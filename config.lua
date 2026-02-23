@@ -12,7 +12,7 @@ local DEFAULTS = {
     tts_rate = 200,
     log_dir = os.getenv("HOME") .. "/.claude/voice-loop/logs",
     -- Phase 1a: hotkey input
-    hotkey_modifier = {"ctrl"},
+    hotkey_modifier = {"ctrl", "shift"},
     listen_timeout = 15,
     max_remind_count = 3,
     confirm_high_risk = true,

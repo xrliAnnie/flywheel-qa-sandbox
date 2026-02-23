@@ -96,6 +96,13 @@ end
 
 --- Main tick: called periodically by the timer.
 function M:tick()
+    -- Polling fallback: if TTS finished but didFinish callback didn't fire
+    -- (macOS audio bug), force cleanup which triggers the on_finish callback.
+    -- Always check, not just in announcing state, since fire-and-forget
+    -- announcements (e.g., "No response, skipping") can leave _speaking=true.
+    if self._tts.checkFinished then self._tts:checkFinished() end
+
+    if self._state == "announcing" then return end
     if self._state ~= "idle" then return end
 
     for _, pane in ipairs(self._cfg.monitored_panes) do
@@ -385,7 +392,7 @@ function M:_start_writing(key)
         ev.pane.target,
         ev.pane_id,
         key,
-        ev.dedupe_key,
+        ev,
         function(ok, err_reason)
             self:_on_write_done(ok, err_reason)
         end

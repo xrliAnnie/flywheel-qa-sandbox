@@ -39,7 +39,7 @@ end
 -- Mock helpers
 -- ---------------------------------------------------------------------------
 
---- Create a mock monitor that returns configurable capture text and pane_id.
+--- Create a mock monitor that returns configurable capture text.
 local function mock_monitor(opts)
     opts = opts or {}
     return {
@@ -52,7 +52,7 @@ local function mock_monitor(opts)
     }
 end
 
---- Create a mock parser with configurable parse result and dedupe_key.
+--- Create a mock parser with configurable parse result.
 local function mock_parser(opts)
     opts = opts or {}
     return {
@@ -101,19 +101,38 @@ local function mock_logger()
     }
 end
 
+--- Standard event for tests: paren format with 2 choices.
+local function make_event(opts)
+    opts = opts or {}
+    return {
+        prompt = {
+            format = opts.format or "paren",
+            choices = opts.choices or {
+                { key = "1", text = "foo" },
+                { key = "2", text = "bar" },
+            },
+            raw_match = "1) foo\n2) bar",
+        },
+        dedupe_key = "test:0.0|abc123",
+    }
+end
+
 -- ===========================================================================
 print("\n=== Writer: pane validation ===")
 -- ===========================================================================
 
-test("send succeeds when pane exists, pane_id matches, fingerprint matches", function()
+test("send succeeds when pane exists, pane_id matches, prompt matches", function()
     local log = mock_logger()
     local w = writer_mod.new({
         monitor = mock_monitor({
             capture_text = "1) foo\n2) bar\n",
         }),
         parser = mock_parser({
-            parse_result = { format = "paren", choices = {}, raw_match = "1) foo\n2) bar" },
-            dedupe_key_value = "test:0.0|abc123",
+            parse_result = {
+                format = "paren",
+                choices = { { key = "1", text = "foo" }, { key = "2", text = "bar" } },
+                raw_match = "1) foo\n2) bar",
+            },
         }),
         execute = mock_execute("%42"),
         task_run = mock_task_run(0),
@@ -121,7 +140,7 @@ test("send succeeds when pane exists, pane_id matches, fingerprint matches", fun
     })
 
     local result_ok, result_err
-    w:send("test:0.0", "%42", "1", "test:0.0|abc123", function(ok, err)
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
         result_ok = ok
         result_err = err
     end)
@@ -141,7 +160,7 @@ test("send fails when pane does not exist", function()
     })
 
     local result_ok, result_err
-    w:send("test:0.0", "%42", "1", "test:0.0|abc123", function(ok, err)
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
         result_ok = ok
         result_err = err
     end)
@@ -161,7 +180,7 @@ test("send fails when pane_id changed", function()
     })
 
     local result_ok, result_err
-    w:send("test:0.0", "%42", "1", "test:0.0|abc123", function(ok, err)
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
         result_ok = ok
         result_err = err
     end)
@@ -184,7 +203,7 @@ test("send fails when capture returns empty", function()
     })
 
     local result_ok, result_err
-    w:send("test:0.0", "%42", "1", "test:0.0|abc123", function(ok, err)
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
         result_ok = ok
         result_err = err
     end)
@@ -203,7 +222,7 @@ test("send fails when parser returns nil (prompt gone)", function()
     })
 
     local result_ok, result_err
-    w:send("test:0.0", "%42", "1", "test:0.0|abc123", function(ok, err)
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
         result_ok = ok
         result_err = err
     end)
@@ -212,12 +231,15 @@ test("send fails when parser returns nil (prompt gone)", function()
     assert_eq(result_err, "prompt_gone", "reason")
 end)
 
-test("send fails when dedupe_key doesn't match (prompt changed)", function()
+test("send fails when prompt format changed", function()
     local w = writer_mod.new({
-        monitor = mock_monitor({ capture_text = "1) new\n2) choices\n" }),
+        monitor = mock_monitor({ capture_text = "Yes or No?" }),
         parser = mock_parser({
-            parse_result = { format = "paren", choices = {}, raw_match = "1) new\n2) choices" },
-            dedupe_key_value = "test:0.0|DIFFERENT",
+            parse_result = {
+                format = "yesno",  -- different from event's "paren"
+                choices = { { key = "y", text = "Yes" }, { key = "n", text = "No" } },
+                raw_match = "Yes or No?",
+            },
         }),
         execute = mock_execute("%42"),
         task_run = mock_task_run(0),
@@ -225,7 +247,64 @@ test("send fails when dedupe_key doesn't match (prompt changed)", function()
     })
 
     local result_ok, result_err
-    w:send("test:0.0", "%42", "1", "test:0.0|abc123", function(ok, err)
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
+        result_ok = ok
+        result_err = err
+    end)
+
+    assert_eq(result_ok, false, "should fail")
+    assert_eq(result_err, "prompt_changed", "reason")
+end)
+
+test("send fails when choice count changed", function()
+    local w = writer_mod.new({
+        monitor = mock_monitor({ capture_text = "1) foo\n2) bar\n3) baz\n" }),
+        parser = mock_parser({
+            parse_result = {
+                format = "paren",
+                choices = {
+                    { key = "1", text = "foo" },
+                    { key = "2", text = "bar" },
+                    { key = "3", text = "baz" },  -- extra choice
+                },
+                raw_match = "1) foo\n2) bar\n3) baz",
+            },
+        }),
+        execute = mock_execute("%42"),
+        task_run = mock_task_run(0),
+        logger = mock_logger(),
+    })
+
+    local result_ok, result_err
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
+        result_ok = ok
+        result_err = err
+    end)
+
+    assert_eq(result_ok, false, "should fail")
+    assert_eq(result_err, "prompt_changed", "reason")
+end)
+
+test("send fails when choice key changed", function()
+    local w = writer_mod.new({
+        monitor = mock_monitor({ capture_text = "1) foo\n3) bar\n" }),
+        parser = mock_parser({
+            parse_result = {
+                format = "paren",
+                choices = {
+                    { key = "1", text = "foo" },
+                    { key = "3", text = "bar" },  -- key "3" instead of "2"
+                },
+                raw_match = "1) foo\n3) bar",
+            },
+        }),
+        execute = mock_execute("%42"),
+        task_run = mock_task_run(0),
+        logger = mock_logger(),
+    })
+
+    local result_ok, result_err
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
         result_ok = ok
         result_err = err
     end)
@@ -245,8 +324,11 @@ test("send retries once on send-keys failure, then fails", function()
             capture_text = "1) foo\n2) bar\n",
         }),
         parser = mock_parser({
-            parse_result = { format = "paren", choices = {}, raw_match = "1) foo\n2) bar" },
-            dedupe_key_value = "test:0.0|abc123",
+            parse_result = {
+                format = "paren",
+                choices = { { key = "1", text = "foo" }, { key = "2", text = "bar" } },
+                raw_match = "1) foo\n2) bar",
+            },
         }),
         execute = mock_execute("%42"),
         task_run = function(_, _, callback)
@@ -258,16 +340,13 @@ test("send retries once on send-keys failure, then fails", function()
     })
 
     local result_ok, result_err
-    w:send("test:0.0", "%42", "1", "test:0.0|abc123", function(ok, err)
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
         result_ok = ok
         result_err = err
     end)
 
     assert_eq(result_ok, false, "should fail after retry")
     assert_eq(result_err, "send_keys_failed", "reason")
-    -- task_run called twice: initial + 1 retry
-    -- But note: each send() call does pane verify + fingerprint verify + task_run
-    -- So call_count for task_run specifically should be 2
     assert_eq(call_count, 2, "task_run called twice")
 end)
 
@@ -278,8 +357,11 @@ test("send succeeds on retry after first failure", function()
             capture_text = "1) foo\n2) bar\n",
         }),
         parser = mock_parser({
-            parse_result = { format = "paren", choices = {}, raw_match = "1) foo\n2) bar" },
-            dedupe_key_value = "test:0.0|abc123",
+            parse_result = {
+                format = "paren",
+                choices = { { key = "1", text = "foo" }, { key = "2", text = "bar" } },
+                raw_match = "1) foo\n2) bar",
+            },
         }),
         execute = mock_execute("%42"),
         task_run = function(_, _, callback)
@@ -295,7 +377,7 @@ test("send succeeds on retry after first failure", function()
     })
 
     local result_ok, result_err
-    w:send("test:0.0", "%42", "1", "test:0.0|abc123", function(ok, err)
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
         result_ok = ok
         result_err = err
     end)
@@ -342,8 +424,11 @@ test("send fails fast when task_run returns nil", function()
             capture_text = "1) foo\n2) bar\n",
         }),
         parser = mock_parser({
-            parse_result = { format = "paren", choices = {}, raw_match = "1) foo\n2) bar" },
-            dedupe_key_value = "test:0.0|abc123",
+            parse_result = {
+                format = "paren",
+                choices = { { key = "1", text = "foo" }, { key = "2", text = "bar" } },
+                raw_match = "1) foo\n2) bar",
+            },
         }),
         execute = mock_execute("%42"),
         task_run = function(_, _, _)
@@ -353,7 +438,7 @@ test("send fails fast when task_run returns nil", function()
     })
 
     local result_ok, result_err
-    w:send("test:0.0", "%42", "1", "test:0.0|abc123", function(ok, err)
+    w:send("test:0.0", "%42", "1", make_event(), function(ok, err)
         result_ok = ok
         result_err = err
     end)

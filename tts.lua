@@ -36,7 +36,22 @@ end
 --- Check if TTS is currently speaking.
 --- @return boolean
 function M:isSpeaking()
-    return self._speaking
+    if not self._speaking then return false end
+    -- Check actual state: synth task still running or sound still playing
+    if self._synth_task then return true end
+    if self._sound and self._sound:isPlaying() then return true end
+    -- Flag says speaking but nothing is actually active — stale state
+    return false
+end
+
+--- Poll-safe cleanup: if sound finished but callback didn't fire, clean up now.
+--- Call this periodically from a timer to work around macOS audio callback bugs.
+function M:checkFinished()
+    if not self._speaking then return end
+    if self._synth_task then return end  -- still synthesizing
+    if self._sound and self._sound:isPlaying() then return end  -- still playing
+    -- Sound finished but didFinish callback didn't fire — force cleanup
+    self:_finish()
 end
 
 --- Reset runtime state and cleanup any temporary output file.

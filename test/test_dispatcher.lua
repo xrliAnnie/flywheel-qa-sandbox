@@ -102,6 +102,18 @@ local function mock_tts()
         self._speaking = false
         if cb then cb("failed") end
     end
+    --- Poll-safe cleanup: mirrors real tts.lua:checkFinished().
+    --- If _speaking but _sound_done flag set (simulating hs.sound finished
+    --- without firing didFinish callback), force completion.
+    function t:checkFinished()
+        if not self._speaking then return end
+        if not self._sound_done then return end
+        -- Sound finished but callback didn't fire — force cleanup
+        local cb = self._on_finish
+        self._on_finish = nil
+        self._speaking = false
+        if cb then cb("completed") end
+    end
     return t
 end
 
@@ -628,6 +640,20 @@ test("TTS failure during announcing returns to idle", function()
     d:tick()
     mocks.tts:fail()
     assert_eq(d:state(), "idle", "back to idle after TTS failure")
+end)
+
+test("tick polling fallback advances past announcing when TTS done", function()
+    local d, mocks = make_dispatcher()
+    d:tick()
+    assert_eq(d:state(), "announcing", "announcing")
+
+    -- Simulate: TTS sound finished playing but didFinish callback didn't fire (macOS bug)
+    -- _speaking is still true, _on_finish still holds the callback, but sound is done
+    mocks.tts._sound_done = true
+
+    -- Next tick should call checkFinished() which forces completion
+    d:tick()
+    assert_eq(d:state(), "waiting_input", "polling fallback advanced to waiting_input")
 end)
 
 -- ===========================================================================

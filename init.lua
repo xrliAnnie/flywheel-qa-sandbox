@@ -150,4 +150,9 @@ function M:toggle()
     end
 end
 
+--- Debug: expose internal state for Hammerspoon console inspection.
+function M:_debug()
+    return state
+end
+
 return M
