@@ -40,7 +40,11 @@ function M:isSpeaking()
 end
 
 --- Reset runtime state and cleanup any temporary output file.
-function M:_finish()
+--- @param reason string|nil "completed" (default), "failed", or "stopped"
+function M:_finish(reason)
+    reason = reason or "completed"
+    local cb = self._on_finish
+    self._on_finish = nil
     if self._sound then
         self._sound:setCallback(nil)
         self._sound = nil
@@ -49,6 +53,7 @@ function M:_finish()
     safe_remove(self._tmp_file)
     self._tmp_file = nil
     self._speaking = false
+    if cb then cb(reason) end
 end
 
 --- Play the synthesized AIFF file via hs.sound.
@@ -62,7 +67,7 @@ function M:_playSynthesizedFile()
     local sound = hs.sound.getByFile(path)
     if not sound then
         hs.printf("[voice-loop] failed to load synthesized audio: %s", path)
-        self:_finish()
+        self:_finish("failed")
         return
     end
 
@@ -75,7 +80,7 @@ function M:_playSynthesizedFile()
 
     if not sound:play() then
         hs.printf("[voice-loop] failed to play synthesized audio: %s", path)
-        self:_finish()
+        self:_finish("failed")
     end
 end
 
@@ -101,13 +106,20 @@ end
 
 --- Announce a detected prompt via TTS.
 --- @param alias string Pane alias (e.g., "backend")
---- @param prompt table Parsed prompt from parser
+--- @param prompt table|string Parsed prompt from parser, or raw text string
+--- @param on_finish function|nil Callback(reason) where reason is "completed"/"stopped"/"failed"
 --- @return boolean Whether announcement started
-function M:announce(alias, prompt)
+function M:announce(alias, prompt, on_finish)
     if self._speaking then return false end
 
-    local text = self:_formatText(alias, prompt)
+    local text
+    if type(prompt) == "string" then
+        text = prompt
+    else
+        text = self:_formatText(alias, prompt)
+    end
     self._speaking = true
+    self._on_finish = on_finish
     self._tmp_file = make_tmp_aiff()
 
     local args = {
@@ -124,7 +136,7 @@ function M:announce(alias, prompt)
         self._synth_task = nil
         if exitCode ~= 0 then
             hs.printf("[voice-loop] say synthesis failed (exit=%d): %s", exitCode, tostring(stdErr))
-            self:_finish()
+            self:_finish("failed")
             return
         end
         self:_playSynthesizedFile()
@@ -132,21 +144,23 @@ function M:announce(alias, prompt)
 
     if not self._synth_task then
         hs.printf("[voice-loop] failed to create say task")
-        self:_finish()
+        self:_finish("failed")
         return false
     end
 
     if not self._synth_task:start() then
         hs.printf("[voice-loop] failed to start say task")
-        self:_finish()
+        self:_finish("failed")
         return false
     end
 
     return true
 end
 
---- Stop any current speech.
+--- Stop any current speech. Calls on_finish("stopped") if callback was set.
 function M:stop()
+    local cb = self._on_finish
+    self._on_finish = nil   -- clear BEFORE cleanup to prevent re-entry
     if self._synth_task then
         self._synth_task:terminate()
         self._synth_task = nil
@@ -159,6 +173,7 @@ function M:stop()
     safe_remove(self._tmp_file)
     self._tmp_file = nil
     self._speaking = false
+    if cb then cb("stopped") end
 end
 
 return M

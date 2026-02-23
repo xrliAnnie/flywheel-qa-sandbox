@@ -1,11 +1,14 @@
 --- Voice-in-the-Loop: voice control for Claude Code in tmux panes.
---- Phase 0: capture-pane → parse prompt → TTS announce
+--- Phase 1a: capture-pane → parse prompt → TTS announce → hotkey input → tmux write-back
 
 local config = require("voice-loop.config")
 local monitor = require("voice-loop.monitor")
 local parser = require("voice-loop.parser")
 local tts = require("voice-loop.tts")
 local logger = require("voice-loop.logger")
+local writer_mod = require("voice-loop.writer")
+local input_mod = require("voice-loop.input")
+local dispatcher_mod = require("voice-loop.dispatcher")
 
 local M = {}
 
@@ -14,40 +17,16 @@ local state = {
     timer = nil,
     cfg = nil,
     log = nil,
-    speaker = nil,
-    seen = {},      -- pane_target -> last dedupe_key
+    dispatcher = nil,
+    input = nil,
     running = false,
 }
 
---- Main polling tick: capture each pane → parse → announce new prompts.
+--- Main polling tick: delegates to dispatcher.
 local function tick()
     if not state.running then return end
-    if state.speaker:isSpeaking() then return end
-
-    for _, pane in ipairs(state.cfg.monitored_panes) do
-        -- Skip if TTS started during this tick (from earlier pane)
-        if state.speaker:isSpeaking() then break end
-
-        local text = monitor.capture(pane.target, state.cfg.capture_lines)
-        if text and #text > 0 then
-            local prompt = parser.parse(text)
-            if prompt then
-                local key = parser.dedupe_key(pane.target, prompt.raw_match)
-                if state.seen[pane.target] ~= key then
-                    state.seen[pane.target] = key
-                    state.log:event("detected", {
-                        pane = pane.target,
-                        alias = pane.alias,
-                        format = prompt.format,
-                        choices = prompt.choices and #prompt.choices or 0,
-                    })
-                    state.speaker:announce(pane.alias, prompt)
-                end
-            -- Note: we do NOT clear seen[pane] when parse returns nil.
-            -- The dedupe key persists so the same prompt won't re-announce.
-            -- A new/different prompt will have a different dedupe key.
-            end
-        end
+    if state.dispatcher then
+        state.dispatcher:tick()
     end
 end
 
@@ -65,10 +44,57 @@ function M:start()
     end
 
     state.log = logger.new(state.cfg.log_dir)
-    state.speaker = tts.new(state.cfg)
-    state.seen = {}
-    state.running = true
+    local speaker = tts.new(state.cfg)
 
+    -- Create writer with real hs dependencies
+    local w = writer_mod.new({
+        monitor = monitor,
+        parser = parser,
+        execute = function(cmd) return hs.execute(cmd, true) end,
+        task_run = function(path, args, callback)
+            local t = hs.task.new(path, function(exitCode)
+                callback(exitCode)
+            end, args)
+            if t then t:start() end
+            return t
+        end,
+        logger = state.log,
+        capture_lines = state.cfg.capture_lines,
+    })
+
+    -- Create input with real hs dependencies
+    state.input = input_mod.new({
+        hotkey_new = function(mods, key, fn)
+            return hs.hotkey.new(mods, key, fn)
+        end,
+        alert_show = function(text, duration)
+            hs.alert.show(text, duration)
+        end,
+        modifier = state.cfg.hotkey_modifier,
+    })
+    state.input:create()
+
+    -- Create dispatcher with all dependencies
+    state.dispatcher = dispatcher_mod.new({
+        monitor = monitor,
+        parser = parser,
+        tts = speaker,
+        writer = w,
+        input = state.input,
+        logger = state.log,
+        clock = {
+            now = function() return hs.timer.secondsSinceEpoch() end,
+            delayed_call = function(seconds, fn)
+                return hs.timer.doAfter(seconds, fn)
+            end,
+        },
+        alert = function(text, duration)
+            hs.alert.show(text, duration)
+        end,
+        config = state.cfg,
+    })
+
+    state.running = true
     state.timer = hs.timer.new(state.cfg.poll_interval, tick)
     state.timer:start()
 
@@ -80,8 +106,9 @@ end
 function M:stop()
     state.running = false
     if state.timer then state.timer:stop(); state.timer = nil end
-    if state.speaker then state.speaker:stop() end
-    state.seen = {}
+    if state.dispatcher then state.dispatcher:stop() end
+    if state.input then state.input:destroy(); state.input = nil end
+    state.dispatcher = nil
     if state.log then
         state.log:event("stopped", {})
         state.log:close()
@@ -94,6 +121,7 @@ end
 function M:pause()
     state.running = false
     if state.timer then state.timer:stop() end
+    if state.dispatcher then state.dispatcher:pause() end
     if state.log then state.log:event("paused", {}) end
     hs.alert.show("Voice Loop: paused")
 end
@@ -106,6 +134,7 @@ function M:resume()
     end
     state.running = true
     state.timer:start()
+    if state.dispatcher then state.dispatcher:resume() end
     if state.log then state.log:event("resumed", {}) end
     hs.alert.show("Voice Loop: resumed")
 end

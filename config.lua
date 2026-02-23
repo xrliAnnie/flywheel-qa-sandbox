@@ -11,6 +11,13 @@ local DEFAULTS = {
     tts_voice = nil,
     tts_rate = 200,
     log_dir = os.getenv("HOME") .. "/.claude/voice-loop/logs",
+    -- Phase 1a: hotkey input
+    hotkey_modifier = {"ctrl"},
+    listen_timeout = 15,
+    max_remind_count = 3,
+    confirm_high_risk = true,
+    confirm_keywords = {"delete", "remove", "force", "reset", "drop", "destroy"},
+    max_choices = 10,
 }
 
 --- Load config: defaults merged with user overrides.
