@@ -333,6 +333,36 @@ test("get_pane_id returns nil on failure", function()
 end)
 
 -- ===========================================================================
+print("\n=== Writer: task_run returning nil (Codex review fix) ===")
+-- ===========================================================================
+
+test("send fails fast when task_run returns nil", function()
+    local w = writer_mod.new({
+        monitor = mock_monitor({
+            capture_text = "1) foo\n2) bar\n",
+        }),
+        parser = mock_parser({
+            parse_result = { format = "paren", choices = {}, raw_match = "1) foo\n2) bar" },
+            dedupe_key_value = "test:0.0|abc123",
+        }),
+        execute = mock_execute("%42"),
+        task_run = function(_, _, _)
+            return nil  -- task creation failed, callback never called
+        end,
+        logger = mock_logger(),
+    })
+
+    local result_ok, result_err
+    w:send("test:0.0", "%42", "1", "test:0.0|abc123", function(ok, err)
+        result_ok = ok
+        result_err = err
+    end)
+
+    assert_eq(result_ok, false, "should fail")
+    assert_eq(result_err, "send_keys_failed", "reason")
+end)
+
+-- ===========================================================================
 -- Summary
 -- ===========================================================================
 print(string.format("\n%d tests, %d failures", TOTAL, FAILURES))

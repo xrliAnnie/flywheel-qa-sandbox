@@ -157,9 +157,16 @@ end
 function M:_start_announcing()
     self:_transition("announcing")
     local ev = self._event
-    self._tts:announce(ev.pane.alias, ev.prompt, function(reason)
+    local ok = self._tts:announce(ev.pane.alias, ev.prompt, function(reason)
         self:_on_tts_done(reason)
     end)
+    if not ok then
+        -- TTS busy or failed to start — fall back to idle
+        if self._logger then
+            self._logger:event("announce_failed", { pane = ev.pane.target })
+        end
+        self:_transition("idle")
+    end
 end
 
 function M:_on_tts_done(reason)
@@ -280,14 +287,16 @@ function M:_handle_waiting_input(command, value)
 end
 
 function M:_handle_confirming_input(command, _value)
-    self:_cancel_timeout()
-    self._input:disableAll()
-
+    -- Only act on yes/cancel/no — ignore all other commands to avoid deadlock
     if command == "yes" then
+        self:_cancel_timeout()
+        self._input:disableAll()
         local key = self._event.pending_key
         self._event.pending_key = nil
         self:_start_writing(key)
     elseif command == "cancel" or command == "no" then
+        self:_cancel_timeout()
+        self._input:disableAll()
         if self._logger then
             self._logger:event("confirm_cancelled", { pane = self._event.pane.target })
         end
@@ -295,7 +304,7 @@ function M:_handle_confirming_input(command, _value)
         self._event = nil
         self:_transition("idle")
     end
-    -- Ignore other commands during confirming
+    -- Other commands (choose, replay) are no-ops — timer and hotkeys stay active
 end
 
 -- =========================================================================
@@ -429,9 +438,10 @@ end
 function M:pause()
     self._input:disableAll()
     self:_cancel_timeout()
-    self._tts:stop()
-    -- Don't clear _event — preserve for resume
+    -- Transition to paused BEFORE stopping TTS, so that TTS stop() callback
+    -- sees state=paused and doesn't clear _event (fixes confirm-TTS race)
     self:_transition("paused")
+    self._tts:stop()
 end
 
 --- Resume the dispatcher.

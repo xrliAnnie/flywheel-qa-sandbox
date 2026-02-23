@@ -115,7 +115,7 @@ function M:send(target, pane_id, key, dedupe_key, callback, retry_count)
 
     -- Step 3: send-keys (async)
     local send_args = { "send-keys", "-t", target, key, "Enter" }
-    self._task_run("/usr/bin/tmux", send_args, function(exit_code)
+    local task_handle = self._task_run("/usr/bin/tmux", send_args, function(exit_code)
         if exit_code == 0 then
             if self._logger then
                 self._logger:event("write_ok", { pane = target, key = key })
@@ -135,6 +135,16 @@ function M:send(target, pane_id, key, dedupe_key, callback, retry_count)
             end
         end
     end)
+
+    -- If task creation failed, callback will never fire — fail fast
+    if not task_handle then
+        if self._logger then
+            self._logger:event("write_failed", {
+                pane = target, key = key, reason = "send_keys_failed",
+            })
+        end
+        callback(false, "send_keys_failed")
+    end
 end
 
 return M

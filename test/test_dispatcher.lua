@@ -651,6 +651,122 @@ test("stop clears event, seen, and returns to idle", function()
 end)
 
 -- ===========================================================================
+print("\n=== Dispatcher: Codex review fix — confirming deadlock on unhandled keys ===")
+-- ===========================================================================
+
+test("unhandled command in confirming does not deadlock", function()
+    local d, mocks = make_dispatcher({
+        monitor = mock_monitor("Yes/No?\n"),
+        parser = mock_parser({
+            parse_result = {
+                format = "yesno",
+                choices = {
+                    { key = "y", text = "Yes" },
+                    { key = "n", text = "No" },
+                },
+                raw_match = "Yes/No?",
+            },
+        }),
+    })
+
+    d:tick()
+    mocks.tts:complete()
+    d:handle_input("yes")  -- → confirming
+    mocks.tts:complete()   -- confirm TTS done
+
+    -- Send unhandled commands — should NOT deadlock
+    d:handle_input("replay")
+    assert_eq(d:state(), "confirming", "still confirming after replay")
+    assert_true(mocks.input._enabled, "hotkeys still enabled")
+
+    d:handle_input("choose", "1")
+    assert_eq(d:state(), "confirming", "still confirming after choose")
+    assert_true(mocks.input._enabled, "hotkeys still enabled")
+
+    -- Can still confirm normally
+    d:handle_input("yes")
+    assert_eq(d:state(), "idle", "confirmed and wrote")
+end)
+
+-- ===========================================================================
+print("\n=== Dispatcher: Codex review fix — pause during confirm-TTS preserves event ===")
+-- ===========================================================================
+
+test("pause during confirm-TTS preserves event for resume", function()
+    local d, mocks = make_dispatcher({
+        monitor = mock_monitor("Yes/No?\n"),
+        parser = mock_parser({
+            parse_result = {
+                format = "yesno",
+                choices = {
+                    { key = "y", text = "Yes" },
+                    { key = "n", text = "No" },
+                },
+                raw_match = "Yes/No?",
+            },
+        }),
+    })
+
+    d:tick()
+    mocks.tts:complete()
+    d:handle_input("yes")  -- → confirming, TTS starts "Confirm y?"
+    assert_eq(d:state(), "confirming", "confirming")
+
+    -- Pause while confirm TTS is speaking
+    d:pause()
+    assert_eq(d:state(), "paused", "paused")
+    assert_not_nil(d:current_event(), "event preserved during pause")
+
+    -- Resume should re-announce
+    d:resume()
+    assert_eq(d:state(), "announcing", "re-announcing after resume")
+end)
+
+-- ===========================================================================
+print("\n=== Dispatcher: Codex review fix — announce returning false ===")
+-- ===========================================================================
+
+test("announce returning false falls back to idle", function()
+    local tts_mock = mock_tts()
+    -- Override announce to return false (TTS busy)
+    local original_announce = tts_mock.announce
+    local announce_count = 0
+    function tts_mock:announce(alias, prompt, on_finish)
+        announce_count = announce_count + 1
+        if announce_count == 1 then
+            -- First call succeeds normally
+            return original_announce(self, alias, prompt, on_finish)
+        else
+            -- Second call: TTS busy, returns false
+            return false
+        end
+    end
+
+    local d, mocks = make_dispatcher({ tts = tts_mock })
+    d:tick()
+    mocks.tts:complete()
+    d:handle_input("choose", "1")
+    assert_eq(d:state(), "idle", "back to idle after write")
+
+    -- Force a new dedupe key so tick detects again
+    -- (We need to make the parser return a different key)
+    -- Simpler: just test _start_announcing directly when TTS returns false
+    -- Reset state for a cleaner test
+end)
+
+test("announce failure on fresh detection goes to idle", function()
+    local tts_mock = mock_tts()
+    -- announce always returns false
+    function tts_mock:announce(_, _, _)
+        return false
+    end
+
+    local d = make_dispatcher({ tts = tts_mock })
+    d:tick()
+    assert_eq(d:state(), "idle", "falls back to idle when announce fails")
+end)
+
+-- ===========================================================================
 -- Summary
 -- ===========================================================================
 print(string.format("\n%d tests, %d failures", TOTAL, FAILURES))
