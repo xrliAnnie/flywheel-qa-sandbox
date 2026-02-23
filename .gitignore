@@ -1,0 +1,12 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Logs (runtime, not in repo)
+logs/
+
+# Samples collected during Phase 0
+samples/
