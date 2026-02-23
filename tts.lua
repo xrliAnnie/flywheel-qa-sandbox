@@ -23,7 +23,7 @@ end
 --- @return table TTS instance
 function M.new(config)
     local self = setmetatable({}, M)
-    self.voice = config.tts_voice  -- e.g., "Alex", "Samantha", "Ting-Ting"
+    self.voice = config.tts_voice or "Samantha"  -- fallback: system default may produce empty AIFF
     self.rate = config.tts_rate or 200
     self._speaking = false
     self._synth_task = nil
