@@ -76,6 +76,11 @@ Phase 4+: 可选接入路线 C（Whisper）替换 ASR 部分
 路线 B:   弃用
 ```
 
+> **Phase 0 实测更新 (2026-02-22):**
+> - `hs.speech`（NSSpeechSynthesizer）在 macOS Sequoia 上无法播放音频。TTS 改用两阶段方案：`say -o` 合成 AIFF 文件 + `hs.sound` (NSSound) 播放。
+> - `hs.speech.listener`（NSSpeechRecognizer）在 macOS Sonoma 14.5+ 上 `new()` 返回 nil（[#3529](https://github.com/Hammerspoon/hammerspoon/issues/3529)）。ASR 部分需要替代方案。
+> - Hammerspoon 仍是 MVP 首选平台（tmux 集成 + Lua 脚本控制），但 TTS/ASR 的具体技术实现需要调整。
+
 ---
 
 ## 3. 系统架构
@@ -95,8 +100,8 @@ flowchart TB
         MON["tmux Monitor\n轮询 capture-pane"] --> PARSER["Prompt Parser\n正则解析选项"]
         PARSER --> QUEUE["Event Queue\nFIFO + snooze + dedup"]
         QUEUE --> DISPATCHER["Dispatcher\n取队头事件"]
-        DISPATCHER --> TTS["TTS Engine\nhs.speech 播报"]
-        TTS --> ASR["ASR Listener\nhs.speech.listener\n等待语音命令"]
+        DISPATCHER --> TTS["TTS Engine\nsay -o + hs.sound"]
+        TTS --> ASR["ASR Listener\n待定（替代方案）\n等待语音命令"]
         ASR --> ROUTER["Command Router\n解析语音→动作"]
         ROUTER --> WRITER["tmux Writer\nsend-keys 回写"]
         ROUTER -->|稍后/下一个/重复| QUEUE
@@ -124,8 +129,8 @@ flowchart TB
 | **Prompt Parser** | 从文本中识别"需要用户选择"的提示 | 正则 + 启发式规则 |
 | **Event Queue** | 事件排队、去重、snooze、超时管理 | Lua table + timer |
 | **Dispatcher** | 取队头事件，驱动 TTS 播报 | 状态机控制 |
-| **TTS Engine** | 语音播报 | `hs.speech.new()` |
-| **ASR Listener** | 语音命令识别 | `hs.speech.listener.new()` |
+| **TTS Engine** | 语音播报 | `say -o` 合成 + `hs.sound` 播放（hs.speech 在 Sequoia 不可用） |
+| **ASR Listener** | 语音命令识别 | 待定 — hs.speech.listener 在 Sonoma+ 不可用，需替代方案 |
 | **Command Router** | 将识别结果映射为动作 | 词表匹配 |
 | **tmux Writer** | 把用户选择写回正确 pane | `tmux send-keys -t <target>` |
 | **Logger** | 记录所有事件和操作 | JSONL append |
@@ -873,3 +878,9 @@ monitored_panes = {
 4. **tmux pane 与 Claude Code 实例的对应关系？** — 用户可能在同一 pane 中 exit 一个 Claude Code 再启动另一个。已通过 prompt 指纹重验（dedupe_key 比对）部分解决——新实例会产生不同指纹，旧事件自动标记 `done_stale`。
 
 5. ~~**耳机切换？**~~ → **Resolved (Codex Round 1 #9):** 加入 Phase 0 preflight checklist，包含耳机切换测试。
+
+6. ~~**`hs.speech` TTS 可用性?**~~ → **Resolved (Phase 0):** `hs.speech` (NSSpeechSynthesizer) 在 macOS Sequoia 上无声。改用 `say -o` + `hs.sound` 两阶段方案，已验证。
+
+7. ~~**`hs.speech.listener` ASR 可用性?**~~ → **Resolved (Phase 0):** 在 macOS Sonoma+ 上 `new()` 返回 nil。需要替代 ASR 方案（Whisper.cpp 或 hotkey fallback）。
+
+8. **`coreaudiod` 长时间运行导致音频失效?** — Phase 0 实测中发现 coreaudiod 运行 14 天后系统音频完全失效，`sudo killall coreaudiod` 可修复。需要考虑是否在启动时检测/提示。
