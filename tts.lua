@@ -1,12 +1,21 @@
---- TTS Engine: uses macOS `say` command for voice announcements.
---- Runs `say` via background shell process to avoid blocking Hammerspoon.
+--- TTS Engine: synthesize speech to AIFF with `say -o`, then play via hs.sound.
+--- This avoids silent subprocess speech output issues on some macOS 15.x setups.
 
 local M = {}
 M.__index = M
 
---- Shell-escape a string for safe use in commands.
-local function shell_escape(s)
-    return "'" .. s:gsub("'", "'\\''") .. "'"
+local TMP_PREFIX = "/tmp/voice-loop-tts-"
+
+local function now_ms()
+    return math.floor(hs.timer.secondsSinceEpoch() * 1000)
+end
+
+local function make_tmp_aiff()
+    return string.format("%s%d-%d.aiff", TMP_PREFIX, now_ms(), math.random(100000, 999999))
+end
+
+local function safe_remove(path)
+    if path then os.remove(path) end
 end
 
 --- Create a new TTS engine.
@@ -17,6 +26,10 @@ function M.new(config)
     self.voice = config.tts_voice  -- e.g., "Alex", "Samantha", "Ting-Ting"
     self.rate = config.tts_rate or 200
     self._speaking = false
+    self._synth_task = nil
+    self._sound = nil
+    self._tmp_file = nil
+    math.randomseed(now_ms())
     return self
 end
 
@@ -24,6 +37,46 @@ end
 --- @return boolean
 function M:isSpeaking()
     return self._speaking
+end
+
+--- Reset runtime state and cleanup any temporary output file.
+function M:_finish()
+    if self._sound then
+        self._sound:setCallback(nil)
+        self._sound = nil
+    end
+    self._synth_task = nil
+    safe_remove(self._tmp_file)
+    self._tmp_file = nil
+    self._speaking = false
+end
+
+--- Play the synthesized AIFF file via hs.sound.
+function M:_playSynthesizedFile()
+    local path = self._tmp_file
+    if not path then
+        self:_finish()
+        return
+    end
+
+    local sound = hs.sound.getByFile(path)
+    if not sound then
+        hs.printf("[voice-loop] failed to load synthesized audio: %s", path)
+        self:_finish()
+        return
+    end
+
+    self._sound = sound
+    sound:setCallback(function(_, message)
+        if message == "didFinish" or message == "didStop" then
+            self:_finish()
+        end
+    end)
+
+    if not sound:play() then
+        hs.printf("[voice-loop] failed to play synthesized audio: %s", path)
+        self:_finish()
+    end
 end
 
 --- Format the announcement text from a parsed prompt.
@@ -54,42 +107,57 @@ function M:announce(alias, prompt)
     if self._speaking then return false end
 
     local text = self:_formatText(alias, prompt)
-
-    -- Build say command
-    local cmd = "/usr/bin/say"
-    if self.voice then
-        cmd = cmd .. " -v " .. shell_escape(self.voice)
-    end
-    cmd = cmd .. " -r " .. tostring(self.rate)
-    cmd = cmd .. " " .. shell_escape(text)
-
-    -- Run in background via shell, with a done-marker file
-    local marker = "/tmp/voice-loop-tts-done"
-    os.remove(marker)
-    hs.execute("(" .. cmd .. "; touch " .. marker .. ") &", true)
-
     self._speaking = true
+    self._tmp_file = make_tmp_aiff()
 
-    -- Poll for completion (check every 0.5s)
-    local check
-    check = hs.timer.doEvery(0.5, function()
-        local f = io.open(marker, "r")
-        if f then
-            f:close()
-            os.remove(marker)
-            self._speaking = false
-            check:stop()
+    local args = {
+        "-r", tostring(self.rate),
+        "-o", self._tmp_file,
+        text,
+    }
+    if self.voice and #self.voice > 0 then
+        table.insert(args, 1, self.voice)
+        table.insert(args, 1, "-v")
+    end
+
+    self._synth_task = hs.task.new("/usr/bin/say", function(exitCode, _, stdErr)
+        self._synth_task = nil
+        if exitCode ~= 0 then
+            hs.printf("[voice-loop] say synthesis failed (exit=%d): %s", exitCode, tostring(stdErr))
+            self:_finish()
+            return
         end
-    end)
+        self:_playSynthesizedFile()
+    end, args)
+
+    if not self._synth_task then
+        hs.printf("[voice-loop] failed to create say task")
+        self:_finish()
+        return false
+    end
+
+    if not self._synth_task:start() then
+        hs.printf("[voice-loop] failed to start say task")
+        self:_finish()
+        return false
+    end
 
     return true
 end
 
 --- Stop any current speech.
 function M:stop()
-    -- Kill any running say process
-    hs.execute("pkill -f '/usr/bin/say.*voice-loop' 2>/dev/null || true", true)
-    os.remove("/tmp/voice-loop-tts-done")
+    if self._synth_task then
+        self._synth_task:terminate()
+        self._synth_task = nil
+    end
+    if self._sound then
+        self._sound:setCallback(nil)
+        self._sound:stop()
+        self._sound = nil
+    end
+    safe_remove(self._tmp_file)
+    self._tmp_file = nil
     self._speaking = false
 end
 
