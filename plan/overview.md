@@ -1,14 +1,8 @@
-# 005 — Voice-in-the-Loop: Claude Code 全程语音闭环控制
+# Voice-in-the-Loop — Shared Design Overview
 
 > 让用户戴着耳机在家走动，用语音完成 80%+ 的 Claude Code approve/choice 操作，不需要盯屏幕。
 
-## Status: new
-
-> **NOTE**: This file is the original design archive (single source of truth). For day-to-day development, use the structured `plan/` directory:
-> - [`plan/overview.md`](plan/overview.md) — shared design (Sections 1-9, 11-13, Open Questions)
-> - [`plan/phase-N/plan.md`](plan/phase-0/plan.md) — per-phase goals, tasks, acceptance criteria
-> - [`plan/phase-N/progress.md`](plan/phase-0/progress.md) — implementation progress tracking
-> - [`plan/README.md`](plan/README.md) — workflow instructions
+本文件包含所有 phase 共享的设计基础，从 `PLAN.md` Section 1-9, 11-13 及 Open Questions 提取。
 
 ---
 
@@ -329,14 +323,6 @@ tmux send-keys -t <target> "1" Enter
 
 **回写前校验：**
 
-<!-- Codex Round 1 #2: 用 display-message 校验 pane 级目标，不用 has-session -->
-<!-- Codex Round 1 #6: 每次回写前重验 prompt 指纹，防止陈旧事件竞态 -->
-<!-- Codex Round 1 #7: 用 hs.task 异步执行 tmux 命令，避免阻塞主循环 -->
-
-<!-- Codex Round 2 #1: validate 中 display-message 和 capture-pane 属于"读操作" -->
-<!-- 在回写前的同步校验上下文中使用 hs.execute 是合理的（需要立即判定） -->
-<!-- 只有 send-keys（写操作）走 hs.task 异步 -->
-
 ```lua
 local function validate_pane_before_send(target, event)
     -- 1. 检查 pane 是否存在（同步读操作，需要立即判定）
@@ -355,9 +341,6 @@ end
 ```
 
 **tmux 命令执行方式：**
-
-<!-- Codex Round 1 #7: 用 hs.task 异步执行写操作，避免阻塞 Hammerspoon 主循环 -->
-<!-- Codex Round 2 #1: 明确异步/同步边界 -->
 
 **异步策略边界：**
 - **写操作**（`send-keys`）→ `hs.task` 异步，避免阻塞
@@ -475,9 +458,6 @@ tmux list-panes -a -F "#{session_name}:#{window_index}.#{pane_index} #{pane_curr
 
 **词表注册（Hammerspoon）：**
 
-<!-- Codex Round 1 #1: 必须显式 foregroundOnly(false)，否则后台无法识别 -->
-<!-- Codex Round 1 #3: 默认词表以英文为主，中文作为可选增强 -->
-
 ```lua
 local listener = hs.speech.listener.new("VoiceLoop")
 -- 关键：必须关闭 foregroundOnly，否则 Hammerspoon 不在前台时无法识别
@@ -554,9 +534,6 @@ local PROMPT_PATTERNS = {
 
 ### 8.2 解析流程
 
-<!-- Codex Round 1 #5: capture-pane 默认不含 ANSI，去掉清洗步骤 -->
-<!-- Codex Round 1 #4: 增加"多条件命中"逻辑降低误报 -->
-
 ```mermaid
 flowchart TD
     INPUT[Pane 最后 50 行文本<br/>capture-pane 不加 -e，纯文本] --> SCAN[依次尝试所有 PROMPT_PATTERNS]
@@ -578,8 +555,6 @@ flowchart TD
 
 **多条件命中规则（降低误报）：**
 
-<!-- Codex Round 1 #4: 单一正则匹配不够，需多条件交叉验证 -->
-
 仅正则匹配不足以判定——必须同时满足以下条件之一：
 - **条件 A（强信号）：** 正则命中选择模式 **且** pane 最后一行为空或仅含光标（表示正在等待输入）
 - **条件 B（中信号）：** 正则命中 **且** 该 pane 在过去 5 秒内无新输出（通过连续两次 capture-pane 比对）
@@ -598,16 +573,12 @@ flowchart TD
 
 ### 8.3 ANSI escape code 处理
 
-<!-- Codex Round 1 #5: capture-pane 不加 -e 时默认不含 ANSI 转义，无需清洗 -->
-
 **关键：`tmux capture-pane` 不加 `-e` 标志时，输出不包含 ANSI escape codes。**
 
 因此 MVP 阶段：
 - **不使用 `-e` 标志**（默认行为，输出纯文本）
 - **不需要 ANSI 清洗函数**
 - 如果未来因调试需要启用 `-e`，再引入完整的 ANSI parser（不手写 regex）
-
-<!-- Codex Round 2 #1: 统一使用 hs.task 异步，或明确标注同步例外 -->
 
 ```lua
 -- 读操作（capture-pane、display-message、list-panes）使用 hs.execute 同步，
@@ -626,9 +597,6 @@ end
 
 ### 强绑定 pane
 
-<!-- Codex Round 1 #2: 校验改为 pane 级（display-message），不再用 has-session -->
-<!-- Codex Round 1 #6: 每次命令执行和重播前都重验 prompt 指纹 -->
-
 - 每个 Event 绑定 `source_pane`（tmux target）
 - 回写前 **必须** 二次校验：
   - pane 存在（`tmux display-message -p -t <target> '#{pane_id}'`）
@@ -637,8 +605,6 @@ end
 - 校验失败 → 不回写，标记为 `done_stale`（内容已变）或 `expired`（pane 不存在），播报通知用户
 
 ### 二次确认机制
-
-<!-- Codex Round 1 #8: 高风险操作默认开启二次确认 -->
 
 ```lua
 config = {
@@ -682,122 +648,6 @@ config = {
 - `hs.speech.listener` 纯本地，音频不出设备
 - 日志不记录 pane 完整内容，只记录 `choices` 数量和操作
 - 如未来接 Whisper，默认使用本地模型（`whisper.cpp`），不调用云 API
-
----
-
-## 10. MVP 分阶段里程碑
-
-<!-- Codex Round 1 #10: 明确 MVP 边界 -->
-
-**MVP 定义（Phase 0-1 交付）：** 手动配置 1-3 个 pane + 数字/yes-no 语音回写 + 基础日志。
-**不属于 MVP：** 自动发现、复杂启发式、needs_attention 兜底、日志轮转、macOS 通知、热重载。这些归入 Phase 2-3。
-
-### Phase 0: 环境验证 + 单 pane 检测 + TTS 播报
-
-<!-- Codex Round 1 #9: 增加 preflight checklist -->
-<!-- Codex Round 1 #3: 中文词表验证作为 Phase 0 gate -->
-<!-- Codex Round 1 #4: 采集真实 capture-pane 样本 -->
-
-**目标：** 验证环境可行性 + tmux capture-pane → 解析 → TTS 播报链路
-
-**Preflight Checklist（必须全部通过才能继续）：**
-- [ ] Hammerspoon 已安装且能运行 Lua 脚本
-- [ ] 麦克风权限已授予 Hammerspoon（`hs.microphoneState()` 返回 true，否则触发 `hs.microphoneState(true)` 请求授权）
-- [ ] `hs.speech.listener` 后台识别可用：设置 `foregroundOnly(false)` 后切到其他 app，确认仍能识别命令
-- [ ] 音频设备测试：TTS 通过当前耳机/扬声器正常播放；切换蓝牙耳机后仍正常
-- [ ] tmux 可达：`hs.execute("tmux list-sessions")` 能正常返回
-- [ ] `tmux capture-pane -t <test_pane> -p -S -50` 能正常返回内容
-
-**中文词表 Gate（Phase 0 硬性验证）：**
-- [ ] 注册中文命令词（"选一"/"选二"/"稍后"等），测试识别率
-- [ ] **通过标准：** 安静环境下 10 次测试 >= 8 次正确识别
-- [ ] **未通过：** MVP 仅使用英文词表（"one"/"two"/"later"等），中文降为 Phase 4 可选增强
-
-**真实样本采集：**
-- [ ] 在 Claude Code 中触发 10+ 种不同的选择提示
-- [ ] 用 `tmux capture-pane -p -S -50` 保存每次输出到 `~/.claude/voice-loop/samples/`
-- [ ] 基于真实样本校准 parser 正则规则（而非凭假设写 pattern）
-- [ ] 建立样本回归测试集（所有新 pattern 必须通过全部样本）
-
-**其余任务：**
-- [ ] 创建 `~/.hammerspoon/voice-loop/` 目录结构
-- [ ] 实现 `monitor.lua`：定时 capture-pane 指定 pane
-- [ ] 实现 `parser.lua`：基于真实样本的正则匹配
-- [ ] 实现 `tts.lua`：`hs.speech` 封装，播报模板
-- [ ] 配置文件：手动指定一个 pane target + alias
-- [ ] 端到端测试：在 pane 中 echo 模拟提示 → 听到播报
-
-**验收标准：** preflight 全通过 + 在一个指定 pane 中出现选择提示后 < 3 秒听到语音播报。
-
-**预计工作量：** 约 6-8 小时（含 preflight 和样本采集）
-
----
-
-### Phase 1: 语音命令 → 回写 tmux
-
-**目标：** 闭环——播报后用语音选择，自动回写
-
-**任务：**
-- [ ] 实现 `listener.lua`：`hs.speech.listener` 封装 + 命令词表
-- [ ] 实现 `router.lua`：语音命令 → 动作映射
-- [ ] 实现 `writer.lua`：`tmux send-keys` 封装 + 回写前校验
-- [ ] 实现 `dispatcher.lua`：TTS → ASR → Router → Writer 的完整状态流转
-- [ ] 超时处理：15s 无响应 → 重播
-- [ ] 高风险二次确认（`confirm_high_risk = true`）：yes/no 和 approve/reject 类提示默认要求确认
-- [ ] 端到端测试：模拟提示 → 播报 → 语音选择 → 验证 pane 收到正确输入
-
-**验收标准：** 用户说"选一"后 < 2 秒，对应 pane 收到 `1\n`。
-
-**预计工作量：** 约 4-6 小时
-
----
-
-### Phase 2: 多 pane 自动发现 + 事件队列
-
-**目标：** 支持多 pane 并行监控 + 排队播报
-
-**任务：**
-- [ ] 实现 `queue.lua`：Event 数据结构 + 状态机 + FIFO
-- [ ] 实现 pane 自动发现：`tmux list-panes -a` + 过滤
-- [ ] 同 pane 串行化逻辑
-- [ ] 去重逻辑（dedupe_key）
-- [ ] 多 pane 端到端测试：2+ pane 同时出现提示 → 按顺序播报和处理
-
-**验收标准：** 3 个 pane 各出一个提示，按 FIFO 逐个播报，选择正确路由。
-
-**预计工作量：** 约 6-8 小时
-
----
-
-### Phase 3: snooze / 重复 / 下一个 + 日志 + 通知
-
-**目标：** 完善队列控制 + 可观测性
-
-**任务：**
-- [ ] 实现 snooze 逻辑（"稍后" → 放回队尾 + 延迟）
-- [ ] 实现"下一个"/"重复"/"取消"/"状态"命令
-- [ ] 实现完整日志系统（JSONL + 轮转）
-- [ ] macOS 通知集成（`hs.notify`）：事件过期时弹通知
-- [ ] 二次确认 UI 完善（Phase 1 已实现高风险默认确认，此处完善撤销窗口 UI 和可配置性）
-- [ ] 配置热重载：修改 config.lua 后自动生效
-
-**验收标准：** "稍后" → 2 分钟后重新播报；"下一个" → 播下一事件；日志文件记录完整。
-
-**预计工作量：** 约 6-8 小时
-
----
-
-### Phase 4: Whisper 升级 + 自由语音（可选）
-
-**目标：** 支持更自然的语音命令
-
-**任务：**
-- [ ] 集成 `whisper.cpp`（本地推理）
-- [ ] 支持自然语言指令解析（"帮我 approve A，B 稍后"）
-- [ ] 混合模式：小词表用 `hs.speech.listener`（低延迟），超出词表时 fallback Whisper
-- [ ] 评估延迟和准确率 trade-off
-
-**预计工作量：** 约 8-12 小时
 
 ---
 
