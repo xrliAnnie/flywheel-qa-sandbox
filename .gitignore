@@ -5,8 +5,13 @@
 .idea/
 .vscode/
 
-# Logs (runtime, not in repo)
-logs/
+# Dependencies
+node_modules/
 
-# Samples collected during Phase 0
-samples/
+# Environment
+.env
+.env.*
+
+# Logs
+logs/
+*.log
