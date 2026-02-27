@@ -46,7 +46,7 @@ Linear issues → DAG resolver → Claude Code sessions → auto PR
 | Base | Fork Cyrus (~80% reuse) |
 | Notification | **Slack** (Cyrus has transport, OpenClaw supports it, threads > Discord) |
 | Memory | Per-project (`.flywheel/` in each project repo, not centralized) |
-| Memory Architecture | **MemoryGateway** — unified API, 3 physical adapters: SQLite+sqlite-vec (Decision Layer), Mem0 (OpenClaw), Filesystem (Project). Single-direction sync, no Mem0 for decisions. |
+| Memory Architecture | Phase 1-4: **DecisionStore** (event-sourced SQLite) + **FilesystemContext** (.flywheel/). Phase 5+: **MemoryGateway** unified abstraction + Mem0 bridge. Single-direction sync, no Mem0 for decisions. |
 | Decision Layer | CIPHER learning + Haiku classification + SQLite + sqlite-vec + local embeddings |
 | Phase 1 autonomy | Pass-through (architect for extension) |
 | Runner | Claude Code only (Phase 2: multi-runner via Cyrus RunnerSelectionService) |
