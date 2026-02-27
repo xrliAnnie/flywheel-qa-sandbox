@@ -79,7 +79,7 @@ Update memory file + CLAUDE.md with new decisions/ideas from this session. Run a
 
 - **Runtime**: Node.js / TypeScript
 - **Base**: Cyrus fork (pnpm monorepo)
-- **AI**: Claude Code Agent SDK (`@anthropic-ai/claude-agent-sdk`), Haiku for Decision Layer
+- **AI**: Spawn CLI tools (Claude Code CLI, Codex CLI, Gemini CLI) via `IAgentRunner`; Haiku for Decision Layer
 - **Storage**: SQLite (`better-sqlite3`) + `sqlite-vec` for vector search
 - **Embeddings**: `@xenova/transformers` (local, zero API cost)
 - **Messaging**: Slack (via Cyrus `slack-event-transport`) + OpenClaw
