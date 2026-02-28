@@ -12,6 +12,15 @@ node_modules/
 .env
 .env.*
 
+# Build output
+dist/
+
 # Logs
 logs/
 *.log
+
+# pnpm
+.pnpm-debug.log
+
+# TypeScript
+*.tsbuildinfo
