@@ -5,11 +5,9 @@
 New session? Run `/onboarding` or read these files in order:
 
 1. **Memory** → `~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md` (decisions, architecture, current progress)
-2. **Implementation Plan** → `doc/plan/draft/v0.1.1-interactive-runner.md` (active plan, 7 tasks, Codex approved)
-3. **Architecture** → `doc/exploration/new/v0.1.1-interactive-runner-architecture.md` (design decisions, tradeoffs)
-4. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md` (industry patterns)
+2. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md` (industry patterns)
 
-Archived docs (v0.1.0) are in `doc/*/archive/` — read only if you need historical context.
+Archived docs (v0.1.0, v0.1.1) are in `doc/*/archive/` — read only if you need historical context.
 
 ## What Is Flywheel
 
@@ -25,28 +23,13 @@ Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
 
 ## Current Phase
 
-**v0.1.1 implementation** — converting headless runner to interactive tmux-based sessions.
+**v0.1.1 complete** — planning next milestone.
 
 | Milestone | Status |
 |-----------|--------|
 | v0.1.0 Core Loop (headless `--print` mode) | ✅ Merged (PR #3) |
-| v0.1.1 Exploration (interactive runner architecture) | ✅ Codex approved |
-| v0.1.1 Plan (7 tasks, ~280 LOC net reduction) | ✅ Codex approved |
-| v0.1.1 Implementation | ⬜ **Next** — follow `doc/plan/draft/v0.1.1-interactive-runner.md` |
-
-## v0.1.1 Key Design Decisions
-
-| Decision | Choice |
-|----------|--------|
-| Runner | TmuxRunner (interactive tmux window, replaces headless ClaudeCodeRunner) |
-| Completion detection | SessionEnd hook (primary) + pane_dead polling (fallback) |
-| Result detection | Git SHA-range: `baseSha..HEAD` commit count |
-| Success criteria | `commitCount > 0` (Phase 1) |
-| Preflight | `assertCleanTree()` — fail fast on dirty working tree |
-| CLI arg order | `claude [options] [prompt]` — options before prompt |
-| Blueprint | Simplified: hydrate → one-line prompt → run tmux → git check |
-| PreHydrator | Minimal: only fetch Linear title + description |
-| Execution | Sequential (Phase 1), parallel deferred to Phase 2+ |
+| v0.1.1 Interactive Runner (tmux sessions) | ✅ Merged (PR #4) |
+| v0.2.0 (TBD) | ⬜ **Next** — needs exploration & planning |
 
 ## Key Architecture Decisions (project-wide)
 
