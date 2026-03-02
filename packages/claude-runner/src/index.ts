@@ -8,6 +8,8 @@ export type {
 } from "@anthropic-ai/claude-agent-sdk";
 export { AbortError, ClaudeRunner } from "./ClaudeRunner.js";
 export { ClaudeCodeRunner } from "./ClaudeCodeRunner.js";
+export { TmuxRunner } from "./TmuxRunner.js";
+export type { ExecFileFn } from "./TmuxRunner.js";
 export {
 	availableTools,
 	getAllTools,

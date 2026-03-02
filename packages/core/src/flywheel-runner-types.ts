@@ -22,8 +22,10 @@ export interface FlywheelRunRequest {
 	maxTurns?: number;
 	/** Maximum dollar amount to spend on API calls */
 	maxCostUsd?: number;
-	/** Session ID for resuming a previous session */
+	/** Session ID for resuming a previous session (headless mode only) */
 	sessionId?: string;
+	/** Human-readable label for UI display (e.g., issue ID "GEO-101") */
+	label?: string;
 	/** Process-level timeout in milliseconds (default: 30 minutes) */
 	timeoutMs?: number;
 	/** Model to use (e.g., "opus", "sonnet") */
@@ -40,16 +42,20 @@ export interface FlywheelRunRequest {
 export interface FlywheelRunResult {
 	/** Whether the agent completed successfully */
 	success: boolean;
-	/** Total API cost in USD */
-	costUsd: number;
-	/** Session ID (for resuming later) */
+	/** Total API cost in USD (unavailable in interactive mode) */
+	costUsd?: number;
+	/** Claude session ID — for resume in headless mode, UUID in interactive mode */
 	sessionId: string;
+	/** tmux target — format "session:@window_id" e.g. "flywheel:@42" (only set by TmuxRunner) */
+	tmuxWindow?: string;
 	/** Total duration in milliseconds */
 	durationMs?: number;
 	/** Number of agentic turns used */
 	numTurns?: number;
 	/** The agent's text result (may be empty for tool-only sessions) */
 	resultText?: string;
+	/** True if the session was terminated by timeout (TmuxRunner only) */
+	timedOut?: boolean;
 }
 
 /**

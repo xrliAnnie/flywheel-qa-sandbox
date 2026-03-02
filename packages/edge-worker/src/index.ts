@@ -23,6 +23,8 @@ export type {
 } from "./ChatSessionHandler.js";
 export { ChatSessionHandler } from "./ChatSessionHandler.js";
 export { EdgeWorker } from "./EdgeWorker.js";
+export { GitResultChecker } from "./GitResultChecker.js";
+export type { GitCheckResult, ExecFileFn as GitExecFileFn } from "./GitResultChecker.js";
 export { GitService } from "./GitService.js";
 export type { SerializedGlobalRegistryState } from "./GlobalSessionRegistry.js";
 export { GlobalSessionRegistry } from "./GlobalSessionRegistry.js";

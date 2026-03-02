@@ -20,7 +20,7 @@
  *   - Run from project root (not from inside a Claude Code session)
  */
 
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -30,9 +30,9 @@ import { DagResolver } from "../packages/dag-resolver/dist/DagResolver.js";
 import { Blueprint } from "../packages/edge-worker/dist/Blueprint.js";
 import { PreHydrator } from "../packages/edge-worker/dist/PreHydrator.js";
 import { DagDispatcher } from "../packages/edge-worker/dist/DagDispatcher.js";
+import { GitResultChecker } from "../packages/edge-worker/dist/GitResultChecker.js";
 
 import type { DagNode } from "../packages/dag-resolver/dist/types.js";
-import type { FlywheelConfig } from "../packages/config/dist/types.js";
 import type {
 	FlywheelRunRequest,
 	FlywheelRunResult,
@@ -240,59 +240,36 @@ async function main() {
 
 	const hydrator = new PreHydrator(
 		async (id: string) => issueData[id] ?? { title: "Unknown", description: "" },
-		async () => "Make minimal changes. Only edit math.ts. Do not create new files or PRs.",
-		repoDir,
 	);
 
-	const config: FlywheelConfig = {
-		project: "smoke-test",
-		linear: { team_id: "SMOKE" },
-		runners: {
-			default: "claude",
-			available: { claude: { type: "claude", model: "haiku" } },
+	const gitChecker = new GitResultChecker(
+		async (cmd: string, args: string[], cwd: string) => {
+			const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
+			return { stdout: result };
 		},
-		teams: [
-			{
-				name: "test",
-				orchestrators: [{ type: "code", runner: "claude", budget_per_issue: 0.5 }],
-			},
-		],
-		decision_layer: {
-			autonomy_level: "manual_only",
-			escalation_channel: "#test",
-		},
-		ci: { max_rounds: 1 },
-	};
+	);
 
-	const blueprint = new Blueprint(config, hydrator, () => runner, {
-		// Skip git push, CI, lint — local only
+	const shell = {
 		async execFile(cmd: string, args: string[], cwd: string) {
-			if (cmd === "git" && args[0] === "push") {
-				return { stdout: "", exitCode: 0 };
-			}
-			if (cmd === "gh") {
-				return {
-					stdout: JSON.stringify([{ status: "completed", conclusion: "success" }]),
-					exitCode: 0,
-				};
-			}
-			if (cmd === "npm") {
+			if (cmd === "tmux") {
+				// Ignore tmux kill-window — no tmux in smoke test
 				return { stdout: "", exitCode: 0 };
 			}
 			const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
 			return { stdout: result, exitCode: 0 };
 		},
-	});
+	};
+
+	const blueprint = new Blueprint(hydrator, gitChecker, () => runner, shell);
 
 	const dispatcher = new DagDispatcher(resolver, blueprint, repoDir, () => ({
 		teamName: "test",
 		runnerName: "claude",
-		budgetPerIssue: 0.5,
-		fixBudgetUsd: 0.25,
 	}));
 
 	dispatcher.onNodeComplete = async (nodeId, result) => {
-		log(`[${result.success ? "OK" : "FAIL"}] ${nodeId} — $${result.costUsd.toFixed(4)}`);
+		const cost = result.costUsd?.toFixed(4) ?? "N/A";
+		log(`[${result.success ? "OK" : "FAIL"}] ${nodeId} — $${cost}`);
 	};
 
 	// 5. Dispatch!
@@ -307,7 +284,7 @@ async function main() {
 	console.log("========================================\n");
 	console.log(`Completed: ${result.completed.join(", ") || "(none)"}`);
 	console.log(`Shelved:   ${result.shelved.join(", ") || "(none)"}`);
-	console.log(`Cost:      $${result.totalCostUsd.toFixed(4)}`);
+	console.log(`Halted:    ${result.halted}`);
 	console.log(`Time:      ${elapsed}s`);
 
 	// 7. Verify

@@ -1,13 +1,10 @@
 import type { DagNode } from "flywheel-dag-resolver";
 
-/** Pre-hydrated context for an issue — assembled deterministically, zero token cost */
+/** Minimal hydrated context — just issue data from Linear */
 export interface HydratedContext {
+	issueId: string;
 	issueTitle: string;
 	issueDescription: string;
-	linkedPRs: string[];
-	relatedFiles: string[];
-	projectRules: string;
-	recentDecisions: string[];
 }
 
 /** Function to fetch a Linear issue by ID */
@@ -15,31 +12,22 @@ export type FetchIssueFn = (
 	issueId: string,
 ) => Promise<{ title: string; description: string | null }>;
 
-/** Function to read project rules (CLAUDE.md, .flywheel/ config) */
-export type ReadRulesFn = (projectRoot: string) => Promise<string>;
-
 /**
- * Pre-Hydrator: deterministically assembles context for an issue.
- * Zero token cost — all data fetched via APIs and filesystem.
+ * Pre-Hydrator: fetches issue metadata from Linear.
+ *
+ * v0.1.1: Minimal — only fetches title + description.
+ * Claude Code reads CLAUDE.md and project files on its own.
  */
 export class PreHydrator {
-	constructor(
-		private fetchIssue: FetchIssueFn,
-		private readRules: ReadRulesFn,
-		private projectRoot: string,
-	) {}
+	constructor(private fetchIssue: FetchIssueFn) {}
 
 	async hydrate(node: DagNode): Promise<HydratedContext> {
 		const issue = await this.fetchIssue(node.id);
-		const rules = await this.readRules(this.projectRoot);
 
 		return {
+			issueId: node.id,
 			issueTitle: issue.title,
 			issueDescription: issue.description ?? "",
-			linkedPRs: [],
-			relatedFiles: [],
-			projectRules: rules,
-			recentDecisions: [],
 		};
 	}
 }
