@@ -5,7 +5,12 @@
 New session? Run `/onboarding` or read these files in order:
 
 1. **Memory** → `~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md` (decisions, architecture, current progress)
-2. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md` (industry patterns)
+2. **Design Docs** (read based on task):
+   - `doc/exploration/new/v0.2-parallel-execution.md` — worktree + concurrency design
+   - `doc/exploration/new/v0.2-decision-layer.md` — Hard Rules + Haiku Triage
+   - `doc/exploration/new/v0.2-skill-system.md` — SKILL.md injection
+   - `doc/exploration/new/v0.3-memory-system.md` — per-project memory (Phase 3)
+3. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md`
 
 Archived docs (v0.1.0, v0.1.1) are in `doc/*/archive/` — read only if you need historical context.
 
@@ -23,13 +28,14 @@ Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
 
 ## Current Phase
 
-**v0.1.1 complete** — planning next milestone.
+**v0.2 research complete** — ready for implementation planning.
 
 | Milestone | Status |
 |-----------|--------|
 | v0.1.0 Core Loop (headless `--print` mode) | ✅ Merged (PR #3) |
 | v0.1.1 Interactive Runner (tmux sessions) | ✅ Merged (PR #4) |
-| v0.2.0 (TBD) | ⬜ **Next** — needs exploration & planning |
+| v0.2 Research (6 deep research sessions) | ✅ Complete (6,474 lines of design docs) |
+| v0.2 Implementation | ⬜ **Next** — turn exploration docs into implementation plans |
 
 ## Key Architecture Decisions (project-wide)
 
@@ -46,15 +52,21 @@ Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
 
 ```
 doc/
-├── exploration/{new,archive}/   — Product exploration docs
-├── research/{archive}/          — Technical research
+├── exploration/{new,archive}/   — Product exploration / design docs
+├── research/{new,archive}/      — Technical research / evaluations
 ├── deep-research/               — External LLM research results
-├── plan/{draft,archive}/        — Implementation plans
+├── plan/{draft,backlog,archive}/ — Implementation plans
 ├── implementation/              — Implementation notes
 └── reference/                   — Reference docs (Cyrus, Ralph, patterns)
 ```
 
-**Lifecycle**: `draft → new → archive` (when superseded or completed).
+**Lifecycle**: `backlog → draft → new → archive` (when superseded or completed).
+
+**Current exploration docs** (v0.2+):
+- `v0.2-parallel-execution.md` — Worktree, hooks, concurrency (R1)
+- `v0.2-decision-layer.md` — Hard Rules, Haiku Triage, CIPHER (R3)
+- `v0.2-skill-system.md` — SKILL.md injection (R4)
+- `v0.3-memory-system.md` — Per-project memory with mem0/memU/deer-flow (R2)
 
 ## Commands
 
@@ -78,9 +90,9 @@ Update memory file + CLAUDE.md with new decisions from this session. Run at end 
 ## Implementation Phases
 
 1. **Core Loop** (v0.1.0): Fork Cyrus → DAG → headless `--print` → auto PR ✅
-2. **Interactive Runner** (v0.1.1): tmux sessions → user can see & interact ⬜
-3. **Decision Loop**: Slack + Decision Logger → blocked → notify → resume
-4. **Auto-Loop + Memory**: Continuous execution + per-project memory
+2. **Interactive Runner** (v0.1.1): tmux sessions → user can see & interact ✅
+3. **Parallel + Decision** (v0.2): Worktree parallel execution + Decision Layer + Skill injection ⬜
+4. **Memory** (v0.3): Per-project memory (`.flywheel/memory.json` → SQLite + sqlite-vec) ⬜
 5. **Decision Intelligence**: CIPHER learning + auto-approve + digest
 6. **Multi-Team** (optional): Content/Marketing teams
 
