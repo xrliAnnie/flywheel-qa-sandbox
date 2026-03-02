@@ -52,6 +52,7 @@ Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
 
 ```
 doc/
+├── architecture/{archive}/      — Unified architecture docs (v0.1.0, v0.2)
 ├── exploration/{new,archive}/   — Product exploration / design docs
 ├── research/{new,archive}/      — Technical research / evaluations
 ├── deep-research/               — External LLM research results
