@@ -2,7 +2,20 @@ import { describe, expect, it, vi } from "vitest";
 import { DagDispatcher } from "../DagDispatcher.js";
 import { DagResolver } from "flywheel-dag-resolver";
 import type { DagNode } from "flywheel-dag-resolver";
-import type { Blueprint, BlueprintContext, BlueprintResult } from "../Blueprint.js";
+import type {
+	Blueprint,
+	BlueprintContext,
+	BlueprintResult,
+} from "../Blueprint.js";
+
+// Mock node:child_process to prevent osascript from opening Terminal windows during tests
+vi.mock("node:child_process", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:child_process")>();
+	return {
+		...actual,
+		execFile: vi.fn(),
+	};
+});
 
 function makeMockBlueprint(
 	results: Map<string, BlueprintResult>,
@@ -17,8 +30,6 @@ function makeMockBlueprint(
 				return (
 					results.get(node.id) ?? {
 						success: true,
-						costUsd: 1.0,
-						ciRounds: 1,
 					}
 				);
 			},
@@ -30,8 +41,6 @@ function defaultContext(_node: DagNode): BlueprintContext {
 	return {
 		teamName: "eng",
 		runnerName: "claude",
-		budgetPerIssue: 5.0,
-		fixBudgetUsd: 2.0,
 	};
 }
 
@@ -43,8 +52,8 @@ describe("DagDispatcher", () => {
 		];
 		const resolver = new DagResolver(nodes);
 		const results = new Map<string, BlueprintResult>([
-			["A", { success: true, costUsd: 1.0, ciRounds: 1 }],
-			["B", { success: true, costUsd: 2.0, ciRounds: 1 }],
+			["A", { success: true }],
+			["B", { success: true }],
 		]);
 		const blueprint = makeMockBlueprint(results);
 		const dispatcher = new DagDispatcher(
@@ -58,7 +67,7 @@ describe("DagDispatcher", () => {
 
 		expect(result.completed.sort()).toEqual(["A", "B"]);
 		expect(result.shelved).toEqual([]);
-		expect(result.totalCostUsd).toBe(3.0);
+		expect(result.halted).toBe(false);
 	});
 
 	it("processes chain in dependency order", async () => {
@@ -72,7 +81,7 @@ describe("DagDispatcher", () => {
 		const blueprint = {
 			run: vi.fn(async (node: DagNode) => {
 				callOrder.push(node.id);
-				return { success: true, costUsd: 1.0, ciRounds: 1 };
+				return { success: true };
 			}),
 		} as unknown as Blueprint;
 
@@ -89,73 +98,66 @@ describe("DagDispatcher", () => {
 		expect(result.completed).toEqual(["A", "B", "C"]);
 	});
 
-	it("shelves failed nodes and blocks downstream", async () => {
-		const nodes: DagNode[] = [
-			{ id: "A", blockedBy: [] },
-			{ id: "B", blockedBy: ["A"] },
-		];
-		const resolver = new DagResolver(nodes);
-		const results = new Map<string, BlueprintResult>([
-			["A", { success: false, costUsd: 2.0, ciRounds: 2 }],
-		]);
-		const blueprint = makeMockBlueprint(results);
-		const dispatcher = new DagDispatcher(
-			resolver,
-			blueprint,
-			"/project",
-			defaultContext,
-		);
-
-		const result = await dispatcher.dispatch();
-
-		// A shelved → B blocked (default: shelve blocks downstream)
-		expect(result.shelved).toEqual(["A"]);
-		expect(result.completed).toEqual([]);
-		expect(result.totalCostUsd).toBe(2.0);
-		// B was never attempted because A was shelved and blocks it
-		expect(
-			(blueprint.run as ReturnType<typeof vi.fn>).mock.calls,
-		).toHaveLength(1);
-	});
-
-	it("handles diamond dependency with partial failure", async () => {
-		const nodes: DagNode[] = [
-			{ id: "A", blockedBy: [] },
-			{ id: "B", blockedBy: ["A"] },
-			{ id: "C", blockedBy: ["A"] },
-			{ id: "D", blockedBy: ["B", "C"] },
-		];
-		const resolver = new DagResolver(nodes);
-		const results = new Map<string, BlueprintResult>([
-			["A", { success: true, costUsd: 1.0, ciRounds: 1 }],
-			["B", { success: true, costUsd: 1.0, ciRounds: 1 }],
-			["C", { success: false, costUsd: 0.5, ciRounds: 2 }],
-		]);
-		const blueprint = makeMockBlueprint(results);
-		const dispatcher = new DagDispatcher(
-			resolver,
-			blueprint,
-			"/project",
-			defaultContext,
-		);
-
-		const result = await dispatcher.dispatch();
-
-		expect(result.completed.sort()).toEqual(["A", "B"]);
-		expect(result.shelved).toEqual(["C"]);
-		// D is blocked because C was shelved
-		expect(result.totalCostUsd).toBe(2.5);
-	});
-
-	it("fires onNodeComplete callback for each node", async () => {
+	it("shelves failed nodes and halts on first failure", async () => {
 		const nodes: DagNode[] = [
 			{ id: "A", blockedBy: [] },
 			{ id: "B", blockedBy: [] },
 		];
 		const resolver = new DagResolver(nodes);
 		const results = new Map<string, BlueprintResult>([
-			["A", { success: true, costUsd: 1.0, ciRounds: 1 }],
-			["B", { success: false, costUsd: 0.5, ciRounds: 2 }],
+			["A", { success: false }],
+			["B", { success: true }],
+		]);
+		const blueprint = makeMockBlueprint(results);
+		const dispatcher = new DagDispatcher(
+			resolver,
+			blueprint,
+			"/project",
+			defaultContext,
+		);
+
+		const result = await dispatcher.dispatch();
+
+		expect(result.shelved).toEqual(["A"]);
+		expect(result.halted).toBe(true);
+		// B was never attempted because dispatch halted
+		expect(
+			(blueprint.run as ReturnType<typeof vi.fn>).mock.calls,
+		).toHaveLength(1);
+	});
+
+	it("shelving A blocks downstream B", async () => {
+		const nodes: DagNode[] = [
+			{ id: "A", blockedBy: [] },
+			{ id: "B", blockedBy: ["A"] },
+		];
+		const resolver = new DagResolver(nodes);
+		const results = new Map<string, BlueprintResult>([
+			["A", { success: false }],
+		]);
+		const blueprint = makeMockBlueprint(results);
+		const dispatcher = new DagDispatcher(
+			resolver,
+			blueprint,
+			"/project",
+			defaultContext,
+		);
+
+		const result = await dispatcher.dispatch();
+
+		expect(result.shelved).toEqual(["A"]);
+		expect(result.completed).toEqual([]);
+		expect(result.halted).toBe(true);
+		expect(
+			(blueprint.run as ReturnType<typeof vi.fn>).mock.calls,
+		).toHaveLength(1);
+	});
+
+	it("fires onNodeComplete callback for each node", async () => {
+		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
+		const resolver = new DagResolver(nodes);
+		const results = new Map<string, BlueprintResult>([
+			["A", { success: true }],
 		]);
 		const blueprint = makeMockBlueprint(results);
 		const dispatcher = new DagDispatcher(
@@ -172,9 +174,9 @@ describe("DagDispatcher", () => {
 
 		await dispatcher.dispatch();
 
-		expect(events).toHaveLength(2);
-		expect(events.find((e) => e.nodeId === "A")?.success).toBe(true);
-		expect(events.find((e) => e.nodeId === "B")?.success).toBe(false);
+		expect(events).toHaveLength(1);
+		expect(events[0]!.nodeId).toBe("A");
+		expect(events[0]!.success).toBe(true);
 	});
 
 	it("handles empty DAG", async () => {
@@ -191,18 +193,14 @@ describe("DagDispatcher", () => {
 
 		expect(result.completed).toEqual([]);
 		expect(result.shelved).toEqual([]);
-		expect(result.totalCostUsd).toBe(0);
+		expect(result.halted).toBe(false);
 	});
 
 	it("passes project root to Blueprint.run", async () => {
 		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
 		const resolver = new DagResolver(nodes);
 		const blueprint = {
-			run: vi.fn(async () => ({
-				success: true,
-				costUsd: 1.0,
-				ciRounds: 1,
-			})),
+			run: vi.fn(async () => ({ success: true })),
 		} as unknown as Blueprint;
 		const dispatcher = new DagDispatcher(
 			resolver,
@@ -218,25 +216,42 @@ describe("DagDispatcher", () => {
 		).toBe("/my/project");
 	});
 
-	it("uses buildContext function for each node", async () => {
+	it("handles blueprint.run() throwing an exception", async () => {
 		const nodes: DagNode[] = [
 			{ id: "A", blockedBy: [] },
 			{ id: "B", blockedBy: [] },
 		];
 		const resolver = new DagResolver(nodes);
 		const blueprint = {
-			run: vi.fn(async () => ({
-				success: true,
-				costUsd: 1.0,
-				ciRounds: 1,
-			})),
+			run: vi.fn(async () => {
+				throw new Error("dirty working tree");
+			}),
+		} as unknown as Blueprint;
+		const dispatcher = new DagDispatcher(
+			resolver,
+			blueprint,
+			"/project",
+			defaultContext,
+		);
+
+		// The exception should propagate — dispatch does not swallow blueprint throws
+		await expect(dispatcher.dispatch()).rejects.toThrow(
+			"dirty working tree",
+		);
+	});
+
+	it("uses buildContext function for each node", async () => {
+		const nodes: DagNode[] = [
+			{ id: "A", blockedBy: [] },
+		];
+		const resolver = new DagResolver(nodes);
+		const blueprint = {
+			run: vi.fn(async () => ({ success: true })),
 		} as unknown as Blueprint;
 
-		const buildContext = vi.fn((node: DagNode) => ({
+		const buildContext = vi.fn((_node: DagNode) => ({
 			teamName: "eng",
-			runnerName: node.id === "A" ? "claude" : "codex",
-			budgetPerIssue: 5.0,
-			fixBudgetUsd: 2.0,
+			runnerName: "claude",
 		}));
 
 		const dispatcher = new DagDispatcher(
@@ -248,6 +263,6 @@ describe("DagDispatcher", () => {
 
 		await dispatcher.dispatch();
 
-		expect(buildContext).toHaveBeenCalledTimes(2);
+		expect(buildContext).toHaveBeenCalledTimes(1);
 	});
 });

@@ -11,13 +11,25 @@ export class FlywheelRunnerRegistry {
 	private defaultRunnerName: string | null = null;
 
 	/**
-	 * Register a runner implementation.
+	 * Register a runner implementation using its own name.
 	 * The first registered runner becomes the default unless overridden.
 	 */
 	register(runner: IFlywheelRunner): void {
 		this.runners.set(runner.name, runner);
 		if (this.defaultRunnerName === null) {
 			this.defaultRunnerName = runner.name;
+		}
+	}
+
+	/**
+	 * Register a runner under a custom alias.
+	 * Useful when runner.name differs from the config key (e.g., TmuxRunner
+	 * has name "claude-tmux" but is registered as "claude").
+	 */
+	registerAs(name: string, runner: IFlywheelRunner): void {
+		this.runners.set(name, runner);
+		if (this.defaultRunnerName === null) {
+			this.defaultRunnerName = name;
 		}
 	}
 

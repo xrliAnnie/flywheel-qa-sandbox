@@ -2,22 +2,18 @@ import { describe, expect, it, vi } from "vitest";
 import { PreHydrator } from "../PreHydrator.js";
 
 describe("PreHydrator", () => {
-	it("hydrates context from issue and rules", async () => {
+	it("hydrates context from issue", async () => {
 		const fetchIssue = vi.fn(async () => ({
 			title: "Add login page",
 			description: "Build a login form with OAuth",
 		}));
-		const readRules = vi.fn(async () => "Always use TypeScript");
-		const hydrator = new PreHydrator(fetchIssue, readRules, "/project");
+		const hydrator = new PreHydrator(fetchIssue);
 
-		const ctx = await hydrator.hydrate({ id: "issue-1", blockedBy: [] });
+		const ctx = await hydrator.hydrate({ id: "GEO-101", blockedBy: [] });
 
+		expect(ctx.issueId).toBe("GEO-101");
 		expect(ctx.issueTitle).toBe("Add login page");
 		expect(ctx.issueDescription).toBe("Build a login form with OAuth");
-		expect(ctx.projectRules).toBe("Always use TypeScript");
-		expect(ctx.linkedPRs).toEqual([]);
-		expect(ctx.relatedFiles).toEqual([]);
-		expect(ctx.recentDecisions).toEqual([]);
 	});
 
 	it("handles null description", async () => {
@@ -25,10 +21,9 @@ describe("PreHydrator", () => {
 			title: "Title",
 			description: null as string | null,
 		}));
-		const readRules = vi.fn(async () => "rules");
-		const hydrator = new PreHydrator(fetchIssue, readRules, "/project");
+		const hydrator = new PreHydrator(fetchIssue);
 
-		const ctx = await hydrator.hydrate({ id: "issue-1", blockedBy: [] });
+		const ctx = await hydrator.hydrate({ id: "GEO-102", blockedBy: [] });
 
 		expect(ctx.issueDescription).toBe("");
 	});
@@ -38,28 +33,22 @@ describe("PreHydrator", () => {
 			title: "T",
 			description: "D",
 		}));
-		const readRules = vi.fn(async () => "");
-		const hydrator = new PreHydrator(fetchIssue, readRules, "/root");
+		const hydrator = new PreHydrator(fetchIssue);
 
 		await hydrator.hydrate({ id: "issue-42", blockedBy: [] });
 
 		expect(fetchIssue).toHaveBeenCalledWith("issue-42");
 	});
 
-	it("passes projectRoot to readRules", async () => {
+	it("includes issueId in hydrated context", async () => {
 		const fetchIssue = vi.fn(async () => ({
 			title: "T",
 			description: "D",
 		}));
-		const readRules = vi.fn(async () => "");
-		const hydrator = new PreHydrator(
-			fetchIssue,
-			readRules,
-			"/my/project/root",
-		);
+		const hydrator = new PreHydrator(fetchIssue);
 
-		await hydrator.hydrate({ id: "issue-1", blockedBy: [] });
+		const ctx = await hydrator.hydrate({ id: "GEO-99", blockedBy: [] });
 
-		expect(readRules).toHaveBeenCalledWith("/my/project/root");
+		expect(ctx.issueId).toBe("GEO-99");
 	});
 });

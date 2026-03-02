@@ -66,6 +66,7 @@ export {
 	DEFAULT_CONFIG_FILENAME,
 	DEFAULT_PROXY_URL,
 	DEFAULT_WORKTREES_DIR,
+	FLYWHEEL_MARKER_DIR,
 } from "./constants.js";
 // Issue Tracker Abstraction
 export type {
