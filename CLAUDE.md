@@ -5,91 +5,127 @@
 New session? Run `/onboarding` or read these files in order:
 
 1. **Memory** → `~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md` (decisions, architecture, current progress)
-2. **Exploration** → `doc/exploration/new/001-flywheel-autonomous-dev-workflow.md` (product vision, user decisions, architecture diagrams)
-3. **Research 001** → `doc/research/new/001-flywheel-orchestrator.md` (Cyrus, Agent SDK, Linear API, memory isolation)
-4. **Research 002** → `doc/research/new/002-research-gaps-supplement.md` (Cyrus deep eval, Decision Layer, per-project memory, cost model, Slack)
-5. **Research 003** → `doc/research/new/003-decision-layer-cross-reference.md` (Gemini vs ChatGPT synthesis)
-6. **Deep Research** → `doc/deep-research/` (Gemini + ChatGPT raw results on Decision Layer)
+2. **Implementation Plan** → `doc/plan/draft/v0.1.1-interactive-runner.md` (active plan, 7 tasks, Codex approved)
+3. **Architecture** → `doc/exploration/new/v0.1.1-interactive-runner-architecture.md` (design decisions, tradeoffs)
+4. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md` (industry patterns)
+
+Archived docs (v0.1.0) are in `doc/*/archive/` — read only if you need historical context.
 
 ## What Is Flywheel
 
 TypeScript orchestrator (forked from [Cyrus](https://github.com/ceedaragents/cyrus)):
 
 ```
-Linear issues → DAG resolver → Claude Code sessions → auto PR
+Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
                                         ↓ (blocked/failed)
                               Decision Layer (Haiku) → Slack → OpenClaw → CEO
 ```
 
 **Goal**: Autonomous dev workflow — human attention is the bottleneck, not AI capability. CEO sets direction, Flywheel executes continuously, only escalating when it genuinely needs a human decision.
 
-**Decision Layer** is not a message relay — it's a progressive autonomy engine that learns CEO's decision patterns (CIPHER/PRELUDE framework) and gradually handles more decisions independently.
-
 ## Current Phase
 
-**Pre-implementation**: Research complete, awaiting CEO review → then `/write-plan`.
+**v0.1.1 implementation** — converting headless runner to interactive tmux-based sessions.
 
 | Milestone | Status |
 |-----------|--------|
-| Exploration (product vision + user decisions) | ✅ Done |
-| Research 001 (core tech) | ✅ Done, awaiting review |
-| Research 002 (gaps: Cyrus eval, memory, cost, Slack) | ✅ Done, awaiting review |
-| Research 003 (Decision Layer cross-reference) | ✅ Done, awaiting review |
-| Deep Research (Gemini + ChatGPT on Decision Layer) | ✅ Done |
-| Plan | ⬜ Next (`/write-plan` after research approved) |
-| Implementation | ⬜ Not started |
+| v0.1.0 Core Loop (headless `--print` mode) | ✅ Merged (PR #3) |
+| v0.1.1 Exploration (interactive runner architecture) | ✅ Codex approved |
+| v0.1.1 Plan (7 tasks, ~280 LOC net reduction) | ✅ Codex approved |
+| v0.1.1 Implementation | ⬜ **Next** — follow `doc/plan/draft/v0.1.1-interactive-runner.md` |
 
-## Key Architecture Decisions
+## v0.1.1 Key Design Decisions
+
+| Decision | Choice |
+|----------|--------|
+| Runner | TmuxRunner (interactive tmux window, replaces headless ClaudeCodeRunner) |
+| Completion detection | SessionEnd hook (primary) + pane_dead polling (fallback) |
+| Result detection | Git SHA-range: `baseSha..HEAD` commit count |
+| Success criteria | `commitCount > 0` (Phase 1) |
+| Preflight | `assertCleanTree()` — fail fast on dirty working tree |
+| CLI arg order | `claude [options] [prompt]` — options before prompt |
+| Blueprint | Simplified: hydrate → one-line prompt → run tmux → git check |
+| PreHydrator | Minimal: only fetch Linear title + description |
+| Execution | Sequential (Phase 1), parallel deferred to Phase 2+ |
+
+## Key Architecture Decisions (project-wide)
 
 | Decision | Choice |
 |----------|--------|
 | Base | Fork Cyrus (~80% reuse) |
-| Notification | **Slack** (Cyrus has transport, OpenClaw supports it, threads > Discord) |
-| Memory | Per-project (`.flywheel/` in each project repo, not centralized) |
-| Memory Architecture | Phase 1-4: **DecisionStore** (event-sourced SQLite) + **FilesystemContext** (.flywheel/). Phase 5+: **MemoryGateway** unified abstraction + Mem0 bridge. Single-direction sync, no Mem0 for decisions. |
-| Decision Layer | CIPHER learning + Haiku classification + SQLite + sqlite-vec + local embeddings |
+| Notification | **Slack** (Cyrus has transport, OpenClaw supports it) |
+| Memory | Per-project (`.flywheel/` in each project repo) |
+| Decision Layer | CIPHER learning + Haiku + SQLite + sqlite-vec + local embeddings |
 | Phase 1 autonomy | Pass-through (architect for extension) |
-| Runner | Claude Code only (Phase 2: multi-runner via Cyrus RunnerSelectionService) |
+| Runner | Claude Code only (Phase 2: multi-runner) |
 
 ## Doc Structure
 
 ```
 doc/
-├── exploration/{new,archive,backlog}/   — Product exploration docs
-├── research/{new,archive,backlog}/      — Technical research (our own)
-│   └── prompts/                         — Prompts for external deep research
-├── deep-research/                       — External LLM research results (GPT, Gemini)
-├── plan/{new,archive,backlog}/          — Implementation plans
-└── reference/                           — Reference docs (Cyrus overview, etc.)
+├── exploration/{new,archive}/   — Product exploration docs
+├── research/{archive}/          — Technical research
+├── deep-research/               — External LLM research results
+├── plan/{draft,archive}/        — Implementation plans
+├── implementation/              — Implementation notes
+└── reference/                   — Reference docs (Cyrus, Ralph, patterns)
 ```
 
-**Lifecycle**: `backlog → new → archive` (when superseded or completed).
+**Lifecycle**: `draft → new → archive` (when superseded or completed).
 
 ## Commands
 
 ### `/onboarding`
 
-Read memory + latest docs, present current status to CEO. Use when starting a new session.
+Read memory + plan + present current status. Use when starting a new session.
 
 ### `/update`
 
-Update memory file + CLAUDE.md with new decisions/ideas from this session. Run at the end of a session or after significant decisions.
+Update memory file + CLAUDE.md with new decisions from this session. Run at end of session or after significant decisions.
 
-## Tech Stack (planned)
+## Tech Stack
 
 - **Runtime**: Node.js / TypeScript
 - **Base**: Cyrus fork (pnpm monorepo)
-- **AI**: Spawn CLI tools (Claude Code CLI, Codex CLI, Gemini CLI) via `IAgentRunner`; Haiku for Decision Layer
-- **Storage**: SQLite (`better-sqlite3`) + `sqlite-vec` for vector search
-- **Embeddings**: `@xenova/transformers` (local, zero API cost)
-- **Messaging**: Slack (via Cyrus `slack-event-transport`) + OpenClaw
+- **AI**: Spawn CLI tools (Claude Code CLI) via `IAgentRunner`; Haiku for Decision Layer (Phase 2+)
+- **Storage**: SQLite (`better-sqlite3`) + `sqlite-vec` for vector search (Phase 2+)
 - **Issue tracking**: Linear (`@linear/sdk`)
 - **VCS**: GitHub
 
-## Implementation Phases (from research)
+## Implementation Phases
 
-1. **Core Loop** (W1-2): Fork Cyrus → DAG resolver → 1 issue end-to-end
-2. **Decision Loop** (W3): Slack + Decision Logger → blocked → notify → resume
-3. **Auto-Loop + Memory** (W4): Continuous execution + per-project memory
-4. **Decision Intelligence** (W5-6): CIPHER learning + auto-approve + digest
-5. **Multi-Team** (W7-8, optional): Content/Marketing teams
+1. **Core Loop** (v0.1.0): Fork Cyrus → DAG → headless `--print` → auto PR ✅
+2. **Interactive Runner** (v0.1.1): tmux sessions → user can see & interact ⬜
+3. **Decision Loop**: Slack + Decision Logger → blocked → notify → resume
+4. **Auto-Loop + Memory**: Continuous execution + per-project memory
+5. **Decision Intelligence**: CIPHER learning + auto-approve + digest
+6. **Multi-Team** (optional): Content/Marketing teams
+
+## Core Behaviors
+
+- **Surface assumptions**: Before implementing anything non-trivial, list your assumptions explicitly. Never silently fill in ambiguous requirements.
+- **Push back**: You are not a yes-machine. Point out problems directly, explain downsides, propose alternatives.
+- **Enforce simplicity**: Actively resist overcomplication. Prefer the boring, obvious solution.
+- **Scope discipline**: Touch only what you're asked to touch. No unsolicited cleanup.
+- **Dead code hygiene**: After refactoring, list newly unreachable code and ask before removing.
+- **Confusion = stop**: On inconsistencies or unclear specs, stop and ask.
+
+## Non-Negotiables
+
+- External input must be validated at system boundaries.
+- Handle failure paths explicitly — no silent swallowing of errors.
+- No hardcoded secrets; use environment variables or config.
+- Auth/authz boundaries must be verified, not assumed.
+
+## Agent Strategy
+
+- Independent checks/tasks should run in parallel (use multiple Task calls in one message).
+- Complex changes: call planner agent first, code-reviewer agent after implementation.
+
+## Output
+
+After modifications, summarize: what changed and why, what you intentionally left alone, potential concerns.
+
+## Mermaid Diagrams
+
+Prefer Mermaid diagrams for plans, architecture docs, and any document describing flows or relationships.
