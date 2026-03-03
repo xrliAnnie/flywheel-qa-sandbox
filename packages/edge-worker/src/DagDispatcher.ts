@@ -99,9 +99,10 @@ export class DagDispatcher {
 	private openTmuxViewer(): void {
 		const s = this.tmuxSessionName;
 		// macOS: open a new Terminal.app window that attaches to the tmux session
+		// Use exact-match "=" prefix to prevent tmux prefix matching
 		execFile("osascript", [
 			"-e",
-			`tell application "Terminal" to do script "tmux attach -t ${s} 2>/dev/null || (echo 'Waiting for tmux session ${s}...' && sleep 2 && tmux attach -t ${s})"`,
+			`tell application "Terminal" to do script "tmux attach -t '=${s}' 2>/dev/null || (echo 'Waiting for tmux session ${s}...' && sleep 2 && tmux attach -t '=${s}')"`,
 		], (err) => {
 			if (err) {
 				console.warn(

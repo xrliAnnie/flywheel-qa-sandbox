@@ -22,6 +22,42 @@ export class GitResultChecker {
 	constructor(private execFile: ExecFileFn) {}
 
 	/**
+	 * Discover all git roots under a directory.
+	 * Returns paths to directories containing `.git/` (independent repos, not submodules).
+	 * Always includes the root itself if it's a git repo.
+	 */
+	async discoverGitRoots(dir: string): Promise<string[]> {
+		const roots: string[] = [];
+
+		// Check if dir itself is a git repo
+		try {
+			const result = await this.execFile(
+				"git",
+				["-C", dir, "rev-parse", "--git-dir"],
+				dir,
+			);
+			if (result.stdout.trim()) roots.push(dir);
+		} catch { /* not a git repo */ }
+
+		// Scan immediate children for independent git repos
+		try {
+			const result = await this.execFile(
+				"find",
+				[dir, "-maxdepth", "2", "-name", ".git", "-type", "d"],
+				dir,
+			);
+			for (const gitDir of result.stdout.trim().split("\n").filter(Boolean)) {
+				const repoDir = gitDir.replace(/\/\.git$/, "");
+				if (repoDir !== dir && !roots.includes(repoDir)) {
+					roots.push(repoDir);
+				}
+			}
+		} catch { /* find failed — just use what we have */ }
+
+		return roots;
+	}
+
+	/**
 	 * Fail fast if the working tree has staged, unstaged, or untracked changes.
 	 * Must be called before captureBaseline to prevent misattribution.
 	 */
