@@ -515,6 +515,36 @@ describe("WorktreeManager", () => {
 			vi.restoreAllMocks();
 		});
 
+		it("cleans up orphan directory (exists but not registered)", async () => {
+			const bgDeleteCalls: Array<{ cmd: string; args: string[] }> = [];
+			const { fn } = makeMockExec([
+				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
+				new Error("error: branch 'flywheel-GEO-42' not found"), // branch -D
+			]);
+			const mgr = new WorktreeManager(
+				{
+					baseDir: "/home/user/.flywheel/worktrees",
+					bgDeleteFn: (cmd, args) => bgDeleteCalls.push({ cmd, args }),
+				},
+				fn,
+			);
+
+			// Mock existsSync to return true for orphan dir
+			vi.spyOn(fs, "existsSync").mockReturnValue(true);
+
+			const cleaned = await mgr.removeIfExists("/main/repo", "proj", "GEO-42");
+			expect(cleaned).toBe(false); // branch didn't exist
+
+			// Verify bg delete was called for orphan dir
+			expect(bgDeleteCalls).toHaveLength(1);
+			expect(bgDeleteCalls[0]!.cmd).toBe("/bin/rm");
+			expect(bgDeleteCalls[0]!.args).toContain(
+				"/home/user/.flywheel/worktrees/proj/flywheel-GEO-42",
+			);
+
+			vi.restoreAllMocks();
+		});
+
 		it("propagates non-'not found' errors from branch -D", async () => {
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)

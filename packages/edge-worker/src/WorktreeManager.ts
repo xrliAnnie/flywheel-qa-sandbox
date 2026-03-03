@@ -183,6 +183,11 @@ export class WorktreeManager {
 		// Step 1: remove worktree if registered
 		if (await this.isRegistered(mainRepoPath, worktreePath)) {
 			await this.remove(mainRepoPath, worktreePath);
+		} else if (fs.existsSync(worktreePath)) {
+			// Orphan directory: exists on disk but not registered as a worktree.
+			// This can happen after a crash or interrupted removal. Clean it up
+			// so the subsequent create() doesn't fail on "path already exists".
+			this.bgDelete("/bin/rm", ["-rf", worktreePath]);
 		}
 
 		// Step 2: delete local branch if it still exists
