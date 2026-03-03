@@ -2,6 +2,9 @@
 export { Semaphore } from "./Semaphore.js";
 export { ProjectLock } from "./ProjectLock.js";
 
+// Hook callback interface (cross-package boundary)
+export type { IHookCallbackServer } from "./hook-callback-types.js";
+
 // Logging
 
 export type { ILogger, LogContext } from "./logging/index.js";

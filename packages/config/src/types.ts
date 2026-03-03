@@ -60,6 +60,32 @@ export interface CIConfig {
 	retry_on?: string[];
 }
 
+/** Parallel execution configuration (v0.2) */
+export interface ParallelConfig {
+	/** Maximum concurrent sessions, default: 3 */
+	max_parallel?: number;
+	/** Base directory for git worktrees, default: ~/.flywheel/worktrees */
+	worktree_base_dir?: string;
+	/** Port for HookCallbackServer, default: 0 (auto-assign) */
+	hook_port?: number;
+	/** Per-session timeout in minutes, default: 240 */
+	session_timeout_minutes?: number;
+}
+
+/** Skills injection configuration (v0.2) */
+export interface SkillsConfig {
+	/** Enable skill injection, default: true */
+	enabled?: boolean;
+	/** Test command, default: "pnpm test" */
+	test_command?: string;
+	/** Lint command, default: "pnpm lint" */
+	lint_command?: string;
+	/** Build command, default: "pnpm build" */
+	build_command?: string;
+	/** Test framework name, default: "vitest" */
+	test_framework?: string;
+}
+
 /** Reactions configuration (Phase 2+, interface reserved) */
 export interface ReactionsConfig {
 	"changes-requested"?: {
@@ -93,4 +119,6 @@ export interface FlywheelConfig {
 	decision_layer: DecisionLayerConfig;
 	ci?: CIConfig;
 	reactions?: ReactionsConfig;
+	parallel?: ParallelConfig;
+	skills?: SkillsConfig;
 }

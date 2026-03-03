@@ -447,4 +447,87 @@ describe("WorktreeManager", () => {
 			expect(pruned).toEqual([]);
 		});
 	});
+
+	// ── removeIfExists() ──
+
+	describe("removeIfExists()", () => {
+		it("removes registered worktree + deletes branch", async () => {
+			const { fn, calls } = makeMockExec([
+				{ stdout: PORCELAIN_TWO_WORKTREES }, // list (isRegistered)
+				{ stdout: "" }, // rename (remove phase 1) — will use fs.rename mock
+				{ stdout: "" }, // git worktree prune (remove phase 2)
+				{ stdout: "" }, // git branch -D
+			]);
+			const mgr = new WorktreeManager(
+				{ baseDir: "/home/user/.flywheel/worktrees", bgDeleteFn: noopBgDelete },
+				fn,
+			);
+
+			// Mock fs.promises.rename to succeed
+			vi.spyOn(fs.promises, "rename").mockResolvedValue(undefined);
+
+			const cleaned = await mgr.removeIfExists("/main/repo", "proj", "GEO-42");
+			expect(cleaned).toBe(true);
+
+			// Verify branch -D was called
+			const branchCall = calls.find(
+				(c) => c.args.includes("branch") && c.args.includes("-D"),
+			);
+			expect(branchCall).toBeDefined();
+			expect(branchCall!.args).toContain("flywheel-GEO-42");
+
+			vi.restoreAllMocks();
+		});
+
+		it("is no-op when nothing exists (first run)", async () => {
+			const { fn } = makeMockExec([
+				{ stdout: PORCELAIN_SINGLE },  // list (isRegistered → false)
+				new Error("error: branch 'flywheel-GEO-99' not found"), // git branch -D
+			]);
+			const mgr = new WorktreeManager(
+				{ baseDir: "/home/user/.flywheel/worktrees", bgDeleteFn: noopBgDelete },
+				fn,
+			);
+
+			const cleaned = await mgr.removeIfExists("/main/repo", "proj", "GEO-99");
+			expect(cleaned).toBe(false);
+		});
+
+		it("succeeds even if branch doesn't exist (worktree only)", async () => {
+			const { fn } = makeMockExec([
+				{ stdout: PORCELAIN_TWO_WORKTREES }, // list (isRegistered → true)
+				{ stdout: "" }, // git worktree prune (remove — ENOENT path)
+				new Error("error: branch 'flywheel-GEO-42' not found"), // branch -D
+			]);
+			const mgr = new WorktreeManager(
+				{ baseDir: "/home/user/.flywheel/worktrees", bgDeleteFn: noopBgDelete },
+				fn,
+			);
+
+			// Mock rename to throw ENOENT (dir already gone)
+			vi.spyOn(fs.promises, "rename").mockRejectedValue(
+				Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
+			);
+
+			const cleaned = await mgr.removeIfExists("/main/repo", "proj", "GEO-42");
+			expect(cleaned).toBe(false);
+
+			vi.restoreAllMocks();
+		});
+
+		it("propagates non-'not found' errors from branch -D", async () => {
+			const { fn } = makeMockExec([
+				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
+				new Error("fatal: unexpected git error"), // branch -D
+			]);
+			const mgr = new WorktreeManager(
+				{ baseDir: "/home/user/.flywheel/worktrees", bgDeleteFn: noopBgDelete },
+				fn,
+			);
+
+			await expect(
+				mgr.removeIfExists("/main/repo", "proj", "GEO-42"),
+			).rejects.toThrow("unexpected git error");
+		});
+	});
 });
