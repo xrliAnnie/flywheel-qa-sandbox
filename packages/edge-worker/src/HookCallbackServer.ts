@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import http from "node:http";
+import type { IHookCallbackServer } from "flywheel-core";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -15,7 +16,7 @@ export interface HookEvent {
  * Lightweight HTTP server that receives session-end callbacks from Claude Code hooks.
  * Binds to 127.0.0.1 only (loopback — no external access).
  */
-export class HookCallbackServer extends EventEmitter {
+export class HookCallbackServer extends EventEmitter implements IHookCallbackServer {
 	private readonly server: http.Server;
 	private readonly requestedPort: number;
 	private assignedPort = 0;

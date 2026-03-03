@@ -2,13 +2,15 @@
 /**
  * Run a single Linear issue through the Flywheel pipeline.
  *
- * Uses the full Blueprint flow:
+ * Uses the full Blueprint flow (v0.2):
  *   1. Git preflight (assert clean tree)
  *   2. Pre-hydrate (fetch issue from Linear or use hardcoded data)
- *   3. Launch Claude Code in tmux via TmuxRunner
- *   4. Wait for completion (pane_dead polling + marker file)
- *   5. Git result check (commit count — supports multi-repo projects)
- *   6. Report results + cleanup tmux session
+ *   3. Worktree setup (single-repo only; multi-repo falls back to v0.1.1)
+ *   4. Skill injection (SKILL.md files into .claude/skills/)
+ *   5. Launch Claude Code in tmux via TmuxRunner
+ *   6. Wait for completion (HTTP callback + pane_dead polling)
+ *   7. Git result check + evidence collection
+ *   8. Report results + cleanup
  *
  * Prerequisites:
  *   - tmux running (you should be in a tmux session)
@@ -23,7 +25,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, existsSync, rmSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -31,7 +33,10 @@ import { TmuxRunner } from "../packages/claude-runner/dist/TmuxRunner.js";
 import { GitResultChecker } from "../packages/edge-worker/dist/GitResultChecker.js";
 import { Blueprint } from "../packages/edge-worker/dist/Blueprint.js";
 import { PreHydrator } from "../packages/edge-worker/dist/PreHydrator.js";
-import { FLYWHEEL_MARKER_DIR } from "../packages/core/dist/constants.js";
+import { HookCallbackServer } from "../packages/edge-worker/dist/HookCallbackServer.js";
+import { WorktreeManager } from "../packages/edge-worker/dist/WorktreeManager.js";
+import { SkillInjector } from "../packages/edge-worker/dist/SkillInjector.js";
+import { ExecutionEvidenceCollector } from "../packages/edge-worker/dist/ExecutionEvidenceCollector.js";
 
 // ── Hardcoded issue data (fallback when LINEAR_API_KEY is not set) ──
 
@@ -224,11 +229,27 @@ async function main() {
 	}
 	log(`Issue: ${issueId} — ${issueData.title}`);
 
-	// 4. Setup marker directory
-	if (!existsSync(FLYWHEEL_MARKER_DIR)) {
-		mkdirSync(FLYWHEEL_MARKER_DIR, { recursive: true });
-		log(`Created marker dir: ${FLYWHEEL_MARKER_DIR}`);
+	// 4. v0.2 components — HookCallbackServer replaces marker dir
+	const hookServer = new HookCallbackServer(0); // auto-assign port
+	await hookServer.start();
+	log(`HookCallbackServer started on port ${hookServer.getPort()}`);
+
+	// Multi-repo detection: v0.2 worktree only supports single-repo projects.
+	// Multi-repo (e.g., GeoForge3D umbrella dir) falls back to v0.1.1 path.
+	const isSingleRepo = subRepos.length === 0;
+	const worktreeManager = isSingleRepo ? new WorktreeManager() : undefined;
+	if (!isSingleRepo) {
+		log("Multi-repo detected — worktree disabled (v0.1.1 fallback)");
 	}
+
+	const skillInjector = new SkillInjector();
+
+	const evidenceCollector = new ExecutionEvidenceCollector(
+		async (cmd: string, args: string[], cwd: string) => {
+			const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
+			return { stdout: result };
+		},
+	);
 
 	// 5. Capture baselines for all repos (parent + sub-repos)
 	const allRepos = [resolvedRoot, ...subRepos];
@@ -261,6 +282,7 @@ async function main() {
 			undefined,  // default execFile
 			5000,       // poll every 5s
 			600_000,    // 10 min timeout
+			hookServer, // v0.2: HTTP callback completion
 		);
 
 	const shell = {
@@ -274,7 +296,10 @@ async function main() {
 		},
 	};
 
-	const blueprint = new Blueprint(hydrator, gitChecker, makeRunner, shell);
+	const blueprint = new Blueprint(
+		hydrator, gitChecker, makeRunner, shell,
+		worktreeManager, skillInjector, evidenceCollector,
+	);
 
 	// 7. Auto-open Terminal viewer
 	// Use exact session match (=sessionName) to avoid tmux prefix matching
@@ -332,78 +357,95 @@ async function main() {
 
 	const startTime = Date.now();
 	const node = { id: issueId, blockedBy: [] };
-	const ctx = { teamName: "eng", runnerName: "claude" };
+	const projectName = resolvedRoot.split("/").pop() ?? "unknown";
+	const ctx = {
+		teamName: "eng",
+		runnerName: "claude",
+		projectName,
+		sessionTimeoutMs: 600_000, // 10 min — matches current script timeout
+	};
 
-	let blueprintResult;
+	let actualSuccess = false;
 	try {
-		blueprintResult = await blueprint.run(node, resolvedRoot, ctx);
+		const blueprintResult = await blueprint.run(node, resolvedRoot, ctx);
+		clearInterval(autoInteractInterval);
+		const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+		// 10. FIX: Check sub-repos for commits (Blueprint only checks parent repo)
+		actualSuccess = blueprintResult.success;
+		const subRepoCheck = checkSubRepoCommits(allRepos, baselines);
+
+		if (!actualSuccess && subRepoCheck.totalCommits > 0) {
+			log(`Blueprint reported no commits in parent repo, but found ${subRepoCheck.totalCommits} commits in sub-repos`);
+			actualSuccess = true;
+		}
+
+		// 11. Report
+		console.log("\n--- Blueprint Result ---\n");
+		console.log(`  success:      ${actualSuccess}${!blueprintResult.success && actualSuccess ? " (overridden by sub-repo check)" : ""}`);
+		console.log(`  sessionId:    ${blueprintResult.sessionId ?? "(none)"}`);
+		console.log(`  durationMs:   ${blueprintResult.durationMs}`);
+		console.log(`  elapsed:      ${elapsed}s`);
+		console.log(`  error:        ${blueprintResult.error ?? "(none)"}`);
+		console.log(`  worktreePath: ${blueprintResult.worktreePath ?? "(none — v0.1.1 mode)"}`);
+
+		if (blueprintResult.evidence) {
+			const ev = blueprintResult.evidence;
+			console.log("\n--- Execution Evidence ---\n");
+			console.log(`  commits:      ${ev.commitCount}`);
+			console.log(`  filesChanged: ${ev.filesChangedCount}`);
+			console.log(`  linesAdded:   ${ev.linesAdded}`);
+			console.log(`  linesRemoved: ${ev.linesRemoved}`);
+			console.log(`  headSha:      ${ev.headSha ?? "(unknown)"}`);
+			console.log(`  partial:      ${ev.partial}`);
+			if (ev.commitMessages.length > 0) {
+				console.log("  commits:");
+				for (const msg of ev.commitMessages) {
+					console.log(`    - ${msg}`);
+				}
+			}
+		}
+
+		if (subRepoCheck.repoResults.length > 0) {
+			console.log("\n--- Sub-Repo Commits ---\n");
+			for (const r of subRepoCheck.repoResults) {
+				console.log(`  ${r.repo.split("/").pop()}: ${r.commits} commits`);
+				for (const msg of r.messages) {
+					console.log(`    - ${msg}`);
+				}
+			}
+		}
+
+		// 12. Show git state
+		for (const repo of allRepos) {
+			const repoName = repo.split("/").pop();
+			try {
+				console.log(`\n--- ${repoName} branches ---`);
+				console.log(git(["branch", "--sort=-committerdate"], repo).split("\n").slice(0, 5).join("\n"));
+			} catch { /* skip */ }
+		}
+
+		// 13. Verdict
+		console.log("\n========================================");
+		if (actualSuccess) {
+			console.log(`  ✅ PASS — ${issueId} completed successfully!`);
+			console.log(`  Commits: ${subRepoCheck.totalCommits} across ${subRepoCheck.repoResults.length} repo(s)`);
+		} else if (blueprintResult.error) {
+			console.log(`  ❌ FAIL — Error: ${blueprintResult.error}`);
+		} else {
+			console.log(`  ❌ FAIL — No commits detected in any repo`);
+		}
+		console.log("========================================\n");
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		console.error(`\nBlueprint error: ${msg}`);
+	} finally {
+		// 14. Cleanup — hookServer.stop() always runs
 		clearInterval(autoInteractInterval);
+		await hookServer.stop();
+		log("HookCallbackServer stopped");
 		killTmuxSession(tmuxSessionName);
-		process.exit(1);
 	}
-
-	clearInterval(autoInteractInterval);
-	const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-
-	// 10. FIX: Check sub-repos for commits (Blueprint only checks parent repo)
-	let actualSuccess = blueprintResult.success;
-	const subRepoCheck = checkSubRepoCommits(allRepos, baselines);
-
-	if (!actualSuccess && subRepoCheck.totalCommits > 0) {
-		log(`Blueprint reported no commits in parent repo, but found ${subRepoCheck.totalCommits} commits in sub-repos`);
-		actualSuccess = true;
-	}
-
-	// 11. Report
-	console.log("\n--- Blueprint Result ---\n");
-	console.log(`  success:    ${actualSuccess}${!blueprintResult.success && actualSuccess ? " (overridden by sub-repo check)" : ""}`);
-	console.log(`  sessionId:  ${blueprintResult.sessionId ?? "(none)"}`);
-	console.log(`  durationMs: ${blueprintResult.durationMs}`);
-	console.log(`  elapsed:    ${elapsed}s`);
-	console.log(`  error:      ${blueprintResult.error ?? "(none)"}`);
-
-	if (subRepoCheck.repoResults.length > 0) {
-		console.log("\n--- Sub-Repo Commits ---\n");
-		for (const r of subRepoCheck.repoResults) {
-			console.log(`  ${r.repo.split("/").pop()}: ${r.commits} commits`);
-			for (const msg of r.messages) {
-				console.log(`    - ${msg}`);
-			}
-		}
-	}
-
-	// 12. Show git state
-	for (const repo of allRepos) {
-		const repoName = repo.split("/").pop();
-		try {
-			console.log(`\n--- ${repoName} branches ---`);
-			console.log(git(["branch", "--sort=-committerdate"], repo).split("\n").slice(0, 5).join("\n"));
-		} catch { /* skip */ }
-	}
-
-	// 13. Verdict
-	console.log("\n========================================");
-	if (actualSuccess) {
-		console.log(`  ✅ PASS — ${issueId} completed successfully!`);
-		console.log(`  Commits: ${subRepoCheck.totalCommits} across ${subRepoCheck.repoResults.length} repo(s)`);
-	} else if (blueprintResult.error) {
-		console.log(`  ❌ FAIL — Error: ${blueprintResult.error}`);
-	} else {
-		console.log(`  ❌ FAIL — No commits detected in any repo`);
-	}
-	console.log("========================================\n");
-
-	// 14. Cleanup
-	try {
-		rmSync(FLYWHEEL_MARKER_DIR, { recursive: true, force: true });
-		log("Cleaned up marker dir");
-	} catch { /* ok */ }
-
-	// FIX: Kill the tmux session (also closes the Terminal viewer)
-	killTmuxSession(tmuxSessionName);
 
 	process.exit(actualSuccess ? 0 : 1);
 }

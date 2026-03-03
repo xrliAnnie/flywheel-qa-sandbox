@@ -552,4 +552,132 @@ describe("TmuxRunner", () => {
 		const permIdx = claudeArgs.indexOf("--permission-mode");
 		expect(permIdx).toBeLessThan(claudeArgs.length - 1);
 	});
+
+	// ─── v0.2: hookServer integration ──────────────
+
+	describe("v0.2 hookServer mode", () => {
+		function makeMockHookServer(options: {
+			port?: number;
+			resolveImmediately?: boolean;
+		} = {}) {
+			const { port = 9876, resolveImmediately = true } = options;
+			return {
+				getPort: vi.fn(() => port),
+				waitForCompletion: vi.fn(async (_token: string, _timeoutMs: number) => {
+					if (resolveImmediately) {
+						return { token: _token, sessionId: "hook-session", issueId: "GEO-42" };
+					}
+					// Never resolve — let pane_dead or timeout win
+					return new Promise(() => {});
+				}),
+			};
+		}
+
+		it("accepts optional hookServer in constructor", () => {
+			const { fn } = makeMockExec();
+			const hookServer = makeMockHookServer();
+			const runner = new TmuxRunner("flywheel", fn, 10, 30000, hookServer);
+			expect(runner.name).toBe("claude-tmux");
+		});
+
+		it("run() without hookServer — no env vars injected (v0.1.1 path)", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const runner = new TmuxRunner("flywheel", fn, 10);
+
+			await runner.run(makeRequest());
+
+			const newWindow = calls.find(c => c.args[0] === "new-window");
+			const args = newWindow!.args;
+			expect(args.join(" ")).not.toContain("FLYWHEEL_CALLBACK_PORT");
+			expect(args.join(" ")).not.toContain("FLYWHEEL_CALLBACK_TOKEN");
+		});
+
+		it("run() with hookServer — env vars in tmux new-window args", async () => {
+			const hookServer = makeMockHookServer({ port: 12345 });
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const runner = new TmuxRunner("flywheel", fn, 10, 30000, hookServer);
+
+			await runner.run(makeRequest({ issueId: "GEO-42" }));
+
+			const newWindow = calls.find(c => c.args[0] === "new-window");
+			const args = newWindow!.args;
+
+			// Check -e flags are present
+			const envArgStr = args.join(" ");
+			expect(envArgStr).toContain("FLYWHEEL_CALLBACK_PORT=12345");
+			expect(envArgStr).toContain("FLYWHEEL_CALLBACK_TOKEN=");
+			expect(envArgStr).toContain("FLYWHEEL_ISSUE_ID=GEO-42");
+		});
+
+		it("waitForCompletion resolves on HTTP callback", async () => {
+			const hookServer = makeMockHookServer({ resolveImmediately: true });
+			const { fn } = makeMockExec({ paneDead: false });
+			const runner = new TmuxRunner("flywheel", fn, 100, 5000, hookServer);
+
+			const result = await runner.run(makeRequest());
+
+			expect(result.timedOut).toBe(false);
+			expect(hookServer.waitForCompletion).toHaveBeenCalled();
+		});
+
+		it("waitForCompletion resolves on pane_dead even with hookServer", async () => {
+			// hookServer never resolves, but pane dies
+			const hookServer = makeMockHookServer({ resolveImmediately: false });
+			const { fn } = makeMockExecWithDelayedDead(1);
+			const runner = new TmuxRunner("flywheel", fn, 10, 5000, hookServer);
+
+			const result = await runner.run(makeRequest());
+
+			expect(result.timedOut).toBe(false);
+		});
+
+		it("callbackToken is unique per run() call", async () => {
+			const hookServer = makeMockHookServer();
+			const { fn } = makeMockExec({ paneDead: true });
+			const runner = new TmuxRunner("flywheel", fn, 10, 30000, hookServer);
+
+			await runner.run(makeRequest());
+			await runner.run(makeRequest());
+
+			const calls = hookServer.waitForCompletion.mock.calls;
+			expect(calls).toHaveLength(2);
+			const token1 = calls[0]![0];
+			const token2 = calls[1]![0];
+			expect(token1).not.toBe(token2);
+		});
+
+		it("timeout still works with hookServer", async () => {
+			const hookServer = makeMockHookServer({ resolveImmediately: false });
+			const { fn } = makeMockExec({ paneDead: false });
+			const runner = new TmuxRunner("flywheel", fn, 100, 50, hookServer);
+
+			const result = await runner.run(makeRequest());
+
+			expect(result.timedOut).toBe(true);
+		});
+
+		it("v0.2 mode does not set FLYWHEEL_MARKER_DIR in session env", async () => {
+			const hookServer = makeMockHookServer();
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const runner = new TmuxRunner("flywheel", fn, 10, 30000, hookServer);
+
+			await runner.run(makeRequest());
+
+			const setEnvCalls = calls.filter(c => c.args[0] === "set-environment");
+			const markerDirCall = setEnvCalls.find(c => c.args.includes("FLYWHEEL_MARKER_DIR") && !c.args.includes("-u"));
+			expect(markerDirCall).toBeUndefined();
+		});
+
+		it("uses issueId from request (not label) for env var", async () => {
+			const hookServer = makeMockHookServer({ port: 8888 });
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const runner = new TmuxRunner("flywheel", fn, 10, 30000, hookServer);
+
+			await runner.run(makeRequest({ label: "GEO-42-Fix auth bug", issueId: "GEO-42" }));
+
+			const newWindow = calls.find(c => c.args[0] === "new-window");
+			const args = newWindow!.args;
+			expect(args.join(" ")).toContain("FLYWHEEL_ISSUE_ID=GEO-42");
+		});
+	});
 });

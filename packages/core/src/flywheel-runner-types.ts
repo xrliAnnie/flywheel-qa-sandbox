@@ -24,8 +24,10 @@ export interface FlywheelRunRequest {
 	maxCostUsd?: number;
 	/** Session ID for resuming a previous session (headless mode only) */
 	sessionId?: string;
-	/** Human-readable label for UI display (e.g., issue ID "GEO-101") */
+	/** Human-readable label for UI display (e.g., "GEO-101-Fix the bug") */
 	label?: string;
+	/** Issue ID for callback env var (URL-safe, e.g., "GEO-95") */
+	issueId?: string;
 	/** Process-level timeout in milliseconds (default: 30 minutes) */
 	timeoutMs?: number;
 	/** Model to use (e.g., "opus", "sonnet") */

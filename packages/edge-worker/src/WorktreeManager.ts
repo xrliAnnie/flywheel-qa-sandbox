@@ -167,6 +167,47 @@ export class WorktreeManager {
 		return parsePorcelain(stdout);
 	}
 
+	/**
+	 * Safe rerun cleanup: remove worktree + delete local branch.
+	 * Keeps path construction internal to WorktreeManager.
+	 * Returns true if something was cleaned up, false if nothing existed.
+	 */
+	async removeIfExists(
+		mainRepoPath: string,
+		projectName: string,
+		issueId: string,
+	): Promise<boolean> {
+		const branch = `flywheel-${issueId}`;
+		const worktreePath = path.join(this.baseDir, projectName, branch);
+
+		// Step 1: remove worktree if registered
+		if (await this.isRegistered(mainRepoPath, worktreePath)) {
+			await this.remove(mainRepoPath, worktreePath);
+		} else if (fs.existsSync(worktreePath)) {
+			// Orphan directory: exists on disk but not registered as a worktree.
+			// This can happen after a crash or interrupted removal. Clean it up
+			// so the subsequent create() doesn't fail on "path already exists".
+			this.bgDelete("/bin/rm", ["-rf", worktreePath]);
+		}
+
+		// Step 2: delete local branch if it still exists
+		// git worktree prune does NOT delete the branch — only the worktree registration.
+		// Without this, next create() with -b flywheel-{issueId} fails:
+		//   "fatal: a branch named 'flywheel-GEO-42' already exists"
+		try {
+			await this.exec(
+				"git",
+				["-C", mainRepoPath, "branch", "-D", branch],
+				mainRepoPath,
+			);
+			return true;
+		} catch (err: unknown) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (!msg.includes("not found")) throw err;
+			return false;
+		}
+	}
+
 	async pruneOrphans(
 		mainRepoPath: string,
 		projectName: string,
