@@ -385,7 +385,7 @@ describe("TmuxRunner", () => {
 		const markerDirCall = setEnvCalls.find(c => c.args.includes("FLYWHEEL_MARKER_DIR") && !c.args.includes("-u"));
 		expect(markerDirCall).toBeDefined();
 		expect(markerDirCall!.args).toContain("-t");
-		expect(markerDirCall!.args).toContain("flywheel");
+		expect(markerDirCall!.args).toContain("=flywheel");
 	});
 
 	it("unsets CLAUDECODE env var to prevent nested Claude hang", async () => {
@@ -398,7 +398,7 @@ describe("TmuxRunner", () => {
 		const unsetCall = setEnvCalls.find(c => c.args.includes("-u") && c.args.includes("CLAUDECODE"));
 		expect(unsetCall).toBeDefined();
 		expect(unsetCall!.args).toContain("-t");
-		expect(unsetCall!.args).toContain("flywheel");
+		expect(unsetCall!.args).toContain("=flywheel");
 	});
 
 	it("sets remain-on-exit on", async () => {

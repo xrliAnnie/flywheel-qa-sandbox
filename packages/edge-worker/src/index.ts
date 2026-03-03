@@ -24,6 +24,8 @@ export type {
 export { ChatSessionHandler } from "./ChatSessionHandler.js";
 export { EdgeWorker } from "./EdgeWorker.js";
 export { GitResultChecker } from "./GitResultChecker.js";
+export { HookCallbackServer } from "./HookCallbackServer.js";
+export type { HookEvent } from "./HookCallbackServer.js";
 export type { GitCheckResult, ExecFileFn as GitExecFileFn } from "./GitResultChecker.js";
 export { GitService } from "./GitService.js";
 export type { SerializedGlobalRegistryState } from "./GlobalSessionRegistry.js";
@@ -55,4 +57,13 @@ export {
 	type ValidationLoopState,
 	type ValidationResult,
 } from "./validation/index.js";
+export { SkillInjector } from "./SkillInjector.js";
+export type { SkillContext } from "./SkillInjector.js";
 export { WorktreeIncludeService } from "./WorktreeIncludeService.js";
+export { WorktreeManager } from "./WorktreeManager.js";
+export type {
+	ExternalWorktree,
+	WorktreeConfig,
+	WorktreeExecFn,
+	WorktreeInfo,
+} from "./WorktreeManager.js";

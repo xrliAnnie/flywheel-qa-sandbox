@@ -57,7 +57,7 @@ export class TmuxRunner implements IFlywheelRunner {
 		this.execFileFn("tmux", [
 			"set-environment",
 			"-t",
-			this.sessionName,
+			`=${this.sessionName}`,
 			"FLYWHEEL_MARKER_DIR",
 			FLYWHEEL_MARKER_DIR,
 		]);
@@ -67,7 +67,7 @@ export class TmuxRunner implements IFlywheelRunner {
 		this.execFileFn("tmux", [
 			"set-environment",
 			"-t",
-			this.sessionName,
+			`=${this.sessionName}`,
 			"-u",
 			"CLAUDECODE",
 		]);
@@ -76,7 +76,7 @@ export class TmuxRunner implements IFlywheelRunner {
 		this.execFileFn("tmux", [
 			"set-option",
 			"-t",
-			this.sessionName,
+			`=${this.sessionName}`,
 			"remain-on-exit",
 			"on",
 		]);
@@ -86,13 +86,14 @@ export class TmuxRunner implements IFlywheelRunner {
 
 		// Launch Claude in a new tmux window WITH cwd
 		// Use -P -F to capture stable window_id (e.g., "@42")
+		// Use exact-match "=" prefix for session target
 		const launchResult = this.execFileFn("tmux", [
 			"new-window",
 			"-P",
 			"-F",
 			"#{window_id}",
 			"-t",
-			this.sessionName,
+			`=${this.sessionName}`,
 			"-n",
 			windowName,
 			"-c",
@@ -221,10 +222,12 @@ export class TmuxRunner implements IFlywheelRunner {
 
 	private ensureSession(): void {
 		try {
+			// Use exact-match prefix "=" to prevent tmux prefix matching
+			// (e.g., "flywheel" would otherwise match "flywheel-e2e")
 			this.execFileFn("tmux", [
 				"has-session",
 				"-t",
-				this.sessionName,
+				`=${this.sessionName}`,
 			]);
 		} catch {
 			this.execFileFn("tmux", [

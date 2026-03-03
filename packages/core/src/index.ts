@@ -1,3 +1,7 @@
+// Async primitives
+export { Semaphore } from "./Semaphore.js";
+export { ProjectLock } from "./ProjectLock.js";
+
 // Logging
 
 export type { ILogger, LogContext } from "./logging/index.js";
