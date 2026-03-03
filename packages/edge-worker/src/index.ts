@@ -57,6 +57,8 @@ export {
 	type ValidationLoopState,
 	type ValidationResult,
 } from "./validation/index.js";
+export { ExecutionEvidenceCollector } from "./ExecutionEvidenceCollector.js";
+export type { ExecutionEvidence } from "./ExecutionEvidenceCollector.js";
 export { SkillInjector } from "./SkillInjector.js";
 export type { SkillContext } from "./SkillInjector.js";
 export { WorktreeIncludeService } from "./WorktreeIncludeService.js";

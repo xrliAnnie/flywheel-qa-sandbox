@@ -423,4 +423,47 @@ decision_layer:
 		// ci is optional and undefined when not specified
 		expect(config.ci).toBeUndefined();
 	});
+
+	// ─── v0.2 config extensions ─────────────────────
+
+	it("loads config without parallel/skills sections (backward compat)", async () => {
+		readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.parallel).toBeUndefined();
+		expect(config.skills).toBeUndefined();
+	});
+
+	it("loads config with parallel section", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+parallel:
+  max_parallel: 5
+  worktree_base_dir: /tmp/wt
+  hook_port: 0
+  session_timeout_minutes: 120
+`;
+		readFile.mockResolvedValue(yaml);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.parallel?.max_parallel).toBe(5);
+		expect(config.parallel?.worktree_base_dir).toBe("/tmp/wt");
+		expect(config.parallel?.hook_port).toBe(0);
+		expect(config.parallel?.session_timeout_minutes).toBe(120);
+	});
+
+	it("loads config with skills section", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+skills:
+  enabled: true
+  test_command: "npm test"
+  lint_command: "npm run lint"
+  build_command: "npm run build"
+  test_framework: "jest"
+`;
+		readFile.mockResolvedValue(yaml);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.skills?.enabled).toBe(true);
+		expect(config.skills?.test_command).toBe("npm test");
+		expect(config.skills?.lint_command).toBe("npm run lint");
+		expect(config.skills?.build_command).toBe("npm run build");
+		expect(config.skills?.test_framework).toBe("jest");
+	});
 });

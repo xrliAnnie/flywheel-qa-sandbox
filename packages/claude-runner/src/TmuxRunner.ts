@@ -1,11 +1,12 @@
 import { execFileSync } from "node:child_process";
 import { watch } from "node:fs";
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type {
 	FlywheelRunRequest,
 	FlywheelRunResult,
 	IFlywheelRunner,
+	IHookCallbackServer,
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR } from "flywheel-core";
 
@@ -17,9 +18,9 @@ export type ExecFileFn = (
 /**
  * TmuxRunner — launches Claude Code in an interactive tmux window.
  *
- * Dual-path completion detection:
- * - Primary: SessionEnd hook writes marker file → fs.watch() resolves
- * - Fallback: pane_dead polling (works even if hooks are disabled)
+ * Two completion modes:
+ * - v0.2 mode (hookServer present): HTTP callback (primary) + pane_dead poller (fallback)
+ * - v0.1.1 mode (hookServer absent): marker file watcher + pane_dead poller
  */
 export class TmuxRunner implements IFlywheelRunner {
 	readonly name = "claude-tmux";
@@ -30,6 +31,7 @@ export class TmuxRunner implements IFlywheelRunner {
 		private execFileFn: ExecFileFn = defaultExecFile,
 		private pollIntervalMs: number = 5000,
 		private defaultTimeoutMs: number = 1800000, // 30 min
+		private hookServer?: IHookCallbackServer,
 	) {}
 
 	async run(request: FlywheelRunRequest): Promise<FlywheelRunResult> {
@@ -47,23 +49,26 @@ export class TmuxRunner implements IFlywheelRunner {
 		const start = Date.now();
 		const effectiveTimeoutMs = request.timeoutMs ?? this.defaultTimeoutMs;
 
-		// Marker directory managed by DagDispatcher — TmuxRunner assumes it exists
+		// Generate per-run callback token if hookServer available
+		const callbackToken = this.hookServer ? randomUUID() : undefined;
 
 		// Ensure session exists (idempotent)
 		this.ensureSession();
 
-		// Inject FLYWHEEL_MARKER_DIR into tmux session environment
-		// so the SessionEnd hook shell script inherits it
-		this.execFileFn("tmux", [
-			"set-environment",
-			"-t",
-			`=${this.sessionName}`,
-			"FLYWHEEL_MARKER_DIR",
-			FLYWHEEL_MARKER_DIR,
-		]);
+		if (this.hookServer) {
+			// v0.2 mode: no marker dir needed
+		} else {
+			// v0.1.1 mode: inject FLYWHEEL_MARKER_DIR into tmux session environment
+			this.execFileFn("tmux", [
+				"set-environment",
+				"-t",
+				`=${this.sessionName}`,
+				"FLYWHEEL_MARKER_DIR",
+				FLYWHEEL_MARKER_DIR,
+			]);
+		}
 
 		// Unset CLAUDECODE to prevent nested Claude hang/refuse
-		// (inherited when Flywheel is launched from within a Claude Code session)
 		this.execFileFn("tmux", [
 			"set-environment",
 			"-t",
@@ -84,9 +89,21 @@ export class TmuxRunner implements IFlywheelRunner {
 		// Build claude args (interactive mode — NO --print, NO --output-format)
 		const claudeArgs = this.buildClaudeArgs(request, claudeSessionId);
 
+		// Build per-window env args for v0.2 HTTP callback
+		const envArgs =
+			this.hookServer && callbackToken
+				? [
+						"-e",
+						`FLYWHEEL_CALLBACK_PORT=${this.hookServer.getPort()}`,
+						"-e",
+						`FLYWHEEL_CALLBACK_TOKEN=${callbackToken}`,
+						"-e",
+						`FLYWHEEL_ISSUE_ID=${request.issueId ?? "unknown"}`,
+					]
+				: [];
+
 		// Launch Claude in a new tmux window WITH cwd
 		// Use -P -F to capture stable window_id (e.g., "@42")
-		// Use exact-match "=" prefix for session target
 		const launchResult = this.execFileFn("tmux", [
 			"new-window",
 			"-P",
@@ -94,6 +111,7 @@ export class TmuxRunner implements IFlywheelRunner {
 			"#{window_id}",
 			"-t",
 			`=${this.sessionName}`,
+			...envArgs,
 			"-n",
 			windowName,
 			"-c",
@@ -103,11 +121,12 @@ export class TmuxRunner implements IFlywheelRunner {
 		]);
 		const windowId = launchResult.stdout.trim();
 
-		// Wait for completion: hook marker (primary) OR pane_dead (fallback)
+		// Wait for completion: mode depends on hookServer presence
 		const timedOut = await this.waitForCompletion(
 			claudeSessionId,
 			windowId,
 			effectiveTimeoutMs,
+			callbackToken,
 		);
 
 		return {
@@ -148,82 +167,109 @@ export class TmuxRunner implements IFlywheelRunner {
 		claudeSessionId: string,
 		windowId: string,
 		timeoutMs: number,
+		callbackToken?: string,
 	): Promise<boolean> {
-		// NOTE: Claude's internal session_id differs from the --session-id we pass.
-		// --session-id is for resume; Claude generates its own ID for hooks.
-		// Phase 1 (sequential): match any .done file since only one session runs at a time.
-		// TODO: Phase 2 (parallel): correlate via marker file content or tmux window metadata.
-
 		return new Promise<boolean>((resolve) => {
-			let resolved = false;
-			const cleanup = () => {
-				resolved = true;
+			let settled = false;
+			let watcher: ReturnType<typeof watch> | null = null;
+			let poller: ReturnType<typeof setInterval> | null = null;
+
+			const settle = (timedOut: boolean) => {
+				if (settled) return;
+				settled = true;
 				watcher?.close();
-				clearInterval(poller);
+				if (poller) clearInterval(poller);
 				clearTimeout(timer);
+				resolve(timedOut);
 			};
 
-			// Path 1: Watch for any hook-written .done marker file (event-driven)
-			const watcher = existsSync(FLYWHEEL_MARKER_DIR)
-				? watch(FLYWHEEL_MARKER_DIR, (_, filename) => {
-						if (!resolved && filename?.endsWith(".done")) {
-							cleanup();
-							resolve(false); // not timed out
-						}
-					})
-				: null;
-
-			// Path 2: Poll pane_dead as fallback
-			const poller = setInterval(() => {
-				if (resolved) return;
-				// Also check if any marker appeared (in case fs.watch missed it)
-				try {
-					const files = require("node:fs").readdirSync(FLYWHEEL_MARKER_DIR) as string[];
-					if (files.some((f: string) => f.endsWith(".done"))) {
-						cleanup();
-						resolve(false); // not timed out
-						return;
-					}
-				} catch { /* marker dir may not exist */ }
-				try {
-					const result = this.execFileFn("tmux", [
-						"list-panes",
-						"-t",
-						windowId,
-						"-F",
-						"#{pane_dead}",
-					]);
-					if (result.stdout.trim() === "1") {
-						cleanup();
-						resolve(false); // not timed out
-					}
-				} catch (err) {
-					// Window gone entirely — treat as session ended
-					const msg = err instanceof Error ? err.message : String(err);
-					console.warn(
-						`[TmuxRunner] tmux list-panes failed for ${windowId}: ${msg}. Treating as session ended.`,
-					);
-					cleanup();
-					resolve(false); // not timed out
-				}
-			}, this.pollIntervalMs);
-
-			// Timeout — resolve (not reject) so caller gets tmuxWindow for inspection
+			// Timeout
 			const timer = setTimeout(() => {
-				if (resolved) return;
 				console.warn(
 					`[TmuxRunner] Session ${claudeSessionId} timed out after ${timeoutMs}ms. Window ${windowId} preserved for inspection.`,
 				);
-				cleanup();
-				resolve(true); // timed out
+				settle(true);
 			}, timeoutMs);
+
+			if (this.hookServer && callbackToken) {
+				// ── v0.2 mode: HTTP callback (primary) + pane_dead poller (fallback) ──
+				// NO marker file watcher — markers are not per-token safe for parallel
+
+				// Path 1: HTTP callback
+				this.hookServer
+					.waitForCompletion(callbackToken, timeoutMs)
+					.then((event) => {
+						if (event) settle(false);
+					});
+
+				// Path 2: pane_dead poller (fallback — races with callback)
+				poller = setInterval(() => {
+					if (settled) return;
+					try {
+						const result = this.execFileFn("tmux", [
+							"list-panes",
+							"-t",
+							windowId,
+							"-F",
+							"#{pane_dead}",
+						]);
+						if (result.stdout.trim() === "1") settle(false);
+					} catch {
+						// Window gone → pane is dead
+						settle(false);
+					}
+				}, this.pollIntervalMs);
+			} else {
+				// ── v0.1.1 mode: marker file watcher + pane_dead poller ──
+
+				// Path 1: Watch for any hook-written .done marker file (event-driven)
+				watcher = existsSync(FLYWHEEL_MARKER_DIR)
+					? watch(FLYWHEEL_MARKER_DIR, (_, filename) => {
+							if (!settled && filename?.endsWith(".done")) {
+								settle(false);
+							}
+						})
+					: null;
+
+				// Path 2: Poll pane_dead as fallback
+				poller = setInterval(() => {
+					if (settled) return;
+					// Also check if any marker appeared (in case fs.watch missed it)
+					try {
+						const files = readdirSync(FLYWHEEL_MARKER_DIR);
+						if (files.some((f: string) => f.endsWith(".done"))) {
+							settle(false);
+							return;
+						}
+					} catch {
+						/* marker dir may not exist */
+					}
+					try {
+						const result = this.execFileFn("tmux", [
+							"list-panes",
+							"-t",
+							windowId,
+							"-F",
+							"#{pane_dead}",
+						]);
+						if (result.stdout.trim() === "1") {
+							settle(false);
+						}
+					} catch (err) {
+						const msg =
+							err instanceof Error ? err.message : String(err);
+						console.warn(
+							`[TmuxRunner] tmux list-panes failed for ${windowId}: ${msg}. Treating as session ended.`,
+						);
+						settle(false);
+					}
+				}, this.pollIntervalMs);
+			}
 		});
 	}
 
 	private ensureSession(): void {
 		try {
-			// Use exact-match prefix "=" to prevent tmux prefix matching
-			// (e.g., "flywheel" would otherwise match "flywheel-e2e")
 			this.execFileFn("tmux", [
 				"has-session",
 				"-t",

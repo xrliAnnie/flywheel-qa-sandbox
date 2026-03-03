@@ -7,7 +7,9 @@ export type {
 	DecisionLayerConfig,
 	FlywheelConfig,
 	OrchestratorConfig,
+	ParallelConfig,
 	ReactionsConfig,
 	RunnerConfig,
+	SkillsConfig,
 	TeamConfig,
 } from "./types.js";
