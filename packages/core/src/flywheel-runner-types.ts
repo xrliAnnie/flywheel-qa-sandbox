@@ -36,6 +36,8 @@ export interface FlywheelRunRequest {
 	permissionMode?: string;
 	/** Additional system prompt to append */
 	appendSystemPrompt?: string;
+	/** Display name for the Claude session (sent via /rename after startup) */
+	sessionDisplayName?: string;
 }
 
 /**

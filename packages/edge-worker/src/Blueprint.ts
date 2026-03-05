@@ -1,11 +1,20 @@
-import type { IFlywheelRunner, FlywheelRunResult } from "flywheel-core";
+import type {
+	IFlywheelRunner,
+	FlywheelRunResult,
+	DecisionResult,
+	ExecutionContext,
+} from "flywheel-core";
 import type { SkillsConfig } from "flywheel-config";
 import type { DagNode } from "flywheel-dag-resolver";
 import type { PreHydrator } from "./PreHydrator.js";
 import type { GitResultChecker } from "./GitResultChecker.js";
 import type { WorktreeManager, WorktreeInfo } from "./WorktreeManager.js";
 import type { SkillInjector } from "./SkillInjector.js";
-import type { ExecutionEvidenceCollector, ExecutionEvidence } from "./ExecutionEvidenceCollector.js";
+import type {
+	ExecutionEvidenceCollector,
+	ExecutionEvidence,
+} from "./ExecutionEvidenceCollector.js";
+import type { IDecisionLayer } from "./decision/DecisionLayer.js";
 
 /** Result of a Blueprint execution */
 export interface BlueprintResult {
@@ -18,6 +27,8 @@ export interface BlueprintResult {
 	// v0.2
 	worktreePath?: string;
 	evidence?: ExecutionEvidence;
+	// v0.2 Step 2b
+	decision?: DecisionResult;
 }
 
 /** Runtime context for a single Blueprint execution */
@@ -27,6 +38,8 @@ export interface BlueprintContext {
 	// v0.2 — optional for backward compat
 	projectName?: string;
 	sessionTimeoutMs?: number;
+	// v0.2 Step 2b — tracked by caller (DagDispatcher)
+	consecutiveFailures?: number;
 }
 
 /** Shell command runner for tmux window cleanup */
@@ -42,11 +55,12 @@ export interface ShellRunner {
  * Blueprint: interactive-mode orchestration engine.
  *
  * Flow: [Worktree setup] → Git preflight → Pre-Hydrate → [Skill injection] →
- *       Launch Claude (tmux) → Wait → Git check → [Evidence collection]
+ *       Launch Claude (tmux) → Wait → Git check → [Evidence collection] →
+ *       [Decision Layer] → Result
  *
- * v0.1.1: No worktree, no skills, no evidence.
+ * v0.1.1: No worktree, no skills, no evidence, no decision.
  * v0.2: Worktree isolation + skill injection + evidence collection.
- * Success = commitCount > 0 && !timedOut (via GitResultChecker).
+ * v0.2 Step 2b: Decision Layer integration (optional).
  */
 export class Blueprint {
 	constructor(
@@ -59,6 +73,8 @@ export class Blueprint {
 		private skillInjector?: SkillInjector,
 		private evidenceCollector?: ExecutionEvidenceCollector,
 		private skillsConfig?: SkillsConfig,
+		// v0.2 Step 2b — optional for backward compat
+		private decisionLayer?: IDecisionLayer,
 	) {}
 
 	async run(
@@ -148,11 +164,16 @@ export class Blueprint {
 			result = await runner.run({
 				prompt,
 				cwd,
-				label: `${hydrated.issueId}-${hydrated.issueTitle}`,
+				label: buildWindowLabel(
+					hydrated.issueId,
+					ctx.runnerName,
+					hydrated.issueTitle,
+				),
 				issueId: hydrated.issueId,
 				permissionMode: "bypassPermissions",
 				appendSystemPrompt: systemPrompt,
 				timeoutMs,
+				sessionDisplayName: `${hydrated.issueId} ${hydrated.issueTitle}`,
 			});
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
@@ -181,9 +202,23 @@ export class Blueprint {
 			);
 		}
 
+		// ── Decision Layer (v0.2 Step 2b — optional) ──────────
+		if (this.decisionLayer && evidence) {
+			return this.runWithDecision(
+				node,
+				ctx,
+				hydrated,
+				evidence,
+				result,
+				cwd,
+				baseSha,
+				worktreeInfo,
+			);
+		}
+
+		// ── v0.1.1 fallback: no DecisionLayer ─────────────────
 		const success = gitResult.commitCount > 0 && !result.timedOut;
 
-		// ── Window lifecycle (existing) ───────────────────────
 		if (result.tmuxWindow) {
 			if (success) {
 				await this.killTmuxWindow(result.tmuxWindow);
@@ -201,6 +236,90 @@ export class Blueprint {
 		};
 	}
 
+	private async runWithDecision(
+		_node: DagNode,
+		ctx: BlueprintContext,
+		hydrated: {
+			issueId: string;
+			issueTitle: string;
+			labels: string[];
+			projectId: string;
+			issueIdentifier: string;
+		},
+		evidence: ExecutionEvidence,
+		result: FlywheelRunResult,
+		cwd: string,
+		baseSha: string,
+		worktreeInfo: WorktreeInfo | undefined,
+	): Promise<BlueprintResult> {
+		// Build ExecutionContext
+		const execCtx: ExecutionContext = {
+			issueId: hydrated.issueId,
+			issueIdentifier: hydrated.issueIdentifier,
+			issueTitle: hydrated.issueTitle,
+			labels: hydrated.labels,
+			projectId: hydrated.projectId,
+			exitReason: result.timedOut
+				? "timeout"
+				: !result.success
+					? "error"
+					: "completed",
+			baseSha,
+			commitCount: evidence.commitCount,
+			commitMessages: evidence.commitMessages,
+			changedFilePaths: evidence.changedFilePaths,
+			filesChangedCount: evidence.filesChangedCount,
+			linesAdded: evidence.linesAdded,
+			linesRemoved: evidence.linesRemoved,
+			diffSummary: evidence.diffSummary,
+			headSha: evidence.headSha,
+			durationMs: evidence.durationMs,
+			consecutiveFailures: ctx.consecutiveFailures ?? 0,
+			partial: evidence.partial,
+		};
+
+		let decision: DecisionResult;
+		try {
+			decision = await this.decisionLayer!.decide(execCtx, cwd);
+		} catch (err) {
+			// DecisionLayer failure → conservative needs_review
+			decision = {
+				route: "needs_review",
+				confidence: 0,
+				reasoning: `Decision layer error: ${err instanceof Error ? err.message : String(err)}`,
+				concerns: ["Decision layer failed"],
+				decisionSource: "decision_error_fallback",
+			};
+		}
+
+		// Route → success mapping
+		const success =
+			decision.route === "auto_approve" ||
+			decision.route === "needs_review";
+
+		// Window lifecycle based on decision
+		if (result.tmuxWindow) {
+			if (decision.route === "auto_approve") {
+				await this.killTmuxWindow(result.tmuxWindow);
+			}
+			// needs_review / blocked → preserve window for inspection
+		}
+
+		return {
+			success,
+			costUsd: result.costUsd,
+			sessionId: result.sessionId,
+			tmuxWindow:
+				decision.route === "auto_approve"
+					? undefined
+					: result.tmuxWindow,
+			durationMs: result.durationMs,
+			worktreePath: worktreeInfo?.worktreePath,
+			evidence,
+			decision,
+		};
+	}
+
 	private async killTmuxWindow(tmuxWindow: string): Promise<void> {
 		try {
 			await this.shell.execFile(
@@ -215,4 +334,22 @@ export class Blueprint {
 			);
 		}
 	}
+}
+
+/**
+ * Build a human-readable tmux window label.
+ * Strip priority tags like [P0], [P1] and collapse repeated dashes.
+ * issueId is omitted — tmux session name already carries it.
+ * Format: "{runner}:{cleanTitle}"
+ */
+function buildWindowLabel(
+	_issueId: string,
+	runner: string,
+	title: string,
+): string {
+	const cleanTitle = title
+		.replace(/\[P\d+\]\s*/gi, "") // strip [P0], [P1], etc.
+		.replace(/\s*—\s*/g, "-") // em-dash → single dash
+		.trim();
+	return `${runner}:${cleanTitle}`;
 }

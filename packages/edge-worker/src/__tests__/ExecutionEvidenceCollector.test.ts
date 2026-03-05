@@ -288,4 +288,26 @@ describe("ExecutionEvidenceCollector", () => {
 
 		expect(evidence.durationMs).toBe(99999);
 	});
+
+	// --- Step 2b: getFullDiff ---
+
+	it("getFullDiff returns untruncated diff", async () => {
+		const longDiff = "diff --git ...\n" + "+".repeat(5000);
+		const exec = makeMockExec({ diff: longDiff });
+		const collector = new ExecutionEvidenceCollector(exec);
+
+		const result = await collector.getFullDiff("/project", "abc123");
+
+		expect(result).toBe(longDiff);
+		expect(result.length).toBe(5000 + 15);
+	});
+
+	it("getFullDiff handles empty diff", async () => {
+		const exec = makeMockExec({ diff: "" });
+		const collector = new ExecutionEvidenceCollector(exec);
+
+		const result = await collector.getFullDiff("/project", "abc123");
+
+		expect(result).toBe("");
+	});
 });

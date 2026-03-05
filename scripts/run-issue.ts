@@ -29,7 +29,10 @@ import { existsSync } from "node:fs";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
+import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 import { TmuxRunner } from "../packages/claude-runner/dist/TmuxRunner.js";
+import { AnthropicLLMClient } from "../packages/claude-runner/dist/AnthropicLLMClient.js";
 import { GitResultChecker } from "../packages/edge-worker/dist/GitResultChecker.js";
 import { Blueprint } from "../packages/edge-worker/dist/Blueprint.js";
 import { PreHydrator } from "../packages/edge-worker/dist/PreHydrator.js";
@@ -37,10 +40,26 @@ import { HookCallbackServer } from "../packages/edge-worker/dist/HookCallbackSer
 import { WorktreeManager } from "../packages/edge-worker/dist/WorktreeManager.js";
 import { SkillInjector } from "../packages/edge-worker/dist/SkillInjector.js";
 import { ExecutionEvidenceCollector } from "../packages/edge-worker/dist/ExecutionEvidenceCollector.js";
+import { AuditLogger } from "../packages/edge-worker/dist/AuditLogger.js";
+import {
+	DecisionLayer,
+	HardRuleEngine,
+	HaikuTriageAgent,
+	HaikuVerifier,
+	FallbackHeuristic,
+	defaultRules,
+} from "../packages/edge-worker/dist/decision/index.js";
+import type { LLMClient } from "../packages/core/dist/llm-client-types.js";
 
 // ── Hardcoded issue data (fallback when LINEAR_API_KEY is not set) ──
 
-const KNOWN_ISSUES: Record<string, { title: string; description: string }> = {
+const KNOWN_ISSUES: Record<string, {
+	title: string;
+	description: string;
+	labels?: string[];
+	projectId?: string;
+	identifier?: string;
+}> = {
 	"GEO-95": {
 		title: "[P0] OSM attribution — add OpenStreetMap license notice in UI",
 		description: `## Background
@@ -162,7 +181,7 @@ async function main() {
 	const resolvedRoot = projectRoot.replace(/^~/, process.env.HOME ?? "");
 
 	// FIX: Use issue-specific tmux session name to avoid prefix matching
-	const tmuxSessionName = `flywheel-${issueId}`;
+	const tmuxSessionName = issueId;
 
 	console.log("\n========================================");
 	console.log(`  Flywheel — Run Issue: ${issueId}`);
@@ -251,6 +270,35 @@ async function main() {
 		},
 	);
 
+	// 4b. Decision Layer — always-on components (no LLM needed)
+	const flywheelDir = join(homedir(), ".flywheel");
+	mkdirSync(flywheelDir, { recursive: true });
+	const auditLogger = new AuditLogger(join(flywheelDir, "audit.db"));
+	await auditLogger.init();
+	log("AuditLogger initialized");
+
+	const hardRules = new HardRuleEngine(defaultRules());
+	const fallback = new FallbackHeuristic();
+
+	// LLM components — conditional on API key
+	let triage: HaikuTriageAgent;
+	let verifier: HaikuVerifier;
+	if (process.env.ANTHROPIC_API_KEY) {
+		const llmClient = new AnthropicLLMClient();
+		triage = new HaikuTriageAgent(llmClient, "claude-haiku-4-5-20251001", 2000);
+		verifier = new HaikuVerifier(llmClient, "claude-haiku-4-5-20251001");
+		log("Decision Layer: LLM triage + verify enabled");
+	} else {
+		log("ANTHROPIC_API_KEY not set — LLM triage/verify disabled, hard rules + fallback active");
+		const noLlm: LLMClient = { chat: () => { throw new Error("No ANTHROPIC_API_KEY"); } };
+		triage = new HaikuTriageAgent(noLlm, "", 0);
+		verifier = new HaikuVerifier(noLlm, "");
+	}
+
+	const decisionLayer = new DecisionLayer(
+		hardRules, triage, verifier, fallback, auditLogger, evidenceCollector,
+	);
+
 	// 5. Capture baselines for all repos (parent + sub-repos)
 	const allRepos = [resolvedRoot, ...subRepos];
 	const baselines = new Map<string, string>();
@@ -266,7 +314,13 @@ async function main() {
 	const hydrator = new PreHydrator(async (id) => {
 		const data = KNOWN_ISSUES[id];
 		if (!data) throw new Error(`Unknown issue: ${id}`);
-		return { title: data.title, description: data.description };
+		return {
+			title: data.title,
+			description: data.description,
+			labels: data.labels,
+			projectId: data.projectId,
+			identifier: data.identifier ?? id,
+		};
 	});
 
 	const gitChecker = new GitResultChecker(
@@ -299,23 +353,32 @@ async function main() {
 	const blueprint = new Blueprint(
 		hydrator, gitChecker, makeRunner, shell,
 		worktreeManager, skillInjector, evidenceCollector,
+		undefined, // skillsConfig — use defaults
+		decisionLayer,
 	);
 
-	// 7. Auto-open Terminal viewer
+	// 7. Auto-open Terminal viewer and bring to front
 	// Use exact session match (=sessionName) to avoid tmux prefix matching
 	log("\n--- Opening tmux viewer ---");
 	execFileSync("osascript", [
 		"-e",
-		`tell application "Terminal" to do script "echo 'Waiting for Flywheel session ${tmuxSessionName}...' && while ! tmux has-session -t '=${tmuxSessionName}' 2>/dev/null; do sleep 1; done && tmux attach -t '=${tmuxSessionName}'"`,
+		[
+			'tell application "Terminal"',
+			`  do script "echo 'Waiting for Flywheel session ${tmuxSessionName}...' && while ! tmux has-session -t '=${tmuxSessionName}' 2>/dev/null; do sleep 1; done && tmux attach -t '=${tmuxSessionName}'; exit"`,
+			"  activate",
+			"end tell",
+		].join("\n"),
 	]);
 	log("Viewer window opened — it will connect once Claude starts");
 
 	// 8. Auto-interaction: handle trust prompt + detect completion
+	// Session naming: tmux session = issueId, window = buildWindowLabel() output.
 	let trustConfirmed = false;
 	let exitSent = false;
-	// Label format from Blueprint: "{issueId}-{issueTitle}"
+	// Label format from Blueprint.buildWindowLabel: "{runner}:{cleanTitle}"
 	// Must match TmuxRunner.sanitizeWindowName: [^a-zA-Z0-9-] → "-", max 50 chars
-	const windowLabel = `${issueId}-${issueData.title}`.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 50);
+	const cleanTitle = issueData.title.replace(/\[P\d+\]\s*/gi, "").replace(/\s*—\s*/g, "-").trim();
+	const windowLabel = `claude-${cleanTitle}`.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 50);
 	const tmuxTarget = `${tmuxSessionName}:${windowLabel}`;
 
 	const autoInteractInterval = setInterval(() => {
@@ -366,10 +429,17 @@ async function main() {
 	};
 
 	let actualSuccess = false;
+	let preserveSession = false;
 	try {
 		const blueprintResult = await blueprint.run(node, resolvedRoot, ctx);
 		clearInterval(autoInteractInterval);
 		const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+
+		// Decision route determines if tmux session should survive for inspection
+		const route = blueprintResult.decision?.route;
+		if (route === "needs_review" || route === "blocked") {
+			preserveSession = true;
+		}
 
 		// 10. FIX: Check sub-repos for commits (Blueprint only checks parent repo)
 		actualSuccess = blueprintResult.success;
@@ -403,6 +473,27 @@ async function main() {
 				for (const msg of ev.commitMessages) {
 					console.log(`    - ${msg}`);
 				}
+			}
+		}
+
+		if (blueprintResult.decision) {
+			const d = blueprintResult.decision;
+			console.log("\n--- Decision Layer ---\n");
+			console.log(`  route:        ${d.route}`);
+			console.log(`  confidence:   ${d.confidence}`);
+			console.log(`  source:       ${d.decisionSource}`);
+			console.log(`  reasoning:    ${d.reasoning}`);
+			if (d.concerns && d.concerns.length > 0) {
+				console.log("  concerns:");
+				for (const c of d.concerns) {
+					console.log(`    - ${c}`);
+				}
+			}
+			if (d.hardRuleId) {
+				console.log(`  hardRuleId:   ${d.hardRuleId}`);
+			}
+			if (d.verification) {
+				console.log(`  verification: ${d.verification.approved ? "approved" : "rejected"} (confidence: ${d.verification.confidence})`);
 			}
 		}
 
@@ -440,11 +531,17 @@ async function main() {
 		const msg = err instanceof Error ? err.message : String(err);
 		console.error(`\nBlueprint error: ${msg}`);
 	} finally {
-		// 14. Cleanup — hookServer.stop() always runs
+		// 14. Cleanup — hookServer.stop() + auditLogger.close() always run
 		clearInterval(autoInteractInterval);
 		await hookServer.stop();
 		log("HookCallbackServer stopped");
-		killTmuxSession(tmuxSessionName);
+		await auditLogger.close();
+		log("AuditLogger closed");
+		if (preserveSession) {
+			log(`Preserving tmux session '${tmuxSessionName}' for inspection (route: needs_review/blocked)`);
+		} else {
+			killTmuxSession(tmuxSessionName);
+		}
 	}
 
 	process.exit(actualSuccess ? 0 : 1);
