@@ -10,6 +10,8 @@ export { AbortError, ClaudeRunner } from "./ClaudeRunner.js";
 export { ClaudeCodeRunner } from "./ClaudeCodeRunner.js";
 export { TmuxRunner } from "./TmuxRunner.js";
 export type { ExecFileFn } from "./TmuxRunner.js";
+export { AnthropicLLMClient } from "./AnthropicLLMClient.js";
+export { TrustPromptHandler } from "./TrustPromptHandler.js";
 export {
 	availableTools,
 	getAllTools,

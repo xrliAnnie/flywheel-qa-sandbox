@@ -131,6 +131,16 @@ export class ExecutionEvidenceCollector {
 		return result.stdout.slice(0, 2000);
 	}
 
+	/** Full untruncated diff — called lazily by DecisionLayer only for auto_approve path */
+	async getFullDiff(cwd: string, baseSha: string): Promise<string> {
+		const result = await this.execFile(
+			"git",
+			["-C", cwd, "diff", `${baseSha}..HEAD`],
+			cwd,
+		);
+		return result.stdout;
+	}
+
 	private async getHeadSha(cwd: string): Promise<string> {
 		const result = await this.execFile(
 			"git",

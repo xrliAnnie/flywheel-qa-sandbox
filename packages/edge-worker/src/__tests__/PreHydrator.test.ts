@@ -51,4 +51,81 @@ describe("PreHydrator", () => {
 
 		expect(ctx.issueId).toBe("GEO-99");
 	});
+
+	// --- Step 2b enrichment ---
+
+	it("returns labels from fetch", async () => {
+		const fetchIssue = vi.fn(async () => ({
+			title: "T",
+			description: "D",
+			labels: ["security", "auth"],
+		}));
+		const hydrator = new PreHydrator(fetchIssue);
+
+		const ctx = await hydrator.hydrate({ id: "GEO-1", blockedBy: [] });
+
+		expect(ctx.labels).toEqual(["security", "auth"]);
+	});
+
+	it("defaults labels to [] when fetch omits them", async () => {
+		const fetchIssue = vi.fn(async () => ({
+			title: "T",
+			description: "D",
+		}));
+		const hydrator = new PreHydrator(fetchIssue);
+
+		const ctx = await hydrator.hydrate({ id: "GEO-1", blockedBy: [] });
+
+		expect(ctx.labels).toEqual([]);
+	});
+
+	it("returns projectId from fetch", async () => {
+		const fetchIssue = vi.fn(async () => ({
+			title: "T",
+			description: "D",
+			projectId: "proj-abc",
+		}));
+		const hydrator = new PreHydrator(fetchIssue);
+
+		const ctx = await hydrator.hydrate({ id: "GEO-1", blockedBy: [] });
+
+		expect(ctx.projectId).toBe("proj-abc");
+	});
+
+	it("defaults projectId to empty when omitted", async () => {
+		const fetchIssue = vi.fn(async () => ({
+			title: "T",
+			description: "D",
+		}));
+		const hydrator = new PreHydrator(fetchIssue);
+
+		const ctx = await hydrator.hydrate({ id: "GEO-1", blockedBy: [] });
+
+		expect(ctx.projectId).toBe("");
+	});
+
+	it("returns identifier from fetch", async () => {
+		const fetchIssue = vi.fn(async () => ({
+			title: "T",
+			description: "D",
+			identifier: "GEO-95",
+		}));
+		const hydrator = new PreHydrator(fetchIssue);
+
+		const ctx = await hydrator.hydrate({ id: "issue-id-1", blockedBy: [] });
+
+		expect(ctx.issueIdentifier).toBe("GEO-95");
+	});
+
+	it("defaults identifier to issueId when omitted", async () => {
+		const fetchIssue = vi.fn(async () => ({
+			title: "T",
+			description: "D",
+		}));
+		const hydrator = new PreHydrator(fetchIssue);
+
+		const ctx = await hydrator.hydrate({ id: "issue-id-1", blockedBy: [] });
+
+		expect(ctx.issueIdentifier).toBe("issue-id-1");
+	});
 });

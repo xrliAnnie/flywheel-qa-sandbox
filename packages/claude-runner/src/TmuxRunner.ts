@@ -77,13 +77,25 @@ export class TmuxRunner implements IFlywheelRunner {
 			"CLAUDECODE",
 		]);
 
-		// Enable remain-on-exit so dead panes stay visible
+		// Enable remain-on-exit so dead panes stay visible.
+		// remain-on-exit is a window option — use "session:" syntax to target
+		// the current window in the session (bare session name fails in tmux 3.5+).
 		this.execFileFn("tmux", [
 			"set-option",
 			"-t",
-			`=${this.sessionName}`,
+			`=${this.sessionName}:`,
 			"remain-on-exit",
 			"on",
+		]);
+
+		// Prevent Claude CLI from overwriting the pane title via escape sequences.
+		// This lets our custom pane title (set after launch) persist.
+		this.execFileFn("tmux", [
+			"set-option",
+			"-t",
+			`=${this.sessionName}:`,
+			"allow-rename",
+			"off",
 		]);
 
 		// Build claude args (interactive mode — NO --print, NO --output-format)
@@ -103,6 +115,7 @@ export class TmuxRunner implements IFlywheelRunner {
 				: [];
 
 		// Launch Claude in a new tmux window WITH cwd
+		// Prompt is passed as CLI arg — Claude starts processing immediately.
 		// Use -P -F to capture stable window_id (e.g., "@42")
 		const launchResult = this.execFileFn("tmux", [
 			"new-window",
@@ -155,7 +168,8 @@ export class TmuxRunner implements IFlywheelRunner {
 		// NOTE: --max-turns does NOT exist in Claude CLI v2.1.63
 		// NOTE: --max-budget-usd not supported in interactive mode (requires --print)
 		// NOTE: request.sessionId intentionally ignored — no resume in interactive mode
-		args.push(req.prompt); // prompt MUST be last positional argument
+		// Prompt as last CLI arg — Claude starts processing immediately on launch
+		args.push(req.prompt);
 		return args;
 	}
 
@@ -294,6 +308,9 @@ function defaultExecFile(
 	cmd: string,
 	args: string[],
 ): { stdout: string } {
-	const result = execFileSync(cmd, args, { encoding: "utf-8" });
+	const result = execFileSync(cmd, args, {
+		encoding: "utf-8",
+		stdio: ["pipe", "pipe", "pipe"],
+	});
 	return { stdout: result };
 }

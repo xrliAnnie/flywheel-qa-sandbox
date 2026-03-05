@@ -69,3 +69,18 @@ export type {
 	WorktreeExecFn,
 	WorktreeInfo,
 } from "./WorktreeManager.js";
+export { AuditLogger } from "./AuditLogger.js";
+export type { AuditEntry } from "./AuditLogger.js";
+export {
+	DecisionLayer,
+	HardRuleEngine,
+	HaikuTriageAgent,
+	HaikuVerifier,
+	FallbackHeuristic,
+	defaultRules,
+} from "./decision/index.js";
+export type {
+	IDecisionLayer,
+	FullDiffProvider,
+	HardRule,
+} from "./decision/index.js";

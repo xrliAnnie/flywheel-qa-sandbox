@@ -1,16 +1,25 @@
 import type { DagNode } from "flywheel-dag-resolver";
 
-/** Minimal hydrated context — just issue data from Linear */
+/** Hydrated context — issue data from Linear */
 export interface HydratedContext {
 	issueId: string;
 	issueTitle: string;
 	issueDescription: string;
+	labels: string[];
+	projectId: string;
+	issueIdentifier: string;
 }
 
 /** Function to fetch a Linear issue by ID */
 export type FetchIssueFn = (
 	issueId: string,
-) => Promise<{ title: string; description: string | null }>;
+) => Promise<{
+	title: string;
+	description: string | null;
+	labels?: string[];
+	projectId?: string;
+	identifier?: string;
+}>;
 
 /**
  * Pre-Hydrator: fetches issue metadata from Linear.
@@ -28,6 +37,9 @@ export class PreHydrator {
 			issueId: node.id,
 			issueTitle: issue.title,
 			issueDescription: issue.description ?? "",
+			labels: issue.labels ?? [],
+			projectId: issue.projectId ?? "",
+			issueIdentifier: issue.identifier ?? node.id,
 		};
 	}
 }

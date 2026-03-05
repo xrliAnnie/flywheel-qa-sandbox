@@ -227,7 +227,7 @@ describe("Blueprint", () => {
 		const runCall = (runner.run as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as FlywheelRunRequest;
 		expect(runCall.permissionMode).toBe("bypassPermissions");
-		expect(runCall.label).toBe("GEO-101-Issue GEO-101 title");
+		expect(runCall.label).toBe("claude:Issue GEO-101 title");
 		expect(runCall.cwd).toBe("/project");
 	});
 

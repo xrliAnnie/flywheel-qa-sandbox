@@ -215,6 +215,27 @@ export type {
 	IFlywheelRunner,
 } from "./flywheel-runner-types.js";
 export { FlywheelRunnerRegistry } from "./FlywheelRunnerRegistry.js";
+
+// Flywheel Error types (v0.2 Step 2b)
+export type { FlywheelError, RetryPolicy } from "./flywheel-error-types.js";
+export {
+	isRetryable,
+	retryDelay,
+	DEFAULT_RETRY_POLICY,
+} from "./flywheel-error-types.js";
+
+// Decision Layer types (v0.2 Step 2b)
+export type {
+	DecisionRoute,
+	DecisionSource,
+	ExecutionContext,
+	DecisionResult,
+	VerificationResult,
+	HardRuleResult,
+} from "./decision-types.js";
+
+// LLM Client interface (v0.2 Step 2b — model agnostic)
+export type { LLMClient } from "./llm-client-types.js";
 // Platform-agnostic webhook type aliases - exported from issue-tracker
 // These are now defined in issue-tracker/types.ts as aliases to Linear SDK webhook types
 // EdgeWorker and other high-level code should use these generic names via issue-tracker exports
