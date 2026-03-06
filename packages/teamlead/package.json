@@ -1,0 +1,30 @@
+{
+	"name": "flywheel-teamlead",
+	"version": "0.4.0",
+	"description": "TeamLead daemon — event pipeline, Socket Mode Slack, template notifications",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"teamlead": "dist/index.js"
+	},
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"test": "vitest",
+		"test:run": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@slack/bolt": "^4.1.0",
+		"sql.js": "^1.14.1",
+		"flywheel-core": "workspace:*",
+		"flywheel-edge-worker": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/sql.js": "^1.4.9",
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	}
+}

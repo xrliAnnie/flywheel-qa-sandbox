@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type {
 	IFlywheelRunner,
 	FlywheelRunResult,
@@ -15,6 +16,7 @@ import type {
 	ExecutionEvidence,
 } from "./ExecutionEvidenceCollector.js";
 import type { IDecisionLayer } from "./decision/DecisionLayer.js";
+import type { ExecutionEventEmitter, EventEnvelope } from "./ExecutionEventEmitter.js";
 
 /** Result of a Blueprint execution */
 export interface BlueprintResult {
@@ -40,6 +42,8 @@ export interface BlueprintContext {
 	sessionTimeoutMs?: number;
 	// v0.2 Step 2b — tracked by caller (DagDispatcher)
 	consecutiveFailures?: number;
+	// v0.4 — optional; Blueprint fallback to randomUUID()
+	executionId?: string;
 }
 
 /** Shell command runner for tmux window cleanup */
@@ -75,12 +79,42 @@ export class Blueprint {
 		private skillsConfig?: SkillsConfig,
 		// v0.2 Step 2b — optional for backward compat
 		private decisionLayer?: IDecisionLayer,
+		// v0.4 — optional event emitter for TeamLead pipeline
+		private eventEmitter?: ExecutionEventEmitter,
 	) {}
 
 	async run(
 		node: DagNode,
 		projectRoot: string,
 		ctx: BlueprintContext,
+	): Promise<BlueprintResult> {
+		const executionId = ctx.executionId ?? randomUUID();
+		const env: EventEnvelope = {
+			executionId,
+			issueId: node.id,
+			projectName: ctx.projectName ?? "unknown",
+		};
+
+		// Fire-and-forget started event
+		this.eventEmitter?.emitStarted(env).catch(() => {});
+
+		try {
+			const result = await this.runInner(node, projectRoot, ctx, env);
+			await this.emitTerminal(env, result);
+			return result;
+		} catch (err) {
+			const errorMsg = err instanceof Error ? err.message : String(err);
+			const failResult: BlueprintResult = { success: false, error: errorMsg };
+			await this.emitTerminal(env, failResult);
+			throw err;
+		}
+	}
+
+	private async runInner(
+		node: DagNode,
+		projectRoot: string,
+		ctx: BlueprintContext,
+		env: EventEnvelope,
 	): Promise<BlueprintResult> {
 		const runner = this.getRunner(ctx.runnerName);
 		const startTime = Date.now();
@@ -120,6 +154,10 @@ export class Blueprint {
 
 		// ── Pre-Hydrate (existing) ────────────────────────────
 		const hydrated = await this.hydrator.hydrate(node);
+
+		// Enrich envelope with hydrated fields
+		env.issueIdentifier = hydrated.issueIdentifier;
+		env.issueTitle = hydrated.issueTitle;
 
 		// ── Skill injection (v0.2 — best-effort, non-blocking) ─
 		if (this.skillInjector) {
@@ -234,6 +272,36 @@ export class Blueprint {
 			worktreePath: worktreeInfo?.worktreePath,
 			evidence,
 		};
+	}
+
+	private async emitTerminal(env: EventEnvelope, result: BlueprintResult): Promise<void> {
+		if (!this.eventEmitter) return;
+		try {
+			if (result.success || result.decision) {
+				const summary = this.buildSummary(result);
+				await Promise.race([
+					this.eventEmitter.emitCompleted(env, result, summary),
+					new Promise<void>((r) => setTimeout(r, 1000)),
+				]);
+			} else {
+				await Promise.race([
+					this.eventEmitter.emitFailed(env, result.error ?? "unknown"),
+					new Promise<void>((r) => setTimeout(r, 1000)),
+				]);
+			}
+		} catch (err) {
+			console.warn(`[Blueprint] emitTerminal failed: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	private buildSummary(result: BlueprintResult): string | undefined {
+		if (!result.evidence) return undefined;
+		const parts: string[] = [];
+		if (result.evidence.diffSummary) parts.push(result.evidence.diffSummary);
+		if (result.evidence.commitMessages?.length) {
+			parts.push(`Commits: ${result.evidence.commitMessages.join("; ")}`);
+		}
+		return parts.join(" | ") || undefined;
 	}
 
 	private async runWithDecision(
