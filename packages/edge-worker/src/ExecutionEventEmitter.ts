@@ -95,11 +95,15 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 			if (this.authToken) {
 				headers.Authorization = `Bearer ${this.authToken}`;
 			}
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 5_000);
 			const res = await fetch(`${this.baseUrl}/events`, {
 				method: "POST",
 				headers,
 				body: JSON.stringify(body),
+				signal: controller.signal,
 			});
+			clearTimeout(timeout);
 			if (!res.ok) {
 				console.warn(`[TeamLeadClient] Event rejected: ${res.status} ${res.statusText}`);
 			}

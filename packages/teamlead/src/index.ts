@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 
-import { randomUUID } from "node:crypto";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
 import { StateStore } from "./StateStore.js";
@@ -39,8 +38,10 @@ async function main() {
 		);
 	}
 
-	// 3. EventIngestion (always active, with auth token)
-	const ingestToken = process.env.TEAMLEAD_INGEST_TOKEN ?? randomUUID();
+	// 3. EventIngestion (always active)
+	// Auth token: both daemon and orchestrator must share the same TEAMLEAD_INGEST_TOKEN.
+	// If not configured, auth is disabled on both sides (TeamLeadClient won't send, EventIngestion won't check).
+	const ingestToken = process.env.TEAMLEAD_INGEST_TOKEN;
 	const ingestion = new EventIngestion(store, (event) => {
 		if (!notifier) return;
 
