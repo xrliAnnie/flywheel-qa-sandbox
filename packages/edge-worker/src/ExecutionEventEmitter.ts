@@ -18,6 +18,7 @@ export interface ExecutionEventEmitter {
 
 export class TeamLeadClient implements ExecutionEventEmitter {
 	private pending: Promise<void>[] = [];
+	private settled = new Set<Promise<void>>();
 
 	constructor(private baseUrl: string) {}
 
@@ -33,7 +34,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueTitle: env.issueTitle,
 			},
 		});
-		this.pending.push(p);
+		this.track(p);
 	}
 
 	async emitCompleted(env: EventEnvelope, result: BlueprintResult, summary?: string): Promise<void> {
@@ -51,7 +52,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				summary,
 			},
 		});
-		this.pending.push(p);
+		this.track(p);
 	}
 
 	async emitFailed(env: EventEnvelope, error: string, lastActivity?: string): Promise<void> {
@@ -68,21 +69,36 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				lastActivity,
 			},
 		});
-		this.pending.push(p);
+		this.track(p);
 	}
 
 	async flush(): Promise<void> {
 		await Promise.allSettled(this.pending);
 		this.pending = [];
+		this.settled.clear();
+	}
+
+	/** Track a fire-and-forget promise, draining settled ones to prevent unbounded growth. */
+	private track(p: Promise<void>): void {
+		const tracked = p.finally(() => this.settled.add(tracked));
+		this.pending.push(tracked);
+		// Periodically drain settled entries
+		if (this.settled.size > 0) {
+			this.pending = this.pending.filter((item) => !this.settled.has(item));
+			this.settled.clear();
+		}
 	}
 
 	private async postEvent(body: Record<string, unknown>): Promise<void> {
 		try {
-			await fetch(`${this.baseUrl}/events`, {
+			const res = await fetch(`${this.baseUrl}/events`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify(body),
 			});
+			if (!res.ok) {
+				console.warn(`[TeamLeadClient] Event rejected: ${res.status} ${res.statusText}`);
+			}
 		} catch (err) {
 			console.warn(
 				`[TeamLeadClient] Failed to post event: ${err instanceof Error ? err.message : String(err)}`,

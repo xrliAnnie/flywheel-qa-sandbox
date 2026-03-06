@@ -34,6 +34,13 @@ export class StuckWatcher {
 
 	async check(): Promise<void> {
 		const stuck = this.store.getStuckSessions(this.thresholdMinutes);
+
+		// Prune notified set: remove entries for sessions no longer stuck
+		const stuckIds = new Set(stuck.map((s) => s.execution_id));
+		for (const id of this.notifiedExecutions) {
+			if (!stuckIds.has(id)) this.notifiedExecutions.delete(id);
+		}
+
 		for (const session of stuck) {
 			if (this.notifiedExecutions.has(session.execution_id)) continue;
 
