@@ -43,10 +43,12 @@ export interface SlackPostMessageParams {
 	token: string;
 	/** Channel ID to post the message in */
 	channel: string;
-	/** Message text */
+	/** Message text (also serves as fallback for Block Kit) */
 	text: string;
 	/** Thread timestamp to reply in a thread */
 	thread_ts?: string;
+	/** Slack Block Kit layout blocks */
+	blocks?: unknown[];
 }
 
 export class SlackMessageService {
@@ -62,13 +64,16 @@ export class SlackMessageService {
 	 * @see https://api.slack.com/methods/chat.postMessage
 	 */
 	async postMessage(params: SlackPostMessageParams): Promise<void> {
-		const { token, channel, text, thread_ts } = params;
+		const { token, channel, text, thread_ts, blocks } = params;
 
 		const url = `${this.apiBaseUrl}/chat.postMessage`;
 
-		const body: Record<string, string> = { channel, text };
+		const body: Record<string, unknown> = { channel, text };
 		if (thread_ts) {
 			body.thread_ts = thread_ts;
+		}
+		if (blocks) {
+			body.blocks = blocks;
 		}
 
 		const response = await fetch(url, {

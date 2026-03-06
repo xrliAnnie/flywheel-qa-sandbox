@@ -69,6 +69,17 @@ export type {
 	WorktreeExecFn,
 	WorktreeInfo,
 } from "./WorktreeManager.js";
+export { SlackNotifier } from "./SlackNotifier.js";
+export type { SlackNotifierConfig } from "./SlackNotifier.js";
+export { SlackInteractionServer } from "./SlackInteractionServer.js";
+export type { SlackAction } from "./SlackInteractionServer.js";
+export { ReactionsEngine } from "./ReactionsEngine.js";
+export type { ActionHandler, ActionResult } from "./ReactionsEngine.js";
+export {
+	ApproveHandler,
+	RejectHandler,
+	DeferHandler,
+} from "./reactions/index.js";
 export { AuditLogger } from "./AuditLogger.js";
 export type { AuditEntry } from "./AuditLogger.js";
 export {
