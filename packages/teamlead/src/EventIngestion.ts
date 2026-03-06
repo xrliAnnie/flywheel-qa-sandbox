@@ -99,7 +99,13 @@ export class EventIngestion {
 	private processEvent(body: string, res: http.ServerResponse): void {
 		let event: IngestEvent;
 		try {
-			event = JSON.parse(body);
+			const parsed = JSON.parse(body);
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+				res.writeHead(400);
+				res.end("expected JSON object");
+				return;
+			}
+			event = parsed;
 		} catch {
 			res.writeHead(400);
 			res.end("invalid JSON");
