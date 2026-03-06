@@ -15,7 +15,6 @@
  *   npx tsx scripts/run-project.ts geoforge3d ~/Dev/GeoForge3D --issue-ids GEO-95,GEO-96
  */
 
-import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 
 import { Semaphore } from "../packages/core/dist/Semaphore.js";
@@ -25,15 +24,12 @@ import type { DagNode } from "../packages/dag-resolver/dist/DagResolver.js";
 import {
 	setupComponents,
 	teardownComponents,
+	log,
+	killTmuxSession,
 	type FlywheelComponents,
 } from "./lib/setup.js";
 
 // ── Helpers ──────────────────────────────────────────────────
-
-function log(msg: string) {
-	const time = new Date().toLocaleTimeString();
-	console.log(`[${time}] ${msg}`);
-}
 
 function getFlag(flag: string): string | undefined {
 	const idx = process.argv.indexOf(flag);
@@ -196,10 +192,7 @@ async function main() {
 		process.exitCode = 1;
 	} finally {
 		await teardownComponents(components);
-		try {
-			execFileSync("tmux", ["kill-session", "-t", `=${tmuxSessionName}`]);
-			log(`Cleaned up tmux session: ${tmuxSessionName}`);
-		} catch { /* session may already be gone */ }
+		killTmuxSession(tmuxSessionName);
 	}
 }
 

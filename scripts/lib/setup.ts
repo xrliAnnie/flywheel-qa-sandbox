@@ -74,9 +74,16 @@ export interface SetupOptions {
 	sessionTimeoutMs?: number;
 }
 
-function log(msg: string) {
+export function log(msg: string) {
 	const time = new Date().toLocaleTimeString();
 	console.log(`[${time}] ${msg}`);
+}
+
+export function killTmuxSession(sessionName: string): void {
+	try {
+		execFileSync("tmux", ["kill-session", "-t", `=${sessionName}`]);
+		log(`Cleaned up tmux session: ${sessionName}`);
+	} catch { /* session may already be gone */ }
 }
 
 export async function setupComponents(opts: SetupOptions): Promise<FlywheelComponents> {
