@@ -81,6 +81,8 @@ export {
 	DeferHandler,
 } from "./reactions/index.js";
 export { AuditLogger } from "./AuditLogger.js";
+export { TeamLeadClient, NoOpEventEmitter } from "./ExecutionEventEmitter.js";
+export type { ExecutionEventEmitter, EventEnvelope } from "./ExecutionEventEmitter.js";
 export type { AuditEntry } from "./AuditLogger.js";
 export {
 	DecisionLayer,
