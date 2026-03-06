@@ -83,6 +83,7 @@ export {
 export { AuditLogger } from "./AuditLogger.js";
 export { TeamLeadClient, NoOpEventEmitter } from "./ExecutionEventEmitter.js";
 export type { ExecutionEventEmitter, EventEnvelope } from "./ExecutionEventEmitter.js";
+export { parseActionId } from "./parseActionId.js";
 export type { AuditEntry } from "./AuditLogger.js";
 export {
 	DecisionLayer,
