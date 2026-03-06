@@ -48,26 +48,28 @@ describe("Parallel Dispatch E2E", () => {
 			{ id: "C", blockedBy: [] },
 		];
 		const resolver = new DagResolver(nodes);
-		const results = new Map<string, BlueprintResult>([
-			["A", { success: true }],
-			["B", { success: true }],
-			["C", { success: true }],
-		]);
-		const blueprint = makeTimedBlueprint(results, 50);
+		let concurrent = 0;
+		let maxConcurrent = 0;
+		const blueprint = {
+			run: vi.fn(async () => {
+				concurrent++;
+				maxConcurrent = Math.max(maxConcurrent, concurrent);
+				await new Promise((r) => setTimeout(r, 30));
+				concurrent--;
+				return { success: true };
+			}),
+		} as unknown as Blueprint;
 		const semaphore = new Semaphore(2);
 		const dispatcher = new DagDispatcher(
 			resolver, blueprint, "/project", ctx, semaphore,
 		);
 
-		const start = Date.now();
 		const result = await dispatcher.dispatch();
-		const elapsed = Date.now() - start;
 
 		expect(result.completed.sort()).toEqual(["A", "B", "C"]);
 		expect(result.shelved).toEqual([]);
-		// Semaphore(2): first batch (2 parallel) ~50ms, second batch ~50ms = ~100ms total
-		// Sequential would be ~150ms. Use generous margin for CI/load variance.
-		expect(elapsed).toBeLessThan(300);
+		// Semaphore(2) allows max 2 concurrent, not 3
+		expect(maxConcurrent).toBe(2);
 		expect(result.durationMs).toBeGreaterThanOrEqual(0);
 	});
 
@@ -81,10 +83,15 @@ describe("Parallel Dispatch E2E", () => {
 		];
 		const resolver = new DagResolver(nodes);
 		const callOrder: string[] = [];
+		let concurrent = 0;
+		let maxConcurrent = 0;
 		const blueprint = {
 			run: vi.fn(async (node: DagNode) => {
 				callOrder.push(node.id);
-				await new Promise((r) => setTimeout(r, 30));
+				concurrent++;
+				maxConcurrent = Math.max(maxConcurrent, concurrent);
+				await new Promise((r) => setTimeout(r, 20));
+				concurrent--;
 				return { success: true };
 			}),
 		} as unknown as Blueprint;
@@ -93,16 +100,14 @@ describe("Parallel Dispatch E2E", () => {
 			resolver, blueprint, "/project", ctx, semaphore,
 		);
 
-		const start = Date.now();
 		const result = await dispatcher.dispatch();
-		const elapsed = Date.now() - start;
 
 		// A first, B+C parallel, D last
 		expect(callOrder[0]).toBe("A");
 		expect(callOrder[callOrder.length - 1]).toBe("D");
 		expect(result.completed.sort()).toEqual(["A", "B", "C", "D"]);
-		// 3 layers * 30ms = ~90ms (B+C are parallel). Generous margin for CI.
-		expect(elapsed).toBeLessThan(300);
+		// B and C should run concurrently (max concurrent >= 2)
+		expect(maxConcurrent).toBeGreaterThanOrEqual(2);
 	});
 
 	it("failure in one branch does not affect other branch", async () => {

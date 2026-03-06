@@ -278,17 +278,23 @@ describe("DagDispatcher", () => {
 
 	// ─── Parallel-specific tests ────────────────────
 
-	it("independent nodes A, B run in parallel (timing check)", async () => {
+	it("independent nodes A, B run in parallel (concurrency check)", async () => {
 		const nodes: DagNode[] = [
 			{ id: "A", blockedBy: [] },
 			{ id: "B", blockedBy: [] },
 		];
 		const resolver = new DagResolver(nodes);
-		const results = new Map<string, BlueprintResult>([
-			["A", { success: true }],
-			["B", { success: true }],
-		]);
-		const blueprint = makeMockBlueprint(results, 50); // 50ms each
+		let concurrent = 0;
+		let maxConcurrent = 0;
+		const blueprint = {
+			run: vi.fn(async () => {
+				concurrent++;
+				maxConcurrent = Math.max(maxConcurrent, concurrent);
+				await new Promise((r) => setTimeout(r, 30));
+				concurrent--;
+				return { success: true };
+			}),
+		} as unknown as Blueprint;
 		const semaphore = new Semaphore(2);
 		const dispatcher = new DagDispatcher(
 			resolver,
@@ -298,13 +304,11 @@ describe("DagDispatcher", () => {
 			semaphore,
 		);
 
-		const start = Date.now();
 		const result = await dispatcher.dispatch();
-		const elapsed = Date.now() - start;
 
 		expect(result.completed.sort()).toEqual(["A", "B"]);
-		// Parallel: ~50ms, not ~100ms. Generous margin for CI/load variance.
-		expect(elapsed).toBeLessThan(300);
+		// With Semaphore(2), both should run concurrently
+		expect(maxConcurrent).toBe(2);
 	});
 
 	it("diamond DAG: A -> B, A -> C, B+C -> D", async () => {
