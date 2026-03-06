@@ -29,35 +29,12 @@ import { existsSync } from "node:fs";
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
-import { TmuxRunner } from "../packages/claude-runner/dist/TmuxRunner.js";
-import { AnthropicLLMClient } from "../packages/claude-runner/dist/AnthropicLLMClient.js";
-import { GitResultChecker } from "../packages/edge-worker/dist/GitResultChecker.js";
-import { Blueprint } from "../packages/edge-worker/dist/Blueprint.js";
-import { PreHydrator } from "../packages/edge-worker/dist/PreHydrator.js";
-import { HookCallbackServer } from "../packages/edge-worker/dist/HookCallbackServer.js";
-import { WorktreeManager } from "../packages/edge-worker/dist/WorktreeManager.js";
-import { SkillInjector } from "../packages/edge-worker/dist/SkillInjector.js";
-import { ExecutionEvidenceCollector } from "../packages/edge-worker/dist/ExecutionEvidenceCollector.js";
-import { AuditLogger } from "../packages/edge-worker/dist/AuditLogger.js";
-import { SlackNotifier } from "../packages/edge-worker/dist/SlackNotifier.js";
-import { SlackInteractionServer } from "../packages/edge-worker/dist/SlackInteractionServer.js";
-import { ReactionsEngine } from "../packages/edge-worker/dist/ReactionsEngine.js";
-import { ApproveHandler } from "../packages/edge-worker/dist/reactions/ApproveHandler.js";
-import { RejectHandler } from "../packages/edge-worker/dist/reactions/RejectHandler.js";
-import { DeferHandler } from "../packages/edge-worker/dist/reactions/DeferHandler.js";
-import { postSlackResponse } from "../packages/edge-worker/dist/reactions/postSlackResponse.js";
-import { SlackMessageService } from "../packages/slack-event-transport/dist/SlackMessageService.js";
 import {
-	DecisionLayer,
-	HardRuleEngine,
-	HaikuTriageAgent,
-	HaikuVerifier,
-	FallbackHeuristic,
-	defaultRules,
-} from "../packages/edge-worker/dist/decision/index.js";
-import type { LLMClient } from "../packages/core/dist/llm-client-types.js";
+	setupComponents,
+	teardownComponents,
+	log,
+	killTmuxSession,
+} from "./lib/setup.js";
 
 // ── Hardcoded issue data (fallback when LINEAR_API_KEY is not set) ──
 
@@ -98,11 +75,6 @@ Small (< 1 day)`,
 };
 
 // ── Helpers ──────────────────────────────────────────────────
-
-function log(msg: string) {
-	const time = new Date().toLocaleTimeString();
-	console.log(`[${time}] ${msg}`);
-}
 
 function git(args: string[], cwd: string): string {
 	return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
@@ -163,16 +135,6 @@ function checkSubRepoCommits(repos: string[], baselines: Map<string, string>): {
 	}
 
 	return { totalCommits, allMessages, totalFiles, repoResults };
-}
-
-/**
- * Kill a tmux session. Best-effort — failure is non-fatal.
- */
-function killTmuxSession(sessionName: string): void {
-	try {
-		execFileSync("tmux", ["kill-session", "-t", `=${sessionName}`]);
-		log(`Cleaned up tmux session: ${sessionName}`);
-	} catch { /* session may already be gone */ }
 }
 
 // ── Main ─────────────────────────────────────────────────────
@@ -256,104 +218,27 @@ async function main() {
 	}
 	log(`Issue: ${issueId} — ${issueData.title}`);
 
-	// 4. v0.2 components — HookCallbackServer replaces marker dir
-	const hookServer = new HookCallbackServer(0); // auto-assign port
-	await hookServer.start();
-	log(`HookCallbackServer started on port ${hookServer.getPort()}`);
-
-	// Multi-repo detection: v0.2 worktree only supports single-repo projects.
-	// Multi-repo (e.g., GeoForge3D umbrella dir) falls back to v0.1.1 path.
+	// 4. v0.2 components — shared setup
 	const isSingleRepo = subRepos.length === 0;
-	const worktreeManager = isSingleRepo ? new WorktreeManager() : undefined;
-	if (!isSingleRepo) {
-		log("Multi-repo detected — worktree disabled (v0.1.1 fallback)");
-	}
-
-	const skillInjector = new SkillInjector();
-
-	const evidenceCollector = new ExecutionEvidenceCollector(
-		async (cmd: string, args: string[], cwd: string) => {
-			const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
-			return { stdout: result };
+	const projectName = resolvedRoot.split("/").pop() ?? "unknown";
+	const components = await setupComponents({
+		projectRoot: resolvedRoot,
+		tmuxSessionName,
+		projectName,
+		enableWorktree: isSingleRepo,
+		fetchIssue: async (id: string) => {
+			const data = KNOWN_ISSUES[id];
+			if (!data) throw new Error(`Unknown issue: ${id}`);
+			return {
+				title: data.title,
+				description: data.description,
+				labels: data.labels,
+				projectId: data.projectId,
+				identifier: data.identifier ?? id,
+			};
 		},
-	);
-
-	// 4b. Decision Layer — always-on components (no LLM needed)
-	const flywheelDir = join(homedir(), ".flywheel");
-	mkdirSync(flywheelDir, { recursive: true });
-	const auditLogger = new AuditLogger(join(flywheelDir, "audit.db"));
-	await auditLogger.init();
-	log("AuditLogger initialized");
-
-	const hardRules = new HardRuleEngine(defaultRules());
-	const fallback = new FallbackHeuristic();
-
-	// LLM components — conditional on API key
-	let triage: HaikuTriageAgent;
-	let verifier: HaikuVerifier;
-	if (process.env.ANTHROPIC_API_KEY) {
-		const llmClient = new AnthropicLLMClient();
-		triage = new HaikuTriageAgent(llmClient, "claude-haiku-4-5-20251001", 2000);
-		verifier = new HaikuVerifier(llmClient, "claude-haiku-4-5-20251001");
-		log("Decision Layer: LLM triage + verify enabled");
-	} else {
-		log("ANTHROPIC_API_KEY not set — LLM triage/verify disabled, hard rules + fallback active");
-		const noLlm: LLMClient = { chat: () => { throw new Error("No ANTHROPIC_API_KEY"); } };
-		triage = new HaikuTriageAgent(noLlm, "", 0);
-		verifier = new HaikuVerifier(noLlm, "");
-	}
-
-	const decisionLayer = new DecisionLayer(
-		hardRules, triage, verifier, fallback, auditLogger, evidenceCollector,
-	);
-
-	// 4c. Slack notification — conditional on SLACK_BOT_TOKEN
-	let slackNotifier: SlackNotifier | undefined;
-	let interactionServer: SlackInteractionServer | undefined;
-	let reactionsEngine: ReactionsEngine | undefined;
-
-	if (process.env.SLACK_BOT_TOKEN && process.env.FLYWHEEL_SLACK_CHANNEL) {
-		const msgService = new SlackMessageService();
-		slackNotifier = new SlackNotifier(
-			{
-				channelId: process.env.FLYWHEEL_SLACK_CHANNEL,
-				botToken: process.env.SLACK_BOT_TOKEN,
-				projectRepo: process.env.FLYWHEEL_PROJECT_REPO,
-			},
-			msgService,
-		);
-
-		interactionServer = new SlackInteractionServer(
-			parseInt(process.env.FLYWHEEL_INTERACTION_PORT ?? "9877"),
-			process.env.SLACK_INTERACTION_TOKEN,
-		);
-		await interactionServer.start();
-		log(`SlackInteractionServer started on port ${interactionServer.getPort()}`);
-
-		const execFn = async (cmd: string, args: string[], cwd: string) => {
-			const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
-			return { stdout: result };
-		};
-		// Stub handlers for retry/shelve (full implementation in v0.2.1+ Auto-Loop)
-		const stubHandler = {
-			async execute(action: { issueId: string; action: string; responseUrl: string; userId: string }) {
-				const msg = `Action '${action.action}' for ${action.issueId} acknowledged — not yet implemented (v0.2.1+)`;
-				await postSlackResponse(action.responseUrl, msg);
-				return { success: true, message: msg };
-			},
-		};
-
-		reactionsEngine = new ReactionsEngine({
-			approve: new ApproveHandler(execFn, resolvedRoot, process.env.FLYWHEEL_PROJECT_REPO),
-			reject: new RejectHandler(),
-			defer: new DeferHandler(),
-			retry: stubHandler,
-			shelve: stubHandler,
-		});
-		log("Slack notification + reactions enabled");
-	} else {
-		log("SLACK_BOT_TOKEN not set — Slack notifications disabled");
-	}
+	});
+	const { blueprint, slackNotifier, interactionServer, reactionsEngine } = components;
 
 	// 5. Capture baselines for all repos (parent + sub-repos)
 	const allRepos = [resolvedRoot, ...subRepos];
@@ -365,53 +250,6 @@ async function main() {
 			log(`Baseline ${repo.split("/").pop()}: ${sha.slice(0, 8)}`);
 		} catch { /* repo might not have commits */ }
 	}
-
-	// 6. Setup components
-	const hydrator = new PreHydrator(async (id) => {
-		const data = KNOWN_ISSUES[id];
-		if (!data) throw new Error(`Unknown issue: ${id}`);
-		return {
-			title: data.title,
-			description: data.description,
-			labels: data.labels,
-			projectId: data.projectId,
-			identifier: data.identifier ?? id,
-		};
-	});
-
-	const gitChecker = new GitResultChecker(
-		async (cmd: string, args: string[], cwd: string) => {
-			const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
-			return { stdout: result };
-		},
-	);
-
-	const makeRunner = (_name: string) =>
-		new TmuxRunner(
-			tmuxSessionName,
-			undefined,  // default execFile
-			5000,       // poll every 5s
-			600_000,    // 10 min timeout
-			hookServer, // v0.2: HTTP callback completion
-		);
-
-	const shell = {
-		execFile: async (cmd: string, args: string[], cwd: string) => {
-			try {
-				const stdout = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
-				return { stdout, exitCode: 0 };
-			} catch (e: any) {
-				return { stdout: e.stdout ?? "", exitCode: e.status ?? 1 };
-			}
-		},
-	};
-
-	const blueprint = new Blueprint(
-		hydrator, gitChecker, makeRunner, shell,
-		worktreeManager, skillInjector, evidenceCollector,
-		undefined, // skillsConfig — use defaults
-		decisionLayer,
-	);
 
 	// 7. Auto-open Terminal viewer and bring to front
 	// Use exact session match (=sessionName) to avoid tmux prefix matching
@@ -476,7 +314,6 @@ async function main() {
 
 	const startTime = Date.now();
 	const node = { id: issueId, blockedBy: [] };
-	const projectName = resolvedRoot.split("/").pop() ?? "unknown";
 	const ctx = {
 		teamName: "eng",
 		runnerName: "claude",
@@ -635,16 +472,9 @@ async function main() {
 	} catch (err) {
 		console.error("\nBlueprint error:", err);
 	} finally {
-		// 14. Cleanup — hookServer.stop() + auditLogger.close() always run
+		// 14. Cleanup
 		clearInterval(autoInteractInterval);
-		await hookServer.stop();
-		log("HookCallbackServer stopped");
-		if (interactionServer) {
-			await interactionServer.stop();
-			log("SlackInteractionServer stopped");
-		}
-		await auditLogger.close();
-		log("AuditLogger closed");
+		await teardownComponents(components);
 		if (preserveSession) {
 			log(`Preserving tmux session '${tmuxSessionName}' for inspection (route: needs_review/blocked)`);
 		} else {
