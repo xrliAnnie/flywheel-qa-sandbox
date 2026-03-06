@@ -1,13 +1,6 @@
 import { EventEmitter } from "node:events";
 import http from "node:http";
-
-const VALID_ACTIONS = new Set([
-	"approve",
-	"reject",
-	"defer",
-	"retry",
-	"shelve",
-]);
+import { parseActionId } from "./parseActionId.js";
 
 const MAX_BODY_BYTES = 1_048_576; // 1 MB
 
@@ -18,6 +11,7 @@ export interface SlackAction {
 	userId: string;
 	responseUrl: string;
 	messageTs: string;
+	executionId?: string;
 }
 
 /**
@@ -185,13 +179,23 @@ export class SlackInteractionServer extends EventEmitter {
 			const actionId: string = rawAction.action_id ?? "";
 			if (!actionId.startsWith("flywheel_")) continue;
 
-			const parsed = this.parseActionId(actionId);
+			const parsed = parseActionId(actionId);
 			if (!parsed) {
 				console.warn(
 					`[SlackInteractionServer] Could not parse flywheel action_id: ${actionId}`,
 				);
 				continue;
 			}
+
+			// Parse executionId from button value JSON (validate UUID format)
+			let executionId: string | undefined;
+			try {
+				const val = typeof rawAction.value === "string" ? JSON.parse(rawAction.value) : undefined;
+				const rawId = val?.executionId ?? val?.execution_id;
+				if (typeof rawId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId)) {
+					executionId = rawId;
+				}
+			} catch { /* ignore parse errors */ }
 
 			const slackAction: SlackAction = {
 				actionId,
@@ -200,38 +204,10 @@ export class SlackInteractionServer extends EventEmitter {
 				userId: payload.user?.id ?? "",
 				responseUrl: payload.response_url ?? "",
 				messageTs: payload.message?.ts ?? "",
+				executionId,
 			};
 
 			this.emit("action", slackAction);
 		}
-	}
-
-	private parseActionId(
-		actionId: string,
-	): { action: string; issueId: string } | null {
-		// Format: flywheel_{action}_{issueId}
-		// issueId may contain underscores, so split carefully
-		const prefix = "flywheel_";
-		const rest = actionId.slice(prefix.length);
-
-		// Find the action by checking valid actions
-		for (const action of VALID_ACTIONS) {
-			if (rest.startsWith(`${action}_`)) {
-				const issueId = rest.slice(action.length + 1);
-				if (issueId) {
-					return { action, issueId };
-				}
-			}
-		}
-
-		// Also handle view_pr (two-word action)
-		if (rest.startsWith("view_pr_")) {
-			const issueId = rest.slice("view_pr_".length);
-			if (issueId) {
-				return { action: "view_pr", issueId };
-			}
-		}
-
-		return null;
 	}
 }

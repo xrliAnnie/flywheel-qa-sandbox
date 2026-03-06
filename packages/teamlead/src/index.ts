@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+import { randomUUID } from "node:crypto";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
 import { StateStore } from "./StateStore.js";
@@ -38,7 +39,8 @@ async function main() {
 		);
 	}
 
-	// 3. EventIngestion (always active)
+	// 3. EventIngestion (always active, with auth token)
+	const ingestToken = process.env.TEAMLEAD_INGEST_TOKEN ?? randomUUID();
 	const ingestion = new EventIngestion(store, (event) => {
 		if (!notifier) return;
 
@@ -54,7 +56,7 @@ async function main() {
 				console.error("[TeamLead] Notification error:", err);
 			});
 		}
-	});
+	}, ingestToken);
 
 	// 4. Start components
 	const port = await ingestion.start(config.port);

@@ -43,25 +43,25 @@ describe("adaptBoltAction", () => {
 	it("parses executionId from button value JSON", () => {
 		const action = {
 			action_id: "flywheel_approve_GEO-95",
-			value: JSON.stringify({ executionId: "exec-123" }),
+			value: JSON.stringify({ executionId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890" }),
 		};
 		const body = { user: { id: "U123" }, message: {} };
 
 		const result = adaptBoltAction(action, body);
 
-		expect(result.executionId).toBe("exec-123");
+		expect(result.executionId).toBe("a1b2c3d4-e5f6-7890-abcd-ef1234567890");
 	});
 
 	it("handles execution_id (snake_case) in button value", () => {
 		const action = {
 			action_id: "flywheel_approve_GEO-95",
-			value: JSON.stringify({ execution_id: "exec-456" }),
+			value: JSON.stringify({ execution_id: "b2c3d4e5-f6a7-8901-bcde-f12345678901" }),
 		};
 		const body = { user: { id: "U123" }, message: {} };
 
 		const result = adaptBoltAction(action, body);
 
-		expect(result.executionId).toBe("exec-456");
+		expect(result.executionId).toBe("b2c3d4e5-f6a7-8901-bcde-f12345678901");
 	});
 
 	it("returns empty fields for missing body properties", () => {

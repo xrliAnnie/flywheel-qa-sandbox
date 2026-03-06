@@ -14,7 +14,7 @@ export class SlackBot {
 	private app: App;
 
 	constructor(
-		private botToken: string,
+		botToken: string,
 		appToken: string,
 		private channelId: string,
 		private deps: SlackBotDeps,
@@ -58,7 +58,6 @@ export class SlackBot {
 		threadTs?: string,
 	): Promise<string | undefined> {
 		const args: Record<string, unknown> = {
-			token: this.botToken,
 			channel: this.channelId,
 			text,
 		};
@@ -74,6 +73,8 @@ export class SlackBot {
  * Convert @slack/bolt action payload to our SlackAction interface.
  * Reuses parseActionId from edge-worker for consistent parsing.
  */
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export function adaptBoltAction(action: any, body: any): SlackAction {
 	const actionId: string = action.action_id ?? "";
 	const parsed = parseActionId(actionId);
@@ -84,7 +85,11 @@ export function adaptBoltAction(action: any, body: any): SlackAction {
 			typeof action.value === "string"
 				? JSON.parse(action.value)
 				: undefined;
-		executionId = val?.executionId ?? val?.execution_id;
+		const rawId = val?.executionId ?? val?.execution_id;
+		// Validate executionId is a UUID to prevent injection
+		if (typeof rawId === "string" && UUID_PATTERN.test(rawId)) {
+			executionId = rawId;
+		}
 	} catch {
 		/* ignore parse errors */
 	}

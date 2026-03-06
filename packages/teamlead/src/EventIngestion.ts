@@ -20,6 +20,7 @@ export class EventIngestion {
 	constructor(
 		private store: StateStore,
 		private onEvent?: (event: IngestEvent) => void,
+		private authToken?: string,
 	) {
 		this.server = http.createServer((req, res) => this.handleRequest(req, res));
 	}
@@ -53,6 +54,16 @@ export class EventIngestion {
 			res.writeHead(405);
 			res.end("method not allowed");
 			return;
+		}
+
+		// Auth check (Bearer token)
+		if (this.authToken) {
+			const authHeader = req.headers.authorization ?? "";
+			if (authHeader !== `Bearer ${this.authToken}`) {
+				res.writeHead(401);
+				res.end("unauthorized");
+				return;
+			}
 		}
 
 		const url = new URL(req.url ?? "/", `http://127.0.0.1:${this.assignedPort}`);
