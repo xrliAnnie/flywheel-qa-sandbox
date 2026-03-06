@@ -20,7 +20,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 	private pending: Promise<void>[] = [];
 	private settled = new Set<Promise<void>>();
 
-	constructor(private baseUrl: string) {}
+	constructor(private baseUrl: string, private authToken?: string) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
 		const p = this.postEvent({
@@ -91,9 +91,13 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 
 	private async postEvent(body: Record<string, unknown>): Promise<void> {
 		try {
+			const headers: Record<string, string> = { "Content-Type": "application/json" };
+			if (this.authToken) {
+				headers.Authorization = `Bearer ${this.authToken}`;
+			}
 			const res = await fetch(`${this.baseUrl}/events`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers,
 				body: JSON.stringify(body),
 			});
 			if (!res.ok) {

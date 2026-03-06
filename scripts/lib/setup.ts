@@ -159,8 +159,9 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	);
 
 	// EventEmitter — TeamLead pipeline
+	const teamleadToken = process.env.TEAMLEAD_INGEST_TOKEN;
 	const eventEmitter: ExecutionEventEmitter = teamleadUrl
-		? new TeamLeadClient(teamleadUrl)
+		? new TeamLeadClient(teamleadUrl, teamleadToken)
 		: new NoOpEventEmitter();
 	if (teamleadUrl) log(`TeamLead events → ${teamleadUrl}`);
 

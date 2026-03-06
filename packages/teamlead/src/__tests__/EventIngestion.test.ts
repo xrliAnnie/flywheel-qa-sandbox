@@ -169,4 +169,36 @@ describe("EventIngestion", () => {
 			expect(addr.address).toBe("127.0.0.1");
 		}
 	});
+
+	it("rejects requests without auth token when configured", async () => {
+		ingestion = new EventIngestion(store, undefined, "secret-token");
+		const port = await ingestion.start(0);
+
+		// No auth header → 401
+		const res1 = await postEvent(port, {
+			event_id: "e1",
+			execution_id: "exec-1",
+			issue_id: "GEO-95",
+			project_name: "geoforge3d",
+			event_type: "session_started",
+		});
+		expect(res1.status).toBe(401);
+
+		// With correct auth → 200
+		const res2 = await fetch(`http://127.0.0.1:${port}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer secret-token",
+			},
+			body: JSON.stringify({
+				event_id: "e2",
+				execution_id: "exec-2",
+				issue_id: "GEO-96",
+				project_name: "geoforge3d",
+				event_type: "session_started",
+			}),
+		});
+		expect(res2.status).toBe(200);
+	});
 });
