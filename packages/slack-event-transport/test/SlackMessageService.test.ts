@@ -135,6 +135,74 @@ describe("SlackMessageService", () => {
 		});
 	});
 
+	describe("postMessage with Block Kit blocks", () => {
+		it("includes blocks in request body when provided", async () => {
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ ok: true, ts: "1704110400.000300" }),
+			});
+
+			const blocks = [
+				{ type: "header", text: { type: "plain_text", text: "Test" } },
+				{ type: "section", text: { type: "mrkdwn", text: "Hello" } },
+			];
+
+			await service.postMessage({
+				token: "xoxb-test-token",
+				channel: "C9876543210",
+				text: "Fallback text",
+				blocks,
+			});
+
+			const calledBody = JSON.parse(
+				mockFetch.mock.calls[0][1].body as string,
+			);
+			expect(calledBody.blocks).toEqual(blocks);
+			expect(calledBody.text).toBe("Fallback text");
+			expect(calledBody.channel).toBe("C9876543210");
+		});
+
+		it("omits blocks field when not provided", async () => {
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ ok: true }),
+			});
+
+			await service.postMessage({
+				token: "xoxb-test-token",
+				channel: "C9876543210",
+				text: "Plain message",
+			});
+
+			const calledBody = JSON.parse(
+				mockFetch.mock.calls[0][1].body as string,
+			);
+			expect(calledBody.blocks).toBeUndefined();
+			expect(calledBody.text).toBe("Plain message");
+		});
+
+		it("sends text as fallback alongside blocks for accessibility", async () => {
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				json: async () => ({ ok: true, ts: "1704110400.000400" }),
+			});
+
+			await service.postMessage({
+				token: "xoxb-test-token",
+				channel: "C9876543210",
+				text: "Fallback: Review Required GEO-95",
+				blocks: [{ type: "header", text: { type: "plain_text", text: "Review Required: GEO-95" } }],
+			});
+
+			const calledBody = JSON.parse(
+				mockFetch.mock.calls[0][1].body as string,
+			);
+			// Both text and blocks must be present
+			expect(calledBody.text).toBe("Fallback: Review Required GEO-95");
+			expect(calledBody.blocks).toHaveLength(1);
+		});
+	});
+
 	describe("fetchThreadMessages", () => {
 		it("fetches thread messages with correct GET params and Bearer auth", async () => {
 			mockFetch.mockResolvedValueOnce({

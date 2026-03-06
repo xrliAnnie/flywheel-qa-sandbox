@@ -41,6 +41,14 @@ import { WorktreeManager } from "../packages/edge-worker/dist/WorktreeManager.js
 import { SkillInjector } from "../packages/edge-worker/dist/SkillInjector.js";
 import { ExecutionEvidenceCollector } from "../packages/edge-worker/dist/ExecutionEvidenceCollector.js";
 import { AuditLogger } from "../packages/edge-worker/dist/AuditLogger.js";
+import { SlackNotifier } from "../packages/edge-worker/dist/SlackNotifier.js";
+import { SlackInteractionServer } from "../packages/edge-worker/dist/SlackInteractionServer.js";
+import { ReactionsEngine } from "../packages/edge-worker/dist/ReactionsEngine.js";
+import { ApproveHandler } from "../packages/edge-worker/dist/reactions/ApproveHandler.js";
+import { RejectHandler } from "../packages/edge-worker/dist/reactions/RejectHandler.js";
+import { DeferHandler } from "../packages/edge-worker/dist/reactions/DeferHandler.js";
+import { postSlackResponse } from "../packages/edge-worker/dist/reactions/postSlackResponse.js";
+import { SlackMessageService } from "../packages/slack-event-transport/dist/SlackMessageService.js";
 import {
 	DecisionLayer,
 	HardRuleEngine,
@@ -299,6 +307,54 @@ async function main() {
 		hardRules, triage, verifier, fallback, auditLogger, evidenceCollector,
 	);
 
+	// 4c. Slack notification — conditional on SLACK_BOT_TOKEN
+	let slackNotifier: SlackNotifier | undefined;
+	let interactionServer: SlackInteractionServer | undefined;
+	let reactionsEngine: ReactionsEngine | undefined;
+
+	if (process.env.SLACK_BOT_TOKEN && process.env.FLYWHEEL_SLACK_CHANNEL) {
+		const msgService = new SlackMessageService();
+		slackNotifier = new SlackNotifier(
+			{
+				channelId: process.env.FLYWHEEL_SLACK_CHANNEL,
+				botToken: process.env.SLACK_BOT_TOKEN,
+				projectRepo: process.env.FLYWHEEL_PROJECT_REPO,
+			},
+			msgService,
+		);
+
+		interactionServer = new SlackInteractionServer(
+			parseInt(process.env.FLYWHEEL_INTERACTION_PORT ?? "9877"),
+			process.env.SLACK_INTERACTION_TOKEN,
+		);
+		await interactionServer.start();
+		log(`SlackInteractionServer started on port ${interactionServer.getPort()}`);
+
+		const execFn = async (cmd: string, args: string[], cwd: string) => {
+			const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
+			return { stdout: result };
+		};
+		// Stub handlers for retry/shelve (full implementation in v0.2.1+ Auto-Loop)
+		const stubHandler = {
+			async execute(action: { issueId: string; action: string; responseUrl: string; userId: string }) {
+				const msg = `Action '${action.action}' for ${action.issueId} acknowledged — not yet implemented (v0.2.1+)`;
+				await postSlackResponse(action.responseUrl, msg);
+				return { success: true, message: msg };
+			},
+		};
+
+		reactionsEngine = new ReactionsEngine({
+			approve: new ApproveHandler(execFn, resolvedRoot, process.env.FLYWHEEL_PROJECT_REPO),
+			reject: new RejectHandler(),
+			defer: new DeferHandler(),
+			retry: stubHandler,
+			shelve: stubHandler,
+		});
+		log("Slack notification + reactions enabled");
+	} else {
+		log("SLACK_BOT_TOKEN not set — Slack notifications disabled");
+	}
+
 	// 5. Capture baselines for all repos (parent + sub-repos)
 	const allRepos = [resolvedRoot, ...subRepos];
 	const baselines = new Map<string, string>();
@@ -497,6 +553,55 @@ async function main() {
 			}
 		}
 
+		// 11b. Slack notification + CEO reaction (v0.2 Step 2c)
+		if (slackNotifier && blueprintResult.decision && (route === "needs_review" || route === "blocked")) {
+			try {
+				const notifyResult = await slackNotifier.notify(
+					{
+						issueId,
+						issueIdentifier: issueData.identifier ?? issueId,
+						issueTitle: issueData.title,
+						labels: issueData.labels ?? [],
+						projectId: issueData.projectId ?? projectName,
+						exitReason: blueprintResult.decision.route === "blocked" ? "error" : "completed",
+						baseSha: baselines.get(resolvedRoot) ?? "",
+						commitCount: blueprintResult.evidence?.commitCount ?? 0,
+						commitMessages: blueprintResult.evidence?.commitMessages ?? [],
+						changedFilePaths: blueprintResult.evidence?.changedFilePaths ?? [],
+						filesChangedCount: blueprintResult.evidence?.filesChangedCount ?? 0,
+						linesAdded: blueprintResult.evidence?.linesAdded ?? 0,
+						linesRemoved: blueprintResult.evidence?.linesRemoved ?? 0,
+						diffSummary: blueprintResult.evidence?.diffSummary ?? "",
+						headSha: blueprintResult.evidence?.headSha ?? null,
+						durationMs: blueprintResult.durationMs ?? 0,
+						consecutiveFailures: 0,
+						partial: blueprintResult.evidence?.partial ?? false,
+					},
+					blueprintResult.decision,
+					{ tmuxSession: tmuxSessionName },
+				);
+
+				if (notifyResult.sent) {
+					log(`Slack notification sent (route: ${route})`);
+
+					if (interactionServer && reactionsEngine) {
+						log("Waiting for CEO response (timeout: 1h)...");
+						const action = await interactionServer.waitForAction(issueId, 3_600_000);
+
+						if (action) {
+							const actionResult = await reactionsEngine.dispatch(action);
+							log(`Action executed: ${action.action} → ${actionResult.message}`);
+						} else {
+							log("No CEO response within timeout — issue preserved for manual review");
+						}
+					}
+				}
+			} catch (err) {
+				const errMsg = err instanceof Error ? err.message : String(err);
+				log(`Slack notification failed (non-fatal): ${errMsg}`);
+			}
+		}
+
 		if (subRepoCheck.repoResults.length > 0) {
 			console.log("\n--- Sub-Repo Commits ---\n");
 			for (const r of subRepoCheck.repoResults) {
@@ -528,13 +633,16 @@ async function main() {
 		}
 		console.log("========================================\n");
 	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		console.error(`\nBlueprint error: ${msg}`);
+		console.error("\nBlueprint error:", err);
 	} finally {
 		// 14. Cleanup — hookServer.stop() + auditLogger.close() always run
 		clearInterval(autoInteractInterval);
 		await hookServer.stop();
 		log("HookCallbackServer stopped");
+		if (interactionServer) {
+			await interactionServer.stop();
+			log("SlackInteractionServer stopped");
+		}
 		await auditLogger.close();
 		log("AuditLogger closed");
 		if (preserveSession) {
