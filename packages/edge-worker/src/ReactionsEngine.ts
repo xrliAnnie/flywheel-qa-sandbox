@@ -7,6 +7,7 @@ export interface ActionHandler {
 export interface ActionResult {
 	success: boolean;
 	message: string;
+	alreadyResponded?: boolean;
 }
 
 export class ReactionsEngine {

@@ -46,6 +46,7 @@ export class ApproveHandler implements ActionHandler {
 				return {
 					success: false,
 					message: `No PR found for branch flywheel-${action.issueId}`,
+					alreadyResponded: true,
 				};
 			}
 
@@ -69,14 +70,14 @@ export class ApproveHandler implements ActionHandler {
 			const msg = `PR #${prNumber} merged (squash) by <@${action.userId}>`;
 			await postSlackResponse(action.responseUrl, msg);
 
-			return { success: true, message: msg };
+			return { success: true, message: msg, alreadyResponded: true };
 		} catch (err) {
 			const errMsg = err instanceof Error ? err.message : String(err);
 			await postSlackResponse(
 				action.responseUrl,
 				`Approve failed: ${errMsg}`,
 			);
-			return { success: false, message: `Approve failed: ${errMsg}` };
+			return { success: false, message: `Approve failed: ${errMsg}`, alreadyResponded: true };
 		}
 	}
 }
