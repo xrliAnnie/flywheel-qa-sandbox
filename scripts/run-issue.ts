@@ -24,6 +24,7 @@
  *   npx tsx scripts/run-issue.ts GEO-95 ~/Dev/GeoForge3D
  */
 
+import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readdirSync, statSync } from "node:fs";
@@ -314,11 +315,13 @@ async function main() {
 
 	const startTime = Date.now();
 	const node = { id: issueId, blockedBy: [] };
+	const executionId = randomUUID();
 	const ctx = {
 		teamName: "eng",
 		runnerName: "claude",
 		projectName,
 		sessionTimeoutMs: 600_000, // 10 min — matches current script timeout
+		executionId,
 	};
 
 	let actualSuccess = false;

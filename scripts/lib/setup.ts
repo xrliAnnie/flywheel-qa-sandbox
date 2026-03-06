@@ -35,6 +35,8 @@ import {
 	defaultRules,
 } from "../../packages/edge-worker/dist/decision/index.js";
 import type { LLMClient } from "../../packages/core/dist/llm-client-types.js";
+import { TeamLeadClient, NoOpEventEmitter } from "../../packages/edge-worker/dist/ExecutionEventEmitter.js";
+import type { ExecutionEventEmitter } from "../../packages/edge-worker/dist/ExecutionEventEmitter.js";
 
 // Re-export for convenience
 export { Blueprint } from "../../packages/edge-worker/dist/Blueprint.js";
@@ -53,6 +55,7 @@ export interface FlywheelComponents {
 	slackNotifier?: SlackNotifier;
 	interactionServer?: SlackInteractionServer;
 	reactionsEngine?: ReactionsEngine;
+	eventEmitter: ExecutionEventEmitter;
 }
 
 export interface SetupOptions {
@@ -96,6 +99,15 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		fetchIssue,
 		sessionTimeoutMs = 600_000,
 	} = opts;
+
+	// Fail-fast: TEAMLEAD_OWNS_SLACK=true requires TEAMLEAD_URL
+	const teamleadUrl = process.env.TEAMLEAD_URL;
+	const teamleadOwnsSlack = process.env.TEAMLEAD_OWNS_SLACK === "true";
+	if (teamleadOwnsSlack && !teamleadUrl) {
+		throw new Error(
+			"TEAMLEAD_OWNS_SLACK=true requires TEAMLEAD_URL. Otherwise no notification path is active.",
+		);
+	}
 
 	// HookCallbackServer
 	const hookServer = new HookCallbackServer(0);
@@ -146,7 +158,13 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		hardRules, triage, verifier, fallback, auditLogger, evidenceCollector,
 	);
 
-	// Slack notification — conditional
+	// EventEmitter — TeamLead pipeline
+	const eventEmitter: ExecutionEventEmitter = teamleadUrl
+		? new TeamLeadClient(teamleadUrl)
+		: new NoOpEventEmitter();
+	if (teamleadUrl) log(`TeamLead events → ${teamleadUrl}`);
+
+	// Slack notification — conditional (skipped when TEAMLEAD_OWNS_SLACK)
 	let slackNotifier: SlackNotifier | undefined;
 	let interactionServer: SlackInteractionServer | undefined;
 	let reactionsEngine: ReactionsEngine | undefined;
@@ -155,7 +173,9 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	const slackToken = process.env.SLACK_BOT_TOKEN;
 	const repo = projectRepo ?? process.env.FLYWHEEL_PROJECT_REPO;
 
-	if (slackToken && slackChannel) {
+	if (teamleadOwnsSlack) {
+		log("TEAMLEAD_OWNS_SLACK=true — legacy Slack path disabled");
+	} else if (slackToken && slackChannel) {
 		const msgService = new SlackMessageService();
 		slackNotifier = new SlackNotifier(
 			{ channelId: slackChannel, botToken: slackToken, projectRepo: repo },
@@ -221,6 +241,7 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		worktreeManager, skillInjector, evidenceCollector,
 		undefined, // skillsConfig
 		decisionLayer,
+		eventEmitter,
 	);
 
 	return {
@@ -234,10 +255,12 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		slackNotifier,
 		interactionServer,
 		reactionsEngine,
+		eventEmitter,
 	};
 }
 
 export async function teardownComponents(c: FlywheelComponents): Promise<void> {
+	await c.eventEmitter.flush();
 	await c.hookServer.stop();
 	log("HookCallbackServer stopped");
 	if (c.interactionServer) {

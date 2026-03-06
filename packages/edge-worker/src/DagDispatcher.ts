@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { execFile } from "node:child_process";
 import { FLYWHEEL_MARKER_DIR } from "flywheel-core";
@@ -79,7 +80,7 @@ export class DagDispatcher {
 
 				for (const node of ready) {
 					scheduled.add(node.id);
-					const ctx = this.buildContext(node);
+					const ctx = { ...this.buildContext(node), executionId: randomUUID() };
 					const p = this.dispatchOne(node, ctx, completed, shelved, nodeResults)
 						.finally(() => inflight.delete(node.id));
 					inflight.set(node.id, p);
