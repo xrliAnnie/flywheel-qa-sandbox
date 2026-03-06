@@ -32,6 +32,8 @@ import { join } from "node:path";
 import {
 	setupComponents,
 	teardownComponents,
+	log,
+	killTmuxSession,
 } from "./lib/setup.js";
 
 // ── Hardcoded issue data (fallback when LINEAR_API_KEY is not set) ──
@@ -73,11 +75,6 @@ Small (< 1 day)`,
 };
 
 // ── Helpers ──────────────────────────────────────────────────
-
-function log(msg: string) {
-	const time = new Date().toLocaleTimeString();
-	console.log(`[${time}] ${msg}`);
-}
 
 function git(args: string[], cwd: string): string {
 	return execFileSync("git", args, { cwd, encoding: "utf-8" }).trim();
@@ -138,16 +135,6 @@ function checkSubRepoCommits(repos: string[], baselines: Map<string, string>): {
 	}
 
 	return { totalCommits, allMessages, totalFiles, repoResults };
-}
-
-/**
- * Kill a tmux session. Best-effort — failure is non-fatal.
- */
-function killTmuxSession(sessionName: string): void {
-	try {
-		execFileSync("tmux", ["kill-session", "-t", `=${sessionName}`]);
-		log(`Cleaned up tmux session: ${sessionName}`);
-	} catch { /* session may already be gone */ }
 }
 
 // ── Main ─────────────────────────────────────────────────────
