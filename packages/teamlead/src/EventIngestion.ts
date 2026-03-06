@@ -106,14 +106,17 @@ export class EventIngestion {
 			return;
 		}
 
-		// Validate required fields
-		if (!event.event_id || !event.execution_id || !event.issue_id || !event.project_name || !event.event_type) {
-			res.writeHead(400);
-			res.end("missing required field");
-			return;
+		// Validate required fields — strict type checks at system boundary
+		const required = ["event_id", "execution_id", "issue_id", "project_name", "event_type"] as const;
+		for (const field of required) {
+			if (typeof event[field] !== "string" || event[field].length === 0) {
+				res.writeHead(400);
+				res.end(`missing or invalid field: ${field}`);
+				return;
+			}
 		}
 
-		// Store event (idempotent)
+		// Store event (idempotent) — skip side effects for duplicates
 		const sessionEvent: SessionEvent = {
 			event_id: event.event_id,
 			execution_id: event.execution_id,
@@ -121,9 +124,15 @@ export class EventIngestion {
 			project_name: event.project_name,
 			event_type: event.event_type,
 			payload: event.payload,
-			source: event.source ?? "orchestrator",
+			source: typeof event.source === "string" ? event.source : "orchestrator",
 		};
-		this.store.insertEvent(sessionEvent);
+		const isNew = this.store.insertEvent(sessionEvent);
+		if (!isNew) {
+			// Duplicate event_id — return 200 but skip all side effects
+			res.writeHead(200, { "Content-Type": "application/json" });
+			res.end(JSON.stringify({ ok: true, duplicate: true }));
+			return;
+		}
 
 		// Update session read model
 		const now = new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
