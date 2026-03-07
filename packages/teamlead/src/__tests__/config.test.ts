@@ -54,37 +54,33 @@ describe("loadConfig — LLM fields", () => {
 		expect(config.allowedUserIds).toEqual(["U123", "U456"]);
 	});
 
-	it("throws when ownsSlack + anthropicApiKey but no allowlist/allowAll", () => {
+	it("throws when ownsSlack but no allowlist/allowAll", () => {
 		process.env.TEAMLEAD_OWNS_SLACK = "true";
 		process.env.SLACK_BOT_TOKEN = "xoxb-test";
 		process.env.SLACK_APP_TOKEN = "xapp-test";
 		process.env.FLYWHEEL_SLACK_CHANNEL = "C07XXX";
-		process.env.ANTHROPIC_API_KEY = "sk-ant-test";
 
 		expect(() => loadConfig()).toThrow(
 			"Brain Q&A requires TEAMLEAD_ALLOWED_USER_IDS or TEAMLEAD_ALLOW_ALL_USERS=true",
 		);
 	});
 
-	it("passes with ownsSlack + anthropicApiKey + non-empty allowedUserIds", () => {
+	it("passes with ownsSlack + non-empty allowedUserIds", () => {
 		process.env.TEAMLEAD_OWNS_SLACK = "true";
 		process.env.SLACK_BOT_TOKEN = "xoxb-test";
 		process.env.SLACK_APP_TOKEN = "xapp-test";
 		process.env.FLYWHEEL_SLACK_CHANNEL = "C07XXX";
-		process.env.ANTHROPIC_API_KEY = "sk-ant-test";
 		process.env.TEAMLEAD_ALLOWED_USER_IDS = "U123";
 
 		const config = loadConfig();
-		expect(config.anthropicApiKey).toBe("sk-ant-test");
 		expect(config.allowedUserIds).toEqual(["U123"]);
 	});
 
-	it("passes with ownsSlack + anthropicApiKey + allowAllUsers=true", () => {
+	it("passes with ownsSlack + allowAllUsers=true", () => {
 		process.env.TEAMLEAD_OWNS_SLACK = "true";
 		process.env.SLACK_BOT_TOKEN = "xoxb-test";
 		process.env.SLACK_APP_TOKEN = "xapp-test";
 		process.env.FLYWHEEL_SLACK_CHANNEL = "C07XXX";
-		process.env.ANTHROPIC_API_KEY = "sk-ant-test";
 		process.env.TEAMLEAD_ALLOW_ALL_USERS = "true";
 
 		const config = loadConfig();

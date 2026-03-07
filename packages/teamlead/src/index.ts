@@ -8,7 +8,7 @@ import { SlackBot } from "./SlackBot.js";
 import { TemplateNotifier } from "./TemplateNotifier.js";
 import { StuckWatcher } from "./StuckWatcher.js";
 import { createReactionsEngine } from "./ActionExecutor.js";
-import { TeamLeadBrain } from "./TeamLeadBrain.js";
+import { TeamLeadBrain, createSdkLlm, createCliLlm } from "./TeamLeadBrain.js";
 
 async function main() {
 	const config = loadConfig();
@@ -25,17 +25,16 @@ async function main() {
 	if (config.ownsSlack) {
 		const reactionsEngine = createReactionsEngine(projects, store);
 
-		// Brain (conditional on anthropicApiKey)
+		// Brain — SDK backend (API key) or CLI backend (subscription)
 		let brain: TeamLeadBrain | undefined;
 		if (config.anthropicApiKey) {
-			brain = new TeamLeadBrain(
-				{ model: config.llmModel, maxTokens: config.llmMaxTokens },
-				store,
-				config.anthropicApiKey,
-			);
-			console.log(`[TeamLead] Brain enabled (model: ${config.llmModel})`);
+			const llmCall = await createSdkLlm(config.anthropicApiKey, config.llmModel, config.llmMaxTokens);
+			brain = new TeamLeadBrain(store, llmCall);
+			console.log(`[TeamLead] Brain enabled (SDK, model: ${config.llmModel})`);
 		} else {
-			console.log("[TeamLead] Brain disabled (no ANTHROPIC_API_KEY)");
+			const llmCall = createCliLlm(config.llmModel);
+			brain = new TeamLeadBrain(store, llmCall);
+			console.log(`[TeamLead] Brain enabled (CLI, model: ${config.llmModel})`);
 		}
 
 		bot = new SlackBot(

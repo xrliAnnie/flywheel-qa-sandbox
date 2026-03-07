@@ -1,19 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TeamLeadBrain } from "../TeamLeadBrain.js";
+import type { LlmCall } from "../TeamLeadBrain.js";
 import { StateStore } from "../StateStore.js";
-import type { Session } from "../StateStore.js";
 
 // In production: issue_id is a UUID from Linear, issue_identifier is "GEO-95"
 const ISSUE_UUID = "abc12345-def6-7890-abcd-ef1234567890";
 
-function mockAnthropicClient(responseText: string) {
-	return {
-		messages: {
-			create: vi.fn().mockResolvedValue({
-				content: [{ type: "text", text: responseText }],
-			}),
-		},
-	} as any;
+function mockLlmCall(responseText: string) {
+	return vi.fn<[string, string], Promise<string | null>>(async () => responseText);
 }
 
 describe("TeamLeadBrain", () => {
@@ -35,23 +29,16 @@ describe("TeamLeadBrain", () => {
 			last_activity_at: "2024-01-01 10:30:00",
 		});
 
-		const client = mockAnthropicClient("GEO-95 is awaiting review.");
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
-			store,
-			"test-key",
-			client,
-		);
+		const llm = mockLlmCall("GEO-95 is awaiting review.");
+		const brain = new TeamLeadBrain(store, llm);
 
 		const result = await brain.answer("How is GEO-95?");
 		expect(result).toBe("GEO-95 is awaiting review.");
 
-		// Verify API was called with correct structure
-		const call = client.messages.create.mock.calls[0]![0];
-		expect(call.model).toBe("claude-sonnet-4-5-20250514");
-		expect(call.system).toContain("TeamLead");
-		expect(call.messages[0].content).toContain("GEO-95");
-		expect(call.messages[0].content).toContain("<issue_detail");
+		// Verify LLM was called with correct structure
+		expect(llm.mock.calls[0]![0]).toContain("TeamLead");
+		expect(llm.mock.calls[0]![1]).toContain("GEO-95");
+		expect(llm.mock.calls[0]![1]).toContain("<issue_detail");
 	});
 
 	it("answer in known thread loads issue context from thread", async () => {
@@ -67,19 +54,13 @@ describe("TeamLeadBrain", () => {
 		// Thread stores issue_id (UUID), not identifier
 		store.upsertThread("1111.2222", "C07XXX", ISSUE_UUID);
 
-		const client = mockAnthropicClient("GEO-95 is still running.");
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
-			store,
-			"test-key",
-			client,
-		);
+		const llm = mockLlmCall("GEO-95 is still running.");
+		const brain = new TeamLeadBrain(store, llm);
 
 		const result = await brain.answer("tell me more", "1111.2222");
 		expect(result).toBe("GEO-95 is still running.");
 
-		const call = client.messages.create.mock.calls[0]![0];
-		expect(call.messages[0].content).toContain("<issue_detail");
+		expect(llm.mock.calls[0]![1]).toContain("<issue_detail");
 	});
 
 	it("answer without issue ID loads only active sessions", async () => {
@@ -91,72 +72,33 @@ describe("TeamLeadBrain", () => {
 			last_activity_at: "2024-01-01 10:30:00",
 		});
 
-		const client = mockAnthropicClient("One issue is running.");
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
-			store,
-			"test-key",
-			client,
-		);
+		const llm = mockLlmCall("One issue is running.");
+		const brain = new TeamLeadBrain(store, llm);
 
 		const result = await brain.answer("what's running?");
 		expect(result).toBe("One issue is running.");
 
-		const call = client.messages.create.mock.calls[0]![0];
-		expect(call.messages[0].content).toContain("<agent_status>");
-		expect(call.messages[0].content).not.toContain("<issue_detail");
+		expect(llm.mock.calls[0]![1]).toContain("<agent_status>");
+		expect(llm.mock.calls[0]![1]).not.toContain("<issue_detail");
 	});
 
-	it("answer calls Anthropic with correct model and system prompt", async () => {
-		const client = mockAnthropicClient("ok");
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 512 },
-			store,
-			"test-key",
-			client,
-		);
+	it("answer calls LLM with system prompt", async () => {
+		const llm = mockLlmCall("ok");
+		const brain = new TeamLeadBrain(store, llm);
 
 		await brain.answer("hello");
 
-		const call = client.messages.create.mock.calls[0]![0];
-		expect(call.model).toBe("claude-sonnet-4-5-20250514");
-		expect(call.max_tokens).toBe(512);
-		expect(call.system).toBeDefined();
-		expect(call.messages).toHaveLength(1);
-		expect(call.messages[0].role).toBe("user");
+		expect(llm).toHaveBeenCalledTimes(1);
+		expect(llm.mock.calls[0]![0]).toBeDefined();
+		expect(llm.mock.calls[0]![0]).toContain("TeamLead");
 	});
 
-	it("answer returns text from Sonnet response", async () => {
-		const client = mockAnthropicClient("Here is the answer.");
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
-			store,
-			"test-key",
-			client,
-		);
+	it("answer returns text from LLM response", async () => {
+		const llm = mockLlmCall("Here is the answer.");
+		const brain = new TeamLeadBrain(store, llm);
 
 		const result = await brain.answer("test question");
 		expect(result).toBe("Here is the answer.");
-	});
-
-	it("answer handles rate limit error gracefully", async () => {
-		const client = {
-			messages: {
-				create: vi.fn().mockRejectedValue(
-					Object.assign(new Error("rate limited"), { status: 429 }),
-				),
-			},
-		} as any;
-
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
-			store,
-			"test-key",
-			client,
-		);
-
-		const result = await brain.answer("test");
-		expect(result).toContain("rate-limited");
 	});
 
 	it("answer falls back to issue_id when thread session has no issue_identifier", async () => {
@@ -172,20 +114,14 @@ describe("TeamLeadBrain", () => {
 		});
 		store.upsertThread("1111.2222", "C07XXX", ISSUE_UUID);
 
-		const client = mockAnthropicClient("The session failed.");
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
-			store,
-			"test-key",
-			client,
-		);
+		const llm = mockLlmCall("The session failed.");
+		const brain = new TeamLeadBrain(store, llm);
 
 		const result = await brain.answer("what happened?", "1111.2222");
 		expect(result).toBe("The session failed.");
 
 		// Should still get issue_detail via issue_id fallback
-		const call = client.messages.create.mock.calls[0]![0];
-		expect(call.messages[0].content).toContain("<issue_detail");
+		expect(llm.mock.calls[0]![1]).toContain("<issue_detail");
 	});
 
 	it("answer ignores false-positive regex matches (e.g., model names) in thread context", async () => {
@@ -200,13 +136,8 @@ describe("TeamLeadBrain", () => {
 		});
 		store.upsertThread("1111.2222", "C07XXX", ISSUE_UUID);
 
-		const client = mockAnthropicClient("GEO-95 is running.");
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
-			store,
-			"test-key",
-			client,
-		);
+		const llm = mockLlmCall("GEO-95 is running.");
+		const brain = new TeamLeadBrain(store, llm);
 
 		// Question contains "sonnet-4" which matches the regex but doesn't exist in DB.
 		// Thread context (GEO-95) should still be used.
@@ -216,27 +147,26 @@ describe("TeamLeadBrain", () => {
 		);
 		expect(result).toBe("GEO-95 is running.");
 
-		const call = client.messages.create.mock.calls[0]![0];
-		expect(call.messages[0].content).toContain("<issue_detail");
+		expect(llm.mock.calls[0]![1]).toContain("<issue_detail");
 	});
 
-	it("answer handles API connection error gracefully", async () => {
-		const client = {
-			messages: {
-				create: vi.fn().mockRejectedValue(
-					Object.assign(new Error("connection refused"), { status: 500 }),
-				),
-			},
-		} as any;
-
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
-			store,
-			"test-key",
-			client,
-		);
+	it("answer handles LLM error gracefully", async () => {
+		const llm = vi.fn().mockRejectedValue(
+			Object.assign(new Error("connection refused"), { status: 500 }),
+		) as any;
+		const brain = new TeamLeadBrain(store, llm);
 
 		const result = await brain.answer("test");
 		expect(result).toContain("wrong");
+	});
+
+	it("answer handles rate limit error gracefully", async () => {
+		const llm = vi.fn().mockRejectedValue(
+			Object.assign(new Error("rate limited"), { status: 429 }),
+		) as any;
+		const brain = new TeamLeadBrain(store, llm);
+
+		const result = await brain.answer("test");
+		expect(result).toContain("rate-limited");
 	});
 });

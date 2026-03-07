@@ -50,8 +50,9 @@ export function loadConfig(): TeamLeadConfig {
 		allowAllUsers: process.env.TEAMLEAD_ALLOW_ALL_USERS === "true",
 	};
 
-	// Secure-by-default: when brain + Slack both enabled, require access control
-	if (config.ownsSlack && config.anthropicApiKey && !config.allowAllUsers && config.allowedUserIds.length === 0) {
+	// Secure-by-default: when Slack is enabled, Brain Q&A is always active (SDK or CLI fallback),
+	// so access control is always required.
+	if (config.ownsSlack && !config.allowAllUsers && config.allowedUserIds.length === 0) {
 		throw new Error(
 			"Brain Q&A requires TEAMLEAD_ALLOWED_USER_IDS or TEAMLEAD_ALLOW_ALL_USERS=true",
 		);

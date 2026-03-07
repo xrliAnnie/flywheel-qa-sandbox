@@ -1,10 +1,70 @@
-import Anthropic from "@anthropic-ai/sdk";
+import { spawn } from "node:child_process";
 import type { StateStore } from "./StateStore.js";
 import { PromptAssembler } from "./PromptAssembler.js";
 
 export interface BrainConfig {
 	model: string;
 	maxTokens: number;
+}
+
+/**
+ * Generic LLM call function — abstracts SDK vs CLI backends.
+ */
+export type LlmCall = (system: string, userContent: string) => Promise<string | null>;
+
+/**
+ * Create an LLM backend using the Anthropic SDK (requires API key).
+ */
+export async function createSdkLlm(apiKey: string, model: string, maxTokens: number): Promise<LlmCall> {
+	const { default: Anthropic } = await import("@anthropic-ai/sdk");
+	const client = new Anthropic({ apiKey });
+	return async (system, userContent) => {
+		const response = await client.messages.create({
+			model,
+			max_tokens: maxTokens,
+			system,
+			messages: [{ role: "user", content: userContent }],
+		});
+		const textBlock = response.content.find((b: any) => b.type === "text");
+		return textBlock ? (textBlock as any).text : null;
+	};
+}
+
+/**
+ * Create an LLM backend using the Claude CLI (uses subscription, no API key needed).
+ * Spawns `claude -p` as a subprocess for each call.
+ */
+export function createCliLlm(model: string): LlmCall {
+	return (system, userContent) => {
+		return new Promise((resolve) => {
+			const proc = spawn("claude", ["-p", "--model", model], {
+				env: { ...process.env, CLAUDECODE: "" },
+				stdio: ["pipe", "pipe", "pipe"],
+			});
+
+			let stdout = "";
+			proc.stdout.on("data", (d) => { stdout += d; });
+			proc.stderr.on("data", () => { /* ignore stderr noise */ });
+
+			proc.on("error", (err) => {
+				console.error("[TeamLeadBrain] CLI spawn error:", err);
+				resolve("Something went wrong. Please try again later.");
+			});
+
+			proc.on("close", (code) => {
+				if (code !== 0 || !stdout.trim()) {
+					console.error(`[TeamLeadBrain] CLI exited with code ${code}`);
+					resolve("Something went wrong. Please try again later.");
+					return;
+				}
+				resolve(stdout.trim());
+			});
+
+			// Pass system prompt + user content via stdin
+			proc.stdin.write(`${system}\n\n${userContent}`);
+			proc.stdin.end();
+		});
+	};
 }
 
 const ISSUE_ID_PATTERN = /[A-Za-z][A-Za-z0-9_-]*-\d+/g;
@@ -14,18 +74,12 @@ function extractIssueIds(text: string): string[] {
 }
 
 export class TeamLeadBrain {
-	private client: Anthropic;
 	private assembler: PromptAssembler;
-	private config: BrainConfig;
 
 	constructor(
-		config: BrainConfig,
 		private store: StateStore,
-		apiKey: string,
-		client?: Anthropic,
+		private llmCall: LlmCall,
 	) {
-		this.config = config;
-		this.client = client ?? new Anthropic({ apiKey });
 		this.assembler = new PromptAssembler();
 	}
 
@@ -80,20 +134,9 @@ export class TeamLeadBrain {
 			issueHistory,
 		);
 
-		// 5. Call Anthropic
+		// 5. Call LLM
 		try {
-			const response = await this.client.messages.create({
-				model: this.config.model,
-				max_tokens: this.config.maxTokens,
-				system: prompt.system,
-				messages: [{ role: "user", content: prompt.userContent }],
-			});
-
-			// 6. Extract text response
-			const textBlock = response.content.find(
-				(block: any) => block.type === "text",
-			);
-			return textBlock ? (textBlock as any).text : null;
+			return await this.llmCall(prompt.system, prompt.userContent);
 		} catch (err: unknown) {
 			const status = (err as any)?.status;
 			if (status === 429) {

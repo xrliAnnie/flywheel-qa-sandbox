@@ -1,16 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { TeamLeadBrain } from "../TeamLeadBrain.js";
-
-function mockAnthropicClient(responseText: string) {
-	return {
-		messages: {
-			create: vi.fn().mockResolvedValue({
-				content: [{ type: "text", text: responseText }],
-			}),
-		},
-	} as any;
-}
+import type { LlmCall } from "../TeamLeadBrain.js";
 
 describe("Brain E2E", () => {
 	it("CEO asks about specific issue → gets answer with issue detail", async () => {
@@ -35,28 +26,25 @@ describe("Brain E2E", () => {
 			decision_reasoning: "Auth changes require human review",
 		});
 
-		const client = mockAnthropicClient(
-			"GEO-95 完成了 auth 中间件重构，3 个 commit 改了 6 个文件，正在等 review。",
-		);
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
-			store,
-			"test-key",
-			client,
-		);
+		const calls: [string, string][] = [];
+		const llm: LlmCall = vi.fn(async (system: string, userContent: string) => {
+			calls.push([system, userContent]);
+			return "GEO-95 完成了 auth 中间件重构，3 个 commit 改了 6 个文件，正在等 review。";
+		});
+		const brain = new TeamLeadBrain(store, llm);
 
 		const answer = await brain.answer("GEO-95 怎么样了？");
 
 		// Verify answer returned
 		expect(answer).toContain("GEO-95");
 
-		// Verify Anthropic was called with issue context
-		const call = client.messages.create.mock.calls[0]![0];
-		expect(call.system).toContain("TeamLead");
-		expect(call.messages[0].content).toContain("<issue_detail");
-		expect(call.messages[0].content).toContain("GEO-95");
-		expect(call.messages[0].content).toContain("Refactor auth middleware");
-		expect(call.messages[0].content).toContain("<agent_status>");
+		// Verify LLM was called with issue context
+		const [system, userContent] = calls[0]!;
+		expect(system).toContain("TeamLead");
+		expect(userContent).toContain("<issue_detail");
+		expect(userContent).toContain("GEO-95");
+		expect(userContent).toContain("Refactor auth middleware");
+		expect(userContent).toContain("<agent_status>");
 
 		store.close();
 	});
@@ -79,15 +67,12 @@ describe("Brain E2E", () => {
 		// Thread was created by TemplateNotifier
 		store.upsertThread("1234.5678", "C07XXX", "GEO-96");
 
-		const client = mockAnthropicClient(
-			"GEO-96 正在运行，已启动 15 分钟。",
-		);
-		const brain = new TeamLeadBrain(
-			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
-			store,
-			"test-key",
-			client,
-		);
+		const calls: [string, string][] = [];
+		const llm: LlmCall = vi.fn(async (system: string, userContent: string) => {
+			calls.push([system, userContent]);
+			return "GEO-96 正在运行，已启动 15 分钟。";
+		});
+		const brain = new TeamLeadBrain(store, llm);
 
 		// CEO replies in thread without mentioning issue ID
 		const answer = await brain.answer("现在怎么样了？", "1234.5678");
@@ -95,9 +80,9 @@ describe("Brain E2E", () => {
 		expect(answer).toContain("GEO-96");
 
 		// Verify thread context was used to find the issue
-		const call = client.messages.create.mock.calls[0]![0];
-		expect(call.messages[0].content).toContain("<issue_detail");
-		expect(call.messages[0].content).toContain("GEO-96");
+		const [, userContent] = calls[0]!;
+		expect(userContent).toContain("<issue_detail");
+		expect(userContent).toContain("GEO-96");
 
 		store.close();
 	});
