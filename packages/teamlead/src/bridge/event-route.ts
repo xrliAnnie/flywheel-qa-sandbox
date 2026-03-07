@@ -1,7 +1,7 @@
 import { Router } from "express";
 import type { StateStore, Session } from "../StateStore.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import type { BridgeConfig } from "./types.js";
+import { sqliteDatetime, type BridgeConfig } from "./types.js";
 import { approveExecution } from "./actions.js";
 
 interface IngestEvent {
@@ -12,10 +12,6 @@ interface IngestEvent {
 	event_type: string;
 	payload?: Record<string, unknown>;
 	source?: string;
-}
-
-function sqliteDatetime(): string {
-	return new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
 }
 
 function formatNotification(session: Session, eventType: string): string {
