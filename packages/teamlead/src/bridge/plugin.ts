@@ -1,4 +1,5 @@
 import express from "express";
+import { timingSafeEqual } from "node:crypto";
 import { StateStore } from "../StateStore.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { BridgeConfig } from "./types.js";
@@ -6,23 +7,16 @@ import { createQueryRouter } from "./tools.js";
 import { createActionRouter } from "./actions.js";
 import { createEventRouter } from "./event-route.js";
 
-export function ingestAuthMiddleware(token?: string): express.RequestHandler {
-	return (req, res, next) => {
-		if (!token) return next();
-		const header = req.headers.authorization ?? "";
-		if (header !== `Bearer ${token}`) {
-			res.status(401).json({ error: "unauthorized" });
-			return;
-		}
-		next();
-	};
+function safeCompare(a: string, b: string): boolean {
+	if (a.length !== b.length) return false;
+	return timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
-export function apiAuthMiddleware(token?: string): express.RequestHandler {
+function tokenAuthMiddleware(token?: string): express.RequestHandler {
 	return (req, res, next) => {
 		if (!token) return next();
 		const header = req.headers.authorization ?? "";
-		if (header !== `Bearer ${token}`) {
+		if (!safeCompare(header, `Bearer ${token}`)) {
 			res.status(401).json({ error: "unauthorized" });
 			return;
 		}
@@ -36,6 +30,7 @@ export function createBridgeApp(
 	config: BridgeConfig,
 ): express.Application {
 	const app = express();
+	app.disable("x-powered-by");
 
 	app.use(express.json({ limit: "512kb" }));
 
@@ -50,11 +45,11 @@ export function createBridgeApp(
 	});
 
 	// /events — ingest auth
-	app.use("/events", ingestAuthMiddleware(config.ingestToken), createEventRouter(store, projects, config));
+	app.use("/events", tokenAuthMiddleware(config.ingestToken), createEventRouter(store, projects, config));
 
 	// /api/* — api auth
-	app.use("/api", apiAuthMiddleware(config.apiToken), createQueryRouter(store));
-	app.use("/api/actions", apiAuthMiddleware(config.apiToken), createActionRouter(store, projects));
+	app.use("/api", tokenAuthMiddleware(config.apiToken), createQueryRouter(store));
+	app.use("/api/actions", tokenAuthMiddleware(config.apiToken), createActionRouter(store, projects));
 
 	// Catch-all 404
 	app.use((_req, res) => {

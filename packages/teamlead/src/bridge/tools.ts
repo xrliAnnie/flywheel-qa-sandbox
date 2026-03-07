@@ -11,7 +11,8 @@ export function createQueryRouter(store: StateStore): Router {
 
 	router.get("/sessions", (req, res) => {
 		const mode = (req.query.mode as string) ?? "active";
-		const limit = parseInt((req.query.limit as string) ?? "20", 10);
+		const rawLimit = parseInt((req.query.limit as string) ?? "20", 10);
+		const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 200) : 20;
 
 		let sessions: Session[];
 
@@ -23,7 +24,8 @@ export function createQueryRouter(store: StateStore): Router {
 				sessions = store.getRecentSessions(limit);
 				break;
 			case "stuck": {
-				const threshold = parseInt((req.query.stuck_threshold as string) ?? "15", 10);
+				const rawThreshold = parseInt((req.query.stuck_threshold as string) ?? "15", 10);
+			const threshold = Number.isFinite(rawThreshold) ? Math.min(Math.max(rawThreshold, 1), 1440) : 15;
 				sessions = store.getStuckSessions(threshold);
 				break;
 			}
