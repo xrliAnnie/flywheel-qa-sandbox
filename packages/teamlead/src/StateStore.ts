@@ -316,7 +316,7 @@ export class StateStore {
 	}
 
 	getActiveSessions(): Session[] {
-		const stmt = this.db.prepare("SELECT * FROM sessions WHERE status IN ('running', 'awaiting_review')");
+		const stmt = this.db.prepare("SELECT * FROM sessions WHERE status IN ('running', 'awaiting_review') ORDER BY last_activity_at DESC");
 		const rows: Session[] = [];
 		while (stmt.step()) {
 			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
