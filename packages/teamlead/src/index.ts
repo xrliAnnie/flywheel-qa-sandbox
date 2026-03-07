@@ -8,6 +8,7 @@ import { SlackBot } from "./SlackBot.js";
 import { TemplateNotifier } from "./TemplateNotifier.js";
 import { StuckWatcher } from "./StuckWatcher.js";
 import { createReactionsEngine } from "./ActionExecutor.js";
+import { TeamLeadBrain } from "./TeamLeadBrain.js";
 
 async function main() {
 	const config = loadConfig();
@@ -23,11 +24,33 @@ async function main() {
 
 	if (config.ownsSlack) {
 		const reactionsEngine = createReactionsEngine(projects, store);
+
+		// Brain (conditional on anthropicApiKey)
+		let brain: TeamLeadBrain | undefined;
+		if (config.anthropicApiKey) {
+			brain = new TeamLeadBrain(
+				{ model: config.llmModel, maxTokens: config.llmMaxTokens },
+				store,
+				config.anthropicApiKey,
+			);
+			console.log(`[TeamLead] Brain enabled (model: ${config.llmModel})`);
+		} else {
+			console.log("[TeamLead] Brain disabled (no ANTHROPIC_API_KEY)");
+		}
+
 		bot = new SlackBot(
 			config.slackBotToken!,
 			config.slackAppToken!,
 			config.slackChannelId!,
-			{ reactionsDispatch: (action) => reactionsEngine.dispatch(action) },
+			{
+				reactionsDispatch: (action) => reactionsEngine.dispatch(action),
+				onMessage: brain
+					? (q, ts) => brain!.answer(q, ts)
+					: undefined,
+				getThreadIssue: (ts) => store.getThreadIssue(ts),
+				allowedUserIds: config.allowedUserIds,
+				allowAllUsers: config.allowAllUsers,
+			},
 		);
 		notifier = new TemplateNotifier(bot, store);
 		stuckWatcher = new StuckWatcher(
