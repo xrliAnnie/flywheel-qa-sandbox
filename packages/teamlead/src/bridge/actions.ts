@@ -11,9 +11,11 @@ type ExecFn = (
 ) => Promise<{ stdout: string }>;
 
 const defaultExec: ExecFn = async (cmd, args, cwd) => {
-	const { execFileSync } = await import("node:child_process");
-	const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
-	return { stdout: result };
+	const { execFile } = await import("node:child_process");
+	const { promisify } = await import("node:util");
+	const execFileAsync = promisify(execFile);
+	const result = await execFileAsync(cmd, args, { cwd, encoding: "utf-8" });
+	return { stdout: result.stdout };
 };
 
 function sqliteDatetime(): string {
