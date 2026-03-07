@@ -53,8 +53,12 @@ export class StuckWatcher {
 				minutesSince = Math.round((Date.now() - lastActivity.getTime()) / 60_000);
 			}
 
-			await this.notifier.onSessionStuck(session, minutesSince);
-			this.notifiedExecutions.add(session.execution_id);
+			try {
+				await this.notifier.onSessionStuck(session, minutesSince);
+				this.notifiedExecutions.add(session.execution_id);
+			} catch {
+				// Notification failed — don't dedup so it's retried next cycle
+			}
 		}
 	}
 }
@@ -74,7 +78,7 @@ export class WebhookStuckNotifier implements StuckNotifier {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 3000);
 		try {
-			await fetch(`${this.gatewayUrl}/hooks/agent`, {
+			const res = await fetch(`${this.gatewayUrl}/hooks/agent`, {
 				method: "POST",
 				headers: {
 					Authorization: `Bearer ${this.hooksToken}`,
@@ -83,8 +87,12 @@ export class WebhookStuckNotifier implements StuckNotifier {
 				body: JSON.stringify({ agentId: "product-lead", message }),
 				signal: controller.signal,
 			});
+			if (!res.ok) {
+				throw new Error(`Gateway returned ${res.status}`);
+			}
 		} catch (err) {
 			console.warn("[stuck-notify] Failed:", (err as Error).message);
+			throw err; // Let StuckWatcher skip dedup so notification is retried
 		} finally {
 			clearTimeout(timeout);
 		}

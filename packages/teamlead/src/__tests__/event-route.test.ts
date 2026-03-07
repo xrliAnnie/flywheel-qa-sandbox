@@ -204,9 +204,14 @@ describe("formatNotification", () => {
 		expect(msg).toContain("3 commits");
 	});
 
-	it("auto_approve notification", () => {
-		const msg = formatNotification({ ...baseSession, decision_route: "auto_approve" }, "session_completed");
+	it("auto_approve notification (merge succeeded)", () => {
+		const msg = formatNotification({ ...baseSession, decision_route: "auto_approve", status: "approved" }, "session_completed");
 		expect(msg).toContain("[Auto-merged]");
+	});
+
+	it("auto_approve notification (merge failed)", () => {
+		const msg = formatNotification({ ...baseSession, decision_route: "auto_approve", status: "awaiting_review" }, "session_completed");
+		expect(msg).toContain("[Auto-merge Failed]");
 	});
 
 	it("blocked notification", () => {
