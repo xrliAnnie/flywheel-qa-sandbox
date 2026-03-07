@@ -30,11 +30,19 @@ export class TeamLeadBrain {
 	}
 
 	async answer(question: string, threadTs?: string): Promise<string | null> {
-		// 1. Extract issue identifiers from question (e.g., "GEO-95")
-		const issueIds = extractIssueIds(question);
-		let focusIdentifier = issueIds[0];
+		// 1. Extract issue identifiers from question and validate against DB
+		//    The regex is broad (matches "sonnet-4" etc.), so we verify each
+		//    candidate exists before using it as the focus identifier.
+		const candidates = extractIssueIds(question);
+		let focusIdentifier: string | undefined;
+		for (const candidate of candidates) {
+			if (this.store.getSessionByIdentifier(candidate)) {
+				focusIdentifier = candidate;
+				break;
+			}
+		}
 
-		// 2. If threadTs, look up issue_id from conversation_threads, then resolve identifier
+		// 2. If no valid identifier in question and we're in a known thread, use thread context
 		if (!focusIdentifier && threadTs) {
 			const threadIssueId = this.store.getThreadIssue(threadTs);
 			if (threadIssueId) {

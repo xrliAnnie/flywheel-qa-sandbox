@@ -159,6 +159,38 @@ describe("TeamLeadBrain", () => {
 		expect(result).toContain("rate-limited");
 	});
 
+	it("answer ignores false-positive regex matches (e.g., model names) in thread context", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: ISSUE_UUID,
+			project_name: "geoforge3d",
+			status: "running",
+			issue_identifier: "GEO-95",
+			started_at: "2024-01-01 10:00:00",
+			last_activity_at: "2024-01-01 10:30:00",
+		});
+		store.upsertThread("1111.2222", "C07XXX", ISSUE_UUID);
+
+		const client = mockAnthropicClient("GEO-95 is running.");
+		const brain = new TeamLeadBrain(
+			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
+			store,
+			"test-key",
+			client,
+		);
+
+		// Question contains "sonnet-4" which matches the regex but doesn't exist in DB.
+		// Thread context (GEO-95) should still be used.
+		const result = await brain.answer(
+			"what model is claude-sonnet-4 using?",
+			"1111.2222",
+		);
+		expect(result).toBe("GEO-95 is running.");
+
+		const call = client.messages.create.mock.calls[0]![0];
+		expect(call.messages[0].content).toContain("<issue_detail");
+	});
+
 	it("answer handles API connection error gracefully", async () => {
 		const client = {
 			messages: {
