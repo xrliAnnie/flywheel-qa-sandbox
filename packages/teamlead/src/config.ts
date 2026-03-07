@@ -42,7 +42,7 @@ export function loadConfig(): TeamLeadConfig {
 		stuckThresholdMinutes: parseInt(process.env.TEAMLEAD_STUCK_THRESHOLD ?? "15", 10),
 		stuckCheckIntervalMs: parseInt(process.env.TEAMLEAD_STUCK_INTERVAL ?? "300000", 10),
 		anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-		llmModel: process.env.TEAMLEAD_LLM_MODEL ?? "claude-sonnet-4-5-20250514",
+		llmModel: process.env.TEAMLEAD_LLM_MODEL ?? "claude-sonnet-4-6",
 		llmMaxTokens: parseInt(process.env.TEAMLEAD_LLM_MAX_TOKENS ?? "1024", 10),
 		allowedUserIds: process.env.TEAMLEAD_ALLOWED_USER_IDS
 			? process.env.TEAMLEAD_ALLOWED_USER_IDS.split(",").map((s) => s.trim()).filter(Boolean)

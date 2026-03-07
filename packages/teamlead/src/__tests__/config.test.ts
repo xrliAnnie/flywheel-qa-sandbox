@@ -40,7 +40,7 @@ describe("loadConfig — LLM fields", () => {
 	it("returns undefined anthropicApiKey when ANTHROPIC_API_KEY not set", () => {
 		const config = loadConfig();
 		expect(config.anthropicApiKey).toBeUndefined();
-		expect(config.llmModel).toBe("claude-sonnet-4-5-20250514");
+		expect(config.llmModel).toBe("claude-sonnet-4-6");
 		expect(config.llmMaxTokens).toBe(1024);
 		expect(config.allowedUserIds).toEqual([]);
 		expect(config.allowAllUsers).toBe(false);
