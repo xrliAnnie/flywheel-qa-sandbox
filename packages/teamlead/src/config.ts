@@ -1,39 +1,23 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { BridgeConfig } from "./bridge/types.js";
 
-export interface TeamLeadConfig {
-	port: number;
-	dbPath: string;
-	ownsSlack: boolean;
-	slackBotToken?: string;
-	slackAppToken?: string;
-	slackChannelId?: string;
-	stuckThresholdMinutes: number;
-	stuckCheckIntervalMs: number;
-}
+export type { BridgeConfig };
 
-export function loadConfig(): TeamLeadConfig {
-	const ownsSlack = process.env.TEAMLEAD_OWNS_SLACK === "true";
-
-	if (ownsSlack) {
-		if (!process.env.SLACK_BOT_TOKEN) {
-			throw new Error("TEAMLEAD_OWNS_SLACK=true requires SLACK_BOT_TOKEN");
-		}
-		if (!process.env.SLACK_APP_TOKEN) {
-			throw new Error("TEAMLEAD_OWNS_SLACK=true requires SLACK_APP_TOKEN");
-		}
-		if (!process.env.FLYWHEEL_SLACK_CHANNEL) {
-			throw new Error("TEAMLEAD_OWNS_SLACK=true requires FLYWHEEL_SLACK_CHANNEL");
-		}
+export function loadConfig(): BridgeConfig {
+	const host = process.env.TEAMLEAD_HOST ?? "127.0.0.1";
+	if (host === "0.0.0.0") {
+		throw new Error("TEAMLEAD_HOST must not be 0.0.0.0 — use 127.0.0.1");
 	}
 
 	return {
+		host,
 		port: parseInt(process.env.TEAMLEAD_PORT ?? "9876", 10),
 		dbPath: process.env.TEAMLEAD_DB_PATH ?? join(homedir(), ".flywheel", "teamlead.db"),
-		ownsSlack,
-		slackBotToken: process.env.SLACK_BOT_TOKEN,
-		slackAppToken: process.env.SLACK_APP_TOKEN,
-		slackChannelId: process.env.FLYWHEEL_SLACK_CHANNEL,
+		ingestToken: process.env.TEAMLEAD_INGEST_TOKEN,
+		apiToken: process.env.TEAMLEAD_API_TOKEN,
+		gatewayUrl: process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789",
+		hooksToken: process.env.OPENCLAW_HOOKS_TOKEN,
 		stuckThresholdMinutes: parseInt(process.env.TEAMLEAD_STUCK_THRESHOLD ?? "15", 10),
 		stuckCheckIntervalMs: parseInt(process.env.TEAMLEAD_STUCK_INTERVAL ?? "300000", 10),
 	};
