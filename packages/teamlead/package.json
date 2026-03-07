@@ -1,7 +1,7 @@
 {
 	"name": "flywheel-teamlead",
-	"version": "0.4.0",
-	"description": "TeamLead daemon — event pipeline, Socket Mode Slack, template notifications",
+	"version": "0.5.0",
+	"description": "Flywheel bridge — REST API for OpenClaw agent integration",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
@@ -16,7 +16,6 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@slack/bolt": "^4.1.0",
 		"express": "^5.2.1",
 		"flywheel-core": "workspace:*",
 		"flywheel-edge-worker": "workspace:*",

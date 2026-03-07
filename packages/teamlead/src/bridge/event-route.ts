@@ -170,6 +170,8 @@ export function createEventRouter(
 				status: "failed",
 				last_activity_at: now,
 				last_error: payload.error as string | undefined,
+				issue_identifier: payload.issueIdentifier as string | undefined,
+				issue_title: payload.issueTitle as string | undefined,
 			});
 		}
 
