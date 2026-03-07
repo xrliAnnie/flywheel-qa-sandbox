@@ -22,6 +22,9 @@ Rules:
 
 const SUMMARY_MAX_LENGTH = 200;
 const REASONING_MAX_LENGTH = 200;
+const ERROR_MAX_LENGTH = 200;
+const TITLE_MAX_LENGTH = 50;
+const ERROR_INLINE_MAX_LENGTH = 80;
 const MAX_CHANGED_FILES = 10;
 const MAX_HISTORY_ENTRIES = 5;
 
@@ -38,16 +41,22 @@ function truncate(text: string, maxLen: number): string {
 	return text.slice(0, maxLen) + "...";
 }
 
+function getDisplayId(session: Session): string {
+	return session.issue_identifier ?? session.issue_id;
+}
+
+function formatDiffInfo(session: Session): string {
+	if (session.lines_added == null || session.lines_removed == null) return "";
+	return ` (+${session.lines_added}/-${session.lines_removed})`;
+}
+
 function formatSessionLine(session: Session): string {
-	const id = session.issue_identifier ?? session.issue_id;
-	const title = session.issue_title ? escapeXml(truncate(session.issue_title, 50)) : "untitled";
+	const id = getDisplayId(session);
+	const title = session.issue_title ? escapeXml(truncate(session.issue_title, TITLE_MAX_LENGTH)) : "untitled";
 	const parts = [`- ${escapeXml(id)}: ${session.status} | "${title}"`];
 
 	if (session.commit_count != null && session.files_changed != null) {
-		const diffInfo = session.lines_added != null && session.lines_removed != null
-			? ` (+${session.lines_added}/-${session.lines_removed})`
-			: "";
-		parts.push(`${session.commit_count} commits, ${session.files_changed} files${diffInfo}`);
+		parts.push(`${session.commit_count} commits, ${session.files_changed} files${formatDiffInfo(session)}`);
 	}
 
 	if (session.decision_route) {
@@ -55,7 +64,7 @@ function formatSessionLine(session: Session): string {
 	}
 
 	if (session.last_error) {
-		parts.push(`error: ${escapeXml(truncate(session.last_error, 80))}`);
+		parts.push(`error: ${escapeXml(truncate(session.last_error, ERROR_INLINE_MAX_LENGTH))}`);
 	}
 
 	return parts.join(" | ");
@@ -70,7 +79,7 @@ export function buildAgentStatus(sessions: Session[]): string {
 }
 
 export function buildIssueDetail(session: Session): string {
-	const id = session.issue_identifier ?? session.issue_id;
+	const id = getDisplayId(session);
 	const lines: string[] = [];
 	lines.push(`<issue_detail issue="${escapeXml(id)}">`);
 	lines.push(`Status: ${session.status}`);
@@ -81,10 +90,7 @@ export function buildIssueDetail(session: Session): string {
 		lines.push(`Summary: ${escapeXml(truncate(session.summary, SUMMARY_MAX_LENGTH))}`);
 	}
 	if (session.commit_count != null && session.files_changed != null) {
-		const diffInfo = session.lines_added != null && session.lines_removed != null
-			? ` (+${session.lines_added}/-${session.lines_removed})`
-			: "";
-		lines.push(`Commits: ${session.commit_count} | Files: ${session.files_changed}${diffInfo}`);
+		lines.push(`Commits: ${session.commit_count} | Files: ${session.files_changed}${formatDiffInfo(session)}`);
 	}
 	if (session.decision_route) {
 		lines.push(`Decision: ${session.decision_route}`);
@@ -93,7 +99,7 @@ export function buildIssueDetail(session: Session): string {
 		lines.push(`Reasoning: ${escapeXml(truncate(session.decision_reasoning, REASONING_MAX_LENGTH))}`);
 	}
 	if (session.last_error) {
-		lines.push(`Error: ${escapeXml(truncate(session.last_error, 200))}`);
+		lines.push(`Error: ${escapeXml(truncate(session.last_error, ERROR_MAX_LENGTH))}`);
 	}
 	if (session.changed_file_paths) {
 		const files = session.changed_file_paths.split("\n").slice(0, MAX_CHANGED_FILES);
@@ -105,11 +111,11 @@ export function buildIssueDetail(session: Session): string {
 
 export function buildIssueHistory(history: Session[]): string {
 	if (history.length === 0) return "";
-	const id = history[0]!.issue_identifier ?? history[0]!.issue_id;
+	const id = getDisplayId(history[0]!);
 	const entries = history.slice(0, MAX_HISTORY_ENTRIES).map((s, i) => {
 		const parts = [`- Execution ${i + 1}: ${s.status}`];
 		if (s.last_error) {
-			parts.push(`error: "${escapeXml(truncate(s.last_error, 80))}"`);
+			parts.push(`error: "${escapeXml(truncate(s.last_error, ERROR_INLINE_MAX_LENGTH))}"`);
 		}
 		if (s.commit_count != null && s.files_changed != null) {
 			parts.push(`${s.commit_count} commits, ${s.files_changed} files`);

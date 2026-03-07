@@ -378,11 +378,11 @@ export class StateStore {
 		return rows;
 	}
 
-	getSessionHistory(issueId: string): Session[] {
+	getSessionHistory(issueId: string, limit = 20): Session[] {
 		const stmt = this.db.prepare(
-			"SELECT * FROM sessions WHERE issue_id = ? ORDER BY started_at ASC",
+			"SELECT * FROM sessions WHERE issue_id = ? ORDER BY started_at ASC LIMIT ?",
 		);
-		stmt.bind([issueId]);
+		stmt.bind([issueId, limit]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
 			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));

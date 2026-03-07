@@ -41,18 +41,19 @@ export class TeamLeadBrain {
 
 		// 3. Load context from StateStore
 		const activeSessions = this.store.getRecentSessions(20);
-		const focusSession = focusIssueId
-			? this.store.getSessionByIssue(focusIssueId)
-			: undefined;
 		const issueHistory = focusIssueId
-			? this.store.getSessionHistory(focusIssueId)
+			? this.store.getSessionHistory(focusIssueId, 5)
+			: undefined;
+		// Use the most recent session from history as focus (avoids extra DB query)
+		const focusSession = issueHistory?.length
+			? issueHistory[issueHistory.length - 1]
 			: undefined;
 
 		// 4. Assemble prompt
 		const prompt = this.assembler.assemble(
 			question,
 			activeSessions,
-			focusSession ?? undefined,
+			focusSession,
 			issueHistory,
 		);
 
