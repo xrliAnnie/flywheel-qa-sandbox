@@ -30,19 +30,25 @@ export class TeamLeadBrain {
 	}
 
 	async answer(question: string, threadTs?: string): Promise<string | null> {
-		// 1. Extract issue IDs from question
+		// 1. Extract issue identifiers from question (e.g., "GEO-95")
 		const issueIds = extractIssueIds(question);
-		let focusIssueId = issueIds[0];
+		let focusIdentifier = issueIds[0];
 
-		// 2. If threadTs, look up issue from conversation_threads
-		if (!focusIssueId && threadTs) {
-			focusIssueId = this.store.getThreadIssue(threadTs) ?? undefined;
+		// 2. If threadTs, look up issue_id from conversation_threads, then resolve identifier
+		if (!focusIdentifier && threadTs) {
+			const threadIssueId = this.store.getThreadIssue(threadTs);
+			if (threadIssueId) {
+				// Thread stores issue_id (UUID); look up the session to get its identifier
+				const session = this.store.getSessionByIssue(threadIssueId);
+				focusIdentifier = session?.issue_identifier;
+			}
 		}
 
 		// 3. Load context from StateStore
+		// CEO mentions identifiers like "GEO-95", which map to issue_identifier (not issue_id UUID)
 		const activeSessions = this.store.getRecentSessions(20);
-		const issueHistory = focusIssueId
-			? this.store.getSessionHistory(focusIssueId, 5)
+		const issueHistory = focusIdentifier
+			? this.store.getSessionHistoryByIdentifier(focusIdentifier, 5)
 			: undefined;
 		// Use the most recent session from history as focus (avoids extra DB query)
 		const focusSession = issueHistory?.length

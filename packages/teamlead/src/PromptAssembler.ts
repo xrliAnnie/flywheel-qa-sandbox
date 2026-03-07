@@ -150,7 +150,7 @@ export class PromptAssembler {
 			}
 		}
 
-		const userContent = `${contextParts.join("\n\n")}\n\nCEO's question: ${question}`;
+		const userContent = `${contextParts.join("\n\n")}\n\nCEO's question: ${escapeXml(question)}`;
 
 		return {
 			system: SYSTEM_PROMPT,

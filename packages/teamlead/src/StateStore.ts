@@ -379,10 +379,43 @@ export class StateStore {
 	}
 
 	getSessionHistory(issueId: string, limit = 20): Session[] {
+		// Subquery gets most recent N sessions, outer query orders them chronologically
 		const stmt = this.db.prepare(
-			"SELECT * FROM sessions WHERE issue_id = ? ORDER BY started_at ASC LIMIT ?",
+			`SELECT * FROM (
+				SELECT * FROM sessions WHERE issue_id = ? ORDER BY started_at DESC LIMIT ?
+			) ORDER BY started_at ASC`,
 		);
 		stmt.bind([issueId, limit]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+		}
+		stmt.free();
+		return rows;
+	}
+
+	getSessionByIdentifier(identifier: string): Session | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE issue_identifier = ? ORDER BY last_activity_at DESC LIMIT 1",
+		);
+		stmt.bind([identifier]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			return this.rowToSession(row);
+		}
+		stmt.free();
+		return undefined;
+	}
+
+	getSessionHistoryByIdentifier(identifier: string, limit = 20): Session[] {
+		// Subquery gets most recent N sessions, outer query orders them chronologically
+		const stmt = this.db.prepare(
+			`SELECT * FROM (
+				SELECT * FROM sessions WHERE issue_identifier = ? ORDER BY started_at DESC LIMIT ?
+			) ORDER BY started_at ASC`,
+		);
+		stmt.bind([identifier, limit]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
 			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));

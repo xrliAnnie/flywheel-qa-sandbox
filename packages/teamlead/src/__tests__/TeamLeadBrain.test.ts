@@ -3,26 +3,8 @@ import { TeamLeadBrain } from "../TeamLeadBrain.js";
 import { StateStore } from "../StateStore.js";
 import type { Session } from "../StateStore.js";
 
-function makeSession(overrides: Partial<Session> = {}): Session {
-	return {
-		execution_id: "exec-1",
-		issue_id: "GEO-95",
-		project_name: "geoforge3d",
-		status: "running",
-		issue_identifier: "GEO-95",
-		issue_title: "Refactor auth middleware",
-		started_at: "2024-01-01 10:00:00",
-		last_activity_at: "2024-01-01 10:30:00",
-		commit_count: 3,
-		files_changed: 6,
-		lines_added: 120,
-		lines_removed: 45,
-		summary: "Refactored JWT verification",
-		decision_route: "needs_review",
-		decision_reasoning: "Auth changes need human review",
-		...overrides,
-	};
-}
+// In production: issue_id is a UUID from Linear, issue_identifier is "GEO-95"
+const ISSUE_UUID = "abc12345-def6-7890-abcd-ef1234567890";
 
 function mockAnthropicClient(responseText: string) {
 	return {
@@ -41,10 +23,10 @@ describe("TeamLeadBrain", () => {
 		store = await StateStore.create(":memory:");
 	});
 
-	it("answer with issue ID loads focus session + history", async () => {
+	it("answer with issue identifier loads focus session + history", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
-			issue_id: "GEO-95",
+			issue_id: ISSUE_UUID,
 			project_name: "geoforge3d",
 			status: "awaiting_review",
 			issue_identifier: "GEO-95",
@@ -75,14 +57,15 @@ describe("TeamLeadBrain", () => {
 	it("answer in known thread loads issue context from thread", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
-			issue_id: "GEO-95",
+			issue_id: ISSUE_UUID,
 			project_name: "geoforge3d",
 			status: "running",
 			issue_identifier: "GEO-95",
 			started_at: "2024-01-01 10:00:00",
 			last_activity_at: "2024-01-01 10:30:00",
 		});
-		store.upsertThread("1111.2222", "C07XXX", "GEO-95");
+		// Thread stores issue_id (UUID), not identifier
+		store.upsertThread("1111.2222", "C07XXX", ISSUE_UUID);
 
 		const client = mockAnthropicClient("GEO-95 is still running.");
 		const brain = new TeamLeadBrain(
@@ -102,7 +85,7 @@ describe("TeamLeadBrain", () => {
 	it("answer without issue ID loads only active sessions", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
-			issue_id: "GEO-95",
+			issue_id: ISSUE_UUID,
 			project_name: "geoforge3d",
 			status: "running",
 			last_activity_at: "2024-01-01 10:30:00",

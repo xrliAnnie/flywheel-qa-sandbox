@@ -208,4 +208,80 @@ describe("StateStore", () => {
 		const threadTs = store.getThreadForIssue("GEO-95");
 		expect(threadTs).toBe("1111.2222");
 	});
+
+	// --- Identifier-based queries (Codex fix) ---
+
+	it("getSessionByIdentifier returns most recent session matching issue_identifier", () => {
+		store.upsertSession(makeSession({
+			execution_id: "e1",
+			issue_id: "uuid-111",
+			issue_identifier: "GEO-95",
+			status: "failed",
+			last_activity_at: "2024-01-01 10:00:00",
+		}));
+		store.upsertSession(makeSession({
+			execution_id: "e2",
+			issue_id: "uuid-111",
+			issue_identifier: "GEO-95",
+			status: "running",
+			last_activity_at: "2024-01-01 12:00:00",
+		}));
+
+		const session = store.getSessionByIdentifier("GEO-95");
+		expect(session).toBeDefined();
+		expect(session!.execution_id).toBe("e2"); // most recent
+	});
+
+	it("getSessionByIdentifier returns undefined for unknown identifier", () => {
+		expect(store.getSessionByIdentifier("NOPE-999")).toBeUndefined();
+	});
+
+	it("getSessionHistoryByIdentifier returns sessions in chronological order", () => {
+		store.upsertSession(makeSession({
+			execution_id: "e1",
+			issue_id: "uuid-111",
+			issue_identifier: "GEO-95",
+			status: "failed",
+			started_at: "2024-01-01 12:00:00",
+		}));
+		store.upsertSession(makeSession({
+			execution_id: "e2",
+			issue_id: "uuid-111",
+			issue_identifier: "GEO-95",
+			status: "running",
+			started_at: "2024-01-01 10:00:00",
+		}));
+		store.upsertSession(makeSession({
+			execution_id: "other",
+			issue_id: "uuid-222",
+			issue_identifier: "GEO-96",
+			status: "running",
+			started_at: "2024-01-01 11:00:00",
+		}));
+
+		const history = store.getSessionHistoryByIdentifier("GEO-95");
+		expect(history).toHaveLength(2);
+		// Chronological order (ASC) — e2 started earlier
+		expect(history[0]!.execution_id).toBe("e2");
+		expect(history[1]!.execution_id).toBe("e1");
+	});
+
+	it("getSessionHistoryByIdentifier respects limit (most recent N)", () => {
+		for (let i = 0; i < 5; i++) {
+			store.upsertSession(makeSession({
+				execution_id: `e${i}`,
+				issue_id: "uuid-111",
+				issue_identifier: "GEO-95",
+				status: "completed",
+				started_at: `2024-01-0${i + 1} 10:00:00`,
+			}));
+		}
+
+		const history = store.getSessionHistoryByIdentifier("GEO-95", 3);
+		expect(history).toHaveLength(3);
+		// Most recent 3 in chronological order: e2, e3, e4
+		expect(history[0]!.execution_id).toBe("e2");
+		expect(history[1]!.execution_id).toBe("e3");
+		expect(history[2]!.execution_id).toBe("e4");
+	});
 });
