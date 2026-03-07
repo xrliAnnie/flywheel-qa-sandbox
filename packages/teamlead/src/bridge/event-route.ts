@@ -19,7 +19,10 @@ function formatNotification(session: Session, eventType: string): string {
 	switch (eventType) {
 		case "session_completed":
 			if (session.decision_route === "auto_approve") {
-				return `[Auto-merged] ${id}: ${session.issue_title ?? ""}. ${session.commit_count ?? 0} commits. PR automatically merged by bridge.`;
+				if (session.status === "approved") {
+					return `[Auto-merged] ${id}: ${session.issue_title ?? ""}. ${session.commit_count ?? 0} commits. PR automatically merged by bridge.`;
+				}
+				return `[Auto-merge Failed] ${id}: ${session.issue_title ?? ""}. Merge failed — manual review required.`;
 			}
 			if (session.decision_route === "needs_review") {
 				return `[Review Required] ${id}: ${session.issue_title ?? ""}. ${session.commit_count ?? 0} commits, +${session.lines_added ?? 0}/-${session.lines_removed ?? 0} lines. Please review.`;
@@ -45,7 +48,7 @@ async function notifyAgent(
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 3000);
 	try {
-		await fetch(`${gatewayUrl}/hooks/agent`, {
+		const res = await fetch(`${gatewayUrl}/hooks/agent`, {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${hooksToken}`,
@@ -54,6 +57,9 @@ async function notifyAgent(
 			body: JSON.stringify({ agentId: "product-lead", message }),
 			signal: controller.signal,
 		});
+		if (!res.ok) {
+			console.warn(`[notify] Gateway returned ${res.status}`);
+		}
 	} catch (err) {
 		console.warn("[notify] Failed to push to OpenClaw gateway:", (err as Error).message);
 	} finally {
@@ -156,6 +162,15 @@ export function createEventRouter(
 				const result = await approveExecution(store, projects, event.execution_id);
 				if (!result.success) {
 					console.warn(`[event-route] Auto-approve failed for ${event.execution_id}: ${result.message}`);
+					// Persist failure so notification and status reflect reality
+					store.upsertSession({
+						execution_id: event.execution_id,
+						issue_id: event.issue_id,
+						project_name: event.project_name,
+						status: "awaiting_review",
+						last_activity_at: sqliteDatetime(),
+						last_error: `Auto-merge failed: ${result.message}`,
+					});
 				}
 			}
 		} else if (event.event_type === "session_failed") {
