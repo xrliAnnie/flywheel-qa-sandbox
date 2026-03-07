@@ -61,7 +61,7 @@ export class TeamLeadBrain {
 		// 3. Load context from StateStore
 		// Use truly active sessions for <agent_status> (running + awaiting_review).
 		// Completed/failed sessions are available via <issue_history> when a specific issue is focused.
-		const activeSessions = this.store.getActiveSessions();
+		const activeSessions = this.store.getActiveSessions().slice(0, 20);
 		const issueHistory = focusIdentifier
 			? this.store.getSessionHistoryByIdentifier(focusIdentifier, 5)
 			: focusIssueId
