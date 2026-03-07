@@ -17,13 +17,15 @@
 	},
 	"dependencies": {
 		"@slack/bolt": "^4.1.0",
-		"sql.js": "^1.14.1",
+		"express": "^5.2.1",
 		"flywheel-core": "workspace:*",
-		"flywheel-edge-worker": "workspace:*"
+		"flywheel-edge-worker": "workspace:*",
+		"sql.js": "^1.14.1"
 	},
 	"devDependencies": {
-		"@types/sql.js": "^1.4.9",
+		"@types/express": "^5.0.6",
 		"@types/node": "^20.0.0",
+		"@types/sql.js": "^1.4.9",
 		"typescript": "^5.3.3",
 		"vitest": "^3.1.4"
 	}
