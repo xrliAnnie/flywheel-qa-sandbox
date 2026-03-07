@@ -4,6 +4,14 @@ import { parseActionId } from "flywheel-edge-worker";
 
 export interface SlackBotDeps {
 	reactionsDispatch: (action: SlackAction) => Promise<ActionResult>;
+	onMessage?: (question: string, threadTs?: string) => Promise<string | null>;
+	getThreadIssue?: (threadTs: string) => string | undefined;
+	allowedUserIds?: string[];
+	allowAllUsers?: boolean;
+}
+
+export function stripBotMention(text: string, botUserId: string): string {
+	return text.replace(new RegExp(`<@${botUserId}>`, "g"), "").trim();
 }
 
 /**
@@ -12,6 +20,7 @@ export interface SlackBotDeps {
  */
 export class SlackBot {
 	private app: App;
+	private botUserId = "";
 
 	constructor(
 		botToken: string,
@@ -38,10 +47,63 @@ export class SlackBot {
 				});
 			}
 		});
+
+		// @mention handler — responds when CEO @mentions the bot
+		this.app.event("app_mention", async ({ event, say }) => {
+			if (!this.deps.onMessage) return;
+			if (!this.isAllowedUser(event.user)) return;
+			if (event.channel !== this.channelId) return;
+
+			const question = stripBotMention(event.text ?? "", this.botUserId);
+			if (!question.trim()) return;
+
+			const threadTs = event.thread_ts ?? event.ts;
+			const response = await this.deps.onMessage(question, threadTs);
+			if (response) {
+				await say({ text: response, thread_ts: threadTs });
+			}
+		});
+
+		// Thread message handler — responds in known notification threads
+		this.app.message(async ({ message, say }) => {
+			if (!this.deps.onMessage || !this.deps.getThreadIssue) return;
+
+			const msg = message as any;
+			if (msg.subtype || msg.bot_id) return;
+			if (!msg.thread_ts) return;
+			if (!this.isAllowedUser(msg.user)) return;
+			if (msg.channel !== this.channelId) return;
+
+			// Skip messages that mention THIS bot — app_mention handler covers those
+			if (msg.text?.includes(`<@${this.botUserId}>`)) return;
+
+			// Only respond in known threads (created by TemplateNotifier)
+			const issueId = this.deps.getThreadIssue(msg.thread_ts);
+			if (!issueId) return;
+
+			const response = await this.deps.onMessage(msg.text ?? "", msg.thread_ts);
+			if (response) {
+				await say({ text: response, thread_ts: msg.thread_ts });
+			}
+		});
+	}
+
+	private isAllowedUser(userId: string | undefined): boolean {
+		if (!userId) return false;
+		if (this.deps.allowAllUsers) return true;
+		if (!this.deps.allowedUserIds?.length) return false;
+		return this.deps.allowedUserIds.includes(userId);
 	}
 
 	async start(): Promise<void> {
 		await this.app.start();
+		// Cache bot user ID for stripBotMention
+		try {
+			const authResult = await this.app.client.auth.test();
+			this.botUserId = (authResult.user_id as string) ?? "";
+		} catch {
+			console.warn("[SlackBot] Could not retrieve bot user ID");
+		}
 	}
 
 	async stop(): Promise<void> {

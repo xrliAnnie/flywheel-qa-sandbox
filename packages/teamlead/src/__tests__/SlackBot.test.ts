@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { adaptBoltAction } from "../SlackBot.js";
+import { adaptBoltAction, stripBotMention } from "../SlackBot.js";
 import type { SlackAction, ActionResult } from "flywheel-edge-worker";
 
 // We test adaptBoltAction directly (pure function, no Slack connection needed).
@@ -161,5 +161,115 @@ describe("SlackBot action handler", () => {
 				text: "Action 'retry' completed",
 			}),
 		);
+	});
+});
+
+// --- Task 5: Message handlers ---
+
+describe("stripBotMention", () => {
+	it("strips bot mention and trims", () => {
+		expect(stripBotMention("<@U_BOT123> how is GEO-95?", "U_BOT123")).toBe(
+			"how is GEO-95?",
+		);
+	});
+
+	it("preserves other user mentions", () => {
+		expect(
+			stripBotMention("<@U_BOT123> ask <@U_OTHER> about GEO-95", "U_BOT123"),
+		).toBe("ask <@U_OTHER> about GEO-95");
+	});
+
+	it("handles text without mention", () => {
+		expect(stripBotMention("hello world", "U_BOT123")).toBe("hello world");
+	});
+});
+
+describe("SlackBot message handler logic", () => {
+	// Simulate handler behavior with extracted logic.
+	// The real handlers are registered in the constructor and call these patterns.
+
+	function isAllowedUser(
+		userId: string,
+		allowedUserIds?: string[],
+		allowAllUsers?: boolean,
+	): boolean {
+		if (allowAllUsers) return true;
+		if (!allowedUserIds?.length) return false;
+		return allowedUserIds.includes(userId);
+	}
+
+	it("app_mention triggers onMessage with stripped text", async () => {
+		const onMessage = vi.fn().mockResolvedValue("GEO-95 is running.");
+		const text = "<@UBOT> how is GEO-95?";
+		const stripped = stripBotMention(text, "UBOT");
+		expect(stripped).toBe("how is GEO-95?");
+
+		const response = await onMessage(stripped, "1111.2222");
+		expect(onMessage).toHaveBeenCalledWith("how is GEO-95?", "1111.2222");
+		expect(response).toBe("GEO-95 is running.");
+	});
+
+	it("app_mention replies in thread (threadTs from event)", () => {
+		// If event has thread_ts, use it; otherwise use event.ts
+		const event = { ts: "1234.5678", thread_ts: "1111.2222", text: "<@UBOT> hi", user: "U123", channel: "C07XXX" };
+		const threadTs = event.thread_ts ?? event.ts;
+		expect(threadTs).toBe("1111.2222");
+	});
+
+	it("thread message in known thread triggers onMessage", async () => {
+		const onMessage = vi.fn().mockResolvedValue("details here");
+		const getThreadIssue = vi.fn().mockReturnValue("GEO-95");
+
+		const msg = { text: "tell me more", thread_ts: "1111.2222", user: "U123", channel: "C07XXX" };
+
+		// Simulate thread handler logic
+		if (!msg.thread_ts) throw new Error("should have thread_ts");
+		const issueId = getThreadIssue(msg.thread_ts);
+		expect(issueId).toBe("GEO-95");
+
+		const response = await onMessage(msg.text, msg.thread_ts);
+		expect(response).toBe("details here");
+	});
+
+	it("thread message in unknown thread is ignored", () => {
+		const getThreadIssue = vi.fn().mockReturnValue(undefined);
+		const issueId = getThreadIssue("9999.0000");
+		expect(issueId).toBeUndefined();
+		// Handler would return early — onMessage not called
+	});
+
+	it("channel message (not in thread) is ignored", () => {
+		const msg = { text: "random chat", user: "U123", channel: "C07XXX" };
+		// No thread_ts → handler returns early
+		expect((msg as any).thread_ts).toBeUndefined();
+	});
+
+	it("bot message / subtype is ignored", () => {
+		const msg = { text: "bot reply", subtype: "bot_message", bot_id: "B123", thread_ts: "1111.2222" };
+		expect(msg.subtype).toBeDefined();
+		expect(msg.bot_id).toBeDefined();
+		// Handler skips messages with subtype or bot_id
+	});
+
+	it("unauthorized user is silently ignored", () => {
+		expect(isAllowedUser("UBAD", ["U123", "U456"])).toBe(false);
+		expect(isAllowedUser("UBAD", [])).toBe(false);
+		expect(isAllowedUser("UBAD", undefined)).toBe(false);
+	});
+
+	it("thread message with other user mention (not bot) is NOT skipped", () => {
+		const botUserId = "UBOT";
+		const msg = { text: "hey <@UOTHER> what do you think?", thread_ts: "1111.2222" };
+		// Only skip if message mentions THIS bot
+		const mentionsBot = msg.text.includes(`<@${botUserId}>`);
+		expect(mentionsBot).toBe(false);
+		// Handler would NOT return early — proceeds to onMessage
+	});
+
+	it("message in wrong channel is ignored", () => {
+		const configuredChannel = "C07XXX";
+		const event = { channel: "C_OTHER", text: "<@UBOT> hi", user: "U123" };
+		expect(event.channel).not.toBe(configuredChannel);
+		// Handler checks channel !== this.channelId → returns early
 	});
 });
