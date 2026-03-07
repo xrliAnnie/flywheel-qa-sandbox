@@ -10,6 +10,11 @@ export interface TeamLeadConfig {
 	slackChannelId?: string;
 	stuckThresholdMinutes: number;
 	stuckCheckIntervalMs: number;
+	anthropicApiKey?: string;
+	llmModel: string;
+	llmMaxTokens: number;
+	allowedUserIds: string[];
+	allowAllUsers: boolean;
 }
 
 export function loadConfig(): TeamLeadConfig {
@@ -27,7 +32,7 @@ export function loadConfig(): TeamLeadConfig {
 		}
 	}
 
-	return {
+	const config: TeamLeadConfig = {
 		port: parseInt(process.env.TEAMLEAD_PORT ?? "9876", 10),
 		dbPath: process.env.TEAMLEAD_DB_PATH ?? join(homedir(), ".flywheel", "teamlead.db"),
 		ownsSlack,
@@ -36,5 +41,21 @@ export function loadConfig(): TeamLeadConfig {
 		slackChannelId: process.env.FLYWHEEL_SLACK_CHANNEL,
 		stuckThresholdMinutes: parseInt(process.env.TEAMLEAD_STUCK_THRESHOLD ?? "15", 10),
 		stuckCheckIntervalMs: parseInt(process.env.TEAMLEAD_STUCK_INTERVAL ?? "300000", 10),
+		anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+		llmModel: process.env.TEAMLEAD_LLM_MODEL ?? "claude-sonnet-4-5-20250514",
+		llmMaxTokens: parseInt(process.env.TEAMLEAD_LLM_MAX_TOKENS ?? "1024", 10),
+		allowedUserIds: process.env.TEAMLEAD_ALLOWED_USER_IDS
+			? process.env.TEAMLEAD_ALLOWED_USER_IDS.split(",").map((s) => s.trim()).filter(Boolean)
+			: [],
+		allowAllUsers: process.env.TEAMLEAD_ALLOW_ALL_USERS === "true",
 	};
+
+	// Secure-by-default: when brain + Slack both enabled, require access control
+	if (config.ownsSlack && config.anthropicApiKey && !config.allowAllUsers && config.allowedUserIds.length === 0) {
+		throw new Error(
+			"Brain Q&A requires TEAMLEAD_ALLOWED_USER_IDS or TEAMLEAD_ALLOW_ALL_USERS=true",
+		);
+	}
+
+	return config;
 }
