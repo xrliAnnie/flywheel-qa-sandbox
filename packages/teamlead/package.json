@@ -16,6 +16,7 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
+		"@anthropic-ai/sdk": "^0.77.0",
 		"@slack/bolt": "^4.1.0",
 		"sql.js": "^1.14.1",
 		"flywheel-core": "workspace:*",
