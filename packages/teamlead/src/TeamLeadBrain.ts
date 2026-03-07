@@ -43,21 +43,29 @@ export class TeamLeadBrain {
 		}
 
 		// 2. If no valid identifier in question and we're in a known thread, use thread context
+		let focusIssueId: string | undefined;
 		if (!focusIdentifier && threadTs) {
 			const threadIssueId = this.store.getThreadIssue(threadTs);
 			if (threadIssueId) {
 				// Thread stores issue_id (UUID); look up the session to get its identifier
 				const session = this.store.getSessionByIssue(threadIssueId);
-				focusIdentifier = session?.issue_identifier;
+				if (session?.issue_identifier) {
+					focusIdentifier = session.issue_identifier;
+				} else {
+					// Fallback: session exists but has no identifier (e.g., only session_failed received)
+					focusIssueId = threadIssueId;
+				}
 			}
 		}
 
 		// 3. Load context from StateStore
-		// CEO mentions identifiers like "GEO-95", which map to issue_identifier (not issue_id UUID)
+		// Prefer identifier-based queries; fall back to issue_id if identifier unavailable
 		const activeSessions = this.store.getRecentSessions(20);
 		const issueHistory = focusIdentifier
 			? this.store.getSessionHistoryByIdentifier(focusIdentifier, 5)
-			: undefined;
+			: focusIssueId
+				? this.store.getSessionHistory(focusIssueId, 5)
+				: undefined;
 		// Use the most recent session from history as focus (avoids extra DB query)
 		const focusSession = issueHistory?.length
 			? issueHistory[issueHistory.length - 1]

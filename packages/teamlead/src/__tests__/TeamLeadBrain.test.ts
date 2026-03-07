@@ -159,6 +159,35 @@ describe("TeamLeadBrain", () => {
 		expect(result).toContain("rate-limited");
 	});
 
+	it("answer falls back to issue_id when thread session has no issue_identifier", async () => {
+		// Session without issue_identifier (e.g., only session_failed received)
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: ISSUE_UUID,
+			project_name: "geoforge3d",
+			status: "failed",
+			started_at: "2024-01-01 10:00:00",
+			last_activity_at: "2024-01-01 10:30:00",
+			last_error: "build failed",
+		});
+		store.upsertThread("1111.2222", "C07XXX", ISSUE_UUID);
+
+		const client = mockAnthropicClient("The session failed.");
+		const brain = new TeamLeadBrain(
+			{ model: "claude-sonnet-4-5-20250514", maxTokens: 1024 },
+			store,
+			"test-key",
+			client,
+		);
+
+		const result = await brain.answer("what happened?", "1111.2222");
+		expect(result).toBe("The session failed.");
+
+		// Should still get issue_detail via issue_id fallback
+		const call = client.messages.create.mock.calls[0]![0];
+		expect(call.messages[0].content).toContain("<issue_detail");
+	});
+
 	it("answer ignores false-positive regex matches (e.g., model names) in thread context", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
