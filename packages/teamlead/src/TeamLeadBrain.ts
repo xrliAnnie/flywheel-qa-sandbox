@@ -59,8 +59,9 @@ export class TeamLeadBrain {
 		}
 
 		// 3. Load context from StateStore
-		// Prefer identifier-based queries; fall back to issue_id if identifier unavailable
-		const activeSessions = this.store.getRecentSessions(20);
+		// Use truly active sessions for <agent_status> (running + awaiting_review).
+		// Completed/failed sessions are available via <issue_history> when a specific issue is focused.
+		const activeSessions = this.store.getActiveSessions();
 		const issueHistory = focusIdentifier
 			? this.store.getSessionHistoryByIdentifier(focusIdentifier, 5)
 			: focusIssueId
