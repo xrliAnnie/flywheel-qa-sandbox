@@ -1,8 +1,11 @@
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { Router } from "express";
 import { ApproveHandler } from "flywheel-edge-worker";
 import type { ActionResult } from "flywheel-edge-worker";
 import type { StateStore } from "../StateStore.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import { sqliteDatetime } from "./types.js";
 
 type ExecFn = (
 	cmd: string,
@@ -10,17 +13,12 @@ type ExecFn = (
 	cwd: string,
 ) => Promise<{ stdout: string }>;
 
+const execFileAsync = promisify(execFile);
+
 const defaultExec: ExecFn = async (cmd, args, cwd) => {
-	const { execFile } = await import("node:child_process");
-	const { promisify } = await import("node:util");
-	const execFileAsync = promisify(execFile);
 	const result = await execFileAsync(cmd, args, { cwd, encoding: "utf-8" });
 	return { stdout: result.stdout };
 };
-
-function sqliteDatetime(): string {
-	return new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
-}
 
 export async function approveExecution(
 	store: StateStore,
