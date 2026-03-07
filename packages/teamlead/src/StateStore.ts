@@ -365,6 +365,46 @@ export class StateStore {
 		this.save();
 	}
 
+	getRecentSessions(limit = 20): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions ORDER BY last_activity_at DESC LIMIT ?",
+		);
+		stmt.bind([limit]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+		}
+		stmt.free();
+		return rows;
+	}
+
+	getSessionHistory(issueId: string): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE issue_id = ? ORDER BY started_at ASC",
+		);
+		stmt.bind([issueId]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+		}
+		stmt.free();
+		return rows;
+	}
+
+	getThreadForIssue(issueId: string): string | undefined {
+		const stmt = this.db.prepare(
+			"SELECT thread_ts FROM conversation_threads WHERE issue_id = ? ORDER BY last_updated DESC LIMIT 1",
+		);
+		stmt.bind([issueId]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			return row.thread_ts as string;
+		}
+		stmt.free();
+		return undefined;
+	}
+
 	getThreadIssue(threadTs: string): string | undefined {
 		const stmt = this.db.prepare("SELECT issue_id FROM conversation_threads WHERE thread_ts = ?");
 		stmt.bind([threadTs]);

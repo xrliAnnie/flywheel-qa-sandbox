@@ -129,4 +129,83 @@ describe("StateStore", () => {
 		store.upsertSession(makeSession({ status: "running" }));
 		expect(store.getSession("exec-1")!.status).toBe("completed");
 	});
+
+	// --- Task 2: Query Extensions ---
+
+	it("getRecentSessions returns sessions ordered by last_activity_at DESC", () => {
+		store.upsertSession(makeSession({
+			execution_id: "e1",
+			issue_id: "GEO-1",
+			status: "completed",
+			last_activity_at: "2024-01-01 10:00:00",
+		}));
+		store.upsertSession(makeSession({
+			execution_id: "e2",
+			issue_id: "GEO-2",
+			status: "running",
+			last_activity_at: "2024-01-01 12:00:00",
+		}));
+		store.upsertSession(makeSession({
+			execution_id: "e3",
+			issue_id: "GEO-3",
+			status: "failed",
+			last_activity_at: "2024-01-01 11:00:00",
+		}));
+
+		const sessions = store.getRecentSessions(10);
+		expect(sessions).toHaveLength(3);
+		expect(sessions[0]!.execution_id).toBe("e2"); // most recent
+		expect(sessions[1]!.execution_id).toBe("e3");
+		expect(sessions[2]!.execution_id).toBe("e1"); // oldest
+	});
+
+	it("getRecentSessions respects limit", () => {
+		for (let i = 0; i < 5; i++) {
+			store.upsertSession(makeSession({
+				execution_id: `e${i}`,
+				issue_id: `GEO-${i}`,
+				status: "running",
+				last_activity_at: `2024-01-01 ${10 + i}:00:00`,
+			}));
+		}
+		const sessions = store.getRecentSessions(3);
+		expect(sessions).toHaveLength(3);
+	});
+
+	it("getSessionHistory returns all sessions for an issue in chronological order", () => {
+		store.upsertSession(makeSession({
+			execution_id: "e1",
+			issue_id: "GEO-95",
+			status: "failed",
+			started_at: "2024-01-01 10:00:00",
+		}));
+		store.upsertSession(makeSession({
+			execution_id: "e2",
+			issue_id: "GEO-95",
+			status: "running",
+			started_at: "2024-01-01 12:00:00",
+		}));
+		store.upsertSession(makeSession({
+			execution_id: "other",
+			issue_id: "GEO-96",
+			status: "running",
+			started_at: "2024-01-01 11:00:00",
+		}));
+
+		const history = store.getSessionHistory("GEO-95");
+		expect(history).toHaveLength(2);
+		expect(history[0]!.execution_id).toBe("e1");
+		expect(history[1]!.execution_id).toBe("e2");
+	});
+
+	it("getSessionHistory returns empty array for unknown issue", () => {
+		const history = store.getSessionHistory("NOPE-999");
+		expect(history).toEqual([]);
+	});
+
+	it("getThreadForIssue returns thread_ts for known issue", () => {
+		store.upsertThread("1111.2222", "C07XXX", "GEO-95");
+		const threadTs = store.getThreadForIssue("GEO-95");
+		expect(threadTs).toBe("1111.2222");
+	});
 });
