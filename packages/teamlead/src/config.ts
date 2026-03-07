@@ -4,15 +4,22 @@ import type { BridgeConfig } from "./bridge/types.js";
 
 export type { BridgeConfig };
 
+const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
 export function loadConfig(): BridgeConfig {
 	const host = process.env.TEAMLEAD_HOST ?? "127.0.0.1";
-	if (host === "0.0.0.0") {
-		throw new Error("TEAMLEAD_HOST must not be 0.0.0.0 — use 127.0.0.1");
+	if (!ALLOWED_HOSTS.has(host)) {
+		throw new Error(`TEAMLEAD_HOST must be loopback (127.0.0.1, localhost, or ::1), got: ${host}`);
+	}
+
+	const port = parseInt(process.env.TEAMLEAD_PORT ?? "9876", 10);
+	if (!Number.isFinite(port) || port < 1 || port > 65535) {
+		throw new Error(`Invalid TEAMLEAD_PORT: ${process.env.TEAMLEAD_PORT}`);
 	}
 
 	return {
 		host,
-		port: parseInt(process.env.TEAMLEAD_PORT ?? "9876", 10),
+		port,
 		dbPath: process.env.TEAMLEAD_DB_PATH ?? join(homedir(), ".flywheel", "teamlead.db"),
 		ingestToken: process.env.TEAMLEAD_INGEST_TOKEN,
 		apiToken: process.env.TEAMLEAD_API_TOKEN,

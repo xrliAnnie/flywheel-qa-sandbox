@@ -65,7 +65,18 @@ describe("Bridge scaffold", () => {
 		const prev = process.env.TEAMLEAD_HOST;
 		process.env.TEAMLEAD_HOST = "0.0.0.0";
 		try {
-			expect(() => loadConfig()).toThrow("must not be 0.0.0.0");
+			expect(() => loadConfig()).toThrow("must be loopback");
+		} finally {
+			if (prev === undefined) delete process.env.TEAMLEAD_HOST;
+			else process.env.TEAMLEAD_HOST = prev;
+		}
+	});
+
+	it("loadConfig() rejects IPv6 all-interfaces (::)", () => {
+		const prev = process.env.TEAMLEAD_HOST;
+		process.env.TEAMLEAD_HOST = "::";
+		try {
+			expect(() => loadConfig()).toThrow("must be loopback");
 		} finally {
 			if (prev === undefined) delete process.env.TEAMLEAD_HOST;
 			else process.env.TEAMLEAD_HOST = prev;
