@@ -60,7 +60,7 @@ function formatSessionLine(session: Session): string {
 	}
 
 	if (session.decision_route) {
-		parts.push(session.decision_route);
+		parts.push(escapeXml(session.decision_route));
 	}
 
 	if (session.last_error) {
@@ -93,7 +93,7 @@ export function buildIssueDetail(session: Session): string {
 		lines.push(`Commits: ${session.commit_count} | Files: ${session.files_changed}${formatDiffInfo(session)}`);
 	}
 	if (session.decision_route) {
-		lines.push(`Decision: ${session.decision_route}`);
+		lines.push(`Decision: ${escapeXml(session.decision_route)}`);
 	}
 	if (session.decision_reasoning) {
 		lines.push(`Reasoning: ${escapeXml(truncate(session.decision_reasoning, REASONING_MAX_LENGTH))}`);
