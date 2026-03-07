@@ -379,11 +379,12 @@ export class StateStore {
 	}
 
 	getSessionHistory(issueId: string, limit = 20): Session[] {
-		// Subquery gets most recent N sessions, outer query orders them chronologically
+		// Subquery gets most recent N sessions, outer query orders them chronologically.
+		// COALESCE handles sessions where started_at is NULL (e.g., only session_failed received).
 		const stmt = this.db.prepare(
 			`SELECT * FROM (
-				SELECT * FROM sessions WHERE issue_id = ? ORDER BY started_at DESC LIMIT ?
-			) ORDER BY started_at ASC`,
+				SELECT * FROM sessions WHERE issue_id = ? ORDER BY COALESCE(started_at, last_activity_at) DESC LIMIT ?
+			) ORDER BY COALESCE(started_at, last_activity_at) ASC`,
 		);
 		stmt.bind([issueId, limit]);
 		const rows: Session[] = [];
@@ -409,11 +410,12 @@ export class StateStore {
 	}
 
 	getSessionHistoryByIdentifier(identifier: string, limit = 20): Session[] {
-		// Subquery gets most recent N sessions, outer query orders them chronologically
+		// Subquery gets most recent N sessions, outer query orders them chronologically.
+		// COALESCE handles sessions where started_at is NULL (e.g., only session_failed received).
 		const stmt = this.db.prepare(
 			`SELECT * FROM (
-				SELECT * FROM sessions WHERE issue_identifier = ? ORDER BY started_at DESC LIMIT ?
-			) ORDER BY started_at ASC`,
+				SELECT * FROM sessions WHERE issue_identifier = ? ORDER BY COALESCE(started_at, last_activity_at) DESC LIMIT ?
+			) ORDER BY COALESCE(started_at, last_activity_at) ASC`,
 		);
 		stmt.bind([identifier, limit]);
 		const rows: Session[] = [];

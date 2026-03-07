@@ -266,6 +266,32 @@ describe("StateStore", () => {
 		expect(history[1]!.execution_id).toBe("e1");
 	});
 
+	it("getSessionHistoryByIdentifier includes sessions with NULL started_at", () => {
+		// Session with started_at
+		store.upsertSession(makeSession({
+			execution_id: "e1",
+			issue_id: "uuid-111",
+			issue_identifier: "GEO-95",
+			status: "completed",
+			started_at: "2024-01-01 10:00:00",
+			last_activity_at: "2024-01-01 10:30:00",
+		}));
+		// Session without started_at (e.g., only session_failed received)
+		store.upsertSession(makeSession({
+			execution_id: "e2",
+			issue_id: "uuid-111",
+			issue_identifier: "GEO-95",
+			status: "failed",
+			last_activity_at: "2024-01-02 12:00:00",
+		}));
+
+		const history = store.getSessionHistoryByIdentifier("GEO-95");
+		expect(history).toHaveLength(2);
+		// e2 has no started_at but last_activity_at is later → should appear second
+		expect(history[0]!.execution_id).toBe("e1");
+		expect(history[1]!.execution_id).toBe("e2");
+	});
+
 	it("getSessionHistoryByIdentifier respects limit (most recent N)", () => {
 		for (let i = 0; i < 5; i++) {
 			store.upsertSession(makeSession({
