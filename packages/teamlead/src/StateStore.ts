@@ -291,6 +291,15 @@ export class StateStore {
 		this.save();
 	}
 
+	/** Force-update status, bypassing the monotonic terminal→running guard. Used by explicit user actions (retry). */
+	forceStatus(executionId: string, status: string, lastActivityAt: string, lastError?: string): void {
+		this.db.run(
+			`UPDATE sessions SET status = ?, last_activity_at = ?, last_error = ? WHERE execution_id = ?`,
+			[status, lastActivityAt, lastError ?? null, executionId],
+		);
+		this.save();
+	}
+
 	getSession(executionId: string): Session | undefined {
 		const stmt = this.db.prepare("SELECT * FROM sessions WHERE execution_id = ?");
 		stmt.bind([executionId]);
