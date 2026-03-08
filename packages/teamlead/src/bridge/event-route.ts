@@ -58,7 +58,7 @@ async function notifyAgent(
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 3000);
 	try {
-		const res = await fetch(`${gatewayUrl}/hooks/agent`, {
+		const res = await fetch(`${gatewayUrl}/hooks/ingest`, {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${hooksToken}`,
