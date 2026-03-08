@@ -6,6 +6,15 @@ export type { BridgeConfig };
 
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
+function parsePositiveInt(value: string | undefined, fallback: number, name: string): number {
+	if (value === undefined) return fallback;
+	const n = parseInt(value, 10);
+	if (!Number.isFinite(n) || n < 1) {
+		throw new Error(`Invalid ${name}: ${value} (must be a positive integer)`);
+	}
+	return n;
+}
+
 export function loadConfig(): BridgeConfig {
 	const host = process.env.TEAMLEAD_HOST ?? "127.0.0.1";
 	if (!ALLOWED_HOSTS.has(host)) {
@@ -25,7 +34,7 @@ export function loadConfig(): BridgeConfig {
 		apiToken: process.env.TEAMLEAD_API_TOKEN,
 		gatewayUrl: process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789",
 		hooksToken: process.env.OPENCLAW_HOOKS_TOKEN,
-		stuckThresholdMinutes: parseInt(process.env.TEAMLEAD_STUCK_THRESHOLD ?? "15", 10),
-		stuckCheckIntervalMs: parseInt(process.env.TEAMLEAD_STUCK_INTERVAL ?? "300000", 10),
+		stuckThresholdMinutes: parsePositiveInt(process.env.TEAMLEAD_STUCK_THRESHOLD, 15, "TEAMLEAD_STUCK_THRESHOLD"),
+		stuckCheckIntervalMs: parsePositiveInt(process.env.TEAMLEAD_STUCK_INTERVAL, 300_000, "TEAMLEAD_STUCK_INTERVAL"),
 	};
 }

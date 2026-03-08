@@ -94,6 +94,28 @@ describe("Bridge scaffold", () => {
 		}
 	});
 
+	it("loadConfig() rejects non-numeric TEAMLEAD_STUCK_THRESHOLD", () => {
+		const prev = process.env.TEAMLEAD_STUCK_THRESHOLD;
+		process.env.TEAMLEAD_STUCK_THRESHOLD = "abc";
+		try {
+			expect(() => loadConfig()).toThrow("TEAMLEAD_STUCK_THRESHOLD");
+		} finally {
+			if (prev === undefined) delete process.env.TEAMLEAD_STUCK_THRESHOLD;
+			else process.env.TEAMLEAD_STUCK_THRESHOLD = prev;
+		}
+	});
+
+	it("loadConfig() rejects non-numeric TEAMLEAD_STUCK_INTERVAL", () => {
+		const prev = process.env.TEAMLEAD_STUCK_INTERVAL;
+		process.env.TEAMLEAD_STUCK_INTERVAL = "0";
+		try {
+			expect(() => loadConfig()).toThrow("TEAMLEAD_STUCK_INTERVAL");
+		} finally {
+			if (prev === undefined) delete process.env.TEAMLEAD_STUCK_INTERVAL;
+			else process.env.TEAMLEAD_STUCK_INTERVAL = prev;
+		}
+	});
+
 	it("startBridge throws if projects is empty", async () => {
 		const config = makeConfig();
 		await expect(startBridge(config, [])).rejects.toThrow("No projects configured");
