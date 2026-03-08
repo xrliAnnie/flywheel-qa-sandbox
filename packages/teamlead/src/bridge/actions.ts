@@ -20,6 +20,23 @@ const defaultExec: ExecFn = async (cmd, args, cwd) => {
 	return { stdout: result.stdout };
 };
 
+/** Valid source statuses for each action */
+const ACTION_SOURCE_STATUS: Record<string, string[]> = {
+	approve: ["awaiting_review"],
+	reject: ["awaiting_review"],
+	defer: ["awaiting_review", "blocked"],
+	retry: ["failed", "blocked", "rejected"],
+	shelve: ["awaiting_review", "blocked", "failed", "rejected", "deferred"],
+};
+
+/** Target status for each action */
+const ACTION_TARGET_STATUS: Record<string, string> = {
+	reject: "rejected",
+	defer: "deferred",
+	retry: "running",
+	shelve: "shelved",
+};
+
 export async function approveExecution(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -70,6 +87,40 @@ export async function approveExecution(
 	return result;
 }
 
+export function transitionSession(
+	store: StateStore,
+	action: string,
+	executionId: string,
+	reason?: string,
+): ActionResult {
+	const session = store.getSession(executionId);
+	if (!session) {
+		return { success: false, message: `No session found for execution_id ${executionId}` };
+	}
+
+	const validSources = ACTION_SOURCE_STATUS[action];
+	if (!validSources) {
+		return { success: false, message: `Unknown action: ${action}` };
+	}
+
+	if (!validSources.includes(session.status)) {
+		return {
+			success: false,
+			message: `Cannot ${action} ${session.issue_identifier ?? executionId}: status is "${session.status}", expected one of: ${validSources.join(", ")}`,
+		};
+	}
+
+	const targetStatus = ACTION_TARGET_STATUS[action]!;
+	// Use forceStatus to bypass the monotonic guard (retry: terminal → running)
+	store.forceStatus(session.execution_id, targetStatus, sqliteDatetime(), reason);
+
+	const id = session.issue_identifier ?? executionId;
+	const pastTense: Record<string, string> = {
+		reject: "rejected", defer: "deferred", retry: "retried", shelve: "shelved",
+	};
+	return { success: true, message: `${id} ${pastTense[action] ?? action} successfully` };
+}
+
 export function createActionRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -97,9 +148,20 @@ export function createActionRouter(
 			case "reject":
 			case "defer":
 			case "retry":
-			case "shelve":
-				res.status(501).json({ error: `${action} not implemented in Phase 1` });
+			case "shelve": {
+				const { execution_id: eid, reason } = req.body ?? {};
+				if (!eid || typeof eid !== "string") {
+					res.status(400).json({ error: "execution_id is required" });
+					return;
+				}
+				const actionResult = transitionSession(store, action, eid, reason);
+				if (actionResult.success) {
+					res.json({ success: true, message: actionResult.message, action });
+				} else {
+					res.status(400).json({ success: false, message: actionResult.message, action });
+				}
 				return;
+			}
 			default:
 				res.status(400).json({ error: `Unknown action: ${action}` });
 				return;
