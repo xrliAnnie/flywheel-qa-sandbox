@@ -1,40 +1,40 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { BridgeConfig } from "./bridge/types.js";
 
-export interface TeamLeadConfig {
-	port: number;
-	dbPath: string;
-	ownsSlack: boolean;
-	slackBotToken?: string;
-	slackAppToken?: string;
-	slackChannelId?: string;
-	stuckThresholdMinutes: number;
-	stuckCheckIntervalMs: number;
+export type { BridgeConfig };
+
+const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+function parsePositiveInt(value: string | undefined, fallback: number, name: string): number {
+	if (value === undefined) return fallback;
+	const n = parseInt(value, 10);
+	if (!Number.isFinite(n) || n < 1) {
+		throw new Error(`Invalid ${name}: ${value} (must be a positive integer)`);
+	}
+	return n;
 }
 
-export function loadConfig(): TeamLeadConfig {
-	const ownsSlack = process.env.TEAMLEAD_OWNS_SLACK === "true";
+export function loadConfig(): BridgeConfig {
+	const host = process.env.TEAMLEAD_HOST ?? "127.0.0.1";
+	if (!ALLOWED_HOSTS.has(host)) {
+		throw new Error(`TEAMLEAD_HOST must be loopback (127.0.0.1, localhost, or ::1), got: ${host}`);
+	}
 
-	if (ownsSlack) {
-		if (!process.env.SLACK_BOT_TOKEN) {
-			throw new Error("TEAMLEAD_OWNS_SLACK=true requires SLACK_BOT_TOKEN");
-		}
-		if (!process.env.SLACK_APP_TOKEN) {
-			throw new Error("TEAMLEAD_OWNS_SLACK=true requires SLACK_APP_TOKEN");
-		}
-		if (!process.env.FLYWHEEL_SLACK_CHANNEL) {
-			throw new Error("TEAMLEAD_OWNS_SLACK=true requires FLYWHEEL_SLACK_CHANNEL");
-		}
+	const port = parseInt(process.env.TEAMLEAD_PORT ?? "9876", 10);
+	if (!Number.isFinite(port) || port < 1 || port > 65535) {
+		throw new Error(`Invalid TEAMLEAD_PORT: ${process.env.TEAMLEAD_PORT}`);
 	}
 
 	return {
-		port: parseInt(process.env.TEAMLEAD_PORT ?? "9876", 10),
+		host,
+		port,
 		dbPath: process.env.TEAMLEAD_DB_PATH ?? join(homedir(), ".flywheel", "teamlead.db"),
-		ownsSlack,
-		slackBotToken: process.env.SLACK_BOT_TOKEN,
-		slackAppToken: process.env.SLACK_APP_TOKEN,
-		slackChannelId: process.env.FLYWHEEL_SLACK_CHANNEL,
-		stuckThresholdMinutes: parseInt(process.env.TEAMLEAD_STUCK_THRESHOLD ?? "15", 10),
-		stuckCheckIntervalMs: parseInt(process.env.TEAMLEAD_STUCK_INTERVAL ?? "300000", 10),
+		ingestToken: process.env.TEAMLEAD_INGEST_TOKEN,
+		apiToken: process.env.TEAMLEAD_API_TOKEN,
+		gatewayUrl: process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789",
+		hooksToken: process.env.OPENCLAW_HOOKS_TOKEN,
+		stuckThresholdMinutes: parsePositiveInt(process.env.TEAMLEAD_STUCK_THRESHOLD, 15, "TEAMLEAD_STUCK_THRESHOLD"),
+		stuckCheckIntervalMs: parsePositiveInt(process.env.TEAMLEAD_STUCK_INTERVAL, 300_000, "TEAMLEAD_STUCK_INTERVAL"),
 	};
 }

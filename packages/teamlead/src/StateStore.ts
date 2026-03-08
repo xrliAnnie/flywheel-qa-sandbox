@@ -338,6 +338,46 @@ export class StateStore {
 		return rows;
 	}
 
+	getSessionByIdentifier(identifier: string): Session | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE issue_identifier = ? ORDER BY last_activity_at DESC LIMIT 1",
+		);
+		stmt.bind([identifier]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			return this.rowToSession(row);
+		}
+		stmt.free();
+		return undefined;
+	}
+
+	getRecentSessions(limit: number): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions ORDER BY last_activity_at DESC LIMIT ?",
+		);
+		stmt.bind([limit]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+		}
+		stmt.free();
+		return rows;
+	}
+
+	getSessionHistory(issueId: string): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE issue_id = ? ORDER BY started_at ASC",
+		);
+		stmt.bind([issueId]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+		}
+		stmt.free();
+		return rows;
+	}
+
 	getLatestActionableSession(issueId: string): Session | undefined {
 		const stmt = this.db.prepare(
 			"SELECT * FROM sessions WHERE issue_id = ? AND status IN ('awaiting_review', 'blocked') ORDER BY last_activity_at DESC LIMIT 1",
