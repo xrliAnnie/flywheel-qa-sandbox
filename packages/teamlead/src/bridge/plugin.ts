@@ -57,6 +57,16 @@ export function createBridgeApp(
 		res.status(404).json({ error: "not found" });
 	});
 
+	// JSON error handler — returns JSON instead of Express default HTML with stack trace
+	app.use(((err: Error & { status?: number; type?: string }, _req, res, _next) => {
+		if (err.type === "entity.parse.failed") {
+			res.status(400).json({ error: "invalid JSON" });
+			return;
+		}
+		console.error("[bridge] Unhandled error:", err.message);
+		res.status(err.status ?? 500).json({ error: "internal error" });
+	}) as express.ErrorRequestHandler);
+
 	return app;
 }
 
