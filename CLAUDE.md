@@ -5,14 +5,13 @@
 New session? Run `/onboarding` or read these files in order:
 
 1. **Memory** → `~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md` (decisions, architecture, current progress)
-2. **Design Docs** (read based on task):
-   - `doc/exploration/new/v0.2-parallel-execution.md` — worktree + concurrency design
-   - `doc/exploration/new/v0.2-decision-layer.md` — Hard Rules + Haiku Triage
-   - `doc/exploration/new/v0.2-skill-system.md` — SKILL.md injection
-   - `doc/exploration/new/v0.3-memory-system.md` — per-project memory (Phase 3)
+2. **Active Explorations** (read based on task):
+   - `doc/exploration/new/v0.3-memory-system.md` — per-project memory (deferred, waiting for Annie)
+   - `doc/exploration/new/v0.4-voice-interface.md` — push/pull voice channel for CEO
+   - `doc/exploration/new/v0.5-remote-screenshot.md` — visual Slack notifications
 3. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md`
 
-Archived docs (v0.1.0, v0.1.1) are in `doc/*/archive/` — read only if you need historical context.
+Archived docs are in `doc/*/archive/` — read only if you need historical context.
 
 ## What Is Flywheel
 
@@ -20,82 +19,106 @@ TypeScript orchestrator (forked from [Cyrus](https://github.com/ceedaragents/cyr
 
 ```
 Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
-                                        ↓ (blocked/failed)
-                              Decision Layer (Haiku) → Slack → OpenClaw → CEO
+                                        ↓ (completed/failed)
+                              Decision Layer → Bridge API → OpenClaw (product-lead) → Slack → CEO
 ```
 
 **Goal**: Autonomous dev workflow — human attention is the bottleneck, not AI capability. CEO sets direction, Flywheel executes continuously, only escalating when it genuinely needs a human decision.
 
 ## Current Phase
 
-**v0.2 research complete** — ready for implementation planning.
+**v0.5 complete** — OpenClaw bridge + actions + auto-notification operational.
 
 | Milestone | Status |
 |-----------|--------|
 | v0.1.0 Core Loop (headless `--print` mode) | ✅ Merged (PR #3) |
 | v0.1.1 Interactive Runner (tmux sessions) | ✅ Merged (PR #4) |
-| v0.2 Research (6 deep research sessions) | ✅ Complete (6,474 lines of design docs) |
-| v0.2 Implementation | ⬜ **Next** — turn exploration docs into implementation plans |
+| v0.2 Parallel + Decision + Slack | ✅ Merged (PR #5-9) |
+| v0.4 TeamLead Daemon | ✅ Merged (PR #10) |
+| v0.5 OpenClaw Bridge + Actions | ✅ Merged (PR #12 + main) |
+| Real issue trial run | ⬜ **Next** |
 
-## Key Architecture Decisions (project-wide)
+## Doc Structure & Lifecycle
+
+```
+doc/
+├── exploration/{new,backlog,archive}/  — Product exploration / design docs
+├── research/{new,archive}/             — Technical research / evaluations
+├── deep-research/                      — External LLM research results
+├── plan/{draft,backlog,archive}/       — Implementation plans
+├── implementation/                     — Implementation notes
+├── architecture/{archive}/             — Unified architecture docs
+└── reference/                          — Reference docs (Cyrus, Ralph, patterns)
+```
+
+### Document Lifecycle Rules
+
+Documents flow through a pipeline. **A document can only be archived when its downstream artifact exists.**
+
+```
+Exploration (new/) → Research (new/) → Plan (draft/) → Implementation (code) → Archive
+```
+
+**Archive rules:**
+- **Exploration** → archive when Research is complete (or when it's a reference-only doc with no further action)
+- **Research** → archive when Plan is complete
+- **Plan** → archive when Implementation is merged (or abandoned with documented reason)
+- **Never archive** a document whose downstream stage hasn't been done yet
+
+**Backlog rules:**
+- `exploration/backlog/` — explorations deferred intentionally (not abandoned, will return to later)
+- `plan/backlog/` — plans written but implementation deferred
+
+**When moving to archive, do NOT delete.** Just `git mv` to the `archive/` subdirectory. The file keeps its name.
+
+**After archiving, update:**
+1. This CLAUDE.md (remove from "Active Explorations" list)
+2. MEMORY.md doc index (update path and status)
+
+### Current Active Documents
+
+| Type | File | Status | Next Step |
+|------|------|--------|-----------|
+| Exploration | v0.3-memory-system.md | Complete, deferred | Wait for Annie, then plan |
+| Exploration | v0.4-voice-interface.md | Draft | Research → Plan → Implement |
+| Exploration | v0.5-remote-screenshot.md | Draft | Research → Plan → Implement |
+| Research | 005-memory-architecture-survey.md | Complete | Waiting on v0.3 exploration decision |
+| Research | 007-remote-execution-eval.md | Complete | Needs plan or archive decision |
+| Research | 008-multi-machine-consensus.md | Complete | Phase 5+, waiting |
+| Plan | v0.3-step1-memory-system.md | Backlog | Waiting for Annie |
+
+## Key Architecture Decisions
 
 | Decision | Choice |
 |----------|--------|
 | Base | Fork Cyrus (~80% reuse) |
-| Notification | **Slack** (Cyrus has transport, OpenClaw supports it) |
-| Memory | Per-project (`.flywheel/` in each project repo) |
-| Decision Layer | CIPHER learning + Haiku + SQLite + sqlite-vec + local embeddings |
-| Phase 1 autonomy | Pass-through (architect for extension) |
-| Runner | Claude Code only (Phase 2: multi-runner) |
-
-## Doc Structure
-
-```
-doc/
-├── architecture/{archive}/      — Unified architecture docs (v0.1.0, v0.2)
-├── exploration/{new,archive}/   — Product exploration / design docs
-├── research/{new,archive}/      — Technical research / evaluations
-├── deep-research/               — External LLM research results
-├── plan/{draft,backlog,archive}/ — Implementation plans
-├── implementation/              — Implementation notes
-└── reference/                   — Reference docs (Cyrus, Ralph, patterns)
-```
-
-**Lifecycle**: `backlog → draft → new → archive` (when superseded or completed).
-
-**Current exploration docs** (v0.2+):
-- `v0.2-parallel-execution.md` — Worktree, hooks, concurrency (R1)
-- `v0.2-decision-layer.md` — Hard Rules, Haiku Triage, CIPHER (R3)
-- `v0.2-skill-system.md` — SKILL.md injection (R4)
-- `v0.3-memory-system.md` — Per-project memory with mem0/memU/deer-flow (R2)
-
-## Commands
-
-### `/onboarding`
-
-Read memory + plan + present current status. Use when starting a new session.
-
-### `/update`
-
-Update memory file + CLAUDE.md with new decisions from this session. Run at end of session or after significant decisions.
+| Notification | **Slack** via OpenClaw product-lead agent |
+| Agent Gateway | **OpenClaw** (persistent session, tool use, memory, multi-agent) |
+| Memory | Per-project (`.flywheel/` in each project repo) — deferred |
+| Decision Layer | Hard Rules + Haiku Triage + Verify + Route |
+| Runner | Claude Code CLI via tmux |
+| Cost tracking | N/A (Claude subscription, no per-token billing) |
 
 ## Tech Stack
 
 - **Runtime**: Node.js / TypeScript
 - **Base**: Cyrus fork (pnpm monorepo)
-- **AI**: Spawn CLI tools (Claude Code CLI) via `IAgentRunner`; Haiku for Decision Layer (Phase 2+)
-- **Storage**: SQLite (`better-sqlite3`) + `sqlite-vec` for vector search (Phase 2+)
+- **AI**: Spawn Claude Code CLI via `IAgentRunner`; Haiku for Decision Layer
+- **Storage**: SQLite (`sql.js`) for StateStore
 - **Issue tracking**: Linear (`@linear/sdk`)
 - **VCS**: GitHub
+- **Agent**: OpenClaw gateway + product-lead agent → Slack
 
 ## Implementation Phases
 
-1. **Core Loop** (v0.1.0): Fork Cyrus → DAG → headless `--print` → auto PR ✅
+1. **Core Loop** (v0.1.0): Fork Cyrus → DAG → headless → auto PR ✅
 2. **Interactive Runner** (v0.1.1): tmux sessions → user can see & interact ✅
-3. **Parallel + Decision** (v0.2): Worktree parallel execution + Decision Layer + Skill injection ⬜
-4. **Memory** (v0.3): Per-project memory (`.flywheel/memory.json` → SQLite + sqlite-vec) ⬜
-5. **Decision Intelligence**: CIPHER learning + auto-approve + digest
-6. **Multi-Team** (optional): Content/Marketing teams
+3. **Parallel + Decision** (v0.2): Worktree + Decision Layer + Skill injection + Slack ✅
+4. **TeamLead Daemon** (v0.4): Event pipeline + Socket Mode Slack + actions + stuck watcher ✅
+5. **OpenClaw Bridge** (v0.5): Bridge API + product-lead agent + actions + auto-notification ✅
+6. **Memory** (v0.3): Per-project memory — DEFERRED (waiting for Annie)
+7. **CIPHER**: Decision-making memory (learn from past approve/reject patterns)
+8. **Multi-Team**: Config-driven multi-agent (marketing-lead, ops-lead)
 
 ## Core Behaviors
 
