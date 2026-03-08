@@ -14,6 +14,16 @@ interface IngestEvent {
 	source?: string;
 }
 
+/** Coerce a value to string or undefined — prevents non-string payload fields from crashing upsertSession. */
+function asString(v: unknown): string | undefined {
+	return typeof v === "string" ? v : undefined;
+}
+
+/** Coerce a value to number or undefined. */
+function asNumber(v: unknown): number | undefined {
+	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
 function formatNotification(session: Session, eventType: string): string {
 	const id = session.issue_identifier ?? session.issue_id;
 	switch (eventType) {
@@ -110,80 +120,88 @@ export function createEventRouter(
 		const now = sqliteDatetime();
 		const payload = event.payload ?? {};
 
-		if (event.event_type === "session_started") {
-			store.upsertSession({
-				execution_id: event.execution_id,
-				issue_id: event.issue_id,
-				project_name: event.project_name,
-				status: "running",
-				started_at: now,
-				last_activity_at: now,
-				issue_identifier: payload.issueIdentifier as string | undefined,
-				issue_title: payload.issueTitle as string | undefined,
-			});
-		} else if (event.event_type === "session_completed") {
-			const decision = payload.decision as Record<string, unknown> | undefined;
-			const evidence = payload.evidence as Record<string, unknown> | undefined;
-			const route = decision?.route as string | undefined;
+		try {
+			if (event.event_type === "session_started") {
+				store.upsertSession({
+					execution_id: event.execution_id,
+					issue_id: event.issue_id,
+					project_name: event.project_name,
+					status: "running",
+					started_at: now,
+					last_activity_at: now,
+					issue_identifier: asString(payload.issueIdentifier),
+					issue_title: asString(payload.issueTitle),
+				});
+			} else if (event.event_type === "session_completed") {
+				const decision = payload.decision as Record<string, unknown> | undefined;
+				const evidence = payload.evidence as Record<string, unknown> | undefined;
+				const route = asString(decision?.route);
 
-			// auto_approve → write awaiting_review first, then auto-merge
-			let status: string;
-			if (route === "needs_review") status = "awaiting_review";
-			else if (route === "auto_approve") status = "awaiting_review";
-			else if (route === "blocked") status = "blocked";
-			else status = "completed";
+				// auto_approve → write awaiting_review first, then auto-merge
+				let status: string;
+				if (route === "needs_review") status = "awaiting_review";
+				else if (route === "auto_approve") status = "awaiting_review";
+				else if (route === "blocked") status = "blocked";
+				else status = "completed";
 
-			store.upsertSession({
-				execution_id: event.execution_id,
-				issue_id: event.issue_id,
-				project_name: event.project_name,
-				status,
-				last_activity_at: now,
-				decision_route: route,
-				decision_reasoning: decision?.reasoning as string | undefined,
-				commit_count: evidence?.commitCount as number | undefined,
-				files_changed: evidence?.filesChangedCount as number | undefined,
-				lines_added: evidence?.linesAdded as number | undefined,
-				lines_removed: evidence?.linesRemoved as number | undefined,
-				summary: payload.summary as string | undefined,
-				diff_summary: evidence?.diffSummary as string | undefined,
-				commit_messages: Array.isArray(evidence?.commitMessages)
-					? (evidence.commitMessages as string[]).join("\n")
-					: undefined,
-				changed_file_paths: Array.isArray(evidence?.changedFilePaths)
-					? (evidence.changedFilePaths as string[]).join("\n")
-					: undefined,
-				issue_identifier: payload.issueIdentifier as string | undefined,
-				issue_title: payload.issueTitle as string | undefined,
-			});
+				store.upsertSession({
+					execution_id: event.execution_id,
+					issue_id: event.issue_id,
+					project_name: event.project_name,
+					status,
+					last_activity_at: now,
+					decision_route: route,
+					decision_reasoning: asString(decision?.reasoning),
+					commit_count: asNumber(evidence?.commitCount),
+					files_changed: asNumber(evidence?.filesChangedCount),
+					lines_added: asNumber(evidence?.linesAdded),
+					lines_removed: asNumber(evidence?.linesRemoved),
+					summary: asString(payload.summary),
+					diff_summary: asString(evidence?.diffSummary),
+					commit_messages: Array.isArray(evidence?.commitMessages)
+						? (evidence.commitMessages as string[]).join("\n")
+						: undefined,
+					changed_file_paths: Array.isArray(evidence?.changedFilePaths)
+						? (evidence.changedFilePaths as string[]).join("\n")
+						: undefined,
+					issue_identifier: asString(payload.issueIdentifier),
+					issue_title: asString(payload.issueTitle),
+				});
 
-			// Auto-approve flow: bridge auto-merges
-			if (route === "auto_approve") {
-				const result = await approveExecution(store, projects, event.execution_id);
-				if (!result.success) {
-					console.warn(`[event-route] Auto-approve failed for ${event.execution_id}: ${result.message}`);
-					// Persist failure so notification and status reflect reality
-					store.upsertSession({
-						execution_id: event.execution_id,
-						issue_id: event.issue_id,
-						project_name: event.project_name,
-						status: "awaiting_review",
-						last_activity_at: sqliteDatetime(),
-						last_error: `Auto-merge failed: ${result.message}`,
-					});
+				// Auto-approve flow: bridge auto-merges
+				if (route === "auto_approve") {
+					const result = await approveExecution(store, projects, event.execution_id);
+					if (!result.success) {
+						console.warn(`[event-route] Auto-approve failed for ${event.execution_id}: ${result.message}`);
+						// Persist failure so notification and status reflect reality
+						store.upsertSession({
+							execution_id: event.execution_id,
+							issue_id: event.issue_id,
+							project_name: event.project_name,
+							status: "awaiting_review",
+							last_activity_at: sqliteDatetime(),
+							last_error: `Auto-merge failed: ${result.message}`,
+						});
+					}
 				}
+			} else if (event.event_type === "session_failed") {
+				store.upsertSession({
+					execution_id: event.execution_id,
+					issue_id: event.issue_id,
+					project_name: event.project_name,
+					status: "failed",
+					last_activity_at: now,
+					last_error: asString(payload.error),
+					issue_identifier: asString(payload.issueIdentifier),
+					issue_title: asString(payload.issueTitle),
+				});
 			}
-		} else if (event.event_type === "session_failed") {
-			store.upsertSession({
-				execution_id: event.execution_id,
-				issue_id: event.issue_id,
-				project_name: event.project_name,
-				status: "failed",
-				last_activity_at: now,
-				last_error: payload.error as string | undefined,
-				issue_identifier: payload.issueIdentifier as string | undefined,
-				issue_title: payload.issueTitle as string | undefined,
-			});
+		} catch (err) {
+			console.error(`[event-route] Session update failed for ${event.execution_id}:`, err);
+			// Event is already stored — return success with a warning rather than 500
+			// so retries don't get stuck on duplicate detection
+			res.json({ ok: true, warning: "event stored but session update failed" });
+			return;
 		}
 
 		// Best-effort notification push
