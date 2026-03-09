@@ -153,6 +153,9 @@ export function createBridgeApp(
 		}
 	});
 
+	// Dashboard actions — no auth (loopback only, same handlers as /api/actions)
+	app.use("/actions", createActionRouter(store, projects));
+
 	// /events — ingest auth
 	app.use("/events", tokenAuthMiddleware(config.ingestToken), createEventRouter(store, projects, config));
 

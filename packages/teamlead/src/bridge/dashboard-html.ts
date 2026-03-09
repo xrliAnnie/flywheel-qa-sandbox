@@ -54,6 +54,23 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 .empty{color:var(--text-muted);font-style:italic;padding:1rem 0}
 .mono{font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:.8125rem}
 .truncate{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+.act-btn{font-size:.6875rem;padding:2px 8px;border:1px solid var(--border);border-radius:4px;
+  background:transparent;color:var(--text-muted);cursor:pointer;margin-right:4px;transition:all .15s}
+.act-btn:hover{background:var(--surface);color:var(--text);border-color:var(--text-muted)}
+.act-btn.approve{border-color:rgba(63,185,80,.4);color:var(--green)}
+.act-btn.approve:hover{background:rgba(63,185,80,.15)}
+.act-btn.reject{border-color:rgba(248,81,73,.4);color:var(--red)}
+.act-btn.reject:hover{background:rgba(248,81,73,.15)}
+.act-btn.retry{border-color:rgba(88,166,255,.4);color:var(--blue)}
+.act-btn.retry:hover{background:rgba(88,166,255,.15)}
+.act-btn:disabled{opacity:.4;cursor:not-allowed;pointer-events:none}
+
+.toast{position:fixed;bottom:1.5rem;right:1.5rem;padding:.75rem 1rem;border-radius:8px;font-size:.8125rem;
+  background:var(--card-bg);border:1px solid var(--border);color:var(--text);opacity:0;transition:opacity .3s;z-index:100}
+.toast.show{opacity:1}
+.toast.error{border-color:var(--red);color:var(--red)}
+.toast.success{border-color:var(--green);color:var(--green)}
 </style>
 </head>
 <body>
@@ -75,7 +92,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 <section>
   <h2>Active Sessions</h2>
   <table><thead><tr>
-    <th>Issue</th><th>Status</th><th>Project</th><th>Runtime</th><th>Branch</th>
+    <th>Issue</th><th>Status</th><th>Project</th><th>Runtime</th><th>Branch</th><th>Actions</th>
   </tr></thead><tbody id="t-active"></tbody></table>
   <div class="empty" id="e-active" style="display:none">No active sessions</div>
 </section>
@@ -83,7 +100,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 <section>
   <h2>Recent Outcomes</h2>
   <table><thead><tr>
-    <th>Issue</th><th>Status</th><th>Time</th><th>Diff</th><th>Route</th>
+    <th>Issue</th><th>Status</th><th>Time</th><th>Diff</th><th>Route</th><th>Actions</th>
   </tr></thead><tbody id="t-recent"></tbody></table>
   <div class="empty" id="e-recent" style="display:none">No recent outcomes</div>
 </section>
@@ -91,9 +108,11 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 <section id="s-stuck" style="display:none">
   <h2>Stuck Sessions</h2>
   <table><thead><tr>
-    <th>Issue</th><th>Runtime</th><th>Last Active</th><th>Error</th>
+    <th>Issue</th><th>Runtime</th><th>Last Active</th><th>Error</th><th>Actions</th>
   </tr></thead><tbody id="t-stuck"></tbody></table>
 </section>
+
+<div class="toast" id="toast"></div>
 
 <script>
 // Dashboard client — all dynamic data is sanitized through escapeHtml()
@@ -105,8 +124,15 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
     failed: '\\u{1F534}', rejected: '\\u274C', deferred: '\\u23F8\\uFE0F', shelved: '\\u{1F4E6}'
   };
 
-  // Safe HTML escaping — uses DOM textContent for correctness.
-  // All user-derived strings MUST pass through this before innerHTML insertion.
+  // Valid actions per status (mirrors ACTION_SOURCE_STATUS in actions.ts)
+  var STATUS_ACTIONS = {
+    awaiting_review: ['approve', 'reject', 'defer', 'shelve'],
+    blocked: ['defer', 'retry', 'shelve'],
+    failed: ['retry', 'shelve'],
+    rejected: ['retry', 'shelve'],
+    deferred: ['shelve']
+  };
+
   function escapeHtml(str) {
     if (str == null) return '';
     var d = document.createElement('div');
@@ -137,10 +163,59 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
     return '<span class="badge badge-' + safe + '">' + icon + ' ' + safe + '</span>';
   }
 
+  function actionButtons(session) {
+    var actions = STATUS_ACTIONS[session.status];
+    if (!actions || !actions.length) return '<span style="color:var(--text-muted)">\\u2014</span>';
+    var html = '';
+    for (var i = 0; i < actions.length; i++) {
+      var a = actions[i];
+      var cls = a === 'approve' ? ' approve' : a === 'reject' ? ' reject' : a === 'retry' ? ' retry' : '';
+      html += '<button class="act-btn' + cls + '" onclick="doAction(\\'' + escapeHtml(a) + '\\',\\'' + escapeHtml(session.execution_id) + '\\')">'
+        + escapeHtml(a) + '</button>';
+    }
+    return html;
+  }
+
   function setText(id, text) {
     var el = document.getElementById(id);
     if (el) el.textContent = String(text);
   }
+
+  // Toast notification
+  var toastTimer = null;
+  function showToast(msg, type) {
+    var el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'toast show ' + (type || '');
+    if (toastTimer) clearTimeout(toastTimer);
+    toastTimer = setTimeout(function() { el.className = 'toast'; }, 3000);
+  }
+
+  // Action handler — POST to /actions/:action
+  window.doAction = function(action, executionId) {
+    var btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '...';
+    fetch('/actions/' + encodeURIComponent(action), {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({execution_id: executionId})
+    }).then(function(res) { return res.json(); })
+      .then(function(data) {
+        if (data.success) {
+          showToast(data.message || (action + ' succeeded'), 'success');
+        } else {
+          showToast(data.message || (action + ' failed'), 'error');
+          btn.disabled = false;
+          btn.textContent = action;
+        }
+      })
+      .catch(function(err) {
+        showToast('Network error: ' + err.message, 'error');
+        btn.disabled = false;
+        btn.textContent = action;
+      });
+  };
 
   function render(data) {
     var m = data.metrics;
@@ -167,6 +242,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
         + '<td>' + escapeHtml(s.project_name) + '</td>'
         + '<td class="runtime" data-started="' + escapeHtml(s.started_at || '') + '">' + escapeHtml(formatRuntime(s.started_at)) + '</td>'
         + '<td class="mono truncate">' + escapeHtml(s.branch || '-') + '</td>'
+        + '<td>' + actionButtons(s) + '</td>'
         + '</tr>';
     }
     tbody.innerHTML = html;
@@ -186,6 +262,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
         + '<td>' + escapeHtml(formatRuntime(s.started_at)) + '</td>'
         + '<td class="mono">' + escapeHtml(formatDiff(s.lines_added, s.lines_removed)) + '</td>'
         + '<td>' + escapeHtml(s.decision_route || '\\u2014') + '</td>'
+        + '<td>' + actionButtons(s) + '</td>'
         + '</tr>';
     }
     tbody.innerHTML = html;
@@ -204,12 +281,13 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
         + '<td>' + escapeHtml(formatRuntime(s.started_at)) + '</td>'
         + '<td>' + escapeHtml(s.last_activity_at || '-') + '</td>'
         + '<td class="truncate">' + escapeHtml(s.last_error || '-') + '</td>'
+        + '<td>' + actionButtons(s) + '</td>'
         + '</tr>';
     }
     tbody.innerHTML = html;
   }
 
-  // Runtime ticker — update running session clocks every second
+  // Runtime ticker
   setInterval(function() {
     var els = document.querySelectorAll('.runtime[data-started]');
     for (var i = 0; i < els.length; i++) {
