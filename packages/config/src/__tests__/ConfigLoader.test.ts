@@ -636,6 +636,16 @@ default_agent: nonexistent
 		);
 	});
 
+	it("throws when default_agent is set without agents section", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+default_agent: backend
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/default_agent.*requires an agents section/i,
+		);
+	});
+
 	it("throws when agents is a YAML array instead of object", async () => {
 		const yaml = MINIMAL_CONFIG_YAML + `
 agents:
