@@ -7,6 +7,8 @@ import type { BridgeConfig } from "./types.js";
 import { createQueryRouter } from "./tools.js";
 import { createActionRouter } from "./actions.js";
 import { createEventRouter } from "./event-route.js";
+import { getDashboardHtml } from "./dashboard-html.js";
+import { buildDashboardPayload } from "./dashboard-data.js";
 
 function safeCompare(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
@@ -25,10 +27,74 @@ function tokenAuthMiddleware(token?: string): express.RequestHandler {
 	};
 }
 
+export class SseBroadcaster {
+	private clients = new Set<express.Response>();
+	private poller: ReturnType<typeof setInterval> | null = null;
+	private heartbeat: ReturnType<typeof setInterval> | null = null;
+
+	constructor(
+		private store: StateStore,
+		private stuckThresholdMinutes: number,
+	) {}
+
+	addClient(res: express.Response): void {
+		const payload = buildDashboardPayload(this.store, this.stuckThresholdMinutes);
+		res.write(`event: state\ndata: ${JSON.stringify(payload)}\n\n`);
+
+		this.clients.add(res);
+		if (this.clients.size === 1) this.startPolling();
+	}
+
+	removeClient(res: express.Response): void {
+		this.clients.delete(res);
+		if (this.clients.size === 0) this.stopPolling();
+	}
+
+	destroy(): void {
+		this.stopPolling();
+		for (const client of this.clients) {
+			try {
+				client.write(": server shutting down\n\n");
+				client.end();
+			} catch { /* already closed */ }
+		}
+		this.clients.clear();
+	}
+
+	get clientCount(): number {
+		return this.clients.size;
+	}
+
+	get isPolling(): boolean {
+		return this.poller !== null;
+	}
+
+	private startPolling(): void {
+		this.poller = setInterval(() => {
+			const payload = buildDashboardPayload(this.store, this.stuckThresholdMinutes);
+			const message = `event: state\ndata: ${JSON.stringify(payload)}\n\n`;
+			for (const client of this.clients) {
+				try { client.write(message); } catch { this.clients.delete(client); }
+			}
+		}, 2000);
+		this.heartbeat = setInterval(() => {
+			for (const client of this.clients) {
+				try { client.write(": heartbeat\n\n"); } catch { this.clients.delete(client); }
+			}
+		}, 30000);
+	}
+
+	private stopPolling(): void {
+		if (this.poller) { clearInterval(this.poller); this.poller = null; }
+		if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+	}
+}
+
 export function createBridgeApp(
 	store: StateStore,
 	projects: ProjectEntry[],
 	config: BridgeConfig,
+	broadcaster?: SseBroadcaster,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -43,6 +109,28 @@ export function createBridgeApp(
 			uptime: process.uptime(),
 			sessions_count: active.length,
 		});
+	});
+
+	// Dashboard — no auth (loopback only)
+	app.get("/", (_req, res) => {
+		res.type("html").send(getDashboardHtml());
+	});
+
+	// SSE — no auth (loopback only)
+	app.get("/sse", (req, res) => {
+		res.setHeader("Content-Type", "text/event-stream");
+		res.setHeader("Cache-Control", "no-cache");
+		res.setHeader("Connection", "keep-alive");
+		if (broadcaster) {
+			res.flushHeaders();
+			broadcaster.addClient(res);
+			req.on("close", () => broadcaster.removeClient(res));
+		} else {
+			// Snapshot mode (tests without startBridge)
+			const payload = buildDashboardPayload(store, config.stuckThresholdMinutes);
+			res.write(`event: state\ndata: ${JSON.stringify(payload)}\n\n`);
+			res.end();
+		}
 	});
 
 	// /events — ingest auth
@@ -79,7 +167,8 @@ export async function startBridge(
 	}
 
 	const store = await StateStore.create(config.dbPath);
-	const app = createBridgeApp(store, projects, config);
+	const broadcaster = new SseBroadcaster(store, config.stuckThresholdMinutes);
+	const app = createBridgeApp(store, projects, config, broadcaster);
 
 	const server = app.listen(config.port, config.host);
 
@@ -102,6 +191,7 @@ export async function startBridge(
 
 	const close = async () => {
 		stuckWatcher?.stop();
+		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
