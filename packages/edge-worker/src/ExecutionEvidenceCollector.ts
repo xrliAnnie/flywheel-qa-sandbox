@@ -109,8 +109,12 @@ export class ExecutionEvidenceCollector {
 			let raw: string;
 			try {
 				raw = await fs.promises.readFile(signalPath, "utf-8");
-			} catch {
-				return undefined; // File missing → landing not attempted
+			} catch (err: unknown) {
+				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+					return undefined; // File missing → landing not attempted
+				}
+				// Permission error, EISDIR, etc. → treat as parse_error (don't silently skip)
+				return { status: "failed", failureReason: "parse_error" };
 			}
 			const signal = JSON.parse(raw);
 
