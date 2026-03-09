@@ -38,6 +38,8 @@ export interface FlywheelRunRequest {
 	appendSystemPrompt?: string;
 	/** Display name for the Claude session (sent via /rename after startup) */
 	sessionDisplayName?: string;
+	/** Path to sentinel file for land-status detection (TmuxRunner only) */
+	sentinelPath?: string;
 }
 
 /**

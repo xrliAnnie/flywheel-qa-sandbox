@@ -269,7 +269,6 @@ async function main() {
 	// 8. Auto-interaction: handle trust prompt + detect completion
 	// Session naming: tmux session = issueId, window = buildWindowLabel() output.
 	let trustConfirmed = false;
-	let exitSent = false;
 	// Label format from Blueprint.buildWindowLabel: "{runner}:{cleanTitle}"
 	// Must match TmuxRunner.sanitizeWindowName: [^a-zA-Z0-9-] → "-", max 50 chars
 	const cleanTitle = issueData.title.replace(/\[P\d+\]\s*/gi, "").replace(/\s*—\s*/g, "-").trim();
@@ -282,29 +281,17 @@ async function main() {
 				"capture-pane", "-t", tmuxTarget, "-p",
 			], { encoding: "utf-8" });
 
-			// Phase 1: trust prompt
+			// Auto-confirm trust prompt
 			if (!trustConfirmed && (paneContent.includes("trust this folder") || paneContent.includes("Enter to confirm"))) {
 				execFileSync("tmux", ["send-keys", "-t", tmuxTarget, "Enter"]);
 				log("Auto-confirmed workspace trust prompt");
 				trustConfirmed = true;
-				return;
 			}
 
-			// Phase 2: detect Claude completed work
-			const hasPRCreated = /https:\/\/github\.com\/.*\/pull\/\d+/.test(paneContent);
-			const hasPushed = paneContent.includes("Branch") && paneContent.includes("set up to track");
-
-			if (!exitSent && (hasPRCreated || hasPushed)) {
-				setTimeout(() => {
-					try {
-						execFileSync("tmux", ["kill-pane", "-t", tmuxTarget]);
-						log("Killed pane after detecting PR/push — triggering pane_dead");
-					} catch { /* window may already be gone */ }
-				}, 10000); // 10s grace period
-				exitSent = true;
-				if (hasPRCreated) log("Detected: PR created!");
-				if (hasPushed) log("Detected: Branch pushed!");
-			}
+			// NOTE: PR/push detection + kill-pane removed in v0.6.
+			// Session termination is now handled by TmuxRunner sentinel
+			// (detects .flywheel/runs/<executionId>/land-status.json)
+			// or pane_dead (agent exits naturally after landing).
 		} catch { /* window may not exist yet */ }
 	}, 5000);
 
@@ -320,7 +307,7 @@ async function main() {
 		teamName: "eng",
 		runnerName: "claude",
 		projectName,
-		sessionTimeoutMs: 600_000, // 10 min — matches current script timeout
+		sessionTimeoutMs: 2_700_000, // 45 min — land skill needs time for CI/review/merge
 		executionId,
 	};
 

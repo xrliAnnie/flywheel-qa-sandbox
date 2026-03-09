@@ -50,6 +50,16 @@ export class HookCallbackServer extends EventEmitter implements IHookCallbackSer
 		return this.assignedPort;
 	}
 
+	/**
+	 * Tracks pending wait listeners so they can be cancelled externally.
+	 * Key: token, Value: { resolve, timer, onHook }
+	 */
+	private pendingWaits = new Map<string, {
+		resolve: (event: HookEvent | null) => void;
+		timer: ReturnType<typeof setTimeout>;
+		onHook: (event: HookEvent) => void;
+	}>();
+
 	waitForEvent(
 		token: string,
 		eventType: string,
@@ -58,25 +68,35 @@ export class HookCallbackServer extends EventEmitter implements IHookCallbackSer
 		return new Promise((resolve) => {
 			let settled = false;
 
-			const timer = setTimeout(() => {
+			const settle = (event: HookEvent | null) => {
 				if (settled) return;
 				settled = true;
+				clearTimeout(timer);
 				this.removeListener("hook", onHook);
-				resolve(null);
-			}, timeoutMs);
+				this.pendingWaits.delete(token);
+				resolve(event);
+			};
+
+			const timer = setTimeout(() => settle(null), timeoutMs);
 
 			const onHook = (event: HookEvent) => {
 				if (event.token === token && event.eventType === eventType) {
-					if (settled) return;
-					settled = true;
-					clearTimeout(timer);
-					this.removeListener("hook", onHook);
-					resolve(event);
+					settle(event);
 				}
 			};
 
+			this.pendingWaits.set(token, { resolve, timer, onHook });
 			this.on("hook", onHook);
 		});
+	}
+
+	cancelWait(token: string): void {
+		const pending = this.pendingWaits.get(token);
+		if (!pending) return;
+		clearTimeout(pending.timer);
+		this.removeListener("hook", pending.onHook);
+		this.pendingWaits.delete(token);
+		pending.resolve(null);
 	}
 
 	waitForCompletion(

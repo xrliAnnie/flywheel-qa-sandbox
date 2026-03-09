@@ -168,20 +168,32 @@ export function createEventRouter(
 					issue_title: asString(payload.issueTitle),
 				});
 
-				// Auto-approve flow: bridge auto-merges
+				// Auto-approve flow: bridge auto-merges (skip if PR already merged by land skill)
 				if (route === "auto_approve") {
-					const result = await approveExecution(store, projects, event.execution_id);
-					if (!result.success) {
-						console.warn(`[event-route] Auto-approve failed for ${event.execution_id}: ${result.message}`);
-						// Persist failure so notification and status reflect reality
+					const landingStatus = evidence?.landingStatus as { status?: string } | undefined;
+					if (landingStatus?.status === "merged") {
+						// PR already merged by flywheel-land — skip approveExecution, just mark approved
 						store.upsertSession({
 							execution_id: event.execution_id,
 							issue_id: event.issue_id,
 							project_name: event.project_name,
-							status: "awaiting_review",
+							status: "approved",
 							last_activity_at: sqliteDatetime(),
-							last_error: `Auto-merge failed: ${result.message}`,
 						});
+					} else {
+						const result = await approveExecution(store, projects, event.execution_id);
+						if (!result.success) {
+							console.warn(`[event-route] Auto-approve failed for ${event.execution_id}: ${result.message}`);
+							// Persist failure so notification and status reflect reality
+							store.upsertSession({
+								execution_id: event.execution_id,
+								issue_id: event.issue_id,
+								project_name: event.project_name,
+								status: "awaiting_review",
+								last_activity_at: sqliteDatetime(),
+								last_error: `Auto-merge failed: ${result.message}`,
+							});
+						}
 					}
 				}
 			} else if (event.event_type === "session_failed") {

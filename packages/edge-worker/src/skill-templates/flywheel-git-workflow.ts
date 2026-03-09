@@ -69,5 +69,5 @@ git diff --staged
 2. **必须有至少 1 个 commit**
 3. **PR 必须关联 Linear issue**
 4. **不要 \`git add -A\`** — 只 add 相关文件
-5. **不要 force push**
+5. **不要 force push** — 例外：仅在 flywheel-land 流程中 rebase 解决 merge conflict 时允许，且仅限 single-author PR
 `;
