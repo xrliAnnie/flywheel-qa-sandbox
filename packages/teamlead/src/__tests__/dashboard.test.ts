@@ -424,6 +424,119 @@ describe("Dashboard routes", () => {
 	});
 });
 
+// --- Dashboard action routes ---
+
+describe("Dashboard /actions route (no auth)", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+
+	const testProjects = [
+		{ projectName: "geoforge3d", projectRoot: "/tmp/geoforge3d", projectRepo: "xrliAnnie/GeoForge3D" },
+	];
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		const app = createBridgeApp(store, testProjects, makeConfig({ apiToken: "secret" }));
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+	});
+
+	afterEach(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		store.close();
+	});
+
+	it("/actions/reject works without auth (while /api/actions/reject requires auth)", async () => {
+		store.upsertSession(makeSession({ execution_id: "e1", status: "awaiting_review" }));
+
+		// /api/actions requires auth
+		const apiRes = await fetch(`${baseUrl}/api/actions/reject`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "e1" }),
+		});
+		expect(apiRes.status).toBe(401);
+
+		// /actions works without auth
+		const dashRes = await fetch(`${baseUrl}/actions/reject`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "e1" }),
+		});
+		expect(dashRes.status).toBe(200);
+		const body = await dashRes.json();
+		expect(body.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("rejected");
+	});
+
+	it("/actions/defer transitions awaiting_review to deferred", async () => {
+		store.upsertSession(makeSession({ execution_id: "e1", status: "awaiting_review" }));
+		const res = await fetch(`${baseUrl}/actions/defer`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "e1" }),
+		});
+		const body = await res.json();
+		expect(body.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("deferred");
+	});
+
+	it("/actions/retry transitions failed to running", async () => {
+		store.upsertSession(makeSession({ execution_id: "e1", status: "failed" }));
+		const res = await fetch(`${baseUrl}/actions/retry`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "e1" }),
+		});
+		const body = await res.json();
+		expect(body.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("running");
+	});
+
+	it("/actions/shelve transitions failed to shelved", async () => {
+		store.upsertSession(makeSession({ execution_id: "e1", status: "failed" }));
+		const res = await fetch(`${baseUrl}/actions/shelve`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "e1" }),
+		});
+		const body = await res.json();
+		expect(body.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("shelved");
+	});
+
+	it("/actions rejects invalid status transition", async () => {
+		store.upsertSession(makeSession({ execution_id: "e1", status: "running" }));
+		const res = await fetch(`${baseUrl}/actions/reject`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "e1" }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json();
+		expect(body.success).toBe(false);
+	});
+});
+
+// --- Dashboard HTML contains action buttons ---
+
+describe("Dashboard HTML", () => {
+	it("contains action button CSS and JS", async () => {
+		const { getDashboardHtml } = await import("../bridge/dashboard-html.js");
+		const html = getDashboardHtml();
+		expect(html).toContain("act-btn");
+		expect(html).toContain("doAction");
+		expect(html).toContain("/actions/");
+		expect(html).toContain("Actions</th>");
+	});
+});
+
 // --- OUTCOME_STATUSES export ---
 
 describe("OUTCOME_STATUSES", () => {
