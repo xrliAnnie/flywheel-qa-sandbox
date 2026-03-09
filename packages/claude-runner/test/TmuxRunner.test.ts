@@ -570,6 +570,7 @@ describe("TmuxRunner", () => {
 					// Never resolve — let pane_dead or timeout win
 					return new Promise(() => {});
 				}),
+				cancelWait: vi.fn(),
 			};
 		}
 

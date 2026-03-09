@@ -73,7 +73,7 @@ export interface SetupOptions {
 		projectId?: string;
 		identifier?: string;
 	}>;
-	/** Session timeout in ms (default: 600_000 = 10 min) */
+	/** Session timeout in ms (default: 2_700_000 = 45 min) */
 	sessionTimeoutMs?: number;
 }
 
@@ -97,7 +97,7 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		projectRepo,
 		enableWorktree = true,
 		fetchIssue,
-		sessionTimeoutMs = 600_000,
+		sessionTimeoutMs = 2_700_000,
 	} = opts;
 
 	// Fail-fast: TEAMLEAD_OWNS_SLACK=true requires TEAMLEAD_URL

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import type { LandingStatus } from "flywheel-core";
 import type { ExecFileFn, GitCheckResult } from "./GitResultChecker.js";
 
 /**
@@ -20,6 +22,9 @@ export interface ExecutionEvidence {
 	// Metadata
 	partial: boolean;
 	durationMs: number;
+
+	// Landing status (v0.6 — undefined if landing not attempted)
+	landingStatus?: LandingStatus;
 }
 
 /**
@@ -35,6 +40,7 @@ export class ExecutionEvidenceCollector {
 		baseSha: string,
 		gitResult: GitCheckResult,
 		durationMs: number,
+		landSignalPath?: string,
 	): Promise<ExecutionEvidence> {
 		let partial = false;
 
@@ -69,6 +75,11 @@ export class ExecutionEvidenceCollector {
 			return null;
 		});
 
+		// Landing status (v0.6 — from land-status.json signal file)
+		const landingStatus = landSignalPath
+			? await this.readLandingStatus(landSignalPath)
+			: undefined;
+
 		return {
 			commitCount,
 			filesChangedCount,
@@ -80,7 +91,68 @@ export class ExecutionEvidenceCollector {
 			headSha,
 			partial,
 			durationMs,
+			landingStatus,
 		};
+	}
+
+	/**
+	 * Read and validate land-status.json signal file.
+	 * Three-state semantics:
+	 *   - File missing → undefined (landing not attempted)
+	 *   - status=pending → failed/signal_missing (landing started but didn't complete)
+	 *   - status=merged → verify via GitHub API, then pass through
+	 *   - status=failed → pass through
+	 *   - Parse error → failed/parse_error
+	 */
+	private async readLandingStatus(signalPath: string): Promise<LandingStatus | undefined> {
+		try {
+			if (!fs.existsSync(signalPath)) return undefined;
+			const raw = fs.readFileSync(signalPath, "utf-8");
+			const signal = JSON.parse(raw);
+
+			if (signal.status === "pending") {
+				return { status: "failed", failureReason: "signal_missing" };
+			}
+
+			if (signal.status === "merged") {
+				// GitHub API verification
+				if (signal.prNumber) {
+					try {
+						const result = await this.execFile(
+							"gh",
+							["pr", "view", String(signal.prNumber), "--json", "state,mergedAt"],
+							".",
+						);
+						const prData = JSON.parse(result.stdout.trim());
+						if (prData.state !== "MERGED") {
+							return { status: "failed", failureReason: "verification_failed" };
+						}
+					} catch {
+						// gh command failed — trust the signal
+					}
+				}
+				return {
+					status: "merged",
+					prNumber: signal.prNumber,
+					mergedAt: signal.mergedAt,
+					mergeCommitSha: signal.mergeCommitSha,
+				};
+			}
+
+			if (signal.status === "failed") {
+				return {
+					status: "failed",
+					prNumber: signal.prNumber,
+					failureReason: signal.failureReason,
+					failureDetail: signal.failureDetail,
+				};
+			}
+
+			// Unknown status
+			return { status: "failed", failureReason: "parse_error" };
+		} catch {
+			return { status: "failed", failureReason: "parse_error" };
+		}
 	}
 
 	private async getChangedFiles(

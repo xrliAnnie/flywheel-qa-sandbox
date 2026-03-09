@@ -9,4 +9,6 @@ export interface IHookCallbackServer {
 		callbackToken: string,
 		timeoutMs: number,
 	): Promise<{ token: string; sessionId: string; issueId: string } | null>;
+	/** Cancel a pending waitForCompletion/waitForEvent listener by token */
+	cancelWait(token: string): void;
 }
