@@ -2,13 +2,16 @@ import initSqlJs, { type Database } from "sql.js";
 import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
+/** All statuses that represent a final outcome (used by dashboard, queries). */
+export const OUTCOME_STATUSES = [
+	"completed", "approved", "blocked", "failed",
+	"rejected", "deferred", "shelved",
+] as const;
+
 // Terminal states — monotonic progression: once terminal, cannot go back to running
-const TERMINAL_STATUSES = new Set([
-	"completed",
+const TERMINAL_STATUSES = new Set<string>([
+	...OUTCOME_STATUSES,
 	"awaiting_review",
-	"approved",
-	"blocked",
-	"failed",
 ]);
 
 export interface SessionEvent {
@@ -424,6 +427,40 @@ export class StateStore {
 		}
 		stmt.free();
 		return undefined;
+	}
+
+	getTerminalSessionsSince(sinceTs: string): Session[] {
+		const placeholders = OUTCOME_STATUSES.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE status IN (${placeholders})
+			 AND last_activity_at >= ?
+			 ORDER BY last_activity_at DESC`,
+		);
+		stmt.bind([...OUTCOME_STATUSES, sinceTs]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+		}
+		stmt.free();
+		return rows;
+	}
+
+	getRecentOutcomeSessions(limit: number): Session[] {
+		const placeholders = OUTCOME_STATUSES.map(() => "?").join(", ");
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE status IN (${placeholders})
+			 ORDER BY last_activity_at DESC
+			 LIMIT ?`,
+		);
+		stmt.bind([...OUTCOME_STATUSES, limit]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+		}
+		stmt.free();
+		return rows;
 	}
 
 	private rowToSession(row: Record<string, unknown>): Session {

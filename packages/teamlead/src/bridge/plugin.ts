@@ -7,6 +7,8 @@ import type { BridgeConfig } from "./types.js";
 import { createQueryRouter } from "./tools.js";
 import { createActionRouter } from "./actions.js";
 import { createEventRouter } from "./event-route.js";
+import { getDashboardHtml } from "./dashboard-html.js";
+import { buildDashboardPayload } from "./dashboard-data.js";
 
 function safeCompare(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
@@ -25,10 +27,91 @@ function tokenAuthMiddleware(token?: string): express.RequestHandler {
 	};
 }
 
+export class SseBroadcaster {
+	private clients = new Set<express.Response>();
+	private poller: ReturnType<typeof setInterval> | null = null;
+	private heartbeat: ReturnType<typeof setInterval> | null = null;
+
+	constructor(
+		private store: StateStore,
+		private stuckThresholdMinutes: number,
+	) {}
+
+	addClient(res: express.Response): void {
+		try {
+			const payload = buildDashboardPayload(this.store, this.stuckThresholdMinutes);
+			res.write(`event: state\ndata: ${JSON.stringify(payload)}\n\n`);
+		} catch (err) {
+			console.error("[SseBroadcaster] Failed to send initial state:", (err as Error).message);
+		}
+
+		this.clients.add(res);
+		if (this.clients.size === 1) this.startPolling();
+	}
+
+	removeClient(res: express.Response): void {
+		this.clients.delete(res);
+		if (this.clients.size === 0) this.stopPolling();
+	}
+
+	destroy(): void {
+		this.stopPolling();
+		for (const client of this.clients) {
+			try {
+				client.write(": server shutting down\n\n");
+				client.end();
+			} catch (err) {
+				const code = (err as NodeJS.ErrnoException).code;
+				if (code !== "ERR_STREAM_WRITE_AFTER_END" && code !== "ERR_STREAM_DESTROYED") {
+					console.warn("[SseBroadcaster] Unexpected error during destroy:", (err as Error).message);
+				}
+			}
+		}
+		this.clients.clear();
+	}
+
+	get clientCount(): number {
+		return this.clients.size;
+	}
+
+	get isPolling(): boolean {
+		return this.poller !== null;
+	}
+
+	private broadcastToClients(data: string): void {
+		const dead: express.Response[] = [];
+		for (const client of this.clients) {
+			try { client.write(data); } catch { dead.push(client); }
+		}
+		for (const d of dead) this.clients.delete(d);
+	}
+
+	private startPolling(): void {
+		this.poller = setInterval(() => {
+			try {
+				const payload = buildDashboardPayload(this.store, this.stuckThresholdMinutes);
+				const message = `event: state\ndata: ${JSON.stringify(payload)}\n\n`;
+				this.broadcastToClients(message);
+			} catch (err) {
+				console.error("[SseBroadcaster] Failed to build/broadcast payload:", (err as Error).message);
+			}
+		}, 2000);
+		this.heartbeat = setInterval(() => {
+			this.broadcastToClients(": heartbeat\n\n");
+		}, 30000);
+	}
+
+	private stopPolling(): void {
+		if (this.poller) { clearInterval(this.poller); this.poller = null; }
+		if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+	}
+}
+
 export function createBridgeApp(
 	store: StateStore,
 	projects: ProjectEntry[],
 	config: BridgeConfig,
+	broadcaster?: SseBroadcaster,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -44,6 +127,34 @@ export function createBridgeApp(
 			sessions_count: active.length,
 		});
 	});
+
+	// Dashboard — no auth (loopback only)
+	app.get("/", (_req, res) => {
+		res.type("html").send(getDashboardHtml());
+	});
+
+	// SSE — no auth (loopback only)
+	app.get("/sse", (req, res) => {
+		res.setHeader("Content-Type", "text/event-stream");
+		res.setHeader("Cache-Control", "no-cache");
+		res.setHeader("Connection", "keep-alive");
+		if (broadcaster) {
+			res.flushHeaders();
+			broadcaster.addClient(res);
+			req.on("close", () => broadcaster.removeClient(res));
+		} else {
+			// Snapshot mode — no broadcaster configured (tests or direct createBridgeApp usage)
+			if (process.env.NODE_ENV !== "test") {
+				console.warn("[SSE] No broadcaster configured — serving one-shot snapshot");
+			}
+			const payload = buildDashboardPayload(store, config.stuckThresholdMinutes);
+			res.write(`event: state\ndata: ${JSON.stringify(payload)}\n\n`);
+			res.end();
+		}
+	});
+
+	// Dashboard actions — no auth (loopback only, same handlers as /api/actions)
+	app.use("/actions", createActionRouter(store, projects));
 
 	// /events — ingest auth
 	app.use("/events", tokenAuthMiddleware(config.ingestToken), createEventRouter(store, projects, config));
@@ -79,7 +190,8 @@ export async function startBridge(
 	}
 
 	const store = await StateStore.create(config.dbPath);
-	const app = createBridgeApp(store, projects, config);
+	const broadcaster = new SseBroadcaster(store, config.stuckThresholdMinutes);
+	const app = createBridgeApp(store, projects, config, broadcaster);
 
 	const server = app.listen(config.port, config.host);
 
@@ -102,6 +214,7 @@ export async function startBridge(
 
 	const close = async () => {
 		stuckWatcher?.stop();
+		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
