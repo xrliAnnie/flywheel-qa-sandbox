@@ -1,7 +1,7 @@
 import type { AgentConfig } from "flywheel-config";
 import type { HydratedContext } from "./PreHydrator.js";
 
-export interface DispatchResult {
+export interface AgentDispatchResult {
 	agentName: string;
 	agentConfig: AgentConfig;
 	matchMethod: "label" | "haiku" | "fallback";
@@ -21,7 +21,7 @@ export class AgentDispatcher {
 		private classifyFn?: ClassifyFn,
 	) {}
 
-	async dispatch(hydrated: HydratedContext): Promise<DispatchResult | null> {
+	async dispatch(hydrated: HydratedContext): Promise<AgentDispatchResult | null> {
 		const entries = Object.entries(this.agents);
 		if (entries.length === 0) return null;
 

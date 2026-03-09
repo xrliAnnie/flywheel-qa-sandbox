@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { AgentDispatcher } from "../AgentDispatcher.js";
-import type { ClassifyFn, DispatchResult } from "../AgentDispatcher.js";
+import type { ClassifyFn, AgentDispatchResult } from "../AgentDispatcher.js";
 import type { AgentConfig } from "flywheel-config";
 import type { HydratedContext } from "../PreHydrator.js";
 
@@ -212,14 +212,14 @@ describe("AgentDispatcher", () => {
 		);
 	});
 
-	// ─── DispatchResult shape ────────────────────────
+	// ─── AgentDispatchResult shape ────────────────────────
 
-	it("returns correct DispatchResult shape", async () => {
+	it("returns correct AgentDispatchResult shape", async () => {
 		const dispatcher = new AgentDispatcher(makeAgents(), undefined);
 		const result = await dispatcher.dispatch(
 			makeHydrated({ labels: ["api"] }),
 		);
-		expect(result).toEqual<DispatchResult>({
+		expect(result).toEqual<AgentDispatchResult>({
 			agentName: "backend",
 			agentConfig: makeAgents().backend,
 			matchMethod: "label",
