@@ -137,9 +137,19 @@ export class ConfigLoader {
 						`agents.${name}.match.labels must be an array`,
 					);
 				}
+				if (!(match.labels as unknown[]).every((l) => typeof l === "string")) {
+					throw new Error(
+						`agents.${name}.match.labels must contain only strings`,
+					);
+				}
 				if (!Array.isArray(match.keywords)) {
 					throw new Error(
 						`agents.${name}.match.keywords must be an array`,
+					);
+				}
+				if (!(match.keywords as unknown[]).every((k) => typeof k === "string")) {
+					throw new Error(
+						`agents.${name}.match.keywords must contain only strings`,
 					);
 				}
 			}
