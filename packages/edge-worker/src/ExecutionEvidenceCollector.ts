@@ -77,7 +77,7 @@ export class ExecutionEvidenceCollector {
 
 		// Landing status (v0.6 — from land-status.json signal file)
 		const landingStatus = landSignalPath
-			? await this.readLandingStatus(landSignalPath)
+			? await this.readLandingStatus(landSignalPath, cwd)
 			: undefined;
 
 		return {
@@ -104,10 +104,14 @@ export class ExecutionEvidenceCollector {
 	 *   - status=failed → pass through
 	 *   - Parse error → failed/parse_error
 	 */
-	private async readLandingStatus(signalPath: string): Promise<LandingStatus | undefined> {
+	private async readLandingStatus(signalPath: string, cwd: string): Promise<LandingStatus | undefined> {
 		try {
-			if (!fs.existsSync(signalPath)) return undefined;
-			const raw = fs.readFileSync(signalPath, "utf-8");
+			let raw: string;
+			try {
+				raw = await fs.promises.readFile(signalPath, "utf-8");
+			} catch {
+				return undefined; // File missing → landing not attempted
+			}
 			const signal = JSON.parse(raw);
 
 			if (signal.status === "pending") {
@@ -115,13 +119,13 @@ export class ExecutionEvidenceCollector {
 			}
 
 			if (signal.status === "merged") {
-				// GitHub API verification
+				// GitHub API verification — run gh in the project's working directory
 				if (signal.prNumber) {
 					try {
 						const result = await this.execFile(
 							"gh",
 							["pr", "view", String(signal.prNumber), "--json", "state,mergedAt"],
-							".",
+							cwd,
 						);
 						const prData = JSON.parse(result.stdout.trim());
 						if (prData.state !== "MERGED") {
