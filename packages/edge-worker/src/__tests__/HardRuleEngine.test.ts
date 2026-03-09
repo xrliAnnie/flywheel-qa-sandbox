@@ -158,4 +158,42 @@ describe("HardRuleEngine", () => {
 		const result = engine.evaluate(makeCtx());
 		expect(result).toBeNull();
 	});
+
+	// --- HR-010: Landing failed ---
+
+	it("HR-010: landingStatus failed → block", () => {
+		const engine = new HardRuleEngine(defaultRules());
+		const result = engine.evaluate(
+			makeCtx({ landingStatus: { status: "failed", failureReason: "ci_failed" } }),
+		);
+		expect(result?.triggered).toBe(true);
+		expect(result?.action).toBe("block");
+		expect(result?.ruleId).toBe("HR-010");
+		expect(result?.reason).toContain("ci_failed");
+	});
+
+	it("HR-010: landingStatus merged → no trigger", () => {
+		const engine = new HardRuleEngine(defaultRules());
+		const result = engine.evaluate(
+			makeCtx({ landingStatus: { status: "merged", mergedAt: "2025-01-01" } }),
+		);
+		expect(result).toBeNull();
+	});
+
+	it("HR-010: no landingStatus → no trigger", () => {
+		const engine = new HardRuleEngine(defaultRules());
+		const result = engine.evaluate(makeCtx());
+		expect(result).toBeNull();
+	});
+
+	it("HR-010 has highest priority (beats HR-007 timeout)", () => {
+		const engine = new HardRuleEngine(defaultRules());
+		const result = engine.evaluate(
+			makeCtx({
+				exitReason: "timeout",
+				landingStatus: { status: "failed", failureReason: "merge_conflict" },
+			}),
+		);
+		expect(result?.ruleId).toBe("HR-010");
+	});
 });

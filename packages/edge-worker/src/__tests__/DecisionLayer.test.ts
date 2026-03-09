@@ -276,6 +276,66 @@ describe("DecisionLayer", () => {
 		expect(result.route).toBe("needs_review"); // not thrown
 	});
 
+	it("landed PR → early return auto_approve (bypasses hard rules + triage)", async () => {
+		const { hardRules, triage, verifier, fallback, auditLogger, diffProvider } =
+			makeMocks();
+		const evaluateSpy = vi.spyOn(hardRules, "evaluate");
+		const triageSpy = vi.spyOn(triage, "triage");
+
+		const layer = new DecisionLayer(
+			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+		);
+		const result = await layer.decide(
+			makeCtx({ landingStatus: { status: "merged", mergedAt: "2025-01-01T00:00:00Z" } }),
+			"/project",
+		);
+
+		expect(result.route).toBe("auto_approve");
+		expect(result.confidence).toBe(1.0);
+		expect(result.hardRuleId).toBe("HR-LANDED");
+		expect(result.decisionSource).toBe("hard_rule");
+		expect(result.reasoning).toContain("flywheel-land");
+		expect(evaluateSpy).not.toHaveBeenCalled();
+		expect(triageSpy).not.toHaveBeenCalled();
+	});
+
+	it("landed PR → audit logged", async () => {
+		const { hardRules, triage, verifier, fallback, auditLogger, diffProvider } =
+			makeMocks();
+
+		const layer = new DecisionLayer(
+			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+		);
+		await layer.decide(
+			makeCtx({ landingStatus: { status: "merged" } }),
+			"/project",
+		);
+
+		expect(auditLogger.log).toHaveBeenCalledTimes(1);
+	});
+
+	it("landing failed → falls through to hard rules (HR-010)", async () => {
+		const { hardRules, triage, verifier, fallback, auditLogger, diffProvider } =
+			makeMocks();
+		vi.spyOn(hardRules, "evaluate").mockReturnValue({
+			triggered: true,
+			action: "block",
+			reason: "Landing failed",
+			ruleId: "HR-010",
+		});
+
+		const layer = new DecisionLayer(
+			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+		);
+		const result = await layer.decide(
+			makeCtx({ landingStatus: { status: "failed", failureReason: "ci_failed" } }),
+			"/project",
+		);
+
+		expect(result.route).toBe("blocked");
+		expect(result.hardRuleId).toBe("HR-010");
+	});
+
 	it("diffProvider.getFullDiff called only for auto_approve", async () => {
 		const { hardRules, triage, verifier, fallback, auditLogger, diffProvider } =
 			makeMocks();
