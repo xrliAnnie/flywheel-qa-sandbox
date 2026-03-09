@@ -159,6 +159,29 @@ describe("Event route", () => {
 		expect(res.status).toBe(401);
 	});
 
+	it("POST /events with auto_approve + landingStatus merged skips approveExecution", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			body: JSON.stringify(makeEvent({
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "auto_approve" },
+					evidence: {
+						commitCount: 2,
+						landingStatus: { status: "merged", mergedAt: "2025-01-01" },
+					},
+				},
+			})),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		// Should be "approved" — bridge detects merged PR and skips approveExecution
+		expect(session!.status).toBe("approved");
+		expect(session!.decision_route).toBe("auto_approve");
+	});
+
 	it("POST /events with auto_approve triggers auto merge (mock)", async () => {
 		// The auto-merge will fail because ApproveHandler can't run 'gh' in tests
 		// but the status flow should be: awaiting_review → (merge attempt)

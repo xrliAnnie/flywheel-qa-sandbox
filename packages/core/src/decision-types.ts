@@ -12,6 +12,16 @@ export type DecisionSource =
 	| "fallback_heuristic"
 	| "decision_error_fallback";
 
+/** Landing status signal from flywheel-land skill */
+export interface LandingStatus {
+	status: "merged" | "failed";
+	prNumber?: number;
+	mergedAt?: string;
+	mergeCommitSha?: string;
+	failureReason?: string;
+	failureDetail?: string;
+}
+
 export interface ExecutionContext {
 	// Issue identity
 	issueId: string;
@@ -40,6 +50,9 @@ export interface ExecutionContext {
 
 	// Partial evidence flag
 	partial: boolean;
+
+	// Landing status (v0.6 — undefined if landing not attempted)
+	landingStatus?: LandingStatus;
 }
 
 export interface DecisionResult {
