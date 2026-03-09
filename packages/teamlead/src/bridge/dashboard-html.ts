@@ -54,6 +54,8 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 .empty{color:var(--text-muted);font-style:italic;padding:1rem 0}
 .mono{font-family:'SF Mono',SFMono-Regular,Consolas,'Liberation Mono',Menlo,monospace;font-size:.8125rem}
 .truncate{max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.issue-title{display:block;font-size:.75rem;color:var(--text-muted);font-weight:400;margin-top:2px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tmux-tag{font-size:.6875rem;color:var(--text-muted);background:var(--surface);border:1px solid var(--border);border-radius:3px;padding:1px 5px;white-space:nowrap}
 
 .act-btn{font-size:.6875rem;padding:2px 8px;border:1px solid var(--border);border-radius:4px;
   background:transparent;color:var(--text-muted);cursor:pointer;margin-right:4px;transition:all .15s}
@@ -92,7 +94,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 <section>
   <h2>Active Sessions</h2>
   <table><thead><tr>
-    <th>Issue</th><th>Status</th><th>Project</th><th>Runtime</th><th>Branch</th><th>Actions</th>
+    <th>Issue</th><th>Status</th><th>Project</th><th>Runtime</th><th>Branch</th><th>Process</th><th>Actions</th>
   </tr></thead><tbody id="t-active"></tbody></table>
   <div class="empty" id="e-active" style="display:none">No active sessions</div>
 </section>
@@ -155,6 +157,17 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
     if (added) parts.push('+' + added);
     if (removed) parts.push('-' + removed);
     return parts.join(' / ') || '-';
+  }
+
+  function issueCell(s) {
+    var id = escapeHtml(s.issue_identifier || s.execution_id);
+    var title = s.issue_title ? '<span class="issue-title" title="' + escapeHtml(s.issue_title) + '">' + escapeHtml(s.issue_title) + '</span>' : '';
+    return '<td class="mono">' + id + title + '</td>';
+  }
+
+  function tmuxTag(session) {
+    if (!session.tmux_session) return '';
+    return ' <span class="tmux-tag" title="tmux session">' + escapeHtml(session.tmux_session) + '</span>';
   }
 
   function statusBadge(status) {
@@ -237,11 +250,12 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
     for (var i = 0; i < sessions.length; i++) {
       var s = sessions[i];
       html += '<tr>'
-        + '<td class="mono">' + escapeHtml(s.issue_identifier || s.execution_id) + '</td>'
+        + issueCell(s)
         + '<td>' + statusBadge(s.status) + '</td>'
         + '<td>' + escapeHtml(s.project_name) + '</td>'
         + '<td class="runtime" data-started="' + escapeHtml(s.started_at || '') + '">' + escapeHtml(formatRuntime(s.started_at)) + '</td>'
         + '<td class="mono truncate">' + escapeHtml(s.branch || '-') + '</td>'
+        + '<td>' + tmuxTag(s) + '</td>'
         + '<td>' + actionButtons(s) + '</td>'
         + '</tr>';
     }
@@ -257,7 +271,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
     for (var i = 0; i < sessions.length; i++) {
       var s = sessions[i];
       html += '<tr>'
-        + '<td class="mono">' + escapeHtml(s.issue_identifier || s.execution_id) + '</td>'
+        + issueCell(s)
         + '<td>' + statusBadge(s.status) + '</td>'
         + '<td>' + escapeHtml(formatRuntime(s.started_at)) + '</td>'
         + '<td class="mono">' + escapeHtml(formatDiff(s.lines_added, s.lines_removed)) + '</td>'
@@ -277,7 +291,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
     for (var i = 0; i < sessions.length; i++) {
       var s = sessions[i];
       html += '<tr>'
-        + '<td class="mono">' + escapeHtml(s.issue_identifier || s.execution_id) + '</td>'
+        + issueCell(s)
         + '<td>' + escapeHtml(formatRuntime(s.started_at)) + '</td>'
         + '<td>' + escapeHtml(s.last_activity_at || '-') + '</td>'
         + '<td class="truncate">' + escapeHtml(s.last_error || '-') + '</td>'
