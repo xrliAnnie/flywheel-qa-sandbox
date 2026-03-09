@@ -135,8 +135,10 @@ export class ExecutionEvidenceCollector {
 						if (prData.state !== "MERGED") {
 							return { status: "failed", failureReason: "verification_failed" };
 						}
-					} catch {
-						// gh command failed — trust the signal
+					} catch (err) {
+						console.warn(
+							`[EvidenceCollector] gh pr view failed for PR #${signal.prNumber}: ${err instanceof Error ? err.message : String(err)}. Trusting signal file.`,
+						);
 					}
 				}
 				return {
@@ -158,8 +160,12 @@ export class ExecutionEvidenceCollector {
 
 			// Unknown status
 			return { status: "failed", failureReason: "parse_error" };
-		} catch {
-			return { status: "failed", failureReason: "parse_error" };
+		} catch (err) {
+			const reason = err instanceof SyntaxError ? "parse_error" : "read_error";
+			console.warn(
+				`[EvidenceCollector] readLandingStatus failed (${reason}): ${err instanceof Error ? err.message : String(err)}`,
+			);
+			return { status: "failed", failureReason: reason };
 		}
 	}
 
