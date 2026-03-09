@@ -108,7 +108,10 @@ export class ConfigLoader {
 
 		// agents (optional — v0.6)
 		const agents = c.agents as Record<string, unknown> | undefined;
-		if (agents && typeof agents === "object" && !Array.isArray(agents)) {
+		if (agents != null && (typeof agents !== "object" || Array.isArray(agents))) {
+			throw new Error("agents must be a YAML mapping (object), not an array or scalar");
+		}
+		if (agents && typeof agents === "object") {
 			for (const [name, agentRaw] of Object.entries(agents)) {
 				const agent = agentRaw as Record<string, unknown>;
 				if (!agent.agent_file || typeof agent.agent_file !== "string") {

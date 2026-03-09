@@ -636,7 +636,7 @@ default_agent: nonexistent
 		);
 	});
 
-	it("silently ignores agents when it is a YAML array instead of object", async () => {
+	it("throws when agents is a YAML array instead of object", async () => {
 		const yaml = MINIMAL_CONFIG_YAML + `
 agents:
   - agent_file: .claude/agents/backend.md
@@ -645,9 +645,9 @@ agents:
       keywords: ["db"]
 `;
 		readFile.mockResolvedValue(yaml);
-		const config = await loader.load("/p/config.yaml");
-		// Array-form agents should be ignored (treated as absent), not crash
-		expect(config.agents).toBeDefined(); // raw YAML still has it
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/agents must be a YAML mapping/,
+		);
 	});
 
 	it("loads config with skills section", async () => {
