@@ -590,6 +590,36 @@ agents:
 		);
 	});
 
+	it("throws when match.labels contains non-string elements", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    agent_file: .claude/agents/backend.md
+    match:
+      labels: [123, true]
+      keywords: ["db"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/labels.*strings/i,
+		);
+	});
+
+	it("throws when match.keywords contains non-string elements", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    agent_file: .claude/agents/backend.md
+    match:
+      labels: ["backend"]
+      keywords: [42]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/keywords.*strings/i,
+		);
+	});
+
 	it("throws when default_agent references nonexistent agent", async () => {
 		const yaml = MINIMAL_CONFIG_YAML + `
 agents:

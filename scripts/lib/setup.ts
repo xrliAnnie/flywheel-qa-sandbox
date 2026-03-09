@@ -260,8 +260,12 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 					messages: [{ role: "user", content: prompt }],
 					max_tokens: 64,
 				});
-				const result = response.content.trim().toLowerCase();
-				return agentNames.includes(result) ? result : null;
+				const raw = response.content.trim();
+				// Case-insensitive match: agent keys may have mixed case
+				const matched = agentNames.find(
+					(n) => n.toLowerCase() === raw.toLowerCase(),
+				);
+				return matched ?? null;
 			};
 		}
 		agentDispatcher = new AgentDispatcher(
