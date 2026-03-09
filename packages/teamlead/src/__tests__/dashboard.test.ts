@@ -208,6 +208,17 @@ describe("buildDashboardPayload", () => {
 		expect(payload.metrics.completed_today).toBe(2);
 	});
 
+	it("rejected/deferred/shelved/blocked do NOT count as completed_today", () => {
+		const now = new Date();
+		store.upsertSession(makeSession({ execution_id: "e1", status: "rejected", last_activity_at: toSqlite(now) }));
+		store.upsertSession(makeSession({ execution_id: "e2", status: "deferred", last_activity_at: toSqlite(now) }));
+		store.upsertSession(makeSession({ execution_id: "e3", status: "shelved", last_activity_at: toSqlite(now) }));
+		store.upsertSession(makeSession({ execution_id: "e4", status: "blocked", last_activity_at: toSqlite(now) }));
+		store.upsertSession(makeSession({ execution_id: "e5", status: "completed", last_activity_at: toSqlite(now) }));
+		const payload = buildDashboardPayload(store, 15);
+		expect(payload.metrics.completed_today).toBe(1); // only "completed", not rejected/deferred/shelved/blocked
+	});
+
 	it("today's failed sessions count in failed_today", () => {
 		store.upsertSession(makeSession({ execution_id: "e1", status: "failed", last_activity_at: toSqlite(new Date()) }));
 		const payload = buildDashboardPayload(store, 15);
