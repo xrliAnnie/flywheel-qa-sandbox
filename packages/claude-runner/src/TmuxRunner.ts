@@ -262,8 +262,10 @@ export class TmuxRunner implements IFlywheelRunner {
 									return;
 								}
 							}
-						} catch {
-							// Best-effort — don't block pane_dead detection
+						} catch (err) {
+							console.warn(
+								`[TmuxRunner] Sentinel check failed for ${sentinelPath}: ${err instanceof Error ? err.message : String(err)}. Falling back to pane_dead detection.`,
+							);
 						}
 					}
 

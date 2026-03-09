@@ -153,7 +153,13 @@ export class Blueprint {
 		}
 
 		// ── Git exclude for .flywheel/runs/ (v0.6 — BEFORE assertCleanTree) ──
-		await ensureFlywheelRunsExclude(cwd);
+		try {
+			await ensureFlywheelRunsExclude(cwd);
+		} catch (err) {
+			console.warn(
+				`[Blueprint] Failed to set up .flywheel/runs/ git exclude: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
 
 		// ── Git preflight (existing — THROWS on failure) ──────
 		await this.gitChecker.assertCleanTree(cwd);
@@ -288,7 +294,9 @@ export class Blueprint {
 			const runDir = path.join(cwd, ".flywheel", "runs", executionId);
 			try {
 				await fs.promises.rm(runDir, { recursive: true, force: true });
-			} catch { /* best-effort */ }
+			} catch (err) {
+				console.warn(`[Blueprint] Failed to clean up ${runDir}: ${err instanceof Error ? err.message : String(err)}`);
+			}
 		}
 
 		// ── Decision Layer (v0.2 Step 2b — optional) ──────────
@@ -491,8 +499,8 @@ async function ensureFlywheelRunsExclude(cwd: string): Promise<void> {
 				(err, stdout) => (err ? reject(err) : resolve(path.resolve(cwd, stdout.trim()))),
 			);
 		});
-	} catch {
-		// Not a git repo — skip
+	} catch (err) {
+		console.warn(`[Blueprint] ensureFlywheelRunsExclude skipped: ${err instanceof Error ? err.message : String(err)}`);
 		return;
 	}
 
@@ -502,8 +510,10 @@ async function ensureFlywheelRunsExclude(cwd: string): Promise<void> {
 	let content = "";
 	try {
 		content = await fs.promises.readFile(excludeFile, "utf-8");
-	} catch {
-		// File doesn't exist yet — will create
+	} catch (err: unknown) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+			console.warn(`[Blueprint] Failed to read ${excludeFile}: ${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 
 	if (!content.includes(RUNS_EXCLUDE_ENTRY)) {
