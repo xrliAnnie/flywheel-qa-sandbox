@@ -20,6 +20,7 @@ import type {
 } from "./ExecutionEvidenceCollector.js";
 import type { IDecisionLayer } from "./decision/DecisionLayer.js";
 import type { ExecutionEventEmitter, EventEnvelope } from "./ExecutionEventEmitter.js";
+import type { AgentDispatcher } from "./AgentDispatcher.js";
 
 /** Result of a Blueprint execution */
 export interface BlueprintResult {
@@ -68,6 +69,7 @@ export interface ShellRunner {
  * v0.1.1: No worktree, no skills, no evidence, no decision.
  * v0.2: Worktree isolation + skill injection + evidence collection.
  * v0.2 Step 2b: Decision Layer integration (optional).
+ * v0.6: Agent dispatch (project-aware prompt assembly).
  */
 export class Blueprint {
 	constructor(
@@ -84,6 +86,8 @@ export class Blueprint {
 		private decisionLayer?: IDecisionLayer,
 		// v0.4 — optional event emitter for TeamLead pipeline
 		private eventEmitter?: ExecutionEventEmitter,
+		// v0.6 — optional agent dispatcher for project-aware prompts
+		private agentDispatcher?: AgentDispatcher,
 	) {}
 
 	async run(
@@ -197,6 +201,11 @@ export class Blueprint {
 			}
 		}
 
+		// ── Agent dispatch (v0.6 — after hydrate, before prompt) ─
+		const dispatchResult = this.agentDispatcher
+			? await this.agentDispatcher.dispatch(hydrated)
+			: null;
+
 		// ── Landing signal path (v0.6) ───────────────────────
 		const landSignalPath = path.join(cwd, ".flywheel", "runs", executionId, "land-status.json");
 		// Landing is only supported in worktree mode (single-repo)
@@ -240,7 +249,36 @@ export class Blueprint {
 		}
 
 		systemPromptLines.push("Do not ask questions — implement your best judgment.");
-		const systemPrompt = systemPromptLines.join("\n");
+		const baseSystemPrompt = systemPromptLines.join("\n");
+
+		// Agent context (additive — prepend before base system prompt)
+		let agentContext = "";
+		if (dispatchResult) {
+			const agentContent = await readAgentFile(cwd, dispatchResult.agentConfig.agent_file);
+			if (agentContent) {
+				const parts: string[] = [
+					"## Agent Role",
+					agentContent.slice(0, 40_000),
+					"",
+				];
+				if (dispatchResult.agentConfig.domain_file) {
+					const domainContent = await readAgentFile(cwd, dispatchResult.agentConfig.domain_file);
+					if (domainContent) {
+						parts.push(`## Domain Config\n${domainContent.slice(0, 10_000)}`);
+						parts.push("");
+					}
+				}
+				agentContext = parts.join("\n");
+			} else {
+				console.warn(
+					`[Blueprint] Agent file not found: ${dispatchResult.agentConfig.agent_file}, using generic prompt`,
+				);
+			}
+		}
+
+		const systemPrompt = agentContext
+			? `${agentContext}\n## Baseline Rules\n${baseSystemPrompt}`
+			: baseSystemPrompt;
 
 		// ── Runner execution (existing — catch runner errors) ─
 		const timeoutMs = ctx.sessionTimeoutMs ?? 2_700_000;
@@ -461,6 +499,46 @@ export class Blueprint {
 				`[Blueprint] Failed to kill tmux window ${tmuxWindow}: ${msg}`,
 			);
 		}
+	}
+}
+
+/**
+ * Safely read an agent/domain file relative to the repo root.
+ * Returns null if file doesn't exist or path escapes the repo.
+ */
+async function readAgentFile(repoRoot: string, relativePath: string): Promise<string | null> {
+	// Path safety: reject absolute or parent-escaping paths
+	if (path.isAbsolute(relativePath) || relativePath.startsWith("..")) {
+		console.warn(`[Blueprint] Unsafe agent path rejected: ${relativePath}`);
+		return null;
+	}
+
+	const resolved = path.resolve(repoRoot, relativePath);
+
+	// Containment check (resolve-based, no realpath dependency)
+	const normalizedRoot = path.resolve(repoRoot);
+	if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
+		console.warn(`[Blueprint] Agent path escapes repo: ${relativePath}`);
+		return null;
+	}
+
+	try {
+		const content = await fs.promises.readFile(resolved, "utf-8");
+
+		// Symlink containment: verify real path is still inside repo
+		const realResolved = await fs.promises.realpath(resolved);
+		const realRoot = await fs.promises.realpath(repoRoot);
+		if (!realResolved.startsWith(realRoot + path.sep)) {
+			console.warn(`[Blueprint] Agent file symlinks outside repo: ${relativePath}`);
+			return null;
+		}
+
+		return content || null; // empty file → null
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+			return null;
+		}
+		throw err;
 	}
 }
 
