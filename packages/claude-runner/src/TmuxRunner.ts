@@ -189,12 +189,14 @@ export class TmuxRunner implements IFlywheelRunner {
 			let settled = false;
 			let watcher: ReturnType<typeof watch> | null = null;
 			let poller: ReturnType<typeof setInterval> | null = null;
+			let gracePollerRef: ReturnType<typeof setInterval> | null = null;
 
 			const settle = (timedOut: boolean) => {
 				if (settled) return;
 				settled = true;
 				watcher?.close();
 				if (poller) clearInterval(poller);
+				if (gracePollerRef) clearInterval(gracePollerRef);
 				clearTimeout(timer);
 				// Cancel pending hook listener to prevent listener accumulation
 				if (this.hookServer && callbackToken) {
@@ -235,23 +237,20 @@ export class TmuxRunner implements IFlywheelRunner {
 								if (signal.status === "merged" || signal.status === "failed") {
 									// Grace period: wait for pane to exit naturally (max 30s)
 									let graceChecks = 0;
-									const gracePoller = setInterval(() => {
+									gracePollerRef = setInterval(() => {
 										graceChecks++;
 										try {
 											const result = this.execFileFn("tmux", [
 												"list-panes", "-t", windowId, "-F", "#{pane_dead}",
 											]);
 											if (result.stdout.trim() === "1") {
-												clearInterval(gracePoller);
 												settle(false);
 											}
 										} catch {
 											// Window gone
-											clearInterval(gracePoller);
 											settle(false);
 										}
 										if (graceChecks >= 6) { // 30s (6 × 5s)
-											clearInterval(gracePoller);
 											settle(false);
 										}
 									}, this.pollIntervalMs);
