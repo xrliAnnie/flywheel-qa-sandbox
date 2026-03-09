@@ -66,7 +66,9 @@ export function buildDashboardPayload(
 	const running = active.filter((s) => s.status === "running").length;
 	const awaitingReview = active.filter((s) => s.status === "awaiting_review").length;
 	const failedToday = terminal.filter((s) => s.status === "failed").length;
-	const completedToday = terminal.filter((s) => s.status !== "failed").length;
+	const completedToday = terminal.filter(
+		(s) => s.status === "completed" || s.status === "approved",
+	).length;
 
 	return {
 		metrics: {
