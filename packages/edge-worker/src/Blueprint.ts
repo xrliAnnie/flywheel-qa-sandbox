@@ -523,9 +523,7 @@ async function readAgentFile(repoRoot: string, relativePath: string): Promise<st
 	}
 
 	try {
-		const content = await fs.promises.readFile(resolved, "utf-8");
-
-		// Symlink containment: verify real path is still inside repo
+		// Symlink containment: verify real path before reading content
 		const realResolved = await fs.promises.realpath(resolved);
 		const realRoot = await fs.promises.realpath(repoRoot);
 		if (!realResolved.startsWith(realRoot + path.sep)) {
@@ -533,6 +531,7 @@ async function readAgentFile(repoRoot: string, relativePath: string): Promise<st
 			return null;
 		}
 
+		const content = await fs.promises.readFile(realResolved, "utf-8");
 		return content || null; // empty file → null
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {

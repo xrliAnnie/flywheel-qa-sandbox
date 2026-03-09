@@ -535,6 +535,61 @@ agents:
 		);
 	});
 
+	it("throws when agent_file has embedded .. segments", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    agent_file: "foo/../../etc/passwd"
+    match:
+      labels: ["backend"]
+      keywords: ["db"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/must not escape repo/i,
+		);
+	});
+
+	it("throws when match field is missing", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    agent_file: .claude/agents/backend.md
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/agents\.backend.*match/i,
+		);
+	});
+
+	it("throws when match.labels is missing", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    agent_file: .claude/agents/backend.md
+    match:
+      keywords: ["db"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/labels.*array/i,
+		);
+	});
+
+	it("throws when match.keywords is missing", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    agent_file: .claude/agents/backend.md
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/keywords.*array/i,
+		);
+	});
+
 	it("throws when default_agent references nonexistent agent", async () => {
 		const yaml = MINIMAL_CONFIG_YAML + `
 agents:

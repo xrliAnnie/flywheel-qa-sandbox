@@ -1,3 +1,4 @@
+import * as path from "node:path";
 import { parse } from "yaml";
 import type { FlywheelConfig } from "./types.js";
 
@@ -124,6 +125,23 @@ export class ConfigLoader {
 					}
 					this.validateAgentPath(agent.domain_file as string, `agents.${name}.domain_file`);
 				}
+				// match is required with labels and keywords arrays
+				if (!agent.match || typeof agent.match !== "object") {
+					throw new Error(
+						`agents.${name}: missing required field "match"`,
+					);
+				}
+				const match = agent.match as Record<string, unknown>;
+				if (!Array.isArray(match.labels)) {
+					throw new Error(
+						`agents.${name}.match.labels must be an array`,
+					);
+				}
+				if (!Array.isArray(match.keywords)) {
+					throw new Error(
+						`agents.${name}.match.keywords must be an array`,
+					);
+				}
 			}
 
 			// default_agent must reference an existing agent
@@ -142,7 +160,11 @@ export class ConfigLoader {
 				`${fieldName}: agent path must be relative, got "${relativePath}"`,
 			);
 		}
-		if (relativePath.startsWith("..")) {
+		// Resolve against a dummy root to catch embedded .. segments
+		// e.g., "foo/../../etc/passwd" resolves outside the root
+		const dummyRoot = "/flywheel-validate";
+		const resolved = path.resolve(dummyRoot, relativePath);
+		if (!resolved.startsWith(dummyRoot + "/")) {
 			throw new Error(
 				`${fieldName}: agent path must not escape repo, got "${relativePath}"`,
 			);
