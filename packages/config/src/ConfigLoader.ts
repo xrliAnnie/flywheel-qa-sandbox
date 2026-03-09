@@ -157,9 +157,17 @@ export class ConfigLoader {
 				}
 			}
 
-			// default_agent must reference an existing agent
-			const defaultAgent = c.default_agent as string | undefined;
-			if (defaultAgent && !(defaultAgent in agents)) {
+		}
+
+		// default_agent validation (outside agents block)
+		const defaultAgent = c.default_agent as string | undefined;
+		if (defaultAgent) {
+			if (!agents || typeof agents !== "object") {
+				throw new Error(
+					`default_agent "${defaultAgent}" requires an agents section`,
+				);
+			}
+			if (!(defaultAgent in agents)) {
 				throw new Error(
 					`default_agent "${defaultAgent}" not found in agents`,
 				);
