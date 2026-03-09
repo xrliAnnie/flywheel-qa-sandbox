@@ -236,6 +236,8 @@ export class TmuxRunner implements IFlywheelRunner {
 								const signal = JSON.parse(raw);
 								if (signal.status === "merged" || signal.status === "failed") {
 									// Grace period: wait for pane to exit naturally (max 30s)
+									// Clear main timeout — sentinel detected terminal state, don't race
+									clearTimeout(timer);
 									let graceChecks = 0;
 									gracePollerRef = setInterval(() => {
 										graceChecks++;
