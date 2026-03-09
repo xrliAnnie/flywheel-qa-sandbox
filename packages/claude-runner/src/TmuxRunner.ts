@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { watch } from "node:fs";
+import { watch, readFileSync } from "node:fs";
 import { existsSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import type {
@@ -30,7 +30,7 @@ export class TmuxRunner implements IFlywheelRunner {
 		private sessionName: string = "flywheel",
 		private execFileFn: ExecFileFn = defaultExecFile,
 		private pollIntervalMs: number = 5000,
-		private defaultTimeoutMs: number = 1800000, // 30 min
+		private defaultTimeoutMs: number = 2_700_000, // 45 min
 		private hookServer?: IHookCallbackServer,
 	) {}
 
@@ -140,6 +140,7 @@ export class TmuxRunner implements IFlywheelRunner {
 			windowId,
 			effectiveTimeoutMs,
 			callbackToken,
+			request.sentinelPath,
 		);
 
 		return {
@@ -182,18 +183,25 @@ export class TmuxRunner implements IFlywheelRunner {
 		windowId: string,
 		timeoutMs: number,
 		callbackToken?: string,
+		sentinelPath?: string,
 	): Promise<boolean> {
 		return new Promise<boolean>((resolve) => {
 			let settled = false;
 			let watcher: ReturnType<typeof watch> | null = null;
 			let poller: ReturnType<typeof setInterval> | null = null;
+			let gracePollerRef: ReturnType<typeof setInterval> | null = null;
 
 			const settle = (timedOut: boolean) => {
 				if (settled) return;
 				settled = true;
 				watcher?.close();
 				if (poller) clearInterval(poller);
+				if (gracePollerRef) clearInterval(gracePollerRef);
 				clearTimeout(timer);
+				// Cancel pending hook listener to prevent listener accumulation
+				if (this.hookServer && callbackToken) {
+					this.hookServer.cancelWait(callbackToken);
+				}
 				resolve(timedOut);
 			};
 
@@ -206,7 +214,7 @@ export class TmuxRunner implements IFlywheelRunner {
 			}, timeoutMs);
 
 			if (this.hookServer && callbackToken) {
-				// ── v0.2 mode: HTTP callback (primary) + pane_dead poller (fallback) ──
+				// ── v0.2 mode: HTTP callback (primary) + pane_dead poller + sentinel (fallback) ──
 				// NO marker file watcher — markers are not per-token safe for parallel
 
 				// Path 1: HTTP callback
@@ -216,9 +224,51 @@ export class TmuxRunner implements IFlywheelRunner {
 						if (event) settle(false);
 					});
 
-				// Path 2: pane_dead poller (fallback — races with callback)
+				// Path 2: pane_dead poller + sentinel check (fallback — races with callback)
 				poller = setInterval(() => {
 					if (settled) return;
+
+					// Sentinel check: land-status.json terminal state
+					if (sentinelPath) {
+						try {
+							if (existsSync(sentinelPath)) {
+								const raw = readFileSync(sentinelPath, "utf-8");
+								const signal = JSON.parse(raw);
+								if (signal.status === "merged" || signal.status === "failed") {
+									// Grace period: wait for pane to exit naturally (max 30s)
+									// Clear main timeout — sentinel detected terminal state, don't race
+									clearTimeout(timer);
+									let graceChecks = 0;
+									gracePollerRef = setInterval(() => {
+										graceChecks++;
+										try {
+											const result = this.execFileFn("tmux", [
+												"list-panes", "-t", windowId, "-F", "#{pane_dead}",
+											]);
+											if (result.stdout.trim() === "1") {
+												settle(false);
+											}
+										} catch {
+											// Window gone
+											settle(false);
+										}
+										if (graceChecks >= 6) { // 30s (6 × 5s)
+											settle(false);
+										}
+									}, this.pollIntervalMs);
+									// Stop the main poller — grace poller takes over
+									if (poller) clearInterval(poller);
+									poller = null;
+									return;
+								}
+							}
+						} catch (err) {
+							console.warn(
+								`[TmuxRunner] Sentinel check failed for ${sentinelPath}: ${err instanceof Error ? err.message : String(err)}. Falling back to pane_dead detection.`,
+							);
+						}
+					}
+
 					try {
 						const result = this.execFileFn("tmux", [
 							"list-panes",

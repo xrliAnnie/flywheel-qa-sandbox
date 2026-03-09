@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { execFile } from "node:child_process";
 import type {
 	IFlywheelRunner,
 	FlywheelRunResult,
@@ -118,6 +121,7 @@ export class Blueprint {
 	): Promise<BlueprintResult> {
 		const runner = this.getRunner(ctx.runnerName);
 		const startTime = Date.now();
+		const executionId = env.executionId;
 		let cwd = projectRoot;
 		let worktreeInfo: WorktreeInfo | undefined;
 
@@ -148,6 +152,15 @@ export class Blueprint {
 			}
 		}
 
+		// ── Git exclude for .flywheel/runs/ (v0.6 — BEFORE assertCleanTree) ──
+		try {
+			await ensureFlywheelRunsExclude(cwd);
+		} catch (err) {
+			console.warn(
+				`[Blueprint] Failed to set up .flywheel/runs/ git exclude: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+
 		// ── Git preflight (existing — THROWS on failure) ──────
 		await this.gitChecker.assertCleanTree(cwd);
 		const baseSha = await this.gitChecker.captureBaseline(cwd);
@@ -160,6 +173,7 @@ export class Blueprint {
 		env.issueTitle = hydrated.issueTitle;
 
 		// ── Skill injection (v0.2 — best-effort, non-blocking) ─
+		let skillInjectionSucceeded = false;
 		if (this.skillInjector) {
 			const projectName = ctx.projectName ?? ctx.teamName;
 			try {
@@ -173,6 +187,7 @@ export class Blueprint {
 					buildCommand: this.skillsConfig?.build_command,
 					testFramework: this.skillsConfig?.test_framework,
 				});
+				skillInjectionSucceeded = true;
 			} catch (err) {
 				console.warn(
 					`[Blueprint] Skill injection failed (non-fatal): ${
@@ -182,21 +197,53 @@ export class Blueprint {
 			}
 		}
 
+		// ── Landing signal path (v0.6) ───────────────────────
+		const landSignalPath = path.join(cwd, ".flywheel", "runs", executionId, "land-status.json");
+		// Landing is only supported in worktree mode (single-repo)
+		const landingEnabled = !!this.worktreeManager;
+		const hasLandCommand = !!this.skillsConfig?.land_command;
+		const canLand = landingEnabled && (skillInjectionSucceeded || hasLandCommand);
+
 		// ── Build prompt + system prompt ──────────────────────
 		const prompt = `Implement ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`;
-		const systemPrompt = [
+
+		const systemPromptLines = [
 			"You are working on a Linear issue. Follow these steps:",
 			"1. Read the codebase and understand the context (CLAUDE.md, relevant files).",
 			"2. Implement the requested changes following TDD.",
 			"3. Create a feature branch, commit your changes.",
 			"4. Push the branch and create a GitHub PR.",
-			"5. Verify CI passes. If CI fails, fix and push again.",
-			"6. When all work is complete, stop and wait.",
-			"Do not ask questions — implement your best judgment.",
-		].join("\n");
+		];
+
+		if (canLand) {
+			// v0.6: land after PR creation
+			if (hasLandCommand) {
+				systemPromptLines.push(
+					`5. After creating the PR, use ${this.skillsConfig!.land_command} to land it.`,
+					`   Regardless of which landing command you use, you MUST write the landing signal file.`,
+				);
+			} else {
+				systemPromptLines.push(
+					"5. After creating the PR, follow the flywheel-land skill to monitor CI, handle reviews, and merge.",
+				);
+			}
+			systemPromptLines.push(
+				"6. After PR is merged (or landing fails), stop and wait.",
+				`Landing signal path: ${landSignalPath}`,
+			);
+		} else {
+			// Legacy behavior: stop after PR
+			systemPromptLines.push(
+				"5. Verify CI passes. If CI fails, fix and push again.",
+				"6. When all work is complete, stop and wait.",
+			);
+		}
+
+		systemPromptLines.push("Do not ask questions — implement your best judgment.");
+		const systemPrompt = systemPromptLines.join("\n");
 
 		// ── Runner execution (existing — catch runner errors) ─
-		const timeoutMs = ctx.sessionTimeoutMs ?? 1_800_000;
+		const timeoutMs = ctx.sessionTimeoutMs ?? 2_700_000;
 		let result: FlywheelRunResult;
 		try {
 			result = await runner.run({
@@ -212,6 +259,7 @@ export class Blueprint {
 				appendSystemPrompt: systemPrompt,
 				timeoutMs,
 				sessionDisplayName: `${hydrated.issueId} ${hydrated.issueTitle}`,
+				sentinelPath: canLand ? landSignalPath : undefined,
 			});
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
@@ -237,7 +285,18 @@ export class Blueprint {
 				baseSha,
 				gitResult,
 				result.durationMs ?? 0,
+				canLand ? landSignalPath : undefined,
 			);
+		}
+
+		// ── Non-worktree cleanup: remove .flywheel/runs/<executionId>/ ──
+		if (!this.worktreeManager) {
+			const runDir = path.join(cwd, ".flywheel", "runs", executionId);
+			try {
+				await fs.promises.rm(runDir, { recursive: true, force: true });
+			} catch (err) {
+				console.warn(`[Blueprint] Failed to clean up ${runDir}: ${err instanceof Error ? err.message : String(err)}`);
+			}
 		}
 
 		// ── Decision Layer (v0.2 Step 2b — optional) ──────────
@@ -344,6 +403,7 @@ export class Blueprint {
 			durationMs: evidence.durationMs,
 			consecutiveFailures: ctx.consecutiveFailures ?? 0,
 			partial: evidence.partial,
+			landingStatus: evidence.landingStatus,
 		};
 
 		let decision: DecisionResult;
@@ -420,4 +480,47 @@ function buildWindowLabel(
 		.replace(/\s*—\s*/g, "-") // em-dash → single dash
 		.trim();
 	return `${runner}:${cleanTitle}`;
+}
+
+const RUNS_EXCLUDE_ENTRY = ".flywheel/runs/";
+
+/**
+ * Ensure .flywheel/runs/ is in git info/exclude.
+ * Must run BEFORE assertCleanTree() to prevent land-status.json from
+ * making the tree appear dirty.
+ */
+async function ensureFlywheelRunsExclude(cwd: string): Promise<void> {
+	let excludeFile: string;
+	try {
+		excludeFile = await new Promise<string>((resolve, reject) => {
+			execFile(
+				"git",
+				["-C", cwd, "rev-parse", "--git-path", "info/exclude"],
+				(err, stdout) => (err ? reject(err) : resolve(path.resolve(cwd, stdout.trim()))),
+			);
+		});
+	} catch (err) {
+		console.warn(`[Blueprint] ensureFlywheelRunsExclude skipped: ${err instanceof Error ? err.message : String(err)}`);
+		return;
+	}
+
+	const infoDir = path.dirname(excludeFile);
+	await fs.promises.mkdir(infoDir, { recursive: true });
+
+	let content = "";
+	try {
+		content = await fs.promises.readFile(excludeFile, "utf-8");
+	} catch (err: unknown) {
+		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+			console.warn(`[Blueprint] Failed to read ${excludeFile}: ${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+
+	if (!content.includes(RUNS_EXCLUDE_ENTRY)) {
+		const suffix = content.endsWith("\n") || content === "" ? "" : "\n";
+		await fs.promises.writeFile(
+			excludeFile,
+			`${content}${suffix}${RUNS_EXCLUDE_ENTRY}\n`,
+		);
+	}
 }

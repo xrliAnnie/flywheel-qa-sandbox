@@ -17,6 +17,17 @@ const noTrigger = (ruleId: string): HardRuleResult => ({
 	ruleId,
 });
 
+// HR-010: landing failed → block (highest priority — checked before timeout)
+export const HR_010_LANDING_FAILED: HardRule = {
+	id: "HR-010",
+	description: "PR landing failed — block for review",
+	priority: 0,
+	evaluate: (ctx) =>
+		ctx.landingStatus?.status === "failed"
+			? { triggered: true, action: "block", reason: `Landing failed: ${ctx.landingStatus.failureReason ?? "unknown"}`, ruleId: "HR-010" }
+			: noTrigger("HR-010"),
+};
+
 // HR-007: timeout → block (highest priority)
 export const HR_007_TIMEOUT: HardRule = {
 	id: "HR-007",
@@ -127,6 +138,7 @@ export const HR_006_TRUST_SCORE: HardRule = {
 
 export function defaultRules(): HardRule[] {
 	return [
+		HR_010_LANDING_FAILED,
 		HR_007_TIMEOUT,
 		HR_009_ZERO_COMMITS,
 		HR_008_PARTIAL,

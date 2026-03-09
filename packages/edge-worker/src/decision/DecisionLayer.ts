@@ -31,6 +31,20 @@ export class DecisionLayer implements IDecisionLayer {
 		ctx: ExecutionContext,
 		cwd: string,
 	): Promise<DecisionResult> {
+		// Early return: PR already merged by flywheel-land — bypass all rules/triage/verify
+		if (ctx.landingStatus?.status === "merged") {
+			const result: DecisionResult = {
+				route: "auto_approve",
+				confidence: 1.0,
+				reasoning: `PR already merged by flywheel-land at ${ctx.landingStatus.mergedAt ?? "unknown"}`,
+				concerns: [],
+				decisionSource: "hard_rule",
+				hardRuleId: "HR-LANDED",
+			};
+			await this.audit(ctx, result);
+			return result;
+		}
+
 		let result: DecisionResult;
 
 		// Step 1: Hard rules (deterministic, no LLM)

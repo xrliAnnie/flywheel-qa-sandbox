@@ -13,6 +13,7 @@ const SKILL_NAMES = [
 	"flywheel-git-workflow",
 	"flywheel-escalation",
 	"flywheel-tdd",
+	"flywheel-land",
 ];
 
 function makeCtx(overrides: Partial<SkillContext> = {}): SkillContext {

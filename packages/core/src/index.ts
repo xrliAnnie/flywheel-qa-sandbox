@@ -232,6 +232,7 @@ export type {
 	DecisionResult,
 	VerificationResult,
 	HardRuleResult,
+	LandingStatus,
 } from "./decision-types.js";
 
 // LLM Client interface (v0.2 Step 2b — model agnostic)

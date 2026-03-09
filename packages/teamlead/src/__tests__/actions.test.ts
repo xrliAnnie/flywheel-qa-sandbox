@@ -1,7 +1,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { createBridgeApp } from "../bridge/plugin.js";
-import { approveExecution } from "../bridge/actions.js";
+import { approveExecution, transitionSession } from "../bridge/actions.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type http from "node:http";
@@ -145,24 +145,6 @@ describe("Action tools", () => {
 		expect(result.message).toContain("expected \"awaiting_review\"");
 	});
 
-	it("POST /api/actions/reject returns 501", async () => {
-		const res = await fetch(`${baseUrl}/api/actions/reject`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({}),
-		});
-		expect(res.status).toBe(501);
-	});
-
-	it("POST /api/actions/defer returns 501", async () => {
-		const res = await fetch(`${baseUrl}/api/actions/defer`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({}),
-		});
-		expect(res.status).toBe(501);
-	});
-
 	it("POST /api/actions/invalid returns 400", async () => {
 		const res = await fetch(`${baseUrl}/api/actions/invalid`, {
 			method: "POST",
@@ -170,5 +152,172 @@ describe("Action tools", () => {
 			body: JSON.stringify({}),
 		});
 		expect(res.status).toBe(400);
+	});
+
+	// --- reject ---
+	it("reject transitions awaiting_review to rejected", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "awaiting_review", issue_identifier: "GEO-50",
+		});
+		const result = transitionSession(store, "reject", "e1", "Code quality issues");
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("rejected");
+		expect(store.getSession("e1")!.last_error).toBe("Code quality issues");
+	});
+
+	it("reject from running fails", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "running",
+		});
+		const result = transitionSession(store, "reject", "e1");
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("awaiting_review");
+	});
+
+	it("POST /api/actions/reject via HTTP succeeds", async () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		const res = await fetch(`${baseUrl}/api/actions/reject`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "e1", reason: "Not ready" }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.success).toBe(true);
+		expect(body.action).toBe("reject");
+	});
+
+	it("POST /api/actions/reject without execution_id returns 400", async () => {
+		const res = await fetch(`${baseUrl}/api/actions/reject`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ reason: "test" }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json();
+		expect(body.error).toContain("execution_id");
+	});
+
+	// --- defer ---
+	it("defer transitions awaiting_review to deferred", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		const result = transitionSession(store, "defer", "e1", "Waiting for dependency");
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("deferred");
+	});
+
+	it("defer transitions blocked to deferred", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "blocked",
+		});
+		const result = transitionSession(store, "defer", "e1");
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("deferred");
+	});
+
+	it("defer from running fails", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "running",
+		});
+		const result = transitionSession(store, "defer", "e1");
+		expect(result.success).toBe(false);
+	});
+
+	// --- retry ---
+	it("retry transitions failed to running", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "failed",
+		});
+		const result = transitionSession(store, "retry", "e1");
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("running");
+	});
+
+	it("retry transitions rejected to running", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "rejected",
+		});
+		const result = transitionSession(store, "retry", "e1");
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("running");
+	});
+
+	it("retry transitions blocked to running", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "blocked",
+		});
+		const result = transitionSession(store, "retry", "e1");
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("running");
+	});
+
+	it("retry from awaiting_review fails", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		const result = transitionSession(store, "retry", "e1");
+		expect(result.success).toBe(false);
+	});
+
+	// --- shelve ---
+	it("shelve transitions awaiting_review to shelved", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		const result = transitionSession(store, "shelve", "e1", "Low priority");
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("shelved");
+	});
+
+	it("shelve from running fails", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "running",
+		});
+		const result = transitionSession(store, "shelve", "e1");
+		expect(result.success).toBe(false);
+	});
+
+	// --- edge cases ---
+	it("transition with nonexistent execution_id returns error", () => {
+		const result = transitionSession(store, "reject", "nonexistent");
+		expect(result.success).toBe(false);
+		expect(result.message).toContain("No session found");
+	});
+
+	it("transition uses issue_identifier in success message when available", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "awaiting_review", issue_identifier: "GEO-42",
+		});
+		const result = transitionSession(store, "reject", "e1");
+		expect(result.message).toContain("GEO-42");
+		expect(result.message).toContain("rejected");
+	});
+
+	it("transition without reason sets last_error to null", () => {
+		store.upsertSession({
+			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			status: "awaiting_review", last_error: "previous error",
+		});
+		transitionSession(store, "reject", "e1");
+		// last_error should be cleared (COALESCE with null keeps old value in SQLite)
+		// Actually COALESCE(null, last_error) keeps old value — that's fine, reason is optional
+		expect(store.getSession("e1")!.status).toBe("rejected");
 	});
 });

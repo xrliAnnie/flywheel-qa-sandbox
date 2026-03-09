@@ -302,6 +302,199 @@ describe("ExecutionEvidenceCollector", () => {
 		expect(result.length).toBe(5000 + 15);
 	});
 
+	// --- Landing status reading ---
+
+	it("landSignalPath not provided → landingStatus undefined", async () => {
+		const exec = makeMockExec();
+		const collector = new ExecutionEvidenceCollector(exec);
+
+		const evidence = await collector.collect(
+			"/repo", "base123", makeGitResult(), 1000,
+		);
+
+		expect(evidence.landingStatus).toBeUndefined();
+	});
+
+	it("land-status.json missing → landingStatus undefined", async () => {
+		const exec = makeMockExec();
+		const collector = new ExecutionEvidenceCollector(exec);
+
+		const evidence = await collector.collect(
+			"/repo", "base123", makeGitResult(), 1000,
+			"/nonexistent/path/land-status.json",
+		);
+
+		expect(evidence.landingStatus).toBeUndefined();
+	});
+
+	it("land-status.json with status=pending → failed/signal_missing", async () => {
+		const fs = await import("node:fs");
+		const os = await import("node:os");
+		const path = await import("node:path");
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "land-test-"));
+		const signalPath = path.join(tmpDir, "land-status.json");
+		fs.writeFileSync(signalPath, JSON.stringify({ status: "pending" }));
+
+		try {
+			const exec = makeMockExec();
+			const collector = new ExecutionEvidenceCollector(exec);
+
+			const evidence = await collector.collect(
+				"/repo", "base123", makeGitResult(), 1000, signalPath,
+			);
+
+			expect(evidence.landingStatus).toEqual({
+				status: "failed",
+				failureReason: "signal_missing",
+			});
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("land-status.json with status=merged → passes through", async () => {
+		const fs = await import("node:fs");
+		const os = await import("node:os");
+		const path = await import("node:path");
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "land-test-"));
+		const signalPath = path.join(tmpDir, "land-status.json");
+		fs.writeFileSync(signalPath, JSON.stringify({
+			status: "merged",
+			prNumber: 42,
+			mergedAt: "2025-01-01T00:00:00Z",
+			mergeCommitSha: "abc123",
+		}));
+
+		try {
+			// Mock gh pr view to return MERGED state
+			const exec = vi.fn(async (cmd: string, args: string[], _cwd: string) => {
+				if (cmd === "gh") {
+					return { stdout: JSON.stringify({ state: "MERGED", mergedAt: "2025-01-01" }) };
+				}
+				const joined = args.join(" ");
+				if (joined.includes("--name-only")) return { stdout: "src/a.ts\n" };
+				if (joined.includes("--numstat")) return { stdout: "10\t2\tsrc/a.ts\n" };
+				if (joined.includes("rev-parse")) return { stdout: "abc123\n" };
+				if (joined.includes("diff")) return { stdout: "diff\n" };
+				return { stdout: "" };
+			});
+			const collector = new ExecutionEvidenceCollector(exec);
+
+			const evidence = await collector.collect(
+				"/repo", "base123", makeGitResult(), 1000, signalPath,
+			);
+
+			expect(evidence.landingStatus).toEqual({
+				status: "merged",
+				prNumber: 42,
+				mergedAt: "2025-01-01T00:00:00Z",
+				mergeCommitSha: "abc123",
+			});
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("land-status.json with status=failed → passes through", async () => {
+		const fs = await import("node:fs");
+		const os = await import("node:os");
+		const path = await import("node:path");
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "land-test-"));
+		const signalPath = path.join(tmpDir, "land-status.json");
+		fs.writeFileSync(signalPath, JSON.stringify({
+			status: "failed",
+			prNumber: 42,
+			failureReason: "ci_failed",
+			failureDetail: "test suite timed out",
+		}));
+
+		try {
+			const exec = makeMockExec();
+			const collector = new ExecutionEvidenceCollector(exec);
+
+			const evidence = await collector.collect(
+				"/repo", "base123", makeGitResult(), 1000, signalPath,
+			);
+
+			expect(evidence.landingStatus).toEqual({
+				status: "failed",
+				prNumber: 42,
+				failureReason: "ci_failed",
+				failureDetail: "test suite timed out",
+			});
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("land-status.json with invalid JSON → failed/parse_error", async () => {
+		const fs = await import("node:fs");
+		const os = await import("node:os");
+		const path = await import("node:path");
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "land-test-"));
+		const signalPath = path.join(tmpDir, "land-status.json");
+		fs.writeFileSync(signalPath, "not valid json {{{");
+
+		try {
+			const exec = makeMockExec();
+			const collector = new ExecutionEvidenceCollector(exec);
+
+			const evidence = await collector.collect(
+				"/repo", "base123", makeGitResult(), 1000, signalPath,
+			);
+
+			expect(evidence.landingStatus).toEqual({
+				status: "failed",
+				failureReason: "parse_error",
+			});
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("land-status.json merged but gh says not merged → verification_failed", async () => {
+		const fs = await import("node:fs");
+		const os = await import("node:os");
+		const path = await import("node:path");
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "land-test-"));
+		const signalPath = path.join(tmpDir, "land-status.json");
+		fs.writeFileSync(signalPath, JSON.stringify({
+			status: "merged",
+			prNumber: 42,
+		}));
+
+		try {
+			const exec = vi.fn(async (cmd: string, args: string[], _cwd: string) => {
+				if (cmd === "gh") {
+					return { stdout: JSON.stringify({ state: "OPEN" }) };
+				}
+				const joined = args.join(" ");
+				if (joined.includes("--name-only")) return { stdout: "src/a.ts\n" };
+				if (joined.includes("--numstat")) return { stdout: "10\t2\tsrc/a.ts\n" };
+				if (joined.includes("rev-parse")) return { stdout: "abc123\n" };
+				if (joined.includes("diff")) return { stdout: "diff\n" };
+				return { stdout: "" };
+			});
+			const collector = new ExecutionEvidenceCollector(exec);
+
+			const evidence = await collector.collect(
+				"/repo", "base123", makeGitResult(), 1000, signalPath,
+			);
+
+			expect(evidence.landingStatus).toEqual({
+				status: "failed",
+				failureReason: "verification_failed",
+			});
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	it("getFullDiff handles empty diff", async () => {
 		const exec = makeMockExec({ diff: "" });
 		const collector = new ExecutionEvidenceCollector(exec);

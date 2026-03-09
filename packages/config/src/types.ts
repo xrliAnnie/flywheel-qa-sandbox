@@ -84,6 +84,8 @@ export interface SkillsConfig {
 	build_command?: string;
 	/** Test framework name, default: "vitest" */
 	test_framework?: string;
+	/** Custom landing command (e.g. "/ship-pr"). If unset, uses default flywheel-land skill. */
+	land_command?: string;
 }
 
 /** Reactions configuration (Phase 2+, interface reserved) */
