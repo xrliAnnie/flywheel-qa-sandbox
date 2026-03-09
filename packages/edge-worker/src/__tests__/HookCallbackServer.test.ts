@@ -207,6 +207,40 @@ describe("HookCallbackServer", () => {
 		expect(e2!.token).toBe(token2);
 	});
 
+	it("cancelWait resolves pending waitForEvent with null", async () => {
+		const server = await createServer();
+		const promise = server.waitForEvent(UUID, "SessionEnd", 5000);
+
+		// Cancel immediately
+		server.cancelWait(UUID);
+
+		const event = await promise;
+		expect(event).toBeNull();
+	});
+
+	it("cancelWait on non-existent token is a no-op", async () => {
+		const server = await createServer();
+		// Should not throw
+		server.cancelWait("no-such-token-1234-5678-9abc-def012345678");
+	});
+
+	it("cancelWait removes listener (no accumulation)", async () => {
+		const server = await createServer();
+
+		// Create multiple waits and cancel them
+		const p1 = server.waitForEvent(UUID, "SessionEnd", 5000);
+		server.cancelWait(UUID);
+		await p1;
+
+		const token2 = "b2b2b2b2-b2b2-b2b2-b2b2-b2b2b2b2b2b2";
+		const p2 = server.waitForEvent(token2, "SessionEnd", 5000);
+		server.cancelWait(token2);
+		await p2;
+
+		// After cancels, listener count should not have grown
+		expect(server.listenerCount("hook")).toBe(0);
+	});
+
 	it("server binds to 127.0.0.1 only", async () => {
 		const server = await createServer();
 		const port = server.getPort();
