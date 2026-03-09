@@ -18,6 +18,7 @@ export interface DashboardSession {
 	branch?: string;
 	last_error?: string;
 	decision_route?: string;
+	tmux_session?: string;
 	commit_count?: number;
 	lines_added?: number;
 	lines_removed?: number;
@@ -48,6 +49,7 @@ function toDashboardSession(s: Session): DashboardSession {
 		branch: s.branch,
 		last_error: s.last_error,
 		decision_route: s.decision_route,
+		tmux_session: s.tmux_session,
 		commit_count: s.commit_count,
 		lines_added: s.lines_added,
 		lines_removed: s.lines_removed,
