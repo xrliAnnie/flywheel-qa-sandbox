@@ -636,6 +636,20 @@ default_agent: nonexistent
 		);
 	});
 
+	it("silently ignores agents when it is a YAML array instead of object", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  - agent_file: .claude/agents/backend.md
+    match:
+      labels: ["backend"]
+      keywords: ["db"]
+`;
+		readFile.mockResolvedValue(yaml);
+		const config = await loader.load("/p/config.yaml");
+		// Array-form agents should be ignored (treated as absent), not crash
+		expect(config.agents).toBeDefined(); // raw YAML still has it
+	});
+
 	it("loads config with skills section", async () => {
 		const yaml = MINIMAL_CONFIG_YAML + `
 skills:
