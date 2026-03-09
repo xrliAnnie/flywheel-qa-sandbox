@@ -449,6 +449,108 @@ parallel:
 		expect(config.parallel?.session_timeout_minutes).toBe(120);
 	});
 
+	// ─── v0.6 agents config ────────────────────────
+
+	it("loads config with agents section", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    agent_file: .claude/agents/backend-executor.md
+    domain_file: .claude/domains/backend.md
+    match:
+      labels:
+        - "backend"
+        - "api"
+      keywords:
+        - "database"
+        - "server"
+  frontend:
+    agent_file: .claude/agents/frontend-executor.md
+    match:
+      labels:
+        - "frontend"
+      keywords:
+        - "ui"
+        - "react"
+default_agent: backend
+`;
+		readFile.mockResolvedValue(yaml);
+		const config = await loader.load("/p/config.yaml");
+		expect(Object.keys(config.agents!)).toEqual(["backend", "frontend"]);
+		expect(config.agents!.backend.agent_file).toBe(".claude/agents/backend-executor.md");
+		expect(config.agents!.backend.domain_file).toBe(".claude/domains/backend.md");
+		expect(config.agents!.backend.match.labels).toEqual(["backend", "api"]);
+		expect(config.agents!.frontend.domain_file).toBeUndefined();
+		expect(config.default_agent).toBe("backend");
+	});
+
+	it("loads config without agents section (backward compat)", async () => {
+		readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.agents).toBeUndefined();
+		expect(config.default_agent).toBeUndefined();
+	});
+
+	it("throws when agent_file is missing", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    match:
+      labels: ["backend"]
+      keywords: ["db"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/agents\.backend.*agent_file/i,
+		);
+	});
+
+	it("throws when agent_file is absolute path", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    agent_file: /etc/passwd
+    match:
+      labels: ["backend"]
+      keywords: ["db"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/must be relative/i,
+		);
+	});
+
+	it("throws when agent_file starts with ..", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    agent_file: "../../secret.md"
+    match:
+      labels: ["backend"]
+      keywords: ["db"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/must not escape repo/i,
+		);
+	});
+
+	it("throws when default_agent references nonexistent agent", async () => {
+		const yaml = MINIMAL_CONFIG_YAML + `
+agents:
+  backend:
+    agent_file: .claude/agents/backend.md
+    match:
+      labels: ["backend"]
+      keywords: ["db"]
+default_agent: nonexistent
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/default_agent.*nonexistent.*not found/i,
+		);
+	});
+
 	it("loads config with skills section", async () => {
 		const yaml = MINIMAL_CONFIG_YAML + `
 skills:

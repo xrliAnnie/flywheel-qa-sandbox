@@ -88,6 +88,21 @@ export interface SkillsConfig {
 	land_command?: string;
 }
 
+/** Agent dispatch configuration — v0.6 Step 1 */
+export interface AgentConfig {
+	/** Relative path to agent executor file (e.g., .claude/agents/backend-executor.md). REQUIRED. */
+	agent_file: string;
+	/** Relative path to domain config file (e.g., .claude/domains/backend.md). Optional. */
+	domain_file?: string;
+	/** Dispatch matching rules */
+	match: {
+		/** Linear labels that map to this agent (case-insensitive) */
+		labels: string[];
+		/** Keywords fed to Haiku classifier as hints when no label match */
+		keywords: string[];
+	};
+}
+
 /** Reactions configuration (Phase 2+, interface reserved) */
 export interface ReactionsConfig {
 	"changes-requested"?: {
@@ -123,4 +138,8 @@ export interface FlywheelConfig {
 	reactions?: ReactionsConfig;
 	parallel?: ParallelConfig;
 	skills?: SkillsConfig;
+	/** Agent dispatch rules (project-aware). Optional for backward compat. */
+	agents?: Record<string, AgentConfig>;
+	/** Default agent name when no match. Falls back to generic prompt if undefined. */
+	default_agent?: string;
 }
