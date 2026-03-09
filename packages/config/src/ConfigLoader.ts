@@ -104,5 +104,48 @@ export class ConfigLoader {
 				"Missing required field: decision_layer.escalation_channel",
 			);
 		}
+
+		// agents (optional — v0.6)
+		const agents = c.agents as Record<string, unknown> | undefined;
+		if (agents && typeof agents === "object") {
+			for (const [name, agentRaw] of Object.entries(agents)) {
+				const agent = agentRaw as Record<string, unknown>;
+				if (!agent.agent_file || typeof agent.agent_file !== "string") {
+					throw new Error(
+						`agents.${name}: missing required field "agent_file"`,
+					);
+				}
+				this.validateAgentPath(agent.agent_file as string, `agents.${name}.agent_file`);
+				if (agent.domain_file != null) {
+					if (typeof agent.domain_file !== "string") {
+						throw new Error(
+							`agents.${name}.domain_file must be a string`,
+						);
+					}
+					this.validateAgentPath(agent.domain_file as string, `agents.${name}.domain_file`);
+				}
+			}
+
+			// default_agent must reference an existing agent
+			const defaultAgent = c.default_agent as string | undefined;
+			if (defaultAgent && !(defaultAgent in agents)) {
+				throw new Error(
+					`default_agent "${defaultAgent}" not found in agents`,
+				);
+			}
+		}
+	}
+
+	private validateAgentPath(relativePath: string, fieldName: string): void {
+		if (relativePath.startsWith("/") || /^[a-zA-Z]:/.test(relativePath)) {
+			throw new Error(
+				`${fieldName}: agent path must be relative, got "${relativePath}"`,
+			);
+		}
+		if (relativePath.startsWith("..")) {
+			throw new Error(
+				`${fieldName}: agent path must not escape repo, got "${relativePath}"`,
+			);
+		}
 	}
 }
