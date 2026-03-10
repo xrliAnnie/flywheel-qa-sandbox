@@ -129,4 +129,145 @@ describe("StateStore", () => {
 		store.upsertSession(makeSession({ status: "running" }));
 		expect(store.getSession("exec-1")!.status).toBe("completed");
 	});
+
+	// --- v1.0 Phase 1: slack_thread_ts ---
+
+	it("upsertSession stores and retrieves slack_thread_ts", () => {
+		store.upsertSession(makeSession({ slack_thread_ts: "1234.5678" }));
+		const s = store.getSession("exec-1");
+		expect(s!.slack_thread_ts).toBe("1234.5678");
+	});
+
+	it("upsertSession preserves slack_thread_ts via COALESCE on update", () => {
+		store.upsertSession(makeSession({ slack_thread_ts: "1234.5678" }));
+		// Update without slack_thread_ts — should preserve existing value
+		store.upsertSession(makeSession({ status: "awaiting_review" }));
+		const s = store.getSession("exec-1");
+		expect(s!.slack_thread_ts).toBe("1234.5678");
+		expect(s!.status).toBe("awaiting_review");
+	});
+
+	it("setSessionThreadTs updates only the thread field", () => {
+		store.upsertSession(makeSession());
+		store.setSessionThreadTs("exec-1", "9999.1111");
+		const s = store.getSession("exec-1");
+		expect(s!.slack_thread_ts).toBe("9999.1111");
+		expect(s!.status).toBe("running"); // unchanged
+	});
+
+	it("setSessionThreadTs is no-op if session does not exist", () => {
+		// Should not throw
+		store.setSessionThreadTs("nonexistent", "1234.5678");
+	});
+
+	// --- v1.0 Phase 1: getThreadByIssue ---
+
+	it("getThreadByIssue returns thread for known issue", () => {
+		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
+		const thread = store.getThreadByIssue("GEO-42");
+		expect(thread).toBeDefined();
+		expect(thread!.thread_ts).toBe("1234.5678");
+		expect(thread!.channel).toBe("C07XXX");
+	});
+
+	it("getThreadByIssue returns undefined for unknown issue", () => {
+		expect(store.getThreadByIssue("UNKNOWN-1")).toBeUndefined();
+	});
+
+	it("getThreadByIssue returns updated thread after re-upsert", () => {
+		store.upsertThread("old.1111", "C07XXX", "GEO-42");
+		store.upsertThread("new.2222", "C07YYY", "GEO-42");
+		const thread = store.getThreadByIssue("GEO-42");
+		expect(thread!.thread_ts).toBe("new.2222");
+		expect(thread!.channel).toBe("C07YYY");
+	});
+
+	// --- v1.0 Phase 1: upsertThread one-issue-one-thread ---
+
+	it("upsertThread replaces old thread for same issue", () => {
+		store.upsertThread("old.1111", "C07XXX", "GEO-42");
+		store.upsertThread("new.2222", "C07XXX", "GEO-42");
+		// Old thread should be gone
+		expect(store.getThreadIssue("old.1111")).toBeUndefined();
+		// New thread maps to the issue
+		expect(store.getThreadIssue("new.2222")).toBe("GEO-42");
+	});
+
+	it("upsertThread handles same thread_ts + same issue (idempotent)", () => {
+		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
+		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
+		expect(store.getThreadIssue("1234.5678")).toBe("GEO-42");
+	});
+
+	// --- v1.0 Phase 1: migration cleans duplicate threads ---
+
+	it("migrate cleans up duplicate issue_id entries in conversation_threads", async () => {
+		// Manually insert duplicate records bypassing upsertThread
+		store["db"].run(
+			"INSERT INTO conversation_threads (thread_ts, channel, issue_id) VALUES ('ts1', 'C1', 'GEO-99')",
+		);
+		// Temporarily drop the unique index so we can insert a duplicate
+		store["db"].run("DROP INDEX IF EXISTS idx_threads_issue");
+		store["db"].run(
+			"INSERT INTO conversation_threads (thread_ts, channel, issue_id) VALUES ('ts2', 'C1', 'GEO-99')",
+		);
+		// Re-run migrate — should clean up and recreate index
+		store.migrate();
+		// Should have exactly one record for GEO-99 (the one with higher rowid = ts2)
+		const thread = store.getThreadByIssue("GEO-99");
+		expect(thread).toBeDefined();
+		expect(thread!.thread_ts).toBe("ts2");
+		// Old one should be gone
+		expect(store.getThreadIssue("ts1")).toBeUndefined();
+	});
+
+	// --- v1.0 Phase 1: getLatestSessionByIssueAndStatuses ---
+
+	it("getLatestSessionByIssueAndStatuses returns matching session", () => {
+		store.upsertSession(makeSession({
+			execution_id: "e1", status: "awaiting_review",
+			last_activity_at: "2024-01-01 10:00:00",
+		}));
+		store.upsertSession(makeSession({
+			execution_id: "e2", status: "failed",
+			last_activity_at: "2024-01-01 11:00:00",
+		}));
+		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", ["awaiting_review"]);
+		expect(s).toBeDefined();
+		expect(s!.execution_id).toBe("e1");
+	});
+
+	it("getLatestSessionByIssueAndStatuses returns latest when multiple match", () => {
+		store.upsertSession(makeSession({
+			execution_id: "e1", status: "awaiting_review",
+			last_activity_at: "2024-01-01 10:00:00",
+		}));
+		store.upsertSession(makeSession({
+			execution_id: "e2", status: "awaiting_review",
+			last_activity_at: "2024-01-01 12:00:00",
+		}));
+		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", ["awaiting_review"]);
+		expect(s!.execution_id).toBe("e2");
+	});
+
+	it("getLatestSessionByIssueAndStatuses returns undefined for no match", () => {
+		store.upsertSession(makeSession({ execution_id: "e1", status: "running" }));
+		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", ["awaiting_review", "blocked"]);
+		expect(s).toBeUndefined();
+	});
+
+	it("getLatestSessionByIssueAndStatuses with empty statuses returns undefined", () => {
+		store.upsertSession(makeSession());
+		expect(store.getLatestSessionByIssueAndStatuses("GEO-95", [])).toBeUndefined();
+	});
+
+	it("getLatestSessionByIssueAndStatuses matches multiple statuses", () => {
+		store.upsertSession(makeSession({
+			execution_id: "e1", status: "blocked",
+			last_activity_at: "2024-01-01 10:00:00",
+		}));
+		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", ["awaiting_review", "blocked"]);
+		expect(s).toBeDefined();
+		expect(s!.execution_id).toBe("e1");
+	});
 });

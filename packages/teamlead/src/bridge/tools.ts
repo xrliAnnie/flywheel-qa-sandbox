@@ -1,5 +1,6 @@
 import { Router } from "express";
 import type { StateStore, Session } from "../StateStore.js";
+import { ACTION_SOURCE_STATUS } from "./actions.js";
 
 function omitIssueId(session: Session): Omit<Session, "issue_id"> & { identifier?: string } {
 	const { issue_id: _, issue_identifier, ...rest } = session;
@@ -63,7 +64,15 @@ export function createQueryRouter(store: StateStore): Router {
 			return;
 		}
 
-		res.json(omitIssueId(session));
+		const result = omitIssueId(session);
+		// Thread fallback: if session has no slack_thread_ts, check conversation_threads
+		if (!session.slack_thread_ts) {
+			const thread = store.getThreadByIssue(session.issue_id);
+			if (thread) {
+				(result as Record<string, unknown>).slack_thread_ts = thread.thread_ts;
+			}
+		}
+		res.json(result);
 	});
 
 	router.get("/sessions/:id/history", (req, res) => {
@@ -84,6 +93,93 @@ export function createQueryRouter(store: StateStore): Router {
 			identifier: session.issue_identifier,
 			history: history.map(omitIssueId),
 			count: history.length,
+		});
+	});
+
+	// --- v1.0 Phase 1: Thread management + action resolution ---
+
+	router.post("/threads/upsert", (req, res) => {
+		const { thread_ts, channel, issue_id, execution_id } = req.body ?? {};
+		if (!thread_ts || !channel || !issue_id || !execution_id) {
+			res.status(400).json({ error: "thread_ts, channel, issue_id, and execution_id are required" });
+			return;
+		}
+
+		// 1. Verify execution exists
+		const session = store.getSession(execution_id);
+		if (!session) {
+			res.status(404).json({ error: `No session found for execution_id ${execution_id}` });
+			return;
+		}
+
+		// 2. Verify issue_id matches
+		if (session.issue_id !== issue_id) {
+			res.status(400).json({
+				error: `issue_id mismatch: session has "${session.issue_id}", request has "${issue_id}"`,
+			});
+			return;
+		}
+
+		// 3. Check thread_ts not already bound to a different issue
+		const existingIssue = store.getThreadIssue(thread_ts);
+		if (existingIssue && existingIssue !== issue_id) {
+			res.status(409).json({
+				error: `thread_ts ${thread_ts} is already bound to issue ${existingIssue}`,
+			});
+			return;
+		}
+
+		// 4. Upsert thread + bind session
+		store.upsertThread(thread_ts, channel, issue_id);
+		store.setSessionThreadTs(execution_id, thread_ts);
+
+		res.json({ ok: true });
+	});
+
+	router.get("/thread/:thread_ts", (req, res) => {
+		const threadTs = req.params.thread_ts;
+		const issueId = store.getThreadIssue(threadTs);
+		if (!issueId) {
+			res.json({ found: false });
+			return;
+		}
+
+		const latestSession = store.getSessionByIssue(issueId);
+		res.json({
+			found: true,
+			issue_id: issueId,
+			issue_identifier: latestSession?.issue_identifier,
+			latest_execution: latestSession ? omitIssueId(latestSession) : undefined,
+		});
+	});
+
+	router.get("/resolve-action", (req, res) => {
+		const issueId = req.query.issue_id as string;
+		const action = req.query.action as string;
+		if (!issueId || !action) {
+			res.status(400).json({ error: "issue_id and action query params are required" });
+			return;
+		}
+
+		const validSources = ACTION_SOURCE_STATUS[action];
+		if (!validSources) {
+			res.status(400).json({ error: `Unknown action: ${action}` });
+			return;
+		}
+
+		const session = store.getLatestSessionByIssueAndStatuses(issueId, validSources);
+		if (!session) {
+			res.json({
+				can_execute: false,
+				reason: `No session found for issue ${issueId} in status: ${validSources.join(", ")}`,
+			});
+			return;
+		}
+
+		res.json({
+			execution_id: session.execution_id,
+			status: session.status,
+			can_execute: true,
 		});
 	});
 

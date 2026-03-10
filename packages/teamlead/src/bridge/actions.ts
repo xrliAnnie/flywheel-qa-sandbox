@@ -21,7 +21,7 @@ const defaultExec: ExecFn = async (cmd, args, cwd) => {
 };
 
 /** Valid source statuses for each action */
-const ACTION_SOURCE_STATUS: Record<string, string[]> = {
+export const ACTION_SOURCE_STATUS: Record<string, string[]> = {
 	approve: ["awaiting_review"],
 	reject: ["awaiting_review"],
 	defer: ["awaiting_review", "blocked"],
