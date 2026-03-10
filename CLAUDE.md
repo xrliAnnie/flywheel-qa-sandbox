@@ -5,11 +5,15 @@
 New session? Run `/onboarding` or read these files in order:
 
 1. **Memory** → `~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md` (decisions, architecture, current progress)
-2. **Active Explorations** (read based on task):
-   - `doc/exploration/new/v0.3-memory-system.md` — per-project memory (deferred, waiting for Annie)
-   - `doc/exploration/new/v0.4-voice-interface.md` — push/pull voice channel for CEO
-   - `doc/exploration/new/v0.5-remote-screenshot.md` — visual Slack notifications
-3. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md`
+2. **Workflow** → `WORKFLOW.md` (development pipeline: Linear → Brainstorm → Research → Plan → Implement → Archive)
+3. **Active Explorations** (read based on task):
+   - `doc/exploration/new/v0.3-memory-system.md` — per-project memory (GEO-145)
+   - `doc/exploration/new/v0.4-voice-interface.md` — push/pull voice channel for CEO (GEO-150)
+   - `doc/exploration/new/v0.5-remote-screenshot.md` — visual Slack notifications (GEO-151)
+   - `doc/exploration/new/v0.6-slack-threading.md` — Slack threading + workflow engine (GEO-148)
+   - `doc/exploration/new/v1.0-lead-experience.md` — Lead MVP experience (GEO-146)
+   - `doc/exploration/new/v1.1-multi-lead.md` — Multi-lead agents (GEO-152)
+4. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md`
 
 Archived docs are in `doc/*/archive/` — read only if you need historical context.
 
@@ -27,7 +31,7 @@ Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
 
 ## Current Phase
 
-**v0.5 complete** — OpenClaw bridge + actions + auto-notification operational.
+**v1.0 Phase 1 complete** — Lead MVP + Memory System operational. Trial run in progress.
 
 | Milestone | Status |
 |-----------|--------|
@@ -36,7 +40,11 @@ Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
 | v0.2 Parallel + Decision + Slack | ✅ Merged (PR #5-9) |
 | v0.4 TeamLead Daemon | ✅ Merged (PR #10) |
 | v0.5 OpenClaw Bridge + Actions | ✅ Merged (PR #12 + main) |
-| Real issue trial run | ⬜ **Next** |
+| v0.3 Step 1 Memory System (mem0 + Gemini) | ✅ Merged (PR #16) |
+| v1.0 Phase 1 Lead MVP | ✅ Merged (main) |
+| GEO-145: Memory Production (Supabase pgvector) | ⬜ Todo |
+| GEO-146: v1.0 Phase 2 (disable auto-approve) | ⬜ Todo |
+| GEO-147: Formalize workflow pipeline | 🔄 In Progress |
 
 ## Doc Structure & Lifecycle
 
