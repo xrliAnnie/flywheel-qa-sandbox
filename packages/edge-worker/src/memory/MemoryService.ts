@@ -16,7 +16,7 @@ export class MemoryService {
 				provider: "google",
 				config: {
 					apiKey: config.googleApiKey,
-					model: config.llmModel ?? "gemini-2.0-flash",
+					model: config.llmModel ?? "gemini-2.5-flash",
 				},
 			},
 			embedder: {
