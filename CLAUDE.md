@@ -44,7 +44,7 @@ Current version: see `doc/VERSION`
 | v0.3 Step 1 Memory System (mem0 + Gemini) | ✅ Merged (PR #16) |
 | v1.0 Phase 1 Lead MVP | ✅ Merged (main) |
 | GEO-145: Memory Production (Supabase pgvector) | ⬜ Todo |
-| GEO-146: v1.0 Phase 2 (disable auto-approve) | ⬜ Todo |
+| GEO-155: v1.0 Phase 2 (disable auto-approve) | ✅ Merged (PR #17) |
 
 ## Doc Structure & Lifecycle
 
