@@ -134,4 +134,194 @@ describe("Query tools", () => {
 		expect(body.issue_id).toBeUndefined();
 		expect(body.identifier).toBe("GEO-95");
 	});
+
+	it("GET /api/sessions/:id includes thread fallback when slack_thread_ts is empty", async () => {
+		store.upsertSession({ execution_id: "e1", issue_id: "i1", project_name: "p", status: "running" });
+		store.upsertThread("1234.5678", "C07XXX", "i1");
+
+		const res = await fetch(`${baseUrl}/api/sessions/e1`);
+		const body = await res.json();
+		expect(body.slack_thread_ts).toBe("1234.5678");
+	});
+
+	it("GET /api/sessions/:id uses session slack_thread_ts when present", async () => {
+		store.upsertSession({ execution_id: "e1", issue_id: "i1", project_name: "p", status: "running", slack_thread_ts: "direct.9999" });
+		store.upsertThread("old.1111", "C07XXX", "i1");
+
+		const res = await fetch(`${baseUrl}/api/sessions/e1`);
+		const body = await res.json();
+		expect(body.slack_thread_ts).toBe("direct.9999");
+	});
+});
+
+describe("Thread & action endpoints", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		const app = createBridgeApp(store, [], makeConfig());
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+	});
+
+	afterEach(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		store.close();
+	});
+
+	// --- POST /api/threads/upsert ---
+
+	it("POST /api/threads/upsert succeeds with valid data", async () => {
+		store.upsertSession({ execution_id: "exec-1", issue_id: "i1", project_name: "p", status: "running" });
+		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ thread_ts: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "exec-1" }),
+		});
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.ok).toBe(true);
+
+		// Verify thread was stored
+		expect(store.getThreadIssue("1234.5678")).toBe("i1");
+		// Verify session was updated
+		expect(store.getSession("exec-1")!.slack_thread_ts).toBe("1234.5678");
+	});
+
+	it("POST /api/threads/upsert returns 400 for missing fields", async () => {
+		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ thread_ts: "1234.5678" }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("POST /api/threads/upsert returns 404 for unknown execution_id", async () => {
+		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ thread_ts: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "nonexistent" }),
+		});
+		expect(res.status).toBe(404);
+	});
+
+	it("POST /api/threads/upsert returns 400 for mismatched issue_id", async () => {
+		store.upsertSession({ execution_id: "exec-1", issue_id: "i1", project_name: "p", status: "running" });
+		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ thread_ts: "1234.5678", channel: "C07XXX", issue_id: "WRONG", execution_id: "exec-1" }),
+		});
+		expect(res.status).toBe(400);
+		const body = await res.json();
+		expect(body.error).toContain("mismatch");
+	});
+
+	it("POST /api/threads/upsert returns 409 for thread bound to different issue", async () => {
+		store.upsertSession({ execution_id: "exec-1", issue_id: "i1", project_name: "p", status: "running" });
+		store.upsertThread("1234.5678", "C07XXX", "OTHER-ISSUE");
+
+		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ thread_ts: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "exec-1" }),
+		});
+		expect(res.status).toBe(409);
+		const body = await res.json();
+		expect(body.error).toContain("already bound");
+	});
+
+	it("POST /api/threads/upsert idempotent for same thread + same issue", async () => {
+		store.upsertSession({ execution_id: "exec-1", issue_id: "i1", project_name: "p", status: "running" });
+		store.upsertThread("1234.5678", "C07XXX", "i1");
+
+		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ thread_ts: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "exec-1" }),
+		});
+		expect(res.status).toBe(200);
+	});
+
+	// --- GET /api/thread/:thread_ts ---
+
+	it("GET /api/thread/:thread_ts returns issue info for known thread", async () => {
+		store.upsertSession({ execution_id: "exec-1", issue_id: "i1", project_name: "p", status: "awaiting_review", issue_identifier: "GEO-42" });
+		store.upsertThread("1234.5678", "C07XXX", "i1");
+
+		const res = await fetch(`${baseUrl}/api/thread/1234.5678`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.found).toBe(true);
+		expect(body.issue_id).toBe("i1");
+		expect(body.issue_identifier).toBe("GEO-42");
+		expect(body.latest_execution).toBeDefined();
+		expect(body.latest_execution.execution_id).toBe("exec-1");
+	});
+
+	it("GET /api/thread/:thread_ts returns found:false for unknown thread", async () => {
+		const res = await fetch(`${baseUrl}/api/thread/9999.0000`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.found).toBe(false);
+	});
+
+	it("GET /api/thread/:thread_ts returns latest execution for issue", async () => {
+		store.upsertSession({ execution_id: "e1", issue_id: "i1", project_name: "p", status: "failed", last_activity_at: "2024-01-01 10:00:00" });
+		store.upsertSession({ execution_id: "e2", issue_id: "i1", project_name: "p", status: "running", last_activity_at: "2024-01-01 12:00:00" });
+		store.upsertThread("1234.5678", "C07XXX", "i1");
+
+		const res = await fetch(`${baseUrl}/api/thread/1234.5678`);
+		const body = await res.json();
+		expect(body.latest_execution.execution_id).toBe("e2");
+	});
+
+	// --- GET /api/resolve-action ---
+
+	it("GET /api/resolve-action returns can_execute:true for valid action", async () => {
+		store.upsertSession({ execution_id: "exec-1", issue_id: "i1", project_name: "p", status: "awaiting_review", last_activity_at: "2024-01-01 10:00:00" });
+
+		const res = await fetch(`${baseUrl}/api/resolve-action?issue_id=i1&action=approve`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.can_execute).toBe(true);
+		expect(body.execution_id).toBe("exec-1");
+		expect(body.status).toBe("awaiting_review");
+	});
+
+	it("GET /api/resolve-action returns can_execute:false when no matching session", async () => {
+		store.upsertSession({ execution_id: "exec-1", issue_id: "i1", project_name: "p", status: "running" });
+
+		const res = await fetch(`${baseUrl}/api/resolve-action?issue_id=i1&action=approve`);
+		const body = await res.json();
+		expect(body.can_execute).toBe(false);
+		expect(body.reason).toContain("No session found");
+	});
+
+	it("GET /api/resolve-action returns 400 for unknown action", async () => {
+		const res = await fetch(`${baseUrl}/api/resolve-action?issue_id=i1&action=nuke`);
+		expect(res.status).toBe(400);
+	});
+
+	it("GET /api/resolve-action returns 400 for missing params", async () => {
+		const res = await fetch(`${baseUrl}/api/resolve-action`);
+		expect(res.status).toBe(400);
+	});
+
+	it("GET /api/resolve-action works with multi-status actions (shelve)", async () => {
+		store.upsertSession({ execution_id: "exec-1", issue_id: "i1", project_name: "p", status: "failed", last_activity_at: "2024-01-01 10:00:00" });
+
+		const res = await fetch(`${baseUrl}/api/resolve-action?issue_id=i1&action=shelve`);
+		const body = await res.json();
+		expect(body.can_execute).toBe(true);
+		expect(body.execution_id).toBe("exec-1");
+	});
 });

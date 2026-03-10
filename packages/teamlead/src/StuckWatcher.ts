@@ -1,4 +1,5 @@
 import type { StateStore, Session } from "./StateStore.js";
+import { buildSessionKey, buildHookBody, type HookPayload } from "./bridge/hook-payload.js";
 
 export interface StuckNotifier {
 	onSessionStuck(session: Session, minutesSinceActivity: number): Promise<void>;
@@ -73,18 +74,31 @@ export class WebhookStuckNotifier implements StuckNotifier {
 	) {}
 
 	async onSessionStuck(session: Session, minutes: number): Promise<void> {
-		const id = session.issue_identifier ?? session.issue_id;
-		const message = `[Stuck] ${id}: No activity for ${minutes} minutes. Started at ${session.started_at ?? "unknown"}.`;
+		const sessionKey = buildSessionKey(session);
+		const hookPayload: HookPayload = {
+			event_type: "session_stuck",
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			issue_identifier: session.issue_identifier,
+			issue_title: session.issue_title,
+			project_name: session.project_name,
+			status: session.status,
+			thread_ts: session.slack_thread_ts,
+			channel: "CD5QZVAP6",
+			minutes_since_activity: minutes,
+		};
+		const body = buildHookBody("product-lead", hookPayload, sessionKey);
+
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 3000);
 		try {
-			const res = await fetch(`${this.gatewayUrl}/hooks/agent`, {
+			const res = await fetch(`${this.gatewayUrl}/hooks/ingest`, {
 				method: "POST",
 				headers: {
 					Authorization: `Bearer ${this.hooksToken}`,
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ agentId: "product-lead", message }),
+				body: JSON.stringify(body),
 				signal: controller.signal,
 			});
 			if (!res.ok) {

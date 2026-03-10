@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import express from "express";
 import { StateStore } from "../StateStore.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import { formatNotification } from "../bridge/event-route.js";
@@ -202,6 +203,121 @@ describe("Event route", () => {
 		// Status should be awaiting_review (merge failed in test env — no gh CLI)
 		expect(session!.status).toBe("awaiting_review");
 		expect(session!.decision_route).toBe("auto_approve");
+	});
+
+	it("session_started inherits existing thread for same issue", async () => {
+		// Pre-create a thread mapping for this issue
+		store.upsertThread("existing.thread.ts", "CD5QZVAP6", "issue-1");
+
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			body: JSON.stringify(makeEvent({ execution_id: "exec-new" })),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-new");
+		expect(session!.slack_thread_ts).toBe("existing.thread.ts");
+	});
+
+	it("session_started without existing thread leaves slack_thread_ts empty", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			body: JSON.stringify(makeEvent()),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session!.slack_thread_ts).toBeUndefined();
+	});
+});
+
+describe("Event route — structured hook payload", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+	let capturedPayloads: Record<string, unknown>[];
+
+	beforeEach(async () => {
+		capturedPayloads = [];
+		// Mock gateway server to capture hook payloads
+		const gatewayApp = express();
+		gatewayApp.use(express.json());
+		gatewayApp.post("/hooks/ingest", (req, res) => {
+			capturedPayloads.push(req.body);
+			res.json({ ok: true });
+		});
+		const gatewayServer = gatewayApp.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => gatewayServer.once("listening", resolve));
+		const gatewayAddr = gatewayServer.address();
+		const gatewayPort = typeof gatewayAddr === "object" && gatewayAddr ? gatewayAddr.port : 0;
+
+		store = await StateStore.create(":memory:");
+		const config = makeConfig({
+			gatewayUrl: `http://127.0.0.1:${gatewayPort}`,
+			hooksToken: "hooks-secret",
+		});
+		const app = createBridgeApp(store, testProjects, config);
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+
+		// Store gateway server for cleanup
+		(server as any).__gatewayServer = gatewayServer;
+	});
+
+	afterEach(async () => {
+		const gatewayServer = (server as any).__gatewayServer;
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		if (gatewayServer) {
+			await new Promise<void>((resolve, reject) => {
+				gatewayServer.close((err: Error | undefined) => (err ? reject(err) : resolve()));
+			});
+		}
+		store.close();
+	});
+
+	it("sends structured JSON payload with sessionKey", async () => {
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			body: JSON.stringify(makeEvent()),
+		});
+
+		// Wait briefly for async notification
+		await new Promise((r) => setTimeout(r, 100));
+
+		expect(capturedPayloads.length).toBeGreaterThanOrEqual(1);
+		const payload = capturedPayloads[0]!;
+		expect(payload.agentId).toBe("product-lead");
+		expect(payload.sessionKey).toBe("flywheel:GEO-95");
+		expect(typeof payload.message).toBe("string");
+
+		const parsed = JSON.parse(payload.message as string);
+		expect(parsed.event_type).toBe("session_started");
+		expect(parsed.execution_id).toBe("exec-1");
+		expect(parsed.issue_identifier).toBe("GEO-95");
+		expect(parsed.channel).toBe("CD5QZVAP6");
+	});
+
+	it("includes thread_ts in payload when session has inherited thread", async () => {
+		store.upsertThread("inherited.thread", "CD5QZVAP6", "issue-1");
+
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			body: JSON.stringify(makeEvent()),
+		});
+
+		await new Promise((r) => setTimeout(r, 100));
+
+		const parsed = JSON.parse(capturedPayloads[0]!.message as string);
+		expect(parsed.thread_ts).toBe("inherited.thread");
 	});
 });
 

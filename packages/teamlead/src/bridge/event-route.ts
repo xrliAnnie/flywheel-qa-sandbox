@@ -3,6 +3,7 @@ import type { StateStore, Session } from "../StateStore.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { sqliteDatetime, type BridgeConfig } from "./types.js";
 import { approveExecution } from "./actions.js";
+import { buildSessionKey, buildHookBody, type HookPayload } from "./hook-payload.js";
 
 interface IngestEvent {
 	event_id: string;
@@ -53,7 +54,7 @@ function formatNotification(session: Session, eventType: string): string {
 async function notifyAgent(
 	gatewayUrl: string,
 	hooksToken: string,
-	message: string,
+	body: Record<string, unknown>,
 ): Promise<void> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), 3000);
@@ -64,7 +65,7 @@ async function notifyAgent(
 				Authorization: `Bearer ${hooksToken}`,
 				"Content-Type": "application/json",
 			},
-			body: JSON.stringify({ agentId: "product-lead", message }),
+			body: JSON.stringify(body),
 			signal: controller.signal,
 		});
 		if (!res.ok) {
@@ -132,6 +133,12 @@ export function createEventRouter(
 					issue_identifier: asString(payload.issueIdentifier),
 					issue_title: asString(payload.issueTitle),
 				});
+
+				// Inherit existing thread for this issue (retry/reopen reuses thread)
+				const existingThread = store.getThreadByIssue(event.issue_id);
+				if (existingThread) {
+					store.setSessionThreadTs(event.execution_id, existingThread.thread_ts);
+				}
 			} else if (event.event_type === "session_completed") {
 				const decision = payload.decision as Record<string, unknown> | undefined;
 				const evidence = payload.evidence as Record<string, unknown> | undefined;
@@ -216,11 +223,29 @@ export function createEventRouter(
 			return;
 		}
 
-		// Best-effort notification push
+		// Best-effort notification push (structured JSON + sessionKey)
 		const session = store.getSession(event.execution_id);
 		if (session && config.gatewayUrl && config.hooksToken) {
-			const message = formatNotification(session, event.event_type);
-			notifyAgent(config.gatewayUrl, config.hooksToken, message).catch(() => {});
+			const sessionKey = buildSessionKey(session);
+			const hookPayload: HookPayload = {
+				event_type: event.event_type,
+				execution_id: event.execution_id,
+				issue_id: event.issue_id,
+				issue_identifier: session.issue_identifier,
+				issue_title: session.issue_title,
+				project_name: event.project_name,
+				status: session.status,
+				decision_route: session.decision_route,
+				commit_count: session.commit_count,
+				lines_added: session.lines_added,
+				lines_removed: session.lines_removed,
+				summary: session.summary,
+				last_error: session.last_error,
+				thread_ts: session.slack_thread_ts,
+				channel: "CD5QZVAP6",
+			};
+			const body = buildHookBody("product-lead", hookPayload, sessionKey);
+			notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
 		}
 
 		res.json({ ok: true });
