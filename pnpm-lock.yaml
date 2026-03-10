@@ -179,9 +179,6 @@ importers:
       mem0ai:
         specifier: ^2.3.0
         version: 2.3.0(@anthropic-ai/sdk@0.77.0(zod@4.3.6))(@azure/identity@4.13.0)(@azure/search-documents@12.2.0)(@cloudflare/workers-types@4.20260310.1)(@google/genai@1.44.0(@modelcontextprotocol/sdk@1.25.2(@cfworker/json-schema@4.1.1)(hono@4.11.3)(zod@4.3.6)))(@langchain/core@0.3.80(openai@4.104.0(ws@8.19.0)(zod@4.3.6)))(@mistralai/mistralai@1.15.1)(@qdrant/js-client-rest@1.13.0(typescript@5.9.3))(@supabase/supabase-js@2.99.0)(@types/jest@29.5.14)(@types/pg@8.11.0)(better-sqlite3@12.6.2)(cloudflare@4.5.0)(groq-sdk@0.3.0)(neo4j-driver@5.28.3)(ollama@0.6.3)(pg@8.11.3)(redis@4.7.1)(ws@8.19.0)
-      ollama:
-        specifier: ^0.6.3
-        version: 0.6.3
       sql.js:
         specifier: ^1.14.1
         version: 1.14.1
