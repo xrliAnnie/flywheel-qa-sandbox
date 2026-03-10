@@ -3,11 +3,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mock mem0ai/oss before importing MemoryService
 const mockAdd = vi.fn();
 const mockSearch = vi.fn();
+const mockVectorStore = {
+	ready: Promise.resolve(),
+	initError: undefined as Error | undefined,
+};
 
 vi.mock("mem0ai/oss", () => ({
 	Memory: vi.fn().mockImplementation(() => ({
 		add: mockAdd,
 		search: mockSearch,
+		vectorStore: mockVectorStore,
 	})),
 }));
 
@@ -37,18 +42,23 @@ describe("MemoryService", () => {
 		expect(Memory).toHaveBeenCalledOnce();
 	});
 
-	it("creates instance with Qdrant config (production)", () => {
+	it("creates instance with Supabase config (production)", () => {
 		const svc = new MemoryService({
 			googleApiKey: "test-key",
-			qdrantUrl: "http://localhost:6333",
+			supabaseUrl: "https://test.supabase.co",
+			supabaseKey: "test-service-role-key",
 			historyDbPath: "/tmp/test.db",
 		});
 		expect(svc).toBeInstanceOf(MemoryService);
 		const constructorCall = vi.mocked(Memory).mock.calls[0][0] as any;
-		expect(constructorCall.vectorStore.provider).toBe("qdrant");
-		expect(constructorCall.vectorStore.config.url).toBe(
-			"http://localhost:6333",
+		expect(constructorCall.vectorStore.provider).toBe("supabase");
+		expect(constructorCall.vectorStore.config.supabaseUrl).toBe(
+			"https://test.supabase.co",
 		);
+		expect(constructorCall.vectorStore.config.supabaseKey).toBe(
+			"test-service-role-key",
+		);
+		expect(constructorCall.vectorStore.config.tableName).toBe("memories");
 	});
 
 	it("uses in-memory vector store for test config", () => {
@@ -261,41 +271,66 @@ describe("MemoryService", () => {
 describe("createMemoryService", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mockVectorStore.ready = Promise.resolve();
+		mockVectorStore.initError = undefined;
 	});
 
-	it("returns MemoryService when both keys provided", () => {
-		const svc = createMemoryService({
+	it("returns MemoryService when all keys provided", async () => {
+		const svc = await createMemoryService({
 			googleApiKey: "test-key",
-			qdrantUrl: "http://localhost:6333",
+			supabaseUrl: "https://test.supabase.co",
+			supabaseKey: "test-service-role-key",
 			projectName: "myproject",
 		});
 		expect(svc).toBeInstanceOf(MemoryService);
 	});
 
-	it("returns undefined without googleApiKey", () => {
-		const svc = createMemoryService({
-			qdrantUrl: "http://localhost:6333",
+	it("returns undefined without googleApiKey", async () => {
+		const svc = await createMemoryService({
+			supabaseUrl: "https://test.supabase.co",
+			supabaseKey: "test-service-role-key",
 			projectName: "myproject",
 		});
 		expect(svc).toBeUndefined();
 	});
 
-	it("returns undefined without qdrantUrl", () => {
-		const svc = createMemoryService({
+	it("returns undefined without supabaseUrl", async () => {
+		const svc = await createMemoryService({
 			googleApiKey: "test-key",
+			supabaseKey: "test-service-role-key",
 			projectName: "myproject",
 		});
 		expect(svc).toBeUndefined();
 	});
 
-	it("uses history path under ~/.flywheel/memories/<projectName>/", () => {
-		const svc = createMemoryService({
+	it("returns undefined without supabaseKey", async () => {
+		const svc = await createMemoryService({
 			googleApiKey: "test-key",
-			qdrantUrl: "http://localhost:6333",
+			supabaseUrl: "https://test.supabase.co",
+			projectName: "myproject",
+		});
+		expect(svc).toBeUndefined();
+	});
+
+	it("returns undefined when vectorStore.initError is set", async () => {
+		mockVectorStore.initError = new Error("connection refused");
+		const svc = await createMemoryService({
+			googleApiKey: "test-key",
+			supabaseUrl: "https://test.supabase.co",
+			supabaseKey: "test-service-role-key",
+			projectName: "myproject",
+		});
+		expect(svc).toBeUndefined();
+	});
+
+	it("uses history path under ~/.flywheel/memories/<projectName>/", async () => {
+		const svc = await createMemoryService({
+			googleApiKey: "test-key",
+			supabaseUrl: "https://test.supabase.co",
+			supabaseKey: "test-service-role-key",
 			projectName: "geoforge3d",
 		});
 		expect(svc).toBeDefined();
-		// Verify Memory constructor was called with correct historyDbPath
 		const constructorCall = vi.mocked(Memory).mock.calls.at(-1)?.[0] as any;
 		expect(constructorCall.historyDbPath).toMatch(
 			/\.flywheel\/memories\/geoforge3d\/history\.db$/,
