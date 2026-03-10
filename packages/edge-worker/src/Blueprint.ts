@@ -21,6 +21,16 @@ import type {
 import type { IDecisionLayer } from "./decision/DecisionLayer.js";
 import type { ExecutionEventEmitter, EventEnvelope } from "./ExecutionEventEmitter.js";
 import type { AgentDispatcher } from "./AgentDispatcher.js";
+import type { MemoryService } from "./memory/MemoryService.js";
+
+const MEMORY_TIMEOUT_MS = 30_000; // 30s — generous for Gemini+Qdrant, but prevents indefinite hang
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+		promise.then(resolve, reject).finally(() => clearTimeout(timer));
+	});
+}
 
 /** Result of a Blueprint execution */
 export interface BlueprintResult {
@@ -88,6 +98,8 @@ export class Blueprint {
 		private eventEmitter?: ExecutionEventEmitter,
 		// v0.6 — optional agent dispatcher for project-aware prompts
 		private agentDispatcher?: AgentDispatcher,
+		// v0.3 — optional memory service for project memory
+		private memoryService?: MemoryService,
 	) {}
 
 	async run(
@@ -96,10 +108,12 @@ export class Blueprint {
 		ctx: BlueprintContext,
 	): Promise<BlueprintResult> {
 		const executionId = ctx.executionId ?? randomUUID();
+		// v0.3 — canonical project scope (unified for events + memory)
+		const projectScope = ctx.projectName ?? ctx.teamName ?? "unknown";
 		const env: EventEnvelope = {
 			executionId,
 			issueId: node.id,
-			projectName: ctx.projectName ?? "unknown",
+			projectName: projectScope,
 		};
 
 		// Fire-and-forget started event
@@ -206,6 +220,25 @@ export class Blueprint {
 			? await this.agentDispatcher.dispatch(hydrated)
 			: null;
 
+		// ── Memory retrieval (v0.3 — best-effort, non-fatal) ─
+		let memoryBlock = "";
+		if (this.memoryService) {
+			try {
+				memoryBlock = await withTimeout(
+					this.memoryService.searchAndFormat({
+						query: `${hydrated.issueTitle} ${hydrated.issueDescription}`.trim(),
+						projectName: env.projectName,
+					}),
+					MEMORY_TIMEOUT_MS,
+					"Memory retrieval",
+				) ?? "";
+			} catch (err) {
+				console.warn(
+					`[Blueprint] Memory retrieval failed (non-fatal): ${err instanceof Error ? err.stack : String(err)}`,
+				);
+			}
+		}
+
 		// ── Landing signal path (v0.6) ───────────────────────
 		const landSignalPath = path.join(cwd, ".flywheel", "runs", executionId, "land-status.json");
 		// Landing is only supported in worktree mode (single-repo)
@@ -276,9 +309,10 @@ export class Blueprint {
 			}
 		}
 
-		const systemPrompt = agentContext
-			? `${agentContext}\n## Baseline Rules\n${baseSystemPrompt}`
-			: baseSystemPrompt;
+		const systemPrompt = [
+			agentContext ? `${agentContext}\n## Baseline Rules\n${baseSystemPrompt}` : baseSystemPrompt,
+			memoryBlock,
+		].filter(Boolean).join("\n");
 
 		// ── Runner execution (existing — catch runner errors) ─
 		const timeoutMs = ctx.sessionTimeoutMs ?? 2_700_000;
@@ -348,11 +382,17 @@ export class Blueprint {
 				cwd,
 				baseSha,
 				worktreeInfo,
+				env,
 			);
 		}
 
 		// ── v0.1.1 fallback: no DecisionLayer ─────────────────
 		const success = gitResult.commitCount > 0 && !result.timedOut;
+
+		// v0.3 — extract memory (fallback path, no decision)
+		if (evidence) {
+			await this.extractMemory(hydrated, evidence, result, undefined, env.executionId, env.projectName);
+		}
 
 		if (result.tmuxWindow) {
 			if (success) {
@@ -416,6 +456,7 @@ export class Blueprint {
 		cwd: string,
 		baseSha: string,
 		worktreeInfo: WorktreeInfo | undefined,
+		env: EventEnvelope,
 	): Promise<BlueprintResult> {
 		// Build ExecutionContext
 		const execCtx: ExecutionContext = {
@@ -458,6 +499,9 @@ export class Blueprint {
 			};
 		}
 
+		// v0.3 — extract memory (decision path)
+		await this.extractMemory(hydrated, evidence, result, decision, env.executionId, env.projectName);
+
 		// Route → success mapping
 		const success =
 			decision.route === "auto_approve" ||
@@ -484,6 +528,54 @@ export class Blueprint {
 			evidence,
 			decision,
 		};
+	}
+
+	private async extractMemory(
+		hydrated: { issueId: string; issueTitle: string },
+		evidence: ExecutionEvidence,
+		result: FlywheelRunResult,
+		decision: DecisionResult | undefined,
+		executionId: string,
+		projectName: string,
+	): Promise<void> {
+		if (!this.memoryService) return;
+		try {
+			const sessionResult: "success" | "failure" | "timeout" = result.timedOut
+				? "timeout"
+				: decision
+					? (decision.route === "blocked" ? "failure" : "success")
+					: (evidence.commitCount > 0 ? "success" : "failure");
+
+			const memResult = await withTimeout(
+				this.memoryService.addSessionMemory({
+					projectName,
+					executionId,
+					issueId: hydrated.issueId,
+					issueTitle: hydrated.issueTitle,
+					sessionResult,
+					commitMessages: evidence.commitMessages,
+					diffSummary: evidence.diffSummary ?? "",
+					decisionRoute: decision?.route,
+					error: result.timedOut
+						? "timeout"
+						: (!decision && evidence.commitCount === 0)
+							? "no commits produced"
+							: undefined,
+					decisionReasoning: decision
+						? [decision.reasoning, ...decision.concerns.map((c: string) => `concern: ${c}`)].join("; ")
+						: undefined,
+				}),
+				MEMORY_TIMEOUT_MS,
+				"Memory extraction",
+			);
+			console.log(
+				`[Blueprint] Memory stored: +${memResult.added} added, ~${memResult.updated} updated`,
+			);
+		} catch (err) {
+			console.warn(
+				`[Blueprint] Memory extraction failed (non-fatal): ${err instanceof Error ? err.stack : String(err)}`,
+			);
+		}
 	}
 
 	private async killTmuxWindow(tmuxWindow: string): Promise<void> {

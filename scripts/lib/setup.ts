@@ -39,6 +39,7 @@ import { TeamLeadClient, NoOpEventEmitter } from "../../packages/edge-worker/dis
 import type { ExecutionEventEmitter } from "../../packages/edge-worker/dist/ExecutionEventEmitter.js";
 import { ConfigLoader } from "../../packages/config/dist/ConfigLoader.js";
 import { AgentDispatcher } from "../../packages/edge-worker/dist/AgentDispatcher.js";
+import { createMemoryService } from "../../packages/edge-worker/dist/memory/index.js";
 import type { FlywheelConfig } from "../../packages/config/dist/types.js";
 import type { ClassifyFn } from "../../packages/edge-worker/dist/AgentDispatcher.js";
 
@@ -303,6 +304,19 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		},
 	};
 
+	// 4e. Memory system (v0.3) — factory logic + tests live in edge-worker package
+	const memoryService = createMemoryService({
+		googleApiKey: process.env.GOOGLE_API_KEY,
+		qdrantUrl: process.env.QDRANT_URL,
+		projectName,
+		llmModel: process.env.FLYWHEEL_MEMORY_MODEL,
+	});
+	if (memoryService) {
+		log("Memory system enabled (Qdrant persistent)");
+	} else {
+		log("Memory system disabled — requires GOOGLE_API_KEY + QDRANT_URL");
+	}
+
 	const blueprint = new Blueprint(
 		hydrator, gitChecker, makeRunner, shell,
 		worktreeManager, skillInjector, evidenceCollector,
@@ -310,6 +324,7 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		decisionLayer,
 		eventEmitter,
 		agentDispatcher,
+		memoryService,
 	);
 
 	return {
