@@ -57,6 +57,8 @@ export {
 	type ValidationLoopState,
 	type ValidationResult,
 } from "./validation/index.js";
+export { AgentDispatcher } from "./AgentDispatcher.js";
+export type { AgentDispatchResult, ClassifyFn } from "./AgentDispatcher.js";
 export { ExecutionEvidenceCollector } from "./ExecutionEvidenceCollector.js";
 export type { ExecutionEvidence } from "./ExecutionEvidenceCollector.js";
 export { SkillInjector } from "./SkillInjector.js";

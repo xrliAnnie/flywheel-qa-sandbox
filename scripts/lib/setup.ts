@@ -4,7 +4,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -37,6 +37,10 @@ import {
 import type { LLMClient } from "../../packages/core/dist/llm-client-types.js";
 import { TeamLeadClient, NoOpEventEmitter } from "../../packages/edge-worker/dist/ExecutionEventEmitter.js";
 import type { ExecutionEventEmitter } from "../../packages/edge-worker/dist/ExecutionEventEmitter.js";
+import { ConfigLoader } from "../../packages/config/dist/ConfigLoader.js";
+import { AgentDispatcher } from "../../packages/edge-worker/dist/AgentDispatcher.js";
+import type { FlywheelConfig } from "../../packages/config/dist/types.js";
+import type { ClassifyFn } from "../../packages/edge-worker/dist/AgentDispatcher.js";
 
 // Re-export for convenience
 export { Blueprint } from "../../packages/edge-worker/dist/Blueprint.js";
@@ -210,6 +214,68 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		log("SLACK_BOT_TOKEN not set — Slack notifications disabled");
 	}
 
+	// ── Config loading (v0.6 — .flywheel/config.yaml) ──────
+	let flywheelConfig: FlywheelConfig | undefined;
+	const configPath = join(projectRoot, ".flywheel", "config.yaml");
+	try {
+		const configLoader = new ConfigLoader(async (p) => readFileSync(p, "utf-8"));
+		flywheelConfig = await configLoader.load(configPath);
+		log(`Config loaded from ${configPath}`);
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code === "ENOENT") {
+			log("No .flywheel/config.yaml — using defaults");
+		} else {
+			// Config exists but is invalid → fail fast
+			throw err;
+		}
+	}
+
+	// ── AgentDispatcher (v0.6) ──────────────────────────
+	let agentDispatcher: AgentDispatcher | undefined;
+	if (flywheelConfig?.agents && Object.keys(flywheelConfig.agents).length > 0) {
+		let classifyFn: ClassifyFn | undefined;
+		if (process.env.ANTHROPIC_API_KEY) {
+			const classifyClient = new AnthropicLLMClient();
+			classifyFn = async (title, description, agentNames, agentKeywords) => {
+				const keywordList = agentNames
+					.map((n) => `- ${n}: ${agentKeywords[n]?.join(", ") ?? ""}`)
+					.join("\n");
+				const prompt = [
+					`Classify this Linear issue into exactly one of these agent names: [${agentNames.join(", ")}].`,
+					"",
+					"Each agent handles these types of work:",
+					keywordList,
+					"",
+					"<issue_context>",
+					`Title: ${title}`,
+					`Description: ${description.slice(0, 500)}`,
+					"</issue_context>",
+					"",
+					"Reply with ONLY the agent name, nothing else.",
+				].join("\n");
+
+				const response = await classifyClient.chat({
+					model: "claude-haiku-4-5-20251001",
+					messages: [{ role: "user", content: prompt }],
+					max_tokens: 64,
+				});
+				const raw = response.content.trim();
+				// Case-insensitive match: agent keys may have mixed case
+				const matched = agentNames.find(
+					(n) => n.toLowerCase() === raw.toLowerCase(),
+				);
+				return matched ?? null;
+			};
+		}
+		agentDispatcher = new AgentDispatcher(
+			flywheelConfig.agents,
+			flywheelConfig.default_agent,
+			classifyFn,
+		);
+		log(`AgentDispatcher: ${Object.keys(flywheelConfig.agents).length} agents configured`);
+	}
+
 	// Hydrator
 	const hydrator = new PreHydrator(fetchIssue);
 
@@ -240,9 +306,10 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	const blueprint = new Blueprint(
 		hydrator, gitChecker, makeRunner, shell,
 		worktreeManager, skillInjector, evidenceCollector,
-		undefined, // skillsConfig
+		flywheelConfig?.skills, // skillsConfig (was hardcoded undefined)
 		decisionLayer,
 		eventEmitter,
+		agentDispatcher,
 	);
 
 	return {

@@ -1,6 +1,7 @@
 export { ConfigLoader } from "./ConfigLoader.js";
 export type { ReadFileFn } from "./ConfigLoader.js";
 export type {
+	AgentConfig,
 	AgentNodeConfig,
 	AutonomyLevel,
 	CIConfig,
