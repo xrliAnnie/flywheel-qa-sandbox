@@ -190,14 +190,28 @@ describe("SlackNotifier", () => {
 	});
 
 	describe("auto_approve", () => {
-		it("sends nothing", async () => {
+		it("HR-LANDED auto_approve sends nothing", async () => {
 			const result = await notifier.notify(
 				makeCtx(),
-				makeDecision({ route: "auto_approve" }),
+				makeDecision({ route: "auto_approve", hardRuleId: "HR-LANDED" }),
 			);
 
 			expect(mockPostMessage).not.toHaveBeenCalled();
 			expect(result.sent).toBe(false);
+		});
+
+		it("non-HR-LANDED auto_approve normalizes to needs_review and sends", async () => {
+			const result = await notifier.notify(
+				makeCtx(),
+				makeDecision({ route: "auto_approve", hardRuleId: undefined }),
+			);
+
+			expect(mockPostMessage).toHaveBeenCalledTimes(1);
+			expect(result.sent).toBe(true);
+			const { text, blocks } = mockPostMessage.mock.calls[0][0];
+			expect(text).toContain("Review Required");
+			const header = blocks.find((b: any) => b.type === "header");
+			expect(header.text.text).toBe("Review Required: GEO-95");
 		});
 	});
 });

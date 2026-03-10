@@ -31,7 +31,7 @@ export class DecisionLayer implements IDecisionLayer {
 		ctx: ExecutionContext,
 		cwd: string,
 	): Promise<DecisionResult> {
-		// Early return: PR already merged by flywheel-land — bypass all rules/triage/verify
+		// HR-LANDED: PR already merged (backward compat with old flywheel-land) — early return BEFORE final guard
 		if (ctx.landingStatus?.status === "merged") {
 			const result: DecisionResult = {
 				route: "auto_approve",
@@ -40,6 +40,20 @@ export class DecisionLayer implements IDecisionLayer {
 				concerns: [],
 				decisionSource: "hard_rule",
 				hardRuleId: "HR-LANDED",
+			};
+			await this.audit(ctx, result);
+			return result;
+		}
+
+		// HR-READY: PR passed CI, awaiting CEO approval
+		if (ctx.landingStatus?.status === "ready_to_merge") {
+			const result: DecisionResult = {
+				route: "needs_review",
+				confidence: 1.0,
+				reasoning: "PR ready to merge, awaiting CEO approval",
+				concerns: [],
+				decisionSource: "hard_rule",
+				hardRuleId: "HR-READY",
 			};
 			await this.audit(ctx, result);
 			return result;
@@ -102,6 +116,15 @@ export class DecisionLayer implements IDecisionLayer {
 					decisionSource: "haiku_verify",
 				};
 			}
+		}
+
+		// Final guard: auto_approve disabled by policy — downgrade to needs_review
+		if (result.route === "auto_approve") {
+			result = {
+				...result,
+				route: "needs_review",
+				concerns: [...result.concerns, "auto_approve disabled by policy"],
+			};
 		}
 
 		await this.audit(ctx, result);

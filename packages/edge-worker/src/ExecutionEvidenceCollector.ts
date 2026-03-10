@@ -149,7 +149,14 @@ export class ExecutionEvidenceCollector {
 				};
 			}
 
-			if (signal.status === "failed") {
+			if (signal.status === "ready_to_merge") {
+			return {
+				status: "ready_to_merge",
+				prNumber: signal.prNumber,
+			};
+		}
+
+		if (signal.status === "failed") {
 				return {
 					status: "failed",
 					prNumber: signal.prNumber,
