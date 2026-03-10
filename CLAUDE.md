@@ -5,15 +5,14 @@
 New session? Run `/onboarding` or read these files in order:
 
 1. **Memory** → `~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md` (decisions, architecture, current progress)
-2. **Workflow** → `WORKFLOW.md` (development pipeline: Linear → Brainstorm → Research → Plan → Implement → Archive)
-3. **Active Explorations** (read based on task):
+2. **Active Explorations** (read based on task):
    - `doc/exploration/new/v0.3-memory-system.md` — per-project memory (GEO-145)
    - `doc/exploration/new/v0.4-voice-interface.md` — push/pull voice channel for CEO (GEO-150)
    - `doc/exploration/new/v0.5-remote-screenshot.md` — visual Slack notifications (GEO-151)
    - `doc/exploration/new/v0.6-slack-threading.md` — Slack threading + workflow engine (GEO-148)
    - `doc/exploration/new/v1.0-lead-experience.md` — Lead MVP experience (GEO-146)
    - `doc/exploration/new/v1.1-multi-lead.md` — Multi-lead agents (GEO-152)
-4. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md`
+3. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md`
 
 Archived docs are in `doc/*/archive/` — read only if you need historical context.
 
@@ -33,6 +32,8 @@ Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
 
 **v1.0 Phase 1 complete** — Lead MVP + Memory System operational. Trial run in progress.
 
+Current version: see `doc/VERSION`
+
 | Milestone | Status |
 |-----------|--------|
 | v0.1.0 Core Loop (headless `--print` mode) | ✅ Merged (PR #3) |
@@ -44,7 +45,6 @@ Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
 | v1.0 Phase 1 Lead MVP | ✅ Merged (main) |
 | GEO-145: Memory Production (Supabase pgvector) | ⬜ Todo |
 | GEO-146: v1.0 Phase 2 (disable auto-approve) | ⬜ Todo |
-| GEO-147: Formalize workflow pipeline | 🔄 In Progress |
 
 ## Doc Structure & Lifecycle
 
@@ -53,19 +53,99 @@ doc/
 ├── exploration/{new,backlog,archive}/  — Product exploration / design docs
 ├── research/{new,archive}/             — Technical research / evaluations
 ├── deep-research/                      — External LLM research results
-├── plan/{draft,backlog,archive}/       — Implementation plans
+├── plan/{draft,new,inprogress,archive,backlog}/ — Implementation plans
 ├── implementation/                     — Implementation notes
 ├── architecture/{archive}/             — Unified architecture docs
-└── reference/                          — Reference docs (Cyrus, Ralph, patterns)
+├── reference/                          — Reference docs (Cyrus, Ralph, patterns)
+└── VERSION                             — Current version number
 ```
+
+### Development Pipeline
+
+Every feature follows this pipeline. **Linear issue is the single source of truth.**
+
+```mermaid
+graph LR
+    LI[Linear Issue] --> B[Brainstorm<br/>exploration/new/]
+    B --> R[Research<br/>research/new/]
+    R --> P[Plan<br/>plan/draft/]
+    P -->|codex-approved| N[plan/new/]
+    N -->|implement started| IP[plan/inprogress/]
+    IP -->|merged| A[Archive<br/>*/archive/]
+```
+
+**Slash commands per stage:**
+
+| Stage | Command |
+|-------|---------|
+| Brainstorm | `/brainstorm` |
+| Research | `/research` |
+| Plan | `/write-plan` → `/codex-design-review` |
+| Implement | `/implement {plan-file}` |
+| Code Review | `/codex-code-review` or `/gemini-code-review` |
+
+### File Naming Conventions
+
+**MANDATORY**: Always include version + GEO issue ID in filenames.
+
+| Type | Pattern | Example |
+|------|---------|---------|
+| Exploration | `GEO-{XX}-{slug}.md` | `GEO-145-memory-production.md` |
+| Research | `GEO-{XX}-{topic}.md` | `GEO-145-supabase-pgvector.md` |
+| Plan | `v{version}-GEO-{XX}-{slug}.md` | `v1.2.0-GEO-145-memory-production.md` |
+
+Research files may also use a sequential number prefix: `{NNN}-GEO-{XX}-{slug}.md`
+
+### Document Frontmatter
+
+Every document MUST start with a structured metadata block:
+
+**Exploration:**
+```markdown
+# Exploration: {Title} — GEO-{XX}
+
+**Issue**: GEO-{XX} ({title})
+**Date**: {YYYY-MM-DD}
+**Status**: Draft | Complete
+```
+
+**Research:**
+```markdown
+# Research: {Title} — GEO-{XX}
+
+**Issue**: GEO-{XX}
+**Date**: {YYYY-MM-DD}
+**Source**: `doc/exploration/new/GEO-{XX}-{slug}.md`
+```
+
+**Plan:**
+```markdown
+# Plan: {Title}
+
+**Version**: v{X.Y.Z}
+**Issue**: GEO-{XX}
+**Date**: {YYYY-MM-DD}
+**Source**: `doc/exploration/new/GEO-{XX}-{slug}.md`, `doc/research/new/GEO-{XX}-{slug}.md`
+**Status**: draft | codex-approved
+```
+
+### Plan Status Flow
+
+```
+plan/draft/      → Codex design review not yet passed
+plan/new/        → Codex approved, ready for /implement
+plan/inprogress/ → Implementation started (branch exists)
+plan/archive/    → Implementation merged (or abandoned with reason)
+plan/backlog/    → Written but implementation deferred
+```
+
+When a plan passes Codex design review: `git mv plan/draft/{file} plan/new/{file}`
+When implementation starts: `git mv plan/new/{file} plan/inprogress/{file}`
+When PR merges: `git mv plan/inprogress/{file} plan/archive/{file}`
 
 ### Document Lifecycle Rules
 
-Documents flow through a pipeline. **A document can only be archived when its downstream artifact exists.**
-
-```
-Exploration (new/) → Research (new/) → Plan (draft/) → Implementation (code) → Archive
-```
+**A document can only be archived when its downstream artifact exists.**
 
 **Archive rules:**
 - **Exploration** → archive when Research is complete (or when it's a reference-only doc with no further action)
@@ -82,18 +162,7 @@ Exploration (new/) → Research (new/) → Plan (draft/) → Implementation (cod
 **After archiving, update:**
 1. This CLAUDE.md (remove from "Active Explorations" list)
 2. MEMORY.md doc index (update path and status)
-
-### Current Active Documents
-
-| Type | File | Status | Next Step |
-|------|------|--------|-----------|
-| Exploration | v0.3-memory-system.md | Complete, deferred | Wait for Annie, then plan |
-| Exploration | v0.4-voice-interface.md | Draft | Research → Plan → Implement |
-| Exploration | v0.5-remote-screenshot.md | Draft | Research → Plan → Implement |
-| Research | 005-memory-architecture-survey.md | Complete | Waiting on v0.3 exploration decision |
-| Research | 007-remote-execution-eval.md | Complete | Needs plan or archive decision |
-| Research | 008-multi-machine-consensus.md | Complete | Phase 5+, waiting |
-| Plan | v0.3-step1-memory-system.md | Backlog | Waiting for Annie |
+3. Linear issue (mark as Done)
 
 ## Key Architecture Decisions
 
@@ -116,17 +185,6 @@ Exploration (new/) → Research (new/) → Plan (draft/) → Implementation (cod
 - **Issue tracking**: Linear (`@linear/sdk`)
 - **VCS**: GitHub
 - **Agent**: OpenClaw gateway + product-lead agent → Slack
-
-## Implementation Phases
-
-1. **Core Loop** (v0.1.0): Fork Cyrus → DAG → headless → auto PR ✅
-2. **Interactive Runner** (v0.1.1): tmux sessions → user can see & interact ✅
-3. **Parallel + Decision** (v0.2): Worktree + Decision Layer + Skill injection + Slack ✅
-4. **TeamLead Daemon** (v0.4): Event pipeline + Socket Mode Slack + actions + stuck watcher ✅
-5. **OpenClaw Bridge** (v0.5): Bridge API + product-lead agent + actions + auto-notification ✅
-6. **Memory** (v0.3): Per-project memory — DEFERRED (waiting for Annie)
-7. **CIPHER**: Decision-making memory (learn from past approve/reject patterns)
-8. **Multi-Team**: Config-driven multi-agent (marketing-lead, ops-lead)
 
 ## Core Behaviors
 
