@@ -110,12 +110,11 @@ export class MemoryService {
 			return { added: 0, updated: 0 };
 		}
 
-		const added = result.results.filter(
-			(r: { event: string }) => r.event === "ADD",
-		).length;
-		const updated = result.results.filter(
-			(r: { event: string }) => r.event === "UPDATE",
-		).length;
+		// mem0 add() returns items with an `event` field at runtime ("ADD"/"UPDATE")
+		// but the SDK types (MemoryItem) don't declare it — cast to access safely
+		const items = result.results as Array<{ event?: string }>;
+		const added = items.filter((r) => r.event === "ADD").length;
+		const updated = items.filter((r) => r.event === "UPDATE").length;
 
 		return { added, updated };
 	}
