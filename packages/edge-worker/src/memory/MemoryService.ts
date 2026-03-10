@@ -8,7 +8,7 @@ export class MemoryService {
 	constructor(config: MemoryServiceConfig | MemoryServiceTestConfig) {
 		this.searchLimit = config.searchLimit ?? 10;
 
-		const isTestConfig = !("qdrantUrl" in config);
+		const isTestConfig = !("supabaseUrl" in config);
 
 		this.memory = new Memory({
 			version: "v1.1",
@@ -24,26 +24,28 @@ export class MemoryService {
 				config: {
 					apiKey: config.googleApiKey,
 					model: "gemini-embedding-001",
-					embeddingDims: 768, // match embedBatch hardcoded value
+					embeddingDims: 1536,
 				},
 			},
 			vectorStore: isTestConfig
 				? {
 						provider: "memory",
 						config: {
-							collectionName: config.collectionName ?? "flywheel-memories",
-							dimension: 768,
+							collectionName: "flywheel-memories",
+							dimension: 1536,
 						},
 					}
 				: {
-						provider: "qdrant",
+						provider: "supabase",
 						config: {
-							url: (config as MemoryServiceConfig).qdrantUrl,
-							collectionName: config.collectionName ?? "flywheel-memories",
-							dimension: 768,
+							supabaseUrl: (config as MemoryServiceConfig).supabaseUrl,
+							supabaseKey: (config as MemoryServiceConfig).supabaseKey,
+							tableName: "memories",
 						},
 					},
-			historyDbPath: config.historyDbPath ?? ":memory:",
+			historyDbPath: isTestConfig
+				? (config.historyDbPath ?? ":memory:")
+				: (config as MemoryServiceConfig).historyDbPath,
 		});
 	}
 
