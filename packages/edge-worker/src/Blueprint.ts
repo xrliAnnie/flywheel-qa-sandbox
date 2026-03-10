@@ -23,6 +23,15 @@ import type { ExecutionEventEmitter, EventEnvelope } from "./ExecutionEventEmitt
 import type { AgentDispatcher } from "./AgentDispatcher.js";
 import type { MemoryService } from "./memory/MemoryService.js";
 
+const MEMORY_TIMEOUT_MS = 30_000; // 30s — generous for Gemini+Qdrant, but prevents indefinite hang
+
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+		promise.then(resolve, reject).finally(() => clearTimeout(timer));
+	});
+}
+
 /** Result of a Blueprint execution */
 export interface BlueprintResult {
 	success: boolean;
@@ -215,10 +224,14 @@ export class Blueprint {
 		let memoryBlock = "";
 		if (this.memoryService) {
 			try {
-				memoryBlock = await this.memoryService.searchAndFormat({
-					query: `${hydrated.issueTitle} ${hydrated.issueDescription}`.trim(),
-					projectName: env.projectName,
-				}) ?? "";
+				memoryBlock = await withTimeout(
+					this.memoryService.searchAndFormat({
+						query: `${hydrated.issueTitle} ${hydrated.issueDescription}`.trim(),
+						projectName: env.projectName,
+					}),
+					MEMORY_TIMEOUT_MS,
+					"Memory retrieval",
+				) ?? "";
 			} catch (err) {
 				console.warn(
 					`[Blueprint] Memory retrieval failed (non-fatal): ${err instanceof Error ? err.stack : String(err)}`,
@@ -533,24 +546,28 @@ export class Blueprint {
 					? (decision.route === "blocked" ? "failure" : "success")
 					: (evidence.commitCount > 0 ? "success" : "failure");
 
-			const memResult = await this.memoryService.addSessionMemory({
-				projectName,
-				executionId,
-				issueId: hydrated.issueId,
-				issueTitle: hydrated.issueTitle,
-				sessionResult,
-				commitMessages: evidence.commitMessages,
-				diffSummary: evidence.diffSummary ?? "",
-				decisionRoute: decision?.route,
-				error: result.timedOut
-					? "timeout"
-					: (!decision && evidence.commitCount === 0)
-						? "no commits produced"
+			const memResult = await withTimeout(
+				this.memoryService.addSessionMemory({
+					projectName,
+					executionId,
+					issueId: hydrated.issueId,
+					issueTitle: hydrated.issueTitle,
+					sessionResult,
+					commitMessages: evidence.commitMessages,
+					diffSummary: evidence.diffSummary ?? "",
+					decisionRoute: decision?.route,
+					error: result.timedOut
+						? "timeout"
+						: (!decision && evidence.commitCount === 0)
+							? "no commits produced"
+							: undefined,
+					decisionReasoning: decision
+						? [decision.reasoning, ...decision.concerns.map((c: string) => `concern: ${c}`)].join("; ")
 						: undefined,
-				decisionReasoning: decision
-					? [decision.reasoning, ...decision.concerns.map((c: string) => `concern: ${c}`)].join("; ")
-					: undefined,
-			});
+				}),
+				MEMORY_TIMEOUT_MS,
+				"Memory extraction",
+			);
 			console.log(
 				`[Blueprint] Memory stored: +${memResult.added} added, ~${memResult.updated} updated`,
 			);

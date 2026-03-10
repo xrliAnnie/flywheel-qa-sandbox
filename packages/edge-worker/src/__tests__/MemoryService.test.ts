@@ -238,7 +238,7 @@ describe("MemoryService", () => {
 		expect(result).toContain("- Use pnpm, not npm");
 	});
 
-	it("passes app_id to search (matches write-side scoping)", async () => {
+	it("passes app_id filter to search (matches write-side scoping)", async () => {
 		mockSearch.mockResolvedValue({ results: [] });
 		const svc = new MemoryService({
 			googleApiKey: "test-key",
@@ -254,6 +254,7 @@ describe("MemoryService", () => {
 		const [, opts] = mockSearch.mock.calls[0];
 		expect(opts.userId).toBe("myproject");
 		expect(opts.agentId).toBe("qa");
+		expect(opts.filters).toEqual({ app_id: "flywheel" });
 	});
 });
 

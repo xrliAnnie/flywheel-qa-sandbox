@@ -133,6 +133,7 @@ export class MemoryService {
 			userId: params.projectName,
 			agentId: params.agentId,
 			limit: this.searchLimit,
+			filters: { app_id: "flywheel" },
 		});
 
 		if (!results || !Array.isArray(results.results)) {
