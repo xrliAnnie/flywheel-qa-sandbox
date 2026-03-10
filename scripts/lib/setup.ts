@@ -305,16 +305,17 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	};
 
 	// 4e. Memory system (v0.3) — factory logic + tests live in edge-worker package
-	const memoryService = createMemoryService({
+	const memoryService = await createMemoryService({
 		googleApiKey: process.env.GOOGLE_API_KEY,
-		qdrantUrl: process.env.QDRANT_URL,
+		supabaseUrl: process.env.SUPABASE_URL,
+		supabaseKey: process.env.SUPABASE_KEY,
 		projectName,
 		llmModel: process.env.FLYWHEEL_MEMORY_MODEL,
 	});
 	if (memoryService) {
-		log("Memory system enabled (Qdrant persistent)");
+		log("Memory system enabled (Supabase pgvector)");
 	} else {
-		log("Memory system disabled — requires GOOGLE_API_KEY + QDRANT_URL");
+		log("Memory system disabled — requires GOOGLE_API_KEY + SUPABASE_URL + SUPABASE_KEY");
 	}
 
 	const blueprint = new Blueprint(

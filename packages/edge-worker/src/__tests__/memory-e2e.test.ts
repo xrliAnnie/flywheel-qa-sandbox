@@ -3,11 +3,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // Mock mem0ai/oss for E2E tests that don't need live API
 const mockAdd = vi.fn();
 const mockSearch = vi.fn();
+const mockVectorStore = {
+	ready: Promise.resolve(),
+	initError: undefined as Error | undefined,
+};
 
 vi.mock("mem0ai/oss", () => ({
 	Memory: vi.fn().mockImplementation(() => ({
 		add: mockAdd,
 		search: mockSearch,
+		vectorStore: mockVectorStore,
 	})),
 }));
 
@@ -86,24 +91,35 @@ describe("Memory System E2E", () => {
 		expect(opts.userId).toBe("beta");
 	});
 
-	it("graceful degradation: missing GOOGLE_API_KEY → memory disabled", () => {
-		const svc = createMemoryService({
-			qdrantUrl: "http://localhost:6333",
+	it("graceful degradation: missing GOOGLE_API_KEY → memory disabled", async () => {
+		const svc = await createMemoryService({
+			supabaseUrl: "https://test.supabase.co",
+			supabaseKey: "test-key",
 			projectName: "geoforge3d",
 		});
 		expect(svc).toBeUndefined();
 	});
 
-	it("graceful degradation: missing QDRANT_URL → memory disabled", () => {
-		const svc = createMemoryService({
+	it("graceful degradation: missing SUPABASE_URL → memory disabled", async () => {
+		const svc = await createMemoryService({
 			googleApiKey: "test-key",
+			supabaseKey: "test-key",
 			projectName: "geoforge3d",
 		});
 		expect(svc).toBeUndefined();
 	});
 
-	it("graceful degradation: both missing → memory disabled", () => {
-		const svc = createMemoryService({
+	it("graceful degradation: missing SUPABASE_KEY → memory disabled", async () => {
+		const svc = await createMemoryService({
+			googleApiKey: "test-key",
+			supabaseUrl: "https://test.supabase.co",
+			projectName: "geoforge3d",
+		});
+		expect(svc).toBeUndefined();
+	});
+
+	it("graceful degradation: all missing → memory disabled", async () => {
+		const svc = await createMemoryService({
 			projectName: "geoforge3d",
 		});
 		expect(svc).toBeUndefined();

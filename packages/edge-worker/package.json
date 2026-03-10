@@ -26,6 +26,7 @@
 		"@google/genai": "^1.44.0",
 		"@linear/sdk": "^64.0.0",
 		"@ngrok/ngrok": "^1.5.1",
+		"@supabase/supabase-js": "^2.99.0",
 		"chokidar": "^4.0.3",
 		"fastify": "^5.7.3",
 		"fastify-mcp": "^2.1.0",
