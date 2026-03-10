@@ -100,3 +100,10 @@ export type {
 	FullDiffProvider,
 	HardRule,
 } from "./decision/index.js";
+// Memory system (v0.3)
+export { MemoryService, createMemoryService } from "./memory/index.js";
+export type {
+	CreateMemoryServiceOpts,
+	MemoryServiceConfig,
+	MemoryServiceTestConfig,
+} from "./memory/index.js";
