@@ -27,11 +27,25 @@ export function createMemoryService(
 		"memories",
 		safeName,
 	);
-	mkdirSync(memoryDbDir, { recursive: true });
-	return new MemoryService({
-		googleApiKey: opts.googleApiKey,
-		qdrantUrl: opts.qdrantUrl,
-		historyDbPath: join(memoryDbDir, "history.db"),
-		llmModel: opts.llmModel ?? "gemini-2.0-flash",
-	});
+	try {
+		mkdirSync(memoryDbDir, { recursive: true });
+	} catch (err) {
+		console.warn(
+			`[createMemoryService] Cannot create memory DB dir at ${memoryDbDir}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return undefined;
+	}
+	try {
+		return new MemoryService({
+			googleApiKey: opts.googleApiKey,
+			qdrantUrl: opts.qdrantUrl,
+			historyDbPath: join(memoryDbDir, "history.db"),
+			llmModel: opts.llmModel ?? "gemini-2.0-flash",
+		});
+	} catch (err) {
+		console.warn(
+			`[createMemoryService] Failed to initialize MemoryService: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		return undefined;
+	}
 }
