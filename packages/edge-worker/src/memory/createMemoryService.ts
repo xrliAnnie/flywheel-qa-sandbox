@@ -19,11 +19,13 @@ export function createMemoryService(
 	opts: CreateMemoryServiceOpts,
 ): MemoryService | undefined {
 	if (!opts.googleApiKey || !opts.qdrantUrl) return undefined;
+	// Sanitize projectName to prevent path traversal
+	const safeName = opts.projectName.replace(/[^a-zA-Z0-9_.-]/g, "_");
 	const memoryDbDir = join(
 		homedir(),
 		".flywheel",
 		"memories",
-		opts.projectName,
+		safeName,
 	);
 	mkdirSync(memoryDbDir, { recursive: true });
 	return new MemoryService({
