@@ -369,11 +369,17 @@ export class Blueprint {
 				cwd,
 				baseSha,
 				worktreeInfo,
+				env,
 			);
 		}
 
 		// ── v0.1.1 fallback: no DecisionLayer ─────────────────
 		const success = gitResult.commitCount > 0 && !result.timedOut;
+
+		// v0.3 — extract memory (fallback path, no decision)
+		if (evidence) {
+			await this.extractMemory(hydrated, evidence, result, undefined, env.executionId, env.projectName);
+		}
 
 		if (result.tmuxWindow) {
 			if (success) {
@@ -437,6 +443,7 @@ export class Blueprint {
 		cwd: string,
 		baseSha: string,
 		worktreeInfo: WorktreeInfo | undefined,
+		env: EventEnvelope,
 	): Promise<BlueprintResult> {
 		// Build ExecutionContext
 		const execCtx: ExecutionContext = {
@@ -479,6 +486,9 @@ export class Blueprint {
 			};
 		}
 
+		// v0.3 — extract memory (decision path)
+		await this.extractMemory(hydrated, evidence, result, decision, env.executionId, env.projectName);
+
 		// Route → success mapping
 		const success =
 			decision.route === "auto_approve" ||
@@ -505,6 +515,50 @@ export class Blueprint {
 			evidence,
 			decision,
 		};
+	}
+
+	private async extractMemory(
+		hydrated: { issueId: string; issueTitle: string },
+		evidence: ExecutionEvidence,
+		result: FlywheelRunResult,
+		decision: DecisionResult | undefined,
+		executionId: string,
+		projectName: string,
+	): Promise<void> {
+		if (!this.memoryService) return;
+		try {
+			const sessionResult: "success" | "failure" | "timeout" = result.timedOut
+				? "timeout"
+				: decision
+					? (decision.route === "blocked" ? "failure" : "success")
+					: (evidence.commitCount > 0 ? "success" : "failure");
+
+			const memResult = await this.memoryService.addSessionMemory({
+				projectName,
+				executionId,
+				issueId: hydrated.issueId,
+				issueTitle: hydrated.issueTitle,
+				sessionResult,
+				commitMessages: evidence.commitMessages,
+				diffSummary: evidence.diffSummary ?? "",
+				decisionRoute: decision?.route,
+				error: result.timedOut
+					? "timeout"
+					: (!decision && evidence.commitCount === 0)
+						? "no commits produced"
+						: undefined,
+				decisionReasoning: decision
+					? [decision.reasoning, ...decision.concerns.map((c: string) => `concern: ${c}`)].join("; ")
+					: undefined,
+			});
+			console.log(
+				`[Blueprint] Memory stored: +${memResult.added} added, ~${memResult.updated} updated`,
+			);
+		} catch (err) {
+			console.warn(
+				`[Blueprint] Memory extraction failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
 	}
 
 	private async killTmuxWindow(tmuxWindow: string): Promise<void> {
