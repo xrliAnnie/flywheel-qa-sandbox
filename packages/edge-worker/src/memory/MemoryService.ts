@@ -103,13 +103,19 @@ export class MemoryService {
 			},
 		});
 
-		const items = (result?.results ?? []) as Array<{
-			id: string;
-			event: string;
-			memory: string;
-		}>;
-		const added = items.filter((r) => r.event === "ADD").length;
-		const updated = items.filter((r) => r.event === "UPDATE").length;
+		if (!result || !Array.isArray(result.results)) {
+			console.warn(
+				`[MemoryService] Unexpected response from memory.add(): ${JSON.stringify(result)?.slice(0, 200)}`,
+			);
+			return { added: 0, updated: 0 };
+		}
+
+		const added = result.results.filter(
+			(r: { event: string }) => r.event === "ADD",
+		).length;
+		const updated = result.results.filter(
+			(r: { event: string }) => r.event === "UPDATE",
+		).length;
 
 		return { added, updated };
 	}
@@ -129,7 +135,19 @@ export class MemoryService {
 			limit: this.searchLimit,
 		});
 
-		const memories = (results?.results ?? []) as Array<{ memory: string }>;
+		if (!results || !Array.isArray(results.results)) {
+			console.warn(
+				`[MemoryService] Unexpected response from memory.search(): ${JSON.stringify(results)?.slice(0, 200)}`,
+			);
+			return null;
+		}
+
+		const memories = results.results.filter(
+			(m: unknown): m is { memory: string } =>
+				typeof m === "object" &&
+				m !== null &&
+				typeof (m as { memory: unknown }).memory === "string",
+		);
 		if (!memories.length) return null;
 
 		const lines = memories.map((m) => `- ${m.memory}`);

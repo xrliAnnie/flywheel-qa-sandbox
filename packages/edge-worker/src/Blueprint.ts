@@ -221,7 +221,7 @@ export class Blueprint {
 				}) ?? "";
 			} catch (err) {
 				console.warn(
-					`[Blueprint] Memory retrieval failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+					`[Blueprint] Memory retrieval failed (non-fatal): ${err instanceof Error ? err.stack : String(err)}`,
 				);
 			}
 		}
@@ -556,7 +556,7 @@ export class Blueprint {
 			);
 		} catch (err) {
 			console.warn(
-				`[Blueprint] Memory extraction failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+				`[Blueprint] Memory extraction failed (non-fatal): ${err instanceof Error ? err.stack : String(err)}`,
 			);
 		}
 	}
