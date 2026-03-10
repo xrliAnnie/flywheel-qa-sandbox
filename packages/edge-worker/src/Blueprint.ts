@@ -258,19 +258,19 @@ export class Blueprint {
 		];
 
 		if (canLand) {
-			// v0.6: land after PR creation
+			// v0.6: land after PR creation (v1.0 Phase 2: no merge — report readiness only)
 			if (hasLandCommand) {
 				systemPromptLines.push(
-					`5. After creating the PR, use ${this.skillsConfig!.land_command} to land it.`,
-					`   Regardless of which landing command you use, you MUST write the landing signal file.`,
+					`5. After creating the PR, use ${this.skillsConfig!.land_command} to monitor CI readiness.`,
+					`   You MUST write the landing signal file. Do NOT merge the PR — write {"status":"ready_to_merge"} and exit.`,
 				);
 			} else {
 				systemPromptLines.push(
-					"5. After creating the PR, follow the flywheel-land skill to monitor CI, handle reviews, and merge.",
+					"5. After creating the PR, follow the flywheel-land skill to monitor CI and report readiness.",
 				);
 			}
 			systemPromptLines.push(
-				"6. After PR is merged (or landing fails), stop and wait.",
+				"6. After writing the landing signal (ready_to_merge or failed), exit the session.",
 				`Landing signal path: ${landSignalPath}`,
 			);
 		} else {

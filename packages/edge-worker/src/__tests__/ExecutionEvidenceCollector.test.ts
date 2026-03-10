@@ -397,6 +397,35 @@ describe("ExecutionEvidenceCollector", () => {
 		}
 	});
 
+	it("land-status.json with status=ready_to_merge → passes through", async () => {
+		const fs = await import("node:fs");
+		const os = await import("node:os");
+		const path = await import("node:path");
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "land-test-"));
+		const signalPath = path.join(tmpDir, "land-status.json");
+		fs.writeFileSync(signalPath, JSON.stringify({
+			status: "ready_to_merge",
+			prNumber: 42,
+		}));
+
+		try {
+			const exec = makeMockExec();
+			const collector = new ExecutionEvidenceCollector(exec);
+
+			const evidence = await collector.collect(
+				"/repo", "base123", makeGitResult(), 1000, signalPath,
+			);
+
+			expect(evidence.landingStatus).toEqual({
+				status: "ready_to_merge",
+				prNumber: 42,
+			});
+		} finally {
+			fs.rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
 	it("land-status.json with status=failed → passes through", async () => {
 		const fs = await import("node:fs");
 		const os = await import("node:os");
