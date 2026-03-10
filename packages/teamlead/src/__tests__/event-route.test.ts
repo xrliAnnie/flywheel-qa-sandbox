@@ -160,7 +160,7 @@ describe("Event route", () => {
 		expect(res.status).toBe(401);
 	});
 
-	it("POST /events with auto_approve + landingStatus merged skips approveExecution", async () => {
+	it("POST /events with auto_approve + landingStatus merged → approved (backward compat)", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
@@ -178,14 +178,12 @@ describe("Event route", () => {
 		expect(res.status).toBe(200);
 
 		const session = store.getSession("exec-1");
-		// Should be "approved" — bridge detects merged PR and skips approveExecution
+		// Backward compat: already merged → approved (no auto-merge attempt)
 		expect(session!.status).toBe("approved");
 		expect(session!.decision_route).toBe("auto_approve");
 	});
 
-	it("POST /events with auto_approve triggers auto merge (mock)", async () => {
-		// The auto-merge will fail because ApproveHandler can't run 'gh' in tests
-		// but the status flow should be: awaiting_review → (merge attempt)
+	it("POST /events with auto_approve + non-merged → awaiting_review (policy)", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
@@ -200,7 +198,7 @@ describe("Event route", () => {
 		expect(res.status).toBe(200);
 
 		const session = store.getSession("exec-1");
-		// Status should be awaiting_review (merge failed in test env — no gh CLI)
+		// Policy: no auto-merge — awaiting CEO approval
 		expect(session!.status).toBe("awaiting_review");
 		expect(session!.decision_route).toBe("auto_approve");
 	});
@@ -343,14 +341,15 @@ describe("formatNotification", () => {
 		expect(msg).toContain("3 commits");
 	});
 
-	it("auto_approve notification (merge succeeded)", () => {
+	it("auto_approve notification (already merged / backward compat)", () => {
 		const msg = formatNotification({ ...baseSession, decision_route: "auto_approve", status: "approved" }, "session_completed");
-		expect(msg).toContain("[Auto-merged]");
+		expect(msg).toContain("[Already Merged]");
 	});
 
-	it("auto_approve notification (merge failed)", () => {
+	it("auto_approve notification (awaiting review / policy)", () => {
 		const msg = formatNotification({ ...baseSession, decision_route: "auto_approve", status: "awaiting_review" }, "session_completed");
-		expect(msg).toContain("[Auto-merge Failed]");
+		expect(msg).toContain("[Review Required]");
+		expect(msg).toContain("CEO approval");
 	});
 
 	it("blocked notification", () => {

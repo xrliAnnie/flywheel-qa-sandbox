@@ -105,7 +105,7 @@ describe("DecisionLayer Integration", () => {
 		}
 	});
 
-	it("triage auto_approve → verifier approved → auto_approve + audit", async () => {
+	it("triage auto_approve → verifier approved → final guard downgrades to needs_review", async () => {
 		const logger = await setupAuditLogger();
 		try {
 			const hardRules = new HardRuleEngine(defaultRules());
@@ -139,12 +139,60 @@ describe("DecisionLayer Integration", () => {
 
 			const result = await layer.decide(makeCtx(), "/project");
 
-			expect(result.route).toBe("auto_approve");
+			expect(result.route).toBe("needs_review");
+			expect(result.concerns).toContain("auto_approve disabled by policy");
 			expect(result.verification?.approved).toBe(true);
 			expect(diffProvider.getFullDiff).toHaveBeenCalled();
 
 			const entries = await logger.getByIssue("issue-int-1");
 			expect(entries.length).toBe(1);
+			expect(entries[0]!.route).toBe("needs_review");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("merged landing status → HR-LANDED auto_approve (bypasses final guard)", async () => {
+		const logger = await setupAuditLogger();
+		try {
+			const hardRules = new HardRuleEngine(defaultRules());
+			const noLlm: LLMClient = { chat: () => { throw new Error("should not be called"); } };
+			const triage = new HaikuTriageAgent(noLlm, "haiku", 2000);
+			const verifier = new HaikuVerifier(noLlm, "haiku");
+			const fallback = new FallbackHeuristic();
+
+			const layer = new DecisionLayer(
+				hardRules, triage, verifier, fallback, logger, makeDiffProvider(),
+			);
+
+			const ctx = makeCtx({ landingStatus: { status: "merged", mergedAt: "2025-01-01" } });
+			const result = await layer.decide(ctx, "/project");
+
+			expect(result.route).toBe("auto_approve");
+			expect(result.hardRuleId).toBe("HR-LANDED");
+		} finally {
+			await cleanup();
+		}
+	});
+
+	it("ready_to_merge landing status → HR-READY needs_review", async () => {
+		const logger = await setupAuditLogger();
+		try {
+			const hardRules = new HardRuleEngine(defaultRules());
+			const noLlm: LLMClient = { chat: () => { throw new Error("should not be called"); } };
+			const triage = new HaikuTriageAgent(noLlm, "haiku", 2000);
+			const verifier = new HaikuVerifier(noLlm, "haiku");
+			const fallback = new FallbackHeuristic();
+
+			const layer = new DecisionLayer(
+				hardRules, triage, verifier, fallback, logger, makeDiffProvider(),
+			);
+
+			const ctx = makeCtx({ landingStatus: { status: "ready_to_merge", prNumber: 42 } });
+			const result = await layer.decide(ctx, "/project");
+
+			expect(result.route).toBe("needs_review");
+			expect(result.hardRuleId).toBe("HR-READY");
 		} finally {
 			await cleanup();
 		}

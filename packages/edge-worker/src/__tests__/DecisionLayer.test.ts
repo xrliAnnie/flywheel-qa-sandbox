@@ -96,7 +96,7 @@ describe("DecisionLayer", () => {
 		expect(result.decisionSource).toBe("hard_rule");
 	});
 
-	it("triage auto_approve → verifier approved → returns auto_approve", async () => {
+	it("triage auto_approve → verifier approved → final guard downgrades to needs_review", async () => {
 		const { hardRules, triage, verifier, fallback, auditLogger, diffProvider } =
 			makeMocks();
 		vi.spyOn(triage, "triage").mockResolvedValue({
@@ -124,7 +124,8 @@ describe("DecisionLayer", () => {
 		);
 		const result = await layer.decide(makeCtx(), "/project");
 
-		expect(result.route).toBe("auto_approve");
+		expect(result.route).toBe("needs_review");
+		expect(result.concerns).toContain("auto_approve disabled by policy");
 		expect(result.verification?.approved).toBe(true);
 	});
 
@@ -334,6 +335,29 @@ describe("DecisionLayer", () => {
 
 		expect(result.route).toBe("blocked");
 		expect(result.hardRuleId).toBe("HR-010");
+	});
+
+	it("ready_to_merge → HR-READY needs_review (bypasses hard rules + triage)", async () => {
+		const { hardRules, triage, verifier, fallback, auditLogger, diffProvider } =
+			makeMocks();
+		const evaluateSpy = vi.spyOn(hardRules, "evaluate");
+		const triageSpy = vi.spyOn(triage, "triage");
+
+		const layer = new DecisionLayer(
+			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+		);
+		const result = await layer.decide(
+			makeCtx({ landingStatus: { status: "ready_to_merge", prNumber: 42 } }),
+			"/project",
+		);
+
+		expect(result.route).toBe("needs_review");
+		expect(result.confidence).toBe(1.0);
+		expect(result.hardRuleId).toBe("HR-READY");
+		expect(result.decisionSource).toBe("hard_rule");
+		expect(result.reasoning).toContain("CEO approval");
+		expect(evaluateSpy).not.toHaveBeenCalled();
+		expect(triageSpy).not.toHaveBeenCalled();
 	});
 
 	it("diffProvider.getFullDiff called only for auto_approve", async () => {

@@ -126,7 +126,7 @@ async function main() {
 		log(`[${nodeId}] ${result.success ? "DONE" : "SHELVED"}${result.error ? ` — ${result.error}` : ""}`);
 		if (components.slackNotifier && result.decision) {
 			const route = result.decision.route;
-			if (route === "needs_review" || route === "blocked") {
+			{
 				components.slackNotifier.notify(
 					{
 						issueId: nodeId,
