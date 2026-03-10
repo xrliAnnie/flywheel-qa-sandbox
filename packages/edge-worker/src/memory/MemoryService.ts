@@ -103,12 +103,13 @@ export class MemoryService {
 			},
 		});
 
-		const added = (result?.results ?? []).filter(
-			(r: any) => r.event === "ADD",
-		).length;
-		const updated = (result?.results ?? []).filter(
-			(r: any) => r.event === "UPDATE",
-		).length;
+		const items = (result?.results ?? []) as Array<{
+			id: string;
+			event: string;
+			memory: string;
+		}>;
+		const added = items.filter((r) => r.event === "ADD").length;
+		const updated = items.filter((r) => r.event === "UPDATE").length;
 
 		return { added, updated };
 	}
