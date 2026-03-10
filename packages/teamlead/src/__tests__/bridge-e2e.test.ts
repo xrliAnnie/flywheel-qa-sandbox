@@ -234,8 +234,11 @@ describe("Bridge E2E lifecycle", () => {
 			expect(receivedBodies.length).toBeGreaterThanOrEqual(1);
 			const parsed = JSON.parse(receivedBodies[0]);
 			expect(parsed.agentId).toBe("product-lead");
-			expect(parsed.message).toContain("[Started]");
-			expect(parsed.message).toContain("GEO-102");
+			expect(parsed.sessionKey).toBe("flywheel:GEO-102");
+			// message is now structured JSON, not plain text
+			const msg = JSON.parse(parsed.message);
+			expect(msg.event_type).toBe("session_started");
+			expect(msg.issue_identifier).toBe("GEO-102");
 		} finally {
 			await new Promise<void>((resolve, reject) => {
 				server2.close((err) => (err ? reject(err) : resolve()));

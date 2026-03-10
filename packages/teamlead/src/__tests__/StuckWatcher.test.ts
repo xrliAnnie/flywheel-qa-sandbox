@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { StuckWatcher } from "../StuckWatcher.js";
+import { StuckWatcher, WebhookStuckNotifier } from "../StuckWatcher.js";
 import type { Session } from "../StateStore.js";
 
 function makeSession(overrides: Partial<Session> = {}): Session {
@@ -71,5 +71,81 @@ describe("StuckWatcher", () => {
 		expect(store.getStuckSessions).toHaveBeenCalledTimes(1);
 
 		vi.useRealTimers();
+	});
+});
+
+describe("WebhookStuckNotifier", () => {
+	it("sends structured payload to /hooks/ingest with sessionKey", async () => {
+		let capturedBody: Record<string, unknown> | undefined;
+		// Minimal mock gateway
+		const { createServer } = await import("node:http");
+		const gateway = createServer((req, res) => {
+			let data = "";
+			req.on("data", (chunk) => { data += chunk; });
+			req.on("end", () => {
+				capturedBody = JSON.parse(data);
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ ok: true }));
+			});
+		});
+		gateway.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => gateway.once("listening", resolve));
+		const addr = gateway.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+
+		const notifier = new WebhookStuckNotifier(`http://127.0.0.1:${port}`, "test-token");
+		const session: Session = {
+			execution_id: "exec-stuck",
+			issue_id: "i1",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "GEO-100",
+			slack_thread_ts: "1234.5678",
+		};
+
+		await notifier.onSessionStuck(session, 30);
+
+		expect(capturedBody).toBeDefined();
+		expect(capturedBody!.agentId).toBe("product-lead");
+		expect(capturedBody!.sessionKey).toBe("flywheel:GEO-100");
+
+		const parsed = JSON.parse(capturedBody!.message as string);
+		expect(parsed.event_type).toBe("session_stuck");
+		expect(parsed.minutes_since_activity).toBe(30);
+		expect(parsed.thread_ts).toBe("1234.5678");
+		expect(parsed.channel).toBe("CD5QZVAP6");
+
+		await new Promise<void>((resolve, reject) => {
+			gateway.close((err) => (err ? reject(err) : resolve()));
+		});
+	});
+
+	it("posts to /hooks/ingest (not /hooks/agent)", async () => {
+		let capturedPath = "";
+		const { createServer } = await import("node:http");
+		const gateway = createServer((req, res) => {
+			capturedPath = req.url ?? "";
+			let data = "";
+			req.on("data", (chunk) => { data += chunk; });
+			req.on("end", () => {
+				res.writeHead(200, { "Content-Type": "application/json" });
+				res.end(JSON.stringify({ ok: true }));
+			});
+		});
+		gateway.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => gateway.once("listening", resolve));
+		const addr = gateway.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+
+		const notifier = new WebhookStuckNotifier(`http://127.0.0.1:${port}`, "test-token");
+		await notifier.onSessionStuck({
+			execution_id: "e1", issue_id: "i1", project_name: "p", status: "running",
+		}, 15);
+
+		expect(capturedPath).toBe("/hooks/ingest");
+
+		await new Promise<void>((resolve, reject) => {
+			gateway.close((err) => (err ? reject(err) : resolve()));
+		});
 	});
 });
