@@ -1,1 +1,5 @@
 dist
+
+# mem0 local test artifacts
+memory.db
+vector_store.db

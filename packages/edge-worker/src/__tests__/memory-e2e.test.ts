@@ -139,40 +139,4 @@ describe("Memory System E2E", () => {
 	});
 });
 
-describe("Memory System Live E2E", () => {
-	// These tests require real Gemini API + in-memory vector store
-	// Run with: RUN_MEM0_LIVE_TESTS=true GOOGLE_API_KEY=xxx pnpm test
-	const skipLive = !process.env.RUN_MEM0_LIVE_TESTS;
-
-	it.skipIf(skipLive)("add + search round-trip with real mem0", async () => {
-		// This test uses real mem0 with in-memory vector store (no Qdrant)
-		// It requires GOOGLE_API_KEY for Gemini embedding + extraction
-		const { MemoryService: RealMemoryService } = await import("../memory/MemoryService.js");
-
-		const svc = new RealMemoryService({
-			googleApiKey: process.env.GOOGLE_API_KEY!,
-			historyDbPath: ":memory:",
-			collectionName: `test-${Date.now()}`,
-		});
-
-		await svc.addSessionMemory({
-			projectName: "live-test",
-			executionId: "live-exec-1",
-			issueId: "TEST-1",
-			issueTitle: "Fix database connection pooling",
-			sessionResult: "success",
-			commitMessages: ["fix: increase pool size to 20"],
-			diffSummary: "Modified db.ts: pool_size 5 -> 20",
-		});
-
-		// Give mem0 a moment to process
-		await new Promise((r) => setTimeout(r, 2000));
-
-		const block = await svc.searchAndFormat({
-			query: "database connection issues",
-			projectName: "live-test",
-		});
-
-		expect(block).toContain("<project_memory>");
-	});
-});
+// Live E2E tests moved to memory-live.test.ts (no mock interference)
