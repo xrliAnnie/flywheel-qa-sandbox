@@ -59,7 +59,17 @@ export async function createMemoryService(
 			return undefined;
 		}
 
-		await vectorStore.ready;
+		// Timeout prevents startup hang if Supabase is unreachable
+		const INIT_TIMEOUT_MS = 10_000;
+		await Promise.race([
+			vectorStore.ready,
+			new Promise<void>((_, reject) =>
+				setTimeout(
+					() => reject(new Error("Supabase init timed out")),
+					INIT_TIMEOUT_MS,
+				),
+			),
+		]);
 
 		if (vectorStore.initError) {
 			console.warn(
