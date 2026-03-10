@@ -21,6 +21,7 @@ import type {
 import type { IDecisionLayer } from "./decision/DecisionLayer.js";
 import type { ExecutionEventEmitter, EventEnvelope } from "./ExecutionEventEmitter.js";
 import type { AgentDispatcher } from "./AgentDispatcher.js";
+import type { MemoryService } from "./memory/MemoryService.js";
 
 /** Result of a Blueprint execution */
 export interface BlueprintResult {
@@ -88,6 +89,8 @@ export class Blueprint {
 		private eventEmitter?: ExecutionEventEmitter,
 		// v0.6 — optional agent dispatcher for project-aware prompts
 		private agentDispatcher?: AgentDispatcher,
+		// v0.3 — optional memory service for project memory
+		private memoryService?: MemoryService,
 	) {}
 
 	async run(
@@ -96,10 +99,12 @@ export class Blueprint {
 		ctx: BlueprintContext,
 	): Promise<BlueprintResult> {
 		const executionId = ctx.executionId ?? randomUUID();
+		// v0.3 — canonical project scope (unified for events + memory)
+		const projectScope = ctx.projectName ?? ctx.teamName ?? "unknown";
 		const env: EventEnvelope = {
 			executionId,
 			issueId: node.id,
-			projectName: ctx.projectName ?? "unknown",
+			projectName: projectScope,
 		};
 
 		// Fire-and-forget started event
@@ -206,6 +211,21 @@ export class Blueprint {
 			? await this.agentDispatcher.dispatch(hydrated)
 			: null;
 
+		// ── Memory retrieval (v0.3 — best-effort, non-fatal) ─
+		let memoryBlock = "";
+		if (this.memoryService) {
+			try {
+				memoryBlock = await this.memoryService.searchAndFormat({
+					query: `${hydrated.issueTitle} ${hydrated.issueDescription}`.trim(),
+					projectName: env.projectName,
+				}) ?? "";
+			} catch (err) {
+				console.warn(
+					`[Blueprint] Memory retrieval failed (non-fatal): ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+		}
+
 		// ── Landing signal path (v0.6) ───────────────────────
 		const landSignalPath = path.join(cwd, ".flywheel", "runs", executionId, "land-status.json");
 		// Landing is only supported in worktree mode (single-repo)
@@ -276,9 +296,10 @@ export class Blueprint {
 			}
 		}
 
-		const systemPrompt = agentContext
-			? `${agentContext}\n## Baseline Rules\n${baseSystemPrompt}`
-			: baseSystemPrompt;
+		const systemPrompt = [
+			agentContext ? `${agentContext}\n## Baseline Rules\n${baseSystemPrompt}` : baseSystemPrompt,
+			memoryBlock,
+		].filter(Boolean).join("\n");
 
 		// ── Runner execution (existing — catch runner errors) ─
 		const timeoutMs = ctx.sessionTimeoutMs ?? 2_700_000;
