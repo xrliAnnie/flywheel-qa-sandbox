@@ -381,7 +381,7 @@ async function main() {
 		}
 
 		// 11b. Slack notification + CEO reaction (v0.2 Step 2c)
-		if (slackNotifier && blueprintResult.decision && (route === "needs_review" || route === "blocked")) {
+		if (slackNotifier && blueprintResult.decision) {
 			try {
 				const notifyResult = await slackNotifier.notify(
 					{

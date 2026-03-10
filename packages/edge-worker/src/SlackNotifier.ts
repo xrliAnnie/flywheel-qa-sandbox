@@ -1,4 +1,4 @@
-import type { DecisionResult, ExecutionContext } from "flywheel-core";
+import type { DecisionResult, DecisionRoute, ExecutionContext } from "flywheel-core";
 import type { SlackMessageService } from "flywheel-slack-event-transport";
 
 export interface SlackNotifierConfig {
@@ -19,17 +19,25 @@ export class SlackNotifier {
 		decision: DecisionResult,
 		extra?: { tmuxSession?: string; consecutiveFailures?: number },
 	): Promise<{ sent: boolean }> {
-		if (decision.route === "auto_approve") {
+		// Backward compat: HR-LANDED (already merged) — skip legacy notification
+		// Production path (Bridge/OpenClaw) handles merged sessions correctly
+		if (decision.route === "auto_approve" && decision.hardRuleId === "HR-LANDED") {
 			return { sent: false };
 		}
 
+		// Normalize remaining auto_approve (shouldn't happen after final guard, defense-in-depth)
+		const normalizedDecision: DecisionResult =
+			decision.route === "auto_approve"
+				? { ...decision, route: "needs_review" as DecisionRoute }
+				: decision;
+
 		const blocks =
-			decision.route === "needs_review"
-				? this.buildNeedsReviewBlocks(ctx, decision)
-				: this.buildBlockedBlocks(ctx, decision, extra);
+			normalizedDecision.route === "needs_review"
+				? this.buildNeedsReviewBlocks(ctx, normalizedDecision)
+				: this.buildBlockedBlocks(ctx, normalizedDecision, extra);
 
 		const fallbackText =
-			decision.route === "needs_review"
+			normalizedDecision.route === "needs_review"
 				? `Review Required: ${ctx.issueIdentifier} — ${ctx.issueTitle}`
 				: `Blocked: ${ctx.issueIdentifier} — ${ctx.issueTitle}`;
 

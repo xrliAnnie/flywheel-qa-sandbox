@@ -14,7 +14,7 @@ export type DecisionSource =
 
 /** Landing status signal from flywheel-land skill */
 export interface LandingStatus {
-	status: "merged" | "failed";
+	status: "merged" | "failed" | "ready_to_merge";
 	prNumber?: number;
 	mergedAt?: string;
 	mergeCommitSha?: string;

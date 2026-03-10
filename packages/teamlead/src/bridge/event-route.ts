@@ -2,7 +2,7 @@ import { Router } from "express";
 import type { StateStore, Session } from "../StateStore.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { sqliteDatetime, type BridgeConfig } from "./types.js";
-import { approveExecution } from "./actions.js";
+
 import { buildSessionKey, buildHookBody, type HookPayload } from "./hook-payload.js";
 
 interface IngestEvent {
@@ -31,9 +31,9 @@ function formatNotification(session: Session, eventType: string): string {
 		case "session_completed":
 			if (session.decision_route === "auto_approve") {
 				if (session.status === "approved") {
-					return `[Auto-merged] ${id}: ${session.issue_title ?? ""}. ${session.commit_count ?? 0} commits. PR automatically merged by bridge.`;
+					return `[Already Merged] ${id}: ${session.issue_title ?? ""}. PR was already merged.`;
 				}
-				return `[Auto-merge Failed] ${id}: ${session.issue_title ?? ""}. Merge failed — manual review required.`;
+				return `[Review Required] ${id}: ${session.issue_title ?? ""}. ${session.commit_count ?? 0} commits. Awaiting CEO approval.`;
 			}
 			if (session.decision_route === "needs_review") {
 				return `[Review Required] ${id}: ${session.issue_title ?? ""}. ${session.commit_count ?? 0} commits, +${session.lines_added ?? 0}/-${session.lines_removed ?? 0} lines. Please review.`;
@@ -80,7 +80,7 @@ async function notifyAgent(
 
 export function createEventRouter(
 	store: StateStore,
-	projects: ProjectEntry[],
+	_projects: ProjectEntry[],
 	config: BridgeConfig,
 ): Router {
 	const router = Router();
@@ -144,10 +144,19 @@ export function createEventRouter(
 				const evidence = payload.evidence as Record<string, unknown> | undefined;
 				const route = asString(decision?.route);
 
-				// auto_approve → write awaiting_review first, then auto-merge
+				// Status mapping: all routes → appropriate status
 				let status: string;
 				if (route === "needs_review") status = "awaiting_review";
-				else if (route === "auto_approve") status = "awaiting_review";
+				else if (route === "auto_approve") {
+					// Backward compat: old flywheel-land already merged → approved
+					// Policy: new sessions without merge → awaiting_review
+					const landingStatus = evidence?.landingStatus as { status?: string } | undefined;
+					if (landingStatus?.status === "merged") {
+						status = "approved";
+					} else {
+						status = "awaiting_review";
+					}
+				}
 				else if (route === "blocked") status = "blocked";
 				else status = "completed";
 
@@ -175,34 +184,8 @@ export function createEventRouter(
 					issue_title: asString(payload.issueTitle),
 				});
 
-				// Auto-approve flow: bridge auto-merges (skip if PR already merged by land skill)
-				if (route === "auto_approve") {
-					const landingStatus = evidence?.landingStatus as { status?: string } | undefined;
-					if (landingStatus?.status === "merged") {
-						// PR already merged by flywheel-land — skip approveExecution, just mark approved
-						store.upsertSession({
-							execution_id: event.execution_id,
-							issue_id: event.issue_id,
-							project_name: event.project_name,
-							status: "approved",
-							last_activity_at: sqliteDatetime(),
-						});
-					} else {
-						const result = await approveExecution(store, projects, event.execution_id);
-						if (!result.success) {
-							console.warn(`[event-route] Auto-approve failed for ${event.execution_id}: ${result.message}`);
-							// Persist failure so notification and status reflect reality
-							store.upsertSession({
-								execution_id: event.execution_id,
-								issue_id: event.issue_id,
-								project_name: event.project_name,
-								status: "awaiting_review",
-								last_activity_at: sqliteDatetime(),
-								last_error: `Auto-merge failed: ${result.message}`,
-							});
-						}
-					}
-				}
+				// Auto-approve disabled by policy (v1.0 Phase 2)
+				// CEO must approve via Slack before merge. No auto-merge flow.
 			} else if (event.event_type === "session_failed") {
 				store.upsertSession({
 					execution_id: event.execution_id,

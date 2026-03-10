@@ -234,7 +234,7 @@ export class TmuxRunner implements IFlywheelRunner {
 							if (existsSync(sentinelPath)) {
 								const raw = readFileSync(sentinelPath, "utf-8");
 								const signal = JSON.parse(raw);
-								if (signal.status === "merged" || signal.status === "failed") {
+								if (signal.status === "merged" || signal.status === "failed" || signal.status === "ready_to_merge") {
 									// Grace period: wait for pane to exit naturally (max 30s)
 									// Clear main timeout — sentinel detected terminal state, don't race
 									clearTimeout(timer);
