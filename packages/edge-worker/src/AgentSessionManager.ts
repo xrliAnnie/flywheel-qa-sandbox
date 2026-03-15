@@ -1575,6 +1575,7 @@ export class AgentSessionManager extends EventEmitter {
 
 	/**
 	 * Add or update agent runner for a session
+	 * @deprecated Use addAdapterSession instead (GEO-157).
 	 */
 	addAgentRunner(sessionId: string, agentRunner: IAgentRunner): void {
 		const log = this.sessionLog(sessionId);
@@ -1590,7 +1591,8 @@ export class AgentSessionManager extends EventEmitter {
 	}
 
 	/**
-	 *  Get all agent runners
+	 * Get all agent runners
+	 * @deprecated Use getAllAdapterSessions instead (GEO-157).
 	 */
 	getAllAgentRunners(): IAgentRunner[] {
 		return Array.from(this.sessions.values())
@@ -1607,6 +1609,7 @@ export class AgentSessionManager extends EventEmitter {
 
 	/**
 	 * Get all agent runners for a specific issue
+	 * @deprecated Use AdapterSession methods instead (GEO-157).
 	 */
 	getAgentRunnersForIssue(issueId: string): IAgentRunner[] {
 		return Array.from(this.sessions.values())
@@ -1656,6 +1659,7 @@ export class AgentSessionManager extends EventEmitter {
 
 	/**
 	 * Get agent runner for a specific session
+	 * @deprecated Use getAdapterSession instead (GEO-157).
 	 */
 	getAgentRunner(sessionId: string): IAgentRunner | undefined {
 		const session = this.sessions.get(sessionId);
@@ -1664,6 +1668,7 @@ export class AgentSessionManager extends EventEmitter {
 
 	/**
 	 * Check if an agent runner exists for a session
+	 * @deprecated Use hasAdapterSession instead (GEO-157).
 	 */
 	hasAgentRunner(sessionId: string): boolean {
 		const session = this.sessions.get(sessionId);

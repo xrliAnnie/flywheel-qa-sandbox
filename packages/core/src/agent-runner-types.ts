@@ -193,6 +193,9 @@ export interface IMessageFormatter {
  *
  * @see {@link AgentRunnerConfig} for configuration options
  * @see {@link AgentSessionInfo} for session information structure
+ *
+ * @deprecated Use IAdapter + AdapterSession instead (GEO-157).
+ * IAgentRunner will be removed once EdgeWorker.ts is migrated to the adapter protocol.
  */
 export interface IAgentRunner {
 	/**
@@ -375,6 +378,9 @@ export interface IAgentRunner {
  * adapters for other providers (e.g., Gemini), they should map their config to
  * this structure or extend it with provider-specific options.
  *
+ * @deprecated Use AdapterConfig / ClaudeAdapterConfig instead (GEO-157).
+ * AgentRunnerConfig will be removed once EdgeWorker.ts is migrated to the adapter protocol.
+ *
  * @example
  * ```typescript
  * const config: AgentRunnerConfig = {
@@ -446,6 +452,9 @@ export interface AgentRunnerConfig {
  * Tracks the lifecycle and status of an agent session.
  * The sessionId is initially null and gets assigned by the provider
  * when the first message is processed.
+ *
+ * @deprecated Use AdapterSession instead (GEO-157).
+ * AgentSessionInfo will be removed once EdgeWorker.ts is migrated to the adapter protocol.
  *
  * @example
  * ```typescript
