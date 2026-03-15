@@ -43,7 +43,7 @@ export async function createMemoryService(
 			supabaseUrl: opts.supabaseUrl,
 			supabaseKey: opts.supabaseKey,
 			historyDbPath: join(memoryDbDir, "history.db"),
-			llmModel: opts.llmModel ?? "gemini-2.0-flash",
+			llmModel: opts.llmModel ?? "gemini-2.5-flash",
 		});
 
 		// Await the vendor-patched SupabaseDB.ready promise.
