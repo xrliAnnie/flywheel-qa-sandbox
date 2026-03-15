@@ -4,9 +4,9 @@ import { PreHydrator } from "../PreHydrator.js";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import type { DagNode } from "flywheel-dag-resolver";
 import type {
-	IFlywheelRunner,
-	FlywheelRunRequest,
-	FlywheelRunResult,
+	IAdapter,
+	AdapterExecutionContext,
+	AdapterExecutionResult,
 } from "flywheel-core";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import type { WorktreeManager, WorktreeInfo } from "../WorktreeManager.js";
@@ -60,13 +60,15 @@ function makeMockShell(): ShellRunner {
 	};
 }
 
-function makeMockRunner(
-	result: Partial<FlywheelRunResult> = {},
-): IFlywheelRunner {
+function makeMockAdapter(
+	result: Partial<AdapterExecutionResult> = {},
+): IAdapter {
 	return {
-		name: "claude",
-		run: vi.fn(
-			async (_req: FlywheelRunRequest): Promise<FlywheelRunResult> => ({
+		type: "mock",
+		supportsStreaming: false,
+		checkEnvironment: async () => ({ healthy: true, message: "mock" }),
+		execute: vi.fn(
+			async (_ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> => ({
 				success: true,
 				sessionId: "sess-uuid",
 				tmuxWindow: "flywheel:@42",
@@ -122,7 +124,7 @@ function makeMockEvidenceCollector(): ExecutionEvidenceCollector {
 
 describe("Blueprint v0.2 integration", () => {
 	it("full v0.2 flow: worktree → skills → session → evidence", async () => {
-		const mockRunner = makeMockRunner();
+		const mockAdapter = makeMockAdapter();
 		const mockWorktreeManager = makeMockWorktreeManager();
 		const mockSkillInjector = makeMockSkillInjector();
 		const mockEvidenceCollector = makeMockEvidenceCollector();
@@ -130,7 +132,7 @@ describe("Blueprint v0.2 integration", () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 2 }),
-			() => mockRunner,
+			() => mockAdapter,
 			makeMockShell(),
 			mockWorktreeManager,
 			mockSkillInjector,
@@ -157,8 +159,8 @@ describe("Blueprint v0.2 integration", () => {
 			expect.objectContaining({ issueId: "GEO-42" }),
 		);
 
-		// Runner ran in worktree cwd
-		expect(mockRunner.run).toHaveBeenCalledWith(
+		// Adapter executed in worktree cwd
+		expect(mockAdapter.execute).toHaveBeenCalledWith(
 			expect.objectContaining({
 				cwd: "/tmp/wt/test-project/flywheel-GEO-42",
 			}),
@@ -176,15 +178,15 @@ describe("Blueprint v0.2 integration", () => {
 		expect(result.evidence!.commitCount).toBe(2);
 	});
 
-	it("full v0.2 flow — runner timeout", async () => {
-		const mockRunner = makeMockRunner({ timedOut: true });
+	it("full v0.2 flow — adapter timeout", async () => {
+		const mockAdapter = makeMockAdapter({ timedOut: true });
 		const mockWorktreeManager = makeMockWorktreeManager();
 		const mockEvidenceCollector = makeMockEvidenceCollector();
 
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 2 }),
-			() => mockRunner,
+			() => mockAdapter,
 			makeMockShell(),
 			mockWorktreeManager,
 			undefined,
@@ -201,14 +203,14 @@ describe("Blueprint v0.2 integration", () => {
 	});
 
 	it("full v0.2 flow — 0 commits (failure)", async () => {
-		const mockRunner = makeMockRunner();
+		const mockAdapter = makeMockAdapter();
 		const mockWorktreeManager = makeMockWorktreeManager();
 		const mockEvidenceCollector = makeMockEvidenceCollector();
 
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 0 }),
-			() => mockRunner,
+			() => mockAdapter,
 			makeMockShell(),
 			mockWorktreeManager,
 			undefined,
@@ -222,12 +224,12 @@ describe("Blueprint v0.2 integration", () => {
 	});
 
 	it("v0.1.1 fallback — no v0.2 deps", async () => {
-		const mockRunner = makeMockRunner();
+		const mockAdapter = makeMockAdapter();
 
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 1 }),
-			() => mockRunner,
+			() => mockAdapter,
 			makeMockShell(),
 			// No v0.2 deps
 		);
@@ -244,7 +246,7 @@ describe("Blueprint v0.2 integration", () => {
 	});
 
 	it("worktree create failure — early abort", async () => {
-		const mockRunner = makeMockRunner();
+		const mockAdapter = makeMockAdapter();
 		const mockWorktreeManager = makeMockWorktreeManager({
 			create: vi.fn(async () => {
 				throw new Error("git lock error");
@@ -254,7 +256,7 @@ describe("Blueprint v0.2 integration", () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker(),
-			() => mockRunner,
+			() => mockAdapter,
 			makeMockShell(),
 			mockWorktreeManager,
 		);
@@ -263,12 +265,12 @@ describe("Blueprint v0.2 integration", () => {
 
 		expect(result.success).toBe(false);
 		expect(result.error).toBe("git lock error");
-		expect(mockRunner.run).not.toHaveBeenCalled();
+		expect(mockAdapter.execute).not.toHaveBeenCalled();
 	});
 
 	it("skill injection failure — warns + continues", async () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-		const mockRunner = makeMockRunner();
+		const mockAdapter = makeMockAdapter();
 		const mockWorktreeManager = makeMockWorktreeManager();
 		const mockSkillInjector = {
 			inject: vi.fn(async () => {
@@ -279,7 +281,7 @@ describe("Blueprint v0.2 integration", () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 1 }),
-			() => mockRunner,
+			() => mockAdapter,
 			makeMockShell(),
 			mockWorktreeManager,
 			mockSkillInjector,
@@ -288,7 +290,7 @@ describe("Blueprint v0.2 integration", () => {
 		const result = await blueprint.run(makeNode(), "/repo", makeContext());
 
 		// Session still ran despite skill failure
-		expect(mockRunner.run).toHaveBeenCalled();
+		expect(mockAdapter.execute).toHaveBeenCalled();
 		expect(result.success).toBe(true);
 		expect(warnSpy).toHaveBeenCalledWith(
 			expect.stringContaining("Skill injection failed"),

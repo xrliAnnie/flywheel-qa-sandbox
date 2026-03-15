@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type { FlywheelRunResult, DecisionResult, ExecutionContext } from "flywheel-core";
+import type { AdapterExecutionResult, DecisionResult, ExecutionContext } from "flywheel-core";
 import { Blueprint } from "../Blueprint.js";
 import type { BlueprintContext } from "../Blueprint.js";
 import type { IDecisionLayer } from "../decision/DecisionLayer.js";
@@ -33,15 +33,21 @@ function makeMockGitChecker(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-function makeMockRunner(overrides: Partial<FlywheelRunResult> = {}) {
-	const runResult: FlywheelRunResult = {
+function makeMockAdapter(overrides: Partial<AdapterExecutionResult> = {}) {
+	const execResult: AdapterExecutionResult = {
+		success: true,
 		sessionId: "sess-1",
 		costUsd: 0.05,
 		durationMs: 60_000,
 		tmuxWindow: "flywheel:@42",
 		...overrides,
 	};
-	return { run: vi.fn().mockResolvedValue(runResult) };
+	return {
+		type: "mock" as const,
+		supportsStreaming: false as const,
+		checkEnvironment: async () => ({ healthy: true, message: "mock" }),
+		execute: vi.fn().mockResolvedValue(execResult),
+	};
 }
 
 function makeMockShell() {
@@ -96,7 +102,7 @@ describe("Blueprint Decision Layer Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			shell,
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -126,7 +132,7 @@ describe("Blueprint Decision Layer Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			shell,
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -150,7 +156,7 @@ describe("Blueprint Decision Layer Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -176,7 +182,7 @@ describe("Blueprint Decision Layer Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -199,7 +205,7 @@ describe("Blueprint Decision Layer Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker({ commitCount: 3 }),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 		);
 
@@ -226,7 +232,7 @@ describe("Blueprint Decision Layer Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
