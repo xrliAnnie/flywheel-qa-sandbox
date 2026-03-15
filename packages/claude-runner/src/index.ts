@@ -6,12 +6,14 @@ export type {
 	HookJSONOutput,
 	PostToolUseHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
-export { AbortError, ClaudeRunner } from "./ClaudeRunner.js";
-export { ClaudeCodeRunner } from "./ClaudeCodeRunner.js";
 // Adapter implementations (GEO-157)
 export { TmuxAdapter } from "./TmuxAdapter.js";
 export { ClaudeCodeAdapter } from "./ClaudeCodeAdapter.js";
-// Compat re-exports (Wave 6 cleanup)
+export { ClaudeAdapter } from "./ClaudeAdapter.js";
+export { ClaudeAdapterSession } from "./ClaudeAdapterSession.js";
+// Compat re-exports — ClaudeRunner stays exported (test-scripts depend on it, Wave 6 cleanup)
+export { AbortError, ClaudeRunner } from "./ClaudeRunner.js";
+export { ClaudeCodeRunner } from "./ClaudeCodeRunner.js";
 export { TmuxRunner } from "./TmuxRunner.js";
 export type { ExecFileFn } from "./TmuxRunner.js";
 export { AnthropicLLMClient } from "./AnthropicLLMClient.js";
