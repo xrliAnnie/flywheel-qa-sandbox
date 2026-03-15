@@ -1,7 +1,7 @@
 import express from "express";
 import { timingSafeEqual } from "node:crypto";
 import { StateStore } from "../StateStore.js";
-import { StuckWatcher, WebhookStuckNotifier } from "../StuckWatcher.js";
+import { HeartbeatService, WebhookHeartbeatNotifier } from "../HeartbeatService.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { BridgeConfig } from "./types.js";
 import { createQueryRouter } from "./tools.js";
@@ -204,16 +204,22 @@ export async function startBridge(
 	const port = typeof addr === "object" && addr ? addr.port : config.port;
 	console.log(`[Bridge] Listening on ${config.host}:${port}`);
 
-	// Wire StuckWatcher if gateway is configured
-	let stuckWatcher: StuckWatcher | undefined;
+	// Wire HeartbeatService if gateway is configured (stuck detection + orphan reaping)
+	let heartbeatService: HeartbeatService | undefined;
 	if (config.gatewayUrl && config.hooksToken) {
-		const notifier = new WebhookStuckNotifier(config.gatewayUrl, config.hooksToken);
-		stuckWatcher = new StuckWatcher(store, notifier, config.stuckThresholdMinutes, config.stuckCheckIntervalMs);
-		stuckWatcher.start();
+		const notifier = new WebhookHeartbeatNotifier(config.gatewayUrl, config.hooksToken);
+		heartbeatService = new HeartbeatService(
+			store,
+			notifier,
+			config.stuckThresholdMinutes,
+			config.stuckCheckIntervalMs,
+			config.orphanThresholdMinutes,
+		);
+		heartbeatService.start();
 	}
 
 	const close = async () => {
-		stuckWatcher?.stop();
+		heartbeatService?.stop();
 		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));

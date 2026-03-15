@@ -85,6 +85,17 @@ export function createEventRouter(
 ): Router {
 	const router = Router();
 
+	// Dedicated heartbeat route — lightweight, no session_events write, no OpenClaw notification
+	router.post("/heartbeat", (req, res) => {
+		const body = req.body as { execution_id?: string } | undefined;
+		if (!body || typeof body.execution_id !== "string" || body.execution_id.length === 0) {
+			res.status(400).json({ error: "missing or invalid field: execution_id" });
+			return;
+		}
+		store.updateHeartbeat(body.execution_id);
+		res.json({ ok: true });
+	});
+
 	router.post("/", async (req, res) => {
 		const event = req.body as IngestEvent | undefined;
 		if (!event || typeof event !== "object") {
@@ -130,6 +141,7 @@ export function createEventRouter(
 					status: "running",
 					started_at: now,
 					last_activity_at: now,
+					heartbeat_at: now,
 					issue_identifier: asString(payload.issueIdentifier),
 					issue_title: asString(payload.issueTitle),
 				});
