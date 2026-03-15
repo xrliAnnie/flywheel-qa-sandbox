@@ -12,6 +12,7 @@ import type {
 import {
 	AgentSessionStatus,
 	AgentSessionType,
+	type AdapterSession,
 	type CyrusAgentSession,
 	type CyrusAgentSessionEntry,
 	createLogger,
@@ -1669,6 +1670,49 @@ export class AgentSessionManager extends EventEmitter {
 		return session?.agentRunner !== undefined;
 	}
 
+	// ── GEO-157: AdapterSession parallel methods (Wave 4a — coexist with agentRunner) ──
+
+	/**
+	 * Add or update adapter session for a session
+	 */
+	addAdapterSession(sessionId: string, adapterSession: AdapterSession): void {
+		const log = this.sessionLog(sessionId);
+		const session = this.sessions.get(sessionId);
+		if (!session) {
+			log.warn(`No session found`);
+			return;
+		}
+
+		session.adapterSession = adapterSession;
+		session.updatedAt = Date.now();
+		log.debug(`Added adapter session`);
+	}
+
+	/**
+	 * Get adapter session for a specific session
+	 */
+	getAdapterSession(sessionId: string): AdapterSession | undefined {
+		const session = this.sessions.get(sessionId);
+		return session?.adapterSession;
+	}
+
+	/**
+	 * Get all adapter sessions
+	 */
+	getAllAdapterSessions(): AdapterSession[] {
+		return Array.from(this.sessions.values())
+			.map((session) => session.adapterSession)
+			.filter((s): s is AdapterSession => s !== undefined);
+	}
+
+	/**
+	 * Check if an adapter session exists for a session
+	 */
+	hasAdapterSession(sessionId: string): boolean {
+		const session = this.sessions.get(sessionId);
+		return session?.adapterSession !== undefined;
+	}
+
 	/**
 	 * Post an activity to the activity sink for a session.
 	 * Consolidates session lookup, externalSessionId guard, try/catch, and logging.
@@ -1838,8 +1882,8 @@ export class AgentSessionManager extends EventEmitter {
 
 		// Serialize sessions
 		for (const [sessionId, session] of this.sessions.entries()) {
-			// Exclude agentRunner from serialization as it's not serializable
-			const { agentRunner: _agentRunner, ...serializableSession } = session;
+			// Exclude non-serializable agentRunner and adapterSession
+			const { agentRunner: _agentRunner, adapterSession: _adapterSession, ...serializableSession } = session;
 			sessions[sessionId] = serializableSession;
 		}
 

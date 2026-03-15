@@ -260,8 +260,8 @@ export class GlobalSessionRegistry extends EventEmitter {
 		const serializedSessions: Record<string, SerializedCyrusAgentSession> = {};
 		const sessionEntries = Array.from(this.sessions.entries());
 		for (const [sessionId, session] of sessionEntries) {
-			// Exclude non-serializable agentRunner
-			const { agentRunner: _agentRunner, ...serializableSession } = session;
+			// Exclude non-serializable agentRunner and adapterSession
+			const { agentRunner: _agentRunner, adapterSession: _adapterSession, ...serializableSession } = session;
 			serializedSessions[sessionId] = serializableSession;
 		}
 
