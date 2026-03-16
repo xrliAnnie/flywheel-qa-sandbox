@@ -12,7 +12,7 @@ export interface HookPayload {
 	lines_removed?: number;
 	summary?: string;
 	last_error?: string;
-	thread_ts?: string;
+	thread_id?: string;
 	channel?: string;
 	// stuck-specific
 	minutes_since_activity?: number;
