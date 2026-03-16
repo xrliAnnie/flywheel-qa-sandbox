@@ -1,6 +1,6 @@
 import { Router } from "express";
+import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { StateStore, Session } from "../StateStore.js";
-import { ACTION_SOURCE_STATUS } from "./actions.js";
 
 function omitIssueId(session: Session): Omit<Session, "issue_id"> & { identifier?: string } {
 	const { issue_id: _, issue_identifier, ...rest } = session;
@@ -165,17 +165,17 @@ export function createQueryRouter(store: StateStore): Router {
 			return;
 		}
 
-		const validSources = ACTION_SOURCE_STATUS[action];
-		if (!validSources) {
+		const actionDef = ACTION_DEFINITIONS.find((d) => d.action === action);
+		if (!actionDef) {
 			res.status(400).json({ error: `Unknown action: ${action}` });
 			return;
 		}
 
-		const session = store.getLatestSessionByIssueAndStatuses(issueId, validSources);
+		const session = store.getLatestSessionByIssueAndStatuses(issueId, actionDef.fromStates);
 		if (!session) {
 			res.json({
 				can_execute: false,
-				reason: `No session found for issue ${issueId} in status: ${validSources.join(", ")}`,
+				reason: `No session found for issue ${issueId} in status: ${actionDef.fromStates.join(", ")}`,
 			});
 			return;
 		}
