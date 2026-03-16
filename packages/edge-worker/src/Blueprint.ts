@@ -45,6 +45,11 @@ export interface BlueprintResult {
 	evidence?: ExecutionEvidence;
 	// v0.2 Step 2b
 	decision?: DecisionResult;
+	// CIPHER — passed through for event emitter → saveSnapshot
+	labels?: string[];
+	projectId?: string;
+	exitReason?: string;
+	consecutiveFailures?: number;
 }
 
 /** Runtime context for a single Blueprint execution */
@@ -486,6 +491,7 @@ export class Blueprint {
 	): Promise<BlueprintResult> {
 		// Build ExecutionContext
 		const execCtx: ExecutionContext = {
+			executionId: env.executionId,
 			issueId: hydrated.issueId,
 			issueIdentifier: hydrated.issueIdentifier,
 			issueTitle: hydrated.issueTitle,
@@ -553,6 +559,10 @@ export class Blueprint {
 			worktreePath: worktreeInfo?.worktreePath,
 			evidence,
 			decision,
+			labels: hydrated.labels,
+			projectId: hydrated.projectId,
+			exitReason: execCtx.exitReason,
+			consecutiveFailures: execCtx.consecutiveFailures,
 		};
 	}
 
