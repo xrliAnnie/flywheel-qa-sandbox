@@ -683,7 +683,7 @@ export class CipherWriter {
 			}
 
 			const ruleType =
-				action === "likely_reject" ? "escalate" : "escalate";
+				action === "likely_reject" ? "block" : "escalate";
 			const ruleDefinition =
 				action === "likely_approve"
 					? `Auto-approve when pattern matches: ${patternKey ?? "unknown"}`
