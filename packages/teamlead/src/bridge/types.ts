@@ -10,6 +10,7 @@ export interface BridgeConfig {
 	apiToken?: string;
 	gatewayUrl?: string;
 	hooksToken?: string;
+	notificationChannel: string;
 	stuckThresholdMinutes: number;
 	stuckCheckIntervalMs: number;
 	orphanThresholdMinutes: number;

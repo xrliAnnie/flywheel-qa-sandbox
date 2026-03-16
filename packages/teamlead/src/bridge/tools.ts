@@ -65,11 +65,11 @@ export function createQueryRouter(store: StateStore): Router {
 		}
 
 		const result = omitIssueId(session);
-		// Thread fallback: if session has no slack_thread_ts, check conversation_threads
-		if (!session.slack_thread_ts) {
+		// Thread fallback: if session has no thread_id, check conversation_threads
+		if (!session.thread_id) {
 			const thread = store.getThreadByIssue(session.issue_id);
 			if (thread) {
-				(result as Record<string, unknown>).slack_thread_ts = thread.thread_ts;
+				(result as Record<string, unknown>).thread_id = thread.thread_id;
 			}
 		}
 		res.json(result);
@@ -99,9 +99,9 @@ export function createQueryRouter(store: StateStore): Router {
 	// --- v1.0 Phase 1: Thread management + action resolution ---
 
 	router.post("/threads/upsert", (req, res) => {
-		const { thread_ts, channel, issue_id, execution_id } = req.body ?? {};
-		if (!thread_ts || !channel || !issue_id || !execution_id) {
-			res.status(400).json({ error: "thread_ts, channel, issue_id, and execution_id are required" });
+		const { thread_id, channel, issue_id, execution_id } = req.body ?? {};
+		if (!thread_id || !channel || !issue_id || !execution_id) {
+			res.status(400).json({ error: "thread_id, channel, issue_id, and execution_id are required" });
 			return;
 		}
 
@@ -120,25 +120,25 @@ export function createQueryRouter(store: StateStore): Router {
 			return;
 		}
 
-		// 3. Check thread_ts not already bound to a different issue
-		const existingIssue = store.getThreadIssue(thread_ts);
+		// 3. Check thread_id not already bound to a different issue
+		const existingIssue = store.getThreadIssue(thread_id);
 		if (existingIssue && existingIssue !== issue_id) {
 			res.status(409).json({
-				error: `thread_ts ${thread_ts} is already bound to issue ${existingIssue}`,
+				error: `thread_id ${thread_id} is already bound to issue ${existingIssue}`,
 			});
 			return;
 		}
 
 		// 4. Upsert thread + bind session
-		store.upsertThread(thread_ts, channel, issue_id);
-		store.setSessionThreadTs(execution_id, thread_ts);
+		store.upsertThread(thread_id, channel, issue_id);
+		store.setSessionThreadId(execution_id, thread_id);
 
 		res.json({ ok: true });
 	});
 
-	router.get("/thread/:thread_ts", (req, res) => {
-		const threadTs = req.params.thread_ts;
-		const issueId = store.getThreadIssue(threadTs);
+	router.get("/thread/:thread_id", (req, res) => {
+		const threadId = req.params.thread_id;
+		const issueId = store.getThreadIssue(threadId);
 		if (!issueId) {
 			res.json({ found: false });
 			return;
