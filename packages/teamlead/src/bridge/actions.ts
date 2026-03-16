@@ -189,6 +189,11 @@ export function transitionSession(
 
 	sendActionHook(store, config, executionId, action, session.status, targetStatus, reason);
 
+	if (action === "retry") {
+		const thread = store.getThreadByIssue(session.issue_id);
+		if (thread?.thread_id) { store.clearArchived(thread.thread_id); }
+	}
+
 	const id = session.issue_identifier ?? executionId;
 	const pastTense: Record<string, string> = {
 		reject: "rejected", defer: "deferred", retry: "retried", shelve: "shelved",
