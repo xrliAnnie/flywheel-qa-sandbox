@@ -15,6 +15,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		port: 0,
 		dbPath: ":memory:",
 		ingestToken: "ingest-secret",
+		notificationChannel: "test-channel",
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,

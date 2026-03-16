@@ -118,6 +118,7 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 	constructor(
 		private gatewayUrl: string,
 		private hooksToken: string,
+		private notificationChannel: string,
 	) {}
 
 	async onSessionStuck(session: Session, minutes: number): Promise<void> {
@@ -130,8 +131,8 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 			issue_title: session.issue_title,
 			project_name: session.project_name,
 			status: session.status,
-			thread_ts: session.slack_thread_ts,
-			channel: "CD5QZVAP6",
+			thread_id: session.thread_id,
+			channel: this.notificationChannel,
 			minutes_since_activity: minutes,
 		};
 		await this.sendHook(hookPayload, sessionKey);
@@ -147,8 +148,8 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 			issue_title: session.issue_title,
 			project_name: session.project_name,
 			status: "failed", // Already force-failed before notification
-			thread_ts: session.slack_thread_ts,
-			channel: "CD5QZVAP6",
+			thread_id: session.thread_id,
+			channel: this.notificationChannel,
 			minutes_since_activity: minutes,
 		};
 		await this.sendHook(hookPayload, sessionKey);
