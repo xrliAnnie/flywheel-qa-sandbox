@@ -158,14 +158,14 @@ export function createBridgeApp(
 	});
 
 	// Dashboard actions — no auth (loopback only, same handlers as /api/actions)
-	app.use("/actions", createActionRouter(store, projects, transitionOpts));
+	app.use("/actions", createActionRouter(store, projects, transitionOpts, config));
 
 	// /events — ingest auth
 	app.use("/events", tokenAuthMiddleware(config.ingestToken), createEventRouter(store, projects, config, undefined, transitionOpts));
 
 	// /api/* — api auth
 	app.use("/api", tokenAuthMiddleware(config.apiToken), createQueryRouter(store));
-	app.use("/api/actions", tokenAuthMiddleware(config.apiToken), createActionRouter(store, projects, transitionOpts));
+	app.use("/api/actions", tokenAuthMiddleware(config.apiToken), createActionRouter(store, projects, transitionOpts, config));
 
 	// Catch-all 404
 	app.use((_req, res) => {
