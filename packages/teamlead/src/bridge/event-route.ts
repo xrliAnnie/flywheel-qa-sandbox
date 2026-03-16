@@ -2,6 +2,7 @@ import { Router } from "express";
 import type { StateStore, Session } from "../StateStore.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { sqliteDatetime, type BridgeConfig } from "./types.js";
+import { applyTransition, type ApplyTransitionOpts } from "../applyTransition.js";
 
 import { buildSessionKey, buildHookBody, type HookPayload } from "./hook-payload.js";
 
@@ -83,7 +84,7 @@ export function createEventRouter(
 	_projects: ProjectEntry[],
 	config: BridgeConfig,
 	_cipherWriter?: unknown,
-	_transitionOpts?: import("../applyTransition.js").ApplyTransitionOpts,
+	transitionOpts?: ApplyTransitionOpts,
 ): Router {
 	const router = Router();
 
@@ -135,18 +136,35 @@ export function createEventRouter(
 		const payload = event.payload ?? {};
 
 		try {
+			const ctx = {
+				executionId: event.execution_id,
+				issueId: event.issue_id,
+				projectName: event.project_name,
+				trigger: event.event_type,
+			};
+
 			if (event.event_type === "session_started") {
-				store.upsertSession({
-					execution_id: event.execution_id,
-					issue_id: event.issue_id,
-					project_name: event.project_name,
-					status: "running",
-					started_at: now,
-					last_activity_at: now,
-					heartbeat_at: now,
-					issue_identifier: asString(payload.issueIdentifier),
-					issue_title: asString(payload.issueTitle),
-				});
+				if (transitionOpts) {
+					applyTransition(transitionOpts, event.execution_id, "running", ctx, {
+						started_at: now,
+						last_activity_at: now,
+						heartbeat_at: now,
+						issue_identifier: asString(payload.issueIdentifier),
+						issue_title: asString(payload.issueTitle),
+					});
+				} else {
+					store.upsertSession({
+						execution_id: event.execution_id,
+						issue_id: event.issue_id,
+						project_name: event.project_name,
+						status: "running",
+						started_at: now,
+						last_activity_at: now,
+						heartbeat_at: now,
+						issue_identifier: asString(payload.issueIdentifier),
+						issue_title: asString(payload.issueTitle),
+					});
+				}
 
 				// Inherit existing thread for this issue (retry/reopen reuses thread)
 				const existingThread = store.getThreadByIssue(event.issue_id);
@@ -162,8 +180,6 @@ export function createEventRouter(
 				let status: string;
 				if (route === "needs_review") status = "awaiting_review";
 				else if (route === "auto_approve") {
-					// Backward compat: old flywheel-land already merged → approved
-					// Policy: new sessions without merge → awaiting_review
 					const landingStatus = evidence?.landingStatus as { status?: string } | undefined;
 					if (landingStatus?.status === "merged") {
 						status = "approved";
@@ -174,43 +190,77 @@ export function createEventRouter(
 				else if (route === "blocked") status = "blocked";
 				else status = "completed";
 
-				store.upsertSession({
-					execution_id: event.execution_id,
-					issue_id: event.issue_id,
-					project_name: event.project_name,
-					status,
-					last_activity_at: now,
-					decision_route: route,
-					decision_reasoning: asString(decision?.reasoning),
-					commit_count: asNumber(evidence?.commitCount),
-					files_changed: asNumber(evidence?.filesChangedCount),
-					lines_added: asNumber(evidence?.linesAdded),
-					lines_removed: asNumber(evidence?.linesRemoved),
-					summary: asString(payload.summary),
-					diff_summary: asString(evidence?.diffSummary),
-					commit_messages: Array.isArray(evidence?.commitMessages)
-						? (evidence.commitMessages as string[]).join("\n")
-						: undefined,
-					changed_file_paths: Array.isArray(evidence?.changedFilePaths)
-						? (evidence.changedFilePaths as string[]).join("\n")
-						: undefined,
-					issue_identifier: asString(payload.issueIdentifier),
-					issue_title: asString(payload.issueTitle),
-				});
+				if (transitionOpts) {
+					applyTransition(transitionOpts, event.execution_id, status, ctx, {
+						last_activity_at: now,
+						issue_identifier: asString(payload.issueIdentifier),
+						issue_title: asString(payload.issueTitle),
+					});
+					// Metadata via patchSessionMetadata (doesn't touch status)
+					store.patchSessionMetadata(event.execution_id, {
+						decision_route: route,
+						decision_reasoning: asString(decision?.reasoning),
+						commit_count: asNumber(evidence?.commitCount),
+						files_changed: asNumber(evidence?.filesChangedCount),
+						lines_added: asNumber(evidence?.linesAdded),
+						lines_removed: asNumber(evidence?.linesRemoved),
+						summary: asString(payload.summary),
+						diff_summary: asString(evidence?.diffSummary),
+						commit_messages: Array.isArray(evidence?.commitMessages)
+							? (evidence.commitMessages as string[]).join("\n")
+							: undefined,
+						changed_file_paths: Array.isArray(evidence?.changedFilePaths)
+							? (evidence.changedFilePaths as string[]).join("\n")
+							: undefined,
+					});
+				} else {
+					store.upsertSession({
+						execution_id: event.execution_id,
+						issue_id: event.issue_id,
+						project_name: event.project_name,
+						status,
+						last_activity_at: now,
+						decision_route: route,
+						decision_reasoning: asString(decision?.reasoning),
+						commit_count: asNumber(evidence?.commitCount),
+						files_changed: asNumber(evidence?.filesChangedCount),
+						lines_added: asNumber(evidence?.linesAdded),
+						lines_removed: asNumber(evidence?.linesRemoved),
+						summary: asString(payload.summary),
+						diff_summary: asString(evidence?.diffSummary),
+						commit_messages: Array.isArray(evidence?.commitMessages)
+							? (evidence.commitMessages as string[]).join("\n")
+							: undefined,
+						changed_file_paths: Array.isArray(evidence?.changedFilePaths)
+							? (evidence.changedFilePaths as string[]).join("\n")
+							: undefined,
+						issue_identifier: asString(payload.issueIdentifier),
+						issue_title: asString(payload.issueTitle),
+					});
+				}
 
 				// Auto-approve disabled by policy (v1.0 Phase 2)
 				// CEO must approve via Slack before merge. No auto-merge flow.
 			} else if (event.event_type === "session_failed") {
-				store.upsertSession({
-					execution_id: event.execution_id,
-					issue_id: event.issue_id,
-					project_name: event.project_name,
-					status: "failed",
-					last_activity_at: now,
-					last_error: asString(payload.error),
-					issue_identifier: asString(payload.issueIdentifier),
-					issue_title: asString(payload.issueTitle),
-				});
+				if (transitionOpts) {
+					applyTransition(transitionOpts, event.execution_id, "failed", ctx, {
+						last_activity_at: now,
+						last_error: asString(payload.error),
+						issue_identifier: asString(payload.issueIdentifier),
+						issue_title: asString(payload.issueTitle),
+					});
+				} else {
+					store.upsertSession({
+						execution_id: event.execution_id,
+						issue_id: event.issue_id,
+						project_name: event.project_name,
+						status: "failed",
+						last_activity_at: now,
+						last_error: asString(payload.error),
+						issue_identifier: asString(payload.issueIdentifier),
+						issue_title: asString(payload.issueTitle),
+					});
+				}
 			}
 		} catch (err) {
 			console.error(`[event-route] Session update failed for ${event.execution_id}:`, err);
