@@ -21,6 +21,31 @@ export interface HookPayload {
 	action_source_status?: string;
 	action_target_status?: string;
 	action_reason?: string;
+	// CIPHER proposal fields (v1.3)
+	cipher_principle_id?: string;
+	cipher_skill_id?: string;
+	cipher_proposal_rule?: string;
+	cipher_proposal_rule_type?: string;
+	cipher_proposal_confidence?: number;
+	cipher_proposal_samples?: number;
+	cipher_source_pattern?: string;
+}
+
+export function buildSessionKey(session: { issue_identifier?: string; issue_id: string }): string {
+	return `flywheel:${session.issue_identifier ?? session.issue_id}`;
+}
+
+export function buildHookBody(
+	agentId: string,
+	payload: HookPayload,
+	sessionKey?: string,
+): Record<string, unknown> {
+	const body: Record<string, unknown> = {
+		agentId,
+		message: JSON.stringify(payload),
+	};
+	if (sessionKey) body.sessionKey = sessionKey;
+	return body;
 }
 
 /** Best-effort push to OpenClaw gateway (3s timeout, warn on failure). */
@@ -49,21 +74,4 @@ export async function notifyAgent(
 	} finally {
 		clearTimeout(timeout);
 	}
-}
-
-export function buildSessionKey(session: { issue_identifier?: string; issue_id: string }): string {
-	return `flywheel:${session.issue_identifier ?? session.issue_id}`;
-}
-
-export function buildHookBody(
-	agentId: string,
-	payload: HookPayload,
-	sessionKey?: string,
-): Record<string, unknown> {
-	const body: Record<string, unknown> = {
-		agentId,
-		message: JSON.stringify(payload),
-	};
-	if (sessionKey) body.sessionKey = sessionKey;
-	return body;
 }
