@@ -130,34 +130,34 @@ describe("StateStore", () => {
 		expect(store.getSession("exec-1")!.status).toBe("completed");
 	});
 
-	// --- v1.0 Phase 1: slack_thread_ts ---
+	// --- v1.0 Phase 1: thread_id ---
 
-	it("upsertSession stores and retrieves slack_thread_ts", () => {
-		store.upsertSession(makeSession({ slack_thread_ts: "1234.5678" }));
+	it("upsertSession stores and retrieves thread_id", () => {
+		store.upsertSession(makeSession({ thread_id: "1234.5678" }));
 		const s = store.getSession("exec-1");
-		expect(s!.slack_thread_ts).toBe("1234.5678");
+		expect(s!.thread_id).toBe("1234.5678");
 	});
 
-	it("upsertSession preserves slack_thread_ts via COALESCE on update", () => {
-		store.upsertSession(makeSession({ slack_thread_ts: "1234.5678" }));
-		// Update without slack_thread_ts — should preserve existing value
+	it("upsertSession preserves thread_id via COALESCE on update", () => {
+		store.upsertSession(makeSession({ thread_id: "1234.5678" }));
+		// Update without thread_id — should preserve existing value
 		store.upsertSession(makeSession({ status: "awaiting_review" }));
 		const s = store.getSession("exec-1");
-		expect(s!.slack_thread_ts).toBe("1234.5678");
+		expect(s!.thread_id).toBe("1234.5678");
 		expect(s!.status).toBe("awaiting_review");
 	});
 
-	it("setSessionThreadTs updates only the thread field", () => {
+	it("setSessionThreadId updates only the thread field", () => {
 		store.upsertSession(makeSession());
-		store.setSessionThreadTs("exec-1", "9999.1111");
+		store.setSessionThreadId("exec-1", "9999.1111");
 		const s = store.getSession("exec-1");
-		expect(s!.slack_thread_ts).toBe("9999.1111");
+		expect(s!.thread_id).toBe("9999.1111");
 		expect(s!.status).toBe("running"); // unchanged
 	});
 
-	it("setSessionThreadTs is no-op if session does not exist", () => {
+	it("setSessionThreadId is no-op if session does not exist", () => {
 		// Should not throw
-		store.setSessionThreadTs("nonexistent", "1234.5678");
+		store.setSessionThreadId("nonexistent", "1234.5678");
 	});
 
 	// --- v1.0 Phase 1: getThreadByIssue ---
@@ -166,7 +166,7 @@ describe("StateStore", () => {
 		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
 		const thread = store.getThreadByIssue("GEO-42");
 		expect(thread).toBeDefined();
-		expect(thread!.thread_ts).toBe("1234.5678");
+		expect(thread!.thread_id).toBe("1234.5678");
 		expect(thread!.channel).toBe("C07XXX");
 	});
 
@@ -178,7 +178,7 @@ describe("StateStore", () => {
 		store.upsertThread("old.1111", "C07XXX", "GEO-42");
 		store.upsertThread("new.2222", "C07YYY", "GEO-42");
 		const thread = store.getThreadByIssue("GEO-42");
-		expect(thread!.thread_ts).toBe("new.2222");
+		expect(thread!.thread_id).toBe("new.2222");
 		expect(thread!.channel).toBe("C07YYY");
 	});
 
@@ -193,7 +193,7 @@ describe("StateStore", () => {
 		expect(store.getThreadIssue("new.2222")).toBe("GEO-42");
 	});
 
-	it("upsertThread handles same thread_ts + same issue (idempotent)", () => {
+	it("upsertThread handles same thread_id + same issue (idempotent)", () => {
 		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
 		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
 		expect(store.getThreadIssue("1234.5678")).toBe("GEO-42");
@@ -204,19 +204,19 @@ describe("StateStore", () => {
 	it("migrate cleans up duplicate issue_id entries in conversation_threads", async () => {
 		// Manually insert duplicate records bypassing upsertThread
 		store["db"].run(
-			"INSERT INTO conversation_threads (thread_ts, channel, issue_id) VALUES ('ts1', 'C1', 'GEO-99')",
+			"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES ('ts1', 'C1', 'GEO-99')",
 		);
 		// Temporarily drop the unique index so we can insert a duplicate
 		store["db"].run("DROP INDEX IF EXISTS idx_threads_issue");
 		store["db"].run(
-			"INSERT INTO conversation_threads (thread_ts, channel, issue_id) VALUES ('ts2', 'C1', 'GEO-99')",
+			"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES ('ts2', 'C1', 'GEO-99')",
 		);
 		// Re-run migrate — should clean up and recreate index
 		store.migrate();
 		// Should have exactly one record for GEO-99 (the one with higher rowid = ts2)
 		const thread = store.getThreadByIssue("GEO-99");
 		expect(thread).toBeDefined();
-		expect(thread!.thread_ts).toBe("ts2");
+		expect(thread!.thread_id).toBe("ts2");
 		// Old one should be gone
 		expect(store.getThreadIssue("ts1")).toBeUndefined();
 	});
@@ -414,5 +414,216 @@ describe("StateStore", () => {
 
 	it("getLatestSessionParams returns undefined for unknown issue", () => {
 		expect(store.getLatestSessionParams("UNKNOWN-1")).toBeUndefined();
+	});
+
+	// --- GEO-163: migration tests ---
+
+	it("fresh DB creates thread_id column directly (case a)", async () => {
+		// Fresh DB — DDL has thread_id, no migration needed
+		const fresh = await StateStore.create(":memory:");
+		fresh.upsertSession(makeSession({ thread_id: "fresh-thread-123" }));
+		const s = fresh.getSession("exec-1");
+		expect(s!.thread_id).toBe("fresh-thread-123");
+
+		// conversation_threads also uses thread_id
+		fresh.upsertThread("ct-fresh-123", "C07XXX", "GEO-95");
+		const thread = fresh.getThreadByIssue("GEO-95");
+		expect(thread!.thread_id).toBe("ct-fresh-123");
+		fresh.close();
+	});
+
+	it("legacy DB renames slack_thread_ts → thread_id (case b)", async () => {
+		// Simulate a pre-migration DB: create table with slack_thread_ts column
+		const initSqlJs = (await import("sql.js")).default;
+		const SQL = await initSqlJs();
+		const db = new SQL.Database();
+		// Create old-style sessions table with slack_thread_ts
+		db.run(`CREATE TABLE sessions (
+			execution_id TEXT PRIMARY KEY,
+			issue_id TEXT NOT NULL,
+			issue_identifier TEXT,
+			issue_title TEXT,
+			project_name TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			started_at TEXT,
+			last_activity_at TEXT,
+			tmux_session TEXT,
+			worktree_path TEXT,
+			branch TEXT,
+			last_error TEXT,
+			decision_route TEXT,
+			decision_reasoning TEXT,
+			cost_usd REAL DEFAULT 0,
+			commit_count INTEGER DEFAULT 0,
+			files_changed INTEGER DEFAULT 0,
+			lines_added INTEGER DEFAULT 0,
+			lines_removed INTEGER DEFAULT 0,
+			summary TEXT,
+			diff_summary TEXT,
+			commit_messages TEXT,
+			changed_file_paths TEXT,
+			slack_thread_ts TEXT
+		)`);
+		// Create old-style conversation_threads with thread_ts
+		db.run(`CREATE TABLE conversation_threads (
+			thread_ts TEXT PRIMARY KEY,
+			channel TEXT NOT NULL,
+			issue_id TEXT,
+			summary TEXT,
+			last_updated TEXT NOT NULL DEFAULT (datetime('now'))
+		)`);
+		// Insert test data with old column names
+		db.run("INSERT INTO sessions (execution_id, issue_id, project_name, status, slack_thread_ts) VALUES ('e1', 'i1', 'p', 'running', 'old-slack-ts')");
+		db.run("INSERT INTO conversation_threads (thread_ts, channel, issue_id) VALUES ('old-ct-ts', 'C123', 'i1')");
+		db.close();
+
+		// Re-create StateStore from that DB data — migration should rename columns
+		// We use :memory: and manually inject the old schema
+		const store2 = await StateStore.create(":memory:");
+		// Manually inject old schema by accessing internal db
+		const internalDb = store2["db"];
+		// Drop the fresh tables and recreate with old schema
+		internalDb.run("DROP TABLE IF EXISTS session_events");
+		internalDb.run("DROP TABLE IF EXISTS sessions");
+		internalDb.run("DROP TABLE IF EXISTS conversation_threads");
+		internalDb.run("DROP INDEX IF EXISTS idx_threads_issue");
+		internalDb.run("DROP INDEX IF EXISTS idx_events_execution");
+		internalDb.run("DROP INDEX IF EXISTS idx_events_issue");
+		internalDb.run("DROP INDEX IF EXISTS idx_sessions_status");
+		// Create old-style tables
+		internalDb.run(`CREATE TABLE session_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id TEXT UNIQUE NOT NULL,
+			ts TEXT NOT NULL DEFAULT (datetime('now')),
+			execution_id TEXT NOT NULL,
+			issue_id TEXT NOT NULL,
+			project_name TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			severity TEXT NOT NULL DEFAULT 'info',
+			payload JSON,
+			source TEXT NOT NULL
+		)`);
+		internalDb.run(`CREATE TABLE sessions (
+			execution_id TEXT PRIMARY KEY,
+			issue_id TEXT NOT NULL,
+			issue_identifier TEXT,
+			issue_title TEXT,
+			project_name TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			started_at TEXT,
+			last_activity_at TEXT,
+			tmux_session TEXT,
+			worktree_path TEXT,
+			branch TEXT,
+			last_error TEXT,
+			decision_route TEXT,
+			decision_reasoning TEXT,
+			cost_usd REAL DEFAULT 0,
+			commit_count INTEGER DEFAULT 0,
+			files_changed INTEGER DEFAULT 0,
+			lines_added INTEGER DEFAULT 0,
+			lines_removed INTEGER DEFAULT 0,
+			summary TEXT,
+			diff_summary TEXT,
+			commit_messages TEXT,
+			changed_file_paths TEXT,
+			slack_thread_ts TEXT
+		)`);
+		internalDb.run(`CREATE TABLE conversation_threads (
+			thread_ts TEXT PRIMARY KEY,
+			channel TEXT NOT NULL,
+			issue_id TEXT,
+			summary TEXT,
+			last_updated TEXT NOT NULL DEFAULT (datetime('now'))
+		)`);
+		internalDb.run("INSERT INTO sessions (execution_id, issue_id, project_name, status, slack_thread_ts) VALUES ('e1', 'i1', 'p', 'running', 'old-slack-ts')");
+		internalDb.run("INSERT INTO conversation_threads (thread_ts, channel, issue_id) VALUES ('old-ct-ts', 'C123', 'i1')");
+		// Reset user_version so cutover cleanup runs
+		internalDb.run("PRAGMA user_version = 0");
+
+		// Run migration
+		store2.migrate();
+
+		// Verify columns were renamed and data cleared (user_version < 2)
+		const s = store2.getSession("e1");
+		expect(s).toBeDefined();
+		// thread_id should be NULL after cutover cleanup
+		expect(s!.thread_id).toBeUndefined();
+
+		// conversation_threads should be empty after cutover cleanup
+		const thread = store2.getThreadByIssue("i1");
+		expect(thread).toBeUndefined();
+
+		// Can insert new data with thread_id
+		store2.setSessionThreadId("e1", "new-discord-id");
+		expect(store2.getSession("e1")!.thread_id).toBe("new-discord-id");
+
+		store2.close();
+	});
+
+	it("very-legacy DB adds thread_id column (case c)", async () => {
+		const store2 = await StateStore.create(":memory:");
+		const internalDb = store2["db"];
+		// Drop and recreate tables WITHOUT thread column at all
+		internalDb.run("DROP TABLE IF EXISTS session_events");
+		internalDb.run("DROP TABLE IF EXISTS sessions");
+		internalDb.run("DROP TABLE IF EXISTS conversation_threads");
+		internalDb.run("DROP INDEX IF EXISTS idx_threads_issue");
+		internalDb.run("DROP INDEX IF EXISTS idx_events_execution");
+		internalDb.run("DROP INDEX IF EXISTS idx_events_issue");
+		internalDb.run("DROP INDEX IF EXISTS idx_sessions_status");
+		internalDb.run(`CREATE TABLE session_events (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			event_id TEXT UNIQUE NOT NULL,
+			ts TEXT NOT NULL DEFAULT (datetime('now')),
+			execution_id TEXT NOT NULL,
+			issue_id TEXT NOT NULL,
+			project_name TEXT NOT NULL,
+			event_type TEXT NOT NULL,
+			severity TEXT NOT NULL DEFAULT 'info',
+			payload JSON,
+			source TEXT NOT NULL
+		)`);
+		internalDb.run(`CREATE TABLE sessions (
+			execution_id TEXT PRIMARY KEY,
+			issue_id TEXT NOT NULL,
+			issue_identifier TEXT,
+			issue_title TEXT,
+			project_name TEXT NOT NULL,
+			status TEXT NOT NULL DEFAULT 'pending',
+			started_at TEXT,
+			last_activity_at TEXT,
+			tmux_session TEXT,
+			worktree_path TEXT,
+			branch TEXT,
+			last_error TEXT,
+			decision_route TEXT,
+			decision_reasoning TEXT,
+			cost_usd REAL DEFAULT 0,
+			commit_count INTEGER DEFAULT 0,
+			files_changed INTEGER DEFAULT 0,
+			lines_added INTEGER DEFAULT 0,
+			lines_removed INTEGER DEFAULT 0,
+			summary TEXT,
+			diff_summary TEXT,
+			commit_messages TEXT,
+			changed_file_paths TEXT
+		)`);
+		internalDb.run(`CREATE TABLE conversation_threads (
+			channel TEXT NOT NULL,
+			issue_id TEXT,
+			summary TEXT,
+			last_updated TEXT NOT NULL DEFAULT (datetime('now'))
+		)`);
+		internalDb.run("INSERT INTO sessions (execution_id, issue_id, project_name, status) VALUES ('e1', 'i1', 'p', 'running')");
+
+		// Run migration — should ADD thread_id column
+		store2.migrate();
+
+		// Verify thread_id column exists and works
+		store2.setSessionThreadId("e1", "added-thread-id");
+		expect(store2.getSession("e1")!.thread_id).toBe("added-thread-id");
+
+		store2.close();
 	});
 });

@@ -18,6 +18,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		port: 0,
 		dbPath: ":memory:",
 		ingestToken: "ingest-secret",
+		notificationChannel: "test-channel",
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
@@ -216,10 +217,10 @@ describe("Event route", () => {
 		expect(res.status).toBe(200);
 
 		const session = store.getSession("exec-new");
-		expect(session!.slack_thread_ts).toBe("existing.thread.ts");
+		expect(session!.thread_id).toBe("existing.thread.ts");
 	});
 
-	it("session_started without existing thread leaves slack_thread_ts empty", async () => {
+	it("session_started without existing thread leaves thread_id empty", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
@@ -228,7 +229,7 @@ describe("Event route", () => {
 		expect(res.status).toBe(200);
 
 		const session = store.getSession("exec-1");
-		expect(session!.slack_thread_ts).toBeUndefined();
+		expect(session!.thread_id).toBeUndefined();
 	});
 });
 
@@ -301,10 +302,10 @@ describe("Event route — structured hook payload", () => {
 		expect(parsed.event_type).toBe("session_started");
 		expect(parsed.execution_id).toBe("exec-1");
 		expect(parsed.issue_identifier).toBe("GEO-95");
-		expect(parsed.channel).toBe("CD5QZVAP6");
+		expect(parsed.channel).toBe("test-channel");
 	});
 
-	it("includes thread_ts in payload when session has inherited thread", async () => {
+	it("includes thread_id in payload when session has inherited thread", async () => {
 		store.upsertThread("inherited.thread", "CD5QZVAP6", "issue-1");
 
 		await fetch(`${baseUrl}/events`, {
@@ -316,7 +317,7 @@ describe("Event route — structured hook payload", () => {
 		await new Promise((r) => setTimeout(r, 100));
 
 		const parsed = JSON.parse(capturedPayloads[0]!.message as string);
-		expect(parsed.thread_ts).toBe("inherited.thread");
+		expect(parsed.thread_id).toBe("inherited.thread");
 	});
 });
 
