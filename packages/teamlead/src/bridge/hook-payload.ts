@@ -16,6 +16,39 @@ export interface HookPayload {
 	channel?: string;
 	// stuck-specific
 	minutes_since_activity?: number;
+	// action-specific fields (GEO-167)
+	action?: string;
+	action_source_status?: string;
+	action_target_status?: string;
+	action_reason?: string;
+}
+
+/** Best-effort push to OpenClaw gateway (3s timeout, warn on failure). */
+export async function notifyAgent(
+	gatewayUrl: string,
+	hooksToken: string,
+	body: Record<string, unknown>,
+): Promise<void> {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), 3000);
+	try {
+		const res = await fetch(`${gatewayUrl}/hooks/ingest`, {
+			method: "POST",
+			headers: {
+				Authorization: `Bearer ${hooksToken}`,
+				"Content-Type": "application/json",
+			},
+			body: JSON.stringify(body),
+			signal: controller.signal,
+		});
+		if (!res.ok) {
+			console.warn(`[notify] Gateway returned ${res.status}`);
+		}
+	} catch (err) {
+		console.warn("[notify] Failed to push to OpenClaw gateway:", (err as Error).message);
+	} finally {
+		clearTimeout(timeout);
+	}
 }
 
 export function buildSessionKey(session: { issue_identifier?: string; issue_id: string }): string {
