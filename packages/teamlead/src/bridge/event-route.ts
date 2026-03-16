@@ -134,6 +134,7 @@ export function createEventRouter(
 		// Update session read model
 		const now = sqliteDatetime();
 		const payload = event.payload ?? {};
+		let transitionRejected = false;
 
 		try {
 			const ctx = {
@@ -154,6 +155,7 @@ export function createEventRouter(
 					});
 					if (!result.ok) {
 						console.warn(`[event-route] FSM rejected ${event.event_type}: ${result.error}`);
+						transitionRejected = true;
 					}
 				} else {
 					store.upsertSession({
@@ -169,10 +171,12 @@ export function createEventRouter(
 					});
 				}
 
-				// Inherit existing thread for this issue (retry/reopen reuses thread)
-				const existingThread = store.getThreadByIssue(event.issue_id);
-				if (existingThread) {
-					store.setSessionThreadId(event.execution_id, existingThread.thread_id);
+				if (!transitionRejected) {
+					// Inherit existing thread for this issue (retry/reopen reuses thread)
+					const existingThread = store.getThreadByIssue(event.issue_id);
+					if (existingThread) {
+						store.setSessionThreadId(event.execution_id, existingThread.thread_id);
+					}
 				}
 			} else if (event.event_type === "session_completed") {
 				const decision = payload.decision as Record<string, unknown> | undefined;
@@ -201,24 +205,26 @@ export function createEventRouter(
 					});
 					if (!result.ok) {
 						console.warn(`[event-route] FSM rejected ${event.event_type} → ${status}: ${result.error}`);
+						transitionRejected = true;
+					} else {
+						// Metadata via patchSessionMetadata only on successful transition
+						store.patchSessionMetadata(event.execution_id, {
+							decision_route: route,
+							decision_reasoning: asString(decision?.reasoning),
+							commit_count: asNumber(evidence?.commitCount),
+							files_changed: asNumber(evidence?.filesChangedCount),
+							lines_added: asNumber(evidence?.linesAdded),
+							lines_removed: asNumber(evidence?.linesRemoved),
+							summary: asString(payload.summary),
+							diff_summary: asString(evidence?.diffSummary),
+							commit_messages: Array.isArray(evidence?.commitMessages)
+								? (evidence.commitMessages as string[]).join("\n")
+								: undefined,
+							changed_file_paths: Array.isArray(evidence?.changedFilePaths)
+								? (evidence.changedFilePaths as string[]).join("\n")
+								: undefined,
+						});
 					}
-					// Metadata via patchSessionMetadata (doesn't touch status)
-					store.patchSessionMetadata(event.execution_id, {
-						decision_route: route,
-						decision_reasoning: asString(decision?.reasoning),
-						commit_count: asNumber(evidence?.commitCount),
-						files_changed: asNumber(evidence?.filesChangedCount),
-						lines_added: asNumber(evidence?.linesAdded),
-						lines_removed: asNumber(evidence?.linesRemoved),
-						summary: asString(payload.summary),
-						diff_summary: asString(evidence?.diffSummary),
-						commit_messages: Array.isArray(evidence?.commitMessages)
-							? (evidence.commitMessages as string[]).join("\n")
-							: undefined,
-						changed_file_paths: Array.isArray(evidence?.changedFilePaths)
-							? (evidence.changedFilePaths as string[]).join("\n")
-							: undefined,
-					});
 				} else {
 					store.upsertSession({
 						execution_id: event.execution_id,
@@ -257,6 +263,7 @@ export function createEventRouter(
 					});
 					if (!result.ok) {
 						console.warn(`[event-route] FSM rejected ${event.event_type}: ${result.error}`);
+						transitionRejected = true;
 					}
 				} else {
 					store.upsertSession({
@@ -276,6 +283,12 @@ export function createEventRouter(
 			// Event is already stored — return success with a warning rather than 500
 			// so retries don't get stuck on duplicate detection
 			res.json({ ok: true, warning: "event stored but session update failed" });
+			return;
+		}
+
+		// Skip notification when FSM rejected the transition
+		if (transitionRejected) {
+			res.json({ ok: true, warning: "FSM rejected transition — event stored but session not updated" });
 			return;
 		}
 
