@@ -4,7 +4,7 @@ import {
 	RejectHandler,
 	DeferHandler,
 } from "flywheel-edge-worker";
-import type { ActionHandler, ActionResult, SlackAction } from "flywheel-edge-worker";
+import type { ActionHandler, ActionResult, SlackAction as ChatAction } from "flywheel-edge-worker";
 import type { ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
 
@@ -24,7 +24,7 @@ export class ProjectAwareApproveHandler implements ActionHandler {
 		private execFn: ExecFn,
 	) {}
 
-	async execute(action: SlackAction): Promise<ActionResult> {
+	async execute(action: ChatAction): Promise<ActionResult> {
 		// Look up session — prefer executionId from button value, fallback to issueId
 		const session = action.executionId
 			? this.store.getSession(action.executionId)
@@ -46,7 +46,7 @@ export class ProjectAwareApproveHandler implements ActionHandler {
 
 /** Stub handler for actions not yet implemented (retry, shelve). */
 const stubHandler: ActionHandler = {
-	async execute(action: SlackAction): Promise<ActionResult> {
+	async execute(action: ChatAction): Promise<ActionResult> {
 		return {
 			success: true,
 			message: `Action '${action.action}' acknowledged for ${action.issueId} (stub — not yet implemented)`,

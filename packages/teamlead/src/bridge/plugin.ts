@@ -207,7 +207,7 @@ export async function startBridge(
 	// Always start HeartbeatService — orphan reaping is critical even without gateway.
 	// If no gateway hooks configured, use a no-op notifier (reaping still works, just no Slack).
 	const notifier: HeartbeatNotifier = (config.gatewayUrl && config.hooksToken)
-		? new WebhookHeartbeatNotifier(config.gatewayUrl, config.hooksToken)
+		? new WebhookHeartbeatNotifier(config.gatewayUrl, config.hooksToken, config.notificationChannel)
 		: { onSessionStuck: async () => {}, onSessionOrphaned: async () => {} };
 	const heartbeatService = new HeartbeatService(
 		store,

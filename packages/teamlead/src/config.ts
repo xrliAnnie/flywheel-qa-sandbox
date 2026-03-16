@@ -42,6 +42,7 @@ export function loadConfig(): BridgeConfig {
 		apiToken: process.env.TEAMLEAD_API_TOKEN,
 		gatewayUrl: process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789",
 		hooksToken: process.env.OPENCLAW_HOOKS_TOKEN,
+		notificationChannel: process.env.TEAMLEAD_NOTIFICATION_CHANNEL ?? "CD5QZVAP6",
 		stuckThresholdMinutes,
 		stuckCheckIntervalMs: parsePositiveInt(process.env.TEAMLEAD_STUCK_INTERVAL, 300_000, "TEAMLEAD_STUCK_INTERVAL"),
 		orphanThresholdMinutes,

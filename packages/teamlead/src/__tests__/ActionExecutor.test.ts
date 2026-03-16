@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ProjectAwareApproveHandler, createReactionsEngine } from "../ActionExecutor.js";
-import type { SlackAction } from "flywheel-edge-worker";
+import type { SlackAction as ChatAction } from "flywheel-edge-worker";
 import type { StateStore, Session } from "../StateStore.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 
@@ -8,7 +8,7 @@ const projects: ProjectEntry[] = [
 	{ projectName: "geoforge", projectRoot: "/home/user/geoforge", projectRepo: "xrliAnnie/GeoForge3D" },
 ];
 
-function makeAction(overrides: Partial<SlackAction> = {}): SlackAction {
+function makeAction(overrides: Partial<ChatAction> = {}): ChatAction {
 	return {
 		actionId: "flywheel_approve_GEO-95",
 		issueId: "GEO-95",

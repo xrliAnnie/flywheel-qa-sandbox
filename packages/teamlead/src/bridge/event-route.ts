@@ -149,7 +149,7 @@ export function createEventRouter(
 				// Inherit existing thread for this issue (retry/reopen reuses thread)
 				const existingThread = store.getThreadByIssue(event.issue_id);
 				if (existingThread) {
-					store.setSessionThreadTs(event.execution_id, existingThread.thread_ts);
+					store.setSessionThreadId(event.execution_id, existingThread.thread_id);
 				}
 			} else if (event.event_type === "session_completed") {
 				const decision = payload.decision as Record<string, unknown> | undefined;
@@ -236,8 +236,8 @@ export function createEventRouter(
 				lines_removed: session.lines_removed,
 				summary: session.summary,
 				last_error: session.last_error,
-				thread_ts: session.slack_thread_ts,
-				channel: "CD5QZVAP6",
+				thread_id: session.thread_id,
+				channel: config.notificationChannel,
 			};
 			const body = buildHookBody("product-lead", hookPayload, sessionKey);
 			notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
