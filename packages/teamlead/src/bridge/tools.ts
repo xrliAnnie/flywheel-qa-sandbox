@@ -1,13 +1,14 @@
 import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { StateStore, Session } from "../StateStore.js";
+import type { IRetryDispatcher } from "./retry-dispatcher.js";
 
 function omitIssueId(session: Session): Omit<Session, "issue_id"> & { identifier?: string } {
 	const { issue_id: _, issue_identifier, ...rest } = session;
 	return { ...rest, identifier: issue_identifier };
 }
 
-export function createQueryRouter(store: StateStore): Router {
+export function createQueryRouter(store: StateStore, retryDispatcher?: IRetryDispatcher): Router {
 	const router = Router();
 
 	router.get("/sessions", (req, res) => {
@@ -178,6 +179,33 @@ export function createQueryRouter(store: StateStore): Router {
 				reason: `No session found for issue ${issueId} in status: ${actionDef.fromStates.join(", ")}`,
 			});
 			return;
+		}
+
+		// GEO-168: retry-specific pre-flight checks
+		if (action === "retry") {
+			if (retryDispatcher) {
+				const inflight = retryDispatcher.getInflightIssues();
+				if (inflight.has(session.issue_id)) {
+					res.json({
+						execution_id: session.execution_id,
+						status: session.status,
+						can_execute: false,
+						reason: `Issue ${session.issue_identifier ?? session.issue_id} already has a retry in progress`,
+					});
+					return;
+				}
+			}
+			const active = store.getActiveSessions();
+			const activeForIssue = active.find((s) => s.issue_id === session.issue_id);
+			if (activeForIssue) {
+				res.json({
+					execution_id: session.execution_id,
+					status: session.status,
+					can_execute: false,
+					reason: `Issue ${session.issue_identifier ?? session.issue_id} already has an active session (${activeForIssue.execution_id})`,
+				});
+				return;
+			}
 		}
 
 		res.json({

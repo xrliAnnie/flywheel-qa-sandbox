@@ -7,6 +7,8 @@ export interface EventEnvelope {
 	projectName: string;
 	issueIdentifier?: string;
 	issueTitle?: string;
+	retryPredecessor?: string;
+	runAttempt?: number;
 }
 
 export interface ExecutionEventEmitter {

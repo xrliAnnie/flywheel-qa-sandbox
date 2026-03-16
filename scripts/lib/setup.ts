@@ -80,6 +80,10 @@ export interface SetupOptions {
 	}>;
 	/** Session timeout in ms (default: 2_700_000 = 45 min) */
 	sessionTimeoutMs?: number;
+	/** GEO-168: Override default event emitter (e.g., DirectEventSink for bridge-local retries) */
+	eventEmitterOverride?: ExecutionEventEmitter;
+	/** GEO-168: Skip legacy Slack components (used when bridge owns the pipeline) */
+	skipSlackLegacy?: boolean;
 }
 
 export function log(msg: string) {
@@ -103,12 +107,14 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		enableWorktree = true,
 		fetchIssue,
 		sessionTimeoutMs = 2_700_000,
+		eventEmitterOverride,
+		skipSlackLegacy = false,
 	} = opts;
 
-	// Fail-fast: TEAMLEAD_OWNS_SLACK=true requires TEAMLEAD_URL
+	// Fail-fast: TEAMLEAD_OWNS_SLACK=true requires TEAMLEAD_URL (unless skipSlackLegacy)
 	const teamleadUrl = process.env.TEAMLEAD_URL;
 	const teamleadOwnsSlack = process.env.TEAMLEAD_OWNS_SLACK === "true";
-	if (teamleadOwnsSlack && !teamleadUrl) {
+	if (!skipSlackLegacy && teamleadOwnsSlack && !teamleadUrl) {
 		throw new Error(
 			"TEAMLEAD_OWNS_SLACK=true requires TEAMLEAD_URL. Otherwise no notification path is active.",
 		);
@@ -163,14 +169,20 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		hardRules, triage, verifier, fallback, auditLogger, evidenceCollector,
 	);
 
-	// EventEmitter — TeamLead pipeline
-	const teamleadToken = process.env.TEAMLEAD_INGEST_TOKEN;
-	const eventEmitter: ExecutionEventEmitter = teamleadUrl
-		? new TeamLeadClient(teamleadUrl, teamleadToken)
-		: new NoOpEventEmitter();
-	if (teamleadUrl) log(`TeamLead events → ${teamleadUrl}`);
+	// EventEmitter — TeamLead pipeline (GEO-168: allow override for bridge-local retries)
+	let eventEmitter: ExecutionEventEmitter;
+	if (eventEmitterOverride) {
+		eventEmitter = eventEmitterOverride;
+		log("EventEmitter: using provided override (DirectEventSink)");
+	} else {
+		const teamleadToken = process.env.TEAMLEAD_INGEST_TOKEN;
+		eventEmitter = teamleadUrl
+			? new TeamLeadClient(teamleadUrl, teamleadToken)
+			: new NoOpEventEmitter();
+		if (teamleadUrl) log(`TeamLead events → ${teamleadUrl}`);
+	}
 
-	// Slack notification — conditional (skipped when TEAMLEAD_OWNS_SLACK)
+	// Slack notification — conditional (skipped when TEAMLEAD_OWNS_SLACK or skipSlackLegacy)
 	let slackNotifier: SlackNotifier | undefined;
 	let interactionServer: SlackInteractionServer | undefined;
 	let reactionsEngine: ReactionsEngine | undefined;
@@ -179,7 +191,9 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	const slackToken = process.env.SLACK_BOT_TOKEN;
 	const repo = projectRepo ?? process.env.FLYWHEEL_PROJECT_REPO;
 
-	if (teamleadOwnsSlack) {
+	if (skipSlackLegacy) {
+		log("skipSlackLegacy=true — legacy Slack path disabled (bridge-local mode)");
+	} else if (teamleadOwnsSlack) {
 		log("TEAMLEAD_OWNS_SLACK=true — legacy Slack path disabled");
 	} else if (slackToken && slackChannel) {
 		const msgService = new SlackMessageService();

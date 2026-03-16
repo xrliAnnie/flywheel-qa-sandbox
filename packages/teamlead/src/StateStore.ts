@@ -54,6 +54,8 @@ export interface SessionUpsert {
 	heartbeat_at?: string;
 	adapter_type?: string;
 	run_attempt?: number;
+	retry_predecessor?: string;
+	retry_successor?: string;
 }
 
 export interface Session {
@@ -85,6 +87,8 @@ export interface Session {
 	heartbeat_at?: string;
 	adapter_type?: string;
 	run_attempt?: number;
+	retry_predecessor?: string;
+	retry_successor?: string;
 }
 
 export interface CleanupCandidate {
@@ -252,6 +256,10 @@ export class StateStore {
 			// Column already exists — ignore
 		}
 
+		// GEO-168: retry lineage columns
+		try { this.db.run("ALTER TABLE sessions ADD COLUMN retry_predecessor TEXT"); } catch { }
+		try { this.db.run("ALTER TABLE sessions ADD COLUMN retry_successor TEXT"); } catch { }
+
 		// GEO-169: cleanup tracking columns
 		try {
 			this.db.run("ALTER TABLE conversation_threads ADD COLUMN archived_at TEXT");
@@ -344,8 +352,9 @@ export class StateStore {
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
 				thread_id,
-				session_params, heartbeat_at, adapter_type, run_attempt
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				session_params, heartbeat_at, adapter_type, run_attempt,
+				retry_predecessor, retry_successor
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -373,7 +382,9 @@ export class StateStore {
 				session_params = COALESCE(excluded.session_params, session_params),
 				heartbeat_at = COALESCE(excluded.heartbeat_at, heartbeat_at),
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
-				run_attempt = COALESCE(excluded.run_attempt, run_attempt)
+				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
+				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
+				retry_successor = COALESCE(excluded.retry_successor, retry_successor)
 			`,
 			[
 				session.execution_id,
@@ -404,6 +415,8 @@ export class StateStore {
 				session.heartbeat_at ?? null,
 				session.adapter_type ?? null,
 				session.run_attempt ?? null,
+				session.retry_predecessor ?? null,
+				session.retry_successor ?? null,
 			],
 		);
 		this.save();
@@ -426,8 +439,9 @@ export class StateStore {
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
 				thread_id,
-				session_params, heartbeat_at, adapter_type, run_attempt
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				session_params, heartbeat_at, adapter_type, run_attempt,
+				retry_predecessor, retry_successor
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -455,7 +469,9 @@ export class StateStore {
 				session_params = COALESCE(excluded.session_params, session_params),
 				heartbeat_at = COALESCE(excluded.heartbeat_at, heartbeat_at),
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
-				run_attempt = COALESCE(excluded.run_attempt, run_attempt)
+				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
+				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
+				retry_successor = COALESCE(excluded.retry_successor, retry_successor)
 			`,
 			[
 				executionId,
@@ -486,6 +502,8 @@ export class StateStore {
 				fields.heartbeat_at ?? null,
 				fields.adapter_type ?? null,
 				fields.run_attempt ?? null,
+				fields.retry_predecessor ?? null,
+				fields.retry_successor ?? null,
 			],
 		);
 		this.save();
@@ -527,6 +545,8 @@ export class StateStore {
 			heartbeat_at: "heartbeat_at",
 			adapter_type: "adapter_type",
 			run_attempt: "run_attempt",
+			retry_predecessor: "retry_predecessor",
+			retry_successor: "retry_successor",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -554,6 +574,11 @@ export class StateStore {
 			`UPDATE sessions SET status = ?, last_activity_at = ?, last_error = ? WHERE execution_id = ?`,
 			[status, lastActivityAt, lastError ?? null, executionId],
 		);
+		this.save();
+	}
+
+	setRetrySuccessor(executionId: string, successorId: string): void {
+		this.db.run("UPDATE sessions SET retry_successor = ? WHERE execution_id = ?", [successorId, executionId]);
 		this.save();
 	}
 
@@ -902,6 +927,8 @@ export class StateStore {
 			heartbeat_at: (row.heartbeat_at as string) ?? undefined,
 			adapter_type: (row.adapter_type as string) ?? undefined,
 			run_attempt: (row.run_attempt as number) ?? undefined,
+			retry_predecessor: (row.retry_predecessor as string) ?? undefined,
+			retry_successor: (row.retry_successor as string) ?? undefined,
 		};
 	}
 }
