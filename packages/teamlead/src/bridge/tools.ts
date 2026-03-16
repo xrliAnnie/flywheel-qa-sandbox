@@ -105,8 +105,12 @@ export function createQueryRouter(store: StateStore): Router {
 			return;
 		}
 
+		// Coerce to string — Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
+		const safeThreadId = String(thread_id);
+		const safeChannel = String(channel);
+
 		// 1. Verify execution exists
-		const session = store.getSession(execution_id);
+		const session = store.getSession(String(execution_id));
 		if (!session) {
 			res.status(404).json({ error: `No session found for execution_id ${execution_id}` });
 			return;
@@ -121,17 +125,17 @@ export function createQueryRouter(store: StateStore): Router {
 		}
 
 		// 3. Check thread_id not already bound to a different issue
-		const existingIssue = store.getThreadIssue(thread_id);
+		const existingIssue = store.getThreadIssue(safeThreadId);
 		if (existingIssue && existingIssue !== issue_id) {
 			res.status(409).json({
-				error: `thread_id ${thread_id} is already bound to issue ${existingIssue}`,
+				error: `thread_id ${safeThreadId} is already bound to issue ${existingIssue}`,
 			});
 			return;
 		}
 
 		// 4. Upsert thread + bind session
-		store.upsertThread(thread_id, channel, issue_id);
-		store.setSessionThreadId(execution_id, thread_id);
+		store.upsertThread(safeThreadId, safeChannel, issue_id);
+		store.setSessionThreadId(String(execution_id), safeThreadId);
 
 		res.json({ ok: true });
 	});
