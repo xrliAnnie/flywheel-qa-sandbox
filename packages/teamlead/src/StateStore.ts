@@ -393,7 +393,146 @@ export class StateStore {
 		this.save();
 	}
 
-	/** Force-update status, bypassing the monotonic terminal→running guard. Used by explicit user actions (retry). */
+	/**
+	 * Persist a status change that has already been validated by FSM.
+	 * Bypasses monotonic guard — caller MUST have validated via WorkflowFSM.
+	 * Uses INSERT OR UPDATE to handle both first-time creation and subsequent transitions.
+	 * GEO-158: used exclusively by applyTransition().
+	 */
+	persistTransition(executionId: string, status: string, fields: Partial<SessionUpsert>): void {
+		this.db.run(
+			`INSERT INTO sessions (
+				execution_id, issue_id, project_name, status,
+				issue_identifier, issue_title,
+				started_at, last_activity_at,
+				tmux_session, worktree_path, branch,
+				last_error, decision_route, decision_reasoning,
+				cost_usd, commit_count, files_changed, lines_added, lines_removed,
+				summary, diff_summary, commit_messages, changed_file_paths,
+				thread_id,
+				session_params, heartbeat_at, adapter_type, run_attempt
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(execution_id) DO UPDATE SET
+				status = excluded.status,
+				issue_id = COALESCE(excluded.issue_id, issue_id),
+				project_name = COALESCE(excluded.project_name, project_name),
+				issue_identifier = COALESCE(excluded.issue_identifier, issue_identifier),
+				issue_title = COALESCE(excluded.issue_title, issue_title),
+				started_at = COALESCE(excluded.started_at, started_at),
+				last_activity_at = COALESCE(excluded.last_activity_at, last_activity_at),
+				tmux_session = COALESCE(excluded.tmux_session, tmux_session),
+				worktree_path = COALESCE(excluded.worktree_path, worktree_path),
+				branch = COALESCE(excluded.branch, branch),
+				last_error = COALESCE(excluded.last_error, last_error),
+				decision_route = COALESCE(excluded.decision_route, decision_route),
+				decision_reasoning = COALESCE(excluded.decision_reasoning, decision_reasoning),
+				cost_usd = COALESCE(excluded.cost_usd, cost_usd),
+				commit_count = COALESCE(excluded.commit_count, commit_count),
+				files_changed = COALESCE(excluded.files_changed, files_changed),
+				lines_added = COALESCE(excluded.lines_added, lines_added),
+				lines_removed = COALESCE(excluded.lines_removed, lines_removed),
+				summary = COALESCE(excluded.summary, summary),
+				diff_summary = COALESCE(excluded.diff_summary, diff_summary),
+				commit_messages = COALESCE(excluded.commit_messages, commit_messages),
+				changed_file_paths = COALESCE(excluded.changed_file_paths, changed_file_paths),
+				thread_id = COALESCE(excluded.thread_id, thread_id),
+				session_params = COALESCE(excluded.session_params, session_params),
+				heartbeat_at = COALESCE(excluded.heartbeat_at, heartbeat_at),
+				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
+				run_attempt = COALESCE(excluded.run_attempt, run_attempt)
+			`,
+			[
+				executionId,
+				fields.issue_id ?? null,
+				fields.project_name ?? null,
+				status,
+				fields.issue_identifier ?? null,
+				fields.issue_title ?? null,
+				fields.started_at ?? null,
+				fields.last_activity_at ?? null,
+				fields.tmux_session ?? null,
+				fields.worktree_path ?? null,
+				fields.branch ?? null,
+				fields.last_error ?? null,
+				fields.decision_route ?? null,
+				fields.decision_reasoning ?? null,
+				fields.cost_usd ?? null,
+				fields.commit_count ?? null,
+				fields.files_changed ?? null,
+				fields.lines_added ?? null,
+				fields.lines_removed ?? null,
+				fields.summary ?? null,
+				fields.diff_summary ?? null,
+				fields.commit_messages ?? null,
+				fields.changed_file_paths ?? null,
+				fields.thread_id ?? null,
+				fields.session_params ?? null,
+				fields.heartbeat_at ?? null,
+				fields.adapter_type ?? null,
+				fields.run_attempt ?? null,
+			],
+		);
+		this.save();
+	}
+
+	/**
+	 * Update non-status metadata fields only. Does NOT touch status.
+	 * Used after applyTransition() for read-model enrichment (commit_count, lines_added, etc.)
+	 * GEO-158: separates status writes (FSM) from metadata writes (event-route).
+	 */
+	patchSessionMetadata(executionId: string, fields: Partial<Omit<SessionUpsert, "status">>): void {
+		const setClauses: string[] = [];
+		const values: (string | number | null)[] = [];
+
+		const fieldMap: Record<string, keyof typeof fields> = {
+			issue_id: "issue_id",
+			project_name: "project_name",
+			issue_identifier: "issue_identifier",
+			issue_title: "issue_title",
+			started_at: "started_at",
+			last_activity_at: "last_activity_at",
+			tmux_session: "tmux_session",
+			worktree_path: "worktree_path",
+			branch: "branch",
+			last_error: "last_error",
+			decision_route: "decision_route",
+			decision_reasoning: "decision_reasoning",
+			cost_usd: "cost_usd",
+			commit_count: "commit_count",
+			files_changed: "files_changed",
+			lines_added: "lines_added",
+			lines_removed: "lines_removed",
+			summary: "summary",
+			diff_summary: "diff_summary",
+			commit_messages: "commit_messages",
+			changed_file_paths: "changed_file_paths",
+			thread_id: "thread_id",
+			session_params: "session_params",
+			heartbeat_at: "heartbeat_at",
+			adapter_type: "adapter_type",
+			run_attempt: "run_attempt",
+		};
+
+		for (const [col, key] of Object.entries(fieldMap)) {
+			if (fields[key] !== undefined) {
+				setClauses.push(`${col} = ?`);
+				values.push(fields[key] as string | number | null);
+			}
+		}
+
+		if (setClauses.length === 0) return;
+
+		values.push(executionId);
+		this.db.run(
+			`UPDATE sessions SET ${setClauses.join(", ")} WHERE execution_id = ?`,
+			values,
+		);
+		this.save();
+	}
+
+	/**
+	 * @deprecated Use applyTransition() with FSM instead. Will be removed in v1.3.0.
+	 */
 	forceStatus(executionId: string, status: string, lastActivityAt: string, lastError?: string): void {
 		this.db.run(
 			`UPDATE sessions SET status = ?, last_activity_at = ?, last_error = ? WHERE execution_id = ?`,

@@ -1,6 +1,9 @@
 import express from "express";
 import { timingSafeEqual } from "node:crypto";
+import { WorkflowFSM, WORKFLOW_TRANSITIONS } from "flywheel-core";
 import { StateStore } from "../StateStore.js";
+import { DirectiveExecutor } from "../DirectiveExecutor.js";
+import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { HeartbeatService, WebhookHeartbeatNotifier, type HeartbeatNotifier } from "../HeartbeatService.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { BridgeConfig } from "./types.js";
@@ -112,6 +115,7 @@ export function createBridgeApp(
 	projects: ProjectEntry[],
 	config: BridgeConfig,
 	broadcaster?: SseBroadcaster,
+	transitionOpts?: ApplyTransitionOpts,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -154,14 +158,14 @@ export function createBridgeApp(
 	});
 
 	// Dashboard actions — no auth (loopback only, same handlers as /api/actions)
-	app.use("/actions", createActionRouter(store, projects));
+	app.use("/actions", createActionRouter(store, projects, transitionOpts));
 
 	// /events — ingest auth
-	app.use("/events", tokenAuthMiddleware(config.ingestToken), createEventRouter(store, projects, config));
+	app.use("/events", tokenAuthMiddleware(config.ingestToken), createEventRouter(store, projects, config, undefined, transitionOpts));
 
 	// /api/* — api auth
 	app.use("/api", tokenAuthMiddleware(config.apiToken), createQueryRouter(store));
-	app.use("/api/actions", tokenAuthMiddleware(config.apiToken), createActionRouter(store, projects));
+	app.use("/api/actions", tokenAuthMiddleware(config.apiToken), createActionRouter(store, projects, transitionOpts));
 
 	// Catch-all 404
 	app.use((_req, res) => {
@@ -190,8 +194,12 @@ export async function startBridge(
 	}
 
 	const store = await StateStore.create(config.dbPath);
+	// GEO-158: FSM instance + DirectiveExecutor for validated transitions
+	const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
+	const executor = new DirectiveExecutor(store);
+	const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
 	const broadcaster = new SseBroadcaster(store, config.stuckThresholdMinutes);
-	const app = createBridgeApp(store, projects, config, broadcaster);
+	const app = createBridgeApp(store, projects, config, broadcaster, transitionOpts);
 
 	const server = app.listen(config.port, config.host);
 
@@ -215,6 +223,7 @@ export async function startBridge(
 		config.stuckThresholdMinutes,
 		config.stuckCheckIntervalMs,
 		config.orphanThresholdMinutes,
+		transitionOpts,
 	);
 	heartbeatService.start();
 

@@ -1,3 +1,4 @@
+import { allowedActionsForState } from "flywheel-core";
 import type { StateStore, Session } from "../StateStore.js";
 
 export interface DashboardMetrics {
@@ -22,6 +23,7 @@ export interface DashboardSession {
 	commit_count?: number;
 	lines_added?: number;
 	lines_removed?: number;
+	allowedActions: string[];
 }
 
 export interface DashboardPayload {
@@ -53,6 +55,7 @@ function toDashboardSession(s: Session): DashboardSession {
 		commit_count: s.commit_count,
 		lines_added: s.lines_added,
 		lines_removed: s.lines_removed,
+		allowedActions: allowedActionsForState(s.status),
 	};
 }
 

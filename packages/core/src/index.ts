@@ -231,6 +231,23 @@ export type {
 /** @deprecated Use AdapterRegistry instead (GEO-157). */
 export { FlywheelRunnerRegistry } from "./FlywheelRunnerRegistry.js";
 
+// Workflow FSM + Directive types (GEO-158)
+export {
+	WorkflowFSM,
+	WORKFLOW_TRANSITIONS,
+	ACTION_DEFINITIONS,
+	allowedActionsForState,
+	getActionTarget,
+} from "./workflow-fsm.js";
+export type {
+	TransitionContext,
+	TransitionResult,
+	GuardFn,
+	OnEnterFn,
+	ActionDefinition,
+} from "./workflow-fsm.js";
+export type { Directive, AuditDirective } from "./directive-types.js";
+
 // Flywheel Error types (v0.2 Step 2b)
 export type { FlywheelError, RetryPolicy } from "./flywheel-error-types.js";
 export {
