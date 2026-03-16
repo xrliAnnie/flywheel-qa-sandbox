@@ -199,7 +199,20 @@ export {
 } from "./PersistenceManager.js";
 export { StreamingPrompt } from "./StreamingPrompt.js";
 
+// Adapter types (GEO-157 — unified IAdapter protocol)
+export type {
+	AdapterConfig,
+	AdapterExecutionContext,
+	AdapterExecutionResult,
+	AdapterHealthCheck,
+	AdapterSession,
+	ClaudeAdapterConfig,
+	IAdapter,
+} from "./adapter-types.js";
+export { AdapterRegistry } from "./AdapterRegistry.js";
+
 // Simple Agent Runner types
+/** @deprecated Use IAdapter instead (GEO-157). Will be removed in Wave 6. */
 export type {
 	IAgentProgressEvent,
 	ISimpleAgentQueryOptions,
@@ -208,12 +221,14 @@ export type {
 	ISimpleAgentRunnerConfig,
 } from "./simple-agent-runner-types.js";
 
-// Flywheel Runner types (CLI-spawn-oriented, used by Blueprint Dispatcher)
+// Flywheel Runner types — compat re-exports (GEO-157 Wave 6 cleanup)
+/** @deprecated Use IAdapter + AdapterExecutionContext instead (GEO-157). */
 export type {
 	FlywheelRunRequest,
 	FlywheelRunResult,
 	IFlywheelRunner,
 } from "./flywheel-runner-types.js";
+/** @deprecated Use AdapterRegistry instead (GEO-157). */
 export { FlywheelRunnerRegistry } from "./FlywheelRunnerRegistry.js";
 
 // Flywheel Error types (v0.2 Step 2b)

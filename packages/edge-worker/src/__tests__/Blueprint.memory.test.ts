@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { FlywheelRunResult, DecisionResult } from "flywheel-core";
+import type { AdapterExecutionResult, DecisionResult } from "flywheel-core";
 import { Blueprint } from "../Blueprint.js";
 import type { BlueprintContext } from "../Blueprint.js";
 import type { IDecisionLayer } from "../decision/DecisionLayer.js";
@@ -34,15 +34,21 @@ function makeMockGitChecker(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-function makeMockRunner(overrides: Partial<FlywheelRunResult> = {}) {
-	const runResult: FlywheelRunResult = {
+function makeMockAdapter(overrides: Partial<AdapterExecutionResult> = {}) {
+	const execResult: AdapterExecutionResult = {
+		success: true,
 		sessionId: "sess-1",
 		costUsd: 0.05,
 		durationMs: 60_000,
 		tmuxWindow: "flywheel:@42",
 		...overrides,
 	};
-	return { run: vi.fn().mockResolvedValue(runResult) };
+	return {
+		type: "mock" as const,
+		supportsStreaming: false as const,
+		checkEnvironment: async () => ({ healthy: true, message: "mock" }),
+		execute: vi.fn().mockResolvedValue(execResult),
+	};
 }
 
 function makeMockShell() {
@@ -92,7 +98,7 @@ describe("Blueprint Memory Retrieval Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 		);
 
@@ -117,11 +123,11 @@ describe("Blueprint Memory Retrieval Integration", () => {
 			searchAndFormat: vi.fn().mockResolvedValue(memoryBlock),
 		});
 
-		const runner = makeMockRunner();
+		const adapter = makeMockAdapter();
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => runner,
+			() => adapter,
 			makeMockShell(),
 			undefined, undefined, undefined, undefined, undefined, undefined, undefined,
 			memoryService,
@@ -133,8 +139,8 @@ describe("Blueprint Memory Retrieval Integration", () => {
 			makeContext({ projectName: "geoforge3d" }),
 		);
 
-		// Verify runner was called with system prompt containing memory
-		const runCall = runner.run.mock.calls[0][0];
+		// Verify adapter was called with system prompt containing memory
+		const runCall = adapter.execute.mock.calls[0][0];
 		expect(runCall.appendSystemPrompt).toContain("<project_memory>");
 		expect(runCall.appendSystemPrompt).toContain("Auth tokens expire after 1 hour");
 	});
@@ -148,7 +154,7 @@ describe("Blueprint Memory Retrieval Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined, undefined, undefined, undefined, undefined, undefined,
 			memoryService,
@@ -172,11 +178,11 @@ describe("Blueprint Memory Retrieval Integration", () => {
 			searchAndFormat: vi.fn().mockResolvedValue(null),
 		});
 
-		const runner = makeMockRunner();
+		const adapter = makeMockAdapter();
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => runner,
+			() => adapter,
 			makeMockShell(),
 			undefined, undefined, undefined, undefined, undefined, undefined, undefined,
 			memoryService,
@@ -188,7 +194,7 @@ describe("Blueprint Memory Retrieval Integration", () => {
 			makeContext(),
 		);
 
-		const runCall = runner.run.mock.calls[0][0];
+		const runCall = adapter.execute.mock.calls[0][0];
 		expect(runCall.appendSystemPrompt).not.toContain("<project_memory>");
 	});
 
@@ -198,7 +204,7 @@ describe("Blueprint Memory Retrieval Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined, undefined, undefined, undefined, undefined, undefined,
 			memoryService,
@@ -246,7 +252,7 @@ describe("Blueprint Memory Extraction Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -277,7 +283,7 @@ describe("Blueprint Memory Extraction Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -311,7 +317,7 @@ describe("Blueprint Memory Extraction Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -341,7 +347,7 @@ describe("Blueprint Memory Extraction Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -373,7 +379,7 @@ describe("Blueprint Memory Extraction Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -405,7 +411,7 @@ describe("Blueprint Memory Extraction Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner({ timedOut: true }),
+			() => makeMockAdapter({ timedOut: true }),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -450,7 +456,7 @@ describe("Blueprint Memory Extraction Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker({ commitCount: 0, hasNewCommits: false }),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			zeroCommitEvidence,
@@ -480,7 +486,7 @@ describe("Blueprint Memory Extraction Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker({ commitCount: 3 }),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -512,7 +518,7 @@ describe("Blueprint Memory Extraction Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),
@@ -540,7 +546,7 @@ describe("Blueprint Memory Extraction Integration", () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker(),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 			undefined, undefined,
 			makeMockEvidenceCollector(),

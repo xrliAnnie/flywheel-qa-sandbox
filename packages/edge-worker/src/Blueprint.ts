@@ -3,8 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import type {
-	IFlywheelRunner,
-	FlywheelRunResult,
+	IAdapter,
+	AdapterExecutionResult,
 	DecisionResult,
 	ExecutionContext,
 } from "flywheel-core";
@@ -85,7 +85,7 @@ export class Blueprint {
 	constructor(
 		private hydrator: PreHydrator,
 		private gitChecker: GitResultChecker,
-		private getRunner: (name: string) => IFlywheelRunner,
+		private getAdapter: (name: string) => IAdapter,
 		private shell: ShellRunner,
 		// v0.2 — optional for backward compat
 		private worktreeManager?: WorktreeManager,
@@ -137,7 +137,7 @@ export class Blueprint {
 		ctx: BlueprintContext,
 		env: EventEnvelope,
 	): Promise<BlueprintResult> {
-		const runner = this.getRunner(ctx.runnerName);
+		const adapter = this.getAdapter(ctx.runnerName);
 		const startTime = Date.now();
 		const executionId = env.executionId;
 		let cwd = projectRoot;
@@ -314,11 +314,13 @@ export class Blueprint {
 			memoryBlock,
 		].filter(Boolean).join("\n");
 
-		// ── Runner execution (existing — catch runner errors) ─
+		// ── Adapter execution (GEO-157: IAdapter.execute()) ──
 		const timeoutMs = ctx.sessionTimeoutMs ?? 2_700_000;
-		let result: FlywheelRunResult;
+		let result: AdapterExecutionResult;
 		try {
-			result = await runner.run({
+			result = await adapter.execute({
+				executionId,
+				issueId: hydrated.issueId,
 				prompt,
 				cwd,
 				label: buildWindowLabel(
@@ -326,17 +328,19 @@ export class Blueprint {
 					ctx.runnerName,
 					hydrated.issueTitle,
 				),
-				issueId: hydrated.issueId,
 				permissionMode: "bypassPermissions",
 				appendSystemPrompt: systemPrompt,
 				timeoutMs,
 				sessionDisplayName: `${hydrated.issueId} ${hydrated.issueTitle}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
+				onHeartbeat: () => {
+					this.eventEmitter?.emitHeartbeat(env).catch(() => {});
+				},
 			});
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);
 			console.error(
-				`[Blueprint] Runner failed for ${hydrated.issueId}: ${errorMsg}`,
+				`[Blueprint] Adapter failed for ${hydrated.issueId}: ${errorMsg}`,
 			);
 			return {
 				success: false,
@@ -452,7 +456,7 @@ export class Blueprint {
 			issueIdentifier: string;
 		},
 		evidence: ExecutionEvidence,
-		result: FlywheelRunResult,
+		result: AdapterExecutionResult,
 		cwd: string,
 		baseSha: string,
 		worktreeInfo: WorktreeInfo | undefined,
@@ -533,7 +537,7 @@ export class Blueprint {
 	private async extractMemory(
 		hydrated: { issueId: string; issueTitle: string },
 		evidence: ExecutionEvidence,
-		result: FlywheelRunResult,
+		result: AdapterExecutionResult,
 		decision: DecisionResult | undefined,
 		executionId: string,
 		projectName: string,

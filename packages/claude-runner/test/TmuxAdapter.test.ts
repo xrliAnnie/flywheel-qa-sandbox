@@ -1,14 +1,15 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import type { FlywheelRunRequest } from "flywheel-core";
+import type { AdapterExecutionContext } from "flywheel-core";
 
-// We'll test TmuxRunner by injecting a mock execFileFn
-// Import after creating the module
-import { TmuxRunner } from "../src/TmuxRunner.js";
+// We'll test TmuxAdapter by injecting a mock execFileFn
+import { TmuxAdapter } from "../src/TmuxAdapter.js";
 
 // ─── Helpers ─────────────────────────────────────
 
-function makeRequest(overrides: Partial<FlywheelRunRequest> = {}): FlywheelRunRequest {
+function makeCtx(overrides: Partial<AdapterExecutionContext> = {}): AdapterExecutionContext {
 	return {
+		executionId: "test-exec-1",
+		issueId: "GEO-TEST",
 		prompt: "Fix the bug in auth module",
 		cwd: "/project/geoforge3d",
 		...overrides,
@@ -122,29 +123,29 @@ function makeMockExecWithDelayedDead(pollsBeforeDead: number, windowId = "@42") 
 
 // ─── Tests ───────────────────────────────────────
 
-describe("TmuxRunner", () => {
+describe("TmuxAdapter", () => {
 	// ─── Construction (lazy preflight) ──────────────
 
 	it("does NOT check tmux in constructor", () => {
 		const { fn, calls } = makeMockExec();
-		const _runner = new TmuxRunner("flywheel", fn);
+		const _adapter = new TmuxAdapter("flywheel", fn);
 		// No calls at all during construction
 		expect(calls).toHaveLength(0);
 	});
 
-	it("has name 'claude-tmux'", () => {
+	it("has type 'claude-tmux'", () => {
 		const { fn } = makeMockExec();
-		const runner = new TmuxRunner("flywheel", fn);
-		expect(runner.name).toBe("claude-tmux");
+		const adapter = new TmuxAdapter("flywheel", fn);
+		expect(adapter.type).toBe("claude-tmux");
 	});
 
 	// ─── Preflight ──────────────────────────────────
 
-	it("checks tmux -V and claude --version on first run() call only", async () => {
+	it("checks tmux -V and claude --version on first execute() call only", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest());
+		await adapter.execute(makeCtx());
 		const firstRunTmuxV = calls.filter(c => c.args[0] === "-V");
 		const firstRunClaude = calls.filter(c => c.cmd === "claude");
 		expect(firstRunTmuxV).toHaveLength(1);
@@ -152,7 +153,7 @@ describe("TmuxRunner", () => {
 
 		// Second run should not check again
 		const callsBefore = calls.length;
-		await runner.run(makeRequest());
+		await adapter.execute(makeCtx());
 		const secondRunTmuxV = calls.slice(callsBefore).filter(c => c.args[0] === "-V");
 		const secondRunClaude = calls.slice(callsBefore).filter(c => c.cmd === "claude");
 		expect(secondRunTmuxV).toHaveLength(0);
@@ -164,9 +165,9 @@ describe("TmuxRunner", () => {
 			if (cmd === "tmux") throw new Error("tmux not found");
 			return { stdout: "" };
 		};
-		const runner = new TmuxRunner("flywheel", fn);
+		const adapter = new TmuxAdapter("flywheel", fn);
 
-		await expect(runner.run(makeRequest())).rejects.toThrow("tmux not found");
+		await expect(adapter.execute(makeCtx())).rejects.toThrow("tmux not found");
 	});
 
 	it("throws when claude is not installed", async () => {
@@ -175,18 +176,18 @@ describe("TmuxRunner", () => {
 			if (cmd === "claude") throw new Error("claude not found");
 			return { stdout: "" };
 		};
-		const runner = new TmuxRunner("flywheel", fn);
+		const adapter = new TmuxAdapter("flywheel", fn);
 
-		await expect(runner.run(makeRequest())).rejects.toThrow("claude not found");
+		await expect(adapter.execute(makeCtx())).rejects.toThrow("claude not found");
 	});
 
 	// ─── Session management ─────────────────────────
 
 	it("creates tmux session if it doesn't exist", async () => {
 		const { fn, calls } = makeMockExec({ hasSessionError: true, paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest());
+		await adapter.execute(makeCtx());
 
 		const newSession = calls.find(c => c.args[0] === "new-session");
 		expect(newSession).toBeDefined();
@@ -195,9 +196,9 @@ describe("TmuxRunner", () => {
 
 	it("reuses existing session", async () => {
 		const { fn, calls } = makeMockExec({ hasSessionError: false, paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest());
+		await adapter.execute(makeCtx());
 
 		const newSession = calls.find(c => c.args[0] === "new-session");
 		expect(newSession).toBeUndefined();
@@ -205,11 +206,11 @@ describe("TmuxRunner", () => {
 
 	// ─── Window launch ──────────────────────────────
 
-	it("launches tmux window with -c request.cwd", async () => {
+	it("launches tmux window with -c ctx.cwd", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ cwd: "/my/project" }));
+		await adapter.execute(makeCtx({ cwd: "/my/project" }));
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		expect(newWindow).toBeDefined();
@@ -218,11 +219,11 @@ describe("TmuxRunner", () => {
 		expect(newWindow!.args[cwdIdx + 1]).toBe("/my/project");
 	});
 
-	it("uses request.label for window name (not request.sessionId)", async () => {
+	it("uses ctx.label for window name", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ label: "GEO-101", sessionId: "should-be-ignored" }));
+		await adapter.execute(makeCtx({ label: "GEO-101" }));
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const nIdx = newWindow!.args.indexOf("-n");
@@ -231,9 +232,9 @@ describe("TmuxRunner", () => {
 
 	it("falls back to timestamp-based name when no label", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ label: undefined }));
+		await adapter.execute(makeCtx({ label: undefined }));
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const nIdx = newWindow!.args.indexOf("-n");
@@ -243,9 +244,9 @@ describe("TmuxRunner", () => {
 
 	it("sanitizes window name (removes special chars)", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ label: "GEO/101:special.chars!" }));
+		await adapter.execute(makeCtx({ label: "GEO/101:special.chars!" }));
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const nIdx = newWindow!.args.indexOf("-n");
@@ -257,10 +258,10 @@ describe("TmuxRunner", () => {
 
 	it("truncates window name to 50 characters", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 		const longLabel = "a".repeat(100);
 
-		await runner.run(makeRequest({ label: longLabel }));
+		await adapter.execute(makeCtx({ label: longLabel }));
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const nIdx = newWindow!.args.indexOf("-n");
@@ -270,11 +271,11 @@ describe("TmuxRunner", () => {
 
 	// ─── Claude args ────────────────────────────────
 
-	it("passes --session-id <uuid> to claude (ignores request.sessionId)", async () => {
+	it("passes --session-id <uuid> to claude (ignores previousSession)", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ sessionId: "old-session-id" }));
+		await adapter.execute(makeCtx({ previousSession: { sessionId: "old-session-id" } }));
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const claudeArgs = newWindow!.args;
@@ -288,9 +289,9 @@ describe("TmuxRunner", () => {
 
 	it("does NOT include --print or --output-format", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest());
+		await adapter.execute(makeCtx());
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const allArgs = newWindow!.args.join(" ");
@@ -300,9 +301,9 @@ describe("TmuxRunner", () => {
 
 	it("includes --permission-mode and --append-system-prompt", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({
+		await adapter.execute(makeCtx({
 			permissionMode: "bypassPermissions",
 			appendSystemPrompt: "Always use TypeScript",
 		}));
@@ -317,9 +318,9 @@ describe("TmuxRunner", () => {
 
 	it("passes --model when specified", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ model: "opus" }));
+		await adapter.execute(makeCtx({ model: "opus" }));
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const args = newWindow!.args;
@@ -329,9 +330,9 @@ describe("TmuxRunner", () => {
 
 	it("passes --allowed-tools when specified", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ allowedTools: ["Read", "Bash"] }));
+		await adapter.execute(makeCtx({ allowedTools: ["Read", "Bash"] }));
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const args = newWindow!.args;
@@ -342,9 +343,9 @@ describe("TmuxRunner", () => {
 
 	it("does NOT pass --max-turns (flag does not exist in CLI)", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ maxTurns: 50 }));
+		await adapter.execute(makeCtx({ maxTurns: 50 }));
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const allArgs = newWindow!.args.join(" ");
@@ -353,9 +354,9 @@ describe("TmuxRunner", () => {
 
 	it("does NOT pass --allowed-tools when array is empty", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ allowedTools: [] }));
+		await adapter.execute(makeCtx({ allowedTools: [] }));
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const allArgs = newWindow!.args.join(" ");
@@ -364,9 +365,9 @@ describe("TmuxRunner", () => {
 
 	it("does NOT pass --max-budget-usd", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ maxCostUsd: 5.0 }));
+		await adapter.execute(makeCtx());
 
 		const newWindow = calls.find(c => c.args[0] === "new-window");
 		const allArgs = newWindow!.args.join(" ");
@@ -377,9 +378,9 @@ describe("TmuxRunner", () => {
 
 	it("injects FLYWHEEL_MARKER_DIR into tmux session environment", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest());
+		await adapter.execute(makeCtx());
 
 		const setEnvCalls = calls.filter(c => c.args[0] === "set-environment");
 		const markerDirCall = setEnvCalls.find(c => c.args.includes("FLYWHEEL_MARKER_DIR") && !c.args.includes("-u"));
@@ -390,9 +391,9 @@ describe("TmuxRunner", () => {
 
 	it("unsets CLAUDECODE env var to prevent nested Claude hang", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest());
+		await adapter.execute(makeCtx());
 
 		const setEnvCalls = calls.filter(c => c.args[0] === "set-environment");
 		const unsetCall = setEnvCalls.find(c => c.args.includes("-u") && c.args.includes("CLAUDECODE"));
@@ -403,9 +404,9 @@ describe("TmuxRunner", () => {
 
 	it("sets remain-on-exit on", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest());
+		await adapter.execute(makeCtx());
 
 		const setOption = calls.find(c => c.args[0] === "set-option");
 		expect(setOption).toBeDefined();
@@ -417,9 +418,9 @@ describe("TmuxRunner", () => {
 
 	it("resolves when pane_dead = 1 (fallback path) with timedOut=false", async () => {
 		const { fn } = makeMockExecWithDelayedDead(1);
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		const result = await runner.run(makeRequest());
+		const result = await adapter.execute(makeCtx());
 
 		expect(result.success).toBe(true);
 		expect(result.timedOut).toBe(false);
@@ -445,22 +446,22 @@ describe("TmuxRunner", () => {
 			}
 			return { stdout: "" };
 		};
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		const result = await runner.run(makeRequest());
+		const result = await adapter.execute(makeCtx());
 		expect(result.success).toBe(true);
 	});
 
 	// ─── Timeout ────────────────────────────────────
 
-	it("honors request.timeoutMs over default timeout", async () => {
+	it("honors ctx.timeoutMs over default timeout", async () => {
 		// Use a very short timeout + never-dead pane
 		const { fn } = makeMockExec({ paneDead: false });
-		const runner = new TmuxRunner("flywheel", fn, 10, 60000);
+		const adapter = new TmuxAdapter("flywheel", fn, 10, 60000);
 
 		// Short timeout should resolve quickly
 		const start = Date.now();
-		const result = await runner.run(makeRequest({ timeoutMs: 50 }));
+		const result = await adapter.execute(makeCtx({ timeoutMs: 50 }));
 		const elapsed = Date.now() - start;
 
 		expect(result.success).toBe(true); // timeout resolves, not rejects
@@ -469,9 +470,9 @@ describe("TmuxRunner", () => {
 
 	it("resolves on timeout with timedOut=true (preserves window for inspection)", async () => {
 		const { fn } = makeMockExec({ paneDead: false });
-		const runner = new TmuxRunner("flywheel", fn, 10, 50); // 50ms default timeout
+		const adapter = new TmuxAdapter("flywheel", fn, 10, 50); // 50ms default timeout
 
-		const result = await runner.run(makeRequest());
+		const result = await adapter.execute(makeCtx());
 
 		// Timeout resolves (not rejects) — Blueprint checks git for actual success
 		expect(result.success).toBe(true);
@@ -483,27 +484,27 @@ describe("TmuxRunner", () => {
 
 	it("returns sessionId as UUID (same used for --session-id)", async () => {
 		const { fn } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		const result = await runner.run(makeRequest());
+		const result = await adapter.execute(makeCtx());
 
 		expect(result.sessionId).toMatch(/^[0-9a-f-]{36}$/);
 	});
 
 	it("captures window_id from tmux new-window -P -F", async () => {
 		const { fn } = makeMockExec({ paneDead: true, windowId: "@99" });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		const result = await runner.run(makeRequest());
+		const result = await adapter.execute(makeCtx());
 
 		expect(result.tmuxWindow).toBe("flywheel:@99");
 	});
 
 	it("uses window_id (not window_name) for polling", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true, windowId: "@55" });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({ label: "GEO-101" }));
+		await adapter.execute(makeCtx({ label: "GEO-101" }));
 
 		const listPanes = calls.find(c => c.args[0] === "list-panes");
 		expect(listPanes).toBeDefined();
@@ -514,18 +515,18 @@ describe("TmuxRunner", () => {
 
 	it("returns tmuxWindow in format session:@id", async () => {
 		const { fn } = makeMockExec({ paneDead: true, windowId: "@42" });
-		const runner = new TmuxRunner("test-session", fn, 10);
+		const adapter = new TmuxAdapter("test-session", fn, 10);
 
-		const result = await runner.run(makeRequest());
+		const result = await adapter.execute(makeCtx());
 
 		expect(result.tmuxWindow).toBe("test-session:@42");
 	});
 
 	it("returns durationMs", async () => {
 		const { fn } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		const result = await runner.run(makeRequest());
+		const result = await adapter.execute(makeCtx());
 
 		expect(result.durationMs).toBeGreaterThanOrEqual(0);
 	});
@@ -534,9 +535,9 @@ describe("TmuxRunner", () => {
 
 	it("puts prompt as last positional argument (options before prompt)", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
-		const runner = new TmuxRunner("flywheel", fn, 10);
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await runner.run(makeRequest({
+		await adapter.execute(makeCtx({
 			prompt: "Fix the bug",
 			permissionMode: "bypassPermissions",
 		}));
@@ -577,15 +578,15 @@ describe("TmuxRunner", () => {
 		it("accepts optional hookServer in constructor", () => {
 			const { fn } = makeMockExec();
 			const hookServer = makeMockHookServer();
-			const runner = new TmuxRunner("flywheel", fn, 10, 30000, hookServer);
-			expect(runner.name).toBe("claude-tmux");
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 30000, hookServer);
+			expect(adapter.type).toBe("claude-tmux");
 		});
 
-		it("run() without hookServer — no env vars injected (v0.1.1 path)", async () => {
+		it("execute() without hookServer — no env vars injected (v0.1.1 path)", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
-			const runner = new TmuxRunner("flywheel", fn, 10);
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-			await runner.run(makeRequest());
+			await adapter.execute(makeCtx());
 
 			const newWindow = calls.find(c => c.args[0] === "new-window");
 			const args = newWindow!.args;
@@ -593,12 +594,12 @@ describe("TmuxRunner", () => {
 			expect(args.join(" ")).not.toContain("FLYWHEEL_CALLBACK_TOKEN");
 		});
 
-		it("run() with hookServer — env vars in tmux new-window args", async () => {
+		it("execute() with hookServer — env vars in tmux new-window args", async () => {
 			const hookServer = makeMockHookServer({ port: 12345 });
 			const { fn, calls } = makeMockExec({ paneDead: true });
-			const runner = new TmuxRunner("flywheel", fn, 10, 30000, hookServer);
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 30000, hookServer);
 
-			await runner.run(makeRequest({ issueId: "GEO-42" }));
+			await adapter.execute(makeCtx({ issueId: "GEO-42" }));
 
 			const newWindow = calls.find(c => c.args[0] === "new-window");
 			const args = newWindow!.args;
@@ -613,9 +614,9 @@ describe("TmuxRunner", () => {
 		it("waitForCompletion resolves on HTTP callback", async () => {
 			const hookServer = makeMockHookServer({ resolveImmediately: true });
 			const { fn } = makeMockExec({ paneDead: false });
-			const runner = new TmuxRunner("flywheel", fn, 100, 5000, hookServer);
+			const adapter = new TmuxAdapter("flywheel", fn, 100, 5000, hookServer);
 
-			const result = await runner.run(makeRequest());
+			const result = await adapter.execute(makeCtx());
 
 			expect(result.timedOut).toBe(false);
 			expect(hookServer.waitForCompletion).toHaveBeenCalled();
@@ -625,20 +626,20 @@ describe("TmuxRunner", () => {
 			// hookServer never resolves, but pane dies
 			const hookServer = makeMockHookServer({ resolveImmediately: false });
 			const { fn } = makeMockExecWithDelayedDead(1);
-			const runner = new TmuxRunner("flywheel", fn, 10, 5000, hookServer);
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 5000, hookServer);
 
-			const result = await runner.run(makeRequest());
+			const result = await adapter.execute(makeCtx());
 
 			expect(result.timedOut).toBe(false);
 		});
 
-		it("callbackToken is unique per run() call", async () => {
+		it("callbackToken is unique per execute() call", async () => {
 			const hookServer = makeMockHookServer();
 			const { fn } = makeMockExec({ paneDead: true });
-			const runner = new TmuxRunner("flywheel", fn, 10, 30000, hookServer);
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 30000, hookServer);
 
-			await runner.run(makeRequest());
-			await runner.run(makeRequest());
+			await adapter.execute(makeCtx());
+			await adapter.execute(makeCtx());
 
 			const calls = hookServer.waitForCompletion.mock.calls;
 			expect(calls).toHaveLength(2);
@@ -650,9 +651,9 @@ describe("TmuxRunner", () => {
 		it("timeout still works with hookServer", async () => {
 			const hookServer = makeMockHookServer({ resolveImmediately: false });
 			const { fn } = makeMockExec({ paneDead: false });
-			const runner = new TmuxRunner("flywheel", fn, 100, 50, hookServer);
+			const adapter = new TmuxAdapter("flywheel", fn, 100, 50, hookServer);
 
-			const result = await runner.run(makeRequest());
+			const result = await adapter.execute(makeCtx());
 
 			expect(result.timedOut).toBe(true);
 		});
@@ -660,21 +661,21 @@ describe("TmuxRunner", () => {
 		it("v0.2 mode does not set FLYWHEEL_MARKER_DIR in session env", async () => {
 			const hookServer = makeMockHookServer();
 			const { fn, calls } = makeMockExec({ paneDead: true });
-			const runner = new TmuxRunner("flywheel", fn, 10, 30000, hookServer);
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 30000, hookServer);
 
-			await runner.run(makeRequest());
+			await adapter.execute(makeCtx());
 
 			const setEnvCalls = calls.filter(c => c.args[0] === "set-environment");
 			const markerDirCall = setEnvCalls.find(c => c.args.includes("FLYWHEEL_MARKER_DIR") && !c.args.includes("-u"));
 			expect(markerDirCall).toBeUndefined();
 		});
 
-		it("uses issueId from request (not label) for env var", async () => {
+		it("uses issueId from ctx (not label) for env var", async () => {
 			const hookServer = makeMockHookServer({ port: 8888 });
 			const { fn, calls } = makeMockExec({ paneDead: true });
-			const runner = new TmuxRunner("flywheel", fn, 10, 30000, hookServer);
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 30000, hookServer);
 
-			await runner.run(makeRequest({ label: "GEO-42-Fix auth bug", issueId: "GEO-42" }));
+			await adapter.execute(makeCtx({ label: "GEO-42-Fix auth bug", issueId: "GEO-42" }));
 
 			const newWindow = calls.find(c => c.args[0] === "new-window");
 			const args = newWindow!.args;

@@ -21,7 +21,7 @@ import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import { GitResultChecker } from "../GitResultChecker.js";
 import type { ExecFileFn } from "../GitResultChecker.js";
 import { DagDispatcher } from "../DagDispatcher.js";
-import type { IFlywheelRunner, FlywheelRunResult } from "flywheel-core";
+import type { IAdapter, AdapterExecutionResult } from "flywheel-core";
 
 // ─── Mock Data ───────────────────────────────────
 
@@ -47,11 +47,13 @@ const MOCK_LINEAR_ISSUES: LinearIssueData[] = [
 
 // ─── Helpers ─────────────────────────────────────
 
-function makeRunner(commitCount: number): IFlywheelRunner {
+function makeAdapter(commitCount: number): IAdapter {
 	let callCount = 0;
 	return {
-		name: "claude",
-		run: vi.fn(async (): Promise<FlywheelRunResult> => {
+		type: "mock",
+		supportsStreaming: false,
+		checkEnvironment: async () => ({ healthy: true, message: "mock" }),
+		execute: vi.fn(async (): Promise<AdapterExecutionResult> => {
 			callCount++;
 			return {
 				success: true,
@@ -119,11 +121,11 @@ describe("Core Loop E2E", () => {
 			expect(ready.map((n) => n.id)).toEqual(["GEO-101"]);
 
 			// Step 3: Set up Blueprint with mocked services
-			const runner = makeRunner(1);
+			const adapter = makeAdapter(1);
 			const blueprint = new Blueprint(
 				makeHydrator(),
 				makeGitChecker({ commitCount: 1 }),
-				() => runner,
+				() => adapter,
 				makeShell(),
 			);
 
@@ -137,8 +139,8 @@ describe("Core Loop E2E", () => {
 			expect(result.success).toBe(true);
 			expect(result.sessionId).toBeDefined();
 
-			// Verify runner was called with hydrated prompt
-			const runCall = (runner.run as ReturnType<typeof vi.fn>).mock
+			// Verify adapter was called with hydrated prompt
+			const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
 				.calls[0]![0];
 			expect(runCall.prompt).toContain("GEO-101");
 			expect(runCall.prompt).toContain("Issue GEO-101");
@@ -156,11 +158,11 @@ describe("Core Loop E2E", () => {
 			const dagNodes = new LinearGraphBuilder().build(MOCK_LINEAR_ISSUES);
 			const resolver = new DagResolver(dagNodes);
 
-			const runner = makeRunner(1);
+			const adapter = makeAdapter(1);
 			const blueprint = new Blueprint(
 				makeHydrator(),
 				makeGitChecker({ commitCount: 1 }),
-				() => runner,
+				() => adapter,
 				makeShell(),
 			);
 
@@ -187,11 +189,11 @@ describe("Core Loop E2E", () => {
 			];
 			const resolver = new DagResolver(nodes);
 
-			const runner = makeRunner(0);
+			const adapter = makeAdapter(0);
 			const blueprint = new Blueprint(
 				makeHydrator(),
 				makeGitChecker({ commitCount: 0 }), // no commits = failure
-				() => runner,
+				() => adapter,
 				makeShell(),
 			);
 

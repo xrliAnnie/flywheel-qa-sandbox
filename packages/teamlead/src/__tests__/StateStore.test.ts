@@ -270,4 +270,149 @@ describe("StateStore", () => {
 		expect(s).toBeDefined();
 		expect(s!.execution_id).toBe("e1");
 	});
+
+	// --- GEO-157: heartbeat + adapter columns ---
+
+	it("upsertSession stores and retrieves heartbeat_at", () => {
+		store.upsertSession(makeSession({ heartbeat_at: "2026-03-15 10:00:00" }));
+		const s = store.getSession("exec-1");
+		expect(s!.heartbeat_at).toBe("2026-03-15 10:00:00");
+	});
+
+	it("upsertSession stores and retrieves adapter_type", () => {
+		store.upsertSession(makeSession({ adapter_type: "claude-cli" }));
+		const s = store.getSession("exec-1");
+		expect(s!.adapter_type).toBe("claude-cli");
+	});
+
+	it("upsertSession stores and retrieves session_params", () => {
+		store.upsertSession(makeSession({ session_params: '{"sessionId":"abc"}' }));
+		const s = store.getSession("exec-1");
+		expect(s!.session_params).toBe('{"sessionId":"abc"}');
+	});
+
+	it("upsertSession stores and retrieves run_attempt", () => {
+		store.upsertSession(makeSession({ run_attempt: 3 }));
+		const s = store.getSession("exec-1");
+		expect(s!.run_attempt).toBe(3);
+	});
+
+	it("upsertSession preserves heartbeat_at via COALESCE on update", () => {
+		store.upsertSession(makeSession({ heartbeat_at: "2026-03-15 10:00:00" }));
+		store.upsertSession(makeSession({ status: "awaiting_review" }));
+		const s = store.getSession("exec-1");
+		expect(s!.heartbeat_at).toBe("2026-03-15 10:00:00");
+		expect(s!.status).toBe("awaiting_review");
+	});
+
+	// --- GEO-157: updateHeartbeat ---
+
+	it("updateHeartbeat sets heartbeat_at to now", () => {
+		store.upsertSession(makeSession());
+		store.updateHeartbeat("exec-1");
+		const s = store.getSession("exec-1");
+		expect(s!.heartbeat_at).toBeDefined();
+		// Should be a recent timestamp (within the last minute)
+		const hb = new Date(s!.heartbeat_at!.replace(" ", "T") + "Z");
+		expect(Date.now() - hb.getTime()).toBeLessThan(60_000);
+	});
+
+	it("updateHeartbeat is no-op for nonexistent session", () => {
+		// Should not throw
+		store.updateHeartbeat("nonexistent");
+	});
+
+	// --- GEO-157: getOrphanSessions ---
+
+	it("getOrphanSessions returns sessions with stale heartbeat", () => {
+		const toSqlite = (d: Date) => d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+
+		// Orphan: heartbeat 90 min ago
+		store.upsertSession(makeSession({
+			execution_id: "orphan-1",
+			status: "running",
+			heartbeat_at: toSqlite(new Date(Date.now() - 90 * 60 * 1000)),
+		}));
+		// Recent heartbeat
+		store.upsertSession(makeSession({
+			execution_id: "alive-1",
+			status: "running",
+			heartbeat_at: toSqlite(new Date()),
+		}));
+		// No heartbeat (should NOT be returned — heartbeat_at IS NULL)
+		store.upsertSession(makeSession({
+			execution_id: "no-hb-1",
+			status: "running",
+		}));
+		// Stale heartbeat but not running (should NOT be returned)
+		store.upsertSession(makeSession({
+			execution_id: "done-1",
+			status: "completed",
+			heartbeat_at: toSqlite(new Date(Date.now() - 90 * 60 * 1000)),
+		}));
+
+		const orphans = store.getOrphanSessions(60);
+		const ids = orphans.map(s => s.execution_id);
+		expect(ids).toContain("orphan-1");
+		expect(ids).not.toContain("alive-1");
+		expect(ids).not.toContain("no-hb-1");
+		expect(ids).not.toContain("done-1");
+	});
+
+	// --- GEO-157: getSessionParams / setSessionParams ---
+
+	it("setSessionParams + getSessionParams round-trip", () => {
+		store.upsertSession(makeSession());
+		store.setSessionParams("exec-1", { sessionId: "claude-123", lastPromptHash: "abc" });
+		const params = store.getSessionParams("exec-1");
+		expect(params).toEqual({ sessionId: "claude-123", lastPromptHash: "abc" });
+	});
+
+	it("getSessionParams returns undefined when no params set", () => {
+		store.upsertSession(makeSession());
+		const params = store.getSessionParams("exec-1");
+		expect(params).toBeUndefined();
+	});
+
+	it("getSessionParams returns undefined for nonexistent session", () => {
+		expect(store.getSessionParams("nonexistent")).toBeUndefined();
+	});
+
+	// --- GEO-157: getLatestSessionParams ---
+
+	it("getLatestSessionParams returns most recent session with params", () => {
+		store.upsertSession(makeSession({
+			execution_id: "e1",
+			issue_id: "GEO-95",
+			last_activity_at: "2024-01-01 10:00:00",
+		}));
+		store.setSessionParams("e1", { sessionId: "old-session" });
+		store.upsertSession(makeSession({
+			execution_id: "e1",
+			issue_id: "GEO-95",
+			run_attempt: 1,
+		}));
+
+		store.upsertSession(makeSession({
+			execution_id: "e2",
+			issue_id: "GEO-95",
+			last_activity_at: "2024-01-01 12:00:00",
+			run_attempt: 2,
+		}));
+		store.setSessionParams("e2", { sessionId: "new-session" });
+
+		const result = store.getLatestSessionParams("GEO-95");
+		expect(result).toBeDefined();
+		expect(result!.sessionParams).toEqual({ sessionId: "new-session" });
+		expect(result!.runAttempt).toBe(2);
+	});
+
+	it("getLatestSessionParams returns undefined when no params exist", () => {
+		store.upsertSession(makeSession());
+		expect(store.getLatestSessionParams("GEO-95")).toBeUndefined();
+	});
+
+	it("getLatestSessionParams returns undefined for unknown issue", () => {
+		expect(store.getLatestSessionParams("UNKNOWN-1")).toBeUndefined();
+	});
 });

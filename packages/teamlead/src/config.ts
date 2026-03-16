@@ -26,6 +26,14 @@ export function loadConfig(): BridgeConfig {
 		throw new Error(`Invalid TEAMLEAD_PORT: ${process.env.TEAMLEAD_PORT}`);
 	}
 
+	const stuckThresholdMinutes = parsePositiveInt(process.env.TEAMLEAD_STUCK_THRESHOLD, 15, "TEAMLEAD_STUCK_THRESHOLD");
+	const orphanThresholdMinutes = parsePositiveInt(process.env.TEAMLEAD_ORPHAN_THRESHOLD, 60, "TEAMLEAD_ORPHAN_THRESHOLD");
+	if (orphanThresholdMinutes <= stuckThresholdMinutes) {
+		throw new Error(
+			`TEAMLEAD_ORPHAN_THRESHOLD (${orphanThresholdMinutes}) must be greater than TEAMLEAD_STUCK_THRESHOLD (${stuckThresholdMinutes})`,
+		);
+	}
+
 	return {
 		host,
 		port,
@@ -34,7 +42,8 @@ export function loadConfig(): BridgeConfig {
 		apiToken: process.env.TEAMLEAD_API_TOKEN,
 		gatewayUrl: process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789",
 		hooksToken: process.env.OPENCLAW_HOOKS_TOKEN,
-		stuckThresholdMinutes: parsePositiveInt(process.env.TEAMLEAD_STUCK_THRESHOLD, 15, "TEAMLEAD_STUCK_THRESHOLD"),
+		stuckThresholdMinutes,
 		stuckCheckIntervalMs: parsePositiveInt(process.env.TEAMLEAD_STUCK_INTERVAL, 300_000, "TEAMLEAD_STUCK_INTERVAL"),
+		orphanThresholdMinutes,
 	};
 }

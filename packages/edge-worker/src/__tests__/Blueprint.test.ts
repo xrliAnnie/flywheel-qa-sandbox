@@ -5,9 +5,9 @@ import { GitResultChecker } from "../GitResultChecker.js";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import type { DagNode } from "flywheel-dag-resolver";
 import type {
-	IFlywheelRunner,
-	FlywheelRunRequest,
-	FlywheelRunResult,
+	IAdapter,
+	AdapterExecutionContext,
+	AdapterExecutionResult,
 } from "flywheel-core";
 
 // ─── Helpers ─────────────────────────────────────
@@ -26,13 +26,15 @@ function makeContext(
 	};
 }
 
-function makeMockRunner(
-	result: Partial<FlywheelRunResult> = {},
-): IFlywheelRunner {
+function makeMockAdapter(
+	result: Partial<AdapterExecutionResult> = {},
+): IAdapter {
 	return {
-		name: "claude",
-		run: vi.fn(
-			async (_req: FlywheelRunRequest): Promise<FlywheelRunResult> => ({
+		type: "mock",
+		supportsStreaming: false,
+		checkEnvironment: async () => ({ healthy: true, message: "mock" }),
+		execute: vi.fn(
+			async (_ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> => ({
 				success: true,
 				sessionId: "sess-uuid",
 				tmuxWindow: "flywheel:@42",
@@ -43,10 +45,12 @@ function makeMockRunner(
 	};
 }
 
-function makeThrowingRunner(error: Error): IFlywheelRunner {
+function makeThrowingAdapter(error: Error): IAdapter {
 	return {
-		name: "claude",
-		run: vi.fn(async () => {
+		type: "mock",
+		supportsStreaming: false,
+		checkEnvironment: async () => ({ healthy: true, message: "mock" }),
+		execute: vi.fn(async () => {
 			throw error;
 		}),
 	};
@@ -105,11 +109,11 @@ describe("Blueprint", () => {
 
 	it("asserts clean git tree before anything else", async () => {
 		const gitChecker = makeMockGitChecker();
-		const runner = makeMockRunner();
+		const adapter = makeMockAdapter();
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			gitChecker,
-			() => runner,
+			() => adapter,
 			makeMockShell(),
 		);
 
@@ -120,11 +124,11 @@ describe("Blueprint", () => {
 
 	it("throws when git tree is dirty", async () => {
 		const gitChecker = makeMockGitChecker({ cleanTree: false });
-		const runner = makeMockRunner();
+		const adapter = makeMockAdapter();
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			gitChecker,
-			() => runner,
+			() => adapter,
 			makeMockShell(),
 		);
 
@@ -132,23 +136,23 @@ describe("Blueprint", () => {
 			blueprint.run(makeNode(), "/project", makeContext()),
 		).rejects.toThrow("Git working tree is not clean");
 
-		// Runner should NOT have been called
-		expect(runner.run).not.toHaveBeenCalled();
+		// Adapter should NOT have been called
+		expect(adapter.execute).not.toHaveBeenCalled();
 	});
 
 	// ─── Hydration ──────────────────────────────────
 
-	it("hydrates issue before launching runner", async () => {
+	it("hydrates issue before launching adapter", async () => {
 		const fetchIssue = vi.fn(async () => ({
 			title: "Custom Title",
 			description: "Custom Desc",
 		}));
 		const hydrator = new PreHydrator(fetchIssue);
-		const runner = makeMockRunner();
+		const adapter = makeMockAdapter();
 		const blueprint = new Blueprint(
 			hydrator,
 			makeMockGitChecker(),
-			() => runner,
+			() => adapter,
 			makeMockShell(),
 		);
 
@@ -164,7 +168,7 @@ describe("Blueprint", () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			gitChecker,
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 		);
 
@@ -176,59 +180,59 @@ describe("Blueprint", () => {
 	// ─── Prompt construction ────────────────────────
 
 	it("builds prompt with issueId + title + description", async () => {
-		const runner = makeMockRunner();
+		const adapter = makeMockAdapter();
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker(),
-			() => runner,
+			() => adapter,
 			makeMockShell(),
 		);
 
 		await blueprint.run(makeNode("GEO-101"), "/project", makeContext());
 
-		const runCall = (runner.run as ReturnType<typeof vi.fn>).mock
-			.calls[0]![0] as FlywheelRunRequest;
-		expect(runCall.prompt).toContain("GEO-101");
-		expect(runCall.prompt).toContain("Issue GEO-101 title");
-		expect(runCall.prompt).toContain("Description for GEO-101");
+		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		expect(execCall.prompt).toContain("GEO-101");
+		expect(execCall.prompt).toContain("Issue GEO-101 title");
+		expect(execCall.prompt).toContain("Description for GEO-101");
 	});
 
 	it("system prompt includes branch/commit/push/PR/CI instructions", async () => {
-		const runner = makeMockRunner();
+		const adapter = makeMockAdapter();
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker(),
-			() => runner,
+			() => adapter,
 			makeMockShell(),
 		);
 
 		await blueprint.run(makeNode(), "/project", makeContext());
 
-		const runCall = (runner.run as ReturnType<typeof vi.fn>).mock
-			.calls[0]![0] as FlywheelRunRequest;
-		expect(runCall.appendSystemPrompt).toContain("commit");
-		expect(runCall.appendSystemPrompt).toContain("Push");
-		expect(runCall.appendSystemPrompt).toContain("GitHub PR");
+		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		expect(execCall.appendSystemPrompt).toContain("commit");
+		expect(execCall.appendSystemPrompt).toContain("Push");
+		expect(execCall.appendSystemPrompt).toContain("GitHub PR");
 	});
 
-	// ─── Runner args ────────────────────────────────
+	// ─── Adapter args ────────────────────────────────
 
-	it("passes bypassPermissions and label to runner", async () => {
-		const runner = makeMockRunner();
+	it("passes bypassPermissions and label to adapter", async () => {
+		const adapter = makeMockAdapter();
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker(),
-			() => runner,
+			() => adapter,
 			makeMockShell(),
 		);
 
 		await blueprint.run(makeNode("GEO-101"), "/project", makeContext());
 
-		const runCall = (runner.run as ReturnType<typeof vi.fn>).mock
-			.calls[0]![0] as FlywheelRunRequest;
-		expect(runCall.permissionMode).toBe("bypassPermissions");
-		expect(runCall.label).toBe("claude:Issue GEO-101 title");
-		expect(runCall.cwd).toBe("/project");
+		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		expect(execCall.permissionMode).toBe("bypassPermissions");
+		expect(execCall.label).toBe("claude:Issue GEO-101 title");
+		expect(execCall.cwd).toBe("/project");
 	});
 
 	// ─── Success / failure ──────────────────────────
@@ -237,7 +241,7 @@ describe("Blueprint", () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 2 }),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 		);
 
@@ -254,7 +258,7 @@ describe("Blueprint", () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 0 }),
-			() => makeMockRunner(),
+			() => makeMockAdapter(),
 			makeMockShell(),
 		);
 
@@ -267,13 +271,13 @@ describe("Blueprint", () => {
 		expect(result.success).toBe(false);
 	});
 
-	// ─── Runner exceptions ──────────────────────────
+	// ─── Adapter exceptions ──────────────────────────
 
-	it("catches runner exceptions → returns { success: false, error }", async () => {
+	it("catches adapter exceptions → returns { success: false, error }", async () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker(),
-			() => makeThrowingRunner(new Error("tmux not installed")),
+			() => makeThrowingAdapter(new Error("tmux not installed")),
 			makeMockShell(),
 		);
 
@@ -295,7 +299,7 @@ describe("Blueprint", () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 1 }),
-			() => makeMockRunner({ tmuxWindow: "flywheel:@42" }),
+			() => makeMockAdapter({ tmuxWindow: "flywheel:@42" }),
 			shell,
 		);
 
@@ -316,7 +320,7 @@ describe("Blueprint", () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 0 }),
-			() => makeMockRunner({ tmuxWindow: "flywheel:@42" }),
+			() => makeMockAdapter({ tmuxWindow: "flywheel:@42" }),
 			shell,
 		);
 
@@ -336,7 +340,7 @@ describe("Blueprint", () => {
 		const successBlueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 1 }),
-			() => makeMockRunner({ tmuxWindow: "flywheel:@42" }),
+			() => makeMockAdapter({ tmuxWindow: "flywheel:@42" }),
 			makeMockShell(),
 		);
 		const successResult = await successBlueprint.run(
@@ -350,7 +354,7 @@ describe("Blueprint", () => {
 		const failBlueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 0 }),
-			() => makeMockRunner({ tmuxWindow: "flywheel:@42" }),
+			() => makeMockAdapter({ tmuxWindow: "flywheel:@42" }),
 			makeMockShell(),
 		);
 		const failResult = await failBlueprint.run(
@@ -368,7 +372,7 @@ describe("Blueprint", () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 2 }),
-			() => makeMockRunner({ tmuxWindow: "flywheel:@42", timedOut: true }),
+			() => makeMockAdapter({ tmuxWindow: "flywheel:@42", timedOut: true }),
 			shell,
 		);
 
@@ -392,7 +396,7 @@ describe("Blueprint", () => {
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 1 }),
-			() => makeMockRunner({ tmuxWindow: "flywheel:@42", timedOut: false }),
+			() => makeMockAdapter({ tmuxWindow: "flywheel:@42", timedOut: false }),
 			shell,
 		);
 

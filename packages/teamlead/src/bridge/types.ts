@@ -12,4 +12,5 @@ export interface BridgeConfig {
 	hooksToken?: string;
 	stuckThresholdMinutes: number;
 	stuckCheckIntervalMs: number;
+	orphanThresholdMinutes: number;
 }
