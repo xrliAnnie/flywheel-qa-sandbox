@@ -99,6 +99,7 @@ function makeHydrator() {
 
 function makeContext(): BlueprintContext {
 	return {
+		executionId: "test-exec-id",
 		teamName: "eng",
 		runnerName: "claude",
 	};

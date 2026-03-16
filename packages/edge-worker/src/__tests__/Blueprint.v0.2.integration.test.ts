@@ -23,6 +23,7 @@ function makeContext(
 	overrides: Partial<BlueprintContext> = {},
 ): BlueprintContext {
 	return {
+		executionId: "test-exec-id",
 		teamName: "eng",
 		runnerName: "claude",
 		projectName: "test-project",

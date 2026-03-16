@@ -10,6 +10,7 @@ import type { ActionHandler } from "../ReactionsEngine.js";
 
 function makeCtx(overrides?: Partial<ExecutionContext>): ExecutionContext {
 	return {
+		executionId: "test-exec-id",
 		issueId: "e2e-test-1",
 		issueIdentifier: "GEO-99",
 		issueTitle: "E2E smoke test issue",
