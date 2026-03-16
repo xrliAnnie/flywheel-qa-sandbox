@@ -149,6 +149,7 @@ export function createEventRouter(
 					const existingThread = store.getThreadByIssue(event.issue_id);
 					if (existingThread) {
 						store.setSessionThreadId(event.execution_id, existingThread.thread_id);
+						store.clearArchived(existingThread.thread_id);
 					}
 				}
 			} else if (event.event_type === "session_completed") {
