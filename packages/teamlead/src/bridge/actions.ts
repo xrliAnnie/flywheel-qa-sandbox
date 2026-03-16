@@ -7,7 +7,8 @@ import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { StateStore } from "../StateStore.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { applyTransition, type ApplyTransitionOpts } from "../applyTransition.js";
-import { sqliteDatetime } from "./types.js";
+import { sqliteDatetime, type BridgeConfig } from "./types.js";
+import { buildSessionKey, buildHookBody, notifyAgent, type HookPayload } from "./hook-payload.js";
 
 type ExecFn = (
 	cmd: string,
@@ -39,6 +40,38 @@ export const ACTION_TARGET_STATUS: Record<string, string> = {
 	shelve: "shelved",
 };
 
+/** Send post-action hook notification (best-effort, fire-and-forget). */
+function sendActionHook(
+	store: StateStore,
+	config: BridgeConfig | undefined,
+	executionId: string,
+	action: string,
+	sourceStatus: string,
+	targetStatus: string,
+	reason?: string,
+): void {
+	if (!config?.gatewayUrl || !config?.hooksToken) return;
+	const session = store.getSession(executionId);
+	if (!session) return;
+	const hookPayload: HookPayload = {
+		event_type: "action_executed",
+		execution_id: session.execution_id,
+		issue_id: session.issue_id,
+		issue_identifier: session.issue_identifier,
+		issue_title: session.issue_title,
+		project_name: session.project_name,
+		status: targetStatus,
+		thread_id: session.thread_id,
+		channel: config.notificationChannel,
+		action,
+		action_source_status: sourceStatus,
+		action_target_status: targetStatus,
+		action_reason: reason,
+	};
+	const body = buildHookBody("product-lead", hookPayload, buildSessionKey(session));
+	notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+}
+
 export async function approveExecution(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -46,6 +79,7 @@ export async function approveExecution(
 	identifier?: string,
 	execFn?: ExecFn,
 	transitionOpts?: ApplyTransitionOpts,
+	config?: BridgeConfig,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -100,6 +134,7 @@ export async function approveExecution(
 				last_activity_at: sqliteDatetime(),
 			});
 		}
+		sendActionHook(store, config, executionId, "approve", "awaiting_review", "approved");
 	}
 
 	return result;
@@ -111,6 +146,7 @@ export function transitionSession(
 	executionId: string,
 	reason?: string,
 	transitionOpts?: ApplyTransitionOpts,
+	config?: BridgeConfig,
 ): ActionResult {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -151,6 +187,8 @@ export function transitionSession(
 		store.forceStatus(session.execution_id, targetStatus, sqliteDatetime(), reason);
 	}
 
+	sendActionHook(store, config, executionId, action, session.status, targetStatus, reason);
+
 	const id = session.issue_identifier ?? executionId;
 	const pastTense: Record<string, string> = {
 		reject: "rejected", defer: "deferred", retry: "retried", shelve: "shelved",
@@ -162,6 +200,7 @@ export function createActionRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
 	transitionOpts?: ApplyTransitionOpts,
+	config?: BridgeConfig,
 ): Router {
 	const router = Router();
 
@@ -175,7 +214,7 @@ export function createActionRouter(
 					res.status(400).json({ error: "execution_id is required" });
 					return;
 				}
-				const result = await approveExecution(store, projects, execution_id, identifier, undefined, transitionOpts);
+				const result = await approveExecution(store, projects, execution_id, identifier, undefined, transitionOpts, config);
 				if (result.success) {
 					res.json({ success: true, message: result.message, action: "approve", identifier });
 				} else {
@@ -192,7 +231,7 @@ export function createActionRouter(
 					res.status(400).json({ error: "execution_id is required" });
 					return;
 				}
-				const actionResult = transitionSession(store, action, eid, reason, transitionOpts);
+				const actionResult = transitionSession(store, action, eid, reason, transitionOpts, config);
 				if (actionResult.success) {
 					res.json({ success: true, message: actionResult.message, action });
 				} else {
