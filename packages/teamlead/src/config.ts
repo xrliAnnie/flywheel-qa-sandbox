@@ -46,5 +46,12 @@ export function loadConfig(): BridgeConfig {
 		stuckThresholdMinutes,
 		stuckCheckIntervalMs: parsePositiveInt(process.env.TEAMLEAD_STUCK_INTERVAL, 300_000, "TEAMLEAD_STUCK_INTERVAL"),
 		orphanThresholdMinutes,
+		discordBotToken: process.env.DISCORD_BOT_TOKEN,
+		cleanupIntervalMs: parsePositiveInt(
+			process.env.TEAMLEAD_CLEANUP_INTERVAL, 3_600_000, "TEAMLEAD_CLEANUP_INTERVAL",
+		),
+		cleanupThresholdMinutes: parsePositiveInt(
+			process.env.TEAMLEAD_CLEANUP_THRESHOLD, 1440, "TEAMLEAD_CLEANUP_THRESHOLD",
+		),
 	};
 }

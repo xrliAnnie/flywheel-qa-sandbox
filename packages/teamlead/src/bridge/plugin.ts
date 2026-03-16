@@ -5,6 +5,7 @@ import { StateStore } from "../StateStore.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { HeartbeatService, WebhookHeartbeatNotifier, type HeartbeatNotifier } from "../HeartbeatService.js";
+import { CleanupService, FetchDiscordClient } from "../CleanupService.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { BridgeConfig } from "./types.js";
 import { createQueryRouter } from "./tools.js";
@@ -227,8 +228,17 @@ export async function startBridge(
 	);
 	heartbeatService.start();
 
+	let cleanupService: CleanupService | null = null;
+	if (config.discordBotToken) {
+		const dc = new FetchDiscordClient(config.discordBotToken);
+		cleanupService = new CleanupService(store, dc, config.cleanupThresholdMinutes ?? 1440, config.cleanupIntervalMs ?? 3_600_000);
+		cleanupService.start();
+		console.log("[Bridge] CleanupService started");
+	}
+
 	const close = async () => {
 		heartbeatService?.stop();
+		cleanupService?.stop();
 		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
