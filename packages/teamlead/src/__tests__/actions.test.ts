@@ -321,4 +321,111 @@ describe("Action tools", () => {
 		// Actually COALESCE(null, last_error) keeps old value — that's fine, reason is optional
 		expect(store.getSession("e1")!.status).toBe("rejected");
 	});
+
+	// --- post-action hook tests (GEO-167) ---
+	describe("post-action hooks", () => {
+		let hookServer: http.Server;
+		let hookUrl: string;
+		let capturedPayloads: Record<string, unknown>[];
+
+		beforeEach(async () => {
+			capturedPayloads = [];
+			const express = await import("express");
+			const hookApp = express.default();
+			hookApp.use(express.default.json());
+			hookApp.post("/hooks/ingest", (req, res) => {
+				capturedPayloads.push(req.body);
+				res.json({ ok: true });
+			});
+			hookServer = hookApp.listen(0, "127.0.0.1");
+			await new Promise<void>((resolve) => hookServer.once("listening", resolve));
+			const addr = hookServer.address();
+			const port = typeof addr === "object" && addr ? addr.port : 0;
+			hookUrl = `http://127.0.0.1:${port}`;
+		});
+
+		afterEach(async () => {
+			await new Promise<void>((resolve, reject) => {
+				hookServer.close((err) => (err ? reject(err) : resolve()));
+			});
+		});
+
+		it("approve sends action_executed hook", async () => {
+			store.upsertSession({
+				execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+				status: "awaiting_review", issue_identifier: "GEO-99",
+			});
+			const hookConfig = makeConfig({
+				gatewayUrl: hookUrl,
+				hooksToken: "test-token",
+				notificationChannel: "test-ch",
+			});
+
+			await approveExecution(store, testProjects, "e1", "GEO-99", mockExec, undefined, hookConfig);
+
+			// Wait for async hook delivery
+			await new Promise((r) => setTimeout(r, 200));
+
+			expect(capturedPayloads).toHaveLength(1);
+			const payload = JSON.parse(capturedPayloads[0].message as string);
+			expect(payload.event_type).toBe("action_executed");
+			expect(payload.action).toBe("approve");
+			expect(payload.action_source_status).toBe("awaiting_review");
+			expect(payload.action_target_status).toBe("approved");
+			expect(payload.status).toBe("approved");
+		});
+
+		it("reject sends action_executed hook with reason", async () => {
+			store.upsertSession({
+				execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+				status: "awaiting_review", issue_identifier: "GEO-50",
+			});
+			const hookConfig = makeConfig({
+				gatewayUrl: hookUrl,
+				hooksToken: "test-token",
+				notificationChannel: "test-ch",
+			});
+
+			transitionSession(store, "reject", "e1", "needs rework", undefined, hookConfig);
+
+			await new Promise((r) => setTimeout(r, 200));
+
+			expect(capturedPayloads).toHaveLength(1);
+			const payload = JSON.parse(capturedPayloads[0].message as string);
+			expect(payload.event_type).toBe("action_executed");
+			expect(payload.action).toBe("reject");
+			expect(payload.action_reason).toBe("needs rework");
+			expect(payload.action_source_status).toBe("awaiting_review");
+			expect(payload.action_target_status).toBe("rejected");
+		});
+
+		it("no hook when config not provided", async () => {
+			store.upsertSession({
+				execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+				status: "awaiting_review",
+			});
+
+			transitionSession(store, "reject", "e1", "test");
+
+			await new Promise((r) => setTimeout(r, 200));
+			expect(capturedPayloads).toHaveLength(0);
+		});
+
+		it("hook failure does not affect action result", async () => {
+			// Use a broken URL so the hook will fail
+			store.upsertSession({
+				execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+				status: "awaiting_review",
+			});
+			const hookConfig = makeConfig({
+				gatewayUrl: "http://127.0.0.1:1", // connection refused
+				hooksToken: "test-token",
+				notificationChannel: "test-ch",
+			});
+
+			const result = transitionSession(store, "reject", "e1", "test", undefined, hookConfig);
+			expect(result.success).toBe(true);
+			expect(store.getSession("e1")!.status).toBe("rejected");
+		});
+	});
 });
