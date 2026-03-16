@@ -127,9 +127,9 @@ export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 		"failed",
 	],
 	awaiting_review: ["approved", "rejected", "deferred", "shelved"],
-	blocked: ["running", "deferred", "shelved"],
-	failed: ["running", "shelved"],
-	rejected: ["running", "shelved"],
+	blocked: ["deferred", "shelved"],
+	failed: ["shelved"],
+	rejected: ["shelved"],
 	deferred: ["shelved"],
 	approved: [],
 	completed: [],
@@ -142,6 +142,7 @@ export interface ActionDefinition {
 	action: string;
 	fromStates: string[];
 	targetState: string;
+	composite?: boolean;
 }
 
 export const ACTION_DEFINITIONS: ActionDefinition[] = [
@@ -164,6 +165,7 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
 		action: "retry",
 		fromStates: ["failed", "blocked", "rejected"],
 		targetState: "running",
+		composite: true,
 	},
 	{
 		action: "shelve",

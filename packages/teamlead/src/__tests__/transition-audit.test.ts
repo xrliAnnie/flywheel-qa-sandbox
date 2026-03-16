@@ -42,22 +42,18 @@ describe("Transition audit trail", () => {
 		expect(auditEvents.every((e) => e.source === "fsm")).toBe(true);
 	});
 
-	it("retry transition (failed → running) generates audit", async () => {
+	it("GEO-168: retry (failed → running) rejected by FSM — no audit for composite action", async () => {
 		applyTransition(opts, "exec-1", "running", makeCtx({ trigger: "start" }));
 		applyTransition(opts, "exec-1", "failed", makeCtx({ trigger: "fail" }));
-		applyTransition(opts, "exec-1", "running", makeCtx({ trigger: "retry" }));
+		const result = applyTransition(opts, "exec-1", "running", makeCtx({ trigger: "retry" }));
+		expect(result.ok).toBe(false);
 
 		await new Promise((r) => setTimeout(r, 50));
 
 		const events = store.getEventsByExecution("exec-1");
 		const auditEvents = events.filter((e) => e.event_type === "state_transition");
-		expect(auditEvents.length).toBe(3);
-
-		const retryAudit = auditEvents[2];
-		const payload = retryAudit!.payload as { from: string; to: string; trigger: string };
-		expect(payload.from).toBe("failed");
-		expect(payload.to).toBe("running");
-		expect(payload.trigger).toBe("retry");
+		// Only 2 audits: start and fail — retry does not produce an audit
+		expect(auditEvents.length).toBe(2);
 	});
 
 	it("audit payload contains from, to, and trigger", async () => {
@@ -87,19 +83,18 @@ describe("Transition audit trail", () => {
 		expect(events.filter((e) => e.event_type === "state_transition")).toHaveLength(0);
 	});
 
-	it("full lifecycle generates audit trail for all transitions", async () => {
-		// pending → running → awaiting_review → rejected → running → completed
+	it("GEO-168: full lifecycle without retry (composite action removed from FSM)", async () => {
+		// pending → running → awaiting_review → rejected → shelved
 		applyTransition(opts, "exec-1", "running", makeCtx({ trigger: "start" }));
 		applyTransition(opts, "exec-1", "awaiting_review", makeCtx({ trigger: "review" }));
 		applyTransition(opts, "exec-1", "rejected", makeCtx({ trigger: "reject" }));
-		applyTransition(opts, "exec-1", "running", makeCtx({ trigger: "retry" }));
-		applyTransition(opts, "exec-1", "completed", makeCtx({ trigger: "complete" }));
+		applyTransition(opts, "exec-1", "shelved", makeCtx({ trigger: "shelve" }));
 
 		await new Promise((r) => setTimeout(r, 50));
 
 		const events = store.getEventsByExecution("exec-1");
 		const audits = events.filter((e) => e.event_type === "state_transition");
-		expect(audits).toHaveLength(5);
+		expect(audits).toHaveLength(4);
 
 		const transitions = audits.map((e) => {
 			const p = e.payload as { from: string; to: string };
@@ -109,8 +104,7 @@ describe("Transition audit trail", () => {
 			"pending → running",
 			"running → awaiting_review",
 			"awaiting_review → rejected",
-			"rejected → running",
-			"running → completed",
+			"rejected → shelved",
 		]);
 	});
 });
