@@ -83,13 +83,14 @@ describe("applyTransition", () => {
 		expect(store.getSession("exec-1")!.status).toBe("approved");
 	});
 
-	it("retry: failed → running passes FSM", () => {
+	it("GEO-168: retry (failed → running) rejected by FSM — composite action, not simple transition", () => {
 		applyTransition(opts, "exec-1", "running", makeCtx({ trigger: "start" }));
 		applyTransition(opts, "exec-1", "failed", makeCtx({ trigger: "fail" }));
 
 		const result = applyTransition(opts, "exec-1", "running", makeCtx({ trigger: "retry" }));
-		expect(result.ok).toBe(true);
-		expect(store.getSession("exec-1")!.status).toBe("running");
+		expect(result.ok).toBe(false);
+		expect(result.error).toContain("not allowed");
+		expect(store.getSession("exec-1")!.status).toBe("failed");
 	});
 
 	it("audit directive is drained on successful transition", async () => {
