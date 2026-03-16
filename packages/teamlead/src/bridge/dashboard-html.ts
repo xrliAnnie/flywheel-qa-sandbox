@@ -126,15 +126,6 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
     failed: '\\u{1F534}', rejected: '\\u274C', deferred: '\\u23F8\\uFE0F', shelved: '\\u{1F4E6}'
   };
 
-  // Valid actions per status (mirrors ACTION_SOURCE_STATUS in actions.ts)
-  var STATUS_ACTIONS = {
-    awaiting_review: ['approve', 'reject', 'defer', 'shelve'],
-    blocked: ['defer', 'retry', 'shelve'],
-    failed: ['retry', 'shelve'],
-    rejected: ['retry', 'shelve'],
-    deferred: ['shelve']
-  };
-
   function escapeHtml(str) {
     if (str == null) return '';
     var d = document.createElement('div');
@@ -177,7 +168,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
   }
 
   function actionButtons(session) {
-    var actions = STATUS_ACTIONS[session.status];
+    var actions = session.allowedActions;
     if (!actions || !actions.length) return '<span style="color:var(--text-muted)">\\u2014</span>';
     var html = '';
     for (var i = 0; i < actions.length; i++) {
