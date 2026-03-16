@@ -688,9 +688,7 @@ export class CipherWriter {
 				action === "likely_approve"
 					? `Auto-approve when pattern matches: ${patternKey ?? "unknown"}`
 					: `Escalate for review when pattern matches: ${patternKey ?? "unknown"}`;
-			const sourcePattern = patternKey
-				? `${patternKey} — ${(confidence * 100).toFixed(0)}% ${action === "likely_approve" ? "approve" : "reject"} rate`
-				: "";
+			const sourcePattern = patternKey ?? "";
 
 			const principleId = randomUUID();
 			this.db.run(
