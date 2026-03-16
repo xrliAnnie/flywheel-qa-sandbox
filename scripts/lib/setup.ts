@@ -182,9 +182,18 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	try {
 		const principles = await cipherReader.loadActivePrinciples();
 		for (const p of principles) {
-			// Extract the label constraint from the source pattern key (e.g., "label:bug" or "label+size:bug+small")
-			const labelMatch = p.sourcePattern.match(/(?:^|[+])label:([^+]+)/);
-			const requiredLabel = labelMatch ? labelMatch[1] : null;
+			// Extract the label constraint from the source pattern key
+			// Format: "dims:values" — e.g., "label:bug", "label+size:bug+small", "label+area+size:bug+backend+small"
+			let requiredLabel: string | null = null;
+			const parts = p.sourcePattern.split(":");
+			if (parts.length === 2) {
+				const dims = parts[0]!.split("+");
+				const vals = parts[1]!.split("+");
+				const labelIdx = dims.indexOf("label");
+				if (labelIdx >= 0 && labelIdx < vals.length) {
+					requiredLabel = vals[labelIdx]!;
+				}
+			}
 
 			hardRules.registerRule({
 				id: p.id,
