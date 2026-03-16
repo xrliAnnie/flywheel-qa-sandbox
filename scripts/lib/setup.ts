@@ -40,6 +40,7 @@ import type { ExecutionEventEmitter } from "../../packages/edge-worker/dist/Exec
 import { ConfigLoader } from "../../packages/config/dist/ConfigLoader.js";
 import { AgentDispatcher } from "../../packages/edge-worker/dist/AgentDispatcher.js";
 import { createMemoryService } from "../../packages/edge-worker/dist/memory/index.js";
+import { CipherReader } from "../../packages/edge-worker/dist/cipher/CipherReader.js";
 import type { FlywheelConfig } from "../../packages/config/dist/types.js";
 import type { ClassifyFn } from "../../packages/edge-worker/dist/AgentDispatcher.js";
 
@@ -165,9 +166,38 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		verifier = new HaikuVerifier(noLlm, "");
 	}
 
+	// CipherReader (read-only, for DecisionLayer integration)
+	const cipherDbPath = join(flywheelDir, "cipher.db");
+	const cipherReader = new CipherReader(cipherDbPath);
+	log("CipherReader initialized (read-only)");
+
 	const decisionLayer = new DecisionLayer(
 		hardRules, triage, verifier, fallback, auditLogger, evidenceCollector,
+		cipherReader,
 	);
+
+	// CIPHER: register active principles as HardRules
+	try {
+		const principles = await cipherReader.loadActivePrinciples();
+		for (const p of principles) {
+			hardRules.registerRule({
+				id: p.id,
+				description: p.description,
+				priority: p.priority,
+				evaluate: (_ctx) => ({
+					triggered: true,
+					action: p.ruleType,
+					reason: `CIPHER principle: ${p.description} (source: ${p.sourcePattern})`,
+					ruleId: p.id,
+				}),
+			});
+		}
+		if (principles.length > 0) {
+			log(`CIPHER: ${principles.length} active principle(s) registered as HardRules`);
+		}
+	} catch {
+		log("CIPHER: no principles loaded (db may not exist yet)");
+	}
 
 	// EventEmitter — TeamLead pipeline (GEO-168: allow override for bridge-local retries)
 	let eventEmitter: ExecutionEventEmitter;
