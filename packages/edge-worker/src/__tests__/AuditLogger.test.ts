@@ -7,6 +7,7 @@ import type { DecisionResult, ExecutionContext } from "flywheel-core";
 
 function makeContext(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
 	return {
+		executionId: "test-exec-id",
 		issueId: "issue-1",
 		issueIdentifier: "GEO-95",
 		issueTitle: "Fix the bug",
