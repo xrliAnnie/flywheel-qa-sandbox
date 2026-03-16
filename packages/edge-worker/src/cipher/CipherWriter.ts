@@ -566,7 +566,7 @@ export class CipherWriter {
 
 			this.db.run(
 				`INSERT INTO cipher_skills (id, name, description, source_pattern_key, trigger_conditions, recommended_action, confidence, sample_count, derived_by, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'statistical', 'draft', ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'statistical', 'active', ?, ?)`,
 				[
 					randomUUID(),
 					name,
@@ -755,25 +755,29 @@ export class CipherWriter {
 		);
 	}
 
-	async activatePrinciple(principleId: string): Promise<void> {
+	async activatePrinciple(principleId: string): Promise<boolean> {
 		const now = sqlNow();
 		this.db.run(
 			`UPDATE cipher_principles SET status = 'active', activated_at = ? WHERE id = ? AND status = 'proposed'`,
 			[now, principleId],
 		);
+		const changes = this.db.getRowsModified();
 		this.save();
+		return changes > 0;
 	}
 
 	async retirePrinciple(
 		principleId: string,
 		reason: string,
-	): Promise<void> {
+	): Promise<boolean> {
 		const now = sqlNow();
 		this.db.run(
 			`UPDATE cipher_principles SET status = 'retired', retired_at = ?, retired_reason = ? WHERE id = ? AND status IN ('proposed', 'active')`,
 			[now, reason, principleId],
 		);
+		const changes = this.db.getRowsModified();
 		this.save();
+		return changes > 0;
 	}
 
 	private async notifyProposal(principle: CipherPrinciple): Promise<void> {
