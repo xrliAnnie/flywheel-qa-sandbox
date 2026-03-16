@@ -177,19 +177,31 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	);
 
 	// CIPHER: register active principles as HardRules
+	// Principles match on their source pattern's primary label against execution context labels.
+	// If the pattern has no label dimension, the principle fires universally.
 	try {
 		const principles = await cipherReader.loadActivePrinciples();
 		for (const p of principles) {
+			// Extract the label constraint from the source pattern key (e.g., "label:bug" or "label+size:bug+small")
+			const labelMatch = p.sourcePattern.match(/(?:^|[+])label:([^+]+)/);
+			const requiredLabel = labelMatch ? labelMatch[1] : null;
+
 			hardRules.registerRule({
 				id: p.id,
 				description: p.description,
 				priority: p.priority,
-				evaluate: (_ctx) => ({
-					triggered: true,
-					action: p.ruleType,
-					reason: `CIPHER principle: ${p.description} (source: ${p.sourcePattern})`,
-					ruleId: p.id,
-				}),
+				evaluate: (ctx) => {
+					// If principle has a label constraint, only trigger when execution matches
+					if (requiredLabel && !ctx.labels.includes(requiredLabel)) {
+						return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+					}
+					return {
+						triggered: true,
+						action: p.ruleType,
+						reason: `CIPHER principle: ${p.description} (source: ${p.sourcePattern})`,
+						ruleId: p.id,
+					};
+				},
 			});
 		}
 		if (principles.length > 0) {
