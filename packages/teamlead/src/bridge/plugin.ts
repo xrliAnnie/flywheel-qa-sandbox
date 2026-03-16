@@ -1,7 +1,7 @@
 import express from "express";
 import { timingSafeEqual } from "node:crypto";
 import { StateStore } from "../StateStore.js";
-import { HeartbeatService, WebhookHeartbeatNotifier } from "../HeartbeatService.js";
+import { HeartbeatService, WebhookHeartbeatNotifier, type HeartbeatNotifier } from "../HeartbeatService.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { BridgeConfig } from "./types.js";
 import { createQueryRouter } from "./tools.js";
@@ -204,19 +204,19 @@ export async function startBridge(
 	const port = typeof addr === "object" && addr ? addr.port : config.port;
 	console.log(`[Bridge] Listening on ${config.host}:${port}`);
 
-	// Wire HeartbeatService if gateway is configured (stuck detection + orphan reaping)
-	let heartbeatService: HeartbeatService | undefined;
-	if (config.gatewayUrl && config.hooksToken) {
-		const notifier = new WebhookHeartbeatNotifier(config.gatewayUrl, config.hooksToken);
-		heartbeatService = new HeartbeatService(
-			store,
-			notifier,
-			config.stuckThresholdMinutes,
-			config.stuckCheckIntervalMs,
-			config.orphanThresholdMinutes,
-		);
-		heartbeatService.start();
-	}
+	// Always start HeartbeatService — orphan reaping is critical even without gateway.
+	// If no gateway hooks configured, use a no-op notifier (reaping still works, just no Slack).
+	const notifier: HeartbeatNotifier = (config.gatewayUrl && config.hooksToken)
+		? new WebhookHeartbeatNotifier(config.gatewayUrl, config.hooksToken)
+		: { onSessionStuck: async () => {}, onSessionOrphaned: async () => {} };
+	const heartbeatService = new HeartbeatService(
+		store,
+		notifier,
+		config.stuckThresholdMinutes,
+		config.stuckCheckIntervalMs,
+		config.orphanThresholdMinutes,
+	);
+	heartbeatService.start();
 
 	const close = async () => {
 		heartbeatService?.stop();
