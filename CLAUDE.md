@@ -45,6 +45,7 @@ Current version: see `doc/VERSION`
 | v1.0 Phase 1 Lead MVP | ✅ Merged (main) |
 | GEO-145: Memory Production (Supabase pgvector) | ✅ Merged (PR #18) |
 | GEO-155: v1.0 Phase 2 (disable auto-approve) | ✅ Merged (PR #17) |
+| GEO-158: Jido Directive FSM (WorkflowFSM + audit) | ✅ Merged (PR #23) |
 
 ## Doc Structure & Lifecycle
 
