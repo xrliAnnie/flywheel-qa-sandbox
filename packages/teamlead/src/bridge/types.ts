@@ -14,4 +14,7 @@ export interface BridgeConfig {
 	stuckThresholdMinutes: number;
 	stuckCheckIntervalMs: number;
 	orphanThresholdMinutes: number;
+	discordBotToken?: string;
+	cleanupIntervalMs?: number;
+	cleanupThresholdMinutes?: number;
 }

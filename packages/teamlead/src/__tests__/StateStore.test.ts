@@ -626,4 +626,35 @@ describe("StateStore", () => {
 
 		store2.close();
 	});
+
+	const toSqlite3 = (d: Date) => d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+	it("getEligibleForCleanup returns completed beyond threshold", () => {
+		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
+		store.upsertSession(makeSession({ execution_id: "e1", issue_id: "GEO-100", status: "completed", started_at: past, last_activity_at: past }));
+		store.upsertThread("thread-100", "CH1", "GEO-100");
+		expect(store.getEligibleForCleanup(1440)).toHaveLength(1);
+	});
+	it("getEligibleForCleanup excludes failed", () => {
+		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
+		store.upsertSession(makeSession({ execution_id: "e1", issue_id: "GEO-100", status: "failed", started_at: past, last_activity_at: past }));
+		store.upsertThread("thread-100", "CH1", "GEO-100");
+		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
+	});
+	it("getEligibleForCleanup excludes archived", () => {
+		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
+		store.upsertSession(makeSession({ execution_id: "e1", issue_id: "GEO-100", status: "completed", started_at: past, last_activity_at: past }));
+		store.upsertThread("thread-100", "CH1", "GEO-100");
+		store.markArchived("thread-100");
+		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
+	});
+	it("markArchived + clearArchived cycle", () => {
+		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
+		store.upsertSession(makeSession({ execution_id: "e1", issue_id: "GEO-100", status: "completed", started_at: past, last_activity_at: past }));
+		store.upsertThread("thread-100", "CH1", "GEO-100");
+		store.markArchived("thread-100");
+		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
+		store.clearArchived("thread-100");
+		expect(store.getEligibleForCleanup(1440)).toHaveLength(1);
+	});
+
 });

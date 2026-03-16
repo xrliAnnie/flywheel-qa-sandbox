@@ -87,6 +87,14 @@ export interface Session {
 	run_attempt?: number;
 }
 
+export interface CleanupCandidate {
+	thread_id: string;
+	issue_id: string;
+	status: string;
+	last_activity_at: string;
+	cleanup_notified_at: string | null;
+}
+
 export class StateStore {
 	private db: Database;
 	private dbPath: string;
@@ -243,6 +251,14 @@ export class StateStore {
 		} catch {
 			// Column already exists — ignore
 		}
+
+		// GEO-169: cleanup tracking columns
+		try {
+			this.db.run("ALTER TABLE conversation_threads ADD COLUMN archived_at TEXT");
+		} catch { /* exists */ }
+		try {
+			this.db.run("ALTER TABLE conversation_threads ADD COLUMN cleanup_notified_at TEXT");
+		} catch { /* exists */ }
 
 		// Rebuild unique index with current column name
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
@@ -814,6 +830,46 @@ export class StateStore {
 		}
 		stmt.free();
 		return undefined;
+	}
+
+	getEligibleForCleanup(thresholdMinutes: number): CleanupCandidate[] {
+		const stmt = this.db.prepare(`
+			SELECT ct.thread_id, ct.issue_id, latest.status, latest.last_activity_at, ct.cleanup_notified_at
+			FROM conversation_threads ct
+			INNER JOIN (
+				SELECT issue_id, status, last_activity_at,
+					ROW_NUMBER() OVER (PARTITION BY issue_id ORDER BY last_activity_at DESC, started_at DESC, execution_id DESC) AS rn
+				FROM sessions
+			) latest ON latest.issue_id = ct.issue_id AND latest.rn = 1
+			WHERE latest.status IN ('completed', 'approved')
+				AND latest.last_activity_at < datetime('now', '-' || ? || ' minutes')
+				AND ct.thread_id IS NOT NULL AND ct.archived_at IS NULL
+			ORDER BY latest.last_activity_at ASC
+		`);
+		stmt.bind([thresholdMinutes]);
+		const rows: CleanupCandidate[] = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				thread_id: row.thread_id as string, issue_id: row.issue_id as string,
+				status: row.status as string, last_activity_at: row.last_activity_at as string,
+				cleanup_notified_at: (row.cleanup_notified_at as string) ?? null,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+	markArchived(threadId: string): void {
+		this.db.run("UPDATE conversation_threads SET archived_at = datetime('now') WHERE thread_id = ?", [threadId]);
+		this.save();
+	}
+	markCleanupNotified(threadId: string): void {
+		this.db.run("UPDATE conversation_threads SET cleanup_notified_at = datetime('now') WHERE thread_id = ?", [threadId]);
+		this.save();
+	}
+	clearArchived(threadId: string): void {
+		this.db.run("UPDATE conversation_threads SET archived_at = NULL, cleanup_notified_at = NULL WHERE thread_id = ?", [threadId]);
+		this.save();
 	}
 
 	private rowToSession(row: Record<string, unknown>): Session {
