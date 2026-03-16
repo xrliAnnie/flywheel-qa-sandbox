@@ -145,13 +145,16 @@ export function createEventRouter(
 
 			if (event.event_type === "session_started") {
 				if (transitionOpts) {
-					applyTransition(transitionOpts, event.execution_id, "running", ctx, {
+					const result = applyTransition(transitionOpts, event.execution_id, "running", ctx, {
 						started_at: now,
 						last_activity_at: now,
 						heartbeat_at: now,
 						issue_identifier: asString(payload.issueIdentifier),
 						issue_title: asString(payload.issueTitle),
 					});
+					if (!result.ok) {
+						console.warn(`[event-route] FSM rejected ${event.event_type}: ${result.error}`);
+					}
 				} else {
 					store.upsertSession({
 						execution_id: event.execution_id,
@@ -191,11 +194,14 @@ export function createEventRouter(
 				else status = "completed";
 
 				if (transitionOpts) {
-					applyTransition(transitionOpts, event.execution_id, status, ctx, {
+					const result = applyTransition(transitionOpts, event.execution_id, status, ctx, {
 						last_activity_at: now,
 						issue_identifier: asString(payload.issueIdentifier),
 						issue_title: asString(payload.issueTitle),
 					});
+					if (!result.ok) {
+						console.warn(`[event-route] FSM rejected ${event.event_type} → ${status}: ${result.error}`);
+					}
 					// Metadata via patchSessionMetadata (doesn't touch status)
 					store.patchSessionMetadata(event.execution_id, {
 						decision_route: route,
@@ -243,12 +249,15 @@ export function createEventRouter(
 				// CEO must approve via Slack before merge. No auto-merge flow.
 			} else if (event.event_type === "session_failed") {
 				if (transitionOpts) {
-					applyTransition(transitionOpts, event.execution_id, "failed", ctx, {
+					const result = applyTransition(transitionOpts, event.execution_id, "failed", ctx, {
 						last_activity_at: now,
 						last_error: asString(payload.error),
 						issue_identifier: asString(payload.issueIdentifier),
 						issue_title: asString(payload.issueTitle),
 					});
+					if (!result.ok) {
+						console.warn(`[event-route] FSM rejected ${event.event_type}: ${result.error}`);
+					}
 				} else {
 					store.upsertSession({
 						execution_id: event.execution_id,

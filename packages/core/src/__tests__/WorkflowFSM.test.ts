@@ -6,7 +6,8 @@ import {
 	allowedActionsForState,
 	getActionTarget,
 } from "../workflow-fsm.js";
-import type { TransitionContext, Directive } from "../workflow-fsm.js";
+import type { TransitionContext } from "../workflow-fsm.js";
+import type { Directive } from "../directive-types.js";
 
 function makeCtx(overrides: Partial<TransitionContext> = {}): TransitionContext {
 	return {
