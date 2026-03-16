@@ -50,6 +50,10 @@ export interface SessionUpsert {
 	commit_messages?: string;
 	changed_file_paths?: string;
 	slack_thread_ts?: string;
+	session_params?: string;
+	heartbeat_at?: string;
+	adapter_type?: string;
+	run_attempt?: number;
 }
 
 export interface Session {
@@ -77,6 +81,10 @@ export interface Session {
 	commit_messages?: string;
 	changed_file_paths?: string;
 	slack_thread_ts?: string;
+	session_params?: string;
+	heartbeat_at?: string;
+	adapter_type?: string;
+	run_attempt?: number;
 }
 
 export class StateStore {
@@ -179,6 +187,28 @@ export class StateStore {
 			// Column already exists — ignore
 		}
 
+		// Idempotent migration — add GEO-157 heartbeat/adapter columns
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN session_params TEXT");
+		} catch {
+			// Column already exists — ignore
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN heartbeat_at TEXT");
+		} catch {
+			// Column already exists — ignore
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN adapter_type TEXT");
+		} catch {
+			// Column already exists — ignore
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN run_attempt INTEGER DEFAULT 0");
+		} catch {
+			// Column already exists — ignore
+		}
+
 		// Ensure one issue = one canonical thread: clean up historical duplicates
 		this.db.run(`
 			DELETE FROM conversation_threads
@@ -260,8 +290,9 @@ export class StateStore {
 				last_error, decision_route, decision_reasoning,
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
-				slack_thread_ts
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				slack_thread_ts,
+				session_params, heartbeat_at, adapter_type, run_attempt
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -285,7 +316,11 @@ export class StateStore {
 				diff_summary = COALESCE(excluded.diff_summary, diff_summary),
 				commit_messages = COALESCE(excluded.commit_messages, commit_messages),
 				changed_file_paths = COALESCE(excluded.changed_file_paths, changed_file_paths),
-				slack_thread_ts = COALESCE(excluded.slack_thread_ts, slack_thread_ts)
+				slack_thread_ts = COALESCE(excluded.slack_thread_ts, slack_thread_ts),
+				session_params = COALESCE(excluded.session_params, session_params),
+				heartbeat_at = COALESCE(excluded.heartbeat_at, heartbeat_at),
+				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
+				run_attempt = COALESCE(excluded.run_attempt, run_attempt)
 			`,
 			[
 				session.execution_id,
@@ -312,6 +347,10 @@ export class StateStore {
 				session.commit_messages ?? null,
 				session.changed_file_paths ?? null,
 				session.slack_thread_ts ?? null,
+				session.session_params ?? null,
+				session.heartbeat_at ?? null,
+				session.adapter_type ?? null,
+				session.run_attempt ?? null,
 			],
 		);
 		this.save();
@@ -530,6 +569,77 @@ export class StateStore {
 		return rows;
 	}
 
+	/** Update heartbeat timestamp for an active execution. */
+	updateHeartbeat(executionId: string): void {
+		this.db.run(
+			"UPDATE sessions SET heartbeat_at = datetime('now') WHERE execution_id = ?",
+			[executionId],
+		);
+		this.save();
+	}
+
+	/** Find running sessions whose heartbeat has gone stale (orphan detection). */
+	getOrphanSessions(thresholdMinutes: number): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE status = 'running' AND heartbeat_at IS NOT NULL AND heartbeat_at < datetime('now', ?)",
+		);
+		stmt.bind([`-${thresholdMinutes} minutes`]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/** Retrieve parsed session_params for a given execution. */
+	getSessionParams(executionId: string): Record<string, unknown> | undefined {
+		const stmt = this.db.prepare("SELECT session_params FROM sessions WHERE execution_id = ?");
+		stmt.bind([executionId]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			const raw = row.session_params as string | null;
+			if (raw) {
+				return JSON.parse(raw) as Record<string, unknown>;
+			}
+			return undefined;
+		}
+		stmt.free();
+		return undefined;
+	}
+
+	/** Store session_params as JSON for a given execution. */
+	setSessionParams(executionId: string, params: Record<string, unknown>): void {
+		this.db.run(
+			"UPDATE sessions SET session_params = ? WHERE execution_id = ?",
+			[JSON.stringify(params), executionId],
+		);
+		this.save();
+	}
+
+	/** Get the most recent session_params + run_attempt for an issue (for session recovery). */
+	getLatestSessionParams(issueId: string): { sessionParams: Record<string, unknown>; runAttempt: number } | undefined {
+		const stmt = this.db.prepare(
+			"SELECT session_params, run_attempt FROM sessions WHERE issue_id = ? AND session_params IS NOT NULL ORDER BY last_activity_at DESC LIMIT 1",
+		);
+		stmt.bind([issueId]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			const raw = row.session_params as string | null;
+			if (raw) {
+				return {
+					sessionParams: JSON.parse(raw) as Record<string, unknown>,
+					runAttempt: (row.run_attempt as number) ?? 0,
+				};
+			}
+			return undefined;
+		}
+		stmt.free();
+		return undefined;
+	}
+
 	private rowToSession(row: Record<string, unknown>): Session {
 		return {
 			execution_id: row.execution_id as string,
@@ -556,6 +666,10 @@ export class StateStore {
 			commit_messages: (row.commit_messages as string) ?? undefined,
 			changed_file_paths: (row.changed_file_paths as string) ?? undefined,
 			slack_thread_ts: (row.slack_thread_ts as string) ?? undefined,
+			session_params: (row.session_params as string) ?? undefined,
+			heartbeat_at: (row.heartbeat_at as string) ?? undefined,
+			adapter_type: (row.adapter_type as string) ?? undefined,
+			run_attempt: (row.run_attempt as number) ?? undefined,
 		};
 	}
 }

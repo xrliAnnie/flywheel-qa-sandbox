@@ -13,6 +13,8 @@ export interface ExecutionEventEmitter {
 	emitStarted(env: EventEnvelope): Promise<void>;
 	emitCompleted(env: EventEnvelope, result: BlueprintResult, summary?: string): Promise<void>;
 	emitFailed(env: EventEnvelope, error: string, lastActivity?: string): Promise<void>;
+	/** GEO-157: Heartbeat — dedicated route, no session_events, no OpenClaw notification */
+	emitHeartbeat(env: EventEnvelope): Promise<void>;
 	flush(): Promise<void>;
 }
 
@@ -72,6 +74,12 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 		this.track(p);
 	}
 
+	async emitHeartbeat(env: EventEnvelope): Promise<void> {
+		// Dedicated heartbeat route — lightweight, no session_events, no OpenClaw notification
+		const p = this.postHeartbeat(env.executionId);
+		this.track(p);
+	}
+
 	async flush(): Promise<void> {
 		await Promise.allSettled(this.pending);
 		this.pending = [];
@@ -86,6 +94,30 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 		if (this.settled.size > 0) {
 			this.pending = this.pending.filter((item) => !this.settled.has(item));
 			this.settled.clear();
+		}
+	}
+
+	private async postHeartbeat(executionId: string): Promise<void> {
+		try {
+			const headers: Record<string, string> = { "Content-Type": "application/json" };
+			if (this.authToken) {
+				headers.Authorization = `Bearer ${this.authToken}`;
+			}
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 3_000);
+			const res = await fetch(`${this.baseUrl}/events/heartbeat`, {
+				method: "POST",
+				headers,
+				body: JSON.stringify({ execution_id: executionId }),
+				signal: controller.signal,
+			});
+			clearTimeout(timeout);
+			if (!res.ok) {
+				// Heartbeat failures are non-critical — just warn
+				console.warn(`[TeamLeadClient] Heartbeat rejected: ${res.status}`);
+			}
+		} catch {
+			// Silently ignore heartbeat failures — they're best-effort
 		}
 	}
 
@@ -119,5 +151,6 @@ export class NoOpEventEmitter implements ExecutionEventEmitter {
 	async emitStarted(_env: EventEnvelope): Promise<void> {}
 	async emitCompleted(_env: EventEnvelope, _result: BlueprintResult): Promise<void> {}
 	async emitFailed(_env: EventEnvelope, _error: string): Promise<void> {}
+	async emitHeartbeat(_env: EventEnvelope): Promise<void> {}
 	async flush(): Promise<void> {}
 }

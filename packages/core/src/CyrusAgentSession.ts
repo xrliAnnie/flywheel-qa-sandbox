@@ -7,6 +7,7 @@ import type {
 	IAgentRunner,
 	SDKAssistantMessageError,
 } from "./agent-runner-types.js";
+import type { AdapterSession } from "./adapter-types.js";
 import type {
 	AgentSessionStatus,
 	AgentSessionType,
@@ -64,7 +65,10 @@ export interface CyrusAgentSession {
 	geminiSessionId?: string; // Gemini-specific session ID (assigned once it initializes)
 	codexSessionId?: string; // Codex-specific session ID (assigned once it initializes)
 	cursorSessionId?: string; // Cursor-specific session ID (assigned once it initializes)
+	/** @deprecated Use adapterSession instead (GEO-157). */
 	agentRunner?: IAgentRunner;
+	/** GEO-157: Unified adapter session handle (replaces agentRunner). */
+	adapterSession?: AdapterSession;
 	metadata?: {
 		model?: string;
 		tools?: string[];

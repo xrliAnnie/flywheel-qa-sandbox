@@ -1,6 +1,9 @@
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 
 /**
+ * @deprecated Use IAdapter instead (GEO-157). This interface has no implementations
+ * or consumers. Will be removed in Wave 6.
+ *
  * Simple Agent Runner Interface
  *
  * This interface provides a provider-agnostic abstraction for simple agent runners

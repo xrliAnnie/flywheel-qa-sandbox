@@ -14,15 +14,21 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 	};
 }
 
-describe("StuckWatcher", () => {
-	let store: { getStuckSessions: ReturnType<typeof vi.fn> };
-	let notifier: { onSessionStuck: ReturnType<typeof vi.fn> };
+describe("StuckWatcher (compat re-export)", () => {
+	let store: { getStuckSessions: ReturnType<typeof vi.fn>; getOrphanSessions: ReturnType<typeof vi.fn> };
+	let notifier: { onSessionStuck: ReturnType<typeof vi.fn>; onSessionOrphaned: ReturnType<typeof vi.fn> };
 	let watcher: StuckWatcher;
 
 	beforeEach(() => {
-		store = { getStuckSessions: vi.fn().mockReturnValue([]) };
-		notifier = { onSessionStuck: vi.fn().mockResolvedValue(undefined) };
-		watcher = new StuckWatcher(store as any, notifier as any, 15, 60_000);
+		store = {
+			getStuckSessions: vi.fn().mockReturnValue([]),
+			getOrphanSessions: vi.fn().mockReturnValue([]),
+		};
+		notifier = {
+			onSessionStuck: vi.fn().mockResolvedValue(undefined),
+			onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
+		};
+		watcher = new StuckWatcher(store as any, notifier as any, 15, 60_000, 60);
 	});
 
 	afterEach(() => {
