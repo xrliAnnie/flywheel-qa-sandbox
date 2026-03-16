@@ -9,6 +9,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		host: "127.0.0.1",
 		port: 0,
 		dbPath: ":memory:",
+		notificationChannel: "test-channel",
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
@@ -136,22 +137,22 @@ describe("Query tools", () => {
 		expect(body.identifier).toBe("GEO-95");
 	});
 
-	it("GET /api/sessions/:id includes thread fallback when slack_thread_ts is empty", async () => {
+	it("GET /api/sessions/:id includes thread fallback when thread_id is empty", async () => {
 		store.upsertSession({ execution_id: "e1", issue_id: "i1", project_name: "p", status: "running" });
 		store.upsertThread("1234.5678", "C07XXX", "i1");
 
 		const res = await fetch(`${baseUrl}/api/sessions/e1`);
 		const body = await res.json();
-		expect(body.slack_thread_ts).toBe("1234.5678");
+		expect(body.thread_id).toBe("1234.5678");
 	});
 
-	it("GET /api/sessions/:id uses session slack_thread_ts when present", async () => {
-		store.upsertSession({ execution_id: "e1", issue_id: "i1", project_name: "p", status: "running", slack_thread_ts: "direct.9999" });
+	it("GET /api/sessions/:id uses session thread_id when present", async () => {
+		store.upsertSession({ execution_id: "e1", issue_id: "i1", project_name: "p", status: "running", thread_id: "direct.9999" });
 		store.upsertThread("old.1111", "C07XXX", "i1");
 
 		const res = await fetch(`${baseUrl}/api/sessions/e1`);
 		const body = await res.json();
-		expect(body.slack_thread_ts).toBe("direct.9999");
+		expect(body.thread_id).toBe("direct.9999");
 	});
 });
 
@@ -184,7 +185,7 @@ describe("Thread & action endpoints", () => {
 		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ thread_ts: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "exec-1" }),
+			body: JSON.stringify({ thread_id: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "exec-1" }),
 		});
 		expect(res.status).toBe(200);
 		const body = await res.json();
@@ -193,14 +194,14 @@ describe("Thread & action endpoints", () => {
 		// Verify thread was stored
 		expect(store.getThreadIssue("1234.5678")).toBe("i1");
 		// Verify session was updated
-		expect(store.getSession("exec-1")!.slack_thread_ts).toBe("1234.5678");
+		expect(store.getSession("exec-1")!.thread_id).toBe("1234.5678");
 	});
 
 	it("POST /api/threads/upsert returns 400 for missing fields", async () => {
 		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ thread_ts: "1234.5678" }),
+			body: JSON.stringify({ thread_id: "1234.5678" }),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -209,7 +210,7 @@ describe("Thread & action endpoints", () => {
 		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ thread_ts: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "nonexistent" }),
+			body: JSON.stringify({ thread_id: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "nonexistent" }),
 		});
 		expect(res.status).toBe(404);
 	});
@@ -219,7 +220,7 @@ describe("Thread & action endpoints", () => {
 		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ thread_ts: "1234.5678", channel: "C07XXX", issue_id: "WRONG", execution_id: "exec-1" }),
+			body: JSON.stringify({ thread_id: "1234.5678", channel: "C07XXX", issue_id: "WRONG", execution_id: "exec-1" }),
 		});
 		expect(res.status).toBe(400);
 		const body = await res.json();
@@ -233,7 +234,7 @@ describe("Thread & action endpoints", () => {
 		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ thread_ts: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "exec-1" }),
+			body: JSON.stringify({ thread_id: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "exec-1" }),
 		});
 		expect(res.status).toBe(409);
 		const body = await res.json();
@@ -247,14 +248,14 @@ describe("Thread & action endpoints", () => {
 		const res = await fetch(`${baseUrl}/api/threads/upsert`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ thread_ts: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "exec-1" }),
+			body: JSON.stringify({ thread_id: "1234.5678", channel: "C07XXX", issue_id: "i1", execution_id: "exec-1" }),
 		});
 		expect(res.status).toBe(200);
 	});
 
-	// --- GET /api/thread/:thread_ts ---
+	// --- GET /api/thread/:thread_id ---
 
-	it("GET /api/thread/:thread_ts returns issue info for known thread", async () => {
+	it("GET /api/thread/:thread_id returns issue info for known thread", async () => {
 		store.upsertSession({ execution_id: "exec-1", issue_id: "i1", project_name: "p", status: "awaiting_review", issue_identifier: "GEO-42" });
 		store.upsertThread("1234.5678", "C07XXX", "i1");
 
@@ -268,14 +269,14 @@ describe("Thread & action endpoints", () => {
 		expect(body.latest_execution.execution_id).toBe("exec-1");
 	});
 
-	it("GET /api/thread/:thread_ts returns found:false for unknown thread", async () => {
+	it("GET /api/thread/:thread_id returns found:false for unknown thread", async () => {
 		const res = await fetch(`${baseUrl}/api/thread/9999.0000`);
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(body.found).toBe(false);
 	});
 
-	it("GET /api/thread/:thread_ts returns latest execution for issue", async () => {
+	it("GET /api/thread/:thread_id returns latest execution for issue", async () => {
 		store.upsertSession({ execution_id: "e1", issue_id: "i1", project_name: "p", status: "failed", last_activity_at: "2024-01-01 10:00:00" });
 		store.upsertSession({ execution_id: "e2", issue_id: "i1", project_name: "p", status: "running", last_activity_at: "2024-01-01 12:00:00" });
 		store.upsertThread("1234.5678", "C07XXX", "i1");

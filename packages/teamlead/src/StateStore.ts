@@ -49,7 +49,7 @@ export interface SessionUpsert {
 	diff_summary?: string;
 	commit_messages?: string;
 	changed_file_paths?: string;
-	slack_thread_ts?: string;
+	thread_id?: string;
 	session_params?: string;
 	heartbeat_at?: string;
 	adapter_type?: string;
@@ -80,7 +80,7 @@ export interface Session {
 	diff_summary?: string;
 	commit_messages?: string;
 	changed_file_paths?: string;
-	slack_thread_ts?: string;
+	thread_id?: string;
 	session_params?: string;
 	heartbeat_at?: string;
 	adapter_type?: string;
@@ -166,13 +166,14 @@ export class StateStore {
 				summary TEXT,
 				diff_summary TEXT,
 				commit_messages TEXT,
-				changed_file_paths TEXT
+				changed_file_paths TEXT,
+				thread_id TEXT
 			)
 		`);
 
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS conversation_threads (
-				thread_ts TEXT PRIMARY KEY,
+				thread_id TEXT PRIMARY KEY,
 				channel TEXT NOT NULL,
 				issue_id TEXT,
 				summary TEXT,
@@ -180,11 +181,45 @@ export class StateStore {
 			)
 		`);
 
-		// Idempotent migration — add slack_thread_ts if not present
-		try {
-			this.db.run("ALTER TABLE sessions ADD COLUMN slack_thread_ts TEXT");
-		} catch {
-			// Column already exists — ignore
+		// Migration: rename slack_thread_ts → thread_id (existing DBs)
+		// Three cases: (a) fresh DB → DDL already has thread_id, skip
+		//              (b) old DB with slack_thread_ts → rename
+		//              (c) legacy DB without either column → ADD COLUMN
+		const hasSlackThreadTs = this.db.exec(
+			"SELECT 1 FROM pragma_table_info('sessions') WHERE name='slack_thread_ts'",
+		);
+		const hasThreadId = this.db.exec(
+			"SELECT 1 FROM pragma_table_info('sessions') WHERE name='thread_id'",
+		);
+		if (hasSlackThreadTs.length > 0 && hasSlackThreadTs[0]!.values.length > 0) {
+			// Case (b): old DB — rename
+			this.db.run("ALTER TABLE sessions RENAME COLUMN slack_thread_ts TO thread_id");
+		} else if (hasThreadId.length === 0 || hasThreadId[0]!.values.length === 0) {
+			// Case (c): legacy DB — neither column exists
+			this.db.run("ALTER TABLE sessions ADD COLUMN thread_id TEXT");
+		}
+		// Case (a): fresh DB — thread_id already in DDL, nothing to do
+
+		// Same logic for conversation_threads
+		const hasOldThreadTs = this.db.exec(
+			"SELECT 1 FROM pragma_table_info('conversation_threads') WHERE name='thread_ts'",
+		);
+		const hasNewThreadId = this.db.exec(
+			"SELECT 1 FROM pragma_table_info('conversation_threads') WHERE name='thread_id'",
+		);
+		if (hasOldThreadTs.length > 0 && hasOldThreadTs[0]!.values.length > 0) {
+			this.db.run("ALTER TABLE conversation_threads RENAME COLUMN thread_ts TO thread_id");
+		} else if (hasNewThreadId.length === 0 || hasNewThreadId[0]!.values.length === 0) {
+			this.db.run("ALTER TABLE conversation_threads ADD COLUMN thread_id TEXT");
+		}
+
+		// Cutover: clear stale Slack thread mappings (one-time, guarded by user_version)
+		const versionResult = this.db.exec("PRAGMA user_version");
+		const currentVersion = (versionResult[0]?.values[0]?.[0] as number) ?? 0;
+		if (currentVersion < 2) {
+			this.db.run("DELETE FROM conversation_threads");
+			this.db.run("UPDATE sessions SET thread_id = NULL");
+			this.db.run("PRAGMA user_version = 2");
 		}
 
 		// Idempotent migration — add GEO-157 heartbeat/adapter columns
@@ -209,6 +244,8 @@ export class StateStore {
 			// Column already exists — ignore
 		}
 
+		// Rebuild unique index with current column name
+		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
 		// Ensure one issue = one canonical thread: clean up historical duplicates
 		this.db.run(`
 			DELETE FROM conversation_threads
@@ -290,7 +327,7 @@ export class StateStore {
 				last_error, decision_route, decision_reasoning,
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
-				slack_thread_ts,
+				thread_id,
 				session_params, heartbeat_at, adapter_type, run_attempt
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
@@ -316,7 +353,7 @@ export class StateStore {
 				diff_summary = COALESCE(excluded.diff_summary, diff_summary),
 				commit_messages = COALESCE(excluded.commit_messages, commit_messages),
 				changed_file_paths = COALESCE(excluded.changed_file_paths, changed_file_paths),
-				slack_thread_ts = COALESCE(excluded.slack_thread_ts, slack_thread_ts),
+				thread_id = COALESCE(excluded.thread_id, thread_id),
 				session_params = COALESCE(excluded.session_params, session_params),
 				heartbeat_at = COALESCE(excluded.heartbeat_at, heartbeat_at),
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
@@ -346,7 +383,7 @@ export class StateStore {
 				session.diff_summary ?? null,
 				session.commit_messages ?? null,
 				session.changed_file_paths ?? null,
-				session.slack_thread_ts ?? null,
+				session.thread_id ?? null,
 				session.session_params ?? null,
 				session.heartbeat_at ?? null,
 				session.adapter_type ?? null,
@@ -466,28 +503,28 @@ export class StateStore {
 		return undefined;
 	}
 
-	upsertThread(threadTs: string, channel: string, issueId: string): void {
+	upsertThread(threadId: string, channel: string, issueId: string): void {
 		// One issue = one canonical thread: remove any prior mapping for this issue
-		// (unless it's the same thread_ts, in which case the INSERT handles it)
+		// (unless it's the same thread_id, in which case the INSERT handles it)
 		this.db.run(
-			"DELETE FROM conversation_threads WHERE issue_id = ? AND thread_ts != ?",
-			[issueId, threadTs],
+			"DELETE FROM conversation_threads WHERE issue_id = ? AND thread_id != ?",
+			[issueId, threadId],
 		);
 		this.db.run(
-			`INSERT INTO conversation_threads (thread_ts, channel, issue_id)
+			`INSERT INTO conversation_threads (thread_id, channel, issue_id)
 			 VALUES (?, ?, ?)
-			 ON CONFLICT(thread_ts) DO UPDATE SET
+			 ON CONFLICT(thread_id) DO UPDATE SET
 				channel = excluded.channel,
 				issue_id = excluded.issue_id,
 				last_updated = datetime('now')`,
-			[threadTs, channel, issueId],
+			[threadId, channel, issueId],
 		);
 		this.save();
 	}
 
-	getThreadIssue(threadTs: string): string | undefined {
-		const stmt = this.db.prepare("SELECT issue_id FROM conversation_threads WHERE thread_ts = ?");
-		stmt.bind([threadTs]);
+	getThreadIssue(threadId: string): string | undefined {
+		const stmt = this.db.prepare("SELECT issue_id FROM conversation_threads WHERE thread_id = ?");
+		stmt.bind([threadId]);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
 			stmt.free();
@@ -497,24 +534,24 @@ export class StateStore {
 		return undefined;
 	}
 
-	getThreadByIssue(issueId: string): { thread_ts: string; channel: string } | undefined {
+	getThreadByIssue(issueId: string): { thread_id: string; channel: string } | undefined {
 		const stmt = this.db.prepare(
-			"SELECT thread_ts, channel FROM conversation_threads WHERE issue_id = ?",
+			"SELECT thread_id, channel FROM conversation_threads WHERE issue_id = ?",
 		);
 		stmt.bind([issueId]);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
 			stmt.free();
-			return { thread_ts: row.thread_ts as string, channel: row.channel as string };
+			return { thread_id: row.thread_id as string, channel: row.channel as string };
 		}
 		stmt.free();
 		return undefined;
 	}
 
-	setSessionThreadTs(executionId: string, threadTs: string): void {
+	setSessionThreadId(executionId: string, threadId: string): void {
 		this.db.run(
-			"UPDATE sessions SET slack_thread_ts = ? WHERE execution_id = ?",
-			[threadTs, executionId],
+			"UPDATE sessions SET thread_id = ? WHERE execution_id = ?",
+			[threadId, executionId],
 		);
 		this.save();
 	}
@@ -665,7 +702,7 @@ export class StateStore {
 			diff_summary: (row.diff_summary as string) ?? undefined,
 			commit_messages: (row.commit_messages as string) ?? undefined,
 			changed_file_paths: (row.changed_file_paths as string) ?? undefined,
-			slack_thread_ts: (row.slack_thread_ts as string) ?? undefined,
+			thread_id: (row.thread_id as string) ?? undefined,
 			session_params: (row.session_params as string) ?? undefined,
 			heartbeat_at: (row.heartbeat_at as string) ?? undefined,
 			adapter_type: (row.adapter_type as string) ?? undefined,

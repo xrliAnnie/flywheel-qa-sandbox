@@ -207,14 +207,14 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
-		const notifier = new WebhookHeartbeatNotifier(`http://127.0.0.1:${port}`, "test-token");
+		const notifier = new WebhookHeartbeatNotifier(`http://127.0.0.1:${port}`, "test-token", "test-channel");
 		const session: Session = {
 			execution_id: "exec-stuck",
 			issue_id: "i1",
 			project_name: "geo",
 			status: "running",
 			issue_identifier: "GEO-100",
-			slack_thread_ts: "1234.5678",
+			thread_id: "1234.5678",
 		};
 
 		await notifier.onSessionStuck(session, 30);
@@ -226,8 +226,8 @@ describe("WebhookHeartbeatNotifier", () => {
 		const parsed = JSON.parse(capturedBody!.message as string);
 		expect(parsed.event_type).toBe("session_stuck");
 		expect(parsed.minutes_since_activity).toBe(30);
-		expect(parsed.thread_ts).toBe("1234.5678");
-		expect(parsed.channel).toBe("CD5QZVAP6");
+		expect(parsed.thread_id).toBe("1234.5678");
+		expect(parsed.channel).toBe("test-channel");
 
 		await new Promise<void>((resolve, reject) => {
 			gateway.close((err) => (err ? reject(err) : resolve()));
@@ -251,14 +251,14 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
-		const notifier = new WebhookHeartbeatNotifier(`http://127.0.0.1:${port}`, "test-token");
+		const notifier = new WebhookHeartbeatNotifier(`http://127.0.0.1:${port}`, "test-token", "test-channel");
 		const session: Session = {
 			execution_id: "exec-orphan",
 			issue_id: "i2",
 			project_name: "geo",
 			status: "running",
 			issue_identifier: "GEO-200",
-			slack_thread_ts: "5678.1234",
+			thread_id: "5678.1234",
 		};
 
 		await notifier.onSessionOrphaned(session, 75);
@@ -271,8 +271,8 @@ describe("WebhookHeartbeatNotifier", () => {
 		expect(parsed.event_type).toBe("session_orphaned");
 		expect(parsed.status).toBe("failed");
 		expect(parsed.minutes_since_activity).toBe(75);
-		expect(parsed.thread_ts).toBe("5678.1234");
-		expect(parsed.channel).toBe("CD5QZVAP6");
+		expect(parsed.thread_id).toBe("5678.1234");
+		expect(parsed.channel).toBe("test-channel");
 
 		await new Promise<void>((resolve, reject) => {
 			gateway.close((err) => (err ? reject(err) : resolve()));
@@ -296,7 +296,7 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
-		const notifier = new WebhookHeartbeatNotifier(`http://127.0.0.1:${port}`, "test-token");
+		const notifier = new WebhookHeartbeatNotifier(`http://127.0.0.1:${port}`, "test-token", "test-channel");
 		await notifier.onSessionStuck({
 			execution_id: "e1", issue_id: "i1", project_name: "p", status: "running",
 		}, 15);
