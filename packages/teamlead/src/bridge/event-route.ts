@@ -82,6 +82,8 @@ export function createEventRouter(
 	store: StateStore,
 	_projects: ProjectEntry[],
 	config: BridgeConfig,
+	_cipherWriter?: unknown,
+	_transitionOpts?: import("../applyTransition.js").ApplyTransitionOpts,
 ): Router {
 	const router = Router();
 

@@ -3,8 +3,10 @@ import { promisify } from "node:util";
 import { Router } from "express";
 import { ApproveHandler } from "flywheel-edge-worker";
 import type { ActionResult } from "flywheel-edge-worker";
+import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { StateStore } from "../StateStore.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import { applyTransition, type ApplyTransitionOpts } from "../applyTransition.js";
 import { sqliteDatetime } from "./types.js";
 
 type ExecFn = (
@@ -20,7 +22,7 @@ const defaultExec: ExecFn = async (cmd, args, cwd) => {
 	return { stdout: result.stdout };
 };
 
-/** Valid source statuses for each action */
+/** @deprecated Use ACTION_DEFINITIONS from flywheel-core instead (GEO-158). */
 export const ACTION_SOURCE_STATUS: Record<string, string[]> = {
 	approve: ["awaiting_review"],
 	reject: ["awaiting_review"],
@@ -29,8 +31,8 @@ export const ACTION_SOURCE_STATUS: Record<string, string[]> = {
 	shelve: ["awaiting_review", "blocked", "failed", "rejected", "deferred"],
 };
 
-/** Target status for each action */
-const ACTION_TARGET_STATUS: Record<string, string> = {
+/** @deprecated Use getActionTarget() from flywheel-core instead (GEO-158). */
+export const ACTION_TARGET_STATUS: Record<string, string> = {
 	reject: "rejected",
 	defer: "deferred",
 	retry: "running",
@@ -43,6 +45,7 @@ export async function approveExecution(
 	executionId: string,
 	identifier?: string,
 	execFn?: ExecFn,
+	transitionOpts?: ApplyTransitionOpts,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -73,15 +76,30 @@ export async function approveExecution(
 	});
 
 	if (result.success) {
-		store.upsertSession({
-			execution_id: session.execution_id,
-			issue_id: session.issue_id,
-			issue_identifier: session.issue_identifier,
-			issue_title: session.issue_title,
-			project_name: session.project_name,
-			status: "approved",
-			last_activity_at: sqliteDatetime(),
-		});
+		if (transitionOpts) {
+			applyTransition(
+				transitionOpts,
+				session.execution_id,
+				"approved",
+				{
+					executionId: session.execution_id,
+					issueId: session.issue_id,
+					projectName: session.project_name,
+					trigger: "approve",
+				},
+				{ last_activity_at: sqliteDatetime() },
+			);
+		} else {
+			store.upsertSession({
+				execution_id: session.execution_id,
+				issue_id: session.issue_id,
+				issue_identifier: session.issue_identifier,
+				issue_title: session.issue_title,
+				project_name: session.project_name,
+				status: "approved",
+				last_activity_at: sqliteDatetime(),
+			});
+		}
 	}
 
 	return result;
@@ -92,27 +110,46 @@ export function transitionSession(
 	action: string,
 	executionId: string,
 	reason?: string,
+	transitionOpts?: ApplyTransitionOpts,
 ): ActionResult {
 	const session = store.getSession(executionId);
 	if (!session) {
 		return { success: false, message: `No session found for execution_id ${executionId}` };
 	}
 
-	const validSources = ACTION_SOURCE_STATUS[action];
-	if (!validSources) {
+	const actionDef = ACTION_DEFINITIONS.find((d) => d.action === action);
+	if (!actionDef) {
 		return { success: false, message: `Unknown action: ${action}` };
 	}
+	const targetStatus = actionDef.targetState;
 
-	if (!validSources.includes(session.status)) {
-		return {
-			success: false,
-			message: `Cannot ${action} ${session.issue_identifier ?? executionId}: status is "${session.status}", expected one of: ${validSources.join(", ")}`,
-		};
+	if (transitionOpts) {
+		// GEO-158: FSM-validated transition path
+		const result = applyTransition(
+			transitionOpts,
+			session.execution_id,
+			targetStatus,
+			{
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				trigger: action,
+			},
+			{ last_activity_at: sqliteDatetime(), last_error: reason ?? undefined },
+		);
+		if (!result.ok) {
+			return { success: false, message: result.error ?? "Transition rejected by FSM" };
+		}
+	} else {
+		// Legacy fallback (no FSM)
+		if (!actionDef.fromStates.includes(session.status)) {
+			return {
+				success: false,
+				message: `Cannot ${action} ${session.issue_identifier ?? executionId}: status is "${session.status}", expected one of: ${actionDef.fromStates.join(", ")}`,
+			};
+		}
+		store.forceStatus(session.execution_id, targetStatus, sqliteDatetime(), reason);
 	}
-
-	const targetStatus = ACTION_TARGET_STATUS[action]!;
-	// Use forceStatus to bypass the monotonic guard (retry: terminal → running)
-	store.forceStatus(session.execution_id, targetStatus, sqliteDatetime(), reason);
 
 	const id = session.issue_identifier ?? executionId;
 	const pastTense: Record<string, string> = {
@@ -124,6 +161,7 @@ export function transitionSession(
 export function createActionRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
+	transitionOpts?: ApplyTransitionOpts,
 ): Router {
 	const router = Router();
 
@@ -137,7 +175,7 @@ export function createActionRouter(
 					res.status(400).json({ error: "execution_id is required" });
 					return;
 				}
-				const result = await approveExecution(store, projects, execution_id, identifier);
+				const result = await approveExecution(store, projects, execution_id, identifier, undefined, transitionOpts);
 				if (result.success) {
 					res.json({ success: true, message: result.message, action: "approve", identifier });
 				} else {
@@ -154,7 +192,7 @@ export function createActionRouter(
 					res.status(400).json({ error: "execution_id is required" });
 					return;
 				}
-				const actionResult = transitionSession(store, action, eid, reason);
+				const actionResult = transitionSession(store, action, eid, reason, transitionOpts);
 				if (actionResult.success) {
 					res.json({ success: true, message: actionResult.message, action });
 				} else {

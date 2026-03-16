@@ -1,5 +1,6 @@
 import type { StateStore, Session } from "./StateStore.js";
 import { buildSessionKey, buildHookBody, type HookPayload } from "./bridge/hook-payload.js";
+import { applyTransition, type ApplyTransitionOpts } from "./applyTransition.js";
 
 export interface HeartbeatNotifier {
 	onSessionStuck(session: Session, minutesSinceActivity: number): Promise<void>;
@@ -22,6 +23,7 @@ export class HeartbeatService {
 		private thresholdMinutes: number,
 		private intervalMs: number,
 		private orphanThresholdMinutes: number,
+		private transitionOpts?: ApplyTransitionOpts,
 	) {}
 
 	start(): void {
@@ -94,12 +96,27 @@ export class HeartbeatService {
 			try {
 				// Force-fail the orphaned session
 				const now = new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
-				this.store.forceStatus(
-					session.execution_id,
-					"failed",
-					now,
-					`Orphaned: no heartbeat for ${minutesSince} minutes`,
-				);
+				if (this.transitionOpts) {
+					applyTransition(
+						this.transitionOpts,
+						session.execution_id,
+						"failed",
+						{
+							executionId: session.execution_id,
+							issueId: session.issue_id,
+							projectName: session.project_name,
+							trigger: "orphan_reap",
+						},
+						{ last_activity_at: now, last_error: `Orphaned: no heartbeat for ${minutesSince} minutes` },
+					);
+				} else {
+					this.store.forceStatus(
+						session.execution_id,
+						"failed",
+						now,
+						`Orphaned: no heartbeat for ${minutesSince} minutes`,
+					);
+				}
 
 				await this.notifier.onSessionOrphaned(session, minutesSince);
 				this.notifiedOrphans.add(session.execution_id);
