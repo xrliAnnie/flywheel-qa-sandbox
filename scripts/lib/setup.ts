@@ -8,7 +8,7 @@ import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { TmuxRunner } from "../../packages/claude-runner/dist/TmuxRunner.js";
+import { TmuxAdapter } from "../../packages/claude-runner/dist/TmuxAdapter.js";
 import { AnthropicLLMClient } from "../../packages/claude-runner/dist/AnthropicLLMClient.js";
 import { GitResultChecker } from "../../packages/edge-worker/dist/GitResultChecker.js";
 import { Blueprint } from "../../packages/edge-worker/dist/Blueprint.js";
@@ -283,9 +283,9 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	// Git checker
 	const gitChecker = new GitResultChecker(execFn);
 
-	// Runner factory
-	const makeRunner = (_name: string) =>
-		new TmuxRunner(
+	// Adapter factory (GEO-157: TmuxRunner → TmuxAdapter)
+	const makeAdapter = (_name: string) =>
+		new TmuxAdapter(
 			tmuxSessionName,
 			undefined,
 			5000,
@@ -319,7 +319,7 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	}
 
 	const blueprint = new Blueprint(
-		hydrator, gitChecker, makeRunner, shell,
+		hydrator, gitChecker, makeAdapter, shell,
 		worktreeManager, skillInjector, evidenceCollector,
 		flywheelConfig?.skills, // skillsConfig (was hardcoded undefined)
 		decisionLayer,
