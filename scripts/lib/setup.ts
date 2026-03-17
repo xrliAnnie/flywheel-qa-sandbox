@@ -199,15 +199,32 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 				description: p.description,
 				priority: p.priority,
 				evaluate: (ctx) => {
-					// Every dimension in the pattern must match the execution context.
+					// Derive dimensions from raw ExecutionContext fields.
 					// Bucketing mirrors extractDimensions() in cipher/dimensions.ts.
+					const AUTH_RE = /\/(auth|login|session|token|password|middleware|guard)\b/i;
+					const TEST_RE = /\.(test|spec)\.(ts|js|tsx|jsx)$|\/__tests__\//;
+					const FE_RE = /\/(components?|pages?|views?|hooks?|styles?|css)\b/i;
+					const CFG_RE = /\.(ya?ml|json|toml|env|config)\b/i;
+					const totalLines = ctx.linesAdded + ctx.linesRemoved;
+					const sizeBucket = totalLines <= 20 ? "tiny" : totalLines <= 100 ? "small" : totalLines <= 500 ? "medium" : "large";
+					const touchesAuth = ctx.changedFilePaths.some((p) => AUTH_RE.test(p));
+					const hasTests = ctx.changedFilePaths.some((p) => TEST_RE.test(p));
+					// classifyArea logic from dimensions.ts
+					let fe = 0, be = 0, au = 0, te = 0, cf = 0;
+					for (const fp of ctx.changedFilePaths) {
+						if (AUTH_RE.test(fp)) au++; else if (TEST_RE.test(fp)) te++; else if (CFG_RE.test(fp)) cf++; else if (FE_RE.test(fp)) fe++; else be++;
+					}
+					const total = ctx.changedFilePaths.length || 1;
+					const areaTouched = au > total * 0.5 ? "auth" : te > total * 0.5 ? "test" : cf > total * 0.5 ? "config" : (fe > 0 && be > 0) ? "mixed" : fe > be ? "frontend" : "backend";
+
 					for (const c of constraints) {
 						const noMatch = { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
-						if (c.dim === "label" && !ctx.labels.includes(c.val)) return noMatch;
-						if (c.dim === "size" && ctx.sizeBucket !== c.val) return noMatch;
-						if (c.dim === "area" && ctx.areaTouched !== c.val) return noMatch;
-						if (c.dim === "auth" && String(ctx.touchesAuth) !== c.val) return noMatch;
-						if (c.dim === "tests" && String(ctx.hasTests) !== c.val) return noMatch;
+						// label: match primaryLabel (labels[0]) to stay consistent with learning
+						if (c.dim === "label" && (ctx.labels[0] ?? "unlabeled") !== c.val) return noMatch;
+						if (c.dim === "size" && sizeBucket !== c.val) return noMatch;
+						if (c.dim === "area" && areaTouched !== c.val) return noMatch;
+						if (c.dim === "auth" && String(touchesAuth) !== c.val) return noMatch;
+						if (c.dim === "tests" && String(hasTests) !== c.val) return noMatch;
 						if (c.dim === "exit" && ctx.exitReason !== c.val) return noMatch;
 						if (c.dim === "failures" && String(ctx.consecutiveFailures > 0) !== c.val) return noMatch;
 						if (c.dim === "commits") {
