@@ -11,16 +11,40 @@ import { setupComponents, teardownComponents, log, type FlywheelComponents } fro
 import { RetryDispatcher } from "./retry-dispatcher.js";
 
 /**
- * Build a fetchIssue function that returns issue metadata from StateStore.
- * For retry, the issue was already hydrated in the original execution — we can
- * look it up from the stored session. Falls back to minimal stub if not found.
+ * Build a fetchIssue function that tries Linear API first, then falls back
+ * to StateStore session data. This ensures retry executions get the full
+ * issue description (not just a stub), which Blueprint uses as the prompt.
  */
-function createFetchIssueFromStore(store: StateStore) {
+function createFetchIssue(store: StateStore) {
 	return async (id: string) => {
+		// Try Linear API first — gives us full description, labels, projectId
+		const accessToken = process.env.LINEAR_API_KEY;
+		if (accessToken) {
+			try {
+				const { LinearClient } = await import("@linear/sdk");
+				const client = new LinearClient({ accessToken });
+				const issue = await client.issue(id);
+				if (issue) {
+					const labels = await issue.labels();
+					const labelNames = labels.nodes.map((l) => l.name);
+					return {
+						title: issue.title,
+						description: issue.description ?? "",
+						labels: labelNames,
+						projectId: issue.project ? (await issue.project)?.id : undefined,
+						identifier: issue.identifier,
+					};
+				}
+			} catch {
+				// Linear API failed — fall through to StateStore fallback
+			}
+		}
+
+		// Fallback: reconstruct from stored session metadata
 		const session = store.getSessionByIssue(id);
 		return {
 			title: session?.issue_title ?? `Issue ${id}`,
-			description: `Retry execution for issue ${id}`,
+			description: session?.summary ?? `Retry execution for issue ${id}`,
 			identifier: session?.issue_identifier ?? id,
 		};
 	};
@@ -38,14 +62,15 @@ export async function setupRetryRuntime(
 		log(`[RetryRuntime] Setting up retry runtime for project: ${project.projectName}`);
 
 		const directSink = new DirectEventSink(store, bridgeConfig);
+		let components: FlywheelComponents | undefined;
 
 		try {
-			const components = await setupComponents({
+			components = await setupComponents({
 				projectRoot: project.projectRoot,
 				tmuxSessionName: `retry-${project.projectName}`,
 				projectName: project.projectName,
 				projectRepo: project.projectRepo,
-				fetchIssue: createFetchIssueFromStore(store),
+				fetchIssue: createFetchIssue(store),
 				eventEmitterOverride: directSink,
 				skipSlackLegacy: true,
 			});
@@ -54,7 +79,7 @@ export async function setupRetryRuntime(
 				blueprint: components.blueprint,
 				projectRoot: project.projectRoot,
 			});
-			cleanupHandles.push(() => teardownComponents(components));
+			cleanupHandles.push(() => teardownComponents(components!));
 
 			log(`[RetryRuntime] ${project.projectName} ready`);
 		} catch (err) {
@@ -62,7 +87,10 @@ export async function setupRetryRuntime(
 				`[RetryRuntime] Failed to setup ${project.projectName}:`,
 				err instanceof Error ? err.message : err,
 			);
-			// Continue with other projects — one failing project shouldn't block others
+			// Clean up partially initialized components
+			if (components) {
+				try { await teardownComponents(components); } catch { /* best-effort */ }
+			}
 		}
 	}
 
