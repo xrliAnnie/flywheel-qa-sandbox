@@ -1,13 +1,13 @@
-import { describe, expect, it, vi } from "vitest";
-import { DagDispatcher } from "../DagDispatcher.js";
-import { DagResolver } from "flywheel-dag-resolver";
 import { Semaphore } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
+import { DagResolver } from "flywheel-dag-resolver";
+import { describe, expect, it, vi } from "vitest";
 import type {
 	Blueprint,
 	BlueprintContext,
 	BlueprintResult,
 } from "../Blueprint.js";
+import { DagDispatcher } from "../DagDispatcher.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
 
 // Mock node:child_process to prevent osascript from opening Terminal windows during tests
@@ -153,9 +153,9 @@ describe("DagDispatcher", () => {
 		expect(result.shelved).toEqual(["A"]);
 		expect(result.completed).toEqual([]);
 		expect(result.halted).toBe(true);
-		expect(
-			(blueprint.run as ReturnType<typeof vi.fn>).mock.calls,
-		).toHaveLength(1);
+		expect((blueprint.run as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(
+			1,
+		);
 	});
 
 	it("fires onNodeComplete callback for each node", async () => {
@@ -216,9 +216,9 @@ describe("DagDispatcher", () => {
 
 		await dispatcher.dispatch();
 
-		expect(
-			(blueprint.run as ReturnType<typeof vi.fn>).mock.calls[0]![1],
-		).toBe("/my/project");
+		expect((blueprint.run as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe(
+			"/my/project",
+		);
 	});
 
 	it("handles blueprint.run() throwing — shelves node, others continue", async () => {
@@ -227,10 +227,10 @@ describe("DagDispatcher", () => {
 			{ id: "B", blockedBy: [] },
 		];
 		const resolver = new DagResolver(nodes);
-		let callCount = 0;
+		let _callCount = 0;
 		const blueprint = {
 			run: vi.fn(async (node: DagNode) => {
-				callCount++;
+				_callCount++;
 				if (node.id === "A") throw new Error("dirty working tree");
 				return { success: true };
 			}),
@@ -251,9 +251,7 @@ describe("DagDispatcher", () => {
 	});
 
 	it("uses buildContext function for each node", async () => {
-		const nodes: DagNode[] = [
-			{ id: "A", blockedBy: [] },
-		];
+		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
 		const resolver = new DagResolver(nodes);
 		const blueprint = {
 			run: vi.fn(async () => ({ success: true })),
@@ -625,16 +623,14 @@ describe("DagDispatcher", () => {
 
 		await dispatcher.dispatch();
 
-		expect(callCounts["A"]).toBe(1);
-		expect(callCounts["B"]).toBe(1);
+		expect(callCounts.A).toBe(1);
+		expect(callCounts.B).toBe(1);
 	});
 
 	it("pruneOrphans called before and after dispatch", async () => {
 		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
 		const resolver = new DagResolver(nodes);
-		const blueprint = makeMockBlueprint(
-			new Map([["A", { success: true }]]),
-		);
+		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
 		const mockWorktreeManager = {
 			pruneOrphans: vi.fn(async () => []),
 		} as unknown as WorktreeManager;
@@ -657,9 +653,7 @@ describe("DagDispatcher", () => {
 	it("pruneOrphans failure doesn't halt dispatch", async () => {
 		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
 		const resolver = new DagResolver(nodes);
-		const blueprint = makeMockBlueprint(
-			new Map([["A", { success: true }]]),
-		);
+		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
 		const mockWorktreeManager = {
 			pruneOrphans: vi.fn(async () => {
 				throw new Error("prune failed");
@@ -703,8 +697,8 @@ describe("DagDispatcher", () => {
 
 		expect(result.durationMs).toBeGreaterThanOrEqual(0);
 		expect(result.nodeResults).toBeDefined();
-		expect(result.nodeResults!["A"]!.success).toBe(true);
-		expect(result.nodeResults!["B"]!.success).toBe(false);
+		expect(result.nodeResults!.A!.success).toBe(true);
+		expect(result.nodeResults!.B!.success).toBe(false);
 	});
 
 	it("slow onNodeComplete callback doesn't block dispatch loop", async () => {

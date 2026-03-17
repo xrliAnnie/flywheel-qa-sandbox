@@ -1,9 +1,9 @@
 // Async primitives
-export { Semaphore } from "./Semaphore.js";
-export { ProjectLock } from "./ProjectLock.js";
 
 // Hook callback interface (cross-package boundary)
 export type { IHookCallbackServer } from "./hook-callback-types.js";
+export { ProjectLock } from "./ProjectLock.js";
+export { Semaphore } from "./Semaphore.js";
 
 // Logging
 
@@ -14,6 +14,17 @@ export { createLogger, LogLevel } from "./logging/index.js";
 // export type { SessionOptions, , NarrativeItem } from './Session.js'
 // export { ClaudeSessionManager as SessionManager } from './ClaudeSessionManager.js'
 
+export { AdapterRegistry } from "./AdapterRegistry.js";
+// Adapter types (GEO-157 — unified IAdapter protocol)
+export type {
+	AdapterConfig,
+	AdapterExecutionContext,
+	AdapterExecutionResult,
+	AdapterHealthCheck,
+	AdapterSession,
+	ClaudeAdapterConfig,
+	IAdapter,
+} from "./adapter-types.js";
 // Agent Runner types
 export type {
 	AgentMessage,
@@ -44,7 +55,6 @@ export type {
 	IssueMinimal,
 	Workspace,
 } from "./CyrusAgentSession.js";
-
 // Configuration types
 export type {
 	EdgeConfig,
@@ -66,7 +76,6 @@ export {
 	UserAccessControlConfigSchema,
 	UserIdentifierSchema,
 } from "./config-types.js";
-
 // Constants
 export {
 	DEFAULT_BASE_BRANCH,
@@ -75,6 +84,33 @@ export {
 	DEFAULT_WORKTREES_DIR,
 	FLYWHEEL_MARKER_DIR,
 } from "./constants.js";
+// Decision Layer types (v0.2 Step 2b)
+export type {
+	DecisionResult,
+	DecisionRoute,
+	DecisionSource,
+	ExecutionContext,
+	HardRuleResult,
+	LandingStatus,
+	VerificationResult,
+} from "./decision-types.js";
+export type { AuditDirective, Directive } from "./directive-types.js";
+/** @deprecated Use AdapterRegistry instead (GEO-157). */
+export { FlywheelRunnerRegistry } from "./FlywheelRunnerRegistry.js";
+// Flywheel Error types (v0.2 Step 2b)
+export type { FlywheelError, RetryPolicy } from "./flywheel-error-types.js";
+export {
+	DEFAULT_RETRY_POLICY,
+	isRetryable,
+	retryDelay,
+} from "./flywheel-error-types.js";
+// Flywheel Runner types — compat re-exports (GEO-157 Wave 6 cleanup)
+/** @deprecated Use IAdapter + AdapterExecutionContext instead (GEO-157). */
+export type {
+	FlywheelRunRequest,
+	FlywheelRunResult,
+	IFlywheelRunner,
+} from "./flywheel-runner-types.js";
 // Issue Tracker Abstraction
 export type {
 	AgentActivity,
@@ -140,6 +176,8 @@ export {
 	isIssueUnassignedWebhook,
 	isNewCommentEvent,
 } from "./issue-tracker/index.js";
+// LLM Client interface (v0.2 Step 2b — model agnostic)
+export type { LLMClient } from "./llm-client-types.js";
 // Internal Message Bus
 export type {
 	ContentChanges,
@@ -198,19 +236,6 @@ export {
 	PersistenceManager,
 } from "./PersistenceManager.js";
 export { StreamingPrompt } from "./StreamingPrompt.js";
-
-// Adapter types (GEO-157 — unified IAdapter protocol)
-export type {
-	AdapterConfig,
-	AdapterExecutionContext,
-	AdapterExecutionResult,
-	AdapterHealthCheck,
-	AdapterSession,
-	ClaudeAdapterConfig,
-	IAdapter,
-} from "./adapter-types.js";
-export { AdapterRegistry } from "./AdapterRegistry.js";
-
 // Simple Agent Runner types
 /** @deprecated Use IAdapter instead (GEO-157). Will be removed in Wave 6. */
 export type {
@@ -220,55 +245,21 @@ export type {
 	ISimpleAgentRunner,
 	ISimpleAgentRunnerConfig,
 } from "./simple-agent-runner-types.js";
-
-// Flywheel Runner types — compat re-exports (GEO-157 Wave 6 cleanup)
-/** @deprecated Use IAdapter + AdapterExecutionContext instead (GEO-157). */
 export type {
-	FlywheelRunRequest,
-	FlywheelRunResult,
-	IFlywheelRunner,
-} from "./flywheel-runner-types.js";
-/** @deprecated Use AdapterRegistry instead (GEO-157). */
-export { FlywheelRunnerRegistry } from "./FlywheelRunnerRegistry.js";
-
+	ActionDefinition,
+	GuardFn,
+	OnEnterFn,
+	TransitionContext,
+	TransitionResult,
+} from "./workflow-fsm.js";
 // Workflow FSM + Directive types (GEO-158)
 export {
-	WorkflowFSM,
-	WORKFLOW_TRANSITIONS,
 	ACTION_DEFINITIONS,
 	allowedActionsForState,
 	getActionTarget,
+	WORKFLOW_TRANSITIONS,
+	WorkflowFSM,
 } from "./workflow-fsm.js";
-export type {
-	TransitionContext,
-	TransitionResult,
-	GuardFn,
-	OnEnterFn,
-	ActionDefinition,
-} from "./workflow-fsm.js";
-export type { Directive, AuditDirective } from "./directive-types.js";
-
-// Flywheel Error types (v0.2 Step 2b)
-export type { FlywheelError, RetryPolicy } from "./flywheel-error-types.js";
-export {
-	isRetryable,
-	retryDelay,
-	DEFAULT_RETRY_POLICY,
-} from "./flywheel-error-types.js";
-
-// Decision Layer types (v0.2 Step 2b)
-export type {
-	DecisionRoute,
-	DecisionSource,
-	ExecutionContext,
-	DecisionResult,
-	VerificationResult,
-	HardRuleResult,
-	LandingStatus,
-} from "./decision-types.js";
-
-// LLM Client interface (v0.2 Step 2b — model agnostic)
-export type { LLMClient } from "./llm-client-types.js";
 // Platform-agnostic webhook type aliases - exported from issue-tracker
 // These are now defined in issue-tracker/types.ts as aliases to Linear SDK webhook types
 // EdgeWorker and other high-level code should use these generic names via issue-tracker exports

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock mem0ai/oss for E2E tests that don't need live API
 const mockAdd = vi.fn();
@@ -21,8 +21,8 @@ vi.mock("node:fs", async (importOriginal) => {
 	return { ...actual, mkdirSync: vi.fn() };
 });
 
-import { MemoryService } from "../memory/MemoryService.js";
 import { createMemoryService } from "../memory/createMemoryService.js";
+import { MemoryService } from "../memory/MemoryService.js";
 
 describe("Memory System E2E", () => {
 	beforeEach(() => {
@@ -32,7 +32,9 @@ describe("Memory System E2E", () => {
 	it("full loop: add → search → found in prompt", async () => {
 		// 1. Simulate add returning a stored fact
 		mockAdd.mockResolvedValue({
-			results: [{ id: "m1", event: "ADD", memory: "Auth tokens expire after 1 hour" }],
+			results: [
+				{ id: "m1", event: "ADD", memory: "Auth tokens expire after 1 hour" },
+			],
 		});
 
 		const svc = new MemoryService({
@@ -127,7 +129,9 @@ describe("Memory System E2E", () => {
 
 	it("failure session includes error context", async () => {
 		mockAdd.mockResolvedValue({
-			results: [{ id: "m2", event: "ADD", memory: "Build fails with missing dep" }],
+			results: [
+				{ id: "m2", event: "ADD", memory: "Build fails with missing dep" },
+			],
 		});
 
 		const svc = new MemoryService({

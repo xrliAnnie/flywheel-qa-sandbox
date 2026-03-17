@@ -1,12 +1,16 @@
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { StateStore } from "../StateStore.js";
+import type http from "node:http";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import type http from "node:http";
+import { StateStore } from "../StateStore.js";
 
 const testProjects: ProjectEntry[] = [
-	{ projectName: "geoforge3d", projectRoot: "/tmp/geoforge3d", projectRepo: "xrliAnnie/GeoForge3D" },
+	{
+		projectName: "geoforge3d",
+		projectRoot: "/tmp/geoforge3d",
+		projectRepo: "xrliAnnie/GeoForge3D",
+	},
 ];
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -65,7 +69,10 @@ describe("Bridge E2E lifecycle", () => {
 				issue_id: "issue-e2e",
 				project_name: "geoforge3d",
 				event_type: "session_started",
-				payload: { issueIdentifier: "GEO-95", issueTitle: "Refactor auth module" },
+				payload: {
+					issueIdentifier: "GEO-95",
+					issueTitle: "Refactor auth module",
+				},
 			}),
 		});
 		expect(startRes.status).toBe(200);
@@ -88,7 +95,12 @@ describe("Bridge E2E lifecycle", () => {
 				event_type: "session_completed",
 				payload: {
 					decision: { route: "needs_review", reasoning: "has changes" },
-					evidence: { commitCount: 3, filesChangedCount: 6, linesAdded: 120, linesRemoved: 45 },
+					evidence: {
+						commitCount: 3,
+						filesChangedCount: 6,
+						linesAdded: 120,
+						linesRemoved: 45,
+					},
 					summary: "Refactored auth module",
 				},
 			}),
@@ -101,7 +113,9 @@ describe("Bridge E2E lifecycle", () => {
 		expect(activeRes.status).toBe(200);
 		const activeBody = await activeRes.json();
 		expect(activeBody.count).toBeGreaterThanOrEqual(1);
-		expect(activeBody.sessions.some((s: any) => s.execution_id === "exec-e2e")).toBe(true);
+		expect(
+			activeBody.sessions.some((s: any) => s.execution_id === "exec-e2e"),
+		).toBe(true);
 
 		// 4. GET /api/sessions/GEO-95 → session detail by identifier
 		const detailRes = await fetch(`${baseUrl}/api/sessions/GEO-95`);
@@ -191,7 +205,9 @@ describe("Bridge E2E lifecycle", () => {
 
 		const mockGateway = createServer((req, res) => {
 			let body = "";
-			req.on("data", (chunk) => { body += chunk; });
+			req.on("data", (chunk) => {
+				body += chunk;
+			});
 			req.on("end", () => {
 				receivedBodies.push(body);
 				res.writeHead(200);
@@ -199,17 +215,23 @@ describe("Bridge E2E lifecycle", () => {
 			});
 		});
 		mockGateway.listen(0, "127.0.0.1");
-		await new Promise<void>((resolve) => mockGateway.once("listening", resolve));
+		await new Promise<void>((resolve) =>
+			mockGateway.once("listening", resolve),
+		);
 		const gwAddr = mockGateway.address();
 		const gwPort = typeof gwAddr === "object" && gwAddr ? gwAddr.port : 0;
 		const gatewayUrl = `http://127.0.0.1:${gwPort}`;
 
 		// Create a bridge with gateway config
 		const store2 = await StateStore.create(":memory:");
-		const app2 = createBridgeApp(store2, testProjects, makeConfig({
-			gatewayUrl,
-			hooksToken: "hooks-secret",
-		}));
+		const app2 = createBridgeApp(
+			store2,
+			testProjects,
+			makeConfig({
+				gatewayUrl,
+				hooksToken: "hooks-secret",
+			}),
+		);
 		const server2 = app2.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server2.once("listening", resolve));
 		const addr2 = server2.address();
@@ -226,7 +248,10 @@ describe("Bridge E2E lifecycle", () => {
 					issue_id: "issue-notify",
 					project_name: "geoforge3d",
 					event_type: "session_started",
-					payload: { issueIdentifier: "GEO-102", issueTitle: "Test notification" },
+					payload: {
+						issueIdentifier: "GEO-102",
+						issueTitle: "Test notification",
+					},
 				}),
 			});
 

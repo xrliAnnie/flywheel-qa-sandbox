@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import { createMemoryService } from "../memory/createMemoryService.js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -20,7 +20,10 @@ describe.skipIf(!RUN_LIVE || !SUPABASE_URL || !SUPABASE_KEY || !GOOGLE_API_KEY)(
 			});
 
 			expect(svc).toBeDefined();
-			if (!svc) throw new Error("createMemoryService returned undefined — Supabase init failed");
+			if (!svc)
+				throw new Error(
+					"createMemoryService returned undefined — Supabase init failed",
+				);
 
 			const addResult = await svc.addSessionMemory({
 				projectName: uniqueProject,

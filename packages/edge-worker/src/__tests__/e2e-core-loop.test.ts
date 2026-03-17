@@ -12,16 +12,16 @@
  * - [x] Dispatch halts on first failure
  * - [x] Chain dependency order preserved
  */
-import { describe, expect, it, vi } from "vitest";
-import { DagResolver, LinearGraphBuilder } from "flywheel-dag-resolver";
+
+import type { AdapterExecutionResult, IAdapter } from "flywheel-core";
 import type { DagNode, LinearIssueData } from "flywheel-dag-resolver";
-import { PreHydrator } from "../PreHydrator.js";
-import { Blueprint } from "../Blueprint.js";
+import { DagResolver, LinearGraphBuilder } from "flywheel-dag-resolver";
+import { describe, expect, it, vi } from "vitest";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
-import { GitResultChecker } from "../GitResultChecker.js";
-import type { ExecFileFn } from "../GitResultChecker.js";
+import { Blueprint } from "../Blueprint.js";
 import { DagDispatcher } from "../DagDispatcher.js";
-import type { IAdapter, AdapterExecutionResult } from "flywheel-core";
+import type { GitResultChecker } from "../GitResultChecker.js";
+import { PreHydrator } from "../PreHydrator.js";
 
 // ─── Mock Data ───────────────────────────────────
 
@@ -47,7 +47,7 @@ const MOCK_LINEAR_ISSUES: LinearIssueData[] = [
 
 // ─── Helpers ─────────────────────────────────────
 
-function makeAdapter(commitCount: number): IAdapter {
+function makeAdapter(_commitCount: number): IAdapter {
 	let callCount = 0;
 	return {
 		type: "mock",
@@ -65,10 +65,9 @@ function makeAdapter(commitCount: number): IAdapter {
 	};
 }
 
-function makeGitChecker(options: {
-	commitCount?: number;
-	baseSha?: string;
-} = {}): GitResultChecker {
+function makeGitChecker(
+	options: { commitCount?: number; baseSha?: string } = {},
+): GitResultChecker {
 	const { commitCount = 1, baseSha = "abc123" } = options;
 	return {
 		assertCleanTree: vi.fn(async () => {}),
@@ -89,12 +88,10 @@ function makeShell(): ShellRunner {
 }
 
 function makeHydrator() {
-	return new PreHydrator(
-		async (id) => ({
-			title: `Issue ${id}`,
-			description: `Description for ${id}`,
-		}),
-	);
+	return new PreHydrator(async (id) => ({
+		title: `Issue ${id}`,
+		description: `Description for ${id}`,
+	}));
 }
 
 function makeContext(): BlueprintContext {
@@ -198,11 +195,8 @@ describe("Core Loop E2E", () => {
 			);
 
 			const executedNodes: string[] = [];
-			const dispatcher = new DagDispatcher(
-				resolver,
-				blueprint,
-				"/p",
-				() => makeContext(),
+			const dispatcher = new DagDispatcher(resolver, blueprint, "/p", () =>
+				makeContext(),
 			);
 			dispatcher.onNodeComplete = async (nodeId) => {
 				executedNodes.push(nodeId);

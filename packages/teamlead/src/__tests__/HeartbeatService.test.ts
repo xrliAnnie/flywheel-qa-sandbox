@@ -1,5 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { HeartbeatService, WebhookHeartbeatNotifier } from "../HeartbeatService.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	HeartbeatService,
+	WebhookHeartbeatNotifier,
+} from "../HeartbeatService.js";
 import type { Session } from "../StateStore.js";
 
 function makeSession(overrides: Partial<Session> = {}): Session {
@@ -36,7 +39,13 @@ describe("HeartbeatService", () => {
 			onSessionStuck: vi.fn().mockResolvedValue(undefined),
 			onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 		};
-		service = new HeartbeatService(store as any, notifier as any, 15, 60_000, 60);
+		service = new HeartbeatService(
+			store as any,
+			notifier as any,
+			15,
+			60_000,
+			60,
+		);
 	});
 
 	afterEach(() => {
@@ -51,7 +60,10 @@ describe("HeartbeatService", () => {
 
 		await service.check();
 
-		expect(notifier.onSessionStuck).toHaveBeenCalledWith(session, expect.any(Number));
+		expect(notifier.onSessionStuck).toHaveBeenCalledWith(
+			session,
+			expect.any(Number),
+		);
 	});
 
 	it("check() skips already-notified stuck sessions", async () => {
@@ -104,11 +116,17 @@ describe("HeartbeatService", () => {
 			expect.any(String),
 			expect.stringContaining("Orphaned"),
 		);
-		expect(notifier.onSessionOrphaned).toHaveBeenCalledWith(orphan, expect.any(Number));
+		expect(notifier.onSessionOrphaned).toHaveBeenCalledWith(
+			orphan,
+			expect.any(Number),
+		);
 	});
 
 	it("reapOrphans() skips already-notified orphans", async () => {
-		const orphan = makeSession({ execution_id: "exec-orphan", heartbeat_at: "2026-03-06 08:00:00" });
+		const orphan = makeSession({
+			execution_id: "exec-orphan",
+			heartbeat_at: "2026-03-06 08:00:00",
+		});
 		store.getOrphanSessions.mockReturnValue([orphan]);
 
 		await service.reapOrphans();
@@ -119,7 +137,10 @@ describe("HeartbeatService", () => {
 	});
 
 	it("reapOrphans() re-notifies if session leaves and re-enters orphan state", async () => {
-		const orphan = makeSession({ execution_id: "exec-orphan", heartbeat_at: "2026-03-06 08:00:00" });
+		const orphan = makeSession({
+			execution_id: "exec-orphan",
+			heartbeat_at: "2026-03-06 08:00:00",
+		});
 		store.getOrphanSessions.mockReturnValue([orphan]);
 		await service.reapOrphans();
 
@@ -133,9 +154,14 @@ describe("HeartbeatService", () => {
 	});
 
 	it("reapOrphans() does not dedup if notification fails", async () => {
-		const orphan = makeSession({ execution_id: "exec-orphan", heartbeat_at: "2026-03-06 08:00:00" });
+		const orphan = makeSession({
+			execution_id: "exec-orphan",
+			heartbeat_at: "2026-03-06 08:00:00",
+		});
 		store.getOrphanSessions.mockReturnValue([orphan]);
-		notifier.onSessionOrphaned.mockRejectedValueOnce(new Error("notify failed"));
+		notifier.onSessionOrphaned.mockRejectedValueOnce(
+			new Error("notify failed"),
+		);
 
 		await service.reapOrphans();
 		// Notification failed — should retry next cycle
@@ -148,14 +174,23 @@ describe("HeartbeatService", () => {
 
 	it("check() calls both checkStuck and reapOrphans", async () => {
 		const stuck = makeSession({ execution_id: "exec-stuck" });
-		const orphan = makeSession({ execution_id: "exec-orphan", heartbeat_at: "2026-03-06 08:00:00" });
+		const orphan = makeSession({
+			execution_id: "exec-orphan",
+			heartbeat_at: "2026-03-06 08:00:00",
+		});
 		store.getStuckSessions.mockReturnValue([stuck]);
 		store.getOrphanSessions.mockReturnValue([orphan]);
 
 		await service.check();
 
-		expect(notifier.onSessionStuck).toHaveBeenCalledWith(stuck, expect.any(Number));
-		expect(notifier.onSessionOrphaned).toHaveBeenCalledWith(orphan, expect.any(Number));
+		expect(notifier.onSessionStuck).toHaveBeenCalledWith(
+			stuck,
+			expect.any(Number),
+		);
+		expect(notifier.onSessionOrphaned).toHaveBeenCalledWith(
+			orphan,
+			expect.any(Number),
+		);
 		expect(store.forceStatus).toHaveBeenCalledWith(
 			"exec-orphan",
 			"failed",
@@ -195,7 +230,9 @@ describe("WebhookHeartbeatNotifier", () => {
 		const { createServer } = await import("node:http");
 		const gateway = createServer((req, res) => {
 			let data = "";
-			req.on("data", (chunk) => { data += chunk; });
+			req.on("data", (chunk) => {
+				data += chunk;
+			});
 			req.on("end", () => {
 				capturedBody = JSON.parse(data);
 				res.writeHead(200, { "Content-Type": "application/json" });
@@ -207,7 +244,11 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
-		const notifier = new WebhookHeartbeatNotifier(`http://127.0.0.1:${port}`, "test-token", "test-channel");
+		const notifier = new WebhookHeartbeatNotifier(
+			`http://127.0.0.1:${port}`,
+			"test-token",
+			"test-channel",
+		);
 		const session: Session = {
 			execution_id: "exec-stuck",
 			issue_id: "i1",
@@ -239,7 +280,9 @@ describe("WebhookHeartbeatNotifier", () => {
 		const { createServer } = await import("node:http");
 		const gateway = createServer((req, res) => {
 			let data = "";
-			req.on("data", (chunk) => { data += chunk; });
+			req.on("data", (chunk) => {
+				data += chunk;
+			});
 			req.on("end", () => {
 				capturedBody = JSON.parse(data);
 				res.writeHead(200, { "Content-Type": "application/json" });
@@ -251,7 +294,11 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
-		const notifier = new WebhookHeartbeatNotifier(`http://127.0.0.1:${port}`, "test-token", "test-channel");
+		const notifier = new WebhookHeartbeatNotifier(
+			`http://127.0.0.1:${port}`,
+			"test-token",
+			"test-channel",
+		);
 		const session: Session = {
 			execution_id: "exec-orphan",
 			issue_id: "i2",
@@ -284,8 +331,10 @@ describe("WebhookHeartbeatNotifier", () => {
 		const { createServer } = await import("node:http");
 		const gateway = createServer((req, res) => {
 			capturedPath = req.url ?? "";
-			let data = "";
-			req.on("data", (chunk) => { data += chunk; });
+			let _data = "";
+			req.on("data", (chunk) => {
+				_data += chunk;
+			});
 			req.on("end", () => {
 				res.writeHead(200, { "Content-Type": "application/json" });
 				res.end(JSON.stringify({ ok: true }));
@@ -296,10 +345,20 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
-		const notifier = new WebhookHeartbeatNotifier(`http://127.0.0.1:${port}`, "test-token", "test-channel");
-		await notifier.onSessionStuck({
-			execution_id: "e1", issue_id: "i1", project_name: "p", status: "running",
-		}, 15);
+		const notifier = new WebhookHeartbeatNotifier(
+			`http://127.0.0.1:${port}`,
+			"test-token",
+			"test-channel",
+		);
+		await notifier.onSessionStuck(
+			{
+				execution_id: "e1",
+				issue_id: "i1",
+				project_name: "p",
+				status: "running",
+			},
+			15,
+		);
 
 		expect(capturedPath).toBe("/hooks/ingest");
 

@@ -1,12 +1,14 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import type { AdapterExecutionContext } from "flywheel-core";
+import { describe, expect, it, vi } from "vitest";
 
 // We'll test TmuxAdapter by injecting a mock execFileFn
 import { TmuxAdapter } from "../src/TmuxAdapter.js";
 
 // ─── Helpers ─────────────────────────────────────
 
-function makeCtx(overrides: Partial<AdapterExecutionContext> = {}): AdapterExecutionContext {
+function makeCtx(
+	overrides: Partial<AdapterExecutionContext> = {},
+): AdapterExecutionContext {
 	return {
 		executionId: "test-exec-1",
 		issueId: "GEO-TEST",
@@ -21,12 +23,14 @@ interface ExecCall {
 	args: string[];
 }
 
-function makeMockExec(options: {
-	paneDead?: boolean;
-	windowId?: string;
-	tmuxVersion?: string;
-	hasSessionError?: boolean;
-} = {}) {
+function makeMockExec(
+	options: {
+		paneDead?: boolean;
+		windowId?: string;
+		tmuxVersion?: string;
+		hasSessionError?: boolean;
+	} = {},
+) {
 	const calls: ExecCall[] = [];
 	const {
 		paneDead = false,
@@ -93,7 +97,10 @@ function makeMockExec(options: {
 /**
  * Create a mock exec that resolves pane_dead after N polls
  */
-function makeMockExecWithDelayedDead(pollsBeforeDead: number, windowId = "@42") {
+function makeMockExecWithDelayedDead(
+	pollsBeforeDead: number,
+	windowId = "@42",
+) {
 	const calls: ExecCall[] = [];
 	let pollCount = 0;
 
@@ -146,16 +153,20 @@ describe("TmuxAdapter", () => {
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
 		await adapter.execute(makeCtx());
-		const firstRunTmuxV = calls.filter(c => c.args[0] === "-V");
-		const firstRunClaude = calls.filter(c => c.cmd === "claude");
+		const firstRunTmuxV = calls.filter((c) => c.args[0] === "-V");
+		const firstRunClaude = calls.filter((c) => c.cmd === "claude");
 		expect(firstRunTmuxV).toHaveLength(1);
 		expect(firstRunClaude).toHaveLength(1);
 
 		// Second run should not check again
 		const callsBefore = calls.length;
 		await adapter.execute(makeCtx());
-		const secondRunTmuxV = calls.slice(callsBefore).filter(c => c.args[0] === "-V");
-		const secondRunClaude = calls.slice(callsBefore).filter(c => c.cmd === "claude");
+		const secondRunTmuxV = calls
+			.slice(callsBefore)
+			.filter((c) => c.args[0] === "-V");
+		const secondRunClaude = calls
+			.slice(callsBefore)
+			.filter((c) => c.cmd === "claude");
 		expect(secondRunTmuxV).toHaveLength(0);
 		expect(secondRunClaude).toHaveLength(0);
 	});
@@ -178,29 +189,37 @@ describe("TmuxAdapter", () => {
 		};
 		const adapter = new TmuxAdapter("flywheel", fn);
 
-		await expect(adapter.execute(makeCtx())).rejects.toThrow("claude not found");
+		await expect(adapter.execute(makeCtx())).rejects.toThrow(
+			"claude not found",
+		);
 	});
 
 	// ─── Session management ─────────────────────────
 
 	it("creates tmux session if it doesn't exist", async () => {
-		const { fn, calls } = makeMockExec({ hasSessionError: true, paneDead: true });
+		const { fn, calls } = makeMockExec({
+			hasSessionError: true,
+			paneDead: true,
+		});
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
 		await adapter.execute(makeCtx());
 
-		const newSession = calls.find(c => c.args[0] === "new-session");
+		const newSession = calls.find((c) => c.args[0] === "new-session");
 		expect(newSession).toBeDefined();
 		expect(newSession!.args).toContain("flywheel");
 	});
 
 	it("reuses existing session", async () => {
-		const { fn, calls } = makeMockExec({ hasSessionError: false, paneDead: true });
+		const { fn, calls } = makeMockExec({
+			hasSessionError: false,
+			paneDead: true,
+		});
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
 		await adapter.execute(makeCtx());
 
-		const newSession = calls.find(c => c.args[0] === "new-session");
+		const newSession = calls.find((c) => c.args[0] === "new-session");
 		expect(newSession).toBeUndefined();
 	});
 
@@ -212,7 +231,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx({ cwd: "/my/project" }));
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		expect(newWindow).toBeDefined();
 		const cwdIdx = newWindow!.args.indexOf("-c");
 		expect(cwdIdx).toBeGreaterThan(-1);
@@ -225,7 +244,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx({ label: "GEO-101" }));
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const nIdx = newWindow!.args.indexOf("-n");
 		expect(newWindow!.args[nIdx + 1]).toBe("GEO-101");
 	});
@@ -236,7 +255,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx({ label: undefined }));
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const nIdx = newWindow!.args.indexOf("-n");
 		const windowName = newWindow!.args[nIdx + 1]!;
 		expect(windowName).toMatch(/^issue-\d+$/);
@@ -248,7 +267,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx({ label: "GEO/101:special.chars!" }));
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const nIdx = newWindow!.args.indexOf("-n");
 		const windowName = newWindow!.args[nIdx + 1]!;
 		expect(windowName).toMatch(/^[a-zA-Z0-9-]+$/);
@@ -263,7 +282,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx({ label: longLabel }));
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const nIdx = newWindow!.args.indexOf("-n");
 		const windowName = newWindow!.args[nIdx + 1]!;
 		expect(windowName.length).toBeLessThanOrEqual(50);
@@ -275,9 +294,11 @@ describe("TmuxAdapter", () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await adapter.execute(makeCtx({ previousSession: { sessionId: "old-session-id" } }));
+		await adapter.execute(
+			makeCtx({ previousSession: { sessionId: "old-session-id" } }),
+		);
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const claudeArgs = newWindow!.args;
 		// Should contain --session-id with a UUID, not "old-session-id"
 		const sessionIdx = claudeArgs.indexOf("--session-id");
@@ -293,7 +314,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx());
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const allArgs = newWindow!.args.join(" ");
 		expect(allArgs).not.toContain("--print");
 		expect(allArgs).not.toContain("--output-format");
@@ -303,12 +324,14 @@ describe("TmuxAdapter", () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await adapter.execute(makeCtx({
-			permissionMode: "bypassPermissions",
-			appendSystemPrompt: "Always use TypeScript",
-		}));
+		await adapter.execute(
+			makeCtx({
+				permissionMode: "bypassPermissions",
+				appendSystemPrompt: "Always use TypeScript",
+			}),
+		);
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const args = newWindow!.args;
 		expect(args).toContain("--permission-mode");
 		expect(args).toContain("bypassPermissions");
@@ -322,7 +345,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx({ model: "opus" }));
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const args = newWindow!.args;
 		expect(args).toContain("--model");
 		expect(args).toContain("opus");
@@ -334,7 +357,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx({ allowedTools: ["Read", "Bash"] }));
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const args = newWindow!.args;
 		expect(args).toContain("--allowed-tools");
 		expect(args).toContain("Read");
@@ -347,7 +370,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx({ maxTurns: 50 }));
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const allArgs = newWindow!.args.join(" ");
 		expect(allArgs).not.toContain("--max-turns");
 	});
@@ -358,7 +381,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx({ allowedTools: [] }));
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const allArgs = newWindow!.args.join(" ");
 		expect(allArgs).not.toContain("--allowed-tools");
 	});
@@ -369,7 +392,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx());
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const allArgs = newWindow!.args.join(" ");
 		expect(allArgs).not.toContain("--max-budget-usd");
 	});
@@ -382,8 +405,10 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx());
 
-		const setEnvCalls = calls.filter(c => c.args[0] === "set-environment");
-		const markerDirCall = setEnvCalls.find(c => c.args.includes("FLYWHEEL_MARKER_DIR") && !c.args.includes("-u"));
+		const setEnvCalls = calls.filter((c) => c.args[0] === "set-environment");
+		const markerDirCall = setEnvCalls.find(
+			(c) => c.args.includes("FLYWHEEL_MARKER_DIR") && !c.args.includes("-u"),
+		);
 		expect(markerDirCall).toBeDefined();
 		expect(markerDirCall!.args).toContain("-t");
 		expect(markerDirCall!.args).toContain("=flywheel");
@@ -395,8 +420,10 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx());
 
-		const setEnvCalls = calls.filter(c => c.args[0] === "set-environment");
-		const unsetCall = setEnvCalls.find(c => c.args.includes("-u") && c.args.includes("CLAUDECODE"));
+		const setEnvCalls = calls.filter((c) => c.args[0] === "set-environment");
+		const unsetCall = setEnvCalls.find(
+			(c) => c.args.includes("-u") && c.args.includes("CLAUDECODE"),
+		);
 		expect(unsetCall).toBeDefined();
 		expect(unsetCall!.args).toContain("-t");
 		expect(unsetCall!.args).toContain("=flywheel");
@@ -408,7 +435,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx());
 
-		const setOption = calls.find(c => c.args[0] === "set-option");
+		const setOption = calls.find((c) => c.args[0] === "set-option");
 		expect(setOption).toBeDefined();
 		expect(setOption!.args).toContain("remain-on-exit");
 		expect(setOption!.args).toContain("on");
@@ -506,7 +533,7 @@ describe("TmuxAdapter", () => {
 
 		await adapter.execute(makeCtx({ label: "GEO-101" }));
 
-		const listPanes = calls.find(c => c.args[0] === "list-panes");
+		const listPanes = calls.find((c) => c.args[0] === "list-panes");
 		expect(listPanes).toBeDefined();
 		// Should use @55, not "GEO-101"
 		const tIdx = listPanes!.args.indexOf("-t");
@@ -537,12 +564,14 @@ describe("TmuxAdapter", () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
-		await adapter.execute(makeCtx({
-			prompt: "Fix the bug",
-			permissionMode: "bypassPermissions",
-		}));
+		await adapter.execute(
+			makeCtx({
+				prompt: "Fix the bug",
+				permissionMode: "bypassPermissions",
+			}),
+		);
 
-		const newWindow = calls.find(c => c.args[0] === "new-window");
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
 		const args = newWindow!.args;
 		// Find "claude" in args, then check prompt is last
 		const claudeIdx = args.indexOf("claude");
@@ -557,16 +586,19 @@ describe("TmuxAdapter", () => {
 	// ─── v0.2: hookServer integration ──────────────
 
 	describe("v0.2 hookServer mode", () => {
-		function makeMockHookServer(options: {
-			port?: number;
-			resolveImmediately?: boolean;
-		} = {}) {
+		function makeMockHookServer(
+			options: { port?: number; resolveImmediately?: boolean } = {},
+		) {
 			const { port = 9876, resolveImmediately = true } = options;
 			return {
 				getPort: vi.fn(() => port),
 				waitForCompletion: vi.fn(async (_token: string, _timeoutMs: number) => {
 					if (resolveImmediately) {
-						return { token: _token, sessionId: "hook-session", issueId: "GEO-42" };
+						return {
+							token: _token,
+							sessionId: "hook-session",
+							issueId: "GEO-42",
+						};
 					}
 					// Never resolve — let pane_dead or timeout win
 					return new Promise(() => {});
@@ -588,7 +620,7 @@ describe("TmuxAdapter", () => {
 
 			await adapter.execute(makeCtx());
 
-			const newWindow = calls.find(c => c.args[0] === "new-window");
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
 			const args = newWindow!.args;
 			expect(args.join(" ")).not.toContain("FLYWHEEL_CALLBACK_PORT");
 			expect(args.join(" ")).not.toContain("FLYWHEEL_CALLBACK_TOKEN");
@@ -601,7 +633,7 @@ describe("TmuxAdapter", () => {
 
 			await adapter.execute(makeCtx({ issueId: "GEO-42" }));
 
-			const newWindow = calls.find(c => c.args[0] === "new-window");
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
 			const args = newWindow!.args;
 
 			// Check -e flags are present
@@ -665,8 +697,10 @@ describe("TmuxAdapter", () => {
 
 			await adapter.execute(makeCtx());
 
-			const setEnvCalls = calls.filter(c => c.args[0] === "set-environment");
-			const markerDirCall = setEnvCalls.find(c => c.args.includes("FLYWHEEL_MARKER_DIR") && !c.args.includes("-u"));
+			const setEnvCalls = calls.filter((c) => c.args[0] === "set-environment");
+			const markerDirCall = setEnvCalls.find(
+				(c) => c.args.includes("FLYWHEEL_MARKER_DIR") && !c.args.includes("-u"),
+			);
 			expect(markerDirCall).toBeUndefined();
 		});
 
@@ -675,9 +709,11 @@ describe("TmuxAdapter", () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			const adapter = new TmuxAdapter("flywheel", fn, 10, 30000, hookServer);
 
-			await adapter.execute(makeCtx({ label: "GEO-42-Fix auth bug", issueId: "GEO-42" }));
+			await adapter.execute(
+				makeCtx({ label: "GEO-42-Fix auth bug", issueId: "GEO-42" }),
+			);
 
-			const newWindow = calls.find(c => c.args[0] === "new-window");
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
 			const args = newWindow!.args;
 			expect(args.join(" ")).toContain("FLYWHEEL_ISSUE_ID=GEO-42");
 		});

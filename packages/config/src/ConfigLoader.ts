@@ -44,9 +44,7 @@ export class ConfigLoader {
 		if (!runners || !runners.default) {
 			throw new Error("Missing required field: runners.default");
 		}
-		const available = runners.available as
-			| Record<string, unknown>
-			| undefined;
+		const available = runners.available as Record<string, unknown> | undefined;
 		if (!available || typeof available !== "object") {
 			throw new Error("Missing required field: runners.available");
 		}
@@ -54,9 +52,7 @@ export class ConfigLoader {
 		// runners.default must be in available
 		const defaultRunner = runners.default as string;
 		if (!(defaultRunner in available)) {
-			throw new Error(
-				`Runner "${defaultRunner}" not in available runners`,
-			);
+			throw new Error(`Runner "${defaultRunner}" not in available runners`);
 		}
 
 		// teams
@@ -76,9 +72,7 @@ export class ConfigLoader {
 					const o = orch as Record<string, unknown>;
 					const runnerRef = o.runner as string;
 					if (runnerRef && !(runnerRef in available)) {
-						throw new Error(
-							`Runner "${runnerRef}" not in available runners`,
-						);
+						throw new Error(`Runner "${runnerRef}" not in available runners`);
 					}
 				}
 			}
@@ -108,8 +102,13 @@ export class ConfigLoader {
 
 		// agents (optional — v0.6)
 		const agents = c.agents as Record<string, unknown> | undefined;
-		if (agents != null && (typeof agents !== "object" || Array.isArray(agents))) {
-			throw new Error("agents must be a YAML mapping (object), not an array or scalar");
+		if (
+			agents != null &&
+			(typeof agents !== "object" || Array.isArray(agents))
+		) {
+			throw new Error(
+				"agents must be a YAML mapping (object), not an array or scalar",
+			);
 		}
 		if (agents && typeof agents === "object") {
 			for (const [name, agentRaw] of Object.entries(agents)) {
@@ -119,26 +118,26 @@ export class ConfigLoader {
 						`agents.${name}: missing required field "agent_file"`,
 					);
 				}
-				this.validateAgentPath(agent.agent_file as string, `agents.${name}.agent_file`);
+				this.validateAgentPath(
+					agent.agent_file as string,
+					`agents.${name}.agent_file`,
+				);
 				if (agent.domain_file != null) {
 					if (typeof agent.domain_file !== "string") {
-						throw new Error(
-							`agents.${name}.domain_file must be a string`,
-						);
+						throw new Error(`agents.${name}.domain_file must be a string`);
 					}
-					this.validateAgentPath(agent.domain_file as string, `agents.${name}.domain_file`);
+					this.validateAgentPath(
+						agent.domain_file as string,
+						`agents.${name}.domain_file`,
+					);
 				}
 				// match is required with labels and keywords arrays
 				if (!agent.match || typeof agent.match !== "object") {
-					throw new Error(
-						`agents.${name}: missing required field "match"`,
-					);
+					throw new Error(`agents.${name}: missing required field "match"`);
 				}
 				const match = agent.match as Record<string, unknown>;
 				if (!Array.isArray(match.labels)) {
-					throw new Error(
-						`agents.${name}.match.labels must be an array`,
-					);
+					throw new Error(`agents.${name}.match.labels must be an array`);
 				}
 				if (!(match.labels as unknown[]).every((l) => typeof l === "string")) {
 					throw new Error(
@@ -146,17 +145,16 @@ export class ConfigLoader {
 					);
 				}
 				if (!Array.isArray(match.keywords)) {
-					throw new Error(
-						`agents.${name}.match.keywords must be an array`,
-					);
+					throw new Error(`agents.${name}.match.keywords must be an array`);
 				}
-				if (!(match.keywords as unknown[]).every((k) => typeof k === "string")) {
+				if (
+					!(match.keywords as unknown[]).every((k) => typeof k === "string")
+				) {
 					throw new Error(
 						`agents.${name}.match.keywords must contain only strings`,
 					);
 				}
 			}
-
 		}
 
 		// default_agent validation (outside agents block)
@@ -168,9 +166,7 @@ export class ConfigLoader {
 				);
 			}
 			if (!(defaultAgent in agents)) {
-				throw new Error(
-					`default_agent "${defaultAgent}" not found in agents`,
-				);
+				throw new Error(`default_agent "${defaultAgent}" not found in agents`);
 			}
 		}
 	}
@@ -185,7 +181,7 @@ export class ConfigLoader {
 		// e.g., "foo/../../etc/passwd" resolves outside the root
 		const dummyRoot = "/flywheel-validate";
 		const resolved = path.resolve(dummyRoot, relativePath);
-		if (!resolved.startsWith(dummyRoot + "/")) {
+		if (!resolved.startsWith(`${dummyRoot}/`)) {
 			throw new Error(
 				`${fieldName}: agent path must not escape repo, got "${relativePath}"`,
 			);

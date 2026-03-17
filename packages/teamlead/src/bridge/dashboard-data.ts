@@ -1,5 +1,5 @@
 import { allowedActionsForState } from "flywheel-core";
-import type { StateStore, Session } from "../StateStore.js";
+import type { Session, StateStore } from "../StateStore.js";
 
 export interface DashboardMetrics {
 	running: number;
@@ -69,7 +69,9 @@ export function buildDashboardPayload(
 	const stuck = store.getStuckSessions(stuckThresholdMinutes);
 
 	const running = active.filter((s) => s.status === "running").length;
-	const awaitingReview = active.filter((s) => s.status === "awaiting_review").length;
+	const awaitingReview = active.filter(
+		(s) => s.status === "awaiting_review",
+	).length;
 	const failedToday = terminal.filter((s) => s.status === "failed").length;
 	const completedToday = terminal.filter(
 		(s) => s.status === "completed" || s.status === "approved",

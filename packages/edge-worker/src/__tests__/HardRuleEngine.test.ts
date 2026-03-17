@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
 import type { ExecutionContext } from "flywheel-core";
+import { describe, expect, it } from "vitest";
 import { HardRuleEngine } from "../decision/HardRuleEngine.js";
 import { defaultRules } from "../decision/rules.js";
 
@@ -57,9 +57,7 @@ describe("HardRuleEngine", () => {
 
 	it("HR-003: .env file triggers escalate", () => {
 		const engine = new HardRuleEngine(defaultRules());
-		const result = engine.evaluate(
-			makeCtx({ changedFilePaths: [".env"] }),
-		);
+		const result = engine.evaluate(makeCtx({ changedFilePaths: [".env"] }));
 		expect(result?.ruleId).toBe("HR-003");
 	});
 
@@ -85,9 +83,7 @@ describe("HardRuleEngine", () => {
 
 	it("HR-005: breaking-change label triggers", () => {
 		const engine = new HardRuleEngine(defaultRules());
-		const result = engine.evaluate(
-			makeCtx({ labels: ["breaking-change"] }),
-		);
+		const result = engine.evaluate(makeCtx({ labels: ["breaking-change"] }));
 		expect(result?.ruleId).toBe("HR-005");
 	});
 
@@ -164,7 +160,9 @@ describe("HardRuleEngine", () => {
 	it("HR-010: landingStatus failed → block", () => {
 		const engine = new HardRuleEngine(defaultRules());
 		const result = engine.evaluate(
-			makeCtx({ landingStatus: { status: "failed", failureReason: "ci_failed" } }),
+			makeCtx({
+				landingStatus: { status: "failed", failureReason: "ci_failed" },
+			}),
 		);
 		expect(result?.triggered).toBe(true);
 		expect(result?.action).toBe("block");

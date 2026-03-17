@@ -1,11 +1,15 @@
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { randomUUID } from "node:crypto";
 import type http from "node:http";
-import { StateStore } from "../StateStore.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
+import type {
+	IRetryDispatcher,
+	RetryRequest,
+	RetryResult,
+} from "../bridge/retry-dispatcher.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import type { IRetryDispatcher, RetryRequest, RetryResult } from "../bridge/retry-dispatcher.js";
+import { StateStore } from "../StateStore.js";
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	return {
@@ -21,18 +25,29 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 }
 
 const testProjects: ProjectEntry[] = [
-	{ projectName: "geoforge3d", projectRoot: "/tmp/geoforge3d", projectRepo: "xrliAnnie/GeoForge3D" },
+	{
+		projectName: "geoforge3d",
+		projectRoot: "/tmp/geoforge3d",
+		projectRepo: "xrliAnnie/GeoForge3D",
+	},
 ];
 
 /** Mock IRetryDispatcher that records dispatch calls and resolves immediately. */
-function createMockDispatcher(): IRetryDispatcher & { calls: RetryRequest[]; rejectNext?: string } {
+function createMockDispatcher(): IRetryDispatcher & {
+	calls: RetryRequest[];
+	rejectNext?: string;
+} {
 	const calls: RetryRequest[] = [];
 	let rejectNext: string | undefined;
 
 	return {
 		calls,
-		get rejectNext() { return rejectNext; },
-		set rejectNext(v: string | undefined) { rejectNext = v; },
+		get rejectNext() {
+			return rejectNext;
+		},
+		set rejectNext(v: string | undefined) {
+			rejectNext = v;
+		},
 
 		async dispatch(req: RetryRequest): Promise<RetryResult> {
 			if (rejectNext) {
@@ -41,9 +56,14 @@ function createMockDispatcher(): IRetryDispatcher & { calls: RetryRequest[]; rej
 				throw new Error(msg);
 			}
 			calls.push(req);
-			return { newExecutionId: randomUUID(), oldExecutionId: req.oldExecutionId };
+			return {
+				newExecutionId: randomUUID(),
+				oldExecutionId: req.oldExecutionId,
+			};
 		},
-		getInflightIssues(): Set<string> { return new Set(); },
+		getInflightIssues(): Set<string> {
+			return new Set();
+		},
 		stopAccepting(): void {},
 		async drain(): Promise<void> {},
 		async teardownRuntimes(): Promise<void> {},
@@ -53,8 +73,12 @@ function createMockDispatcher(): IRetryDispatcher & { calls: RetryRequest[]; rej
 /** Mock dispatcher that reports an issue as inflight. */
 function createInflightDispatcher(inflightIssueId: string): IRetryDispatcher {
 	return {
-		async dispatch(): Promise<RetryResult> { throw new Error("should not be called"); },
-		getInflightIssues(): Set<string> { return new Set([inflightIssueId]); },
+		async dispatch(): Promise<RetryResult> {
+			throw new Error("should not be called");
+		},
+		getInflightIssues(): Set<string> {
+			return new Set([inflightIssueId]);
+		},
 		stopAccepting(): void {},
 		async drain(): Promise<void> {},
 		async teardownRuntimes(): Promise<void> {},
@@ -70,7 +94,14 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
 		dispatcher = createMockDispatcher();
-		const app = createBridgeApp(store, testProjects, makeConfig(), undefined, undefined, dispatcher);
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			makeConfig(),
+			undefined,
+			undefined,
+			dispatcher,
+		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
@@ -246,7 +277,14 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 		// Use a special dispatcher that reports issue-6 as inflight
 		const inflightStore = await StateStore.create(":memory:");
 		const inflightDispatcher = createInflightDispatcher("issue-6");
-		const app2 = createBridgeApp(inflightStore, testProjects, makeConfig(), undefined, undefined, inflightDispatcher);
+		const app2 = createBridgeApp(
+			inflightStore,
+			testProjects,
+			makeConfig(),
+			undefined,
+			undefined,
+			inflightDispatcher,
+		);
 		const server2 = app2.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server2.once("listening", resolve));
 		const addr2 = server2.address();
@@ -309,7 +347,9 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 			status: "failed",
 		});
 
-		const res = await fetch(`${baseUrl}/api/resolve-action?issue_id=issue-8&action=retry`);
+		const res = await fetch(
+			`${baseUrl}/api/resolve-action?issue_id=issue-8&action=retry`,
+		);
 		const body = await res.json();
 
 		expect(body.can_execute).toBe(true);
@@ -319,7 +359,14 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 	it("resolve-action blocks retry when inflight", async () => {
 		const inflightStore = await StateStore.create(":memory:");
 		const inflightDispatcher = createInflightDispatcher("issue-9");
-		const app2 = createBridgeApp(inflightStore, testProjects, makeConfig(), undefined, undefined, inflightDispatcher);
+		const app2 = createBridgeApp(
+			inflightStore,
+			testProjects,
+			makeConfig(),
+			undefined,
+			undefined,
+			inflightDispatcher,
+		);
 		const server2 = app2.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server2.once("listening", resolve));
 		const addr2 = server2.address();
@@ -332,7 +379,9 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 			status: "failed",
 		});
 
-		const res = await fetch(`http://127.0.0.1:${port2}/api/resolve-action?issue_id=issue-9&action=retry`);
+		const res = await fetch(
+			`http://127.0.0.1:${port2}/api/resolve-action?issue_id=issue-9&action=retry`,
+		);
 		const body = await res.json();
 
 		expect(body.can_execute).toBe(false);
@@ -366,7 +415,7 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 
 		// Thread should be unarchived
 		const eligible = store.getEligibleForCleanup(0);
-		const threadForIssue = eligible.find((c) => c.issue_id === "issue-10");
+		const _threadForIssue = eligible.find((c) => c.issue_id === "issue-10");
 		// If unarchived, it won't appear in cleanup candidates (archived_at is null)
 		// Let's verify via the session that retry_successor is set
 		const oldSession = store.getSession("old-exec");

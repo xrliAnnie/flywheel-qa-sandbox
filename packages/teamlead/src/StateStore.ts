@@ -1,11 +1,16 @@
-import initSqlJs, { type Database } from "sql.js";
-import { readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import initSqlJs, { type Database } from "sql.js";
 
 /** All statuses that represent a final outcome (used by dashboard, queries). */
 export const OUTCOME_STATUSES = [
-	"completed", "approved", "blocked", "failed",
-	"rejected", "deferred", "shelved",
+	"completed",
+	"approved",
+	"blocked",
+	"failed",
+	"rejected",
+	"deferred",
+	"shelved",
 ] as const;
 
 // Terminal states — monotonic progression: once terminal, cannot go back to running
@@ -205,8 +210,13 @@ export class StateStore {
 		);
 		if (hasSlackThreadTs.length > 0 && hasSlackThreadTs[0]!.values.length > 0) {
 			// Case (b): old DB — rename
-			this.db.run("ALTER TABLE sessions RENAME COLUMN slack_thread_ts TO thread_id");
-		} else if (hasThreadId.length === 0 || hasThreadId[0]!.values.length === 0) {
+			this.db.run(
+				"ALTER TABLE sessions RENAME COLUMN slack_thread_ts TO thread_id",
+			);
+		} else if (
+			hasThreadId.length === 0 ||
+			hasThreadId[0]!.values.length === 0
+		) {
 			// Case (c): legacy DB — neither column exists
 			this.db.run("ALTER TABLE sessions ADD COLUMN thread_id TEXT");
 		}
@@ -220,8 +230,13 @@ export class StateStore {
 			"SELECT 1 FROM pragma_table_info('conversation_threads') WHERE name='thread_id'",
 		);
 		if (hasOldThreadTs.length > 0 && hasOldThreadTs[0]!.values.length > 0) {
-			this.db.run("ALTER TABLE conversation_threads RENAME COLUMN thread_ts TO thread_id");
-		} else if (hasNewThreadId.length === 0 || hasNewThreadId[0]!.values.length === 0) {
+			this.db.run(
+				"ALTER TABLE conversation_threads RENAME COLUMN thread_ts TO thread_id",
+			);
+		} else if (
+			hasNewThreadId.length === 0 ||
+			hasNewThreadId[0]!.values.length === 0
+		) {
 			this.db.run("ALTER TABLE conversation_threads ADD COLUMN thread_id TEXT");
 		}
 
@@ -251,22 +266,36 @@ export class StateStore {
 			// Column already exists — ignore
 		}
 		try {
-			this.db.run("ALTER TABLE sessions ADD COLUMN run_attempt INTEGER DEFAULT 0");
+			this.db.run(
+				"ALTER TABLE sessions ADD COLUMN run_attempt INTEGER DEFAULT 0",
+			);
 		} catch {
 			// Column already exists — ignore
 		}
 
 		// GEO-168: retry lineage columns
-		try { this.db.run("ALTER TABLE sessions ADD COLUMN retry_predecessor TEXT"); } catch { }
-		try { this.db.run("ALTER TABLE sessions ADD COLUMN retry_successor TEXT"); } catch { }
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN retry_predecessor TEXT");
+		} catch {}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN retry_successor TEXT");
+		} catch {}
 
 		// GEO-169: cleanup tracking columns
 		try {
-			this.db.run("ALTER TABLE conversation_threads ADD COLUMN archived_at TEXT");
-		} catch { /* exists */ }
+			this.db.run(
+				"ALTER TABLE conversation_threads ADD COLUMN archived_at TEXT",
+			);
+		} catch {
+			/* exists */
+		}
 		try {
-			this.db.run("ALTER TABLE conversation_threads ADD COLUMN cleanup_notified_at TEXT");
-		} catch { /* exists */ }
+			this.db.run(
+				"ALTER TABLE conversation_threads ADD COLUMN cleanup_notified_at TEXT",
+			);
+		} catch {
+			/* exists */
+		}
 
 		// Rebuild unique index with current column name
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
@@ -279,11 +308,19 @@ export class StateStore {
 				GROUP BY issue_id
 			) AND issue_id IS NOT NULL
 		`);
-		this.db.run("CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_issue ON conversation_threads(issue_id)");
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_issue ON conversation_threads(issue_id)",
+		);
 
-		this.db.run("CREATE INDEX IF NOT EXISTS idx_events_execution ON session_events(execution_id)");
-		this.db.run("CREATE INDEX IF NOT EXISTS idx_events_issue ON session_events(issue_id)");
-		this.db.run("CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)");
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_events_execution ON session_events(execution_id)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_events_issue ON session_events(issue_id)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
+		);
 	}
 
 	insertEvent(event: SessionEvent): boolean {
@@ -305,7 +342,10 @@ export class StateStore {
 			this.save();
 			return true;
 		} catch (err: unknown) {
-			if (err instanceof Error && err.message.includes("UNIQUE constraint failed")) {
+			if (
+				err instanceof Error &&
+				err.message.includes("UNIQUE constraint failed")
+			) {
 				return false;
 			}
 			throw err;
@@ -338,7 +378,11 @@ export class StateStore {
 	upsertSession(session: SessionUpsert): void {
 		// Check monotonic state: if existing session is terminal, ignore transition back to running
 		const existing = this.getSession(session.execution_id);
-		if (existing && TERMINAL_STATUSES.has(existing.status) && session.status === "running") {
+		if (
+			existing &&
+			TERMINAL_STATUSES.has(existing.status) &&
+			session.status === "running"
+		) {
 			return; // Ignore: terminal → running is not allowed
 		}
 
@@ -428,7 +472,11 @@ export class StateStore {
 	 * Uses INSERT OR UPDATE to handle both first-time creation and subsequent transitions.
 	 * GEO-158: used exclusively by applyTransition().
 	 */
-	persistTransition(executionId: string, status: string, fields: Partial<SessionUpsert>): void {
+	persistTransition(
+		executionId: string,
+		status: string,
+		fields: Partial<SessionUpsert>,
+	): void {
 		this.db.run(
 			`INSERT INTO sessions (
 				execution_id, issue_id, project_name, status,
@@ -514,7 +562,10 @@ export class StateStore {
 	 * Used after applyTransition() for read-model enrichment (commit_count, lines_added, etc.)
 	 * GEO-158: separates status writes (FSM) from metadata writes (event-route).
 	 */
-	patchSessionMetadata(executionId: string, fields: Partial<Omit<SessionUpsert, "status">>): void {
+	patchSessionMetadata(
+		executionId: string,
+		fields: Partial<Omit<SessionUpsert, "status">>,
+	): void {
 		const setClauses: string[] = [];
 		const values: (string | number | null)[] = [];
 
@@ -569,7 +620,12 @@ export class StateStore {
 	/**
 	 * @deprecated Use applyTransition() with FSM instead. Will be removed in v1.3.0.
 	 */
-	forceStatus(executionId: string, status: string, lastActivityAt: string, lastError?: string): void {
+	forceStatus(
+		executionId: string,
+		status: string,
+		lastActivityAt: string,
+		lastError?: string,
+	): void {
 		this.db.run(
 			`UPDATE sessions SET status = ?, last_activity_at = ?, last_error = ? WHERE execution_id = ?`,
 			[status, lastActivityAt, lastError ?? null, executionId],
@@ -578,12 +634,17 @@ export class StateStore {
 	}
 
 	setRetrySuccessor(executionId: string, successorId: string): void {
-		this.db.run("UPDATE sessions SET retry_successor = ? WHERE execution_id = ?", [successorId, executionId]);
+		this.db.run(
+			"UPDATE sessions SET retry_successor = ? WHERE execution_id = ?",
+			[successorId, executionId],
+		);
 		this.save();
 	}
 
 	getSession(executionId: string): Session | undefined {
-		const stmt = this.db.prepare("SELECT * FROM sessions WHERE execution_id = ?");
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE execution_id = ?",
+		);
 		stmt.bind([executionId]);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
@@ -595,7 +656,9 @@ export class StateStore {
 	}
 
 	getSessionByIssue(issueId: string): Session | undefined {
-		const stmt = this.db.prepare("SELECT * FROM sessions WHERE issue_id = ? ORDER BY last_activity_at DESC LIMIT 1");
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE issue_id = ? ORDER BY last_activity_at DESC LIMIT 1",
+		);
 		stmt.bind([issueId]);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
@@ -607,10 +670,14 @@ export class StateStore {
 	}
 
 	getActiveSessions(): Session[] {
-		const stmt = this.db.prepare("SELECT * FROM sessions WHERE status IN ('running', 'awaiting_review')");
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE status IN ('running', 'awaiting_review')",
+		);
 		const rows: Session[] = [];
 		while (stmt.step()) {
-			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
 		}
 		stmt.free();
 		return rows;
@@ -623,7 +690,9 @@ export class StateStore {
 		stmt.bind([`-${thresholdMinutes} minutes`]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
-			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
 		}
 		stmt.free();
 		return rows;
@@ -650,7 +719,9 @@ export class StateStore {
 		stmt.bind([limit]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
-			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
 		}
 		stmt.free();
 		return rows;
@@ -663,7 +734,9 @@ export class StateStore {
 		stmt.bind([issueId]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
-			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
 		}
 		stmt.free();
 		return rows;
@@ -703,7 +776,9 @@ export class StateStore {
 	}
 
 	getThreadIssue(threadId: string): string | undefined {
-		const stmt = this.db.prepare("SELECT issue_id FROM conversation_threads WHERE thread_id = ?");
+		const stmt = this.db.prepare(
+			"SELECT issue_id FROM conversation_threads WHERE thread_id = ?",
+		);
 		stmt.bind([threadId]);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
@@ -714,7 +789,9 @@ export class StateStore {
 		return undefined;
 	}
 
-	getThreadByIssue(issueId: string): { thread_id: string; channel: string } | undefined {
+	getThreadByIssue(
+		issueId: string,
+	): { thread_id: string; channel: string } | undefined {
 		const stmt = this.db.prepare(
 			"SELECT thread_id, channel FROM conversation_threads WHERE issue_id = ?",
 		);
@@ -722,21 +799,27 @@ export class StateStore {
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
 			stmt.free();
-			return { thread_id: row.thread_id as string, channel: row.channel as string };
+			return {
+				thread_id: row.thread_id as string,
+				channel: row.channel as string,
+			};
 		}
 		stmt.free();
 		return undefined;
 	}
 
 	setSessionThreadId(executionId: string, threadId: string): void {
-		this.db.run(
-			"UPDATE sessions SET thread_id = ? WHERE execution_id = ?",
-			[threadId, executionId],
-		);
+		this.db.run("UPDATE sessions SET thread_id = ? WHERE execution_id = ?", [
+			threadId,
+			executionId,
+		]);
 		this.save();
 	}
 
-	getLatestSessionByIssueAndStatuses(issueId: string, statuses: string[]): Session | undefined {
+	getLatestSessionByIssueAndStatuses(
+		issueId: string,
+		statuses: string[],
+	): Session | undefined {
 		if (statuses.length === 0) return undefined;
 		const placeholders = statuses.map(() => "?").join(", ");
 		const stmt = this.db.prepare(
@@ -763,7 +846,9 @@ export class StateStore {
 		stmt.bind([...OUTCOME_STATUSES, sinceTs]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
-			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
 		}
 		stmt.free();
 		return rows;
@@ -780,7 +865,9 @@ export class StateStore {
 		stmt.bind([...OUTCOME_STATUSES, limit]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
-			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
 		}
 		stmt.free();
 		return rows;
@@ -803,7 +890,9 @@ export class StateStore {
 		stmt.bind([`-${thresholdMinutes} minutes`]);
 		const rows: Session[] = [];
 		while (stmt.step()) {
-			rows.push(this.rowToSession(stmt.getAsObject() as Record<string, unknown>));
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
 		}
 		stmt.free();
 		return rows;
@@ -811,7 +900,9 @@ export class StateStore {
 
 	/** Retrieve parsed session_params for a given execution. */
 	getSessionParams(executionId: string): Record<string, unknown> | undefined {
-		const stmt = this.db.prepare("SELECT session_params FROM sessions WHERE execution_id = ?");
+		const stmt = this.db.prepare(
+			"SELECT session_params FROM sessions WHERE execution_id = ?",
+		);
 		stmt.bind([executionId]);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
@@ -836,7 +927,11 @@ export class StateStore {
 	}
 
 	/** Get the most recent session_params + run_attempt for an issue (for session recovery). */
-	getLatestSessionParams(issueId: string): { sessionParams: Record<string, unknown>; runAttempt: number } | undefined {
+	getLatestSessionParams(
+		issueId: string,
+	):
+		| { sessionParams: Record<string, unknown>; runAttempt: number }
+		| undefined {
 		const stmt = this.db.prepare(
 			"SELECT session_params, run_attempt FROM sessions WHERE issue_id = ? AND session_params IS NOT NULL ORDER BY last_activity_at DESC LIMIT 1",
 		);
@@ -876,8 +971,10 @@ export class StateStore {
 		while (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
 			rows.push({
-				thread_id: row.thread_id as string, issue_id: row.issue_id as string,
-				status: row.status as string, last_activity_at: row.last_activity_at as string,
+				thread_id: row.thread_id as string,
+				issue_id: row.issue_id as string,
+				status: row.status as string,
+				last_activity_at: row.last_activity_at as string,
 				cleanup_notified_at: (row.cleanup_notified_at as string) ?? null,
 			});
 		}
@@ -885,15 +982,24 @@ export class StateStore {
 		return rows;
 	}
 	markArchived(threadId: string): void {
-		this.db.run("UPDATE conversation_threads SET archived_at = datetime('now') WHERE thread_id = ?", [threadId]);
+		this.db.run(
+			"UPDATE conversation_threads SET archived_at = datetime('now') WHERE thread_id = ?",
+			[threadId],
+		);
 		this.save();
 	}
 	markCleanupNotified(threadId: string): void {
-		this.db.run("UPDATE conversation_threads SET cleanup_notified_at = datetime('now') WHERE thread_id = ?", [threadId]);
+		this.db.run(
+			"UPDATE conversation_threads SET cleanup_notified_at = datetime('now') WHERE thread_id = ?",
+			[threadId],
+		);
 		this.save();
 	}
 	clearArchived(threadId: string): void {
-		this.db.run("UPDATE conversation_threads SET archived_at = NULL, cleanup_notified_at = NULL WHERE thread_id = ?", [threadId]);
+		this.db.run(
+			"UPDATE conversation_threads SET archived_at = NULL, cleanup_notified_at = NULL WHERE thread_id = ?",
+			[threadId],
+		);
 		this.save();
 	}
 

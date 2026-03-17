@@ -5,7 +5,11 @@ import type {
 	LLMClient,
 } from "flywheel-core";
 
-const VALID_ROUTES: DecisionRoute[] = ["auto_approve", "needs_review", "blocked"];
+const VALID_ROUTES: DecisionRoute[] = [
+	"auto_approve",
+	"needs_review",
+	"blocked",
+];
 
 /**
  * LLM-based triage — classifies execution result into a DecisionRoute.

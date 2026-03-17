@@ -1,8 +1,8 @@
-import { describe, expect, it, afterEach } from "vitest";
-import { loadConfig } from "../config.js";
+import { afterEach, describe, expect, it } from "vitest";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
-import { StateStore } from "../StateStore.js";
 import type { BridgeConfig } from "../bridge/types.js";
+import { loadConfig } from "../config.js";
+import { StateStore } from "../StateStore.js";
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	return {
@@ -53,10 +53,12 @@ describe("Bridge scaffold", () => {
 
 	it("/api/* requires apiToken when configured", async () => {
 		const config = makeConfig({ apiToken: "secret-api" });
-		const { store, close } = await startBridge(config, [{ projectName: "test", projectRoot: "/tmp" }]);
+		const { store, close } = await startBridge(config, [
+			{ projectName: "test", projectRoot: "/tmp" },
+		]);
 		closeFn = close;
 
-		const addr = getListeningPort(close);
+		const _addr = getListeningPort(close);
 		// This will hit the 404 catch-all since no /api routes are mounted yet,
 		// but auth middleware isn't applied yet either (will be in Task 3).
 		// For now, just verify startBridge works.
@@ -120,12 +122,16 @@ describe("Bridge scaffold", () => {
 
 	it("startBridge throws if projects is empty", async () => {
 		const config = makeConfig();
-		await expect(startBridge(config, [])).rejects.toThrow("No projects configured");
+		await expect(startBridge(config, [])).rejects.toThrow(
+			"No projects configured",
+		);
 	});
 
 	it("startBridge starts and closes cleanly", async () => {
 		const config = makeConfig();
-		const result = await startBridge(config, [{ projectName: "test", projectRoot: "/tmp" }]);
+		const result = await startBridge(config, [
+			{ projectName: "test", projectRoot: "/tmp" },
+		]);
 		closeFn = result.close;
 
 		expect(result.app).toBeDefined();
@@ -137,7 +143,10 @@ describe("Bridge scaffold", () => {
 });
 
 // Helper: start an express app on a random port and return the base URL
-async function startAndGetUrl(app: ReturnType<typeof createBridgeApp>, path: string): Promise<string> {
+async function startAndGetUrl(
+	app: ReturnType<typeof createBridgeApp>,
+	path: string,
+): Promise<string> {
 	const server = app.listen(0, "127.0.0.1");
 	await new Promise<void>((resolve) => server.once("listening", resolve));
 	const addr = server.address();

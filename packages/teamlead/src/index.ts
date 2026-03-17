@@ -1,14 +1,16 @@
 #!/usr/bin/env node
 
+import { startBridge } from "./bridge/plugin.js";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
-import { startBridge } from "./bridge/plugin.js";
 
 async function main() {
 	const config = loadConfig();
 	const projects = loadProjects();
 	if (projects.length === 0) {
-		throw new Error("No projects configured — check FLYWHEEL_PROJECTS or project config");
+		throw new Error(
+			"No projects configured — check FLYWHEEL_PROJECTS or project config",
+		);
 	}
 	const { close } = await startBridge(config, projects);
 

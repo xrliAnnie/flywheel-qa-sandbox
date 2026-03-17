@@ -3,12 +3,17 @@
  * DirectEventSink for bridge-local retry execution.
  */
 
-import type { StateStore } from "../../packages/teamlead/dist/StateStore.js";
 import type { BridgeConfig } from "../../packages/teamlead/dist/bridge/types.js";
-import type { ProjectEntry } from "../../packages/teamlead/dist/ProjectConfig.js";
 import { DirectEventSink } from "../../packages/teamlead/dist/DirectEventSink.js";
-import { setupComponents, teardownComponents, log, type FlywheelComponents } from "./setup.js";
+import type { ProjectEntry } from "../../packages/teamlead/dist/ProjectConfig.js";
+import type { StateStore } from "../../packages/teamlead/dist/StateStore.js";
 import { RetryDispatcher } from "./retry-dispatcher.js";
+import {
+	type FlywheelComponents,
+	log,
+	setupComponents,
+	teardownComponents,
+} from "./setup.js";
 
 /**
  * Build a fetchIssue function that tries Linear API first, then falls back
@@ -45,9 +50,14 @@ function createFetchIssue(store: StateStore) {
 		// This affects agent dispatch routing and CIPHER dimension extraction.
 		// Set LINEAR_API_KEY in the environment for full retry fidelity.
 		if (!accessToken) {
-			console.warn("[RetryRuntime] LINEAR_API_KEY not set — retry will lack labels/projectId (agent routing may be degraded)");
+			console.warn(
+				"[RetryRuntime] LINEAR_API_KEY not set — retry will lack labels/projectId (agent routing may be degraded)",
+			);
 		} else {
-			console.warn("[RetryRuntime] Linear API fetch failed for issue %s — falling back to StateStore metadata", id);
+			console.warn(
+				"[RetryRuntime] Linear API fetch failed for issue %s — falling back to StateStore metadata",
+				id,
+			);
 		}
 		const session = store.getSessionByIssue(id);
 		return {
@@ -63,11 +73,16 @@ export async function setupRetryRuntime(
 	bridgeConfig: BridgeConfig,
 	projects: ProjectEntry[],
 ): Promise<RetryDispatcher> {
-	const projectRuntimes = new Map<string, { blueprint: FlywheelComponents["blueprint"]; projectRoot: string }>();
+	const projectRuntimes = new Map<
+		string,
+		{ blueprint: FlywheelComponents["blueprint"]; projectRoot: string }
+	>();
 	const cleanupHandles: Array<() => Promise<void>> = [];
 
 	for (const project of projects) {
-		log(`[RetryRuntime] Setting up retry runtime for project: ${project.projectName}`);
+		log(
+			`[RetryRuntime] Setting up retry runtime for project: ${project.projectName}`,
+		);
 
 		const directSink = new DirectEventSink(store, bridgeConfig);
 		let components: FlywheelComponents | undefined;
@@ -97,15 +112,23 @@ export async function setupRetryRuntime(
 			);
 			// Clean up partially initialized components
 			if (components) {
-				try { await teardownComponents(components); } catch { /* best-effort */ }
+				try {
+					await teardownComponents(components);
+				} catch {
+					/* best-effort */
+				}
 			}
 		}
 	}
 
 	if (projectRuntimes.size === 0) {
-		console.warn("[RetryRuntime] No project runtimes initialized — retry will be unavailable");
+		console.warn(
+			"[RetryRuntime] No project runtimes initialized — retry will be unavailable",
+		);
 	} else {
-		log(`[RetryRuntime] ${projectRuntimes.size}/${projects.length} project(s) ready for retry`);
+		log(
+			`[RetryRuntime] ${projectRuntimes.size}/${projects.length} project(s) ready for retry`,
+		);
 	}
 
 	return new RetryDispatcher(projectRuntimes, cleanupHandles);

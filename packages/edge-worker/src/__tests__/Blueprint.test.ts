@@ -1,14 +1,14 @@
-import { describe, expect, it, vi } from "vitest";
-import { Blueprint } from "../Blueprint.js";
-import { PreHydrator } from "../PreHydrator.js";
-import { GitResultChecker } from "../GitResultChecker.js";
-import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
-import type { DagNode } from "flywheel-dag-resolver";
 import type {
-	IAdapter,
 	AdapterExecutionContext,
 	AdapterExecutionResult,
+	IAdapter,
 } from "flywheel-core";
+import type { DagNode } from "flywheel-dag-resolver";
+import { describe, expect, it, vi } from "vitest";
+import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
+import { Blueprint } from "../Blueprint.js";
+import type { GitResultChecker } from "../GitResultChecker.js";
+import { PreHydrator } from "../PreHydrator.js";
 
 // ─── Helpers ─────────────────────────────────────
 
@@ -34,7 +34,9 @@ function makeMockAdapter(
 		supportsStreaming: false,
 		checkEnvironment: async () => ({ healthy: true, message: "mock" }),
 		execute: vi.fn(
-			async (_ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> => ({
+			async (
+				_ctx: AdapterExecutionContext,
+			): Promise<AdapterExecutionResult> => ({
 				success: true,
 				sessionId: "sess-uuid",
 				tmuxWindow: "flywheel:@42",
@@ -56,13 +58,15 @@ function makeThrowingAdapter(error: Error): IAdapter {
 	};
 }
 
-function makeMockGitChecker(options: {
-	cleanTree?: boolean;
-	baseSha?: string;
-	commitCount?: number;
-	filesChanged?: number;
-	commitMessages?: string[];
-} = {}) {
+function makeMockGitChecker(
+	options: {
+		cleanTree?: boolean;
+		baseSha?: string;
+		commitCount?: number;
+		filesChanged?: number;
+		commitMessages?: string[];
+	} = {},
+) {
 	const {
 		cleanTree = true,
 		baseSha = "abc123",
@@ -94,12 +98,10 @@ function makeMockShell(): ShellRunner {
 }
 
 function makeHydrator() {
-	return new PreHydrator(
-		async (id) => ({
-			title: `Issue ${id} title`,
-			description: `Description for ${id}`,
-		}),
-	);
+	return new PreHydrator(async (id) => ({
+		title: `Issue ${id} title`,
+		description: `Description for ${id}`,
+	}));
 }
 
 // ─── Tests ───────────────────────────────────────
@@ -245,11 +247,7 @@ describe("Blueprint", () => {
 			makeMockShell(),
 		);
 
-		const result = await blueprint.run(
-			makeNode(),
-			"/project",
-			makeContext(),
-		);
+		const result = await blueprint.run(makeNode(), "/project", makeContext());
 
 		expect(result.success).toBe(true);
 	});
@@ -262,11 +260,7 @@ describe("Blueprint", () => {
 			makeMockShell(),
 		);
 
-		const result = await blueprint.run(
-			makeNode(),
-			"/project",
-			makeContext(),
-		);
+		const result = await blueprint.run(makeNode(), "/project", makeContext());
 
 		expect(result.success).toBe(false);
 	});
@@ -281,11 +275,7 @@ describe("Blueprint", () => {
 			makeMockShell(),
 		);
 
-		const result = await blueprint.run(
-			makeNode(),
-			"/project",
-			makeContext(),
-		);
+		const result = await blueprint.run(makeNode(), "/project", makeContext());
 
 		expect(result.success).toBe(false);
 		expect(result.error).toBe("tmux not installed");
@@ -305,8 +295,7 @@ describe("Blueprint", () => {
 
 		await blueprint.run(makeNode(), "/project", makeContext());
 
-		const shellCalls = (shell.execFile as ReturnType<typeof vi.fn>).mock
-			.calls;
+		const shellCalls = (shell.execFile as ReturnType<typeof vi.fn>).mock.calls;
 		const killCalls = shellCalls.filter(
 			(c: [string, string[], string]) =>
 				c[0] === "tmux" && c[1][0] === "kill-window",
@@ -326,8 +315,7 @@ describe("Blueprint", () => {
 
 		await blueprint.run(makeNode(), "/project", makeContext());
 
-		const shellCalls = (shell.execFile as ReturnType<typeof vi.fn>).mock
-			.calls;
+		const shellCalls = (shell.execFile as ReturnType<typeof vi.fn>).mock.calls;
 		const killCalls = shellCalls.filter(
 			(c: [string, string[], string]) =>
 				c[0] === "tmux" && c[1][0] === "kill-window",

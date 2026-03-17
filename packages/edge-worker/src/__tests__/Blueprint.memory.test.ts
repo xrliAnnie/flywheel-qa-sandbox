@@ -1,7 +1,7 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { AdapterExecutionResult, DecisionResult } from "flywheel-core";
-import { Blueprint } from "../Blueprint.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlueprintContext } from "../Blueprint.js";
+import { Blueprint } from "../Blueprint.js";
 import type { IDecisionLayer } from "../decision/DecisionLayer.js";
 import type { MemoryService } from "../memory/MemoryService.js";
 
@@ -73,7 +73,9 @@ function makeMockEvidenceCollector() {
 	};
 }
 
-function makeContext(overrides: Partial<BlueprintContext> = {}): BlueprintContext {
+function makeContext(
+	overrides: Partial<BlueprintContext> = {},
+): BlueprintContext {
 	return {
 		teamName: "eng",
 		runnerName: "claude",
@@ -81,7 +83,9 @@ function makeContext(overrides: Partial<BlueprintContext> = {}): BlueprintContex
 	};
 }
 
-function makeMockMemoryService(overrides: Partial<MemoryService> = {}): MemoryService {
+function makeMockMemoryService(
+	overrides: Partial<MemoryService> = {},
+): MemoryService {
 	return {
 		searchAndFormat: vi.fn().mockResolvedValue(null),
 		addSessionMemory: vi.fn().mockResolvedValue({ added: 1, updated: 0 }),
@@ -129,7 +133,13 @@ describe("Blueprint Memory Retrieval Integration", () => {
 			makeMockGitChecker(),
 			() => adapter,
 			makeMockShell(),
-			undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -142,7 +152,9 @@ describe("Blueprint Memory Retrieval Integration", () => {
 		// Verify adapter was called with system prompt containing memory
 		const runCall = adapter.execute.mock.calls[0][0];
 		expect(runCall.appendSystemPrompt).toContain("<project_memory>");
-		expect(runCall.appendSystemPrompt).toContain("Auth tokens expire after 1 hour");
+		expect(runCall.appendSystemPrompt).toContain(
+			"Auth tokens expire after 1 hour",
+		);
 	});
 
 	it("memory retrieval failure is non-fatal", async () => {
@@ -156,7 +168,13 @@ describe("Blueprint Memory Retrieval Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -184,7 +202,13 @@ describe("Blueprint Memory Retrieval Integration", () => {
 			makeMockGitChecker(),
 			() => adapter,
 			makeMockShell(),
-			undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -206,7 +230,13 @@ describe("Blueprint Memory Retrieval Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -254,11 +284,13 @@ describe("Blueprint Memory Extraction Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			decisionLayer,
-			undefined, undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -285,11 +317,13 @@ describe("Blueprint Memory Extraction Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			undefined,
-			undefined, undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -319,11 +353,13 @@ describe("Blueprint Memory Extraction Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			undefined,
-			undefined, undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -349,11 +385,13 @@ describe("Blueprint Memory Extraction Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			decisionLayer,
-			undefined, undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -381,11 +419,13 @@ describe("Blueprint Memory Extraction Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			decisionLayer,
-			undefined, undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -413,11 +453,13 @@ describe("Blueprint Memory Extraction Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter({ timedOut: true }),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			decisionLayer,
-			undefined, undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -458,11 +500,13 @@ describe("Blueprint Memory Extraction Integration", () => {
 			makeMockGitChecker({ commitCount: 0, hasNewCommits: false }),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			zeroCommitEvidence,
 			undefined,
 			undefined,
-			undefined, undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -488,11 +532,13 @@ describe("Blueprint Memory Extraction Integration", () => {
 			makeMockGitChecker({ commitCount: 3 }),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			undefined,
-			undefined, undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -520,11 +566,13 @@ describe("Blueprint Memory Extraction Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			decisionLayer,
-			undefined, undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 
@@ -548,11 +596,13 @@ describe("Blueprint Memory Extraction Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			undefined,
-			undefined, undefined,
+			undefined,
+			undefined,
 			memoryService,
 		);
 

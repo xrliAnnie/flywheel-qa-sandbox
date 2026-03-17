@@ -1,11 +1,10 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TrustPromptHandler } from "../src/TrustPromptHandler.js";
 
 describe("TrustPromptHandler", () => {
 	describe("isTrustPrompt", () => {
 		it("detects 'Do you trust the files in this folder'", () => {
-			const output =
-				"? Do you trust the files in this folder? (y/N)";
+			const output = "? Do you trust the files in this folder? (y/N)";
 			expect(TrustPromptHandler.isTrustPrompt(output)).toBe(true);
 		});
 

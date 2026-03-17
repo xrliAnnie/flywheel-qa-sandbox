@@ -154,9 +154,7 @@ describe("SlackMessageService", () => {
 				blocks,
 			});
 
-			const calledBody = JSON.parse(
-				mockFetch.mock.calls[0][1].body as string,
-			);
+			const calledBody = JSON.parse(mockFetch.mock.calls[0][1].body as string);
 			expect(calledBody.blocks).toEqual(blocks);
 			expect(calledBody.text).toBe("Fallback text");
 			expect(calledBody.channel).toBe("C9876543210");
@@ -174,9 +172,7 @@ describe("SlackMessageService", () => {
 				text: "Plain message",
 			});
 
-			const calledBody = JSON.parse(
-				mockFetch.mock.calls[0][1].body as string,
-			);
+			const calledBody = JSON.parse(mockFetch.mock.calls[0][1].body as string);
 			expect(calledBody.blocks).toBeUndefined();
 			expect(calledBody.text).toBe("Plain message");
 		});
@@ -191,12 +187,15 @@ describe("SlackMessageService", () => {
 				token: "xoxb-test-token",
 				channel: "C9876543210",
 				text: "Fallback: Review Required GEO-95",
-				blocks: [{ type: "header", text: { type: "plain_text", text: "Review Required: GEO-95" } }],
+				blocks: [
+					{
+						type: "header",
+						text: { type: "plain_text", text: "Review Required: GEO-95" },
+					},
+				],
 			});
 
-			const calledBody = JSON.parse(
-				mockFetch.mock.calls[0][1].body as string,
-			);
+			const calledBody = JSON.parse(mockFetch.mock.calls[0][1].body as string);
 			// Both text and blocks must be present
 			expect(calledBody.text).toBe("Fallback: Review Required GEO-95");
 			expect(calledBody.blocks).toHaveLength(1);

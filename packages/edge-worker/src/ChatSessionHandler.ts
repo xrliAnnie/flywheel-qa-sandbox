@@ -1,7 +1,11 @@
 import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { McpServerConfig, SDKMessage } from "flywheel-claude-runner";
-import { ClaudeAdapterSession, ClaudeRunner, getAllTools } from "flywheel-claude-runner";
+import {
+	ClaudeAdapterSession,
+	ClaudeRunner,
+	getAllTools,
+} from "flywheel-claude-runner";
 import type { CyrusAgentSession, IAgentRunner, ILogger } from "flywheel-core";
 import { createLogger } from "flywheel-core";
 import { AgentSessionManager } from "./AgentSessionManager.js";
@@ -230,7 +234,10 @@ export class ChatSessionHandler<TEvent> {
 
 			// Store the runner in the session manager (both legacy and new adapter paths)
 			this.sessionManager.addAgentRunner(sessionId, runner);
-			this.sessionManager.addAdapterSession(sessionId, new ClaudeAdapterSession(runner));
+			this.sessionManager.addAdapterSession(
+				sessionId,
+				new ClaudeAdapterSession(runner),
+			);
 
 			// Save persisted state
 			await this.deps.onStateChange();
@@ -310,7 +317,10 @@ export class ChatSessionHandler<TEvent> {
 
 		const runner = new ClaudeRunner(runnerConfig);
 		this.sessionManager.addAgentRunner(sessionId, runner);
-		this.sessionManager.addAdapterSession(sessionId, new ClaudeAdapterSession(runner));
+		this.sessionManager.addAdapterSession(
+			sessionId,
+			new ClaudeAdapterSession(runner),
+		);
 
 		try {
 			const sessionInfo = await runner.startStreaming!(taskInstructions);

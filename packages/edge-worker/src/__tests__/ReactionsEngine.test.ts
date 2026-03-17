@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { ReactionsEngine } from "../ReactionsEngine.js";
 import type { ActionHandler, ActionResult } from "../ReactionsEngine.js";
+import { ReactionsEngine } from "../ReactionsEngine.js";
 import type { SlackAction } from "../SlackInteractionServer.js";
 
 function makeAction(overrides?: Partial<SlackAction>): SlackAction {

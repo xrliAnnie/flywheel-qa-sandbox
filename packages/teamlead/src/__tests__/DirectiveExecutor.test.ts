@@ -1,7 +1,7 @@
-import { describe, expect, it, beforeEach } from "vitest";
+import type { AuditDirective, Directive } from "flywheel-core";
+import { beforeEach, describe, expect, it } from "vitest";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import { StateStore } from "../StateStore.js";
-import type { AuditDirective, Directive } from "flywheel-core";
 
 describe("DirectiveExecutor", () => {
 	let store: StateStore;
@@ -35,7 +35,11 @@ describe("DirectiveExecutor", () => {
 		expect(events).toHaveLength(1);
 		expect(events[0]!.event_type).toBe("state_transition");
 		expect(events[0]!.source).toBe("fsm");
-		const payload = events[0]!.payload as { from: string; to: string; trigger: string };
+		const payload = events[0]!.payload as {
+			from: string;
+			to: string;
+			trigger: string;
+		};
 		expect(payload.from).toBe("running");
 		expect(payload.to).toBe("completed");
 		expect(payload.trigger).toBe("session_completed");
@@ -43,8 +47,16 @@ describe("DirectiveExecutor", () => {
 
 	it("drains multiple audit directives sequentially", async () => {
 		const directives = [
-			makeAudit({ fromState: "pending", toState: "running", trigger: "session_started" }),
-			makeAudit({ fromState: "running", toState: "completed", trigger: "session_completed" }),
+			makeAudit({
+				fromState: "pending",
+				toState: "running",
+				trigger: "session_started",
+			}),
+			makeAudit({
+				fromState: "running",
+				toState: "completed",
+				trigger: "session_completed",
+			}),
 		];
 		const results = await executor.drain(directives);
 		expect(results).toHaveLength(2);

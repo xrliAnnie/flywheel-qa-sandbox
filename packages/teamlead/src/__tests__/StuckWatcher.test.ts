@@ -1,6 +1,6 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { StuckWatcher, WebhookStuckNotifier } from "../StuckWatcher.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "../StateStore.js";
+import { StuckWatcher, WebhookStuckNotifier } from "../StuckWatcher.js";
 
 function makeSession(overrides: Partial<Session> = {}): Session {
 	return {
@@ -15,8 +15,14 @@ function makeSession(overrides: Partial<Session> = {}): Session {
 }
 
 describe("StuckWatcher (compat re-export)", () => {
-	let store: { getStuckSessions: ReturnType<typeof vi.fn>; getOrphanSessions: ReturnType<typeof vi.fn> };
-	let notifier: { onSessionStuck: ReturnType<typeof vi.fn>; onSessionOrphaned: ReturnType<typeof vi.fn> };
+	let store: {
+		getStuckSessions: ReturnType<typeof vi.fn>;
+		getOrphanSessions: ReturnType<typeof vi.fn>;
+	};
+	let notifier: {
+		onSessionStuck: ReturnType<typeof vi.fn>;
+		onSessionOrphaned: ReturnType<typeof vi.fn>;
+	};
 	let watcher: StuckWatcher;
 
 	beforeEach(() => {
@@ -41,7 +47,10 @@ describe("StuckWatcher (compat re-export)", () => {
 
 		await watcher.check();
 
-		expect(notifier.onSessionStuck).toHaveBeenCalledWith(session, expect.any(Number));
+		expect(notifier.onSessionStuck).toHaveBeenCalledWith(
+			session,
+			expect.any(Number),
+		);
 	});
 
 	it("check() skips already-notified sessions", async () => {
@@ -87,7 +96,9 @@ describe("WebhookStuckNotifier", () => {
 		const { createServer } = await import("node:http");
 		const gateway = createServer((req, res) => {
 			let data = "";
-			req.on("data", (chunk) => { data += chunk; });
+			req.on("data", (chunk) => {
+				data += chunk;
+			});
 			req.on("end", () => {
 				capturedBody = JSON.parse(data);
 				res.writeHead(200, { "Content-Type": "application/json" });
@@ -99,7 +110,11 @@ describe("WebhookStuckNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
-		const notifier = new WebhookStuckNotifier(`http://127.0.0.1:${port}`, "test-token", "test-channel");
+		const notifier = new WebhookStuckNotifier(
+			`http://127.0.0.1:${port}`,
+			"test-token",
+			"test-channel",
+		);
 		const session: Session = {
 			execution_id: "exec-stuck",
 			issue_id: "i1",
@@ -131,8 +146,10 @@ describe("WebhookStuckNotifier", () => {
 		const { createServer } = await import("node:http");
 		const gateway = createServer((req, res) => {
 			capturedPath = req.url ?? "";
-			let data = "";
-			req.on("data", (chunk) => { data += chunk; });
+			let _data = "";
+			req.on("data", (chunk) => {
+				_data += chunk;
+			});
 			req.on("end", () => {
 				res.writeHead(200, { "Content-Type": "application/json" });
 				res.end(JSON.stringify({ ok: true }));
@@ -143,10 +160,20 @@ describe("WebhookStuckNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
-		const notifier = new WebhookStuckNotifier(`http://127.0.0.1:${port}`, "test-token", "test-channel");
-		await notifier.onSessionStuck({
-			execution_id: "e1", issue_id: "i1", project_name: "p", status: "running",
-		}, 15);
+		const notifier = new WebhookStuckNotifier(
+			`http://127.0.0.1:${port}`,
+			"test-token",
+			"test-channel",
+		);
+		await notifier.onSessionStuck(
+			{
+				execution_id: "e1",
+				issue_id: "i1",
+				project_name: "p",
+				status: "running",
+			},
+			15,
+		);
 
 		expect(capturedPath).toBe("/hooks/ingest");
 

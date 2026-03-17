@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
 import { homedir } from "node:os";
+import { join } from "node:path";
 
 export interface ProjectEntry {
 	projectName: string;
@@ -31,7 +31,10 @@ export function loadProjects(): ProjectEntry[] {
 	}
 
 	for (const entry of raw) {
-		if (typeof entry?.projectName !== "string" || typeof entry?.projectRoot !== "string") {
+		if (
+			typeof entry?.projectName !== "string" ||
+			typeof entry?.projectRoot !== "string"
+		) {
 			throw new Error(
 				`Invalid project entry: each must have string "projectName" and "projectRoot". Got: ${JSON.stringify(entry)}`,
 			);
@@ -41,6 +44,9 @@ export function loadProjects(): ProjectEntry[] {
 	return raw as ProjectEntry[];
 }
 
-export function getProjectRoot(projects: ProjectEntry[], projectName: string): string | undefined {
+export function getProjectRoot(
+	projects: ProjectEntry[],
+	projectName: string,
+): string | undefined {
 	return projects.find((p) => p.projectName === projectName)?.projectRoot;
 }

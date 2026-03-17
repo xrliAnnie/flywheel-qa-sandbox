@@ -111,7 +111,7 @@ export class WorkflowFSM {
 	/** Quick check without side effects (no guards, no directives). */
 	canTransition(from: string, to: string): boolean {
 		const allowed = this.transitions[from];
-		return allowed !== undefined && allowed.includes(to);
+		return allowed?.includes(to) ?? false;
 	}
 }
 
@@ -119,13 +119,7 @@ export class WorkflowFSM {
 
 export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 	pending: ["running"],
-	running: [
-		"awaiting_review",
-		"approved",
-		"blocked",
-		"completed",
-		"failed",
-	],
+	running: ["awaiting_review", "approved", "blocked", "completed", "failed"],
 	awaiting_review: ["approved", "rejected", "deferred", "shelved"],
 	blocked: ["deferred", "shelved"],
 	failed: ["shelved"],

@@ -21,23 +21,21 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-
-// ── Import from compiled dist ──
-import { DagResolver } from "../packages/dag-resolver/dist/DagResolver.js";
-import { Blueprint } from "../packages/edge-worker/dist/Blueprint.js";
-import { PreHydrator } from "../packages/edge-worker/dist/PreHydrator.js";
-import { DagDispatcher } from "../packages/edge-worker/dist/DagDispatcher.js";
-import { GitResultChecker } from "../packages/edge-worker/dist/GitResultChecker.js";
-
-import type { DagNode } from "../packages/dag-resolver/dist/types.js";
+import { join } from "node:path";
 import type {
 	FlywheelRunRequest,
 	FlywheelRunResult,
 	IFlywheelRunner,
 } from "../packages/core/dist/flywheel-runner-types.js";
+// ── Import from compiled dist ──
+import { DagResolver } from "../packages/dag-resolver/dist/DagResolver.js";
+import type { DagNode } from "../packages/dag-resolver/dist/types.js";
+import { Blueprint } from "../packages/edge-worker/dist/Blueprint.js";
+import { DagDispatcher } from "../packages/edge-worker/dist/DagDispatcher.js";
+import { GitResultChecker } from "../packages/edge-worker/dist/GitResultChecker.js";
+import { PreHydrator } from "../packages/edge-worker/dist/PreHydrator.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -58,11 +56,16 @@ class DirectClaudeRunner implements IFlywheelRunner {
 	async run(request: FlywheelRunRequest): Promise<FlywheelRunResult> {
 		// Use -p (not --print) with json output — proven to work
 		const args = [
-			"-p", request.prompt,
-			"--output-format", "json",
-			"--model", "haiku",
-			"--max-turns", String(request.maxTurns ?? 5),
-			"--permission-mode", "bypassPermissions",
+			"-p",
+			request.prompt,
+			"--output-format",
+			"json",
+			"--model",
+			"haiku",
+			"--max-turns",
+			String(request.maxTurns ?? 5),
+			"--permission-mode",
+			"bypassPermissions",
 		];
 
 		if (request.maxCostUsd !== undefined) {
@@ -75,7 +78,9 @@ class DirectClaudeRunner implements IFlywheelRunner {
 			args.push("--resume", request.sessionId);
 		}
 
-		log(`  Running claude -p (haiku, max ${request.maxTurns ?? 5} turns, cwd: ${request.cwd})`);
+		log(
+			`  Running claude -p (haiku, max ${request.maxTurns ?? 5} turns, cwd: ${request.cwd})`,
+		);
 		log(`  Waiting for Claude to fix the code... (no live output in -p mode)`);
 
 		try {
@@ -88,7 +93,9 @@ class DirectClaudeRunner implements IFlywheelRunner {
 
 			const json = JSON.parse(stdout.trim());
 			const success = !json.is_error && json.subtype === "success";
-			log(`  Done: ${success ? "SUCCESS" : json.subtype} — $${(json.total_cost_usd ?? 0).toFixed(4)} — ${json.num_turns ?? 0} turns — ${((json.duration_ms ?? 0) / 1000).toFixed(1)}s`);
+			log(
+				`  Done: ${success ? "SUCCESS" : json.subtype} — $${(json.total_cost_usd ?? 0).toFixed(4)} — ${json.num_turns ?? 0} turns — ${((json.duration_ms ?? 0) / 1000).toFixed(1)}s`,
+			);
 			if (json.result) {
 				log(`  Claude says: "${json.result.slice(0, 120)}"`);
 			}
@@ -111,7 +118,9 @@ class DirectClaudeRunner implements IFlywheelRunner {
 						costUsd: json.total_cost_usd ?? 0,
 						sessionId: json.session_id ?? "",
 					};
-				} catch { /* not JSON */ }
+				} catch {
+					/* not JSON */
+				}
 			}
 			log(`  ERROR: ${error.message?.slice(0, 100)}`);
 			return { success: false, costUsd: 0, sessionId: "" };
@@ -191,11 +200,15 @@ async function main() {
 	// 1. Check environment
 	if (process.env.CLAUDECODE) {
 		console.error("WARNING: Running inside Claude Code session.");
-		console.error("The nested claude CLI may hang. Run from a regular terminal instead.\n");
+		console.error(
+			"The nested claude CLI may hang. Run from a regular terminal instead.\n",
+		);
 	}
 
 	try {
-		const ver = execFileSync("claude", ["--version"], { encoding: "utf-8" }).trim();
+		const ver = execFileSync("claude", ["--version"], {
+			encoding: "utf-8",
+		}).trim();
 		log(`Claude CLI: ${ver}`);
 	} catch {
 		console.error("ERROR: `claude` CLI not found.");
@@ -207,7 +220,10 @@ async function main() {
 
 	log("\n--- Before fix ---");
 	try {
-		execFileSync("npx", ["tsx", "math.test.ts"], { cwd: repoDir, encoding: "utf-8" });
+		execFileSync("npx", ["tsx", "math.test.ts"], {
+			cwd: repoDir,
+			encoding: "utf-8",
+		});
 	} catch (e: any) {
 		console.log(e.stdout || "(tests failed as expected)");
 	}
@@ -219,7 +235,12 @@ async function main() {
 	];
 	const resolver = new DagResolver(nodes);
 	log(`\nDAG: ${resolver.remaining()} nodes`);
-	log(`Ready: [${resolver.getReady().map(n => n.id).join(", ")}]`);
+	log(
+		`Ready: [${resolver
+			.getReady()
+			.map((n) => n.id)
+			.join(", ")}]`,
+	);
 	log(`Blocked: SMOKE-2 (waiting on SMOKE-1)\n`);
 
 	// 4. Wire components
@@ -239,7 +260,8 @@ async function main() {
 	};
 
 	const hydrator = new PreHydrator(
-		async (id: string) => issueData[id] ?? { title: "Unknown", description: "" },
+		async (id: string) =>
+			issueData[id] ?? { title: "Unknown", description: "" },
 	);
 
 	const gitChecker = new GitResultChecker(

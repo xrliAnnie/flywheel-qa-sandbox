@@ -1,4 +1,5 @@
 #!/usr/bin/env npx tsx
+
 /**
  * E2E: IAdapter Protocol Verification (GEO-157)
  *
@@ -11,14 +12,13 @@
  * 6. Heartbeat route — HTTP integration via TeamLead bridge
  */
 
-import { AdapterRegistry } from "../packages/core/dist/AdapterRegistry.js";
-import { TmuxAdapter } from "../packages/claude-runner/dist/TmuxAdapter.js";
 import { ClaudeCodeAdapter } from "../packages/claude-runner/dist/ClaudeCodeAdapter.js";
+import { TmuxAdapter } from "../packages/claude-runner/dist/TmuxAdapter.js";
 import { TmuxRunner } from "../packages/claude-runner/dist/TmuxRunner.js";
-
+import { AdapterRegistry } from "../packages/core/dist/AdapterRegistry.js";
+import { HeartbeatService } from "../packages/teamlead/dist/HeartbeatService.js";
 // For HeartbeatService / StateStore E2E
 import { StateStore } from "../packages/teamlead/dist/StateStore.js";
-import { HeartbeatService } from "../packages/teamlead/dist/HeartbeatService.js";
 
 let passed = 0;
 let failed = 0;
@@ -29,7 +29,9 @@ function ok(name: string) {
 }
 function fail(name: string, err: unknown) {
 	failed++;
-	console.log(`  ❌ ${name}: ${err instanceof Error ? err.message : String(err)}`);
+	console.log(
+		`  ❌ ${name}: ${err instanceof Error ? err.message : String(err)}`,
+	);
 }
 
 async function main() {
@@ -43,18 +45,27 @@ async function main() {
 		if (!health.healthy) throw new Error(`Not healthy: ${health.message}`);
 		if (!health.details?.tmux) throw new Error("Missing tmux version");
 		if (!health.details?.claude) throw new Error("Missing claude version");
-		ok(`healthy=true, tmux=${health.details.tmux}, claude=${health.details.claude}`);
-	} catch (e) { fail("checkEnvironment", e); }
+		ok(
+			`healthy=true, tmux=${health.details.tmux}, claude=${health.details.claude}`,
+		);
+	} catch (e) {
+		fail("checkEnvironment", e);
+	}
 
 	// ── 2. TmuxRunner compat shim ──
 	console.log("\n2. TmuxRunner compat shim");
 	try {
 		const runner = new TmuxRunner();
-		if (runner.name !== "claude-tmux") throw new Error(`name=${runner.name}, expected claude-tmux`);
-		if (typeof runner.run !== "function") throw new Error("run() not a function");
-		if (typeof runner.sanitizeWindowName !== "function") throw new Error("sanitizeWindowName not a function");
+		if (runner.name !== "claude-tmux")
+			throw new Error(`name=${runner.name}, expected claude-tmux`);
+		if (typeof runner.run !== "function")
+			throw new Error("run() not a function");
+		if (typeof runner.sanitizeWindowName !== "function")
+			throw new Error("sanitizeWindowName not a function");
 		ok(`name=${runner.name}, run() exists, sanitizeWindowName() exists`);
-	} catch (e) { fail("compat shim", e); }
+	} catch (e) {
+		fail("compat shim", e);
+	}
 
 	// ── 3. ClaudeCodeAdapter.checkEnvironment() ──
 	console.log("\n3. ClaudeCodeAdapter.checkEnvironment()");
@@ -63,7 +74,9 @@ async function main() {
 		const health = await adapter.checkEnvironment();
 		if (!health.healthy) throw new Error(`Not healthy: ${health.message}`);
 		ok(`healthy=true, version=${health.details?.version}`);
-	} catch (e) { fail("checkEnvironment", e); }
+	} catch (e) {
+		fail("checkEnvironment", e);
+	}
 
 	// ── 4. AdapterRegistry ──
 	console.log("\n4. AdapterRegistry");
@@ -76,11 +89,14 @@ async function main() {
 		registry.setDefault("claude");
 
 		const got = registry.get("claude-tmux");
-		if (got !== tmux) throw new Error("get(claude-tmux) returned wrong adapter");
+		if (got !== tmux)
+			throw new Error("get(claude-tmux) returned wrong adapter");
 		const def = registry.getDefault();
 		if (def !== code) throw new Error("getDefault returned wrong adapter");
 		ok(`registered 2 adapters, default=claude, get(claude-tmux) works`);
-	} catch (e) { fail("AdapterRegistry", e); }
+	} catch (e) {
+		fail("AdapterRegistry", e);
+	}
 
 	// ── 5. HeartbeatService orphan reaping ──
 	console.log("\n5. HeartbeatService orphan reaping (StateStore integration)");
@@ -105,24 +121,35 @@ async function main() {
 		// Verify updateHeartbeat works
 		const session = store.getSession("orphan-exec-1");
 		if (!session) throw new Error("Session not found after upsert");
-		ok(`updateHeartbeat() sets heartbeat_at (session exists, status=${session.status})`);
+		ok(
+			`updateHeartbeat() sets heartbeat_at (session exists, status=${session.status})`,
+		);
 
 		// Verify getOrphanSessions with very high threshold returns nothing (heartbeat is fresh)
 		const noOrphans = store.getOrphanSessions(999999);
-		if (noOrphans.length !== 0) throw new Error(`Expected 0 orphans with huge threshold, got ${noOrphans.length}`);
+		if (noOrphans.length !== 0)
+			throw new Error(
+				`Expected 0 orphans with huge threshold, got ${noOrphans.length}`,
+			);
 		ok(`getOrphanSessions(999999) returns 0 (fresh heartbeat)`);
 
 		// Note: threshold=0 means "heartbeat_at < now" which is false for a just-updated heartbeat.
 		// Use a large threshold in the future to simulate staleness, or test with unit tests.
 		// Here we verify the query runs and returns correctly shaped data.
 		// The unit tests in StateStore.test.ts cover the actual orphan detection logic.
-		ok(`getOrphanSessions query executes correctly (unit tests verify threshold logic)`);
+		ok(
+			`getOrphanSessions query executes correctly (unit tests verify threshold logic)`,
+		);
 
 		// Verify session_params round-trip
-		store.setSessionParams("orphan-exec-1", { sessionId: "claude-abc", attempt: 3 });
+		store.setSessionParams("orphan-exec-1", {
+			sessionId: "claude-abc",
+			attempt: 3,
+		});
 		const params = store.getSessionParams("orphan-exec-1");
 		if (!params) throw new Error("getSessionParams returned undefined");
-		if (params.sessionId !== "claude-abc") throw new Error(`sessionId=${params.sessionId}`);
+		if (params.sessionId !== "claude-abc")
+			throw new Error(`sessionId=${params.sessionId}`);
 		if (params.attempt !== 3) throw new Error(`attempt=${params.attempt}`);
 		ok(`session_params round-trip: set { sessionId, attempt } → get matches`);
 
@@ -138,7 +165,9 @@ async function main() {
 		ok(`HeartbeatService start/check/stop lifecycle works`);
 
 		store.close();
-	} catch (e) { fail("orphan reaping", e); }
+	} catch (e) {
+		fail("orphan reaping", e);
+	}
 
 	// ── 6. getLatestSessionParams ──
 	console.log("\n6. getLatestSessionParams (session recovery infrastructure)");
@@ -165,16 +194,21 @@ async function main() {
 		const latest = store.getLatestSessionParams("GEO-100");
 		if (!latest) throw new Error("getLatestSessionParams returned undefined");
 		if (latest.sessionParams.sessionId !== "new-session") {
-			throw new Error(`Expected new-session, got ${latest.sessionParams.sessionId}`);
+			throw new Error(
+				`Expected new-session, got ${latest.sessionParams.sessionId}`,
+			);
 		}
 		ok(`getLatestSessionParams returns most recent (new-session)`);
 
 		const none = store.getLatestSessionParams("GEO-NONEXISTENT");
-		if (none !== undefined) throw new Error("Expected undefined for non-existent issue");
+		if (none !== undefined)
+			throw new Error("Expected undefined for non-existent issue");
 		ok(`getLatestSessionParams returns undefined for unknown issue`);
 
 		store.close();
-	} catch (e) { fail("getLatestSessionParams", e); }
+	} catch (e) {
+		fail("getLatestSessionParams", e);
+	}
 
 	// ── Summary ──
 	console.log(`\n${"=".repeat(50)}`);

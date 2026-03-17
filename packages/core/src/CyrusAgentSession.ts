@@ -3,11 +3,11 @@
  * These types represent the core data structures for tracking agent sessions in Linear
  */
 
+import type { AdapterSession } from "./adapter-types.js";
 import type {
 	IAgentRunner,
 	SDKAssistantMessageError,
 } from "./agent-runner-types.js";
-import type { AdapterSession } from "./adapter-types.js";
 import type {
 	AgentSessionStatus,
 	AgentSessionType,

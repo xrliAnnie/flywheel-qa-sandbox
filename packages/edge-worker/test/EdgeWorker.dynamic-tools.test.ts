@@ -446,7 +446,11 @@ describe("EdgeWorker - Dynamic Tools Configuration", () => {
 			const buildAllowedTools = getBuildAllowedTools(edgeWorker);
 			const tools = buildAllowedTools(repository, "debugger");
 
-			expect(tools).toEqual(["CustomTool", "mcp__linear", "mcp__flywheel-tools"]);
+			expect(tools).toEqual([
+				"CustomTool",
+				"mcp__linear",
+				"mcp__flywheel-tools",
+			]);
 		});
 	});
 

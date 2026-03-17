@@ -1,4 +1,8 @@
-import type { DecisionResult, DecisionRoute, ExecutionContext } from "flywheel-core";
+import type {
+	DecisionResult,
+	DecisionRoute,
+	ExecutionContext,
+} from "flywheel-core";
 import type { SlackMessageService } from "flywheel-slack-event-transport";
 
 export interface SlackNotifierConfig {
@@ -21,7 +25,10 @@ export class SlackNotifier {
 	): Promise<{ sent: boolean }> {
 		// Backward compat: HR-LANDED (already merged) — skip legacy notification
 		// Production path (Bridge/OpenClaw) handles merged sessions correctly
-		if (decision.route === "auto_approve" && decision.hardRuleId === "HR-LANDED") {
+		if (
+			decision.route === "auto_approve" &&
+			decision.hardRuleId === "HR-LANDED"
+		) {
 			return { sent: false };
 		}
 
@@ -190,7 +197,8 @@ export class SlackNotifier {
 		decision: DecisionResult,
 		extra?: { tmuxSession?: string; consecutiveFailures?: number },
 	): unknown[] {
-		const attempt = (extra?.consecutiveFailures ?? ctx.consecutiveFailures ?? 0) + 1;
+		const attempt =
+			(extra?.consecutiveFailures ?? ctx.consecutiveFailures ?? 0) + 1;
 
 		return [
 			// Header

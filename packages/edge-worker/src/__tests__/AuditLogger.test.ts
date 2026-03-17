@@ -1,11 +1,13 @@
-import { describe, it, expect, afterEach } from "vitest";
-import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { AuditLogger } from "../AuditLogger.js";
+import { join } from "node:path";
 import type { DecisionResult, ExecutionContext } from "flywheel-core";
+import { afterEach, describe, expect, it } from "vitest";
+import { AuditLogger } from "../AuditLogger.js";
 
-function makeContext(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
+function makeContext(
+	overrides: Partial<ExecutionContext> = {},
+): ExecutionContext {
 	return {
 		issueId: "issue-1",
 		issueIdentifier: "GEO-95",
@@ -107,10 +109,7 @@ describe("AuditLogger", () => {
 	it("log() maps eventType correctly for all sources", async () => {
 		const l = createLogger();
 		await l.init();
-		await l.log(
-			makeContext(),
-			makeDecision({ decisionSource: "hard_rule" }),
-		);
+		await l.log(makeContext(), makeDecision({ decisionSource: "hard_rule" }));
 		await l.log(
 			makeContext(),
 			makeDecision({ decisionSource: "fallback_heuristic" }),
