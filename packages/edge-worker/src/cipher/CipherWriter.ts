@@ -454,6 +454,28 @@ export class CipherWriter {
          WHERE last_seen_at < ? AND maturity_level IN ('trusted', 'established')`,
 				[decayThreshold],
 			);
+
+			// Cascade: retire skills/principles whose source pattern decayed
+			// to tentative (no longer eligible for extractSkills which requires
+			// established/trusted). Without this, stale active principles would
+			// persist in HardRuleEngine indefinitely.
+			const now = sqlNow();
+			this.db.run(
+				`UPDATE cipher_principles SET status = 'retired', retired_at = ?, retired_reason = 'source_pattern_decayed'
+				 WHERE skill_id IN (
+				   SELECT s.id FROM cipher_skills s
+				   JOIN decision_patterns p ON s.source_pattern_key = p.pattern_key
+				   WHERE p.maturity_level = 'tentative' AND s.status = 'active'
+				 ) AND status = 'active'`,
+				[now],
+			);
+			this.db.run(
+				`UPDATE cipher_skills SET status = 'retired', description = description || ' [retired: source pattern decayed]', updated_at = ?
+				 WHERE source_pattern_key IN (
+				   SELECT pattern_key FROM decision_patterns WHERE maturity_level = 'tentative'
+				 ) AND status = 'active'`,
+				[now],
+			);
 		});
 	}
 
@@ -665,27 +687,30 @@ export class CipherWriter {
 	// --- Wave 2: Dreaming ---
 
 	async runDreaming(): Promise<void> {
+		// Capture start timestamp BEFORE dreaming steps so reviews arriving
+		// during the async dreaming window are counted toward the next cycle.
+		const dreamingStartTs = sqlNow();
+
 		// Refresh temporal windows first so detect/extract operate on current 90-day data
 		await this.refreshTemporalWindows();
 		await this.detectQuestions();
 		await this.extractSkills();
 		await this.graduateSkillsToPrinciples();
 
-		// Persist dreaming completion timestamp so restarts know when dreaming
-		// last succeeded. Then re-read outcomeCount from DB to capture any
-		// reviews that arrived during dreaming (which has await points).
-		const dreamingTs = sqlNow();
+		// Persist the start-of-dreaming timestamp. Reviews with created_at >=
+		// dreamingStartTs were not fully processed by this cycle, so they count
+		// toward the next dreaming trigger (both at restart and in-memory).
 		this.db.run(
 			`INSERT OR REPLACE INTO cipher_metadata (key, value) VALUES ('last_dreaming_at', ?)`,
-			[dreamingTs],
+			[dreamingStartTs],
 		);
 		this.save();
 		this.lastRefreshAt = Date.now();
-		// Re-read from DB instead of blindly resetting to 0 — reviews may
-		// have been recorded concurrently during the async dreaming steps.
+		// Re-read from DB — any review arriving during dreaming will have
+		// created_at >= dreamingStartTs and be correctly included.
 		const postCount = this.db.exec(
 			`SELECT COUNT(*) FROM decision_reviews WHERE created_at >= ?`,
-			[dreamingTs],
+			[dreamingStartTs],
 		);
 		this.outcomeCount = (postCount.length > 0 && postCount[0]!.values.length > 0)
 			? Number(postCount[0]!.values[0]![0]) || 0
