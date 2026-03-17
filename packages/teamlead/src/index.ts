@@ -16,24 +16,29 @@ async function main() {
 		throw new Error("No projects configured — check FLYWHEEL_PROJECTS or project config");
 	}
 
-	// CIPHER: create writer + inject notification callback
-	const cipherWriter = await CipherWriter.create(
-		join(homedir(), ".flywheel", "cipher.db"),
-	);
-	cipherWriter.setNotifyFn(async (proposal) => {
-		const hookPayload: HookPayload = {
-			...proposal,
-			execution_id: "",
-			issue_id: "",
-			project_name: "",
-			status: "pending_ceo",
-		};
-		const sessionKey = `cipher-proposal-${proposal.cipher_principle_id}`;
-		const body = buildHookBody("product-lead", hookPayload, sessionKey);
-		if (config.gatewayUrl && config.hooksToken) {
-			await notifyAgent(config.gatewayUrl, config.hooksToken, body);
-		}
-	});
+	// CIPHER: create writer + inject notification callback (advisory — bridge starts without it)
+	let cipherWriter: CipherWriter | undefined;
+	try {
+		cipherWriter = await CipherWriter.create(
+			join(homedir(), ".flywheel", "cipher.db"),
+		);
+		cipherWriter.setNotifyFn(async (proposal) => {
+			const hookPayload: HookPayload = {
+				...proposal,
+				execution_id: "",
+				issue_id: "",
+				project_name: "",
+				status: "pending_ceo",
+			};
+			const sessionKey = `cipher-proposal-${proposal.cipher_principle_id}`;
+			const body = buildHookBody("product-lead", hookPayload, sessionKey);
+			if (config.gatewayUrl && config.hooksToken) {
+				await notifyAgent(config.gatewayUrl, config.hooksToken, body);
+			}
+		});
+	} catch (err) {
+		console.warn("[CIPHER] Failed to initialize — running without CIPHER:", (err as Error).message);
+	}
 
 	const { close } = await startBridge(config, projects, { cipherWriter });
 

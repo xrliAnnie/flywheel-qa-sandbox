@@ -137,3 +137,21 @@ CREATE TABLE IF NOT EXISTS cipher_sync_metadata (
   last_synced_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   rows_synced INTEGER NOT NULL DEFAULT 0
 );
+
+-- RLS: all cipher tables are service-role only (no anon/client access)
+ALTER TABLE decision_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE decision_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE decision_statistics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cipher_skills ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cipher_principles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cipher_questions ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cipher_sync_metadata ENABLE ROW LEVEL SECURITY;
+
+-- Service-role full access (CipherSyncService uses service_role key)
+CREATE POLICY "service_role_all" ON decision_snapshots FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON decision_reviews FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON decision_statistics FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON cipher_skills FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON cipher_principles FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON cipher_questions FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON cipher_sync_metadata FOR ALL USING (auth.role() = 'service_role');
