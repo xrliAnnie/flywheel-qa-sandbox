@@ -208,7 +208,7 @@ async function main() {
 	// The shell command retries until the tmux session appears (created by TmuxRunner).
 	execFileSync("osascript", [
 		"-e",
-		`tell application "Terminal" to do script "echo 'Waiting for Claude to start...' && while ! tmux has-session -t flywheel-e2e 2>/dev/null; do sleep 1; done && tmux attach -t flywheel-e2e"`,
+		`tell application "Terminal" to do script "echo 'Waiting for Claude to start...' && while ! tmux has-session -t flywheel-e2e 2>/dev/null; do sleep 1; done && tmux attach -t flywheel-e2e; exit 0"`,
 	]);
 	log("Opened viewer window — it will connect once Claude starts");
 

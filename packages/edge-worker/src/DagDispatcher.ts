@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { FLYWHEEL_MARKER_DIR, Semaphore } from "flywheel-core";
@@ -192,11 +192,34 @@ export class DagDispatcher {
 	 */
 	private openTmuxViewer(): void {
 		const s = this.tmuxSessionName;
+		// Dedup: skip if a client is already attached
+		try {
+			const clients = execFileSync(
+				"tmux",
+				["list-clients", "-t", `=${s}`],
+				{ encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+			);
+			if (clients.trim().length > 0) {
+				console.log(
+					`[DagDispatcher] Viewer already attached to ${s}, skipping`,
+				);
+				return;
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (!msg.includes("can't find session")) {
+				console.warn(
+					`[DagDispatcher] tmux list-clients failed for ${s}: ${msg}`,
+				);
+			}
+			// Session may not exist yet — proceed to open (best-effort)
+		}
+
 		execFile(
 			"osascript",
 			[
 				"-e",
-				`tell application "Terminal" to do script "tmux attach -t '=${s}' 2>/dev/null || (echo 'Waiting for tmux session ${s}...' && sleep 2 && tmux attach -t '=${s}')"`,
+				`tell application "Terminal" to do script "tmux attach -t '=${s}' 2>/dev/null || (echo 'Waiting for tmux session ${s}...' && sleep 2 && tmux attach -t '=${s}'); exit 0"`,
 			],
 			(err) => {
 				if (err) {
