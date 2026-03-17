@@ -2,7 +2,7 @@
 
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { CipherWriter } from "flywheel-edge-worker";
+import { CipherWriter, CipherSyncService } from "flywheel-edge-worker";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
 import { startBridge } from "./bridge/plugin.js";
@@ -22,6 +22,17 @@ async function main() {
 		cipherWriter = await CipherWriter.create(
 			join(homedir(), ".flywheel", "cipher.db"),
 		);
+		// Wire Supabase sync (advisory — runs after dreaming, env vars optional)
+		const supabaseUrl = process.env.SUPABASE_URL;
+		const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+		if (supabaseUrl && supabaseKey) {
+			const syncService = new CipherSyncService({ supabaseUrl, supabaseKey });
+			cipherWriter.setSyncAfterDreaming(async (db) => {
+				await syncService.syncAll(db);
+			});
+			console.log("[CIPHER] Supabase sync enabled");
+		}
+
 		cipherWriter.setNotifyFn(async (proposal) => {
 			const hookPayload: HookPayload = {
 				...proposal,

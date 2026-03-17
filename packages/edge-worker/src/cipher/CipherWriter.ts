@@ -152,6 +152,7 @@ function sqlNow(): string {
 export class CipherWriter {
 	private db!: Database;
 	private notifyFn?: CipherNotifyFn;
+	private syncAfterDreamingFn?: (db: Database) => Promise<void>;
 	private outcomeCount = 0;
 	private lastRefreshAt = Date.now();
 
@@ -202,6 +203,16 @@ export class CipherWriter {
 	/** Injected by TeamLead composition root */
 	setNotifyFn(fn: CipherNotifyFn): void {
 		this.notifyFn = fn;
+	}
+
+	/** Injected by TeamLead composition root for Supabase sync after dreaming */
+	setSyncAfterDreaming(fn: (db: Database) => Promise<void>): void {
+		this.syncAfterDreamingFn = fn;
+	}
+
+	/** Expose the sql.js Database for CipherSyncService */
+	getDatabase(): Database {
+		return this.db;
 	}
 
 	// --- Phase A: saveSnapshot ---
@@ -551,13 +562,6 @@ export class CipherWriter {
 			// Skip ambiguous patterns
 			if (approveRate > 0.3 && approveRate < 0.7) continue;
 
-			// Check if skill already exists for this pattern
-			const exists = this.db.exec(
-				`SELECT 1 FROM cipher_skills WHERE source_pattern_key = ?`,
-				[key],
-			);
-			if (exists.length > 0 && exists[0]!.values.length > 0) continue;
-
 			const action =
 				approveRate >= 0.7 ? "likely_approve" : "likely_reject";
 			const confidence =
@@ -565,22 +569,34 @@ export class CipherWriter {
 			const name = `Auto-${action}: ${key}`;
 			const description = `Pattern "${key}" shows ${(approveRate * 100).toFixed(0)}% approve rate over ${tc} samples (${ml}).`;
 
-			this.db.run(
-				`INSERT INTO cipher_skills (id, name, description, source_pattern_key, trigger_conditions, recommended_action, confidence, sample_count, derived_by, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'statistical', 'active', ?, ?)`,
-				[
-					randomUUID(),
-					name,
-					description,
-					key,
-					JSON.stringify({ pattern_key: key }),
-					action,
-					confidence,
-					tc,
-					now,
-					now,
-				],
+			// Update existing skill if pattern already tracked, otherwise insert new
+			const exists = this.db.exec(
+				`SELECT id FROM cipher_skills WHERE source_pattern_key = ?`,
+				[key],
 			);
+			if (exists.length > 0 && exists[0]!.values.length > 0) {
+				this.db.run(
+					`UPDATE cipher_skills SET confidence = ?, sample_count = ?, recommended_action = ?, name = ?, description = ?, updated_at = ? WHERE source_pattern_key = ?`,
+					[confidence, tc, action, name, description, now, key],
+				);
+			} else {
+				this.db.run(
+					`INSERT INTO cipher_skills (id, name, description, source_pattern_key, trigger_conditions, recommended_action, confidence, sample_count, derived_by, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'statistical', 'active', ?, ?)`,
+					[
+						randomUUID(),
+						name,
+						description,
+						key,
+						JSON.stringify({ pattern_key: key }),
+						action,
+						confidence,
+						tc,
+						now,
+						now,
+					],
+				);
+			}
 		}
 		this.save();
 	}
@@ -594,6 +610,15 @@ export class CipherWriter {
 		await this.detectQuestions();
 		await this.extractSkills();
 		await this.graduateSkillsToPrinciples();
+
+		// Sync to Supabase mirror after dreaming completes (advisory — errors don't fail dreaming)
+		if (this.syncAfterDreamingFn) {
+			try {
+				await this.syncAfterDreamingFn(this.db);
+			} catch (err) {
+				console.error("[CIPHER] Supabase sync failed:", (err as Error).message);
+			}
+		}
 	}
 
 	// --- Wave 2: Prediction-feedback ---
