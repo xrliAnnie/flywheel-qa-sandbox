@@ -41,6 +41,14 @@ function createFetchIssue(store: StateStore) {
 		}
 
 		// Fallback: reconstruct from stored session metadata
+		// WARNING: labels and projectId are unavailable without LINEAR_API_KEY.
+		// This affects agent dispatch routing and CIPHER dimension extraction.
+		// Set LINEAR_API_KEY in the environment for full retry fidelity.
+		if (!accessToken) {
+			console.warn("[RetryRuntime] LINEAR_API_KEY not set — retry will lack labels/projectId (agent routing may be degraded)");
+		} else {
+			console.warn("[RetryRuntime] Linear API fetch failed for issue %s — falling back to StateStore metadata", id);
+		}
 		const session = store.getSessionByIssue(id);
 		return {
 			title: session?.issue_title ?? `Issue ${id}`,
