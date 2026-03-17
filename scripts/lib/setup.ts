@@ -209,13 +209,16 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 					const sizeBucket = totalLines <= 20 ? "tiny" : totalLines <= 100 ? "small" : totalLines <= 500 ? "medium" : "large";
 					const touchesAuth = ctx.changedFilePaths.some((p) => AUTH_RE.test(p));
 					const hasTests = ctx.changedFilePaths.some((p) => TEST_RE.test(p));
-					// classifyArea logic from dimensions.ts
-					let fe = 0, be = 0, au = 0, te = 0, cf = 0;
-					for (const fp of ctx.changedFilePaths) {
-						if (AUTH_RE.test(fp)) au++; else if (TEST_RE.test(fp)) te++; else if (CFG_RE.test(fp)) cf++; else if (FE_RE.test(fp)) fe++; else be++;
+					// classifyArea logic from dimensions.ts (empty paths → "mixed")
+					let areaTouched = "mixed";
+					if (ctx.changedFilePaths.length > 0) {
+						let fe = 0, be = 0, au = 0, te = 0, cf = 0;
+						for (const fp of ctx.changedFilePaths) {
+							if (AUTH_RE.test(fp)) au++; else if (TEST_RE.test(fp)) te++; else if (CFG_RE.test(fp)) cf++; else if (FE_RE.test(fp)) fe++; else be++;
+						}
+						const total = ctx.changedFilePaths.length;
+						areaTouched = au > total * 0.5 ? "auth" : te > total * 0.5 ? "test" : cf > total * 0.5 ? "config" : (fe > 0 && be > 0) ? "mixed" : fe > be ? "frontend" : "backend";
 					}
-					const total = ctx.changedFilePaths.length || 1;
-					const areaTouched = au > total * 0.5 ? "auth" : te > total * 0.5 ? "test" : cf > total * 0.5 ? "config" : (fe > 0 && be > 0) ? "mixed" : fe > be ? "frontend" : "backend";
 
 					for (const c of constraints) {
 						const noMatch = { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
