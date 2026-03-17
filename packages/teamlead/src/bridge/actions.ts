@@ -9,6 +9,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import { applyTransition, type ApplyTransitionOpts } from "../applyTransition.js";
 import { sqliteDatetime, type BridgeConfig } from "./types.js";
 import { buildSessionKey, buildHookBody, notifyAgent, type HookPayload } from "./hook-payload.js";
+import type { IRetryDispatcher } from "./retry-dispatcher.js";
 
 type ExecFn = (
 	cmd: string,
@@ -201,11 +202,112 @@ export function transitionSession(
 	return { success: true, message: `${id} ${pastTense[action] ?? action} successfully` };
 }
 
+/** GEO-168: Composite retry handler — eligibility check → dispatch → lineage → Linear comment. */
+async function handleRetry(
+	store: StateStore,
+	retryDispatcher: IRetryDispatcher,
+	executionId: string,
+	reason?: string,
+	config?: BridgeConfig,
+): Promise<ActionResult> {
+	const session = store.getSession(executionId);
+	if (!session) {
+		return { success: false, message: `No session found for execution_id ${executionId}` };
+	}
+
+	const actionDef = ACTION_DEFINITIONS.find((d) => d.action === "retry");
+	if (!actionDef || !actionDef.fromStates.includes(session.status)) {
+		return {
+			success: false,
+			message: `Cannot retry ${session.issue_identifier ?? executionId}: status is "${session.status}", expected one of: ${actionDef?.fromStates.join(", ") ?? "?"}`,
+		};
+	}
+
+	// Check for inflight execution on same issue
+	const inflight = retryDispatcher.getInflightIssues();
+	if (inflight.has(session.issue_id)) {
+		return { success: false, message: `Issue ${session.issue_identifier ?? session.issue_id} already has an execution in progress` };
+	}
+
+	// Check for active (running) session in StateStore
+	const active = store.getActiveSessions();
+	const activeForIssue = active.find((s) => s.issue_id === session.issue_id);
+	if (activeForIssue) {
+		return { success: false, message: `Issue ${session.issue_identifier ?? session.issue_id} already has an active session (${activeForIssue.execution_id})` };
+	}
+
+	const runAttempt = (session.run_attempt ?? 0) + 1;
+
+	try {
+		const result = await retryDispatcher.dispatch({
+			oldExecutionId: executionId,
+			issueId: session.issue_id,
+			issueIdentifier: session.issue_identifier,
+			issueTitle: session.issue_title,
+			projectName: session.project_name,
+			reason,
+			previousError: session.last_error,
+			previousDecisionRoute: session.decision_route,
+			previousReasoning: session.decision_reasoning,
+			runAttempt,
+		});
+
+		// Link predecessor → successor
+		store.setRetrySuccessor(executionId, result.newExecutionId);
+
+		// Unarchive thread
+		const thread = store.getThreadByIssue(session.issue_id);
+		if (thread?.thread_id) {
+			store.clearArchived(thread.thread_id);
+		}
+
+		// Post Linear comment (best-effort)
+		postRetryComment(session.issue_id, executionId, result.newExecutionId, runAttempt, reason).catch(() => {});
+
+		// Send hook notification
+		sendActionHook(store, config, result.newExecutionId, "retry", session.status, "running", reason);
+
+		return {
+			success: true,
+			message: `${session.issue_identifier ?? executionId} retry dispatched → ${result.newExecutionId} (attempt #${runAttempt})`,
+		};
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return { success: false, message: `Retry dispatch failed: ${msg}` };
+	}
+}
+
+/** Post a comment on the Linear issue noting the retry (best-effort). */
+async function postRetryComment(
+	issueId: string,
+	oldExecutionId: string,
+	newExecutionId: string,
+	attempt: number,
+	reason?: string,
+): Promise<void> {
+	const apiKey = process.env.LINEAR_API_KEY;
+	if (!apiKey) return;
+	try {
+		const { LinearClient } = await import("@linear/sdk");
+		const client = new LinearClient({ apiKey });
+		const body = [
+			`**Retry dispatched** (attempt #${attempt})`,
+			`- Previous execution: \`${oldExecutionId}\``,
+			`- New execution: \`${newExecutionId}\``,
+			reason ? `- Reason: ${reason}` : null,
+		].filter(Boolean).join("\n");
+		await client.createComment({ issueId, body });
+	} catch {
+		// Non-critical — silently ignore
+	}
+}
+
 export function createActionRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
+	retryDispatcher?: IRetryDispatcher,
 ): Router {
 	const router = Router();
 
@@ -227,9 +329,32 @@ export function createActionRouter(
 				}
 				return;
 			}
+			case "retry": {
+				const { execution_id: eid, reason } = req.body ?? {};
+				if (!eid || typeof eid !== "string") {
+					res.status(400).json({ error: "execution_id is required" });
+					return;
+				}
+				if (retryDispatcher) {
+					const retryResult = await handleRetry(store, retryDispatcher, eid, reason, config);
+					if (retryResult.success) {
+						res.json({ success: true, message: retryResult.message, action: "retry" });
+					} else {
+						res.status(400).json({ success: false, message: retryResult.message, action: "retry" });
+					}
+				} else {
+					// Fallback: legacy transition (no actual re-dispatch)
+					const actionResult = transitionSession(store, action, eid, reason, transitionOpts, config);
+					if (actionResult.success) {
+						res.json({ success: true, message: actionResult.message, action });
+					} else {
+						res.status(400).json({ success: false, message: actionResult.message, action });
+					}
+				}
+				return;
+			}
 			case "reject":
 			case "defer":
-			case "retry":
 			case "shelve": {
 				const { execution_id: eid, reason } = req.body ?? {};
 				if (!eid || typeof eid !== "string") {

@@ -107,21 +107,22 @@ describe("FSM E2E lifecycle", () => {
 		expect(rejectBody.success).toBe(true);
 		expect(store.getSession("exec-fsm")!.status).toBe("rejected");
 
-		// 4. Action: retry → running (FSM: rejected → running)
+		// 4. GEO-168: retry is now a composite action — without dispatcher, FSM rejects rejected→running
 		const retryRes = await fetch(`${baseUrl}/actions/retry`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ execution_id: "exec-fsm" }),
 		});
-		expect(retryRes.status).toBe(200);
-		expect((await retryRes.json()).success).toBe(true);
-		expect(store.getSession("exec-fsm")!.status).toBe("running");
+		expect(retryRes.status).toBe(400);
+		expect((await retryRes.json()).success).toBe(false);
+		// Old session stays rejected (GEO-168: retry no longer transitions old execution)
+		expect(store.getSession("exec-fsm")!.status).toBe("rejected");
 
-		// 5. Verify audit trail in session_events
+		// 5. Verify audit trail in session_events (3 transitions, not 4 — retry doesn't transition)
 		await new Promise((r) => setTimeout(r, 100));
 		const events = store.getEventsByExecution("exec-fsm");
 		const audits = events.filter((e) => e.event_type === "state_transition");
-		expect(audits.length).toBeGreaterThanOrEqual(4);
+		expect(audits.length).toBeGreaterThanOrEqual(3);
 
 		const transitions = audits.map((e) => {
 			const p = e.payload as { from: string; to: string };
@@ -130,7 +131,6 @@ describe("FSM E2E lifecycle", () => {
 		expect(transitions).toContain("pending → running");
 		expect(transitions).toContain("running → awaiting_review");
 		expect(transitions).toContain("awaiting_review → rejected");
-		expect(transitions).toContain("rejected → running");
 	});
 
 	it("FSM rejects illegal action transition", async () => {

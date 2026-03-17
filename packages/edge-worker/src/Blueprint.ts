@@ -58,6 +58,15 @@ export interface BlueprintContext {
 	consecutiveFailures?: number;
 	// v0.4 — optional; Blueprint fallback to randomUUID()
 	executionId?: string;
+	// GEO-168 — retry context for re-executed issues
+	retryContext?: {
+		predecessorExecutionId: string;
+		previousError?: string;
+		previousDecisionRoute?: string;
+		previousReasoning?: string;
+		attempt: number;
+		reason?: string;
+	};
 }
 
 /** Shell command runner for tmux window cleanup */
@@ -114,6 +123,8 @@ export class Blueprint {
 			executionId,
 			issueId: node.id,
 			projectName: projectScope,
+			retryPredecessor: ctx.retryContext?.predecessorExecutionId,
+			runAttempt: ctx.retryContext?.attempt,
 		};
 
 		// Fire-and-forget started event
@@ -279,6 +290,17 @@ export class Blueprint {
 				"5. Verify CI passes. If CI fails, fix and push again.",
 				"6. When all work is complete, stop and wait.",
 			);
+		}
+
+		if (ctx.retryContext) {
+			const rc = ctx.retryContext;
+			systemPromptLines.push("");
+			systemPromptLines.push(`## Retry Context (Attempt #${rc.attempt})`);
+			systemPromptLines.push(`This is a retry of a previous execution that ${rc.previousDecisionRoute === "blocked" ? "was blocked" : "failed"}.`);
+			if (rc.previousError) systemPromptLines.push(`Previous error: ${rc.previousError}`);
+			if (rc.previousReasoning) systemPromptLines.push(`Previous reasoning: ${rc.previousReasoning}`);
+			if (rc.reason) systemPromptLines.push(`CEO instruction: ${rc.reason}`);
+			systemPromptLines.push("Please address the issues from the previous attempt.");
 		}
 
 		systemPromptLines.push("Do not ask questions — implement your best judgment.");
