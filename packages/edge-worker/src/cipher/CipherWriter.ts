@@ -177,6 +177,27 @@ export class CipherWriter {
 		this.db.run(
 			`INSERT OR IGNORE INTO pattern_summary_cache (id) VALUES ('global')`,
 		);
+
+		// Restore dreaming counters from persisted data so a process restart
+		// does not lose track of when the next dreaming cycle should fire.
+		const countResult = this.db.exec(
+			`SELECT COUNT(*) FROM decision_reviews`,
+		);
+		if (countResult.length > 0 && countResult[0]!.values.length > 0) {
+			this.outcomeCount = Number(countResult[0]!.values[0]![0]) || 0;
+		}
+		const lastSkillResult = this.db.exec(
+			`SELECT MAX(updated_at) FROM cipher_skills`,
+		);
+		if (
+			lastSkillResult.length > 0 &&
+			lastSkillResult[0]!.values.length > 0 &&
+			lastSkillResult[0]!.values[0]![0]
+		) {
+			const ts = new Date(lastSkillResult[0]!.values[0]![0] as string).getTime();
+			if (!isNaN(ts)) this.lastRefreshAt = ts;
+		}
+
 		this.save();
 	}
 

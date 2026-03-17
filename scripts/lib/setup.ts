@@ -167,6 +167,9 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	}
 
 	// CipherReader (read-only, for DecisionLayer integration)
+	// NOTE: This CLI path only reads CIPHER patterns; outcome recording (recordOutcome)
+	// is handled by the Bridge path (teamlead actions.ts). The CLI path is legacy and
+	// will be fully replaced by the Bridge-driven workflow.
 	const cipherDbPath = join(flywheelDir, "cipher.db");
 	const cipherReader = new CipherReader(cipherDbPath);
 	log("CipherReader initialized (read-only)");
