@@ -120,8 +120,14 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		);
 	}
 
+	// Track resources for cleanup-on-error (GEO-168: retry-runtime keeps process alive)
+	let hookServer: HookCallbackServer | undefined;
+	let auditLogger: AuditLogger | undefined;
+	let interactionServer: SlackInteractionServer | undefined;
+
+	try {
 	// HookCallbackServer
-	const hookServer = new HookCallbackServer(0);
+	hookServer = new HookCallbackServer(0);
 	await hookServer.start();
 	log(`HookCallbackServer started on port ${hookServer.getPort()}`);
 
@@ -143,7 +149,7 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	// AuditLogger
 	const flywheelDir = join(homedir(), ".flywheel");
 	mkdirSync(flywheelDir, { recursive: true });
-	const auditLogger = new AuditLogger(join(flywheelDir, "audit.db"));
+	auditLogger = new AuditLogger(join(flywheelDir, "audit.db"));
 	await auditLogger.init();
 	log("AuditLogger initialized");
 
@@ -184,7 +190,7 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 
 	// Slack notification — conditional (skipped when TEAMLEAD_OWNS_SLACK or skipSlackLegacy)
 	let slackNotifier: SlackNotifier | undefined;
-	let interactionServer: SlackInteractionServer | undefined;
+	// interactionServer declared above (cleanup-on-error tracking)
 	let reactionsEngine: ReactionsEngine | undefined;
 
 	const slackChannel = process.env.FLYWHEEL_SLACK_CHANNEL;
@@ -355,6 +361,14 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 		reactionsEngine,
 		eventEmitter,
 	};
+
+	} catch (err) {
+		// GEO-168: cleanup started resources on setup failure (retry-runtime keeps process alive)
+		if (interactionServer) { try { await interactionServer.stop(); } catch { /* best-effort */ } }
+		if (auditLogger) { try { await auditLogger.close(); } catch { /* best-effort */ } }
+		if (hookServer) { try { await hookServer.stop(); } catch { /* best-effort */ } }
+		throw err;
+	}
 }
 
 export async function teardownComponents(c: FlywheelComponents): Promise<void> {
