@@ -35,12 +35,10 @@ describe("WorkflowFSM", () => {
 		["awaiting_review", "rejected"],
 		["awaiting_review", "deferred"],
 		["awaiting_review", "shelved"],
-		["blocked", "running"],
+		// GEO-168: blocked/failed/rejected → running removed (retry is composite)
 		["blocked", "deferred"],
 		["blocked", "shelved"],
-		["failed", "running"],
 		["failed", "shelved"],
-		["rejected", "running"],
 		["rejected", "shelved"],
 		["deferred", "shelved"],
 	];
@@ -65,6 +63,10 @@ describe("WorkflowFSM", () => {
 		["pending", "approved"],
 		["failed", "approved"],
 		["deferred", "running"],
+		// GEO-168: retry transitions removed from FSM (composite action)
+		["blocked", "running"],
+		["failed", "running"],
+		["rejected", "running"],
 	];
 
 	it.each(invalidTransitions)(
@@ -254,9 +256,10 @@ describe("ACTION_DEFINITIONS", () => {
 		}
 	});
 
-	it("all action transitions are allowed by FSM", () => {
+	it("all non-composite action transitions are allowed by FSM", () => {
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		for (const def of ACTION_DEFINITIONS) {
+			if (def.composite) continue; // GEO-168: composite actions bypass FSM
 			for (const from of def.fromStates) {
 				expect(fsm.canTransition(from, def.targetState)).toBe(true);
 			}
