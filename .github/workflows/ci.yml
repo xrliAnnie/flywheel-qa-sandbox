@@ -25,6 +25,11 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
 
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@flywheel.dev"
+          git config --global user.name "Flywheel CI"
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
