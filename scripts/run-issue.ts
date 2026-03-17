@@ -296,7 +296,7 @@ async function main() {
 		"-e",
 		[
 			'tell application "Terminal"',
-			`  do script "echo 'Waiting for Flywheel session ${tmuxSessionName}...' && while ! tmux has-session -t '=${tmuxSessionName}' 2>/dev/null; do sleep 1; done && tmux attach -t '=${tmuxSessionName}'; exit"`,
+			`  do script "echo 'Waiting for Flywheel session ${tmuxSessionName}...' && while ! tmux has-session -t '=${tmuxSessionName}' 2>/dev/null; do sleep 1; done && tmux attach -t '=${tmuxSessionName}'; exit 0"`,
 			"  activate",
 			"end tell",
 		].join("\n"),
