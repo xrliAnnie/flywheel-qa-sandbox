@@ -685,10 +685,13 @@ export class CipherWriter {
 
 			const ruleType =
 				action === "likely_reject" ? "block" : "escalate";
+			// HardRule actions are "escalate" | "block" — no "auto_approve".
+			// likely_approve → escalate (force review for known-good patterns until trust grows)
+			// likely_reject → block (prevent known-bad patterns)
 			const ruleDefinition =
 				action === "likely_approve"
-					? `Auto-approve when pattern matches: ${patternKey ?? "unknown"}`
-					: `Escalate for review when pattern matches: ${patternKey ?? "unknown"}`;
+					? `Escalate for review (high approve-rate pattern): ${patternKey ?? "unknown"}`
+					: `Block for review (high reject-rate pattern): ${patternKey ?? "unknown"}`;
 			const sourcePattern = patternKey ?? "";
 
 			const principleId = randomUUID();
