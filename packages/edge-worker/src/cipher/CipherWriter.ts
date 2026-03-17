@@ -605,8 +605,17 @@ export class CipherWriter {
 			];
 			const approveRate = ac / tc;
 
-			// Retire existing skills whose patterns have drifted into the ambiguous zone
+			// Retire existing skills (and their graduated principles) when
+			// patterns drift into the ambiguous zone — prevents stale rules
+			// from persisting in HardRuleEngine.
 			if (approveRate > 0.3 && approveRate < 0.7) {
+				// Retire principles first (FK: principles.skill_id → skills.id)
+				this.db.run(
+					`UPDATE cipher_principles SET status = 'retired', retired_at = ?, retired_reason = 'source_skill_confidence_drift'
+					 WHERE skill_id IN (SELECT id FROM cipher_skills WHERE source_pattern_key = ? AND status = 'active')
+					   AND status = 'active'`,
+					[now, key],
+				);
 				this.db.run(
 					`UPDATE cipher_skills SET status = 'retired', description = description || ' [retired: confidence drift to ambiguous zone]', updated_at = ? WHERE source_pattern_key = ? AND status = 'active'`,
 					[now, key],
@@ -663,7 +672,8 @@ export class CipherWriter {
 		await this.graduateSkillsToPrinciples();
 
 		// Persist dreaming completion timestamp so restarts know when dreaming
-		// last succeeded. Also update in-memory counter and reset outcomeCount.
+		// last succeeded. Then re-read outcomeCount from DB to capture any
+		// reviews that arrived during dreaming (which has await points).
 		const dreamingTs = sqlNow();
 		this.db.run(
 			`INSERT OR REPLACE INTO cipher_metadata (key, value) VALUES ('last_dreaming_at', ?)`,
@@ -671,7 +681,15 @@ export class CipherWriter {
 		);
 		this.save();
 		this.lastRefreshAt = Date.now();
-		this.outcomeCount = 0;
+		// Re-read from DB instead of blindly resetting to 0 — reviews may
+		// have been recorded concurrently during the async dreaming steps.
+		const postCount = this.db.exec(
+			`SELECT COUNT(*) FROM decision_reviews WHERE created_at >= ?`,
+			[dreamingTs],
+		);
+		this.outcomeCount = (postCount.length > 0 && postCount[0]!.values.length > 0)
+			? Number(postCount[0]!.values[0]![0]) || 0
+			: 0;
 
 		// Sync to Supabase mirror after dreaming completes (advisory — errors don't fail dreaming)
 		if (this.syncAfterDreamingFn) {
