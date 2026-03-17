@@ -199,22 +199,26 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 				description: p.description,
 				priority: p.priority,
 				evaluate: (ctx) => {
-					// Every dimension in the pattern must match the execution context
+					// Every dimension in the pattern must match the execution context.
+					// Bucketing mirrors extractDimensions() in cipher/dimensions.ts.
 					for (const c of constraints) {
-						if (c.dim === "label" && !ctx.labels.includes(c.val)) {
-							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+						const noMatch = { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+						if (c.dim === "label" && !ctx.labels.includes(c.val)) return noMatch;
+						if (c.dim === "size" && ctx.sizeBucket !== c.val) return noMatch;
+						if (c.dim === "area" && ctx.areaTouched !== c.val) return noMatch;
+						if (c.dim === "auth" && String(ctx.touchesAuth) !== c.val) return noMatch;
+						if (c.dim === "tests" && String(ctx.hasTests) !== c.val) return noMatch;
+						if (c.dim === "exit" && ctx.exitReason !== c.val) return noMatch;
+						if (c.dim === "failures" && String(ctx.consecutiveFailures > 0) !== c.val) return noMatch;
+						if (c.dim === "commits") {
+							const vol = ctx.commitCount <= 1 ? "single" : ctx.commitCount <= 5 ? "few" : "many";
+							if (vol !== c.val) return noMatch;
 						}
-						if (c.dim === "size" && ctx.sizeBucket !== c.val) {
-							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
-						}
-						if (c.dim === "area" && ctx.areaTouched !== c.val) {
-							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
-						}
-						if (c.dim === "auth" && String(ctx.touchesAuth) !== c.val) {
-							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
-						}
-						if (c.dim === "tests" && String(ctx.hasTests) !== c.val) {
-							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+						if (c.dim === "diff") {
+							const scale = ctx.filesChangedCount <= 2 ? "trivial"
+								: ctx.filesChangedCount <= 5 ? "small"
+								: ctx.filesChangedCount <= 15 ? "medium" : "large";
+							if (scale !== c.val) return noMatch;
 						}
 					}
 					// No constraints at all → don't fire (safety: never make a principle global)

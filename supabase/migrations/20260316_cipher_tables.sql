@@ -139,18 +139,22 @@ CREATE TABLE IF NOT EXISTS cipher_sync_metadata (
 );
 
 -- RLS: all cipher tables are service-role only (no anon/client access)
-ALTER TABLE decision_snapshots ENABLE ROW LEVEL SECURITY;
-ALTER TABLE decision_reviews ENABLE ROW LEVEL SECURITY;
-ALTER TABLE decision_statistics ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cipher_decision_snapshots ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cipher_decision_reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cipher_decision_patterns ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cipher_review_pattern_keys ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cipher_pattern_summary_cache ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cipher_skills ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cipher_principles ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cipher_questions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE cipher_sync_metadata ENABLE ROW LEVEL SECURITY;
 
 -- Service-role full access (CipherSyncService uses service_role key)
-CREATE POLICY "service_role_all" ON decision_snapshots FOR ALL USING (auth.role() = 'service_role');
-CREATE POLICY "service_role_all" ON decision_reviews FOR ALL USING (auth.role() = 'service_role');
-CREATE POLICY "service_role_all" ON decision_statistics FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON cipher_decision_snapshots FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON cipher_decision_reviews FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON cipher_decision_patterns FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON cipher_review_pattern_keys FOR ALL USING (auth.role() = 'service_role');
+CREATE POLICY "service_role_all" ON cipher_pattern_summary_cache FOR ALL USING (auth.role() = 'service_role');
 CREATE POLICY "service_role_all" ON cipher_skills FOR ALL USING (auth.role() = 'service_role');
 CREATE POLICY "service_role_all" ON cipher_principles FOR ALL USING (auth.role() = 'service_role');
 CREATE POLICY "service_role_all" ON cipher_questions FOR ALL USING (auth.role() = 'service_role');
