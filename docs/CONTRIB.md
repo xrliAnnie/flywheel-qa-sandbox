@@ -153,8 +153,8 @@ docs: add v0.2 Step 2c implementation plan
 ### Pull Requests
 
 - PRs target `main`
-- Code review required before merge
-- All CI checks must pass (lint, typecheck, tests)
+- CI checks must pass before merge: build, typecheck, test (blocking); lint (advisory, non-blocking until GEO-TBD)
+- Automated code review via Codex/Gemini
 - Link relevant Linear issues in the PR body
 
 ## TypeScript Configuration
