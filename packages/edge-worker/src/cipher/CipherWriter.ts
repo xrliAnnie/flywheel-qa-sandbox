@@ -589,9 +589,10 @@ export class CipherWriter {
 
 	async runDreaming(): Promise<void> {
 		this.lastRefreshAt = Date.now();
+		// Refresh temporal windows first so detect/extract operate on current 90-day data
+		await this.refreshTemporalWindows();
 		await this.detectQuestions();
 		await this.extractSkills();
-		await this.refreshTemporalWindows();
 		await this.graduateSkillsToPrinciples();
 	}
 
