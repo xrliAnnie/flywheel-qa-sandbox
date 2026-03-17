@@ -4,8 +4,15 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { IRetryDispatcher, RetryRequest, RetryResult } from "../../packages/teamlead/dist/bridge/retry-dispatcher.js";
-import type { Blueprint, BlueprintContext } from "../../packages/edge-worker/dist/Blueprint.js";
+import type {
+	Blueprint,
+	BlueprintContext,
+} from "../../packages/edge-worker/dist/Blueprint.js";
+import type {
+	IRetryDispatcher,
+	RetryRequest,
+	RetryResult,
+} from "../../packages/teamlead/dist/bridge/retry-dispatcher.js";
 
 interface ProjectRuntime {
 	blueprint: Blueprint;
@@ -13,7 +20,10 @@ interface ProjectRuntime {
 }
 
 export class RetryDispatcher implements IRetryDispatcher {
-	private inflight = new Map<string, { executionId: string; promise: Promise<void> }>();
+	private inflight = new Map<
+		string,
+		{ executionId: string; promise: Promise<void> }
+	>();
 	private accepting = true;
 
 	constructor(
@@ -39,7 +49,10 @@ export class RetryDispatcher implements IRetryDispatcher {
 		const newExecutionId = randomUUID();
 
 		// Reserve the slot before any async work
-		const entry = { executionId: newExecutionId, promise: null! as Promise<void> };
+		const entry = {
+			executionId: newExecutionId,
+			promise: null! as Promise<void>,
+		};
 		this.inflight.set(req.issueId, entry);
 
 		const ctx: BlueprintContext = {
@@ -59,16 +72,17 @@ export class RetryDispatcher implements IRetryDispatcher {
 
 		// Fire-and-forget — Blueprint.run() is long-running
 		entry.promise = runtime.blueprint
-			.run(
-				{ id: req.issueId, blockedBy: [] },
-				runtime.projectRoot,
-				ctx,
-			)
+			.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
 			.then(() => {
-				console.log(`[RetryDispatcher] ${newExecutionId} completed for issue ${req.issueIdentifier ?? req.issueId}`);
+				console.log(
+					`[RetryDispatcher] ${newExecutionId} completed for issue ${req.issueIdentifier ?? req.issueId}`,
+				);
 			})
 			.catch((err) => {
-				console.error(`[RetryDispatcher] ${newExecutionId} failed:`, err instanceof Error ? err.message : err);
+				console.error(
+					`[RetryDispatcher] ${newExecutionId} failed:`,
+					err instanceof Error ? err.message : err,
+				);
 			})
 			.finally(() => {
 				this.inflight.delete(req.issueId);

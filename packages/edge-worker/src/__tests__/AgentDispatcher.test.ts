@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
-import { AgentDispatcher } from "../AgentDispatcher.js";
-import type { ClassifyFn, AgentDispatchResult } from "../AgentDispatcher.js";
 import type { AgentConfig } from "flywheel-config";
+import { describe, expect, it, vi } from "vitest";
+import type { AgentDispatchResult, ClassifyFn } from "../AgentDispatcher.js";
+import { AgentDispatcher } from "../AgentDispatcher.js";
 import type { HydratedContext } from "../PreHydrator.js";
 
 // ─── Helpers ─────────────────────────────────────
@@ -33,7 +33,9 @@ function makeAgents(): Record<string, AgentConfig> {
 	};
 }
 
-function makeHydrated(overrides: Partial<HydratedContext> = {}): HydratedContext {
+function makeHydrated(
+	overrides: Partial<HydratedContext> = {},
+): HydratedContext {
 	return {
 		issueId: "GEO-42",
 		issueTitle: "Add user API endpoint",
@@ -106,9 +108,7 @@ describe("AgentDispatcher", () => {
 	it("falls back to classifyFn when no label match", async () => {
 		const classifyFn: ClassifyFn = vi.fn(async () => "frontend");
 		const dispatcher = new AgentDispatcher(makeAgents(), undefined, classifyFn);
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: [] }),
-		);
+		const result = await dispatcher.dispatch(makeHydrated({ labels: [] }));
 		expect(result).not.toBeNull();
 		expect(result!.agentName).toBe("frontend");
 		expect(result!.matchMethod).toBe("haiku");
@@ -118,9 +118,7 @@ describe("AgentDispatcher", () => {
 	it("validates classifyFn output against agent name allowlist", async () => {
 		const classifyFn: ClassifyFn = vi.fn(async () => "hacker-agent");
 		const dispatcher = new AgentDispatcher(makeAgents(), "backend", classifyFn);
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: [] }),
-		);
+		const result = await dispatcher.dispatch(makeHydrated({ labels: [] }));
 		// Invalid name → fallback to default_agent
 		expect(result).not.toBeNull();
 		expect(result!.agentName).toBe("backend");
@@ -130,9 +128,7 @@ describe("AgentDispatcher", () => {
 	it("handles classifyFn returning null", async () => {
 		const classifyFn: ClassifyFn = vi.fn(async () => null);
 		const dispatcher = new AgentDispatcher(makeAgents(), "devops", classifyFn);
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: [] }),
-		);
+		const result = await dispatcher.dispatch(makeHydrated({ labels: [] }));
 		expect(result).not.toBeNull();
 		expect(result!.agentName).toBe("devops");
 		expect(result!.matchMethod).toBe("fallback");
@@ -143,9 +139,7 @@ describe("AgentDispatcher", () => {
 			throw new Error("API rate limit");
 		});
 		const dispatcher = new AgentDispatcher(makeAgents(), "backend", classifyFn);
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: [] }),
-		);
+		const result = await dispatcher.dispatch(makeHydrated({ labels: [] }));
 		expect(result).not.toBeNull();
 		expect(result!.agentName).toBe("backend");
 		expect(result!.matchMethod).toBe("fallback");
@@ -167,9 +161,7 @@ describe("AgentDispatcher", () => {
 
 	it("uses default_agent when no label or haiku match", async () => {
 		const dispatcher = new AgentDispatcher(makeAgents(), "devops");
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: [] }),
-		);
+		const result = await dispatcher.dispatch(makeHydrated({ labels: [] }));
 		expect(result).not.toBeNull();
 		expect(result!.agentName).toBe("devops");
 		expect(result!.agentConfig.agent_file).toBe(".claude/agents/devops.md");
@@ -216,9 +208,7 @@ describe("AgentDispatcher", () => {
 
 	it("returns correct AgentDispatchResult shape", async () => {
 		const dispatcher = new AgentDispatcher(makeAgents(), undefined);
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: ["api"] }),
-		);
+		const result = await dispatcher.dispatch(makeHydrated({ labels: ["api"] }));
 		expect(result).toEqual<AgentDispatchResult>({
 			agentName: "backend",
 			agentConfig: makeAgents().backend,

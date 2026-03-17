@@ -28,9 +28,7 @@ export class SlackInteractionServer extends EventEmitter {
 		super();
 		this.requestedPort = port;
 		this.authToken = authToken;
-		this.server = http.createServer((req, res) =>
-			this.handleRequest(req, res),
-		);
+		this.server = http.createServer((req, res) => this.handleRequest(req, res));
 	}
 
 	async start(): Promise<number> {
@@ -100,10 +98,7 @@ export class SlackInteractionServer extends EventEmitter {
 			return;
 		}
 
-		const url = new URL(
-			req.url ?? "/",
-			`http://0.0.0.0:${this.assignedPort}`,
-		);
+		const url = new URL(req.url ?? "/", `http://0.0.0.0:${this.assignedPort}`);
 		if (url.pathname !== "/slack/interaction") {
 			res.writeHead(404);
 			res.end("not found");
@@ -190,12 +185,22 @@ export class SlackInteractionServer extends EventEmitter {
 			// Parse executionId from button value JSON (validate UUID format)
 			let executionId: string | undefined;
 			try {
-				const val = typeof rawAction.value === "string" ? JSON.parse(rawAction.value) : undefined;
+				const val =
+					typeof rawAction.value === "string"
+						? JSON.parse(rawAction.value)
+						: undefined;
 				const rawId = val?.executionId ?? val?.execution_id;
-				if (typeof rawId === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawId)) {
+				if (
+					typeof rawId === "string" &&
+					/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+						rawId,
+					)
+				) {
 					executionId = rawId;
 				}
-			} catch { /* ignore parse errors */ }
+			} catch {
+				/* ignore parse errors */
+			}
 
 			const slackAction: SlackAction = {
 				actionId,

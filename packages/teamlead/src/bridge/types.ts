@@ -1,5 +1,8 @@
 export function sqliteDatetime(): string {
-	return new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+	return new Date()
+		.toISOString()
+		.replace("T", " ")
+		.replace(/\.\d+Z$/, "");
 }
 
 export interface BridgeConfig {

@@ -1,10 +1,14 @@
-import {
-	ReactionsEngine,
-	ApproveHandler,
-	RejectHandler,
-	DeferHandler,
+import type {
+	ActionHandler,
+	ActionResult,
+	SlackAction as ChatAction,
 } from "flywheel-edge-worker";
-import type { ActionHandler, ActionResult, SlackAction as ChatAction } from "flywheel-edge-worker";
+import {
+	ApproveHandler,
+	DeferHandler,
+	ReactionsEngine,
+	RejectHandler,
+} from "flywheel-edge-worker";
 import type { ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
 
@@ -31,15 +35,27 @@ export class ProjectAwareApproveHandler implements ActionHandler {
 			: this.store.getLatestActionableSession(action.issueId);
 
 		if (!session) {
-			return { success: false, message: `No session found for ${action.issueId}` };
+			return {
+				success: false,
+				message: `No session found for ${action.issueId}`,
+			};
 		}
 
-		const project = this.projects.find((p) => p.projectName === session.project_name);
+		const project = this.projects.find(
+			(p) => p.projectName === session.project_name,
+		);
 		if (!project) {
-			return { success: false, message: `No project config for ${session.project_name}` };
+			return {
+				success: false,
+				message: `No project config for ${session.project_name}`,
+			};
 		}
 
-		const handler = new ApproveHandler(this.execFn, project.projectRoot, project.projectRepo);
+		const handler = new ApproveHandler(
+			this.execFn,
+			project.projectRoot,
+			project.projectRepo,
+		);
 		return handler.execute(action);
 	}
 }
@@ -62,11 +78,13 @@ export function createReactionsEngine(
 	store: StateStore,
 	execFn?: ExecFn,
 ): ReactionsEngine {
-	const exec: ExecFn = execFn ?? (async (cmd, args, cwd) => {
-		const { execFileSync } = await import("node:child_process");
-		const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
-		return { stdout: result };
-	});
+	const exec: ExecFn =
+		execFn ??
+		(async (cmd, args, cwd) => {
+			const { execFileSync } = await import("node:child_process");
+			const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
+			return { stdout: result };
+		});
 
 	return new ReactionsEngine({
 		approve: new ProjectAwareApproveHandler(projects, store, exec),

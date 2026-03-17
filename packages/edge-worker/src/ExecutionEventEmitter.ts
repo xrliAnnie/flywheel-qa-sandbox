@@ -13,8 +13,16 @@ export interface EventEnvelope {
 
 export interface ExecutionEventEmitter {
 	emitStarted(env: EventEnvelope): Promise<void>;
-	emitCompleted(env: EventEnvelope, result: BlueprintResult, summary?: string): Promise<void>;
-	emitFailed(env: EventEnvelope, error: string, lastActivity?: string): Promise<void>;
+	emitCompleted(
+		env: EventEnvelope,
+		result: BlueprintResult,
+		summary?: string,
+	): Promise<void>;
+	emitFailed(
+		env: EventEnvelope,
+		error: string,
+		lastActivity?: string,
+	): Promise<void>;
 	/** GEO-157: Heartbeat — dedicated route, no session_events, no OpenClaw notification */
 	emitHeartbeat(env: EventEnvelope): Promise<void>;
 	flush(): Promise<void>;
@@ -24,7 +32,10 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 	private pending: Promise<void>[] = [];
 	private settled = new Set<Promise<void>>();
 
-	constructor(private baseUrl: string, private authToken?: string) {}
+	constructor(
+		private baseUrl: string,
+		private authToken?: string,
+	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
 		const p = this.postEvent({
@@ -41,7 +52,11 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 		this.track(p);
 	}
 
-	async emitCompleted(env: EventEnvelope, result: BlueprintResult, summary?: string): Promise<void> {
+	async emitCompleted(
+		env: EventEnvelope,
+		result: BlueprintResult,
+		summary?: string,
+	): Promise<void> {
 		const p = this.postEvent({
 			event_id: randomUUID(),
 			execution_id: env.executionId,
@@ -59,7 +74,11 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 		this.track(p);
 	}
 
-	async emitFailed(env: EventEnvelope, error: string, lastActivity?: string): Promise<void> {
+	async emitFailed(
+		env: EventEnvelope,
+		error: string,
+		lastActivity?: string,
+	): Promise<void> {
 		const p = this.postEvent({
 			event_id: randomUUID(),
 			execution_id: env.executionId,
@@ -101,7 +120,9 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 
 	private async postHeartbeat(executionId: string): Promise<void> {
 		try {
-			const headers: Record<string, string> = { "Content-Type": "application/json" };
+			const headers: Record<string, string> = {
+				"Content-Type": "application/json",
+			};
 			if (this.authToken) {
 				headers.Authorization = `Bearer ${this.authToken}`;
 			}
@@ -125,7 +146,9 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 
 	private async postEvent(body: Record<string, unknown>): Promise<void> {
 		try {
-			const headers: Record<string, string> = { "Content-Type": "application/json" };
+			const headers: Record<string, string> = {
+				"Content-Type": "application/json",
+			};
 			if (this.authToken) {
 				headers.Authorization = `Bearer ${this.authToken}`;
 			}
@@ -139,7 +162,9 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 			});
 			clearTimeout(timeout);
 			if (!res.ok) {
-				console.warn(`[TeamLeadClient] Event rejected: ${res.status} ${res.statusText}`);
+				console.warn(
+					`[TeamLeadClient] Event rejected: ${res.status} ${res.statusText}`,
+				);
 			}
 		} catch (err) {
 			console.warn(
@@ -151,7 +176,10 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 
 export class NoOpEventEmitter implements ExecutionEventEmitter {
 	async emitStarted(_env: EventEnvelope): Promise<void> {}
-	async emitCompleted(_env: EventEnvelope, _result: BlueprintResult): Promise<void> {}
+	async emitCompleted(
+		_env: EventEnvelope,
+		_result: BlueprintResult,
+	): Promise<void> {}
 	async emitFailed(_env: EventEnvelope, _error: string): Promise<void> {}
 	async emitHeartbeat(_env: EventEnvelope): Promise<void> {}
 	async flush(): Promise<void> {}

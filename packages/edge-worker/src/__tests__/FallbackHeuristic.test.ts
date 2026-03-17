@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
 import type { ExecutionContext } from "flywheel-core";
+import { describe, expect, it } from "vitest";
 import { FallbackHeuristic } from "../decision/FallbackHeuristic.js";
 
 function makeCtx(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
@@ -45,10 +45,7 @@ describe("FallbackHeuristic", () => {
 	});
 
 	it("250 lines added → needs_review", () => {
-		const result = fallback.evaluate(
-			makeCtx({ linesAdded: 250 }),
-			"API error",
-		);
+		const result = fallback.evaluate(makeCtx({ linesAdded: 250 }), "API error");
 		expect(result.route).toBe("needs_review");
 		expect(result.confidence).toBe(0.6);
 	});

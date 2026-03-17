@@ -31,9 +31,7 @@ export class LinearGraphBuilder {
 			id: issue.id,
 			blockedBy: (issue.relations?.nodes ?? [])
 				.filter(
-					(r) =>
-						r.type === BLOCKED_BY_TYPE &&
-						activeIds.has(r.relatedIssue.id),
+					(r) => r.type === BLOCKED_BY_TYPE && activeIds.has(r.relatedIssue.id),
 				)
 				.map((r) => r.relatedIssue.id),
 		}));

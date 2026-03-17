@@ -1,11 +1,18 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { ProjectAwareApproveHandler, createReactionsEngine } from "../ActionExecutor.js";
 import type { SlackAction as ChatAction } from "flywheel-edge-worker";
-import type { StateStore, Session } from "../StateStore.js";
+import { describe, expect, it, vi } from "vitest";
+import {
+	createReactionsEngine,
+	ProjectAwareApproveHandler,
+} from "../ActionExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import type { Session, StateStore } from "../StateStore.js";
 
 const projects: ProjectEntry[] = [
-	{ projectName: "geoforge", projectRoot: "/home/user/geoforge", projectRepo: "xrliAnnie/GeoForge3D" },
+	{
+		projectName: "geoforge",
+		projectRoot: "/home/user/geoforge",
+		projectRepo: "xrliAnnie/GeoForge3D",
+	},
 ];
 
 function makeAction(overrides: Partial<ChatAction> = {}): ChatAction {
@@ -37,8 +44,13 @@ const session: Session = {
 
 describe("ProjectAwareApproveHandler", () => {
 	it("looks up session + project and delegates to ApproveHandler", async () => {
-		const execFn = vi.fn()
-			.mockResolvedValueOnce({ stdout: JSON.stringify([{ number: 42, url: "https://github.com/pr/42" }]) })
+		const execFn = vi
+			.fn()
+			.mockResolvedValueOnce({
+				stdout: JSON.stringify([
+					{ number: 42, url: "https://github.com/pr/42" },
+				]),
+			})
 			.mockResolvedValueOnce({ stdout: "" });
 
 		const store = makeStore(session);
@@ -47,7 +59,11 @@ describe("ProjectAwareApproveHandler", () => {
 
 		expect(result.success).toBe(true);
 		expect(result.message).toContain("PR #42 merged");
-		expect(execFn).toHaveBeenCalledWith("gh", expect.arrayContaining(["pr", "list"]), "/home/user/geoforge");
+		expect(execFn).toHaveBeenCalledWith(
+			"gh",
+			expect.arrayContaining(["pr", "list"]),
+			"/home/user/geoforge",
+		);
 	});
 
 	it("returns error if session not found", async () => {
@@ -79,7 +95,9 @@ describe("createReactionsEngine", () => {
 	it("stub handler for retry returns acknowledgment", async () => {
 		const store = makeStore();
 		const engine = createReactionsEngine(projects, store);
-		const result = await engine.dispatch(makeAction({ action: "retry", actionId: "flywheel_retry_GEO-95" }));
+		const result = await engine.dispatch(
+			makeAction({ action: "retry", actionId: "flywheel_retry_GEO-95" }),
+		);
 
 		expect(result.success).toBe(true);
 		expect(result.message).toContain("stub");

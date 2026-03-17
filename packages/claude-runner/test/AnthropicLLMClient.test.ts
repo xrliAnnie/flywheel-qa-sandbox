@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AnthropicLLMClient } from "../src/AnthropicLLMClient.js";
 
 // Mock the Anthropic SDK

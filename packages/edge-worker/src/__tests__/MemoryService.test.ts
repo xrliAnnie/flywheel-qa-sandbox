@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock mem0ai/oss before importing MemoryService
 const mockAdd = vi.fn();
@@ -22,9 +22,9 @@ vi.mock("node:fs", async (importOriginal) => {
 	return { ...actual, mkdirSync: vi.fn() };
 });
 
-import { MemoryService } from "../memory/MemoryService.js";
-import { createMemoryService } from "../memory/createMemoryService.js";
 import { Memory } from "mem0ai/oss";
+import { createMemoryService } from "../memory/createMemoryService.js";
+import { MemoryService } from "../memory/MemoryService.js";
 
 describe("MemoryService", () => {
 	beforeEach(() => {

@@ -1,4 +1,5 @@
 #!/usr/bin/env npx tsx
+
 /**
  * GEO-168: Bridge daemon with retry capability.
  *
@@ -15,17 +16,19 @@
  *   - GOOGLE_API_KEY + SUPABASE_URL + SUPABASE_KEY (optional, for memory)
  */
 
+import { startBridge } from "../packages/teamlead/dist/bridge/plugin.js";
 import { loadConfig } from "../packages/teamlead/dist/config.js";
 import { loadProjects } from "../packages/teamlead/dist/ProjectConfig.js";
 import { StateStore } from "../packages/teamlead/dist/StateStore.js";
-import { startBridge } from "../packages/teamlead/dist/bridge/plugin.js";
 import { setupRetryRuntime } from "./lib/retry-runtime.js";
 
 async function main() {
 	const config = loadConfig();
 	const projects = loadProjects();
 	if (projects.length === 0) {
-		throw new Error("No projects configured — check FLYWHEEL_PROJECTS or project config");
+		throw new Error(
+			"No projects configured — check FLYWHEEL_PROJECTS or project config",
+		);
 	}
 
 	console.log(`[run-bridge] Starting with ${projects.length} project(s)...`);
@@ -39,7 +42,10 @@ async function main() {
 	console.log("[run-bridge] RetryDispatcher ready");
 
 	// Phase 3: Start bridge with injected store + dispatcher
-	const { close } = await startBridge(config, projects, { store, retryDispatcher });
+	const { close } = await startBridge(config, projects, {
+		store,
+		retryDispatcher,
+	});
 
 	let shuttingDown = false;
 	const shutdown = async () => {

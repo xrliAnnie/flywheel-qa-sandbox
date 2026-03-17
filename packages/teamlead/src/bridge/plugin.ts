@@ -1,19 +1,23 @@
-import express from "express";
 import { timingSafeEqual } from "node:crypto";
-import { WorkflowFSM, WORKFLOW_TRANSITIONS } from "flywheel-core";
-import { StateStore } from "../StateStore.js";
-import { DirectiveExecutor } from "../DirectiveExecutor.js";
+import express from "express";
+import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
-import { HeartbeatService, WebhookHeartbeatNotifier, type HeartbeatNotifier } from "../HeartbeatService.js";
 import { CleanupService, FetchDiscordClient } from "../CleanupService.js";
+import { DirectiveExecutor } from "../DirectiveExecutor.js";
+import {
+	type HeartbeatNotifier,
+	HeartbeatService,
+	WebhookHeartbeatNotifier,
+} from "../HeartbeatService.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import type { BridgeConfig } from "./types.js";
-import { createQueryRouter } from "./tools.js";
+import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
-import type { IRetryDispatcher } from "./retry-dispatcher.js";
-import { createEventRouter } from "./event-route.js";
-import { getDashboardHtml } from "./dashboard-html.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
+import { getDashboardHtml } from "./dashboard-html.js";
+import { createEventRouter } from "./event-route.js";
+import type { IRetryDispatcher } from "./retry-dispatcher.js";
+import { createQueryRouter } from "./tools.js";
+import type { BridgeConfig } from "./types.js";
 
 function safeCompare(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
@@ -44,10 +48,16 @@ export class SseBroadcaster {
 
 	addClient(res: express.Response): void {
 		try {
-			const payload = buildDashboardPayload(this.store, this.stuckThresholdMinutes);
+			const payload = buildDashboardPayload(
+				this.store,
+				this.stuckThresholdMinutes,
+			);
 			res.write(`event: state\ndata: ${JSON.stringify(payload)}\n\n`);
 		} catch (err) {
-			console.error("[SseBroadcaster] Failed to send initial state:", (err as Error).message);
+			console.error(
+				"[SseBroadcaster] Failed to send initial state:",
+				(err as Error).message,
+			);
 		}
 
 		this.clients.add(res);
@@ -67,8 +77,14 @@ export class SseBroadcaster {
 				client.end();
 			} catch (err) {
 				const code = (err as NodeJS.ErrnoException).code;
-				if (code !== "ERR_STREAM_WRITE_AFTER_END" && code !== "ERR_STREAM_DESTROYED") {
-					console.warn("[SseBroadcaster] Unexpected error during destroy:", (err as Error).message);
+				if (
+					code !== "ERR_STREAM_WRITE_AFTER_END" &&
+					code !== "ERR_STREAM_DESTROYED"
+				) {
+					console.warn(
+						"[SseBroadcaster] Unexpected error during destroy:",
+						(err as Error).message,
+					);
 				}
 			}
 		}
@@ -86,7 +102,11 @@ export class SseBroadcaster {
 	private broadcastToClients(data: string): void {
 		const dead: express.Response[] = [];
 		for (const client of this.clients) {
-			try { client.write(data); } catch { dead.push(client); }
+			try {
+				client.write(data);
+			} catch {
+				dead.push(client);
+			}
 		}
 		for (const d of dead) this.clients.delete(d);
 	}
@@ -94,11 +114,17 @@ export class SseBroadcaster {
 	private startPolling(): void {
 		this.poller = setInterval(() => {
 			try {
-				const payload = buildDashboardPayload(this.store, this.stuckThresholdMinutes);
+				const payload = buildDashboardPayload(
+					this.store,
+					this.stuckThresholdMinutes,
+				);
 				const message = `event: state\ndata: ${JSON.stringify(payload)}\n\n`;
 				this.broadcastToClients(message);
 			} catch (err) {
-				console.error("[SseBroadcaster] Failed to build/broadcast payload:", (err as Error).message);
+				console.error(
+					"[SseBroadcaster] Failed to build/broadcast payload:",
+					(err as Error).message,
+				);
 			}
 		}, 2000);
 		this.heartbeat = setInterval(() => {
@@ -107,8 +133,14 @@ export class SseBroadcaster {
 	}
 
 	private stopPolling(): void {
-		if (this.poller) { clearInterval(this.poller); this.poller = null; }
-		if (this.heartbeat) { clearInterval(this.heartbeat); this.heartbeat = null; }
+		if (this.poller) {
+			clearInterval(this.poller);
+			this.poller = null;
+		}
+		if (this.heartbeat) {
+			clearInterval(this.heartbeat);
+			this.heartbeat = null;
+		}
 	}
 }
 
@@ -152,60 +184,112 @@ export function createBridgeApp(
 		} else {
 			// Snapshot mode — no broadcaster configured (tests or direct createBridgeApp usage)
 			if (process.env.NODE_ENV !== "test") {
-				console.warn("[SSE] No broadcaster configured — serving one-shot snapshot");
+				console.warn(
+					"[SSE] No broadcaster configured — serving one-shot snapshot",
+				);
 			}
-			const payload = buildDashboardPayload(store, config.stuckThresholdMinutes);
+			const payload = buildDashboardPayload(
+				store,
+				config.stuckThresholdMinutes,
+			);
 			res.write(`event: state\ndata: ${JSON.stringify(payload)}\n\n`);
 			res.end();
 		}
 	});
 
 	// Dashboard actions — no auth (loopback only, same handlers as /api/actions)
-	app.use("/actions", createActionRouter(store, projects, transitionOpts, config, retryDispatcher));
+	app.use(
+		"/actions",
+		createActionRouter(
+			store,
+			projects,
+			transitionOpts,
+			config,
+			retryDispatcher,
+		),
+	);
 
 	// /events — ingest auth
-	app.use("/events", tokenAuthMiddleware(config.ingestToken), createEventRouter(store, projects, config, undefined, transitionOpts));
+	app.use(
+		"/events",
+		tokenAuthMiddleware(config.ingestToken),
+		createEventRouter(store, projects, config, undefined, transitionOpts),
+	);
 
 	// /api/* — api auth
-	app.use("/api", tokenAuthMiddleware(config.apiToken), createQueryRouter(store, retryDispatcher));
-	app.use("/api/actions", tokenAuthMiddleware(config.apiToken), createActionRouter(store, projects, transitionOpts, config, retryDispatcher));
+	app.use(
+		"/api",
+		tokenAuthMiddleware(config.apiToken),
+		createQueryRouter(store, retryDispatcher),
+	);
+	app.use(
+		"/api/actions",
+		tokenAuthMiddleware(config.apiToken),
+		createActionRouter(
+			store,
+			projects,
+			transitionOpts,
+			config,
+			retryDispatcher,
+		),
+	);
 
 	// Forum tag update — proxy to Discord API (GEO-167)
-	app.post("/api/forum-tag", tokenAuthMiddleware(config.apiToken), async (req, res) => {
-		const { thread_id, tag_ids } = req.body as { thread_id?: string; tag_ids?: string[] };
-		if (!thread_id || typeof thread_id !== "string") {
-			res.status(400).json({ error: "thread_id is required" });
-			return;
-		}
-		if (!Array.isArray(tag_ids) || !tag_ids.every((t) => typeof t === "string")) {
-			res.status(400).json({ error: "tag_ids must be a string array" });
-			return;
-		}
-		if (!config.discordBotToken) {
-			res.status(503).json({ error: "Discord bot token not configured" });
-			return;
-		}
-		try {
-			const discordRes = await fetch(`https://discord.com/api/v10/channels/${thread_id}`, {
-				method: "PATCH",
-				headers: {
-					Authorization: `Bot ${config.discordBotToken}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify({ applied_tags: tag_ids }),
-			});
-			if (!discordRes.ok) {
-				const body = await discordRes.text();
-				console.warn(`[forum-tag] Discord returned ${discordRes.status}: ${body}`);
-				res.status(discordRes.status).json({ error: "Discord API error", detail: body });
+	app.post(
+		"/api/forum-tag",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			const { thread_id, tag_ids } = req.body as {
+				thread_id?: string;
+				tag_ids?: string[];
+			};
+			if (!thread_id || typeof thread_id !== "string") {
+				res.status(400).json({ error: "thread_id is required" });
 				return;
 			}
-			res.json({ ok: true });
-		} catch (err) {
-			console.error("[forum-tag] Discord API call failed:", (err as Error).message);
-			res.status(502).json({ error: "Failed to reach Discord API" });
-		}
-	});
+			if (
+				!Array.isArray(tag_ids) ||
+				!tag_ids.every((t) => typeof t === "string")
+			) {
+				res.status(400).json({ error: "tag_ids must be a string array" });
+				return;
+			}
+			if (!config.discordBotToken) {
+				res.status(503).json({ error: "Discord bot token not configured" });
+				return;
+			}
+			try {
+				const discordRes = await fetch(
+					`https://discord.com/api/v10/channels/${thread_id}`,
+					{
+						method: "PATCH",
+						headers: {
+							Authorization: `Bot ${config.discordBotToken}`,
+							"Content-Type": "application/json",
+						},
+						body: JSON.stringify({ applied_tags: tag_ids }),
+					},
+				);
+				if (!discordRes.ok) {
+					const body = await discordRes.text();
+					console.warn(
+						`[forum-tag] Discord returned ${discordRes.status}: ${body}`,
+					);
+					res
+						.status(discordRes.status)
+						.json({ error: "Discord API error", detail: body });
+					return;
+				}
+				res.json({ ok: true });
+			} catch (err) {
+				console.error(
+					"[forum-tag] Discord API call failed:",
+					(err as Error).message,
+				);
+				res.status(502).json({ error: "Failed to reach Discord API" });
+			}
+		},
+	);
 
 	// Catch-all 404
 	app.use((_req, res) => {
@@ -213,7 +297,12 @@ export function createBridgeApp(
 	});
 
 	// JSON error handler — returns JSON instead of Express default HTML with stack trace
-	app.use(((err: Error & { status?: number; type?: string }, _req, res, _next) => {
+	app.use(((
+		err: Error & { status?: number; type?: string },
+		_req,
+		res,
+		_next,
+	) => {
 		if (err.type === "entity.parse.failed") {
 			res.status(400).json({ error: "invalid JSON" });
 			return;
@@ -228,20 +317,37 @@ export function createBridgeApp(
 export async function startBridge(
 	config: BridgeConfig,
 	projects: ProjectEntry[],
-	opts?: { store?: StateStore; retryDispatcher?: IRetryDispatcher; cipherWriter?: unknown },
-): Promise<{ app: express.Application; store: StateStore; close: () => Promise<void> }> {
+	opts?: {
+		store?: StateStore;
+		retryDispatcher?: IRetryDispatcher;
+		cipherWriter?: unknown;
+	},
+): Promise<{
+	app: express.Application;
+	store: StateStore;
+	close: () => Promise<void>;
+}> {
 	if (projects.length === 0) {
-		throw new Error("No projects configured — check FLYWHEEL_PROJECTS or project config");
+		throw new Error(
+			"No projects configured — check FLYWHEEL_PROJECTS or project config",
+		);
 	}
 
-	const store = opts?.store ?? await StateStore.create(config.dbPath);
+	const store = opts?.store ?? (await StateStore.create(config.dbPath));
 	const retryDispatcher = opts?.retryDispatcher;
 	// GEO-158: FSM instance + DirectiveExecutor for validated transitions
 	const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 	const executor = new DirectiveExecutor(store);
 	const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
 	const broadcaster = new SseBroadcaster(store, config.stuckThresholdMinutes);
-	const app = createBridgeApp(store, projects, config, broadcaster, transitionOpts, retryDispatcher);
+	const app = createBridgeApp(
+		store,
+		projects,
+		config,
+		broadcaster,
+		transitionOpts,
+		retryDispatcher,
+	);
 
 	const server = app.listen(config.port, config.host);
 
@@ -256,9 +362,14 @@ export async function startBridge(
 
 	// Always start HeartbeatService — orphan reaping is critical even without gateway.
 	// If no gateway hooks configured, use a no-op notifier (reaping still works, just no Slack).
-	const notifier: HeartbeatNotifier = (config.gatewayUrl && config.hooksToken)
-		? new WebhookHeartbeatNotifier(config.gatewayUrl, config.hooksToken, config.notificationChannel)
-		: { onSessionStuck: async () => {}, onSessionOrphaned: async () => {} };
+	const notifier: HeartbeatNotifier =
+		config.gatewayUrl && config.hooksToken
+			? new WebhookHeartbeatNotifier(
+					config.gatewayUrl,
+					config.hooksToken,
+					config.notificationChannel,
+				)
+			: { onSessionStuck: async () => {}, onSessionOrphaned: async () => {} };
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -272,7 +383,12 @@ export async function startBridge(
 	let cleanupService: CleanupService | null = null;
 	if (config.discordBotToken) {
 		const dc = new FetchDiscordClient(config.discordBotToken);
-		cleanupService = new CleanupService(store, dc, config.cleanupThresholdMinutes ?? 1440, config.cleanupIntervalMs ?? 3_600_000);
+		cleanupService = new CleanupService(
+			store,
+			dc,
+			config.cleanupThresholdMinutes ?? 1440,
+			config.cleanupIntervalMs ?? 3_600_000,
+		);
 		cleanupService.start();
 		console.log("[Bridge] CleanupService started");
 	}

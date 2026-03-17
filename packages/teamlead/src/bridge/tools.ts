@@ -1,20 +1,27 @@
 import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
-import type { StateStore, Session } from "../StateStore.js";
+import type { Session, StateStore } from "../StateStore.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 
-function omitIssueId(session: Session): Omit<Session, "issue_id"> & { identifier?: string } {
+function omitIssueId(
+	session: Session,
+): Omit<Session, "issue_id"> & { identifier?: string } {
 	const { issue_id: _, issue_identifier, ...rest } = session;
 	return { ...rest, identifier: issue_identifier };
 }
 
-export function createQueryRouter(store: StateStore, retryDispatcher?: IRetryDispatcher): Router {
+export function createQueryRouter(
+	store: StateStore,
+	retryDispatcher?: IRetryDispatcher,
+): Router {
 	const router = Router();
 
 	router.get("/sessions", (req, res) => {
 		const mode = (req.query.mode as string) ?? "active";
 		const rawLimit = parseInt((req.query.limit as string) ?? "20", 10);
-		const limit = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 200) : 20;
+		const limit = Number.isFinite(rawLimit)
+			? Math.min(Math.max(rawLimit, 1), 200)
+			: 20;
 
 		let sessions: Session[];
 
@@ -26,15 +33,22 @@ export function createQueryRouter(store: StateStore, retryDispatcher?: IRetryDis
 				sessions = store.getRecentSessions(limit);
 				break;
 			case "stuck": {
-				const rawThreshold = parseInt((req.query.stuck_threshold as string) ?? "15", 10);
-			const threshold = Number.isFinite(rawThreshold) ? Math.min(Math.max(rawThreshold, 1), 1440) : 15;
+				const rawThreshold = parseInt(
+					(req.query.stuck_threshold as string) ?? "15",
+					10,
+				);
+				const threshold = Number.isFinite(rawThreshold)
+					? Math.min(Math.max(rawThreshold, 1), 1440)
+					: 15;
 				sessions = store.getStuckSessions(threshold);
 				break;
 			}
 			case "by_identifier": {
 				const identifier = req.query.identifier as string;
 				if (!identifier) {
-					res.status(400).json({ error: "identifier query param required for mode=by_identifier" });
+					res.status(400).json({
+						error: "identifier query param required for mode=by_identifier",
+					});
 					return;
 				}
 				const session = store.getSessionByIdentifier(identifier);
@@ -102,7 +116,9 @@ export function createQueryRouter(store: StateStore, retryDispatcher?: IRetryDis
 	router.post("/threads/upsert", (req, res) => {
 		const { thread_id, channel, issue_id, execution_id } = req.body ?? {};
 		if (!thread_id || !channel || !issue_id || !execution_id) {
-			res.status(400).json({ error: "thread_id, channel, issue_id, and execution_id are required" });
+			res.status(400).json({
+				error: "thread_id, channel, issue_id, and execution_id are required",
+			});
 			return;
 		}
 
@@ -113,7 +129,9 @@ export function createQueryRouter(store: StateStore, retryDispatcher?: IRetryDis
 		// 1. Verify execution exists
 		const session = store.getSession(String(execution_id));
 		if (!session) {
-			res.status(404).json({ error: `No session found for execution_id ${execution_id}` });
+			res
+				.status(404)
+				.json({ error: `No session found for execution_id ${execution_id}` });
 			return;
 		}
 
@@ -162,7 +180,9 @@ export function createQueryRouter(store: StateStore, retryDispatcher?: IRetryDis
 		const issueId = req.query.issue_id as string;
 		const action = req.query.action as string;
 		if (!issueId || !action) {
-			res.status(400).json({ error: "issue_id and action query params are required" });
+			res
+				.status(400)
+				.json({ error: "issue_id and action query params are required" });
 			return;
 		}
 
@@ -172,7 +192,10 @@ export function createQueryRouter(store: StateStore, retryDispatcher?: IRetryDis
 			return;
 		}
 
-		const session = store.getLatestSessionByIssueAndStatuses(issueId, actionDef.fromStates);
+		const session = store.getLatestSessionByIssueAndStatuses(
+			issueId,
+			actionDef.fromStates,
+		);
 		if (!session) {
 			res.json({
 				can_execute: false,
@@ -196,7 +219,9 @@ export function createQueryRouter(store: StateStore, retryDispatcher?: IRetryDis
 				}
 			}
 			const active = store.getActiveSessions();
-			const activeForIssue = active.find((s) => s.issue_id === session.issue_id);
+			const activeForIssue = active.find(
+				(s) => s.issue_id === session.issue_id,
+			);
 			if (activeForIssue) {
 				res.json({
 					execution_id: session.execution_id,

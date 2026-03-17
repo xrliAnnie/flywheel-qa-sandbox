@@ -1,4 +1,5 @@
 #!/usr/bin/env npx tsx
+
 /**
  * Run a single Linear issue through the Flywheel pipeline.
  *
@@ -24,28 +25,30 @@
  *   npx tsx scripts/run-issue.ts GEO-95 ~/Dev/GeoForge3D
  */
 
-import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
-import { readdirSync, statSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+	killTmuxSession,
+	log,
 	setupComponents,
 	teardownComponents,
-	log,
-	killTmuxSession,
 } from "./lib/setup.js";
 
 // ── Hardcoded issue data (fallback when LINEAR_API_KEY is not set) ──
 
-const KNOWN_ISSUES: Record<string, {
-	title: string;
-	description: string;
-	labels?: string[];
-	projectId?: string;
-	identifier?: string;
-}> = {
+const KNOWN_ISSUES: Record<
+	string,
+	{
+		title: string;
+		description: string;
+		labels?: string[];
+		projectId?: string;
+		identifier?: string;
+	}
+> = {
 	"GEO-95": {
 		title: "[P0] OSM attribution — add OpenStreetMap license notice in UI",
 		description: `## Background
@@ -90,12 +93,19 @@ function discoverSubRepos(dir: string): string[] {
 		for (const entry of readdirSync(dir)) {
 			const childPath = join(dir, entry);
 			try {
-				if (statSync(childPath).isDirectory() && existsSync(join(childPath, ".git"))) {
+				if (
+					statSync(childPath).isDirectory() &&
+					existsSync(join(childPath, ".git"))
+				) {
 					subRepos.push(childPath);
 				}
-			} catch { /* skip inaccessible */ }
+			} catch {
+				/* skip inaccessible */
+			}
 		}
-	} catch { /* dir not readable */ }
+	} catch {
+		/* dir not readable */
+	}
 	return subRepos;
 }
 
@@ -103,7 +113,10 @@ function discoverSubRepos(dir: string): string[] {
  * Check for new commits across multiple git repos.
  * Returns aggregated result.
  */
-function checkSubRepoCommits(repos: string[], baselines: Map<string, string>): {
+function checkSubRepoCommits(
+	repos: string[],
+	baselines: Map<string, string>,
+): {
 	totalCommits: number;
 	allMessages: string[];
 	totalFiles: number;
@@ -112,17 +125,24 @@ function checkSubRepoCommits(repos: string[], baselines: Map<string, string>): {
 	let totalCommits = 0;
 	let totalFiles = 0;
 	const allMessages: string[] = [];
-	const repoResults: Array<{ repo: string; commits: number; messages: string[] }> = [];
+	const repoResults: Array<{
+		repo: string;
+		commits: number;
+		messages: string[];
+	}> = [];
 
 	for (const repo of repos) {
 		const baseSha = baselines.get(repo);
 		if (!baseSha) continue;
 
 		try {
-			const count = parseInt(git(["rev-list", "--count", `${baseSha}..HEAD`], repo), 10) || 0;
+			const count =
+				parseInt(git(["rev-list", "--count", `${baseSha}..HEAD`], repo), 10) ||
+				0;
 			if (count > 0) {
 				const messages = git(["log", "--format=%s", `${baseSha}..HEAD`], repo)
-					.split("\n").filter(Boolean);
+					.split("\n")
+					.filter(Boolean);
 				const diffStat = git(["diff", "--shortstat", `${baseSha}..HEAD`], repo);
 				const filesMatch = diffStat.match(/(\d+)\s+files?\s+changed/);
 				const files = filesMatch ? parseInt(filesMatch[1]!, 10) : 0;
@@ -132,7 +152,9 @@ function checkSubRepoCommits(repos: string[], baselines: Map<string, string>): {
 				allMessages.push(...messages);
 				repoResults.push({ repo, commits: count, messages });
 			}
-		} catch { /* skip repos that error */ }
+		} catch {
+			/* skip repos that error */
+		}
 	}
 
 	return { totalCommits, allMessages, totalFiles, repoResults };
@@ -144,8 +166,12 @@ async function main() {
 	const [issueId, projectRoot] = process.argv.slice(2);
 
 	if (!issueId || !projectRoot) {
-		console.error("Usage: npx tsx scripts/run-issue.ts <ISSUE-ID> <PROJECT-ROOT>");
-		console.error("Example: npx tsx scripts/run-issue.ts GEO-95 ~/Dev/GeoForge3D");
+		console.error(
+			"Usage: npx tsx scripts/run-issue.ts <ISSUE-ID> <PROJECT-ROOT>",
+		);
+		console.error(
+			"Example: npx tsx scripts/run-issue.ts GEO-95 ~/Dev/GeoForge3D",
+		);
 		process.exit(1);
 	}
 
@@ -162,7 +188,9 @@ async function main() {
 
 	// 1. Check prerequisites
 	if (process.env.CLAUDECODE) {
-		log("WARNING: Running inside Claude Code session. TmuxRunner will unset CLAUDECODE in tmux env.");
+		log(
+			"WARNING: Running inside Claude Code session. TmuxRunner will unset CLAUDECODE in tmux env.",
+		);
 	}
 
 	try {
@@ -174,7 +202,9 @@ async function main() {
 	}
 
 	try {
-		const ver = execFileSync("claude", ["--version"], { encoding: "utf-8" }).trim();
+		const ver = execFileSync("claude", ["--version"], {
+			encoding: "utf-8",
+		}).trim();
 		log(`claude: ${ver}`);
 	} catch {
 		console.error("ERROR: claude CLI not found.");
@@ -198,7 +228,9 @@ async function main() {
 	// FIX: Discover and check sub-repos
 	const subRepos = discoverSubRepos(resolvedRoot);
 	if (subRepos.length > 0) {
-		log(`Discovered ${subRepos.length} sub-repos: ${subRepos.map(r => r.split("/").pop()).join(", ")}`);
+		log(
+			`Discovered ${subRepos.length} sub-repos: ${subRepos.map((r) => r.split("/").pop()).join(", ")}`,
+		);
 		for (const repo of subRepos) {
 			const subPorcelain = git(["status", "--porcelain"], repo);
 			if (subPorcelain.length > 0) {
@@ -214,7 +246,9 @@ async function main() {
 	const issueData = KNOWN_ISSUES[issueId];
 	if (!issueData) {
 		console.error(`ERROR: Issue ${issueId} not found in hardcoded data.`);
-		console.error(`Add it to KNOWN_ISSUES in this script, or set LINEAR_API_KEY.`);
+		console.error(
+			`Add it to KNOWN_ISSUES in this script, or set LINEAR_API_KEY.`,
+		);
 		process.exit(1);
 	}
 	log(`Issue: ${issueId} — ${issueData.title}`);
@@ -239,7 +273,8 @@ async function main() {
 			};
 		},
 	});
-	const { blueprint, slackNotifier, interactionServer, reactionsEngine } = components;
+	const { blueprint, slackNotifier, interactionServer, reactionsEngine } =
+		components;
 
 	// 5. Capture baselines for all repos (parent + sub-repos)
 	const allRepos = [resolvedRoot, ...subRepos];
@@ -249,7 +284,9 @@ async function main() {
 			const sha = git(["rev-parse", "HEAD"], repo);
 			baselines.set(repo, sha);
 			log(`Baseline ${repo.split("/").pop()}: ${sha.slice(0, 8)}`);
-		} catch { /* repo might not have commits */ }
+		} catch {
+			/* repo might not have commits */
+		}
 	}
 
 	// 7. Auto-open Terminal viewer and bring to front
@@ -271,18 +308,29 @@ async function main() {
 	let trustConfirmed = false;
 	// Label format from Blueprint.buildWindowLabel: "{runner}:{cleanTitle}"
 	// Must match TmuxRunner.sanitizeWindowName: [^a-zA-Z0-9-] → "-", max 50 chars
-	const cleanTitle = issueData.title.replace(/\[P\d+\]\s*/gi, "").replace(/\s*—\s*/g, "-").trim();
-	const windowLabel = `claude-${cleanTitle}`.replace(/[^a-zA-Z0-9-]/g, "-").slice(0, 50);
+	const cleanTitle = issueData.title
+		.replace(/\[P\d+\]\s*/gi, "")
+		.replace(/\s*—\s*/g, "-")
+		.trim();
+	const windowLabel = `claude-${cleanTitle}`
+		.replace(/[^a-zA-Z0-9-]/g, "-")
+		.slice(0, 50);
 	const tmuxTarget = `${tmuxSessionName}:${windowLabel}`;
 
 	const autoInteractInterval = setInterval(() => {
 		try {
-			const paneContent = execFileSync("tmux", [
-				"capture-pane", "-t", tmuxTarget, "-p",
-			], { encoding: "utf-8" });
+			const paneContent = execFileSync(
+				"tmux",
+				["capture-pane", "-t", tmuxTarget, "-p"],
+				{ encoding: "utf-8" },
+			);
 
 			// Auto-confirm trust prompt
-			if (!trustConfirmed && (paneContent.includes("trust this folder") || paneContent.includes("Enter to confirm"))) {
+			if (
+				!trustConfirmed &&
+				(paneContent.includes("trust this folder") ||
+					paneContent.includes("Enter to confirm"))
+			) {
 				execFileSync("tmux", ["send-keys", "-t", tmuxTarget, "Enter"]);
 				log("Auto-confirmed workspace trust prompt");
 				trustConfirmed = true;
@@ -292,7 +340,9 @@ async function main() {
 			// Session termination is now handled by TmuxRunner sentinel
 			// (detects .flywheel/runs/<executionId>/land-status.json)
 			// or pane_dead (agent exits naturally after landing).
-		} catch { /* window may not exist yet */ }
+		} catch {
+			/* window may not exist yet */
+		}
 	}, 5000);
 
 	// 9. Run Blueprint
@@ -329,18 +379,24 @@ async function main() {
 		const subRepoCheck = checkSubRepoCommits(allRepos, baselines);
 
 		if (!actualSuccess && subRepoCheck.totalCommits > 0) {
-			log(`Blueprint reported no commits in parent repo, but found ${subRepoCheck.totalCommits} commits in sub-repos`);
+			log(
+				`Blueprint reported no commits in parent repo, but found ${subRepoCheck.totalCommits} commits in sub-repos`,
+			);
 			actualSuccess = true;
 		}
 
 		// 11. Report
 		console.log("\n--- Blueprint Result ---\n");
-		console.log(`  success:      ${actualSuccess}${!blueprintResult.success && actualSuccess ? " (overridden by sub-repo check)" : ""}`);
+		console.log(
+			`  success:      ${actualSuccess}${!blueprintResult.success && actualSuccess ? " (overridden by sub-repo check)" : ""}`,
+		);
 		console.log(`  sessionId:    ${blueprintResult.sessionId ?? "(none)"}`);
 		console.log(`  durationMs:   ${blueprintResult.durationMs}`);
 		console.log(`  elapsed:      ${elapsed}s`);
 		console.log(`  error:        ${blueprintResult.error ?? "(none)"}`);
-		console.log(`  worktreePath: ${blueprintResult.worktreePath ?? "(none — v0.1.1 mode)"}`);
+		console.log(
+			`  worktreePath: ${blueprintResult.worktreePath ?? "(none — v0.1.1 mode)"}`,
+		);
 
 		if (blueprintResult.evidence) {
 			const ev = blueprintResult.evidence;
@@ -376,7 +432,9 @@ async function main() {
 				console.log(`  hardRuleId:   ${d.hardRuleId}`);
 			}
 			if (d.verification) {
-				console.log(`  verification: ${d.verification.approved ? "approved" : "rejected"} (confidence: ${d.verification.confidence})`);
+				console.log(
+					`  verification: ${d.verification.approved ? "approved" : "rejected"} (confidence: ${d.verification.confidence})`,
+				);
 			}
 		}
 
@@ -390,7 +448,10 @@ async function main() {
 						issueTitle: issueData.title,
 						labels: issueData.labels ?? [],
 						projectId: issueData.projectId ?? projectName,
-						exitReason: blueprintResult.decision.route === "blocked" ? "error" : "completed",
+						exitReason:
+							blueprintResult.decision.route === "blocked"
+								? "error"
+								: "completed",
 						baseSha: baselines.get(resolvedRoot) ?? "",
 						commitCount: blueprintResult.evidence?.commitCount ?? 0,
 						commitMessages: blueprintResult.evidence?.commitMessages ?? [],
@@ -413,13 +474,20 @@ async function main() {
 
 					if (interactionServer && reactionsEngine) {
 						log("Waiting for CEO response (timeout: 1h)...");
-						const action = await interactionServer.waitForAction(issueId, 3_600_000);
+						const action = await interactionServer.waitForAction(
+							issueId,
+							3_600_000,
+						);
 
 						if (action) {
 							const actionResult = await reactionsEngine.dispatch(action);
-							log(`Action executed: ${action.action} → ${actionResult.message}`);
+							log(
+								`Action executed: ${action.action} → ${actionResult.message}`,
+							);
 						} else {
-							log("No CEO response within timeout — issue preserved for manual review");
+							log(
+								"No CEO response within timeout — issue preserved for manual review",
+							);
 						}
 					}
 				}
@@ -444,15 +512,24 @@ async function main() {
 			const repoName = repo.split("/").pop();
 			try {
 				console.log(`\n--- ${repoName} branches ---`);
-				console.log(git(["branch", "--sort=-committerdate"], repo).split("\n").slice(0, 5).join("\n"));
-			} catch { /* skip */ }
+				console.log(
+					git(["branch", "--sort=-committerdate"], repo)
+						.split("\n")
+						.slice(0, 5)
+						.join("\n"),
+				);
+			} catch {
+				/* skip */
+			}
 		}
 
 		// 13. Verdict
 		console.log("\n========================================");
 		if (actualSuccess) {
 			console.log(`  ✅ PASS — ${issueId} completed successfully!`);
-			console.log(`  Commits: ${subRepoCheck.totalCommits} across ${subRepoCheck.repoResults.length} repo(s)`);
+			console.log(
+				`  Commits: ${subRepoCheck.totalCommits} across ${subRepoCheck.repoResults.length} repo(s)`,
+			);
 		} else if (blueprintResult.error) {
 			console.log(`  ❌ FAIL — Error: ${blueprintResult.error}`);
 		} else {
@@ -466,7 +543,9 @@ async function main() {
 		clearInterval(autoInteractInterval);
 		await teardownComponents(components);
 		if (preserveSession) {
-			log(`Preserving tmux session '${tmuxSessionName}' for inspection (route: needs_review/blocked)`);
+			log(
+				`Preserving tmux session '${tmuxSessionName}' for inspection (route: needs_review/blocked)`,
+			);
 		} else {
 			killTmuxSession(tmuxSessionName);
 		}

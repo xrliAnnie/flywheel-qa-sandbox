@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SkillInjector, type SkillContext } from "../SkillInjector.js";
+import { type SkillContext, SkillInjector } from "../SkillInjector.js";
 
 // ─── Helpers ─────────────────────────────────────
 
@@ -58,7 +58,13 @@ describe("SkillInjector", () => {
 		await injector.inject(tmpDir, makeCtx());
 
 		for (const name of SKILL_NAMES) {
-			const skillPath = path.join(tmpDir, ".claude", "skills", name, "SKILL.md");
+			const skillPath = path.join(
+				tmpDir,
+				".claude",
+				"skills",
+				name,
+				"SKILL.md",
+			);
 			expect(fs.existsSync(skillPath)).toBe(true);
 			const content = fs.readFileSync(skillPath, "utf-8");
 			expect(content.length).toBeGreaterThan(0);
@@ -70,7 +76,13 @@ describe("SkillInjector", () => {
 		await injector.inject(tmpDir, makeCtx());
 
 		const content = fs.readFileSync(
-			path.join(tmpDir, ".claude", "skills", "linear-issue-context", "SKILL.md"),
+			path.join(
+				tmpDir,
+				".claude",
+				"skills",
+				"linear-issue-context",
+				"SKILL.md",
+			),
 			"utf-8",
 		);
 		expect(content).toContain("GEO-42");
@@ -82,7 +94,13 @@ describe("SkillInjector", () => {
 		await injector.inject(tmpDir, makeCtx());
 
 		const content = fs.readFileSync(
-			path.join(tmpDir, ".claude", "skills", "linear-issue-context", "SKILL.md"),
+			path.join(
+				tmpDir,
+				".claude",
+				"skills",
+				"linear-issue-context",
+				"SKILL.md",
+			),
 			"utf-8",
 		);
 		expect(content).toContain("Add user authentication");
@@ -131,7 +149,13 @@ describe("SkillInjector", () => {
 		await injector.inject(tmpDir, makeCtx({ issueId: "GEO-2" }));
 
 		const content = fs.readFileSync(
-			path.join(tmpDir, ".claude", "skills", "linear-issue-context", "SKILL.md"),
+			path.join(
+				tmpDir,
+				".claude",
+				"skills",
+				"linear-issue-context",
+				"SKILL.md",
+			),
 			"utf-8",
 		);
 		expect(content).toContain("GEO-2");
@@ -179,7 +203,13 @@ describe("SkillInjector", () => {
 		await injector.inject(tmpDir, makeCtx());
 
 		// Verify exclude file exists at the path git reads
-		const excludePath = execFileSync("git", ["-C", tmpDir, "rev-parse", "--git-path", "info/exclude"])
+		const excludePath = execFileSync("git", [
+			"-C",
+			tmpDir,
+			"rev-parse",
+			"--git-path",
+			"info/exclude",
+		])
 			.toString()
 			.trim();
 		const resolvedExclude = path.resolve(tmpDir, excludePath);
@@ -187,8 +217,12 @@ describe("SkillInjector", () => {
 		expect(content).toContain(".claude/skills/");
 
 		// Verify git actually ignores the skill files
-		const status = execFileSync("git", ["-C", tmpDir, "status", "--short"])
-			.toString();
+		const status = execFileSync("git", [
+			"-C",
+			tmpDir,
+			"status",
+			"--short",
+		]).toString();
 		expect(status).not.toContain(".claude/skills/");
 	});
 
@@ -213,7 +247,15 @@ describe("SkillInjector", () => {
 		execFileSync("git", ["-C", mainRepo, "commit", "-m", "init"]);
 
 		const wtPath = path.join(os.tmpdir(), `wt-${Date.now()}`);
-		execFileSync("git", ["-C", mainRepo, "worktree", "add", wtPath, "-b", "test-branch"]);
+		execFileSync("git", [
+			"-C",
+			mainRepo,
+			"worktree",
+			"add",
+			wtPath,
+			"-b",
+			"test-branch",
+		]);
 
 		try {
 			// .git in worktree is a file, not a directory
@@ -224,7 +266,13 @@ describe("SkillInjector", () => {
 			await injector.inject(wtPath, makeCtx());
 
 			// Verify exclude was written to the path git reads for this worktree
-			const excludePath = execFileSync("git", ["-C", wtPath, "rev-parse", "--git-path", "info/exclude"])
+			const excludePath = execFileSync("git", [
+				"-C",
+				wtPath,
+				"rev-parse",
+				"--git-path",
+				"info/exclude",
+			])
 				.toString()
 				.trim();
 			const resolvedExclude = path.resolve(wtPath, excludePath);
@@ -232,11 +280,22 @@ describe("SkillInjector", () => {
 			expect(content).toContain(".claude/skills/");
 
 			// Verify git actually ignores the skill files in the worktree
-			const status = execFileSync("git", ["-C", wtPath, "status", "--short"])
-				.toString();
+			const status = execFileSync("git", [
+				"-C",
+				wtPath,
+				"status",
+				"--short",
+			]).toString();
 			expect(status).not.toContain(".claude/skills/");
 		} finally {
-			execFileSync("git", ["-C", mainRepo, "worktree", "remove", wtPath, "--force"]);
+			execFileSync("git", [
+				"-C",
+				mainRepo,
+				"worktree",
+				"remove",
+				wtPath,
+				"--force",
+			]);
 			fs.rmSync(mainRepo, { recursive: true, force: true });
 		}
 	});

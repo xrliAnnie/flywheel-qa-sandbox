@@ -24,13 +24,20 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync, existsSync, rmSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import { TmuxRunner } from "../packages/claude-runner/dist/TmuxRunner.js";
-import { GitResultChecker } from "../packages/edge-worker/dist/GitResultChecker.js";
 import { FLYWHEEL_MARKER_DIR } from "../packages/core/dist/constants.js";
+import { GitResultChecker } from "../packages/edge-worker/dist/GitResultChecker.js";
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -105,7 +112,9 @@ function checkHookInstalled(): boolean {
 		const settings = JSON.parse(readFileSync(settingsPath, "utf-8"));
 		const hooks = settings?.hooks?.SessionEnd ?? [];
 		return hooks.some((h: any) =>
-			h?.hooks?.some((inner: any) => inner?.command?.includes("flywheel-session-end")),
+			h?.hooks?.some((inner: any) =>
+				inner?.command?.includes("flywheel-session-end"),
+			),
 		);
 	} catch {
 		return false;
@@ -121,7 +130,9 @@ async function main() {
 
 	// 1. Check prerequisites
 	if (process.env.CLAUDECODE) {
-		console.error("ERROR: Running inside Claude Code session. Run from a regular terminal.");
+		console.error(
+			"ERROR: Running inside Claude Code session. Run from a regular terminal.",
+		);
 		process.exit(1);
 	}
 
@@ -134,7 +145,9 @@ async function main() {
 	}
 
 	try {
-		const ver = execFileSync("claude", ["--version"], { encoding: "utf-8" }).trim();
+		const ver = execFileSync("claude", ["--version"], {
+			encoding: "utf-8",
+		}).trim();
 		log(`claude: ${ver}`);
 	} catch {
 		console.error("ERROR: claude CLI not found.");
@@ -146,7 +159,9 @@ async function main() {
 	if (hookInstalled) {
 		log("SessionEnd hook: installed (primary completion path)");
 	} else {
-		log("SessionEnd hook: NOT installed (will rely on pane_dead polling fallback)");
+		log(
+			"SessionEnd hook: NOT installed (will rely on pane_dead polling fallback)",
+		);
 		log("  To install: bash scripts/install-hooks.sh");
 	}
 
@@ -156,7 +171,10 @@ async function main() {
 
 	log("\n--- Before fix ---");
 	try {
-		execFileSync("npx", ["tsx", "greet.test.ts"], { cwd: repoDir, encoding: "utf-8" });
+		execFileSync("npx", ["tsx", "greet.test.ts"], {
+			cwd: repoDir,
+			encoding: "utf-8",
+		});
 		log("Tests pass (unexpected — bug should fail)");
 	} catch (e: any) {
 		console.log(e.stdout?.trim() || "(tests failed as expected)");
@@ -180,10 +198,10 @@ async function main() {
 	log("  tmux select-window -t flywheel-e2e  (to switch to it)\n");
 
 	const runner = new TmuxRunner(
-		"flywheel-e2e",   // session name
-		undefined,        // default execFile
-		3000,             // poll every 3s (faster for E2E)
-		120_000,          // 2 min timeout
+		"flywheel-e2e", // session name
+		undefined, // default execFile
+		3000, // poll every 3s (faster for E2E)
+		120_000, // 2 min timeout
 	);
 
 	// Auto-open a Terminal window so the user can watch Claude work in real time.
@@ -205,13 +223,24 @@ async function main() {
 	let exitSent = false;
 	const autoInteractInterval = setInterval(() => {
 		try {
-			const paneContent = execFileSync("tmux", [
-				"capture-pane", "-t", "flywheel-e2e:E2E-TEST", "-p",
-			], { encoding: "utf-8" });
+			const paneContent = execFileSync(
+				"tmux",
+				["capture-pane", "-t", "flywheel-e2e:E2E-TEST", "-p"],
+				{ encoding: "utf-8" },
+			);
 
 			// Phase 1: trust prompt
-			if (!trustConfirmed && (paneContent.includes("trust this folder") || paneContent.includes("Enter to confirm"))) {
-				execFileSync("tmux", ["send-keys", "-t", "flywheel-e2e:E2E-TEST", "Enter"]);
+			if (
+				!trustConfirmed &&
+				(paneContent.includes("trust this folder") ||
+					paneContent.includes("Enter to confirm"))
+			) {
+				execFileSync("tmux", [
+					"send-keys",
+					"-t",
+					"flywheel-e2e:E2E-TEST",
+					"Enter",
+				]);
 				log("Auto-confirmed workspace trust prompt");
 				trustConfirmed = true;
 				return; // check again next interval
@@ -227,12 +256,18 @@ async function main() {
 				setTimeout(() => {
 					try {
 						execFileSync("tmux", ["kill-pane", "-t", "flywheel-e2e:E2E-TEST"]);
-						log("Killed pane after detecting git commit — triggering pane_dead");
-					} catch { /* window may already be gone */ }
+						log(
+							"Killed pane after detecting git commit — triggering pane_dead",
+						);
+					} catch {
+						/* window may already be gone */
+					}
 				}, 5000);
 				exitSent = true;
 			}
-		} catch { /* window may not exist yet */ }
+		} catch {
+			/* window may not exist yet */
+		}
 	}, 3000);
 
 	const startTime = Date.now();
@@ -265,7 +300,9 @@ async function main() {
 	console.log(`  hasNewCommits: ${gitResult.hasNewCommits}`);
 	console.log(`  commitCount:   ${gitResult.commitCount}`);
 	console.log(`  filesChanged:  ${gitResult.filesChanged}`);
-	console.log(`  messages:      ${gitResult.commitMessages.join("; ") || "(none)"}`);
+	console.log(
+		`  messages:      ${gitResult.commitMessages.join("; ") || "(none)"}`,
+	);
 
 	const success = gitResult.commitCount > 0 && !result.timedOut;
 
@@ -305,7 +342,9 @@ async function main() {
 	try {
 		rmSync(FLYWHEEL_MARKER_DIR, { recursive: true, force: true });
 		log("Cleaned up marker dir");
-	} catch { /* ok */ }
+	} catch {
+		/* ok */
+	}
 
 	process.exit(success ? 0 : 1);
 }

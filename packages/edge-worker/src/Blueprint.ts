@@ -1,33 +1,43 @@
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { execFile } from "node:child_process";
+import type { SkillsConfig } from "flywheel-config";
 import type {
-	IAdapter,
 	AdapterExecutionResult,
 	DecisionResult,
 	ExecutionContext,
+	IAdapter,
 } from "flywheel-core";
-import type { SkillsConfig } from "flywheel-config";
 import type { DagNode } from "flywheel-dag-resolver";
-import type { PreHydrator } from "./PreHydrator.js";
-import type { GitResultChecker } from "./GitResultChecker.js";
-import type { WorktreeManager, WorktreeInfo } from "./WorktreeManager.js";
-import type { SkillInjector } from "./SkillInjector.js";
-import type {
-	ExecutionEvidenceCollector,
-	ExecutionEvidence,
-} from "./ExecutionEvidenceCollector.js";
-import type { IDecisionLayer } from "./decision/DecisionLayer.js";
-import type { ExecutionEventEmitter, EventEnvelope } from "./ExecutionEventEmitter.js";
 import type { AgentDispatcher } from "./AgentDispatcher.js";
+import type { IDecisionLayer } from "./decision/DecisionLayer.js";
+import type {
+	EventEnvelope,
+	ExecutionEventEmitter,
+} from "./ExecutionEventEmitter.js";
+import type {
+	ExecutionEvidence,
+	ExecutionEvidenceCollector,
+} from "./ExecutionEvidenceCollector.js";
+import type { GitResultChecker } from "./GitResultChecker.js";
 import type { MemoryService } from "./memory/MemoryService.js";
+import type { PreHydrator } from "./PreHydrator.js";
+import type { SkillInjector } from "./SkillInjector.js";
+import type { WorktreeInfo, WorktreeManager } from "./WorktreeManager.js";
 
 const MEMORY_TIMEOUT_MS = 30_000; // 30s — generous for Gemini+Qdrant, but prevents indefinite hang
 
-function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+function withTimeout<T>(
+	promise: Promise<T>,
+	ms: number,
+	label: string,
+): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+		const timer = setTimeout(
+			() => reject(new Error(`${label} timed out after ${ms}ms`)),
+			ms,
+		);
 		promise.then(resolve, reject).finally(() => clearTimeout(timer));
 	});
 }
@@ -172,10 +182,7 @@ export class Blueprint {
 			} catch (error) {
 				return {
 					success: false,
-					error:
-						error instanceof Error
-							? error.message
-							: String(error),
+					error: error instanceof Error ? error.message : String(error),
 					worktreePath: worktreeInfo?.worktreePath,
 				};
 			}
@@ -235,14 +242,16 @@ export class Blueprint {
 		let memoryBlock = "";
 		if (this.memoryService) {
 			try {
-				memoryBlock = await withTimeout(
-					this.memoryService.searchAndFormat({
-						query: `${hydrated.issueTitle} ${hydrated.issueDescription}`.trim(),
-						projectName: env.projectName,
-					}),
-					MEMORY_TIMEOUT_MS,
-					"Memory retrieval",
-				) ?? "";
+				memoryBlock =
+					(await withTimeout(
+						this.memoryService.searchAndFormat({
+							query:
+								`${hydrated.issueTitle} ${hydrated.issueDescription}`.trim(),
+							projectName: env.projectName,
+						}),
+						MEMORY_TIMEOUT_MS,
+						"Memory retrieval",
+					)) ?? "";
 			} catch (err) {
 				console.warn(
 					`[Blueprint] Memory retrieval failed (non-fatal): ${err instanceof Error ? err.stack : String(err)}`,
@@ -251,11 +260,18 @@ export class Blueprint {
 		}
 
 		// ── Landing signal path (v0.6) ───────────────────────
-		const landSignalPath = path.join(cwd, ".flywheel", "runs", executionId, "land-status.json");
+		const landSignalPath = path.join(
+			cwd,
+			".flywheel",
+			"runs",
+			executionId,
+			"land-status.json",
+		);
 		// Landing is only supported in worktree mode (single-repo)
 		const landingEnabled = !!this.worktreeManager;
 		const hasLandCommand = !!this.skillsConfig?.land_command;
-		const canLand = landingEnabled && (skillInjectionSucceeded || hasLandCommand);
+		const canLand =
+			landingEnabled && (skillInjectionSucceeded || hasLandCommand);
 
 		// ── Build prompt + system prompt ──────────────────────
 		const prompt = `Implement ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`;
@@ -296,20 +312,31 @@ export class Blueprint {
 			const rc = ctx.retryContext;
 			systemPromptLines.push("");
 			systemPromptLines.push(`## Retry Context (Attempt #${rc.attempt})`);
-			systemPromptLines.push(`This is a retry of a previous execution that ${rc.previousDecisionRoute === "blocked" ? "was blocked" : "failed"}.`);
-			if (rc.previousError) systemPromptLines.push(`Previous error: ${rc.previousError}`);
-			if (rc.previousReasoning) systemPromptLines.push(`Previous reasoning: ${rc.previousReasoning}`);
+			systemPromptLines.push(
+				`This is a retry of a previous execution that ${rc.previousDecisionRoute === "blocked" ? "was blocked" : "failed"}.`,
+			);
+			if (rc.previousError)
+				systemPromptLines.push(`Previous error: ${rc.previousError}`);
+			if (rc.previousReasoning)
+				systemPromptLines.push(`Previous reasoning: ${rc.previousReasoning}`);
 			if (rc.reason) systemPromptLines.push(`CEO instruction: ${rc.reason}`);
-			systemPromptLines.push("Please address the issues from the previous attempt.");
+			systemPromptLines.push(
+				"Please address the issues from the previous attempt.",
+			);
 		}
 
-		systemPromptLines.push("Do not ask questions — implement your best judgment.");
+		systemPromptLines.push(
+			"Do not ask questions — implement your best judgment.",
+		);
 		const baseSystemPrompt = systemPromptLines.join("\n");
 
 		// Agent context (additive — prepend before base system prompt)
 		let agentContext = "";
 		if (dispatchResult) {
-			const agentContent = await readAgentFile(cwd, dispatchResult.agentConfig.agent_file);
+			const agentContent = await readAgentFile(
+				cwd,
+				dispatchResult.agentConfig.agent_file,
+			);
 			if (agentContent) {
 				const parts: string[] = [
 					"## Agent Role",
@@ -317,7 +344,10 @@ export class Blueprint {
 					"",
 				];
 				if (dispatchResult.agentConfig.domain_file) {
-					const domainContent = await readAgentFile(cwd, dispatchResult.agentConfig.domain_file);
+					const domainContent = await readAgentFile(
+						cwd,
+						dispatchResult.agentConfig.domain_file,
+					);
 					if (domainContent) {
 						parts.push(`## Domain Config\n${domainContent.slice(0, 10_000)}`);
 						parts.push("");
@@ -332,9 +362,13 @@ export class Blueprint {
 		}
 
 		const systemPrompt = [
-			agentContext ? `${agentContext}\n## Baseline Rules\n${baseSystemPrompt}` : baseSystemPrompt,
+			agentContext
+				? `${agentContext}\n## Baseline Rules\n${baseSystemPrompt}`
+				: baseSystemPrompt,
 			memoryBlock,
-		].filter(Boolean).join("\n");
+		]
+			.filter(Boolean)
+			.join("\n");
 
 		// ── Adapter execution (GEO-157: IAdapter.execute()) ──
 		const timeoutMs = ctx.sessionTimeoutMs ?? 2_700_000;
@@ -393,7 +427,9 @@ export class Blueprint {
 			try {
 				await fs.promises.rm(runDir, { recursive: true, force: true });
 			} catch (err) {
-				console.warn(`[Blueprint] Failed to clean up ${runDir}: ${err instanceof Error ? err.message : String(err)}`);
+				console.warn(
+					`[Blueprint] Failed to clean up ${runDir}: ${err instanceof Error ? err.message : String(err)}`,
+				);
 			}
 		}
 
@@ -417,7 +453,14 @@ export class Blueprint {
 
 		// v0.3 — extract memory (fallback path, no decision)
 		if (evidence) {
-			await this.extractMemory(hydrated, evidence, result, undefined, env.executionId, env.projectName);
+			await this.extractMemory(
+				hydrated,
+				evidence,
+				result,
+				undefined,
+				env.executionId,
+				env.projectName,
+			);
 		}
 
 		if (result.tmuxWindow) {
@@ -437,7 +480,10 @@ export class Blueprint {
 		};
 	}
 
-	private async emitTerminal(env: EventEnvelope, result: BlueprintResult): Promise<void> {
+	private async emitTerminal(
+		env: EventEnvelope,
+		result: BlueprintResult,
+	): Promise<void> {
 		if (!this.eventEmitter) return;
 		try {
 			if (result.success || result.decision) {
@@ -453,7 +499,9 @@ export class Blueprint {
 				]);
 			}
 		} catch (err) {
-			console.warn(`[Blueprint] emitTerminal failed: ${err instanceof Error ? err.message : String(err)}`);
+			console.warn(
+				`[Blueprint] emitTerminal failed: ${err instanceof Error ? err.message : String(err)}`,
+			);
 		}
 	}
 
@@ -526,12 +574,18 @@ export class Blueprint {
 		}
 
 		// v0.3 — extract memory (decision path)
-		await this.extractMemory(hydrated, evidence, result, decision, env.executionId, env.projectName);
+		await this.extractMemory(
+			hydrated,
+			evidence,
+			result,
+			decision,
+			env.executionId,
+			env.projectName,
+		);
 
 		// Route → success mapping
 		const success =
-			decision.route === "auto_approve" ||
-			decision.route === "needs_review";
+			decision.route === "auto_approve" || decision.route === "needs_review";
 
 		// Window lifecycle based on decision
 		if (result.tmuxWindow) {
@@ -546,9 +600,7 @@ export class Blueprint {
 			costUsd: result.costUsd,
 			sessionId: result.sessionId,
 			tmuxWindow:
-				decision.route === "auto_approve"
-					? undefined
-					: result.tmuxWindow,
+				decision.route === "auto_approve" ? undefined : result.tmuxWindow,
 			durationMs: result.durationMs,
 			worktreePath: worktreeInfo?.worktreePath,
 			evidence,
@@ -569,8 +621,12 @@ export class Blueprint {
 			const sessionResult: "success" | "failure" | "timeout" = result.timedOut
 				? "timeout"
 				: decision
-					? (decision.route === "blocked" ? "failure" : "success")
-					: (evidence.commitCount > 0 ? "success" : "failure");
+					? decision.route === "blocked"
+						? "failure"
+						: "success"
+					: evidence.commitCount > 0
+						? "success"
+						: "failure";
 
 			const memResult = await withTimeout(
 				this.memoryService.addSessionMemory({
@@ -584,11 +640,14 @@ export class Blueprint {
 					decisionRoute: decision?.route,
 					error: result.timedOut
 						? "timeout"
-						: (!decision && evidence.commitCount === 0)
+						: !decision && evidence.commitCount === 0
 							? "no commits produced"
 							: undefined,
 					decisionReasoning: decision
-						? [decision.reasoning, ...decision.concerns.map((c: string) => `concern: ${c}`)].join("; ")
+						? [
+								decision.reasoning,
+								...decision.concerns.map((c: string) => `concern: ${c}`),
+							].join("; ")
 						: undefined,
 				}),
 				MEMORY_TIMEOUT_MS,
@@ -606,11 +665,7 @@ export class Blueprint {
 
 	private async killTmuxWindow(tmuxWindow: string): Promise<void> {
 		try {
-			await this.shell.execFile(
-				"tmux",
-				["kill-window", "-t", tmuxWindow],
-				"/",
-			);
+			await this.shell.execFile("tmux", ["kill-window", "-t", tmuxWindow], "/");
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			console.warn(
@@ -624,7 +679,10 @@ export class Blueprint {
  * Safely read an agent/domain file relative to the repo root.
  * Returns null if file doesn't exist or path escapes the repo.
  */
-async function readAgentFile(repoRoot: string, relativePath: string): Promise<string | null> {
+async function readAgentFile(
+	repoRoot: string,
+	relativePath: string,
+): Promise<string | null> {
 	// Path safety: reject absolute or parent-escaping paths
 	if (path.isAbsolute(relativePath) || relativePath.startsWith("..")) {
 		console.warn(`[Blueprint] Unsafe agent path rejected: ${relativePath}`);
@@ -635,7 +693,10 @@ async function readAgentFile(repoRoot: string, relativePath: string): Promise<st
 
 	// Containment check (resolve-based, no realpath dependency)
 	const normalizedRoot = path.resolve(repoRoot);
-	if (!resolved.startsWith(normalizedRoot + path.sep) && resolved !== normalizedRoot) {
+	if (
+		!resolved.startsWith(normalizedRoot + path.sep) &&
+		resolved !== normalizedRoot
+	) {
 		console.warn(`[Blueprint] Agent path escapes repo: ${relativePath}`);
 		return null;
 	}
@@ -645,7 +706,9 @@ async function readAgentFile(repoRoot: string, relativePath: string): Promise<st
 		const realResolved = await fs.promises.realpath(resolved);
 		const realRoot = await fs.promises.realpath(repoRoot);
 		if (!realResolved.startsWith(realRoot + path.sep)) {
-			console.warn(`[Blueprint] Agent file symlinks outside repo: ${relativePath}`);
+			console.warn(
+				`[Blueprint] Agent file symlinks outside repo: ${relativePath}`,
+			);
 			return null;
 		}
 
@@ -691,11 +754,14 @@ async function ensureFlywheelRunsExclude(cwd: string): Promise<void> {
 			execFile(
 				"git",
 				["-C", cwd, "rev-parse", "--git-path", "info/exclude"],
-				(err, stdout) => (err ? reject(err) : resolve(path.resolve(cwd, stdout.trim()))),
+				(err, stdout) =>
+					err ? reject(err) : resolve(path.resolve(cwd, stdout.trim())),
 			);
 		});
 	} catch (err) {
-		console.warn(`[Blueprint] ensureFlywheelRunsExclude skipped: ${err instanceof Error ? err.message : String(err)}`);
+		console.warn(
+			`[Blueprint] ensureFlywheelRunsExclude skipped: ${err instanceof Error ? err.message : String(err)}`,
+		);
 		return;
 	}
 
@@ -707,7 +773,9 @@ async function ensureFlywheelRunsExclude(cwd: string): Promise<void> {
 		content = await fs.promises.readFile(excludeFile, "utf-8");
 	} catch (err: unknown) {
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-			console.warn(`[Blueprint] Failed to read ${excludeFile}: ${err instanceof Error ? err.message : String(err)}`);
+			console.warn(
+				`[Blueprint] Failed to read ${excludeFile}: ${err instanceof Error ? err.message : String(err)}`,
+			);
 		}
 	}
 

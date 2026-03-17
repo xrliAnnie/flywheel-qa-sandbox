@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import type { TranslationContext } from "flywheel-core";
 import { createLogger, type ILogger } from "flywheel-core";
-import type { FastifyReply, FastifyRequest } from "fastify";
 import { SlackMessageTranslator } from "./SlackMessageTranslator.js";
 import type {
 	SlackEventEnvelope,

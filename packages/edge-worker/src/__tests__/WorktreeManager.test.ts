@@ -2,16 +2,14 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
-	WorktreeManager,
-	type WorktreeExecFn,
-} from "../WorktreeManager.js";
+import { type WorktreeExecFn, WorktreeManager } from "../WorktreeManager.js";
 
 // ─── Helpers ─────────────────────────────────────
 
-function makeMockExec(
-	responses: Array<{ stdout: string } | Error> = [],
-): { fn: WorktreeExecFn; calls: Array<{ cmd: string; args: string[]; cwd: string }> } {
+function makeMockExec(responses: Array<{ stdout: string } | Error> = []): {
+	fn: WorktreeExecFn;
+	calls: Array<{ cmd: string; args: string[]; cwd: string }>;
+} {
 	const calls: Array<{ cmd: string; args: string[]; cwd: string }> = [];
 	let idx = 0;
 	const fn: WorktreeExecFn = async (cmd, args, cwd) => {
@@ -47,12 +45,9 @@ const PORCELAIN_DETACHED = [
 	"",
 ].join("\n");
 
-const PORCELAIN_BARE = [
-	"worktree /bare/repo",
-	"HEAD abc1234",
-	"bare",
-	"",
-].join("\n");
+const PORCELAIN_BARE = ["worktree /bare/repo", "HEAD abc1234", "bare", ""].join(
+	"\n",
+);
 
 const PORCELAIN_SINGLE = [
 	"worktree /main/repo",
@@ -83,14 +78,13 @@ describe("WorktreeManager", () => {
 			expect(calls[0].cmd).toBe("git");
 			expect(calls[0].args).toContain("-b");
 			expect(calls[0].args).toContain("flywheel-GEO-42");
-			expect(calls[0].args.some((a) => a.includes("origin/main^{commit}"))).toBe(true);
+			expect(
+				calls[0].args.some((a) => a.includes("origin/main^{commit}")),
+			).toBe(true);
 		});
 
 		it("sets push.autoSetupRemote", async () => {
-			const { fn, calls } = makeMockExec([
-				{ stdout: "" },
-				{ stdout: "" },
-			]);
+			const { fn, calls } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
 			const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
 
 			await mgr.create({
@@ -100,15 +94,17 @@ describe("WorktreeManager", () => {
 			});
 
 			expect(calls[1].args).toEqual(
-				expect.arrayContaining(["config", "--local", "push.autoSetupRemote", "true"]),
+				expect.arrayContaining([
+					"config",
+					"--local",
+					"push.autoSetupRemote",
+					"true",
+				]),
 			);
 		});
 
 		it("uses custom startPoint", async () => {
-			const { fn, calls } = makeMockExec([
-				{ stdout: "" },
-				{ stdout: "" },
-			]);
+			const { fn, calls } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
 			const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
 
 			await mgr.create({
@@ -118,14 +114,13 @@ describe("WorktreeManager", () => {
 				startPoint: "feature/base",
 			});
 
-			expect(calls[0].args.some((a) => a.includes("feature/base^{commit}"))).toBe(true);
+			expect(
+				calls[0].args.some((a) => a.includes("feature/base^{commit}")),
+			).toBe(true);
 		});
 
 		it("creates correct worktree path", async () => {
-			const { fn } = makeMockExec([
-				{ stdout: "" },
-				{ stdout: "" },
-			]);
+			const { fn } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
 			const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
 
 			const info = await mgr.create({
@@ -138,10 +133,7 @@ describe("WorktreeManager", () => {
 		});
 
 		it("returns complete WorktreeInfo", async () => {
-			const { fn } = makeMockExec([
-				{ stdout: "" },
-				{ stdout: "" },
-			]);
+			const { fn } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
 			const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
 
 			const info = await mgr.create({
@@ -190,10 +182,7 @@ describe("WorktreeManager", () => {
 		});
 
 		it("uses default baseDir when config omitted", async () => {
-			const { fn } = makeMockExec([
-				{ stdout: "" },
-				{ stdout: "" },
-			]);
+			const { fn } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
 			const mgr = new WorktreeManager(undefined, fn);
 
 			const info = await mgr.create({
@@ -410,7 +399,7 @@ describe("WorktreeManager", () => {
 
 			const { fn } = makeMockExec([
 				{ stdout: porcelain }, // list
-				{ stdout: "" },        // prune (from remove of GEO-43)
+				{ stdout: "" }, // prune (from remove of GEO-43)
 			]);
 			const mgr = new WorktreeManager(
 				{ baseDir: "/base", bgDeleteFn: noopBgDelete },
@@ -481,7 +470,7 @@ describe("WorktreeManager", () => {
 
 		it("is no-op when nothing exists (first run)", async () => {
 			const { fn } = makeMockExec([
-				{ stdout: PORCELAIN_SINGLE },  // list (isRegistered → false)
+				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
 				new Error("error: branch 'flywheel-GEO-99' not found"), // git branch -D
 			]);
 			const mgr = new WorktreeManager(

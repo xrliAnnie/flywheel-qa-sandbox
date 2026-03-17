@@ -1,19 +1,19 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
-import * as path from "node:path";
 import * as os from "node:os";
-import { Blueprint } from "../Blueprint.js";
-import { PreHydrator } from "../PreHydrator.js";
-import { AgentDispatcher } from "../AgentDispatcher.js";
-import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
-import type { DagNode } from "flywheel-dag-resolver";
+import * as path from "node:path";
 import type { AgentConfig } from "flywheel-config";
 import type {
-	IAdapter,
 	AdapterExecutionContext,
 	AdapterExecutionResult,
+	IAdapter,
 } from "flywheel-core";
+import type { DagNode } from "flywheel-dag-resolver";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgentDispatcher } from "../AgentDispatcher.js";
+import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
+import { Blueprint } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
+import { PreHydrator } from "../PreHydrator.js";
 
 // ─── Helpers ─────────────────────────────────────
 
@@ -21,7 +21,9 @@ function makeNode(id = "GEO-42"): DagNode {
 	return { id, blockedBy: [] };
 }
 
-function makeContext(overrides: Partial<BlueprintContext> = {}): BlueprintContext {
+function makeContext(
+	overrides: Partial<BlueprintContext> = {},
+): BlueprintContext {
 	return { teamName: "eng", runnerName: "claude", ...overrides };
 }
 
@@ -55,12 +57,16 @@ function makeMockAdapter(): IAdapter {
 		type: "mock",
 		supportsStreaming: false,
 		checkEnvironment: async () => ({ healthy: true, message: "mock" }),
-		execute: vi.fn(async (_ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> => ({
-			success: true,
-			sessionId: "sess-uuid",
-			tmuxWindow: "flywheel:@42",
-			durationMs: 5000,
-		})),
+		execute: vi.fn(
+			async (
+				_ctx: AdapterExecutionContext,
+			): Promise<AdapterExecutionResult> => ({
+				success: true,
+				sessionId: "sess-uuid",
+				tmuxWindow: "flywheel:@42",
+				durationMs: 5000,
+			}),
+		),
 	};
 }
 
@@ -107,13 +113,19 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 			makeMockGitChecker(),
 			() => adapter,
 			makeMockShell(),
-			undefined, undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			dispatcher,
 		);
 
 		await blueprint.run(makeNode(), tmpDir, makeContext());
 
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock.calls[0]![0] as AdapterExecutionContext;
+		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
 		// Agent content prepended
@@ -151,13 +163,19 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 			makeMockGitChecker(),
 			() => adapter,
 			makeMockShell(),
-			undefined, undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			dispatcher,
 		);
 
 		await blueprint.run(makeNode(), tmpDir, makeContext());
 
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock.calls[0]![0] as AdapterExecutionContext;
+		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
 		expect(sysPrompt).toContain("## Agent Role");
@@ -184,13 +202,19 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 			makeMockGitChecker(),
 			() => adapter,
 			makeMockShell(),
-			undefined, undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			dispatcher,
 		);
 
 		await blueprint.run(makeNode(), tmpDir, makeContext());
 
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock.calls[0]![0] as AdapterExecutionContext;
+		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
 		// Falls back to generic — no agent section
@@ -214,7 +238,8 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 
 		await blueprint.run(makeNode(), tmpDir, makeContext());
 
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock.calls[0]![0] as AdapterExecutionContext;
+		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
 		expect(sysPrompt).not.toContain("## Agent Role");
@@ -239,13 +264,19 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 			makeMockGitChecker(),
 			() => adapter,
 			makeMockShell(),
-			undefined, undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			dispatcher,
 		);
 
 		await blueprint.run(makeNode(), tmpDir, makeContext());
 
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock.calls[0]![0] as AdapterExecutionContext;
+		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
 		// Path traversal rejected — generic prompt
@@ -284,13 +315,19 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 			makeMockGitChecker(),
 			() => adapter,
 			makeMockShell(),
-			undefined, undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			dispatcher,
 		);
 
 		await blueprint.run(makeNode(), tmpDir, makeContext());
 
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock.calls[0]![0] as AdapterExecutionContext;
+		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
 		// Symlink outside repo rejected — generic prompt
@@ -308,10 +345,7 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 		const agentDir = path.join(tmpDir, ".claude", "agents");
 		fs.mkdirSync(agentDir, { recursive: true });
 		// Write a 50KB file
-		fs.writeFileSync(
-			path.join(agentDir, "large.md"),
-			"X".repeat(50_000),
-		);
+		fs.writeFileSync(path.join(agentDir, "large.md"), "X".repeat(50_000));
 
 		const agents: Record<string, AgentConfig> = {
 			large: {
@@ -327,13 +361,19 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 			makeMockGitChecker(),
 			() => adapter,
 			makeMockShell(),
-			undefined, undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			dispatcher,
 		);
 
 		await blueprint.run(makeNode(), tmpDir, makeContext());
 
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock.calls[0]![0] as AdapterExecutionContext;
+		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
 		// Agent content present but truncated

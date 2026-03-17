@@ -7,7 +7,6 @@ vi.mock("node:child_process", () => ({
 
 import { execFile } from "node:child_process";
 import { ClaudeCodeRunner } from "../src/ClaudeCodeRunner.js";
-import type { FlywheelRunRequest } from "flywheel-core";
 
 /**
  * Helper to create a mock execFile that resolves with given stdout
