@@ -633,12 +633,15 @@ export class CipherWriter {
 	// --- Wave 2: Dreaming ---
 
 	async runDreaming(): Promise<void> {
-		this.lastRefreshAt = Date.now();
 		// Refresh temporal windows first so detect/extract operate on current 90-day data
 		await this.refreshTemporalWindows();
 		await this.detectQuestions();
 		await this.extractSkills();
 		await this.graduateSkillsToPrinciples();
+
+		// Update lastRefreshAt AFTER dreaming completes successfully so that
+		// a process crash mid-dreaming will re-trigger on next startup.
+		this.lastRefreshAt = Date.now();
 
 		// Sync to Supabase mirror after dreaming completes (advisory — errors don't fail dreaming)
 		if (this.syncAfterDreamingFn) {

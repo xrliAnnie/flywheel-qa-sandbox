@@ -45,6 +45,10 @@ export class CipherSyncService {
 	/**
 	 * Sync all 8 CIPHER tables from SQLite to Supabase.
 	 * Called after dreaming completes.
+	 *
+	 * Reads all table data synchronously from SQLite first (consistent snapshot),
+	 * then writes to Supabase asynchronously. This prevents concurrent recordOutcome()
+	 * calls from creating an inconsistent cross-table view.
 	 */
 	async syncAll(db: SqlJsDatabase): Promise<{ totalRows: number; errors: string[] }> {
 		const errors: string[] = [];
@@ -62,9 +66,17 @@ export class CipherSyncService {
 			"cipher_questions",
 		];
 
+		// Phase 1: snapshot all table data synchronously (sql.js is synchronous)
+		const snapshots = new Map<SqliteTable, Record<string, unknown>[]>();
+		for (const table of tables) {
+			snapshots.set(table, this.readTable(db, table));
+		}
+
+		// Phase 2: upsert to Supabase from the snapshot
 		for (const table of tables) {
 			try {
-				const count = await this.syncTable(db, table);
+				const rows = snapshots.get(table)!;
+				const count = await this.upsertRows(table, rows);
 				totalRows += count;
 			} catch (err) {
 				const msg = `[CipherSync] Failed to sync ${table}: ${err instanceof Error ? err.message : String(err)}`;
@@ -91,29 +103,31 @@ export class CipherSyncService {
 	}
 
 	/**
-	 * Sync a single table from SQLite to Supabase via batch upsert.
+	 * Read all rows from a SQLite table synchronously.
 	 */
-	private async syncTable(db: SqlJsDatabase, sqliteTable: SqliteTable): Promise<number> {
-		const supabaseTable = TABLE_MAP[sqliteTable];
+	private readTable(db: SqlJsDatabase, sqliteTable: SqliteTable): Record<string, unknown>[] {
 		const queryResult = db.exec(`SELECT * FROM ${sqliteTable}`);
-
 		if (queryResult.length === 0 || queryResult[0]!.values.length === 0) {
-			return 0;
+			return [];
 		}
 
 		const columns = queryResult[0]!.columns;
-		const rows = queryResult[0]!.values;
-
-		// Convert rows to objects
-		const objects = rows.map((row) => {
+		return queryResult[0]!.values.map((row) => {
 			const obj: Record<string, unknown> = {};
 			for (let i = 0; i < columns.length; i++) {
 				obj[columns[i]!] = row[i];
 			}
 			return obj;
 		});
+	}
 
-		// Batch upsert in chunks of 500 (Supabase limit)
+	/**
+	 * Upsert pre-read rows to Supabase via batch upsert.
+	 */
+	private async upsertRows(sqliteTable: SqliteTable, objects: Record<string, unknown>[]): Promise<number> {
+		if (objects.length === 0) return 0;
+
+		const supabaseTable = TABLE_MAP[sqliteTable];
 		const BATCH_SIZE = 500;
 		for (let i = 0; i < objects.length; i += BATCH_SIZE) {
 			const batch = objects.slice(i, i + BATCH_SIZE);
