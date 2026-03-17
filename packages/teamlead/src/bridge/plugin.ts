@@ -229,9 +229,10 @@ export function createBridgeApp(
 					res.status(404).json({ error: "principle not found or not in expected state" });
 					return;
 				}
-				// Principles are loaded into DecisionLayer HardRules at each execution start.
-				// This SQLite change takes effect on the next issue execution, not mid-run.
-				res.json({ ok: true, effective: "next_execution" });
+				// Principles are loaded into DecisionLayer HardRules once at process start
+				// (setup.ts). A running worker reuses the same DecisionLayer for its entire
+				// DAG batch. This change takes effect on the next process/DAG start.
+				res.json({ ok: true, effective: "next_process_start" });
 			} catch {
 				res.status(500).json({ error: "principle action failed" });
 			}
