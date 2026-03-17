@@ -170,6 +170,43 @@ export function createBridgeApp(
 	app.use("/api", tokenAuthMiddleware(config.apiToken), createQueryRouter(store, retryDispatcher));
 	app.use("/api/actions", tokenAuthMiddleware(config.apiToken), createActionRouter(store, projects, transitionOpts, config, retryDispatcher));
 
+	// Forum tag update — proxy to Discord API (GEO-167)
+	app.post("/api/forum-tag", tokenAuthMiddleware(config.apiToken), async (req, res) => {
+		const { thread_id, tag_ids } = req.body as { thread_id?: string; tag_ids?: string[] };
+		if (!thread_id || typeof thread_id !== "string") {
+			res.status(400).json({ error: "thread_id is required" });
+			return;
+		}
+		if (!Array.isArray(tag_ids) || !tag_ids.every((t) => typeof t === "string")) {
+			res.status(400).json({ error: "tag_ids must be a string array" });
+			return;
+		}
+		if (!config.discordBotToken) {
+			res.status(503).json({ error: "Discord bot token not configured" });
+			return;
+		}
+		try {
+			const discordRes = await fetch(`https://discord.com/api/v10/channels/${thread_id}`, {
+				method: "PATCH",
+				headers: {
+					Authorization: `Bot ${config.discordBotToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ applied_tags: tag_ids }),
+			});
+			if (!discordRes.ok) {
+				const body = await discordRes.text();
+				console.warn(`[forum-tag] Discord returned ${discordRes.status}: ${body}`);
+				res.status(discordRes.status).json({ error: "Discord API error", detail: body });
+				return;
+			}
+			res.json({ ok: true });
+		} catch (err) {
+			console.error("[forum-tag] Discord API call failed:", (err as Error).message);
+			res.status(502).json({ error: "Failed to reach Discord API" });
+		}
+	});
+
 	// Catch-all 404
 	app.use((_req, res) => {
 		res.status(404).json({ error: "not found" });
