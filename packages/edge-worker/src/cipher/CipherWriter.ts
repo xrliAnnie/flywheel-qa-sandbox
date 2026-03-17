@@ -204,9 +204,11 @@ export class CipherWriter {
 			const ts = new Date(raw.endsWith("Z") ? raw : raw + "Z").getTime();
 			if (!isNaN(ts)) this.lastRefreshAt = ts;
 
-			// Count outcomes since last successful dreaming
+			// Count outcomes since last successful dreaming. Use >= to avoid
+			// missing reviews that land in the same second as dreaming completion
+			// (sqlNow has only second precision). Overcounting by 1 is harmless.
 			const countResult = this.db.exec(
-				`SELECT COUNT(*) FROM decision_reviews WHERE created_at > ?`,
+				`SELECT COUNT(*) FROM decision_reviews WHERE created_at >= ?`,
 				[raw],
 			);
 			if (countResult.length > 0 && countResult[0]!.values.length > 0) {
