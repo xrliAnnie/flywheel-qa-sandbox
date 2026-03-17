@@ -14,7 +14,7 @@ The goal is autonomous dev execution where human attention is the bottleneck, no
 
 ## Prerequisites
 
-- **Node.js** >= 18 (ES2022 target)
+- **Node.js** >= 22 (CI pins to Node 22 LTS via `.node-version`; ES2022 target)
 - **pnpm** 10.13.1 (`corepack enable && corepack prepare pnpm@10.13.1 --activate`)
 - **TypeScript** ^5.3.3
 
