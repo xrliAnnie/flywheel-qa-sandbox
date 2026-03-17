@@ -65,7 +65,7 @@ describe("CIPHER Bridge E2E", () => {
 		cipherWriter = await CipherWriter.create(cipherDbPath);
 		store = await StateStore.create(":memory:");
 
-		const app = createBridgeApp(store, testProjects, makeConfig(), undefined, cipherWriter);
+		const app = createBridgeApp(store, testProjects, makeConfig(), undefined, undefined, undefined, cipherWriter);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
