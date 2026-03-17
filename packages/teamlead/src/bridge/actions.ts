@@ -115,8 +115,9 @@ export async function approveExecution(
 	});
 
 	if (result.success) {
+		let transitionRejected = false;
 		if (transitionOpts) {
-			applyTransition(
+			const fsmResult = applyTransition(
 				transitionOpts,
 				session.execution_id,
 				"approved",
@@ -128,6 +129,10 @@ export async function approveExecution(
 				},
 				{ last_activity_at: sqliteDatetime() },
 			);
+			if (!fsmResult.ok) {
+				console.warn(`[actions] FSM rejected approve for ${executionId}: ${fsmResult.error}`);
+				transitionRejected = true;
+			}
 		} else {
 			store.upsertSession({
 				execution_id: session.execution_id,
@@ -139,19 +144,22 @@ export async function approveExecution(
 				last_activity_at: sqliteDatetime(),
 			});
 		}
-		sendActionHook(store, config, executionId, "approve", "awaiting_review", "approved");
 
-		// CIPHER: record approve outcome
-		if (cipherWriter && session.status === "awaiting_review") {
-			try {
-				await cipherWriter.recordOutcome({
-					executionId,
-					ceoAction: "approve",
-					ceoActionTimestamp,
-					sourceStatus: session.status,
-				});
-			} catch {
-				console.error(`[CIPHER] recordOutcome failed for approve ${executionId}`);
+		if (!transitionRejected) {
+			sendActionHook(store, config, executionId, "approve", "awaiting_review", "approved");
+
+			// CIPHER: record approve outcome
+			if (cipherWriter && session.status === "awaiting_review") {
+				try {
+					await cipherWriter.recordOutcome({
+						executionId,
+						ceoAction: "approve",
+						ceoActionTimestamp,
+						sourceStatus: session.status,
+					});
+				} catch {
+					console.error(`[CIPHER] recordOutcome failed for approve ${executionId}`);
+				}
 			}
 		}
 	}
