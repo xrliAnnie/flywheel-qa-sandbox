@@ -77,7 +77,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const route = result.decision?.route;
 		let status: string;
 		if (route === "needs_review") status = "awaiting_review";
-		else if (route === "auto_approve") status = "awaiting_review"; // v1.0 Phase 2: no auto-merge
+		else if (route === "auto_approve") {
+			// Mirror event-route.ts: merged → approved, otherwise awaiting_review
+			const landingStatus = result.evidence?.landingStatus as { status?: string } | undefined;
+			status = landingStatus?.status === "merged" ? "approved" : "awaiting_review";
+		}
 		else if (route === "blocked") status = "blocked";
 		else status = "completed";
 
@@ -97,6 +101,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			diff_summary: result.evidence?.diffSummary,
 			commit_messages: result.evidence?.commitMessages?.join("\n"),
 			changed_file_paths: result.evidence?.changedFilePaths?.join("\n"),
+			issue_identifier: env.issueIdentifier,
+			issue_title: env.issueTitle,
 		});
 
 		this.pushNotification(env, "session_completed");
