@@ -215,20 +215,36 @@ export class DagDispatcher {
 			// Session may not exist yet — proceed to open (best-effort)
 		}
 
-		execFile(
-			"osascript",
-			[
-				"-e",
-				`tell application "Terminal" to do script "tmux attach -t '=${s}' 2>/dev/null || (echo 'Waiting for tmux session ${s}...' && sleep 2 && tmux attach -t '=${s}'); exit 0"`,
-			],
-			(err) => {
-				if (err) {
-					console.warn(
-						`[DagDispatcher] Could not auto-open tmux viewer: ${err.message}`,
-					);
-				}
-			},
-		);
+		// Self-closing AppleScript: holds references to the created tab + window,
+		// polls until tmux is no longer in the process list, then closes the window.
+		// Works regardless of Terminal.app shellExitAction preference.
+		const script = [
+			'tell application "Terminal"',
+			`  set viewerTab to do script "tmux attach -t '=${s}' 2>/dev/null || (echo 'Waiting for tmux session ${s}...' && sleep 2 && tmux attach -t '=${s}')"`,
+			"  set viewerWindow to front window",
+			"  activate",
+			"  repeat",
+			"    delay 2",
+			"    try",
+			'      set p to (processes of viewerTab) as string',
+			'      if p does not contain "tmux" then',
+			"        close viewerWindow",
+			"        exit repeat",
+			"      end if",
+			"    on error",
+			"      exit repeat",
+			"    end try",
+			"  end repeat",
+			"end tell",
+		].join("\n");
+
+		execFile("osascript", ["-e", script], (err) => {
+			if (err) {
+				console.warn(
+					`[DagDispatcher] Could not auto-open tmux viewer: ${err.message}`,
+				);
+			}
+		});
 	}
 
 	private cleanupMarkerDir(): void {
