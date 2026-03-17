@@ -185,15 +185,31 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	try {
 		const principles = await cipherReader.loadActivePrinciples();
 		for (const p of principles) {
-			// Extract dimension constraints from the source pattern key
-			// Format: "dims:values" — e.g., "label:bug", "label+size:bug+small", "area+size:backend+large"
+			// Extract dimension constraints from the source pattern key.
+			// Format: "dims:values" — e.g., "label:bug", "label+size:bug+small"
+			// Labels may contain ':' or '+', so split on the FIRST ':' only
+			// and for multi-dim keys, split values from the right (non-label
+			// values like sizeBucket/areaTouched never contain '+').
 			const constraints: Array<{ dim: string; val: string }> = [];
-			const parts = p.sourcePattern.split(":");
-			if (parts.length === 2) {
-				const dims = parts[0]!.split("+");
-				const vals = parts[1]!.split("+");
-				for (let i = 0; i < dims.length && i < vals.length; i++) {
-					constraints.push({ dim: dims[i]!, val: vals[i]! });
+			const colonIdx = p.sourcePattern.indexOf(":");
+			if (colonIdx > 0) {
+				const dimsPart = p.sourcePattern.substring(0, colonIdx);
+				const valsPart = p.sourcePattern.substring(colonIdx + 1);
+				const dims = dimsPart.split("+");
+				if (dims.length === 1) {
+					constraints.push({ dim: dims[0]!, val: valsPart });
+				} else {
+					// Split from right: last N-1 tokens are controlled values,
+					// everything else is the first value (may contain '+').
+					const valTokens = valsPart.split("+");
+					const tailCount = dims.length - 1;
+					if (valTokens.length >= dims.length) {
+						const headVal = valTokens.slice(0, valTokens.length - tailCount).join("+");
+						constraints.push({ dim: dims[0]!, val: headVal });
+						for (let i = 1; i < dims.length; i++) {
+							constraints.push({ dim: dims[i]!, val: valTokens[valTokens.length - tailCount + (i - 1)]! });
+						}
+					}
 				}
 			}
 

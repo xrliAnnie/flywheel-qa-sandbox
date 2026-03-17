@@ -186,15 +186,22 @@ export class CipherWriter {
 		if (countResult.length > 0 && countResult[0]!.values.length > 0) {
 			this.outcomeCount = Number(countResult[0]!.values[0]![0]) || 0;
 		}
-		const lastSkillResult = this.db.exec(
-			`SELECT MAX(updated_at) FROM cipher_skills`,
+		// Use the most recent timestamp from skills (dreaming output) or reviews
+		// (dreaming input) — whichever is later. This handles the case where
+		// reviews exist but no skills have been extracted yet.
+		const lastTsResult = this.db.exec(
+			`SELECT MAX(ts) FROM (
+				SELECT MAX(updated_at) AS ts FROM cipher_skills
+				UNION ALL
+				SELECT MAX(created_at) AS ts FROM decision_reviews
+			)`,
 		);
 		if (
-			lastSkillResult.length > 0 &&
-			lastSkillResult[0]!.values.length > 0 &&
-			lastSkillResult[0]!.values[0]![0]
+			lastTsResult.length > 0 &&
+			lastTsResult[0]!.values.length > 0 &&
+			lastTsResult[0]!.values[0]![0]
 		) {
-			const ts = new Date(lastSkillResult[0]!.values[0]![0] as string).getTime();
+			const ts = new Date(lastTsResult[0]!.values[0]![0] as string).getTime();
 			if (!isNaN(ts)) this.lastRefreshAt = ts;
 		}
 
