@@ -283,6 +283,7 @@ export async function startBridge(
 		if (retryDispatcher) {
 			retryDispatcher.stopAccepting();
 			await retryDispatcher.drain();
+			await retryDispatcher.teardownRuntimes();
 		}
 		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {
