@@ -423,7 +423,7 @@ describe("Action tools", () => {
 				notificationChannel: "test-ch",
 			});
 
-			const result = transitionSession(store, "reject", "e1", "test", undefined, hookConfig);
+			const result = await transitionSession(store, "reject", "e1", "test", undefined, hookConfig);
 			expect(result.success).toBe(true);
 			expect(store.getSession("e1")!.status).toBe("rejected");
 		});

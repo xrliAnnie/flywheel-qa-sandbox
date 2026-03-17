@@ -6,8 +6,7 @@ import { CipherWriter } from "flywheel-edge-worker";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
 import { startBridge } from "./bridge/plugin.js";
-import { buildHookBody } from "./bridge/hook-payload.js";
-import { notifyAgent } from "./bridge/event-route.js";
+import { buildHookBody, notifyAgent } from "./bridge/hook-payload.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
 
 async function main() {
@@ -36,7 +35,7 @@ async function main() {
 		}
 	});
 
-	const { close } = await startBridge(config, projects, cipherWriter);
+	const { close } = await startBridge(config, projects, { cipherWriter });
 
 	let shuttingDown = false;
 	const shutdown = async () => {
