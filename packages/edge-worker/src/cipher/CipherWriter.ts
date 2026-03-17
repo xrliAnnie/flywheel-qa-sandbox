@@ -187,14 +187,11 @@ export class CipherWriter {
 			this.outcomeCount = Number(countResult[0]!.values[0]![0]) || 0;
 		}
 		// Use the most recent timestamp from skills (dreaming output) or reviews
-		// (dreaming input) — whichever is later. This handles the case where
-		// reviews exist but no skills have been extracted yet.
+		// Use only decision_reviews.created_at (immutable, set on outcome recording).
+		// Do NOT use cipher_skills.updated_at — it can be polluted by a partial
+		// dreaming cycle (e.g., extractSkills ran but graduation didn't complete).
 		const lastTsResult = this.db.exec(
-			`SELECT MAX(ts) FROM (
-				SELECT MAX(updated_at) AS ts FROM cipher_skills
-				UNION ALL
-				SELECT MAX(created_at) AS ts FROM decision_reviews
-			)`,
+			`SELECT MAX(created_at) FROM decision_reviews`,
 		);
 		if (
 			lastTsResult.length > 0 &&
@@ -588,8 +585,14 @@ export class CipherWriter {
 			];
 			const approveRate = ac / tc;
 
-			// Skip ambiguous patterns
-			if (approveRate > 0.3 && approveRate < 0.7) continue;
+			// Retire existing skills whose patterns have drifted into the ambiguous zone
+			if (approveRate > 0.3 && approveRate < 0.7) {
+				this.db.run(
+					`UPDATE cipher_skills SET status = 'retired', description = description || ' [retired: confidence drift to ambiguous zone]', updated_at = ? WHERE source_pattern_key = ? AND status = 'active'`,
+					[now, key],
+				);
+				continue;
+			}
 
 			const action =
 				approveRate >= 0.7 ? "likely_approve" : "likely_reject";
