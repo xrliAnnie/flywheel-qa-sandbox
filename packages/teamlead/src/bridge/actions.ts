@@ -101,6 +101,8 @@ export async function approveExecution(
 		return { success: false, message: `Unknown project: ${session.project_name}` };
 	}
 
+	// Capture timestamp before execute() so CIPHER doesn't include merge latency
+	const ceoActionTimestamp = new Date().toISOString();
 	const handler = new ApproveHandler(execFn ?? defaultExec, project.projectRoot, project.projectRepo);
 	const result = await handler.execute({
 		actionId: `flywheel_approve_${session.issue_id}`,
@@ -145,7 +147,7 @@ export async function approveExecution(
 				await cipherWriter.recordOutcome({
 					executionId,
 					ceoAction: "approve",
-					ceoActionTimestamp: new Date().toISOString(),
+					ceoActionTimestamp,
 					sourceStatus: session.status,
 				});
 			} catch {

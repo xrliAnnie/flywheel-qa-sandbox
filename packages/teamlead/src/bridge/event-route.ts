@@ -232,15 +232,16 @@ export function createEventRouter(
 				// CEO must approve via Slack before merge. No auto-merge flow.
 
 				// CIPHER Phase A: save snapshot for awaiting_review sessions
-				if (cipherWriter && status === "awaiting_review") {
+				// Skip if FSM rejected the transition (out-of-order/duplicate events)
+				if (cipherWriter && status === "awaiting_review" && !transitionRejected) {
 					const labels = Array.isArray(payload.labels) ? (payload.labels as string[]) : null;
 					const changedFilePaths = Array.isArray(evidence?.changedFilePaths)
 						? (evidence.changedFilePaths as string[]) : null;
 					const projectId = asString(payload.projectId);
 
-					if (!labels || !changedFilePaths || !projectId) {
+					if (!labels || !changedFilePaths) {
 						console.warn(`[CIPHER] Skipping snapshot for ${event.execution_id}: missing required fields`
-							+ ` (labels=${!!labels}, paths=${!!changedFilePaths}, projectId=${!!projectId})`);
+							+ ` (labels=${!!labels}, paths=${!!changedFilePaths})`);
 					} else {
 						const snapshotInput: SnapshotInputDto = {
 							labels,
@@ -261,7 +262,7 @@ export function createEventRouter(
 								issueId: event.issue_id,
 								issueIdentifier: asString(payload.issueIdentifier) ?? "",
 								issueTitle: asString(payload.issueTitle) ?? "",
-								projectId,
+								projectId: projectId ?? "",
 								issueLabels: labels,
 								dimensions,
 								patternKeys,
