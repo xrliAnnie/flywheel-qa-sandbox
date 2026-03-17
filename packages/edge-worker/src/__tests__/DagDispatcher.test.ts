@@ -819,7 +819,7 @@ describe("DagDispatcher", () => {
 		expect(mockExecFile).toHaveBeenCalled();
 		const call = (mockExecFile as ReturnType<typeof vi.fn>).mock.calls[0]!;
 		expect(call[0]).toBe("osascript");
-		expect(call[1][1]).toContain("; exit 0");
+		expect(call[1][1]).toContain("close viewerWindow");
 	});
 
 	it("openTmuxViewer opens when list-clients throws (session not yet created)", async () => {
