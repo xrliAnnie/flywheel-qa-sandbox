@@ -110,6 +110,8 @@ export type {
 // CIPHER system (v1.3)
 export { CipherWriter } from "./cipher/CipherWriter.js";
 export { CipherReader } from "./cipher/CipherReader.js";
+export { CipherSyncService } from "./cipher/CipherSyncService.js";
+export type { CipherSyncConfig } from "./cipher/CipherSyncService.js";
 export { extractDimensions } from "./cipher/dimensions.js";
 export {
 	generatePatternKeys,
