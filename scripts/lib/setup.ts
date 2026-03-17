@@ -247,7 +247,11 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 						if (c.dim === "area" && areaTouched !== c.val) return noMatch;
 						if (c.dim === "auth" && String(touchesAuth) !== c.val) return noMatch;
 						if (c.dim === "tests" && String(hasTests) !== c.val) return noMatch;
-						if (c.dim === "exit" && ctx.exitReason !== c.val) return noMatch;
+						if (c.dim === "exit") {
+							// Normalize exitReason to match dimensions.ts learning: timeout/error/completed
+							const exitStatus = ctx.exitReason === "timeout" ? "timeout" : ctx.exitReason === "error" ? "error" : "completed";
+							if (exitStatus !== c.val) return noMatch;
+						}
 						if (c.dim === "failures" && String(ctx.consecutiveFailures > 0) !== c.val) return noMatch;
 						if (c.dim === "commits") {
 							const vol = ctx.commitCount <= 1 ? "single" : ctx.commitCount <= 5 ? "few" : "many";
