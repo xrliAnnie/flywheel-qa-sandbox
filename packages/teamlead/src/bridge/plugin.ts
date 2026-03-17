@@ -229,7 +229,9 @@ export function createBridgeApp(
 					res.status(404).json({ error: "principle not found or not in expected state" });
 					return;
 				}
-				res.json({ ok: true });
+				// Principles are loaded into DecisionLayer HardRules at each execution start.
+				// This SQLite change takes effect on the next issue execution, not mid-run.
+				res.json({ ok: true, effective: "next_execution" });
 			} catch {
 				res.status(500).json({ error: "principle action failed" });
 			}
