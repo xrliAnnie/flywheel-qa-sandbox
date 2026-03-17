@@ -10,6 +10,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { BridgeConfig } from "./types.js";
 import { createQueryRouter } from "./tools.js";
 import { createActionRouter } from "./actions.js";
+import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { createEventRouter } from "./event-route.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
@@ -117,6 +118,7 @@ export function createBridgeApp(
 	config: BridgeConfig,
 	broadcaster?: SseBroadcaster,
 	transitionOpts?: ApplyTransitionOpts,
+	retryDispatcher?: IRetryDispatcher,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -159,14 +161,14 @@ export function createBridgeApp(
 	});
 
 	// Dashboard actions — no auth (loopback only, same handlers as /api/actions)
-	app.use("/actions", createActionRouter(store, projects, transitionOpts, config));
+	app.use("/actions", createActionRouter(store, projects, transitionOpts, config, retryDispatcher));
 
 	// /events — ingest auth
 	app.use("/events", tokenAuthMiddleware(config.ingestToken), createEventRouter(store, projects, config, undefined, transitionOpts));
 
 	// /api/* — api auth
-	app.use("/api", tokenAuthMiddleware(config.apiToken), createQueryRouter(store));
-	app.use("/api/actions", tokenAuthMiddleware(config.apiToken), createActionRouter(store, projects, transitionOpts, config));
+	app.use("/api", tokenAuthMiddleware(config.apiToken), createQueryRouter(store, retryDispatcher));
+	app.use("/api/actions", tokenAuthMiddleware(config.apiToken), createActionRouter(store, projects, transitionOpts, config, retryDispatcher));
 
 	// Catch-all 404
 	app.use((_req, res) => {
@@ -189,18 +191,20 @@ export function createBridgeApp(
 export async function startBridge(
 	config: BridgeConfig,
 	projects: ProjectEntry[],
+	opts?: { store?: StateStore; retryDispatcher?: IRetryDispatcher; cipherWriter?: unknown },
 ): Promise<{ app: express.Application; store: StateStore; close: () => Promise<void> }> {
 	if (projects.length === 0) {
 		throw new Error("No projects configured — check FLYWHEEL_PROJECTS or project config");
 	}
 
-	const store = await StateStore.create(config.dbPath);
+	const store = opts?.store ?? await StateStore.create(config.dbPath);
+	const retryDispatcher = opts?.retryDispatcher;
 	// GEO-158: FSM instance + DirectiveExecutor for validated transitions
 	const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 	const executor = new DirectiveExecutor(store);
 	const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
 	const broadcaster = new SseBroadcaster(store, config.stuckThresholdMinutes);
-	const app = createBridgeApp(store, projects, config, broadcaster, transitionOpts);
+	const app = createBridgeApp(store, projects, config, broadcaster, transitionOpts, retryDispatcher);
 
 	const server = app.listen(config.port, config.host);
 
@@ -239,6 +243,10 @@ export async function startBridge(
 	const close = async () => {
 		heartbeatService?.stop();
 		cleanupService?.stop();
+		if (retryDispatcher) {
+			retryDispatcher.stopAccepting();
+			await retryDispatcher.drain();
+		}
 		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
