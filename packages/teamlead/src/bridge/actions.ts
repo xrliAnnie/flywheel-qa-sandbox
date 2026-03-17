@@ -82,6 +82,7 @@ export async function approveExecution(
 	execFn?: ExecFn,
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
+	cipherWriter?: CipherWriter,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -137,6 +138,20 @@ export async function approveExecution(
 			});
 		}
 		sendActionHook(store, config, executionId, "approve", "awaiting_review", "approved");
+
+		// CIPHER: record approve outcome
+		if (cipherWriter && session.status === "awaiting_review") {
+			try {
+				await cipherWriter.recordOutcome({
+					executionId,
+					ceoAction: "approve",
+					ceoActionTimestamp: new Date().toISOString(),
+					sourceStatus: session.status,
+				});
+			} catch {
+				console.error(`[CIPHER] recordOutcome failed for approve ${executionId}`);
+			}
+		}
 	}
 
 	return result;
@@ -339,7 +354,7 @@ export function createActionRouter(
 					res.status(400).json({ error: "execution_id is required" });
 					return;
 				}
-				const result = await approveExecution(store, projects, execution_id, identifier, undefined, transitionOpts, config);
+				const result = await approveExecution(store, projects, execution_id, identifier, undefined, transitionOpts, config, cipherWriter);
 				if (result.success) {
 					res.json({ success: true, message: result.message, action: "approve", identifier });
 				} else {

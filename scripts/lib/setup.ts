@@ -182,16 +182,15 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 	try {
 		const principles = await cipherReader.loadActivePrinciples();
 		for (const p of principles) {
-			// Extract the label constraint from the source pattern key
-			// Format: "dims:values" — e.g., "label:bug", "label+size:bug+small", "label+area+size:bug+backend+small"
-			let requiredLabel: string | null = null;
+			// Extract dimension constraints from the source pattern key
+			// Format: "dims:values" — e.g., "label:bug", "label+size:bug+small", "area+size:backend+large"
+			const constraints: Array<{ dim: string; val: string }> = [];
 			const parts = p.sourcePattern.split(":");
 			if (parts.length === 2) {
 				const dims = parts[0]!.split("+");
 				const vals = parts[1]!.split("+");
-				const labelIdx = dims.indexOf("label");
-				if (labelIdx >= 0 && labelIdx < vals.length) {
-					requiredLabel = vals[labelIdx]!;
+				for (let i = 0; i < dims.length && i < vals.length; i++) {
+					constraints.push({ dim: dims[i]!, val: vals[i]! });
 				}
 			}
 
@@ -200,8 +199,26 @@ export async function setupComponents(opts: SetupOptions): Promise<FlywheelCompo
 				description: p.description,
 				priority: p.priority,
 				evaluate: (ctx) => {
-					// If principle has a label constraint, only trigger when execution matches
-					if (requiredLabel && !ctx.labels.includes(requiredLabel)) {
+					// Every dimension in the pattern must match the execution context
+					for (const c of constraints) {
+						if (c.dim === "label" && !ctx.labels.includes(c.val)) {
+							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+						}
+						if (c.dim === "size" && ctx.sizeBucket !== c.val) {
+							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+						}
+						if (c.dim === "area" && ctx.areaTouched !== c.val) {
+							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+						}
+						if (c.dim === "auth" && String(ctx.touchesAuth) !== c.val) {
+							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+						}
+						if (c.dim === "tests" && String(ctx.hasTests) !== c.val) {
+							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+						}
+					}
+					// No constraints at all → don't fire (safety: never make a principle global)
+					if (constraints.length === 0) {
 						return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
 					}
 					return {

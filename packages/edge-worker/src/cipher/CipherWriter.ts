@@ -259,7 +259,8 @@ export class CipherWriter {
 			string,
 		];
 		const patternKeys: string[] = JSON.parse(patternKeysJson);
-		const notificationTime = new Date(notificationTs).getTime();
+		// sqlNow() strips 'Z' — append it so Date parses as UTC (not local)
+		const notificationTime = new Date(notificationTs + "Z").getTime();
 		const actionTime = new Date(params.ceoActionTimestamp).getTime();
 		const timeToDecision = Math.round(
 			(actionTime - notificationTime) / 1000,
