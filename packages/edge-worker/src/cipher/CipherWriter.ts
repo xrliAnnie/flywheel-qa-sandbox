@@ -160,6 +160,7 @@ export class CipherWriter {
 	private syncAfterDreamingFn?: (db: Database) => Promise<void>;
 	private outcomeCount = 0;
 	private lastRefreshAt = Date.now();
+	private isDreaming = false;
 
 	private constructor(private dbPath: string) {}
 
@@ -687,42 +688,51 @@ export class CipherWriter {
 	// --- Wave 2: Dreaming ---
 
 	async runDreaming(): Promise<void> {
-		// Capture start timestamp BEFORE dreaming steps so reviews arriving
-		// during the async dreaming window are counted toward the next cycle.
-		const dreamingStartTs = sqlNow();
+		// Prevent concurrent dreaming — multiple recordOutcome() calls could
+		// trigger runDreaming simultaneously via the 50-count or 24h threshold.
+		if (this.isDreaming) return;
+		this.isDreaming = true;
 
-		// Refresh temporal windows first so detect/extract operate on current 90-day data
-		await this.refreshTemporalWindows();
-		await this.detectQuestions();
-		await this.extractSkills();
-		await this.graduateSkillsToPrinciples();
+		try {
+			// Capture start timestamp BEFORE dreaming steps so reviews arriving
+			// during the async dreaming window are counted toward the next cycle.
+			const dreamingStartTs = sqlNow();
 
-		// Persist the start-of-dreaming timestamp. Reviews with created_at >=
-		// dreamingStartTs were not fully processed by this cycle, so they count
-		// toward the next dreaming trigger (both at restart and in-memory).
-		this.db.run(
-			`INSERT OR REPLACE INTO cipher_metadata (key, value) VALUES ('last_dreaming_at', ?)`,
-			[dreamingStartTs],
-		);
-		this.save();
-		this.lastRefreshAt = Date.now();
-		// Re-read from DB — any review arriving during dreaming will have
-		// created_at >= dreamingStartTs and be correctly included.
-		const postCount = this.db.exec(
-			`SELECT COUNT(*) FROM decision_reviews WHERE created_at >= ?`,
-			[dreamingStartTs],
-		);
-		this.outcomeCount = (postCount.length > 0 && postCount[0]!.values.length > 0)
-			? Number(postCount[0]!.values[0]![0]) || 0
-			: 0;
+			// Refresh temporal windows first so detect/extract operate on current 90-day data
+			await this.refreshTemporalWindows();
+			await this.detectQuestions();
+			await this.extractSkills();
+			await this.graduateSkillsToPrinciples();
 
-		// Sync to Supabase mirror after dreaming completes (advisory — errors don't fail dreaming)
-		if (this.syncAfterDreamingFn) {
-			try {
-				await this.syncAfterDreamingFn(this.db);
-			} catch (err) {
-				console.error("[CIPHER] Supabase sync failed:", (err as Error).message);
+			// Persist the start-of-dreaming timestamp. Reviews with created_at >=
+			// dreamingStartTs were not fully processed by this cycle, so they count
+			// toward the next dreaming trigger (both at restart and in-memory).
+			this.db.run(
+				`INSERT OR REPLACE INTO cipher_metadata (key, value) VALUES ('last_dreaming_at', ?)`,
+				[dreamingStartTs],
+			);
+			this.save();
+			this.lastRefreshAt = Date.now();
+			// Re-read from DB — any review arriving during dreaming will have
+			// created_at >= dreamingStartTs and be correctly included.
+			const postCount = this.db.exec(
+				`SELECT COUNT(*) FROM decision_reviews WHERE created_at >= ?`,
+				[dreamingStartTs],
+			);
+			this.outcomeCount = (postCount.length > 0 && postCount[0]!.values.length > 0)
+				? Number(postCount[0]!.values[0]![0]) || 0
+				: 0;
+
+			// Sync to Supabase mirror after dreaming completes (advisory — errors don't fail dreaming)
+			if (this.syncAfterDreamingFn) {
+				try {
+					await this.syncAfterDreamingFn(this.db);
+				} catch (err) {
+					console.error("[CIPHER] Supabase sync failed:", (err as Error).message);
+				}
 			}
+		} finally {
+			this.isDreaming = false;
 		}
 	}
 
