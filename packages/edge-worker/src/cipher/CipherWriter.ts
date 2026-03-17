@@ -201,7 +201,9 @@ export class CipherWriter {
 			lastTsResult[0]!.values.length > 0 &&
 			lastTsResult[0]!.values[0]![0]
 		) {
-			const ts = new Date(lastTsResult[0]!.values[0]![0] as string).getTime();
+			const raw = lastTsResult[0]!.values[0]![0] as string;
+			// sqlNow() stores UTC without 'Z' suffix — append it for correct parsing
+			const ts = new Date(raw.endsWith("Z") ? raw : raw + "Z").getTime();
 			if (!isNaN(ts)) this.lastRefreshAt = ts;
 		}
 
@@ -391,15 +393,14 @@ export class CipherWriter {
 
 		this.outcomeCount++;
 
-		// Auto-trigger dreaming periodically
+		// Auto-trigger dreaming periodically (fire-and-forget to avoid
+		// blocking the action request path with dreaming + sync I/O)
 		const hoursSinceRefresh =
 			(Date.now() - this.lastRefreshAt) / (1000 * 60 * 60);
 		if (this.outcomeCount % 50 === 0 || hoursSinceRefresh >= 24) {
-			try {
-				await this.runDreaming();
-			} catch (err) {
+			this.runDreaming().catch((err) => {
 				console.error("[CIPHER] Dreaming failed:", err);
-			}
+			});
 		}
 	}
 
