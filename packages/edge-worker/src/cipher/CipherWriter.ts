@@ -140,6 +140,11 @@ CREATE TABLE IF NOT EXISTS cipher_questions (
   status TEXT NOT NULL DEFAULT 'open',
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS cipher_metadata (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `;
 
 function sqlNow(): string {
@@ -180,28 +185,41 @@ export class CipherWriter {
 
 		// Restore dreaming counters from persisted data so a process restart
 		// does not lose track of when the next dreaming cycle should fire.
-		const countResult = this.db.exec(
-			`SELECT COUNT(*) FROM decision_reviews`,
-		);
-		if (countResult.length > 0 && countResult[0]!.values.length > 0) {
-			this.outcomeCount = Number(countResult[0]!.values[0]![0]) || 0;
-		}
-		// Use the most recent timestamp from skills (dreaming output) or reviews
-		// Use only decision_reviews.created_at (immutable, set on outcome recording).
-		// Do NOT use cipher_skills.updated_at — it can be polluted by a partial
-		// dreaming cycle (e.g., extractSkills ran but graduation didn't complete).
-		const lastTsResult = this.db.exec(
-			`SELECT MAX(created_at) FROM decision_reviews`,
+		//
+		// lastRefreshAt: read from cipher_metadata 'last_dreaming_at' which is
+		// set ONLY on successful dreaming completion. This is immune to partial
+		// dreaming crashes (unlike cipher_skills.updated_at or review timestamps).
+		//
+		// outcomeCount: count reviews SINCE last dreaming, so the 50-outcome
+		// trigger fires correctly after a restart or failed dreaming cycle.
+		const lastDreamingResult = this.db.exec(
+			`SELECT value FROM cipher_metadata WHERE key = 'last_dreaming_at'`,
 		);
 		if (
-			lastTsResult.length > 0 &&
-			lastTsResult[0]!.values.length > 0 &&
-			lastTsResult[0]!.values[0]![0]
+			lastDreamingResult.length > 0 &&
+			lastDreamingResult[0]!.values.length > 0 &&
+			lastDreamingResult[0]!.values[0]![0]
 		) {
-			const raw = lastTsResult[0]!.values[0]![0] as string;
-			// sqlNow() stores UTC without 'Z' suffix — append it for correct parsing
+			const raw = lastDreamingResult[0]!.values[0]![0] as string;
 			const ts = new Date(raw.endsWith("Z") ? raw : raw + "Z").getTime();
 			if (!isNaN(ts)) this.lastRefreshAt = ts;
+
+			// Count outcomes since last successful dreaming
+			const countResult = this.db.exec(
+				`SELECT COUNT(*) FROM decision_reviews WHERE created_at > ?`,
+				[raw],
+			);
+			if (countResult.length > 0 && countResult[0]!.values.length > 0) {
+				this.outcomeCount = Number(countResult[0]!.values[0]![0]) || 0;
+			}
+		} else {
+			// No dreaming has ever completed — count all reviews
+			const countResult = this.db.exec(
+				`SELECT COUNT(*) FROM decision_reviews`,
+			);
+			if (countResult.length > 0 && countResult[0]!.values.length > 0) {
+				this.outcomeCount = Number(countResult[0]!.values[0]![0]) || 0;
+			}
 		}
 
 		this.save();
@@ -608,7 +626,7 @@ export class CipherWriter {
 			);
 			if (exists.length > 0 && exists[0]!.values.length > 0) {
 				this.db.run(
-					`UPDATE cipher_skills SET confidence = ?, sample_count = ?, recommended_action = ?, name = ?, description = ?, updated_at = ? WHERE source_pattern_key = ?`,
+					`UPDATE cipher_skills SET confidence = ?, sample_count = ?, recommended_action = ?, name = ?, description = ?, status = 'active', updated_at = ? WHERE source_pattern_key = ?`,
 					[confidence, tc, action, name, description, now, key],
 				);
 			} else {
@@ -642,9 +660,16 @@ export class CipherWriter {
 		await this.extractSkills();
 		await this.graduateSkillsToPrinciples();
 
-		// Update lastRefreshAt AFTER dreaming completes successfully so that
-		// a process crash mid-dreaming will re-trigger on next startup.
+		// Persist dreaming completion timestamp so restarts know when dreaming
+		// last succeeded. Also update in-memory counter and reset outcomeCount.
+		const dreamingTs = sqlNow();
+		this.db.run(
+			`INSERT OR REPLACE INTO cipher_metadata (key, value) VALUES ('last_dreaming_at', ?)`,
+			[dreamingTs],
+		);
+		this.save();
 		this.lastRefreshAt = Date.now();
+		this.outcomeCount = 0;
 
 		// Sync to Supabase mirror after dreaming completes (advisory — errors don't fail dreaming)
 		if (this.syncAfterDreamingFn) {
