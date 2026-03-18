@@ -822,9 +822,12 @@ export class CipherWriter {
 				sampleCount,
 			] = row as [string, string, string, string, number, number];
 
-			// Check for existing principle
+			// Check for existing principle (any status — including retired).
+			// A retired principle means the CEO explicitly rejected the proposal
+			// or the source pattern decayed. Either way, do not re-propose from
+			// the same skill; the CEO has already seen and dismissed it.
 			const exists = this.db.exec(
-				`SELECT 1 FROM cipher_principles WHERE skill_id = ? AND status IN ('proposed', 'active')`,
+				`SELECT 1 FROM cipher_principles WHERE skill_id = ?`,
 				[skillId],
 			);
 			if (exists.length > 0 && exists[0]!.values.length > 0) continue;
