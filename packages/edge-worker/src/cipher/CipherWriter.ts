@@ -636,32 +636,37 @@ export class CipherWriter {
 
 	async extractSkills(): Promise<void> {
 		const now = sqlNow();
+		// Use last_90d_* columns for skill extraction — consistent with the
+		// recent-activity-based maturity model. Lifetime counts can be
+		// dominated by stale historical data that no longer reflects CEO
+		// preferences.
 		const patterns = this.db.exec(
-			`SELECT pattern_key, approve_count, reject_count, total_count, maturity_level
+			`SELECT pattern_key, last_90d_approve, last_90d_total, total_count, maturity_level
        FROM decision_patterns
-       WHERE maturity_level IN ('established', 'trusted') AND total_count >= 20`,
+       WHERE maturity_level IN ('established', 'trusted') AND last_90d_total >= 10`,
 		);
 		if (patterns.length === 0 || patterns[0]!.values.length === 0) return;
 
 		for (const row of patterns[0]!.values) {
-			const [key, ac, _rc, tc, ml] = row as [
+			const [key, r90Approve, r90Total, _tc, ml] = row as [
 				string,
 				number,
 				number,
 				number,
 				string,
 			];
-			const approveRate = ac / tc;
+			const approveRate = r90Total > 0 ? r90Approve / r90Total : 0.5;
 
 			// Retire existing skills (and their graduated principles) when
 			// patterns drift into the ambiguous zone — prevents stale rules
 			// from persisting in HardRuleEngine.
 			if (approveRate > 0.3 && approveRate < 0.7) {
 				// Retire principles first (FK: principles.skill_id → skills.id)
+				// Include 'proposed' to prevent stale proposals from being activated
 				this.db.run(
 					`UPDATE cipher_principles SET status = 'retired', retired_at = ?, retired_reason = 'source_skill_confidence_drift'
 					 WHERE skill_id IN (SELECT id FROM cipher_skills WHERE source_pattern_key = ? AND status = 'active')
-					   AND status = 'active'`,
+					   AND status IN ('active', 'proposed')`,
 					[now, key],
 				);
 				this.db.run(
@@ -676,7 +681,7 @@ export class CipherWriter {
 			const confidence =
 				approveRate >= 0.7 ? approveRate : 1 - approveRate;
 			const name = `Auto-${action}: ${key}`;
-			const description = `Pattern "${key}" shows ${(approveRate * 100).toFixed(0)}% approve rate over ${tc} samples (${ml}).`;
+			const description = `Pattern "${key}" shows ${(approveRate * 100).toFixed(0)}% approve rate over ${r90Total} recent samples (${ml}).`;
 
 			// Update existing skill if pattern already tracked, otherwise insert new
 			const exists = this.db.exec(
@@ -686,7 +691,7 @@ export class CipherWriter {
 			if (exists.length > 0 && exists[0]!.values.length > 0) {
 				this.db.run(
 					`UPDATE cipher_skills SET confidence = ?, sample_count = ?, recommended_action = ?, name = ?, description = ?, status = 'active', updated_at = ? WHERE source_pattern_key = ?`,
-					[confidence, tc, action, name, description, now, key],
+					[confidence, r90Total, action, name, description, now, key],
 				);
 			} else {
 				this.db.run(
@@ -700,7 +705,7 @@ export class CipherWriter {
 						JSON.stringify({ pattern_key: key }),
 						action,
 						confidence,
-						tc,
+						r90Total,
 						now,
 						now,
 					],
