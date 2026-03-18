@@ -8,7 +8,7 @@ import {
 	mkdirSync,
 } from "node:fs";
 import { dirname } from "node:path";
-import { classifyOutcome, maturityLevel } from "./statistics.js";
+import { classifyOutcome } from "./statistics.js";
 import type {
 	SnapshotParams,
 	OutcomeParams,
@@ -376,18 +376,20 @@ export class CipherWriter {
 					],
 				);
 
-				// Recalculate maturity
-				const rows = this.db.exec(
-					`SELECT total_count FROM decision_patterns WHERE pattern_key = ?`,
+				// Recalculate maturity — only promote, never override time-decay.
+				// A pattern decayed to 'tentative' by refreshTemporalWindows must
+				// re-earn its way up through continued activity, not jump back to
+				// 'trusted' from a single new sample.
+				this.db.run(
+					`UPDATE decision_patterns SET maturity_level = CASE
+					   WHEN maturity_level = 'exploratory' AND total_count >= 10 THEN 'tentative'
+					   WHEN maturity_level = 'tentative' AND total_count >= 20 THEN 'established'
+					   WHEN maturity_level = 'established' AND total_count >= 50 THEN 'trusted'
+					   ELSE maturity_level
+					 END
+					 WHERE pattern_key = ?`,
 					[key],
 				);
-				if (rows.length > 0 && rows[0]!.values.length > 0) {
-					const total = rows[0]!.values[0]![0] as number;
-					this.db.run(
-						`UPDATE decision_patterns SET maturity_level = ? WHERE pattern_key = ?`,
-						[maturityLevel(total), key],
-					);
-				}
 
 				// Junction row
 				this.db.run(
@@ -451,29 +453,30 @@ export class CipherWriter {
 				`UPDATE decision_patterns SET maturity_level = CASE
            WHEN maturity_level = 'trusted' THEN 'established'
            WHEN maturity_level = 'established' THEN 'tentative'
+           WHEN maturity_level = 'tentative' THEN 'exploratory'
            ELSE maturity_level END
-         WHERE last_seen_at < ? AND maturity_level IN ('trusted', 'established')`,
+         WHERE last_seen_at < ? AND maturity_level IN ('trusted', 'established', 'tentative')`,
 				[decayThreshold],
 			);
 
 			// Cascade: retire skills/principles whose source pattern decayed
-			// to tentative (no longer eligible for extractSkills which requires
-			// established/trusted). Without this, stale active principles would
-			// persist in HardRuleEngine indefinitely.
+			// to tentative or exploratory (no longer eligible for extractSkills
+			// which requires established/trusted). Without this, stale active
+			// principles would persist in HardRuleEngine indefinitely.
 			const now = sqlNow();
 			this.db.run(
 				`UPDATE cipher_principles SET status = 'retired', retired_at = ?, retired_reason = 'source_pattern_decayed'
 				 WHERE skill_id IN (
 				   SELECT s.id FROM cipher_skills s
 				   JOIN decision_patterns p ON s.source_pattern_key = p.pattern_key
-				   WHERE p.maturity_level = 'tentative' AND s.status = 'active'
+				   WHERE p.maturity_level IN ('tentative', 'exploratory') AND s.status = 'active'
 				 ) AND status = 'active'`,
 				[now],
 			);
 			this.db.run(
 				`UPDATE cipher_skills SET status = 'retired', description = description || ' [retired: source pattern decayed]', updated_at = ?
 				 WHERE source_pattern_key IN (
-				   SELECT pattern_key FROM decision_patterns WHERE maturity_level = 'tentative'
+				   SELECT pattern_key FROM decision_patterns WHERE maturity_level IN ('tentative', 'exploratory')
 				 ) AND status = 'active'`,
 				[now],
 			);
