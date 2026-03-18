@@ -377,14 +377,14 @@ export class CipherWriter {
 				);
 
 				// Recalculate maturity — only promote, never override time-decay.
-				// A pattern decayed to 'tentative' by refreshTemporalWindows must
-				// re-earn its way up through continued activity, not jump back to
-				// 'trusted' from a single new sample.
+				// Use last_90d_total (recent activity) instead of lifetime total_count
+				// so a decayed pattern must re-earn maturity through sustained recent
+				// activity, not jump back from a single new sample.
 				this.db.run(
 					`UPDATE decision_patterns SET maturity_level = CASE
-					   WHEN maturity_level = 'exploratory' AND total_count >= 10 THEN 'tentative'
-					   WHEN maturity_level = 'tentative' AND total_count >= 20 THEN 'established'
-					   WHEN maturity_level = 'established' AND total_count >= 50 THEN 'trusted'
+					   WHEN maturity_level = 'exploratory' AND last_90d_total >= 10 THEN 'tentative'
+					   WHEN maturity_level = 'tentative' AND last_90d_total >= 20 THEN 'established'
+					   WHEN maturity_level = 'established' AND last_90d_total >= 50 THEN 'trusted'
 					   ELSE maturity_level
 					 END
 					 WHERE pattern_key = ?`,
@@ -449,20 +449,42 @@ export class CipherWriter {
 				[cutoff, cutoff],
 			);
 
+			// Decay maturity based on absolute time since last_seen_at.
+			// Uses direct target maturity (not step-down) so repeated calls
+			// are idempotent — the same stale pattern always lands at the
+			// same maturity level regardless of how many times refresh runs.
+			const decay120 = new Date(
+				Date.now() - 120 * 24 * 60 * 60 * 1000,
+			)
+				.toISOString()
+				.replace("T", " ")
+				.replace(/\.\d+Z$/, "");
+
+			// Unseen 120+ days: decay to exploratory (regardless of current level)
+			this.db.run(
+				`UPDATE decision_patterns SET maturity_level = 'exploratory'
+				 WHERE last_seen_at < ? AND maturity_level IN ('trusted', 'established', 'tentative')`,
+				[decay120],
+			);
+			// Unseen 60-120 days: decay by one level (idempotent — only demotes
+			// if current level is above the target, and the 120+ rule above
+			// already handled the deepest decay)
 			this.db.run(
 				`UPDATE decision_patterns SET maturity_level = CASE
-           WHEN maturity_level = 'trusted' THEN 'established'
-           WHEN maturity_level = 'established' THEN 'tentative'
-           WHEN maturity_level = 'tentative' THEN 'exploratory'
-           ELSE maturity_level END
-         WHERE last_seen_at < ? AND maturity_level IN ('trusted', 'established', 'tentative')`,
-				[decayThreshold],
+				   WHEN maturity_level = 'trusted' THEN 'established'
+				   WHEN maturity_level = 'established' THEN 'tentative'
+				   WHEN maturity_level = 'tentative' THEN 'exploratory'
+				   ELSE maturity_level END
+				 WHERE last_seen_at < ? AND last_seen_at >= ? AND maturity_level IN ('trusted', 'established', 'tentative')`,
+				[decayThreshold, decay120],
 			);
 
 			// Cascade: retire skills/principles whose source pattern decayed
 			// to tentative or exploratory (no longer eligible for extractSkills
 			// which requires established/trusted). Without this, stale active
 			// principles would persist in HardRuleEngine indefinitely.
+			// Also retire 'proposed' principles — a stale pattern should not
+			// have pending proposals that can later be activated.
 			const now = sqlNow();
 			this.db.run(
 				`UPDATE cipher_principles SET status = 'retired', retired_at = ?, retired_reason = 'source_pattern_decayed'
@@ -470,7 +492,7 @@ export class CipherWriter {
 				   SELECT s.id FROM cipher_skills s
 				   JOIN decision_patterns p ON s.source_pattern_key = p.pattern_key
 				   WHERE p.maturity_level IN ('tentative', 'exploratory') AND s.status = 'active'
-				 ) AND status = 'active'`,
+				 ) AND status IN ('active', 'proposed')`,
 				[now],
 			);
 			this.db.run(
