@@ -1,7 +1,7 @@
 import { Semaphore } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
 import { DagResolver } from "flywheel-dag-resolver";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	Blueprint,
 	BlueprintContext,
@@ -10,12 +10,13 @@ import type {
 import { DagDispatcher } from "../DagDispatcher.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
 
-// Mock node:child_process to prevent osascript from opening Terminal windows during tests
+// Mock node:child_process to prevent osascript/tmux from running during tests
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	return {
 		...actual,
 		execFile: vi.fn(),
+		execFileSync: vi.fn(() => ""), // default: no clients attached
 	};
 });
 
@@ -51,6 +52,10 @@ function defaultContext(_node: DagNode): BlueprintContext {
 }
 
 describe("DagDispatcher", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
 	it("processes all ready nodes", async () => {
 		const nodes: DagNode[] = [
 			{ id: "A", blockedBy: [] },
@@ -768,5 +773,77 @@ describe("DagDispatcher", () => {
 
 		expect(result.completed.sort()).toEqual(["A", "B"]);
 		expect(result.shelved).toEqual([]);
+	});
+
+	// ─── Viewer dedup tests (GEO-179) ────────────────
+
+	it("openTmuxViewer skips when client already attached", async () => {
+		const { execFileSync: mockExecFileSync, execFile: mockExecFile } =
+			await import("node:child_process");
+		(mockExecFileSync as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+			"/dev/ttys001: flywheel 160x40",
+		);
+
+		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
+		const resolver = new DagResolver(nodes);
+		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
+		const dispatcher = new DagDispatcher(
+			resolver,
+			blueprint,
+			"/project",
+			defaultContext,
+		);
+
+		await dispatcher.dispatch();
+
+		// execFile (osascript) should NOT have been called — viewer dedup
+		expect(mockExecFile).not.toHaveBeenCalled();
+	});
+
+	it("openTmuxViewer opens when no clients attached", async () => {
+		const { execFile: mockExecFile } = await import("node:child_process");
+
+		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
+		const resolver = new DagResolver(nodes);
+		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
+		const dispatcher = new DagDispatcher(
+			resolver,
+			blueprint,
+			"/project",
+			defaultContext,
+		);
+
+		await dispatcher.dispatch();
+
+		// execFile (osascript) SHOULD have been called (default mock returns "")
+		expect(mockExecFile).toHaveBeenCalled();
+		const call = (mockExecFile as ReturnType<typeof vi.fn>).mock.calls[0]!;
+		expect(call[0]).toBe("osascript");
+		expect(call[1][1]).toContain("close viewerWindow");
+	});
+
+	it("openTmuxViewer opens when list-clients throws (session not yet created)", async () => {
+		const { execFileSync: mockExecFileSync, execFile: mockExecFile } =
+			await import("node:child_process");
+		(mockExecFileSync as ReturnType<typeof vi.fn>).mockImplementationOnce(
+			() => {
+				throw new Error("can't find session: flywheel");
+			},
+		);
+
+		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
+		const resolver = new DagResolver(nodes);
+		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
+		const dispatcher = new DagDispatcher(
+			resolver,
+			blueprint,
+			"/project",
+			defaultContext,
+		);
+
+		await dispatcher.dispatch();
+
+		// Should still open viewer despite list-clients error
+		expect(mockExecFile).toHaveBeenCalled();
 	});
 });

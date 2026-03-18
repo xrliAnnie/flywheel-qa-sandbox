@@ -25,7 +25,7 @@
  *   npx tsx scripts/run-issue.ts GEO-95 ~/Dev/GeoForge3D
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
@@ -289,19 +289,31 @@ async function main() {
 		}
 	}
 
-	// 7. Auto-open Terminal viewer and bring to front
-	// Use exact session match (=sessionName) to avoid tmux prefix matching
+	// 7. Auto-open self-closing Terminal viewer
+	// Uses AppleScript that holds the tab reference, polls until idle, then closes the window.
+	// Async (non-blocking) — the osascript process lives until the tmux session ends.
 	log("\n--- Opening tmux viewer ---");
-	execFileSync("osascript", [
-		"-e",
-		[
-			'tell application "Terminal"',
-			`  do script "echo 'Waiting for Flywheel session ${tmuxSessionName}...' && while ! tmux has-session -t '=${tmuxSessionName}' 2>/dev/null; do sleep 1; done && tmux attach -t '=${tmuxSessionName}'; exit"`,
-			"  activate",
-			"end tell",
-		].join("\n"),
-	]);
-	log("Viewer window opened — it will connect once Claude starts");
+	const viewerScript = [
+		'tell application "Terminal"',
+		`  set viewerTab to do script "echo 'Waiting for Flywheel session ${tmuxSessionName}...' && while ! tmux has-session -t '=${tmuxSessionName}' 2>/dev/null; do sleep 1; done && tmux attach -t '=${tmuxSessionName}'"`,
+		"  set viewerWindow to front window",
+		"  activate",
+		"  repeat",
+		"    delay 2",
+		"    try",
+		'      set p to (processes of viewerTab) as string',
+		'      if p does not contain "tmux" then',
+		"        close viewerWindow",
+		"        exit repeat",
+		"      end if",
+		"    on error",
+		"      exit repeat",
+		"    end try",
+		"  end repeat",
+		"end tell",
+	].join("\n");
+	execFile("osascript", ["-e", viewerScript], () => {});
+	log("Viewer window opened — it will auto-close when session ends");
 
 	// 8. Auto-interaction: handle trust prompt + detect completion
 	// Session naming: tmux session = issueId, window = buildWindowLabel() output.
