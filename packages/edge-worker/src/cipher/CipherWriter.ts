@@ -417,7 +417,7 @@ export class CipherWriter {
 		// blocking the action request path with dreaming + sync I/O)
 		const hoursSinceRefresh =
 			(Date.now() - this.lastRefreshAt) / (1000 * 60 * 60);
-		if (this.outcomeCount % 50 === 0 || hoursSinceRefresh >= 24) {
+		if (this.outcomeCount >= 50 || hoursSinceRefresh >= 24) {
 			this.runDreaming().catch((err) => {
 				console.error("[CIPHER] Dreaming failed:", err);
 			});
