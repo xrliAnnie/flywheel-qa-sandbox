@@ -23,7 +23,7 @@
  *   packages/edge-worker/node_modules/.bin/tsx scripts/e2e-tmux-runner.ts
  */
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -204,13 +204,28 @@ async function main() {
 		120_000, // 2 min timeout
 	);
 
-	// Auto-open a Terminal window so the user can watch Claude work in real time.
-	// The shell command retries until the tmux session appears (created by TmuxRunner).
-	execFileSync("osascript", [
-		"-e",
-		`tell application "Terminal" to do script "echo 'Waiting for Claude to start...' && while ! tmux has-session -t flywheel-e2e 2>/dev/null; do sleep 1; done && tmux attach -t flywheel-e2e"`,
-	]);
-	log("Opened viewer window — it will connect once Claude starts");
+	// Auto-open a self-closing Terminal viewer (polls until tmux exits, then closes window).
+	const viewerScript = [
+		'tell application "Terminal"',
+		'  set viewerTab to do script "echo \'Waiting for Claude to start...\' && while ! tmux has-session -t flywheel-e2e 2>/dev/null; do sleep 1; done && tmux attach -t flywheel-e2e"',
+		"  set viewerWindow to front window",
+		"  activate",
+		"  repeat",
+		"    delay 2",
+		"    try",
+		'      set p to (processes of viewerTab) as string',
+		'      if p does not contain "tmux" then',
+		"        close viewerWindow",
+		"        exit repeat",
+		"      end if",
+		"    on error",
+		"      exit repeat",
+		"    end try",
+		"  end repeat",
+		"end tell",
+	].join("\n");
+	execFile("osascript", ["-e", viewerScript], () => {});
+	log("Opened viewer window — it will connect once Claude starts and auto-close when done");
 
 	// Auto-interaction: handle trust prompt + auto-exit after Claude completes work.
 	// Phase 1: Auto-confirm "trust this folder" prompt (fires once for new temp dirs).

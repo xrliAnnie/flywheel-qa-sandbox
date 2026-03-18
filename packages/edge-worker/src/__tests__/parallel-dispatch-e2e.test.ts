@@ -9,12 +9,13 @@ import type {
 } from "../Blueprint.js";
 import { DagDispatcher } from "../DagDispatcher.js";
 
-// Mock node:child_process to prevent osascript from opening Terminal windows
+// Mock node:child_process to prevent osascript/tmux from running during tests
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	return {
 		...actual,
 		execFile: vi.fn(),
+		execFileSync: vi.fn(() => ""), // prevent real tmux list-clients calls
 	};
 });
 
