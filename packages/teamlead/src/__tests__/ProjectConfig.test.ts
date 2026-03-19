@@ -85,11 +85,17 @@ describe("loadProjects validation", () => {
 	});
 
 	it("returns empty array when projects.json does not exist (ENOENT)", () => {
-		// No env var set, file doesn't exist → should return []
+		// Override HOME to a non-existent dir so projects.json won't be found
+		const origHome = process.env.HOME;
 		delete process.env.FLYWHEEL_PROJECTS;
-		// loadProjects reads ~/.flywheel/projects.json by default
-		// In test env this file may or may not exist; we test via env var path
-		// For ENOENT, we rely on the real file not existing in CI
+		process.env.HOME = "/tmp/flywheel-test-nonexistent-dir";
+		try {
+			const projects = loadProjects();
+			expect(projects).toEqual([]);
+		} finally {
+			if (origHome !== undefined) process.env.HOME = origHome;
+			else delete process.env.HOME;
+		}
 	});
 
 	it("throws on malformed JSON in env var", () => {
