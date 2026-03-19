@@ -20,6 +20,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
 		notificationChannel: "test-ch",
+		defaultLeadAgentId: "product-lead",
 		...overrides,
 	};
 }
@@ -29,6 +30,7 @@ const testProjects: ProjectEntry[] = [
 		projectName: "geoforge3d",
 		projectRoot: "/tmp/geoforge3d",
 		projectRepo: "xrliAnnie/GeoForge3D",
+		lead: { agentId: "product-lead", channel: "test-channel" },
 	},
 ];
 
