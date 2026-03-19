@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import express from "express";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
+import type { CipherWriter } from "flywheel-edge-worker";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { CleanupService, FetchDiscordClient } from "../CleanupService.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
@@ -11,7 +12,6 @@ import {
 } from "../HeartbeatService.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import type { CipherWriter } from "flywheel-edge-worker";
 import { createActionRouter } from "./actions.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
@@ -297,32 +297,52 @@ export function createBridgeApp(
 
 	// CIPHER principle confirmation route
 	if (cipherWriter) {
-		app.post("/api/cipher-principle", tokenAuthMiddleware(config.apiToken), async (req, res) => {
-			const { principleId, action } = req.body as { principleId?: string; action?: string };
-			if (!principleId || !action || !["activate", "retire"].includes(action)) {
-				res.status(400).json({ error: "missing principleId or invalid action" });
-				return;
-			}
-			if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(principleId)) {
-				res.status(400).json({ error: "invalid principleId format" });
-				return;
-			}
-			try {
-				const updated = action === "activate"
-					? await cipherWriter.activatePrinciple(principleId)
-					: await cipherWriter.retirePrinciple(principleId, "CEO retired");
-				if (!updated) {
-					res.status(404).json({ error: "principle not found or not in expected state" });
+		app.post(
+			"/api/cipher-principle",
+			tokenAuthMiddleware(config.apiToken),
+			async (req, res) => {
+				const { principleId, action } = req.body as {
+					principleId?: string;
+					action?: string;
+				};
+				if (
+					!principleId ||
+					!action ||
+					!["activate", "retire"].includes(action)
+				) {
+					res
+						.status(400)
+						.json({ error: "missing principleId or invalid action" });
 					return;
 				}
-				// Principles are loaded into DecisionLayer HardRules once at process start
-				// (setup.ts). A running worker reuses the same DecisionLayer for its entire
-				// DAG batch. This change takes effect on the next process/DAG start.
-				res.json({ ok: true, effective: "next_process_start" });
-			} catch {
-				res.status(500).json({ error: "principle action failed" });
-			}
-		});
+				if (
+					!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+						principleId,
+					)
+				) {
+					res.status(400).json({ error: "invalid principleId format" });
+					return;
+				}
+				try {
+					const updated =
+						action === "activate"
+							? await cipherWriter.activatePrinciple(principleId)
+							: await cipherWriter.retirePrinciple(principleId, "CEO retired");
+					if (!updated) {
+						res
+							.status(404)
+							.json({ error: "principle not found or not in expected state" });
+						return;
+					}
+					// Principles are loaded into DecisionLayer HardRules once at process start
+					// (setup.ts). A running worker reuses the same DecisionLayer for its entire
+					// DAG batch. This change takes effect on the next process/DAG start.
+					res.json({ ok: true, effective: "next_process_start" });
+				} catch {
+					res.status(500).json({ error: "principle action failed" });
+				}
+			},
+		);
 	}
 
 	// Catch-all 404
@@ -402,7 +422,8 @@ export async function startBridge(
 			? new WebhookHeartbeatNotifier(
 					config.gatewayUrl,
 					config.hooksToken,
-					config.notificationChannel,
+					projects,
+					store,
 				)
 			: { onSessionStuck: async () => {}, onSessionOrphaned: async () => {} };
 	const heartbeatService = new HeartbeatService(

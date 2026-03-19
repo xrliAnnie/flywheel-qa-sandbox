@@ -7,6 +7,7 @@ import {
 	buildSessionKey,
 	type HookPayload,
 } from "./bridge/hook-payload.js";
+import { type ProjectEntry, resolveLeadForProject } from "./ProjectConfig.js";
 import type { Session, StateStore } from "./StateStore.js";
 
 export interface HeartbeatNotifier {
@@ -159,10 +160,24 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 	constructor(
 		private gatewayUrl: string,
 		private hooksToken: string,
-		private notificationChannel: string,
+		private projects: ProjectEntry[],
+		private store: StateStore,
 	) {}
 
 	async onSessionStuck(session: Session, minutes: number): Promise<void> {
+		let agentId: string;
+		let channel: string;
+		try {
+			const lead = resolveLeadForProject(this.projects, session.project_name);
+			agentId = lead.agentId;
+			const existingThread = this.store.getThreadByIssue(session.issue_id);
+			channel = existingThread?.channel ?? lead.channel;
+		} catch {
+			console.warn(
+				`[heartbeat-notify] Unknown project "${session.project_name}" — skipping stuck notification`,
+			);
+			return;
+		}
 		const sessionKey = buildSessionKey(session);
 		const hookPayload: HookPayload = {
 			event_type: "session_stuck",
@@ -173,13 +188,26 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 			project_name: session.project_name,
 			status: session.status,
 			thread_id: session.thread_id,
-			channel: this.notificationChannel,
+			channel,
 			minutes_since_activity: minutes,
 		};
-		await this.sendHook(hookPayload, sessionKey);
+		await this.sendHook(agentId, hookPayload, sessionKey);
 	}
 
 	async onSessionOrphaned(session: Session, minutes: number): Promise<void> {
+		let agentId: string;
+		let channel: string;
+		try {
+			const lead = resolveLeadForProject(this.projects, session.project_name);
+			agentId = lead.agentId;
+			const existingThread = this.store.getThreadByIssue(session.issue_id);
+			channel = existingThread?.channel ?? lead.channel;
+		} catch {
+			console.warn(
+				`[heartbeat-notify] Unknown project "${session.project_name}" — skipping orphan notification`,
+			);
+			return;
+		}
 		const sessionKey = buildSessionKey(session);
 		const hookPayload: HookPayload = {
 			event_type: "session_orphaned",
@@ -190,17 +218,18 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 			project_name: session.project_name,
 			status: "failed", // Already force-failed before notification
 			thread_id: session.thread_id,
-			channel: this.notificationChannel,
+			channel,
 			minutes_since_activity: minutes,
 		};
-		await this.sendHook(hookPayload, sessionKey);
+		await this.sendHook(agentId, hookPayload, sessionKey);
 	}
 
 	private async sendHook(
+		agentId: string,
 		hookPayload: HookPayload,
 		sessionKey: string,
 	): Promise<void> {
-		const body = buildHookBody("product-lead", hookPayload, sessionKey);
+		const body = buildHookBody(agentId, hookPayload, sessionKey);
 
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 3000);

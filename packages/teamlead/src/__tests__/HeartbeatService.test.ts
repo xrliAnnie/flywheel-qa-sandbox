@@ -3,7 +3,22 @@ import {
 	HeartbeatService,
 	WebhookHeartbeatNotifier,
 } from "../HeartbeatService.js";
+import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
+import { StateStore } from "../StateStore.js";
+
+const testProjects: ProjectEntry[] = [
+	{
+		projectName: "geo",
+		projectRoot: "/tmp/geo",
+		lead: { agentId: "product-lead", channel: "test-channel" },
+	},
+	{
+		projectName: "p",
+		projectRoot: "/tmp/p",
+		lead: { agentId: "product-lead", channel: "test-channel" },
+	},
+];
 
 function makeSession(overrides: Partial<Session> = {}): Session {
 	return {
@@ -244,10 +259,12 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
+		const hbStore = await StateStore.create(":memory:");
 		const notifier = new WebhookHeartbeatNotifier(
 			`http://127.0.0.1:${port}`,
 			"test-token",
-			"test-channel",
+			testProjects,
+			hbStore,
 		);
 		const session: Session = {
 			execution_id: "exec-stuck",
@@ -270,6 +287,7 @@ describe("WebhookHeartbeatNotifier", () => {
 		expect(parsed.thread_id).toBe("1234.5678");
 		expect(parsed.channel).toBe("test-channel");
 
+		hbStore.close();
 		await new Promise<void>((resolve, reject) => {
 			gateway.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -294,10 +312,12 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
+		const hbStore = await StateStore.create(":memory:");
 		const notifier = new WebhookHeartbeatNotifier(
 			`http://127.0.0.1:${port}`,
 			"test-token",
-			"test-channel",
+			testProjects,
+			hbStore,
 		);
 		const session: Session = {
 			execution_id: "exec-orphan",
@@ -321,6 +341,7 @@ describe("WebhookHeartbeatNotifier", () => {
 		expect(parsed.thread_id).toBe("5678.1234");
 		expect(parsed.channel).toBe("test-channel");
 
+		hbStore.close();
 		await new Promise<void>((resolve, reject) => {
 			gateway.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -345,10 +366,12 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
+		const hbStore = await StateStore.create(":memory:");
 		const notifier = new WebhookHeartbeatNotifier(
 			`http://127.0.0.1:${port}`,
 			"test-token",
-			"test-channel",
+			testProjects,
+			hbStore,
 		);
 		await notifier.onSessionStuck(
 			{
@@ -362,6 +385,7 @@ describe("WebhookHeartbeatNotifier", () => {
 
 		expect(capturedPath).toBe("/hooks/ingest");
 
+		hbStore.close();
 		await new Promise<void>((resolve, reject) => {
 			gateway.close((err) => (err ? reject(err) : resolve()));
 		});
