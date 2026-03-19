@@ -7,8 +7,20 @@ export interface HardRule {
 	evaluate: (ctx: ExecutionContext) => HardRuleResult;
 }
 
-const SENSITIVE_LABELS = ["security", "auth", "billing", "authentication", "authorization"];
-const SENSITIVE_FILE_PATTERNS = [/\.env/, /secret/i, /credential/i, /\.pem$/, /\.key$/];
+const SENSITIVE_LABELS = [
+	"security",
+	"auth",
+	"billing",
+	"authentication",
+	"authorization",
+];
+const SENSITIVE_FILE_PATTERNS = [
+	/\.env/,
+	/secret/i,
+	/credential/i,
+	/\.pem$/,
+	/\.key$/,
+];
 
 const noTrigger = (ruleId: string): HardRuleResult => ({
 	triggered: false,
@@ -24,7 +36,12 @@ export const HR_010_LANDING_FAILED: HardRule = {
 	priority: 0,
 	evaluate: (ctx) =>
 		ctx.landingStatus?.status === "failed"
-			? { triggered: true, action: "block", reason: `Landing failed: ${ctx.landingStatus.failureReason ?? "unknown"}`, ruleId: "HR-010" }
+			? {
+					triggered: true,
+					action: "block",
+					reason: `Landing failed: ${ctx.landingStatus.failureReason ?? "unknown"}`,
+					ruleId: "HR-010",
+				}
 			: noTrigger("HR-010"),
 };
 
@@ -35,7 +52,12 @@ export const HR_007_TIMEOUT: HardRule = {
 	priority: 1,
 	evaluate: (ctx) =>
 		ctx.exitReason === "timeout"
-			? { triggered: true, action: "block", reason: "Session timed out", ruleId: "HR-007" }
+			? {
+					triggered: true,
+					action: "block",
+					reason: "Session timed out",
+					ruleId: "HR-007",
+				}
 			: noTrigger("HR-007"),
 };
 
@@ -46,7 +68,12 @@ export const HR_009_ZERO_COMMITS: HardRule = {
 	priority: 2,
 	evaluate: (ctx) =>
 		ctx.commitCount === 0
-			? { triggered: true, action: "block", reason: "Zero commits — no work was done", ruleId: "HR-009" }
+			? {
+					triggered: true,
+					action: "block",
+					reason: "Zero commits — no work was done",
+					ruleId: "HR-009",
+				}
 			: noTrigger("HR-009"),
 };
 
@@ -57,7 +84,12 @@ export const HR_008_PARTIAL: HardRule = {
 	priority: 3,
 	evaluate: (ctx) =>
 		ctx.partial
-			? { triggered: true, action: "escalate", reason: "Evidence is partial — some git commands failed", ruleId: "HR-008" }
+			? {
+					triggered: true,
+					action: "escalate",
+					reason: "Evidence is partial — some git commands failed",
+					ruleId: "HR-008",
+				}
 			: noTrigger("HR-008"),
 };
 
@@ -71,7 +103,12 @@ export const HR_001_SENSITIVE_LABELS: HardRule = {
 			SENSITIVE_LABELS.includes(l.toLowerCase()),
 		);
 		return match
-			? { triggered: true, action: "escalate", reason: `Sensitive label: ${match}`, ruleId: "HR-001" }
+			? {
+					triggered: true,
+					action: "escalate",
+					reason: `Sensitive label: ${match}`,
+					ruleId: "HR-001",
+				}
 			: noTrigger("HR-001");
 	},
 };
@@ -83,7 +120,12 @@ export const HR_002_CONSECUTIVE_FAILURES: HardRule = {
 	priority: 5,
 	evaluate: (ctx) =>
 		ctx.consecutiveFailures >= 3
-			? { triggered: true, action: "escalate", reason: `${ctx.consecutiveFailures} consecutive failures`, ruleId: "HR-002" }
+			? {
+					triggered: true,
+					action: "escalate",
+					reason: `${ctx.consecutiveFailures} consecutive failures`,
+					ruleId: "HR-002",
+				}
 			: noTrigger("HR-002"),
 };
 
@@ -97,7 +139,12 @@ export const HR_003_SENSITIVE_FILES: HardRule = {
 			SENSITIVE_FILE_PATTERNS.some((p) => p.test(f)),
 		);
 		return match
-			? { triggered: true, action: "escalate", reason: `Sensitive file changed: ${match}`, ruleId: "HR-003" }
+			? {
+					triggered: true,
+					action: "escalate",
+					reason: `Sensitive file changed: ${match}`,
+					ruleId: "HR-003",
+				}
 			: noTrigger("HR-003");
 	},
 };
@@ -109,7 +156,12 @@ export const HR_004_LARGE_CHANGE: HardRule = {
 	priority: 7,
 	evaluate: (ctx) =>
 		ctx.linesAdded > 500
-			? { triggered: true, action: "escalate", reason: `${ctx.linesAdded} lines added (>500)`, ruleId: "HR-004" }
+			? {
+					triggered: true,
+					action: "escalate",
+					reason: `${ctx.linesAdded} lines added (>500)`,
+					ruleId: "HR-004",
+				}
 			: noTrigger("HR-004"),
 };
 
@@ -119,11 +171,14 @@ export const HR_005_BREAKING_CHANGE: HardRule = {
 	description: "Breaking changes require review",
 	priority: 8,
 	evaluate: (ctx) => {
-		const match = ctx.labels.find(
-			(l) => l.toLowerCase() === "breaking-change",
-		);
+		const match = ctx.labels.find((l) => l.toLowerCase() === "breaking-change");
 		return match
-			? { triggered: true, action: "escalate", reason: "Breaking change label", ruleId: "HR-005" }
+			? {
+					triggered: true,
+					action: "escalate",
+					reason: "Breaking change label",
+					ruleId: "HR-005",
+				}
 			: noTrigger("HR-005");
 	},
 };

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApproveHandler } from "../reactions/ApproveHandler.js";
-import { RejectHandler } from "../reactions/RejectHandler.js";
 import { DeferHandler } from "../reactions/DeferHandler.js";
+import { RejectHandler } from "../reactions/RejectHandler.js";
 import type { SlackAction } from "../SlackInteractionServer.js";
 
 // Mock global fetch for response_url calls
@@ -35,7 +35,12 @@ describe("ApproveHandler", () => {
 		// gh pr list returns PR
 		mockExec
 			.mockResolvedValueOnce({
-				stdout: JSON.stringify([{ number: 42, url: "https://github.com/xrliAnnie/GeoForge3D/pull/42" }]),
+				stdout: JSON.stringify([
+					{
+						number: 42,
+						url: "https://github.com/xrliAnnie/GeoForge3D/pull/42",
+					},
+				]),
 			})
 			// gh pr merge
 			.mockResolvedValueOnce({ stdout: "Merged" });
@@ -51,7 +56,9 @@ describe("ApproveHandler", () => {
 	it("merges PR with squash", async () => {
 		mockExec
 			.mockResolvedValueOnce({
-				stdout: JSON.stringify([{ number: 42, url: "https://github.com/test/repo/pull/42" }]),
+				stdout: JSON.stringify([
+					{ number: 42, url: "https://github.com/test/repo/pull/42" },
+				]),
 			})
 			.mockResolvedValueOnce({ stdout: "Merged" });
 
@@ -74,7 +81,9 @@ describe("ApproveHandler", () => {
 	it("posts confirmation to response_url", async () => {
 		mockExec
 			.mockResolvedValueOnce({
-				stdout: JSON.stringify([{ number: 42, url: "https://github.com/test/repo/pull/42" }]),
+				stdout: JSON.stringify([
+					{ number: 42, url: "https://github.com/test/repo/pull/42" },
+				]),
 			})
 			.mockResolvedValueOnce({ stdout: "Merged" });
 

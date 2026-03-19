@@ -1,17 +1,20 @@
-import { describe, expect, it, vi } from "vitest";
-import { Blueprint } from "../Blueprint.js";
-import { PreHydrator } from "../PreHydrator.js";
-import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
-import type { DagNode } from "flywheel-dag-resolver";
 import type {
-	IAdapter,
 	AdapterExecutionContext,
 	AdapterExecutionResult,
+	IAdapter,
 } from "flywheel-core";
+import type { DagNode } from "flywheel-dag-resolver";
+import { describe, expect, it, vi } from "vitest";
+import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
+import { Blueprint } from "../Blueprint.js";
+import type {
+	ExecutionEvidence,
+	ExecutionEvidenceCollector,
+} from "../ExecutionEvidenceCollector.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
-import type { WorktreeManager, WorktreeInfo } from "../WorktreeManager.js";
-import type { SkillInjector, SkillContext } from "../SkillInjector.js";
-import type { ExecutionEvidenceCollector, ExecutionEvidence } from "../ExecutionEvidenceCollector.js";
+import { PreHydrator } from "../PreHydrator.js";
+import type { SkillInjector } from "../SkillInjector.js";
+import type { WorktreeInfo, WorktreeManager } from "../WorktreeManager.js";
 
 // ─── Helpers ─────────────────────────────────────
 
@@ -39,9 +42,7 @@ function makeHydrator() {
 	}));
 }
 
-function makeMockGitChecker(options: {
-	commitCount?: number;
-} = {}) {
+function makeMockGitChecker(options: { commitCount?: number } = {}) {
 	const { commitCount = 2 } = options;
 	return {
 		assertCleanTree: vi.fn(async () => {}),
@@ -69,7 +70,9 @@ function makeMockAdapter(
 		supportsStreaming: false,
 		checkEnvironment: async () => ({ healthy: true, message: "mock" }),
 		execute: vi.fn(
-			async (_ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> => ({
+			async (
+				_ctx: AdapterExecutionContext,
+			): Promise<AdapterExecutionResult> => ({
 				success: true,
 				sessionId: "sess-uuid",
 				tmuxWindow: "flywheel:@42",
@@ -172,9 +175,7 @@ describe("Blueprint v0.2 integration", () => {
 
 		// Result includes v0.2 fields
 		expect(result.success).toBe(true);
-		expect(result.worktreePath).toBe(
-			"/tmp/wt/test-project/flywheel-GEO-42",
-		);
+		expect(result.worktreePath).toBe("/tmp/wt/test-project/flywheel-GEO-42");
 		expect(result.evidence).toBeDefined();
 		expect(result.evidence!.commitCount).toBe(2);
 	});
@@ -197,9 +198,7 @@ describe("Blueprint v0.2 integration", () => {
 		const result = await blueprint.run(makeNode(), "/repo", makeContext());
 
 		expect(result.success).toBe(false); // timeout = failure
-		expect(result.worktreePath).toBe(
-			"/tmp/wt/test-project/flywheel-GEO-42",
-		);
+		expect(result.worktreePath).toBe("/tmp/wt/test-project/flywheel-GEO-42");
 		expect(result.evidence).toBeDefined();
 	});
 

@@ -2,8 +2,8 @@
  * Types for GitHub event transport
  */
 
-import type { InternalMessage } from "flywheel-core";
 import type { FastifyInstance } from "fastify";
+import type { InternalMessage } from "flywheel-core";
 
 /**
  * Verification mode for GitHub webhooks forwarded from CYHOST

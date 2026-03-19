@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
+import type { Directive } from "../directive-types.js";
+import type { TransitionContext } from "../workflow-fsm.js";
 import {
-	WorkflowFSM,
-	WORKFLOW_TRANSITIONS,
 	ACTION_DEFINITIONS,
 	allowedActionsForState,
 	getActionTarget,
+	WORKFLOW_TRANSITIONS,
+	WorkflowFSM,
 } from "../workflow-fsm.js";
-import type { TransitionContext } from "../workflow-fsm.js";
-import type { Directive } from "../directive-types.js";
 
-function makeCtx(overrides: Partial<TransitionContext> = {}): TransitionContext {
+function makeCtx(
+	overrides: Partial<TransitionContext> = {},
+): TransitionContext {
 	return {
 		executionId: "exec-1",
 		issueId: "GEO-42",
@@ -43,15 +45,12 @@ describe("WorkflowFSM", () => {
 		["deferred", "shelved"],
 	];
 
-	it.each(validTransitions)(
-		"allows transition %s → %s",
-		(from, to) => {
-			const result = fsm.transition(from, to, makeCtx());
-			expect(result.ok).toBe(true);
-			expect(result.newState).toBe(to);
-			expect(result.error).toBeUndefined();
-		},
-	);
+	it.each(validTransitions)("allows transition %s → %s", (from, to) => {
+		const result = fsm.transition(from, to, makeCtx());
+		expect(result.ok).toBe(true);
+		expect(result.newState).toBe(to);
+		expect(result.error).toBeUndefined();
+	});
 
 	// ── Invalid transitions ──────────────────────────────────────────
 
@@ -69,15 +68,12 @@ describe("WorkflowFSM", () => {
 		["rejected", "running"],
 	];
 
-	it.each(invalidTransitions)(
-		"rejects transition %s → %s",
-		(from, to) => {
-			const result = fsm.transition(from, to, makeCtx());
-			expect(result.ok).toBe(false);
-			expect(result.newState).toBe(from);
-			expect(result.error).toContain("not allowed");
-		},
-	);
+	it.each(invalidTransitions)("rejects transition %s → %s", (from, to) => {
+		const result = fsm.transition(from, to, makeCtx());
+		expect(result.ok).toBe(false);
+		expect(result.newState).toBe(from);
+		expect(result.error).toContain("not allowed");
+	});
 
 	// ── AuditDirective auto-generation ───────────────────────────────
 
@@ -169,29 +165,26 @@ describe("WorkflowFSM", () => {
 	// ── Guards ───────────────────────────────────────────────────────
 
 	it("guard rejection returns error", () => {
-		const guardedFsm = new WorkflowFSM(
-			WORKFLOW_TRANSITIONS,
-			{ "running → completed": () => false },
-		);
+		const guardedFsm = new WorkflowFSM(WORKFLOW_TRANSITIONS, {
+			"running → completed": () => false,
+		});
 		const result = guardedFsm.transition("running", "completed", makeCtx());
 		expect(result.ok).toBe(false);
 		expect(result.error).toContain("Guard rejected");
 	});
 
 	it("guard pass allows transition", () => {
-		const guardedFsm = new WorkflowFSM(
-			WORKFLOW_TRANSITIONS,
-			{ "running → completed": () => true },
-		);
+		const guardedFsm = new WorkflowFSM(WORKFLOW_TRANSITIONS, {
+			"running → completed": () => true,
+		});
 		const result = guardedFsm.transition("running", "completed", makeCtx());
 		expect(result.ok).toBe(true);
 	});
 
 	it("guards are skipped when no context provided", () => {
-		const guardedFsm = new WorkflowFSM(
-			WORKFLOW_TRANSITIONS,
-			{ "pending → running": () => false },
-		);
+		const guardedFsm = new WorkflowFSM(WORKFLOW_TRANSITIONS, {
+			"pending → running": () => false,
+		});
 		// Without context, guard is skipped
 		const result = guardedFsm.transition("pending", "running");
 		expect(result.ok).toBe(true);
@@ -209,11 +202,9 @@ describe("WorkflowFSM", () => {
 			toState: "y",
 			trigger: "onEnter",
 		};
-		const hookFsm = new WorkflowFSM(
-			WORKFLOW_TRANSITIONS,
-			undefined,
-			{ completed: () => [customDirective] },
-		);
+		const hookFsm = new WorkflowFSM(WORKFLOW_TRANSITIONS, undefined, {
+			completed: () => [customDirective],
+		});
 		const result = hookFsm.transition("running", "completed", makeCtx());
 		expect(result.ok).toBe(true);
 		// 1 auto-generated audit + 1 from onEnter
@@ -222,11 +213,19 @@ describe("WorkflowFSM", () => {
 	});
 
 	it("onEnter is skipped when no context provided", () => {
-		const hookFsm = new WorkflowFSM(
-			WORKFLOW_TRANSITIONS,
-			undefined,
-			{ running: () => [{ type: "audit", executionId: "", issueId: "", projectName: "", fromState: "", toState: "", trigger: "" }] },
-		);
+		const hookFsm = new WorkflowFSM(WORKFLOW_TRANSITIONS, undefined, {
+			running: () => [
+				{
+					type: "audit",
+					executionId: "",
+					issueId: "",
+					projectName: "",
+					fromState: "",
+					toState: "",
+					trigger: "",
+				},
+			],
+		});
 		const result = hookFsm.transition("pending", "running");
 		expect(result.ok).toBe(true);
 		expect(result.directives).toHaveLength(0);

@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { watch, readFileSync } from "node:fs";
-import { existsSync, readdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";
+import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -11,10 +10,7 @@ import type {
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR } from "flywheel-core";
 
-export type ExecFileFn = (
-	cmd: string,
-	args: string[],
-) => { stdout: string };
+export type ExecFileFn = (cmd: string, args: string[]) => { stdout: string };
 
 /**
  * TmuxAdapter — launches Claude Code in an interactive tmux window.
@@ -185,8 +181,7 @@ export class TmuxAdapter implements IAdapter {
 		// CLI syntax: claude [options] [prompt] — options MUST come before prompt
 		const args: string[] = [];
 		args.push("--session-id", sessionId);
-		if (ctx.permissionMode)
-			args.push("--permission-mode", ctx.permissionMode);
+		if (ctx.permissionMode) args.push("--permission-mode", ctx.permissionMode);
 		if (ctx.appendSystemPrompt)
 			args.push("--append-system-prompt", ctx.appendSystemPrompt);
 		if (ctx.model) args.push("--model", ctx.model);
@@ -263,7 +258,11 @@ export class TmuxAdapter implements IAdapter {
 							if (existsSync(sentinelPath)) {
 								const raw = readFileSync(sentinelPath, "utf-8");
 								const signal = JSON.parse(raw);
-								if (signal.status === "merged" || signal.status === "failed" || signal.status === "ready_to_merge") {
+								if (
+									signal.status === "merged" ||
+									signal.status === "failed" ||
+									signal.status === "ready_to_merge"
+								) {
 									clearTimeout(timer);
 									let graceChecks = 0;
 									gracePollerRef = setInterval(() => {
@@ -272,7 +271,11 @@ export class TmuxAdapter implements IAdapter {
 										ctx.onHeartbeat?.(ctx.executionId);
 										try {
 											const result = this.execFileFn("tmux", [
-												"list-panes", "-t", windowId, "-F", "#{pane_dead}",
+												"list-panes",
+												"-t",
+												windowId,
+												"-F",
+												"#{pane_dead}",
 											]);
 											if (result.stdout.trim() === "1") {
 												settle(false);
@@ -350,8 +353,7 @@ export class TmuxAdapter implements IAdapter {
 							settle(false);
 						}
 					} catch (err) {
-						const msg =
-							err instanceof Error ? err.message : String(err);
+						const msg = err instanceof Error ? err.message : String(err);
 						console.warn(
 							`[TmuxAdapter] tmux list-panes failed for ${windowId}: ${msg}. Treating as session ended.`,
 						);
@@ -364,18 +366,9 @@ export class TmuxAdapter implements IAdapter {
 
 	private ensureSession(): void {
 		try {
-			this.execFileFn("tmux", [
-				"has-session",
-				"-t",
-				`=${this.sessionName}`,
-			]);
+			this.execFileFn("tmux", ["has-session", "-t", `=${this.sessionName}`]);
 		} catch {
-			this.execFileFn("tmux", [
-				"new-session",
-				"-d",
-				"-s",
-				this.sessionName,
-			]);
+			this.execFileFn("tmux", ["new-session", "-d", "-s", this.sessionName]);
 		}
 	}
 
@@ -384,10 +377,7 @@ export class TmuxAdapter implements IAdapter {
 	}
 }
 
-function defaultExecFile(
-	cmd: string,
-	args: string[],
-): { stdout: string } {
+function defaultExecFile(cmd: string, args: string[]): { stdout: string } {
 	const result = execFileSync(cmd, args, {
 		encoding: "utf-8",
 		stdio: ["pipe", "pipe", "pipe"],

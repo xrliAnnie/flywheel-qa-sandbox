@@ -21,7 +21,9 @@ export class AgentDispatcher {
 		private classifyFn?: ClassifyFn,
 	) {}
 
-	async dispatch(hydrated: HydratedContext): Promise<AgentDispatchResult | null> {
+	async dispatch(
+		hydrated: HydratedContext,
+	): Promise<AgentDispatchResult | null> {
 		const entries = Object.entries(this.agents);
 		if (entries.length === 0) return null;
 

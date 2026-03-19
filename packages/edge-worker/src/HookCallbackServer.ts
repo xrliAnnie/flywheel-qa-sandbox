@@ -2,7 +2,8 @@ import { EventEmitter } from "node:events";
 import http from "node:http";
 import type { IHookCallbackServer } from "flywheel-core";
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const UUID_RE =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface HookEvent {
 	token: string;
@@ -16,7 +17,10 @@ export interface HookEvent {
  * Lightweight HTTP server that receives session-end callbacks from Claude Code hooks.
  * Binds to 127.0.0.1 only (loopback — no external access).
  */
-export class HookCallbackServer extends EventEmitter implements IHookCallbackServer {
+export class HookCallbackServer
+	extends EventEmitter
+	implements IHookCallbackServer
+{
 	private readonly server: http.Server;
 	private readonly requestedPort: number;
 	private assignedPort = 0;
@@ -54,11 +58,14 @@ export class HookCallbackServer extends EventEmitter implements IHookCallbackSer
 	 * Tracks pending wait listeners so they can be cancelled externally.
 	 * Key: token, Value: { resolve, timer, onHook }
 	 */
-	private pendingWaits = new Map<string, {
-		resolve: (event: HookEvent | null) => void;
-		timer: ReturnType<typeof setTimeout>;
-		onHook: (event: HookEvent) => void;
-	}>();
+	private pendingWaits = new Map<
+		string,
+		{
+			resolve: (event: HookEvent | null) => void;
+			timer: ReturnType<typeof setTimeout>;
+			onHook: (event: HookEvent) => void;
+		}
+	>();
 
 	waitForEvent(
 		token: string,
@@ -108,14 +115,20 @@ export class HookCallbackServer extends EventEmitter implements IHookCallbackSer
 
 	// ─── Private ─────────────────────────────────────
 
-	private handleRequest(req: http.IncomingMessage, res: http.ServerResponse): void {
+	private handleRequest(
+		req: http.IncomingMessage,
+		res: http.ServerResponse,
+	): void {
 		if (req.method !== "POST") {
 			res.writeHead(405);
 			res.end("method not allowed");
 			return;
 		}
 
-		const url = new URL(req.url ?? "/", `http://127.0.0.1:${this.assignedPort}`);
+		const url = new URL(
+			req.url ?? "/",
+			`http://127.0.0.1:${this.assignedPort}`,
+		);
 
 		if (url.pathname !== "/hook/complete") {
 			res.writeHead(404);

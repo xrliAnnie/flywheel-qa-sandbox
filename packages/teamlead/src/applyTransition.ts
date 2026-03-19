@@ -3,9 +3,13 @@
  * GEO-158: validate via FSM → persist via persistTransition → drain audit.
  */
 
-import type { TransitionContext, TransitionResult, WorkflowFSM } from "flywheel-core";
-import type { StateStore, SessionUpsert } from "./StateStore.js";
+import type {
+	TransitionContext,
+	TransitionResult,
+	WorkflowFSM,
+} from "flywheel-core";
 import type { DirectiveExecutor } from "./DirectiveExecutor.js";
+import type { SessionUpsert, StateStore } from "./StateStore.js";
 
 export interface ApplyTransitionOpts {
 	store: StateStore;

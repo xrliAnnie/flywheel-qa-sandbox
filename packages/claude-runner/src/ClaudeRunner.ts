@@ -15,6 +15,7 @@ import {
 	type SDKMessage,
 	type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
+import dotenv from "dotenv";
 import type { AskUserQuestionInput } from "flywheel-core";
 import {
 	createLogger,
@@ -22,7 +23,6 @@ import {
 	type ILogger,
 	StreamingPrompt,
 } from "flywheel-core";
-import dotenv from "dotenv";
 
 // AbortError is no longer exported in v1.0.95, so we define it locally
 export class AbortError extends Error {

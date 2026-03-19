@@ -1,12 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
-import type { ExecutionContext, DecisionResult } from "flywheel-core";
-import { DecisionLayer } from "../decision/DecisionLayer.js";
+import type { ExecutionContext } from "flywheel-core";
+import { describe, expect, it, vi } from "vitest";
+import type { AuditLogger } from "../AuditLogger.js";
 import type { FullDiffProvider } from "../decision/DecisionLayer.js";
-import { HardRuleEngine } from "../decision/HardRuleEngine.js";
+import { DecisionLayer } from "../decision/DecisionLayer.js";
+import { FallbackHeuristic } from "../decision/FallbackHeuristic.js";
 import { HaikuTriageAgent } from "../decision/HaikuTriageAgent.js";
 import { HaikuVerifier } from "../decision/HaikuVerifier.js";
-import { FallbackHeuristic } from "../decision/FallbackHeuristic.js";
-import { AuditLogger } from "../AuditLogger.js";
+import { HardRuleEngine } from "../decision/HardRuleEngine.js";
 
 function makeCtx(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
 	return {
@@ -54,7 +54,15 @@ function makeMocks() {
 		getFullDiff: vi.fn().mockResolvedValue("full diff content"),
 	};
 
-	return { hardRules, triage, verifier, fallback, auditLogger, diffProvider, mockLLM };
+	return {
+		hardRules,
+		triage,
+		verifier,
+		fallback,
+		auditLogger,
+		diffProvider,
+		mockLLM,
+	};
 }
 
 describe("DecisionLayer", () => {
@@ -69,7 +77,12 @@ describe("DecisionLayer", () => {
 		});
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(makeCtx(), "/project");
 
@@ -89,7 +102,12 @@ describe("DecisionLayer", () => {
 		});
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(makeCtx(), "/project");
 
@@ -121,7 +139,12 @@ describe("DecisionLayer", () => {
 		});
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(makeCtx(), "/project");
 
@@ -154,7 +177,12 @@ describe("DecisionLayer", () => {
 		});
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(makeCtx(), "/project");
 
@@ -175,7 +203,12 @@ describe("DecisionLayer", () => {
 		const verifySpy = vi.spyOn(verifier, "verify");
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(makeCtx(), "/project");
 
@@ -195,7 +228,12 @@ describe("DecisionLayer", () => {
 		});
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(makeCtx(), "/project");
 
@@ -208,7 +246,12 @@ describe("DecisionLayer", () => {
 		vi.spyOn(triage, "triage").mockRejectedValue(new Error("API error"));
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(makeCtx(), "/project");
 
@@ -229,7 +272,12 @@ describe("DecisionLayer", () => {
 		vi.spyOn(verifier, "verify").mockRejectedValue(new Error("Verify failed"));
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(makeCtx(), "/project");
 
@@ -249,7 +297,12 @@ describe("DecisionLayer", () => {
 		});
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		await layer.decide(makeCtx(), "/project");
 
@@ -271,7 +324,12 @@ describe("DecisionLayer", () => {
 		);
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(makeCtx(), "/project");
 
@@ -285,10 +343,17 @@ describe("DecisionLayer", () => {
 		const triageSpy = vi.spyOn(triage, "triage");
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(
-			makeCtx({ landingStatus: { status: "merged", mergedAt: "2025-01-01T00:00:00Z" } }),
+			makeCtx({
+				landingStatus: { status: "merged", mergedAt: "2025-01-01T00:00:00Z" },
+			}),
 			"/project",
 		);
 
@@ -306,7 +371,12 @@ describe("DecisionLayer", () => {
 			makeMocks();
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		await layer.decide(
 			makeCtx({ landingStatus: { status: "merged" } }),
@@ -327,10 +397,17 @@ describe("DecisionLayer", () => {
 		});
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(
-			makeCtx({ landingStatus: { status: "failed", failureReason: "ci_failed" } }),
+			makeCtx({
+				landingStatus: { status: "failed", failureReason: "ci_failed" },
+			}),
 			"/project",
 		);
 
@@ -345,7 +422,12 @@ describe("DecisionLayer", () => {
 		const triageSpy = vi.spyOn(triage, "triage");
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		const result = await layer.decide(
 			makeCtx({ landingStatus: { status: "ready_to_merge", prNumber: 42 } }),
@@ -373,7 +455,12 @@ describe("DecisionLayer", () => {
 		});
 
 		const layer = new DecisionLayer(
-			hardRules, triage, verifier, fallback, auditLogger, diffProvider,
+			hardRules,
+			triage,
+			verifier,
+			fallback,
+			auditLogger,
+			diffProvider,
 		);
 		await layer.decide(makeCtx(), "/project");
 

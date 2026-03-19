@@ -2,8 +2,8 @@
  * Types for Linear event transport
  */
 
-import type { AgentEvent, InternalMessage } from "flywheel-core";
 import type { FastifyInstance } from "fastify";
+import type { AgentEvent, InternalMessage } from "flywheel-core";
 
 /**
  * Verification mode for Linear webhooks

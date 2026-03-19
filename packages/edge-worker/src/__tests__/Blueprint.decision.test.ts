@@ -1,7 +1,11 @@
-import { describe, it, expect, vi } from "vitest";
-import type { AdapterExecutionResult, DecisionResult, ExecutionContext } from "flywheel-core";
-import { Blueprint } from "../Blueprint.js";
+import type {
+	AdapterExecutionResult,
+	DecisionResult,
+	ExecutionContext,
+} from "flywheel-core";
+import { describe, expect, it, vi } from "vitest";
 import type { BlueprintContext } from "../Blueprint.js";
+import { Blueprint } from "../Blueprint.js";
 import type { IDecisionLayer } from "../decision/DecisionLayer.js";
 
 // ─── Mocks ─────────────────────────────────
@@ -87,7 +91,9 @@ function makeMockDecisionLayer(
 	};
 }
 
-function makeContext(overrides: Partial<BlueprintContext> = {}): BlueprintContext {
+function makeContext(
+	overrides: Partial<BlueprintContext> = {},
+): BlueprintContext {
 	return {
 		executionId: "test-exec-id",
 		teamName: "eng",
@@ -105,7 +111,8 @@ describe("Blueprint Decision Layer Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			shell,
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			decisionLayer,
@@ -135,7 +142,8 @@ describe("Blueprint Decision Layer Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			shell,
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			decisionLayer,
@@ -159,7 +167,8 @@ describe("Blueprint Decision Layer Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			decisionLayer,
@@ -185,7 +194,8 @@ describe("Blueprint Decision Layer Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			decisionLayer,
@@ -235,7 +245,8 @@ describe("Blueprint Decision Layer Integration", () => {
 			makeMockGitChecker(),
 			() => makeMockAdapter(),
 			makeMockShell(),
-			undefined, undefined,
+			undefined,
+			undefined,
 			makeMockEvidenceCollector(),
 			undefined,
 			decisionLayer,
@@ -247,8 +258,8 @@ describe("Blueprint Decision Layer Integration", () => {
 			makeContext({ consecutiveFailures: 2 }),
 		);
 
-		const execCtx = (decisionLayer.decide as ReturnType<typeof vi.fn>)
-			.mock.calls[0]![0] as ExecutionContext;
+		const execCtx = (decisionLayer.decide as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as ExecutionContext;
 		expect(execCtx.issueId).toBe("GEO-101");
 		expect(execCtx.issueIdentifier).toBe("GEO-101");
 		expect(execCtx.labels).toEqual(["feature"]);

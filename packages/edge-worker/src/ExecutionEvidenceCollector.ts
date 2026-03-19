@@ -45,8 +45,11 @@ export class ExecutionEvidenceCollector {
 		let partial = false;
 
 		// Required fields — from GitCheckResult
-		const { commitCount, filesChanged: filesChangedCount, commitMessages } =
-			gitResult;
+		const {
+			commitCount,
+			filesChanged: filesChangedCount,
+			commitMessages,
+		} = gitResult;
 
 		// Best-effort fields
 		const changedFilePaths = await this.getChangedFiles(cwd, baseSha).catch(
@@ -63,12 +66,10 @@ export class ExecutionEvidenceCollector {
 			},
 		);
 
-		const diffSummary = await this.getDiffSummary(cwd, baseSha).catch(
-			() => {
-				partial = true;
-				return "";
-			},
-		);
+		const diffSummary = await this.getDiffSummary(cwd, baseSha).catch(() => {
+			partial = true;
+			return "";
+		});
 
 		const headSha = await this.getHeadSha(cwd).catch(() => {
 			partial = true;
@@ -104,7 +105,10 @@ export class ExecutionEvidenceCollector {
 	 *   - status=failed → pass through
 	 *   - Parse error → failed/parse_error
 	 */
-	private async readLandingStatus(signalPath: string, cwd: string): Promise<LandingStatus | undefined> {
+	private async readLandingStatus(
+		signalPath: string,
+		cwd: string,
+	): Promise<LandingStatus | undefined> {
 		try {
 			let raw: string;
 			try {
@@ -128,7 +132,13 @@ export class ExecutionEvidenceCollector {
 					try {
 						const result = await this.execFile(
 							"gh",
-							["pr", "view", String(signal.prNumber), "--json", "state,mergedAt"],
+							[
+								"pr",
+								"view",
+								String(signal.prNumber),
+								"--json",
+								"state,mergedAt",
+							],
 							cwd,
 						);
 						const prData = JSON.parse(result.stdout.trim());
@@ -150,13 +160,13 @@ export class ExecutionEvidenceCollector {
 			}
 
 			if (signal.status === "ready_to_merge") {
-			return {
-				status: "ready_to_merge",
-				prNumber: signal.prNumber,
-			};
-		}
+				return {
+					status: "ready_to_merge",
+					prNumber: signal.prNumber,
+				};
+			}
 
-		if (signal.status === "failed") {
+			if (signal.status === "failed") {
 				return {
 					status: "failed",
 					prNumber: signal.prNumber,
@@ -212,10 +222,7 @@ export class ExecutionEvidenceCollector {
 		return { added, removed };
 	}
 
-	private async getDiffSummary(
-		cwd: string,
-		baseSha: string,
-	): Promise<string> {
+	private async getDiffSummary(cwd: string, baseSha: string): Promise<string> {
 		const result = await this.execFile(
 			"git",
 			["-C", cwd, "diff", `${baseSha}..HEAD`],

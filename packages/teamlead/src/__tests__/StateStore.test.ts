@@ -1,6 +1,6 @@
-import { describe, expect, it, beforeEach } from "vitest";
-import { StateStore } from "../StateStore.js";
+import { beforeEach, describe, expect, it } from "vitest";
 import type { SessionEvent, SessionUpsert } from "../StateStore.js";
+import { StateStore } from "../StateStore.js";
 
 function makeEvent(overrides: Partial<SessionEvent> = {}): SessionEvent {
 	return {
@@ -34,7 +34,7 @@ describe("StateStore", () => {
 	it("migrate() is idempotent (call twice)", async () => {
 		const store2 = await StateStore.create(":memory:");
 		// Second migrate is called inside create, call again explicitly
-		store2["migrate"]();
+		store2.migrate();
 		store2.close();
 	});
 
@@ -65,7 +65,12 @@ describe("StateStore", () => {
 
 	it("upsertSession updates existing session", () => {
 		store.upsertSession(makeSession());
-		store.upsertSession(makeSession({ status: "awaiting_review", decision_route: "needs_review" }));
+		store.upsertSession(
+			makeSession({
+				status: "awaiting_review",
+				decision_route: "needs_review",
+			}),
+		);
 		const s = store.getSession("exec-1");
 		expect(s!.status).toBe("awaiting_review");
 		expect(s!.decision_route).toBe("needs_review");
@@ -73,35 +78,47 @@ describe("StateStore", () => {
 
 	it("getActiveSessions returns only running/awaiting_review", () => {
 		store.upsertSession(makeSession({ execution_id: "e1", status: "running" }));
-		store.upsertSession(makeSession({ execution_id: "e2", status: "awaiting_review" }));
+		store.upsertSession(
+			makeSession({ execution_id: "e2", status: "awaiting_review" }),
+		);
 		store.upsertSession(makeSession({ execution_id: "e3", status: "failed" }));
-		store.upsertSession(makeSession({ execution_id: "e4", status: "completed" }));
+		store.upsertSession(
+			makeSession({ execution_id: "e4", status: "completed" }),
+		);
 
 		const active = store.getActiveSessions();
 		expect(active).toHaveLength(2);
-		const ids = active.map(s => s.execution_id).sort();
+		const ids = active.map((s) => s.execution_id).sort();
 		expect(ids).toEqual(["e1", "e2"]);
 	});
 
 	it("getStuckSessions returns sessions with old last_activity_at", () => {
 		// Use SQLite datetime format (YYYY-MM-DD HH:MM:SS) — no T/Z
-		const toSqlite = (d: Date) => d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+		const toSqlite = (d: Date) =>
+			d
+				.toISOString()
+				.replace("T", " ")
+				.replace(/\.\d+Z$/, "");
 
 		// Insert a session with activity 30 min ago
-		store.upsertSession(makeSession({
-			execution_id: "stuck-1",
-			status: "running",
-			last_activity_at: toSqlite(new Date(Date.now() - 30 * 60 * 1000)),
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "stuck-1",
+				status: "running",
+				last_activity_at: toSqlite(new Date(Date.now() - 30 * 60 * 1000)),
+			}),
+		);
 		// Insert a session with recent activity
-		store.upsertSession(makeSession({
-			execution_id: "recent-1",
-			status: "running",
-			last_activity_at: toSqlite(new Date()),
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "recent-1",
+				status: "running",
+				last_activity_at: toSqlite(new Date()),
+			}),
+		);
 
 		const stuck = store.getStuckSessions(15);
-		const stuckIds = stuck.map(s => s.execution_id);
+		const stuckIds = stuck.map((s) => s.execution_id);
 		expect(stuckIds).toContain("stuck-1");
 		expect(stuckIds).not.toContain("recent-1");
 	});
@@ -203,12 +220,12 @@ describe("StateStore", () => {
 
 	it("migrate cleans up duplicate issue_id entries in conversation_threads", async () => {
 		// Manually insert duplicate records bypassing upsertThread
-		store["db"].run(
+		store.db.run(
 			"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES ('ts1', 'C1', 'GEO-99')",
 		);
 		// Temporarily drop the unique index so we can insert a duplicate
-		store["db"].run("DROP INDEX IF EXISTS idx_threads_issue");
-		store["db"].run(
+		store.db.run("DROP INDEX IF EXISTS idx_threads_issue");
+		store.db.run(
 			"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES ('ts2', 'C1', 'GEO-99')",
 		);
 		// Re-run migrate — should clean up and recreate index
@@ -224,49 +241,76 @@ describe("StateStore", () => {
 	// --- v1.0 Phase 1: getLatestSessionByIssueAndStatuses ---
 
 	it("getLatestSessionByIssueAndStatuses returns matching session", () => {
-		store.upsertSession(makeSession({
-			execution_id: "e1", status: "awaiting_review",
-			last_activity_at: "2024-01-01 10:00:00",
-		}));
-		store.upsertSession(makeSession({
-			execution_id: "e2", status: "failed",
-			last_activity_at: "2024-01-01 11:00:00",
-		}));
-		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", ["awaiting_review"]);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "awaiting_review",
+				last_activity_at: "2024-01-01 10:00:00",
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e2",
+				status: "failed",
+				last_activity_at: "2024-01-01 11:00:00",
+			}),
+		);
+		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", [
+			"awaiting_review",
+		]);
 		expect(s).toBeDefined();
 		expect(s!.execution_id).toBe("e1");
 	});
 
 	it("getLatestSessionByIssueAndStatuses returns latest when multiple match", () => {
-		store.upsertSession(makeSession({
-			execution_id: "e1", status: "awaiting_review",
-			last_activity_at: "2024-01-01 10:00:00",
-		}));
-		store.upsertSession(makeSession({
-			execution_id: "e2", status: "awaiting_review",
-			last_activity_at: "2024-01-01 12:00:00",
-		}));
-		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", ["awaiting_review"]);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "awaiting_review",
+				last_activity_at: "2024-01-01 10:00:00",
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e2",
+				status: "awaiting_review",
+				last_activity_at: "2024-01-01 12:00:00",
+			}),
+		);
+		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", [
+			"awaiting_review",
+		]);
 		expect(s!.execution_id).toBe("e2");
 	});
 
 	it("getLatestSessionByIssueAndStatuses returns undefined for no match", () => {
 		store.upsertSession(makeSession({ execution_id: "e1", status: "running" }));
-		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", ["awaiting_review", "blocked"]);
+		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", [
+			"awaiting_review",
+			"blocked",
+		]);
 		expect(s).toBeUndefined();
 	});
 
 	it("getLatestSessionByIssueAndStatuses with empty statuses returns undefined", () => {
 		store.upsertSession(makeSession());
-		expect(store.getLatestSessionByIssueAndStatuses("GEO-95", [])).toBeUndefined();
+		expect(
+			store.getLatestSessionByIssueAndStatuses("GEO-95", []),
+		).toBeUndefined();
 	});
 
 	it("getLatestSessionByIssueAndStatuses matches multiple statuses", () => {
-		store.upsertSession(makeSession({
-			execution_id: "e1", status: "blocked",
-			last_activity_at: "2024-01-01 10:00:00",
-		}));
-		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", ["awaiting_review", "blocked"]);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "blocked",
+				last_activity_at: "2024-01-01 10:00:00",
+			}),
+		);
+		const s = store.getLatestSessionByIssueAndStatuses("GEO-95", [
+			"awaiting_review",
+			"blocked",
+		]);
 		expect(s).toBeDefined();
 		expect(s!.execution_id).toBe("e1");
 	});
@@ -313,7 +357,7 @@ describe("StateStore", () => {
 		const s = store.getSession("exec-1");
 		expect(s!.heartbeat_at).toBeDefined();
 		// Should be a recent timestamp (within the last minute)
-		const hb = new Date(s!.heartbeat_at!.replace(" ", "T") + "Z");
+		const hb = new Date(`${s!.heartbeat_at!.replace(" ", "T")}Z`);
 		expect(Date.now() - hb.getTime()).toBeLessThan(60_000);
 	});
 
@@ -325,34 +369,46 @@ describe("StateStore", () => {
 	// --- GEO-157: getOrphanSessions ---
 
 	it("getOrphanSessions returns sessions with stale heartbeat", () => {
-		const toSqlite = (d: Date) => d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+		const toSqlite = (d: Date) =>
+			d
+				.toISOString()
+				.replace("T", " ")
+				.replace(/\.\d+Z$/, "");
 
 		// Orphan: heartbeat 90 min ago
-		store.upsertSession(makeSession({
-			execution_id: "orphan-1",
-			status: "running",
-			heartbeat_at: toSqlite(new Date(Date.now() - 90 * 60 * 1000)),
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "orphan-1",
+				status: "running",
+				heartbeat_at: toSqlite(new Date(Date.now() - 90 * 60 * 1000)),
+			}),
+		);
 		// Recent heartbeat
-		store.upsertSession(makeSession({
-			execution_id: "alive-1",
-			status: "running",
-			heartbeat_at: toSqlite(new Date()),
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "alive-1",
+				status: "running",
+				heartbeat_at: toSqlite(new Date()),
+			}),
+		);
 		// No heartbeat (should NOT be returned — heartbeat_at IS NULL)
-		store.upsertSession(makeSession({
-			execution_id: "no-hb-1",
-			status: "running",
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "no-hb-1",
+				status: "running",
+			}),
+		);
 		// Stale heartbeat but not running (should NOT be returned)
-		store.upsertSession(makeSession({
-			execution_id: "done-1",
-			status: "completed",
-			heartbeat_at: toSqlite(new Date(Date.now() - 90 * 60 * 1000)),
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "done-1",
+				status: "completed",
+				heartbeat_at: toSqlite(new Date(Date.now() - 90 * 60 * 1000)),
+			}),
+		);
 
 		const orphans = store.getOrphanSessions(60);
-		const ids = orphans.map(s => s.execution_id);
+		const ids = orphans.map((s) => s.execution_id);
 		expect(ids).toContain("orphan-1");
 		expect(ids).not.toContain("alive-1");
 		expect(ids).not.toContain("no-hb-1");
@@ -363,7 +419,10 @@ describe("StateStore", () => {
 
 	it("setSessionParams + getSessionParams round-trip", () => {
 		store.upsertSession(makeSession());
-		store.setSessionParams("exec-1", { sessionId: "claude-123", lastPromptHash: "abc" });
+		store.setSessionParams("exec-1", {
+			sessionId: "claude-123",
+			lastPromptHash: "abc",
+		});
 		const params = store.getSessionParams("exec-1");
 		expect(params).toEqual({ sessionId: "claude-123", lastPromptHash: "abc" });
 	});
@@ -381,24 +440,30 @@ describe("StateStore", () => {
 	// --- GEO-157: getLatestSessionParams ---
 
 	it("getLatestSessionParams returns most recent session with params", () => {
-		store.upsertSession(makeSession({
-			execution_id: "e1",
-			issue_id: "GEO-95",
-			last_activity_at: "2024-01-01 10:00:00",
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				issue_id: "GEO-95",
+				last_activity_at: "2024-01-01 10:00:00",
+			}),
+		);
 		store.setSessionParams("e1", { sessionId: "old-session" });
-		store.upsertSession(makeSession({
-			execution_id: "e1",
-			issue_id: "GEO-95",
-			run_attempt: 1,
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				issue_id: "GEO-95",
+				run_attempt: 1,
+			}),
+		);
 
-		store.upsertSession(makeSession({
-			execution_id: "e2",
-			issue_id: "GEO-95",
-			last_activity_at: "2024-01-01 12:00:00",
-			run_attempt: 2,
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e2",
+				issue_id: "GEO-95",
+				last_activity_at: "2024-01-01 12:00:00",
+				run_attempt: 2,
+			}),
+		);
 		store.setSessionParams("e2", { sessionId: "new-session" });
 
 		const result = store.getLatestSessionParams("GEO-95");
@@ -473,15 +538,19 @@ describe("StateStore", () => {
 			last_updated TEXT NOT NULL DEFAULT (datetime('now'))
 		)`);
 		// Insert test data with old column names
-		db.run("INSERT INTO sessions (execution_id, issue_id, project_name, status, slack_thread_ts) VALUES ('e1', 'i1', 'p', 'running', 'old-slack-ts')");
-		db.run("INSERT INTO conversation_threads (thread_ts, channel, issue_id) VALUES ('old-ct-ts', 'C123', 'i1')");
+		db.run(
+			"INSERT INTO sessions (execution_id, issue_id, project_name, status, slack_thread_ts) VALUES ('e1', 'i1', 'p', 'running', 'old-slack-ts')",
+		);
+		db.run(
+			"INSERT INTO conversation_threads (thread_ts, channel, issue_id) VALUES ('old-ct-ts', 'C123', 'i1')",
+		);
 		db.close();
 
 		// Re-create StateStore from that DB data — migration should rename columns
 		// We use :memory: and manually inject the old schema
 		const store2 = await StateStore.create(":memory:");
 		// Manually inject old schema by accessing internal db
-		const internalDb = store2["db"];
+		const internalDb = store2.db;
 		// Drop the fresh tables and recreate with old schema
 		internalDb.run("DROP TABLE IF EXISTS session_events");
 		internalDb.run("DROP TABLE IF EXISTS sessions");
@@ -536,8 +605,12 @@ describe("StateStore", () => {
 			summary TEXT,
 			last_updated TEXT NOT NULL DEFAULT (datetime('now'))
 		)`);
-		internalDb.run("INSERT INTO sessions (execution_id, issue_id, project_name, status, slack_thread_ts) VALUES ('e1', 'i1', 'p', 'running', 'old-slack-ts')");
-		internalDb.run("INSERT INTO conversation_threads (thread_ts, channel, issue_id) VALUES ('old-ct-ts', 'C123', 'i1')");
+		internalDb.run(
+			"INSERT INTO sessions (execution_id, issue_id, project_name, status, slack_thread_ts) VALUES ('e1', 'i1', 'p', 'running', 'old-slack-ts')",
+		);
+		internalDb.run(
+			"INSERT INTO conversation_threads (thread_ts, channel, issue_id) VALUES ('old-ct-ts', 'C123', 'i1')",
+		);
 		// Reset user_version so cutover cleanup runs
 		internalDb.run("PRAGMA user_version = 0");
 
@@ -563,7 +636,7 @@ describe("StateStore", () => {
 
 	it("very-legacy DB adds thread_id column (case c)", async () => {
 		const store2 = await StateStore.create(":memory:");
-		const internalDb = store2["db"];
+		const internalDb = store2.db;
 		// Drop and recreate tables WITHOUT thread column at all
 		internalDb.run("DROP TABLE IF EXISTS session_events");
 		internalDb.run("DROP TABLE IF EXISTS sessions");
@@ -615,7 +688,9 @@ describe("StateStore", () => {
 			summary TEXT,
 			last_updated TEXT NOT NULL DEFAULT (datetime('now'))
 		)`);
-		internalDb.run("INSERT INTO sessions (execution_id, issue_id, project_name, status) VALUES ('e1', 'i1', 'p', 'running')");
+		internalDb.run(
+			"INSERT INTO sessions (execution_id, issue_id, project_name, status) VALUES ('e1', 'i1', 'p', 'running')",
+		);
 
 		// Run migration — should ADD thread_id column
 		store2.migrate();
@@ -627,34 +702,69 @@ describe("StateStore", () => {
 		store2.close();
 	});
 
-	const toSqlite3 = (d: Date) => d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+	const toSqlite3 = (d: Date) =>
+		d
+			.toISOString()
+			.replace("T", " ")
+			.replace(/\.\d+Z$/, "");
 	it("getEligibleForCleanup returns completed beyond threshold", () => {
 		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(makeSession({ execution_id: "e1", issue_id: "GEO-100", status: "completed", started_at: past, last_activity_at: past }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				issue_id: "GEO-100",
+				status: "completed",
+				started_at: past,
+				last_activity_at: past,
+			}),
+		);
 		store.upsertThread("thread-100", "CH1", "GEO-100");
 		expect(store.getEligibleForCleanup(1440)).toHaveLength(1);
 	});
 	it("getEligibleForCleanup excludes failed", () => {
 		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(makeSession({ execution_id: "e1", issue_id: "GEO-100", status: "failed", started_at: past, last_activity_at: past }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				issue_id: "GEO-100",
+				status: "failed",
+				started_at: past,
+				last_activity_at: past,
+			}),
+		);
 		store.upsertThread("thread-100", "CH1", "GEO-100");
 		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
 	});
 	it("getEligibleForCleanup excludes archived", () => {
 		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(makeSession({ execution_id: "e1", issue_id: "GEO-100", status: "completed", started_at: past, last_activity_at: past }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				issue_id: "GEO-100",
+				status: "completed",
+				started_at: past,
+				last_activity_at: past,
+			}),
+		);
 		store.upsertThread("thread-100", "CH1", "GEO-100");
 		store.markArchived("thread-100");
 		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
 	});
 	it("markArchived + clearArchived cycle", () => {
 		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(makeSession({ execution_id: "e1", issue_id: "GEO-100", status: "completed", started_at: past, last_activity_at: past }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				issue_id: "GEO-100",
+				status: "completed",
+				started_at: past,
+				last_activity_at: past,
+			}),
+		);
 		store.upsertThread("thread-100", "CH1", "GEO-100");
 		store.markArchived("thread-100");
 		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
 		store.clearArchived("thread-100");
 		expect(store.getEligibleForCleanup(1440)).toHaveLength(1);
 	});
-
 });

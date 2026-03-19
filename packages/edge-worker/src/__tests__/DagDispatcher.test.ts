@@ -1,21 +1,22 @@
-import { describe, expect, it, vi } from "vitest";
-import { DagDispatcher } from "../DagDispatcher.js";
-import { DagResolver } from "flywheel-dag-resolver";
 import { Semaphore } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
+import { DagResolver } from "flywheel-dag-resolver";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	Blueprint,
 	BlueprintContext,
 	BlueprintResult,
 } from "../Blueprint.js";
+import { DagDispatcher } from "../DagDispatcher.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
 
-// Mock node:child_process to prevent osascript from opening Terminal windows during tests
+// Mock node:child_process to prevent osascript/tmux from running during tests
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	return {
 		...actual,
 		execFile: vi.fn(),
+		execFileSync: vi.fn(() => ""), // default: no clients attached
 	};
 });
 
@@ -51,6 +52,10 @@ function defaultContext(_node: DagNode): BlueprintContext {
 }
 
 describe("DagDispatcher", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
 	it("processes all ready nodes", async () => {
 		const nodes: DagNode[] = [
 			{ id: "A", blockedBy: [] },
@@ -153,9 +158,9 @@ describe("DagDispatcher", () => {
 		expect(result.shelved).toEqual(["A"]);
 		expect(result.completed).toEqual([]);
 		expect(result.halted).toBe(true);
-		expect(
-			(blueprint.run as ReturnType<typeof vi.fn>).mock.calls,
-		).toHaveLength(1);
+		expect((blueprint.run as ReturnType<typeof vi.fn>).mock.calls).toHaveLength(
+			1,
+		);
 	});
 
 	it("fires onNodeComplete callback for each node", async () => {
@@ -216,9 +221,9 @@ describe("DagDispatcher", () => {
 
 		await dispatcher.dispatch();
 
-		expect(
-			(blueprint.run as ReturnType<typeof vi.fn>).mock.calls[0]![1],
-		).toBe("/my/project");
+		expect((blueprint.run as ReturnType<typeof vi.fn>).mock.calls[0]![1]).toBe(
+			"/my/project",
+		);
 	});
 
 	it("handles blueprint.run() throwing — shelves node, others continue", async () => {
@@ -227,10 +232,10 @@ describe("DagDispatcher", () => {
 			{ id: "B", blockedBy: [] },
 		];
 		const resolver = new DagResolver(nodes);
-		let callCount = 0;
+		let _callCount = 0;
 		const blueprint = {
 			run: vi.fn(async (node: DagNode) => {
-				callCount++;
+				_callCount++;
 				if (node.id === "A") throw new Error("dirty working tree");
 				return { success: true };
 			}),
@@ -251,9 +256,7 @@ describe("DagDispatcher", () => {
 	});
 
 	it("uses buildContext function for each node", async () => {
-		const nodes: DagNode[] = [
-			{ id: "A", blockedBy: [] },
-		];
+		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
 		const resolver = new DagResolver(nodes);
 		const blueprint = {
 			run: vi.fn(async () => ({ success: true })),
@@ -625,16 +628,14 @@ describe("DagDispatcher", () => {
 
 		await dispatcher.dispatch();
 
-		expect(callCounts["A"]).toBe(1);
-		expect(callCounts["B"]).toBe(1);
+		expect(callCounts.A).toBe(1);
+		expect(callCounts.B).toBe(1);
 	});
 
 	it("pruneOrphans called before and after dispatch", async () => {
 		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
 		const resolver = new DagResolver(nodes);
-		const blueprint = makeMockBlueprint(
-			new Map([["A", { success: true }]]),
-		);
+		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
 		const mockWorktreeManager = {
 			pruneOrphans: vi.fn(async () => []),
 		} as unknown as WorktreeManager;
@@ -657,9 +658,7 @@ describe("DagDispatcher", () => {
 	it("pruneOrphans failure doesn't halt dispatch", async () => {
 		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
 		const resolver = new DagResolver(nodes);
-		const blueprint = makeMockBlueprint(
-			new Map([["A", { success: true }]]),
-		);
+		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
 		const mockWorktreeManager = {
 			pruneOrphans: vi.fn(async () => {
 				throw new Error("prune failed");
@@ -703,8 +702,8 @@ describe("DagDispatcher", () => {
 
 		expect(result.durationMs).toBeGreaterThanOrEqual(0);
 		expect(result.nodeResults).toBeDefined();
-		expect(result.nodeResults!["A"]!.success).toBe(true);
-		expect(result.nodeResults!["B"]!.success).toBe(false);
+		expect(result.nodeResults!.A!.success).toBe(true);
+		expect(result.nodeResults!.B!.success).toBe(false);
 	});
 
 	it("slow onNodeComplete callback doesn't block dispatch loop", async () => {
@@ -774,5 +773,77 @@ describe("DagDispatcher", () => {
 
 		expect(result.completed.sort()).toEqual(["A", "B"]);
 		expect(result.shelved).toEqual([]);
+	});
+
+	// ─── Viewer dedup tests (GEO-179) ────────────────
+
+	it("openTmuxViewer skips when client already attached", async () => {
+		const { execFileSync: mockExecFileSync, execFile: mockExecFile } =
+			await import("node:child_process");
+		(mockExecFileSync as ReturnType<typeof vi.fn>).mockReturnValueOnce(
+			"/dev/ttys001: flywheel 160x40",
+		);
+
+		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
+		const resolver = new DagResolver(nodes);
+		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
+		const dispatcher = new DagDispatcher(
+			resolver,
+			blueprint,
+			"/project",
+			defaultContext,
+		);
+
+		await dispatcher.dispatch();
+
+		// execFile (osascript) should NOT have been called — viewer dedup
+		expect(mockExecFile).not.toHaveBeenCalled();
+	});
+
+	it("openTmuxViewer opens when no clients attached", async () => {
+		const { execFile: mockExecFile } = await import("node:child_process");
+
+		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
+		const resolver = new DagResolver(nodes);
+		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
+		const dispatcher = new DagDispatcher(
+			resolver,
+			blueprint,
+			"/project",
+			defaultContext,
+		);
+
+		await dispatcher.dispatch();
+
+		// execFile (osascript) SHOULD have been called (default mock returns "")
+		expect(mockExecFile).toHaveBeenCalled();
+		const call = (mockExecFile as ReturnType<typeof vi.fn>).mock.calls[0]!;
+		expect(call[0]).toBe("osascript");
+		expect(call[1][1]).toContain("close viewerWindow");
+	});
+
+	it("openTmuxViewer opens when list-clients throws (session not yet created)", async () => {
+		const { execFileSync: mockExecFileSync, execFile: mockExecFile } =
+			await import("node:child_process");
+		(mockExecFileSync as ReturnType<typeof vi.fn>).mockImplementationOnce(
+			() => {
+				throw new Error("can't find session: flywheel");
+			},
+		);
+
+		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
+		const resolver = new DagResolver(nodes);
+		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
+		const dispatcher = new DagDispatcher(
+			resolver,
+			blueprint,
+			"/project",
+			defaultContext,
+		);
+
+		await dispatcher.dispatch();
+
+		// Should still open viewer despite list-clients error
+		expect(mockExecFile).toHaveBeenCalled();
 	});
 });

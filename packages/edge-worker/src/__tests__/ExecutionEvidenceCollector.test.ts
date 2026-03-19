@@ -21,16 +21,28 @@ function makeMockExec(responses: Record<string, string> = {}): ExecFileFn {
 		const joined = args.join(" ");
 
 		if (joined.includes("--name-only")) {
-			return { stdout: responses["name-only"] ?? "src/auth.ts\nsrc/auth.test.ts\nsrc/index.ts\n" };
+			return {
+				stdout:
+					responses["name-only"] ??
+					"src/auth.ts\nsrc/auth.test.ts\nsrc/index.ts\n",
+			};
 		}
 		if (joined.includes("--numstat")) {
-			return { stdout: responses["numstat"] ?? "80\t5\tsrc/auth.ts\n30\t0\tsrc/auth.test.ts\n10\t0\tsrc/index.ts\n" };
+			return {
+				stdout:
+					responses.numstat ??
+					"80\t5\tsrc/auth.ts\n30\t0\tsrc/auth.test.ts\n10\t0\tsrc/index.ts\n",
+			};
 		}
 		if (joined.includes("rev-parse")) {
 			return { stdout: responses["rev-parse"] ?? "abc123def456\n" };
 		}
 		if (joined.includes("diff") && !joined.includes("--")) {
-			return { stdout: responses["diff"] ?? "diff --git a/src/auth.ts b/src/auth.ts\n+code here\n" };
+			return {
+				stdout:
+					responses.diff ??
+					"diff --git a/src/auth.ts b/src/auth.ts\n+code here\n",
+			};
 		}
 
 		return { stdout: "" };
@@ -232,7 +244,11 @@ describe("ExecutionEvidenceCollector", () => {
 			if (joined.includes("--numstat")) return { stdout: "10\t2\tfile.ts\n" };
 			if (joined.includes("rev-parse")) return { stdout: "abc123\n" };
 			// Plain diff (no --name-only, no --numstat)
-			if (joined.includes("diff") && !joined.includes("--name") && !joined.includes("--num")) {
+			if (
+				joined.includes("diff") &&
+				!joined.includes("--name") &&
+				!joined.includes("--num")
+			) {
 				throw new Error("diff failed");
 			}
 			return { stdout: "" };
@@ -251,7 +267,12 @@ describe("ExecutionEvidenceCollector", () => {
 	});
 
 	it("all best-effort fields fail → partial=true, required fields intact", async () => {
-		const exec = makeFailingExec(["--name-only", "--numstat", "rev-parse", "diff"]);
+		const exec = makeFailingExec([
+			"--name-only",
+			"--numstat",
+			"rev-parse",
+			"diff",
+		]);
 		const collector = new ExecutionEvidenceCollector(exec);
 
 		const evidence = await collector.collect(
@@ -292,7 +313,7 @@ describe("ExecutionEvidenceCollector", () => {
 	// --- Step 2b: getFullDiff ---
 
 	it("getFullDiff returns untruncated diff", async () => {
-		const longDiff = "diff --git ...\n" + "+".repeat(5000);
+		const longDiff = `diff --git ...\n${"+".repeat(5000)}`;
 		const exec = makeMockExec({ diff: longDiff });
 		const collector = new ExecutionEvidenceCollector(exec);
 
@@ -309,7 +330,10 @@ describe("ExecutionEvidenceCollector", () => {
 		const collector = new ExecutionEvidenceCollector(exec);
 
 		const evidence = await collector.collect(
-			"/repo", "base123", makeGitResult(), 1000,
+			"/repo",
+			"base123",
+			makeGitResult(),
+			1000,
 		);
 
 		expect(evidence.landingStatus).toBeUndefined();
@@ -320,7 +344,10 @@ describe("ExecutionEvidenceCollector", () => {
 		const collector = new ExecutionEvidenceCollector(exec);
 
 		const evidence = await collector.collect(
-			"/repo", "base123", makeGitResult(), 1000,
+			"/repo",
+			"base123",
+			makeGitResult(),
+			1000,
 			"/nonexistent/path/land-status.json",
 		);
 
@@ -341,7 +368,11 @@ describe("ExecutionEvidenceCollector", () => {
 			const collector = new ExecutionEvidenceCollector(exec);
 
 			const evidence = await collector.collect(
-				"/repo", "base123", makeGitResult(), 1000, signalPath,
+				"/repo",
+				"base123",
+				makeGitResult(),
+				1000,
+				signalPath,
 			);
 
 			expect(evidence.landingStatus).toEqual({
@@ -360,22 +391,28 @@ describe("ExecutionEvidenceCollector", () => {
 
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "land-test-"));
 		const signalPath = path.join(tmpDir, "land-status.json");
-		fs.writeFileSync(signalPath, JSON.stringify({
-			status: "merged",
-			prNumber: 42,
-			mergedAt: "2025-01-01T00:00:00Z",
-			mergeCommitSha: "abc123",
-		}));
+		fs.writeFileSync(
+			signalPath,
+			JSON.stringify({
+				status: "merged",
+				prNumber: 42,
+				mergedAt: "2025-01-01T00:00:00Z",
+				mergeCommitSha: "abc123",
+			}),
+		);
 
 		try {
 			// Mock gh pr view to return MERGED state
 			const exec = vi.fn(async (cmd: string, args: string[], _cwd: string) => {
 				if (cmd === "gh") {
-					return { stdout: JSON.stringify({ state: "MERGED", mergedAt: "2025-01-01" }) };
+					return {
+						stdout: JSON.stringify({ state: "MERGED", mergedAt: "2025-01-01" }),
+					};
 				}
 				const joined = args.join(" ");
 				if (joined.includes("--name-only")) return { stdout: "src/a.ts\n" };
-				if (joined.includes("--numstat")) return { stdout: "10\t2\tsrc/a.ts\n" };
+				if (joined.includes("--numstat"))
+					return { stdout: "10\t2\tsrc/a.ts\n" };
 				if (joined.includes("rev-parse")) return { stdout: "abc123\n" };
 				if (joined.includes("diff")) return { stdout: "diff\n" };
 				return { stdout: "" };
@@ -383,7 +420,11 @@ describe("ExecutionEvidenceCollector", () => {
 			const collector = new ExecutionEvidenceCollector(exec);
 
 			const evidence = await collector.collect(
-				"/repo", "base123", makeGitResult(), 1000, signalPath,
+				"/repo",
+				"base123",
+				makeGitResult(),
+				1000,
+				signalPath,
 			);
 
 			expect(evidence.landingStatus).toEqual({
@@ -404,17 +445,24 @@ describe("ExecutionEvidenceCollector", () => {
 
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "land-test-"));
 		const signalPath = path.join(tmpDir, "land-status.json");
-		fs.writeFileSync(signalPath, JSON.stringify({
-			status: "ready_to_merge",
-			prNumber: 42,
-		}));
+		fs.writeFileSync(
+			signalPath,
+			JSON.stringify({
+				status: "ready_to_merge",
+				prNumber: 42,
+			}),
+		);
 
 		try {
 			const exec = makeMockExec();
 			const collector = new ExecutionEvidenceCollector(exec);
 
 			const evidence = await collector.collect(
-				"/repo", "base123", makeGitResult(), 1000, signalPath,
+				"/repo",
+				"base123",
+				makeGitResult(),
+				1000,
+				signalPath,
 			);
 
 			expect(evidence.landingStatus).toEqual({
@@ -433,19 +481,26 @@ describe("ExecutionEvidenceCollector", () => {
 
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "land-test-"));
 		const signalPath = path.join(tmpDir, "land-status.json");
-		fs.writeFileSync(signalPath, JSON.stringify({
-			status: "failed",
-			prNumber: 42,
-			failureReason: "ci_failed",
-			failureDetail: "test suite timed out",
-		}));
+		fs.writeFileSync(
+			signalPath,
+			JSON.stringify({
+				status: "failed",
+				prNumber: 42,
+				failureReason: "ci_failed",
+				failureDetail: "test suite timed out",
+			}),
+		);
 
 		try {
 			const exec = makeMockExec();
 			const collector = new ExecutionEvidenceCollector(exec);
 
 			const evidence = await collector.collect(
-				"/repo", "base123", makeGitResult(), 1000, signalPath,
+				"/repo",
+				"base123",
+				makeGitResult(),
+				1000,
+				signalPath,
 			);
 
 			expect(evidence.landingStatus).toEqual({
@@ -473,7 +528,11 @@ describe("ExecutionEvidenceCollector", () => {
 			const collector = new ExecutionEvidenceCollector(exec);
 
 			const evidence = await collector.collect(
-				"/repo", "base123", makeGitResult(), 1000, signalPath,
+				"/repo",
+				"base123",
+				makeGitResult(),
+				1000,
+				signalPath,
 			);
 
 			expect(evidence.landingStatus).toEqual({
@@ -492,10 +551,13 @@ describe("ExecutionEvidenceCollector", () => {
 
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "land-test-"));
 		const signalPath = path.join(tmpDir, "land-status.json");
-		fs.writeFileSync(signalPath, JSON.stringify({
-			status: "merged",
-			prNumber: 42,
-		}));
+		fs.writeFileSync(
+			signalPath,
+			JSON.stringify({
+				status: "merged",
+				prNumber: 42,
+			}),
+		);
 
 		try {
 			const exec = vi.fn(async (cmd: string, args: string[], _cwd: string) => {
@@ -504,7 +566,8 @@ describe("ExecutionEvidenceCollector", () => {
 				}
 				const joined = args.join(" ");
 				if (joined.includes("--name-only")) return { stdout: "src/a.ts\n" };
-				if (joined.includes("--numstat")) return { stdout: "10\t2\tsrc/a.ts\n" };
+				if (joined.includes("--numstat"))
+					return { stdout: "10\t2\tsrc/a.ts\n" };
 				if (joined.includes("rev-parse")) return { stdout: "abc123\n" };
 				if (joined.includes("diff")) return { stdout: "diff\n" };
 				return { stdout: "" };
@@ -512,7 +575,11 @@ describe("ExecutionEvidenceCollector", () => {
 			const collector = new ExecutionEvidenceCollector(exec);
 
 			const evidence = await collector.collect(
-				"/repo", "base123", makeGitResult(), 1000, signalPath,
+				"/repo",
+				"base123",
+				makeGitResult(),
+				1000,
+				signalPath,
 			);
 
 			expect(evidence.landingStatus).toEqual({

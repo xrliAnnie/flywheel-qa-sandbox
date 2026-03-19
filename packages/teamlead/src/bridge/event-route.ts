@@ -1,13 +1,20 @@
 import { Router } from "express";
-import type { StateStore, Session } from "../StateStore.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
-import { sqliteDatetime, type BridgeConfig } from "./types.js";
-import { applyTransition, type ApplyTransitionOpts } from "../applyTransition.js";
-
-import { buildSessionKey, buildHookBody, notifyAgent, type HookPayload } from "./hook-payload.js";
 import type { CipherWriter } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import type { SnapshotInputDto } from "flywheel-edge-worker";
+import {
+	type ApplyTransitionOpts,
+	applyTransition,
+} from "../applyTransition.js";
+import type { ProjectEntry } from "../ProjectConfig.js";
+import type { Session, StateStore } from "../StateStore.js";
+import {
+	buildHookBody,
+	buildSessionKey,
+	type HookPayload,
+	notifyAgent,
+} from "./hook-payload.js";
+import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 interface IngestEvent {
 	event_id: string;
@@ -67,7 +74,11 @@ export function createEventRouter(
 	// Dedicated heartbeat route — lightweight, no session_events write, no OpenClaw notification
 	router.post("/heartbeat", (req, res) => {
 		const body = req.body as { execution_id?: string } | undefined;
-		if (!body || typeof body.execution_id !== "string" || body.execution_id.length === 0) {
+		if (
+			!body ||
+			typeof body.execution_id !== "string" ||
+			body.execution_id.length === 0
+		) {
 			res.status(400).json({ error: "missing or invalid field: execution_id" });
 			return;
 		}
@@ -83,7 +94,13 @@ export function createEventRouter(
 		}
 
 		// Validate required fields
-		const required = ["event_id", "execution_id", "issue_id", "project_name", "event_type"] as const;
+		const required = [
+			"event_id",
+			"execution_id",
+			"issue_id",
+			"project_name",
+			"event_type",
+		] as const;
 		for (const field of required) {
 			if (typeof event[field] !== "string" || event[field].length === 0) {
 				res.status(400).json({ error: `missing or invalid field: ${field}` });
@@ -122,15 +139,23 @@ export function createEventRouter(
 
 			if (event.event_type === "session_started") {
 				if (transitionOpts) {
-					const result = applyTransition(transitionOpts, event.execution_id, "running", ctx, {
-						started_at: now,
-						last_activity_at: now,
-						heartbeat_at: now,
-						issue_identifier: asString(payload.issueIdentifier),
-						issue_title: asString(payload.issueTitle),
-					});
+					const result = applyTransition(
+						transitionOpts,
+						event.execution_id,
+						"running",
+						ctx,
+						{
+							started_at: now,
+							last_activity_at: now,
+							heartbeat_at: now,
+							issue_identifier: asString(payload.issueIdentifier),
+							issue_title: asString(payload.issueTitle),
+						},
+					);
 					if (!result.ok) {
-						console.warn(`[event-route] FSM rejected ${event.event_type}: ${result.error}`);
+						console.warn(
+							`[event-route] FSM rejected ${event.event_type}: ${result.error}`,
+						);
 						transitionRejected = true;
 					}
 				} else {
@@ -151,37 +176,53 @@ export function createEventRouter(
 					// Inherit existing thread for this issue (retry/reopen reuses thread)
 					const existingThread = store.getThreadByIssue(event.issue_id);
 					if (existingThread) {
-						store.setSessionThreadId(event.execution_id, existingThread.thread_id);
+						store.setSessionThreadId(
+							event.execution_id,
+							existingThread.thread_id,
+						);
 						store.clearArchived(existingThread.thread_id);
 					}
 				}
 			} else if (event.event_type === "session_completed") {
-				const decision = payload.decision as Record<string, unknown> | undefined;
-				const evidence = payload.evidence as Record<string, unknown> | undefined;
+				const decision = payload.decision as
+					| Record<string, unknown>
+					| undefined;
+				const evidence = payload.evidence as
+					| Record<string, unknown>
+					| undefined;
 				const route = asString(decision?.route);
 
 				// Status mapping: all routes → appropriate status
 				let status: string;
 				if (route === "needs_review") status = "awaiting_review";
 				else if (route === "auto_approve") {
-					const landingStatus = evidence?.landingStatus as { status?: string } | undefined;
+					const landingStatus = evidence?.landingStatus as
+						| { status?: string }
+						| undefined;
 					if (landingStatus?.status === "merged") {
 						status = "approved";
 					} else {
 						status = "awaiting_review";
 					}
-				}
-				else if (route === "blocked") status = "blocked";
+				} else if (route === "blocked") status = "blocked";
 				else status = "completed";
 
 				if (transitionOpts) {
-					const result = applyTransition(transitionOpts, event.execution_id, status, ctx, {
-						last_activity_at: now,
-						issue_identifier: asString(payload.issueIdentifier),
-						issue_title: asString(payload.issueTitle),
-					});
+					const result = applyTransition(
+						transitionOpts,
+						event.execution_id,
+						status,
+						ctx,
+						{
+							last_activity_at: now,
+							issue_identifier: asString(payload.issueIdentifier),
+							issue_title: asString(payload.issueTitle),
+						},
+					);
 					if (!result.ok) {
-						console.warn(`[event-route] FSM rejected ${event.event_type} → ${status}: ${result.error}`);
+						console.warn(
+							`[event-route] FSM rejected ${event.event_type} → ${status}: ${result.error}`,
+						);
 						transitionRejected = true;
 					} else {
 						// Metadata via patchSessionMetadata only on successful transition
@@ -289,14 +330,22 @@ export function createEventRouter(
 				}
 			} else if (event.event_type === "session_failed") {
 				if (transitionOpts) {
-					const result = applyTransition(transitionOpts, event.execution_id, "failed", ctx, {
-						last_activity_at: now,
-						last_error: asString(payload.error),
-						issue_identifier: asString(payload.issueIdentifier),
-						issue_title: asString(payload.issueTitle),
-					});
+					const result = applyTransition(
+						transitionOpts,
+						event.execution_id,
+						"failed",
+						ctx,
+						{
+							last_activity_at: now,
+							last_error: asString(payload.error),
+							issue_identifier: asString(payload.issueIdentifier),
+							issue_title: asString(payload.issueTitle),
+						},
+					);
 					if (!result.ok) {
-						console.warn(`[event-route] FSM rejected ${event.event_type}: ${result.error}`);
+						console.warn(
+							`[event-route] FSM rejected ${event.event_type}: ${result.error}`,
+						);
 						transitionRejected = true;
 					}
 				} else {
@@ -313,7 +362,10 @@ export function createEventRouter(
 				}
 			}
 		} catch (err) {
-			console.error(`[event-route] Session update failed for ${event.execution_id}:`, err);
+			console.error(
+				`[event-route] Session update failed for ${event.execution_id}:`,
+				err,
+			);
 			// Event is already stored — return success with a warning rather than 500
 			// so retries don't get stuck on duplicate detection
 			res.json({ ok: true, warning: "event stored but session update failed" });
@@ -322,7 +374,11 @@ export function createEventRouter(
 
 		// Skip notification when FSM rejected the transition
 		if (transitionRejected) {
-			res.json({ ok: true, warning: "FSM rejected transition — event stored but session not updated" });
+			res.json({
+				ok: true,
+				warning:
+					"FSM rejected transition — event stored but session not updated",
+			});
 			return;
 		}
 

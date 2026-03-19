@@ -1,7 +1,7 @@
 import http from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { HookCallbackServer } from "../HookCallbackServer.js";
 import type { HookEvent } from "../HookCallbackServer.js";
+import { HookCallbackServer } from "../HookCallbackServer.js";
 
 // ─── Helpers ─────────────────────────────────────
 
@@ -18,9 +18,7 @@ function post(
 				res.on("data", (chunk: Buffer) => {
 					body += chunk.toString();
 				});
-				res.on("end", () =>
-					resolve({ status: res.statusCode!, body }),
-				);
+				res.on("end", () => resolve({ status: res.statusCode!, body }));
 			},
 		);
 		req.on("error", reject);
@@ -184,9 +182,7 @@ describe("HookCallbackServer", () => {
 		// Remove from tracking so afterEach doesn't double-stop
 		servers.length = 0;
 
-		await expect(
-			post(port, VALID_PATH),
-		).rejects.toThrow();
+		await expect(post(port, VALID_PATH)).rejects.toThrow();
 	});
 
 	it("concurrent waitForEvent on different tokens", async () => {

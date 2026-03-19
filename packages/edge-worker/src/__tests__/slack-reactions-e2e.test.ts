@@ -1,9 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecisionResult, ExecutionContext } from "flywheel-core";
-import { SlackNotifier } from "../SlackNotifier.js";
-import { SlackInteractionServer } from "../SlackInteractionServer.js";
-import { ReactionsEngine } from "../ReactionsEngine.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ActionHandler } from "../ReactionsEngine.js";
+import { ReactionsEngine } from "../ReactionsEngine.js";
+import { SlackInteractionServer } from "../SlackInteractionServer.js";
+import { SlackNotifier } from "../SlackNotifier.js";
 
 // Keep real fetch — E2E tests use real HTTP to interaction server.
 // SlackMessageService is mocked at object level (not via global fetch).
@@ -68,7 +68,9 @@ describe("Slack Reactions E2E", () => {
 
 	it("full needs_review loop: notify → button click → approve", async () => {
 		// 1. Setup
-		const mockMessageService = { postMessage: vi.fn().mockResolvedValue(undefined) } as any;
+		const mockMessageService = {
+			postMessage: vi.fn().mockResolvedValue(undefined),
+		} as any;
 		const notifier = new SlackNotifier(
 			{ channelId: "C07TEST", botToken: "xoxb-test", projectRepo: "test/repo" },
 			mockMessageService,
@@ -78,7 +80,9 @@ describe("Slack Reactions E2E", () => {
 		const port = await interactionServer.start();
 
 		const mockApproveHandler: ActionHandler = {
-			execute: vi.fn().mockResolvedValue({ success: true, message: "PR #42 merged" }),
+			execute: vi
+				.fn()
+				.mockResolvedValue({ success: true, message: "PR #42 merged" }),
 		};
 		const engine = new ReactionsEngine({ approve: mockApproveHandler });
 
@@ -127,7 +131,9 @@ describe("Slack Reactions E2E", () => {
 	});
 
 	it("full blocked loop: notify → button click → retry", async () => {
-		const mockMessageService = { postMessage: vi.fn().mockResolvedValue(undefined) } as any;
+		const mockMessageService = {
+			postMessage: vi.fn().mockResolvedValue(undefined),
+		} as any;
 		const notifier = new SlackNotifier(
 			{ channelId: "C07TEST", botToken: "xoxb-test" },
 			mockMessageService,
@@ -137,7 +143,9 @@ describe("Slack Reactions E2E", () => {
 		const port = await interactionServer.start();
 
 		const mockRetryHandler: ActionHandler = {
-			execute: vi.fn().mockResolvedValue({ success: true, message: "Retry queued" }),
+			execute: vi
+				.fn()
+				.mockResolvedValue({ success: true, message: "Retry queued" }),
 		};
 		const engine = new ReactionsEngine({ retry: mockRetryHandler });
 

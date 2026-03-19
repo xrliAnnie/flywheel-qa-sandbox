@@ -29,10 +29,7 @@ export class DecisionLayer implements IDecisionLayer {
 		private cipherReader?: CipherReader,
 	) {}
 
-	async decide(
-		ctx: ExecutionContext,
-		cwd: string,
-	): Promise<DecisionResult> {
+	async decide(ctx: ExecutionContext, cwd: string): Promise<DecisionResult> {
 		// HR-LANDED: PR already merged (backward compat with old flywheel-land) — early return BEFORE final guard
 		if (ctx.landingStatus?.status === "merged") {
 			const result: DecisionResult = {
@@ -112,10 +109,7 @@ export class DecisionLayer implements IDecisionLayer {
 		// Step 3: If auto_approve, verify with full diff
 		if (result.route === "auto_approve") {
 			try {
-				const fullDiff = await this.diffProvider.getFullDiff(
-					cwd,
-					ctx.baseSha,
-				);
+				const fullDiff = await this.diffProvider.getFullDiff(cwd, ctx.baseSha);
 				const verification = await this.verifier.verify(ctx, fullDiff);
 				result.verification = verification;
 

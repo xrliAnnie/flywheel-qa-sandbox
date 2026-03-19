@@ -23,14 +23,14 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
-import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { TmuxAdapter } from "../packages/claude-runner/dist/TmuxAdapter.js";
-import { StateStore } from "../packages/teamlead/dist/StateStore.js";
-import { HeartbeatService } from "../packages/teamlead/dist/HeartbeatService.js";
 import { createBridgeApp } from "../packages/teamlead/dist/bridge/plugin.js";
+import { HeartbeatService } from "../packages/teamlead/dist/HeartbeatService.js";
+import { StateStore } from "../packages/teamlead/dist/StateStore.js";
 
 // ── Helpers ──────────────────────────────────────────
 
@@ -115,7 +115,10 @@ async function main() {
 	// Register session_started via bridge API (so StateStore has the session)
 	const startedRes = await fetch(`http://127.0.0.1:${bridge.port}/events`, {
 		method: "POST",
-		headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bridge.token}` },
+		headers: {
+			"Content-Type": "application/json",
+			Authorization: `Bearer ${bridge.token}`,
+		},
 		body: JSON.stringify({
 			event_id: randomUUID(),
 			execution_id: executionId,
@@ -125,14 +128,17 @@ async function main() {
 			payload: { issueIdentifier: issueId, issueTitle: "Heartbeat E2E Test" },
 		}),
 	});
-	if (!startedRes.ok) throw new Error(`session_started failed: ${startedRes.status}`);
+	if (!startedRes.ok)
+		throw new Error(`session_started failed: ${startedRes.status}`);
 	log(`  Session registered: ${executionId.slice(0, 8)}...`);
 
 	// Verify initial heartbeat_at was set by session_started handler
 	const initialSession = store.getSession(executionId);
 	log(`  Initial heartbeat_at: ${initialSession?.heartbeat_at ?? "NOT SET"}`);
 	if (!initialSession?.heartbeat_at) {
-		log("  ⚠️  heartbeat_at not initialized by session_started — this is a bug!");
+		log(
+			"  ⚠️  heartbeat_at not initialized by session_started — this is a bug!",
+		);
 	}
 
 	// ── Phase 2: Run Claude with heartbeats ──
@@ -145,9 +151,9 @@ async function main() {
 
 	const adapter = new TmuxAdapter(
 		"flywheel-e2e", // tmux session name
-		undefined,      // default execFileFn
-		5000,           // 5s poll interval
-		60_000,         // 60s timeout (short for E2E)
+		undefined, // default execFileFn
+		5000, // 5s poll interval
+		60_000, // 60s timeout (short for E2E)
 	);
 
 	const start = Date.now();
@@ -155,7 +161,8 @@ async function main() {
 	const resultPromise = adapter.execute({
 		executionId,
 		issueId,
-		prompt: 'Create a file called hello.txt with the content "Hello from Flywheel E2E!" and then exit. Do NOT create a git commit.',
+		prompt:
+			'Create a file called hello.txt with the content "Hello from Flywheel E2E!" and then exit. Do NOT create a git commit.',
 		cwd: repoDir,
 		permissionMode: "bypassPermissions",
 		timeoutMs: 60_000,
@@ -170,7 +177,10 @@ async function main() {
 			// Forward heartbeat to bridge
 			fetch(`http://127.0.0.1:${bridge.port}/events/heartbeat`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json", "Authorization": `Bearer ${bridge.token}` },
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: `Bearer ${bridge.token}`,
+				},
 				body: JSON.stringify({ execution_id: eid }),
 			}).catch(() => {
 				// Best-effort — don't block the adapter
@@ -181,7 +191,9 @@ async function main() {
 	const result = await resultPromise;
 	const elapsed = ((Date.now() - start) / 1000).toFixed(1);
 
-	log(`\n  Claude finished in ${elapsed}s (success=${result.success}, timedOut=${result.timedOut})`);
+	log(
+		`\n  Claude finished in ${elapsed}s (success=${result.success}, timedOut=${result.timedOut})`,
+	);
 	log(`  Total heartbeats: ${heartbeatCount}`);
 	log(`  Session ID: ${result.sessionId.slice(0, 8)}...`);
 	log(`  tmux window: ${result.tmuxWindow}`);
@@ -197,7 +209,9 @@ async function main() {
 	log(`  status: ${updatedSession?.status}`);
 
 	if (updatedSession?.heartbeat_at) {
-		const hbTime = new Date(updatedSession.heartbeat_at.replace(" ", "T") + "Z");
+		const hbTime = new Date(
+			`${updatedSession.heartbeat_at.replace(" ", "T")}Z`,
+		);
 		const age = Math.round((Date.now() - hbTime.getTime()) / 1000);
 		log(`  heartbeat age: ${age}s ago`);
 		if (age < 120) {
@@ -233,18 +247,22 @@ async function main() {
 		[orphanId],
 	);
 	(store as any).save();
-	log(`  Created fake orphan: ${orphanId.slice(0, 8)}... (heartbeat_at=2020-01-01)`);
+	log(
+		`  Created fake orphan: ${orphanId.slice(0, 8)}... (heartbeat_at=2020-01-01)`,
+	);
 
 	const orphanBefore = store.getSession(orphanId);
 	log(`  Orphan status before reaping: ${orphanBefore?.status}`);
 
 	// Run HeartbeatService to detect and reap
-	let reapedSessions: string[] = [];
+	const reapedSessions: string[] = [];
 	const notifier = {
 		onSessionStuck: async () => {},
 		onSessionOrphaned: async (session: any) => {
 			reapedSessions.push(session.execution_id);
-			log(`  🪦 Orphan reaped: ${session.execution_id.slice(0, 8)}... (issue=${session.issue_id})`);
+			log(
+				`  🪦 Orphan reaped: ${session.execution_id.slice(0, 8)}... (issue=${session.issue_id})`,
+			);
 		},
 	};
 
@@ -258,7 +276,9 @@ async function main() {
 	if (orphanAfter?.status === "failed" && reapedSessions.length === 1) {
 		log("  ✅ Orphan successfully reaped! status → failed, notifier called");
 	} else {
-		log(`  ❌ Reaping failed: status=${orphanAfter?.status}, reaped=${reapedSessions.length}`);
+		log(
+			`  ❌ Reaping failed: status=${orphanAfter?.status}, reaped=${reapedSessions.length}`,
+		);
 	}
 
 	// ── Phase 5: session_params (recovery infrastructure) ──
@@ -270,7 +290,9 @@ async function main() {
 	});
 	const params = store.getSessionParams(executionId);
 	if (params?.sessionId === result.sessionId) {
-		log(`  ✅ session_params round-trip OK: sessionId=${result.sessionId.slice(0, 8)}...`);
+		log(
+			`  ✅ session_params round-trip OK: sessionId=${result.sessionId.slice(0, 8)}...`,
+		);
 	} else {
 		log(`  ❌ session_params mismatch: got ${JSON.stringify(params)}`);
 	}
@@ -289,7 +311,9 @@ async function main() {
 
 	// Kill the E2E tmux session if it exists
 	try {
-		execFileSync("tmux", ["kill-session", "-t", "=flywheel-e2e"], { stdio: "pipe" });
+		execFileSync("tmux", ["kill-session", "-t", "=flywheel-e2e"], {
+			stdio: "pipe",
+		});
 		log("  Killed flywheel-e2e tmux session");
 	} catch {
 		// Session may not exist
@@ -300,9 +324,15 @@ async function main() {
 	console.log("║  E2E RESULTS                                     ║");
 	console.log("╠══════════════════════════════════════════════════╣");
 	console.log(`║  Heartbeats received: ${String(heartbeatCount).padEnd(27)}║`);
-	console.log(`║  Heartbeat→Bridge→StateStore: ${heartbeatCount >= 1 ? "✅ PASS" : "❌ FAIL"}               ║`);
-	console.log(`║  Orphan reaping:              ${orphanAfter?.status === "failed" ? "✅ PASS" : "❌ FAIL"}               ║`);
-	console.log(`║  Session params:              ${params?.sessionId === result.sessionId ? "✅ PASS" : "❌ FAIL"}               ║`);
+	console.log(
+		`║  Heartbeat→Bridge→StateStore: ${heartbeatCount >= 1 ? "✅ PASS" : "❌ FAIL"}               ║`,
+	);
+	console.log(
+		`║  Orphan reaping:              ${orphanAfter?.status === "failed" ? "✅ PASS" : "❌ FAIL"}               ║`,
+	);
+	console.log(
+		`║  Session params:              ${params?.sessionId === result.sessionId ? "✅ PASS" : "❌ FAIL"}               ║`,
+	);
 	console.log("╚══════════════════════════════════════════════════╝\n");
 
 	const allPass =

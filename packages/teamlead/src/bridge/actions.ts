@@ -1,16 +1,24 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Router } from "express";
-import { ApproveHandler } from "flywheel-edge-worker";
+import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { ActionResult } from "flywheel-edge-worker";
 import type { CipherWriter } from "flywheel-edge-worker";
-import { ACTION_DEFINITIONS } from "flywheel-core";
-import type { StateStore } from "../StateStore.js";
+import { ApproveHandler } from "flywheel-edge-worker";
+import {
+	type ApplyTransitionOpts,
+	applyTransition,
+} from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import { applyTransition, type ApplyTransitionOpts } from "../applyTransition.js";
-import { sqliteDatetime, type BridgeConfig } from "./types.js";
-import { buildSessionKey, buildHookBody, notifyAgent, type HookPayload } from "./hook-payload.js";
+import type { StateStore } from "../StateStore.js";
+import {
+	buildHookBody,
+	buildSessionKey,
+	type HookPayload,
+	notifyAgent,
+} from "./hook-payload.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
+import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 type ExecFn = (
 	cmd: string,
@@ -70,7 +78,11 @@ function sendActionHook(
 		action_target_status: targetStatus,
 		action_reason: reason,
 	};
-	const body = buildHookBody("product-lead", hookPayload, buildSessionKey(session));
+	const body = buildHookBody(
+		"product-lead",
+		hookPayload,
+		buildSessionKey(session),
+	);
 	notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
 }
 
@@ -86,7 +98,10 @@ export async function approveExecution(
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
-		return { success: false, message: `No session found for execution_id ${executionId}` };
+		return {
+			success: false,
+			message: `No session found for execution_id ${executionId}`,
+		};
 	}
 
 	if (session.status !== "awaiting_review") {
@@ -98,12 +113,19 @@ export async function approveExecution(
 
 	const project = projects.find((p) => p.projectName === session.project_name);
 	if (!project) {
-		return { success: false, message: `Unknown project: ${session.project_name}` };
+		return {
+			success: false,
+			message: `Unknown project: ${session.project_name}`,
+		};
 	}
 
 	// Capture timestamp before execute() so CIPHER doesn't include merge latency
 	const ceoActionTimestamp = new Date().toISOString();
-	const handler = new ApproveHandler(execFn ?? defaultExec, project.projectRoot, project.projectRepo);
+	const handler = new ApproveHandler(
+		execFn ?? defaultExec,
+		project.projectRoot,
+		project.projectRepo,
+	);
 	const result = await handler.execute({
 		actionId: `flywheel_approve_${session.issue_id}`,
 		issueId: session.issue_id,
@@ -146,7 +168,14 @@ export async function approveExecution(
 		}
 
 		if (!transitionRejected) {
-			sendActionHook(store, config, executionId, "approve", "awaiting_review", "approved");
+			sendActionHook(
+				store,
+				config,
+				executionId,
+				"approve",
+				"awaiting_review",
+				"approved",
+			);
 
 			// CIPHER: record approve outcome
 			if (cipherWriter && session.status === "awaiting_review") {
@@ -178,7 +207,10 @@ export async function transitionSession(
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
-		return { success: false, message: `No session found for execution_id ${executionId}` };
+		return {
+			success: false,
+			message: `No session found for execution_id ${executionId}`,
+		};
 	}
 
 	const actionDef = ACTION_DEFINITIONS.find((d) => d.action === action);
@@ -202,7 +234,10 @@ export async function transitionSession(
 			{ last_activity_at: sqliteDatetime(), last_error: reason ?? undefined },
 		);
 		if (!result.ok) {
-			return { success: false, message: result.error ?? "Transition rejected by FSM" };
+			return {
+				success: false,
+				message: result.error ?? "Transition rejected by FSM",
+			};
 		}
 	} else {
 		// Legacy fallback (no FSM)
@@ -212,7 +247,12 @@ export async function transitionSession(
 				message: `Cannot ${action} ${session.issue_identifier ?? executionId}: status is "${session.status}", expected one of: ${actionDef.fromStates.join(", ")}`,
 			};
 		}
-		store.forceStatus(session.execution_id, targetStatus, sqliteDatetime(), reason);
+		store.forceStatus(
+			session.execution_id,
+			targetStatus,
+			sqliteDatetime(),
+			reason,
+		);
 	}
 
 	// CIPHER: record outcome for reject/defer from awaiting_review
@@ -230,18 +270,34 @@ export async function transitionSession(
 		}
 	}
 
-	sendActionHook(store, config, executionId, action, session.status, targetStatus, reason);
+	sendActionHook(
+		store,
+		config,
+		executionId,
+		action,
+		session.status,
+		targetStatus,
+		reason,
+	);
 
 	if (action === "retry") {
 		const thread = store.getThreadByIssue(session.issue_id);
-		if (thread?.thread_id) { store.clearArchived(thread.thread_id); }
+		if (thread?.thread_id) {
+			store.clearArchived(thread.thread_id);
+		}
 	}
 
 	const id = session.issue_identifier ?? executionId;
 	const pastTense: Record<string, string> = {
-		reject: "rejected", defer: "deferred", retry: "retried", shelve: "shelved",
+		reject: "rejected",
+		defer: "deferred",
+		retry: "retried",
+		shelve: "shelved",
 	};
-	return { success: true, message: `${id} ${pastTense[action] ?? action} successfully` };
+	return {
+		success: true,
+		message: `${id} ${pastTense[action] ?? action} successfully`,
+	};
 }
 
 /** GEO-168: Composite retry handler — eligibility check → dispatch → lineage → Linear comment. */
@@ -254,7 +310,10 @@ async function handleRetry(
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
-		return { success: false, message: `No session found for execution_id ${executionId}` };
+		return {
+			success: false,
+			message: `No session found for execution_id ${executionId}`,
+		};
 	}
 
 	const actionDef = ACTION_DEFINITIONS.find((d) => d.action === "retry");
@@ -268,14 +327,20 @@ async function handleRetry(
 	// Check for inflight execution on same issue
 	const inflight = retryDispatcher.getInflightIssues();
 	if (inflight.has(session.issue_id)) {
-		return { success: false, message: `Issue ${session.issue_identifier ?? session.issue_id} already has an execution in progress` };
+		return {
+			success: false,
+			message: `Issue ${session.issue_identifier ?? session.issue_id} already has an execution in progress`,
+		};
 	}
 
 	// Check for active (running) session in StateStore
 	const active = store.getActiveSessions();
 	const activeForIssue = active.find((s) => s.issue_id === session.issue_id);
 	if (activeForIssue) {
-		return { success: false, message: `Issue ${session.issue_identifier ?? session.issue_id} already has an active session (${activeForIssue.execution_id})` };
+		return {
+			success: false,
+			message: `Issue ${session.issue_identifier ?? session.issue_id} already has an active session (${activeForIssue.execution_id})`,
+		};
 	}
 
 	const runAttempt = (session.run_attempt ?? 0) + 1;
@@ -304,10 +369,24 @@ async function handleRetry(
 		}
 
 		// Post Linear comment (best-effort)
-		postRetryComment(session.issue_id, executionId, result.newExecutionId, runAttempt, reason).catch(() => {});
+		postRetryComment(
+			session.issue_id,
+			executionId,
+			result.newExecutionId,
+			runAttempt,
+			reason,
+		).catch(() => {});
 
 		// Send hook notification
-		sendActionHook(store, config, result.newExecutionId, "retry", session.status, "running", reason);
+		sendActionHook(
+			store,
+			config,
+			result.newExecutionId,
+			"retry",
+			session.status,
+			"running",
+			reason,
+		);
 
 		return {
 			success: true,
@@ -337,7 +416,9 @@ async function postRetryComment(
 			`- Previous execution: \`${oldExecutionId}\``,
 			`- New execution: \`${newExecutionId}\``,
 			reason ? `- Reason: ${reason}` : null,
-		].filter(Boolean).join("\n");
+		]
+			.filter(Boolean)
+			.join("\n");
 		await client.createComment({ issueId, body });
 	} catch {
 		// Non-critical — silently ignore
@@ -364,11 +445,29 @@ export function createActionRouter(
 					res.status(400).json({ error: "execution_id is required" });
 					return;
 				}
-				const result = await approveExecution(store, projects, execution_id, identifier, undefined, transitionOpts, config, cipherWriter);
+				const result = await approveExecution(
+					store,
+					projects,
+					execution_id,
+					identifier,
+					undefined,
+					transitionOpts,
+					config,
+					cipherWriter,
+				);
 				if (result.success) {
-					res.json({ success: true, message: result.message, action: "approve", identifier });
+					res.json({
+						success: true,
+						message: result.message,
+						action: "approve",
+						identifier,
+					});
 				} else {
-					res.status(400).json({ success: false, message: result.message, action: "approve" });
+					res.status(400).json({
+						success: false,
+						message: result.message,
+						action: "approve",
+					});
 				}
 				return;
 			}
@@ -379,19 +478,43 @@ export function createActionRouter(
 					return;
 				}
 				if (retryDispatcher) {
-					const retryResult = await handleRetry(store, retryDispatcher, eid, reason, config);
+					const retryResult = await handleRetry(
+						store,
+						retryDispatcher,
+						eid,
+						reason,
+						config,
+					);
 					if (retryResult.success) {
-						res.json({ success: true, message: retryResult.message, action: "retry" });
+						res.json({
+							success: true,
+							message: retryResult.message,
+							action: "retry",
+						});
 					} else {
-						res.status(400).json({ success: false, message: retryResult.message, action: "retry" });
+						res.status(400).json({
+							success: false,
+							message: retryResult.message,
+							action: "retry",
+						});
 					}
 				} else {
 					// Fallback: legacy transition (no actual re-dispatch)
-					const actionResult = await transitionSession(store, action, eid, reason, transitionOpts, config, cipherWriter);
+					const actionResult = await transitionSession(
+						store,
+						action,
+						eid,
+						reason,
+						transitionOpts,
+						config,
+						cipherWriter,
+					);
 					if (actionResult.success) {
 						res.json({ success: true, message: actionResult.message, action });
 					} else {
-						res.status(400).json({ success: false, message: actionResult.message, action });
+						res
+							.status(400)
+							.json({ success: false, message: actionResult.message, action });
 					}
 				}
 				return;
@@ -404,11 +527,21 @@ export function createActionRouter(
 					res.status(400).json({ error: "execution_id is required" });
 					return;
 				}
-				const actionResult = await transitionSession(store, action, eid, reason, transitionOpts, config, cipherWriter);
+				const actionResult = await transitionSession(
+					store,
+					action,
+					eid,
+					reason,
+					transitionOpts,
+					config,
+					cipherWriter,
+				);
 				if (actionResult.success) {
 					res.json({ success: true, message: actionResult.message, action });
 				} else {
-					res.status(400).json({ success: false, message: actionResult.message, action });
+					res
+						.status(400)
+						.json({ success: false, message: actionResult.message, action });
 				}
 				return;
 			}

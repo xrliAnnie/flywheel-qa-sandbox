@@ -1,15 +1,19 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { WorkflowFSM, WORKFLOW_TRANSITIONS } from "flywheel-core";
-import { StateStore } from "../StateStore.js";
-import { DirectiveExecutor } from "../DirectiveExecutor.js";
-import { createBridgeApp } from "../bridge/plugin.js";
-import type { ApplyTransitionOpts } from "../applyTransition.js";
-import type { BridgeConfig } from "../bridge/types.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
 import type http from "node:http";
+import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { ApplyTransitionOpts } from "../applyTransition.js";
+import { createBridgeApp } from "../bridge/plugin.js";
+import type { BridgeConfig } from "../bridge/types.js";
+import { DirectiveExecutor } from "../DirectiveExecutor.js";
+import type { ProjectEntry } from "../ProjectConfig.js";
+import { StateStore } from "../StateStore.js";
 
 const testProjects: ProjectEntry[] = [
-	{ projectName: "geoforge3d", projectRoot: "/tmp/geoforge3d", projectRepo: "xrliAnnie/GeoForge3D" },
+	{
+		projectName: "geoforge3d",
+		projectRoot: "/tmp/geoforge3d",
+		projectRepo: "xrliAnnie/GeoForge3D",
+	},
 ];
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -46,7 +50,13 @@ describe("FSM E2E lifecycle", () => {
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
 		transitionOpts = { store, fsm, executor };
-		const app = createBridgeApp(store, testProjects, makeConfig(), undefined, transitionOpts);
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			makeConfig(),
+			undefined,
+			transitionOpts,
+		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
@@ -100,7 +110,10 @@ describe("FSM E2E lifecycle", () => {
 		const rejectRes = await fetch(`${baseUrl}/actions/reject`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ execution_id: "exec-fsm", reason: "needs more work" }),
+			body: JSON.stringify({
+				execution_id: "exec-fsm",
+				reason: "needs more work",
+			}),
 		});
 		expect(rejectRes.status).toBe(200);
 		const rejectBody = await rejectRes.json();
@@ -185,7 +198,9 @@ describe("FSM E2E lifecycle", () => {
 				issue_id: "issue-shelve",
 				project_name: "geoforge3d",
 				event_type: "session_completed",
-				payload: { decision: { route: "blocked", reasoning: "dependency missing" } },
+				payload: {
+					decision: { route: "blocked", reasoning: "dependency missing" },
+				},
 			}),
 		});
 		expect(store.getSession("exec-shelve")!.status).toBe("blocked");
@@ -225,7 +240,13 @@ describe("FSM E2E lifecycle", () => {
 				event_type: "session_completed",
 				payload: {
 					decision: { route: "needs_review", reasoning: "review plz" },
-					evidence: { commitCount: 7, filesChangedCount: 12, linesAdded: 300, linesRemoved: 50, diffSummary: "big refactor" },
+					evidence: {
+						commitCount: 7,
+						filesChangedCount: 12,
+						linesAdded: 300,
+						linesRemoved: 50,
+						diffSummary: "big refactor",
+					},
 					summary: "Refactored everything",
 				},
 			}),
@@ -274,7 +295,9 @@ describe("FSM E2E lifecycle", () => {
 		const dataLine = text.split("\n").find((l) => l.startsWith("data:"));
 		expect(dataLine).toBeDefined();
 		const payload = JSON.parse(dataLine!.replace("data: ", ""));
-		const activeSession = payload.active.find((s: any) => s.execution_id === "exec-dash");
+		const activeSession = payload.active.find(
+			(s: any) => s.execution_id === "exec-dash",
+		);
 		expect(activeSession).toBeDefined();
 		expect(activeSession.allowedActions).toContain("approve");
 		expect(activeSession.allowedActions).toContain("reject");

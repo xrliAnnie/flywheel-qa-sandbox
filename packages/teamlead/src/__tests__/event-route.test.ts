@@ -1,15 +1,19 @@
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
+import type http from "node:http";
 import express from "express";
-import { StateStore } from "../StateStore.js";
-import { createBridgeApp } from "../bridge/plugin.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { formatNotification } from "../bridge/event-route.js";
+import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
-import type http from "node:http";
+import { StateStore } from "../StateStore.js";
 
 const testProjects: ProjectEntry[] = [
-	{ projectName: "geoforge3d", projectRoot: "/tmp/geoforge3d", projectRepo: "xrliAnnie/GeoForge3D" },
+	{
+		projectName: "geoforge3d",
+		projectRoot: "/tmp/geoforge3d",
+		projectRepo: "xrliAnnie/GeoForge3D",
+	},
 ];
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -26,7 +30,9 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	};
 }
 
-function makeEvent(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+function makeEvent(
+	overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
 	return {
 		event_id: `evt-${Math.random().toString(36).slice(2)}`,
 		execution_id: "exec-1",
@@ -84,23 +90,36 @@ describe("Event route", () => {
 		// First create session
 		await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
 			body: JSON.stringify(makeEvent()),
 		});
 
 		// Then complete it
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
-			body: JSON.stringify(makeEvent({
-				event_id: "evt-completed",
-				event_type: "session_completed",
-				payload: {
-					decision: { route: "needs_review", reasoning: "has changes" },
-					evidence: { commitCount: 3, filesChangedCount: 6, linesAdded: 120, linesRemoved: 45 },
-					summary: "Refactored auth",
-				},
-			})),
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "evt-completed",
+					event_type: "session_completed",
+					payload: {
+						decision: { route: "needs_review", reasoning: "has changes" },
+						evidence: {
+							commitCount: 3,
+							filesChangedCount: 6,
+							linesAdded: 120,
+							linesRemoved: 45,
+						},
+						summary: "Refactored auth",
+					},
+				}),
+			),
 		});
 		expect(res.status).toBe(200);
 
@@ -112,11 +131,16 @@ describe("Event route", () => {
 	it("POST /events with session_failed records error", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
-			body: JSON.stringify(makeEvent({
-				event_type: "session_failed",
-				payload: { error: "deployment timeout" },
-			})),
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_type: "session_failed",
+					payload: { error: "deployment timeout" },
+				}),
+			),
 		});
 		expect(res.status).toBe(200);
 
@@ -130,13 +154,19 @@ describe("Event route", () => {
 
 		await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
 			body: JSON.stringify(event),
 		});
 
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
 			body: JSON.stringify(event),
 		});
 		const body = await res.json();
@@ -147,7 +177,10 @@ describe("Event route", () => {
 	it("POST /events with missing fields returns 400", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
 			body: JSON.stringify({ event_id: "e1" }),
 		});
 		expect(res.status).toBe(400);
@@ -156,7 +189,10 @@ describe("Event route", () => {
 	it("POST /events with invalid auth returns 401", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer wrong-token" },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer wrong-token",
+			},
 			body: JSON.stringify(makeEvent()),
 		});
 		expect(res.status).toBe(401);
@@ -165,17 +201,22 @@ describe("Event route", () => {
 	it("POST /events with auto_approve + landingStatus merged → approved (backward compat)", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
-			body: JSON.stringify(makeEvent({
-				event_type: "session_completed",
-				payload: {
-					decision: { route: "auto_approve" },
-					evidence: {
-						commitCount: 2,
-						landingStatus: { status: "merged", mergedAt: "2025-01-01" },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_type: "session_completed",
+					payload: {
+						decision: { route: "auto_approve" },
+						evidence: {
+							commitCount: 2,
+							landingStatus: { status: "merged", mergedAt: "2025-01-01" },
+						},
 					},
-				},
-			})),
+				}),
+			),
 		});
 		expect(res.status).toBe(200);
 
@@ -188,14 +229,19 @@ describe("Event route", () => {
 	it("POST /events with auto_approve + non-merged → awaiting_review (policy)", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
-			body: JSON.stringify(makeEvent({
-				event_type: "session_completed",
-				payload: {
-					decision: { route: "auto_approve" },
-					evidence: { commitCount: 1 },
-				},
-			})),
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_type: "session_completed",
+					payload: {
+						decision: { route: "auto_approve" },
+						evidence: { commitCount: 1 },
+					},
+				}),
+			),
 		});
 		expect(res.status).toBe(200);
 
@@ -211,7 +257,10 @@ describe("Event route", () => {
 
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
 			body: JSON.stringify(makeEvent({ execution_id: "exec-new" })),
 		});
 		expect(res.status).toBe(200);
@@ -223,7 +272,10 @@ describe("Event route", () => {
 	it("session_started without existing thread leaves thread_id empty", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
 			body: JSON.stringify(makeEvent()),
 		});
 		expect(res.status).toBe(200);
@@ -249,9 +301,12 @@ describe("Event route — structured hook payload", () => {
 			res.json({ ok: true });
 		});
 		const gatewayServer = gatewayApp.listen(0, "127.0.0.1");
-		await new Promise<void>((resolve) => gatewayServer.once("listening", resolve));
+		await new Promise<void>((resolve) =>
+			gatewayServer.once("listening", resolve),
+		);
 		const gatewayAddr = gatewayServer.address();
-		const gatewayPort = typeof gatewayAddr === "object" && gatewayAddr ? gatewayAddr.port : 0;
+		const gatewayPort =
+			typeof gatewayAddr === "object" && gatewayAddr ? gatewayAddr.port : 0;
 
 		store = await StateStore.create(":memory:");
 		const config = makeConfig({
@@ -276,7 +331,9 @@ describe("Event route — structured hook payload", () => {
 		});
 		if (gatewayServer) {
 			await new Promise<void>((resolve, reject) => {
-				gatewayServer.close((err: Error | undefined) => (err ? reject(err) : resolve()));
+				gatewayServer.close((err: Error | undefined) =>
+					err ? reject(err) : resolve(),
+				);
 			});
 		}
 		store.close();
@@ -285,7 +342,10 @@ describe("Event route — structured hook payload", () => {
 	it("sends structured JSON payload with sessionKey", async () => {
 		await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
 			body: JSON.stringify(makeEvent()),
 		});
 
@@ -310,7 +370,10 @@ describe("Event route — structured hook payload", () => {
 
 		await fetch(`${baseUrl}/events`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json", Authorization: "Bearer ingest-secret" },
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
 			body: JSON.stringify(makeEvent()),
 		});
 
@@ -344,23 +407,39 @@ describe("formatNotification", () => {
 	});
 
 	it("auto_approve notification (already merged / backward compat)", () => {
-		const msg = formatNotification({ ...baseSession, decision_route: "auto_approve", status: "approved" }, "session_completed");
+		const msg = formatNotification(
+			{ ...baseSession, decision_route: "auto_approve", status: "approved" },
+			"session_completed",
+		);
 		expect(msg).toContain("[Already Merged]");
 	});
 
 	it("auto_approve notification (awaiting review / policy)", () => {
-		const msg = formatNotification({ ...baseSession, decision_route: "auto_approve", status: "awaiting_review" }, "session_completed");
+		const msg = formatNotification(
+			{
+				...baseSession,
+				decision_route: "auto_approve",
+				status: "awaiting_review",
+			},
+			"session_completed",
+		);
 		expect(msg).toContain("[Review Required]");
 		expect(msg).toContain("CEO approval");
 	});
 
 	it("blocked notification", () => {
-		const msg = formatNotification({ ...baseSession, decision_route: "blocked" }, "session_completed");
+		const msg = formatNotification(
+			{ ...baseSession, decision_route: "blocked" },
+			"session_completed",
+		);
 		expect(msg).toContain("[Blocked]");
 	});
 
 	it("failed notification", () => {
-		const msg = formatNotification({ ...baseSession, last_error: "timeout" }, "session_failed");
+		const msg = formatNotification(
+			{ ...baseSession, last_error: "timeout" },
+			"session_failed",
+		);
 		expect(msg).toContain("[Failed]");
 		expect(msg).toContain("timeout");
 	});

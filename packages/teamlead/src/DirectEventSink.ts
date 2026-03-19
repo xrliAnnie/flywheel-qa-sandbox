@@ -4,11 +4,19 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { ExecutionEventEmitter, EventEnvelope } from "flywheel-edge-worker";
+import type {
+	EventEnvelope,
+	ExecutionEventEmitter,
+} from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
-import type { StateStore } from "./StateStore.js";
+import {
+	buildHookBody,
+	buildSessionKey,
+	type HookPayload,
+	notifyAgent,
+} from "./bridge/hook-payload.js";
 import type { BridgeConfig } from "./bridge/types.js";
-import { buildSessionKey, buildHookBody, notifyAgent, type HookPayload } from "./bridge/hook-payload.js";
+import type { StateStore } from "./StateStore.js";
 
 function sqliteDatetime(): string {
 	return new Date().toISOString().replace("T", " ").replace("Z", "");
@@ -61,7 +69,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.pushNotification(env, "session_started");
 	}
 
-	async emitCompleted(env: EventEnvelope, result: BlueprintResult, summary?: string): Promise<void> {
+	async emitCompleted(
+		env: EventEnvelope,
+		result: BlueprintResult,
+		summary?: string,
+	): Promise<void> {
 		const now = sqliteDatetime();
 
 		this.store.insertEvent({
@@ -79,10 +91,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		if (route === "needs_review") status = "awaiting_review";
 		else if (route === "auto_approve") {
 			// Mirror event-route.ts: merged → approved, otherwise awaiting_review
-			const landingStatus = result.evidence?.landingStatus as { status?: string } | undefined;
-			status = landingStatus?.status === "merged" ? "approved" : "awaiting_review";
-		}
-		else if (route === "blocked") status = "blocked";
+			const landingStatus = result.evidence?.landingStatus as
+				| { status?: string }
+				| undefined;
+			status =
+				landingStatus?.status === "merged" ? "approved" : "awaiting_review";
+		} else if (route === "blocked") status = "blocked";
 		else status = "completed";
 
 		this.store.upsertSession({
@@ -108,7 +122,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.pushNotification(env, "session_completed");
 	}
 
-	async emitFailed(env: EventEnvelope, error: string, _lastActivity?: string): Promise<void> {
+	async emitFailed(
+		env: EventEnvelope,
+		error: string,
+		_lastActivity?: string,
+	): Promise<void> {
 		const now = sqliteDatetime();
 
 		this.store.insertEvent({
@@ -168,7 +186,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			channel: this.config.notificationChannel,
 		};
 		const body = buildHookBody("product-lead", hookPayload, sessionKey);
-		const p = notifyAgent(this.config.gatewayUrl, this.config.hooksToken, body).catch(() => {});
+		const p = notifyAgent(
+			this.config.gatewayUrl,
+			this.config.hooksToken,
+			body,
+		).catch(() => {});
 		this.pending.push(p);
 	}
 }

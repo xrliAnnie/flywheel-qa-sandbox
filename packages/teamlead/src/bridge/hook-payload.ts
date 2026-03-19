@@ -45,13 +45,19 @@ export async function notifyAgent(
 			console.warn(`[notify] Gateway returned ${res.status}`);
 		}
 	} catch (err) {
-		console.warn("[notify] Failed to push to OpenClaw gateway:", (err as Error).message);
+		console.warn(
+			"[notify] Failed to push to OpenClaw gateway:",
+			(err as Error).message,
+		);
 	} finally {
 		clearTimeout(timeout);
 	}
 }
 
-export function buildSessionKey(session: { issue_identifier?: string; issue_id: string }): string {
+export function buildSessionKey(session: {
+	issue_identifier?: string;
+	issue_id: string;
+}): string {
 	return `flywheel:${session.issue_identifier ?? session.issue_id}`;
 }
 

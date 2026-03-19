@@ -1,10 +1,10 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
-	isRetryable,
-	retryDelay,
 	DEFAULT_RETRY_POLICY,
 	type FlywheelError,
+	isRetryable,
 	type RetryPolicy,
+	retryDelay,
 } from "../src/flywheel-error-types.js";
 
 describe("FlywheelError", () => {

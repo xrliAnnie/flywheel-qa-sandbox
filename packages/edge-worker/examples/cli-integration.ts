@@ -17,7 +17,9 @@ export async function createCLIEdgeWorker(config: any) {
 	const linearToken = await oauthHelper.getAccessToken();
 
 	if (!linearToken) {
-		throw new Error('No Linear OAuth token available. Run "flywheel auth" first.');
+		throw new Error(
+			'No Linear OAuth token available. Run "flywheel auth" first.',
+		);
 	}
 
 	// Create workspace service for git worktrees

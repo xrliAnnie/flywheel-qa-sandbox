@@ -692,7 +692,8 @@ Issue: {{issue_identifier}}`;
 				devtoolsHook!,
 				"mcp__chrome-devtools__take_screenshot",
 				{
-					filePath: "/home/flywheel/flywheel-workspaces/PF-738/step1-screenshot.png",
+					filePath:
+						"/home/flywheel/flywheel-workspaces/PF-738/step1-screenshot.png",
 					fullPage: true,
 				},
 				{

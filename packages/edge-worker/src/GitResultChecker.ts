@@ -37,7 +37,9 @@ export class GitResultChecker {
 				dir,
 			);
 			if (result.stdout.trim()) roots.push(dir);
-		} catch { /* not a git repo */ }
+		} catch {
+			/* not a git repo */
+		}
 
 		// Scan immediate children for independent git repos
 		try {
@@ -52,7 +54,9 @@ export class GitResultChecker {
 					roots.push(repoDir);
 				}
 			}
-		} catch { /* find failed — just use what we have */ }
+		} catch {
+			/* find failed — just use what we have */
+		}
 
 		return roots;
 	}
@@ -114,9 +118,7 @@ export class GitResultChecker {
 				.trim()
 				.split("\n")
 				.filter((line) => line.length > 0);
-			const filesChanged = this.parseFilesChanged(
-				diffResult.stdout.trim(),
-			);
+			const filesChanged = this.parseFilesChanged(diffResult.stdout.trim());
 
 			return {
 				hasNewCommits: commitCount > 0,

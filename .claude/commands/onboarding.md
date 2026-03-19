@@ -1,55 +1,78 @@
 # Flywheel Onboarding
 
-Read the following files in order, then present a status summary to the user in Chinese.
+New session startup — read current project state and present a status summary in Chinese.
 
-## Step 1: Memory
+## Step 1: Core Context
 
-Read the auto-memory file for accumulated decisions and architecture context:
+Read these files in order:
 
-```
-~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md
-```
+1. **Memory** (decisions, architecture, progress):
+   ```
+   ~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md
+   ```
 
-## Step 2: Current Implementation Plan
+2. **Project CLAUDE.md** (conventions, pipeline, non-negotiables):
+   ```
+   CLAUDE.md
+   ```
 
-Read the active implementation plan:
+3. **Current version**:
+   ```
+   doc/VERSION
+   ```
 
-```
-doc/plan/draft/v0.1.1-interactive-runner.md
-```
+## Step 2: Active Work
 
-Only read the first 60 lines (header + context + product contract) — do NOT read the full plan unless asked.
-
-## Step 3: Architecture Exploration (if needed)
-
-If the user's task requires understanding the architecture decisions behind the plan, also read:
-
-```
-doc/exploration/new/v0.1.1-interactive-runner-architecture.md
-```
-
-## Step 4: Codebase Orientation
-
-Run a quick scan of current packages and their key files:
+Scan for active plans and explorations:
 
 ```bash
-ls packages/
+echo "=== In-Progress Plans ===" && ls doc/plan/inprogress/ 2>/dev/null || echo "(none)"
+echo "=== Ready Plans ===" && ls doc/plan/new/ 2>/dev/null || echo "(none)"
+echo "=== Draft Plans ===" && ls doc/plan/draft/ 2>/dev/null || echo "(none)"
+echo "=== Active Explorations ===" && ls doc/exploration/new/ 2>/dev/null || echo "(none)"
+echo "=== Active Research ===" && ls doc/research/new/ 2>/dev/null || echo "(none)"
 ```
 
-For implementation tasks, also check current test status:
+## Step 3: Recent Activity
 
 ```bash
-pnpm test 2>&1 | tail -20
+git log --oneline -10
+```
+
+## Step 4: Build Health
+
+```bash
+pnpm -r build 2>&1 | tail -5
+pnpm test 2>&1 | grep -E "(Test Files|Tests)" | head -3
+```
+
+## Step 5: Running Services
+
+```bash
+echo "=== Bridge ===" && curl -s --max-time 2 http://localhost:9876/health 2>/dev/null || echo "Bridge not running"
+echo "=== OpenClaw Gateway ===" && launchctl print gui/$(id -u)/ai.openclaw.gateway 2>/dev/null | grep "state =" || echo "Gateway not running"
 ```
 
 ## Output Format
 
 Present to the user (in Chinese):
 
-1. **Project**: One-line description of Flywheel
-2. **Current milestone**: What's been done (v0.1.0) and what's next (v0.1.1)
-3. **v0.1.1 goal**: Interactive tmux-based Claude Code sessions (replace headless mode)
-4. **Key design decisions**: TmuxRunner, SessionEnd hook, git SHA-range detection
-5. **Plan status**: 7 tasks, dependency graph, what's ready to start
-6. **Test status**: Current build/test health
-7. **Ask**: "What would you like to work on?"
+1. **项目概述**: Flywheel 是什么（一句话）
+2. **当前版本**: 从 `doc/VERSION` 读取
+3. **最近完成**: 最近 merged 的 PR/feature（从 git log 和 MEMORY.md）
+4. **进行中**: 正在实施的 plan（`doc/plan/inprogress/`）
+5. **待实施**: 已批准待开始的 plan（`doc/plan/new/`）
+6. **待探索**: 活跃的 exploration/research docs
+7. **构建状态**: build/test 是否健康
+8. **服务状态**: Bridge 和 Gateway 是否运行
+9. **关键规则提醒**:
+   - 所有改动必须走 worktree + branch + PR（不可直接 push main）
+   - 开发流程: /brainstorm → /research → /write-plan → /codex-design-review → /implement
+   - 中文为默认语言，代码/commit 用英文
+10. **提问**: "你想做什么？"
+
+## Important
+
+- 这个 skill 是**动态的** — 它从文件系统读取当前状态，不依赖硬编码内容
+- 如果 MEMORY.md 过期，在 onboarding 结束时提醒用户需要更新
+- 如果发现 `doc/plan/inprogress/` 有文件但 git log 没有相关最近 commit，提醒可能有 stale plan

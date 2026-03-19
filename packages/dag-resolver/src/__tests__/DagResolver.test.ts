@@ -120,9 +120,7 @@ describe("DagResolver", () => {
 	});
 
 	it("resolveExternalBlocker is idempotent (double-call is no-op)", () => {
-		const nodes: DagNode[] = [
-			{ id: "A", blockedBy: ["EXT-1", "EXT-2"] },
-		];
+		const nodes: DagNode[] = [{ id: "A", blockedBy: ["EXT-1", "EXT-2"] }];
 		const resolver = new DagResolver(nodes);
 		expect(resolver.getReady()).toEqual([]);
 
@@ -150,9 +148,7 @@ describe("DagResolver", () => {
 	});
 
 	it("resolveExternalBlocker ignores blockers not listed on the node", () => {
-		const nodes: DagNode[] = [
-			{ id: "A", blockedBy: ["EXT-1"] },
-		];
+		const nodes: DagNode[] = [{ id: "A", blockedBy: ["EXT-1"] }];
 		const resolver = new DagResolver(nodes);
 		// "RANDOM" is not in A's blockedBy — should be a no-op
 		resolver.resolveExternalBlocker("A", "RANDOM");

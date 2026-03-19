@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { LinearClient } from "@linear/sdk";
+import { Sessions, streamableHttp } from "fastify-mcp";
 import type {
 	HookCallbackMatcher,
 	HookEvent,
@@ -91,7 +92,6 @@ import {
 	SlackEventTransport,
 	type SlackWebhookEvent,
 } from "flywheel-slack-event-transport";
-import { Sessions, streamableHttp } from "fastify-mcp";
 import { ActivityPoster } from "./ActivityPoster.js";
 import { AgentSessionManager } from "./AgentSessionManager.js";
 import { AskUserQuestionHandler } from "./AskUserQuestionHandler.js";
@@ -192,7 +192,10 @@ export class EdgeWorker extends EventEmitter {
 	private promptBuilder: PromptBuilder;
 	private readonly flywheelToolsMcpEndpoint = "/mcp/flywheel-tools";
 	private flywheelToolsMcpRegistered = false;
-	private flywheelToolsMcpContexts = new Map<string, CyrusToolsMcpContextEntry>();
+	private flywheelToolsMcpContexts = new Map<
+		string,
+		CyrusToolsMcpContextEntry
+	>();
 	private flywheelToolsMcpRequestContext =
 		new AsyncLocalStorage<CyrusToolsMcpContext>();
 	private flywheelToolsMcpSessions = new Sessions<any>();
@@ -449,7 +452,10 @@ export class EdgeWorker extends EventEmitter {
 		);
 
 		// Initialize extracted service modules
-		this.attachmentService = new AttachmentService(this.logger, this.flywheelHome);
+		this.attachmentService = new AttachmentService(
+			this.logger,
+			this.flywheelHome,
+		);
 		this.runnerSelectionService = new RunnerSelectionService(
 			this.config,
 			this.logger,
@@ -4122,9 +4128,9 @@ ${taskInstructions}
 			return;
 		}
 
-		const entriesByAge = Array.from(this.flywheelToolsMcpContexts.entries()).sort(
-			(a, b) => a[1].createdAt - b[1].createdAt,
-		);
+		const entriesByAge = Array.from(
+			this.flywheelToolsMcpContexts.entries(),
+		).sort((a, b) => a[1].createdAt - b[1].createdAt);
 
 		const pruneCount = this.flywheelToolsMcpContexts.size - maxEntries;
 		for (let i = 0; i < pruneCount; i++) {

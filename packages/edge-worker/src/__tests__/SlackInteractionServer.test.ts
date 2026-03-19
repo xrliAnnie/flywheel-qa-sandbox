@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { SlackInteractionServer } from "../SlackInteractionServer.js";
 import type { SlackAction } from "../SlackInteractionServer.js";
+import { SlackInteractionServer } from "../SlackInteractionServer.js";
 
 function buildPayload(overrides?: Record<string, unknown>): string {
 	const payload = {

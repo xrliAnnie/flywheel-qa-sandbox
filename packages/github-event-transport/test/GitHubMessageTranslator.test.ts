@@ -256,7 +256,9 @@ describe("GitHubMessageTranslator", () => {
 			const sessionStart = result.message;
 			if (sessionStart.action !== "session_start") return;
 
-			expect(sessionStart.initialPrompt).toBe("@flywheel please review this PR");
+			expect(sessionStart.initialPrompt).toBe(
+				"@flywheel please review this PR",
+			);
 			expect(sessionStart.title).toBe("Test PR");
 			expect(sessionStart.description).toBe("PR description");
 

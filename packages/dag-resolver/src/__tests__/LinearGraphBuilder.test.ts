@@ -98,9 +98,7 @@ describe("LinearGraphBuilder", () => {
 				id: "issue-1",
 				state: { type: "unstarted" },
 				relations: {
-					nodes: [
-						{ type: "related", relatedIssue: { id: "issue-2" } },
-					],
+					nodes: [{ type: "related", relatedIssue: { id: "issue-2" } }],
 				},
 			},
 			{
@@ -162,9 +160,7 @@ describe("LinearGraphBuilder", () => {
 				id: "issue-1",
 				state: { type: "unstarted" },
 				relations: {
-					nodes: [
-						{ type: "blocks", relatedIssue: { id: "issue-2" } },
-					],
+					nodes: [{ type: "blocks", relatedIssue: { id: "issue-2" } }],
 				},
 			},
 			{

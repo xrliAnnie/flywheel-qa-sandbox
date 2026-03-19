@@ -1,6 +1,5 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigLoader } from "../ConfigLoader.js";
-import type { FlywheelConfig } from "../types.js";
 
 // Minimal valid config for testing
 const VALID_CONFIG_YAML = `
@@ -146,9 +145,7 @@ describe("ConfigLoader", () => {
 		expect(config.reactions?.["changes-requested"]?.action).toBe(
 			"send-to-agent",
 		);
-		expect(config.reactions?.["approved-and-green"]?.action).toBe(
-			"auto-merge",
-		);
+		expect(config.reactions?.["approved-and-green"]?.action).toBe("auto-merge");
 		expect(config.decision_layer.digest_interval).toBe(3600);
 	});
 
@@ -163,10 +160,7 @@ describe("ConfigLoader", () => {
 	it("handles multiple runners", async () => {
 		readFile.mockResolvedValue(CONFIG_WITH_ALL_FIELDS);
 		const config = await loader.load("/p/config.yaml");
-		expect(Object.keys(config.runners.available)).toEqual([
-			"claude",
-			"codex",
-		]);
+		expect(Object.keys(config.runners.available)).toEqual(["claude", "codex"]);
 		expect(config.runners.available.codex.type).toBe("openai");
 		expect(config.runners.available.codex.model).toBe("gpt-4o");
 	});
@@ -434,7 +428,7 @@ decision_layer:
 	});
 
 	it("loads config with parallel section", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 parallel:
   max_parallel: 5
   worktree_base_dir: /tmp/wt
@@ -452,7 +446,7 @@ parallel:
 	// ─── v0.6 agents config ────────────────────────
 
 	it("loads config with agents section", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     agent_file: .claude/agents/backend-executor.md
@@ -477,8 +471,12 @@ default_agent: backend
 		readFile.mockResolvedValue(yaml);
 		const config = await loader.load("/p/config.yaml");
 		expect(Object.keys(config.agents!)).toEqual(["backend", "frontend"]);
-		expect(config.agents!.backend.agent_file).toBe(".claude/agents/backend-executor.md");
-		expect(config.agents!.backend.domain_file).toBe(".claude/domains/backend.md");
+		expect(config.agents!.backend.agent_file).toBe(
+			".claude/agents/backend-executor.md",
+		);
+		expect(config.agents!.backend.domain_file).toBe(
+			".claude/domains/backend.md",
+		);
 		expect(config.agents!.backend.match.labels).toEqual(["backend", "api"]);
 		expect(config.agents!.frontend.domain_file).toBeUndefined();
 		expect(config.default_agent).toBe("backend");
@@ -492,7 +490,7 @@ default_agent: backend
 	});
 
 	it("throws when agent_file is missing", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     match:
@@ -506,7 +504,7 @@ agents:
 	});
 
 	it("throws when agent_file is absolute path", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     agent_file: /etc/passwd
@@ -521,7 +519,7 @@ agents:
 	});
 
 	it("throws when agent_file starts with ..", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     agent_file: "../../secret.md"
@@ -536,7 +534,7 @@ agents:
 	});
 
 	it("throws when agent_file has embedded .. segments", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     agent_file: "foo/../../etc/passwd"
@@ -551,7 +549,7 @@ agents:
 	});
 
 	it("throws when match field is missing", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     agent_file: .claude/agents/backend.md
@@ -563,7 +561,7 @@ agents:
 	});
 
 	it("throws when match.labels is missing", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     agent_file: .claude/agents/backend.md
@@ -577,7 +575,7 @@ agents:
 	});
 
 	it("throws when match.keywords is missing", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     agent_file: .claude/agents/backend.md
@@ -591,7 +589,7 @@ agents:
 	});
 
 	it("throws when match.labels contains non-string elements", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     agent_file: .claude/agents/backend.md
@@ -606,7 +604,7 @@ agents:
 	});
 
 	it("throws when match.keywords contains non-string elements", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     agent_file: .claude/agents/backend.md
@@ -621,7 +619,7 @@ agents:
 	});
 
 	it("throws when default_agent references nonexistent agent", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   backend:
     agent_file: .claude/agents/backend.md
@@ -637,7 +635,7 @@ default_agent: nonexistent
 	});
 
 	it("throws when default_agent is set without agents section", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 default_agent: backend
 `;
 		readFile.mockResolvedValue(yaml);
@@ -647,7 +645,7 @@ default_agent: backend
 	});
 
 	it("throws when agents is a YAML array instead of object", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
   - agent_file: .claude/agents/backend.md
     match:
@@ -661,7 +659,7 @@ agents:
 	});
 
 	it("loads config with skills section", async () => {
-		const yaml = MINIMAL_CONFIG_YAML + `
+		const yaml = `${MINIMAL_CONFIG_YAML}
 skills:
   enabled: true
   test_command: "npm test"
