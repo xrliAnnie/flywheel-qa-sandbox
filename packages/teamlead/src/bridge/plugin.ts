@@ -11,6 +11,7 @@ import {
 } from "../HeartbeatService.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+import type { CipherWriter } from "flywheel-edge-worker";
 import { createActionRouter } from "./actions.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
@@ -151,6 +152,7 @@ export function createBridgeApp(
 	broadcaster?: SseBroadcaster,
 	transitionOpts?: ApplyTransitionOpts,
 	retryDispatcher?: IRetryDispatcher,
+	cipherWriter?: CipherWriter,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -206,6 +208,7 @@ export function createBridgeApp(
 			transitionOpts,
 			config,
 			retryDispatcher,
+			cipherWriter,
 		),
 	);
 
@@ -213,7 +216,7 @@ export function createBridgeApp(
 	app.use(
 		"/events",
 		tokenAuthMiddleware(config.ingestToken),
-		createEventRouter(store, projects, config, undefined, transitionOpts),
+		createEventRouter(store, projects, config, cipherWriter, transitionOpts),
 	);
 
 	// /api/* — api auth
@@ -231,6 +234,7 @@ export function createBridgeApp(
 			transitionOpts,
 			config,
 			retryDispatcher,
+			cipherWriter,
 		),
 	);
 
@@ -291,6 +295,36 @@ export function createBridgeApp(
 		},
 	);
 
+	// CIPHER principle confirmation route
+	if (cipherWriter) {
+		app.post("/api/cipher-principle", tokenAuthMiddleware(config.apiToken), async (req, res) => {
+			const { principleId, action } = req.body as { principleId?: string; action?: string };
+			if (!principleId || !action || !["activate", "retire"].includes(action)) {
+				res.status(400).json({ error: "missing principleId or invalid action" });
+				return;
+			}
+			if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(principleId)) {
+				res.status(400).json({ error: "invalid principleId format" });
+				return;
+			}
+			try {
+				const updated = action === "activate"
+					? await cipherWriter.activatePrinciple(principleId)
+					: await cipherWriter.retirePrinciple(principleId, "CEO retired");
+				if (!updated) {
+					res.status(404).json({ error: "principle not found or not in expected state" });
+					return;
+				}
+				// Principles are loaded into DecisionLayer HardRules once at process start
+				// (setup.ts). A running worker reuses the same DecisionLayer for its entire
+				// DAG batch. This change takes effect on the next process/DAG start.
+				res.json({ ok: true, effective: "next_process_start" });
+			} catch {
+				res.status(500).json({ error: "principle action failed" });
+			}
+		});
+	}
+
 	// Catch-all 404
 	app.use((_req, res) => {
 		res.status(404).json({ error: "not found" });
@@ -320,7 +354,7 @@ export async function startBridge(
 	opts?: {
 		store?: StateStore;
 		retryDispatcher?: IRetryDispatcher;
-		cipherWriter?: unknown;
+		cipherWriter?: CipherWriter;
 	},
 ): Promise<{
 	app: express.Application;
@@ -347,6 +381,7 @@ export async function startBridge(
 		broadcaster,
 		transitionOpts,
 		retryDispatcher,
+		opts?.cipherWriter,
 	);
 
 	const server = app.listen(config.port, config.host);

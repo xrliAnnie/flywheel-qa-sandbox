@@ -69,6 +69,10 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				evidence: result.evidence,
 				decision: result.decision,
 				summary,
+				labels: result.labels,
+				projectId: result.projectId,
+				exitReason: result.exitReason,
+				consecutiveFailures: result.consecutiveFailures,
 			},
 		});
 		this.track(p);

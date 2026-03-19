@@ -10,6 +10,7 @@ import { HardRuleEngine } from "../decision/HardRuleEngine.js";
 
 function makeCtx(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
 	return {
+		executionId: "test-exec-id",
 		issueId: "issue-1",
 		issueIdentifier: "GEO-95",
 		issueTitle: "Fix bug",

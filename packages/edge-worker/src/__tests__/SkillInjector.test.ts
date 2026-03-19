@@ -18,6 +18,7 @@ const SKILL_NAMES = [
 
 function makeCtx(overrides: Partial<SkillContext> = {}): SkillContext {
 	return {
+		executionId: "test-exec-id",
 		issueId: "GEO-42",
 		issueTitle: "Add user authentication",
 		issueDescription: "Implement JWT-based auth for the API endpoints.",

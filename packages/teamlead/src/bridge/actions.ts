@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { ActionResult } from "flywheel-edge-worker";
+import type { CipherWriter } from "flywheel-edge-worker";
 import { ApproveHandler } from "flywheel-edge-worker";
 import {
 	type ApplyTransitionOpts,
@@ -93,6 +94,7 @@ export async function approveExecution(
 	execFn?: ExecFn,
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
+	cipherWriter?: CipherWriter,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -117,6 +119,8 @@ export async function approveExecution(
 		};
 	}
 
+	// Capture timestamp before execute() so CIPHER doesn't include merge latency
+	const ceoActionTimestamp = new Date().toISOString();
 	const handler = new ApproveHandler(
 		execFn ?? defaultExec,
 		project.projectRoot,
@@ -133,8 +137,9 @@ export async function approveExecution(
 	});
 
 	if (result.success) {
+		let transitionRejected = false;
 		if (transitionOpts) {
-			applyTransition(
+			const fsmResult = applyTransition(
 				transitionOpts,
 				session.execution_id,
 				"approved",
@@ -146,6 +151,10 @@ export async function approveExecution(
 				},
 				{ last_activity_at: sqliteDatetime() },
 			);
+			if (!fsmResult.ok) {
+				console.warn(`[actions] FSM rejected approve for ${executionId}: ${fsmResult.error}`);
+				transitionRejected = true;
+			}
 		} else {
 			store.upsertSession({
 				execution_id: session.execution_id,
@@ -157,27 +166,45 @@ export async function approveExecution(
 				last_activity_at: sqliteDatetime(),
 			});
 		}
-		sendActionHook(
-			store,
-			config,
-			executionId,
-			"approve",
-			"awaiting_review",
-			"approved",
-		);
+
+		if (!transitionRejected) {
+			sendActionHook(
+				store,
+				config,
+				executionId,
+				"approve",
+				"awaiting_review",
+				"approved",
+			);
+
+			// CIPHER: record approve outcome
+			if (cipherWriter && session.status === "awaiting_review") {
+				try {
+					await cipherWriter.recordOutcome({
+						executionId,
+						ceoAction: "approve",
+						ceoActionTimestamp,
+						sourceStatus: session.status,
+					});
+				} catch {
+					console.error(`[CIPHER] recordOutcome failed for approve ${executionId}`);
+				}
+			}
+		}
 	}
 
 	return result;
 }
 
-export function transitionSession(
+export async function transitionSession(
 	store: StateStore,
 	action: string,
 	executionId: string,
 	reason?: string,
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
-): ActionResult {
+	cipherWriter?: CipherWriter,
+): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
 		return {
@@ -226,6 +253,21 @@ export function transitionSession(
 			sqliteDatetime(),
 			reason,
 		);
+	}
+
+	// CIPHER: record outcome for reject/defer from awaiting_review
+	if (cipherWriter && (action === "reject" || action === "defer")
+		&& session.status === "awaiting_review") {
+		try {
+			await cipherWriter.recordOutcome({
+				executionId,
+				ceoAction: action as "reject" | "defer",
+				ceoActionTimestamp: new Date().toISOString(),
+				sourceStatus: session.status,
+			});
+		} catch {
+			console.error(`[CIPHER] recordOutcome failed for ${executionId}`);
+		}
 	}
 
 	sendActionHook(
@@ -389,6 +431,7 @@ export function createActionRouter(
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
 	retryDispatcher?: IRetryDispatcher,
+	cipherWriter?: CipherWriter,
 ): Router {
 	const router = Router();
 
@@ -410,6 +453,7 @@ export function createActionRouter(
 					undefined,
 					transitionOpts,
 					config,
+					cipherWriter,
 				);
 				if (result.success) {
 					res.json({
@@ -456,13 +500,14 @@ export function createActionRouter(
 					}
 				} else {
 					// Fallback: legacy transition (no actual re-dispatch)
-					const actionResult = transitionSession(
+					const actionResult = await transitionSession(
 						store,
 						action,
 						eid,
 						reason,
 						transitionOpts,
 						config,
+						cipherWriter,
 					);
 					if (actionResult.success) {
 						res.json({ success: true, message: actionResult.message, action });
@@ -482,13 +527,14 @@ export function createActionRouter(
 					res.status(400).json({ error: "execution_id is required" });
 					return;
 				}
-				const actionResult = transitionSession(
+				const actionResult = await transitionSession(
 					store,
 					action,
 					eid,
 					reason,
 					transitionOpts,
 					config,
+					cipherWriter,
 				);
 				if (actionResult.success) {
 					res.json({ success: true, message: actionResult.message, action });
