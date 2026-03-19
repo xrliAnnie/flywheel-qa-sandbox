@@ -1,12 +1,11 @@
 import { Router } from "express";
-import type { CipherWriter } from "flywheel-edge-worker";
+import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
-import type { SnapshotInputDto } from "flywheel-edge-worker";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForProject } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import {
 	buildHookBody,
@@ -64,7 +63,7 @@ function formatNotification(session: Session, eventType: string): string {
 
 export function createEventRouter(
 	store: StateStore,
-	_projects: ProjectEntry[],
+	projects: ProjectEntry[],
 	config: BridgeConfig,
 	cipherWriter?: CipherWriter,
 	transitionOpts?: ApplyTransitionOpts,
@@ -274,15 +273,24 @@ export function createEventRouter(
 
 				// CIPHER Phase A: save snapshot for awaiting_review sessions
 				// Skip if FSM rejected the transition (out-of-order/duplicate events)
-				if (cipherWriter && status === "awaiting_review" && !transitionRejected) {
-					const labels = Array.isArray(payload.labels) ? (payload.labels as string[]) : null;
+				if (
+					cipherWriter &&
+					status === "awaiting_review" &&
+					!transitionRejected
+				) {
+					const labels = Array.isArray(payload.labels)
+						? (payload.labels as string[])
+						: null;
 					const changedFilePaths = Array.isArray(evidence?.changedFilePaths)
-						? (evidence.changedFilePaths as string[]) : null;
+						? (evidence.changedFilePaths as string[])
+						: null;
 					const projectId = asString(payload.projectId);
 
 					if (!labels || !changedFilePaths) {
-						console.warn(`[CIPHER] Skipping snapshot for ${event.execution_id}: missing required fields`
-							+ ` (labels=${!!labels}, paths=${!!changedFilePaths})`);
+						console.warn(
+							`[CIPHER] Skipping snapshot for ${event.execution_id}: missing required fields` +
+								` (labels=${!!labels}, paths=${!!changedFilePaths})`,
+						);
 					} else {
 						const snapshotInput: SnapshotInputDto = {
 							labels,
@@ -317,14 +325,18 @@ export function createEventRouter(
 								linesRemoved: snapshotInput.linesRemoved,
 								diffSummary: asString(evidence?.diffSummary),
 								commitMessages: Array.isArray(evidence?.commitMessages)
-									? (evidence.commitMessages as string[]) : [],
+									? (evidence.commitMessages as string[])
+									: [],
 								changedFilePaths,
 								exitReason: snapshotInput.exitReason,
 								durationMs: asNumber(evidence?.durationMs) ?? 0,
 								consecutiveFailures: snapshotInput.consecutiveFailures,
 							});
 						} catch (err) {
-							console.error(`[CIPHER] saveSnapshot failed for ${event.execution_id}:`, err);
+							console.error(
+								`[CIPHER] saveSnapshot failed for ${event.execution_id}:`,
+								err,
+							);
 						}
 					}
 				}
@@ -385,26 +397,36 @@ export function createEventRouter(
 		// Best-effort notification push (structured JSON + sessionKey)
 		const session = store.getSession(event.execution_id);
 		if (session && config.gatewayUrl && config.hooksToken) {
-			const sessionKey = buildSessionKey(session);
-			const hookPayload: HookPayload = {
-				event_type: event.event_type,
-				execution_id: event.execution_id,
-				issue_id: event.issue_id,
-				issue_identifier: session.issue_identifier,
-				issue_title: session.issue_title,
-				project_name: event.project_name,
-				status: session.status,
-				decision_route: session.decision_route,
-				commit_count: session.commit_count,
-				lines_added: session.lines_added,
-				lines_removed: session.lines_removed,
-				summary: session.summary,
-				last_error: session.last_error,
-				thread_id: session.thread_id,
-				channel: config.notificationChannel,
-			};
-			const body = buildHookBody("product-lead", hookPayload, sessionKey);
-			notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+			try {
+				const lead = resolveLeadForProject(projects, event.project_name);
+				const existingThread = store.getThreadByIssue(event.issue_id);
+				const channel = existingThread?.channel ?? lead.channel;
+				const sessionKey = buildSessionKey(session);
+				const hookPayload: HookPayload = {
+					event_type: event.event_type,
+					execution_id: event.execution_id,
+					issue_id: event.issue_id,
+					issue_identifier: session.issue_identifier,
+					issue_title: session.issue_title,
+					project_name: event.project_name,
+					status: session.status,
+					decision_route: session.decision_route,
+					commit_count: session.commit_count,
+					lines_added: session.lines_added,
+					lines_removed: session.lines_removed,
+					summary: session.summary,
+					last_error: session.last_error,
+					thread_id: session.thread_id,
+					channel,
+				};
+				const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
+				notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+			} catch (err) {
+				console.warn(
+					`[event-route] Unknown project "${event.project_name}" — skipping notification:`,
+					(err as Error).message,
+				);
+			}
 		}
 
 		res.json({ ok: true });
