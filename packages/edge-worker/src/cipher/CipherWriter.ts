@@ -449,34 +449,15 @@ export class CipherWriter {
 				[cutoff, cutoff],
 			);
 
-			// Decay maturity based on absolute time since last_seen_at.
-			// Uses direct target maturity (not step-down) so repeated calls
-			// are idempotent — the same stale pattern always lands at the
-			// same maturity level regardless of how many times refresh runs.
-			const decay120 = new Date(
-				Date.now() - 120 * 24 * 60 * 60 * 1000,
-			)
-				.toISOString()
-				.replace("T", " ")
-				.replace(/\.\d+Z$/, "");
-
-			// Unseen 120+ days: decay to exploratory (regardless of current level)
+			// Decay maturity for patterns unseen 60+ days → exploratory.
+			// Single-rule decay is inherently idempotent — the same stale
+			// pattern always lands at the same maturity regardless of how
+			// many times refresh runs. If the pattern reactivates, it
+			// re-earns maturity through last_90d_total in recordOutcome().
 			this.db.run(
 				`UPDATE decision_patterns SET maturity_level = 'exploratory'
 				 WHERE last_seen_at < ? AND maturity_level IN ('trusted', 'established', 'tentative')`,
-				[decay120],
-			);
-			// Unseen 60-120 days: decay by one level (idempotent — only demotes
-			// if current level is above the target, and the 120+ rule above
-			// already handled the deepest decay)
-			this.db.run(
-				`UPDATE decision_patterns SET maturity_level = CASE
-				   WHEN maturity_level = 'trusted' THEN 'established'
-				   WHEN maturity_level = 'established' THEN 'tentative'
-				   WHEN maturity_level = 'tentative' THEN 'exploratory'
-				   ELSE maturity_level END
-				 WHERE last_seen_at < ? AND last_seen_at >= ? AND maturity_level IN ('trusted', 'established', 'tentative')`,
-				[decayThreshold, decay120],
+				[decayThreshold],
 			);
 
 			// Cascade: retire skills/principles whose source pattern decayed
