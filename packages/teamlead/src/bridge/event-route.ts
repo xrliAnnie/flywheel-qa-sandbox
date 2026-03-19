@@ -277,6 +277,16 @@ export function createEventRouter(
 					});
 				}
 
+				// GEO-152: store labels on completed events (not just started)
+				if (!transitionRejected) {
+					const payloadLabels = Array.isArray(payload.labels) ? payload.labels as string[] : undefined;
+					if (payloadLabels && payloadLabels.length > 0) {
+						store.patchSessionMetadata(event.execution_id, {
+							issue_labels: JSON.stringify(payloadLabels),
+						});
+					}
+				}
+
 				// Auto-approve disabled by policy (v1.0 Phase 2)
 				// CEO must approve via Slack before merge. No auto-merge flow.
 
@@ -381,6 +391,16 @@ export function createEventRouter(
 						issue_title: asString(payload.issueTitle),
 					});
 				}
+
+				// GEO-152: store labels on failed events (not just started)
+				if (!transitionRejected) {
+					const payloadLabels = Array.isArray(payload.labels) ? payload.labels as string[] : undefined;
+					if (payloadLabels && payloadLabels.length > 0) {
+						store.patchSessionMetadata(event.execution_id, {
+							issue_labels: JSON.stringify(payloadLabels),
+						});
+					}
+				}
 			}
 		} catch (err) {
 			console.error(
@@ -407,7 +427,11 @@ export function createEventRouter(
 		const session = store.getSession(event.execution_id);
 		if (session && config.gatewayUrl && config.hooksToken) {
 			try {
-				const labels = store.getSessionLabels(event.execution_id);
+				// GEO-152: fallback to payload labels when session labels are empty
+				const storedLabels = store.getSessionLabels(event.execution_id);
+				const labels = storedLabels.length > 0
+					? storedLabels
+					: (Array.isArray(payload.labels) ? payload.labels as string[] : []);
 				const { lead } = resolveLeadForIssue(
 					projects,
 					event.project_name,

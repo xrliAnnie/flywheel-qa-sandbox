@@ -22,7 +22,7 @@ import type {
 } from "./ExecutionEvidenceCollector.js";
 import type { GitResultChecker } from "./GitResultChecker.js";
 import type { MemoryService } from "./memory/MemoryService.js";
-import type { PreHydrator } from "./PreHydrator.js";
+import type { HydratedContext, PreHydrator } from "./PreHydrator.js";
 import type { SkillInjector } from "./SkillInjector.js";
 import type { WorktreeInfo, WorktreeManager } from "./WorktreeManager.js";
 
@@ -134,19 +134,32 @@ export class Blueprint {
 		const executionId = ctx.executionId ?? randomUUID();
 		// v0.3 — canonical project scope (unified for events + memory)
 		const projectScope = ctx.projectName ?? ctx.teamName ?? "unknown";
+
+		// Hydrate BEFORE emitStarted so labels are available in session_started payload
+		const hydrated = await this.hydrator.hydrate(node);
+
 		const env: EventEnvelope = {
 			executionId,
 			issueId: node.id,
 			projectName: projectScope,
+			issueIdentifier: hydrated.issueIdentifier,
+			issueTitle: hydrated.issueTitle,
+			labels: hydrated.labels,
 			retryPredecessor: ctx.retryContext?.predecessorExecutionId,
 			runAttempt: ctx.retryContext?.attempt,
 		};
 
-		// Fire-and-forget started event
+		// Fire-and-forget started event (labels now populated)
 		this.eventEmitter?.emitStarted(env).catch(() => {});
 
 		try {
-			const result = await this.runInner(node, projectRoot, ctx, env);
+			const result = await this.runInner(
+				node,
+				projectRoot,
+				ctx,
+				env,
+				hydrated,
+			);
 			await this.emitTerminal(env, result);
 			return result;
 		} catch (err) {
@@ -162,6 +175,7 @@ export class Blueprint {
 		projectRoot: string,
 		ctx: BlueprintContext,
 		env: EventEnvelope,
+		hydrated: HydratedContext,
 	): Promise<BlueprintResult> {
 		const adapter = this.getAdapter(ctx.runnerName);
 		const startTime = Date.now();
@@ -205,14 +219,6 @@ export class Blueprint {
 		// ── Git preflight (existing — THROWS on failure) ──────
 		await this.gitChecker.assertCleanTree(cwd);
 		const baseSha = await this.gitChecker.captureBaseline(cwd);
-
-		// ── Pre-Hydrate (existing) ────────────────────────────
-		const hydrated = await this.hydrator.hydrate(node);
-
-		// Enrich envelope with hydrated fields
-		env.issueIdentifier = hydrated.issueIdentifier;
-		env.issueTitle = hydrated.issueTitle;
-		env.labels = hydrated.labels;
 
 		// ── Skill injection (v0.2 — best-effort, non-blocking) ─
 		let skillInjectionSucceeded = false;
