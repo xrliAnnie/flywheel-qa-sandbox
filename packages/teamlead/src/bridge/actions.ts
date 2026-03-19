@@ -2,14 +2,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
-import type { ActionResult } from "flywheel-edge-worker";
-import type { CipherWriter } from "flywheel-edge-worker";
+import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
 import { ApproveHandler } from "flywheel-edge-worker";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForProject } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import {
 	buildHookBody,
@@ -54,6 +53,7 @@ export const ACTION_TARGET_STATUS: Record<string, string> = {
 function sendActionHook(
 	store: StateStore,
 	config: BridgeConfig | undefined,
+	projects: ProjectEntry[],
 	executionId: string,
 	action: string,
 	sourceStatus: string,
@@ -63,27 +63,37 @@ function sendActionHook(
 	if (!config?.gatewayUrl || !config?.hooksToken) return;
 	const session = store.getSession(executionId);
 	if (!session) return;
-	const hookPayload: HookPayload = {
-		event_type: "action_executed",
-		execution_id: session.execution_id,
-		issue_id: session.issue_id,
-		issue_identifier: session.issue_identifier,
-		issue_title: session.issue_title,
-		project_name: session.project_name,
-		status: targetStatus,
-		thread_id: session.thread_id,
-		channel: config.notificationChannel,
-		action,
-		action_source_status: sourceStatus,
-		action_target_status: targetStatus,
-		action_reason: reason,
-	};
-	const body = buildHookBody(
-		"product-lead",
-		hookPayload,
-		buildSessionKey(session),
-	);
-	notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+	try {
+		const lead = resolveLeadForProject(projects, session.project_name);
+		const existingThread = store.getThreadByIssue(session.issue_id);
+		const channel = existingThread?.channel ?? lead.channel;
+		const hookPayload: HookPayload = {
+			event_type: "action_executed",
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			issue_identifier: session.issue_identifier,
+			issue_title: session.issue_title,
+			project_name: session.project_name,
+			status: targetStatus,
+			thread_id: session.thread_id,
+			channel,
+			action,
+			action_source_status: sourceStatus,
+			action_target_status: targetStatus,
+			action_reason: reason,
+		};
+		const body = buildHookBody(
+			lead.agentId,
+			hookPayload,
+			buildSessionKey(session),
+		);
+		notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+	} catch (err) {
+		console.warn(
+			`[actions] Unknown project "${session.project_name}" — skipping hook:`,
+			(err as Error).message,
+		);
+	}
 }
 
 export async function approveExecution(
@@ -152,7 +162,9 @@ export async function approveExecution(
 				{ last_activity_at: sqliteDatetime() },
 			);
 			if (!fsmResult.ok) {
-				console.warn(`[actions] FSM rejected approve for ${executionId}: ${fsmResult.error}`);
+				console.warn(
+					`[actions] FSM rejected approve for ${executionId}: ${fsmResult.error}`,
+				);
 				transitionRejected = true;
 			}
 		} else {
@@ -171,6 +183,7 @@ export async function approveExecution(
 			sendActionHook(
 				store,
 				config,
+				projects,
 				executionId,
 				"approve",
 				"awaiting_review",
@@ -187,7 +200,9 @@ export async function approveExecution(
 						sourceStatus: session.status,
 					});
 				} catch {
-					console.error(`[CIPHER] recordOutcome failed for approve ${executionId}`);
+					console.error(
+						`[CIPHER] recordOutcome failed for approve ${executionId}`,
+					);
 				}
 			}
 		}
@@ -204,6 +219,7 @@ export async function transitionSession(
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
 	cipherWriter?: CipherWriter,
+	projects?: ProjectEntry[],
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -256,8 +272,11 @@ export async function transitionSession(
 	}
 
 	// CIPHER: record outcome for reject/defer from awaiting_review
-	if (cipherWriter && (action === "reject" || action === "defer")
-		&& session.status === "awaiting_review") {
+	if (
+		cipherWriter &&
+		(action === "reject" || action === "defer") &&
+		session.status === "awaiting_review"
+	) {
 		try {
 			await cipherWriter.recordOutcome({
 				executionId,
@@ -273,6 +292,7 @@ export async function transitionSession(
 	sendActionHook(
 		store,
 		config,
+		projects ?? [],
 		executionId,
 		action,
 		session.status,
@@ -307,6 +327,7 @@ async function handleRetry(
 	executionId: string,
 	reason?: string,
 	config?: BridgeConfig,
+	projects?: ProjectEntry[],
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -381,6 +402,7 @@ async function handleRetry(
 		sendActionHook(
 			store,
 			config,
+			projects ?? [],
 			result.newExecutionId,
 			"retry",
 			session.status,
@@ -484,6 +506,7 @@ export function createActionRouter(
 						eid,
 						reason,
 						config,
+						projects,
 					);
 					if (retryResult.success) {
 						res.json({
@@ -508,6 +531,7 @@ export function createActionRouter(
 						transitionOpts,
 						config,
 						cipherWriter,
+						projects,
 					);
 					if (actionResult.success) {
 						res.json({ success: true, message: actionResult.message, action });
@@ -535,6 +559,7 @@ export function createActionRouter(
 					transitionOpts,
 					config,
 					cipherWriter,
+					projects,
 				);
 				if (actionResult.success) {
 					res.json({ success: true, message: actionResult.message, action });
