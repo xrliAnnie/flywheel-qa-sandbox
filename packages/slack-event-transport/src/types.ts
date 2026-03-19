@@ -2,8 +2,8 @@
  * Types for Slack event transport
  */
 
-import type { InternalMessage } from "flywheel-core";
 import type { FastifyInstance } from "fastify";
+import type { InternalMessage } from "flywheel-core";
 
 /**
  * Verification mode for Slack webhooks forwarded from CYHOST

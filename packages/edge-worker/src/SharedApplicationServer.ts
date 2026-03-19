@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { createLogger, type ILogger } from "flywheel-core";
 import Fastify, { type FastifyInstance } from "fastify";
+import { createLogger, type ILogger } from "flywheel-core";
 
 /**
  * OAuth callback state for tracking flows

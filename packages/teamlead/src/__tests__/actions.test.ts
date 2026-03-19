@@ -1,10 +1,10 @@
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { StateStore } from "../StateStore.js";
-import { createBridgeApp } from "../bridge/plugin.js";
+import type http from "node:http";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { approveExecution, transitionSession } from "../bridge/actions.js";
+import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import type http from "node:http";
+import { StateStore } from "../StateStore.js";
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	return {
@@ -19,7 +19,11 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 }
 
 const testProjects: ProjectEntry[] = [
-	{ projectName: "geoforge3d", projectRoot: "/tmp/geoforge3d", projectRepo: "xrliAnnie/GeoForge3D" },
+	{
+		projectName: "geoforge3d",
+		projectRoot: "/tmp/geoforge3d",
+		projectRepo: "xrliAnnie/GeoForge3D",
+	},
 ];
 
 // ApproveHandler calls execFn twice:
@@ -27,7 +31,11 @@ const testProjects: ProjectEntry[] = [
 // 2. gh pr merge ... → any output is fine
 const mockExec = vi.fn(async (_cmd: string, args: string[]) => {
 	if (args.includes("list")) {
-		return { stdout: JSON.stringify([{ number: 42, url: "https://github.com/test/pr/42" }]) };
+		return {
+			stdout: JSON.stringify([
+				{ number: 42, url: "https://github.com/test/pr/42" },
+			]),
+		};
 	}
 	return { stdout: "merged" };
 });
@@ -57,11 +65,20 @@ describe("Action tools", () => {
 
 	it("POST /api/actions/approve with valid execution_id succeeds", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
-			status: "awaiting_review", issue_identifier: "GEO-95",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-95",
 		});
 
-		const result = await approveExecution(store, testProjects, "e1", "GEO-95", mockExec);
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			"GEO-95",
+			mockExec,
+		);
 		expect(result.success).toBe(true);
 		expect(mockExec).toHaveBeenCalled();
 	});
@@ -79,8 +96,11 @@ describe("Action tools", () => {
 
 	it("POST /api/actions/approve passes internal issue_id to ApproveHandler", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "internal-uuid-123", project_name: "geoforge3d",
-			status: "awaiting_review", issue_identifier: "GEO-95",
+			execution_id: "e1",
+			issue_id: "internal-uuid-123",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-95",
 		});
 
 		await approveExecution(store, testProjects, "e1", "GEO-95", mockExec);
@@ -94,11 +114,19 @@ describe("Action tools", () => {
 
 	it("POST /api/actions/approve transitions session to approved on success", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
 
-		const result = await approveExecution(store, testProjects, "e1", undefined, mockExec);
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			mockExec,
+		);
 		expect(result.success).toBe(true);
 
 		const session = store.getSession("e1");
@@ -107,20 +135,27 @@ describe("Action tools", () => {
 
 	it("POST /api/actions/approve updates last_activity_at on success (SQLite format)", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
-			status: "awaiting_review", last_activity_at: "2026-01-01 00:00:00",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			last_activity_at: "2026-01-01 00:00:00",
 		});
 
 		await approveExecution(store, testProjects, "e1", undefined, mockExec);
 
 		const session = store.getSession("e1");
 		// SQLite datetime format: YYYY-MM-DD HH:MM:SS (no T, no Z)
-		expect(session!.last_activity_at).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/);
+		expect(session!.last_activity_at).toMatch(
+			/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/,
+		);
 	});
 
 	it("approved session no longer returned by getActiveSessions()", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
 
@@ -137,13 +172,15 @@ describe("Action tools", () => {
 
 	it("approve with blocked session returns error", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "blocked",
 		});
 
 		const result = await approveExecution(store, testProjects, "e1");
 		expect(result.success).toBe(false);
-		expect(result.message).toContain("expected \"awaiting_review\"");
+		expect(result.message).toContain('expected "awaiting_review"');
 	});
 
 	it("POST /api/actions/invalid returns 400", async () => {
@@ -158,10 +195,18 @@ describe("Action tools", () => {
 	// --- reject ---
 	it("reject transitions awaiting_review to rejected", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
-			status: "awaiting_review", issue_identifier: "GEO-50",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-50",
 		});
-		const result = await transitionSession(store, "reject", "e1", "Code quality issues");
+		const result = await transitionSession(
+			store,
+			"reject",
+			"e1",
+			"Code quality issues",
+		);
 		expect(result.success).toBe(true);
 		expect(store.getSession("e1")!.status).toBe("rejected");
 		expect(store.getSession("e1")!.last_error).toBe("Code quality issues");
@@ -169,7 +214,9 @@ describe("Action tools", () => {
 
 	it("reject from running fails", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "running",
 		});
 		const result = await transitionSession(store, "reject", "e1");
@@ -179,7 +226,9 @@ describe("Action tools", () => {
 
 	it("POST /api/actions/reject via HTTP succeeds", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
 		const res = await fetch(`${baseUrl}/api/actions/reject`, {
@@ -207,17 +256,26 @@ describe("Action tools", () => {
 	// --- defer ---
 	it("defer transitions awaiting_review to deferred", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
-		const result = await transitionSession(store, "defer", "e1", "Waiting for dependency");
+		const result = await transitionSession(
+			store,
+			"defer",
+			"e1",
+			"Waiting for dependency",
+		);
 		expect(result.success).toBe(true);
 		expect(store.getSession("e1")!.status).toBe("deferred");
 	});
 
 	it("defer transitions blocked to deferred", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "blocked",
 		});
 		const result = await transitionSession(store, "defer", "e1");
@@ -227,7 +285,9 @@ describe("Action tools", () => {
 
 	it("defer from running fails", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "running",
 		});
 		const result = await transitionSession(store, "defer", "e1");
@@ -237,7 +297,9 @@ describe("Action tools", () => {
 	// --- retry ---
 	it("retry transitions failed to running", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "failed",
 		});
 		const result = await transitionSession(store, "retry", "e1");
@@ -247,7 +309,9 @@ describe("Action tools", () => {
 
 	it("retry transitions rejected to running", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "rejected",
 		});
 		const result = await transitionSession(store, "retry", "e1");
@@ -257,7 +321,9 @@ describe("Action tools", () => {
 
 	it("retry transitions blocked to running", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "blocked",
 		});
 		const result = await transitionSession(store, "retry", "e1");
@@ -267,7 +333,9 @@ describe("Action tools", () => {
 
 	it("retry from awaiting_review fails", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
 		const result = await transitionSession(store, "retry", "e1");
@@ -277,7 +345,9 @@ describe("Action tools", () => {
 	// --- shelve ---
 	it("shelve transitions awaiting_review to shelved", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
 		const result = await transitionSession(store, "shelve", "e1", "Low priority");
@@ -287,7 +357,9 @@ describe("Action tools", () => {
 
 	it("shelve from running fails", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
 			status: "running",
 		});
 		const result = await transitionSession(store, "shelve", "e1");
@@ -303,8 +375,11 @@ describe("Action tools", () => {
 
 	it("transition uses issue_identifier in success message when available", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
-			status: "awaiting_review", issue_identifier: "GEO-42",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-42",
 		});
 		const result = await transitionSession(store, "reject", "e1");
 		expect(result.message).toContain("GEO-42");
@@ -313,8 +388,11 @@ describe("Action tools", () => {
 
 	it("transition without reason sets last_error to null", async () => {
 		store.upsertSession({
-			execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
-			status: "awaiting_review", last_error: "previous error",
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			last_error: "previous error",
 		});
 		await transitionSession(store, "reject", "e1");
 		// last_error should be cleared (COALESCE with null keeps old value in SQLite)
@@ -338,7 +416,9 @@ describe("Action tools", () => {
 				res.json({ ok: true });
 			});
 			hookServer = hookApp.listen(0, "127.0.0.1");
-			await new Promise<void>((resolve) => hookServer.once("listening", resolve));
+			await new Promise<void>((resolve) =>
+				hookServer.once("listening", resolve),
+			);
 			const addr = hookServer.address();
 			const port = typeof addr === "object" && addr ? addr.port : 0;
 			hookUrl = `http://127.0.0.1:${port}`;
@@ -352,8 +432,11 @@ describe("Action tools", () => {
 
 		it("approve sends action_executed hook", async () => {
 			store.upsertSession({
-				execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
-				status: "awaiting_review", issue_identifier: "GEO-99",
+				execution_id: "e1",
+				issue_id: "i1",
+				project_name: "geoforge3d",
+				status: "awaiting_review",
+				issue_identifier: "GEO-99",
 			});
 			const hookConfig = makeConfig({
 				gatewayUrl: hookUrl,
@@ -361,7 +444,15 @@ describe("Action tools", () => {
 				notificationChannel: "test-ch",
 			});
 
-			await approveExecution(store, testProjects, "e1", "GEO-99", mockExec, undefined, hookConfig);
+			await approveExecution(
+				store,
+				testProjects,
+				"e1",
+				"GEO-99",
+				mockExec,
+				undefined,
+				hookConfig,
+			);
 
 			// Wait for async hook delivery
 			await new Promise((r) => setTimeout(r, 200));
@@ -377,8 +468,11 @@ describe("Action tools", () => {
 
 		it("reject sends action_executed hook with reason", async () => {
 			store.upsertSession({
-				execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
-				status: "awaiting_review", issue_identifier: "GEO-50",
+				execution_id: "e1",
+				issue_id: "i1",
+				project_name: "geoforge3d",
+				status: "awaiting_review",
+				issue_identifier: "GEO-50",
 			});
 			const hookConfig = makeConfig({
 				gatewayUrl: hookUrl,
@@ -386,7 +480,14 @@ describe("Action tools", () => {
 				notificationChannel: "test-ch",
 			});
 
-			transitionSession(store, "reject", "e1", "needs rework", undefined, hookConfig);
+			transitionSession(
+				store,
+				"reject",
+				"e1",
+				"needs rework",
+				undefined,
+				hookConfig,
+			);
 
 			await new Promise((r) => setTimeout(r, 200));
 
@@ -401,7 +502,9 @@ describe("Action tools", () => {
 
 		it("no hook when config not provided", async () => {
 			store.upsertSession({
-				execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+				execution_id: "e1",
+				issue_id: "i1",
+				project_name: "geoforge3d",
 				status: "awaiting_review",
 			});
 
@@ -414,7 +517,9 @@ describe("Action tools", () => {
 		it("hook failure does not affect action result", async () => {
 			// Use a broken URL so the hook will fail
 			store.upsertSession({
-				execution_id: "e1", issue_id: "i1", project_name: "geoforge3d",
+				execution_id: "e1",
+				issue_id: "i1",
+				project_name: "geoforge3d",
 				status: "awaiting_review",
 			});
 			const hookConfig = makeConfig({
@@ -423,7 +528,14 @@ describe("Action tools", () => {
 				notificationChannel: "test-ch",
 			});
 
-			const result = await transitionSession(store, "reject", "e1", "test", undefined, hookConfig);
+			const result = await transitionSession(
+				store,
+				"reject",
+				"e1",
+				"test",
+				undefined,
+				hookConfig,
+			);
 			expect(result.success).toBe(true);
 			expect(store.getSession("e1")!.status).toBe("rejected");
 		});

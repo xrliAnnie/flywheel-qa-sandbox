@@ -6,8 +6,8 @@ import type {
 	ClaudeAdapterConfig,
 	IAdapter,
 } from "flywheel-core";
-import { ClaudeRunner } from "./ClaudeRunner.js";
 import { ClaudeAdapterSession } from "./ClaudeAdapterSession.js";
+import { ClaudeRunner } from "./ClaudeRunner.js";
 import type { ClaudeRunnerConfig } from "./types.js";
 
 /**
@@ -53,7 +53,7 @@ export class ClaudeAdapter implements IAdapter {
 					? { sessionId: sessionInfo.sessionId }
 					: undefined,
 			};
-		} catch (error) {
+		} catch (_error) {
 			return {
 				success: false,
 				sessionId: "",
@@ -83,12 +83,18 @@ export class ClaudeAdapter implements IAdapter {
 			workingDirectory: ctx.cwd,
 			allowedTools: ctx.allowedTools ?? this.config.allowedTools,
 			disallowedTools: this.config.disallowedTools,
-			allowedDirectories: ctx.allowedDirectories ?? this.config.allowedDirectories,
+			allowedDirectories:
+				ctx.allowedDirectories ?? this.config.allowedDirectories,
 			resumeSessionId: resumeId ?? this.config.resumeSessionId,
 			workspaceName: ctx.workspaceName ?? this.config.workspaceName,
-			appendSystemPrompt: ctx.appendSystemPrompt ?? this.config.appendSystemPrompt,
-			mcpConfigPath: ctx.mcpConfigPath as string | string[] | undefined ?? this.config.mcpConfigPath,
-			mcpConfig: ctx.mcpConfig as ClaudeRunnerConfig["mcpConfig"] ?? this.config.mcpConfig,
+			appendSystemPrompt:
+				ctx.appendSystemPrompt ?? this.config.appendSystemPrompt,
+			mcpConfigPath:
+				(ctx.mcpConfigPath as string | string[] | undefined) ??
+				this.config.mcpConfigPath,
+			mcpConfig:
+				(ctx.mcpConfig as ClaudeRunnerConfig["mcpConfig"]) ??
+				this.config.mcpConfig,
 			model: ctx.model ?? this.config.model,
 			fallbackModel: this.config.fallbackModel,
 			maxTurns: ctx.maxTurns ?? this.config.maxTurns,
@@ -96,7 +102,7 @@ export class ClaudeAdapter implements IAdapter {
 			flywheelHome: ctx.flywheelHome ?? this.config.flywheelHome,
 			logger: this.config.logger,
 			promptVersions: this.config.promptVersions,
-			hooks: ctx.hooks as ClaudeRunnerConfig["hooks"] ?? this.config.hooks,
+			hooks: (ctx.hooks as ClaudeRunnerConfig["hooks"]) ?? this.config.hooks,
 			outputFormat: this.config.outputFormat,
 			extraArgs: this.config.extraArgs,
 			systemPrompt: this.config.systemPrompt,

@@ -3,8 +3,13 @@
  * This file provides backward-compatible TmuxRunner for scripts that call runner.run().
  * Will be removed in a future version.
  */
-import type { FlywheelRunRequest, FlywheelRunResult, IFlywheelRunner, IHookCallbackServer } from "flywheel-core";
-import { TmuxAdapter, type ExecFileFn } from "./TmuxAdapter.js";
+import type {
+	FlywheelRunRequest,
+	FlywheelRunResult,
+	IFlywheelRunner,
+	IHookCallbackServer,
+} from "flywheel-core";
+import { type ExecFileFn, TmuxAdapter } from "./TmuxAdapter.js";
 
 export type { ExecFileFn } from "./TmuxAdapter.js";
 
@@ -23,7 +28,13 @@ export class TmuxRunner implements IFlywheelRunner {
 		defaultTimeoutMs?: number,
 		hookServer?: IHookCallbackServer,
 	) {
-		this.adapter = new TmuxAdapter(sessionName, execFileFn, pollIntervalMs, defaultTimeoutMs, hookServer);
+		this.adapter = new TmuxAdapter(
+			sessionName,
+			execFileFn,
+			pollIntervalMs,
+			defaultTimeoutMs,
+			hookServer,
+		);
 		this.name = this.adapter.type;
 	}
 

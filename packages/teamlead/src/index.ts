@@ -1,19 +1,24 @@
 #!/usr/bin/env node
 
-import { join } from "node:path";
 import { homedir } from "node:os";
-import { CipherWriter, CipherSyncService } from "flywheel-edge-worker";
+import { join } from "node:path";
+import { CipherSyncService, CipherWriter } from "flywheel-edge-worker";
+import { startBridge } from "./bridge/plugin.js";
+import {
+	buildHookBody,
+	notifyAgent,
+} from "./bridge/hook-payload.js";
+import type { HookPayload } from "./bridge/hook-payload.js";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
-import { startBridge } from "./bridge/plugin.js";
-import { buildHookBody, notifyAgent } from "./bridge/hook-payload.js";
-import type { HookPayload } from "./bridge/hook-payload.js";
 
 async function main() {
 	const config = loadConfig();
 	const projects = loadProjects();
 	if (projects.length === 0) {
-		throw new Error("No projects configured — check FLYWHEEL_PROJECTS or project config");
+		throw new Error(
+			"No projects configured — check FLYWHEEL_PROJECTS or project config",
+		);
 	}
 
 	// CIPHER: create writer + inject notification callback (advisory — bridge starts without it)

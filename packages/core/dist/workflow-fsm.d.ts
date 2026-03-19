@@ -40,6 +40,7 @@ export interface ActionDefinition {
     action: string;
     fromStates: string[];
     targetState: string;
+    composite?: boolean;
 }
 export declare const ACTION_DEFINITIONS: ActionDefinition[];
 /** Pure static helper — returns actions available for a given state. */

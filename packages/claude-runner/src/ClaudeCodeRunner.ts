@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
-import { createLogger, type ILogger } from "flywheel-core";
 import type {
 	FlywheelRunRequest,
 	FlywheelRunResult,
 	IFlywheelRunner,
 } from "flywheel-core";
+import { createLogger, type ILogger } from "flywheel-core";
 
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 

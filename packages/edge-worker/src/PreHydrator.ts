@@ -11,9 +11,7 @@ export interface HydratedContext {
 }
 
 /** Function to fetch a Linear issue by ID */
-export type FetchIssueFn = (
-	issueId: string,
-) => Promise<{
+export type FetchIssueFn = (issueId: string) => Promise<{
 	title: string;
 	description: string | null;
 	labels?: string[];

@@ -6,18 +6,13 @@ export type {
 	HookJSONOutput,
 	PostToolUseHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
-// Adapter implementations (GEO-157)
-export { TmuxAdapter } from "./TmuxAdapter.js";
-export { ClaudeCodeAdapter } from "./ClaudeCodeAdapter.js";
+export { AnthropicLLMClient } from "./AnthropicLLMClient.js";
 export { ClaudeAdapter } from "./ClaudeAdapter.js";
 export { ClaudeAdapterSession } from "./ClaudeAdapterSession.js";
+export { ClaudeCodeAdapter } from "./ClaudeCodeAdapter.js";
+export { ClaudeCodeRunner } from "./ClaudeCodeRunner.js";
 // Compat re-exports — ClaudeRunner stays exported (test-scripts depend on it, Wave 6 cleanup)
 export { AbortError, ClaudeRunner } from "./ClaudeRunner.js";
-export { ClaudeCodeRunner } from "./ClaudeCodeRunner.js";
-export { TmuxRunner } from "./TmuxRunner.js";
-export type { ExecFileFn } from "./TmuxRunner.js";
-export { AnthropicLLMClient } from "./AnthropicLLMClient.js";
-export { TrustPromptHandler } from "./TrustPromptHandler.js";
 export {
 	availableTools,
 	getAllTools,
@@ -32,6 +27,11 @@ export {
 	ClaudeMessageFormatter,
 	type IMessageFormatter,
 } from "./formatter.js";
+// Adapter implementations (GEO-157)
+export { TmuxAdapter } from "./TmuxAdapter.js";
+export type { ExecFileFn } from "./TmuxRunner.js";
+export { TmuxRunner } from "./TmuxRunner.js";
+export { TrustPromptHandler } from "./TrustPromptHandler.js";
 export type {
 	APIAssistantMessage,
 	APIUserMessage,

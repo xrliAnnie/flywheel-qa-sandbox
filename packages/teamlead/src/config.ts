@@ -6,7 +6,11 @@ export type { BridgeConfig };
 
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
-function parsePositiveInt(value: string | undefined, fallback: number, name: string): number {
+function parsePositiveInt(
+	value: string | undefined,
+	fallback: number,
+	name: string,
+): number {
 	if (value === undefined) return fallback;
 	const n = parseInt(value, 10);
 	if (!Number.isFinite(n) || n < 1) {
@@ -18,7 +22,9 @@ function parsePositiveInt(value: string | undefined, fallback: number, name: str
 export function loadConfig(): BridgeConfig {
 	const host = process.env.TEAMLEAD_HOST ?? "127.0.0.1";
 	if (!ALLOWED_HOSTS.has(host)) {
-		throw new Error(`TEAMLEAD_HOST must be loopback (127.0.0.1, localhost, or ::1), got: ${host}`);
+		throw new Error(
+			`TEAMLEAD_HOST must be loopback (127.0.0.1, localhost, or ::1), got: ${host}`,
+		);
 	}
 
 	const port = parseInt(process.env.TEAMLEAD_PORT ?? "9876", 10);
@@ -26,8 +32,16 @@ export function loadConfig(): BridgeConfig {
 		throw new Error(`Invalid TEAMLEAD_PORT: ${process.env.TEAMLEAD_PORT}`);
 	}
 
-	const stuckThresholdMinutes = parsePositiveInt(process.env.TEAMLEAD_STUCK_THRESHOLD, 15, "TEAMLEAD_STUCK_THRESHOLD");
-	const orphanThresholdMinutes = parsePositiveInt(process.env.TEAMLEAD_ORPHAN_THRESHOLD, 60, "TEAMLEAD_ORPHAN_THRESHOLD");
+	const stuckThresholdMinutes = parsePositiveInt(
+		process.env.TEAMLEAD_STUCK_THRESHOLD,
+		15,
+		"TEAMLEAD_STUCK_THRESHOLD",
+	);
+	const orphanThresholdMinutes = parsePositiveInt(
+		process.env.TEAMLEAD_ORPHAN_THRESHOLD,
+		60,
+		"TEAMLEAD_ORPHAN_THRESHOLD",
+	);
 	if (orphanThresholdMinutes <= stuckThresholdMinutes) {
 		throw new Error(
 			`TEAMLEAD_ORPHAN_THRESHOLD (${orphanThresholdMinutes}) must be greater than TEAMLEAD_STUCK_THRESHOLD (${stuckThresholdMinutes})`,
@@ -37,21 +51,32 @@ export function loadConfig(): BridgeConfig {
 	return {
 		host,
 		port,
-		dbPath: process.env.TEAMLEAD_DB_PATH ?? join(homedir(), ".flywheel", "teamlead.db"),
+		dbPath:
+			process.env.TEAMLEAD_DB_PATH ??
+			join(homedir(), ".flywheel", "teamlead.db"),
 		ingestToken: process.env.TEAMLEAD_INGEST_TOKEN,
 		apiToken: process.env.TEAMLEAD_API_TOKEN,
 		gatewayUrl: process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789",
 		hooksToken: process.env.OPENCLAW_HOOKS_TOKEN,
-		notificationChannel: process.env.TEAMLEAD_NOTIFICATION_CHANNEL ?? "CD5QZVAP6",
+		notificationChannel:
+			process.env.TEAMLEAD_NOTIFICATION_CHANNEL ?? "CD5QZVAP6",
 		stuckThresholdMinutes,
-		stuckCheckIntervalMs: parsePositiveInt(process.env.TEAMLEAD_STUCK_INTERVAL, 300_000, "TEAMLEAD_STUCK_INTERVAL"),
+		stuckCheckIntervalMs: parsePositiveInt(
+			process.env.TEAMLEAD_STUCK_INTERVAL,
+			300_000,
+			"TEAMLEAD_STUCK_INTERVAL",
+		),
 		orphanThresholdMinutes,
 		discordBotToken: process.env.DISCORD_BOT_TOKEN,
 		cleanupIntervalMs: parsePositiveInt(
-			process.env.TEAMLEAD_CLEANUP_INTERVAL, 3_600_000, "TEAMLEAD_CLEANUP_INTERVAL",
+			process.env.TEAMLEAD_CLEANUP_INTERVAL,
+			3_600_000,
+			"TEAMLEAD_CLEANUP_INTERVAL",
 		),
 		cleanupThresholdMinutes: parsePositiveInt(
-			process.env.TEAMLEAD_CLEANUP_THRESHOLD, 1440, "TEAMLEAD_CLEANUP_THRESHOLD",
+			process.env.TEAMLEAD_CLEANUP_THRESHOLD,
+			1440,
+			"TEAMLEAD_CLEANUP_THRESHOLD",
 		),
 	};
 }

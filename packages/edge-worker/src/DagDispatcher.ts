@@ -1,10 +1,8 @@
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { execFile } from "node:child_process";
-import { FLYWHEEL_MARKER_DIR } from "flywheel-core";
-import { Semaphore } from "flywheel-core";
-import { DagResolver } from "flywheel-dag-resolver";
-import type { DagNode } from "flywheel-dag-resolver";
+import { FLYWHEEL_MARKER_DIR, Semaphore } from "flywheel-core";
+import type { DagNode, DagResolver } from "flywheel-dag-resolver";
 import type {
 	Blueprint,
 	BlueprintContext,
@@ -67,8 +65,9 @@ export class DagDispatcher {
 
 		try {
 			while (this.resolver.remaining() > 0) {
-				const ready = this.resolver.getReady()
-					.filter(n => !scheduled.has(n.id));
+				const ready = this.resolver
+					.getReady()
+					.filter((n) => !scheduled.has(n.id));
 
 				if (ready.length === 0 && inflight.size > 0) {
 					// Wait for at least one in-flight to complete
@@ -81,8 +80,13 @@ export class DagDispatcher {
 				for (const node of ready) {
 					scheduled.add(node.id);
 					const ctx = { ...this.buildContext(node), executionId: randomUUID() };
-					const p = this.dispatchOne(node, ctx, completed, shelved, nodeResults)
-						.finally(() => inflight.delete(node.id));
+					const p = this.dispatchOne(
+						node,
+						ctx,
+						completed,
+						shelved,
+						nodeResults,
+					).finally(() => inflight.delete(node.id));
 					inflight.set(node.id, p);
 				}
 
@@ -151,10 +155,12 @@ export class DagDispatcher {
 			const nodeId = node.id;
 			void Promise.resolve()
 				.then(() => this.onNodeComplete!(nodeId, result))
-				.catch(callbackErr => {
+				.catch((callbackErr) => {
 					console.warn(
 						`[DagDispatcher] onNodeComplete error for ${nodeId} (non-fatal): ${
-							callbackErr instanceof Error ? callbackErr.message : String(callbackErr)
+							callbackErr instanceof Error
+								? callbackErr.message
+								: String(callbackErr)
 						}`,
 					);
 				});
@@ -165,15 +171,18 @@ export class DagDispatcher {
 		if (!this.worktreeManager || !this.projectName) return;
 		try {
 			const pruned = await this.worktreeManager.pruneOrphans(
-				this.projectRoot, this.projectName,
+				this.projectRoot,
+				this.projectName,
 			);
 			if (pruned.length > 0) {
 				console.log(`[DagDispatcher] Pruned ${pruned.length} orphan worktrees`);
 			}
 		} catch (err) {
-			console.warn(`[DagDispatcher] pruneOrphans failed (non-fatal): ${
-				err instanceof Error ? err.message : String(err)
-			}`);
+			console.warn(
+				`[DagDispatcher] pruneOrphans failed (non-fatal): ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
 		}
 	}
 
@@ -183,10 +192,53 @@ export class DagDispatcher {
 	 */
 	private openTmuxViewer(): void {
 		const s = this.tmuxSessionName;
-		execFile("osascript", [
-			"-e",
-			`tell application "Terminal" to do script "tmux attach -t '=${s}' 2>/dev/null || (echo 'Waiting for tmux session ${s}...' && sleep 2 && tmux attach -t '=${s}')"`,
-		], (err) => {
+		// Dedup: skip if a client is already attached
+		try {
+			const clients = execFileSync(
+				"tmux",
+				["list-clients", "-t", `=${s}`],
+				{ encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
+			);
+			if (clients.trim().length > 0) {
+				console.log(
+					`[DagDispatcher] Viewer already attached to ${s}, skipping`,
+				);
+				return;
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			if (!msg.includes("can't find session")) {
+				console.warn(
+					`[DagDispatcher] tmux list-clients failed for ${s}: ${msg}`,
+				);
+			}
+			// Session may not exist yet — proceed to open (best-effort)
+		}
+
+		// Self-closing AppleScript: holds references to the created tab + window,
+		// polls until tmux is no longer in the process list, then closes the window.
+		// Works regardless of Terminal.app shellExitAction preference.
+		const script = [
+			'tell application "Terminal"',
+			`  set viewerTab to do script "tmux attach -t '=${s}' 2>/dev/null || (echo 'Waiting for tmux session ${s}...' && sleep 2 && tmux attach -t '=${s}')"`,
+			"  set viewerWindow to front window",
+			"  activate",
+			"  repeat",
+			"    delay 2",
+			"    try",
+			'      set p to (processes of viewerTab) as string',
+			'      if p does not contain "tmux" then',
+			"        close viewerWindow",
+			"        exit repeat",
+			"      end if",
+			"    on error",
+			"      exit repeat",
+			"    end try",
+			"  end repeat",
+			"end tell",
+		].join("\n");
+
+		execFile("osascript", ["-e", script], (err) => {
 			if (err) {
 				console.warn(
 					`[DagDispatcher] Could not auto-open tmux viewer: ${err.message}`,

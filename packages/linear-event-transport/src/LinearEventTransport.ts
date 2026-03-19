@@ -3,9 +3,9 @@ import {
 	LinearWebhookClient,
 	type LinearWebhookPayload,
 } from "@linear/sdk/webhooks";
+import type { FastifyReply, FastifyRequest } from "fastify";
 import type { IAgentEventTransport, TranslationContext } from "flywheel-core";
 import { createLogger, type ILogger } from "flywheel-core";
-import type { FastifyReply, FastifyRequest } from "fastify";
 import { LinearMessageTranslator } from "./LinearMessageTranslator.js";
 import type {
 	LinearEventTransportConfig,

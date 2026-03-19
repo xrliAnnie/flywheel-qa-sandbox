@@ -1,12 +1,12 @@
 import { mkdir, readdir, rename, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
+import { fileTypeFromBuffer } from "file-type";
 import type {
 	IIssueTrackerService,
 	ILogger,
 	Issue,
 	RepositoryConfig,
 } from "flywheel-core";
-import { fileTypeFromBuffer } from "file-type";
 
 export class AttachmentService {
 	private logger: ILogger;

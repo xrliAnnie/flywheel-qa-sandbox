@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
 import type { ExecutionContext, LLMClient } from "flywheel-core";
+import { describe, expect, it, vi } from "vitest";
 import { HaikuVerifier } from "../decision/HaikuVerifier.js";
 
 function makeCtx(overrides: Partial<ExecutionContext> = {}): ExecutionContext {

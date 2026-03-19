@@ -10,9 +10,9 @@ import type {
 	SDKUserMessage,
 } from "flywheel-claude-runner";
 import {
+	type AdapterSession,
 	AgentSessionStatus,
 	AgentSessionType,
-	type AdapterSession,
 	type CyrusAgentSession,
 	type CyrusAgentSessionEntry,
 	createLogger,
@@ -1888,7 +1888,11 @@ export class AgentSessionManager extends EventEmitter {
 		// Serialize sessions
 		for (const [sessionId, session] of this.sessions.entries()) {
 			// Exclude non-serializable agentRunner and adapterSession
-			const { agentRunner: _agentRunner, adapterSession: _adapterSession, ...serializableSession } = session;
+			const {
+				agentRunner: _agentRunner,
+				adapterSession: _adapterSession,
+				...serializableSession
+			} = session;
 			sessions[sessionId] = serializableSession;
 		}
 

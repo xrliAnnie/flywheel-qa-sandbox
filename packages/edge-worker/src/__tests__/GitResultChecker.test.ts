@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from "vitest";
-import { GitResultChecker } from "../GitResultChecker.js";
+import { describe, expect, it } from "vitest";
 import type { ExecFileFn } from "../GitResultChecker.js";
+import { GitResultChecker } from "../GitResultChecker.js";
 
 // ─── Helpers ─────────────────────────────────────
 
@@ -9,14 +9,14 @@ function makeMockExec(responses: Record<string, string> = {}): {
 	calls: Array<{ args: string[] }>;
 } {
 	const calls: Array<{ args: string[] }> = [];
-	const fn: ExecFileFn = async (cmd: string, args: string[], _cwd: string) => {
+	const fn: ExecFileFn = async (_cmd: string, args: string[], _cwd: string) => {
 		calls.push({ args });
 
 		// Match on git subcommand + key args
 		const argsStr = args.join(" ");
 
 		if (argsStr.includes("status --porcelain")) {
-			return { stdout: responses["status"] ?? "" };
+			return { stdout: responses.status ?? "" };
 		}
 		if (argsStr.includes("rev-parse HEAD")) {
 			return { stdout: responses["rev-parse"] ?? "abc123\n" };
@@ -25,10 +25,10 @@ function makeMockExec(responses: Record<string, string> = {}): {
 			return { stdout: responses["rev-list"] ?? "0\n" };
 		}
 		if (argsStr.includes("log --format=%s")) {
-			return { stdout: responses["log"] ?? "" };
+			return { stdout: responses.log ?? "" };
 		}
 		if (argsStr.includes("diff --shortstat")) {
-			return { stdout: responses["diff"] ?? "" };
+			return { stdout: responses.diff ?? "" };
 		}
 
 		return { stdout: "" };
@@ -47,7 +47,9 @@ describe("GitResultChecker", () => {
 			const { fn } = makeMockExec({ status: "" });
 			const checker = new GitResultChecker(fn);
 
-			await expect(checker.assertCleanTree("/project")).resolves.toBeUndefined();
+			await expect(
+				checker.assertCleanTree("/project"),
+			).resolves.toBeUndefined();
 		});
 
 		it("throws on staged files", async () => {

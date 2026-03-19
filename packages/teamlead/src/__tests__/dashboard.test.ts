@@ -1,15 +1,18 @@
-import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { StateStore, OUTCOME_STATUSES } from "../StateStore.js";
-import type { SessionUpsert } from "../StateStore.js";
+import type http from "node:http";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildDashboardPayload } from "../bridge/dashboard-data.js";
 import { createBridgeApp, SseBroadcaster } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
-import type http from "node:http";
+import type { SessionUpsert } from "../StateStore.js";
+import { OUTCOME_STATUSES, StateStore } from "../StateStore.js";
 
 // --- Helpers ---
 
 const toSqlite = (d: Date) =>
-	d.toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+	d
+		.toISOString()
+		.replace("T", " ")
+		.replace(/\.\d+Z$/, "");
 
 function makeSession(overrides: Partial<SessionUpsert> = {}): SessionUpsert {
 	return {
@@ -44,14 +47,18 @@ describe("TERMINAL_STATUSES monotonic guard", () => {
 	});
 
 	it("rejected → running is blocked", () => {
-		store.upsertSession(makeSession({ execution_id: "e1", status: "rejected" }));
+		store.upsertSession(
+			makeSession({ execution_id: "e1", status: "rejected" }),
+		);
 		expect(store.getSession("e1")!.status).toBe("rejected");
 		store.upsertSession(makeSession({ execution_id: "e1", status: "running" }));
 		expect(store.getSession("e1")!.status).toBe("rejected");
 	});
 
 	it("deferred → running is blocked", () => {
-		store.upsertSession(makeSession({ execution_id: "e1", status: "deferred" }));
+		store.upsertSession(
+			makeSession({ execution_id: "e1", status: "deferred" }),
+		);
 		expect(store.getSession("e1")!.status).toBe("deferred");
 		store.upsertSession(makeSession({ execution_id: "e1", status: "running" }));
 		expect(store.getSession("e1")!.status).toBe("deferred");
@@ -76,13 +83,30 @@ describe("getTerminalSessionsSince", () => {
 
 	it("returns terminal sessions since the given timestamp", () => {
 		const now = new Date();
-		store.upsertSession(makeSession({ execution_id: "e1", status: "completed", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e2", status: "failed", last_activity_at: toSqlite(now) }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "completed",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e2",
+				status: "failed",
+				last_activity_at: toSqlite(now),
+			}),
+		);
 		// Before the timestamp
-		store.upsertSession(makeSession({
-			execution_id: "e3", status: "approved",
-			last_activity_at: toSqlite(new Date(now.getTime() - 48 * 60 * 60 * 1000)),
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e3",
+				status: "approved",
+				last_activity_at: toSqlite(
+					new Date(now.getTime() - 48 * 60 * 60 * 1000),
+				),
+			}),
+		);
 
 		const sinceTs = toSqlite(new Date(now.getTime() - 60 * 1000)); // 1 minute ago
 		const results = store.getTerminalSessionsSince(sinceTs);
@@ -92,9 +116,27 @@ describe("getTerminalSessionsSince", () => {
 
 	it("includes rejected, deferred, shelved statuses", () => {
 		const now = new Date();
-		store.upsertSession(makeSession({ execution_id: "e1", status: "rejected", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e2", status: "deferred", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e3", status: "shelved", last_activity_at: toSqlite(now) }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "rejected",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e2",
+				status: "deferred",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e3",
+				status: "shelved",
+				last_activity_at: toSqlite(now),
+			}),
+		);
 
 		const sinceTs = toSqlite(new Date(now.getTime() - 60 * 1000));
 		const results = store.getTerminalSessionsSince(sinceTs);
@@ -103,8 +145,20 @@ describe("getTerminalSessionsSince", () => {
 
 	it("does not return running/awaiting_review sessions", () => {
 		const now = new Date();
-		store.upsertSession(makeSession({ execution_id: "e1", status: "running", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e2", status: "awaiting_review", last_activity_at: toSqlite(now) }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "running",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e2",
+				status: "awaiting_review",
+				last_activity_at: toSqlite(now),
+			}),
+		);
 
 		const sinceTs = toSqlite(new Date(now.getTime() - 60 * 1000));
 		const results = store.getTerminalSessionsSince(sinceTs);
@@ -123,9 +177,27 @@ describe("getRecentOutcomeSessions", () => {
 
 	it("returns terminal sessions, not running/awaiting_review", () => {
 		const now = new Date();
-		store.upsertSession(makeSession({ execution_id: "e1", status: "running", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e2", status: "completed", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e3", status: "failed", last_activity_at: toSqlite(now) }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "running",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e2",
+				status: "completed",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e3",
+				status: "failed",
+				last_activity_at: toSqlite(now),
+			}),
+		);
 
 		const results = store.getRecentOutcomeSessions(10);
 		const ids = results.map((s) => s.execution_id).sort();
@@ -135,11 +207,13 @@ describe("getRecentOutcomeSessions", () => {
 	it("respects limit", () => {
 		const now = new Date();
 		for (let i = 0; i < 5; i++) {
-			store.upsertSession(makeSession({
-				execution_id: `e${i}`,
-				status: "completed",
-				last_activity_at: toSqlite(new Date(now.getTime() + i * 1000)),
-			}));
+			store.upsertSession(
+				makeSession({
+					execution_id: `e${i}`,
+					status: "completed",
+					last_activity_at: toSqlite(new Date(now.getTime() + i * 1000)),
+				}),
+			);
 		}
 
 		const results = store.getRecentOutcomeSessions(3);
@@ -148,14 +222,20 @@ describe("getRecentOutcomeSessions", () => {
 
 	it("orders by last_activity_at descending", () => {
 		const now = new Date();
-		store.upsertSession(makeSession({
-			execution_id: "old", status: "completed",
-			last_activity_at: toSqlite(new Date(now.getTime() - 10000)),
-		}));
-		store.upsertSession(makeSession({
-			execution_id: "new", status: "completed",
-			last_activity_at: toSqlite(now),
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "old",
+				status: "completed",
+				last_activity_at: toSqlite(new Date(now.getTime() - 10000)),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "new",
+				status: "completed",
+				last_activity_at: toSqlite(now),
+			}),
+		);
 
 		const results = store.getRecentOutcomeSessions(10);
 		expect(results[0]!.execution_id).toBe("new");
@@ -195,7 +275,9 @@ describe("buildDashboardPayload", () => {
 	});
 
 	it("awaiting_review session appears in metrics and active", () => {
-		store.upsertSession(makeSession({ execution_id: "e1", status: "awaiting_review" }));
+		store.upsertSession(
+			makeSession({ execution_id: "e1", status: "awaiting_review" }),
+		);
 		const payload = buildDashboardPayload(store, 15);
 		expect(payload.metrics.awaiting_review).toBe(1);
 		expect(payload.active).toHaveLength(1);
@@ -203,34 +285,100 @@ describe("buildDashboardPayload", () => {
 
 	it("today's completed/approved sessions count in completed_today", () => {
 		const now = new Date();
-		store.upsertSession(makeSession({ execution_id: "e1", status: "completed", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e2", status: "approved", last_activity_at: toSqlite(now) }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "completed",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e2",
+				status: "approved",
+				last_activity_at: toSqlite(now),
+			}),
+		);
 		const payload = buildDashboardPayload(store, 15);
 		expect(payload.metrics.completed_today).toBe(2);
 	});
 
 	it("rejected/deferred/shelved/blocked do NOT count as completed_today", () => {
 		const now = new Date();
-		store.upsertSession(makeSession({ execution_id: "e1", status: "rejected", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e2", status: "deferred", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e3", status: "shelved", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e4", status: "blocked", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e5", status: "completed", last_activity_at: toSqlite(now) }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "rejected",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e2",
+				status: "deferred",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e3",
+				status: "shelved",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e4",
+				status: "blocked",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e5",
+				status: "completed",
+				last_activity_at: toSqlite(now),
+			}),
+		);
 		const payload = buildDashboardPayload(store, 15);
 		expect(payload.metrics.completed_today).toBe(1); // only "completed", not rejected/deferred/shelved/blocked
 	});
 
 	it("today's failed sessions count in failed_today", () => {
-		store.upsertSession(makeSession({ execution_id: "e1", status: "failed", last_activity_at: toSqlite(new Date()) }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "failed",
+				last_activity_at: toSqlite(new Date()),
+			}),
+		);
 		const payload = buildDashboardPayload(store, 15);
 		expect(payload.metrics.failed_today).toBe(1);
 	});
 
 	it("rejected/deferred/shelved sessions appear in recent outcomes", () => {
 		const now = new Date();
-		store.upsertSession(makeSession({ execution_id: "e1", status: "rejected", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e2", status: "deferred", last_activity_at: toSqlite(now) }));
-		store.upsertSession(makeSession({ execution_id: "e3", status: "shelved", last_activity_at: toSqlite(now) }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "rejected",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e2",
+				status: "deferred",
+				last_activity_at: toSqlite(now),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "e3",
+				status: "shelved",
+				last_activity_at: toSqlite(now),
+			}),
+		);
 		const payload = buildDashboardPayload(store, 15);
 		expect(payload.recent).toHaveLength(3);
 		const statuses = payload.recent.map((s) => s.status).sort();
@@ -239,27 +387,41 @@ describe("buildDashboardPayload", () => {
 
 	it("recent does not include running/awaiting_review", () => {
 		store.upsertSession(makeSession({ execution_id: "e1", status: "running" }));
-		store.upsertSession(makeSession({ execution_id: "e2", status: "awaiting_review" }));
+		store.upsertSession(
+			makeSession({ execution_id: "e2", status: "awaiting_review" }),
+		);
 		const payload = buildDashboardPayload(store, 15);
 		expect(payload.recent).toHaveLength(0);
 	});
 
 	it("stuck only includes sessions running beyond threshold", () => {
 		const now = new Date();
-		store.upsertSession(makeSession({
-			execution_id: "stuck", status: "running",
-			last_activity_at: toSqlite(new Date(now.getTime() - 30 * 60 * 1000)),
-		}));
-		store.upsertSession(makeSession({
-			execution_id: "fresh", status: "running",
-			last_activity_at: toSqlite(now),
-		}));
+		store.upsertSession(
+			makeSession({
+				execution_id: "stuck",
+				status: "running",
+				last_activity_at: toSqlite(new Date(now.getTime() - 30 * 60 * 1000)),
+			}),
+		);
+		store.upsertSession(
+			makeSession({
+				execution_id: "fresh",
+				status: "running",
+				last_activity_at: toSqlite(now),
+			}),
+		);
 		const payload = buildDashboardPayload(store, 15);
 		expect(payload.stuck.map((s) => s.execution_id)).toEqual(["stuck"]);
 	});
 
 	it("payload does not leak issue_id field", () => {
-		store.upsertSession(makeSession({ execution_id: "e1", status: "running", issue_id: "secret-id" }));
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "running",
+				issue_id: "secret-id",
+			}),
+		);
 		const payload = buildDashboardPayload(store, 15);
 		const session = payload.active[0]!;
 		expect(session).not.toHaveProperty("issue_id");
@@ -275,13 +437,21 @@ describe("SseBroadcaster", () => {
 		store = await StateStore.create(":memory:");
 	});
 
-	function mockResponse(): express.Response & { chunks: string[]; ended: boolean } {
+	function mockResponse(): express.Response & {
+		chunks: string[];
+		ended: boolean;
+	} {
 		const chunks: string[] = [];
 		const res = {
 			chunks,
 			ended: false,
-			write(data: string) { chunks.push(data); return true; },
-			end() { (res as any).ended = true; },
+			write(data: string) {
+				chunks.push(data);
+				return true;
+			},
+			end() {
+				(res as any).ended = true;
+			},
 		} as any;
 		return res;
 	}
@@ -433,12 +603,20 @@ describe("Dashboard /actions route (no auth)", () => {
 	let baseUrl: string;
 
 	const testProjects = [
-		{ projectName: "geoforge3d", projectRoot: "/tmp/geoforge3d", projectRepo: "xrliAnnie/GeoForge3D" },
+		{
+			projectName: "geoforge3d",
+			projectRoot: "/tmp/geoforge3d",
+			projectRepo: "xrliAnnie/GeoForge3D",
+		},
 	];
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
-		const app = createBridgeApp(store, testProjects, makeConfig({ apiToken: "secret" }));
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			makeConfig({ apiToken: "secret" }),
+		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
@@ -454,7 +632,9 @@ describe("Dashboard /actions route (no auth)", () => {
 	});
 
 	it("/actions/reject works without auth (while /api/actions/reject requires auth)", async () => {
-		store.upsertSession(makeSession({ execution_id: "e1", status: "awaiting_review" }));
+		store.upsertSession(
+			makeSession({ execution_id: "e1", status: "awaiting_review" }),
+		);
 
 		// /api/actions requires auth
 		const apiRes = await fetch(`${baseUrl}/api/actions/reject`, {
@@ -477,7 +657,9 @@ describe("Dashboard /actions route (no auth)", () => {
 	});
 
 	it("/actions/defer transitions awaiting_review to deferred", async () => {
-		store.upsertSession(makeSession({ execution_id: "e1", status: "awaiting_review" }));
+		store.upsertSession(
+			makeSession({ execution_id: "e1", status: "awaiting_review" }),
+		);
 		const res = await fetch(`${baseUrl}/actions/defer`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },

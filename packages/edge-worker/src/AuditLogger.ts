@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
-import initSqlJs, { type Database } from "sql.js";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { DecisionResult, ExecutionContext } from "flywheel-core";
+import initSqlJs, { type Database } from "sql.js";
 
 export interface AuditEntry {
 	id: string;
@@ -133,9 +133,7 @@ export class AuditLogger {
 		writeFileSync(this.dbPath, Buffer.from(data));
 	}
 
-	private deriveEventType(
-		result: DecisionResult,
-	): AuditEntry["eventType"] {
+	private deriveEventType(result: DecisionResult): AuditEntry["eventType"] {
 		if (result.decisionSource === "hard_rule") return "hard_rule_triggered";
 		if (result.decisionSource === "fallback_heuristic") return "llm_fallback";
 		return "decision_made";

@@ -1,13 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { DecisionResult, ExecutionContext } from "flywheel-core";
-import { SlackNotifier } from "../SlackNotifier.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SlackNotifierConfig } from "../SlackNotifier.js";
+import { SlackNotifier } from "../SlackNotifier.js";
 
 // Mock SlackMessageService
 const mockPostMessage = vi.fn().mockResolvedValue(undefined);
 const mockMessageService = { postMessage: mockPostMessage } as any;
 
-function makeConfig(overrides?: Partial<SlackNotifierConfig>): SlackNotifierConfig {
+function makeConfig(
+	overrides?: Partial<SlackNotifierConfig>,
+): SlackNotifierConfig {
 	return {
 		channelId: "C07TEST",
 		botToken: "xoxb-test-token",
@@ -92,9 +94,11 @@ describe("SlackNotifier", () => {
 			await notifier.notify(makeCtx(), makeDecision());
 
 			const { blocks } = mockPostMessage.mock.calls[0][0];
-			const sections = blocks.filter((b: any) => b.type === "section" && b.text);
-			const reasoningSection = sections.find(
-				(s: any) => s.text.text.includes("Reasoning"),
+			const sections = blocks.filter(
+				(b: any) => b.type === "section" && b.text,
+			);
+			const reasoningSection = sections.find((s: any) =>
+				s.text.text.includes("Reasoning"),
 			);
 			expect(reasoningSection).toBeDefined();
 			expect(reasoningSection.text.text).toContain("Changes look reasonable");
@@ -108,9 +112,11 @@ describe("SlackNotifier", () => {
 			);
 
 			const { blocks } = mockPostMessage.mock.calls[0][0];
-			const sections = blocks.filter((b: any) => b.type === "section" && b.text);
-			const concernSection = sections.find(
-				(s: any) => s.text.text.includes("Concerns"),
+			const sections = blocks.filter(
+				(b: any) => b.type === "section" && b.text,
+			);
+			const concernSection = sections.find((s: any) =>
+				s.text.text.includes("Concerns"),
 			);
 			expect(concernSection).toBeDefined();
 			expect(concernSection.text.text).toContain("Modified auth module");
@@ -118,15 +124,14 @@ describe("SlackNotifier", () => {
 		});
 
 		it("omits concerns when empty", async () => {
-			await notifier.notify(
-				makeCtx(),
-				makeDecision({ concerns: [] }),
-			);
+			await notifier.notify(makeCtx(), makeDecision({ concerns: [] }));
 
 			const { blocks } = mockPostMessage.mock.calls[0][0];
-			const sections = blocks.filter((b: any) => b.type === "section" && b.text);
-			const concernSection = sections.find(
-				(s: any) => s.text.text.includes("Concerns"),
+			const sections = blocks.filter(
+				(b: any) => b.type === "section" && b.text,
+			);
+			const concernSection = sections.find((s: any) =>
+				s.text.text.includes("Concerns"),
 			);
 			expect(concernSection).toBeUndefined();
 		});
@@ -139,9 +144,7 @@ describe("SlackNotifier", () => {
 			expect(actions).toBeDefined();
 			expect(actions.elements).toHaveLength(4);
 
-			const buttonTexts = actions.elements.map(
-				(e: any) => e.text.text,
-			);
+			const buttonTexts = actions.elements.map((e: any) => e.text.text);
 			expect(buttonTexts).toContain("Approve & Merge");
 			expect(buttonTexts).toContain("Reject");
 			expect(buttonTexts).toContain("Defer");
@@ -174,17 +177,12 @@ describe("SlackNotifier", () => {
 		});
 
 		it("includes retry + shelve buttons", async () => {
-			await notifier.notify(
-				makeCtx(),
-				makeDecision({ route: "blocked" }),
-			);
+			await notifier.notify(makeCtx(), makeDecision({ route: "blocked" }));
 
 			const { blocks } = mockPostMessage.mock.calls[0][0];
 			const actions = blocks.find((b: any) => b.type === "actions");
 			expect(actions).toBeDefined();
-			const buttonTexts = actions.elements.map(
-				(e: any) => e.text.text,
-			);
+			const buttonTexts = actions.elements.map((e: any) => e.text.text);
 			expect(buttonTexts).toContain("Retry");
 			expect(buttonTexts).toContain("Shelve");
 		});

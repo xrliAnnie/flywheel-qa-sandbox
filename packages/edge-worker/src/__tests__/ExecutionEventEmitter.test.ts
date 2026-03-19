@@ -1,8 +1,8 @@
-import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import http from "node:http";
-import { TeamLeadClient, NoOpEventEmitter } from "../ExecutionEventEmitter.js";
-import type { EventEnvelope } from "../ExecutionEventEmitter.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlueprintResult } from "../Blueprint.js";
+import type { EventEnvelope } from "../ExecutionEventEmitter.js";
+import { NoOpEventEmitter, TeamLeadClient } from "../ExecutionEventEmitter.js";
 
 function makeEnvelope(overrides: Partial<EventEnvelope> = {}): EventEnvelope {
 	return {
@@ -70,7 +70,13 @@ describe("TeamLeadClient", () => {
 				partial: false,
 				headSha: "abc123",
 			},
-			decision: { route: "needs_review", confidence: 0.8, reasoning: "ok", concerns: [], decisionSource: "haiku" },
+			decision: {
+				route: "needs_review",
+				confidence: 0.8,
+				reasoning: "ok",
+				concerns: [],
+				decisionSource: "haiku",
+			},
 		};
 
 		await client.emitCompleted(makeEnvelope(), result, "summary text");
@@ -87,7 +93,11 @@ describe("TeamLeadClient", () => {
 
 	it("emitFailed includes error + lastActivity", async () => {
 		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
-		await client.emitFailed(makeEnvelope(), "git preflight failed", "2024-01-01T00:00:00Z");
+		await client.emitFailed(
+			makeEnvelope(),
+			"git preflight failed",
+			"2024-01-01T00:00:00Z",
+		);
 		await client.flush();
 
 		expect(receivedBodies).toHaveLength(1);

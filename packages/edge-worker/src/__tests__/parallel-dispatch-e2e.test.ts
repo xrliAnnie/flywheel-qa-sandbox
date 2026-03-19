@@ -1,20 +1,21 @@
-import { describe, expect, it, vi } from "vitest";
-import { DagDispatcher } from "../DagDispatcher.js";
-import { DagResolver } from "flywheel-dag-resolver";
 import { Semaphore } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
+import { DagResolver } from "flywheel-dag-resolver";
+import { describe, expect, it, vi } from "vitest";
 import type {
 	Blueprint,
 	BlueprintContext,
 	BlueprintResult,
 } from "../Blueprint.js";
+import { DagDispatcher } from "../DagDispatcher.js";
 
-// Mock node:child_process to prevent osascript from opening Terminal windows
+// Mock node:child_process to prevent osascript/tmux from running during tests
 vi.mock("node:child_process", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("node:child_process")>();
 	return {
 		...actual,
 		execFile: vi.fn(),
+		execFileSync: vi.fn(() => ""), // prevent real tmux list-clients calls
 	};
 });
 
@@ -61,7 +62,11 @@ describe("Parallel Dispatch E2E", () => {
 		} as unknown as Blueprint;
 		const semaphore = new Semaphore(2);
 		const dispatcher = new DagDispatcher(
-			resolver, blueprint, "/project", ctx, semaphore,
+			resolver,
+			blueprint,
+			"/project",
+			ctx,
+			semaphore,
 		);
 
 		const result = await dispatcher.dispatch();
@@ -97,7 +102,11 @@ describe("Parallel Dispatch E2E", () => {
 		} as unknown as Blueprint;
 		const semaphore = new Semaphore(3);
 		const dispatcher = new DagDispatcher(
-			resolver, blueprint, "/project", ctx, semaphore,
+			resolver,
+			blueprint,
+			"/project",
+			ctx,
+			semaphore,
 		);
 
 		const result = await dispatcher.dispatch();
@@ -128,7 +137,11 @@ describe("Parallel Dispatch E2E", () => {
 		const blueprint = makeTimedBlueprint(results, 10);
 		const semaphore = new Semaphore(3);
 		const dispatcher = new DagDispatcher(
-			resolver, blueprint, "/project", ctx, semaphore,
+			resolver,
+			blueprint,
+			"/project",
+			ctx,
+			semaphore,
 		);
 
 		const result = await dispatcher.dispatch();
@@ -138,7 +151,7 @@ describe("Parallel Dispatch E2E", () => {
 		expect(result.completed).toContain("C");
 		expect(result.completed).toContain("D");
 		expect(result.halted).toBe(true);
-		expect(result.nodeResults!["B"]!.error).toBe("test failure");
+		expect(result.nodeResults!.B!.error).toBe("test failure");
 	});
 
 	it("onNodeComplete callback error does not affect dispatch", async () => {
@@ -154,7 +167,11 @@ describe("Parallel Dispatch E2E", () => {
 		const blueprint = makeTimedBlueprint(results, 10);
 		const semaphore = new Semaphore(2);
 		const dispatcher = new DagDispatcher(
-			resolver, blueprint, "/project", ctx, semaphore,
+			resolver,
+			blueprint,
+			"/project",
+			ctx,
+			semaphore,
 		);
 
 		const completedNodes: string[] = [];

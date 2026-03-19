@@ -75,23 +75,17 @@ export class WorkflowFSM {
     /** Quick check without side effects (no guards, no directives). */
     canTransition(from, to) {
         const allowed = this.transitions[from];
-        return allowed !== undefined && allowed.includes(to);
+        return allowed?.includes(to) ?? false;
     }
 }
 // ── Flywheel workflow transition map ─────────────────────────────────
 export const WORKFLOW_TRANSITIONS = {
     pending: ["running"],
-    running: [
-        "awaiting_review",
-        "approved",
-        "blocked",
-        "completed",
-        "failed",
-    ],
+    running: ["awaiting_review", "approved", "blocked", "completed", "failed"],
     awaiting_review: ["approved", "rejected", "deferred", "shelved"],
-    blocked: ["running", "deferred", "shelved"],
-    failed: ["running", "shelved"],
-    rejected: ["running", "shelved"],
+    blocked: ["deferred", "shelved"],
+    failed: ["shelved"],
+    rejected: ["shelved"],
     deferred: ["shelved"],
     approved: [],
     completed: [],
@@ -117,6 +111,7 @@ export const ACTION_DEFINITIONS = [
         action: "retry",
         fromStates: ["failed", "blocked", "rejected"],
         targetState: "running",
+        composite: true,
     },
     {
         action: "shelve",

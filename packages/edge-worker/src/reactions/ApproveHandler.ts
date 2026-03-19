@@ -18,9 +18,7 @@ export class ApproveHandler implements ActionHandler {
 	async execute(action: SlackAction): Promise<ActionResult> {
 		try {
 			// Find PR for the issue's branch
-			const repoFlag = this.projectRepo
-				? ["-R", this.projectRepo]
-				: [];
+			const repoFlag = this.projectRepo ? ["-R", this.projectRepo] : [];
 			const listResult = await this.execFile(
 				"gh",
 				[
@@ -73,11 +71,12 @@ export class ApproveHandler implements ActionHandler {
 			return { success: true, message: msg, alreadyResponded: true };
 		} catch (err) {
 			const errMsg = err instanceof Error ? err.message : String(err);
-			await postSlackResponse(
-				action.responseUrl,
-				`Approve failed: ${errMsg}`,
-			);
-			return { success: false, message: `Approve failed: ${errMsg}`, alreadyResponded: true };
+			await postSlackResponse(action.responseUrl, `Approve failed: ${errMsg}`);
+			return {
+				success: false,
+				message: `Approve failed: ${errMsg}`,
+				alreadyResponded: true,
+			};
 		}
 	}
 }

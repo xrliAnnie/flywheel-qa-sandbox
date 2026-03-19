@@ -1,10 +1,20 @@
-import type { StateStore, Session } from "./StateStore.js";
-import { buildSessionKey, buildHookBody, type HookPayload } from "./bridge/hook-payload.js";
-import { applyTransition, type ApplyTransitionOpts } from "./applyTransition.js";
+import {
+	type ApplyTransitionOpts,
+	applyTransition,
+} from "./applyTransition.js";
+import {
+	buildHookBody,
+	buildSessionKey,
+	type HookPayload,
+} from "./bridge/hook-payload.js";
+import type { Session, StateStore } from "./StateStore.js";
 
 export interface HeartbeatNotifier {
 	onSessionStuck(session: Session, minutesSinceActivity: number): Promise<void>;
-	onSessionOrphaned(session: Session, minutesSinceHeartbeat: number): Promise<void>;
+	onSessionOrphaned(
+		session: Session,
+		minutesSinceHeartbeat: number,
+	): Promise<void>;
 }
 
 /**
@@ -61,8 +71,12 @@ export class HeartbeatService {
 
 			let minutesSince = this.thresholdMinutes;
 			if (session.last_activity_at) {
-				const lastActivity = new Date(session.last_activity_at.replace(" ", "T") + "Z");
-				minutesSince = Math.round((Date.now() - lastActivity.getTime()) / 60_000);
+				const lastActivity = new Date(
+					`${session.last_activity_at.replace(" ", "T")}Z`,
+				);
+				minutesSince = Math.round(
+					(Date.now() - lastActivity.getTime()) / 60_000,
+				);
 			}
 
 			try {
@@ -89,13 +103,20 @@ export class HeartbeatService {
 
 			let minutesSince = this.orphanThresholdMinutes;
 			if (session.heartbeat_at) {
-				const lastHeartbeat = new Date(session.heartbeat_at.replace(" ", "T") + "Z");
-				minutesSince = Math.round((Date.now() - lastHeartbeat.getTime()) / 60_000);
+				const lastHeartbeat = new Date(
+					`${session.heartbeat_at.replace(" ", "T")}Z`,
+				);
+				minutesSince = Math.round(
+					(Date.now() - lastHeartbeat.getTime()) / 60_000,
+				);
 			}
 
 			try {
 				// Force-fail the orphaned session
-				const now = new Date().toISOString().replace("T", " ").replace(/\.\d+Z$/, "");
+				const now = new Date()
+					.toISOString()
+					.replace("T", " ")
+					.replace(/\.\d+Z$/, "");
 				if (this.transitionOpts) {
 					applyTransition(
 						this.transitionOpts,
@@ -107,7 +128,10 @@ export class HeartbeatService {
 							projectName: session.project_name,
 							trigger: "orphan_reap",
 						},
-						{ last_activity_at: now, last_error: `Orphaned: no heartbeat for ${minutesSince} minutes` },
+						{
+							last_activity_at: now,
+							last_error: `Orphaned: no heartbeat for ${minutesSince} minutes`,
+						},
 					);
 				} else {
 					this.store.forceStatus(
@@ -172,7 +196,10 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 		await this.sendHook(hookPayload, sessionKey);
 	}
 
-	private async sendHook(hookPayload: HookPayload, sessionKey: string): Promise<void> {
+	private async sendHook(
+		hookPayload: HookPayload,
+		sessionKey: string,
+	): Promise<void> {
 		const body = buildHookBody("product-lead", hookPayload, sessionKey);
 
 		const controller = new AbortController();

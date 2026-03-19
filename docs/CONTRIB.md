@@ -14,7 +14,7 @@ The goal is autonomous dev execution where human attention is the bottleneck, no
 
 ## Prerequisites
 
-- **Node.js** >= 18 (ES2022 target)
+- **Node.js** >= 22 (CI pins to Node 22 LTS via `.node-version`; ES2022 target)
 - **pnpm** 10.13.1 (`corepack enable && corepack prepare pnpm@10.13.1 --activate`)
 - **TypeScript** ^5.3.3
 
@@ -153,8 +153,8 @@ docs: add v0.2 Step 2c implementation plan
 ### Pull Requests
 
 - PRs target `main`
-- Code review required before merge
-- All CI checks must pass (lint, typecheck, tests)
+- CI checks must pass before merge: build, typecheck, test (blocking); lint (advisory, non-blocking until GEO-TBD)
+- Automated code review via Codex/Gemini
 - Link relevant Linear issues in the PR body
 
 ## TypeScript Configuration

@@ -1,17 +1,16 @@
-import { describe, it, expect, vi } from "vitest";
 import { mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { ExecutionContext, DecisionResult } from "flywheel-core";
-import { DecisionLayer } from "../decision/DecisionLayer.js";
+import { join } from "node:path";
+import type { ExecutionContext, LLMClient } from "flywheel-core";
+import { describe, expect, it, vi } from "vitest";
+import { AuditLogger } from "../AuditLogger.js";
 import type { FullDiffProvider } from "../decision/DecisionLayer.js";
-import { HardRuleEngine } from "../decision/HardRuleEngine.js";
+import { DecisionLayer } from "../decision/DecisionLayer.js";
+import { FallbackHeuristic } from "../decision/FallbackHeuristic.js";
 import { HaikuTriageAgent } from "../decision/HaikuTriageAgent.js";
 import { HaikuVerifier } from "../decision/HaikuVerifier.js";
-import { FallbackHeuristic } from "../decision/FallbackHeuristic.js";
+import { HardRuleEngine } from "../decision/HardRuleEngine.js";
 import { defaultRules } from "../decision/rules.js";
-import { AuditLogger } from "../AuditLogger.js";
-import type { LLMClient } from "flywheel-core";
 
 // ── Helpers ─────────────────────────────────────────
 
@@ -42,7 +41,11 @@ function makeCtx(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
 
 function makeDiffProvider(): FullDiffProvider {
 	return {
-		getFullDiff: vi.fn().mockResolvedValue("--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,3 +1,5 @@\n+// new line"),
+		getFullDiff: vi
+			.fn()
+			.mockResolvedValue(
+				"--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1,3 +1,5 @@\n+// new line",
+			),
 	};
 }
 
@@ -63,7 +66,10 @@ let testDir: string;
 let auditLogger: AuditLogger;
 
 async function setupAuditLogger(): Promise<AuditLogger> {
-	testDir = join(tmpdir(), `flywheel-int-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+	testDir = join(
+		tmpdir(),
+		`flywheel-int-test-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+	);
 	mkdirSync(testDir, { recursive: true });
 	auditLogger = new AuditLogger(join(testDir, "audit.db"));
 	await auditLogger.init();
@@ -71,8 +77,16 @@ async function setupAuditLogger(): Promise<AuditLogger> {
 }
 
 async function cleanup(): Promise<void> {
-	try { await auditLogger?.close(); } catch { /* ok */ }
-	try { rmSync(testDir, { recursive: true, force: true }); } catch { /* ok */ }
+	try {
+		await auditLogger?.close();
+	} catch {
+		/* ok */
+	}
+	try {
+		rmSync(testDir, { recursive: true, force: true });
+	} catch {
+		/* ok */
+	}
 }
 
 describe("DecisionLayer Integration", () => {
@@ -80,13 +94,22 @@ describe("DecisionLayer Integration", () => {
 		const logger = await setupAuditLogger();
 		try {
 			const hardRules = new HardRuleEngine(defaultRules());
-			const noLlm: LLMClient = { chat: () => { throw new Error("should not be called"); } };
+			const noLlm: LLMClient = {
+				chat: () => {
+					throw new Error("should not be called");
+				},
+			};
 			const triage = new HaikuTriageAgent(noLlm, "haiku", 2000);
 			const verifier = new HaikuVerifier(noLlm, "haiku");
 			const fallback = new FallbackHeuristic();
 
 			const layer = new DecisionLayer(
-				hardRules, triage, verifier, fallback, logger, makeDiffProvider(),
+				hardRules,
+				triage,
+				verifier,
+				fallback,
+				logger,
+				makeDiffProvider(),
 			);
 
 			// HR-001: security label → escalate
@@ -135,7 +158,12 @@ describe("DecisionLayer Integration", () => {
 			const diffProvider = makeDiffProvider();
 
 			const layer = new DecisionLayer(
-				hardRules, triage, verifier, fallback, logger, diffProvider,
+				hardRules,
+				triage,
+				verifier,
+				fallback,
+				logger,
+				diffProvider,
 			);
 
 			const result = await layer.decide(makeCtx(), "/project");
@@ -157,16 +185,27 @@ describe("DecisionLayer Integration", () => {
 		const logger = await setupAuditLogger();
 		try {
 			const hardRules = new HardRuleEngine(defaultRules());
-			const noLlm: LLMClient = { chat: () => { throw new Error("should not be called"); } };
+			const noLlm: LLMClient = {
+				chat: () => {
+					throw new Error("should not be called");
+				},
+			};
 			const triage = new HaikuTriageAgent(noLlm, "haiku", 2000);
 			const verifier = new HaikuVerifier(noLlm, "haiku");
 			const fallback = new FallbackHeuristic();
 
 			const layer = new DecisionLayer(
-				hardRules, triage, verifier, fallback, logger, makeDiffProvider(),
+				hardRules,
+				triage,
+				verifier,
+				fallback,
+				logger,
+				makeDiffProvider(),
 			);
 
-			const ctx = makeCtx({ landingStatus: { status: "merged", mergedAt: "2025-01-01" } });
+			const ctx = makeCtx({
+				landingStatus: { status: "merged", mergedAt: "2025-01-01" },
+			});
 			const result = await layer.decide(ctx, "/project");
 
 			expect(result.route).toBe("auto_approve");
@@ -180,16 +219,27 @@ describe("DecisionLayer Integration", () => {
 		const logger = await setupAuditLogger();
 		try {
 			const hardRules = new HardRuleEngine(defaultRules());
-			const noLlm: LLMClient = { chat: () => { throw new Error("should not be called"); } };
+			const noLlm: LLMClient = {
+				chat: () => {
+					throw new Error("should not be called");
+				},
+			};
 			const triage = new HaikuTriageAgent(noLlm, "haiku", 2000);
 			const verifier = new HaikuVerifier(noLlm, "haiku");
 			const fallback = new FallbackHeuristic();
 
 			const layer = new DecisionLayer(
-				hardRules, triage, verifier, fallback, logger, makeDiffProvider(),
+				hardRules,
+				triage,
+				verifier,
+				fallback,
+				logger,
+				makeDiffProvider(),
 			);
 
-			const ctx = makeCtx({ landingStatus: { status: "ready_to_merge", prNumber: 42 } });
+			const ctx = makeCtx({
+				landingStatus: { status: "ready_to_merge", prNumber: 42 },
+			});
 			const result = await layer.decide(ctx, "/project");
 
 			expect(result.route).toBe("needs_review");
@@ -227,7 +277,12 @@ describe("DecisionLayer Integration", () => {
 			const fallback = new FallbackHeuristic();
 
 			const layer = new DecisionLayer(
-				hardRules, triage, verifier, fallback, logger, makeDiffProvider(),
+				hardRules,
+				triage,
+				verifier,
+				fallback,
+				logger,
+				makeDiffProvider(),
 			);
 
 			const result = await layer.decide(makeCtx(), "/project");
@@ -257,7 +312,12 @@ describe("DecisionLayer Integration", () => {
 			const diffProvider = makeDiffProvider();
 
 			const layer = new DecisionLayer(
-				hardRules, triage, verifier, fallback, logger, diffProvider,
+				hardRules,
+				triage,
+				verifier,
+				fallback,
+				logger,
+				diffProvider,
 			);
 
 			const result = await layer.decide(makeCtx(), "/project");
@@ -278,13 +338,20 @@ describe("DecisionLayer Integration", () => {
 		const logger = await setupAuditLogger();
 		try {
 			const hardRules = new HardRuleEngine(defaultRules());
-			const failLlm: LLMClient = { chat: () => Promise.reject(new Error("API rate limit")) };
+			const failLlm: LLMClient = {
+				chat: () => Promise.reject(new Error("API rate limit")),
+			};
 			const triage = new HaikuTriageAgent(failLlm, "haiku", 2000);
 			const verifier = new HaikuVerifier(failLlm, "haiku");
 			const fallback = new FallbackHeuristic();
 
 			const layer = new DecisionLayer(
-				hardRules, triage, verifier, fallback, logger, makeDiffProvider(),
+				hardRules,
+				triage,
+				verifier,
+				fallback,
+				logger,
+				makeDiffProvider(),
 			);
 
 			const result = await layer.decide(makeCtx(), "/project");
@@ -303,13 +370,22 @@ describe("DecisionLayer Integration", () => {
 		const logger = await setupAuditLogger();
 		try {
 			const hardRules = new HardRuleEngine(defaultRules());
-			const noLlm: LLMClient = { chat: () => { throw new Error("no key"); } };
+			const noLlm: LLMClient = {
+				chat: () => {
+					throw new Error("no key");
+				},
+			};
 			const triage = new HaikuTriageAgent(noLlm, "haiku", 2000);
 			const verifier = new HaikuVerifier(noLlm, "haiku");
 			const fallback = new FallbackHeuristic();
 
 			const layer = new DecisionLayer(
-				hardRules, triage, verifier, fallback, logger, makeDiffProvider(),
+				hardRules,
+				triage,
+				verifier,
+				fallback,
+				logger,
+				makeDiffProvider(),
 			);
 
 			// Run two decisions for different issues
@@ -333,13 +409,22 @@ describe("DecisionLayer Integration", () => {
 		const logger = await setupAuditLogger();
 		try {
 			const hardRules = new HardRuleEngine(defaultRules());
-			const noLlm: LLMClient = { chat: () => { throw new Error("no key"); } };
+			const noLlm: LLMClient = {
+				chat: () => {
+					throw new Error("no key");
+				},
+			};
 			const triage = new HaikuTriageAgent(noLlm, "haiku", 2000);
 			const verifier = new HaikuVerifier(noLlm, "haiku");
 			const fallback = new FallbackHeuristic();
 
 			const layer = new DecisionLayer(
-				hardRules, triage, verifier, fallback, logger, makeDiffProvider(),
+				hardRules,
+				triage,
+				verifier,
+				fallback,
+				logger,
+				makeDiffProvider(),
 			);
 
 			const ctx = makeCtx({ partial: true });
