@@ -16,6 +16,7 @@ import {
 	notifyAgent,
 } from "./bridge/hook-payload.js";
 import type { BridgeConfig } from "./bridge/types.js";
+import { type ProjectEntry, resolveLeadForProject } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
 
 function sqliteDatetime(): string {
@@ -28,6 +29,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	constructor(
 		private store: StateStore,
 		private config: BridgeConfig,
+		private projects: ProjectEntry[],
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
@@ -167,30 +169,40 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const session = this.store.getSession(env.executionId);
 		if (!session) return;
 
-		const sessionKey = buildSessionKey(session);
-		const hookPayload: HookPayload = {
-			event_type: eventType,
-			execution_id: env.executionId,
-			issue_id: env.issueId,
-			issue_identifier: session.issue_identifier,
-			issue_title: session.issue_title,
-			project_name: env.projectName,
-			status: session.status,
-			decision_route: session.decision_route,
-			commit_count: session.commit_count,
-			lines_added: session.lines_added,
-			lines_removed: session.lines_removed,
-			summary: session.summary,
-			last_error: session.last_error,
-			thread_id: session.thread_id,
-			channel: this.config.notificationChannel,
-		};
-		const body = buildHookBody("product-lead", hookPayload, sessionKey);
-		const p = notifyAgent(
-			this.config.gatewayUrl,
-			this.config.hooksToken,
-			body,
-		).catch(() => {});
-		this.pending.push(p);
+		try {
+			const lead = resolveLeadForProject(this.projects, env.projectName);
+			const existingThread = this.store.getThreadByIssue(env.issueId);
+			const channel = existingThread?.channel ?? lead.channel;
+			const sessionKey = buildSessionKey(session);
+			const hookPayload: HookPayload = {
+				event_type: eventType,
+				execution_id: env.executionId,
+				issue_id: env.issueId,
+				issue_identifier: session.issue_identifier,
+				issue_title: session.issue_title,
+				project_name: env.projectName,
+				status: session.status,
+				decision_route: session.decision_route,
+				commit_count: session.commit_count,
+				lines_added: session.lines_added,
+				lines_removed: session.lines_removed,
+				summary: session.summary,
+				last_error: session.last_error,
+				thread_id: session.thread_id,
+				channel,
+			};
+			const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
+			const p = notifyAgent(
+				this.config.gatewayUrl,
+				this.config.hooksToken,
+				body,
+			).catch(() => {});
+			this.pending.push(p);
+		} catch (err) {
+			console.warn(
+				`[DirectEventSink] Unknown project "${env.projectName}" — skipping notification:`,
+				(err as Error).message,
+			);
+		}
 	}
 }
