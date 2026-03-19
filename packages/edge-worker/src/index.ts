@@ -113,3 +113,33 @@ export type {
 	WorktreeInfo,
 } from "./WorktreeManager.js";
 export { WorktreeManager } from "./WorktreeManager.js";
+// CIPHER system (v1.3)
+export { CipherWriter } from "./cipher/CipherWriter.js";
+export { CipherReader } from "./cipher/CipherReader.js";
+export { CipherSyncService } from "./cipher/CipherSyncService.js";
+export type { CipherSyncConfig } from "./cipher/CipherSyncService.js";
+export { extractDimensions } from "./cipher/dimensions.js";
+export {
+	generatePatternKeys,
+	getFallbackOrder,
+} from "./cipher/pattern-keys.js";
+export {
+	posteriorMean,
+	wilsonLowerBound,
+	maturityLevel,
+	classifyOutcome,
+	shouldInjectPattern,
+} from "./cipher/statistics.js";
+export type {
+	PatternDimensions,
+	SnapshotParams,
+	OutcomeParams,
+	CipherContext,
+	PatternStatistics,
+	SnapshotInputDto,
+	CipherProposalPayload,
+	CipherNotifyFn,
+	CipherPrinciple,
+	CipherSkill,
+	CipherQuestion,
+} from "./cipher/types.js";

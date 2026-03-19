@@ -1,5 +1,6 @@
 import type { DecisionResult, ExecutionContext } from "flywheel-core";
 import type { AuditLogger } from "../AuditLogger.js";
+import type { CipherReader } from "../cipher/CipherReader.js";
 import type { FallbackHeuristic } from "./FallbackHeuristic.js";
 import type { HaikuTriageAgent } from "./HaikuTriageAgent.js";
 import type { HaikuVerifier } from "./HaikuVerifier.js";
@@ -25,6 +26,7 @@ export class DecisionLayer implements IDecisionLayer {
 		private fallback: FallbackHeuristic,
 		private auditLogger: AuditLogger,
 		private diffProvider: FullDiffProvider,
+		private cipherReader?: CipherReader,
 	) {}
 
 	async decide(ctx: ExecutionContext, cwd: string): Promise<DecisionResult> {
@@ -73,9 +75,29 @@ export class DecisionLayer implements IDecisionLayer {
 			return result;
 		}
 
+		// CIPHER context injection (non-fatal)
+		let cipherContext: string | undefined;
+		if (this.cipherReader) {
+			try {
+				const cipher = await this.cipherReader.buildPromptContext({
+					labels: ctx.labels,
+					exitReason: ctx.exitReason,
+					changedFilePaths: ctx.changedFilePaths,
+					commitCount: ctx.commitCount,
+					filesChangedCount: ctx.filesChangedCount,
+					linesAdded: ctx.linesAdded,
+					linesRemoved: ctx.linesRemoved,
+					consecutiveFailures: ctx.consecutiveFailures,
+				});
+				if (cipher) cipherContext = cipher.promptText;
+			} catch {
+				// Non-fatal — proceed without CIPHER context
+			}
+		}
+
 		// Step 2: LLM triage
 		try {
-			result = await this.triage.triage(ctx);
+			result = await this.triage.triage(ctx, cipherContext);
 		} catch (err) {
 			// LLM failure → fallback
 			const errMsg = err instanceof Error ? err.message : String(err);

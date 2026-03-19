@@ -21,6 +21,7 @@ function makeConfig(
 
 function makeCtx(overrides?: Partial<ExecutionContext>): ExecutionContext {
 	return {
+		executionId: "test-exec-id",
 		issueId: "issue-123",
 		issueIdentifier: "GEO-95",
 		issueTitle: "Add dark mode support",

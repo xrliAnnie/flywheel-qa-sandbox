@@ -193,7 +193,7 @@ describe("Action tools", () => {
 	});
 
 	// --- reject ---
-	it("reject transitions awaiting_review to rejected", () => {
+	it("reject transitions awaiting_review to rejected", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -201,7 +201,7 @@ describe("Action tools", () => {
 			status: "awaiting_review",
 			issue_identifier: "GEO-50",
 		});
-		const result = transitionSession(
+		const result = await transitionSession(
 			store,
 			"reject",
 			"e1",
@@ -212,14 +212,14 @@ describe("Action tools", () => {
 		expect(store.getSession("e1")!.last_error).toBe("Code quality issues");
 	});
 
-	it("reject from running fails", () => {
+	it("reject from running fails", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "running",
 		});
-		const result = transitionSession(store, "reject", "e1");
+		const result = await transitionSession(store, "reject", "e1");
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("awaiting_review");
 	});
@@ -254,14 +254,14 @@ describe("Action tools", () => {
 	});
 
 	// --- defer ---
-	it("defer transitions awaiting_review to deferred", () => {
+	it("defer transitions awaiting_review to deferred", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
-		const result = transitionSession(
+		const result = await transitionSession(
 			store,
 			"defer",
 			"e1",
@@ -271,109 +271,109 @@ describe("Action tools", () => {
 		expect(store.getSession("e1")!.status).toBe("deferred");
 	});
 
-	it("defer transitions blocked to deferred", () => {
+	it("defer transitions blocked to deferred", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "blocked",
 		});
-		const result = transitionSession(store, "defer", "e1");
+		const result = await transitionSession(store, "defer", "e1");
 		expect(result.success).toBe(true);
 		expect(store.getSession("e1")!.status).toBe("deferred");
 	});
 
-	it("defer from running fails", () => {
+	it("defer from running fails", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "running",
 		});
-		const result = transitionSession(store, "defer", "e1");
+		const result = await transitionSession(store, "defer", "e1");
 		expect(result.success).toBe(false);
 	});
 
 	// --- retry ---
-	it("retry transitions failed to running", () => {
+	it("retry transitions failed to running", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "failed",
 		});
-		const result = transitionSession(store, "retry", "e1");
+		const result = await transitionSession(store, "retry", "e1");
 		expect(result.success).toBe(true);
 		expect(store.getSession("e1")!.status).toBe("running");
 	});
 
-	it("retry transitions rejected to running", () => {
+	it("retry transitions rejected to running", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "rejected",
 		});
-		const result = transitionSession(store, "retry", "e1");
+		const result = await transitionSession(store, "retry", "e1");
 		expect(result.success).toBe(true);
 		expect(store.getSession("e1")!.status).toBe("running");
 	});
 
-	it("retry transitions blocked to running", () => {
+	it("retry transitions blocked to running", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "blocked",
 		});
-		const result = transitionSession(store, "retry", "e1");
+		const result = await transitionSession(store, "retry", "e1");
 		expect(result.success).toBe(true);
 		expect(store.getSession("e1")!.status).toBe("running");
 	});
 
-	it("retry from awaiting_review fails", () => {
+	it("retry from awaiting_review fails", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
-		const result = transitionSession(store, "retry", "e1");
+		const result = await transitionSession(store, "retry", "e1");
 		expect(result.success).toBe(false);
 	});
 
 	// --- shelve ---
-	it("shelve transitions awaiting_review to shelved", () => {
+	it("shelve transitions awaiting_review to shelved", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
-		const result = transitionSession(store, "shelve", "e1", "Low priority");
+		const result = await transitionSession(store, "shelve", "e1", "Low priority");
 		expect(result.success).toBe(true);
 		expect(store.getSession("e1")!.status).toBe("shelved");
 	});
 
-	it("shelve from running fails", () => {
+	it("shelve from running fails", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "running",
 		});
-		const result = transitionSession(store, "shelve", "e1");
+		const result = await transitionSession(store, "shelve", "e1");
 		expect(result.success).toBe(false);
 	});
 
 	// --- edge cases ---
-	it("transition with nonexistent execution_id returns error", () => {
-		const result = transitionSession(store, "reject", "nonexistent");
+	it("transition with nonexistent execution_id returns error", async () => {
+		const result = await transitionSession(store, "reject", "nonexistent");
 		expect(result.success).toBe(false);
 		expect(result.message).toContain("No session found");
 	});
 
-	it("transition uses issue_identifier in success message when available", () => {
+	it("transition uses issue_identifier in success message when available", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -381,12 +381,12 @@ describe("Action tools", () => {
 			status: "awaiting_review",
 			issue_identifier: "GEO-42",
 		});
-		const result = transitionSession(store, "reject", "e1");
+		const result = await transitionSession(store, "reject", "e1");
 		expect(result.message).toContain("GEO-42");
 		expect(result.message).toContain("rejected");
 	});
 
-	it("transition without reason sets last_error to null", () => {
+	it("transition without reason sets last_error to null", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -394,7 +394,7 @@ describe("Action tools", () => {
 			status: "awaiting_review",
 			last_error: "previous error",
 		});
-		transitionSession(store, "reject", "e1");
+		await transitionSession(store, "reject", "e1");
 		// last_error should be cleared (COALESCE with null keeps old value in SQLite)
 		// Actually COALESCE(null, last_error) keeps old value — that's fine, reason is optional
 		expect(store.getSession("e1")!.status).toBe("rejected");
@@ -528,7 +528,7 @@ describe("Action tools", () => {
 				notificationChannel: "test-ch",
 			});
 
-			const result = transitionSession(
+			const result = await transitionSession(
 				store,
 				"reject",
 				"e1",

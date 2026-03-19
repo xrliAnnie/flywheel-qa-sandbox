@@ -1,4 +1,7 @@
 import { Router } from "express";
+import type { CipherWriter } from "flywheel-edge-worker";
+import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
+import type { SnapshotInputDto } from "flywheel-edge-worker";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -63,7 +66,7 @@ export function createEventRouter(
 	store: StateStore,
 	_projects: ProjectEntry[],
 	config: BridgeConfig,
-	_cipherWriter?: unknown,
+	cipherWriter?: CipherWriter,
 	transitionOpts?: ApplyTransitionOpts,
 ): Router {
 	const router = Router();
@@ -268,6 +271,63 @@ export function createEventRouter(
 
 				// Auto-approve disabled by policy (v1.0 Phase 2)
 				// CEO must approve via Slack before merge. No auto-merge flow.
+
+				// CIPHER Phase A: save snapshot for awaiting_review sessions
+				// Skip if FSM rejected the transition (out-of-order/duplicate events)
+				if (cipherWriter && status === "awaiting_review" && !transitionRejected) {
+					const labels = Array.isArray(payload.labels) ? (payload.labels as string[]) : null;
+					const changedFilePaths = Array.isArray(evidence?.changedFilePaths)
+						? (evidence.changedFilePaths as string[]) : null;
+					const projectId = asString(payload.projectId);
+
+					if (!labels || !changedFilePaths) {
+						console.warn(`[CIPHER] Skipping snapshot for ${event.execution_id}: missing required fields`
+							+ ` (labels=${!!labels}, paths=${!!changedFilePaths})`);
+					} else {
+						const snapshotInput: SnapshotInputDto = {
+							labels,
+							exitReason: asString(payload.exitReason) || "completed",
+							changedFilePaths,
+							commitCount: asNumber(evidence?.commitCount) ?? 0,
+							filesChangedCount: asNumber(evidence?.filesChangedCount) ?? 0,
+							linesAdded: asNumber(evidence?.linesAdded) ?? 0,
+							linesRemoved: asNumber(evidence?.linesRemoved) ?? 0,
+							consecutiveFailures: asNumber(payload.consecutiveFailures) ?? 0,
+						};
+						const dimensions = extractDimensions(snapshotInput);
+						const patternKeys = generatePatternKeys(dimensions);
+
+						try {
+							await cipherWriter.saveSnapshot({
+								executionId: event.execution_id,
+								issueId: event.issue_id,
+								issueIdentifier: asString(payload.issueIdentifier) ?? "",
+								issueTitle: asString(payload.issueTitle) ?? "",
+								projectId: projectId ?? "",
+								issueLabels: labels,
+								dimensions,
+								patternKeys,
+								systemRoute: asString(decision?.route) ?? "",
+								systemConfidence: asNumber(decision?.confidence) ?? 0,
+								decisionSource: asString(decision?.decisionSource) ?? "",
+								decisionReasoning: asString(decision?.reasoning),
+								commitCount: snapshotInput.commitCount,
+								filesChanged: snapshotInput.filesChangedCount,
+								linesAdded: snapshotInput.linesAdded,
+								linesRemoved: snapshotInput.linesRemoved,
+								diffSummary: asString(evidence?.diffSummary),
+								commitMessages: Array.isArray(evidence?.commitMessages)
+									? (evidence.commitMessages as string[]) : [],
+								changedFilePaths,
+								exitReason: snapshotInput.exitReason,
+								durationMs: asNumber(evidence?.durationMs) ?? 0,
+								consecutiveFailures: snapshotInput.consecutiveFailures,
+							});
+						} catch (err) {
+							console.error(`[CIPHER] saveSnapshot failed for ${event.execution_id}:`, err);
+						}
+					}
+				}
 			} else if (event.event_type === "session_failed") {
 				if (transitionOpts) {
 					const result = applyTransition(

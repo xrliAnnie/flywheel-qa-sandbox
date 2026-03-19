@@ -23,6 +23,9 @@ export interface LandingStatus {
 }
 
 export interface ExecutionContext {
+	// Execution identity
+	executionId: string;
+
 	// Issue identity
 	issueId: string;
 	issueIdentifier: string;
