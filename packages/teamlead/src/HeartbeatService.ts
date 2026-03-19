@@ -7,7 +7,7 @@ import {
 	buildSessionKey,
 	type HookPayload,
 } from "./bridge/hook-payload.js";
-import { type ProjectEntry, resolveLeadForProject } from "./ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
 import type { Session, StateStore } from "./StateStore.js";
 
 export interface HeartbeatNotifier {
@@ -166,12 +166,19 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 
 	async onSessionStuck(session: Session, minutes: number): Promise<void> {
 		let agentId: string;
-		let channel: string;
+		let forumChannel: string;
+		let chatChannel: string;
 		try {
-			const lead = resolveLeadForProject(this.projects, session.project_name);
+			const labels = this.store.getSessionLabels(session.execution_id);
+			const { lead } = resolveLeadForIssue(
+				this.projects,
+				session.project_name,
+				labels,
+			);
 			agentId = lead.agentId;
 			const existingThread = this.store.getThreadByIssue(session.issue_id);
-			channel = existingThread?.channel ?? lead.channel;
+			forumChannel = existingThread?.channel ?? lead.forumChannel;
+			chatChannel = lead.chatChannel;
 		} catch {
 			console.warn(
 				`[heartbeat-notify] Unknown project "${session.project_name}" — skipping stuck notification`,
@@ -188,7 +195,8 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 			project_name: session.project_name,
 			status: session.status,
 			thread_id: session.thread_id,
-			channel,
+			forum_channel: forumChannel,
+			chat_channel: chatChannel,
 			minutes_since_activity: minutes,
 		};
 		await this.sendHook(agentId, hookPayload, sessionKey);
@@ -196,12 +204,19 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 
 	async onSessionOrphaned(session: Session, minutes: number): Promise<void> {
 		let agentId: string;
-		let channel: string;
+		let forumChannel: string;
+		let chatChannel: string;
 		try {
-			const lead = resolveLeadForProject(this.projects, session.project_name);
+			const labels = this.store.getSessionLabels(session.execution_id);
+			const { lead } = resolveLeadForIssue(
+				this.projects,
+				session.project_name,
+				labels,
+			);
 			agentId = lead.agentId;
 			const existingThread = this.store.getThreadByIssue(session.issue_id);
-			channel = existingThread?.channel ?? lead.channel;
+			forumChannel = existingThread?.channel ?? lead.forumChannel;
+			chatChannel = lead.chatChannel;
 		} catch {
 			console.warn(
 				`[heartbeat-notify] Unknown project "${session.project_name}" — skipping orphan notification`,
@@ -218,7 +233,8 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 			project_name: session.project_name,
 			status: "failed", // Already force-failed before notification
 			thread_id: session.thread_id,
-			channel,
+			forum_channel: forumChannel,
+			chat_channel: chatChannel,
 			minutes_since_activity: minutes,
 		};
 		await this.sendHook(agentId, hookPayload, sessionKey);

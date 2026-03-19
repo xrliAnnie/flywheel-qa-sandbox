@@ -212,6 +212,7 @@ export class Blueprint {
 		// Enrich envelope with hydrated fields
 		env.issueIdentifier = hydrated.issueIdentifier;
 		env.issueTitle = hydrated.issueTitle;
+		env.labels = hydrated.labels;
 
 		// ── Skill injection (v0.2 — best-effort, non-blocking) ─
 		let skillInjectionSucceeded = false;

@@ -11,12 +11,26 @@ const testProjects: ProjectEntry[] = [
 	{
 		projectName: "geo",
 		projectRoot: "/tmp/geo",
-		lead: { agentId: "product-lead", channel: "test-channel" },
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "test-channel",
+				chatChannel: "test-chat",
+				match: { labels: ["Product"] },
+			},
+		],
 	},
 	{
 		projectName: "p",
 		projectRoot: "/tmp/p",
-		lead: { agentId: "product-lead", channel: "test-channel" },
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "test-channel",
+				chatChannel: "test-chat",
+				match: { labels: ["Product"] },
+			},
+		],
 	},
 ];
 
@@ -285,7 +299,7 @@ describe("WebhookHeartbeatNotifier", () => {
 		expect(parsed.event_type).toBe("session_stuck");
 		expect(parsed.minutes_since_activity).toBe(30);
 		expect(parsed.thread_id).toBe("1234.5678");
-		expect(parsed.channel).toBe("test-channel");
+		expect(parsed.forum_channel).toBe("test-channel");
 
 		hbStore.close();
 		await new Promise<void>((resolve, reject) => {
@@ -339,7 +353,7 @@ describe("WebhookHeartbeatNotifier", () => {
 		expect(parsed.status).toBe("failed");
 		expect(parsed.minutes_since_activity).toBe(75);
 		expect(parsed.thread_id).toBe("5678.1234");
-		expect(parsed.channel).toBe("test-channel");
+		expect(parsed.forum_channel).toBe("test-channel");
 
 		hbStore.close();
 		await new Promise<void>((resolve, reject) => {

@@ -8,7 +8,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import { type ProjectEntry, resolveLeadForProject } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import {
 	buildHookBody,
@@ -64,9 +64,14 @@ function sendActionHook(
 	const session = store.getSession(executionId);
 	if (!session) return;
 	try {
-		const lead = resolveLeadForProject(projects, session.project_name);
+		const labels = store.getSessionLabels(executionId);
+		const { lead } = resolveLeadForIssue(
+			projects,
+			session.project_name,
+			labels,
+		);
 		const existingThread = store.getThreadByIssue(session.issue_id);
-		const channel = existingThread?.channel ?? lead.channel;
+		const forumChannel = existingThread?.channel ?? lead.forumChannel;
 		const hookPayload: HookPayload = {
 			event_type: "action_executed",
 			execution_id: session.execution_id,
@@ -76,7 +81,9 @@ function sendActionHook(
 			project_name: session.project_name,
 			status: targetStatus,
 			thread_id: session.thread_id,
-			channel,
+			forum_channel: forumChannel,
+			chat_channel: lead.chatChannel,
+			issue_labels: labels,
 			action,
 			action_source_status: sourceStatus,
 			action_target_status: targetStatus,

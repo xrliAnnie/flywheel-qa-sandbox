@@ -58,7 +58,14 @@ describe("Bridge scaffold", () => {
 			{
 				projectName: "test",
 				projectRoot: "/tmp",
-				lead: { agentId: "product-lead", channel: "test-channel" },
+				leads: [
+					{
+						agentId: "product-lead",
+						forumChannel: "test-channel",
+						chatChannel: "test-chat",
+						match: { labels: ["Product"] },
+					},
+				],
 			},
 		]);
 		closeFn = close;
@@ -138,7 +145,14 @@ describe("Bridge scaffold", () => {
 			{
 				projectName: "test",
 				projectRoot: "/tmp",
-				lead: { agentId: "product-lead", channel: "test-channel" },
+				leads: [
+					{
+						agentId: "product-lead",
+						forumChannel: "test-channel",
+						chatChannel: "test-chat",
+						match: { labels: ["Product"] },
+					},
+				],
 			},
 		]);
 		closeFn = result.close;

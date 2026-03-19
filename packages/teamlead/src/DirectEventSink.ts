@@ -16,7 +16,7 @@ import {
 	notifyAgent,
 } from "./bridge/hook-payload.js";
 import type { BridgeConfig } from "./bridge/types.js";
-import { type ProjectEntry, resolveLeadForProject } from "./ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
 
 function sqliteDatetime(): string {
@@ -58,6 +58,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			issue_title: env.issueTitle,
 			retry_predecessor: env.retryPredecessor,
 			run_attempt: env.runAttempt,
+			issue_labels: env.labels ? JSON.stringify(env.labels) : undefined,
 		});
 
 		// Thread inheritance (same as event-route.ts)
@@ -170,9 +171,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		if (!session) return;
 
 		try {
-			const lead = resolveLeadForProject(this.projects, env.projectName);
+			const labels = this.store.getSessionLabels(env.executionId);
+			const { lead } = resolveLeadForIssue(
+				this.projects,
+				env.projectName,
+				labels,
+			);
 			const existingThread = this.store.getThreadByIssue(env.issueId);
-			const channel = existingThread?.channel ?? lead.channel;
+			const forumChannel = existingThread?.channel ?? lead.forumChannel;
 			const sessionKey = buildSessionKey(session);
 			const hookPayload: HookPayload = {
 				event_type: eventType,
@@ -189,7 +195,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				summary: session.summary,
 				last_error: session.last_error,
 				thread_id: session.thread_id,
-				channel,
+				forum_channel: forumChannel,
+				chat_channel: lead.chatChannel,
+				issue_labels: labels,
 			};
 			const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
 			const p = notifyAgent(

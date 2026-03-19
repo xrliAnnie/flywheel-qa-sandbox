@@ -12,7 +12,14 @@ const projects: ProjectEntry[] = [
 		projectName: "geoforge",
 		projectRoot: "/home/user/geoforge",
 		projectRepo: "xrliAnnie/GeoForge3D",
-		lead: { agentId: "product-lead", channel: "test-channel" },
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "test-channel",
+				chatChannel: "test-chat",
+				match: { labels: ["Product"] },
+			},
+		],
 	},
 ];
 

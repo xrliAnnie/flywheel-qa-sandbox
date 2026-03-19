@@ -5,7 +5,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import { type ProjectEntry, resolveLeadForProject } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import {
 	buildHookBody,
@@ -137,6 +137,13 @@ export function createEventRouter(
 			};
 
 			if (event.event_type === "session_started") {
+				// GEO-152: store issue labels for multi-lead routing
+				const eventLabels = Array.isArray(payload.labels)
+					? (payload.labels as string[])
+					: [];
+				const issueLabelsJson =
+					eventLabels.length > 0 ? JSON.stringify(eventLabels) : undefined;
+
 				if (transitionOpts) {
 					const result = applyTransition(
 						transitionOpts,
@@ -149,6 +156,7 @@ export function createEventRouter(
 							heartbeat_at: now,
 							issue_identifier: asString(payload.issueIdentifier),
 							issue_title: asString(payload.issueTitle),
+							issue_labels: issueLabelsJson,
 						},
 					);
 					if (!result.ok) {
@@ -168,6 +176,7 @@ export function createEventRouter(
 						heartbeat_at: now,
 						issue_identifier: asString(payload.issueIdentifier),
 						issue_title: asString(payload.issueTitle),
+						issue_labels: issueLabelsJson,
 					});
 				}
 
@@ -398,9 +407,14 @@ export function createEventRouter(
 		const session = store.getSession(event.execution_id);
 		if (session && config.gatewayUrl && config.hooksToken) {
 			try {
-				const lead = resolveLeadForProject(projects, event.project_name);
+				const labels = store.getSessionLabels(event.execution_id);
+				const { lead } = resolveLeadForIssue(
+					projects,
+					event.project_name,
+					labels,
+				);
 				const existingThread = store.getThreadByIssue(event.issue_id);
-				const channel = existingThread?.channel ?? lead.channel;
+				const forumChannel = existingThread?.channel ?? lead.forumChannel;
 				const sessionKey = buildSessionKey(session);
 				const hookPayload: HookPayload = {
 					event_type: event.event_type,
@@ -417,7 +431,9 @@ export function createEventRouter(
 					summary: session.summary,
 					last_error: session.last_error,
 					thread_id: session.thread_id,
-					channel,
+					forum_channel: forumChannel,
+					chat_channel: lead.chatChannel,
+					issue_labels: labels,
 				};
 				const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
 				notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
