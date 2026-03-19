@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type LeadConfig,
-	type ProjectEntry,
 	loadProjects,
+	type ProjectEntry,
 	resolveLeadForProject,
 } from "../ProjectConfig.js";
 

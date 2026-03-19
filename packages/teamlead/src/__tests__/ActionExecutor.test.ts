@@ -12,6 +12,7 @@ const projects: ProjectEntry[] = [
 		projectName: "geoforge",
 		projectRoot: "/home/user/geoforge",
 		projectRepo: "xrliAnnie/GeoForge3D",
+		lead: { agentId: "product-lead", channel: "test-channel" },
 	},
 ];
 
