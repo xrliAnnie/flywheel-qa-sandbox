@@ -1,6 +1,8 @@
 import type http from "node:http";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { EventFilter } from "../bridge/EventFilter.js";
+import { ForumTagUpdater } from "../bridge/ForumTagUpdater.js";
 import { formatNotification } from "../bridge/event-route.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
@@ -447,5 +449,152 @@ describe("formatNotification", () => {
 	it("started notification", () => {
 		const msg = formatNotification(baseSession, "session_started");
 		expect(msg).toContain("[Started]");
+	});
+});
+
+describe("Event route — EventFilter integration", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+	let capturedPayloads: Record<string, unknown>[];
+	const tagMap: Record<string, string[]> = {
+		running: ["tag-running"],
+		awaiting_review: ["tag-review"],
+		approved: ["tag-approved"],
+		failed: ["tag-failed"],
+	};
+
+	beforeEach(async () => {
+		capturedPayloads = [];
+		const gatewayApp = express();
+		gatewayApp.use(express.json());
+		gatewayApp.post("/hooks/ingest", (req, res) => {
+			capturedPayloads.push(req.body);
+			res.json({ ok: true });
+		});
+		const gatewayServer = gatewayApp.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) =>
+			gatewayServer.once("listening", resolve),
+		);
+		const gatewayAddr = gatewayServer.address();
+		const gatewayPort =
+			typeof gatewayAddr === "object" && gatewayAddr ? gatewayAddr.port : 0;
+
+		store = await StateStore.create(":memory:");
+		const config = makeConfig({
+			gatewayUrl: `http://127.0.0.1:${gatewayPort}`,
+			hooksToken: "hooks-secret",
+			discordBotToken: "bot-token",
+		});
+		const eventFilter = new EventFilter();
+		const forumTagUpdater = new ForumTagUpdater(tagMap);
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			config,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			eventFilter,
+			forumTagUpdater,
+		);
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+		(server as any).__gatewayServer = gatewayServer;
+	});
+
+	afterEach(async () => {
+		const gatewayServer = (server as any).__gatewayServer;
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		if (gatewayServer) {
+			await new Promise<void>((resolve, reject) => {
+				gatewayServer.close((err: Error | undefined) =>
+					err ? reject(err) : resolve(),
+				);
+			});
+		}
+		store.close();
+	});
+
+	async function postEvent(overrides: Record<string, unknown> = {}) {
+		return fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent(overrides)),
+		});
+	}
+
+	it("session_completed + needs_review → notifyAgent called (high priority)", async () => {
+		// Start session first
+		await postEvent();
+		// Complete with needs_review
+		await postEvent({
+			event_id: "evt-c1",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "needs_review", reasoning: "has changes" },
+				evidence: { commitCount: 1 },
+				summary: "did stuff",
+			},
+		});
+		await new Promise((r) => setTimeout(r, 150));
+
+		// Should have 2 notifications: session_started (no thread → notify) + session_completed
+		expect(capturedPayloads.length).toBe(2);
+		const completedPayload = JSON.parse(
+			capturedPayloads[1]!.message as string,
+		);
+		expect(completedPayload.filter_priority).toBe("high");
+		expect(completedPayload.notification_context).toContain("needs_review");
+	});
+
+	it("session_started + thread_id exists → notifyAgent NOT called (forum_only)", async () => {
+		// Pre-create thread mapping
+		store.upsertThread("thread-123", "channel-1", "issue-1");
+
+		await postEvent();
+		await new Promise((r) => setTimeout(r, 150));
+
+		// forum_only — no notification sent
+		expect(capturedPayloads.length).toBe(0);
+	});
+
+	it("session_started + NO thread_id → notifyAgent called (agent creates Forum Post)", async () => {
+		await postEvent();
+		await new Promise((r) => setTimeout(r, 150));
+
+		expect(capturedPayloads.length).toBe(1);
+		const parsed = JSON.parse(capturedPayloads[0]!.message as string);
+		expect(parsed.filter_priority).toBe("normal");
+	});
+
+	it("session_failed → notifyAgent called (high priority)", async () => {
+		await postEvent({
+			event_type: "session_failed",
+			payload: { error: "timeout" },
+		});
+		await new Promise((r) => setTimeout(r, 150));
+
+		expect(capturedPayloads.length).toBe(1);
+		const parsed = JSON.parse(capturedPayloads[0]!.message as string);
+		expect(parsed.filter_priority).toBe("high");
+	});
+
+	it("enriched payload includes forum_tag_update_result", async () => {
+		await postEvent();
+		await new Promise((r) => setTimeout(r, 150));
+
+		const parsed = JSON.parse(capturedPayloads[0]!.message as string);
+		// No thread → no_thread
+		expect(parsed.forum_tag_update_result).toBe("no_thread");
 	});
 });
