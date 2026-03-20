@@ -15,9 +15,9 @@ import type { CipherWriter } from "flywheel-edge-worker";
 import { createActionRouter } from "./actions.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
-import type { EventFilter } from "./EventFilter.js";
+import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
-import type { ForumTagUpdater } from "./ForumTagUpdater.js";
+import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { createQueryRouter } from "./tools.js";
 import type { BridgeConfig } from "./types.js";
@@ -363,6 +363,7 @@ export async function startBridge(
 		store?: StateStore;
 		retryDispatcher?: IRetryDispatcher;
 		cipherWriter?: CipherWriter;
+		statusTagMap?: Record<string, string[]>;
 	},
 ): Promise<{
 	app: express.Application;
@@ -382,6 +383,12 @@ export async function startBridge(
 	const executor = new DirectiveExecutor(store);
 	const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
 	const broadcaster = new SseBroadcaster(store, config.stuckThresholdMinutes);
+
+	// GEO-187: EventFilter + ForumTagUpdater
+	const eventFilter = new EventFilter();
+	const statusTagMap = opts?.statusTagMap ?? {};
+	const forumTagUpdater = new ForumTagUpdater(statusTagMap);
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -390,6 +397,8 @@ export async function startBridge(
 		transitionOpts,
 		retryDispatcher,
 		opts?.cipherWriter,
+		eventFilter,
+		forumTagUpdater,
 	);
 
 	const server = app.listen(config.port, config.host);
@@ -411,6 +420,7 @@ export async function startBridge(
 					config.gatewayUrl,
 					config.hooksToken,
 					config.notificationChannel,
+					eventFilter,
 				)
 			: { onSessionStuck: async () => {}, onSessionOrphaned: async () => {} };
 	const heartbeatService = new HeartbeatService(
