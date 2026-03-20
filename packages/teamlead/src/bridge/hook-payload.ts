@@ -21,6 +21,15 @@ export interface HookPayload {
 	action_source_status?: string;
 	action_target_status?: string;
 	action_reason?: string;
+	// EventFilter fields (GEO-187)
+	filter_priority?: "high" | "normal" | "low";
+	notification_context?: string;
+	forum_tag_update_result?:
+		| "skipped"
+		| "attempted"
+		| "succeeded"
+		| "failed"
+		| "no_thread";
 }
 
 /** Best-effort push to OpenClaw gateway (3s timeout, warn on failure). */
