@@ -3,6 +3,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CipherSyncService, CipherWriter } from "flywheel-edge-worker";
+import { EventFilter } from "./bridge/EventFilter.js";
 import { startBridge } from "./bridge/plugin.js";
 import {
 	buildHookBody,
@@ -38,6 +39,7 @@ async function main() {
 			console.log("[CIPHER] Supabase sync enabled");
 		}
 
+		const cipherEventFilter = new EventFilter();
 		cipherWriter.setNotifyFn(async (proposal) => {
 			const hookPayload: HookPayload = {
 				...proposal,
@@ -46,6 +48,17 @@ async function main() {
 				project_name: "",
 				status: "pending_ceo",
 			};
+
+			// EventFilter: classify cipher notifications (GEO-187)
+			const filterResult = cipherEventFilter.classify(
+				"cipher_principle_proposed",
+				hookPayload,
+			);
+			if (filterResult.action !== "notify_agent") return;
+
+			hookPayload.filter_priority = filterResult.priority;
+			hookPayload.notification_context = filterResult.reason;
+
 			const sessionKey = `cipher-proposal-${proposal.cipher_principle_id}`;
 			const body = buildHookBody("product-lead", hookPayload, sessionKey);
 			if (config.gatewayUrl && config.hooksToken) {
