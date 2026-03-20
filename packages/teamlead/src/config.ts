@@ -68,6 +68,8 @@ export function loadConfig(): BridgeConfig {
 		),
 		orphanThresholdMinutes,
 		discordBotToken: process.env.DISCORD_BOT_TOKEN,
+		linearApiKey: process.env.LINEAR_API_KEY,
+		discordGuildId: process.env.DISCORD_GUILD_ID,
 		cleanupIntervalMs: parsePositiveInt(
 			process.env.TEAMLEAD_CLEANUP_INTERVAL,
 			3_600_000,

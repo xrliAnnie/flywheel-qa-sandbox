@@ -20,4 +20,7 @@ export interface BridgeConfig {
 	discordBotToken?: string;
 	cleanupIntervalMs?: number;
 	cleanupThresholdMinutes?: number;
+	// GEO-187: Linear API proxy + Forum thread links
+	linearApiKey?: string;
+	discordGuildId?: string;
 }

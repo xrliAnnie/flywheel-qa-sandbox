@@ -338,6 +338,118 @@ export function createBridgeApp(
 		res.status(404).json({ error: "not found" });
 	});
 
+	// Linear API proxy — agent doesn't hold LINEAR_API_KEY directly (GEO-187)
+	app.post(
+		"/api/linear/create-issue",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			if (!config.linearApiKey) {
+				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+			const { title, description, priority, labels } = req.body ?? {};
+			if (!title || typeof title !== "string") {
+				res.status(400).json({ error: "title is required" });
+				return;
+			}
+			if (typeof title === "string" && title.length > 500) {
+				res.status(400).json({ error: "title must be 500 chars or less" });
+				return;
+			}
+			if (priority !== undefined && (typeof priority !== "number" || priority < 0 || priority > 4)) {
+				res.status(400).json({ error: "priority must be 0-4" });
+				return;
+			}
+			try {
+				const { LinearClient } = await import("@linear/sdk");
+				const client = new LinearClient({ accessToken: config.linearApiKey });
+				const teams = await client.teams();
+				const team = teams.nodes[0];
+				if (!team) {
+					res.status(500).json({ error: "No Linear team found" });
+					return;
+				}
+				const issue = await client.createIssue({
+					teamId: team.id,
+					title,
+					description: description ?? "",
+					priority: priority ?? 0,
+					labelIds: Array.isArray(labels) ? labels : undefined,
+				});
+				const created = await issue.issue;
+				res.json({
+					ok: true,
+					issue: {
+						id: created?.id,
+						identifier: created?.identifier,
+						url: created?.url,
+					},
+				});
+			} catch (err) {
+				console.error("[linear-proxy] create-issue failed:", (err as Error).message);
+				res.status(502).json({ error: "Linear API error" });
+			}
+		},
+	);
+
+	app.patch(
+		"/api/linear/update-issue",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			if (!config.linearApiKey) {
+				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+			const { issueId, title, description, priority, status } = req.body ?? {};
+			if (!issueId || typeof issueId !== "string") {
+				res.status(400).json({ error: "issueId is required" });
+				return;
+			}
+			if (priority !== undefined && (typeof priority !== "number" || priority < 0 || priority > 4)) {
+				res.status(400).json({ error: "priority must be 0-4" });
+				return;
+			}
+			try {
+				const { LinearClient } = await import("@linear/sdk");
+				const client = new LinearClient({ accessToken: config.linearApiKey });
+				const update: Record<string, unknown> = {};
+				if (title !== undefined) update.title = title;
+				if (description !== undefined) update.description = description;
+				if (priority !== undefined) update.priority = priority;
+				if (status !== undefined) {
+					// Resolve status name to workflow state ID
+					const issue = await client.issue(issueId);
+					const team = await issue.team;
+					if (team) {
+						const states = await team.states();
+						const state = states.nodes.find(
+							(s) => s.name.toLowerCase() === String(status).toLowerCase(),
+						);
+						if (state) update.stateId = state.id;
+					}
+				}
+				await client.updateIssue(issueId, update);
+				res.json({ ok: true });
+			} catch (err) {
+				console.error("[linear-proxy] update-issue failed:", (err as Error).message);
+				res.status(502).json({ error: "Linear API error" });
+			}
+		},
+	);
+
+	// Discord guild ID endpoint (GEO-187) — agent can query to build Forum Thread links
+	app.get(
+		"/api/config/discord-guild-id",
+		tokenAuthMiddleware(config.apiToken),
+		(_req, res) => {
+			if (!config.discordGuildId) {
+				res.status(404).json({ error: "DISCORD_GUILD_ID not configured" });
+				return;
+			}
+			res.json({ guild_id: config.discordGuildId });
+		},
+	);
+
 	// JSON error handler — returns JSON instead of Express default HTML with stack trace
 	app.use(((
 		err: Error & { status?: number; type?: string },
