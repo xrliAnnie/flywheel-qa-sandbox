@@ -2,10 +2,12 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "./applyTransition.js";
+import type { EventFilter } from "./bridge/EventFilter.js";
 import {
 	buildHookBody,
 	buildSessionKey,
 	type HookPayload,
+	notifyAgent,
 } from "./bridge/hook-payload.js";
 import type { Session, StateStore } from "./StateStore.js";
 
@@ -160,6 +162,7 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 		private gatewayUrl: string,
 		private hooksToken: string,
 		private notificationChannel: string,
+		private eventFilter?: EventFilter,
 	) {}
 
 	async onSessionStuck(session: Session, minutes: number): Promise<void> {
@@ -200,28 +203,26 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 		hookPayload: HookPayload,
 		sessionKey: string,
 	): Promise<void> {
-		const body = buildHookBody("product-lead", hookPayload, sessionKey);
-
-		const controller = new AbortController();
-		const timeout = setTimeout(() => controller.abort(), 3000);
-		try {
-			const res = await fetch(`${this.gatewayUrl}/hooks/ingest`, {
-				method: "POST",
-				headers: {
-					Authorization: `Bearer ${this.hooksToken}`,
-					"Content-Type": "application/json",
-				},
-				body: JSON.stringify(body),
-				signal: controller.signal,
-			});
-			if (!res.ok) {
-				throw new Error(`Gateway returned ${res.status}`);
+		// EventFilter: classify and potentially skip (GEO-187)
+		if (this.eventFilter) {
+			const filterResult = this.eventFilter.classify(
+				hookPayload.event_type,
+				hookPayload,
+			);
+			if (filterResult.action !== "notify_agent") {
+				return; // skip or forum_only — heartbeat events don't update Forum tags
 			}
+			hookPayload.filter_priority = filterResult.priority;
+			hookPayload.notification_context = filterResult.reason;
+		}
+
+		const body = buildHookBody("product-lead", hookPayload, sessionKey);
+		// Reuse shared notifyAgent (3s timeout, fire-and-forget semantics)
+		try {
+			await notifyAgent(this.gatewayUrl, this.hooksToken, body);
 		} catch (err) {
 			console.warn(`[heartbeat-notify] Failed:`, (err as Error).message);
 			throw err; // Let HeartbeatService skip dedup so notification is retried
-		} finally {
-			clearTimeout(timeout);
 		}
 	}
 }
