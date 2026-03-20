@@ -9,6 +9,8 @@ import type {
 	ExecutionEventEmitter,
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
+import type { EventFilter } from "./bridge/EventFilter.js";
+import type { ForumTagUpdater } from "./bridge/ForumTagUpdater.js";
 import {
 	buildHookBody,
 	buildSessionKey,
@@ -28,6 +30,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	constructor(
 		private store: StateStore,
 		private config: BridgeConfig,
+		private eventFilter?: EventFilter,
+		private forumTagUpdater?: ForumTagUpdater,
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
@@ -185,12 +189,34 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			thread_id: session.thread_id,
 			channel: this.config.notificationChannel,
 		};
-		const body = buildHookBody("product-lead", hookPayload, sessionKey);
-		const p = notifyAgent(
-			this.config.gatewayUrl,
-			this.config.hooksToken,
-			body,
-		).catch(() => {});
-		this.pending.push(p);
+
+		const doNotify = async () => {
+			if (this.eventFilter) {
+				const filterResult = this.eventFilter.classify(eventType, hookPayload);
+
+				let tagResult: HookPayload["forum_tag_update_result"];
+				if (this.forumTagUpdater) {
+					tagResult = await this.forumTagUpdater.updateTag({
+						threadId: session.thread_id,
+						status: session.status ?? "",
+						eventType,
+						discordBotToken: this.config.discordBotToken,
+					});
+				}
+
+				if (filterResult.action === "notify_agent") {
+					hookPayload.filter_priority = filterResult.priority;
+					hookPayload.notification_context = filterResult.reason;
+					hookPayload.forum_tag_update_result = tagResult;
+					const body = buildHookBody("product-lead", hookPayload, sessionKey);
+					await notifyAgent(this.config.gatewayUrl!, this.config.hooksToken!, body);
+				}
+			} else {
+				const body = buildHookBody("product-lead", hookPayload, sessionKey);
+				await notifyAgent(this.config.gatewayUrl!, this.config.hooksToken!, body);
+			}
+		};
+
+		this.pending.push(doNotify().catch(() => {}));
 	}
 }
