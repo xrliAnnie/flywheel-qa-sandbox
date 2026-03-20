@@ -11,6 +11,8 @@ import {
 } from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
+import type { EventFilter } from "./EventFilter.js";
+import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import {
 	buildHookBody,
 	buildSessionKey,
@@ -59,6 +61,8 @@ function sendActionHook(
 	sourceStatus: string,
 	targetStatus: string,
 	reason?: string,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): void {
 	if (!config?.gatewayUrl || !config?.hooksToken) return;
 	const session = store.getSession(executionId);
@@ -78,12 +82,43 @@ function sendActionHook(
 		action_target_status: targetStatus,
 		action_reason: reason,
 	};
-	const body = buildHookBody(
-		"product-lead",
-		hookPayload,
-		buildSessionKey(session),
-	);
-	notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+
+	const doNotify = async () => {
+		if (eventFilter) {
+			const filterResult = eventFilter.classify("action_executed", hookPayload);
+
+			let tagResult: HookPayload["forum_tag_update_result"];
+			if (forumTagUpdater) {
+				tagResult = await forumTagUpdater.updateTag({
+					threadId: session.thread_id,
+					status: targetStatus,
+					eventType: "action_executed",
+					action,
+					discordBotToken: config!.discordBotToken,
+				});
+			}
+
+			if (filterResult.action === "notify_agent") {
+				hookPayload.filter_priority = filterResult.priority;
+				hookPayload.notification_context = filterResult.reason;
+				hookPayload.forum_tag_update_result = tagResult;
+				const body = buildHookBody(
+					"product-lead",
+					hookPayload,
+					buildSessionKey(session),
+				);
+				await notifyAgent(config!.gatewayUrl!, config!.hooksToken!, body);
+			}
+		} else {
+			const body = buildHookBody(
+				"product-lead",
+				hookPayload,
+				buildSessionKey(session),
+			);
+			await notifyAgent(config!.gatewayUrl!, config!.hooksToken!, body);
+		}
+	};
+	doNotify().catch(() => {});
 }
 
 export async function approveExecution(
@@ -95,6 +130,8 @@ export async function approveExecution(
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
 	cipherWriter?: CipherWriter,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -175,6 +212,9 @@ export async function approveExecution(
 				"approve",
 				"awaiting_review",
 				"approved",
+				undefined,
+				eventFilter,
+				forumTagUpdater,
 			);
 
 			// CIPHER: record approve outcome
@@ -204,6 +244,8 @@ export async function transitionSession(
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
 	cipherWriter?: CipherWriter,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -278,6 +320,8 @@ export async function transitionSession(
 		session.status,
 		targetStatus,
 		reason,
+		eventFilter,
+		forumTagUpdater,
 	);
 
 	if (action === "retry") {
@@ -307,6 +351,8 @@ async function handleRetry(
 	executionId: string,
 	reason?: string,
 	config?: BridgeConfig,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -386,6 +432,8 @@ async function handleRetry(
 			session.status,
 			"running",
 			reason,
+			eventFilter,
+			forumTagUpdater,
 		);
 
 		return {
@@ -432,6 +480,8 @@ export function createActionRouter(
 	config?: BridgeConfig,
 	retryDispatcher?: IRetryDispatcher,
 	cipherWriter?: CipherWriter,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): Router {
 	const router = Router();
 
@@ -454,6 +504,8 @@ export function createActionRouter(
 					transitionOpts,
 					config,
 					cipherWriter,
+					eventFilter,
+					forumTagUpdater,
 				);
 				if (result.success) {
 					res.json({
@@ -484,6 +536,8 @@ export function createActionRouter(
 						eid,
 						reason,
 						config,
+						eventFilter,
+						forumTagUpdater,
 					);
 					if (retryResult.success) {
 						res.json({
@@ -508,6 +562,8 @@ export function createActionRouter(
 						transitionOpts,
 						config,
 						cipherWriter,
+						eventFilter,
+						forumTagUpdater,
 					);
 					if (actionResult.success) {
 						res.json({ success: true, message: actionResult.message, action });
@@ -535,6 +591,8 @@ export function createActionRouter(
 					transitionOpts,
 					config,
 					cipherWriter,
+					eventFilter,
+					forumTagUpdater,
 				);
 				if (actionResult.success) {
 					res.json({ success: true, message: actionResult.message, action });

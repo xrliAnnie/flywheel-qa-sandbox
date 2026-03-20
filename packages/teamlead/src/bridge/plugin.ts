@@ -213,6 +213,8 @@ export function createBridgeApp(
 			config,
 			retryDispatcher,
 			cipherWriter,
+			eventFilter,
+			forumTagUpdater,
 		),
 	);
 
@@ -239,6 +241,8 @@ export function createBridgeApp(
 			config,
 			retryDispatcher,
 			cipherWriter,
+			eventFilter,
+			forumTagUpdater,
 		),
 	);
 
