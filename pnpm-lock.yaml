@@ -278,6 +278,9 @@ importers:
 
   packages/teamlead:
     dependencies:
+      '@linear/sdk':
+        specifier: 60.0.0
+        version: 60.0.0
       express:
         specifier: ^5.2.1
         version: 5.2.1
