@@ -15,7 +15,9 @@ import type { CipherWriter } from "flywheel-edge-worker";
 import { createActionRouter } from "./actions.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
+import type { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
+import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { createQueryRouter } from "./tools.js";
 import type { BridgeConfig } from "./types.js";
@@ -153,6 +155,8 @@ export function createBridgeApp(
 	transitionOpts?: ApplyTransitionOpts,
 	retryDispatcher?: IRetryDispatcher,
 	cipherWriter?: CipherWriter,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -216,7 +220,7 @@ export function createBridgeApp(
 	app.use(
 		"/events",
 		tokenAuthMiddleware(config.ingestToken),
-		createEventRouter(store, projects, config, cipherWriter, transitionOpts),
+		createEventRouter(store, projects, config, cipherWriter, transitionOpts, eventFilter, forumTagUpdater),
 	);
 
 	// /api/* — api auth
