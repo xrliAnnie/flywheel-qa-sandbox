@@ -118,7 +118,9 @@ function sendActionHook(
 			await notifyAgent(config!.gatewayUrl!, config!.hooksToken!, body);
 		}
 	};
-	doNotify().catch(() => {});
+	doNotify().catch((err) => {
+		console.warn(`[sendActionHook] Notification pipeline failed for ${executionId}:`, (err as Error).message);
+	});
 }
 
 export async function approveExecution(
@@ -503,9 +505,9 @@ async function handleTerminate(
 	if (session.tmux_session) {
 		try {
 			await execFileAsync("tmux", ["kill-session", "-t", session.tmux_session]);
-		} catch {
+		} catch (err) {
 			// tmux session may already be dead — continue with status transition
-			console.warn(`[terminate] tmux kill-session failed for ${session.tmux_session}`);
+			console.warn(`[terminate] tmux kill-session failed for ${session.tmux_session}:`, (err as Error).message);
 		}
 	}
 

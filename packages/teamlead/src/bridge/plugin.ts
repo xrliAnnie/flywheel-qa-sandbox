@@ -436,7 +436,13 @@ export function createBridgeApp(
 						const state = states.nodes.find(
 							(s) => s.name.toLowerCase() === String(status).toLowerCase(),
 						);
-						if (state) update.stateId = state.id;
+						if (state) {
+							update.stateId = state.id;
+						} else {
+							const available = states.nodes.map((s) => s.name).join(", ");
+							res.status(400).json({ error: `Unknown status "${status}". Available: ${available}` });
+							return;
+						}
 					}
 				}
 				await client.updateIssue(issueId, update);
@@ -515,6 +521,9 @@ export async function startBridge(
 	// GEO-187: EventFilter + ForumTagUpdater
 	const eventFilter = new EventFilter();
 	const statusTagMap = opts?.statusTagMap ?? {};
+	if (Object.keys(statusTagMap).length === 0) {
+		console.warn("[Bridge] statusTagMap is empty — ForumTagUpdater will skip all tag updates. Pass statusTagMap to enable.");
+	}
 	const forumTagUpdater = new ForumTagUpdater(statusTagMap);
 
 	const app = createBridgeApp(

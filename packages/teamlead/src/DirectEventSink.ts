@@ -217,6 +217,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		};
 
-		this.pending.push(doNotify().catch(() => {}));
+		this.pending.push(doNotify().catch((err) => {
+			console.warn(`[DirectEventSink] Notification pipeline failed for ${env.executionId}:`, (err as Error).message);
+		}));
 	}
 }

@@ -21,7 +21,10 @@ export class ForumTagUpdater {
 
 	async updateTag(ctx: TagUpdateContext): Promise<TagUpdateResult> {
 		if (!ctx.threadId) return "no_thread";
-		if (!ctx.discordBotToken) return "skipped";
+		if (!ctx.discordBotToken) {
+			console.warn("[ForumTagUpdater] No discordBotToken configured — skipping tag update");
+			return "skipped";
+		}
 		if (ctx.action && SKIP_ACTIONS.has(ctx.action)) return "skipped";
 
 		const tagIds = this.statusTagMap[ctx.status];
@@ -49,7 +52,7 @@ export class ForumTagUpdater {
 			return "succeeded";
 		} catch (err) {
 			console.warn(
-				"[ForumTagUpdater] Discord API call failed:",
+				`[ForumTagUpdater] Discord API call failed for thread ${ctx.threadId} (status: ${ctx.status}):`,
 				(err as Error).message,
 			);
 			return "failed";
