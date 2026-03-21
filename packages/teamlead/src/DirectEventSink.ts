@@ -209,16 +209,29 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					hookPayload.notification_context = filterResult.reason;
 					hookPayload.forum_tag_update_result = tagResult;
 					const body = buildHookBody("product-lead", hookPayload, sessionKey);
-					await notifyAgent(this.config.gatewayUrl!, this.config.hooksToken!, body);
+					await notifyAgent(
+						this.config.gatewayUrl!,
+						this.config.hooksToken!,
+						body,
+					);
 				}
 			} else {
 				const body = buildHookBody("product-lead", hookPayload, sessionKey);
-				await notifyAgent(this.config.gatewayUrl!, this.config.hooksToken!, body);
+				await notifyAgent(
+					this.config.gatewayUrl!,
+					this.config.hooksToken!,
+					body,
+				);
 			}
 		};
 
-		this.pending.push(doNotify().catch((err) => {
-			console.warn(`[DirectEventSink] Notification pipeline failed for ${env.executionId}:`, (err as Error).message);
-		}));
+		this.pending.push(
+			doNotify().catch((err) => {
+				console.warn(
+					`[DirectEventSink] Notification pipeline failed for ${env.executionId}:`,
+					(err as Error).message,
+				);
+			}),
+		);
 	}
 }

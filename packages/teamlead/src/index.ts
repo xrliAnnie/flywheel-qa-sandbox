@@ -4,12 +4,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { CipherSyncService, CipherWriter } from "flywheel-edge-worker";
 import { EventFilter } from "./bridge/EventFilter.js";
-import { startBridge } from "./bridge/plugin.js";
-import {
-	buildHookBody,
-	notifyAgent,
-} from "./bridge/hook-payload.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
+import { buildHookBody, notifyAgent } from "./bridge/hook-payload.js";
+import { startBridge } from "./bridge/plugin.js";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
 
@@ -66,7 +63,10 @@ async function main() {
 			}
 		});
 	} catch (err) {
-		console.warn("[CIPHER] Failed to initialize — running without CIPHER:", (err as Error).message);
+		console.warn(
+			"[CIPHER] Failed to initialize — running without CIPHER:",
+			(err as Error).message,
+		);
 	}
 
 	const { close } = await startBridge(config, projects, { cipherWriter });

@@ -2,8 +2,8 @@ import type http from "node:http";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { EventFilter } from "../bridge/EventFilter.js";
-import { ForumTagUpdater } from "../bridge/ForumTagUpdater.js";
 import { formatNotification } from "../bridge/event-route.js";
+import { ForumTagUpdater } from "../bridge/ForumTagUpdater.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -550,9 +550,7 @@ describe("Event route — EventFilter integration", () => {
 
 		// Should have 2 notifications: session_started (no thread → notify) + session_completed
 		expect(capturedPayloads.length).toBe(2);
-		const completedPayload = JSON.parse(
-			capturedPayloads[1]!.message as string,
-		);
+		const completedPayload = JSON.parse(capturedPayloads[1]!.message as string);
 		expect(completedPayload.filter_priority).toBe("high");
 		expect(completedPayload.notification_context).toContain("needs_review");
 	});

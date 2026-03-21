@@ -119,7 +119,14 @@ export class WorkflowFSM {
 
 export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 	pending: ["running"],
-	running: ["awaiting_review", "approved", "blocked", "completed", "failed", "terminated"],
+	running: [
+		"awaiting_review",
+		"approved",
+		"blocked",
+		"completed",
+		"failed",
+		"terminated",
+	],
 	awaiting_review: ["approved", "rejected", "deferred", "shelved"],
 	blocked: ["deferred", "shelved"],
 	failed: ["shelved"],

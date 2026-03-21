@@ -350,7 +350,12 @@ describe("Action tools", () => {
 			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
-		const result = await transitionSession(store, "shelve", "e1", "Low priority");
+		const result = await transitionSession(
+			store,
+			"shelve",
+			"e1",
+			"Low priority",
+		);
 		expect(result.success).toBe(true);
 		expect(store.getSession("e1")!.status).toBe("shelved");
 	});

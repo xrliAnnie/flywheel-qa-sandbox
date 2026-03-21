@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import express from "express";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
+import type { CipherWriter } from "flywheel-edge-worker";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { CleanupService, FetchDiscordClient } from "../CleanupService.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
@@ -11,7 +12,6 @@ import {
 } from "../HeartbeatService.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import type { CipherWriter } from "flywheel-edge-worker";
 import { createActionRouter } from "./actions.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
@@ -222,7 +222,15 @@ export function createBridgeApp(
 	app.use(
 		"/events",
 		tokenAuthMiddleware(config.ingestToken),
-		createEventRouter(store, projects, config, cipherWriter, transitionOpts, eventFilter, forumTagUpdater),
+		createEventRouter(
+			store,
+			projects,
+			config,
+			cipherWriter,
+			transitionOpts,
+			eventFilter,
+			forumTagUpdater,
+		),
 	);
 
 	// /api/* — api auth
@@ -305,32 +313,52 @@ export function createBridgeApp(
 
 	// CIPHER principle confirmation route
 	if (cipherWriter) {
-		app.post("/api/cipher-principle", tokenAuthMiddleware(config.apiToken), async (req, res) => {
-			const { principleId, action } = req.body as { principleId?: string; action?: string };
-			if (!principleId || !action || !["activate", "retire"].includes(action)) {
-				res.status(400).json({ error: "missing principleId or invalid action" });
-				return;
-			}
-			if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(principleId)) {
-				res.status(400).json({ error: "invalid principleId format" });
-				return;
-			}
-			try {
-				const updated = action === "activate"
-					? await cipherWriter.activatePrinciple(principleId)
-					: await cipherWriter.retirePrinciple(principleId, "CEO retired");
-				if (!updated) {
-					res.status(404).json({ error: "principle not found or not in expected state" });
+		app.post(
+			"/api/cipher-principle",
+			tokenAuthMiddleware(config.apiToken),
+			async (req, res) => {
+				const { principleId, action } = req.body as {
+					principleId?: string;
+					action?: string;
+				};
+				if (
+					!principleId ||
+					!action ||
+					!["activate", "retire"].includes(action)
+				) {
+					res
+						.status(400)
+						.json({ error: "missing principleId or invalid action" });
 					return;
 				}
-				// Principles are loaded into DecisionLayer HardRules once at process start
-				// (setup.ts). A running worker reuses the same DecisionLayer for its entire
-				// DAG batch. This change takes effect on the next process/DAG start.
-				res.json({ ok: true, effective: "next_process_start" });
-			} catch {
-				res.status(500).json({ error: "principle action failed" });
-			}
-		});
+				if (
+					!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+						principleId,
+					)
+				) {
+					res.status(400).json({ error: "invalid principleId format" });
+					return;
+				}
+				try {
+					const updated =
+						action === "activate"
+							? await cipherWriter.activatePrinciple(principleId)
+							: await cipherWriter.retirePrinciple(principleId, "CEO retired");
+					if (!updated) {
+						res
+							.status(404)
+							.json({ error: "principle not found or not in expected state" });
+						return;
+					}
+					// Principles are loaded into DecisionLayer HardRules once at process start
+					// (setup.ts). A running worker reuses the same DecisionLayer for its entire
+					// DAG batch. This change takes effect on the next process/DAG start.
+					res.json({ ok: true, effective: "next_process_start" });
+				} catch {
+					res.status(500).json({ error: "principle action failed" });
+				}
+			},
+		);
 	}
 
 	// Linear API proxy — agent doesn't hold LINEAR_API_KEY directly (GEO-187)
@@ -355,11 +383,18 @@ export function createBridgeApp(
 				res.status(400).json({ error: "description must be a string" });
 				return;
 			}
-			if (priority !== undefined && (typeof priority !== "number" || priority < 0 || priority > 4)) {
+			if (
+				priority !== undefined &&
+				(typeof priority !== "number" || priority < 0 || priority > 4)
+			) {
 				res.status(400).json({ error: "priority must be 0-4" });
 				return;
 			}
-			if (labels !== undefined && (!Array.isArray(labels) || !labels.every((l: unknown) => typeof l === "string"))) {
+			if (
+				labels !== undefined &&
+				(!Array.isArray(labels) ||
+					!labels.every((l: unknown) => typeof l === "string"))
+			) {
 				res.status(400).json({ error: "labels must be a string array" });
 				return;
 			}
@@ -389,7 +424,10 @@ export function createBridgeApp(
 					},
 				});
 			} catch (err) {
-				console.error("[linear-proxy] create-issue failed:", (err as Error).message);
+				console.error(
+					"[linear-proxy] create-issue failed:",
+					(err as Error).message,
+				);
 				res.status(502).json({ error: "Linear API error" });
 			}
 		},
@@ -416,7 +454,10 @@ export function createBridgeApp(
 				res.status(400).json({ error: "description must be a string" });
 				return;
 			}
-			if (priority !== undefined && (typeof priority !== "number" || priority < 0 || priority > 4)) {
+			if (
+				priority !== undefined &&
+				(typeof priority !== "number" || priority < 0 || priority > 4)
+			) {
 				res.status(400).json({ error: "priority must be 0-4" });
 				return;
 			}
@@ -440,7 +481,11 @@ export function createBridgeApp(
 							update.stateId = state.id;
 						} else {
 							const available = states.nodes.map((s) => s.name).join(", ");
-							res.status(400).json({ error: `Unknown status "${status}". Available: ${available}` });
+							res
+								.status(400)
+								.json({
+									error: `Unknown status "${status}". Available: ${available}`,
+								});
 							return;
 						}
 					}
@@ -448,7 +493,10 @@ export function createBridgeApp(
 				await client.updateIssue(issueId, update);
 				res.json({ ok: true });
 			} catch (err) {
-				console.error("[linear-proxy] update-issue failed:", (err as Error).message);
+				console.error(
+					"[linear-proxy] update-issue failed:",
+					(err as Error).message,
+				);
 				res.status(502).json({ error: "Linear API error" });
 			}
 		},
@@ -522,7 +570,9 @@ export async function startBridge(
 	const eventFilter = new EventFilter();
 	const statusTagMap = opts?.statusTagMap ?? config.statusTagMap ?? {};
 	if (Object.keys(statusTagMap).length === 0) {
-		console.warn("[Bridge] statusTagMap is empty — ForumTagUpdater will skip all tag updates. Set STATUS_TAG_MAP env var to enable.");
+		console.warn(
+			"[Bridge] statusTagMap is empty — ForumTagUpdater will skip all tag updates. Set STATUS_TAG_MAP env var to enable.",
+		);
 	}
 	const forumTagUpdater = new ForumTagUpdater(statusTagMap);
 
