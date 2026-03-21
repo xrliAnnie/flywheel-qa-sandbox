@@ -13,12 +13,12 @@ import type { StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import {
-	buildHookBody,
 	buildSessionKey,
 	type HookPayload,
-	notifyAgent,
 } from "./hook-payload.js";
+import type { LeadEventEnvelope } from "./lead-runtime.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
+import type { RuntimeRegistry } from "./runtime-registry.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 type ExecFn = (
@@ -51,10 +51,9 @@ export const ACTION_TARGET_STATUS: Record<string, string> = {
 	shelve: "shelved",
 };
 
-/** Send post-action hook notification (best-effort, fire-and-forget). */
+/** Send post-action hook notification via RuntimeRegistry (best-effort, fire-and-forget). */
 function sendActionHook(
 	store: StateStore,
-	config: BridgeConfig | undefined,
 	projects: ProjectEntry[],
 	executionId: string,
 	action: string,
@@ -63,13 +62,15 @@ function sendActionHook(
 	reason?: string,
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
+	registry?: RuntimeRegistry,
+	config?: BridgeConfig,
 ): void {
-	if (!config?.gatewayUrl || !config?.hooksToken) return;
+	if (!registry) return;
 	const session = store.getSession(executionId);
 	if (!session) return;
 	try {
 		const labels = store.getSessionLabels(executionId);
-		const { lead } = resolveLeadForIssue(
+		const { runtime, lead } = registry.resolveWithLead(
 			projects,
 			session.project_name,
 			labels,
@@ -94,7 +95,7 @@ function sendActionHook(
 			action_reason: reason,
 		};
 
-		const doNotify = async () => {
+		const doDeliver = async () => {
 			if (eventFilter) {
 				const filterResult = eventFilter.classify("action_executed", hookPayload);
 
@@ -105,7 +106,7 @@ function sendActionHook(
 						status: targetStatus,
 						eventType: "action_executed",
 						action,
-						discordBotToken: config!.discordBotToken,
+						discordBotToken: config?.discordBotToken,
 					});
 				}
 
@@ -113,23 +114,27 @@ function sendActionHook(
 					hookPayload.filter_priority = filterResult.priority;
 					hookPayload.notification_context = filterResult.reason;
 					hookPayload.forum_tag_update_result = tagResult;
-					const body = buildHookBody(
-						lead.agentId,
-						hookPayload,
-						buildSessionKey(session),
-					);
-					await notifyAgent(config!.gatewayUrl!, config!.hooksToken!, body);
+					const envelope: LeadEventEnvelope = {
+						seq: 0,
+						event: hookPayload,
+						sessionKey: buildSessionKey(session),
+						leadId: lead.agentId,
+						timestamp: new Date().toISOString(),
+					};
+					await runtime.deliver(envelope);
 				}
 			} else {
-				const body = buildHookBody(
-					lead.agentId,
-					hookPayload,
-					buildSessionKey(session),
-				);
-				await notifyAgent(config!.gatewayUrl!, config!.hooksToken!, body);
+				const envelope: LeadEventEnvelope = {
+					seq: 0,
+					event: hookPayload,
+					sessionKey: buildSessionKey(session),
+					leadId: lead.agentId,
+					timestamp: new Date().toISOString(),
+				};
+				await runtime.deliver(envelope);
 			}
 		};
-		doNotify().catch((err) => {
+		doDeliver().catch((err) => {
 			console.warn(
 				`[sendActionHook] Notification pipeline failed for ${executionId}:`,
 				(err as Error).message,
@@ -154,6 +159,7 @@ export async function approveExecution(
 	cipherWriter?: CipherWriter,
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
+	registry?: RuntimeRegistry,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -231,7 +237,6 @@ export async function approveExecution(
 		if (!transitionRejected) {
 			sendActionHook(
 				store,
-				config,
 				projects,
 				executionId,
 				"approve",
@@ -240,6 +245,8 @@ export async function approveExecution(
 				undefined,
 				eventFilter,
 				forumTagUpdater,
+				registry,
+				config,
 			);
 
 			// CIPHER: record approve outcome
@@ -274,6 +281,7 @@ export async function transitionSession(
 	projects?: ProjectEntry[],
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
+	registry?: RuntimeRegistry,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -345,7 +353,6 @@ export async function transitionSession(
 
 	sendActionHook(
 		store,
-		config,
 		projects ?? [],
 		executionId,
 		action,
@@ -354,6 +361,8 @@ export async function transitionSession(
 		reason,
 		eventFilter,
 		forumTagUpdater,
+		registry,
+		config,
 	);
 
 	if (action === "retry") {
@@ -387,6 +396,7 @@ async function handleRetry(
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 	ceoContext?: string,
+	registry?: RuntimeRegistry,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -460,7 +470,6 @@ async function handleRetry(
 		// Send hook notification
 		sendActionHook(
 			store,
-			config,
 			projects ?? [],
 			result.newExecutionId,
 			"retry",
@@ -469,6 +478,8 @@ async function handleRetry(
 			reason,
 			eventFilter,
 			forumTagUpdater,
+			registry,
+			config,
 		);
 
 		return {
@@ -517,6 +528,7 @@ async function handleTerminate(
 	projects?: ProjectEntry[],
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
+	registry?: RuntimeRegistry,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -592,7 +604,6 @@ async function handleTerminate(
 
 	sendActionHook(
 		store,
-		config,
 		projects ?? [],
 		executionId,
 		"terminate",
@@ -601,6 +612,8 @@ async function handleTerminate(
 		"Terminated by CEO",
 		eventFilter,
 		forumTagUpdater,
+		registry,
+		config,
 	);
 
 	const id = session.issue_identifier ?? executionId;
@@ -619,6 +632,7 @@ export function createActionRouter(
 	cipherWriter?: CipherWriter,
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
+	registry?: RuntimeRegistry,
 ): Router {
 	const router = Router();
 
@@ -643,6 +657,7 @@ export function createActionRouter(
 					cipherWriter,
 					eventFilter,
 					forumTagUpdater,
+					registry,
 				);
 				if (result.success) {
 					res.json({
@@ -674,6 +689,7 @@ export function createActionRouter(
 					projects,
 					eventFilter,
 					forumTagUpdater,
+					registry,
 				);
 				if (terminateResult.success) {
 					res.json({
@@ -707,6 +723,7 @@ export function createActionRouter(
 						eventFilter,
 						forumTagUpdater,
 						typeof context === "string" ? context : undefined,
+						registry,
 					);
 					if (retryResult.success) {
 						res.json({
@@ -734,6 +751,7 @@ export function createActionRouter(
 						projects,
 						eventFilter,
 						forumTagUpdater,
+						registry,
 					);
 					if (actionResult.success) {
 						res.json({ success: true, message: actionResult.message, action });
@@ -764,6 +782,7 @@ export function createActionRouter(
 					projects,
 					eventFilter,
 					forumTagUpdater,
+					registry,
 				);
 				if (actionResult.success) {
 					res.json({ success: true, message: actionResult.message, action });

@@ -8,9 +8,9 @@ import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import {
 	type HeartbeatNotifier,
 	HeartbeatService,
-	WebhookHeartbeatNotifier,
+	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
@@ -19,8 +19,43 @@ import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
 import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
+import type { LeadRuntime } from "./lead-runtime.js";
+import { OpenClawRuntime } from "./openclaw-runtime.js";
+import { RuntimeRegistry } from "./runtime-registry.js";
 import { createQueryRouter } from "./tools.js";
 import type { BridgeConfig } from "./types.js";
+
+/** Create the appropriate LeadRuntime for a lead config. */
+export async function createLeadRuntime(
+	lead: LeadConfig,
+	config: BridgeConfig,
+): Promise<LeadRuntime> {
+	if (lead.runtime === "claude-discord") {
+		if (!lead.controlChannel) {
+			throw new Error(
+				`Lead "${lead.agentId}" has runtime=claude-discord but missing controlChannel`,
+			);
+		}
+		if (!config.discordBotToken) {
+			throw new Error(
+				`Lead "${lead.agentId}" has runtime=claude-discord but DISCORD_BOT_TOKEN is not set`,
+			);
+		}
+		const { ClaudeDiscordRuntime } = await import(
+			"./claude-discord-runtime.js"
+		);
+		return new ClaudeDiscordRuntime(
+			lead.controlChannel,
+			config.discordBotToken,
+		);
+	}
+	if (!config.gatewayUrl || !config.hooksToken) {
+		throw new Error(
+			`Lead "${lead.agentId}" uses openclaw runtime but OPENCLAW_GATEWAY_URL or OPENCLAW_HOOKS_TOKEN is not set`,
+		);
+	}
+	return new OpenClawRuntime(config.gatewayUrl, config.hooksToken);
+}
 
 function safeCompare(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
@@ -157,6 +192,7 @@ export function createBridgeApp(
 	cipherWriter?: CipherWriter,
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
+	registry?: RuntimeRegistry,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -215,6 +251,7 @@ export function createBridgeApp(
 			cipherWriter,
 			eventFilter,
 			forumTagUpdater,
+			registry,
 		),
 	);
 
@@ -230,6 +267,7 @@ export function createBridgeApp(
 			transitionOpts,
 			eventFilter,
 			forumTagUpdater,
+			registry,
 		),
 	);
 
@@ -251,6 +289,7 @@ export function createBridgeApp(
 			cipherWriter,
 			eventFilter,
 			forumTagUpdater,
+			registry,
 		),
 	);
 
@@ -549,6 +588,7 @@ export async function startBridge(
 	app: express.Application;
 	store: StateStore;
 	close: () => Promise<void>;
+	registry: RuntimeRegistry;
 }> {
 	if (projects.length === 0) {
 		throw new Error(
@@ -563,6 +603,27 @@ export async function startBridge(
 	const executor = new DirectiveExecutor(store);
 	const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
 	const broadcaster = new SseBroadcaster(store, config.stuckThresholdMinutes);
+
+	// GEO-195: Initialize RuntimeRegistry — per-lead runtime selection
+	const registry = new RuntimeRegistry();
+	for (const project of projects) {
+		for (const lead of project.leads) {
+			try {
+				const runtime = await createLeadRuntime(lead, config);
+				registry.register(lead, runtime);
+			} catch (err) {
+				// Non-fatal for openclaw leads without gateway (test/dev environments)
+				if (lead.runtime === "claude-discord") throw err;
+				console.warn(
+					`[Bridge] Skipping runtime for "${lead.agentId}":`,
+					(err as Error).message,
+				);
+			}
+		}
+	}
+	if (registry.size > 0) {
+		console.log(`[Bridge] RuntimeRegistry: ${registry.size} lead runtime(s) registered`);
+	}
 
 	// GEO-187: EventFilter + ForumTagUpdater
 	const eventFilter = new EventFilter();
@@ -584,6 +645,7 @@ export async function startBridge(
 		opts?.cipherWriter,
 		eventFilter,
 		forumTagUpdater,
+		registry,
 	);
 
 	const server = app.listen(config.port, config.host);
@@ -597,17 +659,10 @@ export async function startBridge(
 	const port = typeof addr === "object" && addr ? addr.port : config.port;
 	console.log(`[Bridge] Listening on ${config.host}:${port}`);
 
-	// Always start HeartbeatService — orphan reaping is critical even without gateway.
-	// If no gateway hooks configured, use a no-op notifier (reaping still works, just no Slack).
+	// GEO-195: Use RegistryHeartbeatNotifier when registry has entries, else no-op
 	const notifier: HeartbeatNotifier =
-		config.gatewayUrl && config.hooksToken
-			? new WebhookHeartbeatNotifier(
-					config.gatewayUrl,
-					config.hooksToken,
-					projects,
-					store,
-					eventFilter,
-				)
+		registry.size > 0
+			? new RegistryHeartbeatNotifier(registry, projects, store, eventFilter)
 			: { onSessionStuck: async () => {}, onSessionOrphaned: async () => {} };
 	const heartbeatService = new HeartbeatService(
 		store,
@@ -640,6 +695,7 @@ export async function startBridge(
 			await retryDispatcher.drain();
 			await retryDispatcher.teardownRuntimes();
 		}
+		await registry.shutdownAll();
 		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -647,5 +703,5 @@ export async function startBridge(
 		store.close();
 	};
 
-	return { app, store, close };
+	return { app, store, close, registry };
 }

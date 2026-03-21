@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { CipherSyncService, CipherWriter } from "flywheel-edge-worker";
 import { EventFilter } from "./bridge/EventFilter.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
-import { buildHookBody, notifyAgent } from "./bridge/hook-payload.js";
+import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { startBridge } from "./bridge/plugin.js";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
@@ -36,6 +36,18 @@ async function main() {
 			console.log("[CIPHER] Supabase sync enabled");
 		}
 
+		// CIPHER notifyFn is wired after startBridge returns the registry (GEO-195)
+	} catch (err) {
+		console.warn(
+			"[CIPHER] Failed to initialize — running without CIPHER:",
+			(err as Error).message,
+		);
+	}
+
+	const { close, registry } = await startBridge(config, projects, { cipherWriter });
+
+	// Wire CIPHER notification via RuntimeRegistry (GEO-195)
+	if (cipherWriter && registry) {
 		const cipherEventFilter = new EventFilter();
 		cipherWriter.setNotifyFn(async (proposal) => {
 			const hookPayload: HookPayload = {
@@ -46,7 +58,6 @@ async function main() {
 				status: "pending_ceo",
 			};
 
-			// EventFilter: classify cipher notifications (GEO-187)
 			const filterResult = cipherEventFilter.classify(
 				"cipher_principle_proposed",
 				hookPayload,
@@ -56,24 +67,20 @@ async function main() {
 			hookPayload.filter_priority = filterResult.priority;
 			hookPayload.notification_context = filterResult.reason;
 
-			const sessionKey = `cipher-proposal-${proposal.cipher_principle_id}`;
-			const body = buildHookBody(
-				config.defaultLeadAgentId,
-				hookPayload,
-				sessionKey,
-			);
-			if (config.gatewayUrl && config.hooksToken) {
-				await notifyAgent(config.gatewayUrl, config.hooksToken, body);
-			}
-		});
-	} catch (err) {
-		console.warn(
-			"[CIPHER] Failed to initialize — running without CIPHER:",
-			(err as Error).message,
-		);
-	}
+			const runtime = registry.getForLead(config.defaultLeadAgentId);
+			if (!runtime) return;
 
-	const { close } = await startBridge(config, projects, { cipherWriter });
+			const sessionKey = `cipher-proposal-${proposal.cipher_principle_id}`;
+			const envelope: LeadEventEnvelope = {
+				seq: 0,
+				event: hookPayload,
+				sessionKey,
+				leadId: config.defaultLeadAgentId,
+				timestamp: new Date().toISOString(),
+			};
+			await runtime.deliver(envelope);
+		});
+	}
 
 	let shuttingDown = false;
 	const shutdown = async () => {
