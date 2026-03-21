@@ -114,24 +114,44 @@ function sendActionHook(
 					hookPayload.filter_priority = filterResult.priority;
 					hookPayload.notification_context = filterResult.reason;
 					hookPayload.forum_tag_update_result = tagResult;
+					const eventId = `action-${executionId}-${action}-${Date.now()}`;
+					const sessionKey = buildSessionKey(session);
+					const seq = store.appendLeadEvent(
+						lead.agentId,
+						eventId,
+						"action_executed",
+						JSON.stringify(hookPayload),
+						sessionKey,
+					);
 					const envelope: LeadEventEnvelope = {
-						seq: 0,
+						seq,
 						event: hookPayload,
-						sessionKey: buildSessionKey(session),
+						sessionKey,
 						leadId: lead.agentId,
 						timestamp: new Date().toISOString(),
 					};
 					await runtime.deliver(envelope);
+					store.markLeadEventDelivered(seq);
 				}
 			} else {
+				const eventId = `action-${executionId}-${action}-${Date.now()}`;
+				const sessionKey = buildSessionKey(session);
+				const seq = store.appendLeadEvent(
+					lead.agentId,
+					eventId,
+					"action_executed",
+					JSON.stringify(hookPayload),
+					sessionKey,
+				);
 				const envelope: LeadEventEnvelope = {
-					seq: 0,
+					seq,
 					event: hookPayload,
-					sessionKey: buildSessionKey(session),
+					sessionKey,
 					leadId: lead.agentId,
 					timestamp: new Date().toISOString(),
 				};
 				await runtime.deliver(envelope);
+				store.markLeadEventDelivered(seq);
 			}
 		};
 		doDeliver().catch((err) => {

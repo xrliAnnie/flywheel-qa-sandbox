@@ -12,8 +12,10 @@ import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import type { ForumTagUpdater } from "./bridge/ForumTagUpdater.js";
 import {
+	buildHookBody,
 	buildSessionKey,
 	type HookPayload,
+	notifyAgent,
 } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
@@ -170,10 +172,38 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	}
 
 	private pushNotification(env: EventEnvelope, eventType: string): void {
-		if (!this.registry) return;
-
 		const session = this.store.getSession(env.executionId);
 		if (!session) return;
+
+		// Fallback: when no RuntimeRegistry is available (e.g., retry-runtime path),
+		// use the legacy notifyAgent() path directly via BridgeConfig OpenClaw credentials.
+		if (!this.registry) {
+			if (this.config.gatewayUrl && this.config.hooksToken) {
+				const sessionKey = buildSessionKey(session);
+				const hookPayload: HookPayload = {
+					event_type: eventType,
+					execution_id: env.executionId,
+					issue_id: env.issueId,
+					issue_identifier: session.issue_identifier,
+					issue_title: session.issue_title,
+					project_name: env.projectName,
+					status: session.status,
+				};
+				const body = buildHookBody(
+					this.config.defaultLeadAgentId,
+					hookPayload,
+					sessionKey,
+				);
+				this.pending.push(
+					notifyAgent(
+						this.config.gatewayUrl,
+						this.config.hooksToken,
+						body,
+					).catch(() => {}),
+				);
+			}
+			return;
+		}
 
 		try {
 			const labels = this.store.getSessionLabels(env.executionId);
@@ -223,24 +253,42 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						hookPayload.filter_priority = filterResult.priority;
 						hookPayload.notification_context = filterResult.reason;
 						hookPayload.forum_tag_update_result = tagResult;
+						const eventId = `direct-${env.executionId}-${eventType}-${Date.now()}`;
+						const seq = this.store.appendLeadEvent(
+							lead.agentId,
+							eventId,
+							eventType,
+							JSON.stringify(hookPayload),
+							sessionKey,
+						);
 						const envelope: LeadEventEnvelope = {
-							seq: 0,
+							seq,
 							event: hookPayload,
 							sessionKey,
 							leadId: lead.agentId,
 							timestamp: new Date().toISOString(),
 						};
 						await runtime.deliver(envelope);
+						this.store.markLeadEventDelivered(seq);
 					}
 				} else {
+					const eventId = `direct-${env.executionId}-${eventType}-${Date.now()}`;
+					const seq = this.store.appendLeadEvent(
+						lead.agentId,
+						eventId,
+						eventType,
+						JSON.stringify(hookPayload),
+						sessionKey,
+					);
 					const envelope: LeadEventEnvelope = {
-						seq: 0,
+						seq,
 						event: hookPayload,
 						sessionKey,
 						leadId: lead.agentId,
 						timestamp: new Date().toISOString(),
 					};
 					await runtime.deliver(envelope);
+					this.store.markLeadEventDelivered(seq);
 				}
 			};
 

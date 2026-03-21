@@ -36,7 +36,8 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 		// Bootstrap can be large — split into chunks if needed
 		const chunks = this.splitMessage(content);
 		for (const chunk of chunks) {
-			await this.postDiscordMessage(chunk);
+			// throwOnError=true so bootstrap endpoint can report delivery failure
+			await this.postDiscordMessage(chunk, true);
 		}
 	}
 
@@ -52,7 +53,16 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 		// No persistent connection to clean up — Discord REST is stateless.
 	}
 
-	private async postDiscordMessage(content: string): Promise<void> {
+	/**
+	 * Post a message to the Discord control channel.
+	 * @param throwOnError If true, throw on non-ok response or network failure
+	 *   instead of swallowing. Used by sendBootstrap() so the bootstrap endpoint
+	 *   can report delivery failures.
+	 */
+	private async postDiscordMessage(
+		content: string,
+		throwOnError = false,
+	): Promise<void> {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
 		try {
@@ -70,11 +80,17 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 			);
 			if (!res.ok) {
 				const body = await res.text().catch(() => "");
+				if (throwOnError) {
+					throw new Error(
+						`Discord returned ${res.status}: ${body.slice(0, 200)}`,
+					);
+				}
 				console.warn(
 					`[claude-discord] Discord returned ${res.status}: ${body.slice(0, 200)}`,
 				);
 			}
 		} catch (err) {
+			if (throwOnError) throw err;
 			console.warn(
 				"[claude-discord] Failed to deliver to control channel:",
 				(err as Error).message,
