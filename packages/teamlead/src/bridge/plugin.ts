@@ -333,11 +333,6 @@ export function createBridgeApp(
 		});
 	}
 
-	// Catch-all 404
-	app.use((_req, res) => {
-		res.status(404).json({ error: "not found" });
-	});
-
 	// Linear API proxy — agent doesn't hold LINEAR_API_KEY directly (GEO-187)
 	app.post(
 		"/api/linear/create-issue",
@@ -352,17 +347,25 @@ export function createBridgeApp(
 				res.status(400).json({ error: "title is required" });
 				return;
 			}
-			if (typeof title === "string" && title.length > 500) {
+			if (title.length > 500) {
 				res.status(400).json({ error: "title must be 500 chars or less" });
+				return;
+			}
+			if (description !== undefined && typeof description !== "string") {
+				res.status(400).json({ error: "description must be a string" });
 				return;
 			}
 			if (priority !== undefined && (typeof priority !== "number" || priority < 0 || priority > 4)) {
 				res.status(400).json({ error: "priority must be 0-4" });
 				return;
 			}
+			if (labels !== undefined && (!Array.isArray(labels) || !labels.every((l: unknown) => typeof l === "string"))) {
+				res.status(400).json({ error: "labels must be a string array" });
+				return;
+			}
 			try {
 				const { LinearClient } = await import("@linear/sdk");
-				const client = new LinearClient({ accessToken: config.linearApiKey });
+				const client = new LinearClient({ apiKey: config.linearApiKey });
 				const teams = await client.teams();
 				const team = teams.nodes[0];
 				if (!team) {
@@ -374,7 +377,7 @@ export function createBridgeApp(
 					title,
 					description: description ?? "",
 					priority: priority ?? 0,
-					labelIds: Array.isArray(labels) ? labels : undefined,
+					labelIds: labels,
 				});
 				const created = await issue.issue;
 				res.json({
@@ -405,13 +408,21 @@ export function createBridgeApp(
 				res.status(400).json({ error: "issueId is required" });
 				return;
 			}
+			if (title !== undefined && typeof title !== "string") {
+				res.status(400).json({ error: "title must be a string" });
+				return;
+			}
+			if (description !== undefined && typeof description !== "string") {
+				res.status(400).json({ error: "description must be a string" });
+				return;
+			}
 			if (priority !== undefined && (typeof priority !== "number" || priority < 0 || priority > 4)) {
 				res.status(400).json({ error: "priority must be 0-4" });
 				return;
 			}
 			try {
 				const { LinearClient } = await import("@linear/sdk");
-				const client = new LinearClient({ accessToken: config.linearApiKey });
+				const client = new LinearClient({ apiKey: config.linearApiKey });
 				const update: Record<string, unknown> = {};
 				if (title !== undefined) update.title = title;
 				if (description !== undefined) update.description = description;
@@ -449,6 +460,11 @@ export function createBridgeApp(
 			res.json({ guild_id: config.discordGuildId });
 		},
 	);
+
+	// Catch-all 404 (must be after all routes)
+	app.use((_req, res) => {
+		res.status(404).json({ error: "not found" });
+	});
 
 	// JSON error handler — returns JSON instead of Express default HTML with stack trace
 	app.use(((
