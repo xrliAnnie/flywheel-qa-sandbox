@@ -655,13 +655,11 @@ export function createActionRouter(
 						action: "terminate",
 					});
 				} else {
-					res
-						.status(400)
-						.json({
-							success: false,
-							message: terminateResult.message,
-							action: "terminate",
-						});
+					res.status(400).json({
+						success: false,
+						message: terminateResult.message,
+						action: "terminate",
+					});
 				}
 				return;
 			}

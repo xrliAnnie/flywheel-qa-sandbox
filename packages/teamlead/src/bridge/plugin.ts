@@ -481,11 +481,9 @@ export function createBridgeApp(
 							update.stateId = state.id;
 						} else {
 							const available = states.nodes.map((s) => s.name).join(", ");
-							res
-								.status(400)
-								.json({
-									error: `Unknown status "${status}". Available: ${available}`,
-								});
+							res.status(400).json({
+								error: `Unknown status "${status}". Available: ${available}`,
+							});
 							return;
 						}
 					}

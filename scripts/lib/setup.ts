@@ -16,6 +16,7 @@ import type { ClassifyFn } from "../../packages/edge-worker/dist/AgentDispatcher
 import { AgentDispatcher } from "../../packages/edge-worker/dist/AgentDispatcher.js";
 import { AuditLogger } from "../../packages/edge-worker/dist/AuditLogger.js";
 import { Blueprint } from "../../packages/edge-worker/dist/Blueprint.js";
+import { CipherReader } from "../../packages/edge-worker/dist/cipher/CipherReader.js";
 import {
 	DecisionLayer,
 	defaultRules,
@@ -33,7 +34,6 @@ import { ExecutionEvidenceCollector } from "../../packages/edge-worker/dist/Exec
 import { GitResultChecker } from "../../packages/edge-worker/dist/GitResultChecker.js";
 import { HookCallbackServer } from "../../packages/edge-worker/dist/HookCallbackServer.js";
 import { createMemoryService } from "../../packages/edge-worker/dist/memory/index.js";
-import { CipherReader } from "../../packages/edge-worker/dist/cipher/CipherReader.js";
 import { PreHydrator } from "../../packages/edge-worker/dist/PreHydrator.js";
 import { ReactionsEngine } from "../../packages/edge-worker/dist/ReactionsEngine.js";
 import { ApproveHandler } from "../../packages/edge-worker/dist/reactions/ApproveHandler.js";
@@ -232,10 +232,15 @@ export async function setupComponents(
 						const valTokens = valsPart.split("+");
 						const tailCount = dims.length - 1;
 						if (valTokens.length >= dims.length) {
-							const headVal = valTokens.slice(0, valTokens.length - tailCount).join("+");
+							const headVal = valTokens
+								.slice(0, valTokens.length - tailCount)
+								.join("+");
 							constraints.push({ dim: dims[0]!, val: headVal });
 							for (let i = 1; i < dims.length; i++) {
-								constraints.push({ dim: dims[i]!, val: valTokens[valTokens.length - tailCount + (i - 1)]! });
+								constraints.push({
+									dim: dims[i]!,
+									val: valTokens[valTokens.length - tailCount + (i - 1)]!,
+								});
 							}
 						}
 					}
@@ -248,53 +253,114 @@ export async function setupComponents(
 					evaluate: (ctx) => {
 						// Derive dimensions from raw ExecutionContext fields.
 						// Bucketing mirrors extractDimensions() in cipher/dimensions.ts.
-						const AUTH_RE = /\/(auth|login|session|token|password|middleware|guard)\b/i;
+						const AUTH_RE =
+							/\/(auth|login|session|token|password|middleware|guard)\b/i;
 						const TEST_RE = /\.(test|spec)\.(ts|js|tsx|jsx)$|\/__tests__\//;
 						const FE_RE = /\/(components?|pages?|views?|hooks?|styles?|css)\b/i;
 						const CFG_RE = /\.(ya?ml|json|toml|env|config)\b/i;
 						const totalLines = ctx.linesAdded + ctx.linesRemoved;
-						const sizeBucket = totalLines <= 20 ? "tiny" : totalLines <= 100 ? "small" : totalLines <= 500 ? "medium" : "large";
-						const touchesAuth = ctx.changedFilePaths.some((p) => AUTH_RE.test(p));
+						const sizeBucket =
+							totalLines <= 20
+								? "tiny"
+								: totalLines <= 100
+									? "small"
+									: totalLines <= 500
+										? "medium"
+										: "large";
+						const touchesAuth = ctx.changedFilePaths.some((p) =>
+							AUTH_RE.test(p),
+						);
 						const hasTests = ctx.changedFilePaths.some((p) => TEST_RE.test(p));
 						// classifyArea logic from dimensions.ts (empty paths → "mixed")
 						let areaTouched = "mixed";
 						if (ctx.changedFilePaths.length > 0) {
-							let fe = 0, be = 0, au = 0, te = 0, cf = 0;
+							let fe = 0,
+								be = 0,
+								au = 0,
+								te = 0,
+								cf = 0;
 							for (const fp of ctx.changedFilePaths) {
-								if (AUTH_RE.test(fp)) au++; else if (TEST_RE.test(fp)) te++; else if (CFG_RE.test(fp)) cf++; else if (FE_RE.test(fp)) fe++; else be++;
+								if (AUTH_RE.test(fp)) au++;
+								else if (TEST_RE.test(fp)) te++;
+								else if (CFG_RE.test(fp)) cf++;
+								else if (FE_RE.test(fp)) fe++;
+								else be++;
 							}
 							const total = ctx.changedFilePaths.length;
-							areaTouched = au > total * 0.5 ? "auth" : te > total * 0.5 ? "test" : cf > total * 0.5 ? "config" : (fe > 0 && be > 0) ? "mixed" : fe > be ? "frontend" : "backend";
+							areaTouched =
+								au > total * 0.5
+									? "auth"
+									: te > total * 0.5
+										? "test"
+										: cf > total * 0.5
+											? "config"
+											: fe > 0 && be > 0
+												? "mixed"
+												: fe > be
+													? "frontend"
+													: "backend";
 						}
 
 						for (const c of constraints) {
-							const noMatch = { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+							const noMatch = {
+								triggered: false,
+								action: p.ruleType,
+								reason: "",
+								ruleId: p.id,
+							};
 							// label: match primaryLabel (labels[0]) to stay consistent with learning
-							if (c.dim === "label" && (ctx.labels[0] ?? "unlabeled") !== c.val) return noMatch;
+							if (c.dim === "label" && (ctx.labels[0] ?? "unlabeled") !== c.val)
+								return noMatch;
 							if (c.dim === "size" && sizeBucket !== c.val) return noMatch;
 							if (c.dim === "area" && areaTouched !== c.val) return noMatch;
-							if (c.dim === "auth" && String(touchesAuth) !== c.val) return noMatch;
-							if (c.dim === "tests" && String(hasTests) !== c.val) return noMatch;
+							if (c.dim === "auth" && String(touchesAuth) !== c.val)
+								return noMatch;
+							if (c.dim === "tests" && String(hasTests) !== c.val)
+								return noMatch;
 							if (c.dim === "exit") {
 								// Normalize exitReason to match dimensions.ts learning: timeout/error/completed
-								const exitStatus = ctx.exitReason === "timeout" ? "timeout" : ctx.exitReason === "error" ? "error" : "completed";
+								const exitStatus =
+									ctx.exitReason === "timeout"
+										? "timeout"
+										: ctx.exitReason === "error"
+											? "error"
+											: "completed";
 								if (exitStatus !== c.val) return noMatch;
 							}
-							if (c.dim === "failures" && String(ctx.consecutiveFailures > 0) !== c.val) return noMatch;
+							if (
+								c.dim === "failures" &&
+								String(ctx.consecutiveFailures > 0) !== c.val
+							)
+								return noMatch;
 							if (c.dim === "commits") {
-								const vol = ctx.commitCount <= 1 ? "single" : ctx.commitCount <= 5 ? "few" : "many";
+								const vol =
+									ctx.commitCount <= 1
+										? "single"
+										: ctx.commitCount <= 5
+											? "few"
+											: "many";
 								if (vol !== c.val) return noMatch;
 							}
 							if (c.dim === "diff") {
-								const scale = ctx.filesChangedCount <= 2 ? "trivial"
-									: ctx.filesChangedCount <= 5 ? "small"
-									: ctx.filesChangedCount <= 15 ? "medium" : "large";
+								const scale =
+									ctx.filesChangedCount <= 2
+										? "trivial"
+										: ctx.filesChangedCount <= 5
+											? "small"
+											: ctx.filesChangedCount <= 15
+												? "medium"
+												: "large";
 								if (scale !== c.val) return noMatch;
 							}
 						}
 						// No constraints at all → don't fire (safety: never make a principle global)
 						if (constraints.length === 0) {
-							return { triggered: false, action: p.ruleType, reason: "", ruleId: p.id };
+							return {
+								triggered: false,
+								action: p.ruleType,
+								reason: "",
+								ruleId: p.id,
+							};
 						}
 						return {
 							triggered: true,
@@ -306,7 +372,9 @@ export async function setupComponents(
 				});
 			}
 			if (principles.length > 0) {
-				log(`CIPHER: ${principles.length} active principle(s) registered as HardRules`);
+				log(
+					`CIPHER: ${principles.length} active principle(s) registered as HardRules`,
+				);
 			}
 		} catch {
 			log("CIPHER: no principles loaded (db may not exist yet)");

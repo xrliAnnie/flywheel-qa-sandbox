@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	ForumTagUpdater,
-	type TagUpdateContext,
-} from "../bridge/ForumTagUpdater.js";
+import { ForumTagUpdater } from "../bridge/ForumTagUpdater.js";
 
 const TAG_MAP: Record<string, string[]> = {
 	running: ["tag-running"],

@@ -207,13 +207,13 @@ async function main() {
 	// Auto-open a self-closing Terminal viewer (polls until tmux exits, then closes window).
 	const viewerScript = [
 		'tell application "Terminal"',
-		'  set viewerTab to do script "echo \'Waiting for Claude to start...\' && while ! tmux has-session -t flywheel-e2e 2>/dev/null; do sleep 1; done && tmux attach -t flywheel-e2e"',
+		"  set viewerTab to do script \"echo 'Waiting for Claude to start...' && while ! tmux has-session -t flywheel-e2e 2>/dev/null; do sleep 1; done && tmux attach -t flywheel-e2e\"",
 		"  set viewerWindow to front window",
 		"  activate",
 		"  repeat",
 		"    delay 2",
 		"    try",
-		'      set p to (processes of viewerTab) as string',
+		"      set p to (processes of viewerTab) as string",
 		'      if p does not contain "tmux" then',
 		"        close viewerWindow",
 		"        exit repeat",
@@ -225,7 +225,9 @@ async function main() {
 		"end tell",
 	].join("\n");
 	execFile("osascript", ["-e", viewerScript], () => {});
-	log("Opened viewer window — it will connect once Claude starts and auto-close when done");
+	log(
+		"Opened viewer window — it will connect once Claude starts and auto-close when done",
+	);
 
 	// Auto-interaction: handle trust prompt + auto-exit after Claude completes work.
 	// Phase 1: Auto-confirm "trust this folder" prompt (fires once for new temp dirs).
