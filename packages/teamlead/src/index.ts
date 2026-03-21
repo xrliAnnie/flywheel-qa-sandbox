@@ -44,7 +44,7 @@ async function main() {
 		);
 	}
 
-	const { close, registry } = await startBridge(config, projects, { cipherWriter });
+	const { close, registry, store } = await startBridge(config, projects, { cipherWriter });
 
 	// Wire CIPHER notification via RuntimeRegistry (GEO-195)
 	if (cipherWriter && registry) {
@@ -71,14 +71,25 @@ async function main() {
 			if (!runtime) return;
 
 			const sessionKey = `cipher-proposal-${proposal.cipher_principle_id}`;
+			const eventId = `cipher-${proposal.cipher_principle_id}-${Date.now()}`;
+			const seq = store.appendLeadEvent(
+				config.defaultLeadAgentId,
+				eventId,
+				"cipher_principle_proposed",
+				JSON.stringify(hookPayload),
+				sessionKey,
+			);
 			const envelope: LeadEventEnvelope = {
-				seq: 0,
+				seq,
 				event: hookPayload,
 				sessionKey,
 				leadId: config.defaultLeadAgentId,
 				timestamp: new Date().toISOString(),
 			};
-			await runtime.deliver(envelope);
+			runtime
+				.deliver(envelope)
+				.then(() => store.markLeadEventDelivered(seq))
+				.catch(() => {});
 		});
 	}
 
