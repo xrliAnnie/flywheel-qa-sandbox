@@ -1,14 +1,16 @@
-import { describe, expect, it, afterEach } from "vitest";
-import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { CipherWriter } from "../cipher/CipherWriter.js";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { CipherReader } from "../cipher/CipherReader.js";
+import { CipherWriter } from "../cipher/CipherWriter.js";
 import { extractDimensions } from "../cipher/dimensions.js";
 import { generatePatternKeys } from "../cipher/pattern-keys.js";
 import type { SnapshotInputDto } from "../cipher/types.js";
 
-function makeSnapshotInput(overrides: Partial<SnapshotInputDto> = {}): SnapshotInputDto {
+function makeSnapshotInput(
+	overrides: Partial<SnapshotInputDto> = {},
+): SnapshotInputDto {
 	return {
 		labels: ["bug"],
 		exitReason: "completed",
@@ -34,7 +36,9 @@ describe("CIPHER dreaming E2E — full pipeline", () => {
 	afterEach(() => {
 		try {
 			rmSync(tmpDir, { recursive: true, force: true });
-		} catch { /* ignore */ }
+		} catch {
+			/* ignore */
+		}
 	});
 
 	it("55 approves on same pattern → skill extraction + principle graduation", async () => {
@@ -344,7 +348,10 @@ describe("CIPHER dreaming E2E — full pipeline", () => {
 	it("retirePrinciple returns false for nonexistent ID", async () => {
 		setup();
 		const writer = await CipherWriter.create(dbPath);
-		const result = await writer.retirePrinciple("00000000-0000-0000-0000-000000000000", "test");
+		const result = await writer.retirePrinciple(
+			"00000000-0000-0000-0000-000000000000",
+			"test",
+		);
 		expect(result).toBe(false);
 		writer.close();
 	});
@@ -453,28 +460,33 @@ describe("CIPHER dreaming E2E — full pipeline", () => {
 			.toISOString()
 			.replace("T", " ")
 			.replace(/\.\d+Z$/, "");
-		writer.getDatabase().run(
-			`UPDATE decision_patterns SET last_seen_at = ?`,
-			[staleDate],
-		);
+		writer
+			.getDatabase()
+			.run(`UPDATE decision_patterns SET last_seen_at = ?`, [staleDate]);
 
 		// Run refreshTemporalWindows 3 times — maturity should NOT keep dropping
 		await writer.refreshTemporalWindows();
-		const after1 = writer.getDatabase().exec(
-			`SELECT pattern_key, maturity_level FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
-		);
+		const after1 = writer
+			.getDatabase()
+			.exec(
+				`SELECT pattern_key, maturity_level FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
+			);
 		const maturity1 = after1[0]?.values[0]?.[1] as string;
 
 		await writer.refreshTemporalWindows();
-		const after2 = writer.getDatabase().exec(
-			`SELECT pattern_key, maturity_level FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
-		);
+		const after2 = writer
+			.getDatabase()
+			.exec(
+				`SELECT pattern_key, maturity_level FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
+			);
 		const maturity2 = after2[0]?.values[0]?.[1] as string;
 
 		await writer.refreshTemporalWindows();
-		const after3 = writer.getDatabase().exec(
-			`SELECT pattern_key, maturity_level FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
-		);
+		const after3 = writer
+			.getDatabase()
+			.exec(
+				`SELECT pattern_key, maturity_level FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
+			);
 		const maturity3 = after3[0]?.values[0]?.[1] as string;
 
 		// All three calls should produce the same maturity level (idempotent)
@@ -531,21 +543,21 @@ describe("CIPHER dreaming E2E — full pipeline", () => {
 			.toISOString()
 			.replace("T", " ")
 			.replace(/\.\d+Z$/, "");
-		writer.getDatabase().run(
-			`UPDATE decision_patterns SET last_seen_at = ?`,
-			[staleDate],
-		);
-		writer.getDatabase().run(
-			`UPDATE review_pattern_keys SET created_at = ?`,
-			[staleDate],
-		);
+		writer
+			.getDatabase()
+			.run(`UPDATE decision_patterns SET last_seen_at = ?`, [staleDate]);
+		writer
+			.getDatabase()
+			.run(`UPDATE review_pattern_keys SET created_at = ?`, [staleDate]);
 
 		await writer.refreshTemporalWindows();
 
 		// Verify decayed to exploratory
-		const decayed = writer.getDatabase().exec(
-			`SELECT maturity_level FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
-		);
+		const decayed = writer
+			.getDatabase()
+			.exec(
+				`SELECT maturity_level FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
+			);
 		expect(decayed[0]?.values[0]?.[0]).toBe("exploratory");
 
 		// Add 1 new review — total_count = 16, but last_90d_total = 1
@@ -580,9 +592,11 @@ describe("CIPHER dreaming E2E — full pipeline", () => {
 		});
 
 		// Should still be exploratory — 1 recent sample < 10 threshold
-		const afterNew = writer.getDatabase().exec(
-			`SELECT maturity_level, total_count, last_90d_total FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
-		);
+		const afterNew = writer
+			.getDatabase()
+			.exec(
+				`SELECT maturity_level, total_count, last_90d_total FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
+			);
 		const [ml, tc, r90] = afterNew[0]?.values[0]! as [string, number, number];
 		expect(tc).toBe(16); // lifetime count increased
 		expect(r90).toBe(1); // only 1 recent
@@ -644,9 +658,9 @@ describe("CIPHER dreaming E2E — full pipeline", () => {
 		await writer.activatePrinciple(proposals[0]!.id);
 
 		// Verify skill and principle are active
-		const activeSkills = writer.getDatabase().exec(
-			`SELECT COUNT(*) FROM cipher_skills WHERE status = 'active'`,
-		);
+		const activeSkills = writer
+			.getDatabase()
+			.exec(`SELECT COUNT(*) FROM cipher_skills WHERE status = 'active'`);
 		expect(Number(activeSkills[0]?.values[0]?.[0])).toBeGreaterThan(0);
 
 		// Backdate everything to trigger decay
@@ -654,34 +668,34 @@ describe("CIPHER dreaming E2E — full pipeline", () => {
 			.toISOString()
 			.replace("T", " ")
 			.replace(/\.\d+Z$/, "");
-		writer.getDatabase().run(
-			`UPDATE decision_patterns SET last_seen_at = ?`,
-			[staleDate],
-		);
-		writer.getDatabase().run(
-			`UPDATE review_pattern_keys SET created_at = ?`,
-			[staleDate],
-		);
+		writer
+			.getDatabase()
+			.run(`UPDATE decision_patterns SET last_seen_at = ?`, [staleDate]);
+		writer
+			.getDatabase()
+			.run(`UPDATE review_pattern_keys SET created_at = ?`, [staleDate]);
 
 		// Run dreaming — triggers refreshTemporalWindows → cascade retirement
 		await writer.runDreaming();
 
 		// Pattern should be decayed
-		const patterns = writer.getDatabase().exec(
-			`SELECT maturity_level FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
-		);
+		const patterns = writer
+			.getDatabase()
+			.exec(
+				`SELECT maturity_level FROM decision_patterns WHERE pattern_key LIKE 'label:%'`,
+			);
 		expect(patterns[0]?.values[0]?.[0]).toBe("exploratory");
 
 		// Skill should be retired
-		const skills = writer.getDatabase().exec(
-			`SELECT status FROM cipher_skills WHERE status = 'active'`,
-		);
+		const skills = writer
+			.getDatabase()
+			.exec(`SELECT status FROM cipher_skills WHERE status = 'active'`);
 		expect(skills[0]?.values?.length ?? 0).toBe(0);
 
 		// Principle should be retired
-		const principles = writer.getDatabase().exec(
-			`SELECT status FROM cipher_principles WHERE status = 'active'`,
-		);
+		const principles = writer
+			.getDatabase()
+			.exec(`SELECT status FROM cipher_principles WHERE status = 'active'`);
 		expect(principles[0]?.values?.length ?? 0).toBe(0);
 
 		writer.close();

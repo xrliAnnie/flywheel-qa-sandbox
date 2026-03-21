@@ -4,17 +4,20 @@
  * a consistent snapshot written by CipherWriter).
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import initSqlJs from "sql.js";
-import { readFileSync, existsSync } from "node:fs";
-import type { CipherContext, PatternStatistics } from "./types.js";
-import type { SnapshotInputDto } from "./types.js";
 import { extractDimensions } from "./dimensions.js";
 import { generatePatternKeys, getFallbackOrder } from "./pattern-keys.js";
 import {
 	posteriorMean,
-	wilsonLowerBound,
 	shouldInjectPattern,
+	wilsonLowerBound,
 } from "./statistics.js";
+import type {
+	CipherContext,
+	PatternStatistics,
+	SnapshotInputDto,
+} from "./types.js";
 
 export class CipherReader {
 	constructor(private dbPath: string) {}
@@ -48,9 +51,7 @@ export class CipherReader {
 			];
 
 			// Check if any reviews exist
-			const totalRows = db.exec(
-				`SELECT COUNT(*) FROM decision_reviews`,
-			);
+			const totalRows = db.exec(`SELECT COUNT(*) FROM decision_reviews`);
 			if ((totalRows[0]?.values[0]?.[0] as number) === 0) return null;
 
 			const dimensions = extractDimensions(input);
@@ -78,15 +79,9 @@ export class CipherReader {
 							approveCount: ac,
 							rejectCount: rc,
 							totalCount: tc,
-							posteriorMean: posteriorMean(
-								ac,
-								tc,
-								globalRate,
-								priorStrength,
-							),
+							posteriorMean: posteriorMean(ac, tc, globalRate, priorStrength),
 							wilsonLower: wilsonLowerBound(ac, tc),
-							maturityLevel:
-								ml as PatternStatistics["maturityLevel"],
+							maturityLevel: ml as PatternStatistics["maturityLevel"],
 						};
 						if (shouldInjectPattern(stats, globalRate)) {
 							relevantPatterns.push(stats);
@@ -99,10 +94,7 @@ export class CipherReader {
 
 			if (relevantPatterns.length === 0) return null;
 
-			const promptText = this.formatPrompt(
-				relevantPatterns,
-				globalRate,
-			);
+			const promptText = this.formatPrompt(relevantPatterns, globalRate);
 			return { relevantPatterns, globalApproveRate: globalRate, promptText };
 		} finally {
 			db.close();
@@ -155,9 +147,7 @@ export class CipherReader {
 		globalRate: number,
 	): string {
 		const lines = ["## CIPHER Decision Memory (advisory only)"];
-		lines.push(
-			`Global approve rate: ${(globalRate * 100).toFixed(0)}%`,
-		);
+		lines.push(`Global approve rate: ${(globalRate * 100).toFixed(0)}%`);
 		lines.push("");
 		for (const p of patterns) {
 			const emoji =

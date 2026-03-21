@@ -194,11 +194,10 @@ export class DagDispatcher {
 		const s = this.tmuxSessionName;
 		// Dedup: skip if a client is already attached
 		try {
-			const clients = execFileSync(
-				"tmux",
-				["list-clients", "-t", `=${s}`],
-				{ encoding: "utf-8", stdio: ["pipe", "pipe", "pipe"] },
-			);
+			const clients = execFileSync("tmux", ["list-clients", "-t", `=${s}`], {
+				encoding: "utf-8",
+				stdio: ["pipe", "pipe", "pipe"],
+			});
 			if (clients.trim().length > 0) {
 				console.log(
 					`[DagDispatcher] Viewer already attached to ${s}, skipping`,
@@ -226,7 +225,7 @@ export class DagDispatcher {
 			"  repeat",
 			"    delay 2",
 			"    try",
-			'      set p to (processes of viewerTab) as string',
+			"      set p to (processes of viewerTab) as string",
 			'      if p does not contain "tmux" then',
 			"        close viewerWindow",
 			"        exit repeat",

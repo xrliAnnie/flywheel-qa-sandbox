@@ -5,11 +5,9 @@
 
 import type { PatternDimensions, SnapshotInputDto } from "./types.js";
 
-const AUTH_PATHS =
-	/\/(auth|login|session|token|password|middleware|guard)\b/i;
+const AUTH_PATHS = /\/(auth|login|session|token|password|middleware|guard)\b/i;
 const TEST_PATHS = /\.(test|spec)\.(ts|js|tsx|jsx)$|\/__tests__\//;
-const FRONTEND_PATHS =
-	/\/(components?|pages?|views?|hooks?|styles?|css)\b/i;
+const FRONTEND_PATHS = /\/(components?|pages?|views?|hooks?|styles?|css)\b/i;
 const CONFIG_PATHS = /\.(ya?ml|json|toml|env|config)\b/i;
 
 /**
@@ -37,11 +35,7 @@ export function extractDimensions(input: SnapshotInputDto): PatternDimensions {
 	const hasPriorFailures = input.consecutiveFailures > 0;
 
 	const commitVolume: PatternDimensions["commitVolume"] =
-		input.commitCount <= 1
-			? "single"
-			: input.commitCount <= 5
-				? "few"
-				: "many";
+		input.commitCount <= 1 ? "single" : input.commitCount <= 5 ? "few" : "many";
 
 	const diffScale: PatternDimensions["diffScale"] =
 		input.filesChangedCount <= 2
@@ -53,9 +47,7 @@ export function extractDimensions(input: SnapshotInputDto): PatternDimensions {
 					: "large";
 
 	const hasTests = input.changedFilePaths.some((p) => TEST_PATHS.test(p));
-	const touchesAuth = input.changedFilePaths.some((p) =>
-		AUTH_PATHS.test(p),
-	);
+	const touchesAuth = input.changedFilePaths.some((p) => AUTH_PATHS.test(p));
 
 	return {
 		primaryLabel,
@@ -70,9 +62,7 @@ export function extractDimensions(input: SnapshotInputDto): PatternDimensions {
 	};
 }
 
-function classifyArea(
-	paths: string[],
-): PatternDimensions["areaTouched"] {
+function classifyArea(paths: string[]): PatternDimensions["areaTouched"] {
 	if (paths.length === 0) return "mixed";
 
 	let frontend = 0,
