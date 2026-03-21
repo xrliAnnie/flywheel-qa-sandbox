@@ -18,7 +18,7 @@ import {
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import type { BridgeConfig } from "./bridge/types.js";
-import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
+import type { ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
 
 function sqliteDatetime(): string {

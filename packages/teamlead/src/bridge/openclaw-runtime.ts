@@ -5,7 +5,6 @@
 
 import {
 	buildHookBody,
-	type HookPayload,
 	notifyAgent,
 } from "./hook-payload.js";
 import type {

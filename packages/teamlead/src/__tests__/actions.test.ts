@@ -1,7 +1,9 @@
 import type http from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { approveExecution, transitionSession } from "../bridge/actions.js";
+import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
+import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -415,34 +417,32 @@ describe("Action tools", () => {
 		expect(store.getSession("e1")!.status).toBe("rejected");
 	});
 
-	// --- post-action hook tests (GEO-167) ---
+	// --- post-action hook tests (GEO-167 → GEO-195 registry pattern) ---
 	describe("post-action hooks", () => {
-		let hookServer: http.Server;
-		let hookUrl: string;
-		let capturedPayloads: Record<string, unknown>[];
+		let capturedEnvelopes: LeadEventEnvelope[];
+		let mockRegistry: RuntimeRegistry;
 
-		beforeEach(async () => {
-			capturedPayloads = [];
-			const express = await import("express");
-			const hookApp = express.default();
-			hookApp.use(express.default.json());
-			hookApp.post("/hooks/ingest", (req, res) => {
-				capturedPayloads.push(req.body);
-				res.json({ ok: true });
-			});
-			hookServer = hookApp.listen(0, "127.0.0.1");
-			await new Promise<void>((resolve) =>
-				hookServer.once("listening", resolve),
-			);
-			const addr = hookServer.address();
-			const port = typeof addr === "object" && addr ? addr.port : 0;
-			hookUrl = `http://127.0.0.1:${port}`;
-		});
-
-		afterEach(async () => {
-			await new Promise<void>((resolve, reject) => {
-				hookServer.close((err) => (err ? reject(err) : resolve()));
-			});
+		beforeEach(() => {
+			capturedEnvelopes = [];
+			const mockRuntime = {
+				type: "openclaw" as const,
+				deliver: vi.fn(async (env: LeadEventEnvelope) => {
+					capturedEnvelopes.push(env);
+				}),
+				sendBootstrap: vi.fn(async () => {}),
+				health: vi.fn(async () => ({
+					status: "healthy" as const,
+					lastDeliveryAt: null,
+					lastDeliveredSeq: 0,
+				})),
+				shutdown: vi.fn(async () => {}),
+			};
+			mockRegistry = new RuntimeRegistry();
+			for (const project of testProjects) {
+				for (const lead of project.leads) {
+					mockRegistry.register(lead, mockRuntime);
+				}
+			}
 		});
 
 		it("approve sends action_executed hook", async () => {
@@ -453,12 +453,6 @@ describe("Action tools", () => {
 				status: "awaiting_review",
 				issue_identifier: "GEO-99",
 			});
-			const hookConfig = makeConfig({
-				gatewayUrl: hookUrl,
-				hooksToken: "test-token",
-				notificationChannel: "test-ch",
-				defaultLeadAgentId: "product-lead",
-			});
 
 			await approveExecution(
 				store,
@@ -466,15 +460,19 @@ describe("Action tools", () => {
 				"e1",
 				"GEO-99",
 				mockExec,
-				undefined,
-				hookConfig,
+				undefined, // transitionOpts
+				undefined, // config
+				undefined, // cipherWriter
+				undefined, // eventFilter
+				undefined, // forumTagUpdater
+				mockRegistry,
 			);
 
 			// Wait for async hook delivery
 			await new Promise((r) => setTimeout(r, 200));
 
-			expect(capturedPayloads).toHaveLength(1);
-			const payload = JSON.parse(capturedPayloads[0].message as string);
+			expect(capturedEnvelopes).toHaveLength(1);
+			const payload = capturedEnvelopes[0].event;
 			expect(payload.event_type).toBe("action_executed");
 			expect(payload.action).toBe("approve");
 			expect(payload.action_source_status).toBe("awaiting_review");
@@ -490,28 +488,25 @@ describe("Action tools", () => {
 				status: "awaiting_review",
 				issue_identifier: "GEO-50",
 			});
-			const hookConfig = makeConfig({
-				gatewayUrl: hookUrl,
-				hooksToken: "test-token",
-				defaultLeadAgentId: "product-lead",
-				notificationChannel: "test-ch",
-			});
 
 			transitionSession(
 				store,
 				"reject",
 				"e1",
 				"needs rework",
-				undefined,
-				hookConfig,
-				undefined,
+				undefined, // transitionOpts
+				undefined, // config
+				undefined, // cipherWriter
 				testProjects,
+				undefined, // eventFilter
+				undefined, // forumTagUpdater
+				mockRegistry,
 			);
 
 			await new Promise((r) => setTimeout(r, 200));
 
-			expect(capturedPayloads).toHaveLength(1);
-			const payload = JSON.parse(capturedPayloads[0].message as string);
+			expect(capturedEnvelopes).toHaveLength(1);
+			const payload = capturedEnvelopes[0].event;
 			expect(payload.event_type).toBe("action_executed");
 			expect(payload.action).toBe("reject");
 			expect(payload.action_reason).toBe("needs rework");
@@ -519,7 +514,7 @@ describe("Action tools", () => {
 			expect(payload.action_target_status).toBe("rejected");
 		});
 
-		it("no hook when config not provided", async () => {
+		it("no hook when registry not provided", async () => {
 			store.upsertSession({
 				execution_id: "e1",
 				issue_id: "i1",
@@ -530,33 +525,49 @@ describe("Action tools", () => {
 			transitionSession(store, "reject", "e1", "test");
 
 			await new Promise((r) => setTimeout(r, 200));
-			expect(capturedPayloads).toHaveLength(0);
+			expect(capturedEnvelopes).toHaveLength(0);
 		});
 
 		it("hook failure does not affect action result", async () => {
-			// Use a broken URL so the hook will fail
 			store.upsertSession({
 				execution_id: "e1",
 				issue_id: "i1",
 				project_name: "geoforge3d",
 				status: "awaiting_review",
 			});
-			const hookConfig = makeConfig({
-				gatewayUrl: "http://127.0.0.1:1", // connection refused
-				defaultLeadAgentId: "product-lead",
-				hooksToken: "test-token",
-				notificationChannel: "test-ch",
-			});
+			// Create a registry with a runtime that throws on deliver
+			const failRegistry = new RuntimeRegistry();
+			const failRuntime = {
+				type: "openclaw" as const,
+				deliver: vi.fn(async () => {
+					throw new Error("connection refused");
+				}),
+				sendBootstrap: vi.fn(async () => {}),
+				health: vi.fn(async () => ({
+					status: "healthy" as const,
+					lastDeliveryAt: null,
+					lastDeliveredSeq: 0,
+				})),
+				shutdown: vi.fn(async () => {}),
+			};
+			for (const project of testProjects) {
+				for (const lead of project.leads) {
+					failRegistry.register(lead, failRuntime);
+				}
+			}
 
 			const result = await transitionSession(
 				store,
 				"reject",
 				"e1",
 				"test",
-				undefined,
-				hookConfig,
-				undefined,
+				undefined, // transitionOpts
+				undefined, // config
+				undefined, // cipherWriter
 				testProjects,
+				undefined, // eventFilter
+				undefined, // forumTagUpdater
+				failRegistry,
 			);
 			expect(result.success).toBe(true);
 			expect(store.getSession("e1")!.status).toBe("rejected");
