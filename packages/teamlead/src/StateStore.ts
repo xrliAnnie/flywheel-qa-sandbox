@@ -11,6 +11,7 @@ export const OUTCOME_STATUSES = [
 	"rejected",
 	"deferred",
 	"shelved",
+	"terminated",
 ] as const;
 
 // Terminal states — monotonic progression: once terminal, cannot go back to running
