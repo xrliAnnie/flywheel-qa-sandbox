@@ -119,9 +119,29 @@ export class EventFilter {
 	): FilterResult {
 		for (const rule of FILTER_RULES) {
 			if (rule.match(eventType, payload)) {
+				this.auditLog(eventType, payload, rule.result);
 				return rule.result;
 			}
 		}
+		this.auditLog(eventType, payload, DEFAULT_RESULT);
 		return DEFAULT_RESULT;
+	}
+
+	private auditLog(
+		eventType: string,
+		payload: Partial<HookPayload>,
+		result: FilterResult,
+	): void {
+		console.log(
+			JSON.stringify({
+				component: "EventFilter",
+				event_type: eventType,
+				issue_id: payload.issue_id ?? payload.issue_identifier ?? "",
+				result: result.action,
+				priority: result.priority,
+				reason: result.reason,
+				timestamp: new Date().toISOString(),
+			}),
+		);
 	}
 }
