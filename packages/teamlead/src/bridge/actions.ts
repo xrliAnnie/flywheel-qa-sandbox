@@ -516,10 +516,11 @@ async function handleTerminate(
 			await execFileAsync("tmux", ["kill-session", "-t", session.tmux_session]);
 		} catch (err) {
 			const msg = (err as Error).message ?? String(err);
-			// "session not found" = already dead → safe to proceed
+			// "session not found" / "can't find session" = already dead → safe to proceed
 			// Other errors (ENOENT = tmux not installed, EACCES = permission denied) → abort
 			if (
 				!msg.includes("session not found") &&
+				!msg.includes("can't find session") &&
 				!msg.includes("no server running")
 			) {
 				console.error(
