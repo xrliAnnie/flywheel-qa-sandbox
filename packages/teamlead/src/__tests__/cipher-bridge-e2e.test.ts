@@ -1,17 +1,21 @@
-import { describe, expect, it, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import type http from "node:http";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CipherWriter } from "flywheel-edge-worker";
 import initSqlJs from "sql.js";
-import { StateStore } from "../StateStore.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import { CipherWriter } from "flywheel-edge-worker";
-import type http from "node:http";
+import { StateStore } from "../StateStore.js";
 
 const testProjects: ProjectEntry[] = [
-	{ projectName: "geoforge3d", projectRoot: "/tmp/geoforge3d", projectRepo: "xrliAnnie/GeoForge3D" },
+	{
+		projectName: "geoforge3d",
+		projectRoot: "/tmp/geoforge3d",
+		projectRepo: "xrliAnnie/GeoForge3D",
+	},
 ];
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -29,7 +33,10 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 }
 
 /** Read cipher.db directly to verify data written by CipherWriter */
-async function queryCipherDb(dbPath: string, sql: string): Promise<unknown[][]> {
+async function queryCipherDb(
+	dbPath: string,
+	sql: string,
+): Promise<unknown[][]> {
 	if (!existsSync(dbPath)) return [];
 	const SQL = await initSqlJs();
 	const buf = readFileSync(dbPath);
@@ -65,7 +72,15 @@ describe("CIPHER Bridge E2E", () => {
 		cipherWriter = await CipherWriter.create(cipherDbPath);
 		store = await StateStore.create(":memory:");
 
-		const app = createBridgeApp(store, testProjects, makeConfig(), undefined, undefined, undefined, cipherWriter);
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			makeConfig(),
+			undefined,
+			undefined,
+			undefined,
+			cipherWriter,
+		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
@@ -83,7 +98,11 @@ describe("CIPHER Bridge E2E", () => {
 	});
 
 	/** Helper: send session_started event */
-	async function startSession(executionId: string, issueId: string, identifier: string) {
+	async function startSession(
+		executionId: string,
+		issueId: string,
+		identifier: string,
+	) {
 		return fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: ingestHeaders,
@@ -93,14 +112,19 @@ describe("CIPHER Bridge E2E", () => {
 				issue_id: issueId,
 				project_name: "geoforge3d",
 				event_type: "session_started",
-				payload: { issueIdentifier: identifier, issueTitle: `Test ${identifier}` },
+				payload: {
+					issueIdentifier: identifier,
+					issueTitle: `Test ${identifier}`,
+				},
 			}),
 		});
 	}
 
 	/** Helper: send session_completed with CIPHER-required fields */
 	async function completeSessionWithCipherFields(
-		executionId: string, issueId: string, identifier: string,
+		executionId: string,
+		issueId: string,
+		identifier: string,
 		labels: string[] = ["bug"],
 	) {
 		return fetch(`${baseUrl}/events`, {
@@ -113,13 +137,29 @@ describe("CIPHER Bridge E2E", () => {
 				project_name: "geoforge3d",
 				event_type: "session_completed",
 				payload: {
-					decision: { route: "needs_review", reasoning: "has changes", confidence: 0.85, decisionSource: "haiku_triage" },
+					decision: {
+						route: "needs_review",
+						reasoning: "has changes",
+						confidence: 0.85,
+						decisionSource: "haiku_triage",
+					},
 					evidence: {
-						commitCount: 3, filesChangedCount: 4,
-						linesAdded: 120, linesRemoved: 45,
+						commitCount: 3,
+						filesChangedCount: 4,
+						linesAdded: 120,
+						linesRemoved: 45,
 						diffSummary: "Fixed auth module",
-						commitMessages: ["fix: auth bug", "test: add tests", "refactor: cleanup"],
-						changedFilePaths: ["src/auth.ts", "src/auth.test.ts", "src/middleware.ts", "package.json"],
+						commitMessages: [
+							"fix: auth bug",
+							"test: add tests",
+							"refactor: cleanup",
+						],
+						changedFilePaths: [
+							"src/auth.ts",
+							"src/auth.test.ts",
+							"src/middleware.ts",
+							"package.json",
+						],
 					},
 					issueIdentifier: identifier,
 					issueTitle: `Test ${identifier}`,
@@ -134,13 +174,19 @@ describe("CIPHER Bridge E2E", () => {
 
 	it("session_completed with CIPHER fields → saveSnapshot creates decision_snapshots row", async () => {
 		await startSession("exec-c1", "issue-c1", "GEO-300");
-		const res = await completeSessionWithCipherFields("exec-c1", "issue-c1", "GEO-300");
+		const res = await completeSessionWithCipherFields(
+			"exec-c1",
+			"issue-c1",
+			"GEO-300",
+		);
 		expect(res.status).toBe(200);
 		expect(store.getSession("exec-c1")!.status).toBe("awaiting_review");
 
 		// Verify snapshot in cipher.db
-		const snapshots = await queryCipherDb(cipherDbPath,
-			"SELECT execution_id, issue_id FROM decision_snapshots WHERE execution_id = 'exec-c1'");
+		const snapshots = await queryCipherDb(
+			cipherDbPath,
+			"SELECT execution_id, issue_id FROM decision_snapshots WHERE execution_id = 'exec-c1'",
+		);
 		expect(snapshots.length).toBe(1);
 		expect(snapshots[0]![0]).toBe("exec-c1");
 		expect(snapshots[0]![1]).toBe("issue-c1");
@@ -161,7 +207,12 @@ describe("CIPHER Bridge E2E", () => {
 				event_type: "session_completed",
 				payload: {
 					decision: { route: "needs_review", reasoning: "test" },
-					evidence: { commitCount: 1, filesChangedCount: 1, linesAdded: 10, linesRemoved: 5 },
+					evidence: {
+						commitCount: 1,
+						filesChangedCount: 1,
+						linesAdded: 10,
+						linesRemoved: 5,
+					},
 					summary: "Small fix",
 				},
 			}),
@@ -169,29 +220,38 @@ describe("CIPHER Bridge E2E", () => {
 		expect(res.status).toBe(200);
 
 		// No snapshot
-		const snapshots = await queryCipherDb(cipherDbPath,
-			"SELECT COUNT(*) FROM decision_snapshots WHERE execution_id = 'exec-no-cipher'");
+		const snapshots = await queryCipherDb(
+			cipherDbPath,
+			"SELECT COUNT(*) FROM decision_snapshots WHERE execution_id = 'exec-no-cipher'",
+		);
 		expect(snapshots[0]![0]).toBe(0);
 	});
 
 	it("reject action → recordOutcome creates decision_reviews row", async () => {
 		await startSession("exec-rej", "issue-rej", "GEO-310");
-		await completeSessionWithCipherFields("exec-rej", "issue-rej", "GEO-310", ["feature"]);
+		await completeSessionWithCipherFields("exec-rej", "issue-rej", "GEO-310", [
+			"feature",
+		]);
 		expect(store.getSession("exec-rej")!.status).toBe("awaiting_review");
 
 		// Reject via actions endpoint
 		const rejectRes = await fetch(`${baseUrl}/actions/reject`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ execution_id: "exec-rej", reason: "Code quality issues" }),
+			body: JSON.stringify({
+				execution_id: "exec-rej",
+				reason: "Code quality issues",
+			}),
 		});
 		expect(rejectRes.status).toBe(200);
 		expect((await rejectRes.json()).success).toBe(true);
 		expect(store.getSession("exec-rej")!.status).toBe("rejected");
 
 		// Verify review in cipher.db
-		const reviews = await queryCipherDb(cipherDbPath,
-			"SELECT execution_id, ceo_action, ceo_outcome FROM decision_reviews WHERE execution_id = 'exec-rej'");
+		const reviews = await queryCipherDb(
+			cipherDbPath,
+			"SELECT execution_id, ceo_action, ceo_outcome FROM decision_reviews WHERE execution_id = 'exec-rej'",
+		);
 		expect(reviews.length).toBe(1);
 		expect(reviews[0]![0]).toBe("exec-rej");
 		expect(reviews[0]![1]).toBe("reject");
@@ -204,20 +264,29 @@ describe("CIPHER Bridge E2E", () => {
 		const deferRes = await fetch(`${baseUrl}/actions/defer`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ execution_id: "exec-def", reason: "Not ready yet" }),
+			body: JSON.stringify({
+				execution_id: "exec-def",
+				reason: "Not ready yet",
+			}),
 		});
 		expect(deferRes.status).toBe(200);
 		expect((await deferRes.json()).success).toBe(true);
 
-		const reviews = await queryCipherDb(cipherDbPath,
-			"SELECT ceo_action FROM decision_reviews WHERE execution_id = 'exec-def'");
+		const reviews = await queryCipherDb(
+			cipherDbPath,
+			"SELECT ceo_action FROM decision_reviews WHERE execution_id = 'exec-def'",
+		);
 		expect(reviews.length).toBe(1);
 		expect(reviews[0]![0]).toBe("defer");
 	});
 
 	it("shelve does NOT create cipher review (not a decision action)", async () => {
 		await startSession("exec-shelve", "issue-shelve", "GEO-312");
-		await completeSessionWithCipherFields("exec-shelve", "issue-shelve", "GEO-312");
+		await completeSessionWithCipherFields(
+			"exec-shelve",
+			"issue-shelve",
+			"GEO-312",
+		);
 
 		await fetch(`${baseUrl}/actions/shelve`, {
 			method: "POST",
@@ -225,8 +294,10 @@ describe("CIPHER Bridge E2E", () => {
 			body: JSON.stringify({ execution_id: "exec-shelve" }),
 		});
 
-		const reviews = await queryCipherDb(cipherDbPath,
-			"SELECT COUNT(*) FROM decision_reviews WHERE execution_id = 'exec-shelve'");
+		const reviews = await queryCipherDb(
+			cipherDbPath,
+			"SELECT COUNT(*) FROM decision_reviews WHERE execution_id = 'exec-shelve'",
+		);
 		expect(reviews[0]![0]).toBe(0);
 	});
 
@@ -235,7 +306,12 @@ describe("CIPHER Bridge E2E", () => {
 		for (let i = 0; i < 55; i++) {
 			const execId = `exec-p-${i}`;
 			await startSession(execId, `issue-p-${i}`, `GEO-P${i}`);
-			await completeSessionWithCipherFields(execId, `issue-p-${i}`, `GEO-P${i}`, ["bug"]);
+			await completeSessionWithCipherFields(
+				execId,
+				`issue-p-${i}`,
+				`GEO-P${i}`,
+				["bug"],
+			);
 		}
 
 		// Record approve outcomes directly (approve action requires gh CLI which isn't available in tests)
@@ -265,8 +341,10 @@ describe("CIPHER Bridge E2E", () => {
 		expect((await activateRes.json()).ok).toBe(true);
 
 		// Verify activated via db
-		const active = await queryCipherDb(cipherDbPath,
-			`SELECT status FROM cipher_principles WHERE id = '${principleId}'`);
+		const active = await queryCipherDb(
+			cipherDbPath,
+			`SELECT status FROM cipher_principles WHERE id = '${principleId}'`,
+		);
 		expect(active[0]![0]).toBe("active");
 
 		// Retire via API
@@ -277,8 +355,10 @@ describe("CIPHER Bridge E2E", () => {
 		});
 		expect(retireRes.status).toBe(200);
 
-		const retired = await queryCipherDb(cipherDbPath,
-			`SELECT status FROM cipher_principles WHERE id = '${principleId}'`);
+		const retired = await queryCipherDb(
+			cipherDbPath,
+			`SELECT status FROM cipher_principles WHERE id = '${principleId}'`,
+		);
 		expect(retired[0]![0]).toBe("retired");
 	});
 

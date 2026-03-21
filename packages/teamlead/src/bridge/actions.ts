@@ -2,8 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
-import type { ActionResult } from "flywheel-edge-worker";
-import type { CipherWriter } from "flywheel-edge-worker";
+import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
 import { ApproveHandler } from "flywheel-edge-worker";
 import {
 	type ApplyTransitionOpts,
@@ -119,7 +118,10 @@ function sendActionHook(
 		}
 	};
 	doNotify().catch((err) => {
-		console.warn(`[sendActionHook] Notification pipeline failed for ${executionId}:`, (err as Error).message);
+		console.warn(
+			`[sendActionHook] Notification pipeline failed for ${executionId}:`,
+			(err as Error).message,
+		);
 	});
 }
 
@@ -191,7 +193,9 @@ export async function approveExecution(
 				{ last_activity_at: sqliteDatetime() },
 			);
 			if (!fsmResult.ok) {
-				console.warn(`[actions] FSM rejected approve for ${executionId}: ${fsmResult.error}`);
+				console.warn(
+					`[actions] FSM rejected approve for ${executionId}: ${fsmResult.error}`,
+				);
 				transitionRejected = true;
 			}
 		} else {
@@ -229,7 +233,9 @@ export async function approveExecution(
 						sourceStatus: session.status,
 					});
 				} catch {
-					console.error(`[CIPHER] recordOutcome failed for approve ${executionId}`);
+					console.error(
+						`[CIPHER] recordOutcome failed for approve ${executionId}`,
+					);
 				}
 			}
 		}
@@ -300,8 +306,11 @@ export async function transitionSession(
 	}
 
 	// CIPHER: record outcome for reject/defer from awaiting_review
-	if (cipherWriter && (action === "reject" || action === "defer")
-		&& session.status === "awaiting_review") {
+	if (
+		cipherWriter &&
+		(action === "reject" || action === "defer") &&
+		session.status === "awaiting_review"
+	) {
 		try {
 			await cipherWriter.recordOutcome({
 				executionId,
@@ -509,14 +518,21 @@ async function handleTerminate(
 			const msg = (err as Error).message ?? String(err);
 			// "session not found" = already dead → safe to proceed
 			// Other errors (ENOENT = tmux not installed, EACCES = permission denied) → abort
-			if (!msg.includes("session not found") && !msg.includes("no server running")) {
-				console.error(`[terminate] tmux kill-session failed for ${session.tmux_session}: ${msg}`);
+			if (
+				!msg.includes("session not found") &&
+				!msg.includes("no server running")
+			) {
+				console.error(
+					`[terminate] tmux kill-session failed for ${session.tmux_session}: ${msg}`,
+				);
 				return {
 					success: false,
 					message: `Failed to kill tmux session ${session.tmux_session}: ${msg}`,
 				};
 			}
-			console.warn(`[terminate] tmux session already dead: ${session.tmux_session}`);
+			console.warn(
+				`[terminate] tmux session already dead: ${session.tmux_session}`,
+			);
 		}
 	}
 
@@ -633,9 +649,19 @@ export function createActionRouter(
 					forumTagUpdater,
 				);
 				if (terminateResult.success) {
-					res.json({ success: true, message: terminateResult.message, action: "terminate" });
+					res.json({
+						success: true,
+						message: terminateResult.message,
+						action: "terminate",
+					});
 				} else {
-					res.status(400).json({ success: false, message: terminateResult.message, action: "terminate" });
+					res
+						.status(400)
+						.json({
+							success: false,
+							message: terminateResult.message,
+							action: "terminate",
+						});
 				}
 				return;
 			}

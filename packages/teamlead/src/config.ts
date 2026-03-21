@@ -13,7 +13,11 @@ function parseStatusTagMap(
 	if (!raw) return undefined;
 	try {
 		const parsed = JSON.parse(raw);
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		if (
+			typeof parsed !== "object" ||
+			parsed === null ||
+			Array.isArray(parsed)
+		) {
 			throw new Error("must be a JSON object");
 		}
 		return parsed as Record<string, string[]>;

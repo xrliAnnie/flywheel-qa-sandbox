@@ -113,10 +113,7 @@ const DEFAULT_RESULT: FilterResult = {
 };
 
 export class EventFilter {
-	classify(
-		eventType: string,
-		payload: Partial<HookPayload>,
-	): FilterResult {
+	classify(eventType: string, payload: Partial<HookPayload>): FilterResult {
 		for (const rule of FILTER_RULES) {
 			if (rule.match(eventType, payload)) {
 				this.auditLog(eventType, payload, rule.result);

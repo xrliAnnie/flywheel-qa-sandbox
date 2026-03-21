@@ -3,9 +3,9 @@
  * DirectEventSink for bridge-local retry execution.
  */
 
-import type { BridgeConfig } from "../../packages/teamlead/dist/bridge/types.js";
 import { EventFilter } from "../../packages/teamlead/dist/bridge/EventFilter.js";
 import { ForumTagUpdater } from "../../packages/teamlead/dist/bridge/ForumTagUpdater.js";
+import type { BridgeConfig } from "../../packages/teamlead/dist/bridge/types.js";
 import { DirectEventSink } from "../../packages/teamlead/dist/DirectEventSink.js";
 import type { ProjectEntry } from "../../packages/teamlead/dist/ProjectConfig.js";
 import type { StateStore } from "../../packages/teamlead/dist/StateStore.js";
@@ -89,7 +89,12 @@ export async function setupRetryRuntime(
 		const eventFilter = new EventFilter();
 		const statusTagMap = bridgeConfig.statusTagMap ?? {};
 		const forumTagUpdater = new ForumTagUpdater(statusTagMap);
-		const directSink = new DirectEventSink(store, bridgeConfig, eventFilter, forumTagUpdater);
+		const directSink = new DirectEventSink(
+			store,
+			bridgeConfig,
+			eventFilter,
+			forumTagUpdater,
+		);
 		let components: FlywheelComponents | undefined;
 
 		try {

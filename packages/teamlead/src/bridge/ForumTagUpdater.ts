@@ -22,7 +22,9 @@ export class ForumTagUpdater {
 	async updateTag(ctx: TagUpdateContext): Promise<TagUpdateResult> {
 		if (!ctx.threadId) return "no_thread";
 		if (!ctx.discordBotToken) {
-			console.warn("[ForumTagUpdater] No discordBotToken configured — skipping tag update");
+			console.warn(
+				"[ForumTagUpdater] No discordBotToken configured — skipping tag update",
+			);
 			return "skipped";
 		}
 		if (ctx.action && SKIP_ACTIONS.has(ctx.action)) return "skipped";

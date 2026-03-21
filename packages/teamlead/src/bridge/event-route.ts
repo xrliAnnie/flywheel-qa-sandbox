@@ -1,7 +1,6 @@
 import { Router } from "express";
-import type { CipherWriter } from "flywheel-edge-worker";
+import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
-import type { SnapshotInputDto } from "flywheel-edge-worker";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -278,15 +277,24 @@ export function createEventRouter(
 
 				// CIPHER Phase A: save snapshot for awaiting_review sessions
 				// Skip if FSM rejected the transition (out-of-order/duplicate events)
-				if (cipherWriter && status === "awaiting_review" && !transitionRejected) {
-					const labels = Array.isArray(payload.labels) ? (payload.labels as string[]) : null;
+				if (
+					cipherWriter &&
+					status === "awaiting_review" &&
+					!transitionRejected
+				) {
+					const labels = Array.isArray(payload.labels)
+						? (payload.labels as string[])
+						: null;
 					const changedFilePaths = Array.isArray(evidence?.changedFilePaths)
-						? (evidence.changedFilePaths as string[]) : null;
+						? (evidence.changedFilePaths as string[])
+						: null;
 					const projectId = asString(payload.projectId);
 
 					if (!labels || !changedFilePaths) {
-						console.warn(`[CIPHER] Skipping snapshot for ${event.execution_id}: missing required fields`
-							+ ` (labels=${!!labels}, paths=${!!changedFilePaths})`);
+						console.warn(
+							`[CIPHER] Skipping snapshot for ${event.execution_id}: missing required fields` +
+								` (labels=${!!labels}, paths=${!!changedFilePaths})`,
+						);
 					} else {
 						const snapshotInput: SnapshotInputDto = {
 							labels,
@@ -321,14 +329,18 @@ export function createEventRouter(
 								linesRemoved: snapshotInput.linesRemoved,
 								diffSummary: asString(evidence?.diffSummary),
 								commitMessages: Array.isArray(evidence?.commitMessages)
-									? (evidence.commitMessages as string[]) : [],
+									? (evidence.commitMessages as string[])
+									: [],
 								changedFilePaths,
 								exitReason: snapshotInput.exitReason,
 								durationMs: asNumber(evidence?.durationMs) ?? 0,
 								consecutiveFailures: snapshotInput.consecutiveFailures,
 							});
 						} catch (err) {
-							console.error(`[CIPHER] saveSnapshot failed for ${event.execution_id}:`, err);
+							console.error(
+								`[CIPHER] saveSnapshot failed for ${event.execution_id}:`,
+								err,
+							);
 						}
 					}
 				}
@@ -430,11 +442,7 @@ export function createEventRouter(
 					hookPayload.filter_priority = filterResult.priority;
 					hookPayload.notification_context = filterResult.reason;
 					hookPayload.forum_tag_update_result = tagResult;
-					const body = buildHookBody(
-						"product-lead",
-						hookPayload,
-						sessionKey,
-					);
+					const body = buildHookBody("product-lead", hookPayload, sessionKey);
 					notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(
 						() => {},
 					);
@@ -442,14 +450,8 @@ export function createEventRouter(
 				// forum_only and skip: no notifyAgent call
 			} else {
 				// Legacy path: no EventFilter, notify unconditionally
-				const body = buildHookBody(
-					"product-lead",
-					hookPayload,
-					sessionKey,
-				);
-				notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(
-					() => {},
-				);
+				const body = buildHookBody("product-lead", hookPayload, sessionKey);
+				notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
 			}
 		}
 
