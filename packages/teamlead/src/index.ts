@@ -57,7 +57,11 @@ async function main() {
 			hookPayload.notification_context = filterResult.reason;
 
 			const sessionKey = `cipher-proposal-${proposal.cipher_principle_id}`;
-			const body = buildHookBody("product-lead", hookPayload, sessionKey);
+			const body = buildHookBody(
+				config.defaultLeadAgentId,
+				hookPayload,
+				sessionKey,
+			);
 			if (config.gatewayUrl && config.hooksToken) {
 				await notifyAgent(config.gatewayUrl, config.hooksToken, body);
 			}

@@ -13,6 +13,14 @@ const testProjects: ProjectEntry[] = [
 		projectName: "geoforge3d",
 		projectRoot: "/tmp/geoforge3d",
 		projectRepo: "xrliAnnie/GeoForge3D",
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "test-channel",
+				chatChannel: "test-chat",
+				match: { labels: ["Product"] },
+			},
+		],
 	},
 ];
 
@@ -23,6 +31,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		dbPath: ":memory:",
 		ingestToken: "ingest-secret",
 		notificationChannel: "test-channel",
+		defaultLeadAgentId: "product-lead",
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,

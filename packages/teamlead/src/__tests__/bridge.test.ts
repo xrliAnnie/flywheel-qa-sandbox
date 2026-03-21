@@ -10,6 +10,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		port: 0, // random port
 		dbPath: ":memory:",
 		notificationChannel: "test-channel",
+		defaultLeadAgentId: "product-lead",
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
@@ -54,7 +55,18 @@ describe("Bridge scaffold", () => {
 	it("/api/* requires apiToken when configured", async () => {
 		const config = makeConfig({ apiToken: "secret-api" });
 		const { store, close } = await startBridge(config, [
-			{ projectName: "test", projectRoot: "/tmp" },
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "product-lead",
+						forumChannel: "test-channel",
+						chatChannel: "test-chat",
+						match: { labels: ["Product"] },
+					},
+				],
+			},
 		]);
 		closeFn = close;
 
@@ -130,7 +142,18 @@ describe("Bridge scaffold", () => {
 	it("startBridge starts and closes cleanly", async () => {
 		const config = makeConfig();
 		const result = await startBridge(config, [
-			{ projectName: "test", projectRoot: "/tmp" },
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "product-lead",
+						forumChannel: "test-channel",
+						chatChannel: "test-chat",
+						match: { labels: ["Product"] },
+					},
+				],
+			},
 		]);
 		closeFn = result.close;
 

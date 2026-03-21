@@ -8,7 +8,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
@@ -55,6 +55,7 @@ export const ACTION_TARGET_STATUS: Record<string, string> = {
 function sendActionHook(
 	store: StateStore,
 	config: BridgeConfig | undefined,
+	projects: ProjectEntry[],
 	executionId: string,
 	action: string,
 	sourceStatus: string,
@@ -66,63 +67,80 @@ function sendActionHook(
 	if (!config?.gatewayUrl || !config?.hooksToken) return;
 	const session = store.getSession(executionId);
 	if (!session) return;
-	const hookPayload: HookPayload = {
-		event_type: "action_executed",
-		execution_id: session.execution_id,
-		issue_id: session.issue_id,
-		issue_identifier: session.issue_identifier,
-		issue_title: session.issue_title,
-		project_name: session.project_name,
-		status: targetStatus,
-		thread_id: session.thread_id,
-		channel: config.notificationChannel,
-		action,
-		action_source_status: sourceStatus,
-		action_target_status: targetStatus,
-		action_reason: reason,
-	};
+	try {
+		const labels = store.getSessionLabels(executionId);
+		const { lead } = resolveLeadForIssue(
+			projects,
+			session.project_name,
+			labels,
+		);
+		const existingThread = store.getThreadByIssue(session.issue_id);
+		const forumChannel = existingThread?.channel ?? lead.forumChannel;
+		const hookPayload: HookPayload = {
+			event_type: "action_executed",
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			issue_identifier: session.issue_identifier,
+			issue_title: session.issue_title,
+			project_name: session.project_name,
+			status: targetStatus,
+			thread_id: session.thread_id,
+			forum_channel: forumChannel,
+			chat_channel: lead.chatChannel,
+			issue_labels: labels,
+			action,
+			action_source_status: sourceStatus,
+			action_target_status: targetStatus,
+			action_reason: reason,
+		};
 
-	const doNotify = async () => {
-		if (eventFilter) {
-			const filterResult = eventFilter.classify("action_executed", hookPayload);
+		const doNotify = async () => {
+			if (eventFilter) {
+				const filterResult = eventFilter.classify("action_executed", hookPayload);
 
-			let tagResult: HookPayload["forum_tag_update_result"];
-			if (forumTagUpdater) {
-				tagResult = await forumTagUpdater.updateTag({
-					threadId: session.thread_id,
-					status: targetStatus,
-					eventType: "action_executed",
-					action,
-					discordBotToken: config!.discordBotToken,
-				});
-			}
+				let tagResult: HookPayload["forum_tag_update_result"];
+				if (forumTagUpdater) {
+					tagResult = await forumTagUpdater.updateTag({
+						threadId: session.thread_id,
+						status: targetStatus,
+						eventType: "action_executed",
+						action,
+						discordBotToken: config!.discordBotToken,
+					});
+				}
 
-			if (filterResult.action === "notify_agent") {
-				hookPayload.filter_priority = filterResult.priority;
-				hookPayload.notification_context = filterResult.reason;
-				hookPayload.forum_tag_update_result = tagResult;
+				if (filterResult.action === "notify_agent") {
+					hookPayload.filter_priority = filterResult.priority;
+					hookPayload.notification_context = filterResult.reason;
+					hookPayload.forum_tag_update_result = tagResult;
+					const body = buildHookBody(
+						lead.agentId,
+						hookPayload,
+						buildSessionKey(session),
+					);
+					await notifyAgent(config!.gatewayUrl!, config!.hooksToken!, body);
+				}
+			} else {
 				const body = buildHookBody(
-					"product-lead",
+					lead.agentId,
 					hookPayload,
 					buildSessionKey(session),
 				);
 				await notifyAgent(config!.gatewayUrl!, config!.hooksToken!, body);
 			}
-		} else {
-			const body = buildHookBody(
-				"product-lead",
-				hookPayload,
-				buildSessionKey(session),
+		};
+		doNotify().catch((err) => {
+			console.warn(
+				`[sendActionHook] Notification pipeline failed for ${executionId}:`,
+				(err as Error).message,
 			);
-			await notifyAgent(config!.gatewayUrl!, config!.hooksToken!, body);
-		}
-	};
-	doNotify().catch((err) => {
+		});
+	} catch (err) {
 		console.warn(
-			`[sendActionHook] Notification pipeline failed for ${executionId}:`,
+			`[actions] Unknown project "${session.project_name}" — skipping hook:`,
 			(err as Error).message,
 		);
-	});
+	}
 }
 
 export async function approveExecution(
@@ -214,6 +232,7 @@ export async function approveExecution(
 			sendActionHook(
 				store,
 				config,
+				projects,
 				executionId,
 				"approve",
 				"awaiting_review",
@@ -252,6 +271,7 @@ export async function transitionSession(
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
 	cipherWriter?: CipherWriter,
+	projects?: ProjectEntry[],
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 ): Promise<ActionResult> {
@@ -326,6 +346,7 @@ export async function transitionSession(
 	sendActionHook(
 		store,
 		config,
+		projects ?? [],
 		executionId,
 		action,
 		session.status,
@@ -362,6 +383,7 @@ async function handleRetry(
 	executionId: string,
 	reason?: string,
 	config?: BridgeConfig,
+	projects?: ProjectEntry[],
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 	ceoContext?: string,
@@ -439,6 +461,7 @@ async function handleRetry(
 		sendActionHook(
 			store,
 			config,
+			projects ?? [],
 			result.newExecutionId,
 			"retry",
 			session.status,
@@ -491,6 +514,7 @@ async function handleTerminate(
 	executionId: string,
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
+	projects?: ProjectEntry[],
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 ): Promise<ActionResult> {
@@ -569,6 +593,7 @@ async function handleTerminate(
 	sendActionHook(
 		store,
 		config,
+		projects ?? [],
 		executionId,
 		"terminate",
 		session.status,
@@ -646,6 +671,7 @@ export function createActionRouter(
 					eid,
 					transitionOpts,
 					config,
+					projects,
 					eventFilter,
 					forumTagUpdater,
 				);
@@ -677,6 +703,7 @@ export function createActionRouter(
 						eid,
 						reason,
 						config,
+						projects,
 						eventFilter,
 						forumTagUpdater,
 						typeof context === "string" ? context : undefined,
@@ -704,6 +731,7 @@ export function createActionRouter(
 						transitionOpts,
 						config,
 						cipherWriter,
+						projects,
 						eventFilter,
 						forumTagUpdater,
 					);
@@ -733,6 +761,7 @@ export function createActionRouter(
 					transitionOpts,
 					config,
 					cipherWriter,
+					projects,
 					eventFilter,
 					forumTagUpdater,
 				);

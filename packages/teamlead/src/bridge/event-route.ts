@@ -5,7 +5,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
@@ -65,7 +65,7 @@ function formatNotification(session: Session, eventType: string): string {
 
 export function createEventRouter(
 	store: StateStore,
-	_projects: ProjectEntry[],
+	projects: ProjectEntry[],
 	config: BridgeConfig,
 	cipherWriter?: CipherWriter,
 	transitionOpts?: ApplyTransitionOpts,
@@ -141,6 +141,13 @@ export function createEventRouter(
 			};
 
 			if (event.event_type === "session_started") {
+				// GEO-152: store issue labels for multi-lead routing
+				const eventLabels = Array.isArray(payload.labels)
+					? (payload.labels as string[])
+					: [];
+				const issueLabelsJson =
+					eventLabels.length > 0 ? JSON.stringify(eventLabels) : undefined;
+
 				if (transitionOpts) {
 					const result = applyTransition(
 						transitionOpts,
@@ -153,6 +160,7 @@ export function createEventRouter(
 							heartbeat_at: now,
 							issue_identifier: asString(payload.issueIdentifier),
 							issue_title: asString(payload.issueTitle),
+							issue_labels: issueLabelsJson,
 						},
 					);
 					if (!result.ok) {
@@ -172,6 +180,7 @@ export function createEventRouter(
 						heartbeat_at: now,
 						issue_identifier: asString(payload.issueIdentifier),
 						issue_title: asString(payload.issueTitle),
+						issue_labels: issueLabelsJson,
 					});
 				}
 
@@ -270,6 +279,16 @@ export function createEventRouter(
 						issue_identifier: asString(payload.issueIdentifier),
 						issue_title: asString(payload.issueTitle),
 					});
+				}
+
+				// GEO-152: store labels on completed events (not just started)
+				if (!transitionRejected) {
+					const payloadLabels = Array.isArray(payload.labels) ? payload.labels as string[] : undefined;
+					if (payloadLabels && payloadLabels.length > 0) {
+						store.patchSessionMetadata(event.execution_id, {
+							issue_labels: JSON.stringify(payloadLabels),
+						});
+					}
 				}
 
 				// Auto-approve disabled by policy (v1.0 Phase 2)
@@ -376,6 +395,16 @@ export function createEventRouter(
 						issue_title: asString(payload.issueTitle),
 					});
 				}
+
+				// GEO-152: store labels on failed events (not just started)
+				if (!transitionRejected) {
+					const payloadLabels = Array.isArray(payload.labels) ? payload.labels as string[] : undefined;
+					if (payloadLabels && payloadLabels.length > 0) {
+						store.patchSessionMetadata(event.execution_id, {
+							issue_labels: JSON.stringify(payloadLabels),
+						});
+					}
+				}
 			}
 		} catch (err) {
 			console.error(
@@ -401,57 +430,78 @@ export function createEventRouter(
 		// Best-effort notification push (structured JSON + sessionKey)
 		const session = store.getSession(event.execution_id);
 		if (session && config.gatewayUrl && config.hooksToken) {
-			const sessionKey = buildSessionKey(session);
-			const hookPayload: HookPayload = {
-				event_type: event.event_type,
-				execution_id: event.execution_id,
-				issue_id: event.issue_id,
-				issue_identifier: session.issue_identifier,
-				issue_title: session.issue_title,
-				project_name: event.project_name,
-				status: session.status,
-				decision_route: session.decision_route,
-				commit_count: session.commit_count,
-				lines_added: session.lines_added,
-				lines_removed: session.lines_removed,
-				summary: session.summary,
-				last_error: session.last_error,
-				thread_id: session.thread_id,
-				channel: config.notificationChannel,
-			};
-
-			// EventFilter: classify and route (GEO-187)
-			if (eventFilter) {
-				const filterResult = eventFilter.classify(
-					event.event_type,
-					hookPayload,
+			try {
+				// GEO-152: fallback to payload labels when session labels are empty
+				const storedLabels = store.getSessionLabels(event.execution_id);
+				const labels = storedLabels.length > 0
+					? storedLabels
+					: (Array.isArray(payload.labels) ? payload.labels as string[] : []);
+				const { lead } = resolveLeadForIssue(
+					projects,
+					event.project_name,
+					labels,
 				);
+				const existingThread = store.getThreadByIssue(event.issue_id);
+				const forumChannel = existingThread?.channel ?? lead.forumChannel;
+				const sessionKey = buildSessionKey(session);
+				const hookPayload: HookPayload = {
+					event_type: event.event_type,
+					execution_id: event.execution_id,
+					issue_id: event.issue_id,
+					issue_identifier: session.issue_identifier,
+					issue_title: session.issue_title,
+					project_name: event.project_name,
+					status: session.status,
+					decision_route: session.decision_route,
+					commit_count: session.commit_count,
+					lines_added: session.lines_added,
+					lines_removed: session.lines_removed,
+					summary: session.summary,
+					last_error: session.last_error,
+					thread_id: session.thread_id,
+					forum_channel: forumChannel,
+					chat_channel: lead.chatChannel,
+					issue_labels: labels,
+				};
 
-				// Forum tag update (fire-and-forget for both paths)
-				let tagResult: HookPayload["forum_tag_update_result"];
-				if (forumTagUpdater) {
-					tagResult = await forumTagUpdater.updateTag({
-						threadId: session.thread_id,
-						status: session.status ?? "",
-						eventType: event.event_type,
-						discordBotToken: config.discordBotToken,
-					});
-				}
-
-				if (filterResult.action === "notify_agent") {
-					hookPayload.filter_priority = filterResult.priority;
-					hookPayload.notification_context = filterResult.reason;
-					hookPayload.forum_tag_update_result = tagResult;
-					const body = buildHookBody("product-lead", hookPayload, sessionKey);
-					notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(
-						() => {},
+				// EventFilter: classify and route (GEO-187)
+				if (eventFilter) {
+					const filterResult = eventFilter.classify(
+						event.event_type,
+						hookPayload,
 					);
+
+					// Forum tag update (fire-and-forget for both paths)
+					let tagResult: HookPayload["forum_tag_update_result"];
+					if (forumTagUpdater) {
+						tagResult = await forumTagUpdater.updateTag({
+							threadId: session.thread_id,
+							status: session.status ?? "",
+							eventType: event.event_type,
+							discordBotToken: config.discordBotToken,
+						});
+					}
+
+					if (filterResult.action === "notify_agent") {
+						hookPayload.filter_priority = filterResult.priority;
+						hookPayload.notification_context = filterResult.reason;
+						hookPayload.forum_tag_update_result = tagResult;
+						const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
+						notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(
+							() => {},
+						);
+					}
+					// forum_only and skip: no notifyAgent call
+				} else {
+					// Legacy path: no EventFilter, notify unconditionally
+					const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
+					notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
 				}
-				// forum_only and skip: no notifyAgent call
-			} else {
-				// Legacy path: no EventFilter, notify unconditionally
-				const body = buildHookBody("product-lead", hookPayload, sessionKey);
-				notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+			} catch (err) {
+				console.warn(
+					`[event-route] Unknown project "${event.project_name}" — skipping notification:`,
+					(err as Error).message,
+				);
 			}
 		}
 

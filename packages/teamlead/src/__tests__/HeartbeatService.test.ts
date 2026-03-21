@@ -3,7 +3,36 @@ import {
 	HeartbeatService,
 	WebhookHeartbeatNotifier,
 } from "../HeartbeatService.js";
+import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
+import { StateStore } from "../StateStore.js";
+
+const testProjects: ProjectEntry[] = [
+	{
+		projectName: "geo",
+		projectRoot: "/tmp/geo",
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "test-channel",
+				chatChannel: "test-chat",
+				match: { labels: ["Product"] },
+			},
+		],
+	},
+	{
+		projectName: "p",
+		projectRoot: "/tmp/p",
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "test-channel",
+				chatChannel: "test-chat",
+				match: { labels: ["Product"] },
+			},
+		],
+	},
+];
 
 function makeSession(overrides: Partial<Session> = {}): Session {
 	return {
@@ -244,10 +273,12 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
+		const hbStore = await StateStore.create(":memory:");
 		const notifier = new WebhookHeartbeatNotifier(
 			`http://127.0.0.1:${port}`,
 			"test-token",
-			"test-channel",
+			testProjects,
+			hbStore,
 		);
 		const session: Session = {
 			execution_id: "exec-stuck",
@@ -268,8 +299,9 @@ describe("WebhookHeartbeatNotifier", () => {
 		expect(parsed.event_type).toBe("session_stuck");
 		expect(parsed.minutes_since_activity).toBe(30);
 		expect(parsed.thread_id).toBe("1234.5678");
-		expect(parsed.channel).toBe("test-channel");
+		expect(parsed.forum_channel).toBe("test-channel");
 
+		hbStore.close();
 		await new Promise<void>((resolve, reject) => {
 			gateway.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -294,10 +326,12 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
+		const hbStore = await StateStore.create(":memory:");
 		const notifier = new WebhookHeartbeatNotifier(
 			`http://127.0.0.1:${port}`,
 			"test-token",
-			"test-channel",
+			testProjects,
+			hbStore,
 		);
 		const session: Session = {
 			execution_id: "exec-orphan",
@@ -319,8 +353,9 @@ describe("WebhookHeartbeatNotifier", () => {
 		expect(parsed.status).toBe("failed");
 		expect(parsed.minutes_since_activity).toBe(75);
 		expect(parsed.thread_id).toBe("5678.1234");
-		expect(parsed.channel).toBe("test-channel");
+		expect(parsed.forum_channel).toBe("test-channel");
 
+		hbStore.close();
 		await new Promise<void>((resolve, reject) => {
 			gateway.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -345,10 +380,12 @@ describe("WebhookHeartbeatNotifier", () => {
 		const addr = gateway.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
+		const hbStore = await StateStore.create(":memory:");
 		const notifier = new WebhookHeartbeatNotifier(
 			`http://127.0.0.1:${port}`,
 			"test-token",
-			"test-channel",
+			testProjects,
+			hbStore,
 		);
 		await notifier.onSessionStuck(
 			{
@@ -362,6 +399,7 @@ describe("WebhookHeartbeatNotifier", () => {
 
 		expect(capturedPath).toBe("/hooks/ingest");
 
+		hbStore.close();
 		await new Promise<void>((resolve, reject) => {
 			gateway.close((err) => (err ? reject(err) : resolve()));
 		});

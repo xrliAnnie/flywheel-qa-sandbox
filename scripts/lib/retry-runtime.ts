@@ -92,6 +92,7 @@ export async function setupRetryRuntime(
 		const directSink = new DirectEventSink(
 			store,
 			bridgeConfig,
+			projects,
 			eventFilter,
 			forumTagUpdater,
 		);

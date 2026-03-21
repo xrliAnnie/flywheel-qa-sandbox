@@ -604,7 +604,8 @@ export async function startBridge(
 			? new WebhookHeartbeatNotifier(
 					config.gatewayUrl,
 					config.hooksToken,
-					config.notificationChannel,
+					projects,
+					store,
 					eventFilter,
 				)
 			: { onSessionStuck: async () => {}, onSessionOrphaned: async () => {} };
