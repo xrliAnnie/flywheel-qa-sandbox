@@ -10,11 +10,11 @@ import type { Session, StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import {
-	buildHookBody,
 	buildSessionKey,
 	type HookPayload,
-	notifyAgent,
 } from "./hook-payload.js";
+import type { LeadEventEnvelope } from "./lead-runtime.js";
+import type { RuntimeRegistry } from "./runtime-registry.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 interface IngestEvent {
@@ -71,6 +71,7 @@ export function createEventRouter(
 	transitionOpts?: ApplyTransitionOpts,
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
+	registry?: RuntimeRegistry,
 ): Router {
 	const router = Router();
 
@@ -427,16 +428,16 @@ export function createEventRouter(
 			return;
 		}
 
-		// Best-effort notification push (structured JSON + sessionKey)
+		// Best-effort notification push via RuntimeRegistry (GEO-195)
 		const session = store.getSession(event.execution_id);
-		if (session && config.gatewayUrl && config.hooksToken) {
+		if (session && registry) {
 			try {
 				// GEO-152: fallback to payload labels when session labels are empty
 				const storedLabels = store.getSessionLabels(event.execution_id);
 				const labels = storedLabels.length > 0
 					? storedLabels
 					: (Array.isArray(payload.labels) ? payload.labels as string[] : []);
-				const { lead } = resolveLeadForIssue(
+				const { runtime, lead } = registry.resolveWithLead(
 					projects,
 					event.project_name,
 					labels,
@@ -486,16 +487,26 @@ export function createEventRouter(
 						hookPayload.filter_priority = filterResult.priority;
 						hookPayload.notification_context = filterResult.reason;
 						hookPayload.forum_tag_update_result = tagResult;
-						const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
-						notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(
-							() => {},
-						);
+						const envelope: LeadEventEnvelope = {
+							seq: 0, // TODO: Phase 2 — event journal seq
+							event: hookPayload,
+							sessionKey,
+							leadId: lead.agentId,
+							timestamp: new Date().toISOString(),
+						};
+						runtime.deliver(envelope).catch(() => {});
 					}
-					// forum_only and skip: no notifyAgent call
+					// forum_only and skip: no delivery
 				} else {
-					// Legacy path: no EventFilter, notify unconditionally
-					const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
-					notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+					// Legacy path: no EventFilter, deliver unconditionally
+					const envelope: LeadEventEnvelope = {
+						seq: 0,
+						event: hookPayload,
+						sessionKey,
+						leadId: lead.agentId,
+						timestamp: new Date().toISOString(),
+					};
+					runtime.deliver(envelope).catch(() => {});
 				}
 			} catch (err) {
 				console.warn(

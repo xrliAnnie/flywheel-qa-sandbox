@@ -12,11 +12,11 @@ import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import type { ForumTagUpdater } from "./bridge/ForumTagUpdater.js";
 import {
-	buildHookBody,
 	buildSessionKey,
 	type HookPayload,
-	notifyAgent,
 } from "./bridge/hook-payload.js";
+import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
+import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import type { BridgeConfig } from "./bridge/types.js";
 import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -34,6 +34,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		private projects: ProjectEntry[],
 		private eventFilter?: EventFilter,
 		private forumTagUpdater?: ForumTagUpdater,
+		private registry?: RuntimeRegistry,
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
@@ -169,14 +170,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	}
 
 	private pushNotification(env: EventEnvelope, eventType: string): void {
-		if (!this.config.gatewayUrl || !this.config.hooksToken) return;
+		if (!this.registry) return;
 
 		const session = this.store.getSession(env.executionId);
 		if (!session) return;
 
 		try {
 			const labels = this.store.getSessionLabels(env.executionId);
-			const { lead } = resolveLeadForIssue(
+			const { runtime, lead } = this.registry.resolveWithLead(
 				this.projects,
 				env.projectName,
 				labels,
@@ -204,7 +205,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				issue_labels: labels,
 			};
 
-			const doNotify = async () => {
+			const doDeliver = async () => {
 				if (this.eventFilter) {
 					const filterResult = this.eventFilter.classify(eventType, hookPayload);
 
@@ -222,25 +223,29 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						hookPayload.filter_priority = filterResult.priority;
 						hookPayload.notification_context = filterResult.reason;
 						hookPayload.forum_tag_update_result = tagResult;
-						const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
-						await notifyAgent(
-							this.config.gatewayUrl!,
-							this.config.hooksToken!,
-							body,
-						);
+						const envelope: LeadEventEnvelope = {
+							seq: 0,
+							event: hookPayload,
+							sessionKey,
+							leadId: lead.agentId,
+							timestamp: new Date().toISOString(),
+						};
+						await runtime.deliver(envelope);
 					}
 				} else {
-					const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
-					await notifyAgent(
-						this.config.gatewayUrl!,
-						this.config.hooksToken!,
-						body,
-					);
+					const envelope: LeadEventEnvelope = {
+						seq: 0,
+						event: hookPayload,
+						sessionKey,
+						leadId: lead.agentId,
+						timestamp: new Date().toISOString(),
+					};
+					await runtime.deliver(envelope);
 				}
 			};
 
 			this.pending.push(
-				doNotify().catch((err) => {
+				doDeliver().catch((err) => {
 					console.warn(
 						`[DirectEventSink] Notification pipeline failed for ${env.executionId}:`,
 						(err as Error).message,
