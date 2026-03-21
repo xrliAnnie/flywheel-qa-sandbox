@@ -39,12 +39,25 @@ cd "$PROJECT_DIR"
 if [ -f "$SESSION_ID_FILE" ]; then
   SESSION_ID=$(cat "$SESSION_ID_FILE")
   echo "[lead] Resuming session ${SESSION_ID}..."
+  echo "[lead] (To clear session: rm ${SESSION_ID_FILE})"
   claude --resume "$SESSION_ID" \
     --channels "plugin:discord@claude-plugins-official" \
     --dangerously-skip-permissions
 else
   echo "[lead] Starting fresh session..."
+  echo "[lead] After Claude starts, save the session ID with:"
+  echo "[lead]   echo '<session-id>' > ${SESSION_ID_FILE}"
+  echo "[lead] You can find it in ~/.claude/projects/*/sessions/"
   claude \
     --channels "plugin:discord@claude-plugins-official" \
-    --dangerously-skip-permissions
+    --dangerously-skip-permissions \
+    | tee >(
+      # Attempt to capture session ID from Claude's startup output
+      grep -m1 -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
+        > "$SESSION_ID_FILE" 2>/dev/null || true
+    )
+  # If the grep captured a session ID, log it
+  if [ -f "$SESSION_ID_FILE" ] && [ -s "$SESSION_ID_FILE" ]; then
+    echo "[lead] Auto-captured session ID: $(cat "$SESSION_ID_FILE")"
+  fi
 fi
