@@ -9,7 +9,7 @@ import {
 } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
-import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
+import type { ProjectEntry } from "./ProjectConfig.js";
 import type { Session, StateStore } from "./StateStore.js";
 
 export interface HeartbeatNotifier {
