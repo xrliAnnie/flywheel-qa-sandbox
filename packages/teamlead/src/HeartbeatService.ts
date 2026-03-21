@@ -156,7 +156,17 @@ export class HeartbeatService {
 
 /**
  * GEO-195: Registry-based heartbeat notifier — delivers via RuntimeRegistry.
- * Must throw on failure so HeartbeatService skips dedup and retries next cycle.
+ *
+ * NOTE: deliver() is fire-and-forget (swallows errors internally). For heartbeat
+ * notifications this is acceptable: they are advisory — the orphan reaper still
+ * force-fails stale sessions regardless of notification success. If the
+ * notification fails silently, the worst case is the Lead agent doesn't see the
+ * "stuck" alert, but the session will still be reaped on schedule.
+ *
+ * The original WebhookHeartbeatNotifier threw on failure so HeartbeatService
+ * would skip dedup and retry next cycle. With fire-and-forget delivery, a
+ * failed notification will be deduped (not retried). This is a deliberate
+ * tradeoff: we avoid coupling HeartbeatService to a throwing delivery contract.
  */
 export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	constructor(
@@ -240,14 +250,23 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		}
 
 		const sessionKey = buildSessionKey(session);
+		const eventId = `heartbeat-${session.execution_id}-${Date.now()}`;
+		const seq = this.store.appendLeadEvent(
+			agentId,
+			eventId,
+			hookPayload.event_type,
+			JSON.stringify(hookPayload),
+			sessionKey,
+		);
 		const envelope: LeadEventEnvelope = {
-			seq: 0,
+			seq,
 			event: hookPayload,
 			sessionKey,
 			leadId: agentId,
 			timestamp: new Date().toISOString(),
 		};
-		// Must throw on failure so HeartbeatService skips dedup and retries next cycle.
+		// deliver() is fire-and-forget (swallows errors). See class-level comment for rationale.
 		await runtime.deliver(envelope);
+		this.store.markLeadEventDelivered(seq);
 	}
 }

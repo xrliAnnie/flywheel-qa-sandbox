@@ -487,26 +487,46 @@ export function createEventRouter(
 						hookPayload.filter_priority = filterResult.priority;
 						hookPayload.notification_context = filterResult.reason;
 						hookPayload.forum_tag_update_result = tagResult;
+						const seq = store.appendLeadEvent(
+							lead.agentId,
+							event.event_id,
+							event.event_type,
+							JSON.stringify(hookPayload),
+							sessionKey,
+						);
 						const envelope: LeadEventEnvelope = {
-							seq: 0, // TODO: Phase 2 — event journal seq
+							seq,
 							event: hookPayload,
 							sessionKey,
 							leadId: lead.agentId,
 							timestamp: new Date().toISOString(),
 						};
-						runtime.deliver(envelope).catch(() => {});
+						runtime
+							.deliver(envelope)
+							.then(() => store.markLeadEventDelivered(seq))
+							.catch(() => {});
 					}
 					// forum_only and skip: no delivery
 				} else {
 					// Legacy path: no EventFilter, deliver unconditionally
+					const seq = store.appendLeadEvent(
+						lead.agentId,
+						event.event_id,
+						event.event_type,
+						JSON.stringify(hookPayload),
+						sessionKey,
+					);
 					const envelope: LeadEventEnvelope = {
-						seq: 0,
+						seq,
 						event: hookPayload,
 						sessionKey,
 						leadId: lead.agentId,
 						timestamp: new Date().toISOString(),
 					};
-					runtime.deliver(envelope).catch(() => {});
+					runtime
+						.deliver(envelope)
+						.then(() => store.markLeadEventDelivered(seq))
+						.catch(() => {});
 				}
 			} catch (err) {
 				console.warn(
