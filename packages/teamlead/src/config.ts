@@ -60,6 +60,16 @@ export function loadConfig(): BridgeConfig {
 		hooksToken: process.env.OPENCLAW_HOOKS_TOKEN,
 		notificationChannel:
 			process.env.TEAMLEAD_NOTIFICATION_CHANNEL ?? "CD5QZVAP6",
+		defaultLeadAgentId: (() => {
+			const val =
+				process.env.TEAMLEAD_DEFAULT_LEAD_AGENT?.trim() ?? "product-lead";
+			if (val.length === 0) {
+				throw new Error(
+					"TEAMLEAD_DEFAULT_LEAD_AGENT must be a non-empty string",
+				);
+			}
+			return val;
+		})(),
 		stuckThresholdMinutes,
 		stuckCheckIntervalMs: parsePositiveInt(
 			process.env.TEAMLEAD_STUCK_INTERVAL,

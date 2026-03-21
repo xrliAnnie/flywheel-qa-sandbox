@@ -84,7 +84,7 @@ export async function setupRetryRuntime(
 			`[RetryRuntime] Setting up retry runtime for project: ${project.projectName}`,
 		);
 
-		const directSink = new DirectEventSink(store, bridgeConfig);
+		const directSink = new DirectEventSink(store, bridgeConfig, projects);
 		let components: FlywheelComponents | undefined;
 
 		try {

@@ -3,12 +3,9 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CipherSyncService, CipherWriter } from "flywheel-edge-worker";
-import { startBridge } from "./bridge/plugin.js";
-import {
-	buildHookBody,
-	notifyAgent,
-} from "./bridge/hook-payload.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
+import { buildHookBody, notifyAgent } from "./bridge/hook-payload.js";
+import { startBridge } from "./bridge/plugin.js";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
 
@@ -47,13 +44,20 @@ async function main() {
 				status: "pending_ceo",
 			};
 			const sessionKey = `cipher-proposal-${proposal.cipher_principle_id}`;
-			const body = buildHookBody("product-lead", hookPayload, sessionKey);
+			const body = buildHookBody(
+				config.defaultLeadAgentId,
+				hookPayload,
+				sessionKey,
+			);
 			if (config.gatewayUrl && config.hooksToken) {
 				await notifyAgent(config.gatewayUrl, config.hooksToken, body);
 			}
 		});
 	} catch (err) {
-		console.warn("[CIPHER] Failed to initialize — running without CIPHER:", (err as Error).message);
+		console.warn(
+			"[CIPHER] Failed to initialize — running without CIPHER:",
+			(err as Error).message,
+		);
 	}
 
 	const { close } = await startBridge(config, projects, { cipherWriter });

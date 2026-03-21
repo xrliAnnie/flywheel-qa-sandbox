@@ -11,6 +11,8 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		host: "127.0.0.1",
 		port: 0,
 		dbPath: ":memory:",
+		notificationChannel: "test-channel",
+		defaultLeadAgentId: "product-lead",
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
@@ -23,6 +25,14 @@ const testProjects: ProjectEntry[] = [
 		projectName: "geoforge3d",
 		projectRoot: "/tmp/geoforge3d",
 		projectRepo: "xrliAnnie/GeoForge3D",
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "test-channel",
+				chatChannel: "test-chat",
+				match: { labels: ["Product"] },
+			},
+		],
 	},
 ];
 
@@ -350,7 +360,12 @@ describe("Action tools", () => {
 			project_name: "geoforge3d",
 			status: "awaiting_review",
 		});
-		const result = await transitionSession(store, "shelve", "e1", "Low priority");
+		const result = await transitionSession(
+			store,
+			"shelve",
+			"e1",
+			"Low priority",
+		);
 		expect(result.success).toBe(true);
 		expect(store.getSession("e1")!.status).toBe("shelved");
 	});
@@ -442,6 +457,7 @@ describe("Action tools", () => {
 				gatewayUrl: hookUrl,
 				hooksToken: "test-token",
 				notificationChannel: "test-ch",
+				defaultLeadAgentId: "product-lead",
 			});
 
 			await approveExecution(
@@ -477,6 +493,7 @@ describe("Action tools", () => {
 			const hookConfig = makeConfig({
 				gatewayUrl: hookUrl,
 				hooksToken: "test-token",
+				defaultLeadAgentId: "product-lead",
 				notificationChannel: "test-ch",
 			});
 
@@ -487,6 +504,8 @@ describe("Action tools", () => {
 				"needs rework",
 				undefined,
 				hookConfig,
+				undefined,
+				testProjects,
 			);
 
 			await new Promise((r) => setTimeout(r, 200));
@@ -524,6 +543,7 @@ describe("Action tools", () => {
 			});
 			const hookConfig = makeConfig({
 				gatewayUrl: "http://127.0.0.1:1", // connection refused
+				defaultLeadAgentId: "product-lead",
 				hooksToken: "test-token",
 				notificationChannel: "test-ch",
 			});
@@ -535,6 +555,8 @@ describe("Action tools", () => {
 				"test",
 				undefined,
 				hookConfig,
+				undefined,
+				testProjects,
 			);
 			expect(result.success).toBe(true);
 			expect(store.getSession("e1")!.status).toBe("rejected");
