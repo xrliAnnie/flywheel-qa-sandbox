@@ -22,7 +22,10 @@ export class HaikuTriageAgent {
 		private maxDiffChars: number = 2000,
 	) {}
 
-	async triage(ctx: ExecutionContext, cipherContext?: string): Promise<DecisionResult> {
+	async triage(
+		ctx: ExecutionContext,
+		cipherContext?: string,
+	): Promise<DecisionResult> {
 		const prompt = this.buildPrompt(ctx, cipherContext);
 		const response = await this.client.chat({
 			model: this.model,
@@ -35,9 +38,7 @@ export class HaikuTriageAgent {
 
 	private buildPrompt(ctx: ExecutionContext, cipherContext?: string): string {
 		const diff = ctx.diffSummary.slice(0, this.maxDiffChars);
-		const cipherSection = cipherContext
-			? `\n${cipherContext}\n`
-			: "";
+		const cipherSection = cipherContext ? `\n${cipherContext}\n` : "";
 		return `You are a code review triage agent. Analyze this execution result and classify it.
 ${cipherSection}
 ## Issue

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-	posteriorMean,
-	wilsonLowerBound,
-	maturityLevel,
 	classifyOutcome,
+	maturityLevel,
+	posteriorMean,
 	shouldInjectPattern,
+	wilsonLowerBound,
 } from "../cipher/statistics.js";
 import type { PatternStatistics } from "../cipher/types.js";
 

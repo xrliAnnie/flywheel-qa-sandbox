@@ -1,14 +1,16 @@
-import { describe, expect, it, afterEach } from "vitest";
-import { join } from "node:path";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { CipherWriter } from "../cipher/CipherWriter.js";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
 import { CipherReader } from "../cipher/CipherReader.js";
+import { CipherWriter } from "../cipher/CipherWriter.js";
 import { extractDimensions } from "../cipher/dimensions.js";
 import { generatePatternKeys } from "../cipher/pattern-keys.js";
 import type { SnapshotInputDto } from "../cipher/types.js";
 
-function makeSnapshotInput(overrides: Partial<SnapshotInputDto> = {}): SnapshotInputDto {
+function makeSnapshotInput(
+	overrides: Partial<SnapshotInputDto> = {},
+): SnapshotInputDto {
 	return {
 		labels: ["bug"],
 		exitReason: "completed",
@@ -34,7 +36,9 @@ describe("CIPHER Writer + Reader integration", () => {
 	afterEach(() => {
 		try {
 			rmSync(tmpDir, { recursive: true, force: true });
-		} catch { /* ignore */ }
+		} catch {
+			/* ignore */
+		}
 	});
 
 	it("saveSnapshot + recordOutcome roundtrip", async () => {
@@ -78,7 +82,7 @@ describe("CIPHER Writer + Reader integration", () => {
 
 		// Reader should be able to read the data
 		const reader = new CipherReader(dbPath);
-		const context = await reader.buildPromptContext(input);
+		const _context = await reader.buildPromptContext(input);
 		// With only 1 data point, patterns exist but may not be injected (exploratory maturity)
 		// The context could be null if no patterns meet injection threshold
 		// This is expected behavior — we're testing the data roundtrip works
@@ -203,7 +207,7 @@ describe("CIPHER Writer + Reader integration", () => {
 
 		// Reader should find patterns with counts
 		const reader = new CipherReader(dbPath);
-		const context = await reader.buildPromptContext(input);
+		const _context = await reader.buildPromptContext(input);
 		// With 3 data points, still exploratory — context may be null
 		// But the data is stored correctly
 	});

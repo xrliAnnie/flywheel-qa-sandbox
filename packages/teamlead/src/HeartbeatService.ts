@@ -2,6 +2,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "./applyTransition.js";
+import type { EventFilter } from "./bridge/EventFilter.js";
 import {
 	buildHookBody,
 	buildSessionKey,
@@ -162,6 +163,7 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 		private hooksToken: string,
 		private projects: ProjectEntry[],
 		private store: StateStore,
+		private eventFilter?: EventFilter,
 	) {}
 
 	async onSessionStuck(session: Session, minutes: number): Promise<void> {
@@ -245,8 +247,22 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 		hookPayload: HookPayload,
 		sessionKey: string,
 	): Promise<void> {
-		const body = buildHookBody(agentId, hookPayload, sessionKey);
+		// EventFilter: classify and potentially skip (GEO-187)
+		if (this.eventFilter) {
+			const filterResult = this.eventFilter.classify(
+				hookPayload.event_type,
+				hookPayload,
+			);
+			if (filterResult.action !== "notify_agent") {
+				return; // skip or forum_only — heartbeat events don't update Forum tags
+			}
+			hookPayload.filter_priority = filterResult.priority;
+			hookPayload.notification_context = filterResult.reason;
+		}
 
+		const body = buildHookBody(agentId, hookPayload, sessionKey);
+		// Must throw on failure so HeartbeatService skips dedup and retries next cycle.
+		// notifyAgent() swallows errors (fire-and-forget), so we do our own fetch here.
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), 3000);
 		try {

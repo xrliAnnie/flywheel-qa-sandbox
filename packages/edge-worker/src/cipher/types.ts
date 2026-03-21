@@ -10,13 +10,7 @@
 export interface PatternDimensions {
 	primaryLabel: string;
 	sizeBucket: "tiny" | "small" | "medium" | "large";
-	areaTouched:
-		| "frontend"
-		| "backend"
-		| "auth"
-		| "test"
-		| "config"
-		| "mixed";
+	areaTouched: "frontend" | "backend" | "auth" | "test" | "config" | "mixed";
 	exitStatus: "completed" | "timeout" | "error";
 	hasPriorFailures: boolean;
 	commitVolume: "single" | "few" | "many";
@@ -98,9 +92,7 @@ export interface CipherProposalPayload {
 }
 
 /** Callback injected by TeamLead composition root for proposal notifications. */
-export type CipherNotifyFn = (
-	payload: CipherProposalPayload,
-) => Promise<void>;
+export type CipherNotifyFn = (payload: CipherProposalPayload) => Promise<void>;
 
 /** Internal representation of a cipher_principles row */
 export interface CipherPrinciple {

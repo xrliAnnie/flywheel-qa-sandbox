@@ -1,19 +1,19 @@
 import { randomUUID } from "node:crypto";
-import initSqlJs, { type Database } from "sql.js";
 import {
-	readFileSync,
-	writeFileSync,
 	existsSync,
-	renameSync,
 	mkdirSync,
+	readFileSync,
+	renameSync,
+	writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import initSqlJs, { type Database } from "sql.js";
 import { classifyOutcome } from "./statistics.js";
 import type {
-	SnapshotParams,
-	OutcomeParams,
-	CipherPrinciple,
 	CipherNotifyFn,
+	CipherPrinciple,
+	OutcomeParams,
+	SnapshotParams,
 } from "./types.js";
 
 const SCHEMA_SQL = `
@@ -202,8 +202,8 @@ export class CipherWriter {
 			lastDreamingResult[0]!.values[0]![0]
 		) {
 			const raw = lastDreamingResult[0]!.values[0]![0] as string;
-			const ts = new Date(raw.endsWith("Z") ? raw : raw + "Z").getTime();
-			if (!isNaN(ts)) this.lastRefreshAt = ts;
+			const ts = new Date(raw.endsWith("Z") ? raw : `${raw}Z`).getTime();
+			if (!Number.isNaN(ts)) this.lastRefreshAt = ts;
 
 			// Count outcomes since last successful dreaming. Use >= to avoid
 			// missing reviews that land in the same second as dreaming completion
@@ -217,9 +217,7 @@ export class CipherWriter {
 			}
 		} else {
 			// No dreaming has ever completed — count all reviews
-			const countResult = this.db.exec(
-				`SELECT COUNT(*) FROM decision_reviews`,
-			);
+			const countResult = this.db.exec(`SELECT COUNT(*) FROM decision_reviews`);
 			if (countResult.length > 0 && countResult[0]!.values.length > 0) {
 				this.outcomeCount = Number(countResult[0]!.values[0]![0]) || 0;
 			}
@@ -230,7 +228,7 @@ export class CipherWriter {
 
 	private save(): void {
 		const data = this.db.export();
-		const tmpPath = this.dbPath + ".tmp";
+		const tmpPath = `${this.dbPath}.tmp`;
 		writeFileSync(tmpPath, Buffer.from(data));
 		renameSync(tmpPath, this.dbPath);
 	}
@@ -319,11 +317,9 @@ export class CipherWriter {
 		];
 		const patternKeys: string[] = JSON.parse(patternKeysJson);
 		// sqlNow() strips 'Z' — append it so Date parses as UTC (not local)
-		const notificationTime = new Date(notificationTs + "Z").getTime();
+		const notificationTime = new Date(`${notificationTs}Z`).getTime();
 		const actionTime = new Date(params.ceoActionTimestamp).getTime();
-		const timeToDecision = Math.round(
-			(actionTime - notificationTime) / 1000,
-		);
+		const timeToDecision = Math.round((actionTime - notificationTime) / 1000);
 
 		const outcome = classifyOutcome(params.ceoAction, timeToDecision);
 		const isApprove = params.ceoAction === "approve" ? 1 : 0;
@@ -431,9 +427,7 @@ export class CipherWriter {
 			.toISOString()
 			.replace("T", " ")
 			.replace(/\.\d+Z$/, "");
-		const decayThreshold = new Date(
-			Date.now() - 60 * 24 * 60 * 60 * 1000,
-		)
+		const decayThreshold = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000)
 			.toISOString()
 			.replace("T", " ")
 			.replace(/\.\d+Z$/, "");
@@ -553,10 +547,7 @@ export class CipherWriter {
 							`SELECT 1 FROM cipher_questions WHERE related_pattern_key = ? AND question_type = 'drift_detected' AND status IN ('open', 'asked')`,
 							[key],
 						);
-						if (
-							exists.length === 0 ||
-							exists[0]!.values.length === 0
-						) {
+						if (exists.length === 0 || exists[0]!.values.length === 0) {
 							this.db.run(
 								`INSERT INTO cipher_questions (id, question_type, description, related_pattern_key, evidence, created_at)
                  VALUES (?, 'drift_detected', ?, ?, ?, ?)`,
@@ -657,10 +648,8 @@ export class CipherWriter {
 				continue;
 			}
 
-			const action =
-				approveRate >= 0.7 ? "likely_approve" : "likely_reject";
-			const confidence =
-				approveRate >= 0.7 ? approveRate : 1 - approveRate;
+			const action = approveRate >= 0.7 ? "likely_approve" : "likely_reject";
+			const confidence = approveRate >= 0.7 ? approveRate : 1 - approveRate;
 			const name = `Auto-${action}: ${key}`;
 			const description = `Pattern "${key}" shows ${(approveRate * 100).toFixed(0)}% approve rate over ${r90Total} recent samples (${ml}).`;
 
@@ -730,16 +719,20 @@ export class CipherWriter {
 				`SELECT COUNT(*) FROM decision_reviews WHERE created_at >= ?`,
 				[dreamingStartTs],
 			);
-			this.outcomeCount = (postCount.length > 0 && postCount[0]!.values.length > 0)
-				? Number(postCount[0]!.values[0]![0]) || 0
-				: 0;
+			this.outcomeCount =
+				postCount.length > 0 && postCount[0]!.values.length > 0
+					? Number(postCount[0]!.values[0]![0]) || 0
+					: 0;
 
 			// Sync to Supabase mirror after dreaming completes (advisory — errors don't fail dreaming)
 			if (this.syncAfterDreamingFn) {
 				try {
 					await this.syncAfterDreamingFn(this.db);
 				} catch (err) {
-					console.error("[CIPHER] Supabase sync failed:", (err as Error).message);
+					console.error(
+						"[CIPHER] Supabase sync failed:",
+						(err as Error).message,
+					);
 				}
 			}
 		} finally {
@@ -754,8 +747,7 @@ export class CipherWriter {
 		predictedRoute: string,
 		actualAction: string,
 	): Promise<void> {
-		const predicted =
-			predictedRoute === "auto_approve" ? "approve" : "reject";
+		const predicted = predictedRoute === "auto_approve" ? "approve" : "reject";
 		if (predicted !== actualAction) {
 			const now = sqlNow();
 			this.db.run(
@@ -794,14 +786,8 @@ export class CipherWriter {
 		if (skills.length === 0 || skills[0]!.values.length === 0) return;
 
 		for (const row of skills[0]!.values) {
-			const [
-				skillId,
-				_name,
-				patternKey,
-				action,
-				confidence,
-				sampleCount,
-			] = row as [string, string, string, string, number, number];
+			const [skillId, _name, patternKey, action, confidence, sampleCount] =
+				row as [string, string, string, string, number, number];
 
 			// Check for existing principle (any status — including retired).
 			// A retired principle means the CEO explicitly rejected the proposal
@@ -824,10 +810,11 @@ export class CipherWriter {
 					[patternKey, thirtyDaysAgo],
 				);
 				if (recent.length > 0 && recent[0]!.values.length > 0) {
-					const [recentApprove, recentReject] = recent[0]!
-						.values[0]! as [number, number];
-					const recentTotal =
-						(recentApprove ?? 0) + (recentReject ?? 0);
+					const [recentApprove, recentReject] = recent[0]!.values[0]! as [
+						number,
+						number,
+					];
+					const recentTotal = (recentApprove ?? 0) + (recentReject ?? 0);
 					if (recentTotal > 0) {
 						const recentRate =
 							action === "likely_approve"
@@ -838,8 +825,7 @@ export class CipherWriter {
 				}
 			}
 
-			const ruleType =
-				action === "likely_reject" ? "block" : "escalate";
+			const ruleType = action === "likely_reject" ? "block" : "escalate";
 			// HardRule actions are "escalate" | "block" — no "auto_approve".
 			// likely_approve → escalate (force review for known-good patterns until trust grows)
 			// likely_reject → block (prevent known-bad patterns)
@@ -923,10 +909,7 @@ export class CipherWriter {
 		return changes > 0;
 	}
 
-	async retirePrinciple(
-		principleId: string,
-		reason: string,
-	): Promise<boolean> {
+	async retirePrinciple(principleId: string, reason: string): Promise<boolean> {
 		const now = sqlNow();
 		this.db.run(
 			`UPDATE cipher_principles SET status = 'retired', retired_at = ?, retired_reason = ? WHERE id = ? AND status IN ('proposed', 'active')`,
@@ -951,9 +934,7 @@ export class CipherWriter {
 				cipher_source_pattern: principle.source_pattern,
 			});
 		} catch {
-			console.error(
-				`[CIPHER] Failed to notify proposal ${principle.id}`,
-			);
+			console.error(`[CIPHER] Failed to notify proposal ${principle.id}`);
 		}
 	}
 

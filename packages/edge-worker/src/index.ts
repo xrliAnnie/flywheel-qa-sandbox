@@ -26,6 +26,36 @@ export type {
 	ChatSessionHandlerDeps,
 } from "./ChatSessionHandler.js";
 export { ChatSessionHandler } from "./ChatSessionHandler.js";
+export { CipherReader } from "./cipher/CipherReader.js";
+export type { CipherSyncConfig } from "./cipher/CipherSyncService.js";
+export { CipherSyncService } from "./cipher/CipherSyncService.js";
+// CIPHER system (v1.3)
+export { CipherWriter } from "./cipher/CipherWriter.js";
+export { extractDimensions } from "./cipher/dimensions.js";
+export {
+	generatePatternKeys,
+	getFallbackOrder,
+} from "./cipher/pattern-keys.js";
+export {
+	classifyOutcome,
+	maturityLevel,
+	posteriorMean,
+	shouldInjectPattern,
+	wilsonLowerBound,
+} from "./cipher/statistics.js";
+export type {
+	CipherContext,
+	CipherNotifyFn,
+	CipherPrinciple,
+	CipherProposalPayload,
+	CipherQuestion,
+	CipherSkill,
+	OutcomeParams,
+	PatternDimensions,
+	PatternStatistics,
+	SnapshotInputDto,
+	SnapshotParams,
+} from "./cipher/types.js";
 export type {
 	FullDiffProvider,
 	HardRule,
@@ -113,33 +143,3 @@ export type {
 	WorktreeInfo,
 } from "./WorktreeManager.js";
 export { WorktreeManager } from "./WorktreeManager.js";
-// CIPHER system (v1.3)
-export { CipherWriter } from "./cipher/CipherWriter.js";
-export { CipherReader } from "./cipher/CipherReader.js";
-export { CipherSyncService } from "./cipher/CipherSyncService.js";
-export type { CipherSyncConfig } from "./cipher/CipherSyncService.js";
-export { extractDimensions } from "./cipher/dimensions.js";
-export {
-	generatePatternKeys,
-	getFallbackOrder,
-} from "./cipher/pattern-keys.js";
-export {
-	posteriorMean,
-	wilsonLowerBound,
-	maturityLevel,
-	classifyOutcome,
-	shouldInjectPattern,
-} from "./cipher/statistics.js";
-export type {
-	PatternDimensions,
-	SnapshotParams,
-	OutcomeParams,
-	CipherContext,
-	PatternStatistics,
-	SnapshotInputDto,
-	CipherProposalPayload,
-	CipherNotifyFn,
-	CipherPrinciple,
-	CipherSkill,
-	CipherQuestion,
-} from "./cipher/types.js";

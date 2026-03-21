@@ -14,6 +14,7 @@ const TRUST_PATTERNS = [
  * v0.1.1 identified this bug: bypassPermissions doesn't skip
  * trust prompt for new directories (e.g., new worktrees).
  */
+// biome-ignore lint/complexity/noStaticOnlyClass: utility pattern for trust prompt detection
 export class TrustPromptHandler {
 	/** Check if pane output contains a trust prompt (case-insensitive) */
 	static isTrustPrompt(paneContent: string): boolean {
