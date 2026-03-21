@@ -26,8 +26,7 @@ export function wilsonLowerBound(approves: number, total: number): number {
 	const z2 = Z_90 * Z_90;
 	const denominator = 1 + z2 / total;
 	const center = p + z2 / (2 * total);
-	const spread =
-		Z_90 * Math.sqrt((p * (1 - p) + z2 / (4 * total)) / total);
+	const spread = Z_90 * Math.sqrt((p * (1 - p) + z2 / (4 * total)) / total);
 	return Math.max(0, (center - spread) / denominator);
 }
 
@@ -46,8 +45,7 @@ export function classifyOutcome(
 	ceoAction: "approve" | "reject" | "defer",
 	timeToDecisionSeconds?: number,
 ): "fast_approve" | "approve_after_review" | "reject_or_block" {
-	if (ceoAction === "reject" || ceoAction === "defer")
-		return "reject_or_block";
+	if (ceoAction === "reject" || ceoAction === "defer") return "reject_or_block";
 	if (timeToDecisionSeconds !== undefined && timeToDecisionSeconds <= 300)
 		return "fast_approve";
 	return "approve_after_review";

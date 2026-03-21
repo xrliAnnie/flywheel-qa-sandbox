@@ -1,8 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { generatePatternKeys, getFallbackOrder } from "../cipher/pattern-keys.js";
+import {
+	generatePatternKeys,
+	getFallbackOrder,
+} from "../cipher/pattern-keys.js";
 import type { PatternDimensions } from "../cipher/types.js";
 
-function makeDims(overrides: Partial<PatternDimensions> = {}): PatternDimensions {
+function makeDims(
+	overrides: Partial<PatternDimensions> = {},
+): PatternDimensions {
 	return {
 		primaryLabel: "bug",
 		sizeBucket: "small",

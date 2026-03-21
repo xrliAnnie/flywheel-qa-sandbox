@@ -50,7 +50,9 @@ export class CipherSyncService {
 	 * then writes to Supabase asynchronously. This prevents concurrent recordOutcome()
 	 * calls from creating an inconsistent cross-table view.
 	 */
-	async syncAll(db: SqlJsDatabase): Promise<{ totalRows: number; errors: string[] }> {
+	async syncAll(
+		db: SqlJsDatabase,
+	): Promise<{ totalRows: number; errors: string[] }> {
 		const errors: string[] = [];
 		let totalRows = 0;
 
@@ -87,25 +89,28 @@ export class CipherSyncService {
 
 		// Update sync metadata
 		try {
-			await this.supabase
-				.from("cipher_sync_metadata")
-				.upsert({
-					source_id: this.sourceId,
-					last_synced_at: new Date().toISOString(),
-					rows_synced: totalRows,
-				});
+			await this.supabase.from("cipher_sync_metadata").upsert({
+				source_id: this.sourceId,
+				last_synced_at: new Date().toISOString(),
+				rows_synced: totalRows,
+			});
 		} catch {
 			// Non-critical — don't fail the sync for metadata
 		}
 
-		console.log(`[CipherSync] Synced ${totalRows} rows to Supabase (${errors.length} errors)`);
+		console.log(
+			`[CipherSync] Synced ${totalRows} rows to Supabase (${errors.length} errors)`,
+		);
 		return { totalRows, errors };
 	}
 
 	/**
 	 * Read all rows from a SQLite table synchronously.
 	 */
-	private readTable(db: SqlJsDatabase, sqliteTable: SqliteTable): Record<string, unknown>[] {
+	private readTable(
+		db: SqlJsDatabase,
+		sqliteTable: SqliteTable,
+	): Record<string, unknown>[] {
 		const queryResult = db.exec(`SELECT * FROM ${sqliteTable}`);
 		if (queryResult.length === 0 || queryResult[0]!.values.length === 0) {
 			return [];
@@ -124,7 +129,10 @@ export class CipherSyncService {
 	/**
 	 * Upsert pre-read rows to Supabase via batch upsert.
 	 */
-	private async upsertRows(sqliteTable: SqliteTable, objects: Record<string, unknown>[]): Promise<number> {
+	private async upsertRows(
+		sqliteTable: SqliteTable,
+		objects: Record<string, unknown>[],
+	): Promise<number> {
 		if (objects.length === 0) return 0;
 
 		const supabaseTable = TABLE_MAP[sqliteTable];

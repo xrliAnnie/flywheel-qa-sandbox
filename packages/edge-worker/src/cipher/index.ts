@@ -2,30 +2,30 @@
  * CIPHER module — barrel export.
  */
 
-export { CipherWriter } from "./CipherWriter.js";
 export { CipherReader } from "./CipherReader.js";
+export { CipherWriter } from "./CipherWriter.js";
 export { extractDimensions } from "./dimensions.js";
 export {
 	generatePatternKeys,
 	getFallbackOrder,
 } from "./pattern-keys.js";
 export {
-	posteriorMean,
-	wilsonLowerBound,
-	maturityLevel,
 	classifyOutcome,
+	maturityLevel,
+	posteriorMean,
 	shouldInjectPattern,
+	wilsonLowerBound,
 } from "./statistics.js";
 export type {
-	PatternDimensions,
-	SnapshotParams,
-	OutcomeParams,
 	CipherContext,
-	PatternStatistics,
-	SnapshotInputDto,
-	CipherProposalPayload,
 	CipherNotifyFn,
 	CipherPrinciple,
-	CipherSkill,
+	CipherProposalPayload,
 	CipherQuestion,
+	CipherSkill,
+	OutcomeParams,
+	PatternDimensions,
+	PatternStatistics,
+	SnapshotInputDto,
+	SnapshotParams,
 } from "./types.js";

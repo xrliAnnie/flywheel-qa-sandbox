@@ -15,7 +15,9 @@ import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
+import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
+import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { createQueryRouter } from "./tools.js";
 import type { BridgeConfig } from "./types.js";
@@ -153,6 +155,8 @@ export function createBridgeApp(
 	transitionOpts?: ApplyTransitionOpts,
 	retryDispatcher?: IRetryDispatcher,
 	cipherWriter?: CipherWriter,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -209,6 +213,8 @@ export function createBridgeApp(
 			config,
 			retryDispatcher,
 			cipherWriter,
+			eventFilter,
+			forumTagUpdater,
 		),
 	);
 
@@ -216,7 +222,15 @@ export function createBridgeApp(
 	app.use(
 		"/events",
 		tokenAuthMiddleware(config.ingestToken),
-		createEventRouter(store, projects, config, cipherWriter, transitionOpts),
+		createEventRouter(
+			store,
+			projects,
+			config,
+			cipherWriter,
+			transitionOpts,
+			eventFilter,
+			forumTagUpdater,
+		),
 	);
 
 	// /api/* — api auth
@@ -235,6 +249,8 @@ export function createBridgeApp(
 			config,
 			retryDispatcher,
 			cipherWriter,
+			eventFilter,
+			forumTagUpdater,
 		),
 	);
 
@@ -345,7 +361,159 @@ export function createBridgeApp(
 		);
 	}
 
-	// Catch-all 404
+	// Linear API proxy — agent doesn't hold LINEAR_API_KEY directly (GEO-187)
+	app.post(
+		"/api/linear/create-issue",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			if (!config.linearApiKey) {
+				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+			const { title, description, priority, labels } = req.body ?? {};
+			if (!title || typeof title !== "string") {
+				res.status(400).json({ error: "title is required" });
+				return;
+			}
+			if (title.length > 500) {
+				res.status(400).json({ error: "title must be 500 chars or less" });
+				return;
+			}
+			if (description !== undefined && typeof description !== "string") {
+				res.status(400).json({ error: "description must be a string" });
+				return;
+			}
+			if (
+				priority !== undefined &&
+				(typeof priority !== "number" || priority < 0 || priority > 4)
+			) {
+				res.status(400).json({ error: "priority must be 0-4" });
+				return;
+			}
+			if (
+				labels !== undefined &&
+				(!Array.isArray(labels) ||
+					!labels.every((l: unknown) => typeof l === "string"))
+			) {
+				res.status(400).json({ error: "labels must be a string array" });
+				return;
+			}
+			try {
+				const { LinearClient } = await import("@linear/sdk");
+				const client = new LinearClient({ apiKey: config.linearApiKey });
+				const teams = await client.teams();
+				const team = teams.nodes[0];
+				if (!team) {
+					res.status(500).json({ error: "No Linear team found" });
+					return;
+				}
+				const issue = await client.createIssue({
+					teamId: team.id,
+					title,
+					description: description ?? "",
+					priority: priority ?? 0,
+					labelIds: labels,
+				});
+				const created = await issue.issue;
+				res.json({
+					ok: true,
+					issue: {
+						id: created?.id,
+						identifier: created?.identifier,
+						url: created?.url,
+					},
+				});
+			} catch (err) {
+				console.error(
+					"[linear-proxy] create-issue failed:",
+					(err as Error).message,
+				);
+				res.status(502).json({ error: "Linear API error" });
+			}
+		},
+	);
+
+	app.patch(
+		"/api/linear/update-issue",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			if (!config.linearApiKey) {
+				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+			const { issueId, title, description, priority, status } = req.body ?? {};
+			if (!issueId || typeof issueId !== "string") {
+				res.status(400).json({ error: "issueId is required" });
+				return;
+			}
+			if (title !== undefined && typeof title !== "string") {
+				res.status(400).json({ error: "title must be a string" });
+				return;
+			}
+			if (description !== undefined && typeof description !== "string") {
+				res.status(400).json({ error: "description must be a string" });
+				return;
+			}
+			if (
+				priority !== undefined &&
+				(typeof priority !== "number" || priority < 0 || priority > 4)
+			) {
+				res.status(400).json({ error: "priority must be 0-4" });
+				return;
+			}
+			try {
+				const { LinearClient } = await import("@linear/sdk");
+				const client = new LinearClient({ apiKey: config.linearApiKey });
+				const update: Record<string, unknown> = {};
+				if (title !== undefined) update.title = title;
+				if (description !== undefined) update.description = description;
+				if (priority !== undefined) update.priority = priority;
+				if (status !== undefined) {
+					// Resolve status name to workflow state ID
+					const issue = await client.issue(issueId);
+					const team = await issue.team;
+					if (team) {
+						const states = await team.states();
+						const state = states.nodes.find(
+							(s) => s.name.toLowerCase() === String(status).toLowerCase(),
+						);
+						if (state) {
+							update.stateId = state.id;
+						} else {
+							const available = states.nodes.map((s) => s.name).join(", ");
+							res.status(400).json({
+								error: `Unknown status "${status}". Available: ${available}`,
+							});
+							return;
+						}
+					}
+				}
+				await client.updateIssue(issueId, update);
+				res.json({ ok: true });
+			} catch (err) {
+				console.error(
+					"[linear-proxy] update-issue failed:",
+					(err as Error).message,
+				);
+				res.status(502).json({ error: "Linear API error" });
+			}
+		},
+	);
+
+	// Discord guild ID endpoint (GEO-187) — agent can query to build Forum Thread links
+	app.get(
+		"/api/config/discord-guild-id",
+		tokenAuthMiddleware(config.apiToken),
+		(_req, res) => {
+			if (!config.discordGuildId) {
+				res.status(404).json({ error: "DISCORD_GUILD_ID not configured" });
+				return;
+			}
+			res.json({ guild_id: config.discordGuildId });
+		},
+	);
+
+	// Catch-all 404 (must be after all routes)
 	app.use((_req, res) => {
 		res.status(404).json({ error: "not found" });
 	});
@@ -375,6 +543,7 @@ export async function startBridge(
 		store?: StateStore;
 		retryDispatcher?: IRetryDispatcher;
 		cipherWriter?: CipherWriter;
+		statusTagMap?: Record<string, string[]>;
 	},
 ): Promise<{
 	app: express.Application;
@@ -394,6 +563,17 @@ export async function startBridge(
 	const executor = new DirectiveExecutor(store);
 	const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
 	const broadcaster = new SseBroadcaster(store, config.stuckThresholdMinutes);
+
+	// GEO-187: EventFilter + ForumTagUpdater
+	const eventFilter = new EventFilter();
+	const statusTagMap = opts?.statusTagMap ?? config.statusTagMap ?? {};
+	if (Object.keys(statusTagMap).length === 0) {
+		console.warn(
+			"[Bridge] statusTagMap is empty — ForumTagUpdater will skip all tag updates. Set STATUS_TAG_MAP env var to enable.",
+		);
+	}
+	const forumTagUpdater = new ForumTagUpdater(statusTagMap);
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -402,6 +582,8 @@ export async function startBridge(
 		transitionOpts,
 		retryDispatcher,
 		opts?.cipherWriter,
+		eventFilter,
+		forumTagUpdater,
 	);
 
 	const server = app.listen(config.port, config.host);
@@ -424,6 +606,7 @@ export async function startBridge(
 					config.hooksToken,
 					projects,
 					store,
+					eventFilter,
 				)
 			: { onSessionStuck: async () => {}, onSessionOrphaned: async () => {} };
 	const heartbeatService = new HeartbeatService(

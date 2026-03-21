@@ -7,6 +7,8 @@ import {
 } from "../applyTransition.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import type { EventFilter } from "./EventFilter.js";
+import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import {
 	buildHookBody,
 	buildSessionKey,
@@ -67,6 +69,8 @@ export function createEventRouter(
 	config: BridgeConfig,
 	cipherWriter?: CipherWriter,
 	transitionOpts?: ApplyTransitionOpts,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): Router {
 	const router = Router();
 
@@ -459,8 +463,40 @@ export function createEventRouter(
 					chat_channel: lead.chatChannel,
 					issue_labels: labels,
 				};
-				const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
-				notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+
+				// EventFilter: classify and route (GEO-187)
+				if (eventFilter) {
+					const filterResult = eventFilter.classify(
+						event.event_type,
+						hookPayload,
+					);
+
+					// Forum tag update (fire-and-forget for both paths)
+					let tagResult: HookPayload["forum_tag_update_result"];
+					if (forumTagUpdater) {
+						tagResult = await forumTagUpdater.updateTag({
+							threadId: session.thread_id,
+							status: session.status ?? "",
+							eventType: event.event_type,
+							discordBotToken: config.discordBotToken,
+						});
+					}
+
+					if (filterResult.action === "notify_agent") {
+						hookPayload.filter_priority = filterResult.priority;
+						hookPayload.notification_context = filterResult.reason;
+						hookPayload.forum_tag_update_result = tagResult;
+						const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
+						notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(
+							() => {},
+						);
+					}
+					// forum_only and skip: no notifyAgent call
+				} else {
+					// Legacy path: no EventFilter, notify unconditionally
+					const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
+					notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+				}
 			} catch (err) {
 				console.warn(
 					`[event-route] Unknown project "${event.project_name}" — skipping notification:`,

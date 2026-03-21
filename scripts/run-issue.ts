@@ -301,7 +301,7 @@ async function main() {
 		"  repeat",
 		"    delay 2",
 		"    try",
-		'      set p to (processes of viewerTab) as string',
+		"      set p to (processes of viewerTab) as string",
 		'      if p does not contain "tmux" then',
 		"        close viewerWindow",
 		"        exit repeat",

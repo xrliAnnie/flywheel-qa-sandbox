@@ -114,6 +114,7 @@ describe("WorkflowFSM", () => {
 			"blocked",
 			"completed",
 			"failed",
+			"terminated",
 		]);
 		expect(fsm.allowedTransitions("pending")).toEqual(["running"]);
 	});
@@ -235,8 +236,8 @@ describe("WorkflowFSM", () => {
 // ── ACTION_DEFINITIONS + helpers ─────────────────────────────────────
 
 describe("ACTION_DEFINITIONS", () => {
-	it("defines 5 actions", () => {
-		expect(ACTION_DEFINITIONS).toHaveLength(5);
+	it("defines 6 actions", () => {
+		expect(ACTION_DEFINITIONS).toHaveLength(6);
 	});
 
 	it("all target states are valid states in WORKFLOW_TRANSITIONS", () => {
@@ -289,9 +290,9 @@ describe("allowedActionsForState", () => {
 		expect(allowedActionsForState("shelved")).toEqual([]);
 	});
 
-	it("returns empty for pending and running", () => {
+	it("returns empty for pending, terminate for running", () => {
 		expect(allowedActionsForState("pending")).toEqual([]);
-		expect(allowedActionsForState("running")).toEqual([]);
+		expect(allowedActionsForState("running")).toEqual(["terminate"]);
 	});
 });
 

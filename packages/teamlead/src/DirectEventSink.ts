@@ -9,6 +9,8 @@ import type {
 	ExecutionEventEmitter,
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
+import type { EventFilter } from "./bridge/EventFilter.js";
+import type { ForumTagUpdater } from "./bridge/ForumTagUpdater.js";
 import {
 	buildHookBody,
 	buildSessionKey,
@@ -30,6 +32,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		private store: StateStore,
 		private config: BridgeConfig,
 		private projects: ProjectEntry[],
+		private eventFilter?: EventFilter,
+		private forumTagUpdater?: ForumTagUpdater,
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
@@ -199,13 +203,50 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				chat_channel: lead.chatChannel,
 				issue_labels: labels,
 			};
-			const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
-			const p = notifyAgent(
-				this.config.gatewayUrl,
-				this.config.hooksToken,
-				body,
-			).catch(() => {});
-			this.pending.push(p);
+
+			const doNotify = async () => {
+				if (this.eventFilter) {
+					const filterResult = this.eventFilter.classify(eventType, hookPayload);
+
+					let tagResult: HookPayload["forum_tag_update_result"];
+					if (this.forumTagUpdater) {
+						tagResult = await this.forumTagUpdater.updateTag({
+							threadId: session.thread_id,
+							status: session.status ?? "",
+							eventType,
+							discordBotToken: this.config.discordBotToken,
+						});
+					}
+
+					if (filterResult.action === "notify_agent") {
+						hookPayload.filter_priority = filterResult.priority;
+						hookPayload.notification_context = filterResult.reason;
+						hookPayload.forum_tag_update_result = tagResult;
+						const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
+						await notifyAgent(
+							this.config.gatewayUrl!,
+							this.config.hooksToken!,
+							body,
+						);
+					}
+				} else {
+					const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
+					await notifyAgent(
+						this.config.gatewayUrl!,
+						this.config.hooksToken!,
+						body,
+					);
+				}
+			};
+
+			this.pending.push(
+				doNotify().catch((err) => {
+					console.warn(
+						`[DirectEventSink] Notification pipeline failed for ${env.executionId}:`,
+						(err as Error).message,
+					);
+				}),
+			);
 		} catch (err) {
 			console.warn(
 				`[DirectEventSink] Unknown project "${env.projectName}" — skipping notification:`,

@@ -10,6 +10,8 @@ import {
 } from "../applyTransition.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
+import type { EventFilter } from "./EventFilter.js";
+import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import {
 	buildHookBody,
 	buildSessionKey,
@@ -59,6 +61,8 @@ function sendActionHook(
 	sourceStatus: string,
 	targetStatus: string,
 	reason?: string,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): void {
 	if (!config?.gatewayUrl || !config?.hooksToken) return;
 	const session = store.getSession(executionId);
@@ -89,12 +93,48 @@ function sendActionHook(
 			action_target_status: targetStatus,
 			action_reason: reason,
 		};
-		const body = buildHookBody(
-			lead.agentId,
-			hookPayload,
-			buildSessionKey(session),
-		);
-		notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+
+		const doNotify = async () => {
+			if (eventFilter) {
+				const filterResult = eventFilter.classify("action_executed", hookPayload);
+
+				let tagResult: HookPayload["forum_tag_update_result"];
+				if (forumTagUpdater) {
+					tagResult = await forumTagUpdater.updateTag({
+						threadId: session.thread_id,
+						status: targetStatus,
+						eventType: "action_executed",
+						action,
+						discordBotToken: config!.discordBotToken,
+					});
+				}
+
+				if (filterResult.action === "notify_agent") {
+					hookPayload.filter_priority = filterResult.priority;
+					hookPayload.notification_context = filterResult.reason;
+					hookPayload.forum_tag_update_result = tagResult;
+					const body = buildHookBody(
+						lead.agentId,
+						hookPayload,
+						buildSessionKey(session),
+					);
+					await notifyAgent(config!.gatewayUrl!, config!.hooksToken!, body);
+				}
+			} else {
+				const body = buildHookBody(
+					lead.agentId,
+					hookPayload,
+					buildSessionKey(session),
+				);
+				await notifyAgent(config!.gatewayUrl!, config!.hooksToken!, body);
+			}
+		};
+		doNotify().catch((err) => {
+			console.warn(
+				`[sendActionHook] Notification pipeline failed for ${executionId}:`,
+				(err as Error).message,
+			);
+		});
 	} catch (err) {
 		console.warn(
 			`[actions] Unknown project "${session.project_name}" — skipping hook:`,
@@ -112,6 +152,8 @@ export async function approveExecution(
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
 	cipherWriter?: CipherWriter,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -195,6 +237,9 @@ export async function approveExecution(
 				"approve",
 				"awaiting_review",
 				"approved",
+				undefined,
+				eventFilter,
+				forumTagUpdater,
 			);
 
 			// CIPHER: record approve outcome
@@ -227,6 +272,8 @@ export async function transitionSession(
 	config?: BridgeConfig,
 	cipherWriter?: CipherWriter,
 	projects?: ProjectEntry[],
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -305,6 +352,8 @@ export async function transitionSession(
 		session.status,
 		targetStatus,
 		reason,
+		eventFilter,
+		forumTagUpdater,
 	);
 
 	if (action === "retry") {
@@ -335,6 +384,9 @@ async function handleRetry(
 	reason?: string,
 	config?: BridgeConfig,
 	projects?: ProjectEntry[],
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
+	ceoContext?: string,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -383,7 +435,7 @@ async function handleRetry(
 			reason,
 			previousError: session.last_error,
 			previousDecisionRoute: session.decision_route,
-			previousReasoning: session.decision_reasoning,
+			previousReasoning: ceoContext ?? session.decision_reasoning,
 			runAttempt,
 		});
 
@@ -415,6 +467,8 @@ async function handleRetry(
 			session.status,
 			"running",
 			reason,
+			eventFilter,
+			forumTagUpdater,
 		);
 
 		return {
@@ -454,6 +508,108 @@ async function postRetryComment(
 	}
 }
 
+/** GEO-187: Terminate a running session by killing its tmux session. */
+async function handleTerminate(
+	store: StateStore,
+	executionId: string,
+	transitionOpts?: ApplyTransitionOpts,
+	config?: BridgeConfig,
+	projects?: ProjectEntry[],
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
+): Promise<ActionResult> {
+	const session = store.getSession(executionId);
+	if (!session) {
+		return {
+			success: false,
+			message: `No session found for execution_id ${executionId}`,
+		};
+	}
+
+	const actionDef = ACTION_DEFINITIONS.find((d) => d.action === "terminate");
+	if (!actionDef || !actionDef.fromStates.includes(session.status)) {
+		return {
+			success: false,
+			message: `Cannot terminate ${session.issue_identifier ?? executionId}: status is "${session.status}", expected one of: ${actionDef?.fromStates.join(", ") ?? "running"}`,
+		};
+	}
+
+	// Kill tmux session if available
+	if (session.tmux_session) {
+		try {
+			await execFileAsync("tmux", ["kill-session", "-t", session.tmux_session]);
+		} catch (err) {
+			const msg = (err as Error).message ?? String(err);
+			// "session not found" / "can't find session" = already dead → safe to proceed
+			// Other errors (ENOENT = tmux not installed, EACCES = permission denied) → abort
+			if (
+				!msg.includes("session not found") &&
+				!msg.includes("can't find session") &&
+				!msg.includes("no server running")
+			) {
+				console.error(
+					`[terminate] tmux kill-session failed for ${session.tmux_session}: ${msg}`,
+				);
+				return {
+					success: false,
+					message: `Failed to kill tmux session ${session.tmux_session}: ${msg}`,
+				};
+			}
+			console.warn(
+				`[terminate] tmux session already dead: ${session.tmux_session}`,
+			);
+		}
+	}
+
+	// Transition to terminated
+	if (transitionOpts) {
+		const result = applyTransition(
+			transitionOpts,
+			session.execution_id,
+			"terminated",
+			{
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				trigger: "terminate",
+			},
+			{ last_activity_at: sqliteDatetime(), last_error: "Terminated by CEO" },
+		);
+		if (!result.ok) {
+			return {
+				success: false,
+				message: result.error ?? "Transition rejected by FSM",
+			};
+		}
+	} else {
+		store.forceStatus(
+			session.execution_id,
+			"terminated",
+			sqliteDatetime(),
+			"Terminated by CEO",
+		);
+	}
+
+	sendActionHook(
+		store,
+		config,
+		projects ?? [],
+		executionId,
+		"terminate",
+		session.status,
+		"terminated",
+		"Terminated by CEO",
+		eventFilter,
+		forumTagUpdater,
+	);
+
+	const id = session.issue_identifier ?? executionId;
+	return {
+		success: true,
+		message: `${id} terminated successfully`,
+	};
+}
+
 export function createActionRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -461,6 +617,8 @@ export function createActionRouter(
 	config?: BridgeConfig,
 	retryDispatcher?: IRetryDispatcher,
 	cipherWriter?: CipherWriter,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
 ): Router {
 	const router = Router();
 
@@ -483,6 +641,8 @@ export function createActionRouter(
 					transitionOpts,
 					config,
 					cipherWriter,
+					eventFilter,
+					forumTagUpdater,
 				);
 				if (result.success) {
 					res.json({
@@ -500,8 +660,38 @@ export function createActionRouter(
 				}
 				return;
 			}
+			case "terminate": {
+				const { execution_id: eid } = req.body ?? {};
+				if (!eid || typeof eid !== "string") {
+					res.status(400).json({ error: "execution_id is required" });
+					return;
+				}
+				const terminateResult = await handleTerminate(
+					store,
+					eid,
+					transitionOpts,
+					config,
+					projects,
+					eventFilter,
+					forumTagUpdater,
+				);
+				if (terminateResult.success) {
+					res.json({
+						success: true,
+						message: terminateResult.message,
+						action: "terminate",
+					});
+				} else {
+					res.status(400).json({
+						success: false,
+						message: terminateResult.message,
+						action: "terminate",
+					});
+				}
+				return;
+			}
 			case "retry": {
-				const { execution_id: eid, reason } = req.body ?? {};
+				const { execution_id: eid, reason, context } = req.body ?? {};
 				if (!eid || typeof eid !== "string") {
 					res.status(400).json({ error: "execution_id is required" });
 					return;
@@ -514,6 +704,9 @@ export function createActionRouter(
 						reason,
 						config,
 						projects,
+						eventFilter,
+						forumTagUpdater,
+						typeof context === "string" ? context : undefined,
 					);
 					if (retryResult.success) {
 						res.json({
@@ -539,6 +732,8 @@ export function createActionRouter(
 						config,
 						cipherWriter,
 						projects,
+						eventFilter,
+						forumTagUpdater,
 					);
 					if (actionResult.success) {
 						res.json({ success: true, message: actionResult.message, action });
@@ -567,6 +762,8 @@ export function createActionRouter(
 					config,
 					cipherWriter,
 					projects,
+					eventFilter,
+					forumTagUpdater,
 				);
 				if (actionResult.success) {
 					res.json({ success: true, message: actionResult.message, action });
