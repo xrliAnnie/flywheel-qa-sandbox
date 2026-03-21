@@ -520,9 +520,9 @@ export async function startBridge(
 
 	// GEO-187: EventFilter + ForumTagUpdater
 	const eventFilter = new EventFilter();
-	const statusTagMap = opts?.statusTagMap ?? {};
+	const statusTagMap = opts?.statusTagMap ?? config.statusTagMap ?? {};
 	if (Object.keys(statusTagMap).length === 0) {
-		console.warn("[Bridge] statusTagMap is empty — ForumTagUpdater will skip all tag updates. Pass statusTagMap to enable.");
+		console.warn("[Bridge] statusTagMap is empty — ForumTagUpdater will skip all tag updates. Set STATUS_TAG_MAP env var to enable.");
 	}
 	const forumTagUpdater = new ForumTagUpdater(statusTagMap);
 

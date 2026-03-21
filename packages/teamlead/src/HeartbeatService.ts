@@ -7,7 +7,6 @@ import {
 	buildHookBody,
 	buildSessionKey,
 	type HookPayload,
-	notifyAgent,
 } from "./bridge/hook-payload.js";
 import type { Session, StateStore } from "./StateStore.js";
 
@@ -217,12 +216,28 @@ export class WebhookHeartbeatNotifier implements HeartbeatNotifier {
 		}
 
 		const body = buildHookBody("product-lead", hookPayload, sessionKey);
-		// Reuse shared notifyAgent (3s timeout, fire-and-forget semantics)
+		// Must throw on failure so HeartbeatService skips dedup and retries next cycle.
+		// notifyAgent() swallows errors (fire-and-forget), so we do our own fetch here.
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 3000);
 		try {
-			await notifyAgent(this.gatewayUrl, this.hooksToken, body);
+			const res = await fetch(`${this.gatewayUrl}/hooks/ingest`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${this.hooksToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
+				signal: controller.signal,
+			});
+			if (!res.ok) {
+				throw new Error(`Gateway returned ${res.status}`);
+			}
 		} catch (err) {
 			console.warn(`[heartbeat-notify] Failed:`, (err as Error).message);
 			throw err; // Let HeartbeatService skip dedup so notification is retried
+		} finally {
+			clearTimeout(timeout);
 		}
 	}
 }
