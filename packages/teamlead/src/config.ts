@@ -6,6 +6,26 @@ export type { BridgeConfig };
 
 const ALLOWED_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
+/** Parse STATUS_TAG_MAP env var: JSON object mapping status → tag ID arrays. */
+function parseStatusTagMap(
+	raw: string | undefined,
+): Record<string, string[]> | undefined {
+	if (!raw) return undefined;
+	try {
+		const parsed = JSON.parse(raw);
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+			throw new Error("must be a JSON object");
+		}
+		return parsed as Record<string, string[]>;
+	} catch (err) {
+		console.warn(
+			`[config] Invalid STATUS_TAG_MAP — ignoring:`,
+			(err as Error).message,
+		);
+		return undefined;
+	}
+}
+
 function parsePositiveInt(
 	value: string | undefined,
 	fallback: number,
@@ -70,6 +90,7 @@ export function loadConfig(): BridgeConfig {
 		discordBotToken: process.env.DISCORD_BOT_TOKEN,
 		linearApiKey: process.env.LINEAR_API_KEY,
 		discordGuildId: process.env.DISCORD_GUILD_ID,
+		statusTagMap: parseStatusTagMap(process.env.STATUS_TAG_MAP),
 		cleanupIntervalMs: parsePositiveInt(
 			process.env.TEAMLEAD_CLEANUP_INTERVAL,
 			3_600_000,

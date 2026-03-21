@@ -23,4 +23,6 @@ export interface BridgeConfig {
 	// GEO-187: Linear API proxy + Forum thread links
 	linearApiKey?: string;
 	discordGuildId?: string;
+	/** Status → Discord Forum tag ID mapping (JSON string from env). */
+	statusTagMap?: Record<string, string[]>;
 }
