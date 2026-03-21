@@ -119,7 +119,7 @@ export class WorkflowFSM {
 
 export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 	pending: ["running"],
-	running: ["awaiting_review", "approved", "blocked", "completed", "failed"],
+	running: ["awaiting_review", "approved", "blocked", "completed", "failed", "terminated"],
 	awaiting_review: ["approved", "rejected", "deferred", "shelved"],
 	blocked: ["deferred", "shelved"],
 	failed: ["shelved"],
@@ -128,6 +128,7 @@ export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 	approved: [],
 	completed: [],
 	shelved: [],
+	terminated: [],
 };
 
 // ── Action definitions (single source of truth) ─────────────────────
@@ -171,6 +172,11 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
 			"deferred",
 		],
 		targetState: "shelved",
+	},
+	{
+		action: "terminate",
+		fromStates: ["running"],
+		targetState: "terminated",
 	},
 ];
 

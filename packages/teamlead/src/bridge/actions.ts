@@ -353,6 +353,7 @@ async function handleRetry(
 	config?: BridgeConfig,
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
+	ceoContext?: string,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -401,7 +402,7 @@ async function handleRetry(
 			reason,
 			previousError: session.last_error,
 			previousDecisionRoute: session.decision_route,
-			previousReasoning: session.decision_reasoning,
+			previousReasoning: ceoContext ?? session.decision_reasoning,
 			runAttempt,
 		});
 
@@ -473,6 +474,89 @@ async function postRetryComment(
 	}
 }
 
+/** GEO-187: Terminate a running session by killing its tmux session. */
+async function handleTerminate(
+	store: StateStore,
+	executionId: string,
+	transitionOpts?: ApplyTransitionOpts,
+	config?: BridgeConfig,
+	eventFilter?: EventFilter,
+	forumTagUpdater?: ForumTagUpdater,
+): Promise<ActionResult> {
+	const session = store.getSession(executionId);
+	if (!session) {
+		return {
+			success: false,
+			message: `No session found for execution_id ${executionId}`,
+		};
+	}
+
+	const actionDef = ACTION_DEFINITIONS.find((d) => d.action === "terminate");
+	if (!actionDef || !actionDef.fromStates.includes(session.status)) {
+		return {
+			success: false,
+			message: `Cannot terminate ${session.issue_identifier ?? executionId}: status is "${session.status}", expected one of: ${actionDef?.fromStates.join(", ") ?? "running"}`,
+		};
+	}
+
+	// Kill tmux session if available
+	if (session.tmux_session) {
+		try {
+			await execFileAsync("tmux", ["kill-session", "-t", session.tmux_session]);
+		} catch {
+			// tmux session may already be dead — continue with status transition
+			console.warn(`[terminate] tmux kill-session failed for ${session.tmux_session}`);
+		}
+	}
+
+	// Transition to terminated
+	if (transitionOpts) {
+		const result = applyTransition(
+			transitionOpts,
+			session.execution_id,
+			"terminated",
+			{
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				trigger: "terminate",
+			},
+			{ last_activity_at: sqliteDatetime(), last_error: "Terminated by CEO" },
+		);
+		if (!result.ok) {
+			return {
+				success: false,
+				message: result.error ?? "Transition rejected by FSM",
+			};
+		}
+	} else {
+		store.forceStatus(
+			session.execution_id,
+			"terminated",
+			sqliteDatetime(),
+			"Terminated by CEO",
+		);
+	}
+
+	sendActionHook(
+		store,
+		config,
+		executionId,
+		"terminate",
+		session.status,
+		"terminated",
+		"Terminated by CEO",
+		eventFilter,
+		forumTagUpdater,
+	);
+
+	const id = session.issue_identifier ?? executionId;
+	return {
+		success: true,
+		message: `${id} terminated successfully`,
+	};
+}
+
 export function createActionRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -523,8 +607,29 @@ export function createActionRouter(
 				}
 				return;
 			}
+			case "terminate": {
+				const { execution_id: eid } = req.body ?? {};
+				if (!eid || typeof eid !== "string") {
+					res.status(400).json({ error: "execution_id is required" });
+					return;
+				}
+				const terminateResult = await handleTerminate(
+					store,
+					eid,
+					transitionOpts,
+					config,
+					eventFilter,
+					forumTagUpdater,
+				);
+				if (terminateResult.success) {
+					res.json({ success: true, message: terminateResult.message, action: "terminate" });
+				} else {
+					res.status(400).json({ success: false, message: terminateResult.message, action: "terminate" });
+				}
+				return;
+			}
 			case "retry": {
-				const { execution_id: eid, reason } = req.body ?? {};
+				const { execution_id: eid, reason, context } = req.body ?? {};
 				if (!eid || typeof eid !== "string") {
 					res.status(400).json({ error: "execution_id is required" });
 					return;
@@ -538,6 +643,7 @@ export function createActionRouter(
 						config,
 						eventFilter,
 						forumTagUpdater,
+						typeof context === "string" ? context : undefined,
 					);
 					if (retryResult.success) {
 						res.json({
