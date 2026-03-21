@@ -552,6 +552,48 @@ export function createBridgeApp(
 		},
 	);
 
+	// GEO-195: Bootstrap endpoint — crash recovery for Claude Lead sessions
+	app.post(
+		"/api/bootstrap/:leadId",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			const { leadId } = req.params;
+			if (!leadId || typeof leadId !== "string") {
+				res.status(400).json({ error: "leadId is required" });
+				return;
+			}
+			if (!registry) {
+				res.status(503).json({ error: "RuntimeRegistry not available" });
+				return;
+			}
+			const runtime = registry.getForLead(leadId);
+			if (!runtime) {
+				res.status(404).json({ error: `No runtime registered for lead "${leadId}"` });
+				return;
+			}
+			try {
+				const { generateBootstrap } = await import("./bootstrap-generator.js");
+				const snapshot = await generateBootstrap(leadId, store, projects);
+				await runtime.sendBootstrap(snapshot);
+				res.json({
+					delivered: true,
+					summary: {
+						activeSessions: snapshot.activeSessions.length,
+						pendingDecisions: snapshot.pendingDecisions.length,
+						recentFailures: snapshot.recentFailures.length,
+						recentEvents: snapshot.recentEvents.length,
+					},
+				});
+			} catch (err) {
+				console.error(
+					`[bootstrap] Failed for ${leadId}:`,
+					(err as Error).message,
+				);
+				res.status(500).json({ error: "Bootstrap generation failed" });
+			}
+		},
+	);
+
 	// Catch-all 404 (must be after all routes)
 	app.use((_req, res) => {
 		res.status(404).json({ error: "not found" });
