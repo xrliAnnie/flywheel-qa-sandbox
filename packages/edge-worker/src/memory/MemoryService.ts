@@ -145,7 +145,7 @@ export class MemoryService {
 			);
 		}
 
-		return results.results
+		const memories = results.results
 			.filter(
 				(m: unknown): m is { memory: string } =>
 					typeof m === "object" &&
@@ -153,6 +153,15 @@ export class MemoryService {
 					typeof (m as { memory: unknown }).memory === "string",
 			)
 			.map((m) => m.memory);
+
+		// If mem0 returned items but none had a valid `memory` field, the response is malformed
+		if (results.results.length > 0 && memories.length === 0) {
+			throw new Error(
+				`[MemoryService] All ${results.results.length} search results lack a valid 'memory' field`,
+			);
+		}
+
+		return memories;
 	}
 
 	/**
@@ -184,6 +193,15 @@ export class MemoryService {
 		const items = result.results as Array<{ event?: string }>;
 		const added = items.filter((r) => r.event === "ADD").length;
 		const updated = items.filter((r) => r.event === "UPDATE").length;
+
+		// If mem0 returned items but none had a recognized event, the response is malformed
+		if (items.length > 0 && added === 0 && updated === 0) {
+			const sample = JSON.stringify(items[0])?.slice(0, 200);
+			throw new Error(
+				`[MemoryService] ${items.length} add result(s) lack recognized 'event' field: ${sample}`,
+			);
+		}
+
 		return { added, updated };
 	}
 

@@ -362,6 +362,18 @@ describe("MemoryService", () => {
 		).rejects.toThrow("Unexpected search response shape");
 	});
 
+	it("searchMemories throws when all items lack memory field", async () => {
+		mockSearch.mockResolvedValue({ results: [{ id: "1" }, { id: "2" }] });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await expect(
+			svc.searchMemories({ query: "test", projectName: "proj" }),
+		).rejects.toThrow("lack a valid 'memory' field");
+	});
+
 	// ── addMessages (NEW — API-oriented, strict throw) ──
 
 	it("addMessages adds messages and returns counts", async () => {
@@ -453,6 +465,24 @@ describe("MemoryService", () => {
 				agentId: "lead",
 			}),
 		).rejects.toThrow("Unexpected add response shape");
+	});
+
+	it("addMessages throws when all items lack recognized event field", async () => {
+		mockAdd.mockResolvedValue({
+			results: [{ id: "1" }, { id: "2" }],
+		});
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await expect(
+			svc.addMessages({
+				messages: [{ role: "user", content: "test" }],
+				projectName: "proj",
+				agentId: "lead",
+			}),
+		).rejects.toThrow("lack recognized 'event' field");
 	});
 
 	// ── searchAndFormat (refactored — verify graceful degradation) ──
