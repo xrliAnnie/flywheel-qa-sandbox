@@ -9,6 +9,8 @@ export interface EventEnvelope {
 	issueTitle?: string;
 	retryPredecessor?: string;
 	runAttempt?: number;
+	/** GEO-152: Linear issue labels for multi-lead routing */
+	labels?: string[];
 }
 
 export interface ExecutionEventEmitter {
@@ -47,6 +49,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 			payload: {
 				issueIdentifier: env.issueIdentifier,
 				issueTitle: env.issueTitle,
+				labels: env.labels,
 			},
 		});
 		this.track(p);
@@ -94,6 +97,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueTitle: env.issueTitle,
 				error,
 				lastActivity,
+				labels: env.labels,
 			},
 		});
 		this.track(p);

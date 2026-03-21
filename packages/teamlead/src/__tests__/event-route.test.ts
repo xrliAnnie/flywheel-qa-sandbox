@@ -15,6 +15,14 @@ const testProjects: ProjectEntry[] = [
 		projectName: "geoforge3d",
 		projectRoot: "/tmp/geoforge3d",
 		projectRepo: "xrliAnnie/GeoForge3D",
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "test-channel",
+				chatChannel: "test-chat",
+				match: { labels: ["Product"] },
+			},
+		],
 	},
 ];
 
@@ -25,6 +33,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		dbPath: ":memory:",
 		ingestToken: "ingest-secret",
 		notificationChannel: "test-channel",
+		defaultLeadAgentId: "product-lead",
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
@@ -364,7 +373,7 @@ describe("Event route — structured hook payload", () => {
 		expect(parsed.event_type).toBe("session_started");
 		expect(parsed.execution_id).toBe("exec-1");
 		expect(parsed.issue_identifier).toBe("GEO-95");
-		expect(parsed.channel).toBe("test-channel");
+		expect(parsed.forum_channel).toBe("test-channel");
 	});
 
 	it("includes thread_id in payload when session has inherited thread", async () => {

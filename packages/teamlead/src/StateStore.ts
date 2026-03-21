@@ -62,6 +62,7 @@ export interface SessionUpsert {
 	run_attempt?: number;
 	retry_predecessor?: string;
 	retry_successor?: string;
+	issue_labels?: string;
 }
 
 export interface Session {
@@ -95,6 +96,7 @@ export interface Session {
 	run_attempt?: number;
 	retry_predecessor?: string;
 	retry_successor?: string;
+	issue_labels?: string;
 }
 
 export interface CleanupCandidate {
@@ -282,6 +284,11 @@ export class StateStore {
 			this.db.run("ALTER TABLE sessions ADD COLUMN retry_successor TEXT");
 		} catch {}
 
+		// GEO-152: issue labels for multi-lead routing
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN issue_labels TEXT");
+		} catch {}
+
 		// GEO-169: cleanup tracking columns
 		try {
 			this.db.run(
@@ -398,8 +405,8 @@ export class StateStore {
 				summary, diff_summary, commit_messages, changed_file_paths,
 				thread_id,
 				session_params, heartbeat_at, adapter_type, run_attempt,
-				retry_predecessor, retry_successor
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				retry_predecessor, retry_successor, issue_labels
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -429,7 +436,8 @@ export class StateStore {
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
 				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
 				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
-				retry_successor = COALESCE(excluded.retry_successor, retry_successor)
+				retry_successor = COALESCE(excluded.retry_successor, retry_successor),
+				issue_labels = COALESCE(excluded.issue_labels, issue_labels)
 			`,
 			[
 				session.execution_id,
@@ -462,6 +470,7 @@ export class StateStore {
 				session.run_attempt ?? null,
 				session.retry_predecessor ?? null,
 				session.retry_successor ?? null,
+				session.issue_labels ?? null,
 			],
 		);
 		this.save();
@@ -489,8 +498,8 @@ export class StateStore {
 				summary, diff_summary, commit_messages, changed_file_paths,
 				thread_id,
 				session_params, heartbeat_at, adapter_type, run_attempt,
-				retry_predecessor, retry_successor
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				retry_predecessor, retry_successor, issue_labels
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -520,7 +529,8 @@ export class StateStore {
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
 				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
 				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
-				retry_successor = COALESCE(excluded.retry_successor, retry_successor)
+				retry_successor = COALESCE(excluded.retry_successor, retry_successor),
+				issue_labels = COALESCE(excluded.issue_labels, issue_labels)
 			`,
 			[
 				executionId,
@@ -553,6 +563,7 @@ export class StateStore {
 				fields.run_attempt ?? null,
 				fields.retry_predecessor ?? null,
 				fields.retry_successor ?? null,
+				fields.issue_labels ?? null,
 			],
 		);
 		this.save();
@@ -599,6 +610,7 @@ export class StateStore {
 			run_attempt: "run_attempt",
 			retry_predecessor: "retry_predecessor",
 			retry_successor: "retry_successor",
+			issue_labels: "issue_labels",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -918,6 +930,21 @@ export class StateStore {
 		return undefined;
 	}
 
+	/** Retrieve parsed issue_labels for a given execution (GEO-152). */
+	getSessionLabels(executionId: string): string[] {
+		const session = this.getSession(executionId);
+		if (!session?.issue_labels) return [];
+		try {
+			return JSON.parse(session.issue_labels) as string[];
+		} catch {
+			// Fallback: comma-separated
+			return session.issue_labels
+				.split(",")
+				.map((l) => l.trim())
+				.filter(Boolean);
+		}
+	}
+
 	/** Store session_params as JSON for a given execution. */
 	setSessionParams(executionId: string, params: Record<string, unknown>): void {
 		this.db.run(
@@ -1036,6 +1063,7 @@ export class StateStore {
 			run_attempt: (row.run_attempt as number) ?? undefined,
 			retry_predecessor: (row.retry_predecessor as string) ?? undefined,
 			retry_successor: (row.retry_successor as string) ?? undefined,
+			issue_labels: (row.issue_labels as string) ?? undefined,
 		};
 	}
 }
