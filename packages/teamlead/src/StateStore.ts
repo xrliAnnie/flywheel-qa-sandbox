@@ -329,6 +329,26 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
 		);
+
+		// GEO-195: Event journal for lead runtime delivery tracking
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS lead_events (
+				seq INTEGER PRIMARY KEY AUTOINCREMENT,
+				lead_id TEXT NOT NULL,
+				event_id TEXT NOT NULL,
+				event_type TEXT NOT NULL,
+				payload TEXT NOT NULL,
+				session_key TEXT,
+				delivered_at TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_lead_events_recent ON lead_events(lead_id, delivered_at)",
+		);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
+		);
 	}
 
 	insertEvent(event: SessionEvent): boolean {
@@ -1066,4 +1086,89 @@ export class StateStore {
 			issue_labels: (row.issue_labels as string) ?? undefined,
 		};
 	}
+
+	// --- GEO-195: Lead Event Journal ---
+
+	/** Append a lead event. Returns seq. Dedup on (lead_id, event_id). */
+	appendLeadEvent(
+		leadId: string,
+		eventId: string,
+		eventType: string,
+		payload: string,
+		sessionKey?: string,
+	): number {
+		try {
+			this.db.run(
+				`INSERT INTO lead_events (lead_id, event_id, event_type, payload, session_key)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[leadId, eventId, eventType, payload, sessionKey ?? null],
+			);
+		} catch (err) {
+			// UNIQUE constraint → duplicate
+			if ((err as Error).message?.includes("UNIQUE")) {
+				const existing = this.db.exec(
+					"SELECT seq FROM lead_events WHERE lead_id = ? AND event_id = ?",
+					[leadId, eventId],
+				);
+				return (existing[0]?.values[0]?.[0] as number) ?? 0;
+			}
+			throw err;
+		}
+		const result = this.db.exec("SELECT last_insert_rowid()");
+		return (result[0]?.values[0]?.[0] as number) ?? 0;
+	}
+
+	/** Mark a lead event as delivered. */
+	markLeadEventDelivered(seq: number): void {
+		this.db.run(
+			"UPDATE lead_events SET delivered_at = datetime('now') WHERE seq = ?",
+			[seq],
+		);
+	}
+
+	/** Get recently delivered events within a time window (for bootstrap). */
+	getRecentDeliveredEvents(
+		leadId: string,
+		windowMinutes: number,
+	): LeadEventRow[] {
+		const result = this.db.exec(
+			`SELECT seq, lead_id, event_id, event_type, payload, session_key, delivered_at, created_at
+			 FROM lead_events
+			 WHERE lead_id = ? AND delivered_at IS NOT NULL
+			   AND delivered_at > datetime('now', ?)
+			 ORDER BY seq ASC`,
+			[leadId, `-${windowMinutes} minutes`],
+		);
+		if (result.length === 0) return [];
+		return result[0]!.values.map((row) => ({
+			seq: row[0] as number,
+			lead_id: row[1] as string,
+			event_id: row[2] as string,
+			event_type: row[3] as string,
+			payload: row[4] as string,
+			session_key: (row[5] as string) ?? undefined,
+			delivered_at: (row[6] as string) ?? undefined,
+			created_at: row[7] as string,
+		}));
+	}
+
+	/** Get the highest delivered seq for a lead (for health checks). */
+	getLastDeliveredSeq(leadId: string): number {
+		const result = this.db.exec(
+			`SELECT MAX(seq) FROM lead_events WHERE lead_id = ? AND delivered_at IS NOT NULL`,
+			[leadId],
+		);
+		return (result[0]?.values[0]?.[0] as number) ?? 0;
+	}
+}
+
+export interface LeadEventRow {
+	seq: number;
+	lead_id: string;
+	event_id: string;
+	event_type: string;
+	payload: string;
+	session_key?: string;
+	delivered_at?: string;
+	created_at: string;
 }
