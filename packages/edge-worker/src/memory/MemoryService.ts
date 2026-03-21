@@ -122,42 +122,101 @@ export class MemoryService {
 	}
 
 	/**
+	 * Search memories and return raw strings (no prompt formatting).
+	 * Used by Bridge API. searchAndFormat() reuses this internally.
+	 * Strict: throws on malformed response (API route catches → 502).
+	 */
+	async searchMemories(params: {
+		query: string;
+		projectName: string;
+		agentId?: string;
+		limit?: number;
+	}): Promise<string[]> {
+		const results = await this.memory.search(params.query, {
+			userId: params.projectName,
+			agentId: params.agentId,
+			limit: params.limit ?? this.searchLimit,
+			filters: { app_id: "flywheel" },
+		});
+
+		if (!results || !Array.isArray(results.results)) {
+			throw new Error(
+				`[MemoryService] Unexpected search response shape: ${JSON.stringify(results)?.slice(0, 200)}`,
+			);
+		}
+
+		return results.results
+			.filter(
+				(m: unknown): m is { memory: string } =>
+					typeof m === "object" &&
+					m !== null &&
+					typeof (m as { memory: unknown }).memory === "string",
+			)
+			.map((m) => m.memory);
+	}
+
+	/**
+	 * Add messages to memory with mandatory app_id tagging.
+	 * Used by Bridge API. Caller metadata is merged, app_id is enforced.
+	 * Strict: throws on malformed response (API route catches → 502).
+	 */
+	async addMessages(params: {
+		messages: Array<{ role: "user" | "assistant"; content: string }>;
+		projectName: string;
+		agentId: string;
+		metadata?: Record<string, unknown>;
+	}): Promise<{ added: number; updated: number }> {
+		const result = await this.memory.add(params.messages, {
+			userId: params.projectName,
+			agentId: params.agentId,
+			metadata: {
+				...params.metadata,
+				app_id: "flywheel",
+			},
+		});
+
+		if (!result || !Array.isArray(result.results)) {
+			throw new Error(
+				`[MemoryService] Unexpected add response shape: ${JSON.stringify(result)?.slice(0, 200)}`,
+			);
+		}
+
+		const items = result.results as Array<{ event?: string }>;
+		const added = items.filter((r) => r.event === "ADD").length;
+		const updated = items.filter((r) => r.event === "UPDATE").length;
+		return { added, updated };
+	}
+
+	/**
 	 * Search memories relevant to an issue.
 	 * Returns formatted prompt block or null if no memories found.
+	 * Graceful degradation: catches errors and returns null (runner-facing helper).
 	 */
 	async searchAndFormat(params: {
 		query: string;
 		projectName: string;
 		agentId?: string;
 	}): Promise<string | null> {
-		const results = await this.memory.search(params.query, {
-			userId: params.projectName,
-			agentId: params.agentId,
-			limit: this.searchLimit,
-			filters: { app_id: "flywheel" },
-		});
+		try {
+			const memories = await this.searchMemories({
+				query: params.query,
+				projectName: params.projectName,
+				agentId: params.agentId,
+			});
+			if (!memories.length) return null;
 
-		if (!results || !Array.isArray(results.results)) {
+			const lines = memories.map((m) => `- ${m}`);
+			return [
+				"<project_memory>",
+				"## Learned from previous sessions",
+				...lines,
+				"</project_memory>",
+			].join("\n");
+		} catch (err) {
 			console.warn(
-				`[MemoryService] Unexpected response from memory.search(): ${JSON.stringify(results)?.slice(0, 200)}`,
+				`[MemoryService] searchAndFormat degraded: ${err instanceof Error ? err.message : String(err)}`,
 			);
 			return null;
 		}
-
-		const memories = results.results.filter(
-			(m: unknown): m is { memory: string } =>
-				typeof m === "object" &&
-				m !== null &&
-				typeof (m as { memory: unknown }).memory === "string",
-		);
-		if (!memories.length) return null;
-
-		const lines = memories.map((m) => `- ${m.memory}`);
-		return [
-			"<project_memory>",
-			"## Learned from previous sessions",
-			...lines,
-			"</project_memory>",
-		].join("\n");
 	}
 }
