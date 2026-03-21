@@ -13,7 +13,9 @@ export interface HookPayload {
 	summary?: string;
 	last_error?: string;
 	thread_id?: string;
-	channel?: string;
+	forum_channel?: string;
+	chat_channel?: string;
+	issue_labels?: string[];
 	// stuck-specific
 	minutes_since_activity?: number;
 	// action-specific fields (GEO-167)
