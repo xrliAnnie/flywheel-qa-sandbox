@@ -1,0 +1,24 @@
+{
+  "event": "COMMENT",
+  "body": "🔮 **Gemini Code Review — Round 1**\n\n## Verdict: APPROVED\n\nThe implementation of the Memory System using mem0 OSS and Gemini 2.0 Flash is structurally sound, follows the approved design, and includes comprehensive test coverage. The graceful degradation via the factory pattern and the non-fatal error handling in the Blueprint ensure high system reliability.\n\n### Findings & Observations\n\n- **Correctness & Type Safety**: The `MemoryService` correctly leverages the mem0 SDK with appropriate scoping (`userId`, `runId`) and metadata. The discriminative union for configuration (production vs. test) is handled cleanly.\n- **Redundant Logic (Blueprint.ts)**: Lines 139 and 187 in `Blueprint.ts` still use `ctx.projectName ?? ctx.teamName` for local variables. While functional, this is redundant since `projectScope` is already normalized in `run()` and passed as `env.projectName`. Using `env.projectName` would be cleaner and more consistent with the \"normalize once\" design goal.\n- **Unused Dependency**: `ollama` was added to `packages/edge-worker/package.json` but is not referenced in the memory system or the broader codebase. Consider removing it if not planned for immediate use.\n- **Security & Sanitization**: The use of a sanitized `projectName` for the history database path effectively prevents path traversal risks.\n- **Test Coverage**: Excellent inclusion of project isolation, fallback logic, and mock-based unit tests. The E2E smoke test provides good validation of the full loop.",
+  "comments": [
+    {
+      "path": "packages/edge-worker/src/Blueprint.ts",
+      "line": 139,
+      "side": "RIGHT",
+      "body": "🔮 **Gemini** — Redundant recalculation of project name. Consider using `env.projectName` here for consistency with the normalized `projectScope` defined in `run()`."
+    },
+    {
+      "path": "packages/edge-worker/src/Blueprint.ts",
+      "line": 187,
+      "side": "RIGHT",
+      "body": "🔮 **Gemini** — Similar to line 139, `env.projectName` is already available and carries the canonical project scope."
+    },
+    {
+      "path": "packages/edge-worker/package.json",
+      "line": 42,
+      "side": "RIGHT",
+      "body": "🔮 **Gemini** — `ollama` is added as a dependency but does not appear to be used in the current memory implementation. Consider removing it to keep the dependency footprint lean."
+    }
+  ]
+}

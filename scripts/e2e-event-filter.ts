@@ -119,6 +119,7 @@ async function main() {
 		orphanThresholdMinutes: 60,
 		discordBotToken: "mock-bot-token",
 		discordGuildId: "mock-guild-123",
+		defaultLeadAgentId: "product-lead",
 		statusTagMap: STATUS_TAG_MAP,
 	};
 
@@ -129,6 +130,14 @@ async function main() {
 			projectName: "test-project",
 			projectRoot: "/tmp/test",
 			projectRepo: "test/repo",
+			leads: [
+				{
+					agentId: "product-lead",
+					forumChannel: "test-forum",
+					chatChannel: "test-chat",
+					match: { labels: ["Product"] },
+				},
+			],
 		},
 	];
 	const app = createBridgeApp(

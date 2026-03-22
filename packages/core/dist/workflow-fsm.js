@@ -81,7 +81,14 @@ export class WorkflowFSM {
 // ── Flywheel workflow transition map ─────────────────────────────────
 export const WORKFLOW_TRANSITIONS = {
     pending: ["running"],
-    running: ["awaiting_review", "approved", "blocked", "completed", "failed"],
+    running: [
+        "awaiting_review",
+        "approved",
+        "blocked",
+        "completed",
+        "failed",
+        "terminated",
+    ],
     awaiting_review: ["approved", "rejected", "deferred", "shelved"],
     blocked: ["deferred", "shelved"],
     failed: ["shelved"],
@@ -90,6 +97,7 @@ export const WORKFLOW_TRANSITIONS = {
     approved: [],
     completed: [],
     shelved: [],
+    terminated: [],
 };
 export const ACTION_DEFINITIONS = [
     {
@@ -123,6 +131,11 @@ export const ACTION_DEFINITIONS = [
             "deferred",
         ],
         targetState: "shelved",
+    },
+    {
+        action: "terminate",
+        fromStates: ["running"],
+        targetState: "terminated",
     },
 ];
 /** Pure static helper — returns actions available for a given state. */
