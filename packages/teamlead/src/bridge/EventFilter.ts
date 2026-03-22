@@ -77,13 +77,13 @@ const FILTER_RULES: FilterRule[] = [
 	},
 
 	// === LOW — silent Forum updates ===
-	// session_started with NO thread_id must notify agent (agent creates Forum Post)
+	// session_started with NO thread_id — notify agent + Bridge creates Forum Post (GEO-195)
 	{
 		match: (et, p) => et === "session_started" && !p.thread_id,
 		result: {
 			action: "notify_agent",
 			priority: "normal",
-			reason: "session started — no thread, agent must create Forum Post",
+			reason: "session started — no thread, Bridge creates Forum Post",
 		},
 	},
 	{
