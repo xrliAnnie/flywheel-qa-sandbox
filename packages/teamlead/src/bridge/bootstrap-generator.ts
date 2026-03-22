@@ -5,6 +5,9 @@
  */
 
 import type { MemoryService } from "flywheel-edge-worker";
+import type { ProjectEntry } from "../ProjectConfig.js";
+import { resolveLeadForIssue } from "../ProjectConfig.js";
+import type { Session, StateStore } from "../StateStore.js";
 import type { HookPayload } from "./hook-payload.js";
 import type {
 	BootstrapDecision,
@@ -13,9 +16,6 @@ import type {
 	LeadBootstrap,
 	LeadEventEnvelope,
 } from "./lead-runtime.js";
-import type { Session, StateStore } from "../StateStore.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
-import { resolveLeadForIssue } from "../ProjectConfig.js";
 
 const RECENT_EVENTS_WINDOW_MINUTES = 5;
 const MAX_RECENT_FAILURES = 10;

@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
+import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { loadConfig } from "../config.js";
-import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import { StateStore } from "../StateStore.js";
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -192,7 +192,11 @@ describe("Bootstrap endpoint — memoryService wiring (GEO-203)", () => {
 			sendBootstrap: vi.fn().mockImplementation(async (snapshot: any) => {
 				capturedSnapshot = snapshot;
 			}),
-			health: vi.fn().mockResolvedValue({ status: "healthy", lastDeliveryAt: null, lastDeliveredSeq: 0 }),
+			health: vi.fn().mockResolvedValue({
+				status: "healthy",
+				lastDeliveryAt: null,
+				lastDeliveredSeq: 0,
+			}),
 			shutdown: vi.fn(),
 		};
 
@@ -210,9 +214,18 @@ describe("Bootstrap endpoint — memoryService wiring (GEO-203)", () => {
 
 		const config = makeConfig({ apiToken: "test-token" });
 		const app = createBridgeApp(
-			store, projects, config,
-			undefined, undefined, undefined, undefined, undefined, undefined,
-			registry, undefined, mockMemoryService as any,
+			store,
+			projects,
+			config,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			registry,
+			undefined,
+			mockMemoryService as any,
 		);
 
 		const server = app.listen(0, "127.0.0.1");
@@ -221,13 +234,16 @@ describe("Bootstrap endpoint — memoryService wiring (GEO-203)", () => {
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 
 		try {
-			const res = await fetch(`http://127.0.0.1:${port}/api/bootstrap/product-lead`, {
-				method: "POST",
-				headers: {
-					Authorization: "Bearer test-token",
-					"Content-Type": "application/json",
+			const res = await fetch(
+				`http://127.0.0.1:${port}/api/bootstrap/product-lead`,
+				{
+					method: "POST",
+					headers: {
+						Authorization: "Bearer test-token",
+						"Content-Type": "application/json",
+					},
 				},
-			});
+			);
 			expect(res.status).toBe(200);
 			const body = await res.json();
 			expect(body.delivered).toBe(true);

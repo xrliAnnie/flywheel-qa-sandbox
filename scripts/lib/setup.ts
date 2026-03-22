@@ -111,7 +111,7 @@ export async function setupComponents(
 	const {
 		projectRoot,
 		tmuxSessionName,
-		projectName,
+		projectName: _projectName,
 		projectRepo,
 		enableWorktree = true,
 		fetchIssue,

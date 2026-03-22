@@ -12,10 +12,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
-import {
-	buildSessionKey,
-	type HookPayload,
-} from "./hook-payload.js";
+import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
@@ -97,7 +94,10 @@ function sendActionHook(
 
 		const doDeliver = async () => {
 			if (eventFilter) {
-				const filterResult = eventFilter.classify("action_executed", hookPayload);
+				const filterResult = eventFilter.classify(
+					"action_executed",
+					hookPayload,
+				);
 
 				let tagResult: HookPayload["forum_tag_update_result"];
 				if (forumTagUpdater) {

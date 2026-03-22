@@ -15,16 +15,16 @@ function makeMockMemoryService(overrides?: {
 	const secondaryError = overrides?.secondaryError;
 
 	return {
-		searchMemories: vi.fn().mockImplementation(
-			(params: { agentId?: string; limit?: number }) => {
+		searchMemories: vi
+			.fn()
+			.mockImplementation((params: { agentId?: string; limit?: number }) => {
 				if (params.agentId) {
 					if (primaryError) return Promise.reject(primaryError);
 					return Promise.resolve(primary);
 				}
 				if (secondaryError) return Promise.reject(secondaryError);
 				return Promise.resolve(secondary);
-			},
-		),
+			}),
 		addMessages: vi.fn().mockResolvedValue({ added: 0, updated: 0 }),
 		addSessionMemory: vi.fn().mockResolvedValue({ added: 0, updated: 0 }),
 		searchAndFormat: vi.fn().mockResolvedValue(null),
@@ -132,14 +132,20 @@ describe("Bootstrap Generator (GEO-195)", () => {
 			"product-lead",
 			"evt-1",
 			"session_completed",
-			JSON.stringify({ event_type: "session_completed", execution_id: "exec-1", issue_id: "issue-1" }),
+			JSON.stringify({
+				event_type: "session_completed",
+				execution_id: "exec-1",
+				issue_id: "issue-1",
+			}),
 			"flywheel:GEO-100",
 		);
 		store.markLeadEventDelivered(seq);
 
 		const bootstrap = await generateBootstrap("product-lead", store, projects);
 		expect(bootstrap.recentEvents).toHaveLength(1);
-		expect(bootstrap.recentEvents[0]!.event.event_type).toBe("session_completed");
+		expect(bootstrap.recentEvents[0]!.event.event_type).toBe(
+			"session_completed",
+		);
 	});
 
 	it("is idempotent — multiple calls produce same result", async () => {
@@ -179,7 +185,12 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 			primary: ["decision A", "decision B"],
 			secondary: ["global context X"],
 		});
-		const bootstrap = await generateBootstrap("product-lead", store, projects, ms as any);
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			projects,
+			ms as any,
+		);
 		expect(bootstrap.memoryRecall).not.toBeNull();
 		expect(bootstrap.memoryRecall).toContain("### Role-Specific Memory");
 		expect(bootstrap.memoryRecall).toContain("decision A");
@@ -193,7 +204,12 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 			primary: ["decision A"],
 			secondary: [],
 		});
-		const bootstrap = await generateBootstrap("product-lead", store, projects, ms as any);
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			projects,
+			ms as any,
+		);
 		expect(bootstrap.memoryRecall).toContain("### Role-Specific Memory");
 		expect(bootstrap.memoryRecall).not.toContain("### Project-Wide Context");
 	});
@@ -203,7 +219,12 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 			primary: [],
 			secondary: [],
 		});
-		const bootstrap = await generateBootstrap("product-lead", store, projects, ms as any);
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			projects,
+			ms as any,
+		);
 		expect(bootstrap.memoryRecall).toBeNull();
 	});
 
@@ -213,7 +234,12 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 			primaryError: new Error("Supabase down"),
 			secondaryError: new Error("Supabase down"),
 		});
-		const bootstrap = await generateBootstrap("product-lead", store, projects, ms as any);
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			projects,
+			ms as any,
+		);
 		expect(bootstrap.memoryRecall).toBeNull();
 		// Other fields still populated
 		expect(bootstrap.leadId).toBe("product-lead");
@@ -226,7 +252,12 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 			primaryError: new Error("timeout"),
 			secondary: ["global insight"],
 		});
-		const bootstrap = await generateBootstrap("product-lead", store, projects, ms as any);
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			projects,
+			ms as any,
+		);
 		expect(bootstrap.memoryRecall).toContain("### Project-Wide Context");
 		expect(bootstrap.memoryRecall).toContain("global insight");
 		expect(bootstrap.memoryRecall).not.toContain("### Role-Specific Memory");
@@ -239,7 +270,12 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 			primary: ["my decision"],
 			secondaryError: new Error("timeout"),
 		});
-		const bootstrap = await generateBootstrap("product-lead", store, projects, ms as any);
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			projects,
+			ms as any,
+		);
 		expect(bootstrap.memoryRecall).toContain("### Role-Specific Memory");
 		expect(bootstrap.memoryRecall).toContain("my decision");
 		expect(bootstrap.memoryRecall).not.toContain("### Project-Wide Context");
@@ -251,7 +287,12 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 			primary: ["shared memory", "unique primary"],
 			secondary: ["shared memory", "unique secondary"],
 		});
-		const bootstrap = await generateBootstrap("product-lead", store, projects, ms as any);
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			projects,
+			ms as any,
+		);
 		expect(bootstrap.memoryRecall).not.toBeNull();
 		// "shared memory" should only appear once (in primary)
 		const matches = bootstrap.memoryRecall!.match(/shared memory/g);

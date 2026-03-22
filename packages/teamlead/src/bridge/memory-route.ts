@@ -5,10 +5,7 @@ const TIMEOUT_MS = 30_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(
-			() => reject(new Error("TIMEOUT")),
-			ms,
-		);
+		const timer = setTimeout(() => reject(new Error("TIMEOUT")), ms);
 		promise.then(resolve, reject).finally(() => clearTimeout(timer));
 	});
 }
@@ -34,19 +31,30 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 			return;
 		}
 		if (!isNonEmptyString(project_name)) {
-			res.status(400).json({ error: "project_name must be a non-empty string" });
+			res
+				.status(400)
+				.json({ error: "project_name must be a non-empty string" });
 			return;
 		}
 		// agent_id is optional for search — omit to search all agents
 		if (agent_id !== undefined && !isNonEmptyString(agent_id)) {
-			res.status(400).json({ error: "agent_id must be a non-empty string if provided" });
+			res
+				.status(400)
+				.json({ error: "agent_id must be a non-empty string if provided" });
 			return;
 		}
 
 		// Validate optional limit
 		if (limit !== undefined) {
-			if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 50) {
-				res.status(400).json({ error: "limit must be an integer between 1 and 50" });
+			if (
+				typeof limit !== "number" ||
+				!Number.isInteger(limit) ||
+				limit < 1 ||
+				limit > 50
+			) {
+				res
+					.status(400)
+					.json({ error: "limit must be an integer between 1 and 50" });
 				return;
 			}
 		}
@@ -80,7 +88,9 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 
 		// Validate required fields
 		if (!isNonEmptyString(project_name)) {
-			res.status(400).json({ error: "project_name must be a non-empty string" });
+			res
+				.status(400)
+				.json({ error: "project_name must be a non-empty string" });
 			return;
 		}
 		if (!isNonEmptyString(agent_id)) {
@@ -100,11 +110,15 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 				return;
 			}
 			if (!validRoles.has(msg.role as string)) {
-				res.status(400).json({ error: 'message role must be "user" or "assistant"' });
+				res
+					.status(400)
+					.json({ error: 'message role must be "user" or "assistant"' });
 				return;
 			}
 			if (!isNonEmptyString(msg.content)) {
-				res.status(400).json({ error: "message content must be a non-empty string" });
+				res
+					.status(400)
+					.json({ error: "message content must be a non-empty string" });
 				return;
 			}
 		}
@@ -120,7 +134,10 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 		try {
 			const result = await withTimeout(
 				memoryService.addMessages({
-					messages: messages as Array<{ role: "user" | "assistant"; content: string }>,
+					messages: messages as Array<{
+						role: "user" | "assistant";
+						content: string;
+					}>,
 					projectName: project_name,
 					agentId: agent_id,
 					metadata: metadata as Record<string, unknown> | undefined,

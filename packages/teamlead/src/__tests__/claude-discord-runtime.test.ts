@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeDiscordRuntime } from "../bridge/claude-discord-runtime.js";
-import type { LeadBootstrap, LeadEventEnvelope } from "../bridge/lead-runtime.js";
+import type {
+	LeadBootstrap,
+	LeadEventEnvelope,
+} from "../bridge/lead-runtime.js";
 
 // Mock global fetch
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-function makeEnvelope(overrides?: Partial<LeadEventEnvelope>): LeadEventEnvelope {
+function makeEnvelope(
+	overrides?: Partial<LeadEventEnvelope>,
+): LeadEventEnvelope {
 	return {
 		seq: 42,
 		event: {
@@ -161,8 +166,13 @@ describe("ClaudeDiscordRuntime", () => {
 	describe("sendBootstrap() — memoryRecall formatting (GEO-203)", () => {
 		it("includes full memoryRecall without truncation", async () => {
 			// Create a memoryRecall string > 500 chars
-			const longMemory = "### Role-Specific Memory\n" +
-				Array.from({ length: 30 }, (_, i) => `- Decision ${i}: This is a moderately long memory entry about project decisions`).join("\n");
+			const longMemory =
+				"### Role-Specific Memory\n" +
+				Array.from(
+					{ length: 30 },
+					(_, i) =>
+						`- Decision ${i}: This is a moderately long memory entry about project decisions`,
+				).join("\n");
 			expect(longMemory.length).toBeGreaterThan(500);
 
 			const snapshot = {
@@ -182,8 +192,10 @@ describe("ClaudeDiscordRuntime", () => {
 
 		it("splits long bootstrap with memoryRecall into multiple Discord messages", async () => {
 			// Create content that exceeds 1900 char Discord limit
-			const longMemory = Array.from({ length: 50 }, (_, i) =>
-				`- Memory entry ${i}: Important context about decisions and architecture patterns`,
+			const longMemory = Array.from(
+				{ length: 50 },
+				(_, i) =>
+					`- Memory entry ${i}: Important context about decisions and architecture patterns`,
 			).join("\n");
 
 			const snapshot = {

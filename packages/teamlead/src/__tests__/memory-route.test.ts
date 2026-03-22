@@ -1,5 +1,13 @@
 import express from "express";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
 import { createMemoryRouter } from "../bridge/memory-route.js";
 
 // ─── Mock MemoryService ────────────────────────
@@ -13,7 +21,9 @@ function makeMockMemoryService() {
 
 // ─── Test server setup ─────────────────────────
 
-function createTestApp(memoryService: ReturnType<typeof makeMockMemoryService>) {
+function createTestApp(
+	memoryService: ReturnType<typeof makeMockMemoryService>,
+) {
 	const app = express();
 	app.use(express.json());
 	app.use("/api/memory", createMemoryRouter(memoryService as any));
@@ -101,7 +111,11 @@ describe("POST /api/memory/search", () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ query: 123, project_name: "proj", agent_id: "lead" }),
+			body: JSON.stringify({
+				query: 123,
+				project_name: "proj",
+				agent_id: "lead",
+			}),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -110,7 +124,11 @@ describe("POST /api/memory/search", () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ query: "", project_name: "proj", agent_id: "lead" }),
+			body: JSON.stringify({
+				query: "",
+				project_name: "proj",
+				agent_id: "lead",
+			}),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -143,7 +161,11 @@ describe("POST /api/memory/search", () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ query: "test", project_name: "proj", agent_id: "" }),
+			body: JSON.stringify({
+				query: "test",
+				project_name: "proj",
+				agent_id: "",
+			}),
 		});
 		expect(res.status).toBe(400);
 		const body = await res.json();

@@ -134,13 +134,7 @@ export class Blueprint {
 		this.eventEmitter?.emitStarted(env).catch(() => {});
 
 		try {
-			const result = await this.runInner(
-				node,
-				projectRoot,
-				ctx,
-				env,
-				hydrated,
-			);
+			const result = await this.runInner(node, projectRoot, ctx, env, hydrated);
 			await this.emitTerminal(env, result);
 			return result;
 		} catch (err) {
