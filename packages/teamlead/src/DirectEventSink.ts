@@ -17,8 +17,10 @@ import {
 	type HookPayload,
 	notifyAgent,
 } from "./bridge/hook-payload.js";
+import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
+import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import type { BridgeConfig } from "./bridge/types.js";
-import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
+import type { ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
 
 function sqliteDatetime(): string {
@@ -34,6 +36,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		private projects: ProjectEntry[],
 		private eventFilter?: EventFilter,
 		private forumTagUpdater?: ForumTagUpdater,
+		private registry?: RuntimeRegistry,
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
@@ -169,14 +172,42 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	}
 
 	private pushNotification(env: EventEnvelope, eventType: string): void {
-		if (!this.config.gatewayUrl || !this.config.hooksToken) return;
-
 		const session = this.store.getSession(env.executionId);
 		if (!session) return;
 
+		// Fallback: when no RuntimeRegistry is available (e.g., retry-runtime path),
+		// use the legacy notifyAgent() path directly via BridgeConfig OpenClaw credentials.
+		if (!this.registry) {
+			if (this.config.gatewayUrl && this.config.hooksToken) {
+				const sessionKey = buildSessionKey(session);
+				const hookPayload: HookPayload = {
+					event_type: eventType,
+					execution_id: env.executionId,
+					issue_id: env.issueId,
+					issue_identifier: session.issue_identifier,
+					issue_title: session.issue_title,
+					project_name: env.projectName,
+					status: session.status,
+				};
+				const body = buildHookBody(
+					this.config.defaultLeadAgentId,
+					hookPayload,
+					sessionKey,
+				);
+				this.pending.push(
+					notifyAgent(
+						this.config.gatewayUrl,
+						this.config.hooksToken,
+						body,
+					).catch(() => {}),
+				);
+			}
+			return;
+		}
+
 		try {
 			const labels = this.store.getSessionLabels(env.executionId);
-			const { lead } = resolveLeadForIssue(
+			const { runtime, lead } = this.registry.resolveWithLead(
 				this.projects,
 				env.projectName,
 				labels,
@@ -204,7 +235,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				issue_labels: labels,
 			};
 
-			const doNotify = async () => {
+			const doDeliver = async () => {
 				if (this.eventFilter) {
 					const filterResult = this.eventFilter.classify(eventType, hookPayload);
 
@@ -222,25 +253,47 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						hookPayload.filter_priority = filterResult.priority;
 						hookPayload.notification_context = filterResult.reason;
 						hookPayload.forum_tag_update_result = tagResult;
-						const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
-						await notifyAgent(
-							this.config.gatewayUrl!,
-							this.config.hooksToken!,
-							body,
+						const eventId = `direct-${env.executionId}-${eventType}-${Date.now()}`;
+						const seq = this.store.appendLeadEvent(
+							lead.agentId,
+							eventId,
+							eventType,
+							JSON.stringify(hookPayload),
+							sessionKey,
 						);
+						const envelope: LeadEventEnvelope = {
+							seq,
+							event: hookPayload,
+							sessionKey,
+							leadId: lead.agentId,
+							timestamp: new Date().toISOString(),
+						};
+						await runtime.deliver(envelope);
+						this.store.markLeadEventDelivered(seq);
 					}
 				} else {
-					const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
-					await notifyAgent(
-						this.config.gatewayUrl!,
-						this.config.hooksToken!,
-						body,
+					const eventId = `direct-${env.executionId}-${eventType}-${Date.now()}`;
+					const seq = this.store.appendLeadEvent(
+						lead.agentId,
+						eventId,
+						eventType,
+						JSON.stringify(hookPayload),
+						sessionKey,
 					);
+					const envelope: LeadEventEnvelope = {
+						seq,
+						event: hookPayload,
+						sessionKey,
+						leadId: lead.agentId,
+						timestamp: new Date().toISOString(),
+					};
+					await runtime.deliver(envelope);
+					this.store.markLeadEventDelivered(seq);
 				}
 			};
 
 			this.pending.push(
-				doNotify().catch((err) => {
+				doDeliver().catch((err) => {
 					console.warn(
 						`[DirectEventSink] Notification pipeline failed for ${env.executionId}:`,
 						(err as Error).message,

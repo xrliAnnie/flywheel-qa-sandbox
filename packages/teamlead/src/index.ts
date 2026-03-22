@@ -10,7 +10,7 @@ import {
 } from "flywheel-edge-worker";
 import { EventFilter } from "./bridge/EventFilter.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
-import { buildHookBody, notifyAgent } from "./bridge/hook-payload.js";
+import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { startBridge } from "./bridge/plugin.js";
 import { loadConfig } from "./config.js";
 import { loadProjects } from "./ProjectConfig.js";
@@ -41,36 +41,7 @@ async function main() {
 			console.log("[CIPHER] Supabase sync enabled");
 		}
 
-		const cipherEventFilter = new EventFilter();
-		cipherWriter.setNotifyFn(async (proposal) => {
-			const hookPayload: HookPayload = {
-				...proposal,
-				execution_id: "",
-				issue_id: "",
-				project_name: "",
-				status: "pending_ceo",
-			};
-
-			// EventFilter: classify cipher notifications (GEO-187)
-			const filterResult = cipherEventFilter.classify(
-				"cipher_principle_proposed",
-				hookPayload,
-			);
-			if (filterResult.action !== "notify_agent") return;
-
-			hookPayload.filter_priority = filterResult.priority;
-			hookPayload.notification_context = filterResult.reason;
-
-			const sessionKey = `cipher-proposal-${proposal.cipher_principle_id}`;
-			const body = buildHookBody(
-				config.defaultLeadAgentId,
-				hookPayload,
-				sessionKey,
-			);
-			if (config.gatewayUrl && config.hooksToken) {
-				await notifyAgent(config.gatewayUrl, config.hooksToken, body);
-			}
-		});
+		// CIPHER notifyFn is wired after startBridge returns the registry (GEO-195)
 	} catch (err) {
 		console.warn(
 			"[CIPHER] Failed to initialize — running without CIPHER:",
@@ -96,10 +67,57 @@ async function main() {
 		);
 	}
 
-	const { close } = await startBridge(config, projects, {
+	const { close, registry, store } = await startBridge(config, projects, {
 		cipherWriter,
 		memoryService,
 	});
+
+	// Wire CIPHER notification via RuntimeRegistry (GEO-195)
+	if (cipherWriter && registry) {
+		const cipherEventFilter = new EventFilter();
+		cipherWriter.setNotifyFn(async (proposal) => {
+			const hookPayload: HookPayload = {
+				...proposal,
+				execution_id: "",
+				issue_id: "",
+				project_name: "",
+				status: "pending_ceo",
+			};
+
+			const filterResult = cipherEventFilter.classify(
+				"cipher_principle_proposed",
+				hookPayload,
+			);
+			if (filterResult.action !== "notify_agent") return;
+
+			hookPayload.filter_priority = filterResult.priority;
+			hookPayload.notification_context = filterResult.reason;
+
+			const runtime = registry.getForLead(config.defaultLeadAgentId);
+			if (!runtime) return;
+
+			const sessionKey = `cipher-proposal-${proposal.cipher_principle_id}`;
+			const eventId = `cipher-${proposal.cipher_principle_id}-${Date.now()}`;
+			const seq = store.appendLeadEvent(
+				config.defaultLeadAgentId,
+				eventId,
+				"cipher_principle_proposed",
+				JSON.stringify(hookPayload),
+				sessionKey,
+			);
+			const envelope: LeadEventEnvelope = {
+				seq,
+				event: hookPayload,
+				sessionKey,
+				leadId: config.defaultLeadAgentId,
+				timestamp: new Date().toISOString(),
+			};
+			runtime
+				.deliver(envelope)
+				.then(() => store.markLeadEventDelivered(seq))
+				.catch(() => {});
+		});
+	}
 
 	let shuttingDown = false;
 	const shutdown = async () => {

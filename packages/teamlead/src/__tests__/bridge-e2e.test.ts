@@ -1,6 +1,8 @@
 import type http from "node:http";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
+import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -207,39 +209,41 @@ describe("Bridge E2E lifecycle", () => {
 		expect(body.last_error).toBe("test timeout");
 	});
 
-	it("notification webhook is called when gatewayUrl is configured", async () => {
-		// Set up a mock HTTP server to receive notifications
-		const { createServer } = await import("node:http");
-		const receivedBodies: string[] = [];
+	it("notification is delivered via registry when configured", async () => {
+		const capturedEnvelopes: LeadEventEnvelope[] = [];
+		const mockRuntime = {
+			type: "openclaw" as const,
+			deliver: vi.fn(async (env: LeadEventEnvelope) => {
+				capturedEnvelopes.push(env);
+			}),
+			sendBootstrap: vi.fn(async () => {}),
+			health: vi.fn(async () => ({
+				status: "healthy" as const,
+				lastDeliveryAt: null,
+				lastDeliveredSeq: 0,
+			})),
+			shutdown: vi.fn(async () => {}),
+		};
+		const mockRegistry = new RuntimeRegistry();
+		for (const project of testProjects) {
+			for (const lead of project.leads) {
+				mockRegistry.register(lead, mockRuntime);
+			}
+		}
 
-		const mockGateway = createServer((req, res) => {
-			let body = "";
-			req.on("data", (chunk) => {
-				body += chunk;
-			});
-			req.on("end", () => {
-				receivedBodies.push(body);
-				res.writeHead(200);
-				res.end("ok");
-			});
-		});
-		mockGateway.listen(0, "127.0.0.1");
-		await new Promise<void>((resolve) =>
-			mockGateway.once("listening", resolve),
-		);
-		const gwAddr = mockGateway.address();
-		const gwPort = typeof gwAddr === "object" && gwAddr ? gwAddr.port : 0;
-		const gatewayUrl = `http://127.0.0.1:${gwPort}`;
-
-		// Create a bridge with gateway config
+		// Create a bridge with registry
 		const store2 = await StateStore.create(":memory:");
 		const app2 = createBridgeApp(
 			store2,
 			testProjects,
-			makeConfig({
-				gatewayUrl,
-				hooksToken: "hooks-secret",
-			}),
+			makeConfig(),
+			undefined, // broadcaster
+			undefined, // transitionOpts
+			undefined, // retryDispatcher
+			undefined, // cipherWriter
+			undefined, // eventFilter
+			undefined, // forumTagUpdater
+			mockRegistry,
 		);
 		const server2 = app2.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server2.once("listening", resolve));
@@ -267,22 +271,17 @@ describe("Bridge E2E lifecycle", () => {
 			// Wait briefly for async notification
 			await new Promise((resolve) => setTimeout(resolve, 200));
 
-			expect(receivedBodies.length).toBeGreaterThanOrEqual(1);
-			const parsed = JSON.parse(receivedBodies[0]);
-			expect(parsed.agentId).toBe("product-lead");
-			expect(parsed.sessionKey).toBe("flywheel:GEO-102");
-			// message is now structured JSON, not plain text
-			const msg = JSON.parse(parsed.message);
-			expect(msg.event_type).toBe("session_started");
-			expect(msg.issue_identifier).toBe("GEO-102");
+			expect(capturedEnvelopes.length).toBeGreaterThanOrEqual(1);
+			const env = capturedEnvelopes[0];
+			expect(env.leadId).toBe("product-lead");
+			expect(env.sessionKey).toBe("flywheel:GEO-102");
+			expect(env.event.event_type).toBe("session_started");
+			expect(env.event.issue_identifier).toBe("GEO-102");
 		} finally {
 			await new Promise<void>((resolve, reject) => {
 				server2.close((err) => (err ? reject(err) : resolve()));
 			});
 			store2.close();
-			await new Promise<void>((resolve, reject) => {
-				mockGateway.close((err) => (err ? reject(err) : resolve()));
-			});
 		}
 	});
 

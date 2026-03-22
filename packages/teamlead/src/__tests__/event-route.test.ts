@@ -1,10 +1,11 @@
 import type http from "node:http";
-import express from "express";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventFilter } from "../bridge/EventFilter.js";
 import { formatNotification } from "../bridge/event-route.js";
 import { ForumTagUpdater } from "../bridge/ForumTagUpdater.js";
+import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
+import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
@@ -296,57 +297,66 @@ describe("Event route", () => {
 	});
 });
 
+/** Helper: create a mock RuntimeRegistry for testProjects. */
+function createMockRegistry() {
+	const envelopes: LeadEventEnvelope[] = [];
+	const mockRuntime = {
+		type: "openclaw" as const,
+		deliver: vi.fn(async (env: LeadEventEnvelope) => {
+			envelopes.push(env);
+		}),
+		sendBootstrap: vi.fn(async () => {}),
+		health: vi.fn(async () => ({
+			status: "healthy" as const,
+			lastDeliveryAt: null,
+			lastDeliveredSeq: 0,
+		})),
+		shutdown: vi.fn(async () => {}),
+	};
+	const registry = new RuntimeRegistry();
+	for (const project of testProjects) {
+		for (const lead of project.leads) {
+			registry.register(lead, mockRuntime);
+		}
+	}
+	return { registry, mockRuntime, envelopes };
+}
+
 describe("Event route — structured hook payload", () => {
 	let store: StateStore;
 	let server: http.Server;
 	let baseUrl: string;
-	let capturedPayloads: Record<string, unknown>[];
+	let capturedEnvelopes: LeadEventEnvelope[];
 
 	beforeEach(async () => {
-		capturedPayloads = [];
-		// Mock gateway server to capture hook payloads
-		const gatewayApp = express();
-		gatewayApp.use(express.json());
-		gatewayApp.post("/hooks/ingest", (req, res) => {
-			capturedPayloads.push(req.body);
-			res.json({ ok: true });
-		});
-		const gatewayServer = gatewayApp.listen(0, "127.0.0.1");
-		await new Promise<void>((resolve) =>
-			gatewayServer.once("listening", resolve),
-		);
-		const gatewayAddr = gatewayServer.address();
-		const gatewayPort =
-			typeof gatewayAddr === "object" && gatewayAddr ? gatewayAddr.port : 0;
+		const mock = createMockRegistry();
+		capturedEnvelopes = mock.envelopes;
 
 		store = await StateStore.create(":memory:");
-		const config = makeConfig({
-			gatewayUrl: `http://127.0.0.1:${gatewayPort}`,
-			hooksToken: "hooks-secret",
-		});
-		const app = createBridgeApp(store, testProjects, config);
+		const config = makeConfig();
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			config,
+			undefined, // broadcaster
+			undefined, // transitionOpts
+			undefined, // retryDispatcher
+			undefined, // cipherWriter
+			undefined, // eventFilter
+			undefined, // forumTagUpdater
+			mock.registry,
+		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
-
-		// Store gateway server for cleanup
-		(server as any).__gatewayServer = gatewayServer;
 	});
 
 	afterEach(async () => {
-		const gatewayServer = (server as any).__gatewayServer;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
-		if (gatewayServer) {
-			await new Promise<void>((resolve, reject) => {
-				gatewayServer.close((err: Error | undefined) =>
-					err ? reject(err) : resolve(),
-				);
-			});
-		}
 		store.close();
 	});
 
@@ -363,17 +373,15 @@ describe("Event route — structured hook payload", () => {
 		// Wait briefly for async notification
 		await new Promise((r) => setTimeout(r, 100));
 
-		expect(capturedPayloads.length).toBeGreaterThanOrEqual(1);
-		const payload = capturedPayloads[0]!;
-		expect(payload.agentId).toBe("product-lead");
-		expect(payload.sessionKey).toBe("flywheel:GEO-95");
-		expect(typeof payload.message).toBe("string");
+		expect(capturedEnvelopes.length).toBeGreaterThanOrEqual(1);
+		const env = capturedEnvelopes[0]!;
+		expect(env.leadId).toBe("product-lead");
+		expect(env.sessionKey).toBe("flywheel:GEO-95");
 
-		const parsed = JSON.parse(payload.message as string);
-		expect(parsed.event_type).toBe("session_started");
-		expect(parsed.execution_id).toBe("exec-1");
-		expect(parsed.issue_identifier).toBe("GEO-95");
-		expect(parsed.forum_channel).toBe("test-channel");
+		expect(env.event.event_type).toBe("session_started");
+		expect(env.event.execution_id).toBe("exec-1");
+		expect(env.event.issue_identifier).toBe("GEO-95");
+		expect(env.event.forum_channel).toBe("test-channel");
 	});
 
 	it("includes thread_id in payload when session has inherited thread", async () => {
@@ -390,8 +398,7 @@ describe("Event route — structured hook payload", () => {
 
 		await new Promise((r) => setTimeout(r, 100));
 
-		const parsed = JSON.parse(capturedPayloads[0]!.message as string);
-		expect(parsed.thread_id).toBe("inherited.thread");
+		expect(capturedEnvelopes[0]!.event.thread_id).toBe("inherited.thread");
 	});
 });
 
@@ -465,7 +472,7 @@ describe("Event route — EventFilter integration", () => {
 	let store: StateStore;
 	let server: http.Server;
 	let baseUrl: string;
-	let capturedPayloads: Record<string, unknown>[];
+	let capturedEnvelopes: LeadEventEnvelope[];
 	const tagMap: Record<string, string[]> = {
 		running: ["tag-running"],
 		awaiting_review: ["tag-review"],
@@ -474,25 +481,11 @@ describe("Event route — EventFilter integration", () => {
 	};
 
 	beforeEach(async () => {
-		capturedPayloads = [];
-		const gatewayApp = express();
-		gatewayApp.use(express.json());
-		gatewayApp.post("/hooks/ingest", (req, res) => {
-			capturedPayloads.push(req.body);
-			res.json({ ok: true });
-		});
-		const gatewayServer = gatewayApp.listen(0, "127.0.0.1");
-		await new Promise<void>((resolve) =>
-			gatewayServer.once("listening", resolve),
-		);
-		const gatewayAddr = gatewayServer.address();
-		const gatewayPort =
-			typeof gatewayAddr === "object" && gatewayAddr ? gatewayAddr.port : 0;
+		const mock = createMockRegistry();
+		capturedEnvelopes = mock.envelopes;
 
 		store = await StateStore.create(":memory:");
 		const config = makeConfig({
-			gatewayUrl: `http://127.0.0.1:${gatewayPort}`,
-			hooksToken: "hooks-secret",
 			discordBotToken: "bot-token",
 		});
 		const eventFilter = new EventFilter();
@@ -501,33 +494,25 @@ describe("Event route — EventFilter integration", () => {
 			store,
 			testProjects,
 			config,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
+			undefined, // broadcaster
+			undefined, // transitionOpts
+			undefined, // retryDispatcher
+			undefined, // cipherWriter
 			eventFilter,
 			forumTagUpdater,
+			mock.registry,
 		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
-		(server as any).__gatewayServer = gatewayServer;
 	});
 
 	afterEach(async () => {
-		const gatewayServer = (server as any).__gatewayServer;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
-		if (gatewayServer) {
-			await new Promise<void>((resolve, reject) => {
-				gatewayServer.close((err: Error | undefined) =>
-					err ? reject(err) : resolve(),
-				);
-			});
-		}
 		store.close();
 	});
 
@@ -542,7 +527,7 @@ describe("Event route — EventFilter integration", () => {
 		});
 	}
 
-	it("session_completed + needs_review → notifyAgent called (high priority)", async () => {
+	it("session_completed + needs_review → runtime.deliver called (high priority)", async () => {
 		// Start session first
 		await postEvent();
 		// Complete with needs_review
@@ -558,13 +543,13 @@ describe("Event route — EventFilter integration", () => {
 		await new Promise((r) => setTimeout(r, 150));
 
 		// Should have 2 notifications: session_started (no thread → notify) + session_completed
-		expect(capturedPayloads.length).toBe(2);
-		const completedPayload = JSON.parse(capturedPayloads[1]!.message as string);
+		expect(capturedEnvelopes.length).toBe(2);
+		const completedPayload = capturedEnvelopes[1]!.event;
 		expect(completedPayload.filter_priority).toBe("high");
 		expect(completedPayload.notification_context).toContain("needs_review");
 	});
 
-	it("session_started + thread_id exists → notifyAgent NOT called (forum_only)", async () => {
+	it("session_started + thread_id exists → runtime.deliver NOT called (forum_only)", async () => {
 		// Pre-create thread mapping
 		store.upsertThread("thread-123", "channel-1", "issue-1");
 
@@ -572,36 +557,33 @@ describe("Event route — EventFilter integration", () => {
 		await new Promise((r) => setTimeout(r, 150));
 
 		// forum_only — no notification sent
-		expect(capturedPayloads.length).toBe(0);
+		expect(capturedEnvelopes.length).toBe(0);
 	});
 
-	it("session_started + NO thread_id → notifyAgent called (agent creates Forum Post)", async () => {
+	it("session_started + NO thread_id → runtime.deliver called (agent creates Forum Post)", async () => {
 		await postEvent();
 		await new Promise((r) => setTimeout(r, 150));
 
-		expect(capturedPayloads.length).toBe(1);
-		const parsed = JSON.parse(capturedPayloads[0]!.message as string);
-		expect(parsed.filter_priority).toBe("normal");
+		expect(capturedEnvelopes.length).toBe(1);
+		expect(capturedEnvelopes[0]!.event.filter_priority).toBe("normal");
 	});
 
-	it("session_failed → notifyAgent called (high priority)", async () => {
+	it("session_failed → runtime.deliver called (high priority)", async () => {
 		await postEvent({
 			event_type: "session_failed",
 			payload: { error: "timeout" },
 		});
 		await new Promise((r) => setTimeout(r, 150));
 
-		expect(capturedPayloads.length).toBe(1);
-		const parsed = JSON.parse(capturedPayloads[0]!.message as string);
-		expect(parsed.filter_priority).toBe("high");
+		expect(capturedEnvelopes.length).toBe(1);
+		expect(capturedEnvelopes[0]!.event.filter_priority).toBe("high");
 	});
 
 	it("enriched payload includes forum_tag_update_result", async () => {
 		await postEvent();
 		await new Promise((r) => setTimeout(r, 150));
 
-		const parsed = JSON.parse(capturedPayloads[0]!.message as string);
 		// No thread → no_thread
-		expect(parsed.forum_tag_update_result).toBe("no_thread");
+		expect(capturedEnvelopes[0]!.event.forum_tag_update_result).toBe("no_thread");
 	});
 });
