@@ -33,7 +33,6 @@ import {
 import { ExecutionEvidenceCollector } from "../../packages/edge-worker/dist/ExecutionEvidenceCollector.js";
 import { GitResultChecker } from "../../packages/edge-worker/dist/GitResultChecker.js";
 import { HookCallbackServer } from "../../packages/edge-worker/dist/HookCallbackServer.js";
-import { createMemoryService } from "../../packages/edge-worker/dist/memory/index.js";
 import { PreHydrator } from "../../packages/edge-worker/dist/PreHydrator.js";
 import { ReactionsEngine } from "../../packages/edge-worker/dist/ReactionsEngine.js";
 import { ApproveHandler } from "../../packages/edge-worker/dist/reactions/ApproveHandler.js";
@@ -545,22 +544,6 @@ export async function setupComponents(
 			},
 		};
 
-		// 4e. Memory system (v0.3) — factory logic + tests live in edge-worker package
-		const memoryService = await createMemoryService({
-			googleApiKey: process.env.GOOGLE_API_KEY,
-			supabaseUrl: process.env.SUPABASE_URL,
-			supabaseKey: process.env.SUPABASE_KEY,
-			projectName,
-			llmModel: process.env.FLYWHEEL_MEMORY_MODEL,
-		});
-		if (memoryService) {
-			log("Memory system enabled (Supabase pgvector)");
-		} else {
-			log(
-				"Memory system disabled — requires GOOGLE_API_KEY + SUPABASE_URL + SUPABASE_KEY",
-			);
-		}
-
 		const blueprint = new Blueprint(
 			hydrator,
 			gitChecker,
@@ -573,7 +556,6 @@ export async function setupComponents(
 			decisionLayer,
 			eventEmitter,
 			agentDispatcher,
-			memoryService,
 		);
 
 		return {

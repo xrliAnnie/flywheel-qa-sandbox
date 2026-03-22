@@ -248,6 +248,265 @@ describe("MemoryService", () => {
 		expect(result).toContain("- Use pnpm, not npm");
 	});
 
+	// ── searchMemories (NEW — API-oriented, strict throw) ──
+
+	it("searchMemories returns raw string array", async () => {
+		mockSearch.mockResolvedValue({
+			results: [
+				{ memory: "Auth tokens expire after 1 hour" },
+				{ memory: "Use pnpm, not npm" },
+			],
+		});
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		const result = await svc.searchMemories({
+			query: "auth",
+			projectName: "geoforge3d",
+		});
+
+		expect(result).toEqual([
+			"Auth tokens expire after 1 hour",
+			"Use pnpm, not npm",
+		]);
+	});
+
+	it("searchMemories returns empty array when no results", async () => {
+		mockSearch.mockResolvedValue({ results: [] });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		const result = await svc.searchMemories({
+			query: "nothing",
+			projectName: "geoforge3d",
+		});
+
+		expect(result).toEqual([]);
+	});
+
+	it("searchMemories respects limit parameter", async () => {
+		mockSearch.mockResolvedValue({ results: [] });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await svc.searchMemories({
+			query: "test",
+			projectName: "proj",
+			limit: 5,
+		});
+
+		const [, opts] = mockSearch.mock.calls[0];
+		expect(opts.limit).toBe(5);
+	});
+
+	it("searchMemories passes agentId to mem0 search", async () => {
+		mockSearch.mockResolvedValue({ results: [] });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await svc.searchMemories({
+			query: "test",
+			projectName: "proj",
+			agentId: "product-lead",
+		});
+
+		const [, opts] = mockSearch.mock.calls[0];
+		expect(opts.agentId).toBe("product-lead");
+	});
+
+	it("searchMemories filters by app_id: flywheel", async () => {
+		mockSearch.mockResolvedValue({ results: [] });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await svc.searchMemories({
+			query: "test",
+			projectName: "proj",
+		});
+
+		const [, opts] = mockSearch.mock.calls[0];
+		expect(opts.filters).toEqual({ app_id: "flywheel" });
+	});
+
+	it("searchMemories throws on malformed mem0 response", async () => {
+		mockSearch.mockResolvedValue({ unexpected: true });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await expect(
+			svc.searchMemories({ query: "test", projectName: "proj" }),
+		).rejects.toThrow("Unexpected search response shape");
+	});
+
+	it("searchMemories throws on null response", async () => {
+		mockSearch.mockResolvedValue(null);
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await expect(
+			svc.searchMemories({ query: "test", projectName: "proj" }),
+		).rejects.toThrow("Unexpected search response shape");
+	});
+
+	it("searchMemories throws when all items lack memory field", async () => {
+		mockSearch.mockResolvedValue({ results: [{ id: "1" }, { id: "2" }] });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await expect(
+			svc.searchMemories({ query: "test", projectName: "proj" }),
+		).rejects.toThrow("lack a valid 'memory' field");
+	});
+
+	// ── addMessages (NEW — API-oriented, strict throw) ──
+
+	it("addMessages adds messages and returns counts", async () => {
+		mockAdd.mockResolvedValue({
+			results: [
+				{ id: "1", event: "ADD", memory: "fact" },
+				{ id: "2", event: "UPDATE", memory: "updated" },
+			],
+		});
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		const result = await svc.addMessages({
+			messages: [{ role: "user", content: "hello" }],
+			projectName: "geoforge3d",
+			agentId: "product-lead",
+		});
+
+		expect(result).toEqual({ added: 1, updated: 1 });
+	});
+
+	it("addMessages enforces app_id: flywheel in metadata", async () => {
+		mockAdd.mockResolvedValue({ results: [] });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await svc.addMessages({
+			messages: [{ role: "user", content: "hi" }],
+			projectName: "proj",
+			agentId: "lead",
+		});
+
+		const [, opts] = mockAdd.mock.calls[0];
+		expect(opts.metadata.app_id).toBe("flywheel");
+	});
+
+	it("addMessages merges caller metadata with enforced app_id", async () => {
+		mockAdd.mockResolvedValue({ results: [] });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await svc.addMessages({
+			messages: [{ role: "user", content: "hi" }],
+			projectName: "proj",
+			agentId: "lead",
+			metadata: { custom_key: "value", app_id: "should-be-overridden" },
+		});
+
+		const [, opts] = mockAdd.mock.calls[0];
+		expect(opts.metadata.app_id).toBe("flywheel");
+		expect(opts.metadata.custom_key).toBe("value");
+	});
+
+	it("addMessages passes agentId to mem0 add", async () => {
+		mockAdd.mockResolvedValue({ results: [] });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await svc.addMessages({
+			messages: [{ role: "assistant", content: "response" }],
+			projectName: "proj",
+			agentId: "ops-lead",
+		});
+
+		const [, opts] = mockAdd.mock.calls[0];
+		expect(opts.agentId).toBe("ops-lead");
+		expect(opts.userId).toBe("proj");
+	});
+
+	it("addMessages throws on malformed mem0 add() response", async () => {
+		mockAdd.mockResolvedValue({ unexpected: true });
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await expect(
+			svc.addMessages({
+				messages: [{ role: "user", content: "test" }],
+				projectName: "proj",
+				agentId: "lead",
+			}),
+		).rejects.toThrow("Unexpected add response shape");
+	});
+
+	it("addMessages throws when all items lack recognized event field", async () => {
+		mockAdd.mockResolvedValue({
+			results: [{ id: "1" }, { id: "2" }],
+		});
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		await expect(
+			svc.addMessages({
+				messages: [{ role: "user", content: "test" }],
+				projectName: "proj",
+				agentId: "lead",
+			}),
+		).rejects.toThrow("lack recognized 'event' field");
+	});
+
+	// ── searchAndFormat (refactored — verify graceful degradation) ──
+
+	it("searchAndFormat returns null on malformed response (graceful degradation)", async () => {
+		mockSearch.mockResolvedValue({ unexpected: true });
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const svc = new MemoryService({
+			googleApiKey: "test-key",
+			historyDbPath: ":memory:",
+		});
+
+		const result = await svc.searchAndFormat({
+			query: "test",
+			projectName: "proj",
+		});
+
+		expect(result).toBeNull();
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining("searchAndFormat degraded"),
+		);
+		warnSpy.mockRestore();
+	});
+
 	it("passes app_id filter to search (matches write-side scoping)", async () => {
 		mockSearch.mockResolvedValue({ results: [] });
 		const svc = new MemoryService({
