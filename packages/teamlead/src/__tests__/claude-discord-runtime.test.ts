@@ -158,6 +158,45 @@ describe("ClaudeDiscordRuntime", () => {
 		});
 	});
 
+	describe("sendBootstrap() — memoryRecall formatting (GEO-203)", () => {
+		it("includes full memoryRecall without truncation", async () => {
+			// Create a memoryRecall string > 500 chars
+			const longMemory = "### Role-Specific Memory\n" +
+				Array.from({ length: 30 }, (_, i) => `- Decision ${i}: This is a moderately long memory entry about project decisions`).join("\n");
+			expect(longMemory.length).toBeGreaterThan(500);
+
+			const snapshot = {
+				...makeBootstrap(),
+				memoryRecall: longMemory,
+			};
+			await runtime.sendBootstrap(snapshot);
+
+			// Collect all posted content
+			const allContent = mockFetch.mock.calls
+				.map((call: any[]) => JSON.parse(call[1].body).content)
+				.join("");
+			// Full memoryRecall should be present (not truncated at 500)
+			expect(allContent).toContain("Decision 29");
+			expect(allContent).toContain("### Memory Recall");
+		});
+
+		it("splits long bootstrap with memoryRecall into multiple Discord messages", async () => {
+			// Create content that exceeds 1900 char Discord limit
+			const longMemory = Array.from({ length: 50 }, (_, i) =>
+				`- Memory entry ${i}: Important context about decisions and architecture patterns`,
+			).join("\n");
+
+			const snapshot = {
+				...makeBootstrap(),
+				memoryRecall: longMemory,
+			};
+			await runtime.sendBootstrap(snapshot);
+
+			// Should require multiple Discord messages
+			expect(mockFetch.mock.calls.length).toBeGreaterThan(1);
+		});
+	});
+
 	it("shutdown() is a no-op", async () => {
 		await runtime.shutdown();
 	});

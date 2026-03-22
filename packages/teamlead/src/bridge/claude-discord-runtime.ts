@@ -173,10 +173,10 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 			sections.push("");
 		}
 
-		// Memory recall
+		// Memory recall — full content, splitMessage() handles Discord limit
 		if (snapshot.memoryRecall) {
 			sections.push("### Memory Recall");
-			sections.push(snapshot.memoryRecall.slice(0, 500));
+			sections.push(snapshot.memoryRecall);
 			sections.push("");
 		}
 
