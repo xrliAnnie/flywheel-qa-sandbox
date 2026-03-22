@@ -2,7 +2,12 @@
 
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CipherSyncService, CipherWriter } from "flywheel-edge-worker";
+import {
+	CipherSyncService,
+	CipherWriter,
+	createMemoryService,
+	type MemoryService,
+} from "flywheel-edge-worker";
 import { EventFilter } from "./bridge/EventFilter.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
 import { buildHookBody, notifyAgent } from "./bridge/hook-payload.js";
@@ -73,7 +78,28 @@ async function main() {
 		);
 	}
 
-	const { close } = await startBridge(config, projects, { cipherWriter });
+	// Memory service (GEO-198) — advisory, bridge starts without it
+	let memoryService: MemoryService | undefined;
+	try {
+		memoryService = await createMemoryService({
+			googleApiKey: process.env.GOOGLE_API_KEY,
+			supabaseUrl: process.env.SUPABASE_URL,
+			supabaseKey: process.env.SUPABASE_KEY,
+			projectName: "bridge",
+			llmModel: process.env.FLYWHEEL_MEMORY_MODEL,
+		});
+		if (memoryService) console.log("[Memory] Service enabled (Supabase pgvector)");
+	} catch (err) {
+		console.warn(
+			"[Memory] Failed to initialize:",
+			(err as Error).message,
+		);
+	}
+
+	const { close } = await startBridge(config, projects, {
+		cipherWriter,
+		memoryService,
+	});
 
 	let shuttingDown = false;
 	const shutdown = async () => {

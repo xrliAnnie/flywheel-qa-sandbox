@@ -1,7 +1,8 @@
 import { timingSafeEqual } from "node:crypto";
 import express from "express";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
-import type { CipherWriter } from "flywheel-edge-worker";
+import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
+import { createMemoryRouter } from "./memory-route.js";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { CleanupService, FetchDiscordClient } from "../CleanupService.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
@@ -157,6 +158,7 @@ export function createBridgeApp(
 	cipherWriter?: CipherWriter,
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
+	memoryService?: MemoryService,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -500,6 +502,15 @@ export function createBridgeApp(
 		},
 	);
 
+	// Memory API (GEO-198) — conditional, only if memoryService initialized
+	if (memoryService) {
+		app.use(
+			"/api/memory",
+			tokenAuthMiddleware(config.apiToken),
+			createMemoryRouter(memoryService),
+		);
+	}
+
 	// Discord guild ID endpoint (GEO-187) — agent can query to build Forum Thread links
 	app.get(
 		"/api/config/discord-guild-id",
@@ -544,6 +555,7 @@ export async function startBridge(
 		retryDispatcher?: IRetryDispatcher;
 		cipherWriter?: CipherWriter;
 		statusTagMap?: Record<string, string[]>;
+		memoryService?: MemoryService;
 	},
 ): Promise<{
 	app: express.Application;
@@ -584,6 +596,7 @@ export async function startBridge(
 		opts?.cipherWriter,
 		eventFilter,
 		forumTagUpdater,
+		opts?.memoryService,
 	);
 
 	const server = app.listen(config.port, config.host);
