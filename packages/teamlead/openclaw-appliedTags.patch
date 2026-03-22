@@ -1,0 +1,85 @@
+diff --git a/extensions/discord/src/actions/handle-action.guild-admin.ts b/extensions/discord/src/actions/handle-action.guild-admin.ts
+index 80cd97217a..1a93fe4d38 100644
+--- a/extensions/discord/src/actions/handle-action.guild-admin.ts
++++ b/extensions/discord/src/actions/handle-action.guild-admin.ts
+@@ -197,6 +197,7 @@ export async function tryHandleDiscordMessageActionGuildAdmin(params: {
+       integer: true,
+     });
+     const availableTags = parseAvailableTags(actionParams.availableTags);
++    const appliedTags = readStringArrayParam(actionParams, "appliedTags");
+     return await handleDiscordAction(
+       {
+         action: "channelEdit",
+@@ -212,6 +213,7 @@ export async function tryHandleDiscordMessageActionGuildAdmin(params: {
+         locked,
+         autoArchiveDuration: autoArchiveDuration ?? undefined,
+         availableTags,
++        appliedTags: appliedTags ?? undefined,
+       },
+       cfg,
+     );
+diff --git a/extensions/discord/src/send.channels.ts b/extensions/discord/src/send.channels.ts
+index c77150e4f8..0ae004cf88 100644
+--- a/extensions/discord/src/send.channels.ts
++++ b/extensions/discord/src/send.channels.ts
+@@ -79,6 +79,9 @@ export async function editChannelDiscord(
+       ...(t.emoji_name !== undefined && { emoji_name: t.emoji_name }),
+     }));
+   }
++  if (payload.appliedTags !== undefined) {
++    body.applied_tags = payload.appliedTags;
++  }
+   return (await rest.patch(Routes.channel(payload.channelId), {
+     body,
+   })) as APIChannel;
+diff --git a/extensions/discord/src/send.types.ts b/extensions/discord/src/send.types.ts
+index 189c9434d1..71412bc300 100644
+--- a/extensions/discord/src/send.types.ts
++++ b/extensions/discord/src/send.types.ts
+@@ -158,6 +158,8 @@ export type DiscordChannelEdit = {
+   locked?: boolean;
+   autoArchiveDuration?: number;
+   availableTags?: DiscordForumTag[];
++  /** Tag IDs to apply to a forum/media thread (Discord `applied_tags`). */
++  appliedTags?: string[];
+ };
+ 
+ export type DiscordChannelMove = {
+diff --git a/src/agents/tools/discord-actions-guild.ts b/src/agents/tools/discord-actions-guild.ts
+index 6e08c87a27..8302fc6619 100644
+--- a/src/agents/tools/discord-actions-guild.ts
++++ b/src/agents/tools/discord-actions-guild.ts
+@@ -1,5 +1,5 @@
+ import type { AgentToolResult } from "@mariozechner/pi-agent-core";
+-import { getPresence } from "../../../extensions/discord/src/monitor/presence-cache.js";
++import type { DiscordActionConfig } from "../../config/config.js";
+ import {
+   addRoleDiscord,
+   createChannelDiscord,
+@@ -19,8 +19,8 @@ import {
+   setChannelPermissionDiscord,
+   uploadEmojiDiscord,
+   uploadStickerDiscord,
+-} from "../../../extensions/discord/src/send.js";
+-import type { DiscordActionConfig } from "../../config/config.js";
++} from "../../plugin-sdk-internal/discord.js";
++import { getPresence } from "../../plugin-sdk-internal/discord.js";
+ import {
+   type ActionGate,
+   jsonResult,
+@@ -334,6 +334,7 @@ export async function handleDiscordGuildAction(
+         integer: true,
+       });
+       const availableTags = parseAvailableTags(params.availableTags);
++      const appliedTags = readStringArrayParam(params, "appliedTags");
+       const editPayload = {
+         channelId,
+         name: name ?? undefined,
+@@ -346,6 +347,7 @@ export async function handleDiscordGuildAction(
+         locked,
+         autoArchiveDuration: autoArchiveDuration ?? undefined,
+         availableTags,
++        appliedTags: appliedTags ?? undefined,
+       };
+       const channel = accountId
+         ? await editChannelDiscord(editPayload, { accountId })
