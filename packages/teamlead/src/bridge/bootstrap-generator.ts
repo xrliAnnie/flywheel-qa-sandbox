@@ -4,6 +4,7 @@
  * recent failures, and recently delivered events.
  */
 
+import type { MemoryService } from "flywheel-edge-worker";
 import type { HookPayload } from "./hook-payload.js";
 import type {
 	BootstrapDecision,
@@ -24,6 +25,7 @@ export async function generateBootstrap(
 	leadId: string,
 	store: StateStore,
 	projects: ProjectEntry[],
+	memoryService?: MemoryService,
 ): Promise<LeadBootstrap> {
 	// Active sessions matching this lead (via label routing)
 	const allActive = store.getActiveSessions();
@@ -54,14 +56,100 @@ export async function generateBootstrap(
 		timestamp: row.created_at,
 	}));
 
+	const memoryRecall = memoryService
+		? await recallMemories(memoryService, leadId, projects)
+		: null;
+
 	return {
 		leadId,
 		activeSessions: activeSessions.map(toBootstrapSession),
 		pendingDecisions: pendingDecisions.map(toBootstrapDecision),
 		recentFailures: recentFailures.map(toBootstrapFailure),
 		recentEvents,
-		memoryRecall: null, // GEO-198: wire after mem0 moves to Lead
+		memoryRecall,
 	};
+}
+
+const RECALL_TIMEOUT_MS = 10_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+	return new Promise<T>((resolve, reject) => {
+		const timer = setTimeout(() => reject(new Error("TIMEOUT")), ms);
+		promise.then(resolve, reject).finally(() => clearTimeout(timer));
+	});
+}
+
+function findProjectForLead(
+	leadId: string,
+	projects: ProjectEntry[],
+): string | undefined {
+	for (const p of projects) {
+		if (p.leads.some((l) => l.agentId === leadId)) {
+			return p.projectName;
+		}
+	}
+	return undefined;
+}
+
+async function recallMemories(
+	memoryService: MemoryService,
+	leadId: string,
+	projects: ProjectEntry[],
+): Promise<string | null> {
+	const projectName = findProjectForLead(leadId, projects);
+	if (!projectName) return null;
+
+	// Primary: role-specific memories (limit 10)
+	let primary: string[] = [];
+	try {
+		primary = await withTimeout(
+			memoryService.searchMemories({
+				query: "recent decisions, project context, and learnings",
+				projectName,
+				agentId: leadId,
+				limit: 10,
+			}),
+			RECALL_TIMEOUT_MS,
+		);
+	} catch (err) {
+		console.warn(
+			`[bootstrap] Primary memory recall failed for ${leadId}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+
+	// Secondary: project-wide memories (limit 5, no agentId)
+	let secondary: string[] = [];
+	try {
+		secondary = await withTimeout(
+			memoryService.searchMemories({
+				query: "cross-team context and project-wide decisions",
+				projectName,
+				limit: 5,
+			}),
+			RECALL_TIMEOUT_MS,
+		);
+	} catch (err) {
+		console.warn(
+			`[bootstrap] Secondary memory recall failed for ${leadId}: ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
+
+	// Dedup: remove secondary items that overlap with primary
+	const primarySet = new Set(primary);
+	const uniqueSecondary = secondary.filter((m) => !primarySet.has(m));
+
+	if (primary.length === 0 && uniqueSecondary.length === 0) return null;
+
+	const sections: string[] = [];
+	if (primary.length > 0) {
+		sections.push("### Role-Specific Memory");
+		sections.push(...primary.map((m) => `- ${m}`));
+	}
+	if (uniqueSecondary.length > 0) {
+		sections.push("### Project-Wide Context");
+		sections.push(...uniqueSecondary.map((m) => `- ${m}`));
+	}
+	return sections.join("\n");
 }
 
 function matchesLead(
