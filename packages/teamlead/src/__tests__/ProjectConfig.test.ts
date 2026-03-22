@@ -4,6 +4,7 @@ import {
 	loadProjects,
 	type ProjectEntry,
 	resolveLeadForIssue,
+	validateMemoryIds,
 } from "../ProjectConfig.js";
 
 describe("LeadConfig type", () => {
@@ -312,5 +313,175 @@ describe("resolveLeadForIssue", () => {
 		expect(() => resolveLeadForIssue(projects, "unknown", [])).toThrow(
 			/No project found.*unknown/,
 		);
+	});
+});
+
+describe("memoryAllowedUsers validation", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+
+	afterEach(() => {
+		if (originalEnv === undefined) {
+			delete process.env.FLYWHEEL_PROJECTS;
+		} else {
+			process.env.FLYWHEEL_PROJECTS = originalEnv;
+		}
+	});
+
+	const validLead = {
+		agentId: "product-lead",
+		forumChannel: "123",
+		chatChannel: "456",
+		match: { labels: ["Product"] },
+	};
+
+	it("accepts config with valid memoryAllowedUsers", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [validLead],
+				memoryAllowedUsers: ["annie"],
+			},
+		]);
+		const projects = loadProjects();
+		expect(projects).toHaveLength(1);
+		expect(projects[0]!.memoryAllowedUsers).toEqual(["annie"]);
+	});
+
+	it("accepts config without memoryAllowedUsers", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [validLead],
+			},
+		]);
+		const projects = loadProjects();
+		expect(projects).toHaveLength(1);
+		expect(projects[0]!.memoryAllowedUsers).toBeUndefined();
+	});
+
+	it("throws on empty memoryAllowedUsers array", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [validLead],
+				memoryAllowedUsers: [],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/must be a non-empty array/);
+	});
+
+	it("throws on memoryAllowedUsers with empty string", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [validLead],
+				memoryAllowedUsers: [""],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(
+			/each user must be a non-empty string/,
+		);
+	});
+});
+
+describe("validateMemoryIds", () => {
+	const projects: ProjectEntry[] = [
+		{
+			projectName: "geoforge3d",
+			projectRoot: "/tmp",
+			leads: [
+				{
+					agentId: "product-lead",
+					forumChannel: "x",
+					chatChannel: "y",
+					match: { labels: ["Product"] },
+				},
+				{
+					agentId: "ops-lead",
+					forumChannel: "x2",
+					chatChannel: "y2",
+					match: { labels: ["Operations"] },
+				},
+			],
+			memoryAllowedUsers: ["annie"],
+		},
+		{
+			projectName: "no-memory-project",
+			projectRoot: "/tmp/no-mem",
+			leads: [
+				{
+					agentId: "eng-lead",
+					forumChannel: "a",
+					chatChannel: "b",
+					match: { labels: ["Engineering"] },
+				},
+			],
+		},
+	];
+
+	it("returns valid for known project + agent + user", () => {
+		const result = validateMemoryIds(
+			projects,
+			"geoforge3d",
+			"product-lead",
+			"annie",
+		);
+		expect(result).toEqual({ valid: true });
+	});
+
+	it("returns error for unknown project", () => {
+		const result = validateMemoryIds(
+			projects,
+			"unknown",
+			"product-lead",
+			"annie",
+		);
+		expect(result.valid).toBe(false);
+		if (!result.valid) {
+			expect(result.error).toContain("unknown project_name");
+		}
+	});
+
+	it("returns error for unknown agent", () => {
+		const result = validateMemoryIds(
+			projects,
+			"geoforge3d",
+			"unknown-agent",
+			"annie",
+		);
+		expect(result.valid).toBe(false);
+		if (!result.valid) {
+			expect(result.error).toContain("unknown agent_id");
+		}
+	});
+
+	it("returns error for unknown user", () => {
+		const result = validateMemoryIds(
+			projects,
+			"geoforge3d",
+			"product-lead",
+			"bob",
+		);
+		expect(result.valid).toBe(false);
+		if (!result.valid) {
+			expect(result.error).toContain("unknown user_id");
+		}
+	});
+
+	it("returns error when memoryAllowedUsers not configured (fail-closed)", () => {
+		const result = validateMemoryIds(
+			projects,
+			"no-memory-project",
+			"eng-lead",
+			"annie",
+		);
+		expect(result.valid).toBe(false);
+		if (!result.valid) {
+			expect(result.error).toContain("memory not configured");
+		}
 	});
 });

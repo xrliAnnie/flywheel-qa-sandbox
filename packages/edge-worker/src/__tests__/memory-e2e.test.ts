@@ -42,15 +42,15 @@ describe("Memory System E2E", () => {
 			historyDbPath: ":memory:",
 		});
 
-		// 2. Add a session memory
-		const addResult = await svc.addSessionMemory({
+		// 2. Add messages
+		const addResult = await svc.addMessages({
+			messages: [
+				{ role: "user", content: "Issue: Fix auth token expiry (GEO-42)" },
+				{ role: "assistant", content: "Session result: success. Commits: fix: extend token TTL to 1 hour" },
+			],
 			projectName: "geoforge3d",
-			executionId: "exec-001",
-			issueId: "GEO-42",
-			issueTitle: "Fix auth token expiry",
-			sessionResult: "success",
-			commitMessages: ["fix: extend token TTL to 1 hour"],
-			diffSummary: "+5 -2 in auth.ts",
+			userId: "test-user",
+			agentId: "product-lead",
 		});
 
 		expect(addResult.added).toBe(1);
@@ -64,6 +64,7 @@ describe("Memory System E2E", () => {
 		const block = await svc.searchAndFormat({
 			query: "auth token issues",
 			projectName: "geoforge3d",
+			userId: "test-user",
 		});
 
 		expect(block).toContain("<project_memory>");
@@ -84,13 +85,14 @@ describe("Memory System E2E", () => {
 		const block = await svc.searchAndFormat({
 			query: "auth token",
 			projectName: "beta",
+			userId: "test-user",
 		});
 
 		expect(block).toBeNull();
 
 		// Verify search was called with correct project scope
 		const [, opts] = mockSearch.mock.calls[0];
-		expect(opts.userId).toBe("beta");
+		expect(opts.userId).toBe("test-user");
 	});
 
 	it("graceful degradation: missing GOOGLE_API_KEY → memory disabled", async () => {
@@ -127,36 +129,6 @@ describe("Memory System E2E", () => {
 		expect(svc).toBeUndefined();
 	});
 
-	it("failure session includes error context", async () => {
-		mockAdd.mockResolvedValue({
-			results: [
-				{ id: "m2", event: "ADD", memory: "Build fails with missing dep" },
-			],
-		});
-
-		const svc = new MemoryService({
-			googleApiKey: "test-key",
-			historyDbPath: ":memory:",
-		});
-
-		const result = await svc.addSessionMemory({
-			projectName: "geoforge3d",
-			executionId: "exec-002",
-			issueId: "GEO-50",
-			issueTitle: "Add new feature",
-			sessionResult: "failure",
-			commitMessages: [],
-			diffSummary: "",
-			error: "no commits produced",
-			decisionReasoning: "Too many files changed; concern: no tests",
-		});
-
-		// Verify messages sent to mem0 include error context
-		const [messages] = mockAdd.mock.calls[0];
-		expect(messages[1].content).toContain("Error: no commits produced");
-		expect(messages[1].content).toContain("Decision reasoning:");
-		expect(result.added).toBe(1);
-	});
 });
 
 // Live E2E tests moved to memory-live.test.ts (no mock interference)
