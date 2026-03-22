@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { loadConfig } from "../config.js";
+import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import { StateStore } from "../StateStore.js";
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -162,6 +163,87 @@ describe("Bridge scaffold", () => {
 
 		await result.close();
 		closeFn = undefined;
+	});
+});
+
+describe("Bootstrap endpoint — memoryService wiring (GEO-203)", () => {
+	it("passes memoryService to generateBootstrap and includes memoryRecall", async () => {
+		const store = await StateStore.create(":memory:");
+		const projects = [
+			{
+				projectName: "geoforge3d",
+				projectRoot: "/tmp/geoforge3d",
+				leads: [
+					{
+						agentId: "product-lead",
+						forumChannel: "forum-1",
+						chatChannel: "chat-1",
+						match: { labels: ["Product"] },
+					},
+				],
+			},
+		];
+
+		// Mock runtime that captures the bootstrap snapshot
+		let capturedSnapshot: any = null;
+		const mockRuntime = {
+			type: "claude-discord" as const,
+			deliver: vi.fn(),
+			sendBootstrap: vi.fn().mockImplementation(async (snapshot: any) => {
+				capturedSnapshot = snapshot;
+			}),
+			health: vi.fn().mockResolvedValue({ status: "healthy", lastDeliveryAt: null, lastDeliveredSeq: 0 }),
+			shutdown: vi.fn(),
+		};
+
+		// Register mock runtime
+		const registry = new RuntimeRegistry();
+		registry.register(projects[0]!.leads[0]!, mockRuntime);
+
+		// Mock MemoryService
+		const mockMemoryService = {
+			searchMemories: vi.fn().mockResolvedValue(["wired memory 1"]),
+			addMessages: vi.fn(),
+			addSessionMemory: vi.fn(),
+			searchAndFormat: vi.fn(),
+		};
+
+		const config = makeConfig({ apiToken: "test-token" });
+		const app = createBridgeApp(
+			store, projects, config,
+			undefined, undefined, undefined, undefined, undefined, undefined,
+			registry, undefined, mockMemoryService as any,
+		);
+
+		const server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+
+		try {
+			const res = await fetch(`http://127.0.0.1:${port}/api/bootstrap/product-lead`, {
+				method: "POST",
+				headers: {
+					Authorization: "Bearer test-token",
+					"Content-Type": "application/json",
+				},
+			});
+			expect(res.status).toBe(200);
+			const body = await res.json();
+			expect(body.delivered).toBe(true);
+
+			// Verify memoryService was called (primary + secondary search)
+			expect(mockMemoryService.searchMemories).toHaveBeenCalled();
+
+			// Verify the snapshot passed to runtime includes memoryRecall
+			expect(capturedSnapshot).not.toBeNull();
+			expect(capturedSnapshot.memoryRecall).toContain("wired memory 1");
+		} finally {
+			await new Promise<void>((resolve, reject) => {
+				server.close((err) => (err ? reject(err) : resolve()));
+			});
+			store.close();
+		}
 	});
 });
 
