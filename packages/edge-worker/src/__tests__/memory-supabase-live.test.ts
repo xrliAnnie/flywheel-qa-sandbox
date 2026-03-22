@@ -25,20 +25,21 @@ describe.skipIf(!RUN_LIVE || !SUPABASE_URL || !SUPABASE_KEY || !GOOGLE_API_KEY)(
 					"createMemoryService returned undefined — Supabase init failed",
 				);
 
-			const addResult = await svc.addSessionMemory({
+			const addResult = await svc.addMessages({
+				messages: [
+					{ role: "user", content: "Live smoke test issue" },
+					{ role: "assistant", content: "Session result: success. test: verify Supabase integration" },
+				],
 				projectName: uniqueProject,
-				executionId: `live-test-${Date.now()}`,
-				issueId: "TEST-1",
-				issueTitle: "Live smoke test",
-				sessionResult: "success",
-				commitMessages: ["test: verify Supabase integration"],
-				diffSummary: "Added Supabase live test",
+				userId: "live-test-user",
+				agentId: "test-agent",
 			});
 			expect(addResult.added + addResult.updated).toBeGreaterThan(0);
 
 			const searchResult = await svc.searchAndFormat({
 				query: "Supabase integration test",
 				projectName: uniqueProject,
+				userId: "live-test-user",
 			});
 			expect(searchResult).not.toBeNull();
 			expect(searchResult).toContain("<project_memory>");

@@ -70,143 +70,6 @@ describe("MemoryService", () => {
 		expect(constructorCall.vectorStore.provider).toBe("memory");
 	});
 
-	// ── addSessionMemory ────────────────────────────
-
-	it("calls memory.add() with correct scoping for success session", async () => {
-		mockAdd.mockResolvedValue({
-			results: [{ id: "1", event: "ADD", memory: "fact" }],
-		});
-		const svc = new MemoryService({
-			googleApiKey: "test-key",
-			historyDbPath: ":memory:",
-		});
-
-		const result = await svc.addSessionMemory({
-			projectName: "geoforge3d",
-			executionId: "exec-123",
-			issueId: "GEO-42",
-			issueTitle: "Fix auth bug",
-			sessionResult: "success",
-			commitMessages: ["fix: auth token refresh"],
-			diffSummary: "+10 -3 in auth.ts",
-		});
-
-		expect(mockAdd).toHaveBeenCalledOnce();
-		const [messages, opts] = mockAdd.mock.calls[0];
-
-		// Check scoping (mem0 SDK uses camelCase)
-		expect(opts.userId).toBe("geoforge3d");
-		expect(opts.runId).toBe("exec-123");
-		expect(opts.metadata.app_id).toBe("flywheel");
-
-		// Check message content
-		expect(messages[0].role).toBe("user");
-		expect(messages[0].content).toContain("Fix auth bug");
-		expect(messages[1].role).toBe("assistant");
-		expect(messages[1].content).toContain("success");
-
-		expect(result).toEqual({ added: 1, updated: 0 });
-	});
-
-	it("includes error field for failure session", async () => {
-		mockAdd.mockResolvedValue({ results: [] });
-		const svc = new MemoryService({
-			googleApiKey: "test-key",
-			historyDbPath: ":memory:",
-		});
-
-		await svc.addSessionMemory({
-			projectName: "geoforge3d",
-			executionId: "exec-456",
-			issueId: "GEO-43",
-			issueTitle: "Broken build",
-			sessionResult: "failure",
-			commitMessages: [],
-			diffSummary: "",
-			error: "no commits produced",
-		});
-
-		const [messages] = mockAdd.mock.calls[0];
-		expect(messages[1].content).toContain("Error: no commits produced");
-	});
-
-	it("includes decisionReasoning for blocked session", async () => {
-		mockAdd.mockResolvedValue({ results: [] });
-		const svc = new MemoryService({
-			googleApiKey: "test-key",
-			historyDbPath: ":memory:",
-		});
-
-		await svc.addSessionMemory({
-			projectName: "geoforge3d",
-			executionId: "exec-789",
-			issueId: "GEO-44",
-			issueTitle: "Dangerous refactor",
-			sessionResult: "failure",
-			commitMessages: [],
-			diffSummary: "",
-			decisionRoute: "blocked",
-			decisionReasoning: "Too many files changed; concern: blast radius",
-		});
-
-		const [messages] = mockAdd.mock.calls[0];
-		expect(messages[1].content).toContain("Decision: blocked");
-		expect(messages[1].content).toContain(
-			"Decision reasoning: Too many files changed",
-		);
-	});
-
-	it("passes correct user_id, run_id, app_id to mem0", async () => {
-		mockAdd.mockResolvedValue({ results: [] });
-		const svc = new MemoryService({
-			googleApiKey: "test-key",
-			historyDbPath: ":memory:",
-		});
-
-		await svc.addSessionMemory({
-			projectName: "alpha-project",
-			executionId: "run-001",
-			issueId: "ALPHA-1",
-			issueTitle: "Test",
-			sessionResult: "success",
-			commitMessages: ["test"],
-			diffSummary: "",
-			agentId: "backend",
-		});
-
-		const [, opts] = mockAdd.mock.calls[0];
-		expect(opts.userId).toBe("alpha-project");
-		expect(opts.runId).toBe("run-001");
-		expect(opts.metadata.app_id).toBe("flywheel");
-		expect(opts.agentId).toBe("backend");
-	});
-
-	it("counts added and updated results correctly", async () => {
-		mockAdd.mockResolvedValue({
-			results: [
-				{ id: "1", event: "ADD", memory: "new fact" },
-				{ id: "2", event: "UPDATE", memory: "updated fact" },
-				{ id: "3", event: "ADD", memory: "another fact" },
-			],
-		});
-		const svc = new MemoryService({
-			googleApiKey: "test-key",
-			historyDbPath: ":memory:",
-		});
-
-		const result = await svc.addSessionMemory({
-			projectName: "proj",
-			executionId: "exec-1",
-			issueId: "P-1",
-			issueTitle: "Test",
-			sessionResult: "success",
-			commitMessages: [],
-			diffSummary: "",
-		});
-
-		expect(result).toEqual({ added: 2, updated: 1 });
-	});
-
 	// ── searchAndFormat ─────────────────────────────
 
 	it("returns null when no memories found", async () => {
@@ -219,6 +82,7 @@ describe("MemoryService", () => {
 		const result = await svc.searchAndFormat({
 			query: "some query",
 			projectName: "geoforge3d",
+			userId: "test-user",
 		});
 
 		expect(result).toBeNull();
@@ -239,6 +103,7 @@ describe("MemoryService", () => {
 		const result = await svc.searchAndFormat({
 			query: "auth bug",
 			projectName: "geoforge3d",
+			userId: "test-user",
 		});
 
 		expect(result).toContain("<project_memory>");
@@ -265,6 +130,7 @@ describe("MemoryService", () => {
 		const result = await svc.searchMemories({
 			query: "auth",
 			projectName: "geoforge3d",
+			userId: "test-user",
 		});
 
 		expect(result).toEqual([
@@ -283,6 +149,7 @@ describe("MemoryService", () => {
 		const result = await svc.searchMemories({
 			query: "nothing",
 			projectName: "geoforge3d",
+			userId: "test-user",
 		});
 
 		expect(result).toEqual([]);
@@ -298,6 +165,7 @@ describe("MemoryService", () => {
 		await svc.searchMemories({
 			query: "test",
 			projectName: "proj",
+			userId: "test-user",
 			limit: 5,
 		});
 
@@ -315,6 +183,7 @@ describe("MemoryService", () => {
 		await svc.searchMemories({
 			query: "test",
 			projectName: "proj",
+			userId: "test-user",
 			agentId: "product-lead",
 		});
 
@@ -322,7 +191,7 @@ describe("MemoryService", () => {
 		expect(opts.agentId).toBe("product-lead");
 	});
 
-	it("searchMemories filters by app_id: flywheel", async () => {
+	it("searchMemories filters by app_id: projectName", async () => {
 		mockSearch.mockResolvedValue({ results: [] });
 		const svc = new MemoryService({
 			googleApiKey: "test-key",
@@ -332,10 +201,11 @@ describe("MemoryService", () => {
 		await svc.searchMemories({
 			query: "test",
 			projectName: "proj",
+			userId: "test-user",
 		});
 
 		const [, opts] = mockSearch.mock.calls[0];
-		expect(opts.filters).toEqual({ app_id: "flywheel" });
+		expect(opts.filters).toEqual({ app_id: "proj" });
 	});
 
 	it("searchMemories throws on malformed mem0 response", async () => {
@@ -346,7 +216,7 @@ describe("MemoryService", () => {
 		});
 
 		await expect(
-			svc.searchMemories({ query: "test", projectName: "proj" }),
+			svc.searchMemories({ query: "test", projectName: "proj", userId: "test-user" }),
 		).rejects.toThrow("Unexpected search response shape");
 	});
 
@@ -358,7 +228,7 @@ describe("MemoryService", () => {
 		});
 
 		await expect(
-			svc.searchMemories({ query: "test", projectName: "proj" }),
+			svc.searchMemories({ query: "test", projectName: "proj", userId: "test-user" }),
 		).rejects.toThrow("Unexpected search response shape");
 	});
 
@@ -370,7 +240,7 @@ describe("MemoryService", () => {
 		});
 
 		await expect(
-			svc.searchMemories({ query: "test", projectName: "proj" }),
+			svc.searchMemories({ query: "test", projectName: "proj", userId: "test-user" }),
 		).rejects.toThrow("lack a valid 'memory' field");
 	});
 
@@ -391,13 +261,14 @@ describe("MemoryService", () => {
 		const result = await svc.addMessages({
 			messages: [{ role: "user", content: "hello" }],
 			projectName: "geoforge3d",
+			userId: "test-user",
 			agentId: "product-lead",
 		});
 
 		expect(result).toEqual({ added: 1, updated: 1 });
 	});
 
-	it("addMessages enforces app_id: flywheel in metadata", async () => {
+	it("addMessages sets app_id to projectName in metadata", async () => {
 		mockAdd.mockResolvedValue({ results: [] });
 		const svc = new MemoryService({
 			googleApiKey: "test-key",
@@ -407,11 +278,12 @@ describe("MemoryService", () => {
 		await svc.addMessages({
 			messages: [{ role: "user", content: "hi" }],
 			projectName: "proj",
+			userId: "test-user",
 			agentId: "lead",
 		});
 
 		const [, opts] = mockAdd.mock.calls[0];
-		expect(opts.metadata.app_id).toBe("flywheel");
+		expect(opts.metadata.app_id).toBe("proj");
 	});
 
 	it("addMessages merges caller metadata with enforced app_id", async () => {
@@ -424,12 +296,13 @@ describe("MemoryService", () => {
 		await svc.addMessages({
 			messages: [{ role: "user", content: "hi" }],
 			projectName: "proj",
+			userId: "test-user",
 			agentId: "lead",
 			metadata: { custom_key: "value", app_id: "should-be-overridden" },
 		});
 
 		const [, opts] = mockAdd.mock.calls[0];
-		expect(opts.metadata.app_id).toBe("flywheel");
+		expect(opts.metadata.app_id).toBe("proj");
 		expect(opts.metadata.custom_key).toBe("value");
 	});
 
@@ -443,12 +316,13 @@ describe("MemoryService", () => {
 		await svc.addMessages({
 			messages: [{ role: "assistant", content: "response" }],
 			projectName: "proj",
+			userId: "test-user",
 			agentId: "ops-lead",
 		});
 
 		const [, opts] = mockAdd.mock.calls[0];
 		expect(opts.agentId).toBe("ops-lead");
-		expect(opts.userId).toBe("proj");
+		expect(opts.userId).toBe("test-user");
 	});
 
 	it("addMessages throws on malformed mem0 add() response", async () => {
@@ -462,6 +336,7 @@ describe("MemoryService", () => {
 			svc.addMessages({
 				messages: [{ role: "user", content: "test" }],
 				projectName: "proj",
+				userId: "test-user",
 				agentId: "lead",
 			}),
 		).rejects.toThrow("Unexpected add response shape");
@@ -480,6 +355,7 @@ describe("MemoryService", () => {
 			svc.addMessages({
 				messages: [{ role: "user", content: "test" }],
 				projectName: "proj",
+				userId: "test-user",
 				agentId: "lead",
 			}),
 		).rejects.toThrow("lack recognized 'event' field");
@@ -498,6 +374,7 @@ describe("MemoryService", () => {
 		const result = await svc.searchAndFormat({
 			query: "test",
 			projectName: "proj",
+			userId: "test-user",
 		});
 
 		expect(result).toBeNull();
@@ -517,13 +394,14 @@ describe("MemoryService", () => {
 		await svc.searchAndFormat({
 			query: "test",
 			projectName: "myproject",
+			userId: "test-user",
 			agentId: "qa",
 		});
 
 		const [, opts] = mockSearch.mock.calls[0];
-		expect(opts.userId).toBe("myproject");
+		expect(opts.userId).toBe("test-user");
 		expect(opts.agentId).toBe("qa");
-		expect(opts.filters).toEqual({ app_id: "flywheel" });
+		expect(opts.filters).toEqual({ app_id: "myproject" });
 	});
 });
 

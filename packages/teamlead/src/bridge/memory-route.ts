@@ -1,5 +1,7 @@
 import { Router } from "express";
 import type { MemoryService } from "flywheel-edge-worker";
+import type { ProjectEntry } from "../ProjectConfig.js";
+import { validateMemoryIds } from "../ProjectConfig.js";
 
 const TIMEOUT_MS = 30_000;
 
@@ -21,12 +23,12 @@ function isPlainObject(val: unknown): val is Record<string, unknown> {
 	return typeof val === "object" && val !== null && !Array.isArray(val);
 }
 
-export function createMemoryRouter(memoryService: MemoryService): Router {
+export function createMemoryRouter(memoryService: MemoryService, projects: ProjectEntry[]): Router {
 	const router = Router();
 
 	// POST /search
 	router.post("/search", async (req, res) => {
-		const { query, project_name, agent_id, limit } = req.body ?? {};
+		const { query, project_name, agent_id, user_id, limit } = req.body ?? {};
 
 		// Validate required fields
 		if (!isNonEmptyString(query)) {
@@ -39,6 +41,17 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 		}
 		if (!isNonEmptyString(agent_id)) {
 			res.status(400).json({ error: "agent_id must be a non-empty string" });
+			return;
+		}
+		if (!isNonEmptyString(user_id)) {
+			res.status(400).json({ error: "user_id must be a non-empty string" });
+			return;
+		}
+
+		// Config-based ID validation (GEO-204)
+		const idCheck = validateMemoryIds(projects, project_name, agent_id, user_id);
+		if (!idCheck.valid) {
+			res.status(400).json({ error: idCheck.error });
 			return;
 		}
 
@@ -55,6 +68,7 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 				memoryService.searchMemories({
 					query,
 					projectName: project_name,
+					userId: user_id,
 					agentId: agent_id,
 					limit: limit as number | undefined,
 				}),
@@ -75,7 +89,7 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 
 	// POST /add
 	router.post("/add", async (req, res) => {
-		const { messages, project_name, agent_id, metadata } = req.body ?? {};
+		const { messages, project_name, agent_id, user_id, metadata } = req.body ?? {};
 
 		// Validate required fields
 		if (!isNonEmptyString(project_name)) {
@@ -84,6 +98,17 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 		}
 		if (!isNonEmptyString(agent_id)) {
 			res.status(400).json({ error: "agent_id must be a non-empty string" });
+			return;
+		}
+		if (!isNonEmptyString(user_id)) {
+			res.status(400).json({ error: "user_id must be a non-empty string" });
+			return;
+		}
+
+		// Config-based ID validation (GEO-204)
+		const idCheck = validateMemoryIds(projects, project_name, agent_id, user_id);
+		if (!idCheck.valid) {
+			res.status(400).json({ error: idCheck.error });
 			return;
 		}
 
@@ -121,6 +146,7 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 				memoryService.addMessages({
 					messages: messages as Array<{ role: "user" | "assistant"; content: string }>,
 					projectName: project_name,
+					userId: user_id,
 					agentId: agent_id,
 					metadata: metadata as Record<string, unknown> | undefined,
 				}),
