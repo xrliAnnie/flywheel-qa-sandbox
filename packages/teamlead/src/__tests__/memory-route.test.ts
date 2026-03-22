@@ -11,12 +11,21 @@ function makeMockMemoryService() {
 	};
 }
 
+// ─── Mock projects config ──────────────────────
+
+const mockProjects = [{
+	projectName: "geoforge3d",
+	projectRoot: "/tmp",
+	leads: [{ agentId: "product-lead", forumChannel: "x", chatChannel: "y", match: { labels: ["Product"] } }],
+	memoryAllowedUsers: ["annie"],
+}];
+
 // ─── Test server setup ─────────────────────────
 
 function createTestApp(memoryService: ReturnType<typeof makeMockMemoryService>) {
 	const app = express();
 	app.use(express.json());
-	app.use("/api/memory", createMemoryRouter(memoryService as any));
+	app.use("/api/memory", createMemoryRouter(memoryService as any, mockProjects));
 	return app;
 }
 
@@ -59,6 +68,7 @@ describe("POST /api/memory/search", () => {
 				query: "auth bug",
 				project_name: "geoforge3d",
 				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(200);
@@ -68,6 +78,7 @@ describe("POST /api/memory/search", () => {
 			query: "auth bug",
 			projectName: "geoforge3d",
 			agentId: "product-lead",
+			userId: "annie",
 			limit: undefined,
 		});
 	});
@@ -79,8 +90,9 @@ describe("POST /api/memory/search", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				query: "nothing",
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(200);
@@ -92,7 +104,7 @@ describe("POST /api/memory/search", () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ project_name: "proj", agent_id: "lead" }),
+			body: JSON.stringify({ project_name: "geoforge3d", agent_id: "product-lead", user_id: "annie" }),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -101,7 +113,7 @@ describe("POST /api/memory/search", () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ query: 123, project_name: "proj", agent_id: "lead" }),
+			body: JSON.stringify({ query: 123, project_name: "geoforge3d", agent_id: "product-lead", user_id: "annie" }),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -110,7 +122,7 @@ describe("POST /api/memory/search", () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ query: "", project_name: "proj", agent_id: "lead" }),
+			body: JSON.stringify({ query: "", project_name: "geoforge3d", agent_id: "product-lead", user_id: "annie" }),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -119,7 +131,7 @@ describe("POST /api/memory/search", () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ query: "test", agent_id: "lead" }),
+			body: JSON.stringify({ query: "test", agent_id: "product-lead", user_id: "annie" }),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -128,7 +140,52 @@ describe("POST /api/memory/search", () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ query: "test", project_name: "proj" }),
+			body: JSON.stringify({ query: "test", project_name: "geoforge3d", user_id: "annie" }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("400 when user_id missing", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ query: "test", project_name: "geoforge3d", agent_id: "product-lead" }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("400 when user_id is empty string", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ query: "test", project_name: "geoforge3d", agent_id: "product-lead", user_id: "" }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("400 when project_name is unknown (config validation)", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ query: "test", project_name: "unknown-project", agent_id: "product-lead", user_id: "annie" }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("400 when agent_id is unknown (config validation)", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ query: "test", project_name: "geoforge3d", agent_id: "unknown-agent", user_id: "annie" }),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("400 when user_id not in memoryAllowedUsers", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ query: "test", project_name: "geoforge3d", agent_id: "product-lead", user_id: "bob" }),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -139,8 +196,9 @@ describe("POST /api/memory/search", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				query: "test",
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 				limit: 3.5,
 			}),
 		});
@@ -153,8 +211,9 @@ describe("POST /api/memory/search", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				query: "test",
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 				limit: 0,
 			}),
 		});
@@ -167,8 +226,9 @@ describe("POST /api/memory/search", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				query: "test",
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 				limit: 51,
 			}),
 		});
@@ -181,8 +241,9 @@ describe("POST /api/memory/search", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				query: "test",
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 				limit: 25,
 			}),
 		});
@@ -201,8 +262,9 @@ describe("POST /api/memory/search", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				query: "test",
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(502);
@@ -222,6 +284,7 @@ describe("POST /api/memory/add", () => {
 				messages: [{ role: "user", content: "hello" }],
 				project_name: "geoforge3d",
 				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(200);
@@ -231,6 +294,7 @@ describe("POST /api/memory/add", () => {
 			messages: [{ role: "user", content: "hello" }],
 			projectName: "geoforge3d",
 			agentId: "product-lead",
+			userId: "annie",
 			metadata: undefined,
 		});
 	});
@@ -239,7 +303,7 @@ describe("POST /api/memory/add", () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ project_name: "proj", agent_id: "lead" }),
+			body: JSON.stringify({ project_name: "geoforge3d", agent_id: "product-lead", user_id: "annie" }),
 		});
 		expect(res.status).toBe(400);
 	});
@@ -250,8 +314,9 @@ describe("POST /api/memory/add", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				messages: [],
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(400);
@@ -263,8 +328,9 @@ describe("POST /api/memory/add", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				messages: [{ role: "system", content: "hello" }],
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(400);
@@ -276,8 +342,9 @@ describe("POST /api/memory/add", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				messages: [{ role: "user", content: "" }],
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(400);
@@ -289,8 +356,9 @@ describe("POST /api/memory/add", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				messages: [{ role: "user", content: 123 }],
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(400);
@@ -302,7 +370,8 @@ describe("POST /api/memory/add", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				messages: [{ role: "user", content: "hi" }],
-				agent_id: "lead",
+				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(400);
@@ -314,7 +383,49 @@ describe("POST /api/memory/add", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				messages: [{ role: "user", content: "hi" }],
-				project_name: "proj",
+				project_name: "geoforge3d",
+				user_id: "annie",
+			}),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("400 when user_id missing", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				messages: [{ role: "user", content: "hi" }],
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+			}),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("400 when project_name is unknown (config validation)", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				messages: [{ role: "user", content: "hi" }],
+				project_name: "unknown-project",
+				agent_id: "product-lead",
+				user_id: "annie",
+			}),
+		});
+		expect(res.status).toBe(400);
+	});
+
+	it("400 when user_id not in memoryAllowedUsers", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				messages: [{ role: "user", content: "hi" }],
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "bob",
 			}),
 		});
 		expect(res.status).toBe(400);
@@ -326,8 +437,9 @@ describe("POST /api/memory/add", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				messages: [{ role: "user", content: "hi" }],
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 				metadata: [1, 2, 3],
 			}),
 		});
@@ -340,8 +452,9 @@ describe("POST /api/memory/add", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				messages: [{ role: "user", content: "hi" }],
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(200);
@@ -353,8 +466,9 @@ describe("POST /api/memory/add", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				messages: [{ role: "user", content: "hi" }],
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 				metadata: { custom: "value" },
 			}),
 		});
@@ -373,8 +487,9 @@ describe("POST /api/memory/add", () => {
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({
 				messages: [{ role: "user", content: "test" }],
-				project_name: "proj",
-				agent_id: "lead",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "annie",
 			}),
 		});
 		expect(res.status).toBe(502);

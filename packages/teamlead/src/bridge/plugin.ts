@@ -544,12 +544,12 @@ export function createBridgeApp(
 		},
 	);
 
-	// Memory API (GEO-198) — conditional, only if memoryService initialized
+	// Memory API (GEO-198/GEO-204) — conditional, only if memoryService initialized
 	if (memoryService) {
 		app.use(
 			"/api/memory",
 			tokenAuthMiddleware(config.apiToken),
-			createMemoryRouter(memoryService),
+			createMemoryRouter(memoryService, projects),
 		);
 	}
 

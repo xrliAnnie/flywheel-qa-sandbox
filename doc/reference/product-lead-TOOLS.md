@@ -1,7 +1,7 @@
 # Product Lead Agent — TOOLS.md
 
 > Deploy to OpenClaw workspace: `product-lead/TOOLS.md`
-> Version: v1.5.0 (GEO-187)
+> Version: v1.6.0 (GEO-204)
 
 ---
 
@@ -82,6 +82,49 @@ Priority values: 0=No priority, 1=Urgent, 2=High, 3=Medium, 4=Low
 GET /api/config/discord-guild-id
 Response: { guild_id: "..." }
 ```
+
+### Memory API (GEO-204)
+
+Search and store memories for cross-session context. Requires `memoryAllowedUsers` configured for the project.
+
+```
+POST /api/memory/search
+Body: {
+  "query": "auth token issues",
+  "project_name": "geoforge3d",
+  "user_id": "annie",
+  "agent_id": "product-lead",
+  "limit": 10
+}
+Response: { "memories": ["Auth tokens expire after 1 hour", ...] }
+```
+
+- `query` (required): natural language search query
+- `project_name` (required): must match a configured project
+- `user_id` (required): must be in project's `memoryAllowedUsers`
+- `agent_id` (required): must be a known lead for the project
+- `limit` (optional): 1-50, default 10
+
+```
+POST /api/memory/add
+Body: {
+  "messages": [
+    { "role": "user", "content": "I prefer dark mode" },
+    { "role": "assistant", "content": "Noted, I'll remember that preference." }
+  ],
+  "project_name": "geoforge3d",
+  "user_id": "annie",
+  "agent_id": "product-lead",
+  "metadata": { "source": "discord" }
+}
+Response: { "added": 1, "updated": 0 }
+```
+
+- `messages` (required): non-empty array of `{ role: "user"|"assistant", content: string }`
+- `project_name`, `user_id`, `agent_id`: same validation as search
+- `metadata` (optional): plain object, merged with internal tags
+
+Error codes: 400 (validation), 401 (no token), 502 (mem0 error), 504 (30s timeout)
 
 ### Forum Tag (Legacy — Bridge handles automatically)
 
