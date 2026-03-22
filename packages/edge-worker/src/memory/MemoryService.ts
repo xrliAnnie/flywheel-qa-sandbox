@@ -50,78 +50,6 @@ export class MemoryService {
 	}
 
 	/**
-	 * Store session memories after Blueprint execution.
-	 * mem0 internally: LLM extracts facts → generates embeddings → dedup → store.
-	 */
-	async addSessionMemory(params: {
-		projectName: string;
-		executionId: string;
-		issueId: string;
-		issueTitle: string;
-		sessionResult: "success" | "failure" | "timeout";
-		commitMessages: string[];
-		diffSummary: string;
-		decisionRoute?: string;
-		error?: string;
-		decisionReasoning?: string;
-		agentId?: string;
-	}): Promise<{ added: number; updated: number }> {
-		const messages = [
-			{
-				role: "user" as const,
-				content: [
-					`Issue: ${params.issueTitle} (${params.issueId})`,
-					params.diffSummary ? `Changes:\n${params.diffSummary}` : "",
-				]
-					.filter(Boolean)
-					.join("\n"),
-			},
-			{
-				role: "assistant" as const,
-				content: [
-					`Session result: ${params.sessionResult}`,
-					params.commitMessages.length
-						? `Commits:\n${params.commitMessages.map((m) => `- ${m}`).join("\n")}`
-						: "No commits",
-					params.decisionRoute ? `Decision: ${params.decisionRoute}` : "",
-					params.error ? `Error: ${params.error}` : "",
-					params.decisionReasoning
-						? `Decision reasoning: ${params.decisionReasoning}`
-						: "",
-				]
-					.filter(Boolean)
-					.join("\n"),
-			},
-		];
-
-		const result = await this.memory.add(messages, {
-			userId: params.projectName,
-			runId: params.executionId,
-			agentId: params.agentId,
-			metadata: {
-				app_id: "flywheel",
-				issue_id: params.issueId,
-				session_result: params.sessionResult,
-			},
-		});
-
-		if (!result || !Array.isArray(result.results)) {
-			console.warn(
-				`[MemoryService] Unexpected response from memory.add(): ${JSON.stringify(result)?.slice(0, 200)}`,
-			);
-			return { added: 0, updated: 0 };
-		}
-
-		// mem0 add() returns items with an `event` field at runtime ("ADD"/"UPDATE")
-		// but the SDK types (MemoryItem) don't declare it — cast to access safely
-		const items = result.results as Array<{ event?: string }>;
-		const added = items.filter((r) => r.event === "ADD").length;
-		const updated = items.filter((r) => r.event === "UPDATE").length;
-
-		return { added, updated };
-	}
-
-	/**
 	 * Search memories and return raw strings (no prompt formatting).
 	 * Used by Bridge API. searchAndFormat() reuses this internally.
 	 * Strict: throws on malformed response (API route catches → 502).
@@ -129,14 +57,15 @@ export class MemoryService {
 	async searchMemories(params: {
 		query: string;
 		projectName: string;
+		userId: string;
 		agentId?: string;
 		limit?: number;
 	}): Promise<string[]> {
 		const results = await this.memory.search(params.query, {
-			userId: params.projectName,
+			userId: params.userId,
 			agentId: params.agentId,
 			limit: params.limit ?? this.searchLimit,
-			filters: { app_id: "flywheel" },
+			filters: { app_id: params.projectName },
 		});
 
 		if (!results || !Array.isArray(results.results)) {
@@ -172,15 +101,16 @@ export class MemoryService {
 	async addMessages(params: {
 		messages: Array<{ role: "user" | "assistant"; content: string }>;
 		projectName: string;
+		userId: string;
 		agentId: string;
 		metadata?: Record<string, unknown>;
 	}): Promise<{ added: number; updated: number }> {
 		const result = await this.memory.add(params.messages, {
-			userId: params.projectName,
+			userId: params.userId,
 			agentId: params.agentId,
 			metadata: {
 				...params.metadata,
-				app_id: "flywheel",
+				app_id: params.projectName,
 			},
 		});
 
@@ -190,9 +120,11 @@ export class MemoryService {
 			);
 		}
 
-		const items = result.results as Array<{ event?: string }>;
-		const added = items.filter((r) => r.event === "ADD").length;
-		const updated = items.filter((r) => r.event === "UPDATE").length;
+		// mem0 add() returns items with `event` at top level or nested in `metadata`
+		const items = result.results as Array<{ event?: string; metadata?: { event?: string } }>;
+		const getEvent = (r: (typeof items)[number]) => r.event ?? r.metadata?.event;
+		const added = items.filter((r) => getEvent(r) === "ADD").length;
+		const updated = items.filter((r) => getEvent(r) === "UPDATE").length;
 
 		// If mem0 returned items but none had a recognized event, the response is malformed
 		if (items.length > 0 && added === 0 && updated === 0) {
@@ -213,12 +145,14 @@ export class MemoryService {
 	async searchAndFormat(params: {
 		query: string;
 		projectName: string;
+		userId: string;
 		agentId?: string;
 	}): Promise<string | null> {
 		try {
 			const memories = await this.searchMemories({
 				query: params.query,
 				projectName: params.projectName,
+				userId: params.userId,
 				agentId: params.agentId,
 			});
 			if (!memories.length) return null;

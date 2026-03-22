@@ -21,6 +21,8 @@ export interface ProjectEntry {
 	projectRepo?: string;
 	leads: LeadConfig[];
 	generalChannel?: string;
+	/** Memory API user_id allowlist. Fail-closed: requests rejected if not configured. */
+	memoryAllowedUsers?: string[];
 }
 
 export function loadProjects(): ProjectEntry[] {
@@ -147,6 +149,26 @@ export function loadProjects(): ProjectEntry[] {
 				}
 			}
 		}
+
+		// Validate optional memoryAllowedUsers (GEO-204)
+		const memoryAllowedUsers = entry?.memoryAllowedUsers;
+		if (memoryAllowedUsers !== undefined) {
+			if (
+				!Array.isArray(memoryAllowedUsers) ||
+				memoryAllowedUsers.length === 0
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" memoryAllowedUsers: must be a non-empty array of strings`,
+				);
+			}
+			for (const u of memoryAllowedUsers) {
+				if (typeof u !== "string" || u.length === 0) {
+					throw new Error(
+						`Project "${entry.projectName}" memoryAllowedUsers: each user must be a non-empty string`,
+					);
+				}
+			}
+		}
 	}
 
 	return raw as ProjectEntry[];
@@ -182,4 +204,43 @@ export function resolveLeadForIssue(
 
 	// No match — use first lead as default, flag as "general" match
 	return { lead: project.leads[0]!, matchMethod: "general" };
+}
+
+/**
+ * Validate memory API IDs against project config. Fail-closed:
+ * rejects if project lacks memoryAllowedUsers (memory not configured).
+ */
+export function validateMemoryIds(
+	projects: ProjectEntry[],
+	projectName: string,
+	agentId: string,
+	userId: string,
+): { valid: true } | { valid: false; error: string } {
+	const project = projects.find((p) => p.projectName === projectName);
+	if (!project) {
+		return {
+			valid: false,
+			error: `unknown project_name: "${projectName}"`,
+		};
+	}
+	const knownAgents = project.leads.map((l) => l.agentId);
+	if (!knownAgents.includes(agentId)) {
+		return {
+			valid: false,
+			error: `unknown agent_id: "${agentId}" for project "${projectName}"`,
+		};
+	}
+	if (!project.memoryAllowedUsers) {
+		return {
+			valid: false,
+			error: `memory not configured for project "${projectName}" (missing memoryAllowedUsers)`,
+		};
+	}
+	if (!project.memoryAllowedUsers.includes(userId)) {
+		return {
+			valid: false,
+			error: `unknown user_id: "${userId}" for project "${projectName}"`,
+		};
+	}
+	return { valid: true };
 }
