@@ -8,13 +8,14 @@ import {
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
+import type { ForumPostCreator } from "./ForumPostCreator.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import {
-	buildHookBody,
 	buildSessionKey,
 	type HookPayload,
-	notifyAgent,
 } from "./hook-payload.js";
+import type { LeadEventEnvelope } from "./lead-runtime.js";
+import type { RuntimeRegistry } from "./runtime-registry.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 interface IngestEvent {
@@ -71,6 +72,8 @@ export function createEventRouter(
 	transitionOpts?: ApplyTransitionOpts,
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
+	registry?: RuntimeRegistry,
+	forumPostCreator?: ForumPostCreator,
 ): Router {
 	const router = Router();
 
@@ -193,6 +196,30 @@ export function createEventRouter(
 							existingThread.thread_id,
 						);
 						store.clearArchived(existingThread.thread_id);
+					} else if (forumPostCreator) {
+						// GEO-195: Bridge auto-creates Forum Post when no thread exists.
+						// Previously only OpenClaw Lead did this; Claude Lead can't (no thread-create).
+						const { lead: fpLead } = resolveLeadForIssue(
+							projects,
+							event.project_name,
+							eventLabels,
+						);
+						forumPostCreator
+							.ensureForumPost({
+								forumChannelId: fpLead.forumChannel,
+								issueId: event.issue_id,
+								issueIdentifier: asString(payload.issueIdentifier),
+								issueTitle: asString(payload.issueTitle),
+								executionId: event.execution_id,
+								status: "running",
+								discordBotToken: config.discordBotToken,
+							})
+							.catch((err) => {
+								console.warn(
+									`[event-route] ForumPostCreator failed for ${event.issue_id}:`,
+									(err as Error).message,
+								);
+							});
 					}
 				}
 			} else if (event.event_type === "session_completed") {
@@ -427,16 +454,16 @@ export function createEventRouter(
 			return;
 		}
 
-		// Best-effort notification push (structured JSON + sessionKey)
+		// Best-effort notification push via RuntimeRegistry (GEO-195)
 		const session = store.getSession(event.execution_id);
-		if (session && config.gatewayUrl && config.hooksToken) {
+		if (session && registry) {
 			try {
 				// GEO-152: fallback to payload labels when session labels are empty
 				const storedLabels = store.getSessionLabels(event.execution_id);
 				const labels = storedLabels.length > 0
 					? storedLabels
 					: (Array.isArray(payload.labels) ? payload.labels as string[] : []);
-				const { lead } = resolveLeadForIssue(
+				const { runtime, lead } = registry.resolveWithLead(
 					projects,
 					event.project_name,
 					labels,
@@ -486,16 +513,46 @@ export function createEventRouter(
 						hookPayload.filter_priority = filterResult.priority;
 						hookPayload.notification_context = filterResult.reason;
 						hookPayload.forum_tag_update_result = tagResult;
-						const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
-						notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(
-							() => {},
+						const seq = store.appendLeadEvent(
+							lead.agentId,
+							event.event_id,
+							event.event_type,
+							JSON.stringify(hookPayload),
+							sessionKey,
 						);
+						const envelope: LeadEventEnvelope = {
+							seq,
+							event: hookPayload,
+							sessionKey,
+							leadId: lead.agentId,
+							timestamp: new Date().toISOString(),
+						};
+						runtime
+							.deliver(envelope)
+							.then(() => store.markLeadEventDelivered(seq))
+							.catch(() => {});
 					}
-					// forum_only and skip: no notifyAgent call
+					// forum_only and skip: no delivery
 				} else {
-					// Legacy path: no EventFilter, notify unconditionally
-					const body = buildHookBody(lead.agentId, hookPayload, sessionKey);
-					notifyAgent(config.gatewayUrl, config.hooksToken, body).catch(() => {});
+					// Legacy path: no EventFilter, deliver unconditionally
+					const seq = store.appendLeadEvent(
+						lead.agentId,
+						event.event_id,
+						event.event_type,
+						JSON.stringify(hookPayload),
+						sessionKey,
+					);
+					const envelope: LeadEventEnvelope = {
+						seq,
+						event: hookPayload,
+						sessionKey,
+						leadId: lead.agentId,
+						timestamp: new Date().toISOString(),
+					};
+					runtime
+						.deliver(envelope)
+						.then(() => store.markLeadEventDelivered(seq))
+						.catch(() => {});
 				}
 			} catch (err) {
 				console.warn(

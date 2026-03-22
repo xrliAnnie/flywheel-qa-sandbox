@@ -7,11 +7,12 @@
  * Uses a mock gateway server to capture what the agent actually receives.
  */
 import type http from "node:http";
-import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventFilter } from "../bridge/EventFilter.js";
 import { ForumTagUpdater } from "../bridge/ForumTagUpdater.js";
+import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
+import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -57,18 +58,11 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	};
 }
 
-interface CapturedPayload {
-	agentId: string;
-	sessionKey: string;
-	message: string;
-}
-
 describe("GEO-187 E2E: EventFilter pipeline", () => {
 	let store: StateStore;
 	let server: http.Server;
 	let baseUrl: string;
-	let gatewayServer: http.Server;
-	let capturedPayloads: CapturedPayload[];
+	let capturedEnvelopes: LeadEventEnvelope[];
 	let discordCalls: Array<{ url: string; body: unknown }>;
 
 	const ingestHeaders = {
@@ -81,22 +75,29 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 	};
 
 	beforeEach(async () => {
-		capturedPayloads = [];
+		capturedEnvelopes = [];
 		discordCalls = [];
 
-		// Mock gateway (OpenClaw) to capture notifications
-		const gatewayApp = express();
-		gatewayApp.use(express.json());
-		gatewayApp.post("/hooks/ingest", (req, res) => {
-			capturedPayloads.push(req.body as CapturedPayload);
-			res.json({ ok: true });
-		});
-		gatewayServer = gatewayApp.listen(0, "127.0.0.1");
-		await new Promise<void>((resolve) =>
-			gatewayServer.once("listening", resolve),
-		);
-		const gwAddr = gatewayServer.address();
-		const gwPort = typeof gwAddr === "object" && gwAddr ? gwAddr.port : 0;
+		// Mock RuntimeRegistry with a capture runtime
+		const mockRuntime = {
+			type: "openclaw" as const,
+			deliver: vi.fn(async (env: LeadEventEnvelope) => {
+				capturedEnvelopes.push(env);
+			}),
+			sendBootstrap: vi.fn(async () => {}),
+			health: vi.fn(async () => ({
+				status: "healthy" as const,
+				lastDeliveryAt: null,
+				lastDeliveredSeq: 0,
+			})),
+			shutdown: vi.fn(async () => {}),
+		};
+		const mockRegistry = new RuntimeRegistry();
+		for (const project of testProjects) {
+			for (const lead of project.leads) {
+				mockRegistry.register(lead, mockRuntime);
+			}
+		}
 
 		// Mock Discord API for ForumTagUpdater
 		const originalFetch = globalThis.fetch;
@@ -116,16 +117,13 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 					});
 					return new Response(JSON.stringify({ ok: true }), { status: 200 });
 				}
-				// Pass through to real fetch for gateway calls
+				// Pass through to real fetch
 				return originalFetch(url, init);
 			},
 		);
 
 		store = await StateStore.create(":memory:");
-		const config = makeConfig({
-			gatewayUrl: `http://127.0.0.1:${gwPort}`,
-			hooksToken: "hooks-secret",
-		});
+		const config = makeConfig();
 		const eventFilter = new EventFilter();
 		const forumTagUpdater = new ForumTagUpdater(tagMap);
 		const app = createBridgeApp(
@@ -138,6 +136,7 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 			undefined,
 			eventFilter,
 			forumTagUpdater,
+			mockRegistry,
 		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
@@ -150,11 +149,6 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		vi.restoreAllMocks();
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
-		});
-		await new Promise<void>((resolve, reject) => {
-			gatewayServer.close((err: Error | undefined) =>
-				err ? reject(err) : resolve(),
-			);
 		});
 		store.close();
 	});
@@ -186,8 +180,8 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		await postEvent();
 		await wait();
 
-		expect(capturedPayloads.length).toBe(1);
-		const msg = JSON.parse(capturedPayloads[0].message);
+		expect(capturedEnvelopes.length).toBe(1);
+		const msg = capturedEnvelopes[0].event;
 		expect(msg.event_type).toBe("session_started");
 		expect(msg.filter_priority).toBe("normal");
 		expect(msg.notification_context).toContain("no thread");
@@ -204,7 +198,7 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		await wait();
 
 		// Agent should NOT be notified (forum_only)
-		expect(capturedPayloads.length).toBe(0);
+		expect(capturedEnvelopes.length).toBe(0);
 
 		// Discord API should be called to update Forum tag
 		const discordTagCalls = discordCalls.filter((c) =>
@@ -221,7 +215,7 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		await postEvent();
 		await wait();
 		// Clear captures from session_started notification
-		capturedPayloads.length = 0;
+		capturedEnvelopes.length = 0;
 		discordCalls.length = 0;
 
 		// Complete with needs_review
@@ -237,8 +231,8 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		await wait();
 
 		// Only the session_completed notification (session_started was cleared)
-		expect(capturedPayloads.length).toBe(1);
-		const msg = JSON.parse(capturedPayloads[0].message);
+		expect(capturedEnvelopes.length).toBe(1);
+		const msg = capturedEnvelopes[0].event;
 		expect(msg.event_type).toBe("session_completed");
 		expect(msg.filter_priority).toBe("high");
 		expect(msg.notification_context).toContain("needs_review");
@@ -280,7 +274,7 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		await wait();
 
 		// Approved → forum_only, no agent notification
-		expect(capturedPayloads.length).toBe(0);
+		expect(capturedEnvelopes.length).toBe(0);
 
 		// Verify session status is approved
 		const session = store.getSession("exec-approved");
@@ -296,8 +290,8 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		});
 		await wait();
 
-		expect(capturedPayloads.length).toBe(1);
-		const msg = JSON.parse(capturedPayloads[0].message);
+		expect(capturedEnvelopes.length).toBe(1);
+		const msg = capturedEnvelopes[0].event;
 		expect(msg.event_type).toBe("session_failed");
 		expect(msg.filter_priority).toBe("high");
 		expect(msg.notification_context).toContain("failed");
@@ -331,8 +325,8 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		// Action notification should have been sent
 		// (approve may fail due to no gh CLI, but sendActionHook fires regardless of outcome)
 		// The point is: if it fires, it goes through EventFilter
-		if (capturedPayloads.length > 0) {
-			const msg = JSON.parse(capturedPayloads[0].message);
+		if (capturedEnvelopes.length > 0) {
+			const msg = capturedEnvelopes[0].event;
 			expect(msg.event_type).toBe("action_executed");
 			expect(msg.filter_priority).toBe("normal");
 		}

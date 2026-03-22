@@ -3,5 +3,5 @@
 export type { HeartbeatNotifier as StuckNotifier } from "./HeartbeatService.js";
 export {
 	HeartbeatService as StuckWatcher,
-	WebhookHeartbeatNotifier as WebhookStuckNotifier,
+	RegistryHeartbeatNotifier as WebhookStuckNotifier,
 } from "./HeartbeatService.js";

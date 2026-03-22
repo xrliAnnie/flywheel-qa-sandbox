@@ -9,6 +9,10 @@ export interface LeadConfig {
 	match: {
 		labels: string[];
 	};
+	/** Runtime adapter for this lead. Default: "openclaw". */
+	runtime?: "openclaw" | "claude-discord";
+	/** Discord control channel ID for claude-discord runtime (hidden, bot-only). */
+	controlChannel?: string;
 }
 
 export interface ProjectEntry {
@@ -117,6 +121,28 @@ export function loadProjects(): ProjectEntry[] {
 				if (typeof label !== "string" || label.length === 0) {
 					throw new Error(
 						`Project "${entry.projectName}" leads[${i}].match.labels: each label must be a non-empty string`,
+					);
+				}
+			}
+
+			// GEO-195: validate runtime config
+			const runtime = lead.runtime;
+			if (
+				runtime !== undefined &&
+				runtime !== "openclaw" &&
+				runtime !== "claude-discord"
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].runtime: must be "openclaw" or "claude-discord", got "${runtime}"`,
+				);
+			}
+			if (runtime === "claude-discord") {
+				if (
+					typeof lead.controlChannel !== "string" ||
+					lead.controlChannel.length === 0
+				) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}]: runtime="claude-discord" requires a non-empty controlChannel`,
 					);
 				}
 			}

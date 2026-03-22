@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
+import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
@@ -118,31 +120,37 @@ describe("StuckWatcher (compat re-export)", () => {
 	});
 });
 
-describe("WebhookStuckNotifier", () => {
-	it("sends structured payload to /hooks/ingest with sessionKey", async () => {
-		let capturedBody: Record<string, unknown> | undefined;
-		// Minimal mock gateway
-		const { createServer } = await import("node:http");
-		const gateway = createServer((req, res) => {
-			let data = "";
-			req.on("data", (chunk) => {
-				data += chunk;
-			});
-			req.on("end", () => {
-				capturedBody = JSON.parse(data);
-				res.writeHead(200, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ ok: true }));
-			});
-		});
-		gateway.listen(0, "127.0.0.1");
-		await new Promise<void>((resolve) => gateway.once("listening", resolve));
-		const addr = gateway.address();
-		const port = typeof addr === "object" && addr ? addr.port : 0;
+/** Helper: create a mock RuntimeRegistry with a single mock LeadRuntime. */
+function createMockRegistry() {
+	const envelopes: LeadEventEnvelope[] = [];
+	const mockRuntime = {
+		type: "openclaw" as const,
+		deliver: vi.fn(async (env: LeadEventEnvelope) => {
+			envelopes.push(env);
+		}),
+		sendBootstrap: vi.fn(async () => {}),
+		health: vi.fn(async () => ({
+			status: "healthy" as const,
+			lastDeliveryAt: null,
+			lastDeliveredSeq: 0,
+		})),
+		shutdown: vi.fn(async () => {}),
+	};
+	const registry = new RuntimeRegistry();
+	for (const project of testProjects) {
+		for (const lead of project.leads) {
+			registry.register(lead, mockRuntime);
+		}
+	}
+	return { registry, mockRuntime, envelopes };
+}
 
+describe("WebhookStuckNotifier (RegistryHeartbeatNotifier via re-export)", () => {
+	it("sends structured envelope via registry runtime with sessionKey", async () => {
+		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
 		const notifier = new WebhookStuckNotifier(
-			`http://127.0.0.1:${port}`,
-			"test-token",
+			registry,
 			testProjects,
 			hbStore,
 		);
@@ -157,45 +165,23 @@ describe("WebhookStuckNotifier", () => {
 
 		await notifier.onSessionStuck(session, 30);
 
-		expect(capturedBody).toBeDefined();
-		expect(capturedBody!.agentId).toBe("product-lead");
-		expect(capturedBody!.sessionKey).toBe("flywheel:GEO-100");
-
-		const parsed = JSON.parse(capturedBody!.message as string);
-		expect(parsed.event_type).toBe("session_stuck");
-		expect(parsed.minutes_since_activity).toBe(30);
-		expect(parsed.thread_id).toBe("1234.5678");
-		expect(parsed.forum_channel).toBe("test-channel");
+		expect(envelopes).toHaveLength(1);
+		const env = envelopes[0];
+		expect(env.leadId).toBe("product-lead");
+		expect(env.sessionKey).toBe("flywheel:GEO-100");
+		expect(env.event.event_type).toBe("session_stuck");
+		expect(env.event.minutes_since_activity).toBe(30);
+		expect(env.event.thread_id).toBe("1234.5678");
+		expect(env.event.forum_channel).toBe("test-channel");
 
 		hbStore.close();
-		await new Promise<void>((resolve, reject) => {
-			gateway.close((err) => (err ? reject(err) : resolve()));
-		});
 	});
 
-	it("posts to /hooks/ingest (not /hooks/agent)", async () => {
-		let capturedPath = "";
-		const { createServer } = await import("node:http");
-		const gateway = createServer((req, res) => {
-			capturedPath = req.url ?? "";
-			let _data = "";
-			req.on("data", (chunk) => {
-				_data += chunk;
-			});
-			req.on("end", () => {
-				res.writeHead(200, { "Content-Type": "application/json" });
-				res.end(JSON.stringify({ ok: true }));
-			});
-		});
-		gateway.listen(0, "127.0.0.1");
-		await new Promise<void>((resolve) => gateway.once("listening", resolve));
-		const addr = gateway.address();
-		const port = typeof addr === "object" && addr ? addr.port : 0;
-
+	it("delivers via registry runtime (not direct HTTP)", async () => {
+		const { registry, mockRuntime } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
 		const notifier = new WebhookStuckNotifier(
-			`http://127.0.0.1:${port}`,
-			"test-token",
+			registry,
 			testProjects,
 			hbStore,
 		);
@@ -209,11 +195,8 @@ describe("WebhookStuckNotifier", () => {
 			15,
 		);
 
-		expect(capturedPath).toBe("/hooks/ingest");
+		expect(mockRuntime.deliver).toHaveBeenCalledTimes(1);
 
 		hbStore.close();
-		await new Promise<void>((resolve, reject) => {
-			gateway.close((err) => (err ? reject(err) : resolve()));
-		});
 	});
 });
