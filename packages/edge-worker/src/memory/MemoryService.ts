@@ -120,9 +120,11 @@ export class MemoryService {
 			);
 		}
 
-		const items = result.results as Array<{ event?: string }>;
-		const added = items.filter((r) => r.event === "ADD").length;
-		const updated = items.filter((r) => r.event === "UPDATE").length;
+		// mem0 add() returns items with `event` at top level or nested in `metadata`
+		const items = result.results as Array<{ event?: string; metadata?: { event?: string } }>;
+		const getEvent = (r: (typeof items)[number]) => r.event ?? r.metadata?.event;
+		const added = items.filter((r) => getEvent(r) === "ADD").length;
+		const updated = items.filter((r) => getEvent(r) === "UPDATE").length;
 
 		// If mem0 returned items but none had a recognized event, the response is malformed
 		if (items.length > 0 && added === 0 && updated === 0) {
