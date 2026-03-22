@@ -5,9 +5,10 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
+import type { ForumPostCreator } from "./ForumPostCreator.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import {
 	buildSessionKey,
@@ -72,6 +73,7 @@ export function createEventRouter(
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 	registry?: RuntimeRegistry,
+	forumPostCreator?: ForumPostCreator,
 ): Router {
 	const router = Router();
 
@@ -194,6 +196,30 @@ export function createEventRouter(
 							existingThread.thread_id,
 						);
 						store.clearArchived(existingThread.thread_id);
+					} else if (forumPostCreator) {
+						// GEO-195: Bridge auto-creates Forum Post when no thread exists.
+						// Previously only OpenClaw Lead did this; Claude Lead can't (no thread-create).
+						const { lead: fpLead } = resolveLeadForIssue(
+							projects,
+							event.project_name,
+							eventLabels,
+						);
+						forumPostCreator
+							.ensureForumPost({
+								forumChannelId: fpLead.forumChannel,
+								issueId: event.issue_id,
+								issueIdentifier: asString(payload.issueIdentifier),
+								issueTitle: asString(payload.issueTitle),
+								executionId: event.execution_id,
+								status: "running",
+								discordBotToken: config.discordBotToken,
+							})
+							.catch((err) => {
+								console.warn(
+									`[event-route] ForumPostCreator failed for ${event.issue_id}:`,
+									(err as Error).message,
+								);
+							});
 					}
 				}
 			} else if (event.event_type === "session_completed") {

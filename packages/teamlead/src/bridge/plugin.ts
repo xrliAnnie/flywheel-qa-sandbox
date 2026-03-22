@@ -17,6 +17,7 @@ import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
+import { ForumPostCreator } from "./ForumPostCreator.js";
 import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { LeadRuntime } from "./lead-runtime.js";
@@ -193,6 +194,7 @@ export function createBridgeApp(
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 	registry?: RuntimeRegistry,
+	forumPostCreator?: ForumPostCreator,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -268,6 +270,7 @@ export function createBridgeApp(
 			eventFilter,
 			forumTagUpdater,
 			registry,
+			forumPostCreator,
 		),
 	);
 
@@ -677,6 +680,9 @@ export async function startBridge(
 	}
 	const forumTagUpdater = new ForumTagUpdater(statusTagMap);
 
+	// GEO-195: ForumPostCreator — Bridge auto-creates Forum Posts
+	const forumPostCreator = new ForumPostCreator(store, statusTagMap);
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -688,6 +694,7 @@ export async function startBridge(
 		eventFilter,
 		forumTagUpdater,
 		registry,
+		forumPostCreator,
 	);
 
 	const server = app.listen(config.port, config.host);
