@@ -37,8 +37,9 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 			res.status(400).json({ error: "project_name must be a non-empty string" });
 			return;
 		}
-		if (!isNonEmptyString(agent_id)) {
-			res.status(400).json({ error: "agent_id must be a non-empty string" });
+		// agent_id is optional for search — omit to search all agents
+		if (agent_id !== undefined && !isNonEmptyString(agent_id)) {
+			res.status(400).json({ error: "agent_id must be a non-empty string if provided" });
 			return;
 		}
 
@@ -55,7 +56,7 @@ export function createMemoryRouter(memoryService: MemoryService): Router {
 				memoryService.searchMemories({
 					query,
 					projectName: project_name,
-					agentId: agent_id,
+					agentId: agent_id || undefined,
 					limit: limit as number | undefined,
 				}),
 				TIMEOUT_MS,

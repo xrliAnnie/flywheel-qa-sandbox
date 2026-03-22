@@ -124,13 +124,30 @@ describe("POST /api/memory/search", () => {
 		expect(res.status).toBe(400);
 	});
 
-	it("400 when agent_id missing", async () => {
+	it("200 when agent_id omitted — searches all agents", async () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ query: "test", project_name: "proj" }),
 		});
+		expect(res.status).toBe(200);
+		expect(mockMemoryService.searchMemories).toHaveBeenCalledWith({
+			query: "test",
+			projectName: "proj",
+			agentId: undefined,
+			limit: undefined,
+		});
+	});
+
+	it("400 when agent_id is empty string", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ query: "test", project_name: "proj", agent_id: "" }),
+		});
 		expect(res.status).toBe(400);
+		const body = await res.json();
+		expect(body.error).toContain("agent_id");
 	});
 
 	it("400 when limit is not an integer", async () => {
