@@ -86,8 +86,11 @@ AGENT_TARGET="${HOME}/.claude/agents/product-lead.md"
 mkdir -p "${HOME}/.claude/agents"
 
 if [ -f "$AGENT_SOURCE" ]; then
-  ln -sf "$(cd "$(dirname "$AGENT_SOURCE")" && pwd)/$(basename "$AGENT_SOURCE")" "$AGENT_TARGET"
-  echo "[lead] Agent file synced: ${AGENT_TARGET} -> $(readlink "$AGENT_TARGET")"
+  # Copy (not symlink) to prevent Lead from writing back to repo via symlink.
+  # Lead has Bash + bypassPermissions, so a symlink would let it mutate the
+  # version-controlled agent source file.
+  cp "$AGENT_SOURCE" "$AGENT_TARGET"
+  echo "[lead] Agent file installed: ${AGENT_TARGET} (copied from ${AGENT_SOURCE})"
 else
   echo "[lead] ERROR: Agent source not found at ${AGENT_SOURCE}"
   echo "[lead] Ensure packages/teamlead/agents/product-lead.md exists."

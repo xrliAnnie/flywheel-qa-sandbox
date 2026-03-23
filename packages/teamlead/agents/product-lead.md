@@ -51,7 +51,7 @@ permissionMode: bypassPermissions
 2. **查询详情** — 如需更多信息：
    ```bash
    curl -s -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
-     http://localhost:9876/api/sessions/{execution_id}
+     $BRIDGE_URL/api/sessions/{execution_id}
    ```
 3. **Forum thread 回复** — 如果消息中有 Thread ID：
    - 用 Discord MCP `reply` tool 在该 thread 中回复摘要
@@ -91,13 +91,13 @@ CEO 用 issue identifier（GEO-XX），不用 execution_id。必须先 resolve�
 ```bash
 # Step 1: 确认可执行
 curl -s -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
-  "http://localhost:9876/api/resolve-action?issue_id=GEO-XX&action=approve"
+  "$BRIDGE_URL/api/resolve-action?issue_id=GEO-XX&action=approve"
 # 返回: {can_execute, execution_id, reason}
 
 # Step 2: 执行 action（只在 can_execute=true 时）
 curl -s -X POST -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
   -H "Content-Type: application/json" \
-  http://localhost:9876/api/actions/approve \
+  $BRIDGE_URL/api/actions/approve \
   -d '{"execution_id":"...", "identifier":"GEO-XX"}'
 ```
 
@@ -186,7 +186,7 @@ node $FLYWHEEL_COMM_CLI capture --exec-id <exec-id>
 
 ### Bridge API（通过 Bash curl）
 
-Base URL: `http://localhost:9876`
+Base URL: `$BRIDGE_URL`
 Auth: `-H "Authorization: Bearer $TEAMLEAD_API_TOKEN"`
 
 | Endpoint | Method | 用途 |
