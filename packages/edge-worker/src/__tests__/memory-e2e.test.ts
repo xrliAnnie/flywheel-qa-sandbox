@@ -46,7 +46,11 @@ describe("Memory System E2E", () => {
 		const addResult = await svc.addMessages({
 			messages: [
 				{ role: "user", content: "Issue: Fix auth token expiry (GEO-42)" },
-				{ role: "assistant", content: "Session result: success. Commits: fix: extend token TTL to 1 hour" },
+				{
+					role: "assistant",
+					content:
+						"Session result: success. Commits: fix: extend token TTL to 1 hour",
+				},
 			],
 			projectName: "geoforge3d",
 			userId: "test-user",
@@ -128,7 +132,6 @@ describe("Memory System E2E", () => {
 		});
 		expect(svc).toBeUndefined();
 	});
-
 });
 
 // Live E2E tests moved to memory-live.test.ts (no mock interference)

@@ -72,7 +72,7 @@ async function main() {
 		sessionKey: string;
 		payload: Record<string, unknown>;
 	}> = [];
-	const discordCalls: Array<{ threadId: string; tags: string[] }> = [];
+	const _discordCalls: Array<{ threadId: string; tags: string[] }> = [];
 
 	const gatewayServer = createServer((req, res) => {
 		let body = "";

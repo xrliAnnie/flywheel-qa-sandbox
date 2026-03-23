@@ -8,7 +8,7 @@ import { respond } from "./commands/respond.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 
 function printUsage(): void {
-  console.log(`Usage: flywheel-comm <command> [options]
+	console.log(`Usage: flywheel-comm <command> [options]
 
 Commands:
   ask       Ask your Lead a question
@@ -26,174 +26,174 @@ Environment:
 }
 
 function main(): void {
-  const args = process.argv.slice(2);
-  const command = args[0];
+	const args = process.argv.slice(2);
+	const command = args[0];
 
-  if (!command || command === "--help" || command === "-h") {
-    printUsage();
-    process.exit(0);
-  }
+	if (!command || command === "--help" || command === "-h") {
+		printUsage();
+		process.exit(0);
+	}
 
-  // Parse global options from remaining args
-  const commandArgs = args.slice(1);
+	// Parse global options from remaining args
+	const commandArgs = args.slice(1);
 
-  try {
-    switch (command) {
-      case "ask":
-        runAsk(commandArgs);
-        break;
-      case "check":
-        runCheck(commandArgs);
-        break;
-      case "pending":
-        runPending(commandArgs);
-        break;
-      case "respond":
-        runRespond(commandArgs);
-        break;
-      default:
-        console.error(`Unknown command: ${command}`);
-        printUsage();
-        process.exit(1);
-    }
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.error(`Error: ${message}`);
-    process.exit(1);
-  }
+	try {
+		switch (command) {
+			case "ask":
+				runAsk(commandArgs);
+				break;
+			case "check":
+				runCheck(commandArgs);
+				break;
+			case "pending":
+				runPending(commandArgs);
+				break;
+			case "respond":
+				runRespond(commandArgs);
+				break;
+			default:
+				console.error(`Unknown command: ${command}`);
+				printUsage();
+				process.exit(1);
+		}
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		console.error(`Error: ${message}`);
+		process.exit(1);
+	}
 }
 
 function runAsk(args: string[]): void {
-  const { values, positionals } = parseArgs({
-    args,
-    options: {
-      lead: { type: "string" },
-      "exec-id": { type: "string" },
-      db: { type: "string" },
-      project: { type: "string" },
-      json: { type: "boolean", default: false },
-    },
-    allowPositionals: true,
-  });
+	const { values, positionals } = parseArgs({
+		args,
+		options: {
+			lead: { type: "string" },
+			"exec-id": { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: true,
+	});
 
-  if (!values.lead) {
-    throw new Error("--lead is required");
-  }
+	if (!values.lead) {
+		throw new Error("--lead is required");
+	}
 
-  const question = positionals.join(" ");
-  if (!question) {
-    throw new Error("Question text is required");
-  }
+	const question = positionals.join(" ");
+	if (!question) {
+		throw new Error("Question text is required");
+	}
 
-  const dbPath = resolveDbPath({ db: values.db, project: values.project });
-  const questionId = ask({
-    lead: values.lead,
-    execId: values["exec-id"],
-    question,
-    dbPath,
-  });
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const questionId = ask({
+		lead: values.lead,
+		execId: values["exec-id"],
+		question,
+		dbPath,
+	});
 
-  if (values.json) {
-    console.log(JSON.stringify({ question_id: questionId }));
-  } else {
-    console.log(questionId);
-  }
+	if (values.json) {
+		console.log(JSON.stringify({ question_id: questionId }));
+	} else {
+		console.log(questionId);
+	}
 }
 
 function runCheck(args: string[]): void {
-  const { values, positionals } = parseArgs({
-    args,
-    options: {
-      db: { type: "string" },
-      project: { type: "string" },
-      json: { type: "boolean", default: false },
-    },
-    allowPositionals: true,
-  });
+	const { values, positionals } = parseArgs({
+		args,
+		options: {
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: true,
+	});
 
-  const questionId = positionals[0];
-  if (!questionId) {
-    throw new Error("Question ID is required");
-  }
+	const questionId = positionals[0];
+	if (!questionId) {
+		throw new Error("Question ID is required");
+	}
 
-  const dbPath = resolveDbPath({ db: values.db, project: values.project });
-  const result = check({ questionId, dbPath });
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const result = check({ questionId, dbPath });
 
-  if (values.json) {
-    console.log(JSON.stringify(result));
-  } else if (result.status === "answered") {
-    console.log(result.content);
-  } else {
-    console.log("not yet");
-  }
-  // Always exit 0 per Codex #4
+	if (values.json) {
+		console.log(JSON.stringify(result));
+	} else if (result.status === "answered") {
+		console.log(result.content);
+	} else {
+		console.log("not yet");
+	}
+	// Always exit 0 per Codex #4
 }
 
 function runPending(args: string[]): void {
-  const { values } = parseArgs({
-    args,
-    options: {
-      lead: { type: "string" },
-      db: { type: "string" },
-      project: { type: "string" },
-      json: { type: "boolean", default: false },
-    },
-    allowPositionals: false,
-  });
+	const { values } = parseArgs({
+		args,
+		options: {
+			lead: { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
 
-  if (!values.lead) {
-    throw new Error("--lead is required");
-  }
+	if (!values.lead) {
+		throw new Error("--lead is required");
+	}
 
-  const dbPath = resolveDbPath({ db: values.db, project: values.project });
-  const questions = pending({ lead: values.lead, dbPath });
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const questions = pending({ lead: values.lead, dbPath });
 
-  if (values.json) {
-    console.log(JSON.stringify(questions));
-  } else if (questions.length === 0) {
-    console.log("No pending questions.");
-  } else {
-    for (const q of questions) {
-      console.log(`[${q.id}] from ${q.from_agent} (${q.created_at}):`);
-      console.log(`  ${q.content}`);
-    }
-  }
+	if (values.json) {
+		console.log(JSON.stringify(questions));
+	} else if (questions.length === 0) {
+		console.log("No pending questions.");
+	} else {
+		for (const q of questions) {
+			console.log(`[${q.id}] from ${q.from_agent} (${q.created_at}):`);
+			console.log(`  ${q.content}`);
+		}
+	}
 }
 
 function runRespond(args: string[]): void {
-  const { values, positionals } = parseArgs({
-    args,
-    options: {
-      lead: { type: "string" },
-      db: { type: "string" },
-      project: { type: "string" },
-      json: { type: "boolean", default: false },
-    },
-    allowPositionals: true,
-  });
+	const { values, positionals } = parseArgs({
+		args,
+		options: {
+			lead: { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: true,
+	});
 
-  if (!values.lead) {
-    throw new Error("--lead is required (identifies who is responding)");
-  }
+	if (!values.lead) {
+		throw new Error("--lead is required (identifies who is responding)");
+	}
 
-  const questionId = positionals[0];
-  if (!questionId) {
-    throw new Error("Question ID is required");
-  }
+	const questionId = positionals[0];
+	if (!questionId) {
+		throw new Error("Question ID is required");
+	}
 
-  const answer = positionals.slice(1).join(" ");
-  if (!answer) {
-    throw new Error("Answer text is required");
-  }
+	const answer = positionals.slice(1).join(" ");
+	if (!answer) {
+		throw new Error("Answer text is required");
+	}
 
-  const dbPath = resolveDbPath({ db: values.db, project: values.project });
-  respond({ questionId, fromAgent: values.lead, answer, dbPath });
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	respond({ questionId, fromAgent: values.lead, answer, dbPath });
 
-  if (values.json) {
-    console.log(JSON.stringify({ status: "ok", question_id: questionId }));
-  } else {
-    console.log(`Responded to ${questionId}`);
-  }
+	if (values.json) {
+		console.log(JSON.stringify({ status: "ok", question_id: questionId }));
+	} else {
+		console.log(`Responded to ${questionId}`);
+	}
 }
 
 main();

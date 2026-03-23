@@ -104,14 +104,20 @@ describe("Bootstrap Generator (GEO-195)", () => {
 			"product-lead",
 			"evt-1",
 			"session_completed",
-			JSON.stringify({ event_type: "session_completed", execution_id: "exec-1", issue_id: "issue-1" }),
+			JSON.stringify({
+				event_type: "session_completed",
+				execution_id: "exec-1",
+				issue_id: "issue-1",
+			}),
 			"flywheel:GEO-100",
 		);
 		store.markLeadEventDelivered(seq);
 
 		const bootstrap = await generateBootstrap("product-lead", store, projects);
 		expect(bootstrap.recentEvents).toHaveLength(1);
-		expect(bootstrap.recentEvents[0]!.event.event_type).toBe("session_completed");
+		expect(bootstrap.recentEvents[0]!.event.event_type).toBe(
+			"session_completed",
+		);
 	});
 
 	it("is idempotent — multiple calls produce same result", async () => {

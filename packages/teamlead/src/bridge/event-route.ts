@@ -10,10 +10,7 @@ import type { Session, StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import type { ForumPostCreator } from "./ForumPostCreator.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
-import {
-	buildSessionKey,
-	type HookPayload,
-} from "./hook-payload.js";
+import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
@@ -310,7 +307,9 @@ export function createEventRouter(
 
 				// GEO-152: store labels on completed events (not just started)
 				if (!transitionRejected) {
-					const payloadLabels = Array.isArray(payload.labels) ? payload.labels as string[] : undefined;
+					const payloadLabels = Array.isArray(payload.labels)
+						? (payload.labels as string[])
+						: undefined;
 					if (payloadLabels && payloadLabels.length > 0) {
 						store.patchSessionMetadata(event.execution_id, {
 							issue_labels: JSON.stringify(payloadLabels),
@@ -425,7 +424,9 @@ export function createEventRouter(
 
 				// GEO-152: store labels on failed events (not just started)
 				if (!transitionRejected) {
-					const payloadLabels = Array.isArray(payload.labels) ? payload.labels as string[] : undefined;
+					const payloadLabels = Array.isArray(payload.labels)
+						? (payload.labels as string[])
+						: undefined;
 					if (payloadLabels && payloadLabels.length > 0) {
 						store.patchSessionMetadata(event.execution_id, {
 							issue_labels: JSON.stringify(payloadLabels),
@@ -460,9 +461,12 @@ export function createEventRouter(
 			try {
 				// GEO-152: fallback to payload labels when session labels are empty
 				const storedLabels = store.getSessionLabels(event.execution_id);
-				const labels = storedLabels.length > 0
-					? storedLabels
-					: (Array.isArray(payload.labels) ? payload.labels as string[] : []);
+				const labels =
+					storedLabels.length > 0
+						? storedLabels
+						: Array.isArray(payload.labels)
+							? (payload.labels as string[])
+							: [];
 				const { runtime, lead } = registry.resolveWithLead(
 					projects,
 					event.project_name,

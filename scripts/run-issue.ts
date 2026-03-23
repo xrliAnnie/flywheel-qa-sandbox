@@ -29,18 +29,17 @@ import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-
+import { loadConfig } from "../packages/teamlead/src/config.js";
+import {
+	loadProjects,
+	resolveLeadForIssue,
+} from "../packages/teamlead/src/ProjectConfig.js";
 import {
 	killTmuxSession,
 	log,
 	setupComponents,
 	teardownComponents,
 } from "./lib/setup.js";
-import {
-	loadProjects,
-	resolveLeadForIssue,
-} from "../packages/teamlead/src/ProjectConfig.js";
-import { loadConfig } from "../packages/teamlead/src/config.js";
 
 // ── Hardcoded issue data (fallback when LINEAR_API_KEY is not set) ──
 
@@ -268,9 +267,7 @@ async function main() {
 	let cachedProjects: ReturnType<typeof loadProjects> | undefined;
 	try {
 		cachedProjects = loadProjects();
-		const match = cachedProjects.find(
-			(p) => p.projectRoot === resolvedRoot,
-		);
+		const match = cachedProjects.find((p) => p.projectRoot === resolvedRoot);
 		if (match) {
 			projectName = match.projectName;
 		}

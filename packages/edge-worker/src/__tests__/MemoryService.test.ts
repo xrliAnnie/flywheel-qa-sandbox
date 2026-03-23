@@ -216,7 +216,11 @@ describe("MemoryService", () => {
 		});
 
 		await expect(
-			svc.searchMemories({ query: "test", projectName: "proj", userId: "test-user" }),
+			svc.searchMemories({
+				query: "test",
+				projectName: "proj",
+				userId: "test-user",
+			}),
 		).rejects.toThrow("Unexpected search response shape");
 	});
 
@@ -228,7 +232,11 @@ describe("MemoryService", () => {
 		});
 
 		await expect(
-			svc.searchMemories({ query: "test", projectName: "proj", userId: "test-user" }),
+			svc.searchMemories({
+				query: "test",
+				projectName: "proj",
+				userId: "test-user",
+			}),
 		).rejects.toThrow("Unexpected search response shape");
 	});
 
@@ -240,7 +248,11 @@ describe("MemoryService", () => {
 		});
 
 		await expect(
-			svc.searchMemories({ query: "test", projectName: "proj", userId: "test-user" }),
+			svc.searchMemories({
+				query: "test",
+				projectName: "proj",
+				userId: "test-user",
+			}),
 		).rejects.toThrow("lack a valid 'memory' field");
 	});
 

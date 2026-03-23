@@ -137,13 +137,7 @@ export class Blueprint {
 		this.eventEmitter?.emitStarted(env).catch(() => {});
 
 		try {
-			const result = await this.runInner(
-				node,
-				projectRoot,
-				ctx,
-				env,
-				hydrated,
-			);
+			const result = await this.runInner(node, projectRoot, ctx, env, hydrated);
 			await this.emitTerminal(env, result);
 			return result;
 		} catch (err) {
@@ -363,15 +357,16 @@ export class Blueprint {
 		// GEO-206: Compute commDbPath for Lead ↔ Runner communication.
 		// ctx.projectName is resolved from projects config canonical name in
 		// run-issue.ts. claude-lead.sh accepts matching project-name as 3rd arg.
-		const commDbPath = ctx.leadId && ctx.projectName
-			? path.join(
-					process.env["HOME"] ?? "/tmp",
-					".flywheel",
-					"comm",
-					ctx.projectName,
-					"comm.db",
-				)
-			: undefined;
+		const commDbPath =
+			ctx.leadId && ctx.projectName
+				? path.join(
+						process.env.HOME ?? "/tmp",
+						".flywheel",
+						"comm",
+						ctx.projectName,
+						"comm.db",
+					)
+				: undefined;
 
 		let result: AdapterExecutionResult;
 		try {

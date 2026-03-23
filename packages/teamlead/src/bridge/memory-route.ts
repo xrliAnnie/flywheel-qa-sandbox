@@ -7,10 +7,7 @@ const TIMEOUT_MS = 30_000;
 
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
-		const timer = setTimeout(
-			() => reject(new Error("TIMEOUT")),
-			ms,
-		);
+		const timer = setTimeout(() => reject(new Error("TIMEOUT")), ms);
 		promise.then(resolve, reject).finally(() => clearTimeout(timer));
 	});
 }
@@ -23,7 +20,10 @@ function isPlainObject(val: unknown): val is Record<string, unknown> {
 	return typeof val === "object" && val !== null && !Array.isArray(val);
 }
 
-export function createMemoryRouter(memoryService: MemoryService, projects: ProjectEntry[]): Router {
+export function createMemoryRouter(
+	memoryService: MemoryService,
+	projects: ProjectEntry[],
+): Router {
 	const router = Router();
 
 	// POST /search
@@ -36,7 +36,9 @@ export function createMemoryRouter(memoryService: MemoryService, projects: Proje
 			return;
 		}
 		if (!isNonEmptyString(project_name)) {
-			res.status(400).json({ error: "project_name must be a non-empty string" });
+			res
+				.status(400)
+				.json({ error: "project_name must be a non-empty string" });
 			return;
 		}
 		if (!isNonEmptyString(agent_id)) {
@@ -49,7 +51,12 @@ export function createMemoryRouter(memoryService: MemoryService, projects: Proje
 		}
 
 		// Config-based ID validation (GEO-204)
-		const idCheck = validateMemoryIds(projects, project_name, agent_id, user_id);
+		const idCheck = validateMemoryIds(
+			projects,
+			project_name,
+			agent_id,
+			user_id,
+		);
 		if (!idCheck.valid) {
 			res.status(400).json({ error: idCheck.error });
 			return;
@@ -57,8 +64,15 @@ export function createMemoryRouter(memoryService: MemoryService, projects: Proje
 
 		// Validate optional limit
 		if (limit !== undefined) {
-			if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > 50) {
-				res.status(400).json({ error: "limit must be an integer between 1 and 50" });
+			if (
+				typeof limit !== "number" ||
+				!Number.isInteger(limit) ||
+				limit < 1 ||
+				limit > 50
+			) {
+				res
+					.status(400)
+					.json({ error: "limit must be an integer between 1 and 50" });
 				return;
 			}
 		}
@@ -89,11 +103,14 @@ export function createMemoryRouter(memoryService: MemoryService, projects: Proje
 
 	// POST /add
 	router.post("/add", async (req, res) => {
-		const { messages, project_name, agent_id, user_id, metadata } = req.body ?? {};
+		const { messages, project_name, agent_id, user_id, metadata } =
+			req.body ?? {};
 
 		// Validate required fields
 		if (!isNonEmptyString(project_name)) {
-			res.status(400).json({ error: "project_name must be a non-empty string" });
+			res
+				.status(400)
+				.json({ error: "project_name must be a non-empty string" });
 			return;
 		}
 		if (!isNonEmptyString(agent_id)) {
@@ -106,7 +123,12 @@ export function createMemoryRouter(memoryService: MemoryService, projects: Proje
 		}
 
 		// Config-based ID validation (GEO-204)
-		const idCheck = validateMemoryIds(projects, project_name, agent_id, user_id);
+		const idCheck = validateMemoryIds(
+			projects,
+			project_name,
+			agent_id,
+			user_id,
+		);
 		if (!idCheck.valid) {
 			res.status(400).json({ error: idCheck.error });
 			return;
@@ -124,11 +146,15 @@ export function createMemoryRouter(memoryService: MemoryService, projects: Proje
 				return;
 			}
 			if (!validRoles.has(msg.role as string)) {
-				res.status(400).json({ error: 'message role must be "user" or "assistant"' });
+				res
+					.status(400)
+					.json({ error: 'message role must be "user" or "assistant"' });
 				return;
 			}
 			if (!isNonEmptyString(msg.content)) {
-				res.status(400).json({ error: "message content must be a non-empty string" });
+				res
+					.status(400)
+					.json({ error: "message content must be a non-empty string" });
 				return;
 			}
 		}
@@ -144,7 +170,10 @@ export function createMemoryRouter(memoryService: MemoryService, projects: Proje
 		try {
 			const result = await withTimeout(
 				memoryService.addMessages({
-					messages: messages as Array<{ role: "user" | "assistant"; content: string }>,
+					messages: messages as Array<{
+						role: "user" | "assistant";
+						content: string;
+					}>,
 					projectName: project_name,
 					userId: user_id,
 					agentId: agent_id,

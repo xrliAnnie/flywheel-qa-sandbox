@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { OpenClawRuntime } from "../bridge/openclaw-runtime.js";
 
@@ -12,10 +12,13 @@ vi.mock("../bridge/hook-payload.js", async (importOriginal) => {
 	};
 });
 
-import { notifyAgent, buildHookBody } from "../bridge/hook-payload.js";
+import { buildHookBody, notifyAgent } from "../bridge/hook-payload.js";
+
 const mockNotifyAgent = vi.mocked(notifyAgent);
 
-function makeEnvelope(overrides?: Partial<LeadEventEnvelope>): LeadEventEnvelope {
+function makeEnvelope(
+	overrides?: Partial<LeadEventEnvelope>,
+): LeadEventEnvelope {
 	return {
 		seq: 1,
 		event: {
