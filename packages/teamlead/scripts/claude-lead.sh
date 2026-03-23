@@ -23,18 +23,20 @@ SESSION_ID_FILE="${SESSION_DIR}/${LEAD_ID}.session-id"
 
 mkdir -p "$SESSION_DIR"
 
-# GEO-206: Resolve canonical project name from ~/.flywheel/projects.json
-# Priority: 1) explicit 3rd arg, 2) projects.json lookup by projectRoot, 3) basename
+# GEO-206: Resolve canonical project name using the same loadProjects() logic
+# as run-issue.ts (respects FLYWHEEL_PROJECTS env + ~/.flywheel/projects.json).
+# Priority: 1) explicit 3rd arg, 2) loadProjects() lookup by projectRoot, 3) basename
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -n "${3:-}" ]; then
   PROJECT_NAME="$3"
 else
   PROJECT_NAME=$(node -e "
-    try {
-      const p = JSON.parse(require('fs').readFileSync(
-        require('path').join(require('os').homedir(), '.flywheel/projects.json'), 'utf-8'));
-      const m = p.find(e => e.projectRoot === process.argv[1]);
-      if (m) process.stdout.write(m.projectName);
-    } catch {}
+    import('file://${SCRIPT_DIR}/../dist/ProjectConfig.js').then(({ loadProjects }) => {
+      try {
+        const m = loadProjects().find(e => e.projectRoot === process.argv[1]);
+        if (m) process.stdout.write(m.projectName);
+      } catch {}
+    }).catch(() => {});
   " "$PROJECT_DIR" 2>/dev/null)
   PROJECT_NAME="${PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
 fi
