@@ -23,9 +23,21 @@ SESSION_ID_FILE="${SESSION_DIR}/${LEAD_ID}.session-id"
 
 mkdir -p "$SESSION_DIR"
 
-# GEO-206: Export comm DB path for flywheel-comm CLI
-# Use explicit project-name arg if provided; fallback to basename of project-dir.
-PROJECT_NAME="${3:-$(basename "$PROJECT_DIR")}"
+# GEO-206: Resolve canonical project name from ~/.flywheel/projects.json
+# Priority: 1) explicit 3rd arg, 2) projects.json lookup by projectRoot, 3) basename
+if [ -n "${3:-}" ]; then
+  PROJECT_NAME="$3"
+else
+  PROJECT_NAME=$(node -e "
+    try {
+      const p = JSON.parse(require('fs').readFileSync(
+        require('path').join(require('os').homedir(), '.flywheel/projects.json'), 'utf-8'));
+      const m = p.find(e => e.projectRoot === process.argv[1]);
+      if (m) process.stdout.write(m.projectName);
+    } catch {}
+  " "$PROJECT_DIR" 2>/dev/null)
+  PROJECT_NAME="${PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
+fi
 export FLYWHEEL_COMM_DB="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
 COMM_DIST_DIR="$(cd "$(dirname "$0")/../../flywheel-comm/dist" 2>/dev/null && pwd)"
 if [ -n "$COMM_DIST_DIR" ] && [ -f "${COMM_DIST_DIR}/index.js" ]; then

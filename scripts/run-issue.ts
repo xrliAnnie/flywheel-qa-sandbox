@@ -269,7 +269,7 @@ async function main() {
 	try {
 		cachedProjects = loadProjects();
 		const match = cachedProjects.find(
-			(p) => p.projectRoot === resolvedRoot || p.projectRoot.endsWith(`/${baseProjectName}`),
+			(p) => p.projectRoot === resolvedRoot,
 		);
 		if (match) {
 			projectName = match.projectName;
