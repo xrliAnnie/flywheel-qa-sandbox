@@ -108,7 +108,7 @@ describe("CLI", () => {
         dbPath,
         "Q?",
       ]);
-      runCli(["respond", "--db", dbPath, qId, "Use REST."]);
+      runCli(["respond", "--lead", "product-lead", "--db", dbPath, qId, "Use REST."]);
       const result = runCli(["check", "--db", dbPath, qId]);
       expect(result).toBe("Use REST.");
     });
@@ -143,7 +143,7 @@ describe("CLI", () => {
       expect(pendingResult.status).toBe("pending");
 
       // Answer
-      runCli(["respond", "--db", dbPath, qId, "Answer"]);
+      runCli(["respond", "--lead", "product-lead", "--db", dbPath, qId, "Answer"]);
       const answeredResult = JSON.parse(
         runCli(["check", "--db", dbPath, "--json", qId]),
       );
@@ -209,7 +209,7 @@ describe("CLI", () => {
         dbPath,
         "Q?",
       ]);
-      const result = runCli(["respond", "--db", dbPath, qId, "Answer here"]);
+      const result = runCli(["respond", "--lead", "product-lead", "--db", dbPath, qId, "Answer here"]);
       expect(result).toContain("Responded to");
     });
   });

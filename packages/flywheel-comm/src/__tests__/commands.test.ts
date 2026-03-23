@@ -45,6 +45,7 @@ describe("commands round-trip", () => {
     // Lead responds
     respond({
       questionId,
+      fromAgent: "product-lead",
       answer: "Use REST for simplicity.",
       dbPath,
     });
@@ -78,7 +79,7 @@ describe("commands round-trip", () => {
     expect(pending({ lead: "product-lead", dbPath })).toHaveLength(2);
     expect(pending({ lead: "ops-lead", dbPath })).toHaveLength(1);
 
-    respond({ questionId: q1, answer: "A1", dbPath });
+    respond({ questionId: q1, fromAgent: "product-lead", answer: "A1", dbPath });
     expect(pending({ lead: "product-lead", dbPath })).toHaveLength(1);
   });
 
@@ -97,6 +98,7 @@ describe("commands round-trip", () => {
     expect(() =>
       respond({
         questionId: "non-existent",
+        fromAgent: "product-lead",
         answer: "Answer",
         dbPath,
       }),

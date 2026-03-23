@@ -7,7 +7,13 @@ export interface CheckArgs {
 }
 
 export function check(args: CheckArgs): CheckResult {
-  const db = new CommDB(args.dbPath);
+  let db: CommDB;
+  try {
+    db = new CommDB(args.dbPath, false);
+  } catch {
+    // DB doesn't exist yet — no response possible
+    return { status: "pending" };
+  }
   try {
     const response = db.getResponse(args.questionId);
     if (response) {

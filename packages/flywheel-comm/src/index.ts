@@ -164,12 +164,17 @@ function runRespond(args: string[]): void {
   const { values, positionals } = parseArgs({
     args,
     options: {
+      lead: { type: "string" },
       db: { type: "string" },
       project: { type: "string" },
       json: { type: "boolean", default: false },
     },
     allowPositionals: true,
   });
+
+  if (!values.lead) {
+    throw new Error("--lead is required (identifies who is responding)");
+  }
 
   const questionId = positionals[0];
   if (!questionId) {
@@ -182,7 +187,7 @@ function runRespond(args: string[]): void {
   }
 
   const dbPath = resolveDbPath({ db: values.db, project: values.project });
-  respond({ questionId, answer, dbPath });
+  respond({ questionId, fromAgent: values.lead, answer, dbPath });
 
   if (values.json) {
     console.log(JSON.stringify({ status: "ok", question_id: questionId }));

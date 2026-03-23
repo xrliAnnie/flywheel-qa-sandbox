@@ -21,7 +21,14 @@ mkdir -p "$SESSION_DIR"
 # GEO-206: Export comm DB path for flywheel-comm CLI
 PROJECT_NAME=$(basename "$PROJECT_DIR")
 export FLYWHEEL_COMM_DB="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
-export FLYWHEEL_COMM_CLI="$(cd "$(dirname "$0")/../../flywheel-comm/dist" && pwd)/index.js"
+COMM_DIST_DIR="$(cd "$(dirname "$0")/../../flywheel-comm/dist" 2>/dev/null && pwd)"
+if [ -n "$COMM_DIST_DIR" ] && [ -f "${COMM_DIST_DIR}/index.js" ]; then
+  export FLYWHEEL_COMM_CLI="${COMM_DIST_DIR}/index.js"
+  echo "[lead] Comm CLI: ${FLYWHEEL_COMM_CLI}"
+else
+  echo "[lead] WARNING: flywheel-comm not built yet. Run 'pnpm -r build' first."
+  echo "[lead] Lead ↔ Runner communication will not be available."
+fi
 mkdir -p "$(dirname "$FLYWHEEL_COMM_DB")"
 echo "[lead] Comm DB: ${FLYWHEEL_COMM_DB}"
 

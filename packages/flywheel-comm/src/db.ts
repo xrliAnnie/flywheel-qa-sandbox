@@ -1,6 +1,6 @@
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Message } from "./types.js";
 
@@ -25,7 +25,19 @@ CREATE INDEX IF NOT EXISTS idx_messages_expires ON messages(expires_at);
 export class CommDB {
   private db: Database.Database;
 
-  constructor(dbPath: string) {
+  /**
+   * Open (or create) the comm database.
+   * @param dbPath - Path to the SQLite file
+   * @param createIfMissing - When false, throws if the DB file doesn't exist.
+   *   Read-only commands (check, pending) should pass false to avoid masking
+   *   configuration errors as "no pending questions".
+   */
+  constructor(dbPath: string, createIfMissing = true) {
+    if (!createIfMissing && !existsSync(dbPath)) {
+      throw new Error(
+        `Database not found: ${dbPath}. Has a question been asked yet?`,
+      );
+    }
     mkdirSync(dirname(dbPath), { recursive: true });
     this.db = new Database(dbPath);
     this.db.pragma("journal_mode = WAL");

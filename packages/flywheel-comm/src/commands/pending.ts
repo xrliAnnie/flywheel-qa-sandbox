@@ -7,7 +7,7 @@ export interface PendingArgs {
 }
 
 export function pending(args: PendingArgs): PendingQuestion[] {
-  const db = new CommDB(args.dbPath);
+  const db = new CommDB(args.dbPath, false);
   try {
     const questions = db.getPendingQuestions(args.lead);
     return questions.map((q) => ({
