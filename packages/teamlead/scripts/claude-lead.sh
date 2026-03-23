@@ -15,7 +15,10 @@
 set -euo pipefail
 
 LEAD_ID="${1:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name]}"
-PROJECT_DIR="${2:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name]}"
+# Normalize PROJECT_DIR: expand ~ and resolve to absolute path (must match
+# projectRoot in projects.json exactly for canonical name resolution)
+PROJECT_DIR_RAW="${2:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name]}"
+PROJECT_DIR="$(cd "$PROJECT_DIR_RAW" && pwd)"
 BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 BRIDGE_TOKEN="${TEAMLEAD_API_TOKEN:-}"
 SESSION_DIR="${HOME}/.flywheel/claude-sessions"
