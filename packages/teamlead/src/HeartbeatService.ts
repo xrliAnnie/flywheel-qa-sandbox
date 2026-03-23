@@ -3,10 +3,7 @@ import {
 	applyTransition,
 } from "./applyTransition.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
-import {
-	buildSessionKey,
-	type HookPayload,
-} from "./bridge/hook-payload.js";
+import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import type { ProjectEntry } from "./ProjectConfig.js";

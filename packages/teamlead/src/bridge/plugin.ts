@@ -2,7 +2,6 @@ import { timingSafeEqual } from "node:crypto";
 import express from "express";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
-import { createMemoryRouter } from "./memory-route.js";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { CleanupService, FetchDiscordClient } from "../CleanupService.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
@@ -20,9 +19,10 @@ import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
 import { ForumPostCreator } from "./ForumPostCreator.js";
 import { ForumTagUpdater } from "./ForumTagUpdater.js";
-import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { LeadRuntime } from "./lead-runtime.js";
+import { createMemoryRouter } from "./memory-route.js";
 import { OpenClawRuntime } from "./openclaw-runtime.js";
+import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
 import { createQueryRouter } from "./tools.js";
 import type { BridgeConfig } from "./types.js";
@@ -582,7 +582,9 @@ export function createBridgeApp(
 			}
 			const runtime = registry.getForLead(leadId);
 			if (!runtime) {
-				res.status(404).json({ error: `No runtime registered for lead "${leadId}"` });
+				res
+					.status(404)
+					.json({ error: `No runtime registered for lead "${leadId}"` });
 				return;
 			}
 			try {
@@ -679,7 +681,9 @@ export async function startBridge(
 		}
 	}
 	if (registry.size > 0) {
-		console.log(`[Bridge] RuntimeRegistry: ${registry.size} lead runtime(s) registered`);
+		console.log(
+			`[Bridge] RuntimeRegistry: ${registry.size} lead runtime(s) registered`,
+		);
 	}
 
 	// GEO-187: EventFilter + ForumTagUpdater

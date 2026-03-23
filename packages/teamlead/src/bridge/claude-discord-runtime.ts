@@ -111,14 +111,23 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 		if (e.decision_route) lines.push(`> **Route**: ${e.decision_route}`);
 		if (e.summary) lines.push(`> **Summary**: ${e.summary.slice(0, 300)}`);
 		if (e.last_error) lines.push(`> **Error**: ${e.last_error.slice(0, 200)}`);
-		if (e.action) lines.push(`> **Action**: ${e.action} (${e.action_source_status} → ${e.action_target_status})`);
-		if (e.commit_count) lines.push(`> **Commits**: ${e.commit_count} | +${e.lines_added ?? 0}/-${e.lines_removed ?? 0}`);
+		if (e.action)
+			lines.push(
+				`> **Action**: ${e.action} (${e.action_source_status} → ${e.action_target_status})`,
+			);
+		if (e.commit_count)
+			lines.push(
+				`> **Commits**: ${e.commit_count} | +${e.lines_added ?? 0}/-${e.lines_removed ?? 0}`,
+			);
 		if (e.filter_priority) lines.push(`> **Priority**: ${e.filter_priority}`);
-		if (e.notification_context) lines.push(`> **Context**: ${e.notification_context}`);
+		if (e.notification_context)
+			lines.push(`> **Context**: ${e.notification_context}`);
 		if (e.thread_id) lines.push(`> **Thread**: ${e.thread_id}`);
 		if (e.forum_channel) lines.push(`> **Forum**: ${e.forum_channel}`);
 
-		lines.push(`> **Timestamp**: ${env.timestamp} | **Session Key**: \`${env.sessionKey}\``);
+		lines.push(
+			`> **Timestamp**: ${env.timestamp} | **Session Key**: \`${env.sessionKey}\``,
+		);
 		return lines.join("\n");
 	}
 
@@ -164,7 +173,9 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 
 		// Recent events (for re-processing)
 		if (snapshot.recentEvents.length > 0) {
-			sections.push(`### Recent Events (last 5 min — ${snapshot.recentEvents.length} events)`);
+			sections.push(
+				`### Recent Events (last 5 min — ${snapshot.recentEvents.length} events)`,
+			);
 			for (const e of snapshot.recentEvents) {
 				sections.push(
 					`- [#${e.seq}] \`${e.event.event_type}\` — ${e.event.issue_identifier ?? e.event.issue_id ?? "—"}`,

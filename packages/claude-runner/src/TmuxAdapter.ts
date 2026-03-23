@@ -134,6 +134,11 @@ export class TmuxAdapter implements IAdapter {
 					]
 				: [];
 
+		// GEO-206: Inject comm DB path for flywheel-comm CLI
+		if (ctx.commDbPath) {
+			envArgs.push("-e", `FLYWHEEL_COMM_DB=${ctx.commDbPath}`);
+		}
+
 		// Launch Claude in a new tmux window WITH cwd
 		const launchResult = this.execFileFn("tmux", [
 			"new-window",

@@ -67,8 +67,18 @@ describe("Lead Event Journal (GEO-195)", () => {
 
 	describe("getRecentDeliveredEvents()", () => {
 		it("returns events within window, ordered by seq asc", () => {
-			const seq1 = store.appendLeadEvent("product-lead", "evt-1", "started", "{}");
-			const seq2 = store.appendLeadEvent("product-lead", "evt-2", "completed", "{}");
+			const seq1 = store.appendLeadEvent(
+				"product-lead",
+				"evt-1",
+				"started",
+				"{}",
+			);
+			const seq2 = store.appendLeadEvent(
+				"product-lead",
+				"evt-2",
+				"completed",
+				"{}",
+			);
 			store.markLeadEventDelivered(seq1);
 			store.markLeadEventDelivered(seq2);
 

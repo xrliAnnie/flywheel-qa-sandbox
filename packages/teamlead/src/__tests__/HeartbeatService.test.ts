@@ -1,10 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
+import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import {
 	HeartbeatService,
 	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
-import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
-import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";

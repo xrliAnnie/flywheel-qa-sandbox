@@ -387,7 +387,7 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 
 		// tmux kill-session will fail (no tmux in test env), but
 		// "no server running" should be treated as safe → proceed
-		const session = store.getSession("exec-terminate");
+		const _session = store.getSession("exec-terminate");
 		// Either terminated (tmux error treated as safe) or still running (tmux error treated as real)
 		// The key test: the endpoint doesn't crash
 		expect(res.status).toBeLessThanOrEqual(400);

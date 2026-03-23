@@ -54,10 +54,7 @@ async function main() {
 		});
 		if (memoryService) console.log("[run-bridge] Memory service enabled");
 	} catch (err) {
-		console.warn(
-			"[run-bridge] Memory init failed:",
-			(err as Error).message,
-		);
+		console.warn("[run-bridge] Memory init failed:", (err as Error).message);
 	}
 
 	// Phase 4: Start bridge with injected store + dispatcher + memory

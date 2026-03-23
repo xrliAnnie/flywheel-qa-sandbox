@@ -584,6 +584,8 @@ describe("Event route — EventFilter integration", () => {
 		await new Promise((r) => setTimeout(r, 150));
 
 		// No thread → no_thread
-		expect(capturedEnvelopes[0]!.event.forum_tag_update_result).toBe("no_thread");
+		expect(capturedEnvelopes[0]!.event.forum_tag_update_result).toBe(
+			"no_thread",
+		);
 	});
 });

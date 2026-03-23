@@ -643,6 +643,34 @@ describe("TmuxAdapter", () => {
 			expect(envArgStr).toContain("FLYWHEEL_ISSUE_ID=GEO-42");
 		});
 
+		// GEO-206: commDbPath env injection
+		it("execute() with commDbPath — injects FLYWHEEL_COMM_DB env", async () => {
+			const hookServer = makeMockHookServer({ port: 12345 });
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 30000, hookServer);
+
+			await adapter.execute(
+				makeCtx({ commDbPath: "/home/user/.flywheel/comm/geoforge3d/comm.db" }),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const envArgStr = newWindow!.args.join(" ");
+			expect(envArgStr).toContain(
+				"FLYWHEEL_COMM_DB=/home/user/.flywheel/comm/geoforge3d/comm.db",
+			);
+		});
+
+		it("execute() without commDbPath — no FLYWHEEL_COMM_DB env", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const args = newWindow!.args;
+			expect(args.join(" ")).not.toContain("FLYWHEEL_COMM_DB");
+		});
+
 		it("waitForCompletion resolves on HTTP callback", async () => {
 			const hookServer = makeMockHookServer({ resolveImmediately: true });
 			const { fn } = makeMockExec({ paneDead: false });

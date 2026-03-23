@@ -59,12 +59,10 @@ async function main() {
 			projectName: "bridge",
 			llmModel: process.env.FLYWHEEL_MEMORY_MODEL,
 		});
-		if (memoryService) console.log("[Memory] Service enabled (Supabase pgvector)");
+		if (memoryService)
+			console.log("[Memory] Service enabled (Supabase pgvector)");
 	} catch (err) {
-		console.warn(
-			"[Memory] Failed to initialize:",
-			(err as Error).message,
-		);
+		console.warn("[Memory] Failed to initialize:", (err as Error).message);
 	}
 
 	const { close, registry, store } = await startBridge(config, projects, {

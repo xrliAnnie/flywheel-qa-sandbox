@@ -237,7 +237,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 			const doDeliver = async () => {
 				if (this.eventFilter) {
-					const filterResult = this.eventFilter.classify(eventType, hookPayload);
+					const filterResult = this.eventFilter.classify(
+						eventType,
+						hookPayload,
+					);
 
 					let tagResult: HookPayload["forum_tag_update_result"];
 					if (this.forumTagUpdater) {

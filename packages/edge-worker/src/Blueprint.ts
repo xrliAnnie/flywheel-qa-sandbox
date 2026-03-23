@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { SkillsConfig } from "flywheel-config";
 import type {
 	AdapterExecutionResult,
@@ -65,6 +66,8 @@ export interface BlueprintContext {
 		attempt: number;
 		reason?: string;
 	};
+	// GEO-206 — Lead ID for bidirectional communication prompt
+	leadId?: string;
 }
 
 /** Shell command runner for tmux window cleanup */
@@ -134,13 +137,7 @@ export class Blueprint {
 		this.eventEmitter?.emitStarted(env).catch(() => {});
 
 		try {
-			const result = await this.runInner(
-				node,
-				projectRoot,
-				ctx,
-				env,
-				hydrated,
-			);
+			const result = await this.runInner(node, projectRoot, ctx, env, hydrated);
 			await this.emitTerminal(env, result);
 			return result;
 		} catch (err) {
@@ -297,9 +294,26 @@ export class Blueprint {
 			);
 		}
 
-		systemPromptLines.push(
-			"Do not ask questions — implement your best judgment.",
-		);
+		// GEO-206: Inject flywheel-comm ask instructions when Lead is available
+		if (ctx.leadId) {
+			const __filename = fileURLToPath(import.meta.url);
+			const commCliPath = path.resolve(
+				path.dirname(__filename),
+				"../../flywheel-comm/dist/index.js",
+			);
+			systemPromptLines.push(
+				`Prefer independent implementation. If you encounter a major ambiguity ` +
+					`(architecture choice, API design, priority conflict) that you cannot safely ` +
+					`resolve alone, use \`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} "your question"\` ` +
+					`to ask your Lead. Then continue with other work and periodically run ` +
+					`\`node ${commCliPath} check {question_id}\` to check for a response. ` +
+					`If no response arrives before your session ends, use your best judgment.`,
+			);
+		} else {
+			systemPromptLines.push(
+				"Do not ask questions — implement your best judgment.",
+			);
+		}
 		const baseSystemPrompt = systemPromptLines.join("\n");
 
 		// Agent context (additive — prepend before base system prompt)
@@ -339,6 +353,21 @@ export class Blueprint {
 
 		// ── Adapter execution (GEO-157: IAdapter.execute()) ──
 		const timeoutMs = ctx.sessionTimeoutMs ?? 2_700_000;
+
+		// GEO-206: Compute commDbPath for Lead ↔ Runner communication.
+		// ctx.projectName is resolved from projects config canonical name in
+		// run-issue.ts. claude-lead.sh accepts matching project-name as 3rd arg.
+		const commDbPath =
+			ctx.leadId && ctx.projectName
+				? path.join(
+						process.env.HOME ?? "/tmp",
+						".flywheel",
+						"comm",
+						ctx.projectName,
+						"comm.db",
+					)
+				: undefined;
+
 		let result: AdapterExecutionResult;
 		try {
 			result = await adapter.execute({
@@ -356,6 +385,7 @@ export class Blueprint {
 				timeoutMs,
 				sessionDisplayName: `${hydrated.issueId} ${hydrated.issueTitle}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
+				commDbPath,
 				onHeartbeat: () => {
 					this.eventEmitter?.emitHeartbeat(env).catch(() => {});
 				},

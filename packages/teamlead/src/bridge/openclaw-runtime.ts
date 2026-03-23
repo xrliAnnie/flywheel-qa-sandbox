@@ -3,10 +3,7 @@
  * into a LeadRuntime implementation. Behavior-preserving extraction.
  */
 
-import {
-	buildHookBody,
-	notifyAgent,
-} from "./hook-payload.js";
+import { buildHookBody, notifyAgent } from "./hook-payload.js";
 import type {
 	LeadBootstrap,
 	LeadEventEnvelope,

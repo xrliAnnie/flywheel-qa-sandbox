@@ -28,7 +28,11 @@ describe.skipIf(!RUN_LIVE || !SUPABASE_URL || !SUPABASE_KEY || !GOOGLE_API_KEY)(
 			const addResult = await svc.addMessages({
 				messages: [
 					{ role: "user", content: "Live smoke test issue" },
-					{ role: "assistant", content: "Session result: success. test: verify Supabase integration" },
+					{
+						role: "assistant",
+						content:
+							"Session result: success. test: verify Supabase integration",
+					},
 				],
 				projectName: uniqueProject,
 				userId: "live-test-user",
