@@ -11,6 +11,8 @@ export interface RetryRequest {
 	previousDecisionRoute?: string;
 	previousReasoning?: string;
 	runAttempt: number;
+	// GEO-206: Lead ID for bidirectional communication
+	leadId?: string;
 }
 
 export interface RetryResult {

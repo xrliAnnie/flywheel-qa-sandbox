@@ -36,6 +36,11 @@ import {
 	setupComponents,
 	teardownComponents,
 } from "./lib/setup.js";
+import {
+	loadProjects,
+	resolveLeadForIssue,
+} from "../packages/teamlead/src/ProjectConfig.js";
+import { loadConfig } from "../packages/teamlead/src/config.js";
 
 // ── Hardcoded issue data (fallback when LINEAR_API_KEY is not set) ──
 
@@ -365,12 +370,31 @@ async function main() {
 	const startTime = Date.now();
 	const node = { id: issueId, blockedBy: [] };
 	const executionId = randomUUID();
+
+	// GEO-206: Resolve leadId for Lead ↔ Runner communication
+	let leadId: string | undefined;
+	try {
+		const projects = loadProjects();
+		const issueLabels: string[] = issueData?.labels ?? [];
+		const result = resolveLeadForIssue(projects, projectName, issueLabels);
+		leadId = result.lead.agentId;
+	} catch {
+		// projectName not in projects config — fallback to defaultLeadAgentId
+		try {
+			const bridgeConfig = loadConfig();
+			leadId = bridgeConfig.defaultLeadAgentId;
+		} catch {
+			// No config available — leadId stays undefined (no comm prompt injected)
+		}
+	}
+
 	const ctx = {
 		teamName: "eng",
 		runnerName: "claude",
 		projectName,
 		sessionTimeoutMs: 2_700_000, // 45 min — land skill needs time for CI/review/merge
 		executionId,
+		leadId,
 	};
 
 	let actualSuccess = false;

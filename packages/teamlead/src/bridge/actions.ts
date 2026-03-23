@@ -8,6 +8,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
+import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
@@ -455,6 +456,18 @@ async function handleRetry(
 
 	const runAttempt = (session.run_attempt ?? 0) + 1;
 
+	// GEO-206: Resolve leadId for retry
+	let retryLeadId: string | undefined;
+	if (projects) {
+		try {
+			const storedLabels = session.issue_labels ? JSON.parse(session.issue_labels) as string[] : [];
+			const resolved = resolveLeadForIssue(projects, session.project_name, storedLabels);
+			retryLeadId = resolved.lead.agentId;
+		} catch {
+			retryLeadId = config?.defaultLeadAgentId;
+		}
+	}
+
 	try {
 		const result = await retryDispatcher.dispatch({
 			oldExecutionId: executionId,
@@ -467,6 +480,7 @@ async function handleRetry(
 			previousDecisionRoute: session.decision_route,
 			previousReasoning: ceoContext ?? session.decision_reasoning,
 			runAttempt,
+			leadId: retryLeadId,
 		});
 
 		// Link predecessor → successor

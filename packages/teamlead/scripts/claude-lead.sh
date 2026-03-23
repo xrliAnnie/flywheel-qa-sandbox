@@ -18,6 +18,13 @@ SESSION_ID_FILE="${SESSION_DIR}/${LEAD_ID}.session-id"
 
 mkdir -p "$SESSION_DIR"
 
+# GEO-206: Export comm DB path for flywheel-comm CLI
+PROJECT_NAME=$(basename "$PROJECT_DIR")
+export FLYWHEEL_COMM_DB="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
+export FLYWHEEL_COMM_CLI="$(cd "$(dirname "$0")/../../flywheel-comm/dist" && pwd)/index.js"
+mkdir -p "$(dirname "$FLYWHEEL_COMM_DB")"
+echo "[lead] Comm DB: ${FLYWHEEL_COMM_DB}"
+
 # Send bootstrap via Bridge API
 echo "[lead] Sending bootstrap for ${LEAD_ID}..."
 if [ -n "$BRIDGE_TOKEN" ]; then

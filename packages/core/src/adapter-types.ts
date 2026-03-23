@@ -194,6 +194,11 @@ export interface AdapterExecutionContext {
 	/** Callback for AskUserQuestion tool invocations */
 	onAskUserQuestion?: OnAskUserQuestion;
 
+	// -- GEO-206: Lead ↔ Runner communication --
+
+	/** SQLite DB path for flywheel-comm CLI */
+	commDbPath?: string;
+
 	// -- Callbacks --
 
 	/** Log output callback (stdout/stderr from CLI process) */

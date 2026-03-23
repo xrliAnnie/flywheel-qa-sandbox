@@ -401,4 +401,87 @@ describe("Blueprint", () => {
 		);
 		expect(killCalls).toHaveLength(1);
 	});
+
+	// ─── GEO-206: Lead ↔ Runner communication prompt ──
+
+	it("injects flywheel-comm ask instructions when leadId is set", async () => {
+		const adapter = makeMockAdapter();
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker(),
+			() => adapter,
+			makeMockShell(),
+		);
+
+		await blueprint.run(
+			makeNode(),
+			"/project",
+			makeContext({ leadId: "product-lead", projectName: "geoforge3d" }),
+		);
+
+		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		expect(execCall.appendSystemPrompt).toContain("flywheel-comm");
+		expect(execCall.appendSystemPrompt).toContain("product-lead");
+		expect(execCall.appendSystemPrompt).toContain("ask");
+		expect(execCall.appendSystemPrompt).toContain("check");
+		expect(execCall.appendSystemPrompt).not.toContain(
+			"Do not ask questions",
+		);
+	});
+
+	it("keeps 'Do not ask questions' when leadId is not set", async () => {
+		const adapter = makeMockAdapter();
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker(),
+			() => adapter,
+			makeMockShell(),
+		);
+
+		await blueprint.run(makeNode(), "/project", makeContext());
+
+		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		expect(execCall.appendSystemPrompt).toContain(
+			"Do not ask questions",
+		);
+		expect(execCall.appendSystemPrompt).not.toContain("flywheel-comm");
+	});
+
+	it("passes commDbPath to adapter when leadId + projectName set", async () => {
+		const adapter = makeMockAdapter();
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker(),
+			() => adapter,
+			makeMockShell(),
+		);
+
+		await blueprint.run(
+			makeNode(),
+			"/project",
+			makeContext({ leadId: "product-lead", projectName: "geoforge3d" }),
+		);
+
+		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		expect(execCall.commDbPath).toContain(".flywheel/comm/geoforge3d/comm.db");
+	});
+
+	it("does not pass commDbPath when leadId is not set", async () => {
+		const adapter = makeMockAdapter();
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker(),
+			() => adapter,
+			makeMockShell(),
+		);
+
+		await blueprint.run(makeNode(), "/project", makeContext());
+
+		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		expect(execCall.commDbPath).toBeUndefined();
+	});
 });
