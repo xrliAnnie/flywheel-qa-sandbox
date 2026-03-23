@@ -309,6 +309,16 @@ export class Blueprint {
 					`\`node ${commCliPath} check {question_id}\` to check for a response. ` +
 					`If no response arrives before your session ends, use your best judgment.`,
 			);
+			// GEO-206 Phase 2: Inbox instructions for Lead proactive commands
+			systemPromptLines.push(
+				`Additionally, your Lead may send you proactive instructions. ` +
+					`Periodically check for instructions with ` +
+					`\`node ${commCliPath} inbox --exec-id ${executionId}\`. ` +
+					`Check at task boundaries (before committing, when starting a new subtask). ` +
+					`If you receive instructions, evaluate their urgency: follow immediately ` +
+					`if the Lead explicitly demands it, otherwise incorporate at the next ` +
+					`natural breakpoint.`,
+			);
 		} else {
 			systemPromptLines.push(
 				"Do not ask questions — implement your best judgment.",
@@ -386,6 +396,9 @@ export class Blueprint {
 				sessionDisplayName: `${hydrated.issueId} ${hydrated.issueTitle}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
 				commDbPath,
+				waitingTimeoutMs: 14_400_000, // GEO-206 Phase 2: 4h when waiting for Lead
+				leadId: ctx.leadId,
+				projectName: ctx.projectName,
 				onHeartbeat: () => {
 					this.eventEmitter?.emitHeartbeat(env).catch(() => {});
 				},

@@ -5,6 +5,7 @@ export interface Message {
 	type: "question" | "response" | "instruction" | "progress";
 	content: string;
 	parent_id: string | null;
+	read_at: string | null;
 	created_at: string;
 	expires_at: string;
 }
@@ -21,4 +22,15 @@ export interface PendingQuestion {
 	from_agent: string;
 	content: string;
 	created_at: string;
+}
+
+export interface Session {
+	execution_id: string;
+	tmux_window: string;
+	project_name: string;
+	issue_id: string | null;
+	lead_id: string | null;
+	started_at: string;
+	ended_at: string | null;
+	status: "running" | "completed" | "timeout";
 }

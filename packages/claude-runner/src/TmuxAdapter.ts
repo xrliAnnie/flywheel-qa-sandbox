@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
+import { CommDB } from "flywheel-comm/db";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -157,18 +158,58 @@ export class TmuxAdapter implements IAdapter {
 		]);
 		const windowId = launchResult.stdout.trim();
 
+		// GEO-206 Phase 2: Register session in comm.db
+		// Store full tmux target (session:window) so capture works with any session name
+		let registeredSession = false;
+		if (ctx.commDbPath) {
+			try {
+				const commDb = new CommDB(ctx.commDbPath);
+				commDb.registerSession(
+					ctx.executionId,
+					`${this.sessionName}:${windowId}`,
+					ctx.projectName ?? "unknown",
+					ctx.issueId,
+					ctx.leadId,
+				);
+				commDb.close();
+				registeredSession = true;
+			} catch {
+				// Registration failure is non-fatal
+			}
+		}
+
 		// Send immediate first heartbeat (before first poll cycle)
 		ctx.onHeartbeat?.(ctx.executionId);
 
 		// Wait for completion: mode depends on hookServer presence
-		const timedOut = await this.waitForCompletion(
-			ctx,
-			claudeSessionId,
-			windowId,
-			effectiveTimeoutMs,
-			callbackToken,
-			ctx.sentinelPath,
-		);
+		let timedOut: boolean;
+		let sessionStatus: "completed" | "timeout" = "completed";
+		try {
+			timedOut = await this.waitForCompletion(
+				ctx,
+				claudeSessionId,
+				windowId,
+				effectiveTimeoutMs,
+				callbackToken,
+				ctx.sentinelPath,
+			);
+			sessionStatus = timedOut ? "timeout" : "completed";
+		} catch (err) {
+			// waitForCompletion failure — session may still exist
+			sessionStatus = "timeout";
+			throw err;
+		} finally {
+			// GEO-206 Phase 2: Update session status
+			if (registeredSession && ctx.commDbPath) {
+				try {
+					const commDb = new CommDB(ctx.commDbPath);
+					commDb.updateSessionStatus(ctx.executionId, sessionStatus);
+					commDb.close();
+				} catch {
+					// Update failure is non-fatal
+				}
+			}
+		}
 
 		return {
 			success: true, // runner-level: process completed. Task-level success via GitResultChecker
@@ -205,6 +246,77 @@ export class TmuxAdapter implements IAdapter {
 	 *
 	 * During the poll loop, calls ctx.onHeartbeat to report liveness.
 	 */
+	/**
+	 * GEO-206 Phase 2: Check comm.db for pending questions and manage dynamic timeout.
+	 * Returns true if the session should be timed out.
+	 */
+	/**
+	 * GEO-206 Phase 2: Check comm.db for pending questions and manage dynamic timeout.
+	 *
+	 * Timeout logic: When Runner is waiting for Lead, time spent waiting does NOT
+	 * count against the normal 45-min timeout. This prevents the scenario where
+	 * Lead responds after 50 minutes but Runner immediately times out because
+	 * elapsed (50min) > normalTimeout (45min).
+	 *
+	 * We track `totalWaitingMs` — accumulated time spent in waiting state.
+	 * Normal timeout checks: (elapsed - totalWaitingMs) > normalTimeoutMs
+	 * Waiting hard cap: elapsed > waitingTimeoutMs (4h absolute limit)
+	 */
+	private checkDynamicTimeout(
+		ctx: AdapterExecutionContext,
+		start: number,
+		normalTimeoutMs: number,
+		commDbHandle: { db: CommDB | null },
+		waitState: { totalWaitingMs: number; lastWaitStart: number | null },
+	): { shouldTimeout: boolean; isWaiting: boolean } {
+		let isWaiting = false;
+
+		// Lazy open: try to open DB if not yet opened
+		if (!commDbHandle.db && ctx.commDbPath && existsSync(ctx.commDbPath)) {
+			try {
+				commDbHandle.db = CommDB.openReadonly(ctx.commDbPath);
+			} catch {
+				// DB not ready — will retry next cycle
+			}
+		}
+
+		// Query pending questions for THIS execution
+		if (commDbHandle.db) {
+			try {
+				isWaiting = commDbHandle.db.hasPendingQuestionsFrom(ctx.executionId);
+			} catch {
+				// Query failed — fall back to normal timeout
+				isWaiting = false;
+			}
+		}
+
+		const now = Date.now();
+
+		// Track waiting time transitions
+		if (isWaiting && waitState.lastWaitStart === null) {
+			// Entered waiting state
+			waitState.lastWaitStart = now;
+		} else if (!isWaiting && waitState.lastWaitStart !== null) {
+			// Left waiting state — accumulate time spent waiting
+			waitState.totalWaitingMs += now - waitState.lastWaitStart;
+			waitState.lastWaitStart = null;
+		}
+
+		const elapsed = now - start;
+		if (isWaiting) {
+			// While waiting: only enforce absolute hard cap
+			const hardCap = ctx.waitingTimeoutMs ?? 14_400_000; // 4h
+			return { shouldTimeout: elapsed > hardCap, isWaiting };
+		}
+
+		// Not waiting: subtract accumulated waiting time from elapsed
+		const currentWaiting = waitState.lastWaitStart
+			? now - waitState.lastWaitStart
+			: 0;
+		const activeTime = elapsed - waitState.totalWaitingMs - currentWaiting;
+		return { shouldTimeout: activeTime > normalTimeoutMs, isWaiting };
+	}
+
 	private async waitForCompletion(
 		ctx: AdapterExecutionContext,
 		claudeSessionId: string,
@@ -218,6 +330,14 @@ export class TmuxAdapter implements IAdapter {
 			let watcher: ReturnType<typeof watch> | null = null;
 			let poller: ReturnType<typeof setInterval> | null = null;
 			let gracePollerRef: ReturnType<typeof setInterval> | null = null;
+			const start = Date.now();
+
+			// GEO-206 Phase 2: Lazy-opened readonly DB handle for dynamic timeout
+			const commDbHandle: { db: CommDB | null } = { db: null };
+			const waitState = {
+				totalWaitingMs: 0,
+				lastWaitStart: null as number | null,
+			};
 
 			const settle = (timedOut: boolean) => {
 				if (settled) return;
@@ -226,26 +346,39 @@ export class TmuxAdapter implements IAdapter {
 				if (poller) clearInterval(poller);
 				if (gracePollerRef) clearInterval(gracePollerRef);
 				clearTimeout(timer);
+				// GEO-206 Phase 2: Close readonly DB handle
+				if (commDbHandle.db) {
+					try {
+						commDbHandle.db.close();
+					} catch {
+						/* ignore */
+					}
+					commDbHandle.db = null;
+				}
 				if (this.hookServer && callbackToken) {
 					this.hookServer.cancelWait(callbackToken);
 				}
 				resolve(timedOut);
 			};
 
-			// Timeout
+			// Hard upper bound timeout (safety net)
+			const hardTimeoutMs = Math.max(
+				timeoutMs,
+				ctx.waitingTimeoutMs ?? timeoutMs,
+			);
 			const timer = setTimeout(() => {
 				console.warn(
-					`[TmuxAdapter] Session ${claudeSessionId} timed out after ${timeoutMs}ms. Window ${windowId} preserved for inspection.`,
+					`[TmuxAdapter] Session ${claudeSessionId} hard timeout after ${hardTimeoutMs}ms. Window ${windowId} preserved for inspection.`,
 				);
 				settle(true);
-			}, timeoutMs);
+			}, hardTimeoutMs);
 
 			if (this.hookServer && callbackToken) {
 				// ── v0.2 mode: HTTP callback (primary) + pane_dead poller + sentinel (fallback) ──
 
-				// Path 1: HTTP callback
+				// Path 1: HTTP callback (use hard upper bound to match dynamic timeout)
 				this.hookServer
-					.waitForCompletion(callbackToken, timeoutMs)
+					.waitForCompletion(callbackToken, hardTimeoutMs)
 					.then((event) => {
 						if (event) settle(false);
 					});
@@ -256,6 +389,24 @@ export class TmuxAdapter implements IAdapter {
 
 					// Heartbeat: report liveness each poll cycle
 					ctx.onHeartbeat?.(ctx.executionId);
+
+					// GEO-206 Phase 2: Dynamic timeout check (query DB first, then check elapsed)
+					if (ctx.commDbPath) {
+						const { shouldTimeout } = this.checkDynamicTimeout(
+							ctx,
+							start,
+							timeoutMs,
+							commDbHandle,
+							waitState,
+						);
+						if (shouldTimeout) {
+							console.warn(
+								`[TmuxAdapter] Dynamic timeout for ${claudeSessionId}. Window ${windowId} preserved.`,
+							);
+							settle(true);
+							return;
+						}
+					}
 
 					// Sentinel check: land-status.json terminal state
 					if (sentinelPath) {
@@ -335,6 +486,24 @@ export class TmuxAdapter implements IAdapter {
 
 					// Heartbeat: report liveness each poll cycle
 					ctx.onHeartbeat?.(ctx.executionId);
+
+					// GEO-206 Phase 2: Dynamic timeout check (query DB first, then check elapsed)
+					if (ctx.commDbPath) {
+						const { shouldTimeout } = this.checkDynamicTimeout(
+							ctx,
+							start,
+							timeoutMs,
+							commDbHandle,
+							waitState,
+						);
+						if (shouldTimeout) {
+							console.warn(
+								`[TmuxAdapter] Dynamic timeout for ${claudeSessionId}. Window ${windowId} preserved.`,
+							);
+							settle(true);
+							return;
+						}
+					}
 
 					// Also check if any marker appeared (in case fs.watch missed it)
 					try {
