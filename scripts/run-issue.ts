@@ -260,6 +260,8 @@ async function main() {
 
 	// 4. v0.2 components — shared setup
 	const isSingleRepo = subRepos.length === 0;
+	// GEO-206: projectName is used as the comm DB directory name.
+	// Must match the project-name arg passed to claude-lead.sh.
 	const projectName = resolvedRoot.split("/").pop() ?? "unknown";
 	const components = await setupComponents({
 		projectRoot: resolvedRoot,

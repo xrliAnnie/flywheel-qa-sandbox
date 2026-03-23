@@ -360,7 +360,10 @@ export class Blueprint {
 		// ── Adapter execution (GEO-157: IAdapter.execute()) ──
 		const timeoutMs = ctx.sessionTimeoutMs ?? 2_700_000;
 
-		// GEO-206: Compute commDbPath for Lead ↔ Runner communication
+		// GEO-206: Compute commDbPath for Lead ↔ Runner communication.
+		// IMPORTANT: ctx.projectName must match the project-name arg passed to
+		// claude-lead.sh (defaults to basename of project dir in both places).
+		// If these diverge, Lead and Runner will use different comm.db files.
 		const commDbPath = ctx.leadId && ctx.projectName
 			? path.join(
 					process.env["HOME"] ?? "/tmp",

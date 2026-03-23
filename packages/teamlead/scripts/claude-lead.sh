@@ -1,16 +1,21 @@
 #!/bin/bash
 # GEO-195: Manual supervisor script for Claude Lead session.
-# Usage: ./scripts/claude-lead.sh <lead-id> <project-dir>
+# Usage: ./scripts/claude-lead.sh <lead-id> <project-dir> [project-name]
+#
+# project-name: canonical name used for comm DB path (must match Blueprint's
+#   ctx.projectName). Defaults to basename of project-dir if omitted.
+#   This MUST match the value Blueprint uses, otherwise Lead and Runner
+#   will read/write different comm.db files.
 #
 # Run inside a tmux session:
 #   tmux new -s product-lead
-#   ./scripts/claude-lead.sh product-lead /Users/xiaorongli/Dev/geoforge3d
+#   ./scripts/claude-lead.sh product-lead /Users/xiaorongli/Dev/geoforge3d geoforge3d
 #
 # On crash: up-arrow + enter to restart.
 set -euo pipefail
 
-LEAD_ID="${1:?Usage: claude-lead.sh <lead-id> <project-dir>}"
-PROJECT_DIR="${2:?Usage: claude-lead.sh <lead-id> <project-dir>}"
+LEAD_ID="${1:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name]}"
+PROJECT_DIR="${2:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name]}"
 BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 BRIDGE_TOKEN="${TEAMLEAD_API_TOKEN:-}"
 SESSION_DIR="${HOME}/.flywheel/claude-sessions"
@@ -19,7 +24,8 @@ SESSION_ID_FILE="${SESSION_DIR}/${LEAD_ID}.session-id"
 mkdir -p "$SESSION_DIR"
 
 # GEO-206: Export comm DB path for flywheel-comm CLI
-PROJECT_NAME=$(basename "$PROJECT_DIR")
+# Use explicit project-name arg if provided; fallback to basename of project-dir.
+PROJECT_NAME="${3:-$(basename "$PROJECT_DIR")}"
 export FLYWHEEL_COMM_DB="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
 COMM_DIST_DIR="$(cd "$(dirname "$0")/../../flywheel-comm/dist" 2>/dev/null && pwd)"
 if [ -n "$COMM_DIST_DIR" ] && [ -f "${COMM_DIST_DIR}/index.js" ]; then
