@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClaudeDiscordRuntime } from "../bridge/claude-discord-runtime.js";
-import type { LeadBootstrap, LeadEventEnvelope } from "../bridge/lead-runtime.js";
+import type {
+	LeadBootstrap,
+	LeadEventEnvelope,
+} from "../bridge/lead-runtime.js";
 
 // Mock global fetch
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-function makeEnvelope(overrides?: Partial<LeadEventEnvelope>): LeadEventEnvelope {
+function makeEnvelope(
+	overrides?: Partial<LeadEventEnvelope>,
+): LeadEventEnvelope {
 	return {
 		seq: 42,
 		event: {

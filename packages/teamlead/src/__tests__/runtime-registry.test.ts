@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import type { LeadRuntime } from "../bridge/lead-runtime.js";
 import { RuntimeRegistry } from "../bridge/runtime-registry.js";
+import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 
 function makeLead(overrides?: Partial<LeadConfig>): LeadConfig {
 	return {
@@ -13,12 +13,18 @@ function makeLead(overrides?: Partial<LeadConfig>): LeadConfig {
 	};
 }
 
-function makeRuntime(type: "openclaw" | "claude-discord" = "openclaw"): LeadRuntime {
+function makeRuntime(
+	type: "openclaw" | "claude-discord" = "openclaw",
+): LeadRuntime {
 	return {
 		type,
 		deliver: vi.fn().mockResolvedValue(undefined),
 		sendBootstrap: vi.fn().mockResolvedValue(undefined),
-		health: vi.fn().mockResolvedValue({ status: "healthy", lastDeliveryAt: null, lastDeliveredSeq: 0 }),
+		health: vi.fn().mockResolvedValue({
+			status: "healthy",
+			lastDeliveryAt: null,
+			lastDeliveredSeq: 0,
+		}),
 		shutdown: vi.fn().mockResolvedValue(undefined),
 	};
 }
@@ -50,8 +56,14 @@ describe("RuntimeRegistry", () => {
 		const reg = new RuntimeRegistry();
 		const productRt = makeRuntime("openclaw");
 		const opsRt = makeRuntime("claude-discord");
-		reg.register(makeLead({ agentId: "product-lead", match: { labels: ["Product"] } }), productRt);
-		reg.register(makeLead({ agentId: "ops-lead", match: { labels: ["Operations"] } }), opsRt);
+		reg.register(
+			makeLead({ agentId: "product-lead", match: { labels: ["Product"] } }),
+			productRt,
+		);
+		reg.register(
+			makeLead({ agentId: "ops-lead", match: { labels: ["Operations"] } }),
+			opsRt,
+		);
 
 		expect(reg.resolve(projects, "geoforge3d", ["Product"])).toBe(productRt);
 		expect(reg.resolve(projects, "geoforge3d", ["Operations"])).toBe(opsRt);
@@ -68,7 +80,10 @@ describe("RuntimeRegistry", () => {
 	it("resolveWithLead() returns runtime + lead config", () => {
 		const reg = new RuntimeRegistry();
 		const rt = makeRuntime();
-		reg.register(makeLead({ agentId: "product-lead", match: { labels: ["Product"] } }), rt);
+		reg.register(
+			makeLead({ agentId: "product-lead", match: { labels: ["Product"] } }),
+			rt,
+		);
 
 		const result = reg.resolveWithLead(projects, "geoforge3d", ["Product"]);
 		expect(result.runtime).toBe(rt);

@@ -50,7 +50,7 @@ export class ForumPostCreator {
 
 		const threadName = ctx.issueIdentifier
 			? `[${ctx.issueIdentifier}] ${ctx.issueTitle ?? ""}`
-			: ctx.issueTitle ?? ctx.issueId;
+			: (ctx.issueTitle ?? ctx.issueId);
 
 		const content = [
 			`**Issue**: ${ctx.issueIdentifier ?? ctx.issueId}`,

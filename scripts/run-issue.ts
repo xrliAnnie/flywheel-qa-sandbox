@@ -29,7 +29,11 @@ import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
-
+import { loadConfig } from "../packages/teamlead/src/config.js";
+import {
+	loadProjects,
+	resolveLeadForIssue,
+} from "../packages/teamlead/src/ProjectConfig.js";
 import {
 	killTmuxSession,
 	log,
@@ -255,7 +259,21 @@ async function main() {
 
 	// 4. v0.2 components — shared setup
 	const isSingleRepo = subRepos.length === 0;
-	const projectName = resolvedRoot.split("/").pop() ?? "unknown";
+	// GEO-206: Resolve canonical projectName from projects config.
+	// This ensures comm DB path matches Lead's claude-lead.sh.
+	// Fallback to directory basename if no config match.
+	const baseProjectName = resolvedRoot.split("/").pop() ?? "unknown";
+	let projectName = baseProjectName;
+	let cachedProjects: ReturnType<typeof loadProjects> | undefined;
+	try {
+		cachedProjects = loadProjects();
+		const match = cachedProjects.find((p) => p.projectRoot === resolvedRoot);
+		if (match) {
+			projectName = match.projectName;
+		}
+	} catch {
+		// No projects config — use basename
+	}
 	const components = await setupComponents({
 		projectRoot: resolvedRoot,
 		tmuxSessionName,
@@ -365,12 +383,31 @@ async function main() {
 	const startTime = Date.now();
 	const node = { id: issueId, blockedBy: [] };
 	const executionId = randomUUID();
+
+	// GEO-206: Resolve leadId for Lead ↔ Runner communication
+	let leadId: string | undefined;
+	try {
+		const projects = cachedProjects ?? loadProjects();
+		const issueLabels: string[] = issueData?.labels ?? [];
+		const result = resolveLeadForIssue(projects, projectName, issueLabels);
+		leadId = result.lead.agentId;
+	} catch {
+		// projectName not in projects config — fallback to defaultLeadAgentId
+		try {
+			const bridgeConfig = loadConfig();
+			leadId = bridgeConfig.defaultLeadAgentId;
+		} catch {
+			// No config available — leadId stays undefined (no comm prompt injected)
+		}
+	}
+
 	const ctx = {
 		teamName: "eng",
 		runnerName: "claude",
 		projectName,
 		sessionTimeoutMs: 2_700_000, // 45 min — land skill needs time for CI/review/merge
 		executionId,
+		leadId,
 	};
 
 	let actualSuccess = false;

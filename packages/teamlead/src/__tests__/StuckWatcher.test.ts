@@ -149,11 +149,7 @@ describe("WebhookStuckNotifier (RegistryHeartbeatNotifier via re-export)", () =>
 	it("sends structured envelope via registry runtime with sessionKey", async () => {
 		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
-		const notifier = new WebhookStuckNotifier(
-			registry,
-			testProjects,
-			hbStore,
-		);
+		const notifier = new WebhookStuckNotifier(registry, testProjects, hbStore);
 		const session: Session = {
 			execution_id: "exec-stuck",
 			issue_id: "i1",
@@ -180,11 +176,7 @@ describe("WebhookStuckNotifier (RegistryHeartbeatNotifier via re-export)", () =>
 	it("delivers via registry runtime (not direct HTTP)", async () => {
 		const { registry, mockRuntime } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
-		const notifier = new WebhookStuckNotifier(
-			registry,
-			testProjects,
-			hbStore,
-		);
+		const notifier = new WebhookStuckNotifier(registry, testProjects, hbStore);
 		await notifier.onSessionStuck(
 			{
 				execution_id: "e1",

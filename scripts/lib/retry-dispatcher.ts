@@ -60,6 +60,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			runnerName: "claude",
 			projectName: req.projectName,
 			executionId: newExecutionId,
+			leadId: req.leadId,
 			retryContext: {
 				predecessorExecutionId: req.oldExecutionId,
 				previousError: req.previousError,
