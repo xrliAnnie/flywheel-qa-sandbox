@@ -12,6 +12,16 @@
 #   ./scripts/claude-lead.sh product-lead /Users/xiaorongli/Dev/geoforge3d geoforge3d
 #
 # On crash: up-arrow + enter to restart.
+#
+# GEO-206 Phase 2 — Lead CLI commands (use $FLYWHEEL_COMM_CLI):
+#   Send instruction to Runner:
+#     node "$FLYWHEEL_COMM_CLI" send --from "$LEAD_ID" --to <exec-id> "instruction text"
+#   View Runner sessions (all statuses):
+#     node "$FLYWHEEL_COMM_CLI" sessions --project "$PROJECT_NAME"
+#   Capture Runner tmux output:
+#     node "$FLYWHEEL_COMM_CLI" capture --exec-id <exec-id>
+#   Check pending Runner questions:
+#     node "$FLYWHEEL_COMM_CLI" pending --lead "$LEAD_ID"
 set -euo pipefail
 
 LEAD_ID="${1:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name]}"

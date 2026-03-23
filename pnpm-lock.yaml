@@ -55,6 +55,9 @@ importers:
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
+      flywheel-comm:
+        specifier: workspace:*
+        version: link:../flywheel-comm
       flywheel-core:
         specifier: workspace:*
         version: link:../core
