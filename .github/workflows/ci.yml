@@ -33,8 +33,8 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Rebuild native modules
-        run: pnpm rebuild better-sqlite3
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
 
       - name: Build
         run: pnpm build
