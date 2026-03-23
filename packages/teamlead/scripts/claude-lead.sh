@@ -89,6 +89,9 @@ if [ -f "$AGENT_SOURCE" ]; then
   # Copy (not symlink) to prevent Lead from writing back to repo via symlink.
   # Lead has Bash + bypassPermissions, so a symlink would let it mutate the
   # version-controlled agent source file.
+  # Remove first: if target is an existing symlink (from older versions),
+  # cp would follow it and overwrite the symlink target in-place.
+  rm -f "$AGENT_TARGET"
   cp "$AGENT_SOURCE" "$AGENT_TARGET"
   echo "[lead] Agent file installed: ${AGENT_TARGET} (copied from ${AGENT_SOURCE})"
 else
