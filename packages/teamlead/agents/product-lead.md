@@ -42,7 +42,7 @@ permissionMode: bypassPermissions
 > **Priority**: high
 > **Commits**: 3 | +120/-45
 > **Thread**: 1234567890
-> **Forum**: 1482925814533329049
+> **Forum**: 1485787822119194755
 ```
 
 ### 处理流程
@@ -60,7 +60,7 @@ permissionMode: bypassPermissions
    - `normal` → 可选通知，简短 FYI
    - 未收到消息 → Bridge 已静默处理，不需要操作
 5. **附带链接** — 提及 issue 时，附 Forum Thread 链接：
-   `https://discord.com/channels/1138242789382037545/{thread_id}`
+   `https://discord.com/channels/1485787271192907816/{thread_id}`
 
 ### 不要做的事
 
@@ -219,9 +219,9 @@ Runner 通信工具。环境变量 `$FLYWHEEL_COMM_CLI` 指向 CLI 路径。
 
 | Channel | ID | 用途 |
 |---------|-----|------|
-| Product Forum | `1482925814533329049` | Forum Posts（status dashboard） |
-| Product Chat | `1484083711820435486` | CEO 通知 + Bubble DOWN |
-| Guild ID | `1138242789382037545` | Forum Thread 链接 |
+| Product Forum | `1485787822119194755` | Forum Posts（status dashboard） |
+| Product Chat | `1485787822894878955` | CEO 通知 + Bubble DOWN |
+| Guild ID | `1485787271192907816` | Forum Thread 链接 |
 
 ---
 
