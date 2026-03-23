@@ -260,9 +260,23 @@ async function main() {
 
 	// 4. v0.2 components — shared setup
 	const isSingleRepo = subRepos.length === 0;
-	// GEO-206: projectName is used as the comm DB directory name.
-	// Must match the project-name arg passed to claude-lead.sh.
-	const projectName = resolvedRoot.split("/").pop() ?? "unknown";
+	// GEO-206: Resolve canonical projectName from projects config.
+	// This ensures comm DB path matches Lead's claude-lead.sh.
+	// Fallback to directory basename if no config match.
+	const baseProjectName = resolvedRoot.split("/").pop() ?? "unknown";
+	let projectName = baseProjectName;
+	let cachedProjects: ReturnType<typeof loadProjects> | undefined;
+	try {
+		cachedProjects = loadProjects();
+		const match = cachedProjects.find(
+			(p) => p.projectRoot === resolvedRoot || p.projectRoot.endsWith(`/${baseProjectName}`),
+		);
+		if (match) {
+			projectName = match.projectName;
+		}
+	} catch {
+		// No projects config — use basename
+	}
 	const components = await setupComponents({
 		projectRoot: resolvedRoot,
 		tmuxSessionName,
@@ -376,7 +390,7 @@ async function main() {
 	// GEO-206: Resolve leadId for Lead ↔ Runner communication
 	let leadId: string | undefined;
 	try {
-		const projects = loadProjects();
+		const projects = cachedProjects ?? loadProjects();
 		const issueLabels: string[] = issueData?.labels ?? [];
 		const result = resolveLeadForIssue(projects, projectName, issueLabels);
 		leadId = result.lead.agentId;
