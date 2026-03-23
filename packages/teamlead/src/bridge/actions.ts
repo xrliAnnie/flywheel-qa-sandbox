@@ -8,15 +8,12 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
-import {
-	buildSessionKey,
-	type HookPayload,
-} from "./hook-payload.js";
+import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
@@ -98,7 +95,10 @@ function sendActionHook(
 
 		const doDeliver = async () => {
 			if (eventFilter) {
-				const filterResult = eventFilter.classify("action_executed", hookPayload);
+				const filterResult = eventFilter.classify(
+					"action_executed",
+					hookPayload,
+				);
 
 				let tagResult: HookPayload["forum_tag_update_result"];
 				if (forumTagUpdater) {
@@ -460,8 +460,14 @@ async function handleRetry(
 	let retryLeadId: string | undefined;
 	if (projects) {
 		try {
-			const storedLabels = session.issue_labels ? JSON.parse(session.issue_labels) as string[] : [];
-			const resolved = resolveLeadForIssue(projects, session.project_name, storedLabels);
+			const storedLabels = session.issue_labels
+				? (JSON.parse(session.issue_labels) as string[])
+				: [];
+			const resolved = resolveLeadForIssue(
+				projects,
+				session.project_name,
+				storedLabels,
+			);
 			retryLeadId = resolved.lead.agentId;
 		} catch {
 			retryLeadId = config?.defaultLeadAgentId;
