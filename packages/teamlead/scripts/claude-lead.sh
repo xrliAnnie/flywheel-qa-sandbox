@@ -1,24 +1,40 @@
 #!/bin/bash
 # GEO-195: Manual supervisor script for Claude Lead session.
 # GEO-234: Agent file + workspace isolation + flywheel-comm integration.
+# GEO-246: Parameterized for multi-lead — supports any agent name.
 #
 # Usage: ./scripts/claude-lead.sh <lead-id> <project-dir> [project-name]
+#
+# lead-id: Must match an agent file in packages/teamlead/agents/<lead-id>.md
+#   and an agentId in projects.json leads[].
 #
 # project-name: canonical name used for comm DB path (must match Blueprint's
 #   ctx.projectName). Defaults to basename of project-dir if omitted.
 #   This MUST match the value Blueprint uses, otherwise Lead and Runner
 #   will read/write different comm.db files.
 #
-# Run inside a tmux session:
-#   tmux new -s product-lead
-#   ./scripts/claude-lead.sh product-lead /Users/xiaorongli/Dev/geoforge3d geoforge3d
+# Environment variables:
+#   DISCORD_BOT_TOKEN  — Bot token for this Lead's Discord identity (required for Discord)
+#   LEAD_WORKSPACE     — Custom workspace directory (optional, default: ~/.flywheel/lead-workspace/<lead-id>)
+#   BRIDGE_URL         — Bridge API URL (default: http://localhost:9876)
+#   TEAMLEAD_API_TOKEN — Bridge API auth token
+#
+# Examples:
+#   # Product Lead (Peter)
+#   source ~/.flywheel/.env
+#   cd ~/Dev/flywheel/packages/teamlead && \
+#   DISCORD_BOT_TOKEN=$PETER_BOT_TOKEN \
+#   LEAD_WORKSPACE=/path/to/geoforge3d/product/.lead/product-lead \
+#     ./scripts/claude-lead.sh product-lead /path/to/geoforge3d geoforge3d
+#
+#   # Ops Lead (Oliver)
+#   source ~/.flywheel/.env
+#   cd ~/Dev/flywheel/packages/teamlead && \
+#   DISCORD_BOT_TOKEN=$OLIVER_BOT_TOKEN \
+#   LEAD_WORKSPACE=/path/to/geoforge3d/operations/.lead/ops-lead \
+#     ./scripts/claude-lead.sh ops-lead /path/to/geoforge3d geoforge3d
 #
 # On crash: up-arrow + enter to restart.
-#
-# GEO-234: Lead uses --agent product-lead (defined in packages/teamlead/agents/).
-#   The agent file is auto-symlinked to ~/.claude/agents/product-lead.md on startup.
-#   Lead runs in an isolated workspace (~/.flywheel/lead-workspace/<lead-id>/),
-#   NOT in the product repo, to reduce risk of accidental code modification.
 #
 # flywheel-comm CLI commands (available via $FLYWHEEL_COMM_CLI):
 #   Check pending Runner questions:
@@ -81,8 +97,8 @@ mkdir -p "$(dirname "$FLYWHEEL_COMM_DB")"
 echo "[lead] Comm DB: ${FLYWHEEL_COMM_DB}"
 
 # ── Agent file auto-sync (symlink repo source → global target) ──
-AGENT_SOURCE="${SCRIPT_DIR}/../agents/product-lead.md"
-AGENT_TARGET="${HOME}/.claude/agents/product-lead.md"
+AGENT_SOURCE="${SCRIPT_DIR}/../agents/${LEAD_ID}.md"
+AGENT_TARGET="${HOME}/.claude/agents/${LEAD_ID}.md"
 mkdir -p "${HOME}/.claude/agents"
 
 if [ -f "$AGENT_SOURCE" ]; then
@@ -96,14 +112,14 @@ if [ -f "$AGENT_SOURCE" ]; then
   echo "[lead] Agent file installed: ${AGENT_TARGET} (copied from ${AGENT_SOURCE})"
 else
   echo "[lead] ERROR: Agent source not found at ${AGENT_SOURCE}"
-  echo "[lead] Ensure packages/teamlead/agents/product-lead.md exists."
+  echo "[lead] Ensure packages/teamlead/agents/${LEAD_ID}.md exists."
   exit 1
 fi
 
 # ── Workspace isolation ──────────────────────────────────────
 # Lead runs in an isolated workspace, NOT in the product repo.
 # This reduces risk of accidental code modification via Bash.
-LEAD_WORKSPACE="${HOME}/.flywheel/lead-workspace/${LEAD_ID}"
+LEAD_WORKSPACE="${LEAD_WORKSPACE:-${HOME}/.flywheel/lead-workspace/${LEAD_ID}}"
 mkdir -p "$LEAD_WORKSPACE"
 echo "[lead] Working directory: ${LEAD_WORKSPACE} (isolated from product repo)"
 
@@ -126,7 +142,7 @@ sleep 3
 cd "$LEAD_WORKSPACE"
 
 # Build claude args using bash array (avoids quoting/word-splitting issues)
-CLAUDE_ARGS=(--agent product-lead --channels "plugin:discord@claude-plugins-official")
+CLAUDE_ARGS=(--agent "$LEAD_ID" --channels "plugin:discord@claude-plugins-official")
 
 # Resume if we have a session ID, otherwise start fresh
 if [ -f "$SESSION_ID_FILE" ]; then
