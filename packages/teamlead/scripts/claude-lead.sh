@@ -166,14 +166,5 @@ else
   echo "[lead] After Claude starts, save the session ID with:"
   echo "[lead]   echo '<session-id>' > ${SESSION_ID_FILE}"
   echo "[lead] You can find it in ~/.claude/projects/*/sessions/"
-  claude "${CLAUDE_ARGS[@]}" \
-    | tee >(
-      # Attempt to capture session ID from Claude's startup output
-      grep -m1 -oE '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}' \
-        > "$SESSION_ID_FILE" 2>/dev/null || true
-    )
-  # If the grep captured a session ID, log it
-  if [ -f "$SESSION_ID_FILE" ] && [ -s "$SESSION_ID_FILE" ]; then
-    echo "[lead] Auto-captured session ID: $(cat "$SESSION_ID_FILE")"
-  fi
+  claude "${CLAUDE_ARGS[@]}"
 fi
