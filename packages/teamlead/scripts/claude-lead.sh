@@ -64,7 +64,8 @@ PROJECT_DIR="$(cd "$PROJECT_DIR_RAW" && pwd)"
 export BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 export TEAMLEAD_API_TOKEN="${TEAMLEAD_API_TOKEN:-}"
 SESSION_DIR="${HOME}/.flywheel/claude-sessions"
-SESSION_ID_FILE="${SESSION_DIR}/${LEAD_ID}.session-id"
+# GEO-246: SESSION_ID_FILE set after PROJECT_NAME resolution (below)
+# to include project name and avoid cross-project session collisions.
 
 mkdir -p "$SESSION_DIR"
 
@@ -85,6 +86,10 @@ else
   PROJECT_NAME="${PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
 fi
 export PROJECT_NAME
+
+# GEO-246: Include PROJECT_NAME in session file to avoid cross-project collisions.
+# e.g., ~/.flywheel/claude-sessions/geoforge3d-product-lead.session-id
+SESSION_ID_FILE="${SESSION_DIR}/${PROJECT_NAME}-${LEAD_ID}.session-id"
 
 # ── Comm DB + CLI setup ──────────────────────────────────────
 export FLYWHEEL_COMM_DB="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
