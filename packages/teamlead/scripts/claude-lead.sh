@@ -51,6 +51,12 @@ set -euo pipefail
 
 # ── Parse arguments and export for agent prompt ──────────────
 export LEAD_ID="${1:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name]}"
+# GEO-246: Validate LEAD_ID format to prevent path traversal.
+# Only lowercase alphanumeric and hyphens allowed (e.g., "product-lead", "ops-lead").
+if [[ ! "$LEAD_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+  echo "[lead] ERROR: Invalid lead-id '${LEAD_ID}'. Must match [a-z0-9][a-z0-9-]*"
+  exit 1
+fi
 # Normalize PROJECT_DIR: expand ~ and resolve to absolute path (must match
 # projectRoot in projects.json exactly for canonical name resolution)
 PROJECT_DIR_RAW="${2:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name]}"
