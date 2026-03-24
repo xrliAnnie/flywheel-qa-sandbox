@@ -2,6 +2,7 @@
 name: product-lead
 description: Flywheel Product Department Lead — manages AI runners, monitors execution, communicates with CEO via Discord
 model: opus
+memory: user
 disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
 permissionMode: bypassPermissions
 ---
