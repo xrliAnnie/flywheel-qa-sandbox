@@ -112,8 +112,16 @@ fi
 mkdir -p "$(dirname "$FLYWHEEL_COMM_DB")"
 echo "[lead] Comm DB: ${FLYWHEEL_COMM_DB}"
 
-# ── Agent file auto-sync (symlink repo source → global target) ──
-AGENT_SOURCE="${SCRIPT_DIR}/../agents/${LEAD_ID}.md"
+# ── Agent file auto-sync (project source → global target) ──
+# GEO-246: Agent files are project-specific, not Flywheel infrastructure.
+# Priority: 1) AGENT_SOURCE env var, 2) project dir .lead/, 3) Flywheel repo agents/
+if [ -n "${AGENT_SOURCE:-}" ]; then
+  : # explicit override, use as-is
+elif [ -f "${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md" ]; then
+  AGENT_SOURCE="${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md"
+else
+  AGENT_SOURCE="${SCRIPT_DIR}/../agents/${LEAD_ID}.md"
+fi
 AGENT_TARGET="${HOME}/.claude/agents/${LEAD_ID}.md"
 mkdir -p "${HOME}/.claude/agents"
 
@@ -128,7 +136,7 @@ if [ -f "$AGENT_SOURCE" ]; then
   echo "[lead] Agent file installed: ${AGENT_TARGET} (copied from ${AGENT_SOURCE})"
 else
   echo "[lead] ERROR: Agent source not found at ${AGENT_SOURCE}"
-  echo "[lead] Ensure packages/teamlead/agents/${LEAD_ID}.md exists."
+  echo "[lead] Searched: AGENT_SOURCE env, ${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md, ${SCRIPT_DIR}/../agents/${LEAD_ID}.md"
   exit 1
 fi
 
