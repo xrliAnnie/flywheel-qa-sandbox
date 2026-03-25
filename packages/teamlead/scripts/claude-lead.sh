@@ -114,11 +114,11 @@ echo "[lead] Comm DB: ${FLYWHEEL_COMM_DB}"
 
 # ── Agent file auto-sync (project source → global target) ──
 # GEO-246: Agent files are project-specific, not Flywheel infrastructure.
-# Priority: 1) AGENT_SOURCE env var, 2) project dir .lead/, 3) Flywheel repo agents/
+# Priority: 1) AGENT_SOURCE env var, 2) LEAD_WORKSPACE/agent.md, 3) Flywheel repo agents/ (fallback)
 if [ -n "${AGENT_SOURCE:-}" ]; then
   : # explicit override, use as-is
-elif [ -f "${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md" ]; then
-  AGENT_SOURCE="${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md"
+elif [ -f "${LEAD_WORKSPACE}/agent.md" ]; then
+  AGENT_SOURCE="${LEAD_WORKSPACE}/agent.md"
 else
   AGENT_SOURCE="${SCRIPT_DIR}/../agents/${LEAD_ID}.md"
 fi
