@@ -13,6 +13,10 @@ export interface LeadConfig {
 	runtime?: "openclaw" | "claude-discord";
 	/** Discord control channel ID for claude-discord runtime (hidden, bot-only). */
 	controlChannel?: string;
+	/** Status → Discord Forum tag ID mapping for this lead's forum channel (GEO-253).
+	 *  Once defined, fully replaces the global STATUS_TAG_MAP for this lead.
+	 *  Omit to fall back to global STATUS_TAG_MAP. */
+	statusTagMap?: Record<string, string[]>;
 }
 
 export interface ProjectEntry {
@@ -146,6 +150,39 @@ export function loadProjects(): ProjectEntry[] {
 					throw new Error(
 						`Project "${entry.projectName}" leads[${i}]: runtime="claude-discord" requires a non-empty controlChannel`,
 					);
+				}
+			}
+
+			// GEO-253: validate optional statusTagMap
+			const stm = lead.statusTagMap;
+			if (stm !== undefined) {
+				if (
+					typeof stm !== "object" ||
+					stm === null ||
+					Array.isArray(stm)
+				) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].statusTagMap: must be a non-null, non-array object`,
+					);
+				}
+				if (Object.keys(stm).length === 0) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].statusTagMap: must not be empty (omit the field to use global fallback)`,
+					);
+				}
+				for (const [status, tagIds] of Object.entries(stm)) {
+					if (!Array.isArray(tagIds) || tagIds.length === 0) {
+						throw new Error(
+							`Project "${entry.projectName}" leads[${i}].statusTagMap["${status}"]: must be a non-empty array of tag ID strings`,
+						);
+					}
+					for (const tagId of tagIds) {
+						if (typeof tagId !== "string" || tagId.length === 0) {
+							throw new Error(
+								`Project "${entry.projectName}" leads[${i}].statusTagMap["${status}"]: each tag ID must be a non-empty string`,
+							);
+						}
+					}
 				}
 			}
 		}

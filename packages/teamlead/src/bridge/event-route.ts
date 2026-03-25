@@ -210,6 +210,7 @@ export function createEventRouter(
 								executionId: event.execution_id,
 								status: "running",
 								discordBotToken: config.discordBotToken,
+								statusTagMap: fpLead.statusTagMap,
 							})
 							.catch((err) => {
 								console.warn(
@@ -510,6 +511,7 @@ export function createEventRouter(
 							status: session.status ?? "",
 							eventType: event.event_type,
 							discordBotToken: config.discordBotToken,
+							statusTagMap: lead.statusTagMap,
 						});
 					}
 
