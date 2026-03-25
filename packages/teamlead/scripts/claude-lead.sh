@@ -63,6 +63,11 @@ PROJECT_DIR_RAW="${2:?Usage: claude-lead.sh <lead-id> <project-dir> [project-nam
 PROJECT_DIR="$(cd "$PROJECT_DIR_RAW" && pwd)"
 export BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 export TEAMLEAD_API_TOKEN="${TEAMLEAD_API_TOKEN:-}"
+# GEO-246: Per-lead Discord state directory for channel/token isolation.
+# Each lead gets its own .env (bot token) and access.json (channel list).
+# Default: ~/.claude/channels/discord-<lead-id>/
+export DISCORD_STATE_DIR="${DISCORD_STATE_DIR:-${HOME}/.claude/channels/discord-${LEAD_ID}}"
+echo "[lead] Discord state: ${DISCORD_STATE_DIR}"
 SESSION_DIR="${HOME}/.flywheel/claude-sessions"
 # GEO-246: SESSION_ID_FILE set after PROJECT_NAME resolution (below)
 # to include project name and avoid cross-project session collisions.
