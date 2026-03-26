@@ -478,6 +478,7 @@ export class Blueprint {
 		};
 	}
 
+	/** GEO-261: Await terminal event delivery (retry handled by emitter). */
 	private async emitTerminal(
 		env: EventEnvelope,
 		result: BlueprintResult,
@@ -486,18 +487,13 @@ export class Blueprint {
 		try {
 			if (result.success || result.decision) {
 				const summary = this.buildSummary(result);
-				await Promise.race([
-					this.eventEmitter.emitCompleted(env, result, summary),
-					new Promise<void>((r) => setTimeout(r, 1000)),
-				]);
+				await this.eventEmitter.emitCompleted(env, result, summary);
 			} else {
-				await Promise.race([
-					this.eventEmitter.emitFailed(env, result.error ?? "unknown"),
-					new Promise<void>((r) => setTimeout(r, 1000)),
-				]);
+				await this.eventEmitter.emitFailed(env, result.error ?? "unknown");
 			}
 		} catch (err) {
-			console.warn(
+			// postEventReliable never throws, but defensive catch for interface changes
+			console.error(
 				`[Blueprint] emitTerminal failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}

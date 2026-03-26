@@ -699,7 +699,11 @@ export async function startBridge(
 		console.warn(
 			"[Bridge] No statusTagMap configured (global or per-lead) — ForumTagUpdater will skip all tag updates.",
 		);
-	} else if (globalEmpty && leadsWithoutMap.length > 0 && leadsWithMap.length > 0) {
+	} else if (
+		globalEmpty &&
+		leadsWithoutMap.length > 0 &&
+		leadsWithMap.length > 0
+	) {
 		console.warn(
 			`[Bridge] Global statusTagMap is empty. ${leadsWithMap.length}/${allLeads.length} leads have per-lead statusTagMap. ` +
 				`Leads missing config: ${leadsWithoutMap.map((l) => l.agentId).join(", ")} — these will skip tag updates.`,
