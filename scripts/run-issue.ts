@@ -53,6 +53,19 @@ const KNOWN_ISSUES: Record<
 		identifier?: string;
 	}
 > = {
+	"GEO-251": {
+		title: "E2E Test: 添加 flywheel-comm 集成状态到 README",
+		description: `## 测试 Issue (E2E验证用)
+
+在 GeoForge3D 的 README.md 中添加一小段说明：项目使用 Flywheel 自动化开发系统。
+
+### 要求
+- 在 README.md 末尾添加一个 \`## Development Automation\` section
+- 内容：\`This project uses Flywheel for automated development orchestration.\`
+- 不要改动其他内容`,
+		labels: ["Product"],
+		identifier: "GEO-251",
+	},
 	"GEO-95": {
 		title: "[P0] OSM attribution — add OpenStreetMap license notice in UI",
 		description: `## Background
