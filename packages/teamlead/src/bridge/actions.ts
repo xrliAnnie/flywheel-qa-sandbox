@@ -107,7 +107,7 @@ function sendActionHook(
 						status: targetStatus,
 						eventType: "action_executed",
 						action,
-						discordBotToken: config?.discordBotToken,
+						discordBotToken: lead.botToken ?? config?.discordBotToken,
 						statusTagMap: lead.statusTagMap,
 					});
 				}

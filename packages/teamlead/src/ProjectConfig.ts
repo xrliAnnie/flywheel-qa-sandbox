@@ -17,6 +17,10 @@ export interface LeadConfig {
 	 *  Once defined, fully replaces the global STATUS_TAG_MAP for this lead.
 	 *  Omit to fall back to global STATUS_TAG_MAP. */
 	statusTagMap?: Record<string, string[]>;
+	/** Env var name for this lead's Discord bot token (e.g., "PETER_BOT_TOKEN"). */
+	botTokenEnv?: string;
+	/** Resolved bot token (populated at load time from botTokenEnv). NOT from JSON input. */
+	botToken?: string;
 }
 
 export interface ProjectEntry {
@@ -183,6 +187,35 @@ export function loadProjects(): ProjectEntry[] {
 							);
 						}
 					}
+				}
+			}
+
+			// GEO-252: resolve per-lead bot token from env var
+			// Validate botTokenEnv type if present
+			if (
+				lead.botTokenEnv !== undefined &&
+				(typeof lead.botTokenEnv !== "string" ||
+					lead.botTokenEnv.length === 0)
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].botTokenEnv: must be a non-empty string, got ${JSON.stringify(lead.botTokenEnv)}`,
+				);
+			}
+			// Strip any raw botToken from JSON input first — secrets must come via env vars
+			delete lead.botToken;
+			const botTokenEnv = lead.botTokenEnv;
+			if (typeof botTokenEnv === "string" && botTokenEnv.length > 0) {
+				const resolved = process.env[botTokenEnv];
+				if (resolved) {
+					lead.botToken = resolved;
+				} else if (runtime === "claude-discord") {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}]: botTokenEnv="${botTokenEnv}" is set but env var is not defined`,
+					);
+				} else {
+					console.warn(
+						`[loadProjects] "${entry.projectName}" leads[${i}]: botTokenEnv="${botTokenEnv}" not found in env — will fall back to DISCORD_BOT_TOKEN`,
+					);
 				}
 			}
 		}

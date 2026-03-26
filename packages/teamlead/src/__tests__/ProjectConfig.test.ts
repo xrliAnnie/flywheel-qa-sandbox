@@ -478,6 +478,155 @@ describe("memoryAllowedUsers validation", () => {
 	});
 });
 
+describe("botTokenEnv resolution (GEO-252)", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+	let savedTokenEnv: string | undefined;
+
+	afterEach(() => {
+		if (originalEnv === undefined) {
+			delete process.env.FLYWHEEL_PROJECTS;
+		} else {
+			process.env.FLYWHEEL_PROJECTS = originalEnv;
+		}
+		// Clean up test env var
+		if (savedTokenEnv !== undefined) {
+			process.env.TEST_PETER_TOKEN = savedTokenEnv;
+		} else {
+			delete process.env.TEST_PETER_TOKEN;
+		}
+	});
+
+	const baseLead = {
+		agentId: "product-lead",
+		forumChannel: "123",
+		chatChannel: "456",
+		match: { labels: ["Product"] },
+		runtime: "claude-discord" as const,
+		controlChannel: "ctrl-123",
+	};
+
+	it("resolves botToken from env var when botTokenEnv is set", () => {
+		savedTokenEnv = process.env.TEST_PETER_TOKEN;
+		process.env.TEST_PETER_TOKEN = "resolved-token-value";
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [{ ...baseLead, botTokenEnv: "TEST_PETER_TOKEN" }],
+			},
+		]);
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.botToken).toBe("resolved-token-value");
+		expect(projects[0]!.leads[0]!.botTokenEnv).toBe("TEST_PETER_TOKEN");
+	});
+
+	it("throws when botTokenEnv is set but env var missing for claude-discord", () => {
+		savedTokenEnv = process.env.TEST_PETER_TOKEN;
+		delete process.env.TEST_PETER_TOKEN;
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [{ ...baseLead, botTokenEnv: "TEST_PETER_TOKEN" }],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(
+			/botTokenEnv="TEST_PETER_TOKEN" is set but env var is not defined/,
+		);
+	});
+
+	it("does not throw when botTokenEnv missing for non-claude-discord runtime", () => {
+		savedTokenEnv = process.env.TEST_PETER_TOKEN;
+		delete process.env.TEST_PETER_TOKEN;
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						...baseLead,
+						runtime: "openclaw",
+						controlChannel: undefined,
+						botTokenEnv: "TEST_PETER_TOKEN",
+					},
+				],
+			},
+		]);
+		// Should not throw, just warn
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.botToken).toBeUndefined();
+	});
+
+	it("botToken is undefined when botTokenEnv is not configured (backward-compat)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [baseLead],
+			},
+		]);
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.botToken).toBeUndefined();
+		expect(projects[0]!.leads[0]!.botTokenEnv).toBeUndefined();
+	});
+
+	it("strips raw botToken from JSON input", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [{ ...baseLead, botToken: "raw-secret-leaked" }],
+			},
+		]);
+		const projects = loadProjects();
+		// botToken from JSON should be stripped (no botTokenEnv to resolve)
+		expect(projects[0]!.leads[0]!.botToken).toBeUndefined();
+	});
+
+	it("throws when botTokenEnv is non-string type", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [{ ...baseLead, botTokenEnv: 123 }],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/botTokenEnv: must be a non-empty string/);
+	});
+
+	it("throws when botTokenEnv is empty string", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [{ ...baseLead, botTokenEnv: "" }],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/botTokenEnv: must be a non-empty string/);
+	});
+
+	it("strips raw botToken and resolves from botTokenEnv instead", () => {
+		savedTokenEnv = process.env.TEST_PETER_TOKEN;
+		process.env.TEST_PETER_TOKEN = "env-resolved-value";
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						...baseLead,
+						botToken: "raw-secret-leaked",
+						botTokenEnv: "TEST_PETER_TOKEN",
+					},
+				],
+			},
+		]);
+		const projects = loadProjects();
+		// Should use resolved env var, not the raw JSON value
+		expect(projects[0]!.leads[0]!.botToken).toBe("env-resolved-value");
+	});
+});
+
 describe("validateMemoryIds", () => {
 	const projects: ProjectEntry[] = [
 		{
