@@ -5,9 +5,9 @@
  */
 
 import type { ProjectEntry } from "../ProjectConfig.js";
-import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type { HookPayload } from "./hook-payload.js";
+import { filterSessionsByLead } from "./lead-scope.js";
 import type {
 	BootstrapDecision,
 	BootstrapFailure,
@@ -27,19 +27,22 @@ export async function generateBootstrap(
 ): Promise<LeadBootstrap> {
 	// Active sessions matching this lead (via label routing)
 	const allActive = store.getActiveSessions();
-	const activeSessions = filterByLead(allActive, leadId, projects, store);
+	const activeSessions = filterSessionsByLead(allActive, leadId, projects);
 
 	// Pending decisions (awaiting_review)
 	const recent = store.getRecentSessions(MAX_RECENT_SESSIONS);
-	const pendingDecisions = recent
-		.filter((s) => s.status === "awaiting_review")
-		.filter((s) => matchesLead(s, leadId, projects, store));
+	const pendingDecisions = filterSessionsByLead(
+		recent.filter((s) => s.status === "awaiting_review"),
+		leadId,
+		projects,
+	);
 
 	// Recent failures
-	const recentFailures = recent
-		.filter((s) => s.status === "failed")
-		.filter((s) => matchesLead(s, leadId, projects, store))
-		.slice(0, MAX_RECENT_FAILURES);
+	const recentFailures = filterSessionsByLead(
+		recent.filter((s) => s.status === "failed"),
+		leadId,
+		projects,
+	).slice(0, MAX_RECENT_FAILURES);
 
 	// Recently delivered events from journal
 	const eventRows = store.getRecentDeliveredEvents(
@@ -64,33 +67,6 @@ export async function generateBootstrap(
 	};
 }
 
-function matchesLead(
-	session: Session,
-	leadId: string,
-	projects: ProjectEntry[],
-	store: StateStore,
-): boolean {
-	try {
-		const labels = store.getSessionLabels(session.execution_id);
-		const { lead } = resolveLeadForIssue(
-			projects,
-			session.project_name,
-			labels,
-		);
-		return lead.agentId === leadId;
-	} catch {
-		return false;
-	}
-}
-
-function filterByLead(
-	sessions: Session[],
-	leadId: string,
-	projects: ProjectEntry[],
-	store: StateStore,
-): Session[] {
-	return sessions.filter((s) => matchesLead(s, leadId, projects, store));
-}
 
 function toBootstrapSession(s: Session): BootstrapSession {
 	return {

@@ -574,3 +574,132 @@ describe("Action tools", () => {
 		});
 	});
 });
+
+// --- GEO-259: leadId scope check on action endpoints ---
+
+const scopeProjects: ProjectEntry[] = [
+	{
+		projectName: "geoforge3d",
+		projectRoot: "/tmp/geoforge3d",
+		projectRepo: "xrliAnnie/GeoForge3D",
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "test-channel",
+				chatChannel: "test-chat",
+				match: { labels: ["Product"] },
+			},
+			{
+				agentId: "ops-lead",
+				forumChannel: "ops-channel",
+				chatChannel: "ops-chat",
+				match: { labels: ["Operations"] },
+			},
+		],
+	},
+];
+
+describe("GEO-259: leadId scope check on actions", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		const app = createBridgeApp(store, scopeProjects, makeConfig());
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+
+		store.upsertSession({
+			execution_id: "prod-exec",
+			issue_id: "i-prod",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-200",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		store.upsertSession({
+			execution_id: "ops-exec",
+			issue_id: "i-ops",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-201",
+			issue_labels: JSON.stringify(["Operations"]),
+		});
+	});
+
+	afterEach(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		store.close();
+	});
+
+	it("POST /api/actions/reject without leadId works as before", async () => {
+		const res = await fetch(`${baseUrl}/api/actions/reject`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "prod-exec", reason: "test" }),
+		});
+		const body = await res.json();
+		expect(body.success).toBe(true);
+	});
+
+	it("POST /api/actions/reject with matching leadId succeeds", async () => {
+		const res = await fetch(`${baseUrl}/api/actions/reject`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				execution_id: "prod-exec",
+				reason: "test",
+				leadId: "product-lead",
+			}),
+		});
+		const body = await res.json();
+		expect(body.success).toBe(true);
+	});
+
+	it("POST /api/actions/reject with mismatching leadId returns 403", async () => {
+		const res = await fetch(`${baseUrl}/api/actions/reject`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				execution_id: "prod-exec",
+				reason: "test",
+				leadId: "ops-lead",
+			}),
+		});
+		expect(res.status).toBe(403);
+		const body = await res.json();
+		expect(body.success).toBe(false);
+		expect(body.message).toContain("outside lead");
+	});
+
+	it("POST /api/actions/defer with mismatching leadId returns 403", async () => {
+		const res = await fetch(`${baseUrl}/api/actions/defer`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				execution_id: "ops-exec",
+				reason: "test",
+				leadId: "product-lead",
+			}),
+		});
+		expect(res.status).toBe(403);
+	});
+
+	it("POST /api/actions/shelve with mismatching leadId returns 403", async () => {
+		const res = await fetch(`${baseUrl}/api/actions/shelve`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				execution_id: "ops-exec",
+				leadId: "product-lead",
+			}),
+		});
+		expect(res.status).toBe(403);
+	});
+});

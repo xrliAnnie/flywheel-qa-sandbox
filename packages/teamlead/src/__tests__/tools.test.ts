@@ -519,3 +519,208 @@ describe("Thread & action endpoints", () => {
 		expect(body.execution_id).toBe("exec-1");
 	});
 });
+
+// --- GEO-259: Lead scope filtering tests ---
+
+const multiLeadProjects = [
+	{
+		projectName: "geoforge3d",
+		projectRoot: "/tmp/geoforge3d",
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "111",
+				chatChannel: "111-chat",
+				match: { labels: ["Product"] },
+			},
+			{
+				agentId: "ops-lead",
+				forumChannel: "222",
+				chatChannel: "222-chat",
+				match: { labels: ["Operations"] },
+			},
+		],
+	},
+];
+
+describe("GEO-259: leadId filtering on query routes", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		const app = createBridgeApp(store, multiLeadProjects, makeConfig());
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+
+		// Seed sessions: 2 for product-lead, 1 for ops-lead
+		store.upsertSession({
+			execution_id: "prod-1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_identifier: "GEO-100",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		store.upsertSession({
+			execution_id: "prod-2",
+			issue_id: "i2",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-101",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		store.upsertSession({
+			execution_id: "ops-1",
+			issue_id: "i3",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_identifier: "GEO-102",
+			issue_labels: JSON.stringify(["Operations"]),
+		});
+	});
+
+	afterEach(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		store.close();
+	});
+
+	it("GET /api/sessions without leadId returns all sessions (backwards compat)", async () => {
+		const res = await fetch(`${baseUrl}/api/sessions`);
+		const body = await res.json();
+		expect(body.count).toBe(3);
+	});
+
+	it("GET /api/sessions?leadId=product-lead returns only product-lead sessions", async () => {
+		const res = await fetch(`${baseUrl}/api/sessions?leadId=product-lead`);
+		const body = await res.json();
+		expect(body.count).toBe(2);
+		const ids = body.sessions.map((s: any) => s.execution_id).sort();
+		expect(ids).toEqual(["prod-1", "prod-2"]);
+	});
+
+	it("GET /api/sessions?leadId=ops-lead returns only ops-lead sessions", async () => {
+		const res = await fetch(`${baseUrl}/api/sessions?leadId=ops-lead`);
+		const body = await res.json();
+		expect(body.count).toBe(1);
+		expect(body.sessions[0].execution_id).toBe("ops-1");
+	});
+
+	it("GET /api/sessions?leadId=unknown-lead returns empty array", async () => {
+		const res = await fetch(`${baseUrl}/api/sessions?leadId=unknown-lead`);
+		const body = await res.json();
+		expect(body.count).toBe(0);
+		expect(body.sessions).toEqual([]);
+	});
+
+	it("GET /api/sessions?mode=recent&leadId=product-lead returns filtered recent", async () => {
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=recent&leadId=product-lead`,
+		);
+		const body = await res.json();
+		expect(body.count).toBe(2);
+		expect(
+			body.sessions.every((s: any) =>
+				["prod-1", "prod-2"].includes(s.execution_id),
+			),
+		).toBe(true);
+	});
+
+	it("GET /api/sessions?mode=by_identifier is NOT affected by leadId", async () => {
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-102&leadId=product-lead`,
+		);
+		const body = await res.json();
+		// Should return ops-1 even though leadId is product-lead (by_identifier ignores leadId)
+		expect(body.count).toBe(1);
+		expect(body.sessions[0].execution_id).toBe("ops-1");
+	});
+
+	it("GET /api/sessions/:id/history?leadId=product-lead returns filtered history", async () => {
+		// Create two sessions for same issue with different labels
+		store.upsertSession({
+			execution_id: "hist-prod",
+			issue_id: "i-shared",
+			project_name: "geoforge3d",
+			status: "failed",
+			issue_labels: JSON.stringify(["Product"]),
+			last_activity_at: "2026-01-01 10:00:00",
+		});
+		store.upsertSession({
+			execution_id: "hist-ops",
+			issue_id: "i-shared",
+			project_name: "geoforge3d",
+			status: "failed",
+			issue_labels: JSON.stringify(["Operations"]),
+			last_activity_at: "2026-01-02 10:00:00",
+		});
+
+		const res = await fetch(
+			`${baseUrl}/api/sessions/hist-prod/history?leadId=product-lead`,
+		);
+		const body = await res.json();
+		expect(body.count).toBe(1);
+		expect(body.history[0].execution_id).toBe("hist-prod");
+	});
+
+	it("GET /api/resolve-action without leadId uses existing behavior", async () => {
+		const res = await fetch(
+			`${baseUrl}/api/resolve-action?issue_id=i3&action=terminate`,
+		);
+		const body = await res.json();
+		expect(body.can_execute).toBe(true);
+		expect(body.execution_id).toBe("ops-1");
+	});
+
+	it("GET /api/resolve-action?leadId=product-lead in scope returns can_execute true", async () => {
+		const res = await fetch(
+			`${baseUrl}/api/resolve-action?issue_id=i2&action=approve&leadId=product-lead`,
+		);
+		const body = await res.json();
+		expect(body.can_execute).toBe(true);
+		expect(body.execution_id).toBe("prod-2");
+	});
+
+	it("GET /api/resolve-action?leadId=product-lead out of scope returns can_execute false", async () => {
+		const res = await fetch(
+			`${baseUrl}/api/resolve-action?issue_id=i3&action=terminate&leadId=product-lead`,
+		);
+		const body = await res.json();
+		expect(body.can_execute).toBe(false);
+		expect(body.reason).toContain("No in-scope session");
+	});
+
+	it("resolve-action with leadId selects in-scope candidate (label drift)", async () => {
+		// Same issue, two sessions with different labels
+		store.upsertSession({
+			execution_id: "drift-old-prod",
+			issue_id: "i-drift",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_labels: JSON.stringify(["Product"]),
+			last_activity_at: "2026-01-01 10:00:00",
+		});
+		store.upsertSession({
+			execution_id: "drift-new-ops",
+			issue_id: "i-drift",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_labels: JSON.stringify(["Operations"]),
+			last_activity_at: "2026-01-02 10:00:00",
+		});
+
+		// Product-lead should get the older in-scope session
+		const res = await fetch(
+			`${baseUrl}/api/resolve-action?issue_id=i-drift&action=approve&leadId=product-lead`,
+		);
+		const body = await res.json();
+		expect(body.can_execute).toBe(true);
+		expect(body.execution_id).toBe("drift-old-prod");
+	});
+});
