@@ -2,6 +2,17 @@ import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { Session, StateStore } from "../StateStore.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
+import {
+	type CaptureError,
+	type CaptureResult,
+	isCaptureError,
+} from "./session-capture.js";
+
+export type CaptureSessionFn = (
+	executionId: string,
+	projectName: string,
+	lines: number,
+) => Promise<CaptureResult | CaptureError>;
 
 function omitIssueId(
 	session: Session,
@@ -13,6 +24,7 @@ function omitIssueId(
 export function createQueryRouter(
 	store: StateStore,
 	retryDispatcher?: IRetryDispatcher,
+	captureSessionFn?: CaptureSessionFn,
 ): Router {
 	const router = Router();
 
@@ -108,6 +120,47 @@ export function createQueryRouter(
 			identifier: session.issue_identifier,
 			history: history.map(omitIssueId),
 			count: history.length,
+		});
+	});
+
+	router.get("/sessions/:id/capture", async (req, res) => {
+		if (!captureSessionFn) {
+			res.status(501).json({ error: "Capture not configured" });
+			return;
+		}
+
+		const id = req.params.id;
+
+		// Resolve session (same fallback as /sessions/:id)
+		let session = store.getSession(id);
+		if (!session) {
+			session = store.getSessionByIdentifier(id);
+		}
+		if (!session) {
+			res.status(404).json({ error: "Session not found" });
+			return;
+		}
+
+		// Parse and validate lines parameter
+		const rawLines = parseInt((req.query.lines as string) ?? "100", 10);
+		const lines = Number.isFinite(rawLines)
+			? Math.min(Math.max(rawLines, 1), 500)
+			: 100;
+
+		const result = await captureSessionFn(
+			session.execution_id,
+			session.project_name,
+			lines,
+		);
+
+		if (isCaptureError(result)) {
+			res.status(result.status).json({ error: result.error });
+			return;
+		}
+
+		res.json({
+			execution_id: session.execution_id,
+			...result,
 		});
 	});
 

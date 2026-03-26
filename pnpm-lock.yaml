@@ -306,6 +306,9 @@ importers:
       express:
         specifier: ^5.2.1
         version: 5.2.1
+      flywheel-comm:
+        specifier: workspace:*
+        version: link:../flywheel-comm
       flywheel-core:
         specifier: workspace:*
         version: link:../core
