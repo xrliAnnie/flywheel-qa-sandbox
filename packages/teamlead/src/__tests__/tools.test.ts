@@ -1,6 +1,11 @@
 import type http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
+import type {
+	CaptureError,
+	CaptureResult,
+} from "../bridge/session-capture.js";
+import type { CaptureSessionFn } from "../bridge/tools.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { StateStore } from "../StateStore.js";
 
@@ -517,5 +522,223 @@ describe("Thread & action endpoints", () => {
 		const body = await res.json();
 		expect(body.can_execute).toBe(true);
 		expect(body.execution_id).toBe("exec-1");
+	});
+});
+
+describe("Session capture endpoint", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+
+	const mockCapture: CaptureSessionFn = async (execId, project, lines) => ({
+		output: `mock terminal output for ${execId}\n`,
+		tmux_target: "flywheel:@42",
+		lines,
+		captured_at: new Date().toISOString(),
+	});
+
+	const mockCaptureError: CaptureSessionFn = async () => ({
+		error: "tmux window not found: flywheel:@99",
+		status: 502,
+	});
+
+	function startServerWithCapture(
+		s: StateStore,
+		captureFn?: CaptureSessionFn,
+	) {
+		const app = createBridgeApp(
+			s,
+			[],
+			makeConfig(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			captureFn,
+		);
+		return app.listen(0, "127.0.0.1");
+	}
+
+	afterEach(async () => {
+		if (server) {
+			await new Promise<void>((resolve, reject) => {
+				server.close((err) => (err ? reject(err) : resolve()));
+			});
+		}
+		if (store) {
+			store.close();
+		}
+	});
+
+	it("GET /api/sessions/:id/capture returns 200 with capture output", async () => {
+		store = await StateStore.create(":memory:");
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "i1",
+			project_name: "test-project",
+			status: "running",
+			issue_identifier: "GEO-262",
+		});
+		server = startServerWithCapture(store, mockCapture);
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+
+		const res = await fetch(`${baseUrl}/api/sessions/exec-1/capture?lines=50`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.execution_id).toBe("exec-1");
+		expect(body.output).toContain("mock terminal output");
+		expect(body.tmux_target).toBe("flywheel:@42");
+		expect(body.lines).toBe(50);
+		expect(body.captured_at).toBeTruthy();
+	});
+
+	it("GET /api/sessions/:id/capture returns 404 for unknown session", async () => {
+		store = await StateStore.create(":memory:");
+		server = startServerWithCapture(store, mockCapture);
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+
+		const res = await fetch(`${baseUrl}/api/sessions/nonexistent/capture`);
+		expect(res.status).toBe(404);
+		const body = await res.json();
+		expect(body.error).toBe("Session not found");
+	});
+
+	it("GET /api/sessions/:id/capture forwards capture error status", async () => {
+		store = await StateStore.create(":memory:");
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "i1",
+			project_name: "test-project",
+			status: "running",
+		});
+		server = startServerWithCapture(store, mockCaptureError);
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+
+		const res = await fetch(`${baseUrl}/api/sessions/exec-1/capture`);
+		expect(res.status).toBe(502);
+		const body = await res.json();
+		expect(body.error).toContain("tmux window not found");
+	});
+
+	it("GET /api/sessions/:id/capture clamps lines parameter", async () => {
+		store = await StateStore.create(":memory:");
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "i1",
+			project_name: "test-project",
+			status: "running",
+		});
+
+		let capturedLines: number | undefined;
+		const lineCapture: CaptureSessionFn = async (_execId, _project, lines) => {
+			capturedLines = lines;
+			return {
+				output: "output\n",
+				tmux_target: "flywheel:@42",
+				lines,
+				captured_at: new Date().toISOString(),
+			};
+		};
+
+		server = startServerWithCapture(store, lineCapture);
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+
+		// lines=9999 should clamp to 500
+		let res = await fetch(`${baseUrl}/api/sessions/exec-1/capture?lines=9999`);
+		let body = await res.json();
+		expect(body.lines).toBe(500);
+		expect(capturedLines).toBe(500);
+
+		// lines=0 should clamp to 1
+		res = await fetch(`${baseUrl}/api/sessions/exec-1/capture?lines=0`);
+		body = await res.json();
+		expect(body.lines).toBe(1);
+		expect(capturedLines).toBe(1);
+
+		// lines=NaN should default to 100
+		res = await fetch(`${baseUrl}/api/sessions/exec-1/capture?lines=abc`);
+		body = await res.json();
+		expect(body.lines).toBe(100);
+		expect(capturedLines).toBe(100);
+	});
+
+	it("GET /api/sessions/:id/capture resolves session by identifier fallback", async () => {
+		store = await StateStore.create(":memory:");
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "i1",
+			project_name: "test-project",
+			status: "running",
+			issue_identifier: "GEO-262",
+		});
+		server = startServerWithCapture(store, mockCapture);
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+
+		const res = await fetch(`${baseUrl}/api/sessions/GEO-262/capture`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.execution_id).toBe("exec-1");
+		expect(body.output).toContain("exec-1");
+	});
+
+	it("GET /api/sessions/:id/capture returns 501 when captureSessionFn not configured", async () => {
+		store = await StateStore.create(":memory:");
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "i1",
+			project_name: "test-project",
+			status: "running",
+		});
+		// No capture function passed
+		server = startServerWithCapture(store);
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+
+		const res = await fetch(`${baseUrl}/api/sessions/exec-1/capture`);
+		expect(res.status).toBe(501);
+		const body = await res.json();
+		expect(body.error).toContain("Capture not configured");
+	});
+
+	it("GET /api/sessions/:id/capture defaults lines to 100 when not specified", async () => {
+		store = await StateStore.create(":memory:");
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "i1",
+			project_name: "test-project",
+			status: "running",
+		});
+		server = startServerWithCapture(store, mockCapture);
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+
+		const res = await fetch(`${baseUrl}/api/sessions/exec-1/capture`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.lines).toBe(100);
 	});
 });

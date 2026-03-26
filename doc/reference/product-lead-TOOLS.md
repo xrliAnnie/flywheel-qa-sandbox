@@ -1,7 +1,7 @@
 # Product Lead Agent — TOOLS.md
 
 > Deploy to OpenClaw workspace: `product-lead/TOOLS.md`
-> Version: v1.6.0 (GEO-204)
+> Version: v1.11.0 (GEO-262)
 
 ---
 
@@ -49,18 +49,54 @@ Note: Kills the tmux session. Only works on running sessions.
 GET /api/sessions/:id
   Returns session by execution_id (or identifier fallback)
 
-GET /api/sessions?mode=by_identifier&identifier=GEO-XX
-  Returns session by issue identifier
+GET /api/sessions/:id/history
+  Returns all executions for the same issue
 
 GET /api/sessions?mode=active
-  Returns all active (running) sessions
+  Returns all active (running + awaiting_review) sessions
 
-GET /api/sessions?mode=pending
-  Returns sessions awaiting review
+GET /api/sessions?mode=recent&limit=N
+  Returns most recent N sessions (default 20, max 200)
+
+GET /api/sessions?mode=stuck&stuck_threshold=15
+  Returns sessions with no activity for N minutes
+
+GET /api/sessions?mode=by_identifier&identifier=GEO-XX
+  Returns session by issue identifier
 ```
 
 Response includes `thread_id` — use for Forum Thread links:
 `https://discord.com/channels/{guild_id}/{thread_id}`
+
+### Session Capture (GEO-262)
+
+Capture the current tmux terminal output of a runner session.
+
+```
+GET /api/sessions/:id/capture?lines=100
+
+Parameters:
+  :id    — execution_id or issue identifier (e.g., GEO-262)
+  lines  — number of lines to capture (1-500, default 100)
+
+Response 200:
+{
+  "execution_id": "abc-123",
+  "tmux_target": "flywheel:@42",
+  "lines": 100,
+  "output": "... terminal text ...",
+  "captured_at": "2026-03-25T12:00:00Z"
+}
+
+Errors:
+  404 — Session not found / CommDB not found / no tmux window
+  502 — tmux window gone (pane died)
+```
+
+Use this to:
+- Check what a Runner is doing right now ("GEO-XX is doing what?")
+- Diagnose stuck sessions ("stuck on npm install or waiting for CI?")
+- Provide specific info when reporting to CEO
 
 ### Linear API (via Bridge proxy)
 
