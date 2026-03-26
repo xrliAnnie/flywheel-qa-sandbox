@@ -868,6 +868,27 @@ export class StateStore {
 		return undefined;
 	}
 
+	/** GEO-259: Get all sessions for an issue matching given statuses, ordered by last_activity_at DESC. */
+	getSessionsByIssueAndStatuses(
+		issueId: string,
+		statuses: string[],
+	): Session[] {
+		if (statuses.length === 0) return [];
+		const placeholders = statuses.map(() => "?").join(", ");
+		const results: Session[] = [];
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions WHERE issue_id = ? AND status IN (${placeholders}) ORDER BY last_activity_at DESC`,
+		);
+		stmt.bind([issueId, ...statuses]);
+		while (stmt.step()) {
+			results.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return results;
+	}
+
 	getTerminalSessionsSince(sinceTs: string): Session[] {
 		const placeholders = OUTCOME_STATUSES.map(() => "?").join(", ");
 		const stmt = this.db.prepare(

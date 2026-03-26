@@ -14,6 +14,7 @@ import type { StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
+import { matchesLead } from "./lead-scope.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
@@ -664,6 +665,47 @@ async function handleTerminate(
 	};
 }
 
+/** GEO-259: Check lead scope for a session. Returns error response or null (in-scope). */
+function checkLeadScope(
+	session: { execution_id: string; project_name: string; issue_labels?: string },
+	leadId: string | undefined,
+	projects: ProjectEntry[],
+	action: string,
+): { status: number; body: object } | null {
+	if (!leadId) return null;
+	try {
+		if (
+			!matchesLead(
+				session as import("../StateStore.js").Session,
+				leadId,
+				projects,
+			)
+		) {
+			return {
+				status: 403,
+				body: {
+					success: false,
+					message: `Session ${session.execution_id} is outside lead "${leadId}" scope`,
+					action,
+				},
+			};
+		}
+	} catch (err) {
+		console.warn(
+			`[actions] Cannot verify lead scope for ${session.execution_id}: ${(err as Error).message}`,
+		);
+		return {
+			status: 403,
+			body: {
+				success: false,
+				message: `Cannot verify lead scope for session ${session.execution_id}`,
+				action,
+			},
+		};
+	}
+	return null;
+}
+
 export function createActionRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -680,12 +722,25 @@ export function createActionRouter(
 	router.post("/:action", async (req, res) => {
 		const action = req.params.action;
 
+		// GEO-259: Extract leadId for scope check (optional, backwards-compatible)
+		const { leadId } = req.body ?? {};
+
 		switch (action) {
 			case "approve": {
 				const { execution_id, identifier } = req.body ?? {};
 				if (!execution_id || typeof execution_id !== "string") {
 					res.status(400).json({ error: "execution_id is required" });
 					return;
+				}
+				{
+					const sess = store.getSession(execution_id);
+					if (sess) {
+						const scopeErr = checkLeadScope(sess, leadId, projects, action);
+						if (scopeErr) {
+							res.status(scopeErr.status).json(scopeErr.body);
+							return;
+						}
+					}
 				}
 				const result = await approveExecution(
 					store,
@@ -722,6 +777,16 @@ export function createActionRouter(
 					res.status(400).json({ error: "execution_id is required" });
 					return;
 				}
+				{
+					const sess = store.getSession(eid);
+					if (sess) {
+						const scopeErr = checkLeadScope(sess, leadId, projects, action);
+						if (scopeErr) {
+							res.status(scopeErr.status).json(scopeErr.body);
+							return;
+						}
+					}
+				}
 				const terminateResult = await handleTerminate(
 					store,
 					eid,
@@ -752,6 +817,16 @@ export function createActionRouter(
 				if (!eid || typeof eid !== "string") {
 					res.status(400).json({ error: "execution_id is required" });
 					return;
+				}
+				{
+					const sess = store.getSession(eid);
+					if (sess) {
+						const scopeErr = checkLeadScope(sess, leadId, projects, action);
+						if (scopeErr) {
+							res.status(scopeErr.status).json(scopeErr.body);
+							return;
+						}
+					}
 				}
 				if (retryDispatcher) {
 					const retryResult = await handleRetry(
@@ -811,6 +886,16 @@ export function createActionRouter(
 				if (!eid || typeof eid !== "string") {
 					res.status(400).json({ error: "execution_id is required" });
 					return;
+				}
+				{
+					const sess = store.getSession(eid);
+					if (sess) {
+						const scopeErr = checkLeadScope(sess, leadId, projects, action);
+						if (scopeErr) {
+							res.status(scopeErr.status).json(scopeErr.body);
+							return;
+						}
+					}
 				}
 				const actionResult = await transitionSession(
 					store,
