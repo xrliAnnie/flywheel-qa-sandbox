@@ -116,12 +116,13 @@ export function createQueryRouter(
 			return;
 		}
 
-		// GEO-259: Filter history to Lead scope
+		// GEO-259: Filter history to Lead scope.
+		// If leadId provided but no in-scope history exists, return empty.
 		let history = store.getSessionHistory(session.issue_id);
 		history = filterSessionsByLead(history, leadId, projects);
 
 		res.json({
-			identifier: session.issue_identifier,
+			identifier: history.length > 0 ? session.issue_identifier : undefined,
 			history: history.map(omitIssueId),
 			count: history.length,
 		});
