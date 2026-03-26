@@ -209,7 +209,10 @@ export function createEventRouter(
 								issueTitle: asString(payload.issueTitle),
 								executionId: event.execution_id,
 								status: "running",
-								discordBotToken: config.discordBotToken,
+								// GEO-252: per-lead token. Note: labels may be overwritten on
+								// session_completed/failed, but thread ownership is consistent
+								// because ForumPostCreator only runs once (session_started).
+								discordBotToken: fpLead.botToken ?? config.discordBotToken,
 								statusTagMap: fpLead.statusTagMap,
 							})
 							.catch((err) => {
@@ -510,7 +513,7 @@ export function createEventRouter(
 							threadId: session.thread_id,
 							status: session.status ?? "",
 							eventType: event.event_type,
-							discordBotToken: config.discordBotToken,
+							discordBotToken: lead.botToken ?? config.discordBotToken,
 							statusTagMap: lead.statusTagMap,
 						});
 					}

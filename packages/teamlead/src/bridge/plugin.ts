@@ -38,18 +38,17 @@ export async function createLeadRuntime(
 				`Lead "${lead.agentId}" has runtime=claude-discord but missing controlChannel`,
 			);
 		}
-		if (!config.discordBotToken) {
+		// GEO-252: use per-lead botToken, fall back to global DISCORD_BOT_TOKEN
+		const token = lead.botToken ?? config.discordBotToken;
+		if (!token) {
 			throw new Error(
-				`Lead "${lead.agentId}" has runtime=claude-discord but DISCORD_BOT_TOKEN is not set`,
+				`Lead "${lead.agentId}" has runtime=claude-discord but no botToken (botTokenEnv=${lead.botTokenEnv ?? "unset"}) and DISCORD_BOT_TOKEN is not set`,
 			);
 		}
 		const { ClaudeDiscordRuntime } = await import(
 			"./claude-discord-runtime.js"
 		);
-		return new ClaudeDiscordRuntime(
-			lead.controlChannel,
-			config.discordBotToken,
-		);
+		return new ClaudeDiscordRuntime(lead.controlChannel, token);
 	}
 	if (!config.gatewayUrl || !config.hooksToken) {
 		throw new Error(
