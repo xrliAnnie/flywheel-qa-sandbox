@@ -249,6 +249,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							status: session.status ?? "",
 							eventType,
 							discordBotToken: this.config.discordBotToken,
+							statusTagMap: lead.statusTagMap,
 						});
 					}
 

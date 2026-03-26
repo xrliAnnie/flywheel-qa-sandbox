@@ -185,4 +185,45 @@ describe("ForumTagUpdater", () => {
 			expect(fetchSpy).not.toHaveBeenCalled();
 		});
 	});
+
+	describe("per-call statusTagMap override (GEO-253)", () => {
+		it("uses ctx.statusTagMap over constructor map", async () => {
+			const result = await updater.updateTag({
+				threadId: "thread-1",
+				status: "running",
+				eventType: "session_started",
+				discordBotToken: "bot-token",
+				statusTagMap: { running: ["per-lead-tag"] },
+			});
+			expect(result).toBe("succeeded");
+			const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+			expect(body.applied_tags).toEqual(["per-lead-tag"]);
+		});
+
+		it("constructor map empty + per-call map works", async () => {
+			const emptyUpdater = new ForumTagUpdater({});
+			const result = await emptyUpdater.updateTag({
+				threadId: "thread-1",
+				status: "completed",
+				eventType: "session_completed",
+				discordBotToken: "bot-token",
+				statusTagMap: { completed: ["lead-completed-tag"] },
+			});
+			expect(result).toBe("succeeded");
+			const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+			expect(body.applied_tags).toEqual(["lead-completed-tag"]);
+		});
+
+		it("falls back to constructor map when ctx.statusTagMap not provided", async () => {
+			const result = await updater.updateTag({
+				threadId: "thread-1",
+				status: "running",
+				eventType: "session_started",
+				discordBotToken: "bot-token",
+			});
+			expect(result).toBe("succeeded");
+			const body = JSON.parse(fetchSpy.mock.calls[0][1].body);
+			expect(body.applied_tags).toEqual(["tag-running"]);
+		});
+	});
 });

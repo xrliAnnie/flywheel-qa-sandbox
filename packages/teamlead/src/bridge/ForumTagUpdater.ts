@@ -4,6 +4,8 @@ export interface TagUpdateContext {
 	eventType: string;
 	action?: string;
 	discordBotToken?: string;
+	/** Per-lead tag map override (GEO-253). Falls back to constructor's map if not provided. */
+	statusTagMap?: Record<string, string[]>;
 }
 
 export type TagUpdateResult =
@@ -29,7 +31,8 @@ export class ForumTagUpdater {
 		}
 		if (ctx.action && SKIP_ACTIONS.has(ctx.action)) return "skipped";
 
-		const tagIds = this.statusTagMap[ctx.status];
+		const effectiveMap = ctx.statusTagMap ?? this.statusTagMap;
+		const tagIds = effectiveMap[ctx.status];
 		if (!tagIds) return "skipped";
 
 		try {

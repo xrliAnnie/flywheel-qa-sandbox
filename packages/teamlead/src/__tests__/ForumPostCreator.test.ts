@@ -133,4 +133,78 @@ describe("ForumPostCreator (GEO-195)", () => {
 		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
 		expect(body.name.length).toBeLessThanOrEqual(100);
 	});
+
+	it("uses per-call statusTagMap over constructor map (GEO-253)", async () => {
+		mockFetch.mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ id: "thread-override" }),
+		});
+
+		await creator.ensureForumPost({
+			forumChannelId: "forum-ch-1",
+			issueId: "issue-1",
+			executionId: "exec-1",
+			status: "running",
+			discordBotToken: "bot-token",
+			statusTagMap: { running: ["per-lead-tag"] },
+		});
+
+		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(body.applied_tags).toEqual(["per-lead-tag"]);
+	});
+
+	it("constructor map empty + per-call map works (GEO-253)", async () => {
+		const emptyCreator = new ForumPostCreator(store, {});
+		// Need a fresh issue to avoid idempotency skip
+		store.upsertSession({
+			execution_id: "exec-2",
+			issue_id: "issue-2",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+		mockFetch.mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ id: "thread-empty" }),
+		});
+
+		await emptyCreator.ensureForumPost({
+			forumChannelId: "forum-ch-1",
+			issueId: "issue-2",
+			executionId: "exec-2",
+			status: "running",
+			discordBotToken: "bot-token",
+			statusTagMap: { running: ["lead-only-tag"] },
+		});
+
+		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(body.applied_tags).toEqual(["lead-only-tag"]);
+	});
+
+	it("appliedTags still takes priority over per-call statusTagMap (GEO-253)", async () => {
+		mockFetch.mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ id: "thread-explicit" }),
+		});
+
+		// Need fresh issue
+		store.upsertSession({
+			execution_id: "exec-3",
+			issue_id: "issue-3",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+
+		await creator.ensureForumPost({
+			forumChannelId: "forum-ch-1",
+			issueId: "issue-3",
+			executionId: "exec-3",
+			status: "running",
+			discordBotToken: "bot-token",
+			appliedTags: ["explicit-tag"],
+			statusTagMap: { running: ["should-not-use"] },
+		});
+
+		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+		expect(body.applied_tags).toEqual(["explicit-tag"]);
+	});
 });
