@@ -316,6 +316,96 @@ describe("resolveLeadForIssue", () => {
 	});
 });
 
+describe("statusTagMap validation (GEO-253)", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+
+	afterEach(() => {
+		if (originalEnv === undefined) {
+			delete process.env.FLYWHEEL_PROJECTS;
+		} else {
+			process.env.FLYWHEEL_PROJECTS = originalEnv;
+		}
+	});
+
+	const baseLead = {
+		agentId: "product-lead",
+		forumChannel: "123",
+		chatChannel: "456",
+		match: { labels: ["Product"] },
+	};
+
+	function makeProject(leadOverrides: Record<string, unknown>) {
+		return JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [{ ...baseLead, ...leadOverrides }],
+			},
+		]);
+	}
+
+	it("accepts lead without statusTagMap (uses global fallback)", () => {
+		process.env.FLYWHEEL_PROJECTS = makeProject({});
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.statusTagMap).toBeUndefined();
+	});
+
+	it("accepts valid statusTagMap", () => {
+		process.env.FLYWHEEL_PROJECTS = makeProject({
+			statusTagMap: { running: ["tag-1"], failed: ["tag-2"] },
+		});
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.statusTagMap).toEqual({
+			running: ["tag-1"],
+			failed: ["tag-2"],
+		});
+	});
+
+	it("throws on empty statusTagMap {}", () => {
+		process.env.FLYWHEEL_PROJECTS = makeProject({ statusTagMap: {} });
+		expect(() => loadProjects()).toThrow(/must not be empty/);
+	});
+
+	it("throws when statusTagMap is an array", () => {
+		process.env.FLYWHEEL_PROJECTS = makeProject({ statusTagMap: ["tag-1"] });
+		expect(() => loadProjects()).toThrow(/non-array object/);
+	});
+
+	it("throws when statusTagMap is null", () => {
+		process.env.FLYWHEEL_PROJECTS = makeProject({ statusTagMap: null });
+		expect(() => loadProjects()).toThrow(/non-null/);
+	});
+
+	it("throws when statusTagMap value is empty array", () => {
+		process.env.FLYWHEEL_PROJECTS = makeProject({
+			statusTagMap: { running: [] },
+		});
+		expect(() => loadProjects()).toThrow(/non-empty array/);
+	});
+
+	it("throws when statusTagMap value contains empty string tag ID", () => {
+		process.env.FLYWHEEL_PROJECTS = makeProject({
+			statusTagMap: { running: [""] },
+		});
+		expect(() => loadProjects()).toThrow(/non-empty string/);
+	});
+
+	it("throws when statusTagMap value contains non-string tag ID", () => {
+		process.env.FLYWHEEL_PROJECTS = makeProject({
+			statusTagMap: { running: [123] },
+		});
+		expect(() => loadProjects()).toThrow(/non-empty string/);
+	});
+
+	it("LeadConfig type includes optional statusTagMap", () => {
+		const lead: LeadConfig = {
+			...baseLead,
+			statusTagMap: { running: ["tag-r"], completed: ["tag-c"] },
+		};
+		expect(lead.statusTagMap?.running).toEqual(["tag-r"]);
+	});
+});
+
 describe("memoryAllowedUsers validation", () => {
 	const originalEnv = process.env.FLYWHEEL_PROJECTS;
 

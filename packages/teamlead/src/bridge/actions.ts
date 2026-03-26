@@ -108,6 +108,7 @@ function sendActionHook(
 						eventType: "action_executed",
 						action,
 						discordBotToken: config?.discordBotToken,
+						statusTagMap: lead.statusTagMap,
 					});
 				}
 

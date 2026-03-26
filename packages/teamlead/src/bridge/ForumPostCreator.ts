@@ -19,6 +19,8 @@ export interface ForumPostContext {
 	discordBotToken?: string;
 	/** Initial tag IDs to apply (from statusTagMap). */
 	appliedTags?: string[];
+	/** Per-lead tag map override (GEO-253). Falls back to constructor's map if not provided. */
+	statusTagMap?: Record<string, string[]>;
 }
 
 export interface ForumPostResult {
@@ -61,8 +63,9 @@ export class ForumPostCreator {
 			.filter(Boolean)
 			.join("\n");
 
-		// Resolve initial tags from statusTagMap
-		const appliedTags = ctx.appliedTags ?? this.statusTagMap[ctx.status] ?? [];
+		// Resolve initial tags: explicit appliedTags > per-lead map > constructor/global map
+		const effectiveMap = ctx.statusTagMap ?? this.statusTagMap;
+		const appliedTags = ctx.appliedTags ?? effectiveMap[ctx.status] ?? [];
 
 		try {
 			const res = await fetch(
