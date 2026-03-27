@@ -281,7 +281,7 @@ export function createBridgeApp(
 	app.use(
 		"/api",
 		tokenAuthMiddleware(config.apiToken),
-		createQueryRouter(store, retryDispatcher, captureSessionFn),
+		createQueryRouter(store, projects, retryDispatcher, captureSessionFn),
 	);
 	app.use(
 		"/api/actions",
