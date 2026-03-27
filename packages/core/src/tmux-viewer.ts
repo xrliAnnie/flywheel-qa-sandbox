@@ -1,4 +1,5 @@
 import { execFileSync, execFile } from "node:child_process";
+import { sanitizeTmuxName } from "./tmux-naming.js";
 
 /**
  * Resolve the absolute path to the tmux binary.
@@ -30,6 +31,10 @@ function resolveTmuxPath(): string | undefined {
  * GEO-277
  */
 export function openTmuxViewer(sessionName: string): void {
+	// Sanitize session name to prevent shell/AppleScript injection —
+	// only allows alphanumeric + dash (strips quotes, spaces, special chars)
+	const safeName = sanitizeTmuxName(sessionName);
+
 	// Resolve tmux absolute path — do shell script runs /bin/sh without user PATH
 	const tmuxPath = resolveTmuxPath();
 	if (!tmuxPath) {
@@ -41,7 +46,7 @@ export function openTmuxViewer(sessionName: string): void {
 	try {
 		const clients = execFileSync(
 			tmuxPath,
-			["list-clients", "-t", `=${sessionName}`],
+			["list-clients", "-t", `=${safeName}`],
 			{
 				encoding: "utf-8",
 				stdio: ["pipe", "pipe", "pipe"],
@@ -49,7 +54,7 @@ export function openTmuxViewer(sessionName: string): void {
 		);
 		if (clients.trim().length > 0) {
 			console.log(
-				`[tmux-viewer] Viewer already attached to ${sessionName}, skipping`,
+				`[tmux-viewer] Viewer already attached to ${safeName}, skipping`,
 			);
 			return;
 		}
@@ -57,17 +62,18 @@ export function openTmuxViewer(sessionName: string): void {
 		const msg = err instanceof Error ? err.message : String(err);
 		if (!msg.includes("can't find session")) {
 			console.warn(
-				`[tmux-viewer] tmux list-clients failed for ${sessionName}: ${msg}`,
+				`[tmux-viewer] tmux list-clients failed for ${safeName}: ${msg}`,
 			);
 		}
 		// Session may not exist yet — proceed to open (best-effort)
 	}
 
 	// Shell command: POSIX counter wait loop + exec attach (all absolute paths)
+	// safeName is guaranteed alphanumeric + dash only (no injection risk)
 	const shellCmd = [
-		`i=0; while [ $i -lt 120 ] && ! ${tmuxPath} has-session -t '=${sessionName}' 2>/dev/null;`,
+		`i=0; while [ $i -lt 120 ] && ! ${tmuxPath} has-session -t '=${safeName}' 2>/dev/null;`,
 		`do sleep 1; i=$((i+1)); done;`,
-		`exec ${tmuxPath} attach -t '=${sessionName}' 2>/dev/null`,
+		`exec ${tmuxPath} attach -t '=${safeName}' 2>/dev/null`,
 	].join(" ");
 
 	// Two-phase AppleScript state machine:
@@ -86,7 +92,7 @@ export function openTmuxViewer(sessionName: string): void {
 		"    delay 3",
 		"    set waited to waited + 3",
 		"    try",
-		`      set clients to do shell script "${tmuxPath} list-clients -t '=${sessionName}' 2>/dev/null || true"`,
+		`      set clients to do shell script "${tmuxPath} list-clients -t '=${safeName}' 2>/dev/null || true"`,
 		'      if clients is not "" then',
 		"        set attached to true",
 		"        exit repeat",
