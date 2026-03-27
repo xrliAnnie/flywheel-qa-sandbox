@@ -94,11 +94,35 @@ export function createRunsRouter(
 			}
 		}
 
-		// Note: Blueprint.run() is fire-and-forget. Issue hydration (PreHydrator)
-		// happens asynchronously inside Blueprint. If Linear API fails despite
-		// LINEAR_API_KEY being set, createFetchIssue() falls back to stub data.
-		// This is the same behavior as the retry path. The session will show
-		// as failed in StateStore if Blueprint cannot proceed.
+		// Pre-flight: verify issue exists in Linear before dispatching.
+		// This prevents fire-and-forget from silently using stub metadata
+		// when the issue doesn't exist or Linear API is unreachable.
+		try {
+			const { LinearClient } = await import("@linear/sdk");
+			const client = new LinearClient({
+				accessToken: process.env.LINEAR_API_KEY!,
+			});
+			const issue = await client.issue(issueId);
+			if (!issue) {
+				res.status(404).json({
+					success: false,
+					message: `Issue ${issueId} not found in Linear`,
+				});
+				return;
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			console.error(
+				`[runs/start] Linear pre-flight failed for ${issueId}:`,
+				msg,
+			);
+			res.status(502).json({
+				success: false,
+				message: `Cannot verify issue ${issueId} in Linear: ${msg}`,
+			});
+			return;
+		}
+
 		try {
 			const result = await startDispatcher.start({
 				issueId,
