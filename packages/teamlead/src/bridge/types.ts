@@ -28,4 +28,6 @@ export interface BridgeConfig {
 	discordGuildId?: string;
 	/** Status → Discord Forum tag ID mapping (JSON string from env). */
 	statusTagMap?: Record<string, string[]>;
+	/** GEO-267: Maximum concurrent Runner executions (default 3). */
+	maxConcurrentRunners: number;
 }
