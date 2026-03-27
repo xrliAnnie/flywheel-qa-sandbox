@@ -186,10 +186,10 @@ source ~/.claude/channels/discord/.env.bak  # ClaudeBot token
 #   VIEW_CHANNEL         = 1024          (1 << 10)
 #   SEND_MESSAGES        = 2048          (1 << 11)
 #   READ_MESSAGE_HISTORY = 65536         (1 << 16)
-#   MANAGE_THREADS       = 274877906944  (1 << 38)
+#   SEND_MESSAGES_IN_THREADS = 274877906944  (1 << 38)
 #
 # @everyone (guild ID): deny VIEW = 1024
-# ClaudeBot:  VIEW + SEND + READ_HISTORY + MANAGE_THREADS = 274877975552
+# ClaudeBot:  VIEW + SEND + READ_HISTORY + SEND_IN_THREADS = 274877975552
 # Lead bot:   VIEW + SEND + READ_HISTORY                  = 68608
 
 curl -X POST "https://discord.com/api/v10/guilds/1485787271192907816/channels" \
