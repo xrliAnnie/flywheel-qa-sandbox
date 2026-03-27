@@ -591,7 +591,9 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 				leads: [{ ...baseLead, botTokenEnv: 123 }],
 			},
 		]);
-		expect(() => loadProjects()).toThrow(/botTokenEnv: must be a non-empty string/);
+		expect(() => loadProjects()).toThrow(
+			/botTokenEnv: must be a non-empty string/,
+		);
 	});
 
 	it("throws when botTokenEnv is empty string", () => {
@@ -602,7 +604,9 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 				leads: [{ ...baseLead, botTokenEnv: "" }],
 			},
 		]);
-		expect(() => loadProjects()).toThrow(/botTokenEnv: must be a non-empty string/);
+		expect(() => loadProjects()).toThrow(
+			/botTokenEnv: must be a non-empty string/,
+		);
 	});
 
 	it("strips raw botToken and resolves from botTokenEnv instead", () => {

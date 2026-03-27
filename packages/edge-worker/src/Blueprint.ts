@@ -309,15 +309,14 @@ export class Blueprint {
 					`\`node ${commCliPath} check {question_id}\` to check for a response. ` +
 					`If no response arrives before your session ends, use your best judgment.`,
 			);
-			// GEO-206 Phase 2: Inbox instructions for Lead proactive commands
+			// GEO-266: Inbox instructions — auto-injected via PostToolUse hook, with manual fallback
 			systemPromptLines.push(
-				`Additionally, your Lead may send you proactive instructions. ` +
-					`Periodically check for instructions with ` +
-					`\`node ${commCliPath} inbox --exec-id ${executionId}\`. ` +
-					`Check at task boundaries (before committing, when starting a new subtask). ` +
-					`If you receive instructions, evaluate their urgency: follow immediately ` +
-					`if the Lead explicitly demands it, otherwise incorporate at the next ` +
-					`natural breakpoint.`,
+				`Your Lead may send you instructions during your session. ` +
+					`Instructions may appear automatically as context after your tool calls via a PostToolUse hook. ` +
+					`Additionally, manually check with \`node ${commCliPath} inbox --exec-id ${executionId}\` at task boundaries ` +
+					`(before committing, when starting a new subtask) as a safety net. ` +
+					`When you receive a Lead instruction, evaluate urgency and act accordingly. ` +
+					`Always briefly acknowledge received instructions.`,
 			);
 		} else {
 			systemPromptLines.push(
@@ -478,6 +477,7 @@ export class Blueprint {
 		};
 	}
 
+	/** GEO-261: Await terminal event delivery (retry handled by emitter). */
 	private async emitTerminal(
 		env: EventEnvelope,
 		result: BlueprintResult,
@@ -486,18 +486,13 @@ export class Blueprint {
 		try {
 			if (result.success || result.decision) {
 				const summary = this.buildSummary(result);
-				await Promise.race([
-					this.eventEmitter.emitCompleted(env, result, summary),
-					new Promise<void>((r) => setTimeout(r, 1000)),
-				]);
+				await this.eventEmitter.emitCompleted(env, result, summary);
 			} else {
-				await Promise.race([
-					this.eventEmitter.emitFailed(env, result.error ?? "unknown"),
-					new Promise<void>((r) => setTimeout(r, 1000)),
-				]);
+				await this.eventEmitter.emitFailed(env, result.error ?? "unknown");
 			}
 		} catch (err) {
-			console.warn(
+			// postEventReliable never throws, but defensive catch for interface changes
+			console.error(
 				`[Blueprint] emitTerminal failed: ${err instanceof Error ? err.message : String(err)}`,
 			);
 		}

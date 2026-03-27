@@ -24,7 +24,8 @@ import { createMemoryRouter } from "./memory-route.js";
 import { OpenClawRuntime } from "./openclaw-runtime.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
-import { createQueryRouter } from "./tools.js";
+import { captureSession as defaultCaptureSession } from "./session-capture.js";
+import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import type { BridgeConfig } from "./types.js";
 
 /** Create the appropriate LeadRuntime for a lead config. */
@@ -196,6 +197,7 @@ export function createBridgeApp(
 	registry?: RuntimeRegistry,
 	forumPostCreator?: ForumPostCreator,
 	memoryService?: MemoryService,
+	captureSessionFn?: CaptureSessionFn,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -279,7 +281,7 @@ export function createBridgeApp(
 	app.use(
 		"/api",
 		tokenAuthMiddleware(config.apiToken),
-		createQueryRouter(store, projects, retryDispatcher),
+		createQueryRouter(store, projects, retryDispatcher, captureSessionFn),
 	);
 	app.use(
 		"/api/actions",
@@ -740,6 +742,7 @@ export async function startBridge(
 		registry,
 		forumPostCreator,
 		opts?.memoryService,
+		defaultCaptureSession,
 	);
 
 	const server = app.listen(config.port, config.host);

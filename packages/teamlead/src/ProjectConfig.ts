@@ -160,11 +160,7 @@ export function loadProjects(): ProjectEntry[] {
 			// GEO-253: validate optional statusTagMap
 			const stm = lead.statusTagMap;
 			if (stm !== undefined) {
-				if (
-					typeof stm !== "object" ||
-					stm === null ||
-					Array.isArray(stm)
-				) {
+				if (typeof stm !== "object" || stm === null || Array.isArray(stm)) {
 					throw new Error(
 						`Project "${entry.projectName}" leads[${i}].statusTagMap: must be a non-null, non-array object`,
 					);
@@ -194,8 +190,7 @@ export function loadProjects(): ProjectEntry[] {
 			// Validate botTokenEnv type if present
 			if (
 				lead.botTokenEnv !== undefined &&
-				(typeof lead.botTokenEnv !== "string" ||
-					lead.botTokenEnv.length === 0)
+				(typeof lead.botTokenEnv !== "string" || lead.botTokenEnv.length === 0)
 			) {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}].botTokenEnv: must be a non-empty string, got ${JSON.stringify(lead.botTokenEnv)}`,
