@@ -115,5 +115,17 @@ export function loadConfig(): BridgeConfig {
 			1440,
 			"TEAMLEAD_CLEANUP_THRESHOLD",
 		),
+		maxConcurrentRunners: (() => {
+			const n = parseInt(
+				process.env.TEAMLEAD_MAX_CONCURRENT_RUNNERS ?? "3",
+				10,
+			);
+			if (!Number.isFinite(n) || n < 1 || n > 20) {
+				throw new Error(
+					`TEAMLEAD_MAX_CONCURRENT_RUNNERS must be 1-20, got ${process.env.TEAMLEAD_MAX_CONCURRENT_RUNNERS}`,
+				);
+			}
+			return n;
+		})(),
 	};
 }

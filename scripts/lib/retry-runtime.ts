@@ -1,15 +1,19 @@
 /**
  * GEO-168: Retry runtime builder — assembles per-project Blueprint with
  * DirectEventSink for bridge-local retry execution.
+ *
+ * GEO-267: Returns RunDispatcher (extends RetryDispatcher) with start() + concurrency control.
+ * Accepts optional RuntimeRegistry for proper multi-Lead event routing.
  */
 
 import { EventFilter } from "../../packages/teamlead/dist/bridge/EventFilter.js";
 import { ForumTagUpdater } from "../../packages/teamlead/dist/bridge/ForumTagUpdater.js";
+import type { RuntimeRegistry } from "../../packages/teamlead/dist/bridge/runtime-registry.js";
 import type { BridgeConfig } from "../../packages/teamlead/dist/bridge/types.js";
 import { DirectEventSink } from "../../packages/teamlead/dist/DirectEventSink.js";
 import type { ProjectEntry } from "../../packages/teamlead/dist/ProjectConfig.js";
 import type { StateStore } from "../../packages/teamlead/dist/StateStore.js";
-import { RetryDispatcher } from "./retry-dispatcher.js";
+import { RunDispatcher } from "./retry-dispatcher.js";
 import {
 	type FlywheelComponents,
 	log,
@@ -74,7 +78,8 @@ export async function setupRetryRuntime(
 	store: StateStore,
 	bridgeConfig: BridgeConfig,
 	projects: ProjectEntry[],
-): Promise<RetryDispatcher> {
+	registry?: RuntimeRegistry,
+): Promise<RunDispatcher> {
 	const projectRuntimes = new Map<
 		string,
 		{ blueprint: FlywheelComponents["blueprint"]; projectRoot: string }
@@ -83,18 +88,20 @@ export async function setupRetryRuntime(
 
 	for (const project of projects) {
 		log(
-			`[RetryRuntime] Setting up retry runtime for project: ${project.projectName}`,
+			`[RetryRuntime] Setting up runtime for project: ${project.projectName}`,
 		);
 
 		const eventFilter = new EventFilter();
 		const statusTagMap = bridgeConfig.statusTagMap ?? {};
 		const forumTagUpdater = new ForumTagUpdater(statusTagMap);
+		// GEO-267: Pass registry to DirectEventSink for proper multi-Lead event routing
 		const directSink = new DirectEventSink(
 			store,
 			bridgeConfig,
 			projects,
 			eventFilter,
 			forumTagUpdater,
+			registry,
 		);
 		let components: FlywheelComponents | undefined;
 
@@ -134,13 +141,17 @@ export async function setupRetryRuntime(
 
 	if (projectRuntimes.size === 0) {
 		console.warn(
-			"[RetryRuntime] No project runtimes initialized — retry will be unavailable",
+			"[RetryRuntime] No project runtimes initialized — start/retry will be unavailable",
 		);
 	} else {
 		log(
-			`[RetryRuntime] ${projectRuntimes.size}/${projects.length} project(s) ready for retry`,
+			`[RetryRuntime] ${projectRuntimes.size}/${projects.length} project(s) ready (maxConcurrent: ${bridgeConfig.maxConcurrentRunners})`,
 		);
 	}
 
-	return new RetryDispatcher(projectRuntimes, cleanupHandles);
+	return new RunDispatcher(
+		projectRuntimes,
+		cleanupHandles,
+		bridgeConfig.maxConcurrentRunners,
+	);
 }
