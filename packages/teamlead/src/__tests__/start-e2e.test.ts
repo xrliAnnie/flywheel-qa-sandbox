@@ -227,6 +227,26 @@ describe("Start API E2E", () => {
 		expect(body.message).toContain("Max concurrent runners");
 	});
 
+	it("POST without LINEAR_API_KEY → 503", async () => {
+		const saved = process.env.LINEAR_API_KEY;
+		delete process.env.LINEAR_API_KEY;
+		try {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-NOKEY",
+					projectName: "TestProject",
+				}),
+			});
+			expect(res.status).toBe(503);
+			const body = (await res.json()) as { message: string };
+			expect(body.message).toContain("LINEAR_API_KEY");
+		} finally {
+			if (saved) process.env.LINEAR_API_KEY = saved;
+		}
+	});
+
 	it("GET /api/runs/active → counts", async () => {
 		// Insert a running session
 		store.upsertSession({
