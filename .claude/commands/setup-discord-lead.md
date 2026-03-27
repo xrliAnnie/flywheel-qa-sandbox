@@ -182,6 +182,16 @@ If Bridge needs to send events to this Lead:
 ```bash
 source ~/.claude/channels/discord/.env.bak  # ClaudeBot token
 
+# Permission bits:
+#   VIEW_CHANNEL         = 1024          (1 << 10)
+#   SEND_MESSAGES        = 2048          (1 << 11)
+#   READ_MESSAGE_HISTORY = 65536         (1 << 16)
+#   MANAGE_THREADS       = 274877906944  (1 << 38)
+#
+# @everyone (guild ID): deny VIEW = 1024
+# ClaudeBot:  VIEW + SEND + READ_HISTORY + MANAGE_THREADS = 274877975552
+# Lead bot:   VIEW + SEND + READ_HISTORY                  = 68608
+
 curl -X POST "https://discord.com/api/v10/guilds/1485787271192907816/channels" \
   -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
   -H "Content-Type: application/json" \
@@ -192,12 +202,40 @@ curl -X POST "https://discord.com/api/v10/guilds/1485787271192907816/channels" \
     "permission_overwrites": [
       {"id": "1485787271192907816", "type": 0, "deny": "1024"},
       {"id": "{claudebot-id}", "type": 1, "allow": "274877975552"},
-      {"id": "{new-bot-id}", "type": 1, "allow": "66560"}
+      {"id": "{new-bot-id}", "type": 1, "allow": "68608"}
     ]
   }'
 ```
 
 Add the control channel ID to the lead's `access.json` groups.
+
+### Step 6b: Repair Existing Control Channel Permissions
+
+If a control channel was created before this fix (Lead bot got `66560` instead of `68608`, missing SEND_MESSAGES → 403), repair it:
+
+```bash
+LEAD_BOT_ID="{new-bot-id}"            # Lead bot's Application ID (see Reference table)
+CONTROL_CHANNEL_ID="{control-channel-id}"
+
+source ~/.claude/channels/discord/.env.bak  # ClaudeBot token (has MANAGE_ROLES)
+
+# Set correct permission overwrite: VIEW + SEND + READ_HISTORY = 68608
+curl -X PUT "https://discord.com/api/v10/channels/${CONTROL_CHANNEL_ID}/permissions/${LEAD_BOT_ID}" \
+  -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"allow": "68608", "deny": "0", "type": 1}'
+```
+
+Verify by sending a test message with the Lead bot token:
+```bash
+source ~/.claude/channels/discord-{lead-name}/.env
+curl -s -o /dev/null -w "%{http_code}" -X POST \
+  "https://discord.com/api/v10/channels/${CONTROL_CHANNEL_ID}/messages" \
+  -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "Permission test — Lead bot can send messages."}'
+# Expected: 200
+```
 
 ---
 
@@ -259,6 +297,7 @@ LEAD_WORKSPACE=/path/to/project/org/.lead/{lead-name} \
 | All bots respond | Administrator permission on bot | Kick bot, re-invite without Admin |
 | "Product Lead" typing | Default `.env` has token, or other session connected | Clear default `.env` and `access.json` groups |
 | Bot typing but no reply | Channel not in this lead's `access.json` groups | Add channel ID to groups |
+| Bridge 403 on control channel | Lead bot missing SEND_MESSAGES permission | Run Step 6b to repair permissions |
 | MFA fails during save | Discord session issue | Try "Verify with something else" |
 
 ---
