@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
+import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { filterSessionsByLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import {
 	type CaptureError,
@@ -23,6 +25,7 @@ function omitIssueId(
 
 export function createQueryRouter(
 	store: StateStore,
+	projects: ProjectEntry[],
 	retryDispatcher?: IRetryDispatcher,
 	captureSessionFn?: CaptureSessionFn,
 ): Router {
@@ -30,6 +33,7 @@ export function createQueryRouter(
 
 	router.get("/sessions", (req, res) => {
 		const mode = (req.query.mode as string) ?? "active";
+		const leadId = req.query.leadId as string | undefined;
 		const rawLimit = parseInt((req.query.limit as string) ?? "20", 10);
 		const limit = Number.isFinite(rawLimit)
 			? Math.min(Math.max(rawLimit, 1), 200)
@@ -56,6 +60,7 @@ export function createQueryRouter(
 				break;
 			}
 			case "by_identifier": {
+				// Specific lookup — leadId not applied (caller knows the identifier)
 				const identifier = req.query.identifier as string;
 				if (!identifier) {
 					res.status(400).json({
@@ -65,12 +70,19 @@ export function createQueryRouter(
 				}
 				const session = store.getSessionByIdentifier(identifier);
 				sessions = session ? [session] : [];
-				break;
+				res.json({
+					sessions: sessions.map(omitIssueId),
+					count: sessions.length,
+				});
+				return;
 			}
 			default:
 				res.status(400).json({ error: `Unknown mode: ${mode}` });
 				return;
 		}
+
+		// GEO-259: Apply lead scope filter for bulk modes (no-op if leadId not provided)
+		sessions = filterSessionsByLead(sessions, leadId, projects);
 
 		res.json({
 			sessions: sessions.map(omitIssueId),
@@ -104,6 +116,7 @@ export function createQueryRouter(
 
 	router.get("/sessions/:id/history", (req, res) => {
 		const id = req.params.id;
+		const leadId = req.query.leadId as string | undefined;
 
 		// Resolve session first using same deterministic fallback
 		let session = store.getSession(id);
@@ -115,9 +128,13 @@ export function createQueryRouter(
 			return;
 		}
 
-		const history = store.getSessionHistory(session.issue_id);
+		// GEO-259: Filter history to Lead scope.
+		// If leadId provided but no in-scope history exists, return empty.
+		let history = store.getSessionHistory(session.issue_id);
+		history = filterSessionsByLead(history, leadId, projects);
+
 		res.json({
-			identifier: session.issue_identifier,
+			identifier: history.length > 0 ? session.issue_identifier : undefined,
 			history: history.map(omitIssueId),
 			count: history.length,
 		});
@@ -232,6 +249,7 @@ export function createQueryRouter(
 	router.get("/resolve-action", (req, res) => {
 		const issueId = req.query.issue_id as string;
 		const action = req.query.action as string;
+		const leadId = req.query.leadId as string | undefined;
 		if (!issueId || !action) {
 			res
 				.status(400)
@@ -245,14 +263,28 @@ export function createQueryRouter(
 			return;
 		}
 
-		const session = store.getLatestSessionByIssueAndStatuses(
-			issueId,
-			actionDef.fromStates,
-		);
+		// GEO-259: Scope-aware candidate selection when leadId provided
+		let session: Session | undefined;
+		if (leadId) {
+			const candidates = store.getSessionsByIssueAndStatuses(
+				issueId,
+				actionDef.fromStates,
+			);
+			const inScope = filterSessionsByLead(candidates, leadId, projects);
+			session = inScope[0]; // Already ordered by last_activity_at DESC
+		} else {
+			session = store.getLatestSessionByIssueAndStatuses(
+				issueId,
+				actionDef.fromStates,
+			);
+		}
+
 		if (!session) {
 			res.json({
 				can_execute: false,
-				reason: `No session found for issue ${issueId} in status: ${actionDef.fromStates.join(", ")}`,
+				reason: leadId
+					? `No in-scope session found for issue ${issueId} in lead "${leadId}" scope`
+					: `No session found for issue ${issueId} in status: ${actionDef.fromStates.join(", ")}`,
 			});
 			return;
 		}
