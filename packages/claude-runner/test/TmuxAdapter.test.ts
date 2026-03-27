@@ -671,6 +671,29 @@ describe("TmuxAdapter", () => {
 			expect(args.join(" ")).not.toContain("FLYWHEEL_COMM_DB");
 		});
 
+		// GEO-266: FLYWHEEL_EXEC_ID env injection
+		it("execute() always injects FLYWHEEL_EXEC_ID", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx({ executionId: "exec-abc-123" }));
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const envArgStr = newWindow!.args.join(" ");
+			expect(envArgStr).toContain("FLYWHEEL_EXEC_ID=exec-abc-123");
+		});
+
+		it("execute() injects FLYWHEEL_EXEC_ID even without hookServer", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const envArgStr = newWindow!.args.join(" ");
+			expect(envArgStr).toContain("FLYWHEEL_EXEC_ID=test-exec-1");
+		});
+
 		it("waitForCompletion resolves on HTTP callback", async () => {
 			const hookServer = makeMockHookServer({ resolveImmediately: true });
 			const { fn } = makeMockExec({ paneDead: false });
