@@ -10,6 +10,7 @@ import type {
 	ExecutionContext,
 	IAdapter,
 } from "flywheel-core";
+import { buildWindowLabel, cleanIssueTitle } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
 import type { AgentDispatcher } from "./AgentDispatcher.js";
 import type { IDecisionLayer } from "./decision/DecisionLayer.js";
@@ -392,7 +393,7 @@ export class Blueprint {
 				permissionMode: "bypassPermissions",
 				appendSystemPrompt: systemPrompt,
 				timeoutMs,
-				sessionDisplayName: `${hydrated.issueId} ${hydrated.issueTitle}`,
+				sessionDisplayName: `${hydrated.issueId} ${cleanIssueTitle(hydrated.issueTitle)}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
 				commDbPath,
 				waitingTimeoutMs: 14_400_000, // GEO-206 Phase 2: 4h when waiting for Lead
@@ -653,24 +654,6 @@ async function readAgentFile(
 		}
 		throw err;
 	}
-}
-
-/**
- * Build a human-readable tmux window label.
- * Strip priority tags like [P0], [P1] and collapse repeated dashes.
- * issueId is omitted — tmux session name already carries it.
- * Format: "{runner}:{cleanTitle}"
- */
-function buildWindowLabel(
-	_issueId: string,
-	runner: string,
-	title: string,
-): string {
-	const cleanTitle = title
-		.replace(/\[P\d+\]\s*/gi, "") // strip [P0], [P1], etc.
-		.replace(/\s*—\s*/g, "-") // em-dash → single dash
-		.trim();
-	return `${runner}:${cleanTitle}`;
 }
 
 const RUNS_EXCLUDE_ENTRY = ".flywheel/runs/";

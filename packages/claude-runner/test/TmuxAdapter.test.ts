@@ -397,6 +397,31 @@ describe("TmuxAdapter", () => {
 		expect(allArgs).not.toContain("--max-budget-usd");
 	});
 
+	it("passes --name when sessionDisplayName is set", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await adapter.execute(
+			makeCtx({ sessionDisplayName: "GEO-101 Fix auth bug" }),
+		);
+
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		const args = newWindow!.args;
+		expect(args).toContain("--name");
+		expect(args).toContain("GEO-101 Fix auth bug");
+	});
+
+	it("does NOT pass --name when sessionDisplayName is absent", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await adapter.execute(makeCtx());
+
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		const allArgs = newWindow!.args.join(" ");
+		expect(allArgs).not.toContain("--name");
+	});
+
 	// ─── remain-on-exit ─────────────────────────────
 
 	it("injects FLYWHEEL_MARKER_DIR into tmux session environment", async () => {
