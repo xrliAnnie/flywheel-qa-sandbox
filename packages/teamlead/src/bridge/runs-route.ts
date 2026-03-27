@@ -100,7 +100,7 @@ export function createRunsRouter(
 		try {
 			const { LinearClient } = await import("@linear/sdk");
 			const client = new LinearClient({
-				accessToken: process.env.LINEAR_API_KEY!,
+				apiKey: process.env.LINEAR_API_KEY!,
 			});
 			const issue = await client.issue(issueId);
 			if (!issue) {
