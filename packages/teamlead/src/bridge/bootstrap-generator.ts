@@ -7,7 +7,6 @@
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type { HookPayload } from "./hook-payload.js";
-import { filterSessionsByLead } from "./lead-scope.js";
 import type {
 	BootstrapDecision,
 	BootstrapFailure,
@@ -15,6 +14,7 @@ import type {
 	LeadBootstrap,
 	LeadEventEnvelope,
 } from "./lead-runtime.js";
+import { filterSessionsByLead } from "./lead-scope.js";
 
 const RECENT_EVENTS_WINDOW_MINUTES = 5;
 const MAX_RECENT_FAILURES = 10;
@@ -66,7 +66,6 @@ export async function generateBootstrap(
 		memoryRecall: null, // GEO-198: wire after mem0 moves to Lead
 	};
 }
-
 
 function toBootstrapSession(s: Session): BootstrapSession {
 	return {
