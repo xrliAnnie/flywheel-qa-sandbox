@@ -18,6 +18,30 @@ Read `CLAUDE.md` for naming conventions and pipeline rules. Read `doc/VERSION` f
 ### 0d. Derive slug
 From the issue title, derive a kebab-case slug (e.g., "Memory Production Setup" → `memory-production-setup`). This slug is used in all filenames for this issue.
 
+### 0e. Create or enter worktree
+
+**All pipeline work (brainstorm, research, plan, implement) happens in a dedicated worktree — never on main.**
+
+1. Check if a worktree for this issue already exists:
+   ```bash
+   git worktree list | grep -i "GEO-{XX}\|{slug}"
+   ```
+
+2. If **no existing worktree**: create one from latest main:
+   ```bash
+   git checkout main && git pull origin main
+   git worktree add ../flywheel-geo-{XX} -b feat/GEO-{XX}-{slug}
+   ```
+
+3. If **worktree already exists**: enter it (it already has the feature branch).
+
+4. **Switch working directory** to the worktree for all subsequent steps:
+   ```bash
+   cd ../flywheel-geo-{XX}
+   ```
+
+All doc writes (exploration, research, plan) and code changes happen in this worktree. When the PR is created, it includes both docs and code — everything enters main through the PR.
+
 ## Step 1: Detect Pipeline Stage
 
 Search the doc/ directory to figure out where this issue is in the pipeline. Check in this order — the first match determines the current stage:
@@ -121,23 +145,35 @@ Before starting:
 1. Move plan: `git mv doc/plan/new/{file} doc/plan/inprogress/{file}`
 2. Update Linear issue status to "In Progress"
 
-The `/implement` skill handles: branch creation, TDD, code review, PR, and user approval.
+**Note**: The worktree and feature branch were already created in Step 0e. `/implement` should detect the existing branch and skip branch creation. Pass `--skip-branch` or rely on `/implement`'s auto-detection of the current feature branch.
 
 ### Stage: Archive (after PR merges)
 
-After implementation is shipped:
+After implementation is shipped (PR merged to main):
 
-1. Archive docs:
+1. **Switch to main repo** (not worktree) and pull:
+   ```bash
+   cd ~/Dev/flywheel  # or the main repo directory
+   git pull origin main
    ```
+
+2. **Clean up worktree**:
+   ```bash
+   git worktree remove ../flywheel-geo-{XX}
+   ```
+
+3. Archive docs using **`git mv`** (NOT copy):
+   ```bash
    git mv doc/plan/inprogress/{file} doc/plan/archive/{file}
    git mv doc/research/new/GEO-{XX}-*.md doc/research/archive/
    git mv doc/exploration/new/GEO-{XX}-*.md doc/exploration/archive/
    ```
    Only archive docs that exist — not every issue has all three.
+   **IMPORTANT**: Always use `git mv`, never `cp`. Copying creates duplicates.
 
-2. Update CLAUDE.md: remove from Active Explorations list
+4. Update CLAUDE.md: remove from Active Explorations list
 
-3. Update MEMORY.md: move docs from Active to Archived index
+5. Update MEMORY.md: move docs from Active to Archived index
 
 4. Update Linear issue status to "Done"
 
