@@ -1,10 +1,6 @@
 import type http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
-import type {
-	CaptureError,
-	CaptureResult,
-} from "../bridge/session-capture.js";
 import type { CaptureSessionFn } from "../bridge/tools.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { StateStore } from "../StateStore.js";
@@ -530,7 +526,7 @@ describe("Session capture endpoint", () => {
 	let server: http.Server;
 	let baseUrl: string;
 
-	const mockCapture: CaptureSessionFn = async (execId, project, lines) => ({
+	const mockCapture: CaptureSessionFn = async (execId, _project, lines) => ({
 		output: `mock terminal output for ${execId}\n`,
 		tmux_target: "flywheel:@42",
 		lines,
@@ -542,10 +538,7 @@ describe("Session capture endpoint", () => {
 		status: 502,
 	});
 
-	function startServerWithCapture(
-		s: StateStore,
-		captureFn?: CaptureSessionFn,
-	) {
+	function startServerWithCapture(s: StateStore, captureFn?: CaptureSessionFn) {
 		const app = createBridgeApp(
 			s,
 			[],
