@@ -14,8 +14,8 @@ import type { StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
-import { matchesLead } from "./lead-scope.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
+import { matchesLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
@@ -667,7 +667,11 @@ async function handleTerminate(
 
 /** GEO-259: Check lead scope for a session. Returns error response or null (in-scope). */
 function checkLeadScope(
-	session: { execution_id: string; project_name: string; issue_labels?: string },
+	session: {
+		execution_id: string;
+		project_name: string;
+		issue_labels?: string;
+	},
 	leadId: string | undefined,
 	projects: ProjectEntry[],
 	action: string,

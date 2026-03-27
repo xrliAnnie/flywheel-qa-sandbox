@@ -1,11 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ProjectEntry } from "../ProjectConfig.js";
-import type { Session } from "../StateStore.js";
 import {
 	filterSessionsByLead,
 	matchesLead,
 	parseSessionLabels,
 } from "../bridge/lead-scope.js";
+import type { ProjectEntry } from "../ProjectConfig.js";
+import type { Session } from "../StateStore.js";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -251,11 +251,7 @@ describe("filterSessionsByLead", () => {
 	});
 
 	it("returns empty array when no sessions match the lead", () => {
-		const result = filterSessionsByLead(
-			[opsSession],
-			"product-lead",
-			projects,
-		);
+		const result = filterSessionsByLead([opsSession], "product-lead", projects);
 		expect(result).toHaveLength(0);
 	});
 
