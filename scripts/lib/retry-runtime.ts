@@ -119,6 +119,7 @@ export async function setupRetryRuntime(
 			projectRuntimes.set(project.projectName, {
 				blueprint: components.blueprint,
 				projectRoot: project.projectRoot,
+				tmuxSessionName: `retry-${project.projectName}`,
 			});
 			cleanupHandles.push(() => teardownComponents(components!));
 

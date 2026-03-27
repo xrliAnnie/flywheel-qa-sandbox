@@ -11,6 +11,7 @@ import type {
 	Blueprint,
 	BlueprintContext,
 } from "../../packages/edge-worker/dist/Blueprint.js";
+import { openTmuxViewer } from "../../packages/core/dist/index.js";
 import type {
 	IRetryDispatcher,
 	IStartDispatcher,
@@ -23,6 +24,7 @@ import type {
 interface ProjectRuntime {
 	blueprint: Blueprint;
 	projectRoot: string;
+	tmuxSessionName: string;
 }
 
 export class RetryDispatcher implements IRetryDispatcher {
@@ -51,6 +53,9 @@ export class RetryDispatcher implements IRetryDispatcher {
 		if (!runtime) {
 			throw new Error(`No runtime for project: ${req.projectName}`);
 		}
+
+		// GEO-277: Best-effort Terminal viewer for CEO visibility
+		openTmuxViewer(runtime.tmuxSessionName);
 
 		const newExecutionId = randomUUID();
 
@@ -156,6 +161,9 @@ export class RunDispatcher
 		if (!runtime) {
 			throw new Error(`No runtime for project: ${req.projectName}`);
 		}
+
+		// GEO-277: Best-effort Terminal viewer for CEO visibility
+		openTmuxViewer(runtime.tmuxSessionName);
 
 		const executionId = randomUUID();
 		const entry = {
