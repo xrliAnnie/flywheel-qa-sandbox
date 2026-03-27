@@ -174,7 +174,7 @@ export interface AdapterExecutionContext {
 	label?: string;
 	/** Path to sentinel file for land-status detection (TmuxAdapter only) */
 	sentinelPath?: string;
-	/** Display name for the Claude session (sent via /rename after startup) */
+	/** Display name for the Claude session (passed as --name to CLI) */
 	sessionDisplayName?: string;
 
 	// -- Edge Worker path specific --

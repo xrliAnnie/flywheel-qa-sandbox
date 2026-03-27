@@ -235,7 +235,8 @@ describe("Blueprint", () => {
 		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		expect(execCall.permissionMode).toBe("bypassPermissions");
-		expect(execCall.label).toBe("claude:Issue GEO-101 title");
+		expect(execCall.label).toBe("GEO-101-claude-Issue GEO-101 title");
+		expect(execCall.sessionDisplayName).toBe("GEO-101 Issue GEO-101 title");
 		expect(execCall.cwd).toBe("/project");
 	});
 

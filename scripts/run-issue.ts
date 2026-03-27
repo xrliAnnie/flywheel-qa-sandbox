@@ -29,6 +29,11 @@ import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import {
+	buildSessionName,
+	buildWindowLabel,
+	sanitizeTmuxName,
+} from "../packages/core/src/tmux-naming.js";
 import { loadConfig } from "../packages/teamlead/src/config.js";
 import {
 	loadProjects,
@@ -194,8 +199,8 @@ async function main() {
 
 	const resolvedRoot = projectRoot.replace(/^~/, process.env.HOME ?? "");
 
-	// FIX: Use issue-specific tmux session name to avoid prefix matching
-	const tmuxSessionName = issueId;
+	// GEO-269: Session name includes title — computed after issueData is resolved
+	let tmuxSessionName = issueId;
 
 	console.log("\n========================================");
 	console.log(`  Flywheel — Run Issue: ${issueId}`);
@@ -269,6 +274,10 @@ async function main() {
 		process.exit(1);
 	}
 	log(`Issue: ${issueId} — ${issueData.title}`);
+
+	// GEO-269: Compute final session name now that title is available
+	tmuxSessionName = buildSessionName(issueId, issueData.title);
+	log(`Session: ${tmuxSessionName}`);
 
 	// 4. v0.2 components — shared setup
 	const isSingleRepo = subRepos.length === 0;
@@ -347,17 +356,11 @@ async function main() {
 	log("Viewer window opened — it will auto-close when session ends");
 
 	// 8. Auto-interaction: handle trust prompt + detect completion
-	// Session naming: tmux session = issueId, window = buildWindowLabel() output.
+	// GEO-269: Use shared buildWindowLabel + sanitizeTmuxName for consistency with Blueprint
 	let trustConfirmed = false;
-	// Label format from Blueprint.buildWindowLabel: "{runner}:{cleanTitle}"
-	// Must match TmuxRunner.sanitizeWindowName: [^a-zA-Z0-9-] → "-", max 50 chars
-	const cleanTitle = issueData.title
-		.replace(/\[P\d+\]\s*/gi, "")
-		.replace(/\s*—\s*/g, "-")
-		.trim();
-	const windowLabel = `claude-${cleanTitle}`
-		.replace(/[^a-zA-Z0-9-]/g, "-")
-		.slice(0, 50);
+	const windowLabel = sanitizeTmuxName(
+		buildWindowLabel(issueId, "claude", issueData.title),
+	);
 	const tmuxTarget = `${tmuxSessionName}:${windowLabel}`;
 
 	const autoInteractInterval = setInterval(() => {

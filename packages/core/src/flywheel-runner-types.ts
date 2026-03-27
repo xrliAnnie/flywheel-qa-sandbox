@@ -36,7 +36,7 @@ export interface FlywheelRunRequest {
 	permissionMode?: string;
 	/** Additional system prompt to append */
 	appendSystemPrompt?: string;
-	/** Display name for the Claude session (sent via /rename after startup) */
+	/** Display name for the Claude session (passed as --name to CLI) */
 	sessionDisplayName?: string;
 	/** Path to sentinel file for land-status detection (TmuxRunner only) */
 	sentinelPath?: string;

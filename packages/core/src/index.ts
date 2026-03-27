@@ -260,6 +260,13 @@ export {
 	WORKFLOW_TRANSITIONS,
 	WorkflowFSM,
 } from "./workflow-fsm.js";
+// Tmux naming utilities (GEO-269)
+export {
+	buildSessionName,
+	buildWindowLabel,
+	cleanIssueTitle,
+	sanitizeTmuxName,
+} from "./tmux-naming.js";
 // Platform-agnostic webhook type aliases - exported from issue-tracker
 // These are now defined in issue-tracker/types.ts as aliases to Linear SDK webhook types
 // EdgeWorker and other high-level code should use these generic names via issue-tracker exports
