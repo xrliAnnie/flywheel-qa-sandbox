@@ -34,7 +34,7 @@ fi
 
 # Read instructions as JSON to safely handle multi-line content
 # sqlite3 -json returns: [{"id":"...","from_agent":"...","content":"..."}]
-JSON_ROWS=$(sq "SELECT json_group_array(json_object('id', id, 'from_agent', from_agent, 'content', content)) FROM (SELECT id, from_agent, content FROM messages WHERE to_agent='${EXEC_ID}' AND type='instruction' AND read_at IS NULL AND expires_at > datetime('now') ORDER BY created_at ASC);") || exit 0
+JSON_ROWS=$(sq "SELECT json_group_array(json_object('id', id, 'from_agent', from_agent, 'content', content)) FROM (SELECT id, from_agent, content FROM messages WHERE to_agent='${EXEC_ID}' AND type='instruction' AND read_at IS NULL AND expires_at > datetime('now') ORDER BY created_at ASC, rowid ASC);") || exit 0
 
 if [ -z "$JSON_ROWS" ] || [ "$JSON_ROWS" = "[[]]" ] || [ "$JSON_ROWS" = "[null]" ]; then
   exit 0
