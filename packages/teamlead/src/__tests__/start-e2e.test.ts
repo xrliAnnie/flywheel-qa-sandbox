@@ -75,8 +75,12 @@ describe("Start API E2E", () => {
 	let server: http.Server;
 	let baseUrl: string;
 	let mockDispatcher: ReturnType<typeof createMockStartDispatcher>;
+	let savedLinearKey: string | undefined;
 
 	beforeEach(async () => {
+		// Hermetic: ensure LINEAR_API_KEY is set for non-503 tests
+		savedLinearKey = process.env.LINEAR_API_KEY;
+		process.env.LINEAR_API_KEY = savedLinearKey ?? "test-key";
 		store = await StateStore.create(":memory:");
 		mockDispatcher = createMockStartDispatcher();
 		const app = createBridgeApp(
@@ -103,6 +107,12 @@ describe("Start API E2E", () => {
 	});
 
 	afterEach(async () => {
+		// Restore original env
+		if (savedLinearKey !== undefined) {
+			process.env.LINEAR_API_KEY = savedLinearKey;
+		} else {
+			delete process.env.LINEAR_API_KEY;
+		}
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
