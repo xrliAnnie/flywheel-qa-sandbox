@@ -152,6 +152,48 @@ else
   fail "Should not re-inject" "got: $OUTPUT"
 fi
 
+# Test 7: Multi-line content handled correctly (Codex R1 fix)
+echo ""
+echo "Test 7: Multi-line instruction content"
+DB7="$TMPDIR/test7.db"
+sqlite3 "$DB7" "
+CREATE TABLE messages (
+  id TEXT PRIMARY KEY,
+  from_agent TEXT NOT NULL,
+  to_agent TEXT NOT NULL,
+  type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  parent_id TEXT,
+  read_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
+);
+PRAGMA journal_mode=WAL;
+INSERT INTO messages (id, from_agent, to_agent, type, content)
+  VALUES ('msg-ml', 'product-lead', 'exec-ml', 'instruction', 'Line one
+Line two
+Line three');
+"
+OUTPUT=$(FLYWHEEL_EXEC_ID="exec-ml" FLYWHEEL_COMM_DB="$DB7" bash "$HOOK" 2>&1)
+if echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext' > /dev/null 2>&1; then
+  pass "Multi-line: valid JSON"
+else
+  fail "Multi-line: invalid JSON" "$OUTPUT"
+fi
+# Verify all three lines are present (not truncated)
+CTX=$(echo "$OUTPUT" | jq -r '.hookSpecificOutput.additionalContext')
+if echo "$CTX" | grep -q "Line one" && echo "$CTX" | grep -q "Line two" && echo "$CTX" | grep -q "Line three"; then
+  pass "Multi-line: all lines preserved"
+else
+  fail "Multi-line: content truncated" "$CTX"
+fi
+# Verify no bogus empty-agent entries
+if echo "$CTX" | grep -q '\[\]:'; then
+  fail "Multi-line: bogus empty entry found" "$CTX"
+else
+  pass "Multi-line: no bogus entries"
+fi
+
 # Summary
 echo ""
 echo "=========================="

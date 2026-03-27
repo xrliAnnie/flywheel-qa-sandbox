@@ -32,35 +32,33 @@ if [ "$COUNT" -eq "0" ] 2>/dev/null; then
   exit 0
 fi
 
-# Read specific instruction IDs and content (not blanket — avoids race condition)
-# Output format: id|from_agent|content  (one per line)
-ROWS=$(sq "SELECT id || '|' || from_agent || '|' || content FROM messages WHERE to_agent='${EXEC_ID}' AND type='instruction' AND read_at IS NULL AND expires_at > datetime('now') ORDER BY created_at ASC;") || exit 0
+# Read instructions as JSON to safely handle multi-line content
+# sqlite3 -json returns: [{"id":"...","from_agent":"...","content":"..."}]
+JSON_ROWS=$(sq "SELECT json_group_array(json_object('id', id, 'from_agent', from_agent, 'content', content)) FROM messages WHERE to_agent='${EXEC_ID}' AND type='instruction' AND read_at IS NULL AND expires_at > datetime('now') ORDER BY created_at ASC;") || exit 0
 
-if [ -z "$ROWS" ]; then
+if [ -z "$JSON_ROWS" ] || [ "$JSON_ROWS" = "[[]]" ] || [ "$JSON_ROWS" = "[null]" ]; then
   exit 0
 fi
 
-# Extract IDs for targeted read-marking (only mark what we actually retrieved)
-IDS=""
-DISPLAY_MSGS=""
-while IFS='|' read -r id from_agent content; do
-  if [ -n "$id" ]; then
-    if [ -n "$IDS" ]; then
-      IDS="${IDS},'${id}'"
-    else
-      IDS="'${id}'"
-    fi
-    DISPLAY_MSGS="${DISPLAY_MSGS}[${from_agent}]: ${content}
-"
-  fi
-done <<< "$ROWS"
+# Extract IDs for targeted read-marking
+IDS=$(echo "$JSON_ROWS" | jq -r '.[] | .id' 2>/dev/null | sed "s/.*/'&'/" | paste -sd, -)
 
 if [ -z "$IDS" ]; then
   exit 0
 fi
 
-# Mark only the retrieved IDs as read (not blanket update)
-sq "UPDATE messages SET read_at=datetime('now') WHERE id IN (${IDS});" || true
+# Mark retrieved IDs as read BEFORE outputting additionalContext.
+# If marking fails (SQLITE_BUSY), do NOT output — prevents repeated injection.
+if ! sq "UPDATE messages SET read_at=datetime('now') WHERE id IN (${IDS});"; then
+  exit 0
+fi
+
+# Build display messages from JSON (handles multi-line content safely)
+DISPLAY_MSGS=$(echo "$JSON_ROWS" | jq -r '.[] | "[" + .from_agent + "]: " + .content' 2>/dev/null)
+
+if [ -z "$DISPLAY_MSGS" ]; then
+  exit 0
+fi
 
 # Build additionalContext
 HEADER="LEAD INSTRUCTION — Read and act on these instructions"
@@ -69,7 +67,7 @@ HEADER="LEAD INSTRUCTION — Read and act on these instructions"
 jq -n --arg header "$HEADER" --arg msgs "$DISPLAY_MSGS" '{
   hookSpecificOutput: {
     hookEventName: "PostToolUse",
-    additionalContext: ($header + "\n\n" + $msgs + "\nAfter processing, briefly acknowledge what you received and how you will act on it.")
+    additionalContext: ($header + "\n\n" + $msgs + "\n\nAfter processing, briefly acknowledge what you received and how you will act on it.")
   }
 }'
 

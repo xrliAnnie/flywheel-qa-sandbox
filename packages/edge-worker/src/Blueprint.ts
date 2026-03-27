@@ -312,8 +312,9 @@ export class Blueprint {
 			// GEO-266: Inbox instructions — auto-injected via PostToolUse hook, with manual fallback
 			systemPromptLines.push(
 				`Your Lead may send you instructions during your session. ` +
-					`If a PostToolUse hook is installed, instructions appear automatically as context after your tool calls. ` +
-					`Otherwise, periodically check with \`node ${commCliPath} inbox --exec-id ${executionId}\` at task boundaries. ` +
+					`Instructions may appear automatically as context after your tool calls via a PostToolUse hook. ` +
+					`Additionally, manually check with \`node ${commCliPath} inbox --exec-id ${executionId}\` at task boundaries ` +
+					`(before committing, when starting a new subtask) as a safety net. ` +
 					`When you receive a Lead instruction, evaluate urgency and act accordingly. ` +
 					`Always briefly acknowledge received instructions.`,
 			);
