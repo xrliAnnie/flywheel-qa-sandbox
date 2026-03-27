@@ -94,6 +94,11 @@ export function createRunsRouter(
 			}
 		}
 
+		// Note: Blueprint.run() is fire-and-forget. Issue hydration (PreHydrator)
+		// happens asynchronously inside Blueprint. If Linear API fails despite
+		// LINEAR_API_KEY being set, createFetchIssue() falls back to stub data.
+		// This is the same behavior as the retry path. The session will show
+		// as failed in StateStore if Blueprint cannot proceed.
 		try {
 			const result = await startDispatcher.start({
 				issueId,
