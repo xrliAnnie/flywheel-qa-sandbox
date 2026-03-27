@@ -83,7 +83,11 @@ export async function setupRetryRuntime(
 ): Promise<RunDispatcher> {
 	const projectRuntimes = new Map<
 		string,
-		{ blueprint: FlywheelComponents["blueprint"]; projectRoot: string }
+		{
+			blueprint: FlywheelComponents["blueprint"];
+			projectRoot: string;
+			tmuxSessionName: string;
+		}
 	>();
 	const cleanupHandles: Array<() => Promise<void>> = [];
 
