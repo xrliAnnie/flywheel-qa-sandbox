@@ -27,3 +27,21 @@ export interface IRetryDispatcher {
 	drain(): Promise<void>;
 	teardownRuntimes(): Promise<void>;
 }
+
+/** GEO-267: Start a new Runner execution (no predecessor session) */
+export interface StartRequest {
+	issueId: string;
+	projectName: string;
+	leadId?: string;
+}
+
+export interface StartResult {
+	executionId: string;
+	issueId: string;
+}
+
+export interface IStartDispatcher {
+	start(req: StartRequest): Promise<StartResult>;
+	/** Current count of inflight (dispatched but not yet completed) executions */
+	getInflightCount(): number;
+}
