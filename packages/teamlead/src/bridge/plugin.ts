@@ -13,7 +13,6 @@ import {
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
-import { captureSession as defaultCaptureSession } from "./session-capture.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
@@ -25,6 +24,7 @@ import { createMemoryRouter } from "./memory-route.js";
 import { OpenClawRuntime } from "./openclaw-runtime.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
+import { captureSession as defaultCaptureSession } from "./session-capture.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import type { BridgeConfig } from "./types.js";
 

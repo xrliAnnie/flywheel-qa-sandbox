@@ -1,13 +1,13 @@
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CommDB } from "flywheel-comm/db";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type CaptureError,
 	type CaptureResult,
-	type ExecCaptureFn,
 	captureSession,
+	type ExecCaptureFn,
 	isCaptureError,
 } from "../bridge/session-capture.js";
 
