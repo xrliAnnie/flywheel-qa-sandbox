@@ -11,6 +11,16 @@ import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 
+// Mock @linear/sdk for pre-flight issue check
+vi.mock("@linear/sdk", () => ({
+	LinearClient: vi.fn().mockImplementation(() => ({
+		issue: vi.fn().mockResolvedValue({
+			title: "Test Issue",
+			identifier: "GEO-TEST",
+		}),
+	})),
+}));
+
 const testProjects: ProjectEntry[] = [
 	{
 		projectName: "TestProject",
@@ -235,6 +245,29 @@ describe("Start API E2E", () => {
 		expect(res.status).toBe(429);
 		const body = (await res.json()) as { message: string };
 		expect(body.message).toContain("Max concurrent runners");
+	});
+
+	it("POST with Linear API failure → 502", async () => {
+		// Temporarily make LinearClient.issue() reject
+		const { LinearClient } = await import("@linear/sdk");
+		const mockIssue = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("Network timeout"));
+		(LinearClient as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
+			() => ({ issue: mockIssue }),
+		);
+
+		const res = await fetch(`${baseUrl}/api/runs/start`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				issueId: "GEO-FAIL",
+				projectName: "TestProject",
+			}),
+		});
+		expect(res.status).toBe(502);
+		const body = (await res.json()) as { message: string };
+		expect(body.message).toContain("Cannot verify issue");
 	});
 
 	it("POST without LINEAR_API_KEY → 503", async () => {
