@@ -22,7 +22,8 @@ import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { OpenClawRuntime } from "./openclaw-runtime.js";
-import type { IRetryDispatcher } from "./retry-dispatcher.js";
+import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
+import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
 import { captureSession as defaultCaptureSession } from "./session-capture.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
@@ -198,6 +199,7 @@ export function createBridgeApp(
 	forumPostCreator?: ForumPostCreator,
 	memoryService?: MemoryService,
 	captureSessionFn?: CaptureSessionFn,
+	startDispatcher?: IStartDispatcher,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -611,6 +613,21 @@ export function createBridgeApp(
 		},
 	);
 
+	// GEO-267: /api/runs — start new Runner executions
+	if (startDispatcher) {
+		const runsRouter = createRunsRouter(
+			startDispatcher,
+			store,
+			projects,
+			config.maxConcurrentRunners,
+		);
+		if (config.apiToken) {
+			app.use("/api/runs", tokenAuthMiddleware(config.apiToken), runsRouter);
+		} else {
+			app.use("/api/runs", runsRouter);
+		}
+	}
+
 	// Catch-all 404 (must be after all routes)
 	app.use((_req, res) => {
 		res.status(404).json({ error: "not found" });
@@ -640,9 +657,11 @@ export async function startBridge(
 	opts?: {
 		store?: StateStore;
 		retryDispatcher?: IRetryDispatcher;
+		startDispatcher?: IStartDispatcher;
 		cipherWriter?: CipherWriter;
 		statusTagMap?: Record<string, string[]>;
 		memoryService?: MemoryService;
+		registry?: RuntimeRegistry;
 	},
 ): Promise<{
 	app: express.Application;
@@ -665,7 +684,8 @@ export async function startBridge(
 	const broadcaster = new SseBroadcaster(store, config.stuckThresholdMinutes);
 
 	// GEO-195: Initialize RuntimeRegistry — per-lead runtime selection
-	const registry = new RuntimeRegistry();
+	// GEO-267: Accept pre-created registry (from run-bridge.ts for DirectEventSink injection)
+	const registry = opts?.registry ?? new RuntimeRegistry();
 	for (const project of projects) {
 		for (const lead of project.leads) {
 			try {
@@ -743,6 +763,7 @@ export async function startBridge(
 		forumPostCreator,
 		opts?.memoryService,
 		defaultCaptureSession,
+		opts?.startDispatcher,
 	);
 
 	const server = app.listen(config.port, config.host);
