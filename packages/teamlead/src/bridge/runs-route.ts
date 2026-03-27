@@ -19,6 +19,17 @@ export function createRunsRouter(
 	const router = Router();
 
 	router.post("/start", async (req, res) => {
+		// GEO-267: LINEAR_API_KEY is required for issue hydration (PreHydrator).
+		// Without it, Runner gets stub metadata → degraded agent routing.
+		if (!process.env.LINEAR_API_KEY) {
+			res.status(503).json({
+				success: false,
+				message:
+					"LINEAR_API_KEY not configured — cannot hydrate issue data for Runner",
+			});
+			return;
+		}
+
 		const { issueId, projectName, leadId } = req.body;
 
 		// Input validation
