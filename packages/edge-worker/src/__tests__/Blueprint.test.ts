@@ -7,6 +7,7 @@ import type { DagNode } from "flywheel-dag-resolver";
 import { describe, expect, it, vi } from "vitest";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import { Blueprint } from "../Blueprint.js";
+import type { ExecutionEventEmitter } from "../ExecutionEventEmitter.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 
@@ -479,5 +480,114 @@ describe("Blueprint", () => {
 		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		expect(execCall.commDbPath).toBeUndefined();
+	});
+
+	// ─── GEO-261: emitTerminal await tests ──────────
+
+	describe("emitTerminal (GEO-261)", () => {
+		function makeStubEmitter(
+			overrides: Partial<ExecutionEventEmitter> = {},
+		): ExecutionEventEmitter {
+			return {
+				emitStarted: vi.fn(async () => {}),
+				emitCompleted: vi.fn(async () => {}),
+				emitFailed: vi.fn(async () => {}),
+				emitHeartbeat: vi.fn(async () => {}),
+				flush: vi.fn(async () => {}),
+				...overrides,
+			};
+		}
+
+		it("awaits emitCompleted on success path", async () => {
+			const order: string[] = [];
+			const emitter = makeStubEmitter({
+				emitCompleted: vi.fn(async () => {
+					// Simulate slow HTTP with retry
+					await new Promise((r) => setTimeout(r, 50));
+					order.push("emitCompleted-done");
+				}),
+			});
+
+			const blueprint = new Blueprint(
+				makeHydrator(),
+				makeMockGitChecker({ commitCount: 1 }),
+				() => makeMockAdapter(),
+				makeMockShell(),
+				undefined, // worktreeManager
+				undefined, // skillInjector
+				undefined, // evidenceCollector
+				undefined, // skillsConfig
+				undefined, // decisionLayer
+				emitter,
+			);
+
+			await blueprint.run(makeNode(), "/project", makeContext());
+			order.push("run-done");
+
+			// emitCompleted must finish BEFORE run() returns
+			expect(order).toEqual(["emitCompleted-done", "run-done"]);
+			expect(emitter.emitCompleted).toHaveBeenCalledTimes(1);
+		});
+
+		it("awaits emitFailed on failure path", async () => {
+			const order: string[] = [];
+			const emitter = makeStubEmitter({
+				emitFailed: vi.fn(async () => {
+					await new Promise((r) => setTimeout(r, 50));
+					order.push("emitFailed-done");
+				}),
+			});
+
+			const blueprint = new Blueprint(
+				makeHydrator(),
+				makeMockGitChecker({ commitCount: 0 }),
+				() => makeMockAdapter(),
+				makeMockShell(),
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				emitter,
+			);
+
+			await blueprint.run(makeNode(), "/project", makeContext());
+			order.push("run-done");
+
+			expect(order).toEqual(["emitFailed-done", "run-done"]);
+			expect(emitter.emitFailed).toHaveBeenCalledTimes(1);
+		});
+
+		it("handles emitter exception defensively", async () => {
+			const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+			const emitter = makeStubEmitter({
+				emitFailed: vi.fn(async () => {
+					throw new Error("network explosion");
+				}),
+			});
+
+			const blueprint = new Blueprint(
+				makeHydrator(),
+				makeMockGitChecker({ commitCount: 0 }),
+				() => makeMockAdapter(),
+				makeMockShell(),
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				emitter,
+			);
+
+			// Should NOT throw despite emitter failure
+			const result = await blueprint.run(makeNode(), "/project", makeContext());
+			expect(result.success).toBe(false);
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("emitTerminal failed"),
+			);
+
+			errorSpy.mockRestore();
+		});
 	});
 });
