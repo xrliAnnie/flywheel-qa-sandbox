@@ -309,15 +309,13 @@ export class Blueprint {
 					`\`node ${commCliPath} check {question_id}\` to check for a response. ` +
 					`If no response arrives before your session ends, use your best judgment.`,
 			);
-			// GEO-206 Phase 2: Inbox instructions for Lead proactive commands
+			// GEO-266: Inbox instructions — auto-injected via PostToolUse hook, with manual fallback
 			systemPromptLines.push(
-				`Additionally, your Lead may send you proactive instructions. ` +
-					`Periodically check for instructions with ` +
-					`\`node ${commCliPath} inbox --exec-id ${executionId}\`. ` +
-					`Check at task boundaries (before committing, when starting a new subtask). ` +
-					`If you receive instructions, evaluate their urgency: follow immediately ` +
-					`if the Lead explicitly demands it, otherwise incorporate at the next ` +
-					`natural breakpoint.`,
+				`Your Lead may send you instructions during your session. ` +
+					`If a PostToolUse hook is installed, instructions appear automatically as context after your tool calls. ` +
+					`Otherwise, periodically check with \`node ${commCliPath} inbox --exec-id ${executionId}\` at task boundaries. ` +
+					`When you receive a Lead instruction, evaluate urgency and act accordingly. ` +
+					`Always briefly acknowledge received instructions.`,
 			);
 		} else {
 			systemPromptLines.push(

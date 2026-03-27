@@ -140,6 +140,9 @@ export class TmuxAdapter implements IAdapter {
 			envArgs.push("-e", `FLYWHEEL_COMM_DB=${ctx.commDbPath}`);
 		}
 
+		// GEO-266: Inject execution ID for inbox PostToolUse hook
+		envArgs.push("-e", `FLYWHEEL_EXEC_ID=${ctx.executionId}`);
+
 		// Launch Claude in a new tmux window WITH cwd
 		const launchResult = this.execFileFn("tmux", [
 			"new-window",
