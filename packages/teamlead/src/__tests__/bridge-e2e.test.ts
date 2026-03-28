@@ -331,4 +331,160 @@ describe("Bridge E2E lifecycle", () => {
 		const body = await res.json();
 		expect(body.count).toBe(2);
 	});
+
+	// GEO-275: full lifecycle with a no-forum PM lead
+	it("full lifecycle works for lead without forumChannel", async () => {
+		const noForumProjects: ProjectEntry[] = [
+			{
+				projectName: "geoforge3d",
+				projectRoot: "/tmp/geoforge3d",
+				projectRepo: "xrliAnnie/GeoForge3D",
+				leads: [
+					{
+						agentId: "product-lead",
+						forumChannel: "test-channel",
+						chatChannel: "test-chat",
+						match: { labels: ["Product"] },
+					},
+					{
+						agentId: "pm-lead",
+						// No forumChannel — PM lead
+						chatChannel: "core-channel",
+						match: { labels: ["PM"] },
+					},
+				],
+			},
+		];
+
+		const capturedEnvelopes: LeadEventEnvelope[] = [];
+		const mockRuntime = {
+			type: "openclaw" as const,
+			deliver: vi.fn(async (env: LeadEventEnvelope) => {
+				capturedEnvelopes.push(env);
+			}),
+			sendBootstrap: vi.fn(async () => {}),
+			health: vi.fn(async () => ({
+				status: "healthy" as const,
+				lastDeliveryAt: null,
+				lastDeliveredSeq: 0,
+			})),
+			shutdown: vi.fn(async () => {}),
+		};
+		const mockRegistry = new RuntimeRegistry();
+		for (const project of noForumProjects) {
+			for (const lead of project.leads) {
+				mockRegistry.register(lead, mockRuntime);
+			}
+		}
+
+		const store2 = await StateStore.create(":memory:");
+		const app2 = createBridgeApp(
+			store2,
+			noForumProjects,
+			makeConfig(),
+			undefined, // broadcaster
+			undefined, // transitionOpts
+			undefined, // retryDispatcher
+			undefined, // cipherWriter
+			undefined, // eventFilter
+			undefined, // forumTagUpdater
+			mockRegistry,
+		);
+		const server2 = app2.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server2.once("listening", resolve));
+		const addr2 = server2.address();
+		const port2 = typeof addr2 === "object" && addr2 ? addr2.port : 0;
+		const baseUrl2 = `http://127.0.0.1:${port2}`;
+
+		try {
+			// 1. session_started for PM-labelled issue → routes to pm-lead
+			const startRes = await fetch(`${baseUrl2}/events`, {
+				method: "POST",
+				headers: ingestHeaders,
+				body: JSON.stringify({
+					event_id: "evt-pm-1",
+					execution_id: "exec-pm",
+					issue_id: "issue-pm",
+					project_name: "geoforge3d",
+					event_type: "session_started",
+					payload: {
+						issueIdentifier: "GEO-500",
+						issueTitle: "PM triage task",
+						labels: ["PM"],
+					},
+				}),
+			});
+			expect(startRes.status).toBe(200);
+
+			const session = store2.getSession("exec-pm");
+			expect(session).toBeDefined();
+			expect(session!.status).toBe("running");
+
+			// 2. session_completed → awaiting_review
+			const completeRes = await fetch(`${baseUrl2}/events`, {
+				method: "POST",
+				headers: ingestHeaders,
+				body: JSON.stringify({
+					event_id: "evt-pm-2",
+					execution_id: "exec-pm",
+					issue_id: "issue-pm",
+					project_name: "geoforge3d",
+					event_type: "session_completed",
+					payload: {
+						decision: { route: "needs_review", reasoning: "done" },
+						evidence: { commitCount: 1, filesChangedCount: 2, linesAdded: 10, linesRemoved: 5 },
+						summary: "PM task completed",
+						labels: ["PM"],
+					},
+				}),
+			});
+			expect(completeRes.status).toBe(200);
+			expect(store2.getSession("exec-pm")!.status).toBe("awaiting_review");
+
+			// Wait for async notification delivery
+			await new Promise((r) => setTimeout(r, 200));
+
+			// 3. Verify notifications were delivered to pm-lead
+			const pmEnvelopes = capturedEnvelopes.filter((e) => e.leadId === "pm-lead");
+			expect(pmEnvelopes.length).toBeGreaterThanOrEqual(1);
+
+			// 4. Verify forum_channel is undefined in pm-lead envelopes
+			for (const env of pmEnvelopes) {
+				expect(env.event.forum_channel).toBeUndefined();
+				expect(env.event.chat_channel).toBe("core-channel");
+			}
+
+			// 5. session_started for Product-labelled issue → routes to product-lead (with forum)
+			const prodRes = await fetch(`${baseUrl2}/events`, {
+				method: "POST",
+				headers: ingestHeaders,
+				body: JSON.stringify({
+					event_id: "evt-prod-1",
+					execution_id: "exec-prod",
+					issue_id: "issue-prod",
+					project_name: "geoforge3d",
+					event_type: "session_started",
+					payload: {
+						issueIdentifier: "GEO-501",
+						issueTitle: "Product feature",
+						labels: ["Product"],
+					},
+				}),
+			});
+			expect(prodRes.status).toBe(200);
+			await new Promise((r) => setTimeout(r, 200));
+
+			const prodEnvelopes = capturedEnvelopes.filter((e) => e.leadId === "product-lead");
+			expect(prodEnvelopes.length).toBeGreaterThanOrEqual(1);
+
+			// Product lead envelopes SHOULD have forum_channel
+			const prodEnv = prodEnvelopes[prodEnvelopes.length - 1]!;
+			expect(prodEnv.event.forum_channel).toBe("test-channel");
+		} finally {
+			await new Promise<void>((resolve, reject) => {
+				server2.close((err) => (err ? reject(err) : resolve()));
+			});
+			store2.close();
+		}
+	});
 });

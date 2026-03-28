@@ -4,7 +4,8 @@ import { join } from "node:path";
 
 export interface LeadConfig {
 	agentId: string;
-	forumChannel: string;
+	/** Discord Forum channel ID. Optional: PM leads (no Runner) may omit this. */
+	forumChannel?: string;
 	chatChannel: string;
 	match: {
 		labels: string[];
@@ -85,7 +86,7 @@ export function loadProjects(): ProjectEntry[] {
 		const leads = entry?.leads;
 		if (!Array.isArray(leads) || leads.length === 0) {
 			throw new Error(
-				`Project "${entry.projectName}" is missing "leads" config. Each project must have leads: [{ agentId, forumChannel, chatChannel, match: { labels: [...] } }]`,
+				`Project "${entry.projectName}" is missing "leads" config. Each project must have leads: [{ agentId, chatChannel, match: { labels: [...] } }]`,
 			);
 		}
 		for (let i = 0; i < leads.length; i++) {
@@ -100,13 +101,16 @@ export function loadProjects(): ProjectEntry[] {
 					`Project "${entry.projectName}" leads[${i}].agentId: must be a non-empty string`,
 				);
 			}
-			if (
-				typeof lead.forumChannel !== "string" ||
-				lead.forumChannel.length === 0
-			) {
-				throw new Error(
-					`Project "${entry.projectName}" leads[${i}].forumChannel: must be a non-empty string`,
-				);
+			// GEO-275: forumChannel is optional (PM leads don't need a forum)
+			if (lead.forumChannel !== undefined) {
+				if (
+					typeof lead.forumChannel !== "string" ||
+					lead.forumChannel.length === 0
+				) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].forumChannel: if provided, must be a non-empty string`,
+					);
+				}
 			}
 			if (
 				typeof lead.chatChannel !== "string" ||

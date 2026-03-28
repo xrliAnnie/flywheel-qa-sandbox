@@ -1024,8 +1024,10 @@ export async function startBridge(
 
 	// GEO-253: 3-state + multi-forum startup diagnostics
 	const allLeads = projects.flatMap((p) => p.leads);
-	const leadsWithMap = allLeads.filter((l) => l.statusTagMap != null);
-	const leadsWithoutMap = allLeads.filter((l) => l.statusTagMap == null);
+	// GEO-275: exclude leads without forumChannel (e.g., PM leads) from forum-related diagnostics
+	const forumLeads = allLeads.filter((l) => l.forumChannel != null);
+	const leadsWithMap = forumLeads.filter((l) => l.statusTagMap != null);
+	const leadsWithoutMap = forumLeads.filter((l) => l.statusTagMap == null);
 	const globalEmpty = Object.keys(statusTagMap).length === 0;
 
 	if (globalEmpty && leadsWithMap.length === 0) {
@@ -1038,7 +1040,7 @@ export async function startBridge(
 		leadsWithMap.length > 0
 	) {
 		console.warn(
-			`[Bridge] Global statusTagMap is empty. ${leadsWithMap.length}/${allLeads.length} leads have per-lead statusTagMap. ` +
+			`[Bridge] Global statusTagMap is empty. ${leadsWithMap.length}/${forumLeads.length} leads have per-lead statusTagMap. ` +
 				`Leads missing config: ${leadsWithoutMap.map((l) => l.agentId).join(", ")} — these will skip tag updates.`,
 		);
 	} else if (globalEmpty) {
@@ -1046,7 +1048,7 @@ export async function startBridge(
 			"[Bridge] Global statusTagMap is empty; all leads have per-lead statusTagMap configured.",
 		);
 	} else if (!globalEmpty && leadsWithoutMap.length > 0) {
-		const uniqueForums = new Set(allLeads.map((l) => l.forumChannel));
+		const uniqueForums = new Set(forumLeads.map((l) => l.forumChannel));
 		if (uniqueForums.size > 1) {
 			console.warn(
 				`[Bridge] Multiple forum channels detected but ${leadsWithoutMap.length} lead(s) lack per-lead statusTagMap ` +

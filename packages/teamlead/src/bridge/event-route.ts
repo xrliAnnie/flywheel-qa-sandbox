@@ -201,6 +201,8 @@ export function createEventRouter(
 							event.project_name,
 							eventLabels,
 						);
+						// GEO-275: skip Forum Post creation for leads without forumChannel (e.g., PM lead)
+						if (fpLead.forumChannel) {
 						forumPostCreator
 							.ensureForumPost({
 								forumChannelId: fpLead.forumChannel,
@@ -221,6 +223,7 @@ export function createEventRouter(
 									(err as Error).message,
 								);
 							});
+						}
 					}
 				}
 			} else if (event.event_type === "session_completed") {
