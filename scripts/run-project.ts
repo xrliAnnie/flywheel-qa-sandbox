@@ -18,6 +18,7 @@
 import { existsSync } from "node:fs";
 
 import { Semaphore } from "../packages/core/dist/Semaphore.js";
+import { sanitizeTmuxName } from "../packages/core/dist/index.js";
 import type { DagNode } from "../packages/dag-resolver/dist/DagResolver.js";
 import { DagResolver } from "../packages/dag-resolver/dist/DagResolver.js";
 import { DagDispatcher } from "../packages/edge-worker/dist/DagDispatcher.js";
@@ -86,7 +87,8 @@ async function main() {
 	}
 
 	const resolver = new DagResolver(nodes);
-	const tmuxSessionName = `flywheel-${projectName}`;
+	// GEO-277: Sanitize session name so openTmuxViewer and TmuxAdapter agree
+	const tmuxSessionName = sanitizeTmuxName(`flywheel-${projectName}`);
 
 	// 2. Initialize components
 	let components: FlywheelComponents;
