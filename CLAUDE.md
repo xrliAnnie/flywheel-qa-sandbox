@@ -53,6 +53,10 @@ Current version: see `doc/VERSION`
 | GEO-267: Lead Auto-Start Runner (Phase 1 Engine) | ✅ Merged (PR #53) |
 | GEO-274: Lead Start Ability (Phase 2 Agent Config) | ✅ Merged (Flywheel PR #56, GeoForge3D PR #93) |
 | GEO-258: setup-discord-lead Permission Fix | ✅ Merged (PR #58) |
+| GEO-270: Stale Session Patrol + close-tmux | ✅ Merged (PR #57) |
+| GEO-269: tmux Session/Window Naming | ✅ Merged (PR #55) |
+| GEO-277: Runner Terminal Auto-Open | ✅ Merged (PR #60) |
+| GEO-275: Simba Chief of Staff + Core Channel (Phase 3) | ✅ Merged (Flywheel PR #59, GeoForge3D PR #96) |
 
 ## Doc Structure & Lifecycle
 
