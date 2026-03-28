@@ -56,6 +56,7 @@ Current version: see `doc/VERSION`
 | GEO-270: Stale Session Patrol + close-tmux | ✅ Merged (PR #57) |
 | GEO-269: tmux Session/Window Naming | ✅ Merged (PR #55) |
 | GEO-277: Runner Terminal Auto-Open | ✅ Merged (PR #60) |
+| GEO-276: PM Auto-Triage (Phase 1) | ✅ Merged (Flywheel PR #62, GeoForge3D PR #98) |
 | GEO-275: Simba Chief of Staff + Core Channel (Phase 3) | ✅ Merged (Flywheel PR #59, GeoForge3D PR #96) |
 
 ## Doc Structure & Lifecycle
