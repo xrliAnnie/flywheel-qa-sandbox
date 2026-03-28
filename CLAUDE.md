@@ -46,6 +46,13 @@ Current version: see `doc/VERSION`
 | GEO-145: Memory Production (Supabase pgvector) | ✅ Merged (PR #18) |
 | GEO-155: v1.0 Phase 2 (disable auto-approve) | ✅ Merged (PR #17) |
 | GEO-158: Jido Directive FSM (WorkflowFSM + audit) | ✅ Merged (PR #23) |
+| GEO-206: Lead ↔ Runner comm (Phase 1+2) | ✅ Merged (PR #40-42). Phase 3+4 pending |
+| GEO-246: Multi-Lead Architecture | ✅ Merged (PR #44, #45) |
+| GEO-252: Per-Lead Bot Token | ✅ Merged (PR #46) |
+| GEO-253: Per-Lead StatusTagMap | ✅ Merged (PR #47) |
+| GEO-267: Lead Auto-Start Runner (Phase 1 Engine) | ✅ Merged (PR #53) |
+| GEO-274: Lead Start Ability (Phase 2 Agent Config) | ✅ Merged (Flywheel PR #56, GeoForge3D PR #93) |
+| GEO-258: setup-discord-lead Permission Fix | ✅ Merged (PR #58) |
 
 ## Doc Structure & Lifecycle
 

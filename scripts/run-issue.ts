@@ -58,6 +58,20 @@ const KNOWN_ISSUES: Record<
 		identifier?: string;
 	}
 > = {
+	"GEO-265": {
+		title: "[Test] Add version display to footer component",
+		description: `Simple test task for Flywheel E2E verification (GEO-262 capture API).
+
+Read package.json version and display it in the footer.
+
+### Tasks
+- Read the version from package.json
+- Log the version to console
+- List all files in src/components/ and summarize what each does in one sentence
+- Take your time, be thorough`,
+		labels: ["Product"],
+		identifier: "GEO-265",
+	},
 	"GEO-251": {
 		title: "E2E Test: 添加 flywheel-comm 集成状态到 README",
 		description: `## 测试 Issue (E2E验证用)
