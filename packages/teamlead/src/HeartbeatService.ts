@@ -286,7 +286,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		hookPayload: HookPayload,
 	): Promise<void> {
 		let agentId: string;
-		let forumChannel: string;
+		let forumChannel: string | undefined;
 		let chatChannel: string;
 		let runtime: import("./bridge/lead-runtime.js").LeadRuntime;
 		try {

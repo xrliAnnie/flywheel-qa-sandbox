@@ -80,7 +80,25 @@ describe("loadProjects validation", () => {
 		expect(() => loadProjects()).toThrow(/agentId/);
 	});
 
-	it("throws when leads[].forumChannel is missing", () => {
+	it("accepts lead without forumChannel (GEO-275: PM leads)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "pm-lead",
+						chatChannel: "456",
+						match: { labels: ["PM"] },
+					},
+				],
+			},
+		]);
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.forumChannel).toBeUndefined();
+	});
+
+	it("throws when leads[].forumChannel is empty string", () => {
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
 			{
 				projectName: "test",
@@ -88,6 +106,7 @@ describe("loadProjects validation", () => {
 				leads: [
 					{
 						agentId: "bot",
+						forumChannel: "",
 						chatChannel: "456",
 						match: { labels: ["bug"] },
 					},

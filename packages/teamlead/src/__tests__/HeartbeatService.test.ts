@@ -371,4 +371,63 @@ describe("RegistryHeartbeatNotifier", () => {
 
 		hbStore.close();
 	});
+
+	// GEO-275: no-forum lead heartbeat notification
+	it("sends session_stuck with undefined forum_channel for no-forum lead", async () => {
+		const noForumProjects: ProjectEntry[] = [
+			{
+				projectName: "geo-nf",
+				projectRoot: "/tmp/geo-nf",
+				leads: [
+					{
+						agentId: "pm-lead",
+						chatChannel: "core-channel",
+						match: { labels: ["PM"] },
+						// No forumChannel
+					},
+				],
+			},
+		];
+		const envelopes: LeadEventEnvelope[] = [];
+		const mockRuntime = {
+			type: "openclaw" as const,
+			deliver: vi.fn(async (env: LeadEventEnvelope) => {
+				envelopes.push(env);
+			}),
+			sendBootstrap: vi.fn(async () => {}),
+			health: vi.fn(async () => ({
+				status: "healthy" as const,
+				lastDeliveryAt: null,
+				lastDeliveredSeq: 0,
+			})),
+			shutdown: vi.fn(async () => {}),
+		};
+		const registry = new RuntimeRegistry();
+		for (const lead of noForumProjects[0]!.leads) {
+			registry.register(lead, mockRuntime);
+		}
+
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			noForumProjects,
+			hbStore,
+		);
+		const session: Session = {
+			execution_id: "exec-nf-stuck",
+			issue_id: "i-nf",
+			project_name: "geo-nf",
+			status: "running",
+			issue_identifier: "GEO-500",
+		};
+
+		await notifier.onSessionStuck(session, 30);
+
+		expect(envelopes).toHaveLength(1);
+		expect(envelopes[0].event.event_type).toBe("session_stuck");
+		expect(envelopes[0].event.forum_channel).toBeUndefined();
+		expect(envelopes[0].event.chat_channel).toBe("core-channel");
+
+		hbStore.close();
+	});
 });

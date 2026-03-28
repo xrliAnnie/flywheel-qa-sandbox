@@ -589,3 +589,111 @@ describe("Event route — EventFilter integration", () => {
 		);
 	});
 });
+
+// GEO-275: no-forum lead tests
+describe("Event route — no-forum lead (GEO-275)", () => {
+	const noForumProjects: ProjectEntry[] = [
+		{
+			projectName: "geoforge3d",
+			projectRoot: "/tmp/geoforge3d",
+			projectRepo: "xrliAnnie/GeoForge3D",
+			leads: [
+				{
+					agentId: "pm-lead",
+					chatChannel: "core-channel",
+					match: { labels: ["PM"] },
+					// No forumChannel — PM lead
+				},
+			],
+		},
+	];
+
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+	let capturedEnvelopes: LeadEventEnvelope[];
+
+	beforeEach(async () => {
+		capturedEnvelopes = [];
+		const mockRuntime = {
+			type: "openclaw" as const,
+			deliver: vi.fn(async (env: LeadEventEnvelope) => {
+				capturedEnvelopes.push(env);
+			}),
+			sendBootstrap: vi.fn(async () => {}),
+			health: vi.fn(async () => ({
+				status: "healthy" as const,
+				lastDeliveryAt: null,
+				lastDeliveredSeq: 0,
+			})),
+			shutdown: vi.fn(async () => {}),
+		};
+		const registry = new RuntimeRegistry();
+		for (const project of noForumProjects) {
+			for (const lead of project.leads) {
+				registry.register(lead, mockRuntime);
+			}
+		}
+
+		store = await StateStore.create(":memory:");
+		const config = makeConfig({ discordBotToken: "bot-token" });
+		const eventFilter = new EventFilter();
+		const forumTagUpdater = new ForumTagUpdater({});
+		const app = createBridgeApp(
+			store,
+			noForumProjects,
+			config,
+			undefined, // broadcaster
+			undefined, // transitionOpts
+			undefined, // retryDispatcher
+			undefined, // cipherWriter
+			eventFilter,
+			forumTagUpdater,
+			registry,
+		);
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+	});
+
+	afterEach(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		store.close();
+	});
+
+	it("session_started event still delivers to runtime for no-forum lead", async () => {
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify({
+				event_id: "evt-nf-1",
+				execution_id: "exec-nf",
+				issue_id: "issue-nf",
+				issue_identifier: "GEO-300",
+				project_name: "geoforge3d",
+				event_type: "session_started",
+				payload: {
+					issueIdentifier: "GEO-300",
+					issueTitle: "PM triage task",
+					issueLabels: ["PM"],
+				},
+			}),
+		});
+		await new Promise((r) => setTimeout(r, 150));
+
+		// Event should still be delivered (not skipped)
+		expect(capturedEnvelopes.length).toBeGreaterThanOrEqual(1);
+		const payload = capturedEnvelopes[0]!.event;
+		expect(payload.event_type).toBe("session_started");
+		// forum_channel should be undefined for no-forum lead
+		expect(payload.forum_channel).toBeUndefined();
+		expect(payload.chat_channel).toBe("core-channel");
+	});
+});

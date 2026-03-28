@@ -572,6 +572,73 @@ describe("Action tools", () => {
 			expect(result.success).toBe(true);
 			expect(store.getSession("e1")!.status).toBe("rejected");
 		});
+
+		// GEO-275: no-forum lead action hook
+		it("approve sends action_executed hook with undefined forum_channel for no-forum lead", async () => {
+			const noForumProjects: ProjectEntry[] = [
+				{
+					projectName: "geoforge3d",
+					projectRoot: "/tmp/geoforge3d",
+					leads: [
+						{
+							agentId: "pm-lead",
+							chatChannel: "core-channel",
+							match: { labels: ["PM"] },
+							// No forumChannel
+						},
+					],
+				},
+			];
+			const nfEnvelopes: LeadEventEnvelope[] = [];
+			const nfRuntime = {
+				type: "openclaw" as const,
+				deliver: vi.fn(async (env: LeadEventEnvelope) => {
+					nfEnvelopes.push(env);
+				}),
+				sendBootstrap: vi.fn(async () => {}),
+				health: vi.fn(async () => ({
+					status: "healthy" as const,
+					lastDeliveryAt: null,
+					lastDeliveredSeq: 0,
+				})),
+				shutdown: vi.fn(async () => {}),
+			};
+			const nfRegistry = new RuntimeRegistry();
+			for (const lead of noForumProjects[0]!.leads) {
+				nfRegistry.register(lead, nfRuntime);
+			}
+
+			store.upsertSession({
+				execution_id: "e-nf",
+				issue_id: "i-nf",
+				project_name: "geoforge3d",
+				status: "awaiting_review",
+				issue_identifier: "GEO-400",
+			});
+
+			await approveExecution(
+				store,
+				noForumProjects,
+				"e-nf",
+				"GEO-400",
+				mockExec,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				nfRegistry,
+			);
+
+			await new Promise((r) => setTimeout(r, 200));
+
+			expect(nfEnvelopes).toHaveLength(1);
+			const payload = nfEnvelopes[0].event;
+			expect(payload.event_type).toBe("action_executed");
+			expect(payload.action).toBe("approve");
+			expect(payload.forum_channel).toBeUndefined();
+			expect(payload.chat_channel).toBe("core-channel");
+		});
 	});
 });
 
