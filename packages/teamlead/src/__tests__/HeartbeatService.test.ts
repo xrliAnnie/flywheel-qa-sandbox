@@ -52,11 +52,13 @@ describe("HeartbeatService", () => {
 	let store: {
 		getStuckSessions: ReturnType<typeof vi.fn>;
 		getOrphanSessions: ReturnType<typeof vi.fn>;
+		getStaleCompletedSessions: ReturnType<typeof vi.fn>;
 		forceStatus: ReturnType<typeof vi.fn>;
 	};
 	let notifier: {
 		onSessionStuck: ReturnType<typeof vi.fn>;
 		onSessionOrphaned: ReturnType<typeof vi.fn>;
+		onSessionStale: ReturnType<typeof vi.fn>;
 	};
 	let service: HeartbeatService;
 
@@ -64,11 +66,13 @@ describe("HeartbeatService", () => {
 		store = {
 			getStuckSessions: vi.fn().mockReturnValue([]),
 			getOrphanSessions: vi.fn().mockReturnValue([]),
+			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 			forceStatus: vi.fn(),
 		};
 		notifier = {
 			onSessionStuck: vi.fn().mockResolvedValue(undefined),
 			onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
+			onSessionStale: vi.fn().mockResolvedValue(undefined),
 		};
 		service = new HeartbeatService(
 			store as any,

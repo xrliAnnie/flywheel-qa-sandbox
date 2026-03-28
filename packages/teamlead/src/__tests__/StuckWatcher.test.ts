@@ -49,10 +49,12 @@ describe("StuckWatcher (compat re-export)", () => {
 	let store: {
 		getStuckSessions: ReturnType<typeof vi.fn>;
 		getOrphanSessions: ReturnType<typeof vi.fn>;
+		getStaleCompletedSessions: ReturnType<typeof vi.fn>;
 	};
 	let notifier: {
 		onSessionStuck: ReturnType<typeof vi.fn>;
 		onSessionOrphaned: ReturnType<typeof vi.fn>;
+		onSessionStale: ReturnType<typeof vi.fn>;
 	};
 	let watcher: StuckWatcher;
 
@@ -60,10 +62,12 @@ describe("StuckWatcher (compat re-export)", () => {
 		store = {
 			getStuckSessions: vi.fn().mockReturnValue([]),
 			getOrphanSessions: vi.fn().mockReturnValue([]),
+			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 		};
 		notifier = {
 			onSessionStuck: vi.fn().mockResolvedValue(undefined),
 			onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
+			onSessionStale: vi.fn().mockResolvedValue(undefined),
 		};
 		watcher = new StuckWatcher(store as any, notifier as any, 15, 60_000, 60);
 	});
