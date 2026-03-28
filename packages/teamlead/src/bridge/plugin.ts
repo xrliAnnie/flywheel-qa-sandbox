@@ -10,7 +10,11 @@ import {
 	HeartbeatService,
 	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
-import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
+import {
+	type LeadConfig,
+	type ProjectEntry,
+	resolveLeadForIssue,
+} from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
@@ -25,7 +29,13 @@ import { OpenClawRuntime } from "./openclaw-runtime.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
+import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { captureSession as defaultCaptureSession } from "./session-capture.js";
+import {
+	getTmuxTargetFromCommDb,
+	isTmuxSessionAlive,
+	killTmuxSession,
+} from "./tmux-lookup.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import type { BridgeConfig } from "./types.js";
 
@@ -299,6 +309,307 @@ export function createBridgeApp(
 			forumTagUpdater,
 			registry,
 		),
+	);
+
+	// GEO-270: Close stale tmux session (resource cleanup, no status change)
+	app.post(
+		"/api/sessions/:executionId/close-tmux",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			const executionId = req.params.executionId as string;
+			const { leadId } = (req.body ?? {}) as { leadId?: string };
+
+			const session = store.getSession(executionId);
+			if (!session) {
+				res.status(404).json({ error: "Session not found" });
+				return;
+			}
+
+			// Only allow closing sessions in terminal states
+			const terminalStates = new Set([
+				"completed",
+				"failed",
+				"blocked",
+				"approved",
+				"terminated",
+			]);
+			if (!terminalStates.has(session.status)) {
+				res.status(409).json({
+					error: `Cannot close tmux for session in "${session.status}" state — only terminal states allowed`,
+				});
+				return;
+			}
+
+			if (leadId && projects) {
+				try {
+					if (!matchesLead(session, leadId, projects)) {
+						res.status(403).json({
+							success: false,
+							message: `Session ${executionId} is outside lead "${leadId}" scope`,
+						});
+						return;
+					}
+				} catch (err) {
+					console.warn(
+						`[close-tmux] matchesLead error for ${executionId}: ${(err as Error).message}`,
+					);
+					res.status(403).json({
+						success: false,
+						message: `Lead scope check failed: ${(err as Error).message}`,
+					});
+					return;
+				}
+			}
+
+			const target = getTmuxTargetFromCommDb(
+				executionId,
+				session.project_name,
+			);
+			if (!target) {
+				res.json({ closed: false, reason: "No tmux target found" });
+				return;
+			}
+
+			const result = await killTmuxSession(target.sessionName);
+
+			store.insertEvent({
+				event_id: `close-tmux-${executionId}-${Date.now()}`,
+				execution_id: executionId,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: result.killed ? "tmux_closed" : "tmux_close_failed",
+				source: "bridge.close-tmux",
+				payload: {
+					leadId: leadId ?? "unknown",
+					tmuxWindow: target.tmuxWindow,
+					error: result.error,
+				},
+			});
+
+			res.json({ closed: result.killed, error: result.error });
+		},
+	);
+
+	// GEO-270: Scan for stale sessions (manual/cron trigger)
+	// With notify=true, groups stale sessions by Lead and sends Discord summary
+	app.post(
+		"/api/patrol/scan-stale",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			const { thresholdHours, notify } = (req.body ?? {}) as {
+				thresholdHours?: number;
+				notify?: boolean;
+			};
+			const threshold = thresholdHours ?? 24;
+
+			const stale = store.getStaleCompletedSessions(threshold);
+
+			interface StaleEntry {
+				execution_id: string;
+				issue_id: string;
+				issue_identifier?: string;
+				issue_title?: string;
+				project_name: string;
+				status: string;
+				last_activity_at?: string;
+				hours_since_activity: number;
+				tmux_alive: boolean;
+				tmux_target?: string;
+			}
+
+			const results: StaleEntry[] = [];
+
+			for (const session of stale) {
+				if (!session.project_name) continue;
+
+				const hoursSince = session.last_activity_at
+					? Math.round(
+							(Date.now() -
+								new Date(
+									`${session.last_activity_at.replace(" ", "T")}Z`,
+								).getTime()) /
+								3_600_000,
+						)
+					: 0;
+
+				const target = getTmuxTargetFromCommDb(
+					session.execution_id,
+					session.project_name,
+				);
+
+				let tmuxAlive = false;
+				if (target) {
+					tmuxAlive = await isTmuxSessionAlive(target.sessionName);
+				}
+
+				results.push({
+					execution_id: session.execution_id,
+					issue_id: session.issue_id,
+					issue_identifier: session.issue_identifier,
+					issue_title: session.issue_title,
+					project_name: session.project_name,
+					status: session.status,
+					last_activity_at: session.last_activity_at,
+					hours_since_activity: hoursSince,
+					tmux_alive: tmuxAlive,
+					tmux_target: target?.tmuxWindow,
+				});
+			}
+
+			const alive = results.filter((r) => r.tmux_alive);
+
+			// ── Discord notification (notify=true) ──
+			const notifications: Array<{
+				leadId: string;
+				chatChannel: string;
+				sessionCount: number;
+				sent: boolean;
+				error?: string;
+			}> = [];
+
+			if (notify && alive.length > 0 && projects.length > 0) {
+				// Group alive sessions by Lead
+				const byLead = new Map<
+					string,
+					{
+						lead: import("../ProjectConfig.js").LeadConfig;
+						sessions: StaleEntry[];
+					}
+				>();
+
+				for (const entry of alive) {
+					try {
+						const fullSession = store.getSession(
+							entry.execution_id,
+						);
+						if (!fullSession) continue;
+						const labels = parseSessionLabels(fullSession);
+						const { lead } = resolveLeadForIssue(
+							projects,
+							entry.project_name,
+							labels,
+						);
+						const existing = byLead.get(lead.agentId);
+						if (existing) {
+							existing.sessions.push(entry);
+						} else {
+							byLead.set(lead.agentId, {
+								lead,
+								sessions: [entry],
+							});
+						}
+					} catch {
+						// Can't resolve Lead — skip notification for this session
+					}
+				}
+
+				// Send grouped summary to each Lead's chatChannel
+				for (const [leadId, group] of byLead) {
+					const { lead, sessions: leadSessions } = group;
+					const token =
+						lead.botToken ?? config.discordBotToken;
+					if (!token || !lead.chatChannel) {
+						notifications.push({
+							leadId,
+							chatChannel: lead.chatChannel ?? "(none)",
+							sessionCount: leadSessions.length,
+							sent: false,
+							error: "No bot token or chatChannel",
+						});
+						continue;
+					}
+
+					// Build summary message
+					const lines = [
+						"🔍 **Stale Session Patrol**",
+						"",
+						`你名下有 **${leadSessions.length}** 个 session 已完成但 tmux 仍然开着：`,
+						"",
+					];
+					for (let i = 0; i < leadSessions.length; i++) {
+						const s = leadSessions[i]!;
+						const id =
+							s.issue_identifier ?? s.execution_id;
+						const title = s.issue_title
+							? ` — ${s.issue_title}`
+							: "";
+						lines.push(
+							`${i + 1}. **${id}**${title}`,
+						);
+						lines.push(
+							`   状态: ${s.status} | ${s.hours_since_activity}h ago`,
+						);
+					}
+					lines.push("");
+					lines.push(
+						"请检查并处理。处理完后请回报结果。",
+					);
+
+					const content = lines.join("\n");
+
+					// Send to Discord chatChannel
+					const controller = new AbortController();
+					const timeout = setTimeout(
+						() => controller.abort(),
+						5000,
+					);
+					try {
+						const discordRes = await fetch(
+							`https://discord.com/api/v10/channels/${lead.chatChannel}/messages`,
+							{
+								method: "POST",
+								headers: {
+									Authorization: `Bot ${token}`,
+									"Content-Type": "application/json",
+								},
+								body: JSON.stringify({ content }),
+								signal: controller.signal,
+							},
+						);
+						if (!discordRes.ok) {
+							const body = await discordRes
+								.text()
+								.catch(() => "");
+							notifications.push({
+								leadId,
+								chatChannel: lead.chatChannel,
+								sessionCount: leadSessions.length,
+								sent: false,
+								error: `Discord ${discordRes.status}: ${body}`,
+							});
+						} else {
+							notifications.push({
+								leadId,
+								chatChannel: lead.chatChannel,
+								sessionCount: leadSessions.length,
+								sent: true,
+							});
+						}
+					} catch (err) {
+						notifications.push({
+							leadId,
+							chatChannel: lead.chatChannel,
+							sessionCount: leadSessions.length,
+							sent: false,
+							error: (err as Error).message,
+						});
+					} finally {
+						clearTimeout(timeout);
+					}
+				}
+			}
+
+			res.json({
+				threshold_hours: threshold,
+				total: results.length,
+				tmux_alive: alive.length,
+				tmux_dead: results.length - alive.length,
+				sessions: results,
+				...(notify
+					? { notifications }
+					: {}),
+			});
+		},
 	);
 
 	// Forum tag update — proxy to Discord API (GEO-167)
@@ -781,7 +1092,28 @@ export async function startBridge(
 	const notifier: HeartbeatNotifier =
 		registry.size > 0
 			? new RegistryHeartbeatNotifier(registry, projects, store, eventFilter)
-			: { onSessionStuck: async () => {}, onSessionOrphaned: async () => {} };
+			: {
+					onSessionStuck: async () => {},
+					onSessionOrphaned: async () => {},
+					onSessionStale: async () => {},
+				};
+
+	// GEO-270: Stale session patrol config (local variables, not in BridgeConfig)
+	const staleThresholdHours = (() => {
+		const v = parseInt(
+			process.env.TEAMLEAD_STALE_THRESHOLD_HOURS ?? "24",
+			10,
+		);
+		return Number.isFinite(v) && v >= 1 ? v : 24;
+	})();
+	const staleCheckIntervalMs = (() => {
+		const v = parseInt(
+			process.env.TEAMLEAD_STALE_CHECK_INTERVAL ?? "21600000",
+			10,
+		);
+		return Number.isFinite(v) && v >= 1 ? v : 6 * 3_600_000;
+	})();
+
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -789,6 +1121,8 @@ export async function startBridge(
 		config.stuckCheckIntervalMs,
 		config.orphanThresholdMinutes,
 		transitionOpts,
+		staleThresholdHours,
+		staleCheckIntervalMs,
 	);
 	heartbeatService.start();
 

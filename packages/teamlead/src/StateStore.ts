@@ -952,6 +952,22 @@ export class StateStore {
 		return rows;
 	}
 
+	/** GEO-270: Get sessions in terminal state (completed/failed/blocked) with stale activity. */
+	getStaleCompletedSessions(thresholdHours: number): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE status IN ('completed', 'failed', 'blocked') AND last_activity_at < datetime('now', ?)",
+		);
+		stmt.bind([`-${thresholdHours} hours`]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
 	/** Retrieve parsed session_params for a given execution. */
 	getSessionParams(executionId: string): Record<string, unknown> | undefined {
 		const stmt = this.db.prepare(

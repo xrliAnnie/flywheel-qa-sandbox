@@ -59,6 +59,15 @@ const FILTER_RULES: FilterRule[] = [
 			reason: "session orphaned",
 		},
 	},
+	// GEO-270: Stale session patrol
+	{
+		match: (et) => et === "session_stale_completed",
+		result: {
+			action: "notify_agent",
+			priority: "normal",
+			reason: "stale completed session — tmux still alive",
+		},
+	},
 	{
 		match: (et) => et === "action_executed",
 		result: {

@@ -6,6 +6,10 @@ import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
+import {
+	getTmuxTargetFromCommDb,
+	isTmuxSessionAlive,
+} from "./bridge/tmux-lookup.js";
 import type { ProjectEntry } from "./ProjectConfig.js";
 import type { Session, StateStore } from "./StateStore.js";
 
@@ -15,6 +19,8 @@ export interface HeartbeatNotifier {
 		session: Session,
 		minutesSinceHeartbeat: number,
 	): Promise<void>;
+	/** GEO-270: Stale session patrol — tmux still alive after terminal state. */
+	onSessionStale(session: Session, hoursSinceActivity: number): Promise<void>;
 }
 
 /**
@@ -26,6 +32,8 @@ export class HeartbeatService {
 	private timer: NodeJS.Timeout | null = null;
 	private notifiedStuck = new Set<string>();
 	private notifiedOrphans = new Set<string>();
+	private notifiedStale = new Set<string>();
+	private lastStaleCheckAt = 0;
 
 	constructor(
 		private store: StateStore,
@@ -34,6 +42,8 @@ export class HeartbeatService {
 		private intervalMs: number,
 		private orphanThresholdMinutes: number,
 		private transitionOpts?: ApplyTransitionOpts,
+		private staleThresholdHours: number = 24,
+		private staleCheckIntervalMs: number = 6 * 3_600_000,
 	) {}
 
 	start(): void {
@@ -55,6 +65,7 @@ export class HeartbeatService {
 	async check(): Promise<void> {
 		await this.checkStuck();
 		await this.reapOrphans();
+		await this.checkStaleCompleted();
 	}
 
 	private async checkStuck(): Promise<void> {
@@ -86,6 +97,58 @@ export class HeartbeatService {
 				// Notification failed — don't dedup so it's retried next cycle
 			}
 		}
+	}
+
+	/** GEO-270: Check for completed/failed/blocked sessions with tmux still alive. */
+	async checkStaleCompleted(): Promise<void> {
+		const now = Date.now();
+		if (now - this.lastStaleCheckAt < this.staleCheckIntervalMs) return;
+
+		const stale = this.store.getStaleCompletedSessions(
+			this.staleThresholdHours,
+		);
+
+		// Prune dedup set
+		const staleIds = new Set(stale.map((s) => s.execution_id));
+		for (const id of this.notifiedStale) {
+			if (!staleIds.has(id)) this.notifiedStale.delete(id);
+		}
+
+		for (const session of stale) {
+			if (this.notifiedStale.has(session.execution_id)) continue;
+			if (!session.project_name) continue;
+
+			try {
+				const target = getTmuxTargetFromCommDb(
+					session.execution_id,
+					session.project_name,
+				);
+				if (!target) continue;
+
+				const alive = await isTmuxSessionAlive(target.sessionName);
+				if (!alive) continue;
+
+				const hoursSince = session.last_activity_at
+					? Math.round(
+							(Date.now() -
+								new Date(
+									`${session.last_activity_at.replace(" ", "T")}Z`,
+								).getTime()) /
+								3_600_000,
+						)
+					: 0;
+
+				await this.notifier.onSessionStale(session, hoursSince);
+				this.notifiedStale.add(session.execution_id);
+			} catch (err) {
+				console.error(
+					`[HeartbeatService] stale check failed for ${session.execution_id}:`,
+					(err as Error).message,
+				);
+			}
+		}
+
+		this.lastStaleCheckAt = Date.now();
 	}
 
 	/** Reap orphan sessions: heartbeat has gone stale beyond orphanThresholdMinutes. */
@@ -203,6 +266,21 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		await this.deliverHook(session, hookPayload);
 	}
 
+	async onSessionStale(session: Session, hours: number): Promise<void> {
+		const hookPayload: HookPayload = {
+			event_type: "session_stale_completed",
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			issue_identifier: session.issue_identifier,
+			issue_title: session.issue_title,
+			project_name: session.project_name,
+			status: session.status,
+			thread_id: session.thread_id,
+			notification_context: `Session ${session.status} ${hours}h ago but tmux still alive. Please check if it can be closed.`,
+		};
+		await this.deliverHook(session, hookPayload);
+	}
+
 	private async deliverHook(
 		session: Session,
 		hookPayload: HookPayload,
@@ -243,7 +321,10 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 				return;
 			}
 			hookPayload.filter_priority = filterResult.priority;
-			hookPayload.notification_context = filterResult.reason;
+			// GEO-270: Preserve caller-provided notification_context if present
+			if (!hookPayload.notification_context) {
+				hookPayload.notification_context = filterResult.reason;
+			}
 		}
 
 		const sessionKey = buildSessionKey(session);

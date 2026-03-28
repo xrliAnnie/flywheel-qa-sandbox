@@ -310,6 +310,46 @@ async function main() {
 	} catch {
 		// No projects config — use basename
 	}
+
+	// GEO-270: Cleanup stale tmux sessions from previous runs (current project only)
+	try {
+		const { cleanupStaleSessions } = await import(
+			"../packages/flywheel-comm/src/cleanup.js"
+		);
+		const timeoutMinutes = parseInt(
+			process.env.CLEANUP_TIMEOUT_MINUTES ?? "30",
+			10,
+		);
+		if (isNaN(timeoutMinutes) || timeoutMinutes < 1) {
+			log("Warning: CLEANUP_TIMEOUT_MINUTES invalid, skipping cleanup");
+		} else {
+			const home = process.env.HOME ?? "/tmp";
+			const commDbPath = join(
+				home,
+				".flywheel",
+				"comm",
+				projectName,
+				"comm.db",
+			);
+			const result = cleanupStaleSessions({
+				dbPaths: [commDbPath],
+				timeoutMinutes,
+				log,
+			});
+			if (result.cleaned > 0) {
+				log(`Cleaned up ${result.cleaned} stale tmux window(s)`);
+			}
+			if (result.errors.length > 0) {
+				log(
+					`Warning: session cleanup had ${result.errors.length} error(s): ${result.errors[0]}`,
+				);
+			}
+		}
+	} catch (err) {
+		log(`Warning: session cleanup failed: ${err}`);
+		// Non-fatal — continue with execution
+	}
+
 	const components = await setupComponents({
 		projectRoot: resolvedRoot,
 		tmuxSessionName,
