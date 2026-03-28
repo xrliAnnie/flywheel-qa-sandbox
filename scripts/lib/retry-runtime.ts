@@ -13,6 +13,7 @@ import type { BridgeConfig } from "../../packages/teamlead/dist/bridge/types.js"
 import { DirectEventSink } from "../../packages/teamlead/dist/DirectEventSink.js";
 import type { ProjectEntry } from "../../packages/teamlead/dist/ProjectConfig.js";
 import type { StateStore } from "../../packages/teamlead/dist/StateStore.js";
+import { sanitizeTmuxName } from "../../packages/core/dist/index.js";
 import { RunDispatcher } from "./retry-dispatcher.js";
 import {
 	type FlywheelComponents,
@@ -82,7 +83,11 @@ export async function setupRetryRuntime(
 ): Promise<RunDispatcher> {
 	const projectRuntimes = new Map<
 		string,
-		{ blueprint: FlywheelComponents["blueprint"]; projectRoot: string }
+		{
+			blueprint: FlywheelComponents["blueprint"];
+			projectRoot: string;
+			tmuxSessionName: string;
+		}
 	>();
 	const cleanupHandles: Array<() => Promise<void>> = [];
 
@@ -106,9 +111,15 @@ export async function setupRetryRuntime(
 		let components: FlywheelComponents | undefined;
 
 		try {
+			// GEO-277: Sanitize once, reuse everywhere — both TmuxAdapter
+			// and openTmuxViewer must see the same session name
+			const tmuxSessionName = sanitizeTmuxName(
+				`retry-${project.projectName}`,
+			);
+
 			components = await setupComponents({
 				projectRoot: project.projectRoot,
-				tmuxSessionName: `retry-${project.projectName}`,
+				tmuxSessionName,
 				projectName: project.projectName,
 				projectRepo: project.projectRepo,
 				fetchIssue: createFetchIssue(store),
@@ -119,6 +130,7 @@ export async function setupRetryRuntime(
 			projectRuntimes.set(project.projectName, {
 				blueprint: components.blueprint,
 				projectRoot: project.projectRoot,
+				tmuxSessionName,
 			});
 			cleanupHandles.push(() => teardownComponents(components!));
 

@@ -1,7 +1,6 @@
-import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
-import { FLYWHEEL_MARKER_DIR, Semaphore } from "flywheel-core";
+import { FLYWHEEL_MARKER_DIR, openTmuxViewer, Semaphore } from "flywheel-core";
 import type { DagNode, DagResolver } from "flywheel-dag-resolver";
 import type {
 	Blueprint,
@@ -61,7 +60,7 @@ export class DagDispatcher {
 		await this.pruneOrphansQuiet();
 
 		mkdirSync(FLYWHEEL_MARKER_DIR, { recursive: true });
-		this.openTmuxViewer();
+		openTmuxViewer(this.tmuxSessionName);
 
 		try {
 			while (this.resolver.remaining() > 0) {
@@ -184,66 +183,6 @@ export class DagDispatcher {
 				}`,
 			);
 		}
-	}
-
-	/**
-	 * Open a Terminal window attached to the tmux session.
-	 * Best-effort — failure is non-fatal (user can always attach manually).
-	 */
-	private openTmuxViewer(): void {
-		const s = this.tmuxSessionName;
-		// Dedup: skip if a client is already attached
-		try {
-			const clients = execFileSync("tmux", ["list-clients", "-t", `=${s}`], {
-				encoding: "utf-8",
-				stdio: ["pipe", "pipe", "pipe"],
-			});
-			if (clients.trim().length > 0) {
-				console.log(
-					`[DagDispatcher] Viewer already attached to ${s}, skipping`,
-				);
-				return;
-			}
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
-			if (!msg.includes("can't find session")) {
-				console.warn(
-					`[DagDispatcher] tmux list-clients failed for ${s}: ${msg}`,
-				);
-			}
-			// Session may not exist yet — proceed to open (best-effort)
-		}
-
-		// Self-closing AppleScript: holds references to the created tab + window,
-		// polls until tmux is no longer in the process list, then closes the window.
-		// Works regardless of Terminal.app shellExitAction preference.
-		const script = [
-			'tell application "Terminal"',
-			`  set viewerTab to do script "tmux attach -t '=${s}' 2>/dev/null || (echo 'Waiting for tmux session ${s}...' && sleep 2 && tmux attach -t '=${s}')"`,
-			"  set viewerWindow to front window",
-			"  activate",
-			"  repeat",
-			"    delay 2",
-			"    try",
-			"      set p to (processes of viewerTab) as string",
-			'      if p does not contain "tmux" then',
-			"        close viewerWindow",
-			"        exit repeat",
-			"      end if",
-			"    on error",
-			"      exit repeat",
-			"    end try",
-			"  end repeat",
-			"end tell",
-		].join("\n");
-
-		execFile("osascript", ["-e", script], (err) => {
-			if (err) {
-				console.warn(
-					`[DagDispatcher] Could not auto-open tmux viewer: ${err.message}`,
-				);
-			}
-		});
 	}
 
 	private cleanupMarkerDir(): void {
