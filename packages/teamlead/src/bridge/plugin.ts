@@ -858,6 +858,140 @@ export function createBridgeApp(
 		},
 	);
 
+	// Linear query proxy — list issues with filters (GEO-276)
+	app.get(
+		"/api/linear/issues",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			if (!config.linearApiKey) {
+				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+
+			// Normalize query params — Express may pass arrays for repeated keys
+			const project = Array.isArray(req.query.project)
+				? String(req.query.project[0])
+				: (req.query.project as string | undefined);
+			const stateParam = Array.isArray(req.query.state)
+				? (req.query.state as string[]).join(",")
+				: (req.query.state as string | undefined);
+			const labelsParam = Array.isArray(req.query.labels)
+				? (req.query.labels as string[]).join(",")
+				: (req.query.labels as string | undefined);
+			const limitRaw =
+				req.query.limit !== undefined
+					? parseInt(String(req.query.limit), 10)
+					: 50;
+			const limit = Number.isNaN(limitRaw)
+				? 50
+				: Math.min(Math.max(1, limitRaw), 250);
+
+			// Build Linear GraphQL filter
+			const filter: Record<string, unknown> = {};
+			if (project) {
+				filter.project = { name: { eq: project } };
+			}
+			if (stateParam) {
+				const states = stateParam.split(",").map((s) => s.trim());
+				if (states.length === 1) {
+					filter.state = { type: { eq: states[0] } };
+				} else {
+					filter.state = { type: { in: states } };
+				}
+			}
+			if (labelsParam) {
+				const labels = labelsParam.split(",").map((l) => l.trim());
+				if (labels.length === 1) {
+					filter.labels = { name: { eq: labels[0] } };
+				} else {
+					filter.or = labels.map((name) => ({
+						labels: { name: { eq: name } },
+					}));
+				}
+			}
+
+			const query = `
+				query ListIssues($filter: IssueFilter, $first: Int) {
+					issues(filter: $filter, first: $first, orderBy: updatedAt) {
+						nodes {
+							id
+							identifier
+							title
+							description
+							priority
+							priorityLabel
+							url
+							createdAt
+							updatedAt
+							state { name type }
+							labels { nodes { name } }
+							assignee { name }
+						}
+						pageInfo { hasNextPage endCursor }
+					}
+				}
+			`;
+
+			try {
+				const { LinearClient } = await import("@linear/sdk");
+				const client = new LinearClient({ apiKey: config.linearApiKey });
+				const result = await client.client.rawRequest(query, {
+					filter,
+					first: limit,
+				});
+
+				const data = result.data as {
+					issues: {
+						nodes: Array<{
+							id: string;
+							identifier: string;
+							title: string;
+							description: string | null;
+							priority: number;
+							priorityLabel: string;
+							url: string;
+							createdAt: string;
+							updatedAt: string;
+							state: { name: string; type: string };
+							labels: { nodes: Array<{ name: string }> };
+							assignee: { name: string } | null;
+						}>;
+						pageInfo: { hasNextPage: boolean; endCursor: string | null };
+					};
+				};
+
+				const nodes = data.issues.nodes;
+				const issues = nodes.map((n) => ({
+					id: n.id,
+					identifier: n.identifier,
+					title: n.title,
+					description: n.description,
+					priority: n.priority,
+					priorityLabel: n.priorityLabel,
+					state: n.state.name,
+					stateType: n.state.type,
+					labels: n.labels.nodes.map((l) => l.name),
+					assignee: n.assignee?.name ?? null,
+					url: n.url,
+					createdAt: n.createdAt,
+					updatedAt: n.updatedAt,
+				}));
+
+				res.json({
+					issues,
+					count: issues.length,
+					truncated: data.issues.pageInfo.hasNextPage,
+				});
+			} catch (err) {
+				console.error(
+					"[linear-proxy] list-issues failed:",
+					(err as Error).message,
+				);
+				res.status(502).json({ error: "Linear API error" });
+			}
+		},
+	);
+
 	// Memory API (GEO-198/GEO-204) — conditional, only if memoryService initialized
 	if (memoryService) {
 		app.use(
