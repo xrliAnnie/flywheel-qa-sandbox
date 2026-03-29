@@ -199,6 +199,18 @@ When PR merges: `git mv plan/inprogress/{file} plan/archive/{file}`
 - **VCS**: GitHub
 - **Agent**: OpenClaw gateway + product-lead agent → Slack
 
+## Linear Project
+
+- **GeoForge3D Team** (prefix: GEO) — 产品 issue + 历史 Flywheel issue
+- **Flywheel Team** (prefix: FLY) — 新 Flywheel 基础设施 issue
+- **Project**: Flywheel (ID: `764d7ab4-9a3b-43ea-99d9-7e881bb3b376`)
+
+> **过渡期规则**:
+> - 历史 Flywheel issue 仍在 GEO- team 下，不迁移
+> - 查询 Flywheel issue: 按 project name 过滤（自动覆盖两个 team）
+> - 新建 Flywheel issue: **必须**指定 `team: "FLY"` 和 `project: "Flywheel"`
+> - 当 GEO- 下 active Flywheel issue 归零后，移除此过渡期说明
+
 ## Core Behaviors
 
 - **Surface assumptions**: Before implementing anything non-trivial, list your assumptions explicitly. Never silently fill in ambiguous requirements.
