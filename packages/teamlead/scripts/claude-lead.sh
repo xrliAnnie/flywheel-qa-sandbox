@@ -162,6 +162,34 @@ fi
 # Wait for bootstrap message to arrive in Discord
 sleep 3
 
+# ── Discord plugin fork integrity check ─────────────────────
+# GEO-296: Ensure Discord plugin is our fork version (with allowBots support).
+# Claude Code may overwrite the cache during plugin updates; this preflight
+# re-applies our fork if the cache was reverted to the official version.
+# Uses absolute paths — do NOT rely on PATH including ~/.flywheel/bin.
+FLYWHEEL_BIN="${HOME}/.flywheel/bin"
+CHECK_SCRIPT="${FLYWHEEL_BIN}/check-discord-plugin.sh"
+UPDATE_SCRIPT="${FLYWHEEL_BIN}/update-discord-plugin.sh"
+
+if [ ! -x "$CHECK_SCRIPT" ] || [ ! -x "$UPDATE_SCRIPT" ]; then
+  echo "[lead] ERROR: Discord plugin fork scripts not found or not executable:"
+  echo "[lead]   check:  $CHECK_SCRIPT"
+  echo "[lead]   update: $UPDATE_SCRIPT"
+  echo "[lead] Run GEO-296 setup first. Aborting."
+  exit 1
+fi
+
+if ! "$CHECK_SCRIPT"; then
+  echo "[lead] Discord plugin cache is not fork version, updating..."
+  "$UPDATE_SCRIPT"
+  # Re-check after update — hard fail if still not matching
+  if ! "$CHECK_SCRIPT"; then
+    echo "[lead] ERROR: Discord plugin still not fork version after update. Aborting."
+    exit 1
+  fi
+fi
+echo "[lead] Discord plugin fork check: OK"
+
 # ── Launch Claude with agent identity ────────────────────────
 cd "$LEAD_WORKSPACE"
 
