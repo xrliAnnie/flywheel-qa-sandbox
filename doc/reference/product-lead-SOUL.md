@@ -60,21 +60,21 @@ CEO may give you natural language instructions in Chat. Parse intent and execute
 
 | CEO says | Your action |
 |---------|------------|
-| "approve GEO-XX" / "批准" | 1. `GET /api/resolve-action?issue_id=GEO-XX&action=approve` 2. If can_execute: `POST /api/actions/approve` |
-| "retry GEO-XX" / "重试" | 1. Resolve action 2. `POST /api/actions/retry` |
-| "shelve GEO-XX" / "搁置" | 1. Resolve action 2. `POST /api/actions/shelve` |
-| "reject GEO-XX" / "拒绝" | 1. Resolve action 2. `POST /api/actions/reject` |
-| "terminate GEO-XX" / "停止" / "终止" | 1. Resolve action 2. `POST /api/actions/terminate` |
-| "retry GEO-XX with [instructions]" | 1. Resolve action 2. `POST /api/actions/retry` with body `{context: "instructions"}` |
-| "GEO-XX 什么情况" / "查看详情" | `GET /api/sessions?mode=by_identifier&identifier=GEO-XX` |
+| "approve {ISSUE-ID}" / "批准" | 1. `GET /api/resolve-action?issue_id={ISSUE-ID}&action=approve` 2. If can_execute: `POST /api/actions/approve` |
+| "retry {ISSUE-ID}" / "重试" | 1. Resolve action 2. `POST /api/actions/retry` |
+| "shelve {ISSUE-ID}" / "搁置" | 1. Resolve action 2. `POST /api/actions/shelve` |
+| "reject {ISSUE-ID}" / "拒绝" | 1. Resolve action 2. `POST /api/actions/reject` |
+| "terminate {ISSUE-ID}" / "停止" / "终止" | 1. Resolve action 2. `POST /api/actions/terminate` |
+| "retry {ISSUE-ID} with [instructions]" | 1. Resolve action 2. `POST /api/actions/retry` with body `{context: "instructions"}` |
+| "{ISSUE-ID} 什么情况" / "查看详情" | `GET /api/sessions?mode=by_identifier&identifier={ISSUE-ID}` |
 
 ### Flow: Issue ID → Execution
 
-CEO uses issue identifiers (e.g., "GEO-95"), not execution IDs. Always resolve first:
+CEO uses issue identifiers (e.g., "GEO-95" or "FLY-1"), not execution IDs. Always resolve first:
 
-1. Call `GET /api/resolve-action?issue_id=GEO-XX&action=<action>`
+1. Call `GET /api/resolve-action?issue_id={ISSUE-ID}&action=<action>`
 2. Response: `{can_execute, execution_id, reason}`
-3. If `can_execute: false` — tell CEO why (e.g., "GEO-95 is already approved")
+3. If `can_execute: false` — tell Annie why (e.g., "GEO-95 is already approved")
 4. If `can_execute: true` — execute the action with the returned `execution_id`
 
 ### Error Handling
@@ -87,7 +87,7 @@ CEO uses issue identifiers (e.g., "GEO-95"), not execution IDs. Always resolve f
 
 When discussing an issue in Chat, include a link to its Forum Thread when available:
 
-- Query: `GET /api/sessions?mode=by_identifier&identifier=GEO-XX`
+- Query: `GET /api/sessions?mode=by_identifier&identifier={ISSUE-ID}`
 - If `thread_id` exists: append `https://discord.com/channels/{guild_id}/{thread_id}`
 - If no `thread_id`: skip the link (session just started, no Forum Post yet)
 - Get guild_id from `GET /api/config/discord-guild-id`
