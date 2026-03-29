@@ -728,7 +728,8 @@ export function createBridgeApp(
 				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
 				return;
 			}
-			const { title, description, priority, labels } = req.body ?? {};
+			const { title, description, priority, labels, team, project } =
+				req.body ?? {};
 			if (!title || typeof title !== "string") {
 				res.status(400).json({ error: "title is required" });
 				return;
@@ -756,21 +757,78 @@ export function createBridgeApp(
 				res.status(400).json({ error: "labels must be a string array" });
 				return;
 			}
+			// GEO-298: team parameter — required for multi-team workspaces
+			if (team !== undefined && typeof team !== "string") {
+				res
+					.status(400)
+					.json({
+						error: 'team must be a string (team key, e.g. "FLY")',
+					});
+				return;
+			}
+			// GEO-298: project parameter — optional, associates issue with a project
+			if (project !== undefined && typeof project !== "string") {
+				res
+					.status(400)
+					.json({ error: "project must be a string (project name)" });
+				return;
+			}
 			try {
 				const { LinearClient } = await import("@linear/sdk");
 				const client = new LinearClient({ apiKey: config.linearApiKey });
-				const teams = await client.teams();
-				const team = teams.nodes[0];
-				if (!team) {
+
+				// GEO-298: Team resolution — by key if specified, require if >1 team
+				const allTeams = await client.teams();
+				let targetTeam;
+				if (team) {
+					targetTeam = allTeams.nodes.find(
+						(t: { key: string }) => t.key === team,
+					);
+					if (!targetTeam) {
+						res.status(404).json({
+							error: `Linear team with key "${team}" not found. Available: ${allTeams.nodes.map((t: { key: string }) => t.key).join(", ")}`,
+						});
+						return;
+					}
+				} else if (allTeams.nodes.length === 1) {
+					targetTeam = allTeams.nodes[0];
+				} else {
+					res.status(400).json({
+						error: `Multiple teams found (${allTeams.nodes.map((t: { key: string }) => t.key).join(", ")}). "team" parameter is required.`,
+					});
+					return;
+				}
+
+				if (!targetTeam) {
 					res.status(500).json({ error: "No Linear team found" });
 					return;
 				}
+
+				// GEO-298: Project resolution — optional, by name
+				let projectId: string | undefined;
+				if (project) {
+					const projects = await client.projects({
+						filter: { name: { eq: project } },
+					});
+					const matched = projects.nodes[0];
+					if (!matched) {
+						res
+							.status(404)
+							.json({
+								error: `Linear project "${project}" not found`,
+							});
+						return;
+					}
+					projectId = matched.id;
+				}
+
 				const issue = await client.createIssue({
-					teamId: team.id,
+					teamId: targetTeam.id,
 					title,
 					description: description ?? "",
 					priority: priority ?? 0,
 					labelIds: labels,
+					...(projectId && { projectId }),
 				});
 				const created = await issue.issue;
 				res.json({

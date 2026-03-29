@@ -13,7 +13,7 @@ Base URL: configured in OpenClaw hooks. All endpoints require Bearer token auth.
 
 #### Resolve Action (always call first)
 ```
-GET /api/resolve-action?issue_id={GEO-XX}&action={action}
+GET /api/resolve-action?issue_id={ISSUE-ID}&action={action}
 
 Response: { can_execute: boolean, execution_id?: string, reason?: string }
 ```
@@ -23,7 +23,7 @@ Supported actions: `approve`, `retry`, `reject`, `defer`, `shelve`, `terminate`
 #### Execute Action
 ```
 POST /api/actions/approve
-Body: { execution_id: "...", identifier: "GEO-XX" }
+Body: { execution_id: "...", identifier: "GEO-XX or FLY-XX" }
 
 POST /api/actions/retry
 Body: { execution_id: "...", reason?: "...", context?: "CEO custom instructions" }
@@ -61,7 +61,7 @@ GET /api/sessions?mode=recent&limit=N
 GET /api/sessions?mode=stuck&stuck_threshold=15
   Returns sessions with no activity for N minutes
 
-GET /api/sessions?mode=by_identifier&identifier=GEO-XX
+GET /api/sessions?mode=by_identifier&identifier={ISSUE-ID}
   Returns session by issue identifier
 ```
 
@@ -76,7 +76,7 @@ Capture the current tmux terminal output of a runner session.
 GET /api/sessions/:id/capture?lines=100
 
 Parameters:
-  :id    — execution_id or issue identifier (e.g., GEO-262)
+  :id    — execution_id or issue identifier (e.g., GEO-262 or FLY-1)
   lines  — number of lines to capture (1-500, default 100)
 
 Response 200:
@@ -94,7 +94,7 @@ Errors:
 ```
 
 Use this to:
-- Check what a Runner is doing right now ("GEO-XX is doing what?")
+- Check what a Runner is doing right now ("GEO-XX or FLY-XX is doing what?")
 - Diagnose stuck sessions ("stuck on npm install or waiting for CI?")
 - Provide specific info when reporting to CEO
 
@@ -102,7 +102,9 @@ Use this to:
 
 ```
 POST /api/linear/create-issue
-Body: { title: "...", description?: "...", priority?: 0-4, labels?: ["label-id"] }
+Body: { title: "...", description?: "...", priority?: 0-4, labels?: ["label-id"],
+        team: "FLY"|"GEO" (team key, required for multi-team workspace),
+        project?: "Flywheel"|"GeoForge3D" (project name, optional) }
 Response: { ok: true, issue: { id, identifier, url } }
 
 PATCH /api/linear/update-issue
