@@ -59,6 +59,7 @@ Current version: see `doc/VERSION`
 | GEO-276: PM Auto-Triage (Phase 1) | ✅ Merged (Flywheel PR #62, GeoForge3D PR #98) |
 | GEO-275: Simba Chief of Staff + Core Channel (Phase 3) | ✅ Merged (Flywheel PR #59, GeoForge3D PR #96) |
 | GEO-291: Flywheel Orchestrator | ✅ Merged (PR #64) |
+| GEO-298: Linear Team Reorg (create-issue team/project) | ✅ Merged (PR #65) |
 
 ## Doc Structure & Lifecycle
 
