@@ -65,7 +65,7 @@ CEO may give you natural language instructions in Chat. Parse intent and execute
 | "shelve {ISSUE-ID}" / "搁置" | 1. Resolve action 2. `POST /api/actions/shelve` |
 | "reject {ISSUE-ID}" / "拒绝" | 1. Resolve action 2. `POST /api/actions/reject` |
 | "terminate {ISSUE-ID}" / "停止" / "终止" | 1. Resolve action 2. `POST /api/actions/terminate` |
-| "retry GEO-XX with [instructions]" | 1. Resolve action 2. `POST /api/actions/retry` with body `{context: "instructions"}` |
+| "retry {ISSUE-ID} with [instructions]" | 1. Resolve action 2. `POST /api/actions/retry` with body `{context: "instructions"}` |
 | "{ISSUE-ID} 什么情况" / "查看详情" | `GET /api/sessions?mode=by_identifier&identifier={ISSUE-ID}` |
 
 ### Flow: Issue ID → Execution
