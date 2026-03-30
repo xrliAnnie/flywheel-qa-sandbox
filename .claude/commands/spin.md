@@ -147,31 +147,36 @@ Before starting:
 
 **Note**: The worktree and feature branch were already created in Step 0e. `/implement` should detect the existing branch and skip branch creation. Pass `--skip-branch` or rely on `/implement`'s auto-detection of the current feature branch.
 
-### Stage: Archive (after PR merges)
+### Stage: Ship (after PR created + code review approved)
 
-After implementation is shipped (PR merged to main):
-
-**If `/ship-pr` was used**: docs are already archived (Phase 2 handles `git mv` to archive dirs). Skip to post-merge bookkeeping below.
-
-**If merged without `/ship-pr`**: archive docs manually from main repo:
+**Step 1: Archive docs on feature branch** (before merge):
 ```bash
-MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
-cd "$MAIN_REPO" && git checkout main && git pull origin main
 ISSUE_ID="{ISSUE_ID}"
-if [ -z "$ISSUE_ID" ]; then
-  echo "No ISSUE_ID — skipping doc archive"
-else
+if [ -n "$ISSUE_ID" ]; then
   for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
     src="${dir_pair%%:*}"; dst="${dir_pair##*:}"
     for f in $(find "$src" -name "*${ISSUE_ID}-*" -type f 2>/dev/null); do
       git mv "$f" "$dst/"
     done
   done
-  git diff --cached --quiet || git commit -m "docs: archive ${ISSUE_ID} docs after merge"
+  if ! git diff --cached --quiet; then
+    git commit -m "docs: archive ${ISSUE_ID} docs before merge"
+    git push
+  fi
 fi
 ```
 
-**Post-merge bookkeeping** (always required):
+**Step 2: Trigger ship** — comment `:cool:` on the PR:
+```bash
+gh pr comment {PR_NUMBER} --body ":cool:"
+```
+The `ship-on-comment.yml` GitHub Actions workflow runs CI (build + typecheck + lint + test) and squash merges if green. If CI fails, fix and comment `:cool:` again.
+
+**Step 3: Post-merge bookkeeping** (after PR is merged):
+```bash
+MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+cd "$MAIN_REPO" && git checkout main && git pull origin main
+```
 1. Update CLAUDE.md: add milestone to table, remove from Active Explorations if listed
 2. Update MEMORY.md (local file): move docs from Active to Archived index, mark Done
 3. Update Linear issue status to "Done"

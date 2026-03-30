@@ -101,17 +101,39 @@ After all PRs are created (or user decides to ship a subset):
 
 ### 7. Ship + Cleanup (Teammate Executes)
 For each PR the user approves to ship:
-1. `SendMessage(to="worker-geo-{XX}", message="Ship PR #{N}: merge, clean up, update docs")`
+1. `SendMessage(to="worker-geo-{XX}", message="Ship PR #{N}: archive docs, trigger :cool:, then clean up")`
 2. Teammate executes **ALL** of the following (do not skip any):
 
-   **A. Ship via /ship-pr**
+   **A. Pre-merge: Archive pipeline docs on the feature branch**
+   ```bash
+   ISSUE_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '(GEO|FLY)-[0-9]+' | head -1)
+   if [ -n "$ISSUE_ID" ]; then
+     for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
+       src="${dir_pair%%:*}"; dst="${dir_pair##*:}"
+       for f in $(find "$src" -name "*${ISSUE_ID}-*" -type f 2>/dev/null); do
+         git mv "$f" "$dst/"
+       done
+     done
+     if ! git diff --cached --quiet; then
+       git commit -m "docs: archive ${ISSUE_ID} docs before merge"
+       git push
+     fi
+   fi
    ```
-   /ship-pr {PR_NUMBER} --yes
-   ```
-   Handles: CI green gate → fix loop (max 3 attempts) → archive docs → squash merge.
-   If CI stuck after 3 attempts, teammate reports failure details and stops.
 
-   **B. Post-merge bookkeeping** (all commands from main repo)
+   **B. Trigger ship: comment `:cool:` on the PR**
+   ```bash
+   gh pr comment {PR_NUMBER} --body ":cool:"
+   ```
+   The `ship-on-comment.yml` workflow will run CI (build + typecheck + lint + test) and squash merge if green.
+   Wait for the workflow to complete:
+   ```bash
+   # Poll PR state until merged or workflow fails
+   gh pr view {PR_NUMBER} --json state -q '.state'
+   ```
+   If the workflow fails, check the run logs and fix the issue, then comment `:cool:` again.
+
+   **C. Post-merge bookkeeping** (all commands from main repo)
    Each code block derives the main repo path independently (variables don't persist across blocks):
    ```bash
    MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
@@ -138,10 +160,10 @@ For each PR the user approves to ship:
    - Mark issue as ✅ Done in Next Steps table
    - Add one-line summary with PR number, key changes, review rounds
 
-   **C. Update Linear**
+   **D. Update Linear**
    Use the cached Linear MCP handle (resolved at orchestrator startup) to mark the issue as Done.
 
-   **D. Clean up worktree** (from main repo)
+   **E. Clean up worktree** (from main repo)
    ```bash
    MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
    cd "$MAIN_REPO"
@@ -149,14 +171,14 @@ For each PR the user approves to ship:
    git branch -D {branch} 2>/dev/null
    ```
 
-   **E. Report completion**
+   **F. Report completion**
    - Mark task as completed
    - Report what was done (merge + cleanup + docs)
 
 3. After teammate confirms ALL steps done → `cleanup-agent.sh <id> completed`
 4. **THEN** send shutdown_request to that teammate
 
-**CRITICAL**: Steps B-D are mandatory, not optional. Skipping doc updates creates tech debt that accumulates. The teammate has the context to do these updates — don't defer to a follow-up.
+**CRITICAL**: Steps C-E are mandatory, not optional. Skipping doc updates creates tech debt that accumulates. The teammate has the context to do these updates — don't defer to a follow-up.
 
 ### 8. Teammate Communication
 - Teammates send messages via `SendMessage` when they need help or finish
