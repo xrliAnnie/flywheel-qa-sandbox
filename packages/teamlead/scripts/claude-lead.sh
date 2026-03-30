@@ -72,6 +72,17 @@ log() {
   echo "[lead] $(date '+%H:%M:%S') $*"
 }
 
+# ── TTY guard ──────────────────────────────────────────────────
+# Claude Code ≥2.1.87 requires stdout to be a TTY for interactive mode.
+# When started from a non-TTY context (e.g., Bash tool, cron, subprocess),
+# Claude detects !process.stdout.isTTY → enters headless mode → fails
+# because --channels expects interactive mode with no prompt argument.
+# Fix: allocate a pseudo-TTY via macOS `script` command and re-exec.
+if [ ! -t 1 ] && [ -z "${_FLYWHEEL_PTY:-}" ]; then
+  export _FLYWHEEL_PTY=1
+  exec script -q /dev/null "$0" "$@"
+fi
+
 # Interruptible sleep: runs sleep in the background so SIGINT/SIGTERM
 # can set SHOULD_EXIT during the wait. Falls through immediately if
 # the shell receives a signal while waiting. Tracks sleep PID to avoid
