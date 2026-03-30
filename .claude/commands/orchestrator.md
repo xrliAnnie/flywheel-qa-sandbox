@@ -101,42 +101,90 @@ After all PRs are created (or user decides to ship a subset):
 
 ### 7. Ship + Cleanup (Teammate Executes)
 For each PR the user approves to ship:
-1. `SendMessage(to="worker-geo-{XX}", message="Ship PR #{N}: merge, clean up, update docs")`
+1. `SendMessage(to="worker-geo-{XX}", message="Ship PR #{N}: archive docs, trigger :cool:, then clean up")`
 2. Teammate executes **ALL** of the following (do not skip any):
 
-   **A. Merge PR**
-   - `gh pr merge {PR_NUMBER} --squash --delete-branch` (or merge strategy user prefers)
+   **A. Pre-merge: Archive pipeline docs on the feature branch**
+   ```bash
+   ISSUE_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '(GEO|FLY)-[0-9]+' | head -1)
+   if [ -n "$ISSUE_ID" ]; then
+     for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
+       src="${dir_pair%%:*}"; dst="${dir_pair##*:}"
+       for f in $(find "$src" -name "*${ISSUE_ID}-*" -type f 2>/dev/null); do
+         git mv "$f" "$dst/"
+       done
+     done
+     if ! git diff --cached --quiet; then
+       git commit -m "docs: archive ${ISSUE_ID} docs before merge"
+       git push
+     fi
+   fi
+   ```
 
-   **B. Clean up worktree**
-   - `cd` out of worktree
-   - `git worktree remove {worktree_path}`
-   - `git branch -D {branch}` (if not already deleted by --delete-branch)
+   **B. Trigger ship: comment `:cool:` on the PR**
+   ```bash
+   gh pr comment {PR_NUMBER} --body ":cool:"
+   ```
+   The `ship-on-comment.yml` workflow will run CI (build + typecheck + lint + test) and squash merge if green.
+   Wait for merge (poll every 30s). The workflow posts a comment on both success and failure:
+   ```bash
+   sleep 10  # let Actions register the run
+   while true; do
+     STATE=$(gh pr view {PR_NUMBER} --json state -q '.state')
+     if [ "$STATE" = "MERGED" ]; then echo "PR merged"; break; fi
+     if [ "$STATE" = "CLOSED" ]; then echo "PR closed without merge"; exit 1; fi
+     sleep 30
+   done
+   ```
+   If the PR stays OPEN for >15 min, the ship workflow likely failed. Check `gh pr view {PR_NUMBER} --comments` for the failure comment, fix the issue, and post `:cool:` again.
+   If the workflow fails, check the run logs and fix the issue, then comment `:cool:` again.
 
-   **C. Archive docs** (in main repo, on main branch)
-   - `git mv doc/plan/inprogress/{file} doc/plan/archive/`
-   - `git mv doc/exploration/new/{file} doc/exploration/archive/`
-   - `git mv doc/research/new/{file} doc/research/archive/` (if exists)
-   - Commit: `docs: archive GEO-{XX} docs after merge`
+   **C. Post-merge bookkeeping** (all commands from main repo)
+   Each code block derives the main repo path independently (variables don't persist across blocks):
+   ```bash
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+   cd "$MAIN_REPO" && git checkout main && git pull origin main
+   ```
 
-   **D. Update MEMORY.md**
+   VERSION bump (if first ship of sprint):
+   ```bash
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+   cd "$MAIN_REPO" && bash -c 'source .claude/orchestrator/config.sh && current=$(get_feature_version) && if [ "$current" != "{SPRINT_VERSION}" ]; then bump_feature_version minor; fi'
+   ```
+
+   Update CLAUDE.md milestone table + commit:
+   ```bash
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+   cd "$MAIN_REPO"
+   # Edit CLAUDE.md to add milestone row
+   git add CLAUDE.md doc/VERSION
+   git commit -m "docs: update CLAUDE.md + VERSION after {ISSUE_ID} merge (PR #{N})"
+   git push origin main
+   ```
+
+   Update MEMORY.md (local file at `~/.claude/projects/...`, not git tracked):
    - Mark issue as ✅ Done in Next Steps table
    - Add one-line summary with PR number, key changes, review rounds
 
-   **E. Update CLAUDE.md**
-   - Add milestone to the milestone table
-   - Update version in `doc/VERSION` if needed
+   **D. Update Linear**
+   Use the cached Linear MCP handle (resolved at orchestrator startup) to mark the issue as Done.
 
-   **F. Update Linear issue**
-   - Mark issue as Done in Linear
+   **E. Clean up worktree** (from main repo)
+   ```bash
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+   cd "$MAIN_REPO"
+   git worktree remove {worktree_path} 2>/dev/null
+   git branch -D {branch} 2>/dev/null
+   ```
 
-   **G. Report completion**
+   **F. Report completion**
    - Mark task as completed
    - Report what was done (merge + cleanup + docs)
 
 3. After teammate confirms ALL steps done → `cleanup-agent.sh <id> completed`
 4. **THEN** send shutdown_request to that teammate
 
-**CRITICAL**: Steps C-F are mandatory, not optional. Skipping doc updates creates tech debt that accumulates. The teammate has the context to do these updates — don't defer to a follow-up.
+**CRITICAL**: Steps C-E are mandatory, not optional. Skipping doc updates creates tech debt that accumulates. The teammate has the context to do these updates — don't defer to a follow-up.
 
 ### 8. Teammate Communication
 - Teammates send messages via `SendMessage` when they need help or finish
