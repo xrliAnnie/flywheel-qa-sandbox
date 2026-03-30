@@ -101,7 +101,7 @@ After all PRs are created (or user decides to ship a subset):
 
 ### 7. Ship + Cleanup (Teammate Executes)
 For each PR the user approves to ship:
-1. `SendMessage(to="worker-{XX}", message="Ship PR #{N}: merge, clean up, update docs")`
+1. `SendMessage(to="worker-geo-{XX}", message="Ship PR #{N}: merge, clean up, update docs")`
 2. Teammate executes **ALL** of the following (do not skip any):
 
    **A. Ship via /ship-pr**

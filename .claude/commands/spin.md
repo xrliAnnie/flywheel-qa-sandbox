@@ -162,7 +162,7 @@ if [ -z "$ISSUE_ID" ]; then
 else
   for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
     src="${dir_pair%%:*}"; dst="${dir_pair##*:}"
-    for f in $(find "$src" -name "*${ISSUE_ID}*" -type f 2>/dev/null); do
+    for f in $(find "$src" -name "*${ISSUE_ID}-*" -type f 2>/dev/null); do
       git mv "$f" "$dst/"
     done
   done
@@ -174,7 +174,7 @@ fi
 1. Update CLAUDE.md: add milestone to table, remove from Active Explorations if listed
 2. Update MEMORY.md (local file): move docs from Active to Archived index, mark Done
 3. Update Linear issue status to "Done"
-4. Clean up worktree: `cd ~/Dev/flywheel && git worktree remove ../flywheel-{slug}`
+4. Clean up worktree: `cd ~/Dev/flywheel && git worktree remove ../flywheel-geo-{XX}`
 5. Commit + push docs changes: `docs: update docs after {ISSUE_ID} merge`
 
 ## Important Rules
