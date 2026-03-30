@@ -70,8 +70,20 @@ export function createQueryRouter(
 				}
 				const session = store.getSessionByIdentifier(identifier);
 				sessions = session ? [session] : [];
+				// GEO-200: Thread fallback (same logic as /sessions/:id)
+				const mapped = sessions.map((s) => {
+					const result = omitIssueId(s);
+					if (!s.thread_id) {
+						const thread = store.getThreadByIssue(s.issue_id);
+						if (thread) {
+							(result as Record<string, unknown>).thread_id =
+								thread.thread_id;
+						}
+					}
+					return result;
+				});
 				res.json({
-					sessions: sessions.map(omitIssueId),
+					sessions: mapped,
 					count: sessions.length,
 				});
 				return;

@@ -19,6 +19,7 @@ import {
 } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
+import { validateThreadExists } from "./bridge/thread-validator.js";
 import type { BridgeConfig } from "./bridge/types.js";
 import type { ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -71,8 +72,39 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// Thread inheritance (same as event-route.ts)
 		const existingThread = this.store.getThreadByIssue(env.issueId);
 		if (existingThread) {
-			this.store.setSessionThreadId(env.executionId, existingThread.thread_id);
-			this.store.clearArchived(existingThread.thread_id);
+			// GEO-200: Validate thread still exists + per-lead bot token (GEO-252)
+			let botToken = this.config.discordBotToken;
+			if (this.registry) {
+				try {
+					const labels = this.store.getSessionLabels(env.executionId);
+					const { lead } = this.registry.resolveWithLead(
+						this.projects,
+						env.projectName,
+						labels,
+					);
+					botToken = lead.botToken ?? this.config.discordBotToken;
+				} catch {
+					// Partial registry (lead not registered yet) — fall back to global token
+				}
+			}
+			let threadValid = true;
+			if (botToken) {
+				threadValid = await validateThreadExists(
+					existingThread.thread_id,
+					botToken,
+					{
+						markDiscordMissing: (id) =>
+							this.store.markDiscordMissing(id),
+					},
+				);
+			}
+			if (threadValid) {
+				this.store.setSessionThreadId(
+					env.executionId,
+					existingThread.thread_id,
+				);
+				this.store.clearArchived(existingThread.thread_id);
+			}
 		}
 
 		// Notify agent

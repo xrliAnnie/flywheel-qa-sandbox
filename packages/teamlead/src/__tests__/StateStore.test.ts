@@ -767,4 +767,89 @@ describe("StateStore", () => {
 		store.clearArchived("thread-100");
 		expect(store.getEligibleForCleanup(1440)).toHaveLength(1);
 	});
+
+	// --- GEO-200: discord_missing_at + markDiscordMissing ---
+
+	it("getThreadByIssue skips threads marked discord_missing", () => {
+		store.upsertThread("thread-200", "CH1", "GEO-200");
+		expect(store.getThreadByIssue("GEO-200")).toBeDefined();
+
+		store.markDiscordMissing("thread-200");
+		expect(store.getThreadByIssue("GEO-200")).toBeUndefined();
+	});
+
+	it("getThreadByIssue still returns archived threads (archived_at != discord_missing_at)", () => {
+		store.upsertThread("thread-201", "CH1", "GEO-201");
+		store.markArchived("thread-201");
+		// archived_at should NOT filter out
+		expect(store.getThreadByIssue("GEO-201")).toBeDefined();
+		expect(store.getThreadByIssue("GEO-201")!.thread_id).toBe("thread-201");
+	});
+
+	it("markDiscordMissing clears sessions.thread_id", () => {
+		store.upsertSession(
+			makeSession({
+				execution_id: "exec-miss-1",
+				issue_id: "GEO-202",
+				status: "running",
+			}),
+		);
+		store.upsertThread("thread-202", "CH1", "GEO-202");
+		store.setSessionThreadId("exec-miss-1", "thread-202");
+		expect(store.getSession("exec-miss-1")!.thread_id).toBe("thread-202");
+
+		store.markDiscordMissing("thread-202");
+		expect(store.getSession("exec-miss-1")!.thread_id).toBeUndefined();
+	});
+
+	it("markDiscordMissing writes timestamp", () => {
+		store.upsertThread("thread-203", "CH1", "GEO-203");
+		store.markDiscordMissing("thread-203");
+		// Verify via raw SQL that discord_missing_at is set
+		const stmt = store.db.prepare(
+			"SELECT discord_missing_at FROM conversation_threads WHERE thread_id = ?",
+		);
+		stmt.bind(["thread-203"]);
+		expect(stmt.step()).toBe(true);
+		const row = stmt.getAsObject() as Record<string, unknown>;
+		stmt.free();
+		expect(row.discord_missing_at).toBeTruthy();
+	});
+
+	it("markDiscordMissing is idempotent", () => {
+		store.upsertThread("thread-204", "CH1", "GEO-204");
+		store.markDiscordMissing("thread-204");
+		store.markDiscordMissing("thread-204");
+		expect(store.getThreadByIssue("GEO-204")).toBeUndefined();
+	});
+
+	it("getThreadIssue returns undefined for discord_missing thread", () => {
+		store.upsertThread("thread-205", "CH1", "GEO-205");
+		expect(store.getThreadIssue("thread-205")).toBe("GEO-205");
+
+		store.markDiscordMissing("thread-205");
+		expect(store.getThreadIssue("thread-205")).toBeUndefined();
+	});
+
+	it("getEligibleForCleanup excludes discord_missing threads", () => {
+		// Set up a completed session with a thread
+		store.upsertSession(
+			makeSession({
+				execution_id: "exec-cleanup-1",
+				issue_id: "GEO-206",
+				status: "completed",
+				last_activity_at: "2020-01-01 00:00:00",
+			}),
+		);
+		store.upsertThread("thread-206", "CH1", "GEO-206");
+
+		// Should be eligible before marking missing
+		const before = store.getEligibleForCleanup(1);
+		expect(before.some((c) => c.thread_id === "thread-206")).toBe(true);
+
+		// After marking missing, should be excluded
+		store.markDiscordMissing("thread-206");
+		const after = store.getEligibleForCleanup(1);
+		expect(after.some((c) => c.thread_id === "thread-206")).toBe(false);
+	});
 });

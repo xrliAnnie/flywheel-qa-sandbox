@@ -6,6 +6,7 @@
  */
 
 import type { StateStore } from "../StateStore.js";
+import { validateThreadExists } from "./thread-validator.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 
@@ -40,10 +41,26 @@ export class ForumPostCreator {
 	 * Idempotent — skips if a thread is already mapped for this issue.
 	 */
 	async ensureForumPost(ctx: ForumPostContext): Promise<ForumPostResult> {
-		// Already has a thread — skip
+		// Already has a thread — validate it still exists (GEO-200 defense-in-depth)
 		const existing = this.store.getThreadByIssue(ctx.issueId);
 		if (existing) {
-			return { created: false, threadId: existing.thread_id };
+			if (ctx.discordBotToken) {
+				const valid = await validateThreadExists(
+					existing.thread_id,
+					ctx.discordBotToken,
+					{ markDiscordMissing: (id) => this.store.markDiscordMissing(id) },
+				);
+				if (!valid) {
+					console.warn(
+						`[ForumPostCreator] Thread ${existing.thread_id} missing from Discord, creating new`,
+					);
+					// Fall through to create new thread
+				} else {
+					return { created: false, threadId: existing.thread_id };
+				}
+			} else {
+				return { created: false, threadId: existing.thread_id };
+			}
 		}
 
 		if (!ctx.discordBotToken) {
