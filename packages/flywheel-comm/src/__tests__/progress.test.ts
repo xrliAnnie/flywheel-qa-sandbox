@@ -128,6 +128,17 @@ describe("progress system (GEO-292)", () => {
 			db2.close();
 		});
 
+		it("should return null when DB does not exist (best-effort)", () => {
+			const result = progress({
+				execId: "exec-1",
+				stage: "brainstorm",
+				status: "started",
+				dbPath: join(tmpDir, "nonexistent", "comm.db"),
+			});
+
+			expect(result).toBeNull();
+		});
+
 		it("should return null when no session found", () => {
 			// Create DB but no session
 			const db = new CommDB(dbPath);

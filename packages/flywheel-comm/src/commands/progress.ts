@@ -27,7 +27,14 @@ export function progress(args: ProgressArgs): string | null {
 		);
 	}
 
-	const db = new CommDB(args.dbPath, false);
+	let db: CommDB;
+	try {
+		db = new CommDB(args.dbPath, false);
+	} catch {
+		// DB doesn't exist or can't be opened — silently skip (best-effort reporting)
+		return null;
+	}
+
 	try {
 		const session = db.getSession(args.execId);
 		if (!session || !session.lead_id) {
