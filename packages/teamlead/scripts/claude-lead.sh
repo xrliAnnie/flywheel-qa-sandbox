@@ -376,7 +376,8 @@ log "Auto-compact threshold: ${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE}%"
 send_bootstrap() {
   log "Sending bootstrap for ${LEAD_ID}..."
   local token="${TEAMLEAD_API_TOKEN:-}"
-  local args=(-s -X POST "${BRIDGE_URL}/api/bootstrap/${LEAD_ID}" -H "Content-Type: application/json" --max-time 10 -w '\n%{http_code}')
+  # GEO-203: Increased timeout from 10→15s to account for dual-bucket memory recall
+  local args=(-s -X POST "${BRIDGE_URL}/api/bootstrap/${LEAD_ID}" -H "Content-Type: application/json" --max-time 15 -w '\n%{http_code}')
   [ -n "$token" ] && args+=(-H "Authorization: Bearer ${token}")
 
   local response

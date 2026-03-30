@@ -183,10 +183,10 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 			sections.push("");
 		}
 
-		// Memory recall
+		// Memory recall (GEO-203: pass through — truncation handled by bootstrap-generator)
 		if (snapshot.memoryRecall) {
 			sections.push("### Memory Recall");
-			sections.push(snapshot.memoryRecall.slice(0, 500));
+			sections.push(snapshot.memoryRecall);
 			sections.push("");
 		}
 

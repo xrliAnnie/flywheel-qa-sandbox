@@ -669,7 +669,8 @@ describe("validateMemoryIds", () => {
 					match: { labels: ["Operations"] },
 				},
 			],
-			memoryAllowedUsers: ["annie"],
+			// GEO-203: dual-bucket — lead IDs (private) + project name (shared)
+			memoryAllowedUsers: ["annie", "product-lead", "ops-lead", "geoforge3d"],
 		},
 		{
 			projectName: "no-memory-project",
@@ -739,6 +740,86 @@ describe("validateMemoryIds", () => {
 			projects,
 			"no-memory-project",
 			"eng-lead",
+			"annie",
+		);
+		expect(result.valid).toBe(false);
+		if (!result.valid) {
+			expect(result.error).toContain("memory not configured");
+		}
+	});
+
+	// GEO-203: dual-bucket — optional agentId tests
+	it("valid: agentId=undefined + userId=geoforge3d (shared bucket search)", () => {
+		const result = validateMemoryIds(
+			projects,
+			"geoforge3d",
+			undefined,
+			"geoforge3d",
+		);
+		expect(result).toEqual({ valid: true });
+	});
+
+	it("valid: agentId=undefined + userId=product-lead (private bucket search)", () => {
+		const result = validateMemoryIds(
+			projects,
+			"geoforge3d",
+			undefined,
+			"product-lead",
+		);
+		expect(result).toEqual({ valid: true });
+	});
+
+	it("invalid: agentId=undefined + userId=unknown-user (optional agentId does NOT relax user allowlist)", () => {
+		const result = validateMemoryIds(
+			projects,
+			"geoforge3d",
+			undefined,
+			"unknown-user",
+		);
+		expect(result.valid).toBe(false);
+		if (!result.valid) {
+			expect(result.error).toContain("unknown user_id");
+		}
+	});
+
+	it("valid: agentId=product-lead + userId=product-lead (private bucket with agent)", () => {
+		const result = validateMemoryIds(
+			projects,
+			"geoforge3d",
+			"product-lead",
+			"product-lead",
+		);
+		expect(result).toEqual({ valid: true });
+	});
+
+	it("valid: agentId=product-lead + userId=geoforge3d (shared bucket with agent)", () => {
+		const result = validateMemoryIds(
+			projects,
+			"geoforge3d",
+			"product-lead",
+			"geoforge3d",
+		);
+		expect(result).toEqual({ valid: true });
+	});
+
+	it("invalid: agentId=unknown-agent + userId=geoforge3d (agent not in leads)", () => {
+		const result = validateMemoryIds(
+			projects,
+			"geoforge3d",
+			"unknown-agent",
+			"geoforge3d",
+		);
+		expect(result.valid).toBe(false);
+		if (!result.valid) {
+			expect(result.error).toContain("unknown agent_id");
+		}
+	});
+
+	it("invalid: memoryAllowedUsers missing, regardless of agentId", () => {
+		const result = validateMemoryIds(
+			projects,
+			"no-memory-project",
+			undefined,
 			"annie",
 		);
 		expect(result.valid).toBe(false);
