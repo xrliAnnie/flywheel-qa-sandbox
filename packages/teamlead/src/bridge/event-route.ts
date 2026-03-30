@@ -13,6 +13,7 @@ import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
+import { validateThreadExists } from "./thread-validator.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 interface IngestEvent {
@@ -188,14 +189,43 @@ export function createEventRouter(
 					// Inherit existing thread for this issue (retry/reopen reuses thread)
 					const existingThread = store.getThreadByIssue(event.issue_id);
 					if (existingThread) {
-						store.setSessionThreadId(
-							event.execution_id,
-							existingThread.thread_id,
+						// GEO-200: Validate thread still exists in Discord before inheriting
+						const { lead: valLead } = resolveLeadForIssue(
+							projects,
+							event.project_name,
+							eventLabels,
 						);
-						store.clearArchived(existingThread.thread_id);
-					} else if (forumPostCreator) {
-						// GEO-195: Bridge auto-creates Forum Post when no thread exists.
-						// Previously only OpenClaw Lead did this; Claude Lead can't (no thread-create).
+						const botToken =
+							valLead.botToken ?? config.discordBotToken;
+						let threadValid = true;
+						if (botToken) {
+							threadValid = await validateThreadExists(
+								existingThread.thread_id,
+								botToken,
+								{
+									markDiscordMissing: (id) =>
+										store.markDiscordMissing(id),
+								},
+							);
+						}
+						if (threadValid) {
+							store.setSessionThreadId(
+								event.execution_id,
+								existingThread.thread_id,
+							);
+							store.clearArchived(existingThread.thread_id);
+						} else {
+							console.warn(
+								`[event-route] Thread ${existingThread.thread_id} missing from Discord, will create new`,
+							);
+						}
+					}
+
+					// ForumPostCreator: fire-and-forget (preserves EventFilter notification semantics)
+					if (
+						!store.getSession(event.execution_id)?.thread_id &&
+						forumPostCreator
+					) {
 						const { lead: fpLead } = resolveLeadForIssue(
 							projects,
 							event.project_name,

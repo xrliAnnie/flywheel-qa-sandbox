@@ -85,12 +85,15 @@ CEO uses issue identifiers (e.g., "GEO-95" or "FLY-1"), not execution IDs. Alway
 
 ## Forum Thread Links
 
-When discussing an issue in Chat, include a link to its Forum Thread when available:
+When discussing an issue in Chat, include a link to its Forum Thread
+when available:
 
 - Query: `GET /api/sessions?mode=by_identifier&identifier={ISSUE-ID}`
-- If `thread_id` exists: append `https://discord.com/channels/{guild_id}/{thread_id}`
-- If no `thread_id`: skip the link (session just started, no Forum Post yet)
+- If `thread_id` exists in response:
+  append `https://discord.com/channels/{guild_id}/{thread_id}`
+- If no `thread_id`: skip the link (thread not created yet)
 - Get guild_id from `GET /api/config/discord-guild-id`
+- If guild_id unavailable: skip the link entirely
 
 ## What You Cannot Do
 

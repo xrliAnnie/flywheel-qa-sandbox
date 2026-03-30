@@ -65,8 +65,10 @@ GET /api/sessions?mode=by_identifier&identifier={ISSUE-ID}
   Returns session by issue identifier
 ```
 
-Response includes `thread_id` — use for Forum Thread links:
+Response includes `thread_id` (if available) — use for Forum links:
 `https://discord.com/channels/{guild_id}/{thread_id}`
+Note: `thread_id` is only present when a valid Forum Thread exists.
+If absent, the thread has not been created yet.
 
 ### Session Capture (GEO-262)
 

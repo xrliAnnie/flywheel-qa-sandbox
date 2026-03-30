@@ -917,4 +917,86 @@ describe("GEO-259: leadId filtering on query routes", () => {
 		expect(body.can_execute).toBe(true);
 		expect(body.execution_id).toBe("drift-old-prod");
 	});
+
+	// --- GEO-200: by_identifier thread fallback ---
+
+	it("GET /api/sessions?mode=by_identifier includes thread_id fallback from conversation_threads", async () => {
+		store.upsertSession({
+			execution_id: "e-fallback",
+			issue_id: "i-fallback",
+			project_name: "p",
+			status: "running",
+			issue_identifier: "GEO-200",
+		});
+		// Session has no thread_id, but conversation_threads does
+		store.upsertThread("thread-fb-200", "forum-ch", "i-fallback");
+
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-200`,
+		);
+		const body = await res.json();
+		expect(body.count).toBe(1);
+		expect(body.sessions[0].thread_id).toBe("thread-fb-200");
+	});
+
+	it("GET /api/sessions?mode=by_identifier skips discord_missing thread in fallback", async () => {
+		store.upsertSession({
+			execution_id: "e-missing",
+			issue_id: "i-missing",
+			project_name: "p",
+			status: "running",
+			issue_identifier: "GEO-201",
+		});
+		store.upsertThread("thread-miss", "forum-ch", "i-missing");
+		store.markDiscordMissing("thread-miss");
+
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-201`,
+		);
+		const body = await res.json();
+		expect(body.count).toBe(1);
+		// thread_id should not be present (discord_missing_at filters it)
+		expect(body.sessions[0].thread_id).toBeUndefined();
+	});
+
+	it("GET /api/sessions/:id skips discord_missing thread in fallback", async () => {
+		store.upsertSession({
+			execution_id: "e-miss-id",
+			issue_id: "i-miss-id",
+			project_name: "p",
+			status: "running",
+			issue_identifier: "GEO-202",
+		});
+		store.upsertThread("thread-miss-id", "forum-ch", "i-miss-id");
+		store.markDiscordMissing("thread-miss-id");
+
+		const res = await fetch(`${baseUrl}/api/sessions/e-miss-id`);
+		const body = await res.json();
+		// thread_id should not be present
+		expect(body.thread_id).toBeUndefined();
+	});
+
+	it("session thread_id cleared after markDiscordMissing", async () => {
+		store.upsertSession({
+			execution_id: "e-stale",
+			issue_id: "i-stale",
+			project_name: "p",
+			status: "running",
+			issue_identifier: "GEO-203",
+		});
+		store.upsertThread("thread-stale", "forum-ch", "i-stale");
+		store.setSessionThreadId("e-stale", "thread-stale");
+
+		// Verify session has thread_id before cleanup
+		let res = await fetch(`${baseUrl}/api/sessions/e-stale`);
+		let body = await res.json();
+		expect(body.thread_id).toBe("thread-stale");
+
+		// Mark as missing — clears sessions.thread_id
+		store.markDiscordMissing("thread-stale");
+
+		res = await fetch(`${baseUrl}/api/sessions/e-stale`);
+		body = await res.json();
+		expect(body.thread_id).toBeUndefined();
+	});
 });

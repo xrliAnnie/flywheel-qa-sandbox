@@ -697,3 +697,215 @@ describe("Event route — no-forum lead (GEO-275)", () => {
 		expect(payload.chat_channel).toBe("core-channel");
 	});
 });
+
+// GEO-200: Thread validation regression tests
+describe("Event route — thread validation (GEO-200)", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+	let capturedEnvelopes: LeadEventEnvelope[];
+	const tagMap: Record<string, string[]> = {
+		running: ["tag-running"],
+	};
+
+	const mockFetchGeo200 = vi.fn();
+
+	beforeEach(async () => {
+		vi.stubGlobal("fetch", mockFetchGeo200);
+
+		const mock = createMockRegistry();
+		capturedEnvelopes = mock.envelopes;
+
+		store = await StateStore.create(":memory:");
+		const config = makeConfig({
+			discordBotToken: "bot-token",
+		});
+		const eventFilter = new EventFilter();
+		const forumTagUpdater = new ForumTagUpdater(tagMap);
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			config,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			eventFilter,
+			forumTagUpdater,
+			mock.registry,
+		);
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+	});
+
+	afterEach(async () => {
+		vi.unstubAllGlobals();
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		store.close();
+	});
+
+	function postEvent(overrides: Record<string, unknown> = {}) {
+		// Use the real fetch for HTTP calls to the local test server
+		const realFetch = mockFetchGeo200;
+		return realFetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent(overrides)),
+		});
+	}
+
+	it("session_started + valid existing thread → inherit thread_id (forum_only)", async () => {
+		store.upsertThread("thread-valid", "channel-1", "issue-1");
+
+		// Mock Discord API validation: 200 (thread exists)
+		// The test server fetch calls also go through mockFetchGeo200
+		mockFetchGeo200.mockImplementation(async (url: string, opts?: any) => {
+			if (
+				typeof url === "string" &&
+				url.includes("discord.com/api/v10/channels/thread-valid")
+			) {
+				return { status: 200 };
+			}
+			// Real HTTP for local test server
+			return globalThis.fetch(url, opts);
+		});
+
+		// Need to restore real fetch for the HTTP call
+		vi.unstubAllGlobals();
+		// Re-seed fetch mock that delegates to real fetch for non-Discord URLs
+		const originalFetch = globalThis.fetch;
+		vi.stubGlobal("fetch", async (url: string, opts?: any) => {
+			if (
+				typeof url === "string" &&
+				url.includes("discord.com/api/v10/channels/")
+			) {
+				return { status: 200 };
+			}
+			return originalFetch(url, opts);
+		});
+
+		const res = await originalFetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent()),
+		});
+		expect(res.status).toBe(200);
+		await new Promise((r) => setTimeout(r, 150));
+
+		// Thread inherited → session.thread_id set → forum_only → NOT delivered
+		expect(capturedEnvelopes.length).toBe(0);
+		const session = store.getSession("exec-1");
+		expect(session?.thread_id).toBe("thread-valid");
+	});
+
+	it("session_started + deleted thread (404) → no inherit, notify_agent", async () => {
+		store.upsertThread("thread-deleted", "channel-1", "issue-1");
+
+		vi.unstubAllGlobals();
+		const originalFetch = globalThis.fetch;
+		vi.stubGlobal("fetch", async (url: string, opts?: any) => {
+			if (
+				typeof url === "string" &&
+				url.includes("discord.com/api/v10/channels/")
+			) {
+				return { status: 404 };
+			}
+			return originalFetch(url, opts);
+		});
+
+		const res = await originalFetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent()),
+		});
+		expect(res.status).toBe(200);
+		await new Promise((r) => setTimeout(r, 150));
+
+		// Thread not inherited → notify_agent (Lead gets notified)
+		expect(capturedEnvelopes.length).toBe(1);
+		expect(capturedEnvelopes[0]!.event.event_type).toBe("session_started");
+		// session should NOT have thread_id
+		const session = store.getSession("exec-1");
+		expect(session?.thread_id).toBeUndefined();
+		// conversation_threads marked as missing
+		expect(store.getThreadByIssue("issue-1")).toBeUndefined();
+	});
+
+	it("session_started + no existing thread → notify_agent", async () => {
+		// No thread seeded
+		vi.unstubAllGlobals();
+		const originalFetch = globalThis.fetch;
+		vi.stubGlobal("fetch", async (url: string, opts?: any) => {
+			return originalFetch(url, opts);
+		});
+
+		const res = await originalFetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent()),
+		});
+		expect(res.status).toBe(200);
+		await new Promise((r) => setTimeout(r, 150));
+
+		// No thread → notify_agent
+		expect(capturedEnvelopes.length).toBe(1);
+		expect(capturedEnvelopes[0]!.event.event_type).toBe("session_started");
+	});
+
+	it("markDiscordMissing clears sessions.thread_id for all sessions with that thread", async () => {
+		store.upsertThread("thread-stale", "channel-1", "issue-1");
+
+		// Create session manually with thread_id pre-set
+		store.upsertSession({
+			execution_id: "exec-old",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "completed",
+		});
+		store.setSessionThreadId("exec-old", "thread-stale");
+		expect(store.getSession("exec-old")?.thread_id).toBe("thread-stale");
+
+		vi.unstubAllGlobals();
+		const originalFetch = globalThis.fetch;
+		vi.stubGlobal("fetch", async (url: string, opts?: any) => {
+			if (
+				typeof url === "string" &&
+				url.includes("discord.com/api/v10/channels/")
+			) {
+				return { status: 404 };
+			}
+			return originalFetch(url, opts);
+		});
+
+		const res = await originalFetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent()),
+		});
+		expect(res.status).toBe(200);
+		await new Promise((r) => setTimeout(r, 150));
+
+		// Old session's thread_id should be cleared by markDiscordMissing
+		expect(store.getSession("exec-old")?.thread_id).toBeUndefined();
+	});
+});

@@ -305,6 +305,15 @@ export class StateStore {
 			/* exists */
 		}
 
+		// GEO-200: Track threads that no longer exist in Discord
+		try {
+			this.db.run(
+				"ALTER TABLE conversation_threads ADD COLUMN discord_missing_at TEXT",
+			);
+		} catch {
+			/* exists */
+		}
+
 		// Rebuild unique index with current column name
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
 		// Ensure one issue = one canonical thread: clean up historical duplicates
@@ -810,7 +819,7 @@ export class StateStore {
 
 	getThreadIssue(threadId: string): string | undefined {
 		const stmt = this.db.prepare(
-			"SELECT issue_id FROM conversation_threads WHERE thread_id = ?",
+			"SELECT issue_id FROM conversation_threads WHERE thread_id = ? AND discord_missing_at IS NULL",
 		);
 		stmt.bind([threadId]);
 		if (stmt.step()) {
@@ -826,7 +835,7 @@ export class StateStore {
 		issueId: string,
 	): { thread_id: string; channel: string } | undefined {
 		const stmt = this.db.prepare(
-			"SELECT thread_id, channel FROM conversation_threads WHERE issue_id = ?",
+			"SELECT thread_id, channel FROM conversation_threads WHERE issue_id = ? AND discord_missing_at IS NULL",
 		);
 		stmt.bind([issueId]);
 		if (stmt.step()) {
@@ -1048,7 +1057,7 @@ export class StateStore {
 			) latest ON latest.issue_id = ct.issue_id AND latest.rn = 1
 			WHERE latest.status IN ('completed', 'approved')
 				AND latest.last_activity_at < datetime('now', '-' || ? || ' minutes')
-				AND ct.thread_id IS NOT NULL AND ct.archived_at IS NULL
+				AND ct.thread_id IS NOT NULL AND ct.archived_at IS NULL AND ct.discord_missing_at IS NULL
 			ORDER BY latest.last_activity_at ASC
 		`);
 		stmt.bind([thresholdMinutes]);
@@ -1083,6 +1092,20 @@ export class StateStore {
 	clearArchived(threadId: string): void {
 		this.db.run(
 			"UPDATE conversation_threads SET archived_at = NULL, cleanup_notified_at = NULL WHERE thread_id = ?",
+			[threadId],
+		);
+		this.save();
+	}
+
+	/** GEO-200: Mark thread as no longer existing in Discord + clear all session references. */
+	markDiscordMissing(threadId: string): void {
+		this.db.run(
+			"UPDATE conversation_threads SET discord_missing_at = datetime('now') WHERE thread_id = ?",
+			[threadId],
+		);
+		// Clear stale session references
+		this.db.run(
+			"UPDATE sessions SET thread_id = NULL WHERE thread_id = ?",
 			[threadId],
 		);
 		this.save();

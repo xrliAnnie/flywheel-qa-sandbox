@@ -65,8 +65,10 @@ describe("ForumPostCreator (GEO-195)", () => {
 		expect(thread?.thread_id).toBe("thread-new-123");
 	});
 
-	it("skips if thread already exists (idempotent)", async () => {
+	it("skips if thread already exists and is valid (idempotent)", async () => {
 		store.upsertThread("existing-thread", "forum-ch-1", "issue-1");
+		// GEO-200: validation GET returns 200
+		mockFetch.mockResolvedValueOnce({ status: 200 });
 
 		const result = await creator.ensureForumPost({
 			forumChannelId: "forum-ch-1",
@@ -78,7 +80,9 @@ describe("ForumPostCreator (GEO-195)", () => {
 
 		expect(result.created).toBe(false);
 		expect(result.threadId).toBe("existing-thread");
-		expect(mockFetch).not.toHaveBeenCalled();
+		// Only the validation call, no thread creation POST
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		expect(mockFetch.mock.calls[0][0]).toContain("/channels/existing-thread");
 	});
 
 	it("returns error when no bot token", async () => {
@@ -206,5 +210,107 @@ describe("ForumPostCreator (GEO-195)", () => {
 
 		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
 		expect(body.applied_tags).toEqual(["explicit-tag"]);
+	});
+});
+
+describe("ForumPostCreator thread validation (GEO-200)", () => {
+	let store: StateStore;
+	let creator: ForumPostCreator;
+
+	beforeEach(async () => {
+		vi.clearAllMocks();
+		store = await StateStore.create(":memory:");
+		creator = new ForumPostCreator(store, STATUS_TAG_MAP);
+
+		store.upsertSession({
+			execution_id: "exec-v1",
+			issue_id: "issue-v1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+		// Seed existing thread
+		store.upsertThread("thread-old", "forum-ch-1", "issue-v1");
+	});
+
+	afterEach(() => {
+		store.close();
+		vi.restoreAllMocks();
+	});
+
+	it("validates existing thread (200) → reuse without creating new", async () => {
+		// First call: GET /channels/thread-old → 200 (thread exists)
+		mockFetch.mockResolvedValueOnce({ status: 200 });
+
+		const result = await creator.ensureForumPost({
+			forumChannelId: "forum-ch-1",
+			issueId: "issue-v1",
+			executionId: "exec-v1",
+			status: "running",
+			discordBotToken: "bot-token",
+		});
+
+		expect(result.created).toBe(false);
+		expect(result.threadId).toBe("thread-old");
+		// Only the validation GET, no POST to create
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+		expect(mockFetch.mock.calls[0][0]).toContain("/channels/thread-old");
+	});
+
+	it("creates new thread when existing is deleted (404)", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		// First call: GET /channels/thread-old → 404
+		mockFetch.mockResolvedValueOnce({ status: 404 });
+		// Second call: POST to create new thread
+		mockFetch.mockResolvedValueOnce({
+			ok: true,
+			json: () => Promise.resolve({ id: "thread-new-200" }),
+		});
+
+		const result = await creator.ensureForumPost({
+			forumChannelId: "forum-ch-1",
+			issueId: "issue-v1",
+			issueIdentifier: "GEO-200",
+			issueTitle: "Fix thread",
+			executionId: "exec-v1",
+			status: "running",
+			discordBotToken: "bot-token",
+		});
+
+		expect(result.created).toBe(true);
+		expect(result.threadId).toBe("thread-new-200");
+		// markDiscordMissing should have been called
+		expect(store.getThreadByIssue("issue-v1")?.thread_id).toBe(
+			"thread-new-200",
+		);
+		warnSpy.mockRestore();
+	});
+
+	it("fail-open on network error → reuse existing", async () => {
+		mockFetch.mockRejectedValueOnce(new Error("ECONNREFUSED"));
+
+		const result = await creator.ensureForumPost({
+			forumChannelId: "forum-ch-1",
+			issueId: "issue-v1",
+			executionId: "exec-v1",
+			status: "running",
+			discordBotToken: "bot-token",
+		});
+
+		expect(result.created).toBe(false);
+		expect(result.threadId).toBe("thread-old");
+	});
+
+	it("no bot token → skip validation, reuse existing", async () => {
+		const result = await creator.ensureForumPost({
+			forumChannelId: "forum-ch-1",
+			issueId: "issue-v1",
+			executionId: "exec-v1",
+			status: "running",
+			// no discordBotToken
+		});
+
+		expect(result.created).toBe(false);
+		expect(result.threadId).toBe("thread-old");
+		expect(mockFetch).not.toHaveBeenCalled();
 	});
 });

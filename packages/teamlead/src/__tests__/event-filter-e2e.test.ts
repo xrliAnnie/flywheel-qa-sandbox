@@ -200,12 +200,15 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		// Agent should NOT be notified (forum_only)
 		expect(capturedEnvelopes.length).toBe(0);
 
-		// Discord API should be called to update Forum tag
-		const discordTagCalls = discordCalls.filter((c) =>
+		// Discord API should be called: 1 validation GET (GEO-200) + 1 tag PATCH
+		const discordThreadCalls = discordCalls.filter((c) =>
 			c.url.includes("channels/thread-abc"),
 		);
-		expect(discordTagCalls.length).toBe(1);
-		expect(discordTagCalls[0].body).toEqual({ applied_tags: ["tag-running"] });
+		expect(discordThreadCalls.length).toBe(2);
+		// The tag update call has a body with applied_tags
+		const tagUpdateCall = discordThreadCalls.find((c) => c.body?.applied_tags);
+		expect(tagUpdateCall).toBeDefined();
+		expect(tagUpdateCall!.body).toEqual({ applied_tags: ["tag-running"] });
 	});
 
 	// ── Scenario 3: session_completed + needs_review → notify_agent (high) ──
