@@ -67,6 +67,8 @@ Current version: see `doc/VERSION`
 | GEO-288: Daily Standup v2 — system status + cron trigger | ✅ Merged (PR #70, GeoForge3D PR #105) |
 | GEO-285: Lead Context Window — crash recovery + PostCompact hook | ✅ Merged (PR #68) |
 | GEO-254: flywheel-comm E2E integration tests | ✅ Merged (PR #71) |
+| GEO-302: Fix CI lint failures (biome formatting) | ✅ Merged (PR #73) |
+| GEO-200: Forum Thread link "unknown" — thread validation + stale cleanup | ✅ Merged (PR #75) |
 
 ## Doc Structure & Lifecycle
 
