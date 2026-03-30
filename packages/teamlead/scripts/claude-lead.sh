@@ -2,6 +2,8 @@
 # GEO-195: Manual supervisor script for Claude Lead session.
 # GEO-234: Agent file + flywheel-comm integration.
 # GEO-246: Parameterized for multi-lead — supports any agent name.
+# GEO-285: Crash recovery loop + auto session ID + graceful shutdown
+#          + PostCompact hook for bootstrap re-send after auto-compact.
 # GEO-286: Per-Lead workspace subdirectory. Claude Code walks up to load
 #   project CLAUDE.md, so subdirectory still gets full project context.
 #
@@ -45,7 +47,8 @@
 #   DISCORD_BOT_TOKEN=$SIMBA_BOT_TOKEN \
 #     ./scripts/claude-lead.sh cos-lead /path/to/geoforge3d geoforge3d
 #
-# On crash: up-arrow + enter to restart.
+# The supervisor automatically restarts Claude on crash with exponential
+# backoff. Use Ctrl+C or SIGTERM for graceful shutdown.
 #
 # flywheel-comm CLI commands (available via $FLYWHEEL_COMM_CLI):
 #   Check pending Runner questions:
@@ -60,12 +63,35 @@
 #     node "$FLYWHEEL_COMM_CLI" capture --exec-id <exec-id>
 set -euo pipefail
 
+# ════════════════════════════════════════════════════════════════
+# Layer 1: One-time Preflight
+# ════════════════════════════════════════════════════════════════
+
+# ── Utility functions ───────────────────────────────────────────
+log() {
+  echo "[lead] $(date '+%H:%M:%S') $*"
+}
+
+# Interruptible sleep: runs sleep in the background so SIGINT/SIGTERM
+# can set SHOULD_EXIT during the wait. Falls through immediately if
+# the shell receives a signal while waiting. Tracks sleep PID to avoid
+# orphaned sleep processes on signal delivery.
+interruptible_sleep() {
+  local _sleep_pid
+  sleep "$1" &
+  _sleep_pid=$!
+  wait $_sleep_pid 2>/dev/null || true
+  # If we were interrupted by a signal, kill the sleep child
+  kill $_sleep_pid 2>/dev/null || true
+}
+
+
 # ── Parse arguments and export for agent prompt ──────────────
 export LEAD_ID="${1:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>]}"
 # GEO-246: Validate LEAD_ID format to prevent path traversal.
 # Only lowercase alphanumeric and hyphens allowed (e.g., "product-lead", "ops-lead").
 if [[ ! "$LEAD_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
-  echo "[lead] ERROR: Invalid lead-id '${LEAD_ID}'. Must match [a-z0-9][a-z0-9-]*"
+  log "ERROR: Invalid lead-id '${LEAD_ID}'. Must match [a-z0-9][a-z0-9-]*"
   exit 1
 fi
 # Normalize PROJECT_DIR: expand ~ and resolve to absolute path.
@@ -82,7 +108,7 @@ export TEAMLEAD_API_TOKEN="${TEAMLEAD_API_TOKEN:-}"
 # Each lead gets its own .env (bot token) and access.json (channel list).
 # Default: ~/.claude/channels/discord-<lead-id>/
 export DISCORD_STATE_DIR="${DISCORD_STATE_DIR:-${HOME}/.claude/channels/discord-${LEAD_ID}}"
-echo "[lead] Discord state: ${DISCORD_STATE_DIR}"
+log "Discord state: ${DISCORD_STATE_DIR}"
 SESSION_DIR="${HOME}/.flywheel/claude-sessions"
 # GEO-246: SESSION_ID_FILE set after PROJECT_NAME resolution (below)
 # to include project name and avoid cross-project session collisions.
@@ -149,14 +175,24 @@ export FLYWHEEL_COMM_DB="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
 COMM_DIST_DIR="${SCRIPT_DIR}/../../flywheel-comm/dist"
 if [ -f "${COMM_DIST_DIR}/index.js" ]; then
   export FLYWHEEL_COMM_CLI="$(cd "$COMM_DIST_DIR" && pwd)/index.js"
-  echo "[lead] Comm CLI: ${FLYWHEEL_COMM_CLI}"
+  log "Comm CLI: ${FLYWHEEL_COMM_CLI}"
 else
-  echo "[lead] WARNING: flywheel-comm not built. Runner communication disabled."
-  echo "[lead] Lead will still handle Discord events and CEO commands."
-  echo "[lead] Run 'pnpm -r build' to enable Runner communication."
+  log "WARNING: flywheel-comm not built. Runner communication disabled."
+  log "Lead will still handle Discord events and Annie commands."
+  log "Run 'pnpm -r build' to enable Runner communication."
 fi
 mkdir -p "$(dirname "$FLYWHEEL_COMM_DB")"
-echo "[lead] Comm DB: ${FLYWHEEL_COMM_DB}"
+log "Comm DB: ${FLYWHEEL_COMM_DB}"
+
+# ── Workspace isolation ──────────────────────────────────────
+# GEO-285: LEAD_WORKSPACE default must be set BEFORE agent source resolution,
+# because the agent file lookup checks LEAD_WORKSPACE/agent.md (set -u safe).
+# Lead runs in an isolated workspace, NOT in the product repo.
+# This reduces risk of accidental code modification via Bash.
+LEAD_WORKSPACE="${LEAD_WORKSPACE:-${HOME}/.flywheel/lead-workspace/${LEAD_ID}}"
+export LEAD_WORKSPACE
+mkdir -p "$LEAD_WORKSPACE"
+log "Working directory: ${LEAD_WORKSPACE} (isolated from product repo)"
 
 # ── Workspace ────────────────────────────────────────────────
 # GEO-286: Per-Lead subdirectory. Claude Code walks up the directory tree
@@ -217,7 +253,7 @@ if [ -f "${AGENT_SOURCE:-}" ]; then
   # cp would follow it and overwrite the symlink target in-place.
   rm -f "$AGENT_TARGET"
   cp "$AGENT_SOURCE" "$AGENT_TARGET"
-  echo "[lead] Agent file installed: ${AGENT_TARGET} (copied from ${AGENT_SOURCE})"
+  log "Agent file installed: ${AGENT_TARGET} (copied from ${AGENT_SOURCE})"
 else
   echo "[lead] ERROR: Agent source not found."
   if [ -n "${AGENT_SOURCE:-}" ]; then
@@ -229,21 +265,8 @@ else
   exit 1
 fi
 
-# ── Bootstrap via Bridge API ─────────────────────────────────
-echo "[lead] Sending bootstrap for ${LEAD_ID}..."
-BRIDGE_TOKEN="${TEAMLEAD_API_TOKEN:-}"
-if [ -n "$BRIDGE_TOKEN" ]; then
-  curl -s -X POST "${BRIDGE_URL}/api/bootstrap/${LEAD_ID}" \
-    -H "Authorization: Bearer ${BRIDGE_TOKEN}" \
-    -H "Content-Type: application/json" || echo "[lead] Bootstrap failed (non-fatal)"
-else
-  curl -s -X POST "${BRIDGE_URL}/api/bootstrap/${LEAD_ID}" \
-    -H "Content-Type: application/json" || echo "[lead] Bootstrap failed (non-fatal)"
-fi
-
-# Wait for bootstrap message to arrive in Discord
-sleep 3
-
+# GEO-285: Bootstrap moved to recovery loop (send_bootstrap function).
+# Only sent on fresh start, not on resume.
 # ── Discord plugin fork integrity check ─────────────────────
 # GEO-296: Ensure Discord plugin is our fork version (with allowBots support).
 # Claude Code may overwrite the cache during plugin updates; this preflight
@@ -254,40 +277,290 @@ CHECK_SCRIPT="${FLYWHEEL_BIN}/check-discord-plugin.sh"
 UPDATE_SCRIPT="${FLYWHEEL_BIN}/update-discord-plugin.sh"
 
 if [ ! -x "$CHECK_SCRIPT" ] || [ ! -x "$UPDATE_SCRIPT" ]; then
-  echo "[lead] ERROR: Discord plugin fork scripts not found or not executable:"
-  echo "[lead]   check:  $CHECK_SCRIPT"
-  echo "[lead]   update: $UPDATE_SCRIPT"
-  echo "[lead] Run GEO-296 setup first. Aborting."
+  log "ERROR: Discord plugin fork scripts not found or not executable:"
+  log "  check:  $CHECK_SCRIPT"
+  log "  update: $UPDATE_SCRIPT"
+  log "Run GEO-296 setup first. Aborting."
   exit 1
 fi
 
 if ! "$CHECK_SCRIPT"; then
-  echo "[lead] Discord plugin cache is not fork version, updating..."
+  log "Discord plugin cache is not fork version, updating..."
   "$UPDATE_SCRIPT"
   # Re-check after update — hard fail if still not matching
   if ! "$CHECK_SCRIPT"; then
-    echo "[lead] ERROR: Discord plugin still not fork version after update. Aborting."
+    log "ERROR: Discord plugin still not fork version after update. Aborting."
     exit 1
   fi
 fi
-echo "[lead] Discord plugin fork check: OK"
+log "Discord plugin fork check: OK"
 
-# ── Launch Claude with agent identity ────────────────────────
+# ── GEO-285: Install PostCompact hook ─────────────────────
+# Requires jq for idempotent JSON merge. Skip gracefully if not installed.
+if ! command -v jq >/dev/null 2>&1; then
+  log "WARNING: jq not found. Skipping PostCompact hook install."
+  log "Install jq to enable automatic bootstrap after auto-compact."
+fi
+install_post_compact_hook() {
+  local src_script
+  src_script="$(cd "$SCRIPT_DIR" && pwd)/post-compact-bootstrap.sh"
+  if [ ! -f "$src_script" ]; then
+    log "WARNING: PostCompact hook source not found: $src_script"
+    return
+  fi
+
+  # Install to stable path (~/.flywheel/bin/) to avoid duplicate entries
+  # when the repo is cloned to different directories or worktrees.
+  local hook_script="${HOME}/.flywheel/bin/post-compact-bootstrap.sh"
+  mkdir -p "$(dirname "$hook_script")"
+  cp "$src_script" "$hook_script"
+  chmod +x "$hook_script"
+
+  # Clean up any old entries pointing to different paths (repo-local copies)
+  # before adding the stable path entry.
+  local settings_file="${HOME}/.claude/settings.json"
+  mkdir -p "$(dirname "$settings_file")"
+
+  local existing
+  if [ -f "$settings_file" ]; then
+    if ! jq empty "$settings_file" 2>/dev/null; then
+      log "WARNING: $settings_file is not valid JSON. Skipping hook install."
+      return
+    fi
+    existing=$(cat "$settings_file")
+  else
+    existing="{}"
+  fi
+
+  local tmpfile
+  tmpfile=$(mktemp "${settings_file}.XXXXXX")
+
+  if ! echo "$existing" | jq --arg cmd "$hook_script" '
+    # Reset PostCompact to array if it exists but is not an array (defensive)
+    .hooks.PostCompact = (if .hooks.PostCompact | type == "array" then .hooks.PostCompact else [] end) |
+    # Remove any old entries whose hooks contain a post-compact-bootstrap.sh command
+    # Uses any() to produce a single boolean (avoids select+generator ambiguity)
+    .hooks.PostCompact = [.hooks.PostCompact[] | select(any(.hooks[]?.command // ""; endswith("post-compact-bootstrap.sh")) | not)] |
+    # Add the stable-path entry if not already present
+    if (.hooks.PostCompact | map(select(any(.hooks[]?.command // ""; . == $cmd))) | length) == 0
+    then .hooks.PostCompact += [{"hooks": [{"type": "command", "command": $cmd}]}]
+    else .
+    end
+  ' > "$tmpfile" 2>/dev/null; then
+    log "WARNING: Failed to merge PostCompact hook into settings. Skipping."
+    rm -f "$tmpfile"
+    return
+  fi
+
+  if ! jq empty "$tmpfile" 2>/dev/null; then
+    log "WARNING: Generated settings JSON is invalid. Skipping hook install."
+    rm -f "$tmpfile"
+    return
+  fi
+
+  mv "$tmpfile" "$settings_file"
+  log "PostCompact hook installed: $hook_script"
+}
+if command -v jq >/dev/null 2>&1; then
+  install_post_compact_hook
+fi
+
+# ── GEO-285: Early auto-compact + env exports ─────────────
+export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
+export FLYWHEEL_LEAD_ID="$LEAD_ID"
+log "Auto-compact threshold: ${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE}%"
+
+# ── Bootstrap function ──────────────────────────────────────
+# GEO-285: Extracted from inline code. Called only on fresh start,
+# NOT on resume (resumed sessions already have context).
+send_bootstrap() {
+  log "Sending bootstrap for ${LEAD_ID}..."
+  local token="${TEAMLEAD_API_TOKEN:-}"
+  local args=(-s -X POST "${BRIDGE_URL}/api/bootstrap/${LEAD_ID}" -H "Content-Type: application/json" --max-time 10 -w '\n%{http_code}')
+  [ -n "$token" ] && args+=(-H "Authorization: Bearer ${token}")
+
+  local response
+  response=$(curl "${args[@]}" 2>/dev/null) || {
+    log "WARNING: Bootstrap request failed (curl error, non-fatal)"
+    interruptible_sleep 3
+    return
+  }
+
+  local http_code
+  http_code=$(echo "$response" | tail -1)
+  if [ "$http_code" -ge 400 ] 2>/dev/null; then
+    log "WARNING: Bootstrap returned HTTP ${http_code} (non-fatal)"
+  fi
+  # Wait for bootstrap message to arrive in Discord
+  interruptible_sleep 3
+}
+
+# ── Graceful shutdown ───────────────────────────────────────
+# GEO-285: PID tracking + signal forwarding.
+# SIGINT (Ctrl+C) in a terminal is delivered to the foreground process group,
+# so Claude receives it directly. But SIGTERM (e.g., kill <supervisor-pid>)
+# only hits the shell — we must forward it to the Claude child process.
+SHOULD_EXIT=0
+CLAUDE_PID=0
+
+cleanup() {
+  SHOULD_EXIT=1
+  log "Shutdown signal received..."
+  if [ "$CLAUDE_PID" -ne 0 ] && kill -0 "$CLAUDE_PID" 2>/dev/null; then
+    log "Forwarding SIGTERM to Claude (PID $CLAUDE_PID)..."
+    kill -TERM "$CLAUDE_PID" 2>/dev/null || true
+    wait "$CLAUDE_PID" 2>/dev/null || true
+  fi
+  # Kill any background jobs not yet captured in CLAUDE_PID (race window)
+  local bg_pids
+  bg_pids=$(jobs -pr 2>/dev/null) || true
+  if [ -n "$bg_pids" ]; then
+    log "Cleaning up uncaptured background processes: $bg_pids"
+    kill -TERM $bg_pids 2>/dev/null || true
+    wait $bg_pids 2>/dev/null || true
+  fi
+  # Exit from trap to prevent main flow from continuing after signal
+  exit 0
+}
+trap cleanup SIGINT SIGTERM
+
+# ── Claude args ─────────────────────────────────────────────
 cd "$LEAD_WORKSPACE"
 
 # Build claude args using bash array (avoids quoting/word-splitting issues)
 CLAUDE_ARGS=(--agent "$LEAD_ID" --channels "plugin:discord@claude-plugins-official")
 
-# Resume if we have a session ID, otherwise start fresh
-if [ -f "$SESSION_ID_FILE" ]; then
-  SESSION_ID=$(cat "$SESSION_ID_FILE")
-  echo "[lead] Resuming session ${SESSION_ID}..."
-  echo "[lead] (To clear session: rm ${SESSION_ID_FILE})"
-  claude "${CLAUDE_ARGS[@]}" --resume "$SESSION_ID"
-else
-  echo "[lead] Starting fresh session..."
-  echo "[lead] After Claude starts, save the session ID with:"
-  echo "[lead]   echo '<session-id>' > ${SESSION_ID_FILE}"
-  echo "[lead] You can find it in ~/.claude/projects/*/sessions/"
-  claude "${CLAUDE_ARGS[@]}"
-fi
+# ════════════════════════════════════════════════════════════════
+# Layer 2: Recovery Loop
+# ════════════════════════════════════════════════════════════════
+
+# GEO-285: Crash recovery with exponential backoff.
+# - Fresh start: generate UUID → bootstrap → save → claude --session-id
+# - Resume: read session ID → claude --resume (no bootstrap)
+# - Crash recovery: backoff → restart
+# - Resume failure: retry-before-delete (3 consecutive quick exits → delete session file)
+# - Graceful shutdown: SIGINT/SIGTERM → forward to Claude child → wait → exit loop
+
+CRASH_COUNT=0
+BACKOFF_SECONDS=(5 15 30 60 60 60)
+RESTART_COUNT=0
+RESUME_FAIL_COUNT=0
+RESUME_FAIL_THRESHOLD=3
+
+log "Supervisor starting (recovery loop enabled)"
+log "Session ID file: ${SESSION_ID_FILE}"
+
+while true; do
+  # ── Check shutdown flag ───────────────────────────────────
+  if [ "$SHOULD_EXIT" -ne 0 ]; then
+    log "Shutdown flag set — exiting supervisor."
+    break
+  fi
+
+  CLAUDE_EXIT=0
+  PROCESS_START_TS=$(date +%s)  # Per-process time (for crash classification)
+  RESTART_COUNT=$((RESTART_COUNT + 1))
+  IS_RESUME=0
+
+  if [ -f "$SESSION_ID_FILE" ]; then
+    # ── Resume existing session ───────────────────────────
+    IS_RESUME=1
+    SESSION_ID=$(cat "$SESSION_ID_FILE")
+    log "[restart #${RESTART_COUNT}] Resuming session ${SESSION_ID}..."
+    log "(To force fresh start: rm ${SESSION_ID_FILE})"
+
+    # Final SIGTERM gate — must be right before fork to close the race window
+    if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
+    claude "${CLAUDE_ARGS[@]}" --resume "$SESSION_ID" &
+    CLAUDE_PID=$!
+  else
+    # ── Fresh start ───────────────────────────────────────
+    SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
+    log "[restart #${RESTART_COUNT}] Fresh start with session ${SESSION_ID}"
+
+    # Bootstrap only on fresh start — resumed sessions already have context
+    send_bootstrap
+
+    # Check shutdown flag after bootstrap (sleep may have been interrupted)
+    if [ "$SHOULD_EXIT" -ne 0 ]; then
+      log "Shutdown during bootstrap — exiting supervisor."
+      break
+    fi
+
+    # Final SIGTERM gate — right before fork. cleanup() now exits the trap,
+    # so signals after this point terminate the script immediately.
+    if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
+    # Fork first, write session file after — avoids orphan session ID if
+    # SIGTERM arrives between gate and fork (cleanup's exit+jobs-pr handles it).
+    claude "${CLAUDE_ARGS[@]}" --session-id "$SESSION_ID" &
+    CLAUDE_PID=$!
+    # Write session file only after successful fork — no orphan on SIGTERM
+    echo "$SESSION_ID" > "$SESSION_ID_FILE"
+  fi
+
+  wait "$CLAUDE_PID" 2>/dev/null || CLAUDE_EXIT=$?
+  CLAUDE_PID=0
+
+  # DURATION = this process's runtime (for crash classification / backoff)
+  DURATION=$(( $(date +%s) - PROCESS_START_TS ))
+
+  # ── Check shutdown flag (may have been set during Claude's run) ──
+  if [ "$SHOULD_EXIT" -ne 0 ]; then
+    log "Shutdown signal received — exiting supervisor. (Claude exit code: ${CLAUDE_EXIT})"
+    break
+  fi
+
+  # ── Classify exit reason ──────────────────────────────────
+  if [ "$CLAUDE_EXIT" -eq 0 ]; then
+    # Normal exit (Claude exited cleanly, but without shutdown signal).
+    # This can happen if Claude's session ends normally.
+    log "Claude exited normally (code 0) after ${DURATION}s. Restarting..."
+    CRASH_COUNT=0
+    # Brief cooldown to prevent hot-loop if Claude keeps exiting immediately
+    sleep 2
+    continue
+  fi
+
+  # Non-zero exit = crash or resume failure
+  CRASH_COUNT=$((CRASH_COUNT + 1))
+  log "Claude crashed (exit code ${CLAUDE_EXIT}) after ${DURATION}s. Crash count: ${CRASH_COUNT}"
+
+  # Resume failure heuristic: retry-before-delete.
+  # Only applies to resume path (IS_RESUME=1). Quick exit (<10s) on resume
+  # MAY indicate session corruption, but could also be a transient fault.
+  # Delete session file only after RESUME_FAIL_THRESHOLD consecutive failures.
+  if [ "$IS_RESUME" -eq 1 ] && [ "$DURATION" -lt 10 ]; then
+    RESUME_FAIL_COUNT=$((RESUME_FAIL_COUNT + 1))
+    log "Quick exit on resume (${DURATION}s) — possible failure (${RESUME_FAIL_COUNT}/${RESUME_FAIL_THRESHOLD})."
+    if [ "$RESUME_FAIL_COUNT" -ge "$RESUME_FAIL_THRESHOLD" ]; then
+      log "Consecutive resume failures reached threshold. Deleting session file for fresh start."
+      rm -f "$SESSION_ID_FILE"
+      RESUME_FAIL_COUNT=0
+    fi
+  else
+    # Successful run (>10s) or fresh start — reset resume failure count
+    RESUME_FAIL_COUNT=0
+  fi
+
+  # Reset crash count if Claude ran for a meaningful duration (>60s).
+  # This prevents crash count from accumulating across unrelated failures.
+  if [ "$DURATION" -gt 60 ]; then
+    CRASH_COUNT=1
+  fi
+
+  # Exponential backoff
+  BACKOFF_IDX=$((CRASH_COUNT - 1))
+  if [ "$BACKOFF_IDX" -ge ${#BACKOFF_SECONDS[@]} ]; then
+    BACKOFF_IDX=$(( ${#BACKOFF_SECONDS[@]} - 1 ))
+  fi
+  BACKOFF=${BACKOFF_SECONDS[$BACKOFF_IDX]}
+
+  if [ "$CRASH_COUNT" -ge 5 ]; then
+    log "WARNING: ${CRASH_COUNT} consecutive crashes. Check Claude CLI health."
+  fi
+
+  log "Waiting ${BACKOFF}s before restart..."
+  interruptible_sleep "$BACKOFF"
+done
+
+log "Supervisor stopped. Total restarts: ${RESTART_COUNT}"
