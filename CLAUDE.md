@@ -66,6 +66,7 @@ Current version: see `doc/VERSION`
 | GEO-280: Sprint closing — Bridge tmux auto-close | ✅ Merged (PR #69) |
 | GEO-288: Daily Standup v2 — system status + cron trigger | ✅ Merged (PR #70, GeoForge3D PR #105) |
 | GEO-285: Lead Context Window — crash recovery + PostCompact hook | ✅ Merged (PR #68) |
+| GEO-254: flywheel-comm E2E integration tests | ✅ Merged (PR #71) |
 
 ## Doc Structure & Lifecycle
 
