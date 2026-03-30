@@ -25,9 +25,11 @@ import { ForumPostCreator } from "./ForumPostCreator.js";
 import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
+import { queryLinearIssues } from "./linear-query.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { OpenClawRuntime } from "./openclaw-runtime.js";
 import { postMergeCleanup } from "./post-merge.js";
+import { createPublishHtmlRouter } from "./publish-html-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
@@ -198,6 +200,11 @@ export class SseBroadcaster {
 	}
 }
 
+/** GEO-294: Options object for new Bridge dependencies (avoids positional arg bloat). */
+export interface BridgeAppOptions {
+	vercelToken?: string;
+}
+
 export function createBridgeApp(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -215,6 +222,7 @@ export function createBridgeApp(
 	startDispatcher?: IStartDispatcher,
 	standupService?: StandupService,
 	standupProjectName?: string,
+	opts?: BridgeAppOptions,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -918,7 +926,7 @@ export function createBridgeApp(
 		},
 	);
 
-	// Linear query proxy — list issues with filters (GEO-276)
+	// Linear query proxy — list issues with filters (GEO-276, refactored GEO-294)
 	app.get(
 		"/api/linear/issues",
 		tokenAuthMiddleware(config.apiToken),
@@ -946,101 +954,22 @@ export function createBridgeApp(
 				? 50
 				: Math.min(Math.max(1, limitRaw), 250);
 
-			// Build Linear GraphQL filter
-			const filter: Record<string, unknown> = {};
-			if (project) {
-				filter.project = { name: { eq: project } };
-			}
-			if (stateParam) {
-				const states = stateParam.split(",").map((s) => s.trim());
-				if (states.length === 1) {
-					filter.state = { type: { eq: states[0] } };
-				} else {
-					filter.state = { type: { in: states } };
-				}
-			}
-			if (labelsParam) {
-				const labels = labelsParam.split(",").map((l) => l.trim());
-				if (labels.length === 1) {
-					filter.labels = { name: { eq: labels[0] } };
-				} else {
-					filter.or = labels.map((name) => ({
-						labels: { name: { eq: name } },
-					}));
-				}
-			}
-
-			const query = `
-				query ListIssues($filter: IssueFilter, $first: Int) {
-					issues(filter: $filter, first: $first, orderBy: updatedAt) {
-						nodes {
-							id
-							identifier
-							title
-							description
-							priority
-							priorityLabel
-							url
-							createdAt
-							updatedAt
-							state { name type }
-							labels { nodes { name } }
-							assignee { name }
-						}
-						pageInfo { hasNextPage endCursor }
-					}
-				}
-			`;
-
 			try {
-				const { LinearClient } = await import("@linear/sdk");
-				const client = new LinearClient({ apiKey: config.linearApiKey });
-				const result = await client.client.rawRequest(query, {
-					filter,
-					first: limit,
+				const result = await queryLinearIssues(config.linearApiKey, {
+					project: project ?? undefined,
+					states: stateParam
+						? stateParam.split(",").map((s) => s.trim())
+						: undefined,
+					labels: labelsParam
+						? labelsParam.split(",").map((l) => l.trim())
+						: undefined,
+					limit,
 				});
 
-				const data = result.data as {
-					issues: {
-						nodes: Array<{
-							id: string;
-							identifier: string;
-							title: string;
-							description: string | null;
-							priority: number;
-							priorityLabel: string;
-							url: string;
-							createdAt: string;
-							updatedAt: string;
-							state: { name: string; type: string };
-							labels: { nodes: Array<{ name: string }> };
-							assignee: { name: string } | null;
-						}>;
-						pageInfo: { hasNextPage: boolean; endCursor: string | null };
-					};
-				};
-
-				const nodes = data.issues.nodes;
-				const issues = nodes.map((n) => ({
-					id: n.id,
-					identifier: n.identifier,
-					title: n.title,
-					description: n.description,
-					priority: n.priority,
-					priorityLabel: n.priorityLabel,
-					state: n.state.name,
-					stateType: n.state.type,
-					labels: n.labels.nodes.map((l) => l.name),
-					assignee: n.assignee?.name ?? null,
-					url: n.url,
-					createdAt: n.createdAt,
-					updatedAt: n.updatedAt,
-				}));
-
 				res.json({
-					issues,
-					count: issues.length,
-					truncated: data.issues.pageInfo.hasNextPage,
+					issues: result.issues,
+					count: result.issues.length,
+					truncated: result.truncated,
 				});
 			} catch (err) {
 				console.error(
@@ -1153,6 +1082,18 @@ export function createBridgeApp(
 		} else {
 			app.use("/api/standup", standupRouter);
 		}
+	}
+
+	// GEO-294: /api/publish-html — generic HTML publishing (Vercel deploy)
+	const publishHtmlRouter = createPublishHtmlRouter(opts?.vercelToken);
+	if (config.apiToken) {
+		app.use(
+			"/api/publish-html",
+			tokenAuthMiddleware(config.apiToken),
+			publishHtmlRouter,
+		);
+	} else {
+		app.use("/api/publish-html", publishHtmlRouter);
 	}
 
 	// Catch-all 404 (must be after all routes)
@@ -1365,6 +1306,12 @@ export async function startBridge(
 		);
 	}
 
+	// GEO-294: Vercel token for HTML publishing
+	const vercelToken = process.env.VERCEL_TOKEN;
+	if (vercelToken) {
+		console.log("[Bridge] HTML publishing configured (Vercel)");
+	}
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -1382,6 +1329,7 @@ export async function startBridge(
 		opts?.startDispatcher,
 		standupService,
 		standupProjectName,
+		{ vercelToken },
 	);
 
 	const server = app.listen(config.port, config.host);
