@@ -112,20 +112,21 @@ For each PR the user approves to ship:
    If CI stuck after 3 attempts, teammate reports failure details and stops.
 
    **B. Post-merge bookkeeping** (all commands from main repo)
-   Derive main repo path from current worktree:
+   Each code block derives the main repo path independently (variables don't persist across blocks):
    ```bash
    MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
-   cd "$MAIN_REPO"
-   git checkout main && git pull origin main
+   cd "$MAIN_REPO" && git checkout main && git pull origin main
    ```
 
    VERSION bump (if first ship of sprint):
    ```bash
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
    cd "$MAIN_REPO" && bash -c 'source .claude/orchestrator/config.sh && current=$(get_feature_version) && if [ "$current" != "{SPRINT_VERSION}" ]; then bump_feature_version minor; fi'
    ```
 
    Update CLAUDE.md milestone table + commit:
    ```bash
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
    cd "$MAIN_REPO"
    # Edit CLAUDE.md to add milestone row
    git add CLAUDE.md doc/VERSION
@@ -142,6 +143,7 @@ For each PR the user approves to ship:
 
    **D. Clean up worktree** (from main repo)
    ```bash
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
    cd "$MAIN_REPO"
    git worktree remove {worktree_path} 2>/dev/null
    git branch -D {branch} 2>/dev/null

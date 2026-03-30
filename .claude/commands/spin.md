@@ -175,7 +175,7 @@ fi
 1. Update CLAUDE.md: add milestone to table, remove from Active Explorations if listed
 2. Update MEMORY.md (local file): move docs from Active to Archived index, mark Done
 3. Update Linear issue status to "Done"
-4. Clean up worktree: `cd "$MAIN_REPO" && git worktree remove ../flywheel-geo-{XX}`
+4. Clean up worktree: `MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //') && cd "$MAIN_REPO" && git worktree remove ../flywheel-geo-{XX}`
 5. Commit + push docs changes: `docs: update docs after {ISSUE_ID} merge`
 
 ## Important Rules
