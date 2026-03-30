@@ -132,9 +132,10 @@ For each PR the user approves to ship:
      STATE=$(gh pr view {PR_NUMBER} --json state -q '.state')
      if [ "$STATE" = "MERGED" ]; then echo "PR merged"; break; fi
      if [ "$STATE" = "CLOSED" ]; then echo "PR closed without merge"; exit 1; fi
-     # Check recent comments for ship workflow failure (last 5 to avoid old failures poisoning retries)
-     if gh pr view {PR_NUMBER} --json comments -q '[.comments[-5:][].body] | join("\n")' | grep -q "Ship failed"; then
-       echo "Ship workflow failed — check logs and fix, then post :cool: again"
+     # Check recent comments for ship workflow failure or rejection (last 5 to avoid old failures poisoning retries)
+     RECENT=$(gh pr view {PR_NUMBER} --json comments -q '[.comments[-5:][].body] | join("\n")')
+     if echo "$RECENT" | grep -qE "Ship failed|Cannot ship|ship rejected"; then
+       echo "Ship workflow failed or rejected — check logs and fix, then post :cool: again"
        break
      fi
      sleep 30

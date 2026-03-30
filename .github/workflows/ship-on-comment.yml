@@ -31,12 +31,18 @@ jobs:
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
-          const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            username: context.payload.comment.user.login
-          });
-          if (!['admin', 'write'].includes(perm.permission)) {
+          let permission = 'none';
+          try {
+            const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.payload.comment.user.login
+            });
+            permission = perm.permission;
+          } catch (e) {
+            // 404 for non-collaborators — treat as no permission
+          }
+          if (!['admin', 'write'].includes(permission)) {
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
