@@ -1,3 +1,4 @@
+import type { MemoryService } from "flywheel-edge-worker";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	findProjectForLead,
@@ -5,7 +6,6 @@ import {
 } from "../bridge/bootstrap-generator.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
-import type { MemoryService } from "flywheel-edge-worker";
 
 const projects: ProjectEntry[] = [
 	{
@@ -40,9 +40,7 @@ const projects: ProjectEntry[] = [
 	},
 ];
 
-function mockMemoryService(
-	overrides?: Partial<MemoryService>,
-): MemoryService {
+function mockMemoryService(overrides?: Partial<MemoryService>): MemoryService {
 	return {
 		searchMemories: vi.fn().mockResolvedValue([]),
 		addMessages: vi.fn().mockResolvedValue({ added: 0, updated: 0 }),
@@ -222,8 +220,9 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 		expect(bootstrap.memoryRecall).toContain("### Project Facts (shared)");
 		expect(bootstrap.memoryRecall).toContain("shared fact B");
 		// "shared overlap" should appear only once (in private, deduped from shared)
-		const overlapCount = (bootstrap.memoryRecall!.match(/shared overlap/g) || [])
-			.length;
+		const overlapCount = (
+			bootstrap.memoryRecall!.match(/shared overlap/g) || []
+		).length;
 		expect(overlapCount).toBe(1);
 	});
 
@@ -246,9 +245,7 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 		expect(bootstrap.memoryRecall).not.toBeNull();
 		expect(bootstrap.memoryRecall).toContain("### Personal Memory (private)");
 		expect(bootstrap.memoryRecall).toContain("private fact only");
-		expect(bootstrap.memoryRecall).not.toContain(
-			"### Project Facts (shared)",
-		);
+		expect(bootstrap.memoryRecall).not.toContain("### Project Facts (shared)");
 	});
 
 	it("both empty → memoryRecall: null", async () => {
@@ -342,9 +339,7 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 		expect(bootstrap.memoryRecall).not.toBeNull();
 		expect(bootstrap.memoryRecall).toContain("### Personal Memory (private)");
 		expect(bootstrap.memoryRecall).toContain("private fact only");
-		expect(bootstrap.memoryRecall).not.toContain(
-			"### Project Facts (shared)",
-		);
+		expect(bootstrap.memoryRecall).not.toContain("### Project Facts (shared)");
 	});
 
 	it("shared has duplicates of private → deduped", async () => {
@@ -400,7 +395,8 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 		expect(searchFn).toHaveBeenCalledTimes(2);
 		// Private bucket call
 		const privateCall = searchFn.mock.calls.find(
-			(c: unknown[]) => (c[0] as { agentId?: string }).agentId === "product-lead",
+			(c: unknown[]) =>
+				(c[0] as { agentId?: string }).agentId === "product-lead",
 		);
 		expect(privateCall).toBeDefined();
 		expect(privateCall![0].userId).toBe("product-lead");
@@ -422,7 +418,8 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 		expect(searchFn).toHaveBeenCalledTimes(2);
 		// Private bucket
 		const privateCall = searchFn.mock.calls.find(
-			(c: unknown[]) => (c[0] as { agentId?: string }).agentId === "product-lead",
+			(c: unknown[]) =>
+				(c[0] as { agentId?: string }).agentId === "product-lead",
 		);
 		expect(privateCall).toBeDefined();
 		expect(privateCall![0].agentId).toBe("product-lead");

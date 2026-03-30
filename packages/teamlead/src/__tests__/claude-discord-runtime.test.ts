@@ -158,8 +158,10 @@ describe("ClaudeDiscordRuntime", () => {
 			// Generate memoryRecall longer than Discord's 1900 char limit
 			snapshot.memoryRecall =
 				"### Personal Memory (private)\n" +
-				Array.from({ length: 50 }, (_, i) => `- Memory fact number ${i}: ${"X".repeat(100)}`)
-					.join("\n");
+				Array.from(
+					{ length: 50 },
+					(_, i) => `- Memory fact number ${i}: ${"X".repeat(100)}`,
+				).join("\n");
 			expect(snapshot.memoryRecall.length).toBeGreaterThan(1900);
 
 			await runtime.sendBootstrap(snapshot);
