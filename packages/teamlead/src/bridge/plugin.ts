@@ -37,6 +37,8 @@ import {
 	isTmuxSessionAlive,
 	killTmuxSession,
 } from "./tmux-lookup.js";
+import { createStandupRouter } from "./standup-route.js";
+import { StandupService } from "./standup-service.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import type { BridgeConfig } from "./types.js";
 
@@ -211,6 +213,8 @@ export function createBridgeApp(
 	memoryService?: MemoryService,
 	captureSessionFn?: CaptureSessionFn,
 	startDispatcher?: IStartDispatcher,
+	standupService?: StandupService,
+	standupProjectName?: string,
 ): express.Application {
 	const app = express();
 	app.disable("x-powered-by");
@@ -1152,6 +1156,23 @@ export function createBridgeApp(
 		}
 	}
 
+	// GEO-288: /api/standup — daily standup trigger
+	if (standupService && standupProjectName) {
+		const standupRouter = createStandupRouter(
+			standupService,
+			standupProjectName,
+		);
+		if (config.apiToken) {
+			app.use(
+				"/api/standup",
+				tokenAuthMiddleware(config.apiToken),
+				standupRouter,
+			);
+		} else {
+			app.use("/api/standup", standupRouter);
+		}
+	}
+
 	// Catch-all 404 (must be after all routes)
 	app.use((_req, res) => {
 		res.status(404).json({ error: "not found" });
@@ -1275,6 +1296,91 @@ export async function startBridge(
 	// GEO-195: ForumPostCreator — Bridge auto-creates Forum Posts
 	const forumPostCreator = new ForumPostCreator(store, statusTagMap);
 
+	// GEO-288: Standup service (v2 — no scheduler, triggered by external cron)
+	const standupChannel = process.env.STANDUP_CHANNEL;
+	const standupSimbaMention = process.env.STANDUP_SIMBA_MENTION ?? "<@1487339075563290745>";
+
+	// Resolve standup project name — single-project defaults, multi-project requires config
+	const standupProjectName: string | undefined = (() => {
+		const envName = process.env.STANDUP_PROJECT_NAME;
+		if (envName) {
+			const match = projects.find((p) => p.projectName === envName);
+			if (!match) {
+				console.warn(
+					`[Bridge] STANDUP_PROJECT_NAME="${envName}" does not match any configured project. Standup disabled.`,
+				);
+				return undefined;
+			}
+			return match.projectName;
+		}
+		if (projects.length === 1) {
+			return projects[0]!.projectName;
+		}
+		if (projects.length > 1) {
+			console.warn(
+				"[Bridge] Multi-project setup requires STANDUP_PROJECT_NAME. Standup disabled.",
+			);
+		}
+		return undefined;
+	})();
+
+	// Resolve standup lead — scoped to standup project
+	const standupProject = standupProjectName
+		? projects.find((p) => p.projectName === standupProjectName)
+		: undefined;
+	const standupLeadId = process.env.STANDUP_LEAD_ID ?? (() => {
+		const leads = standupProject?.leads ?? projects.flatMap((p) => p.leads);
+		const nonCos = leads.find((l) => !l.agentId.includes("cos"));
+		return nonCos?.agentId ?? leads[0]?.agentId ?? "unknown";
+	})();
+	const standupLead = (standupProject?.leads ?? []).find(
+		(l) => l.agentId === standupLeadId,
+	);
+	if (standupProjectName && !standupLead) {
+		console.warn(
+			`[Bridge] STANDUP_LEAD_ID="${standupLeadId}" not found in project "${standupProjectName}" leads. Standup will fail closed on delivery.`,
+		);
+	}
+	// Fail closed: only use the matched lead's token. No fallback to global token
+	// which could be Simba's and break the allowBots triage chain.
+	const standupBotToken = standupLead?.botToken;
+
+	// Parse stale threshold for standup (same env var as GEO-270 patrol)
+	const standupStaleThresholdHours = (() => {
+		const v = parseInt(
+			process.env.TEAMLEAD_STALE_THRESHOLD_HOURS ?? "24",
+			10,
+		);
+		return Number.isFinite(v) && v >= 1 ? v : 24;
+	})();
+
+	// LINEAR_WORKSPACE_SLUG: e.g. "geoforge3d" → constructs https://linear.app/geoforge3d/issue
+	const linearWorkspaceSlug = process.env.LINEAR_WORKSPACE_SLUG;
+	if (!linearWorkspaceSlug) {
+		console.warn("[Bridge] LINEAR_WORKSPACE_SLUG not set — standup issue links will be plain text");
+	}
+	const linearIssueBaseUrl = linearWorkspaceSlug
+		? `https://linear.app/${linearWorkspaceSlug}/issue`
+		: undefined;
+
+	let standupService: StandupService | undefined;
+	if (standupProjectName) {
+		standupService = new StandupService(
+			store,
+			projects,
+			standupBotToken,
+			config.maxConcurrentRunners,
+			config.stuckThresholdMinutes,
+			standupStaleThresholdHours,
+			standupChannel,
+			standupSimbaMention,
+			linearIssueBaseUrl,
+		);
+		console.log(
+			`[Bridge] Standup configured — project="${standupProjectName}", channel=${standupChannel ?? "(none)"}, lead=${standupLeadId}`,
+		);
+	}
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -1290,6 +1396,8 @@ export async function startBridge(
 		opts?.memoryService,
 		defaultCaptureSession,
 		opts?.startDispatcher,
+		standupService,
+		standupProjectName,
 	);
 
 	const server = app.listen(config.port, config.host);

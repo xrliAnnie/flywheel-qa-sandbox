@@ -3,6 +3,10 @@
  * session via a hidden Discord control channel. Uses Discord REST API directly.
  */
 
+import {
+	DISCORD_API,
+	splitDiscordMessage,
+} from "./discord-utils.js";
 import type {
 	LeadBootstrap,
 	LeadEventEnvelope,
@@ -10,9 +14,7 @@ import type {
 	LeadRuntimeHealth,
 } from "./lead-runtime.js";
 
-const DISCORD_API = "https://discord.com/api/v10";
 const DELIVERY_TIMEOUT_MS = 3000;
-const MAX_MESSAGE_LENGTH = 1900; // Discord limit is 2000, leave margin
 
 export class ClaudeDiscordRuntime implements LeadRuntime {
 	readonly type = "claude-discord" as const;
@@ -34,7 +36,7 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 	async sendBootstrap(snapshot: LeadBootstrap): Promise<void> {
 		const content = this.formatBootstrap(snapshot);
 		// Bootstrap can be large — split into chunks if needed
-		const chunks = this.splitMessage(content);
+		const chunks = splitDiscordMessage(content);
 		for (const chunk of chunks) {
 			// throwOnError=true so bootstrap endpoint can report delivery failure
 			await this.postDiscordMessage(chunk, true);
@@ -194,21 +196,4 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 		return sections.join("\n");
 	}
 
-	private splitMessage(content: string): string[] {
-		if (content.length <= MAX_MESSAGE_LENGTH) return [content];
-		const chunks: string[] = [];
-		let remaining = content;
-		while (remaining.length > 0) {
-			if (remaining.length <= MAX_MESSAGE_LENGTH) {
-				chunks.push(remaining);
-				break;
-			}
-			// Split at last newline within limit
-			const cutoff = remaining.lastIndexOf("\n", MAX_MESSAGE_LENGTH);
-			const splitAt = cutoff > 0 ? cutoff : MAX_MESSAGE_LENGTH;
-			chunks.push(remaining.slice(0, splitAt));
-			remaining = remaining.slice(splitAt).trimStart();
-		}
-		return chunks;
-	}
 }
