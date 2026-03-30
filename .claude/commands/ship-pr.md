@@ -53,7 +53,7 @@ Extract variables needed by subsequent phases:
 ```bash
 PR_NUMBER={from 0a}
 HEAD_BRANCH=$(gh pr view ${PR_NUMBER} --json headRefName -q '.headRefName')
-ISSUE_ID=$(echo "$HEAD_BRANCH" | grep -oE '(GEO|FLY)-[0-9]+' | head -1)
+ISSUE_ID=$(gh pr view ${PR_NUMBER} --json headRefName -q '.headRefName' | grep -oE '(GEO|FLY)-[0-9]+' | head -1)
 ```
 If branch name doesn't contain an issue ID, try extracting from PR title or body:
 ```bash
