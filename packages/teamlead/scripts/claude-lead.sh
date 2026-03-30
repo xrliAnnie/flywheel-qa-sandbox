@@ -365,6 +365,63 @@ if command -v jq >/dev/null 2>&1; then
   install_post_compact_hook
 fi
 
+# ── GEO-292: Install Lead Progress PostToolUse hook ────────
+install_lead_progress_hook() {
+  local src_script
+  src_script="$(cd "$SCRIPT_DIR" && pwd)/lead-progress-check.sh"
+  if [ ! -f "$src_script" ]; then
+    log "WARNING: lead-progress-check.sh source not found: $src_script"
+    return
+  fi
+
+  local hook_script="${HOME}/.flywheel/hooks/lead-progress-check.sh"
+  mkdir -p "$(dirname "$hook_script")"
+  cp "$src_script" "$hook_script"
+  chmod +x "$hook_script"
+
+  local settings_file="${HOME}/.claude/settings.json"
+  mkdir -p "$(dirname "$settings_file")"
+
+  local existing
+  if [ -f "$settings_file" ]; then
+    if ! jq empty "$settings_file" 2>/dev/null; then
+      log "WARNING: $settings_file is not valid JSON. Skipping hook install."
+      return
+    fi
+    existing=$(cat "$settings_file")
+  else
+    existing="{}"
+  fi
+
+  local tmpfile
+  tmpfile=$(mktemp "${settings_file}.XXXXXX")
+
+  if ! echo "$existing" | jq --arg cmd "$hook_script" '
+    .hooks.PostToolUse = (if .hooks.PostToolUse | type == "array" then .hooks.PostToolUse else [] end) |
+    .hooks.PostToolUse = [.hooks.PostToolUse[] | select(any(.hooks[]?.command // ""; endswith("lead-progress-check.sh")) | not)] |
+    if (.hooks.PostToolUse | map(select(any(.hooks[]?.command // ""; . == $cmd))) | length) == 0
+    then .hooks.PostToolUse += [{"hooks": [{"type": "command", "command": $cmd}]}]
+    else .
+    end
+  ' > "$tmpfile" 2>/dev/null; then
+    log "WARNING: Failed to merge PostToolUse hook into settings. Skipping."
+    rm -f "$tmpfile"
+    return
+  fi
+
+  if ! jq empty "$tmpfile" 2>/dev/null; then
+    log "WARNING: Generated settings JSON is invalid. Skipping hook install."
+    rm -f "$tmpfile"
+    return
+  fi
+
+  mv "$tmpfile" "$settings_file"
+  log "Lead progress hook installed: $hook_script"
+}
+if command -v jq >/dev/null 2>&1; then
+  install_lead_progress_hook
+fi
+
 # ── GEO-285: Early auto-compact + env exports ─────────────
 export CLAUDE_AUTOCOMPACT_PCT_OVERRIDE="${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
 export FLYWHEEL_LEAD_ID="$LEAD_ID"

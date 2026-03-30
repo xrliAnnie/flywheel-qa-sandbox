@@ -34,3 +34,29 @@ export interface Session {
 	ended_at: string | null;
 	status: "running" | "completed" | "timeout";
 }
+
+// GEO-292: Pipeline stage enum — frozen, aligned with orchestrator 9-step template
+export const PIPELINE_STAGES = [
+	"verify_env",
+	"brainstorm",
+	"research",
+	"plan_review",
+	"implement",
+	"code_review",
+	"user_approval",
+	"ship",
+	"post_ship",
+] as const;
+export type PipelineStage = (typeof PIPELINE_STAGES)[number];
+
+export const PROGRESS_STATUSES = ["started", "completed", "failed"] as const;
+export type ProgressStatus = (typeof PROGRESS_STATUSES)[number];
+
+export interface ProgressPayload {
+	stage: PipelineStage;
+	status: ProgressStatus;
+	executionId: string;
+	issueId?: string;
+	artifact?: string;
+	timestamp: string;
+}

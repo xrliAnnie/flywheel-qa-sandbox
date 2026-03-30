@@ -378,6 +378,14 @@ export class Blueprint {
 					)
 				: undefined;
 
+		// GEO-292: Compute commCliPath for Runner progress reporting via /spin
+		const commCliAbsPath = ctx.leadId
+			? path.resolve(
+					path.dirname(fileURLToPath(import.meta.url)),
+					"../../flywheel-comm/dist/index.js",
+				)
+			: undefined;
+
 		let result: AdapterExecutionResult;
 		try {
 			result = await adapter.execute({
@@ -396,6 +404,7 @@ export class Blueprint {
 				sessionDisplayName: `${hydrated.issueId} ${cleanIssueTitle(hydrated.issueTitle)}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
 				commDbPath,
+				commCliPath: commCliAbsPath,
 				waitingTimeoutMs: 14_400_000, // GEO-206 Phase 2: 4h when waiting for Lead
 				leadId: ctx.leadId,
 				projectName: ctx.projectName,

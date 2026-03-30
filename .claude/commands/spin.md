@@ -69,6 +69,30 @@ Present the detection result to the user:
 
 Wait for confirmation before continuing.
 
+## Progress Reporting (Runner Mode)
+
+When running as a Flywheel Runner (all three environment variables `FLYWHEEL_EXEC_ID`, `FLYWHEEL_COMM_DB`, and `FLYWHEEL_COMM_CLI` exist), report pipeline progress to the Lead at stage boundaries:
+
+```bash
+# Before each stage:
+node "$FLYWHEEL_COMM_CLI" progress --exec-id $FLYWHEEL_EXEC_ID --stage <stage> --status started --db $FLYWHEEL_COMM_DB
+
+# After successful completion:
+node "$FLYWHEEL_COMM_CLI" progress --exec-id $FLYWHEEL_EXEC_ID --stage <stage> --status completed --artifact <path> --db $FLYWHEEL_COMM_DB
+
+# On error:
+node "$FLYWHEEL_COMM_CLI" progress --exec-id $FLYWHEEL_EXEC_ID --stage <stage> --status failed --db $FLYWHEEL_COMM_DB
+```
+
+Stage names (aligned with orchestrator 9-step template):
+- Step 0 completion → `verify_env`
+- Brainstorm → `brainstorm`
+- Research → `research`
+- Plan + Design Review → `plan_review`
+- Implement → `implement`
+
+If any env var is missing, skip all progress reporting silently (local dev mode).
+
 ## Step 2: Execute Pipeline
 
 Run each remaining stage in sequence. Between each stage, pause and confirm with the user before proceeding to the next.

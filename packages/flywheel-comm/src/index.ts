@@ -5,7 +5,9 @@ import { ask } from "./commands/ask.js";
 import { capture } from "./commands/capture.js";
 import { check } from "./commands/check.js";
 import { inbox } from "./commands/inbox.js";
+import { leadInbox } from "./commands/lead-inbox.js";
 import { pending } from "./commands/pending.js";
+import { progress } from "./commands/progress.js";
 import { respond } from "./commands/respond.js";
 import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
@@ -21,6 +23,8 @@ Commands:
   respond   Respond to a runner's question
   send      Send an instruction to a runner (Lead use)
   inbox     Check for instructions from Lead (Runner use)
+  progress  Report pipeline progress (Runner use)
+  lead-inbox  Check for progress updates (Lead use)
   sessions  List runner sessions
   capture   Capture tmux output of a runner session
 
@@ -64,6 +68,12 @@ function main(): void {
 				break;
 			case "inbox":
 				runInbox(commandArgs);
+				break;
+			case "progress":
+				runProgress(commandArgs);
+				break;
+			case "lead-inbox":
+				runLeadInbox(commandArgs);
 				break;
 			case "sessions":
 				runSessions(commandArgs);
@@ -282,6 +292,81 @@ function runInbox(args: string[]): void {
 	} else {
 		for (const inst of result.instructions) {
 			console.log(`[${inst.id}] from ${inst.from_agent}: ${inst.content}`);
+		}
+	}
+}
+
+function runProgress(args: string[]): void {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			stage: { type: "string" },
+			status: { type: "string" },
+			artifact: { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
+
+	if (!values["exec-id"]) {
+		throw new Error("--exec-id is required");
+	}
+	if (!values.stage) {
+		throw new Error("--stage is required");
+	}
+	if (!values.status) {
+		throw new Error("--status is required");
+	}
+
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const messageId = progress({
+		execId: values["exec-id"],
+		stage: values.stage,
+		status: values.status,
+		dbPath,
+		artifact: values.artifact,
+	});
+
+	if (values.json) {
+		console.log(
+			JSON.stringify({ message_id: messageId, skipped: messageId === null }),
+		);
+	} else if (messageId) {
+		console.log(messageId);
+	} else {
+		console.log("Skipped (no session or lead found).");
+	}
+}
+
+function runLeadInbox(args: string[]): void {
+	const { values } = parseArgs({
+		args,
+		options: {
+			lead: { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
+
+	if (!values.lead) {
+		throw new Error("--lead is required");
+	}
+
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const result = leadInbox({ leadId: values.lead, dbPath });
+
+	if (values.json) {
+		console.log(JSON.stringify(result.messages));
+	} else if (result.messages.length === 0) {
+		console.log("No progress updates.");
+	} else {
+		for (const msg of result.messages) {
+			console.log(`[${msg.id}] from ${msg.from_agent}: ${msg.content}`);
 		}
 	}
 }

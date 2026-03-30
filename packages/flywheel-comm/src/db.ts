@@ -172,6 +172,30 @@ export class CommDB {
 			.run(id);
 	}
 
+	// ── Progress (GEO-292) ──
+
+	insertProgress(fromAgent: string, toAgent: string, content: string): string {
+		const id = randomUUID();
+		this.db
+			.prepare(
+				`INSERT INTO messages (id, from_agent, to_agent, type, content)
+         VALUES (?, ?, ?, 'progress', ?)`,
+			)
+			.run(id, fromAgent, toAgent, content);
+		return id;
+	}
+
+	getUnreadProgress(leadId: string): Message[] {
+		return this.db
+			.prepare(
+				`SELECT * FROM messages
+         WHERE to_agent = ? AND type = 'progress' AND read_at IS NULL
+         AND expires_at > datetime('now')
+         ORDER BY created_at ASC`,
+			)
+			.all(leadId) as Message[];
+	}
+
 	// ── Dynamic Timeout (Phase 2) ──
 
 	hasPendingQuestionsFrom(execId: string): boolean {
