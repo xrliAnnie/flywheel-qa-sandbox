@@ -60,7 +60,14 @@ jobs:
           });
 
           if (pr.merged || pr.state !== 'open') {
-            core.info(`PR is already ${pr.merged ? 'merged' : pr.state} — skipping`);
+            core.setFailed(`PR is already ${pr.merged ? 'merged' : pr.state} — skipping`);
+            return;
+          }
+
+          const headRepoFullName = pr.head.repo?.full_name;
+          const baseRepoFullName = `${context.repo.owner}/${context.repo.repo}`;
+          if (headRepoFullName && headRepoFullName !== baseRepoFullName) {
+            core.setFailed('Fork PRs are not supported by ship workflow');
             return;
           }
 

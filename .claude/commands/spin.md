@@ -170,7 +170,17 @@ fi
 ```bash
 gh pr comment {PR_NUMBER} --body ":cool:"
 ```
-The `ship-on-comment.yml` GitHub Actions workflow runs CI (build + typecheck + lint + test) and squash merges if green. If CI fails, fix and comment `:cool:` again.
+The `ship-on-comment.yml` GitHub Actions workflow runs CI (build + typecheck + lint + test) and squash merges if green. Wait for merge:
+```bash
+sleep 10  # let Actions register the run
+while true; do
+  STATE=$(gh pr view {PR_NUMBER} --json state -q '.state')
+  if [ "$STATE" = "MERGED" ]; then echo "PR merged"; break; fi
+  if [ "$STATE" = "CLOSED" ]; then echo "PR closed without merge"; exit 1; fi
+  sleep 30
+done
+```
+If the PR stays OPEN for >15 min, the ship workflow likely failed. Check comments for details, fix the issue, and post `:cool:` again.
 
 **Step 3: Post-merge bookkeeping** (after PR is merged):
 ```bash
