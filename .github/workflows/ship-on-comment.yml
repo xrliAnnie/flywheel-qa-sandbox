@@ -10,6 +10,10 @@ permissions:
   pull-requests: write
   checks: read
 
+concurrency:
+  group: ship-pr-${{ github.event.issue.number }}
+  cancel-in-progress: true
+
 jobs:
   ship:
     name: "🚀 CI + Merge"
@@ -60,6 +64,7 @@ jobs:
     - uses: actions/checkout@v4
       with:
         ref: ${{ steps.pr-info.outputs.head_sha }}
+        persist-credentials: false
 
     - uses: pnpm/action-setup@v4
 
