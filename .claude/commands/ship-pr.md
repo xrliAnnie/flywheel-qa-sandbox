@@ -121,22 +121,19 @@ Output: "CI failed after 3 fix attempts. Last failure: {step}: {error summary}"
 ### 2a. Archive Pipeline Docs (if they exist)
 
 **Guard**: If `ISSUE_ID` is empty, skip archiving entirely. An empty pattern would match all files and cause mass-archiving.
+
 ```bash
 if [ -z "$ISSUE_ID" ]; then
   echo "No ISSUE_ID found — skipping doc archive"
-fi
-```
-
-If `ISSUE_ID` is set, check for and move issue-related docs to archive directories:
-```bash
-ISSUE_ID="${ISSUE_ID}"
-for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
-  src="${dir_pair%%:*}"
-  dst="${dir_pair##*:}"
-  for f in $(find "$src" -name "*${ISSUE_ID}*" -type f 2>/dev/null); do
-    git mv "$f" "$dst/"
+else
+  for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
+    src="${dir_pair%%:*}"
+    dst="${dir_pair##*:}"
+    for f in $(find "$src" -name "*${ISSUE_ID}*" -type f 2>/dev/null); do
+      git mv "$f" "$dst/"
+    done
   done
-done
+fi
 ```
 
 If any files were archived, commit and push, then re-enter CI gate:
