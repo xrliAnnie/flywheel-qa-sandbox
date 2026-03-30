@@ -83,10 +83,14 @@ Exit code: 0 = all pass, non-zero = has failures.
 gh pr checks ${PR_NUMBER} --json name,bucket,link,workflow,state
 ```
 
-Get the failed run ID, binding to the current HEAD SHA for stability across reruns:
+Get the failed run ID, binding to the current HEAD SHA for stability across reruns.
+Check both `failure` and `timed_out` statuses (they are separate in the GitHub API):
 ```bash
 HEAD_SHA=$(gh pr view ${PR_NUMBER} --json commits -q '.commits[-1].oid')
 RUN_ID=$(gh run list --branch ${HEAD_BRANCH} --workflow CI --commit ${HEAD_SHA} --status failure --limit 1 --json databaseId -q '.[0].databaseId')
+if [ -z "$RUN_ID" ]; then
+  RUN_ID=$(gh run list --branch ${HEAD_BRANCH} --workflow CI --commit ${HEAD_SHA} --status timed_out --limit 1 --json databaseId -q '.[0].databaseId')
+fi
 ```
 
 ### 1c. Read Failed Logs
