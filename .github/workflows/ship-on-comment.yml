@@ -14,6 +14,7 @@ jobs:
   ship:
     name: "🚀 CI + Merge"
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: |
       github.event.issue.pull_request &&
       github.event.issue.state == 'open' &&
@@ -126,7 +127,7 @@ jobs:
           } catch (e) { /* best-effort branch cleanup */ }
 
     - name: "❌ Report failure"
-      if: failure()
+      if: failure() && steps.pr-info.outcome == 'success'
       uses: actions/github-script@v6
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -136,5 +137,5 @@ jobs:
             owner: context.repo.owner,
             repo: context.repo.repo,
             issue_number: context.issue.number,
-            body: `❌ CI failed — PR was NOT merged. Check the [workflow run](${runUrl}) for details. Fix the issue and post :cool: again.`
+            body: `❌ Ship failed — PR was NOT merged. Check the [workflow run](${runUrl}) for details. Fix the issue and post :cool: again.`
           });
