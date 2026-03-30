@@ -379,12 +379,17 @@ export class Blueprint {
 				: undefined;
 
 		// GEO-292: Compute commCliPath for Runner progress reporting via /spin
-		const commCliAbsPath = ctx.leadId
+		// Only pass if the built CLI file actually exists (avoids errors in partial-build envs)
+		const commCliCandidate = ctx.leadId
 			? path.resolve(
 					path.dirname(fileURLToPath(import.meta.url)),
 					"../../flywheel-comm/dist/index.js",
 				)
 			: undefined;
+		const commCliAbsPath =
+			commCliCandidate && fs.existsSync(commCliCandidate)
+				? commCliCandidate
+				: undefined;
 
 		let result: AdapterExecutionResult;
 		try {

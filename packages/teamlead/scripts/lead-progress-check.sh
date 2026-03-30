@@ -14,6 +14,11 @@ if [ -z "$LEAD_ID" ] || [ -z "$DB_PATH" ] || [ ! -f "$DB_PATH" ]; then
   exit 0
 fi
 
+# Sanitize LEAD_ID: only allow alphanumeric, dash, underscore (prevent SQL injection)
+if ! echo "$LEAD_ID" | grep -qE '^[a-zA-Z0-9_-]+$'; then
+  exit 0
+fi
+
 sq_ro() { sqlite3 -readonly -cmd ".timeout 5000" "$DB_PATH" "$1" 2>/dev/null; }
 sq()    { sqlite3 -cmd ".timeout 5000" "$DB_PATH" "$1" 2>/dev/null; }
 
