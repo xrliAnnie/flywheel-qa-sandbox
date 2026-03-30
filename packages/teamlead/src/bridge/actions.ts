@@ -10,7 +10,7 @@ import {
 } from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
-import type { StateStore } from "../StateStore.js";
+import type { Session, StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
@@ -183,6 +183,7 @@ export async function approveExecution(
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 	registry?: RuntimeRegistry,
+	onApproved?: (executionId: string, session: Session) => void,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -286,6 +287,18 @@ export async function approveExecution(
 						`[CIPHER] recordOutcome failed for approve ${executionId}`,
 					);
 				}
+			}
+
+			// GEO-280: Post-merge cleanup (fire-and-forget, error-isolated)
+			if (onApproved) {
+				void Promise.resolve()
+					.then(() => onApproved(executionId, session))
+					.catch((err) => {
+						console.error(
+							`[post-merge] onApproved callback error for ${executionId}:`,
+							(err as Error).message,
+						);
+					});
 			}
 		}
 	}
@@ -720,6 +733,7 @@ export function createActionRouter(
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 	registry?: RuntimeRegistry,
+	onApproved?: (executionId: string, session: Session) => void,
 ): Router {
 	const router = Router();
 
@@ -758,6 +772,7 @@ export function createActionRouter(
 					eventFilter,
 					forumTagUpdater,
 					registry,
+					onApproved,
 				);
 				if (result.success) {
 					res.json({

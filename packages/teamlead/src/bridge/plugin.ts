@@ -17,6 +17,7 @@ import {
 } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
+import { postMergeCleanup } from "./post-merge.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
@@ -256,6 +257,24 @@ export function createBridgeApp(
 		}
 	});
 
+	// GEO-280: Post-merge cleanup callback (fire-and-forget after approve)
+	// Bridge only closes tmux session + audit. Other cleanup (worktree, docs) is Runner/Orchestrator responsibility.
+	const onApproved = (executionId: string, session: { issue_id: string; project_name: string }) => {
+		postMergeCleanup(
+			{
+				executionId,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+			},
+			store,
+		).catch((err) => {
+			console.error(
+				`[post-merge] Cleanup failed for ${executionId}:`,
+				(err as Error).message,
+			);
+		});
+	};
+
 	// Dashboard actions — no auth (loopback only, same handlers as /api/actions)
 	app.use(
 		"/actions",
@@ -269,6 +288,7 @@ export function createBridgeApp(
 			eventFilter,
 			forumTagUpdater,
 			registry,
+			onApproved,
 		),
 	);
 
@@ -308,6 +328,7 @@ export function createBridgeApp(
 			eventFilter,
 			forumTagUpdater,
 			registry,
+			onApproved,
 		),
 	);
 

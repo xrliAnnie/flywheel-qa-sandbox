@@ -770,3 +770,140 @@ describe("GEO-259: leadId scope check on actions", () => {
 		expect(res.status).toBe(403);
 	});
 });
+
+// --- GEO-280: onApproved callback tests ---
+describe("GEO-280: onApproved callback", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		mockExec.mockClear();
+	});
+
+	it("approve calls onApproved callback on success", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-280",
+		});
+
+		const onApproved = vi.fn();
+		await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			"GEO-280",
+			mockExec,
+			undefined, // transitionOpts
+			undefined, // config
+			undefined, // cipherWriter
+			undefined, // eventFilter
+			undefined, // forumTagUpdater
+			undefined, // registry
+			onApproved,
+		);
+
+		// onApproved is fire-and-forget (microtask), give it a tick
+		await new Promise((r) => setTimeout(r, 50));
+		expect(onApproved).toHaveBeenCalledWith("e1", expect.objectContaining({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+		}));
+	});
+
+	it("no onApproved on merge failure", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+
+		const failExec = vi.fn(async () => {
+			throw new Error("merge failed");
+		});
+
+		const onApproved = vi.fn();
+		await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			failExec,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			onApproved,
+		);
+
+		await new Promise((r) => setTimeout(r, 50));
+		expect(onApproved).not.toHaveBeenCalled();
+	});
+
+	it("no onApproved on FSM rejection (wrong status)", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "running", // can't approve from running
+		});
+
+		const onApproved = vi.fn();
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			mockExec,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			onApproved,
+		);
+
+		await new Promise((r) => setTimeout(r, 50));
+		expect(result.success).toBe(false);
+		expect(onApproved).not.toHaveBeenCalled();
+	});
+
+	it("onApproved error does not affect approve result", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+
+		const onApproved = vi.fn(() => {
+			throw new Error("callback exploded");
+		});
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			mockExec,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			onApproved,
+		);
+
+		await new Promise((r) => setTimeout(r, 50));
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("approved");
+	});
+});
