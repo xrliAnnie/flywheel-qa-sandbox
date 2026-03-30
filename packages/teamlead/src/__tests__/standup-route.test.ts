@@ -41,10 +41,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	};
 }
 
-function makeService(
-	store: StateStore,
-	channel?: string,
-): StandupService {
+function makeService(store: StateStore, channel?: string): StandupService {
 	return new StandupService(
 		store,
 		testProjects,
@@ -87,8 +84,16 @@ describe("POST /api/standup/trigger", () => {
 			store,
 			testProjects,
 			makeConfig(),
-			undefined, undefined, undefined, undefined, undefined,
-			undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			undefined, // startDispatcher
 			service,
 			"TestProject",
@@ -112,8 +117,16 @@ describe("POST /api/standup/trigger", () => {
 			store,
 			testProjects,
 			makeConfig({ apiToken: "secret" }),
-			undefined, undefined, undefined, undefined, undefined,
-			undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			undefined, // startDispatcher
 			service,
 			"TestProject",
@@ -131,8 +144,16 @@ describe("POST /api/standup/trigger", () => {
 			store,
 			testProjects,
 			makeConfig(),
-			undefined, undefined, undefined, undefined, undefined,
-			undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			undefined, // startDispatcher
 			service,
 			"TestProject",
@@ -152,8 +173,16 @@ describe("POST /api/standup/trigger", () => {
 			store,
 			testProjects,
 			makeConfig(),
-			undefined, undefined, undefined, undefined, undefined,
-			undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			undefined, // startDispatcher
 			service,
 			"TestProject",
@@ -180,15 +209,26 @@ describe("POST /api/standup/trigger", () => {
 			store,
 			testProjects,
 			makeConfig(),
-			undefined, undefined, undefined, undefined, undefined,
-			undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			undefined, // startDispatcher
 			service,
 			"TestProject",
 		);
 
 		// Send a different projectName in the request body — should be ignored
-		const res = await makeRequest(app, { projectName: "OtherProject", dryRun: true });
+		const res = await makeRequest(app, {
+			projectName: "OtherProject",
+			dryRun: true,
+		});
 		expect(res.status).toBe(200);
 
 		const body = JSON.parse(res.body);
@@ -203,8 +243,16 @@ describe("POST /api/standup/trigger", () => {
 			store,
 			testProjects,
 			makeConfig(),
-			undefined, undefined, undefined, undefined, undefined,
-			undefined, undefined, undefined, undefined, undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
 			undefined, // startDispatcher
 			service,
 			undefined, // no project name → route not registered
@@ -243,7 +291,10 @@ async function makeRequest(
 			};
 			const req = http.request(
 				options,
-				(res: { statusCode: number; on: (e: string, cb: (d?: Buffer) => void) => void }) => {
+				(res: {
+					statusCode: number;
+					on: (e: string, cb: (d?: Buffer) => void) => void;
+				}) => {
 					let data = "";
 					res.on("data", (chunk: Buffer) => {
 						data += chunk.toString();

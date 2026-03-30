@@ -16,9 +16,8 @@
  */
 
 import { existsSync } from "node:fs";
-
-import { Semaphore } from "../packages/core/dist/Semaphore.js";
 import { sanitizeTmuxName } from "../packages/core/dist/index.js";
+import { Semaphore } from "../packages/core/dist/Semaphore.js";
 import type { DagNode } from "../packages/dag-resolver/dist/DagResolver.js";
 import { DagResolver } from "../packages/dag-resolver/dist/DagResolver.js";
 import { DagDispatcher } from "../packages/edge-worker/dist/DagDispatcher.js";

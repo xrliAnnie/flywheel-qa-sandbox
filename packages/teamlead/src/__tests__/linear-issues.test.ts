@@ -201,10 +201,9 @@ describe("GET /api/linear/issues (GEO-276)", () => {
 	it("handles Express array params for repeated state keys", async () => {
 		mockRawRequest.mockResolvedValueOnce(mockLinearResponse());
 
-		await fetch(
-			`${baseUrl}/api/linear/issues?state=backlog&state=started`,
-			{ headers: { Authorization: "Bearer test-token" } },
-		);
+		await fetch(`${baseUrl}/api/linear/issues?state=backlog&state=started`, {
+			headers: { Authorization: "Bearer test-token" },
+		});
 
 		const variables = mockRawRequest.mock.calls[0][1] as {
 			filter: Record<string, unknown>;
@@ -271,9 +270,9 @@ describe("GET /api/linear/issues (GEO-276)", () => {
 		await fetch(`${baseUrl}/api/linear/issues?limit=0`, {
 			headers: { Authorization: "Bearer test-token" },
 		});
-		expect(
-			(mockRawRequest.mock.calls[0][1] as { first: number }).first,
-		).toBe(1);
+		expect((mockRawRequest.mock.calls[0][1] as { first: number }).first).toBe(
+			1,
+		);
 
 		mockRawRequest.mockClear();
 
@@ -281,9 +280,9 @@ describe("GET /api/linear/issues (GEO-276)", () => {
 		await fetch(`${baseUrl}/api/linear/issues?limit=1.5`, {
 			headers: { Authorization: "Bearer test-token" },
 		});
-		expect(
-			(mockRawRequest.mock.calls[0][1] as { first: number }).first,
-		).toBe(1);
+		expect((mockRawRequest.mock.calls[0][1] as { first: number }).first).toBe(
+			1,
+		);
 
 		mockRawRequest.mockClear();
 
@@ -291,9 +290,9 @@ describe("GET /api/linear/issues (GEO-276)", () => {
 		await fetch(`${baseUrl}/api/linear/issues?limit=abc`, {
 			headers: { Authorization: "Bearer test-token" },
 		});
-		expect(
-			(mockRawRequest.mock.calls[0][1] as { first: number }).first,
-		).toBe(50);
+		expect((mockRawRequest.mock.calls[0][1] as { first: number }).first).toBe(
+			50,
+		);
 
 		mockRawRequest.mockClear();
 
@@ -301,9 +300,9 @@ describe("GET /api/linear/issues (GEO-276)", () => {
 		await fetch(`${baseUrl}/api/linear/issues?limit=999`, {
 			headers: { Authorization: "Bearer test-token" },
 		});
-		expect(
-			(mockRawRequest.mock.calls[0][1] as { first: number }).first,
-		).toBe(250);
+		expect((mockRawRequest.mock.calls[0][1] as { first: number }).first).toBe(
+			250,
+		);
 	});
 
 	// 9. Linear SDK throws → 502

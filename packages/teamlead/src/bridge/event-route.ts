@@ -203,26 +203,26 @@ export function createEventRouter(
 						);
 						// GEO-275: skip Forum Post creation for leads without forumChannel (e.g., PM lead)
 						if (fpLead.forumChannel) {
-						forumPostCreator
-							.ensureForumPost({
-								forumChannelId: fpLead.forumChannel,
-								issueId: event.issue_id,
-								issueIdentifier: asString(payload.issueIdentifier),
-								issueTitle: asString(payload.issueTitle),
-								executionId: event.execution_id,
-								status: "running",
-								// GEO-252: per-lead token. Note: labels may be overwritten on
-								// session_completed/failed, but thread ownership is consistent
-								// because ForumPostCreator only runs once (session_started).
-								discordBotToken: fpLead.botToken ?? config.discordBotToken,
-								statusTagMap: fpLead.statusTagMap,
-							})
-							.catch((err) => {
-								console.warn(
-									`[event-route] ForumPostCreator failed for ${event.issue_id}:`,
-									(err as Error).message,
-								);
-							});
+							forumPostCreator
+								.ensureForumPost({
+									forumChannelId: fpLead.forumChannel,
+									issueId: event.issue_id,
+									issueIdentifier: asString(payload.issueIdentifier),
+									issueTitle: asString(payload.issueTitle),
+									executionId: event.execution_id,
+									status: "running",
+									// GEO-252: per-lead token. Note: labels may be overwritten on
+									// session_completed/failed, but thread ownership is consistent
+									// because ForumPostCreator only runs once (session_started).
+									discordBotToken: fpLead.botToken ?? config.discordBotToken,
+									statusTagMap: fpLead.statusTagMap,
+								})
+								.catch((err) => {
+									console.warn(
+										`[event-route] ForumPostCreator failed for ${event.issue_id}:`,
+										(err as Error).message,
+									);
+								});
 						}
 					}
 				}

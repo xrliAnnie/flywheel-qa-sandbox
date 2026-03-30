@@ -1,4 +1,4 @@
-import { execFileSync, execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 
 /**
  * Resolve the absolute path to the tmux binary.

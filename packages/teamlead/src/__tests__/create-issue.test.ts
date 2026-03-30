@@ -134,7 +134,11 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 
 	it("creates issue with explicit team key in multi-team workspace", async () => {
 		mockMultiTeam();
-		mockIssueCreated("FLY-1", "fly-issue-1", "https://linear.app/test/issue/FLY-1");
+		mockIssueCreated(
+			"FLY-1",
+			"fly-issue-1",
+			"https://linear.app/test/issue/FLY-1",
+		);
 
 		const res = await post({ title: "Test issue", team: "FLY" });
 		expect(res.status).toBe(200);
@@ -255,7 +259,11 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 	it("creates issue with team + project (full flow)", async () => {
 		mockMultiTeam();
 		mockProjectResolution("Flywheel", "project-flywheel-id");
-		mockIssueCreated("FLY-1", "fly-1-id", "https://linear.app/test/issue/FLY-1");
+		mockIssueCreated(
+			"FLY-1",
+			"fly-1-id",
+			"https://linear.app/test/issue/FLY-1",
+		);
 
 		const res = await post({
 			title: "New Flywheel feature",

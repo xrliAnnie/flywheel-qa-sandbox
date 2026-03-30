@@ -253,9 +253,9 @@ describe("Start API E2E", () => {
 		const mockIssue = vi
 			.fn()
 			.mockRejectedValueOnce(new Error("Network timeout"));
-		(LinearClient as unknown as ReturnType<typeof vi.fn>).mockImplementationOnce(
-			() => ({ issue: mockIssue }),
-		);
+		(
+			LinearClient as unknown as ReturnType<typeof vi.fn>
+		).mockImplementationOnce(() => ({ issue: mockIssue }));
 
 		const res = await fetch(`${baseUrl}/api/runs/start`, {
 			method: "POST",

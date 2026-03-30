@@ -2,18 +2,18 @@ import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import {
 	afterEach,
 	beforeEach,
 	describe,
 	expect,
 	it,
-	vi,
 	type Mock,
+	vi,
 } from "vitest";
-import Database from "better-sqlite3";
-import { CommDB } from "../db.js";
 import { cleanupStaleSessions } from "../cleanup.js";
+import { CommDB } from "../db.js";
 
 // Mock execFileSync to control tmux command behavior
 vi.mock("node:child_process", () => ({
@@ -29,15 +29,13 @@ describe("cleanupStaleSessions", () => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-cleanup-test-"));
 		vi.clearAllMocks();
 		// Default: tmux server is running, sessions exist, no clients attached
-		mockExecFileSync.mockImplementation(
-			(cmd: string, args: string[]) => {
-				if (cmd === "tmux" && args[0] === "list-sessions") return "";
-				if (cmd === "tmux" && args[0] === "has-session") return "";
-				if (cmd === "tmux" && args[0] === "list-clients") return "";
-				if (cmd === "tmux" && args[0] === "kill-window") return "";
-				return "";
-			},
-		);
+		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+			if (cmd === "tmux" && args[0] === "list-sessions") return "";
+			if (cmd === "tmux" && args[0] === "has-session") return "";
+			if (cmd === "tmux" && args[0] === "list-clients") return "";
+			if (cmd === "tmux" && args[0] === "kill-window") return "";
+			return "";
+		});
 	});
 
 	afterEach(() => {
@@ -70,9 +68,7 @@ describe("cleanupStaleSessions", () => {
 			if (s.ended_at) {
 				// Override ended_at for precise timeout testing
 				(db as unknown as { db: Database.Database }).db
-					.prepare(
-						"UPDATE sessions SET ended_at = ? WHERE execution_id = ?",
-					)
+					.prepare("UPDATE sessions SET ended_at = ? WHERE execution_id = ?")
 					.run(s.ended_at, s.execution_id);
 			}
 		}
@@ -103,14 +99,12 @@ describe("cleanupStaleSessions", () => {
 	});
 
 	it("returns empty result when tmux server is not running", () => {
-		mockExecFileSync.mockImplementation(
-			(cmd: string, args: string[]) => {
-				if (cmd === "tmux" && args[0] === "list-sessions") {
-					throw new Error("no server running");
-				}
-				return "";
-			},
-		);
+		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+			if (cmd === "tmux" && args[0] === "list-sessions") {
+				throw new Error("no server running");
+			}
+			return "";
+		});
 
 		const dbPath = createDbWithSessions([
 			{
@@ -175,25 +169,21 @@ describe("cleanupStaleSessions", () => {
 		// Verify kill-window was called with correct target
 		const killCalls = mockExecFileSync.mock.calls.filter(
 			(c: unknown[]) =>
-				c[0] === "tmux" &&
-				Array.isArray(c[1]) &&
-				c[1][0] === "kill-window",
+				c[0] === "tmux" && Array.isArray(c[1]) && c[1][0] === "kill-window",
 		);
 		expect(killCalls).toHaveLength(1);
 		expect(killCalls[0][1]).toEqual(["kill-window", "-t", "GEO-1:@0"]);
 	});
 
 	it("skips timed-out sessions with client attached", () => {
-		mockExecFileSync.mockImplementation(
-			(cmd: string, args: string[]) => {
-				if (cmd === "tmux" && args[0] === "list-sessions") return "";
-				if (cmd === "tmux" && args[0] === "has-session") return "";
-				if (cmd === "tmux" && args[0] === "list-clients") {
-					return "/dev/ttys001: GEO-1 [200x50]";
-				}
-				return "";
-			},
-		);
+		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+			if (cmd === "tmux" && args[0] === "list-sessions") return "";
+			if (cmd === "tmux" && args[0] === "has-session") return "";
+			if (cmd === "tmux" && args[0] === "list-clients") {
+				return "/dev/ttys001: GEO-1 [200x50]";
+			}
+			return "";
+		});
 
 		const dbPath = createDbWithSessions([
 			{
@@ -214,15 +204,13 @@ describe("cleanupStaleSessions", () => {
 	});
 
 	it("skips when tmux session no longer exists", () => {
-		mockExecFileSync.mockImplementation(
-			(cmd: string, args: string[]) => {
-				if (cmd === "tmux" && args[0] === "list-sessions") return "";
-				if (cmd === "tmux" && args[0] === "has-session") {
-					throw new Error("session not found");
-				}
-				return "";
-			},
-		);
+		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+			if (cmd === "tmux" && args[0] === "list-sessions") return "";
+			if (cmd === "tmux" && args[0] === "has-session") {
+				throw new Error("session not found");
+			}
+			return "";
+		});
 
 		const dbPath = createDbWithSessions([
 			{
@@ -267,9 +255,7 @@ describe("cleanupStaleSessions", () => {
 		// Verify kill-window was NOT called
 		const killCalls = mockExecFileSync.mock.calls.filter(
 			(c: unknown[]) =>
-				c[0] === "tmux" &&
-				Array.isArray(c[1]) &&
-				c[1][0] === "kill-window",
+				c[0] === "tmux" && Array.isArray(c[1]) && c[1][0] === "kill-window",
 		);
 		expect(killCalls).toHaveLength(0);
 	});
@@ -327,9 +313,7 @@ describe("cleanupStaleSessions", () => {
 	it("records warning for legacy DB without sessions table", () => {
 		const legacyDbPath = join(tmpDir, "legacy.db");
 		const legacyDb = new Database(legacyDbPath);
-		legacyDb.exec(
-			"CREATE TABLE messages (id TEXT PRIMARY KEY, content TEXT)",
-		);
+		legacyDb.exec("CREATE TABLE messages (id TEXT PRIMARY KEY, content TEXT)");
 		legacyDb.close();
 
 		const result = cleanupStaleSessions({
@@ -352,17 +336,15 @@ describe("cleanupStaleSessions", () => {
 			},
 		]);
 
-		mockExecFileSync.mockImplementation(
-			(cmd: string, args: string[]) => {
-				if (cmd === "tmux" && args[0] === "list-sessions") return "";
-				if (cmd === "tmux" && args[0] === "has-session") return "";
-				if (cmd === "tmux" && args[0] === "list-clients") return "";
-				if (cmd === "tmux" && args[0] === "kill-window") {
-					throw new Error("can't find window GEO-1:@0");
-				}
-				return "";
-			},
-		);
+		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+			if (cmd === "tmux" && args[0] === "list-sessions") return "";
+			if (cmd === "tmux" && args[0] === "has-session") return "";
+			if (cmd === "tmux" && args[0] === "list-clients") return "";
+			if (cmd === "tmux" && args[0] === "kill-window") {
+				throw new Error("can't find window GEO-1:@0");
+			}
+			return "";
+		});
 
 		const result = cleanupStaleSessions({
 			dbPaths: [dbPath],
@@ -385,17 +367,15 @@ describe("cleanupStaleSessions", () => {
 			},
 		]);
 
-		mockExecFileSync.mockImplementation(
-			(cmd: string, args: string[]) => {
-				if (cmd === "tmux" && args[0] === "list-sessions") return "";
-				if (cmd === "tmux" && args[0] === "has-session") return "";
-				if (cmd === "tmux" && args[0] === "list-clients") return "";
-				if (cmd === "tmux" && args[0] === "kill-window") {
-					throw new Error("permission denied");
-				}
-				return "";
-			},
-		);
+		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+			if (cmd === "tmux" && args[0] === "list-sessions") return "";
+			if (cmd === "tmux" && args[0] === "has-session") return "";
+			if (cmd === "tmux" && args[0] === "list-clients") return "";
+			if (cmd === "tmux" && args[0] === "kill-window") {
+				throw new Error("permission denied");
+			}
+			return "";
+		});
 
 		const result = cleanupStaleSessions({
 			dbPaths: [dbPath],
@@ -416,17 +396,15 @@ describe("cleanupStaleSessions", () => {
 			},
 		]);
 
-		mockExecFileSync.mockImplementation(
-			(cmd: string, args: string[]) => {
-				if (cmd === "tmux" && args[0] === "list-sessions") return "";
-				if (cmd === "tmux" && args[0] === "has-session") return "";
-				if (cmd === "tmux" && args[0] === "list-clients") return "";
-				if (cmd === "tmux" && args[0] === "kill-window") {
-					throw new Error("unexpected failure");
-				}
-				return "";
-			},
-		);
+		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+			if (cmd === "tmux" && args[0] === "list-sessions") return "";
+			if (cmd === "tmux" && args[0] === "has-session") return "";
+			if (cmd === "tmux" && args[0] === "list-clients") return "";
+			if (cmd === "tmux" && args[0] === "kill-window") {
+				throw new Error("unexpected failure");
+			}
+			return "";
+		});
 
 		const result = cleanupStaleSessions({
 			dbPaths: [dbPath],
@@ -506,15 +484,13 @@ describe("cleanupStaleSessions", () => {
 		]);
 
 		// Realistic behavior: has-session fails for bare window IDs
-		mockExecFileSync.mockImplementation(
-			(cmd: string, args: string[]) => {
-				if (cmd === "tmux" && args[0] === "list-sessions") return "";
-				if (cmd === "tmux" && args[0] === "has-session") {
-					throw new Error("can't find session @42");
-				}
-				return "";
-			},
-		);
+		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
+			if (cmd === "tmux" && args[0] === "list-sessions") return "";
+			if (cmd === "tmux" && args[0] === "has-session") {
+				throw new Error("can't find session @42");
+			}
+			return "";
+		});
 
 		const result = cleanupStaleSessions({
 			dbPaths: [dbPath],

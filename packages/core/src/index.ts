@@ -245,6 +245,15 @@ export type {
 	ISimpleAgentRunner,
 	ISimpleAgentRunnerConfig,
 } from "./simple-agent-runner-types.js";
+// Tmux naming utilities (GEO-269)
+export {
+	buildSessionName,
+	buildWindowLabel,
+	cleanIssueTitle,
+	sanitizeTmuxName,
+} from "./tmux-naming.js";
+// Tmux viewer utility (GEO-277)
+export { openTmuxViewer } from "./tmux-viewer.js";
 export type {
 	ActionDefinition,
 	GuardFn,
@@ -260,15 +269,6 @@ export {
 	WORKFLOW_TRANSITIONS,
 	WorkflowFSM,
 } from "./workflow-fsm.js";
-// Tmux naming utilities (GEO-269)
-export {
-	buildSessionName,
-	buildWindowLabel,
-	cleanIssueTitle,
-	sanitizeTmuxName,
-} from "./tmux-naming.js";
-// Tmux viewer utility (GEO-277)
-export { openTmuxViewer } from "./tmux-viewer.js";
 // Platform-agnostic webhook type aliases - exported from issue-tracker
 // These are now defined in issue-tracker/types.ts as aliases to Linear SDK webhook types
 // EdgeWorker and other high-level code should use these generic names via issue-tracker exports

@@ -6,17 +6,17 @@
 
 import { execFileSync } from "node:child_process";
 import { rmSync } from "node:fs";
-import { join } from "node:path";
+import type http from "node:http";
 import { homedir } from "node:os";
-import http from "node:http";
-import { StateStore } from "../packages/teamlead/src/StateStore.js";
+import { join } from "node:path";
 import { createBridgeApp } from "../packages/teamlead/src/bridge/plugin.js";
-import type { BridgeConfig } from "../packages/teamlead/src/bridge/types.js";
-import type { ProjectEntry } from "../packages/teamlead/src/ProjectConfig.js";
 import {
 	getTmuxTargetFromCommDb,
 	isTmuxSessionAlive,
 } from "../packages/teamlead/src/bridge/tmux-lookup.js";
+import type { BridgeConfig } from "../packages/teamlead/src/bridge/types.js";
+import type { ProjectEntry } from "../packages/teamlead/src/ProjectConfig.js";
+import { StateStore } from "../packages/teamlead/src/StateStore.js";
 
 const PROJECT = "e2e-stale-demo";
 const EXEC_ID = "exec-demo-stale";
@@ -143,9 +143,7 @@ async function main() {
 		section("Step 4: StateStore 巡检查询");
 
 		const stale = store.getStaleCompletedSessions(24);
-		console.log(
-			`  🔎 getStaleCompletedSessions(24h): 找到 ${stale.length} 个`,
-		);
+		console.log(`  🔎 getStaleCompletedSessions(24h): 找到 ${stale.length} 个`);
 		for (const s of stale) {
 			console.log(
 				`     → ${s.execution_id}: status=${s.status}, last_activity=${s.last_activity_at}`,
@@ -183,17 +181,14 @@ async function main() {
 		showTmuxSessions();
 
 		console.log(`\n  🔫 POST ${baseUrl}/api/sessions/${EXEC_ID}/close-tmux`);
-		const res = await fetch(
-			`${baseUrl}/api/sessions/${EXEC_ID}/close-tmux`,
-			{
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					Authorization: "Bearer demo-token",
-				},
-				body: JSON.stringify({ leadId: "product-lead" }),
+		const res = await fetch(`${baseUrl}/api/sessions/${EXEC_ID}/close-tmux`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer demo-token",
 			},
-		);
+			body: JSON.stringify({ leadId: "product-lead" }),
+		});
 		const body = (await res.json()) as Record<string, unknown>;
 		console.log(`  📬 Response: ${res.status}`, JSON.stringify(body));
 
@@ -204,11 +199,7 @@ async function main() {
 		showTmuxSessions();
 
 		try {
-			execFileSync("tmux", [
-				"has-session",
-				"-t",
-				"=GEO-E2E-STALE",
-			]);
+			execFileSync("tmux", ["has-session", "-t", "=GEO-E2E-STALE"]);
 			console.log("\n  ❌ GEO-E2E-STALE 还活着！关闭失败");
 		} catch {
 			console.log("\n  ✅ GEO-E2E-STALE 已被杀掉");
@@ -223,9 +214,7 @@ async function main() {
 		console.log("  所有验证通过 ✅\n");
 	} finally {
 		if (server) {
-			await new Promise<void>((r, j) =>
-				server!.close((e) => (e ? j(e) : r())),
-			);
+			await new Promise<void>((r, j) => server!.close((e) => (e ? j(e) : r())));
 		}
 		store?.close();
 		// 清理 CommDB

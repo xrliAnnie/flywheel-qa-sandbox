@@ -81,9 +81,7 @@ export function createRunsRouter(
 		if (leadId) {
 			const project = projects.find((p) => p.projectName === projectName);
 			if (project) {
-				const leadExists = project.leads.some(
-					(l) => l.agentId === leadId,
-				);
+				const leadExists = project.leads.some((l) => l.agentId === leadId);
 				if (!leadExists) {
 					res.status(403).json({
 						success: false,

@@ -42,10 +42,7 @@ export async function postMergeCleanup(
 
 	// Close Runner tmux session
 	try {
-		const target = getTmuxTargetFromCommDb(
-			opts.executionId,
-			opts.projectName,
-		);
+		const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 		if (target) {
 			const killResult = await killTmuxSession(target.sessionName);
 			result.tmuxClosed = killResult.killed;
@@ -60,9 +57,7 @@ export async function postMergeCleanup(
 
 	// Audit event
 	const eventType =
-		result.errors.length > 0
-			? "post_merge_partial"
-			: "post_merge_completed";
+		result.errors.length > 0 ? "post_merge_partial" : "post_merge_completed";
 	store.insertEvent({
 		event_id: `post-merge-${opts.executionId}-${Date.now()}`,
 		execution_id: opts.executionId,

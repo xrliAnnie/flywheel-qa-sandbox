@@ -11,17 +11,17 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, rmSync } from "node:fs";
+import type http from "node:http";
 import { tmpdir } from "node:os";
-import http from "node:http";
+import { join } from "node:path";
 
 // Use source imports (tsx handles TS directly)
 import { CommDB } from "../packages/flywheel-comm/src/db.js";
-import { StateStore } from "../packages/teamlead/src/StateStore.js";
 import { createBridgeApp } from "../packages/teamlead/src/bridge/plugin.js";
 import type { BridgeConfig } from "../packages/teamlead/src/bridge/types.js";
 import type { ProjectEntry } from "../packages/teamlead/src/ProjectConfig.js";
+import { StateStore } from "../packages/teamlead/src/StateStore.js";
 
 // ── Config ──
 const EXEC_ID = `e2e-stale-${Date.now()}`;
@@ -161,9 +161,7 @@ async function main() {
 
 		const app = createBridgeApp(store, projects, config);
 		server = app.listen(0, "127.0.0.1");
-		await new Promise<void>((resolve) =>
-			server!.once("listening", resolve),
-		);
+		await new Promise<void>((resolve) => server!.once("listening", resolve));
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		const baseUrl = `http://127.0.0.1:${port}`;
@@ -287,11 +285,7 @@ async function main() {
 
 		// Kill tmux session if still alive
 		try {
-			execFileSync("tmux", [
-				"kill-session",
-				"-t",
-				`=${TMUX_SESSION}`,
-			]);
+			execFileSync("tmux", ["kill-session", "-t", `=${TMUX_SESSION}`]);
 		} catch {
 			// already dead
 		}
@@ -307,12 +301,7 @@ async function main() {
 		try {
 			rmSync(standardCommDbPath, { force: true });
 			rmSync(
-				join(
-					process.env.HOME ?? "/tmp",
-					".flywheel",
-					"comm",
-					PROJECT_NAME,
-				),
+				join(process.env.HOME ?? "/tmp", ".flywheel", "comm", PROJECT_NAME),
 				{ recursive: true, force: true },
 			);
 		} catch {

@@ -97,11 +97,9 @@ export async function killTmuxSession(
 	sessionName: string,
 ): Promise<{ killed: boolean; error?: string }> {
 	try {
-		await execFileAsync(
-			"tmux",
-			["kill-session", "-t", `=${sessionName}`],
-			{ timeout: TMUX_TIMEOUT },
-		);
+		await execFileAsync("tmux", ["kill-session", "-t", `=${sessionName}`], {
+			timeout: TMUX_TIMEOUT,
+		});
 		return { killed: true };
 	} catch (err) {
 		const msg = (err as Error).message ?? String(err);

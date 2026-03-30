@@ -17,7 +17,7 @@ const timeoutIdx = args.indexOf("--timeout");
 const timeoutMinutes =
 	timeoutIdx >= 0 ? parseInt(args[timeoutIdx + 1], 10) : 30;
 
-if (isNaN(timeoutMinutes) || timeoutMinutes < 1) {
+if (Number.isNaN(timeoutMinutes) || timeoutMinutes < 1) {
 	console.error("Error: --timeout must be a positive integer");
 	process.exit(1);
 }

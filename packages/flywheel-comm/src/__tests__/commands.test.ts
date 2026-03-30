@@ -289,9 +289,9 @@ describe("capture command", () => {
 		const db = new CommDB(dbPath);
 		db.close();
 
-		expect(() =>
-			capture({ execId: "exec-nonexistent", dbPath }),
-		).toThrow("No session found for execution");
+		expect(() => capture({ execId: "exec-nonexistent", dbPath })).toThrow(
+			"No session found for execution",
+		);
 	});
 
 	it("should throw when tmux window is not available", () => {
@@ -301,8 +301,8 @@ describe("capture command", () => {
 		db.close();
 
 		// capture will try to exec tmux which will fail (no real tmux session)
-		expect(() =>
-			capture({ execId: "exec-tmux", dbPath }),
-		).toThrow("tmux window not found");
+		expect(() => capture({ execId: "exec-tmux", dbPath })).toThrow(
+			"tmux window not found",
+		);
 	});
 });

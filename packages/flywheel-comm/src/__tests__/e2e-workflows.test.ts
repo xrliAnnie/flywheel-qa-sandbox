@@ -54,14 +54,7 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 
 		// Lead sees pending question
 		const pendingResult = JSON.parse(
-			runCli([
-				"pending",
-				"--lead",
-				"product-lead",
-				"--db",
-				dbPath,
-				"--json",
-			]),
+			runCli(["pending", "--lead", "product-lead", "--db", dbPath, "--json"]),
 		);
 		expect(pendingResult).toHaveLength(1);
 		expect(pendingResult[0].id).toBe(qId);
@@ -91,14 +84,7 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 
 		// No more pending
 		const pendingAfter = JSON.parse(
-			runCli([
-				"pending",
-				"--lead",
-				"product-lead",
-				"--db",
-				dbPath,
-				"--json",
-			]),
+			runCli(["pending", "--lead", "product-lead", "--db", dbPath, "--json"]),
 		);
 		expect(pendingAfter).toHaveLength(0);
 	});
@@ -122,14 +108,7 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 
 		// Runner checks inbox
 		const inboxResult = JSON.parse(
-			runCli([
-				"inbox",
-				"--exec-id",
-				"exec-w2",
-				"--db",
-				dbPath,
-				"--json",
-			]),
+			runCli(["inbox", "--exec-id", "exec-w2", "--db", dbPath, "--json"]),
 		);
 		expect(inboxResult).toHaveLength(1);
 		expect(inboxResult[0].content).toBe("Switch to GEO-999 immediately");
@@ -137,14 +116,7 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 
 		// Inbox is now empty (instructions marked as read)
 		const inboxAfter = JSON.parse(
-			runCli([
-				"inbox",
-				"--exec-id",
-				"exec-w2",
-				"--db",
-				dbPath,
-				"--json",
-			]),
+			runCli(["inbox", "--exec-id", "exec-w2", "--db", dbPath, "--json"]),
 		);
 		expect(inboxAfter).toHaveLength(0);
 	});
@@ -179,28 +151,14 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 
 		// Runner can see instruction
 		const inboxResult = JSON.parse(
-			runCli([
-				"inbox",
-				"--exec-id",
-				"exec-mixed",
-				"--db",
-				dbPath,
-				"--json",
-			]),
+			runCli(["inbox", "--exec-id", "exec-mixed", "--db", dbPath, "--json"]),
 		);
 		expect(inboxResult).toHaveLength(1);
 		expect(inboxResult[0].content).toBe("Priority change: do X first");
 
 		// Question is still pending
 		const pendingResult = JSON.parse(
-			runCli([
-				"pending",
-				"--lead",
-				"product-lead",
-				"--db",
-				dbPath,
-				"--json",
-			]),
+			runCli(["pending", "--lead", "product-lead", "--db", dbPath, "--json"]),
 		);
 		expect(pendingResult).toHaveLength(1);
 		expect(pendingResult[0].id).toBe(askResult.question_id);
@@ -256,27 +214,13 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 
 		// Each lead sees only their own pending
 		const productPending = JSON.parse(
-			runCli([
-				"pending",
-				"--lead",
-				"product-lead",
-				"--db",
-				dbPath,
-				"--json",
-			]),
+			runCli(["pending", "--lead", "product-lead", "--db", dbPath, "--json"]),
 		);
 		expect(productPending).toHaveLength(1);
 		expect(productPending[0].content).toBe("Product question?");
 
 		const opsPending = JSON.parse(
-			runCli([
-				"pending",
-				"--lead",
-				"ops-lead",
-				"--db",
-				dbPath,
-				"--json",
-			]),
+			runCli(["pending", "--lead", "ops-lead", "--db", dbPath, "--json"]),
 		);
 		expect(opsPending).toHaveLength(1);
 		expect(opsPending[0].content).toBe("Ops question?");
@@ -294,27 +238,16 @@ describe("E2E workflows", { timeout: 20000 }, () => {
 
 		// Ops still has pending question
 		const opsStillPending = JSON.parse(
-			runCli([
-				"pending",
-				"--lead",
-				"ops-lead",
-				"--db",
-				dbPath,
-				"--json",
-			]),
+			runCli(["pending", "--lead", "ops-lead", "--db", dbPath, "--json"]),
 		);
 		expect(opsStillPending).toHaveLength(1);
 
 		// Both answers retrievable independently
-		const answer1 = JSON.parse(
-			runCli(["check", "--db", dbPath, "--json", q1]),
-		);
+		const answer1 = JSON.parse(runCli(["check", "--db", dbPath, "--json", q1]));
 		expect(answer1.status).toBe("answered");
 		expect(answer1.content).toBe("Product answer");
 
-		const answer2 = JSON.parse(
-			runCli(["check", "--db", dbPath, "--json", q2]),
-		);
+		const answer2 = JSON.parse(runCli(["check", "--db", dbPath, "--json", q2]));
 		expect(answer2.status).toBe("pending");
 	});
 });
