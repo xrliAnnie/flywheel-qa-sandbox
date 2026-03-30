@@ -64,6 +64,7 @@ Current version: see `doc/VERSION`
 | FLY-1: Vitest watch mode fix | ✅ Merged (PR #72) |
 | GEO-286: Lead Workspace per-Lead subdirectory | ✅ Merged (PR #67) |
 | GEO-280: Sprint closing — Bridge tmux auto-close | ✅ Merged (PR #69) |
+| GEO-288: Daily Standup v2 — system status + cron trigger | ✅ Merged (PR #70, GeoForge3D PR #105) |
 | GEO-285: Lead Context Window — crash recovery + PostCompact hook | ✅ Merged (PR #68) |
 
 ## Doc Structure & Lifecycle
