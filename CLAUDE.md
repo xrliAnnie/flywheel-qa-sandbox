@@ -60,6 +60,10 @@ Current version: see `doc/VERSION`
 | GEO-275: Simba Chief of Staff + Core Channel (Phase 3) | ✅ Merged (Flywheel PR #59, GeoForge3D PR #96) |
 | GEO-291: Flywheel Orchestrator | ✅ Merged (PR #64) |
 | GEO-298: Linear Team Reorg (create-issue team/project) | ✅ Merged (PR #65) |
+| GEO-296: Fork claude-plugins-official (bot-to-bot) | ✅ Merged (PR #66) |
+| FLY-1: Vitest watch mode fix | ✅ Merged (PR #72) |
+| GEO-286: Lead Workspace per-Lead subdirectory | ✅ Merged (PR #67) |
+| GEO-280: Sprint closing — Bridge tmux auto-close | ✅ Merged (PR #69) |
 
 ## Doc Structure & Lifecycle
 
