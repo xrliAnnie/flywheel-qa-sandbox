@@ -22,9 +22,7 @@ jobs:
     if: |
       github.event.issue.pull_request &&
       github.event.issue.state == 'open' &&
-      (github.event.comment.body == ':cool:' ||
-       github.event.comment.body == '😎' ||
-       github.event.comment.body == '🆒')
+      github.event.comment.body == ':cool:'
 
     steps:
     - name: "📝 Get PR information"

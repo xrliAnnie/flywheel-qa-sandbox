@@ -126,10 +126,20 @@ For each PR the user approves to ship:
    gh pr comment {PR_NUMBER} --body ":cool:"
    ```
    The `ship-on-comment.yml` workflow will run CI (build + typecheck + lint + test) and squash merge if green.
-   Wait for the workflow to complete:
+   Wait for the workflow to complete (poll every 30s):
    ```bash
-   # Poll PR state until merged or workflow fails
-   gh pr view {PR_NUMBER} --json state -q '.state'
+   while true; do
+     STATE=$(gh pr view {PR_NUMBER} --json state -q '.state')
+     if [ "$STATE" = "MERGED" ]; then echo "PR merged"; break; fi
+     if [ "$STATE" = "CLOSED" ]; then echo "PR closed without merge"; exit 1; fi
+     # Check if ship workflow posted a failure comment
+     LAST=$(gh pr view {PR_NUMBER} --json comments -q '.comments[-1].body')
+     if echo "$LAST" | grep -q "Ship failed"; then
+       echo "Ship workflow failed — check logs and fix, then post :cool: again"
+       break
+     fi
+     sleep 30
+   done
    ```
    If the workflow fails, check the run logs and fix the issue, then comment `:cool:` again.
 
