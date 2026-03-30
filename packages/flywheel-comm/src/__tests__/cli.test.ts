@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { CommDB } from "../db.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, "../../dist/index.js");
@@ -266,6 +267,245 @@ describe("CLI", () => {
 			expect(result).toContain("Usage:");
 			expect(result).toContain("ask");
 			expect(result).toContain("check");
+		});
+	});
+
+	describe("send", () => {
+		it("should output instruction ID", () => {
+			const result = runCli([
+				"send",
+				"--from",
+				"product-lead",
+				"--to",
+				"exec-123",
+				"--db",
+				dbPath,
+				"Stop current work",
+			]);
+			expect(result).toMatch(
+				/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+			);
+		});
+
+		it("should output JSON with --json", () => {
+			const result = runCli([
+				"send",
+				"--from",
+				"product-lead",
+				"--to",
+				"exec-123",
+				"--db",
+				dbPath,
+				"--json",
+				"Stop current work",
+			]);
+			const parsed = JSON.parse(result);
+			expect(parsed.instruction_id).toBeTruthy();
+		});
+
+		it("should fail without --from", () => {
+			const { exitCode } = runCliSafe([
+				"send",
+				"--to",
+				"exec-123",
+				"--db",
+				dbPath,
+				"instruction",
+			]);
+			expect(exitCode).toBe(1);
+		});
+
+		it("should fail without --to", () => {
+			const { exitCode } = runCliSafe([
+				"send",
+				"--from",
+				"product-lead",
+				"--db",
+				dbPath,
+				"instruction",
+			]);
+			expect(exitCode).toBe(1);
+		});
+	});
+
+	describe("inbox", () => {
+		it("should show instructions via send → inbox round-trip", () => {
+			runCli([
+				"send",
+				"--from",
+				"product-lead",
+				"--to",
+				"exec-456",
+				"--db",
+				dbPath,
+				"Do the thing",
+			]);
+
+			const result = runCli([
+				"inbox",
+				"--exec-id",
+				"exec-456",
+				"--db",
+				dbPath,
+			]);
+			expect(result).toContain("Do the thing");
+			expect(result).toContain("product-lead");
+		});
+
+		it("should output JSON with --json", () => {
+			runCli([
+				"send",
+				"--from",
+				"product-lead",
+				"--to",
+				"exec-789",
+				"--db",
+				dbPath,
+				"Instruction text",
+			]);
+
+			const result = JSON.parse(
+				runCli([
+					"inbox",
+					"--exec-id",
+					"exec-789",
+					"--db",
+					dbPath,
+					"--json",
+				]),
+			);
+			expect(result).toHaveLength(1);
+			expect(result[0].content).toBe("Instruction text");
+			expect(result[0].from_agent).toBe("product-lead");
+		});
+
+		it("should show 'No instructions.' when empty", () => {
+			const result = runCli([
+				"inbox",
+				"--exec-id",
+				"exec-empty",
+				"--db",
+				dbPath,
+			]);
+			expect(result).toBe("No instructions.");
+		});
+
+		it("should fail without --exec-id", () => {
+			const { exitCode } = runCliSafe(["inbox", "--db", dbPath]);
+			expect(exitCode).toBe(1);
+		});
+	});
+
+	describe("sessions", () => {
+		it("should list sessions", () => {
+			// Seed session data via CommDB
+			const db = new CommDB(dbPath);
+			db.registerSession("exec-1", "GEO-1:@0", "geoforge3d", "GEO-100");
+			db.close();
+
+			const result = runCli(["sessions", "--db", dbPath]);
+			expect(result).toContain("exec-1");
+			expect(result).toContain("GEO-1:@0");
+			expect(result).toContain("GEO-100");
+			expect(result).toContain("running");
+		});
+
+		it("should output JSON with --json", () => {
+			const db = new CommDB(dbPath);
+			db.registerSession("exec-1", "GEO-1:@0", "geoforge3d", "GEO-100");
+			db.registerSession("exec-2", "GEO-2:@1", "geoforge3d", "GEO-101");
+			db.close();
+
+			const result = JSON.parse(
+				runCli(["sessions", "--db", dbPath, "--json"]),
+			);
+			expect(result).toHaveLength(2);
+			expect(result[0].execution_id).toBe("exec-1");
+			expect(result[1].execution_id).toBe("exec-2");
+		});
+
+		it("should filter active sessions with --active", () => {
+			const db = new CommDB(dbPath);
+			db.registerSession("exec-1", "GEO-1:@0", "geoforge3d");
+			db.registerSession("exec-2", "GEO-2:@1", "geoforge3d");
+			db.updateSessionStatus("exec-1", "completed");
+			db.close();
+
+			const result = JSON.parse(
+				runCli(["sessions", "--db", dbPath, "--json", "--active"]),
+			);
+			expect(result).toHaveLength(1);
+			expect(result[0].execution_id).toBe("exec-2");
+		});
+
+		it("should show 'No sessions.' when empty", () => {
+			// Create DB but no sessions
+			const db = new CommDB(dbPath);
+			db.close();
+
+			const result = runCli(["sessions", "--db", dbPath]);
+			expect(result).toBe("No sessions.");
+		});
+	});
+
+	describe("capture", () => {
+		it("should fail without --exec-id", () => {
+			const { exitCode } = runCliSafe(["capture", "--db", dbPath]);
+			expect(exitCode).toBe(1);
+		});
+
+		it("should capture tmux output via fake tmux", () => {
+			// Seed a session
+			const db = new CommDB(dbPath);
+			db.registerSession("exec-cap", "GEO-CAP:@0", "geoforge3d");
+			db.close();
+
+			// Create fake tmux script
+			const fakeTmuxDir = join(tmpDir, "bin");
+			mkdirSync(fakeTmuxDir, { recursive: true });
+			writeFileSync(
+				join(fakeTmuxDir, "tmux"),
+				'#!/bin/sh\necho "captured tmux output line 1"\necho "captured tmux output line 2"',
+				{ mode: 0o755 },
+			);
+
+			const result = runCli(
+				["capture", "--exec-id", "exec-cap", "--db", dbPath],
+				{ PATH: `${fakeTmuxDir}:${process.env.PATH}` },
+			);
+			expect(result).toContain("captured tmux output line 1");
+			expect(result).toContain("captured tmux output line 2");
+		});
+
+		it("should pass --lines to tmux (NaN passthrough for non-numeric)", () => {
+			// Seed a session
+			const db = new CommDB(dbPath);
+			db.registerSession("exec-nan", "GEO-NAN:@0", "geoforge3d");
+			db.close();
+
+			// Create fake tmux that echoes args for inspection
+			const fakeTmuxDir = join(tmpDir, "bin-nan");
+			mkdirSync(fakeTmuxDir, { recursive: true });
+			writeFileSync(
+				join(fakeTmuxDir, "tmux"),
+				'#!/bin/sh\necho "args: $@"',
+				{ mode: 0o755 },
+			);
+
+			const result = runCli(
+				[
+					"capture",
+					"--exec-id",
+					"exec-nan",
+					"--db",
+					dbPath,
+					"--lines",
+					"foo",
+				],
+				{ PATH: `${fakeTmuxDir}:${process.env.PATH}` },
+			);
+			// Current behavior: parseInt("foo", 10) → NaN → tmux gets -S -NaN
+			expect(result).toContain("-NaN");
 		});
 	});
 });
