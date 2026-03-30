@@ -429,7 +429,7 @@ trap cleanup SIGINT SIGTERM
 cd "$LEAD_WORKSPACE"
 
 # Build claude args using bash array (avoids quoting/word-splitting issues)
-CLAUDE_ARGS=(--agent "$LEAD_ID" --channels "plugin:discord@claude-plugins-official")
+CLAUDE_ARGS=(--agent "$LEAD_ID" --channels "plugin:discord@claude-plugins-official" --permission-mode bypassPermissions)
 
 # ════════════════════════════════════════════════════════════════
 # Layer 2: Recovery Loop
