@@ -69,6 +69,9 @@ Current version: see `doc/VERSION`
 | GEO-254: flywheel-comm E2E integration tests | ✅ Merged (PR #71) |
 | GEO-302: Fix CI lint failures (biome formatting) | ✅ Merged (PR #73) |
 | GEO-200: Forum Thread link "unknown" — thread validation + stale cleanup | ✅ Merged (PR #75) |
+| FLY-2: Ship :cool: flow — CI green gate before merge | ✅ Merged (PR #76) |
+| GEO-203: Claude Lead mem0 memory — dual-bucket model | ✅ Merged (Flywheel PR #78, GeoForge3D PR #112) |
+| GEO-294: Triage HTML Report — publish-html + Vercel deploy | ✅ Merged (Flywheel PR #74, GeoForge3D PR #114) |
 
 ## Doc Structure & Lifecycle
 
