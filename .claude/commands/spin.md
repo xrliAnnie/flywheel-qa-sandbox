@@ -147,37 +147,51 @@ Before starting:
 
 **Note**: The worktree and feature branch were already created in Step 0e. `/implement` should detect the existing branch and skip branch creation. Pass `--skip-branch` or rely on `/implement`'s auto-detection of the current feature branch.
 
-### Stage: Archive (after PR merges)
+### Stage: Ship (after PR created + code review approved)
 
-After implementation is shipped (PR merged to main):
+**Step 1: Archive docs on feature branch** (before merge):
+```bash
+ISSUE_ID="{ISSUE_ID}"
+if [ -n "$ISSUE_ID" ]; then
+  for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
+    src="${dir_pair%%:*}"; dst="${dir_pair##*:}"
+    for f in $(find "$src" -name "*${ISSUE_ID}-*" -type f 2>/dev/null); do
+      git mv "$f" "$dst/"
+    done
+  done
+  if ! git diff --cached --quiet; then
+    git commit -m "docs: archive ${ISSUE_ID} docs before merge"
+    git push
+  fi
+fi
+```
 
-1. **Switch to main repo** (not worktree) and pull:
-   ```bash
-   cd ~/Dev/flywheel  # or the main repo directory
-   git pull origin main
-   ```
+**Step 2: Trigger ship** — comment `:cool:` on the PR:
+```bash
+gh pr comment {PR_NUMBER} --body ":cool:"
+```
+The `ship-on-comment.yml` GitHub Actions workflow runs CI (build + typecheck + lint + test) and squash merges if green. Wait for merge:
+```bash
+sleep 10  # let Actions register the run
+while true; do
+  STATE=$(gh pr view {PR_NUMBER} --json state -q '.state')
+  if [ "$STATE" = "MERGED" ]; then echo "PR merged"; break; fi
+  if [ "$STATE" = "CLOSED" ]; then echo "PR closed without merge"; exit 1; fi
+  sleep 30
+done
+```
+If the PR stays OPEN for >15 min, the ship workflow likely failed. Check comments for details, fix the issue, and post `:cool:` again.
 
-2. **Clean up worktree**:
-   ```bash
-   git worktree remove ../flywheel-geo-{XX}
-   ```
-
-3. Archive docs using **`git mv`** (NOT copy):
-   ```bash
-   git mv doc/plan/inprogress/{file} doc/plan/archive/{file}
-   git mv doc/research/new/GEO-{XX}-*.md doc/research/archive/
-   git mv doc/exploration/new/GEO-{XX}-*.md doc/exploration/archive/
-   ```
-   Only archive docs that exist — not every issue has all three.
-   **IMPORTANT**: Always use `git mv`, never `cp`. Copying creates duplicates.
-
-4. Update CLAUDE.md: remove from Active Explorations list
-
-5. Update MEMORY.md: move docs from Active to Archived index
-
-4. Update Linear issue status to "Done"
-
-5. Commit: `docs: archive GEO-{XX} docs after implementation merged`
+**Step 3: Post-merge bookkeeping** (after PR is merged):
+```bash
+MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+cd "$MAIN_REPO" && git checkout main && git pull origin main
+```
+1. Update CLAUDE.md: add milestone to table, remove from Active Explorations if listed
+2. Update MEMORY.md (local file): move docs from Active to Archived index, mark Done
+3. Update Linear issue status to "Done"
+4. Clean up worktree: `MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //') && cd "$MAIN_REPO" && git worktree remove ../flywheel-geo-{XX}`
+5. Commit + push docs changes: `docs: update docs after {ISSUE_ID} merge`
 
 ## Important Rules
 
