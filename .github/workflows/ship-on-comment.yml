@@ -17,9 +17,9 @@ jobs:
     if: |
       github.event.issue.pull_request &&
       github.event.issue.state == 'open' &&
-      (contains(github.event.comment.body, ':cool') ||
-       contains(github.event.comment.body, '😎') ||
-       contains(github.event.comment.body, '🆒'))
+      (github.event.comment.body == ':cool:' ||
+       github.event.comment.body == '😎' ||
+       github.event.comment.body == '🆒')
 
     steps:
     - name: "📝 Get PR information"
@@ -33,6 +33,18 @@ jobs:
             repo: context.repo.repo,
             pull_number: context.issue.number
           });
+
+          if (pr.draft) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '⚠️ Cannot ship a draft PR. Mark it as ready for review first.'
+            });
+            core.setFailed('PR is still in draft');
+            return;
+          }
+
           core.setOutput('head_ref', pr.head.ref);
           core.setOutput('head_sha', pr.head.sha);
           core.setOutput('pr_title', pr.title);
@@ -41,12 +53,12 @@ jobs:
             owner: context.repo.owner,
             repo: context.repo.repo,
             issue_number: context.issue.number,
-            body: `🚀 Ship triggered for \`${pr.head.ref}\` — running CI checks...`
+            body: `🚀 Ship triggered for \`${pr.head.ref}\` at \`${pr.head.sha.slice(0, 7)}\` — running CI checks...`
           });
 
     - uses: actions/checkout@v4
       with:
-        ref: ${{ steps.pr-info.outputs.head_ref }}
+        ref: ${{ steps.pr-info.outputs.head_sha }}
 
     - uses: pnpm/action-setup@v4
 
@@ -85,6 +97,7 @@ jobs:
         PR_TITLE: ${{ steps.pr-info.outputs.pr_title }}
         PR_NUMBER: ${{ github.event.issue.number }}
         HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
+        HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
@@ -95,13 +108,14 @@ jobs:
             pull_number: prNumber,
             merge_method: 'squash',
             commit_title: `${process.env.PR_TITLE} (#${prNumber})`,
-            commit_message: 'Shipped via :cool: comment'
+            commit_message: 'Shipped via :cool: comment',
+            sha: process.env.HEAD_SHA
           });
           await github.rest.issues.createComment({
             owner: context.repo.owner,
             repo: context.repo.repo,
             issue_number: prNumber,
-            body: '✅ CI green — PR merged to main!'
+            body: `✅ CI green — PR merged to main! (${process.env.HEAD_SHA.slice(0, 7)})`
           });
           try {
             await github.rest.git.deleteRef({
