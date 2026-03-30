@@ -1097,7 +1097,12 @@ export function createBridgeApp(
 			}
 			try {
 				const { generateBootstrap } = await import("./bootstrap-generator.js");
-				const snapshot = await generateBootstrap(leadId, store, projects);
+				const snapshot = await generateBootstrap(
+					leadId,
+					store,
+					projects,
+					memoryService,
+				);
 				await runtime.sendBootstrap(snapshot);
 				res.json({
 					delivered: true,

@@ -15,7 +15,8 @@ if [ -z "$LEAD_ID" ]; then
 fi
 
 bootstrap_curl() {
-  local args=(-s -X POST "${BRIDGE_URL}/api/bootstrap/${LEAD_ID}" -H "Content-Type: application/json" --max-time 10 -w '\n%{http_code}')
+  # GEO-203: Increased timeout from 10→15s to account for dual-bucket memory recall
+  local args=(-s -X POST "${BRIDGE_URL}/api/bootstrap/${LEAD_ID}" -H "Content-Type: application/json" --max-time 15 -w '\n%{http_code}')
   [ -n "$API_TOKEN" ] && args+=(-H "Authorization: Bearer ${API_TOKEN}")
 
   local response

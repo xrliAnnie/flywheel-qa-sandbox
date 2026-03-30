@@ -41,8 +41,11 @@ export function createMemoryRouter(
 				.json({ error: "project_name must be a non-empty string" });
 			return;
 		}
-		if (!isNonEmptyString(agent_id)) {
-			res.status(400).json({ error: "agent_id must be a non-empty string" });
+		// GEO-203: agent_id optional for search (dual-bucket: omit for cross-agent queries)
+		if (agent_id !== undefined && !isNonEmptyString(agent_id)) {
+			res
+				.status(400)
+				.json({ error: "agent_id must be a non-empty string if provided" });
 			return;
 		}
 		if (!isNonEmptyString(user_id)) {
@@ -50,16 +53,37 @@ export function createMemoryRouter(
 			return;
 		}
 
-		// Config-based ID validation (GEO-204)
+		// Config-based ID validation (GEO-204, GEO-203: optional agentId)
 		const idCheck = validateMemoryIds(
 			projects,
 			project_name,
-			agent_id,
+			agent_id ?? undefined,
 			user_id,
 		);
 		if (!idCheck.valid) {
 			res.status(400).json({ error: idCheck.error });
 			return;
+		}
+
+		// GEO-203: Dual-bucket contract enforcement
+		// - No agent_id → shared bucket only: user_id must equal project_name
+		// - With agent_id → user_id must be agent_id (private) or project_name (shared)
+		if (agent_id === undefined) {
+			if (user_id !== project_name) {
+				res.status(400).json({
+					error:
+						"when agent_id is omitted, user_id must equal project_name (shared bucket)",
+				});
+				return;
+			}
+		} else {
+			if (user_id !== agent_id && user_id !== project_name) {
+				res.status(400).json({
+					error:
+						"user_id must equal agent_id (private bucket) or project_name (shared bucket)",
+				});
+				return;
+			}
 		}
 
 		// Validate optional limit
@@ -83,7 +107,7 @@ export function createMemoryRouter(
 					query,
 					projectName: project_name,
 					userId: user_id,
-					agentId: agent_id,
+					agentId: agent_id || undefined,
 					limit: limit as number | undefined,
 				}),
 				TIMEOUT_MS,
