@@ -93,8 +93,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					existingThread.thread_id,
 					botToken,
 					{
-						markDiscordMissing: (id) =>
-							this.store.markDiscordMissing(id),
+						markDiscordMissing: (id) => this.store.markDiscordMissing(id),
 					},
 				);
 			}

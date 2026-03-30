@@ -76,8 +76,7 @@ export function createQueryRouter(
 					if (!s.thread_id) {
 						const thread = store.getThreadByIssue(s.issue_id);
 						if (thread) {
-							(result as Record<string, unknown>).thread_id =
-								thread.thread_id;
+							(result as Record<string, unknown>).thread_id = thread.thread_id;
 						}
 					}
 					return result;
