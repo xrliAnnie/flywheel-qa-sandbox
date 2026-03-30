@@ -749,7 +749,7 @@ describe("Event route — thread validation (GEO-200)", () => {
 		store.close();
 	});
 
-	function postEvent(overrides: Record<string, unknown> = {}) {
+	function _postEvent(overrides: Record<string, unknown> = {}) {
 		// Use the real fetch for HTTP calls to the local test server
 		const realFetch = mockFetchGeo200;
 		return realFetch(`${baseUrl}/events`, {

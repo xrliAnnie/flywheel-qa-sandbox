@@ -1104,10 +1104,9 @@ export class StateStore {
 			[threadId],
 		);
 		// Clear stale session references
-		this.db.run(
-			"UPDATE sessions SET thread_id = NULL WHERE thread_id = ?",
-			[threadId],
-		);
+		this.db.run("UPDATE sessions SET thread_id = NULL WHERE thread_id = ?", [
+			threadId,
+		]);
 		this.save();
 	}
 

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	validateThreadExists,
 	type ThreadValidationDeps,
+	validateThreadExists,
 } from "../bridge/thread-validator.js";
 
 const mockFetch = vi.fn();
@@ -72,7 +72,9 @@ describe("validateThreadExists (GEO-200)", () => {
 	});
 
 	it("fail-open on abort/timeout", async () => {
-		mockFetch.mockRejectedValue(new DOMException("The operation was aborted", "AbortError"));
+		mockFetch.mockRejectedValue(
+			new DOMException("The operation was aborted", "AbortError"),
+		);
 
 		const result = await validateThreadExists("thread-123", "bot-token", deps);
 

@@ -195,16 +195,14 @@ export function createEventRouter(
 							event.project_name,
 							eventLabels,
 						);
-						const botToken =
-							valLead.botToken ?? config.discordBotToken;
+						const botToken = valLead.botToken ?? config.discordBotToken;
 						let threadValid = true;
 						if (botToken) {
 							threadValid = await validateThreadExists(
 								existingThread.thread_id,
 								botToken,
 								{
-									markDiscordMissing: (id) =>
-										store.markDiscordMissing(id),
+									markDiscordMissing: (id) => store.markDiscordMissing(id),
 								},
 							);
 						}
