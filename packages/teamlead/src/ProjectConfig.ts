@@ -282,7 +282,7 @@ export function resolveLeadForIssue(
 export function validateMemoryIds(
 	projects: ProjectEntry[],
 	projectName: string,
-	agentId: string,
+	agentId: string | undefined,
 	userId: string,
 ): { valid: true } | { valid: false; error: string } {
 	const project = projects.find((p) => p.projectName === projectName);
@@ -292,12 +292,15 @@ export function validateMemoryIds(
 			error: `unknown project_name: "${projectName}"`,
 		};
 	}
-	const knownAgents = project.leads.map((l) => l.agentId);
-	if (!knownAgents.includes(agentId)) {
-		return {
-			valid: false,
-			error: `unknown agent_id: "${agentId}" for project "${projectName}"`,
-		};
+	// GEO-203: agentId optional for search (cross-agent queries omit it)
+	if (agentId !== undefined) {
+		const knownAgents = project.leads.map((l) => l.agentId);
+		if (!knownAgents.includes(agentId)) {
+			return {
+				valid: false,
+				error: `unknown agent_id: "${agentId}" for project "${projectName}"`,
+			};
+		}
 	}
 	if (!project.memoryAllowedUsers) {
 		return {

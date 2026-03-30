@@ -152,6 +152,42 @@ describe("ClaudeDiscordRuntime", () => {
 			await runtime.sendBootstrap(snapshot);
 			expect(mockFetch).toHaveBeenCalledTimes(2);
 		});
+
+		it("long memoryRecall produces multiple Discord POSTs (GEO-203)", async () => {
+			const snapshot = makeBootstrap();
+			// Generate memoryRecall longer than Discord's 1900 char limit
+			snapshot.memoryRecall =
+				"### Personal Memory (private)\n" +
+				Array.from({ length: 50 }, (_, i) => `- Memory fact number ${i}: ${"X".repeat(100)}`)
+					.join("\n");
+			expect(snapshot.memoryRecall.length).toBeGreaterThan(1900);
+
+			await runtime.sendBootstrap(snapshot);
+
+			// Should have been split into multiple chunks
+			expect(mockFetch.mock.calls.length).toBeGreaterThan(1);
+			// Verify all calls go to the same channel
+			for (const [url] of mockFetch.mock.calls) {
+				expect(url).toBe(
+					"https://discord.com/api/v10/channels/ctrl-channel-123/messages",
+				);
+			}
+		});
+
+		it("memoryRecall content is NOT truncated to 500 chars (GEO-203)", async () => {
+			const snapshot = makeBootstrap();
+			snapshot.memoryRecall = "A".repeat(800);
+
+			await runtime.sendBootstrap(snapshot);
+
+			// Find the chunk that contains the memory recall content
+			const allBodies = mockFetch.mock.calls.map(
+				([, opts]: [string, { body: string }]) => JSON.parse(opts.body).content,
+			);
+			const fullContent = allBodies.join("");
+			// Full 800-char memory should be present (not truncated to 500)
+			expect(fullContent).toContain("A".repeat(800));
+		});
 	});
 
 	describe("health()", () => {

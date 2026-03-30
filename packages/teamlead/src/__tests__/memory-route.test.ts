@@ -33,7 +33,8 @@ const mockProjects = [
 				match: { labels: ["Product"] },
 			},
 		],
-		memoryAllowedUsers: ["annie"],
+		// GEO-203: dual-bucket — lead IDs (private) + project name (shared)
+		memoryAllowedUsers: ["annie", "product-lead", "geoforge3d"],
 	},
 ];
 
@@ -176,7 +177,8 @@ describe("POST /api/memory/search", () => {
 		expect(res.status).toBe(400);
 	});
 
-	it("400 when agent_id missing", async () => {
+	// GEO-203: agent_id is now optional for search (dual-bucket support)
+	it("200 when agent_id omitted — shared bucket search", async () => {
 		const res = await fetch(url(), {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
@@ -186,7 +188,55 @@ describe("POST /api/memory/search", () => {
 				user_id: "annie",
 			}),
 		});
+		expect(res.status).toBe(200);
+		expect(mockMemoryService.searchMemories).toHaveBeenCalledWith({
+			query: "test",
+			projectName: "geoforge3d",
+			userId: "annie",
+			agentId: undefined,
+			limit: undefined,
+		});
+	});
+
+	it("400 when agent_id is empty string", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				query: "test",
+				project_name: "geoforge3d",
+				agent_id: "",
+				user_id: "annie",
+			}),
+		});
 		expect(res.status).toBe(400);
+	});
+
+	it("200 with user_id=product-lead — private bucket search", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				query: "my decisions",
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "product-lead",
+			}),
+		});
+		expect(res.status).toBe(200);
+	});
+
+	it("200 with user_id=geoforge3d — shared bucket search", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				query: "project facts",
+				project_name: "geoforge3d",
+				user_id: "geoforge3d",
+			}),
+		});
+		expect(res.status).toBe(200);
 	});
 
 	it("400 when user_id missing", async () => {
@@ -501,6 +551,28 @@ describe("POST /api/memory/add", () => {
 			}),
 		});
 		expect(res.status).toBe(400);
+	});
+
+	// GEO-203: add with private bucket user_id
+	it("200 when writing to private bucket (user_id=product-lead)", async () => {
+		const res = await fetch(url(), {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				messages: [{ role: "assistant", content: "my decision" }],
+				project_name: "geoforge3d",
+				agent_id: "product-lead",
+				user_id: "product-lead",
+			}),
+		});
+		expect(res.status).toBe(200);
+		expect(mockMemoryService.addMessages).toHaveBeenCalledWith({
+			messages: [{ role: "assistant", content: "my decision" }],
+			projectName: "geoforge3d",
+			agentId: "product-lead",
+			userId: "product-lead",
+			metadata: undefined,
+		});
 	});
 
 	it("400 when metadata is array (not object)", async () => {

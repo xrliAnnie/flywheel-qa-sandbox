@@ -41,8 +41,11 @@ export function createMemoryRouter(
 				.json({ error: "project_name must be a non-empty string" });
 			return;
 		}
-		if (!isNonEmptyString(agent_id)) {
-			res.status(400).json({ error: "agent_id must be a non-empty string" });
+		// GEO-203: agent_id optional for search (dual-bucket: omit for cross-agent queries)
+		if (agent_id !== undefined && !isNonEmptyString(agent_id)) {
+			res
+				.status(400)
+				.json({ error: "agent_id must be a non-empty string if provided" });
 			return;
 		}
 		if (!isNonEmptyString(user_id)) {
@@ -50,11 +53,11 @@ export function createMemoryRouter(
 			return;
 		}
 
-		// Config-based ID validation (GEO-204)
+		// Config-based ID validation (GEO-204, GEO-203: optional agentId)
 		const idCheck = validateMemoryIds(
 			projects,
 			project_name,
-			agent_id,
+			agent_id ?? undefined,
 			user_id,
 		);
 		if (!idCheck.valid) {
@@ -83,7 +86,7 @@ export function createMemoryRouter(
 					query,
 					projectName: project_name,
 					userId: user_id,
-					agentId: agent_id,
+					agentId: agent_id || undefined,
 					limit: limit as number | undefined,
 				}),
 				TIMEOUT_MS,
