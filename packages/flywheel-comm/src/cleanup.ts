@@ -63,10 +63,7 @@ export function cleanupStaleSessions(opts?: CleanupOptions): CleanupResult {
 		let db: CommDB | undefined;
 		try {
 			db = CommDB.openReadonly(dbPath);
-			const sessions = db.listSessions(undefined, [
-				"completed",
-				"timeout",
-			]);
+			const sessions = db.listSessions(undefined, ["completed", "timeout"]);
 
 			for (const session of sessions) {
 				processSession(session, timeoutMinutes, dryRun, log, result);
@@ -122,7 +119,7 @@ function processSession(
 	}
 
 	// Check if session has exceeded the timeout
-	const endedAtMs = Date.parse(session.ended_at + "Z");
+	const endedAtMs = Date.parse(`${session.ended_at}Z`);
 	const elapsed = Date.now() - endedAtMs;
 	if (elapsed < timeoutMinutes * 60_000) {
 		result.skipped++;
@@ -132,7 +129,8 @@ function processSession(
 	const tmuxWindow = session.tmux_window;
 	// tmux_window format: "sessionName:@windowId" (production) or bare "@id" (legacy test data)
 	const colonIdx = tmuxWindow.indexOf(":");
-	const sessionName = colonIdx >= 0 ? tmuxWindow.slice(0, colonIdx) : tmuxWindow;
+	const sessionName =
+		colonIdx >= 0 ? tmuxWindow.slice(0, colonIdx) : tmuxWindow;
 
 	try {
 		// Check if tmux session still exists
@@ -149,13 +147,7 @@ function processSession(
 		// Check if anyone is attached
 		const clients = execFileSync(
 			"tmux",
-			[
-				"list-clients",
-				"-t",
-				`=${sessionName}`,
-				"-F",
-				"#{client_session}",
-			],
+			["list-clients", "-t", `=${sessionName}`, "-F", "#{client_session}"],
 			{ encoding: "utf-8", stdio: "pipe" },
 		).trim();
 
@@ -177,7 +169,9 @@ function processSession(
 		execFileSync("tmux", ["kill-window", "-t", tmuxWindow], {
 			stdio: "pipe",
 		});
-		log(`Killed stale tmux window: ${tmuxWindow} (session: ${session.execution_id})`);
+		log(
+			`Killed stale tmux window: ${tmuxWindow} (session: ${session.execution_id})`,
+		);
 		result.cleaned++;
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);

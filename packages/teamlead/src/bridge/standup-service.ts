@@ -5,10 +5,7 @@
  * Those are handled by PM Triage (GEO-276) via Simba.
  */
 
-import {
-	type ProjectEntry,
-	resolveLeadForIssue,
-} from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import {
 	DISCORD_API,
@@ -22,7 +19,11 @@ import {
  * Build a Markdown hyperlink for a Linear issue: [**GEO-1** — Title](url).
  * When linearBaseUrl is provided, produces a clickable link; otherwise plain bold text.
  */
-function issueLink(identifier: string, title?: string, linearBaseUrl?: string): string {
+function issueLink(
+	identifier: string,
+	title?: string,
+	linearBaseUrl?: string,
+): string {
 	const label = title ? `**${identifier}** — ${title}` : `**${identifier}**`;
 	if (!linearBaseUrl) return label;
 	return `[${label}](${linearBaseUrl}/${identifier})`;
@@ -64,9 +65,7 @@ export function pacificDateString(now?: Date): string {
 
 function parseActivityTimestamp(session: Session): number | null {
 	if (!session.last_activity_at) return null;
-	return new Date(
-		`${session.last_activity_at.replace(" ", "T")}Z`,
-	).getTime();
+	return new Date(`${session.last_activity_at.replace(" ", "T")}Z`).getTime();
 }
 
 function resolveOwner(
@@ -219,9 +218,7 @@ export function formatStandupReport(
 			lines.push(`- ${link} [${c.status}]${owner}`);
 		}
 		if (totalCompletions > MAX_COMPLETIONS_DISPLAY) {
-			lines.push(
-				`- …and ${totalCompletions - MAX_COMPLETIONS_DISPLAY} more`,
-			);
+			lines.push(`- …and ${totalCompletions - MAX_COMPLETIONS_DISPLAY} more`);
 		}
 		lines.push("");
 	} else {
@@ -299,9 +296,7 @@ function buildFormattedReport(
 			lines.push(`- ${link} [${c.status}]${owner}`);
 		}
 		if (totalCompletions > maxCompletions) {
-			lines.push(
-				`- …and ${totalCompletions - maxCompletions} more`,
-			);
+			lines.push(`- …and ${totalCompletions - maxCompletions} more`);
 		}
 		lines.push("");
 	} else {
@@ -359,7 +354,11 @@ export class StandupService {
 			throw new Error("No bot token available for standup delivery");
 		}
 
-		const markdown = formatStandupReport(report, this.simbaMention, this.linearBaseUrl);
+		const markdown = formatStandupReport(
+			report,
+			this.simbaMention,
+			this.linearBaseUrl,
+		);
 		const chunks = splitDiscordMessage(markdown);
 
 		// Standup must be a single message to ensure triage trigger is delivered
@@ -372,10 +371,7 @@ export class StandupService {
 		let sent = 0;
 		for (const chunk of chunks) {
 			const controller = new AbortController();
-			const timeout = setTimeout(
-				() => controller.abort(),
-				DELIVERY_TIMEOUT_MS,
-			);
+			const timeout = setTimeout(() => controller.abort(), DELIVERY_TIMEOUT_MS);
 			try {
 				const res = await fetch(
 					`${DISCORD_API}/channels/${this.standupChannel}/messages`,
@@ -391,9 +387,7 @@ export class StandupService {
 				);
 				if (!res.ok) {
 					const body = await res.text().catch(() => "");
-					throw new Error(
-						`Discord ${res.status}: ${body.slice(0, 200)}`,
-					);
+					throw new Error(`Discord ${res.status}: ${body.slice(0, 200)}`);
 				}
 				sent++;
 			} finally {

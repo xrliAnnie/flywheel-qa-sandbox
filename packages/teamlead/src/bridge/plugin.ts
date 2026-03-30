@@ -17,7 +17,6 @@ import {
 } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
-import { postMergeCleanup } from "./post-merge.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
@@ -25,20 +24,21 @@ import { createEventRouter } from "./event-route.js";
 import { ForumPostCreator } from "./ForumPostCreator.js";
 import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import type { LeadRuntime } from "./lead-runtime.js";
+import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { OpenClawRuntime } from "./openclaw-runtime.js";
+import { postMergeCleanup } from "./post-merge.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
-import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { captureSession as defaultCaptureSession } from "./session-capture.js";
+import { createStandupRouter } from "./standup-route.js";
+import { StandupService } from "./standup-service.js";
 import {
 	getTmuxTargetFromCommDb,
 	isTmuxSessionAlive,
 	killTmuxSession,
 } from "./tmux-lookup.js";
-import { createStandupRouter } from "./standup-route.js";
-import { StandupService } from "./standup-service.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import type { BridgeConfig } from "./types.js";
 
@@ -263,7 +263,10 @@ export function createBridgeApp(
 
 	// GEO-280: Post-merge cleanup callback (fire-and-forget after approve)
 	// Bridge only closes tmux session + audit. Other cleanup (worktree, docs) is Runner/Orchestrator responsibility.
-	const onApproved = (executionId: string, session: { issue_id: string; project_name: string }) => {
+	const onApproved = (
+		executionId: string,
+		session: { issue_id: string; project_name: string },
+	) => {
 		postMergeCleanup(
 			{
 				executionId,
@@ -386,10 +389,7 @@ export function createBridgeApp(
 				}
 			}
 
-			const target = getTmuxTargetFromCommDb(
-				executionId,
-				session.project_name,
-			);
+			const target = getTmuxTargetFromCommDb(executionId, session.project_name);
 			if (!target) {
 				res.json({ closed: false, reason: "No tmux target found" });
 				return;
@@ -504,9 +504,7 @@ export function createBridgeApp(
 
 				for (const entry of alive) {
 					try {
-						const fullSession = store.getSession(
-							entry.execution_id,
-						);
+						const fullSession = store.getSession(entry.execution_id);
 						if (!fullSession) continue;
 						const labels = parseSessionLabels(fullSession);
 						const { lead } = resolveLeadForIssue(
@@ -531,8 +529,7 @@ export function createBridgeApp(
 				// Send grouped summary to each Lead's chatChannel
 				for (const [leadId, group] of byLead) {
 					const { lead, sessions: leadSessions } = group;
-					const token =
-						lead.botToken ?? config.discordBotToken;
+					const token = lead.botToken ?? config.discordBotToken;
 					if (!token || !lead.chatChannel) {
 						notifications.push({
 							leadId,
@@ -553,31 +550,19 @@ export function createBridgeApp(
 					];
 					for (let i = 0; i < leadSessions.length; i++) {
 						const s = leadSessions[i]!;
-						const id =
-							s.issue_identifier ?? s.execution_id;
-						const title = s.issue_title
-							? ` — ${s.issue_title}`
-							: "";
-						lines.push(
-							`${i + 1}. **${id}**${title}`,
-						);
-						lines.push(
-							`   状态: ${s.status} | ${s.hours_since_activity}h ago`,
-						);
+						const id = s.issue_identifier ?? s.execution_id;
+						const title = s.issue_title ? ` — ${s.issue_title}` : "";
+						lines.push(`${i + 1}. **${id}**${title}`);
+						lines.push(`   状态: ${s.status} | ${s.hours_since_activity}h ago`);
 					}
 					lines.push("");
-					lines.push(
-						"请检查并处理。处理完后请回报结果。",
-					);
+					lines.push("请检查并处理。处理完后请回报结果。");
 
 					const content = lines.join("\n");
 
 					// Send to Discord chatChannel
 					const controller = new AbortController();
-					const timeout = setTimeout(
-						() => controller.abort(),
-						5000,
-					);
+					const timeout = setTimeout(() => controller.abort(), 5000);
 					try {
 						const discordRes = await fetch(
 							`https://discord.com/api/v10/channels/${lead.chatChannel}/messages`,
@@ -592,9 +577,7 @@ export function createBridgeApp(
 							},
 						);
 						if (!discordRes.ok) {
-							const body = await discordRes
-								.text()
-								.catch(() => "");
+							const body = await discordRes.text().catch(() => "");
 							notifications.push({
 								leadId,
 								chatChannel: lead.chatChannel,
@@ -630,9 +613,7 @@ export function createBridgeApp(
 				tmux_alive: alive.length,
 				tmux_dead: results.length - alive.length,
 				sessions: results,
-				...(notify
-					? { notifications }
-					: {}),
+				...(notify ? { notifications } : {}),
 			});
 		},
 	);
@@ -784,11 +765,9 @@ export function createBridgeApp(
 			}
 			// GEO-298: team parameter — required for multi-team workspaces
 			if (team !== undefined && typeof team !== "string") {
-				res
-					.status(400)
-					.json({
-						error: 'team must be a string (team key, e.g. "FLY")',
-					});
+				res.status(400).json({
+					error: 'team must be a string (team key, e.g. "FLY")',
+				});
 				return;
 			}
 			// GEO-298: project parameter — optional, associates issue with a project
@@ -804,7 +783,7 @@ export function createBridgeApp(
 
 				// GEO-298: Team resolution — by key if specified, require if >1 team
 				const allTeams = await client.teams();
-				let targetTeam;
+				let targetTeam: (typeof allTeams.nodes)[number] | undefined;
 				if (team) {
 					targetTeam = allTeams.nodes.find(
 						(t: { key: string }) => t.key === team,
@@ -837,11 +816,9 @@ export function createBridgeApp(
 					});
 					const matched = projects.nodes[0];
 					if (!matched) {
-						res
-							.status(404)
-							.json({
-								error: `Linear project "${project}" not found`,
-							});
+						res.status(404).json({
+							error: `Linear project "${project}" not found`,
+						});
 						return;
 					}
 					projectId = matched.id;
@@ -1298,7 +1275,8 @@ export async function startBridge(
 
 	// GEO-288: Standup service (v2 — no scheduler, triggered by external cron)
 	const standupChannel = process.env.STANDUP_CHANNEL;
-	const standupSimbaMention = process.env.STANDUP_SIMBA_MENTION ?? "<@1487339075563290745>";
+	const standupSimbaMention =
+		process.env.STANDUP_SIMBA_MENTION ?? "<@1487339075563290745>";
 
 	// Resolve standup project name — single-project defaults, multi-project requires config
 	const standupProjectName: string | undefined = (() => {
@@ -1328,11 +1306,13 @@ export async function startBridge(
 	const standupProject = standupProjectName
 		? projects.find((p) => p.projectName === standupProjectName)
 		: undefined;
-	const standupLeadId = process.env.STANDUP_LEAD_ID ?? (() => {
-		const leads = standupProject?.leads ?? projects.flatMap((p) => p.leads);
-		const nonCos = leads.find((l) => !l.agentId.includes("cos"));
-		return nonCos?.agentId ?? leads[0]?.agentId ?? "unknown";
-	})();
+	const standupLeadId =
+		process.env.STANDUP_LEAD_ID ??
+		(() => {
+			const leads = standupProject?.leads ?? projects.flatMap((p) => p.leads);
+			const nonCos = leads.find((l) => !l.agentId.includes("cos"));
+			return nonCos?.agentId ?? leads[0]?.agentId ?? "unknown";
+		})();
 	const standupLead = (standupProject?.leads ?? []).find(
 		(l) => l.agentId === standupLeadId,
 	);
@@ -1347,17 +1327,16 @@ export async function startBridge(
 
 	// Parse stale threshold for standup (same env var as GEO-270 patrol)
 	const standupStaleThresholdHours = (() => {
-		const v = parseInt(
-			process.env.TEAMLEAD_STALE_THRESHOLD_HOURS ?? "24",
-			10,
-		);
+		const v = parseInt(process.env.TEAMLEAD_STALE_THRESHOLD_HOURS ?? "24", 10);
 		return Number.isFinite(v) && v >= 1 ? v : 24;
 	})();
 
 	// LINEAR_WORKSPACE_SLUG: e.g. "geoforge3d" → constructs https://linear.app/geoforge3d/issue
 	const linearWorkspaceSlug = process.env.LINEAR_WORKSPACE_SLUG;
 	if (!linearWorkspaceSlug) {
-		console.warn("[Bridge] LINEAR_WORKSPACE_SLUG not set — standup issue links will be plain text");
+		console.warn(
+			"[Bridge] LINEAR_WORKSPACE_SLUG not set — standup issue links will be plain text",
+		);
 	}
 	const linearIssueBaseUrl = linearWorkspaceSlug
 		? `https://linear.app/${linearWorkspaceSlug}/issue`
@@ -1423,10 +1402,7 @@ export async function startBridge(
 
 	// GEO-270: Stale session patrol config (local variables, not in BridgeConfig)
 	const staleThresholdHours = (() => {
-		const v = parseInt(
-			process.env.TEAMLEAD_STALE_THRESHOLD_HOURS ?? "24",
-			10,
-		);
+		const v = parseInt(process.env.TEAMLEAD_STALE_THRESHOLD_HOURS ?? "24", 10);
 		return Number.isFinite(v) && v >= 1 ? v : 24;
 	})();
 	const staleCheckIntervalMs = (() => {

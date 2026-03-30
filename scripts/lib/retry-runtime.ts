@@ -6,6 +6,7 @@
  * Accepts optional RuntimeRegistry for proper multi-Lead event routing.
  */
 
+import { sanitizeTmuxName } from "../../packages/core/dist/index.js";
 import { EventFilter } from "../../packages/teamlead/dist/bridge/EventFilter.js";
 import { ForumTagUpdater } from "../../packages/teamlead/dist/bridge/ForumTagUpdater.js";
 import type { RuntimeRegistry } from "../../packages/teamlead/dist/bridge/runtime-registry.js";
@@ -13,7 +14,6 @@ import type { BridgeConfig } from "../../packages/teamlead/dist/bridge/types.js"
 import { DirectEventSink } from "../../packages/teamlead/dist/DirectEventSink.js";
 import type { ProjectEntry } from "../../packages/teamlead/dist/ProjectConfig.js";
 import type { StateStore } from "../../packages/teamlead/dist/StateStore.js";
-import { sanitizeTmuxName } from "../../packages/core/dist/index.js";
 import { RunDispatcher } from "./retry-dispatcher.js";
 import {
 	type FlywheelComponents,
@@ -113,9 +113,7 @@ export async function setupRetryRuntime(
 		try {
 			// GEO-277: Sanitize once, reuse everywhere — both TmuxAdapter
 			// and openTmuxViewer must see the same session name
-			const tmuxSessionName = sanitizeTmuxName(
-				`retry-${project.projectName}`,
-			);
+			const tmuxSessionName = sanitizeTmuxName(`retry-${project.projectName}`);
 
 			components = await setupComponents({
 				projectRoot: project.projectRoot,

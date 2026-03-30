@@ -44,7 +44,8 @@ export function createStandupRouter(
 		// Delivery requires STANDUP_CHANNEL
 		if (!service.getStandupChannel()) {
 			res.status(400).json({
-				error: "STANDUP_CHANNEL not configured — cannot deliver. Use dryRun=true to preview report.",
+				error:
+					"STANDUP_CHANNEL not configured — cannot deliver. Use dryRun=true to preview report.",
 			});
 			return;
 		}

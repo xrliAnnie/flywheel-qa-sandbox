@@ -3,10 +3,7 @@
  * session via a hidden Discord control channel. Uses Discord REST API directly.
  */
 
-import {
-	DISCORD_API,
-	splitDiscordMessage,
-} from "./discord-utils.js";
+import { DISCORD_API, splitDiscordMessage } from "./discord-utils.js";
 import type {
 	LeadBootstrap,
 	LeadEventEnvelope,
@@ -195,5 +192,4 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 
 		return sections.join("\n");
 	}
-
 }

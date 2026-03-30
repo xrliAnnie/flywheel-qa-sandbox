@@ -151,7 +151,7 @@ describe("openTmuxViewer", () => {
 
 	it("resolves tmux absolute path and uses it everywhere", () => {
 		mockExecFileSync.mockImplementation(
-			(cmd: string, args: string[], _opts?: unknown) => {
+			(cmd: string, _args: string[], _opts?: unknown) => {
 				if (cmd === "which") return "/opt/homebrew/bin/tmux";
 				return "";
 			},

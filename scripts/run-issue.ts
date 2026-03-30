@@ -320,7 +320,7 @@ async function main() {
 			process.env.CLEANUP_TIMEOUT_MINUTES ?? "30",
 			10,
 		);
-		if (isNaN(timeoutMinutes) || timeoutMinutes < 1) {
+		if (Number.isNaN(timeoutMinutes) || timeoutMinutes < 1) {
 			log("Warning: CLEANUP_TIMEOUT_MINUTES invalid, skipping cleanup");
 		} else {
 			const home = process.env.HOME ?? "/tmp";

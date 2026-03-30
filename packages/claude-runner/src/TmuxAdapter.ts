@@ -2,7 +2,6 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
 import { CommDB } from "flywheel-comm/db";
-import { sanitizeTmuxName } from "flywheel-core";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -10,7 +9,7 @@ import type {
 	IAdapter,
 	IHookCallbackServer,
 } from "flywheel-core";
-import { FLYWHEEL_MARKER_DIR } from "flywheel-core";
+import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
 
 export type ExecFileFn = (cmd: string, args: string[]) => { stdout: string };
 
@@ -232,8 +231,7 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.model) args.push("--model", ctx.model);
 		if (ctx.allowedTools?.length)
 			args.push("--allowed-tools", ...ctx.allowedTools);
-		if (ctx.sessionDisplayName)
-			args.push("--name", ctx.sessionDisplayName);
+		if (ctx.sessionDisplayName) args.push("--name", ctx.sessionDisplayName);
 		// NOTE: --max-turns does NOT exist in Claude CLI v2.1.63
 		// NOTE: previousSession intentionally ignored — no resume in interactive tmux mode
 		// Prompt as last CLI arg — Claude starts processing immediately on launch

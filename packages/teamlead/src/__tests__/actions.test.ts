@@ -807,11 +807,14 @@ describe("GEO-280: onApproved callback", () => {
 
 		// onApproved is fire-and-forget (microtask), give it a tick
 		await new Promise((r) => setTimeout(r, 50));
-		expect(onApproved).toHaveBeenCalledWith("e1", expect.objectContaining({
-			execution_id: "e1",
-			issue_id: "i1",
-			project_name: "geoforge3d",
-		}));
+		expect(onApproved).toHaveBeenCalledWith(
+			"e1",
+			expect.objectContaining({
+				execution_id: "e1",
+				issue_id: "i1",
+				project_name: "geoforge3d",
+			}),
+		);
 	});
 
 	it("no onApproved on merge failure", async () => {

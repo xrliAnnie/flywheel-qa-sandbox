@@ -1,8 +1,8 @@
 #!/usr/bin/env tsx
-import { CommDB } from "../packages/flywheel-comm/src/db.js";
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
 import { homedir } from "node:os";
+import { join } from "node:path";
+import { CommDB } from "../packages/flywheel-comm/src/db.js";
 
 const PROJECT = "e2e-stale-demo";
 const dir = join(homedir(), ".flywheel", "comm", PROJECT);

@@ -1,8 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { PostMergeResult } from "../bridge/post-merge.js";
-import {
-	postMergeCleanup,
-} from "../bridge/post-merge.js";
+import { postMergeCleanup } from "../bridge/post-merge.js";
 import { StateStore } from "../StateStore.js";
 
 // ── Mock tmux-lookup ────────────────────────────────────
@@ -103,9 +100,7 @@ describe("postMergeCleanup", () => {
 		await postMergeCleanup(makeOpts(), store);
 
 		const events = store.getEventsByExecution("exec-1");
-		const pmEvent = events.find(
-			(e) => e.event_type === "post_merge_completed",
-		);
+		const pmEvent = events.find((e) => e.event_type === "post_merge_completed");
 		expect(pmEvent).toBeDefined();
 		expect(pmEvent!.source).toBe("bridge.post-merge");
 	});
@@ -123,9 +118,7 @@ describe("postMergeCleanup", () => {
 		await postMergeCleanup(makeOpts(), store);
 
 		const events = store.getEventsByExecution("exec-1");
-		const pmEvent = events.find(
-			(e) => e.event_type === "post_merge_partial",
-		);
+		const pmEvent = events.find((e) => e.event_type === "post_merge_partial");
 		expect(pmEvent).toBeDefined();
 	});
 });

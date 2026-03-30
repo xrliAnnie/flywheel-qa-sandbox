@@ -432,7 +432,12 @@ describe("Bridge E2E lifecycle", () => {
 					event_type: "session_completed",
 					payload: {
 						decision: { route: "needs_review", reasoning: "done" },
-						evidence: { commitCount: 1, filesChangedCount: 2, linesAdded: 10, linesRemoved: 5 },
+						evidence: {
+							commitCount: 1,
+							filesChangedCount: 2,
+							linesAdded: 10,
+							linesRemoved: 5,
+						},
 						summary: "PM task completed",
 						labels: ["PM"],
 					},
@@ -445,7 +450,9 @@ describe("Bridge E2E lifecycle", () => {
 			await new Promise((r) => setTimeout(r, 200));
 
 			// 3. Verify notifications were delivered to pm-lead
-			const pmEnvelopes = capturedEnvelopes.filter((e) => e.leadId === "pm-lead");
+			const pmEnvelopes = capturedEnvelopes.filter(
+				(e) => e.leadId === "pm-lead",
+			);
 			expect(pmEnvelopes.length).toBeGreaterThanOrEqual(1);
 
 			// 4. Verify forum_channel is undefined in pm-lead envelopes
@@ -474,7 +481,9 @@ describe("Bridge E2E lifecycle", () => {
 			expect(prodRes.status).toBe(200);
 			await new Promise((r) => setTimeout(r, 200));
 
-			const prodEnvelopes = capturedEnvelopes.filter((e) => e.leadId === "product-lead");
+			const prodEnvelopes = capturedEnvelopes.filter(
+				(e) => e.leadId === "product-lead",
+			);
 			expect(prodEnvelopes.length).toBeGreaterThanOrEqual(1);
 
 			// Product lead envelopes SHOULD have forum_channel

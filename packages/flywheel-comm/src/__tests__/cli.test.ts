@@ -341,13 +341,7 @@ describe("CLI", () => {
 				"Do the thing",
 			]);
 
-			const result = runCli([
-				"inbox",
-				"--exec-id",
-				"exec-456",
-				"--db",
-				dbPath,
-			]);
+			const result = runCli(["inbox", "--exec-id", "exec-456", "--db", dbPath]);
 			expect(result).toContain("Do the thing");
 			expect(result).toContain("product-lead");
 		});
@@ -365,14 +359,7 @@ describe("CLI", () => {
 			]);
 
 			const result = JSON.parse(
-				runCli([
-					"inbox",
-					"--exec-id",
-					"exec-789",
-					"--db",
-					dbPath,
-					"--json",
-				]),
+				runCli(["inbox", "--exec-id", "exec-789", "--db", dbPath, "--json"]),
 			);
 			expect(result).toHaveLength(1);
 			expect(result[0].content).toBe("Instruction text");
@@ -416,9 +403,7 @@ describe("CLI", () => {
 			db.registerSession("exec-2", "GEO-2:@1", "geoforge3d", "GEO-101");
 			db.close();
 
-			const result = JSON.parse(
-				runCli(["sessions", "--db", dbPath, "--json"]),
-			);
+			const result = JSON.parse(runCli(["sessions", "--db", dbPath, "--json"]));
 			expect(result).toHaveLength(2);
 			expect(result[0].execution_id).toBe("exec-1");
 			expect(result[1].execution_id).toBe("exec-2");
@@ -486,22 +471,12 @@ describe("CLI", () => {
 			// Create fake tmux that echoes args for inspection
 			const fakeTmuxDir = join(tmpDir, "bin-nan");
 			mkdirSync(fakeTmuxDir, { recursive: true });
-			writeFileSync(
-				join(fakeTmuxDir, "tmux"),
-				'#!/bin/sh\necho "args: $@"',
-				{ mode: 0o755 },
-			);
+			writeFileSync(join(fakeTmuxDir, "tmux"), '#!/bin/sh\necho "args: $@"', {
+				mode: 0o755,
+			});
 
 			const result = runCli(
-				[
-					"capture",
-					"--exec-id",
-					"exec-nan",
-					"--db",
-					dbPath,
-					"--lines",
-					"foo",
-				],
+				["capture", "--exec-id", "exec-nan", "--db", dbPath, "--lines", "foo"],
 				{ PATH: `${fakeTmuxDir}:${process.env.PATH}` },
 			);
 			// Current behavior: parseInt("foo", 10) → NaN → tmux gets -S -NaN

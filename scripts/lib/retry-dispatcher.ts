@@ -7,11 +7,11 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { openTmuxViewer } from "../../packages/core/dist/index.js";
 import type {
 	Blueprint,
 	BlueprintContext,
 } from "../../packages/edge-worker/dist/Blueprint.js";
-import { openTmuxViewer } from "../../packages/core/dist/index.js";
 import type {
 	IRetryDispatcher,
 	IStartDispatcher,
@@ -126,10 +126,7 @@ export class RetryDispatcher implements IRetryDispatcher {
  * Adds maxConcurrentRunners concurrency control (inflight-level check;
  * route layer adds StateStore active session count for full picture).
  */
-export class RunDispatcher
-	extends RetryDispatcher
-	implements IStartDispatcher
-{
+export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 	constructor(
 		blueprintsByProject: Map<string, ProjectRuntime>,
 		cleanupHandles: Array<() => Promise<void>>,

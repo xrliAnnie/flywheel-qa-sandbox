@@ -13,15 +13,15 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync } from "node:fs";
+import type http from "node:http";
 import { homedir } from "node:os";
-import http from "node:http";
+import { join } from "node:path";
 import { CommDB } from "../packages/flywheel-comm/src/db.js";
-import { StateStore } from "../packages/teamlead/src/StateStore.js";
-import { loadProjects } from "../packages/teamlead/src/ProjectConfig.js";
 import { createBridgeApp } from "../packages/teamlead/src/bridge/plugin.js";
 import type { BridgeConfig } from "../packages/teamlead/src/bridge/types.js";
+import { loadProjects } from "../packages/teamlead/src/ProjectConfig.js";
+import { StateStore } from "../packages/teamlead/src/StateStore.js";
 
 const EXEC_ID = `e2e-notify-${Date.now()}`;
 const TMUX_SESSION = `e2e-notify-${Date.now()}`;
@@ -58,13 +58,16 @@ async function main() {
 	let store: StateStore | undefined;
 
 	// Load real projects config
-	let projects;
+	let projects: ReturnType<typeof loadProjects> | undefined;
 	try {
 		projects = loadProjects();
 		console.log(`  ✅ Loaded ${projects.length} project(s) from projects.json`);
 		for (const p of projects) {
 			for (const l of p.leads) {
-				const hasToken = !!(l.botToken || (l.botTokenEnv && process.env[l.botTokenEnv]));
+				const hasToken = !!(
+					l.botToken ||
+					(l.botTokenEnv && process.env[l.botTokenEnv])
+				);
 				console.log(
 					`     ${p.projectName} → ${l.agentId}: chatChannel=${l.chatChannel}, token=${hasToken ? "✅" : "❌"}`,
 				);
@@ -178,9 +181,7 @@ async function main() {
 					`     ${icon} ${n.leadId}: ${n.sessionCount} session(s) → channel ${n.chatChannel}${n.error ? ` (${n.error})` : ""}`,
 				);
 			}
-			console.log(
-				"\n  👀 去 Discord 检查 Lead 的 chatChannel 是否收到通知！",
-			);
+			console.log("\n  👀 去 Discord 检查 Lead 的 chatChannel 是否收到通知！");
 		} else {
 			console.log("\n  ⚠️  没有发送通知（可能没有匹配的 Lead 或 token）");
 		}
@@ -217,17 +218,13 @@ async function main() {
 		}
 
 		const after = store.getSession(EXEC_ID);
-		console.log(
-			`  ✅ StateStore 状态: "${after?.status}" (不变)`,
-		);
+		console.log(`  ✅ StateStore 状态: "${after?.status}" (不变)`);
 
 		section("测试完成");
 		console.log("  所有步骤完成 ✅\n");
 	} finally {
 		if (server) {
-			await new Promise<void>((r, j) =>
-				server!.close((e) => (e ? j(e) : r())),
-			);
+			await new Promise<void>((r, j) => server!.close((e) => (e ? j(e) : r())));
 		}
 		store?.close();
 		try {

@@ -4,16 +4,16 @@
  * v2: No StandupScheduler, no Linear backlog, no Blockers.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ProjectEntry } from "../ProjectConfig.js";
-import { StateStore } from "../StateStore.js";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { MAX_DISCORD_MESSAGE_LENGTH } from "../bridge/discord-utils.js";
 import {
 	aggregateStandup,
 	formatStandupReport,
 	pacificDateString,
 	splitDiscordMessage,
 } from "../bridge/standup-service.js";
-import { MAX_DISCORD_MESSAGE_LENGTH } from "../bridge/discord-utils.js";
+import type { ProjectEntry } from "../ProjectConfig.js";
+import { StateStore } from "../StateStore.js";
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -98,7 +98,12 @@ describe("aggregateStandup", () => {
 		insertSession(store, { status: "awaiting_review", issue_id: "i3" });
 
 		const report = await aggregateStandup(
-			store, "TestProject", 3, testProjects, 15, 24,
+			store,
+			"TestProject",
+			3,
+			testProjects,
+			15,
+			24,
 		);
 
 		expect(report.systemStatus.runningCount).toBe(2);
@@ -121,7 +126,12 @@ describe("aggregateStandup", () => {
 		});
 
 		const report = await aggregateStandup(
-			store, "TestProject", 3, testProjects, 15, 24,
+			store,
+			"TestProject",
+			3,
+			testProjects,
+			15,
+			24,
 		);
 
 		expect(report.completions).toHaveLength(1);
@@ -129,11 +139,24 @@ describe("aggregateStandup", () => {
 	});
 
 	it("filters by project_name", async () => {
-		insertSession(store, { status: "running", project_name: "TestProject", issue_id: "i1" });
-		insertSession(store, { status: "running", project_name: "OtherProject", issue_id: "i2" });
+		insertSession(store, {
+			status: "running",
+			project_name: "TestProject",
+			issue_id: "i1",
+		});
+		insertSession(store, {
+			status: "running",
+			project_name: "OtherProject",
+			issue_id: "i2",
+		});
 
 		const report = await aggregateStandup(
-			store, "TestProject", 3, testProjects, 15, 24,
+			store,
+			"TestProject",
+			3,
+			testProjects,
+			15,
+			24,
 		);
 
 		expect(report.systemStatus.runningCount).toBe(1);
@@ -156,7 +179,12 @@ describe("aggregateStandup", () => {
 		});
 
 		const report = await aggregateStandup(
-			store, "TestProject", 3, testProjects, 15, 24,
+			store,
+			"TestProject",
+			3,
+			testProjects,
+			15,
+			24,
 		);
 
 		expect(report.completions).toHaveLength(2);
@@ -176,7 +204,12 @@ describe("aggregateStandup", () => {
 		});
 
 		const report = await aggregateStandup(
-			store, "TestProject", 3, testProjects, 15, 24,
+			store,
+			"TestProject",
+			3,
+			testProjects,
+			15,
+			24,
 		);
 
 		expect(report.completions).toHaveLength(1);
@@ -185,7 +218,12 @@ describe("aggregateStandup", () => {
 
 	it("returns empty report for empty StateStore", async () => {
 		const report = await aggregateStandup(
-			store, "TestProject", 3, testProjects, 15, 24,
+			store,
+			"TestProject",
+			3,
+			testProjects,
+			15,
+			24,
 		);
 
 		expect(report.systemStatus.runningCount).toBe(0);
@@ -202,15 +240,27 @@ describe("aggregateStandup", () => {
 		});
 
 		const report = await aggregateStandup(
-			store, "TestProject", 3, testProjects, 15, 24,
+			store,
+			"TestProject",
+			3,
+			testProjects,
+			15,
+			24,
 		);
 
-		expect(report.systemStatus.oldCompletedFailedBlockedCount).toBeGreaterThanOrEqual(0);
+		expect(
+			report.systemStatus.oldCompletedFailedBlockedCount,
+		).toBeGreaterThanOrEqual(0);
 	});
 
 	it("report has no blockers or backlogIssues fields", async () => {
 		const report = await aggregateStandup(
-			store, "TestProject", 3, testProjects, 15, 24,
+			store,
+			"TestProject",
+			3,
+			testProjects,
+			15,
+			24,
 		);
 
 		expect(report).not.toHaveProperty("blockers");
@@ -236,7 +286,12 @@ describe("formatStandupReport", () => {
 				staleThresholdHours: 24,
 			},
 			completions: [
-				{ identifier: "GEO-1", title: "Feature", status: "completed", ownerLeadId: "product-lead" },
+				{
+					identifier: "GEO-1",
+					title: "Feature",
+					status: "completed",
+					ownerLeadId: "product-lead",
+				},
 			],
 		};
 
@@ -247,7 +302,9 @@ describe("formatStandupReport", () => {
 		expect(output).toContain("Running Runners: **2**/3");
 		expect(output).toContain("Awaiting Review: **1**");
 		expect(output).toContain("### Completions (24h)");
-		expect(output).toContain("[**GEO-1** — Feature](https://linear.app/geoforge3d/issue/GEO-1)");
+		expect(output).toContain(
+			"[**GEO-1** — Feature](https://linear.app/geoforge3d/issue/GEO-1)",
+		);
 	});
 
 	it("renders plain bold text when linearBaseUrl is not provided", () => {
@@ -357,7 +414,9 @@ describe("formatStandupReport", () => {
 		const output = formatStandupReport(report, undefined, TEST_LINEAR_BASE);
 
 		expect(output).toContain("### Completions (24h) — 15");
-		expect(output).toContain("[**GEO-10** — Issue 10](https://linear.app/geoforge3d/issue/GEO-10)");
+		expect(output).toContain(
+			"[**GEO-10** — Issue 10](https://linear.app/geoforge3d/issue/GEO-10)",
+		);
 		expect(output).not.toContain("GEO-11");
 		expect(output).toContain("…and 5 more");
 	});
@@ -384,7 +443,11 @@ describe("formatStandupReport", () => {
 			completions,
 		};
 
-		const output = formatStandupReport(report, "<@1487339075563290745>", TEST_LINEAR_BASE);
+		const output = formatStandupReport(
+			report,
+			"<@1487339075563290745>",
+			TEST_LINEAR_BASE,
+		);
 
 		expect(output.length).toBeLessThanOrEqual(MAX_DISCORD_MESSAGE_LENGTH);
 	});
@@ -412,7 +475,11 @@ describe("formatStandupReport", () => {
 			completions,
 		};
 
-		const output = formatStandupReport(report, "<@1487339075563290745> 系统日报已发，请执行今日 triage", TEST_LINEAR_BASE);
+		const output = formatStandupReport(
+			report,
+			"<@1487339075563290745> 系统日报已发，请执行今日 triage",
+			TEST_LINEAR_BASE,
+		);
 
 		expect(output.length).toBeLessThanOrEqual(MAX_DISCORD_MESSAGE_LENGTH);
 	});
@@ -450,7 +517,7 @@ describe("splitDiscordMessage", () => {
 	});
 
 	it("splits long messages at newline boundaries", () => {
-		const line = "x".repeat(100) + "\n";
+		const line = `${"x".repeat(100)}\n`;
 		const msg = line.repeat(25); // 2525 chars
 		const chunks = splitDiscordMessage(msg);
 
