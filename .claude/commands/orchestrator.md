@@ -112,19 +112,21 @@ For each PR the user approves to ship:
    If CI stuck after 3 attempts, teammate reports failure details and stops.
 
    **B. Post-merge bookkeeping** (all commands from main repo)
+   Derive main repo path from current worktree:
    ```bash
-   cd ~/Dev/flywheel
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+   cd "$MAIN_REPO"
    git checkout main && git pull origin main
    ```
 
    VERSION bump (if first ship of sprint):
    ```bash
-   cd ~/Dev/flywheel && bash -c 'source .claude/orchestrator/config.sh && current=$(get_feature_version) && if [ "$current" != "{SPRINT_VERSION}" ]; then bump_feature_version minor; fi'
+   cd "$MAIN_REPO" && bash -c 'source .claude/orchestrator/config.sh && current=$(get_feature_version) && if [ "$current" != "{SPRINT_VERSION}" ]; then bump_feature_version minor; fi'
    ```
 
    Update CLAUDE.md milestone table + commit:
    ```bash
-   cd ~/Dev/flywheel
+   cd "$MAIN_REPO"
    # Edit CLAUDE.md to add milestone row
    git add CLAUDE.md doc/VERSION
    git commit -m "docs: update CLAUDE.md + VERSION after {ISSUE_ID} merge (PR #{N})"
@@ -140,7 +142,7 @@ For each PR the user approves to ship:
 
    **D. Clean up worktree** (from main repo)
    ```bash
-   cd ~/Dev/flywheel
+   cd "$MAIN_REPO"
    git worktree remove {worktree_path} 2>/dev/null
    git branch -D {branch} 2>/dev/null
    ```

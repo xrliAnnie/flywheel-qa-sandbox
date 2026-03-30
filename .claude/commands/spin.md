@@ -155,7 +155,8 @@ After implementation is shipped (PR merged to main):
 
 **If merged without `/ship-pr`**: archive docs manually from main repo:
 ```bash
-cd ~/Dev/flywheel && git checkout main && git pull origin main
+MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+cd "$MAIN_REPO" && git checkout main && git pull origin main
 ISSUE_ID="{ISSUE_ID}"
 if [ -z "$ISSUE_ID" ]; then
   echo "No ISSUE_ID — skipping doc archive"
@@ -174,7 +175,7 @@ fi
 1. Update CLAUDE.md: add milestone to table, remove from Active Explorations if listed
 2. Update MEMORY.md (local file): move docs from Active to Archived index, mark Done
 3. Update Linear issue status to "Done"
-4. Clean up worktree: `cd ~/Dev/flywheel && git worktree remove ../flywheel-geo-{XX}`
+4. Clean up worktree: `cd "$MAIN_REPO" && git worktree remove ../flywheel-geo-{XX}`
 5. Commit + push docs changes: `docs: update docs after {ISSUE_ID} merge`
 
 ## Important Rules

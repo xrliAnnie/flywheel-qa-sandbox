@@ -12,6 +12,7 @@ allowed-tools:
   - Bash(git status:*)
   - Bash(git -C:*)
   - Bash(git checkout:*)
+  - Bash(git rev-parse:*)
   - Bash(pnpm lint:*)
   - Bash(pnpm format:*)
   - Bash(pnpm build:*)
