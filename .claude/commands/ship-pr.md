@@ -11,6 +11,7 @@ allowed-tools:
   - Bash(git mv:*)
   - Bash(git status:*)
   - Bash(git -C:*)
+  - Bash(git checkout:*)
   - Bash(pnpm lint:*)
   - Bash(pnpm format:*)
   - Bash(pnpm build:*)
@@ -58,6 +59,16 @@ If branch name doesn't contain an issue ID, try extracting from PR title or body
 ISSUE_ID=$(gh pr view ${PR_NUMBER} --json title -q '.title' | grep -oE '(GEO|FLY)-[0-9]+' | head -1)
 ```
 
+### 0d. Branch Verification
+Verify the local checkout is on the correct branch before proceeding:
+```bash
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+if [ "$CURRENT_BRANCH" != "$HEAD_BRANCH" ]; then
+  git checkout "$HEAD_BRANCH"
+fi
+```
+**This is critical.** Phase 2 mutates git state (git mv, commit, push). Running on the wrong branch would archive docs onto an unrelated branch while leaving the PR unchanged.
+
 ## Phase 1: CI Green Gate
 
 ### 1a. Wait for CI
@@ -71,9 +82,10 @@ Exit code: 0 = all pass, non-zero = has failures.
 gh pr checks ${PR_NUMBER} --json name,bucket,link,workflow,state
 ```
 
-Get the failed run ID:
+Get the failed run ID, binding to the current HEAD SHA for stability across reruns:
 ```bash
-gh run list --branch ${HEAD_BRANCH} --workflow CI --status failure --limit 1 --json databaseId -q '.[0].databaseId'
+HEAD_SHA=$(gh pr view ${PR_NUMBER} --json commits -q '.commits[-1].oid')
+RUN_ID=$(gh run list --branch ${HEAD_BRANCH} --workflow CI --commit ${HEAD_SHA} --status failure --limit 1 --json databaseId -q '.[0].databaseId')
 ```
 
 ### 1c. Read Failed Logs
@@ -120,15 +132,18 @@ for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/res
 done
 ```
 
-If any files were archived, commit and push:
+If any files were archived, commit and push, then re-enter CI gate:
 ```bash
 if ! git diff --cached --quiet; then
   git commit -m "docs: archive ${ISSUE_ID} docs before merge"
   git push
-  # CI will re-run on the new commit — wait for it
+  # CI will re-run on the new commit — wait for green before merge
   gh pr checks ${PR_NUMBER} --watch
+  # If this exits non-zero, the archive commit broke CI.
+  # Re-enter Phase 1 (classify + fix). This counts toward the 3-attempt limit.
 fi
 ```
+**If `gh pr checks` exits non-zero after the archive commit**, go back to Phase 1b (get failure details) and treat this as a new fix attempt within the loop limit. Do NOT fall through to merge with red CI.
 
 ### 2b. Merge (only when CI is green)
 ```bash

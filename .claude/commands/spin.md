@@ -155,7 +155,7 @@ After implementation is shipped (PR merged to main):
 
 **If merged without `/ship-pr`**: archive docs manually from main repo:
 ```bash
-cd ~/Dev/flywheel && git pull origin main
+cd ~/Dev/flywheel && git checkout main && git pull origin main
 ISSUE_ID="{ISSUE_ID}"
 for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
   src="${dir_pair%%:*}"; dst="${dir_pair##*:}"
