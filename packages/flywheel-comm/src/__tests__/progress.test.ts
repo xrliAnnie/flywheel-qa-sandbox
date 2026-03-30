@@ -154,6 +154,35 @@ describe("progress system (GEO-292)", () => {
 			expect(result).toBeNull();
 		});
 
+		it("should return null on post-open DB error (best-effort)", () => {
+			// Create valid DB with session, then make read-only to trigger write failure
+			const roDbPath = join(tmpDir, "readonly.db");
+			const roDb = new CommDB(roDbPath);
+			roDb.registerSession("exec-1", "flywheel:@1", "geoforge3d", "GEO-292", "product-lead");
+			roDb.close();
+
+			// Make DB and WAL files read-only so insertProgress fails
+			const { chmodSync } = require("node:fs");
+			chmodSync(roDbPath, 0o444);
+			// WAL/shm files may also exist
+			try { chmodSync(`${roDbPath}-wal`, 0o444); } catch {}
+			try { chmodSync(`${roDbPath}-shm`, 0o444); } catch {}
+
+			const result = progress({
+				execId: "exec-1",
+				stage: "brainstorm",
+				status: "started",
+				dbPath: roDbPath,
+			});
+
+			// Restore write permissions for cleanup
+			try { chmodSync(roDbPath, 0o644); } catch {}
+			try { chmodSync(`${roDbPath}-wal`, 0o644); } catch {}
+			try { chmodSync(`${roDbPath}-shm`, 0o644); } catch {}
+
+			expect(result).toBeNull();
+		});
+
 		it("should return null when session has no lead_id", () => {
 			const db = new CommDB(dbPath);
 			db.registerSession("exec-1", "flywheel:@1", "geoforge3d", "GEO-292");

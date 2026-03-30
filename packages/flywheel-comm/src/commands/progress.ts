@@ -55,6 +55,9 @@ export function progress(args: ProgressArgs): string | null {
 			session.lead_id,
 			JSON.stringify(payload),
 		);
+	} catch {
+		// Any DB error (corrupt, SQLITE_BUSY, etc.) — best-effort, don't crash Runner
+		return null;
 	} finally {
 		db.close();
 	}
