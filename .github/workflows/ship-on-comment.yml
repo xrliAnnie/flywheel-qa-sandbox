@@ -33,6 +33,22 @@ jobs:
       with:
         github-token: ${{ secrets.GITHUB_TOKEN }}
         script: |
+          const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            username: context.payload.comment.user.login
+          });
+          if (!['admin', 'write'].includes(perm.permission)) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `⚠️ @${context.payload.comment.user.login} does not have write access — ship rejected.`
+            });
+            core.setFailed('Commenter lacks write permission');
+            return;
+          }
+
           const { data: pr } = await github.rest.pulls.get({
             owner: context.repo.owner,
             repo: context.repo.repo,
