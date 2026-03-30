@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { leadInbox } from "../commands/lead-inbox.js";
 import { progress } from "../commands/progress.js";
 import { CommDB } from "../db.js";
@@ -155,32 +155,26 @@ describe("progress system (GEO-292)", () => {
 		});
 
 		it("should return null on post-open DB error (best-effort)", () => {
-			// Create valid DB with session, then make read-only to trigger write failure
-			const roDbPath = join(tmpDir, "readonly.db");
-			const roDb = new CommDB(roDbPath);
-			roDb.registerSession("exec-1", "flywheel:@1", "geoforge3d", "GEO-292", "product-lead");
-			roDb.close();
+			// Setup: valid DB with session so progress() gets past open + getSession
+			const db = new CommDB(dbPath);
+			db.registerSession("exec-1", "flywheel:@1", "geoforge3d", "GEO-292", "product-lead");
+			db.close();
 
-			// Make DB and WAL files read-only so insertProgress fails
-			const { chmodSync } = require("node:fs");
-			chmodSync(roDbPath, 0o444);
-			// WAL/shm files may also exist
-			try { chmodSync(`${roDbPath}-wal`, 0o444); } catch {}
-			try { chmodSync(`${roDbPath}-shm`, 0o444); } catch {}
+			// Stub insertProgress to throw after DB opens successfully
+			const spy = vi.spyOn(CommDB.prototype, "insertProgress").mockImplementation(() => {
+				throw new Error("SQLITE_BUSY: database is locked");
+			});
 
 			const result = progress({
 				execId: "exec-1",
 				stage: "brainstorm",
 				status: "started",
-				dbPath: roDbPath,
+				dbPath,
 			});
 
-			// Restore write permissions for cleanup
-			try { chmodSync(roDbPath, 0o644); } catch {}
-			try { chmodSync(`${roDbPath}-wal`, 0o644); } catch {}
-			try { chmodSync(`${roDbPath}-shm`, 0o644); } catch {}
-
 			expect(result).toBeNull();
+			expect(spy).toHaveBeenCalled();
+			spy.mockRestore();
 		});
 
 		it("should return null when session has no lead_id", () => {
