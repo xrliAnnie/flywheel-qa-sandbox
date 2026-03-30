@@ -1,11 +1,13 @@
 #!/bin/bash
 # GEO-195: Manual supervisor script for Claude Lead session.
-# GEO-234: Agent file + workspace isolation + flywheel-comm integration.
+# GEO-234: Agent file + flywheel-comm integration.
 # GEO-246: Parameterized for multi-lead — supports any agent name.
+# GEO-286: Per-Lead workspace subdirectory. Claude Code walks up to load
+#   project CLAUDE.md, so subdirectory still gets full project context.
 #
-# Usage: ./scripts/claude-lead.sh <lead-id> <project-dir> [project-name]
+# Usage: ./scripts/claude-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>]
 #
-# lead-id: Must match an agent file in packages/teamlead/agents/<lead-id>.md
+# lead-id: Must match an agent file at <project-dir>/.lead/<lead-id>/agent.md
 #   and an agentId in projects.json leads[].
 #
 # project-name: canonical name used for comm DB path (must match Blueprint's
@@ -13,26 +15,35 @@
 #   This MUST match the value Blueprint uses, otherwise Lead and Runner
 #   will read/write different comm.db files.
 #
+# --subdir <dir>: subdirectory within project-dir for this Lead's workspace.
+#   Must be a relative path within project-dir (no .. traversal).
+#   Omit for root directory (e.g. Simba as Chief of Staff).
+#   Examples: --subdir product (Peter), --subdir operations (Oliver).
+#
 # Environment variables:
 #   DISCORD_BOT_TOKEN  — Bot token for this Lead's Discord identity (required for Discord)
-#   LEAD_WORKSPACE     — Custom workspace directory (optional, default: ~/.flywheel/lead-workspace/<lead-id>)
+#   LEAD_WORKSPACE     — Custom workspace directory (optional, overrides --subdir)
 #   BRIDGE_URL         — Bridge API URL (default: http://localhost:9876)
 #   TEAMLEAD_API_TOKEN — Bridge API auth token
 #
 # Examples:
-#   # Product Lead (Peter)
+#   # Product Lead (Peter) — runs in GeoForge3D/product/
 #   source ~/.flywheel/.env
 #   cd ~/Dev/flywheel/packages/teamlead && \
 #   DISCORD_BOT_TOKEN=$PETER_BOT_TOKEN \
-#   LEAD_WORKSPACE=/path/to/geoforge3d/product/.lead/product-lead \
-#     ./scripts/claude-lead.sh product-lead /path/to/geoforge3d geoforge3d
+#     ./scripts/claude-lead.sh product-lead /path/to/geoforge3d geoforge3d --subdir product
 #
-#   # Ops Lead (Oliver)
+#   # Ops Lead (Oliver) — runs in GeoForge3D/operations/
 #   source ~/.flywheel/.env
 #   cd ~/Dev/flywheel/packages/teamlead && \
 #   DISCORD_BOT_TOKEN=$OLIVER_BOT_TOKEN \
-#   LEAD_WORKSPACE=/path/to/geoforge3d/operations/.lead/ops-lead \
-#     ./scripts/claude-lead.sh ops-lead /path/to/geoforge3d geoforge3d
+#     ./scripts/claude-lead.sh ops-lead /path/to/geoforge3d geoforge3d --subdir operations
+#
+#   # Chief of Staff (Simba) — runs in GeoForge3D/ (root, no --subdir)
+#   source ~/.flywheel/.env
+#   cd ~/Dev/flywheel/packages/teamlead && \
+#   DISCORD_BOT_TOKEN=$SIMBA_BOT_TOKEN \
+#     ./scripts/claude-lead.sh cos-lead /path/to/geoforge3d geoforge3d
 #
 # On crash: up-arrow + enter to restart.
 #
@@ -50,17 +61,21 @@
 set -euo pipefail
 
 # ── Parse arguments and export for agent prompt ──────────────
-export LEAD_ID="${1:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name]}"
+export LEAD_ID="${1:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>]}"
 # GEO-246: Validate LEAD_ID format to prevent path traversal.
 # Only lowercase alphanumeric and hyphens allowed (e.g., "product-lead", "ops-lead").
 if [[ ! "$LEAD_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
   echo "[lead] ERROR: Invalid lead-id '${LEAD_ID}'. Must match [a-z0-9][a-z0-9-]*"
   exit 1
 fi
-# Normalize PROJECT_DIR: expand ~ and resolve to absolute path (must match
-# projectRoot in projects.json exactly for canonical name resolution)
-PROJECT_DIR_RAW="${2:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name]}"
-PROJECT_DIR="$(cd "$PROJECT_DIR_RAW" && pwd)"
+# Normalize PROJECT_DIR: expand ~ and resolve to absolute path.
+PROJECT_DIR_RAW="${2:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>]}"
+# Logical path (preserves symlinks) — used for projects.json name lookup,
+# where projectRoot must match exactly as configured.
+PROJECT_DIR_LOGICAL="$(cd "$PROJECT_DIR_RAW" && pwd)"
+# Physical path (resolves symlinks) — used for --subdir boundary enforcement,
+# where symlink-based escapes must be detected.
+PROJECT_DIR="$(cd "$PROJECT_DIR_RAW" && pwd -P)"
 export BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 export TEAMLEAD_API_TOKEN="${TEAMLEAD_API_TOKEN:-}"
 # GEO-246: Per-lead Discord state directory for channel/token isolation.
@@ -74,12 +89,43 @@ SESSION_DIR="${HOME}/.flywheel/claude-sessions"
 
 mkdir -p "$SESSION_DIR"
 
-# ── Resolve canonical project name ───────────────────────────
-# Priority: 1) explicit 3rd arg, 2) loadProjects() lookup by projectRoot, 3) basename
+# ── Resolve canonical project name + parse flags ─────────────
+# GEO-286: $3 is project-name IF it doesn't start with "--".
+# Flags (--subdir) can appear at $3+ position.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-if [ -n "${3:-}" ]; then
-  PROJECT_NAME="$3"
-else
+LEAD_SUBDIR=""
+PROJECT_NAME=""
+
+# Parse $3+ as either project-name (first non-flag) or flags
+shift 2
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --subdir)
+      if [ $# -lt 2 ] || [ -z "${2:-}" ] || [[ "${2:-}" == --* ]]; then
+        echo "[lead] ERROR: --subdir requires a directory argument."
+        exit 1
+      fi
+      LEAD_SUBDIR="$2"
+      shift 2
+      ;;
+    --*)
+      echo "[lead] ERROR: Unknown flag '$1'. Did you mean --subdir?"
+      exit 1
+      ;;
+    *)
+      if [ -z "$PROJECT_NAME" ]; then
+        PROJECT_NAME="$1"
+        shift
+      else
+        echo "[lead] ERROR: Unexpected argument '$1'. Use --subdir for workspace subdirectory."
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+# If project-name wasn't provided, auto-resolve
+if [ -z "$PROJECT_NAME" ]; then
   PROJECT_NAME=$(node -e "
     import('file://${SCRIPT_DIR}/../dist/ProjectConfig.js').then(({ loadProjects }) => {
       try {
@@ -87,8 +133,8 @@ else
         if (m) process.stdout.write(m.projectName);
       } catch {}
     }).catch(() => {});
-  " "$PROJECT_DIR" 2>/dev/null)
-  PROJECT_NAME="${PROJECT_NAME:-$(basename "$PROJECT_DIR")}"
+  " "$PROJECT_DIR_LOGICAL" 2>/dev/null)
+  PROJECT_NAME="${PROJECT_NAME:-$(basename "$PROJECT_DIR_LOGICAL")}"
 fi
 export PROJECT_NAME
 
@@ -112,20 +158,58 @@ fi
 mkdir -p "$(dirname "$FLYWHEEL_COMM_DB")"
 echo "[lead] Comm DB: ${FLYWHEEL_COMM_DB}"
 
+# ── Workspace ────────────────────────────────────────────────
+# GEO-286: Per-Lead subdirectory. Claude Code walks up the directory tree
+# to find CLAUDE.md, so running in a subdirectory still gets full project
+# context from the root CLAUDE.md.
+# LEAD_WORKSPACE env var is the highest-priority escape hatch: if set,
+# skip --subdir path validation (existence, boundary check) and use it
+# directly. Note: CLI syntax parsing (--subdir arg presence) still runs
+# above — a malformed --subdir is a CLI error regardless of env vars.
+if [ -n "${LEAD_WORKSPACE:-}" ]; then
+  echo "[lead] Using LEAD_WORKSPACE override: ${LEAD_WORKSPACE}"
+elif [ -n "$LEAD_SUBDIR" ]; then
+  # Validate: no path traversal (reject ..)
+  if [[ "$LEAD_SUBDIR" == *..* ]]; then
+    echo "[lead] ERROR: --subdir must not contain '..': ${LEAD_SUBDIR}"
+    exit 1
+  fi
+  CANDIDATE="${PROJECT_DIR}/${LEAD_SUBDIR}"
+  # Resolve to physical absolute path (pwd -P follows symlinks) to prevent
+  # symlink-based escapes from PROJECT_DIR.
+  RESOLVED="$(cd "$CANDIDATE" 2>/dev/null && pwd -P)" || true
+  if [ -z "$RESOLVED" ]; then
+    echo "[lead] ERROR: --subdir directory does not exist: ${CANDIDATE}"
+    echo "[lead] Create it first, or omit --subdir to use project root."
+    exit 1
+  fi
+  case "$RESOLVED" in
+    "${PROJECT_DIR}"/*) ;; # OK — inside project
+    "${PROJECT_DIR}") ;; # OK — is project root (e.g. --subdir .)
+    *)
+      echo "[lead] ERROR: --subdir resolved to '${RESOLVED}' which is outside project '${PROJECT_DIR}'"
+      exit 1
+      ;;
+  esac
+  LEAD_WORKSPACE="${RESOLVED}"
+else
+  LEAD_WORKSPACE="${PROJECT_DIR}"
+fi
+echo "[lead] Working directory: ${LEAD_WORKSPACE}"
+
 # ── Agent file auto-sync (project source → global target) ──
-# GEO-246: Agent files are project-specific, not Flywheel infrastructure.
-# Priority: 1) AGENT_SOURCE env var, 2) LEAD_WORKSPACE/agent.md, 3) Flywheel repo agents/ (fallback)
+# GEO-246: Agent files live in the project repo, not Flywheel infrastructure.
+# GEO-286: Agent source always from PROJECT_DIR/.lead/ (not workspace).
+# Priority: 1) AGENT_SOURCE env var, 2) PROJECT_DIR/.lead/<lead-id>/agent.md, 3) fail-fast.
 if [ -n "${AGENT_SOURCE:-}" ]; then
   : # explicit override, use as-is
-elif [ -f "${LEAD_WORKSPACE}/agent.md" ]; then
-  AGENT_SOURCE="${LEAD_WORKSPACE}/agent.md"
-else
-  AGENT_SOURCE="${SCRIPT_DIR}/../agents/${LEAD_ID}.md"
+elif [ -f "${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md" ]; then
+  AGENT_SOURCE="${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md"
 fi
 AGENT_TARGET="${HOME}/.claude/agents/${LEAD_ID}.md"
 mkdir -p "${HOME}/.claude/agents"
 
-if [ -f "$AGENT_SOURCE" ]; then
+if [ -f "${AGENT_SOURCE:-}" ]; then
   # Copy (not symlink) to prevent Lead from writing back to repo via symlink.
   # Lead has Bash + bypassPermissions, so a symlink would let it mutate the
   # version-controlled agent source file.
@@ -135,17 +219,15 @@ if [ -f "$AGENT_SOURCE" ]; then
   cp "$AGENT_SOURCE" "$AGENT_TARGET"
   echo "[lead] Agent file installed: ${AGENT_TARGET} (copied from ${AGENT_SOURCE})"
 else
-  echo "[lead] ERROR: Agent source not found at ${AGENT_SOURCE}"
-  echo "[lead] Searched: AGENT_SOURCE env, ${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md, ${SCRIPT_DIR}/../agents/${LEAD_ID}.md"
+  echo "[lead] ERROR: Agent source not found."
+  if [ -n "${AGENT_SOURCE:-}" ]; then
+    echo "[lead] AGENT_SOURCE was set to '${AGENT_SOURCE}' but file does not exist."
+    echo "[lead] Unset AGENT_SOURCE to use automatic resolution, or fix the path."
+  else
+    echo "[lead] Expected: ${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md"
+  fi
   exit 1
 fi
-
-# ── Workspace isolation ──────────────────────────────────────
-# Lead runs in an isolated workspace, NOT in the product repo.
-# This reduces risk of accidental code modification via Bash.
-LEAD_WORKSPACE="${LEAD_WORKSPACE:-${HOME}/.flywheel/lead-workspace/${LEAD_ID}}"
-mkdir -p "$LEAD_WORKSPACE"
-echo "[lead] Working directory: ${LEAD_WORKSPACE} (isolated from product repo)"
 
 # ── Bootstrap via Bridge API ─────────────────────────────────
 echo "[lead] Sending bootstrap for ${LEAD_ID}..."
