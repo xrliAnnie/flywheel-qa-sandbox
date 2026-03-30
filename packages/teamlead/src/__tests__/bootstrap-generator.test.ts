@@ -437,6 +437,56 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 		expect(sharedCall![0].limit).toBe(5);
 	});
 
+	it("project without memoryAllowedUsers → memoryRecall: null (fail-closed)", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const ms = mockMemoryService({
+			searchMemories: vi.fn().mockResolvedValue(["should not appear"]),
+		});
+
+		const bootstrap = await generateBootstrap(
+			"other-lead",
+			store,
+			projects,
+			ms,
+		);
+		expect(bootstrap.memoryRecall).toBeNull();
+		// searchMemories should NOT have been called — fail-closed
+		expect(ms.searchMemories).not.toHaveBeenCalled();
+		warnSpy.mockRestore();
+	});
+
+	it("project with memoryAllowedUsers missing leadId → memoryRecall: null", async () => {
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		// Create a project where leadId is NOT in memoryAllowedUsers
+		const restrictedProjects: ProjectEntry[] = [
+			{
+				projectName: "restricted",
+				projectRoot: "/tmp/restricted",
+				leads: [
+					{
+						agentId: "restricted-lead",
+						chatChannel: "chat-r",
+						match: { labels: ["R"] },
+					},
+				],
+				memoryAllowedUsers: ["someone-else"],
+			},
+		];
+		const ms = mockMemoryService({
+			searchMemories: vi.fn().mockResolvedValue(["should not appear"]),
+		});
+
+		const bootstrap = await generateBootstrap(
+			"restricted-lead",
+			store,
+			restrictedProjects,
+			ms,
+		);
+		expect(bootstrap.memoryRecall).toBeNull();
+		expect(ms.searchMemories).not.toHaveBeenCalled();
+		warnSpy.mockRestore();
+	});
+
 	it("result > 1500 chars → truncated with suffix", async () => {
 		const longFact = "A".repeat(200);
 		const ms = mockMemoryService({

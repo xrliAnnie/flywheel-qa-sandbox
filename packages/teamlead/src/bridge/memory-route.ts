@@ -65,6 +65,27 @@ export function createMemoryRouter(
 			return;
 		}
 
+		// GEO-203: Dual-bucket contract enforcement
+		// - No agent_id → shared bucket only: user_id must equal project_name
+		// - With agent_id → user_id must be agent_id (private) or project_name (shared)
+		if (agent_id === undefined) {
+			if (user_id !== project_name) {
+				res.status(400).json({
+					error:
+						"when agent_id is omitted, user_id must equal project_name (shared bucket)",
+				});
+				return;
+			}
+		} else {
+			if (user_id !== agent_id && user_id !== project_name) {
+				res.status(400).json({
+					error:
+						"user_id must equal agent_id (private bucket) or project_name (shared bucket)",
+				});
+				return;
+			}
+		}
+
 		// Validate optional limit
 		if (limit !== undefined) {
 			if (

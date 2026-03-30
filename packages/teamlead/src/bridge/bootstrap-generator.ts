@@ -168,16 +168,29 @@ export async function generateBootstrap(
 	if (memoryService) {
 		const project = findProjectForLead(leadId, projects);
 		if (project) {
-			try {
-				memoryRecall = await recallMemories(
-					leadId,
-					project.projectName,
-					memoryService,
-				);
-			} catch (err) {
+			// Fail-closed: skip memory recall if memoryAllowedUsers not configured
+			// or if the required userIds are not in the allowlist
+			const allowedUsers = project.memoryAllowedUsers;
+			if (
+				!allowedUsers ||
+				!allowedUsers.includes(leadId) ||
+				!allowedUsers.includes(project.projectName)
+			) {
 				console.warn(
-					`[bootstrap] Memory recall failed for ${leadId}: ${err instanceof Error ? err.message : String(err)}`,
+					`[bootstrap] Memory not configured for project "${project.projectName}" or missing userId in allowlist — skipping recall`,
 				);
+			} else {
+				try {
+					memoryRecall = await recallMemories(
+						leadId,
+						project.projectName,
+						memoryService,
+					);
+				} catch (err) {
+					console.warn(
+						`[bootstrap] Memory recall failed for ${leadId}: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
 			}
 		} else {
 			console.warn(
