@@ -101,42 +101,58 @@ After all PRs are created (or user decides to ship a subset):
 
 ### 7. Ship + Cleanup (Teammate Executes)
 For each PR the user approves to ship:
-1. `SendMessage(to="worker-geo-{XX}", message="Ship PR #{N}: merge, clean up, update docs")`
+1. `SendMessage(to="worker-{XX}", message="Ship PR #{N}: merge, clean up, update docs")`
 2. Teammate executes **ALL** of the following (do not skip any):
 
-   **A. Merge PR**
-   - `gh pr merge {PR_NUMBER} --squash --delete-branch` (or merge strategy user prefers)
+   **A. Ship via /ship-pr**
+   ```
+   /ship-pr {PR_NUMBER} --yes
+   ```
+   Handles: CI green gate → fix loop (max 3 attempts) → archive docs → squash merge.
+   If CI stuck after 3 attempts, teammate reports failure details and stops.
 
-   **B. Clean up worktree**
-   - `cd` out of worktree
-   - `git worktree remove {worktree_path}`
-   - `git branch -D {branch}` (if not already deleted by --delete-branch)
+   **B. Post-merge bookkeeping** (all commands from main repo)
+   ```bash
+   cd ~/Dev/flywheel
+   git checkout main && git pull origin main
+   ```
 
-   **C. Archive docs** (in main repo, on main branch)
-   - `git mv doc/plan/inprogress/{file} doc/plan/archive/`
-   - `git mv doc/exploration/new/{file} doc/exploration/archive/`
-   - `git mv doc/research/new/{file} doc/research/archive/` (if exists)
-   - Commit: `docs: archive GEO-{XX} docs after merge`
+   VERSION bump (if first ship of sprint):
+   ```bash
+   cd ~/Dev/flywheel && bash -c 'source .claude/orchestrator/config.sh && current=$(get_feature_version) && if [ "$current" != "{SPRINT_VERSION}" ]; then bump_feature_version minor; fi'
+   ```
 
-   **D. Update MEMORY.md**
+   Update CLAUDE.md milestone table + commit:
+   ```bash
+   cd ~/Dev/flywheel
+   # Edit CLAUDE.md to add milestone row
+   git add CLAUDE.md doc/VERSION
+   git commit -m "docs: update CLAUDE.md + VERSION after {ISSUE_ID} merge (PR #{N})"
+   git push origin main
+   ```
+
+   Update MEMORY.md (local file at `~/.claude/projects/...`, not git tracked):
    - Mark issue as ✅ Done in Next Steps table
    - Add one-line summary with PR number, key changes, review rounds
 
-   **E. Update CLAUDE.md**
-   - Add milestone to the milestone table
-   - Update version in `doc/VERSION` if needed
+   **C. Update Linear**
+   Use the cached Linear MCP handle (resolved at orchestrator startup) to mark the issue as Done.
 
-   **F. Update Linear issue**
-   - Mark issue as Done in Linear
+   **D. Clean up worktree** (from main repo)
+   ```bash
+   cd ~/Dev/flywheel
+   git worktree remove {worktree_path} 2>/dev/null
+   git branch -D {branch} 2>/dev/null
+   ```
 
-   **G. Report completion**
+   **E. Report completion**
    - Mark task as completed
    - Report what was done (merge + cleanup + docs)
 
 3. After teammate confirms ALL steps done → `cleanup-agent.sh <id> completed`
 4. **THEN** send shutdown_request to that teammate
 
-**CRITICAL**: Steps C-F are mandatory, not optional. Skipping doc updates creates tech debt that accumulates. The teammate has the context to do these updates — don't defer to a follow-up.
+**CRITICAL**: Steps B-D are mandatory, not optional. Skipping doc updates creates tech debt that accumulates. The teammate has the context to do these updates — don't defer to a follow-up.
 
 ### 8. Teammate Communication
 - Teammates send messages via `SendMessage` when they need help or finish

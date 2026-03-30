@@ -151,33 +151,27 @@ Before starting:
 
 After implementation is shipped (PR merged to main):
 
-1. **Switch to main repo** (not worktree) and pull:
-   ```bash
-   cd ~/Dev/flywheel  # or the main repo directory
-   git pull origin main
-   ```
+**If `/ship-pr` was used**: docs are already archived (Phase 2 handles `git mv` to archive dirs). Skip to post-merge bookkeeping below.
 
-2. **Clean up worktree**:
-   ```bash
-   git worktree remove ../flywheel-geo-{XX}
-   ```
+**If merged without `/ship-pr`**: archive docs manually from main repo:
+```bash
+cd ~/Dev/flywheel && git pull origin main
+ISSUE_ID="{ISSUE_ID}"
+for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
+  src="${dir_pair%%:*}"; dst="${dir_pair##*:}"
+  for f in $(find "$src" -name "*${ISSUE_ID}*" -type f 2>/dev/null); do
+    git mv "$f" "$dst/"
+  done
+done
+git diff --cached --quiet || git commit -m "docs: archive ${ISSUE_ID} docs after merge"
+```
 
-3. Archive docs using **`git mv`** (NOT copy):
-   ```bash
-   git mv doc/plan/inprogress/{file} doc/plan/archive/{file}
-   git mv doc/research/new/GEO-{XX}-*.md doc/research/archive/
-   git mv doc/exploration/new/GEO-{XX}-*.md doc/exploration/archive/
-   ```
-   Only archive docs that exist — not every issue has all three.
-   **IMPORTANT**: Always use `git mv`, never `cp`. Copying creates duplicates.
-
-4. Update CLAUDE.md: remove from Active Explorations list
-
-5. Update MEMORY.md: move docs from Active to Archived index
-
-4. Update Linear issue status to "Done"
-
-5. Commit: `docs: archive GEO-{XX} docs after implementation merged`
+**Post-merge bookkeeping** (always required):
+1. Update CLAUDE.md: add milestone to table, remove from Active Explorations if listed
+2. Update MEMORY.md (local file): move docs from Active to Archived index, mark Done
+3. Update Linear issue status to "Done"
+4. Clean up worktree: `cd ~/Dev/flywheel && git worktree remove ../flywheel-{slug}`
+5. Commit + push docs changes: `docs: update docs after {ISSUE_ID} merge`
 
 ## Important Rules
 
