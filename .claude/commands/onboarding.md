@@ -39,14 +39,7 @@ echo "=== Active Research ===" && ls doc/research/new/ 2>/dev/null || echo "(non
 git log --oneline -10
 ```
 
-## Step 4: Build Health
-
-```bash
-pnpm -r build 2>&1 | tail -5
-pnpm test 2>&1 | grep -E "(Test Files|Tests)" | head -3
-```
-
-## Step 5: Running Services
+## Step 4: Running Services
 
 ```bash
 echo "=== Bridge ===" && curl -s --max-time 2 http://localhost:9876/health 2>/dev/null || echo "Bridge not running"
@@ -63,8 +56,7 @@ Present to the user (in Chinese):
 4. **进行中**: 正在实施的 plan（`doc/plan/inprogress/`）
 5. **待实施**: 已批准待开始的 plan（`doc/plan/new/`）
 6. **待探索**: 活跃的 exploration/research docs
-7. **构建状态**: build/test 是否健康
-8. **服务状态**: Bridge 和 Gateway 是否运行
+7. **服务状态**: Bridge 和 Gateway 是否运行
 9. **关键规则提醒**:
    - 所有改动必须走 worktree + branch + PR（不可直接 push main）
    - 开发流程: /brainstorm → /research → /write-plan → /codex-design-review → /implement

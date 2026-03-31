@@ -38,13 +38,27 @@ source "$ORCHESTRATOR_DIR/lock.sh"
 # Version management
 VERSION_FILE="$PROJECT_ROOT/doc/VERSION"
 
-get_feature_version() {
+get_current_version() {
     if [ -f "$VERSION_FILE" ]; then
         cat "$VERSION_FILE"
         return
     fi
     echo "ERROR: VERSION file not found at $VERSION_FILE" >&2
     return 1
+}
+
+# Alias for backwards compatibility
+get_feature_version() { get_current_version; }
+
+# Compute next minor version WITHOUT writing to VERSION file.
+# Use this at sprint start to get the version for branch/plan naming.
+# Only call bump_feature_version during ship phase to actually write.
+compute_next_version() {
+    local current
+    current=$(get_current_version) || return 1
+    local major minor patch
+    IFS='.' read -r major minor patch <<< "${current#v}"
+    echo "v${major}.$((minor + 1)).0"
 }
 
 bump_feature_version() {
