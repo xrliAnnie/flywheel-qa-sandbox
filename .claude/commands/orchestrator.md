@@ -166,10 +166,20 @@ For each PR the user approves to ship:
    - Mark issue as ✅ Done in Next Steps table
    - Add one-line summary with PR number, key changes, review rounds
 
-   **D. Update Linear**
+   **D. Restart Services** (Flywheel repo merges only)
+   After all doc updates and before worktree cleanup, trigger restart if the merge was in the Flywheel repo:
+   ```bash
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+   if [[ "$(basename "$MAIN_REPO")" == "flywheel" ]]; then
+       bash "$MAIN_REPO/scripts/restart-services.sh" 2>&1 | tee -a /tmp/flywheel-restart.log || echo "[orchestrator] WARNING: restart-services.sh failed (non-blocking)"
+   fi
+   ```
+   If restart-services.sh fails, log the error and continue — do not block cleanup or worktree removal.
+
+   **E. Update Linear**
    Use the cached Linear MCP handle (resolved at orchestrator startup) to mark the issue as Done.
 
-   **E. Clean up worktree** (from main repo)
+   **F. Clean up worktree** (from main repo)
    ```bash
    MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
    cd "$MAIN_REPO"
@@ -177,7 +187,7 @@ For each PR the user approves to ship:
    git branch -D {branch} 2>/dev/null
    ```
 
-   **F. Report completion**
+   **G. Report completion**
    - Mark task as completed
    - Report what was done (merge + cleanup + docs)
 

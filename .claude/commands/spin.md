@@ -190,8 +190,15 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
 1. Update CLAUDE.md: add milestone to table, remove from Active Explorations if listed
 2. Update MEMORY.md (local file): move docs from Active to Archived index, mark Done
 3. Update Linear issue status to "Done"
-4. Clean up worktree: `MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //') && cd "$MAIN_REPO" && git worktree remove ../flywheel-geo-{XX}`
-5. Commit + push docs changes: `docs: update docs after {ISSUE_ID} merge`
+4. Restart services (Flywheel repo only):
+   ```bash
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+   if [[ "$(basename "$MAIN_REPO")" == "flywheel" ]]; then
+       bash "$MAIN_REPO/scripts/restart-services.sh" 2>&1 | tee -a /tmp/flywheel-restart.log || echo "[spin] WARNING: restart-services.sh failed (non-blocking)"
+   fi
+   ```
+5. Clean up worktree: `MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //') && cd "$MAIN_REPO" && git worktree remove ../flywheel-geo-{XX}`
+6. Commit + push docs changes: `docs: update docs after {ISSUE_ID} merge`
 
 ## Important Rules
 
