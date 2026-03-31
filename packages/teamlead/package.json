@@ -9,7 +9,7 @@
 		"teamlead": "dist/index.js"
 	},
 	"scripts": {
-		"build": "tsc",
+		"build": "tsc && cp -r static dist/static",
 		"dev": "tsc --watch",
 		"test": "vitest run",
 		"test:watch": "vitest --watch",

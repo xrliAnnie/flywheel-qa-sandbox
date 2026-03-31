@@ -1,4 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import express from "express";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
@@ -44,6 +46,7 @@ import {
 } from "./tmux-lookup.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
+import { createTriageTemplateRouter } from "./triage-template-route.js";
 import type { BridgeConfig } from "./types.js";
 
 /** Create the appropriate LeadRuntime for a lead config. */
@@ -997,6 +1000,15 @@ export function createBridgeApp(
 			config.maxConcurrentRunners,
 			startDispatcher,
 		),
+	);
+
+	// FLY-27: Triage HTML template endpoint — serves static template for Simba
+	const __dirname = dirname(fileURLToPath(import.meta.url));
+	const templatePath = resolve(__dirname, "../../static/triage-template.html");
+	app.use(
+		"/api/triage/template",
+		tokenAuthMiddleware(config.apiToken),
+		createTriageTemplateRouter(templatePath),
 	);
 
 	// Memory API (GEO-198/GEO-204) — conditional, only if memoryService initialized
