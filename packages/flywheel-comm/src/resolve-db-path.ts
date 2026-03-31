@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { validateProjectName } from "./validate.js";
 
 /**
  * Resolve the comm DB path from CLI args and environment.
@@ -16,6 +17,7 @@ export function resolveDbPath(opts: { db?: string; project?: string }): string {
 	}
 
 	if (opts.project) {
+		validateProjectName(opts.project);
 		return join(homedir(), ".flywheel", "comm", opts.project, "comm.db");
 	}
 

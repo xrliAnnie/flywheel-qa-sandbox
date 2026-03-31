@@ -6,6 +6,7 @@ export interface SessionsArgs {
 	dbPath: string;
 	projectName?: string;
 	activeOnly?: boolean;
+	leadId?: string;
 }
 
 export function sessions(args: SessionsArgs): Session[] {
@@ -14,10 +15,16 @@ export function sessions(args: SessionsArgs): Session[] {
 	}
 	const db = new CommDB(args.dbPath, false);
 	try {
+		let results: Session[];
 		if (args.activeOnly) {
-			return db.getActiveSessions(args.projectName);
+			results = db.getActiveSessions(args.projectName);
+		} else {
+			results = db.listSessions(args.projectName);
 		}
-		return db.listSessions(args.projectName);
+		if (args.leadId) {
+			results = results.filter((s) => s.lead_id === args.leadId);
+		}
+		return results;
 	} finally {
 		db.close();
 	}

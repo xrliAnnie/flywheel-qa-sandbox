@@ -1,0 +1,30 @@
+{
+	"name": "flywheel-terminal-mcp",
+	"version": "0.1.0",
+	"description": "MCP server for Lead terminal observation of Runner tmux sessions",
+	"type": "module",
+	"main": "dist/index.js",
+	"bin": {
+		"flywheel-terminal-mcp": "dist/index.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"test": "vitest run",
+		"test:watch": "vitest --watch",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@modelcontextprotocol/sdk": "^1.25.2",
+		"flywheel-comm": "workspace:*",
+		"zod": "^3.23.0"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	}
+}

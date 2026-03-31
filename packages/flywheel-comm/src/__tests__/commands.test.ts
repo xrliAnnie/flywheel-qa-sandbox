@@ -260,6 +260,61 @@ describe("sessions command", () => {
 		});
 		expect(result).toHaveLength(0);
 	});
+
+	it("should filter sessions by leadId", () => {
+		const db = new CommDB(dbPath);
+		db.registerSession(
+			"exec-1",
+			"GEO-1:@0",
+			"geoforge3d",
+			"GEO-100",
+			"product-lead",
+		);
+		db.registerSession(
+			"exec-2",
+			"GEO-2:@1",
+			"geoforge3d",
+			"GEO-101",
+			"ops-lead",
+		);
+		db.registerSession(
+			"exec-3",
+			"GEO-3:@2",
+			"geoforge3d",
+			"GEO-102",
+			"product-lead",
+		);
+		db.close();
+
+		const productSessions = sessions({
+			dbPath,
+			leadId: "product-lead",
+		});
+		expect(productSessions).toHaveLength(2);
+		expect(productSessions.map((s) => s.execution_id)).toEqual([
+			"exec-1",
+			"exec-3",
+		]);
+
+		const opsSessions = sessions({ dbPath, leadId: "ops-lead" });
+		expect(opsSessions).toHaveLength(1);
+		expect(opsSessions[0]!.execution_id).toBe("exec-2");
+	});
+
+	it("should return no sessions when leadId matches none", () => {
+		const db = new CommDB(dbPath);
+		db.registerSession(
+			"exec-1",
+			"GEO-1:@0",
+			"geoforge3d",
+			"GEO-100",
+			"product-lead",
+		);
+		db.close();
+
+		const result = sessions({ dbPath, leadId: "unknown-lead" });
+		expect(result).toHaveLength(0);
+	});
 });
 
 describe("capture command", () => {
