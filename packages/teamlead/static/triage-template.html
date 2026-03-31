@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Triage — {{DATE}}</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.5; padding: 24px; max-width: 960px; margin: 0 auto; }
+
+  .header { text-align: center; margin-bottom: 32px; }
+  .header h1 { font-size: 28px; font-weight: 700; color: #1a365d; }
+  .header .date { color: #86868b; font-size: 14px; margin-top: 4px; }
+  .header .project { display: inline-block; background: linear-gradient(135deg, #1a365d, #2d5aa0); color: white; padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 600; margin-top: 12px; letter-spacing: 0.5px; }
+
+  .section { margin-bottom: 28px; }
+  .section-title { font-size: 18px; font-weight: 700; margin-bottom: 12px; display: flex; align-items: center; gap: 8px; }
+  .section-title .count { background: #e8e8ed; color: #6e6e73; font-size: 12px; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
+
+  .card { background: white; border-radius: 12px; padding: 16px 20px; margin-bottom: 10px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); transition: transform 0.15s; }
+  .card:hover { transform: translateY(-1px); box-shadow: 0 2px 8px rgba(0,0,0,0.1); }
+  .card-red { border-left: 4px solid #ff3b30; }
+  .card-amber { border-left: 4px solid #ff9500; }
+  .card-blue { border-left: 4px solid #007aff; }
+
+  .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
+  .issue-id { font-family: 'SF Mono', 'Menlo', monospace; font-size: 13px; color: #1a365d; text-decoration: none; font-weight: 600; }
+  .issue-id:hover { text-decoration: underline; }
+  .card-title { font-size: 15px; font-weight: 600; color: #1d1d1f; flex: 1; }
+
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 6px; text-transform: uppercase; letter-spacing: 0.3px; }
+  .badge-agent { background: #e3f2fd; color: #1565c0; }
+  .badge-annie { background: #fce4ec; color: #c62828; }
+
+  .card-reason { font-size: 13px; color: #6e6e73; margin-top: 4px; }
+
+  .priority-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+  .dot-urgent { background: #ff3b30; }
+  .dot-high { background: #ff9500; }
+  .dot-medium { background: #007aff; }
+  .dot-low { background: #c7c7cc; }
+
+  .status-tag { font-size: 11px; padding: 2px 8px; border-radius: 6px; font-weight: 500; }
+  .status-backlog { background: #f2f2f7; color: #8e8e93; }
+  .status-todo { background: #e8e8ed; color: #6e6e73; }
+  .status-inprogress { background: #e3f2fd; color: #1565c0; }
+
+  .stats { display: flex; gap: 12px; justify-content: center; margin-bottom: 24px; flex-wrap: wrap; }
+  .stat { background: white; border-radius: 12px; padding: 12px 20px; text-align: center; box-shadow: 0 1px 3px rgba(0,0,0,0.06); min-width: 100px; }
+  .stat-number { font-size: 24px; font-weight: 700; color: #1a365d; }
+  .stat-label { font-size: 12px; color: #86868b; }
+
+  .module-section { margin-bottom: 20px; }
+  .module-header { font-size: 14px; font-weight: 700; padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; }
+  .group-product { background: #f3e5f5; color: #7b1fa2; }
+  .group-operations { background: #fff3e0; color: #e65100; }
+  .group-other { background: #f2f2f7; color: #6e6e73; }
+
+  .issue-row { display: flex; align-items: center; padding: 8px 12px; border-bottom: 1px solid #f2f2f7; gap: 8px; font-size: 14px; }
+  .issue-row:last-child { border-bottom: none; }
+  .issue-row .issue-id { font-size: 12px; min-width: 60px; }
+  .issue-row .title { flex: 1; color: #1d1d1f; }
+
+  .capacity { background: white; border-radius: 12px; padding: 12px 20px; margin-bottom: 24px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); text-align: center; font-size: 14px; color: #6e6e73; }
+  .capacity strong { color: #1a365d; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>Triage</h1>
+  <div class="date">{{DATE}}</div>
+  <div class="project">{{PROJECT_NAME}}</div>
+</div>
+
+<div class="stats">
+{{STATS}}
+</div>
+
+<div class="capacity">{{CAPACITY}}</div>
+
+<!-- Section 1: 马上做 -->
+<div class="section">
+  <div class="section-title">
+    <span style="color: #ff3b30;">&#9679;</span> 马上做
+  </div>
+{{SECTION_CRITICAL}}
+</div>
+
+<!-- Section 2: 本周完成 -->
+<div class="section">
+  <div class="section-title">
+    <span style="color: #ff9500;">&#9679;</span> 本周完成
+  </div>
+{{SECTION_WEEK}}
+</div>
+
+<!-- Section 3: 已在进行中 -->
+<div class="section">
+  <div class="section-title">
+    <span style="color: #007aff;">&#9679;</span> 已在进行中
+  </div>
+{{SECTION_INPROGRESS}}
+</div>
+
+<!-- Section 4: 其余 issue 按 team -->
+<div class="section">
+  <div class="section-title">其余 Issue（按 Team）</div>
+{{SECTION_REMAINING}}
+</div>
+
+<div style="text-align: center; color: #86868b; font-size: 12px; margin-top: 32px; padding-bottom: 24px;">
+  Generated by Simba &middot; {{DATE}}
+</div>
+
+</body>
+</html>
