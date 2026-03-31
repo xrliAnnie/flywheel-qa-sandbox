@@ -7,6 +7,7 @@ import { check } from "./commands/check.js";
 import { inbox } from "./commands/inbox.js";
 import { pending } from "./commands/pending.js";
 import { respond } from "./commands/respond.js";
+import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { stage } from "./commands/stage.js";
@@ -24,6 +25,7 @@ Commands:
   inbox     Check for instructions from Lead (Runner use)
   sessions  List runner sessions
   capture   Capture tmux output of a runner session
+  search    Search tmux output for a regex pattern
   stage     Report pipeline stage to Bridge (Runner use)
 
 Global options:
@@ -71,6 +73,9 @@ async function main(): Promise<void> {
 			break;
 		case "capture":
 			runCapture(commandArgs);
+			break;
+		case "search":
+			await runSearch(commandArgs);
 			break;
 		case "stage":
 			await runStage(commandArgs);
@@ -292,6 +297,7 @@ function runSessions(args: string[]): void {
 			project: { type: "string" },
 			db: { type: "string" },
 			active: { type: "boolean", default: false },
+			lead: { type: "string" },
 			json: { type: "boolean", default: false },
 		},
 		allowPositionals: false,
@@ -302,6 +308,7 @@ function runSessions(args: string[]): void {
 		dbPath,
 		projectName: values.project,
 		activeOnly: values.active,
+		leadId: values.lead,
 	});
 
 	if (values.json) {
@@ -340,6 +347,48 @@ function runCapture(args: string[]): void {
 		lines: values.lines ? Number.parseInt(values.lines, 10) : undefined,
 	});
 	process.stdout.write(output);
+}
+
+async function runSearch(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			pattern: { type: "string" },
+			lines: { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
+
+	if (!values["exec-id"]) {
+		throw new Error("--exec-id is required");
+	}
+	if (!values.pattern) {
+		throw new Error("--pattern is required");
+	}
+
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const result = await search({
+		execId: values["exec-id"],
+		pattern: values.pattern,
+		dbPath,
+		lines: values.lines ? Number.parseInt(values.lines, 10) : undefined,
+	});
+
+	if (values.json) {
+		console.log(JSON.stringify(result));
+	} else if (result.matches.length === 0) {
+		console.log(
+			`No matches for "${result.pattern}" in ${result.total_lines} lines.`,
+		);
+	} else {
+		for (const m of result.matches) {
+			console.log(`${m.line}: ${m.text}`);
+		}
+	}
 }
 
 async function runStage(args: string[]): Promise<void> {

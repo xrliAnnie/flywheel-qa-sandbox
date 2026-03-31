@@ -492,12 +492,44 @@ trap cleanup SIGINT SIGTERM
 # ── Claude args ─────────────────────────────────────────────
 cd "$LEAD_WORKSPACE"
 
+# ── FLY-11: Terminal MCP server config ─────────────────────
+# Generate MCP config JSON for Lead terminal observation.
+# The MCP server runs alongside Claude, providing read-only access to Runner tmux sessions.
+TERMINAL_MCP_DIR="${SCRIPT_DIR}/../../terminal-mcp/dist"
+if [ -d "$TERMINAL_MCP_DIR" ]; then
+  TERMINAL_MCP_BIN="$(cd "$TERMINAL_MCP_DIR" && pwd)/index.js"
+  MCP_CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-mcp-XXXXXX.json")
+  cat > "$MCP_CONFIG_FILE" <<MCPEOF
+{
+  "mcpServers": {
+    "flywheel-terminal": {
+      "command": "node",
+      "args": ["${TERMINAL_MCP_BIN}"],
+      "env": {
+        "FLYWHEEL_PROJECT_NAME": "${PROJECT_NAME}",
+        "FLYWHEEL_LEAD_ID": "${LEAD_ID}"
+      }
+    }
+  }
+}
+MCPEOF
+  log "Terminal MCP config: ${MCP_CONFIG_FILE}"
+else
+  log "WARNING: terminal-mcp not built (${TERMINAL_MCP_DIR} missing), skipping MCP"
+  MCP_CONFIG_FILE=""
+fi
+
 # Build claude args using bash array (avoids quoting/word-splitting issues)
 CLAUDE_ARGS=(
   --agent "$LEAD_ID"
   --channels "plugin:discord@claude-plugins-official"
   --permission-mode bypassPermissions
 )
+
+# ── FLY-11: Terminal MCP config ──────────
+if [ -n "$MCP_CONFIG_FILE" ]; then
+  CLAUDE_ARGS+=(--mcp-config "$MCP_CONFIG_FILE")
+fi
 
 # ── FLY-26: Append shared rule files to system prompt ──────────
 # common-rules.md: loaded by ALL leads (communication style, memory, MCP, shared limits)

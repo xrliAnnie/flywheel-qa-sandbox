@@ -433,6 +433,140 @@ describe("CLI", () => {
 		});
 	});
 
+	describe("sessions --lead filter", () => {
+		it("should filter sessions by --lead", () => {
+			const db = new CommDB(dbPath);
+			db.registerSession(
+				"exec-1",
+				"GEO-1:@0",
+				"geoforge3d",
+				"GEO-100",
+				"product-lead",
+			);
+			db.registerSession(
+				"exec-2",
+				"GEO-2:@1",
+				"geoforge3d",
+				"GEO-101",
+				"ops-lead",
+			);
+			db.close();
+
+			const result = JSON.parse(
+				runCli([
+					"sessions",
+					"--db",
+					dbPath,
+					"--json",
+					"--lead",
+					"product-lead",
+				]),
+			);
+			expect(result).toHaveLength(1);
+			expect(result[0].execution_id).toBe("exec-1");
+		});
+	});
+
+	describe("search", () => {
+		it("should fail without --exec-id", () => {
+			const { exitCode } = runCliSafe([
+				"search",
+				"--pattern",
+				"test",
+				"--db",
+				dbPath,
+			]);
+			expect(exitCode).toBe(1);
+		});
+
+		it("should fail without --pattern", () => {
+			const { exitCode } = runCliSafe([
+				"search",
+				"--exec-id",
+				"exec-1",
+				"--db",
+				dbPath,
+			]);
+			expect(exitCode).toBe(1);
+		});
+
+		it("should report error when session not found", () => {
+			const db = new CommDB(dbPath);
+			db.close();
+
+			const { exitCode } = runCliSafe([
+				"search",
+				"--exec-id",
+				"nonexistent",
+				"--pattern",
+				"test",
+				"--db",
+				dbPath,
+			]);
+			expect(exitCode).toBe(1);
+		});
+
+		it("should search tmux output via fake tmux", () => {
+			const db = new CommDB(dbPath);
+			db.registerSession("exec-search", "GEO-SEARCH:@0", "geoforge3d");
+			db.close();
+
+			const fakeTmuxDir = join(tmpDir, "bin-search");
+			mkdirSync(fakeTmuxDir, { recursive: true });
+			writeFileSync(
+				join(fakeTmuxDir, "tmux"),
+				'#!/bin/sh\necho "line one"\necho "ERROR: test failure"\necho "line three"',
+				{ mode: 0o755 },
+			);
+
+			const result = runCli(
+				[
+					"search",
+					"--exec-id",
+					"exec-search",
+					"--pattern",
+					"ERROR",
+					"--db",
+					dbPath,
+				],
+				{ PATH: `${fakeTmuxDir}:${process.env.PATH}` },
+			);
+			expect(result).toContain("ERROR: test failure");
+		});
+
+		it("should output JSON with --json", () => {
+			const db = new CommDB(dbPath);
+			db.registerSession("exec-sjson", "GEO-SJSON:@0", "geoforge3d");
+			db.close();
+
+			const fakeTmuxDir = join(tmpDir, "bin-sjson");
+			mkdirSync(fakeTmuxDir, { recursive: true });
+			writeFileSync(
+				join(fakeTmuxDir, "tmux"),
+				'#!/bin/sh\necho "hello world"\necho "hello there"',
+				{ mode: 0o755 },
+			);
+
+			const result = JSON.parse(
+				runCli(
+					[
+						"search",
+						"--exec-id",
+						"exec-sjson",
+						"--pattern",
+						"hello",
+						"--db",
+						dbPath,
+						"--json",
+					],
+					{ PATH: `${fakeTmuxDir}:${process.env.PATH}` },
+				),
+			);
+			expect(result.matches).toHaveLength(2);
+			expect(result.pattern).toBe("hello");
+		});
+	});
+
 	describe("capture", () => {
 		it("should fail without --exec-id", () => {
 			const { exitCode } = runCliSafe(["capture", "--db", dbPath]);
