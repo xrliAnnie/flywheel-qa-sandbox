@@ -247,9 +247,12 @@ echo "[lead] Working directory: ${LEAD_WORKSPACE}"
 # ── Agent file auto-sync (project source → global target) ──
 # GEO-246: Agent files live in the project repo, not Flywheel infrastructure.
 # GEO-286: Agent source always from PROJECT_DIR/.lead/ (not workspace).
-# Priority: 1) AGENT_SOURCE env var, 2) PROJECT_DIR/.lead/<lead-id>/agent.md, 3) fail-fast.
+# FLY-26: identity.md preferred over agent.md (agent.md kept as backward-compatible fallback).
+# Priority: 1) AGENT_SOURCE env var, 2) identity.md, 3) agent.md, 4) fail-fast.
 if [ -n "${AGENT_SOURCE:-}" ]; then
   : # explicit override, use as-is
+elif [ -f "${PROJECT_DIR}/.lead/${LEAD_ID}/identity.md" ]; then
+  AGENT_SOURCE="${PROJECT_DIR}/.lead/${LEAD_ID}/identity.md"
 elif [ -f "${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md" ]; then
   AGENT_SOURCE="${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md"
 fi
@@ -271,9 +274,48 @@ else
     echo "[lead] AGENT_SOURCE was set to '${AGENT_SOURCE}' but file does not exist."
     echo "[lead] Unset AGENT_SOURCE to use automatic resolution, or fix the path."
   else
-    echo "[lead] Expected: ${PROJECT_DIR}/.lead/${LEAD_ID}/agent.md"
+    echo "[lead] Expected: ${PROJECT_DIR}/.lead/${LEAD_ID}/identity.md (or agent.md as fallback)"
   fi
   exit 1
+fi
+
+# ── FLY-26: Shared rule file sync (atomic replacement) ─────────
+# Copy shared rule files from project repo to a local staging directory.
+# Uses atomic replacement to prevent loading stale files if source changes.
+SHARED_RULES_DIR="${PROJECT_DIR}/.lead/shared"
+LEAD_RULES_DIR="${HOME}/.flywheel/lead-rules/${LEAD_ID}"
+
+if [ -d "$SHARED_RULES_DIR" ]; then
+  # Ensure parent directory exists
+  mkdir -p "$(dirname "$LEAD_RULES_DIR")"
+
+  # Stage to temp directory, then atomic swap
+  LEAD_RULES_TMP=$(mktemp -d "${LEAD_RULES_DIR}.XXXXXX")
+
+  SHARED_RULES_COUNT=0
+  for rule_file in "$SHARED_RULES_DIR"/*.md; do
+    [ -f "$rule_file" ] || continue
+    rule_name=$(basename "$rule_file")
+    cp "$rule_file" "${LEAD_RULES_TMP}/${rule_name}" || {
+      echo "[lead] ERROR: Failed to copy shared rule: ${rule_file}"
+      rm -rf "$LEAD_RULES_TMP"
+      exit 1
+    }
+    SHARED_RULES_COUNT=$((SHARED_RULES_COUNT + 1))
+    log "Shared rule staged: ${rule_name}"
+  done
+
+  if [ "$SHARED_RULES_COUNT" -gt 0 ]; then
+    # Atomic replace: remove old, move new into place
+    rm -rf "$LEAD_RULES_DIR"
+    mv "$LEAD_RULES_TMP" "$LEAD_RULES_DIR"
+    log "Shared rules installed: ${LEAD_RULES_DIR} (${SHARED_RULES_COUNT} files)"
+  else
+    rm -rf "$LEAD_RULES_TMP"
+    log "No shared rule files found in ${SHARED_RULES_DIR}"
+  fi
+else
+  log "No shared rules directory at ${SHARED_RULES_DIR} (skipping)"
 fi
 
 # GEO-285: Bootstrap moved to recovery loop (send_bootstrap function).
@@ -440,7 +482,31 @@ trap cleanup SIGINT SIGTERM
 cd "$LEAD_WORKSPACE"
 
 # Build claude args using bash array (avoids quoting/word-splitting issues)
-CLAUDE_ARGS=(--agent "$LEAD_ID" --channels "plugin:discord@claude-plugins-official" --permission-mode bypassPermissions)
+CLAUDE_ARGS=(
+  --agent "$LEAD_ID"
+  --channels "plugin:discord@claude-plugins-official"
+  --permission-mode bypassPermissions
+)
+
+# ── FLY-26: Append shared rule files to system prompt ──────────
+# common-rules.md: loaded by ALL leads (communication style, memory, MCP, shared limits)
+# department-lead-rules.md: loaded by department leads only (Peter/Oliver), NOT cos-lead (Simba)
+if [ -d "$LEAD_RULES_DIR" ]; then
+  COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
+  if [ -f "$COMMON_RULES" ] && [ -r "$COMMON_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
+    log "Appending common rules: ${COMMON_RULES}"
+  fi
+
+  # Department lead rules — only for non-cos-lead (Peter/Oliver manage Runners, Simba does not)
+  if [ "$LEAD_ID" != "cos-lead" ]; then
+    DEPT_RULES="${LEAD_RULES_DIR}/department-lead-rules.md"
+    if [ -f "$DEPT_RULES" ] && [ -r "$DEPT_RULES" ]; then
+      CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
+      log "Appending department lead rules: ${DEPT_RULES}"
+    fi
+  fi
+fi
 
 # ════════════════════════════════════════════════════════════════
 # Layer 2: Recovery Loop
