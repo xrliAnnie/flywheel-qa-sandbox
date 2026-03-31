@@ -20,7 +20,13 @@ Manages parallel agent execution for Flywheel development using **Agent Teams**.
 
 4. Report current state: `list_active_agents` + `get_agent_history`
 
-5. **Create Team**:
+5. **Compute sprint version** (read-only, does NOT write VERSION file):
+   ```bash
+   bash -c 'source .claude/orchestrator/config.sh && compute_next_version'
+   ```
+   Store this as `SPRINT_VERSION` (e.g., `v1.18.0`). All branches and plans in this sprint use this version.
+
+6. **Create Team**:
    ```
    TeamCreate(team_name="flywheel-sprint", description="Flywheel parallel development sprint")
    ```
@@ -30,10 +36,12 @@ Manages parallel agent execution for Flywheel development using **Agent Teams**.
 Repeat every `RECONCILE_INTERVAL` (5 min):
 
 ### 1. Discover Issues
-- Call Linear list_issues (using the handle resolved at startup) with project="Flywheel", team="GEO"
-- Also query team="FLY" (Flywheel infra team)
+- **CRITICAL: Only Flywheel project issues.** Always filter by `project="Flywheel"`. Never pick up GeoForge3D product issues — those are Peter/Oliver/Simba's responsibility.
+- Query 1: `project="Flywheel", team="GEO"` (historical Flywheel issues under GEO team)
+- Query 2: `project="Flywheel", team="FLY"` (new Flywheel issues under FLY team)
 - Exclude: status = Done / Cancelled
 - Exclude: issue_id already in agents table (non-terminal)
+- When user asks to "find issues to run", always apply `project="Flywheel"` filter. Do NOT recommend GeoForge3D product issues.
 
 ### 2. Check Capacity
 - Count non-terminal agents in SQLite
@@ -57,18 +65,28 @@ For each new issue (up to available slots):
 
 3. Compute absolute worktree path: `$(cd "$PROJECT_ROOT/.." && pwd)/flywheel-geo-{XX}`
 
-4. `git worktree add <absolute_path> -b feat/GEO-{XX}-{slug}`
+4. `git worktree add <absolute_path> -b feat/{SPRINT_VERSION}-GEO-{XX}-{slug}`
+   - Use `SPRINT_VERSION` computed at startup (e.g., `feat/v1.18.0-GEO-200-forum-thread-link`)
    - If fails: `set_agent_error` + `update_agent_status failed` + `cleanup-agent.sh` → skip
 
 5. `set_agent_field(id, "worktree_path", "<absolute_path>")`
-6. `set_agent_field(id, "branch", "feat/GEO-{XX}-{slug}")`
+6. `set_agent_field(id, "branch", "feat/{SPRINT_VERSION}-GEO-{XX}-{slug}")`
 7. `update_agent_status(id, "running")`
 
 8. **Spawn Teammate** (NOT independent background agent):
+
+   **CRITICAL: Give clear, specific guidance.** The prompt MUST include:
+   - Exact reference files/code to look at (e.g., "参考 GeoForge3D 的 `.github/workflows/backend-deploy-on-comment.yml`")
+   - What approach to take (e.g., "这是 GitHub Actions workflow，不是 CLI skill")
+   - What NOT to do (common wrong directions for this type of issue)
+   - If the issue has prior art in other repos, point to it explicitly
+
+   Vague prompts lead to agents going in the wrong direction (happened with GEO-292 and FLY-2 in this sprint).
+
    ```
    Agent(
      description="Spin GEO-{XX} {slug}",
-     prompt="You are working in the Flywheel project worktree at {worktree_path} on branch {branch}. Run the full /spin pipeline for GEO-{XX}: {title}. Follow brainstorm → research → write-plan → codex-design-review → implement → code-review → PR. Work ONLY in the worktree. Push to {branch} and create PR against main.",
+     prompt="You are working in the Flywheel project worktree at {worktree_path} on branch {branch}. Run the full /spin pipeline for GEO-{XX}: {title}. Follow brainstorm → research → write-plan → /codex-design-review-rescue → implement → PR → /codex-code-review-rescue. MANDATORY: After creating the PR, you MUST run /codex-code-review-rescue (or /codex-code-review if rescue unavailable). Do NOT skip code review. Do NOT report PR as done until code review passes. Work ONLY in the worktree. Push to {branch} and create PR against main.",
      name="worker-geo-{XX}",
      team_name="flywheel-sprint",
      run_in_background=true,
@@ -101,91 +119,66 @@ After all PRs are created (or user decides to ship a subset):
 
 ### 7. Ship + Cleanup (Teammate Executes)
 For each PR the user approves to ship:
-1. `SendMessage(to="worker-geo-{XX}", message="Ship PR #{N}: archive docs, trigger :cool:, then clean up")`
+1. `SendMessage(to="worker-geo-{XX}", message="Ship PR #{N}: merge, clean up, update docs")`
 2. Teammate executes **ALL** of the following (do not skip any):
 
-   **A. Pre-merge: Archive pipeline docs on the feature branch**
+   **A. Ship via :cool: flow (MANDATORY — do not skip)**
+
+   Push triggers GitHub Actions CI. Wait for CI to pass before merging.
+
    ```bash
-   ISSUE_ID=$(git rev-parse --abbrev-ref HEAD | grep -oE '(GEO|FLY)-[0-9]+' | head -1)
-   if [ -n "$ISSUE_ID" ]; then
-     for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
-       src="${dir_pair%%:*}"; dst="${dir_pair##*:}"
-       for f in $(find "$src" -name "*${ISSUE_ID}-*" -type f 2>/dev/null); do
-         git mv "$f" "$dst/"
-       done
-     done
-     if ! git diff --cached --quiet; then
-       git commit -m "docs: archive ${ISSUE_ID} docs before merge"
-       git push
-     fi
-   fi
+   # 1. Ensure latest code is pushed
+   git push origin {branch}
+
+   # 2. Wait for CI checks to complete
+   gh pr checks {PR_NUMBER} --watch
    ```
 
-   **B. Trigger ship: comment `:cool:` on the PR**
-   ```bash
-   gh pr comment {PR_NUMBER} --body ":cool:"
-   ```
-   The `ship-on-comment.yml` workflow will run CI (build + typecheck + lint + test) and squash merge if green.
-   Wait for merge (poll every 30s). The workflow posts a comment on both success and failure:
-   ```bash
-   sleep 10  # let Actions register the run
-   while true; do
-     STATE=$(gh pr view {PR_NUMBER} --json state -q '.state')
-     if [ "$STATE" = "MERGED" ]; then echo "PR merged"; break; fi
-     if [ "$STATE" = "CLOSED" ]; then echo "PR closed without merge"; exit 1; fi
-     sleep 30
-   done
-   ```
-   If the PR stays OPEN for >15 min, the ship workflow likely failed. Check `gh pr view {PR_NUMBER} --comments` for the failure comment, fix the issue, and post `:cool:` again.
-   If the workflow fails, check the run logs and fix the issue, then comment `:cool:` again.
+   - **CI green** → proceed to merge
+   - **CI red** → fix the failing step:
+     1. Read CI failure details: `gh pr checks {PR_NUMBER}`
+     2. Fix the issue in the worktree
+     3. Commit + push → CI re-triggers automatically
+     4. `gh pr checks {PR_NUMBER} --watch` again
+     5. Repeat until green
+     6. If stuck after 3 fix attempts, escalate to team lead:
+        ```
+        SendMessage(to="team-lead", message="Ship blocked on PR #{N}: CI failed after 3 fix attempts. Details: {failure}")
+        ```
 
-   **C. Post-merge bookkeeping** (all commands from main repo)
-   Each code block derives the main repo path independently (variables don't persist across blocks):
-   ```bash
-   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
-   cd "$MAIN_REPO" && git checkout main && git pull origin main
-   ```
+   **Never merge with red CI.**
 
-   VERSION bump (if first ship of sprint):
-   ```bash
-   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
-   cd "$MAIN_REPO" && bash -c 'source .claude/orchestrator/config.sh && current=$(get_feature_version) && if [ "$current" != "{SPRINT_VERSION}" ]; then bump_feature_version minor; fi'
-   ```
+   **B. Merge PR via :cool: flow (MANDATORY)**
+   - Only after CI is green
+   - Comment `:cool:` on the PR: `gh pr comment {PR_NUMBER} --body ":cool:"`
+   - This triggers the `ship-on-comment.yml` GitHub Actions workflow (CI re-run + squash merge)
+   - Wait for merge to complete: `gh pr view {PR_NUMBER} --json state --jq '.state'` until `MERGED`
+   - **Do NOT use `gh pr merge` directly** — all ships must go through the `:cool:` flow for audit trail and CI gating
 
-   Update CLAUDE.md milestone table + commit:
-   ```bash
-   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
-   cd "$MAIN_REPO"
-   # Edit CLAUDE.md to add milestone row
-   git add CLAUDE.md doc/VERSION
-   git commit -m "docs: update CLAUDE.md + VERSION after {ISSUE_ID} merge (PR #{N})"
-   git push origin main
-   ```
+   **B. Clean up worktree**
+   - `cd` out of worktree
+   - `git worktree remove {worktree_path}`
+   - `git branch -D {branch}` (if not already deleted by --delete-branch)
 
-   Update MEMORY.md (local file at `~/.claude/projects/...`, not git tracked):
+   **C. Archive docs** (in main repo, on main branch)
+   - `git mv doc/plan/inprogress/{file} doc/plan/archive/`
+   - `git mv doc/exploration/new/{file} doc/exploration/archive/`
+   - `git mv doc/research/new/{file} doc/research/archive/` (if exists)
+   - Commit: `docs: archive GEO-{XX} docs after merge`
+
+   **D. Update MEMORY.md**
    - Mark issue as ✅ Done in Next Steps table
    - Add one-line summary with PR number, key changes, review rounds
 
-   **D. Restart Services** (Flywheel repo merges only)
-   After all doc updates and before worktree cleanup, trigger restart if the merge was in the Flywheel repo:
-   ```bash
-   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
-   if [[ "$(basename "$MAIN_REPO")" == "flywheel" ]]; then
-       bash "$MAIN_REPO/scripts/restart-services.sh" 2>&1 | tee -a /tmp/flywheel-restart.log || echo "[orchestrator] WARNING: restart-services.sh failed (non-blocking)"
-   fi
-   ```
-   If restart-services.sh fails, log the error and continue — do not block cleanup or worktree removal.
+   **E. Update CLAUDE.md + VERSION**
+   - Add milestone to the milestone table
+   - Bump `doc/VERSION` to `SPRINT_VERSION` if not already bumped (first ship of the sprint writes the new version; subsequent ships in the same sprint skip this step since VERSION is already correct):
+     ```bash
+     bash -c 'source .claude/orchestrator/config.sh && current=$(get_current_version) && if [ "$current" != "{SPRINT_VERSION}" ]; then bump_feature_version minor; fi'
+     ```
 
-   **E. Update Linear**
-   Use the cached Linear MCP handle (resolved at orchestrator startup) to mark the issue as Done.
-
-   **F. Clean up worktree** (from main repo)
-   ```bash
-   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
-   cd "$MAIN_REPO"
-   git worktree remove {worktree_path} 2>/dev/null
-   git branch -D {branch} 2>/dev/null
-   ```
+   **F. Update Linear issue**
+   - Mark issue as Done in Linear
 
    **G. Report completion**
    - Mark task as completed
@@ -194,7 +187,7 @@ For each PR the user approves to ship:
 3. After teammate confirms ALL steps done → `cleanup-agent.sh <id> completed`
 4. **THEN** send shutdown_request to that teammate
 
-**CRITICAL**: Steps C-E are mandatory, not optional. Skipping doc updates creates tech debt that accumulates. The teammate has the context to do these updates — don't defer to a follow-up.
+**CRITICAL**: Steps C-F are mandatory, not optional. Skipping doc updates creates tech debt that accumulates. The teammate has the context to do these updates — don't defer to a follow-up.
 
 ### 8. Teammate Communication
 - Teammates send messages via `SendMessage` when they need help or finish

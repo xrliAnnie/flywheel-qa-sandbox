@@ -24,3 +24,4 @@ logs/
 
 # TypeScript
 *.tsbuildinfo
+.claude/worktrees/
