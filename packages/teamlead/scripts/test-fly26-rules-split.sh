@@ -337,6 +337,135 @@ ARGS_STR="${CLAUDE_ARGS[*]}"
 assert_not_contains "$ARGS_STR" "append-system-prompt-file" "No rules dir → no append args"
 
 # ═══════════════════════════════════════════════════════════════
+# Test Group 4: Stale cache cleanup
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "=== Test Group 4: Stale cache cleanup ==="
+
+# Test 4.1: Stale cache cleaned when shared dir disappears
+echo "--- Test 4.1: Stale cache cleaned when source dir disappears ---"
+PROJECT="$TMPDIR/test-stale-1"
+mkdir -p "$PROJECT/.lead/product-lead"
+# No .lead/shared/ directory — simulates rollback/branch switch
+
+LEAD_RULES_DIR="$TMPDIR/stale-cache-1/product-lead"
+mkdir -p "$LEAD_RULES_DIR"
+echo "# Old common" > "$LEAD_RULES_DIR/common-rules.md"
+echo "# Old dept" > "$LEAD_RULES_DIR/department-lead-rules.md"
+
+SHARED_RULES_DIR="$PROJECT/.lead/shared"
+if [ -d "$SHARED_RULES_DIR" ]; then
+  : # would sync
+else
+  if [ -d "$LEAD_RULES_DIR" ]; then
+    rm -rf "$LEAD_RULES_DIR"
+  fi
+fi
+
+assert_dir_not_exists "$LEAD_RULES_DIR" "Stale cache removed when source dir gone"
+
+# Test 4.2: Stale cache NOT cleaned when shared dir exists
+echo "--- Test 4.2: Cache preserved when source dir exists ---"
+PROJECT="$TMPDIR/test-stale-2"
+mkdir -p "$PROJECT/.lead/shared"
+echo "# Fresh" > "$PROJECT/.lead/shared/common-rules.md"
+
+LEAD_RULES_DIR="$TMPDIR/stale-cache-2/product-lead"
+mkdir -p "$LEAD_RULES_DIR"
+echo "# Will be replaced" > "$LEAD_RULES_DIR/common-rules.md"
+
+SHARED_RULES_DIR="$PROJECT/.lead/shared"
+if [ -d "$SHARED_RULES_DIR" ]; then
+  mkdir -p "$(dirname "$LEAD_RULES_DIR")"
+  LEAD_RULES_TMP=$(mktemp -d "${LEAD_RULES_DIR}.XXXXXX")
+  SHARED_RULES_COUNT=0
+  for rule_file in "$SHARED_RULES_DIR"/*.md; do
+    [ -f "$rule_file" ] || continue
+    rule_name=$(basename "$rule_file")
+    cp "$rule_file" "${LEAD_RULES_TMP}/${rule_name}"
+    SHARED_RULES_COUNT=$((SHARED_RULES_COUNT + 1))
+  done
+  if [ "$SHARED_RULES_COUNT" -gt 0 ]; then
+    rm -rf "$LEAD_RULES_DIR"
+    mv "$LEAD_RULES_TMP" "$LEAD_RULES_DIR"
+  else
+    rm -rf "$LEAD_RULES_TMP"
+  fi
+fi
+
+assert_file_exists "$LEAD_RULES_DIR/common-rules.md" "Cache replaced with fresh content"
+assert_eq "$(cat "$LEAD_RULES_DIR/common-rules.md")" "# Fresh" "Content is fresh, not stale"
+
+# ═══════════════════════════════════════════════════════════════
+# Test Group 5: Fail-fast on missing required files
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "=== Test Group 5: Fail-fast on missing required files ==="
+
+# Test 5.1: LEAD_RULES_DIR exists but common-rules.md missing → should fail
+echo "--- Test 5.1: Missing common-rules.md → fail-fast ---"
+LEAD_RULES_DIR="$TMPDIR/fail-fast-1"
+mkdir -p "$LEAD_RULES_DIR"
+# No common-rules.md inside
+
+LEAD_ID="product-lead"
+SHARED_RULES_DIR="$TMPDIR/dummy-shared"
+FAILED=0
+if [ -d "$LEAD_RULES_DIR" ]; then
+  COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
+  if [ ! -f "$COMMON_RULES" ] || [ ! -r "$COMMON_RULES" ]; then
+    FAILED=1
+  fi
+fi
+assert_eq "$FAILED" "1" "Missing common-rules.md triggers fail-fast"
+
+# Test 5.2: common-rules.md exists but dept-rules.md missing (Peter) → should fail
+echo "--- Test 5.2: Missing dept-rules.md for Peter → fail-fast ---"
+LEAD_RULES_DIR="$TMPDIR/fail-fast-2"
+mkdir -p "$LEAD_RULES_DIR"
+echo "# Common" > "$LEAD_RULES_DIR/common-rules.md"
+# No department-lead-rules.md
+
+LEAD_ID="product-lead"
+FAILED=0
+if [ -d "$LEAD_RULES_DIR" ]; then
+  COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
+  if [ ! -f "$COMMON_RULES" ] || [ ! -r "$COMMON_RULES" ]; then
+    FAILED=1
+  fi
+  if [ "$LEAD_ID" != "cos-lead" ]; then
+    DEPT_RULES="${LEAD_RULES_DIR}/department-lead-rules.md"
+    if [ ! -f "$DEPT_RULES" ] || [ ! -r "$DEPT_RULES" ]; then
+      FAILED=1
+    fi
+  fi
+fi
+assert_eq "$FAILED" "1" "Missing dept-rules.md for Peter triggers fail-fast"
+
+# Test 5.3: Missing dept-rules.md for Simba → should NOT fail (Simba doesn't need it)
+echo "--- Test 5.3: Missing dept-rules.md for Simba → OK ---"
+LEAD_RULES_DIR="$TMPDIR/fail-fast-3"
+mkdir -p "$LEAD_RULES_DIR"
+echo "# Common" > "$LEAD_RULES_DIR/common-rules.md"
+# No department-lead-rules.md
+
+LEAD_ID="cos-lead"
+FAILED=0
+if [ -d "$LEAD_RULES_DIR" ]; then
+  COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
+  if [ ! -f "$COMMON_RULES" ] || [ ! -r "$COMMON_RULES" ]; then
+    FAILED=1
+  fi
+  if [ "$LEAD_ID" != "cos-lead" ]; then
+    DEPT_RULES="${LEAD_RULES_DIR}/department-lead-rules.md"
+    if [ ! -f "$DEPT_RULES" ] || [ ! -r "$DEPT_RULES" ]; then
+      FAILED=1
+    fi
+  fi
+fi
+assert_eq "$FAILED" "0" "Missing dept-rules.md OK for Simba (doesn't need it)"
+
+# ═══════════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════════
 echo ""

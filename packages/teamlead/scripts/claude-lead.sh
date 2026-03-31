@@ -315,6 +315,12 @@ if [ -d "$SHARED_RULES_DIR" ]; then
     log "No shared rule files found in ${SHARED_RULES_DIR}"
   fi
 else
+  # No shared rules source — clean up any stale local cache to prevent
+  # loading outdated rules after rollback/branch switch.
+  if [ -d "$LEAD_RULES_DIR" ]; then
+    rm -rf "$LEAD_RULES_DIR"
+    log "Cleaned stale shared rules cache: ${LEAD_RULES_DIR}"
+  fi
   log "No shared rules directory at ${SHARED_RULES_DIR} (skipping)"
 fi
 
@@ -491,20 +497,27 @@ CLAUDE_ARGS=(
 # ── FLY-26: Append shared rule files to system prompt ──────────
 # common-rules.md: loaded by ALL leads (communication style, memory, MCP, shared limits)
 # department-lead-rules.md: loaded by department leads only (Peter/Oliver), NOT cos-lead (Simba)
+# Fail-fast: if LEAD_RULES_DIR exists (meaning shared rules were synced), required files MUST be present.
 if [ -d "$LEAD_RULES_DIR" ]; then
   COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
-  if [ -f "$COMMON_RULES" ] && [ -r "$COMMON_RULES" ]; then
-    CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
-    log "Appending common rules: ${COMMON_RULES}"
+  if [ ! -f "$COMMON_RULES" ] || [ ! -r "$COMMON_RULES" ]; then
+    echo "[lead] ERROR: Required shared rule file missing or unreadable: ${COMMON_RULES}"
+    echo "[lead] Source should be: ${SHARED_RULES_DIR}/common-rules.md"
+    exit 1
   fi
+  CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
+  log "Appending common rules: ${COMMON_RULES}"
 
   # Department lead rules — only for non-cos-lead (Peter/Oliver manage Runners, Simba does not)
   if [ "$LEAD_ID" != "cos-lead" ]; then
     DEPT_RULES="${LEAD_RULES_DIR}/department-lead-rules.md"
-    if [ -f "$DEPT_RULES" ] && [ -r "$DEPT_RULES" ]; then
-      CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
-      log "Appending department lead rules: ${DEPT_RULES}"
+    if [ ! -f "$DEPT_RULES" ] || [ ! -r "$DEPT_RULES" ]; then
+      echo "[lead] ERROR: Required department rule file missing or unreadable: ${DEPT_RULES}"
+      echo "[lead] Source should be: ${SHARED_RULES_DIR}/department-lead-rules.md"
+      exit 1
     fi
+    CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
+    log "Appending department lead rules: ${DEPT_RULES}"
   fi
 fi
 
