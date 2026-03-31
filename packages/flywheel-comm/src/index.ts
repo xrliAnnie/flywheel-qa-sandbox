@@ -9,6 +9,7 @@ import { pending } from "./commands/pending.js";
 import { respond } from "./commands/respond.js";
 import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
+import { stage } from "./commands/stage.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 
 function printUsage(): void {
@@ -23,6 +24,7 @@ Commands:
   inbox     Check for instructions from Lead (Runner use)
   sessions  List runner sessions
   capture   Capture tmux output of a runner session
+  stage     Report pipeline stage to Bridge (Runner use)
 
 Global options:
   --db <path>       Explicit DB path
@@ -33,7 +35,7 @@ Environment:
   FLYWHEEL_COMM_DB  DB path (overridden by --db)`);
 }
 
-function main(): void {
+async function main(): Promise<void> {
 	const args = process.argv.slice(2);
 	const command = args[0];
 
@@ -45,41 +47,38 @@ function main(): void {
 	// Parse global options from remaining args
 	const commandArgs = args.slice(1);
 
-	try {
-		switch (command) {
-			case "ask":
-				runAsk(commandArgs);
-				break;
-			case "check":
-				runCheck(commandArgs);
-				break;
-			case "pending":
-				runPending(commandArgs);
-				break;
-			case "respond":
-				runRespond(commandArgs);
-				break;
-			case "send":
-				runSend(commandArgs);
-				break;
-			case "inbox":
-				runInbox(commandArgs);
-				break;
-			case "sessions":
-				runSessions(commandArgs);
-				break;
-			case "capture":
-				runCapture(commandArgs);
-				break;
-			default:
-				console.error(`Unknown command: ${command}`);
-				printUsage();
-				process.exit(1);
-		}
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		console.error(`Error: ${message}`);
-		process.exit(1);
+	switch (command) {
+		case "ask":
+			runAsk(commandArgs);
+			break;
+		case "check":
+			runCheck(commandArgs);
+			break;
+		case "pending":
+			runPending(commandArgs);
+			break;
+		case "respond":
+			runRespond(commandArgs);
+			break;
+		case "send":
+			runSend(commandArgs);
+			break;
+		case "inbox":
+			runInbox(commandArgs);
+			break;
+		case "sessions":
+			runSessions(commandArgs);
+			break;
+		case "capture":
+			runCapture(commandArgs);
+			break;
+		case "stage":
+			await runStage(commandArgs);
+			break;
+		default:
+			console.error(`Unknown command: ${command}`);
+			printUsage();
+			process.exit(1);
 	}
 }
 
@@ -343,4 +342,20 @@ function runCapture(args: string[]): void {
 	process.stdout.write(output);
 }
 
-main();
+async function runStage(args: string[]): Promise<void> {
+	const subcommand = args[0];
+	const stageName = args[1];
+
+	if (!subcommand) {
+		console.error("Usage: flywheel-comm stage set <stage>");
+		process.exit(1);
+	}
+
+	await stage({ subcommand, stageName: stageName ?? "" });
+}
+
+main().catch((err) => {
+	const message = err instanceof Error ? err.message : String(err);
+	console.error(`Error: ${message}`);
+	process.exit(1);
+});

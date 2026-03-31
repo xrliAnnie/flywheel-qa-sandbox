@@ -63,6 +63,9 @@ export interface SessionUpsert {
 	retry_predecessor?: string;
 	retry_successor?: string;
 	issue_labels?: string;
+	pr_number?: number;
+	session_stage?: string;
+	stage_updated_at?: string;
 }
 
 export interface Session {
@@ -97,6 +100,9 @@ export interface Session {
 	retry_predecessor?: string;
 	retry_successor?: string;
 	issue_labels?: string;
+	pr_number?: number;
+	session_stage?: string;
+	stage_updated_at?: string;
 }
 
 export interface CleanupCandidate {
@@ -314,6 +320,23 @@ export class StateStore {
 			/* exists */
 		}
 
+		// GEO-292: PR number + session stage tracking
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN pr_number INTEGER");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN session_stage TEXT");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN stage_updated_at TEXT");
+		} catch {
+			/* exists */
+		}
+
 		// Rebuild unique index with current column name
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
 		// Ensure one issue = one canonical thread: clean up historical duplicates
@@ -434,8 +457,9 @@ export class StateStore {
 				summary, diff_summary, commit_messages, changed_file_paths,
 				thread_id,
 				session_params, heartbeat_at, adapter_type, run_attempt,
-				retry_predecessor, retry_successor, issue_labels
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				retry_predecessor, retry_successor, issue_labels,
+				pr_number, session_stage, stage_updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -466,7 +490,10 @@ export class StateStore {
 				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
 				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
 				retry_successor = COALESCE(excluded.retry_successor, retry_successor),
-				issue_labels = COALESCE(excluded.issue_labels, issue_labels)
+				issue_labels = COALESCE(excluded.issue_labels, issue_labels),
+				pr_number = COALESCE(excluded.pr_number, pr_number),
+				session_stage = COALESCE(excluded.session_stage, session_stage),
+				stage_updated_at = COALESCE(excluded.stage_updated_at, stage_updated_at)
 			`,
 			[
 				session.execution_id,
@@ -500,6 +527,9 @@ export class StateStore {
 				session.retry_predecessor ?? null,
 				session.retry_successor ?? null,
 				session.issue_labels ?? null,
+				session.pr_number ?? null,
+				session.session_stage ?? null,
+				session.stage_updated_at ?? null,
 			],
 		);
 		this.save();
@@ -527,8 +557,9 @@ export class StateStore {
 				summary, diff_summary, commit_messages, changed_file_paths,
 				thread_id,
 				session_params, heartbeat_at, adapter_type, run_attempt,
-				retry_predecessor, retry_successor, issue_labels
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				retry_predecessor, retry_successor, issue_labels,
+				pr_number, session_stage, stage_updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -559,7 +590,10 @@ export class StateStore {
 				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
 				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
 				retry_successor = COALESCE(excluded.retry_successor, retry_successor),
-				issue_labels = COALESCE(excluded.issue_labels, issue_labels)
+				issue_labels = COALESCE(excluded.issue_labels, issue_labels),
+				pr_number = COALESCE(excluded.pr_number, pr_number),
+				session_stage = COALESCE(excluded.session_stage, session_stage),
+				stage_updated_at = COALESCE(excluded.stage_updated_at, stage_updated_at)
 			`,
 			[
 				executionId,
@@ -593,6 +627,9 @@ export class StateStore {
 				fields.retry_predecessor ?? null,
 				fields.retry_successor ?? null,
 				fields.issue_labels ?? null,
+				fields.pr_number ?? null,
+				fields.session_stage ?? null,
+				fields.stage_updated_at ?? null,
 			],
 		);
 		this.save();
@@ -640,6 +677,9 @@ export class StateStore {
 			retry_predecessor: "retry_predecessor",
 			retry_successor: "retry_successor",
 			issue_labels: "issue_labels",
+			pr_number: "pr_number",
+			session_stage: "session_stage",
+			stage_updated_at: "stage_updated_at",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -1143,6 +1183,9 @@ export class StateStore {
 			retry_predecessor: (row.retry_predecessor as string) ?? undefined,
 			retry_successor: (row.retry_successor as string) ?? undefined,
 			issue_labels: (row.issue_labels as string) ?? undefined,
+			pr_number: (row.pr_number as number) ?? undefined,
+			session_stage: (row.session_stage as string) ?? undefined,
+			stage_updated_at: (row.stage_updated_at as string) ?? undefined,
 		};
 	}
 

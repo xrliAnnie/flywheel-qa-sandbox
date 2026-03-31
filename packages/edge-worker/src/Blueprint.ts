@@ -295,13 +295,15 @@ export class Blueprint {
 			);
 		}
 
+		// GEO-292: Lift commCliPath to outer scope so both lead-comm and stage injection can use it
+		const __filename = fileURLToPath(import.meta.url);
+		const commCliPath = path.resolve(
+			path.dirname(__filename),
+			"../../flywheel-comm/dist/index.js",
+		);
+
 		// GEO-206: Inject flywheel-comm ask instructions when Lead is available
 		if (ctx.leadId) {
-			const __filename = fileURLToPath(import.meta.url);
-			const commCliPath = path.resolve(
-				path.dirname(__filename),
-				"../../flywheel-comm/dist/index.js",
-			);
 			systemPromptLines.push(
 				`Prefer independent implementation. If you encounter a major ambiguity ` +
 					`(architecture choice, API design, priority conflict) that you cannot safely ` +
@@ -322,6 +324,19 @@ export class Blueprint {
 		} else {
 			systemPromptLines.push(
 				"Do not ask questions — implement your best judgment.",
+			);
+		}
+
+		// GEO-292: Stage reporting instructions (requires both Bridge URL and projectName)
+		const bridgeUrl = process.env.TEAMLEAD_URL;
+		if (bridgeUrl && ctx.projectName) {
+			systemPromptLines.push(
+				`Report your pipeline stage at each major transition using: ` +
+					`\`node ${commCliPath} stage set <stage>\`. ` +
+					`Valid stages: brainstorm, research, plan, design_review, implement, test, code_review, pr_created, ship. ` +
+					`Call this when you start each pipeline phase. ` +
+					`Not every task goes through all stages — skip stages that don't apply ` +
+					`(e.g., bug fixes may go directly to implement).`,
 			);
 		}
 		const baseSystemPrompt = systemPromptLines.join("\n");
@@ -399,6 +414,8 @@ export class Blueprint {
 				waitingTimeoutMs: 14_400_000, // GEO-206 Phase 2: 4h when waiting for Lead
 				leadId: ctx.leadId,
 				projectName: ctx.projectName,
+				bridgeUrl: process.env.TEAMLEAD_URL,
+				bridgeIngestToken: process.env.TEAMLEAD_INGEST_TOKEN,
 				onHeartbeat: () => {
 					this.eventEmitter?.emitHeartbeat(env).catch(() => {});
 				},

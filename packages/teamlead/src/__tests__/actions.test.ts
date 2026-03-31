@@ -771,6 +771,79 @@ describe("GEO-259: leadId scope check on actions", () => {
 	});
 });
 
+// --- GEO-292: approve sets session_stage ---
+describe("GEO-292: approve sets session_stage", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		mockExec.mockClear();
+	});
+
+	it("approve sets session_stage='ship' when current stage is earlier", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-292",
+			session_stage: "pr_created",
+			stage_updated_at: "2026-03-30 10:00:00",
+		});
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			"GEO-292",
+			mockExec,
+		);
+		expect(result.success).toBe(true);
+
+		const session = store.getSession("e1");
+		expect(session!.status).toBe("approved");
+		expect(session!.session_stage).toBe("ship");
+		expect(session!.stage_updated_at).toBeDefined();
+		// stage_updated_at should be updated to a newer timestamp
+		expect(session!.stage_updated_at).not.toBe("2026-03-30 10:00:00");
+	});
+
+	it("approve does not regress session_stage if already at 'ship'", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			session_stage: "ship",
+			stage_updated_at: "2026-03-30 10:00:00",
+		});
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			mockExec,
+		);
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")!.session_stage).toBe("ship");
+	});
+
+	it("approve sets session_stage='ship' when no prior stage exists", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+
+		await approveExecution(store, testProjects, "e1", undefined, mockExec);
+
+		const session = store.getSession("e1");
+		expect(session!.session_stage).toBe("ship");
+	});
+});
+
 // --- GEO-280: onApproved callback tests ---
 describe("GEO-280: onApproved callback", () => {
 	let store: StateStore;

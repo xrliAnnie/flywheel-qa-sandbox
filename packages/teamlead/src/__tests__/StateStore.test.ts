@@ -852,4 +852,124 @@ describe("StateStore", () => {
 		const after = store.getEligibleForCleanup(1);
 		expect(after.some((c) => c.thread_id === "thread-206")).toBe(false);
 	});
+
+	// --- GEO-292: pr_number, session_stage, stage_updated_at ---
+
+	it("migration creates pr_number, session_stage, stage_updated_at columns", async () => {
+		const store2 = await StateStore.create(":memory:");
+		const internalDb = store2.db;
+
+		// Verify columns exist by querying PRAGMA
+		const cols = internalDb.exec("PRAGMA table_info(sessions)");
+		const colNames = cols[0]!.values.map((row) => row[1] as string);
+		expect(colNames).toContain("pr_number");
+		expect(colNames).toContain("session_stage");
+		expect(colNames).toContain("stage_updated_at");
+
+		store2.close();
+	});
+
+	it("upsertSession writes and reads pr_number", () => {
+		store.upsertSession(makeSession({ pr_number: 42 }));
+		const s = store.getSession("exec-1");
+		expect(s!.pr_number).toBe(42);
+	});
+
+	it("upsertSession writes and reads session_stage + stage_updated_at", () => {
+		store.upsertSession(
+			makeSession({
+				session_stage: "implement",
+				stage_updated_at: "2026-03-30 12:00:00",
+			}),
+		);
+		const s = store.getSession("exec-1");
+		expect(s!.session_stage).toBe("implement");
+		expect(s!.stage_updated_at).toBe("2026-03-30 12:00:00");
+	});
+
+	it("upsertSession preserves pr_number via COALESCE on update", () => {
+		store.upsertSession(makeSession({ pr_number: 99 }));
+		store.upsertSession(makeSession({ status: "awaiting_review" }));
+		const s = store.getSession("exec-1");
+		expect(s!.pr_number).toBe(99);
+		expect(s!.status).toBe("awaiting_review");
+	});
+
+	it("upsertSession preserves session_stage via COALESCE on update", () => {
+		store.upsertSession(makeSession({ session_stage: "research" }));
+		store.upsertSession(makeSession({ status: "awaiting_review" }));
+		const s = store.getSession("exec-1");
+		expect(s!.session_stage).toBe("research");
+	});
+
+	it("persistTransition writes pr_number, session_stage, stage_updated_at", () => {
+		// Create session first
+		store.upsertSession(makeSession());
+		store.persistTransition("exec-1", "awaiting_review", {
+			issue_id: "GEO-95",
+			project_name: "geoforge3d",
+			pr_number: 77,
+			session_stage: "pr_created",
+			stage_updated_at: "2026-03-30 14:00:00",
+			last_activity_at: "2026-03-30 14:00:00",
+		});
+		const s = store.getSession("exec-1");
+		expect(s!.pr_number).toBe(77);
+		expect(s!.session_stage).toBe("pr_created");
+		expect(s!.stage_updated_at).toBe("2026-03-30 14:00:00");
+		expect(s!.status).toBe("awaiting_review");
+	});
+
+	it("patchSessionMetadata writes pr_number, session_stage, stage_updated_at", () => {
+		store.upsertSession(makeSession());
+		store.patchSessionMetadata("exec-1", {
+			pr_number: 55,
+			session_stage: "code_review",
+			stage_updated_at: "2026-03-30 15:00:00",
+		});
+		const s = store.getSession("exec-1");
+		expect(s!.pr_number).toBe(55);
+		expect(s!.session_stage).toBe("code_review");
+		expect(s!.stage_updated_at).toBe("2026-03-30 15:00:00");
+	});
+
+	it("patchSessionMetadata does not overwrite unmentioned fields", () => {
+		store.upsertSession(
+			makeSession({
+				pr_number: 10,
+				session_stage: "implement",
+				stage_updated_at: "2026-03-30 10:00:00",
+			}),
+		);
+		// Patch only session_stage
+		store.patchSessionMetadata("exec-1", { session_stage: "test" });
+		const s = store.getSession("exec-1");
+		expect(s!.pr_number).toBe(10);
+		expect(s!.session_stage).toBe("test");
+		// stage_updated_at was not in the patch, should be unchanged
+		expect(s!.stage_updated_at).toBe("2026-03-30 10:00:00");
+	});
+
+	it("rowToSession returns pr_number, session_stage, stage_updated_at", () => {
+		store.upsertSession(
+			makeSession({
+				pr_number: 123,
+				session_stage: "ship",
+				stage_updated_at: "2026-03-30 16:00:00",
+			}),
+		);
+		const s = store.getSession("exec-1");
+		expect(s).toBeDefined();
+		expect(s!.pr_number).toBe(123);
+		expect(s!.session_stage).toBe("ship");
+		expect(s!.stage_updated_at).toBe("2026-03-30 16:00:00");
+	});
+
+	it("rowToSession returns undefined for null pr_number/session_stage/stage_updated_at", () => {
+		store.upsertSession(makeSession());
+		const s = store.getSession("exec-1");
+		expect(s!.pr_number).toBeUndefined();
+		expect(s!.session_stage).toBeUndefined();
+		expect(s!.stage_updated_at).toBeUndefined();
+	});
 });
