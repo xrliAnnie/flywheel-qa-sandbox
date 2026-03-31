@@ -91,10 +91,38 @@ Reply sent       → stopTypingKeepalive(chatId)
 | API rate limit from sendTyping | 8-second interval well within Discord rate limits |
 | Memory leak (intervals never cleared) | Safety timeout + idempotent start (clears previous) |
 | Multiple messages in same channel | New message resets keepalive (correct behavior) |
+| **Bot reply echo re-triggers typing** | **Self-message check (see Follow-up Fix below)** |
+
+## Follow-up Fix: Self-Message Echo
+
+### Bug
+Initial keepalive fix worked, but typing indicator **never stopped** after reply. Root cause: when the bot sends a reply, Discord fires `messageCreate` for the bot's own message. With `allowBots` configured (for Lead-to-Lead communication), the bot's own message passes through the filter → enters `handleInbound` → triggers `startTypingKeepalive()` again → no subsequent reply → typing runs forever.
+
+### Fix
+Add self-message check as the **first guard** in the `messageCreate` handler, before any other processing:
+
+```typescript
+client.on('messageCreate', msg => {
+  // Never process our own messages — prevents typing keepalive re-trigger on reply echo.
+  if (msg.author.id === client.user?.id) return
+  // ...existing bot/gate checks...
+})
+```
+
+This also eliminates the "自己的回复回显，无需操作" log noise in Lead tmux — the message never reaches Claude at all.
+
+### Verification
+- Sent test message to Peter → Peter replied "OK"
+- 25 seconds after reply: **no typing indicator** (previously it persisted indefinitely)
+- Peter tmux shows idle prompt with no echo processing
 
 ## Decision
 
 Fix is clear and minimal. Proceed directly to implementation in the fork repo.
+
+**Fork commits** (both on `xrliAnnie/claude-plugins-official` main):
+1. `9ba6bd6` — typing keepalive (8s interval + 10min safety cap)
+2. `557729f` — self-message check (prevent reply echo re-trigger)
 
 **Deployment path**:
 1. Commit to fork repo → push to `xrliAnnie/claude-plugins-official`
