@@ -7,7 +7,7 @@
 # GEO-286: Per-Lead workspace subdirectory. Claude Code walks up to load
 #   project CLAUDE.md, so subdirectory still gets full project context.
 #
-# Usage: ./scripts/claude-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>]
+# Usage: ./scripts/claude-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>] [--bot-token-env <ENV_NAME>]
 #
 # lead-id: Must match an agent file at <project-dir>/.lead/<lead-id>/agent.md
 #   and an agentId in projects.json leads[].
@@ -21,6 +21,11 @@
 #   Must be a relative path within project-dir (no .. traversal).
 #   Omit for root directory (e.g. Simba as Chief of Staff).
 #   Examples: --subdir product (Peter), --subdir operations (Oliver).
+#
+# --bot-token-env <ENV_NAME>: name of the environment variable holding this
+#   Lead's Discord bot token (e.g. PETER_BOT_TOKEN). Recorded in the manifest
+#   so auto-restart can reconstruct the startup command. Defaults to
+#   DISCORD_BOT_TOKEN if omitted.
 #
 # Environment variables:
 #   DISCORD_BOT_TOKEN  — Bot token for this Lead's Discord identity (required for Discord)
@@ -132,6 +137,7 @@ mkdir -p "$SESSION_DIR"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LEAD_SUBDIR=""
 PROJECT_NAME=""
+BOT_TOKEN_ENV_NAME=""
 
 # Parse $3+ as either project-name (first non-flag) or flags
 shift 2
@@ -145,8 +151,16 @@ while [ $# -gt 0 ]; do
       LEAD_SUBDIR="$2"
       shift 2
       ;;
+    --bot-token-env)
+      if [ $# -lt 2 ] || [ -z "${2:-}" ] || [[ "${2:-}" == --* ]]; then
+        echo "[lead] ERROR: --bot-token-env requires an environment variable name."
+        exit 1
+      fi
+      BOT_TOKEN_ENV_NAME="$2"
+      shift 2
+      ;;
     --*)
-      echo "[lead] ERROR: Unknown flag '$1'. Did you mean --subdir?"
+      echo "[lead] ERROR: Unknown flag '$1'. Did you mean --subdir or --bot-token-env?"
       exit 1
       ;;
     *)
@@ -243,6 +257,28 @@ else
   LEAD_WORKSPACE="${PROJECT_DIR}"
 fi
 echo "[lead] Working directory: ${LEAD_WORKSPACE}"
+
+# ── FLY-20: Write manifest for auto-restart ──────────────────
+# Records startup parameters so restart-services.sh can faithfully
+# reconstruct the launch command after a deploy.
+MANIFEST_DIR="${HOME}/.flywheel/manifests"
+MANIFEST_FILE="${MANIFEST_DIR}/${PROJECT_NAME}-${LEAD_ID}.json"
+mkdir -p "$MANIFEST_DIR"
+if command -v jq >/dev/null 2>&1; then
+  jq -n \
+    --arg leadId "$LEAD_ID" \
+    --arg projectDir "$PROJECT_DIR" \
+    --arg projectName "$PROJECT_NAME" \
+    --arg subdir "${LEAD_SUBDIR:-}" \
+    --arg workspace "$LEAD_WORKSPACE" \
+    --arg botTokenEnv "${BOT_TOKEN_ENV_NAME:-DISCORD_BOT_TOKEN}" \
+    --arg pid "$$" \
+    '{leadId: $leadId, projectDir: $projectDir, projectName: $projectName, subdir: $subdir, workspace: $workspace, botTokenEnv: $botTokenEnv, pid: ($pid | tonumber)}' \
+    > "$MANIFEST_FILE"
+  log "Manifest written: ${MANIFEST_FILE}"
+else
+  log "WARNING: jq not found. Manifest not written — auto-restart will skip this Lead."
+fi
 
 # ── Agent file auto-sync (project source → global target) ──
 # GEO-246: Agent files live in the project repo, not Flywheel infrastructure.
@@ -484,6 +520,8 @@ cleanup() {
     kill -TERM $bg_pids 2>/dev/null || true
     wait $bg_pids 2>/dev/null || true
   fi
+  # FLY-20: Remove PID file on graceful exit
+  rm -f "${PID_FILE:-}" 2>/dev/null || true
   # Exit from trap to prevent main flow from continuing after signal
   exit 0
 }
@@ -574,6 +612,13 @@ BACKOFF_SECONDS=(5 15 30 60 60 60)
 RESTART_COUNT=0
 RESUME_FAIL_COUNT=0
 RESUME_FAIL_THRESHOLD=3
+
+# FLY-20: Write PID file for auto-restart process management
+PID_DIR="${HOME}/.flywheel/pids"
+PID_FILE="${PID_DIR}/${PROJECT_NAME}-${LEAD_ID}.pid"
+mkdir -p "$PID_DIR"
+echo $$ > "$PID_FILE"
+log "PID file written: ${PID_FILE} (PID $$)"
 
 log "Supervisor starting (recovery loop enabled)"
 log "Session ID file: ${SESSION_ID_FILE}"
