@@ -312,6 +312,11 @@ if [ -d "$SHARED_RULES_DIR" ]; then
     log "Shared rules installed: ${LEAD_RULES_DIR} (${SHARED_RULES_COUNT} files)"
   else
     rm -rf "$LEAD_RULES_TMP"
+    # Empty shared dir: also clean stale cache to prevent loading outdated rules
+    if [ -d "$LEAD_RULES_DIR" ]; then
+      rm -rf "$LEAD_RULES_DIR"
+      log "Cleaned stale shared rules cache (empty source): ${LEAD_RULES_DIR}"
+    fi
     log "No shared rule files found in ${SHARED_RULES_DIR}"
   fi
 else

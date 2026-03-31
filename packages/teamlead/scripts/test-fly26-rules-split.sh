@@ -396,6 +396,40 @@ fi
 assert_file_exists "$LEAD_RULES_DIR/common-rules.md" "Cache replaced with fresh content"
 assert_eq "$(cat "$LEAD_RULES_DIR/common-rules.md")" "# Fresh" "Content is fresh, not stale"
 
+# Test 4.3: Stale cache cleaned when shared dir exists but is empty
+echo "--- Test 4.3: Stale cache cleaned when shared dir empty ---"
+PROJECT="$TMPDIR/test-stale-3"
+mkdir -p "$PROJECT/.lead/shared"
+# Empty shared dir — no .md files
+
+LEAD_RULES_DIR="$TMPDIR/stale-cache-3/product-lead"
+mkdir -p "$LEAD_RULES_DIR"
+echo "# Old stale common" > "$LEAD_RULES_DIR/common-rules.md"
+
+SHARED_RULES_DIR="$PROJECT/.lead/shared"
+if [ -d "$SHARED_RULES_DIR" ]; then
+  mkdir -p "$(dirname "$LEAD_RULES_DIR")"
+  LEAD_RULES_TMP=$(mktemp -d "${LEAD_RULES_DIR}.XXXXXX")
+  SHARED_RULES_COUNT=0
+  for rule_file in "$SHARED_RULES_DIR"/*.md; do
+    [ -f "$rule_file" ] || continue
+    rule_name=$(basename "$rule_file")
+    cp "$rule_file" "${LEAD_RULES_TMP}/${rule_name}"
+    SHARED_RULES_COUNT=$((SHARED_RULES_COUNT + 1))
+  done
+  if [ "$SHARED_RULES_COUNT" -gt 0 ]; then
+    rm -rf "$LEAD_RULES_DIR"
+    mv "$LEAD_RULES_TMP" "$LEAD_RULES_DIR"
+  else
+    rm -rf "$LEAD_RULES_TMP"
+    # Empty shared dir: also clean stale cache
+    if [ -d "$LEAD_RULES_DIR" ]; then
+      rm -rf "$LEAD_RULES_DIR"
+    fi
+  fi
+fi
+assert_dir_not_exists "$LEAD_RULES_DIR" "Stale cache removed when shared dir empty"
+
 # ═══════════════════════════════════════════════════════════════
 # Test Group 5: Fail-fast on missing required files
 # ═══════════════════════════════════════════════════════════════
