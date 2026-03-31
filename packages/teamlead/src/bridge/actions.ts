@@ -19,6 +19,7 @@ import { matchesLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER } from "./stage-utils.js";
+import { getTmuxTargetFromCommDb, killTmuxSession } from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 type ExecFn = (
@@ -613,30 +614,21 @@ async function handleTerminate(
 		};
 	}
 
-	// Kill tmux session if available
-	if (session.tmux_session) {
-		try {
-			await execFileAsync("tmux", ["kill-session", "-t", session.tmux_session]);
-		} catch (err) {
-			const msg = (err as Error).message ?? String(err);
-			// "session not found" / "can't find session" = already dead → safe to proceed
-			// Other errors (ENOENT = tmux not installed, EACCES = permission denied) → abort
-			if (
-				!msg.includes("session not found") &&
-				!msg.includes("can't find session") &&
-				!msg.includes("no server running")
-			) {
-				console.error(
-					`[terminate] tmux kill-session failed for ${session.tmux_session}: ${msg}`,
-				);
-				return {
-					success: false,
-					message: `Failed to kill tmux session ${session.tmux_session}: ${msg}`,
-				};
-			}
-			console.warn(
-				`[terminate] tmux session already dead: ${session.tmux_session}`,
+	// Kill tmux session via CommDB (source of truth, not StateStore.tmux_session
+	// which is unreliably populated in production — see tmux-lookup.ts)
+	const tmuxTarget = session.project_name
+		? getTmuxTargetFromCommDb(executionId, session.project_name)
+		: undefined;
+	if (tmuxTarget) {
+		const killResult = await killTmuxSession(tmuxTarget.sessionName);
+		if (!killResult.killed && killResult.error) {
+			console.error(
+				`[terminate] tmux kill failed for ${tmuxTarget.sessionName}: ${killResult.error}`,
 			);
+			return {
+				success: false,
+				message: `Failed to kill tmux session ${tmuxTarget.sessionName}: ${killResult.error}`,
+			};
 		}
 	}
 
