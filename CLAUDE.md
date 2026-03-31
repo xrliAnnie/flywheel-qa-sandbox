@@ -72,6 +72,7 @@ Current version: see `doc/VERSION`
 | FLY-2: Ship :cool: flow — CI green gate before merge | ✅ Merged (PR #76) |
 | GEO-203: Claude Lead mem0 memory — dual-bucket model | ✅ Merged (Flywheel PR #78, GeoForge3D PR #112) |
 | GEO-294: Triage HTML Report — publish-html + Vercel deploy | ✅ Merged (Flywheel PR #74, GeoForge3D PR #114) |
+| FLY-27: Triage HTML template endpoint — Bridge static serve + deep optimization | ✅ Merged (PR #89) |
 
 ## Doc Structure & Lifecycle
 
