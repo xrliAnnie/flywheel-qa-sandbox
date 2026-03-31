@@ -13,6 +13,7 @@ import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
+import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
 import { validateThreadExists } from "./thread-validator.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
@@ -162,6 +163,8 @@ export function createEventRouter(
 							issue_identifier: asString(payload.issueIdentifier),
 							issue_title: asString(payload.issueTitle),
 							issue_labels: issueLabelsJson,
+							session_stage: "started",
+							stage_updated_at: now,
 						},
 					);
 					if (!result.ok) {
@@ -182,6 +185,8 @@ export function createEventRouter(
 						issue_identifier: asString(payload.issueIdentifier),
 						issue_title: asString(payload.issueTitle),
 						issue_labels: issueLabelsJson,
+						session_stage: "started",
+						stage_updated_at: now,
 					});
 				}
 
@@ -297,6 +302,10 @@ export function createEventRouter(
 						transitionRejected = true;
 					} else {
 						// Metadata via patchSessionMetadata only on successful transition
+						const prNumber = asNumber(
+							(evidence?.landingStatus as Record<string, unknown> | undefined)
+								?.prNumber,
+						);
 						store.patchSessionMetadata(event.execution_id, {
 							decision_route: route,
 							decision_reasoning: asString(decision?.reasoning),
@@ -312,9 +321,34 @@ export function createEventRouter(
 							changed_file_paths: Array.isArray(evidence?.changedFilePaths)
 								? (evidence.changedFilePaths as string[]).join("\n")
 								: undefined,
+							pr_number: prNumber,
 						});
+
+						// GEO-292: Auto-infer stage from landing status (only advance, never regress)
+						if (prNumber) {
+							const landingStatusObj = evidence?.landingStatus as
+								| Record<string, unknown>
+								| undefined;
+							const landingStatusValue = asString(landingStatusObj?.status);
+							const inferredStage =
+								landingStatusValue === "merged" ? "ship" : "pr_created";
+							const currentSession = store.getSession(event.execution_id);
+							const currentOrder =
+								STAGE_ORDER[currentSession?.session_stage ?? ""] ?? -1;
+							const inferredOrder = STAGE_ORDER[inferredStage] ?? -1;
+							if (inferredOrder > currentOrder) {
+								store.patchSessionMetadata(event.execution_id, {
+									session_stage: inferredStage,
+									stage_updated_at: now,
+								});
+							}
+						}
 					}
 				} else {
+					const legacyPrNumber = asNumber(
+						(evidence?.landingStatus as Record<string, unknown> | undefined)
+							?.prNumber,
+					);
 					store.upsertSession({
 						execution_id: event.execution_id,
 						issue_id: event.issue_id,
@@ -337,7 +371,28 @@ export function createEventRouter(
 							: undefined,
 						issue_identifier: asString(payload.issueIdentifier),
 						issue_title: asString(payload.issueTitle),
+						pr_number: legacyPrNumber,
 					});
+
+					// GEO-292: Auto-infer stage for legacy path (only advance, never regress)
+					if (legacyPrNumber) {
+						const landingStatusObj = evidence?.landingStatus as
+							| Record<string, unknown>
+							| undefined;
+						const landingStatusValue = asString(landingStatusObj?.status);
+						const legacyStage =
+							landingStatusValue === "merged" ? "ship" : "pr_created";
+						const currentSession = store.getSession(event.execution_id);
+						const currentOrder =
+							STAGE_ORDER[currentSession?.session_stage ?? ""] ?? -1;
+						const inferredOrder = STAGE_ORDER[legacyStage] ?? -1;
+						if (inferredOrder > currentOrder) {
+							store.patchSessionMetadata(event.execution_id, {
+								session_stage: legacyStage,
+								stage_updated_at: now,
+							});
+						}
+					}
 				}
 
 				// GEO-152: store labels on completed events (not just started)
@@ -467,6 +522,16 @@ export function createEventRouter(
 							issue_labels: JSON.stringify(payloadLabels),
 						});
 					}
+				}
+			} else if (event.event_type === "stage_changed") {
+				// GEO-292: Runner-reported pipeline stage change
+				const stage = asString(payload.stage);
+				if (stage && VALID_STAGES.has(stage)) {
+					store.patchSessionMetadata(event.execution_id, {
+						session_stage: stage,
+						stage_updated_at: now,
+						last_activity_at: now,
+					});
 				}
 			}
 		} catch (err) {

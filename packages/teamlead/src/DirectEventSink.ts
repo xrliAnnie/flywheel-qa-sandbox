@@ -19,6 +19,7 @@ import {
 } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
+import { STAGE_ORDER } from "./bridge/stage-utils.js";
 import { validateThreadExists } from "./bridge/thread-validator.js";
 import type { BridgeConfig } from "./bridge/types.js";
 import type { ProjectEntry } from "./ProjectConfig.js";
@@ -67,6 +68,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			retry_predecessor: env.retryPredecessor,
 			run_attempt: env.runAttempt,
 			issue_labels: env.labels ? JSON.stringify(env.labels) : undefined,
+			session_stage: "started",
+			stage_updated_at: now,
 		});
 
 		// Thread inheritance (same as event-route.ts)
@@ -140,6 +143,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		} else if (route === "blocked") status = "blocked";
 		else status = "completed";
 
+		const prNumber = result.evidence?.landingStatus?.prNumber;
+
+		// GEO-292: Auto-infer stage from landing status
+		let inferredStage: string | undefined;
+		if (prNumber) {
+			const landingStatusValue = (
+				result.evidence?.landingStatus as { status?: string } | undefined
+			)?.status;
+			inferredStage = landingStatusValue === "merged" ? "ship" : "pr_created";
+		}
+
 		this.store.upsertSession({
 			execution_id: env.executionId,
 			issue_id: env.issueId,
@@ -158,7 +172,22 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			changed_file_paths: result.evidence?.changedFilePaths?.join("\n"),
 			issue_identifier: env.issueIdentifier,
 			issue_title: env.issueTitle,
+			pr_number: prNumber,
 		});
+
+		// GEO-292: Stage auto-inference (only advance, never regress)
+		if (inferredStage) {
+			const currentSession = this.store.getSession(env.executionId);
+			const currentOrder =
+				STAGE_ORDER[currentSession?.session_stage ?? ""] ?? -1;
+			const inferredOrder = STAGE_ORDER[inferredStage] ?? -1;
+			if (inferredOrder > currentOrder) {
+				this.store.patchSessionMetadata(env.executionId, {
+					session_stage: inferredStage,
+					stage_updated_at: now,
+				});
+			}
+		}
 
 		this.pushNotification(env, "session_completed");
 	}

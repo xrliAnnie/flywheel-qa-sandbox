@@ -205,6 +205,13 @@ export interface AdapterExecutionContext {
 	/** Project name (for session registration) */
 	projectName?: string;
 
+	// -- GEO-292: Bridge connection for stage reporting --
+
+	/** Bridge URL for stage reporting (e.g., http://localhost:4100) */
+	bridgeUrl?: string;
+	/** Optional ingest token for Bridge authentication */
+	bridgeIngestToken?: string;
+
 	// -- Callbacks --
 
 	/** Log output callback (stdout/stderr from CLI process) */

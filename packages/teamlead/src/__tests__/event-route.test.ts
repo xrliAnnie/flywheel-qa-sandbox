@@ -909,3 +909,293 @@ describe("Event route — thread validation (GEO-200)", () => {
 		expect(store.getSession("exec-old")?.thread_id).toBeUndefined();
 	});
 });
+
+// GEO-292: session_stage + pr_number tracking
+describe("Event route — GEO-292 stage tracking", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		const config = makeConfig();
+		const app = createBridgeApp(store, testProjects, config);
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+	});
+
+	afterEach(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		store.close();
+	});
+
+	async function postEvent(overrides: Record<string, unknown> = {}) {
+		return fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent(overrides)),
+		});
+	}
+
+	it("session_started sets session_stage='started'", async () => {
+		const res = await postEvent();
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session!.session_stage).toBe("started");
+		expect(session!.stage_updated_at).toBeDefined();
+		// SQLite datetime format
+		expect(session!.stage_updated_at).toMatch(
+			/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/,
+		);
+	});
+
+	it("stage_changed with valid stage sets session_stage", async () => {
+		// Create session first
+		await postEvent();
+
+		const res = await postEvent({
+			event_id: "evt-stage-1",
+			event_type: "stage_changed",
+			payload: { stage: "implement" },
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session!.session_stage).toBe("implement");
+	});
+
+	it("stage_changed with invalid stage is ignored", async () => {
+		// Create session first
+		await postEvent();
+
+		const res = await postEvent({
+			event_id: "evt-stage-invalid",
+			event_type: "stage_changed",
+			payload: { stage: "nonexistent_stage" },
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		// Should still be "started" from session_started
+		expect(session!.session_stage).toBe("started");
+	});
+
+	it("stage_changed updates stage_updated_at", async () => {
+		await postEvent();
+
+		const beforeSession = store.getSession("exec-1");
+		const beforeTimestamp = beforeSession!.stage_updated_at;
+
+		// Small delay to ensure different timestamp
+		await new Promise((r) => setTimeout(r, 50));
+
+		await postEvent({
+			event_id: "evt-stage-time",
+			event_type: "stage_changed",
+			payload: { stage: "plan" },
+		});
+
+		const afterSession = store.getSession("exec-1");
+		expect(afterSession!.stage_updated_at).toBeDefined();
+		expect(afterSession!.session_stage).toBe("plan");
+	});
+
+	it("stage_changed allows stage regression (Runner can go backwards)", async () => {
+		await postEvent();
+
+		// Set to a later stage
+		await postEvent({
+			event_id: "evt-stage-forward",
+			event_type: "stage_changed",
+			payload: { stage: "code_review" },
+		});
+		expect(store.getSession("exec-1")!.session_stage).toBe("code_review");
+
+		// Go backwards — stage_changed does NOT enforce ordering
+		await postEvent({
+			event_id: "evt-stage-backward",
+			event_type: "stage_changed",
+			payload: { stage: "brainstorm" },
+		});
+		expect(store.getSession("exec-1")!.session_stage).toBe("brainstorm");
+	});
+
+	it("session_completed extracts pr_number from landingStatus.prNumber", async () => {
+		await postEvent();
+
+		const res = await postEvent({
+			event_id: "evt-completed-pr",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "needs_review" },
+				evidence: {
+					commitCount: 5,
+					landingStatus: { status: "open", prNumber: 42 },
+				},
+			},
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session!.pr_number).toBe(42);
+	});
+
+	it("session_completed without landingStatus has null pr_number", async () => {
+		await postEvent();
+
+		await postEvent({
+			event_id: "evt-completed-no-ls",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "needs_review" },
+				evidence: { commitCount: 1 },
+			},
+		});
+
+		const session = store.getSession("exec-1");
+		expect(session!.pr_number).toBeUndefined();
+	});
+
+	it("session_completed with merged status infers session_stage='ship'", async () => {
+		await postEvent();
+
+		await postEvent({
+			event_id: "evt-completed-merged",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "auto_approve" },
+				evidence: {
+					commitCount: 3,
+					landingStatus: {
+						status: "merged",
+						prNumber: 100,
+						mergedAt: "2026-03-30",
+					},
+				},
+			},
+		});
+
+		const session = store.getSession("exec-1");
+		expect(session!.session_stage).toBe("ship");
+		expect(session!.pr_number).toBe(100);
+	});
+
+	it("session_completed with prNumber infers session_stage='pr_created'", async () => {
+		await postEvent();
+
+		await postEvent({
+			event_id: "evt-completed-pr-created",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "needs_review" },
+				evidence: {
+					commitCount: 2,
+					landingStatus: { status: "open", prNumber: 55 },
+				},
+			},
+		});
+
+		const session = store.getSession("exec-1");
+		expect(session!.session_stage).toBe("pr_created");
+	});
+
+	it("session_completed auto-infer does NOT regress stage in legacy path (no FSM)", async () => {
+		// Legacy path now uses STAGE_ORDER guard — same as FSM path.
+		await postEvent();
+
+		// Set stage to "ship" via stage_changed
+		await postEvent({
+			event_id: "evt-stage-ship",
+			event_type: "stage_changed",
+			payload: { stage: "ship" },
+		});
+		expect(store.getSession("exec-1")!.session_stage).toBe("ship");
+
+		// session_completed with prNumber (open) infers "pr_created"
+		// Legacy path guards with STAGE_ORDER — ship (9) > pr_created (8), so no regression
+		await postEvent({
+			event_id: "evt-completed-legacy",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "needs_review" },
+				evidence: {
+					commitCount: 1,
+					landingStatus: { status: "open", prNumber: 77 },
+				},
+			},
+		});
+
+		const session = store.getSession("exec-1");
+		// Legacy path: STAGE_ORDER prevents regression from ship to pr_created
+		expect(session!.session_stage).toBe("ship");
+		expect(session!.pr_number).toBe(77);
+	});
+
+	it("session_completed with merged doesn't regress from ship (merged infers ship)", async () => {
+		await postEvent();
+
+		// Set to ship via stage_changed
+		await postEvent({
+			event_id: "evt-stage-ship-2",
+			event_type: "stage_changed",
+			payload: { stage: "ship" },
+		});
+
+		// session_completed with merged also infers "ship" — no regression issue
+		await postEvent({
+			event_id: "evt-completed-merged-2",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "auto_approve" },
+				evidence: {
+					commitCount: 1,
+					landingStatus: {
+						status: "merged",
+						prNumber: 88,
+						mergedAt: "2026-03-30",
+					},
+				},
+			},
+		});
+
+		const session = store.getSession("exec-1");
+		expect(session!.session_stage).toBe("ship");
+		expect(session!.pr_number).toBe(88);
+	});
+
+	it("session_completed without prNumber does not overwrite existing stage", async () => {
+		await postEvent();
+
+		// Advance to code_review
+		await postEvent({
+			event_id: "evt-stage-cr",
+			event_type: "stage_changed",
+			payload: { stage: "code_review" },
+		});
+		expect(store.getSession("exec-1")!.session_stage).toBe("code_review");
+
+		// session_completed without landingStatus/prNumber → no inferred stage
+		// legacyStage is undefined → upsertSession COALESCE preserves existing
+		await postEvent({
+			event_id: "evt-completed-no-pr",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "needs_review" },
+				evidence: { commitCount: 1 },
+			},
+		});
+
+		const session = store.getSession("exec-1");
+		expect(session!.session_stage).toBe("code_review"); // preserved
+		expect(session!.pr_number).toBeUndefined();
+	});
+});
