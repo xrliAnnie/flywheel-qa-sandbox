@@ -43,6 +43,7 @@ import {
 	killTmuxSession,
 } from "./tmux-lookup.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
+import { createTriageDataRouter } from "./triage-data-route.js";
 import type { BridgeConfig } from "./types.js";
 
 /** Create the appropriate LeadRuntime for a lead config. */
@@ -955,6 +956,8 @@ export function createBridgeApp(
 				? 50
 				: Math.min(Math.max(1, limitRaw), 250);
 
+			const slim = req.query.slim === "true" || req.query.slim === "1";
+
 			try {
 				const result = await queryLinearIssues(config.linearApiKey, {
 					project: project ?? undefined,
@@ -965,6 +968,7 @@ export function createBridgeApp(
 						? labelsParam.split(",").map((l) => l.trim())
 						: undefined,
 					limit,
+					slim,
 				});
 
 				res.json({
@@ -980,6 +984,19 @@ export function createBridgeApp(
 				res.status(502).json({ error: "Linear API error" });
 			}
 		},
+	);
+
+	// FLY-21: Combined triage data endpoint — issues + sessions + capacity in one call
+	app.use(
+		"/api/triage/data",
+		tokenAuthMiddleware(config.apiToken),
+		createTriageDataRouter(
+			store,
+			projects,
+			config.linearApiKey,
+			config.maxConcurrentRunners,
+			startDispatcher,
+		),
 	);
 
 	// Memory API (GEO-198/GEO-204) — conditional, only if memoryService initialized

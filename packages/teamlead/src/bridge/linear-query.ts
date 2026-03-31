@@ -35,6 +35,8 @@ export interface LinearQueryFilters {
 	states?: string[];
 	labels?: string[];
 	limit?: number;
+	/** When true, omit `description` from GraphQL response to reduce payload. */
+	slim?: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -49,6 +51,7 @@ export async function queryLinearIssues(
 	timeoutMs: number = DEFAULT_TIMEOUT_MS,
 ): Promise<{ issues: LinearIssue[]; truncated: boolean }> {
 	const limit = filters.limit ?? 50;
+	const slim = filters.slim ?? false;
 
 	// Build GraphQL filter
 	const filter: Record<string, unknown> = {};
@@ -72,6 +75,8 @@ export async function queryLinearIssues(
 		}
 	}
 
+	// Slim mode omits `description` to reduce payload (~60-80% smaller)
+	const descriptionField = slim ? "" : "description";
 	const query = `
 		query ListIssues($filter: IssueFilter, $first: Int) {
 			issues(filter: $filter, first: $first, orderBy: updatedAt) {
@@ -79,7 +84,7 @@ export async function queryLinearIssues(
 					id
 					identifier
 					title
-					description
+					${descriptionField}
 					priority
 					priorityLabel
 					url
@@ -128,7 +133,7 @@ export async function queryLinearIssues(
 				id: string;
 				identifier: string;
 				title: string;
-				description: string | null;
+				description?: string | null;
 				priority: number;
 				priorityLabel: string;
 				url: string;
@@ -147,7 +152,7 @@ export async function queryLinearIssues(
 		id: n.id,
 		identifier: n.identifier,
 		title: n.title,
-		description: n.description,
+		description: slim ? null : (n.description ?? null),
 		priority: n.priority,
 		priorityLabel: n.priorityLabel,
 		state: n.state.name,
