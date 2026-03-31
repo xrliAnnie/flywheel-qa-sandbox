@@ -31,6 +31,7 @@ import { OpenClawRuntime } from "./openclaw-runtime.js";
 import { postMergeCleanup } from "./post-merge.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
+import { setupRunInfrastructure } from "./run-infra.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
 import { captureSession as defaultCaptureSession } from "./session-capture.js";
@@ -1312,6 +1313,26 @@ export async function startBridge(
 		console.log("[Bridge] HTML publishing configured (Vercel)");
 	}
 
+	// FLY-22: Create RunDispatcher internally when not injected via opts.
+	// This ensures /api/runs routes are always registered regardless of entry point.
+	let startDispatcher = opts?.startDispatcher;
+	if (!startDispatcher) {
+		try {
+			startDispatcher = await setupRunInfrastructure(
+				store,
+				config,
+				projects,
+				registry,
+			);
+			console.log("[Bridge] RunDispatcher created internally");
+		} catch (err) {
+			console.warn(
+				"[Bridge] Failed to create RunDispatcher — /api/runs will be unavailable:",
+				(err as Error).message,
+			);
+		}
+	}
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -1326,7 +1347,7 @@ export async function startBridge(
 		forumPostCreator,
 		opts?.memoryService,
 		defaultCaptureSession,
-		opts?.startDispatcher,
+		startDispatcher,
 		standupService,
 		standupProjectName,
 		{ vercelToken },
