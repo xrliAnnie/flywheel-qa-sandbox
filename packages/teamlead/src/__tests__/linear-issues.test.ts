@@ -327,4 +327,37 @@ describe("GET /api/linear/issues (GEO-276)", () => {
 		const body = (await res.json()) as { truncated: boolean };
 		expect(body.truncated).toBe(true);
 	});
+
+	// 11. slim=true → GraphQL query omits description field
+	it("omits description from GraphQL query when slim=true", async () => {
+		mockRawRequest.mockResolvedValueOnce(
+			mockLinearResponse([{ ...sampleIssue, description: undefined }]),
+		);
+
+		const res = await fetch(`${baseUrl}/api/linear/issues?slim=true`, {
+			headers: { Authorization: "Bearer test-token" },
+		});
+		expect(res.status).toBe(200);
+
+		// Verify GraphQL query does not contain 'description'
+		const query = mockRawRequest.mock.calls[0][0] as string;
+		expect(query).not.toContain("description");
+
+		const body = (await res.json()) as {
+			issues: Array<{ description: string | null }>;
+		};
+		expect(body.issues[0].description).toBeNull();
+	});
+
+	// 12. slim=false (default) → GraphQL query includes description field
+	it("includes description in GraphQL query by default", async () => {
+		mockRawRequest.mockResolvedValueOnce(mockLinearResponse([sampleIssue]));
+
+		await fetch(`${baseUrl}/api/linear/issues`, {
+			headers: { Authorization: "Bearer test-token" },
+		});
+
+		const query = mockRawRequest.mock.calls[0][0] as string;
+		expect(query).toContain("description");
+	});
 });
