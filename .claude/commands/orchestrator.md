@@ -155,39 +155,50 @@ For each PR the user approves to ship:
    - Wait for merge to complete: `gh pr view {PR_NUMBER} --json state --jq '.state'` until `MERGED`
    - **Do NOT use `gh pr merge` directly** — all ships must go through the `:cool:` flow for audit trail and CI gating
 
-   **B. Clean up worktree**
+   **B2. Trigger restart-services.sh (MANDATORY after merge)**
+   - After merge completes and `git pull` is done:
+     ```bash
+     cd /Users/xiaorongli/Dev/flywheel
+     set -a && source ~/.flywheel/.env && set +a
+     bash scripts/restart-services.sh
+     ```
+   - This detects what changed (Bridge code / Lead config / Discord plugin) and restarts only affected services
+   - If restart-services.sh is not yet deployed (`~/.flywheel/bin/` missing), skip with a warning
+   - The 12h launchd cron is a fallback only — this post-merge step is the primary trigger
+
+   **C. Clean up worktree**
    - `cd` out of worktree
    - `git worktree remove {worktree_path}`
    - `git branch -D {branch}` (if not already deleted by --delete-branch)
 
-   **C. Archive docs** (in main repo, on main branch)
+   **D. Archive docs** (in main repo, on main branch)
    - `git mv doc/plan/inprogress/{file} doc/plan/archive/`
    - `git mv doc/exploration/new/{file} doc/exploration/archive/`
    - `git mv doc/research/new/{file} doc/research/archive/` (if exists)
    - Commit: `docs: archive GEO-{XX} docs after merge`
 
-   **D. Update MEMORY.md**
+   **E. Update MEMORY.md**
    - Mark issue as ✅ Done in Next Steps table
    - Add one-line summary with PR number, key changes, review rounds
 
-   **E. Update CLAUDE.md + VERSION**
+   **F. Update CLAUDE.md + VERSION**
    - Add milestone to the milestone table
    - Bump `doc/VERSION` to `SPRINT_VERSION` if not already bumped (first ship of the sprint writes the new version; subsequent ships in the same sprint skip this step since VERSION is already correct):
      ```bash
      bash -c 'source .claude/orchestrator/config.sh && current=$(get_current_version) && if [ "$current" != "{SPRINT_VERSION}" ]; then bump_feature_version minor; fi'
      ```
 
-   **F. Update Linear issue**
+   **G. Update Linear issue**
    - Mark issue as Done in Linear
 
-   **G. Report completion**
+   **H. Report completion**
    - Mark task as completed
    - Report what was done (merge + cleanup + docs)
 
 3. After teammate confirms ALL steps done → `cleanup-agent.sh <id> completed`
 4. **THEN** send shutdown_request to that teammate
 
-**CRITICAL**: Steps C-F are mandatory, not optional. Skipping doc updates creates tech debt that accumulates. The teammate has the context to do these updates — don't defer to a follow-up.
+**CRITICAL**: Steps D-G are mandatory, not optional. Skipping doc updates creates tech debt that accumulates. The teammate has the context to do these updates — don't defer to a follow-up.
 
 ### 8. Teammate Communication
 - Teammates send messages via `SendMessage` when they need help or finish

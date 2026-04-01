@@ -479,7 +479,7 @@ do_restart_all_leads() {
     shopt -s nullglob
     local manifests=("${HOME}/.flywheel/manifests/"*.json)
     shopt -u nullglob
-    for mf in "${manifests[@]}"; do
+    for mf in ${manifests[@]+"${manifests[@]}"}; do
         local lid
         lid=$(jq -r '.leadId' "$mf")
         manifest_leads="$manifest_leads $lid"
@@ -497,7 +497,7 @@ do_restart_all_leads() {
     done < <(pgrep -af "claude-lead.sh" 2>/dev/null || true)
 
     # Restart Leads that have manifests (pass manifest path directly)
-    for mf in "${manifests[@]}"; do
+    for mf in ${manifests[@]+"${manifests[@]}"}; do
         local rc=0
         restart_lead "$mf" >&2 || rc=$?
         if (( rc == 1 )); then
