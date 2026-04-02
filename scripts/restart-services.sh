@@ -443,15 +443,18 @@ restart_lead() {
         return 1
     fi
 
+    # Per-lead Discord state directory for channel/token isolation
+    local discord_state_dir="${HOME}/.claude/channels/discord-${lead_id}"
+
     # Replay LEAD_WORKSPACE if manifest recorded a custom one
     if [[ -n "$workspace" && "$workspace" != "null" ]]; then
-        LEAD_WORKSPACE="$workspace" DISCORD_BOT_TOKEN="${!bot_token_env}" \
+        LEAD_WORKSPACE="$workspace" DISCORD_STATE_DIR="$discord_state_dir" DISCORD_BOT_TOKEN="${!bot_token_env}" \
             nohup "$FLYWHEEL_DIR/packages/teamlead/scripts/claude-lead.sh" \
             "$lead_id" "$project_dir" "$project_name" $subdir_args \
             --bot-token-env "$bot_token_env" \
             >> "/tmp/flywheel-lead-${lead_id}.log" 2>&1 &
     else
-        DISCORD_BOT_TOKEN="${!bot_token_env}" \
+        DISCORD_STATE_DIR="$discord_state_dir" DISCORD_BOT_TOKEN="${!bot_token_env}" \
             nohup "$FLYWHEEL_DIR/packages/teamlead/scripts/claude-lead.sh" \
             "$lead_id" "$project_dir" "$project_name" $subdir_args \
             --bot-token-env "$bot_token_env" \
