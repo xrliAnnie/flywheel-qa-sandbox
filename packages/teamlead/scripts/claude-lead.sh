@@ -3,6 +3,7 @@
 # GEO-234: Agent file + flywheel-comm integration.
 # GEO-246: Parameterized for multi-lead — supports any agent name.
 # GEO-285: Crash recovery loop + auto session ID + graceful shutdown
+# FLY-20 E2E verification timestamp: 2026-04-01
 #          + PostCompact hook for bootstrap re-send after auto-compact.
 # GEO-286: Per-Lead workspace subdirectory. Claude Code walks up to load
 #   project CLAUDE.md, so subdirectory still gets full project context.
