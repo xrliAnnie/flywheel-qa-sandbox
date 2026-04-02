@@ -537,7 +537,7 @@ cd "$LEAD_WORKSPACE"
 TERMINAL_MCP_DIR="${SCRIPT_DIR}/../../terminal-mcp/dist"
 if [ -d "$TERMINAL_MCP_DIR" ]; then
   TERMINAL_MCP_BIN="$(cd "$TERMINAL_MCP_DIR" && pwd)/index.js"
-  MCP_CONFIG_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-mcp-XXXXXX.json")
+  MCP_CONFIG_FILE="${TMPDIR:-/tmp}/flywheel-mcp-${LEAD_ID}.json"
   cat > "$MCP_CONFIG_FILE" <<MCPEOF
 {
   "mcpServers": {
