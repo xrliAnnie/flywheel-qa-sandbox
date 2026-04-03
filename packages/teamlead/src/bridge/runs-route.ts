@@ -130,10 +130,14 @@ export function createRunsRouter(
 		}
 
 		try {
+			// FLY-24: Pass pre-fetched title/identifier so Blueprint's EventEnvelope
+			// uses real metadata (PreHydrator may fail Linear API and fall back to stub title).
 			const result = await startDispatcher.start({
 				issueId,
 				projectName,
 				leadId,
+				issueTitle,
+				issueIdentifier,
 			});
 
 			// FLY-24: Poll for Forum Post thread_id (created async by Blueprint → emitStarted → ensureForumPost)
@@ -146,16 +150,6 @@ export function createRunsRouter(
 					threadId = session.thread_id;
 					break;
 				}
-			}
-
-			// FLY-24 Bug 1: Patch session with real issue metadata from Linear pre-flight.
-			// Without this, ForumPostCreator uses the stub title from upsertSession
-			// (e.g. "Issue GEO-304") because Blueprint hasn't hydrated yet.
-			if (issueTitle || issueIdentifier) {
-				store.patchSessionMetadata(result.executionId, {
-					...(issueTitle ? { issue_title: issueTitle } : {}),
-					...(issueIdentifier ? { issue_identifier: issueIdentifier } : {}),
-				});
 			}
 
 			const forumLink =
