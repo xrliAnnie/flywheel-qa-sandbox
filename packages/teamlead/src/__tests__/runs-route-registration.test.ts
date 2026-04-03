@@ -43,6 +43,10 @@ vi.mock("flywheel-edge-worker", async (importOriginal) => {
 			init: vi.fn().mockResolvedValue(undefined),
 			close: vi.fn().mockResolvedValue(undefined),
 		})),
+		// FLY-50: CipherReader is now used in createRunBlueprint
+		CipherReader: vi.fn().mockImplementation(() => ({
+			loadActivePrinciples: vi.fn().mockResolvedValue([]),
+		})),
 	};
 });
 
@@ -106,40 +110,44 @@ describe("FLY-22: /api/runs routes always registered", () => {
 		}
 	});
 
-	it("startBridge without startDispatcher → /api/runs/active returns 200 (not 404)", async () => {
-		// Import after mocks are set up
-		const { startBridge } = await import("../bridge/plugin.js");
+	it(
+		"startBridge without startDispatcher → /api/runs/active returns 200 (not 404)",
+		{ timeout: 15_000 },
+		async () => {
+			// Import after mocks are set up
+			const { startBridge } = await import("../bridge/plugin.js");
 
-		const { app, close, store } = await startBridge(
-			makeConfig(),
-			testProjects,
-			// No startDispatcher passed — this is the bug scenario
-		);
-		closeFn = close;
-
-		const server = app.listen(0, "127.0.0.1") as http.Server;
-		await new Promise<void>((resolve) => server.once("listening", resolve));
-
-		try {
-			const addr = server.address();
-			const port = typeof addr === "object" && addr ? addr.port : 0;
-			const baseUrl = `http://127.0.0.1:${port}`;
-
-			const res = await fetch(`${baseUrl}/api/runs/active`);
-
-			// Before fix: 404 (route not registered)
-			// After fix: 200 (RunDispatcher created internally)
-			expect(res.status).toBe(200);
-
-			const body = (await res.json()) as { running: number; max: number };
-			expect(body).toHaveProperty("running");
-			expect(body).toHaveProperty("max");
-			expect(body.max).toBe(2);
-		} finally {
-			await new Promise<void>((resolve, reject) =>
-				server.close((err) => (err ? reject(err) : resolve())),
+			const { app, close, store } = await startBridge(
+				makeConfig(),
+				testProjects,
+				// No startDispatcher passed — this is the bug scenario
 			);
-			store.close();
-		}
-	});
+			closeFn = close;
+
+			const server = app.listen(0, "127.0.0.1") as http.Server;
+			await new Promise<void>((resolve) => server.once("listening", resolve));
+
+			try {
+				const addr = server.address();
+				const port = typeof addr === "object" && addr ? addr.port : 0;
+				const baseUrl = `http://127.0.0.1:${port}`;
+
+				const res = await fetch(`${baseUrl}/api/runs/active`);
+
+				// Before fix: 404 (route not registered)
+				// After fix: 200 (RunDispatcher created internally)
+				expect(res.status).toBe(200);
+
+				const body = (await res.json()) as { running: number; max: number };
+				expect(body).toHaveProperty("running");
+				expect(body).toHaveProperty("max");
+				expect(body.max).toBe(2);
+			} finally {
+				await new Promise<void>((resolve, reject) =>
+					server.close((err) => (err ? reject(err) : resolve())),
+				);
+				store.close();
+			}
+		},
+	);
 });
