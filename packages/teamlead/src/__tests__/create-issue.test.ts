@@ -38,6 +38,47 @@ const testProjects: ProjectEntry[] = [
 	},
 ];
 
+// FLY-23: projects with linearTeamKey for cross-project team resolution
+const testProjectsWithTeamKey: ProjectEntry[] = [
+	{
+		projectName: "geoforge3d",
+		projectRoot: "/tmp/geoforge3d",
+		linearTeamKey: "GEO",
+		leads: [
+			{
+				agentId: "product-lead",
+				forumChannel: "test-forum",
+				chatChannel: "test-chat",
+				match: { labels: ["Product"] },
+			},
+		],
+	},
+	{
+		projectName: "flywheel",
+		projectRoot: "/tmp/flywheel",
+		linearTeamKey: "FLY",
+		leads: [
+			{
+				agentId: "cos-lead",
+				chatChannel: "cos-chat",
+				match: { labels: ["PM"] },
+			},
+		],
+	},
+	{
+		projectName: "no-team-project",
+		projectRoot: "/tmp/no-team",
+		leads: [
+			{
+				agentId: "eng-lead",
+				forumChannel: "eng-forum",
+				chatChannel: "eng-chat",
+				match: { labels: ["Engineering"] },
+			},
+		],
+	},
+];
+
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	return {
 		host: "127.0.0.1",
@@ -299,6 +340,165 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 	it("returns 400 when title exceeds 500 chars", async () => {
 		const res = await post({ title: "x".repeat(501) });
 		expect(res.status).toBe(400);
+	});
+
+	// --- FLY-23: resolveTeamFrom (cross-project team resolution) ---
+
+	describe("resolveTeamFrom (FLY-23)", () => {
+		let store2: StateStore;
+		let server2: http.Server;
+		let baseUrl2: string;
+
+		beforeEach(async () => {
+			store2 = await StateStore.create(":memory:");
+			const app2 = createBridgeApp(
+				store2,
+				testProjectsWithTeamKey,
+				makeConfig({
+					linearApiKey: "test-linear-key",
+					apiToken: "test-token",
+				}),
+			);
+			server2 = app2.listen(0, "127.0.0.1");
+			await new Promise<void>((resolve) =>
+				server2.once("listening", resolve),
+			);
+			const addr2 = server2.address();
+			const port2 = typeof addr2 === "object" && addr2 ? addr2.port : 0;
+			baseUrl2 = `http://127.0.0.1:${port2}`;
+		});
+
+		afterEach(async () => {
+			await new Promise<void>((resolve) =>
+				server2.close(() => resolve()),
+			);
+			store2.close();
+		});
+
+		function post2(body: Record<string, unknown>) {
+			return fetch(`${baseUrl2}/api/linear/create-issue`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer test-token",
+				},
+				body: JSON.stringify(body),
+			});
+		}
+
+		it("resolves team from projectName's linearTeamKey", async () => {
+			mockMultiTeam();
+			mockIssueCreated(
+				"FLY-1",
+				"fly-1-id",
+				"https://linear.app/test/issue/FLY-1",
+			);
+
+			const res = await post2({
+				title: "Cross-project issue",
+				resolveTeamFrom: "flywheel",
+			});
+			expect(res.status).toBe(200);
+
+			expect(mockCreateIssue).toHaveBeenCalledWith(
+				expect.objectContaining({ teamId: "team-fly-id" }),
+			);
+		});
+
+		it("resolves team from geoforge3d project", async () => {
+			mockMultiTeam();
+			mockIssueCreated("GEO-400");
+
+			const res = await post2({
+				title: "GEO issue via resolve",
+				resolveTeamFrom: "geoforge3d",
+			});
+			expect(res.status).toBe(200);
+
+			expect(mockCreateIssue).toHaveBeenCalledWith(
+				expect.objectContaining({ teamId: "team-geo-id" }),
+			);
+		});
+
+		it("explicit team takes precedence over resolveTeamFrom", async () => {
+			mockMultiTeam();
+			mockIssueCreated("GEO-400");
+
+			const res = await post2({
+				title: "Explicit wins",
+				team: "GEO",
+				resolveTeamFrom: "flywheel",
+			});
+			expect(res.status).toBe(200);
+
+			// team=GEO should win, not flywheel's FLY
+			expect(mockCreateIssue).toHaveBeenCalledWith(
+				expect.objectContaining({ teamId: "team-geo-id" }),
+			);
+		});
+
+		it("returns 404 when resolveTeamFrom project not found in config", async () => {
+			mockMultiTeam();
+
+			const res = await post2({
+				title: "Unknown project",
+				resolveTeamFrom: "nonexistent",
+			});
+			expect(res.status).toBe(404);
+
+			const data = await res.json();
+			expect(data.error).toContain("nonexistent");
+			expect(data.error).toContain("not found in project config");
+		});
+
+		it("returns 400 when resolveTeamFrom project has no linearTeamKey", async () => {
+			mockMultiTeam();
+
+			const res = await post2({
+				title: "No team key",
+				resolveTeamFrom: "no-team-project",
+			});
+			expect(res.status).toBe(400);
+
+			const data = await res.json();
+			expect(data.error).toContain("linearTeamKey");
+			expect(data.error).toContain("no-team-project");
+		});
+
+		it("returns 400 for non-string resolveTeamFrom", async () => {
+			const res = await post2({
+				title: "Bad type",
+				resolveTeamFrom: 42,
+			});
+			expect(res.status).toBe(400);
+
+			const data = await res.json();
+			expect(data.error).toContain("resolveTeamFrom");
+		});
+
+		it("resolveTeamFrom + project both work together", async () => {
+			mockMultiTeam();
+			mockProjectResolution("Flywheel", "project-flywheel-id");
+			mockIssueCreated(
+				"FLY-2",
+				"fly-2-id",
+				"https://linear.app/test/issue/FLY-2",
+			);
+
+			const res = await post2({
+				title: "Full cross-project",
+				resolveTeamFrom: "flywheel",
+				project: "Flywheel",
+			});
+			expect(res.status).toBe(200);
+
+			expect(mockCreateIssue).toHaveBeenCalledWith(
+				expect.objectContaining({
+					teamId: "team-fly-id",
+					projectId: "project-flywheel-id",
+				}),
+			);
+		});
 	});
 
 	it("returns 501 when LINEAR_API_KEY not configured", async () => {

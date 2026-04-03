@@ -335,6 +335,84 @@ describe("resolveLeadForIssue", () => {
 	});
 });
 
+describe("linearTeamKey validation (FLY-23)", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+
+	afterEach(() => {
+		if (originalEnv === undefined) {
+			delete process.env.FLYWHEEL_PROJECTS;
+		} else {
+			process.env.FLYWHEEL_PROJECTS = originalEnv;
+		}
+	});
+
+	const validLead = {
+		agentId: "product-lead",
+		forumChannel: "123",
+		chatChannel: "456",
+		match: { labels: ["Product"] },
+	};
+
+	it("accepts project with linearTeamKey", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "geoforge3d",
+				projectRoot: "/tmp",
+				linearTeamKey: "GEO",
+				leads: [validLead],
+			},
+		]);
+		const projects = loadProjects();
+		expect(projects[0]!.linearTeamKey).toBe("GEO");
+	});
+
+	it("accepts project without linearTeamKey (backward compat)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [validLead],
+			},
+		]);
+		const projects = loadProjects();
+		expect(projects[0]!.linearTeamKey).toBeUndefined();
+	});
+
+	it("throws when linearTeamKey is empty string", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				linearTeamKey: "",
+				leads: [validLead],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/linearTeamKey/);
+	});
+
+	it("throws when linearTeamKey is non-string", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				linearTeamKey: 123,
+				leads: [validLead],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/linearTeamKey/);
+	});
+
+	it("ProjectEntry type includes optional linearTeamKey", () => {
+		const entry: ProjectEntry = {
+			projectName: "test",
+			projectRoot: "/tmp",
+			linearTeamKey: "FLY",
+			leads: [validLead],
+		};
+		expect(entry.linearTeamKey).toBe("FLY");
+	});
+});
+
 describe("statusTagMap validation (GEO-253)", () => {
 	const originalEnv = process.env.FLYWHEEL_PROJECTS;
 

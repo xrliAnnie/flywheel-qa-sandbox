@@ -747,8 +747,15 @@ export function createBridgeApp(
 				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
 				return;
 			}
-			const { title, description, priority, labels, team, project } =
-				req.body ?? {};
+			const {
+				title,
+				description,
+				priority,
+				labels,
+				team,
+				project,
+				resolveTeamFrom,
+			} = req.body ?? {};
 			if (!title || typeof title !== "string") {
 				res.status(400).json({ error: "title is required" });
 				return;
@@ -790,20 +797,49 @@ export function createBridgeApp(
 					.json({ error: "project must be a string (project name)" });
 				return;
 			}
+			// FLY-23: resolveTeamFrom — resolve team from project config's linearTeamKey
+			if (resolveTeamFrom !== undefined && typeof resolveTeamFrom !== "string") {
+				res.status(400).json({
+					error:
+						'resolveTeamFrom must be a string (Flywheel project name, e.g. "geoforge3d")',
+				});
+				return;
+			}
 			try {
 				const { LinearClient } = await import("@linear/sdk");
 				const client = new LinearClient({ apiKey: config.linearApiKey });
 
+				// FLY-23: Resolve effective team key — explicit team > resolveTeamFrom > auto
+				let effectiveTeamKey: string | undefined = team;
+				if (!effectiveTeamKey && resolveTeamFrom) {
+					const matchedProject = projects.find(
+						(p) => p.projectName === resolveTeamFrom,
+					);
+					if (!matchedProject) {
+						res.status(404).json({
+							error: `Project "${resolveTeamFrom}" not found in project config. Available: ${projects.map((p) => p.projectName).join(", ")}`,
+						});
+						return;
+					}
+					if (!matchedProject.linearTeamKey) {
+						res.status(400).json({
+							error: `Project "${resolveTeamFrom}" has no linearTeamKey configured`,
+						});
+						return;
+					}
+					effectiveTeamKey = matchedProject.linearTeamKey;
+				}
+
 				// GEO-298: Team resolution — by key if specified, require if >1 team
 				const allTeams = await client.teams();
 				let targetTeam: (typeof allTeams.nodes)[number] | undefined;
-				if (team) {
+				if (effectiveTeamKey) {
 					targetTeam = allTeams.nodes.find(
-						(t: { key: string }) => t.key === team,
+						(t: { key: string }) => t.key === effectiveTeamKey,
 					);
 					if (!targetTeam) {
 						res.status(404).json({
-							error: `Linear team with key "${team}" not found. Available: ${allTeams.nodes.map((t: { key: string }) => t.key).join(", ")}`,
+							error: `Linear team with key "${effectiveTeamKey}" not found. Available: ${allTeams.nodes.map((t: { key: string }) => t.key).join(", ")}`,
 						});
 						return;
 					}

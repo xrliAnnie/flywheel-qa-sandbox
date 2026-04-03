@@ -28,6 +28,8 @@ export interface ProjectEntry {
 	projectName: string;
 	projectRoot: string;
 	projectRepo?: string;
+	/** FLY-23: Linear team key for cross-project issue creation (e.g., "GEO", "FLY"). */
+	linearTeamKey?: string;
 	leads: LeadConfig[];
 	generalChannel?: string;
 	/** Memory API user_id allowlist. Fail-closed: requests rejected if not configured. */
@@ -216,6 +218,16 @@ export function loadProjects(): ProjectEntry[] {
 						`[loadProjects] "${entry.projectName}" leads[${i}]: botTokenEnv="${botTokenEnv}" not found in env — will fall back to DISCORD_BOT_TOKEN`,
 					);
 				}
+			}
+		}
+
+		// FLY-23: Validate optional linearTeamKey
+		const linearTeamKey = entry?.linearTeamKey;
+		if (linearTeamKey !== undefined) {
+			if (typeof linearTeamKey !== "string" || linearTeamKey.length === 0) {
+				throw new Error(
+					`Project "${entry.projectName}" linearTeamKey: must be a non-empty string if provided`,
+				);
 			}
 		}
 
