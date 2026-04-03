@@ -380,9 +380,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 					let tagResult: HookPayload["forum_tag_update_result"];
 					if (this.forumTagUpdater) {
+						// FLY-24 Bug 2: Re-read session to get latest thread_id.
+						// The `session` closure may be stale if ensureForumPost (fire-and-forget)
+						// wrote thread_id after pushNotification captured the session object.
+						const freshSession = this.store.getSession(env.executionId);
+						const freshThreadId = freshSession?.thread_id ?? session.thread_id;
 						tagResult = await this.forumTagUpdater.updateTag({
-							threadId: session.thread_id,
-							status: session.status ?? "",
+							threadId: freshThreadId,
+							status: freshSession?.status ?? session.status ?? "",
 							eventType,
 							discordBotToken: lead.botToken ?? this.config.discordBotToken,
 							statusTagMap: lead.statusTagMap,

@@ -98,8 +98,9 @@ export function createRunsRouter(
 		}
 
 		// Pre-flight: verify issue exists in Linear before dispatching.
-		// This prevents fire-and-forget from silently using stub metadata
-		// when the issue doesn't exist or Linear API is unreachable.
+		// Also captures title/identifier for session metadata patching (FLY-24 Bug 1).
+		let issueTitle: string | undefined;
+		let issueIdentifier: string | undefined;
 		try {
 			const { LinearClient } = await import("@linear/sdk");
 			const client = new LinearClient({
@@ -113,6 +114,8 @@ export function createRunsRouter(
 				});
 				return;
 			}
+			issueTitle = issue.title;
+			issueIdentifier = issue.identifier;
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			console.error(
@@ -143,6 +146,16 @@ export function createRunsRouter(
 					threadId = session.thread_id;
 					break;
 				}
+			}
+
+			// FLY-24 Bug 1: Patch session with real issue metadata from Linear pre-flight.
+			// Without this, ForumPostCreator uses the stub title from upsertSession
+			// (e.g. "Issue GEO-304") because Blueprint hasn't hydrated yet.
+			if (issueTitle || issueIdentifier) {
+				store.patchSessionMetadata(result.executionId, {
+					...(issueTitle ? { issue_title: issueTitle } : {}),
+					...(issueIdentifier ? { issue_identifier: issueIdentifier } : {}),
+				});
 			}
 
 			const forumLink =
