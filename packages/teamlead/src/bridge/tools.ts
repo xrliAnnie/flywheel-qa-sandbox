@@ -4,6 +4,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { filterSessionsByLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
+import type { StatusQueryResult } from "./runner-status.js";
 import {
 	type CaptureError,
 	type CaptureResult,
@@ -15,6 +16,11 @@ export type CaptureSessionFn = (
 	projectName: string,
 	lines: number,
 ) => Promise<CaptureResult | CaptureError>;
+
+export type StatusQueryFn = (
+	executionId: string,
+	projectName: string,
+) => Promise<StatusQueryResult>;
 
 function omitIssueId(
 	session: Session,
@@ -28,6 +34,7 @@ export function createQueryRouter(
 	projects: ProjectEntry[],
 	retryDispatcher?: IRetryDispatcher,
 	captureSessionFn?: CaptureSessionFn,
+	statusQueryFn?: StatusQueryFn,
 ): Router {
 	const router = Router();
 
@@ -189,6 +196,44 @@ export function createQueryRouter(
 		res.json({
 			execution_id: session.execution_id,
 			...result,
+		});
+	});
+
+	// FLY-10: Runner status detection (four-state model + 45s stall watchdog)
+	router.get("/sessions/:id/status", async (req, res) => {
+		if (!statusQueryFn) {
+			res.status(501).json({ error: "Status detection not configured" });
+			return;
+		}
+
+		const id = req.params.id;
+
+		// Resolve session (same fallback as /sessions/:id)
+		let session = store.getSession(id);
+		if (!session) {
+			session = store.getSessionByIdentifier(id);
+		}
+		if (!session) {
+			res.status(404).json({ error: "Session not found" });
+			return;
+		}
+
+		const { result, captureErrorStatus } = await statusQueryFn(
+			session.execution_id,
+			session.project_name,
+		);
+
+		// Propagate non-tmux capture errors (400/404) as HTTP errors
+		// consistent with /sessions/:id/capture behavior
+		if (captureErrorStatus) {
+			res.status(captureErrorStatus).json({ error: result.reason });
+			return;
+		}
+
+		res.json({
+			execution_id: session.execution_id,
+			...result,
+			checked_at: new Date().toISOString(),
 		});
 	});
 

@@ -34,6 +34,7 @@ import { postMergeCleanup } from "./post-merge.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import { setupRunInfrastructure } from "./run-infra.js";
+import { createStatusQuery } from "./runner-status.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
 import { captureSession as defaultCaptureSession } from "./session-capture.js";
@@ -333,7 +334,13 @@ export function createBridgeApp(
 	app.use(
 		"/api",
 		tokenAuthMiddleware(config.apiToken),
-		createQueryRouter(store, projects, retryDispatcher, captureSessionFn),
+		createQueryRouter(
+			store,
+			projects,
+			retryDispatcher,
+			captureSessionFn,
+			captureSessionFn ? createStatusQuery(captureSessionFn).query : undefined,
+		),
 	);
 	app.use(
 		"/api/actions",
