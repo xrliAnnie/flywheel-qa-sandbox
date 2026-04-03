@@ -69,6 +69,9 @@ export interface BlueprintContext {
 	};
 	// GEO-206 — Lead ID for bidirectional communication prompt
 	leadId?: string;
+	// FLY-24 — Pre-fetched issue metadata (overrides PreHydrator on conflict)
+	issueTitle?: string;
+	issueIdentifier?: string;
 }
 
 /** Shell command runner for tmux window cleanup */
@@ -127,8 +130,10 @@ export class Blueprint {
 			executionId,
 			issueId: node.id,
 			projectName: projectScope,
-			issueIdentifier: hydrated.issueIdentifier,
-			issueTitle: hydrated.issueTitle,
+			// FLY-24: Pre-fetched metadata from runs-route takes precedence over PreHydrator
+			// (PreHydrator may fail Linear API and fall back to stub title)
+			issueIdentifier: ctx.issueIdentifier ?? hydrated.issueIdentifier,
+			issueTitle: ctx.issueTitle ?? hydrated.issueTitle,
 			labels: hydrated.labels,
 			retryPredecessor: ctx.retryContext?.predecessorExecutionId,
 			runAttempt: ctx.retryContext?.attempt,

@@ -33,6 +33,10 @@ export interface StartRequest {
 	issueId: string;
 	projectName: string;
 	leadId?: string;
+	/** FLY-24: Pre-fetched issue title from runs-route Linear pre-flight */
+	issueTitle?: string;
+	/** FLY-24: Pre-fetched issue identifier (e.g. "GEO-304") from runs-route Linear pre-flight */
+	issueIdentifier?: string;
 }
 
 export interface StartResult {
