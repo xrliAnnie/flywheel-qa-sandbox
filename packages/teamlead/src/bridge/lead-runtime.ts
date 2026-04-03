@@ -5,6 +5,23 @@
 
 import type { HookPayload } from "./hook-payload.js";
 
+/** Result of a deliver() call — success or transport failure. */
+export interface DeliveryResult {
+	delivered: boolean;
+	error?: string;
+}
+
+/**
+ * Guardrail event types — delivery failures must NOT be silently swallowed.
+ * These events represent critical alerts (stuck/orphan/stale) that the Lead
+ * must act on. Failed delivery triggers retry on next heartbeat cycle.
+ */
+export const GUARDRAIL_EVENT_TYPES = new Set([
+	"session_stuck",
+	"session_orphaned",
+	"session_stale_completed",
+]);
+
 /** Monotonically sequenced event envelope for lead delivery. */
 export interface LeadEventEnvelope {
 	seq: number;
@@ -67,15 +84,15 @@ export interface LeadRuntimeHealth {
  * Runtime adapter for a Lead agent. Each lead can use a different runtime
  * (OpenClaw webhook vs Claude Discord control channel).
  *
- * Delivery contract (matches original notifyAgent() semantics):
- * - Fire-and-forget: callers wrap with .catch(() => {})
+ * Delivery contract (FLY-25 upgrade from fire-and-forget to result-based):
+ * - Returns DeliveryResult: { delivered: boolean; error?: string }
  * - 3s timeout via AbortController
- * - Error swallowing: failures warn, never throw to caller
- * - No retry: recovery via event journal + bootstrap
+ * - Never throws — transport failures are captured in the result
+ * - Callers use result to decide whether to mark event as delivered
  */
 export interface LeadRuntime {
 	readonly type: "openclaw" | "claude-discord";
-	deliver(envelope: LeadEventEnvelope): Promise<void>;
+	deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult>;
 	sendBootstrap(snapshot: LeadBootstrap): Promise<void>;
 	health(): Promise<LeadRuntimeHealth>;
 	shutdown(): Promise<void>;

@@ -304,6 +304,7 @@ function createMockRegistry() {
 		type: "openclaw" as const,
 		deliver: vi.fn(async (env: LeadEventEnvelope) => {
 			envelopes.push(env);
+			return { delivered: true };
 		}),
 		sendBootstrap: vi.fn(async () => {}),
 		health: vi.fn(async () => ({
@@ -619,6 +620,7 @@ describe("Event route — no-forum lead (GEO-275)", () => {
 			type: "openclaw" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
+				return { delivered: true };
 			}),
 			sendBootstrap: vi.fn(async () => {}),
 			health: vi.fn(async () => ({

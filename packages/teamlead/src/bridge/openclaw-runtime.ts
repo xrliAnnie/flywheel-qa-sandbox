@@ -3,8 +3,9 @@
  * into a LeadRuntime implementation. Behavior-preserving extraction.
  */
 
-import { buildHookBody, notifyAgent } from "./hook-payload.js";
+import { buildHookBody } from "./hook-payload.js";
 import type {
+	DeliveryResult,
 	LeadBootstrap,
 	LeadEventEnvelope,
 	LeadRuntime,
@@ -21,15 +22,46 @@ export class OpenClawRuntime implements LeadRuntime {
 		private hooksToken: string,
 	) {}
 
-	async deliver(envelope: LeadEventEnvelope): Promise<void> {
+	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
 		const body = buildHookBody(
 			envelope.leadId,
 			envelope.event,
 			envelope.sessionKey,
 		);
-		await notifyAgent(this.gatewayUrl, this.hooksToken, body);
-		this.lastDeliveryAt = new Date().toISOString();
-		this.lastDeliveredSeq = envelope.seq;
+		// notifyAgent() swallows errors internally (best-effort design).
+		// To get result-based delivery, we must do our own fetch with throwOnError.
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 3000);
+		try {
+			const res = await fetch(`${this.gatewayUrl}/hooks/ingest`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${this.hooksToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify(body),
+				signal: controller.signal,
+			});
+			if (!res.ok) {
+				const text = await res.text().catch(() => "");
+				return {
+					delivered: false,
+					error: `Gateway returned ${res.status}: ${text.slice(0, 200)}`,
+				};
+			}
+			this.lastDeliveryAt = new Date().toISOString();
+			this.lastDeliveredSeq = envelope.seq;
+			return { delivered: true };
+		} catch (err) {
+			const error = (err as Error).message;
+			console.warn(
+				`[openclaw] Delivery failed for seq=${envelope.seq}:`,
+				error,
+			);
+			return { delivered: false, error };
+		} finally {
+			clearTimeout(timeout);
+		}
 	}
 
 	async sendBootstrap(_snapshot: LeadBootstrap): Promise<void> {

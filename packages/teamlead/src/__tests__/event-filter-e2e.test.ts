@@ -83,6 +83,7 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 			type: "openclaw" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
+				return { delivered: true };
 			}),
 			sendBootstrap: vi.fn(async () => {}),
 			health: vi.fn(async () => ({

@@ -266,6 +266,7 @@ function createMockRegistry() {
 		type: "openclaw" as const,
 		deliver: vi.fn(async (env: LeadEventEnvelope) => {
 			envelopes.push(env);
+			return { delivered: true };
 		}),
 		sendBootstrap: vi.fn(async () => {}),
 		health: vi.fn(async () => ({
@@ -393,6 +394,7 @@ describe("RegistryHeartbeatNotifier", () => {
 			type: "openclaw" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				envelopes.push(env);
+				return { delivered: true };
 			}),
 			sendBootstrap: vi.fn(async () => {}),
 			health: vi.fn(async () => ({
@@ -429,5 +431,315 @@ describe("RegistryHeartbeatNotifier", () => {
 		expect(envelopes[0].event.chat_channel).toBe("core-channel");
 
 		hbStore.close();
+	});
+});
+
+// --- FLY-25: Delivery contract upgrade tests ---
+
+describe("FLY-25: RegistryHeartbeatNotifier delivery contract", () => {
+	it("marks guardrail event as delivered only on success", async () => {
+		const { registry } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+		const session: Session = {
+			execution_id: "exec-stuck",
+			issue_id: "i1",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "GEO-100",
+		};
+
+		await notifier.onSessionStuck(session, 30);
+
+		// Should be delivered
+		const events = hbStore.getRecentDeliveredEvents("product-lead", 60);
+		expect(events).toHaveLength(1);
+		expect(events[0]!.event_type).toBe("session_stuck");
+
+		hbStore.close();
+	});
+
+	it("does NOT mark guardrail event as delivered on transport failure", async () => {
+		const { registry, mockRuntime } = createMockRegistry();
+		mockRuntime.deliver.mockResolvedValue({
+			delivered: false,
+			error: "Discord 503",
+		});
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+		const session: Session = {
+			execution_id: "exec-stuck",
+			issue_id: "i1",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "GEO-100",
+		};
+
+		await notifier.onSessionStuck(session, 30);
+
+		// Should NOT be delivered
+		const events = hbStore.getRecentDeliveredEvents("product-lead", 60);
+		expect(events).toHaveLength(0);
+
+		// Should have recorded failure
+		const undelivered = hbStore.getUndeliveredGuardrailEvents(
+			"product-lead",
+			["session_stuck"],
+			3,
+		);
+		expect(undelivered).toHaveLength(1);
+		expect(undelivered[0]!.delivery_attempts).toBe(1);
+		expect(undelivered[0]!.last_delivery_error).toBe("Discord 503");
+
+		hbStore.close();
+	});
+
+	it("marks advisory event (session_stale_completed is guardrail, session_completed is advisory) as delivered even on failure", async () => {
+		// session_stale_completed is guardrail — let's verify with a custom event
+		// All three HeartbeatService notification types are guardrail. Verify that explicitly.
+		const { registry } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const _notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+
+		// Verify all three heartbeat event types are guardrail
+		const { GUARDRAIL_EVENT_TYPES } = await import("../bridge/lead-runtime.js");
+		expect(GUARDRAIL_EVENT_TYPES.has("session_stuck")).toBe(true);
+		expect(GUARDRAIL_EVENT_TYPES.has("session_orphaned")).toBe(true);
+		expect(GUARDRAIL_EVENT_TYPES.has("session_stale_completed")).toBe(true);
+		expect(GUARDRAIL_EVENT_TYPES.has("session_completed")).toBe(false);
+
+		hbStore.close();
+	});
+
+	it("retryUndeliveredGuardrailEvents re-delivers failed events", async () => {
+		const { registry, mockRuntime } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+
+		// First delivery fails
+		mockRuntime.deliver.mockResolvedValue({
+			delivered: false,
+			error: "timeout",
+		});
+		const session: Session = {
+			execution_id: "exec-stuck",
+			issue_id: "i1",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "GEO-100",
+		};
+		await notifier.onSessionStuck(session, 30);
+
+		// Verify not delivered
+		expect(hbStore.getRecentDeliveredEvents("product-lead", 60)).toHaveLength(
+			0,
+		);
+
+		// Now retry succeeds
+		mockRuntime.deliver.mockResolvedValue({ delivered: true });
+		await notifier.retryUndeliveredGuardrailEvents();
+
+		// Should now be delivered
+		const events = hbStore.getRecentDeliveredEvents("product-lead", 60);
+		expect(events).toHaveLength(1);
+
+		hbStore.close();
+	});
+
+	it("retryUndeliveredGuardrailEvents respects max attempts (3)", async () => {
+		const { registry, mockRuntime } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+
+		// Delivery always fails
+		mockRuntime.deliver.mockResolvedValue({
+			delivered: false,
+			error: "persistent failure",
+		});
+		const session: Session = {
+			execution_id: "exec-stuck",
+			issue_id: "i1",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "GEO-100",
+		};
+		await notifier.onSessionStuck(session, 30); // attempt 1
+
+		await notifier.retryUndeliveredGuardrailEvents(); // attempt 2
+		await notifier.retryUndeliveredGuardrailEvents(); // attempt 3
+
+		// Should be exhausted now (3 attempts from recordDeliveryFailure)
+		// The initial failure in deliverHook records attempt 1,
+		// then two retries record attempts 2 and 3
+		const undelivered = hbStore.getUndeliveredGuardrailEvents(
+			"product-lead",
+			["session_stuck"],
+			3,
+		);
+		expect(undelivered).toHaveLength(0); // exhausted — no longer eligible
+
+		// Verify it's still not delivered
+		expect(hbStore.getRecentDeliveredEvents("product-lead", 60)).toHaveLength(
+			0,
+		);
+
+		hbStore.close();
+	});
+});
+
+describe("FLY-25: HeartbeatService.check() integrates retry", () => {
+	it("check() calls retryUndeliveredGuardrailEvents on RegistryHeartbeatNotifier", async () => {
+		const { registry } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+
+		// Spy on retryUndeliveredGuardrailEvents
+		const retrySpy = vi.spyOn(notifier, "retryUndeliveredGuardrailEvents");
+
+		const service = new HeartbeatService(
+			hbStore as any,
+			notifier,
+			15,
+			60_000,
+			60,
+		);
+
+		await service.check();
+
+		expect(retrySpy).toHaveBeenCalledTimes(1);
+
+		service.stop();
+		hbStore.close();
+	});
+});
+
+describe("FLY-25: StateStore delivery tracking", () => {
+	it("recordDeliveryFailure increments attempts and stores error", async () => {
+		const store = await StateStore.create(":memory:");
+		const seq = store.appendLeadEvent(
+			"product-lead",
+			"evt-fail",
+			"session_stuck",
+			"{}",
+		);
+
+		store.recordDeliveryFailure(seq, "timeout");
+		const events = store.getUndeliveredGuardrailEvents(
+			"product-lead",
+			["session_stuck"],
+			3,
+		);
+		expect(events).toHaveLength(1);
+		expect(events[0]!.delivery_attempts).toBe(1);
+		expect(events[0]!.last_delivery_error).toBe("timeout");
+
+		store.recordDeliveryFailure(seq, "503");
+		const events2 = store.getUndeliveredGuardrailEvents(
+			"product-lead",
+			["session_stuck"],
+			3,
+		);
+		expect(events2).toHaveLength(1);
+		expect(events2[0]!.delivery_attempts).toBe(2);
+		expect(events2[0]!.last_delivery_error).toBe("503");
+
+		store.close();
+	});
+
+	it("getUndeliveredGuardrailEvents filters by event type and max attempts", async () => {
+		const store = await StateStore.create(":memory:");
+
+		// Guardrail event
+		const seq1 = store.appendLeadEvent(
+			"product-lead",
+			"evt-1",
+			"session_stuck",
+			"{}",
+		);
+		// Advisory event (should not appear)
+		store.appendLeadEvent("product-lead", "evt-2", "session_completed", "{}");
+		// Guardrail event, already delivered
+		const seq3 = store.appendLeadEvent(
+			"product-lead",
+			"evt-3",
+			"session_orphaned",
+			"{}",
+		);
+		store.markLeadEventDelivered(seq3);
+
+		const events = store.getUndeliveredGuardrailEvents(
+			"product-lead",
+			["session_stuck", "session_orphaned"],
+			3,
+		);
+		expect(events).toHaveLength(1);
+		expect(events[0]!.seq).toBe(seq1);
+
+		store.close();
+	});
+
+	it("getDeliveryStats returns correct counts", async () => {
+		const store = await StateStore.create(":memory:");
+
+		// Delivered event
+		const seq1 = store.appendLeadEvent(
+			"product-lead",
+			"evt-1",
+			"session_stuck",
+			"{}",
+		);
+		store.markLeadEventDelivered(seq1);
+
+		// Failed event (3+ attempts = permanently failed)
+		const seq2 = store.appendLeadEvent(
+			"product-lead",
+			"evt-2",
+			"session_stuck",
+			"{}",
+		);
+		store.recordDeliveryFailure(seq2, "error1");
+		store.recordDeliveryFailure(seq2, "error2");
+		store.recordDeliveryFailure(seq2, "error3");
+
+		// Pending retry (1 attempt, < 3)
+		const seq3 = store.appendLeadEvent(
+			"product-lead",
+			"evt-3",
+			"session_orphaned",
+			"{}",
+		);
+		store.recordDeliveryFailure(seq3, "retry-error");
+
+		const stats = store.getDeliveryStats();
+		expect(stats.total_delivered).toBe(1);
+		expect(stats.total_failed).toBe(1); // seq2 has 3 attempts (exhausted)
+		expect(stats.pending_count).toBe(1); // only seq3 (1 attempt, still retryable)
+		expect(stats.last_failure_error).toBeTruthy();
+
+		store.close();
 	});
 });

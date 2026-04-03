@@ -4,7 +4,10 @@ import {
 } from "./applyTransition.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
-import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
+import {
+	GUARDRAIL_EVENT_TYPES,
+	type LeadEventEnvelope,
+} from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import {
 	getTmuxTargetFromCommDb,
@@ -63,6 +66,11 @@ export class HeartbeatService {
 	}
 
 	async check(): Promise<void> {
+		// FLY-25: Retry undelivered guardrail events from PREVIOUS cycles first,
+		// before detection generates new events in this cycle.
+		if (this.notifier instanceof RegistryHeartbeatNotifier) {
+			await this.notifier.retryUndeliveredGuardrailEvents();
+		}
 		await this.checkStuck();
 		await this.reapOrphans();
 		await this.checkStaleCompleted();
@@ -215,20 +223,16 @@ export class HeartbeatService {
 }
 
 /**
- * GEO-195: Registry-based heartbeat notifier — delivers via RuntimeRegistry.
+ * GEO-195 + FLY-25: Registry-based heartbeat notifier — delivers via RuntimeRegistry.
  *
- * NOTE: deliver() is fire-and-forget (swallows errors internally). For heartbeat
- * notifications this is acceptable: they are advisory — the orphan reaper still
- * force-fails stale sessions regardless of notification success. If the
- * notification fails silently, the worst case is the Lead agent doesn't see the
- * "stuck" alert, but the session will still be reaped on schedule.
- *
- * The original WebhookHeartbeatNotifier threw on failure so HeartbeatService
- * would skip dedup and retry next cycle. With fire-and-forget delivery, a
- * failed notification will be deduped (not retried). This is a deliberate
- * tradeoff: we avoid coupling HeartbeatService to a throwing delivery contract.
+ * FLY-25 upgrade: deliver() returns DeliveryResult instead of fire-and-forget.
+ * Guardrail events (stuck/orphan/stale): only mark delivered on success;
+ *   failures are recorded and retried next heartbeat cycle (max 3 attempts).
+ * Advisory events: best-effort (mark delivered regardless of transport outcome).
  */
 export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
+	static readonly MAX_DELIVERY_ATTEMPTS = 3;
+
 	constructor(
 		private registry: RuntimeRegistry,
 		private projects: ProjectEntry[],
@@ -279,6 +283,53 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			notification_context: `Session ${session.status} ${hours}h ago but tmux still alive. Please check if it can be closed.`,
 		};
 		await this.deliverHook(session, hookPayload);
+	}
+
+	/**
+	 * FLY-25: Retry undelivered guardrail events from previous cycles.
+	 * Called by HeartbeatService.retryUndelivered() each heartbeat cycle.
+	 */
+	async retryUndeliveredGuardrailEvents(): Promise<void> {
+		// Collect unique leadIds from all projects
+		const leadIds = new Set<string>();
+		for (const project of this.projects) {
+			for (const lead of project.leads) {
+				leadIds.add(lead.agentId);
+			}
+		}
+
+		const eventTypes = [...GUARDRAIL_EVENT_TYPES];
+		for (const leadId of leadIds) {
+			const undelivered = this.store.getUndeliveredGuardrailEvents(
+				leadId,
+				eventTypes,
+				RegistryHeartbeatNotifier.MAX_DELIVERY_ATTEMPTS,
+			);
+			for (const row of undelivered) {
+				try {
+					const runtime = this.registry.getForLead(leadId);
+					if (!runtime) continue;
+					const envelope: LeadEventEnvelope = {
+						seq: row.seq,
+						event: JSON.parse(row.payload),
+						sessionKey: row.session_key ?? "",
+						leadId: row.lead_id,
+						timestamp: new Date().toISOString(),
+					};
+					const result = await runtime.deliver(envelope);
+					if (result.delivered) {
+						this.store.markLeadEventDelivered(row.seq);
+					} else {
+						this.store.recordDeliveryFailure(
+							row.seq,
+							result.error ?? "unknown",
+						);
+					}
+				} catch (err) {
+					this.store.recordDeliveryFailure(row.seq, (err as Error).message);
+				}
+			}
+		}
 	}
 
 	private async deliverHook(
@@ -343,8 +394,18 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			leadId: agentId,
 			timestamp: new Date().toISOString(),
 		};
-		// deliver() is fire-and-forget (swallows errors). See class-level comment for rationale.
-		await runtime.deliver(envelope);
-		this.store.markLeadEventDelivered(seq);
+
+		const isGuardrail = GUARDRAIL_EVENT_TYPES.has(hookPayload.event_type);
+		const result = await runtime.deliver(envelope);
+
+		if (result.delivered) {
+			this.store.markLeadEventDelivered(seq);
+		} else if (isGuardrail) {
+			// Guardrail event failed — record failure for retry next cycle
+			this.store.recordDeliveryFailure(seq, result.error ?? "unknown");
+		} else {
+			// Advisory event — best-effort, mark delivered anyway
+			this.store.markLeadEventDelivered(seq);
+		}
 	}
 }

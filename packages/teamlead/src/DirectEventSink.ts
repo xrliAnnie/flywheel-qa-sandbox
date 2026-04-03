@@ -408,6 +408,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							leadId: lead.agentId,
 							timestamp: new Date().toISOString(),
 						};
+						// Advisory events — best-effort, mark delivered regardless
 						await runtime.deliver(envelope);
 						this.store.markLeadEventDelivered(seq);
 					}
@@ -427,6 +428,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						leadId: lead.agentId,
 						timestamp: new Date().toISOString(),
 					};
+					// Advisory events — best-effort, mark delivered regardless
 					await runtime.deliver(envelope);
 					this.store.markLeadEventDelivered(seq);
 				}

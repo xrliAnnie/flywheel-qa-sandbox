@@ -428,6 +428,7 @@ describe("Action tools", () => {
 				type: "openclaw" as const,
 				deliver: vi.fn(async (env: LeadEventEnvelope) => {
 					capturedEnvelopes.push(env);
+					return { delivered: true };
 				}),
 				sendBootstrap: vi.fn(async () => {}),
 				health: vi.fn(async () => ({
@@ -540,7 +541,7 @@ describe("Action tools", () => {
 			const failRuntime = {
 				type: "openclaw" as const,
 				deliver: vi.fn(async () => {
-					throw new Error("connection refused");
+					return { delivered: false, error: "connection refused" };
 				}),
 				sendBootstrap: vi.fn(async () => {}),
 				health: vi.fn(async () => ({
@@ -594,6 +595,7 @@ describe("Action tools", () => {
 				type: "openclaw" as const,
 				deliver: vi.fn(async (env: LeadEventEnvelope) => {
 					nfEnvelopes.push(env);
+					return { delivered: true };
 				}),
 				sendBootstrap: vi.fn(async () => {}),
 				health: vi.fn(async () => ({

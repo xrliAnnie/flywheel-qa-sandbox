@@ -5,6 +5,7 @@
 
 import { DISCORD_API, splitDiscordMessage } from "./discord-utils.js";
 import type {
+	DeliveryResult,
 	LeadBootstrap,
 	LeadEventEnvelope,
 	LeadRuntime,
@@ -23,11 +24,21 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 		private discordBotToken: string,
 	) {}
 
-	async deliver(envelope: LeadEventEnvelope): Promise<void> {
+	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
 		const content = this.formatEnvelope(envelope);
-		await this.postDiscordMessage(content);
-		this.lastDeliveryAt = new Date().toISOString();
-		this.lastDeliveredSeq = envelope.seq;
+		try {
+			await this.postDiscordMessage(content, true);
+			this.lastDeliveryAt = new Date().toISOString();
+			this.lastDeliveredSeq = envelope.seq;
+			return { delivered: true };
+		} catch (err) {
+			const error = (err as Error).message;
+			console.warn(
+				`[claude-discord] Delivery failed for seq=${envelope.seq}:`,
+				error,
+			);
+			return { delivered: false, error };
+		}
 	}
 
 	async sendBootstrap(snapshot: LeadBootstrap): Promise<void> {

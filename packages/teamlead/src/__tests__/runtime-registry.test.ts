@@ -18,7 +18,7 @@ function makeRuntime(
 ): LeadRuntime {
 	return {
 		type,
-		deliver: vi.fn().mockResolvedValue(undefined),
+		deliver: vi.fn().mockResolvedValue({ delivered: true }),
 		sendBootstrap: vi.fn().mockResolvedValue(undefined),
 		health: vi.fn().mockResolvedValue({
 			status: "healthy",
