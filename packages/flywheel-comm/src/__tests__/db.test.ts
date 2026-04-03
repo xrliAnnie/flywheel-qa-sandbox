@@ -276,6 +276,97 @@ describe("CommDB", () => {
 		});
 	});
 
+	describe("cleanupReadMessages", () => {
+		it("should delete read messages older than TTL", () => {
+			const instId = db.insertInstruction(
+				"product-lead",
+				"exec-123",
+				"Old instruction",
+			);
+			db.markInstructionRead(instId);
+			// Backdate created_at to 25 hours ago
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
+				)
+				.run(instId);
+
+			const cleaned = db.cleanupReadMessages(24);
+			expect(cleaned).toBe(1);
+		});
+
+		it("should NOT delete read messages within TTL window", () => {
+			const instId = db.insertInstruction(
+				"product-lead",
+				"exec-123",
+				"Recent instruction",
+			);
+			db.markInstructionRead(instId);
+			// created_at is now — within 24h window
+
+			const cleaned = db.cleanupReadMessages(24);
+			expect(cleaned).toBe(0);
+		});
+
+		it("should NOT delete unread messages regardless of age", () => {
+			const instId = db.insertInstruction(
+				"product-lead",
+				"exec-123",
+				"Unread old instruction",
+			);
+			// Backdate but do NOT mark as read
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET created_at = datetime('now', '-48 hours') WHERE id = ?",
+				)
+				.run(instId);
+
+			const cleaned = db.cleanupReadMessages(24);
+			expect(cleaned).toBe(0);
+
+			// Message should still exist
+			const unread = db.getUnreadInstructions("exec-123");
+			expect(unread).toHaveLength(1);
+		});
+
+		it("should use 24h default TTL when no argument provided", () => {
+			const instId = db.insertInstruction(
+				"product-lead",
+				"exec-123",
+				"Default TTL test",
+			);
+			db.markInstructionRead(instId);
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
+				)
+				.run(instId);
+
+			const cleaned = db.cleanupReadMessages();
+			expect(cleaned).toBe(1);
+		});
+
+		it("should clean up read questions and responses too", () => {
+			const qId = db.insertQuestion("runner-1", "product-lead", "Q?");
+			db.insertResponse(qId, "product-lead", "A");
+
+			// Mark both as read and backdate
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET read_at = datetime('now', '-25 hours'), created_at = datetime('now', '-25 hours')",
+				)
+				.run();
+
+			const cleaned = db.cleanupReadMessages(24);
+			expect(cleaned).toBe(2); // question + response
+		});
+
+		it("should return 0 when no messages to clean", () => {
+			const cleaned = db.cleanupReadMessages(24);
+			expect(cleaned).toBe(0);
+		});
+	});
+
 	describe("openReadonly", () => {
 		it("should open database without running schema or purge", () => {
 			const dbPath = join(tmpDir, "readonly-test.db");

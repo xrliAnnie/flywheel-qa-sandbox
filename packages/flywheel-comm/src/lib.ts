@@ -1,5 +1,10 @@
 export type { CleanupOptions, CleanupResult } from "./cleanup.js";
 export { cleanupStaleSessions } from "./cleanup.js";
+export type {
+	CleanupMessagesArgs,
+	CleanupMessagesResult,
+} from "./commands/cleanup-messages.js";
+export { cleanupMessages } from "./commands/cleanup-messages.js";
 export type { CaptureArgs } from "./commands/capture.js";
 export { capture } from "./commands/capture.js";
 export type {
