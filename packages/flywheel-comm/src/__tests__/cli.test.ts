@@ -488,9 +488,7 @@ describe("CLI", () => {
 			const db = new CommDB(dbPath);
 			db.close();
 
-			const result = JSON.parse(
-				runCli(["cleanup", "--db", dbPath, "--json"]),
-			);
+			const result = JSON.parse(runCli(["cleanup", "--db", dbPath, "--json"]));
 			expect(result.cleaned).toBe(0);
 		});
 
