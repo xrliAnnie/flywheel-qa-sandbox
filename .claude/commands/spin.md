@@ -73,17 +73,63 @@ Wait for confirmation before continuing.
 
 Run each remaining stage in sequence. Between each stage, pause and confirm with the user before proceeding to the next.
 
-### Stage: Brainstorm
+### Stage: Brainstorm (MUST be interactive with Annie — Annie MUST explicitly approve before proceeding)
 
-**Invoke**: `/brainstorm` with the Linear issue context as input.
+**CRITICAL**: DO NOT skip this step. DO NOT guess requirements. DO NOT start coding without Annie's EXPLICIT approval.
 
-**Output file**: `doc/exploration/new/GEO-{XX}-{slug}.md`
+**Step 1 — Present issue to Annie and ASK as many questions as needed:**
 
-**Frontmatter** (ensure the generated doc includes):
+Read the Linear issue, then ask **尽可能多的问题** to truly understand what Annie wants. Don't assume anything.
+
+```
+📋 {ISSUE_ID}: {issue title}
+
+Linear 描述: {issue description summary}
+
+在动手之前，我需要问你几个问题：
+
+**产品/体验层面：**
+1. 这个功能给谁用的？
+2. 用户的完整使用流程是什么？
+3. 输出应该长什么样？能给个具体例子吗？
+4. 如果出错了，用户应该看到什么？
+5. 这个功能需要在哪些地方可见？
+
+**技术/范围层面：**
+6. 这个只对某一个 Lead 有效，还是所有 Lead 都需要？
+7. 有没有类似的功能已经做过了，我可以参考？
+8. 有什么边界情况你担心的？
+9. 最简单可用的版本是什么？
+10. 有没有 deployment 注意事项？
+```
+
+根据 Annie 的回答继续追问，直到完全理解。Annie 宁可你多问也不要你乱做。
+
+**Step 2 — Confirm scope and WAIT for explicit approval:**
+
+```
+确认 scope:
+✅ 要做: [list]
+❌ 不做: [list]
+📋 预期行为: [specific examples]
+
+这样对吗？
+```
+
+**Annie 没有明确说 "OK" / "approved" / "可以" / "对" 之前，绝对不能进入下一步。**
+沉默不是 approve。"嗯" 不是 approve。必须有明确的确认词。
+
+**Step 3 — Write exploration doc:**
+
+Only AFTER Annie explicitly approves, invoke `/brainstorm` with the confirmed requirements.
+
+**Output file**: `doc/exploration/new/{ISSUE_ID}-{slug}.md`
+
+**Frontmatter**:
 ```markdown
-# Exploration: {Title} — GEO-{XX}
+# Exploration: {Title} — {ISSUE_ID}
 
-**Issue**: GEO-{XX} ({issue title})
+**Issue**: {ISSUE_ID} ({issue title})
 **Date**: {today YYYY-MM-DD}
 **Status**: Draft
 ```
