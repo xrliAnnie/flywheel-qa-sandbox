@@ -360,18 +360,14 @@ describe("POST /api/linear/create-issue (GEO-298)", () => {
 				}),
 			);
 			server2 = app2.listen(0, "127.0.0.1");
-			await new Promise<void>((resolve) =>
-				server2.once("listening", resolve),
-			);
+			await new Promise<void>((resolve) => server2.once("listening", resolve));
 			const addr2 = server2.address();
 			const port2 = typeof addr2 === "object" && addr2 ? addr2.port : 0;
 			baseUrl2 = `http://127.0.0.1:${port2}`;
 		});
 
 		afterEach(async () => {
-			await new Promise<void>((resolve) =>
-				server2.close(() => resolve()),
-			);
+			await new Promise<void>((resolve) => server2.close(() => resolve()));
 			store2.close();
 		});
 

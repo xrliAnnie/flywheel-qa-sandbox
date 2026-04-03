@@ -798,7 +798,10 @@ export function createBridgeApp(
 				return;
 			}
 			// FLY-23: resolveTeamFrom — resolve team from project config's linearTeamKey
-			if (resolveTeamFrom !== undefined && typeof resolveTeamFrom !== "string") {
+			if (
+				resolveTeamFrom !== undefined &&
+				typeof resolveTeamFrom !== "string"
+			) {
 				res.status(400).json({
 					error:
 						'resolveTeamFrom must be a string (Flywheel project name, e.g. "geoforge3d")',
