@@ -10,11 +10,16 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 
+/** Poll interval / max wait for Forum Post thread_id to appear on session. */
+const THREAD_POLL_INTERVAL_MS = 500;
+const THREAD_POLL_MAX_MS = 5000;
+
 export function createRunsRouter(
 	startDispatcher: IStartDispatcher,
 	store: StateStore,
 	projects: ProjectEntry[],
 	maxConcurrentRunners: number,
+	discordGuildId?: string,
 ): Router {
 	const router = Router();
 
@@ -127,10 +132,30 @@ export function createRunsRouter(
 				projectName,
 				leadId,
 			});
+
+			// FLY-24: Poll for Forum Post thread_id (created async by Blueprint → emitStarted)
+			let threadId: string | undefined;
+			const deadline = Date.now() + THREAD_POLL_MAX_MS;
+			while (Date.now() < deadline) {
+				await new Promise((r) => setTimeout(r, THREAD_POLL_INTERVAL_MS));
+				const session = store.getSession(result.executionId);
+				if (session?.thread_id) {
+					threadId = session.thread_id;
+					break;
+				}
+			}
+
+			const forumLink =
+				threadId && discordGuildId
+					? `https://discord.com/channels/${discordGuildId}/${threadId}`
+					: undefined;
+
 			res.json({
 				success: true,
 				executionId: result.executionId,
 				issueId: result.issueId,
+				threadId,
+				forumLink,
 				message: `Runner started for ${issueId}`,
 			});
 		} catch (err) {

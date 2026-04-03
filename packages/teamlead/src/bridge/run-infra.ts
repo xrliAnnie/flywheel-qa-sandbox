@@ -198,9 +198,6 @@ export async function setupRunInfrastructure(
 			const forumTagUpdater = new ForumTagUpdater(statusTagMap);
 			// FLY-24: ForumPostCreator so DirectEventSink can create Forum Posts on session_started
 			const forumPostCreator = new ForumPostCreator(store, statusTagMap);
-			console.log(
-				`[RunInfra] ${project.projectName}: ForumPostCreator created, hasRegistry=${!!registry}, hasGlobalBotToken=${!!config.discordBotToken}`,
-			);
 			const directSink = new DirectEventSink(
 				store,
 				config,

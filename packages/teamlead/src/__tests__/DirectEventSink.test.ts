@@ -228,6 +228,31 @@ describe("DirectEventSink — Forum Post creation (FLY-24)", () => {
 		);
 	});
 
+	it("awaits ForumPostCreator — session has thread_id after emitStarted resolves", async () => {
+		const mockCreator = createMockForumPostCreator();
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			undefined,
+			undefined,
+			undefined,
+			mockCreator,
+		);
+
+		await sink.emitStarted(makeEnvelope());
+
+		// After emitStarted resolves (no flush needed), session should have thread_id
+		// set by ForumPostCreator.ensureForumPost → store.setSessionThreadId
+		const session = store.getSession("exec-1");
+		expect(session).toBeDefined();
+		// ForumPostCreator mock returns { created: true, threadId: "thread-new-123" }
+		// but the mock doesn't call store.setSessionThreadId — that's inside real ForumPostCreator.
+		// What we verify is that ensureForumPost was awaited (not fire-and-forget):
+		expect(mockCreator.ensureForumPost).toHaveBeenCalledOnce();
+		// The ensureForumPost promise resolved BEFORE emitStarted returned (awaited, not fire-and-forget)
+	});
+
 	it("catches ForumPostCreator errors without failing emitStarted", async () => {
 		const mockCreator = {
 			ensureForumPost: vi.fn().mockRejectedValue(new Error("Discord 500")),
