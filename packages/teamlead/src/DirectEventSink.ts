@@ -113,8 +113,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		// FLY-24: ForumPostCreator — create Forum Post if no thread exists (mirrors event-route.ts)
-		// Awaited (not fire-and-forget) so session has thread_id before emitStarted resolves.
+		// FLY-24: ForumPostCreator — fire-and-forget (preserves EventFilter notification semantics).
+		// Must NOT await before pushNotification: if thread_id is set before EventFilter runs,
+		// session_started gets classified as "forum_only" instead of "notify_agent", suppressing
+		// the Lead notification. Same pattern as event-route.ts:245.
+		// The /api/runs/start poll reads store directly, so it picks up thread_id async.
 		if (
 			!this.store.getSession(env.executionId)?.thread_id &&
 			this.forumPostCreator
@@ -129,19 +132,28 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				// GEO-275: skip Forum Post creation for leads without forumChannel
 				if (fpLead.forumChannel) {
 					const botToken = fpLead.botToken ?? this.config.discordBotToken;
-					const result = await this.forumPostCreator.ensureForumPost({
-						forumChannelId: fpLead.forumChannel,
-						issueId: env.issueId,
-						issueIdentifier: env.issueIdentifier,
-						issueTitle: env.issueTitle,
-						executionId: env.executionId,
-						status: "running",
-						discordBotToken: botToken,
-						statusTagMap: fpLead.statusTagMap,
-					});
-					console.log(
-						`[DirectEventSink] ensureForumPost: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
-					);
+					this.forumPostCreator
+						.ensureForumPost({
+							forumChannelId: fpLead.forumChannel,
+							issueId: env.issueId,
+							issueIdentifier: env.issueIdentifier,
+							issueTitle: env.issueTitle,
+							executionId: env.executionId,
+							status: "running",
+							discordBotToken: botToken,
+							statusTagMap: fpLead.statusTagMap,
+						})
+						.then((result) => {
+							console.log(
+								`[DirectEventSink] ensureForumPost: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
+							);
+						})
+						.catch((err: Error) => {
+							console.warn(
+								`[DirectEventSink] ensureForumPost failed for ${env.issueId}:`,
+								err.message,
+							);
+						});
 				}
 			} catch (err) {
 				// resolveLeadForIssue may throw if project not found — non-fatal
