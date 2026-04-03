@@ -666,10 +666,11 @@ export function createEventRouter(
 							leadId: lead.agentId,
 							timestamp: new Date().toISOString(),
 						};
+						// Advisory events — best-effort delivery, mark delivered regardless
 						runtime
 							.deliver(envelope)
 							.then(() => store.markLeadEventDelivered(seq))
-							.catch(() => {});
+							.catch(() => store.markLeadEventDelivered(seq));
 					}
 					// forum_only and skip: no delivery
 				} else {
@@ -688,10 +689,11 @@ export function createEventRouter(
 						leadId: lead.agentId,
 						timestamp: new Date().toISOString(),
 					};
+					// Advisory events — best-effort delivery, mark delivered regardless
 					runtime
 						.deliver(envelope)
 						.then(() => store.markLeadEventDelivered(seq))
-						.catch(() => {});
+						.catch(() => store.markLeadEventDelivered(seq));
 				}
 			} catch (err) {
 				console.warn(

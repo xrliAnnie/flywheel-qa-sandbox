@@ -26,11 +26,23 @@ export interface DashboardSession {
 	allowedActions: string[];
 }
 
+/** FLY-25: Delivery health metrics. */
+export interface DashboardDeliveryHealth {
+	pending_count: number;
+	total_delivered: number;
+	total_failed: number;
+	last_failure_error: string | null;
+	last_failure_at: string | null;
+	success_rate: number;
+	monitor_status: "healthy" | "degraded";
+}
+
 export interface DashboardPayload {
 	metrics: DashboardMetrics;
 	active: DashboardSession[];
 	recent: DashboardSession[];
 	stuck: DashboardSession[];
+	delivery: DashboardDeliveryHealth;
 	generated_at: string;
 }
 
@@ -77,6 +89,17 @@ export function buildDashboardPayload(
 		(s) => s.status === "completed" || s.status === "approved",
 	).length;
 
+	// FLY-25: Delivery health
+	const deliveryStats = store.getDeliveryStats();
+	const totalAttempted =
+		deliveryStats.total_delivered + deliveryStats.total_failed;
+	const success_rate =
+		totalAttempted > 0 ? deliveryStats.total_delivered / totalAttempted : 1;
+	const monitor_status: "healthy" | "degraded" =
+		deliveryStats.pending_count > 0 || deliveryStats.total_failed > 0
+			? "degraded"
+			: "healthy";
+
 	return {
 		metrics: {
 			running,
@@ -87,6 +110,15 @@ export function buildDashboardPayload(
 		active: active.map(toDashboardSession),
 		recent: recent.map(toDashboardSession),
 		stuck: stuck.map(toDashboardSession),
+		delivery: {
+			pending_count: deliveryStats.pending_count,
+			total_delivered: deliveryStats.total_delivered,
+			total_failed: deliveryStats.total_failed,
+			last_failure_error: deliveryStats.last_failure_error,
+			last_failure_at: deliveryStats.last_failure_at,
+			success_rate: Math.round(success_rate * 1000) / 1000,
+			monitor_status,
+		},
 		generated_at: new Date().toISOString(),
 	};
 }

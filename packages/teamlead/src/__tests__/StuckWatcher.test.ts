@@ -131,6 +131,7 @@ function createMockRegistry() {
 		type: "openclaw" as const,
 		deliver: vi.fn(async (env: LeadEventEnvelope) => {
 			envelopes.push(env);
+			return { delivered: true };
 		}),
 		sendBootstrap: vi.fn(async () => {}),
 		health: vi.fn(async () => ({

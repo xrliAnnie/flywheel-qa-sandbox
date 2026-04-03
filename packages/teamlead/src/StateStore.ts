@@ -372,6 +372,8 @@ export class StateStore {
 				payload TEXT NOT NULL,
 				session_key TEXT,
 				delivered_at TEXT,
+				delivery_attempts INTEGER NOT NULL DEFAULT 0,
+				last_delivery_error TEXT,
 				created_at TEXT NOT NULL DEFAULT (datetime('now'))
 			)
 		`);
@@ -381,6 +383,8 @@ export class StateStore {
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
+		// FLY-25: migration for existing tables missing new columns
+		this.migrateLeadEventsDeliveryColumns();
 	}
 
 	insertEvent(event: SessionEvent): boolean {
@@ -1262,6 +1266,116 @@ export class StateStore {
 		);
 		return (result[0]?.values[0]?.[0] as number) ?? 0;
 	}
+
+	// --- FLY-25: Delivery tracking ---
+
+	/** Record a delivery failure: increment attempts, store error. */
+	recordDeliveryFailure(seq: number, error: string): void {
+		this.db.run(
+			`UPDATE lead_events SET delivery_attempts = delivery_attempts + 1, last_delivery_error = ? WHERE seq = ?`,
+			[error, seq],
+		);
+	}
+
+	/** Get undelivered guardrail events (stuck/orphan/stale) under max attempts. */
+	getUndeliveredGuardrailEvents(
+		leadId: string,
+		eventTypes: string[],
+		maxAttempts: number,
+	): LeadEventRow[] {
+		if (eventTypes.length === 0) return [];
+		const placeholders = eventTypes.map(() => "?").join(",");
+		const result = this.db.exec(
+			`SELECT seq, lead_id, event_id, event_type, payload, session_key, delivered_at, created_at, delivery_attempts, last_delivery_error
+			 FROM lead_events
+			 WHERE lead_id = ? AND delivered_at IS NULL
+			   AND event_type IN (${placeholders})
+			   AND delivery_attempts < ?
+			 ORDER BY seq ASC`,
+			[leadId, ...eventTypes, maxAttempts],
+		);
+		if (result.length === 0) return [];
+		return result[0]!.values.map((row) => ({
+			seq: row[0] as number,
+			lead_id: row[1] as string,
+			event_id: row[2] as string,
+			event_type: row[3] as string,
+			payload: row[4] as string,
+			session_key: (row[5] as string) ?? undefined,
+			delivered_at: (row[6] as string) ?? undefined,
+			created_at: row[7] as string,
+			delivery_attempts: (row[8] as number) ?? 0,
+			last_delivery_error: (row[9] as string) ?? undefined,
+		}));
+	}
+
+	/** Get delivery stats for dashboard. */
+	getDeliveryStats(leadId?: string): {
+		pending_count: number;
+		total_delivered: number;
+		total_failed: number;
+		last_failure_error: string | null;
+		last_failure_at: string | null;
+	} {
+		const whereClause = leadId ? "WHERE lead_id = ?" : "";
+		const params = leadId ? [leadId] : [];
+
+		const pendingResult = this.db.exec(
+			`SELECT COUNT(*) FROM lead_events ${whereClause ? `${whereClause} AND` : "WHERE"} delivered_at IS NULL AND delivery_attempts > 0 AND delivery_attempts < 3`,
+			params,
+		);
+		const pending_count = (pendingResult[0]?.values[0]?.[0] as number) ?? 0;
+
+		const deliveredResult = this.db.exec(
+			`SELECT COUNT(*) FROM lead_events ${whereClause ? `${whereClause} AND` : "WHERE"} delivered_at IS NOT NULL`,
+			params,
+		);
+		const total_delivered = (deliveredResult[0]?.values[0]?.[0] as number) ?? 0;
+
+		const failedResult = this.db.exec(
+			`SELECT COUNT(*) FROM lead_events ${whereClause ? `${whereClause} AND` : "WHERE"} delivered_at IS NULL AND delivery_attempts >= 3`,
+			params,
+		);
+		const total_failed = (failedResult[0]?.values[0]?.[0] as number) ?? 0;
+
+		const lastFailureResult = this.db.exec(
+			`SELECT last_delivery_error, created_at FROM lead_events ${whereClause ? `${whereClause} AND` : "WHERE"} last_delivery_error IS NOT NULL ORDER BY seq DESC LIMIT 1`,
+			params,
+		);
+		const last_failure_error =
+			(lastFailureResult[0]?.values[0]?.[0] as string) ?? null;
+		const last_failure_at =
+			(lastFailureResult[0]?.values[0]?.[1] as string) ?? null;
+
+		return {
+			pending_count,
+			total_delivered,
+			total_failed,
+			last_failure_error,
+			last_failure_at,
+		};
+	}
+
+	/** FLY-25: Migration for existing DBs that lack delivery_attempts/last_delivery_error columns. */
+	private migrateLeadEventsDeliveryColumns(): void {
+		try {
+			const info = this.db.exec("PRAGMA table_info(lead_events)");
+			if (info.length === 0) return;
+			const columns = info[0]!.values.map((row) => row[1] as string);
+			if (!columns.includes("delivery_attempts")) {
+				this.db.run(
+					"ALTER TABLE lead_events ADD COLUMN delivery_attempts INTEGER NOT NULL DEFAULT 0",
+				);
+			}
+			if (!columns.includes("last_delivery_error")) {
+				this.db.run(
+					"ALTER TABLE lead_events ADD COLUMN last_delivery_error TEXT",
+				);
+			}
+		} catch {
+			// Table may not exist yet (first run) — CREATE TABLE will handle it
+		}
+	}
 }
 
 export interface LeadEventRow {
@@ -1273,4 +1387,6 @@ export interface LeadEventRow {
 	session_key?: string;
 	delivered_at?: string;
 	created_at: string;
+	delivery_attempts?: number;
+	last_delivery_error?: string;
 }

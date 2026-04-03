@@ -215,6 +215,7 @@ describe("Bridge E2E lifecycle", () => {
 			type: "openclaw" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
+				return { delivered: true };
 			}),
 			sendBootstrap: vi.fn(async () => {}),
 			health: vi.fn(async () => ({
@@ -361,6 +362,7 @@ describe("Bridge E2E lifecycle", () => {
 			type: "openclaw" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
+				return { delivered: true };
 			}),
 			sendBootstrap: vi.fn(async () => {}),
 			health: vi.fn(async () => ({
