@@ -175,6 +175,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			projectName: req.projectName,
 			executionId,
 			leadId: req.leadId,
+			// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
+			issueTitle: req.issueTitle,
+			issueIdentifier: req.issueIdentifier,
 		};
 
 		// Fire-and-forget — identical to RetryDispatcher.dispatch() pattern
