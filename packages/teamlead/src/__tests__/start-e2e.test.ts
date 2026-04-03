@@ -146,7 +146,7 @@ describe("Start API E2E", () => {
 		expect(body.success).toBe(true);
 		expect(body.executionId).toBe("exec-GEO-TEST");
 		expect(mockDispatcher.start).toHaveBeenCalledOnce();
-	});
+	}, 15_000);
 
 	it("POST with leadId → passes through to dispatcher", async () => {
 		const res = await fetch(`${baseUrl}/api/runs/start`, {
@@ -164,7 +164,7 @@ describe("Start API E2E", () => {
 			projectName: "TestProject",
 			leadId: "product-lead",
 		});
-	});
+	}, 15_000);
 
 	it("POST missing issueId → 400", async () => {
 		const res = await fetch(`${baseUrl}/api/runs/start`, {

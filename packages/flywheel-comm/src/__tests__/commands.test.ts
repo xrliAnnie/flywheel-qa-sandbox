@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { ask } from "../commands/ask.js";
 import { capture } from "../commands/capture.js";
 import { check } from "../commands/check.js";
+import { cleanupMessages } from "../commands/cleanup-messages.js";
 import { inbox } from "../commands/inbox.js";
 import { pending } from "../commands/pending.js";
 import { respond } from "../commands/respond.js";
@@ -314,6 +315,63 @@ describe("sessions command", () => {
 
 		const result = sessions({ dbPath, leadId: "unknown-lead" });
 		expect(result).toHaveLength(0);
+	});
+});
+
+describe("cleanup-messages command", () => {
+	let tmpDir: string;
+	let dbPath: string;
+
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-cleanup-msg-"));
+		dbPath = join(tmpDir, "comm.db");
+	});
+
+	afterEach(() => {
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("should clean up read messages older than TTL", () => {
+		// Setup: create a read instruction older than 24h
+		const db = new CommDB(dbPath);
+		const instId = db.insertInstruction("product-lead", "exec-1", "Old msg");
+		db.markInstructionRead(instId);
+		(db as any).db
+			.prepare(
+				"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
+			)
+			.run(instId);
+		db.close();
+
+		const result = cleanupMessages({ dbPath });
+		expect(result.cleaned).toBe(1);
+	});
+
+	it("should respect custom TTL", () => {
+		const db = new CommDB(dbPath);
+		const instId = db.insertInstruction("product-lead", "exec-1", "2h old msg");
+		db.markInstructionRead(instId);
+		(db as any).db
+			.prepare(
+				"UPDATE messages SET created_at = datetime('now', '-3 hours') WHERE id = ?",
+			)
+			.run(instId);
+		db.close();
+
+		// 24h TTL: should NOT clean (only 3h old)
+		const result24 = cleanupMessages({ dbPath, ttlHours: 24 });
+		expect(result24.cleaned).toBe(0);
+
+		// 2h TTL: should clean
+		const result2 = cleanupMessages({ dbPath, ttlHours: 2 });
+		expect(result2.cleaned).toBe(1);
+	});
+
+	it("should return 0 when DB does not exist", () => {
+		const result = cleanupMessages({
+			dbPath: join(tmpDir, "nonexistent.db"),
+		});
+		expect(result.cleaned).toBe(0);
 	});
 });
 

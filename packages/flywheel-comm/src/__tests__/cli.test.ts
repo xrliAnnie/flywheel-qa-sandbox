@@ -467,6 +467,59 @@ describe("CLI", () => {
 		});
 	});
 
+	describe("cleanup", () => {
+		it("should output cleaned count", () => {
+			// Create DB with old read message
+			const db = new CommDB(dbPath);
+			const instId = db.insertInstruction("lead", "exec-1", "old msg");
+			db.markInstructionRead(instId);
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET created_at = datetime('now', '-25 hours') WHERE id = ?",
+				)
+				.run(instId);
+			db.close();
+
+			const result = runCli(["cleanup", "--db", dbPath]);
+			expect(result).toBe("Cleaned: 1");
+		});
+
+		it("should output JSON with --json", () => {
+			const db = new CommDB(dbPath);
+			db.close();
+
+			const result = JSON.parse(runCli(["cleanup", "--db", dbPath, "--json"]));
+			expect(result.cleaned).toBe(0);
+		});
+
+		it("should respect --ttl flag", () => {
+			const db = new CommDB(dbPath);
+			const instId = db.insertInstruction("lead", "exec-1", "3h old");
+			db.markInstructionRead(instId);
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET created_at = datetime('now', '-3 hours') WHERE id = ?",
+				)
+				.run(instId);
+			db.close();
+
+			// Default 24h: should not clean
+			const result24 = runCli(["cleanup", "--db", dbPath, "--json"]);
+			expect(JSON.parse(result24).cleaned).toBe(0);
+
+			// 2h TTL: should clean
+			const result2 = runCli([
+				"cleanup",
+				"--db",
+				dbPath,
+				"--ttl",
+				"2",
+				"--json",
+			]);
+			expect(JSON.parse(result2).cleaned).toBe(1);
+		});
+	});
+
 	describe("search", () => {
 		it("should fail without --exec-id", () => {
 			const { exitCode } = runCliSafe([
