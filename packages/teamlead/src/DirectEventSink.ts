@@ -11,7 +11,10 @@ import type {
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import type { ForumPostCreator } from "./bridge/ForumPostCreator.js";
-import type { ForumTagUpdater } from "./bridge/ForumTagUpdater.js";
+import {
+	type ForumTagUpdater,
+	postThreadStatusMessage,
+} from "./bridge/ForumTagUpdater.js";
 import {
 	buildHookBody,
 	buildSessionKey,
@@ -254,7 +257,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		this.pushNotification(env, "session_completed");
+		this.pushNotification(env, "session_completed", "running");
 	}
 
 	async emitFailed(
@@ -295,7 +298,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		this.pushNotification(env, "session_failed");
+		this.pushNotification(env, "session_failed", "running");
 	}
 
 	async emitHeartbeat(env: EventEnvelope): Promise<void> {
@@ -307,7 +310,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.pending = [];
 	}
 
-	private pushNotification(env: EventEnvelope, eventType: string): void {
+	private pushNotification(
+		env: EventEnvelope,
+		eventType: string,
+		previousStatus?: string,
+	): void {
 		const session = this.store.getSession(env.executionId);
 		if (!session) return;
 
@@ -410,6 +417,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						console.log(
 							`[DirectEventSink] updateTag result: ${tagResult} for exec=${env.executionId}`,
 						);
+						// FLY-24: Post status change message to Forum thread
+						if (tagResult === "succeeded" && previousStatus) {
+							await postThreadStatusMessage({
+								threadId: freshThreadId,
+								previousStatus,
+								newStatus: tagStatus,
+								botToken: lead.botToken ?? this.config.discordBotToken,
+							});
+						}
 					}
 
 					if (filterResult.action === "notify_agent") {
