@@ -48,6 +48,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// GEO-202: Ensure issue_identifier is never null — fallback to issueId
 		const identifier = env.issueIdentifier || env.issueId;
 
+		console.log(
+			`[DirectEventSink] emitStarted called: exec=${env.executionId} issue=${env.issueId} project=${env.projectName} labels=${JSON.stringify(env.labels)} hasForumPostCreator=${!!this.forumPostCreator}`,
+		);
+
 		// Store event
 		this.store.insertEvent({
 			event_id: randomUUID(),
@@ -114,19 +118,28 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		}
 
 		// FLY-24: ForumPostCreator — create Forum Post if no thread exists (mirrors event-route.ts)
-		if (
-			!this.store.getSession(env.executionId)?.thread_id &&
-			this.forumPostCreator
-		) {
+		const sessionForThreadCheck = this.store.getSession(env.executionId);
+		const hasThreadId = !!sessionForThreadCheck?.thread_id;
+		console.log(
+			`[DirectEventSink] Forum Post guard: hasThreadId=${hasThreadId} hasForumPostCreator=${!!this.forumPostCreator} sessionExists=${!!sessionForThreadCheck}`,
+		);
+		if (!hasThreadId && this.forumPostCreator) {
 			const eventLabels = env.labels ?? [];
 			try {
-				const { lead: fpLead } = resolveLeadForIssue(
+				const { lead: fpLead, matchMethod } = resolveLeadForIssue(
 					this.projects,
 					env.projectName,
 					eventLabels,
 				);
+				console.log(
+					`[DirectEventSink] resolveLeadForIssue: agentId=${fpLead.agentId} forumChannel=${fpLead.forumChannel ?? "NONE"} hasBotToken=${!!fpLead.botToken} hasGlobalBotToken=${!!this.config.discordBotToken} matchMethod=${matchMethod}`,
+				);
 				// GEO-275: skip Forum Post creation for leads without forumChannel
 				if (fpLead.forumChannel) {
+					const botToken = fpLead.botToken ?? this.config.discordBotToken;
+					console.log(
+						`[DirectEventSink] Calling ensureForumPost: forumChannel=${fpLead.forumChannel} issueId=${env.issueId} hasBotToken=${!!botToken}`,
+					);
 					this.forumPostCreator
 						.ensureForumPost({
 							forumChannelId: fpLead.forumChannel,
@@ -135,8 +148,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							issueTitle: env.issueTitle,
 							executionId: env.executionId,
 							status: "running",
-							discordBotToken: fpLead.botToken ?? this.config.discordBotToken,
+							discordBotToken: botToken,
 							statusTagMap: fpLead.statusTagMap,
+						})
+						.then((result) => {
+							console.log(
+								`[DirectEventSink] ensureForumPost result: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
+							);
 						})
 						.catch((err) => {
 							console.warn(
@@ -144,9 +162,16 @@ export class DirectEventSink implements ExecutionEventEmitter {
 								(err as Error).message,
 							);
 						});
+				} else {
+					console.log(
+						`[DirectEventSink] Skipping Forum Post — lead ${fpLead.agentId} has no forumChannel`,
+					);
 				}
-			} catch {
-				// resolveLeadForIssue may throw if project not found — non-fatal
+			} catch (err) {
+				console.warn(
+					`[DirectEventSink] resolveLeadForIssue threw for project="${env.projectName}" labels=${JSON.stringify(eventLabels)}:`,
+					(err as Error).message,
+				);
 			}
 		}
 

@@ -8,6 +8,7 @@
 
 import { sanitizeTmuxName } from "../../packages/core/dist/index.js";
 import { EventFilter } from "../../packages/teamlead/dist/bridge/EventFilter.js";
+import { ForumPostCreator } from "../../packages/teamlead/dist/bridge/ForumPostCreator.js";
 import { ForumTagUpdater } from "../../packages/teamlead/dist/bridge/ForumTagUpdater.js";
 import type { RuntimeRegistry } from "../../packages/teamlead/dist/bridge/runtime-registry.js";
 import type { BridgeConfig } from "../../packages/teamlead/dist/bridge/types.js";
@@ -99,6 +100,8 @@ export async function setupRetryRuntime(
 		const eventFilter = new EventFilter();
 		const statusTagMap = bridgeConfig.statusTagMap ?? {};
 		const forumTagUpdater = new ForumTagUpdater(statusTagMap);
+		// FLY-24: ForumPostCreator so DirectEventSink can create Forum Posts on session_started
+		const forumPostCreator = new ForumPostCreator(store, statusTagMap);
 		// GEO-267: Pass registry to DirectEventSink for proper multi-Lead event routing
 		const directSink = new DirectEventSink(
 			store,
@@ -107,6 +110,7 @@ export async function setupRetryRuntime(
 			eventFilter,
 			forumTagUpdater,
 			registry,
+			forumPostCreator,
 		);
 		let components: FlywheelComponents | undefined;
 
