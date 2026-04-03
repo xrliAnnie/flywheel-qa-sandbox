@@ -111,6 +111,7 @@ GeoForge3D uses OpenStreetMap data (ODbL license) and Mapbox (proprietary). Both
 ## Effort
 
 Small (< 1 day)`,
+		identifier: "GEO-95",
 	},
 };
 

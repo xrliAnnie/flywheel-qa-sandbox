@@ -32,6 +32,24 @@ function asString(v: unknown): string | undefined {
 	return typeof v === "string" ? v : undefined;
 }
 
+/**
+ * GEO-202: Resolve issue_identifier from payload, falling back to issue_id.
+ * Prevents null issue_identifier in sessions when the event payload
+ * omits issueIdentifier (e.g., fire-and-forget session_started lost,
+ * or emitter didn't include it).
+ *
+ * Returns undefined (not the fallback) when payload has a valid identifier,
+ * so that SQL COALESCE(excluded, existing) can preserve a better existing value.
+ * The fallback is only used when the payload has NO identifier at all.
+ */
+function resolveIdentifier(
+	payload: Record<string, unknown>,
+	fallbackIssueId: string,
+): string {
+	const fromPayload = asString(payload.issueIdentifier);
+	return fromPayload && fromPayload.length > 0 ? fromPayload : fallbackIssueId;
+}
+
 /** Coerce a value to number or undefined. */
 function asNumber(v: unknown): number | undefined {
 	return typeof v === "number" && Number.isFinite(v) ? v : undefined;
@@ -160,7 +178,7 @@ export function createEventRouter(
 							started_at: now,
 							last_activity_at: now,
 							heartbeat_at: now,
-							issue_identifier: asString(payload.issueIdentifier),
+							issue_identifier: resolveIdentifier(payload, event.issue_id),
 							issue_title: asString(payload.issueTitle),
 							issue_labels: issueLabelsJson,
 							session_stage: "started",
@@ -182,7 +200,7 @@ export function createEventRouter(
 						started_at: now,
 						last_activity_at: now,
 						heartbeat_at: now,
-						issue_identifier: asString(payload.issueIdentifier),
+						issue_identifier: resolveIdentifier(payload, event.issue_id),
 						issue_title: asString(payload.issueTitle),
 						issue_labels: issueLabelsJson,
 						session_stage: "started",
@@ -240,7 +258,7 @@ export function createEventRouter(
 								.ensureForumPost({
 									forumChannelId: fpLead.forumChannel,
 									issueId: event.issue_id,
-									issueIdentifier: asString(payload.issueIdentifier),
+									issueIdentifier: resolveIdentifier(payload, event.issue_id),
 									issueTitle: asString(payload.issueTitle),
 									executionId: event.execution_id,
 									status: "running",
@@ -291,7 +309,8 @@ export function createEventRouter(
 						ctx,
 						{
 							last_activity_at: now,
-							issue_identifier: asString(payload.issueIdentifier),
+							// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
+							issue_identifier: asString(payload.issueIdentifier) || undefined,
 							issue_title: asString(payload.issueTitle),
 						},
 					);
@@ -369,7 +388,8 @@ export function createEventRouter(
 						changed_file_paths: Array.isArray(evidence?.changedFilePaths)
 							? (evidence.changedFilePaths as string[]).join("\n")
 							: undefined,
-						issue_identifier: asString(payload.issueIdentifier),
+						// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
+						issue_identifier: asString(payload.issueIdentifier) || undefined,
 						issue_title: asString(payload.issueTitle),
 						pr_number: legacyPrNumber,
 					});
@@ -448,7 +468,7 @@ export function createEventRouter(
 							await cipherWriter.saveSnapshot({
 								executionId: event.execution_id,
 								issueId: event.issue_id,
-								issueIdentifier: asString(payload.issueIdentifier) ?? "",
+								issueIdentifier: resolveIdentifier(payload, event.issue_id),
 								issueTitle: asString(payload.issueTitle) ?? "",
 								projectId: projectId ?? "",
 								issueLabels: labels,
@@ -489,7 +509,8 @@ export function createEventRouter(
 						{
 							last_activity_at: now,
 							last_error: asString(payload.error),
-							issue_identifier: asString(payload.issueIdentifier),
+							// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
+							issue_identifier: asString(payload.issueIdentifier) || undefined,
 							issue_title: asString(payload.issueTitle),
 						},
 					);
@@ -507,7 +528,8 @@ export function createEventRouter(
 						status: "failed",
 						last_activity_at: now,
 						last_error: asString(payload.error),
-						issue_identifier: asString(payload.issueIdentifier),
+						// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
+						issue_identifier: asString(payload.issueIdentifier) || undefined,
 						issue_title: asString(payload.issueTitle),
 					});
 				}
@@ -553,6 +575,18 @@ export function createEventRouter(
 					"FSM rejected transition — event stored but session not updated",
 			});
 			return;
+		}
+
+		// GEO-202: Backfill null issue_identifier after upsert.
+		// This handles the case where session_started was lost (fire-and-forget)
+		// and session_completed/failed creates the session without an identifier.
+		{
+			const postSession = store.getSession(event.execution_id);
+			if (postSession && !postSession.issue_identifier) {
+				store.patchSessionMetadata(event.execution_id, {
+					issue_identifier: event.issue_id,
+				});
+			}
 		}
 
 		// Best-effort notification push via RuntimeRegistry (GEO-195)

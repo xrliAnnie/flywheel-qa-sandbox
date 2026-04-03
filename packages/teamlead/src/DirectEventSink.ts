@@ -43,6 +43,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
 		const now = sqliteDatetime();
+		// GEO-202: Ensure issue_identifier is never null — fallback to issueId
+		const identifier = env.issueIdentifier || env.issueId;
 
 		// Store event
 		this.store.insertEvent({
@@ -63,7 +65,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			started_at: now,
 			last_activity_at: now,
 			heartbeat_at: now,
-			issue_identifier: env.issueIdentifier,
+			issue_identifier: identifier,
 			issue_title: env.issueTitle,
 			retry_predecessor: env.retryPredecessor,
 			run_attempt: env.runAttempt,
@@ -170,10 +172,21 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			diff_summary: result.evidence?.diffSummary,
 			commit_messages: result.evidence?.commitMessages?.join("\n"),
 			changed_file_paths: result.evidence?.changedFilePaths?.join("\n"),
-			issue_identifier: env.issueIdentifier,
+			// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
+			issue_identifier: env.issueIdentifier || undefined,
 			issue_title: env.issueTitle,
 			pr_number: prNumber,
 		});
+
+		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId
+		{
+			const postSession = this.store.getSession(env.executionId);
+			if (postSession && !postSession.issue_identifier) {
+				this.store.patchSessionMetadata(env.executionId, {
+					issue_identifier: env.issueId,
+				});
+			}
+		}
 
 		// GEO-292: Stage auto-inference (only advance, never regress)
 		if (inferredStage) {
@@ -215,9 +228,20 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			status: "failed",
 			last_activity_at: now,
 			last_error: error,
-			issue_identifier: env.issueIdentifier,
+			// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
+			issue_identifier: env.issueIdentifier || undefined,
 			issue_title: env.issueTitle,
 		});
+
+		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId
+		{
+			const session = this.store.getSession(env.executionId);
+			if (session && !session.issue_identifier) {
+				this.store.patchSessionMetadata(env.executionId, {
+					issue_identifier: env.issueId,
+				});
+			}
+		}
 
 		this.pushNotification(env, "session_failed");
 	}
