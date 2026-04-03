@@ -7,7 +7,10 @@
 
 import type { EventEnvelope } from "flywheel-edge-worker";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { EventFilter } from "../bridge/EventFilter.js";
 import type { ForumPostCreator } from "../bridge/ForumPostCreator.js";
+import type { ForumTagUpdater } from "../bridge/ForumTagUpdater.js";
+import type { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -251,5 +254,282 @@ describe("DirectEventSink — Forum Post creation (FLY-24)", () => {
 		const session = store.getSession("exec-1");
 		expect(session).toBeDefined();
 		expect(session!.status).toBe("running");
+	});
+});
+
+describe("DirectEventSink — Forum Tag Update on emitCompleted (FLY-24 Bug 2)", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	afterEach(() => {
+		store.close();
+	});
+
+	function createMockRuntime(): import("../bridge/lead-runtime.js").LeadRuntime {
+		return {
+			type: "claude-discord",
+			deliver: vi.fn().mockResolvedValue({ delivered: true }),
+			sendBootstrap: vi.fn().mockResolvedValue(undefined),
+			health: vi.fn().mockResolvedValue({
+				status: "healthy",
+				lastDeliveryAt: null,
+				lastDeliveredSeq: 0,
+			}),
+			shutdown: vi.fn().mockResolvedValue(undefined),
+		};
+	}
+
+	it("calls ForumTagUpdater.updateTag() on emitCompleted with correct threadId and status", async () => {
+		// Setup: pre-create session with thread_id (simulating ensureForumPost already ran)
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		store.upsertThread("thread-123", "forum-ch-1", "issue-1");
+		store.setSessionThreadId("exec-1", "thread-123");
+
+		const mockTagUpdater: ForumTagUpdater = {
+			updateTag: vi.fn().mockResolvedValue("succeeded"),
+		} as unknown as ForumTagUpdater;
+
+		const mockFilter: EventFilter = new (
+			await import("../bridge/EventFilter.js")
+		).EventFilter();
+
+		const mockRuntime = createMockRuntime();
+		const registry: RuntimeRegistry = new (
+			await import("../bridge/runtime-registry.js")
+		).RuntimeRegistry();
+		registry.register(testProjects[0].leads[0], mockRuntime);
+
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			mockFilter,
+			mockTagUpdater,
+			registry,
+			undefined, // no forumPostCreator needed for this test
+		);
+
+		await sink.emitCompleted(
+			makeEnvelope(),
+			{
+				decision: { route: "needs_review", reasoning: "test" },
+				evidence: {},
+			} as import("flywheel-edge-worker/dist/Blueprint.js").BlueprintResult,
+		);
+		await sink.flush();
+
+		// ForumTagUpdater.updateTag() MUST have been called
+		expect(mockTagUpdater.updateTag).toHaveBeenCalledOnce();
+		expect(mockTagUpdater.updateTag).toHaveBeenCalledWith(
+			expect.objectContaining({
+				threadId: "thread-123",
+				status: "awaiting_review",
+				eventType: "session_completed",
+			}),
+		);
+	});
+
+	it("calls updateTag with per-lead botToken and statusTagMap", async () => {
+		const projectsWithConfig: ProjectEntry[] = [
+			{
+				projectName: "geoforge3d",
+				projectRoot: "/tmp/geoforge3d",
+				leads: [
+					{
+						agentId: "product-lead",
+						forumChannel: "forum-ch-1",
+						chatChannel: "chat-ch-1",
+						match: { labels: ["Product"] },
+						botToken: "per-lead-token",
+						statusTagMap: { awaiting_review: ["tag-ar-1"] },
+					},
+				],
+			},
+		];
+
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		store.upsertThread("thread-456", "forum-ch-1", "issue-1");
+		store.setSessionThreadId("exec-1", "thread-456");
+
+		const mockTagUpdater: ForumTagUpdater = {
+			updateTag: vi.fn().mockResolvedValue("succeeded"),
+		} as unknown as ForumTagUpdater;
+
+		const mockFilter: EventFilter = new (
+			await import("../bridge/EventFilter.js")
+		).EventFilter();
+
+		const mockRuntime = createMockRuntime();
+		const registry: RuntimeRegistry = new (
+			await import("../bridge/runtime-registry.js")
+		).RuntimeRegistry();
+		registry.register(projectsWithConfig[0].leads[0], mockRuntime);
+
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			projectsWithConfig,
+			mockFilter,
+			mockTagUpdater,
+			registry,
+		);
+
+		await sink.emitCompleted(
+			makeEnvelope(),
+			{
+				decision: { route: "needs_review", reasoning: "test" },
+				evidence: {},
+			} as import("flywheel-edge-worker/dist/Blueprint.js").BlueprintResult,
+		);
+		await sink.flush();
+
+		expect(mockTagUpdater.updateTag).toHaveBeenCalledWith(
+			expect.objectContaining({
+				threadId: "thread-456",
+				discordBotToken: "per-lead-token",
+				statusTagMap: { awaiting_review: ["tag-ar-1"] },
+			}),
+		);
+	});
+
+	it("does NOT call updateTag when registry is not provided (legacy path)", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+		store.upsertThread("thread-789", "forum-ch-1", "issue-1");
+		store.setSessionThreadId("exec-1", "thread-789");
+
+		const mockTagUpdater: ForumTagUpdater = {
+			updateTag: vi.fn().mockResolvedValue("succeeded"),
+		} as unknown as ForumTagUpdater;
+
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			undefined, // no eventFilter
+			mockTagUpdater,
+			undefined, // no registry → legacy path
+		);
+
+		await sink.emitCompleted(
+			makeEnvelope(),
+			{
+				decision: { route: "needs_review", reasoning: "test" },
+				evidence: {},
+			} as import("flywheel-edge-worker/dist/Blueprint.js").BlueprintResult,
+		);
+		await sink.flush();
+
+		// Legacy path: no registry → pushNotification returns early → no tag update
+		expect(mockTagUpdater.updateTag).not.toHaveBeenCalled();
+	});
+
+	it("does NOT call updateTag when eventFilter is not provided", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		store.upsertThread("thread-aaa", "forum-ch-1", "issue-1");
+		store.setSessionThreadId("exec-1", "thread-aaa");
+
+		const mockTagUpdater: ForumTagUpdater = {
+			updateTag: vi.fn().mockResolvedValue("succeeded"),
+		} as unknown as ForumTagUpdater;
+
+		const mockRuntime = createMockRuntime();
+		const registry: RuntimeRegistry = new (
+			await import("../bridge/runtime-registry.js")
+		).RuntimeRegistry();
+		registry.register(testProjects[0].leads[0], mockRuntime);
+
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			undefined, // no eventFilter → else branch in doDeliver (no tag update)
+			mockTagUpdater,
+			registry,
+		);
+
+		await sink.emitCompleted(
+			makeEnvelope(),
+			{
+				decision: { route: "needs_review", reasoning: "test" },
+				evidence: {},
+			} as import("flywheel-edge-worker/dist/Blueprint.js").BlueprintResult,
+		);
+		await sink.flush();
+
+		// No eventFilter → doDeliver enters else branch → no tag update
+		expect(mockTagUpdater.updateTag).not.toHaveBeenCalled();
+	});
+
+	it("calls updateTag on emitFailed with status 'failed'", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		store.upsertThread("thread-fail", "forum-ch-1", "issue-1");
+		store.setSessionThreadId("exec-1", "thread-fail");
+
+		const mockTagUpdater: ForumTagUpdater = {
+			updateTag: vi.fn().mockResolvedValue("succeeded"),
+		} as unknown as ForumTagUpdater;
+
+		const mockFilter: EventFilter = new (
+			await import("../bridge/EventFilter.js")
+		).EventFilter();
+
+		const mockRuntime = createMockRuntime();
+		const registry: RuntimeRegistry = new (
+			await import("../bridge/runtime-registry.js")
+		).RuntimeRegistry();
+		registry.register(testProjects[0].leads[0], mockRuntime);
+
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			mockFilter,
+			mockTagUpdater,
+			registry,
+		);
+
+		await sink.emitFailed(makeEnvelope(), "Something went wrong");
+		await sink.flush();
+
+		expect(mockTagUpdater.updateTag).toHaveBeenCalledOnce();
+		expect(mockTagUpdater.updateTag).toHaveBeenCalledWith(
+			expect.objectContaining({
+				threadId: "thread-fail",
+				status: "failed",
+				eventType: "session_failed",
+			}),
+		);
 	});
 });

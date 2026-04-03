@@ -311,6 +311,14 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const session = this.store.getSession(env.executionId);
 		if (!session) return;
 
+		// FLY-24 debug: trace tag update prerequisites
+		console.log(
+			`[DirectEventSink] pushNotification: exec=${env.executionId} event=${eventType} ` +
+				`registry=${!!this.registry} eventFilter=${!!this.eventFilter} ` +
+				`tagUpdater=${!!this.forumTagUpdater} threadId=${session.thread_id ?? "none"} ` +
+				`status=${session.status}`,
+		);
+
 		// Fallback: when no RuntimeRegistry is available (e.g., retry-runtime path),
 		// use the legacy notifyAgent() path directly via BridgeConfig OpenClaw credentials.
 		if (!this.registry) {
@@ -385,13 +393,23 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						// wrote thread_id after pushNotification captured the session object.
 						const freshSession = this.store.getSession(env.executionId);
 						const freshThreadId = freshSession?.thread_id ?? session.thread_id;
+						const tagStatus = freshSession?.status ?? session.status ?? "";
+						console.log(
+							`[DirectEventSink] updateTag: exec=${env.executionId} threadId=${freshThreadId ?? "none"} ` +
+								`status=${tagStatus} event=${eventType} lead=${lead.agentId} ` +
+								`botToken=${(lead.botToken ?? this.config.discordBotToken) ? "set" : "MISSING"} ` +
+								`statusTagMap=${lead.statusTagMap ? JSON.stringify(Object.keys(lead.statusTagMap)) : "none(using-global)"}`,
+						);
 						tagResult = await this.forumTagUpdater.updateTag({
 							threadId: freshThreadId,
-							status: freshSession?.status ?? session.status ?? "",
+							status: tagStatus,
 							eventType,
 							discordBotToken: lead.botToken ?? this.config.discordBotToken,
 							statusTagMap: lead.statusTagMap,
 						});
+						console.log(
+							`[DirectEventSink] updateTag result: ${tagResult} for exec=${env.executionId}`,
+						);
 					}
 
 					if (filterResult.action === "notify_agent") {
