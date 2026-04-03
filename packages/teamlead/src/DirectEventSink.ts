@@ -10,6 +10,7 @@ import type {
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
+import type { ForumPostCreator } from "./bridge/ForumPostCreator.js";
 import type { ForumTagUpdater } from "./bridge/ForumTagUpdater.js";
 import {
 	buildHookBody,
@@ -22,7 +23,7 @@ import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
 import { validateThreadExists } from "./bridge/thread-validator.js";
 import type { BridgeConfig } from "./bridge/types.js";
-import type { ProjectEntry } from "./ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
 
 function sqliteDatetime(): string {
@@ -39,6 +40,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		private eventFilter?: EventFilter,
 		private forumTagUpdater?: ForumTagUpdater,
 		private registry?: RuntimeRegistry,
+		private forumPostCreator?: ForumPostCreator,
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
@@ -108,6 +110,43 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					existingThread.thread_id,
 				);
 				this.store.clearArchived(existingThread.thread_id);
+			}
+		}
+
+		// FLY-24: ForumPostCreator — create Forum Post if no thread exists (mirrors event-route.ts)
+		if (
+			!this.store.getSession(env.executionId)?.thread_id &&
+			this.forumPostCreator
+		) {
+			const eventLabels = env.labels ?? [];
+			try {
+				const { lead: fpLead } = resolveLeadForIssue(
+					this.projects,
+					env.projectName,
+					eventLabels,
+				);
+				// GEO-275: skip Forum Post creation for leads without forumChannel
+				if (fpLead.forumChannel) {
+					this.forumPostCreator
+						.ensureForumPost({
+							forumChannelId: fpLead.forumChannel,
+							issueId: env.issueId,
+							issueIdentifier: env.issueIdentifier,
+							issueTitle: env.issueTitle,
+							executionId: env.executionId,
+							status: "running",
+							discordBotToken: fpLead.botToken ?? this.config.discordBotToken,
+							statusTagMap: fpLead.statusTagMap,
+						})
+						.catch((err) => {
+							console.warn(
+								`[DirectEventSink] ForumPostCreator failed for ${env.issueId}:`,
+								(err as Error).message,
+							);
+						});
+				}
+			} catch {
+				// resolveLeadForIssue may throw if project not found — non-fatal
 			}
 		}
 

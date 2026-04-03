@@ -32,6 +32,7 @@ import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { EventFilter } from "./EventFilter.js";
+import { ForumPostCreator } from "./ForumPostCreator.js";
 import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { type ProjectRuntime, RunDispatcher } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
@@ -195,6 +196,8 @@ export async function setupRunInfrastructure(
 			const eventFilter = new EventFilter();
 			const statusTagMap = config.statusTagMap ?? {};
 			const forumTagUpdater = new ForumTagUpdater(statusTagMap);
+			// FLY-24: ForumPostCreator so DirectEventSink can create Forum Posts on session_started
+			const forumPostCreator = new ForumPostCreator(store, statusTagMap);
 			const directSink = new DirectEventSink(
 				store,
 				config,
@@ -202,6 +205,7 @@ export async function setupRunInfrastructure(
 				eventFilter,
 				forumTagUpdater,
 				registry,
+				forumPostCreator,
 			);
 
 			const { blueprint, cleanup } = await createRunBlueprint(
