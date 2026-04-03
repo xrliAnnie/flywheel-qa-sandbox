@@ -1089,6 +1089,7 @@ export function createBridgeApp(
 			store,
 			projects,
 			config.maxConcurrentRunners,
+			config.discordGuildId,
 		);
 		if (config.apiToken) {
 			app.use("/api/runs", tokenAuthMiddleware(config.apiToken), runsRouter);

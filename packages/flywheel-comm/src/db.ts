@@ -89,6 +89,17 @@ export class CommDB {
 		return result.changes;
 	}
 
+	cleanupReadMessages(ttlHours = 24): number {
+		const result = this.db
+			.prepare(
+				`DELETE FROM messages
+			 WHERE read_at IS NOT NULL
+			 AND created_at < datetime('now', '-' || ? || ' hours')`,
+			)
+			.run(ttlHours);
+		return result.changes;
+	}
+
 	insertQuestion(fromAgent: string, toAgent: string, content: string): string {
 		const id = randomUUID();
 		this.db

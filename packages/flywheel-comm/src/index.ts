@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { ask } from "./commands/ask.js";
 import { capture } from "./commands/capture.js";
 import { check } from "./commands/check.js";
+import { cleanupMessages } from "./commands/cleanup-messages.js";
 import { inbox } from "./commands/inbox.js";
 import { pending } from "./commands/pending.js";
 import { respond } from "./commands/respond.js";
@@ -27,6 +28,7 @@ Commands:
   capture   Capture tmux output of a runner session
   search    Search tmux output for a regex pattern
   stage     Report pipeline stage to Bridge (Runner use)
+  cleanup   Delete read messages older than TTL (default 24h)
 
 Global options:
   --db <path>       Explicit DB path
@@ -79,6 +81,9 @@ async function main(): Promise<void> {
 			break;
 		case "stage":
 			await runStage(commandArgs);
+			break;
+		case "cleanup":
+			runCleanup(commandArgs);
 			break;
 		default:
 			console.error(`Unknown command: ${command}`);
@@ -401,6 +406,29 @@ async function runStage(args: string[]): Promise<void> {
 	}
 
 	await stage({ subcommand, stageName: stageName ?? "" });
+}
+
+function runCleanup(args: string[]): void {
+	const { values } = parseArgs({
+		args,
+		options: {
+			ttl: { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
+
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const ttlHours = values.ttl ? Number.parseInt(values.ttl, 10) : undefined;
+	const result = cleanupMessages({ dbPath, ttlHours });
+
+	if (values.json) {
+		console.log(JSON.stringify(result));
+	} else {
+		console.log(`Cleaned: ${result.cleaned}`);
+	}
 }
 
 main().catch((err) => {
