@@ -12,7 +12,10 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
-import type { ForumTagUpdater } from "./ForumTagUpdater.js";
+import {
+	type ForumTagUpdater,
+	postThreadStatusMessage,
+} from "./ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
@@ -113,6 +116,15 @@ function sendActionHook(
 						discordBotToken: lead.botToken ?? config?.discordBotToken,
 						statusTagMap: lead.statusTagMap,
 					});
+					// FLY-24: Post status change message to Forum thread
+					if (tagResult === "succeeded") {
+						await postThreadStatusMessage({
+							threadId: session.thread_id,
+							previousStatus: sourceStatus,
+							newStatus: targetStatus,
+							botToken: lead.botToken ?? config?.discordBotToken,
+						});
+					}
 				}
 
 				if (filterResult.action === "notify_agent") {

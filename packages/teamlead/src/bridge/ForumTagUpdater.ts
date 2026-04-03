@@ -1,3 +1,56 @@
+/** Human-readable status labels for Forum thread messages. */
+const STATUS_LABELS: Record<string, string> = {
+	running: "🚀 Running",
+	awaiting_review: "👀 Awaiting Review",
+	approved: "✅ Approved",
+	completed: "✅ Completed",
+	failed: "❌ Failed",
+	blocked: "🚧 Blocked",
+	terminated: "⏹ Terminated",
+};
+
+function statusLabel(status: string): string {
+	return STATUS_LABELS[status] ?? status;
+}
+
+/**
+ * FLY-24: Post a status change message to a Discord Forum thread.
+ * Best-effort — logs and returns on failure.
+ */
+export async function postThreadStatusMessage(opts: {
+	threadId?: string;
+	previousStatus: string;
+	newStatus: string;
+	botToken?: string;
+}): Promise<void> {
+	if (!opts.threadId || !opts.botToken) return;
+	if (opts.previousStatus === opts.newStatus) return;
+
+	const msg = `${statusLabel(opts.newStatus)}  ‹ ${opts.previousStatus} → ${opts.newStatus} ›`;
+	try {
+		const res = await fetch(
+			`https://discord.com/api/v10/channels/${opts.threadId}/messages`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bot ${opts.botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ content: msg }),
+			},
+		);
+		if (!res.ok) {
+			const body = await res.text();
+			console.warn(`[postThreadStatusMessage] Discord ${res.status}: ${body}`);
+		}
+	} catch (err) {
+		console.warn(
+			`[postThreadStatusMessage] Failed for thread ${opts.threadId}:`,
+			(err as Error).message,
+		);
+	}
+}
+
 export interface TagUpdateContext {
 	threadId?: string;
 	status: string;
