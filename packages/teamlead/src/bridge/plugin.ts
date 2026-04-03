@@ -1182,7 +1182,7 @@ export async function startBridge(
 	}
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
-	const retryDispatcher = opts?.retryDispatcher;
+	let retryDispatcher = opts?.retryDispatcher;
 	// GEO-158: FSM instance + DirectiveExecutor for validated transitions
 	const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 	const executor = new DirectiveExecutor(store);
@@ -1350,17 +1350,27 @@ export async function startBridge(
 		console.log("[Bridge] HTML publishing configured (Vercel)");
 	}
 
-	// FLY-22: Create RunDispatcher internally when not injected via opts.
-	// This ensures /api/runs routes are always registered regardless of entry point.
+	// FLY-22/FLY-50: Create RunDispatcher internally when not injected via opts.
+	// RunDispatcher implements both IStartDispatcher and IRetryDispatcher,
+	// so a single instance serves both roles.
+	// Track the internal dispatcher separately for cleanup — if a caller injects
+	// retryDispatcher but not startDispatcher, they are different instances.
 	let startDispatcher = opts?.startDispatcher;
+	let internalDispatcher: IRetryDispatcher | undefined;
 	if (!startDispatcher) {
 		try {
-			startDispatcher = await setupRunInfrastructure(
+			const dispatcher = await setupRunInfrastructure(
 				store,
 				config,
 				projects,
 				registry,
 			);
+			startDispatcher = dispatcher;
+			internalDispatcher = dispatcher;
+			// FLY-50: Also wire as retryDispatcher when not externally provided
+			if (!retryDispatcher) {
+				retryDispatcher = dispatcher;
+			}
 			console.log("[Bridge] RunDispatcher created internally");
 		} catch (err) {
 			console.warn(
@@ -1452,10 +1462,18 @@ export async function startBridge(
 	const close = async () => {
 		heartbeatService?.stop();
 		cleanupService?.stop();
+		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
+		// are the same instance, only tear down once. If they differ (caller
+		// injected retryDispatcher but not startDispatcher), tear down both.
 		if (retryDispatcher) {
 			retryDispatcher.stopAccepting();
 			await retryDispatcher.drain();
 			await retryDispatcher.teardownRuntimes();
+		}
+		if (internalDispatcher && internalDispatcher !== retryDispatcher) {
+			internalDispatcher.stopAccepting();
+			await internalDispatcher.drain();
+			await internalDispatcher.teardownRuntimes();
 		}
 		await registry.shutdownAll();
 		broadcaster.destroy();
