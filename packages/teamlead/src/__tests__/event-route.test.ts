@@ -993,7 +993,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 		await postEvent();
 
 		const beforeSession = store.getSession("exec-1");
-		const beforeTimestamp = beforeSession!.stage_updated_at;
+		const _beforeTimestamp = beforeSession!.stage_updated_at;
 
 		// Small delay to ensure different timestamp
 		await new Promise((r) => setTimeout(r, 50));
@@ -1197,5 +1197,170 @@ describe("Event route — GEO-292 stage tracking", () => {
 		const session = store.getSession("exec-1");
 		expect(session!.session_stage).toBe("code_review"); // preserved
 		expect(session!.pr_number).toBeUndefined();
+	});
+});
+
+// GEO-202: issue_identifier must never be null in sessions
+describe("Event route — issue_identifier fallback (GEO-202)", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		const config = makeConfig();
+		const app = createBridgeApp(store, testProjects, config);
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+	});
+
+	afterEach(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		store.close();
+	});
+
+	it("session_started without issueIdentifier in payload falls back to issue_id", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: { issueTitle: "Test issue" }, // no issueIdentifier
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session).toBeDefined();
+		expect(session!.issue_identifier).toBe("issue-1"); // fallback to issue_id
+	});
+
+	it("session_started with empty string issueIdentifier falls back to issue_id", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: { issueIdentifier: "", issueTitle: "Test issue" },
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session).toBeDefined();
+		expect(session!.issue_identifier).toBe("issue-1"); // fallback to issue_id
+	});
+
+	it("session_completed without prior session_started still gets identifier", async () => {
+		// Simulate fire-and-forget session_started being lost
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_type: "session_completed",
+					payload: {
+						decision: { route: "needs_review" },
+						evidence: { commitCount: 1 },
+						// no issueIdentifier in payload
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session).toBeDefined();
+		expect(session!.issue_identifier).toBe("issue-1"); // fallback to issue_id
+	});
+
+	it("session_failed without issueIdentifier falls back to issue_id", async () => {
+		// Create a running session first
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent()),
+		});
+
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "evt-failed",
+					event_type: "session_failed",
+					payload: {
+						error: "timeout",
+						// no issueIdentifier
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session).toBeDefined();
+		// session_started set it to GEO-95, session_failed should preserve it
+		expect(session!.issue_identifier).toBe("GEO-95");
+	});
+
+	it("session_completed with empty string issueIdentifier preserves existing identifier", async () => {
+		// Create a running session with good identifier (GEO-95 from makeEvent default)
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent()),
+		});
+
+		// session_completed with empty string issueIdentifier should NOT overwrite
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "evt-completed",
+					event_type: "session_completed",
+					payload: {
+						issueIdentifier: "", // empty string — must not overwrite GEO-95
+						decision: { route: "needs_review" },
+						evidence: { commitCount: 1 },
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session).toBeDefined();
+		// Empty string should be treated as missing → COALESCE preserves GEO-95
+		expect(session!.issue_identifier).toBe("GEO-95");
 	});
 });
