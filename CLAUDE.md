@@ -4,15 +4,17 @@
 
 New session? Run `/onboarding` or read these files in order:
 
-1. **Memory** → `~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md` (decisions, architecture, current progress)
-2. **Active Explorations** (read based on task):
+1. **Product Experience** → `doc/architecture/product-experience-spec.md` (**必读** — 定义了产品应该长什么样，所有开发工作的 source of truth)
+2. **Memory** → `~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md` (decisions, architecture, current progress)
+3. **Active Explorations** (read based on task):
+   - `doc/exploration/new/FLY-52-product-experience-deep-design.md` — Product brainstorm Q&A (FLY-52)
    - `doc/exploration/new/v0.3-memory-system.md` — per-project memory (GEO-145)
    - `doc/exploration/new/v0.4-voice-interface.md` — push/pull voice channel for CEO (GEO-150)
    - `doc/exploration/new/v0.5-remote-screenshot.md` — visual Slack notifications (GEO-151)
    - `doc/exploration/new/v0.6-slack-threading.md` — Slack threading + workflow engine (GEO-148)
    - `doc/exploration/new/v1.0-lead-experience.md` — Lead MVP experience (GEO-146)
    - `doc/exploration/new/v1.1-multi-lead.md` — Multi-lead agents (GEO-152)
-3. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md`
+4. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md`
 
 Archived docs are in `doc/*/archive/` — read only if you need historical context.
 
