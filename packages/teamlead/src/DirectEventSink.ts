@@ -48,10 +48,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// GEO-202: Ensure issue_identifier is never null — fallback to issueId
 		const identifier = env.issueIdentifier || env.issueId;
 
-		console.log(
-			`[DirectEventSink] emitStarted called: exec=${env.executionId} issue=${env.issueId} project=${env.projectName} labels=${JSON.stringify(env.labels)} hasForumPostCreator=${!!this.forumPostCreator}`,
-		);
-
 		// Store event
 		this.store.insertEvent({
 			event_id: randomUUID(),
@@ -117,29 +113,25 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		// FLY-24: ForumPostCreator — create Forum Post if no thread exists (mirrors event-route.ts)
-		const sessionForThreadCheck = this.store.getSession(env.executionId);
-		const hasThreadId = !!sessionForThreadCheck?.thread_id;
-		console.log(
-			`[DirectEventSink] Forum Post guard: hasThreadId=${hasThreadId} hasForumPostCreator=${!!this.forumPostCreator} sessionExists=${!!sessionForThreadCheck}`,
-		);
-		if (!hasThreadId && this.forumPostCreator) {
+		// FLY-24: ForumPostCreator — fire-and-forget (preserves EventFilter notification semantics).
+		// Must NOT await before pushNotification: if thread_id is set before EventFilter runs,
+		// session_started gets classified as "forum_only" instead of "notify_agent", suppressing
+		// the Lead notification. Same pattern as event-route.ts:245.
+		// The /api/runs/start poll reads store directly, so it picks up thread_id async.
+		if (
+			!this.store.getSession(env.executionId)?.thread_id &&
+			this.forumPostCreator
+		) {
 			const eventLabels = env.labels ?? [];
 			try {
-				const { lead: fpLead, matchMethod } = resolveLeadForIssue(
+				const { lead: fpLead } = resolveLeadForIssue(
 					this.projects,
 					env.projectName,
 					eventLabels,
 				);
-				console.log(
-					`[DirectEventSink] resolveLeadForIssue: agentId=${fpLead.agentId} forumChannel=${fpLead.forumChannel ?? "NONE"} hasBotToken=${!!fpLead.botToken} hasGlobalBotToken=${!!this.config.discordBotToken} matchMethod=${matchMethod}`,
-				);
 				// GEO-275: skip Forum Post creation for leads without forumChannel
 				if (fpLead.forumChannel) {
 					const botToken = fpLead.botToken ?? this.config.discordBotToken;
-					console.log(
-						`[DirectEventSink] Calling ensureForumPost: forumChannel=${fpLead.forumChannel} issueId=${env.issueId} hasBotToken=${!!botToken}`,
-					);
 					this.forumPostCreator
 						.ensureForumPost({
 							forumChannelId: fpLead.forumChannel,
@@ -153,19 +145,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						})
 						.then((result) => {
 							console.log(
-								`[DirectEventSink] ensureForumPost result: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
+								`[DirectEventSink] ensureForumPost: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
 							);
 						})
-						.catch((err) => {
+						.catch((err: Error) => {
 							console.warn(
-								`[DirectEventSink] ForumPostCreator failed for ${env.issueId}:`,
-								(err as Error).message,
+								`[DirectEventSink] ensureForumPost failed for ${env.issueId}:`,
+								err.message,
 							);
 						});
-				} else {
-					console.log(
-						`[DirectEventSink] Skipping Forum Post — lead ${fpLead.agentId} has no forumChannel`,
-					);
 				}
 			} catch (err) {
 				console.warn(
