@@ -1,0 +1,66 @@
+# QA Framework Configuration Template
+# Copy this file to your project's .claude/qa-config.yaml and customize.
+# Validated by flywheel-qa-framework's QaConfigLoader (Zod schema).
+
+# Project metadata
+project:
+  name: "MyProject"                       # Your project name
+  description: "One-line description"     # Brief project description
+
+# QA documentation paths
+qa:
+  doc_root: "doc/qa"                      # Where QA docs live
+  test_report_dir: "doc/qa/test-reports"  # Test report output directory
+  context_file: "doc/qa/qa-context.md"    # Historical experience doc (optional)
+
+# Plan source contract — how QA agent obtains plan files
+# See contracts/PLAN_SOURCE_CONTRACT.md for details
+plan:
+  source: "worktree"                      # "worktree" (default) | "branch_fetch"
+  fetch_strategy: "checkout_file"         # "checkout_file" | "copy_from_root"
+
+# Testable domains — list only what your project has
+# Each domain maps to a test skill and project-specific config file
+domains:
+  - name: "backend"
+    dir: "."                              # Domain code directory (relative to repo root)
+    test_skill: "backend-test"            # Skill name to invoke
+    config_file: ".claude/skills/backend-test/myproject-test-suite.md"  # Project-specific test config
+    cleanup_script: null                  # Optional: domain cleanup script path
+
+  # Uncomment for frontend:
+  # - name: "frontend"
+  #   dir: "./frontend"
+  #   test_skill: "frontend-test"
+  #   config_file: ".claude/skills/frontend-test/myproject-config.md"
+
+# API configuration (optional — omit if no API)
+api:
+  openapi_spec: null                      # Path to OpenAPI spec, null = skip contract tests
+  base_url: "http://localhost:3000"       # Default API base URL
+
+# Orchestrator configuration
+orchestrator:
+  db_path: "~/.flywheel/orchestrator/qa.db"
+  max_concurrent_agents: 2
+  artifact_retention_days: 30
+
+  # Agent types — defines which agents the framework supports
+  # and their execution steps (used by state.sh and track.sh)
+  agent_types:
+    - name: "qa-parallel"
+      step_templates:
+        - { key: "onboard", name: "Onboard", order: 1, prerequisite: null }
+        - { key: "analyze_plan", name: "Analyze + Plan", order: 2, prerequisite: "onboard" }
+        - { key: "research", name: "Research", order: 3, prerequisite: "analyze_plan" }
+        - { key: "write_execute", name: "Write + Execute", order: 4, prerequisite: "research" }
+        - { key: "finalize", name: "Finalize", order: 5, prerequisite: "write_execute" }
+
+# Version file location (optional)
+version:
+  file: "doc/VERSION"
+
+# Environment variable references (names only — never store values here)
+# env_refs:
+#   api_token: "API_TOKEN"
+#   gcloud_project: "GCP_PROJECT"
