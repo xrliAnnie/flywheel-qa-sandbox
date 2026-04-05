@@ -745,52 +745,36 @@ describe("GEO-259: leadId scope check on actions", () => {
 	});
 });
 
-// --- GEO-292: approve sets session_stage ---
-describe("GEO-292: approve sets session_stage", () => {
+// --- FLY-58: approve does NOT advance session_stage (ship stage set by Runner merge) ---
+describe("FLY-58: approve does not advance session_stage", () => {
 	let store: StateStore;
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
 	});
 
-	it("approve sets session_stage='ship' when current stage is earlier", async () => {
+	it("approve leaves session_stage unchanged (stage advances on actual merge, not approve)", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
 			project_name: "geoforge3d",
 			status: "awaiting_review",
-			issue_identifier: "GEO-292",
+			issue_identifier: "FLY-58",
 			session_stage: "pr_created",
 			stage_updated_at: "2026-03-30 10:00:00",
 		});
 
-		const result = await approveExecution(store, testProjects, "e1", "GEO-292");
+		const result = await approveExecution(store, testProjects, "e1", "FLY-58");
 		expect(result.success).toBe(true);
 
 		const session = store.getSession("e1");
 		expect(session!.status).toBe("approved_to_ship");
-		expect(session!.session_stage).toBe("ship");
-		expect(session!.stage_updated_at).toBeDefined();
-		// stage_updated_at should be updated to a newer timestamp
-		expect(session!.stage_updated_at).not.toBe("2026-03-30 10:00:00");
+		// Stage should NOT advance to "ship" — that happens when Runner merges
+		expect(session!.session_stage).toBe("pr_created");
+		expect(session!.stage_updated_at).toBe("2026-03-30 10:00:00");
 	});
 
-	it("approve does not regress session_stage if already at 'ship'", async () => {
-		store.upsertSession({
-			execution_id: "e1",
-			issue_id: "i1",
-			project_name: "geoforge3d",
-			status: "awaiting_review",
-			session_stage: "ship",
-			stage_updated_at: "2026-03-30 10:00:00",
-		});
-
-		const result = await approveExecution(store, testProjects, "e1");
-		expect(result.success).toBe(true);
-		expect(store.getSession("e1")!.session_stage).toBe("ship");
-	});
-
-	it("approve sets session_stage='ship' when no prior stage exists", async () => {
+	it("approve with no prior stage does not set stage", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -801,7 +785,7 @@ describe("GEO-292: approve sets session_stage", () => {
 		await approveExecution(store, testProjects, "e1");
 
 		const session = store.getSession("e1");
-		expect(session!.session_stage).toBe("ship");
+		expect(session!.session_stage).toBeUndefined();
 	});
 });
 

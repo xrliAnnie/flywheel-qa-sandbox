@@ -18,7 +18,6 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
-import { STAGE_ORDER } from "./stage-utils.js";
 import { getTmuxTargetFromCommDb, killTmuxSession } from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
@@ -231,15 +230,8 @@ export async function approveExecution(
 	}
 
 	if (!transitionRejected) {
-		// GEO-292: Auto-set session_stage to "ship" on approve (only advance)
-		const currentSession = store.getSession(session.execution_id);
-		const currentOrder = STAGE_ORDER[currentSession?.session_stage ?? ""] ?? -1;
-		if ((STAGE_ORDER.ship ?? 9) > currentOrder) {
-			store.patchSessionMetadata(session.execution_id, {
-				session_stage: "ship",
-				stage_updated_at: sqliteDatetime(),
-			});
-		}
+		// FLY-58: Do NOT advance session_stage to "ship" on approve — merge hasn't happened yet.
+		// Stage will advance to "ship" when Runner actually merges the PR.
 
 		sendActionHook(
 			store,

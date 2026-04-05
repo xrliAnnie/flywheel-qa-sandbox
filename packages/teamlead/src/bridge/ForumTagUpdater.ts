@@ -3,6 +3,7 @@ const STATUS_LABELS: Record<string, string> = {
 	running: "🚀 Running",
 	awaiting_review: "👀 Awaiting Review",
 	approved: "✅ Approved",
+	approved_to_ship: "✅ Approved (Awaiting Ship)",
 	completed: "✅ Completed",
 	failed: "❌ Failed",
 	blocked: "🚧 Blocked",

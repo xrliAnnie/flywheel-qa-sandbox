@@ -58,7 +58,7 @@ export function createRunsRouter(
 		const alreadyActive = activeSessions.find(
 			(s) =>
 				s.issue_id === issueId &&
-				["running", "awaiting_review"].includes(s.status),
+				["running", "awaiting_review", "approved_to_ship"].includes(s.status),
 		);
 		if (alreadyActive) {
 			res.status(409).json({
