@@ -25,7 +25,7 @@ TypeScript orchestrator (forked from [Cyrus](https://github.com/ceedaragents/cyr
 ```
 Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
                                         ↓ (completed/failed)
-                              Decision Layer → Bridge API → OpenClaw (product-lead) → Slack → CEO
+                              Decision Layer → Bridge API → Discord Lead → CEO
 ```
 
 **Goal**: Autonomous dev workflow — human attention is the bottleneck, not AI capability. CEO sets direction, Flywheel executes continuously, only escalating when it genuinely needs a human decision.
@@ -203,8 +203,7 @@ When PR merges: `git mv plan/inprogress/{file} plan/archive/{file}`
 | Decision | Choice |
 |----------|--------|
 | Base | Fork Cyrus (~80% reuse) |
-| Notification | **Slack** via OpenClaw product-lead agent |
-| Agent Gateway | **OpenClaw** (persistent session, tool use, memory, multi-agent) |
+| Notification | **Discord** via Claude Code Lead agents |
 | Memory | Per-project (`.flywheel/` in each project repo) — deferred |
 | Decision Layer | Hard Rules + Haiku Triage + Verify + Route |
 | Runner | Claude Code CLI via tmux |
@@ -218,7 +217,7 @@ When PR merges: `git mv plan/inprogress/{file} plan/archive/{file}`
 - **Storage**: SQLite (`sql.js`) for StateStore
 - **Issue tracking**: Linear (`@linear/sdk`)
 - **VCS**: GitHub
-- **Agent**: OpenClaw gateway + product-lead agent → Slack
+- **Agent**: Claude Code CLI Lead agents → Discord
 
 ## Linear Project
 

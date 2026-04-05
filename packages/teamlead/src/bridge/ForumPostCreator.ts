@@ -1,6 +1,5 @@
 /**
  * GEO-195: ForumPostCreator — Bridge creates Forum Posts directly via Discord API.
- * Previously, OpenClaw Lead handled this via discord:thread-create.
  * Claude Lead can't create threads (Discord MCP plugin limitation),
  * so Bridge does it automatically when session_started has no thread_id.
  */

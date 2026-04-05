@@ -25,7 +25,7 @@ export interface ExecutionEventEmitter {
 		error: string,
 		lastActivity?: string,
 	): Promise<void>;
-	/** GEO-157: Heartbeat — dedicated route, no session_events, no OpenClaw notification */
+	/** GEO-157: Heartbeat — dedicated route, no session_events, no lead notification */
 	emitHeartbeat(env: EventEnvelope): Promise<void>;
 	flush(): Promise<void>;
 }
@@ -104,7 +104,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 	}
 
 	async emitHeartbeat(env: EventEnvelope): Promise<void> {
-		// Dedicated heartbeat route — lightweight, no session_events, no OpenClaw notification
+		// Dedicated heartbeat route — lightweight, no session_events, no lead notification
 		const p = this.postHeartbeat(env.executionId);
 		this.track(p);
 	}

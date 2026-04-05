@@ -425,7 +425,7 @@ describe("Action tools", () => {
 		beforeEach(() => {
 			capturedEnvelopes = [];
 			const mockRuntime = {
-				type: "openclaw" as const,
+				type: "claude-discord" as const,
 				deliver: vi.fn(async (env: LeadEventEnvelope) => {
 					capturedEnvelopes.push(env);
 					return { delivered: true };
@@ -539,7 +539,7 @@ describe("Action tools", () => {
 			// Create a registry with a runtime that throws on deliver
 			const failRegistry = new RuntimeRegistry();
 			const failRuntime = {
-				type: "openclaw" as const,
+				type: "claude-discord" as const,
 				deliver: vi.fn(async () => {
 					return { delivered: false, error: "connection refused" };
 				}),
@@ -592,7 +592,7 @@ describe("Action tools", () => {
 			];
 			const nfEnvelopes: LeadEventEnvelope[] = [];
 			const nfRuntime = {
-				type: "openclaw" as const,
+				type: "claude-discord" as const,
 				deliver: vi.fn(async (env: LeadEventEnvelope) => {
 					nfEnvelopes.push(env);
 					return { delivered: true };

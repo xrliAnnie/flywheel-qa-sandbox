@@ -24,7 +24,7 @@ export class SlackNotifier {
 		extra?: { tmuxSession?: string; consecutiveFailures?: number },
 	): Promise<{ sent: boolean }> {
 		// Backward compat: HR-LANDED (already merged) — skip legacy notification
-		// Production path (Bridge/OpenClaw) handles merged sessions correctly
+		// Production path (Bridge) handles merged sessions correctly
 		if (
 			decision.route === "auto_approve" &&
 			decision.hardRuleId === "HR-LANDED"

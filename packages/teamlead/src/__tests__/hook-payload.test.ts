@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	buildHookBody,
-	buildSessionKey,
-	type HookPayload,
-} from "../bridge/hook-payload.js";
+import { buildSessionKey } from "../bridge/hook-payload.js";
 
 describe("buildSessionKey", () => {
 	it("uses issue_identifier when available", () => {
@@ -20,34 +16,5 @@ describe("buildSessionKey", () => {
 		expect(
 			buildSessionKey({ issue_identifier: undefined, issue_id: "xyz" }),
 		).toBe("flywheel:xyz");
-	});
-});
-
-describe("buildHookBody", () => {
-	const payload: HookPayload = {
-		event_type: "session_completed",
-		execution_id: "exec-1",
-		issue_id: "GEO-42",
-		issue_identifier: "GEO-42",
-		status: "awaiting_review",
-	};
-
-	it("builds body with agentId and JSON message", () => {
-		const body = buildHookBody("product-lead", payload);
-		expect(body.agentId).toBe("product-lead");
-		expect(typeof body.message).toBe("string");
-		const parsed = JSON.parse(body.message as string);
-		expect(parsed.event_type).toBe("session_completed");
-		expect(parsed.execution_id).toBe("exec-1");
-	});
-
-	it("includes sessionKey when provided", () => {
-		const body = buildHookBody("product-lead", payload, "flywheel:GEO-42");
-		expect(body.sessionKey).toBe("flywheel:GEO-42");
-	});
-
-	it("omits sessionKey when not provided", () => {
-		const body = buildHookBody("product-lead", payload);
-		expect(body).not.toHaveProperty("sessionKey");
 	});
 });

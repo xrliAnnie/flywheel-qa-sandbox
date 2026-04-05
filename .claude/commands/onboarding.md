@@ -43,7 +43,6 @@ git log --oneline -10
 
 ```bash
 echo "=== Bridge ===" && curl -s --max-time 2 http://localhost:9876/health 2>/dev/null || echo "Bridge not running"
-echo "=== OpenClaw Gateway ===" && launchctl print gui/$(id -u)/ai.openclaw.gateway 2>/dev/null | grep "state =" || echo "Gateway not running"
 ```
 
 ## Output Format

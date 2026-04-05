@@ -301,7 +301,7 @@ describe("Event route", () => {
 function createMockRegistry() {
 	const envelopes: LeadEventEnvelope[] = [];
 	const mockRuntime = {
-		type: "openclaw" as const,
+		type: "claude-discord" as const,
 		deliver: vi.fn(async (env: LeadEventEnvelope) => {
 			envelopes.push(env);
 			return { delivered: true };
@@ -617,7 +617,7 @@ describe("Event route — no-forum lead (GEO-275)", () => {
 	beforeEach(async () => {
 		capturedEnvelopes = [];
 		const mockRuntime = {
-			type: "openclaw" as const,
+			type: "claude-discord" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };

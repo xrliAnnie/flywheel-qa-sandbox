@@ -2,17 +2,19 @@
 /**
  * GEO-187 E2E: EventFilter manual verification script.
  *
- * Starts a real Bridge server with mock OpenClaw gateway, then sends
- * a sequence of events through the pipeline. Shows exactly what the
- * EventFilter decides and what the agent receives.
+ * Starts a real Bridge server, then sends a sequence of events through
+ * the pipeline. Shows exactly what the EventFilter decides.
+ *
+ * NOTE (FLY-67): After OpenClaw removal, this script no longer injects a
+ * RuntimeRegistry or capture runtime. It verifies event ingestion (HTTP 200)
+ * and action endpoints, but does NOT verify notify_agent vs forum_only routing.
+ * For full EventFilter coverage, see the unit tests in event-filter-e2e.test.ts.
  *
  * Usage:
  *   pnpm build && npx tsx scripts/e2e-event-filter.ts
  *
  * No external services needed — everything runs locally.
  */
-
-import { createServer } from "node:http";
 
 // Import from compiled dist
 import { EventFilter } from "../packages/teamlead/dist/bridge/EventFilter.js";
@@ -66,44 +68,7 @@ async function main() {
 	log("This script starts a Bridge server and sends events through the");
 	log("EventFilter pipeline. Watch the routing decisions in real time.\n");
 
-	// 1. Start mock OpenClaw gateway
-	const agentNotifications: Array<{
-		agentId: string;
-		sessionKey: string;
-		payload: Record<string, unknown>;
-	}> = [];
-	const _discordCalls: Array<{ threadId: string; tags: string[] }> = [];
-
-	const gatewayServer = createServer((req, res) => {
-		let body = "";
-		req.on("data", (chunk) => {
-			body += chunk;
-		});
-		req.on("end", () => {
-			try {
-				const parsed = JSON.parse(body);
-				const payload = JSON.parse(parsed.message);
-				agentNotifications.push({
-					agentId: parsed.agentId,
-					sessionKey: parsed.sessionKey,
-					payload,
-				});
-			} catch {
-				/* ignore non-JSON */
-			}
-			res.writeHead(200, { "Content-Type": "application/json" });
-			res.end(JSON.stringify({ ok: true }));
-		});
-	});
-	gatewayServer.listen(0, "127.0.0.1");
-	await new Promise<void>((resolve) =>
-		gatewayServer.once("listening", resolve),
-	);
-	const gwAddr = gatewayServer.address();
-	const gwPort = typeof gwAddr === "object" && gwAddr ? gwAddr.port : 0;
-	log(`${DIM}Mock OpenClaw gateway: http://127.0.0.1:${gwPort}${RESET}`);
-
-	// 2. Start Bridge
+	// 1. Start Bridge
 	const store = await StateStore.create(":memory:");
 	const config: BridgeConfig = {
 		host: "127.0.0.1",
@@ -111,8 +76,6 @@ async function main() {
 		dbPath: ":memory:",
 		ingestToken: "test-ingest",
 		apiToken: "test-api",
-		gatewayUrl: `http://127.0.0.1:${gwPort}`,
-		hooksToken: "test-hooks",
 		notificationChannel: "test-channel",
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
@@ -177,9 +140,8 @@ async function main() {
 		desc: string = "",
 	) {
 		eventNum++;
-		const beforeCount = agentNotifications.length;
 
-		await fetch(`${baseUrl}/events`, {
+		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: ingestHeaders,
 			body: JSON.stringify({
@@ -197,34 +159,10 @@ async function main() {
 		});
 		await wait();
 
-		const newNotifs = agentNotifications.slice(beforeCount);
-		const notified = newNotifs.length > 0;
-
 		if (desc) log(`\n  ${DIM}${desc}${RESET}`);
+		result("HTTP status", String(res.status), res.ok ? GREEN : RED);
 
-		if (notified) {
-			const n = newNotifs[0];
-			result("Agent notified", "YES", GREEN);
-			result(
-				"filter_priority",
-				(n.payload.filter_priority as string) ?? "N/A",
-				n.payload.filter_priority === "high" ? RED : YELLOW,
-			);
-			result(
-				"notification_context",
-				(n.payload.notification_context as string) ?? "N/A",
-				DIM,
-			);
-			result(
-				"forum_tag_update_result",
-				(n.payload.forum_tag_update_result as string) ?? "N/A",
-				MAGENTA,
-			);
-		} else {
-			result("Agent notified", "NO (forum_only or skip)", YELLOW);
-		}
-
-		return { notified, notifications: newNotifs };
+		return { status: res.status };
 	}
 
 	const totalScenarios = 10;
@@ -411,19 +349,8 @@ async function main() {
 
 	// ═══ Summary ═══
 	header("Summary");
-	log(
-		`Total agent notifications sent: ${BOLD}${agentNotifications.length}${RESET}`,
-	);
-	log(`\nNotification breakdown:`);
-	for (const n of agentNotifications) {
-		const p = n.payload;
-		const priorityColor = p.filter_priority === "high" ? RED : YELLOW;
-		log(
-			`  ${DIM}•${RESET} ${p.event_type} → ${priorityColor}${p.filter_priority}${RESET} ${DIM}(${p.notification_context})${RESET}`,
-		);
-	}
 
-	log(`\nExpected routing:`);
+	log(`Expected routing:`);
 	log(
 		`  ${GREEN}✓${RESET} session_started (no thread) → notify_agent (normal)`,
 	);
@@ -441,11 +368,6 @@ async function main() {
 	// Cleanup
 	await new Promise<void>((resolve, reject) => {
 		server.close((err) => (err ? reject(err) : resolve()));
-	});
-	await new Promise<void>((resolve, reject) => {
-		gatewayServer.close((err: Error | undefined) =>
-			err ? reject(err) : resolve(),
-		);
 	});
 	store.close();
 

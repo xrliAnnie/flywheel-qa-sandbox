@@ -10,8 +10,8 @@ export interface LeadConfig {
 	match: {
 		labels: string[];
 	};
-	/** Runtime adapter for this lead. Default: "openclaw". */
-	runtime?: "openclaw" | "claude-discord";
+	/** Runtime adapter for this lead. */
+	runtime?: "claude-discord";
 	/** Discord control channel ID for claude-discord runtime (hidden, bot-only). */
 	controlChannel?: string;
 	/** Status → Discord Forum tag ID mapping for this lead's forum channel (GEO-253).
@@ -141,13 +141,9 @@ export function loadProjects(): ProjectEntry[] {
 
 			// GEO-195: validate runtime config
 			const runtime = lead.runtime;
-			if (
-				runtime !== undefined &&
-				runtime !== "openclaw" &&
-				runtime !== "claude-discord"
-			) {
+			if (runtime !== undefined && runtime !== "claude-discord") {
 				throw new Error(
-					`Project "${entry.projectName}" leads[${i}].runtime: must be "openclaw" or "claude-discord", got "${runtime}"`,
+					`Project "${entry.projectName}" leads[${i}].runtime: must be "claude-discord", got "${runtime}"`,
 				);
 			}
 			if (runtime === "claude-discord") {

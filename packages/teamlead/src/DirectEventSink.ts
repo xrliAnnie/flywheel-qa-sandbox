@@ -15,12 +15,7 @@ import {
 	type ForumTagUpdater,
 	postThreadStatusMessage,
 } from "./bridge/ForumTagUpdater.js";
-import {
-	buildHookBody,
-	buildSessionKey,
-	type HookPayload,
-	notifyAgent,
-} from "./bridge/hook-payload.js";
+import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
@@ -326,33 +321,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				`status=${session.status}`,
 		);
 
-		// Fallback: when no RuntimeRegistry is available (e.g., retry-runtime path),
-		// use the legacy notifyAgent() path directly via BridgeConfig OpenClaw credentials.
 		if (!this.registry) {
-			if (this.config.gatewayUrl && this.config.hooksToken) {
-				const sessionKey = buildSessionKey(session);
-				const hookPayload: HookPayload = {
-					event_type: eventType,
-					execution_id: env.executionId,
-					issue_id: env.issueId,
-					issue_identifier: session.issue_identifier,
-					issue_title: session.issue_title,
-					project_name: env.projectName,
-					status: session.status,
-				};
-				const body = buildHookBody(
-					this.config.defaultLeadAgentId,
-					hookPayload,
-					sessionKey,
-				);
-				this.pending.push(
-					notifyAgent(
-						this.config.gatewayUrl,
-						this.config.hooksToken,
-						body,
-					).catch(() => {}),
-				);
-			}
 			return;
 		}
 

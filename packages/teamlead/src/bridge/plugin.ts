@@ -29,7 +29,6 @@ import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { queryLinearIssues } from "./linear-query.js";
 import { createMemoryRouter } from "./memory-route.js";
-import { OpenClawRuntime } from "./openclaw-runtime.js";
 import { postMergeCleanup } from "./post-merge.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
@@ -55,30 +54,20 @@ export async function createLeadRuntime(
 	lead: LeadConfig,
 	config: BridgeConfig,
 ): Promise<LeadRuntime> {
-	if (lead.runtime === "claude-discord") {
-		if (!lead.controlChannel) {
-			throw new Error(
-				`Lead "${lead.agentId}" has runtime=claude-discord but missing controlChannel`,
-			);
-		}
-		// GEO-252: use per-lead botToken, fall back to global DISCORD_BOT_TOKEN
-		const token = lead.botToken ?? config.discordBotToken;
-		if (!token) {
-			throw new Error(
-				`Lead "${lead.agentId}" has runtime=claude-discord but no botToken (botTokenEnv=${lead.botTokenEnv ?? "unset"}) and DISCORD_BOT_TOKEN is not set`,
-			);
-		}
-		const { ClaudeDiscordRuntime } = await import(
-			"./claude-discord-runtime.js"
-		);
-		return new ClaudeDiscordRuntime(lead.controlChannel, token);
-	}
-	if (!config.gatewayUrl || !config.hooksToken) {
+	if (!lead.controlChannel) {
 		throw new Error(
-			`Lead "${lead.agentId}" uses openclaw runtime but OPENCLAW_GATEWAY_URL or OPENCLAW_HOOKS_TOKEN is not set`,
+			`Lead "${lead.agentId}" has runtime=claude-discord but missing controlChannel`,
 		);
 	}
-	return new OpenClawRuntime(config.gatewayUrl, config.hooksToken);
+	// GEO-252: use per-lead botToken, fall back to global DISCORD_BOT_TOKEN
+	const token = lead.botToken ?? config.discordBotToken;
+	if (!token) {
+		throw new Error(
+			`Lead "${lead.agentId}" has runtime=claude-discord but no botToken (botTokenEnv=${lead.botTokenEnv ?? "unset"}) and DISCORD_BOT_TOKEN is not set`,
+		);
+	}
+	const { ClaudeDiscordRuntime } = await import("./claude-discord-runtime.js");
+	return new ClaudeDiscordRuntime(lead.controlChannel, token);
 }
 
 function safeCompare(a: string, b: string): boolean {
@@ -1198,8 +1187,9 @@ export async function startBridge(
 				const runtime = await createLeadRuntime(lead, config);
 				registry.register(lead, runtime);
 			} catch (err) {
-				// Non-fatal for openclaw leads without gateway (test/dev environments)
+				// Fail fast for explicitly configured claude-discord leads
 				if (lead.runtime === "claude-discord") throw err;
+				// Warn for leads without explicit runtime (test/dev environments)
 				console.warn(
 					`[Bridge] Skipping runtime for "${lead.agentId}":`,
 					(err as Error).message,

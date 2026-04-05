@@ -233,7 +233,7 @@ export async function approveExecution(
 		actionId: `flywheel_approve_${session.issue_id}`,
 		issueId: session.issue_id,
 		action: "approve",
-		userId: "openclaw-agent",
+		userId: "lead-agent",
 		responseUrl: "",
 		messageTs: Date.now().toString(),
 		executionId: session.execution_id,

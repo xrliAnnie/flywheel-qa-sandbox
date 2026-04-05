@@ -554,7 +554,7 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 		);
 	});
 
-	it("does not throw when botTokenEnv missing for non-claude-discord runtime", () => {
+	it("does not throw when botTokenEnv missing for default (non-explicit) runtime", () => {
 		savedTokenEnv = process.env.TEST_PETER_TOKEN;
 		delete process.env.TEST_PETER_TOKEN;
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
@@ -564,7 +564,7 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 				leads: [
 					{
 						...baseLead,
-						runtime: "openclaw",
+						runtime: undefined,
 						controlChannel: undefined,
 						botTokenEnv: "TEST_PETER_TOKEN",
 					},

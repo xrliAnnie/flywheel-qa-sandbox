@@ -13,9 +13,7 @@ function makeLead(overrides?: Partial<LeadConfig>): LeadConfig {
 	};
 }
 
-function makeRuntime(
-	type: "openclaw" | "claude-discord" = "openclaw",
-): LeadRuntime {
+function makeRuntime(type: "claude-discord" = "claude-discord"): LeadRuntime {
 	return {
 		type,
 		deliver: vi.fn().mockResolvedValue({ delivered: true }),
@@ -54,7 +52,7 @@ describe("RuntimeRegistry", () => {
 
 	it("resolve() finds runtime by project + labels", () => {
 		const reg = new RuntimeRegistry();
-		const productRt = makeRuntime("openclaw");
+		const productRt = makeRuntime("claude-discord");
 		const opsRt = makeRuntime("claude-discord");
 		reg.register(
 			makeLead({ agentId: "product-lead", match: { labels: ["Product"] } }),

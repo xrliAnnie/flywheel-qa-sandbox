@@ -263,7 +263,7 @@ describe("HeartbeatService", () => {
 function createMockRegistry() {
 	const envelopes: LeadEventEnvelope[] = [];
 	const mockRuntime = {
-		type: "openclaw" as const,
+		type: "claude-discord" as const,
 		deliver: vi.fn(async (env: LeadEventEnvelope) => {
 			envelopes.push(env);
 			return { delivered: true };
@@ -391,7 +391,7 @@ describe("RegistryHeartbeatNotifier", () => {
 		];
 		const envelopes: LeadEventEnvelope[] = [];
 		const mockRuntime = {
-			type: "openclaw" as const,
+			type: "claude-discord" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				envelopes.push(env);
 				return { delivered: true };
