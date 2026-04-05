@@ -86,7 +86,10 @@ export class ForumTagUpdater {
 		if (ctx.action && SKIP_ACTIONS.has(ctx.action)) return "skipped";
 
 		const effectiveMap = ctx.statusTagMap ?? this.statusTagMap;
-		const tagIds = effectiveMap[ctx.status];
+		// FLY-58: approved_to_ship reuses approved's forum tags
+		const tagIds =
+			effectiveMap[ctx.status] ??
+			(ctx.status === "approved_to_ship" ? effectiveMap.approved : undefined);
 		if (!tagIds) return "skipped";
 
 		try {
