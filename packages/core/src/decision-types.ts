@@ -10,7 +10,8 @@ export type DecisionSource =
 	| "haiku_triage"
 	| "haiku_verify"
 	| "fallback_heuristic"
-	| "decision_error_fallback";
+	| "decision_error_fallback"
+	| "fallback_needs_review";
 
 /** Landing status signal from flywheel-land skill */
 export interface LandingStatus {
