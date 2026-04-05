@@ -287,7 +287,7 @@ describe("Blueprint", () => {
 
 	// ─── Window lifecycle ───────────────────────────
 
-	it("kills tmux window on success", async () => {
+	it("preserves tmux window on success for review (FLY-51)", async () => {
 		const shell = makeMockShell();
 		const blueprint = new Blueprint(
 			makeHydrator(),
@@ -296,15 +296,16 @@ describe("Blueprint", () => {
 			shell,
 		);
 
-		await blueprint.run(makeNode(), "/project", makeContext());
+		const result = await blueprint.run(makeNode(), "/project", makeContext());
 
+		// Window must NOT be killed — stays open for human review
 		const shellCalls = (shell.execFile as ReturnType<typeof vi.fn>).mock.calls;
 		const killCalls = shellCalls.filter(
 			(c: [string, string[], string]) =>
 				c[0] === "tmux" && c[1][0] === "kill-window",
 		);
-		expect(killCalls).toHaveLength(1);
-		expect(killCalls[0]![1]).toContain("flywheel:@42");
+		expect(killCalls).toHaveLength(0);
+		expect(result.tmuxWindow).toBe("flywheel:@42");
 	});
 
 	it("preserves tmux window on failure", async () => {
@@ -326,8 +327,8 @@ describe("Blueprint", () => {
 		expect(killCalls).toHaveLength(0);
 	});
 
-	it("returns tmuxWindow only for failed sessions", async () => {
-		// Success: no tmuxWindow in result
+	it("returns tmuxWindow for both success and failure (FLY-51)", async () => {
+		// Success: tmuxWindow preserved for review
 		const successBlueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 1 }),
@@ -339,9 +340,9 @@ describe("Blueprint", () => {
 			"/project",
 			makeContext(),
 		);
-		expect(successResult.tmuxWindow).toBeUndefined();
+		expect(successResult.tmuxWindow).toBe("flywheel:@42");
 
-		// Failure: tmuxWindow preserved
+		// Failure: tmuxWindow preserved for inspection
 		const failBlueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker({ commitCount: 0 }),
@@ -382,7 +383,7 @@ describe("Blueprint", () => {
 		expect(killCalls).toHaveLength(0);
 	});
 
-	it("kills tmux window only when success AND not timed out", async () => {
+	it("preserves tmux window even on success without timeout (FLY-51)", async () => {
 		const shell = makeMockShell();
 		const blueprint = new Blueprint(
 			makeHydrator(),
@@ -394,14 +395,15 @@ describe("Blueprint", () => {
 		const result = await blueprint.run(makeNode(), "/project", makeContext());
 
 		expect(result.success).toBe(true);
-		expect(result.tmuxWindow).toBeUndefined();
+		expect(result.tmuxWindow).toBe("flywheel:@42");
 
+		// No kill calls — window preserved for review
 		const shellCalls = (shell.execFile as ReturnType<typeof vi.fn>).mock.calls;
 		const killCalls = shellCalls.filter(
 			(c: [string, string[], string]) =>
 				c[0] === "tmux" && c[1][0] === "kill-window",
 		);
-		expect(killCalls).toHaveLength(1);
+		expect(killCalls).toHaveLength(0);
 	});
 
 	// ─── GEO-206: Lead ↔ Runner communication prompt ──

@@ -483,17 +483,14 @@ export class Blueprint {
 		// ── v0.1.1 fallback: no DecisionLayer ─────────────────
 		const success = gitResult.commitCount > 0 && !result.timedOut;
 
-		if (result.tmuxWindow) {
-			if (success) {
-				await this.killTmuxWindow(result.tmuxWindow);
-			}
-		}
+		// FLY-51: Never kill tmux window here. Window stays open for human
+		// review. postMergeCleanup closes it after explicit approve.
 
 		return {
 			success,
 			costUsd: result.costUsd,
 			sessionId: result.sessionId,
-			tmuxWindow: success ? undefined : result.tmuxWindow,
+			tmuxWindow: result.tmuxWindow,
 			durationMs: result.durationMs,
 			worktreePath: worktreeInfo?.worktreePath,
 			evidence,
