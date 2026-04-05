@@ -99,7 +99,7 @@ describe("applyTransition", () => {
 		applyTransition(
 			opts,
 			"exec-1",
-			"approved",
+			"approved_to_ship",
 			makeCtx({ trigger: "approve" }),
 		);
 
@@ -114,7 +114,7 @@ describe("applyTransition", () => {
 		expect(result.error).toContain("not allowed");
 
 		// Status unchanged
-		expect(store.getSession("exec-1")!.status).toBe("approved");
+		expect(store.getSession("exec-1")!.status).toBe("approved_to_ship");
 	});
 
 	it("GEO-168: retry (failed → running) rejected by FSM — composite action, not simple transition", () => {

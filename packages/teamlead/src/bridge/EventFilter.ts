@@ -103,14 +103,15 @@ const FILTER_RULES: FilterRule[] = [
 			reason: "session started — thread exists, Forum tag update only",
 		},
 	},
+	// FLY-58/FLY-61: approved completion → notify Lead so it tells Annie "已 ship"
 	{
 		match: (et, p) =>
 			et === "session_completed" &&
 			(p.decision_route === "approved" || p.status === "approved"),
 		result: {
-			action: "forum_only",
-			priority: "low",
-			reason: "approved completion — Forum tag update only",
+			action: "notify_agent",
+			priority: "normal",
+			reason: "approved completion — notify Lead",
 		},
 	},
 ];

@@ -121,7 +121,8 @@ describe("EventFilter", () => {
 			expect(result.priority).toBe("normal");
 		});
 
-		it("session_completed + approved → forum_only (low)", () => {
+		// FLY-58/FLY-61: approved completion now notifies agent (was forum_only)
+		it("session_completed + approved → notify_agent (normal)", () => {
 			const result = filter.classify(
 				"session_completed",
 				makePayload({
@@ -129,8 +130,8 @@ describe("EventFilter", () => {
 					decision_route: "approved",
 				}),
 			);
-			expect(result.action).toBe("forum_only");
-			expect(result.priority).toBe("low");
+			expect(result.action).toBe("notify_agent");
+			expect(result.priority).toBe("normal");
 		});
 	});
 

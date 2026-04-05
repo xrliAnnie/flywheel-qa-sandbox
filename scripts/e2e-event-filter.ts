@@ -28,10 +28,10 @@ import { StateStore } from "../packages/teamlead/dist/StateStore.js";
 const BOLD = "\x1b[1m";
 const DIM = "\x1b[2m";
 const GREEN = "\x1b[32m";
-const YELLOW = "\x1b[33m";
+const _YELLOW = "\x1b[33m";
 const RED = "\x1b[31m";
 const CYAN = "\x1b[36m";
-const MAGENTA = "\x1b[35m";
+const _MAGENTA = "\x1b[35m";
 const RESET = "\x1b[0m";
 
 function log(msg: string) {

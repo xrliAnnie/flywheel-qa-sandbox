@@ -33,10 +33,14 @@ describe("WorkflowFSM", () => {
 		["running", "blocked"],
 		["running", "completed"],
 		["running", "failed"],
-		["awaiting_review", "approved"],
+		// FLY-58: awaiting_review → approved_to_ship (approve action)
+		["awaiting_review", "approved_to_ship"],
 		["awaiting_review", "rejected"],
 		["awaiting_review", "deferred"],
 		["awaiting_review", "shelved"],
+		// FLY-58: approved_to_ship → completed/shelved
+		["approved_to_ship", "completed"],
+		["approved_to_ship", "shelved"],
 		// GEO-168: blocked/failed/rejected → running removed (retry is composite)
 		["blocked", "deferred"],
 		["blocked", "shelved"],
@@ -66,6 +70,10 @@ describe("WorkflowFSM", () => {
 		["blocked", "running"],
 		["failed", "running"],
 		["rejected", "running"],
+		// FLY-58: awaiting_review → approved no longer valid (replaced by approved_to_ship)
+		["awaiting_review", "approved"],
+		// FLY-58: approved_to_ship → running not allowed
+		["approved_to_ship", "running"],
 	];
 
 	it.each(invalidTransitions)("rejects transition %s → %s", (from, to) => {
@@ -141,6 +149,7 @@ describe("WorkflowFSM", () => {
 		expect(fsm.isTerminal("pending")).toBe(false);
 		expect(fsm.isTerminal("running")).toBe(false);
 		expect(fsm.isTerminal("awaiting_review")).toBe(false);
+		expect(fsm.isTerminal("approved_to_ship")).toBe(false);
 		expect(fsm.isTerminal("blocked")).toBe(false);
 		expect(fsm.isTerminal("failed")).toBe(false);
 		expect(fsm.isTerminal("rejected")).toBe(false);
@@ -298,7 +307,7 @@ describe("allowedActionsForState", () => {
 
 describe("getActionTarget", () => {
 	it("returns target state for known actions", () => {
-		expect(getActionTarget("approve")).toBe("approved");
+		expect(getActionTarget("approve")).toBe("approved_to_ship");
 		expect(getActionTarget("reject")).toBe("rejected");
 		expect(getActionTarget("defer")).toBe("deferred");
 		expect(getActionTarget("retry")).toBe("running");

@@ -29,7 +29,7 @@ import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { queryLinearIssues } from "./linear-query.js";
 import { createMemoryRouter } from "./memory-route.js";
-import { postMergeCleanup } from "./post-merge.js";
+// post-merge.ts kept but no longer wired to approve — will be used by Runner ship path
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import { setupRunInfrastructure } from "./run-infra.js";
@@ -264,26 +264,8 @@ export function createBridgeApp(
 		}
 	});
 
-	// GEO-280: Post-merge cleanup callback (fire-and-forget after approve)
-	// Bridge only closes tmux session + audit. Other cleanup (worktree, docs) is Runner/Orchestrator responsibility.
-	const onApproved = (
-		executionId: string,
-		session: { issue_id: string; project_name: string },
-	) => {
-		postMergeCleanup(
-			{
-				executionId,
-				issueId: session.issue_id,
-				projectName: session.project_name,
-			},
-			store,
-		).catch((err) => {
-			console.error(
-				`[post-merge] Cleanup failed for ${executionId}:`,
-				(err as Error).message,
-			);
-		});
-	};
+	// FLY-58: Post-merge cleanup no longer wired to approve — Runner ship stage handles merge.
+	// postMergeCleanup will be wired to the ship/completed transition in a future task.
 
 	// Dashboard actions — no auth (loopback only, same handlers as /api/actions)
 	app.use(
@@ -298,7 +280,6 @@ export function createBridgeApp(
 			eventFilter,
 			forumTagUpdater,
 			registry,
-			onApproved,
 		),
 	);
 
@@ -344,7 +325,6 @@ export function createBridgeApp(
 			eventFilter,
 			forumTagUpdater,
 			registry,
-			onApproved,
 		),
 	);
 

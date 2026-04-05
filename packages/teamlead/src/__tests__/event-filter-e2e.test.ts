@@ -277,10 +277,11 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		});
 		await wait();
 
-		// Approved → forum_only, no agent notification
-		expect(capturedEnvelopes.length).toBe(0);
+		// FLY-58/FLY-61: Approved completion now notifies agent (was forum_only)
+		expect(capturedEnvelopes.length).toBe(1);
+		expect(capturedEnvelopes[0].event.event_type).toBe("session_completed");
 
-		// Verify session status is approved
+		// Verify session status is approved (auto_approve path still uses "approved")
 		const session = store.getSession("exec-approved");
 		expect(session!.status).toBe("approved");
 	});

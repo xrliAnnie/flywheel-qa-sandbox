@@ -6,6 +6,7 @@ import initSqlJs, { type Database } from "sql.js";
 export const OUTCOME_STATUSES = [
 	"completed",
 	"approved",
+	"approved_to_ship",
 	"blocked",
 	"failed",
 	"rejected",
@@ -757,7 +758,7 @@ export class StateStore {
 
 	getActiveSessions(): Session[] {
 		const stmt = this.db.prepare(
-			"SELECT * FROM sessions WHERE status IN ('running', 'awaiting_review')",
+			"SELECT * FROM sessions WHERE status IN ('running', 'awaiting_review', 'approved_to_ship')",
 		);
 		const rows: Session[] = [];
 		while (stmt.step()) {

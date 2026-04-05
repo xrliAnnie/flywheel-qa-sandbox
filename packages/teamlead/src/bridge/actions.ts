@@ -1,16 +1,13 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
-import { ApproveHandler } from "flywheel-edge-worker";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
-import type { Session, StateStore } from "../StateStore.js";
+import type { StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
 import {
 	type ForumTagUpdater,
@@ -24,19 +21,6 @@ import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER } from "./stage-utils.js";
 import { getTmuxTargetFromCommDb, killTmuxSession } from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
-
-type ExecFn = (
-	cmd: string,
-	args: string[],
-	cwd: string,
-) => Promise<{ stdout: string }>;
-
-const execFileAsync = promisify(execFile);
-
-const defaultExec: ExecFn = async (cmd, args, cwd) => {
-	const result = await execFileAsync(cmd, args, { cwd, encoding: "utf-8" });
-	return { stdout: result.stdout };
-};
 
 /** @deprecated Use ACTION_DEFINITIONS from flywheel-core instead (GEO-158). */
 export const ACTION_SOURCE_STATUS: Record<string, string[]> = {
@@ -190,14 +174,12 @@ export async function approveExecution(
 	projects: ProjectEntry[],
 	executionId: string,
 	identifier?: string,
-	execFn?: ExecFn,
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
 	cipherWriter?: CipherWriter,
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 	registry?: RuntimeRegistry,
-	onApproved?: (executionId: string, session: Session) => void,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -214,121 +196,89 @@ export async function approveExecution(
 		};
 	}
 
-	const project = projects.find((p) => p.projectName === session.project_name);
-	if (!project) {
-		return {
-			success: false,
-			message: `Unknown project: ${session.project_name}`,
-		};
+	// FLY-58: Approve only writes status — no merge. Runner ship stage handles merge.
+	const ceoActionTimestamp = new Date().toISOString();
+	let transitionRejected = false;
+	if (transitionOpts) {
+		const fsmResult = applyTransition(
+			transitionOpts,
+			session.execution_id,
+			"approved_to_ship",
+			{
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				trigger: "approve",
+			},
+			{ last_activity_at: sqliteDatetime() },
+		);
+		if (!fsmResult.ok) {
+			console.warn(
+				`[actions] FSM rejected approve for ${executionId}: ${fsmResult.error}`,
+			);
+			transitionRejected = true;
+		}
+	} else {
+		store.upsertSession({
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			issue_identifier: session.issue_identifier,
+			issue_title: session.issue_title,
+			project_name: session.project_name,
+			status: "approved_to_ship",
+			last_activity_at: sqliteDatetime(),
+		});
 	}
 
-	// Capture timestamp before execute() so CIPHER doesn't include merge latency
-	const ceoActionTimestamp = new Date().toISOString();
-	const handler = new ApproveHandler(
-		execFn ?? defaultExec,
-		project.projectRoot,
-		project.projectRepo,
-	);
-	const result = await handler.execute({
-		actionId: `flywheel_approve_${session.issue_id}`,
-		issueId: session.issue_id,
-		action: "approve",
-		userId: "lead-agent",
-		responseUrl: "",
-		messageTs: Date.now().toString(),
-		executionId: session.execution_id,
-	});
-
-	if (result.success) {
-		let transitionRejected = false;
-		if (transitionOpts) {
-			const fsmResult = applyTransition(
-				transitionOpts,
-				session.execution_id,
-				"approved",
-				{
-					executionId: session.execution_id,
-					issueId: session.issue_id,
-					projectName: session.project_name,
-					trigger: "approve",
-				},
-				{ last_activity_at: sqliteDatetime() },
-			);
-			if (!fsmResult.ok) {
-				console.warn(
-					`[actions] FSM rejected approve for ${executionId}: ${fsmResult.error}`,
-				);
-				transitionRejected = true;
-			}
-		} else {
-			store.upsertSession({
-				execution_id: session.execution_id,
-				issue_id: session.issue_id,
-				issue_identifier: session.issue_identifier,
-				issue_title: session.issue_title,
-				project_name: session.project_name,
-				status: "approved",
-				last_activity_at: sqliteDatetime(),
+	if (!transitionRejected) {
+		// GEO-292: Auto-set session_stage to "ship" on approve (only advance)
+		const currentSession = store.getSession(session.execution_id);
+		const currentOrder = STAGE_ORDER[currentSession?.session_stage ?? ""] ?? -1;
+		if ((STAGE_ORDER.ship ?? 9) > currentOrder) {
+			store.patchSessionMetadata(session.execution_id, {
+				session_stage: "ship",
+				stage_updated_at: sqliteDatetime(),
 			});
 		}
 
-		if (!transitionRejected) {
-			// GEO-292: Auto-set session_stage to "ship" on approve (only advance)
-			const currentSession = store.getSession(session.execution_id);
-			const currentOrder =
-				STAGE_ORDER[currentSession?.session_stage ?? ""] ?? -1;
-			if ((STAGE_ORDER.ship ?? 9) > currentOrder) {
-				store.patchSessionMetadata(session.execution_id, {
-					session_stage: "ship",
-					stage_updated_at: sqliteDatetime(),
+		sendActionHook(
+			store,
+			projects,
+			executionId,
+			"approve",
+			"awaiting_review",
+			"approved_to_ship",
+			undefined,
+			eventFilter,
+			forumTagUpdater,
+			registry,
+			config,
+		);
+
+		// CIPHER: record approve outcome
+		if (cipherWriter && session.status === "awaiting_review") {
+			try {
+				await cipherWriter.recordOutcome({
+					executionId,
+					ceoAction: "approve",
+					ceoActionTimestamp,
+					sourceStatus: session.status,
 				});
-			}
-
-			sendActionHook(
-				store,
-				projects,
-				executionId,
-				"approve",
-				"awaiting_review",
-				"approved",
-				undefined,
-				eventFilter,
-				forumTagUpdater,
-				registry,
-				config,
-			);
-
-			// CIPHER: record approve outcome
-			if (cipherWriter && session.status === "awaiting_review") {
-				try {
-					await cipherWriter.recordOutcome({
-						executionId,
-						ceoAction: "approve",
-						ceoActionTimestamp,
-						sourceStatus: session.status,
-					});
-				} catch {
-					console.error(
-						`[CIPHER] recordOutcome failed for approve ${executionId}`,
-					);
-				}
-			}
-
-			// GEO-280: Post-merge cleanup (fire-and-forget, error-isolated)
-			if (onApproved) {
-				void Promise.resolve()
-					.then(() => onApproved(executionId, session))
-					.catch((err) => {
-						console.error(
-							`[post-merge] onApproved callback error for ${executionId}:`,
-							(err as Error).message,
-						);
-					});
+			} catch {
+				console.error(
+					`[CIPHER] recordOutcome failed for approve ${executionId}`,
+				);
 			}
 		}
 	}
 
-	return result;
+	const id = identifier ?? session.issue_identifier ?? executionId;
+	return {
+		success: !transitionRejected,
+		message: transitionRejected
+			? `Approve transition rejected for ${id}`
+			: `${id} approved (awaiting ship)`,
+	};
 }
 
 export async function transitionSession(
@@ -749,7 +699,6 @@ export function createActionRouter(
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 	registry?: RuntimeRegistry,
-	onApproved?: (executionId: string, session: Session) => void,
 ): Router {
 	const router = Router();
 
@@ -781,14 +730,12 @@ export function createActionRouter(
 					projects,
 					execution_id,
 					identifier,
-					undefined,
 					transitionOpts,
 					config,
 					cipherWriter,
 					eventFilter,
 					forumTagUpdater,
 					registry,
-					onApproved,
 				);
 				if (result.success) {
 					res.json({

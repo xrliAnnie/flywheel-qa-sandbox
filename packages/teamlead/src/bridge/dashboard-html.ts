@@ -45,6 +45,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 .badge-awaiting_review{background:rgba(210,153,34,.15);color:var(--yellow)}
 .badge-completed{background:rgba(139,148,158,.15);color:var(--text-muted)}
 .badge-approved{background:rgba(63,185,80,.15);color:var(--green)}
+.badge-approved_to_ship{background:rgba(210,153,34,.15);color:var(--yellow)}
 .badge-blocked{background:rgba(248,81,73,.15);color:var(--red)}
 .badge-failed{background:rgba(248,81,73,.15);color:var(--red)}
 .badge-rejected{background:rgba(248,81,73,.15);color:var(--red)}

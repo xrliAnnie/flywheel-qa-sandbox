@@ -38,19 +38,7 @@ const testProjects: ProjectEntry[] = [
 	},
 ];
 
-// ApproveHandler calls execFn twice:
-// 1. gh pr list ... --json number,url → must return JSON array of PRs
-// 2. gh pr merge ... → any output is fine
-const mockExec = vi.fn(async (_cmd: string, args: string[]) => {
-	if (args.includes("list")) {
-		return {
-			stdout: JSON.stringify([
-				{ number: 42, url: "https://github.com/test/pr/42" },
-			]),
-		};
-	}
-	return { stdout: "merged" };
-});
+// FLY-58: approveExecution no longer calls ApproveHandler (no merge on approve).
 
 describe("Action tools", () => {
 	let store: StateStore;
@@ -65,7 +53,6 @@ describe("Action tools", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
-		mockExec.mockClear();
 	});
 
 	afterEach(async () => {
@@ -84,15 +71,8 @@ describe("Action tools", () => {
 			issue_identifier: "GEO-95",
 		});
 
-		const result = await approveExecution(
-			store,
-			testProjects,
-			"e1",
-			"GEO-95",
-			mockExec,
-		);
+		const result = await approveExecution(store, testProjects, "e1", "GEO-95");
 		expect(result.success).toBe(true);
-		expect(mockExec).toHaveBeenCalled();
 	});
 
 	it("POST /api/actions/approve without execution_id returns 400", async () => {
@@ -106,7 +86,8 @@ describe("Action tools", () => {
 		expect(body.error).toContain("execution_id");
 	});
 
-	it("POST /api/actions/approve passes internal issue_id to ApproveHandler", async () => {
+	// FLY-58: approve no longer calls ApproveHandler — no merge, just status write
+	it("POST /api/actions/approve does not trigger merge (FLY-58)", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "internal-uuid-123",
@@ -115,16 +96,13 @@ describe("Action tools", () => {
 			issue_identifier: "GEO-95",
 		});
 
-		await approveExecution(store, testProjects, "e1", "GEO-95", mockExec);
-
-		// ApproveHandler receives issueId in the action payload
-		const callArgs = mockExec.mock.calls[0];
-		// The ApproveHandler constructs a branch name from issueId: flywheel-${issueId}
-		// It calls exec with ["gh", "pr", "merge", ...] — the issueId is in the branch name
-		expect(callArgs).toBeDefined();
+		const result = await approveExecution(store, testProjects, "e1", "GEO-95");
+		expect(result.success).toBe(true);
+		// Status should be approved_to_ship, not approved
+		expect(store.getSession("e1")!.status).toBe("approved_to_ship");
 	});
 
-	it("POST /api/actions/approve transitions session to approved on success", async () => {
+	it("POST /api/actions/approve transitions session to approved_to_ship on success", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -132,17 +110,11 @@ describe("Action tools", () => {
 			status: "awaiting_review",
 		});
 
-		const result = await approveExecution(
-			store,
-			testProjects,
-			"e1",
-			undefined,
-			mockExec,
-		);
+		const result = await approveExecution(store, testProjects, "e1");
 		expect(result.success).toBe(true);
 
 		const session = store.getSession("e1");
-		expect(session!.status).toBe("approved");
+		expect(session!.status).toBe("approved_to_ship");
 	});
 
 	it("POST /api/actions/approve updates last_activity_at on success (SQLite format)", async () => {
@@ -154,7 +126,7 @@ describe("Action tools", () => {
 			last_activity_at: "2026-01-01 00:00:00",
 		});
 
-		await approveExecution(store, testProjects, "e1", undefined, mockExec);
+		await approveExecution(store, testProjects, "e1");
 
 		const session = store.getSession("e1");
 		// SQLite datetime format: YYYY-MM-DD HH:MM:SS (no T, no Z)
@@ -163,7 +135,8 @@ describe("Action tools", () => {
 		);
 	});
 
-	it("approved session no longer returned by getActiveSessions()", async () => {
+	// FLY-58: approved_to_ship IS returned by getActiveSessions (awaiting Runner ship)
+	it("approved_to_ship session still returned by getActiveSessions()", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -172,8 +145,9 @@ describe("Action tools", () => {
 		});
 
 		expect(store.getActiveSessions()).toHaveLength(1);
-		await approveExecution(store, testProjects, "e1", undefined, mockExec);
-		expect(store.getActiveSessions()).toHaveLength(0);
+		await approveExecution(store, testProjects, "e1");
+		expect(store.getActiveSessions()).toHaveLength(1);
+		expect(store.getActiveSessions()[0]!.status).toBe("approved_to_ship");
 	});
 
 	it("approve with nonexistent execution_id returns error", async () => {
@@ -460,7 +434,6 @@ describe("Action tools", () => {
 				testProjects,
 				"e1",
 				"GEO-99",
-				mockExec,
 				undefined, // transitionOpts
 				undefined, // config
 				undefined, // cipherWriter
@@ -477,8 +450,8 @@ describe("Action tools", () => {
 			expect(payload.event_type).toBe("action_executed");
 			expect(payload.action).toBe("approve");
 			expect(payload.action_source_status).toBe("awaiting_review");
-			expect(payload.action_target_status).toBe("approved");
-			expect(payload.status).toBe("approved");
+			expect(payload.action_target_status).toBe("approved_to_ship");
+			expect(payload.status).toBe("approved_to_ship");
 		});
 
 		it("reject sends action_executed hook with reason", async () => {
@@ -623,7 +596,6 @@ describe("Action tools", () => {
 				noForumProjects,
 				"e-nf",
 				"GEO-400",
-				mockExec,
 				undefined,
 				undefined,
 				undefined,
@@ -779,7 +751,6 @@ describe("GEO-292: approve sets session_stage", () => {
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
-		mockExec.mockClear();
 	});
 
 	it("approve sets session_stage='ship' when current stage is earlier", async () => {
@@ -793,17 +764,11 @@ describe("GEO-292: approve sets session_stage", () => {
 			stage_updated_at: "2026-03-30 10:00:00",
 		});
 
-		const result = await approveExecution(
-			store,
-			testProjects,
-			"e1",
-			"GEO-292",
-			mockExec,
-		);
+		const result = await approveExecution(store, testProjects, "e1", "GEO-292");
 		expect(result.success).toBe(true);
 
 		const session = store.getSession("e1");
-		expect(session!.status).toBe("approved");
+		expect(session!.status).toBe("approved_to_ship");
 		expect(session!.session_stage).toBe("ship");
 		expect(session!.stage_updated_at).toBeDefined();
 		// stage_updated_at should be updated to a newer timestamp
@@ -820,13 +785,7 @@ describe("GEO-292: approve sets session_stage", () => {
 			stage_updated_at: "2026-03-30 10:00:00",
 		});
 
-		const result = await approveExecution(
-			store,
-			testProjects,
-			"e1",
-			undefined,
-			mockExec,
-		);
+		const result = await approveExecution(store, testProjects, "e1");
 		expect(result.success).toBe(true);
 		expect(store.getSession("e1")!.session_stage).toBe("ship");
 	});
@@ -839,23 +798,22 @@ describe("GEO-292: approve sets session_stage", () => {
 			status: "awaiting_review",
 		});
 
-		await approveExecution(store, testProjects, "e1", undefined, mockExec);
+		await approveExecution(store, testProjects, "e1");
 
 		const session = store.getSession("e1");
 		expect(session!.session_stage).toBe("ship");
 	});
 });
 
-// --- GEO-280: onApproved callback tests ---
-describe("GEO-280: onApproved callback", () => {
+// --- FLY-58: approve no longer triggers merge or onApproved callback ---
+describe("FLY-58: approve writes status only (no merge)", () => {
 	let store: StateStore;
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
-		mockExec.mockClear();
 	});
 
-	it("approve calls onApproved callback on success", async () => {
+	it("approve from awaiting_review succeeds and sets approved_to_ship", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -864,124 +822,29 @@ describe("GEO-280: onApproved callback", () => {
 			issue_identifier: "GEO-280",
 		});
 
-		const onApproved = vi.fn();
-		await approveExecution(
-			store,
-			testProjects,
-			"e1",
-			"GEO-280",
-			mockExec,
-			undefined, // transitionOpts
-			undefined, // config
-			undefined, // cipherWriter
-			undefined, // eventFilter
-			undefined, // forumTagUpdater
-			undefined, // registry
-			onApproved,
-		);
+		const result = await approveExecution(store, testProjects, "e1", "GEO-280");
 
-		// onApproved is fire-and-forget (microtask), give it a tick
-		await new Promise((r) => setTimeout(r, 50));
-		expect(onApproved).toHaveBeenCalledWith(
-			"e1",
-			expect.objectContaining({
-				execution_id: "e1",
-				issue_id: "i1",
-				project_name: "geoforge3d",
-			}),
-		);
-	});
-
-	it("no onApproved on merge failure", async () => {
-		store.upsertSession({
-			execution_id: "e1",
-			issue_id: "i1",
-			project_name: "geoforge3d",
-			status: "awaiting_review",
-		});
-
-		const failExec = vi.fn(async () => {
-			throw new Error("merge failed");
-		});
-
-		const onApproved = vi.fn();
-		await approveExecution(
-			store,
-			testProjects,
-			"e1",
-			undefined,
-			failExec,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			onApproved,
-		);
-
-		await new Promise((r) => setTimeout(r, 50));
-		expect(onApproved).not.toHaveBeenCalled();
-	});
-
-	it("no onApproved on FSM rejection (wrong status)", async () => {
-		store.upsertSession({
-			execution_id: "e1",
-			issue_id: "i1",
-			project_name: "geoforge3d",
-			status: "running", // can't approve from running
-		});
-
-		const onApproved = vi.fn();
-		const result = await approveExecution(
-			store,
-			testProjects,
-			"e1",
-			undefined,
-			mockExec,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			onApproved,
-		);
-
-		await new Promise((r) => setTimeout(r, 50));
-		expect(result.success).toBe(false);
-		expect(onApproved).not.toHaveBeenCalled();
-	});
-
-	it("onApproved error does not affect approve result", async () => {
-		store.upsertSession({
-			execution_id: "e1",
-			issue_id: "i1",
-			project_name: "geoforge3d",
-			status: "awaiting_review",
-		});
-
-		const onApproved = vi.fn(() => {
-			throw new Error("callback exploded");
-		});
-
-		const result = await approveExecution(
-			store,
-			testProjects,
-			"e1",
-			undefined,
-			mockExec,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			onApproved,
-		);
-
-		await new Promise((r) => setTimeout(r, 50));
 		expect(result.success).toBe(true);
-		expect(store.getSession("e1")!.status).toBe("approved");
+		expect(result.message).toContain("approved");
+		expect(store.getSession("e1")!.status).toBe("approved_to_ship");
+	});
+
+	it("approve from wrong status fails", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+
+		const result = await approveExecution(store, testProjects, "e1");
+
+		expect(result.success).toBe(false);
+		expect(result.message).toContain('expected "awaiting_review"');
+	});
+
+	it("approved_to_ship is included in OUTCOME_STATUSES", async () => {
+		const { OUTCOME_STATUSES } = await import("../StateStore.js");
+		expect(OUTCOME_STATUSES).toContain("approved_to_ship");
 	});
 });

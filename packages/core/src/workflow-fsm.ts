@@ -127,7 +127,8 @@ export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 		"failed",
 		"terminated",
 	],
-	awaiting_review: ["approved", "rejected", "deferred", "shelved"],
+	awaiting_review: ["approved_to_ship", "rejected", "deferred", "shelved"],
+	approved_to_ship: ["completed", "shelved"],
 	blocked: ["deferred", "shelved"],
 	failed: ["shelved"],
 	rejected: ["shelved"],
@@ -151,7 +152,7 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
 	{
 		action: "approve",
 		fromStates: ["awaiting_review"],
-		targetState: "approved",
+		targetState: "approved_to_ship",
 	},
 	{
 		action: "reject",
