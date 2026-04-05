@@ -11,11 +11,9 @@ export interface BridgeConfig {
 	dbPath: string;
 	ingestToken?: string;
 	apiToken?: string;
-	gatewayUrl?: string;
-	hooksToken?: string;
 	/** @deprecated Use ProjectEntry.leads[].forumChannel instead (GEO-152). */
 	notificationChannel: string;
-	/** Default OpenClaw agent ID for project-less notifications (e.g., CIPHER proposals). */
+	/** Default lead agent ID for project-less notifications (e.g., CIPHER proposals). */
 	defaultLeadAgentId: string;
 	stuckThresholdMinutes: number;
 	stuckCheckIntervalMs: number;

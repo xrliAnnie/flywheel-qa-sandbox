@@ -1,6 +1,5 @@
 /**
- * GEO-195: LeadRuntime abstraction — per-lead switchable runtime adapter.
- * Allows OpenClaw and Claude Discord to run side-by-side, selected per lead.
+ * GEO-195: LeadRuntime abstraction — per-lead runtime adapter.
  */
 
 import type { HookPayload } from "./hook-payload.js";
@@ -81,8 +80,7 @@ export interface LeadRuntimeHealth {
 }
 
 /**
- * Runtime adapter for a Lead agent. Each lead can use a different runtime
- * (OpenClaw webhook vs Claude Discord control channel).
+ * Runtime adapter for a Lead agent.
  *
  * Delivery contract (FLY-25 upgrade from fire-and-forget to result-based):
  * - Returns DeliveryResult: { delivered: boolean; error?: string }
@@ -91,7 +89,7 @@ export interface LeadRuntimeHealth {
  * - Callers use result to decide whether to mark event as delivered
  */
 export interface LeadRuntime {
-	readonly type: "openclaw" | "claude-discord";
+	readonly type: "claude-discord";
 	deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult>;
 	sendBootstrap(snapshot: LeadBootstrap): Promise<void>;
 	health(): Promise<LeadRuntimeHealth>;

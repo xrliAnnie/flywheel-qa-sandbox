@@ -14,7 +14,7 @@ Two layers working together to minimize human-in-the-loop:
 - Keeps executing as long as there are unblocked issues
 - Goal: I set the direction, it does the work
 
-### Layer 2: Messenger (OpenClaw → Discord / Telegram)
+### Layer 2: Messenger (Discord / Telegram)
 
 - **Summaries**: Periodic check-ins (e.g. hourly) — what did Claude Code accomplish, what's in progress
 - **Questions**: Routes the rare approval/decision requests to me via messaging app

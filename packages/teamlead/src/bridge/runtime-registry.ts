@@ -1,6 +1,5 @@
 /**
  * GEO-195: RuntimeRegistry — manages per-lead LeadRuntime instances.
- * All event delivery flows through this registry instead of direct notifyAgent() calls.
  */
 
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
@@ -33,7 +32,7 @@ export class RuntimeRegistry {
 		return runtime;
 	}
 
-	/** Resolve lead AND return its agentId (needed for buildHookBody). */
+	/** Resolve lead AND return its agentId. */
 	resolveWithLead(
 		projects: ProjectEntry[],
 		projectName: string,

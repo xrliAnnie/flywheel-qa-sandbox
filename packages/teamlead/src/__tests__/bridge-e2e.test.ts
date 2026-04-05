@@ -40,7 +40,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 
 /**
  * End-to-end bridge lifecycle test.
- * Exercises the full event → query → action flow without OpenClaw or real Slack.
+ * Exercises the full event → query → action flow without real Slack.
  */
 describe("Bridge E2E lifecycle", () => {
 	let store: StateStore;
@@ -212,7 +212,7 @@ describe("Bridge E2E lifecycle", () => {
 	it("notification is delivered via registry when configured", async () => {
 		const capturedEnvelopes: LeadEventEnvelope[] = [];
 		const mockRuntime = {
-			type: "openclaw" as const,
+			type: "claude-discord" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };
@@ -359,7 +359,7 @@ describe("Bridge E2E lifecycle", () => {
 
 		const capturedEnvelopes: LeadEventEnvelope[] = [];
 		const mockRuntime = {
-			type: "openclaw" as const,
+			type: "claude-discord" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };

@@ -80,8 +80,6 @@ export function loadConfig(): BridgeConfig {
 			join(homedir(), ".flywheel", "teamlead.db"),
 		ingestToken: process.env.TEAMLEAD_INGEST_TOKEN,
 		apiToken: process.env.TEAMLEAD_API_TOKEN,
-		gatewayUrl: process.env.OPENCLAW_GATEWAY_URL ?? "http://localhost:18789",
-		hooksToken: process.env.OPENCLAW_HOOKS_TOKEN,
 		notificationChannel:
 			process.env.TEAMLEAD_NOTIFICATION_CHANNEL ?? "CD5QZVAP6",
 		defaultLeadAgentId: (() => {

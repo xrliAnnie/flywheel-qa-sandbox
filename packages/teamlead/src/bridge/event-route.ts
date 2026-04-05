@@ -94,7 +94,7 @@ export function createEventRouter(
 ): Router {
 	const router = Router();
 
-	// Dedicated heartbeat route — lightweight, no session_events write, no OpenClaw notification
+	// Dedicated heartbeat route — lightweight, no session_events write, no lead notification
 	router.post("/heartbeat", (req, res) => {
 		const body = req.body as { execution_id?: string } | undefined;
 		if (
