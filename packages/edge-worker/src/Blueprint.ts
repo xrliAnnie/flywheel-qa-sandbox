@@ -485,6 +485,17 @@ export class Blueprint {
 
 		// FLY-51: Never kill tmux window here. Window stays open for human
 		// review. postMergeCleanup closes it after explicit approve.
+		// Inject synthetic needs_review decision so event routing sets status
+		// to awaiting_review (required for approve → postMergeCleanup path).
+		const fallbackDecision: DecisionResult | undefined = success
+			? {
+					route: "needs_review",
+					confidence: 0,
+					reasoning: "v0.1.1 fallback — no DecisionLayer configured",
+					concerns: [],
+					decisionSource: "fallback_needs_review",
+				}
+			: undefined;
 
 		return {
 			success,
@@ -494,6 +505,7 @@ export class Blueprint {
 			durationMs: result.durationMs,
 			worktreePath: worktreeInfo?.worktreePath,
 			evidence,
+			decision: fallbackDecision,
 		};
 	}
 

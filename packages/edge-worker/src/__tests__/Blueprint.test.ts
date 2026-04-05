@@ -306,9 +306,12 @@ describe("Blueprint", () => {
 		);
 		expect(killCalls).toHaveLength(0);
 		expect(result.tmuxWindow).toBe("flywheel:@42");
+		// Synthetic decision routes to awaiting_review via event system
+		expect(result.decision?.route).toBe("needs_review");
+		expect(result.decision?.decisionSource).toBe("fallback_needs_review");
 	});
 
-	it("preserves tmux window on failure", async () => {
+	it("preserves tmux window on failure (no synthetic decision)", async () => {
 		const shell = makeMockShell();
 		const blueprint = new Blueprint(
 			makeHydrator(),
@@ -317,7 +320,7 @@ describe("Blueprint", () => {
 			shell,
 		);
 
-		await blueprint.run(makeNode(), "/project", makeContext());
+		const result = await blueprint.run(makeNode(), "/project", makeContext());
 
 		const shellCalls = (shell.execFile as ReturnType<typeof vi.fn>).mock.calls;
 		const killCalls = shellCalls.filter(
@@ -325,6 +328,8 @@ describe("Blueprint", () => {
 				c[0] === "tmux" && c[1][0] === "kill-window",
 		);
 		expect(killCalls).toHaveLength(0);
+		// No synthetic decision on failure — status maps to "completed" (correct)
+		expect(result.decision).toBeUndefined();
 	});
 
 	it("returns tmuxWindow for both success and failure (FLY-51)", async () => {

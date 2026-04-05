@@ -212,7 +212,7 @@ describe("Blueprint Decision Layer Integration", () => {
 		expect(result.decision?.decisionSource).toBe("decision_error_fallback");
 	});
 
-	it("no decisionLayer → v0.1.1 behavior", async () => {
+	it("no decisionLayer → v0.1.1 fallback with synthetic needs_review (FLY-51)", async () => {
 		const blueprint = new Blueprint(
 			makeMockHydrator(),
 			makeMockGitChecker({ commitCount: 3 }),
@@ -227,7 +227,9 @@ describe("Blueprint Decision Layer Integration", () => {
 		);
 
 		expect(result.success).toBe(true);
-		expect(result.decision).toBeUndefined();
+		// FLY-51: synthetic decision so event routing sets awaiting_review
+		expect(result.decision?.route).toBe("needs_review");
+		expect(result.decision?.decisionSource).toBe("fallback_needs_review");
 	});
 
 	it("ExecutionContext built with correct fields", async () => {
