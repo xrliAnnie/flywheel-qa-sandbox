@@ -26,11 +26,11 @@ Read these files in order:
 Scan for active plans and explorations:
 
 ```bash
-echo "=== In-Progress Plans ===" && ls doc/plan/inprogress/ 2>/dev/null || echo "(none)"
-echo "=== Ready Plans ===" && ls doc/plan/new/ 2>/dev/null || echo "(none)"
-echo "=== Draft Plans ===" && ls doc/plan/draft/ 2>/dev/null || echo "(none)"
-echo "=== Active Explorations ===" && ls doc/exploration/new/ 2>/dev/null || echo "(none)"
-echo "=== Active Research ===" && ls doc/research/new/ 2>/dev/null || echo "(none)"
+echo "=== In-Progress Plans ===" && ls doc/engineer/plan/inprogress/ 2>/dev/null || echo "(none)"
+echo "=== Ready Plans ===" && ls doc/engineer/plan/new/ 2>/dev/null || echo "(none)"
+echo "=== Draft Plans ===" && ls doc/engineer/plan/draft/ 2>/dev/null || echo "(none)"
+echo "=== Active Explorations ===" && ls doc/engineer/exploration/new/ 2>/dev/null || echo "(none)"
+echo "=== Active Research ===" && ls doc/engineer/research/new/ 2>/dev/null || echo "(none)"
 ```
 
 ## Step 3: Recent Activity
@@ -52,8 +52,8 @@ Present to the user (in Chinese):
 1. **项目概述**: Flywheel 是什么（一句话）
 2. **当前版本**: 从 `doc/VERSION` 读取
 3. **最近完成**: 最近 merged 的 PR/feature（从 git log 和 MEMORY.md）
-4. **进行中**: 正在实施的 plan（`doc/plan/inprogress/`）
-5. **待实施**: 已批准待开始的 plan（`doc/plan/new/`）
+4. **进行中**: 正在实施的 plan（`doc/engineer/plan/inprogress/`）
+5. **待实施**: 已批准待开始的 plan（`doc/engineer/plan/new/`）
 6. **待探索**: 活跃的 exploration/research docs
 7. **服务状态**: Bridge 和 Gateway 是否运行
 9. **关键规则提醒**:
@@ -66,4 +66,4 @@ Present to the user (in Chinese):
 
 - 这个 skill 是**动态的** — 它从文件系统读取当前状态，不依赖硬编码内容
 - 如果 MEMORY.md 过期，在 onboarding 结束时提醒用户需要更新
-- 如果发现 `doc/plan/inprogress/` 有文件但 git log 没有相关最近 commit，提醒可能有 stale plan
+- 如果发现 `doc/engineer/plan/inprogress/` 有文件但 git log 没有相关最近 commit，提醒可能有 stale plan

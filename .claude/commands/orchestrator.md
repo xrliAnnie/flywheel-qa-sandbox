@@ -172,9 +172,9 @@ For each PR the user approves to ship:
    - `git branch -D {branch}` (if not already deleted by --delete-branch)
 
    **D. Archive docs** (in main repo, on main branch)
-   - `git mv doc/plan/inprogress/{file} doc/plan/archive/`
-   - `git mv doc/exploration/new/{file} doc/exploration/archive/`
-   - `git mv doc/research/new/{file} doc/research/archive/` (if exists)
+   - `git mv doc/engineer/plan/inprogress/{file} doc/engineer/plan/archive/`
+   - `git mv doc/engineer/exploration/new/{file} doc/engineer/exploration/archive/`
+   - `git mv doc/engineer/research/new/{file} doc/engineer/research/archive/` (if exists)
    - Commit: `docs: archive GEO-{XX} docs after merge`
 
    **E. Update MEMORY.md**
