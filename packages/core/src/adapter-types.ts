@@ -5,7 +5,7 @@
  * with a single IAdapter interface that supports both fire-and-forget execution
  * (DAG path) and interactive streaming sessions (Edge Worker path).
  *
- * @see doc/engineer/plan/new/v1.2.0-GEO-157-adapter-protocol-heartbeat.md
+ * @see doc/engineer/plan/archive/v1.2.0-GEO-157-adapter-protocol-heartbeat.md
  */
 
 import type {

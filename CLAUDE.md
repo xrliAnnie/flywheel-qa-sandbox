@@ -91,8 +91,8 @@ doc/
 │   ├── plan/{draft,new,inprogress,archive,backlog}/ — Implementation plans
 │   ├── deep-research/                      — External LLM research results
 │   └── implementation/                     — Implementation notes
-├── qa/                                 — QA reports and test results
 ├── reference/                          — Reference docs (Cyrus, Ralph, patterns)
+├── retro/                              — Retrospectives
 └── VERSION                             — Current version number
 ```
 
