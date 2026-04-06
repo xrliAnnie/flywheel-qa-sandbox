@@ -26,8 +26,12 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 
 	async deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult> {
 		const content = this.formatEnvelope(envelope);
+		// FLY-62: Gate questions can be long — split like sendBootstrap
+		const chunks = splitDiscordMessage(content);
 		try {
-			await this.postDiscordMessage(content, true);
+			for (const chunk of chunks) {
+				await this.postDiscordMessage(chunk, true);
+			}
 			this.lastDeliveryAt = new Date().toISOString();
 			this.lastDeliveredSeq = envelope.seq;
 			return { delivered: true };
@@ -112,6 +116,24 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
+
+		// FLY-62: gate_question gets a special format
+		if (e.event_type === "gate_question") {
+			const tag = e.checkpoint?.toUpperCase() ?? "GATE";
+			const issueRef = e.issue_identifier || e.issue_id;
+			const lines = [
+				`**[Event #${env.seq}]** \`gate_question\``,
+				`> **ID**: \`${e.execution_id || "---"}\` | **Issue**: \`${issueRef || "---"}\``,
+				`**[${tag}]** Runner asks:`,
+				"---",
+				e.summary ?? "(no content)",
+				"---",
+				`Reply to approve or provide feedback. Question ID: \`${e.question_id}\``,
+				`CommDB: \`${e.comm_db_path}\``,
+			];
+			return lines.join("\n");
+		}
+
 		const lines = [
 			`**[Event #${env.seq}]** \`${e.event_type}\``,
 			`> **ID**: \`${e.execution_id || "—"}\` | **Issue**: \`${e.issue_identifier || e.issue_id || "—"}\``,
@@ -132,6 +154,8 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 		if (e.filter_priority) lines.push(`> **Priority**: ${e.filter_priority}`);
 		if (e.notification_context)
 			lines.push(`> **Context**: ${e.notification_context}`);
+		if (e.pr_number) lines.push(`> **PR**: #${e.pr_number}`);
+		if (e.stage_context) lines.push(`> **Note**: ${e.stage_context}`);
 		if (e.thread_id) lines.push(`> **Thread**: ${e.thread_id}`);
 		if (e.forum_channel) lines.push(`> **Forum**: ${e.forum_channel}`);
 
@@ -191,6 +215,22 @@ export class ClaudeDiscordRuntime implements LeadRuntime {
 					`- [#${e.seq}] \`${e.event.event_type}\` — ${e.event.issue_identifier ?? e.event.issue_id ?? "—"}`,
 				);
 			}
+			sections.push("");
+		}
+
+		// FLY-62: Pending gate questions
+		if (snapshot.pendingGateQuestions?.length) {
+			sections.push("### Pending Gate Questions");
+			for (const gq of snapshot.pendingGateQuestions) {
+				const tag = gq.checkpoint.toUpperCase();
+				const issue = gq.issueIdentifier ?? gq.executionId;
+				sections.push(
+					`- **[${tag}]** ${issue} (ID: \`${gq.questionId}\`, DB: \`${gq.commDbPath}\`): ${gq.content.slice(0, 200)}${gq.content.length > 200 ? "..." : ""}`,
+				);
+			}
+			sections.push(
+				'Action: For each, relay to Annie, then: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> "reply"',
+			);
 			sections.push("");
 		}
 

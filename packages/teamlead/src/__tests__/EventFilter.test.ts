@@ -25,7 +25,6 @@ describe("EventFilter", () => {
 					decision_route: "needs_review",
 				}),
 			);
-			expect(result.action).toBe("notify_agent");
 			expect(result.priority).toBe("high");
 		});
 
@@ -37,7 +36,6 @@ describe("EventFilter", () => {
 					decision_route: "blocked",
 				}),
 			);
-			expect(result.action).toBe("notify_agent");
 			expect(result.priority).toBe("high");
 		});
 
@@ -48,13 +46,12 @@ describe("EventFilter", () => {
 					status: "failed",
 				}),
 			);
-			expect(result.action).toBe("notify_agent");
 			expect(result.priority).toBe("high");
 		});
 	});
 
 	describe("NORMAL priority — important updates", () => {
-		it("session_stuck → notify_agent (normal)", () => {
+		it("session_stuck → notify_agent (high — must Chat notify Annie)", () => {
 			const result = filter.classify(
 				"session_stuck",
 				makePayload({
@@ -62,8 +59,7 @@ describe("EventFilter", () => {
 					minutes_since_activity: 20,
 				}),
 			);
-			expect(result.action).toBe("notify_agent");
-			expect(result.priority).toBe("normal");
+			expect(result.priority).toBe("high");
 		});
 
 		it("session_orphaned → notify_agent (normal)", () => {
@@ -73,7 +69,6 @@ describe("EventFilter", () => {
 					status: "running",
 				}),
 			);
-			expect(result.action).toBe("notify_agent");
 			expect(result.priority).toBe("normal");
 		});
 
@@ -84,7 +79,6 @@ describe("EventFilter", () => {
 					action: "approve",
 				}),
 			);
-			expect(result.action).toBe("notify_agent");
 			expect(result.priority).toBe("normal");
 		});
 
@@ -93,35 +87,34 @@ describe("EventFilter", () => {
 				"cipher_principle_proposed",
 				makePayload(),
 			);
-			expect(result.action).toBe("notify_agent");
 			expect(result.priority).toBe("normal");
 		});
 	});
 
-	describe("LOW priority — silent Forum updates", () => {
-		it("session_started + thread_id exists → forum_only (low)", () => {
+	describe("Chat-track events — Lead MUST notify Annie in Chat (FLY-47)", () => {
+		it("session_started + thread_id exists → notify_agent (high)", () => {
 			const result = filter.classify(
 				"session_started",
 				makePayload({
 					thread_id: "thread-123",
 				}),
 			);
-			expect(result.action).toBe("forum_only");
-			expect(result.priority).toBe("low");
+			expect(result.priority).toBe("high");
+			expect(result.reason).toContain("Chat");
 		});
 
-		it("session_started + NO thread_id → notify_agent (normal) — agent creates Forum Post", () => {
+		it("session_started + NO thread_id → notify_agent (high)", () => {
 			const result = filter.classify(
 				"session_started",
 				makePayload({
 					thread_id: undefined,
 				}),
 			);
-			expect(result.action).toBe("notify_agent");
-			expect(result.priority).toBe("normal");
+			expect(result.priority).toBe("high");
+			expect(result.reason).toContain("Chat");
 		});
 
-		it("session_completed + approved → forum_only (low)", () => {
+		it("session_completed + approved → notify_agent (high) — ship complete", () => {
 			const result = filter.classify(
 				"session_completed",
 				makePayload({
@@ -129,15 +122,14 @@ describe("EventFilter", () => {
 					decision_route: "approved",
 				}),
 			);
-			expect(result.action).toBe("forum_only");
-			expect(result.priority).toBe("low");
+			expect(result.priority).toBe("high");
+			expect(result.reason).toContain("Chat");
 		});
 	});
 
 	describe("DEFAULT — unmatched events", () => {
 		it("unknown event type → notify_agent (normal)", () => {
 			const result = filter.classify("some_unknown_event", makePayload());
-			expect(result.action).toBe("notify_agent");
 			expect(result.priority).toBe("normal");
 			expect(result.reason).toContain("default");
 		});
@@ -156,7 +148,7 @@ describe("EventFilter", () => {
 			expect(result.priority).toBe("high");
 		});
 
-		it("session_completed without special route/status → default notify_agent", () => {
+		it("session_completed without special route/status → catch-all (normal + Forum)", () => {
 			const result = filter.classify(
 				"session_completed",
 				makePayload({
@@ -164,16 +156,57 @@ describe("EventFilter", () => {
 					decision_route: "some_other_route",
 				}),
 			);
-			expect(result.action).toBe("notify_agent");
 			expect(result.priority).toBe("normal");
+			expect(result.updateForum).toBe(true);
+		});
+	});
+
+	describe("Forum gating — updateForum (FLY-47)", () => {
+		it("status-changing events → updateForum: true", () => {
+			const forumEvents = [
+				{ type: "session_started", payload: makePayload() },
+				{
+					type: "session_completed",
+					payload: makePayload({
+						status: "awaiting_review",
+						decision_route: "needs_review",
+					}),
+				},
+				{
+					type: "session_failed",
+					payload: makePayload({ status: "failed" }),
+				},
+				{
+					type: "action_executed",
+					payload: makePayload({ action: "approve" }),
+				},
+			];
+			for (const { type, payload } of forumEvents) {
+				const result = filter.classify(type, payload);
+				expect(result.updateForum).toBe(true);
+			}
+		});
+
+		it("informational events → updateForum: false", () => {
+			const noForumEvents = [
+				"session_stuck",
+				"session_orphaned",
+				"session_stale_completed",
+				"cipher_principle_proposed",
+				"unknown_event",
+			];
+			for (const type of noForumEvents) {
+				const result = filter.classify(type, makePayload());
+				expect(result.updateForum).toBe(false);
+			}
 		});
 	});
 
 	describe("Edge cases", () => {
-		it("empty payload → default behavior", () => {
+		it("empty payload session_completed → catch-all (normal + Forum)", () => {
 			const result = filter.classify("session_completed", {});
-			expect(result.action).toBe("notify_agent");
 			expect(result.priority).toBe("normal");
+			expect(result.updateForum).toBe(true);
 		});
 
 		it("null-ish fields in payload → no crash", () => {
@@ -181,8 +214,7 @@ describe("EventFilter", () => {
 				thread_id: undefined,
 				status: undefined,
 			});
-			expect(result.action).toBe("notify_agent");
-			expect(result.priority).toBe("normal");
+			expect(result.priority).toBe("high");
 		});
 
 		it("result always includes a reason", () => {

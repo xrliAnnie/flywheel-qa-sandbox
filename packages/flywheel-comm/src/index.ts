@@ -5,6 +5,7 @@ import { ask } from "./commands/ask.js";
 import { capture } from "./commands/capture.js";
 import { check } from "./commands/check.js";
 import { cleanupMessages } from "./commands/cleanup-messages.js";
+import { gate } from "./commands/gate.js";
 import { inbox } from "./commands/inbox.js";
 import { pending } from "./commands/pending.js";
 import { respond } from "./commands/respond.js";
@@ -12,6 +13,7 @@ import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { stage } from "./commands/stage.js";
+import { CommDB } from "./db.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 
 function printUsage(): void {
@@ -20,11 +22,13 @@ function printUsage(): void {
 Commands:
   ask       Ask your Lead a question
   check     Check if a question has been answered
+  gate      Block at a checkpoint until Lead responds (ask+poll+resolve)
   pending   List unanswered questions for a lead
   respond   Respond to a runner's question
   send      Send an instruction to a runner (Lead use)
   inbox     Check for instructions from Lead (Runner use)
-  sessions  List runner sessions
+  sessions           List runner sessions
+  sessions register  Register a runner session in CommDB
   capture   Capture tmux output of a runner session
   search    Search tmux output for a regex pattern
   stage     Report pipeline stage to Bridge (Runner use)
@@ -58,6 +62,9 @@ async function main(): Promise<void> {
 		case "check":
 			runCheck(commandArgs);
 			break;
+		case "gate":
+			await runGate(commandArgs);
+			break;
 		case "pending":
 			runPending(commandArgs);
 			break;
@@ -71,7 +78,11 @@ async function main(): Promise<void> {
 			runInbox(commandArgs);
 			break;
 		case "sessions":
-			runSessions(commandArgs);
+			if (commandArgs[0] === "register") {
+				runSessionsRegister(commandArgs.slice(1));
+			} else {
+				runSessions(commandArgs);
+			}
 			break;
 		case "capture":
 			runCapture(commandArgs);
@@ -329,6 +340,50 @@ function runSessions(args: string[]): void {
 	}
 }
 
+function runSessionsRegister(args: string[]): void {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			project: { type: "string" },
+			db: { type: "string" },
+			issue: { type: "string" },
+			lead: { type: "string" },
+			window: { type: "string" },
+		},
+		allowPositionals: false,
+	});
+
+	const execId = values["exec-id"];
+	if (!execId) {
+		console.error("Missing required --exec-id");
+		process.exit(1);
+	}
+	const projectName = values.project;
+	if (!projectName) {
+		console.error("Missing required --project");
+		process.exit(1);
+	}
+
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	// tmux window: use provided value, or derive from TMUX_PANE env
+	const tmuxWindow = values.window ?? process.env.TMUX_PANE ?? "unknown";
+
+	const db = new CommDB(dbPath);
+	try {
+		db.registerSession(
+			execId,
+			tmuxWindow,
+			projectName,
+			values.issue,
+			values.lead,
+		);
+		console.log(`Session registered: ${execId}`);
+	} finally {
+		db.close();
+	}
+}
+
 function runCapture(args: string[]): void {
 	const { values } = parseArgs({
 		args,
@@ -429,6 +484,77 @@ function runCleanup(args: string[]): void {
 	} else {
 		console.log(`Cleaned: ${result.cleaned}`);
 	}
+}
+
+async function runGate(args: string[]): Promise<void> {
+	const { values, positionals } = parseArgs({
+		args,
+		options: {
+			lead: { type: "string" },
+			"exec-id": { type: "string" },
+			timeout: { type: "string" },
+			"timeout-behavior": { type: "string" },
+			"cleanup-ttl": { type: "string" },
+			stage: { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: true,
+	});
+
+	const checkpoint = positionals[0];
+	if (!checkpoint) {
+		throw new Error("Checkpoint name is required (e.g., brainstorm, question)");
+	}
+	if (!values.lead) {
+		throw new Error("--lead is required");
+	}
+	if (!values["exec-id"]) {
+		throw new Error("--exec-id is required");
+	}
+
+	const message = positionals.slice(1).join(" ");
+	if (!message) {
+		throw new Error("Message text is required");
+	}
+
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const timeoutMs = values.timeout
+		? Number.parseInt(values.timeout, 10)
+		: 3600_000; // default 1 hour
+
+	// Default timeout behavior based on checkpoint type
+	let timeoutBehavior: "fail-open" | "fail-close" =
+		checkpoint === "question" ? "fail-open" : "fail-close";
+	if (values["timeout-behavior"]) {
+		timeoutBehavior = values["timeout-behavior"] as "fail-open" | "fail-close";
+	}
+
+	const cleanupTtlHours = values["cleanup-ttl"]
+		? Number.parseInt(values["cleanup-ttl"], 10)
+		: 24;
+
+	const result = await gate({
+		checkpoint,
+		lead: values.lead,
+		execId: values["exec-id"],
+		message,
+		dbPath,
+		timeoutMs,
+		timeoutBehavior,
+		cleanupTtlHours,
+		stage: values.stage,
+	});
+
+	if (values.json) {
+		console.log(JSON.stringify(result));
+	} else if (result.status === "answered") {
+		console.log(result.content ?? "");
+	} else {
+		console.error(`Gate timeout (${checkpoint}): ${timeoutBehavior}`);
+	}
+	process.exit(result.exitCode);
 }
 
 main().catch((err) => {

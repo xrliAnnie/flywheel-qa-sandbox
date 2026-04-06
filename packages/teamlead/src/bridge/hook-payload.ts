@@ -23,6 +23,15 @@ export interface HookPayload {
 	action_source_status?: string;
 	action_target_status?: string;
 	action_reason?: string;
+	// FLY-62: gate_question event fields
+	checkpoint?: string;
+	question_id?: string;
+	from_agent?: string;
+	comm_db_path?: string;
+	// GEO-292: PR tracking
+	pr_number?: number;
+	// FLY-47: stage context — explicit guidance for Lead (e.g., "Runner completed work, PR still needs review")
+	stage_context?: string;
 	// EventFilter fields (GEO-187)
 	filter_priority?: "high" | "normal" | "low";
 	notification_context?: string;

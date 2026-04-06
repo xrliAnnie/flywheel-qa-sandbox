@@ -547,26 +547,27 @@ describe("Event route — EventFilter integration", () => {
 		expect(capturedEnvelopes.length).toBe(2);
 		const completedPayload = capturedEnvelopes[1]!.event;
 		expect(completedPayload.filter_priority).toBe("high");
-		expect(completedPayload.notification_context).toContain("needs_review");
+		expect(completedPayload.notification_context).toContain("Chat");
 	});
 
-	it("session_started + thread_id exists → runtime.deliver NOT called (forum_only)", async () => {
+	it("session_started + thread_id exists → runtime.deliver called (FLY-47: Lead announces in Chat)", async () => {
 		// Pre-create thread mapping
 		store.upsertThread("thread-123", "channel-1", "issue-1");
 
 		await postEvent();
 		await new Promise((r) => setTimeout(r, 150));
 
-		// forum_only — no notification sent
-		expect(capturedEnvelopes.length).toBe(0);
+		// FLY-47: notify_agent — Lead needs to announce session start in Chat
+		expect(capturedEnvelopes.length).toBe(1);
+		expect(capturedEnvelopes[0]!.event.notification_context).toContain("Chat");
 	});
 
-	it("session_started + NO thread_id → runtime.deliver called (agent creates Forum Post)", async () => {
+	it("session_started + NO thread_id → runtime.deliver called (high — Chat required)", async () => {
 		await postEvent();
 		await new Promise((r) => setTimeout(r, 150));
 
 		expect(capturedEnvelopes.length).toBe(1);
-		expect(capturedEnvelopes[0]!.event.filter_priority).toBe("normal");
+		expect(capturedEnvelopes[0]!.event.filter_priority).toBe("high");
 	});
 
 	it("session_failed → runtime.deliver called (high priority)", async () => {
@@ -764,7 +765,7 @@ describe("Event route — thread validation (GEO-200)", () => {
 		});
 	}
 
-	it("session_started + valid existing thread → inherit thread_id (forum_only)", async () => {
+	it("session_started + valid existing thread → inherit thread_id + notify Lead (FLY-47)", async () => {
 		store.upsertThread("thread-valid", "channel-1", "issue-1");
 
 		// Mock Discord API validation: 200 (thread exists)
@@ -805,8 +806,9 @@ describe("Event route — thread validation (GEO-200)", () => {
 		expect(res.status).toBe(200);
 		await new Promise((r) => setTimeout(r, 150));
 
-		// Thread inherited → session.thread_id set → forum_only → NOT delivered
-		expect(capturedEnvelopes.length).toBe(0);
+		// FLY-47: Thread inherited + Lead notified (notify_agent) so Lead can announce in Chat
+		expect(capturedEnvelopes.length).toBe(1);
+		expect(capturedEnvelopes[0]!.event.notification_context).toContain("Chat");
 		const session = store.getSession("exec-1");
 		expect(session?.thread_id).toBe("thread-valid");
 	});

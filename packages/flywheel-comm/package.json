@@ -7,7 +7,8 @@
 	"types": "dist/index.d.ts",
 	"exports": {
 		".": "./dist/index.js",
-		"./db": "./dist/lib.js"
+		"./db": "./dist/lib.js",
+		"./utils": "./dist/utils/content-ref.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"

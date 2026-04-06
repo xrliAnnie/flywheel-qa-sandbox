@@ -15,7 +15,9 @@ const VALID_STAGES = new Set([
 	"test",
 	"code_review",
 	"pr_created",
+	"approve",
 	"ship",
+	"completed",
 ]);
 
 const TIMEOUT_MS = 2000;

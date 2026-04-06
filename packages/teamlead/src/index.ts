@@ -82,12 +82,11 @@ async function main() {
 				status: "pending_ceo",
 			};
 
+			// FLY-47: Annotate priority (always deliver to Lead)
 			const filterResult = cipherEventFilter.classify(
 				"cipher_principle_proposed",
 				hookPayload,
 			);
-			if (filterResult.action !== "notify_agent") return;
-
 			hookPayload.filter_priority = filterResult.priority;
 			hookPayload.notification_context = filterResult.reason;
 

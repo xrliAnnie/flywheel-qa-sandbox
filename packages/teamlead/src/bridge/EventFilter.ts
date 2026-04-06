@@ -1,9 +1,19 @@
 import type { HookPayload } from "./hook-payload.js";
 
+/**
+ * FLY-47: EventFilter classifies events for two purposes:
+ * 1. Priority hints for Lead (high = MUST Chat, normal = optional FYI)
+ * 2. Forum gating — decides which events trigger Forum tag updates
+ *
+ * ALL events are delivered to Lead unconditionally. EventFilter does NOT
+ * control delivery — it only annotates and gates Forum updates.
+ */
+
 export interface FilterResult {
-	action: "notify_agent" | "forum_only" | "skip";
 	priority: "high" | "normal" | "low";
 	reason: string;
+	/** Whether this event should trigger a Forum tag update */
+	updateForum: boolean;
 }
 
 interface FilterRule {
@@ -12,15 +22,15 @@ interface FilterRule {
 }
 
 const FILTER_RULES: FilterRule[] = [
-	// === HIGH — needs CEO decision ===
+	// === HIGH + Forum — status-changing events Lead MUST notify Annie about ===
 	{
 		match: (et, p) =>
 			et === "session_completed" &&
 			(p.decision_route === "needs_review" || p.status === "awaiting_review"),
 		result: {
-			action: "notify_agent",
 			priority: "high",
-			reason: "needs_review completion",
+			reason: "PR ready for review — Lead notifies Annie in Chat",
+			updateForum: true,
 		},
 	},
 	{
@@ -28,79 +38,35 @@ const FILTER_RULES: FilterRule[] = [
 			et === "session_completed" &&
 			(p.decision_route === "blocked" || p.status === "blocked"),
 		result: {
-			action: "notify_agent",
 			priority: "high",
-			reason: "blocked completion",
+			reason: "blocked — Lead escalates to Annie in Chat",
+			updateForum: true,
 		},
 	},
 	{
 		match: (et) => et === "session_failed",
 		result: {
-			action: "notify_agent",
 			priority: "high",
-			reason: "session failed",
+			reason: "session failed — Lead escalates to Annie in Chat",
+			updateForum: true,
 		},
 	},
-
-	// === NORMAL — important updates ===
-	{
-		match: (et) => et === "session_stuck",
-		result: {
-			action: "notify_agent",
-			priority: "normal",
-			reason: "session stuck",
-		},
-	},
-	{
-		match: (et) => et === "session_orphaned",
-		result: {
-			action: "notify_agent",
-			priority: "normal",
-			reason: "session orphaned",
-		},
-	},
-	// GEO-270: Stale session patrol
-	{
-		match: (et) => et === "session_stale_completed",
-		result: {
-			action: "notify_agent",
-			priority: "normal",
-			reason: "stale completed session — tmux still alive",
-		},
-	},
-	{
-		match: (et) => et === "action_executed",
-		result: {
-			action: "notify_agent",
-			priority: "normal",
-			reason: "action executed",
-		},
-	},
-	{
-		match: (et) => et === "cipher_principle_proposed",
-		result: {
-			action: "notify_agent",
-			priority: "normal",
-			reason: "cipher principle proposed",
-		},
-	},
-
-	// === LOW — silent Forum updates ===
-	// session_started with NO thread_id — notify agent + Bridge creates Forum Post (GEO-195)
 	{
 		match: (et, p) => et === "session_started" && !p.thread_id,
 		result: {
-			action: "notify_agent",
-			priority: "normal",
-			reason: "session started — no thread, Bridge creates Forum Post",
+			priority: "high",
+			reason:
+				"session started — Lead announces to Annie in Chat + Bridge creates Forum Post",
+			updateForum: true,
 		},
 	},
 	{
 		match: (et, p) => et === "session_started" && !!p.thread_id,
 		result: {
-			action: "forum_only",
-			priority: "low",
-			reason: "session started — thread exists, Forum tag update only",
+			priority: "high",
+			reason:
+				"session started (retry/reopen) — Lead announces to Annie in Chat with Forum link",
+			updateForum: true,
 		},
 	},
 	{
@@ -108,17 +74,70 @@ const FILTER_RULES: FilterRule[] = [
 			et === "session_completed" &&
 			(p.decision_route === "approved" || p.status === "approved"),
 		result: {
-			action: "forum_only",
-			priority: "low",
-			reason: "approved completion — Forum tag update only",
+			priority: "high",
+			reason: "ship complete — Lead notifies Annie in Chat",
+			updateForum: true,
+		},
+	},
+	// Catch-all for session_completed with unrecognized status — still update Forum
+	{
+		match: (et) => et === "session_completed",
+		result: {
+			priority: "normal",
+			reason: "session completed — Forum update for status tracking",
+			updateForum: true,
+		},
+	},
+
+	// === NORMAL + Forum — status changes that update Forum but don't require Chat ===
+	{
+		match: (et) => et === "action_executed",
+		result: {
+			priority: "normal",
+			reason: "action executed",
+			updateForum: true,
+		},
+	},
+
+	// === HIGH + NO Forum — urgent events requiring Lead Chat notification ===
+	{
+		match: (et) => et === "session_stuck",
+		result: {
+			priority: "high",
+			reason: "session stuck — notify Annie via Chat",
+			updateForum: false,
+		},
+	},
+	{
+		match: (et) => et === "session_orphaned",
+		result: {
+			priority: "normal",
+			reason: "session orphaned",
+			updateForum: false,
+		},
+	},
+	{
+		match: (et) => et === "session_stale_completed",
+		result: {
+			priority: "normal",
+			reason: "stale completed session — tmux still alive",
+			updateForum: false,
+		},
+	},
+	{
+		match: (et) => et === "cipher_principle_proposed",
+		result: {
+			priority: "normal",
+			reason: "cipher principle proposed",
+			updateForum: false,
 		},
 	},
 ];
 
 const DEFAULT_RESULT: FilterResult = {
-	action: "notify_agent",
 	priority: "normal",
 	reason: "default — no matching rule",
+	updateForum: false,
 };
 
 export class EventFilter {
@@ -143,9 +162,9 @@ export class EventFilter {
 				component: "EventFilter",
 				event_type: eventType,
 				issue_id: payload.issue_id ?? payload.issue_identifier ?? "",
-				result: result.action,
 				priority: result.priority,
 				reason: result.reason,
+				updateForum: result.updateForum,
 				timestamp: new Date().toISOString(),
 			}),
 		);

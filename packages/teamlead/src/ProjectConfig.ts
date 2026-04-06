@@ -10,10 +10,6 @@ export interface LeadConfig {
 	match: {
 		labels: string[];
 	};
-	/** Runtime adapter for this lead. */
-	runtime?: "claude-discord";
-	/** Discord control channel ID for claude-discord runtime (hidden, bot-only). */
-	controlChannel?: string;
 	/** Status → Discord Forum tag ID mapping for this lead's forum channel (GEO-253).
 	 *  Once defined, fully replaces the global STATUS_TAG_MAP for this lead.
 	 *  Omit to fall back to global STATUS_TAG_MAP. */
@@ -139,24 +135,6 @@ export function loadProjects(): ProjectEntry[] {
 				}
 			}
 
-			// GEO-195: validate runtime config
-			const runtime = lead.runtime;
-			if (runtime !== undefined && runtime !== "claude-discord") {
-				throw new Error(
-					`Project "${entry.projectName}" leads[${i}].runtime: must be "claude-discord", got "${runtime}"`,
-				);
-			}
-			if (runtime === "claude-discord") {
-				if (
-					typeof lead.controlChannel !== "string" ||
-					lead.controlChannel.length === 0
-				) {
-					throw new Error(
-						`Project "${entry.projectName}" leads[${i}]: runtime="claude-discord" requires a non-empty controlChannel`,
-					);
-				}
-			}
-
 			// GEO-253: validate optional statusTagMap
 			const stm = lead.statusTagMap;
 			if (stm !== undefined) {
@@ -203,10 +181,6 @@ export function loadProjects(): ProjectEntry[] {
 				const resolved = process.env[botTokenEnv];
 				if (resolved) {
 					lead.botToken = resolved;
-				} else if (runtime === "claude-discord") {
-					throw new Error(
-						`Project "${entry.projectName}" leads[${i}]: botTokenEnv="${botTokenEnv}" is set but env var is not defined`,
-					);
 				} else {
 					console.warn(
 						`[loadProjects] "${entry.projectName}" leads[${i}]: botTokenEnv="${botTokenEnv}" not found in env — will fall back to DISCORD_BOT_TOKEN`,

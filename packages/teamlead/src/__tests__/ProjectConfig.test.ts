@@ -520,8 +520,6 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 		forumChannel: "123",
 		chatChannel: "456",
 		match: { labels: ["Product"] },
-		runtime: "claude-discord" as const,
-		controlChannel: "ctrl-123",
 	};
 
 	it("resolves botToken from env var when botTokenEnv is set", () => {
@@ -539,7 +537,7 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 		expect(projects[0]!.leads[0]!.botTokenEnv).toBe("TEST_PETER_TOKEN");
 	});
 
-	it("throws when botTokenEnv is set but env var missing for claude-discord", () => {
+	it("warns but does not throw when botTokenEnv is set but env var missing", () => {
 		savedTokenEnv = process.env.TEST_PETER_TOKEN;
 		delete process.env.TEST_PETER_TOKEN;
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
@@ -549,29 +547,7 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 				leads: [{ ...baseLead, botTokenEnv: "TEST_PETER_TOKEN" }],
 			},
 		]);
-		expect(() => loadProjects()).toThrow(
-			/botTokenEnv="TEST_PETER_TOKEN" is set but env var is not defined/,
-		);
-	});
-
-	it("does not throw when botTokenEnv missing for default (non-explicit) runtime", () => {
-		savedTokenEnv = process.env.TEST_PETER_TOKEN;
-		delete process.env.TEST_PETER_TOKEN;
-		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
-			{
-				projectName: "test",
-				projectRoot: "/tmp",
-				leads: [
-					{
-						...baseLead,
-						runtime: undefined,
-						controlChannel: undefined,
-						botTokenEnv: "TEST_PETER_TOKEN",
-					},
-				],
-			},
-		]);
-		// Should not throw, just warn
+		// Should not throw, just warn — falls back to DISCORD_BOT_TOKEN
 		const projects = loadProjects();
 		expect(projects[0]!.leads[0]!.botToken).toBeUndefined();
 	});

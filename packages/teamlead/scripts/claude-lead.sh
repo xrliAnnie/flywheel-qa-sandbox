@@ -535,35 +535,58 @@ cd "$LEAD_WORKSPACE"
 # Generate MCP config JSON for Lead terminal observation.
 # The MCP server runs alongside Claude, providing read-only access to Runner tmux sessions.
 TERMINAL_MCP_DIR="${SCRIPT_DIR}/../../terminal-mcp/dist"
+INBOX_MCP_DIR="${SCRIPT_DIR}/../../inbox-mcp/dist"
+
+MCP_SERVERS_JSON=""
+
 if [ -d "$TERMINAL_MCP_DIR" ]; then
   TERMINAL_MCP_BIN="$(cd "$TERMINAL_MCP_DIR" && pwd)/index.js"
-  MCP_CONFIG_FILE="${TMPDIR:-/tmp}/flywheel-mcp-${LEAD_ID}.json"
-  cat > "$MCP_CONFIG_FILE" <<MCPEOF
-{
-  "mcpServers": {
-    "flywheel-terminal": {
-      "command": "node",
-      "args": ["${TERMINAL_MCP_BIN}"],
-      "env": {
-        "FLYWHEEL_PROJECT_NAME": "${PROJECT_NAME}",
-        "FLYWHEEL_LEAD_ID": "${LEAD_ID}"
-      }
-    }
-  }
-}
-MCPEOF
-  log "Terminal MCP config: ${MCP_CONFIG_FILE}"
+  MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"flywheel-terminal\":{\"command\":\"node\",\"args\":[\"${TERMINAL_MCP_BIN}\"],\"env\":{\"FLYWHEEL_PROJECT_NAME\":\"${PROJECT_NAME}\",\"FLYWHEEL_LEAD_ID\":\"${LEAD_ID}\"}},"
+  log "Terminal MCP: enabled"
 else
-  log "WARNING: terminal-mcp not built (${TERMINAL_MCP_DIR} missing), skipping MCP"
+  log "WARNING: terminal-mcp not built (${TERMINAL_MCP_DIR} missing)"
+fi
+
+# FLY-47: Inbox MCP server for CommDB → Lead channel push delivery
+INBOX_MCP_ENABLED=false
+if [ -d "$INBOX_MCP_DIR" ]; then
+  INBOX_MCP_BIN="$(cd "$INBOX_MCP_DIR" && pwd)/index.js"
+  COMM_DB_PATH="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
+  MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"flywheel-inbox\":{\"command\":\"node\",\"args\":[\"${INBOX_MCP_BIN}\"],\"env\":{\"FLYWHEEL_COMM_DB\":\"${COMM_DB_PATH}\",\"FLYWHEEL_LEAD_ID\":\"${LEAD_ID}\",\"FLYWHEEL_PROJECT_NAME\":\"${PROJECT_NAME}\"}},"
+  INBOX_MCP_ENABLED=true
+  log "Inbox MCP: enabled (CommDB push delivery)"
+else
+  log "WARNING: inbox-mcp not built (${INBOX_MCP_DIR} missing), CommDB push disabled"
+fi
+
+if [ -n "$MCP_SERVERS_JSON" ]; then
+  # Remove trailing comma and wrap in JSON
+  MCP_SERVERS_JSON="${MCP_SERVERS_JSON%,}"
+  MCP_CONFIG_FILE="${TMPDIR:-/tmp}/flywheel-mcp-${LEAD_ID}.json"
+  echo "{\"mcpServers\":{${MCP_SERVERS_JSON}}}" > "$MCP_CONFIG_FILE"
+  log "MCP config: ${MCP_CONFIG_FILE}"
+else
+  log "WARNING: No MCP servers available"
   MCP_CONFIG_FILE=""
 fi
 
 # Build claude args using bash array (avoids quoting/word-splitting issues)
 CLAUDE_ARGS=(
   --agent "$LEAD_ID"
-  --channels "plugin:discord@claude-plugins-official"
   --permission-mode bypassPermissions
 )
+
+# FLY-47: Channel configuration
+# Discord plugin: approved via GrowthBook allowlist → --channels
+# Inbox MCP server: not on allowlist → --dangerously-load-development-channels (sets dev:true, bypasses gate)
+# These are SEPARATE flags — --channels for allowlisted plugins, dev flag for local MCP servers.
+CLAUDE_ARGS+=(--channels "plugin:discord@claude-plugins-official")
+if [ "$INBOX_MCP_ENABLED" = "true" ]; then
+  CLAUDE_ARGS+=(--dangerously-load-development-channels "server:flywheel-inbox")
+  log "Channels: Discord plugin + inbox server (dev channel)"
+else
+  log "Channels: Discord plugin only"
+fi
 
 # ── FLY-11: Terminal MCP config ──────────
 if [ -n "$MCP_CONFIG_FILE" ]; then

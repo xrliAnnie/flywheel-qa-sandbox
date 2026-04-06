@@ -15,6 +15,9 @@ export function pending(args: PendingArgs): PendingQuestion[] {
 			from_agent: q.from_agent,
 			content: q.content,
 			created_at: q.created_at,
+			checkpoint: q.checkpoint ?? null,
+			content_type: (q.content_type ?? "text") as "text" | "ref",
+			content_ref: q.content_ref ?? null,
 		}));
 	} finally {
 		db.close();

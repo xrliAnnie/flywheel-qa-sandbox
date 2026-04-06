@@ -1267,6 +1267,17 @@ export class StateStore {
 		return (result[0]?.values[0]?.[0] as number) ?? 0;
 	}
 
+	/** FLY-62: Check if a lead event has been successfully delivered. */
+	isLeadEventDelivered(leadId: string, eventId: string): boolean {
+		const rows = this.db.exec(
+			`SELECT 1 FROM lead_events
+			 WHERE lead_id = ? AND event_id = ? AND delivered_at IS NOT NULL
+			 LIMIT 1`,
+			[leadId, eventId],
+		);
+		return rows.length > 0 && (rows[0]?.values?.length ?? 0) > 0;
+	}
+
 	// --- FLY-25: Delivery tracking ---
 
 	/** Record a delivery failure: increment attempts, store error. */

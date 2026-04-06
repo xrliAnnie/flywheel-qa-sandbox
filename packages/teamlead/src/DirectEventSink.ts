@@ -130,12 +130,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				// GEO-275: skip Forum Post creation for leads without forumChannel
 				if (fpLead.forumChannel) {
 					const botToken = fpLead.botToken ?? this.config.discordBotToken;
+					// Resolve issue title: prefer env, fall back to session history
+					const resolvedTitle =
+						env.issueTitle ??
+						this.store.getSessionByIssue(env.issueId)?.issue_title ??
+						undefined;
 					this.forumPostCreator
 						.ensureForumPost({
 							forumChannelId: fpLead.forumChannel,
 							issueId: env.issueId,
 							issueIdentifier: env.issueIdentifier,
-							issueTitle: env.issueTitle,
+							issueTitle: resolvedTitle,
 							executionId: env.executionId,
 							status: "running",
 							discordBotToken: botToken,
@@ -356,90 +361,71 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			};
 
 			const doDeliver = async () => {
+				// FLY-47: Classify event — priority hints + Forum gating
+				let updateForum = true; // default: update Forum when no filter
 				if (this.eventFilter) {
 					const filterResult = this.eventFilter.classify(
 						eventType,
 						hookPayload,
 					);
-
-					let tagResult: HookPayload["forum_tag_update_result"];
-					if (this.forumTagUpdater) {
-						// FLY-24 Bug 2: Re-read session to get latest thread_id.
-						// The `session` closure may be stale if ensureForumPost (fire-and-forget)
-						// wrote thread_id after pushNotification captured the session object.
-						const freshSession = this.store.getSession(env.executionId);
-						const freshThreadId = freshSession?.thread_id ?? session.thread_id;
-						const tagStatus = freshSession?.status ?? session.status ?? "";
-						console.log(
-							`[DirectEventSink] updateTag: exec=${env.executionId} threadId=${freshThreadId ?? "none"} ` +
-								`status=${tagStatus} event=${eventType} lead=${lead.agentId} ` +
-								`botToken=${(lead.botToken ?? this.config.discordBotToken) ? "set" : "MISSING"} ` +
-								`statusTagMap=${lead.statusTagMap ? JSON.stringify(Object.keys(lead.statusTagMap)) : "none(using-global)"}`,
-						);
-						tagResult = await this.forumTagUpdater.updateTag({
-							threadId: freshThreadId,
-							status: tagStatus,
-							eventType,
-							discordBotToken: lead.botToken ?? this.config.discordBotToken,
-							statusTagMap: lead.statusTagMap,
-						});
-						console.log(
-							`[DirectEventSink] updateTag result: ${tagResult} for exec=${env.executionId}`,
-						);
-						// FLY-24: Post status change message to Forum thread
-						if (tagResult === "succeeded" && previousStatus) {
-							await postThreadStatusMessage({
-								threadId: freshThreadId,
-								previousStatus,
-								newStatus: tagStatus,
-								botToken: lead.botToken ?? this.config.discordBotToken,
-							});
-						}
-					}
-
-					if (filterResult.action === "notify_agent") {
-						hookPayload.filter_priority = filterResult.priority;
-						hookPayload.notification_context = filterResult.reason;
-						hookPayload.forum_tag_update_result = tagResult;
-						const eventId = `direct-${env.executionId}-${eventType}-${Date.now()}`;
-						const seq = this.store.appendLeadEvent(
-							lead.agentId,
-							eventId,
-							eventType,
-							JSON.stringify(hookPayload),
-							sessionKey,
-						);
-						const envelope: LeadEventEnvelope = {
-							seq,
-							event: hookPayload,
-							sessionKey,
-							leadId: lead.agentId,
-							timestamp: new Date().toISOString(),
-						};
-						// Advisory events — best-effort, mark delivered regardless
-						await runtime.deliver(envelope);
-						this.store.markLeadEventDelivered(seq);
-					}
-				} else {
-					const eventId = `direct-${env.executionId}-${eventType}-${Date.now()}`;
-					const seq = this.store.appendLeadEvent(
-						lead.agentId,
-						eventId,
-						eventType,
-						JSON.stringify(hookPayload),
-						sessionKey,
-					);
-					const envelope: LeadEventEnvelope = {
-						seq,
-						event: hookPayload,
-						sessionKey,
-						leadId: lead.agentId,
-						timestamp: new Date().toISOString(),
-					};
-					// Advisory events — best-effort, mark delivered regardless
-					await runtime.deliver(envelope);
-					this.store.markLeadEventDelivered(seq);
+					hookPayload.filter_priority = filterResult.priority;
+					hookPayload.notification_context = filterResult.reason;
+					updateForum = filterResult.updateForum;
 				}
+
+				// Forum tag update — only for status-changing events
+				let tagResult: HookPayload["forum_tag_update_result"];
+				if (updateForum && this.forumTagUpdater) {
+					// FLY-24 Bug 2: Re-read session to get latest thread_id.
+					const freshSession = this.store.getSession(env.executionId);
+					const freshThreadId = freshSession?.thread_id ?? session.thread_id;
+					const tagStatus = freshSession?.status ?? session.status ?? "";
+					console.log(
+						`[DirectEventSink] updateTag: exec=${env.executionId} threadId=${freshThreadId ?? "none"} ` +
+							`status=${tagStatus} event=${eventType} lead=${lead.agentId} ` +
+							`botToken=${(lead.botToken ?? this.config.discordBotToken) ? "set" : "MISSING"} ` +
+							`statusTagMap=${lead.statusTagMap ? JSON.stringify(Object.keys(lead.statusTagMap)) : "none(using-global)"}`,
+					);
+					tagResult = await this.forumTagUpdater.updateTag({
+						threadId: freshThreadId,
+						status: tagStatus,
+						eventType,
+						discordBotToken: lead.botToken ?? this.config.discordBotToken,
+						statusTagMap: lead.statusTagMap,
+					});
+					console.log(
+						`[DirectEventSink] updateTag result: ${tagResult} for exec=${env.executionId}`,
+					);
+					// FLY-24: Post status change message to Forum thread
+					if (tagResult === "succeeded" && previousStatus) {
+						await postThreadStatusMessage({
+							threadId: freshThreadId,
+							previousStatus,
+							newStatus: tagStatus,
+							botToken: lead.botToken ?? this.config.discordBotToken,
+						});
+					}
+				}
+				hookPayload.forum_tag_update_result = tagResult;
+
+				// FLY-47: Always deliver ALL events to Lead
+				const eventId = `direct-${env.executionId}-${eventType}-${Date.now()}`;
+				const seq = this.store.appendLeadEvent(
+					lead.agentId,
+					eventId,
+					eventType,
+					JSON.stringify(hookPayload),
+					sessionKey,
+				);
+				const envelope: LeadEventEnvelope = {
+					seq,
+					event: hookPayload,
+					sessionKey,
+					leadId: lead.agentId,
+					timestamp: new Date().toISOString(),
+				};
+				await runtime.deliver(envelope);
+				this.store.markLeadEventDelivered(seq);
 			};
 
 			this.pending.push(

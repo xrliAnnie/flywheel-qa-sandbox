@@ -675,4 +675,105 @@ skills:
 		expect(config.skills?.build_command).toBe("npm run build");
 		expect(config.skills?.test_framework).toBe("jest");
 	});
+
+	// ─── FLY-47: Checkpoints validation ──────────────
+
+	describe("checkpoints validation", () => {
+		const withCheckpoints = (checkpointsYaml: string) => `
+${MINIMAL_CONFIG_YAML}
+${checkpointsYaml}
+`;
+
+		it("accepts valid checkpoints config", async () => {
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    enabled: true
+    timeout_ms: 1800000
+    timeout_behavior: fail-close
+    cleanup_ttl_hours: 24
+    stage: brainstorm
+  question:
+    enabled: true
+    timeout_behavior: fail-open
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.checkpoints?.brainstorm?.enabled).toBe(true);
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(1800000);
+			expect(config.checkpoints?.question?.timeout_behavior).toBe("fail-open");
+		});
+
+		it("accepts config without checkpoints", async () => {
+			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.checkpoints).toBeUndefined();
+		});
+
+		it("rejects array checkpoints", async () => {
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  - brainstorm
+  - question
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/checkpoints must be a YAML mapping/,
+			);
+		});
+
+		it("rejects invalid timeout_behavior", async () => {
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    timeout_behavior: explode
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/timeout_behavior/,
+			);
+		});
+
+		it("rejects negative timeout_ms", async () => {
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    timeout_ms: -100
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/timeout_ms.*positive/,
+			);
+		});
+
+		it("rejects negative cleanup_ttl_hours", async () => {
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    cleanup_ttl_hours: 0
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/cleanup_ttl_hours.*positive/,
+			);
+		});
+
+		it("rejects non-boolean enabled", async () => {
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    enabled: "yes"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/enabled.*boolean/,
+			);
+		});
+	});
 });
