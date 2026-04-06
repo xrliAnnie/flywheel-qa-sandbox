@@ -7,13 +7,13 @@ New session? Run `/onboarding` or read these files in order:
 1. **Product Experience** → `doc/architecture/product-experience-spec.md` (**必读** — 定义了产品应该长什么样，所有开发工作的 source of truth)
 2. **Memory** → `~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/MEMORY.md` (decisions, architecture, current progress)
 3. **Active Explorations** (read based on task):
-   - `doc/exploration/new/FLY-52-product-experience-deep-design.md` — Product brainstorm Q&A (FLY-52)
-   - `doc/exploration/new/v0.3-memory-system.md` — per-project memory (GEO-145)
-   - `doc/exploration/new/v0.4-voice-interface.md` — push/pull voice channel for CEO (GEO-150)
-   - `doc/exploration/new/v0.5-remote-screenshot.md` — visual Slack notifications (GEO-151)
-   - `doc/exploration/new/v0.6-slack-threading.md` — Slack threading + workflow engine (GEO-148)
-   - `doc/exploration/new/v1.0-lead-experience.md` — Lead MVP experience (GEO-146)
-   - `doc/exploration/new/v1.1-multi-lead.md` — Multi-lead agents (GEO-152)
+   - `doc/engineer/exploration/new/FLY-52-product-experience-deep-design.md` — Product brainstorm Q&A (FLY-52)
+   - `doc/engineer/exploration/new/v0.3-memory-system.md` — per-project memory (GEO-145)
+   - `doc/engineer/exploration/new/v0.4-voice-interface.md` — push/pull voice channel for CEO (GEO-150)
+   - `doc/engineer/exploration/new/v0.5-remote-screenshot.md` — visual Slack notifications (GEO-151)
+   - `doc/engineer/exploration/new/v0.6-slack-threading.md` — Slack threading + workflow engine (GEO-148)
+   - `doc/engineer/exploration/new/v1.0-lead-experience.md` — Lead MVP experience (GEO-146)
+   - `doc/engineer/exploration/new/v1.1-multi-lead.md` — Multi-lead agents (GEO-152)
 4. **Reference** → `doc/reference/ralph-patterns.md` + `doc/reference/auto-claude-patterns.md`
 
 Archived docs are in `doc/*/archive/` — read only if you need historical context.
@@ -84,13 +84,15 @@ Current version: see `doc/VERSION`
 
 ```
 doc/
-├── exploration/{new,backlog,archive}/  — Product exploration / design docs
-├── research/{new,archive}/             — Technical research / evaluations
-├── deep-research/                      — External LLM research results
-├── plan/{draft,new,inprogress,archive,backlog}/ — Implementation plans
-├── implementation/                     — Implementation notes
 ├── architecture/{archive}/             — Unified architecture docs
+├── engineer/                           — Engineer work area
+│   ├── exploration/{new,backlog,archive}/  — Product exploration / design docs
+│   ├── research/{new,archive}/             — Technical research / evaluations
+│   ├── plan/{draft,new,inprogress,archive,backlog}/ — Implementation plans
+│   ├── deep-research/                      — External LLM research results
+│   └── implementation/                     — Implementation notes
 ├── reference/                          — Reference docs (Cyrus, Ralph, patterns)
+├── retro/                              — Retrospectives
 └── VERSION                             — Current version number
 ```
 
@@ -100,11 +102,11 @@ Every feature follows this pipeline. **Linear issue is the single source of trut
 
 ```mermaid
 graph LR
-    LI[Linear Issue] --> B[Brainstorm<br/>exploration/new/]
-    B --> R[Research<br/>research/new/]
-    R --> P[Plan<br/>plan/draft/]
-    P -->|codex-approved| N[plan/new/]
-    N -->|implement started| IP[plan/inprogress/]
+    LI[Linear Issue] --> B[Brainstorm<br/>engineer/exploration/new/]
+    B --> R[Research<br/>engineer/research/new/]
+    R --> P[Plan<br/>engineer/plan/draft/]
+    P -->|codex-approved| N[engineer/plan/new/]
+    N -->|implement started| IP[engineer/plan/inprogress/]
     IP -->|merged| A[Archive<br/>*/archive/]
 ```
 
@@ -149,7 +151,7 @@ Every document MUST start with a structured metadata block:
 
 **Issue**: GEO-{XX}
 **Date**: {YYYY-MM-DD}
-**Source**: `doc/exploration/new/GEO-{XX}-{slug}.md`
+**Source**: `doc/engineer/exploration/new/GEO-{XX}-{slug}.md`
 ```
 
 **Plan:**
@@ -159,7 +161,7 @@ Every document MUST start with a structured metadata block:
 **Version**: v{X.Y.Z}
 **Issue**: GEO-{XX}
 **Date**: {YYYY-MM-DD}
-**Source**: `doc/exploration/new/GEO-{XX}-{slug}.md`, `doc/research/new/GEO-{XX}-{slug}.md`
+**Source**: `doc/engineer/exploration/new/GEO-{XX}-{slug}.md`, `doc/engineer/research/new/GEO-{XX}-{slug}.md`
 **Status**: draft | codex-approved
 ```
 
@@ -173,9 +175,9 @@ plan/archive/    → Implementation merged (or abandoned with reason)
 plan/backlog/    → Written but implementation deferred
 ```
 
-When a plan passes Codex design review: `git mv plan/draft/{file} plan/new/{file}`
-When implementation starts: `git mv plan/new/{file} plan/inprogress/{file}`
-When PR merges: `git mv plan/inprogress/{file} plan/archive/{file}`
+When a plan passes Codex design review: `git mv doc/engineer/plan/draft/{file} doc/engineer/plan/new/{file}`
+When implementation starts: `git mv doc/engineer/plan/new/{file} doc/engineer/plan/inprogress/{file}`
+When PR merges: `git mv doc/engineer/plan/inprogress/{file} doc/engineer/plan/archive/{file}`
 
 ### Document Lifecycle Rules
 
@@ -188,8 +190,8 @@ When PR merges: `git mv plan/inprogress/{file} plan/archive/{file}`
 - **Never archive** a document whose downstream stage hasn't been done yet
 
 **Backlog rules:**
-- `exploration/backlog/` — explorations deferred intentionally (not abandoned, will return to later)
-- `plan/backlog/` — plans written but implementation deferred
+- `doc/engineer/exploration/backlog/` — explorations deferred intentionally (not abandoned, will return to later)
+- `doc/engineer/plan/backlog/` — plans written but implementation deferred
 
 **When moving to archive, do NOT delete.** Just `git mv` to the `archive/` subdirectory. The file keeps its name.
 

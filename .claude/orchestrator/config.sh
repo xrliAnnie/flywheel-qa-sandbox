@@ -12,14 +12,14 @@ DB_PATH="${DB_PATH:-$SHARED_STATE_DIR/agent-state.db}"
 LOCK_DIR="${LOCK_DIR:-$SHARED_STATE_DIR/locks}"
 
 # Doc paths (flat structure, no domain subdirs)
-PLAN_NEW="$PROJECT_ROOT/doc/plan/new"
-PLAN_DRAFT="$PROJECT_ROOT/doc/plan/draft"
-PLAN_INPROGRESS="$PROJECT_ROOT/doc/plan/inprogress"
-PLAN_ARCHIVE="$PROJECT_ROOT/doc/plan/archive"
-EXPLORATION_NEW="$PROJECT_ROOT/doc/exploration/new"
-EXPLORATION_ARCHIVE="$PROJECT_ROOT/doc/exploration/archive"
-RESEARCH_NEW="$PROJECT_ROOT/doc/research/new"
-RESEARCH_ARCHIVE="$PROJECT_ROOT/doc/research/archive"
+PLAN_NEW="$PROJECT_ROOT/doc/engineer/plan/new"
+PLAN_DRAFT="$PROJECT_ROOT/doc/engineer/plan/draft"
+PLAN_INPROGRESS="$PROJECT_ROOT/doc/engineer/plan/inprogress"
+PLAN_ARCHIVE="$PROJECT_ROOT/doc/engineer/plan/archive"
+EXPLORATION_NEW="$PROJECT_ROOT/doc/engineer/exploration/new"
+EXPLORATION_ARCHIVE="$PROJECT_ROOT/doc/engineer/exploration/archive"
+RESEARCH_NEW="$PROJECT_ROOT/doc/engineer/research/new"
+RESEARCH_ARCHIVE="$PROJECT_ROOT/doc/engineer/research/archive"
 
 # Limits
 MAX_CONCURRENT_AGENTS=5
