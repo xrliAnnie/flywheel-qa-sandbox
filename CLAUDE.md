@@ -79,6 +79,10 @@ Current version: see `doc/VERSION`
 | FLY-11: Terminal MCP tool — Lead reads/writes Runner tmux | ✅ Merged (PR #88) |
 | FLY-20: Auto-restart Bridge + Lead after merge — CD flow + Discord plugin fork detection | ✅ Merged (PR #90) |
 | FLY-29: Typing indicator idle timeout — auto-stop on no-reply | ✅ Merged (Plugin Fork PR #2) |
+| FLY-47: Channel Contract — unified gate + checkpoint system | ✅ Merged (PR #119) |
+| FLY-62: Lead Auto-Relay — Bridge→Lead gate question routing | ✅ Merged (PR #119) |
+| FLY-64: Daily Standup Bridge auto-start + env config | ✅ Merged (PR #117) |
+| FLY-67: OpenClaw runtime + gateway cleanup | ✅ Merged (PR #114) |
 
 ## Doc Structure & Lifecycle
 
