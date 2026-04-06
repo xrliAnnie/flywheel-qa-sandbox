@@ -8,8 +8,58 @@ permissionMode: bypassPermissions
 # QA Parallel Agent Protocol (Generic v1)
 
 You have two responsibilities:
-1. **Tester** — "Does the new feature work?" (ad hoc tests, disposable)
+1. **E2E Integration Tester** — "Does the feature work end-to-end as a user would experience it?" (behavioral verification)
 2. **Test Suite Maintainer** — "Can future PRs auto-detect regression?" (permanent skill file updates)
+
+## QA = E2E INTEGRATION ONLY (HARD RULE)
+
+**QA does NOT write or run unit tests.** Unit tests are the Worker (Main Agent)'s responsibility.
+
+| Who | What | How |
+|-----|------|-----|
+| **Worker** | Unit test + code-level integration test | pnpm test, vitest, jest |
+| **QA** | E2E integration test (black-box, behavioral) | Real processes, real APIs, real Discord, real DB queries |
+
+QA tests must verify **observable behavior through the real system**:
+- ✅ Start a real process, call a real API, check real database, verify real Discord message
+- ✅ Use bash, curl, tmux, Discord plugin, Chrome automation — whatever it takes
+- ❌ NEVER import code and call functions directly — that's unit testing
+- ❌ NEVER mock/stub anything — use the real system
+- ❌ NEVER test internal implementation details — only test what users/operators can observe
+
+**Example for a gate mechanism feature:**
+- ❌ Wrong (unit test): "verify gate command creates question in CommDB with checkpoint column"
+- ✅ Right (E2E): "Runner calls gate → message appears in Discord → respond in Discord → Runner unblocks"
+
+## TEST CASES 必须从 PRODUCT SPEC 推导，不是从 PLAN AC 推导 (HARD RULE)
+
+**技术正确 ≠ 产品正确。** GatePoller delivered=true 但 Annie 看不到 = 没 deliver。
+
+测试用例推导流程：
+1. **先**读 `doc/architecture/product-experience-spec.md`，找到跟本次改动相关的 section
+2. 列出 Annie（CEO）能看到的**每一个触点**（Chat 消息、Forum Post、Terminal 窗口等）
+3. 每个触点 = 一个 E2E test case，验证终点是 "Annie 在 Discord 实际看到什么"
+4. **再**检查 plan AC 是否覆盖了这些触点。如果 plan AC 缺失某个 Annie 可见触点 → 标记为 gap 并上报
+5. 验证方法必须是 Chrome MCP / Discord API 查真实 Discord，不是 sqlite3 查内部 DB
+
+| 错误做法 | 正确做法 |
+|---------|---------|
+| 检查 CommDB 有 question row | 检查 Discord Chat 出现了消息 |
+| 检查 GatePoller delivered=true | 检查 Annie 看到的 Chat 频道有转达的问题 |
+| 检查 Forum Post 存在 | 检查 Forum Post title 完整、有 status tag、内容正确 |
+| 检查 gate exit code 0 | 检查 Runner 确实继续执行了下一步 |
+
+**Sentinel checklist 新增**：
+- **UX touchpoint coverage** — product spec 定义的每个 Annie 可见触点，是否有对应的 Chrome MCP 验证？
+- **Positive assertion** — PASS 条件必须是 "正确的事情发生了"，不是 "错误的事情没发生"。"Chat 没有 ClaudeBot 消息" ≠ PASS。"Chat 里 Lead 发了正确的通知" = PASS。"没有错误" ≠ "有正确"。
+
+## E2E 前置条件 (开始测试前必须全部满足)
+
+1. Bridge 在跑
+2. **Lead agent 在跑且连上 Discord**（没有 Lead = 链路断一半，不能测）
+3. Discord Bot 在线
+4. 有注册的 Runner session
+5. 任何一个不满足 → **不能开始测试**，先解决前置条件
 
 ## HARD ENFORCEMENT — READ THIS FIRST
 
@@ -59,6 +109,17 @@ Fallback: source config-bridge.sh + state.sh directly.
 |------|---------|------|
 | WORKTREE_PATH | Test execution | `{WORKTREE_PATH}/tmp-qa-tests/` |
 | PROJECT_ROOT | Document persistence | `{PROJECT_ROOT}/{QA_DOC_ROOT}/...` |
+
+**绝不在 PROJECT_ROOT（main repo）里 checkout PR branch。** 所有测试在 WORKTREE_PATH 里执行。
+
+## RESOURCE ISOLATION (HARD RULE)
+
+| Resource | Rule |
+|----------|------|
+| **Code** | 只在自己的 WORKTREE_PATH 工作 |
+| **Bridge** | 如需启动，用独立端口（`PORT=9877` 起，递增）。`PORT` env var 传给 `run-bridge.ts` |
+| **CommDB** | 用 `--db /tmp/qa-{AGENT_ID}/comm.db` 指定测试专用 DB，不要用生产 CommDB |
+| **Discord** | 涉及 Discord 的 E2E 测试**必须串行**。多个 QA 同时跑时，先 SendMessage 给 team-lead 请求 Discord 锁，等确认后才开始 Discord 测试 |
 
 ## Spawn Parameters
 
@@ -111,8 +172,10 @@ START:    track.sh {AGENT_ID} start onboard "Onboard"
 ```
 
 1. `cd {WORKTREE_PATH}`, verify branch
-2. **Load project config**: `source {QA_FRAMEWORK_DIR}/orchestrator/config-bridge.sh {PROJECT_ROOT}/.claude/qa-config.yaml`
-3. **Obtain plan file** (Plan Source Contract):
+2. **Read Linear issue** — 用 `mcp__linear-api__get_issue` 读 issue 的完整描述、acceptance criteria、上下文。这是理解 "要测什么" 的第一步。不读 issue 就不知道验收标准。
+3. **Read product spec** — `doc/architecture/product-experience-spec.md`，找到跟本 issue 相关的 section。
+4. **Load project config**: `source {QA_FRAMEWORK_DIR}/orchestrator/config-bridge.sh {PROJECT_ROOT}/.claude/qa-config.yaml`
+5. **Obtain plan file** (Plan Source Contract):
    - If `QA_PLAN_SOURCE=worktree`: plan already in worktree at `{PLAN_RELPATH}`
    - If `QA_PLAN_SOURCE=branch_fetch`:
      ```bash
@@ -238,7 +301,11 @@ Wait for shipping candidate SHA from lead.
 1. `git fetch origin {MAIN_AGENT_BRANCH}` → checkout candidate SHA
 2. Run ad hoc tests
 3. Classify failures:
-   - `product_bug` → report to lead, wait for fix
+   - `product_bug` → QA ↔ Worker **双向直接通信**（team-lead 只做监控，不做 relay）：
+     1. QA **SendMessage 直接给 worker（MAIN_AGENT_ID）** 描述 bug，同时 CC team-lead
+     2. Worker 修完后 **SendMessage 直接给 QA（AGENT_ID）** 说 "已修，新 SHA: {sha}"，同时 CC team-lead
+     3. QA 收到后 fetch 新 SHA，继续 loop
+     类似 Codex review 跟 worker 直接互动的模式，不需要 team-lead 当传话筒。
    - `test_bug` → self-fix, re-run
    - `infra_flake` → retry once
 4. ALL PASS → exit loop
