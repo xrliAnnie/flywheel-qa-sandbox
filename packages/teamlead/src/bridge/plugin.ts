@@ -1339,9 +1339,13 @@ export async function startBridge(
 			`[Bridge] STANDUP_LEAD_ID="${standupLeadId}" not found in project "${standupProjectName}" leads. Standup will fail closed on delivery.`,
 		);
 	}
-	// Fail closed: only use the matched lead's token. No fallback to global token
-	// which could be Simba's and break the allowBots triage chain.
-	const standupBotToken = standupLead?.botToken;
+	// FLY-71: The sending bot must NOT be the standup lead (CoS/Simba), because
+	// Discord bots don't receive their own MESSAGE_CREATE events — Simba needs
+	// to see the standup message to trigger triage. Use a different lead's token.
+	const standupSenderLead = (standupProject?.leads ?? []).find(
+		(l) => l.agentId !== standupLeadId && l.botToken,
+	);
+	const standupBotToken = standupSenderLead?.botToken ?? standupLead?.botToken;
 
 	// Parse stale threshold for standup (same env var as GEO-270 patrol)
 	const standupStaleThresholdHours = (() => {
