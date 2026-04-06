@@ -1,0 +1,61 @@
+# Flywheel QA Configuration
+# Enables qa-framework for the Flywheel orchestrator monorepo
+
+project:
+  name: "flywheel"
+  description: "TypeScript orchestrator for autonomous dev workflows — Linear issues to PRs via Claude Code sessions"
+
+qa:
+  doc_root: "doc/qa"
+  test_report_dir: "doc/qa/reports"
+
+plan:
+  source: "worktree"
+  fetch_strategy: "checkout_file"
+
+domains:
+  - name: "bridge"
+    dir: "packages/teamlead"
+    test_skill: "bridge-integration-test"
+    config_file: ".claude/skills/bridge-integration-test/SKILL.md"
+    cleanup_script: null
+
+  - name: "runner"
+    dir: "packages/claude-runner"
+    test_skill: "runner-integration-test"
+    config_file: ".claude/skills/runner-integration-test/SKILL.md"
+    cleanup_script: null
+
+  - name: "comm"
+    dir: "packages/flywheel-comm"
+    test_skill: "comm-integration-test"
+    config_file: ".claude/skills/comm-integration-test/SKILL.md"
+    cleanup_script: null
+
+  - name: "edge"
+    dir: "packages/edge-worker"
+    test_skill: "edge-integration-test"
+    config_file: ".claude/skills/edge-integration-test/SKILL.md"
+    cleanup_script: null
+
+  - name: "core"
+    dir: "packages/core"
+    test_skill: "core-integration-test"
+    config_file: ".claude/skills/core-integration-test/SKILL.md"
+    cleanup_script: null
+
+orchestrator:
+  db_path: "~/.flywheel/orchestrator/flywheel-qa.db"
+  max_concurrent_agents: 2
+  artifact_retention_days: 30
+  agent_types:
+    - name: "qa-parallel"
+      step_templates:
+        - { key: "onboard", name: "Onboard", order: 1, prerequisite: null }
+        - { key: "analyze_plan", name: "Analyze + Plan", order: 2, prerequisite: "onboard" }
+        - { key: "research", name: "Research", order: 3, prerequisite: "analyze_plan" }
+        - { key: "write_execute", name: "Write + Execute", order: 4, prerequisite: "research" }
+        - { key: "finalize", name: "Finalize", order: 5, prerequisite: "write_execute" }
+
+version:
+  file: "doc/VERSION"
