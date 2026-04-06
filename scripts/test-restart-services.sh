@@ -82,8 +82,8 @@ fi
 # ════════════════════════════════════════════════════════════════
 echo "Test: classify_changes — doc-only = no restart"
 
-CHANGED="doc/plan/inprogress/v1.18.0-FLY-20.md
-doc/exploration/new/FLY-20.md
+CHANGED="doc/engineer/plan/inprogress/v1.18.0-FLY-20.md
+doc/engineer/exploration/new/FLY-20.md
 README.md"
 result=$(classify_changes)
 if echo "$result" | grep -q "restart_bridge=false" && \

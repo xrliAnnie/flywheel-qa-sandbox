@@ -48,11 +48,11 @@ Search the doc/ directory to figure out where this issue is in the pipeline. Che
 
 | Check | If found | Stage |
 |-------|----------|-------|
-| `doc/plan/inprogress/*GEO-{XX}*` | Implementation in progress | Resume `/implement` |
-| `doc/plan/new/*GEO-{XX}*` | Plan approved, ready to implement | Start `/implement` |
-| `doc/plan/draft/*GEO-{XX}*` | Plan drafted, needs review | Run `/codex-design-review` |
-| `doc/research/new/*GEO-{XX}*` | Research done, needs plan | Start `/write-plan` |
-| `doc/exploration/new/*GEO-{XX}*` | Exploration done, needs research | Start `/research` |
+| `doc/engineer/plan/inprogress/*GEO-{XX}*` | Implementation in progress | Resume `/implement` |
+| `doc/engineer/plan/new/*GEO-{XX}*` | Plan approved, ready to implement | Start `/implement` |
+| `doc/engineer/plan/draft/*GEO-{XX}*` | Plan drafted, needs review | Run `/codex-design-review` |
+| `doc/engineer/research/new/*GEO-{XX}*` | Research done, needs plan | Start `/write-plan` |
+| `doc/engineer/exploration/new/*GEO-{XX}*` | Exploration done, needs research | Start `/research` |
 | Nothing found | Fresh issue | Start `/brainstorm` |
 
 Also check `backlog/` and `archive/` directories — if the issue's docs are archived, warn the user that this issue appears to be already completed.
@@ -123,7 +123,7 @@ Linear 描述: {issue description summary}
 
 Only AFTER Annie explicitly approves, invoke `/brainstorm` with the confirmed requirements.
 
-**Output file**: `doc/exploration/new/{ISSUE_ID}-{slug}.md`
+**Output file**: `doc/engineer/exploration/new/{ISSUE_ID}-{slug}.md`
 
 **Frontmatter**:
 ```markdown
@@ -140,7 +140,7 @@ After completion, ask: "Exploration complete. Proceed to Research?"
 
 **Invoke**: `/research` with the exploration doc path as input argument.
 
-**Output file**: `doc/research/new/GEO-{XX}-{slug}.md`
+**Output file**: `doc/engineer/research/new/GEO-{XX}-{slug}.md`
 
 **Frontmatter**:
 ```markdown
@@ -148,7 +148,7 @@ After completion, ask: "Exploration complete. Proceed to Research?"
 
 **Issue**: GEO-{XX}
 **Date**: {today YYYY-MM-DD}
-**Source**: `doc/exploration/new/GEO-{XX}-{slug}.md`
+**Source**: `doc/engineer/exploration/new/GEO-{XX}-{slug}.md`
 ```
 
 After completion, ask: "Research complete. Proceed to Plan?"
@@ -157,7 +157,7 @@ After completion, ask: "Research complete. Proceed to Plan?"
 
 **Invoke**: `/write-plan` with the research doc path as input argument.
 
-**Output file**: `doc/plan/draft/v{VERSION}-GEO-{XX}-{slug}.md`
+**Output file**: `doc/engineer/plan/draft/v{VERSION}-GEO-{XX}-{slug}.md`
 
 The version comes from `doc/VERSION`. The plan starts in `draft/`.
 
@@ -168,7 +168,7 @@ The version comes from `doc/VERSION`. The plan starts in `draft/`.
 **Version**: v{VERSION}
 **Issue**: GEO-{XX}
 **Date**: {today YYYY-MM-DD}
-**Source**: `doc/exploration/new/GEO-{XX}-{slug}.md`, `doc/research/new/GEO-{XX}-{slug}.md`
+**Source**: `doc/engineer/exploration/new/GEO-{XX}-{slug}.md`, `doc/engineer/research/new/GEO-{XX}-{slug}.md`
 **Status**: draft
 ```
 
@@ -180,7 +180,7 @@ This runs Codex to review the plan. It auto-loops until approved (or asks user a
 
 On approval:
 1. Update plan frontmatter: `**Status**: codex-approved`
-2. Move: `git mv doc/plan/draft/{file} doc/plan/new/{file}`
+2. Move: `git mv doc/engineer/plan/draft/{file} doc/engineer/plan/new/{file}`
 3. Say: "Plan approved by Codex. Proceed to Implementation?"
 
 ### Stage: Implement
@@ -188,7 +188,7 @@ On approval:
 **Invoke**: `/implement {plan-file-path}`
 
 Before starting:
-1. Move plan: `git mv doc/plan/new/{file} doc/plan/inprogress/{file}`
+1. Move plan: `git mv doc/engineer/plan/new/{file} doc/engineer/plan/inprogress/{file}`
 2. Update Linear issue status to "In Progress"
 
 **Note**: The worktree and feature branch were already created in Step 0e. `/implement` should detect the existing branch and skip branch creation. Pass `--skip-branch` or rely on `/implement`'s auto-detection of the current feature branch.
@@ -199,7 +199,7 @@ Before starting:
 ```bash
 ISSUE_ID="{ISSUE_ID}"
 if [ -n "$ISSUE_ID" ]; then
-  for dir_pair in "doc/plan/inprogress:doc/plan/archive" "doc/research/new:doc/research/archive" "doc/exploration/new:doc/exploration/archive"; do
+  for dir_pair in "doc/engineer/plan/inprogress:doc/engineer/plan/archive" "doc/engineer/research/new:doc/engineer/research/archive" "doc/engineer/exploration/new:doc/engineer/exploration/archive"; do
     src="${dir_pair%%:*}"; dst="${dir_pair##*:}"
     for f in $(find "$src" -name "*${ISSUE_ID}-*" -type f 2>/dev/null); do
       git mv "$f" "$dst/"

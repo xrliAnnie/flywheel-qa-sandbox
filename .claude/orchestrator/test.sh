@@ -176,12 +176,12 @@ assert_exit "Skip step 6 blocked (mandatory)" 1 ./.claude/orchestrator/track.sh 
 echo ""
 echo "=== 7. Artifacts ==="
 
-add_artifact "t-1" "exploration_doc" "doc/exploration/new/GEO-901-test.md"
+add_artifact "t-1" "exploration_doc" "doc/engineer/exploration/new/GEO-901-test.md"
 add_artifact "t-1" "pr" "123" "merged"
-add_artifact "t-1" "exploration_doc" "doc/exploration/new/GEO-901-test-v2.md"
+add_artifact "t-1" "exploration_doc" "doc/engineer/exploration/new/GEO-901-test-v2.md"
 
 val=$(get_artifact_value "t-1" "exploration_doc")
-assert "get_artifact_value returns latest (by id DESC)" "doc/exploration/new/GEO-901-test-v2.md" "$val"
+assert "get_artifact_value returns latest (by id DESC)" "doc/engineer/exploration/new/GEO-901-test-v2.md" "$val"
 
 pr_val=$(get_artifact_value "t-1" "pr")
 assert "PR artifact value" "123" "$pr_val"

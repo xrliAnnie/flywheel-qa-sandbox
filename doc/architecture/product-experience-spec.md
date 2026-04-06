@@ -3,7 +3,7 @@
 **Issue**: FLY-52
 **Date**: 2026-04-03
 **Status**: Active (Living Document)
-**Source**: `doc/exploration/new/FLY-52-product-experience-deep-design.md`
+**Source**: `doc/engineer/exploration/new/FLY-52-product-experience-deep-design.md`
 
 > 本文档定义 Flywheel 的产品体验 — 从 Annie（CEO）的视角出发，描述每一条 User Flow 应该怎么工作。
 > 这是所有开发工作的 source of truth。任何架构决策必须服务于这里定义的体验。
