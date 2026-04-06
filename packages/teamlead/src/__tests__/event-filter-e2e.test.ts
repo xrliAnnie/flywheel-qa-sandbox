@@ -1,10 +1,11 @@
 /**
  * GEO-187 E2E: EventFilter + ForumTagUpdater integration tests.
  *
- * Verifies the full pipeline: event → EventFilter.classify() → route to
- * notify_agent or forum_only, with enriched HookPayload and ForumTagUpdater.
+ * FLY-47: EventFilter is a pure priority annotator — ALL events are delivered
+ * to Lead. Verifies the full pipeline: event → EventFilter.classify() →
+ * priority annotation → always deliver to Lead, with ForumTagUpdater.
  *
- * Uses a mock gateway server to capture what the agent actually receives.
+ * Uses a mock RuntimeRegistry to capture what the agent actually receives.
  */
 import type http from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -177,29 +178,33 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 
 	// ── Scenario 1: session_started WITHOUT thread → notify_agent ────
 
-	it("session_started (no thread) → agent notified with filter_priority=normal", async () => {
+	it("session_started (no thread) → agent notified with filter_priority=high", async () => {
 		await postEvent();
 		await wait();
 
 		expect(capturedEnvelopes.length).toBe(1);
 		const msg = capturedEnvelopes[0].event;
 		expect(msg.event_type).toBe("session_started");
-		expect(msg.filter_priority).toBe("normal");
-		expect(msg.notification_context).toContain("no thread");
+		expect(msg.filter_priority).toBe("high");
+		expect(msg.notification_context).toContain("Chat");
 		expect(msg.forum_tag_update_result).toBe("no_thread");
 	});
 
-	// ── Scenario 2: session_started WITH thread → forum_only (no notification) ──
+	// ── Scenario 2: session_started WITH thread → notify_agent (FLY-47: Lead relays to Chat) ──
 
-	it("session_started (has thread) → agent NOT notified, Discord tag updated", async () => {
+	it("session_started (has thread) → agent notified + Discord tag updated", async () => {
 		// Pre-create thread mapping
 		store.upsertThread("thread-abc", "channel-1", "issue-1");
 
 		await postEvent();
 		await wait();
 
-		// Agent should NOT be notified (forum_only)
-		expect(capturedEnvelopes.length).toBe(0);
+		// FLY-47: Agent IS notified (notify_agent, high) so Lead MUST announce in Chat
+		expect(capturedEnvelopes.length).toBe(1);
+		const msg = capturedEnvelopes[0].event;
+		expect(msg.event_type).toBe("session_started");
+		expect(msg.filter_priority).toBe("high");
+		expect(msg.notification_context).toContain("Chat");
 
 		// Discord API should be called: 1 validation GET (GEO-200) + 1 tag PATCH
 		const discordThreadCalls = discordCalls.filter((c) =>
@@ -239,13 +244,13 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		const msg = capturedEnvelopes[0].event;
 		expect(msg.event_type).toBe("session_completed");
 		expect(msg.filter_priority).toBe("high");
-		expect(msg.notification_context).toContain("needs_review");
+		expect(msg.notification_context).toContain("Chat");
 		expect(msg.forum_tag_update_result).toBeDefined();
 	});
 
-	// ── Scenario 4: session_completed + approved → forum_only ──
+	// ── Scenario 4: session_completed + approved → notify_agent (FLY-47: Lead tells Annie "已 ship") ──
 
-	it("session_completed (approved) → agent NOT notified (forum_only)", async () => {
+	it("session_completed (approved) → agent notified — Lead tells Annie ship complete", async () => {
 		// Create session directly in running state with a thread
 		store.upsertSession({
 			execution_id: "exec-approved",
@@ -277,8 +282,12 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		});
 		await wait();
 
-		// Approved → forum_only, no agent notification
-		expect(capturedEnvelopes.length).toBe(0);
+		// FLY-47: Approved → notify_agent (high) so Lead MUST tell Annie "已 ship" in Chat
+		expect(capturedEnvelopes.length).toBe(1);
+		const msg = capturedEnvelopes[0].event;
+		expect(msg.event_type).toBe("session_completed");
+		expect(msg.filter_priority).toBe("high");
+		expect(msg.notification_context).toContain("Chat");
 
 		// Verify session status is approved
 		const session = store.getSession("exec-approved");

@@ -118,6 +118,36 @@ describe("ForumPostCreator (GEO-195)", () => {
 		warnSpy.mockRestore();
 	});
 
+	it("uses issueId as fallback when issueTitle is missing", async () => {
+		mockFetch.mockResolvedValue({
+			ok: true,
+			json: () => Promise.resolve({ id: "thread-no-title" }),
+		});
+
+		// Need a fresh issue to avoid idempotency skip
+		store.upsertSession({
+			execution_id: "exec-nt",
+			issue_id: "issue-nt",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+
+		await creator.ensureForumPost({
+			forumChannelId: "forum-ch-1",
+			issueId: "issue-nt",
+			issueIdentifier: "GEO-200",
+			// issueTitle intentionally omitted
+			executionId: "exec-nt",
+			status: "running",
+			discordBotToken: "bot-token",
+		});
+
+		const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+		// Should use issueId as fallback, not empty string
+		expect(body.name).toBe("[GEO-200] issue-nt");
+		expect(body.message.content).not.toContain("**Title**");
+	});
+
 	it("truncates thread name to 100 chars", async () => {
 		mockFetch.mockResolvedValue({
 			ok: true,

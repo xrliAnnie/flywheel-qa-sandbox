@@ -39,6 +39,19 @@ export interface LeadBootstrap {
 	/** Events delivered in the last 5 min — may need re-processing after crash. */
 	recentEvents: LeadEventEnvelope[];
 	memoryRecall: string | null;
+	/** FLY-62: Pending gate questions awaiting Annie's response */
+	pendingGateQuestions?: BootstrapGateQuestion[];
+}
+
+/** FLY-62: Gate question included in bootstrap for crash recovery */
+export interface BootstrapGateQuestion {
+	questionId: string;
+	checkpoint: string;
+	executionId: string;
+	issueIdentifier?: string;
+	content: string;
+	commDbPath: string;
+	createdAt: string;
 }
 
 export interface BootstrapSession {
@@ -89,7 +102,7 @@ export interface LeadRuntimeHealth {
  * - Callers use result to decide whether to mark event as delivered
  */
 export interface LeadRuntime {
-	readonly type: "claude-discord";
+	readonly type: string;
 	deliver(envelope: LeadEventEnvelope): Promise<DeliveryResult>;
 	sendBootstrap(snapshot: LeadBootstrap): Promise<void>;
 	health(): Promise<LeadRuntimeHealth>;

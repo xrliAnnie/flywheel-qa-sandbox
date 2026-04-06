@@ -254,12 +254,17 @@ export function createEventRouter(
 						);
 						// GEO-275: skip Forum Post creation for leads without forumChannel (e.g., PM lead)
 						if (fpLead.forumChannel) {
+							// Resolve issue title: prefer event payload, fall back to session history
+							const resolvedTitle =
+								asString(payload.issueTitle) ??
+								store.getSessionByIssue(event.issue_id)?.issue_title ??
+								undefined;
 							forumPostCreator
 								.ensureForumPost({
 									forumChannelId: fpLead.forumChannel,
 									issueId: event.issue_id,
 									issueIdentifier: resolveIdentifier(payload, event.issue_id),
-									issueTitle: asString(payload.issueTitle),
+									issueTitle: resolvedTitle,
 									executionId: event.execution_id,
 									status: "running",
 									// GEO-252: per-lead token. Note: labels may be overwritten on
@@ -554,6 +559,11 @@ export function createEventRouter(
 						stage_updated_at: now,
 						last_activity_at: now,
 					});
+					// NOTE: stage_changed "completed" is informational only — it does NOT
+					// trigger an FSM transition. The FSM status change happens when the
+					// actual session_completed event arrives (which carries decision_route,
+					// pr_number, etc.). Transitioning here would block that event because
+					// completed is a terminal FSM state with no outgoing transitions.
 				}
 			}
 		} catch (err) {
@@ -627,74 +637,65 @@ export function createEventRouter(
 					forum_channel: forumChannel,
 					chat_channel: lead.chatChannel,
 					issue_labels: labels,
+					pr_number: session.pr_number,
 				};
 
-				// EventFilter: classify and route (GEO-187)
+				// FLY-47: Add stage_context for stage_changed events to prevent Lead misinterpretation
+				if (event.event_type === "stage_changed") {
+					const stage = asString(payload.stage);
+					if (stage === "completed") {
+						hookPayload.stage_context = session.pr_number
+							? `Runner completed work. PR #${session.pr_number} is OPEN and needs review/merge — do NOT tell Annie the PR is merged.`
+							: "Runner completed work. No PR detected — verify status before reporting to Annie.";
+					}
+				}
+
+				// FLY-47: Classify event — priority hints + Forum gating
+				let updateForum = true; // default: update Forum when no filter
 				if (eventFilter) {
 					const filterResult = eventFilter.classify(
 						event.event_type,
 						hookPayload,
 					);
-
-					// Forum tag update (fire-and-forget for both paths)
-					let tagResult: HookPayload["forum_tag_update_result"];
-					if (forumTagUpdater) {
-						tagResult = await forumTagUpdater.updateTag({
-							threadId: session.thread_id,
-							status: session.status ?? "",
-							eventType: event.event_type,
-							discordBotToken: lead.botToken ?? config.discordBotToken,
-							statusTagMap: lead.statusTagMap,
-						});
-					}
-
-					if (filterResult.action === "notify_agent") {
-						hookPayload.filter_priority = filterResult.priority;
-						hookPayload.notification_context = filterResult.reason;
-						hookPayload.forum_tag_update_result = tagResult;
-						const seq = store.appendLeadEvent(
-							lead.agentId,
-							event.event_id,
-							event.event_type,
-							JSON.stringify(hookPayload),
-							sessionKey,
-						);
-						const envelope: LeadEventEnvelope = {
-							seq,
-							event: hookPayload,
-							sessionKey,
-							leadId: lead.agentId,
-							timestamp: new Date().toISOString(),
-						};
-						// Advisory events — best-effort delivery, mark delivered regardless
-						runtime
-							.deliver(envelope)
-							.then(() => store.markLeadEventDelivered(seq))
-							.catch(() => store.markLeadEventDelivered(seq));
-					}
-					// forum_only and skip: no delivery
-				} else {
-					// Legacy path: no EventFilter, deliver unconditionally
-					const seq = store.appendLeadEvent(
-						lead.agentId,
-						event.event_id,
-						event.event_type,
-						JSON.stringify(hookPayload),
-						sessionKey,
-					);
-					const envelope: LeadEventEnvelope = {
-						seq,
-						event: hookPayload,
-						sessionKey,
-						leadId: lead.agentId,
-						timestamp: new Date().toISOString(),
-					};
-					// Advisory events — best-effort delivery, mark delivered regardless
-					runtime
-						.deliver(envelope)
-						.then(() => store.markLeadEventDelivered(seq))
-						.catch(() => store.markLeadEventDelivered(seq));
+					hookPayload.filter_priority = filterResult.priority;
+					hookPayload.notification_context = filterResult.reason;
+					updateForum = filterResult.updateForum;
 				}
+
+				// Forum tag update — only for status-changing events
+				let tagResult: HookPayload["forum_tag_update_result"];
+				if (updateForum && forumTagUpdater) {
+					tagResult = await forumTagUpdater.updateTag({
+						threadId: session.thread_id,
+						status: session.status ?? "",
+						eventType: event.event_type,
+						discordBotToken: lead.botToken ?? config.discordBotToken,
+						statusTagMap: lead.statusTagMap,
+					});
+				}
+				hookPayload.forum_tag_update_result = tagResult;
+
+				// FLY-47: Always deliver ALL events to Lead — Lead decides routing
+				// (mirrors Agent Team pattern: all teammate messages reach the lead)
+				const seq = store.appendLeadEvent(
+					lead.agentId,
+					event.event_id,
+					event.event_type,
+					JSON.stringify(hookPayload),
+					sessionKey,
+				);
+				const envelope: LeadEventEnvelope = {
+					seq,
+					event: hookPayload,
+					sessionKey,
+					leadId: lead.agentId,
+					timestamp: new Date().toISOString(),
+				};
+				// Best-effort delivery, mark delivered regardless
+				runtime
+					.deliver(envelope)
+					.then(() => store.markLeadEventDelivered(seq))
+					.catch(() => store.markLeadEventDelivered(seq));
 			} catch (err) {
 				console.warn(
 					`[event-route] Unknown project "${event.project_name}" — skipping notification:`,

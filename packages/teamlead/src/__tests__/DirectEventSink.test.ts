@@ -437,7 +437,7 @@ describe("DirectEventSink — Forum Tag Update on emitCompleted (FLY-24 Bug 2)",
 		expect(mockTagUpdater.updateTag).not.toHaveBeenCalled();
 	});
 
-	it("does NOT call updateTag when eventFilter is not provided", async () => {
+	it("calls updateTag even when eventFilter is not provided (FLY-47: tag update is independent)", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",
 			issue_id: "issue-1",
@@ -462,7 +462,7 @@ describe("DirectEventSink — Forum Tag Update on emitCompleted (FLY-24 Bug 2)",
 			store,
 			makeConfig(),
 			testProjects,
-			undefined, // no eventFilter → else branch in doDeliver (no tag update)
+			undefined, // no eventFilter
 			mockTagUpdater,
 			registry,
 		);
@@ -473,8 +473,8 @@ describe("DirectEventSink — Forum Tag Update on emitCompleted (FLY-24 Bug 2)",
 		} as import("flywheel-edge-worker/dist/Blueprint.js").BlueprintResult);
 		await sink.flush();
 
-		// No eventFilter → doDeliver enters else branch → no tag update
-		expect(mockTagUpdater.updateTag).not.toHaveBeenCalled();
+		// FLY-47: Forum tag update runs independently of eventFilter
+		expect(mockTagUpdater.updateTag).toHaveBeenCalled();
 	});
 
 	it("calls updateTag on emitFailed with status 'failed'", async () => {

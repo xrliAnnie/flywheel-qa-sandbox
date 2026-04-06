@@ -4,6 +4,8 @@ export type {
 	AgentConfig,
 	AgentNodeConfig,
 	AutonomyLevel,
+	CheckpointConfig,
+	CheckpointsConfig,
 	CIConfig,
 	DecisionLayerConfig,
 	FlywheelConfig,
@@ -13,4 +15,5 @@ export type {
 	RunnerConfig,
 	SkillsConfig,
 	TeamConfig,
+	TimeoutBehavior,
 } from "./types.js";

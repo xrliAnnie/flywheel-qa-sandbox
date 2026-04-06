@@ -6,10 +6,11 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { AnthropicLLMClient, TmuxAdapter } from "flywheel-claude-runner";
+import { type CheckpointsConfig, ConfigLoader } from "flywheel-config";
 import type { LLMClient } from "flywheel-core";
 import { sanitizeTmuxName } from "flywheel-core";
 import {
@@ -83,6 +84,7 @@ async function createRunBlueprint(
 	fetchIssue: ReturnType<typeof createFetchIssue>,
 	eventEmitter: DirectEventSink,
 	sessionTimeoutMs: number = 14_400_000, // 4h (same as retry runtime)
+	checkpointConfig?: CheckpointsConfig, // FLY-47
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -224,6 +226,7 @@ async function createRunBlueprint(
 			decisionLayer,
 			eventEmitter,
 			undefined, // agentDispatcher
+			checkpointConfig, // FLY-47
 		);
 
 		const cleanup = async () => {
@@ -290,10 +293,29 @@ export async function setupRunInfrastructure(
 				forumPostCreator,
 			);
 
+			// FLY-47: Load per-project checkpoint config
+			let checkpointConfig: CheckpointsConfig | undefined;
+			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
+			try {
+				const configLoader = new ConfigLoader(async (p) =>
+					readFileSync(p, "utf-8"),
+				);
+				const flywheelConfig = await configLoader.load(configPath);
+				checkpointConfig = flywheelConfig?.checkpoints;
+			} catch (err) {
+				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+					// No config file — no checkpoints
+				} else {
+					throw err;
+				}
+			}
+
 			const { blueprint, cleanup } = await createRunBlueprint(
 				tmuxSessionName,
 				fetchIssue,
 				directSink,
+				undefined, // sessionTimeoutMs — use default
+				checkpointConfig,
 			);
 
 			projectRuntimes.set(project.projectName, {

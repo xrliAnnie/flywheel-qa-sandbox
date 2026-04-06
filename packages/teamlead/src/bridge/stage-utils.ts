@@ -13,7 +13,9 @@ export const VALID_STAGES = new Set([
 	"test",
 	"code_review",
 	"pr_created",
+	"approve",
 	"ship",
+	"completed",
 ]);
 
 export const STAGE_ORDER: Record<string, number> = {
@@ -26,5 +28,7 @@ export const STAGE_ORDER: Record<string, number> = {
 	test: 6,
 	code_review: 7,
 	pr_created: 8,
-	ship: 9,
+	approve: 9,
+	ship: 10,
+	completed: 11,
 };

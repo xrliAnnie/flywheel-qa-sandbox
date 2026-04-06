@@ -8,6 +8,10 @@ export interface Message {
 	read_at: string | null;
 	created_at: string;
 	expires_at: string;
+	checkpoint: string | null;
+	content_ref: string | null;
+	content_type: "text" | "ref";
+	resolved_at: string | null;
 }
 
 export interface CheckResult {
@@ -22,6 +26,16 @@ export interface PendingQuestion {
 	from_agent: string;
 	content: string;
 	created_at: string;
+	checkpoint: string | null;
+	content_type: "text" | "ref";
+	content_ref: string | null;
+}
+
+/** Gate response structured content (convention, not DB-enforced) */
+export interface GateResponseContent {
+	approved: boolean;
+	feedback?: string;
+	corrections?: string[];
 }
 
 export interface Session {

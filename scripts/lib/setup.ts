@@ -556,6 +556,7 @@ export async function setupComponents(
 			decisionLayer,
 			eventEmitter,
 			agentDispatcher,
+			flywheelConfig?.checkpoints, // FLY-47: checkpoint gate config
 		);
 
 		return {

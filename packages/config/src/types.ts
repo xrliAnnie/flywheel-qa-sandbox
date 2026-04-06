@@ -103,6 +103,26 @@ export interface AgentConfig {
 	};
 }
 
+/** Timeout behavior on expiry */
+export type TimeoutBehavior = "fail-open" | "fail-close";
+
+/** A single checkpoint definition */
+export interface CheckpointConfig {
+	/** Whether this checkpoint is active. Default: false */
+	enabled?: boolean;
+	/** Timeout in ms before timeout_behavior kicks in. Default: 1_800_000 (30 min) */
+	timeout_ms?: number;
+	/** What happens on timeout (no response received). Default: 'fail-open' */
+	timeout_behavior?: TimeoutBehavior;
+	/** TTL in hours for cleanup after gate resolves. Default: 24 */
+	cleanup_ttl_hours?: number;
+	/** Stage name to report to Bridge. Defaults to checkpoint name if in VALID_STAGES. */
+	stage?: string;
+}
+
+/** Checkpoint configuration map — added to FlywheelConfig */
+export type CheckpointsConfig = Record<string, CheckpointConfig>;
+
 /** Reactions configuration (Phase 2+, interface reserved) */
 export interface ReactionsConfig {
 	"changes-requested"?: {
@@ -142,4 +162,6 @@ export interface FlywheelConfig {
 	agents?: Record<string, AgentConfig>;
 	/** Default agent name when no match. Falls back to generic prompt if undefined. */
 	default_agent?: string;
+	/** Checkpoint gates — human-in-the-loop confirmation points */
+	checkpoints?: CheckpointsConfig;
 }

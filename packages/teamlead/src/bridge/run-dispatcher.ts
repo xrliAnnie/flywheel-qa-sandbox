@@ -68,6 +68,9 @@ export class RetryDispatcher implements IRetryDispatcher {
 			projectName: req.projectName,
 			executionId: newExecutionId,
 			leadId: req.leadId,
+			// Forward pre-fetched metadata so EventEnvelope retains title/identifier
+			issueTitle: req.issueTitle,
+			issueIdentifier: req.issueIdentifier,
 			retryContext: {
 				predecessorExecutionId: req.oldExecutionId,
 				previousError: req.previousError,

@@ -362,15 +362,12 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		hookPayload.forum_channel = forumChannel;
 		hookPayload.chat_channel = chatChannel;
 
-		// EventFilter: classify and potentially skip (GEO-187)
+		// FLY-47: Annotate priority (EventFilter provides hints for Lead)
 		if (this.eventFilter) {
 			const filterResult = this.eventFilter.classify(
 				hookPayload.event_type,
 				hookPayload,
 			);
-			if (filterResult.action !== "notify_agent") {
-				return;
-			}
 			hookPayload.filter_priority = filterResult.priority;
 			// GEO-270: Preserve caller-provided notification_context if present
 			if (!hookPayload.notification_context) {

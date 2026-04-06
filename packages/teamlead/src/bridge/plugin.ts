@@ -25,6 +25,7 @@ import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
 import { ForumPostCreator } from "./ForumPostCreator.js";
 import { ForumTagUpdater } from "./ForumTagUpdater.js";
+import { GatePoller } from "./gate-poller.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { queryLinearIssues } from "./linear-query.js";
@@ -49,25 +50,71 @@ import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
 import type { BridgeConfig } from "./types.js";
 
-/** Create the appropriate LeadRuntime for a lead config. */
+/**
+ * FLY-47: CommDB is the sole runtime — no Discord fallback.
+ * Requires inbox-mcp PID lease alive. Throws on failure.
+ */
 export async function createLeadRuntime(
 	lead: LeadConfig,
-	config: BridgeConfig,
+	_config: BridgeConfig,
+	projectName?: string,
 ): Promise<LeadRuntime> {
-	if (!lead.controlChannel) {
+	const { join } = await import("node:path");
+	const { homedir } = await import("node:os");
+	const { existsSync, readFileSync } = await import("node:fs");
+
+	if (!projectName) {
 		throw new Error(
-			`Lead "${lead.agentId}" has runtime=claude-discord but missing controlChannel`,
+			`Lead "${lead.agentId}": projectName is required for CommDB runtime`,
 		);
 	}
-	// GEO-252: use per-lead botToken, fall back to global DISCORD_BOT_TOKEN
-	const token = lead.botToken ?? config.discordBotToken;
-	if (!token) {
+
+	const commDbPath = join(
+		homedir(),
+		".flywheel",
+		"comm",
+		projectName,
+		"comm.db",
+	);
+	const leasePath = join(
+		homedir(),
+		".flywheel",
+		"comm",
+		projectName,
+		`.inbox-ready-${lead.agentId}`,
+	);
+
+	if (
+		!existsSync(commDbPath) ||
+		!isLeaseAlive(leasePath, existsSync, readFileSync)
+	) {
 		throw new Error(
-			`Lead "${lead.agentId}" has runtime=claude-discord but no botToken (botTokenEnv=${lead.botTokenEnv ?? "unset"}) and DISCORD_BOT_TOKEN is not set`,
+			`Lead "${lead.agentId}": inbox-mcp not ready (DB: ${existsSync(commDbPath)}, lease alive: false at ${leasePath})`,
 		);
 	}
-	const { ClaudeDiscordRuntime } = await import("./claude-discord-runtime.js");
-	return new ClaudeDiscordRuntime(lead.controlChannel, token);
+
+	const { CommDBLeadRuntime } = await import("./commdb-lead-runtime.js");
+	return new CommDBLeadRuntime(commDbPath, lead.agentId);
+}
+
+/**
+ * Check if inbox-mcp PID lease file is alive.
+ * Lease contains { pid, startedAt }. Process must still be running.
+ */
+function isLeaseAlive(
+	leasePath: string,
+	existsFn: (p: string) => boolean,
+	readFn: (p: string, enc: BufferEncoding) => string,
+): boolean {
+	if (!existsFn(leasePath)) return false;
+	try {
+		const lease = JSON.parse(readFn(leasePath, "utf-8"));
+		if (typeof lease.pid !== "number" || lease.pid <= 0) return false;
+		process.kill(lease.pid, 0); // signal 0 = existence check
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 function safeCompare(a: string, b: string): boolean {
@@ -535,83 +582,77 @@ export function createBridgeApp(
 					}
 				}
 
-				// Send grouped summary to each Lead's chatChannel
+				// FLY-47: Deliver stale notification via control channel — Lead relays to Annie
 				for (const [leadId, group] of byLead) {
 					const { lead, sessions: leadSessions } = group;
-					const token = lead.botToken ?? config.discordBotToken;
-					if (!token || !lead.chatChannel) {
-						notifications.push({
+
+					// Build summary for Lead to relay to Annie
+					const sessionList = leadSessions
+						.map((s, i) => {
+							const id = s.issue_identifier ?? s.execution_id;
+							const title = s.issue_title ? ` — ${s.issue_title}` : "";
+							return `${i + 1}. **${id}**${title} (${s.status}, ${s.hours_since_activity}h ago)`;
+						})
+						.join("\n");
+
+					const eventId = `stale_patrol_${Date.now()}_${leadId}`;
+					const payload: import("./hook-payload.js").HookPayload = {
+						event_type: "stale_session_summary",
+						execution_id: leadSessions[0]?.execution_id ?? "patrol",
+						issue_id: "stale-patrol",
+						project_name: leadSessions[0]?.project_name ?? "unknown",
+						status: "stale_completed",
+						summary: `${leadSessions.length} stale sessions with tmux still alive:\n${sessionList}`,
+						notification_context:
+							"Tell Annie about these stale sessions and ask her to check them.",
+					};
+
+					const seq = store.appendLeadEvent(
+						leadId,
+						eventId,
+						"stale_session_summary",
+						JSON.stringify(payload),
+					);
+
+					const runtime = registry?.getForLead(leadId);
+					if (runtime) {
+						const envelope: import("./lead-runtime.js").LeadEventEnvelope = {
+							seq,
+							event: payload,
+							sessionKey: "stale-patrol",
 							leadId,
-							chatChannel: lead.chatChannel ?? "(none)",
-							sessionCount: leadSessions.length,
-							sent: false,
-							error: "No bot token or chatChannel",
-						});
-						continue;
-					}
-
-					// Build summary message
-					const lines = [
-						"🔍 **Stale Session Patrol**",
-						"",
-						`你名下有 **${leadSessions.length}** 个 session 已完成但 tmux 仍然开着：`,
-						"",
-					];
-					for (let i = 0; i < leadSessions.length; i++) {
-						const s = leadSessions[i]!;
-						const id = s.issue_identifier ?? s.execution_id;
-						const title = s.issue_title ? ` — ${s.issue_title}` : "";
-						lines.push(`${i + 1}. **${id}**${title}`);
-						lines.push(`   状态: ${s.status} | ${s.hours_since_activity}h ago`);
-					}
-					lines.push("");
-					lines.push("请检查并处理。处理完后请回报结果。");
-
-					const content = lines.join("\n");
-
-					// Send to Discord chatChannel
-					const controller = new AbortController();
-					const timeout = setTimeout(() => controller.abort(), 5000);
-					try {
-						const discordRes = await fetch(
-							`https://discord.com/api/v10/channels/${lead.chatChannel}/messages`,
-							{
-								method: "POST",
-								headers: {
-									Authorization: `Bot ${token}`,
-									"Content-Type": "application/json",
-								},
-								body: JSON.stringify({ content }),
-								signal: controller.signal,
-							},
-						);
-						if (!discordRes.ok) {
-							const body = await discordRes.text().catch(() => "");
-							notifications.push({
-								leadId,
-								chatChannel: lead.chatChannel,
-								sessionCount: leadSessions.length,
-								sent: false,
-								error: `Discord ${discordRes.status}: ${body}`,
-							});
-						} else {
+							timestamp: new Date().toISOString(),
+						};
+						const result = await runtime.deliver(envelope);
+						if (result.delivered) {
+							store.markLeadEventDelivered(seq);
 							notifications.push({
 								leadId,
 								chatChannel: lead.chatChannel,
 								sessionCount: leadSessions.length,
 								sent: true,
 							});
+						} else {
+							store.recordDeliveryFailure(
+								seq,
+								result.error ?? "deliver returned false",
+							);
+							notifications.push({
+								leadId,
+								chatChannel: lead.chatChannel,
+								sessionCount: leadSessions.length,
+								sent: false,
+								error: result.error ?? "control channel delivery failed",
+							});
 						}
-					} catch (err) {
+					} else {
 						notifications.push({
 							leadId,
-							chatChannel: lead.chatChannel,
+							chatChannel: lead.chatChannel ?? "(none)",
 							sessionCount: leadSessions.length,
 							sent: false,
-							error: (err as Error).message,
+							error: "No runtime registered",
 						});
-					} finally {
-						clearTimeout(timeout);
 					}
 				}
 			}
@@ -1184,12 +1225,14 @@ export async function startBridge(
 	for (const project of projects) {
 		for (const lead of project.leads) {
 			try {
-				const runtime = await createLeadRuntime(lead, config);
+				const runtime = await createLeadRuntime(
+					lead,
+					config,
+					project.projectName,
+				);
 				registry.register(lead, runtime);
 			} catch (err) {
-				// Fail fast for explicitly configured claude-discord leads
-				if (lead.runtime === "claude-discord") throw err;
-				// Warn for leads without explicit runtime (test/dev environments)
+				// No Discord fallback — if CommDB isn't ready, skip this lead
 				console.warn(
 					`[Bridge] Skipping runtime for "${lead.agentId}":`,
 					(err as Error).message,
@@ -1449,9 +1492,19 @@ export async function startBridge(
 		console.log("[Bridge] CleanupService started");
 	}
 
+	// FLY-62: Gate question poller
+	const gatePoller = new GatePoller({
+		pollIntervalMs: 3_000,
+		projects,
+		store,
+		runtimeRegistry: registry,
+	});
+	gatePoller.start();
+
 	const close = async () => {
 		heartbeatService?.stop();
 		cleanupService?.stop();
+		gatePoller.stop();
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
 		// are the same instance, only tear down once. If they differ (caller
 		// injected retryDispatcher but not startDispatcher), tear down both.

@@ -18,7 +18,7 @@ export function cleanupMessages(
 	}
 	const db = new CommDB(args.dbPath);
 	try {
-		const cleaned = db.cleanupReadMessages(args.ttlHours);
+		const cleaned = db.cleanupReadMessagesWithRefs(args.ttlHours);
 		return { cleaned };
 	} finally {
 		db.close();

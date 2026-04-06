@@ -5,6 +5,8 @@
  * GEO-203: Dual-bucket parallel memory recall (private + shared).
  */
 
+import { CommDB } from "flywheel-comm/db";
+import { readContentRef } from "flywheel-comm/utils";
 import type { MemoryService } from "flywheel-edge-worker";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
@@ -12,11 +14,13 @@ import type { HookPayload } from "./hook-payload.js";
 import type {
 	BootstrapDecision,
 	BootstrapFailure,
+	BootstrapGateQuestion,
 	BootstrapSession,
 	LeadBootstrap,
 	LeadEventEnvelope,
 } from "./lead-runtime.js";
 import { filterSessionsByLead } from "./lead-scope.js";
+import { defaultGetCommDbPath } from "./session-capture.js";
 
 const RECENT_EVENTS_WINDOW_MINUTES = 5;
 const MAX_RECENT_FAILURES = 10;
@@ -199,6 +203,51 @@ export async function generateBootstrap(
 		}
 	}
 
+	// FLY-62: Collect pending gate questions across projects
+	const pendingGateQuestions: BootstrapGateQuestion[] = [];
+	const projectsDone = new Set<string>();
+	for (const session of activeSessions) {
+		if (projectsDone.has(session.project_name)) continue;
+		projectsDone.add(session.project_name);
+
+		const dbPath = defaultGetCommDbPath(session.project_name);
+		let db: CommDB;
+		try {
+			db = CommDB.openReadonly(dbPath);
+		} catch {
+			continue; // DB doesn't exist yet
+		}
+		try {
+			const pendingQs = db
+				.getPendingQuestions(leadId)
+				.filter((q) => q.checkpoint != null);
+			const sessionByExecId = new Map(
+				activeSessions
+					.filter((s) => s.project_name === session.project_name)
+					.map((s) => [s.execution_id, s]),
+			);
+			for (const q of pendingQs) {
+				const matchedSession = sessionByExecId.get(q.from_agent);
+				if (!matchedSession) continue;
+				let content = q.content;
+				if (q.content_type === "ref" && q.content_ref) {
+					content = readContentRef(q.content_ref) ?? q.content;
+				}
+				pendingGateQuestions.push({
+					questionId: q.id,
+					checkpoint: q.checkpoint!,
+					executionId: matchedSession.execution_id,
+					issueIdentifier: matchedSession.issue_identifier,
+					content,
+					commDbPath: dbPath,
+					createdAt: q.created_at,
+				});
+			}
+		} finally {
+			db.close();
+		}
+	}
+
 	return {
 		leadId,
 		activeSessions: activeSessions.map(toBootstrapSession),
@@ -206,6 +255,8 @@ export async function generateBootstrap(
 		recentFailures: recentFailures.map(toBootstrapFailure),
 		recentEvents,
 		memoryRecall,
+		pendingGateQuestions:
+			pendingGateQuestions.length > 0 ? pendingGateQuestions : undefined,
 	};
 }
 

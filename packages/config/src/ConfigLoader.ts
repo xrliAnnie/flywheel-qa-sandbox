@@ -100,6 +100,57 @@ export class ConfigLoader {
 			);
 		}
 
+		// checkpoints (optional — FLY-47)
+		const checkpoints = c.checkpoints as Record<string, unknown> | undefined;
+		if (
+			checkpoints != null &&
+			(typeof checkpoints !== "object" || Array.isArray(checkpoints))
+		) {
+			throw new Error(
+				"checkpoints must be a YAML mapping (object), not an array or scalar",
+			);
+		}
+		if (checkpoints && typeof checkpoints === "object") {
+			const validBehaviors = new Set(["fail-open", "fail-close"]);
+			for (const [name, cpRaw] of Object.entries(checkpoints)) {
+				if (!cpRaw || typeof cpRaw !== "object" || Array.isArray(cpRaw)) {
+					throw new Error(`checkpoints.${name} must be an object`);
+				}
+				const cp = cpRaw as Record<string, unknown>;
+				if (
+					cp.timeout_behavior != null &&
+					!validBehaviors.has(cp.timeout_behavior as string)
+				) {
+					throw new Error(
+						`checkpoints.${name}.timeout_behavior must be "fail-open" or "fail-close", got "${cp.timeout_behavior}"`,
+					);
+				}
+				if (
+					cp.timeout_ms != null &&
+					(typeof cp.timeout_ms !== "number" || cp.timeout_ms <= 0)
+				) {
+					throw new Error(
+						`checkpoints.${name}.timeout_ms must be a positive number`,
+					);
+				}
+				if (
+					cp.cleanup_ttl_hours != null &&
+					(typeof cp.cleanup_ttl_hours !== "number" ||
+						cp.cleanup_ttl_hours <= 0)
+				) {
+					throw new Error(
+						`checkpoints.${name}.cleanup_ttl_hours must be a positive number`,
+					);
+				}
+				if (cp.stage != null && typeof cp.stage !== "string") {
+					throw new Error(`checkpoints.${name}.stage must be a string`);
+				}
+				if (cp.enabled != null && typeof cp.enabled !== "boolean") {
+					throw new Error(`checkpoints.${name}.enabled must be a boolean`);
+				}
+			}
+		}
+
 		// agents (optional — v0.6)
 		const agents = c.agents as Record<string, unknown> | undefined;
 		if (

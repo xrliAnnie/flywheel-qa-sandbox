@@ -3,6 +3,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import type { Message, Session } from "./types.js";
+import { deleteContentRef as deleteContentRefFile } from "./utils/content-ref.js";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS messages (
@@ -80,9 +81,38 @@ export class CommDB {
 		if (!columns.some((c) => c.name === "read_at")) {
 			this.db.exec("ALTER TABLE messages ADD COLUMN read_at DATETIME");
 		}
+		if (!columns.some((c) => c.name === "checkpoint")) {
+			this.db.exec("ALTER TABLE messages ADD COLUMN checkpoint TEXT");
+		}
+		if (!columns.some((c) => c.name === "content_ref")) {
+			this.db.exec("ALTER TABLE messages ADD COLUMN content_ref TEXT");
+		}
+		if (!columns.some((c) => c.name === "content_type")) {
+			this.db.exec(
+				"ALTER TABLE messages ADD COLUMN content_type TEXT DEFAULT 'text'",
+			);
+		}
+		if (!columns.some((c) => c.name === "resolved_at")) {
+			this.db.exec("ALTER TABLE messages ADD COLUMN resolved_at DATETIME");
+		}
+		this.db.exec(
+			"CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(checkpoint) WHERE checkpoint IS NOT NULL",
+		);
 	}
 
 	purgeExpired(): number {
+		return this.purgeExpiredWithRefs();
+	}
+
+	purgeExpiredWithRefs(): number {
+		const refs = this.db
+			.prepare(
+				"SELECT content_ref FROM messages WHERE expires_at < datetime('now') AND content_ref IS NOT NULL",
+			)
+			.all() as Array<{ content_ref: string }>;
+		for (const { content_ref } of refs) {
+			deleteContentRefFile(content_ref);
+		}
 		const result = this.db
 			.prepare("DELETE FROM messages WHERE expires_at < datetime('now')")
 			.run();
@@ -90,6 +120,21 @@ export class CommDB {
 	}
 
 	cleanupReadMessages(ttlHours = 24): number {
+		return this.cleanupReadMessagesWithRefs(ttlHours);
+	}
+
+	cleanupReadMessagesWithRefs(ttlHours = 24): number {
+		const refs = this.db
+			.prepare(
+				`SELECT content_ref FROM messages
+			 WHERE read_at IS NOT NULL
+			 AND created_at < datetime('now', '-' || ? || ' hours')
+			 AND content_ref IS NOT NULL`,
+			)
+			.all(ttlHours) as Array<{ content_ref: string }>;
+		for (const { content_ref } of refs) {
+			deleteContentRefFile(content_ref);
+		}
 		const result = this.db
 			.prepare(
 				`DELETE FROM messages
@@ -100,15 +145,48 @@ export class CommDB {
 		return result.changes;
 	}
 
-	insertQuestion(fromAgent: string, toAgent: string, content: string): string {
+	insertQuestion(
+		fromAgent: string,
+		toAgent: string,
+		content: string,
+		opts?: {
+			checkpoint?: string;
+			contentRef?: string;
+			contentType?: "text" | "ref";
+		},
+	): string {
 		const id = randomUUID();
 		this.db
 			.prepare(
-				`INSERT INTO messages (id, from_agent, to_agent, type, content)
-         VALUES (?, ?, ?, 'question', ?)`,
+				`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type)
+         VALUES (?, ?, ?, 'question', ?, ?, ?, ?)`,
 			)
-			.run(id, fromAgent, toAgent, content);
+			.run(
+				id,
+				fromAgent,
+				toAgent,
+				content,
+				opts?.checkpoint ?? null,
+				opts?.contentRef ?? null,
+				opts?.contentType ?? "text",
+			);
 		return id;
+	}
+
+	/**
+	 * Mark a gate question as resolved: set resolved_at, mark read,
+	 * and shorten TTL to the configured cleanup hours.
+	 */
+	resolveGate(questionId: string, cleanupTtlHours = 24): void {
+		this.db
+			.prepare(
+				`UPDATE messages SET
+				 resolved_at = datetime('now'),
+				 read_at = COALESCE(read_at, datetime('now')),
+				 expires_at = datetime('now', '+' || ? || ' hours')
+				 WHERE id = ? AND type = 'question'`,
+			)
+			.run(cleanupTtlHours, questionId);
 	}
 
 	insertResponse(parentId: string, fromAgent: string, content: string): void {

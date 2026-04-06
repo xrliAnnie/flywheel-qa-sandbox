@@ -66,13 +66,15 @@ export class ForumPostCreator {
 			return { created: false, error: "no discord bot token" };
 		}
 
+		// Last-resort title: if all upstream sources returned undefined, use issue_id
+		const title = ctx.issueTitle || undefined;
 		const threadName = ctx.issueIdentifier
-			? `[${ctx.issueIdentifier}] ${ctx.issueTitle ?? ""}`
-			: (ctx.issueTitle ?? ctx.issueId);
+			? `[${ctx.issueIdentifier}] ${title ?? ctx.issueId}`
+			: (title ?? ctx.issueId);
 
 		const content = [
 			`**Issue**: ${ctx.issueIdentifier ?? ctx.issueId}`,
-			ctx.issueTitle ? `**Title**: ${ctx.issueTitle}` : null,
+			title ? `**Title**: ${title}` : null,
 			`**Execution**: \`${ctx.executionId}\``,
 			`**Status**: ${ctx.status}`,
 		]

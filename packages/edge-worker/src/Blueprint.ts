@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SkillsConfig } from "flywheel-config";
+import type { CheckpointsConfig, SkillsConfig } from "flywheel-config";
 import type {
 	AdapterExecutionResult,
 	DecisionResult,
@@ -112,6 +112,8 @@ export class Blueprint {
 		private eventEmitter?: ExecutionEventEmitter,
 		// v0.6 — optional agent dispatcher for project-aware prompts
 		private agentDispatcher?: AgentDispatcher,
+		// FLY-47 — optional checkpoint gate configuration
+		private checkpointConfig?: CheckpointsConfig,
 	) {}
 
 	async run(
@@ -326,11 +328,73 @@ export class Blueprint {
 					`When you receive a Lead instruction, evaluate urgency and act accordingly. ` +
 					`Always briefly acknowledge received instructions.`,
 			);
+
+			// FLY-47: Inject gate instructions for enabled checkpoints
+			if (this.checkpointConfig) {
+				for (const [cpName, cpConfig] of Object.entries(
+					this.checkpointConfig,
+				)) {
+					if (!cpConfig.enabled) continue;
+					const timeoutMs = cpConfig.timeout_ms ?? 1_800_000;
+					const flags = [`--timeout ${timeoutMs}`];
+					if (cpConfig.timeout_behavior) {
+						flags.push(`--timeout-behavior ${cpConfig.timeout_behavior}`);
+					}
+					if (cpConfig.cleanup_ttl_hours != null) {
+						flags.push(`--cleanup-ttl ${cpConfig.cleanup_ttl_hours}`);
+					}
+					if (cpConfig.stage) {
+						flags.push(`--stage ${cpConfig.stage}`);
+					}
+					const flagStr = flags.join(" ");
+
+					if (cpName === "brainstorm") {
+						systemPromptLines.push(
+							"",
+							"BRAINSTORM GATE (MANDATORY — do NOT skip):",
+							"Before writing any code, you MUST confirm your understanding with your Lead.",
+							"a. Read the issue and codebase. Form your understanding.",
+							`b. Run: \`node ${commCliPath} gate brainstorm --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your understanding: [what] [how] [expected outcome]"\``,
+							"c. This command BLOCKS until your Lead confirms. Do NOT write code until it returns.",
+							"d. Read the response. If corrections were provided, adjust your approach.",
+						);
+					} else if (cpName === "approve_to_ship") {
+						systemPromptLines.push(
+							"",
+							"APPROVE GATE (MANDATORY — do NOT skip):",
+							"After creating the PR, you MUST wait for approval before exiting.",
+							`a. Run: \`node ${commCliPath} gate approve_to_ship --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "PR created: <url>. Ready for review."\``,
+							"b. This command BLOCKS until approval. Do NOT exit until it returns.",
+							"c. If changes were requested, address them and re-submit gate.",
+						);
+					} else if (cpName === "question") {
+						systemPromptLines.push(
+							"",
+							"QUESTION GATE (use when needed):",
+							"When you have a question that blocks your progress:",
+							`a. Run: \`node ${commCliPath} gate question --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your question here"\``,
+							"b. This command BLOCKS until your Lead responds.",
+						);
+					} else {
+						systemPromptLines.push(
+							"",
+							`${cpName.toUpperCase()} GATE:`,
+							`When you reach the ${cpName} checkpoint:`,
+							`a. Run: \`node ${commCliPath} gate ${cpName} --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your message"\``,
+							"b. This command BLOCKS until your Lead responds.",
+						);
+					}
+				}
+			}
 		} else {
 			systemPromptLines.push(
 				"Do not ask questions — implement your best judgment.",
 			);
 		}
+
+		// NOTE: Session registration is handled by TmuxAdapter.run() which registers
+		// with the correct session:window format. Do NOT add a duplicate registration
+		// instruction here — it would overwrite the correct value with TMUX_PANE.
 
 		// GEO-292: Stage reporting instructions (requires both Bridge URL and projectName)
 		const bridgeUrl = process.env.TEAMLEAD_URL;
@@ -338,10 +402,15 @@ export class Blueprint {
 			systemPromptLines.push(
 				`Report your pipeline stage at each major transition using: ` +
 					`\`node ${commCliPath} stage set <stage>\`. ` +
-					`Valid stages: brainstorm, research, plan, design_review, implement, test, code_review, pr_created, ship. ` +
+					`Valid stages: brainstorm, research, plan, design_review, implement, test, code_review, pr_created, approve, ship, completed. ` +
 					`Call this when you start each pipeline phase. ` +
 					`Not every task goes through all stages — skip stages that don't apply ` +
 					`(e.g., bug fixes may go directly to implement).`,
+				"",
+				"COMPLETION REPORTING (MANDATORY — run when finished):",
+				"When you have completed your task (PR created, or no more work to do), " +
+					`run \`node ${commCliPath} stage set completed\` so the system knows you are done. ` +
+					"Do NOT leave your session idle without reporting completion.",
 			);
 		}
 		const baseSystemPrompt = systemPromptLines.join("\n");

@@ -257,6 +257,31 @@ importers:
         specifier: ^3.1.4
         version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(tsx@4.20.6)(yaml@2.8.1)
 
+  packages/inbox-mcp:
+    dependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: '>=1.25.2'
+        version: 1.25.2(@cfworker/json-schema@4.1.1)(hono@4.11.3)(zod@4.3.6)
+      better-sqlite3:
+        specifier: ^12.0.0
+        version: 12.8.0
+      flywheel-comm:
+        specifier: workspace:*
+        version: link:../flywheel-comm
+    devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.8
+        version: 7.6.13
+      '@types/node':
+        specifier: ^20.0.0
+        version: 20.19.21
+      typescript:
+        specifier: ^5.3.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.1.4
+        version: 3.2.4(@types/node@20.19.21)(@vitest/ui@3.2.4)(tsx@4.20.6)(yaml@2.8.1)
+
   packages/linear-event-transport:
     dependencies:
       '@linear/sdk':
@@ -331,6 +356,9 @@ importers:
       flywheel-comm:
         specifier: workspace:*
         version: link:../flywheel-comm
+      flywheel-config:
+        specifier: workspace:*
+        version: link:../config
       flywheel-core:
         specifier: workspace:*
         version: link:../core

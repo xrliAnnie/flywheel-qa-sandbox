@@ -19,6 +19,7 @@
 	"dependencies": {
 		"express": "^5.2.1",
 		"flywheel-claude-runner": "workspace:*",
+		"flywheel-config": "workspace:*",
 		"flywheel-core": "workspace:*",
 		"flywheel-edge-worker": "workspace:*",
 		"flywheel-comm": "workspace:*",

@@ -100,76 +100,60 @@ function sendActionHook(
 		};
 
 		const doDeliver = async () => {
+			// FLY-47: Classify event — priority hints + Forum gating
+			let updateForum = true; // default: update Forum when no filter
 			if (eventFilter) {
 				const filterResult = eventFilter.classify(
 					"action_executed",
 					hookPayload,
 				);
-
-				let tagResult: HookPayload["forum_tag_update_result"];
-				if (forumTagUpdater) {
-					tagResult = await forumTagUpdater.updateTag({
-						threadId: session.thread_id,
-						status: targetStatus,
-						eventType: "action_executed",
-						action,
-						discordBotToken: lead.botToken ?? config?.discordBotToken,
-						statusTagMap: lead.statusTagMap,
-					});
-					// FLY-24: Post status change message to Forum thread
-					if (tagResult === "succeeded") {
-						await postThreadStatusMessage({
-							threadId: session.thread_id,
-							previousStatus: sourceStatus,
-							newStatus: targetStatus,
-							botToken: lead.botToken ?? config?.discordBotToken,
-						});
-					}
-				}
-
-				if (filterResult.action === "notify_agent") {
-					hookPayload.filter_priority = filterResult.priority;
-					hookPayload.notification_context = filterResult.reason;
-					hookPayload.forum_tag_update_result = tagResult;
-					const eventId = `action-${executionId}-${action}-${Date.now()}`;
-					const sessionKey = buildSessionKey(session);
-					const seq = store.appendLeadEvent(
-						lead.agentId,
-						eventId,
-						"action_executed",
-						JSON.stringify(hookPayload),
-						sessionKey,
-					);
-					const envelope: LeadEventEnvelope = {
-						seq,
-						event: hookPayload,
-						sessionKey,
-						leadId: lead.agentId,
-						timestamp: new Date().toISOString(),
-					};
-					await runtime.deliver(envelope);
-					store.markLeadEventDelivered(seq);
-				}
-			} else {
-				const eventId = `action-${executionId}-${action}-${Date.now()}`;
-				const sessionKey = buildSessionKey(session);
-				const seq = store.appendLeadEvent(
-					lead.agentId,
-					eventId,
-					"action_executed",
-					JSON.stringify(hookPayload),
-					sessionKey,
-				);
-				const envelope: LeadEventEnvelope = {
-					seq,
-					event: hookPayload,
-					sessionKey,
-					leadId: lead.agentId,
-					timestamp: new Date().toISOString(),
-				};
-				await runtime.deliver(envelope);
-				store.markLeadEventDelivered(seq);
+				hookPayload.filter_priority = filterResult.priority;
+				hookPayload.notification_context = filterResult.reason;
+				updateForum = filterResult.updateForum;
 			}
+
+			// Forum tag update — only for status-changing events
+			let tagResult: HookPayload["forum_tag_update_result"];
+			if (updateForum && forumTagUpdater) {
+				tagResult = await forumTagUpdater.updateTag({
+					threadId: session.thread_id,
+					status: targetStatus,
+					eventType: "action_executed",
+					action,
+					discordBotToken: lead.botToken ?? config?.discordBotToken,
+					statusTagMap: lead.statusTagMap,
+				});
+				// FLY-24: Post status change message to Forum thread
+				if (tagResult === "succeeded") {
+					await postThreadStatusMessage({
+						threadId: session.thread_id,
+						previousStatus: sourceStatus,
+						newStatus: targetStatus,
+						botToken: lead.botToken ?? config?.discordBotToken,
+					});
+				}
+			}
+			hookPayload.forum_tag_update_result = tagResult;
+
+			// FLY-47: Always deliver ALL events to Lead
+			const eventId = `action-${executionId}-${action}-${Date.now()}`;
+			const sessionKey = buildSessionKey(session);
+			const seq = store.appendLeadEvent(
+				lead.agentId,
+				eventId,
+				"action_executed",
+				JSON.stringify(hookPayload),
+				sessionKey,
+			);
+			const envelope: LeadEventEnvelope = {
+				seq,
+				event: hookPayload,
+				sessionKey,
+				leadId: lead.agentId,
+				timestamp: new Date().toISOString(),
+			};
+			await runtime.deliver(envelope);
+			store.markLeadEventDelivered(seq);
 		};
 		doDeliver().catch((err) => {
 			console.warn(
