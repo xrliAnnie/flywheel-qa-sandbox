@@ -1327,8 +1327,9 @@ export async function startBridge(
 		process.env.STANDUP_LEAD_ID ??
 		(() => {
 			const leads = standupProject?.leads ?? projects.flatMap((p) => p.leads);
-			const nonCos = leads.find((l) => !l.agentId.includes("cos"));
-			return nonCos?.agentId ?? leads[0]?.agentId ?? "unknown";
+			// FLY-71: Standup is CoS (Simba) responsibility per product spec §2.1
+			const cos = leads.find((l) => l.agentId.includes("cos"));
+			return cos?.agentId ?? leads[0]?.agentId ?? "unknown";
 		})();
 	const standupLead = (standupProject?.leads ?? []).find(
 		(l) => l.agentId === standupLeadId,
