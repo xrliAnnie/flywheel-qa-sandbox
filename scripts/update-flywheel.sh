@@ -10,7 +10,7 @@ DEPLOYED_SHA_FILE="${HOME}/.flywheel/deployed-sha"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] [flywheel-updater] $*"; }
 
-DISCORD_CORE_CHANNEL="${DISCORD_CORE_CHANNEL:-1485787822894878955}"
+DISCORD_CORE_CHANNEL="${DISCORD_CORE_CHANNEL:-1487340532610109520}"
 NOTIFY_BOT_TOKEN="${SIMBA_BOT_TOKEN:-${DISCORD_BOT_TOKEN:-}}"
 
 notify_discord() {
