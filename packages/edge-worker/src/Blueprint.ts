@@ -72,6 +72,8 @@ export interface BlueprintContext {
 	// FLY-24 — Pre-fetched issue metadata (overrides PreHydrator on conflict)
 	issueTitle?: string;
 	issueIdentifier?: string;
+	// FLY-59 — Session role for multi-session-per-issue support
+	sessionRole?: string;
 }
 
 /** Shell command runner for tmux window cleanup */
@@ -139,6 +141,8 @@ export class Blueprint {
 			labels: hydrated.labels,
 			retryPredecessor: ctx.retryContext?.predecessorExecutionId,
 			runAttempt: ctx.retryContext?.attempt,
+			// FLY-59: Propagate session role from context to event envelope
+			sessionRole: ctx.sessionRole,
 		};
 
 		// Fire-and-forget started event (labels now populated)

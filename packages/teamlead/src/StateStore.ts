@@ -70,6 +70,8 @@ export interface SessionUpsert {
 	pr_number?: number;
 	session_stage?: string;
 	stage_updated_at?: string;
+	/** FLY-59: Session role for multi-session-per-issue */
+	session_role?: string;
 }
 
 export interface Session {
@@ -107,6 +109,8 @@ export interface Session {
 	pr_number?: number;
 	session_stage?: string;
 	stage_updated_at?: string;
+	/** FLY-59: Session role for multi-session-per-issue */
+	session_role?: string;
 }
 
 export interface CleanupCandidate {
@@ -341,6 +345,15 @@ export class StateStore {
 			/* exists */
 		}
 
+		// FLY-59: session role for multi-session-per-issue support
+		try {
+			this.db.run(
+				"ALTER TABLE sessions ADD COLUMN session_role TEXT DEFAULT 'main'",
+			);
+		} catch {
+			/* exists */
+		}
+
 		// Rebuild unique index with current column name
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
 		// Ensure one issue = one canonical thread: clean up historical duplicates
@@ -466,8 +479,8 @@ export class StateStore {
 				thread_id,
 				session_params, heartbeat_at, adapter_type, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
-				pr_number, session_stage, stage_updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				pr_number, session_stage, stage_updated_at, session_role
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -501,7 +514,8 @@ export class StateStore {
 				issue_labels = COALESCE(excluded.issue_labels, issue_labels),
 				pr_number = COALESCE(excluded.pr_number, pr_number),
 				session_stage = COALESCE(excluded.session_stage, session_stage),
-				stage_updated_at = COALESCE(excluded.stage_updated_at, stage_updated_at)
+				stage_updated_at = COALESCE(excluded.stage_updated_at, stage_updated_at),
+				session_role = COALESCE(excluded.session_role, session_role)
 			`,
 			[
 				session.execution_id,
@@ -538,6 +552,7 @@ export class StateStore {
 				session.pr_number ?? null,
 				session.session_stage ?? null,
 				session.stage_updated_at ?? null,
+				session.session_role ?? null,
 			],
 		);
 		this.save();
@@ -566,8 +581,8 @@ export class StateStore {
 				thread_id,
 				session_params, heartbeat_at, adapter_type, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
-				pr_number, session_stage, stage_updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				pr_number, session_stage, stage_updated_at, session_role
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -601,7 +616,8 @@ export class StateStore {
 				issue_labels = COALESCE(excluded.issue_labels, issue_labels),
 				pr_number = COALESCE(excluded.pr_number, pr_number),
 				session_stage = COALESCE(excluded.session_stage, session_stage),
-				stage_updated_at = COALESCE(excluded.stage_updated_at, stage_updated_at)
+				stage_updated_at = COALESCE(excluded.stage_updated_at, stage_updated_at),
+				session_role = COALESCE(excluded.session_role, session_role)
 			`,
 			[
 				executionId,
@@ -638,6 +654,7 @@ export class StateStore {
 				fields.pr_number ?? null,
 				fields.session_stage ?? null,
 				fields.stage_updated_at ?? null,
+				fields.session_role ?? null,
 			],
 		);
 		this.save();
@@ -1194,6 +1211,7 @@ export class StateStore {
 			pr_number: (row.pr_number as number) ?? undefined,
 			session_stage: (row.session_stage as string) ?? undefined,
 			stage_updated_at: (row.stage_updated_at as string) ?? undefined,
+			session_role: (row.session_role as string) ?? undefined,
 		};
 	}
 

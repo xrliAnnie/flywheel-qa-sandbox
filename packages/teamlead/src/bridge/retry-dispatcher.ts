@@ -13,6 +13,8 @@ export interface RetryRequest {
 	runAttempt: number;
 	// GEO-206: Lead ID for bidirectional communication
 	leadId?: string;
+	/** FLY-59: Session role for multi-session-per-issue support */
+	sessionRole?: string;
 }
 
 export interface RetryResult {
@@ -23,6 +25,8 @@ export interface RetryResult {
 export interface IRetryDispatcher {
 	dispatch(req: RetryRequest): Promise<RetryResult>;
 	getInflightIssues(): Set<string>;
+	/** FLY-59: Check if a specific issue+role combo is currently inflight */
+	hasInflightForRole(issueId: string, role: string): boolean;
 	stopAccepting(): void;
 	drain(): Promise<void>;
 	teardownRuntimes(): Promise<void>;
@@ -37,6 +41,8 @@ export interface StartRequest {
 	issueTitle?: string;
 	/** FLY-24: Pre-fetched issue identifier (e.g. "GEO-304") from runs-route Linear pre-flight */
 	issueIdentifier?: string;
+	/** FLY-59: Session role for multi-session-per-issue support */
+	sessionRole?: string;
 }
 
 export interface StartResult {

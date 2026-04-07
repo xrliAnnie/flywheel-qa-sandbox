@@ -164,6 +164,7 @@ export class GatePoller {
 			question_id: question.id,
 			from_agent: question.from_agent,
 			comm_db_path: dbPath,
+			session_role: session.session_role ?? "main",
 		};
 
 		const seq = this.config.store.appendLeadEvent(

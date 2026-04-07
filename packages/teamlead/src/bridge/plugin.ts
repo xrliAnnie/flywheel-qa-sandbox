@@ -496,6 +496,7 @@ export function createBridgeApp(
 				hours_since_activity: number;
 				tmux_alive: boolean;
 				tmux_target?: string;
+				session_role?: string;
 			}
 
 			const results: StaleEntry[] = [];
@@ -534,6 +535,7 @@ export function createBridgeApp(
 					hours_since_activity: hoursSince,
 					tmux_alive: tmuxAlive,
 					tmux_target: target?.tmuxWindow,
+					session_role: session.session_role,
 				});
 			}
 
@@ -591,7 +593,12 @@ export function createBridgeApp(
 						.map((s, i) => {
 							const id = s.issue_identifier ?? s.execution_id;
 							const title = s.issue_title ? ` — ${s.issue_title}` : "";
-							return `${i + 1}. **${id}**${title} (${s.status}, ${s.hours_since_activity}h ago)`;
+							// FLY-59: Show role label for non-main sessions
+							const role =
+								s.session_role && s.session_role !== "main"
+									? ` [${s.session_role.toUpperCase()}]`
+									: "";
+							return `${i + 1}. **${id}**${title}${role} (${s.status}, ${s.hours_since_activity}h ago)`;
 						})
 						.join("\n");
 
@@ -605,6 +612,7 @@ export function createBridgeApp(
 						summary: `${leadSessions.length} stale sessions with tmux still alive:\n${sessionList}`,
 						notification_context:
 							"Tell Annie about these stale sessions and ask her to check them.",
+						session_role: leadSessions[0]?.session_role ?? "main",
 					};
 
 					const seq = store.appendLeadEvent(

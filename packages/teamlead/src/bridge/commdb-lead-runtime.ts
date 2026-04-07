@@ -76,8 +76,13 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		if (e.event_type === "gate_question") {
 			const tag = e.checkpoint?.toUpperCase() ?? "GATE";
 			const issueRef = e.issue_identifier || e.issue_id;
+			// FLY-59: Role label for non-main sessions
+			const roleLabel =
+				e.session_role && e.session_role !== "main"
+					? `[${e.session_role.toUpperCase()}] `
+					: "";
 			const lines = [
-				`[Event #${env.seq}] gate_question`,
+				`[Event #${env.seq}] ${roleLabel}gate_question`,
 				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
 				`[${tag}] Runner asks:`,
 				"---",
@@ -89,8 +94,13 @@ export class CommDBLeadRuntime implements LeadRuntime {
 			return lines.join("\n");
 		}
 
+		// FLY-59: Prefix role label for non-main sessions
+		const roleLabel =
+			e.session_role && e.session_role !== "main"
+				? `[${e.session_role.toUpperCase()}] `
+				: "";
 		const lines = [
-			`[Event #${env.seq}] ${e.event_type}`,
+			`[Event #${env.seq}] ${roleLabel}${e.event_type}`,
 			`ID: ${e.execution_id || "—"} | Issue: ${e.issue_identifier || e.issue_id || "—"}`,
 		];
 		if (e.issue_title) lines.push(`Title: ${e.issue_title}`);
@@ -128,8 +138,12 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		if (snapshot.activeSessions.length > 0) {
 			sections.push("### Active Sessions");
 			for (const s of snapshot.activeSessions) {
+				const roleTag =
+					s.sessionRole && s.sessionRole !== "main"
+						? ` [${s.sessionRole.toUpperCase()}]`
+						: "";
 				sections.push(
-					`- ${s.issueIdentifier ?? s.issueId}: ${s.issueTitle ?? "—"} [${s.status}]`,
+					`- ${s.issueIdentifier ?? s.issueId}${roleTag}: ${s.issueTitle ?? "—"} [${s.status}]`,
 				);
 			}
 			sections.push("");
@@ -138,8 +152,12 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		if (snapshot.pendingDecisions.length > 0) {
 			sections.push("### Pending Decisions");
 			for (const d of snapshot.pendingDecisions) {
+				const roleTag =
+					d.sessionRole && d.sessionRole !== "main"
+						? ` [${d.sessionRole.toUpperCase()}]`
+						: "";
 				sections.push(
-					`- ${d.issueIdentifier ?? d.issueId}: ${d.issueTitle ?? "—"} (${d.decisionRoute ?? "unknown"})`,
+					`- ${d.issueIdentifier ?? d.issueId}${roleTag}: ${d.issueTitle ?? "—"} (${d.decisionRoute ?? "unknown"})`,
 				);
 			}
 			sections.push("");
@@ -148,8 +166,12 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		if (snapshot.recentFailures.length > 0) {
 			sections.push("### Recent Failures");
 			for (const f of snapshot.recentFailures) {
+				const roleTag =
+					f.sessionRole && f.sessionRole !== "main"
+						? ` [${f.sessionRole.toUpperCase()}]`
+						: "";
 				sections.push(
-					`- ${f.issueIdentifier ?? f.issueId}: ${f.lastError?.slice(0, 100) ?? "—"}`,
+					`- ${f.issueIdentifier ?? f.issueId}${roleTag}: ${f.lastError?.slice(0, 100) ?? "—"}`,
 				);
 			}
 			sections.push("");
@@ -172,8 +194,13 @@ export class CommDBLeadRuntime implements LeadRuntime {
 			for (const gq of snapshot.pendingGateQuestions) {
 				const tag = gq.checkpoint.toUpperCase();
 				const issue = gq.issueIdentifier ?? gq.executionId;
+				// FLY-59: Role label for non-main sessions
+				const roleLabel =
+					gq.sessionRole && gq.sessionRole !== "main"
+						? `[${gq.sessionRole.toUpperCase()}] `
+						: "";
 				sections.push(
-					`- [${tag}] ${issue} (ID: ${gq.questionId}, DB: ${gq.commDbPath}): ${gq.content.slice(0, 200)}${gq.content.length > 200 ? "..." : ""}`,
+					`- ${roleLabel}[${tag}] ${issue} (ID: ${gq.questionId}, DB: ${gq.commDbPath}): ${gq.content.slice(0, 200)}${gq.content.length > 200 ? "..." : ""}`,
 				);
 			}
 			sections.push(

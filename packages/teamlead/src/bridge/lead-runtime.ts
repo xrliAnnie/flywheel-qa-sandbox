@@ -52,6 +52,8 @@ export interface BootstrapGateQuestion {
 	content: string;
 	commDbPath: string;
 	createdAt: string;
+	/** FLY-59: Session role for distinguishing concurrent same-issue gate questions */
+	sessionRole?: string;
 }
 
 export interface BootstrapSession {
@@ -63,6 +65,8 @@ export interface BootstrapSession {
 	status: string;
 	startedAt?: string;
 	threadId?: string;
+	/** FLY-59: Session role for multi-session-per-issue support */
+	sessionRole?: string;
 }
 
 export interface BootstrapDecision {
@@ -74,6 +78,8 @@ export interface BootstrapDecision {
 	decisionRoute?: string;
 	commitCount?: number;
 	summary?: string;
+	/** FLY-59: Session role for multi-session-per-issue support */
+	sessionRole?: string;
 }
 
 export interface BootstrapFailure {
@@ -84,6 +90,8 @@ export interface BootstrapFailure {
 	projectName: string;
 	lastError?: string;
 	failedAt?: string;
+	/** FLY-59: Session role for multi-session-per-issue support */
+	sessionRole?: string;
 }
 
 export interface LeadRuntimeHealth {

@@ -73,6 +73,9 @@ function createMockDispatcher(): IRetryDispatcher & {
 		getInflightIssues(): Set<string> {
 			return new Set();
 		},
+		hasInflightForRole(_issueId: string, _role: string): boolean {
+			return false;
+		},
 		stopAccepting(): void {},
 		async drain(): Promise<void> {},
 		async teardownRuntimes(): Promise<void> {},
@@ -87,6 +90,9 @@ function createInflightDispatcher(inflightIssueId: string): IRetryDispatcher {
 		},
 		getInflightIssues(): Set<string> {
 			return new Set([inflightIssueId]);
+		},
+		hasInflightForRole(issueId: string, _role: string): boolean {
+			return issueId === inflightIssueId;
 		},
 		stopAccepting(): void {},
 		async drain(): Promise<void> {},
