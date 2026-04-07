@@ -191,12 +191,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		let status: string;
 		if (route === "needs_review") status = "awaiting_review";
 		else if (route === "auto_approve") {
-			// Mirror event-route.ts: merged → approved, otherwise awaiting_review
+			// FLY-58: Mirror event-route.ts: merged → completed (not approved)
 			const landingStatus = result.evidence?.landingStatus as
 				| { status?: string }
 				| undefined;
 			status =
-				landingStatus?.status === "merged" ? "approved" : "awaiting_review";
+				landingStatus?.status === "merged" ? "completed" : "awaiting_review";
 		} else if (route === "blocked") status = "blocked";
 		else status = "completed";
 

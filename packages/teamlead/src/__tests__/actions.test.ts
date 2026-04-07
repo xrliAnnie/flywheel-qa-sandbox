@@ -92,7 +92,8 @@ describe("Action tools", () => {
 			mockExec,
 		);
 		expect(result.success).toBe(true);
-		expect(mockExec).toHaveBeenCalled();
+		// FLY-58: approve no longer calls ApproveHandler (no git merge)
+		expect(mockExec).not.toHaveBeenCalled();
 	});
 
 	it("POST /api/actions/approve without execution_id returns 400", async () => {
@@ -106,7 +107,7 @@ describe("Action tools", () => {
 		expect(body.error).toContain("execution_id");
 	});
 
-	it("POST /api/actions/approve passes internal issue_id to ApproveHandler", async () => {
+	it("POST /api/actions/approve passes internal issue_id (no merge)", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "internal-uuid-123",
@@ -115,16 +116,20 @@ describe("Action tools", () => {
 			issue_identifier: "GEO-95",
 		});
 
-		await approveExecution(store, testProjects, "e1", "GEO-95", mockExec);
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			"GEO-95",
+			mockExec,
+		);
 
-		// ApproveHandler receives issueId in the action payload
-		const callArgs = mockExec.mock.calls[0];
-		// The ApproveHandler constructs a branch name from issueId: flywheel-${issueId}
-		// It calls exec with ["gh", "pr", "merge", ...] — the issueId is in the branch name
-		expect(callArgs).toBeDefined();
+		// FLY-58: approve no longer calls ApproveHandler (no git merge)
+		expect(result.success).toBe(true);
+		expect(mockExec).not.toHaveBeenCalled();
 	});
 
-	it("POST /api/actions/approve transitions session to approved on success", async () => {
+	it("POST /api/actions/approve transitions session to approved_to_ship on success", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -142,7 +147,7 @@ describe("Action tools", () => {
 		expect(result.success).toBe(true);
 
 		const session = store.getSession("e1");
-		expect(session!.status).toBe("approved");
+		expect(session!.status).toBe("approved_to_ship");
 	});
 
 	it("POST /api/actions/approve updates last_activity_at on success (SQLite format)", async () => {
@@ -163,7 +168,7 @@ describe("Action tools", () => {
 		);
 	});
 
-	it("approved session no longer returned by getActiveSessions()", async () => {
+	it("approved_to_ship session IS still returned by getActiveSessions()", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -173,7 +178,9 @@ describe("Action tools", () => {
 
 		expect(store.getActiveSessions()).toHaveLength(1);
 		await approveExecution(store, testProjects, "e1", undefined, mockExec);
-		expect(store.getActiveSessions()).toHaveLength(0);
+		// FLY-58: approved_to_ship is a non-terminal active state
+		expect(store.getActiveSessions()).toHaveLength(1);
+		expect(store.getActiveSessions()[0].status).toBe("approved_to_ship");
 	});
 
 	it("approve with nonexistent execution_id returns error", async () => {
@@ -477,8 +484,8 @@ describe("Action tools", () => {
 			expect(payload.event_type).toBe("action_executed");
 			expect(payload.action).toBe("approve");
 			expect(payload.action_source_status).toBe("awaiting_review");
-			expect(payload.action_target_status).toBe("approved");
-			expect(payload.status).toBe("approved");
+			expect(payload.action_target_status).toBe("approved_to_ship");
+			expect(payload.status).toBe("approved_to_ship");
 		});
 
 		it("reject sends action_executed hook with reason", async () => {
@@ -803,7 +810,7 @@ describe("GEO-292: approve sets session_stage", () => {
 		expect(result.success).toBe(true);
 
 		const session = store.getSession("e1");
-		expect(session!.status).toBe("approved");
+		expect(session!.status).toBe("approved_to_ship");
 		expect(session!.session_stage).toBe("ship");
 		expect(session!.stage_updated_at).toBeDefined();
 		// stage_updated_at should be updated to a newer timestamp
@@ -817,6 +824,29 @@ describe("GEO-292: approve sets session_stage", () => {
 			project_name: "geoforge3d",
 			status: "awaiting_review",
 			session_stage: "ship",
+			stage_updated_at: "2026-03-30 10:00:00",
+		});
+
+		const result = await approveExecution(
+			store,
+			testProjects,
+			"e1",
+			undefined,
+			mockExec,
+		);
+		expect(result.success).toBe(true);
+		expect(store.getSession("e1")!.session_stage).toBe("ship");
+	});
+
+	it("approve overrides premature 'completed' stage to 'ship' (FLY-58 QA bug)", async () => {
+		// QA found: Runner sets stage to "completed" when PR is created,
+		// but ship hasn't happened yet. Approve must override to "ship".
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			session_stage: "completed",
 			stage_updated_at: "2026-03-30 10:00:00",
 		});
 
@@ -846,8 +876,8 @@ describe("GEO-292: approve sets session_stage", () => {
 	});
 });
 
-// --- GEO-280: onApproved callback tests ---
-describe("GEO-280: onApproved callback", () => {
+// --- FLY-58: onApproved callback is no longer called (approve only transitions state) ---
+describe("FLY-58: onApproved callback removed", () => {
 	let store: StateStore;
 
 	beforeEach(async () => {
@@ -855,7 +885,7 @@ describe("GEO-280: onApproved callback", () => {
 		mockExec.mockClear();
 	});
 
-	it("approve calls onApproved callback on success", async () => {
+	it("onApproved callback is NOT called even when provided", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -865,7 +895,7 @@ describe("GEO-280: onApproved callback", () => {
 		});
 
 		const onApproved = vi.fn();
-		await approveExecution(
+		const result = await approveExecution(
 			store,
 			testProjects,
 			"e1",
@@ -880,51 +910,14 @@ describe("GEO-280: onApproved callback", () => {
 			onApproved,
 		);
 
-		// onApproved is fire-and-forget (microtask), give it a tick
 		await new Promise((r) => setTimeout(r, 50));
-		expect(onApproved).toHaveBeenCalledWith(
-			"e1",
-			expect.objectContaining({
-				execution_id: "e1",
-				issue_id: "i1",
-				project_name: "geoforge3d",
-			}),
-		);
-	});
-
-	it("no onApproved on merge failure", async () => {
-		store.upsertSession({
-			execution_id: "e1",
-			issue_id: "i1",
-			project_name: "geoforge3d",
-			status: "awaiting_review",
-		});
-
-		const failExec = vi.fn(async () => {
-			throw new Error("merge failed");
-		});
-
-		const onApproved = vi.fn();
-		await approveExecution(
-			store,
-			testProjects,
-			"e1",
-			undefined,
-			failExec,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			onApproved,
-		);
-
-		await new Promise((r) => setTimeout(r, 50));
+		expect(result.success).toBe(true);
+		// FLY-58: onApproved is no longer called — approve only transitions state
 		expect(onApproved).not.toHaveBeenCalled();
+		expect(store.getSession("e1")!.status).toBe("approved_to_ship");
 	});
 
-	it("no onApproved on FSM rejection (wrong status)", async () => {
+	it("approve from wrong status still fails", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -951,37 +944,5 @@ describe("GEO-280: onApproved callback", () => {
 		await new Promise((r) => setTimeout(r, 50));
 		expect(result.success).toBe(false);
 		expect(onApproved).not.toHaveBeenCalled();
-	});
-
-	it("onApproved error does not affect approve result", async () => {
-		store.upsertSession({
-			execution_id: "e1",
-			issue_id: "i1",
-			project_name: "geoforge3d",
-			status: "awaiting_review",
-		});
-
-		const onApproved = vi.fn(() => {
-			throw new Error("callback exploded");
-		});
-
-		const result = await approveExecution(
-			store,
-			testProjects,
-			"e1",
-			undefined,
-			mockExec,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			onApproved,
-		);
-
-		await new Promise((r) => setTimeout(r, 50));
-		expect(result.success).toBe(true);
-		expect(store.getSession("e1")!.status).toBe("approved");
 	});
 });

@@ -69,10 +69,23 @@ const FILTER_RULES: FilterRule[] = [
 			updateForum: true,
 		},
 	},
+	// FLY-58: approved_to_ship — Runner still needs to ship
+	{
+		match: (et, p) =>
+			et === "action_executed" && p.status === "approved_to_ship",
+		result: {
+			priority: "high",
+			reason: "approved to ship — Lead notifies Runner via gate unblock",
+			updateForum: true,
+		},
+	},
+	// FLY-58: ship complete (completed or legacy approved)
 	{
 		match: (et, p) =>
 			et === "session_completed" &&
-			(p.decision_route === "approved" || p.status === "approved"),
+			(p.decision_route === "approved" ||
+				p.status === "approved" ||
+				p.status === "completed"),
 		result: {
 			priority: "high",
 			reason: "ship complete — Lead notifies Annie in Chat",

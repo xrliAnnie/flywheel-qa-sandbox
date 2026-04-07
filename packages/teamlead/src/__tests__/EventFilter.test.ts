@@ -148,7 +148,8 @@ describe("EventFilter", () => {
 			expect(result.priority).toBe("high");
 		});
 
-		it("session_completed without special route/status → catch-all (normal + Forum)", () => {
+		it("session_completed with status=completed → ship complete (high + Forum)", () => {
+			// FLY-58: completed status matches the "ship complete" rule
 			const result = filter.classify(
 				"session_completed",
 				makePayload({
@@ -156,7 +157,7 @@ describe("EventFilter", () => {
 					decision_route: "some_other_route",
 				}),
 			);
-			expect(result.priority).toBe("normal");
+			expect(result.priority).toBe("high");
 			expect(result.updateForum).toBe(true);
 		});
 	});

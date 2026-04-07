@@ -41,11 +41,11 @@ describe("Transition audit trail", () => {
 			makeCtx({ trigger: "review" }),
 		);
 
-		// Action: approve
+		// Action: approve → approved_to_ship (FLY-58)
 		applyTransition(
 			opts,
 			"exec-1",
-			"approved",
+			"approved_to_ship",
 			makeCtx({ trigger: "approve" }),
 		);
 

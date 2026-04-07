@@ -8,6 +8,8 @@ export interface ActionResult {
 	success: boolean;
 	message: string;
 	alreadyResponded?: boolean;
+	/** FLY-58: true if CommDB gate was successfully unblocked */
+	gateUnblocked?: boolean;
 }
 
 export class ReactionsEngine {

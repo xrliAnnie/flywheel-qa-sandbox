@@ -6,6 +6,7 @@ import initSqlJs, { type Database } from "sql.js";
 export const OUTCOME_STATUSES = [
 	"completed",
 	"approved",
+	"approved_to_ship",
 	"blocked",
 	"failed",
 	"rejected",
@@ -15,10 +16,13 @@ export const OUTCOME_STATUSES = [
 ] as const;
 
 // Terminal states — monotonic progression: once terminal, cannot go back to running
+// Note: approved_to_ship is NOT terminal — Runner still needs to ship
 const TERMINAL_STATUSES = new Set<string>([
 	...OUTCOME_STATUSES,
 	"awaiting_review",
 ]);
+// approved_to_ship is an outcome but not terminal (Runner will transition to completed)
+TERMINAL_STATUSES.delete("approved_to_ship");
 
 export interface SessionEvent {
 	event_id: string;
@@ -757,7 +761,7 @@ export class StateStore {
 
 	getActiveSessions(): Session[] {
 		const stmt = this.db.prepare(
-			"SELECT * FROM sessions WHERE status IN ('running', 'awaiting_review')",
+			"SELECT * FROM sessions WHERE status IN ('running', 'awaiting_review', 'approved_to_ship')",
 		);
 		const rows: Session[] = [];
 		while (stmt.step()) {
@@ -1099,7 +1103,7 @@ export class StateStore {
 					ROW_NUMBER() OVER (PARTITION BY issue_id ORDER BY last_activity_at DESC, started_at DESC, execution_id DESC) AS rn
 				FROM sessions
 			) latest ON latest.issue_id = ct.issue_id AND latest.rn = 1
-			WHERE latest.status IN ('completed', 'approved')
+			WHERE latest.status IN ('completed', 'approved', 'approved_to_ship')
 				AND latest.last_activity_at < datetime('now', '-' || ? || ' minutes')
 				AND ct.thread_id IS NOT NULL AND ct.archived_at IS NULL AND ct.discord_missing_at IS NULL
 			ORDER BY latest.last_activity_at ASC

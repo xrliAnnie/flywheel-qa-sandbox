@@ -227,6 +227,29 @@ export class CommDB {
 			.all(leadId) as Message[];
 	}
 
+	/**
+	 * FLY-58: Find the most recent pending gate question from a specific runner
+	 * with a specific checkpoint. Used by Bridge to respond to approve_to_ship gate.
+	 */
+	getPendingGateByRunner(
+		runnerId: string,
+		checkpoint: string,
+	): Message | undefined {
+		return this.db
+			.prepare(
+				`SELECT q.* FROM messages q
+         WHERE q.from_agent = ? AND q.type = 'question'
+         AND q.checkpoint = ?
+         AND NOT EXISTS (
+           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+         )
+         AND q.expires_at > datetime('now')
+         ORDER BY q.created_at DESC
+         LIMIT 1`,
+			)
+			.get(runnerId, checkpoint) as Message | undefined;
+	}
+
 	// ── Instruction (Phase 2) ──
 
 	insertInstruction(

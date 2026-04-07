@@ -144,18 +144,17 @@ describe("Bridge E2E lifecycle", () => {
 		expect(histBody.count).toBe(1);
 		expect(histBody.history[0].execution_id).toBe("exec-e2e");
 
-		// 6. POST /api/actions/approve → domain logic runs (gh CLI not available in test env)
+		// 6. POST /api/actions/approve → FLY-58: approve only transitions state (no git merge)
 		const approveRes = await fetch(`${baseUrl}/api/actions/approve`, {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ execution_id: "exec-e2e", identifier: "GEO-95" }),
 		});
-		// In test env, ApproveHandler fails (no gh CLI) so bridge returns 400 with success: false
 		const approveBody = await approveRes.json();
-		expect(approveBody).toHaveProperty("success", false);
+		expect(approveBody).toHaveProperty("success", true);
 		expect(approveBody.action).toBe("approve");
-		// Session remains awaiting_review since merge failed
-		expect(store.getSession("exec-e2e")!.status).toBe("awaiting_review");
+		// FLY-58: session transitions to approved_to_ship (Runner handles merge)
+		expect(store.getSession("exec-e2e")!.status).toBe("approved_to_ship");
 	});
 
 	it("duplicate event_id is idempotent", async () => {
