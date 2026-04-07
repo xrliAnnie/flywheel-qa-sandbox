@@ -35,7 +35,7 @@ export function createRunsRouter(
 			return;
 		}
 
-		const { issueId, projectName, leadId } = req.body;
+		const { issueId, projectName, leadId, sessionRole } = req.body;
 
 		// Input validation
 		if (!issueId || typeof issueId !== "string") {
@@ -53,17 +53,20 @@ export function createRunsRouter(
 			return;
 		}
 
-		// Check: no active session for this issue
+		// FLY-59: Per-role dedup — same issue can have main + qa concurrently
+		const role =
+			(typeof sessionRole === "string" ? sessionRole : undefined) ?? "main";
 		const activeSessions = store.getActiveSessions();
 		const alreadyActive = activeSessions.find(
 			(s) =>
 				s.issue_id === issueId &&
+				(s.session_role ?? "main") === role &&
 				["running", "awaiting_review"].includes(s.status),
 		);
 		if (alreadyActive) {
 			res.status(409).json({
 				success: false,
-				message: `Issue ${issueId} already has an active session (${alreadyActive.execution_id}, status: ${alreadyActive.status})`,
+				message: `Issue ${issueId} already has an active session for role "${role}" (${alreadyActive.execution_id}, status: ${alreadyActive.status})`,
 			});
 			return;
 		}
@@ -138,6 +141,7 @@ export function createRunsRouter(
 				leadId,
 				issueTitle,
 				issueIdentifier,
+				sessionRole: role,
 			});
 
 			// FLY-24: Poll for Forum Post thread_id (created async by Blueprint → emitStarted → ensureForumPost)

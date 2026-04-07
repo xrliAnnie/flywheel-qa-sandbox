@@ -11,6 +11,8 @@ export interface EventEnvelope {
 	runAttempt?: number;
 	/** GEO-152: Linear issue labels for multi-lead routing */
 	labels?: string[];
+	/** FLY-59: Session role for multi-session-per-issue support */
+	sessionRole?: string;
 }
 
 export interface ExecutionEventEmitter {
@@ -50,6 +52,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueIdentifier: env.issueIdentifier,
 				issueTitle: env.issueTitle,
 				labels: env.labels,
+				sessionRole: env.sessionRole,
 			},
 		});
 		this.track(p);
@@ -77,6 +80,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				projectId: result.projectId,
 				exitReason: result.exitReason,
 				consecutiveFailures: result.consecutiveFailures,
+				sessionRole: env.sessionRole,
 			},
 		});
 	}
@@ -99,6 +103,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				error,
 				lastActivity,
 				labels: env.labels,
+				sessionRole: env.sessionRole,
 			},
 		});
 	}

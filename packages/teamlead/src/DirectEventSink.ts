@@ -72,6 +72,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			issue_labels: env.labels ? JSON.stringify(env.labels) : undefined,
 			session_stage: "started",
 			stage_updated_at: now,
+			session_role: env.sessionRole ?? "main",
 		});
 
 		// Thread inheritance (same as event-route.ts)
@@ -231,6 +232,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			issue_identifier: env.issueIdentifier || undefined,
 			issue_title: env.issueTitle,
 			pr_number: prNumber,
+			session_role: env.sessionRole ?? "main",
 		});
 
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId
@@ -286,6 +288,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 			issue_identifier: env.issueIdentifier || undefined,
 			issue_title: env.issueTitle,
+			session_role: env.sessionRole ?? "main",
 		});
 
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId
@@ -358,6 +361,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				forum_channel: forumChannel,
 				chat_channel: lead.chatChannel,
 				issue_labels: labels,
+				session_role: session.session_role ?? "main",
 			};
 
 			const doDeliver = async () => {

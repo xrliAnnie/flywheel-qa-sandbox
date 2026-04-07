@@ -39,13 +39,23 @@ export class RetryDispatcher implements IRetryDispatcher {
 		private cleanupHandles: Array<() => Promise<void>>,
 	) {}
 
+	/** FLY-59: Composite inflight key for per-role dedup */
+	protected inflightKey(issueId: string, role: string): string {
+		return `${issueId}:${role}`;
+	}
+
 	async dispatch(req: RetryRequest): Promise<RetryResult> {
 		if (!this.accepting) {
 			throw new Error("RetryDispatcher is shutting down");
 		}
 
-		if (this.inflight.has(req.issueId)) {
-			throw new Error(`Retry already in progress for issue ${req.issueId}`);
+		const role = req.sessionRole ?? "main";
+		const key = this.inflightKey(req.issueId, role);
+
+		if (this.inflight.has(key)) {
+			throw new Error(
+				`Retry already in progress for issue ${req.issueId} role ${role}`,
+			);
 		}
 
 		const runtime = this.blueprintsByProject.get(req.projectName);
@@ -60,7 +70,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			executionId: newExecutionId,
 			promise: null! as Promise<void>,
 		};
-		this.inflight.set(req.issueId, entry);
+		this.inflight.set(key, entry);
 
 		const ctx: BlueprintContext = {
 			teamName: "eng",
@@ -68,6 +78,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			projectName: req.projectName,
 			executionId: newExecutionId,
 			leadId: req.leadId,
+			sessionRole: req.sessionRole,
 			// Forward pre-fetched metadata so EventEnvelope retains title/identifier
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,
@@ -95,14 +106,25 @@ export class RetryDispatcher implements IRetryDispatcher {
 				);
 			})
 			.finally(() => {
-				this.inflight.delete(req.issueId);
+				this.inflight.delete(key);
 			});
 
 		return { newExecutionId, oldExecutionId: req.oldExecutionId };
 	}
 
+	/** FLY-59: Returns unique issueIds from composite keys (backward compat) */
 	getInflightIssues(): Set<string> {
-		return new Set(this.inflight.keys());
+		const issueIds = new Set<string>();
+		for (const key of this.inflight.keys()) {
+			const issueId = key.split(":")[0];
+			if (issueId) issueIds.add(issueId);
+		}
+		return issueIds;
+	}
+
+	/** FLY-59: Check if a specific issue+role combo is currently inflight */
+	hasInflightForRole(issueId: string, role: string): boolean {
+		return this.inflight.has(this.inflightKey(issueId, role));
 	}
 
 	stopAccepting(): void {
@@ -132,8 +154,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		super(blueprintsByProject, cleanupHandles);
 	}
 
+	/** FLY-59: Count all inflight entries (each issue+role combo counts separately) */
 	getInflightCount(): number {
-		return this.getInflightIssues().size;
+		return this.inflight.size;
 	}
 
 	async start(req: StartRequest): Promise<StartResult> {
@@ -147,8 +170,13 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			);
 		}
 
-		if (this.inflight.has(req.issueId)) {
-			throw new Error(`Run already in progress for issue ${req.issueId}`);
+		const role = req.sessionRole ?? "main";
+		const key = this.inflightKey(req.issueId, role);
+
+		if (this.inflight.has(key)) {
+			throw new Error(
+				`Run already in progress for issue ${req.issueId} role ${role}`,
+			);
 		}
 
 		const runtime = this.blueprintsByProject.get(req.projectName);
@@ -163,7 +191,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			executionId,
 			promise: null! as Promise<void>,
 		};
-		this.inflight.set(req.issueId, entry);
+		this.inflight.set(key, entry);
 
 		const ctx: BlueprintContext = {
 			teamName: "eng",
@@ -171,6 +199,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			projectName: req.projectName,
 			executionId,
 			leadId: req.leadId,
+			sessionRole: req.sessionRole,
 			// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,
@@ -190,7 +219,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				);
 			})
 			.finally(() => {
-				this.inflight.delete(req.issueId);
+				this.inflight.delete(key);
 			});
 
 		return { executionId, issueId: req.issueId };

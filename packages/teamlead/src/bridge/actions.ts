@@ -88,6 +88,7 @@ function sendActionHook(
 			forum_channel: forumChannel,
 			chat_channel: lead.chatChannel,
 			issue_labels: labels,
+			session_role: session.session_role ?? "main",
 			action,
 			action_source_status: sourceStatus,
 			action_target_status: targetStatus,
@@ -481,22 +482,26 @@ async function handleRetry(
 		};
 	}
 
-	// Check for inflight execution on same issue
-	const inflight = retryDispatcher.getInflightIssues();
-	if (inflight.has(session.issue_id)) {
+	// FLY-59: Per-role dedup — check inflight for same issue+role
+	const sessionRole = session.session_role ?? "main";
+	if (retryDispatcher.hasInflightForRole(session.issue_id, sessionRole)) {
 		return {
 			success: false,
-			message: `Issue ${session.issue_identifier ?? session.issue_id} already has an execution in progress`,
+			message: `Issue ${session.issue_identifier ?? session.issue_id} already has an execution in progress for role "${sessionRole}"`,
 		};
 	}
 
-	// Check for active (running) session in StateStore
+	// FLY-59: Check for active (running) session in StateStore — per role
 	const active = store.getActiveSessions();
-	const activeForIssue = active.find((s) => s.issue_id === session.issue_id);
+	const activeForIssue = active.find(
+		(s) =>
+			s.issue_id === session.issue_id &&
+			(s.session_role ?? "main") === sessionRole,
+	);
 	if (activeForIssue) {
 		return {
 			success: false,
-			message: `Issue ${session.issue_identifier ?? session.issue_id} already has an active session (${activeForIssue.execution_id})`,
+			message: `Issue ${session.issue_identifier ?? session.issue_id} already has an active session for role "${sessionRole}" (${activeForIssue.execution_id})`,
 		};
 	}
 
@@ -533,6 +538,7 @@ async function handleRetry(
 			previousReasoning: ceoContext ?? session.decision_reasoning,
 			runAttempt,
 			leadId: retryLeadId,
+			sessionRole,
 		});
 
 		// Link predecessor → successor

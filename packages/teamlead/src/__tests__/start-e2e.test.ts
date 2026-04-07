@@ -165,6 +165,7 @@ describe("Start API E2E", () => {
 			leadId: "product-lead",
 			issueTitle: "Test Issue",
 			issueIdentifier: "GEO-TEST",
+			sessionRole: "main",
 		});
 	}, 15_000);
 

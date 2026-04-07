@@ -251,6 +251,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			status: session.status,
 			thread_id: session.thread_id,
 			minutes_since_activity: minutes,
+			session_role: session.session_role ?? "main",
 		};
 		await this.deliverHook(session, hookPayload);
 	}
@@ -266,6 +267,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			status: "failed",
 			thread_id: session.thread_id,
 			minutes_since_activity: minutes,
+			session_role: session.session_role ?? "main",
 		};
 		await this.deliverHook(session, hookPayload);
 	}
@@ -281,6 +283,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			status: session.status,
 			thread_id: session.thread_id,
 			notification_context: `Session ${session.status} ${hours}h ago but tmux still alive. Please check if it can be closed.`,
+			session_role: session.session_role ?? "main",
 		};
 		await this.deliverHook(session, hookPayload);
 	}

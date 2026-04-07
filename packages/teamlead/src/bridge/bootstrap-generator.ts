@@ -241,6 +241,7 @@ export async function generateBootstrap(
 					content,
 					commDbPath: dbPath,
 					createdAt: q.created_at,
+					sessionRole: matchedSession.session_role,
 				});
 			}
 		} finally {
@@ -270,6 +271,7 @@ function toBootstrapSession(s: Session): BootstrapSession {
 		status: s.status,
 		startedAt: s.started_at,
 		threadId: s.thread_id,
+		sessionRole: s.session_role,
 	};
 }
 
@@ -283,6 +285,7 @@ function toBootstrapDecision(s: Session): BootstrapDecision {
 		decisionRoute: s.decision_route,
 		commitCount: s.commit_count,
 		summary: s.summary,
+		sessionRole: s.session_role,
 	};
 }
 
@@ -295,5 +298,6 @@ function toBootstrapFailure(s: Session): BootstrapFailure {
 		projectName: s.project_name,
 		lastError: s.last_error,
 		failedAt: s.last_activity_at,
+		sessionRole: s.session_role,
 	};
 }

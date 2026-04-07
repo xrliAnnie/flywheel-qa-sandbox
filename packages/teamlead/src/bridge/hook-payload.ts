@@ -30,6 +30,8 @@ export interface HookPayload {
 	comm_db_path?: string;
 	// GEO-292: PR tracking
 	pr_number?: number;
+	// FLY-59: Session role for multi-session-per-issue support
+	session_role?: string;
 	// FLY-47: stage context — explicit guidance for Lead (e.g., "Runner completed work, PR still needs review")
 	stage_context?: string;
 	// EventFilter fields (GEO-187)

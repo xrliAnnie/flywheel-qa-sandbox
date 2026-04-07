@@ -168,6 +168,8 @@ export function createEventRouter(
 					: [];
 				const issueLabelsJson =
 					eventLabels.length > 0 ? JSON.stringify(eventLabels) : undefined;
+				// FLY-59: Read session role from event payload
+				const eventSessionRole = asString(payload.sessionRole) ?? "main";
 
 				if (transitionOpts) {
 					const result = applyTransition(
@@ -184,6 +186,7 @@ export function createEventRouter(
 							issue_labels: issueLabelsJson,
 							session_stage: "started",
 							stage_updated_at: now,
+							session_role: eventSessionRole,
 						},
 					);
 					if (!result.ok) {
@@ -206,6 +209,7 @@ export function createEventRouter(
 						issue_labels: issueLabelsJson,
 						session_stage: "started",
 						stage_updated_at: now,
+						session_role: eventSessionRole,
 					});
 				}
 
@@ -316,6 +320,9 @@ export function createEventRouter(
 				} else if (route === "blocked") status = "blocked";
 				else status = "completed";
 
+				// FLY-59: Read session role from completed event payload
+				const completedSessionRole = asString(payload.sessionRole) ?? "main";
+
 				if (transitionOpts) {
 					const result = applyTransition(
 						transitionOpts,
@@ -327,6 +334,7 @@ export function createEventRouter(
 							// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 							issue_identifier: asString(payload.issueIdentifier) || undefined,
 							issue_title: asString(payload.issueTitle),
+							session_role: completedSessionRole,
 						},
 					);
 					if (!result.ok) {
@@ -407,6 +415,7 @@ export function createEventRouter(
 						issue_identifier: asString(payload.issueIdentifier) || undefined,
 						issue_title: asString(payload.issueTitle),
 						pr_number: legacyPrNumber,
+						session_role: completedSessionRole,
 					});
 
 					// GEO-292: Auto-infer stage for legacy path (only advance, never regress)
@@ -536,6 +545,9 @@ export function createEventRouter(
 					}
 				}
 			} else if (event.event_type === "session_failed") {
+				// FLY-59: Read session role from failed event payload
+				const failedSessionRole = asString(payload.sessionRole) ?? "main";
+
 				if (transitionOpts) {
 					const result = applyTransition(
 						transitionOpts,
@@ -548,6 +560,7 @@ export function createEventRouter(
 							// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 							issue_identifier: asString(payload.issueIdentifier) || undefined,
 							issue_title: asString(payload.issueTitle),
+							session_role: failedSessionRole,
 						},
 					);
 					if (!result.ok) {
@@ -567,6 +580,7 @@ export function createEventRouter(
 						// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 						issue_identifier: asString(payload.issueIdentifier) || undefined,
 						issue_title: asString(payload.issueTitle),
+						session_role: failedSessionRole,
 					});
 				}
 
@@ -669,6 +683,7 @@ export function createEventRouter(
 					chat_channel: lead.chatChannel,
 					issue_labels: labels,
 					pr_number: session.pr_number,
+					session_role: session.session_role ?? "main",
 				};
 
 				// FLY-47: Add stage_context for stage_changed events to prevent Lead misinterpretation

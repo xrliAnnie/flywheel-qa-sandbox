@@ -306,6 +306,8 @@ export function createQueryRouter(
 		const issueId = req.query.issue_id as string;
 		const action = req.query.action as string;
 		const leadId = req.query.leadId as string | undefined;
+		/** FLY-59: Optional role filter — defaults to 'main' when omitted */
+		const sessionRole = (req.query.sessionRole as string | undefined) ?? "main";
 		if (!issueId || !action) {
 			res
 				.status(400)
@@ -320,55 +322,60 @@ export function createQueryRouter(
 		}
 
 		// GEO-259: Scope-aware candidate selection when leadId provided
-		let session: Session | undefined;
+		let candidates: Session[];
 		if (leadId) {
-			const candidates = store.getSessionsByIssueAndStatuses(
+			candidates = store.getSessionsByIssueAndStatuses(
 				issueId,
 				actionDef.fromStates,
 			);
-			const inScope = filterSessionsByLead(candidates, leadId, projects);
-			session = inScope[0]; // Already ordered by last_activity_at DESC
+			candidates = filterSessionsByLead(candidates, leadId, projects);
 		} else {
-			session = store.getLatestSessionByIssueAndStatuses(
+			candidates = store.getSessionsByIssueAndStatuses(
 				issueId,
 				actionDef.fromStates,
 			);
 		}
+
+		// FLY-59: Filter by session role
+		const session = candidates.find(
+			(s) => (s.session_role ?? "main") === sessionRole,
+		);
 
 		if (!session) {
 			res.json({
 				can_execute: false,
 				reason: leadId
-					? `No in-scope session found for issue ${issueId} in lead "${leadId}" scope`
-					: `No session found for issue ${issueId} in status: ${actionDef.fromStates.join(", ")}`,
+					? `No in-scope session found for issue ${issueId} in lead "${leadId}" scope (role: ${sessionRole})`
+					: `No session found for issue ${issueId} in status: ${actionDef.fromStates.join(", ")} (role: ${sessionRole})`,
 			});
 			return;
 		}
 
-		// GEO-168: retry-specific pre-flight checks
+		// GEO-168: retry-specific pre-flight checks (FLY-59: per-role)
 		if (action === "retry") {
 			if (retryDispatcher) {
-				const inflight = retryDispatcher.getInflightIssues();
-				if (inflight.has(session.issue_id)) {
+				if (retryDispatcher.hasInflightForRole(session.issue_id, sessionRole)) {
 					res.json({
 						execution_id: session.execution_id,
 						status: session.status,
 						can_execute: false,
-						reason: `Issue ${session.issue_identifier ?? session.issue_id} already has a retry in progress`,
+						reason: `Issue ${session.issue_identifier ?? session.issue_id} already has a retry in progress for role "${sessionRole}"`,
 					});
 					return;
 				}
 			}
 			const active = store.getActiveSessions();
 			const activeForIssue = active.find(
-				(s) => s.issue_id === session.issue_id,
+				(s) =>
+					s.issue_id === session.issue_id &&
+					(s.session_role ?? "main") === sessionRole,
 			);
 			if (activeForIssue) {
 				res.json({
 					execution_id: session.execution_id,
 					status: session.status,
 					can_execute: false,
-					reason: `Issue ${session.issue_identifier ?? session.issue_id} already has an active session (${activeForIssue.execution_id})`,
+					reason: `Issue ${session.issue_identifier ?? session.issue_id} already has an active session for role "${sessionRole}" (${activeForIssue.execution_id})`,
 				});
 				return;
 			}
