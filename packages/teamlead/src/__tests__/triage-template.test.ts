@@ -92,13 +92,17 @@ describe("GET /api/triage/template (FLY-27)", () => {
 
 		const placeholders = [
 			"{{DATE}}",
-			"{{PROJECT_NAME}}",
+			"{{TITLE}}",
+			"{{SUBTITLE}}",
+			"{{NORTH_STAR}}",
+			"{{VERSION}}",
 			"{{STATS}}",
+			"{{CAPACITY}}",
 			"{{SECTION_CRITICAL}}",
 			"{{SECTION_WEEK}}",
 			"{{SECTION_INPROGRESS}}",
 			"{{SECTION_REMAINING}}",
-			"{{CAPACITY}}",
+			"{{EXTRA_SECTIONS}}",
 		];
 		for (const ph of placeholders) {
 			expect(body).toContain(ph);
@@ -111,14 +115,17 @@ describe("GET /api/triage/template (FLY-27)", () => {
 		});
 		const body = await res.text();
 
-		// Key CSS classes from pm-triage design
+		// Key CSS classes from pm-triage Apple-style design
 		expect(body).toContain(".card-red");
 		expect(body).toContain(".card-amber");
 		expect(body).toContain(".card-blue");
 		expect(body).toContain(".priority-dot");
-		expect(body).toContain(".dot-urgent");
+		expect(body).toContain(".pri-urgent");
 		expect(body).toContain(".status-tag");
 		expect(body).toContain(".issue-id");
+		expect(body).toContain(".module-bridge");
+		expect(body).toContain(".module-lead");
+		expect(body).toContain(".module-runner");
 		expect(body).toContain(".group-product");
 		expect(body).toContain(".group-operations");
 	});
@@ -128,16 +135,19 @@ describe("GET /api/triage/template (FLY-27)", () => {
 		expect(res.status).toBe(401);
 	});
 
-	it("uses light theme (pm-triage style)", async () => {
+	it("uses light Apple-style theme (not dark)", async () => {
 		const res = await fetch(`${baseUrl}/api/triage/template`, {
 			headers: { Authorization: "Bearer test-token" },
 		});
 		const body = await res.text();
 
-		// pm-triage light theme
-		expect(body).toContain("#f5f5f7");
-		expect(body).toContain("#1a365d");
+		// Apple-style light theme with CSS variables
+		expect(body).toContain("--gray-bg: #f7fafc");
+		expect(body).toContain("--bg: #ffffff");
+		expect(body).toContain("--brand: #1a365d");
 		// Should NOT contain dark theme
 		expect(body).not.toContain("#1a1a2e");
+		expect(body).not.toContain("#0d1117");
+		expect(body).not.toContain("#161b22");
 	});
 });
