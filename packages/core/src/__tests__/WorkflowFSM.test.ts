@@ -29,14 +29,17 @@ describe("WorkflowFSM", () => {
 	const validTransitions: [string, string][] = [
 		["pending", "running"],
 		["running", "awaiting_review"],
-		["running", "approved"],
+		// FLY-58: running → approved removed (auto_approve now goes to completed)
 		["running", "blocked"],
 		["running", "completed"],
 		["running", "failed"],
-		["awaiting_review", "approved"],
+		["awaiting_review", "approved_to_ship"],
 		["awaiting_review", "rejected"],
 		["awaiting_review", "deferred"],
 		["awaiting_review", "shelved"],
+		// FLY-58: approved_to_ship transitions
+		["approved_to_ship", "completed"],
+		["approved_to_ship", "failed"],
 		// GEO-168: blocked/failed/rejected → running removed (retry is composite)
 		["blocked", "deferred"],
 		["blocked", "shelved"],
@@ -110,9 +113,8 @@ describe("WorkflowFSM", () => {
 	it("returns all allowed target states for a given state", () => {
 		expect(fsm.allowedTransitions("running")).toEqual([
 			"awaiting_review",
-			"approved",
-			"blocked",
 			"completed",
+			"blocked",
 			"failed",
 			"terminated",
 		]);
@@ -141,6 +143,7 @@ describe("WorkflowFSM", () => {
 		expect(fsm.isTerminal("pending")).toBe(false);
 		expect(fsm.isTerminal("running")).toBe(false);
 		expect(fsm.isTerminal("awaiting_review")).toBe(false);
+		expect(fsm.isTerminal("approved_to_ship")).toBe(false);
 		expect(fsm.isTerminal("blocked")).toBe(false);
 		expect(fsm.isTerminal("failed")).toBe(false);
 		expect(fsm.isTerminal("rejected")).toBe(false);
@@ -298,7 +301,7 @@ describe("allowedActionsForState", () => {
 
 describe("getActionTarget", () => {
 	it("returns target state for known actions", () => {
-		expect(getActionTarget("approve")).toBe("approved");
+		expect(getActionTarget("approve")).toBe("approved_to_ship");
 		expect(getActionTarget("reject")).toBe("rejected");
 		expect(getActionTarget("defer")).toBe("deferred");
 		expect(getActionTarget("retry")).toBe("running");

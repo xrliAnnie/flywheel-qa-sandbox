@@ -12,6 +12,7 @@ import type { ForumPostCreator } from "./ForumPostCreator.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
+import { postMergeCleanup } from "./post-merge.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
 import { validateThreadExists } from "./thread-validator.js";
@@ -291,15 +292,24 @@ export function createEventRouter(
 					| undefined;
 				const route = asString(decision?.route);
 
+				// FLY-58: If session is approved_to_ship, Runner finished shipping
+				// → go straight to completed (no Decision Layer needed)
+				const existingSession = store.getSession(event.execution_id);
+				const isPostApproveShip =
+					existingSession?.status === "approved_to_ship";
+
 				// Status mapping: all routes → appropriate status
 				let status: string;
-				if (route === "needs_review") status = "awaiting_review";
+				if (isPostApproveShip) {
+					status = "completed";
+				} else if (route === "needs_review") status = "awaiting_review";
 				else if (route === "auto_approve") {
 					const landingStatus = evidence?.landingStatus as
 						| { status?: string }
 						| undefined;
 					if (landingStatus?.status === "merged") {
-						status = "approved";
+						// FLY-58: auto_approve + merged → completed (not approved)
+						status = "completed";
 					} else {
 						status = "awaiting_review";
 					}
@@ -430,6 +440,27 @@ export function createEventRouter(
 							issue_labels: JSON.stringify(payloadLabels),
 						});
 					}
+				}
+
+				// FLY-58: tmux cleanup on completed (was on approve, now deferred to ship)
+				if (
+					!transitionRejected &&
+					status === "completed" &&
+					isPostApproveShip
+				) {
+					postMergeCleanup(
+						{
+							executionId: event.execution_id,
+							issueId: event.issue_id,
+							projectName: event.project_name,
+						},
+						store,
+					).catch((err) => {
+						console.error(
+							`[event-route] postMergeCleanup failed for ${event.execution_id}:`,
+							(err as Error).message,
+						);
+					});
 				}
 
 				// Auto-approve disabled by policy (v1.0 Phase 2)

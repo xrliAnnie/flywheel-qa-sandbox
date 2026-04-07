@@ -53,6 +53,7 @@ export interface StandupReport {
 
 // ─── Aggregator ──────────────────────────────────────────────────────
 
+// FLY-58: approved_to_ship is NOT completed — Runner still needs to ship
 const COMPLETION_STATUSES = new Set(["completed", "approved"]);
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 

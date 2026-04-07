@@ -45,6 +45,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 .badge-awaiting_review{background:rgba(210,153,34,.15);color:var(--yellow)}
 .badge-completed{background:rgba(139,148,158,.15);color:var(--text-muted)}
 .badge-approved{background:rgba(63,185,80,.15);color:var(--green)}
+.badge-approved_to_ship{background:rgba(88,166,255,.15);color:var(--blue)}
 .badge-blocked{background:rgba(248,81,73,.15);color:var(--red)}
 .badge-failed{background:rgba(248,81,73,.15);color:var(--red)}
 .badge-rejected{background:rgba(248,81,73,.15);color:var(--red)}
@@ -122,8 +123,9 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 (function(){
   var STATUS_ICONS = {
     running: '\\u{1F7E2}', awaiting_review: '\\u{1F7E1}',
-    completed: '\\u2B1C', approved: '\\u2705', blocked: '\\u26D4',
-    failed: '\\u{1F534}', rejected: '\\u274C', deferred: '\\u23F8\\uFE0F', shelved: '\\u{1F4E6}'
+    completed: '\\u2B1C', approved: '\\u2705', approved_to_ship: '\\u{1F680}',
+    blocked: '\\u26D4', failed: '\\u{1F534}', rejected: '\\u274C',
+    deferred: '\\u23F8\\uFE0F', shelved: '\\u{1F4E6}'
   };
 
   function escapeHtml(str) {

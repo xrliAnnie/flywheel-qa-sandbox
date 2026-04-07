@@ -85,6 +85,7 @@ export function buildDashboardPayload(
 		(s) => s.status === "awaiting_review",
 	).length;
 	const failedToday = terminal.filter((s) => s.status === "failed").length;
+	// FLY-58: approved_to_ship is NOT completed — Runner still needs to ship
 	const completedToday = terminal.filter(
 		(s) => s.status === "completed" || s.status === "approved",
 	).length;

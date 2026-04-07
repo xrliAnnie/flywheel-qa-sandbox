@@ -248,9 +248,9 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		expect(msg.forum_tag_update_result).toBeDefined();
 	});
 
-	// ── Scenario 4: session_completed + approved → notify_agent (FLY-47: Lead tells Annie "已 ship") ──
+	// ── Scenario 4: session_completed + completed → notify_agent (FLY-58: Lead tells Annie "已 ship") ──
 
-	it("session_completed (approved) → agent notified — Lead tells Annie ship complete", async () => {
+	it("session_completed (completed via auto_approve+merged) → agent notified — Lead tells Annie ship complete", async () => {
 		// Create session directly in running state with a thread
 		store.upsertSession({
 			execution_id: "exec-approved",
@@ -261,7 +261,7 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		});
 		store.upsertThread("thread-xyz", "channel-1", "issue-approved");
 
-		// Send completed event with auto_approve + already merged → approved status
+		// Send completed event with auto_approve + already merged → completed status (FLY-58)
 		await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: ingestHeaders,
@@ -282,16 +282,16 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		});
 		await wait();
 
-		// FLY-47: Approved → notify_agent (high) so Lead MUST tell Annie "已 ship" in Chat
+		// FLY-58: completed → notify_agent (high) so Lead MUST tell Annie "已 ship" in Chat
 		expect(capturedEnvelopes.length).toBe(1);
 		const msg = capturedEnvelopes[0].event;
 		expect(msg.event_type).toBe("session_completed");
 		expect(msg.filter_priority).toBe("high");
 		expect(msg.notification_context).toContain("Chat");
 
-		// Verify session status is approved
+		// Verify session status is completed (FLY-58: auto_approve + merged → completed)
 		const session = store.getSession("exec-approved");
-		expect(session!.status).toBe("approved");
+		expect(session!.status).toBe("completed");
 	});
 
 	// ── Scenario 5: session_failed → notify_agent (high) ──
@@ -310,7 +310,7 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		expect(msg.notification_context).toContain("failed");
 	});
 
-	// ── Scenario 6: action_executed (approve) → notify + ForumTagUpdater skip ──
+	// ── Scenario 6: action_executed (approve) → notify + ForumTagUpdater ──
 
 	it("action approve → agent notified, ForumTagUpdater updates tag", async () => {
 		// Create a session in awaiting_review state
@@ -324,7 +324,7 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		});
 		store.upsertThread("thread-action", "channel-1", "issue-action");
 
-		// Approve it (will fail because no gh CLI, but the hook notification still fires)
+		// FLY-58: approve succeeds (no longer merges PR)
 		await fetch(`${baseUrl}/api/actions/approve`, {
 			method: "POST",
 			headers: apiHeaders,
@@ -335,14 +335,12 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		});
 		await wait();
 
-		// Action notification should have been sent
-		// (approve may fail due to no gh CLI, but sendActionHook fires regardless of outcome)
-		// The point is: if it fires, it goes through EventFilter
-		if (capturedEnvelopes.length > 0) {
-			const msg = capturedEnvelopes[0].event;
-			expect(msg.event_type).toBe("action_executed");
-			expect(msg.filter_priority).toBe("normal");
-		}
+		// FLY-58: approve always succeeds now, hook always fires with approved_to_ship status
+		expect(capturedEnvelopes.length).toBe(1);
+		const msg = capturedEnvelopes[0].event;
+		expect(msg.event_type).toBe("action_executed");
+		// FLY-58: approved_to_ship matches the specific high-priority rule
+		expect(msg.filter_priority).toBe("high");
 	});
 
 	// ── Scenario 7: action retry → ForumTagUpdater SKIPS tag update ──

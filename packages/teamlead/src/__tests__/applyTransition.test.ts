@@ -87,8 +87,8 @@ describe("applyTransition", () => {
 		expect(session!.last_error).toBe("Something broke");
 	});
 
-	it("illegal transition: approved → running is rejected", () => {
-		// Setup: pending → running → awaiting_review → approved
+	it("illegal transition: approved_to_ship → running is rejected", () => {
+		// Setup: pending → running → awaiting_review → approved_to_ship (FLY-58)
 		applyTransition(opts, "exec-1", "running", makeCtx({ trigger: "start" }));
 		applyTransition(
 			opts,
@@ -99,7 +99,7 @@ describe("applyTransition", () => {
 		applyTransition(
 			opts,
 			"exec-1",
-			"approved",
+			"approved_to_ship",
 			makeCtx({ trigger: "approve" }),
 		);
 
@@ -114,7 +114,7 @@ describe("applyTransition", () => {
 		expect(result.error).toContain("not allowed");
 
 		// Status unchanged
-		expect(store.getSession("exec-1")!.status).toBe("approved");
+		expect(store.getSession("exec-1")!.status).toBe("approved_to_ship");
 	});
 
 	it("GEO-168: retry (failed → running) rejected by FSM — composite action, not simple transition", () => {

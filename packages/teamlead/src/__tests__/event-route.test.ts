@@ -210,7 +210,7 @@ describe("Event route", () => {
 		expect(res.status).toBe(401);
 	});
 
-	it("POST /events with auto_approve + landingStatus merged → approved (backward compat)", async () => {
+	it("POST /events with auto_approve + landingStatus merged → completed (FLY-58)", async () => {
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: {
@@ -233,8 +233,8 @@ describe("Event route", () => {
 		expect(res.status).toBe(200);
 
 		const session = store.getSession("exec-1");
-		// Backward compat: already merged → approved (no auto-merge attempt)
-		expect(session!.status).toBe("approved");
+		// FLY-58: auto_approve + already merged → completed (not approved)
+		expect(session!.status).toBe("completed");
 		expect(session!.decision_route).toBe("auto_approve");
 	});
 

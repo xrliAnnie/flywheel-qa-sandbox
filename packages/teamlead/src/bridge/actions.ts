@@ -1,9 +1,9 @@
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { Router } from "express";
+import { CommDB } from "flywheel-comm/db";
 import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
-import { ApproveHandler } from "flywheel-edge-worker";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -21,7 +21,6 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
-import { STAGE_ORDER } from "./stage-utils.js";
 import { getTmuxTargetFromCommDb, killTmuxSession } from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
@@ -31,12 +30,8 @@ type ExecFn = (
 	cwd: string,
 ) => Promise<{ stdout: string }>;
 
-const execFileAsync = promisify(execFile);
-
-const defaultExec: ExecFn = async (cmd, args, cwd) => {
-	const result = await execFileAsync(cmd, args, { cwd, encoding: "utf-8" });
-	return { stdout: result.stdout };
-};
+// ExecFn kept for backward-compatible caller signatures
+// (no longer used internally after FLY-58 — approve no longer merges PR)
 
 /** @deprecated Use ACTION_DEFINITIONS from flywheel-core instead (GEO-158). */
 export const ACTION_SOURCE_STATUS: Record<string, string[]> = {
@@ -169,19 +164,24 @@ function sendActionHook(
 	}
 }
 
+/**
+ * FLY-58: Approve only transitions state to approved_to_ship.
+ * No longer merges PR — Runner handles merge via /spin ship stage.
+ * Responds to CommDB approve_to_ship gate to unblock Runner.
+ */
 export async function approveExecution(
 	store: StateStore,
 	projects: ProjectEntry[],
 	executionId: string,
 	identifier?: string,
-	execFn?: ExecFn,
+	_execFn?: ExecFn,
 	transitionOpts?: ApplyTransitionOpts,
 	config?: BridgeConfig,
 	cipherWriter?: CipherWriter,
 	eventFilter?: EventFilter,
 	forumTagUpdater?: ForumTagUpdater,
 	registry?: RuntimeRegistry,
-	onApproved?: (executionId: string, session: Session) => void,
+	_onApproved?: (executionId: string, session: Session) => void,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -206,113 +206,135 @@ export async function approveExecution(
 		};
 	}
 
-	// Capture timestamp before execute() so CIPHER doesn't include merge latency
 	const ceoActionTimestamp = new Date().toISOString();
-	const handler = new ApproveHandler(
-		execFn ?? defaultExec,
-		project.projectRoot,
-		project.projectRepo,
-	);
-	const result = await handler.execute({
-		actionId: `flywheel_approve_${session.issue_id}`,
-		issueId: session.issue_id,
-		action: "approve",
-		userId: "lead-agent",
-		responseUrl: "",
-		messageTs: Date.now().toString(),
-		executionId: session.execution_id,
+
+	// FLY-58: Transition to approved_to_ship (not approved, not merge)
+	let transitionRejected = false;
+	if (transitionOpts) {
+		const fsmResult = applyTransition(
+			transitionOpts,
+			session.execution_id,
+			"approved_to_ship",
+			{
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				trigger: "approve",
+			},
+			{ last_activity_at: sqliteDatetime() },
+		);
+		if (!fsmResult.ok) {
+			console.warn(
+				`[actions] FSM rejected approve for ${executionId}: ${fsmResult.error}`,
+			);
+			transitionRejected = true;
+		}
+	} else {
+		store.upsertSession({
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			issue_identifier: session.issue_identifier,
+			issue_title: session.issue_title,
+			project_name: session.project_name,
+			status: "approved_to_ship",
+			last_activity_at: sqliteDatetime(),
+		});
+	}
+
+	if (transitionRejected) {
+		return {
+			success: false,
+			message: `FSM rejected approve transition for ${identifier ?? executionId}`,
+			alreadyResponded: true,
+		};
+	}
+
+	// FLY-58: Always set session_stage to "ship" on approve.
+	// Runner may have prematurely set stage to "completed" when its work finished
+	// (e.g. PR created), but actual ship hasn't happened yet. Approve is a
+	// deliberate lifecycle step that overrides any premature stage.
+	store.patchSessionMetadata(session.execution_id, {
+		session_stage: "ship",
+		stage_updated_at: sqliteDatetime(),
 	});
 
-	if (result.success) {
-		let transitionRejected = false;
-		if (transitionOpts) {
-			const fsmResult = applyTransition(
-				transitionOpts,
-				session.execution_id,
-				"approved",
-				{
-					executionId: session.execution_id,
-					issueId: session.issue_id,
-					projectName: session.project_name,
-					trigger: "approve",
-				},
-				{ last_activity_at: sqliteDatetime() },
-			);
-			if (!fsmResult.ok) {
-				console.warn(
-					`[actions] FSM rejected approve for ${executionId}: ${fsmResult.error}`,
-				);
-				transitionRejected = true;
-			}
-		} else {
-			store.upsertSession({
-				execution_id: session.execution_id,
-				issue_id: session.issue_id,
-				issue_identifier: session.issue_identifier,
-				issue_title: session.issue_title,
-				project_name: session.project_name,
-				status: "approved",
-				last_activity_at: sqliteDatetime(),
-			});
-		}
+	sendActionHook(
+		store,
+		projects,
+		executionId,
+		"approve",
+		"awaiting_review",
+		"approved_to_ship",
+		undefined,
+		eventFilter,
+		forumTagUpdater,
+		registry,
+		config,
+	);
 
-		if (!transitionRejected) {
-			// GEO-292: Auto-set session_stage to "ship" on approve (only advance)
-			const currentSession = store.getSession(session.execution_id);
-			const currentOrder =
-				STAGE_ORDER[currentSession?.session_stage ?? ""] ?? -1;
-			if ((STAGE_ORDER.ship ?? 9) > currentOrder) {
-				store.patchSessionMetadata(session.execution_id, {
-					session_stage: "ship",
-					stage_updated_at: sqliteDatetime(),
-				});
-			}
-
-			sendActionHook(
-				store,
-				projects,
+	// CIPHER: record approve outcome
+	if (cipherWriter) {
+		try {
+			await cipherWriter.recordOutcome({
 				executionId,
-				"approve",
-				"awaiting_review",
-				"approved",
-				undefined,
-				eventFilter,
-				forumTagUpdater,
-				registry,
-				config,
-			);
-
-			// CIPHER: record approve outcome
-			if (cipherWriter && session.status === "awaiting_review") {
-				try {
-					await cipherWriter.recordOutcome({
-						executionId,
-						ceoAction: "approve",
-						ceoActionTimestamp,
-						sourceStatus: session.status,
-					});
-				} catch {
-					console.error(
-						`[CIPHER] recordOutcome failed for approve ${executionId}`,
-					);
-				}
-			}
-
-			// GEO-280: Post-merge cleanup (fire-and-forget, error-isolated)
-			if (onApproved) {
-				void Promise.resolve()
-					.then(() => onApproved(executionId, session))
-					.catch((err) => {
-						console.error(
-							`[post-merge] onApproved callback error for ${executionId}:`,
-							(err as Error).message,
-						);
-					});
-			}
+				ceoAction: "approve",
+				ceoActionTimestamp,
+				sourceStatus: session.status,
+			});
+		} catch {
+			console.error(`[CIPHER] recordOutcome failed for approve ${executionId}`);
 		}
 	}
 
-	return result;
+	// FLY-58: Respond to CommDB approve_to_ship gate to unblock Runner.
+	// Race note: if Annie approves before Runner creates the gate question,
+	// gateUnblocked will be false. In practice this is sub-second and impossible
+	// because Annie must manually review the PR first. If we ever add programmatic
+	// auto-approve, add a retry or check session state in the gate polling loop.
+	let gateUnblocked = false;
+	try {
+		const commDbPath = join(
+			homedir(),
+			".flywheel",
+			"comm",
+			session.project_name,
+			"comm.db",
+		);
+		const db = new CommDB(commDbPath, false);
+		try {
+			const pendingGate = db.getPendingGateByRunner(
+				executionId,
+				"approve_to_ship",
+			);
+			if (pendingGate) {
+				db.insertResponse(
+					pendingGate.id,
+					"bridge",
+					JSON.stringify({ approved: true }),
+				);
+				gateUnblocked = true;
+			}
+		} finally {
+			db.close();
+		}
+	} catch (err) {
+		console.error(
+			`[actions] CommDB gate respond FAILED for ${executionId}: ${(err as Error).message}. Runner may be stuck on approve_to_ship gate.`,
+		);
+	}
+
+	if (!gateUnblocked) {
+		console.warn(
+			`[actions] approve succeeded but gate NOT unblocked for ${executionId}. Runner may need manual intervention if it's waiting on approve_to_ship gate.`,
+		);
+	}
+
+	return {
+		success: true,
+		message: `Approved ${identifier ?? executionId} → approved_to_ship${gateUnblocked ? " (gate unblocked)" : " (WARNING: no pending gate — Runner may need manual unblock)"}`,
+		alreadyResponded: true,
+		gateUnblocked,
+	};
 }
 
 export async function transitionSession(
@@ -780,6 +802,7 @@ export function createActionRouter(
 						message: result.message,
 						action: "approve",
 						identifier,
+						gateUnblocked: result.gateUnblocked,
 					});
 				} else {
 					res.status(400).json({
