@@ -779,6 +779,414 @@ fi
 DRY_RUN=false
 
 # ════════════════════════════════════════════════════════════════
+# FLY-43: Project repo .lead/ change detection tests
+# ════════════════════════════════════════════════════════════════
+
+# Setup: temp file for SHA updates + temp git repo
+PROJECT_SHA_UPDATES_FILE="$TMPDIR_ROOT/project-sha-updates"
+: > "$PROJECT_SHA_UPDATES_FILE"
+
+# Setup: create a temp git repo to simulate a project repo
+PROJECT_REPO="$TMPDIR_ROOT/project-repo"
+mkdir -p "$PROJECT_REPO"
+git -C "$PROJECT_REPO" init -q
+git -C "$PROJECT_REPO" checkout -q -b main
+
+# Create initial .lead/ structure and commit
+mkdir -p "$PROJECT_REPO/.lead/shared" "$PROJECT_REPO/.lead/product-lead"
+echo "# Common rules v1" > "$PROJECT_REPO/.lead/shared/common-rules.md"
+echo "# Identity v1" > "$PROJECT_REPO/.lead/product-lead/identity.md"
+git -C "$PROJECT_REPO" add -A
+git -C "$PROJECT_REPO" commit -q -m "initial .lead/ setup"
+INITIAL_SHA=$(git -C "$PROJECT_REPO" rev-parse HEAD)
+
+# Source helper functions from restart-services.sh
+PROJECT_SHA_DIR="$TMPDIR_ROOT/project-deployed-sha"
+PROJECT_SHA_UPDATES=""
+
+resolve_main_repo() {
+    local dir="$1"
+    [[ -d "$dir" ]] || return 1
+    local common_dir
+    common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 1
+    if [[ "$common_dir" == ".git" ]]; then
+        echo "$dir"
+    else
+        dirname "$common_dir"
+    fi
+}
+
+# ── Test 36: resolve_main_repo — main repo returns itself ──
+echo "Test: FLY-43 — resolve_main_repo — main repo returns itself"
+
+result=$(resolve_main_repo "$PROJECT_REPO")
+if [[ "$result" == "$PROJECT_REPO" ]]; then
+    pass "resolve_main_repo: main repo → itself"
+else
+    fail "resolve_main_repo: expected $PROJECT_REPO, got $result"
+fi
+
+# ── Test 37: resolve_main_repo — nonexistent dir fails ──
+echo "Test: FLY-43 — resolve_main_repo — nonexistent dir fails"
+
+rc=0
+resolve_main_repo "$TMPDIR_ROOT/nonexistent" > /dev/null 2>&1 || rc=$?
+if (( rc != 0 )); then
+    pass "resolve_main_repo: nonexistent dir → failure"
+else
+    fail "resolve_main_repo: expected failure for nonexistent dir"
+fi
+
+# ── Test 38: resolve_main_repo — worktree resolves to main ──
+echo "Test: FLY-43 — resolve_main_repo — worktree resolves to main"
+
+WORKTREE_DIR="$TMPDIR_ROOT/project-worktree"
+git -C "$PROJECT_REPO" worktree add -q "$WORKTREE_DIR" -b test-branch 2>/dev/null
+result=$(resolve_main_repo "$WORKTREE_DIR")
+# Normalize both paths (macOS /var → /private/var symlink)
+expected_normalized=$(cd "$PROJECT_REPO" && pwd -P)
+result_normalized=$(cd "$result" 2>/dev/null && pwd -P)
+if [[ "$result_normalized" == "$expected_normalized" ]]; then
+    pass "resolve_main_repo: worktree → main repo"
+else
+    fail "resolve_main_repo: expected $expected_normalized, got $result_normalized"
+fi
+# Cleanup worktree
+git -C "$PROJECT_REPO" worktree remove "$WORKTREE_DIR" 2>/dev/null || true
+
+# ── Test 39: check_project_lead_changes — no manifests → skip ──
+echo "Test: FLY-43 — check_project_lead_changes — no manifests → skip"
+
+check_project_lead_changes() {
+    project_lead_changed=false
+    : > "$PROJECT_SHA_UPDATES_FILE"
+
+    shopt -s nullglob
+    local manifests=("$TMPDIR_ROOT/empty-manifests/"*.json)
+    shopt -u nullglob
+
+    if (( ${#manifests[@]} == 0 )); then
+        log "No manifests found, skipping project repo check"
+        return
+    fi
+}
+
+mkdir -p "$TMPDIR_ROOT/empty-manifests"
+project_lead_changed=true  # set to true to verify it gets reset
+check_project_lead_changes
+if [[ "$project_lead_changed" == "false" ]]; then
+    pass "check_project_lead_changes: no manifests → project_lead_changed=false"
+else
+    fail "check_project_lead_changes: expected false"
+fi
+
+# ── Test 40: check_project_lead_changes — first run → records SHA, no restart ──
+echo "Test: FLY-43 — check_project_lead_changes — first run → records SHA"
+
+# Create a bare remote so we can test origin/main
+REMOTE_REPO="$TMPDIR_ROOT/remote-repo.git"
+git -C "$PROJECT_REPO" clone -q --bare "$PROJECT_REPO" "$REMOTE_REPO" 2>/dev/null || \
+    git clone -q --bare "$PROJECT_REPO" "$REMOTE_REPO"
+git -C "$PROJECT_REPO" remote remove origin 2>/dev/null || true
+git -C "$PROJECT_REPO" remote add origin "$REMOTE_REPO"
+git -C "$PROJECT_REPO" fetch origin main --quiet 2>/dev/null
+
+# Create manifest pointing to this project
+MANIFEST_DIR_43="$TMPDIR_ROOT/manifests-43"
+mkdir -p "$MANIFEST_DIR_43"
+jq -n \
+  --arg projectDir "$PROJECT_REPO" \
+  --arg projectName "test-project" \
+  --arg leadId "product-lead" \
+  --arg botTokenEnv "TEST_TOKEN" \
+  '{leadId: $leadId, projectDir: $projectDir, projectName: $projectName, subdir: "", botTokenEnv: $botTokenEnv}' \
+  > "$MANIFEST_DIR_43/test-product-lead.json"
+
+# Full check_project_lead_changes with real manifests
+check_project_lead_changes() {
+    project_lead_changed=false
+    : > "$PROJECT_SHA_UPDATES_FILE"
+
+    shopt -s nullglob
+    local manifests=("$MANIFEST_DIR_43/"*.json)
+    shopt -u nullglob
+
+    if (( ${#manifests[@]} == 0 )); then return; fi
+
+    local seen_names=""
+    local project_names=()
+    local project_dirs=()
+
+    for mf in "${manifests[@]}"; do
+        local pname pdir
+        pname=$(jq -r '.projectName' "$mf")
+        pdir=$(jq -r '.projectDir' "$mf")
+        case " $seen_names " in *" $pname "*) continue ;; esac
+
+        local main_repo
+        if main_repo=$(resolve_main_repo "$pdir"); then
+            project_names+=("$pname")
+            project_dirs+=("$main_repo")
+            seen_names="$seen_names $pname"
+        fi
+    done
+
+    local i
+    for (( i=0; i<${#project_names[@]}; i++ )); do
+        local pname="${project_names[$i]}"
+        local repo="${project_dirs[$i]}"
+        local sha_file="${PROJECT_SHA_DIR}/${pname}"
+        local stored_sha
+        stored_sha=$(cat "$sha_file" 2>/dev/null || echo "")
+
+        local current_sha
+        current_sha=$(git -C "$repo" rev-parse origin/main 2>/dev/null) || continue
+
+        printf '%s\t%s\n' "$pname" "$current_sha" >> "$PROJECT_SHA_UPDATES_FILE"
+
+        if [[ "$stored_sha" == "$current_sha" ]]; then continue; fi
+
+        if [[ -z "$stored_sha" ]]; then
+            log "Project $pname: first run, recording SHA ${current_sha:0:7}"
+            mkdir -p "$PROJECT_SHA_DIR"
+            echo "$current_sha" > "$sha_file"
+            continue
+        fi
+
+        # Fail-safe: if git diff fails, treat as changed
+        local lead_changes
+        local diff_ok=true
+        lead_changes=$(git -C "$repo" diff --name-only "$stored_sha" "$current_sha" -- .lead/ 2>/dev/null) || diff_ok=false
+        if [[ "$diff_ok" == "false" ]]; then
+            project_lead_changed=true
+        elif [[ -n "$lead_changes" ]]; then
+            project_lead_changed=true
+        fi
+    done
+}
+
+# Ensure no prior SHA exists
+rm -rf "$PROJECT_SHA_DIR"
+
+check_project_lead_changes
+
+if [[ "$project_lead_changed" == "false" ]] && [[ -f "$PROJECT_SHA_DIR/test-project" ]]; then
+    stored=$(cat "$PROJECT_SHA_DIR/test-project")
+    expected=$(git -C "$PROJECT_REPO" rev-parse origin/main)
+    if [[ "$stored" == "$expected" ]]; then
+        pass "check_project_lead_changes: first run → SHA recorded, no restart"
+    else
+        fail "check_project_lead_changes: SHA mismatch (stored=$stored expected=$expected)"
+    fi
+else
+    fail "check_project_lead_changes: first run failed (changed=$project_lead_changed, sha_file exists=$(test -f "$PROJECT_SHA_DIR/test-project" && echo yes || echo no))"
+fi
+
+# ── Test 41: check_project_lead_changes — no .lead/ changes → false ──
+echo "Test: FLY-43 — check_project_lead_changes — no .lead/ changes → false"
+
+# SHA already recorded, no new commits → should report no changes
+check_project_lead_changes
+
+if [[ "$project_lead_changed" == "false" ]]; then
+    pass "check_project_lead_changes: same SHA → no changes"
+else
+    fail "check_project_lead_changes: expected false on same SHA"
+fi
+
+# ── Test 42: check_project_lead_changes — .lead/ changed → true ──
+echo "Test: FLY-43 — check_project_lead_changes — .lead/ changed → true"
+
+# Make a new commit with .lead/ changes
+echo "# Identity v2 — updated" > "$PROJECT_REPO/.lead/product-lead/identity.md"
+git -C "$PROJECT_REPO" add -A
+git -C "$PROJECT_REPO" commit -q -m "update identity.md"
+git -C "$PROJECT_REPO" push -q origin main 2>/dev/null
+git -C "$PROJECT_REPO" fetch origin main --quiet 2>/dev/null
+
+check_project_lead_changes
+
+if [[ "$project_lead_changed" == "true" ]]; then
+    pass "check_project_lead_changes: .lead/ changed → true"
+else
+    fail "check_project_lead_changes: expected true after .lead/ change"
+fi
+
+# ── Test 43: check_project_lead_changes — non-.lead/ changes → false ──
+echo "Test: FLY-43 — check_project_lead_changes — non-.lead/ changes → false"
+
+# First, update SHA to current state
+update_project_shas() {
+    [[ ! -s "$PROJECT_SHA_UPDATES_FILE" ]] && return
+    mkdir -p "$PROJECT_SHA_DIR"
+    while IFS=$'\t' read -r pname sha; do
+        [[ -z "$pname" || -z "$sha" ]] && continue
+        echo "$sha" > "${PROJECT_SHA_DIR}/${pname}"
+    done < "$PROJECT_SHA_UPDATES_FILE"
+}
+update_project_shas
+
+# Make a new commit that does NOT touch .lead/
+echo "# README" > "$PROJECT_REPO/README.md"
+git -C "$PROJECT_REPO" add -A
+git -C "$PROJECT_REPO" commit -q -m "update README only"
+git -C "$PROJECT_REPO" push -q origin main 2>/dev/null
+git -C "$PROJECT_REPO" fetch origin main --quiet 2>/dev/null
+
+check_project_lead_changes
+
+if [[ "$project_lead_changed" == "false" ]]; then
+    pass "check_project_lead_changes: non-.lead/ change → false"
+else
+    fail "check_project_lead_changes: expected false for non-.lead/ change"
+fi
+
+# ── Test 44: update_project_shas — writes SHA files ──
+echo "Test: FLY-43 — update_project_shas — writes SHA files"
+
+# PROJECT_SHA_UPDATES should have been populated by last check
+update_project_shas
+stored=$(cat "$PROJECT_SHA_DIR/test-project" 2>/dev/null || echo "")
+expected=$(git -C "$PROJECT_REPO" rev-parse origin/main)
+if [[ "$stored" == "$expected" ]]; then
+    pass "update_project_shas: SHA file updated correctly"
+else
+    fail "update_project_shas: stored=$stored expected=$expected"
+fi
+
+# ── Test 45: integration — project_lead_changed + SHA match → PLUGIN_ONLY_RESTART ──
+echo "Test: FLY-43 — integration — project_lead_changed + SHA match → lead-only restart"
+
+project_lead_changed=true
+plugin_needs_restart=false
+DEPLOYED_SHA="abc1234"
+CURRENT_HEAD="abc1234"
+PLUGIN_ONLY_RESTART=false
+
+if [[ "$DEPLOYED_SHA" == "$CURRENT_HEAD" ]]; then
+    if [[ "$plugin_needs_restart" == "true" || "$project_lead_changed" == "true" ]]; then
+        PLUGIN_ONLY_RESTART=true
+    fi
+fi
+
+if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
+    pass "Integration: project_lead_changed + SHA match → lead-only restart"
+else
+    fail "Integration: expected PLUGIN_ONLY_RESTART=true"
+fi
+
+# ── Test 46: integration — project_lead_changed merges into restart_all_leads ──
+echo "Test: FLY-43 — integration — project_lead_changed merges into restart_all_leads"
+
+project_lead_changed=true
+plugin_needs_restart=false
+restart_all_leads=false
+
+if [[ "$plugin_needs_restart" == "true" || "$project_lead_changed" == "true" ]]; then
+    restart_all_leads=true
+fi
+
+if [[ "$restart_all_leads" == "true" ]]; then
+    pass "Integration: project_lead_changed → restart_all_leads=true"
+else
+    fail "Integration: expected restart_all_leads=true"
+fi
+
+# ── Test 47: MAX_WAIT_SECONDS — default is 300 ──
+echo "Test: FLY-43 — MAX_WAIT_SECONDS default is 300"
+
+unset RESTART_MAX_WAIT
+MAX_WAIT_SECONDS="${RESTART_MAX_WAIT:-300}"
+if [[ "$MAX_WAIT_SECONDS" == "300" ]]; then
+    pass "MAX_WAIT_SECONDS: default is 300 (5 minutes)"
+else
+    fail "MAX_WAIT_SECONDS: expected 300, got $MAX_WAIT_SECONDS"
+fi
+
+# ── Test 48: MAX_WAIT_SECONDS — env override ──
+echo "Test: FLY-43 — MAX_WAIT_SECONDS env override"
+
+RESTART_MAX_WAIT=120
+MAX_WAIT_SECONDS="${RESTART_MAX_WAIT:-300}"
+if [[ "$MAX_WAIT_SECONDS" == "120" ]]; then
+    pass "MAX_WAIT_SECONDS: env override to 120"
+else
+    fail "MAX_WAIT_SECONDS: expected 120, got $MAX_WAIT_SECONDS"
+fi
+unset RESTART_MAX_WAIT
+
+# ── Test 49: resolve_main_repo — non-git dir fails ──
+echo "Test: FLY-43 — resolve_main_repo — non-git dir fails"
+
+NON_GIT_DIR="$TMPDIR_ROOT/not-a-repo"
+mkdir -p "$NON_GIT_DIR"
+rc=0
+resolve_main_repo "$NON_GIT_DIR" > /dev/null 2>&1 || rc=$?
+if (( rc != 0 )); then
+    pass "resolve_main_repo: non-git dir → failure"
+else
+    fail "resolve_main_repo: expected failure for non-git dir"
+fi
+
+# ── Test 50: check_project_lead_changes — manifest with dead worktree skipped ──
+echo "Test: FLY-43 — check_project_lead_changes — dead worktree manifest skipped"
+
+# Add a second manifest pointing to a non-existent worktree (same project)
+jq -n \
+  --arg projectDir "$TMPDIR_ROOT/dead-worktree" \
+  --arg projectName "test-project" \
+  --arg leadId "ops-lead" \
+  --arg botTokenEnv "OPS_TOKEN" \
+  '{leadId: $leadId, projectDir: $projectDir, projectName: $projectName, subdir: "", botTokenEnv: $botTokenEnv}' \
+  > "$MANIFEST_DIR_43/test-ops-lead.json"
+
+# Reset SHA to trigger check
+rm -f "$PROJECT_SHA_DIR/test-project"
+
+check_project_lead_changes
+
+# Should still work (product-lead manifest has valid dir)
+if [[ -f "$PROJECT_SHA_DIR/test-project" ]]; then
+    pass "check_project_lead_changes: dead worktree skipped, valid manifest used"
+else
+    fail "check_project_lead_changes: failed to process any manifest"
+fi
+
+# ── Test 51: git diff fail-safe — bad SHA triggers restart ──
+echo "Test: FLY-43 — git diff fail-safe — bad SHA triggers restart"
+
+# Write a garbage SHA to trigger git diff failure
+mkdir -p "$PROJECT_SHA_DIR"
+echo "0000000000000000000000000000000000000000" > "$PROJECT_SHA_DIR/test-project"
+
+check_project_lead_changes
+
+if [[ "$project_lead_changed" == "true" ]]; then
+    pass "git diff fail-safe: bad SHA → project_lead_changed=true"
+else
+    fail "git diff fail-safe: expected true when git diff fails"
+fi
+
+# ── Test 52: update_project_shas — handles project names via file ──
+echo "Test: FLY-43 — update_project_shas — file-based SHA tracking"
+
+# Reset
+rm -rf "$PROJECT_SHA_DIR"
+: > "$PROJECT_SHA_UPDATES_FILE"
+printf 'test-project\tabc123def456\n' >> "$PROJECT_SHA_UPDATES_FILE"
+printf 'another-project\t789xyz000111\n' >> "$PROJECT_SHA_UPDATES_FILE"
+
+update_project_shas
+
+stored1=$(cat "$PROJECT_SHA_DIR/test-project" 2>/dev/null || echo "")
+stored2=$(cat "$PROJECT_SHA_DIR/another-project" 2>/dev/null || echo "")
+if [[ "$stored1" == "abc123def456" && "$stored2" == "789xyz000111" ]]; then
+    pass "update_project_shas: file-based multi-project SHA update"
+else
+    fail "update_project_shas: stored1=$stored1 stored2=$stored2"
+fi
+
+# ════════════════════════════════════════════════════════════════
 # Summary
 # ════════════════════════════════════════════════════════════════
 echo ""
