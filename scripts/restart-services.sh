@@ -587,6 +587,22 @@ restart_lead() {
     # Per-lead Discord state directory for channel/token isolation
     local discord_state_dir="${HOME}/.claude/channels/discord-${lead_id}"
 
+    # FLY-74: If this Lead is managed by launchd daemon, use kickstart instead
+    # of nohup to avoid double-start (launchd KeepAlive would respawn alongside
+    # the nohup'd instance).
+    local daemon_key="${project_name}-${lead_id}"
+    local daemon_label="com.flywheel.lead.${daemon_key}"
+    if launchctl print "gui/$(id -u)/${daemon_label}" &>/dev/null; then
+        log "Lead $lead_id is managed by launchd — using kickstart"
+        launchctl kickstart -k "gui/$(id -u)/${daemon_label}"
+        sleep 3
+        local daemon_pid
+        daemon_pid=$(launchctl print "gui/$(id -u)/${daemon_label}" 2>/dev/null | grep -m1 'pid =' | awk '{print $NF}' || true)
+        log "Lead $lead_id restarted via launchd (PID ${daemon_pid:-unknown})"
+        return 0
+    fi
+
+    # Legacy path: manual nohup (Lead not daemon-managed)
     # Replay LEAD_WORKSPACE if manifest recorded a custom one
     if [[ -n "$workspace" && "$workspace" != "null" ]]; then
         LEAD_WORKSPACE="$workspace" DISCORD_STATE_DIR="$discord_state_dir" DISCORD_BOT_TOKEN="${!bot_token_env}" \
