@@ -20,7 +20,7 @@ DEPLOYED_SHA_FILE="${HOME}/.flywheel/deployed-sha"
 LOCK_DIR="${HOME}/.flywheel/restart.lock.d"
 PLUGIN_RESTART_PENDING="${HOME}/.flywheel/plugin-restart-pending"
 
-MAX_WAIT_SECONDS=1800   # 30 minutes
+MAX_WAIT_SECONDS="${RESTART_MAX_WAIT:-300}"   # 5 minutes default (env override: RESTART_MAX_WAIT)
 POLL_INTERVAL=30        # seconds between idle checks
 BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 
@@ -150,6 +150,141 @@ check_discord_plugin_fork() {
 }
 
 # ════════════════════════════════════════════════════════════════
+# Project repo .lead/ change detection (FLY-43)
+# ════════════════════════════════════════════════════════════════
+
+PROJECT_SHA_DIR="${HOME}/.flywheel/project-deployed-sha"
+
+# Resolve a git dir (possibly a worktree) to its main worktree path.
+# Returns: main repo path on stdout, or fails with return 1.
+resolve_main_repo() {
+    local dir="$1"
+    [[ -d "$dir" ]] || return 1
+    local common_dir
+    common_dir=$(git -C "$dir" rev-parse --git-common-dir 2>/dev/null) || return 1
+    if [[ "$common_dir" == ".git" ]]; then
+        # Already the main worktree
+        echo "$dir"
+    else
+        # common_dir is an absolute path like /path/to/main-repo/.git
+        dirname "$common_dir"
+    fi
+}
+
+# Check all project repos from manifests for .lead/ changes.
+# Sets global: project_lead_changed=true/false
+# Writes to: PROJECT_SHA_UPDATES_FILE (one "projectName=sha" per line)
+check_project_lead_changes() {
+    project_lead_changed=false
+    : > "$PROJECT_SHA_UPDATES_FILE"  # truncate
+
+    shopt -s nullglob
+    local manifests=("${HOME}/.flywheel/manifests/"*.json)
+    shopt -u nullglob
+
+    if (( ${#manifests[@]} == 0 )); then
+        log "No manifests found, skipping project repo check"
+        return
+    fi
+
+    # Collect unique project repos (try each manifest's projectDir until one works)
+    local seen_names=""
+    local project_names=()
+    local project_dirs=()
+
+    for mf in "${manifests[@]}"; do
+        local pname pdir
+        pname=$(jq -r '.projectName' "$mf")
+        pdir=$(jq -r '.projectDir' "$mf")
+
+        # Skip if already seen this project
+        case " $seen_names " in
+            *" $pname "*) continue ;;
+        esac
+
+        local main_repo
+        if main_repo=$(resolve_main_repo "$pdir"); then
+            project_names+=("$pname")
+            project_dirs+=("$main_repo")
+            seen_names="$seen_names $pname"
+        fi
+    done
+
+    # Check each unique project
+    local i
+    for (( i=0; i<${#project_names[@]}; i++ )); do
+        local pname="${project_names[$i]}"
+        local repo="${project_dirs[$i]}"
+        local sha_file="${PROJECT_SHA_DIR}/${pname}"
+        local stored_sha
+        stored_sha=$(cat "$sha_file" 2>/dev/null || echo "")
+
+        # Fetch latest from remote (best-effort, don't block on failure)
+        if [[ "$DRY_RUN" != "true" ]]; then
+            git -C "$repo" fetch origin main --quiet 2>/dev/null || {
+                log "WARNING: Failed to fetch project $pname (${repo}), skipping"
+                continue
+            }
+        fi
+
+        local current_sha
+        current_sha=$(git -C "$repo" rev-parse origin/main 2>/dev/null) || {
+            log "WARNING: Cannot resolve origin/main for project $pname, skipping"
+            continue
+        }
+
+        # Store for later SHA update (tab-separated, one per line)
+        printf '%s\t%s\n' "$pname" "$current_sha" >> "$PROJECT_SHA_UPDATES_FILE"
+
+        if [[ "$stored_sha" == "$current_sha" ]]; then
+            continue
+        fi
+
+        if [[ -z "$stored_sha" ]]; then
+            # First run: record SHA, don't force restart
+            log "Project $pname: first run, recording SHA ${current_sha:0:7} (no restart forced)"
+            mkdir -p "$PROJECT_SHA_DIR"
+            echo "$current_sha" > "$sha_file"
+            continue
+        fi
+
+        # Check if .lead/ changed between stored and current
+        # Fail-safe: if git diff fails (bad SHA, force-push, etc.), treat as changed
+        local lead_changes
+        local diff_ok=true
+        lead_changes=$(git -C "$repo" diff --name-only "$stored_sha" "$current_sha" -- .lead/ 2>/dev/null) || diff_ok=false
+
+        if [[ "$diff_ok" == "false" ]]; then
+            log "WARNING: git diff failed for project $pname (${stored_sha:0:7}→${current_sha:0:7}), treating as changed (fail-safe)"
+            project_lead_changed=true
+        elif [[ -n "$lead_changes" ]]; then
+            local change_count
+            change_count=$(echo "$lead_changes" | wc -l | tr -d ' ')
+            log "Project $pname: ${change_count} .lead/ file(s) changed (${stored_sha:0:7} → ${current_sha:0:7})"
+            if [[ "$DRY_RUN" == "true" ]]; then
+                log "DRY RUN: Changed .lead/ files:"
+                echo "$lead_changes" | head -10
+            fi
+            project_lead_changed=true
+        fi
+    done
+}
+
+# Update project deployed SHAs after successful restart.
+update_project_shas() {
+    [[ ! -s "$PROJECT_SHA_UPDATES_FILE" ]] && return
+    mkdir -p "$PROJECT_SHA_DIR"
+    while IFS=$'\t' read -r pname sha; do
+        [[ -z "$pname" || -z "$sha" ]] && continue
+        echo "$sha" > "${PROJECT_SHA_DIR}/${pname}"
+        log "Project $pname: deployed-sha updated to ${sha:0:7}"
+    done < "$PROJECT_SHA_UPDATES_FILE"
+}
+
+# Temp file for project SHA updates (populated by check_project_lead_changes)
+PROJECT_SHA_UPDATES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-project-sha-XXXXXX")
+
+# ════════════════════════════════════════════════════════════════
 # Parse arguments
 # ════════════════════════════════════════════════════════════════
 
@@ -182,7 +317,7 @@ acquire_lock() {
             exit 0
         fi
     fi
-    trap 'rmdir "$LOCK_DIR" 2>/dev/null; exit' EXIT INT TERM
+    trap 'rmdir "$LOCK_DIR" 2>/dev/null; rm -f "$PROJECT_SHA_UPDATES_FILE" 2>/dev/null; exit' EXIT INT TERM
 }
 
 acquire_lock
@@ -209,6 +344,12 @@ if (( fork_rc == 0 )); then
 fi
 
 # ════════════════════════════════════════════════════════════════
+# Project repo .lead/ change detection (FLY-43)
+# ════════════════════════════════════════════════════════════════
+
+check_project_lead_changes
+
+# ════════════════════════════════════════════════════════════════
 # Deployed-SHA comparison
 # ════════════════════════════════════════════════════════════════
 
@@ -216,10 +357,10 @@ DEPLOYED_SHA=$(cat "$DEPLOYED_SHA_FILE" 2>/dev/null || echo "")
 CURRENT_HEAD=$(git -C "$FLYWHEEL_DIR" rev-parse HEAD)
 
 if [[ "$DEPLOYED_SHA" == "$CURRENT_HEAD" ]]; then
-    if [[ "$plugin_needs_restart" == "true" ]]; then
-        # Dry-run guard for plugin-only path
+    if [[ "$plugin_needs_restart" == "true" || "$project_lead_changed" == "true" ]]; then
+        # Dry-run guard for lead-only restart path
         if [[ "$DRY_RUN" == "true" ]]; then
-            log "DRY RUN: Would restart Leads (plugin update or retry marker)"
+            log "DRY RUN: Would restart Leads (plugin=$plugin_needs_restart project_lead=$project_lead_changed)"
             [[ -f "$PLUGIN_RESTART_PENDING" ]] && log "DRY RUN: Marker exists, would retry"
             exit 0
         fi
@@ -299,8 +440,8 @@ else
     log "Diff analysis: bridge=$restart_bridge leads=$restart_all_leads install=$need_install"
 fi
 
-# Merge plugin update flag into diff classification result
-if [[ "$plugin_needs_restart" == "true" ]]; then
+# Merge plugin update + project .lead/ change flags into diff classification result
+if [[ "$plugin_needs_restart" == "true" || "$project_lead_changed" == "true" ]]; then
     restart_all_leads=true
 fi
 
@@ -657,6 +798,9 @@ deploy_and_verify() {
     echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"
     log "deployed-sha updated to ${CURRENT_HEAD:0:7}"
 
+    # Update project repo deployed SHAs (FLY-43)
+    update_project_shas
+
     notify_discord "✅ Flywheel 已更新到 \`${CURRENT_HEAD:0:7}\`。重启了: ${restarted[*]:-无}"
 }
 
@@ -665,9 +809,9 @@ deploy_and_verify() {
 # ════════════════════════════════════════════════════════════════
 
 if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
-    # Plugin-only path: restart Leads without build/Bridge changes
-    log "Plugin-only restart: restarting Leads..."
-    notify_discord "🔄 Discord plugin 更新，重启 Leads..."
+    # Lead-only restart path: plugin update or project .lead/ changes (no Flywheel code change)
+    log "Lead-only restart: plugin=$plugin_needs_restart project_lead=$project_lead_changed"
+    notify_discord "🔄 Lead 重启中 (plugin=$plugin_needs_restart project_lead=$project_lead_changed)..."
 
     lead_result=$(do_restart_all_leads)
     leads_skipped=$(echo "$lead_result" | sed 's/.*skipped:\([0-9]*\).*/\1/')
@@ -681,11 +825,13 @@ if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
     fi
     # Success (full or partial-skip) — clear retry marker
     rm -f "$PLUGIN_RESTART_PENDING"
+    # Update project repo deployed SHAs (FLY-43)
+    update_project_shas
     if (( leads_skipped > 0 )); then
         notify_discord "⚠️ Discord plugin 更新后 ${leads_skipped} 个 Lead 跳过（无 manifest）。请手动重启。"
         exit 0
     fi
-    notify_discord "✅ Discord plugin 更新完成，Leads 已重启。"
+    notify_discord "✅ Lead 重启完成 (plugin=$plugin_needs_restart project_lead=$project_lead_changed)。"
     log "Done."
 else
     # Normal deploy path
