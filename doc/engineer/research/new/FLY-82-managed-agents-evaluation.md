@@ -13,8 +13,11 @@
 3. [可替代 vs 必须保留](#3-可替代-vs-必须保留)
 4. [迁移路径设计](#4-迁移路径设计)
 5. [Multi-Agent Preview 评估](#5-multi-agent-preview-评估)
-6. [风险 & 时间线](#6-风险--时间线)
-7. [建议](#7-建议)
+6. [Authentication & Secrets 机制](#6-authentication--secrets-机制)
+7. [MCP 云端限制 & 本地 vs 云端 Gap](#7-mcp-云端限制--本地-vs-云端-gap)
+8. [申请指南 & Quickstart](#8-申请指南--quickstart)
+9. [风险 & 时间线](#9-风险--时间线)
+10. [建议](#10-建议)
 
 ---
 
@@ -398,9 +401,296 @@ graph TB
 
 ---
 
-## 6. 风险 & 时间线
+## 6. Authentication & Secrets 机制
 
-### 6.1 风险矩阵
+### 6.1 Vault 系统（MA 原生凭证管理）
+
+MA 提供了完整的 **Vault** 凭证管理系统，这是 Flywheel 迁移的关键支撑：
+
+```mermaid
+graph LR
+    subgraph "凭证流转"
+        V[Vault<br/>vlt_01ABC...] -->|包含| C1[Credential 1<br/>GitHub OAuth]
+        V -->|包含| C2[Credential 2<br/>Linear API Key]
+        V -->|包含| C3[Credential 3<br/>Discord Token]
+        
+        S[Session 创建] -->|vault_ids| V
+        S --> MCP[MCP Server]
+        MCP -->|URL 匹配| C1
+        MCP -->|URL 匹配| C2
+    end
+```
+
+**核心概念：**
+
+| 概念 | 描述 |
+|------|------|
+| **Vault** | 凭证集合，对应一个 end-user。workspace-scoped |
+| **Credential** | 绑定到特定 `mcp_server_url` 的认证信息 |
+| **Session 引用** | 创建 session 时传 `vault_ids`，运行时自动匹配 |
+
+**凭证类型：**
+
+| 类型 | 用途 | 示例 |
+|------|------|------|
+| `mcp_oauth` | OAuth 2.0 服务 | Slack、GitHub Copilot MCP |
+| `static_bearer` | 固定 API key / token | Linear API key、Discord bot token |
+
+**关键特性：**
+- **Credential Isolation**：生成的代码**永远不接触凭证**。token 存在 secure vault，通过代理注入
+- **自动 Token Refresh**：OAuth 凭证支持 `refresh` 配置，Anthropic 自动刷新过期 token
+- **Secret 只写不读**：`token`, `access_token`, `refresh_token`, `client_secret` 字段写入后不可读取
+- **运行时热更新**：凭证在 session 运行中周期性重新解析，rotation 无需重启 session
+- 每 vault 最多 **20 个 credential**
+- 每个 `mcp_server_url` 每 vault **只能有一个** active credential
+
+### 6.2 环境变量 / 直接设 API Keys？
+
+**MA 当前不支持直接设置容器环境变量。** 所有外部服务认证必须通过以下路径之一：
+
+| 方式 | 支持? | 说明 |
+|------|-------|------|
+| **Vault + MCP** | ✅ 推荐 | 凭证通过 Vault 注入 MCP server，agent 代码不接触 token |
+| **Custom Tool** | ✅ 可行 | 你的后端执行 tool call，自己管理认证 |
+| **容器环境变量** | ❌ 不支持 | Environment config 没有 env vars 字段 |
+| **注入文件** | ⚠️ 间接 | Agent 可以通过 bash 写文件，但不是初始化时注入 |
+| **System Prompt 含 token** | ❌ 不推荐 | 安全风险，token 暴露在 context 中 |
+
+### 6.3 Flywheel 服务认证对照
+
+| Flywheel 需要的服务 | 当前认证方式 | MA 迁移路径 |
+|---------------------|-------------|-------------|
+| **GitHub** | `GITHUB_TOKEN` 环境变量 | Vault + GitHub MCP (`api.githubcopilot.com/mcp/`) |
+| **Linear** | `LINEAR_API_KEY` 环境变量 | Vault `static_bearer` + Linear MCP (`mcp.linear.app/mcp`) |
+| **Discord** | Bot token 环境变量 | ⚠️ **无 Discord MCP** — 需保留 custom tool 或 Bridge |
+| **Anthropic API** | `ANTHROPIC_API_KEY` | MA 自带，Agent 配置里已含 |
+| **mem0 / Supabase** | 环境变量 | MA Memory Store 替代 mem0；Supabase 需 custom tool |
+
+---
+
+## 7. MCP 云端限制 & 本地 vs 云端 Gap
+
+### 7.1 MCP Server 类型限制
+
+**MA 只支持 Remote MCP Servers（HTTP endpoint）。** 本地 stdio MCP server 不受支持。
+
+```mermaid
+graph TB
+    subgraph "MA 支持 ✅"
+        R1[Remote MCP<br/>HTTP/SSE endpoint]
+        R2[GitHub Copilot MCP<br/>api.githubcopilot.com]
+        R3[Linear MCP<br/>mcp.linear.app]
+        R4[Slack MCP<br/>mcp.slack.com]
+    end
+    
+    subgraph "MA 不支持 ❌"
+        L1[本地 stdio MCP<br/>如 xiaohongshu-mcp]
+        L2[浏览器 MCP<br/>claude-in-chrome]
+        L3[本地文件 MCP<br/>如 pencil MCP]
+        L4[本地 API MCP<br/>如 loop-bridge]
+    end
+```
+
+**技术要求：**
+- MCP server 必须暴露 **HTTP endpoint**（streamable HTTP transport）
+- 必须是 **公网可达** 或在 environment networking `allowed_hosts` 白名单中
+- 认证通过 **Vault credential** 注入（绑定 `mcp_server_url`）
+
+### 7.2 Flywheel 本地 MCP 影响评估
+
+| 本地 MCP | 功能 | 能迁移? | 替代方案 |
+|----------|------|---------|---------|
+| **terminal-mcp** | Lead 读写 Runner tmux | ✅ 不需要 | MA 内置 bash/read/write 替代 |
+| **inbox-mcp** | Lead-Runner file inbox | ✅ 可替代 | MA multi-agent thread messaging |
+| **claude-in-chrome** | 浏览器自动化 | ❌ **无法迁移** | 保留本地，或用 MA web_fetch |
+| **xiaohongshu-mcp** | 小红书操作 | ❌ **无法迁移** | 需要部署为 remote HTTP MCP |
+| **loop-bridge** | Codex 通信 | ❌ **无法迁移** | 需要 custom tool 桥接 |
+| **pencil** | 设计文件编辑 | ❌ **无法迁移** | 需要部署为 remote HTTP MCP |
+| **serena** | 语义代码工具 | ❌ **无法迁移** | MA 内置 grep/glob 部分替代 |
+
+### 7.3 本地 vs 云端能力差异
+
+| 能力 | 本地 (当前) | 云端 (MA) | Gap |
+|------|------------|-----------|-----|
+| **浏览器自动化** | claude-in-chrome, Playwright | ❌ 不支持 | 🔴 严重 — QA/E2E 测试受影响 |
+| **本地文件系统** | 直接访问 ~/Dev/* | 容器内隔离 | 🟡 需要 Git clone 或文件注入 |
+| **本地网络服务** | localhost API, tmux | ❌ 不可达 | 🟡 需要 custom tool 桥接 |
+| **Claude Code hooks** | PostCompact, PostToolUse | MA event stream | 🟡 功能相似但 API 不同 |
+| **CLAUDE.md / 项目配置** | 自动加载 | 需要注入到容器 | 🟡 通过 system prompt 或文件写入 |
+| **Git credentials** | 本地 ~/.gitconfig | Vault + MCP | 🟢 MA 原生支持 |
+| **tmux session 管理** | 直接控制 | ❌ 不需要 | 🟢 MA 容器替代 |
+| **资源限制** | 无限制 | 8GB RAM, 10GB disk | 🟡 足够大部分场景 |
+
+### 7.4 Hybrid 模式可行性
+
+**MA 没有官方 hybrid 模式**，但可以自建：
+
+```mermaid
+graph TB
+    subgraph "Hybrid 架构"
+        MA[MA Cloud Agent<br/>代码执行 + Git] -->|custom tool| Proxy[本地 Proxy Server<br/>HTTP endpoint]
+        Proxy --> Chrome[claude-in-chrome<br/>浏览器自动化]
+        Proxy --> LocalMCP[本地 MCP servers]
+        Proxy --> LocalFS[本地文件系统]
+    end
+```
+
+**实现方式：**
+1. 本地跑一个 HTTP proxy server（暴露公网 endpoint，如通过 ngrok/cloudflare tunnel）
+2. MA Agent 通过 custom tool 调用 proxy
+3. Proxy 转发请求到本地 MCP servers
+
+**评估：**
+- 复杂度高，引入新的故障点
+- 适合过渡期，不适合长期方案
+- 更好的路径：将需要的 MCP server 部署为 remote HTTP 服务
+
+---
+
+## 8. 申请指南 & Quickstart
+
+### 8.1 Access 层级
+
+| 层级 | 需要什么 | 当前状态 |
+|------|---------|---------|
+| **Core Beta** (Agent/Env/Session) | API key + beta header | ✅ **所有 API 账户默认启用** |
+| **Multi-Agent** | 申请 Research Preview | ⏳ 需申请 |
+| **Memory Store** | 申请 Research Preview | ⏳ 需申请 |
+| **Outcomes** | 申请 Research Preview | ⏳ 需申请 |
+
+### 8.2 申请步骤
+
+**Step 1: 确认 API key**
+- 前往 [Anthropic Console](https://console.anthropic.com/settings/keys) 获取/确认 API key
+- Core Beta 不需要额外申请，header `anthropic-beta: managed-agents-2026-04-01` 即可
+
+**Step 2: 申请 Research Preview**
+- 填写申请表：**https://claude.com/form/claude-managed-agents**
+- 覆盖 multi-agent、memory、outcomes 三个 preview 功能
+- 建议在申请理由中说明 Flywheel 的 multi-agent 场景
+
+**Step 3: 安装 `ant` CLI**
+```bash
+# macOS (Homebrew)
+brew install anthropics/tap/ant
+xattr -d com.apple.quarantine "$(brew --prefix)/bin/ant"
+
+# 验证安装
+ant --version
+```
+
+**Step 4: 安装/更新 SDK**
+```bash
+# TypeScript (Flywheel 主要语言)
+npm install @anthropic-ai/sdk
+
+# Python (如果需要)
+pip install anthropic
+```
+
+### 8.3 5 分钟 Quickstart（Annie 可以直接跑）
+
+设好 API key 后，在终端依次执行：
+
+```bash
+# 0. 设置 API key
+export ANTHROPIC_API_KEY="your-key-here"
+
+# 1. 创建 Agent
+AGENT_ID=$(curl -sS https://api.anthropic.com/v1/agents \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: managed-agents-2026-04-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "name": "Flywheel Test Agent",
+    "model": "claude-sonnet-4-6",
+    "system": "You are a helpful coding assistant.",
+    "tools": [{"type": "agent_toolset_20260401"}]
+  }' | jq -r '.id')
+echo "Agent: $AGENT_ID"
+
+# 2. 创建 Environment
+ENV_ID=$(curl -sS https://api.anthropic.com/v1/environments \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: managed-agents-2026-04-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "name": "flywheel-test-env",
+    "config": {"type": "cloud", "networking": {"type": "unrestricted"}}
+  }' | jq -r '.id')
+echo "Environment: $ENV_ID"
+
+# 3. 创建 Session
+SESSION_ID=$(curl -sS https://api.anthropic.com/v1/sessions \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: managed-agents-2026-04-01" \
+  -H "content-type: application/json" \
+  -d "{
+    \"agent\": \"$AGENT_ID\",
+    \"environment_id\": \"$ENV_ID\",
+    \"title\": \"Quickstart test\"
+  }" | jq -r '.id')
+echo "Session: $SESSION_ID"
+
+# 4. 发送消息
+curl -sS "https://api.anthropic.com/v1/sessions/$SESSION_ID/events" \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: managed-agents-2026-04-01" \
+  -H "content-type: application/json" \
+  -d '{
+    "events": [{
+      "type": "user.message",
+      "content": [{"type": "text", "text": "Write a Python script that prints Hello Flywheel and save it to hello.py, then run it."}]
+    }]
+  }'
+
+# 5. 流式接收响应
+curl -sS -N "https://api.anthropic.com/v1/sessions/$SESSION_ID/stream" \
+  -H "x-api-key: $ANTHROPIC_API_KEY" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "anthropic-beta: managed-agents-2026-04-01" \
+  -H "Accept: text/event-stream" | while IFS= read -r line; do
+    [[ $line == data:* ]] || continue
+    json=${line#data: }
+    type=$(echo "$json" | jq -r '.type')
+    case $type in
+      agent.message) echo "$json" | jq -j '.content[] | select(.type == "text") | .text' ;;
+      agent.tool_use) printf '\n[Tool: %s]\n' "$(echo "$json" | jq -r '.name')" ;;
+      session.status_idle) printf '\n✅ Done!\n'; break ;;
+    esac
+  done
+```
+
+### 8.4 用 `ant` CLI 更简单的版本
+
+```bash
+# 创建 Agent
+ant beta:agents create \
+  --name "Flywheel Test" \
+  --model claude-sonnet-4-6 \
+  --system "You are a helpful coding assistant." \
+  --tool '{type: agent_toolset_20260401}'
+
+# 创建 Environment
+ant beta:environments create \
+  --name "flywheel-test" \
+  --config '{type: cloud, networking: {type: unrestricted}}'
+
+# 创建 Session 并交互
+ant beta:sessions create \
+  --agent "$AGENT_ID" \
+  --environment "$ENV_ID"
+```
+
+---
+
+## 9. 风险 & 时间线
+
+### 9.1 风险矩阵
 
 | 风险 | 影响 | 概率 | 缓解方案 |
 |------|------|------|---------|
@@ -413,7 +703,7 @@ graph TB
 | **Rate Limit** | 60 create/min 可能不够批量 | 低 | 复用 Agent/Environment，只创建 Session |
 | **容器冷启动延迟** | Runner 启动变慢 | 中 | MA 声称 TTFT 大幅改善；Environment 缓存包 |
 
-### 6.2 时间线估算
+### 9.2 时间线估算
 
 | 阶段 | 前提条件 | 预计时间 |
 |------|---------|---------|
@@ -424,27 +714,27 @@ graph TB
 
 ---
 
-## 7. 建议
+## 10. 建议
 
-### 7.1 短期行动（本周）
+### 10.1 短期行动（本周）
 
 1. ✅ **申请 Research Preview access**（multi-agent + memory + outcomes）
 2. ✅ **注册 `ant` CLI**（`brew install anthropics/tap/ant`）
 3. ✅ **创建 PoC Agent**：用 MA 跑一个简单的 coding task，验证基本流程
 
-### 7.2 中期行动（1-3 月）
+### 10.2 中期行动（1-3 月）
 
 4. **Phase 1 PoC**：在 worktree 中实现 `ManagedAgentAdapter`（实现 `IAdapter` 接口），替换 `ClaudeAdapter`
 5. **定价评估**：一旦 Anthropic 公布 MA 定价，做 cost model 对比（当前 Claude subscription vs MA per-token）
 6. **Memory Store PoC**：如果获得 access，测试 mem0 → MA Memory Store 迁移
 
-### 7.3 长期行动（3-6 月）
+### 10.3 长期行动（3-6 月）
 
 7. **Phase 2 实施**：Memory 迁移 + Lead-Runner 通信简化
 8. **Phase 3 设计**：Multi-Agent GA 后，设计 Lead-as-Orchestrator 架构
 9. **Bridge 瘦化**：保留 Discord + Decision Layer + FSM，移除 tmux 管理代码
 
-### 7.4 不建议做的
+### 10.4 不建议做的
 
 - ❌ **不要现在全面迁移**：Beta 稳定性和定价不确定
 - ❌ **不要放弃 WorkflowFSM**：MA 没有业务级状态机
