@@ -146,6 +146,194 @@ Create Session → Send user.message → session.status_running
 
 Organization-level spend limits 和 tier-based rate limits 同样适用。
 
+### 1.10 MA 整体架构图解（Annie Q&A）
+
+#### Q1: Brain 放在哪？它是 stateless 的，靠 Memory 抓东西，对吗？
+
+**是的。** Brain（Claude + Harness）运行在 Anthropic 的托管基础设施上，完全无状态。它不保留任何信息 — 所有上下文从两个来源获取：
+- **Session Event Log**（短期）：当前 session 的对话历史和 tool 调用记录
+- **Memory Store**（长期）：跨 session 的持久知识
+
+Brain 挂了 → 新 Brain 起来 → 读 Event Log 恢复 → 继续工作。你的代码和 Memory 都不受影响。
+
+#### Q2: Memory 是什么 scope？能共享吗？
+
+**Memory Store 是 workspace-scoped（组织级别）**，不是绑定到某个 agent 或 session 的。
+
+- 一个 Memory Store 可以被**任意多个 session 挂载**
+- 一个 session 最多挂载 **8 个** Memory Store
+- 挂载时可以设定 **`read_write`** 或 **`read_only`** 权限
+- 不同 agent 的 session 可以共享同一个 Memory Store
+
+```
+Memory Store "项目规范" (read_only)
+  ├── Session A (Peter Lead) ── 挂载 ✅
+  ├── Session B (Oliver Lead) ── 挂载 ✅
+  └── Session C (Runner #3) ── 挂载 ✅
+
+Memory Store "Peter 个人记忆" (read_write)
+  └── Session A (Peter Lead) ── 挂载 ✅ (only Peter)
+```
+
+#### Q3: Executor（Sandbox）是 stateless 还是 stateful？
+
+**Session 内 stateful，跨 session stateless。**
+
+- 每个 Session 创建时分配一个**独立容器实例**（Ubuntu 22.04, 8GB RAM, 10GB disk）
+- 容器内的文件系统在 session 生命周期内**持久**（你写的文件、clone 的 repo 都在）
+- Session 结束/删除后容器销毁，**文件系统不保留**
+- 不同 session 的容器互相隔离，即使共享同一个 Environment 配置
+
+#### Q4: 整体架构 — 所有组件关系
+
+```mermaid
+graph TB
+    subgraph "你的应用 (Your Code)"
+        App[应用代码<br/>调用 API]
+    end
+
+    subgraph "Anthropic 托管基础设施"
+        subgraph "配置层 (Stateless, 可复用)"
+            Agent["🤖 Agent Config<br/>model + prompt + tools<br/><i>stateless, versioned</i>"]
+            Env["📦 Environment Config<br/>packages + networking<br/><i>stateless, 容器模板</i>"]
+            Vault["🔐 Vault<br/>OAuth tokens / API keys<br/><i>stateless, workspace-scoped</i>"]
+            MemStore["🧠 Memory Store<br/>跨 session 知识库<br/><i>stateful, workspace-scoped</i>"]
+        end
+
+        subgraph "运行时 (Per-Session)"
+            Brain["🧠 Brain<br/>Claude + Harness<br/><i>stateless cattle</i>"]
+            Sandbox["📂 Sandbox (Container)<br/>Ubuntu 22.04 / 8GB RAM<br/><i>session 内 stateful</i>"]
+            EventLog["📝 Event Log<br/>append-only 记录<br/><i>stateful, server-side</i>"]
+        end
+    end
+
+    App -->|"POST /v1/sessions"| Brain
+    App -->|"POST /events"| EventLog
+    App <-->|"GET /stream (SSE)"| EventLog
+
+    Agent -.->|"配置"| Brain
+    Env -.->|"创建容器"| Sandbox
+    Vault -.->|"注入凭证"| Brain
+
+    Brain -->|"execute(tool)"| Sandbox
+    Brain -->|"emitEvent()"| EventLog
+    Brain -->|"getEvents()"| EventLog
+    Brain -->|"memory_read/write"| MemStore
+
+    Sandbox -->|"tool 结果"| Brain
+
+    style Brain fill:#FFE0B2,stroke:#E65100
+    style Sandbox fill:#C8E6C9,stroke:#2E7D32
+    style EventLog fill:#BBDEFB,stroke:#1565C0
+    style MemStore fill:#E1BEE7,stroke:#6A1B9A
+    style Vault fill:#FFCDD2,stroke:#B71C1C
+```
+
+**状态总结：**
+
+| 组件 | 状态性 | 生命周期 | 作用域 |
+|------|--------|---------|--------|
+| Agent Config | Stateless | 永久（直到 archive） | Workspace |
+| Environment Config | Stateless | 永久（直到 archive） | Workspace |
+| Vault | Stateful（存凭证） | 永久（直到 archive） | Workspace |
+| Memory Store | **Stateful** | 永久（跨 session） | Workspace（可多 session 共享） |
+| Brain (Harness) | **Stateless** | 随 session 启停 | Per-session（可替换） |
+| Sandbox (Container) | **Session 内 Stateful** | Session 生命周期 | Per-session（隔离） |
+| Event Log | **Stateful** | Session 生命周期+ | Per-session（可回溯） |
+
+#### Session 生命周期图
+
+```mermaid
+sequenceDiagram
+    participant App as 你的应用
+    participant API as Anthropic API
+    participant Brain as Brain (Harness)
+    participant Sandbox as Sandbox (Container)
+    participant Mem as Memory Store
+    participant Log as Event Log
+
+    Note over App,Log: Phase 1: 创建
+    App->>API: POST /v1/sessions {agent, environment_id, vault_ids}
+    API->>Brain: 分配 Brain (stateless)
+    API->>Sandbox: 按 Environment 创建容器
+    API->>Log: 初始化 Event Log
+    API-->>App: session_id
+
+    Note over App,Log: Phase 2: 执行
+    App->>API: POST /events {user.message: "写代码"}
+    API->>Log: 记录 user.message
+    Log->>Brain: 推送到 Brain context
+    Brain->>Mem: memory_search("相关记忆")
+    Mem-->>Brain: 历史上下文
+    Brain->>Sandbox: execute("write", {file: "app.py", ...})
+    Sandbox-->>Brain: tool_result: "ok"
+    Brain->>Log: emitEvent(agent.tool_use)
+    Brain->>Sandbox: execute("bash", {cmd: "python app.py"})
+    Sandbox-->>Brain: tool_result: "Hello World"
+    Brain->>Log: emitEvent(agent.message)
+    Brain->>Mem: memory_write("学到的东西")
+    Brain->>Log: emitEvent(session.status_idle)
+    Log-->>App: SSE stream: agent.message, session.status_idle
+
+    Note over App,Log: Phase 3: 多轮对话（可选）
+    App->>API: POST /events {user.message: "加个测试"}
+    Note over Brain,Sandbox: 同上循环...
+
+    Note over App,Log: Phase 4: 结束
+    App->>API: DELETE /v1/sessions/:id
+    API->>Sandbox: 销毁容器（文件丢失）
+    API->>Log: 保留（可回溯）
+    Note over Mem: Memory Store 永久保留
+```
+
+#### MA vs Flywheel 对照图
+
+```mermaid
+graph LR
+    subgraph MA["Managed Agents"]
+        MA_Agent["🤖 Agent Config<br/>model + prompt + tools"]
+        MA_Brain["🧠 Brain<br/>Claude + Harness"]
+        MA_Sandbox["📂 Sandbox<br/>Cloud Container"]
+        MA_EventLog["📝 Event Log<br/>SSE Stream"]
+        MA_Memory["🧠 Memory Store"]
+        MA_Vault["🔐 Vault"]
+        MA_Thread["🧵 Multi-Agent Thread"]
+    end
+
+    subgraph FW["Flywheel"]
+        FW_Config["⚙️ ClaudeRunnerConfig<br/>+ ClaudeAdapter"]
+        FW_Lead["👔 TeamLead Daemon<br/>+ Decision Layer"]
+        FW_Runner["🖥️ ClaudeRunner<br/>tmux Session"]
+        FW_State["💾 StateStore<br/>SQLite + WorkflowFSM"]
+        FW_Mem["🧠 mem0<br/>Supabase pgvector"]
+        FW_Env["🔑 Env Vars<br/>.env files"]
+        FW_Inbox["📬 flywheel-comm<br/>File Inbox + MCP"]
+    end
+
+    MA_Agent ===|"对应"| FW_Config
+    MA_Brain ===|"对应"| FW_Lead
+    MA_Sandbox ===|"替代"| FW_Runner
+    MA_EventLog ===|"部分替代"| FW_State
+    MA_Memory ===|"替代"| FW_Mem
+    MA_Vault ===|"替代"| FW_Env
+    MA_Thread ===|"替代"| FW_Inbox
+
+    style MA fill:#E3F2FD,stroke:#1565C0
+    style FW fill:#FFF3E0,stroke:#E65100
+```
+
+**关键映射说明：**
+
+| MA 组件 | Flywheel 对应 | 关系 |
+|---------|-------------|------|
+| Agent Config | ClaudeRunnerConfig + ClaudeAdapter | 直接替代：声明式配置 |
+| Brain (Harness) | TeamLead daemon 的推理部分 | 部分替代：Brain 不含业务逻辑（FSM/Decision Layer 保留） |
+| Sandbox (Container) | ClaudeRunner + tmux | **完全替代**：消除 tmux 管理 |
+| Event Log | StateStore 的 session 持久化部分 | 部分替代：FSM state 仍需 StateStore |
+| Memory Store | mem0 + Supabase pgvector | **完全替代**：更强（版本审计 + 并发控制） |
+| Vault | .env 文件 + 环境变量 | **完全替代**：更安全（credential isolation） |
+| Multi-Agent Thread | flywheel-comm file inbox | **完全替代**（需 Research Preview access） |
+
 ---
 
 ## 2. Flywheel 组件对照表
