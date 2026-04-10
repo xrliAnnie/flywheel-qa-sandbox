@@ -277,6 +277,8 @@ describe("allowedActionsForState", () => {
 		expect(actions).toContain("reject");
 		expect(actions).toContain("defer");
 		expect(actions).toContain("shelve");
+		// FLY-44: terminate now allowed from awaiting_review
+		expect(actions).toContain("terminate");
 		expect(actions).not.toContain("retry");
 	});
 
@@ -284,6 +286,8 @@ describe("allowedActionsForState", () => {
 		const actions = allowedActionsForState("failed");
 		expect(actions).toContain("retry");
 		expect(actions).toContain("shelve");
+		// FLY-44: terminate now allowed from failed
+		expect(actions).toContain("terminate");
 		expect(actions).not.toContain("approve");
 	});
 
@@ -296,6 +300,33 @@ describe("allowedActionsForState", () => {
 	it("returns empty for pending, terminate for running", () => {
 		expect(allowedActionsForState("pending")).toEqual([]);
 		expect(allowedActionsForState("running")).toEqual(["terminate"]);
+	});
+
+	// FLY-44: terminate available from all started non-terminal states
+	it("terminate available from all started non-terminal states", () => {
+		for (const state of [
+			"running",
+			"awaiting_review",
+			"approved_to_ship",
+			"blocked",
+			"failed",
+			"rejected",
+			"deferred",
+		]) {
+			expect(allowedActionsForState(state)).toContain("terminate");
+		}
+	});
+
+	it("terminate NOT available from terminal states or pending", () => {
+		for (const state of [
+			"pending",
+			"completed",
+			"shelved",
+			"terminated",
+			"approved",
+		]) {
+			expect(allowedActionsForState(state)).not.toContain("terminate");
+		}
 	});
 });
 

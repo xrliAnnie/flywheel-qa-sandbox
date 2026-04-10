@@ -611,7 +611,7 @@ async function postRetryComment(
 	}
 }
 
-/** GEO-187: Terminate a running session by killing its tmux session. */
+/** GEO-187/FLY-44: Terminate a session by killing its tmux and transitioning to terminated. */
 async function handleTerminate(
 	store: StateStore,
 	executionId: string,

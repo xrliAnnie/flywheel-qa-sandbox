@@ -409,17 +409,11 @@ export function createBridgeApp(
 				return;
 			}
 
-			// Only allow closing sessions in terminal states
-			const terminalStates = new Set([
-				"completed",
-				"failed",
-				"blocked",
-				"approved",
-				"terminated",
-			]);
-			if (!terminalStates.has(session.status)) {
+			// FLY-44: Only block close-tmux when Runner still needs tmux
+			const tmuxProtectedStates = new Set(["running", "approved_to_ship"]);
+			if (tmuxProtectedStates.has(session.status)) {
 				res.status(409).json({
-					error: `Cannot close tmux for session in "${session.status}" state — only terminal states allowed`,
+					error: `Cannot close tmux for session in "${session.status}" state — Runner still needs tmux`,
 				});
 				return;
 			}

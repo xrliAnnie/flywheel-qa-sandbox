@@ -40,7 +40,8 @@ Body: { execution_id: "...", reason?: "..." }
 
 POST /api/actions/terminate
 Body: { execution_id: "..." }
-Note: Kills the tmux session. Only works on running sessions.
+Note: Works on any started session (running, awaiting_review, approved_to_ship,
+blocked, failed, rejected, deferred). Kills tmux and transitions to terminated.
 ```
 
 ### Session Queries

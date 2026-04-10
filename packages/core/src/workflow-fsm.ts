@@ -120,12 +120,19 @@ export class WorkflowFSM {
 export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
 	pending: ["running"],
 	running: ["awaiting_review", "completed", "blocked", "failed", "terminated"],
-	awaiting_review: ["approved_to_ship", "rejected", "deferred", "shelved"],
-	approved_to_ship: ["completed", "failed"],
-	blocked: ["deferred", "shelved"],
-	failed: ["shelved"],
-	rejected: ["shelved"],
-	deferred: ["shelved"],
+	// FLY-44: terminate allowed from all started non-terminal states
+	awaiting_review: [
+		"approved_to_ship",
+		"rejected",
+		"deferred",
+		"shelved",
+		"terminated",
+	],
+	approved_to_ship: ["completed", "failed", "terminated"],
+	blocked: ["deferred", "shelved", "terminated"],
+	failed: ["shelved", "terminated"],
+	rejected: ["shelved", "terminated"],
+	deferred: ["shelved", "terminated"],
 	// FLY-58: approved kept as terminal for backward compat (existing DB records)
 	approved: [],
 	completed: [],
@@ -177,7 +184,15 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
 	},
 	{
 		action: "terminate",
-		fromStates: ["running"],
+		fromStates: [
+			"running",
+			"awaiting_review",
+			"approved_to_ship",
+			"blocked",
+			"failed",
+			"rejected",
+			"deferred",
+		],
 		targetState: "terminated",
 	},
 ];
