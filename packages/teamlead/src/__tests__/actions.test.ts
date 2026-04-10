@@ -946,3 +946,63 @@ describe("FLY-58: onApproved callback removed", () => {
 		expect(onApproved).not.toHaveBeenCalled();
 	});
 });
+
+// --- FLY-44: terminate from all started non-terminal states ---
+describe("FLY-44: terminate from non-running states", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	const terminableStates = [
+		"awaiting_review",
+		"approved_to_ship",
+		"blocked",
+		"failed",
+		"rejected",
+		"deferred",
+	];
+
+	for (const status of terminableStates) {
+		it(`terminate from ${status} succeeds`, async () => {
+			store.upsertSession({
+				execution_id: "e1",
+				issue_id: "i1",
+				project_name: "geoforge3d",
+				status,
+				issue_identifier: "FLY-44",
+			});
+			const result = await transitionSession(store, "terminate", "e1");
+			// transitionSession uses ACTION_DEFINITIONS which now allows terminate from these states
+			expect(result.success).toBe(true);
+			expect(store.getSession("e1")!.status).toBe("terminated");
+		});
+	}
+
+	const terminalStates = ["completed", "shelved", "terminated", "approved"];
+
+	for (const status of terminalStates) {
+		it(`terminate from ${status} fails`, async () => {
+			store.upsertSession({
+				execution_id: "e1",
+				issue_id: "i1",
+				project_name: "geoforge3d",
+				status,
+			});
+			const result = await transitionSession(store, "terminate", "e1");
+			expect(result.success).toBe(false);
+		});
+	}
+
+	it("terminate from pending fails", async () => {
+		store.upsertSession({
+			execution_id: "e1",
+			issue_id: "i1",
+			project_name: "geoforge3d",
+			status: "pending",
+		});
+		const result = await transitionSession(store, "terminate", "e1");
+		expect(result.success).toBe(false);
+	});
+});

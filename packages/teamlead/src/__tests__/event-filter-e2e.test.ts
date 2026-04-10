@@ -405,13 +405,34 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		expect(body).toHaveProperty("action", "terminate");
 	});
 
-	it("terminate non-running session → error", async () => {
+	// FLY-44: terminate now works on awaiting_review (and all started non-terminal states)
+	it("terminate awaiting_review session → succeeds", async () => {
+		store.upsertSession({
+			execution_id: "exec-term-review",
+			issue_id: "issue-term-review",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-100",
+		});
+
+		const res = await fetch(`${baseUrl}/api/actions/terminate`, {
+			method: "POST",
+			headers: apiHeaders,
+			body: JSON.stringify({ execution_id: "exec-term-review" }),
+		});
+		// tmux kill may fail in test env but endpoint should not crash
+		expect(res.status).toBeLessThanOrEqual(400);
+		const body = await res.json();
+		expect(body).toHaveProperty("action", "terminate");
+	});
+
+	it("terminate terminal session → error", async () => {
 		store.upsertSession({
 			execution_id: "exec-term-fail",
 			issue_id: "issue-term-fail",
 			project_name: "geoforge3d",
-			status: "awaiting_review",
-			issue_identifier: "GEO-100",
+			status: "completed",
+			issue_identifier: "GEO-100b",
 		});
 
 		const res = await fetch(`${baseUrl}/api/actions/terminate`, {
@@ -473,7 +494,8 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 		expect(body.execution_id).toBe("exec-resolve");
 	});
 
-	it("resolve-action for terminate on non-running session → can_execute=false", async () => {
+	// FLY-44: terminate now allowed from awaiting_review
+	it("resolve-action for terminate on awaiting_review session → can_execute=true", async () => {
 		store.upsertSession({
 			execution_id: "exec-resolve2",
 			issue_id: "issue-resolve2",
@@ -484,6 +506,24 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 
 		const res = await fetch(
 			`${baseUrl}/api/resolve-action?issue_id=issue-resolve2&action=terminate`,
+			{ headers: apiHeaders },
+		);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.can_execute).toBe(true);
+	});
+
+	it("resolve-action for terminate on terminal session → can_execute=false", async () => {
+		store.upsertSession({
+			execution_id: "exec-resolve3",
+			issue_id: "issue-resolve3",
+			project_name: "geoforge3d",
+			status: "completed",
+			issue_identifier: "GEO-103b",
+		});
+
+		const res = await fetch(
+			`${baseUrl}/api/resolve-action?issue_id=issue-resolve3&action=terminate`,
 			{ headers: apiHeaders },
 		);
 		expect(res.status).toBe(200);
