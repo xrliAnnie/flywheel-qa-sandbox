@@ -926,13 +926,20 @@ export class StateStore {
 	getLatestSessionByIssueAndStatuses(
 		issueId: string,
 		statuses: string[],
+		excludeExecutionId?: string,
 	): Session | undefined {
 		if (statuses.length === 0) return undefined;
 		const placeholders = statuses.map(() => "?").join(", ");
+		const params: string[] = [issueId, ...statuses];
+		let excludeClause = "";
+		if (excludeExecutionId) {
+			excludeClause = " AND execution_id != ?";
+			params.push(excludeExecutionId);
+		}
 		const stmt = this.db.prepare(
-			`SELECT * FROM sessions WHERE issue_id = ? AND status IN (${placeholders}) ORDER BY last_activity_at DESC LIMIT 1`,
+			`SELECT * FROM sessions WHERE issue_id = ? AND status IN (${placeholders})${excludeClause} ORDER BY last_activity_at DESC LIMIT 1`,
 		);
-		stmt.bind([issueId, ...statuses]);
+		stmt.bind(params);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
 			stmt.free();

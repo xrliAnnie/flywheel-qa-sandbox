@@ -77,19 +77,9 @@ export function createQueryRouter(
 				}
 				const session = store.getSessionByIdentifier(identifier);
 				sessions = session ? [session] : [];
-				// GEO-200: Thread fallback (same logic as /sessions/:id)
-				const mapped = sessions.map((s) => {
-					const result = omitIssueId(s);
-					if (!s.thread_id) {
-						const thread = store.getThreadByIssue(s.issue_id);
-						if (thread) {
-							(result as Record<string, unknown>).thread_id = thread.thread_id;
-						}
-					}
-					return result;
-				});
+				// FLY-80: Removed stale thread fallback (see /sessions/:id comment)
 				res.json({
-					sessions: mapped,
+					sessions: sessions.map(omitIssueId),
 					count: sessions.length,
 				});
 				return;
@@ -122,13 +112,9 @@ export function createQueryRouter(
 		}
 
 		const result = omitIssueId(session);
-		// Thread fallback: if session has no thread_id, check conversation_threads
-		if (!session.thread_id) {
-			const thread = store.getThreadByIssue(session.issue_id);
-			if (thread) {
-				(result as Record<string, unknown>).thread_id = thread.thread_id;
-			}
-		}
+		// FLY-80: Removed thread fallback from conversation_threads.
+		// Thread inheritance is handled by event-route.ts, Forum creation by ForumPostCreator.
+		// Injecting stale conversation_threads entries caused Leads to post to deleted threads.
 		res.json(result);
 	});
 

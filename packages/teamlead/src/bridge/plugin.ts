@@ -1248,6 +1248,47 @@ export async function startBridge(
 		);
 	}
 
+	// FLY-80: Periodic retry for leads not ready at startup (e.g., Lead starts after Bridge).
+	// Checks every 30s until all leads are registered, then stops.
+	const unregisteredLeads: Array<{ lead: LeadConfig; projectName: string }> =
+		[];
+	for (const project of projects) {
+		for (const lead of project.leads) {
+			if (!registry.getForLead(lead.agentId)) {
+				unregisteredLeads.push({ lead, projectName: project.projectName });
+			}
+		}
+	}
+	let runtimeRetryTimer: ReturnType<typeof setInterval> | undefined;
+	if (unregisteredLeads.length > 0) {
+		console.log(
+			`[Bridge] ${unregisteredLeads.length} lead(s) not ready at startup — will retry registration every 30s`,
+		);
+		runtimeRetryTimer = setInterval(async () => {
+			for (let i = unregisteredLeads.length - 1; i >= 0; i--) {
+				const entry = unregisteredLeads[i]!;
+				const { lead, projectName } = entry;
+				try {
+					const runtime = await createLeadRuntime(lead, config, projectName);
+					registry.register(lead, runtime);
+					unregisteredLeads.splice(i, 1);
+					console.log(
+						`[Bridge] Late-registered runtime for "${lead.agentId}" (project: ${projectName})`,
+					);
+				} catch {
+					// Still not ready — will retry next interval
+				}
+			}
+			if (unregisteredLeads.length === 0) {
+				console.log(
+					"[Bridge] All lead runtimes registered — stopping retry timer",
+				);
+				clearInterval(runtimeRetryTimer!);
+				runtimeRetryTimer = undefined;
+			}
+		}, 30_000);
+	}
+
 	// GEO-187: EventFilter + ForumTagUpdater
 	const eventFilter = new EventFilter();
 	const statusTagMap = opts?.statusTagMap ?? config.statusTagMap ?? {};
@@ -1525,6 +1566,7 @@ export async function startBridge(
 			await internalDispatcher.drain();
 			await internalDispatcher.teardownRuntimes();
 		}
+		if (runtimeRetryTimer) clearInterval(runtimeRetryTimer);
 		await registry.shutdownAll();
 		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {

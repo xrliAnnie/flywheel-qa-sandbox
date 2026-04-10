@@ -31,7 +31,10 @@ BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 ENV_FILE="${HOME}/.flywheel/.env"
 if [[ -f "$ENV_FILE" ]]; then
     # shellcheck disable=SC1090
+    # FLY-80: set -a exports all sourced vars to child processes (Bridge, etc.)
+    set -a
     source "$ENV_FILE"
+    set +a
 else
     echo "[restart] WARNING: $ENV_FILE not found"
 fi
@@ -550,6 +553,39 @@ restart_lead() {
     subdir=$(jq -r '.subdir // ""' "$manifest")
     bot_token_env=$(jq -r '.botTokenEnv' "$manifest")
     workspace=$(jq -r '.workspace // ""' "$manifest")
+
+    # FLY-80: Fallback if projectDir is a deleted worktree — resolve to main repo
+    if [[ ! -d "$project_dir" ]]; then
+        log "projectDir '$project_dir' not found (worktree may be deleted)"
+        local parent_dir stale_base best_cand="" best_len=0
+        parent_dir="$(dirname "$project_dir")"
+        stale_base="$(basename "$project_dir")"
+        if [[ -d "$parent_dir" ]]; then
+            local candidate cand_base
+            for candidate in "$parent_dir"/*; do
+                cand_base="$(basename "$candidate")"
+                # Only consider candidates matching worktree naming convention:
+                # stale path (e.g. "flywheel-fly-80") must start with candidate + "-"
+                [[ -d "$candidate/.git" ]] || continue
+                [[ "$stale_base" == "${cand_base}-"* || "$stale_base" == "$cand_base" ]] || continue
+                # Prefer longest matching basename (most specific: "foo-app" > "foo")
+                if (( ${#cand_base} > best_len )); then
+                    best_len=${#cand_base}
+                    best_cand="$candidate"
+                fi
+            done
+            if [[ -n "$best_cand" ]]; then
+                if main_repo=$(resolve_main_repo "$best_cand"); then
+                    log "Resolved projectDir to main repo: $main_repo"
+                    project_dir="$main_repo"
+                fi
+            fi
+        fi
+        if [[ ! -d "$project_dir" ]]; then
+            log "ERROR: Cannot resolve projectDir for Lead $lead_id — skipping"
+            return 1
+        fi
+    fi
 
     # Use PID file for precise supervisor targeting
     local pid_file="${HOME}/.flywheel/pids/${project_name}-${lead_id}.pid"

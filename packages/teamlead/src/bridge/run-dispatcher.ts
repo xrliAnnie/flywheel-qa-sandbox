@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { CommDB } from "flywheel-comm/db";
 import { openTmuxViewer } from "flywheel-core";
 import type {
 	Blueprint,
@@ -20,6 +21,7 @@ import type {
 	StartRequest,
 	StartResult,
 } from "./retry-dispatcher.js";
+import { defaultGetCommDbPath } from "./session-capture.js";
 
 export interface ProjectRuntime {
 	blueprint: Blueprint;
@@ -72,6 +74,15 @@ export class RetryDispatcher implements IRetryDispatcher {
 		};
 		this.inflight.set(key, entry);
 
+		// FLY-80: Pre-register in CommDB before blueprint starts
+		this.preRegisterCommDb(
+			newExecutionId,
+			runtime.tmuxSessionName,
+			req.projectName,
+			req.issueId,
+			req.leadId,
+		);
+
 		const ctx: BlueprintContext = {
 			teamName: "eng",
 			runnerName: "claude",
@@ -104,12 +115,66 @@ export class RetryDispatcher implements IRetryDispatcher {
 					`[RetryDispatcher] ${newExecutionId} failed:`,
 					err instanceof Error ? err.message : err,
 				);
+				// FLY-80: Clean up orphan pre-registration on failed start
+				this.cleanupPreRegistration(newExecutionId, req.projectName);
 			})
 			.finally(() => {
 				this.inflight.delete(key);
 			});
 
 		return { newExecutionId, oldExecutionId: req.oldExecutionId };
+	}
+
+	/**
+	 * FLY-80: Pre-register session in CommDB so Lead can interact immediately
+	 * (capture tmux, check pending questions) without waiting for Runner self-registration.
+	 * Non-fatal — if this fails, Runner will self-register later.
+	 */
+	protected preRegisterCommDb(
+		executionId: string,
+		tmuxSession: string,
+		projectName: string,
+		issueId: string,
+		leadId?: string,
+	): void {
+		try {
+			const dbPath = defaultGetCommDbPath(projectName);
+			const db = new CommDB(dbPath);
+			try {
+				db.registerSession(
+					executionId,
+					`${tmuxSession}:pending`,
+					projectName,
+					issueId,
+					leadId,
+				);
+			} finally {
+				db.close();
+			}
+		} catch (err) {
+			console.warn(
+				`[RunDispatcher] CommDB pre-register failed for ${executionId}:`,
+				(err as Error).message,
+			);
+		}
+	}
+
+	/** FLY-80: Remove orphan pre-registration when blueprint fails before Runner self-registers. */
+	protected cleanupPreRegistration(
+		executionId: string,
+		projectName: string,
+	): void {
+		try {
+			const dbPath = defaultGetCommDbPath(projectName);
+			const db = new CommDB(dbPath);
+			try {
+				db.unregisterPendingSession(executionId);
+			} finally {
+				db.close();
+			}
+		} catch {
+			// Best-effort — CommDB may not be reachable
+		}
 	}
 
 	/** FLY-59: Returns unique issueIds from composite keys (backward compat) */
@@ -193,6 +258,15 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		};
 		this.inflight.set(key, entry);
 
+		// FLY-80: Pre-register in CommDB before blueprint starts
+		this.preRegisterCommDb(
+			executionId,
+			runtime.tmuxSessionName,
+			req.projectName,
+			req.issueId,
+			req.leadId,
+		);
+
 		const ctx: BlueprintContext = {
 			teamName: "eng",
 			runnerName: "claude",
@@ -217,6 +291,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					`[RunDispatcher] ${executionId} failed:`,
 					err instanceof Error ? err.message : err,
 				);
+				// FLY-80: Clean up orphan pre-registration on failed start
+				this.cleanupPreRegistration(executionId, req.projectName);
 			})
 			.finally(() => {
 				this.inflight.delete(key);

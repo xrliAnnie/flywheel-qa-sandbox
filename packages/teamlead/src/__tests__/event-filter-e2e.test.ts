@@ -193,8 +193,15 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 	// ── Scenario 2: session_started WITH thread → notify_agent (FLY-47: Lead relays to Chat) ──
 
 	it("session_started (has thread) → agent notified + Discord tag updated", async () => {
-		// Pre-create thread mapping
-		store.upsertThread("thread-abc", "channel-1", "issue-1");
+		// FLY-80: Need both conversation_threads entry AND active session for inheritance
+		store.upsertThread("thread-abc", "test-channel", "issue-1");
+		store.upsertSession({
+			execution_id: "exec-prior",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			thread_id: "thread-abc",
+		});
 
 		await postEvent();
 		await wait();

@@ -105,18 +105,29 @@ export class CommDB {
 	}
 
 	purgeExpiredWithRefs(): number {
+		// Collect content_ref files from both expired messages and their children
 		const refs = this.db
 			.prepare(
-				"SELECT content_ref FROM messages WHERE expires_at < datetime('now') AND content_ref IS NOT NULL",
+				`SELECT content_ref FROM messages
+				 WHERE (expires_at < datetime('now')
+				    OR parent_id IN (SELECT id FROM messages WHERE expires_at < datetime('now')))
+				   AND content_ref IS NOT NULL`,
 			)
 			.all() as Array<{ content_ref: string }>;
 		for (const { content_ref } of refs) {
 			deleteContentRefFile(content_ref);
 		}
-		const result = this.db
+		// FLY-80: Delete child messages (responses) before parents to satisfy FK constraint.
+		// better-sqlite3 enforces foreign_keys=ON by default.
+		const childResult = this.db
+			.prepare(
+				"DELETE FROM messages WHERE parent_id IN (SELECT id FROM messages WHERE expires_at < datetime('now'))",
+			)
+			.run();
+		const parentResult = this.db
 			.prepare("DELETE FROM messages WHERE expires_at < datetime('now')")
 			.run();
-		return result.changes;
+		return childResult.changes + parentResult.changes;
 	}
 
 	cleanupReadMessages(ttlHours = 24): number {
@@ -124,25 +135,28 @@ export class CommDB {
 	}
 
 	cleanupReadMessagesWithRefs(ttlHours = 24): number {
+		const cleanupCondition = `read_at IS NOT NULL AND created_at < datetime('now', '-' || ? || ' hours')`;
 		const refs = this.db
 			.prepare(
 				`SELECT content_ref FROM messages
-			 WHERE read_at IS NOT NULL
-			 AND created_at < datetime('now', '-' || ? || ' hours')
+			 WHERE (${cleanupCondition}
+			    OR parent_id IN (SELECT id FROM messages WHERE ${cleanupCondition}))
 			 AND content_ref IS NOT NULL`,
 			)
-			.all(ttlHours) as Array<{ content_ref: string }>;
+			.all(ttlHours, ttlHours) as Array<{ content_ref: string }>;
 		for (const { content_ref } of refs) {
 			deleteContentRefFile(content_ref);
 		}
-		const result = this.db
+		// FLY-80: Delete child messages before parents to satisfy FK constraint
+		const childResult = this.db
 			.prepare(
-				`DELETE FROM messages
-			 WHERE read_at IS NOT NULL
-			 AND created_at < datetime('now', '-' || ? || ' hours')`,
+				`DELETE FROM messages WHERE parent_id IN (SELECT id FROM messages WHERE ${cleanupCondition})`,
 			)
 			.run(ttlHours);
-		return result.changes;
+		const parentResult = this.db
+			.prepare(`DELETE FROM messages WHERE ${cleanupCondition}`)
+			.run(ttlHours);
+		return childResult.changes + parentResult.changes;
 	}
 
 	insertQuestion(
@@ -321,6 +335,16 @@ export class CommDB {
 				issueId ?? null,
 				leadId ?? null,
 			);
+	}
+
+	/** FLY-80: Remove a pre-registered session only if still in :pending state.
+	 *  If Runner has self-registered (overwritten tmux_window), this is a no-op. */
+	unregisterPendingSession(executionId: string): void {
+		this.db
+			.prepare(
+				"DELETE FROM sessions WHERE execution_id = ? AND tmux_window LIKE '%:pending'",
+			)
+			.run(executionId);
 	}
 
 	updateSessionStatus(

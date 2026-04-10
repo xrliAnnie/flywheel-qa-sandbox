@@ -524,9 +524,9 @@ async function runGate(args: string[]): Promise<void> {
 		? Number.parseInt(values.timeout, 10)
 		: 3600_000; // default 1 hour
 
-	// Default timeout behavior based on checkpoint type
-	let timeoutBehavior: "fail-open" | "fail-close" =
-		checkpoint === "question" ? "fail-open" : "fail-close";
+	// Default timeout behavior: fail-open (matches CheckpointConfig type definition).
+	// Individual checkpoints override via --timeout-behavior flag.
+	let timeoutBehavior: "fail-open" | "fail-close" = "fail-open";
 	if (values["timeout-behavior"]) {
 		timeoutBehavior = values["timeout-behavior"] as "fail-open" | "fail-close";
 	}

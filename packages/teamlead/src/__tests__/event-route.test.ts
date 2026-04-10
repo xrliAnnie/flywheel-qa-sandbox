@@ -264,8 +264,16 @@ describe("Event route", () => {
 	});
 
 	it("session_started inherits existing thread for same issue", async () => {
-		// Pre-create a thread mapping for this issue
-		store.upsertThread("existing.thread.ts", "CD5QZVAP6", "issue-1");
+		// FLY-80: Thread inheritance requires BOTH a conversation_threads entry
+		// (for getThreadByIssue) AND an active session (for getLatestSessionByIssueAndStatuses)
+		store.upsertThread("existing.thread.ts", "test-channel", "issue-1");
+		store.upsertSession({
+			execution_id: "exec-existing",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			thread_id: "existing.thread.ts",
+		});
 
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
@@ -386,7 +394,15 @@ describe("Event route — structured hook payload", () => {
 	});
 
 	it("includes thread_id in payload when session has inherited thread", async () => {
+		// FLY-80: Need both conversation_threads entry AND active session for inheritance
 		store.upsertThread("inherited.thread", "CD5QZVAP6", "issue-1");
+		store.upsertSession({
+			execution_id: "exec-thread-owner",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			thread_id: "inherited.thread",
+		});
 
 		await fetch(`${baseUrl}/events`, {
 			method: "POST",
@@ -766,7 +782,15 @@ describe("Event route — thread validation (GEO-200)", () => {
 	}
 
 	it("session_started + valid existing thread → inherit thread_id + notify Lead (FLY-47)", async () => {
-		store.upsertThread("thread-valid", "channel-1", "issue-1");
+		// FLY-80: Need both conversation_threads entry AND active session for inheritance
+		store.upsertThread("thread-valid", "test-channel", "issue-1");
+		store.upsertSession({
+			execution_id: "exec-prior",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			thread_id: "thread-valid",
+		});
 
 		// Mock Discord API validation: 200 (thread exists)
 		// The test server fetch calls also go through mockFetchGeo200
@@ -814,7 +838,15 @@ describe("Event route — thread validation (GEO-200)", () => {
 	});
 
 	it("session_started + deleted thread (404) → no inherit, notify_agent", async () => {
-		store.upsertThread("thread-deleted", "channel-1", "issue-1");
+		// FLY-80: Need both conversation_threads entry AND active session for inheritance path
+		store.upsertThread("thread-deleted", "test-channel", "issue-1");
+		store.upsertSession({
+			execution_id: "exec-prior",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			thread_id: "thread-deleted",
+		});
 
 		vi.unstubAllGlobals();
 		const originalFetch = globalThis.fetch;
@@ -874,9 +906,17 @@ describe("Event route — thread validation (GEO-200)", () => {
 	});
 
 	it("markDiscordMissing clears sessions.thread_id for all sessions with that thread", async () => {
-		store.upsertThread("thread-stale", "channel-1", "issue-1");
+		// FLY-80: Need both conversation_threads entry AND active session for inheritance path
+		store.upsertThread("thread-stale", "test-channel", "issue-1");
+		store.upsertSession({
+			execution_id: "exec-active-prior",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			thread_id: "thread-stale",
+		});
 
-		// Create session manually with thread_id pre-set
+		// Create completed session manually with thread_id pre-set
 		store.upsertSession({
 			execution_id: "exec-old",
 			issue_id: "issue-1",

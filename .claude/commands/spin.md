@@ -193,6 +193,44 @@ Before starting:
 
 **Note**: The worktree and feature branch were already created in Step 0e. `/implement` should detect the existing branch and skip branch creation. Pass `--skip-branch` or rely on `/implement`'s auto-detection of the current feature branch.
 
+### Stage: Approve (MANDATORY — wait for Annie after PR created)
+
+After `/implement` creates the PR, you MUST wait for Annie's explicit approval before shipping.
+
+**This gate is enforced by flywheel-comm.** The command blocks until Annie responds.
+
+1. **Report stage** to Bridge:
+   ```bash
+   # If running inside Flywheel Runner (env vars available)
+   if [ -n "$FLYWHEEL_COMM_CLI" ] && [ -n "$FLYWHEEL_LEAD_ID" ] && [ -n "$FLYWHEEL_EXEC_ID" ]; then
+     node "$FLYWHEEL_COMM_CLI" stage pr_created
+   fi
+   ```
+
+2. **Run the approve gate** (BLOCKS until Annie approves):
+   ```bash
+   if [ -n "$FLYWHEEL_COMM_CLI" ] && [ -n "$FLYWHEEL_LEAD_ID" ] && [ -n "$FLYWHEEL_EXEC_ID" ]; then
+     node "$FLYWHEEL_COMM_CLI" gate approve_to_ship \
+       --lead "$FLYWHEEL_LEAD_ID" \
+       --exec-id "$FLYWHEEL_EXEC_ID" \
+       --timeout 86400000 \
+       --timeout-behavior fail-close \
+       --stage approve \
+       "PR created: {PR_URL}. Ready for review."
+   else
+     # Running outside Flywheel (manual /spin) — ask the user directly
+     echo "PR created. Please review and approve before shipping."
+     # Wait for user confirmation before proceeding
+   fi
+   ```
+
+3. **Read the response.** If Annie requests changes:
+   - Address the changes, push to the PR branch
+   - Re-run the gate (step 2) to get fresh approval
+   - Do NOT proceed to Ship without explicit approval
+
+**CRITICAL**: Do NOT skip this gate. Do NOT proceed to Ship until the gate command returns successfully. Silence is NOT approval.
+
 ### Stage: Ship (after PR created + code review approved)
 
 **Step 1: Archive docs on feature branch** (before merge):

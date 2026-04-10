@@ -37,28 +37,28 @@ export class ForumPostCreator {
 
 	/**
 	 * Create a Forum Post for an issue if no thread exists yet.
-	 * Idempotent — skips if a thread is already mapped for this issue.
+	 * FLY-80: Thread inheritance is handled by event-route.ts (active session check).
+	 * If this method is called, the session has NO thread_id, meaning event-route
+	 * decided NOT to inherit. Always create a fresh Forum post — do not reuse
+	 * stale conversation_threads entries (they may reference deleted Discord threads).
 	 */
 	async ensureForumPost(ctx: ForumPostContext): Promise<ForumPostResult> {
-		// Already has a thread — validate it still exists (GEO-200 defense-in-depth)
-		const existing = this.store.getThreadByIssue(ctx.issueId);
-		if (existing) {
+		// FLY-80: Check if session already has a thread (set by event-route.ts inheritance).
+		// If so, validate and return — don't create duplicate.
+		const session = this.store.getSession(ctx.executionId);
+		if (session?.thread_id) {
 			if (ctx.discordBotToken) {
 				const valid = await validateThreadExists(
-					existing.thread_id,
+					session.thread_id,
 					ctx.discordBotToken,
 					{ markDiscordMissing: (id) => this.store.markDiscordMissing(id) },
 				);
-				if (!valid) {
-					console.warn(
-						`[ForumPostCreator] Thread ${existing.thread_id} missing from Discord, creating new`,
-					);
-					// Fall through to create new thread
-				} else {
-					return { created: false, threadId: existing.thread_id };
+				if (valid) {
+					return { created: false, threadId: session.thread_id };
 				}
+				// Thread gone — fall through to create new
 			} else {
-				return { created: false, threadId: existing.thread_id };
+				return { created: false, threadId: session.thread_id };
 			}
 		}
 

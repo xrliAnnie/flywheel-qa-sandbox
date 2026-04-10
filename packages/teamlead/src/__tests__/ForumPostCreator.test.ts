@@ -66,7 +66,8 @@ describe("ForumPostCreator (GEO-195)", () => {
 	});
 
 	it("skips if thread already exists and is valid (idempotent)", async () => {
-		store.upsertThread("existing-thread", "forum-ch-1", "issue-1");
+		// FLY-80: ForumPostCreator now checks session.thread_id, not conversation_threads
+		store.setSessionThreadId("exec-1", "existing-thread");
 		// GEO-200: validation GET returns 200
 		mockFetch.mockResolvedValueOnce({ status: 200 });
 
@@ -258,8 +259,8 @@ describe("ForumPostCreator thread validation (GEO-200)", () => {
 			project_name: "geoforge3d",
 			status: "running",
 		});
-		// Seed existing thread
-		store.upsertThread("thread-old", "forum-ch-1", "issue-v1");
+		// FLY-80: ForumPostCreator checks session.thread_id, not conversation_threads
+		store.setSessionThreadId("exec-v1", "thread-old");
 	});
 
 	afterEach(() => {
