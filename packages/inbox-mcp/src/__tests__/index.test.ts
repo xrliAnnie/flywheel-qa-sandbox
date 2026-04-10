@@ -68,8 +68,8 @@ describe("inbox-mcp poll logic", () => {
 
 	it("preserves FIFO ordering by created_at", () => {
 		// Insert two messages — they get sequential created_at timestamps
-		const id1 = db.insertInstruction("bridge", leadId, "first");
-		const id2 = db.insertInstruction("bridge", leadId, "second");
+		const _id1 = db.insertInstruction("bridge", leadId, "first");
+		const _id2 = db.insertInstruction("bridge", leadId, "second");
 
 		const messages = db.getUnreadInstructions(leadId);
 		expect(messages[0].content).toBe("first");

@@ -1,10 +1,4 @@
-import {
-	existsSync,
-	mkdtempSync,
-	readdirSync,
-	rmSync,
-	unlinkSync,
-} from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -158,10 +152,10 @@ describe("gate command", () => {
 		setupDb.close();
 
 		// Spy on CommDB.openReadonly to throw after question is created (simulating poll failure)
-		const originalOpenReadonly = CommDB.openReadonly;
-		let callCount = 0;
-		vi.spyOn(CommDB, "openReadonly").mockImplementation((...args) => {
-			callCount++;
+		const _originalOpenReadonly = CommDB.openReadonly;
+		let _callCount = 0;
+		vi.spyOn(CommDB, "openReadonly").mockImplementation((..._args) => {
+			_callCount++;
 			throw new Error("Simulated DB read failure");
 		});
 

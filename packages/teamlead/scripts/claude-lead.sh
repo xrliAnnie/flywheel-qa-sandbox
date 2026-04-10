@@ -113,6 +113,48 @@ if [[ ! "$LEAD_ID" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
 fi
 # Normalize PROJECT_DIR: expand ~ and resolve to absolute path.
 PROJECT_DIR_RAW="${2:?Usage: claude-lead.sh <lead-id> <project-dir> [project-name] [--subdir <dir>]}"
+
+# FLY-80: Fallback if projectDir is stale (worktree was deleted)
+if [[ ! -d "$PROJECT_DIR_RAW" ]]; then
+  log "projectDir '$PROJECT_DIR_RAW' not found, attempting recovery..."
+  _parent="$(dirname "$PROJECT_DIR_RAW")"
+  _stale_base="$(basename "$PROJECT_DIR_RAW")"
+  _recovered=false
+  _best_cand=""
+  _best_len=0
+  if [[ -d "$_parent" ]]; then
+    for _cand in "$_parent"/*; do
+      _cand_base="$(basename "$_cand")"
+      # Only consider candidates that match worktree naming convention:
+      # stale path (e.g. "flywheel-fly-80") must start with candidate name + "-"
+      # This prevents picking an unrelated repo in the same parent dir.
+      if [[ ! -d "$_cand/.git" ]]; then continue; fi
+      if [[ "$_stale_base" != "${_cand_base}-"* && "$_stale_base" != "$_cand_base" ]]; then continue; fi
+      # Prefer longest matching basename (most specific: "foo-app" > "foo")
+      if (( ${#_cand_base} > _best_len )); then
+        _best_len=${#_cand_base}
+        _best_cand="$_cand"
+      fi
+    done
+    if [[ -n "$_best_cand" ]]; then
+      _common=$(git -C "$_best_cand" rev-parse --git-common-dir 2>/dev/null) || true
+      if [[ "$_common" == ".git" ]]; then
+        PROJECT_DIR_RAW="$_best_cand"
+      elif [[ -n "$_common" ]]; then
+        PROJECT_DIR_RAW="$(dirname "$_common")"
+      fi
+      if [[ -d "$PROJECT_DIR_RAW" ]]; then
+        log "Recovered to main repo: $PROJECT_DIR_RAW"
+        _recovered=true
+      fi
+    fi
+  fi
+  if [[ "$_recovered" != "true" ]]; then
+    log "ERROR: Cannot recover projectDir — no valid parent directory found"
+    exit 1
+  fi
+fi
+
 # Logical path (preserves symlinks) — used for projects.json name lookup,
 # where projectRoot must match exactly as configured.
 PROJECT_DIR_LOGICAL="$(cd "$PROJECT_DIR_RAW" && pwd)"
@@ -505,6 +547,49 @@ send_bootstrap() {
 SHOULD_EXIT=0
 CLAUDE_PID=0
 
+# FLY-80: Auto-confirm "Loading development channels" TUI dialog.
+# When running as a daemon (launchd), no human can press Enter on the
+# interactive confirmation prompt from --dangerously-load-development-channels.
+# Uses macOS `expect` (pre-installed) to watch for the prompt text and send Enter.
+# Falls back to direct launch if expect is not available.
+_EXPECT_SCRIPT="${TMPDIR:-/tmp}/flywheel-ac-${LEAD_ID}.expect"
+cat > "$_EXPECT_SCRIPT" <<'EXPECT_EOF'
+#!/usr/bin/expect -f
+# Auto-confirm dev channels prompt, then wait for Claude to exit.
+# expect allocates a PTY so Claude gets a TTY for Ink.
+# Usage: expect <this-script> claude <args...>
+#
+# Claude's Ink TUI inserts ANSI escape codes between words, making
+# pattern matching unreliable. Instead, wait a fixed time for the dialog
+# to render, then send Enter. If no dialog appears, the Enter is harmless
+# (empty input in Claude's TUI is ignored).
+log_user 1
+eval spawn -noecho [lrange $argv 0 end]
+# Wait for Claude to start and render the dev channels dialog
+sleep 8
+# Send Enter to confirm "I am using this for local development" (option 1)
+send "\r"
+# Wait for Claude to run until it exits on its own
+set timeout -1
+expect eof
+# Propagate Claude's exit code
+lassign [wait] pid spawnid os_error_flag value
+exit $value
+EXPECT_EOF
+chmod +x "$_EXPECT_SCRIPT"
+
+# Wrapper: launch claude via expect (auto-confirms dev channels prompt),
+# or fall back to direct launch if expect is unavailable.
+_launch_claude() {
+  if command -v expect >/dev/null 2>&1; then
+    expect "$_EXPECT_SCRIPT" claude "$@" &
+  else
+    log "WARNING: expect not found, dev channels prompt may block"
+    claude "$@" &
+  fi
+  CLAUDE_PID=$!
+}
+
 cleanup() {
   SHOULD_EXIT=1
   log "Shutdown signal received..."
@@ -521,6 +606,8 @@ cleanup() {
     kill -TERM $bg_pids 2>/dev/null || true
     wait $bg_pids 2>/dev/null || true
   fi
+  # FLY-80: Clean up expect script
+  rm -f "${_EXPECT_SCRIPT:-}" 2>/dev/null || true
   # FLY-20: Remove PID file on graceful exit
   rm -f "${PID_FILE:-}" 2>/dev/null || true
   # Exit from trap to prevent main flow from continuing after signal
@@ -562,9 +649,12 @@ fi
 if [ -n "$MCP_SERVERS_JSON" ]; then
   # Remove trailing comma and wrap in JSON
   MCP_SERVERS_JSON="${MCP_SERVERS_JSON%,}"
-  MCP_CONFIG_FILE="${TMPDIR:-/tmp}/flywheel-mcp-${LEAD_ID}.json"
+  # FLY-80: Write .mcp.json in Lead workspace (CWD) so Claude's channel system
+  # can resolve server:flywheel-inbox by name. --mcp-config alone is NOT visible
+  # to the --dangerously-load-development-channels server: resolver.
+  MCP_CONFIG_FILE="${LEAD_WORKSPACE}/.mcp.json"
   echo "{\"mcpServers\":{${MCP_SERVERS_JSON}}}" > "$MCP_CONFIG_FILE"
-  log "MCP config: ${MCP_CONFIG_FILE}"
+  log "MCP config: ${MCP_CONFIG_FILE} (project-level for channel resolution)"
 else
   log "WARNING: No MCP servers available"
   MCP_CONFIG_FILE=""
@@ -588,10 +678,8 @@ else
   log "Channels: Discord plugin only"
 fi
 
-# ── FLY-11: Terminal MCP config ──────────
-if [ -n "$MCP_CONFIG_FILE" ]; then
-  CLAUDE_ARGS+=(--mcp-config "$MCP_CONFIG_FILE")
-fi
+# FLY-80: MCP servers are now in $LEAD_WORKSPACE/.mcp.json (auto-discovered by Claude from CWD).
+# No --mcp-config flag needed — this also ensures server:flywheel-inbox resolves for channels.
 
 # ── FLY-26: Append shared rule files to system prompt ──────────
 # common-rules.md: loaded by ALL leads (communication style, memory, MCP, shared limits)
@@ -668,8 +756,7 @@ while true; do
 
     # Final SIGTERM gate — must be right before fork to close the race window
     if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
-    claude "${CLAUDE_ARGS[@]}" --resume "$SESSION_ID" &
-    CLAUDE_PID=$!
+    _launch_claude "${CLAUDE_ARGS[@]}" --resume "$SESSION_ID"
   else
     # ── Fresh start ───────────────────────────────────────
     SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
@@ -689,8 +776,7 @@ while true; do
     if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
     # Fork first, write session file after — avoids orphan session ID if
     # SIGTERM arrives between gate and fork (cleanup's exit+jobs-pr handles it).
-    claude "${CLAUDE_ARGS[@]}" --session-id "$SESSION_ID" &
-    CLAUDE_PID=$!
+    _launch_claude "${CLAUDE_ARGS[@]}" --session-id "$SESSION_ID"
     # Write session file only after successful fork — no orphan on SIGTERM
     echo "$SESSION_ID" > "$SESSION_ID_FILE"
   fi

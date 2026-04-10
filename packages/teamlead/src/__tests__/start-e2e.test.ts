@@ -17,6 +17,8 @@ vi.mock("@linear/sdk", () => ({
 		issue: vi.fn().mockResolvedValue({
 			title: "Test Issue",
 			identifier: "GEO-TEST",
+			// FLY-80: Auto-resolve leadId calls issue.labels()
+			labels: vi.fn().mockResolvedValue({ nodes: [] }),
 		}),
 	})),
 }));
@@ -57,7 +59,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	};
 }
 
-function createMockStartDispatcher(): IStartDispatcher & {
+function createMockStartDispatcher(store: StateStore): IStartDispatcher & {
 	_started: Array<{ issueId: string; projectName: string }>;
 	_inflightCount: number;
 } {
@@ -70,10 +72,15 @@ function createMockStartDispatcher(): IStartDispatcher & {
 				projectName: req.projectName,
 			});
 			mock._inflightCount++;
-			return {
-				executionId: `exec-${req.issueId}`,
-				issueId: req.issueId,
-			};
+			const executionId = `exec-${req.issueId}`;
+			// FLY-80: Ghost start detection expects session to exist in StateStore
+			store.upsertSession({
+				execution_id: executionId,
+				issue_id: req.issueId,
+				project_name: req.projectName,
+				status: "running",
+			});
+			return { executionId, issueId: req.issueId };
 		}),
 		getInflightCount: vi.fn(() => mock._inflightCount),
 	};
@@ -92,7 +99,7 @@ describe("Start API E2E", () => {
 		savedLinearKey = process.env.LINEAR_API_KEY;
 		process.env.LINEAR_API_KEY = savedLinearKey ?? "test-key";
 		store = await StateStore.create(":memory:");
-		mockDispatcher = createMockStartDispatcher();
+		mockDispatcher = createMockStartDispatcher(store);
 		const app = createBridgeApp(
 			store,
 			testProjects,

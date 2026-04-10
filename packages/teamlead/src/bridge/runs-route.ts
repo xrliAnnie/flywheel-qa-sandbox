@@ -6,7 +6,7 @@
  */
 
 import { Router } from "express";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 
@@ -35,7 +35,8 @@ export function createRunsRouter(
 			return;
 		}
 
-		const { issueId, projectName, leadId, sessionRole } = req.body;
+		const { issueId, projectName, sessionRole } = req.body;
+		let leadId = req.body.leadId as string | undefined;
 
 		// Input validation
 		if (!issueId || typeof issueId !== "string") {
@@ -119,6 +120,29 @@ export function createRunsRouter(
 			}
 			issueTitle = issue.title;
 			issueIdentifier = issue.identifier;
+
+			// FLY-80: Auto-resolve leadId from project config if not provided.
+			// Without leadId, Blueprint skips approve gate instructions entirely.
+			if (!leadId) {
+				try {
+					const labels = await issue.labels();
+					const labelNames = labels.nodes.map((l: { name: string }) => l.name);
+					const { lead } = resolveLeadForIssue(
+						projects,
+						projectName,
+						labelNames,
+					);
+					leadId = lead.agentId;
+					console.log(
+						`[runs/start] Auto-resolved leadId to "${leadId}" for ${issueIdentifier}`,
+					);
+				} catch (resolveErr) {
+					console.warn(
+						`[runs/start] Could not auto-resolve leadId:`,
+						(resolveErr as Error).message,
+					);
+				}
+			}
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			console.error(
@@ -154,6 +178,17 @@ export function createRunsRouter(
 					threadId = session.thread_id;
 					break;
 				}
+			}
+
+			// FLY-80: Verify session was actually registered (detect ghost starts).
+			// If Blueprint.run() failed before emitStarted(), no session exists.
+			const finalSession = store.getSession(result.executionId);
+			if (!finalSession) {
+				res.status(500).json({
+					success: false,
+					message: `Runner failed to start — session not registered after ${THREAD_POLL_MAX_MS}ms. Check Bridge logs for errors.`,
+				});
+				return;
 			}
 
 			const forumLink =

@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
+import { createRequire } from "node:module";
 import { CommDB } from "flywheel-comm/db";
 import type {
 	AdapterExecutionContext,
@@ -147,6 +148,22 @@ export class TmuxAdapter implements IAdapter {
 		}
 		if (ctx.projectName) {
 			envArgs.push("-e", `FLYWHEEL_PROJECT_NAME=${ctx.projectName}`);
+		}
+
+		// FLY-80: Inject Lead ID + comm CLI path so Runner's /spin approve gate works.
+		// Without these, the gate's `if [ -n "$FLYWHEEL_COMM_CLI" ]` check fails
+		// and the Runner completes without waiting for Annie's approval.
+		if (ctx.leadId) {
+			envArgs.push("-e", `FLYWHEEL_LEAD_ID=${ctx.leadId}`);
+		}
+		if (ctx.commDbPath) {
+			try {
+				const req = createRequire(import.meta.url);
+				const commCliPath = req.resolve("flywheel-comm");
+				envArgs.push("-e", `FLYWHEEL_COMM_CLI=${commCliPath}`);
+			} catch {
+				// flywheel-comm not resolvable — gate will fall back to manual mode
+			}
 		}
 
 		// Launch Claude in a new tmux window WITH cwd

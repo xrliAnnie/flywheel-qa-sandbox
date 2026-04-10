@@ -30,7 +30,7 @@ describe("CommDB gate methods", () => {
 		});
 
 		it("should insert with content_ref", () => {
-			const id = db.insertQuestion(
+			const _id = db.insertQuestion(
 				"runner-1",
 				"lead-1",
 				"[content_ref: /path/to/file]",

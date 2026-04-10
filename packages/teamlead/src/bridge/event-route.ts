@@ -214,35 +214,55 @@ export function createEventRouter(
 				}
 
 				if (!transitionRejected) {
-					// Inherit existing thread for this issue (retry/reopen reuses thread)
+					// Inherit existing thread for this issue — but only if another session
+					// is still active (e.g., QA alongside main). If all prior sessions are
+					// terminal, the new execution gets its own Forum post.
 					const existingThread = store.getThreadByIssue(event.issue_id);
 					if (existingThread) {
-						// GEO-200: Validate thread still exists in Discord before inheriting
-						const { lead: valLead } = resolveLeadForIssue(
-							projects,
-							event.project_name,
-							eventLabels,
+						// FLY-80: Only reuse thread if another active session owns it.
+						// A terminated/completed session's thread should not be inherited —
+						// each new execution lifecycle gets a fresh Forum post.
+						// Exclude current execution from the search — we want to know
+						// if a *different* active session exists for thread sharing.
+						const activeSession = store.getLatestSessionByIssueAndStatuses(
+							event.issue_id,
+							["running", "awaiting_review", "approved_to_ship"],
+							event.execution_id,
 						);
-						const botToken = valLead.botToken ?? config.discordBotToken;
-						let threadValid = true;
-						if (botToken) {
-							threadValid = await validateThreadExists(
-								existingThread.thread_id,
-								botToken,
-								{
-									markDiscordMissing: (id) => store.markDiscordMissing(id),
-								},
+						const hasOtherActiveSession = !!activeSession;
+
+						if (hasOtherActiveSession) {
+							// GEO-200: Validate thread still exists in Discord before inheriting
+							const { lead: valLead } = resolveLeadForIssue(
+								projects,
+								event.project_name,
+								eventLabels,
 							);
-						}
-						if (threadValid) {
-							store.setSessionThreadId(
-								event.execution_id,
-								existingThread.thread_id,
-							);
-							store.clearArchived(existingThread.thread_id);
+							const botToken = valLead.botToken ?? config.discordBotToken;
+							let threadValid = true;
+							if (botToken) {
+								threadValid = await validateThreadExists(
+									existingThread.thread_id,
+									botToken,
+									{
+										markDiscordMissing: (id) => store.markDiscordMissing(id),
+									},
+								);
+							}
+							if (threadValid) {
+								store.setSessionThreadId(
+									event.execution_id,
+									existingThread.thread_id,
+								);
+								store.clearArchived(existingThread.thread_id);
+							} else {
+								console.warn(
+									`[event-route] Thread ${existingThread.thread_id} missing from Discord, will create new`,
+								);
+							}
 						} else {
-							console.warn(
-								`[event-route] Thread ${existingThread.thread_id} missing from Discord, will create new`,
+							console.log(
+								`[event-route] No active session owns thread ${existingThread.thread_id} for ${event.issue_id}, creating new Forum post`,
 							);
 						}
 					}
@@ -737,11 +757,17 @@ export function createEventRouter(
 					leadId: lead.agentId,
 					timestamp: new Date().toISOString(),
 				};
-				// Best-effort delivery, mark delivered regardless
+				// FLY-80: Only mark delivered on success. On failure, leave undelivered
+				// so inbox-mcp can pick it up on next poll (CommDB is the reliable store).
 				runtime
 					.deliver(envelope)
 					.then(() => store.markLeadEventDelivered(seq))
-					.catch(() => store.markLeadEventDelivered(seq));
+					.catch((err) => {
+						console.warn(
+							`[event-route] Delivery failed for seq=${seq} to ${lead.agentId}:`,
+							(err as Error).message,
+						);
+					});
 			} catch (err) {
 				console.warn(
 					`[event-route] Unknown project "${event.project_name}" — skipping notification:`,

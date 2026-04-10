@@ -231,7 +231,7 @@ describe("Query tools", () => {
 		expect(body.identifier).toBe("GEO-95");
 	});
 
-	it("GET /api/sessions/:id includes thread fallback when thread_id is empty", async () => {
+	it("GET /api/sessions/:id does NOT fallback to conversation_threads (FLY-80)", async () => {
 		store.upsertSession({
 			execution_id: "e1",
 			issue_id: "i1",
@@ -242,7 +242,8 @@ describe("Query tools", () => {
 
 		const res = await fetch(`${baseUrl}/api/sessions/e1`);
 		const body = await res.json();
-		expect(body.thread_id).toBe("1234.5678");
+		// FLY-80: No stale thread fallback — thread_id comes only from session
+		expect(body.thread_id).toBeUndefined();
 	});
 
 	it("GET /api/sessions/:id uses session thread_id when present", async () => {
@@ -920,7 +921,7 @@ describe("GEO-259: leadId filtering on query routes", () => {
 
 	// --- GEO-200: by_identifier thread fallback ---
 
-	it("GET /api/sessions?mode=by_identifier includes thread_id fallback from conversation_threads", async () => {
+	it("GET /api/sessions?mode=by_identifier does NOT fallback to conversation_threads (FLY-80)", async () => {
 		store.upsertSession({
 			execution_id: "e-fallback",
 			issue_id: "i-fallback",
@@ -928,7 +929,7 @@ describe("GEO-259: leadId filtering on query routes", () => {
 			status: "running",
 			issue_identifier: "GEO-200",
 		});
-		// Session has no thread_id, but conversation_threads does
+		// Session has no thread_id — conversation_threads is NOT consulted (FLY-80)
 		store.upsertThread("thread-fb-200", "forum-ch", "i-fallback");
 
 		const res = await fetch(
@@ -936,7 +937,7 @@ describe("GEO-259: leadId filtering on query routes", () => {
 		);
 		const body = await res.json();
 		expect(body.count).toBe(1);
-		expect(body.sessions[0].thread_id).toBe("thread-fb-200");
+		expect(body.sessions[0].thread_id).toBeUndefined();
 	});
 
 	it("GET /api/sessions?mode=by_identifier skips discord_missing thread in fallback", async () => {
