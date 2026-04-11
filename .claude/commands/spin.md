@@ -250,21 +250,91 @@ if [ -n "$ISSUE_ID" ]; then
 fi
 ```
 
-**Step 2: Trigger ship** — comment `:cool:` on the PR:
+**Step 2: Trigger ship and monitor the ship workflow**
+
+**Phase A: Record baseline and trigger**
 ```bash
+# Dual filter: workflow + event (no --branch: issue_comment runs on default branch, not PR branch)
+PREV_RUN_ID=$(gh run list -w "ship-on-comment.yml" -e issue_comment --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "0")
+
+# Trigger ship
 gh pr comment {PR_NUMBER} --body ":cool:"
 ```
-The `ship-on-comment.yml` GitHub Actions workflow runs CI (build + typecheck + lint + test) and squash merges if green. Wait for merge:
+
+**Phase B: Locate the NEW ship run (must be newer than baseline)**
 ```bash
-sleep 10  # let Actions register the run
-while true; do
+# Poll until a new run appears (databaseId > PREV_RUN_ID)
+FOUND_RUN=false
+for i in $(seq 1 12); do  # max 60s (12 x 5s)
+  sleep 5
+  RUN_ID=$(gh run list -w "ship-on-comment.yml" -e issue_comment --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "0")
+  if [ "$RUN_ID" != "$PREV_RUN_ID" ] && [ "$RUN_ID" != "0" ]; then
+    echo "[ship] Found new run: $RUN_ID"
+    FOUND_RUN=true
+    break
+  fi
+  # Also check if PR was already merged (e.g., by a prior queued run)
   STATE=$(gh pr view {PR_NUMBER} --json state -q '.state')
-  if [ "$STATE" = "MERGED" ]; then echo "PR merged"; break; fi
-  if [ "$STATE" = "CLOSED" ]; then echo "PR closed without merge"; exit 1; fi
-  sleep 30
+  if [ "$STATE" = "MERGED" ]; then echo "[ship] PR already merged!"; FOUND_RUN=merged; break; fi
+done
+if [ "$FOUND_RUN" = "merged" ]; then
+  echo "[ship] PR already merged — skipping to Phase D."
+elif [ "$FOUND_RUN" = "false" ]; then
+  echo "[ship] ERROR: no new ship-on-comment.yml run appeared within 60s. Escalating."
+  exit 1  # Hard stop — do NOT proceed with stale RUN_ID
+fi
+```
+
+**Phase C: Watch the run and fix CI failures (max 3 attempts)**
+Skip this phase entirely if `FOUND_RUN=merged` (jump to Phase D).
+```bash
+ATTEMPT=0
+MAX_ATTEMPTS=3
+while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+  ATTEMPT=$((ATTEMPT + 1))
+
+  # Watch the ship workflow run
+  gh run watch "$RUN_ID" --exit-status && break  # exits 0 if passed
+
+  # Run failed — diagnose
+  echo "[ship] CI failed (attempt $ATTEMPT/$MAX_ATTEMPTS). Diagnosing..."
+  gh run view "$RUN_ID" --log-failed
+
+  if [ $ATTEMPT -ge $MAX_ATTEMPTS ]; then
+    echo "[ship] FAILED after $MAX_ATTEMPTS attempts. Escalating."
+    break
+  fi
+
+  # Fix the issue:
+  # 1. Read the failure logs above
+  # 2. Diagnose root cause (lint/type/test/build)
+  # 3. Fix, commit, push
+  # 4. Re-trigger with baseline disambiguation
+  PREV_RUN_ID="$RUN_ID"
+  gh pr comment {PR_NUMBER} --body ":cool:"
+  # Wait for new run (same dual filter as Phase B, with fail-close)
+  FOUND_RETRY_RUN=false
+  for i in $(seq 1 12); do
+    sleep 5
+    RUN_ID=$(gh run list -w "ship-on-comment.yml" -e issue_comment --limit 1 --json databaseId -q '.[0].databaseId' 2>/dev/null || echo "0")
+    if [ "$RUN_ID" != "$PREV_RUN_ID" ] && [ "$RUN_ID" != "0" ]; then FOUND_RETRY_RUN=true; break; fi
+  done
+  if [ "$FOUND_RETRY_RUN" = "false" ]; then
+    echo "[ship] ERROR: no new run appeared after retry within 60s. Escalating."
+    break
+  fi
 done
 ```
-If the PR stays OPEN for >15 min, the ship workflow likely failed. Check comments for details, fix the issue, and post `:cool:` again.
+
+**Phase D: Verify merge**
+```bash
+STATE=$(gh pr view {PR_NUMBER} --json state -q '.state')
+if [ "$STATE" = "MERGED" ]; then echo "[ship] PR merged!"; fi
+if [ "$STATE" = "OPEN" ]; then echo "[ship] ERROR: CI passed but PR not merged. Check workflow logs."; fi
+```
+
+If all 3 attempts fail, report to Lead/Annie with the last failure details.
+**Never proceed to Step 3 with red CI. Never merge manually.**
 
 **Step 3: Post-merge bookkeeping** (after PR is merged):
 ```bash

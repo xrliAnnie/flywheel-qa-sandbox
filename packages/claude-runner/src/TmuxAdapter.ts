@@ -35,7 +35,7 @@ export class TmuxAdapter implements IAdapter {
 		private sessionName: string = "flywheel",
 		private execFileFn: ExecFileFn = defaultExecFile,
 		private pollIntervalMs: number = 5000,
-		private defaultTimeoutMs: number = 2_700_000, // 45 min
+		private defaultTimeoutMs: number = 5_400_000, // 90 min (FLY-86)
 		private hookServer?: IHookCallbackServer,
 	) {}
 
@@ -235,6 +235,14 @@ export class TmuxAdapter implements IAdapter {
 					// Update failure is non-fatal
 				}
 			}
+			// FLY-86: Kill zombie tmux window after timeout
+			if (sessionStatus === "timeout") {
+				try {
+					this.execFileFn("tmux", ["kill-window", "-t", windowId]);
+				} catch {
+					// Window may already be gone — non-fatal
+				}
+			}
 		}
 
 		return {
@@ -281,9 +289,9 @@ export class TmuxAdapter implements IAdapter {
 	 * GEO-206 Phase 2: Check comm.db for pending questions and manage dynamic timeout.
 	 *
 	 * Timeout logic: When Runner is waiting for Lead, time spent waiting does NOT
-	 * count against the normal 45-min timeout. This prevents the scenario where
-	 * Lead responds after 50 minutes but Runner immediately times out because
-	 * elapsed (50min) > normalTimeout (45min).
+	 * count against the normal 90-min timeout. This prevents the scenario where
+	 * Lead responds after 100 minutes but Runner immediately times out because
+	 * elapsed (100min) > normalTimeout (90min).
 	 *
 	 * We track `totalWaitingMs` — accumulated time spent in waiting state.
 	 * Normal timeout checks: (elapsed - totalWaitingMs) > normalTimeoutMs
@@ -395,7 +403,7 @@ export class TmuxAdapter implements IAdapter {
 			);
 			const timer = setTimeout(() => {
 				console.warn(
-					`[TmuxAdapter] Session ${claudeSessionId} hard timeout after ${hardTimeoutMs}ms. Window ${windowId} preserved for inspection.`,
+					`[TmuxAdapter] Session ${claudeSessionId} hard timeout after ${hardTimeoutMs}ms. Window ${windowId} will be cleaned up.`,
 				);
 				settle(true);
 			}, hardTimeoutMs);
@@ -428,7 +436,7 @@ export class TmuxAdapter implements IAdapter {
 						);
 						if (shouldTimeout) {
 							console.warn(
-								`[TmuxAdapter] Dynamic timeout for ${claudeSessionId}. Window ${windowId} preserved.`,
+								`[TmuxAdapter] Dynamic timeout for ${claudeSessionId}. Window ${windowId} will be cleaned up.`,
 							);
 							settle(true);
 							return;
@@ -525,7 +533,7 @@ export class TmuxAdapter implements IAdapter {
 						);
 						if (shouldTimeout) {
 							console.warn(
-								`[TmuxAdapter] Dynamic timeout for ${claudeSessionId}. Window ${windowId} preserved.`,
+								`[TmuxAdapter] Dynamic timeout for ${claudeSessionId}. Window ${windowId} will be cleaned up.`,
 							);
 							settle(true);
 							return;

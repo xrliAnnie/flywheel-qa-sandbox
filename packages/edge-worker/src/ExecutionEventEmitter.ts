@@ -148,7 +148,7 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 	 */
 	private async postEventReliable(
 		body: Record<string, unknown>,
-		maxRetries = 1,
+		maxRetries = 3, // FLY-86: 4 total attempts for terminal events
 	): Promise<void> {
 		const eventType = body.event_type as string;
 		for (let attempt = 0; attempt <= maxRetries; attempt++) {

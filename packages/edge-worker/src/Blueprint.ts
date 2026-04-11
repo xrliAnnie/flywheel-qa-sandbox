@@ -366,10 +366,16 @@ export class Blueprint {
 						systemPromptLines.push(
 							"",
 							"APPROVE GATE (MANDATORY — do NOT skip):",
-							"After creating the PR, you MUST wait for approval before exiting.",
+							"After creating the PR, you MUST wait for approval before shipping.",
 							`a. Run: \`node ${commCliPath} gate approve_to_ship --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "PR created: <url>. Ready for review."\``,
 							"b. This command BLOCKS until approval. Do NOT exit until it returns.",
 							"c. If changes were requested, address them and re-submit gate.",
+							"d. Once approved, SHIP the PR immediately:",
+							`   - Run \`node ${commCliPath} stage set ship\``,
+							'   - Post :cool: to trigger deploy: `gh pr comment <NUMBER> --body ":cool:"`',
+							"   - Wait for the PR to be merged by the deploy workflow (poll `gh pr view <NUMBER> --json state -q '.state'` every 30s until MERGED, max 10 min)",
+							"   - If no deploy workflow merges within 5 minutes, merge directly: `gh pr merge <NUMBER> --squash --delete-branch`",
+							"   Do NOT set stage to completed without first merging the PR.",
 						);
 					} else if (cpName === "question") {
 						systemPromptLines.push(
@@ -455,7 +461,7 @@ export class Blueprint {
 			: baseSystemPrompt;
 
 		// ── Adapter execution (GEO-157: IAdapter.execute()) ──
-		const timeoutMs = ctx.sessionTimeoutMs ?? 2_700_000;
+		const timeoutMs = ctx.sessionTimeoutMs ?? 5_400_000; // 90 min fallback (FLY-86)
 
 		// GEO-206: Compute commDbPath for Lead ↔ Runner communication.
 		// ctx.projectName is resolved from projects config canonical name in

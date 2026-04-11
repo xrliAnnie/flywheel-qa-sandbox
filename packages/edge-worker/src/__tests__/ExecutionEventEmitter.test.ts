@@ -296,7 +296,7 @@ describe("TeamLeadClient", () => {
 			// Should not throw
 			await client.emitCompleted(makeEnvelope(), makeResult(), "summary");
 
-			expect(requestCount).toBe(2); // initial + 1 retry
+			expect(requestCount).toBe(4); // initial + 3 retries (FLY-86)
 			expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("retrying"));
 			expect(errorSpy).toHaveBeenCalledWith(
 				expect.stringContaining("no retries left"),

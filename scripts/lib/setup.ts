@@ -83,7 +83,7 @@ export interface SetupOptions {
 		projectId?: string;
 		identifier?: string;
 	}>;
-	/** Session timeout in ms (default: 2_700_000 = 45 min) */
+	/** Session timeout in ms (default: 5_400_000 = 90 min) */
 	sessionTimeoutMs?: number;
 	/** GEO-168: Override default event emitter (e.g., DirectEventSink for bridge-local retries) */
 	eventEmitterOverride?: ExecutionEventEmitter;
@@ -115,7 +115,7 @@ export async function setupComponents(
 		projectRepo,
 		enableWorktree = true,
 		fetchIssue,
-		sessionTimeoutMs = 2_700_000,
+		sessionTimeoutMs = 5_400_000, // 90 min (FLY-86)
 		eventEmitterOverride,
 		skipSlackLegacy = false,
 	} = opts;

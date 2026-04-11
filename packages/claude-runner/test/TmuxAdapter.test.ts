@@ -520,8 +520,8 @@ describe("TmuxAdapter", () => {
 		expect(elapsed).toBeLessThan(5000); // should be fast
 	});
 
-	it("resolves on timeout with timedOut=true (preserves window for inspection)", async () => {
-		const { fn } = makeMockExec({ paneDead: false });
+	it("resolves on timeout with timedOut=true and kills zombie window (FLY-86)", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: false });
 		const adapter = new TmuxAdapter("flywheel", fn, 10, 50); // 50ms default timeout
 
 		const result = await adapter.execute(makeCtx());
@@ -530,6 +530,12 @@ describe("TmuxAdapter", () => {
 		expect(result.success).toBe(true);
 		expect(result.tmuxWindow).toBeDefined();
 		expect(result.timedOut).toBe(true);
+
+		// FLY-86: Verify kill-window is called on timeout
+		const killCalls = calls.filter(
+			(c) => c.cmd === "tmux" && c.args[0] === "kill-window",
+		);
+		expect(killCalls.length).toBeGreaterThanOrEqual(1);
 	});
 
 	// ─── Return values ──────────────────────────────

@@ -476,7 +476,7 @@ async function main() {
 		teamName: "eng",
 		runnerName: "claude",
 		projectName,
-		sessionTimeoutMs: 2_700_000, // 45 min — land skill needs time for CI/review/merge
+		sessionTimeoutMs: 5_400_000, // 90 min — ship stage needs time for CI/fix/merge (FLY-86)
 		executionId,
 		leadId,
 	};
