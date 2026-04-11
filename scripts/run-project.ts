@@ -120,7 +120,7 @@ async function main() {
 			teamName: "eng",
 			runnerName: "claude",
 			projectName,
-			sessionTimeoutMs: 2_700_000,
+			sessionTimeoutMs: 5_400_000, // 90 min (FLY-86)
 		}),
 		semaphore,
 		tmuxSessionName,
