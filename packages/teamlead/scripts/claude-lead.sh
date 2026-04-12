@@ -575,6 +575,7 @@ _launch_claude() {
     -e "BRIDGE_URL=${BRIDGE_URL:-}"
     -e "TEAMLEAD_API_TOKEN=${TEAMLEAD_API_TOKEN:-}"
     -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
+    -e "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
     -e "HOME=${HOME}"
     -e "PATH=${PATH}"
   )
@@ -713,6 +714,27 @@ if [ -d "$INBOX_MCP_DIR" ]; then
   log "Inbox MCP: enabled (CommDB push delivery)"
 else
   log "WARNING: inbox-mcp not built (${INBOX_MCP_DIR} missing), CommDB push disabled"
+fi
+
+# FLY-90: gbrain MCP server for project Wiki (compound knowledge growth)
+# Provides Lead with 30 MCP tools: hybrid search, page CRUD, timeline, links, tags, etc.
+# Leads READ brain before responding, WRITE back decisions/learnings after conversations.
+# Requires: gbrain installed globally, configured via `gbrain init --supabase` or env var.
+# OPENAI_API_KEY is optional — without it, gbrain degrades to keyword-only search.
+GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
+if [ -n "$GBRAIN_PATH" ] && [ -f "$HOME/.gbrain/config.json" ]; then
+  # No env block: avoids writing secrets to .mcp.json on disk.
+  # Config file required — env-only (GBRAIN_DATABASE_URL) won't reliably reach
+  # the Lead tmux session due to explicit env allowlist in _launch_claude().
+  # OPENAI_API_KEY is propagated via tmux env allowlist for hybrid search.
+  MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"${GBRAIN_PATH}\",\"args\":[\"serve\"]},"
+  log "GBrain MCP: enabled (project Wiki)"
+else
+  if [ -n "$GBRAIN_PATH" ]; then
+    log "GBrain MCP: skipped (installed but not configured — run 'gbrain init --supabase')"
+  else
+    log "GBrain MCP: skipped (gbrain not installed)"
+  fi
 fi
 
 if [ -n "$MCP_SERVERS_JSON" ]; then
