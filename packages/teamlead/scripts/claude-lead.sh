@@ -79,15 +79,9 @@ log() {
 }
 
 # ── TTY guard ──────────────────────────────────────────────────
-# Claude Code ≥2.1.87 requires stdout to be a TTY for interactive mode.
-# When started from a non-TTY context (e.g., Bash tool, cron, subprocess),
-# Claude detects !process.stdout.isTTY → enters headless mode → fails
-# because --channels expects interactive mode with no prompt argument.
-# Fix: allocate a pseudo-TTY via macOS `script` command and re-exec.
-if [ ! -t 1 ] && [ -z "${_FLYWHEEL_PTY:-}" ]; then
-  export _FLYWHEEL_PTY=1
-  exec script -q /dev/null "$0" "$@"
-fi
+# FLY-88: TTY is now provided by tmux (Claude runs inside a tmux window).
+# The old `script -q /dev/null` PTY hack is no longer needed.
+# Keep this as documentation: tmux new-window automatically allocates a PTY.
 
 # Interruptible sleep: runs sleep in the background so SIGINT/SIGTERM
 # can set SHOULD_EXIT during the wait. Falls through immediately if
@@ -541,73 +535,148 @@ send_bootstrap() {
 
 # ── Graceful shutdown ───────────────────────────────────────
 # GEO-285: PID tracking + signal forwarding.
-# SIGINT (Ctrl+C) in a terminal is delivered to the foreground process group,
-# so Claude receives it directly. But SIGTERM (e.g., kill <supervisor-pid>)
-# only hits the shell — we must forward it to the Claude child process.
+# FLY-88: Signal handling adapted for tmux-based Claude.
+# SIGTERM from launchd → cleanup() sends C-c to tmux window → kill-window.
 SHOULD_EXIT=0
-CLAUDE_PID=0
 
-# FLY-80: Auto-confirm "Loading development channels" TUI dialog.
-# When running as a daemon (launchd), no human can press Enter on the
-# interactive confirmation prompt from --dangerously-load-development-channels.
-# Uses macOS `expect` (pre-installed) to watch for the prompt text and send Enter.
-# Falls back to direct launch if expect is not available.
-_EXPECT_SCRIPT="${TMPDIR:-/tmp}/flywheel-ac-${LEAD_ID}.expect"
-cat > "$_EXPECT_SCRIPT" <<'EXPECT_EOF'
-#!/usr/bin/expect -f
-# Auto-confirm dev channels prompt, then wait for Claude to exit.
-# expect allocates a PTY so Claude gets a TTY for Ink.
-# Usage: expect <this-script> claude <args...>
-#
-# Claude's Ink TUI inserts ANSI escape codes between words, making
-# pattern matching unreliable. Instead, wait a fixed time for the dialog
-# to render, then send Enter. If no dialog appears, the Enter is harmless
-# (empty input in Claude's TUI is ignored).
-log_user 1
-eval spawn -noecho [lrange $argv 0 end]
-# Wait for Claude to start and render the dev channels dialog
-sleep 8
-# Send Enter to confirm "I am using this for local development" (option 1)
-send "\r"
-# Wait for Claude to run until it exits on its own
-set timeout -1
-expect eof
-# Propagate Claude's exit code
-lassign [wait] pid spawnid os_error_flag value
-exit $value
-EXPECT_EOF
-chmod +x "$_EXPECT_SCRIPT"
+# FLY-88: tmux-based launch + auto-confirm.
+# Claude runs inside a tmux window in the shared "flywheel" session.
+# tmux provides the PTY; expect is no longer needed.
+# Auto-confirm uses tmux send-keys (bound to window_id).
+LEAD_WINDOW_ID=""
+AUTO_CONFIRM_PID=0
 
-# Wrapper: launch claude via expect (auto-confirms dev channels prompt),
-# or fall back to direct launch if expect is unavailable.
+# Ensure the shared flywheel tmux session exists (race-safe, idempotent).
+# Called before every launch — handles session being killed externally.
+ensure_tmux_session() {
+  # -A: attach-or-create (atomic). -d: stay detached. -x/-y: default size.
+  tmux new-session -Ad -s flywheel -x 200 -y 50 2>/dev/null || true
+}
+
+# Launch Claude in a tmux window within the flywheel session.
+# Uses -P -F to capture window_id (like TmuxAdapter).
+# Uses -e to inject per-window environment (no shell inheritance in shared session).
 _launch_claude() {
-  if command -v expect >/dev/null 2>&1; then
-    expect "$_EXPECT_SCRIPT" claude "$@" &
-  else
-    log "WARNING: expect not found, dev channels prompt may block"
-    claude "$@" &
+  ensure_tmux_session
+
+  local window_name="${PROJECT_NAME}-${LEAD_ID}"
+
+  # Kill stale window with same name (from previous crash)
+  tmux kill-window -t "=flywheel:=${window_name}" 2>/dev/null || true
+
+  # Build env injection args (explicit per-window, match TmuxAdapter pattern)
+  local env_args=(
+    -e "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}"
+    -e "DISCORD_STATE_DIR=${DISCORD_STATE_DIR:-}"
+    -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
+    -e "FLYWHEEL_COMM_DB=${FLYWHEEL_COMM_DB:-}"
+    -e "FLYWHEEL_COMM_CLI=${FLYWHEEL_COMM_CLI:-}"
+    -e "FLYWHEEL_PROJECT_NAME=${PROJECT_NAME}"
+    -e "BRIDGE_URL=${BRIDGE_URL:-}"
+    -e "TEAMLEAD_API_TOKEN=${TEAMLEAD_API_TOKEN:-}"
+    -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
+    -e "HOME=${HOME}"
+    -e "PATH=${PATH}"
+  )
+
+  # Create new window running claude — capture window_id
+  LEAD_WINDOW_ID=$(tmux new-window -d -P -F '#{window_id}' \
+    -t =flywheel \
+    "${env_args[@]}" \
+    -n "$window_name" \
+    -c "$LEAD_WORKSPACE" \
+    claude "$@")
+
+  # Enable remain-on-exit on this specific window so we can read exit code
+  # (must be set-window-option on the window, not session-level, for tmux 3.5+)
+  tmux set-window-option -t "$LEAD_WINDOW_ID" remain-on-exit on 2>/dev/null || true
+
+  log "Claude launched in tmux window: flywheel:${LEAD_WINDOW_ID} (name: ${window_name})"
+}
+
+# Auto-confirm dev channels dialog by sending Enter after 8s.
+# Bound to window_id (not name). PID tracked for cleanup.
+_auto_confirm_dev_channels() {
+  local target="${LEAD_WINDOW_ID}"
+  (
+    sleep 8
+    tmux send-keys -t "$target" Enter 2>/dev/null || true
+  ) &
+  AUTO_CONFIRM_PID=$!
+}
+
+# Wait for tmux window to exit (pane_dead detection).
+# Uses window_id for reliable targeting. Uses interruptible_sleep.
+_wait_tmux_window() {
+  CLAUDE_EXIT=0
+  local target="${LEAD_WINDOW_ID}"
+
+  while true; do
+    if [ "$SHOULD_EXIT" -ne 0 ]; then return 0; fi
+
+    # Check if window still exists (session or window killed externally)
+    if ! tmux list-panes -t "$target" &>/dev/null; then
+      # Window gone — treat as crash (unknown exit code)
+      CLAUDE_EXIT=1
+      return 0
+    fi
+
+    # Check pane_dead flag (requires remain-on-exit)
+    local dead
+    dead=$(tmux list-panes -t "$target" -F '#{pane_dead}' 2>/dev/null | head -1)
+    if [ "$dead" = "1" ]; then
+      # Get exit code from dead pane
+      CLAUDE_EXIT=$(tmux list-panes -t "$target" -F '#{pane_dead_status}' 2>/dev/null | head -1)
+      CLAUDE_EXIT="${CLAUDE_EXIT:-1}"
+      # Kill the dead window to prevent accumulation
+      tmux kill-window -t "$target" 2>/dev/null || true
+      return 0
+    fi
+
+    interruptible_sleep 3
+  done
+}
+
+# Kill auto-confirm background task if still running.
+_kill_auto_confirm() {
+  if [ "$AUTO_CONFIRM_PID" -ne 0 ] && kill -0 "$AUTO_CONFIRM_PID" 2>/dev/null; then
+    kill "$AUTO_CONFIRM_PID" 2>/dev/null || true
   fi
-  CLAUDE_PID=$!
+  AUTO_CONFIRM_PID=0
 }
 
 cleanup() {
   SHOULD_EXIT=1
   log "Shutdown signal received..."
-  if [ "$CLAUDE_PID" -ne 0 ] && kill -0 "$CLAUDE_PID" 2>/dev/null; then
-    log "Forwarding SIGTERM to Claude (PID $CLAUDE_PID)..."
-    kill -TERM "$CLAUDE_PID" 2>/dev/null || true
-    wait "$CLAUDE_PID" 2>/dev/null || true
+
+  # Kill auto-confirm background task
+  _kill_auto_confirm
+
+  # Graceful shutdown: send C-c to Claude in tmux
+  if [ -n "${LEAD_WINDOW_ID:-}" ]; then
+    tmux send-keys -t "$LEAD_WINDOW_ID" C-c 2>/dev/null || true
+    # Wait briefly for graceful exit (check pane_dead to avoid over-waiting)
+    local i=0
+    while [ $i -lt 5 ]; do
+      if ! tmux list-panes -t "$LEAD_WINDOW_ID" &>/dev/null; then break; fi
+      local dead
+      dead=$(tmux list-panes -t "$LEAD_WINDOW_ID" -F '#{pane_dead}' 2>/dev/null | head -1)
+      if [ "$dead" = "1" ]; then break; fi
+      sleep 1
+      i=$((i + 1))
+    done
+    # Force kill if still alive
+    tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
   fi
-  # Kill any background jobs not yet captured in CLAUDE_PID (race window)
+
+  # Kill any background jobs (race window)
   local bg_pids
   bg_pids=$(jobs -pr 2>/dev/null) || true
   if [ -n "$bg_pids" ]; then
-    log "Cleaning up uncaptured background processes: $bg_pids"
     kill -TERM $bg_pids 2>/dev/null || true
     wait $bg_pids 2>/dev/null || true
   fi
-  # FLY-80: Clean up expect script
-  rm -f "${_EXPECT_SCRIPT:-}" 2>/dev/null || true
+
   # FLY-20: Remove PID file on graceful exit
   rm -f "${PID_FILE:-}" 2>/dev/null || true
   # Exit from trap to prevent main flow from continuing after signal
@@ -774,15 +843,21 @@ while true; do
     # Final SIGTERM gate — right before fork. cleanup() now exits the trap,
     # so signals after this point terminate the script immediately.
     if [ "$SHOULD_EXIT" -ne 0 ]; then break; fi
-    # Fork first, write session file after — avoids orphan session ID if
-    # SIGTERM arrives between gate and fork (cleanup's exit+jobs-pr handles it).
+    # Launch in tmux window, write session file after — avoids orphan session ID if
+    # SIGTERM arrives between gate and launch.
     _launch_claude "${CLAUDE_ARGS[@]}" --session-id "$SESSION_ID"
-    # Write session file only after successful fork — no orphan on SIGTERM
+    # Write session file only after successful launch — no orphan on SIGTERM
     echo "$SESSION_ID" > "$SESSION_ID_FILE"
   fi
 
-  wait "$CLAUDE_PID" 2>/dev/null || CLAUDE_EXIT=$?
-  CLAUDE_PID=0
+  # FLY-88: Auto-confirm dev channels dialog (sends Enter after 8s via tmux send-keys)
+  _auto_confirm_dev_channels
+
+  # FLY-88: Wait for tmux window to complete (replaces `wait $CLAUDE_PID`)
+  _wait_tmux_window
+
+  # Clean up auto-confirm background task
+  _kill_auto_confirm
 
   # DURATION = this process's runtime (for crash classification / backoff)
   DURATION=$(( $(date +%s) - PROCESS_START_TS ))
