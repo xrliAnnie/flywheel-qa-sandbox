@@ -19,6 +19,7 @@ export const GUARDRAIL_EVENT_TYPES = new Set([
 	"session_stuck",
 	"session_orphaned",
 	"session_stale_completed",
+	"runner_idle_detected", // FLY-92: idle watchdog events must be reliably delivered
 ]);
 
 /** Monotonically sequenced event envelope for lead delivery. */
