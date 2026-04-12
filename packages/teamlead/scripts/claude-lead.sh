@@ -722,15 +722,9 @@ fi
 # OPENAI_API_KEY is optional — without it, gbrain degrades to keyword-only search.
 GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
 if [ -n "$GBRAIN_PATH" ] && { [ -f "$HOME/.gbrain/config.json" ] || [ -n "${GBRAIN_DATABASE_URL:-}" ] || [ -n "${DATABASE_URL:-}" ]; }; then
-  GBRAIN_ENV=""
-  if [ -n "${OPENAI_API_KEY:-}" ]; then
-    GBRAIN_ENV="\"OPENAI_API_KEY\":\"${OPENAI_API_KEY}\""
-  fi
-  if [ -n "$GBRAIN_ENV" ]; then
-    MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"${GBRAIN_PATH}\",\"args\":[\"serve\"],\"env\":{${GBRAIN_ENV}}},"
-  else
-    MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"${GBRAIN_PATH}\",\"args\":[\"serve\"]},"
-  fi
+  # No env block needed: subprocess inherits OPENAI_API_KEY, DATABASE_URL, etc.
+  # from parent environment. Avoids writing secrets to .mcp.json on disk.
+  MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"${GBRAIN_PATH}\",\"args\":[\"serve\"]},"
   log "GBrain MCP: enabled (project Wiki)"
 else
   if [ -n "$GBRAIN_PATH" ]; then
