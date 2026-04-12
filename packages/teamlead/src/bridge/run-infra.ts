@@ -26,6 +26,7 @@ import {
 	HardRuleEngine,
 	HookCallbackServer,
 	SkillInjector,
+	WorktreeManager,
 } from "flywheel-edge-worker";
 import { Blueprint } from "flywheel-edge-worker/dist/Blueprint.js";
 import { PreHydrator } from "flywheel-edge-worker/dist/PreHydrator.js";
@@ -85,6 +86,7 @@ async function createRunBlueprint(
 	eventEmitter: DirectEventSink,
 	sessionTimeoutMs: number = 14_400_000, // 4h (same as retry runtime)
 	checkpointConfig?: CheckpointsConfig, // FLY-47
+	worktreeManager?: WorktreeManager, // FLY-95
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -219,7 +221,7 @@ async function createRunBlueprint(
 			gitChecker,
 			makeAdapter,
 			shell,
-			undefined, // worktreeManager — not needed for start API
+			worktreeManager, // FLY-95: per-Runner worktree isolation
 			skillInjector,
 			evidenceCollector,
 			undefined, // skillsConfig
@@ -271,8 +273,24 @@ export async function setupRunInfrastructure(
 
 	const fetchIssue = createFetchIssue(store);
 
+	// FLY-95: Shared WorktreeManager for per-Runner worktree isolation
+	const worktreeManager = new WorktreeManager();
+
 	for (const project of projects) {
 		try {
+			// FLY-95: Prune orphan worktrees from previous runs on startup
+			try {
+				await worktreeManager.pruneOrphans(
+					project.projectRoot,
+					project.projectName,
+				);
+			} catch (err) {
+				console.warn(
+					`[RunInfra] ${project.projectName}: worktree prune failed:`,
+					(err as Error).message,
+				);
+			}
+
 			const tmuxSessionName = sanitizeTmuxName(`runner-${project.projectName}`);
 
 			const eventFilter = new EventFilter();
@@ -316,6 +334,7 @@ export async function setupRunInfrastructure(
 				directSink,
 				undefined, // sessionTimeoutMs — use default
 				checkpointConfig,
+				worktreeManager, // FLY-95
 			);
 
 			projectRuntimes.set(project.projectName, {

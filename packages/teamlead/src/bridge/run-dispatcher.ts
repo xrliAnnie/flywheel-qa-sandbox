@@ -43,7 +43,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 
 	/** FLY-59: Composite inflight key for per-role dedup */
 	protected inflightKey(issueId: string, role: string): string {
-		return `${issueId}:${role}`;
+		// FLY-95: Normalize role to match Blueprint worktree naming —
+		// prevents "qa", "QA", "q/a" from being treated as different lanes
+		// while mapping to the same worktree on disk.
+		const normalized =
+			role.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || "main";
+		return `${issueId}:${normalized}`;
 	}
 
 	async dispatch(req: RetryRequest): Promise<RetryResult> {
@@ -105,10 +110,25 @@ export class RetryDispatcher implements IRetryDispatcher {
 
 		entry.promise = runtime.blueprint
 			.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
-			.then(() => {
-				console.log(
-					`[RetryDispatcher] ${newExecutionId} completed for issue ${req.issueIdentifier ?? req.issueId}`,
-				);
+			.then((result) => {
+				if (result.worktreePath) {
+					console.log(
+						`[RetryDispatcher] ${newExecutionId} ran in worktree: ${result.worktreePath}`,
+					);
+				}
+				if (result.success) {
+					console.log(
+						`[RetryDispatcher] ${newExecutionId} completed for issue ${req.issueIdentifier ?? req.issueId}`,
+					);
+				} else {
+					console.warn(
+						`[RetryDispatcher] ${newExecutionId} resolved with failure for issue ${req.issueIdentifier ?? req.issueId}: ${result.error ?? "unknown"}`,
+					);
+					// FLY-95: Clean up orphan pre-registration when Runner never self-registered
+					if (!result.sessionId) {
+						this.cleanupPreRegistration(newExecutionId, req.projectName);
+					}
+				}
 			})
 			.catch((err: unknown) => {
 				console.error(
@@ -281,10 +301,25 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 
 		entry.promise = runtime.blueprint
 			.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
-			.then(() => {
-				console.log(
-					`[RunDispatcher] ${executionId} completed for issue ${req.issueId}`,
-				);
+			.then((result) => {
+				if (result.worktreePath) {
+					console.log(
+						`[RunDispatcher] ${executionId} ran in worktree: ${result.worktreePath}`,
+					);
+				}
+				if (result.success) {
+					console.log(
+						`[RunDispatcher] ${executionId} completed for issue ${req.issueId}`,
+					);
+				} else {
+					console.warn(
+						`[RunDispatcher] ${executionId} resolved with failure for issue ${req.issueId}: ${result.error ?? "unknown"}`,
+					);
+					// FLY-95: Clean up orphan pre-registration when Runner never self-registered
+					if (!result.sessionId) {
+						this.cleanupPreRegistration(executionId, req.projectName);
+					}
+				}
 			})
 			.catch((err: unknown) => {
 				console.error(
