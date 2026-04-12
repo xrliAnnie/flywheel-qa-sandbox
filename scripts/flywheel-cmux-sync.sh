@@ -40,9 +40,9 @@ get_workspace_ref_for() {
   }'
 }
 
-get_selected_workspace_ref() {
-  # Return ref of the currently selected workspace (marked with * prefix)
-  get_cmux_workspaces | grep '^\*' | sed 's/^[* ]*//' | awk '{print $1}' || true
+get_all_workspace_refs() {
+  # Return sorted list of all workspace:N refs
+  get_cmux_workspaces | sed 's/^[* ]*//' | awk '{print $1}' | sort
 }
 
 linked_session_exists() {
@@ -65,13 +65,19 @@ create_workspace_for_window() {
   # 2. Select the target window in the linked session
   tmux select-window -t "${view_session}:${window_id}" 2>/dev/null || true
 
-  # 3. Create cmux workspace attaching to the linked session
-  cmux new-workspace --command "tmux attach -t '=${view_session}'"
-  sleep 0.3
+  # 3. Snapshot workspace refs before creation
+  local refs_before
+  refs_before=$(get_all_workspace_refs)
 
-  # 4. Rename workspace — explicitly target by ref to avoid race with user switching tabs
-  local new_ref
-  new_ref=$(get_selected_workspace_ref)
+  # 4. Create cmux workspace attaching to the linked session
+  cmux new-workspace --command "tmux attach -t '=${view_session}'"
+
+  # 5. Find the new workspace ref by diffing before/after (no selection-state dependency)
+  local refs_after new_ref
+  refs_after=$(get_all_workspace_refs)
+  new_ref=$(grep -vFxf <(echo "$refs_before") <(echo "$refs_after") | head -1 || true)
+
+  # 6. Rename using the exact ref — immune to user tab switching
   if [[ -n "$new_ref" ]]; then
     cmux rename-workspace --workspace "$new_ref" "$window_name" 2>/dev/null || true
   fi
