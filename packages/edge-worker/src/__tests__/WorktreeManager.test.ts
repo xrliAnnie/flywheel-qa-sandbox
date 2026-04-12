@@ -23,14 +23,15 @@ function makeMockExec(responses: Array<{ stdout: string } | Error> = []): {
 
 function noopBgDelete() {}
 
+// mainRepoPath="/main/repo" → repoSlug="repo" → branch/dir prefix="repo-"
 const PORCELAIN_TWO_WORKTREES = [
 	"worktree /main/repo",
 	"HEAD abc1234",
 	"branch refs/heads/main",
 	"",
-	"worktree /home/user/.flywheel/worktrees/proj/flywheel-GEO-42",
+	"worktree /home/user/.flywheel/worktrees/proj/repo-GEO-42",
 	"HEAD def5678",
-	"branch refs/heads/flywheel-GEO-42",
+	"branch refs/heads/repo-GEO-42",
 	"",
 ].join("\n");
 
@@ -77,7 +78,7 @@ describe("WorktreeManager", () => {
 
 			expect(calls[0].cmd).toBe("git");
 			expect(calls[0].args).toContain("-b");
-			expect(calls[0].args).toContain("flywheel-GEO-42");
+			expect(calls[0].args).toContain("repo-GEO-42");
 			expect(
 				calls[0].args.some((a) => a.includes("origin/main^{commit}")),
 			).toBe(true);
@@ -119,7 +120,7 @@ describe("WorktreeManager", () => {
 			).toBe(true);
 		});
 
-		it("creates correct worktree path", async () => {
+		it("creates correct worktree path (with baseDir)", async () => {
 			const { fn } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
 			const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
 
@@ -129,7 +130,7 @@ describe("WorktreeManager", () => {
 				issueId: "GEO-42",
 			});
 
-			expect(info.worktreePath).toBe("/tmp/wt/proj/flywheel-GEO-42");
+			expect(info.worktreePath).toBe("/tmp/wt/proj/repo-GEO-42");
 		});
 
 		it("returns complete WorktreeInfo", async () => {
@@ -145,8 +146,8 @@ describe("WorktreeManager", () => {
 			expect(info).toEqual({
 				projectName: "proj",
 				issueId: "GEO-42",
-				worktreePath: "/tmp/wt/proj/flywheel-GEO-42",
-				branch: "flywheel-GEO-42",
+				worktreePath: "/tmp/wt/proj/repo-GEO-42",
+				branch: "repo-GEO-42",
 				mainRepoPath: "/main/repo",
 			});
 		});
@@ -168,7 +169,7 @@ describe("WorktreeManager", () => {
 
 		it("throws on branch already checked out", async () => {
 			const { fn } = makeMockExec([
-				new Error("fatal: 'flywheel-GEO-42' is already checked out"),
+				new Error("fatal: 'repo-GEO-42' is already checked out"),
 			]);
 			const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
 
@@ -193,6 +194,7 @@ describe("WorktreeManager", () => {
 
 			// /Users/x/Dev/geoforge3d-GEO-42  (sibling, lowercase basename)
 			expect(info.worktreePath).toBe("/Users/x/Dev/geoforge3d-GEO-42");
+			expect(info.branch).toBe("geoforge3d-GEO-42");
 		});
 	});
 
@@ -209,7 +211,7 @@ describe("WorktreeManager", () => {
 
 		it("renames worktree dir to temp location", async () => {
 			tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wt-remove-"));
-			const worktreeDir = path.join(tmpDir, "flywheel-GEO-42");
+			const worktreeDir = path.join(tmpDir, "repo-GEO-42");
 			fs.mkdirSync(worktreeDir);
 
 			const { fn } = makeMockExec([{ stdout: "" }]); // git worktree prune
@@ -226,7 +228,7 @@ describe("WorktreeManager", () => {
 
 		it("calls git worktree prune after rename", async () => {
 			tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wt-prune-"));
-			const worktreeDir = path.join(tmpDir, "flywheel-GEO-42");
+			const worktreeDir = path.join(tmpDir, "repo-GEO-42");
 			fs.mkdirSync(worktreeDir);
 
 			const { fn, calls } = makeMockExec([{ stdout: "" }]);
@@ -242,7 +244,7 @@ describe("WorktreeManager", () => {
 
 		it("spawns background /bin/rm -rf", async () => {
 			tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "wt-rm-"));
-			const worktreeDir = path.join(tmpDir, "flywheel-GEO-42");
+			const worktreeDir = path.join(tmpDir, "repo-GEO-42");
 			fs.mkdirSync(worktreeDir);
 
 			const bgCalls: Array<{ cmd: string; args: string[] }> = [];
@@ -274,7 +276,7 @@ describe("WorktreeManager", () => {
 			);
 
 			await expect(
-				mgr.remove("/main/repo", "/tmp/wt/flywheel-GEO-42"),
+				mgr.remove("/main/repo", "/tmp/wt/repo-GEO-42"),
 			).rejects.toThrow("EACCES");
 
 			vi.restoreAllMocks();
@@ -291,7 +293,7 @@ describe("WorktreeManager", () => {
 				Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
 			);
 
-			await mgr.remove("/main/repo", "/tmp/wt/flywheel-GEO-42");
+			await mgr.remove("/main/repo", "/tmp/wt/repo-GEO-42");
 
 			expect(calls.some((c) => c.args.includes("prune"))).toBe(true);
 
@@ -308,7 +310,7 @@ describe("WorktreeManager", () => {
 
 			const result = await mgr.isRegistered(
 				"/main/repo",
-				"/home/user/.flywheel/worktrees/proj/flywheel-GEO-42",
+				"/home/user/.flywheel/worktrees/proj/repo-GEO-42",
 			);
 			expect(result).toBe(true);
 		});
@@ -338,8 +340,8 @@ describe("WorktreeManager", () => {
 				isBare: false,
 			});
 			expect(list[1]).toEqual({
-				path: "/home/user/.flywheel/worktrees/proj/flywheel-GEO-42",
-				branch: "flywheel-GEO-42",
+				path: "/home/user/.flywheel/worktrees/proj/repo-GEO-42",
+				branch: "repo-GEO-42",
 				isDetached: false,
 				isBare: false,
 			});
@@ -386,13 +388,13 @@ describe("WorktreeManager", () => {
 				"HEAD abc1234",
 				"branch refs/heads/main",
 				"",
-				"worktree /base/proj/flywheel-GEO-42",
+				"worktree /base/proj/repo-GEO-42",
 				"HEAD def5678",
-				"branch refs/heads/flywheel-GEO-42",
+				"branch refs/heads/repo-GEO-42",
 				"",
-				"worktree /base/proj/flywheel-GEO-43",
+				"worktree /base/proj/repo-GEO-43",
 				"HEAD ghi9012",
-				"branch refs/heads/flywheel-GEO-43",
+				"branch refs/heads/repo-GEO-43",
 				"",
 			].join("\n");
 
@@ -409,8 +411,8 @@ describe("WorktreeManager", () => {
 			const origExists = fs.existsSync;
 			vi.spyOn(fs, "existsSync").mockImplementation((p: fs.PathLike) => {
 				const s = p.toString();
-				if (s.includes("flywheel-GEO-42")) return true;
-				if (s.includes("flywheel-GEO-43")) return false;
+				if (s.includes("repo-GEO-42")) return true;
+				if (s.includes("repo-GEO-43")) return false;
 				return origExists(s);
 			});
 
@@ -421,8 +423,8 @@ describe("WorktreeManager", () => {
 
 			const pruned = await mgr.pruneOrphans("/main/repo", "proj");
 
-			expect(pruned).toContain("/base/proj/flywheel-GEO-43");
-			expect(pruned).not.toContain("/base/proj/flywheel-GEO-42");
+			expect(pruned).toContain("/base/proj/repo-GEO-43");
+			expect(pruned).not.toContain("/base/proj/repo-GEO-42");
 
 			vi.restoreAllMocks();
 		});
@@ -462,7 +464,7 @@ describe("WorktreeManager", () => {
 				(c) => c.args.includes("branch") && c.args.includes("-D"),
 			);
 			expect(branchCall).toBeDefined();
-			expect(branchCall!.args).toContain("flywheel-GEO-42");
+			expect(branchCall!.args).toContain("repo-GEO-42");
 
 			vi.restoreAllMocks();
 		});
@@ -470,7 +472,7 @@ describe("WorktreeManager", () => {
 		it("is no-op when nothing exists (first run)", async () => {
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
-				new Error("error: branch 'flywheel-GEO-99' not found"), // git branch -D
+				new Error("error: branch 'repo-GEO-99' not found"), // git branch -D
 			]);
 			const mgr = new WorktreeManager(
 				{ baseDir: "/home/user/.flywheel/worktrees", bgDeleteFn: noopBgDelete },
@@ -485,7 +487,7 @@ describe("WorktreeManager", () => {
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_TWO_WORKTREES }, // list (isRegistered → true)
 				{ stdout: "" }, // git worktree prune (remove — ENOENT path)
-				new Error("error: branch 'flywheel-GEO-42' not found"), // branch -D
+				new Error("error: branch 'repo-GEO-42' not found"), // branch -D
 			]);
 			const mgr = new WorktreeManager(
 				{ baseDir: "/home/user/.flywheel/worktrees", bgDeleteFn: noopBgDelete },
@@ -507,7 +509,7 @@ describe("WorktreeManager", () => {
 			const bgDeleteCalls: Array<{ cmd: string; args: string[] }> = [];
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
-				new Error("error: branch 'flywheel-GEO-42' not found"), // branch -D
+				new Error("error: branch 'repo-GEO-42' not found"), // branch -D
 			]);
 			const mgr = new WorktreeManager(
 				{
@@ -527,7 +529,7 @@ describe("WorktreeManager", () => {
 			expect(bgDeleteCalls).toHaveLength(1);
 			expect(bgDeleteCalls[0]!.cmd).toBe("/bin/rm");
 			expect(bgDeleteCalls[0]!.args).toContain(
-				"/home/user/.flywheel/worktrees/proj/flywheel-GEO-42",
+				"/home/user/.flywheel/worktrees/proj/repo-GEO-42",
 			);
 
 			vi.restoreAllMocks();
