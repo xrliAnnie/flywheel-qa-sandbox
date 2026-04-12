@@ -722,15 +722,16 @@ fi
 # Requires: gbrain installed globally, configured via `gbrain init --supabase` or env var.
 # OPENAI_API_KEY is optional — without it, gbrain degrades to keyword-only search.
 GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
-if [ -n "$GBRAIN_PATH" ] && { [ -f "$HOME/.gbrain/config.json" ] || [ -n "${GBRAIN_DATABASE_URL:-}" ] || [ -n "${DATABASE_URL:-}" ]; }; then
+if [ -n "$GBRAIN_PATH" ] && [ -f "$HOME/.gbrain/config.json" ]; then
   # No env block: avoids writing secrets to .mcp.json on disk.
-  # Reliable config requires ~/.gbrain/config.json (via `gbrain init --supabase`).
+  # Config file required — env-only (GBRAIN_DATABASE_URL) won't reliably reach
+  # the Lead tmux session due to explicit env allowlist in _launch_claude().
   # OPENAI_API_KEY is propagated via tmux env allowlist for hybrid search.
   MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"${GBRAIN_PATH}\",\"args\":[\"serve\"]},"
   log "GBrain MCP: enabled (project Wiki)"
 else
   if [ -n "$GBRAIN_PATH" ]; then
-    log "GBrain MCP: skipped (installed but not configured — run 'gbrain init --supabase' or set GBRAIN_DATABASE_URL)"
+    log "GBrain MCP: skipped (installed but not configured — run 'gbrain init --supabase')"
   else
     log "GBrain MCP: skipped (gbrain not installed)"
   fi
