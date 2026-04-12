@@ -715,6 +715,27 @@ else
   log "WARNING: inbox-mcp not built (${INBOX_MCP_DIR} missing), CommDB push disabled"
 fi
 
+# FLY-90: gbrain MCP server for project Wiki (compound knowledge growth)
+# Provides Lead with 30 MCP tools: hybrid search, page CRUD, timeline, links, tags, etc.
+# Leads READ brain before responding, WRITE back decisions/learnings after conversations.
+# Requires: gbrain installed globally, configured via `gbrain init --supabase` or env var.
+# OPENAI_API_KEY is optional — without it, gbrain degrades to keyword-only search.
+if command -v gbrain &>/dev/null && { [ -f "$HOME/.gbrain/config.json" ] || [ -n "${GBRAIN_DATABASE_URL:-}" ] || [ -n "${DATABASE_URL:-}" ]; }; then
+  GBRAIN_OPENAI="${OPENAI_API_KEY:-}"
+  GBRAIN_ENV="\"GBRAIN_PROJECT_DIR\":\"${PROJECT_DIR}\""
+  if [ -n "$GBRAIN_OPENAI" ]; then
+    GBRAIN_ENV="${GBRAIN_ENV},\"OPENAI_API_KEY\":\"${GBRAIN_OPENAI}\""
+  fi
+  MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"bash\",\"args\":[\"-lc\",\"cd \\\"\\$GBRAIN_PROJECT_DIR\\\" && exec gbrain serve\"],\"env\":{${GBRAIN_ENV}}},"
+  log "GBrain MCP: enabled (project Wiki, project_dir=${PROJECT_DIR})"
+else
+  if command -v gbrain &>/dev/null; then
+    log "GBrain MCP: skipped (installed but not configured — run 'gbrain init --supabase' or set GBRAIN_DATABASE_URL)"
+  else
+    log "GBrain MCP: skipped (gbrain not installed)"
+  fi
+fi
+
 if [ -n "$MCP_SERVERS_JSON" ]; then
   # Remove trailing comma and wrap in JSON
   MCP_SERVERS_JSON="${MCP_SERVERS_JSON%,}"
