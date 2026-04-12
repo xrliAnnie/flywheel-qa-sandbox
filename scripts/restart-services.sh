@@ -884,10 +884,20 @@ if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
         exit 0
     fi
     notify_discord "✅ Lead 重启完成 (plugin=$plugin_needs_restart project_lead=$project_lead_changed)。"
+    # FLY-90: Sync gbrain project Wiki (non-blocking, best-effort)
+    if [[ -x "$HOME/.flywheel/bin/sync-gbrain-docs.sh" ]]; then
+        nohup "$HOME/.flywheel/bin/sync-gbrain-docs.sh" >/dev/null 2>&1 &
+        log "gbrain doc sync triggered (background PID $!)"
+    fi
     log "Done."
 else
     # Normal deploy path
     log "Starting restart: ${DEPLOYED_SHA:0:7} → ${CURRENT_HEAD:0:7} (bridge=$restart_bridge leads=$restart_all_leads)"
     deploy_and_verify
+    # FLY-90: Sync gbrain project Wiki (non-blocking, best-effort)
+    if [[ -x "$HOME/.flywheel/bin/sync-gbrain-docs.sh" ]]; then
+        nohup "$HOME/.flywheel/bin/sync-gbrain-docs.sh" >/dev/null 2>&1 &
+        log "gbrain doc sync triggered (background PID $!)"
+    fi
     log "Done."
 fi
