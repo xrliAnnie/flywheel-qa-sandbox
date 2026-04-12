@@ -97,6 +97,13 @@ if ! bridge_healthy; then
   fi
 fi
 
+# ── FLY-90: Daily gbrain doc reconciliation ───────────────────
+# Best-effort: sync failure must NOT abort standup delivery
+
+if [[ -x "$HOME/.flywheel/bin/sync-gbrain-docs.sh" ]]; then
+  "$HOME/.flywheel/bin/sync-gbrain-docs.sh" || log "WARNING: gbrain doc sync failed (non-fatal)"
+fi
+
 # ── Trigger standup ────────────────────────────────────────────
 
 log "Triggering standup at $BRIDGE_URL/api/standup/trigger"
