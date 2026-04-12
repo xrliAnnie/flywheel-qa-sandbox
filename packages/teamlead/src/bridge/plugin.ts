@@ -17,6 +17,7 @@ import {
 	type ProjectEntry,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
+import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
@@ -1549,10 +1550,23 @@ export async function startBridge(
 	});
 	gatePoller.start();
 
+	// FLY-92: Runner idle watchdog — detects stuck Runners via tmux capture-pane
+	const idleWatchdog = new RunnerIdleWatchdog({
+		pollIntervalMs: 30_000,
+		waitingThresholdCycles: 2,
+		projects,
+		store,
+		runtimeRegistry: registry,
+		captureSessionFn: defaultCaptureSession,
+	});
+	idleWatchdog.start();
+	console.log("[Bridge] RunnerIdleWatchdog started (30s poll)");
+
 	const close = async () => {
 		heartbeatService?.stop();
 		cleanupService?.stop();
 		gatePoller.stop();
+		idleWatchdog.stop();
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
 		// are the same instance, only tear down once. If they differ (caller
 		// injected retryDispatcher but not startDispatcher), tear down both.
