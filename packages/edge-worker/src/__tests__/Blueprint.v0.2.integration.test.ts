@@ -89,8 +89,8 @@ function makeMockWorktreeManager(
 	const defaultWorktreeInfo: WorktreeInfo = {
 		projectName: "test-project",
 		issueId: "GEO-42",
-		worktreePath: "/tmp/wt/test-project/flywheel-GEO-42",
-		branch: "flywheel-GEO-42",
+		worktreePath: "/tmp/wt/test-project/repo-GEO-42",
+		branch: "repo-GEO-42",
 		mainRepoPath: "/repo",
 	};
 	return {
@@ -159,14 +159,14 @@ describe("Blueprint v0.2 integration", () => {
 
 		// Skills injected into worktree
 		expect(mockSkillInjector.inject).toHaveBeenCalledWith(
-			"/tmp/wt/test-project/flywheel-GEO-42",
+			"/tmp/wt/test-project/repo-GEO-42",
 			expect.objectContaining({ issueId: "GEO-42" }),
 		);
 
 		// Adapter executed in worktree cwd
 		expect(mockAdapter.execute).toHaveBeenCalledWith(
 			expect.objectContaining({
-				cwd: "/tmp/wt/test-project/flywheel-GEO-42",
+				cwd: "/tmp/wt/test-project/repo-GEO-42",
 			}),
 		);
 
@@ -175,7 +175,7 @@ describe("Blueprint v0.2 integration", () => {
 
 		// Result includes v0.2 fields
 		expect(result.success).toBe(true);
-		expect(result.worktreePath).toBe("/tmp/wt/test-project/flywheel-GEO-42");
+		expect(result.worktreePath).toBe("/tmp/wt/test-project/repo-GEO-42");
 		expect(result.evidence).toBeDefined();
 		expect(result.evidence!.commitCount).toBe(2);
 	});
@@ -198,7 +198,7 @@ describe("Blueprint v0.2 integration", () => {
 		const result = await blueprint.run(makeNode(), "/repo", makeContext());
 
 		expect(result.success).toBe(false); // timeout = failure
-		expect(result.worktreePath).toBe("/tmp/wt/test-project/flywheel-GEO-42");
+		expect(result.worktreePath).toBe("/tmp/wt/test-project/repo-GEO-42");
 		expect(result.evidence).toBeDefined();
 	});
 

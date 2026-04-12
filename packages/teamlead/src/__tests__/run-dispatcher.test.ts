@@ -200,7 +200,7 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 		const blueprint = {
 			run: vi.fn().mockResolvedValue({
 				success: true,
-				worktreePath: "/tmp/wt/TestProject/flywheel-GEO-1",
+				worktreePath: "/tmp/wt/TestProject/test-GEO-1",
 			}),
 		};
 		const runtimes = new Map<string, ProjectRuntime>([
