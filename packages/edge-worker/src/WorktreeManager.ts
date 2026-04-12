@@ -92,15 +92,12 @@ export class WorktreeManager {
 	}
 
 	/** FLY-95: Project-scoped prefix for pruneOrphans filtering. */
-	private worktreePrefix(
-		mainRepoPath: string,
-		projectName: string,
-	): string {
+	private worktreePrefix(mainRepoPath: string, projectName: string): string {
 		if (this.baseDir) {
 			return path.join(this.baseDir, projectName) + path.sep;
 		}
 		const repoSlug = path.basename(mainRepoPath).toLowerCase();
-		return path.dirname(mainRepoPath) + path.sep + repoSlug + "-";
+		return `${path.dirname(mainRepoPath)}${path.sep}${repoSlug}-`;
 	}
 
 	async create(opts: {
@@ -110,7 +107,11 @@ export class WorktreeManager {
 		startPoint?: string;
 	}): Promise<WorktreeInfo> {
 		const branch = `flywheel-${opts.issueId}`;
-		const worktreePath = this.worktreeDir(opts.mainRepoPath, opts.projectName, opts.issueId);
+		const worktreePath = this.worktreeDir(
+			opts.mainRepoPath,
+			opts.projectName,
+			opts.issueId,
+		);
 		const startPoint = opts.startPoint ?? "origin/main";
 
 		// git worktree add
