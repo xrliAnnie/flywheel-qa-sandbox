@@ -176,16 +176,21 @@ export class Blueprint {
 		// ── Worktree setup (v0.2 — own try/catch) ──────────────
 		if (this.worktreeManager) {
 			const projectName = ctx.projectName ?? ctx.teamName;
+			// FLY-95: Role-aware worktree naming to prevent main/QA collision
+			const rawRole = ctx.sessionRole ?? "main";
+			const role =
+				rawRole.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || "main";
+			const worktreeIssueId = role === "main" ? node.id : `${node.id}-${role}`;
 			try {
 				await this.worktreeManager.removeIfExists(
 					projectRoot,
 					projectName,
-					node.id,
+					worktreeIssueId,
 				);
 				worktreeInfo = await this.worktreeManager.create({
 					mainRepoPath: projectRoot,
 					projectName,
-					issueId: node.id,
+					issueId: worktreeIssueId,
 				});
 				cwd = worktreeInfo.worktreePath;
 			} catch (error) {

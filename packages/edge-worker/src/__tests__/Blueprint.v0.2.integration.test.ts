@@ -298,4 +298,134 @@ describe("Blueprint v0.2 integration", () => {
 
 		warnSpy.mockRestore();
 	});
+
+	// ── FLY-95: Role-aware worktree naming ──────────────
+
+	it("worktree uses plain issueId when sessionRole is 'main'", async () => {
+		const mockWorktreeManager = makeMockWorktreeManager();
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker({ commitCount: 1 }),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			mockWorktreeManager,
+		);
+
+		await blueprint.run(
+			makeNode("GEO-42"),
+			"/repo",
+			makeContext({ sessionRole: "main" }),
+		);
+
+		expect(mockWorktreeManager.removeIfExists).toHaveBeenCalledWith(
+			"/repo",
+			"test-project",
+			"GEO-42",
+		);
+		expect(mockWorktreeManager.create).toHaveBeenCalledWith({
+			mainRepoPath: "/repo",
+			projectName: "test-project",
+			issueId: "GEO-42",
+		});
+	});
+
+	it("worktree uses issueId-role suffix when sessionRole is 'qa'", async () => {
+		const mockWorktreeManager = makeMockWorktreeManager();
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker({ commitCount: 1 }),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			mockWorktreeManager,
+		);
+
+		await blueprint.run(
+			makeNode("GEO-42"),
+			"/repo",
+			makeContext({ sessionRole: "qa" }),
+		);
+
+		expect(mockWorktreeManager.removeIfExists).toHaveBeenCalledWith(
+			"/repo",
+			"test-project",
+			"GEO-42-qa",
+		);
+		expect(mockWorktreeManager.create).toHaveBeenCalledWith({
+			mainRepoPath: "/repo",
+			projectName: "test-project",
+			issueId: "GEO-42-qa",
+		});
+	});
+
+	it("worktree defaults to 'main' when sessionRole is undefined", async () => {
+		const mockWorktreeManager = makeMockWorktreeManager();
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker({ commitCount: 1 }),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			mockWorktreeManager,
+		);
+
+		await blueprint.run(
+			makeNode("GEO-42"),
+			"/repo",
+			makeContext({ sessionRole: undefined }),
+		);
+
+		// No role suffix — uses plain issueId
+		expect(mockWorktreeManager.create).toHaveBeenCalledWith({
+			mainRepoPath: "/repo",
+			projectName: "test-project",
+			issueId: "GEO-42",
+		});
+	});
+
+	it("worktree sanitizes unsafe sessionRole characters", async () => {
+		const mockWorktreeManager = makeMockWorktreeManager();
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker({ commitCount: 1 }),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			mockWorktreeManager,
+		);
+
+		await blueprint.run(
+			makeNode("GEO-42"),
+			"/repo",
+			makeContext({ sessionRole: "QA/../hack" }),
+		);
+
+		// Sanitized to "qahack" — unsafe chars stripped, lowercased
+		expect(mockWorktreeManager.create).toHaveBeenCalledWith({
+			mainRepoPath: "/repo",
+			projectName: "test-project",
+			issueId: "GEO-42-qahack",
+		});
+	});
+
+	it("worktree falls back to 'main' when role is all unsafe characters", async () => {
+		const mockWorktreeManager = makeMockWorktreeManager();
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker({ commitCount: 1 }),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			mockWorktreeManager,
+		);
+
+		await blueprint.run(
+			makeNode("GEO-42"),
+			"/repo",
+			makeContext({ sessionRole: "../../" }),
+		);
+
+		// All chars stripped → empty → falls back to "main" → no suffix
+		expect(mockWorktreeManager.create).toHaveBeenCalledWith({
+			mainRepoPath: "/repo",
+			projectName: "test-project",
+			issueId: "GEO-42",
+		});
+	});
 });
