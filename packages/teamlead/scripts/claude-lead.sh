@@ -575,6 +575,7 @@ _launch_claude() {
     -e "BRIDGE_URL=${BRIDGE_URL:-}"
     -e "TEAMLEAD_API_TOKEN=${TEAMLEAD_API_TOKEN:-}"
     -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
+    -e "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
     -e "HOME=${HOME}"
     -e "PATH=${PATH}"
   )
@@ -722,8 +723,9 @@ fi
 # OPENAI_API_KEY is optional — without it, gbrain degrades to keyword-only search.
 GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
 if [ -n "$GBRAIN_PATH" ] && { [ -f "$HOME/.gbrain/config.json" ] || [ -n "${GBRAIN_DATABASE_URL:-}" ] || [ -n "${DATABASE_URL:-}" ]; }; then
-  # No env block needed: subprocess inherits OPENAI_API_KEY, DATABASE_URL, etc.
-  # from parent environment. Avoids writing secrets to .mcp.json on disk.
+  # No env block: avoids writing secrets to .mcp.json on disk.
+  # Reliable config requires ~/.gbrain/config.json (via `gbrain init --supabase`).
+  # OPENAI_API_KEY is propagated via tmux env allowlist for hybrid search.
   MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"${GBRAIN_PATH}\",\"args\":[\"serve\"]},"
   log "GBrain MCP: enabled (project Wiki)"
 else
