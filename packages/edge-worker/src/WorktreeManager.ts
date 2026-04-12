@@ -1,6 +1,5 @@
 import { execFile, spawn } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { createLogger } from "flywheel-core";
 
@@ -64,15 +63,41 @@ function defaultBgDelete(cmd: string, args: string[]): void {
 // ─── WorktreeManager ────────────────────────────
 
 export class WorktreeManager {
-	private readonly baseDir: string;
+	private readonly baseDir: string | undefined;
 	private readonly exec: WorktreeExecFn;
 	private readonly bgDelete: BgDeleteFn;
 
 	constructor(config?: WorktreeConfig, execFn?: WorktreeExecFn) {
-		this.baseDir =
-			config?.baseDir ?? path.join(os.homedir(), ".flywheel", "worktrees");
+		this.baseDir = config?.baseDir;
 		this.exec = execFn ?? defaultExec;
 		this.bgDelete = config?.bgDeleteFn ?? defaultBgDelete;
+	}
+
+	/**
+	 * FLY-95: Compute worktree directory as a sibling of the main repo.
+	 * e.g. mainRepoPath=/Users/x/Dev/GeoForge3D → /Users/x/Dev/flywheel-GEO-42
+	 * Falls back to explicit baseDir/projectName/ if configured (backward compat).
+	 */
+	private worktreeDir(
+		mainRepoPath: string,
+		projectName: string,
+		issueId: string,
+	): string {
+		if (this.baseDir) {
+			return path.join(this.baseDir, projectName, `flywheel-${issueId}`);
+		}
+		// FLY-95: Derive from projectDir — e.g. /Users/x/Dev/GeoForge3D → /Users/x/Dev/geoforge3d-GEO-42
+		const repoSlug = path.basename(mainRepoPath).toLowerCase();
+		return path.join(path.dirname(mainRepoPath), `${repoSlug}-${issueId}`);
+	}
+
+	/** FLY-95: Project-scoped prefix for pruneOrphans filtering. */
+	private worktreePrefix(mainRepoPath: string, projectName: string): string {
+		if (this.baseDir) {
+			return path.join(this.baseDir, projectName) + path.sep;
+		}
+		const repoSlug = path.basename(mainRepoPath).toLowerCase();
+		return `${path.dirname(mainRepoPath)}${path.sep}${repoSlug}-`;
 	}
 
 	async create(opts: {
@@ -82,7 +107,11 @@ export class WorktreeManager {
 		startPoint?: string;
 	}): Promise<WorktreeInfo> {
 		const branch = `flywheel-${opts.issueId}`;
-		const worktreePath = path.join(this.baseDir, opts.projectName, branch);
+		const worktreePath = this.worktreeDir(
+			opts.mainRepoPath,
+			opts.projectName,
+			opts.issueId,
+		);
 		const startPoint = opts.startPoint ?? "origin/main";
 
 		// git worktree add
@@ -177,7 +206,7 @@ export class WorktreeManager {
 		issueId: string,
 	): Promise<boolean> {
 		const branch = `flywheel-${issueId}`;
-		const worktreePath = path.join(this.baseDir, projectName, branch);
+		const worktreePath = this.worktreeDir(mainRepoPath, projectName, issueId);
 
 		// Step 1: remove worktree if registered
 		if (await this.isRegistered(mainRepoPath, worktreePath)) {
@@ -214,7 +243,7 @@ export class WorktreeManager {
 		const worktrees = await this.list(mainRepoPath);
 		const pruned: string[] = [];
 
-		const projectPrefix = path.join(this.baseDir, projectName) + path.sep;
+		const projectPrefix = this.worktreePrefix(mainRepoPath, projectName);
 
 		for (const wt of worktrees) {
 			// Only prune flywheel-* branches under this project's directory
