@@ -181,19 +181,18 @@ describe("WorktreeManager", () => {
 			).rejects.toThrow(/already checked out/i);
 		});
 
-		it("uses default baseDir when config omitted", async () => {
+		it("FLY-95: defaults to sibling of mainRepoPath when no baseDir", async () => {
 			const { fn } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
 			const mgr = new WorktreeManager(undefined, fn);
 
 			const info = await mgr.create({
-				mainRepoPath: "/main/repo",
+				mainRepoPath: "/Users/x/Dev/GeoForge3D",
 				projectName: "proj",
 				issueId: "GEO-42",
 			});
 
-			expect(info.worktreePath).toContain(
-				path.join(os.homedir(), ".flywheel", "worktrees"),
-			);
+			// /Users/x/Dev/flywheel-GEO-42  (sibling of GeoForge3D)
+			expect(info.worktreePath).toBe("/Users/x/Dev/flywheel-GEO-42");
 		});
 	});
 
