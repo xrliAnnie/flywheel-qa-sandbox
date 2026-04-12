@@ -105,10 +105,25 @@ export class RetryDispatcher implements IRetryDispatcher {
 
 		entry.promise = runtime.blueprint
 			.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
-			.then(() => {
-				console.log(
-					`[RetryDispatcher] ${newExecutionId} completed for issue ${req.issueIdentifier ?? req.issueId}`,
-				);
+			.then((result) => {
+				if (result.worktreePath) {
+					console.log(
+						`[RetryDispatcher] ${newExecutionId} ran in worktree: ${result.worktreePath}`,
+					);
+				}
+				if (result.success) {
+					console.log(
+						`[RetryDispatcher] ${newExecutionId} completed for issue ${req.issueIdentifier ?? req.issueId}`,
+					);
+				} else {
+					console.warn(
+						`[RetryDispatcher] ${newExecutionId} resolved with failure for issue ${req.issueIdentifier ?? req.issueId}: ${result.error ?? "unknown"}`,
+					);
+					// FLY-95: Clean up orphan pre-registration when Runner never self-registered
+					if (!result.sessionId) {
+						this.cleanupPreRegistration(newExecutionId, req.projectName);
+					}
+				}
 			})
 			.catch((err: unknown) => {
 				console.error(
@@ -281,10 +296,25 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 
 		entry.promise = runtime.blueprint
 			.run({ id: req.issueId, blockedBy: [] }, runtime.projectRoot, ctx)
-			.then(() => {
-				console.log(
-					`[RunDispatcher] ${executionId} completed for issue ${req.issueId}`,
-				);
+			.then((result) => {
+				if (result.worktreePath) {
+					console.log(
+						`[RunDispatcher] ${executionId} ran in worktree: ${result.worktreePath}`,
+					);
+				}
+				if (result.success) {
+					console.log(
+						`[RunDispatcher] ${executionId} completed for issue ${req.issueId}`,
+					);
+				} else {
+					console.warn(
+						`[RunDispatcher] ${executionId} resolved with failure for issue ${req.issueId}: ${result.error ?? "unknown"}`,
+					);
+					// FLY-95: Clean up orphan pre-registration when Runner never self-registered
+					if (!result.sessionId) {
+						this.cleanupPreRegistration(executionId, req.projectName);
+					}
+				}
 			})
 			.catch((err: unknown) => {
 				console.error(
