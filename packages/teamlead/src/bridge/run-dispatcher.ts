@@ -43,7 +43,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 
 	/** FLY-59: Composite inflight key for per-role dedup */
 	protected inflightKey(issueId: string, role: string): string {
-		return `${issueId}:${role}`;
+		// FLY-95: Normalize role to match Blueprint worktree naming —
+		// prevents "qa", "QA", "q/a" from being treated as different lanes
+		// while mapping to the same worktree on disk.
+		const normalized =
+			role.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || "main";
+		return `${issueId}:${normalized}`;
 	}
 
 	async dispatch(req: RetryRequest): Promise<RetryResult> {

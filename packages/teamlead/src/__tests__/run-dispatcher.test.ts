@@ -314,4 +314,57 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 		expect(r2.executionId).toBeDefined();
 		expect(r2.executionId).not.toBe(r1.executionId);
 	});
+
+	it("FLY-95: role normalization prevents worktree collision", async () => {
+		// Use a controlled promise so the first start stays inflight
+		let resolveRun!: (v: { success: boolean }) => void;
+		const blueprint = {
+			run: vi.fn(
+				() =>
+					new Promise<{ success: boolean }>((resolve) => {
+						resolveRun = resolve;
+					}),
+			),
+		};
+		const runtimes = new Map<string, ProjectRuntime>([
+			[
+				"TestProject",
+				{
+					blueprint: blueprint as any,
+					projectRoot: "/tmp/test",
+					tmuxSessionName: "runner-test",
+				},
+			],
+		]);
+		const dispatcher = new RunDispatcher(runtimes, [], 5);
+
+		// Start "qa" role — stays inflight
+		await dispatcher.start({
+			issueId: "GEO-1",
+			projectName: "TestProject",
+			sessionRole: "qa",
+		});
+
+		// "QA" normalizes to same key — should reject as duplicate
+		await expect(
+			dispatcher.start({
+				issueId: "GEO-1",
+				projectName: "TestProject",
+				sessionRole: "QA",
+			}),
+		).rejects.toThrow("already in progress");
+
+		// "q/a" also normalizes to "qa" — should reject
+		await expect(
+			dispatcher.start({
+				issueId: "GEO-1",
+				projectName: "TestProject",
+				sessionRole: "q/a",
+			}),
+		).rejects.toThrow("already in progress");
+
+		// Clean up
+		resolveRun({ success: true });
+		await dispatcher.drain();
+	});
 });
