@@ -83,11 +83,12 @@ export class WorktreeManager {
 		projectName: string,
 		issueId: string,
 	): string {
-		const branch = `flywheel-${issueId}`;
 		if (this.baseDir) {
-			return path.join(this.baseDir, projectName, branch);
+			return path.join(this.baseDir, projectName, `flywheel-${issueId}`);
 		}
-		return path.join(path.dirname(mainRepoPath), branch);
+		// FLY-95: Derive from projectDir — e.g. /Users/x/Dev/GeoForge3D → /Users/x/Dev/geoforge3d-GEO-42
+		const repoSlug = path.basename(mainRepoPath).toLowerCase();
+		return path.join(path.dirname(mainRepoPath), `${repoSlug}-${issueId}`);
 	}
 
 	/** FLY-95: Project-scoped prefix for pruneOrphans filtering. */
@@ -98,7 +99,8 @@ export class WorktreeManager {
 		if (this.baseDir) {
 			return path.join(this.baseDir, projectName) + path.sep;
 		}
-		return path.dirname(mainRepoPath) + path.sep + "flywheel-";
+		const repoSlug = path.basename(mainRepoPath).toLowerCase();
+		return path.dirname(mainRepoPath) + path.sep + repoSlug + "-";
 	}
 
 	async create(opts: {

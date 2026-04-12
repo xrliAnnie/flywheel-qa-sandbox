@@ -181,7 +181,7 @@ describe("WorktreeManager", () => {
 			).rejects.toThrow(/already checked out/i);
 		});
 
-		it("FLY-95: defaults to sibling of mainRepoPath when no baseDir", async () => {
+		it("FLY-95: derives worktree path from projectDir when no baseDir", async () => {
 			const { fn } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
 			const mgr = new WorktreeManager(undefined, fn);
 
@@ -191,8 +191,8 @@ describe("WorktreeManager", () => {
 				issueId: "GEO-42",
 			});
 
-			// /Users/x/Dev/flywheel-GEO-42  (sibling of GeoForge3D)
-			expect(info.worktreePath).toBe("/Users/x/Dev/flywheel-GEO-42");
+			// /Users/x/Dev/geoforge3d-GEO-42  (sibling, lowercase basename)
+			expect(info.worktreePath).toBe("/Users/x/Dev/geoforge3d-GEO-42");
 		});
 	});
 
