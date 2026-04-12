@@ -40,6 +40,11 @@ get_workspace_ref_for() {
   }'
 }
 
+get_selected_workspace_ref() {
+  # Return ref of the currently selected workspace (marked with * prefix)
+  get_cmux_workspaces | grep '^\*' | sed 's/^[* ]*//' | awk '{print $1}' || true
+}
+
 linked_session_exists() {
   local session_name="$1"
   tmux has-session -t "=$session_name" 2>/dev/null
@@ -62,11 +67,14 @@ create_workspace_for_window() {
 
   # 3. Create cmux workspace attaching to the linked session
   cmux new-workspace --command "tmux attach -t '=${view_session}'"
-  sleep 0.5
+  sleep 0.3
 
-  # 4. Rename workspace (target: the newly created workspace, which is now selected)
-  # cmux new-workspace auto-selects the new workspace, so rename-workspace targets it
-  cmux rename-workspace "$window_name" 2>/dev/null || true
+  # 4. Rename workspace — explicitly target by ref to avoid race with user switching tabs
+  local new_ref
+  new_ref=$(get_selected_workspace_ref)
+  if [[ -n "$new_ref" ]]; then
+    cmux rename-workspace --workspace "$new_ref" "$window_name" 2>/dev/null || true
+  fi
 }
 
 cleanup_stale_workspaces() {
@@ -75,7 +83,11 @@ cleanup_stale_workspaces() {
   active_names=$(get_tmux_agent_windows | cut -d'|' -f2)
 
   # Check each linked session — if its window no longer exists, clean up fully
-  tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${VIEW_PREFIX}" | while read -r sess; do
+  local linked_sessions
+  linked_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${VIEW_PREFIX}" || true)
+  [[ -z "$linked_sessions" ]] && return 0
+
+  while read -r sess; do
     local agent_name="${sess#${VIEW_PREFIX}}"
     # Exact match check (not substring)
     if ! echo "$active_names" | grep -qx "$agent_name"; then
@@ -91,7 +103,7 @@ cleanup_stale_workspaces() {
       # 2. Kill the linked session
       tmux kill-session -t "=$sess" 2>/dev/null || true
     fi
-  done
+  done <<< "$linked_sessions"
 }
 
 reconcile_existing_workspaces() {
@@ -122,11 +134,17 @@ reconcile_existing_workspaces() {
 }
 
 sync_once() {
+  # Guard: if flywheel session doesn't exist, skip entirely (don't cleanup valid workspaces)
+  if ! tmux has-session -t "=$FLYWHEEL_SESSION" 2>/dev/null; then
+    log "flywheel session not found — skipping sync"
+    return 0
+  fi
+
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
 
   if [[ -z "$tmux_windows" ]]; then
-    # No agent windows — just cleanup any stale workspaces
+    # No agent windows (but session exists) — cleanup any stale workspaces
     cleanup_stale_workspaces
     return 0
   fi
