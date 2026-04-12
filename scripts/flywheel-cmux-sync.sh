@@ -11,9 +11,29 @@ VIEW_PREFIX="cmux-"  # Linked session naming: cmux-<window_name>
 log() { echo "[cmux-sync $(date '+%H:%M:%S')] $*"; }
 
 get_tmux_agent_windows() {
-  # Returns: window_id|window_name per line (excludes default shell)
-  tmux list-windows -t "$FLYWHEEL_SESSION" -F '#{window_id}|#{window_name}' 2>/dev/null \
-    | grep -v '|zsh$' | grep -v '|bash$' || true
+  # Returns: session_name|window_id|window_name per line
+  # Scans both 'flywheel' (Leads) and 'runner-*' (Runners) sessions.
+  # Excludes default shell windows (zsh/bash).
+  local all_windows=""
+
+  # 1. Flywheel session (Leads)
+  all_windows+=$(tmux list-windows -t "$FLYWHEEL_SESSION" -F "#{session_name}|#{window_id}|#{window_name}" 2>/dev/null || true)
+
+  # 2. Runner sessions: runner-<projectName> (e.g., runner-geoforge3d)
+  local runner_sessions
+  runner_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^runner-' || true)
+  if [[ -n "$runner_sessions" ]]; then
+    while read -r rsess; do
+      local rwindows
+      rwindows=$(tmux list-windows -t "$rsess" -F "#{session_name}|#{window_id}|#{window_name}" 2>/dev/null || true)
+      if [[ -n "$rwindows" ]]; then
+        all_windows+=$'\n'"$rwindows"
+      fi
+    done <<< "$runner_sessions"
+  fi
+
+  # Filter out default shell windows
+  echo "$all_windows" | grep -v '|zsh$' | grep -v '|bash$' | grep -v '^$' || true
 }
 
 get_cmux_workspaces() {
@@ -51,15 +71,16 @@ linked_session_exists() {
 }
 
 create_workspace_for_window() {
-  local window_id="$1"
-  local window_name="$2"
+  local source_session="$1"
+  local window_id="$2"
+  local window_name="$3"
   local view_session="${VIEW_PREFIX}${window_name}"
 
-  log "Creating workspace for: $window_name ($window_id)"
+  log "Creating workspace for: $window_name ($window_id) from session $source_session"
 
-  # 1. Create linked session (shares windows, independent current-window)
+  # 1. Create linked session (shares windows with source session, independent current-window)
   if ! linked_session_exists "$view_session"; then
-    tmux new-session -d -t "$FLYWHEEL_SESSION" -s "$view_session" 2>/dev/null || true
+    tmux new-session -d -t "$source_session" -s "$view_session" 2>/dev/null || true
   fi
 
   # 2. Select the target window in the linked session
@@ -84,9 +105,9 @@ create_workspace_for_window() {
 }
 
 cleanup_stale_workspaces() {
-  # Get current tmux window names (exact list)
+  # Get current tmux window names (exact list, field 3 in session|wid|wname format)
   local active_names
-  active_names=$(get_tmux_agent_windows | cut -d'|' -f2)
+  active_names=$(get_tmux_agent_windows | cut -d'|' -f3)
 
   # Check each linked session — if its window no longer exists, clean up fully
   local linked_sessions
@@ -114,56 +135,46 @@ cleanup_stale_workspaces() {
 
 reconcile_existing_workspaces() {
   # For workspaces that exist but have no linked session (e.g., after Lead restart
-  # or cmux reopen with stale workspace), rebuild linked session AND respawn the
-  # cmux workspace's pane to reconnect to the new session.
-  # This ensures the full chain: cmux workspace → tmux attach → linked session → window.
+  # or cmux reopen with stale workspace), close the broken workspace and let the
+  # create phase rebuild it from scratch. This is more reliable than respawn-pane,
+  # which may not work on all pane states.
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
   [[ -z "$tmux_windows" ]] && return 0
 
-  while IFS='|' read -r wid wname; do
+  while IFS='|' read -r src_sess wid wname; do
     local view_session="${VIEW_PREFIX}${wname}"
-    # Workspace exists but linked session doesn't → rebuild full chain
+    # Workspace exists but linked session doesn't → close workspace (create phase will rebuild)
     if workspace_exists_for "$wname" && ! linked_session_exists "$view_session"; then
-      log "Reconciling: rebuilding linked session + respawning pane for '$wname'"
-      # 1. Rebuild linked session
-      tmux new-session -d -t "$FLYWHEEL_SESSION" -s "$view_session" 2>/dev/null || true
-      tmux select-window -t "${view_session}:${wid}" 2>/dev/null || true
-      # 2. Respawn workspace pane to connect to new linked session
+      log "Reconciling: closing stale workspace for '$wname' (linked session dead)"
       local ws_ref
       ws_ref=$(get_workspace_ref_for "$wname")
       if [[ -n "$ws_ref" ]]; then
-        cmux respawn-pane --workspace "$ws_ref" --command "tmux attach -t '=${view_session}'" 2>/dev/null || true
+        cmux close-workspace --workspace "$ws_ref" 2>/dev/null || true
       fi
     fi
   done <<< "$tmux_windows"
 }
 
 sync_once() {
-  # Guard: if flywheel session doesn't exist, skip entirely (don't cleanup valid workspaces)
-  if ! tmux has-session -t "=$FLYWHEEL_SESSION" 2>/dev/null; then
-    log "flywheel session not found — skipping sync"
-    return 0
-  fi
-
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
 
   if [[ -z "$tmux_windows" ]]; then
-    # No agent windows (but session exists) — cleanup any stale workspaces
+    # No agent windows in any session — just cleanup stale
     cleanup_stale_workspaces
     return 0
   fi
 
-  # 1. Reconcile: fix workspaces with missing linked sessions
+  # 1. Reconcile: close workspaces with dead linked sessions (create phase will rebuild)
   reconcile_existing_workspaces
 
   # 2. Create missing workspaces
-  while IFS='|' read -r wid wname; do
+  while IFS='|' read -r src_sess wid wname; do
     if workspace_exists_for "$wname"; then
       continue
     fi
-    create_workspace_for_window "$wid" "$wname"
+    create_workspace_for_window "$src_sess" "$wid" "$wname"
   done <<< "$tmux_windows"
 
   # 3. Cleanup stale (dead windows → close workspace + kill linked session)
