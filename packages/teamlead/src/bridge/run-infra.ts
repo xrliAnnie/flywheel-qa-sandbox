@@ -84,7 +84,7 @@ async function createRunBlueprint(
 	tmuxSessionName: string,
 	fetchIssue: ReturnType<typeof createFetchIssue>,
 	eventEmitter: DirectEventSink,
-	sessionTimeoutMs: number = 14_400_000, // 4h (same as retry runtime)
+	sessionTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; idle detection via FLY-92 watchdog)
 	checkpointConfig?: CheckpointsConfig, // FLY-47
 	worktreeManager?: WorktreeManager, // FLY-95
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {

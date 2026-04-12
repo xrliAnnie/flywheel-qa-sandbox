@@ -466,7 +466,7 @@ export class Blueprint {
 			: baseSystemPrompt;
 
 		// ── Adapter execution (GEO-157: IAdapter.execute()) ──
-		const timeoutMs = ctx.sessionTimeoutMs ?? 5_400_000; // 90 min fallback (FLY-86)
+		const timeoutMs = ctx.sessionTimeoutMs ?? 86_400_000; // 24h safety net (FLY-97; idle detection via FLY-92 watchdog)
 
 		// GEO-206: Compute commDbPath for Lead ↔ Runner communication.
 		// ctx.projectName is resolved from projects config canonical name in
@@ -500,7 +500,7 @@ export class Blueprint {
 				sessionDisplayName: `${hydrated.issueId} ${cleanIssueTitle(hydrated.issueTitle)}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
 				commDbPath,
-				waitingTimeoutMs: 14_400_000, // GEO-206 Phase 2: 4h when waiting for Lead
+				waitingTimeoutMs: 43_200_000, // FLY-97: 12h when waiting for Lead
 				leadId: ctx.leadId,
 				projectName: ctx.projectName,
 				bridgeUrl: process.env.TEAMLEAD_URL,

@@ -86,6 +86,7 @@ Current version: see `doc/VERSION`
 | FLY-59: Session Role/Lane Modeling | ✅ Merged (PR #123) |
 | FLY-51 + FLY-58: Approve/Ship two-step flow + Runner tmux lifecycle | ✅ Merged (PR #122) |
 | FLY-71: Standup channel/bot fix + triage execution gate | ✅ Merged (Flywheel PR #121, GeoForge3D PR #155) |
+| FLY-92: Runner idle watchdog — system-level idle detection + bubble up | ✅ Merged (PR #137) |
 
 ## Doc Structure & Lifecycle
 
