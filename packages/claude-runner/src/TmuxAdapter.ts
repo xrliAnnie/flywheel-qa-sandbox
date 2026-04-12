@@ -35,7 +35,7 @@ export class TmuxAdapter implements IAdapter {
 		private sessionName: string = "flywheel",
 		private execFileFn: ExecFileFn = defaultExecFile,
 		private pollIntervalMs: number = 5000,
-		private defaultTimeoutMs: number = 5_400_000, // 90 min (FLY-86)
+		private defaultTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; idle detection via FLY-92 watchdog)
 		private hookServer?: IHookCallbackServer,
 	) {}
 
@@ -289,13 +289,12 @@ export class TmuxAdapter implements IAdapter {
 	 * GEO-206 Phase 2: Check comm.db for pending questions and manage dynamic timeout.
 	 *
 	 * Timeout logic: When Runner is waiting for Lead, time spent waiting does NOT
-	 * count against the normal 90-min timeout. This prevents the scenario where
-	 * Lead responds after 100 minutes but Runner immediately times out because
-	 * elapsed (100min) > normalTimeout (90min).
+	 * count against the normal active-work timeout. This prevents the scenario
+	 * where Lead responds after a long delay but Runner immediately times out.
 	 *
 	 * We track `totalWaitingMs` — accumulated time spent in waiting state.
 	 * Normal timeout checks: (elapsed - totalWaitingMs) > normalTimeoutMs
-	 * Waiting hard cap: elapsed > waitingTimeoutMs (4h absolute limit)
+	 * Waiting hard cap: elapsed > waitingTimeoutMs (12h absolute limit)
 	 */
 	private checkDynamicTimeout(
 		ctx: AdapterExecutionContext,
@@ -340,7 +339,7 @@ export class TmuxAdapter implements IAdapter {
 		const elapsed = now - start;
 		if (isWaiting) {
 			// While waiting: only enforce absolute hard cap
-			const hardCap = ctx.waitingTimeoutMs ?? 14_400_000; // 4h
+			const hardCap = ctx.waitingTimeoutMs ?? 43_200_000; // 12h (FLY-97)
 			return { shouldTimeout: elapsed > hardCap, isWaiting };
 		}
 
