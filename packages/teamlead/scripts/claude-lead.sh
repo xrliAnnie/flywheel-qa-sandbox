@@ -720,16 +720,20 @@ fi
 # Leads READ brain before responding, WRITE back decisions/learnings after conversations.
 # Requires: gbrain installed globally, configured via `gbrain init --supabase` or env var.
 # OPENAI_API_KEY is optional — without it, gbrain degrades to keyword-only search.
-if command -v gbrain &>/dev/null && { [ -f "$HOME/.gbrain/config.json" ] || [ -n "${GBRAIN_DATABASE_URL:-}" ] || [ -n "${DATABASE_URL:-}" ]; }; then
-  GBRAIN_OPENAI="${OPENAI_API_KEY:-}"
-  GBRAIN_ENV="\"GBRAIN_PROJECT_DIR\":\"${PROJECT_DIR}\""
-  if [ -n "$GBRAIN_OPENAI" ]; then
-    GBRAIN_ENV="${GBRAIN_ENV},\"OPENAI_API_KEY\":\"${GBRAIN_OPENAI}\""
+GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
+if [ -n "$GBRAIN_PATH" ] && { [ -f "$HOME/.gbrain/config.json" ] || [ -n "${GBRAIN_DATABASE_URL:-}" ] || [ -n "${DATABASE_URL:-}" ]; }; then
+  GBRAIN_ENV=""
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    GBRAIN_ENV="\"OPENAI_API_KEY\":\"${OPENAI_API_KEY}\""
   fi
-  MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"bash\",\"args\":[\"-lc\",\"cd \\\"\\$GBRAIN_PROJECT_DIR\\\" && exec gbrain serve\"],\"env\":{${GBRAIN_ENV}}},"
-  log "GBrain MCP: enabled (project Wiki, project_dir=${PROJECT_DIR})"
+  if [ -n "$GBRAIN_ENV" ]; then
+    MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"${GBRAIN_PATH}\",\"args\":[\"serve\"],\"env\":{${GBRAIN_ENV}}},"
+  else
+    MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"${GBRAIN_PATH}\",\"args\":[\"serve\"]},"
+  fi
+  log "GBrain MCP: enabled (project Wiki)"
 else
-  if command -v gbrain &>/dev/null; then
+  if [ -n "$GBRAIN_PATH" ]; then
     log "GBrain MCP: skipped (installed but not configured — run 'gbrain init --supabase' or set GBRAIN_DATABASE_URL)"
   else
     log "GBrain MCP: skipped (gbrain not installed)"
