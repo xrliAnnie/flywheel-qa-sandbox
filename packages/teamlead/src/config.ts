@@ -125,5 +125,8 @@ export function loadConfig(): BridgeConfig {
 			}
 			return n;
 		})(),
+		// FLY-91: Chat thread feature flag (env: TEAMLEAD_CHAT_THREADS_ENABLED=true)
+		chatThreadsEnabled: process.env.TEAMLEAD_CHAT_THREADS_ENABLED === "true",
+		discordOwnerUserId: process.env.DISCORD_OWNER_USER_ID,
 	};
 }

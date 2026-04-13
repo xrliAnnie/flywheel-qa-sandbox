@@ -400,6 +400,21 @@ export class StateStore {
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
+		// FLY-91: Chat threads for per-issue conversation in chatChannel
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS chat_threads (
+				thread_id TEXT PRIMARY KEY,
+				channel_id TEXT NOT NULL,
+				issue_id TEXT,
+				lead_id TEXT,
+				created_at TEXT DEFAULT (datetime('now')),
+				discord_missing_at TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_threads_issue_channel ON chat_threads(issue_id, channel_id)",
+		);
+
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
 	}
@@ -1179,6 +1194,80 @@ export class StateStore {
 		this.db.run("UPDATE sessions SET thread_id = NULL WHERE thread_id = ?", [
 			threadId,
 		]);
+		this.save();
+	}
+
+	// --- FLY-91: Chat thread CRUD (per-issue threads in chatChannel) ---
+
+	/** Delete-first upsert (same pattern as upsertThread for Forum). */
+	upsertChatThread(
+		threadId: string,
+		channelId: string,
+		issueId: string,
+		leadId?: string,
+	): void {
+		this.db.run(
+			"DELETE FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND thread_id != ?",
+			[issueId, channelId, threadId],
+		);
+		this.db.run(
+			`INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id)
+			 VALUES (?, ?, ?, ?)
+			 ON CONFLICT(thread_id) DO UPDATE SET
+				channel_id = excluded.channel_id,
+				issue_id = excluded.issue_id,
+				lead_id = excluded.lead_id`,
+			[threadId, channelId, issueId, leadId ?? null],
+		);
+		this.save();
+	}
+
+	getChatThreadByIssue(
+		issueId: string,
+		channelId: string,
+	): { thread_id: string; channel_id: string } | undefined {
+		const stmt = this.db.prepare(
+			"SELECT thread_id, channel_id FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND discord_missing_at IS NULL",
+		);
+		stmt.bind([issueId, channelId]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			return {
+				thread_id: row.thread_id as string,
+				channel_id: row.channel_id as string,
+			};
+		}
+		stmt.free();
+		return undefined;
+	}
+
+	/** FLY-91 Round 2: Reverse lookup by thread_id for conflict detection. */
+	getChatThreadByThreadId(
+		threadId: string,
+	): { thread_id: string; channel_id: string; issue_id: string } | undefined {
+		const stmt = this.db.prepare(
+			"SELECT thread_id, channel_id, issue_id FROM chat_threads WHERE thread_id = ? AND discord_missing_at IS NULL",
+		);
+		stmt.bind([threadId]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			return {
+				thread_id: row.thread_id as string,
+				channel_id: row.channel_id as string,
+				issue_id: row.issue_id as string,
+			};
+		}
+		stmt.free();
+		return undefined;
+	}
+
+	markChatThreadMissing(threadId: string): void {
+		this.db.run(
+			"UPDATE chat_threads SET discord_missing_at = datetime('now') WHERE thread_id = ?",
+			[threadId],
+		);
 		this.save();
 	}
 

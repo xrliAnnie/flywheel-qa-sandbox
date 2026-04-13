@@ -8,6 +8,7 @@ import { readContentRef } from "flywheel-comm/utils";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { resolveChatThreadId } from "./chat-thread-utils.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { parseSessionLabels } from "./lead-scope.js";
@@ -19,6 +20,8 @@ export interface GatePollerConfig {
 	projects: ProjectEntry[];
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
+	/** FLY-91: Enable per-issue chat thread hints in gate_question payloads. */
+	chatThreadsEnabled?: boolean;
 }
 
 interface PendingGateQuestion {
@@ -166,6 +169,15 @@ export class GatePoller {
 			comm_db_path: dbPath,
 			session_role: session.session_role ?? "main",
 		};
+
+		// FLY-91: Fill chat_thread_id for Lead thread routing
+		if (this.config.chatThreadsEnabled) {
+			payload.chat_thread_id = resolveChatThreadId(
+				this.config.store,
+				session.issue_id,
+				lead.chatChannel,
+			);
+		}
 
 		const seq = this.config.store.appendLeadEvent(
 			lead.agentId,

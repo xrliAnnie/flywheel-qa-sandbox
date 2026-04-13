@@ -20,6 +20,7 @@ import {
 import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
+import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
@@ -243,9 +244,13 @@ export class SseBroadcaster {
 	}
 }
 
-/** GEO-294: Options object for new Bridge dependencies (avoids positional arg bloat). */
+/** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
 	vercelToken?: string;
+	/** FLY-91 Round 3: Bridge-level shared ChatThreadCreator instance. */
+	chatThreadCreator?: ChatThreadCreator;
+	/** FLY-91 Round 3: Global Discord bot token for thread creation fallback. */
+	globalBotToken?: string;
 }
 
 export function createBridgeApp(
@@ -371,13 +376,17 @@ export function createBridgeApp(
 	app.use(
 		"/api",
 		tokenAuthMiddleware(config.apiToken),
-		createQueryRouter(
-			store,
-			projects,
+		createQueryRouter(store, projects, {
 			retryDispatcher,
 			captureSessionFn,
-			captureSessionFn ? createStatusQuery(captureSessionFn).query : undefined,
-		),
+			statusQueryFn: captureSessionFn
+				? createStatusQuery(captureSessionFn).query
+				: undefined,
+			chatThreadsEnabled: config.chatThreadsEnabled,
+			chatThreadCreator: opts?.chatThreadCreator,
+			globalBotToken: opts?.globalBotToken,
+			discordOwnerUserId: config.discordOwnerUserId,
+		}),
 	);
 	app.use(
 		"/api/actions",
@@ -1101,6 +1110,7 @@ export function createBridgeApp(
 					store,
 					projects,
 					memoryService,
+					{ chatThreadsEnabled: config.chatThreadsEnabled },
 				);
 				await runtime.sendBootstrap(snapshot);
 				res.json({
@@ -1130,6 +1140,7 @@ export function createBridgeApp(
 			projects,
 			config.maxConcurrentRunners,
 			config.discordGuildId,
+			config.chatThreadsEnabled,
 		);
 		if (config.apiToken) {
 			app.use("/api/runs", tokenAuthMiddleware(config.apiToken), runsRouter);
@@ -1432,6 +1443,20 @@ export async function startBridge(
 		console.log("[Bridge] HTML publishing configured (Vercel)");
 	}
 
+	// FLY-91 Round 3: Create shared ChatThreadCreator at Bridge level (before run infra).
+	// Single instance shared by both DirectEventSink (via run-infra) and query router.
+	const chatThreadCreator = config.chatThreadsEnabled
+		? new ChatThreadCreator(store)
+		: undefined;
+	if (config.chatThreadsEnabled && !chatThreadCreator) {
+		throw new Error(
+			"[Bridge] chatThreadsEnabled=true but ChatThreadCreator failed to initialize",
+		);
+	}
+	if (chatThreadCreator) {
+		console.log("[Bridge] Shared ChatThreadCreator created");
+	}
+
 	// FLY-22/FLY-50: Create RunDispatcher internally when not injected via opts.
 	// RunDispatcher implements both IStartDispatcher and IRetryDispatcher,
 	// so a single instance serves both roles.
@@ -1446,6 +1471,7 @@ export async function startBridge(
 				config,
 				projects,
 				registry,
+				{ chatThreadCreator },
 			);
 			startDispatcher = dispatcher;
 			internalDispatcher = dispatcher;
@@ -1479,7 +1505,11 @@ export async function startBridge(
 		startDispatcher,
 		standupService,
 		standupProjectName,
-		{ vercelToken },
+		{
+			vercelToken,
+			chatThreadCreator,
+			globalBotToken: config.discordBotToken,
+		},
 	);
 
 	const server = app.listen(config.port, config.host);
@@ -1496,7 +1526,13 @@ export async function startBridge(
 	// GEO-195: Use RegistryHeartbeatNotifier when registry has entries, else no-op
 	const notifier: HeartbeatNotifier =
 		registry.size > 0
-			? new RegistryHeartbeatNotifier(registry, projects, store, eventFilter)
+			? new RegistryHeartbeatNotifier(
+					registry,
+					projects,
+					store,
+					eventFilter,
+					config.chatThreadsEnabled,
+				)
 			: {
 					onSessionStuck: async () => {},
 					onSessionOrphaned: async () => {},
@@ -1547,6 +1583,7 @@ export async function startBridge(
 		projects,
 		store,
 		runtimeRegistry: registry,
+		chatThreadsEnabled: config.chatThreadsEnabled,
 	});
 	gatePoller.start();
 
@@ -1558,6 +1595,7 @@ export async function startBridge(
 		store,
 		runtimeRegistry: registry,
 		captureSessionFn: defaultCaptureSession,
+		chatThreadsEnabled: config.chatThreadsEnabled,
 	});
 	idleWatchdog.start();
 	console.log("[Bridge] RunnerIdleWatchdog started (30s poll)");

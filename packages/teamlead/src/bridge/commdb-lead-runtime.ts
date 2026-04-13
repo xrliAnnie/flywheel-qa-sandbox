@@ -91,6 +91,8 @@ export class CommDBLeadRuntime implements LeadRuntime {
 				`Reply to approve or provide feedback. Question ID: ${e.question_id}`,
 				`CommDB: ${e.comm_db_path}`,
 			];
+			// FLY-91: Include Chat-Thread hint for gate questions
+			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 			return lines.join("\n");
 		}
 
@@ -121,8 +123,10 @@ export class CommDBLeadRuntime implements LeadRuntime {
 			lines.push(`Context: ${e.notification_context}`);
 		if (e.pr_number) lines.push(`PR: #${e.pr_number}`);
 		if (e.stage_context) lines.push(`Note: ${e.stage_context}`);
-		if (e.thread_id) lines.push(`Thread: ${e.thread_id}`);
+		if (e.thread_id) lines.push(`Forum-Thread: ${e.thread_id}`);
 		if (e.forum_channel) lines.push(`Forum: ${e.forum_channel}`);
+		// FLY-91: Chat thread hint for per-issue conversation
+		if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 
 		lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);
 		return lines.join("\n");
@@ -142,8 +146,11 @@ export class CommDBLeadRuntime implements LeadRuntime {
 					s.sessionRole && s.sessionRole !== "main"
 						? ` [${s.sessionRole.toUpperCase()}]`
 						: "";
+				const chatHint = s.chatThreadId
+					? ` (Chat-Thread: ${s.chatThreadId})`
+					: "";
 				sections.push(
-					`- ${s.issueIdentifier ?? s.issueId}${roleTag}: ${s.issueTitle ?? "—"} [${s.status}]`,
+					`- ${s.issueIdentifier ?? s.issueId}${roleTag}: ${s.issueTitle ?? "—"} [${s.status}]${chatHint}`,
 				);
 			}
 			sections.push("");

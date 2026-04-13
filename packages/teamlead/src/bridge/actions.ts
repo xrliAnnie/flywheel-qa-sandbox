@@ -11,6 +11,7 @@ import {
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { resolveChatThreadId } from "./chat-thread-utils.js";
 import type { EventFilter } from "./EventFilter.js";
 import {
 	type ForumTagUpdater,
@@ -94,6 +95,15 @@ function sendActionHook(
 			action_target_status: targetStatus,
 			action_reason: reason,
 		};
+
+		// FLY-91: Fill chat_thread_id for Lead thread routing
+		if (config?.chatThreadsEnabled) {
+			hookPayload.chat_thread_id = resolveChatThreadId(
+				store,
+				session.issue_id,
+				lead.chatChannel,
+			);
+		}
 
 		const doDeliver = async () => {
 			// FLY-47: Classify event — priority hints + Forum gating

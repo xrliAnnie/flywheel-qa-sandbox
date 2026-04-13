@@ -124,6 +124,42 @@ GET /api/config/discord-guild-id
 Response: { guild_id: "..." }
 ```
 
+### Chat Thread Management (FLY-91)
+
+Each issue can have a dedicated Discord thread in chatChannel for focused discussion.
+
+#### Create/Get Thread
+```
+POST /api/chat-threads/create
+Body: {
+  "issueId": "abc-123-uuid",           // Linear internal UUID (from event payload)
+  // — OR —
+  "issueIdentifier": "FLY-91",         // Linear identifier (from direct chat)
+  "channelId": "$CHAT_CHANNEL",
+  "leadId": "$LEAD_ID",
+  "projectName": "$PROJECT_NAME"
+}
+Response: { "threadId": "discord-thread-id", "created": true/false }
+```
+
+- Provide at least one of `issueId` or `issueIdentifier`
+- Returns existing thread if one already exists (`created: false`)
+- `issueId` is the Linear internal UUID; `issueIdentifier` is like `FLY-91`
+- Use `issueId` when you have it from an event payload's `issue_id` field
+- Use `issueIdentifier` when Annie assigns a task directly in chat
+
+#### Query Existing Thread
+```
+GET /api/chat-threads?issueId={LINEAR-UUID}&channelId=$CHAT_CHANNEL
+Response: { "threadId": "..." | null }
+```
+
+#### When to Use
+- When you receive a notification with `chat_thread_id`: reply directly in the thread
+- When discussing an issue but no thread exists yet: call `/api/chat-threads/create`
+- Bridge auto-creates threads on Runner startup (fallback)
+- If `/api/chat-threads/create` fails, reply in chatChannel top-level instead (graceful degradation)
+
 ### Memory API (GEO-204)
 
 Search and store memories for cross-session context. Requires `memoryAllowedUsers` configured for the project.

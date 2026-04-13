@@ -43,6 +43,8 @@ export interface HookPayload {
 		| "succeeded"
 		| "failed"
 		| "no_thread";
+	// FLY-91: Chat thread for per-issue conversation in chatChannel
+	chat_thread_id?: string;
 }
 
 export function buildSessionKey(session: {

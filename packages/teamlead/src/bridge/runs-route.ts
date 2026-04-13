@@ -8,6 +8,7 @@
 import { Router } from "express";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
+import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 
 /** Poll interval / max wait for Forum Post thread_id to appear on session. */
@@ -20,6 +21,7 @@ export function createRunsRouter(
 	projects: ProjectEntry[],
 	maxConcurrentRunners: number,
 	discordGuildId?: string,
+	chatThreadsEnabled?: boolean,
 ): Router {
 	const router = Router();
 
@@ -156,6 +158,54 @@ export function createRunsRouter(
 			return;
 		}
 
+		// FLY-91 Round 2: Pre-register chat thread if Lead already created one.
+		// Must happen AFTER leadId resolution, BEFORE dispatch (so ensureChatThread() skips).
+		if (chatThreadsEnabled) {
+			const chatThreadId = req.body.chatThreadId as string | undefined;
+			const chatChannelId = req.body.chatChannelId as string | undefined;
+
+			// Pair validation: both or neither
+			if (
+				(chatThreadId && !chatChannelId) ||
+				(!chatThreadId && chatChannelId)
+			) {
+				res.status(400).json({
+					success: false,
+					message:
+						"chatThreadId and chatChannelId must both be provided or both omitted",
+				});
+				return;
+			}
+
+			if (chatThreadId && chatChannelId) {
+				if (!leadId) {
+					res.status(400).json({
+						success: false,
+						message: "leadId is required when chatThreadId is provided",
+					});
+					return;
+				}
+				const regResult = await validateAndRegisterChatThread(
+					{
+						threadId: chatThreadId,
+						channelId: chatChannelId,
+						issueId,
+						leadId,
+						projectName,
+					},
+					store,
+					projects,
+				);
+				if (!regResult.ok) {
+					res.status(regResult.status).json({
+						success: false,
+						message: regResult.error,
+					});
+					return;
+				}
+			}
+		}
+
 		try {
 			// FLY-24: Pass pre-fetched title/identifier so Blueprint's EventEnvelope
 			// uses real metadata (PreHydrator may fail Linear API and fall back to stub title).
@@ -168,16 +218,31 @@ export function createRunsRouter(
 				sessionRole: role,
 			});
 
-			// FLY-24: Poll for Forum Post thread_id (created async by Blueprint → emitStarted → ensureForumPost)
+			// FLY-24 + FLY-91: Poll for Forum thread_id AND chatThreadId.
+			// Both are created by emitStarted() which is fire-and-forget from Blueprint.
+			// Forum post is fire-and-forget inside emitStarted, chat thread is awaited —
+			// but either could finish first, so poll until both are found (or timeout).
 			let threadId: string | undefined;
+			let chatThreadId: string | undefined;
+			const chatChannel = (() => {
+				if (!chatThreadsEnabled || !leadId) return undefined;
+				const proj = projects.find((p) => p.projectName === projectName);
+				return proj?.leads.find((l) => l.agentId === leadId)?.chatChannel;
+			})();
+
 			const deadline = Date.now() + THREAD_POLL_MAX_MS;
 			while (Date.now() < deadline) {
 				await new Promise((r) => setTimeout(r, THREAD_POLL_INTERVAL_MS));
 				const session = store.getSession(result.executionId);
-				if (session?.thread_id) {
-					threadId = session.thread_id;
-					break;
+				if (!threadId && session?.thread_id) threadId = session.thread_id;
+				if (!chatThreadId && chatChannel) {
+					chatThreadId = store.getChatThreadByIssue(
+						issueId,
+						chatChannel,
+					)?.thread_id;
 				}
+				// Exit when both are resolved (or chat threads disabled)
+				if (threadId && (chatThreadId || !chatChannel)) break;
 			}
 
 			// FLY-80: Verify session was actually registered (detect ghost starts).
@@ -202,6 +267,7 @@ export function createRunsRouter(
 				issueId: result.issueId,
 				threadId,
 				forumLink,
+				chatThreadId,
 				message: `Runner started for ${issueId}`,
 			});
 		} catch (err) {

@@ -103,6 +103,27 @@ Be honest about limitations:
 - You cannot create new tmux sessions — only Bridge/Blueprint does that
 - You cannot access the codebase directly — use session data and summaries
 
+## Chat Thread Reply (FLY-91)
+
+When a payload contains `chat_thread_id`:
+- Reply inside the thread (`reply(chat_id=chat_thread_id)`), not in chatChannel top-level
+- Each issue has its own thread — keeps different issue discussions separated
+
+When discussing an issue but no `chat_thread_id` is available:
+1. If you have `issue_id` (UUID) from an event payload, use `issueId` parameter
+2. If you only have an identifier (like `FLY-91`), use `issueIdentifier` parameter
+3. Call `POST /api/chat-threads/create` to get (or create) a thread
+4. Use the returned `threadId` for all subsequent replies about this issue
+
+When to proactively create a thread:
+- Received a task assignment from Simba/Annie, about to start working
+- Annie is discussing an issue in chat (conversation is getting long enough)
+- Short status updates can go directly to chatChannel — no thread needed
+
+If `/api/chat-threads/create` fails:
+- Reply in chatChannel top-level instead — do not retry
+- Next time you have a new message about the issue, you can try creating the thread again
+
 ## Memory & Preferences
 
 Track CEO's patterns over time:
