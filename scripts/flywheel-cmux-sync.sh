@@ -323,27 +323,31 @@ drain_events() {
   # so the worst a concurrent writer can do is put its event in the next batch.
   #
   # Crash recovery: if a previous drain was interrupted, $EVENT_FILE.processing
-  # still holds unprocessed events. Merge it into the fresh batch BEFORE doing
-  # the `mv`, so events are replayed rather than overwritten.
+  # still holds unprocessed events. Replay it FIRST as its own batch, then do
+  # the normal mv + drain for any current events. Processing leftover and live
+  # events separately avoids the TOCTOU race where rebuilding $EVENT_FILE via
+  # `cat ... > merged && mv merged $EVENT_FILE` would drop concurrent hook
+  # appends that landed on the old inode between snapshot and mv (Codex Round 2).
   local tmp_events="${EVENT_FILE}.processing"
 
-  # Fold any leftover processing-file from a prior crash onto the live event
-  # file so the next mv captures both. If the event file doesn't exist yet,
-  # just rename the leftover into place.
+  # Phase 1 — crash recovery: drain the leftover .processing file if present.
   if [[ -f "$tmp_events" ]]; then
-    if [[ -f "$EVENT_FILE" ]]; then
-      local merged="${EVENT_FILE}.merge.$$"
-      cat "$tmp_events" "$EVENT_FILE" > "$merged" 2>/dev/null || true
-      mv "$merged" "$EVENT_FILE" 2>/dev/null || true
-      rm -f "$tmp_events"
-    else
-      mv "$tmp_events" "$EVENT_FILE" 2>/dev/null || true
-    fi
+    _drain_file "$tmp_events"
+    rm -f "$tmp_events"
   fi
 
+  # Phase 2 — normal drain: atomically rename live event file, then drain it.
   [[ ! -f "$EVENT_FILE" ]] && return 0
-
   mv "$EVENT_FILE" "$tmp_events" 2>/dev/null || return 0
+  _drain_file "$tmp_events"
+  rm -f "$tmp_events"
+}
+
+_drain_file() {
+  # Process every event line in a single frozen batch file. Factored out so
+  # drain_events can reuse it for both crash-recovery replay and normal drain.
+  local source_file="$1"
+  [[ ! -f "$source_file" ]] && return 0
 
   # Generate the event timestamp at drain time. If we tried to embed $(date +%s)
   # in the hook command string, tmux/shell would evaluate it at registration
@@ -385,9 +389,7 @@ drain_events() {
         register_session_hooks "$session"
         ;;
     esac
-  done < "$tmp_events"
-
-  rm -f "$tmp_events"
+  done < "$source_file"
 }
 
 cleanup_stale_conservative() {
