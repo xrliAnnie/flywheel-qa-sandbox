@@ -47,7 +47,16 @@ claim_slot() {
   local lock_pid
   lock_pid=$(cat "$lockfile/pid" 2>/dev/null || echo "")
   if [[ "$lock_pid" == "claiming" ]]; then
-    # Another deploy is in-progress — not stale
+    # Another deploy is in-progress — check if lock is old (>5 min = likely crashed deploy)
+    local lock_age
+    lock_age=$(( $(date +%s) - $(stat -f %m "$lockfile/pid" 2>/dev/null || echo "0") ))
+    if (( lock_age > 300 )); then
+      log "Reclaiming stale claiming lock ${slot_num} (${lock_age}s old)"
+      rm -rf "$lockfile"
+      mkdir "$lockfile" 2>/dev/null || return 1
+      echo "claiming" > "$lockfile/pid"
+      return 0
+    fi
     return 1
   fi
   if [[ -n "$lock_pid" ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
@@ -79,6 +88,19 @@ else
     fi
   done
 fi
+
+# Cleanup trap: release slot lock if deploy fails before Bridge PID is written
+cleanup_on_failure() {
+  local lock="/tmp/flywheel-test-slot-${SLOT}.lock"
+  local lock_pid
+  lock_pid=$(cat "$lock/pid" 2>/dev/null || echo "")
+  # Only clean up if still in "claiming" state (Bridge PID not yet written)
+  if [[ "$lock_pid" == "claiming" ]]; then
+    log "Deploy interrupted — releasing slot ${SLOT} lock"
+    rm -rf "$lock"
+  fi
+}
+trap cleanup_on_failure EXIT
 
 if [[ -z "$SLOT" ]]; then
   echo "ERROR: All ${TOTAL_SLOTS} test slots are in use." >&2
@@ -200,6 +222,8 @@ BRIDGE_PID=$!
 echo "$BRIDGE_PID" > "${SLOT_DIR}/bridge.pid"
 # Update slot lock with long-lived Bridge PID (prevents stale-lock misdetection)
 echo "$BRIDGE_PID" > "/tmp/flywheel-test-slot-${SLOT}.lock/pid"
+# Bridge PID written — disable failure cleanup trap
+trap - EXIT
 log "Bridge PID: ${BRIDGE_PID}"
 
 # ── Step 4: Wait for Bridge HTTP ready ────────────────
