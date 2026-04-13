@@ -244,18 +244,27 @@ register_session_hooks() {
   # would clear the whole hook array in tmux 3.5a).
   # No $(date ...) inside the hook command string — it would be shell-expanded at
   # registration time. Timestamps are added when the watcher drains events.
+  #
+  # Variable names: use plain #{session_name} / #{window_id} / #{window_name}
+  # rather than the #{hook_*} variants. In tmux 3.5a under `run-shell -b`, the
+  # #{hook_session_name} / #{hook_window} / #{hook_window_name} vars expand to
+  # EMPTY for after-new-window and pane-exited (even though the man page lists
+  # them). The plain names correctly resolve to the session/window where the
+  # hook fired. Empirically verified + enforced by integration test.
   tmux set-hook -t "$session" 'after-new-window[500]' \
-    "run-shell -b 'echo \"create|#{hook_session_name}|#{hook_window}|#{hook_window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
+    "run-shell -b 'echo \"create|#{session_name}|#{window_id}|#{window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
   tmux set-hook -t "$session" 'pane-exited[500]' \
-    "run-shell -b 'echo \"exited|#{hook_session_name}|#{hook_window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
+    "run-shell -b 'echo \"exited|#{session_name}|#{window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
   log "Hooks registered on session: $session"
 }
 
 register_global_hooks() {
   # Global session-created hook fires for every new tmux session.
   # The watcher filters by name (only flywheel / runner-*) during event drain.
+  # Use #{session_name} rather than #{hook_session_name} for consistency with
+  # after-new-window / pane-exited (see register_session_hooks comment).
   tmux set-hook -g 'session-created[500]' \
-    "run-shell -b 'echo \"register|#{hook_session_name}\" >> $EVENT_FILE'" 2>/dev/null || true
+    "run-shell -b 'echo \"register|#{session_name}\" >> $EVENT_FILE'" 2>/dev/null || true
 }
 
 register_hooks_on_new_sessions() {

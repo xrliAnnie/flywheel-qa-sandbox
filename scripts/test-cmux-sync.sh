@@ -180,10 +180,17 @@ echo "Test: hook command does not embed shell-expanded timestamp"
 reset_mocks
 register_session_hooks "flywheel" >/dev/null
 
-if echo "$MOCK_TMUX_HOOKS" | grep -q '#{hook_session_name}'; then
-  pass "hook uses #{hook_session_name} format var"
+if echo "$MOCK_TMUX_HOOKS" | grep -q '#{session_name}'; then
+  pass "hook uses #{session_name} format var"
 else
-  fail "hook missing #{hook_session_name}"
+  fail "hook missing #{session_name} (should use plain var, not #{hook_session_name} — see QA regression)"
+fi
+# #{hook_session_name} expands to EMPTY under run-shell -b in tmux 3.5a —
+# QA-caught regression. Guard against its reintroduction.
+if echo "$MOCK_TMUX_HOOKS" | grep -q '#{hook_session_name}\|#{hook_window_name}\|#{hook_window}[^_]'; then
+  fail "hook uses #{hook_*} format var that expands to empty in tmux 3.5a"
+else
+  pass "hook avoids broken #{hook_*} format vars"
 fi
 # Make sure no numeric timestamp was baked in (would indicate shell expansion)
 if echo "$MOCK_TMUX_HOOKS" | grep -qE '\|[0-9]{10}\|'; then
@@ -506,6 +513,67 @@ if grep -q "^old-win|" "$CLEANUP_PENDING" 2>/dev/null && grep -q "^new-win|" "$C
   pass "both old (leftover) and new events processed"
 else
   fail "expected both old-win and new-win in pending. Got: $(cat "$CLEANUP_PENDING" 2>/dev/null)"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# Integration: real tmux hook expansion
+# ════════════════════════════════════════════════════════════════
+# Regression guard for the tmux 3.5a hook var trap — QA found that
+# #{hook_session_name} / #{hook_window_name} / #{hook_window} expand to EMPTY
+# under `run-shell -b` for after-new-window / pane-exited, even though the
+# man page lists them. This test fires the real hook command strings against
+# a real tmux session and asserts the resulting event lines have non-empty
+# fields. The pure-mock tests above cannot catch this because they stub tmux.
+echo "Test: real tmux hook expansion (integration)"
+
+if ! command -v tmux >/dev/null 2>&1; then
+  echo "  ⏭  tmux not available — skipping"
+else
+  # Sourced flywheel-cmux-sync.sh sets `set -euo pipefail`; disable errexit
+  # here so non-zero exits from tmux operations don't abort the test script.
+  set +e
+  TMUX_INT_EVENT_FILE="$TMPDIR_ROOT/int-events"
+  TMUX_INT_SESSION="flywheel-cmux-sync-test-$$"
+  > "$TMUX_INT_EVENT_FILE"
+
+  # Use `command tmux` throughout to bypass the mock function defined above.
+  command tmux kill-session -t "$TMUX_INT_SESSION" 2>/dev/null
+  command tmux new-session -d -s "$TMUX_INT_SESSION" -n initial 2>/dev/null
+
+  # Exact hook command strings from register_session_hooks / register_global_hooks.
+  command tmux set-hook -t "$TMUX_INT_SESSION" 'after-new-window[500]' \
+    "run-shell -b 'echo \"create|#{session_name}|#{window_id}|#{window_name}\" >> $TMUX_INT_EVENT_FILE'" 2>/dev/null
+  command tmux set-hook -t "$TMUX_INT_SESSION" 'pane-exited[500]' \
+    "run-shell -b 'echo \"exited|#{session_name}|#{window_name}\" >> $TMUX_INT_EVENT_FILE'" 2>/dev/null
+
+  # Trigger after-new-window.
+  command tmux new-window -t "$TMUX_INT_SESSION:" -n int-test-win 2>/dev/null
+  # Give run-shell -b a moment to flush.
+  sleep 0.3
+
+  create_line=$(grep '^create|' "$TMUX_INT_EVENT_FILE" 2>/dev/null | head -1)
+  if [[ -z "$create_line" ]]; then
+    fail "no create event written to event file"
+  else
+    IFS='|' read -r _etype sess wid wname <<< "$create_line"
+    if [[ -n "$sess" && -n "$wid" && -n "$wname" ]]; then
+      pass "create event fields non-empty (sess=$sess wid=$wid wname=$wname)"
+    else
+      fail "create event has empty fields: sess='$sess' wid='$wid' wname='$wname'"
+    fi
+    if [[ "$sess" == "$TMUX_INT_SESSION" ]]; then
+      pass "session_name expands to the session where hook fired"
+    else
+      fail "expected session=$TMUX_INT_SESSION, got session=$sess"
+    fi
+    if [[ "$wname" == "int-test-win" ]]; then
+      pass "window_name expands to the new window"
+    else
+      fail "expected window_name=int-test-win, got window_name=$wname"
+    fi
+  fi
+
+  command tmux kill-session -t "$TMUX_INT_SESSION" 2>/dev/null || true
 fi
 
 # ════════════════════════════════════════════════════════════════
