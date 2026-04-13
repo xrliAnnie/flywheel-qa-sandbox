@@ -721,6 +721,8 @@ fi
 # Leads READ brain before responding, WRITE back decisions/learnings after conversations.
 # Requires: gbrain installed globally, configured via `gbrain init --supabase` or env var.
 # OPENAI_API_KEY is optional — without it, gbrain degrades to keyword-only search.
+# bun global bin may not be in PATH when launched via launchd/tmux — add it explicitly.
+export PATH="$HOME/.bun/bin:$PATH"
 GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
 if [ -n "$GBRAIN_PATH" ] && [ -f "$HOME/.gbrain/config.json" ]; then
   # No env block: avoids writing secrets to .mcp.json on disk.
