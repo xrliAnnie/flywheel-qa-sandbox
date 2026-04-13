@@ -2,6 +2,14 @@ import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import type {
+	ChatThreadCreator,
+	ChatThreadResult,
+} from "./ChatThreadCreator.js";
+import {
+	validateAndRegisterChatThread,
+	validateChatThreadParams,
+} from "./chat-thread-register.js";
 import { filterSessionsByLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { StatusQueryResult } from "./runner-status.js";
@@ -22,6 +30,17 @@ export type StatusQueryFn = (
 	projectName: string,
 ) => Promise<StatusQueryResult>;
 
+/** FLY-91 Round 3: Options object for createQueryRouter (replaces positional params). */
+export interface QueryRouterOptions {
+	retryDispatcher?: IRetryDispatcher;
+	captureSessionFn?: CaptureSessionFn;
+	statusQueryFn?: StatusQueryFn;
+	chatThreadsEnabled?: boolean;
+	chatThreadCreator?: ChatThreadCreator;
+	globalBotToken?: string;
+	discordOwnerUserId?: string;
+}
+
 function omitIssueId(
 	session: Session,
 ): Omit<Session, "issue_id"> & { identifier?: string } {
@@ -32,10 +51,12 @@ function omitIssueId(
 export function createQueryRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
-	retryDispatcher?: IRetryDispatcher,
-	captureSessionFn?: CaptureSessionFn,
-	statusQueryFn?: StatusQueryFn,
+	opts?: QueryRouterOptions,
 ): Router {
+	const retryDispatcher = opts?.retryDispatcher;
+	const captureSessionFn = opts?.captureSessionFn;
+	const statusQueryFn = opts?.statusQueryFn;
+	const chatThreadsEnabled = opts?.chatThreadsEnabled;
 	const router = Router();
 
 	router.get("/sessions", (req, res) => {
@@ -371,6 +392,226 @@ export function createQueryRouter(
 			execution_id: session.execution_id,
 			status: session.status,
 			can_execute: true,
+		});
+	});
+
+	// --- FLY-91 Round 2: Lead-centric chat thread management ---
+
+	router.post("/chat-threads/register", async (req, res) => {
+		if (!chatThreadsEnabled) {
+			res.status(404).json({ error: "Chat threads not enabled" });
+			return;
+		}
+
+		const { threadId, channelId, issueId, leadId, projectName } =
+			req.body ?? {};
+		if (!threadId || !channelId || !issueId || !leadId || !projectName) {
+			res.status(400).json({
+				error:
+					"threadId, channelId, issueId, leadId, and projectName are required",
+			});
+			return;
+		}
+
+		// Linear preflight: verify issue exists before writing to DB
+		if (!process.env.LINEAR_API_KEY) {
+			res.status(503).json({
+				error: "LINEAR_API_KEY not configured — cannot verify issue",
+			});
+			return;
+		}
+		try {
+			const { LinearClient } = await import("@linear/sdk");
+			const client = new LinearClient({
+				apiKey: process.env.LINEAR_API_KEY,
+			});
+			const issue = await client.issue(issueId);
+			if (!issue) {
+				res.status(404).json({ error: `Issue ${issueId} not found in Linear` });
+				return;
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			res.status(502).json({
+				error: `Cannot verify issue ${issueId} in Linear: ${msg}`,
+			});
+			return;
+		}
+
+		// Resolve botToken for Discord validation
+		const proj = projects.find((p) => p.projectName === projectName);
+		const leadCfg = proj?.leads.find((l) => l.agentId === leadId);
+		const regBotToken = leadCfg?.botToken ?? opts?.globalBotToken;
+
+		const result = await validateAndRegisterChatThread(
+			{
+				threadId: String(threadId),
+				channelId: String(channelId),
+				issueId,
+				leadId,
+				projectName,
+				botToken: regBotToken,
+			},
+			store,
+			projects,
+		);
+
+		if (!result.ok) {
+			res.status(result.status).json({ error: result.error });
+			return;
+		}
+
+		res.json({ ok: true });
+	});
+
+	// --- FLY-91 Round 3: Lead requests Bridge to create/get a chat thread ---
+
+	router.post("/chat-threads/create", async (req, res) => {
+		if (!chatThreadsEnabled) {
+			res.status(404).json({ error: "Chat threads not enabled" });
+			return;
+		}
+
+		const {
+			issueId,
+			issueIdentifier: bodyIdentifier,
+			channelId,
+			leadId,
+			projectName,
+		} = req.body ?? {};
+
+		// Must provide at least one of issueId or issueIdentifier
+		if (
+			(!issueId && !bodyIdentifier) ||
+			!channelId ||
+			!leadId ||
+			!projectName
+		) {
+			res.status(400).json({
+				error:
+					"channelId, leadId, projectName, and at least one of issueId or issueIdentifier are required",
+			});
+			return;
+		}
+
+		// Reuse shared validation (project/lead/channel check)
+		const validation = validateChatThreadParams(
+			{ channelId, leadId, projectName },
+			projects,
+		);
+		if (!validation.ok) {
+			res.status(validation.status).json({ error: validation.error });
+			return;
+		}
+
+		// Linear preflight: verify issue exists + resolve identifier if needed
+		if (!process.env.LINEAR_API_KEY) {
+			res.status(503).json({ error: "LINEAR_API_KEY not configured" });
+			return;
+		}
+
+		let resolvedIssueId: string;
+		let resolvedIdentifier: string | undefined;
+		let resolvedTitle: string | undefined;
+
+		try {
+			const { LinearClient } = await import("@linear/sdk");
+			const client = new LinearClient({
+				apiKey: process.env.LINEAR_API_KEY,
+			});
+
+			if (issueId) {
+				// Direct UUID path
+				const issue = await client.issue(issueId);
+				if (!issue) {
+					res
+						.status(404)
+						.json({ error: `Issue ${issueId} not found in Linear` });
+					return;
+				}
+				resolvedIssueId = issueId;
+				resolvedIdentifier = issue.identifier;
+				resolvedTitle = issue.title;
+			} else {
+				// Identifier resolve path
+				const results = await client.searchIssues(bodyIdentifier);
+				const matched = results.nodes.find(
+					(i: { identifier: string }) => i.identifier === bodyIdentifier,
+				);
+				if (!matched) {
+					res.status(404).json({
+						error: `Issue "${bodyIdentifier}" not found in Linear`,
+					});
+					return;
+				}
+				resolvedIssueId = matched.id;
+				resolvedIdentifier = matched.identifier;
+				resolvedTitle = matched.title;
+			}
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			res.status(502).json({ error: `Cannot verify issue: ${msg}` });
+			return;
+		}
+
+		// Resolve bot token (per-lead or global fallback)
+		const botToken = validation.leadConfig.botToken ?? opts?.globalBotToken;
+		if (!botToken) {
+			res.status(503).json({ error: "No Discord bot token available" });
+			return;
+		}
+
+		// Fail-closed: chatThreadCreator must be present when flag is on
+		if (!opts?.chatThreadCreator) {
+			res.status(503).json({ error: "ChatThreadCreator not initialized" });
+			return;
+		}
+
+		// Delegate to shared ChatThreadCreator
+		// ensureChatThread() can both return { error } AND throw on unexpected failures
+		let result: ChatThreadResult;
+		try {
+			result = await opts.chatThreadCreator.ensureChatThread({
+				chatChannelId: channelId,
+				issueId: resolvedIssueId,
+				issueIdentifier: resolvedIdentifier,
+				issueTitle: resolvedTitle,
+				botToken,
+				leadId,
+				ownerUserId: opts.discordOwnerUserId,
+			});
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			res.status(502).json({ error: `Thread creation failed: ${msg}` });
+			return;
+		}
+
+		if (result.error) {
+			res.status(502).json({ error: result.error });
+			return;
+		}
+
+		res.json({ threadId: result.threadId, created: result.created });
+	});
+
+	router.get("/chat-threads", (req, res) => {
+		if (!chatThreadsEnabled) {
+			res.status(404).json({ error: "Chat threads not enabled" });
+			return;
+		}
+
+		const issueId = req.query.issueId as string;
+		const channelId = req.query.channelId as string;
+		if (!issueId || !channelId) {
+			res.status(400).json({
+				error: "issueId and channelId query params are required",
+			});
+			return;
+		}
+
+		const row = store.getChatThreadByIssue(issueId, channelId);
+		res.json({
+			threadId: row?.thread_id ?? null,
 		});
 	});
 

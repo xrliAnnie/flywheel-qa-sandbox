@@ -83,7 +83,7 @@ describe("CommDBLeadRuntime", () => {
 			expect(content).toContain("Commits: 3 | +100/-20");
 			expect(content).toContain("Priority: high");
 			expect(content).toContain("Context: PR ready for review");
-			expect(content).toContain("Thread: thread-123");
+			expect(content).toContain("Forum-Thread: thread-123");
 			expect(content).toContain("Forum: forum-456");
 		});
 
@@ -213,6 +213,73 @@ describe("CommDBLeadRuntime", () => {
 	describe("type", () => {
 		it("is commdb", () => {
 			expect(runtime.type).toBe("commdb");
+		});
+	});
+
+	describe("FLY-91: Chat-Thread formatting", () => {
+		it("includes Chat-Thread in generic envelope when chat_thread_id is set", async () => {
+			const envelope = makeEnvelope({
+				chat_thread_id: "chat-thread-789",
+				thread_id: "forum-thread-123",
+				forum_channel: "forum-456",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("Chat-Thread: chat-thread-789");
+			expect(content).toContain("Forum-Thread: forum-thread-123");
+		});
+
+		it("includes Chat-Thread in gate_question special format", async () => {
+			const envelope = makeEnvelope({
+				event_type: "gate_question",
+				checkpoint: "plan",
+				question_id: "q-2",
+				summary: "Should I proceed?",
+				comm_db_path: "/tmp/comm.db",
+				chat_thread_id: "chat-thread-gate",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("Chat-Thread: chat-thread-gate");
+			expect(content).toContain("[PLAN] Runner asks:");
+		});
+
+		it("omits Chat-Thread when chat_thread_id is not set", async () => {
+			const envelope = makeEnvelope({
+				thread_id: "forum-thread-123",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).not.toContain("Chat-Thread:");
+			expect(content).toContain("Forum-Thread: forum-thread-123");
+		});
+
+		it("includes chatThreadId in bootstrap active sessions", async () => {
+			const snapshot: LeadBootstrap = {
+				leadId: "lead-peter",
+				activeSessions: [
+					{
+						executionId: "exec-1",
+						issueId: "issue-1",
+						issueIdentifier: "FLY-91",
+						issueTitle: "Thread reply",
+						projectName: "flywheel",
+						status: "running",
+						chatThreadId: "chat-thread-bootstrap",
+					},
+				],
+				pendingDecisions: [],
+				recentFailures: [],
+				recentEvents: [],
+				memoryRecall: null,
+			};
+			await runtime.sendBootstrap(snapshot);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("Chat-Thread: chat-thread-bootstrap");
 		});
 	});
 });

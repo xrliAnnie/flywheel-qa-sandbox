@@ -33,6 +33,7 @@ import { PreHydrator } from "flywheel-edge-worker/dist/PreHydrator.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
+import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
 import { ForumPostCreator } from "./ForumPostCreator.js";
 import { ForumTagUpdater } from "./ForumTagUpdater.js";
@@ -262,11 +263,18 @@ async function createRunBlueprint(
  *
  * Called by startBridge when no external startDispatcher is provided.
  */
+/** FLY-91 Round 3: Optional external dependencies for run infrastructure. */
+export interface RunInfraOptions {
+	/** Shared ChatThreadCreator — if provided, used instead of per-project creation. */
+	chatThreadCreator?: ChatThreadCreator;
+}
+
 export async function setupRunInfrastructure(
 	store: StateStore,
 	config: BridgeConfig,
 	projects: ProjectEntry[],
 	registry?: RuntimeRegistry,
+	runInfraOpts?: RunInfraOptions,
 ): Promise<RunDispatcher> {
 	const projectRuntimes = new Map<string, ProjectRuntime>();
 	const cleanupHandles: Array<() => Promise<void>> = [];
@@ -298,8 +306,12 @@ export async function setupRunInfrastructure(
 			const forumTagUpdater = new ForumTagUpdater(statusTagMap);
 			// FLY-24: ForumPostCreator so DirectEventSink can create Forum Posts on session_started
 			const forumPostCreator = new ForumPostCreator(store, statusTagMap);
+			// FLY-91: Use shared ChatThreadCreator if provided (Round 3), else create per-project (backward compat)
+			const chatThreadCreator =
+				runInfraOpts?.chatThreadCreator ??
+				(config.chatThreadsEnabled ? new ChatThreadCreator(store) : undefined);
 			console.log(
-				`[RunInfra] ${project.projectName}: ForumPostCreator created, hasRegistry=${!!registry}, hasGlobalBotToken=${!!config.discordBotToken}`,
+				`[RunInfra] ${project.projectName}: ForumPostCreator created, hasRegistry=${!!registry}, hasGlobalBotToken=${!!config.discordBotToken}, chatThreads=${!!chatThreadCreator}`,
 			);
 			const directSink = new DirectEventSink(
 				store,
@@ -309,6 +321,7 @@ export async function setupRunInfrastructure(
 				forumTagUpdater,
 				registry,
 				forumPostCreator,
+				chatThreadCreator,
 			);
 
 			// FLY-47: Load per-project checkpoint config

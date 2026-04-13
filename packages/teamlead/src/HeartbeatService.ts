@@ -2,6 +2,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "./applyTransition.js";
+import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import {
@@ -238,6 +239,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		private projects: ProjectEntry[],
 		private store: StateStore,
 		private eventFilter?: EventFilter,
+		private chatThreadsEnabled?: boolean,
 	) {}
 
 	async onSessionStuck(session: Session, minutes: number): Promise<void> {
@@ -364,6 +366,15 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 
 		hookPayload.forum_channel = forumChannel;
 		hookPayload.chat_channel = chatChannel;
+
+		// FLY-91: Fill chat_thread_id for Lead thread routing
+		if (this.chatThreadsEnabled) {
+			hookPayload.chat_thread_id = resolveChatThreadId(
+				this.store,
+				session.issue_id,
+				chatChannel,
+			);
+		}
 
 		// FLY-47: Annotate priority (EventFilter provides hints for Lead)
 		if (this.eventFilter) {

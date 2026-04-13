@@ -539,12 +539,45 @@ send_bootstrap() {
 # SIGTERM from launchd → cleanup() sends C-c to tmux window → kill-window.
 SHOULD_EXIT=0
 
-# FLY-88: tmux-based launch + auto-confirm.
+# FLY-88: tmux-based launch.
 # Claude runs inside a tmux window in the shared "flywheel" session.
-# tmux provides the PTY; expect is no longer needed.
-# Auto-confirm uses tmux send-keys (bound to window_id).
+# FLY-80 restored: expect auto-confirms --dangerously-load-development-channels prompt.
+# tmux provides the window; expect provides PTY + prompt detection inside the window.
 LEAD_WINDOW_ID=""
-AUTO_CONFIRM_PID=0
+
+# FLY-80: expect script for auto-confirming dev channels dialog.
+# Claude Code shows a TUI confirmation for --dangerously-load-development-channels.
+# In daemon mode (launchd), no human can press Enter. expect watches for the prompt
+# text and sends Enter automatically, then waits for Claude to exit.
+_EXPECT_SCRIPT="${TMPDIR:-/tmp}/flywheel-ac-${LEAD_ID}.expect"
+cat > "$_EXPECT_SCRIPT" <<'EXPECT_EOF'
+#!/usr/bin/expect -f
+# Auto-confirm dev channels prompt, then wait for Claude to exit.
+# expect allocates a PTY so Claude gets a TTY for Ink.
+# Usage: expect <this-script> claude <args...>
+log_user 1
+set timeout 60
+eval spawn -noecho [lrange $argv 0 end]
+expect {
+  "Enter to confirm" {
+    send "\r"
+    exp_continue
+  }
+  -re "bypass permissions" {
+    # Claude TUI is up — prompt was auto-confirmed or absent
+  }
+  timeout {
+    # Prompt may not appear (e.g., already accepted, or resume) — continue
+  }
+}
+# Wait for Claude to run until it exits on its own
+set timeout -1
+expect eof
+# Propagate Claude's exit code
+lassign [wait] pid spawnid os_error_flag value
+exit $value
+EXPECT_EOF
+chmod +x "$_EXPECT_SCRIPT"
 
 # Ensure the shared flywheel tmux session exists (race-safe, idempotent).
 # Called before every launch — handles session being killed externally.
@@ -580,30 +613,27 @@ _launch_claude() {
     -e "PATH=${PATH}"
   )
 
-  # Create new window running claude — capture window_id
+  # Create new window running claude via expect (auto-confirms dev channels prompt).
+  # Falls back to direct claude if expect is unavailable.
+  local launch_cmd
+  if command -v expect >/dev/null 2>&1; then
+    launch_cmd="expect ${_EXPECT_SCRIPT} claude"
+  else
+    log "WARNING: expect not found, dev channels prompt may block"
+    launch_cmd="claude"
+  fi
   LEAD_WINDOW_ID=$(tmux new-window -d -P -F '#{window_id}' \
     -t =flywheel \
     "${env_args[@]}" \
     -n "$window_name" \
     -c "$LEAD_WORKSPACE" \
-    claude "$@")
+    ${launch_cmd} "$@")
 
   # Enable remain-on-exit on this specific window so we can read exit code
   # (must be set-window-option on the window, not session-level, for tmux 3.5+)
   tmux set-window-option -t "$LEAD_WINDOW_ID" remain-on-exit on 2>/dev/null || true
 
   log "Claude launched in tmux window: flywheel:${LEAD_WINDOW_ID} (name: ${window_name})"
-}
-
-# Auto-confirm dev channels dialog by sending Enter after 8s.
-# Bound to window_id (not name). PID tracked for cleanup.
-_auto_confirm_dev_channels() {
-  local target="${LEAD_WINDOW_ID}"
-  (
-    sleep 8
-    tmux send-keys -t "$target" Enter 2>/dev/null || true
-  ) &
-  AUTO_CONFIRM_PID=$!
 }
 
 # Wait for tmux window to exit (pane_dead detection).
@@ -638,20 +668,12 @@ _wait_tmux_window() {
   done
 }
 
-# Kill auto-confirm background task if still running.
-_kill_auto_confirm() {
-  if [ "$AUTO_CONFIRM_PID" -ne 0 ] && kill -0 "$AUTO_CONFIRM_PID" 2>/dev/null; then
-    kill "$AUTO_CONFIRM_PID" 2>/dev/null || true
-  fi
-  AUTO_CONFIRM_PID=0
-}
-
 cleanup() {
   SHOULD_EXIT=1
   log "Shutdown signal received..."
 
-  # Kill auto-confirm background task
-  _kill_auto_confirm
+  # FLY-80: Clean up expect script
+  rm -f "${_EXPECT_SCRIPT:-}" 2>/dev/null || true
 
   # Graceful shutdown: send C-c to Claude in tmux
   if [ -n "${LEAD_WINDOW_ID:-}" ]; then
@@ -874,14 +896,9 @@ while true; do
     echo "$SESSION_ID" > "$SESSION_ID_FILE"
   fi
 
-  # FLY-88: Auto-confirm dev channels dialog (sends Enter after 8s via tmux send-keys)
-  _auto_confirm_dev_channels
-
-  # FLY-88: Wait for tmux window to complete (replaces `wait $CLAUDE_PID`)
+  # FLY-88: Wait for tmux window to complete (replaces `wait $CLAUDE_PID`).
+  # Auto-confirm is handled by expect inside the tmux window (FLY-80).
   _wait_tmux_window
-
-  # Clean up auto-confirm background task
-  _kill_auto_confirm
 
   # DURATION = this process's runtime (for crash classification / backoff)
   DURATION=$(( $(date +%s) - PROCESS_START_TS ))

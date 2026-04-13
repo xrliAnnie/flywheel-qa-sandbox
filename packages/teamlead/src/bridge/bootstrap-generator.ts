@@ -8,7 +8,7 @@
 import { CommDB } from "flywheel-comm/db";
 import { readContentRef } from "flywheel-comm/utils";
 import type { MemoryService } from "flywheel-edge-worker";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type { HookPayload } from "./hook-payload.js";
 import type {
@@ -134,6 +134,7 @@ export async function generateBootstrap(
 	store: StateStore,
 	projects: ProjectEntry[],
 	memoryService?: MemoryService,
+	opts?: { chatThreadsEnabled?: boolean },
 ): Promise<LeadBootstrap> {
 	// Active sessions matching this lead (via label routing)
 	const allActive = store.getActiveSessions();
@@ -249,9 +250,27 @@ export async function generateBootstrap(
 		}
 	}
 
+	// FLY-91: Enrich bootstrap sessions with chatThreadId (only when feature is enabled)
+	const bootstrapSessions = activeSessions.map((s) => {
+		const bs = toBootstrapSession(s);
+		if (opts?.chatThreadsEnabled) {
+			try {
+				const labels = store.getSessionLabels(s.execution_id);
+				const { lead } = resolveLeadForIssue(projects, s.project_name, labels);
+				if (lead.chatChannel) {
+					const ct = store.getChatThreadByIssue(s.issue_id, lead.chatChannel);
+					if (ct) bs.chatThreadId = ct.thread_id;
+				}
+			} catch {
+				// Lead resolution failed — skip chatThreadId
+			}
+		}
+		return bs;
+	});
+
 	return {
 		leadId,
-		activeSessions: activeSessions.map(toBootstrapSession),
+		activeSessions: bootstrapSessions,
 		pendingDecisions: pendingDecisions.map(toBootstrapDecision),
 		recentFailures: recentFailures.map(toBootstrapFailure),
 		recentEvents,

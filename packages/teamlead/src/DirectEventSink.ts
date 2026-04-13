@@ -9,6 +9,12 @@ import type {
 	ExecutionEventEmitter,
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
+import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
+import {
+	archiveChatThread,
+	removeUserFromChatThread,
+	resolveChatThreadId,
+} from "./bridge/chat-thread-utils.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import type { ForumPostCreator } from "./bridge/ForumPostCreator.js";
 import {
@@ -39,6 +45,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		private forumTagUpdater?: ForumTagUpdater,
 		private registry?: RuntimeRegistry,
 		private forumPostCreator?: ForumPostCreator,
+		private chatThreadCreator?: ChatThreadCreator,
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
@@ -167,6 +174,61 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
+		// FLY-91: Await chat thread creation so first notification includes chat_thread_id.
+		// Unlike ForumPost (fire-and-forget), chat_thread_id doesn't affect EventFilter
+		// classification, so awaiting is safe and ensures first message goes to thread.
+		if (this.config.chatThreadsEnabled && this.chatThreadCreator) {
+			const eventLabels = env.labels ?? [];
+			try {
+				const { lead: ctLead } = resolveLeadForIssue(
+					this.projects,
+					env.projectName,
+					eventLabels,
+				);
+				if (ctLead.chatChannel) {
+					const botToken = ctLead.botToken ?? this.config.discordBotToken;
+					if (botToken) {
+						const resolvedTitle =
+							env.issueTitle ??
+							this.store.getSessionByIssue(env.issueId)?.issue_title ??
+							undefined;
+						console.log(
+							`[DirectEventSink] ensureChatThread calling: issueId=${env.issueId} channel=${ctLead.chatChannel} lead=${ctLead.agentId} hasToken=true`,
+						);
+						const result = await this.chatThreadCreator.ensureChatThread({
+							chatChannelId: ctLead.chatChannel,
+							issueId: env.issueId,
+							issueIdentifier: env.issueIdentifier,
+							issueTitle: resolvedTitle,
+							botToken,
+							leadId: ctLead.agentId,
+							ownerUserId: this.config.discordOwnerUserId,
+						});
+						console.log(
+							`[DirectEventSink] ensureChatThread: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
+						);
+					} else {
+						console.warn(
+							`[DirectEventSink] chatThread skipped for ${env.issueId}: no botToken (lead=${ctLead.agentId}, globalToken=${!!this.config.discordBotToken})`,
+						);
+					}
+				} else {
+					console.warn(
+						`[DirectEventSink] chatThread skipped for ${env.issueId}: lead "${ctLead.agentId}" has no chatChannel`,
+					);
+				}
+			} catch (err) {
+				console.warn(
+					`[DirectEventSink] ensureChatThread failed for ${env.issueId}:`,
+					(err as Error).message,
+				);
+			}
+		} else {
+			console.log(
+				`[DirectEventSink] chatThread guard: enabled=${!!this.config.chatThreadsEnabled} hasCreator=${!!this.chatThreadCreator} — skipping for ${env.issueId}`,
+			);
+		}
+
 		// Notify agent
 		this.pushNotification(env, "session_started");
 	}
@@ -260,6 +322,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		}
 
 		this.pushNotification(env, "session_completed", "running");
+
+		// FLY-91: Remove owner + archive chat thread on terminal status
+		if (status === "completed") {
+			this.removeOwnerFromChatThread(env);
+			this.archiveChatThread(env);
+		}
 	}
 
 	async emitFailed(
@@ -313,6 +381,91 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.pending = [];
 	}
 
+	/**
+	 * FLY-91: Remove owner from chat thread membership on terminal states.
+	 * This clears the thread from Annie's Discord sidebar.
+	 * Fire-and-forget — failures are logged but don't block.
+	 */
+	private removeOwnerFromChatThread(env: EventEnvelope): void {
+		if (!this.config.chatThreadsEnabled || !this.config.discordOwnerUserId)
+			return;
+
+		try {
+			const labels = this.store.getSessionLabels(env.executionId);
+			const { lead } = resolveLeadForIssue(
+				this.projects,
+				env.projectName,
+				labels,
+			);
+			if (!lead.chatChannel) return;
+
+			const botToken = lead.botToken ?? this.config.discordBotToken;
+			if (!botToken) return;
+
+			const chatThread = this.store.getChatThreadByIssue(
+				env.issueId,
+				lead.chatChannel,
+			);
+			if (!chatThread) return;
+
+			removeUserFromChatThread(
+				chatThread.thread_id,
+				this.config.discordOwnerUserId,
+				botToken,
+			).catch((err) =>
+				console.warn(
+					`[DirectEventSink] removeOwnerFromChatThread failed:`,
+					(err as Error).message,
+				),
+			);
+		} catch (err) {
+			console.warn(
+				`[DirectEventSink] removeOwnerFromChatThread error:`,
+				(err as Error).message,
+			);
+		}
+	}
+
+	/**
+	 * FLY-91: Archive chat thread on completed/merged.
+	 * Archived threads disappear from sidebar. If Annie replies later,
+	 * Discord auto-unarchives. Fire-and-forget.
+	 */
+	private archiveChatThread(env: EventEnvelope): void {
+		if (!this.config.chatThreadsEnabled) return;
+
+		try {
+			const labels = this.store.getSessionLabels(env.executionId);
+			const { lead } = resolveLeadForIssue(
+				this.projects,
+				env.projectName,
+				labels,
+			);
+			if (!lead.chatChannel) return;
+
+			const botToken = lead.botToken ?? this.config.discordBotToken;
+			if (!botToken) return;
+
+			const chatThread = this.store.getChatThreadByIssue(
+				env.issueId,
+				lead.chatChannel,
+			);
+			if (!chatThread) return;
+
+			archiveChatThread(chatThread.thread_id, botToken).catch((err) =>
+				console.warn(
+					`[DirectEventSink] archiveChatThread failed:`,
+					(err as Error).message,
+				),
+			);
+		} catch (err) {
+			console.warn(
+				`[DirectEventSink] archiveChatThread error:`,
+				(err as Error).message,
+			);
+		}
+	}
+
 	private pushNotification(
 		env: EventEnvelope,
 		eventType: string,
@@ -363,6 +516,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				issue_labels: labels,
 				session_role: session.session_role ?? "main",
 			};
+
+			// FLY-91: Fill chat_thread_id for Lead thread routing
+			if (this.config.chatThreadsEnabled) {
+				hookPayload.chat_thread_id = resolveChatThreadId(
+					this.store,
+					env.issueId,
+					lead.chatChannel,
+				);
+			}
 
 			const doDeliver = async () => {
 				// FLY-47: Classify event — priority hints + Forum gating

@@ -9,6 +9,7 @@
  * Reference: Claude Code Agent Team idle detection (inProcessRunner.ts, teammateInit.ts).
  */
 
+import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { parseSessionLabels } from "./bridge/lead-scope.js";
@@ -26,6 +27,8 @@ export interface IdleWatchdogConfig {
 	store: StateStore;
 	runtimeRegistry: RuntimeRegistry;
 	captureSessionFn: CaptureSessionFn;
+	/** FLY-91: Enable per-issue chat thread hints in idle event payloads. */
+	chatThreadsEnabled?: boolean;
 }
 
 type IdleStatus = "waiting" | "idle" | "unknown";
@@ -205,6 +208,15 @@ export class RunnerIdleWatchdog {
 			summary: reason,
 			session_role: session.session_role ?? "main",
 		};
+
+		// FLY-91: Fill chat_thread_id for Lead thread routing
+		if (this.config.chatThreadsEnabled) {
+			payload.chat_thread_id = resolveChatThreadId(
+				this.config.store,
+				session.issue_id,
+				lead.chatChannel,
+			);
+		}
 
 		const seq = this.config.store.appendLeadEvent(
 			lead.agentId,

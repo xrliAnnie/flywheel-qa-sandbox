@@ -66,6 +66,8 @@ export interface BootstrapSession {
 	status: string;
 	startedAt?: string;
 	threadId?: string;
+	/** FLY-91: Chat thread ID for per-issue conversation in chatChannel */
+	chatThreadId?: string;
 	/** FLY-59: Session role for multi-session-per-issue support */
 	sessionRole?: string;
 }

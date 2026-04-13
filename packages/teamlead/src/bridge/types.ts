@@ -28,4 +28,8 @@ export interface BridgeConfig {
 	statusTagMap?: Record<string, string[]>;
 	/** GEO-267: Maximum concurrent Runner executions (default 3). */
 	maxConcurrentRunners: number;
+	/** FLY-91: Enable per-issue chat thread creation in chatChannel. */
+	chatThreadsEnabled?: boolean;
+	/** FLY-91: Discord user ID to auto-add as thread member (e.g., server owner). */
+	discordOwnerUserId?: string;
 }
