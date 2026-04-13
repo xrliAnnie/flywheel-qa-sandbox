@@ -1,6 +1,7 @@
 #!/bin/bash
 # flywheel-cmux-sync.sh — Sync flywheel tmux windows to cmux workspaces
-# Must be run from inside cmux (requires CMUX socket access).
+# --once/--watch: full sync (tmux + cmux workspace management). Must be run from inside cmux.
+# --refresh: tmux-only linked session repair. Safe to call from anywhere (no cmux socket needed).
 set -euo pipefail
 
 FLYWHEEL_SESSION="flywheel"
@@ -83,15 +84,20 @@ create_workspace_for_window() {
     tmux new-session -d -t "$source_session" -s "$view_session" 2>/dev/null || true
   fi
 
-  # 2. Select the target window in the linked session
-  tmux select-window -t "${view_session}:${window_id}" 2>/dev/null || true
+  # 2. Select the target window in the linked session (by exact name, not ID)
+  # FLY-98: use =name exact match to survive window ID changes across restarts
+  tmux select-window -t "=${view_session}:=${window_name}" 2>/dev/null || true
 
   # 3. Snapshot workspace refs before creation
   local refs_before
   refs_before=$(get_all_workspace_refs)
 
   # 4. Create cmux workspace attaching to the linked session
-  cmux new-workspace --command "tmux attach -t '=${view_session}'"
+  # FLY-98: protect against SIGPIPE/exit 141 when cmux is unavailable
+  if ! cmux new-workspace --command "tmux attach -t '=${view_session}'" 2>/dev/null; then
+    log "WARNING: cmux new-workspace failed for $window_name (cmux not running?)"
+    return 0
+  fi
 
   # 5. Find the new workspace ref by diffing before/after (no selection-state dependency)
   local refs_after new_ref
@@ -133,6 +139,23 @@ cleanup_stale_workspaces() {
   done <<< "$linked_sessions"
 }
 
+refresh_linked_sessions() {
+  # FLY-98: tmux-only repair — re-select correct window by name in existing linked sessions.
+  # Safe to call from outside cmux (no cmux CLI dependency).
+  # Fixes stale current-window pointers after Lead restart (window ID changed, name unchanged).
+  local tmux_windows
+  tmux_windows=$(get_tmux_agent_windows)
+  [[ -z "$tmux_windows" ]] && return 0
+
+  while IFS='|' read -r src_sess wid wname; do
+    local view_session="${VIEW_PREFIX}${wname}"
+    if linked_session_exists "$view_session"; then
+      # Re-select window by exact name — idempotent, harmless if already correct
+      tmux select-window -t "=${view_session}:=${wname}" 2>/dev/null || true
+    fi
+  done <<< "$tmux_windows"
+}
+
 reconcile_existing_workspaces() {
   # For workspaces that exist but have no linked session (e.g., after Lead restart
   # or cmux reopen with stale workspace), close the broken workspace and let the
@@ -169,7 +192,10 @@ sync_once() {
   # 1. Reconcile: close workspaces with dead linked sessions (create phase will rebuild)
   reconcile_existing_workspaces
 
-  # 2. Create missing workspaces
+  # 2. Refresh linked sessions — fix stale current-window pointers (FLY-98)
+  refresh_linked_sessions
+
+  # 3. Create missing workspaces
   while IFS='|' read -r src_sess wid wname; do
     if workspace_exists_for "$wname"; then
       continue
@@ -177,7 +203,7 @@ sync_once() {
     create_workspace_for_window "$src_sess" "$wid" "$wname"
   done <<< "$tmux_windows"
 
-  # 3. Cleanup stale (dead windows → close workspace + kill linked session)
+  # 4. Cleanup stale (dead windows → close workspace + kill linked session)
   cleanup_stale_workspaces
 }
 
@@ -192,11 +218,18 @@ case "${1:-}" in
       sync_once
     done
     ;;
+  --refresh)
+    # FLY-98: tmux-only repair — safe to call from outside cmux
+    refresh_linked_sessions
+    ;;
   --once|"")
     sync_once
     ;;
   *)
-    echo "Usage: flywheel-cmux-sync [--once|--watch]"
+    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh]"
+    echo "  --once    Full sync (cmux + tmux). Must run from inside cmux."
+    echo "  --watch   Continuous full sync every 10s. Must run from inside cmux."
+    echo "  --refresh tmux-only linked session repair. Safe from anywhere."
     exit 1
     ;;
 esac

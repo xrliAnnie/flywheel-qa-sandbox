@@ -16,10 +16,9 @@ echo "[install] Installing flywheel-cmux integration..."
 # 1. Ensure install directory
 mkdir -p "$INSTALL_DIR"
 
-# 2. Copy scripts (not symlink — avoids stale-copy issue only if repo moves)
-cp "$REPO_DIR/scripts/flywheel-cmux-sync.sh" "$INSTALL_DIR/flywheel-cmux-sync"
-cp "$REPO_DIR/scripts/flywheel-cmux-autostart.sh" "$INSTALL_DIR/flywheel-cmux-autostart"
-chmod +x "$INSTALL_DIR/flywheel-cmux-sync" "$INSTALL_DIR/flywheel-cmux-autostart"
+# 2. Symlink scripts (FLY-98: repo updates take effect immediately without re-install)
+ln -sf "$REPO_DIR/scripts/flywheel-cmux-sync.sh" "$INSTALL_DIR/flywheel-cmux-sync"
+ln -sf "$REPO_DIR/scripts/flywheel-cmux-autostart.sh" "$INSTALL_DIR/flywheel-cmux-autostart"
 
 # 3. Write shell integration file
 cat > "$INTEGRATION_FILE" << 'INTEGRATION'

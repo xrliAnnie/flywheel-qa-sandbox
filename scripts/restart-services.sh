@@ -664,6 +664,18 @@ restart_lead() {
     log "Lead $lead_id restarted (PID $new_pid, liveness check OK)"
 }
 
+# FLY-98: Trigger cmux linked session refresh after Lead restart.
+# Must be called OUTSIDE do_restart_all_leads to preserve stdout contract.
+# Uses repo script directly (not ~/.flywheel/bin copy) to avoid stale-install rollout gap.
+trigger_cmux_refresh() {
+    local sync_script="${FLYWHEEL_DIR}/scripts/flywheel-cmux-sync.sh"
+    if [[ -x "$sync_script" ]]; then
+        # Wait 5s for new Lead tmux windows to initialize, then do tmux-only refresh
+        (sleep 5 && "$sync_script" --refresh >> "/tmp/flywheel-cmux-sync.log" 2>&1) &
+        log "cmux refresh scheduled (background, 5s delay)"
+    fi
+}
+
 # Restart all Leads. Outputs "skipped:N failed:M" to stdout.
 # All logs go to stderr; stdout is machine-readable only.
 do_restart_all_leads() {
@@ -769,6 +781,8 @@ rollback_and_restart() {
         fi
         if [[ "$restart_all_leads" == "true" ]]; then
             do_restart_all_leads > /dev/null
+            # FLY-98: trigger cmux refresh after rollback restart
+            trigger_cmux_refresh
         fi
         notify_discord "⚠️ Flywheel 更新到 \`${CURRENT_HEAD:0:7}\` 失败。已回滚到 \`${rollback_sha:0:7}\` 并重启旧版本。"
     else
@@ -829,6 +843,8 @@ deploy_and_verify() {
         leads_skipped=$(echo "$lead_result" | sed 's/.*skipped:\([0-9]*\).*/\1/')
         leads_failed=$(echo "$lead_result" | sed 's/.*failed:\([0-9]*\).*/\1/')
         restarted+=("Leads")
+        # FLY-98: trigger cmux refresh after all Leads restarted
+        trigger_cmux_refresh
     fi
 
     # Step 5: Update deployed-sha
@@ -868,6 +884,9 @@ if [[ "$PLUGIN_ONLY_RESTART" == "true" ]]; then
     lead_result=$(do_restart_all_leads)
     leads_skipped=$(echo "$lead_result" | sed 's/.*skipped:\([0-9]*\).*/\1/')
     leads_failed=$(echo "$lead_result" | sed 's/.*failed:\([0-9]*\).*/\1/')
+
+    # FLY-98: trigger cmux refresh after Lead-only restart
+    trigger_cmux_refresh
 
     if (( leads_failed > 0 )); then
         # Write retry marker — next run will retry Lead restart
