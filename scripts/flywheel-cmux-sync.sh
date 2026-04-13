@@ -13,25 +13,14 @@ log() { echo "[cmux-sync $(date '+%H:%M:%S')] $*"; }
 
 get_tmux_agent_windows() {
   # Returns: session_name|window_id|window_name per line
-  # Scans both 'flywheel' (Leads) and 'runner-*' (Runners) sessions.
+  # FLY-102: Only scans 'flywheel' session (Lead windows).
+  # Runner sessions (runner-*) are excluded — creating linked sessions from Runner
+  # sessions correlates with Runner crashes (GEO-312, GEO-349, GEO-358).
   # Excludes default shell windows (zsh/bash).
   local all_windows=""
 
-  # 1. Flywheel session (Leads)
+  # Flywheel session (Leads only)
   all_windows+=$(tmux list-windows -t "$FLYWHEEL_SESSION" -F "#{session_name}|#{window_id}|#{window_name}" 2>/dev/null || true)
-
-  # 2. Runner sessions: runner-<projectName> (e.g., runner-geoforge3d)
-  local runner_sessions
-  runner_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^runner-' || true)
-  if [[ -n "$runner_sessions" ]]; then
-    while read -r rsess; do
-      local rwindows
-      rwindows=$(tmux list-windows -t "$rsess" -F "#{session_name}|#{window_id}|#{window_name}" 2>/dev/null || true)
-      if [[ -n "$rwindows" ]]; then
-        all_windows+=$'\n'"$rwindows"
-      fi
-    done <<< "$runner_sessions"
-  fi
 
   # Filter out default shell windows
   echo "$all_windows" | grep -v '|zsh$' | grep -v '|bash$' | grep -v '^$' || true
