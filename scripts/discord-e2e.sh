@@ -168,8 +168,7 @@ EOF
   if check_discord_message "TEST-E2E-${TEST_ID}" 30; then
     pass "Message delivered to Discord channel"
   else
-    # This may fail if Lead hasn't fully started — not a hard failure
-    log "  ⚠️  WARN: Discord message not detected (Lead may not have processed event yet)"
+    fail "Discord message not detected within 30s"
   fi
 }
 

@@ -38,18 +38,23 @@ claim_slot() {
   local lockfile="/tmp/flywheel-test-slot-${slot_num}.lock"
 
   if mkdir "$lockfile" 2>/dev/null; then
-    echo $$ > "$lockfile/pid"
+    # PID is updated later to Bridge PID (long-lived) — see Step 5
+    echo "claiming" > "$lockfile/pid"
     return 0
   fi
 
-  # Check if existing lock is stale
+  # Check if existing lock is stale (Bridge PID dead)
   local lock_pid
   lock_pid=$(cat "$lockfile/pid" 2>/dev/null || echo "")
+  if [[ "$lock_pid" == "claiming" ]]; then
+    # Another deploy is in-progress — not stale
+    return 1
+  fi
   if [[ -n "$lock_pid" ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
     log "Reclaiming stale slot ${slot_num} (PID ${lock_pid} dead)"
     rm -rf "$lockfile"
     mkdir "$lockfile" 2>/dev/null || return 1
-    echo $$ > "$lockfile/pid"
+    echo "claiming" > "$lockfile/pid"
     return 0
   fi
 
@@ -108,6 +113,7 @@ mkdir -p "${SLOT_DIR}/project"
 cat > "${SLOT_DIR}/discord-state/.env" <<EOF
 DISCORD_BOT_TOKEN=${TEST_BOT_TOKEN}
 EOF
+chmod 600 "${SLOT_DIR}/discord-state/.env"
 
 # access.json — only the test channel
 cat > "${SLOT_DIR}/discord-state/access.json" <<EOF
@@ -183,13 +189,17 @@ if [[ "$LEAD_READY" != "true" ]]; then
 fi
 
 # ── Step 3: Start test Bridge (fixed port, :memory: StateStore) ──
+# Unset TEAMLEAD_API_TOKEN so /api/* routes don't require auth in test
 log "Starting test Bridge on port ${SLOT_PORT}"
-TEAMLEAD_PORT="${SLOT_PORT}" \
+env -u TEAMLEAD_API_TOKEN \
+  TEAMLEAD_PORT="${SLOT_PORT}" \
   TEAMLEAD_DB_PATH=":memory:" \
   FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
   npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" &
 BRIDGE_PID=$!
 echo "$BRIDGE_PID" > "${SLOT_DIR}/bridge.pid"
+# Update slot lock with long-lived Bridge PID (prevents stale-lock misdetection)
+echo "$BRIDGE_PID" > "/tmp/flywheel-test-slot-${SLOT}.lock/pid"
 log "Bridge PID: ${BRIDGE_PID}"
 
 # ── Step 4: Wait for Bridge HTTP ready ────────────────

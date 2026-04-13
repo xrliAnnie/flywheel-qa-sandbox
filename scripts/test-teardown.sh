@@ -58,7 +58,8 @@ teardown_slot() {
   fi
 
   # ── Step 3: Kill Lead tmux window (cleanup fallback) ──
-  local TMUX_WINDOW="lead-${AGENT_ID}"
+  # Window name matches claude-lead.sh convention: ${PROJECT_NAME}-${LEAD_ID}
+  local TMUX_WINDOW="${PROJECT_NAME}-${AGENT_ID}"
   if tmux has-session -t "flywheel" 2>/dev/null; then
     if tmux list-windows -t "flywheel" -F '#{window_name}' 2>/dev/null | grep -q "^${TMUX_WINDOW}$"; then
       log "Killing tmux window: ${TMUX_WINDOW}"
