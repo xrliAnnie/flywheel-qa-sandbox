@@ -1,11 +1,25 @@
 #!/bin/bash
 # flywheel-cmux-sync.sh — Sync flywheel tmux windows to cmux workspaces
-# --once/--watch: full sync (tmux + cmux workspace management). Must be run from inside cmux.
+# --once: full sync (tmux + cmux workspace management, with aggressive cleanup). Manual use.
+# --watch: event-signaled polling (15s event drain + 60s additive scan). Must run from inside cmux.
 # --refresh: tmux-only linked session repair. Safe to call from anywhere (no cmux socket needed).
+#
+# FLY-102: --watch uses event-signaled polling architecture:
+#   - tmux hooks (after-new-window, pane-exited, session-created) write events to $EVENT_FILE
+#   - watcher drains events every 15s and performs cmux operations
+#   - additive-only polling (60s) creates missing workspaces, conservative cleanup (5min)
+#   - hooks themselves never call cmux CLI (they lack cmux socket context)
 set -euo pipefail
 
 FLYWHEEL_SESSION="flywheel"
 VIEW_PREFIX="cmux-"  # Linked session naming: cmux-<window_name>
+
+# FLY-102: Event-signaled polling state files
+EVENT_FILE="/tmp/flywheel-cmux-events"
+CLEANUP_PENDING="/tmp/flywheel-cmux-cleanup-pending"
+STALE_STATE="/tmp/flywheel-cmux-stale.state"
+CLEANUP_DELAY_SECONDS="${FLYWHEEL_CMUX_CLEANUP_DELAY:-30}"
+CONSERVATIVE_CLEANUP_SECONDS="${FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP:-300}"
 
 # ── Functions ──
 
@@ -71,6 +85,47 @@ linked_session_exists() {
   tmux has-session -t "=$session_name" 2>/dev/null
 }
 
+is_pane_alive() {
+  # FLY-102: Check whether the source pane for a given window name is still alive.
+  # Since Runner and Lead both set `remain-on-exit on`, the tmux window persists
+  # after the pane process dies (displaying exit code). We therefore cannot rely on
+  # window existence — we must check #{pane_dead} on the source pane itself.
+  # Returns 0 (alive) if at least one matching window has a live pane.
+  # Returns 1 (dead / missing) otherwise.
+  local wname="$1"
+  local sessions
+  sessions=$(get_tmux_agent_windows | grep "|${wname}\$" || true)
+  [[ -z "$sessions" ]] && return 1
+
+  while IFS='|' read -r sess wid name; do
+    [[ -z "$sess" || -z "$name" ]] && continue
+    local dead
+    dead=$(tmux display-message -p -t "=${sess}:=${name}" "#{pane_dead}" 2>/dev/null || echo "1")
+    if [[ "$dead" == "0" ]]; then
+      return 0
+    fi
+  done <<< "$sessions"
+  return 1
+}
+
+cleanup_workspace_for() {
+  # FLY-102: Clean up a single cmux workspace + linked session by window name.
+  # Extracted from cleanup_stale_workspaces so event-signaled cleanup can reuse it.
+  # Safe to call even if workspace or linked session no longer exists.
+  local agent_name="$1"
+  local view_session="${VIEW_PREFIX}${agent_name}"
+
+  # 1. Close cmux workspace (if it exists)
+  local ws_ref
+  ws_ref=$(get_workspace_ref_for "$agent_name")
+  if [[ -n "$ws_ref" ]]; then
+    cmux close-workspace --workspace "$ws_ref" 2>/dev/null || true
+  fi
+
+  # 2. Kill the linked session (never kill the source session)
+  tmux kill-session -t "=$view_session" 2>/dev/null || true
+}
+
 create_workspace_for_window() {
   local source_session="$1"
   local window_id="$2"
@@ -125,16 +180,7 @@ cleanup_stale_workspaces() {
     # Exact match check (not substring)
     if ! echo "$active_names" | grep -qx "$agent_name"; then
       log "Cleaning stale: $sess (tmux window '$agent_name' gone)"
-
-      # 1. Close the corresponding cmux workspace (so it doesn't linger as dead tab)
-      local ws_ref
-      ws_ref=$(get_workspace_ref_for "$agent_name")
-      if [[ -n "$ws_ref" ]]; then
-        cmux close-workspace --workspace "$ws_ref" 2>/dev/null || true
-      fi
-
-      # 2. Kill the linked session
-      tmux kill-session -t "=$sess" 2>/dev/null || true
+      cleanup_workspace_for "$agent_name"
     fi
   done <<< "$linked_sessions"
 }
@@ -179,6 +225,251 @@ reconcile_existing_workspaces() {
   done <<< "$tmux_windows"
 }
 
+# ── FLY-102: Event-Signaled Polling ──
+
+register_session_hooks() {
+  # Register per-session tmux hooks that write events to $EVENT_FILE.
+  # Scope: flywheel (Leads) and runner-* (Runners) sessions only.
+  # Idempotent: repeated registration overwrites the same array index [500].
+  local session="$1"
+  case "$session" in
+    flywheel|runner-*) ;;
+    *) return 0 ;;
+  esac
+
+  # after-new-window: fires when a new window is created in this session.
+  # pane-exited: fires when the pane process exits (independent of remain-on-exit).
+  # Array index [500] avoids overwriting other tools' hooks (unindexed set-hook
+  # would clear the whole hook array in tmux 3.5a).
+  # No $(date ...) inside the hook command string — it would be shell-expanded at
+  # registration time. Timestamps are added when the watcher drains events.
+  tmux set-hook -t "$session" 'after-new-window[500]' \
+    "run-shell -b 'echo \"create|#{hook_session_name}|#{hook_window}|#{hook_window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
+  tmux set-hook -t "$session" 'pane-exited[500]' \
+    "run-shell -b 'echo \"exited|#{hook_session_name}|#{hook_window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
+  log "Hooks registered on session: $session"
+}
+
+register_global_hooks() {
+  # Global session-created hook fires for every new tmux session.
+  # The watcher filters by name (only flywheel / runner-*) during event drain.
+  tmux set-hook -g 'session-created[500]' \
+    "run-shell -b 'echo \"register|#{hook_session_name}\" >> $EVENT_FILE'" 2>/dev/null || true
+}
+
+register_hooks_on_new_sessions() {
+  # Scan live sessions and register hooks on any flywheel/runner-* that lack them.
+  # Called at startup and during each 60s additive poll as a safety net for
+  # sessions that existed before the watcher started, or whose hooks were cleared.
+  local sessions
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null || true)
+  [[ -z "$sessions" ]] && return 0
+
+  while read -r sess; do
+    case "$sess" in
+      flywheel|runner-*) register_session_hooks "$sess" ;;
+    esac
+  done <<< "$sessions"
+}
+
+mark_for_cleanup() {
+  # Record a window name as pending cleanup with the timestamp of the exit event.
+  # Idempotent: only adds if no pending entry exists for this window name.
+  local wname="$1" ts="$2"
+  [[ -z "$wname" ]] && return 0
+  touch "$CLEANUP_PENDING"
+  grep -q "^${wname}|" "$CLEANUP_PENDING" 2>/dev/null || \
+    echo "${wname}|${ts}" >> "$CLEANUP_PENDING"
+}
+
+process_pending_cleanups() {
+  # Walk the cleanup-pending file. For each entry:
+  #   - if the source pane is alive again → drop the entry (restart detected)
+  #   - else if < CLEANUP_DELAY_SECONDS since exit → keep the entry
+  #   - else → cleanup_workspace_for + drop the entry
+  [[ ! -f "$CLEANUP_PENDING" ]] && return 0
+
+  local now remaining=""
+  now=$(date +%s)
+
+  while IFS='|' read -r wname ts; do
+    [[ -z "$wname" || -z "$ts" ]] && continue
+    # Pane alive again → cancel cleanup. Uses #{pane_dead} (not window existence)
+    # because `remain-on-exit on` means window lingers after pane dies.
+    if is_pane_alive "$wname"; then
+      continue
+    fi
+    # Still within delay window → keep entry for next tick
+    if (( now - ts < CLEANUP_DELAY_SECONDS )); then
+      remaining+="${wname}|${ts}"$'\n'
+      continue
+    fi
+    # Delay elapsed + pane confirmed dead → clean up
+    log "Event cleanup: '$wname' (exited $((now - ts))s ago)"
+    cleanup_workspace_for "$wname"
+  done < "$CLEANUP_PENDING"
+
+  if [[ -n "$remaining" ]]; then
+    printf '%s' "$remaining" > "$CLEANUP_PENDING"
+  else
+    rm -f "$CLEANUP_PENDING"
+  fi
+}
+
+drain_events() {
+  # Atomically consume $EVENT_FILE: mv → read → process.
+  # Hooks writing via `>>` are POSIX-atomic for writes smaller than PIPE_BUF,
+  # so the worst a concurrent writer can do is put its event in the next batch.
+  [[ ! -f "$EVENT_FILE" ]] && return 0
+
+  local tmp_events="${EVENT_FILE}.processing"
+  mv "$EVENT_FILE" "$tmp_events" 2>/dev/null || return 0
+
+  # Generate the event timestamp at drain time. If we tried to embed $(date +%s)
+  # in the hook command string, tmux/shell would evaluate it at registration
+  # time, producing a fixed constant. Using drain-time ~ event-arrival-time is
+  # acceptable: events drain within 15s of firing.
+  local now
+  now=$(date +%s)
+
+  while IFS='|' read -r etype arg1 arg2 arg3; do
+    case "$etype" in
+      create)
+        local session="$arg1" wid="$arg2" wname="$arg3"
+        [[ -z "$wname" ]] && continue
+        # Skip default shell windows
+        [[ "$wname" == "zsh" || "$wname" == "bash" ]] && continue
+        # Only handle windows from flywheel/runner-* sessions
+        case "$session" in
+          flywheel|runner-*) ;;
+          *) continue ;;
+        esac
+        if ! workspace_exists_for "$wname"; then
+          create_workspace_for_window "$session" "$wid" "$wname"
+        fi
+        ;;
+      exited)
+        local session="$arg1" wname="$arg2"
+        [[ -z "$wname" ]] && continue
+        [[ "$wname" == "zsh" || "$wname" == "bash" ]] && continue
+        case "$session" in
+          flywheel|runner-*) ;;
+          *) continue ;;
+        esac
+        mark_for_cleanup "$wname" "$now"
+        ;;
+      register)
+        local session="$arg1"
+        [[ -z "$session" ]] && continue
+        register_session_hooks "$session"
+        ;;
+    esac
+  done < "$tmp_events"
+
+  rm -f "$tmp_events"
+}
+
+cleanup_stale_conservative() {
+  # Polling fallback for cleanup. Only cleans up a linked session after its
+  # corresponding tmux window has been missing for CONSERVATIVE_CLEANUP_SECONDS
+  # (default 5 minutes). This is belt-and-suspenders for event-drop scenarios.
+  #
+  # Known limitation: uses window-existence (via get_tmux_agent_windows), not
+  # #{pane_dead}. With `remain-on-exit on`, a dead pane keeps its window in the
+  # list, so this fallback does not cover the "event lost + window still listed
+  # with dead pane" edge case. Event-signaled cleanup (process_pending_cleanups)
+  # handles that path via is_pane_alive.
+  local active_names
+  active_names=$(get_tmux_agent_windows | cut -d'|' -f3)
+
+  local linked_sessions
+  linked_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${VIEW_PREFIX}" || true)
+  [[ -z "$linked_sessions" ]] && return 0
+
+  local now
+  now=$(date +%s)
+  touch "$STALE_STATE"
+
+  while read -r sess; do
+    local agent_name="${sess#${VIEW_PREFIX}}"
+    if ! echo "$active_names" | grep -qx "$agent_name"; then
+      local first_stale
+      first_stale=$(grep "^${agent_name}|" "$STALE_STATE" 2>/dev/null | cut -d'|' -f2 || true)
+      if [[ -z "$first_stale" ]]; then
+        echo "${agent_name}|${now}" >> "$STALE_STATE"
+      elif (( now - first_stale >= CONSERVATIVE_CLEANUP_SECONDS )); then
+        log "Conservative cleanup: $sess (stale for $((now - first_stale))s)"
+        cleanup_workspace_for "$agent_name"
+        sed -i '' "/^${agent_name}|/d" "$STALE_STATE" 2>/dev/null || true
+      fi
+    else
+      # Window came back → clear stale marker
+      sed -i '' "/^${agent_name}|/d" "$STALE_STATE" 2>/dev/null || true
+    fi
+  done <<< "$linked_sessions"
+}
+
+sync_additive_bootstrap() {
+  # Run once at `--watch` startup. Additive-only: never performs aggressive
+  # cleanup. This prevents a watcher restart from killing healthy Runner
+  # workspaces while the event file is empty.
+  local tmux_windows
+  tmux_windows=$(get_tmux_agent_windows)
+  [[ -z "$tmux_windows" ]] && return 0
+
+  # 1. Preserve FLY-98 reconcile repair: close broken workspaces (workspace
+  #    exists but linked session is dead) so the create phase can rebuild.
+  reconcile_existing_workspaces
+
+  # 2. Refresh linked sessions — fix stale current-window pointers (FLY-98).
+  refresh_linked_sessions
+
+  # 3. Create missing workspaces. No cleanup of existing ones.
+  while IFS='|' read -r src_sess wid wname; do
+    if ! workspace_exists_for "$wname"; then
+      create_workspace_for_window "$src_sess" "$wid" "$wname"
+    fi
+  done <<< "$tmux_windows"
+}
+
+sync_additive() {
+  # Called every 60s. Mirrors bootstrap, plus conservative cleanup + hook
+  # top-up for sessions that existed before the watcher started.
+  register_hooks_on_new_sessions
+
+  local tmux_windows
+  tmux_windows=$(get_tmux_agent_windows)
+  if [[ -z "$tmux_windows" ]]; then
+    cleanup_stale_conservative
+    return 0
+  fi
+
+  reconcile_existing_workspaces
+  refresh_linked_sessions
+
+  while IFS='|' read -r src_sess wid wname; do
+    if ! workspace_exists_for "$wname"; then
+      create_workspace_for_window "$src_sess" "$wid" "$wname"
+    fi
+  done <<< "$tmux_windows"
+
+  cleanup_stale_conservative
+}
+
+watch_loop() {
+  # Polling loop for --watch mode. Wrapped in a function so `local` is legal.
+  local tick=0
+  while true; do
+    sleep 15
+    tick=$((tick + 1))
+    drain_events
+    process_pending_cleanups
+    if (( tick % 4 == 0 )); then
+      sync_additive
+    fi
+  done
+}
+
 sync_once() {
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
@@ -208,15 +499,23 @@ sync_once() {
 }
 
 # ── Main ──
+# Guard: only run the case dispatcher when invoked directly (not sourced for tests).
+if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
+  return 0 2>/dev/null || true
+fi
 
 case "${1:-}" in
   --watch)
-    log "Watch mode: syncing every 10s"
-    sync_once
-    while true; do
-      sleep 10
-      sync_once
-    done
+    log "Watch mode: event-signaled polling (${CLEANUP_DELAY_SECONDS}s cleanup delay, ${CONSERVATIVE_CLEANUP_SECONDS}s conservative cleanup)"
+    # 1. Install hooks (global + per-session)
+    register_global_hooks
+    register_hooks_on_new_sessions
+    # 2. Additive-only bootstrap — never do aggressive cleanup on startup
+    sync_additive_bootstrap
+    # 3. Polling loop:
+    #    - every 15s: drain events + process pending cleanups
+    #    - every 60s (tick % 4): additive scan + conservative stale cleanup
+    watch_loop
     ;;
   --refresh)
     # FLY-98: tmux-only repair — safe to call from outside cmux
@@ -227,8 +526,8 @@ case "${1:-}" in
     ;;
   *)
     echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh]"
-    echo "  --once    Full sync (cmux + tmux). Must run from inside cmux."
-    echo "  --watch   Continuous full sync every 10s. Must run from inside cmux."
+    echo "  --once    Full sync with aggressive cleanup (cmux + tmux). Manual use from inside cmux."
+    echo "  --watch   Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
     echo "  --refresh tmux-only linked session repair. Safe from anywhere."
     exit 1
     ;;
