@@ -14,10 +14,11 @@ set -euo pipefail
 FLYWHEEL_SESSION="flywheel"
 VIEW_PREFIX="cmux-"  # Linked session naming: cmux-<window_name>
 
-# FLY-102: Event-signaled polling state files
-EVENT_FILE="/tmp/flywheel-cmux-events"
-CLEANUP_PENDING="/tmp/flywheel-cmux-cleanup-pending"
-STALE_STATE="/tmp/flywheel-cmux-stale.state"
+# FLY-102: Event-signaled polling state files.
+# Paths are overridable for tests (${VAR:-default} preserves pre-set values).
+EVENT_FILE="${EVENT_FILE:-/tmp/flywheel-cmux-events}"
+CLEANUP_PENDING="${CLEANUP_PENDING:-/tmp/flywheel-cmux-cleanup-pending}"
+STALE_STATE="${STALE_STATE:-/tmp/flywheel-cmux-stale.state}"
 CLEANUP_DELAY_SECONDS="${FLYWHEEL_CMUX_CLEANUP_DELAY:-30}"
 CONSERVATIVE_CLEANUP_SECONDS="${FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP:-300}"
 
@@ -317,18 +318,38 @@ process_pending_cleanups() {
 }
 
 drain_events() {
-  # Atomically consume $EVENT_FILE: mv → read → process.
+  # Consume $EVENT_FILE: mv → read → process.
   # Hooks writing via `>>` are POSIX-atomic for writes smaller than PIPE_BUF,
   # so the worst a concurrent writer can do is put its event in the next batch.
+  #
+  # Crash recovery: if a previous drain was interrupted, $EVENT_FILE.processing
+  # still holds unprocessed events. Merge it into the fresh batch BEFORE doing
+  # the `mv`, so events are replayed rather than overwritten.
+  local tmp_events="${EVENT_FILE}.processing"
+
+  # Fold any leftover processing-file from a prior crash onto the live event
+  # file so the next mv captures both. If the event file doesn't exist yet,
+  # just rename the leftover into place.
+  if [[ -f "$tmp_events" ]]; then
+    if [[ -f "$EVENT_FILE" ]]; then
+      local merged="${EVENT_FILE}.merge.$$"
+      cat "$tmp_events" "$EVENT_FILE" > "$merged" 2>/dev/null || true
+      mv "$merged" "$EVENT_FILE" 2>/dev/null || true
+      rm -f "$tmp_events"
+    else
+      mv "$tmp_events" "$EVENT_FILE" 2>/dev/null || true
+    fi
+  fi
+
   [[ ! -f "$EVENT_FILE" ]] && return 0
 
-  local tmp_events="${EVENT_FILE}.processing"
   mv "$EVENT_FILE" "$tmp_events" 2>/dev/null || return 0
 
   # Generate the event timestamp at drain time. If we tried to embed $(date +%s)
   # in the hook command string, tmux/shell would evaluate it at registration
   # time, producing a fixed constant. Using drain-time ~ event-arrival-time is
-  # acceptable: events drain within 15s of firing.
+  # acceptable: events drain within 15s of firing, and replay after crash still
+  # assigns a meaningful (though slightly-late) timestamp.
   local now
   now=$(date +%s)
 
@@ -370,18 +391,14 @@ drain_events() {
 }
 
 cleanup_stale_conservative() {
-  # Polling fallback for cleanup. Only cleans up a linked session after its
-  # corresponding tmux window has been missing for CONSERVATIVE_CLEANUP_SECONDS
+  # Polling fallback for cleanup. Cleans up a linked session after its source
+  # pane has been dead (or its window missing) for CONSERVATIVE_CLEANUP_SECONDS
   # (default 5 minutes). This is belt-and-suspenders for event-drop scenarios.
   #
-  # Known limitation: uses window-existence (via get_tmux_agent_windows), not
-  # #{pane_dead}. With `remain-on-exit on`, a dead pane keeps its window in the
-  # list, so this fallback does not cover the "event lost + window still listed
-  # with dead pane" edge case. Event-signaled cleanup (process_pending_cleanups)
-  # handles that path via is_pane_alive.
-  local active_names
-  active_names=$(get_tmux_agent_windows | cut -d'|' -f3)
-
+  # Uses is_pane_alive() rather than window-existence so it handles BOTH the
+  # "window gone" case AND the "remain-on-exit on — window lingers with dead
+  # pane" case. Without this, a lost `exited` event combined with remain-on-exit
+  # would keep the corresponding cmux workspace / linked session alive forever.
   local linked_sessions
   linked_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${VIEW_PREFIX}" || true)
   [[ -z "$linked_sessions" ]] && return 0
@@ -392,7 +409,7 @@ cleanup_stale_conservative() {
 
   while read -r sess; do
     local agent_name="${sess#${VIEW_PREFIX}}"
-    if ! echo "$active_names" | grep -qx "$agent_name"; then
+    if ! is_pane_alive "$agent_name"; then
       local first_stale
       first_stale=$(grep "^${agent_name}|" "$STALE_STATE" 2>/dev/null | cut -d'|' -f2 || true)
       if [[ -z "$first_stale" ]]; then
@@ -403,7 +420,7 @@ cleanup_stale_conservative() {
         sed -i '' "/^${agent_name}|/d" "$STALE_STATE" 2>/dev/null || true
       fi
     else
-      # Window came back → clear stale marker
+      # Pane is alive again → clear stale marker
       sed -i '' "/^${agent_name}|/d" "$STALE_STATE" 2>/dev/null || true
     fi
   done <<< "$linked_sessions"

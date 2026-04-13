@@ -414,11 +414,13 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════
-# Test 10: cleanup_stale_conservative clears marker when window returns
+# Test 10: cleanup_stale_conservative clears marker when pane alive
 # ════════════════════════════════════════════════════════════════
-echo "Test: cleanup_stale_conservative clears marker on window return"
+echo "Test: cleanup_stale_conservative clears marker on pane-alive return"
 reset_mocks
+# Pane alive → marker should be cleared
 MOCK_TMUX_WINDOWS="flywheel|@1|returned-win"
+MOCK_PANE_DEAD="flywheel:returned-win=0"
 MOCK_TMUX_SESSIONS=$'flywheel\ncmux-returned-win'
 MOCK_CMUX_WORKSPACES=""
 now=$(date +%s)
@@ -428,9 +430,82 @@ printf 'returned-win|%s\n' "$past" > "$STALE_STATE"
 cleanup_stale_conservative >/dev/null
 
 if grep -q "^returned-win|" "$STALE_STATE" 2>/dev/null; then
-  fail "marker should be cleared when window returns"
+  fail "marker should be cleared when pane alive"
 else
-  pass "marker cleared when window returns"
+  pass "marker cleared when pane alive"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# Test 11: cleanup_stale_conservative treats dead pane (remain-on-exit) as stale
+# ════════════════════════════════════════════════════════════════
+echo "Test: cleanup_stale_conservative — dead pane with window still listed"
+reset_mocks
+# remain-on-exit: window still in list-windows, but pane is dead → should mark stale
+MOCK_TMUX_WINDOWS="flywheel|@1|dead-pane-win"
+MOCK_PANE_DEAD="flywheel:dead-pane-win=1"
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-dead-pane-win'
+MOCK_CMUX_WORKSPACES=""
+
+# First pass: mark stale
+cleanup_stale_conservative >/dev/null
+if grep -q "^dead-pane-win|" "$STALE_STATE" 2>/dev/null; then
+  pass "dead-pane window marked stale despite window existing (remain-on-exit path)"
+else
+  fail "dead-pane window not marked stale — event-loss fallback would leak"
+fi
+
+# Fast-forward the marker by 6 minutes → cleanup should fire
+now=$(date +%s)
+past=$((now - 400))
+printf 'dead-pane-win|%s\n' "$past" > "$STALE_STATE"
+cleanup_stale_conservative >/dev/null
+if echo "$MOCK_TMUX_KILLED" | grep -q "=cmux-dead-pane-win"; then
+  pass "dead-pane window cleaned up after threshold (closes event-loss leak)"
+else
+  fail "expected cleanup of dead-pane-win after 5min. Got: $MOCK_TMUX_KILLED"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# Test 12: drain_events replays leftover .processing after a crash
+# ════════════════════════════════════════════════════════════════
+echo "Test: drain_events crash recovery replays .processing leftover"
+reset_mocks
+# Simulate prior crash: .processing holds an exited event, $EVENT_FILE doesn't exist.
+printf 'exited|flywheel|crashed-win\n' > "${EVENT_FILE}.processing"
+# No windows/sessions — is_pane_alive returns false → exited will mark for cleanup
+MOCK_TMUX_WINDOWS=""
+MOCK_TMUX_SESSIONS=""
+
+drain_events >/dev/null
+
+if grep -q "^crashed-win|" "$CLEANUP_PENDING" 2>/dev/null; then
+  pass "leftover .processing event replayed (no event loss across crash)"
+else
+  fail "leftover .processing event lost"
+fi
+if [[ -f "${EVENT_FILE}.processing" ]]; then
+  fail ".processing should be cleaned up after replay"
+else
+  pass ".processing cleaned after replay"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# Test 13: drain_events merges .processing with new events on recovery
+# ════════════════════════════════════════════════════════════════
+echo "Test: drain_events merges leftover + fresh events"
+reset_mocks
+# Leftover from prior crash + fresh event arrived since
+printf 'exited|flywheel|old-win\n' > "${EVENT_FILE}.processing"
+printf 'exited|flywheel|new-win\n' > "$EVENT_FILE"
+MOCK_TMUX_WINDOWS=""
+MOCK_TMUX_SESSIONS=""
+
+drain_events >/dev/null
+
+if grep -q "^old-win|" "$CLEANUP_PENDING" 2>/dev/null && grep -q "^new-win|" "$CLEANUP_PENDING" 2>/dev/null; then
+  pass "both old (leftover) and new events processed"
+else
+  fail "expected both old-win and new-win in pending. Got: $(cat "$CLEANUP_PENDING" 2>/dev/null)"
 fi
 
 # ════════════════════════════════════════════════════════════════
