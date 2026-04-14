@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Flywheel Agent Architecture</title>
+    <style>
+      :root {
+        --bg: #f5f1e8;
+        --panel: #fffdf8;
+        --ink: #1f2937;
+        --muted: #5b6472;
+        --line: #d6d0c4;
+        --accent: #0f766e;
+        --accent-2: #b45309;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        font-family:
+          "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino,
+          Georgia, serif;
+        background:
+          radial-gradient(circle at top left, #fff7e6 0, transparent 28%),
+          radial-gradient(circle at top right, #e6fffa 0, transparent 22%),
+          linear-gradient(180deg, #f8f5ee 0%, var(--bg) 100%);
+        color: var(--ink);
+      }
+
+      .page {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 32px 24px 48px;
+      }
+
+      .header {
+        margin-bottom: 20px;
+      }
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 40px;
+        line-height: 1.05;
+        letter-spacing: -0.02em;
+      }
+
+      .subtitle {
+        max-width: 980px;
+        margin: 0;
+        font-size: 18px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      .panel {
+        background: color-mix(in srgb, var(--panel) 92%, white 8%);
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        box-shadow: 0 12px 40px rgba(31, 41, 55, 0.08);
+        overflow: hidden;
+      }
+
+      .panel-head {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 18px 22px;
+        border-bottom: 1px solid var(--line);
+        background: rgba(255, 255, 255, 0.68);
+      }
+
+      .panel-head h2 {
+        margin: 0;
+        font-size: 18px;
+      }
+
+      .panel-head p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .diagram-wrap {
+        padding: 24px 12px 12px;
+        overflow: auto;
+      }
+
+      .mermaid {
+        min-width: 1280px;
+      }
+
+      .notes {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 16px;
+        padding: 16px 22px 24px;
+      }
+
+      .note {
+        padding: 16px 18px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.72);
+      }
+
+      .note h3 {
+        margin: 0 0 8px;
+        font-size: 15px;
+      }
+
+      .note p {
+        margin: 0;
+        font-size: 14px;
+        line-height: 1.6;
+        color: var(--muted);
+      }
+
+      @media (max-width: 960px) {
+        .notes {
+          grid-template-columns: 1fr;
+        }
+
+        h1 {
+          font-size: 32px;
+        }
+
+        .subtitle {
+          font-size: 16px;
+        }
+      }
+    </style>
+    <script type="module">
+      import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+
+      mermaid.initialize({
+        startOnLoad: true,
+        theme: "base",
+        securityLevel: "loose",
+        flowchart: {
+          curve: "basis",
+          nodeSpacing: 36,
+          rankSpacing: 44,
+          htmlLabels: true,
+        },
+        themeVariables: {
+          background: "#fffdf8",
+          primaryColor: "#fff6db",
+          primaryTextColor: "#1f2937",
+          primaryBorderColor: "#b45309",
+          secondaryColor: "#e6fffa",
+          secondaryBorderColor: "#0f766e",
+          tertiaryColor: "#f4f4f5",
+          lineColor: "#6b7280",
+          clusterBkg: "#fffaf0",
+          clusterBorder: "#d6d0c4",
+          fontFamily:
+            '"Iowan Old Style", "Palatino Linotype", "Book Antiqua", Palatino, Georgia, serif',
+          fontSize: "16px",
+        },
+      });
+    </script>
+  </head>
+  <body>
+    <main class="page">
+      <header class="header">
+        <h1>Flywheel Agent Architecture</h1>
+        <p class="subtitle">
+          这张图把当前代码里的实际运行路径、目标中的 role/adapter 分层，以及下一步需要整理的架构切口放在一起。
+          核心方向是：从 Claude-first orchestration，整理成 role-driven、adapter-backed 的 multi-agent orchestrator。
+        </p>
+      </header>
+
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Current To Target</h2>
+          <p>Lead = Claude Code, Runner = Codex, but both remain swappable</p>
+        </div>
+
+        <div class="diagram-wrap">
+          <pre class="mermaid">
+flowchart LR
+  subgraph CURRENT["Current Architecture"]
+    TL["teamlead<br/>run-infra / bridge"]
+    EW["edge-worker<br/>orchestration"]
+    SS["RunnerSelectionService<br/>logical multi-runner"]
+    ASM["AgentSessionManager<br/>provider-specific session state"]
+    PR["prompt / procedures / decision / memory"]
+    CR["flywheel-claude-runner<br/>ClaudeRunner / TmuxAdapter"]
+    CC["Claude Code<br/>lead + runner"]
+
+    TL --> EW
+    EW --> SS
+    EW --> ASM
+    EW --> PR
+    TL -. direct infra assembly .-> CR
+    EW -. direct runner creation .-> CR
+    ASM -. provider specific session logic .-> CR
+    CR --> CC
+  end
+
+  subgraph TARGET["Target Architecture"]
+    ORCH["Flywheel Orchestrator<br/>workflow / routing / memory / verification"]
+    RR["Role Resolver<br/>lead / runner / reviewer / triager"]
+    AR["Adapter Registry + Factory"]
+    CS["Canonical Contracts<br/>TaskSpec / AgentEvent / AgentSessionRef / AgentResult"]
+    LA["Lead Adapter<br/>claude-code"]
+    RA["Runner Adapter<br/>codex"]
+    OA["Other Adapters<br/>gemini / goose / cursor"]
+    L1["Claude Code"]
+    R1["Codex"]
+    O1["Other Agents"]
+
+    ORCH --> RR
+    RR --> AR
+    ORCH --> CS
+    AR --> LA
+    AR --> RA
+    AR --> OA
+    LA --> L1
+    RA --> R1
+    OA --> O1
+    CS -. shared artifacts / session refs / events .- ORCH
+  end
+
+  CURRENT -->|"Refactor toward"| TARGET
+
+  W1["1. Replace direct ClaudeRunner/TmuxAdapter construction<br/>with adapter factory entrypoints"]
+  W2["2. Replace provider-specific session fields<br/>with canonical AgentSessionRef"]
+  W3["3. Separate role selection from adapter selection<br/>so lead and runner are swappable"]
+  W4["4. Make runner path adapter-first before touching lead path"]
+
+  TARGET --> W1
+  TARGET --> W2
+  TARGET --> W3
+  TARGET --> W4
+
+  classDef current fill:#fff1cf,stroke:#b45309,color:#1f2937,stroke-width:1.5px;
+  classDef target fill:#def7f3,stroke:#0f766e,color:#1f2937,stroke-width:1.5px;
+  classDef work fill:#f3f4f6,stroke:#6b7280,color:#1f2937,stroke-width:1.2px;
+
+  class TL,EW,SS,ASM,PR,CR,CC current;
+  class ORCH,RR,AR,CS,LA,RA,OA,L1,R1,O1 target;
+  class W1,W2,W3,W4 work;
+          </pre>
+        </div>
+
+        <div class="notes">
+          <article class="note">
+            <h3>Current Problem</h3>
+            <p>
+              `core` 里已经有 adapter 抽象，但 `teamlead` 和 `edge-worker`
+              生产路径仍然直接实例化 Claude 相关实现，导致抽象层没有成为唯一执行入口。
+            </p>
+          </article>
+          <article class="note">
+            <h3>Near-Term Goal</h3>
+            <p>
+              先实现 `Lead = Claude Code`、`Runner = Codex` 的稳定链路，不先追求所有 agent
+              在能力上完全等价。
+            </p>
+          </article>
+          <article class="note">
+            <h3>Architecture Direction</h3>
+            <p>
+              让 Flywheel 调度的是 role，role 再绑定 adapter，adapter 再包装具体 agent。
+              这样将来替换 Lead 或 Runner 都不会动 orchestrator 主体。
+            </p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>
