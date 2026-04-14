@@ -10,7 +10,7 @@
  */
 
 import type { StateStore } from "../StateStore.js";
-import { getTmuxTargetFromCommDb, killTmuxSession } from "./tmux-lookup.js";
+import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
 
 // ── Types ───────────────────────────────────────────────
 
@@ -44,7 +44,7 @@ export async function postMergeCleanup(
 	try {
 		const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 		if (target) {
-			const killResult = await killTmuxSession(target.sessionName);
+			const killResult = await killTmuxWindow(target.tmuxWindow);
 			result.tmuxClosed = killResult.killed;
 			if (killResult.error) {
 				result.errors.push(`tmux: ${killResult.error}`);

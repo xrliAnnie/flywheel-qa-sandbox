@@ -45,7 +45,7 @@ import { StandupService } from "./standup-service.js";
 import {
 	getTmuxTargetFromCommDb,
 	isTmuxSessionAlive,
-	killTmuxSession,
+	killTmuxWindow,
 } from "./tmux-lookup.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
@@ -455,7 +455,7 @@ export function createBridgeApp(
 				return;
 			}
 
-			const result = await killTmuxSession(target.sessionName);
+			const result = await killTmuxWindow(target.tmuxWindow);
 
 			store.insertEvent({
 				event_id: `close-tmux-${executionId}-${Date.now()}`,

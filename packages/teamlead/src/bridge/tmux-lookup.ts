@@ -90,27 +90,35 @@ export async function isTmuxSessionAlive(
 }
 
 /**
- * Kill a tmux session.
+ * Kill a specific tmux window (not the whole session).
+ *
+ * Takes the full CommDB tmux_window target (e.g. "runner-geoforge3d:@42").
+ * Using kill-window preserves other Runners sharing the same session and
+ * triggers pane-exited hooks so cmux-sync event-driven cleanup runs.
+ *
  * Distinguishes benign (already dead) from real errors.
  */
-export async function killTmuxSession(
-	sessionName: string,
+export async function killTmuxWindow(
+	tmuxWindow: string,
 ): Promise<{ killed: boolean; error?: string }> {
 	try {
-		await execFileAsync("tmux", ["kill-session", "-t", `=${sessionName}`], {
+		await execFileAsync("tmux", ["kill-window", "-t", tmuxWindow], {
 			timeout: TMUX_TIMEOUT,
 		});
 		return { killed: true };
 	} catch (err) {
 		const msg = (err as Error).message ?? String(err);
 		if (
+			msg.includes("window not found") ||
+			msg.includes("can't find window") ||
+			msg.includes("can't find pane") ||
 			msg.includes("session not found") ||
 			msg.includes("can't find session") ||
 			msg.includes("no server running")
 		) {
 			return { killed: true }; // already dead = success
 		}
-		console.error(`[tmux-lookup] kill-session error: ${msg}`);
+		console.error(`[tmux-lookup] kill-window error: ${msg}`);
 		return { killed: false, error: msg };
 	}
 }

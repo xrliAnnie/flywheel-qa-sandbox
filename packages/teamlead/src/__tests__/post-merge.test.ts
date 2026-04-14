@@ -5,11 +5,11 @@ import { StateStore } from "../StateStore.js";
 // ── Mock tmux-lookup ────────────────────────────────────
 
 const mockGetTmuxTarget = vi.fn();
-const mockKillTmuxSession = vi.fn();
+const mockKillTmuxWindow = vi.fn();
 
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
-	killTmuxSession: (...args: unknown[]) => mockKillTmuxSession(...args),
+	killTmuxWindow: (...args: unknown[]) => mockKillTmuxWindow(...args),
 }));
 
 // ── Helpers ─────────────────────────────────────────────
@@ -36,7 +36,7 @@ describe("postMergeCleanup", () => {
 			status: "approved",
 		});
 		mockGetTmuxTarget.mockReset();
-		mockKillTmuxSession.mockReset();
+		mockKillTmuxWindow.mockReset();
 	});
 
 	it("closes tmux when CommDB has target", async () => {
@@ -44,13 +44,13 @@ describe("postMergeCleanup", () => {
 			tmuxWindow: "GEO-280:@0",
 			sessionName: "GEO-280",
 		});
-		mockKillTmuxSession.mockResolvedValue({ killed: true });
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
 
 		const result = await postMergeCleanup(makeOpts(), store);
 
 		expect(result.tmuxClosed).toBe(true);
 		expect(result.errors).toEqual([]);
-		expect(mockKillTmuxSession).toHaveBeenCalledWith("GEO-280");
+		expect(mockKillTmuxWindow).toHaveBeenCalledWith("GEO-280:@0");
 	});
 
 	it("skips tmux when no CommDB target", async () => {
@@ -60,7 +60,7 @@ describe("postMergeCleanup", () => {
 
 		expect(result.tmuxClosed).toBe(false);
 		expect(result.errors).toEqual([]);
-		expect(mockKillTmuxSession).not.toHaveBeenCalled();
+		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
 	});
 
 	it("captures tmux kill error without throwing", async () => {
@@ -68,7 +68,7 @@ describe("postMergeCleanup", () => {
 			tmuxWindow: "GEO-280:@0",
 			sessionName: "GEO-280",
 		});
-		mockKillTmuxSession.mockResolvedValue({
+		mockKillTmuxWindow.mockResolvedValue({
 			killed: false,
 			error: "permission denied",
 		});
@@ -95,7 +95,7 @@ describe("postMergeCleanup", () => {
 			tmuxWindow: "GEO-280:@0",
 			sessionName: "GEO-280",
 		});
-		mockKillTmuxSession.mockResolvedValue({ killed: true });
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
 
 		await postMergeCleanup(makeOpts(), store);
 
@@ -110,7 +110,7 @@ describe("postMergeCleanup", () => {
 			tmuxWindow: "GEO-280:@0",
 			sessionName: "GEO-280",
 		});
-		mockKillTmuxSession.mockResolvedValue({
+		mockKillTmuxWindow.mockResolvedValue({
 			killed: false,
 			error: "timeout",
 		});
