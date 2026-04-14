@@ -1,0 +1,63 @@
+flowchart LR
+  subgraph CURRENT["Current Architecture"]
+    TL["teamlead<br/>run-infra / bridge"]
+    EW["edge-worker<br/>orchestration"]
+    SS["RunnerSelectionService<br/>logical multi-runner"]
+    ASM["AgentSessionManager<br/>provider-specific session state"]
+    PR["prompt / procedures / decision / memory"]
+    CR["flywheel-claude-runner<br/>ClaudeRunner / TmuxAdapter"]
+    CC["Claude Code<br/>lead + runner"]
+
+    TL --> EW
+    EW --> SS
+    EW --> ASM
+    EW --> PR
+    TL -. direct infra assembly .-> CR
+    EW -. direct runner creation .-> CR
+    ASM -. provider specific session logic .-> CR
+    CR --> CC
+  end
+
+  subgraph TARGET["Target Architecture"]
+    ORCH["Flywheel Orchestrator<br/>workflow / routing / memory / verification"]
+    RR["Role Resolver<br/>lead / runner / reviewer / triager"]
+    AR["Adapter Registry + Factory"]
+    CS["Canonical Contracts<br/>TaskSpec / AgentEvent / AgentSessionRef / AgentResult"]
+    LA["Lead Adapter<br/>claude-code"]
+    RA["Runner Adapter<br/>codex"]
+    OA["Other Adapters<br/>gemini / goose / cursor"]
+    L1["Claude Code"]
+    R1["Codex"]
+    O1["Other Agents"]
+
+    ORCH --> RR
+    RR --> AR
+    ORCH --> CS
+    AR --> LA
+    AR --> RA
+    AR --> OA
+    LA --> L1
+    RA --> R1
+    OA --> O1
+    CS -. shared artifacts / session refs / events .- ORCH
+  end
+
+  CURRENT -->|"Refactor toward"| TARGET
+
+  W1["1. Replace direct ClaudeRunner/TmuxAdapter construction<br/>with adapter factory entrypoints"]
+  W2["2. Replace provider-specific session fields<br/>with canonical AgentSessionRef"]
+  W3["3. Separate role selection from adapter selection<br/>so lead and runner are swappable"]
+  W4["4. Make runner path adapter-first before touching lead path"]
+
+  TARGET --> W1
+  TARGET --> W2
+  TARGET --> W3
+  TARGET --> W4
+
+  classDef current fill:#fff1cf,stroke:#b45309,color:#1f2937,stroke-width:1.5px;
+  classDef target fill:#def7f3,stroke:#0f766e,color:#1f2937,stroke-width:1.5px;
+  classDef work fill:#f3f4f6,stroke:#6b7280,color:#1f2937,stroke-width:1.2px;
+
+  class TL,EW,SS,ASM,PR,CR,CC current;
+  class ORCH,RR,AR,CS,LA,RA,OA,L1,R1,O1 target;
+  class W1,W2,W3,W4 work;
