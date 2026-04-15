@@ -320,12 +320,37 @@ For each PR the user approves to ship:
 1. `SendMessage(to="worker-geo-{XX}", message="Ship PR #{N}: merge, clean up, update docs")`
 2. Teammate executes **ALL** of the following (do not skip any):
 
+   **A0. Archive docs as FINAL commit on feature branch (MANDATORY — do before ship)**
+
+   Doc archive moves must ride along with the implementation PR, NOT as a follow-up archive PR.
+   This keeps "PR merged = feature done = docs archived" in a single atomic ship, saves one
+   CI+`:cool:` round-trip, and avoids orphan `inprogress/new/` entries on main.
+
+   ```bash
+   cd {worktree_path}
+   ISSUE_ID="FLY-{XX}"  # or GEO-{XX}
+   for dir_pair in \
+       "doc/engineer/plan/inprogress:doc/engineer/plan/archive" \
+       "doc/engineer/research/new:doc/engineer/research/archive" \
+       "doc/engineer/exploration/new:doc/engineer/exploration/archive"; do
+     src="${dir_pair%%:*}"; dst="${dir_pair##*:}"
+     for f in $(find "$src" -name "*${ISSUE_ID}-*" -type f 2>/dev/null); do
+       git mv "$f" "$dst/"
+     done
+   done
+   if ! git diff --cached --quiet; then
+     git commit -m "docs: archive ${ISSUE_ID} docs (final commit before ship)"
+   fi
+   ```
+
+   If no docs to move, skip silently. Matches `spin.md` Stage: Ship Step 1.
+
    **A. Ship via :cool: flow (MANDATORY — do not skip)**
 
    Push triggers GitHub Actions CI. Wait for CI to pass before merging.
 
    ```bash
-   # 1. Ensure latest code is pushed
+   # 1. Ensure latest code is pushed (includes the archive commit from A0)
    git push origin {branch}
 
    # 2. Wait for CI checks to complete
@@ -369,11 +394,13 @@ For each PR the user approves to ship:
    - `git worktree remove {worktree_path}`
    - `git branch -D {branch}` (if not already deleted by --delete-branch)
 
-   **D. Archive docs** (in main repo, on main branch)
-   - `git mv doc/engineer/plan/inprogress/{file} doc/engineer/plan/archive/`
-   - `git mv doc/engineer/exploration/new/{file} doc/engineer/exploration/archive/`
-   - `git mv doc/engineer/research/new/{file} doc/engineer/research/archive/` (if exists)
-   - Commit: `docs: archive GEO-{XX} docs after merge`
+   **D. Verify archive docs landed** (done on feature branch in Step A0 — this is just a check)
+   - The `docs: archive ${ISSUE_ID} docs` commit was pushed as the final commit on the feature
+     branch in Step A0 and merged to main as part of the ship.
+   - Spot-check on main: `git log --oneline -5` should show the archive commit, and
+     `ls doc/engineer/plan/archive/` should contain the archived plan file.
+   - If archive didn't land (e.g., worker skipped A0), file a follow-up archive PR as a
+     stopgap — but the worker owes an apology for skipping A0.
 
    **E. Update MEMORY.md**
    - Mark issue as ✅ Done in Next Steps table
