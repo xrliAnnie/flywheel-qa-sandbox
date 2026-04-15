@@ -51,8 +51,12 @@ claim_slot() {
     local lock_age
     lock_age=$(( $(date +%s) - $(stat -f %m "$lockfile/pid" 2>/dev/null || echo "0") ))
     if (( lock_age > 300 )); then
-      log "Reclaiming stale claiming lock ${slot_num} (${lock_age}s old)"
-      rm -rf "$lockfile"
+      log "Reclaiming stale claiming lock ${slot_num} (${lock_age}s old) — running full teardown first"
+      # A prior deploy crashed before writing Bridge PID — Lead supervisor may still be
+      # running from Step 1. Teardown clears Lead/session/workspace/CommDB.
+      if ! bash "${SCRIPT_DIR}/test-teardown.sh" "$slot_num" >&2; then
+        log "WARN: teardown of stale claiming slot ${slot_num} reported errors — continuing"
+      fi
       mkdir "$lockfile" 2>/dev/null || return 1
       echo "claiming" > "$lockfile/pid"
       return 0
@@ -60,8 +64,15 @@ claim_slot() {
     return 1
   fi
   if [[ -n "$lock_pid" ]] && ! kill -0 "$lock_pid" 2>/dev/null; then
-    log "Reclaiming stale slot ${slot_num} (PID ${lock_pid} dead)"
-    rm -rf "$lockfile"
+    log "Reclaiming stale slot ${slot_num} (PID ${lock_pid} dead) — running full teardown first"
+    # Bridge is dead but Lead supervisor, session-id, CommDB, workspace may still exist.
+    # Reusing the slot without clearing them lets the new Bridge inherit the old Lead's
+    # inbox-ready lease, --resume into the prior Claude session, and mix CommDB state
+    # across tests. Run full teardown to guarantee a clean slot before reclaiming.
+    if ! bash "${SCRIPT_DIR}/test-teardown.sh" "$slot_num" >&2; then
+      log "WARN: teardown of stale slot ${slot_num} reported errors — continuing"
+    fi
+    # Teardown removed the lock; recreate it as "claiming".
     mkdir "$lockfile" 2>/dev/null || return 1
     echo "claiming" > "$lockfile/pid"
     return 0

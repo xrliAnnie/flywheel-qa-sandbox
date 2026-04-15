@@ -88,12 +88,28 @@ fi
 log "Bridge alive at ${BRIDGE_URL}"
 
 # ── Helper: POST event to Bridge ──────────────────────
+# Emits the server response on stdout. On curl/HTTP failure, emits a
+# synthetic JSON {"ok":false,"error":"..."} and still returns 0, so callers
+# under `set -e` can branch on `.ok` instead of dying at the subshell.
 post_event() {
   local event_json="$1"
-  curl -sf -X POST "${BRIDGE_URL}/events" \
+  local body http_code curl_rc
+  body=$(curl -s -o /dev/stdout -w "\n__HTTP__%{http_code}" -X POST "${BRIDGE_URL}/events" \
     -H "Content-Type: application/json" \
     -H "Authorization: Bearer ${INGEST_TOKEN}" \
-    -d "$event_json"
+    -d "$event_json" 2>&1) || curl_rc=$?
+  curl_rc="${curl_rc:-0}"
+  http_code="${body##*__HTTP__}"
+  body="${body%$'\n'__HTTP__*}"
+  if [[ "$curl_rc" != "0" ]]; then
+    printf '{"ok":false,"error":"curl exit %s: %s"}\n' "$curl_rc" "${body//\"/\\\"}"
+    return 0
+  fi
+  if [[ ! "$http_code" =~ ^2 ]]; then
+    printf '{"ok":false,"error":"http %s: %s"}\n' "$http_code" "${body//\"/\\\"}"
+    return 0
+  fi
+  printf '%s\n' "$body"
 }
 
 # ── Helper: Check Discord channel for message ─────────
