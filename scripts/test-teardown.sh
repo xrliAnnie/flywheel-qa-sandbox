@@ -20,11 +20,16 @@ teardown_slot() {
   local SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
   local LOCK_FILE="/tmp/flywheel-test-slot-${SLOT}.lock"
 
-  # Read slot config for agent ID
+  # Read slot config for agent ID. Schema matches ~/.flywheel/test-slots.json
+  # (FLY-96): AGENT_ID is derived from .botName (1:1). Fallback to a predictable
+  # name if the slots file is missing/unreadable so teardown still makes progress.
   SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
   local SLOT_IDX=$((SLOT - 1))
   local AGENT_ID
-  AGENT_ID=$(jq -r ".slots[${SLOT_IDX}].agentId" "$SLOTS_FILE" 2>/dev/null || echo "test-lead-${SLOT}")
+  AGENT_ID=$(jq -r ".slots[${SLOT_IDX}].botName // empty" "$SLOTS_FILE" 2>/dev/null || true)
+  if [[ -z "$AGENT_ID" ]]; then
+    AGENT_ID="flywheel-test-${SLOT}"
+  fi
   local PROJECT_NAME="test-slot-${SLOT}"
 
   log "Tearing down slot ${SLOT} (agent: ${AGENT_ID})"

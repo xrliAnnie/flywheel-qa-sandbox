@@ -37,10 +37,11 @@ if [[ -z "$SLOT_INFO" ]]; then
       SLOT_DIR="/tmp/flywheel-test-slot-${i}"
       SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
       SLOT_IDX=$((i - 1))
-      PORT=$(jq -r ".slots[${SLOT_IDX}].port" "$SLOTS_FILE")
-      AGENT_ID=$(jq -r ".slots[${SLOT_IDX}].agentId" "$SLOTS_FILE")
-      CHANNEL=$(jq -r ".slots[${SLOT_IDX}].chatChannelId" "$SLOTS_FILE")
-      BOT_TOKEN_ENV=$(jq -r ".slots[${SLOT_IDX}].botTokenEnv" "$SLOTS_FILE")
+      # Schema matches ~/.flywheel/test-slots.json (FLY-96)
+      PORT=$(jq -r ".slots[${SLOT_IDX}].bridgePort" "$SLOTS_FILE")
+      AGENT_ID=$(jq -r ".slots[${SLOT_IDX}].botName" "$SLOTS_FILE")
+      CHANNEL=$(jq -r ".slots[${SLOT_IDX}].channelId" "$SLOTS_FILE")
+      BOT_TOKEN_ENV=$(jq -r ".slots[${SLOT_IDX}].tokenEnvVar" "$SLOTS_FILE")
       BOT_TOKEN="${!BOT_TOKEN_ENV}"
       PROJECT_NAME="test-slot-${i}"
       BRIDGE_PID=$(cat "${SLOT_DIR}/bridge.pid" 2>/dev/null || echo "")

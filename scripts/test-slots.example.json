@@ -4,36 +4,41 @@
 	"slots": [
 		{
 			"id": 1,
-			"port": 19871,
-			"agentId": "test-lead-1",
-			"botTokenEnv": "TEST_BOT_TOKEN_1",
-			"botId": "<bot-application-id>",
-			"chatChannelId": "<channel-id>"
+			"botName": "flywheel-test-1",
+			"botAppId": "<bot-application-id>",
+			"tokenEnvVar": "TEST_BOT_TOKEN_1",
+			"channelId": "<channel-id>",
+			"channelName": "qa-test-1",
+			"bridgePort": 19871
 		},
 		{
 			"id": 2,
-			"port": 19872,
-			"agentId": "test-lead-2",
-			"botTokenEnv": "TEST_BOT_TOKEN_2",
-			"botId": "<bot-application-id>",
-			"chatChannelId": "<channel-id>"
+			"botName": "flywheel-test-2",
+			"botAppId": "<bot-application-id>",
+			"tokenEnvVar": "TEST_BOT_TOKEN_2",
+			"channelId": "<channel-id>",
+			"channelName": "qa-test-2",
+			"bridgePort": 19872
 		},
 		{
 			"id": 3,
-			"port": 19873,
-			"agentId": "test-lead-3",
-			"botTokenEnv": "TEST_BOT_TOKEN_3",
-			"botId": "<bot-application-id>",
-			"chatChannelId": "<channel-id>"
+			"botName": "flywheel-test-3",
+			"botAppId": "<bot-application-id>",
+			"tokenEnvVar": "TEST_BOT_TOKEN_3",
+			"channelId": "<channel-id>",
+			"channelName": "qa-test-3",
+			"bridgePort": 19873
 		},
 		{
 			"id": 4,
-			"port": 19874,
-			"agentId": "test-lead-4",
-			"botTokenEnv": "TEST_BOT_TOKEN_4",
-			"botId": "<bot-application-id>",
-			"chatChannelId": "<channel-id>"
+			"botName": "flywheel-test-4",
+			"botAppId": "<bot-application-id>",
+			"tokenEnvVar": "TEST_BOT_TOKEN_4",
+			"channelId": "<channel-id>",
+			"channelName": "qa-test-4",
+			"bridgePort": 19874
 		}
 	],
+	"categoryId": "<discord-category-id>",
 	"guildId": "<discord-guild-id>"
 }

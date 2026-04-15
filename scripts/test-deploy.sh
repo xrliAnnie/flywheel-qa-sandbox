@@ -121,12 +121,26 @@ fi
 log "Claimed slot ${SLOT}"
 
 # ── Read slot config ──────────────────────────────────
+# Schema matches ~/.flywheel/test-slots.json (FLY-96):
+#   bridgePort, botName, tokenEnvVar, botAppId, channelId
+# AGENT_ID is derived from botName (1:1) — simple and deterministic.
 SLOT_IDX=$((SLOT - 1))
-SLOT_PORT=$(jq -r ".slots[${SLOT_IDX}].port" "$SLOTS_FILE")
-AGENT_ID=$(jq -r ".slots[${SLOT_IDX}].agentId" "$SLOTS_FILE")
-BOT_TOKEN_ENV=$(jq -r ".slots[${SLOT_IDX}].botTokenEnv" "$SLOTS_FILE")
-BOT_ID=$(jq -r ".slots[${SLOT_IDX}].botId" "$SLOTS_FILE")
-CHAT_CHANNEL_ID=$(jq -r ".slots[${SLOT_IDX}].chatChannelId" "$SLOTS_FILE")
+SLOT_PORT=$(jq -r ".slots[${SLOT_IDX}].bridgePort" "$SLOTS_FILE")
+AGENT_ID=$(jq -r ".slots[${SLOT_IDX}].botName" "$SLOTS_FILE")
+BOT_TOKEN_ENV=$(jq -r ".slots[${SLOT_IDX}].tokenEnvVar" "$SLOTS_FILE")
+BOT_ID=$(jq -r ".slots[${SLOT_IDX}].botAppId" "$SLOTS_FILE")
+CHAT_CHANNEL_ID=$(jq -r ".slots[${SLOT_IDX}].channelId" "$SLOTS_FILE")
+
+# Validate required fields (jq returns literal "null" string when missing)
+for pair in "bridgePort:${SLOT_PORT}" "botName:${AGENT_ID}" "tokenEnvVar:${BOT_TOKEN_ENV}" "botAppId:${BOT_ID}" "channelId:${CHAT_CHANNEL_ID}"; do
+  field="${pair%%:*}"
+  value="${pair#*:}"
+  if [[ -z "$value" || "$value" == "null" ]]; then
+    echo "ERROR: slots[${SLOT_IDX}].${field} missing or null in ${SLOTS_FILE}" >&2
+    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    exit 1
+  fi
+done
 
 # Resolve bot token from env var name
 TEST_BOT_TOKEN="${!BOT_TOKEN_ENV:-}"
