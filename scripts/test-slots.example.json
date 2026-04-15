@@ -1,39 +1,39 @@
 {
-  "_comment": "Copy to ~/.flywheel/test-slots.json and fill in values",
-  "_setup": "Create bots at discord.com/developers/applications, channels in Discord server",
-  "slots": [
-    {
-      "id": 1,
-      "port": 19871,
-      "agentId": "test-lead-1",
-      "botTokenEnv": "TEST_BOT_TOKEN_1",
-      "botId": "<bot-application-id>",
-      "chatChannelId": "<channel-id>"
-    },
-    {
-      "id": 2,
-      "port": 19872,
-      "agentId": "test-lead-2",
-      "botTokenEnv": "TEST_BOT_TOKEN_2",
-      "botId": "<bot-application-id>",
-      "chatChannelId": "<channel-id>"
-    },
-    {
-      "id": 3,
-      "port": 19873,
-      "agentId": "test-lead-3",
-      "botTokenEnv": "TEST_BOT_TOKEN_3",
-      "botId": "<bot-application-id>",
-      "chatChannelId": "<channel-id>"
-    },
-    {
-      "id": 4,
-      "port": 19874,
-      "agentId": "test-lead-4",
-      "botTokenEnv": "TEST_BOT_TOKEN_4",
-      "botId": "<bot-application-id>",
-      "chatChannelId": "<channel-id>"
-    }
-  ],
-  "guildId": "<discord-guild-id>"
+	"_comment": "Copy to ~/.flywheel/test-slots.json and fill in values",
+	"_setup": "Create bots at discord.com/developers/applications, channels in Discord server",
+	"slots": [
+		{
+			"id": 1,
+			"port": 19871,
+			"agentId": "test-lead-1",
+			"botTokenEnv": "TEST_BOT_TOKEN_1",
+			"botId": "<bot-application-id>",
+			"chatChannelId": "<channel-id>"
+		},
+		{
+			"id": 2,
+			"port": 19872,
+			"agentId": "test-lead-2",
+			"botTokenEnv": "TEST_BOT_TOKEN_2",
+			"botId": "<bot-application-id>",
+			"chatChannelId": "<channel-id>"
+		},
+		{
+			"id": 3,
+			"port": 19873,
+			"agentId": "test-lead-3",
+			"botTokenEnv": "TEST_BOT_TOKEN_3",
+			"botId": "<bot-application-id>",
+			"chatChannelId": "<channel-id>"
+		},
+		{
+			"id": 4,
+			"port": 19874,
+			"agentId": "test-lead-4",
+			"botTokenEnv": "TEST_BOT_TOKEN_4",
+			"botId": "<bot-application-id>",
+			"chatChannelId": "<channel-id>"
+		}
+	],
+	"guildId": "<discord-guild-id>"
 }

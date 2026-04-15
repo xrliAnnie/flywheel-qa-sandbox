@@ -8,8 +8,8 @@
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "flywheel-comm/db";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDBLeadRuntime } from "../bridge/commdb-lead-runtime.js";
 import type { HookPayload } from "../bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
