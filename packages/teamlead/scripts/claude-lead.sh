@@ -556,18 +556,27 @@ cat > "$_EXPECT_SCRIPT" <<'EXPECT_EOF'
 # expect allocates a PTY so Claude gets a TTY for Ink.
 # Usage: expect <this-script> claude <args...>
 log_user 1
-set timeout 60
+# FLY-102 hot-deploy fix: 60s was too short — Claude boot can exceed 60s with
+# config loading; after timeout, expect fell through and the prompt was never
+# dismissed. Bump to 600s and keep watching indefinitely for prompt/success.
+set timeout 600
 eval spawn -noecho [lrange $argv 0 end]
+set confirmed 0
 expect {
-  "Enter to confirm" {
-    send "\r"
+  # Claude's Ink TUI injects ANSI color codes between EVERY word, so neither
+  # "Enter to confirm" nor "local development" match as contiguous bytes
+  # (actual output: "local\x1b[39m \x1b[38;5;153mdevelopment"). Match on the
+  # single contiguous word "confirm" — only appears in the dev-channels
+  # prompt's "Enter to confirm · Esc to cancel" footer.
+  -re {confirm} {
+    send "1\r"
+    set confirmed 1
     exp_continue
   }
-  -re "bypass permissions" {
-    # Claude TUI is up — prompt was auto-confirmed or absent
-  }
+  -re {bypass permissions} { }
+  -re {Type your message} { }
   timeout {
-    # Prompt may not appear (e.g., already accepted, or resume) — continue
+    if {!$confirmed} { send "1\r" }
   }
 }
 # Wait for Claude to run until it exits on its own
@@ -710,70 +719,98 @@ trap cleanup SIGINT SIGTERM
 # ── Claude args ─────────────────────────────────────────────
 cd "$LEAD_WORKSPACE"
 
-# ── FLY-11: Terminal MCP server config ─────────────────────
-# Generate MCP config JSON for Lead terminal observation.
-# The MCP server runs alongside Claude, providing read-only access to Runner tmux sessions.
+# ── FLY-11 / FLY-102: MCP server config (jq-generated) ──────
+# Build .mcp.json via jq so any token / path that contains " / \ / newline
+# is escaped safely. Hand-rolled string concatenation (pre-FLY-102) broke
+# the file when TEAMLEAD_API_TOKEN contained JSON-special characters.
 TERMINAL_MCP_DIR="${SCRIPT_DIR}/../../terminal-mcp/dist"
 INBOX_MCP_DIR="${SCRIPT_DIR}/../../inbox-mcp/dist"
 
-MCP_SERVERS_JSON=""
+if ! command -v jq >/dev/null 2>&1; then
+  log "ERROR: jq is required for MCP config generation (FLY-102). Aborting."
+  exit 1
+fi
 
+# FLY-90: bun global bin may not be in PATH when launched via launchd/tmux.
+export PATH="$HOME/.bun/bin:$PATH"
+GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
+
+terminal_server='{}'
 if [ -d "$TERMINAL_MCP_DIR" ]; then
   TERMINAL_MCP_BIN="$(cd "$TERMINAL_MCP_DIR" && pwd)/index.js"
-  MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"flywheel-terminal\":{\"command\":\"node\",\"args\":[\"${TERMINAL_MCP_BIN}\"],\"env\":{\"FLYWHEEL_PROJECT_NAME\":\"${PROJECT_NAME}\",\"FLYWHEEL_LEAD_ID\":\"${LEAD_ID}\"}},"
-  log "Terminal MCP: enabled"
+  # FLY-102: inject BRIDGE_URL + TEAMLEAD_API_TOKEN so close_runner tool
+  # can reach the Bridge /api/sessions/:id/close-runner endpoint.
+  terminal_server=$(jq -n \
+    --arg bin "$TERMINAL_MCP_BIN" \
+    --arg projectName "$PROJECT_NAME" \
+    --arg leadId "$LEAD_ID" \
+    --arg bridgeUrl "${BRIDGE_URL:-}" \
+    --arg apiToken "${TEAMLEAD_API_TOKEN:-}" \
+    '{
+      "flywheel-terminal": {
+        command: "node",
+        args: [$bin],
+        env: {
+          FLYWHEEL_PROJECT_NAME: $projectName,
+          FLYWHEEL_LEAD_ID: $leadId,
+          BRIDGE_URL: $bridgeUrl,
+          TEAMLEAD_API_TOKEN: $apiToken
+        }
+      }
+    }')
+  log "Terminal MCP: enabled (with BRIDGE_URL + TEAMLEAD_API_TOKEN)"
 else
   log "WARNING: terminal-mcp not built (${TERMINAL_MCP_DIR} missing)"
 fi
 
-# FLY-47: Inbox MCP server for CommDB → Lead channel push delivery
+# FLY-47: Inbox MCP for CommDB → Lead channel push delivery
 INBOX_MCP_ENABLED=false
+inbox_server='{}'
 if [ -d "$INBOX_MCP_DIR" ]; then
   INBOX_MCP_BIN="$(cd "$INBOX_MCP_DIR" && pwd)/index.js"
   COMM_DB_PATH="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
-  MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"flywheel-inbox\":{\"command\":\"node\",\"args\":[\"${INBOX_MCP_BIN}\"],\"env\":{\"FLYWHEEL_COMM_DB\":\"${COMM_DB_PATH}\",\"FLYWHEEL_LEAD_ID\":\"${LEAD_ID}\",\"FLYWHEEL_PROJECT_NAME\":\"${PROJECT_NAME}\"}},"
+  inbox_server=$(jq -n \
+    --arg bin "$INBOX_MCP_BIN" \
+    --arg db "$COMM_DB_PATH" \
+    --arg leadId "$LEAD_ID" \
+    --arg projectName "$PROJECT_NAME" \
+    '{
+      "flywheel-inbox": {
+        command: "node",
+        args: [$bin],
+        env: {
+          FLYWHEEL_COMM_DB: $db,
+          FLYWHEEL_LEAD_ID: $leadId,
+          FLYWHEEL_PROJECT_NAME: $projectName
+        }
+      }
+    }')
   INBOX_MCP_ENABLED=true
   log "Inbox MCP: enabled (CommDB push delivery)"
 else
   log "WARNING: inbox-mcp not built (${INBOX_MCP_DIR} missing), CommDB push disabled"
 fi
 
-# FLY-90: gbrain MCP server for project Wiki (compound knowledge growth)
-# Provides Lead with 30 MCP tools: hybrid search, page CRUD, timeline, links, tags, etc.
-# Leads READ brain before responding, WRITE back decisions/learnings after conversations.
-# Requires: gbrain installed globally, configured via `gbrain init --supabase` or env var.
-# OPENAI_API_KEY is optional — without it, gbrain degrades to keyword-only search.
-# bun global bin may not be in PATH when launched via launchd/tmux — add it explicitly.
-export PATH="$HOME/.bun/bin:$PATH"
-GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
+# FLY-90: gbrain MCP for project Wiki.
+gbrain_server='{}'
 if [ -n "$GBRAIN_PATH" ] && [ -f "$HOME/.gbrain/config.json" ]; then
-  # No env block: avoids writing secrets to .mcp.json on disk.
-  # Config file required — env-only (GBRAIN_DATABASE_URL) won't reliably reach
-  # the Lead tmux session due to explicit env allowlist in _launch_claude().
-  # OPENAI_API_KEY is propagated via tmux env allowlist for hybrid search.
-  MCP_SERVERS_JSON="${MCP_SERVERS_JSON}\"gbrain\":{\"command\":\"${GBRAIN_PATH}\",\"args\":[\"serve\"]},"
+  gbrain_server=$(jq -n --arg bin "$GBRAIN_PATH" \
+    '{"gbrain": {command: $bin, args: ["serve"]}}')
   log "GBrain MCP: enabled (project Wiki)"
+elif [ -n "$GBRAIN_PATH" ]; then
+  log "GBrain MCP: skipped (installed but not configured — run 'gbrain init --supabase')"
 else
-  if [ -n "$GBRAIN_PATH" ]; then
-    log "GBrain MCP: skipped (installed but not configured — run 'gbrain init --supabase')"
-  else
-    log "GBrain MCP: skipped (gbrain not installed)"
-  fi
+  log "GBrain MCP: skipped (gbrain not installed)"
 fi
 
-if [ -n "$MCP_SERVERS_JSON" ]; then
-  # Remove trailing comma and wrap in JSON
-  MCP_SERVERS_JSON="${MCP_SERVERS_JSON%,}"
-  # FLY-80: Write .mcp.json in Lead workspace (CWD) so Claude's channel system
-  # can resolve server:flywheel-inbox by name. --mcp-config alone is NOT visible
-  # to the --dangerously-load-development-channels server: resolver.
-  MCP_CONFIG_FILE="${LEAD_WORKSPACE}/.mcp.json"
-  echo "{\"mcpServers\":{${MCP_SERVERS_JSON}}}" > "$MCP_CONFIG_FILE"
-  log "MCP config: ${MCP_CONFIG_FILE} (project-level for channel resolution)"
-else
-  log "WARNING: No MCP servers available"
-  MCP_CONFIG_FILE=""
-fi
+MCP_CONFIG_FILE="${LEAD_WORKSPACE}/.mcp.json"
+jq -n \
+  --argjson terminal "$terminal_server" \
+  --argjson inbox "$inbox_server" \
+  --argjson gbrain "$gbrain_server" \
+  '{mcpServers: ($terminal + $inbox + $gbrain)}' \
+  > "$MCP_CONFIG_FILE"
+log "MCP config: ${MCP_CONFIG_FILE}"
 
 # Build claude args using bash array (avoids quoting/word-splitting issues)
 CLAUDE_ARGS=(

@@ -1,15 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { postMergeCleanup } from "../bridge/post-merge.js";
+import { postMergeTmuxCleanup } from "../bridge/post-merge.js";
 import { StateStore } from "../StateStore.js";
 
 // ── Mock tmux-lookup ────────────────────────────────────
 
 const mockGetTmuxTarget = vi.fn();
-const mockKillTmuxSession = vi.fn();
+const mockKillTmuxWindow = vi.fn();
 
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
-	killTmuxSession: (...args: unknown[]) => mockKillTmuxSession(...args),
+	killTmuxWindow: (...args: unknown[]) => mockKillTmuxWindow(...args),
 }));
 
 // ── Helpers ─────────────────────────────────────────────
@@ -23,7 +23,7 @@ function makeOpts(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-describe("postMergeCleanup", () => {
+describe("postMergeTmuxCleanup", () => {
 	let store: StateStore;
 
 	beforeEach(async () => {
@@ -36,7 +36,7 @@ describe("postMergeCleanup", () => {
 			status: "approved",
 		});
 		mockGetTmuxTarget.mockReset();
-		mockKillTmuxSession.mockReset();
+		mockKillTmuxWindow.mockReset();
 	});
 
 	it("closes tmux when CommDB has target", async () => {
@@ -44,23 +44,23 @@ describe("postMergeCleanup", () => {
 			tmuxWindow: "GEO-280:@0",
 			sessionName: "GEO-280",
 		});
-		mockKillTmuxSession.mockResolvedValue({ killed: true });
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
 
-		const result = await postMergeCleanup(makeOpts(), store);
+		const result = await postMergeTmuxCleanup(makeOpts(), store);
 
 		expect(result.tmuxClosed).toBe(true);
 		expect(result.errors).toEqual([]);
-		expect(mockKillTmuxSession).toHaveBeenCalledWith("GEO-280");
+		expect(mockKillTmuxWindow).toHaveBeenCalledWith("GEO-280:@0");
 	});
 
 	it("skips tmux when no CommDB target", async () => {
 		mockGetTmuxTarget.mockReturnValue(undefined);
 
-		const result = await postMergeCleanup(makeOpts(), store);
+		const result = await postMergeTmuxCleanup(makeOpts(), store);
 
 		expect(result.tmuxClosed).toBe(false);
 		expect(result.errors).toEqual([]);
-		expect(mockKillTmuxSession).not.toHaveBeenCalled();
+		expect(mockKillTmuxWindow).not.toHaveBeenCalled();
 	});
 
 	it("captures tmux kill error without throwing", async () => {
@@ -68,12 +68,12 @@ describe("postMergeCleanup", () => {
 			tmuxWindow: "GEO-280:@0",
 			sessionName: "GEO-280",
 		});
-		mockKillTmuxSession.mockResolvedValue({
+		mockKillTmuxWindow.mockResolvedValue({
 			killed: false,
 			error: "permission denied",
 		});
 
-		const result = await postMergeCleanup(makeOpts(), store);
+		const result = await postMergeTmuxCleanup(makeOpts(), store);
 
 		expect(result.tmuxClosed).toBe(false);
 		expect(result.errors).toContain("tmux: permission denied");
@@ -84,7 +84,7 @@ describe("postMergeCleanup", () => {
 			throw new Error("CommDB corrupted");
 		});
 
-		const result = await postMergeCleanup(makeOpts(), store);
+		const result = await postMergeTmuxCleanup(makeOpts(), store);
 
 		expect(result.tmuxClosed).toBe(false);
 		expect(result.errors).toContain("tmux: CommDB corrupted");
@@ -95,9 +95,9 @@ describe("postMergeCleanup", () => {
 			tmuxWindow: "GEO-280:@0",
 			sessionName: "GEO-280",
 		});
-		mockKillTmuxSession.mockResolvedValue({ killed: true });
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
 
-		await postMergeCleanup(makeOpts(), store);
+		await postMergeTmuxCleanup(makeOpts(), store);
 
 		const events = store.getEventsByExecution("exec-1");
 		const pmEvent = events.find((e) => e.event_type === "post_merge_completed");
@@ -110,12 +110,12 @@ describe("postMergeCleanup", () => {
 			tmuxWindow: "GEO-280:@0",
 			sessionName: "GEO-280",
 		});
-		mockKillTmuxSession.mockResolvedValue({
+		mockKillTmuxWindow.mockResolvedValue({
 			killed: false,
 			error: "timeout",
 		});
 
-		await postMergeCleanup(makeOpts(), store);
+		await postMergeTmuxCleanup(makeOpts(), store);
 
 		const events = store.getEventsByExecution("exec-1");
 		const pmEvent = events.find((e) => e.event_type === "post_merge_partial");

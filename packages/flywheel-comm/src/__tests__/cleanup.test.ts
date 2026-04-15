@@ -28,11 +28,10 @@ describe("cleanupStaleSessions", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-cleanup-test-"));
 		vi.clearAllMocks();
-		// Default: tmux server is running, sessions exist, no clients attached
+		// Default: tmux server running, windows exist, kill succeeds
 		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
 			if (cmd === "tmux" && args[0] === "list-sessions") return "";
-			if (cmd === "tmux" && args[0] === "has-session") return "";
-			if (cmd === "tmux" && args[0] === "list-clients") return "";
+			if (cmd === "tmux" && args[0] === "list-panes") return "";
 			if (cmd === "tmux" && args[0] === "kill-window") return "";
 			return "";
 		});
@@ -175,20 +174,22 @@ describe("cleanupStaleSessions", () => {
 		expect(killCalls[0][1]).toEqual(["kill-window", "-t", "GEO-1:@0"]);
 	});
 
-	it("skips timed-out sessions with client attached", () => {
+	it("cleans up even when siblings have clients attached (shared-session)", () => {
+		// Under FLY-102 shared-session model, a client attached to the shared
+		// runner session (e.g. Annie watching a sibling Runner's window) must
+		// NOT block cleanup of a stale completed window. `kill-window` is
+		// non-disruptive to other windows in the session.
 		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
 			if (cmd === "tmux" && args[0] === "list-sessions") return "";
-			if (cmd === "tmux" && args[0] === "has-session") return "";
-			if (cmd === "tmux" && args[0] === "list-clients") {
-				return "/dev/ttys001: GEO-1 [200x50]";
-			}
+			if (cmd === "tmux" && args[0] === "list-panes") return "";
+			if (cmd === "tmux" && args[0] === "kill-window") return "";
 			return "";
 		});
 
 		const dbPath = createDbWithSessions([
 			{
 				execution_id: "exec-1",
-				tmux_window: "GEO-1:@0",
+				tmux_window: "runner-proj:@0",
 				project_name: "test",
 				status: "completed",
 				ended_at: "2020-01-01 00:00:00",
@@ -199,15 +200,15 @@ describe("cleanupStaleSessions", () => {
 			dbPaths: [dbPath],
 			timeoutMinutes: 30,
 		});
-		expect(result.cleaned).toBe(0);
-		expect(result.skipped).toBe(1);
+		expect(result.cleaned).toBe(1);
+		expect(result.skipped).toBe(0);
 	});
 
-	it("skips when tmux session no longer exists", () => {
+	it("skips when tmux window no longer exists", () => {
 		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
 			if (cmd === "tmux" && args[0] === "list-sessions") return "";
-			if (cmd === "tmux" && args[0] === "has-session") {
-				throw new Error("session not found");
+			if (cmd === "tmux" && args[0] === "list-panes") {
+				throw new Error("can't find window");
 			}
 			return "";
 		});
@@ -338,8 +339,7 @@ describe("cleanupStaleSessions", () => {
 
 		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
 			if (cmd === "tmux" && args[0] === "list-sessions") return "";
-			if (cmd === "tmux" && args[0] === "has-session") return "";
-			if (cmd === "tmux" && args[0] === "list-clients") return "";
+			if (cmd === "tmux" && args[0] === "list-panes") return "";
 			if (cmd === "tmux" && args[0] === "kill-window") {
 				throw new Error("can't find window GEO-1:@0");
 			}
@@ -350,7 +350,7 @@ describe("cleanupStaleSessions", () => {
 			dbPaths: [dbPath],
 			timeoutMinutes: 30,
 		});
-		// Window disappeared between has-session and kill-window — treated as skip
+		// Window disappeared between list-panes and kill-window — treated as skip
 		expect(result.skipped).toBe(1);
 		expect(result.errors).toHaveLength(0);
 		expect(result.cleaned).toBe(0);
@@ -369,8 +369,7 @@ describe("cleanupStaleSessions", () => {
 
 		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
 			if (cmd === "tmux" && args[0] === "list-sessions") return "";
-			if (cmd === "tmux" && args[0] === "has-session") return "";
-			if (cmd === "tmux" && args[0] === "list-clients") return "";
+			if (cmd === "tmux" && args[0] === "list-panes") return "";
 			if (cmd === "tmux" && args[0] === "kill-window") {
 				throw new Error("permission denied");
 			}
@@ -398,8 +397,7 @@ describe("cleanupStaleSessions", () => {
 
 		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
 			if (cmd === "tmux" && args[0] === "list-sessions") return "";
-			if (cmd === "tmux" && args[0] === "has-session") return "";
-			if (cmd === "tmux" && args[0] === "list-clients") return "";
+			if (cmd === "tmux" && args[0] === "list-panes") return "";
 			if (cmd === "tmux" && args[0] === "kill-window") {
 				throw new Error("unexpected failure");
 			}
@@ -472,22 +470,22 @@ describe("cleanupStaleSessions", () => {
 		expect(result.skipped).toBe(1);
 	});
 
-	it("gracefully skips bare window ID format (has-session fails for non-session targets)", () => {
+	it("gracefully skips bare window ID format (list-panes fails for non-session-qualified targets)", () => {
 		const dbPath = createDbWithSessions([
 			{
 				execution_id: "exec-1",
-				tmux_window: "@42", // legacy format — not a valid session name
+				tmux_window: "@42", // legacy format — not a valid window target
 				project_name: "test",
 				status: "completed",
 				ended_at: "2020-01-01 00:00:00",
 			},
 		]);
 
-		// Realistic behavior: has-session fails for bare window IDs
+		// Realistic behavior: list-panes fails for bare window IDs without session context
 		mockExecFileSync.mockImplementation((cmd: string, args: string[]) => {
 			if (cmd === "tmux" && args[0] === "list-sessions") return "";
-			if (cmd === "tmux" && args[0] === "has-session") {
-				throw new Error("can't find session @42");
+			if (cmd === "tmux" && args[0] === "list-panes") {
+				throw new Error("can't find window @42");
 			}
 			return "";
 		});

@@ -725,6 +725,18 @@ describe("TmuxAdapter", () => {
 			expect(envArgStr).toContain("FLYWHEEL_EXEC_ID=test-exec-1");
 		});
 
+		// FLY-102: BASH_MAX_TIMEOUT_MS env injection
+		it("execute() always injects BASH_MAX_TIMEOUT_MS=86400000", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const envArgStr = newWindow!.args.join(" ");
+			expect(envArgStr).toContain("BASH_MAX_TIMEOUT_MS=86400000");
+		});
+
 		it("waitForCompletion resolves on HTTP callback", async () => {
 			const hookServer = makeMockHookServer({ resolveImmediately: true });
 			const { fn } = makeMockExec({ paneDead: false });

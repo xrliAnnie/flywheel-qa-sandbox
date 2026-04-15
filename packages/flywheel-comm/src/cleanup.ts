@@ -31,8 +31,9 @@ export interface CleanupResult {
  * Clean up stale tmux windows from completed/timed-out runner sessions.
  *
  * Scans CommDB for sessions in terminal state (completed/timeout) whose
- * ended_at exceeds the timeout threshold. For each, checks if the tmux
- * session still exists and has no attached clients before killing the window.
+ * ended_at exceeds the timeout threshold. For each, verifies the specific
+ * tmux window still exists (window-level, not session-level, so siblings in
+ * a shared session don't gate cleanup) before killing the window.
  */
 export function cleanupStaleSessions(opts?: CleanupOptions): CleanupResult {
 	const timeoutMinutes = opts?.timeoutMinutes ?? 30;
@@ -127,31 +128,19 @@ function processSession(
 	}
 
 	const tmuxWindow = session.tmux_window;
-	// tmux_window format: "sessionName:@windowId" (production) or bare "@id" (legacy test data)
-	const colonIdx = tmuxWindow.indexOf(":");
-	const sessionName =
-		colonIdx >= 0 ? tmuxWindow.slice(0, colonIdx) : tmuxWindow;
 
 	try {
-		// Check if tmux session still exists
+		// Window-level existence check. Under the shared-session model
+		// (FLY-102 PR #146), multiple Runners share a tmux session and each
+		// Runner is a named window — so session-level has-session / list-clients
+		// would incorrectly keep stale windows alive whenever any sibling had
+		// a client attached. list-panes scopes the liveness check to THIS window.
 		try {
-			execFileSync("tmux", ["has-session", "-t", `=${sessionName}`], {
+			execFileSync("tmux", ["list-panes", "-t", tmuxWindow], {
 				stdio: "pipe",
 			});
 		} catch {
-			// Session doesn't exist — already cleaned up
-			result.skipped++;
-			return;
-		}
-
-		// Check if anyone is attached
-		const clients = execFileSync(
-			"tmux",
-			["list-clients", "-t", `=${sessionName}`, "-F", "#{client_session}"],
-			{ encoding: "utf-8", stdio: "pipe" },
-		).trim();
-
-		if (clients.length > 0) {
+			// Window doesn't exist — already cleaned up (or bare legacy ID)
 			result.skipped++;
 			return;
 		}
@@ -175,7 +164,7 @@ function processSession(
 		result.cleaned++;
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
-		// TOCTOU: session/window may have been cleaned between has-session and kill-window
+		// TOCTOU: session/window may have been cleaned between list-panes and kill-window
 		if (msg.includes("session") || msg.includes("window")) {
 			result.skipped++;
 		} else {

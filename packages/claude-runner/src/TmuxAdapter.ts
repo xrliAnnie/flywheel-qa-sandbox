@@ -166,6 +166,11 @@ export class TmuxAdapter implements IAdapter {
 			}
 		}
 
+		// FLY-102: Override Claude Code's Bash tool max timeout.
+		// Default is 600,000ms (10 min) which kills gate commands that wait for
+		// human decisions. Set to 24h to match session timeout.
+		envArgs.push("-e", "BASH_MAX_TIMEOUT_MS=86400000");
+
 		// Launch Claude in a new tmux window WITH cwd
 		const launchResult = this.execFileFn("tmux", [
 			"new-window",
@@ -495,9 +500,17 @@ export class TmuxAdapter implements IAdapter {
 							"-t",
 							windowId,
 							"-F",
-							"#{pane_dead}",
+							"#{pane_dead}|#{pane_dead_status}",
 						]);
-						if (result.stdout.trim() === "1") settle(false);
+						const [dead, exitStatus] = result.stdout.trim().split("|");
+						if (dead === "1") {
+							// FLY-102: Log exit code for crash diagnostics
+							const elapsed = Date.now() - start;
+							console.log(
+								`[TmuxAdapter] Runner pane died: window=${windowId} exit=${exitStatus} elapsed=${Math.round(elapsed / 1000)}s session=${claudeSessionId}`,
+							);
+							settle(false);
+						}
 					} catch {
 						settle(false);
 					}
@@ -555,9 +568,15 @@ export class TmuxAdapter implements IAdapter {
 							"-t",
 							windowId,
 							"-F",
-							"#{pane_dead}",
+							"#{pane_dead}|#{pane_dead_status}",
 						]);
-						if (result.stdout.trim() === "1") {
+						const [dead, exitStatus] = result.stdout.trim().split("|");
+						if (dead === "1") {
+							// FLY-102: Log exit code for crash diagnostics
+							const elapsed = Date.now() - start;
+							console.log(
+								`[TmuxAdapter] Runner pane died: window=${windowId} exit=${exitStatus} elapsed=${Math.round(elapsed / 1000)}s session=${claudeSessionId}`,
+							);
 							settle(false);
 						}
 					} catch (err) {

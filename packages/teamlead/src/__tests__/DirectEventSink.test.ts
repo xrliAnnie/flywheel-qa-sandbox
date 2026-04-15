@@ -750,3 +750,115 @@ describe("DirectEventSink — postThreadStatusMessage integration (FLY-24)", () 
 		expect(messageCalls.length).toBe(0);
 	});
 });
+
+describe("DirectEventSink — post-ship finalization gate (FLY-102 Codex Round 1)", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	afterEach(() => {
+		store.close();
+	});
+
+	function createMockRuntime(): import("../bridge/lead-runtime.js").LeadRuntime {
+		return {
+			type: "claude-discord",
+			deliver: vi.fn().mockResolvedValue({ delivered: true }),
+			sendBootstrap: vi.fn().mockResolvedValue(undefined),
+			health: vi.fn().mockResolvedValue({
+				status: "healthy",
+				lastDeliveryAt: null,
+				lastDeliveredSeq: 0,
+			}),
+			shutdown: vi.fn().mockResolvedValue(undefined),
+		};
+	}
+
+	async function makeSink(): Promise<DirectEventSink> {
+		const mockFilter: EventFilter = new (
+			await import("../bridge/EventFilter.js")
+		).EventFilter();
+		const registry: RuntimeRegistry = new (
+			await import("../bridge/runtime-registry.js")
+		).RuntimeRegistry();
+		registry.register(testProjectsNoForum[0].leads[0], createMockRuntime());
+		return new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjectsNoForum,
+			mockFilter,
+			undefined,
+			registry,
+			undefined,
+		);
+	}
+
+	it("does NOT trigger finalization when approved_to_ship → blocked (ship failed)", async () => {
+		// Seed: session is approved_to_ship. Predicate would return true on
+		// existingStatus alone, but status resolves to "blocked" (not completed),
+		// so finalization must be gated OUT.
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "approved_to_ship",
+		});
+
+		const sink = await makeSink();
+		await sink.emitCompleted(makeEnvelope(), {
+			decision: { route: "blocked", reasoning: "ship gate failed" },
+			evidence: {},
+		} as import("flywheel-edge-worker/dist/Blueprint.js").BlueprintResult);
+		await sink.flush();
+
+		const claims = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "post_ship_finalization_claim");
+		expect(claims).toHaveLength(0);
+	});
+
+	it("DOES trigger finalization when approved_to_ship → completed (normal ship path)", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "approved_to_ship",
+		});
+
+		const sink = await makeSink();
+		await sink.emitCompleted(makeEnvelope(), {
+			decision: { route: undefined, reasoning: "natural completion" },
+			evidence: {},
+		} as import("flywheel-edge-worker/dist/Blueprint.js").BlueprintResult);
+		await sink.flush();
+
+		const claims = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "post_ship_finalization_claim");
+		expect(claims).toHaveLength(1);
+	});
+
+	it("does NOT trigger finalization on route=needs_review self-completion", async () => {
+		// No pre-existing approved_to_ship, route=needs_review → status=awaiting_review.
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+
+		const sink = await makeSink();
+		await sink.emitCompleted(makeEnvelope(), {
+			decision: { route: "needs_review", reasoning: "needs CEO review" },
+			evidence: {},
+		} as import("flywheel-edge-worker/dist/Blueprint.js").BlueprintResult);
+		await sink.flush();
+
+		const claims = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "post_ship_finalization_claim");
+		expect(claims).toHaveLength(0);
+	});
+});

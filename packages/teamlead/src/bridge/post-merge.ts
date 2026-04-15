@@ -1,16 +1,24 @@
 /**
- * GEO-280: Post-merge cleanup — fire-and-forget tmux cleanup after approve.
+ * Post-merge tmux cleanup — tmux session close + audit event.
  *
- * Bridge-side responsibility: close Runner tmux session + audit event.
- * Other cleanup (worktree, doc archive, MEMORY.md) is Runner/Orchestrator responsibility
- * via /spin Archive stage and cleanup-agent.sh.
+ * Responsibility boundary (FLY-102 Round 3):
+ *   - Bridge-side: close Runner tmux session + write audit event.
+ *   - NOT here: worktree remove, docs archive, MEMORY update.
+ *     Those stay with Runner / Orchestrator (future: executor lifecycle contract).
  *
- * Triggered by the `onApproved` callback in approveExecution().
+ * Call sites:
+ *   - DirectEventSink.emitCompleted (production session_completed path)
+ *     via runPostShipFinalization orchestrator
+ *   - event-route.ts postApproveShip branch (PR-merged webhook)
+ *     via runPostShipFinalization orchestrator
+ *   - actions.ts _onApproved callback is DEAD CODE — not relied on.
+ *
+ * Idempotent: killTmuxWindow returns success when window already gone.
  * Never throws — all errors are captured in the result and audit event.
  */
 
 import type { StateStore } from "../StateStore.js";
-import { getTmuxTargetFromCommDb, killTmuxSession } from "./tmux-lookup.js";
+import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
 
 // ── Types ───────────────────────────────────────────────
 
@@ -31,7 +39,7 @@ export interface PostMergeResult {
  * Post-merge cleanup. Called fire-and-forget after approve succeeds.
  * Never throws — all errors captured in result.errors and audit event.
  */
-export async function postMergeCleanup(
+export async function postMergeTmuxCleanup(
 	opts: PostMergeOpts,
 	store: StateStore,
 ): Promise<PostMergeResult> {
@@ -44,7 +52,7 @@ export async function postMergeCleanup(
 	try {
 		const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 		if (target) {
-			const killResult = await killTmuxSession(target.sessionName);
+			const killResult = await killTmuxWindow(target.tmuxWindow);
 			result.tmuxClosed = killResult.killed;
 			if (killResult.error) {
 				result.errors.push(`tmux: ${killResult.error}`);

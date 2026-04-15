@@ -154,6 +154,56 @@ describe("Query tools", () => {
 		expect(body.sessions[0].identifier).toBe("GEO-95");
 	});
 
+	it("GET /api/sessions?mode=by_identifier&statuses=... filters to closable states (FLY-102 Codex Round 1)", async () => {
+		// Same identifier, two sessions: one running (not closable), one completed.
+		store.upsertSession({
+			execution_id: "exec-running",
+			issue_id: "i1",
+			project_name: "p",
+			status: "running",
+			issue_identifier: "FLY-500",
+		});
+		store.upsertSession({
+			execution_id: "exec-completed",
+			issue_id: "i1",
+			project_name: "p",
+			status: "completed",
+			issue_identifier: "FLY-500",
+		});
+
+		const closable =
+			"blocked,completed,deferred,failed,rejected,shelved,terminated";
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=FLY-500&statuses=${encodeURIComponent(closable)}`,
+		);
+		const body = await res.json();
+		expect(body.count).toBe(1);
+		expect(body.sessions[0].execution_id).toBe("exec-completed");
+	});
+
+	it("statuses filter returns >1 when multiple closable sessions (caller disambiguates)", async () => {
+		store.upsertSession({
+			execution_id: "exec-failed",
+			issue_id: "i1",
+			project_name: "p",
+			status: "failed",
+			issue_identifier: "FLY-501",
+		});
+		store.upsertSession({
+			execution_id: "exec-completed",
+			issue_id: "i1",
+			project_name: "p",
+			status: "completed",
+			issue_identifier: "FLY-501",
+		});
+
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=FLY-501&statuses=${encodeURIComponent("completed,failed")}`,
+		);
+		const body = await res.json();
+		expect(body.count).toBe(2);
+	});
+
 	it("GET /api/sessions/:id returns session by execution_id", async () => {
 		store.upsertSession({
 			execution_id: "exec-uuid",
