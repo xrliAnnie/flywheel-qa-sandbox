@@ -10,11 +10,7 @@ import type {
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
-import {
-	archiveChatThread,
-	removeUserFromChatThread,
-	resolveChatThreadId,
-} from "./bridge/chat-thread-utils.js";
+import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import type { ForumPostCreator } from "./bridge/ForumPostCreator.js";
 import {
@@ -23,6 +19,10 @@ import {
 } from "./bridge/ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
+import {
+	isPostApproveShipComplete,
+	runPostShipFinalization,
+} from "./bridge/post-ship-finalization.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
 import { validateThreadExists } from "./bridge/thread-validator.js";
@@ -274,6 +274,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			inferredStage = landingStatusValue === "merged" ? "ship" : "pr_created";
 		}
 
+		// FLY-102: capture existing status BEFORE upsertSession writes the new one.
+		// isPostApproveShipComplete needs to see approved_to_ship → completed transition.
+		const preExistingSession = this.store.getSession(env.executionId);
+
 		this.store.upsertSession({
 			execution_id: env.executionId,
 			issue_id: env.issueId,
@@ -323,10 +327,40 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 		this.pushNotification(env, "session_completed", "running");
 
-		// FLY-91: Remove owner + archive chat thread on terminal status
-		if (status === "completed") {
-			this.removeOwnerFromChatThread(env);
-			this.archiveChatThread(env);
+		// FLY-102: Post-approve-ship finalization (tmux cleanup → notifier → archive).
+		// Gated by predicate so only approve-ship completions (not route=needs_review
+		// self-completes) trigger Runner lifecycle teardown. Codex Round 1 (post-Round 4
+		// cycle): must also guard on `status === "completed"` — otherwise a ship that
+		// lands as `status = "blocked"` (e.g. route=blocked after approved_to_ship)
+		// would still trigger tmux teardown / thread archive before ship completes.
+		// Must match event-route.ts:482 gate.
+		const landingStatusForHook = result.evidence?.landingStatus as
+			| { status?: string }
+			| undefined;
+		if (
+			status === "completed" &&
+			isPostApproveShipComplete({
+				existingStatus: preExistingSession?.status,
+				route,
+				landingStatus: landingStatusForHook,
+			})
+		) {
+			this.pending.push(
+				runPostShipFinalization(
+					{
+						executionId: env.executionId,
+						issueId: env.issueId,
+						issueIdentifier: env.issueIdentifier,
+						projectName: env.projectName,
+						sessionStatus: status,
+						discordOwnerUserId: this.config.chatThreadsEnabled
+							? this.config.discordOwnerUserId
+							: undefined,
+						fallbackBotToken: this.config.discordBotToken,
+					},
+					{ store: this.store, projects: this.projects },
+				),
+			);
 		}
 	}
 
@@ -379,91 +413,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	async flush(): Promise<void> {
 		await Promise.allSettled(this.pending);
 		this.pending = [];
-	}
-
-	/**
-	 * FLY-91: Remove owner from chat thread membership on terminal states.
-	 * This clears the thread from Annie's Discord sidebar.
-	 * Fire-and-forget — failures are logged but don't block.
-	 */
-	private removeOwnerFromChatThread(env: EventEnvelope): void {
-		if (!this.config.chatThreadsEnabled || !this.config.discordOwnerUserId)
-			return;
-
-		try {
-			const labels = this.store.getSessionLabels(env.executionId);
-			const { lead } = resolveLeadForIssue(
-				this.projects,
-				env.projectName,
-				labels,
-			);
-			if (!lead.chatChannel) return;
-
-			const botToken = lead.botToken ?? this.config.discordBotToken;
-			if (!botToken) return;
-
-			const chatThread = this.store.getChatThreadByIssue(
-				env.issueId,
-				lead.chatChannel,
-			);
-			if (!chatThread) return;
-
-			removeUserFromChatThread(
-				chatThread.thread_id,
-				this.config.discordOwnerUserId,
-				botToken,
-			).catch((err) =>
-				console.warn(
-					`[DirectEventSink] removeOwnerFromChatThread failed:`,
-					(err as Error).message,
-				),
-			);
-		} catch (err) {
-			console.warn(
-				`[DirectEventSink] removeOwnerFromChatThread error:`,
-				(err as Error).message,
-			);
-		}
-	}
-
-	/**
-	 * FLY-91: Archive chat thread on completed/merged.
-	 * Archived threads disappear from sidebar. If Annie replies later,
-	 * Discord auto-unarchives. Fire-and-forget.
-	 */
-	private archiveChatThread(env: EventEnvelope): void {
-		if (!this.config.chatThreadsEnabled) return;
-
-		try {
-			const labels = this.store.getSessionLabels(env.executionId);
-			const { lead } = resolveLeadForIssue(
-				this.projects,
-				env.projectName,
-				labels,
-			);
-			if (!lead.chatChannel) return;
-
-			const botToken = lead.botToken ?? this.config.discordBotToken;
-			if (!botToken) return;
-
-			const chatThread = this.store.getChatThreadByIssue(
-				env.issueId,
-				lead.chatChannel,
-			);
-			if (!chatThread) return;
-
-			archiveChatThread(chatThread.thread_id, botToken).catch((err) =>
-				console.warn(
-					`[DirectEventSink] archiveChatThread failed:`,
-					(err as Error).message,
-				),
-			);
-		} catch (err) {
-			console.warn(
-				`[DirectEventSink] archiveChatThread error:`,
-				(err as Error).message,
-			);
-		}
 	}
 
 	private pushNotification(

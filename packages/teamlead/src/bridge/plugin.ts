@@ -21,6 +21,7 @@ import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
+import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
@@ -32,7 +33,7 @@ import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { queryLinearIssues } from "./linear-query.js";
 import { createMemoryRouter } from "./memory-route.js";
-import { postMergeCleanup } from "./post-merge.js";
+import { postMergeTmuxCleanup } from "./post-merge.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import { setupRunInfrastructure } from "./run-infra.js";
@@ -44,8 +45,8 @@ import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
 import {
 	getTmuxTargetFromCommDb,
-	isTmuxSessionAlive,
-	killTmuxSession,
+	isTmuxWindowAlive,
+	killTmuxWindow,
 } from "./tmux-lookup.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
@@ -323,7 +324,7 @@ export function createBridgeApp(
 		executionId: string,
 		session: { issue_id: string; project_name: string },
 	) => {
-		postMergeCleanup(
+		postMergeTmuxCleanup(
 			{
 				executionId,
 				issueId: session.issue_id,
@@ -455,7 +456,7 @@ export function createBridgeApp(
 				return;
 			}
 
-			const result = await killTmuxSession(target.sessionName);
+			const result = await killTmuxWindow(target.tmuxWindow);
 
 			store.insertEvent({
 				event_id: `close-tmux-${executionId}-${Date.now()}`,
@@ -472,6 +473,94 @@ export function createBridgeApp(
 			});
 
 			res.json({ closed: result.killed, error: result.error });
+		},
+	);
+
+	// FLY-102: Lead-driven Runner lifecycle — strict close with status guard +
+	// audit event. Eligible states: CLOSE_ELIGIBLE_STATES (7 non-running
+	// outcomes). Distinct from close-tmux (resource janitor, FLY-44 guard).
+	app.post(
+		"/api/sessions/:executionId/close-runner",
+		tokenAuthMiddleware(config.apiToken),
+		async (req, res) => {
+			const executionId = req.params.executionId as string;
+			const { leadId, reason, executorType } = (req.body ?? {}) as {
+				leadId?: string;
+				reason?: string;
+				executorType?: string;
+			};
+
+			// FLY-102 Codex Round 1+2: leadId MUST be present — scope check is
+			// mandatory, not optional. Token alone is insufficient authority.
+			// Round 2: reject whitespace-only values (not just empty strings).
+			const leadIdTrimmed =
+				typeof leadId === "string" ? leadId.trim() : undefined;
+			if (!leadIdTrimmed) {
+				res.status(400).json({
+					success: false,
+					message: "leadId is required in request body",
+				});
+				return;
+			}
+
+			const session = store.getSession(executionId);
+			if (!session) {
+				res.status(404).json({ error: "Session not found" });
+				return;
+			}
+
+			if (!projects) {
+				res.status(500).json({
+					success: false,
+					message: "Lead scope check unavailable: projects not configured",
+				});
+				return;
+			}
+
+			try {
+				if (!matchesLead(session, leadIdTrimmed, projects)) {
+					res.status(403).json({
+						success: false,
+						message: `Session ${executionId} is outside lead "${leadIdTrimmed}" scope`,
+					});
+					return;
+				}
+			} catch (err) {
+				console.warn(
+					`[close-runner] matchesLead error for ${executionId}: ${(err as Error).message}`,
+				);
+				res.status(403).json({
+					success: false,
+					message: `Lead scope check failed: ${(err as Error).message}`,
+				});
+				return;
+			}
+
+			const result = await closeRunner(
+				{
+					executionId,
+					issueId: session.issue_id,
+					projectName: session.project_name,
+					reason,
+					leadId: leadIdTrimmed,
+					executorType,
+				},
+				store,
+			);
+
+			if (!result.closed && result.error?.startsWith("status_not_eligible:")) {
+				res.status(409).json({
+					success: false,
+					message: `Cannot close runner: ${result.error}. Eligible states: ${Array.from(CLOSE_ELIGIBLE_STATES).join(", ")}.`,
+				});
+				return;
+			}
+
+			res.json({
+				success: result.closed,
+				alreadyGone: result.alreadyGone ?? false,
+				error: result.error,
+			});
 		},
 	);
 
@@ -525,7 +614,7 @@ export function createBridgeApp(
 
 				let tmuxAlive = false;
 				if (target) {
-					tmuxAlive = await isTmuxSessionAlive(target.sessionName);
+					tmuxAlive = await isTmuxWindowAlive(target.tmuxWindow);
 				}
 
 				results.push({

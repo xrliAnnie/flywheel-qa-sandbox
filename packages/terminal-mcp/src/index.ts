@@ -399,5 +399,166 @@ server.tool(
 	},
 );
 
+// Tool 6: close_runner (FLY-102)
+server.tool(
+	"close_runner",
+	[
+		"Close a Runner's tmux window after it has reached a non-running outcome.",
+		"Eligible statuses: completed, failed, blocked, rejected, deferred, shelved, terminated.",
+		"REJECTS: running, awaiting_review, approved, approved_to_ship — those must be approved/rejected first.",
+		"Use after Annie confirms closure, or per team-lead pre-authorized rules.",
+		"Idempotent: if the tmux window is already gone, returns success.",
+	].join(" "),
+	{
+		issue_identifier: z
+			.string()
+			.optional()
+			.describe(
+				"Linear issue identifier (e.g. 'FLY-102'). Either this or execution_id required.",
+			),
+		execution_id: z
+			.string()
+			.optional()
+			.describe(
+				"CommDB execution_id. Either this or issue_identifier required.",
+			),
+		reason: z
+			.string()
+			.describe(
+				"Why closing (for audit trail — e.g. 'Annie approved after ship complete').",
+			),
+	},
+	async ({ issue_identifier, execution_id, reason }) => {
+		if (!issue_identifier && !execution_id) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: "Error: provide issue_identifier or execution_id",
+					},
+				],
+				isError: true,
+			};
+		}
+
+		const bridgeUrl = process.env.BRIDGE_URL;
+		const token = process.env.TEAMLEAD_API_TOKEN;
+		if (!bridgeUrl || !token) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: "Error: BRIDGE_URL / TEAMLEAD_API_TOKEN not configured",
+					},
+				],
+				isError: true,
+			};
+		}
+
+		try {
+			let resolvedExec = execution_id;
+			if (!resolvedExec && issue_identifier) {
+				// FLY-102 Round 1 (Codex post-Round 4): constrain lookup to
+				// close-eligible statuses. Without this filter, the fallback
+				// `ORDER BY last_activity_at DESC LIMIT 1` can pick a running
+				// session under retry/parallel — closing the wrong execution.
+				// Mirrors CLOSE_ELIGIBLE_STATES in close-runner.ts (kept in sync).
+				const closableStatuses =
+					"blocked,completed,deferred,failed,rejected,shelved,terminated";
+				const lookupUrl = `${bridgeUrl}/api/sessions?mode=by_identifier&identifier=${encodeURIComponent(issue_identifier)}&statuses=${encodeURIComponent(closableStatuses)}`;
+				const r = await fetch(lookupUrl, {
+					headers: { Authorization: `Bearer ${token}` },
+				});
+				if (!r.ok) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Error: lookup failed (${r.status})`,
+							},
+						],
+						isError: true,
+					};
+				}
+				const json = (await r.json()) as {
+					sessions?: Array<{ execution_id: string; status: string }>;
+				};
+				if (!json.sessions?.length) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Error: no closable session for ${issue_identifier}. If a Runner is currently running, wait for completion or pass execution_id explicitly.`,
+							},
+						],
+						isError: true,
+					};
+				}
+				if (json.sessions.length > 1) {
+					return {
+						content: [
+							{
+								type: "text" as const,
+								text: `Error: ${json.sessions.length} closable sessions for ${issue_identifier} — pass execution_id explicitly to disambiguate. Candidates: ${json.sessions.map((s) => `${s.execution_id}(${s.status})`).join(", ")}`,
+							},
+						],
+						isError: true,
+					};
+				}
+				resolvedExec = json.sessions[0]?.execution_id;
+			}
+
+			// Scope guard — reuse getSessionScoped so MCP-layer errors are consistent.
+			if (existsSync(dbPath)) {
+				const db = openDb();
+				try {
+					getSessionScoped(db, resolvedExec as string, {
+						requireExactLead: true,
+					});
+				} finally {
+					db.close();
+				}
+			}
+
+			const r = await fetch(
+				`${bridgeUrl}/api/sessions/${resolvedExec}/close-runner`,
+				{
+					method: "POST",
+					headers: {
+						Authorization: `Bearer ${token}`,
+						"Content-Type": "application/json",
+					},
+					body: JSON.stringify({ leadId, reason }),
+				},
+			);
+			const body = await r.text();
+			if (r.status === 409) {
+				return {
+					content: [{ type: "text" as const, text: `Refused: ${body}` }],
+				};
+			}
+			if (!r.ok) {
+				return {
+					content: [
+						{ type: "text" as const, text: `Error (${r.status}): ${body}` },
+					],
+					isError: true,
+				};
+			}
+			return { content: [{ type: "text" as const, text: body }] };
+		} catch (e) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: `Error: ${e instanceof Error ? e.message : String(e)}`,
+					},
+				],
+				isError: true,
+			};
+		}
+	},
+);
+
 const transport = new StdioServerTransport();
 await server.connect(transport);

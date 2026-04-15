@@ -96,8 +96,26 @@ export function createQueryRouter(
 					});
 					return;
 				}
-				const session = store.getSessionByIdentifier(identifier);
-				sessions = session ? [session] : [];
+				// FLY-102 Round 1 (Codex post-Round 4): `statuses` filter scopes the
+				// lookup to caller-supplied statuses (e.g. CLOSE_ELIGIBLE_STATES from
+				// close_runner). Returns ALL matching sessions — caller decides how
+				// to disambiguate (usually: error on 0 or >1). Without this, the
+				// fallback `ORDER BY last_activity_at DESC LIMIT 1` picks any status,
+				// which under retries/parallel can point to a running session.
+				const statusesRaw = req.query.statuses as string | undefined;
+				if (statusesRaw) {
+					const statuses = statusesRaw
+						.split(",")
+						.map((s) => s.trim())
+						.filter(Boolean);
+					sessions = store.getSessionsByIdentifierAndStatuses(
+						identifier,
+						statuses,
+					);
+				} else {
+					const session = store.getSessionByIdentifier(identifier);
+					sessions = session ? [session] : [];
+				}
 				// FLY-80: Removed stale thread fallback (see /sessions/:id comment)
 				res.json({
 					sessions: sessions.map(omitIssueId),

@@ -12,7 +12,7 @@ import {
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import {
 	getTmuxTargetFromCommDb,
-	isTmuxSessionAlive,
+	isTmuxWindowAlive,
 } from "./bridge/tmux-lookup.js";
 import type { ProjectEntry } from "./ProjectConfig.js";
 import type { Session, StateStore } from "./StateStore.js";
@@ -134,7 +134,7 @@ export class HeartbeatService {
 				);
 				if (!target) continue;
 
-				const alive = await isTmuxSessionAlive(target.sessionName);
+				const alive = await isTmuxWindowAlive(target.tmuxWindow);
 				if (!alive) continue;
 
 				const hoursSince = session.last_activity_at

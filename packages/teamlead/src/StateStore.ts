@@ -834,6 +834,32 @@ export class StateStore {
 		return undefined;
 	}
 
+	/**
+	 * FLY-102 Round 1 (Codex post-Round 4): Lookup all sessions for an identifier
+	 * whose status is in the caller-supplied set. Used by `close_runner` MCP tool
+	 * to avoid the unstable `ORDER BY last_activity_at DESC LIMIT 1` fallback,
+	 * which under retries/parallel runs can pick the wrong execution.
+	 */
+	getSessionsByIdentifierAndStatuses(
+		identifier: string,
+		statuses: readonly string[],
+	): Session[] {
+		if (statuses.length === 0) return [];
+		const placeholders = statuses.map(() => "?").join(",");
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions WHERE issue_identifier = ? AND status IN (${placeholders}) ORDER BY last_activity_at DESC`,
+		);
+		stmt.bind([identifier, ...statuses]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
 	getRecentSessions(limit: number): Session[] {
 		const stmt = this.db.prepare(
 			"SELECT * FROM sessions ORDER BY last_activity_at DESC LIMIT ?",

@@ -22,7 +22,7 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
-import { getTmuxTargetFromCommDb, killTmuxSession } from "./tmux-lookup.js";
+import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 type ExecFn = (
@@ -654,14 +654,14 @@ async function handleTerminate(
 		? getTmuxTargetFromCommDb(executionId, session.project_name)
 		: undefined;
 	if (tmuxTarget) {
-		const killResult = await killTmuxSession(tmuxTarget.sessionName);
+		const killResult = await killTmuxWindow(tmuxTarget.tmuxWindow);
 		if (!killResult.killed && killResult.error) {
 			console.error(
-				`[terminate] tmux kill failed for ${tmuxTarget.sessionName}: ${killResult.error}`,
+				`[terminate] tmux kill failed for ${tmuxTarget.tmuxWindow}: ${killResult.error}`,
 			);
 			return {
 				success: false,
-				message: `Failed to kill tmux session ${tmuxTarget.sessionName}: ${killResult.error}`,
+				message: `Failed to kill tmux window ${tmuxTarget.tmuxWindow}: ${killResult.error}`,
 			};
 		}
 	}
