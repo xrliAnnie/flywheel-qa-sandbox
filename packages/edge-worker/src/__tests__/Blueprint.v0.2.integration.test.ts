@@ -252,13 +252,25 @@ describe("Blueprint v0.2 integration", () => {
 	// until removeIfExists() has fully resolved.
 	it("FLY-99: awaits removeIfExists before calling create", async () => {
 		const mockAdapter = makeMockAdapter();
+
+		// Two deferreds: removeStarted signals that Blueprint has actually
+		// entered removeIfExists() (so we know it has reached the worktree
+		// setup step). removePromise controls when removeIfExists resolves.
+		// This makes the ordering assertion independent of how many awaits
+		// appear earlier in Blueprint.run.
+		let removeStartedResolve!: () => void;
+		const removeStarted = new Promise<void>((r) => {
+			removeStartedResolve = r;
+		});
 		let removeResolve!: () => void;
 		const removePromise = new Promise<void>((r) => {
 			removeResolve = r;
 		});
 		let createCalled = false;
+
 		const mockWorktreeManager = makeMockWorktreeManager({
 			removeIfExists: vi.fn(async () => {
+				removeStartedResolve();
 				await removePromise;
 				return true;
 			}),
@@ -284,8 +296,13 @@ describe("Blueprint v0.2 integration", () => {
 
 		const runPromise = blueprint.run(makeNode(), "/repo", makeContext());
 
-		// Let Blueprint advance until it is awaiting removeIfExists.
-		for (let i = 0; i < 10; i++) await Promise.resolve();
+		// Wait until Blueprint has actually invoked removeIfExists — proves
+		// execution reached the worktree setup step, not just an earlier await.
+		await removeStarted;
+		// Flush any microtask that might have immediately enqueued create()
+		// (there shouldn't be any, because removeIfExists is blocked on
+		// removePromise — this is what we're asserting).
+		await Promise.resolve();
 		expect(createCalled).toBe(false);
 
 		removeResolve();
