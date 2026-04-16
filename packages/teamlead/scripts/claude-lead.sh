@@ -847,8 +847,14 @@ if [ -d "$LEAD_RULES_DIR" ]; then
   CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
   log "Appending common rules: ${COMMON_RULES}"
 
-  # Department lead rules — only for non-cos-lead (Peter/Oliver manage Runners, Simba does not)
-  if [ "$LEAD_ID" != "cos-lead" ]; then
+  # Department lead rules — only for non-cos roles (Peter/Oliver manage Runners, Simba does not).
+  # Role detection: production uses LEAD_ID=="cos-lead"; FLY-96 test slots use synthetic LEAD_ID
+  # (flywheel-test-N) and set FLYWHEEL_LEAD_ROLE=cos|lead to drive the same gate.
+  IS_COS_ROLE=false
+  if [ "${FLYWHEEL_LEAD_ROLE:-}" = "cos" ] || [ "$LEAD_ID" = "cos-lead" ]; then
+    IS_COS_ROLE=true
+  fi
+  if [ "$IS_COS_ROLE" = false ]; then
     DEPT_RULES="${LEAD_RULES_DIR}/department-lead-rules.md"
     if [ ! -f "$DEPT_RULES" ] || [ ! -r "$DEPT_RULES" ]; then
       echo "[lead] ERROR: Required department rule file missing or unreadable: ${DEPT_RULES}"
