@@ -272,10 +272,28 @@ run_error() {
   log "Running scenario: error"
   local TEST_ID="e2e-err-$(date +%s)"
 
-  # session_failed
+  # 1. session_started (Bridge creates session row)
   post_event "$(cat <<EOF
 {
   "event_id": "evt-${TEST_ID}-1",
+  "execution_id": "exec-${TEST_ID}",
+  "issue_id": "issue-${TEST_ID}",
+  "project_name": "${PROJECT_NAME}",
+  "event_type": "session_started",
+  "payload": {
+    "issueIdentifier": "TEST-ERR-${TEST_ID}",
+    "issueTitle": "E2E error test"
+  }
+}
+EOF
+)" >/dev/null
+
+  sleep 1
+
+  # 2. session_failed (Bridge transitions existing row to failed)
+  post_event "$(cat <<EOF
+{
+  "event_id": "evt-${TEST_ID}-2",
   "execution_id": "exec-${TEST_ID}",
   "issue_id": "issue-${TEST_ID}",
   "project_name": "${PROJECT_NAME}",
