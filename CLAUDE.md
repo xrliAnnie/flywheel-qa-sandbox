@@ -87,6 +87,7 @@ Current version: see `doc/VERSION`
 | FLY-51 + FLY-58: Approve/Ship two-step flow + Runner tmux lifecycle | ✅ Merged (PR #122) |
 | FLY-71: Standup channel/bot fix + triage execution gate | ✅ Merged (Flywheel PR #121, GeoForge3D PR #155) |
 | FLY-92: Runner idle watchdog — system-level idle detection + bubble up | ✅ Merged (PR #137) |
+| FLY-96: QA testing infrastructure — 4-slot parallel Discord E2E (1 cos + 3 lead) | ✅ Merged (PR #144) |
 
 ## Doc Structure & Lifecycle
 
