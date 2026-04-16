@@ -1,8 +1,16 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { promisify } from "node:util";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type WorktreeExecFn, WorktreeManager } from "../WorktreeManager.js";
+
+const execFileAsync = promisify(execFile);
+async function gitCmd(cwd: string, ...args: string[]): Promise<string> {
+	const { stdout } = await execFileAsync("git", args, { cwd });
+	return stdout.trim();
+}
 
 // ─── Helpers ─────────────────────────────────────
 
@@ -77,7 +85,11 @@ describe("WorktreeManager", () => {
 			});
 
 			expect(calls[0].cmd).toBe("git");
-			expect(calls[0].args).toContain("-b");
+			// FLY-99: -B (reset-or-create) replaces -b so a stale local branch
+			// left behind by a crashed Runner is reset to startPoint instead of
+			// failing with "branch already exists".
+			expect(calls[0].args).toContain("-B");
+			expect(calls[0].args).not.toContain("-b");
 			expect(calls[0].args).toContain("repo-GEO-42");
 			expect(
 				calls[0].args.some((a) => a.includes("origin/main^{commit}")),
@@ -543,17 +555,19 @@ describe("WorktreeManager", () => {
 				Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
 			);
 
+			// FLY-99: `cleaned` is now true because the registered worktree was
+			// cleaned via remove() — even though branch -D reported "not found".
 			const cleaned = await mgr.removeIfExists("/main/repo", "proj", "GEO-42");
-			expect(cleaned).toBe(false);
+			expect(cleaned).toBe(true);
 
 			vi.restoreAllMocks();
 		});
 
-		it("cleans up orphan directory (exists but not registered)", async () => {
+		it("FLY-99: cleans up orphan directory synchronously (exists but not registered)", async () => {
 			const bgDeleteCalls: Array<{ cmd: string; args: string[] }> = [];
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
-				new Error("error: branch 'repo-GEO-42' not found"), // branch -D
+				{ stdout: "" }, // branch -D succeeds (stale branch still present)
 			]);
 			const mgr = new WorktreeManager(
 				{
@@ -565,16 +579,17 @@ describe("WorktreeManager", () => {
 
 			// Mock existsSync to return true for orphan dir
 			vi.spyOn(fs, "existsSync").mockReturnValue(true);
+			const rmSpy = vi.spyOn(fs.promises, "rm").mockResolvedValue(undefined);
 
 			const cleaned = await mgr.removeIfExists("/main/repo", "proj", "GEO-42");
-			expect(cleaned).toBe(false); // branch didn't exist
+			expect(cleaned).toBe(true);
 
-			// Verify bg delete was called for orphan dir
-			expect(bgDeleteCalls).toHaveLength(1);
-			expect(bgDeleteCalls[0]!.cmd).toBe("/bin/rm");
-			expect(bgDeleteCalls[0]!.args).toContain(
+			// FLY-99: orphan dir cleanup uses awaited fs.promises.rm, NOT bgDelete.
+			expect(rmSpy).toHaveBeenCalledWith(
 				"/home/user/.flywheel/worktrees/proj/repo-GEO-42",
+				{ recursive: true, force: true },
 			);
+			expect(bgDeleteCalls).toHaveLength(0);
 
 			vi.restoreAllMocks();
 		});
@@ -592,6 +607,227 @@ describe("WorktreeManager", () => {
 			await expect(
 				mgr.removeIfExists("/main/repo", "proj", "GEO-42"),
 			).rejects.toThrow("unexpected git error");
+		});
+
+		// FLY-99: Race regression — removeIfExists() must await fs.rm on the orphan
+		// directory so the subsequent create() doesn't race a still-running delete.
+		// If anyone ever reverts the orphan-dir cleanup to fire-and-forget, this
+		// test fails deterministically (rmStarted won't fire or settled flips early).
+		it("FLY-99: orphan directory cleanup awaits fs.rm before returning", async () => {
+			const bgDeleteCalls: Array<{ cmd: string; args: string[] }> = [];
+			const { fn } = makeMockExec([
+				{ stdout: PORCELAIN_SINGLE }, // isRegistered → false
+				new Error("error: branch 'repo-GEO-42' not found"), // branch -D
+			]);
+			const mgr = new WorktreeManager(
+				{
+					baseDir: "/home/user/.flywheel/worktrees",
+					bgDeleteFn: (cmd, args) => bgDeleteCalls.push({ cmd, args }),
+				},
+				fn,
+			);
+
+			// Orphan dir exists on disk
+			vi.spyOn(fs, "existsSync").mockReturnValue(true);
+
+			// Two deferreds: rmStarted proves fs.rm was invoked; rmPromise
+			// controls when rm resolves.
+			let rmStartedResolve!: () => void;
+			const rmStarted = new Promise<void>((r) => {
+				rmStartedResolve = r;
+			});
+			let rmResolve!: () => void;
+			const rmPromise = new Promise<void>((r) => {
+				rmResolve = r;
+			});
+			const rmSpy = vi.spyOn(fs.promises, "rm").mockImplementationOnce(() => {
+				rmStartedResolve();
+				return rmPromise;
+			});
+
+			const removePromise = mgr.removeIfExists("/main/repo", "proj", "GEO-42");
+
+			let settled = false;
+			removePromise.then(
+				() => {
+					settled = true;
+				},
+				() => {
+					settled = true;
+				},
+			);
+
+			// Wait until fs.rm is actually invoked — proves code reached
+			// `await fs.promises.rm(...)`. We can't rely on a fixed number of
+			// microtask flushes because removeIfExists() has several awaits
+			// (isRegistered → list → exec) before the rm call.
+			await rmStarted;
+			// Let any enqueued continuation run.
+			await Promise.resolve();
+
+			// removeIfExists must still be pending — its await on fs.rm is blocked.
+			expect(settled).toBe(false);
+
+			rmResolve();
+			// cleaned === true because orphan dir was removed, even though branch -D
+			// reported "not found".
+			await expect(removePromise).resolves.toBe(true);
+
+			expect(rmSpy).toHaveBeenCalledWith(
+				"/home/user/.flywheel/worktrees/proj/repo-GEO-42",
+				{ recursive: true, force: true },
+			);
+			// No bgDelete — orphan-dir cleanup is now awaited, not fire-and-forget.
+			expect(bgDeleteCalls).toHaveLength(0);
+
+			vi.restoreAllMocks();
+		});
+	});
+
+	// ── FLY-99 real-git integration ──
+	// These tests run actual `git` against a throwaway bare origin + clone so we
+	// verify the real semantics of `-B` and the orphan-dir → create() cycle, not
+	// just the mocked exec surface.
+	describe("FLY-99 real git integration", () => {
+		let workDir: string;
+
+		async function setupRepo(): Promise<{
+			mainRepo: string;
+			commit1: string;
+			commit2: string;
+		}> {
+			const origin = path.join(workDir, "origin.git");
+			await execFileAsync("git", [
+				"init",
+				"--bare",
+				"--initial-branch=main",
+				origin,
+			]);
+
+			// Seed origin via a throwaway clone so it has an `origin/main` head
+			// the worktree tests can use as startPoint.
+			const seed = path.join(workDir, "seed");
+			await execFileAsync("git", ["clone", origin, seed]);
+			await execFileAsync("git", [
+				"-C",
+				seed,
+				"config",
+				"user.email",
+				"test@example.com",
+			]);
+			await execFileAsync("git", ["-C", seed, "config", "user.name", "Test"]);
+			fs.writeFileSync(path.join(seed, "f.txt"), "v1");
+			await execFileAsync("git", ["-C", seed, "add", "."]);
+			await execFileAsync("git", ["-C", seed, "commit", "-m", "v1"]);
+			await execFileAsync("git", ["-C", seed, "push", "-u", "origin", "main"]);
+			fs.writeFileSync(path.join(seed, "f.txt"), "v2");
+			await execFileAsync("git", ["-C", seed, "add", "."]);
+			await execFileAsync("git", ["-C", seed, "commit", "-m", "v2"]);
+			await execFileAsync("git", ["-C", seed, "push", "origin", "main"]);
+
+			const mainRepo = path.join(workDir, "repo");
+			await execFileAsync("git", ["clone", origin, mainRepo]);
+			await execFileAsync("git", [
+				"-C",
+				mainRepo,
+				"config",
+				"user.email",
+				"test@example.com",
+			]);
+			await execFileAsync("git", [
+				"-C",
+				mainRepo,
+				"config",
+				"user.name",
+				"Test",
+			]);
+
+			const commit2 = await gitCmd(mainRepo, "rev-parse", "origin/main");
+			const commit1 = await gitCmd(mainRepo, "rev-parse", "origin/main~1");
+			return { mainRepo, commit1, commit2 };
+		}
+
+		beforeEach(() => {
+			// realpath: macOS tmpdir is a /var → /private/var symlink; git
+			// worktree list returns the resolved path, so normalize up front to
+			// keep isRegistered() path comparisons accurate.
+			workDir = fs.realpathSync(
+				fs.mkdtempSync(path.join(os.tmpdir(), "wt-fly99-")),
+			);
+		});
+
+		afterEach(() => {
+			if (workDir && fs.existsSync(workDir)) {
+				fs.rmSync(workDir, { recursive: true, force: true });
+			}
+		});
+
+		it("FLY-99: -B resets a stale local branch to startPoint without failing", async () => {
+			const { mainRepo, commit1, commit2 } = await setupRepo();
+			const mgr = new WorktreeManager();
+
+			// Simulate a crashed Runner that left a stale `repo-GEO-42` local
+			// branch pointing at an older commit.
+			await execFileAsync("git", [
+				"-C",
+				mainRepo,
+				"branch",
+				"repo-GEO-42",
+				commit1,
+			]);
+
+			// Under -b (create-only) this would fail with "branch already exists".
+			// Under -B (reset-or-create) it must succeed and reset to origin/main.
+			const info = await mgr.create({
+				mainRepoPath: mainRepo,
+				projectName: "proj",
+				issueId: "GEO-42",
+			});
+
+			const branchSha = await gitCmd(
+				mainRepo,
+				"rev-parse",
+				"refs/heads/repo-GEO-42",
+			);
+			expect(branchSha).toBe(commit2);
+			expect(info.worktreePath).toBe(
+				path.join(path.dirname(mainRepo), "repo-GEO-42"),
+			);
+			expect(fs.existsSync(info.worktreePath)).toBe(true);
+		});
+
+		it("FLY-99: orphan dir + orphan branch → removeIfExists → create full cycle", async () => {
+			const { mainRepo } = await setupRepo();
+			const mgr = new WorktreeManager();
+
+			const worktreePath = path.join(path.dirname(mainRepo), "repo-GEO-42");
+
+			// Residual state from a crashed Runner:
+			//   1. a directory on disk at the worktree path that is NOT registered
+			//      (git worktree add would refuse with "already exists"), and
+			//   2. a stale local branch at the same name (git worktree add -b
+			//      would refuse with "branch already exists").
+			fs.mkdirSync(worktreePath);
+			fs.writeFileSync(path.join(worktreePath, "leftover.txt"), "stale");
+			await execFileAsync("git", ["-C", mainRepo, "branch", "repo-GEO-42"]);
+
+			const cleaned = await mgr.removeIfExists(mainRepo, "proj", "GEO-42");
+			expect(cleaned).toBe(true);
+			expect(fs.existsSync(worktreePath)).toBe(false);
+
+			// The create() that follows is what was actually crashing Runners in
+			// prod: previously a non-awaited rm could still be deleting the orphan
+			// dir, and `git worktree add` would see a partial tree. Now that
+			// removeIfExists awaits the rm, this must succeed first try.
+			const info = await mgr.create({
+				mainRepoPath: mainRepo,
+				projectName: "proj",
+				issueId: "GEO-42",
+			});
+
+			expect(fs.existsSync(info.worktreePath)).toBe(true);
+			expect(await mgr.isRegistered(mainRepo, info.worktreePath)).toBe(true);
+			expect(fs.existsSync(path.join(info.worktreePath, "f.txt"))).toBe(true);
 		});
 	});
 });
