@@ -1,0 +1,49 @@
+{
+	"_comment": "Copy to ~/.flywheel/test-slots.json and fill in values",
+	"_setup": "Create bots at discord.com/developers/applications, channels in Discord server",
+	"_role": "slot.role selects the GeoForge3D identity.md to source from: 'cos' → .lead/cos-lead/identity.md (Simba), 'lead' → .lead/product-lead/identity.md (Peter). Required — test-deploy.sh fails fast if missing.",
+	"slots": [
+		{
+			"id": 1,
+			"role": "cos",
+			"botName": "flywheel-test-1",
+			"botAppId": "<bot-application-id>",
+			"tokenEnvVar": "TEST_BOT_TOKEN_1",
+			"channelId": "<channel-id>",
+			"channelName": "cos-test",
+			"bridgePort": 19871
+		},
+		{
+			"id": 2,
+			"role": "lead",
+			"botName": "flywheel-test-2",
+			"botAppId": "<bot-application-id>",
+			"tokenEnvVar": "TEST_BOT_TOKEN_2",
+			"channelId": "<channel-id>",
+			"channelName": "lead-test-1",
+			"bridgePort": 19872
+		},
+		{
+			"id": 3,
+			"role": "lead",
+			"botName": "flywheel-test-3",
+			"botAppId": "<bot-application-id>",
+			"tokenEnvVar": "TEST_BOT_TOKEN_3",
+			"channelId": "<channel-id>",
+			"channelName": "lead-test-2",
+			"bridgePort": 19873
+		},
+		{
+			"id": 4,
+			"role": "lead",
+			"botName": "flywheel-test-4",
+			"botAppId": "<bot-application-id>",
+			"tokenEnvVar": "TEST_BOT_TOKEN_4",
+			"channelId": "<channel-id>",
+			"channelName": "lead-test-3",
+			"bridgePort": 19874
+		}
+	],
+	"categoryId": "<discord-category-id>",
+	"guildId": "<discord-guild-id>"
+}

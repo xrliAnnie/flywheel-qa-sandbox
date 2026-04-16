@@ -117,9 +117,42 @@ Fallback: source config-bridge.sh + state.sh directly.
 | Resource | Rule |
 |----------|------|
 | **Code** | 只在自己的 WORKTREE_PATH 工作 |
-| **Bridge** | 如需启动，用独立端口（`PORT=9877` 起，递增）。`PORT` env var 传给 `run-bridge.ts` |
-| **CommDB** | 用 `--db /tmp/qa-{AGENT_ID}/comm.db` 指定测试专用 DB，不要用生产 CommDB |
-| **Discord** | 涉及 Discord 的 E2E 测试**必须串行**。多个 QA 同时跑时，先 SendMessage 给 team-lead 请求 Discord 锁，等确认后才开始 Discord 测试 |
+| **Bridge** | 使用 `scripts/test-deploy.sh` 自动分配 test slot（固定端口 19871-19874）。不要手动指定端口 |
+| **CommDB** | test-deploy 自动创建隔离的 CommDB（`~/.flywheel/comm/test-slot-{N}/`），teardown 时自动清理 |
+| **Discord** | 4 个独立 test bot + 4 个独立 test channel，支持**完全并行**。每个 slot 有专属 bot token 和 channel，互不干扰 |
+
+### Test Slot 工作流
+
+```bash
+# 1. 部署 test slot（自动分配可用 slot）
+SLOT_INFO=$(scripts/test-deploy.sh)
+SLOT=$(echo "$SLOT_INFO" | jq -r '.slot')
+
+# 2. 运行 Discord E2E 测试
+scripts/discord-e2e.sh basic "$SLOT_INFO"   # 或 lifecycle, error, all
+
+# 3. 清理
+scripts/test-teardown.sh "$SLOT"
+```
+
+**Slot 池**: 4 个 slot（端口 19871-19874），配置在 `~/.flywheel/test-slots.json`（模板: `scripts/test-slots.example.json`）。
+每个 slot 包含：独立 Bridge 进程、独立 test Lead、独立 Discord bot/channel、独立 CommDB。
+
+### Slot Role Map
+
+Each slot has a `role` field that selects which production identity.md to source from (`~/Dev/GeoForge3D/.lead/{cos-lead|product-lead}/identity.md`), so the test Lead mirrors production announce behavior (session_started / session_completed / session_failed messages) inside the test channel.
+
+| Slot | Role | Channel      | Identity source (Simba/Peter) |
+|------|------|--------------|-------------------------------|
+| 1    | cos  | cos-test     | `.lead/cos-lead/identity.md` (Simba)    |
+| 2    | lead | lead-test-1  | `.lead/product-lead/identity.md` (Peter) |
+| 3    | lead | lead-test-2  | `.lead/product-lead/identity.md` (Peter) |
+| 4    | lead | lead-test-3  | `.lead/product-lead/identity.md` (Peter) |
+
+**When testing CoS behavior** (triage, core channel routing) → claim slot 1.
+**When testing Lead behavior** (product-chat notifications, forum posts) → claim any of slot 2/3/4 (or let `test-deploy.sh` auto-allocate).
+
+**一键检查**: `scripts/pre-ship-check.sh` 按顺序执行 build → typecheck → lint → unit tests → Discord E2E（可选 `--skip-e2e`）。
 
 ## Spawn Parameters
 
