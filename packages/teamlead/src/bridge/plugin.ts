@@ -1728,7 +1728,16 @@ export async function startBridge(
 	// FLY-83: drain alert queue every 60s so spills from shell path (lead-alert.sh)
 	// or prior Bridge runs do not rot. Queue files only appear when Discord POST
 	// fails or env is missing, so this is usually a no-op.
+	//
+	// In-flight guard (leadAlertDraining) is load-bearing: drainQueue() bypasses
+	// the claim check and only unlinks a queue file AFTER a successful POST. If
+	// a drain stalls past the 60s interval (slow Discord), an overlapping drain
+	// would re-POST the same still-present queue file → duplicate alert, which
+	// breaks the "one alert per 10-min bucket" invariant. Skip when busy.
+	let leadAlertDraining = false;
 	const leadAlertDrainTimer = setInterval(() => {
+		if (leadAlertDraining) return;
+		leadAlertDraining = true;
 		leadAlertNotifier
 			.drainQueue()
 			.then(({ sent, remaining }) => {
@@ -1740,6 +1749,9 @@ export async function startBridge(
 			})
 			.catch((err: Error) => {
 				console.warn(`[Bridge] LeadAlert drain failed: ${err.message}`);
+			})
+			.finally(() => {
+				leadAlertDraining = false;
 			});
 	}, 60_000);
 	leadAlertDrainTimer.unref?.();
