@@ -1725,12 +1725,32 @@ export async function startBridge(
 	leadWatchdog.start();
 	console.log("[Bridge] LeadWatchdog started (30s poll, 3-cycle alert)");
 
+	// FLY-83: drain alert queue every 60s so spills from shell path (lead-alert.sh)
+	// or prior Bridge runs do not rot. Queue files only appear when Discord POST
+	// fails or env is missing, so this is usually a no-op.
+	const leadAlertDrainTimer = setInterval(() => {
+		leadAlertNotifier
+			.drainQueue()
+			.then(({ sent, remaining }) => {
+				if (sent > 0 || remaining > 0) {
+					console.log(
+						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining}`,
+					);
+				}
+			})
+			.catch((err: Error) => {
+				console.warn(`[Bridge] LeadAlert drain failed: ${err.message}`);
+			});
+	}, 60_000);
+	leadAlertDrainTimer.unref?.();
+
 	const close = async () => {
 		heartbeatService?.stop();
 		cleanupService?.stop();
 		gatePoller.stop();
 		idleWatchdog.stop();
 		leadWatchdog.stop();
+		clearInterval(leadAlertDrainTimer);
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
 		// are the same instance, only tear down once. If they differ (caller
 		// injected retryDispatcher but not startDispatcher), tear down both.
