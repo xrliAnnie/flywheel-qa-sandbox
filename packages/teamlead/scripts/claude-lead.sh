@@ -793,20 +793,43 @@ log "MCP config: ${MCP_CONFIG_FILE}"
 
 # FLY-109 (b): Pre-seed enableAllProjectMcpServers so project .mcp.json servers
 # are auto-approved on resume (no interactive dialog dependency). Written to
-# ~/.claude.json under projects[LEAD_WORKSPACE]. Each Lead has its own workspace
-# path so concurrent Leads don't conflict.
+# ~/.claude.json under projects[LEAD_WORKSPACE]. Uses mkdir-based lock to
+# prevent read-modify-write race when multiple Leads start concurrently
+# (restart-services.sh launches Leads in parallel).
 CLAUDE_JSON="${HOME}/.claude.json"
-if [ -f "$CLAUDE_JSON" ] && command -v jq >/dev/null 2>&1; then
-  _abs_workspace="$(cd "$LEAD_WORKSPACE" && pwd)"
-  _tmp_claude_json="$(mktemp "${CLAUDE_JSON}.tmp.XXXXXX")"
-  if jq --arg proj "$_abs_workspace" \
-     '.projects[$proj].enableAllProjectMcpServers = true' \
-     "$CLAUDE_JSON" > "$_tmp_claude_json" 2>/dev/null; then
-    mv "$_tmp_claude_json" "$CLAUDE_JSON"
-    log "MCP approval: enableAllProjectMcpServers=true for ${_abs_workspace}"
+if command -v jq >/dev/null 2>&1; then
+  # Create minimal ~/.claude.json if missing (fresh machine / state reset)
+  if [ ! -f "$CLAUDE_JSON" ]; then
+    echo '{"projects":{}}' > "$CLAUDE_JSON"
+    log "MCP approval: created ${CLAUDE_JSON}"
+  fi
+
+  # mkdir is atomic on POSIX — serves as a spinlock for concurrent writers
+  _lock_dir="${CLAUDE_JSON}.flywheel-lock"
+  _lock_acquired=false
+  for _i in $(seq 1 50); do
+    if mkdir "$_lock_dir" 2>/dev/null; then
+      _lock_acquired=true
+      break
+    fi
+    sleep 0.2
+  done
+
+  if [ "$_lock_acquired" = "true" ]; then
+    _abs_workspace="$(cd "$LEAD_WORKSPACE" && pwd)"
+    _tmp_claude_json="$(mktemp "${CLAUDE_JSON}.tmp.XXXXXX")"
+    if jq --arg proj "$_abs_workspace" \
+       '.projects[$proj].enableAllProjectMcpServers = true' \
+       "$CLAUDE_JSON" > "$_tmp_claude_json" 2>/dev/null; then
+      mv "$_tmp_claude_json" "$CLAUDE_JSON"
+      log "MCP approval: enableAllProjectMcpServers=true for ${_abs_workspace}"
+    else
+      rm -f "$_tmp_claude_json" 2>/dev/null || true
+      log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
+    fi
+    rmdir "$_lock_dir" 2>/dev/null || true
   else
-    rm -f "$_tmp_claude_json" 2>/dev/null || true
-    log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
+    log "WARNING: Could not acquire lock on ${CLAUDE_JSON} after 10s, skipping MCP pre-seed"
   fi
 fi
 
