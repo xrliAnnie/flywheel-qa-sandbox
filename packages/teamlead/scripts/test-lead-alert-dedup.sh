@@ -7,7 +7,8 @@
 # transaction is fully exercised.
 #
 # Passes when:
-#   * `alert_claims` holds exactly 1 row
+#   * `alert_claims` holds exactly 1 row (winner's claim stays — queue file is
+#     the retry record, Bridge's drainQueue() reruns POST without re-claiming)
 #   * exactly 1 worker queued a payload (sent or queued)
 #   * the remaining workers logged "already claimed" and exited 0
 set -euo pipefail

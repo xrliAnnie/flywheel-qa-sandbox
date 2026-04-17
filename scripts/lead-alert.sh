@@ -136,9 +136,15 @@ if [ -z "$TOKEN" ] && [ -n "$LEAD_BOT_TOKEN_ENV" ]; then
 fi
 
 # ── Event ID (sha1 of leadId|kind|10min-bucket) ────────────
+# MUST match Bridge-side formula in LeadWatchdog.ts (pipe separators, not
+# colons) or cross-process dedup silently breaks.
 NOW_EPOCH=$(date +%s)
 BUCKET=$((NOW_EPOCH / 600))
-EVENT_ID=$(printf '%s:%s:%s' "$LEAD_ID" "$KIND" "$BUCKET" | shasum -a 1 | awk '{print $1}')
+EVENT_ID=$(LC_ALL=C printf '%s|%s|%s' "$LEAD_ID" "$KIND" "$BUCKET" | LC_ALL=C shasum -a 1 | awk '{print $1}')
+if [ -z "$EVENT_ID" ]; then
+  log "ERROR: shasum failed to produce EVENT_ID (lead=$LEAD_ID kind=$KIND bucket=$BUCKET)" >&2
+  exit 3
+fi
 
 # ── Cross-process claim via claims.db ──────────────────────
 # Single sqlite3 connection + BEGIN IMMEDIATE + SELECT changes() in the
@@ -235,5 +241,12 @@ fi
 RESP_BODY=$(cat /tmp/lead-alert-$$.out 2>/dev/null || true)
 rm -f /tmp/lead-alert-$$.out
 log "Discord POST failed HTTP=$HTTP_CODE body=$RESP_BODY"
+
+# Keep the claim — it marks "someone took responsibility for this eventId".
+# The queue file is the durable retry record; Bridge's drainQueue() reruns the
+# POST directly (bypasses the claim check) every 60s until delivery succeeds.
+# Releasing the claim here would let a concurrent Bridge live-path fire a
+# second POST on the same eventId, breaking the "one alert per 10-min bucket"
+# invariant.
 enqueue "discord-${HTTP_CODE}"
 exit 2
