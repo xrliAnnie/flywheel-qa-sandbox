@@ -19,8 +19,14 @@ if ! command -v expect >/dev/null 2>&1; then
   exit 0
 fi
 
-# Extract the expect heredoc body into a temp .exp file.
-EXP_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-expect-test.XXXXXX.exp")
+# Extract the expect heredoc body into a temp file. BSD mktemp (macOS) only
+# expands XXXXXX when it's the tail of the template — "...XXXXXX.exp" keeps
+# the literal suffix and returns the same path on every invocation, so
+# consecutive runs collide on mkstemp("File exists"). Use -t and add the
+# .exp suffix afterwards.
+EXP_FILE="$(mktemp -t flywheel-expect-test)"
+mv "$EXP_FILE" "${EXP_FILE}.exp"
+EXP_FILE="${EXP_FILE}.exp"
 trap 'rm -f "$EXP_FILE"' EXIT
 
 awk '
