@@ -563,7 +563,7 @@ fi
 
 # Ensure startup log directory exists and export env consumed by the .exp script.
 mkdir -p "${HOME}/.flywheel/logs" 2>/dev/null || true
-export FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC="${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC:-30}"
+export FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC="${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC:-90}"
 export FLYWHEEL_EXPECT_LOG="${FLYWHEEL_EXPECT_LOG:-${HOME}/.flywheel/logs/lead-${LEAD_ID}-startup.log}"
 
 # Ensure the shared flywheel tmux session exists (race-safe, idempotent).
@@ -790,6 +790,25 @@ jq -n \
   '{mcpServers: ($terminal + $inbox + $gbrain)}' \
   > "$MCP_CONFIG_FILE"
 log "MCP config: ${MCP_CONFIG_FILE}"
+
+# FLY-109 (b): Pre-seed enableAllProjectMcpServers so project .mcp.json servers
+# are auto-approved on resume (no interactive dialog dependency). Written to
+# ~/.claude.json under projects[LEAD_WORKSPACE]. Each Lead has its own workspace
+# path so concurrent Leads don't conflict.
+CLAUDE_JSON="${HOME}/.claude.json"
+if [ -f "$CLAUDE_JSON" ] && command -v jq >/dev/null 2>&1; then
+  _abs_workspace="$(cd "$LEAD_WORKSPACE" && pwd)"
+  _tmp_claude_json="$(mktemp "${CLAUDE_JSON}.tmp.XXXXXX")"
+  if jq --arg proj "$_abs_workspace" \
+     '.projects[$proj].enableAllProjectMcpServers = true' \
+     "$CLAUDE_JSON" > "$_tmp_claude_json" 2>/dev/null; then
+    mv "$_tmp_claude_json" "$CLAUDE_JSON"
+    log "MCP approval: enableAllProjectMcpServers=true for ${_abs_workspace}"
+  else
+    rm -f "$_tmp_claude_json" 2>/dev/null || true
+    log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
+  fi
+fi
 
 # Build claude args using bash array (avoids quoting/word-splitting issues)
 CLAUDE_ARGS=(

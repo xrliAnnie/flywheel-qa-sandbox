@@ -3,7 +3,7 @@
 #
 # Stage 1: Wait for a dev-channels dialog marker (one of the phrases Claude
 #          prints when the DevChannelsDialog is mounted). Short timeout
-#          controlled by FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC (default 30s).
+#          controlled by FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC (default 90s).
 # Stage 2: Once the marker is seen, send "1\r" once, then `expect eof` until
 #          the child process exits on its own.
 #
@@ -19,14 +19,14 @@
 #   expect expect-dev-channels.exp <child-cmd> [child-args...]
 #
 # Env:
-#   FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC — stage 1 timeout in seconds (default 30)
+#   FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC — stage 1 timeout in seconds (default 90)
 #   FLYWHEEL_EXPECT_LOG               — path to append state log (optional)
 
 log_user 1
 
 # ── Env ──
 
-set dialog_timeout 30
+set dialog_timeout 90
 if {[info exists env(FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC)]} {
     set dialog_timeout $env(FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC)
 }
