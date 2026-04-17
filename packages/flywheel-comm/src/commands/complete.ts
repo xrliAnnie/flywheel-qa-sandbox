@@ -254,21 +254,31 @@ function writeMarker(args: {
 }): void {
 	const home = process.env.HOME ?? homedir();
 	const dir = join(home, ".flywheel", "state", "complete-failed");
-	mkdirSync(dir, { recursive: true });
 	const markerPath = join(dir, `${args.execId}.json`);
-	writeFileSync(
-		markerPath,
-		JSON.stringify(
-			{
-				execution_id: args.execId,
-				attempts: args.attempts,
-				error: args.lastError,
-				timestamp: new Date().toISOString(),
-				...(typeof args.body === "object" ? args.body : {}),
-			},
-			null,
-			2,
-		),
-		"utf8",
-	);
+	try {
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(
+			markerPath,
+			JSON.stringify(
+				{
+					execution_id: args.execId,
+					attempts: args.attempts,
+					error: args.lastError,
+					timestamp: new Date().toISOString(),
+					...(typeof args.body === "object" ? args.body : {}),
+				},
+				null,
+				2,
+			),
+			"utf8",
+		);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		console.error(
+			`[complete] CRITICAL: marker write failed at ${markerPath}: ${msg}`,
+		);
+		console.error(
+			`[complete] session_completed emit failed AND marker could not be persisted — stale patrol has no record of this failure. Check disk/permissions at ${dir}.`,
+		);
+	}
 }

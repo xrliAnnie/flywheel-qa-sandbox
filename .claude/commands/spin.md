@@ -362,17 +362,22 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
    # done. 4 retries with exponential backoff; on all-fail, writes a marker
    # file to `$HOME/.flywheel/state/complete-failed/${FLYWHEEL_EXEC_ID}.json`
    # and exits 1 (fail-close — stale patrol reconciles later).
-   if [ -n "$FLYWHEEL_COMM_CLI" ] && [ -n "$FLYWHEEL_EXEC_ID" ]; then
-     if ! node "$FLYWHEEL_COMM_CLI" complete \
-         --route auto_approve \
-         --pr "{PR_NUMBER}" \
-         --merged \
-         --session-role main ; then
-       echo "[complete] ERROR: session_completed emit failed after 4 retries."
-       echo "[complete] Marker written to \$HOME/.flywheel/state/complete-failed/."
-       echo "[complete] DO NOT manually mark session completed — let stale patrol reconcile."
-       exit 1
-     fi
+   if [ -z "$FLYWHEEL_COMM_CLI" ] || [ -z "$FLYWHEEL_EXEC_ID" ]; then
+     echo "[complete] FATAL: FLYWHEEL_COMM_CLI or FLYWHEEL_EXEC_ID not set."
+     echo "[complete] Runner was not launched with flywheel-comm injected — cannot"
+     echo "[complete] emit session_completed. Session will be stuck at 'running' until"
+     echo "[complete] stale patrol reconciles. Check TmuxAdapter CLI injection."
+     exit 1
+   fi
+   if ! node "$FLYWHEEL_COMM_CLI" complete \
+       --route auto_approve \
+       --pr "{PR_NUMBER}" \
+       --merged \
+       --session-role main ; then
+     echo "[complete] ERROR: session_completed emit failed after 4 retries."
+     echo "[complete] Marker written to \$HOME/.flywheel/state/complete-failed/."
+     echo "[complete] DO NOT manually mark session completed — let stale patrol reconcile."
+     exit 1
    fi
    ```
 
@@ -380,11 +385,17 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
 creates the PR and BEFORE Annie approves, Runner emits:
 
 ```bash
-if [ -n "$FLYWHEEL_COMM_CLI" ] && [ -n "$FLYWHEEL_EXEC_ID" ]; then
-  node "$FLYWHEEL_COMM_CLI" complete \
+if [ -z "$FLYWHEEL_COMM_CLI" ] || [ -z "$FLYWHEEL_EXEC_ID" ]; then
+  echo "[complete] FATAL: FLYWHEEL_COMM_CLI or FLYWHEEL_EXEC_ID not set."
+  echo "[complete] Cannot emit needs_review session_completed — check TmuxAdapter CLI injection."
+  exit 1
+fi
+if ! node "$FLYWHEEL_COMM_CLI" complete \
     --route needs_review \
     --pr "{PR_NUMBER}" \
-    --session-role main
+    --session-role main ; then
+  echo "[complete] ERROR: needs_review session_completed emit failed after 4 retries."
+  exit 1
 fi
 ```
 
