@@ -690,6 +690,8 @@ cleanup() {
 
   # FLY-20: Remove PID file on graceful exit
   rm -f "${PID_FILE:-}" 2>/dev/null || true
+  # FLY-109: Release MCP pre-seed lock if we hold it
+  rmdir "${HOME}/.claude.json.flywheel-lock" 2>/dev/null || true
   # Exit from trap to prevent main flow from continuing after signal
   exit 0
 }
@@ -798,13 +800,9 @@ log "MCP config: ${MCP_CONFIG_FILE}"
 # (restart-services.sh launches Leads in parallel).
 CLAUDE_JSON="${HOME}/.claude.json"
 if command -v jq >/dev/null 2>&1; then
-  # Create minimal ~/.claude.json if missing (fresh machine / state reset)
-  if [ ! -f "$CLAUDE_JSON" ]; then
-    echo '{"projects":{}}' > "$CLAUDE_JSON"
-    log "MCP approval: created ${CLAUDE_JSON}"
-  fi
-
-  # mkdir is atomic on POSIX — serves as a spinlock for concurrent writers
+  # mkdir is atomic on POSIX — serves as a spinlock for concurrent writers.
+  # Stale lock detection: if lock dir is >30s old, a previous process was
+  # killed mid-write. Remove it and retry.
   _lock_dir="${CLAUDE_JSON}.flywheel-lock"
   _lock_acquired=false
   for _i in $(seq 1 50); do
@@ -812,10 +810,22 @@ if command -v jq >/dev/null 2>&1; then
       _lock_acquired=true
       break
     fi
+    # Stale lock check: find returns 0 if the dir exists and is >30s old
+    if find "$_lock_dir" -maxdepth 0 -mmin +0.5 -print 2>/dev/null | grep -q .; then
+      rmdir "$_lock_dir" 2>/dev/null || true
+      log "MCP approval: removed stale lock dir"
+    fi
     sleep 0.2
   done
 
   if [ "$_lock_acquired" = "true" ]; then
+    # Create minimal ~/.claude.json if missing (fresh machine / state reset).
+    # Inside the lock to prevent concurrent creates from racing.
+    if [ ! -f "$CLAUDE_JSON" ]; then
+      echo '{"projects":{}}' > "$CLAUDE_JSON"
+      log "MCP approval: created ${CLAUDE_JSON}"
+    fi
+
     _abs_workspace="$(cd "$LEAD_WORKSPACE" && pwd)"
     _tmp_claude_json="$(mktemp "${CLAUDE_JSON}.tmp.XXXXXX")"
     if jq --arg proj "$_abs_workspace" \
