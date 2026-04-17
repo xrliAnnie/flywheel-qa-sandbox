@@ -1368,6 +1368,44 @@ export class StateStore {
 		return (result[0]?.values[0]?.[0] as number) ?? 0;
 	}
 
+	/**
+	 * FLY-83: attempt to claim a (leadId, eventId) slot.
+	 * Returns true if this caller wrote the row, false if it already existed.
+	 *
+	 * Uses a SELECT COUNT(*) pre-check + appendLeadEvent. Not atomic in the
+	 * SQL sense, but sql.js is single-threaded inside the Bridge process, so
+	 * no two JS callers interleave. Cross-process races (shell alert script
+	 * vs Bridge) live in a separate `claims.db` (see scripts/lead-alert.sh),
+	 * not in lead_events.
+	 *
+	 * `appendLeadEvent` alone cannot answer this question: on UNIQUE conflict
+	 * it returns the existing seq (still non-zero), so a "got a seq back"
+	 * return is indistinguishable from a fresh insert.
+	 */
+	tryClaimLeadEvent(
+		leadId: string,
+		eventId: string,
+		eventType: string,
+		payload: string,
+		sessionKey?: string,
+	): boolean {
+		const existing = this.dbQuery(
+			"SELECT COUNT(*) FROM lead_events WHERE lead_id = ? AND event_id = ?",
+			[leadId, eventId],
+		);
+		const count = (existing[0]?.values[0]?.[0] as number) ?? 0;
+		if (count > 0) return false;
+		this.appendLeadEvent(leadId, eventId, eventType, payload, sessionKey);
+		return true;
+	}
+
+	private dbQuery(
+		sql: string,
+		params: (string | number | null)[],
+	): { values: unknown[][] }[] {
+		return this.db.exec(sql, params) as { values: unknown[][] }[];
+	}
+
 	/** Mark a lead event as delivered. */
 	markLeadEventDelivered(seq: number): void {
 		this.db.run(

@@ -17,6 +17,9 @@ import {
 	type ProjectEntry,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
+import { LeadAlertNotifier } from "../LeadAlertNotifier.js";
+import { LeadWatchdog } from "../LeadWatchdog.js";
+import { locateLeadWindow } from "../LeadWindowLocator.js";
 import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
@@ -40,6 +43,11 @@ import { setupRunInfrastructure } from "./run-infra.js";
 import { createStatusQuery } from "./runner-status.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
+import {
+	createBlockedMarkerReader,
+	createClaimsReader,
+	defaultLeadPaneCapture,
+} from "./lead-alert-helpers.js";
 import { captureSession as defaultCaptureSession } from "./session-capture.js";
 import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
@@ -1689,11 +1697,40 @@ export async function startBridge(
 	idleWatchdog.start();
 	console.log("[Bridge] RunnerIdleWatchdog started (30s poll)");
 
+	// FLY-83: Lead liveness watchdog — external pane-hash observation for
+	// Claude Code TUI. Pairs with scripts/lead-alert.sh (shell-owned alert
+	// path) via cross-process claims.db dedup.
+	const claimsReader = createClaimsReader();
+	const blockedMarkerReader = createBlockedMarkerReader();
+	const leadPaneCaptureFn = defaultLeadPaneCapture();
+	const leadAlertNotifier = new LeadAlertNotifier({
+		store,
+		projects,
+		claimsReader,
+	});
+	const leadWatchdog = new LeadWatchdog({
+		pollIntervalMs: 30_000,
+		paneHashStuckCycles: 2,
+		paneHashAlertCycles: 3,
+		cooldownMs: 30 * 60_000,
+		projects,
+		store,
+		notifier: (payload) => leadAlertNotifier.alert(payload),
+		locateWindowFn: (projectName, leadId) =>
+			locateLeadWindow(projectName, leadId),
+		captureFn: leadPaneCaptureFn,
+		claimsReader,
+		blockedMarkerReader,
+	});
+	leadWatchdog.start();
+	console.log("[Bridge] LeadWatchdog started (30s poll, 3-cycle alert)");
+
 	const close = async () => {
 		heartbeatService?.stop();
 		cleanupService?.stop();
 		gatePoller.stop();
 		idleWatchdog.stop();
+		leadWatchdog.stop();
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
 		// are the same instance, only tear down once. If they differ (caller
 		// injected retryDispatcher but not startDispatcher), tear down both.
