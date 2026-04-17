@@ -1,0 +1,116 @@
+#!/usr/bin/expect -f
+# FLY-109 — two-stage dev-channels dialog auto-confirm.
+#
+# Stage 1: Wait for a dev-channels dialog marker (one of the phrases Claude
+#          prints when the DevChannelsDialog is mounted). Short timeout
+#          controlled by FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC (default 30s).
+# Stage 2: Once the marker is seen, send "1\r" once, then `expect eof` until
+#          the child process exits on its own.
+#
+# If stage 1 times out without seeing the dialog marker, we log
+# DEV_CHANNELS_DIALOG_NOT_SEEN and DO NOT blindly send "1\r" (Codex Round 1
+# flagged that `1` is a legal input in regular prompts — sending it without
+# confirmation context can inject into the user's workflow).
+#
+# All state transitions are written to $FLYWHEEL_EXPECT_LOG if set, so the
+# calling shell (claude-lead.sh) can diagnose startup problems after the fact.
+#
+# Usage:
+#   expect expect-dev-channels.exp <child-cmd> [child-args...]
+#
+# Env:
+#   FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC — stage 1 timeout in seconds (default 30)
+#   FLYWHEEL_EXPECT_LOG               — path to append state log (optional)
+
+log_user 1
+
+# ── Env ──
+
+set dialog_timeout 30
+if {[info exists env(FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC)]} {
+    set dialog_timeout $env(FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC)
+}
+
+set log_path ""
+if {[info exists env(FLYWHEEL_EXPECT_LOG)]} {
+    set log_path $env(FLYWHEEL_EXPECT_LOG)
+}
+
+proc log_state {msg} {
+    global log_path
+    if {$log_path ne ""} {
+        if {[catch {
+            set fh [open $log_path a]
+            puts $fh "[clock format [clock seconds] -format {%Y-%m-%dT%H:%M:%S}] $msg"
+            close $fh
+        } err]} {
+            # Logging should never fail the run
+        }
+    }
+}
+
+# ── Spawn child ──
+
+if {[llength $argv] < 1} {
+    puts stderr "usage: expect expect-dev-channels.exp <child-cmd> \[args...\]"
+    exit 2
+}
+
+log_state "spawn argv=$argv dialog_timeout=${dialog_timeout}s"
+eval spawn -noecho [lrange $argv 0 end]
+
+# ── Stage 1: wait for dialog marker ──
+
+set confirmed 0
+set timeout $dialog_timeout
+expect {
+    # Claude's Ink TUI injects ANSI color codes between words, so we match
+    # short, mostly-contiguous substrings that appear in DevChannelsDialog
+    # (see claude-code/src/components/DevChannelsDialog.tsx). Any single
+    # marker is enough — we only send "1\r" once.
+    -re {Loading development channels} {
+        log_state "stage1: matched 'Loading development channels'"
+        send "1\r"
+        set confirmed 1
+    }
+    -re {I am using this for local development} {
+        log_state "stage1: matched 'I am using this for local development'"
+        send "1\r"
+        set confirmed 1
+    }
+    -re {WARNING: Loading development channels} {
+        log_state "stage1: matched 'WARNING: Loading development channels'"
+        send "1\r"
+        set confirmed 1
+    }
+    -re {confirm} {
+        # Legacy match — "Enter to confirm" footer of the dialog. Kept as a
+        # defensive net in case upstream rewords the main body.
+        log_state "stage1: matched 'confirm'"
+        send "1\r"
+        set confirmed 1
+    }
+    timeout {
+        log_state "DEV_CHANNELS_DIALOG_NOT_SEEN after ${dialog_timeout}s"
+    }
+    eof {
+        log_state "child exited before dialog appeared"
+    }
+}
+
+log_state "stage1 done confirmed=$confirmed"
+
+# ── Stage 2: wait for child exit ──
+
+# We deliberately do NOT match on any post-dialog UI string (Codex Round 2
+# noted "Type your message" has no source-level evidence in claude-code).
+# `expect eof` fires when the child process exits, which is the only
+# authoritative signal.
+set timeout -1
+expect eof
+
+log_state "stage2: eof, exiting"
+
+# Propagate child's exit code
+lassign [wait] pid spawnid os_error_flag value
+exit $value

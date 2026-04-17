@@ -397,4 +397,185 @@ describe("CommDB", () => {
 			dbWrite.close();
 		});
 	});
+
+	// ── FLY-109: push-path helpers (delivered_at + ack semantics) ──
+
+	describe("FLY-109 push-path helpers", () => {
+		it("should add delivered_at column via migration", () => {
+			const dbPath = join(tmpDir, "delivered-migrate.db");
+			const db1 = new CommDB(dbPath);
+			db1.close();
+
+			const db2 = new CommDB(dbPath);
+			const columns = (db2 as any).db
+				.prepare("PRAGMA table_info(messages)")
+				.all() as Array<{ name: string }>;
+			expect(
+				columns.some((c: { name: string }) => c.name === "delivered_at"),
+			).toBe(true);
+			db2.close();
+		});
+
+		it("should be idempotent when migration runs multiple times", () => {
+			const dbPath = join(tmpDir, "delivered-idempotent.db");
+			const db1 = new CommDB(dbPath);
+			db1.close();
+			const db2 = new CommDB(dbPath);
+			db2.close();
+			// Third open should not throw
+			expect(() => {
+				const db3 = new CommDB(dbPath);
+				db3.close();
+			}).not.toThrow();
+		});
+
+		it("getPendingPushInstructions returns undelivered instructions", () => {
+			const id1 = db.insertInstruction("bridge", "lead-1", "msg 1");
+			db.insertInstruction("bridge", "lead-1", "msg 2");
+
+			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(pending).toHaveLength(2);
+			expect(pending[0]!.id).toBe(id1);
+			expect(pending[0]!.delivered_at).toBeNull();
+		});
+
+		it("getPendingPushInstructions hides delivered messages within retry window", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			db.markInstructionDelivered(id);
+
+			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(pending).toHaveLength(0);
+		});
+
+		it("getPendingPushInstructions re-surfaces messages after retry window", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "stale");
+			db.markInstructionDelivered(id);
+			// Backdate delivered_at 60s ago
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET delivered_at = datetime('now', '-60 seconds') WHERE id = ?",
+				)
+				.run(id);
+
+			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(pending).toHaveLength(1);
+			expect(pending[0]!.id).toBe(id);
+			expect(pending[0]!.delivered_at).not.toBeNull();
+		});
+
+		it("getPendingPushInstructions hides acked messages regardless of retry window", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "acked");
+			db.markInstructionDelivered(id);
+			db.ackInstructionRead(id);
+			// Backdate delivered_at far past retry window
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET delivered_at = datetime('now', '-600 seconds') WHERE id = ?",
+				)
+				.run(id);
+
+			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(pending).toHaveLength(0);
+		});
+
+		it("markInstructionDelivered sets delivered_at to now", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			db.markInstructionDelivered(id);
+
+			const row = (db as any).db
+				.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+				.get(id) as { delivered_at: string | null };
+			expect(row.delivered_at).not.toBeNull();
+		});
+
+		it("markInstructionDelivered is idempotent — refreshes delivered_at on repeat", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			db.markInstructionDelivered(id);
+			// Backdate delivered_at
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET delivered_at = datetime('now', '-60 seconds') WHERE id = ?",
+				)
+				.run(id);
+			const before = (db as any).db
+				.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+				.get(id) as { delivered_at: string };
+
+			// Re-deliver
+			db.markInstructionDelivered(id);
+			const after = (db as any).db
+				.prepare("SELECT delivered_at FROM messages WHERE id = ?")
+				.get(id) as { delivered_at: string };
+			expect(after.delivered_at > before.delivered_at).toBe(true);
+		});
+
+		it("ackInstructionRead sets read_at", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			db.markInstructionDelivered(id);
+			db.ackInstructionRead(id);
+
+			const row = (db as any).db
+				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.get(id) as { read_at: string | null };
+			expect(row.read_at).not.toBeNull();
+		});
+
+		it("ackInstructionRead is idempotent — preserves original read_at on repeat", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "msg");
+			db.markInstructionDelivered(id);
+			db.ackInstructionRead(id);
+
+			const first = (db as any).db
+				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.get(id) as { read_at: string };
+
+			db.ackInstructionRead(id);
+
+			const second = (db as any).db
+				.prepare("SELECT read_at FROM messages WHERE id = ?")
+				.get(id) as { read_at: string };
+			expect(second.read_at).toBe(first.read_at);
+		});
+
+		it("ackInstructionRead is a no-op for unknown id (no throw)", () => {
+			expect(() => db.ackInstructionRead("nonexistent-id")).not.toThrow();
+		});
+
+		it("does NOT change getUnreadInstructions semantics — CLI pull path unaffected by delivered_at", () => {
+			// Instruction marked delivered but NOT acked — CLI pull should still see it
+			const id = db.insertInstruction("bridge", "lead-1", "delivered not acked");
+			db.markInstructionDelivered(id);
+
+			const unread = db.getUnreadInstructions("lead-1");
+			expect(unread).toHaveLength(1);
+			expect(unread[0]!.id).toBe(id);
+		});
+
+		it("markInstructionRead (CLI pull path) still hides from getUnreadInstructions", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "cli path");
+			db.markInstructionRead(id);
+
+			expect(db.getUnreadInstructions("lead-1")).toHaveLength(0);
+		});
+
+		it("getPendingPushInstructions filters out expired instructions", () => {
+			const id = db.insertInstruction("bridge", "lead-1", "expired");
+			(db as any).db
+				.prepare(
+					"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+				)
+				.run(id);
+
+			expect(db.getPendingPushInstructions("lead-1", 30)).toHaveLength(0);
+		});
+
+		it("getPendingPushInstructions returns FIFO by created_at", () => {
+			const id1 = db.insertInstruction("bridge", "lead-1", "first");
+			const id2 = db.insertInstruction("bridge", "lead-1", "second");
+
+			const pending = db.getPendingPushInstructions("lead-1", 30);
+			expect(pending[0]!.id).toBe(id1);
+			expect(pending[1]!.id).toBe(id2);
+		});
+	});
 });

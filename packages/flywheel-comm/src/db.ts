@@ -95,6 +95,9 @@ export class CommDB {
 		if (!columns.some((c) => c.name === "resolved_at")) {
 			this.db.exec("ALTER TABLE messages ADD COLUMN resolved_at DATETIME");
 		}
+		if (!columns.some((c) => c.name === "delivered_at")) {
+			this.db.exec("ALTER TABLE messages ADD COLUMN delivered_at DATETIME");
+		}
 		this.db.exec(
 			"CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(checkpoint) WHERE checkpoint IS NOT NULL",
 		);
@@ -295,6 +298,57 @@ export class CommDB {
 	markInstructionRead(id: string): void {
 		this.db
 			.prepare("UPDATE messages SET read_at = datetime('now') WHERE id = ?")
+			.run(id);
+	}
+
+	// ── FLY-109: push-path helpers (at-least-once via delivered_at + explicit ack) ──
+	//
+	// These are push-only helpers used by inbox-mcp's poll → channel notification loop.
+	// The CLI pull path (packages/flywheel-comm/src/commands/inbox.ts) continues to use
+	// getUnreadInstructions()/markInstructionRead() — its semantics are NOT changed.
+	//
+	// State machine:
+	//   inserted         → delivered_at=NULL, read_at=NULL  → returned by getPendingPushInstructions
+	//   markDelivered()  → delivered_at=now,  read_at=NULL  → hidden within retry window
+	//   (retry window expires) → re-surfaces in getPendingPushInstructions
+	//   ackRead()        → read_at=now (idempotent)         → hidden permanently
+	//
+	// retry_window_sec is provided by the caller (inbox-mcp via FLYWHEEL_INBOX_RETRY_WINDOW_SEC).
+
+	getPendingPushInstructions(
+		agentId: string,
+		retryWindowSec: number,
+	): Message[] {
+		return this.db
+			.prepare(
+				`SELECT * FROM messages
+         WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
+         AND (delivered_at IS NULL
+              OR delivered_at < datetime('now', '-' || ? || ' seconds'))
+         AND expires_at > datetime('now')
+         ORDER BY created_at ASC`,
+			)
+			.all(agentId, retryWindowSec) as Message[];
+	}
+
+	markInstructionDelivered(id: string): void {
+		this.db
+			.prepare(
+				"UPDATE messages SET delivered_at = datetime('now') WHERE id = ?",
+			)
+			.run(id);
+	}
+
+	/**
+	 * Idempotent ack — only sets read_at if not already set.
+	 * Called by inbox-mcp's flywheel_inbox_ack tool when the Lead model explicitly
+	 * confirms it has processed a message. No-op for unknown ids.
+	 */
+	ackInstructionRead(id: string): void {
+		this.db
+			.prepare(
+				"UPDATE messages SET read_at = datetime('now') WHERE id = ? AND read_at IS NULL",
+			)
 			.run(id);
 	}
 

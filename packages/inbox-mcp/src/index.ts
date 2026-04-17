@@ -7,14 +7,22 @@
  * readiness to Bridge's runtime selector.
  *
  * FLY-47: replaces Discord control channel for Bridge→Lead communication.
+ * FLY-109: at-least-once semantics via delivered_at + explicit model-triggered
+ * flywheel_inbox_ack tool. Lease is written AFTER server.connect() so Bridge
+ * never sees a "ready" signal while the MCP transport is still half-wired.
  */
 import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import type Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
+import { z } from "zod";
+import {
+	type DeliveryMessage,
+	handleAck,
+	processPendingDeliveries,
+} from "./delivery.js";
 
 // ── Required env vars (injected by claude-lead.sh) ──
 
@@ -31,6 +39,19 @@ if (!leadId) {
 	process.exit(1);
 }
 
+// Retry window: how long after a delivery before we re-push an unacked message.
+// Default 30s balances "don't spam on ack latency" vs "don't wait too long on drop".
+const RETRY_WINDOW_SEC = Number.parseInt(
+	process.env.FLYWHEEL_INBOX_RETRY_WINDOW_SEC ?? "30",
+	10,
+);
+if (!Number.isFinite(RETRY_WINDOW_SEC) || RETRY_WINDOW_SEC <= 0) {
+	process.stderr.write(
+		`FLYWHEEL_INBOX_RETRY_WINDOW_SEC must be a positive integer (got: ${process.env.FLYWHEEL_INBOX_RETRY_WINDOW_SEC})\n`,
+	);
+	process.exit(1);
+}
+
 // ── Lease file path ──
 
 const leaseDir = projectName
@@ -38,34 +59,13 @@ const leaseDir = projectName
 	: dirname(commDbPath);
 const leasePath = join(leaseDir, `.inbox-ready-${leadId}`);
 
-// ── DB queries (prepared once) ──
-
-interface MessageRow {
-	id: string;
-	from_agent: string;
-	content: string;
-	created_at: string;
-}
+// ── DB ──
 
 let commDb: CommDB;
-let stmtUnread: Database.Statement;
-let stmtMarkRead: Database.Statement;
 
 function openDb(): void {
 	// CommDB constructor creates the DB + schema if missing, sets WAL + busy_timeout
 	commDb = new CommDB(commDbPath!);
-
-	// Prepared statements on the underlying DB handle
-	const rawDb = (commDb as unknown as { db: Database.Database }).db;
-	stmtUnread = rawDb.prepare(
-		`SELECT id, from_agent, content, created_at FROM messages
-     WHERE to_agent = ? AND type = 'instruction' AND read_at IS NULL
-     AND expires_at > datetime('now')
-     ORDER BY created_at ASC`,
-	);
-	stmtMarkRead = rawDb.prepare(
-		"UPDATE messages SET read_at = datetime('now') WHERE id = ?",
-	);
 }
 
 // ── Lease management ──
@@ -91,7 +91,7 @@ function deleteLease(): void {
 const server = new McpServer(
 	{
 		name: "flywheel-inbox",
-		version: "0.1.0",
+		version: "0.2.0",
 	},
 	{
 		capabilities: {
@@ -102,43 +102,61 @@ const server = new McpServer(
 	},
 );
 
+// Tool: flywheel_inbox_ack — called by the Lead model after it has processed
+// an inbox message. This is the at-least-once ack; without it the message will
+// be redelivered after RETRY_WINDOW_SEC.
+server.tool(
+	"flywheel_inbox_ack",
+	"Acknowledge a processed inbox message by its message_id. Call this exactly once per channel message you receive (the message_id is in the notification's meta field). Idempotent — repeat calls are safe.",
+	{
+		message_id: z
+			.string()
+			.describe("The message_id from the channel notification's meta field"),
+	},
+	async ({ message_id }) => {
+		const result = handleAck(commDb, message_id);
+		if (result.ok) {
+			return {
+				content: [
+					{ type: "text" as const, text: `acked: ${message_id}` },
+				],
+			};
+		}
+		return {
+			content: [{ type: "text" as const, text: `Error: ${result.error}` }],
+			isError: true,
+		};
+	},
+);
+
 // ── Poll loop ──
 
 const POLL_INTERVAL_MS = 1000;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 async function pollOnce(): Promise<void> {
-	let messages: MessageRow[];
 	try {
-		messages = stmtUnread.all(leadId) as MessageRow[];
+		await processPendingDeliveries(
+			commDb,
+			leadId!,
+			RETRY_WINDOW_SEC,
+			async (msg: DeliveryMessage) => {
+				await server.server.notification({
+					method: "notifications/claude/channel",
+					params: {
+						content: msg.content,
+						meta: {
+							from: msg.from_agent,
+							message_id: msg.id,
+						},
+					},
+				});
+			},
+		);
 	} catch (err) {
 		process.stderr.write(
-			`[inbox-mcp] DB read error: ${(err as Error).message}\n`,
+			`[inbox-mcp] Poll error: ${(err as Error).message}\n`,
 		);
-		return;
-	}
-
-	for (const msg of messages) {
-		try {
-			await server.server.notification({
-				method: "notifications/claude/channel",
-				params: {
-					content: msg.content,
-					meta: {
-						from: msg.from_agent,
-						message_id: msg.id,
-					},
-				},
-			});
-			// Only mark read after successful notification send
-			stmtMarkRead.run(msg.id);
-		} catch (err) {
-			// Channel notification failed — message stays unread, retry next cycle
-			process.stderr.write(
-				`[inbox-mcp] Notification failed for ${msg.id}: ${(err as Error).message}\n`,
-			);
-			break; // Stop processing this batch to preserve ordering
-		}
 	}
 }
 
@@ -158,10 +176,8 @@ async function main(): Promise<void> {
 		process.exit(1);
 	}
 
-	// Write PID lease — signals readiness to Bridge
-	writeLease();
-
-	// Connect MCP transport
+	// Connect MCP transport FIRST — only after this returns is the server wired
+	// up to handle notifications and tool calls. FLY-109: lease goes AFTER this.
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
 
@@ -173,6 +189,12 @@ async function main(): Promise<void> {
 			);
 		});
 	}, POLL_INTERVAL_MS);
+
+	// Write PID lease LAST — by this point transport is connected and poll loop
+	// is running, so Bridge seeing the lease means we can actually deliver.
+	// The remaining race (client-side handler not yet registered) is absorbed
+	// by the ack/retry machinery in RETRY_WINDOW_SEC.
+	writeLease();
 
 	// Shutdown handler
 	const shutdown = () => {
@@ -193,7 +215,7 @@ async function main(): Promise<void> {
 	process.on("SIGINT", shutdown);
 
 	process.stderr.write(
-		`[inbox-mcp] Ready — polling for ${leadId} from ${commDbPath}\n`,
+		`[inbox-mcp] Ready — polling for ${leadId} from ${commDbPath} (retry window ${RETRY_WINDOW_SEC}s)\n`,
 	);
 }
 

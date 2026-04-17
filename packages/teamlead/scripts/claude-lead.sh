@@ -545,48 +545,26 @@ SHOULD_EXIT=0
 # tmux provides the window; expect provides PTY + prompt detection inside the window.
 LEAD_WINDOW_ID=""
 
-# FLY-80: expect script for auto-confirming dev channels dialog.
+# FLY-80 / FLY-109: expect script for auto-confirming dev channels dialog.
 # Claude Code shows a TUI confirmation for --dangerously-load-development-channels.
 # In daemon mode (launchd), no human can press Enter. expect watches for the prompt
 # text and sends Enter automatically, then waits for Claude to exit.
-_EXPECT_SCRIPT="${TMPDIR:-/tmp}/flywheel-ac-${LEAD_ID}.expect"
-cat > "$_EXPECT_SCRIPT" <<'EXPECT_EOF'
-#!/usr/bin/expect -f
-# Auto-confirm dev channels prompt, then wait for Claude to exit.
-# expect allocates a PTY so Claude gets a TTY for Ink.
-# Usage: expect <this-script> claude <args...>
-log_user 1
-# FLY-102 hot-deploy fix: 60s was too short — Claude boot can exceed 60s with
-# config loading; after timeout, expect fell through and the prompt was never
-# dismissed. Bump to 600s and keep watching indefinitely for prompt/success.
-set timeout 600
-eval spawn -noecho [lrange $argv 0 end]
-set confirmed 0
-expect {
-  # Claude's Ink TUI injects ANSI color codes between EVERY word, so neither
-  # "Enter to confirm" nor "local development" match as contiguous bytes
-  # (actual output: "local\x1b[39m \x1b[38;5;153mdevelopment"). Match on the
-  # single contiguous word "confirm" — only appears in the dev-channels
-  # prompt's "Enter to confirm · Esc to cancel" footer.
-  -re {confirm} {
-    send "1\r"
-    set confirmed 1
-    exp_continue
-  }
-  -re {bypass permissions} { }
-  -re {Type your message} { }
-  timeout {
-    if {!$confirmed} { send "1\r" }
-  }
-}
-# Wait for Claude to run until it exits on its own
-set timeout -1
-expect eof
-# Propagate Claude's exit code
-lassign [wait] pid spawnid os_error_flag value
-exit $value
-EXPECT_EOF
-chmod +x "$_EXPECT_SCRIPT"
+#
+# FLY-109 rework: the script is now a standalone file under scripts/, versioned with
+# the rest of the repo and unit-tested. The two-stage state machine only sends "1\r"
+# after seeing a DevChannelsDialog marker — blind-sending on timeout (the old
+# behavior) could inject "1" into regular Claude prompts, so we explicitly DO NOT
+# do that. All state transitions are appended to $FLYWHEEL_EXPECT_LOG for post-hoc
+# diagnosis of startup problems.
+_EXPECT_SCRIPT="${SCRIPT_DIR}/expect-dev-channels.exp"
+if [ ! -x "$_EXPECT_SCRIPT" ]; then
+  chmod +x "$_EXPECT_SCRIPT" 2>/dev/null || true
+fi
+
+# Ensure startup log directory exists and export env consumed by the .exp script.
+mkdir -p "${HOME}/.flywheel/logs" 2>/dev/null || true
+export FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC="${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC:-30}"
+export FLYWHEEL_EXPECT_LOG="${FLYWHEEL_EXPECT_LOG:-${HOME}/.flywheel/logs/lead-${LEAD_ID}-startup.log}"
 
 # Ensure the shared flywheel tmux session exists (race-safe, idempotent).
 # Called before every launch — handles session being killed externally.
@@ -618,6 +596,8 @@ _launch_claude() {
     -e "TEAMLEAD_API_TOKEN=${TEAMLEAD_API_TOKEN:-}"
     -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
     -e "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
+    -e "FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC=${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC}"
+    -e "FLYWHEEL_EXPECT_LOG=${FLYWHEEL_EXPECT_LOG}"
     -e "HOME=${HOME}"
     -e "PATH=${PATH}"
   )
@@ -681,8 +661,7 @@ cleanup() {
   SHOULD_EXIT=1
   log "Shutdown signal received..."
 
-  # FLY-80: Clean up expect script
-  rm -f "${_EXPECT_SCRIPT:-}" 2>/dev/null || true
+  # FLY-109: expect-dev-channels.exp lives under scripts/ now — nothing to clean up.
 
   # Graceful shutdown: send C-c to Claude in tmux
   if [ -n "${LEAD_WINDOW_ID:-}" ]; then
@@ -826,6 +805,18 @@ CLAUDE_ARGS+=(--channels "plugin:discord@claude-plugins-official")
 if [ "$INBOX_MCP_ENABLED" = "true" ]; then
   CLAUDE_ARGS+=(--dangerously-load-development-channels "server:flywheel-inbox")
   log "Channels: Discord plugin + inbox server (dev channel)"
+
+  # FLY-109: Tell the Lead model how + when to call flywheel_inbox_ack. The file
+  # ships in scripts/ so it's always present when this launcher runs; no external
+  # sync required. Only loaded when inbox-mcp is enabled — the tool doesn't exist
+  # otherwise.
+  INBOX_ACK_RULE="${SCRIPT_DIR}/inbox-ack-rule.md"
+  if [ -f "$INBOX_ACK_RULE" ] && [ -r "$INBOX_ACK_RULE" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$INBOX_ACK_RULE")
+    log "Appending inbox ack rule: ${INBOX_ACK_RULE}"
+  else
+    log "WARNING: inbox ack rule missing at ${INBOX_ACK_RULE} — Lead may not ack channel messages"
+  fi
 else
   log "Channels: Discord plugin only"
 fi
