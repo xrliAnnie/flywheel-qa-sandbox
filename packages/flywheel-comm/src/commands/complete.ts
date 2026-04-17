@@ -145,9 +145,17 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	}
 
 	// All retries exhausted — fail-close + marker file.
-	writeMarker({ execId, body, attempts: ATTEMPT_COUNT, lastError });
+	const markerWritten = writeMarker({
+		execId,
+		body,
+		attempts: ATTEMPT_COUNT,
+		lastError,
+	});
+	const markerStatus = markerWritten
+		? "Marker written."
+		: "Marker NOT written (see above).";
 	console.error(
-		`[complete] FAIL-CLOSE: ${ATTEMPT_COUNT} attempts failed. Marker written. Last error: ${lastError}`,
+		`[complete] FAIL-CLOSE: ${ATTEMPT_COUNT} attempts failed. ${markerStatus} Last error: ${lastError}`,
 	);
 	process.exit(1);
 }
@@ -251,7 +259,7 @@ function writeMarker(args: {
 	body: unknown;
 	attempts: number;
 	lastError: string | undefined;
-}): void {
+}): boolean {
 	const home = process.env.HOME ?? homedir();
 	const dir = join(home, ".flywheel", "state", "complete-failed");
 	const markerPath = join(dir, `${args.execId}.json`);
@@ -272,6 +280,7 @@ function writeMarker(args: {
 			),
 			"utf8",
 		);
+		return true;
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
 		console.error(
@@ -280,5 +289,6 @@ function writeMarker(args: {
 		console.error(
 			`[complete] session_completed emit failed AND marker could not be persisted — stale patrol has no record of this failure. Check disk/permissions at ${dir}.`,
 		);
+		return false;
 	}
 }
