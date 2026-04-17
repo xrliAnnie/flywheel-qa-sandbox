@@ -353,6 +353,47 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
    ```
 5. Clean up worktree: `MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //') && cd "$MAIN_REPO" && git worktree remove ../flywheel-geo-{XX}`
 6. Commit + push docs changes: `docs: update docs after {ISSUE_ID} merge`
+7. **Emit `session_completed` — terminal event for Bridge** (FLY-108):
+   ```bash
+   # MUST be the LAST sync step. `runPostShipFinalization` (tmux kill +
+   # chat-thread archive + sidebar cleanup) fires as soon as Bridge receives
+   # this event — so all prior bookkeeping (docs archive, MEMORY/Linear
+   # update, restart-services, worktree remove, docs commit+push) must be
+   # done. 4 retries with exponential backoff; on all-fail, writes a marker
+   # file to `$HOME/.flywheel/state/complete-failed/${FLYWHEEL_EXEC_ID}.json`
+   # and exits 1 (fail-close — stale patrol reconciles later).
+   if [ -n "$FLYWHEEL_COMM_CLI" ] && [ -n "$FLYWHEEL_EXEC_ID" ]; then
+     if ! node "$FLYWHEEL_COMM_CLI" complete \
+         --route auto_approve \
+         --pr "{PR_NUMBER}" \
+         --merged \
+         --session-role main ; then
+       echo "[complete] ERROR: session_completed emit failed after 4 retries."
+       echo "[complete] Marker written to \$HOME/.flywheel/state/complete-failed/."
+       echo "[complete] DO NOT manually mark session completed — let stale patrol reconcile."
+       exit 1
+     fi
+   fi
+   ```
+
+**`needs_review` path (Annie must review; no auto-ship)**: after `/implement`
+creates the PR and BEFORE Annie approves, Runner emits:
+
+```bash
+if [ -n "$FLYWHEEL_COMM_CLI" ] && [ -n "$FLYWHEEL_EXEC_ID" ]; then
+  node "$FLYWHEEL_COMM_CLI" complete \
+    --route needs_review \
+    --pr "{PR_NUMBER}" \
+    --session-role main
+fi
+```
+
+This drives `running → awaiting_review` (FSM-legal). `runPostShipFinalization`
+does NOT fire (predicate fails: existingStatus ≠ approved_to_ship AND route ≠
+auto_approve+merged), so tmux stays open and Runner idles until Annie
+approves. After approve + ship, Step 3.7 above emits `auto_approve+merged`
+from `approved_to_ship → completed` — which is FSM-legal and triggers
+finalization exactly once (atomic claim in `post-ship-finalization.ts`).
 
 ## Important Rules
 
@@ -363,3 +404,4 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
 - **Structured frontmatter** is mandatory on every generated document.
 - **Update Linear** at key transitions (start → In Progress, done → Done).
 - If a stage's skill (`/brainstorm`, `/research`, etc.) doesn't exist or fails, fall back to doing the work directly following the same quality standards.
+- **Never exit `/spin` without a successful `flywheel-comm complete`** (FLY-108). This is the only signal Bridge recognizes as "Runner finished". Skipping it leaves `sessions.status = running`, blocks `close_runner`, and suppresses the `🏁` notification.
