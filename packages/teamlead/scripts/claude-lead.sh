@@ -545,26 +545,63 @@ SHOULD_EXIT=0
 # tmux provides the window; expect provides PTY + prompt detection inside the window.
 LEAD_WINDOW_ID=""
 
-# FLY-80 / FLY-109: expect script for auto-confirming dev channels dialog.
-# Claude Code shows a TUI confirmation for --dangerously-load-development-channels.
-# In daemon mode (launchd), no human can press Enter. expect watches for the prompt
-# text and sends Enter automatically, then waits for Claude to exit.
+# FLY-109: Dev-channels dialog auto-confirm via tmux capture-pane.
 #
-# FLY-109 rework: the script is now a standalone file under scripts/, versioned with
-# the rest of the repo and unit-tested. The two-stage state machine only sends "1\r"
-# after seeing a DevChannelsDialog marker — blind-sending on timeout (the old
-# behavior) could inject "1" into regular Claude prompts, so we explicitly DO NOT
-# do that. All state transitions are appended to $FLYWHEEL_EXPECT_LOG for post-hoc
-# diagnosis of startup problems.
-_EXPECT_SCRIPT="${SCRIPT_DIR}/expect-dev-channels.exp"
-if [ ! -x "$_EXPECT_SCRIPT" ]; then
-  chmod +x "$_EXPECT_SCRIPT" 2>/dev/null || true
-fi
+# Claude Code shows a TUI confirmation for --dangerously-load-development-channels.
+# In daemon mode (launchd), no human can press Enter. We poll the tmux pane's
+# rendered text (ANSI-stripped by capture-pane) and send "1" + Enter when we detect
+# dialog markers.
+#
+# Previous approach (expect script) failed because Ink TUI inserts ANSI escape
+# codes between words, breaking regex matching on the raw byte stream. capture-pane
+# returns the rendered screen content without ANSI codes, making grep reliable.
+#
+# The poller runs in the background and auto-exits on confirm or timeout.
 
-# Ensure startup log directory exists and export env consumed by the .exp script.
 mkdir -p "${HOME}/.flywheel/logs" 2>/dev/null || true
-export FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC="${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC:-90}"
-export FLYWHEEL_EXPECT_LOG="${FLYWHEEL_EXPECT_LOG:-${HOME}/.flywheel/logs/lead-${LEAD_ID}-startup.log}"
+FLYWHEEL_DIALOG_TIMEOUT_SEC="${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC:-90}"
+FLYWHEEL_STARTUP_LOG="${FLYWHEEL_EXPECT_LOG:-${HOME}/.flywheel/logs/lead-${LEAD_ID}-startup.log}"
+
+_log_startup() {
+  echo "$(date -u '+%Y-%m-%dT%H:%M:%S') $*" >> "$FLYWHEEL_STARTUP_LOG"
+}
+
+# Poll tmux pane for dev-channels dialog and auto-confirm.
+# Args: $1 = tmux window_id, $2 = timeout_sec
+# Runs as a background job; exits on confirm, timeout, or window death.
+_poll_dev_channels_dialog() {
+  local window_id="$1"
+  local timeout_sec="${2:-90}"
+  local elapsed=0
+
+  _log_startup "dialog-poller: start window=${window_id} timeout=${timeout_sec}s"
+
+  while [ "$elapsed" -lt "$timeout_sec" ]; do
+    # Check window still exists
+    if ! tmux list-panes -t "$window_id" &>/dev/null; then
+      _log_startup "dialog-poller: window gone, exiting"
+      return 0
+    fi
+
+    local pane_text
+    pane_text=$(tmux capture-pane -t "$window_id" -p 2>/dev/null || echo "")
+
+    if echo "$pane_text" | grep -qE "Loading development channels|am using this for local development|development channels"; then
+      _log_startup "dialog-poller: matched dev-channels dialog, sending '1' Enter"
+      tmux send-keys -t "$window_id" "1" 2>/dev/null || true
+      sleep 0.3
+      tmux send-keys -t "$window_id" Enter 2>/dev/null || true
+      _log_startup "dialog-poller: confirmed=1"
+      return 0
+    fi
+
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  _log_startup "dialog-poller: DEV_CHANNELS_DIALOG_NOT_SEEN after ${timeout_sec}s"
+  return 0
+}
 
 # Ensure the shared flywheel tmux session exists (race-safe, idempotent).
 # Called before every launch — handles session being killed externally.
@@ -596,27 +633,18 @@ _launch_claude() {
     -e "TEAMLEAD_API_TOKEN=${TEAMLEAD_API_TOKEN:-}"
     -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
     -e "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
-    -e "FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC=${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC}"
-    -e "FLYWHEEL_EXPECT_LOG=${FLYWHEEL_EXPECT_LOG}"
     -e "HOME=${HOME}"
     -e "PATH=${PATH}"
   )
 
-  # Create new window running claude via expect (auto-confirms dev channels prompt).
-  # Falls back to direct claude if expect is unavailable.
-  local launch_cmd
-  if command -v expect >/dev/null 2>&1; then
-    launch_cmd="expect ${_EXPECT_SCRIPT} claude"
-  else
-    log "WARNING: expect not found, dev channels prompt may block"
-    launch_cmd="claude"
-  fi
+  # FLY-109: Launch claude directly (no expect wrapper). Dev-channels dialog
+  # is handled by background capture-pane poller started below.
   LEAD_WINDOW_ID=$(tmux new-window -d -P -F '#{window_id}' \
     -t =flywheel \
     "${env_args[@]}" \
     -n "$window_name" \
     -c "$LEAD_WORKSPACE" \
-    ${launch_cmd} "$@")
+    claude "$@")
 
   # Enable remain-on-exit on this specific window so we can read exit code
   # (must be set-window-option on the window, not session-level, for tmux 3.5+)
@@ -988,9 +1016,23 @@ while true; do
     echo "$SESSION_ID" > "$SESSION_ID_FILE"
   fi
 
-  # FLY-88: Wait for tmux window to complete (replaces `wait $CLAUDE_PID`).
-  # Auto-confirm is handled by expect inside the tmux window (FLY-80).
+  # FLY-109: Start background dev-channels dialog poller. capture-pane is
+  # ANSI-proof (unlike expect which fails on Ink TUI escape codes).
+  # Only poll when dev-channels flag is active.
+  if [ "$INBOX_MCP_ENABLED" = "true" ] && [ -n "${LEAD_WINDOW_ID:-}" ]; then
+    _poll_dev_channels_dialog "$LEAD_WINDOW_ID" "$FLYWHEEL_DIALOG_TIMEOUT_SEC" &
+    _DIALOG_POLLER_PID=$!
+  fi
+
+  # FLY-88: Wait for tmux window to complete.
   _wait_tmux_window
+
+  # Clean up dialog poller if still running
+  if [ -n "${_DIALOG_POLLER_PID:-}" ]; then
+    kill "$_DIALOG_POLLER_PID" 2>/dev/null || true
+    wait "$_DIALOG_POLLER_PID" 2>/dev/null || true
+    _DIALOG_POLLER_PID=""
+  fi
 
   # DURATION = this process's runtime (for crash classification / backoff)
   DURATION=$(( $(date +%s) - PROCESS_START_TS ))
