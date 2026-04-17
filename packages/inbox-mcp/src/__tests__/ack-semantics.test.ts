@@ -84,7 +84,7 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		const notifier = vi.fn().mockResolvedValue(undefined);
 
 		await processPendingDeliveries(db, leadId, 30, notifier);
-		handleAck(db, id);
+		handleAck(db, id, leadId);
 
 		(db as any).db
 			.prepare(
@@ -102,14 +102,14 @@ describe("inbox-mcp delivery + ack state machine", () => {
 		const notifier = vi.fn().mockResolvedValue(undefined);
 		await processPendingDeliveries(db, leadId, 30, notifier);
 
-		const r1 = handleAck(db, id);
+		const r1 = handleAck(db, id, leadId);
 		expect(r1.ok).toBe(true);
 
 		const firstReadAt = (db as any).db
 			.prepare("SELECT read_at FROM messages WHERE id = ?")
 			.get(id) as { read_at: string };
 
-		const r2 = handleAck(db, id);
+		const r2 = handleAck(db, id, leadId);
 		expect(r2.ok).toBe(true);
 
 		const secondReadAt = (db as any).db
@@ -119,11 +119,26 @@ describe("inbox-mcp delivery + ack state machine", () => {
 	});
 
 	it("ack returns structured error for unknown message_id", () => {
-		const result = handleAck(db, "does-not-exist");
+		const result = handleAck(db, "does-not-exist", leadId);
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
 			expect(result.error).toMatch(/unknown|not found/i);
 		}
+	});
+
+	it("ack cannot cross-ack another lead's message", async () => {
+		const otherLead = "other-lead";
+		const idForOther = db.insertInstruction("bridge", otherLead, "not mine");
+		const notifier = vi.fn().mockResolvedValue(undefined);
+		await processPendingDeliveries(db, otherLead, 30, notifier);
+
+		const result = handleAck(db, idForOther, leadId);
+		expect(result.ok).toBe(false);
+
+		const row = (db as any).db
+			.prepare("SELECT read_at FROM messages WHERE id = ?")
+			.get(idForOther) as { read_at: string | null };
+		expect(row.read_at).toBeNull();
 	});
 
 	it("delivery preserves FIFO order", async () => {

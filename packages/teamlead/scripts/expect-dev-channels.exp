@@ -83,13 +83,6 @@ expect {
         send "1\r"
         set confirmed 1
     }
-    -re {confirm} {
-        # Legacy match — "Enter to confirm" footer of the dialog. Kept as a
-        # defensive net in case upstream rewords the main body.
-        log_state "stage1: matched 'confirm'"
-        send "1\r"
-        set confirmed 1
-    }
     timeout {
         log_state "DEV_CHANNELS_DIALOG_NOT_SEEN after ${dialog_timeout}s"
     }

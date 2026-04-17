@@ -114,7 +114,7 @@ server.tool(
 			.describe("The message_id from the channel notification's meta field"),
 	},
 	async ({ message_id }) => {
-		const result = handleAck(commDb, message_id);
+		const result = handleAck(commDb, message_id, leadId!);
 		if (result.ok) {
 			return {
 				content: [

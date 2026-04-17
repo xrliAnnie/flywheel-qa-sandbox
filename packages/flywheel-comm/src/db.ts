@@ -96,7 +96,20 @@ export class CommDB {
 			this.db.exec("ALTER TABLE messages ADD COLUMN resolved_at DATETIME");
 		}
 		if (!columns.some((c) => c.name === "delivered_at")) {
-			this.db.exec("ALTER TABLE messages ADD COLUMN delivered_at DATETIME");
+			// FLY-109: ALTER is not atomic w.r.t. the PRAGMA read above, so two
+			// concurrent openers of the same DB can both pass the guard and race
+			// on ADD COLUMN. Swallow the racing side's "duplicate column" error —
+			// the column is present either way, which is all we need.
+			try {
+				this.db.exec(
+					"ALTER TABLE messages ADD COLUMN delivered_at DATETIME",
+				);
+			} catch (err) {
+				const msg = (err as Error).message ?? "";
+				if (!/duplicate column name: delivered_at/i.test(msg)) {
+					throw err;
+				}
+			}
 		}
 		this.db.exec(
 			"CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(checkpoint) WHERE checkpoint IS NOT NULL",

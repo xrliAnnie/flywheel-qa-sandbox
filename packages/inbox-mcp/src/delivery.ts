@@ -64,12 +64,22 @@ export type AckResult = { ok: true } | { ok: false; error: string };
  * Idempotent ack — safe to call multiple times for the same id.
  * Returns structured error for unknown ids rather than throwing,
  * so the MCP tool handler can report it back to the Lead model.
+ *
+ * Authz: ack is bound to the calling Lead's `toAgent`. A Lead cannot ack
+ * another Lead's message — unknown ids from the caller's perspective return
+ * the same structured error as a truly nonexistent id (no enumeration leak).
  */
-export function handleAck(db: CommDB, messageId: string): AckResult {
+export function handleAck(
+	db: CommDB,
+	messageId: string,
+	toAgent: string,
+): AckResult {
 	const rawDb = (db as unknown as { db: { prepare: Function } }).db;
 	const row = rawDb
-		.prepare("SELECT id FROM messages WHERE id = ?")
-		.get(messageId);
+		.prepare(
+			"SELECT id FROM messages WHERE id = ? AND to_agent = ? AND type = 'instruction'",
+		)
+		.get(messageId, toAgent);
 	if (!row) {
 		return { ok: false, error: `unknown message_id: ${messageId}` };
 	}

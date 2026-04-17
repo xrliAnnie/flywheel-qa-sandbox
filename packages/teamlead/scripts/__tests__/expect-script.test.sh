@@ -72,6 +72,19 @@ case "${1:-}" in
     sleep 0.2
     exit 0
     ;;
+  confirm-only-no-dev-channels)
+    # Generic startup screen containing "confirm" but NO dev-channels markers.
+    # Script must NOT send "1\r" — otherwise it would inject into unrelated prompts.
+    echo "Checking model context..."
+    echo "Press Enter to confirm · Esc to cancel"
+    if IFS= read -r -t 2 line; then
+      if [ "$line" = "1" ]; then
+        echo "WRONGLY_CONFIRMED" > "${MARKER_FILE:-/tmp/expect-test-marker}"
+      fi
+    fi
+    sleep 0.1
+    exit 0
+    ;;
   *)
     echo "unknown scenario: ${1:-}" >&2
     exit 2
@@ -190,6 +203,37 @@ if [ -f "$LOG_FILE" ] && grep -q "confirmed=1" "$LOG_FILE"; then
   pass "Test 3: startup log contains confirmed=1"
 else
   fail "Test 3: startup log missing confirmed=1"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# Test 4: confirm-only — NO dev-channels markers, must NOT send 1
+# ════════════════════════════════════════════════════════════════
+
+log_test "Test 4: generic 'confirm' screen without dev-channels markers → must NOT send 1"
+MARKER_FILE="${TMPDIR_TEST}/marker4"
+LOG_FILE="${TMPDIR_TEST}/startup4.log"
+FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC=1 \
+  FLYWHEEL_EXPECT_LOG="$LOG_FILE" \
+  MARKER_FILE="$MARKER_FILE" \
+  expect "$EXPECT_SCRIPT" "$MOCK_CHILD" confirm-only-no-dev-channels >/dev/null 2>&1
+EXIT_CODE=$?
+
+if [ "$EXIT_CODE" = "0" ]; then
+  pass "Test 4: exit code 0 (propagated from child)"
+else
+  fail "Test 4: exit code was $EXIT_CODE, expected 0"
+fi
+
+if [ ! -f "$MARKER_FILE" ]; then
+  pass "Test 4: child did NOT receive '1' (generic 'confirm' does not match dev-channels markers)"
+else
+  fail "Test 4: child wrongly received '1' — generic 'confirm' should not trigger send"
+fi
+
+if [ -f "$LOG_FILE" ] && grep -q "DEV_CHANNELS_DIALOG_NOT_SEEN" "$LOG_FILE"; then
+  pass "Test 4: startup log contains DEV_CHANNELS_DIALOG_NOT_SEEN"
+else
+  fail "Test 4: startup log missing DEV_CHANNELS_DIALOG_NOT_SEEN"
 fi
 
 # ════════════════════════════════════════════════════════════════
