@@ -690,8 +690,10 @@ cleanup() {
 
   # FLY-20: Remove PID file on graceful exit
   rm -f "${PID_FILE:-}" 2>/dev/null || true
-  # FLY-109: Release MCP pre-seed lock if we hold it
-  rmdir "${HOME}/.claude.json.flywheel-lock" 2>/dev/null || true
+  # FLY-109: Release MCP pre-seed lock only if THIS process holds it
+  if [ "${_MCP_LOCK_HELD:-false}" = "true" ]; then
+    rmdir "${HOME}/.claude.json.flywheel-lock" 2>/dev/null || true
+  fi
   # Exit from trap to prevent main flow from continuing after signal
   exit 0
 }
@@ -799,19 +801,22 @@ log "MCP config: ${MCP_CONFIG_FILE}"
 # prevent read-modify-write race when multiple Leads start concurrently
 # (restart-services.sh launches Leads in parallel).
 CLAUDE_JSON="${HOME}/.claude.json"
+_MCP_LOCK_HELD=false
 if command -v jq >/dev/null 2>&1; then
   # mkdir is atomic on POSIX — serves as a spinlock for concurrent writers.
-  # Stale lock detection: if lock dir is >30s old, a previous process was
-  # killed mid-write. Remove it and retry.
+  # Stale lock detection: if lock dir is >60s old, a previous process was
+  # killed mid-write. Remove it and retry. Uses -mmin +1 (integer, macOS
+  # find does not support fractional minutes).
   _lock_dir="${CLAUDE_JSON}.flywheel-lock"
   _lock_acquired=false
   for _i in $(seq 1 50); do
     if mkdir "$_lock_dir" 2>/dev/null; then
       _lock_acquired=true
+      _MCP_LOCK_HELD=true
       break
     fi
-    # Stale lock check: find returns 0 if the dir exists and is >30s old
-    if find "$_lock_dir" -maxdepth 0 -mmin +0.5 -print 2>/dev/null | grep -q .; then
+    # Stale lock check: dir older than 1 minute is definitely orphaned
+    if find "$_lock_dir" -maxdepth 0 -mmin +1 -print 2>/dev/null | grep -q .; then
       rmdir "$_lock_dir" 2>/dev/null || true
       log "MCP approval: removed stale lock dir"
     fi
@@ -838,6 +843,7 @@ if command -v jq >/dev/null 2>&1; then
       log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
     fi
     rmdir "$_lock_dir" 2>/dev/null || true
+    _MCP_LOCK_HELD=false
   else
     log "WARNING: Could not acquire lock on ${CLAUDE_JSON} after 10s, skipping MCP pre-seed"
   fi
