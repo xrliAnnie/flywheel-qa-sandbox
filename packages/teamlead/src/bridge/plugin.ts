@@ -12,14 +12,14 @@ import {
 	HeartbeatService,
 	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
+import { LeadAlertNotifier } from "../LeadAlertNotifier.js";
+import { LeadWatchdog } from "../LeadWatchdog.js";
+import { locateLeadWindow } from "../LeadWindowLocator.js";
 import {
 	type LeadConfig,
 	type ProjectEntry,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
-import { LeadAlertNotifier } from "../LeadAlertNotifier.js";
-import { LeadWatchdog } from "../LeadWatchdog.js";
-import { locateLeadWindow } from "../LeadWindowLocator.js";
 import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
@@ -32,6 +32,11 @@ import { createEventRouter } from "./event-route.js";
 import { ForumPostCreator } from "./ForumPostCreator.js";
 import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { GatePoller } from "./gate-poller.js";
+import {
+	createBlockedMarkerReader,
+	createClaimsReader,
+	defaultLeadPaneCapture,
+} from "./lead-alert-helpers.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { queryLinearIssues } from "./linear-query.js";
@@ -43,11 +48,6 @@ import { setupRunInfrastructure } from "./run-infra.js";
 import { createStatusQuery } from "./runner-status.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
-import {
-	createBlockedMarkerReader,
-	createClaimsReader,
-	defaultLeadPaneCapture,
-} from "./lead-alert-helpers.js";
 import { captureSession as defaultCaptureSession } from "./session-capture.js";
 import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";

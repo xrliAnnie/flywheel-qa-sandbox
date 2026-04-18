@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { LeadWatchdog } from "../LeadWatchdog.js";
 import type { AlertPayload } from "../LeadAlertNotifier.js";
+import { LeadWatchdog } from "../LeadWatchdog.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 

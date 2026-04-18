@@ -27,8 +27,7 @@ const DEFAULT_CLAIMS_DB =
 	process.env.FLYWHEEL_CLAIMS_DB ??
 	join(homedir(), ".flywheel", "alerts", "claims.db");
 const DEFAULT_BLOCKED_DIR =
-	process.env.FLYWHEEL_BLOCKED_DIR ??
-	join(homedir(), ".flywheel", "blocked");
+	process.env.FLYWHEEL_BLOCKED_DIR ?? join(homedir(), ".flywheel", "blocked");
 const DEFAULT_TMUX_SESSION = process.env.FLYWHEEL_TMUX_SESSION ?? "flywheel";
 
 const CLAIMS_LOOKBACK_SECONDS = 3600;
@@ -81,9 +80,7 @@ export function createBlockedMarkerReader(
 			const kinds: string[] = [];
 			for (const entry of entries) {
 				if (entry.startsWith(prefix) && entry.endsWith(suffix)) {
-					kinds.push(
-						entry.slice(prefix.length, entry.length - suffix.length),
-					);
+					kinds.push(entry.slice(prefix.length, entry.length - suffix.length));
 				}
 			}
 			return kinds;
