@@ -180,14 +180,13 @@ export class WorktreeManager {
 				logger.info("Worktree dir already gone, skipping rename", {
 					worktreePath,
 				});
-				// Skip to prune.
-				// FLY-99: --expire=now is required. Default prune respects
-				// gc.worktreePruneExpire (3.months.ago), so a freshly-renamed
-				// admin dir survives, leaving the branch still "checked out at"
-				// the stale gitdir and blocking rerun.
+				// Skip to prune. Plain `git worktree prune` drops any admin
+				// entry whose gitdir target is missing — no time threshold
+				// applies (CLI default). `gc.worktreePruneExpire` only governs
+				// `git gc`'s auto-prune, not this explicit invocation.
 				await this.exec(
 					"git",
-					["-C", mainRepoPath, "worktree", "prune", "--expire=now"],
+					["-C", mainRepoPath, "worktree", "prune"],
 					mainRepoPath,
 				);
 				return;
@@ -195,10 +194,11 @@ export class WorktreeManager {
 			throw err;
 		}
 
-		// Phase 2: git worktree prune (see FLY-99 note above re: --expire=now)
+		// Phase 2: git worktree prune — drops the admin entry for the
+		// just-renamed gitdir (now missing from its original path).
 		await this.exec(
 			"git",
-			["-C", mainRepoPath, "worktree", "prune", "--expire=now"],
+			["-C", mainRepoPath, "worktree", "prune"],
 			mainRepoPath,
 		);
 
@@ -259,17 +259,23 @@ export class WorktreeManager {
 		}
 
 		// Step 1b: FLY-99 — always prune stale admin entries before branch -D.
-		// isRegistered compares git's canonical path (e.g. /private/var/...) to
-		// the caller-provided path (e.g. /var/... on macOS via symlink); a
-		// SIGKILL'd Runner whose mainRepoPath was unresolved falls through the
-		// orphan-dir branch and leaves the admin dir at .git/worktrees/<name>/
-		// intact. That admin dir still holds the branch as "checked out",
-		// which would make branch -D and the next worktree add both fail.
-		// --expire=now is required because git's default gc.worktreePruneExpire
-		// is 3.months.ago, so fresh admin dirs are otherwise skipped.
+		//
+		// Root cause: `isRegistered()` compares git's canonical worktree path
+		// (from `git worktree list --porcelain`, always fully resolved) against
+		// the caller-provided `mainRepoPath`-derived path. If the caller passes
+		// an unresolved path that traverses a symlink (e.g. `/var/foo` when git
+		// records `/private/var/foo` on macOS, or any user-configured symlink
+		// chain on Linux), the string comparison fails and `isRegistered`
+		// returns false. The orphan-dir branch above then `fs.rm`s the target
+		// via the symlink, but the admin entry at `.git/worktrees/<name>/`
+		// still records the branch as "checked out at <canonical-path>" — so
+		// without this prune, `branch -D` fails with "Cannot delete branch X
+		// checked out at Y" and the subsequent `worktree add -B` fails with
+		// "already checked out at Y". Step 1b unconditionally drops the now-
+		// stale admin entry so the rerun succeeds.
 		await this.exec(
 			"git",
-			["-C", mainRepoPath, "worktree", "prune", "--expire=now"],
+			["-C", mainRepoPath, "worktree", "prune"],
 			mainRepoPath,
 		);
 

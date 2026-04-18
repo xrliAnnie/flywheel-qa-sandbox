@@ -497,12 +497,24 @@ describe("WorktreeManager", () => {
 	// ── removeIfExists() ──
 
 	describe("removeIfExists()", () => {
+		// FLY-99: defensive restore so a failing assertion in one test doesn't
+		// leak a `vi.spyOn` into later tests (e.g. fs.existsSync spies bleeding
+		// into real-git integration tests and causing confusing passes/fails).
+		afterEach(() => {
+			vi.restoreAllMocks();
+		});
+
 		it("removes registered worktree + deletes branch", async () => {
+			// Exec sequence (rename is a filesystem op, not exec):
+			//   1. `worktree list --porcelain` (from isRegistered)
+			//   2. `worktree prune` (remove() Phase 2, after rename)
+			//   3. `worktree prune` (Step 1b, unconditional pre-branch-D prune)
+			//   4. `branch -D`
 			const { fn, calls } = makeMockExec([
-				{ stdout: PORCELAIN_TWO_WORKTREES }, // list (isRegistered)
-				{ stdout: "" }, // rename (remove phase 1) — will use fs.rename mock
-				{ stdout: "" }, // git worktree prune (remove phase 2)
-				{ stdout: "" }, // git branch -D
+				{ stdout: PORCELAIN_TWO_WORKTREES }, // 1. list
+				{ stdout: "" }, // 2. prune (Phase 2)
+				{ stdout: "" }, // 3. prune (Step 1b)
+				{ stdout: "" }, // 4. branch -D
 			]);
 			const mgr = new WorktreeManager(
 				{ baseDir: "/home/user/.flywheel/worktrees", bgDeleteFn: noopBgDelete },
@@ -515,20 +527,25 @@ describe("WorktreeManager", () => {
 			const cleaned = await mgr.removeIfExists("/main/repo", "proj", "GEO-42");
 			expect(cleaned).toBe(true);
 
-			// Verify branch -D was called
+			// FLY-99: assert exec call count so makeMockExec's post-exhaustion
+			// default `{ stdout: "" }` can't silently mask an added/removed step.
+			expect(calls).toHaveLength(4);
+			const pruneCalls = calls.filter(
+				(c) => c.args.includes("worktree") && c.args.includes("prune"),
+			);
+			expect(pruneCalls).toHaveLength(2);
+
 			const branchCall = calls.find(
 				(c) => c.args.includes("branch") && c.args.includes("-D"),
 			);
 			expect(branchCall).toBeDefined();
 			expect(branchCall!.args).toContain("repo-GEO-42");
-
-			vi.restoreAllMocks();
 		});
 
 		it("is no-op when nothing exists (first run)", async () => {
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
-				{ stdout: "" }, // FLY-99: Step 1b prune --expire=now
+				{ stdout: "" }, // FLY-99: Step 1b prune (pre-branch-D)
 				new Error("error: branch 'repo-GEO-99' not found"), // git branch -D
 			]);
 			const mgr = new WorktreeManager(
@@ -544,7 +561,7 @@ describe("WorktreeManager", () => {
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_TWO_WORKTREES }, // list (isRegistered → true)
 				{ stdout: "" }, // git worktree prune (remove — ENOENT path)
-				{ stdout: "" }, // FLY-99: Step 1b prune --expire=now
+				{ stdout: "" }, // FLY-99: Step 1b prune (pre-branch-D)
 				new Error("error: branch 'repo-GEO-42' not found"), // branch -D
 			]);
 			const mgr = new WorktreeManager(
@@ -569,7 +586,7 @@ describe("WorktreeManager", () => {
 			const bgDeleteCalls: Array<{ cmd: string; args: string[] }> = [];
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
-				{ stdout: "" }, // FLY-99: Step 1b prune --expire=now
+				{ stdout: "" }, // FLY-99: Step 1b prune (pre-branch-D)
 				{ stdout: "" }, // branch -D succeeds (stale branch still present)
 			]);
 			const mgr = new WorktreeManager(
@@ -600,7 +617,7 @@ describe("WorktreeManager", () => {
 		it("propagates non-'not found' errors from branch -D", async () => {
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
-				{ stdout: "" }, // FLY-99: Step 1b prune --expire=now
+				{ stdout: "" }, // FLY-99: Step 1b prune (pre-branch-D)
 				new Error("fatal: unexpected git error"), // branch -D
 			]);
 			const mgr = new WorktreeManager(
@@ -621,7 +638,7 @@ describe("WorktreeManager", () => {
 			const bgDeleteCalls: Array<{ cmd: string; args: string[] }> = [];
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // isRegistered → false
-				{ stdout: "" }, // FLY-99: Step 1b prune --expire=now
+				{ stdout: "" }, // FLY-99: Step 1b prune (pre-branch-D)
 				new Error("error: branch 'repo-GEO-42' not found"), // branch -D
 			]);
 			const mgr = new WorktreeManager(
@@ -752,6 +769,67 @@ describe("WorktreeManager", () => {
 			return { mainRepo, commit1, commit2 };
 		}
 
+		// FLY-99 path-mismatch fixture: seed repos under a `real-parent/`
+		// subdirectory, then build a `link-parent/` directory symlink that
+		// points to it. Callers pass `link-parent/repo` as mainRepoPath so
+		// git canonicalizes internally but WorktreeManager's string-compare
+		// in isRegistered() sees the unresolved `link-parent/...` form. This
+		// does NOT rely on the macOS `/var → /private/var` tmpdir quirk —
+		// the symlink is explicit, so Linux CI reproduces the same mismatch.
+		async function setupSymlinkedRepo(): Promise<{
+			mainRepoCanonical: string;
+			mainRepoViaSymlink: string;
+		}> {
+			const realParent = path.join(workDir, "real-parent");
+			fs.mkdirSync(realParent);
+
+			const origin = path.join(realParent, "origin.git");
+			await execFileAsync("git", [
+				"init",
+				"--bare",
+				"--initial-branch=main",
+				origin,
+			]);
+
+			const seed = path.join(realParent, "seed");
+			await execFileAsync("git", ["clone", origin, seed]);
+			await execFileAsync("git", [
+				"-C",
+				seed,
+				"config",
+				"user.email",
+				"test@example.com",
+			]);
+			await execFileAsync("git", ["-C", seed, "config", "user.name", "Test"]);
+			fs.writeFileSync(path.join(seed, "f.txt"), "v1");
+			await execFileAsync("git", ["-C", seed, "add", "."]);
+			await execFileAsync("git", ["-C", seed, "commit", "-m", "v1"]);
+			await execFileAsync("git", ["-C", seed, "push", "-u", "origin", "main"]);
+
+			const mainRepoCanonical = path.join(realParent, "repo");
+			await execFileAsync("git", ["clone", origin, mainRepoCanonical]);
+			await execFileAsync("git", [
+				"-C",
+				mainRepoCanonical,
+				"config",
+				"user.email",
+				"test@example.com",
+			]);
+			await execFileAsync("git", [
+				"-C",
+				mainRepoCanonical,
+				"config",
+				"user.name",
+				"Test",
+			]);
+
+			const linkParent = path.join(workDir, "link-parent");
+			fs.symlinkSync(realParent, linkParent);
+			const mainRepoViaSymlink = path.join(linkParent, "repo");
+
+			return { mainRepoCanonical, mainRepoViaSymlink };
+		}
+
 		beforeEach(() => {
 			// realpath: macOS tmpdir is a /var → /private/var symlink; git
 			// worktree list returns the resolved path, so normalize up front to
@@ -835,63 +913,121 @@ describe("WorktreeManager", () => {
 			expect(fs.existsSync(path.join(info.worktreePath, "f.txt"))).toBe(true);
 		});
 
-		it("FLY-99: registered worktree + branch still 'checked out' after kill → removeIfExists → create succeeds", async () => {
-			// Production repro: Runner called create() successfully, started work,
-			// then got SIGKILL. The worktree is registered in .git/worktrees/<name>/
-			// and the branch is still considered "checked out at" that gitdir.
-			// Without --expire=now on prune, git's default gc.worktreePruneExpire
-			// (3 months) leaves the admin dir untouched, so `branch -D` fails
-			// with "Cannot delete branch X checked out at Y" and the subsequent
-			// `worktree add -B` fails with "already checked out at".
-			const { mainRepo } = await setupRepo();
+		it("FLY-99: symlinked mainRepoPath → isRegistered false → Step 1b prune enables rerun", async () => {
+			// Production repro via an EXPLICIT directory symlink so the test
+			// behaves identically on macOS and Linux CI (does not depend on
+			// /var → /private/var auto-normalization).
+			//
+			// Sequence:
+			//   1. create() via symlinked mainRepoPath. git canonicalizes
+			//      internally and records the resolved worktree path in its
+			//      admin entry under .git/worktrees/<name>/.
+			//   2. isRegistered() via the same symlinked path does a raw
+			//      string compare and returns false — the caller's
+			//      constructed path still contains the unresolved symlink
+			//      segment, git's listing does not.
+			//   3. removeIfExists() therefore takes the orphan-dir branch and
+			//      fs.rm's the worktree dir (via symlink, so the real dir on
+			//      disk is removed), but the admin entry survives.
+			//   4. Step 1b's unconditional `git worktree prune` drops the now-
+			//      stale admin entry. Without it, the subsequent `branch -D`
+			//      fails with "Cannot delete branch X checked out at Y" and
+			//      the follow-up create() fails with "already checked out at".
+			const { mainRepoCanonical, mainRepoViaSymlink } =
+				await setupSymlinkedRepo();
 			const mgr = new WorktreeManager();
 
+			// Precondition: the two paths string-compare differently but
+			// resolve to the same directory on disk.
+			expect(mainRepoViaSymlink).not.toBe(mainRepoCanonical);
+			expect(fs.realpathSync(mainRepoViaSymlink)).toBe(mainRepoCanonical);
+
 			const first = await mgr.create({
-				mainRepoPath: mainRepo,
+				mainRepoPath: mainRepoViaSymlink,
 				projectName: "proj",
 				issueId: "GEO-99",
 			});
-			expect(await mgr.isRegistered(mainRepo, first.worktreePath)).toBe(true);
 			fs.writeFileSync(path.join(first.worktreePath, "wip.txt"), "in-progress");
 
-			// Simulate SIGKILL — Runner dies. Do NOT call remove/cleanup. The
-			// worktree stays registered, the branch stays "checked out".
+			// What git actually recorded: the canonical path. This is the
+			// mirror image of first.worktreePath (which still holds the
+			// unresolved symlink segment).
+			const canonicalWtPath = path.join(
+				path.dirname(mainRepoCanonical),
+				path.basename(first.worktreePath),
+			);
+			expect(canonicalWtPath).not.toBe(first.worktreePath);
 
-			const cleaned = await mgr.removeIfExists(mainRepo, "proj", "GEO-99");
+			// The mismatch precondition: isRegistered string-compares, so it
+			// returns false for the caller's (symlinked) worktree path and
+			// true for the canonical one — same underlying worktree, two
+			// answers.
+			expect(
+				await mgr.isRegistered(mainRepoViaSymlink, first.worktreePath),
+			).toBe(false);
+			expect(await mgr.isRegistered(mainRepoCanonical, canonicalWtPath)).toBe(
+				true,
+			);
+
+			// Simulate SIGKILL — no cleanup. Rerun via the symlinked path
+			// (what Blueprint would do on the next attempt).
+			const cleaned = await mgr.removeIfExists(
+				mainRepoViaSymlink,
+				"proj",
+				"GEO-99",
+			);
 			expect(cleaned).toBe(true);
 
+			// The actual bug manifestation: this create() used to fail with
+			// "already checked out at" before Step 1b.
 			const second = await mgr.create({
-				mainRepoPath: mainRepo,
+				mainRepoPath: mainRepoViaSymlink,
 				projectName: "proj",
 				issueId: "GEO-99",
 			});
 			expect(fs.existsSync(second.worktreePath)).toBe(true);
-			expect(await mgr.isRegistered(mainRepo, second.worktreePath)).toBe(true);
-			// The stale file from the first (killed) Runner must not bleed into
-			// the rerun — worktree was fully cleaned, not re-attached.
+			// Verify registration via the canonical worktree path, since
+			// that is what git records in its admin entry.
+			const canonicalWtPath2 = path.join(
+				path.dirname(mainRepoCanonical),
+				path.basename(second.worktreePath),
+			);
+			expect(await mgr.isRegistered(mainRepoCanonical, canonicalWtPath2)).toBe(
+				true,
+			);
+			// wip.txt from the killed first Runner must not leak into the
+			// rerun — the worktree was rebuilt, not reattached.
 			expect(fs.existsSync(path.join(second.worktreePath, "wip.txt"))).toBe(
 				false,
 			);
 		});
 
-		it("FLY-99: 3× kill+rerun cycles on same issue never crash", async () => {
-			// Stress the full kill/rerun loop. Mirrors the Annie ask: Runner 跑一半
-			// 中断 → 同一个 issue 重跑 → 不 crash. Three rounds in a row.
-			const { mainRepo } = await setupRepo();
+		it("FLY-99: 3× kill+rerun cycles via symlinked mainRepoPath never crash", async () => {
+			// Stress the kill/rerun loop against the path-mismatch fixture.
+			// Each cycle leaves a stale "checked out at canonical path" admin
+			// entry that Step 1b must prune before the next create() -B can
+			// succeed. Three rounds mirrors the Annie ask: Runner 跑一半中断 →
+			// 同一个 issue 重跑 → 不 crash.
+			const { mainRepoViaSymlink } = await setupSymlinkedRepo();
 			const mgr = new WorktreeManager();
 
 			for (let i = 0; i < 3; i++) {
 				const info = await mgr.create({
-					mainRepoPath: mainRepo,
+					mainRepoPath: mainRepoViaSymlink,
 					projectName: "proj",
 					issueId: "GEO-LOOP",
 				});
 				fs.writeFileSync(path.join(info.worktreePath, `cycle-${i}.txt`), "x");
-				const cleaned = await mgr.removeIfExists(mainRepo, "proj", "GEO-LOOP");
+				// Skip remove — simulate SIGKILL — then rerun via removeIfExists.
+				const cleaned = await mgr.removeIfExists(
+					mainRepoViaSymlink,
+					"proj",
+					"GEO-LOOP",
+				);
 				expect(cleaned).toBe(true);
 			}
 			const final = await mgr.create({
-				mainRepoPath: mainRepo,
+				mainRepoPath: mainRepoViaSymlink,
 				projectName: "proj",
 				issueId: "GEO-LOOP",
 			});
