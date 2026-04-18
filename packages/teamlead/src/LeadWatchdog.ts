@@ -18,7 +18,11 @@
  */
 
 import { createHash } from "node:crypto";
-import type { AlertEventType, AlertPayload, AlertResult } from "./LeadAlertNotifier.js";
+import type {
+	AlertEventType,
+	AlertPayload,
+	AlertResult,
+} from "./LeadAlertNotifier.js";
 import type { LeadWindowRef } from "./LeadWindowLocator.js";
 import type { ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -35,10 +39,7 @@ export type LocateWindowFn = (
 	leadId: string,
 ) => Promise<LeadWindowRef | null>;
 
-export type CaptureFn = (
-	windowId: string,
-	lines: number,
-) => Promise<string>;
+export type CaptureFn = (windowId: string, lines: number) => Promise<string>;
 
 export type NotifierFn = (payload: AlertPayload) => Promise<AlertResult>;
 
@@ -293,6 +294,7 @@ export class LeadWatchdog {
 
 function hashPane(content: string): string {
 	const normalized = content
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escape sequences from tmux pane
 		.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "")
 		.replace(/\r/g, "")
 		.split("\n")
@@ -335,6 +337,7 @@ function severityFor(kind: AlertEventType): AlertPayload["severity"] {
 function summarizePane(pane: string): string {
 	const lines = pane
 		.split("\n")
+		// biome-ignore lint/suspicious/noControlCharactersInRegex: strip ANSI escape sequences from tmux pane
 		.map((l) => l.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").trimEnd())
 		.filter((l) => l.length > 0);
 	const tail = lines.slice(-5).join("\n");

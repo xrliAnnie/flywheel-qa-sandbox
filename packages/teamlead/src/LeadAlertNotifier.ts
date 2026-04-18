@@ -11,7 +11,13 @@
  * Not responsible for deciding *when* to alert — LeadWatchdog drives that.
  */
 
-import { mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
@@ -160,7 +166,9 @@ export class LeadAlertNotifier {
 			try {
 				payload = JSON.parse(readFileSync(path, "utf-8")) as AlertPayload;
 			} catch (err) {
-				this.logger(`skip malformed queue entry ${file}: ${(err as Error).message}`);
+				this.logger(
+					`skip malformed queue entry ${file}: ${(err as Error).message}`,
+				);
 				continue;
 			}
 			const resolved = this.resolveLead(payload.leadId, payload.projectName);
@@ -267,9 +275,10 @@ export class LeadAlertNotifier {
 				);
 				return false;
 			}
-			const body = (await (
-				res.json as undefined | (() => Promise<{ id?: string }>)
-			)?.()) ?? {};
+			const body =
+				(await (
+					res.json as undefined | (() => Promise<{ id?: string }>)
+				)?.()) ?? {};
 			const dmChannelId = body.id;
 			if (!dmChannelId) return false;
 			return this.postMessage(dmChannelId, token, payload);
@@ -302,7 +311,9 @@ function formatContent(payload: AlertPayload): string {
 	return `${sev} **${payload.title}** (${payload.leadId} / ${payload.eventType})\n${payload.body}`;
 }
 
-async function safeText(res: Response | { text?: () => Promise<string> }): Promise<string> {
+async function safeText(
+	res: Response | { text?: () => Promise<string> },
+): Promise<string> {
 	try {
 		return typeof res.text === "function" ? await res.text() : "";
 	} catch {

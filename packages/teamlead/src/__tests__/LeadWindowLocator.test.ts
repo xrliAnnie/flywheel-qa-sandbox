@@ -17,7 +17,10 @@ describe("LeadWindowLocator", () => {
 			execFn,
 		});
 
-		expect(result).toEqual({ windowId: "@7", windowName: "geoforge3d-product-lead" });
+		expect(result).toEqual({
+			windowId: "@7",
+			windowName: "geoforge3d-product-lead",
+		});
 		expect(execFn).toHaveBeenCalledWith(
 			"tmux",
 			["list-windows", "-t", "flywheel", "-F", "#{window_id} #{window_name}"],
@@ -44,7 +47,9 @@ describe("LeadWindowLocator", () => {
 			}),
 		);
 
-		const result = await locateLeadWindow("geoforge3d", "product-lead", { execFn });
+		const result = await locateLeadWindow("geoforge3d", "product-lead", {
+			execFn,
+		});
 
 		expect(result).toBeNull();
 	});
@@ -63,7 +68,10 @@ describe("LeadWindowLocator", () => {
 			execFn,
 		});
 
-		expect(result).toEqual({ windowId: "@7", windowName: "geoforge3d-product-lead" });
+		expect(result).toEqual({
+			windowId: "@7",
+			windowName: "geoforge3d-product-lead",
+		});
 	});
 
 	it("tolerates trailing whitespace and empty lines", async () => {
@@ -76,6 +84,9 @@ describe("LeadWindowLocator", () => {
 			execFn,
 		});
 
-		expect(result).toEqual({ windowId: "@7", windowName: "geoforge3d-product-lead" });
+		expect(result).toEqual({
+			windowId: "@7",
+			windowName: "geoforge3d-product-lead",
+		});
 	});
 });

@@ -1,11 +1,8 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	LeadAlertNotifier,
-	type AlertPayload,
-} from "../LeadAlertNotifier.js";
+import { type AlertPayload, LeadAlertNotifier } from "../LeadAlertNotifier.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 
@@ -45,13 +42,11 @@ const testProjects: ProjectEntry[] = [
 	},
 ];
 
-function buildPayload(
-	overrides: Partial<AlertPayload> = {},
-): AlertPayload {
+function buildPayload(overrides: Partial<AlertPayload> = {}): AlertPayload {
 	return {
 		leadId: "cos-lead",
 		projectName: "geoforge3d",
-		eventId: "evt-" + Math.random().toString(36).slice(2),
+		eventId: `evt-${Math.random().toString(36).slice(2)}`,
 		eventType: "pane_hash_stuck",
 		title: "Lead silent pane",
 		body: "Lead pane has not changed for 3 cycles",
