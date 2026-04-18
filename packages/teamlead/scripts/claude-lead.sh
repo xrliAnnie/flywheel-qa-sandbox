@@ -719,8 +719,8 @@ cleanup() {
   # FLY-20: Remove PID file on graceful exit
   rm -f "${PID_FILE:-}" 2>/dev/null || true
   # FLY-109: Release MCP pre-seed lock only if THIS process holds it
-  if [ "${_MCP_LOCK_HELD:-false}" = "true" ]; then
-    rmdir "${HOME}/.claude.json.flywheel-lock" 2>/dev/null || true
+  if [ "${_MCP_LOCK_HELD:-false}" = "true" ] && [ -n "${_SETTINGS_LOCAL_JSON:-}" ]; then
+    rmdir "${_SETTINGS_LOCAL_JSON}.flywheel-lock" 2>/dev/null || true
   fi
   # Exit from trap to prevent main flow from continuing after signal
   exit 0
@@ -824,18 +824,32 @@ jq -n \
 log "MCP config: ${MCP_CONFIG_FILE}"
 
 # FLY-109 (b): Pre-seed enableAllProjectMcpServers so project .mcp.json servers
-# are auto-approved on resume (no interactive dialog dependency). Written to
-# ~/.claude.json under projects[LEAD_WORKSPACE]. Uses mkdir-based lock to
-# prevent read-modify-write race when multiple Leads start concurrently
-# (restart-services.sh launches Leads in parallel).
-CLAUDE_JSON="${HOME}/.claude.json"
+# are auto-approved on resume (no interactive dialog dependency).
+#
+# Target: <LEAD_WORKSPACE>/.claude/settings.local.json (localSettings layer).
+#
+# Why this path, not ~/.claude.json:
+# Upstream Claude Code reads enableAllProjectMcpServers via getSettings_DEPRECATED(),
+# which returns the merged settings tree. It also runs
+# migrateEnableAllProjectMcpServersToSettings() on startup: a value found at
+# ~/.claude.json.projects[cwd].enableAllProjectMcpServers is copied to localSettings
+# only when localSettings.enableAllProjectMcpServers is undefined, then deleted from
+# ~/.claude.json regardless. Consequence: seeding ~/.claude.json is a noop whenever
+# localSettings already has a decision (especially a prior `false`), and is wiped
+# on every startup. Writing localSettings directly overrides prior decisions and
+# survives restarts.
+#
+# Each Lead owns its own workspace dir, so a per-workspace lock is sufficient.
+_SETTINGS_LOCAL_JSON="${LEAD_WORKSPACE}/.claude/settings.local.json"
 _MCP_LOCK_HELD=false
 if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$(dirname "$_SETTINGS_LOCAL_JSON")" 2>/dev/null || true
+
   # mkdir is atomic on POSIX — serves as a spinlock for concurrent writers.
   # Stale lock detection: if lock dir is >60s old, a previous process was
   # killed mid-write. Remove it and retry. Uses -mmin +1 (integer, macOS
   # find does not support fractional minutes).
-  _lock_dir="${CLAUDE_JSON}.flywheel-lock"
+  _lock_dir="${_SETTINGS_LOCAL_JSON}.flywheel-lock"
   _lock_acquired=false
   for _i in $(seq 1 50); do
     if mkdir "$_lock_dir" 2>/dev/null; then
@@ -852,28 +866,26 @@ if command -v jq >/dev/null 2>&1; then
   done
 
   if [ "$_lock_acquired" = "true" ]; then
-    # Create minimal ~/.claude.json if missing (fresh machine / state reset).
+    # Create empty settings.local.json if missing (fresh workspace).
     # Inside the lock to prevent concurrent creates from racing.
-    if [ ! -f "$CLAUDE_JSON" ]; then
-      echo '{"projects":{}}' > "$CLAUDE_JSON"
-      log "MCP approval: created ${CLAUDE_JSON}"
+    if [ ! -f "$_SETTINGS_LOCAL_JSON" ]; then
+      echo '{}' > "$_SETTINGS_LOCAL_JSON"
+      log "MCP approval: created ${_SETTINGS_LOCAL_JSON}"
     fi
 
-    _abs_workspace="$(cd "$LEAD_WORKSPACE" && pwd)"
-    _tmp_claude_json="$(mktemp "${CLAUDE_JSON}.tmp.XXXXXX")"
-    if jq --arg proj "$_abs_workspace" \
-       '.projects[$proj].enableAllProjectMcpServers = true' \
-       "$CLAUDE_JSON" > "$_tmp_claude_json" 2>/dev/null; then
-      mv "$_tmp_claude_json" "$CLAUDE_JSON"
-      log "MCP approval: enableAllProjectMcpServers=true for ${_abs_workspace}"
+    _tmp_settings="$(mktemp "${_SETTINGS_LOCAL_JSON}.tmp.XXXXXX")"
+    if jq '.enableAllProjectMcpServers = true' \
+       "$_SETTINGS_LOCAL_JSON" > "$_tmp_settings" 2>/dev/null; then
+      mv "$_tmp_settings" "$_SETTINGS_LOCAL_JSON"
+      log "MCP approval: enableAllProjectMcpServers=true in ${_SETTINGS_LOCAL_JSON}"
     else
-      rm -f "$_tmp_claude_json" 2>/dev/null || true
+      rm -f "$_tmp_settings" 2>/dev/null || true
       log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
     fi
     rmdir "$_lock_dir" 2>/dev/null || true
     _MCP_LOCK_HELD=false
   else
-    log "WARNING: Could not acquire lock on ${CLAUDE_JSON} after 10s, skipping MCP pre-seed"
+    log "WARNING: Could not acquire lock on ${_SETTINGS_LOCAL_JSON} after 10s, skipping MCP pre-seed"
   fi
 fi
 
