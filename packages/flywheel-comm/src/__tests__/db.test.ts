@@ -578,7 +578,11 @@ describe("CommDB", () => {
 
 		it("does NOT change getUnreadInstructions semantics — CLI pull path unaffected by delivered_at", () => {
 			// Instruction marked delivered but NOT acked — CLI pull should still see it
-			const id = db.insertInstruction("bridge", "lead-1", "delivered not acked");
+			const id = db.insertInstruction(
+				"bridge",
+				"lead-1",
+				"delivered not acked",
+			);
 			db.markInstructionDelivered(id);
 
 			const unread = db.getUnreadInstructions("lead-1");

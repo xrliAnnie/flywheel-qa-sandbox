@@ -117,9 +117,7 @@ server.tool(
 		const result = handleAck(commDb, message_id, leadId!);
 		if (result.ok) {
 			return {
-				content: [
-					{ type: "text" as const, text: `acked: ${message_id}` },
-				],
+				content: [{ type: "text" as const, text: `acked: ${message_id}` }],
 			};
 		}
 		return {
@@ -154,9 +152,7 @@ async function pollOnce(): Promise<void> {
 			},
 		);
 	} catch (err) {
-		process.stderr.write(
-			`[inbox-mcp] Poll error: ${(err as Error).message}\n`,
-		);
+		process.stderr.write(`[inbox-mcp] Poll error: ${(err as Error).message}\n`);
 	}
 }
 

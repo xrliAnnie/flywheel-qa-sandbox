@@ -101,9 +101,7 @@ export class CommDB {
 			// on ADD COLUMN. Swallow the racing side's "duplicate column" error —
 			// the column is present either way, which is all we need.
 			try {
-				this.db.exec(
-					"ALTER TABLE messages ADD COLUMN delivered_at DATETIME",
-				);
+				this.db.exec("ALTER TABLE messages ADD COLUMN delivered_at DATETIME");
 			} catch (err) {
 				const msg = (err as Error).message ?? "";
 				if (!/duplicate column name: delivered_at/i.test(msg)) {
