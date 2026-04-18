@@ -528,6 +528,7 @@ describe("WorktreeManager", () => {
 		it("is no-op when nothing exists (first run)", async () => {
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
+				{ stdout: "" }, // FLY-99: Step 1b prune --expire=now
 				new Error("error: branch 'repo-GEO-99' not found"), // git branch -D
 			]);
 			const mgr = new WorktreeManager(
@@ -543,6 +544,7 @@ describe("WorktreeManager", () => {
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_TWO_WORKTREES }, // list (isRegistered → true)
 				{ stdout: "" }, // git worktree prune (remove — ENOENT path)
+				{ stdout: "" }, // FLY-99: Step 1b prune --expire=now
 				new Error("error: branch 'repo-GEO-42' not found"), // branch -D
 			]);
 			const mgr = new WorktreeManager(
@@ -567,6 +569,7 @@ describe("WorktreeManager", () => {
 			const bgDeleteCalls: Array<{ cmd: string; args: string[] }> = [];
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
+				{ stdout: "" }, // FLY-99: Step 1b prune --expire=now
 				{ stdout: "" }, // branch -D succeeds (stale branch still present)
 			]);
 			const mgr = new WorktreeManager(
@@ -597,6 +600,7 @@ describe("WorktreeManager", () => {
 		it("propagates non-'not found' errors from branch -D", async () => {
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // list (isRegistered → false)
+				{ stdout: "" }, // FLY-99: Step 1b prune --expire=now
 				new Error("fatal: unexpected git error"), // branch -D
 			]);
 			const mgr = new WorktreeManager(
@@ -617,6 +621,7 @@ describe("WorktreeManager", () => {
 			const bgDeleteCalls: Array<{ cmd: string; args: string[] }> = [];
 			const { fn } = makeMockExec([
 				{ stdout: PORCELAIN_SINGLE }, // isRegistered → false
+				{ stdout: "" }, // FLY-99: Step 1b prune --expire=now
 				new Error("error: branch 'repo-GEO-42' not found"), // branch -D
 			]);
 			const mgr = new WorktreeManager(
@@ -828,6 +833,69 @@ describe("WorktreeManager", () => {
 			expect(fs.existsSync(info.worktreePath)).toBe(true);
 			expect(await mgr.isRegistered(mainRepo, info.worktreePath)).toBe(true);
 			expect(fs.existsSync(path.join(info.worktreePath, "f.txt"))).toBe(true);
+		});
+
+		it("FLY-99: registered worktree + branch still 'checked out' after kill → removeIfExists → create succeeds", async () => {
+			// Production repro: Runner called create() successfully, started work,
+			// then got SIGKILL. The worktree is registered in .git/worktrees/<name>/
+			// and the branch is still considered "checked out at" that gitdir.
+			// Without --expire=now on prune, git's default gc.worktreePruneExpire
+			// (3 months) leaves the admin dir untouched, so `branch -D` fails
+			// with "Cannot delete branch X checked out at Y" and the subsequent
+			// `worktree add -B` fails with "already checked out at".
+			const { mainRepo } = await setupRepo();
+			const mgr = new WorktreeManager();
+
+			const first = await mgr.create({
+				mainRepoPath: mainRepo,
+				projectName: "proj",
+				issueId: "GEO-99",
+			});
+			expect(await mgr.isRegistered(mainRepo, first.worktreePath)).toBe(true);
+			fs.writeFileSync(path.join(first.worktreePath, "wip.txt"), "in-progress");
+
+			// Simulate SIGKILL — Runner dies. Do NOT call remove/cleanup. The
+			// worktree stays registered, the branch stays "checked out".
+
+			const cleaned = await mgr.removeIfExists(mainRepo, "proj", "GEO-99");
+			expect(cleaned).toBe(true);
+
+			const second = await mgr.create({
+				mainRepoPath: mainRepo,
+				projectName: "proj",
+				issueId: "GEO-99",
+			});
+			expect(fs.existsSync(second.worktreePath)).toBe(true);
+			expect(await mgr.isRegistered(mainRepo, second.worktreePath)).toBe(true);
+			// The stale file from the first (killed) Runner must not bleed into
+			// the rerun — worktree was fully cleaned, not re-attached.
+			expect(fs.existsSync(path.join(second.worktreePath, "wip.txt"))).toBe(
+				false,
+			);
+		});
+
+		it("FLY-99: 3× kill+rerun cycles on same issue never crash", async () => {
+			// Stress the full kill/rerun loop. Mirrors the Annie ask: Runner 跑一半
+			// 中断 → 同一个 issue 重跑 → 不 crash. Three rounds in a row.
+			const { mainRepo } = await setupRepo();
+			const mgr = new WorktreeManager();
+
+			for (let i = 0; i < 3; i++) {
+				const info = await mgr.create({
+					mainRepoPath: mainRepo,
+					projectName: "proj",
+					issueId: "GEO-LOOP",
+				});
+				fs.writeFileSync(path.join(info.worktreePath, `cycle-${i}.txt`), "x");
+				const cleaned = await mgr.removeIfExists(mainRepo, "proj", "GEO-LOOP");
+				expect(cleaned).toBe(true);
+			}
+			const final = await mgr.create({
+				mainRepoPath: mainRepo,
+				projectName: "proj",
+				issueId: "GEO-LOOP",
+			});
+			expect(fs.existsSync(final.worktreePath)).toBe(true);
 		});
 	});
 });

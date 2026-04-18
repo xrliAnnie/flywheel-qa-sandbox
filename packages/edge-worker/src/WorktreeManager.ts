@@ -180,10 +180,14 @@ export class WorktreeManager {
 				logger.info("Worktree dir already gone, skipping rename", {
 					worktreePath,
 				});
-				// Skip to prune
+				// Skip to prune.
+				// FLY-99: --expire=now is required. Default prune respects
+				// gc.worktreePruneExpire (3.months.ago), so a freshly-renamed
+				// admin dir survives, leaving the branch still "checked out at"
+				// the stale gitdir and blocking rerun.
 				await this.exec(
 					"git",
-					["-C", mainRepoPath, "worktree", "prune"],
+					["-C", mainRepoPath, "worktree", "prune", "--expire=now"],
 					mainRepoPath,
 				);
 				return;
@@ -191,10 +195,10 @@ export class WorktreeManager {
 			throw err;
 		}
 
-		// Phase 2: git worktree prune
+		// Phase 2: git worktree prune (see FLY-99 note above re: --expire=now)
 		await this.exec(
 			"git",
-			["-C", mainRepoPath, "worktree", "prune"],
+			["-C", mainRepoPath, "worktree", "prune", "--expire=now"],
 			mainRepoPath,
 		);
 
@@ -253,6 +257,21 @@ export class WorktreeManager {
 			await fs.promises.rm(worktreePath, { recursive: true, force: true });
 			cleaned = true;
 		}
+
+		// Step 1b: FLY-99 — always prune stale admin entries before branch -D.
+		// isRegistered compares git's canonical path (e.g. /private/var/...) to
+		// the caller-provided path (e.g. /var/... on macOS via symlink); a
+		// SIGKILL'd Runner whose mainRepoPath was unresolved falls through the
+		// orphan-dir branch and leaves the admin dir at .git/worktrees/<name>/
+		// intact. That admin dir still holds the branch as "checked out",
+		// which would make branch -D and the next worktree add both fail.
+		// --expire=now is required because git's default gc.worktreePruneExpire
+		// is 3.months.ago, so fresh admin dirs are otherwise skipped.
+		await this.exec(
+			"git",
+			["-C", mainRepoPath, "worktree", "prune", "--expire=now"],
+			mainRepoPath,
+		);
 
 		// Step 2: delete local branch if it still exists.
 		// `git worktree prune` does NOT delete the branch — only the worktree
