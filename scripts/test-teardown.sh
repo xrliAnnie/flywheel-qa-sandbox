@@ -15,8 +15,110 @@ set -euo pipefail
 
 log() { echo "[test-teardown] $(date +%H:%M:%S) $*" >&2; }
 
+# FLY-115 fix: mkdir(2)-based mutex matches inject-linear-issue.sh's locking
+# so teardown's prune doesn't race with a concurrent inject in another slot.
+# Parallel slot operations previously could drop in-flight trust keys. Stale
+# lock (>CLAUDE_LOCK_STALE_S seconds) is stolen — covers crashes mid-RMW.
+: "${CLAUDE_LOCK_STALE_S:=60}"
+: "${CLAUDE_LOCK_WAIT_S:=30}"
+acquire_claude_lock() {
+  local lock="${HOME}/.claude.json.lock"
+  local waited_ms=0 step_ms=100 max_ms=$((CLAUDE_LOCK_WAIT_S * 1000))
+  while ! mkdir "$lock" 2>/dev/null; do
+    if [[ -d "$lock" ]]; then
+      local mtime now age
+      mtime=$(stat -f %m "$lock" 2>/dev/null \
+              || stat -c %Y "$lock" 2>/dev/null \
+              || echo "")
+      now=$(date +%s)
+      if [[ -n "$mtime" ]]; then
+        age=$(( now - mtime ))
+        if (( age > CLAUDE_LOCK_STALE_S )); then
+          log "WARN: stealing stale trust lock (age ${age}s)"
+          rmdir "$lock" 2>/dev/null || true
+          continue
+        fi
+      fi
+    fi
+    if (( waited_ms >= max_ms )); then
+      log "WARN: timed out waiting for ${lock} after ${CLAUDE_LOCK_WAIT_S}s"
+      return 1
+    fi
+    sleep 0.1
+    waited_ms=$(( waited_ms + step_ms ))
+  done
+  return 0
+}
+
+release_claude_lock() {
+  rmdir "${HOME}/.claude.json.lock" 2>/dev/null || true
+}
+
+# FLY-115 fix: Remove ~/.claude.json trust entries whose keys live under the
+# given prefix. Best-effort; never aborts teardown under `set -e`. Atomic write
+# via same-dir tempfile (POSIX rename(2) atomicity) so no partial JSON on crash.
+prune_trust_entries() {
+  local PREFIX="$1"
+  local CLAUDE_JSON="${HOME}/.claude.json"
+  [[ -f "$CLAUDE_JSON" ]] || return 0
+  [[ -n "$PREFIX" ]] || return 0
+
+  # Canonicalize the prefix so we match however the entries were written.
+  # inject-linear-issue.sh's write_trust_entry() canonicalizes via parent pwd
+  # -P — on macOS /tmp is a symlink to /private/tmp, so written keys look like
+  # /private/tmp/flywheel-test-slot-N-FLY-108/. We MUST match that form here.
+  # Resolve via PARENT (always exists) rather than `cd "$PREFIX"` which fails
+  # after Step 6's `rm -rf "$SLOT_DIR"` and falls back to the raw /tmp path.
+  local CANON parent basename canonical_parent
+  parent="$(dirname "$PREFIX")"
+  basename="$(basename "$PREFIX")"
+  if canonical_parent="$(cd "$parent" 2>/dev/null && pwd -P)"; then
+    CANON="${canonical_parent}/${basename}"
+  else
+    CANON="$PREFIX"
+  fi
+  # Ensure trailing slash so `/tmp/flywheel-test-slot-1` doesn't accidentally
+  # match `/tmp/flywheel-test-slot-10/...`.
+  [[ "${CANON}" != */ ]] && CANON="${CANON}/"
+
+  # Serialize the RMW with the same mkdir mutex as inject-linear-issue.sh so
+  # this prune can't drop a concurrent slot's just-written trust key.
+  if ! acquire_claude_lock; then
+    log "WARN: trust prune skipped (lock timeout); ~/.claude.json unchanged"
+    return 0
+  fi
+
+  # Create tempfile in the SAME directory as ~/.claude.json so the final mv
+  # is an atomic rename(2) (same filesystem guarantee).
+  local TMP
+  if ! TMP=$(mktemp "${CLAUDE_JSON}.XXXXXX"); then
+    release_claude_lock
+    return 0
+  fi
+
+  if jq --arg prefix "$CANON" \
+    '.projects = ((.projects // {}) | with_entries(select((.key | startswith($prefix)) | not)))' \
+    "$CLAUDE_JSON" > "$TMP" 2>/dev/null \
+    && jq -e . "$TMP" >/dev/null 2>&1; then
+    mv "$TMP" "$CLAUDE_JSON" 2>/dev/null || rm -f "$TMP"
+    log "Pruned trust entries under ${CANON}"
+  else
+    rm -f "$TMP"
+    log "WARN: trust prune skipped (jq/schema error); ~/.claude.json unchanged"
+  fi
+  release_claude_lock
+}
+
 teardown_slot() {
   local SLOT="$1"
+  # FLY-115 fix (Codex R7 #1): Validate SLOT is a positive integer. Without
+  # this, `SLOT_IDX=$((SLOT - 1))` would produce a negative index (e.g.
+  # SLOT=0 → -1) that `jq '.slots[-1]'` resolves to the LAST slot — causing
+  # this teardown to delete a different slot's lead workspace (line below).
+  if ! [[ "$SLOT" =~ ^[1-9][0-9]*$ ]]; then
+    log "ERROR: invalid slot '${SLOT}' — must be a positive integer"
+    return 1
+  fi
   local SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
   local LOCK_FILE="/tmp/flywheel-test-slot-${SLOT}.lock"
 
@@ -104,6 +206,36 @@ teardown_slot() {
     fi
   fi
 
+  # ── Step 5c (FLY-115 fix / Defect #3b): Port-based straggler kill ──
+  # `test-deploy.sh` captures $! from `npx tsx ...`, which is the npm-exec
+  # wrapper — NOT the real `node --import tsx/loader.mjs` grandchild that
+  # actually binds the port. When the wrapper exits early or SIGTERM doesn't
+  # cascade, the grandchild orphans and keeps holding SLOT_PORT. Belt-and-
+  # suspenders: whoever is LISTENING on SLOT_PORT gets SIGTERM → 2s → SIGKILL.
+  # Narrow to `-sTCP:LISTEN` so client connections that happen to have a
+  # local-or-remote port == SLOT_PORT are NOT swept up (Codex R5 #1).
+  local SLOT_PORT=""
+  # Defense-in-depth: SLOT_IDX negative-index guard. Change 0 above already
+  # fail-fast on invalid SLOT; this keeps the block independently safe if ever
+  # reused outside teardown_slot().
+  if (( SLOT_IDX >= 0 )); then
+    SLOT_PORT=$(jq -r ".slots[${SLOT_IDX}].bridgePort // empty" "$SLOTS_FILE" 2>/dev/null || true)
+  fi
+  if [[ -n "$SLOT_PORT" ]]; then
+    local STRAGGLERS
+    STRAGGLERS=$(lsof -nP -t -iTCP:"$SLOT_PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true)
+    if [[ -n "$STRAGGLERS" ]]; then
+      log "Killing port stragglers on :${SLOT_PORT} (pids: $(echo "$STRAGGLERS" | tr '\n' ' '))"
+      echo "$STRAGGLERS" | xargs kill 2>/dev/null || true
+      sleep 2
+      STRAGGLERS=$(lsof -nP -t -iTCP:"$SLOT_PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true)
+      if [[ -n "$STRAGGLERS" ]]; then
+        log "Port :${SLOT_PORT} still bound, sending SIGKILL"
+        echo "$STRAGGLERS" | xargs kill -9 2>/dev/null || true
+      fi
+    fi
+  fi
+
   # ── Step 5b (FLY-115): Clean FLY-95 Runner worktrees + slot-local branches ──
   # Runner worktrees live as siblings of the host clone inside SLOT_DIR
   # (e.g. ${SLOT_DIR}/project-slot-${SLOT}-FLY-108). Host clone basename is
@@ -114,7 +246,14 @@ teardown_slot() {
   local HOST_REPO="${SLOT_DIR}/project-slot-${SLOT}"
   if [[ -d "${HOST_REPO}/.git" ]]; then
     log "Removing FLY-95 Runner worktrees registered under ${SLOT_DIR}"
-    mapfile -t SLOT_WORKTREES < <(
+    # FLY-115 fix (Defect #3a): macOS /bin/bash 3.2 has no `mapfile`. Use the
+    # portable `while read` pattern; `|| [[ -n "$line" ]]` keeps any trailing
+    # line without a final newline; empty lines are filtered.
+    local SLOT_WORKTREES=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -z "$line" ]] && continue
+      SLOT_WORKTREES+=("$line")
+    done < <(
       git -C "$HOST_REPO" worktree list --porcelain 2>/dev/null \
         | awk '/^worktree /{print $2}' \
         | grep -F "$SLOT_DIR/" || true
@@ -132,7 +271,12 @@ teardown_slot() {
     # Delete slot-local branches: qa-slot-${SLOT}-* and any FLY-95 Runner
     # branches. It is a per-slot clone, so deletion has no cross-slot impact.
     log "Pruning local branches in ${HOST_REPO}"
-    mapfile -t LOCAL_BRANCHES < <(
+    # FLY-115 fix (Defect #3a): portable replacement for `mapfile -t`.
+    local LOCAL_BRANCHES=()
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -z "$line" ]] && continue
+      LOCAL_BRANCHES+=("$line")
+    done < <(
       git -C "$HOST_REPO" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true
     )
     local b
@@ -159,6 +303,11 @@ teardown_slot() {
     log "Cleaning temp dir: ${SLOT_DIR}"
     rm -rf "$SLOT_DIR"
   fi
+
+  # FLY-115 fix: Prune ~/.claude.json trust entries written by
+  # inject-linear-issue.sh so they don't accumulate and don't cause the
+  # race-window jq write corruption seen in qa-fly-108.
+  prune_trust_entries "/tmp/flywheel-test-slot-${SLOT}"
 
   local COMMDB_DIR="${HOME}/.flywheel/comm/${PROJECT_NAME}"
   if [[ -d "$COMMDB_DIR" ]]; then
