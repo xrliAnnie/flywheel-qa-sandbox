@@ -120,6 +120,50 @@ describe("WorktreeManager", () => {
 			).toBe(true);
 		});
 
+		it("FLY-115: falls back to FLYWHEEL_RUNNER_START_POINT env when opts.startPoint unset", async () => {
+			const { fn, calls } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
+			const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
+			const prev = process.env.FLYWHEEL_RUNNER_START_POINT;
+			process.env.FLYWHEEL_RUNNER_START_POINT = "refs/remotes/origin/feat/x";
+			try {
+				await mgr.create({
+					mainRepoPath: "/main/repo",
+					projectName: "proj",
+					issueId: "GEO-42",
+				});
+				expect(
+					calls[0].args.some((a) =>
+						a.includes("refs/remotes/origin/feat/x^{commit}"),
+					),
+				).toBe(true);
+			} finally {
+				if (prev === undefined) delete process.env.FLYWHEEL_RUNNER_START_POINT;
+				else process.env.FLYWHEEL_RUNNER_START_POINT = prev;
+			}
+		});
+
+		it("FLY-115: opts.startPoint still wins over FLYWHEEL_RUNNER_START_POINT env", async () => {
+			const { fn, calls } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
+			const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
+			const prev = process.env.FLYWHEEL_RUNNER_START_POINT;
+			process.env.FLYWHEEL_RUNNER_START_POINT = "refs/remotes/origin/ignored";
+			try {
+				await mgr.create({
+					mainRepoPath: "/main/repo",
+					projectName: "proj",
+					issueId: "GEO-43",
+					startPoint: "feature/base",
+				});
+				expect(
+					calls[0].args.some((a) => a.includes("feature/base^{commit}")),
+				).toBe(true);
+				expect(calls[0].args.some((a) => a.includes("ignored"))).toBe(false);
+			} finally {
+				if (prev === undefined) delete process.env.FLYWHEEL_RUNNER_START_POINT;
+				else process.env.FLYWHEEL_RUNNER_START_POINT = prev;
+			}
+		});
+
 		it("creates correct worktree path (with baseDir)", async () => {
 			const { fn } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
 			const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);

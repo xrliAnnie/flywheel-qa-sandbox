@@ -81,7 +81,103 @@ claim_slot() {
   return 1
 }
 
-REQUESTED_SLOT="${1:-}"
+# ── Argument parsing (FLY-115) ────────────────────────
+FROM_BRANCH=""
+REQUESTED_SLOT=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --from-branch)
+      FROM_BRANCH="${2:?--from-branch requires a value}"; shift 2 ;;
+    --from-branch=*)
+      FROM_BRANCH="${1#*=}"; shift ;;
+    -h|--help)
+      sed -n '2,12p' "$0"; exit 0 ;;
+    [0-9]*)
+      REQUESTED_SLOT="$1"; shift ;;
+    *)
+      echo "ERROR: unknown argument '$1'" >&2; exit 1 ;;
+  esac
+done
+
+# Default branch — sandbox `main` works for most smoke / regression suites.
+FROM_BRANCH="${FROM_BRANCH:-main}"
+
+# ── FLY-115: Pre-flight ───────────────────────────────
+REBUILD_LOCK="/tmp/flywheel-qa-rebuild.lock"
+SANDBOX_SLUG="xrliAnnie/flywheel-qa-sandbox"
+SANDBOX_REMOTE_URL="${FLYWHEEL_SANDBOX_REMOTE_URL:-git@github.com:${SANDBOX_SLUG}.git}"
+
+fail_preflight() {
+  echo "ERROR [pre-flight]: $1" >&2
+  echo "See doc/qa/framework/real-runner-e2e-guide.md." >&2
+  exit 2
+}
+
+[[ -n "${LINEAR_API_KEY:-}" ]] \
+  || fail_preflight "LINEAR_API_KEY not set (required for /api/runs/start PreHydrator)"
+gh auth status >/dev/null 2>&1 \
+  || fail_preflight "gh CLI not authenticated (required for Runner gh pr create)"
+gh repo view "$SANDBOX_SLUG" >/dev/null 2>&1 \
+  || fail_preflight "sandbox repo ${SANDBOX_SLUG} missing. Run: gh repo fork xrliAnnie/flywheel --fork-name flywheel-qa-sandbox --clone=false"
+# Runner needs to 'git push + gh pr create' into the sandbox. Read-only access
+# means the whole real-Runner flow fails after clone. Fail fast so the operator
+# fixes gh auth scopes / fork permissions before we start rebuilding anything.
+SANDBOX_PUSH_PERM=$(gh api "repos/${SANDBOX_SLUG}" --jq '.permissions.push' 2>/dev/null || echo "")
+[[ "$SANDBOX_PUSH_PERM" == "true" ]] \
+  || fail_preflight "no push permission on ${SANDBOX_SLUG} (gh api .permissions.push=${SANDBOX_PUSH_PERM:-unset}). Check gh auth scopes / fork ownership."
+
+# Serialized preflight block — all the work that would collide across slots
+# is done under one lock. macOS has no flock(1) — fall back to a portable
+# mkdir-based spinlock with PID-based stale detection.
+#
+# Order: better-sqlite3 rebuild + require() probe, THEN TypeScript build
+# of the dist artifacts Bridge imports at runtime.
+log "Preflight under ${REBUILD_LOCK}: better-sqlite3 rebuild + flywheel-edge-worker build"
+LOCK_TIMEOUT=300
+waited=0
+while ! mkdir "$REBUILD_LOCK" 2>/dev/null; do
+  # Reclaim if holder PID is dead (crashed mid-preflight).
+  lock_holder=$(cat "${REBUILD_LOCK}/pid" 2>/dev/null || echo "")
+  if [[ -n "$lock_holder" ]] && ! kill -0 "$lock_holder" 2>/dev/null; then
+    log "Reclaiming stale preflight lock (holder PID ${lock_holder} dead)"
+    rm -rf "$REBUILD_LOCK"
+    continue
+  fi
+  if (( waited >= LOCK_TIMEOUT )); then
+    fail_preflight "preflight lock busy > ${LOCK_TIMEOUT}s (holder=${lock_holder:-unknown}). If stale: rm -rf ${REBUILD_LOCK}"
+  fi
+  sleep 1
+  waited=$((waited + 1))
+done
+echo "$$" > "${REBUILD_LOCK}/pid"
+release_preflight_lock() { rm -rf "$REBUILD_LOCK"; }
+trap release_preflight_lock EXIT
+
+(
+  cd "$REPO_ROOT"
+
+  # 1. native addon rebuild (flywheel-comm + inbox-mcp both consume better-sqlite3)
+  pnpm -r --filter flywheel-comm --filter flywheel-inbox-mcp rebuild better-sqlite3
+  ( cd "$REPO_ROOT/packages/flywheel-comm" && node -e "require('better-sqlite3')" ) \
+    || exit 11
+  ( cd "$REPO_ROOT/packages/inbox-mcp" && node -e "require('better-sqlite3')" ) \
+    || exit 12
+
+  # 2. Rebuild edge-worker dist so scripts/run-bridge.ts → dist/WorktreeManager.js
+  #    picks up the FLYWHEEL_RUNNER_START_POINT env fallback. Without this,
+  #    /api/runs/start spawns Runners against stale origin/main dist.
+  pnpm --filter flywheel-edge-worker build || exit 13
+
+  # 3. Assert the env fallback actually landed in the built artifact. Cheaper
+  #    than rerunning unit tests under the lock, and it catches the case where
+  #    someone forgets to rebuild after editing src.
+  grep -q 'FLYWHEEL_RUNNER_START_POINT' \
+    "$REPO_ROOT/packages/edge-worker/dist/WorktreeManager.js" || exit 14
+) || fail_preflight "preflight failed (better-sqlite3 rebuild, edge-worker build, or dist freshness check)"
+
+release_preflight_lock
+trap - EXIT
+
 SLOT=""
 
 if [[ -n "$REQUESTED_SLOT" ]]; then
@@ -155,7 +251,35 @@ fi
 # ── Create temp directories ───────────────────────────
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
 mkdir -p "${SLOT_DIR}/discord-state"
-mkdir -p "${SLOT_DIR}/project"
+
+# FLY-115: per-slot normal clone eliminates cross-slot git contention
+# and avoids bare-clone refspec/spin.md gotchas.
+#
+# Clone basename embeds the slot number (project-slot-${SLOT}) because
+# WorktreeManager derives the Runner branch name from basename(projectRoot)
+# (packages/edge-worker/src/WorktreeManager.ts `worktreeName`). If two slots
+# ran the same issue with identical basenames, both Runners would push
+# `project-<ISSUE>` to the shared sandbox remote and collide. Slot-suffixed
+# basename yields slot-unique branches: `project-slot-1-FLY-108`, etc.
+HOST_REPO_DIRNAME="project-slot-${SLOT}"
+HOST_REPO="${SLOT_DIR}/${HOST_REPO_DIRNAME}"
+QA_TEMP_BRANCH="qa-slot-${SLOT}-$(date +%s)"
+log "Cloning sandbox → ${HOST_REPO} (branch: ${FROM_BRANCH})"
+rm -rf "${HOST_REPO}"
+git clone --branch "${FROM_BRANCH}" "${SANDBOX_REMOTE_URL}" "${HOST_REPO}" \
+  || fail_preflight "git clone --branch ${FROM_BRANCH} failed. Did you push the branch to sandbox? (see doc/qa/framework/real-runner-e2e-guide.md §6)"
+
+# Resolve remote-tracking ref for the Runner worktree start point
+RUNNER_START_REF="refs/remotes/origin/${FROM_BRANCH}"
+git -C "${HOST_REPO}" rev-parse --verify "$RUNNER_START_REF" >/dev/null \
+  || fail_preflight "${RUNNER_START_REF} missing in slot clone"
+
+# Host-side local branch so Annie can push via the host clone if ever needed
+git -C "${HOST_REPO}" checkout -B "$QA_TEMP_BRANCH" "$RUNNER_START_REF"
+
+# Record the SHA under test for downstream verification
+BRANCH_SHA="$(git -C "${HOST_REPO}" rev-parse HEAD)"
+log "Sandbox HEAD for ${FROM_BRANCH}: ${BRANCH_SHA}"
 
 # ── Generate DISCORD_STATE_DIR files ──────────────────
 # .env with test bot token
@@ -228,7 +352,7 @@ cat "$PROD_IDENTITY" >> "${SLOT_DIR}/test-identity.md"
 # claude-lead.sh reads \${PROJECT_DIR}/.lead/shared/*.md (FLY-26). Without this
 # the test Lead misses department-lead-rules.md which defines announce behavior.
 SHARED_SRC="${HOME}/Dev/GeoForge3D/.lead/shared"
-SHARED_DST="${SLOT_DIR}/project/.lead/shared"
+SHARED_DST="${HOST_REPO}/.lead/shared"
 if [[ -d "$SHARED_SRC" ]]; then
   mkdir -p "$SHARED_DST"
   cp "$SHARED_SRC"/*.md "$SHARED_DST/" 2>/dev/null || true
@@ -242,8 +366,8 @@ fi
 TEST_PROJECT_NAME="test-slot-${SLOT}"
 FLYWHEEL_PROJECTS="[{
   \"projectName\": \"${TEST_PROJECT_NAME}\",
-  \"projectRoot\": \"${SLOT_DIR}/project\",
-  \"projectRepo\": \"test/test-slot-${SLOT}\",
+  \"projectRoot\": \"${HOST_REPO}\",
+  \"projectRepo\": \"${SANDBOX_SLUG}\",
   \"leads\": [{
     \"agentId\": \"${AGENT_ID}\",
     \"chatChannel\": \"${CHAT_CHANNEL_ID}\",
@@ -263,7 +387,7 @@ env -u DISCORD_BOT_TOKEN \
   AGENT_SOURCE="${SLOT_DIR}/test-identity.md" \
   FLYWHEEL_LEAD_ROLE="${SLOT_ROLE}" \
   bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
-    "${AGENT_ID}" "${SLOT_DIR}/project" "${TEST_PROJECT_NAME}" &
+    "${AGENT_ID}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" &
 LEAD_BG_PID=$!
 log "Lead background PID: ${LEAD_BG_PID}"
 
@@ -334,14 +458,24 @@ if [[ "$LEAD_READY" != "true" ]]; then
   exit 1
 fi
 
-# ── Step 3: Start test Bridge (fixed port, :memory: StateStore) ──
-# Unset TEAMLEAD_API_TOKEN so /api/* routes don't require auth in test
-log "Starting test Bridge on port ${SLOT_PORT}"
+# ── Step 3: Start test Bridge (file-backed DB, real-Runner env) ──
+# FLY-115 §4.5: file-backed teamlead.db so FLY-108 S4 chain is visible
+# across processes; TEAMLEAD_URL so Blueprint/TmuxAdapter forward
+# FLYWHEEL_BRIDGE_URL to the Runner; FLYWHEEL_RUNNER_START_POINT so the
+# Runner worktree HEAD tracks sandbox <from-branch>; LINEAR_API_KEY so
+# /api/runs/start PreHydrator can verify issues against Linear; stdout +
+# stderr redirected to bridge.log for QA observability. Unset
+# TEAMLEAD_API_TOKEN so /api/* routes don't require auth in test.
+log "Starting test Bridge on port ${SLOT_PORT} (from-branch=${FROM_BRANCH})"
 env -u TEAMLEAD_API_TOKEN \
   TEAMLEAD_PORT="${SLOT_PORT}" \
-  TEAMLEAD_DB_PATH=":memory:" \
+  TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
+  TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
   FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
-  npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" &
+  LINEAR_API_KEY="${LINEAR_API_KEY}" \
+  FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
+  npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
+  > "${SLOT_DIR}/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 echo "$BRIDGE_PID" > "${SLOT_DIR}/bridge.pid"
 # Update slot lock with long-lived Bridge PID (prevents stale-lock misdetection)
@@ -401,6 +535,14 @@ cat <<EOF
   "bridgePid": ${BRIDGE_PID},
   "leadPidFile": "${LEAD_PID_FILE}",
   "slotDir": "${SLOT_DIR}",
-  "bridgeUrl": "http://localhost:${SLOT_PORT}"
+  "bridgeUrl": "http://localhost:${SLOT_PORT}",
+  "fromBranch": "${FROM_BRANCH}",
+  "sandbox": "${SANDBOX_SLUG}",
+  "hostRepo": "${HOST_REPO}",
+  "tempBranch": "${QA_TEMP_BRANCH}",
+  "branchSha": "${BRANCH_SHA}",
+  "runnerStartPoint": "${RUNNER_START_REF}",
+  "dbPath": "${SLOT_DIR}/teamlead.db",
+  "bridgeLog": "${SLOT_DIR}/bridge.log"
 }
 EOF
