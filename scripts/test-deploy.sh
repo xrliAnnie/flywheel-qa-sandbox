@@ -379,6 +379,10 @@ log "Starting test Lead: ${AGENT_ID} (project: ${TEST_PROJECT_NAME})"
 
 # ── Step 1: Start test Lead (background) ─────────────
 # env -u clears inherited production token, then sets test token explicitly (D8)
+# FLY-115 fix: redirect Lead stdout/stderr to a per-slot log so the caller's
+# `| tail -40` doesn't stay attached to the backgrounded Lead's stdout — that
+# kept the pipe open and made the caller hang forever.
+LEAD_LOG="${SLOT_DIR}/lead.log"
 env -u DISCORD_BOT_TOKEN \
   DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
   DISCORD_GUILD_ID="${GUILD_ID}" \
@@ -387,7 +391,8 @@ env -u DISCORD_BOT_TOKEN \
   AGENT_SOURCE="${SLOT_DIR}/test-identity.md" \
   FLYWHEEL_LEAD_ROLE="${SLOT_ROLE}" \
   bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
-    "${AGENT_ID}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" &
+    "${AGENT_ID}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" \
+    > "${LEAD_LOG}" 2>&1 &
 LEAD_BG_PID=$!
 log "Lead background PID: ${LEAD_BG_PID}"
 
@@ -543,6 +548,7 @@ cat <<EOF
   "branchSha": "${BRANCH_SHA}",
   "runnerStartPoint": "${RUNNER_START_REF}",
   "dbPath": "${SLOT_DIR}/teamlead.db",
-  "bridgeLog": "${SLOT_DIR}/bridge.log"
+  "bridgeLog": "${SLOT_DIR}/bridge.log",
+  "leadLog": "${LEAD_LOG}"
 }
 EOF
