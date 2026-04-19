@@ -34,6 +34,15 @@ teardown_slot() {
 
   log "Tearing down slot ${SLOT} (agent: ${AGENT_ID})"
 
+  # ── Step 1b (FLY-115): Stop Runner tmux session if present ──
+  # Runner tmux is killed BEFORE Bridge so that no process is actively
+  # writing into the FLY-95 Runner worktree while we remove it.
+  local RUNNER_TMUX="runner-test-slot-${SLOT}"
+  if tmux has-session -t "$RUNNER_TMUX" 2>/dev/null; then
+    log "Killing Runner tmux session: ${RUNNER_TMUX}"
+    tmux kill-session -t "$RUNNER_TMUX" 2>/dev/null || true
+  fi
+
   # ── Step 1: Kill Lead supervisor ──────────────────────
   local LEAD_PID_FILE="${HOME}/.flywheel/pids/${PROJECT_NAME}-${AGENT_ID}.pid"
   if [[ -f "$LEAD_PID_FILE" ]]; then
@@ -92,6 +101,56 @@ teardown_slot() {
       if kill -0 "$BRIDGE_PID" 2>/dev/null; then
         kill -9 "$BRIDGE_PID" 2>/dev/null || true
       fi
+    fi
+  fi
+
+  # ── Step 5b (FLY-115): Clean FLY-95 Runner worktrees + slot-local branches ──
+  # Runner worktrees live as siblings of the host clone inside SLOT_DIR
+  # (e.g. ${SLOT_DIR}/project-slot-${SLOT}-FLY-108). Host clone basename is
+  # slot-unique to avoid branch-name collision on the sandbox remote when
+  # multiple slots run the same issue concurrently (see test-deploy.sh §4.3).
+  # Must run AFTER Bridge is killed (no new dispatch) and BEFORE `rm -rf
+  # SLOT_DIR` (so git gets a chance to prune registry cleanly).
+  local HOST_REPO="${SLOT_DIR}/project-slot-${SLOT}"
+  if [[ -d "${HOST_REPO}/.git" ]]; then
+    log "Removing FLY-95 Runner worktrees registered under ${SLOT_DIR}"
+    mapfile -t SLOT_WORKTREES < <(
+      git -C "$HOST_REPO" worktree list --porcelain 2>/dev/null \
+        | awk '/^worktree /{print $2}' \
+        | grep -F "$SLOT_DIR/" || true
+    )
+    local wt
+    for wt in "${SLOT_WORKTREES[@]}"; do
+      # Skip the host worktree itself — it is ${SLOT_DIR}/project-slot-${SLOT}
+      # and is torn down when we rm -rf SLOT_DIR below.
+      [[ "$wt" == "$HOST_REPO" ]] && continue
+      log "  worktree remove --force ${wt}"
+      git -C "$HOST_REPO" worktree remove --force "$wt" 2>/dev/null || true
+      rm -rf "$wt"
+    done
+
+    # Delete slot-local branches: qa-slot-${SLOT}-* and any FLY-95 Runner
+    # branches. It is a per-slot clone, so deletion has no cross-slot impact.
+    log "Pruning local branches in ${HOST_REPO}"
+    mapfile -t LOCAL_BRANCHES < <(
+      git -C "$HOST_REPO" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true
+    )
+    local b
+    for b in "${LOCAL_BRANCHES[@]}"; do
+      [[ "$b" == "main" || "$b" == "master" ]] && continue
+      git -C "$HOST_REPO" branch -D "$b" 2>/dev/null || true
+    done
+
+    git -C "$HOST_REPO" worktree prune 2>/dev/null || true
+
+    # Verification assertion — warn loud if anything survives inside SLOT_DIR
+    local REMAINING
+    REMAINING=$(git -C "$HOST_REPO" worktree list --porcelain 2>/dev/null \
+      | awk '/^worktree /{print $2}' \
+      | grep -F "$SLOT_DIR/" | grep -v "^${HOST_REPO}$" || true)
+    if [[ -n "$REMAINING" ]]; then
+      log "WARN: worktrees still registered in ${SLOT_DIR} after cleanup:"
+      echo "$REMAINING" | sed 's/^/    /' >&2
     fi
   fi
 

@@ -123,7 +123,14 @@ export class WorktreeManager {
 			opts.projectName,
 			opts.issueId,
 		);
-		const startPoint = opts.startPoint ?? "origin/main";
+		// FLY-115: QA test-injection hook. When opts.startPoint is not supplied
+		// by the caller, fall back to the FLYWHEEL_RUNNER_START_POINT env var so
+		// test-deploy.sh can pin Runner worktrees to a PR branch on the sandbox
+		// fork. Unset in prod → falls through to origin/main (unchanged).
+		const startPoint =
+			opts.startPoint ??
+			process.env.FLYWHEEL_RUNNER_START_POINT ??
+			"origin/main";
 
 		// git worktree add
 		await this.exec(

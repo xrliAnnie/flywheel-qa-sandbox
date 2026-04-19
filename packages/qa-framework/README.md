@@ -38,6 +38,36 @@ TypeScript types: `import { QaConfig } from 'flywheel-qa-framework'`
 
 - `examples/geoforge3d/` — Full GeoForge3D configuration
 
+## Test Slot Framework — Real Runner E2E (FLY-115)
+
+The slot-based E2E framework (FLY-96 + FLY-115) spawns parallel isolated test environments, each running a **real Runner** against `xrliAnnie/flywheel-qa-sandbox`. No synthetic / fixture mode is supported — every slot is a real Runner end-to-end.
+
+### Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/test-deploy.sh [--from-branch <br>] <N>` | Clone sandbox at `<br>` into `/tmp/flywheel-test-slot-<N>/project-slot-<N>` (slot-suffixed basename so WorktreeManager-derived Runner branches don't collide on the sandbox remote when two slots run the same issue), start test Bridge with `FLYWHEEL_RUNNER_START_POINT=refs/remotes/origin/<br>`, start test Lead. Default branch is sandbox `main`. |
+| `scripts/inject-linear-issue.sh <N> <FLY-XXX>` | POST `/api/runs/start` directly to the slot's Bridge to spawn a real Runner. |
+| `scripts/test-teardown.sh <N>` | Kill Runner tmux, Lead, Bridge; clean FLY-95 worktrees + slot-local branches; remove `SLOT_DIR` + CommDB. |
+
+### Pre-requisites
+
+- `LINEAR_API_KEY` exported in shell env (required for `/api/runs/start` PreHydrator).
+- `gh` CLI authenticated with push access to the sandbox fork.
+- `xrliAnnie/flywheel-qa-sandbox` fork exists (one-time: `gh repo fork xrliAnnie/flywheel --fork-name flywheel-qa-sandbox --clone=false`).
+- Branch under test pushed to sandbox (`git push git@github.com:xrliAnnie/flywheel-qa-sandbox.git <br>:<br>`).
+
+`test-deploy.sh` fails fast (exit 2) at pre-flight if any of these are missing.
+
+### Runner worktree start point
+
+FLY-95's `WorktreeManager.create()` now reads `FLYWHEEL_RUNNER_START_POINT` as a fallback when `opts.startPoint` is not supplied. `test-deploy.sh` sets this env var on the Bridge process only; production launchers do not set it, so the default `origin/main` behavior is unchanged in prod.
+
+### Guides
+
+- `doc/qa/framework/real-runner-e2e-guide.md` — end-to-end walkthrough + troubleshooting.
+- `doc/qa/framework/sandbox-sync-guide.md` — sandbox fork lifecycle.
+
 ## Contracts
 
 - `contracts/PLAN_SOURCE_CONTRACT.md` — How QA agents obtain plan files across worktrees
