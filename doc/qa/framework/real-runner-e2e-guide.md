@@ -9,9 +9,14 @@
 
 All of the following must be true or `scripts/test-deploy.sh` will fail fast (exit 2) at pre-flight.
 
-1. **Sandbox fork exists**:
+1. **Sandbox repo exists** (standalone, not a fork — GitHub doesn't allow same-account fork):
    ```
-   gh repo fork xrliAnnie/flywheel --fork-name flywheel-qa-sandbox --clone=false
+   gh repo create xrliAnnie/flywheel-qa-sandbox --public --description "FLY-115 QA sandbox for real-Runner E2E"
+   git clone git@github.com:xrliAnnie/flywheel.git /tmp/sandbox-seed
+   cd /tmp/sandbox-seed
+   git remote set-url origin git@github.com:xrliAnnie/flywheel-qa-sandbox.git
+   git push origin main
+   cd - && rm -rf /tmp/sandbox-seed
    ```
    See `doc/qa/framework/sandbox-sync-guide.md` for ongoing sync.
 
@@ -189,9 +194,9 @@ gh pr close <number> -R xrliAnnie/flywheel-qa-sandbox
 |---------|--------------|-----------|
 | Pre-flight exit 2: "LINEAR_API_KEY not set" | Shell env missing key | `export LINEAR_API_KEY=...` (or fix `~/.zshrc`) |
 | Pre-flight exit 2: "gh CLI not authenticated" | gh token expired | `gh auth refresh` |
-| Pre-flight exit 2: "sandbox repo missing" | Fork not created | `gh repo fork xrliAnnie/flywheel --fork-name flywheel-qa-sandbox --clone=false` |
+| Pre-flight exit 2: "sandbox repo missing" | Standalone sandbox not created | See §1 step 1 — `gh repo create` + seed from flywheel main |
 | Pre-flight exit 2: "preflight failed (...rebuild...)" | `better-sqlite3` build or edge-worker tsc failed under preflight lock | `pnpm -r install`, then re-run deploy |
-| Pre-flight exit 2: "no push permission on ..." | gh token lacks push scope on sandbox, or fork owned by a different account | `gh auth refresh -s repo`, confirm `gh api repos/<slug> --jq .permissions.push` returns `true` |
+| Pre-flight exit 2: "no push permission on ..." | gh token lacks push scope on sandbox | `gh auth refresh -s repo`, confirm `gh api repos/<slug> --jq .permissions.push` returns `true` |
 | Pre-flight exit 2: "preflight lock busy > 300s" | Stale `/tmp/flywheel-qa-rebuild.lock` from a crashed deploy | Check holder PID in `${lock}/pid`; if dead, `rm -rf /tmp/flywheel-qa-rebuild.lock` |
 | Inject exit 2 (404) | Linear reports the issue doesn't exist | Check ID spelling; confirm the issue is visible to the LINEAR_API_KEY's workspace |
 | `git clone --branch <br>` fails | Branch not pushed to sandbox | `git push git@github.com:xrliAnnie/flywheel-qa-sandbox.git <br>:<br>` |
