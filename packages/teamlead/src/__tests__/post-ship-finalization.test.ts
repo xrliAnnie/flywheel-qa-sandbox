@@ -289,6 +289,51 @@ describe("runPostShipFinalization", () => {
 		expect(callOrder.filter((s) => s === "discord:archive")).toHaveLength(1);
 	});
 
+	it("FLY-108 Variant B: running → completed path still fires exactly-once", async () => {
+		// Seed a session whose pre-FSM state was `running` (Variant B — docs-only
+		// compressed pipeline). After `running → completed` FSM transition,
+		// event-route calls runPostShipFinalization with sessionStatus="completed".
+		// Orchestrator claim must still dedupe across retries regardless of how
+		// we got here (no pre-existing `approved_to_ship` history needed).
+		store = await StateStore.create(":memory:");
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-108",
+			project_name: "flywheel",
+			status: "completed", // post-transition value event-route passes in
+		});
+		store.upsertChatThread("thread-1", "chan-1", "FLY-108");
+
+		const opts = {
+			executionId: "exec-1",
+			issueId: "FLY-108",
+			issueIdentifier: "FLY-108",
+			projectName: "flywheel",
+			sessionStatus: "completed",
+			discordOwnerUserId: "user-annie",
+			fallbackBotToken: undefined,
+		};
+
+		await Promise.all([
+			runPostShipFinalization(opts, { store, projects: PROJECTS }),
+			runPostShipFinalization(opts, { store, projects: PROJECTS }),
+		]);
+
+		expect(callOrder.filter((s) => s === "discord:archive")).toHaveLength(1);
+		expect(callOrder.filter((s) => s === "discord:remove-user")).toHaveLength(
+			1,
+		);
+		expect(callOrder.filter((s) => s === "tmux:kill")).toHaveLength(1);
+		expect(callOrder.filter((s) => s === "discord:post-message")).toHaveLength(
+			1,
+		);
+
+		const claims = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "post_ship_finalization_claim");
+		expect(claims).toHaveLength(1);
+	});
+
 	it("never throws when postMergeTmuxCleanup errors", async () => {
 		mockGetTmuxTarget.mockImplementationOnce(() => {
 			throw new Error("CommDB corrupted");

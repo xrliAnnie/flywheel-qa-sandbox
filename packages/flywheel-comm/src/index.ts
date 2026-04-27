@@ -5,6 +5,7 @@ import { ask } from "./commands/ask.js";
 import { capture } from "./commands/capture.js";
 import { check } from "./commands/check.js";
 import { cleanupMessages } from "./commands/cleanup-messages.js";
+import { complete } from "./commands/complete.js";
 import { gate } from "./commands/gate.js";
 import { inbox } from "./commands/inbox.js";
 import { pending } from "./commands/pending.js";
@@ -32,6 +33,7 @@ Commands:
   capture   Capture tmux output of a runner session
   search    Search tmux output for a regex pattern
   stage     Report pipeline stage to Bridge (Runner use)
+  complete  Emit session_completed terminal event to Bridge (Runner use)
   cleanup   Delete read messages older than TTL (default 24h)
 
 Global options:
@@ -92,6 +94,9 @@ async function main(): Promise<void> {
 			break;
 		case "stage":
 			await runStage(commandArgs);
+			break;
+		case "complete":
+			await runComplete(commandArgs);
 			break;
 		case "cleanup":
 			runCleanup(commandArgs);
@@ -449,6 +454,32 @@ async function runSearch(args: string[]): Promise<void> {
 			console.log(`${m.line}: ${m.text}`);
 		}
 	}
+}
+
+async function runComplete(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			route: { type: "string" },
+			pr: { type: "string" },
+			merged: { type: "boolean", default: false },
+			"session-role": { type: "string" },
+			summary: { type: "string" },
+			"exit-reason": { type: "string" },
+			"base-ref": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+
+	await complete({
+		route: values.route ?? "",
+		pr: values.pr ? Number.parseInt(values.pr, 10) : undefined,
+		merged: values.merged ?? false,
+		sessionRole: values["session-role"],
+		summary: values.summary,
+		exitReason: values["exit-reason"],
+		baseRef: values["base-ref"],
+	});
 }
 
 async function runStage(args: string[]): Promise<void> {

@@ -201,6 +201,153 @@ describe("CIPHER Bridge E2E", () => {
 		expect(snapshots[0]![1]).toBe("issue-c1");
 	});
 
+	it("FLY-108: Runner-driven emit backfills labels from session_started StateStore", async () => {
+		// session_started with labels persisted to StateStore.issue_labels
+		const startRes = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: ingestHeaders,
+			body: JSON.stringify({
+				event_id: "evt-start-backfill",
+				execution_id: "exec-backfill",
+				issue_id: "issue-backfill",
+				project_name: "geoforge3d",
+				event_type: "session_started",
+				payload: {
+					issueIdentifier: "GEO-BK1",
+					issueTitle: "Backfill test",
+					labels: ["bug", "priority:high"],
+				},
+			}),
+		});
+		expect(startRes.status).toBe(200);
+
+		// session_completed omits labels + projectId (Runner-driven emit)
+		const completeRes = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: ingestHeaders,
+			body: JSON.stringify({
+				event_id: "evt-complete-backfill",
+				execution_id: "exec-backfill",
+				issue_id: "issue-backfill",
+				project_name: "geoforge3d",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review", reasoning: "runner" },
+					evidence: {
+						commitCount: 2,
+						filesChangedCount: 2,
+						linesAdded: 30,
+						linesRemoved: 10,
+						diffSummary: "Runner fix",
+						commitMessages: ["fix: thing", "test: add"],
+						changedFilePaths: ["a.ts", "b.ts"],
+					},
+					issueIdentifier: "GEO-BK1",
+					issueTitle: "Backfill test",
+					exitReason: "completed",
+				},
+			}),
+		});
+		expect(completeRes.status).toBe(200);
+		expect(store.getSession("exec-backfill")!.status).toBe("awaiting_review");
+
+		// Snapshot exists with backfilled labels + degraded empty projectId
+		const rows = await queryCipherDb(
+			cipherDbPath,
+			"SELECT issue_labels, project_id FROM decision_snapshots WHERE execution_id = 'exec-backfill'",
+		);
+		expect(rows.length).toBe(1);
+		expect(JSON.parse(rows[0]![0] as string)).toEqual(["bug", "priority:high"]);
+		expect(rows[0]![1]).toBe("");
+	});
+
+	it("FLY-108: session_started also omitted labels → snapshot created with empty array", async () => {
+		await startSession("exec-bk-empty", "issue-bk-empty", "GEO-BK2");
+
+		const completeRes = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: ingestHeaders,
+			body: JSON.stringify({
+				event_id: "evt-complete-bk-empty",
+				execution_id: "exec-bk-empty",
+				issue_id: "issue-bk-empty",
+				project_name: "geoforge3d",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review", reasoning: "no labels" },
+					evidence: {
+						commitCount: 1,
+						filesChangedCount: 1,
+						linesAdded: 5,
+						linesRemoved: 1,
+						changedFilePaths: ["x.ts"],
+					},
+					exitReason: "completed",
+				},
+			}),
+		});
+		expect(completeRes.status).toBe(200);
+
+		const rows = await queryCipherDb(
+			cipherDbPath,
+			"SELECT issue_labels FROM decision_snapshots WHERE execution_id = 'exec-bk-empty'",
+		);
+		expect(rows.length).toBe(1);
+		expect(JSON.parse(rows[0]![0] as string)).toEqual([]);
+	});
+
+	it("FLY-108: explicit empty labels array wins over StateStore backfill", async () => {
+		// session_started has labels ["bug"]
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: ingestHeaders,
+			body: JSON.stringify({
+				event_id: "evt-start-explicit-empty",
+				execution_id: "exec-explicit-empty",
+				issue_id: "issue-explicit-empty",
+				project_name: "geoforge3d",
+				event_type: "session_started",
+				payload: {
+					issueIdentifier: "GEO-BK3",
+					labels: ["bug"],
+				},
+			}),
+		});
+
+		// session_completed explicitly sends labels: [] → honored, not backfilled
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: ingestHeaders,
+			body: JSON.stringify({
+				event_id: "evt-complete-explicit-empty",
+				execution_id: "exec-explicit-empty",
+				issue_id: "issue-explicit-empty",
+				project_name: "geoforge3d",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review", reasoning: "explicit empty" },
+					evidence: {
+						commitCount: 1,
+						filesChangedCount: 1,
+						linesAdded: 2,
+						linesRemoved: 1,
+						changedFilePaths: ["y.ts"],
+					},
+					labels: [],
+					exitReason: "completed",
+				},
+			}),
+		});
+		expect(res.status).toBe(200);
+
+		const rows = await queryCipherDb(
+			cipherDbPath,
+			"SELECT issue_labels FROM decision_snapshots WHERE execution_id = 'exec-explicit-empty'",
+		);
+		expect(rows.length).toBe(1);
+		expect(JSON.parse(rows[0]![0] as string)).toEqual([]);
+	});
+
 	it("session_completed without CIPHER fields → no snapshot (graceful skip)", async () => {
 		await startSession("exec-no-cipher", "issue-no-cipher", "GEO-301");
 
