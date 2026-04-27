@@ -5,14 +5,14 @@
 
 ---
 
-## 1. Why a sandbox fork
+## 1. Why a sandbox repo
 
 Real-Runner QA (FLY-115) needs a push target that:
 
 1. The test Runner can safely `git push` + `gh pr create` against without polluting the real `xrliAnnie/flywheel` history.
 2. Has a `main` that matches production closely enough that spin.md, worktree setup, and build steps behave the same as prod.
 
-`xrliAnnie/flywheel-qa-sandbox` is that fork.
+`xrliAnnie/flywheel-qa-sandbox` is a **standalone repo** seeded from flywheel main. GitHub does not allow a user to fork their own repo to the same account, so the sandbox is not a true fork — it's an independent repo kept in sync manually (§3).
 
 ---
 
@@ -20,8 +20,15 @@ Real-Runner QA (FLY-115) needs a push target that:
 
 Done once per machine / account. Pre-deploy checklist in `scripts/test-deploy.sh` fails with a pointer back here if this is missing.
 
+> **Note**: GitHub does NOT allow a user to fork their own repo to the same account. So sandbox is a **standalone repo seeded from flywheel main**, not a true fork. The QA test flow is identical — only the sync mechanism differs (see §3).
+
 ```
-gh repo fork xrliAnnie/flywheel --fork-name flywheel-qa-sandbox --clone=false
+gh repo create xrliAnnie/flywheel-qa-sandbox --public --description "FLY-115 QA sandbox for real-Runner E2E"
+git clone git@github.com:xrliAnnie/flywheel.git /tmp/sandbox-seed
+cd /tmp/sandbox-seed
+git remote set-url origin git@github.com:xrliAnnie/flywheel-qa-sandbox.git
+git push origin main
+cd - && rm -rf /tmp/sandbox-seed
 gh auth status
 gh api repos/xrliAnnie/flywheel-qa-sandbox --jq .permissions.push   # expect: true
 ```
@@ -38,13 +45,19 @@ FLYWHEEL_SANDBOX_REMOTE_URL=git@github.com:xrliAnnie/flywheel-qa-sandbox.git
 
 ## 3. Sync flow
 
-GitHub can sync a fork from its upstream branch-for-branch with a single API call. For the default branch:
+Since sandbox is a standalone repo (not a fork), `gh repo sync` does NOT work. Use manual git fetch + force push:
 
 ```
-gh repo sync xrliAnnie/flywheel-qa-sandbox --source xrliAnnie/flywheel --branch main
+git clone git@github.com:xrliAnnie/flywheel-qa-sandbox.git /tmp/sandbox-sync
+cd /tmp/sandbox-sync
+git remote add upstream git@github.com:xrliAnnie/flywheel.git
+git fetch upstream main
+git reset --hard upstream/main
+git push --force origin main
+cd - && rm -rf /tmp/sandbox-sync
 ```
 
-This is a fast-forward merge on GitHub's side. No clone, no rebase required.
+This is destructive to sandbox `main` history — it's fine because sandbox has no independent history of record; it's a throwaway mirror.
 
 ---
 
@@ -63,31 +76,14 @@ If the real-Runner E2E guide's §2 ("push the branch under test to sandbox") is 
 
 ## 5. Troubleshooting
 
-**Sync reports conflicts**
-`gh repo sync` will refuse to force-merge. If sandbox `main` has diverged (it shouldn't — no one should be committing to sandbox), reset it to the upstream ref explicitly:
-
-```
-git clone git@github.com:xrliAnnie/flywheel-qa-sandbox.git /tmp/sandbox-reset
-cd /tmp/sandbox-reset
-git fetch origin
-git remote add upstream git@github.com:xrliAnnie/flywheel.git
-git fetch upstream
-git reset --hard upstream/main
-git push --force origin main
-rm -rf /tmp/sandbox-reset
-```
-
-This is destructive to sandbox `main` history — it's fine because sandbox has no independent history of record; it's a throwaway mirror.
+**Sync reports conflicts or push rejected**
+The §3 procedure uses `--force` so conflicts shouldn't occur. If force-push is rejected (branch protection on sandbox `main`), disable the rule: `gh api repos/xrliAnnie/flywheel-qa-sandbox/branches/main/protection -X DELETE`. Sandbox has no independent history of record — protection is not useful.
 
 **`gh` auth expired**
 
 ```
 gh auth refresh
 ```
-
-**`gh repo sync` not available**
-
-Upgrade `gh`: `brew upgrade gh`. Minimum version supporting `gh repo sync` is 2.8.
 
 ---
 
