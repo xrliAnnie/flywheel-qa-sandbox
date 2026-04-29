@@ -82,7 +82,7 @@ describe("isPostApproveShipComplete", () => {
 		).toBe(false);
 	});
 
-	it("returns false for route=needs_review", () => {
+	it("returns false for route=needs_review (no landing status)", () => {
 		expect(
 			isPostApproveShipComplete({
 				existingStatus: "running",
@@ -90,6 +90,30 @@ describe("isPostApproveShipComplete", () => {
 				landingStatus: undefined,
 			}),
 		).toBe(false);
+	});
+
+	it("returns false for route=needs_review + ready_to_merge (PR not yet merged)", () => {
+		expect(
+			isPostApproveShipComplete({
+				existingStatus: "running",
+				route: "needs_review",
+				landingStatus: { status: "ready_to_merge" },
+			}),
+		).toBe(false);
+	});
+
+	// FLY-115 v1.24.5 (FLY-120): Lead unblocked approve_to_ship via
+	// `flywheel-comm respond` so existingStatus never reached
+	// `approved_to_ship`. Without this case the Runner tmux + chat thread
+	// stay alive after the PR has merged.
+	it("returns true for route=needs_review + landingStatus.merged (FLY-120 self-shipped path)", () => {
+		expect(
+			isPostApproveShipComplete({
+				existingStatus: "running",
+				route: "needs_review",
+				landingStatus: { status: "merged" },
+			}),
+		).toBe(true);
 	});
 
 	it("returns false when existingStatus !== approved_to_ship AND not auto_approve+merged (Round 2 Issue #2)", () => {
