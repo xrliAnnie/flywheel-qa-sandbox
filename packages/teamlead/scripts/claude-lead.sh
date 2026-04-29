@@ -172,16 +172,6 @@ mkdir -p "$SESSION_DIR"
 # GEO-286: $3 is project-name IF it doesn't start with "--".
 # Flags (--subdir) can appear at $3+ position.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# FLY-83: FLYWHEEL_ROOT for locating scripts/lead-alert.sh (independent alert path).
-# SCRIPT_DIR is packages/teamlead/scripts; FLYWHEEL_ROOT is three levels up.
-FLYWHEEL_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
-export FLYWHEEL_ROOT
-# FLY-83: Ensure all alert-path directories exist before anything can fail.
-# - blocked/  : marker files pausing supervisor until Annie clears them
-# - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
-# - alerts/   : claims.db (cross-process dedup) lives here
-BLOCKED_DIR="${HOME}/.flywheel/blocked"
-mkdir -p "$BLOCKED_DIR" "${HOME}/.flywheel/alert-queue" "${HOME}/.flywheel/alerts"
 LEAD_SUBDIR=""
 PROJECT_NAME=""
 BOT_TOKEN_ENV_NAME=""
@@ -555,87 +545,63 @@ SHOULD_EXIT=0
 # tmux provides the window; expect provides PTY + prompt detection inside the window.
 LEAD_WINDOW_ID=""
 
-# FLY-80: expect script for auto-confirming dev channels dialog.
+# FLY-109: Dev-channels dialog auto-confirm via tmux capture-pane.
+#
 # Claude Code shows a TUI confirmation for --dangerously-load-development-channels.
-# In daemon mode (launchd), no human can press Enter. expect watches for the prompt
-# text and sends Enter automatically, then waits for Claude to exit.
-_EXPECT_SCRIPT="${TMPDIR:-/tmp}/flywheel-ac-${LEAD_ID}.expect"
-cat > "$_EXPECT_SCRIPT" <<'EXPECT_EOF'
-#!/usr/bin/expect -f
-# FLY-80 / FLY-83: Auto-confirm safe startup prompts; detect blocked prompts
-# and exit with layered sentinel codes (100/101/102) so claude-lead.sh can
-# pause, write a marker, and fire an independent Discord alert.
+# In daemon mode (launchd), no human can press Enter. We poll the tmux pane's
+# rendered text (ANSI-stripped by capture-pane) and send "1" + Enter when we detect
+# dialog markers.
 #
-# Design notes:
-# - Claude's Ink TUI injects ANSI color codes between EVERY word, so multi-
-#   word phrases like "local development" never match as contiguous bytes
-#   ("local\x1b[39m \x1b[38;5;153mdevelopment"). Word-boundary anchors \m/\M
-#   skip the ANSI noise without needing per-byte stripping.
-# - Blocked prompts need a title word AND a tail word within the same
-#   screen region — bounded {0,200} distance via (?s) single-line mode.
-# - expect allocates a PTY so Claude gets a TTY for Ink.
-# Usage: expect <this-script> claude <args...>
-log_user 1
-# FLY-102 hot-deploy fix: 60s was too short — Claude boot can exceed 60s with
-# config loading; after timeout, expect fell through and the prompt was never
-# dismissed. Bump to 600s and keep watching indefinitely for prompt/success.
-set timeout 600
-eval spawn -noecho [lrange $argv 0 end]
-set confirmed 0
-
-# Tcl ARE tops out at 255 repetitions per branch and word-boundary anchors
-# (\m/\M) don't fire when an ANSI escape like `[31m` puts a letter directly
-# against the target word. We fall back to *bounded co-occurrence* regexes:
-# each prompt must contain two distinctive tokens within ~200 screen bytes.
-# Distinctive enough to avoid false positives in normal TUI output.
+# Previous approach (expect script) failed because Ink TUI inserts ANSI escape
+# codes between words, breaking regex matching on the raw byte stream. capture-pane
+# returns the rendered screen content without ANSI codes, making grep reliable.
 #
-# Single unified loop: auto-confirm startup prompts, fire sentinel codes on
-# blocked prompts, cleanly exit on EOF. `set timeout -1` after first match
-# so long-running sessions are not torn down by the boot-phase timeout.
+# The poller runs in the background and auto-exits on confirm or timeout.
 
-set booting 1
-expect {
-  # Dev-channels confirm: title (development|bypass) + footer (confirm|cancel).
-  -re {(?s)(development|bypass).{0,200}(confirm|cancel)} {
-    if {!$confirmed} {
-      send "1\r"
-      set confirmed 1
-    }
-    set booting 0
-    set timeout -1
-    exp_continue
-  }
-  # Auto-compact confirm.
-  -re {(?s)compact.{0,200}(confirm|enter)} {
-    send "1\r"
-    set booting 0
-    set timeout -1
-    exp_continue
-  }
-  # Rate limit — NOT auto-dismissed. Supervisor pauses 30min on exit 100.
-  -re {(?s)(rate|usage).{0,200}(limit|reset|try again)} { exit 100 }
-  # Login expired / re-auth required — NOT auto-dismissed; marker + alert.
-  -re {(?s)(login|reauth).{0,200}(expired|required)} { exit 101 }
-  # Permission prompt — NEVER auto-confirmed; marker + alert, needs Annie.
-  -re {(?s)permission.{0,200}(required|denied)} { exit 102 }
-  timeout {
-    if {$booting} {
-      # Boot-phase fell through — Claude likely past the confirm screen.
-      # Blind-send Enter once, relax the timeout, and keep watching.
-      if {!$confirmed} { send "1\r"; set confirmed 1 }
-      set booting 0
-      set timeout -1
-      exp_continue
-    }
-  }
-  eof { }
+mkdir -p "${HOME}/.flywheel/logs" 2>/dev/null || true
+FLYWHEEL_DIALOG_TIMEOUT_SEC="${FLYWHEEL_EXPECT_DIALOG_TIMEOUT_SEC:-90}"
+FLYWHEEL_STARTUP_LOG="${FLYWHEEL_EXPECT_LOG:-${HOME}/.flywheel/logs/lead-${LEAD_ID}-startup.log}"
+
+_log_startup() {
+  echo "$(date -u '+%Y-%m-%dT%H:%M:%S') $*" >> "$FLYWHEEL_STARTUP_LOG"
 }
 
-# Propagate Claude's exit code.
-lassign [wait] pid spawnid os_error_flag value
-exit $value
-EXPECT_EOF
-chmod +x "$_EXPECT_SCRIPT"
+# Poll tmux pane for dev-channels dialog and auto-confirm.
+# Args: $1 = tmux window_id, $2 = timeout_sec
+# Runs as a background job; exits on confirm, timeout, or window death.
+_poll_dev_channels_dialog() {
+  local window_id="$1"
+  local timeout_sec="${2:-90}"
+  local elapsed=0
+
+  _log_startup "dialog-poller: start window=${window_id} timeout=${timeout_sec}s"
+
+  while [ "$elapsed" -lt "$timeout_sec" ]; do
+    # Check window still exists
+    if ! tmux list-panes -t "$window_id" &>/dev/null; then
+      _log_startup "dialog-poller: window gone, exiting"
+      return 0
+    fi
+
+    local pane_text
+    pane_text=$(tmux capture-pane -t "$window_id" -p 2>/dev/null || echo "")
+
+    if echo "$pane_text" | grep -qE "Loading development channels|am using this for local development|development channels"; then
+      _log_startup "dialog-poller: matched dev-channels dialog, sending '1' Enter"
+      tmux send-keys -t "$window_id" "1" 2>/dev/null || true
+      sleep 0.3
+      tmux send-keys -t "$window_id" Enter 2>/dev/null || true
+      _log_startup "dialog-poller: confirmed=1"
+      return 0
+    fi
+
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  _log_startup "dialog-poller: DEV_CHANNELS_DIALOG_NOT_SEEN after ${timeout_sec}s"
+  return 0
+}
 
 # Ensure the shared flywheel tmux session exists (race-safe, idempotent).
 # Called before every launch — handles session being killed externally.
@@ -671,21 +637,14 @@ _launch_claude() {
     -e "PATH=${PATH}"
   )
 
-  # Create new window running claude via expect (auto-confirms dev channels prompt).
-  # Falls back to direct claude if expect is unavailable.
-  local launch_cmd
-  if command -v expect >/dev/null 2>&1; then
-    launch_cmd="expect ${_EXPECT_SCRIPT} claude"
-  else
-    log "WARNING: expect not found, dev channels prompt may block"
-    launch_cmd="claude"
-  fi
+  # FLY-109: Launch claude directly (no expect wrapper). Dev-channels dialog
+  # is handled by background capture-pane poller started below.
   LEAD_WINDOW_ID=$(tmux new-window -d -P -F '#{window_id}' \
     -t =flywheel \
     "${env_args[@]}" \
     -n "$window_name" \
     -c "$LEAD_WORKSPACE" \
-    ${launch_cmd} "$@")
+    claude "$@")
 
   # Enable remain-on-exit on this specific window so we can read exit code
   # (must be set-window-option on the window, not session-level, for tmux 3.5+)
@@ -730,8 +689,7 @@ cleanup() {
   SHOULD_EXIT=1
   log "Shutdown signal received..."
 
-  # FLY-80: Clean up expect script
-  rm -f "${_EXPECT_SCRIPT:-}" 2>/dev/null || true
+  # FLY-109: expect-dev-channels.exp lives under scripts/ now — nothing to clean up.
 
   # Graceful shutdown: send C-c to Claude in tmux
   if [ -n "${LEAD_WINDOW_ID:-}" ]; then
@@ -760,6 +718,10 @@ cleanup() {
 
   # FLY-20: Remove PID file on graceful exit
   rm -f "${PID_FILE:-}" 2>/dev/null || true
+  # FLY-109: Release MCP pre-seed lock only if THIS process holds it
+  if [ "${_MCP_LOCK_HELD:-false}" = "true" ] && [ -n "${_SETTINGS_LOCAL_JSON:-}" ]; then
+    rmdir "${_SETTINGS_LOCAL_JSON}.flywheel-lock" 2>/dev/null || true
+  fi
   # Exit from trap to prevent main flow from continuing after signal
   exit 0
 }
@@ -861,6 +823,72 @@ jq -n \
   > "$MCP_CONFIG_FILE"
 log "MCP config: ${MCP_CONFIG_FILE}"
 
+# FLY-109 (b): Pre-seed enableAllProjectMcpServers so project .mcp.json servers
+# are auto-approved on resume (no interactive dialog dependency).
+#
+# Target: <LEAD_WORKSPACE>/.claude/settings.local.json (localSettings layer).
+#
+# Why this path, not ~/.claude.json:
+# Upstream Claude Code reads enableAllProjectMcpServers via getSettings_DEPRECATED(),
+# which returns the merged settings tree. It also runs
+# migrateEnableAllProjectMcpServersToSettings() on startup: a value found at
+# ~/.claude.json.projects[cwd].enableAllProjectMcpServers is copied to localSettings
+# only when localSettings.enableAllProjectMcpServers is undefined, then deleted from
+# ~/.claude.json regardless. Consequence: seeding ~/.claude.json is a noop whenever
+# localSettings already has a decision (especially a prior `false`), and is wiped
+# on every startup. Writing localSettings directly overrides prior decisions and
+# survives restarts.
+#
+# Each Lead owns its own workspace dir, so a per-workspace lock is sufficient.
+_SETTINGS_LOCAL_JSON="${LEAD_WORKSPACE}/.claude/settings.local.json"
+_MCP_LOCK_HELD=false
+if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$(dirname "$_SETTINGS_LOCAL_JSON")" 2>/dev/null || true
+
+  # mkdir is atomic on POSIX — serves as a spinlock for concurrent writers.
+  # Stale lock detection: if lock dir is >60s old, a previous process was
+  # killed mid-write. Remove it and retry. Uses -mmin +1 (integer, macOS
+  # find does not support fractional minutes).
+  _lock_dir="${_SETTINGS_LOCAL_JSON}.flywheel-lock"
+  _lock_acquired=false
+  for _i in $(seq 1 50); do
+    if mkdir "$_lock_dir" 2>/dev/null; then
+      _lock_acquired=true
+      _MCP_LOCK_HELD=true
+      break
+    fi
+    # Stale lock check: dir older than 1 minute is definitely orphaned
+    if find "$_lock_dir" -maxdepth 0 -mmin +1 -print 2>/dev/null | grep -q .; then
+      rmdir "$_lock_dir" 2>/dev/null || true
+      log "MCP approval: removed stale lock dir"
+    fi
+    sleep 0.2
+  done
+
+  if [ "$_lock_acquired" = "true" ]; then
+    # Create empty settings.local.json if missing (fresh workspace).
+    # Inside the lock to prevent concurrent creates from racing.
+    if [ ! -f "$_SETTINGS_LOCAL_JSON" ]; then
+      echo '{}' > "$_SETTINGS_LOCAL_JSON"
+      log "MCP approval: created ${_SETTINGS_LOCAL_JSON}"
+    fi
+
+    _tmp_settings="$(mktemp "${_SETTINGS_LOCAL_JSON}.tmp.XXXXXX")"
+    if jq '.enableAllProjectMcpServers = true' \
+       "$_SETTINGS_LOCAL_JSON" > "$_tmp_settings" 2>/dev/null; then
+      mv "$_tmp_settings" "$_SETTINGS_LOCAL_JSON"
+      log "MCP approval: enableAllProjectMcpServers=true in ${_SETTINGS_LOCAL_JSON}"
+    else
+      rm -f "$_tmp_settings" 2>/dev/null || true
+      log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
+    fi
+    rmdir "$_lock_dir" 2>/dev/null || true
+    _MCP_LOCK_HELD=false
+  else
+    log "WARNING: Could not acquire lock on ${_SETTINGS_LOCAL_JSON} after 10s, skipping MCP pre-seed"
+  fi
+fi
+
 # Build claude args using bash array (avoids quoting/word-splitting issues)
 CLAUDE_ARGS=(
   --agent "$LEAD_ID"
@@ -875,6 +903,18 @@ CLAUDE_ARGS+=(--channels "plugin:discord@claude-plugins-official")
 if [ "$INBOX_MCP_ENABLED" = "true" ]; then
   CLAUDE_ARGS+=(--dangerously-load-development-channels "server:flywheel-inbox")
   log "Channels: Discord plugin + inbox server (dev channel)"
+
+  # FLY-109: Tell the Lead model how + when to call flywheel_inbox_ack. The file
+  # ships in scripts/ so it's always present when this launcher runs; no external
+  # sync required. Only loaded when inbox-mcp is enabled — the tool doesn't exist
+  # otherwise.
+  INBOX_ACK_RULE="${SCRIPT_DIR}/inbox-ack-rule.md"
+  if [ -f "$INBOX_ACK_RULE" ] && [ -r "$INBOX_ACK_RULE" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$INBOX_ACK_RULE")
+    log "Appending inbox ack rule: ${INBOX_ACK_RULE}"
+  else
+    log "WARNING: inbox ack rule missing at ${INBOX_ACK_RULE} — Lead may not ack channel messages"
+  fi
 else
   log "Channels: Discord plugin only"
 fi
@@ -988,9 +1028,23 @@ while true; do
     echo "$SESSION_ID" > "$SESSION_ID_FILE"
   fi
 
-  # FLY-88: Wait for tmux window to complete (replaces `wait $CLAUDE_PID`).
-  # Auto-confirm is handled by expect inside the tmux window (FLY-80).
+  # FLY-109: Start background dev-channels dialog poller. capture-pane is
+  # ANSI-proof (unlike expect which fails on Ink TUI escape codes).
+  # Only poll when dev-channels flag is active.
+  if [ "$INBOX_MCP_ENABLED" = "true" ] && [ -n "${LEAD_WINDOW_ID:-}" ]; then
+    _poll_dev_channels_dialog "$LEAD_WINDOW_ID" "$FLYWHEEL_DIALOG_TIMEOUT_SEC" &
+    _DIALOG_POLLER_PID=$!
+  fi
+
+  # FLY-88: Wait for tmux window to complete.
   _wait_tmux_window
+
+  # Clean up dialog poller if still running
+  if [ -n "${_DIALOG_POLLER_PID:-}" ]; then
+    kill "$_DIALOG_POLLER_PID" 2>/dev/null || true
+    wait "$_DIALOG_POLLER_PID" 2>/dev/null || true
+    _DIALOG_POLLER_PID=""
+  fi
 
   # DURATION = this process's runtime (for crash classification / backoff)
   DURATION=$(( $(date +%s) - PROCESS_START_TS ))
@@ -1011,72 +1065,6 @@ while true; do
     sleep 2
     continue
   fi
-
-  # ── FLY-83: Layered blocked-prompt sentinels (100/101/102) ───
-  # expect wrapper emits these when it detects a blocked TUI prompt.
-  # These are NOT counted as crashes — hot-restarting through a rate limit
-  # or login-expired state would turn every minute into an alert storm.
-  LEAD_ALERT_SH="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
-  case "$CLAUDE_EXIT" in
-    100)
-      log "WARNING: rate-limit prompt detected (exit 100). Pausing 30min."
-      if [ -x "$LEAD_ALERT_SH" ]; then
-        "$LEAD_ALERT_SH" \
-          --lead "$LEAD_ID" --project "$PROJECT_NAME" \
-          --kind rate_limit --severity warning \
-          --title "Lead hit rate limit" \
-          --body "expect wrapper caught a rate-limit prompt; pausing 30min." \
-          || log "WARNING: lead-alert.sh returned non-zero"
-      else
-        log "WARNING: lead-alert.sh missing at $LEAD_ALERT_SH (skipped)"
-      fi
-      # Chunked sleep so SIGTERM can interrupt promptly.
-      _remaining=1800
-      while [ "$_remaining" -gt 0 ] && [ "$SHOULD_EXIT" -eq 0 ]; do
-        interruptible_sleep 60
-        _remaining=$((_remaining - 60))
-      done
-      continue
-      ;;
-    101)
-      MARKER="${BLOCKED_DIR}/${LEAD_ID}.login_expired.flag"
-      touch "$MARKER"
-      log "ERROR: login expired (exit 101). Marker: $MARKER"
-      if [ -x "$LEAD_ALERT_SH" ]; then
-        "$LEAD_ALERT_SH" \
-          --lead "$LEAD_ID" --project "$PROJECT_NAME" \
-          --kind login_expired --severity severe \
-          --title "Lead login expired" \
-          --body "Re-authenticate the Claude CLI, then remove the marker: rm $MARKER" \
-          || log "WARNING: lead-alert.sh returned non-zero"
-      else
-        log "WARNING: lead-alert.sh missing at $LEAD_ALERT_SH (skipped)"
-      fi
-      while [ -f "$MARKER" ] && [ "$SHOULD_EXIT" -eq 0 ]; do
-        interruptible_sleep 60
-      done
-      continue
-      ;;
-    102)
-      MARKER="${BLOCKED_DIR}/${LEAD_ID}.permission_blocked.flag"
-      touch "$MARKER"
-      log "ERROR: permission prompt (exit 102). Marker: $MARKER"
-      if [ -x "$LEAD_ALERT_SH" ]; then
-        "$LEAD_ALERT_SH" \
-          --lead "$LEAD_ID" --project "$PROJECT_NAME" \
-          --kind permission_blocked --severity warning \
-          --title "Lead waiting on permission prompt" \
-          --body "Decide in Claude CLI (Allow/Deny), then remove marker: rm $MARKER" \
-          || log "WARNING: lead-alert.sh returned non-zero"
-      else
-        log "WARNING: lead-alert.sh missing at $LEAD_ALERT_SH (skipped)"
-      fi
-      while [ -f "$MARKER" ] && [ "$SHOULD_EXIT" -eq 0 ]; do
-        interruptible_sleep 60
-      done
-      continue
-      ;;
-  esac
 
   # Non-zero exit = crash or resume failure
   CRASH_COUNT=$((CRASH_COUNT + 1))
@@ -1114,15 +1102,6 @@ while true; do
 
   if [ "$CRASH_COUNT" -ge 5 ]; then
     log "WARNING: ${CRASH_COUNT} consecutive crashes. Check Claude CLI health."
-    # FLY-83: Fire crash_loop alert once per escalation (idempotency via claims.db).
-    if [ -x "$LEAD_ALERT_SH" ]; then
-      "$LEAD_ALERT_SH" \
-        --lead "$LEAD_ID" --project "$PROJECT_NAME" \
-        --kind crash_loop --severity severe \
-        --title "Lead crash-looping" \
-        --body "Claude CLI has crashed ${CRASH_COUNT} times. Last exit code: ${CLAUDE_EXIT}." \
-        || log "WARNING: lead-alert.sh returned non-zero"
-    fi
   fi
 
   log "Waiting ${BACKOFF}s before restart..."

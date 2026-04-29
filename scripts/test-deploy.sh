@@ -397,34 +397,52 @@ log "Lead background PID: ${LEAD_BG_PID}"
 # local development / 2. Exit" prompt on startup. claude-lead.sh only sends
 # Enter (at 8s), which selects the UI default (Exit on fresh installs and
 # hangs the Lead). Poll the tmux window and send "1" + Enter explicitly.
+#
+# FLY-109: expect-dev-channels.exp now handles this inside the tmux child —
+# the send-keys workaround is redundant when the .exp file is active. Set
+# SKIP_DEV_CHANNELS_WORKAROUND=1 to skip this block and validate that the
+# .exp file alone is sufficient (Class A expect tests rely on this path).
 LEAD_WINDOW_NAME="${TEST_PROJECT_NAME}-${AGENT_ID}"
-log "Polling tmux window '${LEAD_WINDOW_NAME}' for dev-channels prompt"
-LEAD_WINDOW_ID=""
-for i in $(seq 1 30); do
-  LEAD_WINDOW_ID=$(tmux list-windows -t flywheel -F '#{window_id} #{window_name}' 2>/dev/null \
-    | awk -v n="$LEAD_WINDOW_NAME" '$2==n {print $1; exit}')
-  [[ -n "$LEAD_WINDOW_ID" ]] && break
-  sleep 1
-done
-
-if [[ -n "$LEAD_WINDOW_ID" ]]; then
-  log "Lead tmux window: ${LEAD_WINDOW_ID}"
-  PROMPT_HIT=false
+if [[ "${SKIP_DEV_CHANNELS_WORKAROUND:-0}" == "1" ]]; then
+  log "SKIP_DEV_CHANNELS_WORKAROUND=1 — relying on expect-dev-channels.exp for dialog confirmation"
+  LEAD_WINDOW_ID=""
   for i in $(seq 1 30); do
-    PANE=$(tmux capture-pane -t "$LEAD_WINDOW_ID" -p 2>/dev/null || echo "")
-    if echo "$PANE" | grep -qE "Loading development channels|am using this for local|development channels"; then
-      log "Detected dev-channels prompt on slot ${SLOT}, sending '1' Enter"
-      tmux send-keys -t "$LEAD_WINDOW_ID" "1" 2>/dev/null || true
-      sleep 0.3
-      tmux send-keys -t "$LEAD_WINDOW_ID" Enter 2>/dev/null || true
-      PROMPT_HIT=true
-      break
-    fi
+    LEAD_WINDOW_ID=$(tmux list-windows -t flywheel -F '#{window_id} #{window_name}' 2>/dev/null \
+      | awk -v n="$LEAD_WINDOW_NAME" '$2==n {print $1; exit}')
+    [[ -n "$LEAD_WINDOW_ID" ]] && break
     sleep 1
   done
-  [[ "$PROMPT_HIT" == "false" ]] && log "No dev-channels prompt observed (already acknowledged or startup bypassed it)"
+  [[ -n "$LEAD_WINDOW_ID" ]] && log "Lead tmux window: ${LEAD_WINDOW_ID} (expect script handles dialog)" \
+    || log "WARN: Lead tmux window '${LEAD_WINDOW_NAME}' not found after 30s"
 else
-  log "WARN: Lead tmux window '${LEAD_WINDOW_NAME}' not found after 30s"
+  log "Polling tmux window '${LEAD_WINDOW_NAME}' for dev-channels prompt"
+  LEAD_WINDOW_ID=""
+  for i in $(seq 1 30); do
+    LEAD_WINDOW_ID=$(tmux list-windows -t flywheel -F '#{window_id} #{window_name}' 2>/dev/null \
+      | awk -v n="$LEAD_WINDOW_NAME" '$2==n {print $1; exit}')
+    [[ -n "$LEAD_WINDOW_ID" ]] && break
+    sleep 1
+  done
+
+  if [[ -n "$LEAD_WINDOW_ID" ]]; then
+    log "Lead tmux window: ${LEAD_WINDOW_ID}"
+    PROMPT_HIT=false
+    for i in $(seq 1 30); do
+      PANE=$(tmux capture-pane -t "$LEAD_WINDOW_ID" -p 2>/dev/null || echo "")
+      if echo "$PANE" | grep -qE "Loading development channels|am using this for local|development channels"; then
+        log "Detected dev-channels prompt on slot ${SLOT}, sending '1' Enter"
+        tmux send-keys -t "$LEAD_WINDOW_ID" "1" 2>/dev/null || true
+        sleep 0.3
+        tmux send-keys -t "$LEAD_WINDOW_ID" Enter 2>/dev/null || true
+        PROMPT_HIT=true
+        break
+      fi
+      sleep 1
+    done
+    [[ "$PROMPT_HIT" == "false" ]] && log "No dev-channels prompt observed (already acknowledged or startup bypassed it)"
+  else
+    log "WARN: Lead tmux window '${LEAD_WINDOW_NAME}' not found after 30s"
+  fi
 fi
 
 # ── Step 2: Wait for Lead inbox-ready lease ───────────

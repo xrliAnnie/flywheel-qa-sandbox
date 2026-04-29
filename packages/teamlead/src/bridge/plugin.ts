@@ -41,6 +41,7 @@ import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { queryLinearIssues } from "./linear-query.js";
 import { createMemoryRouter } from "./memory-route.js";
+import { waitForPaneMarker } from "./pane-readiness.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
@@ -104,8 +105,72 @@ export async function createLeadRuntime(
 		);
 	}
 
+	// FLY-109 cold-start hardening (Direction R): soft-wait for the Lead tmux pane
+	// to print the MCP channel-handler marker before we declare readiness. Correctness
+	// does NOT depend on this — the ack/retry state machine in inbox-mcp recovers any
+	// push that fires before the handler is installed. We keep this as defense-in-
+	// depth against a cold-start thundering herd where every queued push would hit
+	// the retry window at once. Disabled by default; enable with
+	// FLYWHEEL_LEAD_PANE_READINESS=1 once ops have validated the marker text.
+	if (process.env.FLYWHEEL_LEAD_PANE_READINESS === "1") {
+		const windowId = await lookupLeadWindowId(projectName, lead.agentId);
+		if (windowId) {
+			const timeoutMs = Number.parseInt(
+				process.env.FLYWHEEL_LEAD_PANE_READINESS_TIMEOUT_MS ?? "20000",
+				10,
+			);
+			const result = await waitForPaneMarker(
+				windowId,
+				"Listening for channel messages from:",
+				Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : 20000,
+			);
+			if (result.seen) {
+				console.log(
+					`[Bridge] Lead "${lead.agentId}" pane ready after ${result.elapsedMs}ms`,
+				);
+			} else {
+				console.warn(
+					`[Bridge] Lead "${lead.agentId}" pane marker not seen within ${result.elapsedMs}ms — downgrading to lease-only readiness (ack/retry still covers correctness)`,
+				);
+			}
+		}
+	}
+
 	const { CommDBLeadRuntime } = await import("./commdb-lead-runtime.js");
 	return new CommDBLeadRuntime(commDbPath, lead.agentId);
+}
+
+/**
+ * Resolve the tmux window ID for a Lead's Claude session.
+ * Lead windows live in the shared `flywheel` session and are named `<project>-<lead>`.
+ * Returns undefined if the session or window doesn't exist yet (cold start).
+ */
+async function lookupLeadWindowId(
+	projectName: string,
+	agentId: string,
+): Promise<string | undefined> {
+	const { execFile } = await import("node:child_process");
+	const { promisify } = await import("node:util");
+	const execFileAsync = promisify(execFile);
+	const targetName = `${projectName}-${agentId}`;
+	try {
+		const { stdout } = await execFileAsync(
+			"tmux",
+			["list-windows", "-t", "flywheel", "-F", "#{window_name}:#{window_id}"],
+			{ timeout: 5000 },
+		);
+		for (const line of stdout.split("\n")) {
+			const sep = line.indexOf(":");
+			if (sep <= 0) continue;
+			const name = line.slice(0, sep);
+			const id = line.slice(sep + 1);
+			if (name === targetName && id.startsWith("@")) return id;
+		}
+	} catch {
+		// tmux may be absent or the flywheel session may not exist yet — callers
+		// treat undefined as "skip pane check, proceed with lease-only readiness".
+	}
+	return undefined;
 }
 
 /**

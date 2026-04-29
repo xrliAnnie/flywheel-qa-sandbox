@@ -20,7 +20,8 @@
 	"dependencies": {
 		"@modelcontextprotocol/sdk": "^1.25.2",
 		"better-sqlite3": "^12.0.0",
-		"flywheel-comm": "workspace:*"
+		"flywheel-comm": "workspace:*",
+		"zod": "4.3.6"
 	},
 	"devDependencies": {
 		"@types/better-sqlite3": "^7.6.8",
