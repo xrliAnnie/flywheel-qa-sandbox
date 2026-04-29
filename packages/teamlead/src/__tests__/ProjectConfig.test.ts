@@ -804,3 +804,99 @@ describe("validateMemoryIds", () => {
 		}
 	});
 });
+
+describe("FLY-83 alert fields", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+
+	afterEach(() => {
+		if (originalEnv === undefined) {
+			delete process.env.FLYWHEEL_PROJECTS;
+		} else {
+			process.env.FLYWHEEL_PROJECTS = originalEnv;
+		}
+	});
+
+	function validLead(overrides: Partial<LeadConfig> = {}): LeadConfig {
+		return {
+			agentId: "product-lead",
+			forumChannel: "111",
+			chatChannel: "222",
+			match: { labels: ["Product"] },
+			...overrides,
+		};
+	}
+
+	it("accepts a lead without any alert fields (all optional)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "geo",
+				projectRoot: "/tmp/geo",
+				leads: [validLead()],
+			},
+		]);
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.alertChannel).toBeUndefined();
+		expect(projects[0]!.leads[0]!.alertBotTokenEnv).toBeUndefined();
+		expect(projects[0]!.leads[0]!.alertDmUserId).toBeUndefined();
+		expect(projects[0]!.leads[0]!.alertFallbackToCore).toBeUndefined();
+	});
+
+	it("preserves alertChannel / alertBotTokenEnv / alertDmUserId / alertFallbackToCore when valid", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "geo",
+				projectRoot: "/tmp/geo",
+				leads: [
+					validLead({
+						alertChannel: "1487340532610109520",
+						alertBotTokenEnv: "SIMBA_BOT_TOKEN",
+						alertDmUserId: "999",
+						alertFallbackToCore: true,
+					}),
+				],
+			},
+		]);
+		const lead = loadProjects()[0]!.leads[0]!;
+		expect(lead.alertChannel).toBe("1487340532610109520");
+		expect(lead.alertBotTokenEnv).toBe("SIMBA_BOT_TOKEN");
+		expect(lead.alertDmUserId).toBe("999");
+		expect(lead.alertFallbackToCore).toBe(true);
+	});
+
+	it("rejects empty-string alertChannel", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "geo",
+				projectRoot: "/tmp/geo",
+				leads: [validLead({ alertChannel: "" })],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/alertChannel/);
+	});
+
+	it("rejects non-string alertBotTokenEnv", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "geo",
+				projectRoot: "/tmp/geo",
+				leads: [validLead({ alertBotTokenEnv: 42 as unknown as string })],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/alertBotTokenEnv/);
+	});
+
+	it("rejects non-boolean alertFallbackToCore", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "geo",
+				projectRoot: "/tmp/geo",
+				leads: [
+					validLead({
+						alertFallbackToCore: "yes" as unknown as boolean,
+					}),
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/alertFallbackToCore/);
+	});
+});
