@@ -91,6 +91,7 @@ Current version: see `doc/VERSION`
 | FLY-115: QA Test Slot Framework — Real Runner Support (A1 + W1 + F1) | ✅ Merged (PR #157) |
 | FLY-115 v1.24.1: framework fix — Runner trust prompt + Lead tail pipe + teardown portability | ✅ Merged (PR #158) |
 | FLY-108: Session status flip — Runner-driven session_completed + Bridge route guard | ✅ Merged (PR #155) |
+| FLY-115 v1.24.2-v1.24.5: framework consolidated — env gaps + sandbox config + respond path + post-merge finalization (FLY-120 closed) | ✅ Merged (PR #162) |
 
 ## Doc Structure & Lifecycle
 
