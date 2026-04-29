@@ -2,6 +2,7 @@
 	"_comment": "Copy to ~/.flywheel/test-slots.json and fill in values",
 	"_setup": "Create bots at discord.com/developers/applications, channels in Discord server",
 	"_role": "slot.role selects the GeoForge3D identity.md to source from: 'cos' → .lead/cos-lead/identity.md (Simba), 'lead' → .lead/product-lead/identity.md (Peter). Required — test-deploy.sh fails fast if missing.",
+	"_forumChannel": "FLY-115 v1.24.2 Gap C: forumChannelId is OPTIONAL. Create a Forum-type channel in the test guild per slot and grant the bot VIEW_CHANNEL, SEND_MESSAGES, SEND_MESSAGES_IN_THREADS, CREATE_PUBLIC_THREADS, MANAGE_THREADS. Omitting / empty string → test-deploy.sh logs a WARN and Bridge starts without forum support (ProjectConfig.forumChannel is absent rather than empty — packages/teamlead/src/ProjectConfig.ts:100-110).",
 	"slots": [
 		{
 			"id": 1,
@@ -11,6 +12,8 @@
 			"tokenEnvVar": "TEST_BOT_TOKEN_1",
 			"channelId": "<channel-id>",
 			"channelName": "cos-test",
+			"forumChannelId": "<forum-channel-id-or-empty>",
+			"forumChannelName": "forum-test-1",
 			"bridgePort": 19871
 		},
 		{
@@ -21,6 +24,8 @@
 			"tokenEnvVar": "TEST_BOT_TOKEN_2",
 			"channelId": "<channel-id>",
 			"channelName": "lead-test-1",
+			"forumChannelId": "<forum-channel-id-or-empty>",
+			"forumChannelName": "forum-test-2",
 			"bridgePort": 19872
 		},
 		{
@@ -31,6 +36,8 @@
 			"tokenEnvVar": "TEST_BOT_TOKEN_3",
 			"channelId": "<channel-id>",
 			"channelName": "lead-test-2",
+			"forumChannelId": "<forum-channel-id-or-empty>",
+			"forumChannelName": "forum-test-3",
 			"bridgePort": 19873
 		},
 		{
@@ -41,6 +48,8 @@
 			"tokenEnvVar": "TEST_BOT_TOKEN_4",
 			"channelId": "<channel-id>",
 			"channelName": "lead-test-3",
+			"forumChannelId": "<forum-channel-id-or-empty>",
+			"forumChannelName": "forum-test-4",
 			"bridgePort": 19874
 		}
 	],

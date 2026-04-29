@@ -29,12 +29,33 @@ import { postMergeTmuxCleanup } from "./post-merge.js";
 import { emitRunnerReadyToCloseNotification } from "./runner-ready-to-close-notifier.js";
 
 /**
- * Shared predicate — aligns with event-route.ts postApproveShip semantics.
+ * Shared predicate — aligns with event-route.ts + DirectEventSink
+ * postApproveShip semantics.
  *
  * Must return true BEFORE DES or event-route schedules `runPostShipFinalization`.
  * Note: `status === "completed"` alone is NOT sufficient — a Runner that
- * self-completes without going through approve/ship (e.g. `route=needs_review`)
- * should not trigger post-ship cleanup.
+ * self-completes without actually shipping (e.g. `route=needs_review` and
+ * the PR is still open) should not trigger post-ship cleanup.
+ *
+ * The three "yes" cases the orchestrator must accept:
+ *   1. session was already in `approved_to_ship` (Annie / a Lead pressed
+ *      `:cool:` first; Bridge's approveExecution flipped status; Runner
+ *      then fired session_completed) — the canonical FLY-58 path.
+ *   2. `route === "auto_approve"` with `landingStatus.status === "merged"`
+ *      — auto-approve workflows where the PR self-merged via deploy
+ *      action without an explicit Bridge approve.
+ *   3. `route === "needs_review"` with `landingStatus.status === "merged"`
+ *      — FLY-115 v1.24.5 (FLY-120). The Lead unblocked the
+ *      `approve_to_ship` gate via `flywheel-comm respond` (production
+ *      path; v1.24.4 test framework also uses this). Bridge's
+ *      `approveExecution` was never called so `existingStatus` stayed at
+ *      `running`; the Runner resumed, merged the PR, rewrote
+ *      `land-status.json` to `status:"merged"`, and finally exited.
+ *      Without this case `runPostShipFinalization` is skipped, the
+ *      Runner tmux + chat thread are never torn down, and the Lead
+ *      keeps pestering Annie about a PR already on main. Symmetric with
+ *      the matching `status` mapping in `DirectEventSink.emitCompleted`
+ *      / `event-route.ts:event_type=session_completed`.
  */
 export function isPostApproveShipComplete(args: {
 	/** session.status BEFORE this event applied (from getSession before upsertSession). */
@@ -43,8 +64,10 @@ export function isPostApproveShipComplete(args: {
 	landingStatus: { status?: string } | undefined;
 }): boolean {
 	if (args.existingStatus === "approved_to_ship") return true;
-	if (args.route === "auto_approve" && args.landingStatus?.status === "merged")
-		return true;
+	if (args.landingStatus?.status === "merged") {
+		if (args.route === "auto_approve") return true;
+		if (args.route === "needs_review") return true; // FLY-120
+	}
 	return false;
 }
 

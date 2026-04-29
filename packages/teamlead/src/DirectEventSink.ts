@@ -251,13 +251,23 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 		// Status mapping (aligned with event-route.ts)
 		const route = result.decision?.route;
+		const landingStatus = result.evidence?.landingStatus as
+			| { status?: string }
+			| undefined;
 		let status: string;
-		if (route === "needs_review") status = "awaiting_review";
-		else if (route === "auto_approve") {
-			// FLY-58: Mirror event-route.ts: merged → completed (not approved)
-			const landingStatus = result.evidence?.landingStatus as
-				| { status?: string }
-				| undefined;
+		if (route === "needs_review") {
+			// FLY-115 v1.24.5 (FLY-120): if the Runner already finished shipping
+			// (Lead unblocked the approve_to_ship gate via flywheel-comm respond,
+			// then the Runner self-merged), short-circuit to "completed". The
+			// previous mapping forced status back to "awaiting_review" even when
+			// landingStatus.status === "merged", leaving Lead telling Annie a PR
+			// already on main was still waiting for :cool:. Mirrors the
+			// auto_approve+merged branch and the post-approve-ship completion
+			// guard at packages/teamlead/src/bridge/event-route.ts:344-354.
+			status =
+				landingStatus?.status === "merged" ? "completed" : "awaiting_review";
+		} else if (route === "auto_approve") {
+			// FLY-58: merged → completed (not approved)
 			status =
 				landingStatus?.status === "merged" ? "completed" : "awaiting_review";
 		} else if (route === "blocked") status = "blocked";

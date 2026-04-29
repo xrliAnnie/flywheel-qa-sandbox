@@ -861,4 +861,37 @@ describe("DirectEventSink — post-ship finalization gate (FLY-102 Codex Round 1
 			.filter((e) => e.event_type === "post_ship_finalization_claim");
 		expect(claims).toHaveLength(0);
 	});
+
+	// FLY-115 v1.24.5 (FLY-120): Lead unblocked approve_to_ship via
+	// `flywheel-comm respond` so existingStatus stayed "running" (no
+	// approveExecution flip). Runner then merged the PR itself and rewrote
+	// land-status.json to status=merged. The pre-Codex-Round-1 predicate
+	// only accepted `approved_to_ship` or `auto_approve+merged`, so the
+	// Runner tmux + chat thread were never torn down. This test pins the
+	// fixed mapping: needs_review + landingStatus.merged DOES trigger
+	// finalization even without approveExecution running first.
+	it("DOES trigger finalization on route=needs_review + landingStatus.merged (FLY-120 self-shipped path)", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+
+		const sink = await makeSink();
+		await sink.emitCompleted(makeEnvelope(), {
+			decision: { route: "needs_review", reasoning: "merged via gate respond" },
+			evidence: {
+				landingStatus: { status: "merged", prNumber: 7 },
+			},
+		} as import("flywheel-edge-worker/dist/Blueprint.js").BlueprintResult);
+		await sink.flush();
+
+		const claims = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "post_ship_finalization_claim");
+		expect(claims).toHaveLength(1);
+		// Status mapping (sister fix): needs_review + merged → completed.
+		expect(store.getSession("exec-1")!.status).toBe("completed");
+	});
 });

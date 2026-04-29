@@ -380,7 +380,15 @@ export class Blueprint {
 							'   - Post :cool: to trigger deploy: `gh pr comment <NUMBER> --body ":cool:"`',
 							"   - Wait for the PR to be merged by the deploy workflow (poll `gh pr view <NUMBER> --json state -q '.state'` every 30s until MERGED, max 10 min)",
 							"   - If no deploy workflow merges within 5 minutes, merge directly: `gh pr merge <NUMBER> --squash --delete-branch`",
-							"   Do NOT set stage to completed without first merging the PR.",
+							// FLY-115 v1.24.5 (FLY-120): once the PR is actually merged we MUST
+							// rewrite the landing signal to status=\"merged\". Bridge's
+							// emitCompleted/event-route paths read landingStatus.status to decide
+							// the FSM target — leaving the file at \"ready_to_merge\" keeps the
+							// session stuck in awaiting_review even though the PR is gone.
+							// schema: packages/core/src/decision-types.ts (LandingStatus).
+							"   - Capture the merge commit SHA and rewrite the landing signal: `MERGE_SHA=$(gh pr view <NUMBER> --json mergeCommit -q '.mergeCommit.oid'); jq -n --arg sha \"$MERGE_SHA\" --argjson n <NUMBER> '{status:\"merged\",prNumber:$n,mergeCommitSha:$sha}' > <land-status-path>`",
+							`   - Then run \`node ${commCliPath} stage set completed\`.`,
+							'   Do NOT set stage to completed without first merging the PR AND rewriting the landing signal to status="merged".',
 						);
 					} else if (cpName === "question") {
 						systemPromptLines.push(

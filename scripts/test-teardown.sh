@@ -136,13 +136,111 @@ teardown_slot() {
 
   log "Tearing down slot ${SLOT} (agent: ${AGENT_ID})"
 
-  # ── Step 1b (FLY-115): Stop Runner tmux session if present ──
+  # ── Step 1b (FLY-115): Stop Runner tmux + its cmux linked sessions ──
   # Runner tmux is killed BEFORE Bridge so that no process is actively
   # writing into the FLY-95 Runner worktree while we remove it.
+  #
+  # v1.24.2 Gap 3.2 (Codex R3 unified sweep): cmux viewer sessions are
+  # named `cmux-<window_name>` and flywheel-cmux-sync.sh creates every
+  # one of them via
+  #   tmux new-session -d -t "$source_session" -s "cmux-<window_name>"
+  # (scripts/flywheel-cmux-sync.sh:138-141), which records the source
+  # session as the viewer's `#{session_group}`. That group name persists
+  # on the viewer even after the source dies, giving us a reliable
+  # ownership signal that a plain window-name match cannot provide.
+  #
+  # Killing the Runner session first is safe: cmux viewers are detached
+  # linked sessions and outlive the source, so doing the unified cmux
+  # sweep afterwards covers all three scenarios that the earlier
+  # primary+secondary design leaked:
+  #   (a) RUNNER_TMUX alive when teardown starts          → normal path
+  #   (b) RUNNER_TMUX already dead when teardown starts   → crash recovery
+  #   (c) two live slots colliding on the same window     → no false-kill
   local RUNNER_TMUX="runner-test-slot-${SLOT}"
   if tmux has-session -t "$RUNNER_TMUX" 2>/dev/null; then
     log "Killing Runner tmux session: ${RUNNER_TMUX}"
     tmux kill-session -t "$RUNNER_TMUX" 2>/dev/null || true
+  fi
+
+  # Unified cmux sweep, keyed on `#{session_group}` ownership.
+  # Decision table:
+  #   owner == RUNNER_TMUX            → ours         → kill
+  #   owner is a live sibling session → still in use → skip
+  #   owner names a dead session      → orphan       → kill (cleanup)
+  #   owner is empty                  → not Flywheel → skip (don't touch
+  #                                        sessions we didn't create —
+  #                                        narrower than the pre-v1.24.2
+  #                                        window-name sweep on purpose)
+  #
+  # Exact-match querying: `list-sessions -f '#{==:#{session_name},<s>}'`
+  # is used instead of `display-message -t "=<s>"` because the latter
+  # returns empty on macOS tmux when the target has no `:window` suffix,
+  # and bare `-t <s>` risks prefix matching a differently-named session.
+  local cmux_s owner
+  while IFS= read -r cmux_s || [[ -n "$cmux_s" ]]; do
+    [[ -z "$cmux_s" ]] && continue
+    owner=$(tmux list-sessions -F '#{session_group}' \
+      -f "#{==:#{session_name},${cmux_s}}" 2>/dev/null | head -1 || echo "")
+    [[ -z "$owner" ]] && continue
+    if [[ "$owner" != "$RUNNER_TMUX" ]] \
+       && tmux has-session -t "=${owner}" 2>/dev/null; then
+      log "Skip cmux kill ${cmux_s} — owned by live session '${owner}'"
+      continue
+    fi
+    log "Killing cmux linked session: ${cmux_s} (owner=${owner})"
+    tmux kill-session -t "=${cmux_s}" 2>/dev/null || true
+  done < <(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -E '^cmux-' || true)
+
+  # ── Step 1c (FLY-115 v1.24.2 Gap 3.3): Orphan `claude` CLI sweep ──
+  # After killing the Runner tmux session, its child `claude` processes can
+  # reparent to init (pid 1) and linger. `pgrep -f` matches by argv, which
+  # both false-positives (Annie's host `claude` session debugging a slot
+  # path) and false-negatives (`claude --print "hi"` has no path in argv).
+  # Use `pgrep -x claude` for exact-name candidates, then `lsof -p $pid -d
+  # cwd` to read the real cwd and match against a canonicalized slot prefix
+  # with trailing slash so slot-1 does NOT match slot-10 / slot-1-old.
+  local CANONICAL_SLOT_DIR
+  CANONICAL_SLOT_DIR=$(cd "${SLOT_DIR}" 2>/dev/null && pwd -P || echo "")
+  if [[ -n "$CANONICAL_SLOT_DIR" && "$CANONICAL_SLOT_DIR" != "/" ]]; then
+    local CANDIDATES=()
+    while IFS= read -r cpid || [[ -n "$cpid" ]]; do
+      [[ -z "$cpid" ]] && continue
+      CANDIDATES+=("$cpid")
+    done < <(pgrep -x claude 2>/dev/null || true)
+
+    local ORPHAN_PIDS=()
+    if (( ${#CANDIDATES[@]} > 0 )); then
+      local slot_prefix="${CANONICAL_SLOT_DIR%/}/"
+      local cpid cwd cwd_norm
+      for cpid in "${CANDIDATES[@]}"; do
+        # lsof -a -p PID -d cwd -Fn → one-record-per-fd output, `n` field
+        # holds the canonical path. On macOS /tmp is a symlink to /private/tmp,
+        # so `lsof` typically resolves to /private/tmp/... already.
+        cwd=$(lsof -a -p "$cpid" -d cwd -Fn 2>/dev/null \
+          | awk '/^n/{print substr($0,2); exit}' \
+          || echo "")
+        [[ -z "$cwd" ]] && continue
+        cwd_norm="${cwd%/}/"
+        if [[ "$cwd_norm" == "$slot_prefix"* ]]; then
+          ORPHAN_PIDS+=("$cpid")
+        fi
+      done
+    fi
+
+    if (( ${#ORPHAN_PIDS[@]} > 0 )); then
+      log "Killing ${#ORPHAN_PIDS[@]} orphan claude pid(s) under ${CANONICAL_SLOT_DIR} (SIGTERM)"
+      local opid
+      for opid in "${ORPHAN_PIDS[@]}"; do
+        kill -TERM "$opid" 2>/dev/null || true
+      done
+      sleep 2
+      for opid in "${ORPHAN_PIDS[@]}"; do
+        if kill -0 "$opid" 2>/dev/null; then
+          log "  pid ${opid} survived SIGTERM; SIGKILL"
+          kill -KILL "$opid" 2>/dev/null || true
+        fi
+      done
+    fi
   fi
 
   # ── Step 1: Kill Lead supervisor ──────────────────────
@@ -258,15 +356,20 @@ teardown_slot() {
         | awk '/^worktree /{print $2}' \
         | grep -F "$SLOT_DIR/" || true
     )
-    local wt
-    for wt in "${SLOT_WORKTREES[@]}"; do
-      # Skip the host worktree itself — it is ${SLOT_DIR}/project-slot-${SLOT}
-      # and is torn down when we rm -rf SLOT_DIR below.
-      [[ "$wt" == "$HOST_REPO" ]] && continue
-      log "  worktree remove --force ${wt}"
-      git -C "$HOST_REPO" worktree remove --force "$wt" 2>/dev/null || true
-      rm -rf "$wt"
-    done
+    # v1.24.2 Gap 3.1: macOS /bin/bash 3.2 + set -u barfs `unbound variable` on
+    # `"${arr[@]}"` when arr is empty. Guard the loop with an explicit length
+    # check so zero-state teardown (no FLY-95 worktrees yet) still exits 0.
+    if (( ${#SLOT_WORKTREES[@]} > 0 )); then
+      local wt
+      for wt in "${SLOT_WORKTREES[@]}"; do
+        # Skip the host worktree itself — it is ${SLOT_DIR}/project-slot-${SLOT}
+        # and is torn down when we rm -rf SLOT_DIR below.
+        [[ "$wt" == "$HOST_REPO" ]] && continue
+        log "  worktree remove --force ${wt}"
+        git -C "$HOST_REPO" worktree remove --force "$wt" 2>/dev/null || true
+        rm -rf "$wt"
+      done
+    fi
 
     # Delete slot-local branches: qa-slot-${SLOT}-* and any FLY-95 Runner
     # branches. It is a per-slot clone, so deletion has no cross-slot impact.
@@ -279,11 +382,14 @@ teardown_slot() {
     done < <(
       git -C "$HOST_REPO" for-each-ref --format='%(refname:short)' refs/heads/ 2>/dev/null || true
     )
-    local b
-    for b in "${LOCAL_BRANCHES[@]}"; do
-      [[ "$b" == "main" || "$b" == "master" ]] && continue
-      git -C "$HOST_REPO" branch -D "$b" 2>/dev/null || true
-    done
+    # v1.24.2 Gap 3.1: same empty-array guard as above.
+    if (( ${#LOCAL_BRANCHES[@]} > 0 )); then
+      local b
+      for b in "${LOCAL_BRANCHES[@]}"; do
+        [[ "$b" == "main" || "$b" == "master" ]] && continue
+        git -C "$HOST_REPO" branch -D "$b" 2>/dev/null || true
+      done
+    fi
 
     git -C "$HOST_REPO" worktree prune 2>/dev/null || true
 
