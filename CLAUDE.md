@@ -90,6 +90,7 @@ Current version: see `doc/VERSION`
 | FLY-96: QA testing infrastructure — 4-slot parallel Discord E2E (1 cos + 3 lead) | ✅ Merged (PR #144) |
 | FLY-115: QA Test Slot Framework — Real Runner Support (A1 + W1 + F1) | ✅ Merged (PR #157) |
 | FLY-108: Runner-driven session_completed + Bridge route guard | ✅ Merged (PR #1) |
+| FLY-99: QA pipeline execution — milestone record | ✅ Merged |
 
 ## Doc Structure & Lifecycle
 
