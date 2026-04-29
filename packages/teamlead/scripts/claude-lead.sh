@@ -172,6 +172,16 @@ mkdir -p "$SESSION_DIR"
 # GEO-286: $3 is project-name IF it doesn't start with "--".
 # Flags (--subdir) can appear at $3+ position.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# FLY-83: FLYWHEEL_ROOT for locating scripts/lead-alert.sh (independent alert path).
+# SCRIPT_DIR is packages/teamlead/scripts; FLYWHEEL_ROOT is three levels up.
+FLYWHEEL_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+export FLYWHEEL_ROOT
+# FLY-83: Ensure all alert-path directories exist before anything can fail.
+# - blocked/  : marker files pausing supervisor until Annie clears them
+# - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
+# - alerts/   : claims.db (cross-process dedup) lives here
+BLOCKED_DIR="${HOME}/.flywheel/blocked"
+mkdir -p "$BLOCKED_DIR" "${HOME}/.flywheel/alert-queue" "${HOME}/.flywheel/alerts"
 LEAD_SUBDIR=""
 PROJECT_NAME=""
 BOT_TOKEN_ENV_NAME=""
@@ -552,8 +562,18 @@ LEAD_WINDOW_ID=""
 _EXPECT_SCRIPT="${TMPDIR:-/tmp}/flywheel-ac-${LEAD_ID}.expect"
 cat > "$_EXPECT_SCRIPT" <<'EXPECT_EOF'
 #!/usr/bin/expect -f
-# Auto-confirm dev channels prompt, then wait for Claude to exit.
-# expect allocates a PTY so Claude gets a TTY for Ink.
+# FLY-80 / FLY-83: Auto-confirm safe startup prompts; detect blocked prompts
+# and exit with layered sentinel codes (100/101/102) so claude-lead.sh can
+# pause, write a marker, and fire an independent Discord alert.
+#
+# Design notes:
+# - Claude's Ink TUI injects ANSI color codes between EVERY word, so multi-
+#   word phrases like "local development" never match as contiguous bytes
+#   ("local\x1b[39m \x1b[38;5;153mdevelopment"). Word-boundary anchors \m/\M
+#   skip the ANSI noise without needing per-byte stripping.
+# - Blocked prompts need a title word AND a tail word within the same
+#   screen region — bounded {0,200} distance via (?s) single-line mode.
+# - expect allocates a PTY so Claude gets a TTY for Ink.
 # Usage: expect <this-script> claude <args...>
 log_user 1
 # FLY-102 hot-deploy fix: 60s was too short — Claude boot can exceed 60s with
@@ -562,27 +582,56 @@ log_user 1
 set timeout 600
 eval spawn -noecho [lrange $argv 0 end]
 set confirmed 0
+
+# Tcl ARE tops out at 255 repetitions per branch and word-boundary anchors
+# (\m/\M) don't fire when an ANSI escape like `[31m` puts a letter directly
+# against the target word. We fall back to *bounded co-occurrence* regexes:
+# each prompt must contain two distinctive tokens within ~200 screen bytes.
+# Distinctive enough to avoid false positives in normal TUI output.
+#
+# Single unified loop: auto-confirm startup prompts, fire sentinel codes on
+# blocked prompts, cleanly exit on EOF. `set timeout -1` after first match
+# so long-running sessions are not torn down by the boot-phase timeout.
+
+set booting 1
 expect {
-  # Claude's Ink TUI injects ANSI color codes between EVERY word, so neither
-  # "Enter to confirm" nor "local development" match as contiguous bytes
-  # (actual output: "local\x1b[39m \x1b[38;5;153mdevelopment"). Match on the
-  # single contiguous word "confirm" — only appears in the dev-channels
-  # prompt's "Enter to confirm · Esc to cancel" footer.
-  -re {confirm} {
-    send "1\r"
-    set confirmed 1
+  # Dev-channels confirm: title (development|bypass) + footer (confirm|cancel).
+  -re {(?s)(development|bypass).{0,200}(confirm|cancel)} {
+    if {!$confirmed} {
+      send "1\r"
+      set confirmed 1
+    }
+    set booting 0
+    set timeout -1
     exp_continue
   }
-  -re {bypass permissions} { }
-  -re {Type your message} { }
-  timeout {
-    if {!$confirmed} { send "1\r" }
+  # Auto-compact confirm.
+  -re {(?s)compact.{0,200}(confirm|enter)} {
+    send "1\r"
+    set booting 0
+    set timeout -1
+    exp_continue
   }
+  # Rate limit — NOT auto-dismissed. Supervisor pauses 30min on exit 100.
+  -re {(?s)(rate|usage).{0,200}(limit|reset|try again)} { exit 100 }
+  # Login expired / re-auth required — NOT auto-dismissed; marker + alert.
+  -re {(?s)(login|reauth).{0,200}(expired|required)} { exit 101 }
+  # Permission prompt — NEVER auto-confirmed; marker + alert, needs Annie.
+  -re {(?s)permission.{0,200}(required|denied)} { exit 102 }
+  timeout {
+    if {$booting} {
+      # Boot-phase fell through — Claude likely past the confirm screen.
+      # Blind-send Enter once, relax the timeout, and keep watching.
+      if {!$confirmed} { send "1\r"; set confirmed 1 }
+      set booting 0
+      set timeout -1
+      exp_continue
+    }
+  }
+  eof { }
 }
-# Wait for Claude to run until it exits on its own
-set timeout -1
-expect eof
-# Propagate Claude's exit code
+
+# Propagate Claude's exit code.
 lassign [wait] pid spawnid os_error_flag value
 exit $value
 EXPECT_EOF
@@ -963,6 +1012,72 @@ while true; do
     continue
   fi
 
+  # ── FLY-83: Layered blocked-prompt sentinels (100/101/102) ───
+  # expect wrapper emits these when it detects a blocked TUI prompt.
+  # These are NOT counted as crashes — hot-restarting through a rate limit
+  # or login-expired state would turn every minute into an alert storm.
+  LEAD_ALERT_SH="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
+  case "$CLAUDE_EXIT" in
+    100)
+      log "WARNING: rate-limit prompt detected (exit 100). Pausing 30min."
+      if [ -x "$LEAD_ALERT_SH" ]; then
+        "$LEAD_ALERT_SH" \
+          --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+          --kind rate_limit --severity warning \
+          --title "Lead hit rate limit" \
+          --body "expect wrapper caught a rate-limit prompt; pausing 30min." \
+          || log "WARNING: lead-alert.sh returned non-zero"
+      else
+        log "WARNING: lead-alert.sh missing at $LEAD_ALERT_SH (skipped)"
+      fi
+      # Chunked sleep so SIGTERM can interrupt promptly.
+      _remaining=1800
+      while [ "$_remaining" -gt 0 ] && [ "$SHOULD_EXIT" -eq 0 ]; do
+        interruptible_sleep 60
+        _remaining=$((_remaining - 60))
+      done
+      continue
+      ;;
+    101)
+      MARKER="${BLOCKED_DIR}/${LEAD_ID}.login_expired.flag"
+      touch "$MARKER"
+      log "ERROR: login expired (exit 101). Marker: $MARKER"
+      if [ -x "$LEAD_ALERT_SH" ]; then
+        "$LEAD_ALERT_SH" \
+          --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+          --kind login_expired --severity severe \
+          --title "Lead login expired" \
+          --body "Re-authenticate the Claude CLI, then remove the marker: rm $MARKER" \
+          || log "WARNING: lead-alert.sh returned non-zero"
+      else
+        log "WARNING: lead-alert.sh missing at $LEAD_ALERT_SH (skipped)"
+      fi
+      while [ -f "$MARKER" ] && [ "$SHOULD_EXIT" -eq 0 ]; do
+        interruptible_sleep 60
+      done
+      continue
+      ;;
+    102)
+      MARKER="${BLOCKED_DIR}/${LEAD_ID}.permission_blocked.flag"
+      touch "$MARKER"
+      log "ERROR: permission prompt (exit 102). Marker: $MARKER"
+      if [ -x "$LEAD_ALERT_SH" ]; then
+        "$LEAD_ALERT_SH" \
+          --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+          --kind permission_blocked --severity warning \
+          --title "Lead waiting on permission prompt" \
+          --body "Decide in Claude CLI (Allow/Deny), then remove marker: rm $MARKER" \
+          || log "WARNING: lead-alert.sh returned non-zero"
+      else
+        log "WARNING: lead-alert.sh missing at $LEAD_ALERT_SH (skipped)"
+      fi
+      while [ -f "$MARKER" ] && [ "$SHOULD_EXIT" -eq 0 ]; do
+        interruptible_sleep 60
+      done
+      continue
+      ;;
+  esac
+
   # Non-zero exit = crash or resume failure
   CRASH_COUNT=$((CRASH_COUNT + 1))
   log "Claude crashed (exit code ${CLAUDE_EXIT}) after ${DURATION}s. Crash count: ${CRASH_COUNT}"
@@ -999,6 +1114,15 @@ while true; do
 
   if [ "$CRASH_COUNT" -ge 5 ]; then
     log "WARNING: ${CRASH_COUNT} consecutive crashes. Check Claude CLI health."
+    # FLY-83: Fire crash_loop alert once per escalation (idempotency via claims.db).
+    if [ -x "$LEAD_ALERT_SH" ]; then
+      "$LEAD_ALERT_SH" \
+        --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+        --kind crash_loop --severity severe \
+        --title "Lead crash-looping" \
+        --body "Claude CLI has crashed ${CRASH_COUNT} times. Last exit code: ${CLAUDE_EXIT}." \
+        || log "WARNING: lead-alert.sh returned non-zero"
+    fi
   fi
 
   log "Waiting ${BACKOFF}s before restart..."

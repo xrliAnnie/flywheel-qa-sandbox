@@ -12,6 +12,9 @@ import {
 	HeartbeatService,
 	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
+import { LeadAlertNotifier } from "../LeadAlertNotifier.js";
+import { LeadWatchdog } from "../LeadWatchdog.js";
+import { locateLeadWindow } from "../LeadWindowLocator.js";
 import {
 	type LeadConfig,
 	type ProjectEntry,
@@ -29,6 +32,11 @@ import { createEventRouter } from "./event-route.js";
 import { ForumPostCreator } from "./ForumPostCreator.js";
 import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { GatePoller } from "./gate-poller.js";
+import {
+	createBlockedMarkerReader,
+	createClaimsReader,
+	defaultLeadPaneCapture,
+} from "./lead-alert-helpers.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { queryLinearIssues } from "./linear-query.js";
@@ -1689,11 +1697,72 @@ export async function startBridge(
 	idleWatchdog.start();
 	console.log("[Bridge] RunnerIdleWatchdog started (30s poll)");
 
+	// FLY-83: Lead liveness watchdog — external pane-hash observation for
+	// Claude Code TUI. Pairs with scripts/lead-alert.sh (shell-owned alert
+	// path) via cross-process claims.db dedup.
+	const claimsReader = createClaimsReader();
+	const blockedMarkerReader = createBlockedMarkerReader();
+	const leadPaneCaptureFn = defaultLeadPaneCapture();
+	const leadAlertNotifier = new LeadAlertNotifier({
+		store,
+		projects,
+		claimsReader,
+	});
+	const leadWatchdog = new LeadWatchdog({
+		pollIntervalMs: 30_000,
+		paneHashStuckCycles: 2,
+		paneHashAlertCycles: 3,
+		cooldownMs: 30 * 60_000,
+		projects,
+		store,
+		notifier: (payload) => leadAlertNotifier.alert(payload),
+		locateWindowFn: (projectName, leadId) =>
+			locateLeadWindow(projectName, leadId),
+		captureFn: leadPaneCaptureFn,
+		claimsReader,
+		blockedMarkerReader,
+	});
+	leadWatchdog.start();
+	console.log("[Bridge] LeadWatchdog started (30s poll, 3-cycle alert)");
+
+	// FLY-83: drain alert queue every 60s so spills from shell path (lead-alert.sh)
+	// or prior Bridge runs do not rot. Queue files only appear when Discord POST
+	// fails or env is missing, so this is usually a no-op.
+	//
+	// In-flight guard (leadAlertDraining) is load-bearing: drainQueue() bypasses
+	// the claim check and only unlinks a queue file AFTER a successful POST. If
+	// a drain stalls past the 60s interval (slow Discord), an overlapping drain
+	// would re-POST the same still-present queue file → duplicate alert, which
+	// breaks the "one alert per 10-min bucket" invariant. Skip when busy.
+	let leadAlertDraining = false;
+	const leadAlertDrainTimer = setInterval(() => {
+		if (leadAlertDraining) return;
+		leadAlertDraining = true;
+		leadAlertNotifier
+			.drainQueue()
+			.then(({ sent, remaining }) => {
+				if (sent > 0 || remaining > 0) {
+					console.log(
+						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining}`,
+					);
+				}
+			})
+			.catch((err: Error) => {
+				console.warn(`[Bridge] LeadAlert drain failed: ${err.message}`);
+			})
+			.finally(() => {
+				leadAlertDraining = false;
+			});
+	}, 60_000);
+	leadAlertDrainTimer.unref?.();
+
 	const close = async () => {
 		heartbeatService?.stop();
 		cleanupService?.stop();
 		gatePoller.stop();
 		idleWatchdog.stop();
+		leadWatchdog.stop();
+		clearInterval(leadAlertDrainTimer);
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
 		// are the same instance, only tear down once. If they differ (caller
 		// injected retryDispatcher but not startDispatcher), tear down both.
