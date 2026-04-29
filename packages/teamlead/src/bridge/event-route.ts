@@ -322,26 +322,49 @@ export function createEventRouter(
 					| { status?: string }
 					| undefined;
 
+				// FLY-108 Decision 4: strict route guard. A payload with a foreign or
+				// missing route is almost always an emitter bug (GEO-362 Variant A) —
+				// fail loudly instead of silently falling through to "completed".
+				const VALID_ROUTES = new Set([
+					"auto_approve",
+					"needs_review",
+					"blocked",
+				]);
+				if (!route || !VALID_ROUTES.has(route)) {
+					console.warn(
+						`[event-route] session_completed ${event.execution_id} has invalid route ` +
+							`(${route ?? "undefined"}) — skipping FSM update. ` +
+							`Expected one of ${[...VALID_ROUTES].join(", ")}. ` +
+							`Likely Runner emitter bug or deprecated code path.`,
+					);
+					res.json({ ok: true, warning: "invalid route skipped" });
+					return;
+				}
+
 				// FLY-58: If session is approved_to_ship, Runner finished shipping
 				// → go straight to completed (no Decision Layer needed)
 				const existingSession = store.getSession(event.execution_id);
 				const isPostApproveShip =
 					existingSession?.status === "approved_to_ship";
 
-				// Status mapping: all routes → appropriate status
+				// FLY-108: status mapping. Guard above ensures route ∈ VALID_ROUTES,
+				// so no `else status = "completed"` fallback is reachable here.
 				let status: string;
 				if (isPostApproveShip) {
 					status = "completed";
-				} else if (route === "needs_review") status = "awaiting_review";
-				else if (route === "auto_approve") {
+				} else if (route === "needs_review") {
+					status = "awaiting_review";
+				} else if (route === "auto_approve") {
 					if (landingStatus?.status === "merged") {
 						// FLY-58: auto_approve + merged → completed (not approved)
 						status = "completed";
 					} else {
 						status = "awaiting_review";
 					}
-				} else if (route === "blocked") status = "blocked";
-				else status = "completed";
+				} else {
+					// Guard ensures route === "blocked" is the only remaining case.
+					status = "blocked";
+				}
 
 				// FLY-59: Read session role from completed event payload
 				const completedSessionRole = asString(payload.sessionRole) ?? "main";
@@ -361,8 +384,11 @@ export function createEventRouter(
 						},
 					);
 					if (!result.ok) {
-						console.warn(
-							`[event-route] FSM rejected ${event.event_type} → ${status}: ${result.error}`,
+						// FLY-108: upgrade to error + carry pre-state / target / route for triage
+						const preState = existingSession?.status ?? "<none>";
+						console.error(
+							`[event-route] FSM rejected ${event.event_type} ${event.execution_id}: ` +
+								`pre-state=${preState} → target=${status} (route=${route}): ${result.error}`,
 						);
 						transitionRejected = true;
 					} else {
@@ -517,18 +543,31 @@ export function createEventRouter(
 					status === "awaiting_review" &&
 					!transitionRejected
 				) {
-					const labels = Array.isArray(payload.labels)
+					// FLY-108 Decision 6: Runner-driven `session_completed` omits
+					// labels/projectId (Runner has no Linear SDK access). Backfill
+					// from StateStore so the CIPHER snapshot contract holds.
+					// Explicit payload.labels (Array.isArray) wins over backfill —
+					// `labels: []` on an emitter means "no labels", not "look it up".
+					let labels = Array.isArray(payload.labels)
 						? (payload.labels as string[])
 						: null;
+					if (!labels) {
+						// getSessionLabels() returns [] when unstored — StateStore.ts:1113-1123.
+						labels = store.getSessionLabels(event.execution_id);
+					}
+
 					const changedFilePaths = Array.isArray(evidence?.changedFilePaths)
 						? (evidence.changedFilePaths as string[])
 						: null;
+					// projectId: Runner payload may omit; saveSnapshot below already
+					// uses `projectId ?? ""` fallback, so degraded empty is fine.
 					const projectId = asString(payload.projectId);
 
-					if (!labels || !changedFilePaths) {
+					// `labels` is now always an array (possibly empty). Skip only
+					// when changedFilePaths is missing (no diff → nothing to snapshot).
+					if (!changedFilePaths) {
 						console.warn(
-							`[CIPHER] Skipping snapshot for ${event.execution_id}: missing required fields` +
-								` (labels=${!!labels}, paths=${!!changedFilePaths})`,
+							`[CIPHER] Skipping snapshot for ${event.execution_id}: missing changedFilePaths`,
 						);
 					} else {
 						const snapshotInput: SnapshotInputDto = {
