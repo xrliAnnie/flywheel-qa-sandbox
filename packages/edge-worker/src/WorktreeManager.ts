@@ -133,6 +133,12 @@ export class WorktreeManager {
 			"origin/main";
 
 		// git worktree add
+		// FLY-99: -B (reset-or-create) replaces -b (create-only) so a stale
+		// local branch left behind by a crashed Runner is reset to startPoint
+		// instead of failing with "branch already exists". removeIfExists() still
+		// runs `branch -D` up front — -B is the belt, branch -D is the suspenders.
+		// -B still fails if the branch is currently checked out in another
+		// worktree, but that is a concurrent-scheduling concern, not FLY-99 scope.
 		await this.exec(
 			"git",
 			[
@@ -141,7 +147,7 @@ export class WorktreeManager {
 				"worktree",
 				"add",
 				worktreePath,
-				"-b",
+				"-B",
 				branch,
 				`${startPoint}^{commit}`,
 			],
@@ -174,7 +180,10 @@ export class WorktreeManager {
 				logger.info("Worktree dir already gone, skipping rename", {
 					worktreePath,
 				});
-				// Skip to prune
+				// Skip to prune. Plain `git worktree prune` drops any admin
+				// entry whose gitdir target is missing — no time threshold
+				// applies (CLI default). `gc.worktreePruneExpire` only governs
+				// `git gc`'s auto-prune, not this explicit invocation.
 				await this.exec(
 					"git",
 					["-C", mainRepoPath, "worktree", "prune"],
@@ -185,7 +194,8 @@ export class WorktreeManager {
 			throw err;
 		}
 
-		// Phase 2: git worktree prune
+		// Phase 2: git worktree prune — drops the admin entry for the
+		// just-renamed gitdir (now missing from its original path).
 		await this.exec(
 			"git",
 			["-C", mainRepoPath, "worktree", "prune"],
@@ -226,20 +236,56 @@ export class WorktreeManager {
 		const branch = this.worktreeName(mainRepoPath, issueId);
 		const worktreePath = this.worktreeDir(mainRepoPath, projectName, issueId);
 
-		// Step 1: remove worktree if registered
+		let cleaned = false;
+
+		// Step 1: remove worktree if registered, OR clean up orphan dir on disk.
 		if (await this.isRegistered(mainRepoPath, worktreePath)) {
+			// remove() uses rename + prune + background rm — race-free because
+			// the original path is renamed first, so a follow-up create() can
+			// immediately reclaim it.
 			await this.remove(mainRepoPath, worktreePath);
+			cleaned = true;
 		} else if (fs.existsSync(worktreePath)) {
 			// Orphan directory: exists on disk but not registered as a worktree.
-			// This can happen after a crash or interrupted removal. Clean it up
-			// so the subsequent create() doesn't fail on "path already exists".
-			this.bgDelete("/bin/rm", ["-rf", worktreePath]);
+			// This can happen after a crash or interrupted removal.
+			//
+			// FLY-99: Use *awaited* fs.promises.rm instead of the fire-and-forget
+			// bgDelete() used by remove(). The caller here is Blueprint, which
+			// immediately follows up with create() — any non-awaited rm would
+			// race the next `git worktree add`, causing "path already exists"
+			// or a partially-deleted tree to be re-registered.
+			await fs.promises.rm(worktreePath, { recursive: true, force: true });
+			cleaned = true;
 		}
 
-		// Step 2: delete local branch if it still exists
-		// git worktree prune does NOT delete the branch — only the worktree registration.
-		// Without this, next create() with -b <branch> fails:
-		//   "fatal: a branch named 'geoforge3d-GEO-42' already exists"
+		// Step 1b: FLY-99 — always prune stale admin entries before branch -D.
+		//
+		// Root cause: `isRegistered()` compares git's canonical worktree path
+		// (from `git worktree list --porcelain`, always fully resolved) against
+		// the caller-provided `mainRepoPath`-derived path. If the caller passes
+		// an unresolved path that traverses a symlink (e.g. `/var/foo` when git
+		// records `/private/var/foo` on macOS, or any user-configured symlink
+		// chain on Linux), the string comparison fails and `isRegistered`
+		// returns false. The orphan-dir branch above then `fs.rm`s the target
+		// via the symlink, but the admin entry at `.git/worktrees/<name>/`
+		// still records the branch as "checked out at <canonical-path>" — so
+		// without this prune, `branch -D` fails with "Cannot delete branch X
+		// checked out at Y" and the subsequent `worktree add -B` fails with
+		// "already checked out at Y". Step 1b unconditionally drops the now-
+		// stale admin entry so the rerun succeeds.
+		await this.exec(
+			"git",
+			["-C", mainRepoPath, "worktree", "prune"],
+			mainRepoPath,
+		);
+
+		// Step 2: delete local branch if it still exists.
+		// `git worktree prune` does NOT delete the branch — only the worktree
+		// registration. Without this, a subsequent create() without -B would
+		// fail with "branch already exists". With FLY-99's switch to -B this is
+		// no longer a hard requirement, but branch -D still serves as repo
+		// hygiene (removes stale local refs) and handles the degenerate case
+		// where only the branch survived a prior cleanup attempt.
 		try {
 			await this.exec(
 				"git",
@@ -250,7 +296,8 @@ export class WorktreeManager {
 		} catch (err: unknown) {
 			const msg = err instanceof Error ? err.message : String(err);
 			if (!msg.includes("not found")) throw err;
-			return false;
+			// Branch missing is fine; report whether anything else was cleaned.
+			return cleaned;
 		}
 	}
 
