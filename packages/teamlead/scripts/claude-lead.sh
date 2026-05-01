@@ -172,6 +172,16 @@ mkdir -p "$SESSION_DIR"
 # GEO-286: $3 is project-name IF it doesn't start with "--".
 # Flags (--subdir) can appear at $3+ position.
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# FLY-83: FLYWHEEL_ROOT for locating scripts/lead-alert.sh (independent alert path).
+# SCRIPT_DIR is packages/teamlead/scripts; FLYWHEEL_ROOT is three levels up.
+FLYWHEEL_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
+export FLYWHEEL_ROOT
+# FLY-83: Ensure all alert-path directories exist before anything can fail.
+# - blocked/  : marker files pausing supervisor until Annie clears them
+# - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
+# - alerts/   : claims.db (cross-process dedup) lives here
+BLOCKED_DIR="${HOME}/.flywheel/blocked"
+mkdir -p "$BLOCKED_DIR" "${HOME}/.flywheel/alert-queue" "${HOME}/.flywheel/alerts"
 LEAD_SUBDIR=""
 PROJECT_NAME=""
 BOT_TOKEN_ENV_NAME=""
@@ -555,6 +565,12 @@ LEAD_WINDOW_ID=""
 # Previous approach (expect script) failed because Ink TUI inserts ANSI escape
 # codes between words, breaking regex matching on the raw byte stream. capture-pane
 # returns the rendered screen content without ANSI codes, making grep reliable.
+#
+# FLY-83 note: blocked-prompt classification (rate_limit / usage_limit /
+# login_expired / permission_blocked) is owned by the Bridge-side LeadWatchdog
+# (packages/teamlead/src/LeadWatchdog.ts), which uses the SAME capture-pane
+# approach against the rendered screen and avoids the ANSI byte-stream
+# mismatches that doomed the earlier expect-script sentinel-exit-code path.
 #
 # The poller runs in the background and auto-exits on confirm or timeout.
 
@@ -1066,6 +1082,16 @@ while true; do
     continue
   fi
 
+  # FLY-83: blocked-prompt classification (rate_limit / login_expired /
+  # permission_blocked) used to live here as case statements driven by
+  # expect-wrapper sentinel exit codes. After FLY-109 replaced expect with the
+  # capture-pane dialog poller, Claude no longer exits with sentinel codes —
+  # the Bridge-side LeadWatchdog (packages/teamlead/src/LeadWatchdog.ts)
+  # now classifies blocked patterns directly from capture-pane output and
+  # fires the same alerts via LeadAlertNotifier (which shares claims.db
+  # with scripts/lead-alert.sh below for the crash-loop path).
+  LEAD_ALERT_SH="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
+
   # Non-zero exit = crash or resume failure
   CRASH_COUNT=$((CRASH_COUNT + 1))
   log "Claude crashed (exit code ${CLAUDE_EXIT}) after ${DURATION}s. Crash count: ${CRASH_COUNT}"
@@ -1102,6 +1128,18 @@ while true; do
 
   if [ "$CRASH_COUNT" -ge 5 ]; then
     log "WARNING: ${CRASH_COUNT} consecutive crashes. Check Claude CLI health."
+    # FLY-83: Fire crash_loop alert once per day per (project, lead) via the
+    # default daily signature in lead-alert.sh. Repeated escalations within
+    # the same day collapse to one Discord notification (the body still
+    # carries the up-to-date crash count for context).
+    if [ -x "$LEAD_ALERT_SH" ]; then
+      "$LEAD_ALERT_SH" \
+        --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+        --kind crash_loop --severity severe \
+        --title "Lead crash-looping" \
+        --body "Claude CLI has crashed ${CRASH_COUNT} times today. Last exit code: ${CLAUDE_EXIT}. Check ~/.flywheel/logs/lead-${LEAD_ID}-startup.log + the Lead's tmux pane for the failure mode (rate-limit / login-expired / config error)." \
+        || log "WARNING: lead-alert.sh returned non-zero"
+    fi
   fi
 
   log "Waiting ${BACKOFF}s before restart..."
