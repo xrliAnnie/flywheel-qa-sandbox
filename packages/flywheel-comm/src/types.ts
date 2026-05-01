@@ -12,6 +12,7 @@ export interface Message {
 	content_ref: string | null;
 	content_type: "text" | "ref";
 	resolved_at: string | null;
+	delivered_at: string | null;
 }
 
 export interface CheckResult {
