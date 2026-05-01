@@ -18,6 +18,24 @@ export interface LeadConfig {
 	botTokenEnv?: string;
 	/** Resolved bot token (populated at load time from botTokenEnv). NOT from JSON input. */
 	botToken?: string;
+	/**
+	 * FLY-83: Discord channel ID where LeadWatchdog / lead-alert.sh post
+	 * operator-facing alerts (login expired, permission blocked, silent pane).
+	 * If omitted and alertFallbackToCore is false, alerts are skipped.
+	 */
+	alertChannel?: string;
+	/** Optional Discord user ID for severe follow-up DMs. */
+	alertDmUserId?: string;
+	/**
+	 * Env var name for the bot token used to post alerts. Falls back to
+	 * botTokenEnv/botToken if omitted.
+	 */
+	alertBotTokenEnv?: string;
+	/**
+	 * When true and alertChannel is missing, route alerts to the project's
+	 * core channel (Simba's cos-chat) instead of dropping them.
+	 */
+	alertFallbackToCore?: boolean;
 }
 
 export interface ProjectEntry {
@@ -172,6 +190,31 @@ export function loadProjects(): ProjectEntry[] {
 			) {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}].botTokenEnv: must be a non-empty string, got ${JSON.stringify(lead.botTokenEnv)}`,
+				);
+			}
+
+			// FLY-83: validate optional alert fields
+			for (const field of [
+				"alertChannel",
+				"alertDmUserId",
+				"alertBotTokenEnv",
+			] as const) {
+				const value = (lead as Record<string, unknown>)[field];
+				if (
+					value !== undefined &&
+					(typeof value !== "string" || value.length === 0)
+				) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].${field}: must be a non-empty string, got ${JSON.stringify(value)}`,
+					);
+				}
+			}
+			if (
+				lead.alertFallbackToCore !== undefined &&
+				typeof lead.alertFallbackToCore !== "boolean"
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].alertFallbackToCore: must be a boolean, got ${JSON.stringify(lead.alertFallbackToCore)}`,
 				);
 			}
 			// Strip any raw botToken from JSON input first — secrets must come via env vars
