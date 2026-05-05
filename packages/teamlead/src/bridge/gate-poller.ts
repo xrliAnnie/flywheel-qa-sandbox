@@ -187,7 +187,7 @@ export class GatePoller {
 			session.execution_id,
 		);
 
-		// Post to Lead's control channel (for Claude Code consumption)
+		// Deliver to Lead via CommDB instruction (Lead picks it up through flywheel-inbox MCP)
 		const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
 		if (runtime) {
 			const envelope: LeadEventEnvelope = {
@@ -210,7 +210,8 @@ export class GatePoller {
 			}
 		}
 
-		// FLY-47: Chat relay removed — Lead receives gate_question via control channel
-		// and relays to Annie in chatChannel using its own Discord identity.
+		// FLY-47/FLY-77: Chat relay removed. Lead receives gate_question via the CommDB
+		// inbox (no Discord control channel) and relays to Annie in chatChannel using
+		// its own Discord identity.
 	}
 }

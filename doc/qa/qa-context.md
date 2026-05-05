@@ -20,7 +20,7 @@ Accumulated QA knowledge across sessions. Read at onboard, write at finalize.
 - bash E2E script at `tmp-qa-tests/e2e-gate.sh` — 13 tests, ~30s total runtime.
 - Bridge E2E requires: PETER_BOT_TOKEN, DISCORD_GUILD_ID, TEAMLEAD_PORT=9877, TEAMLEAD_INGEST_TOKEN, TEAMLEAD_API_TOKEN.
 
-### P0 Bug: GatePoller → Lead Relay Broken (found 2026-04-06)
+### [HISTORICAL — fixed by FLY-47/77] P0 Bug: GatePoller → Lead Relay Broken (2026-04-06)
 - **Root cause**: Discord plugin `server.ts` Line 852-855 filters ALL bot messages from reaching Lead agent
   - Line 852: `if (msg.author.id === client.user?.id) return` — self-message unconditional drop
   - Line 853-855: `if (msg.author.bot && !access.allowBots?.includes(msg.author.id)) return` — all other bots dropped when allowBots not configured
@@ -28,11 +28,13 @@ Accumulated QA knowledge across sessions. Read at onboard, write at finalize.
 - **access.json** at `~/.claude/channels/discord/access.json`: control channel IS registered in groups but `allowBots` is missing
 - **Fix needed**: (1) Bridge should use CLAUDEBOT_TOKEN for control channel delivery, (2) access.json needs `allowBots` with ClaudeBot's user ID
 - **Fix status (SHA 0c2d49f)**: (1) CLAUDEBOT_TOKEN fix verified ✅, (2) access.json still pending
+- **Resolution**: FLY-47 (PR #119) 改用 CommDBLeadRuntime；FLY-77 (PR #TBD) 删除 ClaudeDiscordRuntime + CLAUDEBOT_TOKEN。Bridge → Lead 现走 CommDB file inbox + flywheel_inbox MCP，不再 post Discord 任何 channel。
 
-### GatePoller Chat Dedup Bug (found 2026-04-06)
+### [HISTORICAL — control channel removed by FLY-77] GatePoller Chat Dedup Bug (2026-04-06)
 - **Symptom**: Same gate question relayed to Discord chat every 3s poll cycle (20+ duplicates)
 - **Root cause**: `postToChatChannel()` in `gate-poller.ts` L206 is called unconditionally in `relayToLead()`, outside the `markLeadEventDelivered` gate. If `runtime.deliver()` fails (control channel), `isLeadEventDelivered` stays false → every poll re-enters relay → chat message sent again.
 - **Fix needed**: Either move `postToChatChannel` inside `if (result.delivered)` block, or add independent dedup for chat delivery.
+- **Resolution**: FLY-47 / FLY-77 后无 control channel deliver 路径，dedup 问题随之消失。
 
 ### QA Testing Lessons
 - **`/events` API payload must include `issueTitle`**: ForumPostCreator title comes from `payload.issueTitle`. Missing field → forum post title shows only `[FLY-QA-4]` without title text. This is correct behavior (not a bug) — the caller must provide the field.

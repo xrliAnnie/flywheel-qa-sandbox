@@ -59,7 +59,7 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 		store = await StateStore.create(":memory:");
 
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };

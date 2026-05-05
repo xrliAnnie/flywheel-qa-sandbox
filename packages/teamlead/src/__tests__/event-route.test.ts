@@ -309,7 +309,7 @@ describe("Event route", () => {
 function createMockRegistry() {
 	const envelopes: LeadEventEnvelope[] = [];
 	const mockRuntime = {
-		type: "claude-discord" as const,
+		type: "commdb" as const,
 		deliver: vi.fn(async (env: LeadEventEnvelope) => {
 			envelopes.push(env);
 			return { delivered: true };
@@ -634,7 +634,7 @@ describe("Event route — no-forum lead (GEO-275)", () => {
 	beforeEach(async () => {
 		capturedEnvelopes = [];
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };
