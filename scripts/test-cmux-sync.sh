@@ -172,6 +172,27 @@ if echo "$MOCK_TMUX_HOOKS" | grep -q 'pane-exited\[500\]'; then
 else
   fail "pane-exited[500] not found"
 fi
+# FLY-110: pane-died MUST also be registered (in register_global_hooks).
+# Production sets `remain-on-exit on` on Runner/Lead sessions, where tmux
+# 3.5a fires `pane-died` (not `pane-exited`) when the pane process exits.
+# In tmux 3.5a, pane-died only fires when registered globally — session-
+# scoped registration is silently ignored by the hook dispatcher.
+reset_mocks
+register_global_hooks >/dev/null
+if echo "$MOCK_TMUX_HOOKS" | grep -q 'pane-died\[500\]'; then
+  pass "pane-died[500] registered globally (FLY-110 fix)"
+else
+  fail "pane-died[500] not registered globally — production path with remain-on-exit on will not fire (FLY-110)"
+fi
+# pane-died MUST NOT be registered session-scoped — that registration is
+# silently dropped by tmux 3.5a's hook dispatcher.
+reset_mocks
+register_session_hooks "flywheel" >/dev/null
+if echo "$MOCK_TMUX_HOOKS" | grep -q 'pane-died\[500\]'; then
+  fail "pane-died[500] should not be registered session-scoped (tmux 3.5a drops it silently); register globally instead"
+else
+  pass "pane-died not registered session-scoped (correct — tmux 3.5a only fires global pane-died)"
+fi
 
 # ════════════════════════════════════════════════════════════════
 # Test 3: Hook command embeds format vars, not $(date ...)

@@ -129,8 +129,15 @@ export async function isTmuxWindowAlive(tmuxWindow: string): Promise<boolean> {
  * Kill a specific tmux window (not the whole session).
  *
  * Takes the full CommDB tmux_window target (e.g. "runner-geoforge3d:@42").
- * Using kill-window preserves other Runners sharing the same session and
- * triggers pane-exited hooks so cmux-sync event-driven cleanup runs.
+ * Using kill-window preserves other Runners sharing the same session.
+ *
+ * cmux-sync cleanup is signaled by `pane-died` (registered globally —
+ * see scripts/flywheel-cmux-sync.sh::register_global_hooks) when a
+ * `remain-on-exit on` pane's process exits — that fires before this
+ * kill-window call and is what actually drives the event-driven cleanup
+ * path. kill-window itself just closes the now-dead window; tmux 3.5a
+ * does not reliably emit a second hook for kill-window on an already-dead
+ * pane, and the cleanup is already queued by then.
  *
  * Distinguishes benign (already dead) from real errors.
  */

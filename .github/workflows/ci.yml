@@ -47,3 +47,15 @@ jobs:
 
       - name: Test
         run: pnpm test:packages:run
+
+      # FLY-110: cmux-sync hook integration test runs against an isolated
+      # tmux server (custom -L socket name) so it cannot interfere with
+      # other CI processes. Verifies the production-critical cleanup path:
+      # pane-died (global hook) fires when a remain-on-exit pane process
+      # exits — the bug that left cmux sidebar entries hanging for 5+
+      # minutes in production until FLY-110.
+      - name: Install tmux for cmux-sync hook integration test
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Integration test — cmux-sync hooks
+        run: bash scripts/test-cmux-sync-hooks-integration.sh

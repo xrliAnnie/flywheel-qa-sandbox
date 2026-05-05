@@ -5,10 +5,13 @@
 # --refresh: tmux-only linked session repair. Safe to call from anywhere (no cmux socket needed).
 #
 # FLY-102: --watch uses event-signaled polling architecture:
-#   - tmux hooks (after-new-window, pane-exited, session-created) write events to $EVENT_FILE
+#   - tmux hooks (after-new-window, pane-exited, pane-died, session-created)
+#     write events to $EVENT_FILE
 #   - watcher drains events every 15s and performs cmux operations
 #   - additive-only polling (60s) creates missing workspaces, conservative cleanup (5min)
 #   - hooks themselves never call cmux CLI (they lack cmux socket context)
+# FLY-110: pane-died is the production-dominant cleanup signal — see
+#   register_session_hooks() for why both pane-exited AND pane-died are needed.
 set -euo pipefail
 
 FLYWHEEL_SESSION="flywheel"
@@ -239,7 +242,19 @@ register_session_hooks() {
   esac
 
   # after-new-window: fires when a new window is created in this session.
-  # pane-exited: fires when the pane process exits (independent of remain-on-exit).
+  # pane-exited:      fires when the pane process exits AND the pane has
+  #                   actually closed (i.e. remain-on-exit is OFF, or the
+  #                   pane is being torn down).
+  #
+  # NOTE on hook scope:
+  #   `after-new-window` and `pane-exited` work correctly when registered
+  #   per-session (`set-hook -t <session>`). However the related
+  #   `pane-died` event does NOT fire for session-scoped registration in
+  #   tmux 3.5a — empirically confirmed via isolated tmux server. The
+  #   fix for FLY-110 therefore registers `pane-died` GLOBALLY in
+  #   register_global_hooks(), with the same event payload, and lets
+  #   drain_events() filter by session name on the consumer side.
+  #
   # Array index [500] avoids overwriting other tools' hooks (unindexed set-hook
   # would clear the whole hook array in tmux 3.5a).
   # No $(date ...) inside the hook command string — it would be shell-expanded at
@@ -265,6 +280,32 @@ register_global_hooks() {
   # after-new-window / pane-exited (see register_session_hooks comment).
   tmux set-hook -g 'session-created[500]' \
     "run-shell -b 'echo \"register|#{session_name}\" >> $EVENT_FILE'" 2>/dev/null || true
+
+  # FLY-110: pane-died MUST be registered globally.
+  #
+  # Production Runner sessions (packages/claude-runner/src/TmuxAdapter.ts:105)
+  # and Lead sessions (packages/teamlead/scripts/claude-lead.sh) set
+  # `remain-on-exit on` so the operator can read the exit code of a dead
+  # pane. Under that configuration tmux 3.5a fires `pane-died` (NOT
+  # `pane-exited`) when the pane process exits.
+  #
+  # FLY-102 originally only registered `pane-exited` — and only at session
+  # scope — so the event-driven cleanup path silently never ran in
+  # production. Bug found in FLY-110.
+  #
+  # Empirically: in tmux 3.5a, `set-hook -t <session> pane-died[N] ...`
+  # registers the hook (show-hooks confirms it) but the hook NEVER fires
+  # when a pane in that session dies. `set-hook -g pane-died[N] ...` does
+  # fire correctly. Therefore pane-died is registered globally here.
+  # `drain_events()` filters by session name (`flywheel|runner-*`) so the
+  # global scope does not introduce noise from other tmux sessions.
+  #
+  # Reference: tmux 3.5a man page —
+  #   pane-died:   "...program ... exits, but remain-on-exit is on so the
+  #                pane has not closed."
+  #   pane-exited: "...program ... exits."  (i.e. pane has actually closed)
+  tmux set-hook -g 'pane-died[500]' \
+    "run-shell -b 'echo \"exited|#{session_name}|#{window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
 }
 
 register_hooks_on_new_sessions() {
