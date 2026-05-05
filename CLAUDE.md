@@ -95,6 +95,7 @@ Current version: see `doc/VERSION`
 | FLY-109: Lead resume no longer silently drops flywheel-inbox events (delivered_at + ack tool + dialog poller) | ✅ Merged (PR #154) |
 | FLY-99: Runner crash on residual worktree — pre-create cleanup (orphan dir + stale branch) | ✅ Merged (PR #153) |
 | FLY-83: Lead daemon stuck detection + Annie Discord alerts (LeadWatchdog Bridge-side, pattern-first ≤30s) | ✅ Merged (PR #156) |
+| FLY-110 v1.25.0: cmux-sync pane-died global hook — fix event cleanup never firing in production (5+ min → ~30-45s typical) | ✅ Merged (PR #166) |
 
 ## Doc Structure & Lifecycle
 
