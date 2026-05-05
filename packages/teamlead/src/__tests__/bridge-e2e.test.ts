@@ -211,7 +211,7 @@ describe("Bridge E2E lifecycle", () => {
 	it("notification is delivered via registry when configured", async () => {
 		const capturedEnvelopes: LeadEventEnvelope[] = [];
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };
@@ -358,7 +358,7 @@ describe("Bridge E2E lifecycle", () => {
 
 		const capturedEnvelopes: LeadEventEnvelope[] = [];
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };

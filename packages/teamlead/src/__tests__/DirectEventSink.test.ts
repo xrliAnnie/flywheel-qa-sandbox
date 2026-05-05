@@ -273,7 +273,7 @@ describe("DirectEventSink — Forum Tag Update on emitCompleted (FLY-24 Bug 2)",
 
 	function createMockRuntime(): import("../bridge/lead-runtime.js").LeadRuntime {
 		return {
-			type: "claude-discord",
+			type: "commdb",
 			deliver: vi.fn().mockResolvedValue({ delivered: true }),
 			sendBootstrap: vi.fn().mockResolvedValue(undefined),
 			health: vi.fn().mockResolvedValue({
@@ -639,7 +639,7 @@ describe("DirectEventSink — postThreadStatusMessage integration (FLY-24)", () 
 
 	function createMockRuntime(): import("../bridge/lead-runtime.js").LeadRuntime {
 		return {
-			type: "claude-discord",
+			type: "commdb",
 			deliver: vi.fn().mockResolvedValue({ delivered: true }),
 			sendBootstrap: vi.fn().mockResolvedValue(undefined),
 			health: vi.fn().mockResolvedValue({
@@ -764,7 +764,7 @@ describe("DirectEventSink — post-ship finalization gate (FLY-102 Codex Round 1
 
 	function createMockRuntime(): import("../bridge/lead-runtime.js").LeadRuntime {
 		return {
-			type: "claude-discord",
+			type: "commdb",
 			deliver: vi.fn().mockResolvedValue({ delivered: true }),
 			sendBootstrap: vi.fn().mockResolvedValue(undefined),
 			health: vi.fn().mockResolvedValue({

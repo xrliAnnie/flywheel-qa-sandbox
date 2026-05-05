@@ -13,7 +13,7 @@ function makeLead(overrides?: Partial<LeadConfig>): LeadConfig {
 	};
 }
 
-function makeRuntime(type: "claude-discord" = "claude-discord"): LeadRuntime {
+function makeRuntime(type: "commdb" = "commdb"): LeadRuntime {
 	return {
 		type,
 		deliver: vi.fn().mockResolvedValue({ delivered: true }),
@@ -52,8 +52,8 @@ describe("RuntimeRegistry", () => {
 
 	it("resolve() finds runtime by project + labels", () => {
 		const reg = new RuntimeRegistry();
-		const productRt = makeRuntime("claude-discord");
-		const opsRt = makeRuntime("claude-discord");
+		const productRt = makeRuntime("commdb");
+		const opsRt = makeRuntime("commdb");
 		reg.register(
 			makeLead({ agentId: "product-lead", match: { labels: ["Product"] } }),
 			productRt,

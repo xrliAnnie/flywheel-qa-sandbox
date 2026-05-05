@@ -81,7 +81,7 @@ describe("GEO-187 E2E: EventFilter pipeline", () => {
 
 		// Mock RuntimeRegistry with a capture runtime
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };

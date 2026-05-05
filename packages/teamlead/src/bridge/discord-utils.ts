@@ -1,5 +1,5 @@
 /**
- * Shared Discord utilities used by standup-service and claude-discord-runtime.
+ * Shared Discord utilities used by standup-service.
  */
 
 export const DISCORD_API = "https://discord.com/api/v10";

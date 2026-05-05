@@ -1,16 +1,12 @@
 /**
  * FLY-47: CommDBLeadRuntime — delivers events to Lead via CommDB instructions.
  *
- * Replaces ClaudeDiscordRuntime: instead of posting to a Discord control channel,
- * writes to CommDB as instructions. Lead picks these up via inbox-check.sh hook
- * (same mechanism as Runner → Lead communication).
+ * Bridge writes events to CommDB as instructions. Lead picks them up via the
+ * flywheel-inbox MCP / inbox-check.sh hook (same mechanism as Runner → Lead).
+ * (FLY-77 removed the predecessor Discord control-channel transport entirely.)
  *
- * This eliminates the need for:
- * - ClaudeBot token for internal Bridge → Lead communication
- * - allowBots Discord configuration
- * - Discord control channel as internal transport
- *
- * Discord is now only used for Lead → Annie (outbound Chat messages).
+ * Internal Bridge → Lead transport uses no Discord channel and no Bridge bot
+ * token. Discord is only used for Lead → Annie (outbound chat messages).
  */
 
 import { CommDB } from "flywheel-comm/db";
