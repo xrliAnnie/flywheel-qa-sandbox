@@ -36,6 +36,18 @@ export interface LeadConfig {
 	 * core channel (Simba's cos-chat) instead of dropping them.
 	 */
 	alertFallbackToCore?: boolean;
+	/**
+	 * FLY-127: Whether this Lead is authorized to spawn Runners via
+	 * `POST /api/runs/start`. The Bridge enforces this server-side.
+	 *
+	 * Default (when field is absent): derived from `forumChannel` —
+	 *   - `forumChannel` set     → defaults to `true`  (typical department lead)
+	 *   - `forumChannel` missing → defaults to `false` (typical PM / triage lead)
+	 *
+	 * Explicit `true` / `false` always wins. After `loadProjects()`, this field
+	 * is normalized to a boolean (no `undefined`).
+	 */
+	canSpawnRunners?: boolean;
 }
 
 export interface ProjectEntry {
@@ -217,6 +229,20 @@ export function loadProjects(): ProjectEntry[] {
 					`Project "${entry.projectName}" leads[${i}].alertFallbackToCore: must be a boolean, got ${JSON.stringify(lead.alertFallbackToCore)}`,
 				);
 			}
+			// FLY-127: validate optional canSpawnRunners type
+			if (
+				lead.canSpawnRunners !== undefined &&
+				typeof lead.canSpawnRunners !== "boolean"
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].canSpawnRunners: must be a boolean, got ${JSON.stringify(lead.canSpawnRunners)}`,
+				);
+			}
+			// FLY-127: Normalize canSpawnRunners — auto-derive from forumChannel
+			// when the field is absent, so downstream code reads a boolean.
+			if (lead.canSpawnRunners === undefined) {
+				lead.canSpawnRunners = Boolean(lead.forumChannel);
+			}
 			// Strip any raw botToken from JSON input first — secrets must come via env vars
 			delete lead.botToken;
 			const botTokenEnv = lead.botTokenEnv;
@@ -230,6 +256,32 @@ export function loadProjects(): ProjectEntry[] {
 					);
 				}
 			}
+		}
+
+		// FLY-127: per-project schema validation for spawning leads.
+		// (Codex R1 #2 + R2 #1) Each spawning lead must have exactly 1 dept label,
+		// and the canonical labels (case-insensitive) must be unique across spawning
+		// leads in the same project. Without these, `resolveCanonicalLead` is
+		// ambiguous and the "1 lead → 1 department" / "1 issue → 1 department"
+		// invariants break.
+		const canonicalLabelOwners = new Map<string, string>(); // lower(label) → leadId
+		for (let i = 0; i < entry.leads.length; i++) {
+			const lead = entry.leads[i] as LeadConfig;
+			if (!lead.canSpawnRunners) continue;
+
+			if (lead.match.labels.length !== 1) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): spawning leads must have exactly 1 match.labels entry (got ${lead.match.labels.length}: ${JSON.stringify(lead.match.labels)}). FLY-127 requires Lead → 1 department.`,
+				);
+			}
+			const canonical = lead.match.labels[0]!.toLowerCase();
+			const existingOwner = canonicalLabelOwners.get(canonical);
+			if (existingOwner) {
+				throw new Error(
+					`Project "${entry.projectName}": spawning leads "${existingOwner}" and "${lead.agentId}" share canonical label "${lead.match.labels[0]}" (case-insensitive). Each spawning lead must own a unique department label. FLY-127.`,
+				);
+			}
+			canonicalLabelOwners.set(canonical, lead.agentId);
 		}
 
 		// Validate optional memoryAllowedUsers (GEO-204)

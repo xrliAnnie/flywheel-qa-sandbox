@@ -236,6 +236,244 @@ describe("loadProjects validation", () => {
 		process.env.FLYWHEEL_PROJECTS = "not valid json{{{";
 		expect(() => loadProjects()).toThrow();
 	});
+
+	// FLY-127: canSpawnRunners + spawning-lead schema validation
+	describe("FLY-127 — canSpawnRunners + spawning-lead schema", () => {
+		it("throws when canSpawnRunners is not a boolean", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "product-lead",
+							forumChannel: "123",
+							chatChannel: "456",
+							match: { labels: ["Product"] },
+							canSpawnRunners: "yes",
+						},
+					],
+				},
+			]);
+			expect(() => loadProjects()).toThrow(/canSpawnRunners.*boolean/);
+		});
+
+		it("normalizes canSpawnRunners to true when forumChannel is set and field absent", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "product-lead",
+							forumChannel: "123",
+							chatChannel: "456",
+							match: { labels: ["Product"] },
+						},
+					],
+				},
+			]);
+			const projects = loadProjects();
+			expect(projects[0]!.leads[0]!.canSpawnRunners).toBe(true);
+		});
+
+		it("normalizes canSpawnRunners to false when forumChannel absent and field absent", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "cos-lead",
+							chatChannel: "456",
+							match: { labels: ["PM"] },
+						},
+					],
+				},
+			]);
+			const projects = loadProjects();
+			expect(projects[0]!.leads[0]!.canSpawnRunners).toBe(false);
+		});
+
+		it("explicit canSpawnRunners=true survives normalization", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "pm-spawn-lead",
+							chatChannel: "456",
+							match: { labels: ["PM"] },
+							canSpawnRunners: true,
+						},
+					],
+				},
+			]);
+			const projects = loadProjects();
+			expect(projects[0]!.leads[0]!.canSpawnRunners).toBe(true);
+		});
+
+		it("explicit canSpawnRunners=false overrides forumChannel-derived true", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "non-spawning-with-forum",
+							forumChannel: "123",
+							chatChannel: "456",
+							match: { labels: ["Marketing"] },
+							canSpawnRunners: false,
+						},
+					],
+				},
+			]);
+			const projects = loadProjects();
+			expect(projects[0]!.leads[0]!.canSpawnRunners).toBe(false);
+		});
+
+		it("throws when a spawning lead has more than 1 dept label", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "multi-label-spawner",
+							forumChannel: "123",
+							chatChannel: "456",
+							match: { labels: ["Product", "Engineering"] },
+						},
+					],
+				},
+			]);
+			expect(() => loadProjects()).toThrow(
+				/spawning leads must have exactly 1 match.labels/,
+			);
+		});
+
+		it("allows non-spawning lead to keep multi-label sentinels", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "product-lead",
+							forumChannel: "123",
+							chatChannel: "456",
+							match: { labels: ["Product"] },
+						},
+						{
+							agentId: "cos-lead",
+							chatChannel: "789",
+							match: { labels: ["PM", "Triage"] },
+						},
+					],
+				},
+			]);
+			expect(() => loadProjects()).not.toThrow();
+		});
+
+		it("throws when two spawning leads share an exact canonical label", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "product-lead-a",
+							forumChannel: "123",
+							chatChannel: "456",
+							match: { labels: ["Product"] },
+						},
+						{
+							agentId: "product-lead-b",
+							forumChannel: "789",
+							chatChannel: "012",
+							match: { labels: ["Product"] },
+						},
+					],
+				},
+			]);
+			expect(() => loadProjects()).toThrow(/share canonical label "Product"/);
+		});
+
+		it("throws when two spawning leads share a case-insensitive canonical label", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "product-lead-a",
+							forumChannel: "123",
+							chatChannel: "456",
+							match: { labels: ["Product"] },
+						},
+						{
+							agentId: "product-lead-b",
+							forumChannel: "789",
+							chatChannel: "012",
+							match: { labels: ["product"] },
+						},
+					],
+				},
+			]);
+			expect(() => loadProjects()).toThrow(/share canonical label/);
+		});
+
+		it("allows distinct spawning labels across two spawning leads", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "product-lead",
+							forumChannel: "123",
+							chatChannel: "456",
+							match: { labels: ["Product"] },
+						},
+						{
+							agentId: "ops-lead",
+							forumChannel: "789",
+							chatChannel: "012",
+							match: { labels: ["Operations"] },
+						},
+					],
+				},
+			]);
+			expect(() => loadProjects()).not.toThrow();
+		});
+
+		it("allows non-spawning lead to reuse a spawning lead's label", () => {
+			process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "product-lead",
+							forumChannel: "123",
+							chatChannel: "456",
+							match: { labels: ["Product"] },
+						},
+						{
+							agentId: "watcher-lead",
+							chatChannel: "789",
+							match: { labels: ["Product"] },
+							canSpawnRunners: false,
+						},
+					],
+				},
+			]);
+			// Only spawning leads are checked for canonical-label uniqueness.
+			expect(() => loadProjects()).not.toThrow();
+		});
+	});
 });
 
 describe("resolveLeadForIssue", () => {

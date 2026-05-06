@@ -11,14 +11,18 @@ import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 
-// Mock @linear/sdk for pre-flight issue check
+// Mock @linear/sdk for pre-flight issue check.
+// Default: issue carries the "Product" label so the FLY-127 scope check
+// allows the default product-lead path. Individual tests can override via
+// vi.mocked / mockImplementationOnce when they need a different label set.
 vi.mock("@linear/sdk", () => ({
 	LinearClient: vi.fn().mockImplementation(() => ({
 		issue: vi.fn().mockResolvedValue({
 			title: "Test Issue",
 			identifier: "GEO-TEST",
-			// FLY-80: Auto-resolve leadId calls issue.labels()
-			labels: vi.fn().mockResolvedValue({ nodes: [] }),
+			labels: vi.fn().mockResolvedValue({
+				nodes: [{ name: "Product" }],
+			}),
 		}),
 	})),
 }));
@@ -39,6 +43,13 @@ const testProjects: ProjectEntry[] = [
 				forumChannel: "test-ops-forum",
 				chatChannel: "test-ops-chat",
 				match: { labels: ["Ops"] },
+			},
+			// FLY-127: cos-lead has no forumChannel → DepartmentRegistry derives
+			// canSpawnRunners=false. Used by `lead_cannot_spawn` tests.
+			{
+				agentId: "cos-lead",
+				chatChannel: "test-cos-chat",
+				match: { labels: ["PM"] },
 			},
 		],
 	},
@@ -322,5 +333,188 @@ describe("Start API E2E", () => {
 		expect(body.inflight).toBe(1);
 		expect(body.total).toBe(2);
 		expect(body.max).toBe(2);
+	});
+
+	// FLY-127: department scope enforcement on /api/runs/start
+	describe("FLY-127 — department scope enforcement", () => {
+		// Helper to swap the LinearClient mock for a single test.
+		async function mockIssueLabels(labels: string[]): Promise<void> {
+			const { LinearClient } = await import("@linear/sdk");
+			(
+				LinearClient as unknown as ReturnType<typeof vi.fn>
+			).mockImplementationOnce(() => ({
+				issue: vi.fn().mockResolvedValue({
+					title: "Test Issue",
+					identifier: "GEO-FLY127",
+					labels: vi.fn().mockResolvedValue({
+						nodes: labels.map((name) => ({ name })),
+					}),
+				}),
+			}));
+		}
+
+		it("403 label_mismatch when leadId is product but issue carries only Ops label", async () => {
+			await mockIssueLabels(["Ops"]);
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-FLY127",
+					projectName: "TestProject",
+					leadId: "product-lead",
+				}),
+			});
+			expect(res.status).toBe(403);
+			const body = (await res.json()) as {
+				success: boolean;
+				reason: string;
+				canonicalLeadId?: string;
+				issueLabels: string[];
+			};
+			expect(body.success).toBe(false);
+			expect(body.reason).toBe("label_mismatch");
+			expect(body.canonicalLeadId).toBe("ops-lead");
+			expect(body.issueLabels).toEqual(["Ops"]);
+			// Side-effect isolation: dispatcher not invoked
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		});
+
+		it("403 lead_cannot_spawn when cos-lead tries to start a Runner", async () => {
+			await mockIssueLabels(["PM"]);
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-FLY127",
+					projectName: "TestProject",
+					leadId: "cos-lead",
+				}),
+			});
+			expect(res.status).toBe(403);
+			const body = (await res.json()) as { reason: string };
+			expect(body.reason).toBe("lead_cannot_spawn");
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		});
+
+		it("403 issue_no_department_label when issue has only non-dept labels", async () => {
+			await mockIssueLabels(["Bug", "P0"]);
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-FLY127",
+					projectName: "TestProject",
+					leadId: "product-lead",
+				}),
+			});
+			expect(res.status).toBe(403);
+			const body = (await res.json()) as { reason: string };
+			expect(body.reason).toBe("issue_no_department_label");
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		});
+
+		it("403 issue_multiple_department_labels when issue has both Product and Ops", async () => {
+			await mockIssueLabels(["Product", "Ops"]);
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-FLY127",
+					projectName: "TestProject",
+					// leadId omitted — registry classifies → many → 403
+				}),
+			});
+			expect(res.status).toBe(403);
+			const body = (await res.json()) as {
+				reason: string;
+				matchedLeadIds?: string[];
+			};
+			expect(body.reason).toBe("issue_multiple_department_labels");
+			expect(body.matchedLeadIds).toEqual(
+				expect.arrayContaining(["product-lead", "ops-lead"]),
+			);
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		});
+
+		it("auto-resolves leadId via registry on single dept label", async () => {
+			await mockIssueLabels(["Ops"]);
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-FLY127",
+					projectName: "TestProject",
+					// leadId omitted
+				}),
+			});
+			expect(res.status).toBe(200);
+			expect(mockDispatcher.start).toHaveBeenCalledWith(
+				expect.objectContaining({
+					issueId: "GEO-FLY127",
+					projectName: "TestProject",
+					leadId: "ops-lead",
+				}),
+			);
+		}, 15_000);
+
+		it("502 linear_labels_unavailable when issue.labels() throws", async () => {
+			const { LinearClient } = await import("@linear/sdk");
+			(
+				LinearClient as unknown as ReturnType<typeof vi.fn>
+			).mockImplementationOnce(() => ({
+				issue: vi.fn().mockResolvedValue({
+					title: "Test Issue",
+					identifier: "GEO-FLY127",
+					labels: vi
+						.fn()
+						.mockRejectedValueOnce(new Error("Linear API timeout")),
+				}),
+			}));
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-FLY127",
+					projectName: "TestProject",
+					leadId: "product-lead",
+				}),
+			});
+			expect(res.status).toBe(502);
+			const body = (await res.json()) as { reason: string };
+			expect(body.reason).toBe("linear_labels_unavailable");
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		});
+
+		it("happy path: leadId=product-lead + issue has Product label → 200", async () => {
+			// uses default mock (Product label)
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-OK",
+					projectName: "TestProject",
+					leadId: "product-lead",
+				}),
+			});
+			expect(res.status).toBe(200);
+			expect(mockDispatcher.start).toHaveBeenCalled();
+		}, 15_000);
+
+		it("side-effect isolation: 403 leaves StateStore + dispatcher untouched", async () => {
+			await mockIssueLabels(["Ops"]);
+			const before = store.getActiveSessions().length;
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-FLY127",
+					projectName: "TestProject",
+					leadId: "product-lead",
+				}),
+			});
+			expect(res.status).toBe(403);
+			expect(store.getActiveSessions().length).toBe(before);
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		});
 	});
 });

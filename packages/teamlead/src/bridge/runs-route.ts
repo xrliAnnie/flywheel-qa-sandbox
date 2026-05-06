@@ -6,7 +6,11 @@
  */
 
 import { Router } from "express";
-import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
+import {
+	DepartmentRegistry,
+	type ScopeDecision,
+} from "../department-registry.js";
+import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
@@ -14,6 +18,30 @@ import type { IStartDispatcher } from "./retry-dispatcher.js";
 /** Poll interval / max wait for Forum Post thread_id to appear on session. */
 const THREAD_POLL_INTERVAL_MS = 500;
 const THREAD_POLL_MAX_MS = 5000;
+
+/**
+ * FLY-127: Structured rejection log for spawn-scope denials.
+ * One line per rejection at warn level so Annie / on-call can grep by reason.
+ */
+function logRejection(
+	decision: ScopeDecision,
+	ctx: {
+		projectName: string;
+		issueIdentifier: string | undefined;
+		leadId: string | undefined;
+		issueLabels: string[];
+	},
+): void {
+	console.warn(
+		`[runs/start FLY-127 reject] reason=${decision.reason} ` +
+			`projectName=${ctx.projectName} ` +
+			`leadId=${ctx.leadId ?? "<none>"} ` +
+			`issueIdentifier=${ctx.issueIdentifier ?? "<none>"} ` +
+			`issueLabels=${JSON.stringify(ctx.issueLabels)} ` +
+			`canonicalLeadId=${decision.canonicalLeadId ?? "<none>"} ` +
+			`matchedLeadIds=${JSON.stringify(decision.matchedLeadIds ?? [])}`,
+	);
+}
 
 export function createRunsRouter(
 	startDispatcher: IStartDispatcher,
@@ -24,6 +52,9 @@ export function createRunsRouter(
 	chatThreadsEnabled?: boolean,
 ): Router {
 	const router = Router();
+	// FLY-127: Single registry instance per router; safe to capture because
+	// `projects` is loaded once at boot. Bridge restart picks up config edits.
+	const registry = new DepartmentRegistry(projects);
 
 	router.post("/start", async (req, res) => {
 		// GEO-267: LINEAR_API_KEY is required for issue hydration (PreHydrator).
@@ -107,6 +138,7 @@ export function createRunsRouter(
 		// Also captures title/identifier for session metadata patching (FLY-24 Bug 1).
 		let issueTitle: string | undefined;
 		let issueIdentifier: string | undefined;
+		let issueLabels: string[] = [];
 		try {
 			const { LinearClient } = await import("@linear/sdk");
 			const client = new LinearClient({
@@ -123,27 +155,25 @@ export function createRunsRouter(
 			issueTitle = issue.title;
 			issueIdentifier = issue.identifier;
 
-			// FLY-80: Auto-resolve leadId from project config if not provided.
-			// Without leadId, Blueprint skips approve gate instructions entirely.
-			if (!leadId) {
-				try {
-					const labels = await issue.labels();
-					const labelNames = labels.nodes.map((l: { name: string }) => l.name);
-					const { lead } = resolveLeadForIssue(
-						projects,
-						projectName,
-						labelNames,
-					);
-					leadId = lead.agentId;
-					console.log(
-						`[runs/start] Auto-resolved leadId to "${leadId}" for ${issueIdentifier}`,
-					);
-				} catch (resolveErr) {
-					console.warn(
-						`[runs/start] Could not auto-resolve leadId:`,
-						(resolveErr as Error).message,
-					);
-				}
+			// FLY-127: Always hydrate labels (was: only on auto-resolve).
+			// Department scope enforcement requires them for every spawn path.
+			// Fail-closed on label fetch error → 502 below.
+			try {
+				const labelConn = await issue.labels();
+				issueLabels = labelConn.nodes.map((l: { name: string }) => l.name);
+			} catch (labelErr) {
+				const msg =
+					labelErr instanceof Error ? labelErr.message : String(labelErr);
+				console.error(
+					`[runs/start FLY-127] label hydration failed for ${issueIdentifier}:`,
+					msg,
+				);
+				res.status(502).json({
+					success: false,
+					message: `Cannot fetch labels for ${issueIdentifier} from Linear: ${msg}`,
+					reason: "linear_labels_unavailable",
+				});
+				return;
 			}
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -154,6 +184,59 @@ export function createRunsRouter(
 			res.status(502).json({
 				success: false,
 				message: `Cannot verify issue ${issueId} in Linear: ${msg}`,
+			});
+			return;
+		}
+
+		// FLY-127: Department scope enforcement (server-side authority).
+		// When leadId omitted, registry resolves canonically (NOT
+		// resolveLeadForIssue's leads[0] fallback). When leadId provided,
+		// registry verifies the issue is in that lead's scope.
+		if (!leadId) {
+			const resolution = registry.resolveCanonicalLead(
+				projectName,
+				issueLabels,
+			);
+			if (!resolution.ok) {
+				logRejection(resolution.decision, {
+					projectName,
+					issueIdentifier,
+					leadId: undefined,
+					issueLabels,
+				});
+				res.status(403).json({
+					success: false,
+					message: resolution.decision.message,
+					reason: resolution.decision.reason,
+					issueIdentifier,
+					issueLabels,
+					matchedLeadIds: resolution.decision.matchedLeadIds,
+				});
+				return;
+			}
+			leadId = resolution.lead.agentId;
+			console.log(
+				`[runs/start FLY-127] Auto-resolved leadId to "${leadId}" for ${issueIdentifier}`,
+			);
+		}
+
+		const decision = registry.isLeadInScope(projectName, leadId, issueLabels);
+		if (!decision.allowed) {
+			logRejection(decision, {
+				projectName,
+				issueIdentifier,
+				leadId,
+				issueLabels,
+			});
+			res.status(403).json({
+				success: false,
+				message: decision.message,
+				reason: decision.reason,
+				issueIdentifier,
+				leadId,
+				issueLabels,
+				canonicalLeadId: decision.canonicalLeadId,
+				matchedLeadIds: decision.matchedLeadIds,
 			});
 			return;
 		}
