@@ -92,6 +92,7 @@ Current version: see `doc/VERSION`
 | FLY-108: Runner-driven session_completed + Bridge route guard | ✅ Merged (PR #1) |
 | FLY-99: QA pipeline execution — milestone record | ✅ Merged |
 | FLY-124: QA pipeline execution — milestone record | ✅ Merged (PR #7, #8, #9, #11) |
+| FLY-135: QA pipeline execution — milestone record | ✅ Merged |
 
 ## Doc Structure & Lifecycle
 
