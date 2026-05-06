@@ -74,6 +74,13 @@ export interface BlueprintContext {
 	issueIdentifier?: string;
 	// FLY-59 — Session role for multi-session-per-issue support
 	sessionRole?: string;
+	// FLY-116 — Per-runner Terminal viewer hook. Fired by TmuxAdapter
+	// after `tmux new-window` returns a windowId, before waitForCompletion.
+	// Dispatchers set this to spawn a per-execution macOS Terminal tab.
+	onTmuxWindowCreated?: (info: {
+		baseSessionName: string;
+		windowId: string;
+	}) => void;
 }
 
 /** Shell command runner for tmux window cleanup */
@@ -516,6 +523,9 @@ export class Blueprint {
 				onHeartbeat: () => {
 					this.eventEmitter?.emitHeartbeat(env).catch(() => {});
 				},
+				// FLY-116: forward callback so dispatcher can spawn Terminal viewer
+				// when TmuxAdapter creates the tmux window.
+				onTmuxWindowCreated: ctx.onTmuxWindowCreated,
 			});
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);

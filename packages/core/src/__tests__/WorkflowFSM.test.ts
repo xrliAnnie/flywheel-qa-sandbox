@@ -34,6 +34,11 @@ describe("WorkflowFSM", () => {
 		["running", "completed"],
 		["running", "failed"],
 		["awaiting_review", "approved_to_ship"],
+		// FLY-60 W2: awaiting_review → completed for post-merge re-finalize
+		// path (event-route stage_changed=completed + landing_status=merged).
+		// Merge-proof guard lives at the event-route call site; FSM map only
+		// declares the transition is legal.
+		["awaiting_review", "completed"],
 		["awaiting_review", "rejected"],
 		["awaiting_review", "deferred"],
 		["awaiting_review", "shelved"],

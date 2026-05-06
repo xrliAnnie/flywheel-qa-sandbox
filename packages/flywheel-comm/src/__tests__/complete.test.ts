@@ -29,7 +29,7 @@ describe("complete command", () => {
 	let mockFetch: ReturnType<typeof vi.fn>;
 	let exitSpy: ReturnType<typeof vi.spyOn>;
 	let errorSpy: ReturnType<typeof vi.spyOn>;
-	let logSpy: ReturnType<typeof vi.spyOn>;
+	let _logSpy: ReturnType<typeof vi.spyOn>;
 	let tmpHome: string;
 
 	beforeEach(() => {
@@ -54,7 +54,7 @@ describe("complete command", () => {
 			});
 
 		errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		_logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		execFileSyncMock.mockImplementation((cmd, args) => {
 			if (cmd !== "git") throw new Error(`unexpected cmd ${cmd}`);
@@ -257,7 +257,7 @@ describe("complete command", () => {
 	});
 
 	it("git branch not matching regex → issueIdentifier omitted", async () => {
-		execFileSyncMock.mockImplementation((cmd, args) => {
+		execFileSyncMock.mockImplementation((_cmd, args) => {
 			const a = (args ?? []) as string[];
 			if (a[0] === "rev-parse" && a[1] === "--abbrev-ref") return "main\n";
 			if (a[0] === "merge-base") return "base123\n";

@@ -90,7 +90,9 @@ describe("closeRunner", () => {
 	});
 
 	it("returns alreadyGone=true when no tmux target (idempotent)", async () => {
-		seedSession(store, "failed");
+		// FLY-116: failed/blocked are preserved by default; use an AUTO_CLOSE
+		// status here so the alreadyGone path is exercised.
+		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue(undefined);
 
 		const result = await closeRunner(makeOpts(), store);
@@ -104,7 +106,10 @@ describe("closeRunner", () => {
 	});
 
 	it("records lead_close_runner_failed when killTmuxWindow errors", async () => {
-		seedSession(store, "blocked");
+		// FLY-116: pre-FLY-116 used status="blocked"; that now defaults to preserve.
+		// Use "completed" (AUTO_CLOSE) so the kill is attempted and the error
+		// path is exercised.
+		seedSession(store, "completed");
 		mockGetTmuxTarget.mockReturnValue({
 			tmuxWindow: "FLY-102:@0",
 			sessionName: "FLY-102",
@@ -121,6 +126,81 @@ describe("closeRunner", () => {
 		expect(
 			events.some((e) => e.event_type === "lead_close_runner_failed"),
 		).toBe(true);
+	});
+
+	// ───────── FLY-116: state split tests ─────────
+
+	it.each([["failed"], ["blocked"]])(
+		"FLY-116: PRESERVE — status=%s defaults to preserved (no kill, no close)",
+		async (status) => {
+			seedSession(store, status);
+			mockGetTmuxTarget.mockReturnValue({
+				tmuxWindow: "FLY-102:@0",
+				sessionName: "FLY-102",
+			});
+
+			const result = await closeRunner(makeOpts(), store);
+
+			expect(result).toEqual({
+				closed: false,
+				preserved: true,
+				reason: "crash_preserve",
+			});
+			expect(mockKillTmuxWindow).not.toHaveBeenCalled();
+			const events = store.getEventsByExecution("exec-1");
+			expect(
+				events.some((e) => e.event_type === "lead_close_runner_preserved"),
+			).toBe(true);
+		},
+	);
+
+	it.each([["failed"], ["blocked"]])(
+		"FLY-116: forcePreserved bypasses preserve gate — status=%s kills + closes",
+		async (status) => {
+			seedSession(store, status);
+			mockGetTmuxTarget.mockReturnValue({
+				tmuxWindow: "FLY-102:@0",
+				sessionName: "FLY-102",
+			});
+			mockKillTmuxWindow.mockResolvedValue({ killed: true });
+
+			const result = await closeRunner(
+				{ ...makeOpts(), forcePreserved: true },
+				store,
+			);
+
+			expect(result).toEqual({ closed: true, error: undefined });
+			expect(mockKillTmuxWindow).toHaveBeenCalledWith("FLY-102:@0");
+			const events = store.getEventsByExecution("exec-1");
+			expect(
+				events.some(
+					(e) => e.event_type === "lead_close_runner_force_preserved",
+				),
+			).toBe(true);
+		},
+	);
+
+	it("FLY-116: forcePreserved on AUTO_CLOSE status (no-op gate, normal close)", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+
+		// forcePreserved=true on a non-preserve status is a no-op (does NOT
+		// promote to "force_preserved" event type — only failed/blocked do).
+		const result = await closeRunner(
+			{ ...makeOpts(), forcePreserved: true },
+			store,
+		);
+
+		expect(result).toEqual({ closed: true, error: undefined });
+		const events = store.getEventsByExecution("exec-1");
+		expect(events.some((e) => e.event_type === "lead_close_runner")).toBe(true);
+		expect(
+			events.some((e) => e.event_type === "lead_close_runner_force_preserved"),
+		).toBe(false);
 	});
 
 	it.each([["rejected"], ["deferred"], ["shelved"], ["terminated"]])(

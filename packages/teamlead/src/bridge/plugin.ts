@@ -630,9 +630,15 @@ export function createBridgeApp(
 				return;
 			}
 
+			// FLY-116: surface preserve outcome so callers (Lead, Terminal MCP)
+			// can distinguish intentional preserve (failed/blocked → tab kept
+			// for inspection) from a hard close failure.
 			res.json({
-				success: result.closed,
+				success: result.closed || !!result.preserved,
+				closed: result.closed,
 				alreadyGone: result.alreadyGone ?? false,
+				preserved: result.preserved ?? false,
+				reason: result.reason,
 				error: result.error,
 			});
 		},
@@ -1389,6 +1395,22 @@ export async function startBridge(
 	}
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+
+	// FLY-116: one-shot startup reaper for stale Terminal.app tabs left over
+	// from prior runs (macOS Terminal session-restore, crashed Phase 2 watcher, etc).
+	// Status-dominant — failed/blocked tabs preserved. Fire-and-forget.
+	import("./terminal-tab-reaper.js")
+		.then(({ reapTerminalTabs }) =>
+			reapTerminalTabs(store).then((r) =>
+				console.log(
+					`[terminal-reaper] scanned=${r.scanned} closed=${r.closed} preserved=${r.preserved} errors=${r.errors.length}`,
+				),
+			),
+		)
+		.catch((e: Error) =>
+			console.warn(`[terminal-reaper] failed: ${e.message}`),
+		);
+
 	let retryDispatcher = opts?.retryDispatcher;
 	// GEO-158: FSM instance + DirectiveExecutor for validated transitions
 	const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);

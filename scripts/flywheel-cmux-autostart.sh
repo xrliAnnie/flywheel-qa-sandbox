@@ -33,5 +33,15 @@ echo $$ > "$LOCK_DIR/pid"
 trap cleanup_lock EXIT
 
 # ── Run watcher ──
+#
+# FLY-129: do NOT `exec` the sync script. `exec` replaces this shell, which
+# means the EXIT trap (cleanup_lock) won't fire when the sync exits. We need
+# the trap so that fail-loud (sync exits 1 on auth-rejected IPC) actually
+# releases /tmp/flywheel-cmux-watcher.lock — otherwise the next cmux-pane
+# autostart would see a stale lock dir and skip spawning a fresh watcher.
+#
+# Tradeoff: 1 long-running bash wrapper per host (negligible — ~5MB RSS).
 
-exec "$SYNC_SCRIPT" --watch >> "$LOG" 2>&1
+"$SYNC_SCRIPT" --watch >> "$LOG" 2>&1
+exit_code=$?
+exit "$exit_code"

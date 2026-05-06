@@ -737,6 +737,35 @@ describe("TmuxAdapter", () => {
 			expect(envArgStr).toContain("BASH_MAX_TIMEOUT_MS=86400000");
 		});
 
+		// FLY-60 W2 (a): FLYWHEEL_LAND_STATUS_PATH injection so flywheel-comm
+		// stage CLI can read landing-status.json and attach landing_status to
+		// stage_changed=completed event payload.
+		it("execute() injects FLYWHEEL_LAND_STATUS_PATH when ctx.sentinelPath present", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(
+				makeCtx({ sentinelPath: "/tmp/test-runs/exec-x/land-status.json" }),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const envArgStr = newWindow!.args.join(" ");
+			expect(envArgStr).toContain(
+				"FLYWHEEL_LAND_STATUS_PATH=/tmp/test-runs/exec-x/land-status.json",
+			);
+		});
+
+		it("execute() omits FLYWHEEL_LAND_STATUS_PATH when ctx.sentinelPath absent", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const envArgStr = newWindow!.args.join(" ");
+			expect(envArgStr).not.toContain("FLYWHEEL_LAND_STATUS_PATH");
+		});
+
 		it("waitForCompletion resolves on HTTP callback", async () => {
 			const hookServer = makeMockHookServer({ resolveImmediately: true });
 			const { fn } = makeMockExec({ paneDead: false });

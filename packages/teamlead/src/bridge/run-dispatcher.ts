@@ -70,7 +70,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 			throw new Error(`No runtime for project: ${req.projectName}`);
 		}
 
-		openTmuxViewer(runtime.tmuxSessionName);
+		// FLY-116: opener moved into BlueprintContext callback below
+		// (was: openTmuxViewer(runtime.tmuxSessionName) — fired too early without windowId).
 
 		const newExecutionId = randomUUID();
 		const entry = {
@@ -105,6 +106,16 @@ export class RetryDispatcher implements IRetryDispatcher {
 				previousReasoning: req.previousReasoning,
 				attempt: req.runAttempt,
 				reason: req.reason,
+			},
+			// FLY-116: spawn macOS Terminal viewer once tmux window exists
+			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
+				openTmuxViewer({
+					baseSessionName,
+					windowId,
+					executionId: newExecutionId,
+					projectName: req.projectName,
+					sessionRole: req.sessionRole,
+				});
 			},
 		};
 
@@ -269,7 +280,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			throw new Error(`No runtime for project: ${req.projectName}`);
 		}
 
-		openTmuxViewer(runtime.tmuxSessionName);
+		// FLY-116: opener moved into BlueprintContext callback below.
 
 		const executionId = randomUUID();
 		const entry = {
@@ -297,6 +308,16 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,
+			// FLY-116: spawn macOS Terminal viewer once tmux window exists
+			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
+				openTmuxViewer({
+					baseSessionName,
+					windowId,
+					executionId,
+					projectName: req.projectName,
+					sessionRole: req.sessionRole,
+				});
+			},
 		};
 
 		entry.promise = runtime.blueprint

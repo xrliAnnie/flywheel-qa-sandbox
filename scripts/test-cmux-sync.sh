@@ -94,7 +94,12 @@ tmux() {
 }
 
 cmux() {
-  case "$1" in
+  # FLY-129: cmux_call passes `--socket "$path"` first; skip those two args
+  # so the rest of the test mock keeps working unchanged.
+  if [[ "${1:-}" == "--socket" ]]; then
+    shift 2
+  fi
+  case "${1:-}" in
     list-workspaces)
       echo "$MOCK_CMUX_WORKSPACES"
       ;;
@@ -559,7 +564,11 @@ else
 
   # Use `command tmux` throughout to bypass the mock function defined above.
   command tmux kill-session -t "$TMUX_INT_SESSION" 2>/dev/null
-  command tmux new-session -d -s "$TMUX_INT_SESSION" -n initial 2>/dev/null
+  # FLY-129 R2: some sandboxes (AppArmor / restricted /tmp / codex review env)
+  # reject tmux's socket creation. Probe + skip gracefully instead of failing.
+  if ! command tmux new-session -d -s "$TMUX_INT_SESSION" -n initial 2>/dev/null; then
+    echo "  ⏭  tmux new-session failed (sandbox / restricted env) — skipping integration test"
+  else
 
   # Exact hook command strings from register_session_hooks / register_global_hooks.
   command tmux set-hook -t "$TMUX_INT_SESSION" 'after-new-window[500]' \
@@ -595,7 +604,225 @@ else
   fi
 
   command tmux kill-session -t "$TMUX_INT_SESSION" 2>/dev/null || true
+  fi  # tmux new-session probe close
 fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-129: cmux IPC health check + cmux_call wrapper
+# ════════════════════════════════════════════════════════════════
+
+# Helper: probe whether AF_UNIX socket creation works in this environment.
+# Some sandboxes (codex review env, certain CI setups) deny AF_UNIX bind.
+# Tests requiring a real socket should skip gracefully when this returns 1.
+_can_bind_af_unix() {
+  command -v python3 >/dev/null 2>&1 || return 1
+  local probe="$TMPDIR_ROOT/.afunix-probe.$$"
+  rm -f "$probe"
+  python3 - "$probe" >/dev/null 2>&1 <<'PY'
+import socket, sys
+try:
+    s = socket.socket(socket.AF_UNIX)
+    s.bind(sys.argv[1])
+    s.close()
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+PY
+  local rc=$?
+  rm -f "$probe"
+  [[ $rc -eq 0 ]]
+}
+
+# Helper: spawn a python Unix-socket listener (creates the socket file).
+# Echoes the PID on stdout. Caller is responsible for kill + wait + rm.
+#
+# Important: redirect python stdout/stderr away from the command-substitution
+# capture pipe. Otherwise the long-running background process inherits that
+# pipe and `pid=$(_spawn_unix_socket ...)` won't return until python exits.
+_spawn_unix_socket() {
+  local path="$1"
+  python3 - "$path" >/dev/null 2>&1 <<'PY' &
+import socket, sys, time
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+s.listen(1)
+time.sleep(60)
+PY
+  local pid=$!
+  local deadline=$((SECONDS + 5))
+  while [[ ! -S "$path" && $SECONDS -lt $deadline ]]; do
+    sleep 0.05
+  done
+  if [[ ! -S "$path" ]]; then
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+    return 1
+  fi
+  echo "$pid"
+}
+
+_kill_unix_socket() {
+  local pid="$1" path="$2"
+  kill "$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  rm -f "$path"
+}
+
+# Save / restore the global cmux mock so per-test overrides don't leak.
+_SAVED_CMUX_MOCK=""
+_save_cmux_mock() { _SAVED_CMUX_MOCK="$(declare -f cmux 2>/dev/null || true)"; }
+_restore_cmux_mock() {
+  unset -f cmux 2>/dev/null || true
+  if [[ -n "$_SAVED_CMUX_MOCK" ]]; then
+    eval "$_SAVED_CMUX_MOCK"
+  fi
+}
+
+test_health_check_no_socket() {
+  echo "▶ test_health_check_no_socket"
+  local fake_socket="$TMPDIR_ROOT/no-such-socket"
+  rm -f "$fake_socket"
+  local rc=0
+  CMUX_SOCKET_PATH="$fake_socket" cmux_health_check 2>/dev/null || rc=$?
+  if [[ $rc -eq 1 ]]; then pass "missing socket → rc=1"; else fail "expected rc=1, got $rc"; fi
+}
+
+test_health_check_auth_rejected() {
+  echo "▶ test_health_check_auth_rejected"
+  if ! _can_bind_af_unix; then
+    echo "  (skipped: AF_UNIX bind unavailable in this environment)"
+    return 0
+  fi
+  local fake_socket="$TMPDIR_ROOT/cmux-fake-auth.sock"
+  rm -f "$fake_socket"
+  local server_pid
+  if ! server_pid=$(_spawn_unix_socket "$fake_socket"); then
+    echo "  (skipped: could not bind AF_UNIX socket — sandbox or permission issue)"
+    return 0
+  fi
+  _save_cmux_mock
+  cmux() {
+    if [[ "$1" == "--socket" ]]; then shift 2; fi
+    if [[ "$1" == "ping" ]]; then
+      echo "ERROR: Access denied — only processes started inside cmux can connect" >&2
+      return 141
+    fi
+    return 0
+  }
+  local rc=0
+  CMUX_SOCKET_PATH="$fake_socket" cmux_health_check 2>/dev/null || rc=$?
+  _restore_cmux_mock
+  _kill_unix_socket "$server_pid" "$fake_socket"
+  if [[ $rc -eq 2 ]]; then pass "auth rejected → rc=2"; else fail "expected rc=2, got $rc"; fi
+}
+
+test_health_check_healthy() {
+  echo "▶ test_health_check_healthy"
+  if ! _can_bind_af_unix; then
+    echo "  (skipped: AF_UNIX bind unavailable in this environment)"
+    return 0
+  fi
+  local fake_socket="$TMPDIR_ROOT/cmux-fake-healthy.sock"
+  rm -f "$fake_socket"
+  local server_pid
+  if ! server_pid=$(_spawn_unix_socket "$fake_socket"); then
+    echo "  (skipped: could not bind AF_UNIX socket — sandbox or permission issue)"
+    return 0
+  fi
+  _save_cmux_mock
+  cmux() {
+    if [[ "$1" == "--socket" ]]; then shift 2; fi
+    [[ "$1" == "ping" ]] && echo "PONG" && return 0
+    return 0
+  }
+  local rc=0
+  CMUX_SOCKET_PATH="$fake_socket" cmux_health_check 2>/dev/null || rc=$?
+  _restore_cmux_mock
+  _kill_unix_socket "$server_pid" "$fake_socket"
+  if [[ $rc -eq 0 ]]; then pass "healthy → rc=0"; else fail "expected rc=0, got $rc"; fi
+}
+
+test_health_check_transient_error() {
+  echo "▶ test_health_check_transient_error"
+  if ! _can_bind_af_unix; then
+    echo "  (skipped: AF_UNIX bind unavailable in this environment)"
+    return 0
+  fi
+  local fake_socket="$TMPDIR_ROOT/cmux-fake-transient.sock"
+  rm -f "$fake_socket"
+  local server_pid
+  if ! server_pid=$(_spawn_unix_socket "$fake_socket"); then
+    echo "  (skipped: could not bind AF_UNIX socket — sandbox or permission issue)"
+    return 0
+  fi
+  _save_cmux_mock
+  cmux() {
+    if [[ "$1" == "--socket" ]]; then shift 2; fi
+    if [[ "$1" == "ping" ]]; then
+      echo "Error: Failed to connect to socket" >&2
+      return 1
+    fi
+    return 0
+  }
+  local rc=0
+  CMUX_SOCKET_PATH="$fake_socket" cmux_health_check 2>/dev/null || rc=$?
+  _restore_cmux_mock
+  _kill_unix_socket "$server_pid" "$fake_socket"
+  if [[ $rc -eq 3 ]]; then pass "transient → rc=3"; else fail "expected rc=3, got $rc"; fi
+}
+
+test_cmux_call_stdout_passthrough() {
+  echo "▶ test_cmux_call_stdout_passthrough"
+  _save_cmux_mock
+  cmux() {
+    if [[ "$1" == "--socket" ]]; then shift 2; fi
+    echo "workspace:1  alpha"
+    echo "workspace:2  beta"
+    return 0
+  }
+  local out
+  out=$(cmux_call list-workspaces 2>/dev/null)
+  _restore_cmux_mock
+  if [[ "$out" == *"workspace:1  alpha"* && "$out" == *"workspace:2  beta"* ]]; then
+    pass "stdout preserved through cmux_call wrapper"
+  else
+    fail "stdout mangled: '$out'"
+  fi
+}
+
+test_cmux_call_stderr_logged_not_in_stdout() {
+  echo "▶ test_cmux_call_stderr_logged_not_in_stdout"
+  _save_cmux_mock
+  cmux() {
+    if [[ "$1" == "--socket" ]]; then shift 2; fi
+    echo "fake-stdout-line"
+    echo "fake-stderr-line" >&2
+    return 7
+  }
+  local out err
+  err=$(mktemp)
+  out=$(cmux_call list-workspaces 2>"$err") || true
+  local err_content
+  err_content=$(cat "$err")
+  rm -f "$err"
+  _restore_cmux_mock
+  if [[ "$out" == *"fake-stdout-line"* ]] \
+     && [[ "$err_content" == *"fake-stderr-line"* ]] \
+     && [[ "$out" != *"fake-stderr-line"* ]]; then
+    pass "stdout passes through, stderr captured to log (not stdout)"
+  else
+    fail "out='$out' err='$err_content'"
+  fi
+}
+
+echo ""
+echo "═══ FLY-129: cmux IPC health check + cmux_call ═══"
+test_health_check_no_socket
+test_health_check_auth_rejected
+test_health_check_healthy
+test_health_check_transient_error
+test_cmux_call_stdout_passthrough
+test_cmux_call_stderr_logged_not_in_stdout
 
 # ════════════════════════════════════════════════════════════════
 # Summary

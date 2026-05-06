@@ -25,3 +25,4 @@ logs/
 # TypeScript
 *.tsbuildinfo
 .claude/worktrees/
+.claude/scheduled_tasks.lock
