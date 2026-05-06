@@ -93,6 +93,7 @@ Current version: see `doc/VERSION`
 | FLY-99: QA pipeline execution — milestone record | ✅ Merged |
 | FLY-124: QA pipeline execution — milestone record | ✅ Merged (PR #7, #8, #9, #11, #12) |
 | FLY-135: QA pipeline execution — milestone record | ✅ Merged |
+| FLY-136: QA pipeline execution — milestone record | ✅ Merged |
 
 ## Doc Structure & Lifecycle
 
