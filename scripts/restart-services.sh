@@ -546,13 +546,17 @@ start_bridge() {
 restart_lead() {
     local manifest="$1"
 
-    local lead_id project_dir project_name subdir bot_token_env workspace
+    local lead_id project_dir project_name subdir bot_token_env workspace mcp_exclude chrome_enabled
     lead_id=$(jq -r '.leadId' "$manifest")
     project_dir=$(jq -r '.projectDir' "$manifest")
     project_name=$(jq -r '.projectName' "$manifest")
     subdir=$(jq -r '.subdir // ""' "$manifest")
     bot_token_env=$(jq -r '.botTokenEnv' "$manifest")
     workspace=$(jq -r '.workspace // ""' "$manifest")
+    # FLY-143: per-Lead MCP scope fields. Default empty/false for older
+    # manifests so legacy nohup path matches launchd wrapper behavior.
+    mcp_exclude=$(jq -r '.mcpExclude // ""' "$manifest")
+    chrome_enabled=$(jq -r '.chromeEnabled // false' "$manifest")
 
     # FLY-80: Fallback if projectDir is a deleted worktree — resolve to main repo
     if [[ ! -d "$project_dir" ]]; then
@@ -639,20 +643,29 @@ restart_lead() {
     fi
 
     # Legacy path: manual nohup (Lead not daemon-managed)
-    # Replay LEAD_WORKSPACE if manifest recorded a custom one
+    # Replay LEAD_WORKSPACE if manifest recorded a custom one.
+    # FLY-143: also propagate FLYWHEEL_LEAD_MCP_EXCLUDE / FLYWHEEL_LEAD_CHROME_ENABLED
+    # so per-Lead MCP scope matches the launchd path. Use `env` with explicit
+    # arguments — late-expanded `NAME=value` words are NOT recognized as env
+    # assignments by bash (assignment recognition happens before parameter
+    # expansion), so a `$_chrome_env` style would launch
+    # "FLYWHEEL_LEAD_CHROME_ENABLED=true" as the command name.
+    local lead_env=(
+      "DISCORD_STATE_DIR=$discord_state_dir"
+      "DISCORD_BOT_TOKEN=${!bot_token_env}"
+      "FLYWHEEL_LEAD_MCP_EXCLUDE=$mcp_exclude"
+    )
     if [[ -n "$workspace" && "$workspace" != "null" ]]; then
-        LEAD_WORKSPACE="$workspace" DISCORD_STATE_DIR="$discord_state_dir" DISCORD_BOT_TOKEN="${!bot_token_env}" \
-            nohup "$FLYWHEEL_DIR/packages/teamlead/scripts/claude-lead.sh" \
-            "$lead_id" "$project_dir" "$project_name" $subdir_args \
-            --bot-token-env "$bot_token_env" \
-            >> "/tmp/flywheel-lead-${lead_id}.log" 2>&1 &
-    else
-        DISCORD_STATE_DIR="$discord_state_dir" DISCORD_BOT_TOKEN="${!bot_token_env}" \
-            nohup "$FLYWHEEL_DIR/packages/teamlead/scripts/claude-lead.sh" \
-            "$lead_id" "$project_dir" "$project_name" $subdir_args \
-            --bot-token-env "$bot_token_env" \
-            >> "/tmp/flywheel-lead-${lead_id}.log" 2>&1 &
+        lead_env+=("LEAD_WORKSPACE=$workspace")
     fi
+    if [[ "$chrome_enabled" == "true" ]]; then
+        lead_env+=("FLYWHEEL_LEAD_CHROME_ENABLED=true")
+    fi
+    nohup env "${lead_env[@]}" \
+        "$FLYWHEEL_DIR/packages/teamlead/scripts/claude-lead.sh" \
+        "$lead_id" "$project_dir" "$project_name" $subdir_args \
+        --bot-token-env "$bot_token_env" \
+        >> "/tmp/flywheel-lead-${lead_id}.log" 2>&1 &
     local new_pid=$!
     # Brief liveness check: wait 3s and verify process didn't exit immediately
     sleep 3

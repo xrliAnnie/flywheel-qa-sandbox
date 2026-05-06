@@ -312,6 +312,25 @@ MANIFEST_DIR="${HOME}/.flywheel/manifests"
 MANIFEST_FILE="${MANIFEST_DIR}/${PROJECT_NAME}-${LEAD_ID}.json"
 mkdir -p "$MANIFEST_DIR"
 if command -v jq >/dev/null 2>&1; then
+  # FLY-143: preserve per-Lead MCP scope fields across manifest rewrites.
+  # Source of truth: env (set by wrapper from prior manifest read). Falling
+  # back to existing manifest values stops a launchd restart from silently
+  # dropping `mcpExclude` / `chromeEnabled` and re-broadening MCP scope.
+  _existing_mcp_exclude=""
+  _existing_chrome_enabled="false"
+  if [ -f "$MANIFEST_FILE" ]; then
+    _existing_mcp_exclude=$(jq -r '.mcpExclude // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
+    _existing_chrome_enabled=$(jq -r '.chromeEnabled // false' "$MANIFEST_FILE" 2>/dev/null || echo "false")
+  fi
+  _final_mcp_exclude="${FLYWHEEL_LEAD_MCP_EXCLUDE-$_existing_mcp_exclude}"
+  if [ "${FLYWHEEL_LEAD_CHROME_ENABLED:-}" = "true" ]; then
+    _final_chrome_enabled=true
+  elif [ "${FLYWHEEL_LEAD_CHROME_ENABLED:-}" = "false" ]; then
+    _final_chrome_enabled=false
+  else
+    _final_chrome_enabled="$_existing_chrome_enabled"
+  fi
+
   jq -n \
     --arg leadId "$LEAD_ID" \
     --arg projectDir "$PROJECT_DIR" \
@@ -320,9 +339,16 @@ if command -v jq >/dev/null 2>&1; then
     --arg workspace "$LEAD_WORKSPACE" \
     --arg botTokenEnv "${BOT_TOKEN_ENV_NAME:-DISCORD_BOT_TOKEN}" \
     --arg pid "$$" \
-    '{leadId: $leadId, projectDir: $projectDir, projectName: $projectName, subdir: $subdir, workspace: $workspace, botTokenEnv: $botTokenEnv, pid: ($pid | tonumber)}' \
+    --arg mcpExclude "$_final_mcp_exclude" \
+    --argjson chromeEnabled "$_final_chrome_enabled" \
+    '{
+       leadId: $leadId, projectDir: $projectDir, projectName: $projectName,
+       subdir: $subdir, workspace: $workspace, botTokenEnv: $botTokenEnv,
+       mcpExclude: $mcpExclude, chromeEnabled: $chromeEnabled,
+       pid: ($pid | tonumber)
+     }' \
     > "$MANIFEST_FILE"
-  log "Manifest written: ${MANIFEST_FILE}"
+  log "Manifest written: ${MANIFEST_FILE} (mcpExclude=\"${_final_mcp_exclude}\", chromeEnabled=${_final_chrome_enabled})"
 else
   log "WARNING: jq not found. Manifest not written — auto-restart will skip this Lead."
 fi
@@ -664,6 +690,24 @@ _launch_claude() {
     -e "PATH=${PATH}"
   )
 
+  # FLY-143 (QA-found): tmux `new-window -e` does NOT inherit the launcher's
+  # env, so any `${VAR}` referenced in the merged .mcp.json must be passed
+  # explicitly or Claude marks the server "needs authentication".
+  # Scan the final .mcp.json and append each required env var with its
+  # current value (or empty if unset — empty preserves the variable name in
+  # the Lead pane so `${VAR:-default}` semantics still work).
+  if [ -n "${MCP_CONFIG_FILE:-}" ] && [ -f "${MCP_CONFIG_FILE}" ]; then
+    local _req_var _added_count=0
+    while IFS= read -r _req_var; do
+      [ -z "$_req_var" ] && continue
+      env_args+=(-e "${_req_var}=${!_req_var:-}")
+      _added_count=$((_added_count + 1))
+    done < <(list_required_envs "$MCP_CONFIG_FILE")
+    if [ "$_added_count" -gt 0 ]; then
+      log "MCP env propagation: forwarded ${_added_count} required env var(s) to tmux pane"
+    fi
+  fi
+
   # FLY-109: Launch claude directly (no expect wrapper). Dev-channels dialog
   # is handled by background capture-pane poller started below.
   LEAD_WINDOW_ID=$(tmux new-window -d -P -F '#{window_id}' \
@@ -842,13 +886,42 @@ else
 fi
 
 MCP_CONFIG_FILE="${LEAD_WORKSPACE}/.mcp.json"
-jq -n \
-  --argjson terminal "$terminal_server" \
-  --argjson inbox "$inbox_server" \
-  --argjson gbrain "$gbrain_server" \
-  '{mcpServers: ($terminal + $inbox + $gbrain)}' \
-  > "$MCP_CONFIG_FILE"
-log "MCP config: ${MCP_CONFIG_FILE}"
+
+# FLY-143: Inherit user-scope MCP servers (default-inherit + class blacklist
+# + per-Lead exclude + JSON-aware env gate + reserved-name collision warn).
+# See doc/engineer/exploration/new/FLY-143-lead-mcp-scope-audit.md (v4).
+#
+# Trust model: Lead/Runner is Annie's alter ego. Reads only top-level
+# `~/.claude.json.mcpServers` (NEVER `.projects[*].mcpServers`, where
+# Annie's local-scope `slack` server carries her personal SLACK_BOT_TOKEN).
+#
+# Per-Lead exclude: wrapper exports FLYWHEEL_LEAD_MCP_EXCLUDE from manifest's
+# `mcpExclude` field (e.g. Simba excludes "bambu-h2d,xiaohongshu-mcp,pencil"
+# since cos-lead has no operational use for printer/publishing/design).
+#
+# Class blacklist: hardcoded "audible" today (personal media history).
+# Future personal/account/desktop-control MCPs default-deny via this list.
+LEAD_USER_MCP_BLACKLIST="${FLYWHEEL_LEAD_MCP_BLACKLIST:-audible}"
+RESERVED_INFRA_NAMES="flywheel-terminal,flywheel-inbox,gbrain"
+
+# shellcheck source=lib/mcp-inherit.sh
+source "${SCRIPT_DIR}/lib/mcp-inherit.sh"
+
+USER_MCP_FRAGMENT=$(build_user_mcp_fragment \
+  "${HOME}/.claude.json" \
+  "$RESERVED_INFRA_NAMES" \
+  "$LEAD_USER_MCP_BLACKLIST" \
+  "${FLYWHEEL_LEAD_MCP_EXCLUDE:-}")
+
+# Atomic write — mktemp + chmod 600 + mv. Fixes prior 0644 mode that exposed
+# TEAMLEAD_API_TOKEN inside flywheel-terminal env, and removes partial-read
+# race during shell stdout redirect.
+write_atomic_mcp_config "$MCP_CONFIG_FILE" \
+  "$USER_MCP_FRAGMENT" \
+  "$terminal_server" \
+  "$inbox_server" \
+  "$gbrain_server"
+log "MCP config: ${MCP_CONFIG_FILE} (mode 0600, atomic)"
 
 # FLY-109 (b): Pre-seed enableAllProjectMcpServers so project .mcp.json servers
 # are auto-approved on resume (no interactive dialog dependency).
@@ -921,6 +994,22 @@ CLAUDE_ARGS=(
   --agent "$LEAD_ID"
   --permission-mode bypassPermissions
 )
+
+# FLY-143: claude-in-chrome — env-gated, default OFF.
+# `--chrome` + `--permission-mode bypassPermissions` together set
+# CLAUDE_CHROME_PERMISSION_MODE=skip_all_permission_checks (verified upstream
+# in setup.ts:101-104). That gives an autonomous Lead access to Annie's
+# logged-in Chrome session without per-site friction. Keep this opt-in.
+#
+# Wrapper reads `chromeEnabled: true` from manifest and exports the env var.
+# To enable for one Lead: set "chromeEnabled": true in its manifest, restart.
+if [ "${FLYWHEEL_LEAD_CHROME_ENABLED:-false}" = "true" ]; then
+  CLAUDE_ARGS+=(--chrome)
+  log "Claude in Chrome: ENABLED (--chrome flag set)"
+  log "WARNING: Lead operates in Annie's logged-in Chrome session with skip_all_permission_checks"
+else
+  log "Claude in Chrome: disabled (set FLYWHEEL_LEAD_CHROME_ENABLED=true to enable)"
+fi
 
 # FLY-47: Channel configuration
 # Discord plugin: approved via GrowthBook allowlist → --channels
