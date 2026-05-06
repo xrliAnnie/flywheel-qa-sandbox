@@ -217,9 +217,11 @@ fi
 log "Claimed slot ${SLOT}"
 
 # ── Read slot config ──────────────────────────────────
-# Schema matches ~/.flywheel/test-slots.json (FLY-96):
-#   bridgePort, botName, tokenEnvVar, botAppId, channelId, role
-# role ∈ {"cos", "lead"} — selects which GeoForge3D identity.md to source from.
+# Schema matches ~/.flywheel/test-slots.json:
+#   FLY-96 (required): bridgePort, botName, tokenEnvVar, botAppId, channelId, role
+#   FLY-127 (optional, dept-aware): department, deptLabel, identitySource
+# role ∈ {"cos", "lead"} — kept for backward compat; selects identity if
+# identitySource is absent.
 # AGENT_ID is derived from botName (1:1) — simple and deterministic.
 SLOT_IDX=$((SLOT - 1))
 SLOT_PORT=$(jq -r ".slots[${SLOT_IDX}].bridgePort" "$SLOTS_FILE")
@@ -233,6 +235,14 @@ SLOT_ROLE=$(jq -r ".slots[${SLOT_IDX}].role" "$SLOTS_FILE")
 # in the FLYWHEEL_PROJECTS jq builder below to satisfy ProjectConfig's
 # "forumChannel must be non-empty string or absent" rule.
 FORUM_CHANNEL_ID=$(jq -r ".slots[${SLOT_IDX}].forumChannelId // empty" "$SLOTS_FILE")
+# FLY-127: dept-aware fields. All three are optional for backward compat —
+# if absent, falls back to FLY-96 role-based identity sourcing and `["*"]`
+# label-match (no dept enforcement). If present, identitySource overrides
+# the role→subdir map and deptLabel becomes the FLYWHEEL_PROJECTS match label
+# so PR #170's classifyIssue() / isLeadInScope() actually fires in tests.
+DEPARTMENT=$(jq -r ".slots[${SLOT_IDX}].department // empty" "$SLOTS_FILE")
+DEPT_LABEL=$(jq -r ".slots[${SLOT_IDX}].deptLabel // empty" "$SLOTS_FILE")
+IDENTITY_SOURCE=$(jq -r ".slots[${SLOT_IDX}].identitySource // empty" "$SLOTS_FILE")
 
 # Validate required fields (jq returns literal "null" string when missing)
 for pair in "bridgePort:${SLOT_PORT}" "botName:${AGENT_ID}" "tokenEnvVar:${BOT_TOKEN_ENV}" "botAppId:${BOT_ID}" "channelId:${CHAT_CHANNEL_ID}" "role:${SLOT_ROLE}"; do
@@ -364,15 +374,22 @@ EOF
 # didn't post anything to Discord. Source from GeoForge3D production
 # identity.md (role-based) + TEST SLOT OVERRIDE banner that redirects all
 # channel/bot references to this slot's dedicated resources.
-case "$SLOT_ROLE" in
-  cos)  SOURCE_SUBDIR="cos-lead" ;;
-  lead) SOURCE_SUBDIR="product-lead" ;;
-  *)
-    echo "ERROR: unknown slot role '${SLOT_ROLE}' (expected 'cos' or 'lead')" >&2
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
-    exit 1
-    ;;
-esac
+# FLY-127: prefer explicit identitySource (per-dept, e.g. ops-lead) over the
+# role-based fallback. Old slots without identitySource keep the FLY-96 mapping
+# (cos→cos-lead, lead→product-lead) so existing test runs are unaffected.
+if [[ -n "$IDENTITY_SOURCE" ]]; then
+  SOURCE_SUBDIR="$IDENTITY_SOURCE"
+else
+  case "$SLOT_ROLE" in
+    cos)  SOURCE_SUBDIR="cos-lead" ;;
+    lead) SOURCE_SUBDIR="product-lead" ;;
+    *)
+      echo "ERROR: unknown slot role '${SLOT_ROLE}' (expected 'cos' or 'lead'). Set slot.identitySource explicitly to override." >&2
+      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      exit 1
+      ;;
+  esac
+fi
 
 PROD_IDENTITY="${HOME}/Dev/GeoForge3D/.lead/${SOURCE_SUBDIR}/identity.md"
 if [[ ! -f "$PROD_IDENTITY" ]]; then
@@ -385,7 +402,7 @@ fi
 cat > "${SLOT_DIR}/test-identity.md" <<EOF
 ---
 name: ${AGENT_ID}
-description: Flywheel TEST slot ${SLOT} (${SLOT_ROLE}) — automated QA environment
+description: Flywheel TEST slot ${SLOT} (${SLOT_ROLE}${DEPT_LABEL:+, dept=${DEPT_LABEL}}) — automated QA environment
 model: opus
 disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
 permissionMode: bypassPermissions
@@ -404,7 +421,8 @@ NOT interact with any production channel.
 - **Your ONLY channel**: <#${CHAT_CHANNEL_ID}> (channel ID \`${CHAT_CHANNEL_ID}\`)
 - **Ignore** all other channel IDs in "Channel Isolation Rules", "Core Channel Routing", "Discord Channel IDs", etc. — those belong to production.
 - If a received message's \`chat_id\` is not \`${CHAT_CHANNEL_ID}\`, silently ignore it (no reply, no action).
-- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${CHAT_CHANNEL_ID}>.
+- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${CHAT_CHANNEL_ID}>.${DEPT_LABEL:+
+- **Department scope (FLY-127)**: you own the \`${DEPT_LABEL}\` Linear label only. Bridge will 403-reject any \`POST /api/runs/start\` for an issue whose labels do not exactly match \`${DEPT_LABEL}\`. If a user asks you to spawn a Runner for an out-of-scope issue, refuse in Chinese and tell them which slot owns the issue's department.}
 
 ---
 
@@ -440,6 +458,11 @@ fi
 # v1.24.3 sandbox config write can reuse it; the assignment is left here in
 # comment form for traceability.
 # TEST_PROJECT_NAME="test-slot-${SLOT}"  # moved up to ~line 292 (FLY-115 v1.24.3)
+# FLY-127: when slot.deptLabel is set, the lead's match.labels becomes
+# `[deptLabel]` so PR #170's department registry actually enforces scope in
+# tests (S1 happy / S2 mismatch / S3 multi-dept / S4 no-dept all become
+# meaningful). When deptLabel is empty (legacy slots), keep `["*"]` so old
+# integration tests that don't care about dept routing keep passing.
 FLYWHEEL_PROJECTS=$(jq -n \
   --arg projectName "$TEST_PROJECT_NAME" \
   --arg projectRoot "$HOST_REPO" \
@@ -448,6 +471,7 @@ FLYWHEEL_PROJECTS=$(jq -n \
   --arg chatChannel "$CHAT_CHANNEL_ID" \
   --arg botTokenEnv "$BOT_TOKEN_ENV" \
   --arg forumChannel "$FORUM_CHANNEL_ID" \
+  --arg deptLabel "$DEPT_LABEL" \
   '
   [{
     projectName: $projectName,
@@ -458,7 +482,7 @@ FLYWHEEL_PROJECTS=$(jq -n \
         agentId: $agentId,
         chatChannel: $chatChannel,
         botTokenEnv: $botTokenEnv,
-        match: { labels: ["*"] }
+        match: { labels: (if ($deptLabel != "") then [$deptLabel] else ["*"] end) }
       } + (if ($forumChannel != "") then { forumChannel: $forumChannel } else {} end))
     ]
   }]
@@ -466,6 +490,11 @@ FLYWHEEL_PROJECTS=$(jq -n \
 
 if [[ -z "$FORUM_CHANNEL_ID" ]]; then
   log "WARN: slot ${SLOT} has no forumChannelId in $SLOTS_FILE — forum thread creation will be skipped (Gap C §11.2 env gate pending)"
+fi
+if [[ -n "$DEPT_LABEL" ]]; then
+  log "Dept-aware slot ${SLOT}: department=${DEPARTMENT:-?} deptLabel=${DEPT_LABEL} identitySource=${IDENTITY_SOURCE:-(role-based:${SLOT_ROLE})}"
+else
+  log "Legacy slot ${SLOT}: deptLabel absent → match.labels=['*'] (no dept enforcement)"
 fi
 
 log "Starting test Lead: ${AGENT_ID} (project: ${TEST_PROJECT_NAME})"
