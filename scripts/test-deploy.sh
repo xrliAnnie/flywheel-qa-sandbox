@@ -491,7 +491,8 @@ NOT interact with any production channel.
 - ${ALLOWED_CHANNELS_TEXT}
 - **Ignore** all other channel IDs in "Channel Isolation Rules", "Core Channel Routing", "Discord Channel IDs", etc. — those belong to production.
 - ${CHANNEL_FILTER_TEXT}
-- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside the channels listed above.${DEPT_BANNER}${SHARED_CORE_BANNER}
+- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside the channels listed above.
+- **Project name (FLY-127 qa-fly-127 R4)**: For ALL Bridge API calls (\`/api/runs/start\`, \`/api/sessions/*\`, \`flywheel-comm respond\`, etc.) and for any \`projectName\` field in JSON bodies, you MUST use \`${TEST_PROJECT_NAME}\` — NOT the production project name (\`geoforge3d\`, \`flywheel\`, etc.) referenced in the sections below. Bridge will 403 \`project_unknown\` for the production name because this slot's \`FLYWHEEL_PROJECTS\` only registers the test project.${DEPT_BANNER}${SHARED_CORE_BANNER}
 
 ---
 
