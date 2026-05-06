@@ -363,10 +363,45 @@ DISCORD_BOT_TOKEN=${TEST_BOT_TOKEN}
 EOF
 chmod 600 "${SLOT_DIR}/discord-state/.env"
 
-# access.json — only the test channel
+# FLY-127 v3 (qa R3 / Annie's Option B): build access.json `groups` to mirror
+# production's multi-channel listening pattern. Production product-lead's
+# access.json has 3 channels: own chat, own forum, AND the shared core
+# (geoforge3d-core, Simba's channel) — so all dept Leads see Annie's posts in
+# the core channel and decide based on @mention / dept scope.
+#
+# For test, dept-aware non-cos slots (slot 2/3/4) get their own chat + forum
+# + cos-test (the shared core analog). cos slot 1 keeps its single-channel
+# config because cos-test IS its own channel; legacy slots without
+# slot.department keep the FLY-96 single-channel access.json.
+#
+# allowFrom on the cos-test entry = Annie's user ID + the OTHER 3 dept bots,
+# matching production where Peter sees Simba/Oliver bots in core. This lets
+# a dept Lead observe both Annie's prompts and other Leads' relays.
+ANNIE_USER_ID="${FLYWHEEL_ANNIE_USER_ID:-1138241636057481306}"
+COS_CHANNEL_ID=$(jq -r '.slots[] | select(.role == "cos") | .channelId' "$SLOTS_FILE")
+OTHER_BOT_IDS=$(jq -c --arg currentBot "$AGENT_ID" \
+  '[ .slots[] | select(.botName != $currentBot) | .botAppId ]' "$SLOTS_FILE")
+
+GROUPS_JSON=$(jq -n \
+  --arg ownChannel "$CHAT_CHANNEL_ID" \
+  --arg ownForum "$FORUM_CHANNEL_ID" \
+  --arg cosChannel "$COS_CHANNEL_ID" \
+  --arg department "$DEPARTMENT" \
+  --arg annieId "$ANNIE_USER_ID" \
+  --argjson otherBots "$OTHER_BOT_IDS" \
+  '
+  ({ ($ownChannel): { requireMention: false, allowFrom: [] } })
+  + (if $ownForum != "" then { ($ownForum): { requireMention: false, allowFrom: [] } } else {} end)
+  + (if ($department != "" and $department != "cos" and $cosChannel != "" and $cosChannel != $ownChannel) then
+       { ($cosChannel): { requireMention: false, allowFrom: ([$annieId] + $otherBots) } }
+     else {} end)
+  ')
+
 cat > "${SLOT_DIR}/discord-state/access.json" <<EOF
-{"dmPolicy":"allowlist","allowFrom":[],"allowBots":["${BOT_ID}"],"groups":{"${CHAT_CHANNEL_ID}":{"requireMention":false,"allowFrom":[]}},"pending":{}}
+{"dmPolicy":"allowlist","allowFrom":[],"allowBots":["${BOT_ID}"],"groups":${GROUPS_JSON},"pending":{}}
 EOF
+ACCESS_GROUP_COUNT=$(echo "$GROUPS_JSON" | jq 'length')
+log "access.json groups=${ACCESS_GROUP_COUNT} (own${FORUM_CHANNEL_ID:+ + forum}${DEPARTMENT:+${COS_CHANNEL_ID:+ + cos-test (if non-cos slot)}})"
 
 # ── Generate test identity.md from production template ──
 # FLY-96 QA bug fix: 4-line identity.md didn't define announce behavior
@@ -416,6 +451,24 @@ else
   DEPT_BANNER=""
 fi
 
+# FLY-127 v3 (Annie's Option B): if this slot is a dept-aware non-cos lead
+# AND a cos slot exists in the same guild, list cos-test as a SHARED CORE
+# channel in the OVERRIDE banner. Mirrors production where each dept Lead
+# listens to geoforge3d-core in addition to its own channel — Annie posts
+# routing requests there and Leads decide based on @mention / dept scope.
+# Without this update, the OVERRIDE bullet "Your ONLY channel" silenced
+# cos-test messages even though access.json now allowlists cos-test.
+SHARED_CORE_BANNER=""
+if [[ -n "$DEPARTMENT" && "$DEPARTMENT" != "cos" && -n "$COS_CHANNEL_ID" && "$COS_CHANNEL_ID" != "$CHAT_CHANNEL_ID" ]]; then
+  CHANNEL_FILTER_TEXT="If a received message's \`chat_id\` is NOT one of: \`${CHAT_CHANNEL_ID}\` (own), \`${COS_CHANNEL_ID}\` (cos-test shared core), silently ignore it (no reply, no action)."
+  ALLOWED_CHANNELS_TEXT="**Your channels** (allowed): <#${CHAT_CHANNEL_ID}> (own primary), <#${COS_CHANNEL_ID}> (shared core, multiple Lead bots listen here — same as production geoforge3d-core)"
+  SHARED_CORE_BANNER="
+- **Shared core channel routing** (FLY-127 v3): in <#${COS_CHANNEL_ID}> multiple Lead bots see every message. Only act when (1) your bot is @-mentioned, OR (2) your name appears in the text, OR (3) a Linear issue is named whose label matches your dept (\`${DEPT_LABEL:-N/A}\`). Otherwise stay silent — the matching dept Lead handles it. This mirrors production's geoforge3d-core multi-Lead routing."
+else
+  CHANNEL_FILTER_TEXT="If a received message's \`chat_id\` is not \`${CHAT_CHANNEL_ID}\`, silently ignore it (no reply, no action)."
+  ALLOWED_CHANNELS_TEXT="**Your ONLY channel**: <#${CHAT_CHANNEL_ID}> (channel ID \`${CHAT_CHANNEL_ID}\`)"
+fi
+
 cat > "${SLOT_DIR}/test-identity.md" <<EOF
 ---
 name: ${AGENT_ID}
@@ -435,10 +488,10 @@ NOT interact with any production channel.
 ## TEST IDENTITY OVERRIDE (highest priority)
 
 - **Your Bot ID**: \`${BOT_ID}\` (overrides any bot ID in the sections below)
-- **Your ONLY channel**: <#${CHAT_CHANNEL_ID}> (channel ID \`${CHAT_CHANNEL_ID}\`)
+- ${ALLOWED_CHANNELS_TEXT}
 - **Ignore** all other channel IDs in "Channel Isolation Rules", "Core Channel Routing", "Discord Channel IDs", etc. — those belong to production.
-- If a received message's \`chat_id\` is not \`${CHAT_CHANNEL_ID}\`, silently ignore it (no reply, no action).
-- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${CHAT_CHANNEL_ID}>.${DEPT_BANNER}
+- ${CHANNEL_FILTER_TEXT}
+- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside the channels listed above.${DEPT_BANNER}${SHARED_CORE_BANNER}
 
 ---
 
