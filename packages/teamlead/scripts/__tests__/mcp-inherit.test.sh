@@ -315,6 +315,50 @@ fi
 # ════════════════════════════════════════════════════════════════
 # Summary
 # ════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
+# Test 12: list_required_envs — extracts ${VAR} placeholders from a final
+# .mcp.json so claude-lead.sh can propagate them through tmux env_args.
+# (QA-FLY-143 finding: tmux `new-window -e` doesn't inherit launcher env.)
+# ════════════════════════════════════════════════════════════════
+log_test "Test 12: list_required_envs — find required env from merged .mcp.json"
+FIX_12="${TMP_DIR}/merged-mcp.json"
+fixture "$FIX_12" <<'EOF'
+{
+  "mcpServers": {
+    "linear-api": {"type": "http", "headers": {"Authorization": "Bearer ${LINEAR_API_KEY}"}},
+    "two-vars":   {"command": "node", "env": {"A": "${VAR_A}", "B": "${VAR_B}"}},
+    "with-default": {"command": "node", "env": {"X": "${OPTIONAL:-fallback}"}},
+    "escaped":    {"command": "node", "env": {"X": "$${LITERAL}"}},
+    "bare":       {"command": "node", "args": ["$NOTPLACEHOLDER"]},
+    "no-env":     {"command": "node"}
+  }
+}
+EOF
+LIST_12=$(list_required_envs "$FIX_12" | tr '\n' ',' | sed 's/,$//')
+if [ "$LIST_12" = "LINEAR_API_KEY,VAR_A,VAR_B" ]; then
+  pass "list_required_envs returns 3 unique required vars (LINEAR_API_KEY, VAR_A, VAR_B)"
+else
+  fail "expected 'LINEAR_API_KEY,VAR_A,VAR_B', got '$LIST_12'"
+fi
+
+# Edge: file missing → empty + no error
+LIST_12B=$(list_required_envs "$TMP_DIR/no-such.json" || echo "<errored>")
+if [ -z "$LIST_12B" ]; then
+  pass "list_required_envs missing file → empty + return 0 (no abort)"
+else
+  fail "expected empty, got '$LIST_12B'"
+fi
+
+# Edge: file with no mcpServers → empty
+FIX_12C="${TMP_DIR}/no-servers.json"
+echo '{}' > "$FIX_12C"
+LIST_12C=$(list_required_envs "$FIX_12C")
+if [ -z "$LIST_12C" ]; then
+  pass "list_required_envs with no mcpServers → empty"
+else
+  fail "expected empty, got '$LIST_12C'"
+fi
+
 echo
 echo "────────────────────────────────────────"
 echo "Passed: $PASSED"

@@ -89,6 +89,36 @@ _required_env_missing() {
   return 1
 }
 
+# ── list_required_envs <mcp_config_file>
+# Walk all string leaves of <mcp_config_file>'s mcpServers (final merged
+# `.mcp.json`), extract every `${VAR}` placeholder without `:-default`, and
+# print one unique var name per line on stdout. Used by claude-lead.sh
+# `_launch_claude` to plumb just-in-time required env vars through tmux's
+# `new-window -e` arg list — `tmux new-window -e` does NOT inherit the
+# launcher's env, so anything referenced in `.mcp.json` (e.g. linear-api's
+# `Bearer ${LINEAR_API_KEY}`) must be passed explicitly or the Lead session
+# sees it as undefined and Claude marks the server "needs authentication".
+#
+# Same regex semantics as `_required_env_missing`:
+#   - `${VAR}` → required (output VAR)
+#   - `${VAR:-default}` → optional (skipped)
+#   - `$$VAR` → literal escape (skipped — negative lookbehind)
+#   - bare `$VAR` (no braces) → not a Claude placeholder (skipped)
+#
+# Returns 0 always (empty output is OK). Errors silently ignored to keep
+# the launcher booting even if jq trips on unexpected JSON.
+list_required_envs() {
+  local mcp_file="$1"
+  [ ! -f "$mcp_file" ] && return 0
+  jq -r '
+    [.mcpServers // {} | .. | strings]
+    | .[]?
+    | scan("(?<!\\$)\\$\\{([A-Za-z_][A-Za-z0-9_]*)(:-[^}]*)?\\}")
+    | select(.[1] == null)
+    | .[0]
+  ' "$mcp_file" 2>/dev/null | sort -u
+}
+
 # ── build_user_mcp_fragment <user_claude_json> <reserved_csv> [<blacklist_csv>] [<exclude_csv>]
 # Outputs JSON object on stdout. Empty `{}` if nothing to inherit. Never aborts
 # the caller — every failure path is warn-and-continue.

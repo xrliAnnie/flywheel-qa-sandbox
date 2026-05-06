@@ -690,6 +690,24 @@ _launch_claude() {
     -e "PATH=${PATH}"
   )
 
+  # FLY-143 (QA-found): tmux `new-window -e` does NOT inherit the launcher's
+  # env, so any `${VAR}` referenced in the merged .mcp.json must be passed
+  # explicitly or Claude marks the server "needs authentication".
+  # Scan the final .mcp.json and append each required env var with its
+  # current value (or empty if unset — empty preserves the variable name in
+  # the Lead pane so `${VAR:-default}` semantics still work).
+  if [ -n "${MCP_CONFIG_FILE:-}" ] && [ -f "${MCP_CONFIG_FILE}" ]; then
+    local _req_var _added_count=0
+    while IFS= read -r _req_var; do
+      [ -z "$_req_var" ] && continue
+      env_args+=(-e "${_req_var}=${!_req_var:-}")
+      _added_count=$((_added_count + 1))
+    done < <(list_required_envs "$MCP_CONFIG_FILE")
+    if [ "$_added_count" -gt 0 ]; then
+      log "MCP env propagation: forwarded ${_added_count} required env var(s) to tmux pane"
+    fi
+  fi
+
   # FLY-109: Launch claude directly (no expect wrapper). Dev-channels dialog
   # is handled by background capture-pane poller started below.
   LEAD_WINDOW_ID=$(tmux new-window -d -P -F '#{window_id}' \

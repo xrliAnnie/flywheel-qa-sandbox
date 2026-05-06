@@ -29,6 +29,8 @@ The helper scans each user-scope server's config for `${VAR}` placeholders and *
 
 > **Important**: missing `LINEAR_API_KEY` will **only** skip `linear-api`, not break the other servers. Pre-FLY-143 it could break the entire MCP config parse.
 
+> **Env propagation note**: `claude-lead.sh` scans the generated `.mcp.json` for `${VAR}` placeholders and forwards each one through `tmux new-window -e` so the Lead's Claude process actually sees the value. (Without this, tmux silently inherits an empty environment for any var not explicitly listed, so Claude marks the server "needs authentication" even when `LINEAR_API_KEY` is exported in the launcher's shell.) New user-MCP servers needing env vars don't require launcher changes — the scan picks them up automatically.
+
 ## First-time `~/.flywheel/.env` setup
 
 ```bash
