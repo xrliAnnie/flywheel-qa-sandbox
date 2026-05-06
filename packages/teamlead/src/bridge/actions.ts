@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
-import { ACTION_DEFINITIONS } from "flywheel-core";
+import { ACTION_DEFINITIONS, closeRunnerTerminalView } from "flywheel-core";
 import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
 import {
 	type ApplyTransitionOpts,
@@ -12,6 +12,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
+import { AUTO_CLOSE_STATES, closeRunner } from "./close-runner.js";
 import type { EventFilter } from "./EventFilter.js";
 import {
 	type ForumTagUpdater,
@@ -22,6 +23,7 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
+import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
@@ -450,6 +452,28 @@ export async function transitionSession(
 		}
 	}
 
+	// FLY-116: when an action transitions session to an AUTO_CLOSE state
+	// (rejected / deferred / shelved / terminated), also kill tmux + close
+	// the macOS Terminal viewer tab. terminate has its own handler that
+	// already does this; the transitionSession path covers reject/defer/shelve.
+	if (
+		AUTO_CLOSE_STATES.has(targetStatus) &&
+		action !== "retry" &&
+		action !== "terminate"
+	) {
+		closeRunner(
+			{
+				executionId,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				reason: `transition_to_${targetStatus}`,
+			},
+			store,
+		).catch((e: Error) =>
+			console.warn(`[transition] closeRunner warn for ${action}: ${e.message}`),
+		);
+	}
+
 	const id = session.issue_identifier ?? executionId;
 	const pastTense: Record<string, string> = {
 		reject: "rejected",
@@ -533,6 +557,31 @@ async function handleRetry(
 		} catch {
 			retryLeadId = config?.defaultLeadAgentId;
 		}
+	}
+
+	// FLY-116: cleanup old preserved Runner window/tab BEFORE dispatching new
+	// execution. If status is failed/blocked it defaulted to crash_preserve;
+	// retry indicates the user has decided to discard the dead window.
+	// `forcePreserved: true` bypasses the crash_preserve gate.
+	//
+	// AWAIT (Codex Round 1 PR review #2): the new retry must not start until
+	// the old tmux window + Terminal tab + linked viewer session are gone,
+	// otherwise the next runner can collide with stale state during dispatch.
+	// Cleanup errors are logged but do NOT block the retry.
+	try {
+		await closeRunner(
+			{
+				executionId,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				leadId: retryLeadId,
+				reason: "retry_force_close",
+				forcePreserved: true,
+			},
+			store,
+		);
+	} catch (e) {
+		console.warn(`[retry] old window cleanup warn: ${(e as Error).message}`);
 	}
 
 	try {
@@ -663,6 +712,20 @@ async function handleTerminate(
 				success: false,
 				message: `Failed to kill tmux window ${tmuxTarget.tmuxWindow}: ${killResult.error}`,
 			};
+		}
+
+		// FLY-116: also close per-runner Terminal viewer tab + linked viewer session
+		const identity = resolveTerminalViewIdentity(session, tmuxTarget);
+		if (identity) {
+			await closeRunnerTerminalView({
+				baseSessionName: identity.sessionName,
+				projectName: identity.projectName,
+				executionId: identity.executionId,
+				windowId: identity.windowId,
+				sessionRole: identity.sessionRole,
+			}).catch((e: Error) =>
+				console.warn(`[terminate] terminal close warn: ${e.message}`),
+			);
 		}
 	}
 

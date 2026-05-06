@@ -72,6 +72,21 @@ fi
 TMUX_VERSION=$(tmux -V 2>/dev/null || echo "tmux unknown")
 echo "tmux version: $TMUX_VERSION"
 
+# FLY-60 W4b + FLY-110: tmux 3.5+ is the production target (macOS Lead /
+# Runner machines run 3.5a). Some scenarios in this file exercise
+# behavior that differs between tmux 3.4 (e.g. Ubuntu CI default) and
+# 3.5+: pane-exited / window-unlinked hook firing semantics + format
+# var availability. Detect 3.5+ once here so individual scenarios can
+# skip cleanly when running on older tmux.
+TMUX_MAJOR_MINOR=$(echo "$TMUX_VERSION" | sed -E 's/^tmux ([0-9]+\.[0-9]+).*/\1/')
+TMUX_IS_35_PLUS=0
+case "$TMUX_MAJOR_MINOR" in
+  3.5*|3.6*|3.7*|3.8*|3.9*|[4-9].*|[1-9][0-9]*.*)
+    TMUX_IS_35_PLUS=1
+    ;;
+esac
+echo "tmux 3.5+: $TMUX_IS_35_PLUS"
+
 TMUX_SOCKET="flywheel-cmux-test-$$"
 TMPDIR_ROOT=$(mktemp -d -t fly110.XXXXXX)
 EVENT_FILE_BASE="$TMPDIR_ROOT/events"
@@ -199,48 +214,56 @@ setup_session() {
 
 echo
 echo "── Scenario A: program exits + remain-on-exit ON (production main path) ──"
-reset_scenario "A"
-session=$(setup_session)
-window="A-target"
-
-# Turn on remain-on-exit BEFORE the short-lived command can exit.
-# Codex R3 non-blocking guidance: avoid scenario A flakiness on slow CI hosts.
-# Use sleep that is long enough for set-option to land first.
-tmux new-window -t "${session}:" -n "$window" "sleep 1" 2>/dev/null
-tmux set-option -t "${session}:${window}" remain-on-exit on 2>/dev/null
-
-# Wait up to 10s for the event to land. sleep 1 will exit shortly,
-# pane-died hook should fire, drain-time hook writes "exited|..." line.
-# (We're not running drain_events here — just verifying the raw hook output.)
-if wait_for_event "^exited|.*${window}\$" 10; then
-  pass "Scenario A: pane-died fired and wrote 'exited|...|${window}'"
+if [[ "$TMUX_IS_35_PLUS" != "1" ]]; then
+  skip "Scenario A requires tmux 3.5+ pane-died semantics (current: $TMUX_VERSION); production runs 3.5a"
 else
-  fail "Scenario A: no exited event within 10s — pane-died hook did not fire"
-  dump_events
+  reset_scenario "A"
+  session=$(setup_session)
+  window="A-target"
+
+  # Turn on remain-on-exit BEFORE the short-lived command can exit.
+  # Codex R3 non-blocking guidance: avoid scenario A flakiness on slow CI hosts.
+  # Use sleep that is long enough for set-option to land first.
+  tmux new-window -t "${session}:" -n "$window" "sleep 1" 2>/dev/null
+  tmux set-option -t "${session}:${window}" remain-on-exit on 2>/dev/null
+
+  # Wait up to 10s for the event to land. sleep 1 will exit shortly,
+  # pane-died hook should fire, drain-time hook writes "exited|..." line.
+  # (We're not running drain_events here — just verifying the raw hook output.)
+  if wait_for_event "^exited|.*${window}\$" 10; then
+    pass "Scenario A: pane-died fired and wrote 'exited|...|${window}'"
+  else
+    fail "Scenario A: no exited event within 10s — pane-died hook did not fire"
+    dump_events
+  fi
 fi
 
 # ── Scenario B: program exits + remain-on-exit OFF (legacy / off-mode) ──
 
 echo
 echo "── Scenario B: program exits + remain-on-exit OFF (legacy/off-mode path) ──"
-reset_scenario "B"
-session=$(setup_session)
-window="B-target"
-
-tmux new-window -t "${session}:" -n "$window" "sleep 1" 2>/dev/null
-# Explicitly leave remain-on-exit at default (off).
-
-# B's assertion is intentionally relaxed to "any exited event was written"
-# (not "with this window_name"). When remain-on-exit is off, the window is
-# destroyed at the same time pane-exited fires, and tmux 3.5a's
-# #{window_name} expansion can resolve to the next active window. This is
-# acceptable because production sets remain-on-exit on, so this code path
-# is exercised only by legacy / future-refactor configurations.
-if wait_for_event "^exited|" 10; then
-  pass "Scenario B: pane-exited fired (any exited event accepted; window_name flaky when window destroyed)"
+if [[ "$TMUX_IS_35_PLUS" != "1" ]]; then
+  skip "Scenario B requires tmux 3.5+ (current: $TMUX_VERSION); production runs 3.5a so behavior is verified there"
 else
-  fail "Scenario B: no exited event within 10s — pane-exited hook did not fire"
-  dump_events
+  reset_scenario "B"
+  session=$(setup_session)
+  window="B-target"
+
+  tmux new-window -t "${session}:" -n "$window" "sleep 1" 2>/dev/null
+  # Explicitly leave remain-on-exit at default (off).
+
+  # B's assertion is intentionally relaxed to "any exited event was written"
+  # (not "with this window_name"). When remain-on-exit is off, the window is
+  # destroyed at the same time pane-exited fires, and tmux 3.5a's
+  # #{window_name} expansion can resolve to the next active window. This is
+  # acceptable because production sets remain-on-exit on, so this code path
+  # is exercised only by legacy / future-refactor configurations.
+  if wait_for_event "^exited|" 10; then
+    pass "Scenario B: pane-exited fired (any exited event accepted; window_name flaky when window destroyed)"
+  else
+    fail "Scenario B: no exited event within 10s — pane-exited hook did not fire"
+    dump_events
+  fi
 fi
 
 # ── Scenario C: production cleanup path (A then kill-window on dead pane) ──
@@ -262,41 +285,96 @@ fi
 
 echo
 echo "── Scenario C: production cleanup path (natural exit then kill-window) ──"
-reset_scenario "C"
-session=$(setup_session)
-window="C-target"
-
-tmux new-window -t "${session}:" -n "$window" "sleep 1" 2>/dev/null
-tmux set-option -t "${session}:${window}" remain-on-exit on 2>/dev/null
-
-# Phase 1: wait for natural-exit pane-died.
-phase1_pass=0
-if wait_for_event "^exited|.*${window}\$" 10; then
-  pass "Scenario C: natural exit pane-died fired with correct window_name"
-  phase1_pass=1
+if [[ "$TMUX_IS_35_PLUS" != "1" ]]; then
+  skip "Scenario C requires tmux 3.5+ pane-died semantics (current: $TMUX_VERSION); production runs 3.5a"
+  skip "Scenario C phase 2 — gated with phase 1"
 else
-  fail "Scenario C: no natural-exit pane-died event within 10s"
-  dump_events
-fi
+  reset_scenario "C"
+  session=$(setup_session)
+  window="C-target"
 
-# Phase 2: simulate Bridge kill-window on the now-dead pane.
-# Skipping when phase 1 didn't observe the natural-exit event avoids
-# reporting a misleading "0 -> 0" pass when nothing happened to begin
-# with.
-if [[ "$phase1_pass" == "1" ]]; then
-  event_count_before=$(grep -c "^exited|.*${window}\$" "$EVENT_FILE" 2>/dev/null || echo 0)
-  tmux kill-window -t "${session}:${window}" 2>/dev/null
-  sleep 1
-  event_count_after=$(grep -c "^exited|.*${window}\$" "$EVENT_FILE" 2>/dev/null || echo 0)
-  delta=$((event_count_after - event_count_before))
-  if [[ "$delta" -eq 0 ]]; then
-    pass "Scenario C: kill-window on dead pane emits no extra event (count: $event_count_before -> $event_count_after)"
+  tmux new-window -t "${session}:" -n "$window" "sleep 1" 2>/dev/null
+  tmux set-option -t "${session}:${window}" remain-on-exit on 2>/dev/null
+
+  # Phase 1: wait for natural-exit pane-died.
+  phase1_pass=0
+  if wait_for_event "^exited|.*${window}\$" 10; then
+    pass "Scenario C: natural exit pane-died fired with correct window_name"
+    phase1_pass=1
   else
-    fail "Scenario C: kill-window on dead pane emitted $delta extra event(s) for $window (expected 0)"
+    fail "Scenario C: no natural-exit pane-died event within 10s"
     dump_events
   fi
+
+  # Phase 2: simulate Bridge kill-window on the now-dead pane.
+  # Skipping when phase 1 didn't observe the natural-exit event avoids
+  # reporting a misleading "0 -> 0" pass when nothing happened to begin
+  # with.
+  if [[ "$phase1_pass" == "1" ]]; then
+    event_count_before=$(grep -c "^exited|.*${window}\$" "$EVENT_FILE" 2>/dev/null || echo 0)
+    tmux kill-window -t "${session}:${window}" 2>/dev/null
+    sleep 1
+    event_count_after=$(grep -c "^exited|.*${window}\$" "$EVENT_FILE" 2>/dev/null || echo 0)
+    delta=$((event_count_after - event_count_before))
+    if [[ "$delta" -eq 0 ]]; then
+      pass "Scenario C: kill-window on dead pane emits no extra event (count: $event_count_before -> $event_count_after)"
+    else
+      fail "Scenario C: kill-window on dead pane emitted $delta extra event(s) for $window (expected 0)"
+      dump_events
+    fi
+  else
+    skip "Scenario C phase 2 (kill-window) — phase 1 did not produce a baseline event"
+  fi
+fi
+
+# ── Scenario D: FLY-60 W4b — kill-window on a LIVE pane fires window-unlinked
+# (the path Bridge takes via runPostShipFinalization → postMergeTmuxCleanup →
+# killTmuxWindow). pane-died does NOT detect this; window-unlinked is the
+# only signal we get for the post-merge force-kill case.
+#
+# Verifies:
+#   1. window-unlinked global hook is registered.
+#   2. `tmux kill-window` on a LIVE pane writes a keyed
+#      `unlinked|sn=<src_session>|wn=<win_name>` row to EVENT_FILE.
+#   3. The destroyed window's name is captured via `#{hook_window_name}`
+#      (NOT `#{window_name}` which would resolve to the session's current
+#      window, e.g. `zsh`). Per W4a empirical evidence at
+#      doc/qa/reports/v1.25.0-FLY-60-evidence/w4a-tmux-hook-empirical-test.md.
+
+if [[ "$TMUX_IS_35_PLUS" != "1" ]]; then
+  skip "Scenario D requires tmux 3.5+ for window-unlinked + #{hook_window_name} (current: $TMUX_VERSION); production runs 3.5a"
 else
-  skip "Scenario C phase 2 (kill-window) — phase 1 did not produce a baseline event"
+  reset_scenario "D"
+  session=$(setup_session)
+  window="D-victim"
+
+  # Create the victim window with a long-running command so kill-window
+  # kills a LIVE pane (the post-W2-W3 production scenario).
+  tmux new-window -t "${session}:" -n "$window" "sleep 60" 2>/dev/null
+  sleep 0.5
+
+  # Force-kill via tmux kill-window (simulates Bridge's killTmuxWindow).
+  tmux kill-window -t "${session}:${window}" 2>/dev/null
+
+  # Assert: a keyed `unlinked|sn=<session>|wn=<window>` row appears within 10s.
+  if wait_for_event "^unlinked\\|sn=${session}\\|wn=${window}\$" 10; then
+    pass "Scenario D: kill-window fires window-unlinked with correct hook_window_name"
+  else
+    fail "Scenario D: no window-unlinked event matching window=${window} within 10s"
+    dump_events
+  fi
+
+  # Negative assertion: confirm `#{window_name}` was NOT used (which W4a
+  # proved would resolve to the session's CURRENT window, e.g. zsh,
+  # instead of the destroyed window name). If a future tmux change made
+  # #{window_name} work for window-unlinked, we'd see `unlinked|sn=...|wn=zsh`
+  # rows. The current implementation must use #{hook_window_name}.
+  if grep -q "^unlinked|sn=${session}|wn=zsh\$" "$EVENT_FILE" 2>/dev/null; then
+    fail "Scenario D: unexpected wn=zsh row — hook may be using #{window_name} instead of #{hook_window_name}"
+    dump_events
+  else
+    pass "Scenario D: no wn=zsh false-positive (hook_window_name correctly used)"
+  fi
 fi
 
 # ── Summary ───────────────────────────────────────────────────────────

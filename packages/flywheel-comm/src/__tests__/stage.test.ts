@@ -1,3 +1,6 @@
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { stage } from "../commands/stage.js";
 
@@ -186,5 +189,102 @@ describe("stage command", () => {
 		expect(errorSpy).toHaveBeenCalledWith(
 			"FLYWHEEL_PROJECT_NAME environment variable is required",
 		);
+	});
+
+	// FLY-60 W2 (a): when stage=completed, attach landing_status from
+	// land-status.json so Bridge can fire post-ship finalization on the
+	// merge-proven event.
+	describe("FLY-60 W2: landing_status payload on stage=completed", () => {
+		let tmpRoot: string;
+		const origCwd = process.cwd();
+
+		beforeEach(() => {
+			tmpRoot = join(tmpdir(), `stage-test-${Date.now()}-${Math.random()}`);
+			mkdirSync(tmpRoot, { recursive: true });
+			delete process.env.FLYWHEEL_LAND_STATUS_PATH;
+		});
+
+		afterEach(() => {
+			process.chdir(origCwd);
+			rmSync(tmpRoot, { recursive: true, force: true });
+		});
+
+		it("includes landing_status when FLYWHEEL_LAND_STATUS_PATH is set", async () => {
+			const landPath = join(tmpRoot, "land-status.json");
+			writeFileSync(
+				landPath,
+				JSON.stringify({
+					status: "merged",
+					prNumber: 42,
+					mergeCommitSha: "abc123def456",
+				}),
+			);
+			process.env.FLYWHEEL_LAND_STATUS_PATH = landPath;
+
+			await stage({ subcommand: "set", stageName: "completed" });
+
+			expect(mockFetch).toHaveBeenCalledOnce();
+			const [, opts] = mockFetch.mock.calls[0]!;
+			const body = JSON.parse(opts.body);
+			expect(body.payload.stage).toBe("completed");
+			expect(body.payload.landing_status).toEqual({
+				status: "merged",
+				prNumber: 42,
+				mergeCommitSha: "abc123def456",
+			});
+		});
+
+		it("falls back to cwd-derived land-status path when env unset", async () => {
+			const runDir = join(tmpRoot, ".flywheel", "runs", "exec-test-1");
+			mkdirSync(runDir, { recursive: true });
+			writeFileSync(
+				join(runDir, "land-status.json"),
+				JSON.stringify({
+					status: "merged",
+					prNumber: 7,
+					mergeCommitSha: "deadbeef",
+				}),
+			);
+			process.chdir(tmpRoot);
+
+			await stage({ subcommand: "set", stageName: "completed" });
+
+			expect(mockFetch).toHaveBeenCalledOnce();
+			const [, opts] = mockFetch.mock.calls[0]!;
+			const body = JSON.parse(opts.body);
+			expect(body.payload.landing_status).toEqual({
+				status: "merged",
+				prNumber: 7,
+				mergeCommitSha: "deadbeef",
+			});
+		});
+
+		it("omits landing_status when stage != completed", async () => {
+			const landPath = join(tmpRoot, "land-status.json");
+			writeFileSync(landPath, JSON.stringify({ status: "merged" }));
+			process.env.FLYWHEEL_LAND_STATUS_PATH = landPath;
+
+			await stage({ subcommand: "set", stageName: "ship" });
+
+			expect(mockFetch).toHaveBeenCalledOnce();
+			const [, opts] = mockFetch.mock.calls[0]!;
+			const body = JSON.parse(opts.body);
+			expect(body.payload.stage).toBe("ship");
+			expect(body.payload).not.toHaveProperty("landing_status");
+		});
+
+		it("omits landing_status when file missing (back-compat)", async () => {
+			// stage=completed but no FLYWHEEL_LAND_STATUS_PATH and no
+			// cwd-derived file → payload should still POST cleanly.
+			process.chdir(tmpRoot);
+
+			await stage({ subcommand: "set", stageName: "completed" });
+
+			expect(mockFetch).toHaveBeenCalledOnce();
+			const [, opts] = mockFetch.mock.calls[0]!;
+			const body = JSON.parse(opts.body);
+			expect(body.payload.stage).toBe("completed");
+			expect(body.payload).not.toHaveProperty("landing_status");
+		});
 	});
 });

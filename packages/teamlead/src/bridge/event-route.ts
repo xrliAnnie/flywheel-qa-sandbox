@@ -730,11 +730,113 @@ export function createEventRouter(
 						stage_updated_at: now,
 						last_activity_at: now,
 					});
-					// NOTE: stage_changed "completed" is informational only — it does NOT
-					// trigger an FSM transition. The FSM status change happens when the
-					// actual session_completed event arrives (which carries decision_route,
-					// pr_number, etc.). Transitioning here would block that event because
-					// completed is a terminal FSM state with no outgoing transitions.
+
+					// FLY-60 W2: post-merge re-finalize path. When stage=completed
+					// and the payload carries `landing_status.status="merged"`, the
+					// Runner has finished shipping and rewritten land-status.json
+					// to merged after PR merge. Earlier `session_completed` event
+					// (DirectEventSink) may have mapped status to `awaiting_review`
+					// because landingStatus was still "ready_to_merge" at that time.
+					// We re-evaluate the predicate with the now-merged landing
+					// status and fire `runPostShipFinalization` to drive the
+					// kill-Runner-tmux + chat-thread-cleanup chain.
+					//
+					// Scope (per plan §12.3): Run-#4-repair only — requires prior
+					// `session_completed` to have written `decision_route`. The
+					// "session=running, no prior session_completed" case is out of
+					// scope (would need stage payload to carry route).
+					if (stage === "completed") {
+						const landingStatus = payload.landing_status as
+							| {
+									status?: string;
+									prNumber?: number;
+									mergeCommitSha?: string;
+							  }
+							| undefined;
+						const sessionAtStage = store.getSession(event.execution_id);
+						const stageRoute = asString(sessionAtStage?.decision_route);
+						if (
+							landingStatus?.status === "merged" &&
+							isPostApproveShipComplete({
+								existingStatus: sessionAtStage?.status,
+								route: stageRoute,
+								landingStatus,
+							})
+						) {
+							// (i) FSM transition FIRST via canonical applyTransition;
+							// pr_number patched via sessionFields so write is tied to
+							// the validated transition (codex R4 M2). merge_commit_sha
+							// is NOT a StateStore.Session column — it stays in the
+							// payload for downstream stage_context consumption only.
+							let transitionApplied = false;
+							if (transitionOpts) {
+								const sessionFields: Partial<{
+									pr_number: number;
+									last_activity_at: string;
+								}> = { last_activity_at: now };
+								if (landingStatus.prNumber !== undefined) {
+									sessionFields.pr_number = landingStatus.prNumber;
+								}
+								const w2Result = applyTransition(
+									transitionOpts,
+									event.execution_id,
+									"completed",
+									ctx,
+									sessionFields,
+								);
+								if (!w2Result.ok) {
+									console.warn(
+										`[event-route W2] FSM rejected ${sessionAtStage?.status}→completed for ${event.execution_id}: ${w2Result.error}`,
+									);
+									transitionRejected = true;
+								} else {
+									transitionApplied = true;
+								}
+							} else {
+								// Defensive: production plugin.ts always passes
+								// transitionOpts. If somehow absent, refuse to fire
+								// finalization (no legacy fallback for stage_changed
+								// handler). codex R5 M1.
+								transitionRejected = true;
+								console.warn(
+									`[event-route W2] missing transitionOpts; refusing post-ship finalization for ${event.execution_id}`,
+								);
+							}
+
+							// (ii) Fire orchestrator with the EXACT PostShipOpts shape
+							// used at the session_completed branch (line ~567). Do NOT
+							// pass landingStatus/decisionRoute/prNumber as fields — they
+							// are not part of PostShipOpts and TS would reject.
+							if (transitionApplied) {
+								runPostShipFinalization(
+									{
+										executionId: event.execution_id,
+										issueId: event.issue_id,
+										issueIdentifier:
+											sessionAtStage?.issue_identifier ??
+											resolveIdentifier(payload, event.issue_id),
+										projectName: event.project_name,
+										sessionStatus: "completed",
+										discordOwnerUserId: config.chatThreadsEnabled
+											? config.discordOwnerUserId
+											: undefined,
+										fallbackBotToken: config.discordBotToken,
+									},
+									{ store, projects },
+								).catch((err) => {
+									console.error(
+										`[event-route W2] runPostShipFinalization failed for ${event.execution_id}:`,
+										(err as Error).message,
+									);
+								});
+							}
+						}
+					}
+
+					// NOTE: stage_changed values OTHER than "completed" remain
+					// informational only — they do NOT trigger FSM transitions or
+					// orchestrators. The FSM status change for non-merged
+					// completion still flows through `session_completed`.
 				}
 			}
 		} catch (err) {

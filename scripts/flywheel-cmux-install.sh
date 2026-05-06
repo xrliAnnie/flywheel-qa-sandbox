@@ -40,4 +40,50 @@ else
   echo "[install] ~/.zshrc already has flywheel cmux integration"
 fi
 
+# 5. Configure cmux socket control mode (FLY-129)
+# Watcher needs to talk to cmux from outside its process tree (the watcher
+# orphans to launchd when its source pane closes). cmux's default
+# `socketControlMode = cmuxOnly` rejects all non-descendant callers, so we
+# need `allowAll`. Tradeoff: opens /tmp/cmux.sock to all local users (mode
+# 0666). Acceptable for single-user dev box; NOT for shared/multi-user
+# hosts.
+echo "[install] Configuring cmux socket access..."
+if ! command -v defaults >/dev/null 2>&1; then
+  echo "[install] (Skipped: 'defaults' command not available — non-macOS host)"
+elif [[ "${FLYWHEEL_CMUX_SOCKET_MODE:-}" == "allowAll" ]]; then
+  defaults write com.cmuxterm.app socketControlMode -string allowAll
+  echo "[install] ✓ Set socketControlMode = allowAll (via FLYWHEEL_CMUX_SOCKET_MODE env)"
+  echo "[install] ⚠️  Restart cmux app for change to take effect."
+elif [[ ! -t 0 ]]; then
+  echo "[install] (Non-interactive stdin — skipping prompt.)"
+  echo "[install]   To set automatically: FLYWHEEL_CMUX_SOCKET_MODE=allowAll bash $0"
+  echo "[install]   To set manually:      defaults write com.cmuxterm.app socketControlMode -string allowAll"
+else
+  CURRENT_MODE=$(defaults read com.cmuxterm.app socketControlMode 2>/dev/null || echo "")
+  if [[ "$CURRENT_MODE" == "allowAll" ]]; then
+    echo "[install] socketControlMode already 'allowAll' ✓"
+  else
+    echo "[install] Current socketControlMode='${CURRENT_MODE:-unset}'"
+    echo "[install] flywheel-cmux-sync needs 'allowAll' so the watcher can talk to cmux from"
+    echo "[install] outside its process tree (the watcher orphans to launchd when source pane closes)."
+    echo "[install] WARNING: 'allowAll' relaxes /tmp/cmux.sock to mode 0666 (any local user can connect)."
+    echo "[install] Acceptable for single-user dev box; NOT for multi-user / shared hosts."
+    echo ""
+    resp="n"
+    read -r -p "[install] Set socketControlMode to 'allowAll'? [y/N] " resp || resp="n"
+    if [[ "$resp" =~ ^[Yy]$ ]]; then
+      defaults write com.cmuxterm.app socketControlMode -string allowAll
+      echo "[install] ✓ Set socketControlMode = allowAll"
+      echo "[install] ⚠️  Restart cmux app for change to take effect."
+    else
+      echo "[install] Skipped. Watcher will WARN at startup and FATAL on access-denied."
+    fi
+  fi
+fi
+
+# 6. Note: watchers should be started ONLY through flywheel-cmux-autostart
+# (which holds /tmp/flywheel-cmux-watcher.lock for single-instance gating).
+# Direct `flywheel-cmux-sync --watch` skips the lock and may race with another
+# watcher; reserve that for manual debugging.
+
 echo "[install] Done. Restart cmux to activate."

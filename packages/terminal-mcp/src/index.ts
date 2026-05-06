@@ -399,12 +399,15 @@ server.tool(
 	},
 );
 
-// Tool 6: close_runner (FLY-102)
+// Tool 6: close_runner (FLY-102 + FLY-116)
 server.tool(
 	"close_runner",
 	[
-		"Close a Runner's tmux window after it has reached a non-running outcome.",
-		"Eligible statuses: completed, failed, blocked, rejected, deferred, shelved, terminated.",
+		"Close a Runner's tmux window AND macOS Terminal viewer tab after it has reached a non-running outcome.",
+		"AUTO-CLOSE statuses (kills tmux + closes Terminal tab): completed, rejected, deferred, shelved, terminated.",
+		"PRESERVE statuses (FLY-116 — keeps tmux + tab so the user can inspect scrollback): failed, blocked.",
+		"  → Returns { success: false, preserved: true, reason: 'crash_preserve' }.",
+		"  → Cleanup happens later when the user transitions to retry/reject/defer/shelve/terminate.",
 		"REJECTS: running, awaiting_review, approved, approved_to_ship — those must be approved/rejected first.",
 		"Use after Annie confirms closure, or per team-lead pre-authorized rules.",
 		"Idempotent: if the tmux window is already gone, returns success.",

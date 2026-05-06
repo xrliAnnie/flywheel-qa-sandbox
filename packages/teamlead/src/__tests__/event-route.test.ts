@@ -1,5 +1,7 @@
 import type http from "node:http";
+import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { EventFilter } from "../bridge/EventFilter.js";
 import { formatNotification } from "../bridge/event-route.js";
 import { ForumTagUpdater } from "../bridge/ForumTagUpdater.js";
@@ -7,6 +9,7 @@ import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
+import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
@@ -963,7 +966,19 @@ describe("Event route — GEO-292 stage tracking", () => {
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
 		const config = makeConfig();
-		const app = createBridgeApp(store, testProjects, config);
+		// FLY-60 W2: pass transitionOpts so stage_changed=completed can fire
+		// the canonical applyTransition path. Without it, the W2 branch's
+		// defensive code refuses finalization (matches plugin.ts production).
+		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
+		const executor = new DirectiveExecutor(store);
+		const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			config,
+			undefined, // broadcaster
+			transitionOpts,
+		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
@@ -1241,6 +1256,198 @@ describe("Event route — GEO-292 stage tracking", () => {
 		const session = store.getSession("exec-1");
 		expect(session!.session_stage).toBe("code_review"); // preserved
 		expect(session!.pr_number).toBeUndefined();
+	});
+
+	// FLY-60 W2: post-merge re-finalize from stage_changed=completed +
+	// landing_status.status=merged. Run-#4-repair scope: requires prior
+	// session_completed (with route=needs_review/auto_approve) to have
+	// already written decision_route to StateStore. The stage_changed
+	// event then carries fresh landing_status proving merge.
+	describe("FLY-60 W2: stage_changed=completed + merge proof", () => {
+		it("fires runPostShipFinalization + flips status when awaiting_review + decision_route present + landing_status.status=merged", async () => {
+			// (1) session_started
+			await postEvent();
+			// (2) earlier session_completed with route=needs_review +
+			//     landingStatus.status="ready_to_merge" → status=awaiting_review
+			//     and decision_route=needs_review persisted
+			await postEvent({
+				event_id: "evt-pre-completed",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review" },
+					evidence: {
+						commitCount: 1,
+						landingStatus: { status: "ready_to_merge", prNumber: 9 },
+					},
+				},
+			});
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+			expect(store.getSession("exec-1")!.decision_route).toBe("needs_review");
+
+			// (3) Runner rewrote land-status.json after PR merge and emits
+			//     stage_changed=completed with landing_status proving merge.
+			const res = await postEvent({
+				event_id: "evt-stage-completed-merged",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: {
+						status: "merged",
+						prNumber: 9,
+						mergeCommitSha: "abc123",
+					},
+				},
+			});
+			expect(res.status).toBe(200);
+
+			// W2 assertion: status flipped to completed via canonical FSM path
+			const session = store.getSession("exec-1");
+			expect(session!.status).toBe("completed");
+			expect(session!.session_stage).toBe("completed");
+			// pr_number was patched via sessionFields, not before transition
+			expect(session!.pr_number).toBe(9);
+		});
+
+		it("no-op when stage_changed=completed has no landing_status (back-compat)", async () => {
+			await postEvent();
+			await postEvent({
+				event_id: "evt-pre-completed",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review" },
+					evidence: {
+						commitCount: 1,
+						landingStatus: { status: "ready_to_merge", prNumber: 11 },
+					},
+				},
+			});
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+
+			await postEvent({
+				event_id: "evt-stage-completed-no-ls",
+				event_type: "stage_changed",
+				payload: { stage: "completed" }, // no landing_status
+			});
+
+			// Status unchanged
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+		});
+
+		it("no-op when stage_changed=completed has landing_status.status != merged", async () => {
+			await postEvent();
+			await postEvent({
+				event_id: "evt-pre-completed",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review" },
+					evidence: {
+						commitCount: 1,
+						landingStatus: { status: "ready_to_merge", prNumber: 12 },
+					},
+				},
+			});
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+
+			await postEvent({
+				event_id: "evt-stage-completed-not-merged",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: { status: "ready_to_merge", prNumber: 12 },
+				},
+			});
+
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+		});
+
+		// Negative-boundary regression test (codex R6 M1):
+		//   running + merged + decision_route UNSET → predicate returns false,
+		//   no FSM transition, no orchestrator fire. Tests that W2 fails-closed
+		//   for the running-only-no-route case which is explicit out of scope
+		//   (would need stage payload to carry route).
+		it("no-op when running + merged + decision_route UNSET (boundary regression)", async () => {
+			await postEvent(); // session_started → status=running, no decision_route yet
+
+			expect(store.getSession("exec-1")!.status).toBe("running");
+			expect(store.getSession("exec-1")!.decision_route).toBeUndefined();
+
+			// stage_changed with merge proof BUT no prior session_completed
+			// → predicate sees route=undefined → returns false → no W2 action
+			await postEvent({
+				event_id: "evt-stage-completed-no-route",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: {
+						status: "merged",
+						prNumber: 50,
+						mergeCommitSha: "deadbeef",
+					},
+				},
+			});
+
+			// Status stays running; W2 did NOT fire orchestrator.
+			expect(store.getSession("exec-1")!.status).toBe("running");
+			// session_stage still updated (stage tracking is informational)
+			expect(store.getSession("exec-1")!.session_stage).toBe("completed");
+		});
+
+		// Idempotency: stage_changed=completed (W2 path) followed by a later
+		// session_completed → both predicate-match, but
+		// runPostShipFinalization atomically claims event_id, so cleanup
+		// only runs once.
+		it("idempotency: W2 then session_completed both fire predicate but cleanup only once", async () => {
+			await postEvent();
+			await postEvent({
+				event_id: "evt-pre-completed",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review" },
+					evidence: {
+						commitCount: 1,
+						landingStatus: { status: "ready_to_merge", prNumber: 77 },
+					},
+				},
+			});
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+
+			// W2 fires (stage_changed=completed + merged) → status=completed
+			const res1 = await postEvent({
+				event_id: "evt-stage-completed-merged",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: {
+						status: "merged",
+						prNumber: 77,
+						mergeCommitSha: "feedface",
+					},
+				},
+			});
+			expect(res1.status).toBe(200);
+			expect(store.getSession("exec-1")!.status).toBe("completed");
+
+			// Later session_completed arrives (e.g., Blueprint emitTerminal
+			// fired after Runner finally exited). Should be safe to apply
+			// (FSM `completed` is terminal, transition is no-op or rejected).
+			const res2 = await postEvent({
+				event_id: "evt-late-session-completed",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review" },
+					evidence: {
+						commitCount: 1,
+						landingStatus: {
+							status: "merged",
+							prNumber: 77,
+							mergeCommitSha: "feedface",
+						},
+					},
+				},
+			});
+			expect(res2.status).toBe(200);
+			expect(store.getSession("exec-1")!.status).toBe("completed");
+		});
 	});
 });
 

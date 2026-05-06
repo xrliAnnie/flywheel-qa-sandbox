@@ -637,13 +637,24 @@ _launch_claude() {
   # Kill stale window with same name (from previous crash)
   tmux kill-window -t "=flywheel:=${window_name}" 2>/dev/null || true
 
-  # Build env injection args (explicit per-window, match TmuxAdapter pattern)
+  # Build env injection args (explicit per-window, match TmuxAdapter pattern).
+  # FLY-60 W6 v2: ALSO override the un-prefixed LEAD_ID and PROJECT_NAME
+  # vars per-window. Without these the new Lead window inherits the parent
+  # shell's values (e.g. Annie's PROJECT_NAME=geoforge3d, LEAD_ID=ops-lead),
+  # so any tool that reads the un-prefixed names sees the wrong slot
+  # context — Bridge then 404s "No runtime for project: geoforge3d" while
+  # the test slot's runtime is registered as "test-slot-N". The W6 v1 fix
+  # was identity.md prompt-only, which could not override env-var leak.
+  # In production this is a no-op (Annie's shell already has the right
+  # values); in test slots it ensures the per-invocation slot values win.
   local env_args=(
     -e "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}"
     -e "DISCORD_STATE_DIR=${DISCORD_STATE_DIR:-}"
+    -e "LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_COMM_DB=${FLYWHEEL_COMM_DB:-}"
     -e "FLYWHEEL_COMM_CLI=${FLYWHEEL_COMM_CLI:-}"
+    -e "PROJECT_NAME=${PROJECT_NAME}"
     -e "FLYWHEEL_PROJECT_NAME=${PROJECT_NAME}"
     -e "BRIDGE_URL=${BRIDGE_URL:-}"
     -e "TEAMLEAD_API_TOKEN=${TEAMLEAD_API_TOKEN:-}"

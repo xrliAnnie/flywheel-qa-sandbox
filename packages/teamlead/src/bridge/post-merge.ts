@@ -17,7 +17,9 @@
  * Never throws — all errors are captured in the result and audit event.
  */
 
+import { closeRunnerTerminalView } from "flywheel-core";
 import type { StateStore } from "../StateStore.js";
+import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
 
 // ── Types ───────────────────────────────────────────────
@@ -48,7 +50,7 @@ export async function postMergeTmuxCleanup(
 		errors: [],
 	};
 
-	// Close Runner tmux session
+	// Close Runner tmux session AND macOS Terminal viewer tab (FLY-116)
 	try {
 		const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 		if (target) {
@@ -56,6 +58,31 @@ export async function postMergeTmuxCleanup(
 			result.tmuxClosed = killResult.killed;
 			if (killResult.error) {
 				result.errors.push(`tmux: ${killResult.error}`);
+			}
+
+			// FLY-116: close per-runner Terminal viewer tab + linked viewer session
+			const session = store.getSession(opts.executionId);
+			if (session && killResult.killed) {
+				const identity = resolveTerminalViewIdentity(session, target);
+				if (identity) {
+					const closeRes = await closeRunnerTerminalView({
+						baseSessionName: identity.sessionName,
+						projectName: identity.projectName,
+						executionId: identity.executionId,
+						windowId: identity.windowId,
+						sessionRole: identity.sessionRole,
+					}).catch(
+						(e: Error) =>
+							({
+								closedTab: false,
+								killedViewerSession: false,
+								error: e.message,
+							}) as const,
+					);
+					if (closeRes.error) {
+						result.errors.push(`terminal: ${closeRes.error}`);
+					}
+				}
 			}
 		}
 		// No target → tmux was never registered or CommDB missing. Not an error.

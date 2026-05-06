@@ -233,6 +233,19 @@ export interface AdapterExecutionContext {
 	 * The adapter (claude-runner) never directly depends on StateStore (teamlead).
 	 */
 	onHeartbeat?: (executionId: string) => void;
+
+	/**
+	 * FLY-116: fired by TmuxAdapter immediately after `tmux new-window` returns
+	 * a windowId, BEFORE waiting for runner completion. Used to spawn a per-runner
+	 * macOS Terminal.app viewer with a unique custom title (status-dominant close
+	 * later by closeRunner / postMergeTmuxCleanup / actions cleanup).
+	 *
+	 * Best-effort — adapter wraps in try/catch; failures non-fatal.
+	 */
+	onTmuxWindowCreated?: (info: {
+		baseSessionName: string;
+		windowId: string;
+	}) => void;
 }
 
 // ---------------------------------------------------------------------------

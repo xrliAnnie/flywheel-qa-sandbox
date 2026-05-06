@@ -166,6 +166,17 @@ export class TmuxAdapter implements IAdapter {
 			}
 		}
 
+		// FLY-60 W2: inject the landing-signal sentinel path so the
+		// `flywheel-comm stage set completed` CLI can read landing-status.json
+		// and attach the parsed `landing_status` object to its stage_changed
+		// event payload. Bridge's event-route uses that payload to fire
+		// `runPostShipFinalization` on the post-merge re-finalize path
+		// (codex-approved §12.3 of the FLY-60 plan). Other code paths that
+		// don't pass `sentinelPath` are unaffected (env var simply absent).
+		if (ctx.sentinelPath) {
+			envArgs.push("-e", `FLYWHEEL_LAND_STATUS_PATH=${ctx.sentinelPath}`);
+		}
+
 		// FLY-102: Override Claude Code's Bash tool max timeout.
 		// Default is 600,000ms (10 min) which kills gate commands that wait for
 		// human decisions. Set to 24h to match session timeout.
@@ -211,6 +222,22 @@ export class TmuxAdapter implements IAdapter {
 
 		// Send immediate first heartbeat (before first poll cycle)
 		ctx.onHeartbeat?.(ctx.executionId);
+
+		// FLY-116: fire onTmuxWindowCreated callback BEFORE waitForCompletion,
+		// so the macOS Terminal viewer opens while the runner is still running.
+		if (ctx.onTmuxWindowCreated) {
+			try {
+				ctx.onTmuxWindowCreated({
+					baseSessionName: this.sessionName,
+					windowId,
+				});
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				console.warn(
+					`[TmuxAdapter] onTmuxWindowCreated callback failed: ${msg}`,
+				);
+			}
+		}
 
 		// Wait for completion: mode depends on hookServer presence
 		let timedOut: boolean;

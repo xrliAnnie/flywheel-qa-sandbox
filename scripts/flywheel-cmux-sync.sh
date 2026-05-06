@@ -27,7 +27,95 @@ CONSERVATIVE_CLEANUP_SECONDS="${FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP:-300}"
 
 # ── Functions ──
 
-log() { echo "[cmux-sync $(date '+%H:%M:%S')] $*"; }
+# FLY-129: log to stderr so callers in pipelines (e.g. `cmux_call list-workspaces | sed`)
+# don't get diagnostics mixed into the data stream. autostart redirects both
+# stdout and stderr to the log file, so on-disk log output is unchanged.
+log() { echo "[cmux-sync $(date '+%H:%M:%S')] $*" >&2; }
+
+# Path of cmux IPC socket. Override via $CMUX_SOCKET_PATH env (cmux's own convention).
+CMUX_SOCKET_PATH_DEFAULT="${CMUX_SOCKET_PATH:-/tmp/cmux.sock}"
+
+# FLY-129: Health-check cmux IPC. Distinguish:
+#   rc=0  healthy (PONG)
+#   rc=1  cmux not running (socket missing — recoverable, just wait)
+#   rc=2  config issue, fatal (Access denied OR socket exists but kernel-level
+#         permission denied / operation not permitted — caller can't connect
+#         and never will until config changes)
+#   rc=3  other transient error (socket present, non-fatal — warn, retry)
+cmux_health_check() {
+  local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
+  if [[ ! -S "$socket" ]]; then
+    return 1
+  fi
+  local err_file out rc=0
+  err_file=$(mktemp)
+  # Pass --socket explicitly so override env actually reaches cmux CLI.
+  out=$(cmux --socket "$socket" ping 2>"$err_file") || rc=$?
+  local err_text
+  err_text=$(cat "$err_file" 2>/dev/null || true)
+  rm -f "$err_file"
+  if [[ $rc -eq 0 && "$out" == *PONG* ]]; then
+    return 0
+  fi
+  # Match against combined stdout + stderr: cmux may write the access-denied
+  # message to either stream depending on protocol stage.
+  local combined="${out}${err_text}"
+  if grep -q "Access denied" <<<"$combined"; then
+    log "ERROR: cmux IPC rejected by app — caller is not a cmux descendant and socketControlMode != allowAll"
+    log "ERROR: stderr: ${err_text:-<empty>}"
+    log "ERROR: To fix: defaults write com.cmuxterm.app socketControlMode -string allowAll && quit cmux app + relaunch"
+    return 2
+  fi
+  # FLY-129 R2: kernel-level permission denial means socket exists but caller
+  # can't open() it (wrong owner / mode 0600 by another user / SIP / etc.).
+  # No amount of retrying will fix this — surface as fatal so the lock
+  # releases instead of looping forever.
+  if grep -qE "Permission denied|Operation not permitted" <<<"$combined"; then
+    log "ERROR: cmux socket present at $socket but kernel denied open()"
+    log "ERROR: stderr: ${err_text:-<empty>}"
+    log "ERROR: Likely cause: socket owned by a different user, or socketControlMode=cmuxOnly with file mode 0600"
+    log "ERROR: To fix: ls -l $socket; defaults write com.cmuxterm.app socketControlMode -string allowAll && quit cmux app + relaunch"
+    return 2
+  fi
+  log "WARN: cmux ping failed transiently (rc=$rc, out='${out}', err='${err_text}')"
+  return 3
+}
+
+# FLY-129: gate helper used both at startup and every minute in watch_loop.
+# Returns:
+#   0 — healthy (caller can run cmux operations)
+#   2 — auth rejected (this function exits 1; never returns)
+#   non-zero (1/3) — recoverable; caller should SKIP cmux operations this tick
+# Designed for use as a gate: `if cmux_health_check_or_die; then sync_additive; fi`
+cmux_health_check_or_die() {
+  local rc=0
+  cmux_health_check || rc=$?
+  case $rc in
+    0) return 0 ;;
+    1) log "INFO: cmux socket missing — skipping cmux ops this tick (will retry)"; return 1 ;;
+    2) log "FATAL: cmux IPC auth rejected — exiting so autostart lock releases for next cmux-pane-spawned watcher"; exit 1 ;;
+    3) return 3 ;;  # transient; warn already logged in cmux_health_check
+  esac
+}
+
+# FLY-129: wrap cmux call so stderr goes to log (via stderr, not /dev/null).
+# Returns cmux's exit code; **stdout passthrough preserved** for callers in
+# pipelines (e.g. `cmux_call list-workspaces | sed`).
+# Honors $CMUX_SOCKET_PATH override so health-check + sync ops talk to the
+# same socket.
+cmux_call() {
+  local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
+  local err_file rc=0
+  err_file=$(mktemp)
+  cmux --socket "$socket" "$@" 2>"$err_file" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    local err_text
+    err_text=$(cat "$err_file" 2>/dev/null || true)
+    log "WARN: cmux $1 failed (rc=$rc): ${err_text:-<empty>}"
+  fi
+  rm -f "$err_file"
+  return $rc
+}
 
 get_tmux_agent_windows() {
   # Returns: session_name|window_id|window_name per line
@@ -56,8 +144,9 @@ get_tmux_agent_windows() {
 }
 
 get_cmux_workspaces() {
-  # Returns raw workspace list from cmux
-  cmux list-workspaces 2>/dev/null || true
+  # Returns raw workspace list from cmux. FLY-129: stderr now goes to log
+  # via cmux_call instead of being discarded.
+  cmux_call list-workspaces || true
 }
 
 workspace_exists_for() {
@@ -123,7 +212,7 @@ cleanup_workspace_for() {
   local ws_ref
   ws_ref=$(get_workspace_ref_for "$agent_name")
   if [[ -n "$ws_ref" ]]; then
-    cmux close-workspace --workspace "$ws_ref" 2>/dev/null || true
+    cmux_call close-workspace --workspace "$ws_ref" || true
   fi
 
   # 2. Kill the linked session (never kill the source session)
@@ -152,9 +241,12 @@ create_workspace_for_window() {
   refs_before=$(get_all_workspace_refs)
 
   # 4. Create cmux workspace attaching to the linked session
-  # FLY-98: protect against SIGPIPE/exit 141 when cmux is unavailable
-  if ! cmux new-workspace --command "tmux attach -t '=${view_session}'" 2>/dev/null; then
-    log "WARNING: cmux new-workspace failed for $window_name (cmux not running?)"
+  # FLY-98: original `2>/dev/null` swallowed real errors (it does NOT prevent
+  #   SIGPIPE — that's a kernel signal). FLY-129: cmux_call routes stderr to
+  #   the log so we can see whether cmux is missing, rejecting auth, or just
+  #   transiently broken.
+  if ! cmux_call new-workspace --command "tmux attach -t '=${view_session}'"; then
+    log "WARN: cmux new-workspace failed for $window_name (see prior log lines)"
     return 0
   fi
 
@@ -165,7 +257,7 @@ create_workspace_for_window() {
 
   # 6. Rename using the exact ref — immune to user tab switching
   if [[ -n "$new_ref" ]]; then
-    cmux rename-workspace --workspace "$new_ref" "$window_name" 2>/dev/null || true
+    cmux_call rename-workspace --workspace "$new_ref" "$window_name" || true
   fi
 }
 
@@ -223,7 +315,7 @@ reconcile_existing_workspaces() {
       local ws_ref
       ws_ref=$(get_workspace_ref_for "$wname")
       if [[ -n "$ws_ref" ]]; then
-        cmux close-workspace --workspace "$ws_ref" 2>/dev/null || true
+        cmux_call close-workspace --workspace "$ws_ref" || true
       fi
     fi
   done <<< "$tmux_windows"
@@ -306,6 +398,26 @@ register_global_hooks() {
   #   pane-exited: "...program ... exits."  (i.e. pane has actually closed)
   tmux set-hook -g 'pane-died[500]' \
     "run-shell -b 'echo \"exited|#{session_name}|#{window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
+
+  # FLY-60 W4b (per W4a empirical evidence
+  # `doc/qa/reports/v1.25.0-FLY-60-evidence/w4a-tmux-hook-empirical-test.md`):
+  # `pane-died` does NOT fire when a window is destroyed via
+  # `tmux kill-window` (which is what Bridge's W3 force-kill path does
+  # via `runPostShipFinalization → postMergeTmuxCleanup → killTmuxWindow`).
+  # tmux 3.5a fires `window-unlinked` instead. Empirical test confirmed it
+  # fires deterministically (3/3 trials) AND the format vars
+  # `#{hook_session_name}` + `#{hook_window_name}` are both populated AND
+  # identify the SOURCE session + DESTROYED window.
+  #
+  # Critical: must use `#{hook_window_name}` (NOT `#{window_name}`) —
+  # window-unlinked's `#{window_name}` returns the session's CURRENT
+  # window name (e.g. `zsh`/`tmux`), not the destroyed one.
+  #
+  # The format `unlinked|sn=<src>|wn=<destroyed>` differs from the
+  # legacy positional `exited|<sess>|<window>` pane-died rows, so the
+  # watcher's `drain_events` parses both formats (sniff for `|sn=`).
+  tmux set-hook -g 'window-unlinked[500]' \
+    "run-shell -b 'echo \"unlinked|sn=#{hook_session_name}|wn=#{hook_window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
 }
 
 register_hooks_on_new_sessions() {
@@ -438,6 +550,31 @@ _drain_file() {
         [[ -z "$session" ]] && continue
         register_session_hooks "$session"
         ;;
+      unlinked)
+        # FLY-60 W4b: window-unlinked global hook fires on tmux kill-window
+        # (the path Bridge takes via runPostShipFinalization →
+        # postMergeTmuxCleanup → killTmuxWindow when W2's stage_changed=
+        # completed branch fires). pane-died does NOT fire on kill-window
+        # in tmux 3.5a (verified by W4a empirical test), so this is the
+        # ONLY signal we get for the post-merge force-kill path.
+        #
+        # Format is keyed (sn=..., wn=...) — different from legacy
+        # positional pane-died `exited|<sess>|<window>` rows. Legacy rows
+        # already match the `exited)` arm above; we parse the keyed form
+        # here and treat it the same as `exited` for cleanup purposes.
+        #
+        # Parser: arg1 is "sn=<src_session>" and arg2 is "wn=<win_name>".
+        # Strip the `sn=` / `wn=` prefixes before applying the same filter.
+        local session="${arg1#sn=}"
+        local wname="${arg2#wn=}"
+        [[ -z "$wname" ]] && continue
+        [[ "$wname" == "zsh" || "$wname" == "bash" ]] && continue
+        case "$session" in
+          flywheel|runner-*) ;;
+          *) continue ;;
+        esac
+        mark_for_cleanup "$wname" "$now"
+        ;;
     esac
   done < "$source_file"
 }
@@ -531,12 +668,59 @@ watch_loop() {
   while true; do
     sleep 15
     tick=$((tick + 1))
-    drain_events
-    process_pending_cleanups
-    if (( tick % 4 == 0 )); then
-      sync_additive
+
+    # FLY-129 R2: gate ALL cmux-touching work behind the health check, every
+    # tick (15s). drain_events / process_pending_cleanups CAN call cmux
+    # (create_workspace_for_window, cleanup_workspace_for), so we must check
+    # health before we let them touch cmux.
+    #
+    # rc=2 (Access denied / kernel perm-denied) → cmux_health_check_or_die
+    # exits 1 → autostart EXIT trap releases the lock.
+    # rc=0 healthy → run drain + cleanup; every 4th tick also run sync_additive.
+    # rc=1/3 recoverable → skip cmux-touching paths this tick. Events still
+    # accumulate in $EVENT_FILE; sync_additive on the next healthy tick will
+    # reconcile by creating any missing workspaces.
+    local hc_rc=0
+    cmux_health_check_or_die || hc_rc=$?
+    if [[ $hc_rc -eq 0 ]]; then
+      drain_events
+      process_pending_cleanups
+      if (( tick % 4 == 0 )); then
+        sync_additive
+      fi
     fi
   done
+}
+
+# FLY-129: --watch dispatcher body. Wrapped in a function so we can use `local`
+# without falling foul of the case-statement scope.
+watch_main() {
+  log "Watch mode: event-signaled polling (${CLEANUP_DELAY_SECONDS}s cleanup delay, ${CONSERVATIVE_CLEANUP_SECONDS}s conservative cleanup)"
+
+  # Advisory: warn if cmux app preference is the broken default. This catches
+  # the case where the watcher will work today (we're inside cmux pane) but
+  # will fail post-reparent.
+  if command -v defaults >/dev/null 2>&1; then
+    local mode
+    mode=$(defaults read com.cmuxterm.app socketControlMode 2>/dev/null || echo "unset")
+    if [[ "$mode" != "allowAll" ]]; then
+      log "WARN: cmux socketControlMode='$mode' (expected: allowAll)"
+      log "WARN: When watcher orphans to launchd, IPC will be rejected. To fix:"
+      log "WARN:   defaults write com.cmuxterm.app socketControlMode -string allowAll && quit cmux + relaunch"
+    fi
+  fi
+
+  # Hooks are tmux-only — register regardless of cmux health.
+  register_global_hooks
+  register_hooks_on_new_sessions
+
+  # Gate cmux-touching bootstrap: if cmux is broken (rc=2 already exited),
+  # skip the full sync but still enter the watch loop. drain_events / loop
+  # will retry health every minute.
+  if cmux_health_check_or_die; then
+    sync_additive_bootstrap
+  fi
+  watch_loop
 }
 
 sync_once() {
@@ -575,16 +759,9 @@ fi
 
 case "${1:-}" in
   --watch)
-    log "Watch mode: event-signaled polling (${CLEANUP_DELAY_SECONDS}s cleanup delay, ${CONSERVATIVE_CLEANUP_SECONDS}s conservative cleanup)"
-    # 1. Install hooks (global + per-session)
-    register_global_hooks
-    register_hooks_on_new_sessions
-    # 2. Additive-only bootstrap — never do aggressive cleanup on startup
-    sync_additive_bootstrap
-    # 3. Polling loop:
-    #    - every 15s: drain events + process pending cleanups
-    #    - every 60s (tick % 4): additive scan + conservative stale cleanup
-    watch_loop
+    # FLY-129: full --watch body lives in watch_main() so it can use `local`
+    # and so health-check gating can wrap cmux ops cleanly.
+    watch_main
     ;;
   --refresh)
     # FLY-98: tmux-only repair — safe to call from outside cmux
