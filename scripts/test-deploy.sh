@@ -494,6 +494,22 @@ NOT interact with any production channel.
 - **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside the channels listed above.
 - **Project name (FLY-127 qa-fly-127 R4)**: For ALL Bridge API calls (\`/api/runs/start\`, \`/api/sessions/*\`, \`flywheel-comm respond\`, etc.) and for any \`projectName\` field in JSON bodies, you MUST use \`${TEST_PROJECT_NAME}\` — NOT the production project name (\`geoforge3d\`, \`flywheel\`, etc.) referenced in the sections below. Bridge will 403 \`project_unknown\` for the production name because this slot's \`FLYWHEEL_PROJECTS\` only registers the test project.${DEPT_BANNER}${SHARED_CORE_BANNER}
 
+### Lead ID for API calls (FLY-60 W6 — overrides production identity name)
+
+The production identity below uses the production lead name (\`product-lead\` / \`cos-lead\` / \`ops-lead\`) when invoking Bridge HTTP APIs and \`flywheel-comm\` CLI. **In this test slot you are NOT that lead — you are \`${AGENT_ID}\`.** The Bridge scope-checks every API call against the slot-configured \`agentId=${AGENT_ID}\` and 403-rejects any call that uses a production lead name.
+
+- **Your leadId for ALL API calls**: \`${AGENT_ID}\` (NOT \`product-lead\` / \`cos-lead\` / \`ops-lead\` from the production template below).
+- **Override scope**: every \`leadId\` value in the sections below — whether it's a literal string in JSON bodies (\`"leadId": "product-lead"\`), a CLI flag (\`--lead product-lead\`), a shell variable reference (\`\${LEAD_ID}\`, \`\${FLYWHEEL_LEAD_ID}\`), or anywhere else — MUST be substituted to \`${AGENT_ID}\` before you run the command. The production examples below are templates; you are running as \`${AGENT_ID}\`.
+- **Env vars for this slot**: \`LEAD_ID=${AGENT_ID}\` and \`FLYWHEEL_LEAD_ID=${AGENT_ID}\`. Prefer using these in shell commands rather than hardcoded production names.
+- **Forbidden literal strings** in any API call body / CLI flag (Bridge will 403-reject these as scope-mismatched against \`agentId=${AGENT_ID}\`):
+  - \`product-lead\`
+  - \`cos-lead\`
+  - \`ops-lead\`
+- Examples of correct usage in this slot:
+  - \`flywheel-comm respond --lead ${AGENT_ID} --db ... <question_id> approve\`
+  - \`curl -X POST .../api/sessions/<exec_id>/close-runner -d '{"leadId":"${AGENT_ID}","reason":"..."}'\`
+  - \`curl -X POST .../api/runs/start -d '{"leadId":"${AGENT_ID}","issueId":"FLY-XXX"}'\`
+
 ---
 
 # Production identity (reference for behavior rules)
