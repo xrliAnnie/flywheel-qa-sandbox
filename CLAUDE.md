@@ -91,7 +91,7 @@ Current version: see `doc/VERSION`
 | FLY-115: QA Test Slot Framework — Real Runner Support (A1 + W1 + F1) | ✅ Merged (PR #157) |
 | FLY-108: Runner-driven session_completed + Bridge route guard | ✅ Merged (PR #1) |
 | FLY-99: QA pipeline execution — milestone record | ✅ Merged |
-| FLY-124: QA pipeline execution — milestone record | ✅ Merged (PR #7, #8, #9, #11) |
+| FLY-124: QA pipeline execution — milestone record | ✅ Merged (PR #7, #8, #9, #11, #12) |
 
 ## Doc Structure & Lifecycle
 
