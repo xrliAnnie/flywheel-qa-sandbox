@@ -479,6 +479,51 @@ fi
 # tests (S1 happy / S2 mismatch / S3 multi-dept / S4 no-dept all become
 # meaningful). When deptLabel is empty (legacy slots), keep `["*"]` so old
 # integration tests that don't care about dept routing keep passing.
+#
+# FLY-127 (qa-fly-127 round 2): single-Lead-per-Bridge test slots can't
+# reproduce `label_mismatch` / `issue_multiple_department_labels` /
+# auto-resolve-to-sibling because each Bridge's `loadProjects()` only sees
+# its own dept Lead. The registry then truthfully reports "no canonical lead
+# in this project" for any foreign-dept label, so S2/S3/AR2/AR3 collapse
+# into S4 / 200-spawn shapes.
+#
+# Fix (Path A): when this slot is dept-aware (slot.department set), also
+# inject sibling spawning leads from ~/.flywheel/test-slots.json as
+# **shadow** Lead entries. Shadows reuse the sibling slot's bot-token-env +
+# chat/forum channel IDs, so:
+#   * ProjectConfig's per-spawning-lead canonical-label uniqueness check
+#     still passes (each shadow has a distinct dept label).
+#   * The 403 paths (label_mismatch, multi-dept) are fully testable; no
+#     dispatch happens before a 403 so the shadow never has to act.
+#   * AR3 (auto-resolve to sibling) routes the runs/start to a shadow whose
+#     announce path uses the sibling slot's bot — Discord side sees the
+#     spawn notification land in the right channel; the Runner itself is
+#     hosted on this slot's host. That's a known test-infra deviation from
+#     prod (in prod each dept has its own Bridge); documented in QA report.
+#
+# Legacy slots (no `.department`) skip shadow injection so existing tests
+# aren't perturbed.
+SHADOW_LEADS_JSON="[]"
+if [[ -n "$DEPARTMENT" ]]; then
+  SHADOW_LEADS_JSON=$(jq -c \
+    --arg currentBot "$AGENT_ID" \
+    '
+    [
+      .slots[]
+      | select((.department // "") != "")
+      | select((.forumChannelId // "") != "")
+      | select(.botName != $currentBot)
+      | {
+          agentId: .botName,
+          chatChannel: .channelId,
+          botTokenEnv: .tokenEnvVar,
+          forumChannel: .forumChannelId,
+          match: { labels: [.deptLabel] }
+        }
+    ]
+    ' "$SLOTS_FILE")
+fi
+
 FLYWHEEL_PROJECTS=$(jq -n \
   --arg projectName "$TEST_PROJECT_NAME" \
   --arg projectRoot "$HOST_REPO" \
@@ -488,27 +533,29 @@ FLYWHEEL_PROJECTS=$(jq -n \
   --arg botTokenEnv "$BOT_TOKEN_ENV" \
   --arg forumChannel "$FORUM_CHANNEL_ID" \
   --arg deptLabel "$DEPT_LABEL" \
+  --argjson shadowLeads "$SHADOW_LEADS_JSON" \
   '
   [{
     projectName: $projectName,
     projectRoot: $projectRoot,
     projectRepo: $projectRepo,
-    leads: [
+    leads: ([
       ({
         agentId: $agentId,
         chatChannel: $chatChannel,
         botTokenEnv: $botTokenEnv,
         match: { labels: (if ($deptLabel != "") then [$deptLabel] else ["*"] end) }
       } + (if ($forumChannel != "") then { forumChannel: $forumChannel } else {} end))
-    ]
+    ] + $shadowLeads)
   }]
   ')
 
 if [[ -z "$FORUM_CHANNEL_ID" ]]; then
   log "WARN: slot ${SLOT} has no forumChannelId in $SLOTS_FILE — forum thread creation will be skipped (Gap C §11.2 env gate pending)"
 fi
+SHADOW_COUNT=$(echo "$SHADOW_LEADS_JSON" | jq 'length')
 if [[ -n "$DEPT_LABEL" ]]; then
-  log "Dept-aware slot ${SLOT}: department=${DEPARTMENT:-?} deptLabel=${DEPT_LABEL} identitySource=${IDENTITY_SOURCE:-(role-based:${SLOT_ROLE})}"
+  log "Dept-aware slot ${SLOT}: department=${DEPARTMENT:-?} deptLabel=${DEPT_LABEL} identitySource=${IDENTITY_SOURCE:-(role-based:${SLOT_ROLE})} shadowLeads=${SHADOW_COUNT}"
 else
   log "Legacy slot ${SLOT}: deptLabel absent → match.labels=['*'] (no dept enforcement)"
 fi
