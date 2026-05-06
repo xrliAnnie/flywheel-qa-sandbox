@@ -53,6 +53,13 @@ PROJECT_NAME=$(jq -r '.projectName' "$MANIFEST")
 SUBDIR=$(jq -r '.subdir // ""' "$MANIFEST")
 BOT_TOKEN_ENV=$(jq -r '.botTokenEnv // "DISCORD_BOT_TOKEN"' "$MANIFEST")
 WORKSPACE=$(jq -r '.workspace // ""' "$MANIFEST")
+# FLY-143: optional fields for Lead MCP scope tuning.
+# `mcpExclude`: comma-separated user-scope MCP servers this Lead should skip
+#   (e.g. Simba excludes "bambu-h2d,xiaohongshu-mcp,pencil").
+# `chromeEnabled`: opt-in to Claude in Chrome — see claude-lead.sh for the
+#   security note about bypassPermissions + --chrome.
+MCP_EXCLUDE=$(jq -r '.mcpExclude // ""' "$MANIFEST")
+CHROME_ENABLED=$(jq -r '.chromeEnabled // false' "$MANIFEST")
 
 # Validate critical fields
 if [ -z "$LEAD_ID" ] || [ "$LEAD_ID" = "null" ]; then
@@ -89,6 +96,14 @@ if [ -z "$DISCORD_BOT_TOKEN" ]; then
   log "WARNING: Bot token env '${BOT_TOKEN_ENV}' is empty. Discord may not work."
 fi
 export DISCORD_STATE_DIR="${HOME}/.claude/channels/discord-${LEAD_ID}"
+
+# FLY-143: per-Lead MCP scope env vars — claude-lead.sh reads these.
+# Empty MCP_EXCLUDE means "no per-Lead exclusion beyond the global blacklist".
+# CHROME_ENABLED defaults to false (manifest must explicitly opt in).
+export FLYWHEEL_LEAD_MCP_EXCLUDE="$MCP_EXCLUDE"
+if [ "$CHROME_ENABLED" = "true" ]; then
+  export FLYWHEEL_LEAD_CHROME_ENABLED=true
+fi
 
 # Replay custom workspace if manifest recorded one
 if [ -n "$WORKSPACE" ] && [ "$WORKSPACE" != "null" ]; then
