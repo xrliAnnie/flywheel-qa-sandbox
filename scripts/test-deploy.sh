@@ -399,10 +399,27 @@ if [[ ! -f "$PROD_IDENTITY" ]]; then
   exit 1
 fi
 
+# FLY-127 fix (qa-fly-127 round 1): macOS ships bash 3.2.57, which fails to
+# parse an apostrophe inside `${VAR:+...}` inside a heredoc — the `'` opens
+# a quote context the parser never closes, yielding "bad substitution: no
+# closing `}'" at runtime. Pre-render the dept-aware suffix and banner OUTSIDE
+# the heredoc so the heredoc only sees plain `${var}` expansions, which 3.2
+# handles correctly. Robust against future copy-edits adding more `'`/`!`/`"`
+# to the dept banner.
+if [[ -n "$DEPT_LABEL" ]]; then
+  DEPT_DESC_SUFFIX=", dept=${DEPT_LABEL}"
+  # Leading newline keeps the bullet on its own line under the previous one.
+  DEPT_BANNER="
+- **Department scope (FLY-127)**: you own the \`${DEPT_LABEL}\` Linear label only. Bridge will 403-reject any \`POST /api/runs/start\` for an issue whose labels do not exactly match \`${DEPT_LABEL}\`. If a user asks you to spawn a Runner for an out-of-scope issue, refuse in Chinese and tell them which slot owns the department for that issue."
+else
+  DEPT_DESC_SUFFIX=""
+  DEPT_BANNER=""
+fi
+
 cat > "${SLOT_DIR}/test-identity.md" <<EOF
 ---
 name: ${AGENT_ID}
-description: Flywheel TEST slot ${SLOT} (${SLOT_ROLE}${DEPT_LABEL:+, dept=${DEPT_LABEL}}) — automated QA environment
+description: Flywheel TEST slot ${SLOT} (${SLOT_ROLE}${DEPT_DESC_SUFFIX}) — automated QA environment
 model: opus
 disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
 permissionMode: bypassPermissions
@@ -421,8 +438,7 @@ NOT interact with any production channel.
 - **Your ONLY channel**: <#${CHAT_CHANNEL_ID}> (channel ID \`${CHAT_CHANNEL_ID}\`)
 - **Ignore** all other channel IDs in "Channel Isolation Rules", "Core Channel Routing", "Discord Channel IDs", etc. — those belong to production.
 - If a received message's \`chat_id\` is not \`${CHAT_CHANNEL_ID}\`, silently ignore it (no reply, no action).
-- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${CHAT_CHANNEL_ID}>.${DEPT_LABEL:+
-- **Department scope (FLY-127)**: you own the \`${DEPT_LABEL}\` Linear label only. Bridge will 403-reject any \`POST /api/runs/start\` for an issue whose labels do not exactly match \`${DEPT_LABEL}\`. If a user asks you to spawn a Runner for an out-of-scope issue, refuse in Chinese and tell them which slot owns the issue's department.}
+- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${CHAT_CHANNEL_ID}>.${DEPT_BANNER}
 
 ---
 
