@@ -398,6 +398,10 @@ classify_changes() {
             # Lead impact (specific patterns BEFORE wildcard teamlead/*)
             packages/teamlead/scripts/claude-lead.sh)   _restart_all_leads=true ;;
             packages/teamlead/scripts/post-compact*)     _restart_all_leads=true ;;
+            # FLY-127 R3: base prompt rules read by claude-lead.sh on every Lead
+            # spawn. Editing these requires Lead daemon kickstart; Bridge does
+            # NOT read them, so don't trigger a Bridge restart for these.
+            packages/teamlead/lead-rules-base/*)         _restart_all_leads=true ;;
 
             # Bridge impact: teamlead + dependency packages + scripts
             packages/teamlead/*)         _restart_bridge=true ;;

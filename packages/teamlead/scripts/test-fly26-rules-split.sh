@@ -500,6 +500,207 @@ fi
 assert_eq "$FAILED" "0" "Missing dept-rules.md OK for Simba (doesn't need it)"
 
 # ═══════════════════════════════════════════════════════════════
+# Test Group 6 (FLY-127 R3): flywheel BASE rules layered before PROJECT rules
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "=== Test Group 6 (FLY-127 R3): base layer ordering ==="
+
+# Helper: simulate the relevant slice of claude-lead.sh's append logic
+# (the BASE block from FLY-127 R3 + the existing PROJECT block from FLY-26).
+# Returns the joined CLAUDE_ARGS string. Inputs:
+#   $1: BASE_RULES_DIR (path to flywheel base, may be missing)
+#   $2: LEAD_RULES_DIR (path to project shared, may be missing)
+#   $3: LEAD_ID (or set FLYWHEEL_LEAD_ROLE externally for test slots)
+simulate_append_logic() {
+  local base_dir="$1"
+  local lead_rules_dir="$2"
+  local lead_id="$3"
+  local inbox_ack_path="${4:-}"
+
+  CLAUDE_ARGS=(--agent "$lead_id" --permission-mode bypassPermissions)
+
+  # Detect cos role early (matches claude-lead.sh)
+  IS_COS_ROLE=false
+  if [ "${FLYWHEEL_LEAD_ROLE:-}" = "cos" ] || [ "$lead_id" = "cos-lead" ]; then
+    IS_COS_ROLE=true
+  fi
+
+  # FLY-109: inbox-ack-rule (flywheel single-source, conditional on inbox-mcp).
+  # Optional in this test simulator — caller passes path when it wants to
+  # verify the full chain ordering (Test 6.6).
+  if [ -n "$inbox_ack_path" ] && [ -f "$inbox_ack_path" ] && [ -r "$inbox_ack_path" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$inbox_ack_path")
+  fi
+
+  # FLY-127 R3 BASE block (loaded BEFORE project — extension semantics)
+  if [ "$IS_COS_ROLE" = false ]; then
+    BASE_DEPT_RULES="${base_dir}/department-lead-rules.md"
+    if [ -f "$BASE_DEPT_RULES" ] && [ -r "$BASE_DEPT_RULES" ]; then
+      CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEPT_RULES")
+    fi
+  else
+    BASE_COS_RULES="${base_dir}/cos-lead-rules.md"
+    if [ -f "$BASE_COS_RULES" ] && [ -r "$BASE_COS_RULES" ]; then
+      CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_COS_RULES")
+    fi
+  fi
+
+  # FLY-26 PROJECT block (loaded AFTER base)
+  if [ -d "$lead_rules_dir" ]; then
+    COMMON_RULES="${lead_rules_dir}/common-rules.md"
+    if [ -f "$COMMON_RULES" ] && [ -r "$COMMON_RULES" ]; then
+      CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
+    fi
+    if [ "$IS_COS_ROLE" = false ]; then
+      DEPT_RULES="${lead_rules_dir}/department-lead-rules.md"
+      if [ -f "$DEPT_RULES" ] && [ -r "$DEPT_RULES" ]; then
+        CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
+      fi
+    fi
+  fi
+
+  echo "${CLAUDE_ARGS[*]}"
+}
+
+# Test 6.1: dept Lead — base file appended BEFORE project file
+echo "--- Test 6.1: dept Lead — BASE before PROJECT (department-lead-rules.md) ---"
+BASE_DIR_61="$TMPDIR/base-61"
+PROJECT_DIR_61="$TMPDIR/project-61"
+mkdir -p "$BASE_DIR_61" "$PROJECT_DIR_61"
+echo "# BASE department rules" > "$BASE_DIR_61/department-lead-rules.md"
+echo "# Common" > "$PROJECT_DIR_61/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_61/department-lead-rules.md"
+ARGS_61=$(simulate_append_logic "$BASE_DIR_61" "$PROJECT_DIR_61" "product-lead")
+# Both should be present
+assert_contains "$ARGS_61" "$BASE_DIR_61/department-lead-rules.md" "Test 6.1: BASE dept rules appended"
+assert_contains "$ARGS_61" "$PROJECT_DIR_61/department-lead-rules.md" "Test 6.1: PROJECT dept rules appended"
+# Order check: base index < project index in the args string
+BASE_POS_61=$(echo "$ARGS_61" | grep -bo "$BASE_DIR_61/department-lead-rules.md" | head -1 | cut -d: -f1)
+PROJ_POS_61=$(echo "$ARGS_61" | grep -bo "$PROJECT_DIR_61/department-lead-rules.md" | head -1 | cut -d: -f1)
+if [ -n "$BASE_POS_61" ] && [ -n "$PROJ_POS_61" ] && [ "$BASE_POS_61" -lt "$PROJ_POS_61" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.1: BASE precedes PROJECT in args order ($BASE_POS_61 < $PROJ_POS_61)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.1: BASE precedes PROJECT (BASE=$BASE_POS_61 PROJECT=$PROJ_POS_61)"
+fi
+
+# Test 6.2: cos-lead — base cos-lead-rules.md appended; no dept base
+echo "--- Test 6.2: cos-lead — BASE cos-lead-rules appended, no dept base ---"
+BASE_DIR_62="$TMPDIR/base-62"
+PROJECT_DIR_62="$TMPDIR/project-62"
+mkdir -p "$BASE_DIR_62" "$PROJECT_DIR_62"
+echo "# BASE cos rules" > "$BASE_DIR_62/cos-lead-rules.md"
+echo "# BASE department rules" > "$BASE_DIR_62/department-lead-rules.md"
+echo "# Common" > "$PROJECT_DIR_62/common-rules.md"
+ARGS_62=$(simulate_append_logic "$BASE_DIR_62" "$PROJECT_DIR_62" "cos-lead")
+assert_contains "$ARGS_62" "$BASE_DIR_62/cos-lead-rules.md" "Test 6.2: cos-lead gets BASE cos rules"
+assert_not_contains "$ARGS_62" "$BASE_DIR_62/department-lead-rules.md" "Test 6.2: cos-lead does NOT get BASE dept rules"
+
+# Test 6.3: backward compat — missing BASE files → no failure, project-only behavior
+echo "--- Test 6.3: missing BASE dir → project-only behavior (backward compat) ---"
+BASE_DIR_63="$TMPDIR/nonexistent-base-63"
+PROJECT_DIR_63="$TMPDIR/project-63"
+mkdir -p "$PROJECT_DIR_63"
+echo "# Common" > "$PROJECT_DIR_63/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_63/department-lead-rules.md"
+ARGS_63=$(simulate_append_logic "$BASE_DIR_63" "$PROJECT_DIR_63" "product-lead")
+assert_contains "$ARGS_63" "$PROJECT_DIR_63/department-lead-rules.md" "Test 6.3: PROJECT rules still appended"
+assert_not_contains "$ARGS_63" "$BASE_DIR_63" "Test 6.3: missing BASE silently skipped"
+
+# Test 6.4: FLYWHEEL_LEAD_ROLE=cos test slot also gets BASE cos-lead-rules
+echo "--- Test 6.4: test slot (FLYWHEEL_LEAD_ROLE=cos, synthetic LEAD_ID) → cos base ---"
+BASE_DIR_64="$TMPDIR/base-64"
+PROJECT_DIR_64="$TMPDIR/project-64"
+mkdir -p "$BASE_DIR_64" "$PROJECT_DIR_64"
+echo "# BASE cos rules" > "$BASE_DIR_64/cos-lead-rules.md"
+echo "# Common" > "$PROJECT_DIR_64/common-rules.md"
+FLYWHEEL_LEAD_ROLE=cos
+ARGS_64=$(simulate_append_logic "$BASE_DIR_64" "$PROJECT_DIR_64" "flywheel-test-1")
+unset FLYWHEEL_LEAD_ROLE
+assert_contains "$ARGS_64" "$BASE_DIR_64/cos-lead-rules.md" "Test 6.4: synthetic test slot in cos role gets BASE cos rules"
+
+# Test 6.5: FLYWHEEL_LEAD_ROLE=lead test slot gets BASE department-lead-rules
+echo "--- Test 6.5: test slot (FLYWHEEL_LEAD_ROLE=lead, synthetic LEAD_ID) → dept base ---"
+BASE_DIR_65="$TMPDIR/base-65"
+PROJECT_DIR_65="$TMPDIR/project-65"
+mkdir -p "$BASE_DIR_65" "$PROJECT_DIR_65"
+echo "# BASE department rules" > "$BASE_DIR_65/department-lead-rules.md"
+echo "# Common" > "$PROJECT_DIR_65/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_65/department-lead-rules.md"
+FLYWHEEL_LEAD_ROLE=lead
+ARGS_65=$(simulate_append_logic "$BASE_DIR_65" "$PROJECT_DIR_65" "flywheel-test-2")
+unset FLYWHEEL_LEAD_ROLE
+assert_contains "$ARGS_65" "$BASE_DIR_65/department-lead-rules.md" "Test 6.5: synthetic test slot in lead role gets BASE dept rules"
+assert_contains "$ARGS_65" "$PROJECT_DIR_65/department-lead-rules.md" "Test 6.5: PROJECT dept rules also appended"
+
+# Test 6.6 (Codex round 1): full chain ordering
+#   inbox-ack < BASE dept-rules < PROJECT common-rules < PROJECT dept-rules
+echo "--- Test 6.6: full chain ordering inbox-ack < BASE < project-common < project-dept ---"
+BASE_DIR_66="$TMPDIR/base-66"
+PROJECT_DIR_66="$TMPDIR/project-66"
+INBOX_ACK_66="$TMPDIR/inbox-ack-66.md"
+mkdir -p "$BASE_DIR_66" "$PROJECT_DIR_66"
+echo "# inbox-ack stub" > "$INBOX_ACK_66"
+echo "# BASE dept rules" > "$BASE_DIR_66/department-lead-rules.md"
+echo "# PROJECT common rules" > "$PROJECT_DIR_66/common-rules.md"
+echo "# PROJECT dept rules" > "$PROJECT_DIR_66/department-lead-rules.md"
+ARGS_66=$(simulate_append_logic "$BASE_DIR_66" "$PROJECT_DIR_66" "product-lead" "$INBOX_ACK_66")
+INBOX_POS=$(echo "$ARGS_66" | grep -bo "$INBOX_ACK_66" | head -1 | cut -d: -f1)
+BASE_POS=$(echo "$ARGS_66"  | grep -bo "$BASE_DIR_66/department-lead-rules.md"     | head -1 | cut -d: -f1)
+PCOM_POS=$(echo "$ARGS_66"  | grep -bo "$PROJECT_DIR_66/common-rules.md"           | head -1 | cut -d: -f1)
+PDEP_POS=$(echo "$ARGS_66"  | grep -bo "$PROJECT_DIR_66/department-lead-rules.md"  | head -1 | cut -d: -f1)
+if [ -n "$INBOX_POS" ] && [ -n "$BASE_POS" ] && [ "$INBOX_POS" -lt "$BASE_POS" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.6: inbox-ack < BASE ($INBOX_POS < $BASE_POS)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.6: inbox-ack < BASE (inbox=$INBOX_POS BASE=$BASE_POS)"
+fi
+if [ -n "$BASE_POS" ] && [ -n "$PCOM_POS" ] && [ "$BASE_POS" -lt "$PCOM_POS" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.6: BASE < project-common ($BASE_POS < $PCOM_POS)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.6: BASE < project-common (BASE=$BASE_POS PCOM=$PCOM_POS)"
+fi
+if [ -n "$PCOM_POS" ] && [ -n "$PDEP_POS" ] && [ "$PCOM_POS" -lt "$PDEP_POS" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.6: project-common < project-dept ($PCOM_POS < $PDEP_POS)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.6: project-common < project-dept (PCOM=$PCOM_POS PDEP=$PDEP_POS)"
+fi
+
+# Test 6.7 (Codex round 1): generic-voice scan — base files must NOT contain
+# project-specific names or hardcoded Discord IDs. Lives in flywheel base —
+# anyone editing should see this fail loudly if they leak project data.
+echo "--- Test 6.7: generic-voice scan — base files contain no project-specific names or hardcoded IDs ---"
+BASE_FILES_DIR="$(cd "$(dirname "$0")/../lead-rules-base" && pwd)"
+if [ ! -d "$BASE_FILES_DIR" ]; then
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.7 setup: base dir not found at $BASE_FILES_DIR"
+else
+  # Scan the rule files only (not README.md which legitimately documents
+  # examples of project-side concrete data).
+  RULE_FILES=("$BASE_FILES_DIR/department-lead-rules.md" "$BASE_FILES_DIR/cos-lead-rules.md")
+  # Names that should never appear in base rule files (examples of project
+  # concretes that belong in the project layer).
+  FORBIDDEN_NAMES_RE='\b(Peter|Oliver|Simba|Annie)\b'
+  # Hardcoded Discord IDs (17-20 digit @-mentions or bare 17-20 digit IDs)
+  FORBIDDEN_IDS_RE='<@[0-9]{17,20}>|"id":\s*"?[0-9]{17,20}"?'
+  any_name_leak=false
+  any_id_leak=false
+  for rf in "${RULE_FILES[@]}"; do
+    if [ -f "$rf" ]; then
+      if grep -qE "$FORBIDDEN_NAMES_RE" "$rf"; then any_name_leak=true; fi
+      if grep -qE "$FORBIDDEN_IDS_RE" "$rf"; then any_id_leak=true; fi
+    fi
+  done
+  if [ "$any_name_leak" = false ]; then
+    PASS=$((PASS+1)); echo "  PASS: Test 6.7: base rule files contain no project-specific names (Peter/Oliver/Simba/Annie)"
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: Test 6.7: base rule files leak project-specific names. Run: grep -nE '$FORBIDDEN_NAMES_RE' ${RULE_FILES[*]}"
+  fi
+  if [ "$any_id_leak" = false ]; then
+    PASS=$((PASS+1)); echo "  PASS: Test 6.7: base rule files contain no hardcoded Discord IDs (17-20 digit)"
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: Test 6.7: base rule files leak hardcoded Discord IDs. Run: grep -nE '$FORBIDDEN_IDS_RE' ${RULE_FILES[*]}"
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════
 # Summary
 # ═══════════════════════════════════════════════════════════════
 echo ""
