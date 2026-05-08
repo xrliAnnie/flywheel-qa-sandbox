@@ -1038,10 +1038,61 @@ fi
 # FLY-80: MCP servers are now in $LEAD_WORKSPACE/.mcp.json (auto-discovered by Claude from CWD).
 # No --mcp-config flag needed — this also ensures server:flywheel-inbox resolves for channels.
 
-# ── FLY-26: Append shared rule files to system prompt ──────────
-# common-rules.md: loaded by ALL leads (communication style, memory, MCP, shared limits)
-# department-lead-rules.md: loaded by department leads only (Peter/Oliver), NOT cos-lead (Simba)
-# Fail-fast: if LEAD_RULES_DIR exists (meaning shared rules were synced), required files MUST be present.
+# ── FLY-26 + FLY-127 R3: Append shared rule files to system prompt ──────────
+# Two-layer extension model (FLY-127 R3):
+#   1. flywheel BASE layer (this script's repo, lead-rules-base/) — abstract behavior
+#      contracts, project-agnostic ("each dept Lead", "your dept", "the cos-lead role").
+#   2. PROJECT layer (synced into LEAD_RULES_DIR from <project>/.lead/shared/) —
+#      concrete instantiation: dept-name → Lead-name mapping, Bridge endpoints,
+#      channel IDs, project-specific tone.
+#
+# Load order: BASE first, PROJECT second. Project rules sit "on top of" base
+# (class extension semantics). Where both touch the same topic, the later
+# (project) wins per Claude prompt-stacking — but project authors should
+# treat that as a yellow flag and prefer extension over override.
+#
+# Files:
+#   common-rules.md (project): loaded by ALL leads (style, memory, MCP, capability)
+#   department-lead-rules.md (BASE + project): non-cos leads only
+#                                              (FLY-127 Action Gate, Multi-Lead, Bridge rejection)
+#   cos-lead-rules.md (BASE only, no project counterpart today): cos role only
+#                                              (FLY-127 Department Routing Discipline)
+#
+# Fail-fast: if LEAD_RULES_DIR exists (meaning project shared rules were synced),
+# required PROJECT files MUST be present. Base files are optional (silent
+# no-op if missing) for backward compat with older flywheel checkouts.
+
+# Detect cos role early — used by both BASE and PROJECT append blocks.
+# Production uses LEAD_ID=="cos-lead"; FLY-96 test slots use synthetic LEAD_ID
+# (flywheel-test-N) and set FLYWHEEL_LEAD_ROLE=cos|lead to drive the same gate.
+IS_COS_ROLE=false
+if [ "${FLYWHEEL_LEAD_ROLE:-}" = "cos" ] || [ "$LEAD_ID" = "cos-lead" ]; then
+  IS_COS_ROLE=true
+fi
+
+# ── FLY-127 R3 Layer 1a/1b: flywheel BASE rules (project-agnostic) ──
+# Loaded BEFORE the project's own shared rules so the project file extends
+# (and may override) the abstract base contracts. Optional — missing base
+# file is a no-op, preserving pre-FLY-127 behavior on older checkouts.
+BASE_RULES_DIR="${SCRIPT_DIR}/../lead-rules-base"
+
+if [ "$IS_COS_ROLE" = false ]; then
+  # Department Lead base: Action Gate + Multi-Lead Mentions + Bridge rejection diagnostics
+  BASE_DEPT_RULES="${BASE_RULES_DIR}/department-lead-rules.md"
+  if [ -f "$BASE_DEPT_RULES" ] && [ -r "$BASE_DEPT_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEPT_RULES")
+    log "Appending base dept-lead rules: ${BASE_DEPT_RULES}"
+  fi
+else
+  # Cos-lead base: Department Routing Discipline (one Lead per spawn message)
+  BASE_COS_RULES="${BASE_RULES_DIR}/cos-lead-rules.md"
+  if [ -f "$BASE_COS_RULES" ] && [ -r "$BASE_COS_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_COS_RULES")
+    log "Appending base cos-lead rules: ${BASE_COS_RULES}"
+  fi
+fi
+
+# ── FLY-26: project-side shared rules (concrete data) ──
 if [ -d "$LEAD_RULES_DIR" ]; then
   COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
   if [ ! -f "$COMMON_RULES" ] || [ ! -r "$COMMON_RULES" ]; then
@@ -1052,13 +1103,8 @@ if [ -d "$LEAD_RULES_DIR" ]; then
   CLAUDE_ARGS+=(--append-system-prompt-file "$COMMON_RULES")
   log "Appending common rules: ${COMMON_RULES}"
 
-  # Department lead rules — only for non-cos roles (Peter/Oliver manage Runners, Simba does not).
-  # Role detection: production uses LEAD_ID=="cos-lead"; FLY-96 test slots use synthetic LEAD_ID
-  # (flywheel-test-N) and set FLYWHEEL_LEAD_ROLE=cos|lead to drive the same gate.
-  IS_COS_ROLE=false
-  if [ "${FLYWHEEL_LEAD_ROLE:-}" = "cos" ] || [ "$LEAD_ID" = "cos-lead" ]; then
-    IS_COS_ROLE=true
-  fi
+  # Department lead rules — only for non-cos roles (manage Runners). Cos-lead
+  # (Simba role) does not load this file because it doesn't spawn Runners.
   if [ "$IS_COS_ROLE" = false ]; then
     DEPT_RULES="${LEAD_RULES_DIR}/department-lead-rules.md"
     if [ ! -f "$DEPT_RULES" ] || [ ! -r "$DEPT_RULES" ]; then
