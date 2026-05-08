@@ -36,6 +36,18 @@ export interface LeadConfig {
 	 * core channel (Simba's cos-chat) instead of dropping them.
 	 */
 	alertFallbackToCore?: boolean;
+	/**
+	 * FLY-127: Whether this Lead is authorized to spawn Runners via
+	 * `POST /api/runs/start`. The Bridge enforces this server-side.
+	 *
+	 * Default (when field is absent): derived from `forumChannel` —
+	 *   - `forumChannel` set     → defaults to `true`  (typical department lead)
+	 *   - `forumChannel` missing → defaults to `false` (typical PM / triage lead)
+	 *
+	 * Explicit `true` / `false` always wins. After `loadProjects()`, this field
+	 * is normalized to a boolean (no `undefined`).
+	 */
+	canSpawnRunners?: boolean;
 }
 
 export interface ProjectEntry {
@@ -216,6 +228,23 @@ export function loadProjects(): ProjectEntry[] {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}].alertFallbackToCore: must be a boolean, got ${JSON.stringify(lead.alertFallbackToCore)}`,
 				);
+			}
+			// FLY-127: validate optional canSpawnRunners type
+			if (
+				lead.canSpawnRunners !== undefined &&
+				typeof lead.canSpawnRunners !== "boolean"
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].canSpawnRunners: must be a boolean, got ${JSON.stringify(lead.canSpawnRunners)}`,
+				);
+			}
+			// FLY-127: Normalize canSpawnRunners — auto-derive from forumChannel
+			// when the field is absent, so DepartmentRegistry reads a deterministic
+			// boolean. Existing prod configs (without the field) keep working —
+			// dept Leads with a forumChannel become spawn-authorized; PM-only Leads
+			// (no forum) become spawn-denied. Explicit `true`/`false` always wins.
+			if (lead.canSpawnRunners === undefined) {
+				lead.canSpawnRunners = Boolean(lead.forumChannel);
 			}
 			// Strip any raw botToken from JSON input first — secrets must come via env vars
 			delete lead.botToken;

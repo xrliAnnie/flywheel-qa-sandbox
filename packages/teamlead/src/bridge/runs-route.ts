@@ -3,9 +3,16 @@
  *
  * POST /api/runs/start — start a Runner for an issue
  * GET  /api/runs/active — query active run counts
+ *
+ * FLY-127 R3 Layer 2: Server-side department scope enforcement. When a Lead
+ * calls `/api/runs/start` for an issue outside its department, Bridge rejects
+ * with a machine-readable diagnostic code (`DEPT_SCOPE_REJECT` + `reason`)
+ * that the Lead translates into one short Chinese diagnostic line per its
+ * Action Gate rule. Gated by `BRIDGE_DEPT_SCOPE_REJECT` env var (default on).
  */
 
 import { Router } from "express";
+import { DepartmentRegistry } from "../department-registry.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
@@ -14,6 +21,28 @@ import type { IStartDispatcher } from "./retry-dispatcher.js";
 /** Poll interval / max wait for Forum Post thread_id to appear on session. */
 const THREAD_POLL_INTERVAL_MS = 500;
 const THREAD_POLL_MAX_MS = 5000;
+
+/**
+ * FLY-127: Read the dept-scope reject feature flag.
+ *
+ * Default: enforcement ON. Set `BRIDGE_DEPT_SCOPE_REJECT=off` (or `false` /
+ * `0`) to disable.
+ *
+ * **Toggling requires a Bridge restart.** Although the value is re-read from
+ * `process.env` on every request, a running Node process does not pick up
+ * external env-var mutations — `process.env` is a snapshot of the parent
+ * shell at fork time. Re-reading per request guards against (hypothetical)
+ * intra-process env mutation but does not enable no-restart rollback.
+ *
+ * For runtime no-restart toggle we'd need an admin endpoint or config-watch
+ * mechanism. That is out of scope for FLY-127; tracked as a follow-up.
+ */
+function isDeptScopeRejectEnabled(): boolean {
+	const v = process.env.BRIDGE_DEPT_SCOPE_REJECT;
+	if (v === undefined) return true;
+	const lower = v.toLowerCase();
+	return lower !== "off" && lower !== "false" && lower !== "0";
+}
 
 export function createRunsRouter(
 	startDispatcher: IStartDispatcher,
@@ -24,6 +53,10 @@ export function createRunsRouter(
 	chatThreadsEnabled?: boolean,
 ): Router {
 	const router = Router();
+	// FLY-127: registry is constructed once per router and re-read on each
+	// request through the same `projects` reference. Bridge restart picks up
+	// new project config; runtime toggles use the env-var flag instead.
+	const departmentRegistry = new DepartmentRegistry(projects);
 
 	router.post("/start", async (req, res) => {
 		// GEO-267: LINEAR_API_KEY is required for issue hydration (PreHydrator).
@@ -107,6 +140,9 @@ export function createRunsRouter(
 		// Also captures title/identifier for session metadata patching (FLY-24 Bug 1).
 		let issueTitle: string | undefined;
 		let issueIdentifier: string | undefined;
+		// FLY-127: labels are needed by both the FLY-80 auto-resolve path AND the
+		// new department-scope check. Fetch once, reuse for both.
+		let issueLabelNames: string[] = [];
 		try {
 			const { LinearClient } = await import("@linear/sdk");
 			const client = new LinearClient({
@@ -123,16 +159,28 @@ export function createRunsRouter(
 			issueTitle = issue.title;
 			issueIdentifier = issue.identifier;
 
+			// FLY-127: fetch labels regardless of whether leadId is provided.
+			// Auto-resolve (FLY-80) and dept-scope check (FLY-127) both need them.
+			try {
+				const labels = await issue.labels();
+				issueLabelNames = labels.nodes.map((l: { name: string }) => l.name);
+			} catch (labelErr) {
+				console.warn(
+					`[runs/start] Could not fetch labels for ${issueIdentifier}:`,
+					(labelErr as Error).message,
+				);
+				// Leave issueLabelNames empty — dept-scope check will treat as
+				// `issue_no_department_label` and reject (when enforcement is on).
+			}
+
 			// FLY-80: Auto-resolve leadId from project config if not provided.
 			// Without leadId, Blueprint skips approve gate instructions entirely.
 			if (!leadId) {
 				try {
-					const labels = await issue.labels();
-					const labelNames = labels.nodes.map((l: { name: string }) => l.name);
 					const { lead } = resolveLeadForIssue(
 						projects,
 						projectName,
-						labelNames,
+						issueLabelNames,
 					);
 					leadId = lead.agentId;
 					console.log(
@@ -156,6 +204,51 @@ export function createRunsRouter(
 				message: `Cannot verify issue ${issueId} in Linear: ${msg}`,
 			});
 			return;
+		}
+
+		// FLY-127 R3 Layer 2: Server-side department scope check.
+		//
+		// Runs only when:
+		//   - the feature flag is on (BRIDGE_DEPT_SCOPE_REJECT != off)
+		//   - leadId is known (either provided by caller or auto-resolved above)
+		//
+		// On reject, returns a machine-readable diagnostic that Lead daemons
+		// translate into one short Chinese line per their Action Gate rule.
+		// `silent: false` because Bridge is only called on explicit-intent paths
+		// (Layer 1b filters passive cross-dept noise before any API call).
+		if (isDeptScopeRejectEnabled() && leadId) {
+			const decision = departmentRegistry.isLeadInScope(
+				projectName,
+				leadId,
+				issueLabelNames,
+			);
+			if (!decision.allowed) {
+				// Log the english `decision.message` for operator debugging — the
+				// HTTP response intentionally carries machine-readable fields only
+				// (no free-form prose for the Lead to echo or paraphrase).
+				console.log(
+					`[runs/start] FLY-127 dept-scope reject: project="${projectName}" ` +
+						`lead="${leadId}" issue="${issueIdentifier}" ` +
+						`reason=${decision.reason} ` +
+						`canonicalLeadId="${decision.canonicalLeadId ?? "null"}" ` +
+						`detail="${decision.message}"`,
+				);
+				// Codex R1: response shape is machine-only — `code` / `reason` /
+				// `canonicalLeadId` / `silent`. The Lead translates `reason` into
+				// the canonical Chinese diagnostic per its Action Gate rule. No
+				// `message` field — preventing Leads from echoing arbitrary
+				// english prose into Discord. `canonicalLeadId` always present
+				// (string-or-null) for stable response shape across all reject
+				// codes; null when the issue has no / multiple labels.
+				res.status(403).json({
+					success: false,
+					code: "DEPT_SCOPE_REJECT",
+					reason: decision.reason,
+					canonicalLeadId: decision.canonicalLeadId ?? null,
+					silent: false,
+				});
+				return;
+			}
 		}
 
 		// FLY-91 Round 2: Pre-register chat thread if Lead already created one.
