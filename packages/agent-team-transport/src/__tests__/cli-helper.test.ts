@@ -18,7 +18,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 const execFileAsync = promisify(execFile);
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const CLI_PATH = resolve(__dirname, "../../dist/bin/agent-team-transport-cli.js");
+const CLI_PATH = resolve(
+	__dirname,
+	"../../dist/bin/agent-team-transport-cli.js",
+);
 
 let tempDir: string;
 const origConfigDir = process.env.CLAUDE_CONFIG_DIR;

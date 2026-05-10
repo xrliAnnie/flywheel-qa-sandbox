@@ -7,8 +7,8 @@
  */
 
 import { describe, expect, it, vi } from "vitest";
-import { CodexAdapter } from "../CodexAdapter.js";
 import type { ILogger } from "../../types.js";
+import { CodexAdapter } from "../CodexAdapter.js";
 
 const noopLogger: ILogger = {
 	debug: vi.fn(),
@@ -33,9 +33,9 @@ describe("CodexAdapter (stub)", () => {
 	});
 
 	it("getInboxPath throws", () => {
-		expect(() =>
-			new CodexAdapter().getInboxPath("lead", "agent"),
-		).toThrow(/not implemented yet/);
+		expect(() => new CodexAdapter().getInboxPath("lead", "agent")).toThrow(
+			/not implemented yet/,
+		);
 	});
 
 	it("getStateDir throws", () => {

@@ -17,7 +17,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import lockfile from "proper-lockfile";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MailboxWriteError, type MailboxPayload } from "../../types.js";
+import { type MailboxPayload, MailboxWriteError } from "../../types.js";
 import {
 	__testing,
 	computeFingerprint,
@@ -416,9 +416,8 @@ describe("ClaudeMailboxCodec — sidecar repair semantics", () => {
 			flywheelId: "repairable",
 			payload: basePayload(),
 		});
-		const records: SidecarRecord[] = await __testing.sidecarReadRecords(
-			sidecarPath,
-		);
+		const records: SidecarRecord[] =
+			await __testing.sidecarReadRecords(sidecarPath);
 		const finalized = records.find((r) => r.flywheelId === "repairable");
 		expect(finalized?.status).toBe("finalized");
 		expect(finalized?.mainEntryRef?.from).toBe("cos-lead");

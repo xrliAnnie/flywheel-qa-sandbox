@@ -33,13 +33,13 @@ import {
 import {
 	type AvailabilitySignal,
 	type IAgentTeamTransport,
-	type IMailboxWatcher,
 	type ILogger,
+	type IMailboxWatcher,
 	type LeadSpawnConfig,
 	type LeadSpawnContext,
-	MailboxWriteError,
 	type MailboxMessage,
 	type MailboxPayload,
+	MailboxWriteError,
 	type MailboxWriteResult,
 	type PreflightResult,
 	type RunnerSpawnConfig,
@@ -74,8 +74,7 @@ export class ClaudeCodeAdapter implements IAgentTeamTransport {
 
 	constructor(options: ClaudeCodeAdapterOptions = {}) {
 		this.claudeCommand = options.claudeCommand ?? "claude";
-		this.maxPayloadBytes =
-			options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
+		this.maxPayloadBytes = options.maxPayloadBytes ?? DEFAULT_MAX_PAYLOAD_BYTES;
 	}
 
 	// ----------------------------------------------------------------------
@@ -302,9 +301,7 @@ export class ClaudeCodeAdapter implements IAgentTeamTransport {
 
 		// 1. CLI presence
 		try {
-			const result = await execFileAsync(this.claudeCommand, [
-				"--version",
-			]);
+			const result = await execFileAsync(this.claudeCommand, ["--version"]);
 			const version = result.stdout.trim();
 			signals.push({
 				kind: "ok",

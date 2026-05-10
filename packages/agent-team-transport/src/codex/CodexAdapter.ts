@@ -18,8 +18,8 @@
 
 import type {
 	IAgentTeamTransport,
-	IMailboxWatcher,
 	ILogger,
+	IMailboxWatcher,
 	LeadSpawnConfig,
 	LeadSpawnContext,
 	MailboxMessage,

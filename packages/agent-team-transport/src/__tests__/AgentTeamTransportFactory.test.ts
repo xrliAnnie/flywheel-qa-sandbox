@@ -52,7 +52,9 @@ describe("AgentTeamTransportFactory", () => {
 
 	it("respects explicit `backend` option override", () => {
 		process.env.FLYWHEEL_AGENT_BACKEND = "claude-code";
-		const adapter = AgentTeamTransportFactory.fromEnv({ backend: "claude-code" });
+		const adapter = AgentTeamTransportFactory.fromEnv({
+			backend: "claude-code",
+		});
 		expect(adapter.vendorId()).toBe("claude-code");
 	});
 

@@ -40,9 +40,9 @@
 import process from "node:process";
 import { AgentTeamTransportFactory } from "../src/AgentTeamTransportFactory.js";
 import type {
+	ILogger,
 	LeadSpawnContext,
 	RunnerSpawnContext,
-	ILogger,
 } from "../src/types.js";
 
 interface ParsedArgs {

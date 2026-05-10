@@ -22,9 +22,7 @@ describe("grep-gate (vendor-neutrality CI gate)", () => {
 		const { stdout, stderr } = await execFileAsync("node", [GREP_GATE_PATH]);
 		// Combined output should report PASS for all rules.
 		const combined = stdout + stderr;
-		expect(combined).toContain(
-			"no-hardcoded-claude-teams-path: OK",
-		);
+		expect(combined).toContain("no-hardcoded-claude-teams-path: OK");
 		expect(combined).toContain("no-claude-code-internal-imports: OK");
 		expect(combined).toContain("no-flywheel-teams-dir-env: OK");
 		expect(combined).toContain("PASS — no violations.");

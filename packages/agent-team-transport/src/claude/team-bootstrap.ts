@@ -19,10 +19,7 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import lockfile from "proper-lockfile";
-import {
-	getClaudeTeamConfigPath,
-	getClaudeTeamsDir,
-} from "../path-helpers.js";
+import { getClaudeTeamConfigPath, getClaudeTeamsDir } from "../path-helpers.js";
 import { ensureFileExists } from "./ClaudeMailboxCodec.js";
 
 const LOCK_OPTIONS = {
@@ -157,9 +154,8 @@ async function mutateTeamFileUnderLock(args: MutateArgs): Promise<TeamFile> {
 			let existing: TeamFile | null;
 			try {
 				const content = await readFile(path, "utf-8");
-				existing = content.length > 0
-					? (JSON.parse(content) as TeamFile)
-					: null;
+				existing =
+					content.length > 0 ? (JSON.parse(content) as TeamFile) : null;
 			} catch {
 				existing = null;
 			}
@@ -280,9 +276,7 @@ export async function addMember(args: AddMemberArgs): Promise<TeamFile> {
 				}),
 			};
 
-			const others = existing.members.filter(
-				(m) => m.name !== args.memberName,
-			);
+			const others = existing.members.filter((m) => m.name !== args.memberName);
 			return { ...existing, members: [...others, newMember] };
 		},
 	});
@@ -297,9 +291,7 @@ export interface RemoveMemberArgs {
  * Remove a member by name. Idempotent: removing a non-existent member is
  * a no-op (returns team unchanged).
  */
-export async function removeMember(
-	args: RemoveMemberArgs,
-): Promise<TeamFile> {
+export async function removeMember(args: RemoveMemberArgs): Promise<TeamFile> {
 	return mutateTeamFileUnderLock({
 		teamName: args.teamName,
 		mutate: (existing) => {
@@ -308,9 +300,7 @@ export async function removeMember(
 					`Cannot remove member from non-existent team ${args.teamName}`,
 				);
 			}
-			const next = existing.members.filter(
-				(m) => m.name !== args.memberName,
-			);
+			const next = existing.members.filter((m) => m.name !== args.memberName);
 			return { ...existing, members: next };
 		},
 	});

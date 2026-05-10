@@ -23,16 +23,10 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-	mkdir,
-	readFile,
-	rename,
-	stat,
-	writeFile,
-} from "node:fs/promises";
+import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
-import { MailboxWriteError, type MailboxPayload } from "../types.js";
+import { type MailboxPayload, MailboxWriteError } from "../types.js";
 
 // Stock claude-code lock options. MUST match exactly (see plan §2.0.6).
 const LOCK_OPTIONS = {
@@ -100,7 +94,9 @@ export interface WriteOutcome {
  * Throws `MailboxWriteError` on lock timeout, permission denied, missing
  * dir, or corrupted JSON.
  */
-export async function writeMailboxEntry(spec: WriteSpec): Promise<WriteOutcome> {
+export async function writeMailboxEntry(
+	spec: WriteSpec,
+): Promise<WriteOutcome> {
 	// Validate parent dir exists; lazy mkdir for ephemeral test dirs.
 	await mkdir(dirname(spec.inboxPath), { recursive: true });
 
@@ -367,7 +363,12 @@ async function sidecarFinalize(args: SidecarFinalizeArgs): Promise<void> {
 		const records = await sidecarReadRecords(args.sidecarPath);
 		const updated = records.map((r) =>
 			r.flywheelId === args.flywheelId && r.status === "pending"
-				? { ...r, status: "finalized" as const, finalizedAt: args.finalizedAt, mainEntryRef: args.mainEntryRef }
+				? {
+						...r,
+						status: "finalized" as const,
+						finalizedAt: args.finalizedAt,
+						mainEntryRef: args.mainEntryRef,
+					}
 				: r,
 		);
 		await rewriteJsonLines(args.sidecarPath, updated);
@@ -519,10 +520,7 @@ export async function ensureFileExists(
 	}
 }
 
-async function appendJsonLine(
-	filePath: string,
-	record: object,
-): Promise<void> {
+async function appendJsonLine(filePath: string, record: object): Promise<void> {
 	const line = `${JSON.stringify(record)}\n`;
 	const existing = await readFile(filePath, "utf-8").catch(() => "");
 	await writeFile(filePath, existing + line, "utf-8");

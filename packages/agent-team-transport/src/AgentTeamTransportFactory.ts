@@ -11,7 +11,10 @@
  * with `ClaudeCodeAdapter`-specific options.
  */
 
-import { ClaudeCodeAdapter, type ClaudeCodeAdapterOptions } from "./claude/ClaudeCodeAdapter.js";
+import {
+	ClaudeCodeAdapter,
+	type ClaudeCodeAdapterOptions,
+} from "./claude/ClaudeCodeAdapter.js";
 import { CodexAdapter } from "./codex/CodexAdapter.js";
 import type { IAgentTeamTransport } from "./types.js";
 
@@ -33,7 +36,8 @@ export class AgentTeamTransportFactory {
 	 * stub only — production activation requires Spike-δ first per §11).
 	 */
 	static fromEnv(options: FactoryOptions = {}): IAgentTeamTransport {
-		const backend = (options.backend ?? this.resolveBackendFromEnv()) as SupportedBackend;
+		const backend = (options.backend ??
+			AgentTeamTransportFactory.resolveBackendFromEnv()) as SupportedBackend;
 
 		switch (backend) {
 			case "claude-code":

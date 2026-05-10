@@ -62,7 +62,10 @@ export function getClaudeTeamConfigPath(leadName: string): string {
 }
 
 /** `<CLAUDE_CONFIG_DIR>/teams/<lead>/inboxes/<agent>.json` */
-export function getClaudeInboxPath(leadName: string, agentName: string): string {
+export function getClaudeInboxPath(
+	leadName: string,
+	agentName: string,
+): string {
 	return join(getClaudeTeamsDir(), leadName, "inboxes", `${agentName}.json`);
 }
 
