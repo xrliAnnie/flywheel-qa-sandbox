@@ -534,10 +534,27 @@ stop_bridge() {
 }
 
 start_bridge() {
+    # FLY-151: prefer launchd-managed Bridge (env loaded by
+    # flywheel-bridge-wrapper.sh, single source of truth). Fall back to
+    # legacy nohup branch if the plist is not loaded for this user.
+    # TODO(v1.28+): remove the nohup fallback once everyone has migrated
+    # per docs/operations/bridge-daemon-management.md.
+    local label="com.flywheel.bridge"
+    local target="gui/$(id -u)/${label}"
+    if launchctl print "$target" >/dev/null 2>&1; then
+        if launchctl kickstart -k "$target" >/dev/null 2>&1; then
+            log "Bridge restart requested via launchctl ($target)"
+            return 0
+        fi
+        log "WARNING: launchctl kickstart failed for $target — falling back to nohup"
+    else
+        log "WARNING: FLY-151 plist not installed (launchctl has no $label). " \
+            "Using legacy nohup. Install per docs/operations/bridge-daemon-management.md"
+    fi
     cd "$FLYWHEEL_DIR"
     nohup npx tsx scripts/run-bridge.ts \
         >> /tmp/flywheel-bridge.log 2>&1 &
-    log "Bridge started (PID $!)"
+    log "Bridge started (PID $!) via legacy nohup"
     cd - > /dev/null
 }
 
