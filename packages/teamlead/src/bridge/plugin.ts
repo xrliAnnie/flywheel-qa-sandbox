@@ -64,8 +64,35 @@ import { createTriageTemplateRouter } from "./triage-template-route.js";
 import type { BridgeConfig } from "./types.js";
 
 /**
- * FLY-47: CommDB is the sole runtime — no Discord fallback.
- * Requires inbox-mcp PID lease alive. Throws on failure.
+ * FLY-142 PR 1.4: Backend selection — `mailbox` (default) or `commdb` (rollback).
+ *
+ * - `mailbox`: vendor-neutral MailboxLeadRuntime (writes to claude-code mailbox,
+ *   read by stock useInboxPoller). Bypasses the buggy `inbox-check.sh` filter
+ *   that drops `type='response'` (FLY-142 wake bug).
+ * - `commdb`: legacy CommDBLeadRuntime (writes to CommDB instructions, read by
+ *   the buggy hook). Preserved for rollback only — not recommended for prod.
+ *
+ * Hard-gate path (commdb-lead-runtime "instruction" channel for gate questions
+ * and approve_to_ship responses) stays on CommDB regardless of this env per
+ * plan §B-2 Codex r3 critical #1; Batch 2 PR 2.1 will swap it for
+ * StructuredInboxRouter once await-mcp ships.
+ */
+type CommBackend = "mailbox" | "commdb";
+
+function resolveCommBackend(): CommBackend {
+	const raw = (process.env.FLYWHEEL_COMM_BACKEND ?? "mailbox").toLowerCase();
+	if (raw === "commdb") return "commdb";
+	if (raw === "mailbox" || raw === "") return "mailbox";
+	console.warn(
+		`[Bridge] Unrecognized FLYWHEEL_COMM_BACKEND="${raw}" — falling back to "mailbox" default. Set to "mailbox" or "commdb" explicitly.`,
+	);
+	return "mailbox";
+}
+
+/**
+ * FLY-47 → FLY-142 PR 1.4: per-Lead runtime factory. Selects MailboxLeadRuntime
+ * (default, fixes wake bug) or CommDBLeadRuntime (rollback) based on
+ * FLYWHEEL_COMM_BACKEND env var. Throws on transport readiness failure.
  */
 export async function createLeadRuntime(
 	lead: LeadConfig,
@@ -76,6 +103,36 @@ export async function createLeadRuntime(
 	const { homedir } = await import("node:os");
 	const { existsSync, readFileSync } = await import("node:fs");
 
+	const backend = resolveCommBackend();
+
+	if (backend === "mailbox") {
+		// Mailbox path — no CommDB / inbox-mcp lease check needed. Lead's
+		// stock useInboxPoller reads from <CLAUDE_CONFIG_DIR>/teams/<lead>/inboxes/
+		// and injects directly into the conversation, bypassing the buggy hook.
+		const { AgentTeamTransportFactory } = await import(
+			"flywheel-agent-team-transport"
+		);
+		const { MailboxLeadRuntime } = await import("./mailbox-lead-runtime.js");
+		const transport = AgentTeamTransportFactory.fromEnv();
+		// Fail fast if transport itself isn't healthy — Lead can't deliver
+		// anything if CLAUDE_CONFIG_DIR isn't writable / claude-code isn't
+		// installed. Surfaces same bar as CommDB lease-check before.
+		const preflight = await transport.preflight({});
+		if (!preflight.ok) {
+			throw new Error(
+				`Lead "${lead.agentId}": mailbox transport preflight failed — ${
+					preflight.failures?.map((f) => `${f.code}: ${f.detail}`).join("; ") ??
+					"unknown"
+				}`,
+			);
+		}
+		console.log(
+			`[Bridge] Lead "${lead.agentId}" using mailbox runtime (FLY-142 PR 1.4 default)`,
+		);
+		return new MailboxLeadRuntime({ leadId: lead.agentId, transport });
+	}
+
+	// Rollback path — CommDB runtime. Requires inbox-mcp PID lease alive.
 	if (!projectName) {
 		throw new Error(
 			`Lead "${lead.agentId}": projectName is required for CommDB runtime`,

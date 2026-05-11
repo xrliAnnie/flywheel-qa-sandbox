@@ -3,8 +3,15 @@
 	"version": "0.1.0",
 	"description": "Vendor-neutral transport adapter for Lead↔Runner mailbox IPC. Default backend: claude-code Agent Team. Stub: Codex.",
 	"type": "module",
-	"main": "dist/index.js",
-	"types": "dist/index.d.ts",
+	"main": "dist/src/index.js",
+	"types": "dist/src/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/src/index.d.ts",
+			"import": "./dist/src/index.js",
+			"default": "./dist/src/index.js"
+		}
+	},
 	"bin": {
 		"agent-team-transport": "dist/bin/agent-team-transport-cli.js"
 	},

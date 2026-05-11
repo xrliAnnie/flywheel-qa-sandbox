@@ -1,7 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	watch,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import type {
 	AdapterExecutionContext,
@@ -184,6 +193,47 @@ export class TmuxAdapter implements IAdapter {
 
 		// GEO-266: Inject execution ID for inbox PostToolUse hook
 		envArgs.push("-e", `FLYWHEEL_EXEC_ID=${ctx.executionId}`);
+
+		// FLY-142 PR 1.4: Mailbox sentinel — when present, ~/.flywheel/hooks/inbox-check.sh
+		// short-circuits to a no-op. Lead → Runner delivery uses claude-code's
+		// stock useInboxPoller (vendor-neutral mailbox), bypassing the buggy
+		// CommDB hook filter (only reads type='instruction', drops 'response').
+		//
+		// Sentinel is inert when FLYWHEEL_COMM_BACKEND=commdb (rollback path) — the
+		// hook still runs first; the sentinel is a fast-exit marker, not a switch.
+		// Writing the sentinel is unconditional at Runner spawn (mailbox is the
+		// default backend per createLeadRuntime); rollback callers should `rm -f`
+		// the sentinel before flipping the env back to commdb.
+		try {
+			const sentinelDir = join(
+				homedir(),
+				".flywheel",
+				"runner-state",
+				ctx.executionId,
+			);
+			mkdirSync(sentinelDir, { recursive: true });
+			const sentinelPath = join(sentinelDir, "mailbox-active");
+			writeFileSync(
+				sentinelPath,
+				JSON.stringify(
+					{
+						execution_id: ctx.executionId,
+						created_at: new Date().toISOString(),
+						note: "FLY-142 PR 1.4 — mailbox cutover sentinel; presence tells inbox-check.sh hook to noop.",
+					},
+					null,
+					2,
+				),
+				"utf-8",
+			);
+			envArgs.push("-e", `FLYWHEEL_RUNNER_STATE_DIR=${sentinelDir}`);
+		} catch (err) {
+			// Non-fatal: hook will fall back to old behavior (and thus the wake
+			// bug). Log loudly so this gets caught in QA.
+			console.error(
+				`[TmuxAdapter] FLY-142 sentinel write FAILED for ${ctx.executionId}: ${(err as Error).message}. Runner will be subject to FLY-142 wake bug if FLYWHEEL_COMM_BACKEND=commdb fallback path runs.`,
+			);
+		}
 
 		// GEO-292: Bridge connection for stage reporting
 		if (ctx.bridgeUrl) {
