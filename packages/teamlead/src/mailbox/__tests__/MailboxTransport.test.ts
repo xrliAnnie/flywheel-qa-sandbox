@@ -87,7 +87,10 @@ describe("MailboxTransport", () => {
 			expect(result.wroteAt).toBe(1_700_000_000_000);
 		});
 
-		it("idempotent skip: verify NOT called, returns idempotent: true", async () => {
+		it("idempotent hit: STILL calls verify (Codex r1 PR 1.3 HIGH #1)", async () => {
+			// Adapter's idempotent=true does NOT guarantee a finalized main
+			// entry exists — could be a recent <60s pending sidecar. ALWAYS
+			// verify to catch the gap where main is still empty.
 			const t = makeMockTransport({
 				write: vi.fn(async () => ({
 					flywheelId: "stable-1",
@@ -104,8 +107,43 @@ describe("MailboxTransport", () => {
 			});
 
 			expect(t.write).toHaveBeenCalled();
-			expect(t.verifyLastWrite).not.toHaveBeenCalled();
+			// MUST be called even on idempotent — see HIGH #1.
+			expect(t.verifyLastWrite).toHaveBeenCalledWith({
+				leadName: "cos-lead",
+				recipient: "runner-x",
+				expected: basePayload,
+			});
 			expect(result.idempotent).toBe(true);
+		});
+
+		it("idempotent + verify mismatch (pending-not-finalized) throws MailboxWriteError", async () => {
+			// The Codex HIGH #1 scenario: adapter returns idempotent because
+			// a recent <60s pending sidecar exists, but main is still empty
+			// (original writer is in-flight or died). verifyLastWrite throws.
+			const t = makeMockTransport({
+				write: vi.fn(async () => ({
+					flywheelId: "stable-1",
+					idempotent: true,
+					wroteAt: 1_700_000_000_000,
+				})),
+				verifyLastWrite: vi.fn(async () => {
+					throw new MailboxWriteError(
+						"verifyLastWrite mismatch — main empty",
+						"verify_mismatch",
+						"runner-x",
+						false,
+					);
+				}),
+			});
+			const mt = new MailboxTransport(t);
+
+			await expect(
+				mt.writeVerified({
+					leadName: "cos-lead",
+					recipient: "runner-x",
+					payload: basePayload,
+				}),
+			).rejects.toMatchObject({ code: "verify_mismatch" });
 		});
 
 		it("verify mismatch: MailboxWriteError propagated", async () => {

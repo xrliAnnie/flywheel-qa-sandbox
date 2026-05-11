@@ -92,6 +92,11 @@ export class StructuredInboxRouter {
 	/**
 	 * Begin watching. Idempotent — calling start() multiple times is a
 	 * no-op after the first.
+	 *
+	 * Codex r1 PR 1.3 HIGH #2: AWAITS chokidar's `ready` event before
+	 * resolving so files written immediately after `await start()` are
+	 * guaranteed to be picked up. Without this, production startup could
+	 * miss requests that `await-mcp` drops between mkdir + watcher attach.
 	 */
 	async start(): Promise<void> {
 		if (this.watcher) return;
@@ -127,6 +132,14 @@ export class StructuredInboxRouter {
 			this.logger.error("[StructuredInboxRouter] watcher error", {
 				error: (err as Error).message,
 			});
+		});
+
+		// Wait for chokidar to complete initial scan + be ready for new events.
+		// Without this, the caller can write a file and `start()` returns
+		// before the watcher is actually listening → silent miss until next
+		// poll-interval or restart (Codex r1 PR 1.3 HIGH #2).
+		await new Promise<void>((resolve) => {
+			this.watcher!.once("ready", () => resolve());
 		});
 
 		this.logger.info("[StructuredInboxRouter] started", {
@@ -178,6 +191,20 @@ export class StructuredInboxRouter {
 		return this.processedDir;
 	}
 
+	/**
+	 * In-flight set: basenames currently being processed (between the first
+	 * `add` event and either successful delivery or thrown callback). Codex
+	 * r1 PR 1.3 MEDIUM #3: distinct from `delivered` so that concurrent
+	 * duplicate `add` events don't both pass the dedupe check + both invoke
+	 * `onRequest`.
+	 *
+	 * Invariant: a basename is in EITHER `inFlight` OR `delivered`, never
+	 * both. After successful delivery + move, basename moves from inFlight
+	 * → delivered. After callback throw, basename is removed from inFlight
+	 * (file left in place for retry on next watcher restart).
+	 */
+	private readonly inFlight = new Set<string>();
+
 	private async handleFile(filePath: string): Promise<void> {
 		// Only process .json files; skip swap files / other noise.
 		if (!filePath.endsWith(".json")) return;
@@ -185,69 +212,87 @@ export class StructuredInboxRouter {
 		const basename = filePath.split("/").pop() ?? "";
 
 		// Dedupe — chokidar can fire `add` multiple times for the same file
-		// in some edge cases (e.g. rename across devices). Our delivered set
-		// prevents double-fire within process lifetime.
-		if (this.delivered.has(basename)) {
+		// in some edge cases (e.g. rename across devices). The in-flight check
+		// covers concurrent duplicate events; the delivered check covers
+		// post-completion re-fires (Codex r1 PR 1.3 MEDIUM #3).
+		if (this.inFlight.has(basename) || this.delivered.has(basename)) {
 			this.logger.warn(
 				"[StructuredInboxRouter] duplicate add event, skipping",
 				{
 					basename,
+					state: this.inFlight.has(basename) ? "in-flight" : "delivered",
 				},
 			);
 			return;
 		}
+		// Mark in-flight BEFORE the first await — synchronous reservation
+		// closes the race where two add events both pass the check above.
+		this.inFlight.add(basename);
 
-		let parsed: StructuredRequest;
 		try {
-			const content = await readFile(filePath, "utf-8");
-			parsed = JSON.parse(content) as StructuredRequest;
-		} catch (err) {
-			this.logger.error(
-				"[StructuredInboxRouter] failed to read/parse request",
-				{
-					filePath,
-					error: (err as Error).message,
-				},
-			);
-			// Move corrupt file to processed/ with .corrupt suffix so it doesn't
-			// get retried on next watcher restart, but we keep the artifact.
-			// Add to delivered set so chokidar replay events for the same
-			// basename don't re-process the (already-moved) file.
+			let parsed: StructuredRequest;
+			try {
+				const content = await readFile(filePath, "utf-8");
+				parsed = JSON.parse(content) as StructuredRequest;
+			} catch (err) {
+				this.logger.error(
+					"[StructuredInboxRouter] failed to read/parse request",
+					{
+						filePath,
+						error: (err as Error).message,
+					},
+				);
+				// Move corrupt file to processed/ with .corrupt suffix so it doesn't
+				// get retried on next watcher restart, but we keep the artifact.
+				// Promote to delivered set so chokidar replay events for the same
+				// basename don't re-process the (already-moved) file.
+				this.delivered.add(basename);
+				await this.moveProcessedSafe(filePath, `${basename}.corrupt`);
+				return;
+			}
+
+			if (!parsed.request_id) {
+				this.logger.error(
+					"[StructuredInboxRouter] request missing request_id, dropping",
+					{ filePath },
+				);
+				this.delivered.add(basename);
+				await this.moveProcessedSafe(filePath, `${basename}.invalid`);
+				return;
+			}
+
+			// Hand to caller. If callback throws, do NOT move file — leave it for
+			// retry on next watcher restart (StructuredInboxRouter recovery is
+			// caller responsibility per plan §B-1).
+			try {
+				await this.options.onRequest(parsed);
+			} catch (err) {
+				this.logger.error(
+					"[StructuredInboxRouter] onRequest callback threw, leaving file in place",
+					{
+						filePath,
+						request_id: parsed.request_id,
+						error: (err as Error).message,
+					},
+				);
+				// IMPORTANT: do NOT promote to `delivered` — file is still in
+				// requests/, must be re-tried on next watcher restart. The
+				// in-flight removal in finally{} is the only state cleanup.
+				return;
+			}
+
+			// Mark delivered + atomic move to processed/ for audit.
 			this.delivered.add(basename);
-			await this.moveProcessedSafe(filePath, `${basename}.corrupt`);
-			return;
+			await this.moveProcessedSafe(filePath, basename);
+		} finally {
+			// Always release the in-flight reservation. If we reached here
+			// successfully OR via any error path, the basename's status is
+			// now reflected in `delivered` (success/.corrupt/.invalid) OR
+			// requires retry (callback throw, file still in requests/).
+			// Either way, future `add` events for the same basename should
+			// re-evaluate via the (delivered + inFlight) check.
+			this.inFlight.delete(basename);
 		}
-
-		if (!parsed.request_id) {
-			this.logger.error(
-				"[StructuredInboxRouter] request missing request_id, dropping",
-				{ filePath },
-			);
-			this.delivered.add(basename);
-			await this.moveProcessedSafe(filePath, `${basename}.invalid`);
-			return;
-		}
-
-		// Hand to caller. If callback throws, do NOT move file — leave it for
-		// retry on next watcher restart (StructuredInboxRouter recovery is
-		// caller responsibility per plan §B-1).
-		try {
-			await this.options.onRequest(parsed);
-		} catch (err) {
-			this.logger.error(
-				"[StructuredInboxRouter] onRequest callback threw, leaving file in place",
-				{
-					filePath,
-					request_id: parsed.request_id,
-					error: (err as Error).message,
-				},
-			);
-			return;
-		}
-
-		// Mark delivered + atomic move to processed/ for audit.
-		this.delivered.add(basename);
-		await this.moveProcessedSafe(filePath, basename);
 	}
 
 	private async moveProcessedSafe(

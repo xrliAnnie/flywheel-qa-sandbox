@@ -55,6 +55,18 @@ export class MailboxTransport {
 	 *
 	 * Idempotent on retry if the caller passes `payload.metadata.flywheelId`
 	 * (sidecar dedupe per §2.0.6 — caller-provided stable key).
+	 *
+	 * **Codex r1 PR 1.3 HIGH #1**: ALWAYS calls `verifyLastWrite`, including
+	 * on the idempotent-skip path. The adapter's `idempotent: true` does NOT
+	 * guarantee a finalized main-file entry exists — `ClaudeMailboxCodec`
+	 * returns idempotent for both finalized AND recent (<60s) pending
+	 * sidecar records, the latter meaning the original writer is still in
+	 * flight (or died before finalizing). If we skip verify, a concurrent
+	 * retry on a pending-but-not-yet-finalized id would incorrectly report
+	 * success even though no inbox entry exists. Always verifying catches
+	 * that gap — for a real finalized hit, verify passes; for a pending hit
+	 * where main is still empty, verify throws `verify_mismatch` (caller can
+	 * retry or fall back).
 	 */
 	async writeVerified(args: WriteVerifiedArgs): Promise<WriteVerifiedResult> {
 		const writeResult = await this.transport.write({
@@ -63,19 +75,9 @@ export class MailboxTransport {
 			payload: args.payload,
 		});
 
-		// Idempotent skip — no entry was newly written, nothing to verify.
-		// Caller treats as success (the prior write already verified).
-		if (writeResult.idempotent) {
-			return {
-				flywheelId: writeResult.flywheelId,
-				idempotent: true,
-				wroteAt: writeResult.wroteAt,
-			};
-		}
-
-		// Verify the last entry matches expected payload (defense against
-		// silent partial writes per Codex r1 #9). Adapter implementations
-		// throw `MailboxWriteError` with code `verify_mismatch` on failure.
+		// Verify regardless of idempotent flag — see HIGH #1 contract above.
+		// Adapter throws `MailboxWriteError` with code `verify_mismatch` if
+		// the main file's last entry doesn't match expected payload.
 		await this.transport.verifyLastWrite({
 			leadName: args.leadName,
 			recipient: args.recipient,
@@ -84,7 +86,7 @@ export class MailboxTransport {
 
 		return {
 			flywheelId: writeResult.flywheelId,
-			idempotent: false,
+			idempotent: writeResult.idempotent,
 			wroteAt: writeResult.wroteAt,
 		};
 	}

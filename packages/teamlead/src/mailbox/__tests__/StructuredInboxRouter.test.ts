@@ -37,15 +37,24 @@ afterEach(async () => {
 	await rm(tempDir, { recursive: true, force: true });
 });
 
-/** Wait until predicate returns true OR timeout — chokidar fires async. */
+/**
+ * Wait until predicate returns true OR timeout — chokidar fires async.
+ *
+ * Codex r1 PR 1.3 MEDIUM #4: predicate signature is
+ * `() => boolean | Promise<boolean>`. The original `() => boolean` would
+ * silently return a Promise from `async () =>` callers — Promise is
+ * truthy → waitFor returns immediately without checking the actual
+ * filesystem condition → tests false-pass. Now we await the result.
+ */
 async function waitFor(
-	predicate: () => boolean,
+	predicate: () => boolean | Promise<boolean>,
 	timeoutMs = 3000,
 	pollMs = 25,
 ): Promise<void> {
 	const deadline = Date.now() + timeoutMs;
 	while (Date.now() < deadline) {
-		if (predicate()) return;
+		const result = await predicate();
+		if (result) return;
 		await new Promise((r) => setTimeout(r, pollMs));
 	}
 	throw new Error(`Timeout after ${timeoutMs}ms waiting for predicate`);
