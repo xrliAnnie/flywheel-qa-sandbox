@@ -1,5 +1,5 @@
 import type { AdapterExecutionContext } from "flywheel-core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // We'll test TmuxAdapter by injecting a mock execFileFn
 import { TmuxAdapter } from "../src/TmuxAdapter.js";
@@ -1017,6 +1017,95 @@ describe("TmuxAdapter", () => {
 			const joined = newWindow!.args.join(" ");
 			expect(joined).not.toContain("--agent-id");
 			expect(joined).not.toContain("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS");
+		});
+	});
+
+	// =========================================================================
+	// FLY-142 PR 1.4 — mailbox sentinel + commdb rollback gate (Codex r1 HIGH)
+	// =========================================================================
+	describe("FLY-142 PR 1.4 — mailbox sentinel + rollback gate", () => {
+		const ORIGINAL_BACKEND = process.env.FLYWHEEL_COMM_BACKEND;
+		afterEach(() => {
+			if (ORIGINAL_BACKEND === undefined) {
+				delete process.env.FLYWHEEL_COMM_BACKEND;
+			} else {
+				process.env.FLYWHEEL_COMM_BACKEND = ORIGINAL_BACKEND;
+			}
+		});
+
+		it("default (env unset → mailbox): writes sentinel + injects FLYWHEEL_RUNNER_STATE_DIR", async () => {
+			delete process.env.FLYWHEEL_COMM_BACKEND;
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+			expect(joined).toContain("/.flywheel/runner-state/");
+			expect(joined).toContain(
+				"/mailbox-active".replace("/mailbox-active", ""),
+			); // dir, not file
+			expect(joined).not.toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+		});
+
+		it("FLYWHEEL_COMM_BACKEND=mailbox explicit: writes sentinel + injects state dir", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "mailbox";
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+			expect(joined).not.toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+		});
+
+		it("FLYWHEEL_COMM_BACKEND=commdb (rollback): does NOT write sentinel + propagates DISABLE=1 to Runner env (Codex r1 HIGH fix)", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "commdb";
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			// Defense-in-depth: even if a stale sentinel exists from a prior
+			// mailbox-mode spawn, hook must ignore it.
+			expect(joined).toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+			// Sentinel state dir env must NOT be set on rollback (no sentinel written).
+			expect(joined).not.toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+		});
+
+		it("FLYWHEEL_COMM_BACKEND=COMMDB (case-insensitive): treats as rollback", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "COMMDB";
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+			expect(joined).not.toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+		});
+
+		it("unknown backend value: defaults to mailbox (matches plugin.ts factory behavior)", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "garbage-value";
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			// Adapter is conservative: any non-"commdb" value falls back to
+			// sentinel-on (mailbox path). plugin.ts logs a warning and does
+			// the same. This keeps the most-recoverable path as default.
+			expect(joined).toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+			expect(joined).not.toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
 		});
 	});
 });

@@ -100,7 +100,12 @@ export class MailboxLeadRuntime implements LeadRuntime {
 				`writeVerified seq=${envelope.seq}`,
 			);
 			this.lastDeliveryAt = new Date().toISOString();
-			this.lastDeliveredSeq = envelope.seq;
+			// Codex r1 PR 1.4 non-blocking note: use Math.max to keep
+			// lastDeliveredSeq monotonic when concurrent deliver() calls finish
+			// out of order (seq=2 completes before seq=1). The durable store
+			// (StateStore.markLeadEventDelivered) handles per-seq delivery
+			// tracking; this field is for health visibility only.
+			this.lastDeliveredSeq = Math.max(this.lastDeliveredSeq, envelope.seq);
 			return { delivered: true };
 		} catch (err) {
 			const error = (err as Error).message;

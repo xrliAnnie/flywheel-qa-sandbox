@@ -199,39 +199,59 @@ export class TmuxAdapter implements IAdapter {
 		// stock useInboxPoller (vendor-neutral mailbox), bypassing the buggy
 		// CommDB hook filter (only reads type='instruction', drops 'response').
 		//
-		// Sentinel is inert when FLYWHEEL_COMM_BACKEND=commdb (rollback path) — the
-		// hook still runs first; the sentinel is a fast-exit marker, not a switch.
-		// Writing the sentinel is unconditional at Runner spawn (mailbox is the
-		// default backend per createLeadRuntime); rollback callers should `rm -f`
-		// the sentinel before flipping the env back to commdb.
-		try {
-			const sentinelDir = join(
-				homedir(),
-				".flywheel",
-				"runner-state",
-				ctx.executionId,
-			);
-			mkdirSync(sentinelDir, { recursive: true });
-			const sentinelPath = join(sentinelDir, "mailbox-active");
-			writeFileSync(
-				sentinelPath,
-				JSON.stringify(
-					{
-						execution_id: ctx.executionId,
-						created_at: new Date().toISOString(),
-						note: "FLY-142 PR 1.4 — mailbox cutover sentinel; presence tells inbox-check.sh hook to noop.",
-					},
-					null,
-					2,
-				),
-				"utf-8",
-			);
-			envArgs.push("-e", `FLYWHEEL_RUNNER_STATE_DIR=${sentinelDir}`);
-		} catch (err) {
-			// Non-fatal: hook will fall back to old behavior (and thus the wake
-			// bug). Log loudly so this gets caught in QA.
-			console.error(
-				`[TmuxAdapter] FLY-142 sentinel write FAILED for ${ctx.executionId}: ${(err as Error).message}. Runner will be subject to FLY-142 wake bug if FLYWHEEL_COMM_BACKEND=commdb fallback path runs.`,
+		// Codex r1 PR 1.4 HIGH: sentinel must be GATED on the backend selector
+		// — if FLYWHEEL_COMM_BACKEND=commdb (rollback), do NOT write the
+		// sentinel AND propagate FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 to the
+		// Runner env so even a stale on-disk sentinel from a prior mailbox-mode
+		// session is ignored. Without this gate, rollback is broken: every new
+		// Runner spawn re-creates the sentinel, hook keeps no-op'ing, legacy
+		// CommDB Lead → Runner messages are never injected.
+		//
+		// Default (env unset / "mailbox"): write sentinel + don't disable.
+		// Rollback ("commdb"): skip sentinel write + force disable in Runner env.
+		const backendRaw = (
+			process.env.FLYWHEEL_COMM_BACKEND ?? "mailbox"
+		).toLowerCase();
+		const backend: "mailbox" | "commdb" =
+			backendRaw === "commdb" ? "commdb" : "mailbox";
+
+		if (backend === "mailbox") {
+			try {
+				const sentinelDir = join(
+					homedir(),
+					".flywheel",
+					"runner-state",
+					ctx.executionId,
+				);
+				mkdirSync(sentinelDir, { recursive: true });
+				const sentinelPath = join(sentinelDir, "mailbox-active");
+				writeFileSync(
+					sentinelPath,
+					JSON.stringify(
+						{
+							execution_id: ctx.executionId,
+							created_at: new Date().toISOString(),
+							note: "FLY-142 PR 1.4 — mailbox cutover sentinel; presence tells inbox-check.sh hook to noop.",
+						},
+						null,
+						2,
+					),
+					"utf-8",
+				);
+				envArgs.push("-e", `FLYWHEEL_RUNNER_STATE_DIR=${sentinelDir}`);
+			} catch (err) {
+				// Non-fatal: hook will fall back to old behavior (and thus the wake
+				// bug). Log loudly so this gets caught in QA.
+				console.error(
+					`[TmuxAdapter] FLY-142 sentinel write FAILED for ${ctx.executionId}: ${(err as Error).message}. Runner will be subject to FLY-142 wake bug if Lead writes via flywheel-comm respond.`,
+				);
+			}
+		} else {
+			// Rollback: defense-in-depth — even if a stale sentinel exists from a
+			// previous mailbox-mode spawn, force the hook to ignore it via env.
+			envArgs.push("-e", "FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+			console.warn(
+				`[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for ${ctx.executionId} + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.`,
 			);
 		}
 

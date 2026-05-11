@@ -456,4 +456,29 @@ describe("MailboxLeadRuntime", () => {
 			expect(runtime.type).toBe("mailbox");
 		});
 	});
+
+	describe("lastDeliveredSeq monotonicity (Codex r1 PR 1.4 non-blocking)", () => {
+		it("does NOT regress when concurrent deliveries complete out of order", async () => {
+			// Health field should monotonically reflect "highest-seq delivered",
+			// not "most recent caller's seq". Without Math.max, seq=2 completing
+			// before seq=1 would correctly leave 2, but seq=1 finishing later
+			// would clobber it back to 1.
+			const transport = makeMockTransport();
+			const runtime = new MailboxLeadRuntime({
+				leadId: "cos-lead",
+				transport,
+			});
+
+			await runtime.deliver(makeEnvelope({ seq: 5 }));
+			expect((await runtime.health()).lastDeliveredSeq).toBe(5);
+
+			// Out-of-order arrival: a stale seq=3 finishes after seq=5 already landed.
+			await runtime.deliver(makeEnvelope({ seq: 3 }));
+			expect((await runtime.health()).lastDeliveredSeq).toBe(5);
+
+			// Higher seq still advances normally.
+			await runtime.deliver(makeEnvelope({ seq: 9 }));
+			expect((await runtime.health()).lastDeliveredSeq).toBe(9);
+		});
+	});
 });
