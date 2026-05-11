@@ -841,4 +841,182 @@ describe("TmuxAdapter", () => {
 			expect(args.join(" ")).toContain("FLYWHEEL_ISSUE_ID=GEO-42");
 		});
 	});
+
+	// =========================================================================
+	// FLY-142 PR 1.2 — vendor-neutral Agent Team transport wiring
+	// =========================================================================
+	describe("FLY-142 PR 1.2 — Agent Team transport wiring", () => {
+		function makeMockTransport() {
+			const buildRunnerSpawnConfig = vi.fn(
+				(ctx: { runnerName: string; teamName: string; leadName: string }) => ({
+					args: [
+						"--agent-id",
+						`${ctx.runnerName}@${ctx.teamName}`,
+						"--agent-name",
+						ctx.runnerName,
+						"--team-name",
+						ctx.teamName,
+					],
+					env: {
+						CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
+						FLYWHEEL_AGENT_BACKEND: "claude-code",
+					},
+				}),
+			);
+			return { buildRunnerSpawnConfig };
+		}
+
+		it("spawn omits transport flags when transport is undefined (backward compat)", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			// 6th positional arg (transport) intentionally omitted.
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 30000);
+
+			await adapter.execute(
+				makeCtx({
+					agentName: "runner-FLY-142-abc1",
+					teamName: "cos-lead",
+					vendor: "claude-code",
+				}),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).not.toContain("--agent-id");
+			expect(joined).not.toContain("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS");
+		});
+
+		it("spawn omits transport flags when ctx is missing agentName (backward compat)", async () => {
+			const transport = makeMockTransport();
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				30000,
+				undefined,
+				transport,
+			);
+
+			// ctx has vendor but NO agentName/teamName → transport not invoked.
+			await adapter.execute(makeCtx({ vendor: "claude-code" }));
+
+			expect(transport.buildRunnerSpawnConfig).not.toHaveBeenCalled();
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).not.toContain("--agent-id");
+			expect(joined).not.toContain("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS");
+		});
+
+		it("when transport + ctx fields all set, merges identity flags + env", async () => {
+			const transport = makeMockTransport();
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				30000,
+				undefined,
+				transport,
+			);
+
+			await adapter.execute(
+				makeCtx({
+					leadId: "cos-lead",
+					agentName: "runner-FLY-142-abc1",
+					teamName: "cos-lead",
+					leadSessionId: "lead-session-uuid",
+					agentColor: "cyan",
+					permissionMode: "bypassPermissions",
+					vendor: "claude-code",
+				}),
+			);
+
+			expect(transport.buildRunnerSpawnConfig).toHaveBeenCalledWith(
+				expect.objectContaining({
+					leadName: "cos-lead",
+					runnerName: "runner-FLY-142-abc1",
+					teamName: "cos-lead",
+					parentSessionId: "lead-session-uuid",
+					color: "cyan",
+					permissionMode: "bypassPermissions",
+				}),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			// Transport-supplied env vars present in tmux -e flags.
+			expect(joined).toContain("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
+			expect(joined).toContain("FLYWHEEL_AGENT_BACKEND=claude-code");
+			// Transport-supplied identity flags present in claude args.
+			expect(joined).toContain("--agent-id");
+			expect(joined).toContain("runner-FLY-142-abc1@cos-lead");
+			expect(joined).toContain("--team-name");
+			expect(joined).toContain("cos-lead");
+		});
+
+		it("transport identity flags are prepended BEFORE ctx flags so prompt stays last", async () => {
+			const transport = makeMockTransport();
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				30000,
+				undefined,
+				transport,
+			);
+
+			await adapter.execute(
+				makeCtx({
+					prompt: "do work",
+					leadId: "cos-lead",
+					agentName: "runner-x",
+					teamName: "cos-lead",
+					vendor: "claude-code",
+				}),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const args = newWindow!.args;
+			const claudeIdx = args.indexOf("claude");
+			expect(claudeIdx).toBeGreaterThan(-1);
+			// First flag after `claude` should be from transport (--agent-id),
+			// not from buildClaudeArgs (--session-id).
+			expect(args[claudeIdx + 1]).toBe("--agent-id");
+			// Last positional MUST be the prompt — never overtaken by transport flags.
+			expect(args[args.length - 1]).toBe("do work");
+		});
+
+		it("transport throw is non-fatal — falls back to no-transport spawn", async () => {
+			const transport = {
+				buildRunnerSpawnConfig: vi.fn(() => {
+					throw new Error("transport boom");
+				}),
+			};
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				30000,
+				undefined,
+				transport,
+			);
+
+			// Should NOT throw — adapter swallows transport error.
+			await adapter.execute(
+				makeCtx({
+					leadId: "cos-lead",
+					agentName: "runner-x",
+					teamName: "cos-lead",
+					vendor: "claude-code",
+				}),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).not.toContain("--agent-id");
+			expect(joined).not.toContain("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS");
+		});
+	});
 });

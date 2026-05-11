@@ -688,6 +688,16 @@ _launch_claude() {
     -e "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
     -e "HOME=${HOME}"
     -e "PATH=${PATH}"
+    # FLY-142 PR 1.2: Agent Team transport env vars. Set by
+    # `eval "$(agent-team-transport lead-env ...)"` earlier in the script
+    # (no-op if transport CLI not on PATH, vars empty). Propagate into tmux
+    # pane so claude-code's useInboxPoller activates with the same paths the
+    # launcher knows about (Codex r1 high #5: stock binary uses
+    # CLAUDE_CONFIG_DIR; the legacy FLYWHEEL_TEAMS_* env namespace is banned).
+    -e "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}"
+    -e "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR:-}"
+    -e "FLYWHEEL_AGENT_BACKEND=${FLYWHEEL_AGENT_BACKEND:-}"
+    -e "FLYWHEEL_STATE_DIR=${FLYWHEEL_STATE_DIR:-}"
   )
 
   # FLY-143 (QA-found): tmux `new-window -e` does NOT inherit the launcher's
@@ -1115,6 +1125,52 @@ if [ -d "$LEAD_RULES_DIR" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
     log "Appending department lead rules: ${DEPT_RULES}"
   fi
+fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-142 PR 1.2: Vendor-neutral Agent Team transport wiring
+# ════════════════════════════════════════════════════════════════
+#
+# Per plan v1.27.1 §2.0.4-bis (Codex r1 critical #2 + r2 high #4):
+# - `agent-team-transport lead-env` emits `export KEY=$'value'` lines for
+#   `eval` (bash 3.2+ compat — `declare -g` not supported on macOS).
+# - `agent-team-transport lead-args` emits `FLYWHEEL_AGENT_TEAM_ARGS=( ... )`
+#   array assignment, also for `eval`.
+# - DOUBLE-quoted `eval "$(...)"` is safe vs word-splitting because the CLI
+#   emits ANSI-C `$'...'`-quoted values that survive eval intact.
+#
+# Default `FLYWHEEL_AGENT_BACKEND=claude-code`. Set `FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT=1`
+# to bypass preflight (for emergency / dev iteration).
+
+if command -v agent-team-transport >/dev/null 2>&1; then
+  # Preflight gate: refuse to start Lead if backend is broken.
+  if [ "${FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT:-0}" != "1" ]; then
+    if ! agent-team-transport preflight >/dev/null 2>&1; then
+      log "FATAL: agent-team-transport preflight failed — refusing to start Lead"
+      log "(Set FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT=1 to bypass — emergency only)"
+      agent-team-transport preflight 1>&2 || true
+      exit 1
+    fi
+    log "Agent Team transport: preflight OK (vendor=$(agent-team-transport vendor 2>/dev/null || echo unknown))"
+  else
+    log "Agent Team transport: preflight SKIPPED (FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT=1)"
+  fi
+
+  # Source vendor-supplied env vars (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS etc.).
+  # These are exported into the launcher shell; `_launch_claude` propagates
+  # them into the tmux pane via env_args (see below).
+  eval "$(agent-team-transport lead-env --lead-id "${LEAD_ID}")"
+
+  # Source vendor-supplied identity flags into FLYWHEEL_AGENT_TEAM_ARGS array,
+  # then merge into CLAUDE_ARGS. Quote-safe array splat preserves values with
+  # spaces / quotes / $VAR / newlines.
+  eval "$(agent-team-transport lead-args --lead-id "${LEAD_ID}")"
+  if [ "${#FLYWHEEL_AGENT_TEAM_ARGS[@]}" -gt 0 ]; then
+    CLAUDE_ARGS+=( "${FLYWHEEL_AGENT_TEAM_ARGS[@]}" )
+    log "Agent Team transport: merged ${#FLYWHEEL_AGENT_TEAM_ARGS[@]} identity flag(s) into CLAUDE_ARGS"
+  fi
+else
+  log "Agent Team transport: agent-team-transport CLI not on PATH (skipping wiring)"
 fi
 
 # ════════════════════════════════════════════════════════════════
