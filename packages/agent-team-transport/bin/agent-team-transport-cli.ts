@@ -6,10 +6,28 @@
  * Per plan v1.27.1 §2.0.4-bis (Codex r1 critical #2 + r2 high #4):
  *
  *   Bash launcher pattern (quote-safe via ANSI-C `$'...'` escaping +
- *   double-quoted `eval "$(...)"`):
+ *   capture-then-eval — see PR 1.2 Codex r1 MEDIUM):
  *
- *     eval "$(agent-team-transport lead-env --lead-id ${LEAD_ID})"
- *     eval "$(agent-team-transport lead-args --lead-id ${LEAD_ID})"
+ *     # Capture FIRST so command-substitution exit status propagates.
+ *     # `eval "$(false)"` does NOT propagate failure under `set -e`.
+ *     if ! lead_env_output=$(agent-team-transport lead-env --lead-id "${LEAD_ID}"); then
+ *       echo "FATAL: agent-team-transport lead-env failed" >&2
+ *       exit 1
+ *     fi
+ *     eval "${lead_env_output}"
+ *
+ *     if ! lead_args_output=$(agent-team-transport lead-args --lead-id "${LEAD_ID}"); then
+ *       echo "FATAL: agent-team-transport lead-args failed" >&2
+ *       exit 1
+ *     fi
+ *     eval "${lead_args_output}"
+ *
+ *     # Post-eval assertion (catches helper regression where output is
+ *     # well-formed bash but doesn't actually export expected env).
+ *     [ "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}" = "1" ] || {
+ *       echo "FATAL: Agent Teams env not set" >&2; exit 1
+ *     }
+ *
  *     CLAUDE_ARGS+=( "${FLYWHEEL_AGENT_TEAM_ARGS[@]}" )
  *
  * Why `eval "$(...)"` not `source <(...)`: macOS ships bash 3.2 (GPL3
@@ -226,9 +244,22 @@ Commands:
 
 Backend selected by FLYWHEEL_AGENT_BACKEND env (default: claude-code).
 
-Shell launcher integration (bash 3.2+ compatible per Codex r2 high #4):
-  eval "$(agent-team-transport lead-env --lead-id \${LEAD_ID})"
-  eval "$(agent-team-transport lead-args --lead-id \${LEAD_ID})"
+Shell launcher integration (bash 3.2+ compat + capture-then-eval per
+PR 1.2 Codex r1 — \`eval "\$(...)"\` does NOT propagate command-sub failures):
+
+  if ! lead_env=\$(agent-team-transport lead-env --lead-id "\${LEAD_ID}"); then
+    echo "FATAL" >&2; exit 1
+  fi
+  eval "\${lead_env}"
+
+  if ! lead_args=\$(agent-team-transport lead-args --lead-id "\${LEAD_ID}"); then
+    echo "FATAL" >&2; exit 1
+  fi
+  eval "\${lead_args}"
+
+  [ "\${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}" = "1" ] || {
+    echo "FATAL: env not set" >&2; exit 1
+  }
   CLAUDE_ARGS+=( "\${FLYWHEEL_AGENT_TEAM_ARGS[@]}" )
 
 See plan v1.27.1 §2.0.4-bis for full launcher pattern + safety rationale.`,

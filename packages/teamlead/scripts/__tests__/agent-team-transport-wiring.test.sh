@@ -110,6 +110,26 @@ case "$1" in
 esac
 STUB
       ;;
+    preflight-fail-env-ok)
+      # Codex r2 PR 1.2 MEDIUM #2: preflight FAILS but lead-env/lead-args
+      # succeed normally. Used to verify FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT=1
+      # truly bypasses preflight AND that env+args are still properly merged
+      # (not a false-positive "fragment refused but test passes" case).
+      cat > "$stub" <<'STUB'
+#!/bin/bash
+case "$1" in
+  preflight) echo "preflight should be skipped" 1>&2; exit 1 ;;
+  vendor) echo "claude-code" ;;
+  lead-env)
+    echo "export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=\$'1'"
+    echo "export CLAUDE_CONFIG_DIR=\$'/skip/test'"
+    ;;
+  lead-args)
+    echo "FLYWHEEL_AGENT_TEAM_ARGS=( \$'--agent-id' \$'cos-lead@cos-lead' )"
+    ;;
+esac
+STUB
+      ;;
     adversarial)
       cat > "$stub" <<'STUB'
 #!/bin/bash
@@ -204,19 +224,31 @@ test_preflight_fail() {
 }
 
 # ═══════════════════════════════════════════════════════════════════════
-# Test 3: skip preflight when FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT=1
+# Test 3 (Codex r2 PR 1.2 MEDIUM #2 fix): skip-preflight must actually run
+# the fragment to completion AND assert env+args merged. Old test used a
+# stub that failed preflight but ALSO emitted no env, so post-eval
+# assertion failed silently — `exit 0` after that masked the error.
+# New stub: preflight fails (forcing skip path) but lead-env/lead-args
+# succeed, so we can positively verify the merge happened.
 # ═══════════════════════════════════════════════════════════════════════
 test_skip_preflight() {
   local stub_dir
-  stub_dir=$(make_stub_transport preflight-fail)  # would fail if not skipped
+  stub_dir=$(make_stub_transport preflight-fail-env-ok)  # preflight fails, env OK
   PATH="$stub_dir:$PATH" \
   LEAD_ID="cos-lead" \
   FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT="1" \
     bash -c "
+      set -e
       $(declare -f source_transport_fragment)
-      source_transport_fragment
+      source_transport_fragment   # MUST succeed (no '|| true' / 'exit 0' mask)
+      # Positive assertions — fragment must have populated these.
+      [ \"\${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}\" = '1' ] || { echo 'env not merged'; exit 1; }
+      [ \"\${CLAUDE_CONFIG_DIR:-}\" = '/skip/test' ] || { echo 'config dir not merged'; exit 1; }
+      [ \${#CLAUDE_ARGS[@]} -ge 4 ] || { echo \"args not merged: \${#CLAUDE_ARGS[@]}\"; exit 1; }
+      [ \"\${CLAUDE_ARGS[2]}\" = '--agent-id' ] || { echo \"unexpected first transport arg: \${CLAUDE_ARGS[2]}\"; exit 1; }
       exit 0
-    " 2>/dev/null && pass "skip preflight: bypasses failed preflight when flag set" || fail "skip preflight didn't bypass"
+    " && pass "skip preflight: bypasses failing preflight AND merges env/args correctly" \
+       || fail "skip preflight false-positive regression (Codex r2 PR 1.2 MEDIUM #2)"
 }
 
 # ═══════════════════════════════════════════════════════════════════════
