@@ -112,24 +112,38 @@ export async function writeMailboxEntry(
 	});
 
 	// ----- Phase A: sidecar dedupe check + pending insert (same lock) -----
-	if (spec.flywheelId !== undefined) {
+	// Best-effort writes (no caller-provided flywheelId): generate a
+	// per-call surrogate id so we can finalize after Phase B (Codex r1
+	// medium #3 fix — best-effort records were never finalized, leaving
+	// dangling pending entries). The surrogate is unique per write attempt
+	// (timestamp+random suffix) so it never collides with a stable
+	// caller-provided key.
+	const isBestEffort = spec.flywheelId === undefined;
+	const effectiveFlywheelId =
+		spec.flywheelId ??
+		`${fingerprint}:be:${wroteAtMs}:${Math.random().toString(36).slice(2, 8)}`;
+
+	if (!isBestEffort) {
 		const dedupeOutcome = await sidecarCheckAndInsertPending({
 			sidecarPath: spec.sidecarPath,
-			flywheelId: spec.flywheelId,
+			flywheelId: effectiveFlywheelId,
 			payloadFingerprint: fingerprint,
 			pendingAt: wroteAtMs,
 		});
 		if (dedupeOutcome.idempotent) {
 			return {
-				flywheelId: spec.flywheelId,
+				flywheelId: effectiveFlywheelId,
 				idempotent: true,
 				wroteAt: wroteAtMs,
 			};
 		}
 	} else {
-		// Best-effort write — record sidecar marker but skip dedupe entirely.
-		await sidecarAppendBestEffort({
+		// Best-effort: insert a sidecar pending record (under lock, but no
+		// dedupe check — surrogate id never collides). Will be finalized
+		// after Phase B.
+		await sidecarAppendBestEffortPending({
 			sidecarPath: spec.sidecarPath,
+			flywheelId: effectiveFlywheelId,
 			payloadFingerprint: fingerprint,
 			pendingAt: wroteAtMs,
 		});
@@ -151,17 +165,19 @@ export async function writeMailboxEntry(
 		newEntry,
 	});
 
-	// ----- Phase C: finalize sidecar pending (same id, status → finalized) -----
-	if (spec.flywheelId !== undefined) {
-		await sidecarFinalize({
-			sidecarPath: spec.sidecarPath,
-			flywheelId: spec.flywheelId,
-			finalizedAt: Date.now(),
-			mainEntryRef: { from: spec.payload.from, timestamp: timestampIso },
-		});
-	}
+	// ----- Phase C: finalize sidecar pending → finalized (always, including
+	// best-effort writes per Codex r1 medium #3) -----
+	await sidecarFinalize({
+		sidecarPath: spec.sidecarPath,
+		flywheelId: effectiveFlywheelId,
+		finalizedAt: Date.now(),
+		mainEntryRef: { from: spec.payload.from, timestamp: timestampIso },
+	});
 
 	return {
+		// Caller sees the id they passed in, or undefined for best-effort
+		// (the surrogate id is internal — exposing it would falsely suggest
+		// dedupe support).
 		flywheelId: spec.flywheelId,
 		idempotent: false,
 		wroteAt: wroteAtMs,
@@ -286,28 +302,69 @@ interface SidecarCheckOutcome {
 	idempotent: boolean;
 }
 
+/** Pending records older than this are considered stale (Codex r1 high #2). */
+const PENDING_STALE_THRESHOLD_MS = 60_000;
+
 /**
- * Atomic check-and-insert: if `flywheelId` already in sidecar (pending or
- * finalized), return `{ idempotent: true }` without inserting. Otherwise
- * append a `pending` record. Both happen under the SAME sidecar lock per
- * Codex r5 low #1.
+ * Atomic check-and-insert with pending-aware repair (Codex r1 high #2 fix).
+ *
+ * Old behavior (broken): any existing record with this `flywheelId` (pending
+ * OR finalized) returned `idempotent: true`. If Phase B failed after Phase A
+ * pending insert, the next retry would silently skip the main file write
+ * and report success → message lost.
+ *
+ * New behavior:
+ *  - **Finalized hit** → genuine idempotency, return `idempotent: true`
+ *  - **Pending + recent (< 60s)** → another concurrent writer is mid-flight;
+ *    return `idempotent: true` and let it complete (caller's retry comes
+ *    back to a finalized record next time)
+ *  - **Pending + stale (>= 60s)** → previous attempt died after pending insert
+ *    but before finalize; replace it with a fresh pending record and proceed
+ *    to Phase B (this retry actually writes)
+ *  - **No record** → insert pending, proceed
+ *
+ * All happens under the SAME sidecar lock per Codex r5 low #1 (atomic
+ * check-and-insert).
  */
 async function sidecarCheckAndInsertPending(
 	args: SidecarCheckArgs,
 ): Promise<SidecarCheckOutcome> {
 	await mkdir(dirname(args.sidecarPath), { recursive: true });
-
-	// Ensure sidecar file exists (proper-lockfile requirement).
 	await ensureFileExists(args.sidecarPath, "");
 
 	const lockPath = `${args.sidecarPath}.lock`;
 	return withFileLock(args.sidecarPath, lockPath, async () => {
 		const existing = await sidecarReadRecords(args.sidecarPath);
 		const hit = existing.find((r) => r.flywheelId === args.flywheelId);
+
 		if (hit) {
-			return { idempotent: true };
+			if (hit.status === "finalized") {
+				// Confirmed prior write succeeded — genuine idempotency hit.
+				return { idempotent: true };
+			}
+			// Pending hit — could be either (a) concurrent in-flight writer,
+			// or (b) crashed previous attempt that never finalized.
+			const ageMs = args.pendingAt - hit.pendingAt;
+			if (ageMs < PENDING_STALE_THRESHOLD_MS) {
+				// Recent: assume concurrent writer, defer to it. Caller's
+				// retry will see finalized record next time around.
+				return { idempotent: true };
+			}
+			// Stale: prior attempt died. Drop the dead pending record and
+			// re-insert as fresh pending so this retry actually writes.
+			const filtered = existing.filter((r) => r.flywheelId !== args.flywheelId);
+			const fresh: SidecarRecord = {
+				flywheelId: args.flywheelId,
+				status: "pending",
+				idempotency: "stable",
+				payloadFingerprint: args.payloadFingerprint,
+				pendingAt: args.pendingAt,
+			};
+			await rewriteJsonLines(args.sidecarPath, [...filtered, fresh]);
+			return { idempotent: false };
 		}
 
+		// No record — insert pending and proceed.
 		const pendingRecord: SidecarRecord = {
 			flywheelId: args.flywheelId,
 			status: "pending",
@@ -315,7 +372,6 @@ async function sidecarCheckAndInsertPending(
 			payloadFingerprint: args.payloadFingerprint,
 			pendingAt: args.pendingAt,
 		};
-
 		await appendJsonLine(args.sidecarPath, pendingRecord);
 		return { idempotent: false };
 	});
@@ -323,11 +379,19 @@ async function sidecarCheckAndInsertPending(
 
 interface SidecarBestEffortArgs {
 	sidecarPath: string;
+	flywheelId: string;
 	payloadFingerprint: string;
 	pendingAt: number;
 }
 
-async function sidecarAppendBestEffort(
+/**
+ * Insert a best-effort sidecar `pending` record under lock (no dedupe check
+ * — caller's surrogate id never collides). This is paired with a
+ * `sidecarFinalize` call after the main write succeeds, so best-effort
+ * writes leave finalized records (Codex r1 medium #3 fix) rather than
+ * dangling pending entries.
+ */
+async function sidecarAppendBestEffortPending(
 	args: SidecarBestEffortArgs,
 ): Promise<void> {
 	await mkdir(dirname(args.sidecarPath), { recursive: true });
@@ -336,11 +400,7 @@ async function sidecarAppendBestEffort(
 	const lockPath = `${args.sidecarPath}.lock`;
 	await withFileLock(args.sidecarPath, lockPath, async () => {
 		const record: SidecarRecord = {
-			// Use fingerprint as id when caller didn't provide one. We add a
-			// per-call random suffix so multiple best-effort writes with the
-			// same payload don't collide on key (callers know they aren't
-			// asking for dedupe).
-			flywheelId: `${args.payloadFingerprint}:be:${args.pendingAt}:${Math.random().toString(36).slice(2, 8)}`,
+			flywheelId: args.flywheelId,
 			status: "pending",
 			idempotency: "best-effort",
 			payloadFingerprint: args.payloadFingerprint,

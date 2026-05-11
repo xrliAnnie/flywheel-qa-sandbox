@@ -277,6 +277,22 @@ describe("ClaudeMailboxCodec — best-effort writes (no flywheelId)", () => {
 		expect(records.every((r) => r.idempotency === "best-effort")).toBe(true);
 	});
 
+	it("best-effort sidecar records are FINALIZED (Codex r1 medium #3 — not left dangling)", async () => {
+		const payload = basePayload();
+		await writeMailboxEntry({ inboxPath, sidecarPath, payload });
+		await writeMailboxEntry({ inboxPath, sidecarPath, payload });
+
+		const records = await __testing.sidecarReadRecords(sidecarPath);
+		// Each best-effort write should produce exactly one finalized record.
+		expect(records).toHaveLength(2);
+		for (const r of records) {
+			expect(r.status).toBe("finalized");
+			expect(r.idempotency).toBe("best-effort");
+			expect(r.finalizedAt).toBeGreaterThan(0);
+			expect(r.mainEntryRef).toBeDefined();
+		}
+	});
+
 	it("best-effort and stable writes can coexist on same inbox", async () => {
 		await writeMailboxEntry({
 			inboxPath,
@@ -422,5 +438,90 @@ describe("ClaudeMailboxCodec — sidecar repair semantics", () => {
 		expect(finalized?.status).toBe("finalized");
 		expect(finalized?.mainEntryRef?.from).toBe("cos-lead");
 		expect(finalized?.mainEntryRef?.timestamp).toBeTruthy();
+	});
+
+	// =========================================================================
+	// Codex r1 high #2 — pending dedupe semantics
+	// =========================================================================
+
+	it("finalized record blocks subsequent retries (genuine idempotency)", async () => {
+		await writeMailboxEntry({
+			inboxPath,
+			sidecarPath,
+			flywheelId: "stable-1",
+			payload: basePayload({ content: "first" }),
+		});
+
+		const result = await writeMailboxEntry({
+			inboxPath,
+			sidecarPath,
+			flywheelId: "stable-1",
+			payload: basePayload({ content: "first" }),
+		});
+		expect(result.idempotent).toBe(true);
+
+		const messages = await readMailboxEntries(inboxPath);
+		expect(messages).toHaveLength(1);
+	});
+
+	it("recent (<60s) pending record blocks retry (concurrent-writer protection)", async () => {
+		// Inject a pending record manually (simulates an in-flight concurrent writer).
+		await ensureFileExists(sidecarPath, "");
+		const recentPending: SidecarRecord = {
+			flywheelId: "in-flight",
+			status: "pending",
+			idempotency: "stable",
+			payloadFingerprint: "x",
+			pendingAt: Date.now(), // very recent
+		};
+		await writeFile(sidecarPath, `${JSON.stringify(recentPending)}\n`, "utf-8");
+
+		// Retry should defer to the in-flight writer.
+		const result = await writeMailboxEntry({
+			inboxPath,
+			sidecarPath,
+			flywheelId: "in-flight",
+			payload: basePayload(),
+		});
+		expect(result.idempotent).toBe(true);
+
+		// Main file should NOT have been written (deferred to in-flight writer).
+		const messages = await readMailboxEntries(inboxPath);
+		expect(messages).toHaveLength(0);
+	});
+
+	it("STALE (>=60s) pending record is REPLACED and retry actually writes (Codex r1 high #2 fix)", async () => {
+		// Inject a stale pending record (simulates a crashed previous attempt).
+		await ensureFileExists(sidecarPath, "");
+		const stalePending: SidecarRecord = {
+			flywheelId: "crashed-attempt",
+			status: "pending",
+			idempotency: "stable",
+			payloadFingerprint: "old-fp",
+			pendingAt: Date.now() - 120_000, // 2 minutes ago — past 60s stale threshold
+		};
+		await writeFile(sidecarPath, `${JSON.stringify(stalePending)}\n`, "utf-8");
+
+		// Retry with same flywheelId — should NOT be idempotent (stale pending
+		// was a dead writer; this retry should actually write).
+		const result = await writeMailboxEntry({
+			inboxPath,
+			sidecarPath,
+			flywheelId: "crashed-attempt",
+			payload: basePayload({ content: "retry payload" }),
+		});
+		expect(result.idempotent).toBe(false);
+
+		// Main file should now have the message.
+		const messages = await readMailboxEntries(inboxPath);
+		expect(messages).toHaveLength(1);
+		expect(messages[0]?.text).toBe("retry payload");
+
+		// Sidecar should have one finalized record (stale pending dropped + new
+		// pending → finalized).
+		const records = await __testing.sidecarReadRecords(sidecarPath);
+		const matching = records.filter((r) => r.flywheelId === "crashed-attempt");
+		expect(matching).toHaveLength(1);
+		expect(matching[0]?.status).toBe("finalized");
 	});
 });

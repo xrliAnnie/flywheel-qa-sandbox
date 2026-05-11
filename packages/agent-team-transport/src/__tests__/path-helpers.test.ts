@@ -17,6 +17,7 @@ import {
 	getStateDir,
 	getStructuredRequestDir,
 	getStructuredResponseDir,
+	sanitizePathComponent,
 } from "../path-helpers.js";
 
 describe("path-helpers", () => {
@@ -59,6 +60,16 @@ describe("path-helpers", () => {
 		it("preserves spaces and special chars in env path (Codex r2 high #4)", () => {
 			process.env.CLAUDE_CONFIG_DIR = "/path with spaces/.claude";
 			expect(getClaudeConfigDir()).toBe("/path with spaces/.claude");
+		});
+
+		it("normalizes Unicode to NFC (Codex r1 medium #4 — matches stock claude-code envUtils.ts:8-17)", () => {
+			// "café" in NFD form: c + a + f + e + combining-acute-accent
+			const nfd = "/test/café/.claude";
+			// NFC form: c + a + f + é (precomposed)
+			const nfc = "/test/café/.claude";
+			process.env.CLAUDE_CONFIG_DIR = nfd;
+			// Should normalize to NFC so paths align with stock claude-code's polling.
+			expect(getClaudeConfigDir()).toBe(nfc);
 		});
 	});
 
@@ -113,6 +124,55 @@ describe("path-helpers", () => {
 			process.env.FLYWHEEL_STATE_DIR = "/state";
 			expect(getStructuredResponseDir("runner-FLY-142-abc1")).toBe(
 				"/state/inbox-structured/runner-FLY-142-abc1/responses",
+			);
+		});
+	});
+
+	describe("Adversarial inbox paths (Codex r1 high #1 — security/correctness)", () => {
+		beforeEach(() => {
+			process.env.CLAUDE_CONFIG_DIR = "/test/claude";
+		});
+
+		it("sanitizes spaces in lead/agent names", () => {
+			expect(getClaudeInboxPath("lead with spaces", "agent name")).toBe(
+				"/test/claude/teams/lead-with-spaces/inboxes/agent-name.json",
+			);
+		});
+
+		it("blocks `..` path traversal escape", () => {
+			const path = getClaudeInboxPath("../escape", "x");
+			// `..` becomes `--`, so path is contained inside teams dir.
+			expect(path).toBe("/test/claude/teams/---escape/inboxes/x.json");
+			expect(path).not.toContain("/teams/..");
+		});
+
+		it("sanitizes `/` to prevent directory traversal in lead name", () => {
+			expect(getClaudeInboxPath("a/b", "x")).toBe(
+				"/test/claude/teams/a-b/inboxes/x.json",
+			);
+		});
+
+		it("sanitizes `/` in agent name (would otherwise create subdirs)", () => {
+			expect(getClaudeInboxPath("lead", "agent/with/slash")).toBe(
+				"/test/claude/teams/lead/inboxes/agent-with-slash.json",
+			);
+		});
+
+		it("sanitizes `@` (commonly used in agent IDs but not legal in path component)", () => {
+			expect(getClaudeInboxPath("cos-lead", "runner@cos-lead")).toBe(
+				"/test/claude/teams/cos-lead/inboxes/runner-cos-lead.json",
+			);
+		});
+
+		it("sidecar path also gets sanitized lead/agent components", () => {
+			expect(getClaudeSidecarPath("lead with spaces", "agent name")).toBe(
+				"/test/claude/teams/lead-with-spaces/inboxes/agent-name.json.flywheel.jsonl",
+			);
+		});
+
+		it("getClaudeTeamConfigPath sanitizes lead name", () => {
+			expect(getClaudeTeamConfigPath("Cos Lead")).toBe(
+				"/test/claude/teams/Cos-Lead/config.json",
 			);
 		});
 	});

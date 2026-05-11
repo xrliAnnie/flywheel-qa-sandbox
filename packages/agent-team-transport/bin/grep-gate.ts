@@ -35,7 +35,13 @@ const RULES: Rule[] = [
 	{
 		name: "no-hardcoded-claude-teams-path",
 		pattern: "~/\\.claude/teams|\\.claude/teams",
-		includeGlobs: ["packages/*/src/**/*.ts", "packages/*/scripts/*.sh"],
+		// Codex r1 low #5: include packages/*/bin/**/*.ts so CLI helpers are
+		// also covered by the vendor-neutrality guard.
+		includeGlobs: [
+			"packages/*/src/**/*.ts",
+			"packages/*/bin/**/*.ts",
+			"packages/*/scripts/*.sh",
+		],
 		excludeGlobs: [
 			"packages/agent-team-transport/src/claude/**",
 			"**/*.test.ts",
@@ -45,7 +51,7 @@ const RULES: Rule[] = [
 	{
 		name: "no-claude-code-internal-imports",
 		pattern: "from ['\"]@anthropic-ai/claude-code|from ['\"].*claude-code/src/",
-		includeGlobs: ["packages/*/src/**/*.ts"],
+		includeGlobs: ["packages/*/src/**/*.ts", "packages/*/bin/**/*.ts"],
 		excludeGlobs: [
 			"packages/agent-team-transport/src/claude/**",
 			"packages/agent-team-transport/src/claude/__tests__/**",
@@ -57,7 +63,11 @@ const RULES: Rule[] = [
 		name: "no-flywheel-teams-dir-env",
 		// Banned per Codex r1 high #5 + r2 medium #6 — use CLAUDE_CONFIG_DIR.
 		pattern: "FLYWHEEL_TEAMS_DIR",
-		includeGlobs: ["packages/*/src/**/*.ts", "packages/*/scripts/*.sh"],
+		includeGlobs: [
+			"packages/*/src/**/*.ts",
+			"packages/*/bin/**/*.ts",
+			"packages/*/scripts/*.sh",
+		],
 		excludeGlobs: ["**/*.test.ts", "**/__tests__/**"],
 	},
 ];
