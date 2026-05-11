@@ -44,19 +44,27 @@ interface Rule {
 	excludeGlobs: string[];
 }
 
+// Self-allowlist: this gate file MUST contain the literal patterns it scans
+// for (since its job is to detect them). Excluding it from every rule
+// prevents the gate from flagging itself.
+const SELF_PATH = "packages/agent-team-transport/bin/grep-gate.ts";
+
 const RULES: Rule[] = [
 	{
 		name: "no-hardcoded-claude-teams-path",
 		pattern: "~/\\.claude/teams|\\.claude/teams",
-		// Codex r1 low #5: include packages/*/bin/**/*.ts so CLI helpers are
-		// also covered by the vendor-neutrality guard.
+		// Codex r1 low #5 + r3 medium: include packages/*/bin/*.ts so direct
+		// bin files are scanned (the **/*.ts double-star glob doesn't match
+		// direct children in git pathspecs — Codex r3 catch).
 		includeGlobs: [
 			"packages/*/src/**/*.ts",
+			"packages/*/bin/*.ts",
 			"packages/*/bin/**/*.ts",
 			"packages/*/scripts/*.sh",
 		],
 		excludeGlobs: [
 			"packages/agent-team-transport/src/claude/**",
+			SELF_PATH,
 			"**/*.test.ts",
 			"**/__tests__/**",
 		],
@@ -64,10 +72,15 @@ const RULES: Rule[] = [
 	{
 		name: "no-claude-code-internal-imports",
 		pattern: "from ['\"]@anthropic-ai/claude-code|from ['\"].*claude-code/src/",
-		includeGlobs: ["packages/*/src/**/*.ts", "packages/*/bin/**/*.ts"],
+		includeGlobs: [
+			"packages/*/src/**/*.ts",
+			"packages/*/bin/*.ts",
+			"packages/*/bin/**/*.ts",
+		],
 		excludeGlobs: [
 			"packages/agent-team-transport/src/claude/**",
 			"packages/agent-team-transport/src/claude/__tests__/**",
+			SELF_PATH,
 			"**/*.test.ts",
 			"**/__tests__/**",
 		],
@@ -78,10 +91,11 @@ const RULES: Rule[] = [
 		pattern: "FLYWHEEL_TEAMS_DIR",
 		includeGlobs: [
 			"packages/*/src/**/*.ts",
+			"packages/*/bin/*.ts",
 			"packages/*/bin/**/*.ts",
 			"packages/*/scripts/*.sh",
 		],
-		excludeGlobs: ["**/*.test.ts", "**/__tests__/**"],
+		excludeGlobs: [SELF_PATH, "**/*.test.ts", "**/__tests__/**"],
 	},
 ];
 

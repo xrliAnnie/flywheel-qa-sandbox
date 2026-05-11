@@ -44,4 +44,28 @@ describe("grep-gate (vendor-neutrality CI gate)", () => {
 		expect(combined).toContain("Scanning from repo root:");
 		expect(combined).toContain("PASS — no violations.");
 	}, 30_000);
+
+	it("DOES scan packages/*/bin/*.ts files (Codex r3 medium fix — git pathspec **/*.ts doesn't match direct files)", async () => {
+		// Sanity check that the include globs actually resolve to bin/*.ts files.
+		// If this regresses, the gate would silently scan nothing in bin/ and a
+		// forbidden literal in a CLI helper would land in main.
+		const { execFile: ef } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const efp = promisify(ef);
+		const repoRoot = (
+			await efp("git", ["rev-parse", "--show-toplevel"])
+		).stdout.trim();
+
+		const direct = await efp("git", ["ls-files", "--", "packages/*/bin/*.ts"], {
+			cwd: repoRoot,
+		});
+		// Direct bin/*.ts files MUST resolve (we have at least cli + grep-gate).
+		expect(direct.stdout.trim().length).toBeGreaterThan(0);
+		expect(direct.stdout).toContain(
+			"packages/agent-team-transport/bin/agent-team-transport-cli.ts",
+		);
+		expect(direct.stdout).toContain(
+			"packages/agent-team-transport/bin/grep-gate.ts",
+		);
+	}, 30_000);
 });
