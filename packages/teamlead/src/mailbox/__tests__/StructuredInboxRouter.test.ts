@@ -13,9 +13,11 @@
  * - health() returns watching state
  */
 
+import { EventEmitter } from "node:events";
 import { mkdir, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import chokidar from "chokidar";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	StructuredInboxRouter,
@@ -211,6 +213,99 @@ describe.sequential("StructuredInboxRouter", () => {
 
 			const h = await router.health();
 			expect(h.watching).toBe(false);
+		});
+
+		it("chokidar 'error' before 'ready' rejects start + clears startPromise (Codex r4 PR 1.3 LOW)", async () => {
+			// Mock chokidar.watch to return a fake watcher that emits 'error'
+			// before 'ready' — covers the actual R3 bug surface (chokidar
+			// emitting error after watcher creation but before initial scan
+			// completes), which the mkdir-failure test does NOT exercise.
+			const fakeWatcher = new EventEmitter() as unknown as ReturnType<
+				typeof chokidar.watch
+			>;
+			(fakeWatcher as unknown as { close: () => Promise<void> }).close = vi.fn(
+				async () => {},
+			);
+			const watchSpy = vi
+				.spyOn(chokidar, "watch")
+				.mockReturnValueOnce(fakeWatcher);
+
+			router = new StructuredInboxRouter({
+				leadName: "cos-lead",
+				stateDir: tempDir,
+				onRequest: vi.fn(),
+			});
+
+			const startPromise = router.start();
+			// Yield so doStart() can register the once('ready'/'error') listeners
+			// before we emit. With usePolling+mkdir, doStart hits the await
+			// after the synchronous chokidar.watch + on/once setup, so a
+			// single microtask flush is enough.
+			await new Promise((r) => setTimeout(r, 5));
+
+			// Emit error BEFORE ready — this is the path R3 was meant to handle.
+			(fakeWatcher as unknown as EventEmitter).emit(
+				"error",
+				new Error("simulated pre-ready chokidar error"),
+			);
+
+			await expect(startPromise).rejects.toThrow(
+				/simulated pre-ready chokidar error/,
+			);
+			// Watcher was closed in startup-error cleanup branch.
+			expect(
+				(fakeWatcher as unknown as { close: ReturnType<typeof vi.fn> }).close,
+			).toHaveBeenCalled();
+
+			// startPromise was cleared — a follow-up start() must re-execute
+			// doStart (not return the stuck rejected cached promise). We
+			// assert this by allowing the spy to fall through to real chokidar
+			// on the second call and confirming start() now succeeds.
+			watchSpy.mockRestore();
+			await router.start();
+			const h = await router.health();
+			expect(h.watching).toBe(true);
+		});
+
+		it("stop() returns within 1s when called during in-flight start (Codex r4 PR 1.3 MEDIUM)", async () => {
+			// Codex r4 reproduction: chokidar's close() does NOT emit
+			// ready/error, so without an explicit cancellation trigger
+			// stop() deadlocks on `await this.startPromise` (doStart hangs
+			// on the ready/error race that will never settle).
+			//
+			// Repeat 5x at varying inter-call delays to make the race
+			// reliably surface (Codex saw 1/2/5/10ms all hit the deadlock).
+			for (const delayMs of [0, 1, 2, 5, 10]) {
+				const innerRouter = new StructuredInboxRouter({
+					leadName: "cos-lead",
+					stateDir: await mkdtemp(join(tmpdir(), "sir-r4-stop-")),
+					onRequest: vi.fn(),
+				});
+				const startPromise = innerRouter.start();
+				if (delayMs > 0) {
+					await new Promise((r) => setTimeout(r, delayMs));
+				}
+				const t0 = Date.now();
+				await Promise.race([
+					innerRouter.stop(),
+					new Promise((_, reject) =>
+						setTimeout(
+							() =>
+								reject(
+									new Error(
+										`stop() deadlocked at delay=${delayMs}ms after 1500ms`,
+									),
+								),
+							1500,
+						),
+					),
+				]);
+				const elapsed = Date.now() - t0;
+				expect(elapsed).toBeLessThan(1500);
+				await startPromise.catch(() => {});
+				const h = await innerRouter.health();
+				expect(h.watching).toBe(false);
+			}
 		});
 	});
 

@@ -137,6 +137,18 @@ export class StructuredInboxRouter {
 	 * watcher that hasn't yet been assigned to `this.watcher`.
 	 */
 	private startupWatcher: FSWatcher | null = null;
+	/**
+	 * Codex r4 PR 1.3 MEDIUM: stop()-during-start cancellation trigger.
+	 * doStart() races chokidar's `ready`/`error` against this trigger so
+	 * that `stop()` can wake up the in-flight ready-await even when
+	 * chokidar's `close()` does not emit `ready`/`error` (which it
+	 * doesn't, per Codex r4 reproduction with slow initial scans).
+	 *
+	 * Without this, stop() → close(startupWatcher) → await startPromise
+	 * deadlocks: the await never settles because chokidar gives no signal
+	 * after close(), so startPromise is pending forever.
+	 */
+	private startCancelTrigger: (() => void) | null = null;
 
 	private async doStart(): Promise<void> {
 		this.startCancelled = false;
@@ -181,14 +193,23 @@ export class StructuredInboxRouter {
 		// Codex r3 PR 1.3 MEDIUM: also reject on chokidar error before ready,
 		// so callers get a real failure (and can retry) instead of a stuck
 		// promise. Both listeners are removed on settle to avoid late firing.
+		// Codex r4 PR 1.3 MEDIUM: ALSO race against `startCancelTrigger` so
+		// stop() can wake the await even when chokidar's `close()` produces
+		// no `ready`/`error` event (the deadlock case).
+		let outcome: "ready" | "cancelled";
 		try {
-			await new Promise<void>((resolve, reject) => {
-				const onReady = () => {
+			outcome = await new Promise<"ready" | "cancelled">((resolve, reject) => {
+				const cleanup = () => {
+					watcher.off("ready", onReady);
 					watcher.off("error", onError);
-					resolve();
+					this.startCancelTrigger = null;
+				};
+				const onReady = () => {
+					cleanup();
+					resolve("ready");
 				};
 				const onError = (err: unknown) => {
-					watcher.off("ready", onReady);
+					cleanup();
 					reject(
 						err instanceof Error
 							? err
@@ -197,6 +218,11 @@ export class StructuredInboxRouter {
 				};
 				watcher.once("ready", onReady);
 				watcher.once("error", onError);
+				// stop() flips this trigger to wake the await immediately.
+				this.startCancelTrigger = () => {
+					cleanup();
+					resolve("cancelled");
+				};
 			});
 		} catch (err) {
 			// Startup error: clean up the watcher so it doesn't keep polling
@@ -204,6 +230,7 @@ export class StructuredInboxRouter {
 			// retry start() (the start() wrapper clears `startPromise` on throw).
 			await watcher.close().catch(() => {});
 			this.startupWatcher = null;
+			this.startCancelTrigger = null;
 			this.logger.error("[StructuredInboxRouter] startup error", {
 				error: (err as Error).message,
 			});
@@ -212,8 +239,9 @@ export class StructuredInboxRouter {
 
 		// Cancellation check: if stop() was called while we were waiting for
 		// ready, do NOT assign this.watcher (resurrects shutdown watcher).
-		// Close the watcher and silently return — stop() handled cleanup.
-		if (this.startCancelled) {
+		// Close the watcher and silently return — stop() will close again
+		// defensively but chokidar.close() is idempotent.
+		if (outcome === "cancelled" || this.startCancelled) {
 			await watcher.close().catch(() => {});
 			this.startupWatcher = null;
 			this.logger.info("[StructuredInboxRouter] startup cancelled by stop()", {
@@ -222,16 +250,16 @@ export class StructuredInboxRouter {
 			return;
 		}
 
-		this.watcher = watcher;
-		this.startupWatcher = null;
-
-		// Attach a long-lived error handler now that startup succeeded.
-		// (Pre-ready errors went to the rejector; post-ready go here.)
+		// Attach long-lived error handler BEFORE clearing startup tracking,
+		// so there's no gap with zero error listeners (Codex r4 sanity note).
 		watcher.on("error", (err) => {
 			this.logger.error("[StructuredInboxRouter] watcher error", {
 				error: (err as Error).message,
 			});
 		});
+
+		this.watcher = watcher;
+		this.startupWatcher = null;
 
 		this.logger.info("[StructuredInboxRouter] started", {
 			leadName: this.options.leadName,
@@ -253,18 +281,28 @@ export class StructuredInboxRouter {
 		// preempted by stop()'s assignment.
 		this.startCancelled = true;
 
-		// Close in-flight startup watcher (if any). Its handle is in
-		// `startupWatcher` from the start of doStart, before ready.
+		// Codex r4 PR 1.3 MEDIUM: trigger doStart's ready/error race to
+		// resolve as "cancelled" — chokidar.close() does NOT emit ready
+		// or error, so without this trigger doStart hangs forever and
+		// `await this.startPromise` below deadlocks.
+		if (this.startCancelTrigger) {
+			this.startCancelTrigger();
+			this.startCancelTrigger = null;
+		}
+
+		// Await any in-flight startPromise FIRST so doStart's cancellation
+		// branch closes startupWatcher itself, then we close defensively.
+		// Swallow errors — startup error rejection is fine (already cleaned up).
+		if (this.startPromise) {
+			await this.startPromise.catch(() => {});
+		}
+
+		// Defensive: close startupWatcher if doStart didn't (race window
+		// between cancellation and final close in doStart). chokidar.close()
+		// is idempotent so this is safe even if doStart already closed.
 		if (this.startupWatcher) {
 			await this.startupWatcher.close().catch(() => {});
 			this.startupWatcher = null;
-		}
-
-		// Await any in-flight startPromise so doStart's cancellation cleanup
-		// runs before stop() returns. Swallow errors — startup error rejection
-		// is fine (already-cleaned-up watcher).
-		if (this.startPromise) {
-			await this.startPromise.catch(() => {});
 		}
 
 		// Close the assigned watcher (if start succeeded).
