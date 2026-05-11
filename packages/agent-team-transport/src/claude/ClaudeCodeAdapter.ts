@@ -134,6 +134,10 @@ export class ClaudeCodeAdapter implements IAgentTeamTransport {
 			flywheelId: outcome.flywheelId,
 			idempotent: outcome.idempotent,
 			wroteAt: outcome.wroteAt,
+			// Codex r2 PR 1.3 HIGH #1: surface finalized state so wrappers
+			// (MailboxTransport.writeVerified) can distinguish durable
+			// idempotent hits from in-flight pending hits.
+			finalized: outcome.finalized,
 		};
 	}
 

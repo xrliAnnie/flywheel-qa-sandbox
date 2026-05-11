@@ -75,7 +75,12 @@ async function writeRequestFile(
 	return path;
 }
 
-describe("StructuredInboxRouter", () => {
+// Run tests sequentially: chokidar watchers + temp dirs + atomic renames
+// can starve each other under parallel concurrency, causing intermittent
+// "processed file is atomically moved" timeout. Codex r2 PR 1.3 also
+// observed `EMFILE: too many open files, watch` in their sandbox under
+// parallel load. Sequential keeps each test's watcher isolated.
+describe.sequential("StructuredInboxRouter", () => {
 	describe("lifecycle", () => {
 		it("start() creates requests + processed dirs even if missing", async () => {
 			const onRequest = vi.fn();
@@ -103,6 +108,36 @@ describe("StructuredInboxRouter", () => {
 			await router.start();
 
 			// Should not throw + watcher state still healthy.
+			const h = await router.health();
+			expect(h.watching).toBe(true);
+		});
+
+		it("concurrent start() callers all wait for same chokidar ready (Codex r2 PR 1.3 MEDIUM #2)", async () => {
+			// Without the cached startPromise, the second concurrent caller's
+			// `await start()` would return immediately on the watcher-set
+			// check and miss the ready boundary. Verify all callers wait for
+			// the SAME `ready` event.
+			router = new StructuredInboxRouter({
+				leadName: "cos-lead",
+				stateDir: tempDir,
+				onRequest: vi.fn(),
+			});
+
+			// Fire 5 concurrent start() calls. All should resolve at the same
+			// time (after ready), not the second/third/etc returning early.
+			const results = await Promise.all([
+				router.start(),
+				router.start(),
+				router.start(),
+				router.start(),
+				router.start(),
+			]);
+
+			// All should succeed without throwing.
+			expect(results).toHaveLength(5);
+
+			// After all resolve, watcher MUST be in the ready state (file
+			// writes will be picked up immediately).
 			const h = await router.health();
 			expect(h.watching).toBe(true);
 		});
@@ -159,20 +194,33 @@ describe("StructuredInboxRouter", () => {
 			});
 			await router.start();
 
+			// Capture paths NOW (before any await unwinds the test) — using
+			// `router?.getX() ?? ""` in waitFor predicates can hit ENOENT
+			// during test cleanup races.
+			const requestsDir = router.getRequestsDir();
+			const processedDir = router.getProcessedDir();
+
 			const basename = "1700000000000-req-move.json";
-			await writeRequestFile(router.getRequestsDir(), basename, {
+			await writeRequestFile(requestsDir, basename, {
 				request_id: "req-move",
 			});
 
-			await waitFor(() => received.length === 1);
-			// Wait briefly for the move to complete (post-callback).
+			// Bumped timeout to 5s (from default 3s) to absorb chokidar
+			// awaitWriteFinish stability (100ms) + handleFile read+parse+
+			// callback+rename latency under suite-wide load. Was flaking
+			// 1/3 runs at 3s.
+			await waitFor(() => received.length === 1, 5000);
+			// Wait for both: file appears in processed AND is gone from
+			// requests. Combined check avoids flakiness from polling either
+			// dir alone (move happens after callback, atomic rename).
 			await waitFor(async () => {
-				const processed = await readdir(router?.getProcessedDir() ?? "");
-				return processed.includes(basename);
-			});
+				const processed = await readdir(processedDir);
+				const requests = await readdir(requestsDir);
+				return processed.includes(basename) && !requests.includes(basename);
+			}, 5000);
 
-			const requests = await readdir(router.getRequestsDir());
-			const processed = await readdir(router.getProcessedDir());
+			const requests = await readdir(requestsDir);
+			const processed = await readdir(processedDir);
 			expect(requests).not.toContain(basename);
 			expect(processed).toContain(basename);
 		});

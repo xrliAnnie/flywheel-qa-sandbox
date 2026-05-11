@@ -56,17 +56,23 @@ export class MailboxTransport {
 	 * Idempotent on retry if the caller passes `payload.metadata.flywheelId`
 	 * (sidecar dedupe per §2.0.6 — caller-provided stable key).
 	 *
-	 * **Codex r1 PR 1.3 HIGH #1**: ALWAYS calls `verifyLastWrite`, including
-	 * on the idempotent-skip path. The adapter's `idempotent: true` does NOT
-	 * guarantee a finalized main-file entry exists — `ClaudeMailboxCodec`
-	 * returns idempotent for both finalized AND recent (<60s) pending
-	 * sidecar records, the latter meaning the original writer is still in
-	 * flight (or died before finalizing). If we skip verify, a concurrent
-	 * retry on a pending-but-not-yet-finalized id would incorrectly report
-	 * success even though no inbox entry exists. Always verifying catches
-	 * that gap — for a real finalized hit, verify passes; for a pending hit
-	 * where main is still empty, verify throws `verify_mismatch` (caller can
-	 * retry or fall back).
+	 * **Codex r1 → r2 PR 1.3 HIGH #1 contract** (final after R2 fix):
+	 *
+	 * Skip-verify is conditioned on BOTH `idempotent: true` AND
+	 * `finalized: true`:
+	 *
+	 * - `idempotent: true, finalized: true` → durable prior write exists in
+	 *   main (even if no longer last entry — newer messages may have been
+	 *   appended). Caller's intent satisfied; skip verify (R1 always-verify
+	 *   would have falsely failed because verifyLastWrite checks LAST entry).
+	 * - `idempotent: true, finalized: false` → recent <60s pending sidecar;
+	 *   main may still be empty (in-flight writer or crashed). Verify will
+	 *   throw `verify_mismatch` if main empty — caller retries or falls back.
+	 *   This catches the R1 HIGH #1 gap where pending was indistinguishable.
+	 * - `idempotent: false` → we just wrote it. Always verify (caught silent
+	 *   partial-write per Codex r1 #9 from PR #177 plan review).
+	 * - `idempotent: true, finalized: undefined` → adapter doesn't track
+	 *   finalization. Verify defensively (treat as `false`).
 	 */
 	async writeVerified(args: WriteVerifiedArgs): Promise<WriteVerifiedResult> {
 		const writeResult = await this.transport.write({
@@ -75,14 +81,19 @@ export class MailboxTransport {
 			payload: args.payload,
 		});
 
-		// Verify regardless of idempotent flag — see HIGH #1 contract above.
-		// Adapter throws `MailboxWriteError` with code `verify_mismatch` if
-		// the main file's last entry doesn't match expected payload.
-		await this.transport.verifyLastWrite({
-			leadName: args.leadName,
-			recipient: args.recipient,
-			expected: args.payload,
-		});
+		// Skip verify ONLY for confirmed-finalized idempotent hits — see
+		// HIGH #1 contract above.
+		const safeToSkipVerify =
+			writeResult.idempotent && writeResult.finalized === true;
+		if (!safeToSkipVerify) {
+			// Adapter throws `MailboxWriteError` with code `verify_mismatch`
+			// if the main file's last entry doesn't match expected payload.
+			await this.transport.verifyLastWrite({
+				leadName: args.leadName,
+				recipient: args.recipient,
+				expected: args.payload,
+			});
+		}
 
 		return {
 			flywheelId: writeResult.flywheelId,

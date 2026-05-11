@@ -79,6 +79,31 @@ export interface MailboxWriteResult {
 	flywheelId?: string;
 	idempotent: boolean;
 	wroteAt: number;
+	/**
+	 * For `idempotent: true` returns: did the prior write reach a finalized
+	 * state in the underlying store?
+	 *
+	 * - `true` → prior write is durably recorded in the main mailbox (sidecar
+	 *   has a finalized entry for this flywheelId). Retry can safely skip
+	 *   `verifyLastWrite` because the write is committed (even if newer
+	 *   messages have since been appended — last entry is no longer this id).
+	 * - `false` → prior write is still pending (writer in flight, or died
+	 *   before finalizing). Retry should NOT trust this as durable; caller
+	 *   should treat as in-flight (defer to original writer who'll finalize
+	 *   within ~60s, or stale-replace path if dead).
+	 * - `undefined` → adapter doesn't track finalization state (best-effort
+	 *   semantics — caller treats as `false` defensively).
+	 *
+	 * For `idempotent: false` returns: always `true` (we just wrote it +
+	 * Phase C finalize completes synchronously) OR `undefined` for adapters
+	 * without two-phase semantics. Caller should NOT condition on this for
+	 * non-idempotent — it's always safe to verify.
+	 *
+	 * Per Codex r2 PR 1.3 HIGH #1 — needed to distinguish finalized vs
+	 * pending idempotent so wrappers like MailboxTransport.writeVerified can
+	 * make correct skip-verify decisions.
+	 */
+	finalized?: boolean;
 }
 
 export class MailboxWriteError extends Error {

@@ -79,6 +79,18 @@ export interface WriteOutcome {
 	flywheelId?: string;
 	idempotent: boolean;
 	wroteAt: number;
+	/**
+	 * For idempotent returns: was the prior write reaching `finalized` state
+	 * in the sidecar (true) or still `pending` (false)? Per Codex r2 PR 1.3
+	 * HIGH #1, callers (e.g. MailboxTransport.writeVerified) need this to
+	 * decide whether to skip verifyLastWrite — finalized = safe to skip
+	 * (durable in main even if no longer last); pending = unsafe to skip
+	 * (main may still be empty, in-flight writer hasn't finalized).
+	 *
+	 * For non-idempotent (we just wrote): always true (Phase C finalize
+	 * runs synchronously before this returns).
+	 */
+	finalized: boolean;
 }
 
 /**
@@ -131,10 +143,14 @@ export async function writeMailboxEntry(
 			pendingAt: wroteAtMs,
 		});
 		if (dedupeOutcome.idempotent) {
+			// Surface finalized state to callers — Codex r2 PR 1.3 HIGH #1.
+			// `dedupeOutcome.finalized` is true for confirmed durable hits,
+			// false for recent-pending hits where main may still be empty.
 			return {
 				flywheelId: effectiveFlywheelId,
 				idempotent: true,
 				wroteAt: wroteAtMs,
+				finalized: dedupeOutcome.finalized ?? false,
 			};
 		}
 	} else {
@@ -180,6 +196,9 @@ export async function writeMailboxEntry(
 		// dedupe support).
 		flywheelId: spec.flywheelId,
 		idempotent: false,
+		// We just completed Phase B (main write) + Phase C (sidecar finalize)
+		// synchronously. Always finalized for non-idempotent path.
+		finalized: true,
 		wroteAt: wroteAtMs,
 	};
 }
@@ -300,6 +319,16 @@ interface SidecarCheckArgs {
 
 interface SidecarCheckOutcome {
 	idempotent: boolean;
+	/**
+	 * For idempotent: true returns, was the existing record finalized
+	 * (`true`) or pending (`false`)? Per Codex r2 PR 1.3 HIGH #1 — surfaces
+	 * sidecar state to writeMailboxEntry so callers can distinguish durable
+	 * idempotent hits from in-flight pending hits.
+	 *
+	 * For idempotent: false returns: undefined (not applicable; main write
+	 * proceeds and Phase C finalize will set the outer WriteOutcome.finalized).
+	 */
+	finalized?: boolean;
 }
 
 /** Pending records older than this are considered stale (Codex r1 high #2). */
@@ -340,7 +369,7 @@ async function sidecarCheckAndInsertPending(
 		if (hit) {
 			if (hit.status === "finalized") {
 				// Confirmed prior write succeeded — genuine idempotency hit.
-				return { idempotent: true };
+				return { idempotent: true, finalized: true };
 			}
 			// Pending hit — could be either (a) concurrent in-flight writer,
 			// or (b) crashed previous attempt that never finalized.
@@ -348,7 +377,9 @@ async function sidecarCheckAndInsertPending(
 			if (ageMs < PENDING_STALE_THRESHOLD_MS) {
 				// Recent: assume concurrent writer, defer to it. Caller's
 				// retry will see finalized record next time around.
-				return { idempotent: true };
+				// finalized: false signals to wrappers (MailboxTransport) that
+				// the main file may still be empty — DO NOT skip verify.
+				return { idempotent: true, finalized: false };
 			}
 			// Stale: prior attempt died. Drop the dead pending record and
 			// re-insert as fresh pending so this retry actually writes.

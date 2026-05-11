@@ -72,6 +72,16 @@ export class StructuredInboxRouter {
 	private readonly logger: NonNullable<StructuredInboxRouterOptions["logger"]>;
 	/** Dedupe set — basenames already delivered, prevents double-fire on chokidar replay. */
 	private readonly delivered = new Set<string>();
+	/**
+	 * Cached startup promise. Per Codex r2 PR 1.3 MEDIUM #2: concurrent
+	 * `start()` callers must all await the same chokidar `ready` boundary,
+	 * not just the first caller. Without this, second caller's `await
+	 * router.start()` returns immediately on the idempotent-watcher check
+	 * before the first call's `ready` event has fired → second caller can
+	 * write a request immediately and hit the same pre-ready window the
+	 * fix is trying to close.
+	 */
+	private startPromise: Promise<void> | null = null;
 
 	constructor(private readonly options: StructuredInboxRouterOptions) {
 		this.requestsDir = join(
@@ -93,21 +103,34 @@ export class StructuredInboxRouter {
 	 * Begin watching. Idempotent — calling start() multiple times is a
 	 * no-op after the first.
 	 *
-	 * Codex r1 PR 1.3 HIGH #2: AWAITS chokidar's `ready` event before
-	 * resolving so files written immediately after `await start()` are
-	 * guaranteed to be picked up. Without this, production startup could
-	 * miss requests that `await-mcp` drops between mkdir + watcher attach.
+	 * Codex r1 → r2 PR 1.3 HIGH #2 + MEDIUM #2:
+	 * - AWAITS chokidar's `ready` event before resolving so files written
+	 *   immediately after `await start()` are guaranteed to be picked up.
+	 * - Caches the startup promise so concurrent `start()` callers all wait
+	 *   for the SAME `ready` boundary (not just the first caller — the
+	 *   second caller's idempotent return would otherwise race the ready).
 	 */
 	async start(): Promise<void> {
-		if (this.watcher) return;
+		// Cached promise: every concurrent caller awaits the same boundary.
+		if (this.startPromise) return this.startPromise;
+		this.startPromise = this.doStart();
+		try {
+			await this.startPromise;
+		} catch (err) {
+			// On failure, clear cache so next call retries cleanly.
+			this.startPromise = null;
+			throw err;
+		}
+	}
 
+	private async doStart(): Promise<void> {
 		// Ensure both directories exist before chokidar attaches (chokidar
 		// silently fails to detect adds if the watched dir doesn't exist
 		// at start time — only later on dir create).
 		await mkdir(this.requestsDir, { recursive: true });
 		await mkdir(this.processedDir, { recursive: true });
 
-		this.watcher = chokidar.watch(this.requestsDir, {
+		const watcher = chokidar.watch(this.requestsDir, {
 			ignoreInitial: false, // pick up files that already exist
 			depth: 0, // don't recurse
 			awaitWriteFinish: {
@@ -117,9 +140,17 @@ export class StructuredInboxRouter {
 				stabilityThreshold: 100,
 				pollInterval: 50,
 			},
+			// Use polling instead of native fsevents to avoid EMFILE under
+			// suite-wide load (Codex r2 sandbox saw "too many open files,
+			// watch") + reduce flake on macOS where fsevents can drop events
+			// under contention. 200ms interval matches our awaitWriteFinish
+			// stability for predictable latency.
+			usePolling: true,
+			interval: 200,
+			binaryInterval: 200,
 		});
 
-		this.watcher.on("add", (path) => {
+		watcher.on("add", (path) => {
 			this.handleFile(path).catch((err) => {
 				this.logger.error("[StructuredInboxRouter] handleFile failed", {
 					path,
@@ -128,19 +159,20 @@ export class StructuredInboxRouter {
 			});
 		});
 
-		this.watcher.on("error", (err) => {
+		watcher.on("error", (err) => {
 			this.logger.error("[StructuredInboxRouter] watcher error", {
 				error: (err as Error).message,
 			});
 		});
 
 		// Wait for chokidar to complete initial scan + be ready for new events.
-		// Without this, the caller can write a file and `start()` returns
-		// before the watcher is actually listening → silent miss until next
-		// poll-interval or restart (Codex r1 PR 1.3 HIGH #2).
+		// Per Codex r2 MEDIUM #2: assign `this.watcher` AFTER ready resolves,
+		// so a concurrent `start()` caller can't see the watcher field set
+		// while the initial scan is still in progress.
 		await new Promise<void>((resolve) => {
-			this.watcher!.once("ready", () => resolve());
+			watcher.once("ready", () => resolve());
 		});
+		this.watcher = watcher;
 
 		this.logger.info("[StructuredInboxRouter] started", {
 			leadName: this.options.leadName,
@@ -152,10 +184,18 @@ export class StructuredInboxRouter {
 	 * Stop watching and clean up. Idempotent.
 	 */
 	async stop(): Promise<void> {
-		if (!this.watcher) return;
+		if (!this.watcher) {
+			// Even with no watcher, clear startPromise in case stop() is
+			// called between start() initiation and ready (e.g. test cleanup
+			// in beforeEach failure path).
+			this.startPromise = null;
+			return;
+		}
 		await this.watcher.close();
 		this.watcher = null;
+		this.startPromise = null;
 		this.delivered.clear();
+		this.inFlight.clear();
 		this.logger.info("[StructuredInboxRouter] stopped", {
 			leadName: this.options.leadName,
 		});

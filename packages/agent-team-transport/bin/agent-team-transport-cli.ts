@@ -245,14 +245,14 @@ Commands:
 Backend selected by FLYWHEEL_AGENT_BACKEND env (default: claude-code).
 
 Shell launcher integration (bash 3.2+ compat + capture-then-eval per
-PR 1.2 Codex r1 — \`eval "\$(...)"\` does NOT propagate command-sub failures):
+PR 1.2 Codex r1 — \`eval "$(...)"\` does NOT propagate command-sub failures):
 
-  if ! lead_env=\$(agent-team-transport lead-env --lead-id "\${LEAD_ID}"); then
+  if ! lead_env=$(agent-team-transport lead-env --lead-id "\${LEAD_ID}"); then
     echo "FATAL" >&2; exit 1
   fi
   eval "\${lead_env}"
 
-  if ! lead_args=\$(agent-team-transport lead-args --lead-id "\${LEAD_ID}"); then
+  if ! lead_args=$(agent-team-transport lead-args --lead-id "\${LEAD_ID}"); then
     echo "FATAL" >&2; exit 1
   fi
   eval "\${lead_args}"

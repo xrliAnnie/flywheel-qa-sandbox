@@ -39,6 +39,7 @@ function makeMockTransport(
 				flywheelId: "test-id",
 				idempotent: false,
 				wroteAt: 1_700_000_000_000,
+				finalized: true,
 			}),
 		),
 		verifyLastWrite: vi.fn(async () => {}),
@@ -116,15 +117,39 @@ describe("MailboxTransport", () => {
 			expect(result.idempotent).toBe(true);
 		});
 
-		it("idempotent + verify mismatch (pending-not-finalized) throws MailboxWriteError", async () => {
-			// The Codex HIGH #1 scenario: adapter returns idempotent because
-			// a recent <60s pending sidecar exists, but main is still empty
-			// (original writer is in-flight or died). verifyLastWrite throws.
+		it("idempotent + finalized: skips verify (Codex r2 PR 1.3 HIGH #1)", async () => {
+			// Legitimate case: prior write durably committed. verifyLastWrite
+			// would falsely fail if a NEWER message has been appended after.
+			// finalized: true tells us we can trust the prior write — skip verify.
 			const t = makeMockTransport({
 				write: vi.fn(async () => ({
 					flywheelId: "stable-1",
 					idempotent: true,
 					wroteAt: 1_700_000_000_000,
+					finalized: true,
+				})),
+			});
+			const mt = new MailboxTransport(t);
+
+			const result = await mt.writeVerified({
+				leadName: "cos-lead",
+				recipient: "runner-x",
+				payload: basePayload,
+			});
+
+			expect(t.verifyLastWrite).not.toHaveBeenCalled();
+			expect(result.idempotent).toBe(true);
+		});
+
+		it("idempotent + NOT finalized: STILL calls verify (catches pending writer race)", async () => {
+			// Recent <60s pending sidecar — main may still be empty.
+			// Verify should run; if main is empty it throws verify_mismatch.
+			const t = makeMockTransport({
+				write: vi.fn(async () => ({
+					flywheelId: "stable-1",
+					idempotent: true,
+					wroteAt: 1_700_000_000_000,
+					finalized: false,
 				})),
 				verifyLastWrite: vi.fn(async () => {
 					throw new MailboxWriteError(
@@ -144,6 +169,28 @@ describe("MailboxTransport", () => {
 					payload: basePayload,
 				}),
 			).rejects.toMatchObject({ code: "verify_mismatch" });
+		});
+
+		it("idempotent + finalized undefined: defensively verifies", async () => {
+			// Adapter doesn't track finalization (legacy / non-claude). Treat
+			// as defensive default — always verify.
+			const t = makeMockTransport({
+				write: vi.fn(async () => ({
+					flywheelId: "stable-1",
+					idempotent: true,
+					wroteAt: 1_700_000_000_000,
+					// finalized intentionally omitted
+				})),
+			});
+			const mt = new MailboxTransport(t);
+
+			await mt.writeVerified({
+				leadName: "cos-lead",
+				recipient: "runner-x",
+				payload: basePayload,
+			});
+
+			expect(t.verifyLastWrite).toHaveBeenCalled();
 		});
 
 		it("verify mismatch: MailboxWriteError propagated", async () => {
