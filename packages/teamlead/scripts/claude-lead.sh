@@ -1159,12 +1159,35 @@ if command -v agent-team-transport >/dev/null 2>&1; then
   # Source vendor-supplied env vars (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS etc.).
   # These are exported into the launcher shell; `_launch_claude` propagates
   # them into the tmux pane via env_args (see below).
-  eval "$(agent-team-transport lead-env --lead-id "${LEAD_ID}")"
+  #
+  # Codex r1 PR 1.2 MEDIUM: capture output FIRST and check exit status before
+  # eval. `eval "$(false)"` does not propagate failure under `set -e`, so a
+  # broken helper would silently continue with empty env → claude-code's
+  # `isAgentSwarmsEnabled()` returns false even though identity flags were
+  # added to CLAUDE_ARGS.
+  if ! _lead_env_output=$(agent-team-transport lead-env --lead-id "${LEAD_ID}"); then
+    log "FATAL: agent-team-transport lead-env failed — refusing to start Lead"
+    exit 1
+  fi
+  eval "${_lead_env_output}"
+  unset _lead_env_output
 
-  # Source vendor-supplied identity flags into FLYWHEEL_AGENT_TEAM_ARGS array,
-  # then merge into CLAUDE_ARGS. Quote-safe array splat preserves values with
-  # spaces / quotes / $VAR / newlines.
-  eval "$(agent-team-transport lead-args --lead-id "${LEAD_ID}")"
+  # Same exit-status check for lead-args.
+  if ! _lead_args_output=$(agent-team-transport lead-args --lead-id "${LEAD_ID}"); then
+    log "FATAL: agent-team-transport lead-args failed — refusing to start Lead"
+    exit 1
+  fi
+  eval "${_lead_args_output}"
+  unset _lead_args_output
+
+  # Post-eval assertion: env vars MUST be set after eval. Catches helper
+  # regression where output is well-formed bash but doesn't set what we expect.
+  if [ "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}" != "1" ]; then
+    log "FATAL: agent-team-transport lead-env did not set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1"
+    log "  (got: '${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-<unset>}')"
+    exit 1
+  fi
+
   if [ "${#FLYWHEEL_AGENT_TEAM_ARGS[@]}" -gt 0 ]; then
     CLAUDE_ARGS+=( "${FLYWHEEL_AGENT_TEAM_ARGS[@]}" )
     log "Agent Team transport: merged ${#FLYWHEEL_AGENT_TEAM_ARGS[@]} identity flag(s) into CLAUDE_ARGS"

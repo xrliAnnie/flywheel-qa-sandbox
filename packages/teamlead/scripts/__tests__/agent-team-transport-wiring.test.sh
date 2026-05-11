@@ -34,6 +34,9 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 source_transport_fragment() {
   # Inputs from caller's env: LEAD_ID, FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT
   # Outputs: CLAUDE_ARGS array + transport env vars (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS etc.)
+  #
+  # Mirrors claude-lead.sh:1148-1190 exactly so tests catch regressions
+  # in either the launcher OR this fragment's mirror.
   CLAUDE_ARGS=("--initial-flag" "$LEAD_ID")  # baseline existing args
 
   if command -v agent-team-transport >/dev/null 2>&1; then
@@ -43,8 +46,29 @@ source_transport_fragment() {
         return 1
       fi
     fi
-    eval "$(agent-team-transport lead-env --lead-id "${LEAD_ID}")"
-    eval "$(agent-team-transport lead-args --lead-id "${LEAD_ID}")"
+
+    # Codex r1 PR 1.2 MEDIUM: capture output + check exit status BEFORE eval
+    # (eval "$(false)" doesn't propagate under set -e).
+    if ! _lead_env_output=$(agent-team-transport lead-env --lead-id "${LEAD_ID}"); then
+      echo "[FRAGMENT] lead-env FAILED, exiting"
+      return 1
+    fi
+    eval "${_lead_env_output}"
+    unset _lead_env_output
+
+    if ! _lead_args_output=$(agent-team-transport lead-args --lead-id "${LEAD_ID}"); then
+      echo "[FRAGMENT] lead-args FAILED, exiting"
+      return 1
+    fi
+    eval "${_lead_args_output}"
+    unset _lead_args_output
+
+    # Post-eval assertion: env MUST be set.
+    if [ "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}" != "1" ]; then
+      echo "[FRAGMENT] env not set after eval, exiting"
+      return 1
+    fi
+
     if [ "${#FLYWHEEL_AGENT_TEAM_ARGS[@]}" -gt 0 ]; then
       CLAUDE_ARGS+=("${FLYWHEEL_AGENT_TEAM_ARGS[@]}")
     fi
@@ -94,6 +118,7 @@ case "$1" in
   vendor) echo "claude-code" ;;
   lead-env)
     # Path with spaces + single-quote + $VAR literal
+    echo "export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=\$'1'"
     echo "export CLAUDE_CONFIG_DIR=\$'/path with spaces/.claude\\'with quote'"
     echo "export FLYWHEEL_LITERAL_DOLLAR=\$'\$PWD/test_\$RANDOM'"
     ;;
@@ -105,6 +130,33 @@ case "$1" in
     printf '%s' "\$'--literal-dollar' \$'\$PWD/test_\$RANDOM' "
     printf '%s\n' ")"
     ;;
+esac
+STUB
+      ;;
+    lead-env-fails)
+      cat > "$stub" <<'STUB'
+#!/bin/bash
+# Codex r1 PR 1.2 MEDIUM: simulate preflight OK but lead-env failure
+# (transient node crash / dist regression / etc).
+case "$1" in
+  preflight) exit 0 ;;  # passes
+  vendor) echo "claude-code" ;;
+  lead-env) echo "stub: lead-env crashed" 1>&2; exit 2 ;;  # FAILS
+  lead-args) echo "FLYWHEEL_AGENT_TEAM_ARGS=( \$'--agent-id' \$'x@y' )" ;;
+esac
+STUB
+      ;;
+    env-not-set)
+      cat > "$stub" <<'STUB'
+#!/bin/bash
+# Codex r1 PR 1.2 MEDIUM: lead-env succeeds but doesn't actually set the
+# required env (helper regression — output is well-formed bash but missing
+# the CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS export).
+case "$1" in
+  preflight) exit 0 ;;
+  vendor) echo "claude-code" ;;
+  lead-env) echo "export CLAUDE_CONFIG_DIR=\$'/test'" ;;  # NO _AGENT_TEAMS
+  lead-args) echo "FLYWHEEL_AGENT_TEAM_ARGS=( \$'--agent-id' \$'x@y' )" ;;
 esac
 STUB
       ;;
@@ -210,12 +262,52 @@ test_adversarial_quote_safety() {
     " && pass "adversarial values: spaces / quotes / \$VAR all survive eval round-trip" || fail "adversarial quote-safety regression"
 }
 
+# ═══════════════════════════════════════════════════════════════════════
+# Test 6 (Codex r1 PR 1.2 MEDIUM): preflight OK but lead-env command FAILS.
+# Without exit-status capture, eval "$(false)" silently continues with empty
+# env → claude-code starts with identity flags but agent-teams disabled.
+# ═══════════════════════════════════════════════════════════════════════
+test_lead_env_failure() {
+  local stub_dir
+  stub_dir=$(make_stub_transport lead-env-fails)
+  PATH="$stub_dir:$PATH" \
+  LEAD_ID="cos-lead" \
+  FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT="" \
+    bash -c "
+      $(declare -f source_transport_fragment)
+      source_transport_fragment && exit 1 || exit 0
+    " && pass "preflight OK + lead-env fails: fragment returns nonzero, refuses to continue" \
+       || fail "lead-env failure not detected (Codex r1 PR 1.2 MEDIUM regression)"
+}
+
+# ═══════════════════════════════════════════════════════════════════════
+# Test 7 (Codex r1 PR 1.2 MEDIUM): lead-env succeeds with valid bash output
+# but doesn't set the required CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS env.
+# Post-eval assertion catches helper regression where output is well-formed
+# but missing critical exports.
+# ═══════════════════════════════════════════════════════════════════════
+test_post_eval_env_assertion() {
+  local stub_dir
+  stub_dir=$(make_stub_transport env-not-set)
+  PATH="$stub_dir:$PATH" \
+  LEAD_ID="cos-lead" \
+  FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT="" \
+    env -i PATH="$stub_dir:/usr/bin:/bin" LEAD_ID="cos-lead" \
+    bash -c "
+      $(declare -f source_transport_fragment)
+      source_transport_fragment && exit 1 || exit 0
+    " && pass "post-eval assertion: rejects when CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS not set" \
+       || fail "post-eval env assertion not enforced (Codex r1 PR 1.2 MEDIUM regression)"
+}
+
 # ─── Run all tests ────────────────────────────────────────────────
 test_happy_path
 test_preflight_fail
 test_skip_preflight
 test_missing_cli
 test_adversarial_quote_safety
+test_lead_env_failure
+test_post_eval_env_assertion
 
 # ─── Summary ──────────────────────────────────────────────────────
 echo ""
