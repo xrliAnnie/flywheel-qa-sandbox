@@ -24,6 +24,19 @@ import { promisify } from "node:util";
 
 const execFile = promisify(execFileCallback);
 
+/**
+ * Resolve repo root via `git rev-parse --show-toplevel`. The grep-gate must
+ * run with cwd at repo root because all rule globs are repo-root-relative
+ * (`packages/*\/src/**` etc) — running from a package dir would silently
+ * scan nothing (Codex r2 LOW finding). We auto-detect rather than relying
+ * on caller cwd so the script works the same whether run from repo root
+ * (CI), a package dir (package script), or anywhere else.
+ */
+async function getRepoRoot(): Promise<string> {
+	const { stdout } = await execFile("git", ["rev-parse", "--show-toplevel"]);
+	return stdout.trim();
+}
+
 interface Rule {
 	name: string;
 	pattern: string; // grep -E pattern
@@ -72,7 +85,7 @@ const RULES: Rule[] = [
 	},
 ];
 
-async function runGitGrep(rule: Rule): Promise<string[]> {
+async function runGitGrep(rule: Rule, repoRoot: string): Promise<string[]> {
 	const args = [
 		"grep",
 		"-l",
@@ -83,7 +96,7 @@ async function runGitGrep(rule: Rule): Promise<string[]> {
 		...rule.excludeGlobs.map((g) => `:(exclude)${g}`),
 	];
 	try {
-		const { stdout } = await execFile("git", args);
+		const { stdout } = await execFile("git", args, { cwd: repoRoot });
 		return stdout
 			.split("\n")
 			.map((s) => s.trim())
@@ -97,9 +110,11 @@ async function runGitGrep(rule: Rule): Promise<string[]> {
 }
 
 async function main(): Promise<void> {
+	const repoRoot = await getRepoRoot();
+	console.log(`[grep-gate] Scanning from repo root: ${repoRoot}`);
 	let totalViolations = 0;
 	for (const rule of RULES) {
-		const violations = await runGitGrep(rule);
+		const violations = await runGitGrep(rule, repoRoot);
 		if (violations.length > 0) {
 			console.error(
 				`\n[grep-gate] ${rule.name}: ${violations.length} violation(s)`,

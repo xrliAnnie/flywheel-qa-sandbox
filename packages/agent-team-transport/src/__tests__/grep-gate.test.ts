@@ -20,11 +20,28 @@ const GREP_GATE_PATH = resolve(__dirname, "../../dist/bin/grep-gate.js");
 describe("grep-gate (vendor-neutrality CI gate)", () => {
 	it("exits 0 when run on the current tree", async () => {
 		const { stdout, stderr } = await execFileAsync("node", [GREP_GATE_PATH]);
-		// Combined output should report PASS for all rules.
 		const combined = stdout + stderr;
 		expect(combined).toContain("no-hardcoded-claude-teams-path: OK");
 		expect(combined).toContain("no-claude-code-internal-imports: OK");
 		expect(combined).toContain("no-flywheel-teams-dir-env: OK");
+		expect(combined).toContain("PASS — no violations.");
+		// Codex r2 LOW finding: gate must auto-resolve repo root rather than
+		// passively trust the cwd, otherwise running from any package dir
+		// silently scans nothing.
+		expect(combined).toContain("Scanning from repo root:");
+	}, 30_000);
+
+	it("works the same when invoked from a non-repo-root cwd (Codex r2 LOW fix)", async () => {
+		// Run from a subdirectory inside the repo — verifies the gate auto-
+		// detects repo root via git rev-parse rather than passively trusting
+		// cwd (Codex r2 found the test originally ran from package cwd which
+		// silently scanned nothing).
+		const subDir = resolve(__dirname, "..");
+		const { stdout, stderr } = await execFileAsync("node", [GREP_GATE_PATH], {
+			cwd: subDir,
+		});
+		const combined = stdout + stderr;
+		expect(combined).toContain("Scanning from repo root:");
 		expect(combined).toContain("PASS — no violations.");
 	}, 30_000);
 });

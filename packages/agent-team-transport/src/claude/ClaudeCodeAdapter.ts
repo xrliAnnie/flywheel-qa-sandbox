@@ -11,8 +11,10 @@
  * - Wake mode: builtin-receiver — claude-code's internal `useInboxPoller`
  *   handles delivery, so `createReceiver()` returns null.
  * - Mailbox path: `<CLAUDE_CONFIG_DIR>/teams/<team>/inboxes/<agent>.json`
- *   (uses claude-code's native `CLAUDE_CONFIG_DIR` env, NOT
- *   `FLYWHEEL_TEAMS_DIR` — Codex r1 high #5).
+ *   (uses claude-code's native `CLAUDE_CONFIG_DIR` env — we deliberately
+ *   do NOT introduce a competing `FLYWHEEL_TEAMS_*` env var per Codex r1
+ *   high #5; that would create dual-truth-source paths that diverge from
+ *   what stock useInboxPoller polls).
  * - Codec: `ClaudeMailboxCodec` writes stock-compatible
  *   `TeammateMessage[]` + sidecar `.flywheel.jsonl` for caller-provided
  *   idempotency keys.
