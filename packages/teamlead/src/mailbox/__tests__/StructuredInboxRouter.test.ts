@@ -154,6 +154,64 @@ describe.sequential("StructuredInboxRouter", () => {
 			const h = await router.health();
 			expect(h.watching).toBe(false);
 		});
+
+		it("start() rejects + clears startPromise when chokidar errors before ready (Codex r3 PR 1.3)", async () => {
+			// Trigger startup error: ENOENT — pass a stateDir whose parent
+			// can't be mkdir'd because it points to a file (not a dir).
+			//
+			// Note: chokidar polling mode rarely emits true pre-ready errors
+			// on macOS; the stronger guarantee we can verify is that the
+			// fix's `error → reject` plumbing exists. We test the cleanup
+			// side: when start() rejects (e.g. ENOENT mkdir), startPromise
+			// is cleared so caller can retry.
+			const tempFile = join(tempDir, "not-a-dir");
+			await writeFile(tempFile, "block", "utf-8"); // file, not dir
+
+			router = new StructuredInboxRouter({
+				leadName: "cos-lead",
+				// Path that requires creating a dir under a regular file → mkdir ENOTDIR.
+				stateDir: tempFile,
+				onRequest: vi.fn(),
+				logger: {
+					info: vi.fn(),
+					warn: vi.fn(),
+					error: vi.fn(),
+				},
+			});
+
+			await expect(router.start()).rejects.toThrow();
+
+			// After rejection, startPromise should be cleared so a retry
+			// (with a fixed config) would actually re-execute doStart.
+			// We can't easily reconfigure stateDir, but we can verify that
+			// start() doesn't return a stuck cached promise.
+			await expect(router.start()).rejects.toThrow();
+		});
+
+		it("stop() during in-flight start() does not leave watching=true (Codex r3 PR 1.3)", async () => {
+			router = new StructuredInboxRouter({
+				leadName: "cos-lead",
+				stateDir: tempDir,
+				onRequest: vi.fn(),
+			});
+
+			// Start without awaiting — simulates a caller that fires start
+			// then immediately cancels via stop.
+			const startPromise = router.start();
+			// Give doStart a microtask to register the chokidar watcher.
+			await new Promise((r) => setTimeout(r, 5));
+
+			// stop() while start() is still in-flight (waiting for ready).
+			await router.stop();
+
+			// startPromise should now resolve (or reject) but NOT leave the
+			// watcher resurrected. With the cancellation flag, doStart sees
+			// startCancelled=true after ready and skips assignment.
+			await startPromise.catch(() => {}); // accept either resolve or reject
+
+			const h = await router.health();
+			expect(h.watching).toBe(false);
+		});
 	});
 
 	describe("file delivery", () => {

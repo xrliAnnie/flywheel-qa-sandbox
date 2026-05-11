@@ -123,7 +123,23 @@ export class StructuredInboxRouter {
 		}
 	}
 
+	/**
+	 * Cancellation flag set by `stop()` to abort in-flight `doStart()` —
+	 * Codex r3 PR 1.3 MEDIUM. Without this, calling `stop()` while `start()`
+	 * is mid-flight (waiting for chokidar `ready`) would leave the local
+	 * `watcher` to be assigned to `this.watcher` post-stop, resurrecting
+	 * the watcher after intended shutdown.
+	 */
+	private startCancelled = false;
+	/**
+	 * Track the in-flight startup watcher so `stop()` can close it even
+	 * before `ready` fires. Without this, `stop()` has no handle to a
+	 * watcher that hasn't yet been assigned to `this.watcher`.
+	 */
+	private startupWatcher: FSWatcher | null = null;
+
 	private async doStart(): Promise<void> {
+		this.startCancelled = false;
 		// Ensure both directories exist before chokidar attaches (chokidar
 		// silently fails to detect adds if the watched dir doesn't exist
 		// at start time — only later on dir create).
@@ -149,6 +165,8 @@ export class StructuredInboxRouter {
 			interval: 200,
 			binaryInterval: 200,
 		});
+		// Track for stop() — Codex r3 fix.
+		this.startupWatcher = watcher;
 
 		watcher.on("add", (path) => {
 			this.handleFile(path).catch((err) => {
@@ -159,20 +177,61 @@ export class StructuredInboxRouter {
 			});
 		});
 
+		// Wait for chokidar to complete initial scan + be ready for new events.
+		// Codex r3 PR 1.3 MEDIUM: also reject on chokidar error before ready,
+		// so callers get a real failure (and can retry) instead of a stuck
+		// promise. Both listeners are removed on settle to avoid late firing.
+		try {
+			await new Promise<void>((resolve, reject) => {
+				const onReady = () => {
+					watcher.off("error", onError);
+					resolve();
+				};
+				const onError = (err: unknown) => {
+					watcher.off("ready", onReady);
+					reject(
+						err instanceof Error
+							? err
+							: new Error(`chokidar error: ${String(err)}`),
+					);
+				};
+				watcher.once("ready", onReady);
+				watcher.once("error", onError);
+			});
+		} catch (err) {
+			// Startup error: clean up the watcher so it doesn't keep polling
+			// in the background. Throw so the caller sees the failure and can
+			// retry start() (the start() wrapper clears `startPromise` on throw).
+			await watcher.close().catch(() => {});
+			this.startupWatcher = null;
+			this.logger.error("[StructuredInboxRouter] startup error", {
+				error: (err as Error).message,
+			});
+			throw err;
+		}
+
+		// Cancellation check: if stop() was called while we were waiting for
+		// ready, do NOT assign this.watcher (resurrects shutdown watcher).
+		// Close the watcher and silently return — stop() handled cleanup.
+		if (this.startCancelled) {
+			await watcher.close().catch(() => {});
+			this.startupWatcher = null;
+			this.logger.info("[StructuredInboxRouter] startup cancelled by stop()", {
+				leadName: this.options.leadName,
+			});
+			return;
+		}
+
+		this.watcher = watcher;
+		this.startupWatcher = null;
+
+		// Attach a long-lived error handler now that startup succeeded.
+		// (Pre-ready errors went to the rejector; post-ready go here.)
 		watcher.on("error", (err) => {
 			this.logger.error("[StructuredInboxRouter] watcher error", {
 				error: (err as Error).message,
 			});
 		});
-
-		// Wait for chokidar to complete initial scan + be ready for new events.
-		// Per Codex r2 MEDIUM #2: assign `this.watcher` AFTER ready resolves,
-		// so a concurrent `start()` caller can't see the watcher field set
-		// while the initial scan is still in progress.
-		await new Promise<void>((resolve) => {
-			watcher.once("ready", () => resolve());
-		});
-		this.watcher = watcher;
 
 		this.logger.info("[StructuredInboxRouter] started", {
 			leadName: this.options.leadName,
@@ -182,17 +241,38 @@ export class StructuredInboxRouter {
 
 	/**
 	 * Stop watching and clean up. Idempotent.
+	 *
+	 * Codex r3 PR 1.3 MEDIUM: also cancels in-flight `doStart()` so a
+	 * watcher that hasn't yet been assigned to `this.watcher` can't
+	 * resurrect after stop returns. Awaits the in-flight startup promise
+	 * (if any) so caller sees the watcher fully closed before resolving.
 	 */
 	async stop(): Promise<void> {
-		if (!this.watcher) {
-			// Even with no watcher, clear startPromise in case stop() is
-			// called between start() initiation and ready (e.g. test cleanup
-			// in beforeEach failure path).
-			this.startPromise = null;
-			return;
+		// Set cancel flag BEFORE awaiting anything — closes the gap where
+		// doStart sees this.startCancelled=false then immediately gets
+		// preempted by stop()'s assignment.
+		this.startCancelled = true;
+
+		// Close in-flight startup watcher (if any). Its handle is in
+		// `startupWatcher` from the start of doStart, before ready.
+		if (this.startupWatcher) {
+			await this.startupWatcher.close().catch(() => {});
+			this.startupWatcher = null;
 		}
-		await this.watcher.close();
-		this.watcher = null;
+
+		// Await any in-flight startPromise so doStart's cancellation cleanup
+		// runs before stop() returns. Swallow errors — startup error rejection
+		// is fine (already-cleaned-up watcher).
+		if (this.startPromise) {
+			await this.startPromise.catch(() => {});
+		}
+
+		// Close the assigned watcher (if start succeeded).
+		if (this.watcher) {
+			await this.watcher.close();
+			this.watcher = null;
+		}
+
 		this.startPromise = null;
 		this.delivered.clear();
 		this.inFlight.clear();
