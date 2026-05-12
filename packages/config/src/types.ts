@@ -88,18 +88,36 @@ export interface SkillsConfig {
 	land_command?: string;
 }
 
-/** Agent dispatch configuration — v0.6 Step 1 */
+/** Agent dispatch configuration — v0.6 Step 1; FLY-137 v1.27.2 dept-aware */
 export interface AgentConfig {
-	/** Relative path to agent executor file (e.g., .claude/agents/backend-executor.md). REQUIRED. */
+	/**
+	 * Relative path to agent executor file (e.g., `.flywheel/agents/<dept>/<role>-executor.md`
+	 * for dept-owned agents, or `.flywheel/agents/<role>-executor.md` for cross-dept catch-all).
+	 * REQUIRED. Path validation enforced by ConfigLoader via parsedDept() helper.
+	 */
 	agent_file: string;
 	/** Relative path to domain config file (e.g., .claude/domains/backend.md). Optional. */
 	domain_file?: string;
+	/**
+	 * FLY-137 v1.27.2: optional explicit department. If absent, auto-derived from
+	 * agent_file's first subdir under `.flywheel/agents/` (or `undefined` for top-level
+	 * cross-dept catch-all). ConfigLoader errors on mismatch between explicit value and
+	 * path-derived value.
+	 */
+	department?: string;
 	/** Dispatch matching rules */
 	match: {
-		/** Linear labels that map to this agent (case-insensitive) */
+		/**
+		 * Linear labels that map to this agent (case-insensitive). Multiple entries =
+		 * multi-alias (e.g. `["designer", "design", "ui", "ux"]` — any label hit matches).
+		 */
 		labels: string[];
-		/** Keywords fed to Haiku classifier as hints when no label match */
-		keywords: string[];
+		/**
+		 * @deprecated FLY-137 v1.27.1: Haiku classify step removed; keywords no longer consulted.
+		 * Kept optional for backward compat with existing config files. ConfigLoader accepts
+		 * the field if present (must still be array of strings) but never reads it at dispatch.
+		 */
+		keywords?: string[];
 	};
 }
 

@@ -10,8 +10,18 @@ export type {
 	UserIdentifier,
 	Workspace,
 } from "flywheel-core";
-export type { AgentDispatchResult, ClassifyFn } from "./AgentDispatcher.js";
-export { AgentDispatcher } from "./AgentDispatcher.js";
+export type {
+	AgentDispatchResult,
+	AgentFileRoot,
+	AgentMatchMethod,
+	DispatchOptions,
+} from "./AgentDispatcher.js";
+export {
+	AgentDispatcher,
+	InvalidAgentFilePathError,
+	InvalidAgentNameError,
+	parsedDept,
+} from "./AgentDispatcher.js";
 export { AgentSessionManager } from "./AgentSessionManager.js";
 export type {
 	AskUserQuestionHandlerConfig,

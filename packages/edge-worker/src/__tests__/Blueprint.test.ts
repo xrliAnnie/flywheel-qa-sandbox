@@ -1,3 +1,7 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -10,6 +14,7 @@ import { Blueprint } from "../Blueprint.js";
 import type { ExecutionEventEmitter } from "../ExecutionEventEmitter.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
+import type { WorktreeManager } from "../WorktreeManager.js";
 
 // ─── Helpers ─────────────────────────────────────
 
@@ -491,6 +496,7 @@ describe("Blueprint", () => {
 		): ExecutionEventEmitter {
 			return {
 				emitStarted: vi.fn(async () => {}),
+				emitWorktreeReady: vi.fn(async () => {}),
 				emitCompleted: vi.fn(async () => {}),
 				emitFailed: vi.fn(async () => {}),
 				emitHeartbeat: vi.fn(async () => {}),
@@ -498,6 +504,167 @@ describe("Blueprint", () => {
 				...overrides,
 			};
 		}
+
+		// FLY-137: Verify Blueprint awaits emitWorktreeReady BEFORE adapter
+		// starts, so Bridge has persisted session.worktree_path before any
+		// stage event can fire.
+		it("awaits emitWorktreeReady AFTER worktree.create() and BEFORE adapter.execute()", async () => {
+			const order: string[] = [];
+			const realWorktreePath = join(
+				tmpdir(),
+				`bp-wt-ready-${Date.now()}-${Math.random()}`,
+			);
+			mkdirSync(realWorktreePath, { recursive: true });
+			execFileSync("git", ["init", "-q"], { cwd: realWorktreePath });
+
+			const stubWorktreeManager = {
+				removeIfExists: vi.fn(async () => {
+					order.push("worktree.removeIfExists");
+				}),
+				create: vi.fn(async () => {
+					order.push("worktree.create");
+					return {
+						worktreePath: realWorktreePath,
+						branch: "feat/bp-wt-test",
+					};
+				}),
+			} as unknown as WorktreeManager;
+
+			const emitter = makeStubEmitter({
+				emitWorktreeReady: vi.fn(async (_env, wt) => {
+					// Slow patch so we can verify adapter.execute waits.
+					await new Promise((r) => setTimeout(r, 25));
+					order.push(`emitWorktreeReady:${wt}`);
+				}),
+			});
+
+			const adapter: IAdapter = {
+				type: "mock",
+				supportsStreaming: false,
+				checkEnvironment: async () => ({ healthy: true, message: "mock" }),
+				execute: vi.fn(async () => {
+					order.push("adapter.execute");
+					return {
+						success: true,
+						sessionId: "s",
+						durationMs: 1,
+					};
+				}),
+			};
+
+			const blueprint = new Blueprint(
+				makeHydrator(),
+				makeMockGitChecker({ commitCount: 1 }),
+				() => adapter,
+				makeMockShell(),
+				stubWorktreeManager,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				emitter,
+			);
+
+			try {
+				await blueprint.run(makeNode(), "/project", makeContext());
+				// Order: removeIfExists → create → emitWorktreeReady → execute
+				const createIdx = order.indexOf("worktree.create");
+				const emitIdx = order.findIndex((s) =>
+					s.startsWith("emitWorktreeReady:"),
+				);
+				const execIdx = order.indexOf("adapter.execute");
+				expect(createIdx).toBeGreaterThanOrEqual(0);
+				expect(emitIdx).toBeGreaterThan(createIdx);
+				expect(execIdx).toBeGreaterThan(emitIdx);
+				// And the payload carries the actual worktree path.
+				expect(order[emitIdx]).toBe(`emitWorktreeReady:${realWorktreePath}`);
+				expect(emitter.emitWorktreeReady).toHaveBeenCalledWith(
+					expect.objectContaining({ executionId: "test-exec-id" }),
+					realWorktreePath,
+				);
+			} finally {
+				rmSync(realWorktreePath, { recursive: true, force: true });
+			}
+		});
+
+		it("does NOT call emitWorktreeReady when no worktreeManager is configured", async () => {
+			const emitter = makeStubEmitter();
+			const blueprint = new Blueprint(
+				makeHydrator(),
+				makeMockGitChecker({ commitCount: 1 }),
+				() => makeMockAdapter(),
+				makeMockShell(),
+				undefined, // no worktreeManager
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				emitter,
+			);
+			await blueprint.run(makeNode(), "/project", makeContext());
+			expect(emitter.emitWorktreeReady).not.toHaveBeenCalled();
+		});
+
+		it("swallows emitWorktreeReady failures and continues to adapter", async () => {
+			const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+			const realWorktreePath = join(
+				tmpdir(),
+				`bp-wt-fail-${Date.now()}-${Math.random()}`,
+			);
+			mkdirSync(realWorktreePath, { recursive: true });
+			execFileSync("git", ["init", "-q"], { cwd: realWorktreePath });
+
+			const stubWorktreeManager = {
+				removeIfExists: vi.fn(async () => {}),
+				create: vi.fn(async () => ({
+					worktreePath: realWorktreePath,
+					branch: "feat/bp-wt-fail",
+				})),
+			} as unknown as WorktreeManager;
+
+			const adapterExec = vi.fn(async () => ({
+				success: true,
+				sessionId: "s",
+				durationMs: 1,
+			}));
+			const adapter: IAdapter = {
+				type: "mock",
+				supportsStreaming: false,
+				checkEnvironment: async () => ({ healthy: true, message: "mock" }),
+				execute: adapterExec,
+			};
+
+			const emitter = makeStubEmitter({
+				emitWorktreeReady: vi.fn(async () => {
+					throw new Error("bridge unreachable");
+				}),
+			});
+
+			const blueprint = new Blueprint(
+				makeHydrator(),
+				makeMockGitChecker({ commitCount: 1 }),
+				() => adapter,
+				makeMockShell(),
+				stubWorktreeManager,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				emitter,
+			);
+
+			try {
+				await blueprint.run(makeNode(), "/project", makeContext());
+				// Adapter still ran despite emit failure
+				expect(adapterExec).toHaveBeenCalled();
+				expect(warnSpy).toHaveBeenCalledWith(
+					expect.stringContaining("emitWorktreeReady failed"),
+				);
+			} finally {
+				warnSpy.mockRestore();
+				rmSync(realWorktreePath, { recursive: true, force: true });
+			}
+		});
 
 		it("awaits emitCompleted on success path", async () => {
 			const order: string[] = [];

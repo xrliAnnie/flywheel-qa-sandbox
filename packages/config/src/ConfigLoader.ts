@@ -162,6 +162,12 @@ export class ConfigLoader {
 			);
 		}
 		if (agents && typeof agents === "object") {
+			// FLY-137 v1.27.2: "generic" is reserved (shipped fallback in AgentDispatcher).
+			if ("generic" in agents) {
+				throw new Error(
+					'agents.generic: "generic" is reserved by Flywheel for the shipped-generic fallback. Pick a different agent name.',
+				);
+			}
 			for (const [name, agentRaw] of Object.entries(agents)) {
 				const agent = agentRaw as Record<string, unknown>;
 				if (!agent.agent_file || typeof agent.agent_file !== "string") {
@@ -169,10 +175,8 @@ export class ConfigLoader {
 						`agents.${name}: missing required field "agent_file"`,
 					);
 				}
-				this.validateAgentPath(
-					agent.agent_file as string,
-					`agents.${name}.agent_file`,
-				);
+				const agentFile = agent.agent_file as string;
+				this.validateAgentPath(agentFile, `agents.${name}.agent_file`);
 				if (agent.domain_file != null) {
 					if (typeof agent.domain_file !== "string") {
 						throw new Error(`agents.${name}.domain_file must be a string`);
@@ -182,7 +186,28 @@ export class ConfigLoader {
 						`agents.${name}.domain_file`,
 					);
 				}
-				// match is required with labels and keywords arrays
+				// FLY-137 v1.27.2: optional `department` field with bidirectional consistency check.
+				const explicitDept = agent.department;
+				if (explicitDept != null && typeof explicitDept !== "string") {
+					throw new Error(`agents.${name}.department must be a string`);
+				}
+				const pathDept = this.parseAgentDept(
+					agentFile,
+					`agents.${name}.agent_file`,
+				);
+				if (typeof explicitDept === "string") {
+					if (pathDept === null) {
+						throw new Error(
+							`agents.${name}: agent_file "${agentFile}" is at top-level (no dept dir) but department: "${explicitDept}" is declared. Top-level agents must omit the department field.`,
+						);
+					}
+					if (pathDept !== explicitDept) {
+						throw new Error(
+							`agents.${name}.department="${explicitDept}" mismatches agent_file path "${agentFile}" (expected department="${pathDept}").`,
+						);
+					}
+				}
+				// match validation
 				if (!agent.match || typeof agent.match !== "object") {
 					throw new Error(`agents.${name}: missing required field "match"`);
 				}
@@ -195,15 +220,21 @@ export class ConfigLoader {
 						`agents.${name}.match.labels must contain only strings`,
 					);
 				}
-				if (!Array.isArray(match.keywords)) {
-					throw new Error(`agents.${name}.match.keywords must be an array`);
-				}
-				if (
-					!(match.keywords as unknown[]).every((k) => typeof k === "string")
-				) {
-					throw new Error(
-						`agents.${name}.match.keywords must contain only strings`,
-					);
+				// FLY-137 v1.27.1: `match.keywords` is now optional (Haiku step dropped).
+				// Validate ONLY if the field is present.
+				if (match.keywords != null) {
+					if (!Array.isArray(match.keywords)) {
+						throw new Error(
+							`agents.${name}.match.keywords must be an array (if present)`,
+						);
+					}
+					if (
+						!(match.keywords as unknown[]).every((k) => typeof k === "string")
+					) {
+						throw new Error(
+							`agents.${name}.match.keywords must contain only strings`,
+						);
+					}
 				}
 			}
 		}
@@ -237,5 +268,42 @@ export class ConfigLoader {
 				`${fieldName}: agent path must not escape repo, got "${relativePath}"`,
 			);
 		}
+	}
+
+	/**
+	 * FLY-137 v1.27.2: extract dept from `.flywheel/agents/<dept>/<file>.md` paths.
+	 * Returns:
+	 *   - `null` for `.flywheel/agents/<file>.md` (top-level catch-all, depth 0)
+	 *   - `<dept>` (string) for `.flywheel/agents/<dept>/<file>.md` (dept-owned, depth 1)
+	 * Throws on:
+	 *   - paths not starting with `.flywheel/agents/` (legacy `.claude/agents/...` is hard-errored
+	 *     — operators run `flywheel migrate-agents-path` to fix)
+	 *   - depth ≥ 2 (nested subdirs not supported in v1.27.2)
+	 */
+	private parseAgentDept(agentFile: string, fieldName: string): string | null {
+		const prefix = ".flywheel/agents/";
+		if (!agentFile.startsWith(prefix)) {
+			throw new Error(
+				`${fieldName}: agent_file must live under ".flywheel/agents/", got "${agentFile}". ` +
+					`If this is a legacy ".claude/agents/" reference, run \`flywheel migrate-agents-path\` to update.`,
+			);
+		}
+		const rest = agentFile.slice(prefix.length);
+		if (rest.length === 0) {
+			throw new Error(
+				`${fieldName}: agent_file cannot be the agents/ directory itself`,
+			);
+		}
+		const segments = rest.split("/");
+		if (segments.length === 1) return null;
+		if (segments.length === 2) {
+			if (segments[0]!.length === 0) {
+				throw new Error(`${fieldName}: empty dept segment in "${agentFile}"`);
+			}
+			return segments[0]!;
+		}
+		throw new Error(
+			`${fieldName}: nested subdirs not supported (depth ${segments.length - 1}); v1.27.2 allows only flat .flywheel/agents/<dept>/<file>.md`,
+		);
 	}
 }

@@ -72,6 +72,14 @@ export interface SessionUpsert {
 	stage_updated_at?: string;
 	/** FLY-59: Session role for multi-session-per-issue */
 	session_role?: string;
+	/** FLY-137 Phase 5: agent dispatch (Lead override or label match) */
+	agent_name?: string;
+	/** FLY-137 Phase 5: how the agent was selected — "override" | "label" | "generic" */
+	agent_match_method?: string;
+	/** FLY-137 Phase 5: design_review plan path (set via `stage set design_review --plan ...`) */
+	plan_path?: string;
+	/** FLY-137 Phase 5: codex-skip label snapshotted at run start (0|1) */
+	codex_skip?: number;
 }
 
 export interface Session {
@@ -111,6 +119,14 @@ export interface Session {
 	stage_updated_at?: string;
 	/** FLY-59: Session role for multi-session-per-issue */
 	session_role?: string;
+	/** FLY-137 Phase 5: agent dispatch (Lead override or label match) */
+	agent_name?: string;
+	/** FLY-137 Phase 5: how the agent was selected — "override" | "label" | "generic" */
+	agent_match_method?: string;
+	/** FLY-137 Phase 5: design_review plan path (set via `stage set design_review --plan ...`) */
+	plan_path?: string;
+	/** FLY-137 Phase 5: codex-skip label snapshotted at run start (boolean) */
+	codex_skip?: boolean;
 }
 
 export interface CleanupCandidate {
@@ -349,6 +365,32 @@ export class StateStore {
 		try {
 			this.db.run(
 				"ALTER TABLE sessions ADD COLUMN session_role TEXT DEFAULT 'main'",
+			);
+		} catch {
+			/* exists */
+		}
+
+		// FLY-137 Phase 5: agent dispatch + Codex auto-trigger persistence.
+		// All four columns are NULL-able / defaulted so existing rows are
+		// backward-compatible with no migration data step required.
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN agent_name TEXT");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN agent_match_method TEXT");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN plan_path TEXT");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run(
+				"ALTER TABLE sessions ADD COLUMN codex_skip INTEGER NOT NULL DEFAULT 0",
 			);
 		} catch {
 			/* exists */
@@ -720,6 +762,11 @@ export class StateStore {
 			pr_number: "pr_number",
 			session_stage: "session_stage",
 			stage_updated_at: "stage_updated_at",
+			// FLY-137 Phase 5: agent dispatch + Codex auto-trigger persistence
+			agent_name: "agent_name",
+			agent_match_method: "agent_match_method",
+			plan_path: "plan_path",
+			codex_skip: "codex_skip",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -1334,6 +1381,11 @@ export class StateStore {
 			session_stage: (row.session_stage as string) ?? undefined,
 			stage_updated_at: (row.stage_updated_at as string) ?? undefined,
 			session_role: (row.session_role as string) ?? undefined,
+			// FLY-137 Phase 5: agent dispatch + Codex auto-trigger persistence
+			agent_name: (row.agent_name as string) ?? undefined,
+			agent_match_method: (row.agent_match_method as string) ?? undefined,
+			plan_path: (row.plan_path as string) ?? undefined,
+			codex_skip: row.codex_skip ? !!(row.codex_skip as number) : undefined,
 		};
 	}
 

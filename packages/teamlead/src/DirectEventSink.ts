@@ -233,6 +233,48 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.pushNotification(env, "session_started");
 	}
 
+	/**
+	 * FLY-137: In-process counterpart to TeamLeadClient.emitWorktreeReady.
+	 * Persists `session.worktree_path` immediately so downstream stage
+	 * handlers (Codex auto-trigger / skip.json) write into the Runner's
+	 * actual cwd.
+	 *
+	 * Codex R2 #1 fix: even though `emitStarted` runs its sync
+	 * `store.upsertSession` before any await, future refactors might
+	 * change that. Defensive upsert ensures `worktree_path` lands
+	 * regardless of whether `emitStarted` has populated the row first.
+	 */
+	async emitWorktreeReady(
+		env: EventEnvelope,
+		worktreePath: string,
+	): Promise<void> {
+		if (!worktreePath || worktreePath.length === 0) {
+			console.warn(
+				`[DirectEventSink] emitWorktreeReady for ${env.executionId} called with empty worktreePath`,
+			);
+			return;
+		}
+		const existing = this.store.getSession(env.executionId);
+		if (!existing) {
+			// Codex R3 #1 fix: leave status as `pending` so the later
+			// session_started FSM transition (`pending → running`) is
+			// legal. Upserting as `running` here would cause WorkflowFSM
+			// to reject `running → running` and skip labels/title/thread
+			// initialization in the started handler.
+			this.store.upsertSession({
+				execution_id: env.executionId,
+				issue_id: env.issueId,
+				project_name: env.projectName,
+				status: "pending",
+				worktree_path: worktreePath,
+			});
+			return;
+		}
+		this.store.patchSessionMetadata(env.executionId, {
+			worktree_path: worktreePath,
+		});
+	}
+
 	async emitCompleted(
 		env: EventEnvelope,
 		result: BlueprintResult,

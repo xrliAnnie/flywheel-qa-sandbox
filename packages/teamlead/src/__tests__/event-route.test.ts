@@ -1449,6 +1449,73 @@ describe("Event route — GEO-292 stage tracking", () => {
 			expect(store.getSession("exec-1")!.status).toBe("completed");
 		});
 	});
+
+	// FLY-137 Codex R3 #1: worktree_ready can race ahead of
+	// session_started (started is fire-and-forget non-retrying;
+	// worktree_ready is reliable+retried). Upserting the row as
+	// `running` in worktree_ready would make the later
+	// `session_started → running` FSM transition illegal
+	// (`running → running` is not in WORKFLOW_TRANSITIONS) and the
+	// started handler would skip labels/identifier/thread init.
+	describe("FLY-137: worktree_ready before session_started", () => {
+		it("upserts row as pending so session_started's FSM transition is legal", async () => {
+			// 1) worktree_ready arrives first (no prior row).
+			const lateExecId = "exec-race-wt-first";
+			expect(store.getSession(lateExecId)).toBeUndefined();
+			const r1 = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify({
+					event_id: "evt-wt-race-1",
+					execution_id: lateExecId,
+					issue_id: "issue-race",
+					project_name: "geoforge3d",
+					event_type: "worktree_ready",
+					payload: { worktreePath: "/tmp/race-wt" },
+				}),
+			});
+			expect(r1.status).toBe(200);
+
+			const seeded = store.getSession(lateExecId);
+			expect(seeded?.status).toBe("pending");
+			expect(seeded?.worktree_path).toBe("/tmp/race-wt");
+
+			// 2) session_started lands second — must succeed via
+			//    `pending → running` (legal in WORKFLOW_TRANSITIONS).
+			//    Labels + identifier + stage must populate.
+			const r2 = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify({
+					event_id: "evt-started-race",
+					execution_id: lateExecId,
+					issue_id: "issue-race",
+					project_name: "geoforge3d",
+					event_type: "session_started",
+					payload: {
+						issueIdentifier: "GEO-RACE",
+						issueTitle: "race",
+						labels: ["Product", "backend"],
+					},
+				}),
+			});
+			expect(r2.status).toBe(200);
+
+			const after = store.getSession(lateExecId);
+			expect(after?.status).toBe("running");
+			expect(after?.issue_identifier).toBe("GEO-RACE");
+			expect(after?.issue_title).toBe("race");
+			expect(after?.session_stage).toBe("started");
+			// worktree_path preserved from the earlier upsert.
+			expect(after?.worktree_path).toBe("/tmp/race-wt");
+		});
+	});
 });
 
 // GEO-202: issue_identifier must never be null in sessions

@@ -1,4 +1,8 @@
+import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { Router } from "express";
+import { CommDB } from "flywheel-comm/db";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import {
@@ -82,6 +86,249 @@ function formatNotification(session: Session, eventType: string): string {
 			return `[Started] ${id}: ${session.issue_title ?? ""}`;
 		default:
 			return `[${eventType}] ${id}`;
+	}
+}
+
+// ---------------------------------------------------------------------------
+// FLY-137 Phase 5: Codex auto-trigger helpers.
+//
+// On `stage_changed` to `design_review` or `pr_created`, Bridge either:
+//   (a) writes a skip.json marker under the Runner's worktree codex dir
+//       (when codex-skip label was snapshotted at run start), so the
+//       Runner's `await-codex-gate` bypass-exits 0 immediately; OR
+//   (b) writes a CommDB instruction telling the Runner to run
+//       `/codex-design-review <plan>` or `/codex-code-review`, then call
+//       `flywheel-comm await-codex-gate <type>` before advancing stages.
+//
+// Bridge ONLY writes skip.json — Runner/Codex writes the result JSON
+// (design-review.json / code-review.json). This keeps the gate from
+// being self-authorizing.
+// ---------------------------------------------------------------------------
+
+function commDbPathForProject(projectName: string): string {
+	return join(homedir(), ".flywheel", "comm", projectName, "comm.db");
+}
+
+/**
+ * Resolve the Runner worktree path for the session. Falls back to
+ * `${HOME}/Dev/<projectName>/worktrees/<execId>` only if session is
+ * missing — normally Blueprint patches `worktree_path` after worktree
+ * creation, so the stored value should be present by the time
+ * design_review or pr_created fires.
+ */
+function resolveWorktreeForCodex(
+	session: Session | undefined,
+	projectName: string,
+	executionId: string,
+): string {
+	if (session?.worktree_path && session.worktree_path.length > 0) {
+		return session.worktree_path;
+	}
+	// Defensive fallback. Logged by caller.
+	return join(homedir(), "Dev", projectName, "worktrees", executionId);
+}
+
+/**
+ * Atomically write a JSON payload into the codex dir under
+ * `<worktree>/.flywheel/runs/<execId>/codex/<file>`. Writes to a tmp
+ * file then `rename()` (POSIX atomic). Returns the resolved absolute
+ * path on success; throws on error (caller handles).
+ */
+function writeCodexJsonAtomic(
+	worktree: string,
+	executionId: string,
+	fileName: string,
+	payload: unknown,
+): string {
+	const dir = resolvePath(worktree, ".flywheel", "runs", executionId, "codex");
+	mkdirSync(dir, { recursive: true });
+	const finalPath = join(dir, fileName);
+	const tmpPath = `${finalPath}.tmp`;
+	writeFileSync(tmpPath, JSON.stringify(payload, null, 2));
+	renameSync(tmpPath, finalPath);
+	return finalPath;
+}
+
+function isSafePlanPath(planPath: string): boolean {
+	if (typeof planPath !== "string" || planPath.length === 0) return false;
+	if (isAbsolute(planPath)) return false;
+	if (planPath.split("/").some((seg) => seg === "..")) return false;
+	return true;
+}
+
+/**
+ * Resolve the review type from a stage transition target.
+ * - `design_review` → "design"
+ * - `pr_created`    → "code"
+ * - anything else   → null (no auto-trigger)
+ */
+function codexReviewTypeFor(stage: string): "design" | "code" | null {
+	if (stage === "design_review") return "design";
+	if (stage === "pr_created") return "code";
+	return null;
+}
+
+/**
+ * Build the Runner-targeted instruction text for design/code review.
+ */
+function buildCodexInstruction(
+	reviewType: "design" | "code",
+	planPath: string | undefined,
+	executionId: string,
+): string {
+	if (reviewType === "design") {
+		const target =
+			planPath ?? "<MISSING — re-run stage set design_review --plan <path>>";
+		return [
+			`[FLY-137] Codex design review required for exec=${executionId}.`,
+			`Run: /codex-design-review ${target}`,
+			`Iterate on findings until Codex returns APPROVED. Write the approved`,
+			`result to .flywheel/runs/${executionId}/codex/design-review.json with`,
+			`schema {executionId, reviewType:"design", status:"APPROVED",`,
+			`reviewedTarget:"${target}", timestamp:<ISO-8601>, rounds:<int>,`,
+			`codexThreadId:<string>}.`,
+			`Then call \`flywheel-comm await-codex-gate design --exec-id ${executionId}\``,
+			`before \`flywheel-comm stage set implement\`. The gate command is`,
+			`fail-closed; it will block until the result file or a skip marker`,
+			`appears.`,
+		].join(" ");
+	}
+	return [
+		`[FLY-137] Codex code review required for exec=${executionId}.`,
+		`Run: /codex-code-review`,
+		`Iterate on findings until Codex returns APPROVED. Write the approved`,
+		`result to .flywheel/runs/${executionId}/codex/code-review.json with`,
+		`schema {executionId, reviewType:"code", status:"APPROVED",`,
+		`reviewedTarget:"<pr-url>", timestamp:<ISO-8601>, rounds:<int>,`,
+		`codexThreadId:<string>}.`,
+		`Then call \`flywheel-comm await-codex-gate code --exec-id ${executionId}\``,
+		`before \`flywheel-comm stage set approve\`. The gate command is`,
+		`fail-closed; it will block until the result file or a skip marker`,
+		`appears.`,
+	].join(" ");
+}
+
+/**
+ * Handle stage_changed → design_review / pr_created. Reads session
+ * state (codex_skip + worktree_path + plan_path) and either writes
+ * skip.json or writes a CommDB instruction to the Runner inbox.
+ * Failures are logged + non-fatal; the parent stage transition still
+ * succeeds.
+ */
+function handleCodexAutoTrigger(
+	store: StateStore,
+	event: IngestEvent,
+	stage: string,
+	payloadPlanPath: string | undefined,
+): void {
+	const reviewType = codexReviewTypeFor(stage);
+	if (!reviewType) return;
+
+	const session = store.getSession(event.execution_id);
+	const worktree = resolveWorktreeForCodex(
+		session,
+		event.project_name,
+		event.execution_id,
+	);
+
+	// Persist plan_path from the payload (if provided + safe). Even on
+	// the skip path we still record it for audit/diagnostics.
+	if (reviewType === "design" && payloadPlanPath !== undefined) {
+		if (!isSafePlanPath(payloadPlanPath)) {
+			console.warn(
+				`[codex-trigger] unsafe plan_path rejected for ${event.execution_id}: ${payloadPlanPath}`,
+			);
+		} else {
+			store.patchSessionMetadata(event.execution_id, {
+				plan_path: payloadPlanPath,
+			});
+		}
+	}
+
+	const refreshedSession = store.getSession(event.execution_id);
+	const codexSkip = !!refreshedSession?.codex_skip;
+	const persistedPlanPath = refreshedSession?.plan_path;
+
+	if (codexSkip) {
+		try {
+			const skipPath = writeCodexJsonAtomic(
+				worktree,
+				event.execution_id,
+				"skip.json",
+				{
+					executionId: event.execution_id,
+					reviewType,
+					reason: "codex-skip-label",
+					timestamp: new Date().toISOString(),
+				},
+			);
+			console.log(
+				`[codex-trigger] skip ${reviewType} review for ${event.execution_id} (codex-skip label) → ${skipPath}`,
+			);
+		} catch (err) {
+			console.warn(
+				`[codex-trigger] failed to write skip.json for ${event.execution_id}: ${(err as Error).message}`,
+			);
+		}
+		return;
+	}
+
+	// Missing plan_path on design_review → fail-closed instruction so
+	// Runner re-issues stage with --plan; await-codex-gate will time
+	// out (no skip.json, no result) → Runner reports to Lead.
+	if (reviewType === "design" && !persistedPlanPath) {
+		try {
+			const dbPath = commDbPathForProject(event.project_name);
+			mkdirSync(dirname(dbPath), { recursive: true });
+			const commDb = new CommDB(dbPath);
+			try {
+				commDb.insertInstruction(
+					"bridge",
+					event.execution_id,
+					[
+						`[FLY-137] ERROR: stage_changed to design_review requires --plan <relative-path>.`,
+						`Re-run: \`flywheel-comm stage set design_review --plan <path>\`.`,
+						`Codex design review was NOT triggered. Do not proceed to implement`,
+						`until --plan is provided. The await-codex-gate will time out`,
+						`without a skip marker or result file (fail-closed).`,
+					].join(" "),
+				);
+				console.log(
+					`[codex-trigger] missing plan_path — instruction sent to re-trigger for ${event.execution_id}`,
+				);
+			} finally {
+				commDb.close();
+			}
+		} catch (err) {
+			console.warn(
+				`[codex-trigger] failed to write missing-plan instruction for ${event.execution_id}: ${(err as Error).message}`,
+			);
+		}
+		return;
+	}
+
+	// Happy path: write the Codex review instruction to the Runner inbox.
+	try {
+		const dbPath = commDbPathForProject(event.project_name);
+		mkdirSync(dirname(dbPath), { recursive: true });
+		const commDb = new CommDB(dbPath);
+		try {
+			const content = buildCodexInstruction(
+				reviewType,
+				persistedPlanPath,
+				event.execution_id,
+			);
+			commDb.insertInstruction("bridge", event.execution_id, content);
+			console.log(
+				`[codex-trigger] queued ${reviewType} review instruction for ${event.execution_id}`,
+			);
+		} finally {
+			commDb.close();
+		}
+	} catch (err) {
+		console.warn(
+			`[codex-trigger] failed to write instruction for ${event.execution_id}: ${(err as Error).message}`,
+		);
 	}
 }
 
@@ -309,6 +556,60 @@ export function createEventRouter(
 								});
 						}
 					}
+				}
+			} else if (event.event_type === "worktree_ready") {
+				// FLY-137: Blueprint reports the resolved worktree path
+				// immediately after `WorktreeManager.create()` returns. We
+				// persist it on the session row so the Codex auto-trigger
+				// handlers (stage_changed=design_review / pr_created) and
+				// the `codex-skip` snapshot can write skip.json + review
+				// markers inside the Runner's actual cwd. Without this,
+				// downstream handlers fall back to a derived path the
+				// Runner cannot see and the await-codex-gate hangs until
+				// timeout.
+				//
+				// Codex R2 #1 fix: `emitStarted` is fire-and-forget while
+				// `emitWorktreeReady` is reliable (postEventReliable +
+				// retries). The worktree_ready POST can therefore land at
+				// Bridge BEFORE session_started's POST (especially if
+				// started's first attempt failed and silently gave up).
+				// `patchSessionMetadata` no-ops on missing rows, which
+				// would silently lose worktree_path. Defend by upserting
+				// a minimal running session when the row is absent — the
+				// later session_started POST will UPSERT and refresh the
+				// fields it cares about (started_at, labels, etc.) via
+				// COALESCE.
+				const worktreePath =
+					typeof payload.worktreePath === "string" &&
+					payload.worktreePath.length > 0
+						? payload.worktreePath
+						: undefined;
+				if (worktreePath) {
+					const existing = store.getSession(event.execution_id);
+					if (!existing) {
+						// Codex R3 #1 fix: when the row is created by
+						// worktree_ready (race condition with the fire-and-
+						// forget session_started POST), keep status as
+						// `pending` so the later session_started can apply
+						// the FSM-legal `pending → running` transition
+						// (running → running is rejected by WorkflowFSM and
+						// would skip labels/title/thread initialization).
+						store.upsertSession({
+							execution_id: event.execution_id,
+							issue_id: event.issue_id,
+							project_name: event.project_name,
+							status: "pending",
+							worktree_path: worktreePath,
+						});
+					} else {
+						store.patchSessionMetadata(event.execution_id, {
+							worktree_path: worktreePath,
+						});
+					}
+				} else {
+					console.warn(
+						`[event-route] worktree_ready event for ${event.execution_id} missing worktreePath payload`,
+					);
 				}
 			} else if (event.event_type === "session_completed") {
 				const decision = payload.decision as
@@ -730,6 +1031,16 @@ export function createEventRouter(
 						stage_updated_at: now,
 						last_activity_at: now,
 					});
+
+					// FLY-137 Phase 5: Codex auto-trigger fires on design_review
+					// and pr_created. Honors codex-skip label snapshot (writes
+					// skip.json), enforces plan_path requirement for design_review
+					// (fail-closed via missing-plan instruction), otherwise queues
+					// a CommDB instruction to the Runner inbox.
+					if (stage === "design_review" || stage === "pr_created") {
+						const planPath = asString(payload.plan_path);
+						handleCodexAutoTrigger(store, event, stage, planPath);
+					}
 
 					// FLY-60 W2: post-merge re-finalize path. When stage=completed
 					// and the payload carries `landing_status.status="merged"`, the

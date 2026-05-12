@@ -89,6 +89,38 @@ export function createRunsRouter(
 			return;
 		}
 
+		// FLY-137 v1.27.2: optional Lead override `agentName` body field.
+		// Semantics per Codex v1.27.0 Round 1 #2:
+		//   - undefined / null / missing → normal dispatch (no override)
+		//   - "" (empty string)          → reject with INVALID_AGENT_NAME
+		//   - non-empty string           → validate; reject if unknown; else override
+		// Final validation against the project's actual agents map happens via
+		// `AgentDispatcher.dispatchByName(...)` inside Blueprint at dispatch time;
+		// here we only sanity-check shape and reject empty strings.
+		const rawAgentName = req.body.agentName;
+		let agentName: string | undefined;
+		if (rawAgentName === undefined || rawAgentName === null) {
+			agentName = undefined;
+		} else if (typeof rawAgentName !== "string") {
+			res.status(400).json({
+				success: false,
+				code: "INVALID_AGENT_NAME",
+				reason: "wrong_type",
+				silent: false,
+			});
+			return;
+		} else if (rawAgentName.length === 0) {
+			res.status(400).json({
+				success: false,
+				code: "INVALID_AGENT_NAME",
+				reason: "empty_string",
+				silent: false,
+			});
+			return;
+		} else {
+			agentName = rawAgentName;
+		}
+
 		// FLY-59: Per-role dedup — same issue can have main + qa concurrently
 		const role =
 			(typeof sessionRole === "string" ? sessionRole : undefined) ?? "main";
@@ -299,6 +331,55 @@ export function createRunsRouter(
 			}
 		}
 
+		// FLY-137 v1.27.2: normalize labels ONCE at the Bridge boundary + resolve
+		// owningDept via DepartmentRegistry. Downstream consumers (StartRequest →
+		// BlueprintContext → AgentDispatcher) receive lowercased labels; dispatcher
+		// no longer re-lowercases per call.
+		const normalizedIssueLabels = issueLabelNames.map((l) => l.toLowerCase());
+		const owningDept = departmentRegistry.getDepartmentForIssue(
+			projectName,
+			normalizedIssueLabels,
+		);
+
+		// FLY-137 Phase 5: snapshot codex-skip label at run start (no mid-run
+		// Linear refresh). Semantics: "label the issue before triggering;
+		// if you forgot, cancel + retry." Bridge persists this on the session
+		// row so event-route's stage_changed handler can check it without
+		// touching Linear at transition time.
+		const codexSkip = normalizedIssueLabels.includes("codex-skip");
+
+		// FLY-137 v1.27.2 (Codex Track A #2): validate `agentName` SYNCHRONOUSLY
+		// before kicking off any async work. Without this, InvalidAgentNameError
+		// thrown deep inside Blueprint.run() gets swallowed by the .catch() chain
+		// in RunDispatcher.start() and never surfaces as a 400 response.
+		if (agentName !== undefined) {
+			const validation = startDispatcher.validateAgentName(
+				projectName,
+				agentName,
+			);
+			if (!validation.ok) {
+				if (validation.reason === "project_unknown") {
+					res.status(404).json({
+						success: false,
+						message: `Project "${projectName}" is not registered with the Bridge runtime`,
+					});
+					return;
+				}
+				// unknown_agent → FLY-127-shape machine-only payload
+				console.log(
+					`[runs/start] FLY-137 INVALID_AGENT_NAME: project="${projectName}" provided="${agentName}" available=${JSON.stringify(validation.available)}`,
+				);
+				res.status(400).json({
+					success: false,
+					code: "INVALID_AGENT_NAME",
+					reason: "unknown_agent",
+					available: validation.available,
+					silent: false,
+				});
+				return;
+			}
+		}
+
 		try {
 			// FLY-24: Pass pre-fetched title/identifier so Blueprint's EventEnvelope
 			// uses real metadata (PreHydrator may fail Linear API and fall back to stub title).
@@ -309,6 +390,12 @@ export function createRunsRouter(
 				issueTitle,
 				issueIdentifier,
 				sessionRole: role,
+				// FLY-137 v1.27.2: dept-aware dispatch context
+				agentName,
+				issueLabels: normalizedIssueLabels,
+				owningDept,
+				// FLY-137 Phase 5: Codex auto-trigger snapshot
+				codexSkip,
 			});
 
 			// FLY-24 + FLY-91: Poll for Forum thread_id AND chatThreadId.
@@ -338,6 +425,22 @@ export function createRunsRouter(
 				if (threadId && (chatThreadId || !chatChannel)) break;
 			}
 
+			// FLY-137 Phase 5: persist agent dispatch metadata + codex-skip
+			// snapshot now that the session row exists. patchSessionMetadata
+			// is a no-op (no rows) if Blueprint failed before emitStarted —
+			// the FLY-80 ghost-start guard below covers that case.
+			const persistedSession = store.getSession(result.executionId);
+			if (persistedSession) {
+				const matchMethod: string | undefined = agentName
+					? "override"
+					: undefined;
+				store.patchSessionMetadata(result.executionId, {
+					agent_name: agentName ?? undefined,
+					agent_match_method: matchMethod,
+					codex_skip: codexSkip ? 1 : 0,
+				});
+			}
+
 			// FLY-80: Verify session was actually registered (detect ghost starts).
 			// If Blueprint.run() failed before emitStarted(), no session exists.
 			const finalSession = store.getSession(result.executionId);
@@ -364,6 +467,26 @@ export function createRunsRouter(
 				message: `Runner started for ${issueId}`,
 			});
 		} catch (err) {
+			// FLY-137 v1.27.2: InvalidAgentNameError thrown from AgentDispatcher
+			// when Lead override `agentName` doesn't match any configured agent.
+			// Map to FLY-127-shaped machine-only diagnostic.
+			if (err instanceof Error && err.name === "InvalidAgentNameError") {
+				const e = err as Error & {
+					providedName?: string;
+					available?: string[];
+				};
+				console.log(
+					`[runs/start] FLY-137 INVALID_AGENT_NAME: provided="${e.providedName}" available=${JSON.stringify(e.available)}`,
+				);
+				res.status(400).json({
+					success: false,
+					code: "INVALID_AGENT_NAME",
+					reason: "unknown_agent",
+					available: e.available ?? [],
+					silent: false,
+				});
+				return;
+			}
 			const message = err instanceof Error ? err.message : String(err);
 			if (
 				message.includes("Max concurrent") ||

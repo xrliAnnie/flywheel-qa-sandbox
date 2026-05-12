@@ -48,6 +48,36 @@ export interface LeadConfig {
 	 * is normalized to a boolean (no `undefined`).
 	 */
 	canSpawnRunners?: boolean;
+	/**
+	 * FLY-137 v1.27.2: optional explicit department identifier. If absent,
+	 * `resolveLeadDepartment(lead)` derives it from `match.labels[0]?.toLowerCase()`.
+	 *
+	 * Used by `DepartmentRegistry.getLeadDepartment(projectName, leadId)` and
+	 * `getDepartmentForIssue(projectName, issueLabels)` to feed AgentDispatcher's
+	 * dept-aware step 2.
+	 */
+	department?: string;
+}
+
+/**
+ * FLY-137 v1.27.2: resolve a Lead's department.
+ *
+ * Returns the explicit `LeadConfig.department` if set, else falls back to
+ * the first match label (lowercased) — preserves backward compat with FLY-127
+ * label-based dispatch for projects that don't yet set `department` explicitly.
+ *
+ * Returns `undefined` only if both `department` is unset AND `match.labels` is
+ * empty (shouldn't happen after `loadProjects()` validation, but defensive).
+ */
+export function resolveLeadDepartment(lead: LeadConfig): string | undefined {
+	if (typeof lead.department === "string" && lead.department.length > 0) {
+		return lead.department;
+	}
+	const firstLabel = lead.match?.labels?.[0];
+	if (typeof firstLabel === "string" && firstLabel.length > 0) {
+		return firstLabel.toLowerCase();
+	}
+	return undefined;
 }
 
 export interface ProjectEntry {
@@ -163,6 +193,27 @@ export function loadProjects(): ProjectEntry[] {
 						`Project "${entry.projectName}" leads[${i}].match.labels: each label must be a non-empty string`,
 					);
 				}
+			}
+
+			// FLY-137 v1.27.2: validate optional department field (used by AgentDispatcher).
+			if (lead.department !== undefined) {
+				if (
+					typeof lead.department !== "string" ||
+					lead.department.length === 0
+				) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].department: if provided, must be a non-empty string`,
+					);
+				}
+			} else if (Array.isArray(match.labels) && match.labels.length > 1) {
+				// Warn (not error) when a Lead has multiple match labels AND no explicit
+				// department — first-label inference may not match intent.
+				console.warn(
+					`[loadProjects] Project "${entry.projectName}" leads[${i}] (agentId="${lead.agentId}") has ` +
+						`match.labels.length=${match.labels.length} but no explicit "department" field. ` +
+						`AgentDispatcher will derive dept from match.labels[0]="${match.labels[0]}" (lowercased). ` +
+						`Set "department" explicitly if this is wrong.`,
+				);
 			}
 
 			// GEO-253: validate optional statusTagMap
