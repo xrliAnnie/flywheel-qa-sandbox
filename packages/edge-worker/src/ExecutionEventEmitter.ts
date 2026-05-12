@@ -17,6 +17,15 @@ export interface EventEnvelope {
 
 export interface ExecutionEventEmitter {
 	emitStarted(env: EventEnvelope): Promise<void>;
+	/**
+	 * FLY-137: Notify Bridge that the worktree has been created so it can
+	 * persist `session.worktree_path` BEFORE the Runner can fire any stage
+	 * event (design_review / pr_created). Must be awaited by the caller —
+	 * stage handlers downstream rely on the session row carrying the right
+	 * worktree path, otherwise `skip.json` and review markers land in a
+	 * fallback directory the Runner can't see.
+	 */
+	emitWorktreeReady(env: EventEnvelope, worktreePath: string): Promise<void>;
 	emitCompleted(
 		env: EventEnvelope,
 		result: BlueprintResult,
@@ -112,6 +121,28 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 		// Dedicated heartbeat route — lightweight, no session_events, no lead notification
 		const p = this.postHeartbeat(env.executionId);
 		this.track(p);
+	}
+
+	/**
+	 * FLY-137: Worktree_ready — awaited by Blueprint after worktree
+	 * creation, before adapter execution. Uses the reliable post path so
+	 * the caller can rely on Bridge having persisted `worktree_path`
+	 * before any downstream stage handler runs.
+	 */
+	async emitWorktreeReady(
+		env: EventEnvelope,
+		worktreePath: string,
+	): Promise<void> {
+		await this.postEventReliable({
+			event_id: randomUUID(),
+			execution_id: env.executionId,
+			issue_id: env.issueId,
+			project_name: env.projectName,
+			event_type: "worktree_ready",
+			payload: {
+				worktreePath,
+			},
+		});
 	}
 
 	async flush(): Promise<void> {
@@ -242,6 +273,10 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 
 export class NoOpEventEmitter implements ExecutionEventEmitter {
 	async emitStarted(_env: EventEnvelope): Promise<void> {}
+	async emitWorktreeReady(
+		_env: EventEnvelope,
+		_worktreePath: string,
+	): Promise<void> {}
 	async emitCompleted(
 		_env: EventEnvelope,
 		_result: BlueprintResult,

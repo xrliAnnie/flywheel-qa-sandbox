@@ -189,6 +189,16 @@ describe("Start API E2E", () => {
 			issueTitle: "Test Issue",
 			issueIdentifier: "GEO-TEST",
 			sessionRole: "main",
+			// FLY-137 v1.27.2: dept-aware dispatch context threaded from
+			// runs-route. agentName omitted by default; issueLabels carries
+			// lowercased Linear labels; owningDept resolved via
+			// DepartmentRegistry from the "Product" mock label.
+			agentName: undefined,
+			issueLabels: ["product"],
+			owningDept: "product",
+			// FLY-137 Phase 5: codex-skip label snapshot at run start.
+			// Mock issue has no codex-skip label → false.
+			codexSkip: false,
 		});
 	}, 15_000);
 

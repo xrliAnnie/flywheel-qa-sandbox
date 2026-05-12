@@ -144,9 +144,10 @@ describe("stage command", () => {
 		expect(errorSpy).toHaveBeenCalledWith("Unknown stage subcommand: get");
 	});
 
-	it("stage set validates all 10 valid stages", async () => {
+	it("stage set validates all valid stages (FLY-137 v1.27.2: 13 incl. onboard)", async () => {
 		const validStages = [
 			"started",
+			"onboard", // FLY-137 v1.27.2
 			"brainstorm",
 			"research",
 			"plan",
@@ -155,7 +156,9 @@ describe("stage command", () => {
 			"test",
 			"code_review",
 			"pr_created",
+			"approve",
 			"ship",
+			"completed",
 		];
 		for (const s of validStages) {
 			mockFetch.mockClear();
@@ -285,6 +288,89 @@ describe("stage command", () => {
 			const body = JSON.parse(opts.body);
 			expect(body.payload.stage).toBe("completed");
 			expect(body.payload).not.toHaveProperty("landing_status");
+		});
+	});
+
+	// FLY-137 Phase 5: --plan flag carries the plan path into the
+	// stage_changed payload so Bridge can persist + thread into the
+	// Codex auto-trigger instruction.
+	describe("FLY-137 Phase 5: --plan flag for design_review", () => {
+		let tmpRoot: string;
+		const origCwd = process.cwd();
+
+		beforeEach(() => {
+			tmpRoot = join(tmpdir(), `stage-plan-${Date.now()}-${Math.random()}`);
+			mkdirSync(tmpRoot, { recursive: true });
+			process.chdir(tmpRoot);
+		});
+
+		afterEach(() => {
+			process.chdir(origCwd);
+			rmSync(tmpRoot, { recursive: true, force: true });
+		});
+
+		it("includes plan_path in payload for stage=design_review", async () => {
+			await stage({
+				subcommand: "set",
+				stageName: "design_review",
+				planPath: "doc/engineer/plan/draft/v1.27.0-FLY-137-foo.md",
+			});
+
+			expect(mockFetch).toHaveBeenCalledOnce();
+			const [, opts] = mockFetch.mock.calls[0]!;
+			const body = JSON.parse(opts.body);
+			expect(body.payload.stage).toBe("design_review");
+			expect(body.payload.plan_path).toBe(
+				"doc/engineer/plan/draft/v1.27.0-FLY-137-foo.md",
+			);
+		});
+
+		it("rejects absolute --plan path", async () => {
+			await expect(
+				stage({
+					subcommand: "set",
+					stageName: "design_review",
+					planPath: "/etc/passwd",
+				}),
+			).rejects.toThrow("process.exit(1)");
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("must be a relative path"),
+			);
+		});
+
+		it("rejects --plan with .. traversal", async () => {
+			await expect(
+				stage({
+					subcommand: "set",
+					stageName: "design_review",
+					planPath: "../escape/foo.md",
+				}),
+			).rejects.toThrow("process.exit(1)");
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("must not contain '..'"),
+			);
+		});
+
+		it("rejects --plan on non-design_review stages", async () => {
+			await expect(
+				stage({
+					subcommand: "set",
+					stageName: "implement",
+					planPath: "doc/foo.md",
+				}),
+			).rejects.toThrow("process.exit(1)");
+			expect(errorSpy).toHaveBeenCalledWith(
+				expect.stringContaining("only valid for stage=design_review"),
+			);
+		});
+
+		it("omits plan_path on design_review when flag not passed", async () => {
+			await stage({ subcommand: "set", stageName: "design_review" });
+			expect(mockFetch).toHaveBeenCalledOnce();
+			const [, opts] = mockFetch.mock.calls[0]!;
+			const body = JSON.parse(opts.body);
+			expect(body.payload.stage).toBe("design_review");
+			expect(body.payload).not.toHaveProperty("plan_path");
 		});
 	});
 });

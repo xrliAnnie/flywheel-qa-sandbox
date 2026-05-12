@@ -8,6 +8,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
+import { DepartmentRegistry } from "../department-registry.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
@@ -584,6 +585,74 @@ async function handleRetry(
 		console.warn(`[retry] old window cleanup warn: ${(e as Error).message}`);
 	}
 
+	// FLY-137 v1.27.2 (Codex Track A #5): retry must thread `issueLabels` +
+	// `owningDept` so AgentDispatcher's dept-aware step 2a can re-select the same
+	// dept-grouped agent. Without this, retry silently degrades to top-level
+	// catch-all and may pick a different agent than the original execution.
+	//
+	// Strategy: reuse the stored Linear labels from `session.issue_labels` (same
+	// source `resolveLeadForIssue` already uses for leadId resolution above) and
+	// re-resolve owningDept via DepartmentRegistry. Linear-refresh-on-retry is
+	// deferred per plan v1.27.2 §Data path wiring — stored labels are sufficient
+	// for the dept-aware dispatcher step 2a re-selection.
+	let retryIssueLabels: string[] | undefined;
+	let retryOwningDept: string | "multiple" | undefined;
+	if (projects) {
+		try {
+			const storedLabels = session.issue_labels
+				? (JSON.parse(session.issue_labels) as string[])
+				: [];
+			retryIssueLabels = storedLabels.map((l) => l.toLowerCase());
+			const registry = new DepartmentRegistry(projects);
+			retryOwningDept = registry.getDepartmentForIssue(
+				session.project_name,
+				retryIssueLabels,
+			);
+		} catch (err) {
+			console.warn(
+				`[retry] Failed to resolve issueLabels/owningDept from stored session: ${(err as Error).message}. ` +
+					`AgentDispatcher will fall through to top-level catch-all.`,
+			);
+		}
+	}
+
+	// FLY-137 Phase 5: codex-skip re-snapshot on retry. If LINEAR_API_KEY
+	// is set, re-fetch labels so a fresh `codex-skip` label addition takes
+	// effect for the retry; otherwise fall back to the stored value with
+	// a warning. Annie's mental model: "label the issue codex-skip, retry
+	// the Runner" — degrade gracefully on Linear unreachable.
+	let retryCodexSkip = !!session.codex_skip;
+	if (process.env.LINEAR_API_KEY) {
+		try {
+			const { LinearClient } = await import("@linear/sdk");
+			const linear = new LinearClient({
+				apiKey: process.env.LINEAR_API_KEY,
+			});
+			const issue = await linear.issue(session.issue_id);
+			const labels = await issue.labels();
+			const labelNames = (labels.nodes ?? []).map((l) =>
+				(l.name ?? "").toLowerCase(),
+			);
+			retryCodexSkip = labelNames.includes("codex-skip");
+			if (retryCodexSkip !== !!session.codex_skip) {
+				console.log(
+					`[retry] codex-skip changed for ${session.issue_id}: stored=${!!session.codex_skip} fresh=${retryCodexSkip}`,
+				);
+			}
+			// Persist the refreshed labels too so subsequent retries see
+			// the latest snapshot (matches the start-time semantics).
+			retryIssueLabels = labelNames;
+		} catch (err) {
+			console.warn(
+				`[retry] Linear label refresh failed; using stored codex_skip=${!!session.codex_skip}: ${(err as Error).message}`,
+			);
+		}
+	} else {
+		console.warn(
+			`[retry] LINEAR_API_KEY not set; using stored codex_skip=${!!session.codex_skip}`,
+		);
+	}
+
 	try {
 		const result = await retryDispatcher.dispatch({
 			oldExecutionId: executionId,
@@ -598,10 +667,40 @@ async function handleRetry(
 			runAttempt,
 			leadId: retryLeadId,
 			sessionRole,
+			// FLY-137 v1.27.2: dept-aware dispatch context for retry
+			issueLabels: retryIssueLabels,
+			owningDept: retryOwningDept,
+			// FLY-137 Phase 5: refreshed (or stored-fallback) codex-skip
+			// snapshot. Persisted on the new session row below so the
+			// event-route stage_changed handler picks it up at design_review.
+			codexSkip: retryCodexSkip,
+			// FLY-137 v1.27.2: thread stored Lead override (if any) so a
+			// previously-overridden Runner stays on the same agent across
+			// retries.
+			agentName: session.agent_name,
 		});
 
 		// Link predecessor → successor
 		store.setRetrySuccessor(executionId, result.newExecutionId);
+
+		// FLY-137 Phase 5: persist codex_skip + agent_name + agent_match_method
+		// on the NEW session row so event-route stage_changed reads the right
+		// values for the retried Runner (instead of inheriting from the old row).
+		// patchSessionMetadata is a no-op if the new row hasn't been created
+		// yet (Blueprint creates it inside dispatch()); this defensive guard
+		// avoids racing.
+		const newSession = store.getSession(result.newExecutionId);
+		if (newSession) {
+			store.patchSessionMetadata(result.newExecutionId, {
+				codex_skip: retryCodexSkip ? 1 : 0,
+				...(session.agent_name
+					? {
+							agent_name: session.agent_name,
+							agent_match_method: session.agent_match_method ?? "override",
+						}
+					: {}),
+			});
+		}
 
 		// Unarchive thread
 		const thread = store.getThreadByIssue(session.issue_id);

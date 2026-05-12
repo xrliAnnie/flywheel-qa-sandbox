@@ -20,7 +20,11 @@
  * normalize once at config load to avoid recomputation per call.
  */
 
-import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
+import {
+	type LeadConfig,
+	type ProjectEntry,
+	resolveLeadDepartment,
+} from "./ProjectConfig.js";
 
 export type ScopeReason =
 	| "ok"
@@ -109,6 +113,44 @@ export class DepartmentRegistry {
 		const lead = project.leads.find((l) => l.agentId === leadId);
 		if (!lead) return false;
 		return effectiveCanSpawn(lead);
+	}
+
+	/**
+	 * FLY-137 v1.27.2: resolve a Lead's department.
+	 * Returns `undefined` if the project / lead is unknown OR if both
+	 * `lead.department` and `lead.match.labels[0]` are absent.
+	 * Project-scoped because leadId is only unique within a project.
+	 */
+	getLeadDepartment(projectName: string, leadId: string): string | undefined {
+		const project = this.projects.find((p) => p.projectName === projectName);
+		if (!project) return undefined;
+		const lead = project.leads.find((l) => l.agentId === leadId);
+		if (!lead) return undefined;
+		return resolveLeadDepartment(lead);
+	}
+
+	/**
+	 * FLY-137 v1.27.2: resolve the owning department for an issue given its
+	 * Linear labels. Used by `runs-route.ts` to compute `owningDept` for
+	 * `AgentDispatcher.dispatch({ owningDept })`.
+	 *
+	 * Returns:
+	 *   - the dept string when exactly one Lead's labels match (classifyIssue "one")
+	 *   - `"multiple"` when 2+ Leads match (FLY-127 ambiguous case; runs-route
+	 *     usually rejects this at Bridge layer, but dispatcher must still handle
+	 *     deterministically for retry/feature-off paths)
+	 *   - `undefined` when no Lead matches OR the project is unknown
+	 */
+	getDepartmentForIssue(
+		projectName: string,
+		issueLabels: string[],
+	): string | "multiple" | undefined {
+		const cls = this.classifyIssue(projectName, issueLabels);
+		if (cls.kind === "none") return undefined;
+		if (cls.kind === "one") {
+			return this.getLeadDepartment(projectName, cls.leadId) ?? undefined;
+		}
+		return "multiple";
 	}
 
 	/**

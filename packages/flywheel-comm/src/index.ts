@@ -2,6 +2,7 @@
 
 import { parseArgs } from "node:util";
 import { ask } from "./commands/ask.js";
+import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
 import { check } from "./commands/check.js";
 import { cleanupMessages } from "./commands/cleanup-messages.js";
@@ -34,6 +35,7 @@ Commands:
   search    Search tmux output for a regex pattern
   stage     Report pipeline stage to Bridge (Runner use)
   complete  Emit session_completed terminal event to Bridge (Runner use)
+  await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   cleanup   Delete read messages older than TTL (default 24h)
 
 Global options:
@@ -97,6 +99,9 @@ async function main(): Promise<void> {
 			break;
 		case "complete":
 			await runComplete(commandArgs);
+			break;
+		case "await-codex-gate":
+			await runAwaitCodexGate(commandArgs);
 			break;
 		case "cleanup":
 			runCleanup(commandArgs);
@@ -482,16 +487,68 @@ async function runComplete(args: string[]): Promise<void> {
 	});
 }
 
-async function runStage(args: string[]): Promise<void> {
-	const subcommand = args[0];
-	const stageName = args[1];
+async function runAwaitCodexGate(args: string[]): Promise<void> {
+	const reviewType = args[0];
+	const rest = args.slice(1);
+	const { values } = parseArgs({
+		args: rest,
+		options: {
+			"exec-id": { type: "string" },
+			"worktree-path": { type: "string" },
+			timeout: { type: "string" },
+			"poll-interval": { type: "string" },
+		},
+		allowPositionals: false,
+	});
 
-	if (!subcommand) {
-		console.error("Usage: flywheel-comm stage set <stage>");
+	if (!reviewType) {
+		console.error(
+			"Usage: flywheel-comm await-codex-gate <design|code> --exec-id <id> [--worktree-path <path>]",
+		);
+		process.exit(1);
+	}
+	const execId = values["exec-id"] ?? process.env.FLYWHEEL_EXEC_ID;
+	if (!execId) {
+		console.error("--exec-id is required (or set FLYWHEEL_EXEC_ID)");
 		process.exit(1);
 	}
 
-	await stage({ subcommand, stageName: stageName ?? "" });
+	await awaitCodexGate({
+		reviewType,
+		execId,
+		worktreePath: values["worktree-path"],
+		timeoutMs: values.timeout ? Number.parseInt(values.timeout, 10) : undefined,
+		pollIntervalMs: values["poll-interval"]
+			? Number.parseInt(values["poll-interval"], 10)
+			: undefined,
+	});
+}
+
+async function runStage(args: string[]): Promise<void> {
+	const subcommand = args[0];
+	const stageName = args[1];
+	const flagArgs = args.slice(2);
+
+	const { values } = parseArgs({
+		args: flagArgs,
+		options: {
+			plan: { type: "string" },
+		},
+		allowPositionals: false,
+	});
+
+	if (!subcommand) {
+		console.error(
+			"Usage: flywheel-comm stage set <stage> [--plan <relative-path>]",
+		);
+		process.exit(1);
+	}
+
+	await stage({
+		subcommand,
+		stageName: stageName ?? "",
+		planPath: values.plan,
+	});
 }
 
 function runCleanup(args: string[]): void {

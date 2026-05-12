@@ -1,218 +1,398 @@
 import type { AgentConfig } from "flywheel-config";
-import { describe, expect, it, vi } from "vitest";
-import type { AgentDispatchResult, ClassifyFn } from "../AgentDispatcher.js";
-import { AgentDispatcher } from "../AgentDispatcher.js";
-import type { HydratedContext } from "../PreHydrator.js";
+import { describe, expect, it } from "vitest";
+import type { AgentDispatchResult } from "../AgentDispatcher.js";
+import {
+	AgentDispatcher,
+	InvalidAgentFilePathError,
+	InvalidAgentNameError,
+	parsedDept,
+} from "../AgentDispatcher.js";
+
+/** Synthetic Flywheel repo root for tests — value isn't read on disk, just non-empty. */
+const TEST_FLYWHEEL_ROOT = "/test-flywheel-root";
 
 // ─── Helpers ─────────────────────────────────────
 
+/** v1.27.2 dept-grouped fixture mirroring the GeoForge3D layout. */
 function makeAgents(): Record<string, AgentConfig> {
 	return {
 		backend: {
-			agent_file: ".claude/agents/backend.md",
-			domain_file: ".claude/domains/backend.md",
-			match: {
-				labels: ["backend", "api"],
-				keywords: ["database", "server", "migration"],
-			},
+			agent_file: ".flywheel/agents/product/backend-executor.md",
+			department: "product",
+			match: { labels: ["backend", "api"] },
 		},
 		frontend: {
-			agent_file: ".claude/agents/frontend.md",
-			match: {
-				labels: ["frontend", "ui"],
-				keywords: ["react", "css", "component"],
-			},
+			agent_file: ".flywheel/agents/product/frontend-executor.md",
+			department: "product",
+			match: { labels: ["frontend", "ui", "design"] }, // multi-alias
 		},
-		devops: {
-			agent_file: ".claude/agents/devops.md",
-			match: {
-				labels: ["devops"],
-				keywords: ["ci", "deploy", "docker"],
-			},
+		operations: {
+			agent_file: ".flywheel/agents/operations/operations-executor.md",
+			department: "operations",
+			match: { labels: ["operations", "ops"] },
+		},
+		general: {
+			// top-level cross-dept catch-all (no department field; path has no subdir)
+			agent_file: ".flywheel/agents/general-executor.md",
+			match: { labels: ["chore", "tooling"] },
 		},
 	};
 }
 
-function makeHydrated(
-	overrides: Partial<HydratedContext> = {},
-): HydratedContext {
-	return {
-		issueId: "GEO-42",
-		issueTitle: "Add user API endpoint",
-		issueDescription: "Create REST endpoint for user management",
-		labels: [],
-		projectId: "proj-1",
-		issueIdentifier: "GEO-42",
-		...overrides,
-	};
-}
+// ─── parsedDept helper ─────────────────────────────
 
-// ─── Tests ───────────────────────────────────────
+describe("parsedDept", () => {
+	it("returns null for top-level path (depth 0)", () => {
+		expect(parsedDept(".flywheel/agents/general-executor.md")).toBeNull();
+	});
+
+	it("returns the dept name for dept-owned path (depth 1)", () => {
+		expect(parsedDept(".flywheel/agents/product/backend-executor.md")).toBe(
+			"product",
+		);
+	});
+
+	it("throws on legacy .claude/agents/ paths", () => {
+		expect(() => parsedDept(".claude/agents/backend-executor.md")).toThrow(
+			InvalidAgentFilePathError,
+		);
+	});
+
+	it("throws on nested subdirs (depth >= 2)", () => {
+		expect(() =>
+			parsedDept(".flywheel/agents/product/eng/backend-executor.md"),
+		).toThrow(InvalidAgentFilePathError);
+	});
+
+	it("throws on bare prefix without filename", () => {
+		expect(() => parsedDept(".flywheel/agents/")).toThrow(
+			InvalidAgentFilePathError,
+		);
+	});
+});
+
+// ─── AgentDispatcher ─────────────────────────────
 
 describe("AgentDispatcher", () => {
-	// ─── Empty config ────────────────────────────────
+	// ─── Constructor ────────────────────────────
 
-	it("returns null when agents config is empty", async () => {
-		const dispatcher = new AgentDispatcher({}, undefined);
-		const result = await dispatcher.dispatch(makeHydrated());
-		expect(result).toBeNull();
-	});
-
-	// ─── Label matching ──────────────────────────────
-
-	it("matches by exact label", async () => {
-		const dispatcher = new AgentDispatcher(makeAgents(), undefined);
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: ["backend"] }),
+	it("throws when flywheelRepoRoot is empty", () => {
+		expect(() => new AgentDispatcher({}, undefined, "")).toThrow(
+			/flywheelRepoRoot is required/,
 		);
-		expect(result).not.toBeNull();
-		expect(result!.agentName).toBe("backend");
-		expect(result!.matchMethod).toBe("label");
 	});
 
-	it("matches label case-insensitively", async () => {
-		const dispatcher = new AgentDispatcher(makeAgents(), undefined);
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: ["BACKEND"] }),
-		);
-		expect(result).not.toBeNull();
-		expect(result!.agentName).toBe("backend");
-		expect(result!.matchMethod).toBe("label");
-	});
+	// ─── Shipped-generic fallback ────────────────
 
-	it("matches when issue has multiple labels", async () => {
-		const dispatcher = new AgentDispatcher(makeAgents(), undefined);
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: ["bug", "frontend", "P0"] }),
-		);
-		expect(result).not.toBeNull();
-		expect(result!.agentName).toBe("frontend");
-	});
-
-	it("returns first matching agent when multiple agents match labels", async () => {
-		const agents = makeAgents();
-		// Add "shared" label to both backend and frontend
-		agents.backend.match.labels.push("shared");
-		agents.frontend.match.labels.push("shared");
-		const dispatcher = new AgentDispatcher(agents, undefined);
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: ["shared"] }),
-		);
-		expect(result).not.toBeNull();
-		// First match wins (object iteration order = insertion order)
-		expect(result!.agentName).toBe("backend");
-	});
-
-	// ─── Haiku classification ────────────────────────
-
-	it("falls back to classifyFn when no label match", async () => {
-		const classifyFn: ClassifyFn = vi.fn(async () => "frontend");
-		const dispatcher = new AgentDispatcher(makeAgents(), undefined, classifyFn);
-		const result = await dispatcher.dispatch(makeHydrated({ labels: [] }));
-		expect(result).not.toBeNull();
-		expect(result!.agentName).toBe("frontend");
-		expect(result!.matchMethod).toBe("haiku");
-		expect(classifyFn).toHaveBeenCalled();
-	});
-
-	it("validates classifyFn output against agent name allowlist", async () => {
-		const classifyFn: ClassifyFn = vi.fn(async () => "hacker-agent");
-		const dispatcher = new AgentDispatcher(makeAgents(), "backend", classifyFn);
-		const result = await dispatcher.dispatch(makeHydrated({ labels: [] }));
-		// Invalid name → fallback to default_agent
-		expect(result).not.toBeNull();
-		expect(result!.agentName).toBe("backend");
-		expect(result!.matchMethod).toBe("fallback");
-	});
-
-	it("handles classifyFn returning null", async () => {
-		const classifyFn: ClassifyFn = vi.fn(async () => null);
-		const dispatcher = new AgentDispatcher(makeAgents(), "devops", classifyFn);
-		const result = await dispatcher.dispatch(makeHydrated({ labels: [] }));
-		expect(result).not.toBeNull();
-		expect(result!.agentName).toBe("devops");
-		expect(result!.matchMethod).toBe("fallback");
-	});
-
-	it("handles classifyFn throwing error → fallback", async () => {
-		const classifyFn: ClassifyFn = vi.fn(async () => {
-			throw new Error("API rate limit");
+	it("returns shipped-generic when agents map is empty", () => {
+		const dispatcher = new AgentDispatcher({}, undefined, TEST_FLYWHEEL_ROOT);
+		const result = dispatcher.dispatch({
+			issueLabels: ["anything"],
+			owningDept: undefined,
 		});
-		const dispatcher = new AgentDispatcher(makeAgents(), "backend", classifyFn);
-		const result = await dispatcher.dispatch(makeHydrated({ labels: [] }));
-		expect(result).not.toBeNull();
-		expect(result!.agentName).toBe("backend");
-		expect(result!.matchMethod).toBe("fallback");
+		expect(result.agentName).toBe("generic");
+		expect(result.matchMethod).toBe("shipped-generic");
+		expect(result.agentFileRoot).toBe("flywheel");
+		expect(result.agentConfig.agent_file).toBe("agents/generic-executor.md");
+		expect(result.department).toBeUndefined();
 	});
 
-	// ─── classifyFn not provided ─────────────────────
-
-	it("skips classification when classifyFn is undefined", async () => {
-		const dispatcher = new AgentDispatcher(makeAgents(), "backend");
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: ["unrelated"] }),
+	it("returns shipped-generic when label matches nothing", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
 		);
-		expect(result).not.toBeNull();
-		expect(result!.agentName).toBe("backend");
-		expect(result!.matchMethod).toBe("fallback");
+		const result = dispatcher.dispatch({
+			issueLabels: ["nonexistent-label"],
+			owningDept: undefined,
+		});
+		expect(result.matchMethod).toBe("shipped-generic");
+		expect(result.agentFileRoot).toBe("flywheel");
 	});
 
-	// ─── Default agent fallback ──────────────────────
+	// ─── Step 2a: own-dept scope ─────────────────
 
-	it("uses default_agent when no label or haiku match", async () => {
-		const dispatcher = new AgentDispatcher(makeAgents(), "devops");
-		const result = await dispatcher.dispatch(makeHydrated({ labels: [] }));
-		expect(result).not.toBeNull();
-		expect(result!.agentName).toBe("devops");
-		expect(result!.agentConfig.agent_file).toBe(".claude/agents/devops.md");
-		expect(result!.matchMethod).toBe("fallback");
-	});
-
-	// ─── No match at all ─────────────────────────────
-
-	it("returns null when no match and no default_agent", async () => {
-		const dispatcher = new AgentDispatcher(makeAgents(), undefined);
-		const result = await dispatcher.dispatch(
-			makeHydrated({ labels: ["unrelated"] }),
+	it("matches dept-owned agent when owningDept set + label hits", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
 		);
-		expect(result).toBeNull();
+		const result = dispatcher.dispatch({
+			issueLabels: ["backend"],
+			owningDept: "product",
+		});
+		expect(result.agentName).toBe("backend");
+		expect(result.matchMethod).toBe("label");
+		expect(result.agentFileRoot).toBe("project");
+		expect(result.department).toBe("product");
 	});
 
-	// ─── classifyFn receives correct arguments ───────
-
-	it("passes correct args to classifyFn", async () => {
-		const classifyFn: ClassifyFn = vi.fn(async () => "backend");
-		const agents = makeAgents();
-		const dispatcher = new AgentDispatcher(agents, undefined, classifyFn);
-
-		await dispatcher.dispatch(
-			makeHydrated({
-				issueTitle: "Fix DB migration",
-				issueDescription: "The database migration is broken",
-			}),
+	it("multi-alias label match (case-insensitive)", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
 		);
+		// frontend has match.labels: ["frontend", "ui", "design"]
+		const result = dispatcher.dispatch({
+			issueLabels: ["design"],
+			owningDept: "product",
+		});
+		expect(result.agentName).toBe("frontend");
+		expect(result.matchMethod).toBe("label");
+	});
 
-		expect(classifyFn).toHaveBeenCalledWith(
-			"Fix DB migration",
-			"The database migration is broken",
-			["backend", "frontend", "devops"],
-			{
-				backend: ["database", "server", "migration"],
-				frontend: ["react", "css", "component"],
-				devops: ["ci", "deploy", "docker"],
+	it("normalized lowercase labels match mixed-case configured labels", () => {
+		const agents: Record<string, AgentConfig> = {
+			backend: {
+				agent_file: ".flywheel/agents/product/backend-executor.md",
+				department: "product",
+				match: { labels: ["Backend", "API"] }, // mixed case in config
 			},
+		};
+		const dispatcher = new AgentDispatcher(
+			agents,
+			undefined,
+			TEST_FLYWHEEL_ROOT,
 		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["backend"], // caller already lowercased
+			owningDept: "product",
+		});
+		expect(result.agentName).toBe("backend");
 	});
 
-	// ─── AgentDispatchResult shape ────────────────────────
+	// ─── Step 2b: top-level catch-all ────────────
 
-	it("returns correct AgentDispatchResult shape", async () => {
-		const dispatcher = new AgentDispatcher(makeAgents(), undefined);
-		const result = await dispatcher.dispatch(makeHydrated({ labels: ["api"] }));
+	it("falls through to top-level catch-all when own-dept has no match", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		// "chore" only matches general (top-level), not any product/ops agent
+		const result = dispatcher.dispatch({
+			issueLabels: ["chore"],
+			owningDept: "product",
+		});
+		expect(result.agentName).toBe("general");
+		expect(result.matchMethod).toBe("label");
+		expect(result.department).toBeUndefined();
+	});
+
+	it("owningDept=undefined skips step 2a, matches top-level directly", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["chore"],
+			owningDept: undefined,
+		});
+		expect(result.agentName).toBe("general");
+	});
+
+	it('owningDept="multiple" skips step 2a, goes to top-level', () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["chore"],
+			owningDept: "multiple",
+		});
+		expect(result.agentName).toBe("general");
+	});
+
+	// ─── default_agent fallback ──────────────────
+
+	it("uses default_agent when no label match anywhere", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			"backend",
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["unrelated"],
+			owningDept: undefined,
+		});
+		expect(result.agentName).toBe("backend");
+		expect(result.matchMethod).toBe("default");
+		expect(result.department).toBe("product");
+	});
+
+	it("default_agent absent → falls to shipped-generic", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["unrelated"],
+			owningDept: undefined,
+		});
+		expect(result.matchMethod).toBe("shipped-generic");
+	});
+
+	it("default_agent pointing at unknown name → falls to shipped-generic", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			"ghost-agent",
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: [],
+			owningDept: undefined,
+		});
+		expect(result.matchMethod).toBe("shipped-generic");
+	});
+
+	// ─── Backward compat (no dept hierarchy) ──────
+
+	it("project with all flat agents (no dept subdirs) still dispatches", () => {
+		// Every agent_file is .flywheel/agents/<file>.md (top-level)
+		const flatAgents: Record<string, AgentConfig> = {
+			alpha: {
+				agent_file: ".flywheel/agents/alpha-executor.md",
+				match: { labels: ["alpha"] },
+			},
+			beta: {
+				agent_file: ".flywheel/agents/beta-executor.md",
+				match: { labels: ["beta"] },
+			},
+		};
+		const dispatcher = new AgentDispatcher(
+			flatAgents,
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		// Even with owningDept set, step 2a finds nothing (no dept subdirs);
+		// step 2b iterates top-level entries and matches.
+		const result = dispatcher.dispatch({
+			issueLabels: ["beta"],
+			owningDept: "product",
+		});
+		expect(result.agentName).toBe("beta");
+		expect(result.matchMethod).toBe("label");
+		expect(result.department).toBeUndefined();
+	});
+
+	// ─── First-configured-agent wins on collision ─
+
+	it("when multiple agents declare the same label, first-configured wins", () => {
+		const agents: Record<string, AgentConfig> = {
+			alpha: {
+				agent_file: ".flywheel/agents/product/alpha-executor.md",
+				department: "product",
+				match: { labels: ["shared"] },
+			},
+			bravo: {
+				agent_file: ".flywheel/agents/product/bravo-executor.md",
+				department: "product",
+				match: { labels: ["shared"] },
+			},
+		};
+		const dispatcher = new AgentDispatcher(
+			agents,
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["shared"],
+			owningDept: "product",
+		});
+		expect(result.agentName).toBe("alpha");
+	});
+
+	// ─── dispatchByName (Lead override) ──────────
+
+	it("dispatchByName picks a known agent", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatchByName("frontend");
+		expect(result.agentName).toBe("frontend");
+		expect(result.matchMethod).toBe("override");
+		expect(result.agentFileRoot).toBe("project");
+		expect(result.department).toBe("product");
+	});
+
+	it("dispatchByName('generic') returns shipped-generic", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatchByName("generic");
+		expect(result.matchMethod).toBe("shipped-generic");
+		expect(result.agentFileRoot).toBe("flywheel");
+	});
+
+	it("dispatchByName throws InvalidAgentNameError on unknown name", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		try {
+			dispatcher.dispatchByName("does-not-exist");
+			expect.fail("should have thrown");
+		} catch (err) {
+			expect(err).toBeInstanceOf(InvalidAgentNameError);
+			const e = err as InvalidAgentNameError;
+			expect(e.providedName).toBe("does-not-exist");
+			// available includes all configured names + "generic"
+			expect(e.available).toContain("backend");
+			expect(e.available).toContain("frontend");
+			expect(e.available).toContain("operations");
+			expect(e.available).toContain("general");
+			expect(e.available).toContain("generic");
+		}
+	});
+
+	// ─── AgentDispatchResult shape ────────────────
+
+	it("returns correct AgentDispatchResult shape", () => {
+		const agents = makeAgents();
+		const dispatcher = new AgentDispatcher(
+			agents,
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["api"],
+			owningDept: "product",
+		});
 		expect(result).toEqual<AgentDispatchResult>({
 			agentName: "backend",
-			agentConfig: makeAgents().backend,
+			agentConfig: agents.backend!,
 			matchMethod: "label",
+			agentFileRoot: "project",
+			department: "product",
 		});
+	});
+
+	// ─── availableNames ───────────────────────────
+
+	it("availableNames includes all configured + generic", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const names = dispatcher.availableNames();
+		expect(names).toEqual([
+			"backend",
+			"frontend",
+			"operations",
+			"general",
+			"generic",
+		]);
 	});
 });

@@ -6,14 +6,20 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { AnthropicLLMClient, TmuxAdapter } from "flywheel-claude-runner";
-import { type CheckpointsConfig, ConfigLoader } from "flywheel-config";
+import {
+	type AgentConfig,
+	type CheckpointsConfig,
+	ConfigLoader,
+} from "flywheel-config";
 import type { LLMClient } from "flywheel-core";
 import { sanitizeTmuxName } from "flywheel-core";
 import {
+	AgentDispatcher,
 	AuditLogger,
 	CipherReader,
 	DecisionLayer,
@@ -80,7 +86,40 @@ function createFetchIssue(store: StateStore) {
 	};
 }
 
-/** Create a Blueprint for running issues (no Slack, no AgentDispatcher; CIPHER principles loaded). */
+/**
+ * FLY-137 v1.27.2: resolve the Flywheel repo root canonically (single source of truth
+ * across all Bridge entrypoints — `scripts/run-bridge.ts`, `packages/teamlead/src/index.ts`).
+ * Order: caller-supplied option → `FLYWHEEL_REPO_ROOT` env → `import.meta.url`-derived path.
+ * Validates the resolved root contains `agents/generic-executor.md` (sanity check, NOT fail-fast).
+ */
+function resolveFlywheelRepoRoot(explicit?: string): string {
+	const candidate =
+		explicit?.trim() ||
+		process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+		(() => {
+			// __filename of this module → walk up to the repo root. Module sits at:
+			//   <repo>/packages/teamlead/dist/bridge/run-infra.js (built)
+			//   <repo>/packages/teamlead/src/bridge/run-infra.ts  (dev)
+			// In either case 4 levels up = the repo root.
+			const here = dirname(fileURLToPath(import.meta.url));
+			return resolve(here, "..", "..", "..", "..");
+		})();
+	const sentinel = join(candidate, "agents", "generic-executor.md");
+	if (!existsSync(sentinel)) {
+		console.warn(
+			`[RunInfra] FLYWHEEL_REPO_ROOT resolved to "${candidate}" but expected sentinel "${sentinel}" not found. ` +
+				`AgentDispatcher's shipped-generic fallback will fail at dispatch time. ` +
+				`Set FLYWHEEL_REPO_ROOT to the Flywheel repo root that contains agents/generic-executor.md.`,
+		);
+	} else {
+		console.log(
+			`[RunInfra] FLYWHEEL_REPO_ROOT resolved to "${candidate}" (sentinel found).`,
+		);
+	}
+	return candidate;
+}
+
+/** Create a Blueprint for running issues. CIPHER principles loaded; AgentDispatcher wired (FLY-137 v1.27.2). */
 async function createRunBlueprint(
 	tmuxSessionName: string,
 	fetchIssue: ReturnType<typeof createFetchIssue>,
@@ -88,6 +127,8 @@ async function createRunBlueprint(
 	sessionTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; idle detection via FLY-92 watchdog)
 	checkpointConfig?: CheckpointsConfig, // FLY-47
 	worktreeManager?: WorktreeManager, // FLY-95
+	agentDispatcher?: AgentDispatcher, // FLY-137 v1.27.2
+	flywheelRepoRoot?: string, // FLY-137 v1.27.2 (Codex Track A #1): Blueprint needs this to resolve shipped-generic agent_file
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -228,8 +269,9 @@ async function createRunBlueprint(
 			undefined, // skillsConfig
 			decisionLayer,
 			eventEmitter,
-			undefined, // agentDispatcher
+			agentDispatcher, // FLY-137 v1.27.2: wired (was undefined pre-v1.27.2)
 			checkpointConfig, // FLY-47
+			flywheelRepoRoot, // FLY-137 v1.27.2: Blueprint resolves shipped-generic agent_file from this root
 		);
 
 		const cleanup = async () => {
@@ -263,10 +305,16 @@ async function createRunBlueprint(
  *
  * Called by startBridge when no external startDispatcher is provided.
  */
-/** FLY-91 Round 3: Optional external dependencies for run infrastructure. */
+/** FLY-91 Round 3 + FLY-137 v1.27.2: Optional external dependencies for run infrastructure. */
 export interface RunInfraOptions {
 	/** Shared ChatThreadCreator — if provided, used instead of per-project creation. */
 	chatThreadCreator?: ChatThreadCreator;
+	/**
+	 * FLY-137 v1.27.2: optional explicit Flywheel repo root. If unset, falls back to
+	 * `FLYWHEEL_REPO_ROOT` env var, then to a module-location-derived path. Used by
+	 * `AgentDispatcher` to resolve the shipped `agents/generic-executor.md` fallback.
+	 */
+	flywheelRepoRoot?: string;
 }
 
 export async function setupRunInfrastructure(
@@ -283,6 +331,11 @@ export async function setupRunInfrastructure(
 
 	// FLY-95: Shared WorktreeManager for per-Runner worktree isolation
 	const worktreeManager = new WorktreeManager();
+
+	// FLY-137 v1.27.2: resolve Flywheel repo root once at startup (canonical source of truth).
+	const flywheelRepoRoot = resolveFlywheelRepoRoot(
+		runInfraOpts?.flywheelRepoRoot,
+	);
 
 	for (const project of projects) {
 		try {
@@ -324,8 +377,10 @@ export async function setupRunInfrastructure(
 				chatThreadCreator,
 			);
 
-			// FLY-47: Load per-project checkpoint config
+			// FLY-47 + FLY-137 v1.27.2: Load per-project checkpoint + agents config
 			let checkpointConfig: CheckpointsConfig | undefined;
+			let agentsConfig: Record<string, AgentConfig> | undefined;
+			let defaultAgentName: string | undefined;
 			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
 			try {
 				const configLoader = new ConfigLoader(async (p) =>
@@ -333,13 +388,25 @@ export async function setupRunInfrastructure(
 				);
 				const flywheelConfig = await configLoader.load(configPath);
 				checkpointConfig = flywheelConfig?.checkpoints;
+				agentsConfig = flywheelConfig?.agents;
+				defaultAgentName = flywheelConfig?.default_agent;
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-					// No config file — no checkpoints
+					// No config file — no checkpoints, no agents block.
+					// AgentDispatcher will still be constructed (empty agents map) so the
+					// shipped-generic fallback kicks in for zero-config projects.
 				} else {
 					throw err;
 				}
 			}
+
+			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
+			// dispatcher returns shipped-generic for every issue in that case).
+			const agentDispatcher = new AgentDispatcher(
+				agentsConfig ?? {},
+				defaultAgentName,
+				flywheelRepoRoot,
+			);
 
 			const { blueprint, cleanup } = await createRunBlueprint(
 				tmuxSessionName,
@@ -348,12 +415,15 @@ export async function setupRunInfrastructure(
 				undefined, // sessionTimeoutMs — use default
 				checkpointConfig,
 				worktreeManager, // FLY-95
+				agentDispatcher, // FLY-137 v1.27.2
+				flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1)
 			);
 
 			projectRuntimes.set(project.projectName, {
 				blueprint,
 				projectRoot: project.projectRoot,
 				tmuxSessionName,
+				agentDispatcher, // FLY-137 v1.27.2: exposed for sync agentName validation in runs-route
 			});
 			cleanupHandles.push(cleanup);
 

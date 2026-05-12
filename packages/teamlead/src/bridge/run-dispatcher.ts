@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
 import { openTmuxViewer } from "flywheel-core";
+import type { AgentDispatcher } from "flywheel-edge-worker";
 import type {
 	Blueprint,
 	BlueprintContext,
@@ -27,6 +28,14 @@ export interface ProjectRuntime {
 	blueprint: Blueprint;
 	projectRoot: string;
 	tmuxSessionName: string;
+	/**
+	 * FLY-137 v1.27.2 (Codex Track A #2): expose the AgentDispatcher so runs-route
+	 * can validate `agentName` body field SYNCHRONOUSLY before kicking off the
+	 * async Blueprint.run() promise. Without this, `InvalidAgentNameError` thrown
+	 * deep inside Blueprint after the .catch handler swallows it — never reaches
+	 * the runs-route catch block for a proper 400 INVALID_AGENT_NAME response.
+	 */
+	agentDispatcher: AgentDispatcher;
 }
 
 export class RetryDispatcher implements IRetryDispatcher {
@@ -99,6 +108,10 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// Forward pre-fetched metadata so EventEnvelope retains title/identifier
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,
+			// FLY-137 v1.27.2: thread Lead override + dispatch context
+			agentName: req.agentName,
+			issueLabels: req.issueLabels,
+			owningDept: req.owningDept,
 			retryContext: {
 				predecessorExecutionId: req.oldExecutionId,
 				previousError: req.previousError,
@@ -255,6 +268,45 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		return this.inflight.size;
 	}
 
+	/**
+	 * FLY-137 v1.27.2 (Codex Track A #2): synchronous agentName validation.
+	 * Routes through `AgentDispatcher.dispatchByName(name)` which throws
+	 * `InvalidAgentNameError` on unknown names. runs-route calls this BEFORE
+	 * `start()` so the 400 INVALID_AGENT_NAME response can fire before any
+	 * Blueprint.run() promise is kicked off (which would swallow the error).
+	 */
+	validateAgentName(
+		projectName: string,
+		agentName: string | undefined,
+	):
+		| { ok: true }
+		| { ok: false; reason: "unknown_agent"; available: string[] }
+		| { ok: false; reason: "project_unknown" } {
+		if (!agentName) {
+			// undefined / null / empty → no override, no validation needed
+			return { ok: true };
+		}
+		const runtime = this.blueprintsByProject.get(projectName);
+		if (!runtime) {
+			return { ok: false, reason: "project_unknown" };
+		}
+		try {
+			runtime.agentDispatcher.dispatchByName(agentName);
+			return { ok: true };
+		} catch (err) {
+			// AgentDispatcher.dispatchByName throws InvalidAgentNameError on unknown
+			if (err instanceof Error && err.name === "InvalidAgentNameError") {
+				const e = err as Error & { available?: string[] };
+				return {
+					ok: false,
+					reason: "unknown_agent",
+					available: e.available ?? [],
+				};
+			}
+			throw err; // unexpected — rethrow for top-level error handler
+		}
+	}
+
 	async start(req: StartRequest): Promise<StartResult> {
 		if (!this.accepting) {
 			throw new Error("RunDispatcher is shutting down");
@@ -308,6 +360,10 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,
+			// FLY-137 v1.27.2: thread Lead override + dispatch context (runs-route resolves)
+			agentName: req.agentName,
+			issueLabels: req.issueLabels,
+			owningDept: req.owningDept,
 			// FLY-116: spawn macOS Terminal viewer once tmux window exists
 			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
 				openTmuxViewer({

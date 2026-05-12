@@ -81,6 +81,20 @@ export interface BlueprintContext {
 		baseSessionName: string;
 		windowId: string;
 	}) => void;
+	// FLY-137 v1.27.2 — Lead override: explicit agent name; bypasses label-match dispatch
+	agentName?: string;
+	// FLY-137 v1.27.2 — Pre-normalized (lowercased) Linear labels passed by caller
+	// (runs-route.ts normalizes once at the boundary). Optional for backward compat
+	// with tests / call sites that haven't been migrated; Blueprint falls back to
+	// `hydrated.labels` when omitted.
+	issueLabels?: string[];
+	// FLY-137 v1.27.2 — Owning dept of the issue, resolved by caller via
+	// `DepartmentRegistry.getDepartmentForIssue`. Three possible values:
+	//   - `string`: one Lead matched (e.g. "product")
+	//   - `"multiple"`: 2+ Leads matched (FLY-127 ambiguous case)
+	//   - `undefined`: no Lead matched OR no project Lead config
+	// AgentDispatcher's dept-aware step 2 uses this to scope label match.
+	owningDept?: string | "multiple";
 }
 
 /** Shell command runner for tmux window cleanup */
@@ -123,6 +137,12 @@ export class Blueprint {
 		private agentDispatcher?: AgentDispatcher,
 		// FLY-47 — optional checkpoint gate configuration
 		private checkpointConfig?: CheckpointsConfig,
+		// FLY-137 v1.27.2 — Flywheel repo root, used by Blueprint to resolve
+		// shipped-generic agent files when `dispatchResult.agentFileRoot === "flywheel"`.
+		// Optional for backward compat with test stubs; if absent AND a dispatch
+		// returns `agentFileRoot: "flywheel"`, agent content load logs a warning
+		// and the system prompt falls back to baseline (same as v1.27.0 behavior).
+		private flywheelRepoRoot?: string,
 	) {}
 
 	async run(
@@ -207,6 +227,29 @@ export class Blueprint {
 					worktreePath: worktreeInfo?.worktreePath,
 				};
 			}
+
+			// FLY-137: Persist worktree_path on the session row before any
+			// stage event can fire. The Codex auto-trigger handler (Bridge
+			// stage_changed=design_review/pr_created) needs
+			// `session.worktree_path` to write skip.json + review-result
+			// markers inside the Runner's cwd; without this await, skip.json
+			// lands in a fallback directory the Runner can't see and the
+			// gate hangs until timeout.
+			if (this.eventEmitter && worktreeInfo) {
+				try {
+					await this.eventEmitter.emitWorktreeReady(
+						env,
+						worktreeInfo.worktreePath,
+					);
+				} catch (err) {
+					// Reliable post already retries internally; if it still
+					// fails we log and proceed. Downstream stage handlers
+					// fall back to the derived path with a warning.
+					console.warn(
+						`[Blueprint] emitWorktreeReady failed for ${hydrated.issueId}: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			}
 		}
 
 		// ── Git exclude for .flywheel/runs/ (v0.6 — BEFORE assertCleanTree) ──
@@ -248,9 +291,23 @@ export class Blueprint {
 		}
 
 		// ── Agent dispatch (v0.6 — after hydrate, before prompt) ─
-		const dispatchResult = this.agentDispatcher
-			? await this.agentDispatcher.dispatch(hydrated)
-			: null;
+		// FLY-137 v1.27.2 dispatch contract:
+		//   - Lead override (ctx.agentName) → AgentDispatcher.dispatchByName(name); throws on unknown
+		//   - Otherwise → AgentDispatcher.dispatch({ issueLabels, owningDept })
+		//     - issueLabels: caller-normalized lowercased labels (falls back to hydrated.labels)
+		//     - owningDept: caller-resolved via DepartmentRegistry; undefined for legacy callers
+		const dispatchResult = (() => {
+			if (!this.agentDispatcher) return null;
+			if (ctx.agentName) {
+				return this.agentDispatcher.dispatchByName(ctx.agentName);
+			}
+			const issueLabels =
+				ctx.issueLabels ?? hydrated.labels.map((l) => l.toLowerCase());
+			return this.agentDispatcher.dispatch({
+				issueLabels,
+				owningDept: ctx.owningDept,
+			});
+		})();
 
 		// ── Landing signal path (v0.6) ───────────────────────
 		const landSignalPath = path.join(
@@ -324,6 +381,25 @@ export class Blueprint {
 			path.dirname(__filename),
 			"../../flywheel-comm/dist/index.js",
 		);
+
+		// FLY-137 v1.27.2: onboard stage preamble. Reports intent BEFORE attempting
+		// the onboard skill so the dashboard reflects that the Runner started
+		// onboarding (not just that it finished). Failure path uses existing
+		// `complete --route blocked` (no new error stage).
+		// Inserted at the TOP of systemPromptLines so the Runner sees this before
+		// the standard pipeline instructions.
+		if (ctx.projectName) {
+			const onboardPreamble = [
+				"PIPELINE PREAMBLE — run BEFORE any other work:",
+				`(1) \`node ${commCliPath} stage set onboard\` — reports intent (you are starting onboarding).`,
+				"(2) Attempt the `onboard` skill (or `onboard-<role>` matching your agent role if applicable).",
+				`(3) On success: \`node ${commCliPath} stage set brainstorm\` and proceed.`,
+				`(4) If the onboard skill file is absent in this project: \`node ${commCliPath} stage set brainstorm\` directly (legitimate for new projects).`,
+				`(5) If the skill threw a hard error or hung: do NOT silently proceed. Run \`node ${commCliPath} complete --route blocked --summary "onboard_failed: <short reason>"\` and stop. This is the existing terminal failure channel — Bridge sees \`session_completed\` with \`status=blocked\`, Lead is notified, no silent hangs.`,
+				"",
+			];
+			systemPromptLines.unshift(...onboardPreamble);
+		}
 
 		// GEO-206: Inject flywheel-comm ask instructions when Lead is available
 		if (ctx.leadId) {
@@ -446,10 +522,26 @@ export class Blueprint {
 		const baseSystemPrompt = systemPromptLines.join("\n");
 
 		// Agent context (additive — prepend before base system prompt)
+		// FLY-137 v1.27.2: resolve agent_file root via agentFileRoot discriminant:
+		//   - "project" → project cwd (project-declared agents)
+		//   - "flywheel" → Flywheel repo root (shipped-generic fallback)
+		// Codex Track A Round 1 #1 fix — was previously always cwd, which silently
+		// dropped shipped-generic content for zero-config projects.
 		let agentContext = "";
 		if (dispatchResult) {
+			const agentFileBaseDir =
+				dispatchResult.agentFileRoot === "flywheel"
+					? this.flywheelRepoRoot
+					: cwd;
+			if (!agentFileBaseDir) {
+				console.warn(
+					`[Blueprint] agentFileRoot="${dispatchResult.agentFileRoot}" but ` +
+						`flywheelRepoRoot is unset on this Blueprint instance — falling back to cwd. ` +
+						`Update the construction site to pass flywheelRepoRoot (FLY-137 v1.27.2).`,
+				);
+			}
 			const agentContent = await readAgentFile(
-				cwd,
+				agentFileBaseDir ?? cwd,
 				dispatchResult.agentConfig.agent_file,
 			);
 			if (agentContent) {
@@ -459,8 +551,9 @@ export class Blueprint {
 					"",
 				];
 				if (dispatchResult.agentConfig.domain_file) {
+					// FLY-137 v1.27.2: domain_file resolves against the same root as agent_file
 					const domainContent = await readAgentFile(
-						cwd,
+						agentFileBaseDir ?? cwd,
 						dispatchResult.agentConfig.domain_file,
 					);
 					if (domainContent) {

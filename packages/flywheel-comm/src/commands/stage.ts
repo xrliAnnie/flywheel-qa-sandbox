@@ -13,7 +13,7 @@
 
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { isAbsolute, resolve as resolvePath } from "node:path";
 
 interface LandingStatus {
 	status?: string;
@@ -68,8 +68,11 @@ function readLandingStatus(execId: string): LandingStatus | null {
 	}
 }
 
+// FLY-137 v1.27.2: must stay in sync with packages/teamlead/src/bridge/stage-utils.ts
+// (Bridge-side VALID_STAGES). `onboard` inserted between `started` and `brainstorm`.
 const VALID_STAGES = new Set([
 	"started",
+	"onboard",
 	"brainstorm",
 	"research",
 	"plan",
@@ -85,9 +88,36 @@ const VALID_STAGES = new Set([
 
 const TIMEOUT_MS = 2000;
 
+/**
+ * FLY-137 Phase 5: validate `--plan <relative-path>` against worktree.
+ * Must be a relative path with no `..` traversal that resolves inside the
+ * worktree. Returns the validated relative path on success, or exits 1
+ * with diagnostic on failure (fail-closed — bad plan_path is a Runner
+ * protocol violation, not a soft warning).
+ */
+function validatePlanPath(planPath: string, worktreeRoot: string): string {
+	if (isAbsolute(planPath)) {
+		console.error(`--plan must be a relative path (got absolute: ${planPath})`);
+		process.exit(1);
+	}
+	if (planPath.split("/").some((seg) => seg === "..")) {
+		console.error(`--plan must not contain '..' segments (got: ${planPath})`);
+		process.exit(1);
+	}
+	const resolved = resolvePath(worktreeRoot, planPath);
+	if (!resolved.startsWith(`${worktreeRoot}/`) && resolved !== worktreeRoot) {
+		console.error(
+			`--plan resolved path escapes worktree: ${resolved} (worktree=${worktreeRoot})`,
+		);
+		process.exit(1);
+	}
+	return planPath;
+}
+
 export async function stage(opts: {
 	subcommand: string;
 	stageName: string;
+	planPath?: string;
 }): Promise<void> {
 	if (opts.subcommand !== "set") {
 		console.error(`Unknown stage subcommand: ${opts.subcommand}`);
@@ -104,6 +134,15 @@ export async function stage(opts: {
 	if (!VALID_STAGES.has(opts.stageName)) {
 		console.error(
 			`Invalid stage: ${opts.stageName}. Valid stages: ${[...VALID_STAGES].join(", ")}`,
+		);
+		process.exit(1);
+	}
+
+	// FLY-137 Phase 5: `--plan` is only meaningful for design_review.
+	// Reject quietly elsewhere to surface Runner mistakes.
+	if (opts.planPath !== undefined && opts.stageName !== "design_review") {
+		console.error(
+			`--plan flag is only valid for stage=design_review (got stage=${opts.stageName})`,
 		);
 		process.exit(1);
 	}
@@ -133,7 +172,14 @@ export async function stage(opts: {
 
 	// FLY-60 W2 (a): attach landing_status when stage=completed so Bridge
 	// can fire post-ship finalization on the merge-proven event.
-	const payload: { stage: string; landing_status?: LandingStatus } = {
+	// FLY-137 Phase 5: attach plan_path when stage=design_review so Bridge
+	// can persist it on the session row and reference it in the Codex
+	// auto-trigger instruction.
+	const payload: {
+		stage: string;
+		landing_status?: LandingStatus;
+		plan_path?: string;
+	} = {
 		stage: opts.stageName,
 	};
 	if (opts.stageName === "completed") {
@@ -141,6 +187,9 @@ export async function stage(opts: {
 		if (landingStatus) {
 			payload.landing_status = landingStatus;
 		}
+	}
+	if (opts.stageName === "design_review" && opts.planPath !== undefined) {
+		payload.plan_path = validatePlanPath(opts.planPath, process.cwd());
 	}
 
 	const body = {
