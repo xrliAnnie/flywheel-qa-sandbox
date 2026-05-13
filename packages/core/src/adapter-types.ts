@@ -205,6 +205,35 @@ export interface AdapterExecutionContext {
 	/** Project name (for session registration) */
 	projectName?: string;
 
+	// -- FLY-142 Phase 0 PR 1.2: Agent Team transport identity --
+	//
+	// These fields drive the vendor-neutral `IAgentTeamTransport` adapter
+	// (packages/agent-team-transport). When set, TmuxAdapter calls
+	// `transport.buildRunnerSpawnConfig(ctx)` to merge vendor-specific env +
+	// CLI flags into the spawn invocation. When absent (current production),
+	// transport wiring is skipped and Runner spawns the same as before.
+	//
+	// Default vendor is `claude-code` (selected by `FLYWHEEL_AGENT_BACKEND`
+	// env at AgentTeamTransportFactory.fromEnv() call site).
+
+	/** Agent name within the team (e.g. "runner-FLY-142-abc1") */
+	agentName?: string;
+	/** Lead's team this Runner joins (typically equals leadId) */
+	teamName?: string;
+	/**
+	 * Lead's claude session UUID — passed as `--parent-session-id` so the
+	 * Runner appears as a child of the Lead session in claude-code's UI.
+	 */
+	leadSessionId?: string;
+	/** UI color hint passed as `--agent-color` (e.g. "cyan", "red") */
+	agentColor?: string;
+	/**
+	 * Vendor backend selector. When set, signals Blueprint/TmuxAdapter to
+	 * activate transport wiring. When absent, no transport wiring (backward-
+	 * compat default = production today).
+	 */
+	vendor?: "claude-code" | "codex";
+
 	// -- GEO-292: Bridge connection for stage reporting --
 
 	/** Bridge URL for stage reporting (e.g., http://localhost:4100) */

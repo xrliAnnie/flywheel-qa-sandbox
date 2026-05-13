@@ -9,9 +9,13 @@ import type {
 	IFlywheelRunner,
 	IHookCallbackServer,
 } from "flywheel-core";
-import { type ExecFileFn, TmuxAdapter } from "./TmuxAdapter.js";
+import {
+	type ExecFileFn,
+	type RunnerSpawnTransport,
+	TmuxAdapter,
+} from "./TmuxAdapter.js";
 
-export type { ExecFileFn } from "./TmuxAdapter.js";
+export type { ExecFileFn, RunnerSpawnTransport } from "./TmuxAdapter.js";
 
 /**
  * @deprecated Use TmuxAdapter instead.
@@ -27,6 +31,12 @@ export class TmuxRunner implements IFlywheelRunner {
 		pollIntervalMs?: number,
 		defaultTimeoutMs?: number,
 		hookServer?: IHookCallbackServer,
+		/**
+		 * FLY-142 PR 1.2: optional vendor-neutral transport adapter. When
+		 * production wires `AgentTeamTransportFactory.fromEnv()` here,
+		 * Runner spawns will include Agent Team identity flags + env vars.
+		 */
+		transport?: RunnerSpawnTransport,
 	) {
 		this.adapter = new TmuxAdapter(
 			sessionName,
@@ -34,6 +44,7 @@ export class TmuxRunner implements IFlywheelRunner {
 			pollIntervalMs,
 			defaultTimeoutMs,
 			hookServer,
+			transport,
 		);
 		this.name = this.adapter.type;
 	}

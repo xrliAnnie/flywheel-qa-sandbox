@@ -5,9 +5,23 @@
 # as additionalContext into Claude's conversation. No-op when FLYWHEEL_EXEC_ID
 # is not set, making it safe for non-Runner sessions.
 #
+# FLY-142 PR 1.4: When the mailbox sentinel
+# `~/.flywheel/runner-state/<execId>/mailbox-active` exists, this hook
+# short-circuits to a no-op. Lead → Runner delivery uses claude-code's stock
+# `useInboxPoller` (mailbox path), bypassing the buggy CommDB filter that only
+# read `type='instruction'` (dropping `type='response'` — the wake bug).
+#
+# Rollback (FLYWHEEL_COMM_BACKEND=commdb): TmuxAdapter still writes the
+# sentinel by default; ops must `rm -f ~/.flywheel/runner-state/<execId>/mailbox-active`
+# OR set FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 to re-enable the legacy CommDB
+# polling path for that Runner.
+#
 # Dependencies: sqlite3 (macOS built-in), jq (brew install jq)
 # Env vars:    FLYWHEEL_EXEC_ID  — Runner execution ID (set by TmuxAdapter)
 #              FLYWHEEL_COMM_DB  — CommDB path (set by TmuxAdapter)
+#              FLYWHEEL_RUNNER_STATE_DIR — Runner state dir (set by TmuxAdapter PR 1.4)
+#              FLYWHEEL_DISABLE_MAILBOX_SENTINEL — set to "1" to ignore sentinel
+#                  and force legacy CommDB polling (rollback only)
 #
 # Deployed to: ~/.flywheel/hooks/inbox-check.sh (via /setup-flywheel-hooks)
 
@@ -19,6 +33,19 @@ DB_PATH="${FLYWHEEL_COMM_DB:-}"
 # Quick exit for non-Runner sessions (zero overhead)
 if [ -z "$EXEC_ID" ] || [ -z "$DB_PATH" ] || [ ! -f "$DB_PATH" ]; then
   exit 0
+fi
+
+# FLY-142 PR 1.4: mailbox sentinel — short-circuit if present (default path).
+# Resolve the sentinel path with explicit env override → exec-id-derived
+# fallback so this hook works on Runners spawned before TmuxAdapter set
+# FLYWHEEL_RUNNER_STATE_DIR (existing live sessions during rollout).
+if [ "${FLYWHEEL_DISABLE_MAILBOX_SENTINEL:-}" != "1" ]; then
+  SENTINEL_DIR="${FLYWHEEL_RUNNER_STATE_DIR:-${HOME}/.flywheel/runner-state/${EXEC_ID}}"
+  if [ -f "${SENTINEL_DIR}/mailbox-active" ]; then
+    # Mailbox path active — Lead writes go straight to claude-code's mailbox,
+    # picked up by stock useInboxPoller. Hook is intentionally inert here.
+    exit 0
+  fi
 fi
 
 # Helper: run sqlite3 with busy_timeout via -cmd flag (no stdout noise)

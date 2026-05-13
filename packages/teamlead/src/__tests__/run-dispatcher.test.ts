@@ -2,7 +2,7 @@
  * FLY-22: RunDispatcher unit tests.
  */
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type ProjectRuntime,
 	RetryDispatcher,
@@ -366,5 +366,125 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 		// Clean up
 		resolveRun({ success: true });
 		await dispatcher.drain();
+	});
+
+	// ══════════════════════════════════════════════════════════════════════
+	// FLY-142 PR 1.4 — Agent Team identity wiring
+	//
+	// QA E1 verify (2026-05-12) found Bug #4: PR #178 added TmuxAdapter
+	// transport branch, PR #181 PR #181 added MailboxLeadRuntime — but the
+	// dispatch flow NEVER set the agentName/agentTeamName/vendor fields the
+	// transport branch requires. claude-code never entered Agent Team mode,
+	// `useInboxPoller` never ran, mailbox writes silently landed in a file
+	// no one read. These tests pin the wiring so the wake bug fix actually
+	// connects end-to-end.
+	// ══════════════════════════════════════════════════════════════════════
+
+	describe("FLY-142 PR 1.4 — Agent Team identity in spawn ctx", () => {
+		const ORIGINAL_BACKEND = process.env.FLYWHEEL_COMM_BACKEND;
+		afterEach(() => {
+			if (ORIGINAL_BACKEND === undefined)
+				delete process.env.FLYWHEEL_COMM_BACKEND;
+			else process.env.FLYWHEEL_COMM_BACKEND = ORIGINAL_BACKEND;
+		});
+
+		it("start() under mailbox backend passes agentName/agentTeamName/vendor to Blueprint", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "mailbox";
+			const blueprint = { run: vi.fn().mockResolvedValue({ success: true }) };
+			const runtimes = new Map<string, ProjectRuntime>([
+				[
+					"TestProject",
+					{
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
+						blueprint: blueprint as any,
+						projectRoot: "/tmp/test",
+						tmuxSessionName: "runner-test",
+					},
+				],
+			]);
+			const dispatcher = new RunDispatcher(runtimes, [], 3);
+
+			const result = await dispatcher.start({
+				issueId: "GEO-1",
+				projectName: "TestProject",
+				leadId: "flywheel-test-2",
+			});
+
+			// Allow microtasks to drain
+			await new Promise((r) => setImmediate(r));
+			// blueprint.run signature: (taskNode, projectRoot, ctx) — ctx is arg #2.
+			const ctx = blueprint.run.mock.calls[0]?.[2];
+			expect(ctx).toBeDefined();
+			expect(ctx.vendor).toBe("claude-code");
+			expect(ctx.agentTeamName).toBe("flywheel-test-2");
+			// FLY-142 transport identity — distinct from FLY-137's
+			// `ctx.agentName` (Lead-override dispatcher key).
+			expect(ctx.runnerAgentName).toBe(
+				`runner-${result.executionId.slice(0, 8)}`,
+			);
+		});
+
+		it("start() under commdb rollback backend omits Agent Team fields", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "commdb";
+			const blueprint = { run: vi.fn().mockResolvedValue({ success: true }) };
+			const runtimes = new Map<string, ProjectRuntime>([
+				[
+					"TestProject",
+					{
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
+						blueprint: blueprint as any,
+						projectRoot: "/tmp/test",
+						tmuxSessionName: "runner-test",
+					},
+				],
+			]);
+			const dispatcher = new RunDispatcher(runtimes, [], 3);
+
+			await dispatcher.start({
+				issueId: "GEO-1",
+				projectName: "TestProject",
+				leadId: "flywheel-test-2",
+			});
+
+			await new Promise((r) => setImmediate(r));
+			// blueprint.run signature: (taskNode, projectRoot, ctx) — ctx is arg #2.
+			const ctx = blueprint.run.mock.calls[0]?.[2];
+			expect(ctx).toBeDefined();
+			// Transport wiring stays off on rollback — Agent Team fields absent.
+			expect(ctx.runnerAgentName).toBeUndefined();
+			expect(ctx.agentTeamName).toBeUndefined();
+			expect(ctx.vendor).toBeUndefined();
+		});
+
+		it("start() omits Agent Team fields when leadId is missing (defensive)", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "mailbox";
+			const blueprint = { run: vi.fn().mockResolvedValue({ success: true }) };
+			const runtimes = new Map<string, ProjectRuntime>([
+				[
+					"TestProject",
+					{
+						// eslint-disable-next-line @typescript-eslint/no-explicit-any
+						blueprint: blueprint as any,
+						projectRoot: "/tmp/test",
+						tmuxSessionName: "runner-test",
+					},
+				],
+			]);
+			const dispatcher = new RunDispatcher(runtimes, [], 3);
+
+			await dispatcher.start({
+				issueId: "GEO-1",
+				projectName: "TestProject",
+				// no leadId — shouldn't happen on hot path but guard for safety
+			});
+
+			await new Promise((r) => setImmediate(r));
+			// blueprint.run signature: (taskNode, projectRoot, ctx) — ctx is arg #2.
+			const ctx = blueprint.run.mock.calls[0]?.[2];
+			expect(ctx).toBeDefined();
+			expect(ctx.runnerAgentName).toBeUndefined();
+			expect(ctx.agentTeamName).toBeUndefined();
+			expect(ctx.vendor).toBeUndefined();
+		});
 	});
 });

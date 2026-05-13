@@ -64,8 +64,35 @@ import { createTriageTemplateRouter } from "./triage-template-route.js";
 import type { BridgeConfig } from "./types.js";
 
 /**
- * FLY-47: CommDB is the sole runtime — no Discord fallback.
- * Requires inbox-mcp PID lease alive. Throws on failure.
+ * FLY-142 PR 1.4: Backend selection — `mailbox` (default) or `commdb` (rollback).
+ *
+ * - `mailbox`: vendor-neutral MailboxLeadRuntime (writes to claude-code mailbox,
+ *   read by stock useInboxPoller). Bypasses the buggy `inbox-check.sh` filter
+ *   that drops `type='response'` (FLY-142 wake bug).
+ * - `commdb`: legacy CommDBLeadRuntime (writes to CommDB instructions, read by
+ *   the buggy hook). Preserved for rollback only — not recommended for prod.
+ *
+ * Hard-gate path (commdb-lead-runtime "instruction" channel for gate questions
+ * and approve_to_ship responses) stays on CommDB regardless of this env per
+ * plan §B-2 Codex r3 critical #1; Batch 2 PR 2.1 will swap it for
+ * StructuredInboxRouter once await-mcp ships.
+ */
+type CommBackend = "mailbox" | "commdb";
+
+export function resolveCommBackend(): CommBackend {
+	const raw = (process.env.FLYWHEEL_COMM_BACKEND ?? "mailbox").toLowerCase();
+	if (raw === "commdb") return "commdb";
+	if (raw === "mailbox" || raw === "") return "mailbox";
+	console.warn(
+		`[Bridge] Unrecognized FLYWHEEL_COMM_BACKEND="${raw}" — falling back to "mailbox" default. Set to "mailbox" or "commdb" explicitly.`,
+	);
+	return "mailbox";
+}
+
+/**
+ * FLY-47 → FLY-142 PR 1.4: per-Lead runtime factory. Selects MailboxLeadRuntime
+ * (default, fixes wake bug) or CommDBLeadRuntime (rollback) based on
+ * FLYWHEEL_COMM_BACKEND env var. Throws on transport readiness failure.
  */
 export async function createLeadRuntime(
 	lead: LeadConfig,
@@ -76,6 +103,61 @@ export async function createLeadRuntime(
 	const { homedir } = await import("node:os");
 	const { existsSync, readFileSync } = await import("node:fs");
 
+	const backend = resolveCommBackend();
+
+	if (backend === "mailbox") {
+		// Mailbox path — no CommDB / inbox-mcp lease check needed. Lead's
+		// stock useInboxPoller reads from <CLAUDE_CONFIG_DIR>/teams/<lead>/inboxes/
+		// and injects directly into the conversation, bypassing the buggy hook.
+		const { AgentTeamTransportFactory } = await import(
+			"flywheel-agent-team-transport"
+		);
+		const { MailboxLeadRuntime } = await import("./mailbox-lead-runtime.js");
+		const transport = AgentTeamTransportFactory.fromEnv();
+		// Fail fast if transport itself isn't healthy — Lead can't deliver
+		// anything if CLAUDE_CONFIG_DIR isn't writable / claude-code isn't
+		// installed. Surfaces same bar as CommDB lease-check before.
+		//
+		// FLY-142 verify (2026-05-12, QA-found Bug #2): pass a real logger so
+		// adapter diagnostic logs land in the Bridge console — useful when
+		// preflight fails on a fresh machine. Adapter still tolerates an
+		// omitted logger per `ITransportPreflight` contract (PR 1.1 fix), so
+		// this is defense in depth, not a hard requirement.
+		const preflight = await transport.preflight({
+			logger: {
+				debug: (msg, meta) =>
+					console.debug(`[Bridge.preflight] ${msg}`, meta ?? ""),
+				info: (msg, meta) =>
+					console.log(`[Bridge.preflight] ${msg}`, meta ?? ""),
+				warn: (msg, meta) =>
+					console.warn(`[Bridge.preflight] ${msg}`, meta ?? ""),
+				error: (msg, meta) =>
+					console.error(`[Bridge.preflight] ${msg}`, meta ?? ""),
+			},
+		});
+		if (!preflight.ok) {
+			// FLY-142 verify (2026-05-12, QA-found Bug #3): old code read
+			// `preflight.failures` which doesn't exist on `PreflightResult`
+			// (the schema has `availabilitySignals` + `message`). So every
+			// preflight failure surfaced as "unknown" instead of the real
+			// signal, masking Bug #2 root cause. Read the right fields.
+			const errorSignals = preflight.availabilitySignals
+				.filter((s) => s.kind === "error")
+				.map((s) => `${s.name}${s.detail ? `: ${s.detail}` : ""}`);
+			const detail =
+				preflight.message ??
+				(errorSignals.length > 0 ? errorSignals.join("; ") : "unknown");
+			throw new Error(
+				`Lead "${lead.agentId}": mailbox transport preflight failed — ${detail}`,
+			);
+		}
+		console.log(
+			`[Bridge] Lead "${lead.agentId}" using mailbox runtime (FLY-142 PR 1.4 default)`,
+		);
+		return new MailboxLeadRuntime({ leadId: lead.agentId, transport });
+	}
+
+	// Rollback path — CommDB runtime. Requires inbox-mcp PID lease alive.
 	if (!projectName) {
 		throw new Error(
 			`Lead "${lead.agentId}": projectName is required for CommDB runtime`,
@@ -1395,6 +1477,40 @@ export async function startBridge(
 	}
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+
+	// FLY-142 PR #186 amend (QA hybrid-swap, 2026-05-13): auto-deploy runtime
+	// hooks from `scripts/hooks/` to `~/.flywheel/hooks/` on Bridge boot.
+	// Without this, hot-redeploys of the FLY-142 sentinel short-circuit
+	// landed in the source file but the runtime hook (read by Claude Code's
+	// PostToolUse) stayed at the pre-FLY-142 version → CommDB-rollback
+	// Runners still hit the wake bug. Synchronous (not fire-and-forget) so
+	// the FIRST Runner spawn after this Bridge restart already sees the
+	// fresh hook. Idempotent on checksum match; errors are logged but
+	// non-fatal (Bridge still boots — the legacy hook continues to function
+	// for everything except the FLY-142 sentinel check, which is the
+	// degraded but safe state pre-PR-#186).
+	try {
+		const { syncFlywheelRuntime } = await import("./sync-flywheel-hooks.js");
+		// FLY-142 PR #186 Bug #5 amend: also deploy CLI bin symlinks (e.g.,
+		// `agent-team-transport` → `~/.flywheel/bin/agent-team-transport`)
+		// so `claude-lead.sh` finds the CLI on PATH (the FATAL check added
+		// in Round 1 was firing in prod because the CLI was only built into
+		// the monorepo dist, never installed system-wide).
+		const { hooks, bins } = await syncFlywheelRuntime();
+		console.log(
+			`[sync-hooks] synced=${hooks.synced.length} matched=${hooks.matched.length} missingSource=${hooks.missingSource.length} errors=${hooks.errors.length}`,
+		);
+		console.log(
+			`[sync-bin] synced=${bins.synced.length} matched=${bins.matched.length} missingSource=${bins.missingSource.length} errors=${bins.errors.length}`,
+		);
+	} catch (err) {
+		// Soft failure: log but don't abort Bridge startup. Operator can
+		// rerun `/setup-flywheel-hooks` manually + manually symlink the CLI
+		// as the legacy escape hatch.
+		console.warn(
+			`[sync-runtime] failed (Bridge will continue, legacy hook + manually-installed CLI still in place): ${err instanceof Error ? err.message : String(err)}`,
+		);
+	}
 
 	// FLY-116: one-shot startup reaper for stale Terminal.app tabs left over
 	// from prior runs (macOS Terminal session-restore, crashed Phase 2 watcher, etc).

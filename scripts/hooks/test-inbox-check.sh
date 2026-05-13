@@ -194,6 +194,132 @@ else
   pass "Multi-line: no bogus entries"
 fi
 
+# Test S1: FLY-142 PR 1.4 sentinel — present → noop even with unread instructions
+echo ""
+echo "Test S1: mailbox sentinel present → hook noops (FLY-142 PR 1.4)"
+DB_S1="$TMPDIR/test_s1.db"
+sqlite3 "$DB_S1" "
+CREATE TABLE messages (
+  id TEXT PRIMARY KEY,
+  from_agent TEXT NOT NULL,
+  to_agent TEXT NOT NULL,
+  type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  parent_id TEXT,
+  read_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
+);
+INSERT INTO messages (id, from_agent, to_agent, type, content)
+  VALUES ('s1-msg', 'lead', 'exec-s1', 'instruction', 'Should NOT be delivered when sentinel present');
+"
+SENTINEL_DIR_S1="$TMPDIR/runner-state/exec-s1"
+mkdir -p "$SENTINEL_DIR_S1"
+touch "$SENTINEL_DIR_S1/mailbox-active"
+OUTPUT=$(FLYWHEEL_EXEC_ID="exec-s1" \
+         FLYWHEEL_COMM_DB="$DB_S1" \
+         FLYWHEEL_RUNNER_STATE_DIR="$SENTINEL_DIR_S1" \
+         bash "$HOOK" 2>&1)
+if [ -z "$OUTPUT" ]; then
+  pass "Sentinel present → no output (hook short-circuits)"
+else
+  fail "Sentinel should suppress output" "got: $OUTPUT"
+fi
+# Verify the message was NOT marked as read (sentinel skipped the SQL path entirely)
+READ_AT=$(sqlite3 "$DB_S1" "SELECT read_at FROM messages WHERE id='s1-msg';")
+if [ -z "$READ_AT" ]; then
+  pass "Sentinel present → message NOT marked read (proves SQL path skipped)"
+else
+  fail "Sentinel should leave message unread" "read_at=$READ_AT"
+fi
+
+# Test S2: FLY-142 PR 1.4 sentinel absent → legacy CommDB path runs
+echo ""
+echo "Test S2: sentinel absent → legacy CommDB delivery still works (rollback)"
+DB_S2="$TMPDIR/test_s2.db"
+sqlite3 "$DB_S2" "
+CREATE TABLE messages (
+  id TEXT PRIMARY KEY,
+  from_agent TEXT NOT NULL,
+  to_agent TEXT NOT NULL,
+  type TEXT NOT NULL,
+  content TEXT NOT NULL,
+  parent_id TEXT,
+  read_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
+);
+INSERT INTO messages (id, from_agent, to_agent, type, content)
+  VALUES ('s2-msg', 'lead', 'exec-s2', 'instruction', 'Rollback path delivery');
+"
+# Explicitly point sentinel dir at empty location → no sentinel
+OUTPUT=$(FLYWHEEL_EXEC_ID="exec-s2" \
+         FLYWHEEL_COMM_DB="$DB_S2" \
+         FLYWHEEL_RUNNER_STATE_DIR="$TMPDIR/no-such-dir" \
+         bash "$HOOK" 2>&1)
+if echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext' > /dev/null 2>&1; then
+  pass "No sentinel → CommDB delivery still works"
+else
+  fail "Expected legacy delivery output" "$OUTPUT"
+fi
+
+# Test S3: FLY_DISABLE_MAILBOX_SENTINEL=1 → ignore sentinel, run legacy path
+echo ""
+echo "Test S3: FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 ignores sentinel"
+DB_S3="$TMPDIR/test_s3.db"
+sqlite3 "$DB_S3" "
+CREATE TABLE messages (
+  id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
+  type TEXT NOT NULL, content TEXT NOT NULL, parent_id TEXT,
+  read_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
+);
+INSERT INTO messages (id, from_agent, to_agent, type, content)
+  VALUES ('s3-msg', 'lead', 'exec-s3', 'instruction', 'Override delivery');
+"
+SENTINEL_DIR_S3="$TMPDIR/runner-state/exec-s3"
+mkdir -p "$SENTINEL_DIR_S3"
+touch "$SENTINEL_DIR_S3/mailbox-active"
+OUTPUT=$(FLYWHEEL_EXEC_ID="exec-s3" \
+         FLYWHEEL_COMM_DB="$DB_S3" \
+         FLYWHEEL_RUNNER_STATE_DIR="$SENTINEL_DIR_S3" \
+         FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 \
+         bash "$HOOK" 2>&1)
+if echo "$OUTPUT" | jq -e '.hookSpecificOutput.additionalContext' > /dev/null 2>&1; then
+  pass "DISABLE_MAILBOX_SENTINEL=1 → sentinel ignored, legacy delivery runs"
+else
+  fail "Expected legacy delivery despite sentinel" "$OUTPUT"
+fi
+
+# Test S4: Default sentinel path (~/.flywheel/runner-state/<exec>/mailbox-active)
+# is consulted when FLYWHEEL_RUNNER_STATE_DIR is unset
+echo ""
+echo "Test S4: default sentinel path picked up via HOME-derived fallback"
+DB_S4="$TMPDIR/test_s4.db"
+sqlite3 "$DB_S4" "
+CREATE TABLE messages (
+  id TEXT PRIMARY KEY, from_agent TEXT NOT NULL, to_agent TEXT NOT NULL,
+  type TEXT NOT NULL, content TEXT NOT NULL, parent_id TEXT,
+  read_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  expires_at DATETIME DEFAULT (datetime('now', '+72 hours'))
+);
+INSERT INTO messages (id, from_agent, to_agent, type, content)
+  VALUES ('s4-msg', 'lead', 'exec-s4', 'instruction', 'Default-path test');
+"
+# Override HOME so the default path resolves into TMPDIR
+FAKE_HOME="$TMPDIR/fake-home-s4"
+mkdir -p "$FAKE_HOME/.flywheel/runner-state/exec-s4"
+touch "$FAKE_HOME/.flywheel/runner-state/exec-s4/mailbox-active"
+OUTPUT=$(HOME="$FAKE_HOME" \
+         FLYWHEEL_EXEC_ID="exec-s4" \
+         FLYWHEEL_COMM_DB="$DB_S4" \
+         bash "$HOOK" 2>&1)
+if [ -z "$OUTPUT" ]; then
+  pass "Default \$HOME-derived sentinel path detected"
+else
+  fail "Expected sentinel-noop via default path" "$OUTPUT"
+fi
+
 # Summary
 echo ""
 echo "=========================="
