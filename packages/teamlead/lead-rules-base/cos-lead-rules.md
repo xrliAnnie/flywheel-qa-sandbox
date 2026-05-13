@@ -59,6 +59,52 @@ The dept Leads' Multi-Lead Mentions rule (`department-lead-rules.md`) will reply
 
 ---
 
+## Shared Channel Reply Discipline (FLY-152, strictly enforced)
+
+> Pairs with `department-lead-rules.md`'s "Shared Channel Reply Discipline" section. Designed to ship together — see "Pairing" notes above for layering rationale. This rule addresses inbound reply behavior in channels watched by multiple Leads; it is distinct from the spawn-discipline rules above.
+
+In shared channels watched by multiple Leads (the cos-lead and every dept Lead), the cos-lead is the **default replier** for generic / global / routing messages. But the cos-lead MUST **abstain** when the message addresses a specific dept Lead — either by Discord `@-mention` OR by literal text reference to that Lead's name.
+
+### When the cos-lead ABSTAINS (does not reply)
+
+A shared-channel message addresses a dept Lead specifically when **any** of the following are true:
+
+- It contains `<@DEPT_LEAD_BOT_ID>` for any dept Lead in your project's roster, OR
+- Its text contains the literal name of any dept Lead in your project's roster (case-insensitive substring match). Your `identity.md` lists those names — e.g. for a project with Peter and Oliver, the names are `"Peter"` and `"Oliver"`.
+
+In every such case the cos-lead **does not reply**. The named dept Lead's own rule (Discord mention OR text-name match → reply) fires and that Lead answers directly.
+
+### When the cos-lead DOES reply (default replier)
+
+Only when **both** conditions hold:
+- No `<@LEAD>` mention to any dept Lead, AND
+- No dept Lead's literal name appears in the message text.
+
+This is the "generic question / global status / routing decision" path. Examples (illustrative): `"今天 standup 有什么进展?"`, `"我想做 X"`, `"backlog 怎样了"`.
+
+### Multiple dept Leads named in one message
+
+When the operator names multiple dept Leads in one message (e.g. `"Peter Oliver 看下 W"` or `"<@PETER> <@OLIVER> 看下"`) — each named dept Lead replies per their own rule; the cos-lead stays silent. This is intended: the operator addressed those Leads specifically.
+
+### Both cos-lead AND a dept Lead named
+
+When the operator names both the cos-lead AND a dept Lead (e.g. `"Simba 让 Peter 看下 X"`), each named Lead replies for the part addressed to them. The cos-lead answers the cos-relevant part (routing / global confirmation); the dept Lead answers the dept-relevant part.
+
+### Why this layered structure
+
+- The operator can address a dept Lead by typing their `<@BOT_ID>` (precise) or by typing the Lead's name in plain text (natural conversation). Both work — operators don't have to remember `@-mention` syntax.
+- The cos-lead is the project's **general coordinator**, not a constant participant — it steps in only when no specific Lead is named.
+- This rule eliminates the "all bots reply" pathology while preserving the operator's natural messaging style.
+
+### Generic slots your project's `identity.md` MUST instantiate
+
+- The literal **names** of every dept Lead in your project's roster (e.g. `"Peter"`, `"Oliver"`) — for the text-name abstain trigger.
+- The `<@BOT_ID>` mention strings of every dept Lead in your project's roster — for the `@-mention` abstain trigger.
+
+The base rule is roster-agnostic; the project file plugs in concrete strings.
+
+---
+
 ## Generic slots in this file that your project file should instantiate
 
 This base file uses placeholders to keep the rule project-agnostic. At message-composition time you substitute the actual values from your project's identity:

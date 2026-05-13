@@ -43,8 +43,8 @@ This matches `class Project extends Base` semantics: subclass declarations sit o
 
 | File | Audience | Purpose |
 |------|----------|---------|
-| [`department-lead-rules.md`](department-lead-rules.md) | Department Leads (non-cos roles) | FLY-127 Action Gate, Multi-Lead Mentions handling, Bridge rejection diagnostic templates |
-| [`cos-lead-rules.md`](cos-lead-rules.md) | Cos-lead role only | FLY-127 Department Routing Discipline (one Lead per backend spawn directive) |
+| [`department-lead-rules.md`](department-lead-rules.md) | Department Leads (non-cos roles) | FLY-127 Action Gate, Multi-Lead Mentions handling, Bridge rejection diagnostic templates; FLY-152 Shared Channel Reply Discipline |
+| [`cos-lead-rules.md`](cos-lead-rules.md) | Cos-lead role only | FLY-127 Department Routing Discipline (one Lead per backend spawn directive); FLY-152 Shared Channel Reply Discipline |
 
 Both files are appended via `--append-system-prompt-file` in `packages/teamlead/scripts/claude-lead.sh`. They are conditional: if a base file is missing, behavior is identical to pre-FLY-127 (no failure, no warning — backward compatible for old flywheel checkouts).
 
