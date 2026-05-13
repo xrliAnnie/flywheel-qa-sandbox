@@ -82,9 +82,16 @@ export class WorkflowFSM {
 export const WORKFLOW_TRANSITIONS = {
     pending: ["running"],
     running: ["awaiting_review", "completed", "blocked", "failed", "terminated"],
-    // FLY-44: terminate allowed from all started non-terminal states
+    // FLY-44: terminate allowed from all started non-terminal states.
+    // FLY-60 W2 (b): `completed` added to support post-merge re-finalization
+    // from the `stage_changed=completed + landing_status.status="merged"`
+    // branch in Bridge event-route. Merge-proof guard lives at the event-route
+    // call site (it must verify landing_status before calling applyTransition);
+    // this FSM map only declares the transition is legal. Defense-in-depth FSM
+    // guard via ctx.payload is a follow-up if needed (per plan §12.3).
     awaiting_review: [
         "approved_to_ship",
+        "completed",
         "rejected",
         "deferred",
         "shelved",

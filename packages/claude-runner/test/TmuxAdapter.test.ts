@@ -1,5 +1,5 @@
 import type { AdapterExecutionContext } from "flywheel-core";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // We'll test TmuxAdapter by injecting a mock execFileFn
 import { TmuxAdapter } from "../src/TmuxAdapter.js";
@@ -917,6 +917,273 @@ describe("TmuxAdapter", () => {
 			const newWindow = calls.find((c) => c.args[0] === "new-window");
 			const args = newWindow!.args;
 			expect(args.join(" ")).toContain("FLYWHEEL_ISSUE_ID=GEO-42");
+		});
+	});
+
+	// =========================================================================
+	// FLY-142 PR 1.2 — vendor-neutral Agent Team transport wiring
+	// =========================================================================
+	describe("FLY-142 PR 1.2 — Agent Team transport wiring", () => {
+		function makeMockTransport() {
+			const buildRunnerSpawnConfig = vi.fn(
+				(ctx: { runnerName: string; teamName: string; leadName: string }) => ({
+					args: [
+						"--agent-id",
+						`${ctx.runnerName}@${ctx.teamName}`,
+						"--agent-name",
+						ctx.runnerName,
+						"--team-name",
+						ctx.teamName,
+					],
+					env: {
+						CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS: "1",
+						FLYWHEEL_AGENT_BACKEND: "claude-code",
+					},
+				}),
+			);
+			return { buildRunnerSpawnConfig };
+		}
+
+		it("spawn omits transport flags when transport is undefined (backward compat)", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			// 6th positional arg (transport) intentionally omitted.
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 30000);
+
+			await adapter.execute(
+				makeCtx({
+					agentName: "runner-FLY-142-abc1",
+					teamName: "cos-lead",
+					vendor: "claude-code",
+				}),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).not.toContain("--agent-id");
+			expect(joined).not.toContain("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS");
+		});
+
+		it("spawn omits transport flags when ctx is missing agentName (backward compat)", async () => {
+			const transport = makeMockTransport();
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				30000,
+				undefined,
+				transport,
+			);
+
+			// ctx has vendor but NO agentName/teamName → transport not invoked.
+			await adapter.execute(makeCtx({ vendor: "claude-code" }));
+
+			expect(transport.buildRunnerSpawnConfig).not.toHaveBeenCalled();
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).not.toContain("--agent-id");
+			expect(joined).not.toContain("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS");
+		});
+
+		it("when transport + ctx fields all set, merges identity flags + env", async () => {
+			const transport = makeMockTransport();
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				30000,
+				undefined,
+				transport,
+			);
+
+			await adapter.execute(
+				makeCtx({
+					leadId: "cos-lead",
+					agentName: "runner-FLY-142-abc1",
+					teamName: "cos-lead",
+					leadSessionId: "lead-session-uuid",
+					agentColor: "cyan",
+					permissionMode: "bypassPermissions",
+					vendor: "claude-code",
+				}),
+			);
+
+			expect(transport.buildRunnerSpawnConfig).toHaveBeenCalledWith(
+				expect.objectContaining({
+					leadName: "cos-lead",
+					runnerName: "runner-FLY-142-abc1",
+					teamName: "cos-lead",
+					parentSessionId: "lead-session-uuid",
+					color: "cyan",
+					permissionMode: "bypassPermissions",
+				}),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			// Transport-supplied env vars present in tmux -e flags.
+			expect(joined).toContain("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1");
+			expect(joined).toContain("FLYWHEEL_AGENT_BACKEND=claude-code");
+			// Transport-supplied identity flags present in claude args.
+			expect(joined).toContain("--agent-id");
+			expect(joined).toContain("runner-FLY-142-abc1@cos-lead");
+			expect(joined).toContain("--team-name");
+			expect(joined).toContain("cos-lead");
+		});
+
+		it("transport identity flags are prepended BEFORE ctx flags so prompt stays last", async () => {
+			const transport = makeMockTransport();
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				30000,
+				undefined,
+				transport,
+			);
+
+			await adapter.execute(
+				makeCtx({
+					prompt: "do work",
+					leadId: "cos-lead",
+					agentName: "runner-x",
+					teamName: "cos-lead",
+					vendor: "claude-code",
+				}),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const args = newWindow!.args;
+			const claudeIdx = args.indexOf("claude");
+			expect(claudeIdx).toBeGreaterThan(-1);
+			// First flag after `claude` should be from transport (--agent-id),
+			// not from buildClaudeArgs (--session-id).
+			expect(args[claudeIdx + 1]).toBe("--agent-id");
+			// Last positional MUST be the prompt — never overtaken by transport flags.
+			expect(args[args.length - 1]).toBe("do work");
+		});
+
+		it("transport throw is non-fatal — falls back to no-transport spawn", async () => {
+			const transport = {
+				buildRunnerSpawnConfig: vi.fn(() => {
+					throw new Error("transport boom");
+				}),
+			};
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				30000,
+				undefined,
+				transport,
+			);
+
+			// Should NOT throw — adapter swallows transport error.
+			await adapter.execute(
+				makeCtx({
+					leadId: "cos-lead",
+					agentName: "runner-x",
+					teamName: "cos-lead",
+					vendor: "claude-code",
+				}),
+			);
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).not.toContain("--agent-id");
+			expect(joined).not.toContain("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS");
+		});
+	});
+
+	// =========================================================================
+	// FLY-142 PR 1.4 — mailbox sentinel + commdb rollback gate (Codex r1 HIGH)
+	// =========================================================================
+	describe("FLY-142 PR 1.4 — mailbox sentinel + rollback gate", () => {
+		const ORIGINAL_BACKEND = process.env.FLYWHEEL_COMM_BACKEND;
+		afterEach(() => {
+			if (ORIGINAL_BACKEND === undefined) {
+				delete process.env.FLYWHEEL_COMM_BACKEND;
+			} else {
+				process.env.FLYWHEEL_COMM_BACKEND = ORIGINAL_BACKEND;
+			}
+		});
+
+		it("default (env unset → mailbox): writes sentinel + injects FLYWHEEL_RUNNER_STATE_DIR", async () => {
+			delete process.env.FLYWHEEL_COMM_BACKEND;
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+			expect(joined).toContain("/.flywheel/runner-state/");
+			expect(joined).toContain(
+				"/mailbox-active".replace("/mailbox-active", ""),
+			); // dir, not file
+			expect(joined).not.toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+		});
+
+		it("FLYWHEEL_COMM_BACKEND=mailbox explicit: writes sentinel + injects state dir", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "mailbox";
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+			expect(joined).not.toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+		});
+
+		it("FLYWHEEL_COMM_BACKEND=commdb (rollback): does NOT write sentinel + propagates DISABLE=1 to Runner env (Codex r1 HIGH fix)", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "commdb";
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			// Defense-in-depth: even if a stale sentinel exists from a prior
+			// mailbox-mode spawn, hook must ignore it.
+			expect(joined).toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+			// Sentinel state dir env must NOT be set on rollback (no sentinel written).
+			expect(joined).not.toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+		});
+
+		it("FLYWHEEL_COMM_BACKEND=COMMDB (case-insensitive): treats as rollback", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "COMMDB";
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			expect(joined).toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+			expect(joined).not.toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+		});
+
+		it("unknown backend value: defaults to mailbox (matches plugin.ts factory behavior)", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "garbage-value";
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+			await adapter.execute(makeCtx());
+
+			const newWindow = calls.find((c) => c.args[0] === "new-window");
+			const joined = newWindow!.args.join(" ");
+			// Adapter is conservative: any non-"commdb" value falls back to
+			// sentinel-on (mailbox path). plugin.ts logs a warning and does
+			// the same. This keeps the most-recoverable path as default.
+			expect(joined).toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+			expect(joined).not.toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
 		});
 	});
 });

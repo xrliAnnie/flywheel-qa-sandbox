@@ -78,6 +78,25 @@ log() {
   echo "[lead] $(date '+%H:%M:%S') $*"
 }
 
+# Normalize `FLYWHEEL_COMM_BACKEND` for comparisons. Mirrors the lenient
+# parse used by Bridge `plugin.ts:resolveCommBackend`:
+#   - Default to `mailbox` when unset / empty.
+#   - Strip leading/trailing whitespace (operator-typed `.env` quirks).
+#   - Lowercase so `Commdb`, `COMMDB`, etc. compare correctly.
+# Echoes the normalized value to stdout for `$(...)` capture.
+#
+# codex:rescue Round 2 MEDIUM: pre-helper code used inline
+# `printf | tr` without the trim step, so `FLYWHEEL_COMM_BACKEND=" commdb "`
+# (with whitespace) routed as mailbox and silently broke rollback.
+normalize_comm_backend() {
+  local raw="${FLYWHEEL_COMM_BACKEND:-mailbox}"
+  # Trim leading whitespace via bash 3.2-compatible parameter expansion.
+  raw="${raw#"${raw%%[![:space:]]*}"}"
+  # Trim trailing whitespace.
+  raw="${raw%"${raw##*[![:space:]]}"}"
+  printf '%s' "$raw" | tr '[:upper:]' '[:lower:]'
+}
+
 # ── TTY guard ──────────────────────────────────────────────────
 # FLY-88: TTY is now provided by tmux (Claude runs inside a tmux window).
 # The old `script -q /dev/null` PTY hack is no longer needed.
@@ -690,6 +709,32 @@ _launch_claude() {
     -e "PATH=${PATH}"
   )
 
+  # FLY-142 PR 1.2: Agent Team transport env vars. Set by
+  # `eval "$(agent-team-transport lead-env ...)"` earlier in the script
+  # (no-op if transport CLI not on PATH, vars stay unset). Propagate into
+  # tmux pane so claude-code's useInboxPoller activates with the same paths
+  # the launcher knows about (Codex r1 high #5: stock binary uses
+  # CLAUDE_CONFIG_DIR; the legacy FLYWHEEL_TEAMS_* env namespace is banned).
+  #
+  # QA-found bug (2026-05-12, FLY-142 verify): empty propagation is NOT a
+  # no-op. `tmux new-window -e CLAUDE_CONFIG_DIR=` sets the var to empty
+  # string in the pane, which claude-code distinguishes from "unset" — empty
+  # string sends it looking for trust state at the wrong path, retriggering
+  # the Trust dialog even when ~/.claude.json:hasTrustDialogAccepted=true is
+  # set. Only propagate when the launcher actually has a value.
+  if [ -n "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}" ]; then
+    env_args+=(-e "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS}")
+  fi
+  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
+    env_args+=(-e "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR}")
+  fi
+  if [ -n "${FLYWHEEL_AGENT_BACKEND:-}" ]; then
+    env_args+=(-e "FLYWHEEL_AGENT_BACKEND=${FLYWHEEL_AGENT_BACKEND}")
+  fi
+  if [ -n "${FLYWHEEL_STATE_DIR:-}" ]; then
+    env_args+=(-e "FLYWHEEL_STATE_DIR=${FLYWHEEL_STATE_DIR}")
+  fi
+
   # FLY-143 (QA-found): tmux `new-window -e` does NOT inherit the launcher's
   # env, so any `${VAR}` referenced in the merged .mcp.json must be passed
   # explicitly or Claude marks the server "needs authentication".
@@ -815,6 +860,16 @@ fi
 
 # FLY-90: bun global bin may not be in PATH when launched via launchd/tmux.
 export PATH="$HOME/.bun/bin:$PATH"
+
+# FLY-142 PR #186 Bug #5 amend: Bridge boot symlinks `agent-team-transport`
+# into `~/.flywheel/bin/` (via `sync-flywheel-hooks.ts:syncFlywheelCliBin`)
+# so the FATAL check below finds the CLI on PATH. Prepend the dir here so
+# launchd / tmux launches inherit the path even when the operator's shell
+# rc files don't add it.
+#
+# `FLYWHEEL_BIN_DIR` mirrors the override used by `syncFlywheelCliBin` for
+# test slots; if unset, we use `~/.flywheel/bin` (the production default).
+export PATH="${FLYWHEEL_BIN_DIR:-$HOME/.flywheel/bin}:$PATH"
 GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
 
 terminal_server='{}'
@@ -1083,6 +1138,33 @@ if [ "$IS_COS_ROLE" = false ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEPT_RULES")
     log "Appending base dept-lead rules: ${BASE_DEPT_RULES}"
   fi
+  # FLY-142 PR #186 Codex Round 1 HIGH: dept leads spawn + DM Runners, so
+  # they MUST be told to use `SendMessage` MCP for ordinary DM (mailbox
+  # path) rather than `flywheel-comm send` (suppressed by sentinel once
+  # mailbox cutover is active — silent message loss otherwise).
+  #
+  # FLY-142 PR #186 codex:rescue Bug B: ONLY load this rule on the mailbox
+  # path. On the `FLYWHEEL_COMM_BACKEND=commdb` rollback path, `run-dispatcher.ts:buildAgentTeamIdentity`
+  # returns `{}` so Runner spawns without Agent Team identity → Lead writes
+  # mailbox via SendMessage but nobody polls it → silent message loss. Skip
+  # the rule on rollback so Lead falls back to the legacy `flywheel-comm send`
+  # CommDB path that the rolled-back Runner side actually reads.
+  #
+  # codex:rescue Round 2 MEDIUM: also trim leading/trailing whitespace —
+  # an operator who writes `FLYWHEEL_COMM_BACKEND=" commdb "` in their
+  # `.env` would otherwise be routed as mailbox because the raw value has
+  # spaces. Mirror the lenient parse used by `plugin.ts:resolveCommBackend`.
+  _runnermsg_backend=$(normalize_comm_backend)
+  if [ "$_runnermsg_backend" != "commdb" ]; then
+    BASE_RUNNER_MSG_RULES="${BASE_RULES_DIR}/runner-messaging-rules.md"
+    if [ -f "$BASE_RUNNER_MSG_RULES" ] && [ -r "$BASE_RUNNER_MSG_RULES" ]; then
+      CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_RUNNER_MSG_RULES")
+      log "Appending base runner-messaging rules: ${BASE_RUNNER_MSG_RULES}"
+    fi
+  else
+    log "FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping runner-messaging-rules.md so Lead stays on legacy flywheel-comm path consistent with Runner spawn"
+  fi
+  unset _runnermsg_backend
 else
   # Cos-lead base: Department Routing Discipline (one Lead per spawn message)
   BASE_COS_RULES="${BASE_RULES_DIR}/cos-lead-rules.md"
@@ -1115,6 +1197,108 @@ if [ -d "$LEAD_RULES_DIR" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
     log "Appending department lead rules: ${DEPT_RULES}"
   fi
+fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-142 PR 1.2: Vendor-neutral Agent Team transport wiring
+# ════════════════════════════════════════════════════════════════
+#
+# Per plan v1.27.1 §2.0.4-bis (Codex r1 critical #2 + r2 high #4):
+# - `agent-team-transport lead-env` emits `export KEY=$'value'` lines for
+#   `eval` (bash 3.2+ compat — `declare -g` not supported on macOS).
+# - `agent-team-transport lead-args` emits `FLYWHEEL_AGENT_TEAM_ARGS=( ... )`
+#   array assignment, also for `eval`.
+# - DOUBLE-quoted `eval "$(...)"` is safe vs word-splitting because the CLI
+#   emits ANSI-C `$'...'`-quoted values that survive eval intact.
+#
+# Default `FLYWHEEL_AGENT_BACKEND=claude-code`. Set `FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT=1`
+# to bypass preflight (for emergency / dev iteration).
+
+if command -v agent-team-transport >/dev/null 2>&1; then
+  # Preflight gate: refuse to start Lead if backend is broken.
+  if [ "${FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT:-0}" != "1" ]; then
+    if ! agent-team-transport preflight >/dev/null 2>&1; then
+      log "FATAL: agent-team-transport preflight failed — refusing to start Lead"
+      log "(Set FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT=1 to bypass — emergency only)"
+      agent-team-transport preflight 1>&2 || true
+      exit 1
+    fi
+    log "Agent Team transport: preflight OK (vendor=$(agent-team-transport vendor 2>/dev/null || echo unknown))"
+  else
+    log "Agent Team transport: preflight SKIPPED (FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT=1)"
+  fi
+
+  # Source vendor-supplied env vars (CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS etc.).
+  # These are exported into the launcher shell; `_launch_claude` propagates
+  # them into the tmux pane via env_args (see below).
+  #
+  # Codex r1 PR 1.2 MEDIUM: capture output FIRST and check exit status before
+  # eval. `eval "$(false)"` does not propagate failure under `set -e`, so a
+  # broken helper would silently continue with empty env → claude-code's
+  # `isAgentSwarmsEnabled()` returns false even though identity flags were
+  # added to CLAUDE_ARGS.
+  if ! _lead_env_output=$(agent-team-transport lead-env --lead-id "${LEAD_ID}"); then
+    log "FATAL: agent-team-transport lead-env failed — refusing to start Lead"
+    exit 1
+  fi
+  eval "${_lead_env_output}"
+  unset _lead_env_output
+
+  # Same exit-status check for lead-args.
+  if ! _lead_args_output=$(agent-team-transport lead-args --lead-id "${LEAD_ID}"); then
+    log "FATAL: agent-team-transport lead-args failed — refusing to start Lead"
+    exit 1
+  fi
+  eval "${_lead_args_output}"
+  unset _lead_args_output
+
+  # Post-eval assertion: env vars MUST be set after eval. Catches helper
+  # regression where output is well-formed bash but doesn't set what we expect.
+  if [ "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}" != "1" ]; then
+    log "FATAL: agent-team-transport lead-env did not set CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1"
+    log "  (got: '${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-<unset>}')"
+    exit 1
+  fi
+
+  # FLY-142 PR #186 codex:rescue Bug B: on the `FLYWHEEL_COMM_BACKEND=commdb`
+  # rollback path the Runner is spawned WITHOUT Agent Team identity (per
+  # `run-dispatcher.ts:buildAgentTeamIdentity`), so merging the Lead's own
+  # `--agent-id @<team>` etc. into CLAUDE_ARGS would put Lead on a mailbox
+  # path nobody polls. Skip the merge so Lead stays on legacy CommDB+hook
+  # behavior consistent with the rolled-back Runner side.
+  #
+  # codex:rescue Round 2 MEDIUM: also trim leading/trailing whitespace via
+  # the shared `normalize_comm_backend` helper.
+  _agentteam_backend=$(normalize_comm_backend)
+  if [ "$_agentteam_backend" = "commdb" ]; then
+    log "FLYWHEEL_COMM_BACKEND=commdb (rollback): NOT merging FLYWHEEL_AGENT_TEAM_ARGS into CLAUDE_ARGS (Runner has no Agent Team identity in this mode)"
+  elif [ "${#FLYWHEEL_AGENT_TEAM_ARGS[@]}" -gt 0 ]; then
+    CLAUDE_ARGS+=( "${FLYWHEEL_AGENT_TEAM_ARGS[@]}" )
+    log "Agent Team transport: merged ${#FLYWHEEL_AGENT_TEAM_ARGS[@]} identity flag(s) into CLAUDE_ARGS"
+  fi
+  unset _agentteam_backend
+else
+  # FLY-142 PR #186 Codex Round 1 HIGH: silently skipping wiring is fatal
+  # when mailbox is the active backend — Bridge will still write to the
+  # vendor mailbox, but Lead's claude-code won't load Agent Team identity,
+  # `useInboxPoller` won't activate, and inbound DMs land in a file no one
+  # reads. Refuse to start unless caller is explicitly on the commdb
+  # rollback path (FLYWHEEL_COMM_BACKEND=commdb) — same env Bridge uses to
+  # pick CommDBLeadRuntime, so the two stay consistent.
+  # codex:rescue Round 2 MEDIUM: use the shared `normalize_comm_backend`
+  # helper so whitespace-in-env-value (e.g. `=" commdb "`) also routes to
+  # the rollback path consistently with the other two gates above.
+  _commbackend_raw="${FLYWHEEL_COMM_BACKEND:-mailbox}"
+  _commbackend_lc=$(normalize_comm_backend)
+  if [ "$_commbackend_lc" = "commdb" ]; then
+    log "Agent Team transport: agent-team-transport CLI not on PATH (skipping wiring — FLYWHEEL_COMM_BACKEND=commdb rollback path active)"
+  else
+    log "FATAL: agent-team-transport CLI not on PATH but FLYWHEEL_COMM_BACKEND='${_commbackend_raw}' selects the mailbox path"
+    log "  (Lead must be a claude-code teammate to read inbound mailbox DMs; otherwise messages drop silently)"
+    log "  Fix: install/build agent-team-transport in the launcher PATH, OR set FLYWHEEL_COMM_BACKEND=commdb to use the legacy CommDB+hook path"
+    exit 1
+  fi
+  unset _commbackend_raw _commbackend_lc
 fi
 
 # ════════════════════════════════════════════════════════════════

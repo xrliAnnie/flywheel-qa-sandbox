@@ -252,6 +252,38 @@ async function createRunBlueprint(
 
 		const hydrator = new PreHydrator(fetchIssue);
 		const gitChecker = new GitResultChecker(execFn);
+		// FLY-142 PR 1.4 — Wire transport into Runner spawn when mailbox
+		// backend is active. Without this, `TmuxAdapter.tryBuildTransportSpawnConfig`
+		// short-circuits (no transport ref) and Runner spawns WITHOUT
+		// `--agent-id` / `--team-name` flags → claude-code never enters
+		// Agent Team mode → `useInboxPoller` never starts → mailbox writes
+		// silently land in a file no one reads. QA E1 verify caught this
+		// after Bug #1+#2+#3 were fixed (2026-05-12).
+		//
+		// Transport instantiation throws loudly on Codex backend or env
+		// misconfig — same bar as `createLeadRuntime` preflight gate.
+		// CommDB rollback path stays untouched (transport undefined).
+		//
+		// FLY-142 PR #186 Codex Round 1 MEDIUM: share `resolveCommBackend`
+		// with plugin.ts so unknown/typo'd `FLYWHEEL_COMM_BACKEND` values
+		// fall back to mailbox consistently with Bridge runtime selection.
+		// Previously a typo silently stripped transport here while plugin.ts
+		// kept selecting the mailbox runtime → Bridge wrote mailbox but
+		// Runner spawn had no Agent Team identity (wake bug returned).
+		const { resolveCommBackend } = await import("./plugin.js");
+		const commBackend = resolveCommBackend();
+		let transport:
+			| import("flywheel-agent-team-transport").IAgentTeamTransport
+			| undefined;
+		if (commBackend === "mailbox") {
+			const { AgentTeamTransportFactory } = await import(
+				"flywheel-agent-team-transport"
+			);
+			transport = AgentTeamTransportFactory.fromEnv();
+		}
+		// 6th positional arg is FLY-142 PR 1.2 transport (positions 2-5 are
+		// execFileFn/pollIntervalMs/defaultTimeoutMs/hookServer — keep
+		// defaults by passing undefined/5000/sessionTimeoutMs/hookServer).
 		const makeAdapter = (_name: string) =>
 			new TmuxAdapter(
 				tmuxSessionName,
@@ -259,6 +291,7 @@ async function createRunBlueprint(
 				5000,
 				sessionTimeoutMs,
 				hookServer,
+				transport,
 			);
 		const shell = {
 			execFile: async (cmd: string, args: string[], cwd: string) => {

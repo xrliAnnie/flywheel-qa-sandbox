@@ -27,8 +27,32 @@ if [ ! -f "$ENV_FILE" ]; then
   log "ERROR: Environment file not found: ${ENV_FILE}"
   exit 1
 fi
+# FLY-142 PR #186 codex:rescue Bug A: `source $ENV_FILE` without `set -a`
+# sets shell variables that are NOT exported into the subprocess env. When
+# the wrapper `exec`s claude-lead.sh, the supervisor's `${FLYWHEEL_COMM_BACKEND:-mailbox}`
+# read sees the default (mailbox) even when `.env` has `FLYWHEEL_COMM_BACKEND=commdb`,
+# producing a split-brain rollback: Bridge picks CommDBLeadRuntime but Lead
+# loads Agent Team identity flags → Lead writes mailbox, Bridge reads CommDB,
+# messages are silently lost. `set -a` / `set +a` brackets the source so every
+# assignment auto-exports into the process env that `exec` inherits.
+#
+# codex:rescue Round 2 LOW: capture the incoming `allexport` state and only
+# turn it off after the source if WE were the one who turned it on. Without
+# this, a caller that already had `set -a` enabled (rare but possible —
+# e.g., a wrapping launchd job that pre-exports) would have it
+# unintentionally disabled after this block.
+if [[ "$-" == *a* ]]; then
+  _wrapper_prev_allexport=on
+else
+  _wrapper_prev_allexport=off
+fi
+set -a
 # shellcheck source=/dev/null
 source "$ENV_FILE"
+if [ "$_wrapper_prev_allexport" = "off" ]; then
+  set +a
+fi
+unset _wrapper_prev_allexport
 
 # ── Expand PATH for launchd ───────────────────────────────────
 # launchd provides only /usr/bin:/bin:/usr/sbin:/sbin.

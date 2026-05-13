@@ -95,6 +95,38 @@ export interface BlueprintContext {
 	//   - `undefined`: no Lead matched OR no project Lead config
 	// AgentDispatcher's dept-aware step 2 uses this to scope label match.
 	owningDept?: string | "multiple";
+
+	// FLY-142 PR 1.4 — Agent Team transport identity fields.
+	//
+	// When all three (runnerAgentName + agentTeamName + vendor) are set,
+	// Blueprint forwards them to `adapter.execute()` which then invokes
+	// `transport.buildRunnerSpawnConfig(ctx)` to merge vendor-specific CLI
+	// flags (`--agent-id`, `--agent-name`, `--team-name`, ...) into the
+	// Runner's tmux spawn. claude-code then enters Agent Team mode and
+	// `useInboxPoller` reads the matching mailbox file under the
+	// CLAUDE_CONFIG_DIR teams subtree — which is where
+	// `MailboxLeadRuntime` writes Lead → Runner messages.
+	//
+	// Without these fields, transport wiring is skipped (transport branch
+	// in TmuxAdapter is dead code) and the FLY-142 wake bug fix doesn't
+	// actually take effect — mailbox is written but Runner never reads.
+	//
+	// **Distinct from FLY-137 `agentName`** (Lead-override dispatcher key
+	// resolved by AgentDispatcher.dispatchByName). FLY-142 uses
+	// `runnerAgentName` to avoid the semantic clash: each Runner needs a
+	// per-execution UNIQUE name for its mailbox inbox file, while FLY-137's
+	// `agentName` resolves to a shared dispatcher key (e.g., "frontend").
+
+	/** Per-Runner unique agent identity (per-execution), e.g., `runner-<exec-id-slice>`. */
+	runnerAgentName?: string;
+	/** Agent Team name = Lead's agentId, e.g., `flywheel-test-2`. */
+	agentTeamName?: string;
+	/** Vendor backend. When `"claude-code"`, transport wiring activates. */
+	vendor?: "claude-code" | "codex";
+	/** Lead's claude session UUID — Runner spawns as child for the UI tree. */
+	leadSessionId?: string;
+	/** UI color hint for `--agent-color` (e.g., `"cyan"`). */
+	agentColor?: string;
 }
 
 /**
@@ -668,6 +700,19 @@ export class Blueprint {
 				// FLY-116: forward callback so dispatcher can spawn Terminal viewer
 				// when TmuxAdapter creates the tmux window.
 				onTmuxWindowCreated: ctx.onTmuxWindowCreated,
+				// FLY-142 PR 1.4: forward Agent Team transport identity so
+				// TmuxAdapter.tryBuildTransportSpawnConfig() actually fires
+				// (was dead code in QA E1 verify because none of these were
+				// being passed — wake bug fix never wired up end-to-end).
+				// NOTE: `ctx.runnerAgentName` (FLY-142, per-Runner unique)
+				// is distinct from `ctx.agentName` (FLY-137 Lead-override
+				// dispatcher key). AdapterExecutionContext.agentName is the
+				// transport-flag side and matches FLY-142 semantics.
+				agentName: ctx.runnerAgentName,
+				teamName: ctx.agentTeamName,
+				vendor: ctx.vendor,
+				leadSessionId: ctx.leadSessionId,
+				agentColor: ctx.agentColor,
 			});
 		} catch (err) {
 			const errorMsg = err instanceof Error ? err.message : String(err);

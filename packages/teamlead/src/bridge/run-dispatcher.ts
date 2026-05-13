@@ -14,6 +14,7 @@ import type {
 	Blueprint,
 	BlueprintContext,
 } from "flywheel-edge-worker/dist/Blueprint.js";
+import { resolveCommBackend } from "./plugin.js";
 import type {
 	IRetryDispatcher,
 	IStartDispatcher,
@@ -36,6 +37,57 @@ export interface ProjectRuntime {
 	 * the runs-route catch block for a proper 400 INVALID_AGENT_NAME response.
 	 */
 	agentDispatcher: AgentDispatcher;
+}
+
+/**
+ * FLY-142 PR 1.4 — Build Agent Team transport identity fields for a Runner
+ * spawn. Returns fields only when `FLYWHEEL_COMM_BACKEND=mailbox` (default).
+ * Empty object → Runner spawn skips transport wiring (same as pre-FLY-142).
+ *
+ * `runnerAgentName` is derived from `executionId` (first 8 hex chars) so
+ * each Runner gets a unique, stable identity in claude-code's Agent Team.
+ * Named `runnerAgentName` (not `agentName`) to disambiguate from FLY-137's
+ * `BlueprintContext.agentName` which is the dispatcher key
+ * (AgentDispatcher.dispatchByName); these serve different purposes.
+ *
+ * `agentTeamName` equals `leadId` so the Lead's mailbox writes (via
+ * `MailboxLeadRuntime.deliver()`) and the Runner's stock `useInboxPoller`
+ * reads land on the same vendor path (resolved by ClaudeCodeAdapter from
+ * the CLAUDE_CONFIG_DIR teams subtree — kept vendor-opaque here per the
+ * grep-gate rule).
+ *
+ * **Important**: QA E1 verify (2026-05-12) caught that without this, the
+ * FLY-142 wake bug "fix" was architecturally dead — TmuxAdapter has the
+ * transport branch, but spawn flows weren't passing the required identity
+ * fields. Result: mailbox written by Lead, never read by Runner.
+ */
+function buildAgentTeamIdentity(
+	executionId: string,
+	leadId: string | undefined,
+): Pick<BlueprintContext, "runnerAgentName" | "agentTeamName" | "vendor"> {
+	// FLY-142 PR #186 Codex Round 1 MEDIUM: share the single
+	// `resolveCommBackend` parser with `plugin.ts:createLeadRuntime` so
+	// unknown / typo'd env values fall back to mailbox consistently across
+	// the Bridge runtime selection AND Runner spawn identity. Previously
+	// run-dispatcher used a strict `!== "mailbox"` check while plugin.ts
+	// was lenient (typo → fallback to mailbox), so a typo silently broke
+	// the Runner side while the Bridge side carried on writing mailbox.
+	if (resolveCommBackend() !== "mailbox") {
+		// Rollback path — CommDB hook flow, no Agent Team identity needed.
+		return {};
+	}
+	if (!leadId) {
+		// No Lead → no Agent Team to join. Runner spawns without transport
+		// wiring (same as pre-FLY-142). This shouldn't happen on the
+		// production path (req.leadId is required when dispatched from
+		// LeadEventRouter), but guard anyway.
+		return {};
+	}
+	return {
+		runnerAgentName: `runner-${executionId.slice(0, 8)}`,
+		agentTeamName: leadId,
+		vendor: "claude-code",
+	};
 }
 
 export class RetryDispatcher implements IRetryDispatcher {
@@ -112,6 +164,12 @@ export class RetryDispatcher implements IRetryDispatcher {
 			agentName: req.agentName,
 			issueLabels: req.issueLabels,
 			owningDept: req.owningDept,
+			// FLY-142 PR 1.4: Agent Team identity so Runner spawn flips
+			// claude-code into teammate mode and `useInboxPoller` reads
+			// MailboxLeadRuntime's writes. No-op on rollback path.
+			// Uses runnerAgentName/agentTeamName/vendor — distinct from
+			// FLY-137's agentName (dispatcher key) above.
+			...buildAgentTeamIdentity(newExecutionId, req.leadId),
 			retryContext: {
 				predecessorExecutionId: req.oldExecutionId,
 				previousError: req.previousError,
@@ -364,6 +422,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			agentName: req.agentName,
 			issueLabels: req.issueLabels,
 			owningDept: req.owningDept,
+			// FLY-142 PR 1.4: same as start() path — wire Agent Team identity
+			// so Runner reads Lead's mailbox via stock useInboxPoller.
+			...buildAgentTeamIdentity(executionId, req.leadId),
 			// FLY-116: spawn macOS Terminal viewer once tmux window exists
 			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
 				openTmuxViewer({
