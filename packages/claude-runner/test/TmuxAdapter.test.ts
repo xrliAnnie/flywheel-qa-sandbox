@@ -320,14 +320,20 @@ describe("TmuxAdapter", () => {
 		expect(allArgs).not.toContain("--output-format");
 	});
 
-	it("includes --permission-mode and --append-system-prompt", async () => {
+	it("includes --permission-mode and --append-system-prompt-file (FLY-154 hotfix)", async () => {
+		// FLY-154 hotfix: large system prompts overflowed tmux's `new-window`
+		// internal command buffer ("command too long" — caught by qa-fly-372
+		// hybrid swap test). The adapter now writes the prompt to a file and
+		// passes --append-system-prompt-file <path>, keeping argv small.
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
+		const promptBody = "Always use TypeScript";
 		await adapter.execute(
 			makeCtx({
+				executionId: "exec-prompt-file-1",
 				permissionMode: "bypassPermissions",
-				appendSystemPrompt: "Always use TypeScript",
+				appendSystemPrompt: promptBody,
 			}),
 		);
 
@@ -335,8 +341,80 @@ describe("TmuxAdapter", () => {
 		const args = newWindow!.args;
 		expect(args).toContain("--permission-mode");
 		expect(args).toContain("bypassPermissions");
-		expect(args).toContain("--append-system-prompt");
-		expect(args).toContain("Always use TypeScript");
+
+		// Inline form must be GONE — that's the whole point of this fix.
+		expect(args).not.toContain("--append-system-prompt");
+		expect(args).not.toContain(promptBody);
+
+		// File form must be present + path must look right.
+		expect(args).toContain("--append-system-prompt-file");
+		const fileFlagIdx = args.indexOf("--append-system-prompt-file");
+		const promptPath = args[fileFlagIdx + 1];
+		expect(promptPath).toMatch(
+			/flywheel-runner-prompts\/exec-prompt-file-1\/append-system-prompt\.md$/,
+		);
+
+		// File must actually contain the prompt body.
+		const { readFileSync } = await import("node:fs");
+		expect(readFileSync(promptPath, "utf-8")).toBe(promptBody);
+	});
+
+	it("restricts prompt dir to 0o700 and file to 0o600 (Codex R3 LOW hardening)", async () => {
+		// Defense-in-depth: prompts in shared tmpdir could contain designer
+		// + issue-body text. Other local users must not be able to read.
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		await adapter.execute(
+			makeCtx({
+				executionId: "exec-perms-1",
+				appendSystemPrompt: "secret designer prompt",
+			}),
+		);
+
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		const fileFlagIdx = newWindow!.args.indexOf("--append-system-prompt-file");
+		const promptPath = newWindow!.args[fileFlagIdx + 1] as string;
+
+		const { statSync } = await import("node:fs");
+		const { dirname } = await import("node:path");
+		const fileMode = statSync(promptPath).mode & 0o777;
+		const dirMode = statSync(dirname(promptPath)).mode & 0o777;
+		expect(fileMode).toBe(0o600);
+		expect(dirMode).toBe(0o700);
+	});
+
+	it("handles 14KB+ designer-sized system prompts via the file path (FLY-154 hotfix regression)", async () => {
+		// Reproduces the qa-fly-372 designer canary size: agent.md (~6.3KB)
+		// + domain config (~1KB) + baseline rules (~1KB) + ample headroom.
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+
+		const bigPrompt = `## Agent Role\n${"x".repeat(14_000)}\n## Baseline Rules\n`;
+		expect(bigPrompt.length).toBeGreaterThan(14_000);
+
+		await adapter.execute(
+			makeCtx({
+				executionId: "exec-14kb",
+				appendSystemPrompt: bigPrompt,
+			}),
+		);
+
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		const args = newWindow!.args;
+
+		// Critical: argv must NOT contain the 14KB blob anywhere.
+		const totalArgv = args.join(" ");
+		expect(totalArgv).not.toContain("x".repeat(14_000));
+		expect(totalArgv.length).toBeLessThan(2_000);
+
+		// File path is what the Runner consumes.
+		const fileFlagIdx = args.indexOf("--append-system-prompt-file");
+		expect(fileFlagIdx).toBeGreaterThan(-1);
+		const { readFileSync } = await import("node:fs");
+		expect(readFileSync(args[fileFlagIdx + 1] as string, "utf-8")).toBe(
+			bigPrompt,
+		);
 	});
 
 	it("passes --model when specified", async () => {

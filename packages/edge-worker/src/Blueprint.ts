@@ -97,6 +97,47 @@ export interface BlueprintContext {
 	owningDept?: string | "multiple";
 }
 
+/**
+ * FLY-137 wire-up fix: resolve the Bridge URL that Runners use to reach
+ * `/events`, `/api/sessions/...`, etc. via `flywheel-comm`.
+ *
+ * Order:
+ *   1. `TEAMLEAD_URL` if explicitly set (test-deploy.sh exports it).
+ *   2. Fallback to `http://${TEAMLEAD_HOST||127.0.0.1}:${TEAMLEAD_PORT||9876}` —
+ *      mirrors the defaults in packages/teamlead/src/config.ts. Blueprint runs
+ *      inside the Bridge process, so this is always the origin to call.
+ *
+ * Returns undefined only if a non-loopback `TEAMLEAD_HOST` is configured but
+ * `TEAMLEAD_URL` is not — in that case the caller MUST set `TEAMLEAD_URL`
+ * explicitly (loopback assumption no longer holds).
+ *
+ * Exported for unit testing.
+ */
+export function resolveBridgeUrl(
+	env: NodeJS.ProcessEnv = process.env,
+): string | undefined {
+	const explicit = env.TEAMLEAD_URL?.trim();
+	if (explicit) return explicit;
+	const host = env.TEAMLEAD_HOST?.trim() || "127.0.0.1";
+	const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
+	if (!LOOPBACK.has(host)) {
+		// Non-loopback host — caller must set TEAMLEAD_URL explicitly so the
+		// Runner reaches the right interface (loopback assumption broken).
+		return undefined;
+	}
+	const portRaw = env.TEAMLEAD_PORT?.trim();
+	const port = portRaw ? Number.parseInt(portRaw, 10) : 9876;
+	if (!Number.isFinite(port) || port < 1 || port > 65535) {
+		return undefined;
+	}
+	// Codex R1 fix: IPv6 literals must be bracketed in URL authority per
+	// RFC 3986 §3.2.2. `config.ts` ALLOWED_HOSTS accepts `::1`, so a bare
+	// `http://::1:9876` was an invalid URL — `flywheel-comm` would fail to
+	// parse it. Bracket the host when it's an IPv6 literal (contains `:`).
+	const hostForUrl = host.includes(":") ? `[${host}]` : host;
+	return `http://${hostForUrl}:${port}`;
+}
+
 /** Shell command runner for tmux window cleanup */
 export interface ShellRunner {
 	execFile(
@@ -503,7 +544,15 @@ export class Blueprint {
 		// instruction here — it would overwrite the correct value with TMUX_PANE.
 
 		// GEO-292: Stage reporting instructions (requires both Bridge URL and projectName)
-		const bridgeUrl = process.env.TEAMLEAD_URL;
+		// FLY-137 wire-up fix: when TEAMLEAD_URL is unset (production case — only
+		// scripts/test-deploy.sh exports it), fall back to the Bridge's own
+		// loopback URL derived from TEAMLEAD_HOST/TEAMLEAD_PORT (same defaults
+		// as packages/teamlead/src/config.ts). Blueprint runs INSIDE the Bridge
+		// process, so this is always the correct origin to call. Without the
+		// fallback, the Runner gets no FLYWHEEL_BRIDGE_URL, `flywheel-comm stage`
+		// exits 1, and the FLY-137 onboard preamble silently no-ops — designer /
+		// agent-specific protocols never trigger end-to-end.
+		const bridgeUrl = resolveBridgeUrl();
 		if (bridgeUrl && ctx.projectName) {
 			systemPromptLines.push(
 				`Report your pipeline stage at each major transition using: ` +
@@ -611,7 +660,7 @@ export class Blueprint {
 				waitingTimeoutMs: 43_200_000, // FLY-97: 12h when waiting for Lead
 				leadId: ctx.leadId,
 				projectName: ctx.projectName,
-				bridgeUrl: process.env.TEAMLEAD_URL,
+				bridgeUrl: resolveBridgeUrl(),
 				bridgeIngestToken: process.env.TEAMLEAD_INGEST_TOKEN,
 				onHeartbeat: () => {
 					this.eventEmitter?.emitHeartbeat(env).catch(() => {});

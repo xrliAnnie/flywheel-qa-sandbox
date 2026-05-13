@@ -47,14 +47,26 @@ import { type ProjectRuntime, RunDispatcher } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import type { BridgeConfig } from "./types.js";
 
-/** Build a fetchIssue function that tries Linear API, falls back to StateStore. */
-function createFetchIssue(store: StateStore) {
+/**
+ * Build a fetchIssue function that tries Linear API, falls back to StateStore.
+ *
+ * Exported for unit testing (FLY-137 wire-up fix Bug 2 regression coverage).
+ */
+export function createFetchIssue(store: StateStore) {
 	return async (id: string) => {
-		const accessToken = process.env.LINEAR_API_KEY;
-		if (accessToken) {
+		const apiKey = process.env.LINEAR_API_KEY;
+		if (apiKey) {
 			try {
 				const { LinearClient } = await import("@linear/sdk");
-				const client = new LinearClient({ accessToken });
+				// FLY-137 wire-up fix: LINEAR_API_KEY is a personal API key, not an
+				// OAuth access token. Passing it as `accessToken` causes the SDK to
+				// prefix it with `Bearer ` and Linear rejects with "It looks like
+				// you're trying to use an API key as a Bearer token." The
+				// surrounding catch swallowed that error, so every PreHydrator call
+				// silently returned no labels → session.issue_labels stored as "[]"
+				// → AgentDispatcher / dept-scope / event-route stage routing all
+				// degraded. `runs-route.ts` uses `apiKey` correctly; aligning here.
+				const client = new LinearClient({ apiKey });
 				const issue = await client.issue(id);
 				if (issue) {
 					const labels = await issue.labels();
@@ -67,12 +79,17 @@ function createFetchIssue(store: StateStore) {
 						identifier: issue.identifier,
 					};
 				}
-			} catch {
-				// Linear API failed — fall through to StateStore fallback
+			} catch (err) {
+				// FLY-137 wire-up fix: log the real error so future regressions are
+				// visible (previously this catch was silent — concealed the
+				// accessToken→apiKey misconfiguration for months).
+				console.warn(
+					`[RunInfra] Linear fetchIssue(${id}) failed — falling back to StateStore: ${(err as Error).message}`,
+				);
 			}
 		}
 
-		if (!accessToken) {
+		if (!apiKey) {
 			console.warn(
 				"[RunInfra] LINEAR_API_KEY not set — run will lack labels/projectId",
 			);
