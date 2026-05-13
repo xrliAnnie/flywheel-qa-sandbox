@@ -1,7 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, watch } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	watch,
+	writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import type {
 	AdapterExecutionContext,
@@ -294,8 +303,33 @@ export class TmuxAdapter implements IAdapter {
 		const args: string[] = [];
 		args.push("--session-id", sessionId);
 		if (ctx.permissionMode) args.push("--permission-mode", ctx.permissionMode);
-		if (ctx.appendSystemPrompt)
-			args.push("--append-system-prompt", ctx.appendSystemPrompt);
+		if (ctx.appendSystemPrompt) {
+			// FLY-154 hotfix: tmux `new-window` parser has an internal command
+			// buffer that rejects very long argv lists with `command too long`
+			// (qa-fly-372 hybrid swap test caught this — designer/agent prompts
+			// are 6KB+ and combined with --append-system-prompt + issue body
+			// + env -e args the parser overflows). claude supports the file
+			// variant `--append-system-prompt-file <path>`, which keeps the
+			// argv small. Write to a deterministic per-execution path under
+			// the system tmpdir so /Users/.flywheel/runs/<id>/ cleanup also
+			// works without colliding across runs.
+			const promptDir = join(
+				tmpdir(),
+				"flywheel-runner-prompts",
+				ctx.executionId,
+			);
+			// Codex R3 LOW: shared tmpdir → restrict perms so other local users
+			// can't read the prompt contents (designer / issue-body text). 0o700
+			// on the dir prevents listing the per-execution subdir, 0o600 on
+			// the file prevents reading by anyone but the Runner owner.
+			mkdirSync(promptDir, { recursive: true, mode: 0o700 });
+			const promptPath = join(promptDir, "append-system-prompt.md");
+			writeFileSync(promptPath, ctx.appendSystemPrompt, {
+				encoding: "utf-8",
+				mode: 0o600,
+			});
+			args.push("--append-system-prompt-file", promptPath);
+		}
 		if (ctx.model) args.push("--model", ctx.model);
 		if (ctx.allowedTools?.length)
 			args.push("--allowed-tools", ...ctx.allowedTools);
@@ -631,10 +665,60 @@ export class TmuxAdapter implements IAdapter {
 	}
 }
 
-function defaultExecFile(cmd: string, args: string[]): { stdout: string } {
-	const result = execFileSync(cmd, args, {
-		encoding: "utf-8",
-		stdio: ["pipe", "pipe", "pipe"],
-	});
-	return { stdout: result };
+/**
+ * FLY-154 hotfix: exported for direct unit testing of the stderr-capture
+ * wrapping. Production callers should still use the default constructor
+ * which wires this in automatically.
+ */
+export function defaultExecFile(
+	cmd: string,
+	args: string[],
+): { stdout: string } {
+	try {
+		const result = execFileSync(cmd, args, {
+			encoding: "utf-8",
+			stdio: ["pipe", "pipe", "pipe"],
+		});
+		return { stdout: result };
+	} catch (err) {
+		// FLY-154 hotfix: execFileSync's default error.message is just
+		// `Command failed: <cmd>` — it does NOT include stderr, even though
+		// `error.stderr` is populated. qa-fly-372 spent a full Bridge restart
+		// cycle guessing the cause of a "tmux command too long" failure
+		// because Bridge logs only saw the truncated cmd line. Wrap to surface
+		// stderr (+ stdout if non-empty) in the thrown message so future
+		// failures are observable without re-running. Preserves all other
+		// fields (.stderr, .stdout, .status, .signal) for callers that read
+		// them programmatically.
+		if (err instanceof Error) {
+			const e = err as Error & {
+				stderr?: string | Buffer;
+				stdout?: string | Buffer;
+				status?: number;
+				signal?: string | null;
+			};
+			const stderrStr = e.stderr
+				? Buffer.isBuffer(e.stderr)
+					? e.stderr.toString("utf-8")
+					: String(e.stderr)
+				: "";
+			const stdoutStr = e.stdout
+				? Buffer.isBuffer(e.stdout)
+					? e.stdout.toString("utf-8")
+					: String(e.stdout)
+				: "";
+			const detail = [
+				stderrStr.trim() ? `stderr: ${stderrStr.trim()}` : "",
+				stdoutStr.trim() ? `stdout: ${stdoutStr.trim()}` : "",
+				e.status != null ? `status: ${e.status}` : "",
+				e.signal ? `signal: ${e.signal}` : "",
+			]
+				.filter(Boolean)
+				.join(" | ");
+			if (detail) {
+				e.message = `${e.message} (${detail})`;
+			}
+		}
+		throw err;
+	}
 }
