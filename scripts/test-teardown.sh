@@ -134,7 +134,14 @@ teardown_slot() {
   fi
   local PROJECT_NAME="test-slot-${SLOT}"
 
-  log "Tearing down slot ${SLOT} (agent: ${AGENT_ID})"
+  # FLY-153: Surface mode in teardown log for observability. Mode sidecar
+  # is written by test-deploy.sh; absent file means pre-FLY-153 deploy or
+  # manual setup — log as 'unknown' rather than failing.
+  local SLOT_MODE_VAL="unknown"
+  if [[ -f "/tmp/flywheel-test-slot-${SLOT}.lock/mode" ]]; then
+    SLOT_MODE_VAL=$(cat "/tmp/flywheel-test-slot-${SLOT}.lock/mode" 2>/dev/null || echo "unknown")
+  fi
+  log "Tearing down slot ${SLOT} (agent: ${AGENT_ID}, mode: ${SLOT_MODE_VAL})"
 
   # ── Step 1b (FLY-115): Stop Runner tmux + its cmux linked sessions ──
   # Runner tmux is killed BEFORE Bridge so that no process is actively

@@ -130,6 +130,133 @@ DRIVER_PATH   = scripts/qa-fly-60-driver.sh
 AGENT_ID      = qa-fly-60
 ```
 
+## Mirror Mode (FLY-153) — multi-Lead shared-channel testing
+
+The default 4-slot framework gives every test slot its own dedicated Discord
+channel. Some scenarios — most notably FLY-152 reply discipline — only show
+up when **multiple Leads share one channel** (mirroring prod
+`#geoforge3d-core`). Mirror mode opts the first three slots
+(cos / product / ops) into one shared `#test-core-mirror` channel while
+keeping the legacy 4-slot per-channel mode untouched.
+
+### Quick reference
+
+```bash
+# Legacy per-slot mode (default — 0 regression for existing suites)
+scripts/test-deploy.sh 1
+scripts/test-deploy.sh 4
+
+# Mirror mode — slots 1-3 only
+scripts/test-deploy.sh --mode mirror 1   # cos      → Simba identity
+scripts/test-deploy.sh --mode mirror 2   # product  → Peter identity
+scripts/test-deploy.sh --mode mirror 3   # ops      → Oliver identity
+
+# Smoke test (validates the mirror wiring deterministically + bot-origin LLM)
+scripts/qa-fly-153-mirror-smoke.sh
+
+# Teardown is mode-agnostic
+scripts/test-teardown.sh 1
+```
+
+Mirror mode is **out of scope for Runner E2E**. `inject-linear-issue.sh`
+refuses a mirror slot unless you pass `--allow-mirror`, and
+`scripts/qa-fly-60-driver.sh` aborts if any selected slot is in mirror mode.
+This is intentional — Runner E2E in shared-channel topology needs separate
+design (chat-thread dedupe across Bridges, etc.).
+
+### One-time Annie setup — Discord guild
+
+You only need to do this once per dev machine. **Why this step is manual**:
+the four test bots in this guild only have View Channel + Send Messages +
+Read Message History permissions (perms `68608`). Discord requires
+`MANAGE_CHANNELS` to create a channel or grant channel-level overwrites,
+and none of the bots have that. Only you do.
+
+The framework expects:
+
+| Field | Value |
+|-------|-------|
+| Test guild ID | `1485787271192907816` |
+| Category ID | `1493080958889496760` (QA Testing) |
+| New channel name | `test-core-mirror` |
+| Channel type | Text channel |
+| Members | You + bots `flywheel-test-1`, `product-lead-test`, `ops-lead-test` |
+| Per-bot permissions | View Channel · Send Messages · Read Message History |
+
+**Steps**:
+
+```bash
+# Step 0 — print current Annie steps (also embeds your guild + category IDs)
+scripts/setup-mirror-channel.sh
+```
+
+Then in Discord:
+
+1. Switch to the test guild → QA Testing category
+2. Right-click the category → **Create Channel** → Text channel → name
+   `test-core-mirror` → Create
+3. For each bot (`flywheel-test-1`, `product-lead-test`, `ops-lead-test`):
+   - Channel settings → **Permissions** → **+ Add member or role**
+   - Search the bot user → add → grant **View Channel**, **Send Messages**,
+     **Read Message History**
+   - You do **not** need to grant Mention Everyone — the smoke uses
+     `<@bot-user-id>` direct mentions, not `@everyone` / `@here` / role pings.
+4. Right-click the channel → **Copy Channel ID** (Developer Mode must be on)
+5. Run the helper to validate + install in one shot:
+   ```bash
+   scripts/setup-mirror-channel.sh <pasted-channel-id>
+   ```
+   It probes each of the three bots (`GET /channels/<id>` for View Channel
+   then a tiny POST + DELETE round-trip for Send Messages), then patches
+   `~/.flywheel/test-slots.json` with `mirrorChannel.channelId`. Idempotent —
+   safe to re-run if you redo the Discord side.
+
+After that, `scripts/test-deploy.sh --mode mirror 1` should succeed. Each
+deploy also runs the per-bot probe again and fails fast with a pointer back
+to this section if View Channel access is missing.
+
+### Bot user ID terminology
+
+Plugin gating compares `access.allowBots` entries against `msg.author.id`,
+which equals each bot user's Discord ID. For these single-bot apps that
+ID is the same as the Application ID (`botAppId` in `test-slots.json`).
+Smoke Phase A echoes the three bot user IDs it places in `allowBots` so you
+can sanity-check them against Discord's developer portal.
+
+### What mirror mode does (under the hood)
+
+- All three Bridges subscribe to the **same** Discord channel (`mirrorChannel.channelId`) instead of their per-slot channels
+- Each slot's `access.json` adds the other two mirror slots' bot user IDs to `allowBots`, so bot-to-bot delivery (e.g. Simba's triage report → Peter / Oliver) survives the Discord plugin's pre-gate bot filter (`server.ts:856-858`)
+- The TEST OVERRIDE banner replaces the legacy "ignore all production channel IDs" instruction with explicit substitution: production `#geoforge3d-core` references map to the mirror channel; all other production channel IDs remain prod-only and must not be used
+- Slot identity selection now reads `identitySource` from `test-slots.json` (with backward-compat fallback to the legacy role mapping). This was a pre-existing FLY-96 bug where slot 3 would always load Peter's identity instead of Oliver — the fix is in scope for FLY-153 because mirror cascade testing depends on it
+
+### Manual user-origin sanity (optional, not gated)
+
+The automated smoke is bot-origin only because bash can't directly drive
+Discord MCP tools. If you want a quick eyeball check that user-originated
+messages also route correctly:
+
+1. After mirror slots 1-3 are deployed, post `"Peter, 看下 FLY-1"` (you, not
+   a bot) in `#test-core-mirror`
+2. Wait ~60s and look at the channel: only Peter (`flywheel-test-2`) should
+   reply; Simba and Oliver should stay silent
+
+This is informal — framework verdict is anchored on Phase A + B2/B3 of the
+automated smoke.
+
+### Caveats
+
+- **Chat threads (FLY-91)**: each Bridge owns its own StateStore, so if
+  multiple Leads run against the same `(chatChannel, issueId)` pair they
+  create independent threads. Mirror mode is intended for reply-discipline
+  smoke fixtures only — don't run Runner E2E in mirror mode.
+- **Slot 4 (finance)** has no prod analog and is rejected in mirror mode.
+  Use legacy mode for finance regression coverage.
+- **Mode sidecar**: the slot lock dir gains a `mode` file (`slot` or
+  `mirror`). Do not hand-edit it. `inject-linear-issue.sh --allow-mirror`
+  is the documented escape hatch if you really want to run Runners in a
+  mirror slot.
+
 ## Contracts
 
 - `contracts/PLAN_SOURCE_CONTRACT.md` — How QA agents obtain plan files across worktrees

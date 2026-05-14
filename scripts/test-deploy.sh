@@ -81,15 +81,20 @@ claim_slot() {
   return 1
 }
 
-# ── Argument parsing (FLY-115) ────────────────────────
+# ── Argument parsing (FLY-115 + FLY-153) ──────────────
 FROM_BRANCH=""
 REQUESTED_SLOT=""
+MODE="slot"   # FLY-153: slot (default, per-slot channel) | mirror (3-Lead shared channel)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-branch)
       FROM_BRANCH="${2:?--from-branch requires a value}"; shift 2 ;;
     --from-branch=*)
       FROM_BRANCH="${1#*=}"; shift ;;
+    --mode)
+      MODE="${2:?--mode requires slot|mirror}"; shift 2 ;;
+    --mode=*)
+      MODE="${1#*=}"; shift ;;
     -h|--help)
       sed -n '2,12p' "$0"; exit 0 ;;
     [0-9]*)
@@ -101,6 +106,41 @@ done
 
 # Default branch — sandbox `main` works for most smoke / regression suites.
 FROM_BRANCH="${FROM_BRANCH:-main}"
+
+# ── FLY-153: Mirror mode validation (BEFORE expensive preflight) ──
+# Round 1 #3 + R2 #4: validate mode + mirror requirements before paying for
+# gh/pnpm preflight. If the user asks for an impossible mirror config (slot 4,
+# missing mirrorChannel), fail in milliseconds instead of minutes.
+case "$MODE" in
+  slot|mirror) ;;
+  *)
+    echo "ERROR: --mode must be 'slot' or 'mirror' (got '${MODE}')" >&2
+    exit 1
+    ;;
+esac
+
+MIRROR_CHANNEL_ID=""
+if [[ "$MODE" == "mirror" ]]; then
+  if [[ ! -f "$SLOTS_FILE" ]]; then
+    echo "ERROR: ${SLOTS_FILE} not found — required for --mode mirror" >&2
+    exit 1
+  fi
+  MIRROR_CHANNEL_ID=$(jq -r '.mirrorChannel.channelId // empty' "$SLOTS_FILE")
+  if [[ -z "$MIRROR_CHANNEL_ID" || "$MIRROR_CHANNEL_ID" == "<shared-mirror-channel-id>" ]]; then
+    echo "ERROR: --mode mirror requires mirrorChannel.channelId in ${SLOTS_FILE}." >&2
+    echo "  See packages/qa-framework/README.md §Mirror Mode for setup steps." >&2
+    exit 1
+  fi
+  if [[ -n "$REQUESTED_SLOT" ]]; then
+    case "$REQUESTED_SLOT" in
+      1|2|3) ;;
+      *)
+        echo "ERROR: --mode mirror supports slots 1-3 (cos/product/ops). Slot ${REQUESTED_SLOT} has no prod analog (slot 4 is finance-only)." >&2
+        exit 1
+        ;;
+    esac
+  fi
+fi
 
 # ── FLY-115: Pre-flight ───────────────────────────────
 REBUILD_LOCK="/tmp/flywheel-qa-rebuild.lock"
@@ -130,9 +170,9 @@ SANDBOX_PUSH_PERM=$(gh api "repos/${SANDBOX_SLUG}" --jq '.permissions.push' 2>/d
 # is done under one lock. macOS has no flock(1) — fall back to a portable
 # mkdir-based spinlock with PID-based stale detection.
 #
-# Order: better-sqlite3 rebuild + require() probe, THEN TypeScript build
-# of the dist artifacts Bridge imports at runtime.
-log "Preflight under ${REBUILD_LOCK}: better-sqlite3 rebuild + flywheel-edge-worker build"
+# Order: better-sqlite3 native compile + require() probe, THEN TypeScript
+# build of the dist artifacts Bridge imports at runtime.
+log "Preflight under ${REBUILD_LOCK}: better-sqlite3 native compile + flywheel-edge-worker build"
 LOCK_TIMEOUT=300
 waited=0
 while ! mkdir "$REBUILD_LOCK" 2>/dev/null; do
@@ -156,8 +196,37 @@ trap release_preflight_lock EXIT
 (
   cd "$REPO_ROOT"
 
-  # 1. native addon rebuild (flywheel-comm + inbox-mcp both consume better-sqlite3)
-  pnpm -r --filter flywheel-comm --filter flywheel-inbox-mcp rebuild better-sqlite3
+  # 1. native addon compile — better_sqlite3.node.
+  #
+  # Root cause for the silent-no-op the old `pnpm rebuild` had: this repo
+  # pins `pnpm.onlyBuiltDependencies: []` in package.json, which (pnpm 10+)
+  # blocks ALL transitive install scripts. better-sqlite3's `install` hook
+  # is what compiles the native binding, so `pnpm rebuild better-sqlite3`
+  # returned 0 without touching the dep on a fresh worktree. Bridge / Lead
+  # would then crash with "Could not locate the bindings file" the moment
+  # they tried to open CommDB.
+  #
+  # Fix: bypass pnpm and drive better-sqlite3's own `install` script
+  # directly when the compiled binary is missing. Idempotent — re-runs
+  # are no-ops once the binary exists.
+  BSQLITE_DIR=$(find "$REPO_ROOT/node_modules/.pnpm" -type d \
+    -path "*better-sqlite3@*/node_modules/better-sqlite3" 2>/dev/null | head -1)
+  if [[ -z "$BSQLITE_DIR" ]]; then
+    echo "ERROR: better-sqlite3 not installed in pnpm store. Run 'pnpm install' first." >&2
+    exit 11
+  fi
+  BSQLITE_BINARY="${BSQLITE_DIR}/build/Release/better_sqlite3.node"
+  if [[ ! -f "$BSQLITE_BINARY" ]]; then
+    echo "[preflight] Compiling better-sqlite3 native binding at ${BSQLITE_DIR}" >&2
+    ( cd "$BSQLITE_DIR" && npm run install ) || {
+      echo "ERROR: better-sqlite3 install script failed. Is node-gyp / a C++ toolchain available?" >&2
+      exit 11
+    }
+    if [[ ! -f "$BSQLITE_BINARY" ]]; then
+      echo "ERROR: better-sqlite3 install script returned 0 but ${BSQLITE_BINARY} still missing." >&2
+      exit 11
+    fi
+  fi
   ( cd "$REPO_ROOT/packages/flywheel-comm" && node -e "require('better-sqlite3')" ) \
     || exit 11
   ( cd "$REPO_ROOT/packages/inbox-mcp" && node -e "require('better-sqlite3')" ) \
@@ -188,7 +257,14 @@ if [[ -n "$REQUESTED_SLOT" ]]; then
     exit 1
   fi
 else
-  for i in $(seq 1 "$TOTAL_SLOTS"); do
+  # FLY-153: in mirror mode auto-allocation only considers slots 1-3
+  # (slot 4 is finance — no prod analog in mirror topology).
+  if [[ "$MODE" == "mirror" ]]; then
+    AUTO_RANGE_END=3
+  else
+    AUTO_RANGE_END="$TOTAL_SLOTS"
+  fi
+  for i in $(seq 1 "$AUTO_RANGE_END"); do
     if claim_slot "$i"; then
       SLOT="$i"
       break
@@ -234,6 +310,13 @@ SLOT_ROLE=$(jq -r ".slots[${SLOT_IDX}].role" "$SLOTS_FILE")
 # "forumChannel must be non-empty string or absent" rule.
 FORUM_CHANNEL_ID=$(jq -r ".slots[${SLOT_IDX}].forumChannelId // empty" "$SLOTS_FILE")
 
+# FLY-153: identitySource selects which GeoForge3D identity.md to load. Optional;
+# falls back to legacy role-based mapping (cos→cos-lead, lead→product-lead) so
+# pre-FLY-153 test-slots.json files keep working. Without this, slot 3 (ops) would
+# always load Peter's identity (the legacy `lead` mapping), breaking mirror cascade
+# coverage that requires Simba + Peter + Oliver.
+IDENTITY_SOURCE=$(jq -r ".slots[${SLOT_IDX}].identitySource // empty" "$SLOTS_FILE")
+
 # Validate required fields (jq returns literal "null" string when missing)
 for pair in "bridgePort:${SLOT_PORT}" "botName:${AGENT_ID}" "tokenEnvVar:${BOT_TOKEN_ENV}" "botAppId:${BOT_ID}" "channelId:${CHAT_CHANNEL_ID}" "role:${SLOT_ROLE}"; do
   field="${pair%%:*}"
@@ -251,6 +334,68 @@ if [[ -z "$TEST_BOT_TOKEN" ]]; then
   echo "ERROR: ${BOT_TOKEN_ENV} not set in environment." >&2
   rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
   exit 1
+fi
+
+# ── FLY-153: mirror mode override ───────────────────────────
+# In mirror mode, swap the slot's per-slot channelId for the shared mirror
+# channel. The slot's own channel field stays in test-slots.json untouched —
+# legacy mode coexists.
+EFFECTIVE_CHANNEL_LABEL="slot-channel"
+if [[ "$MODE" == "mirror" ]]; then
+  log "Mirror mode active — overriding CHAT_CHANNEL_ID ${CHAT_CHANNEL_ID} -> ${MIRROR_CHANNEL_ID}"
+  CHAT_CHANNEL_ID="$MIRROR_CHANNEL_ID"
+  EFFECTIVE_CHANNEL_LABEL="mirror-channel"
+fi
+
+# Persist mode in slot lock dir for downstream consumers (FLY-153 P7):
+# inject-linear-issue.sh refuses mirror slots without --allow-mirror;
+# qa-fly-60-driver.sh aborts if any selected slot is in mirror mode.
+echo "$MODE" > "/tmp/flywheel-test-slot-${SLOT}.lock/mode"
+
+# ── FLY-153 R2 #4: per-bot mirror channel REST probe ────────
+# Verify (a) channel exists, (b) bot has View Channel permission, (c) bot is a
+# channel member — before paying the cost of starting Lead + Bridge. Send
+# Messages permission can't be tested via GET; smoke Phase A's ephemeral
+# POST/DELETE catches that later. Plugin server.ts grep guards against the
+# Discord plugin cache being stale-without-allowBots-field.
+if [[ "$MODE" == "mirror" ]]; then
+  PLUGIN_BASE="${HOME}/.claude/plugins/cache/claude-plugins-official/discord"
+  if [[ -d "$PLUGIN_BASE" ]]; then
+    LATEST_PLUGIN=$(ls -dt "${PLUGIN_BASE}"/*/ 2>/dev/null | head -1)
+    if [[ -n "$LATEST_PLUGIN" && -f "${LATEST_PLUGIN}/server.ts" ]]; then
+      grep -q "access.allowBots" "${LATEST_PLUGIN}/server.ts" \
+        || { echo "ERROR: Discord plugin at ${LATEST_PLUGIN} does not consume access.allowBots — mirror mode cascade will silently fail. Run: claude plugin update discord@claude-plugins-official" >&2; rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1; }
+    fi
+  fi
+
+  log "Probing mirror channel ${MIRROR_CHANNEL_ID} accessibility for bot ${AGENT_ID}"
+  # Drop -f: with -f curl exits non-zero on >=400 AND still writes the body
+  # to -o /dev/null, then -w "%{http_code}" is appended via the failed-curl
+  # branch -> we used to get strings like "403000" which never matched 403|404
+  # below. Without -f curl returns 0 on HTTP errors and only the http code is
+  # captured. Network/DNS failures still produce empty output → "000" fallback.
+  PROBE_HTTP=$(curl -s -H "Authorization: Bot ${TEST_BOT_TOKEN}" \
+    "https://discord.com/api/v10/channels/${MIRROR_CHANNEL_ID}" \
+    -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+  [[ -z "$PROBE_HTTP" ]] && PROBE_HTTP="000"
+  case "$PROBE_HTTP" in
+    200)
+      log "Mirror channel probe OK (HTTP 200) for ${AGENT_ID}"
+      ;;
+    403|404)
+      echo "ERROR: Mirror channel ${MIRROR_CHANNEL_ID} inaccessible to bot ${AGENT_ID} (HTTP ${PROBE_HTTP})." >&2
+      echo "  Invite this bot with View Channel + Send Messages + Read Message History." >&2
+      echo "  See packages/qa-framework/README.md §Mirror Mode for step-by-step." >&2
+      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      exit 1
+      ;;
+    *)
+      echo "ERROR: Mirror channel probe network/auth error (HTTP ${PROBE_HTTP}) for bot ${AGENT_ID}." >&2
+      echo "  Verify TEST_BOT_TOKEN_${SLOT} is fresh and Discord API is reachable." >&2
+      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      exit 1
+      ;;
+  esac
 fi
 
 # ── Create temp directories ───────────────────────────
@@ -353,10 +498,30 @@ DISCORD_BOT_TOKEN=${TEST_BOT_TOKEN}
 EOF
 chmod 600 "${SLOT_DIR}/discord-state/.env"
 
-# access.json — only the test channel
+# access.json — only the test channel.
+# FLY-153: in mirror mode, allowBots also includes the OTHER mirror slots'
+# bot user IDs so cross-Lead bot delivery (e.g. Simba's triage report → Peter)
+# survives the Discord plugin's pre-gate bot filter at server.ts:856-858.
+ALLOWBOTS_JSON=$(jq -n --arg self "$BOT_ID" '[$self]')
+if [[ "$MODE" == "mirror" ]]; then
+  ALLOWBOTS_JSON=$(jq -n \
+    --arg self "$BOT_ID" \
+    --argjson selfSlot "$SLOT" \
+    --slurpfile slots <(jq '.slots' "$SLOTS_FILE") \
+    '
+    [$self] + (
+      $slots[0]
+      | map(select(.id != $selfSlot and (.id == 1 or .id == 2 or .id == 3)))
+      | map(.botAppId)
+      | map(select(. != null and . != ""))
+    )
+    | unique
+    ')
+fi
 cat > "${SLOT_DIR}/discord-state/access.json" <<EOF
-{"dmPolicy":"allowlist","allowFrom":[],"allowBots":["${BOT_ID}"],"groups":{"${CHAT_CHANNEL_ID}":{"requireMention":false,"allowFrom":[]}},"pending":{}}
+{"dmPolicy":"allowlist","allowFrom":[],"allowBots":${ALLOWBOTS_JSON},"groups":{"${CHAT_CHANNEL_ID}":{"requireMention":false,"allowFrom":[]}},"pending":{}}
 EOF
+log "access.json allowBots: $(echo "$ALLOWBOTS_JSON" | jq -c .)"
 
 # ── Generate test identity.md from production template ──
 # FLY-96 QA bug fix: 4-line identity.md didn't define announce behavior
@@ -364,15 +529,32 @@ EOF
 # didn't post anything to Discord. Source from GeoForge3D production
 # identity.md (role-based) + TEST SLOT OVERRIDE banner that redirects all
 # channel/bot references to this slot's dedicated resources.
-case "$SLOT_ROLE" in
-  cos)  SOURCE_SUBDIR="cos-lead" ;;
-  lead) SOURCE_SUBDIR="product-lead" ;;
-  *)
-    echo "ERROR: unknown slot role '${SLOT_ROLE}' (expected 'cos' or 'lead')" >&2
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
-    exit 1
-    ;;
-esac
+# FLY-153: prefer explicit identitySource; fall back to legacy role mapping.
+# Allowlist limits which GeoForge3D .lead/* dirs we'll source — mirror mode
+# expects cos-lead / product-lead / ops-lead specifically.
+if [[ -n "$IDENTITY_SOURCE" ]]; then
+  case "$IDENTITY_SOURCE" in
+    cos-lead|product-lead|ops-lead)
+      SOURCE_SUBDIR="$IDENTITY_SOURCE"
+      ;;
+    *)
+      echo "ERROR: slots[${SLOT_IDX}].identitySource '${IDENTITY_SOURCE}' not in allowlist (cos-lead|product-lead|ops-lead)" >&2
+      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      exit 1
+      ;;
+  esac
+else
+  # Backward-compat: pre-FLY-153 test-slots.json had only `role`.
+  case "$SLOT_ROLE" in
+    cos)  SOURCE_SUBDIR="cos-lead" ;;
+    lead) SOURCE_SUBDIR="product-lead" ;;
+    *)
+      echo "ERROR: unknown slot role '${SLOT_ROLE}' (expected 'cos' or 'lead')" >&2
+      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+      exit 1
+      ;;
+  esac
+fi
 
 PROD_IDENTITY="${HOME}/Dev/GeoForge3D/.lead/${SOURCE_SUBDIR}/identity.md"
 if [[ ! -f "$PROD_IDENTITY" ]]; then
@@ -382,10 +564,60 @@ if [[ ! -f "$PROD_IDENTITY" ]]; then
   exit 1
 fi
 
+# FLY-153: TEST OVERRIDE banner now has two channel-scope variants. Slot mode
+# (legacy) tells the LLM to ignore ALL production channel IDs because the slot
+# has its own dedicated channel. Mirror mode tells the LLM that the production
+# `#geoforge3d-core` references map to the mirror channel — channel-scoped
+# rules anchored on `#geoforge3d-core` (e.g. FLY-152 Shared Channel Reply
+# Discipline) DO apply, but against the mirror channel. All OTHER production
+# channel IDs remain prod-only and must not be touched.
+PROD_CORE_CHANNEL_ID="1487340532610109520"   # #geoforge3d-core in production
+
+# Bash quirk: `$(cat <<MARK ... MARK)` parses the heredoc body with the outer
+# subshell tokenizer, which still sees apostrophes as opening string literals
+# and chokes on `message's`. Build the variants without contractions to dodge
+# the issue (and keep the wording slightly more formal).
+if [[ "$MODE" == "mirror" ]]; then
+  CHANNEL_SCOPE_BLOCK=$(cat <<MIRROR_BLOCK
+## CHANNEL CONTEXT — MIRROR MODE (highest priority)
+
+This slot subscribes to the test guild shared mirror channel
+\`<#${CHAT_CHANNEL_ID}>\`, which simulates the production
+\`#geoforge3d-core\` topology (3 Leads share one channel).
+
+**Production → Mirror substitution**:
+
+- Every reference to \`#geoforge3d-core\` (channel ID \`${PROD_CORE_CHANNEL_ID}\`)
+  in the production identity below MUST be interpreted as
+  \`<#${CHAT_CHANNEL_ID}>\` for this test slot.
+- Channel-scoped rules anchored on \`#geoforge3d-core\` (e.g. "Core Channel
+  Routing Rules", FLY-152 Shared Channel Reply Discipline) DO apply, but
+  against the mirror channel.
+- All OTHER production channel IDs ("Channel Isolation Rules" enumerated
+  channels not equal to \`#geoforge3d-core\`) remain production-only — you
+  MUST NOT post to them.
+- **Your ONLY channel** for any outbound message: \`<#${CHAT_CHANNEL_ID}>\`.
+- If a received message has a \`chat_id\` other than \`${CHAT_CHANNEL_ID}\`,
+  silently ignore it (no reply, no action).
+- **Behavior rules** (when to announce session_started / session_completed /
+  session_failed, message format, reactions) STILL apply — but only inside
+  \`<#${CHAT_CHANNEL_ID}>\`.
+MIRROR_BLOCK
+)
+else
+  CHANNEL_SCOPE_BLOCK=$(cat <<SLOT_BLOCK
+- **Your ONLY channel**: <#${CHAT_CHANNEL_ID}> (channel ID \`${CHAT_CHANNEL_ID}\`)
+- **Ignore** all other channel IDs in "Channel Isolation Rules", "Core Channel Routing", "Discord Channel IDs", etc. — those belong to production.
+- If a received message has a \`chat_id\` other than \`${CHAT_CHANNEL_ID}\`, silently ignore it (no reply, no action).
+- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${CHAT_CHANNEL_ID}>.
+SLOT_BLOCK
+)
+fi
+
 cat > "${SLOT_DIR}/test-identity.md" <<EOF
 ---
 name: ${AGENT_ID}
-description: Flywheel TEST slot ${SLOT} (${SLOT_ROLE}) — automated QA environment
+description: Flywheel TEST slot ${SLOT} (${SLOT_ROLE}, mode=${MODE}) — automated QA environment
 model: opus
 disallowedTools: Write, Edit, MultiEdit, Agent, NotebookEdit
 permissionMode: bypassPermissions
@@ -401,10 +633,8 @@ NOT interact with any production channel.
 ## TEST IDENTITY OVERRIDE (highest priority)
 
 - **Your Bot ID**: \`${BOT_ID}\` (overrides any bot ID in the sections below)
-- **Your ONLY channel**: <#${CHAT_CHANNEL_ID}> (channel ID \`${CHAT_CHANNEL_ID}\`)
-- **Ignore** all other channel IDs in "Channel Isolation Rules", "Core Channel Routing", "Discord Channel IDs", etc. — those belong to production.
-- If a received message's \`chat_id\` is not \`${CHAT_CHANNEL_ID}\`, silently ignore it (no reply, no action).
-- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${CHAT_CHANNEL_ID}>.
+
+${CHANNEL_SCOPE_BLOCK}
 
 ### Lead ID for API calls (FLY-60 W6 — overrides production identity name)
 
@@ -484,7 +714,15 @@ if [[ -z "$FORUM_CHANNEL_ID" ]]; then
   log "WARN: slot ${SLOT} has no forumChannelId in $SLOTS_FILE — forum thread creation will be skipped (Gap C §11.2 env gate pending)"
 fi
 
-log "Starting test Lead: ${AGENT_ID} (project: ${TEST_PROJECT_NAME})"
+# FLY-153 R2 #3: persist FLYWHEEL_PROJECTS to disk so the smoke test (and any
+# operator) can deterministically inspect the routing config without scraping
+# the live Bridge process env. Bridge still receives FLYWHEEL_PROJECTS via env
+# below — this is a double-write, not a relocation.
+FLYWHEEL_PROJECTS_FILE="${SLOT_DIR}/flywheel-projects.json"
+echo "$FLYWHEEL_PROJECTS" > "$FLYWHEEL_PROJECTS_FILE"
+log "Wrote ${FLYWHEEL_PROJECTS_FILE}"
+
+log "Starting test Lead: ${AGENT_ID} (project: ${TEST_PROJECT_NAME}, mode=${MODE}, channel=${EFFECTIVE_CHANNEL_LABEL}=${CHAT_CHANNEL_ID})"
 
 # ── Step 1: Start test Lead (background) ─────────────
 # env -u clears inherited production token, then sets test token explicitly (D8)
@@ -664,10 +902,14 @@ log "  Channel: ${CHAT_CHANNEL_ID}"
 log "  Bridge PID: ${BRIDGE_PID}"
 log "  Lead PID file: ${LEAD_PID_FILE}"
 
-# Output JSON for downstream scripts
+# Output JSON for downstream scripts.
+# FLY-153: also surface mode + mirrorChannelId + flywheelProjectsFile so smoke
+# tests and qa-fly-60-driver can branch on mode without re-reading config.
 cat <<EOF
 {
   "slot": ${SLOT},
+  "mode": "${MODE}",
+  "mirrorChannelId": "${MIRROR_CHANNEL_ID}",
   "port": ${SLOT_PORT},
   "agentId": "${AGENT_ID}",
   "projectName": "${TEST_PROJECT_NAME}",
@@ -685,6 +927,7 @@ cat <<EOF
   "runnerStartPoint": "${RUNNER_START_REF}",
   "dbPath": "${SLOT_DIR}/teamlead.db",
   "bridgeLog": "${SLOT_DIR}/bridge.log",
-  "leadLog": "${LEAD_LOG}"
+  "leadLog": "${LEAD_LOG}",
+  "flywheelProjectsFile": "${FLYWHEEL_PROJECTS_FILE}"
 }
 EOF

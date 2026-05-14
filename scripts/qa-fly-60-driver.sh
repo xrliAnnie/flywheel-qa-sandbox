@@ -110,6 +110,28 @@ done
 [[ "$SLOT" =~ ^[1-4]$ ]] || { err "--slot must be 1-4 (got '$SLOT')"; exit 3; }
 [[ "$G3_TRIALS" =~ ^[0-9]+$ ]] && (( G3_TRIALS > 0 )) || { err "--g3-trials must be positive"; exit 3; }
 
+# FLY-153: hard-gate suite is Runner-driven E2E and incompatible with mirror
+# mode (chat-thread dedupe across multiple Bridges sharing one channel is
+# undefined). Refuse if the requested slot is currently in mirror mode, or if
+# the sidecar exists but contains an unknown value (fail-closed on corruption).
+SLOT_MODE_FILE="/tmp/flywheel-test-slot-${SLOT}.lock/mode"
+if [[ -f "$SLOT_MODE_FILE" ]]; then
+  SLOT_MODE_VAL=$(cat "$SLOT_MODE_FILE" 2>/dev/null || echo "")
+  case "$SLOT_MODE_VAL" in
+    slot)
+      : ;;  # legacy mode, proceed
+    mirror)
+      err "slot ${SLOT} is in mirror mode (FLY-153). qa-fly-60 hard-gate suite requires legacy slot mode."
+      err "  Run 'scripts/test-teardown.sh ${SLOT}' first, then re-run without --mode mirror."
+      exit 3
+      ;;
+    *)
+      err "slot ${SLOT} mode sidecar (${SLOT_MODE_FILE}) contains unknown value '${SLOT_MODE_VAL}'. Refusing to start hard-gate suite — run scripts/test-teardown.sh ${SLOT} and redeploy."
+      exit 3
+      ;;
+  esac
+fi
+
 VALID_SCENARIOS="hp v1 v2 v3 v4a v4b v5 v6 all"
 echo "$VALID_SCENARIOS" | grep -wq "$SCENARIO" || { err "invalid --scenario '$SCENARIO' (valid: $VALID_SCENARIOS)"; exit 3; }
 
