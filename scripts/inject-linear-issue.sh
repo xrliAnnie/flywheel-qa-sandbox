@@ -4,7 +4,7 @@
 # real Runner spawns against the slot's sandbox clone.
 #
 # Usage:
-#   scripts/inject-linear-issue.sh <slot> <linear-issue-id> [--role main|qa]
+#   scripts/inject-linear-issue.sh <slot> <linear-issue-id> [--role main|qa] [--allow-mirror]
 #
 # Example:
 #   scripts/inject-linear-issue.sh 2 FLY-108
@@ -15,19 +15,50 @@
 #   silent hang when Claude CLI launches in a fresh worktree — the prompt is
 #   non-interactive under headless spawn and blocks the whole run.
 #   A teardown call (`scripts/test-teardown.sh <slot>`) prunes these entries.
+#
+# FLY-153: Refuses mirror-mode slots by default. Mirror mode is intended for
+# reply-discipline cascade testing only; spawning a real Runner under mirror
+# topology is out of scope (chat-thread dedupe across Bridges is undefined).
+# Pass --allow-mirror to override if you really know what you are doing.
 set -euo pipefail
 
-SLOT="${1:?Usage: inject-linear-issue.sh <slot> <issue-id> [--role main|qa]}"
+SLOT="${1:?Usage: inject-linear-issue.sh <slot> <issue-id> [--role main|qa] [--allow-mirror]}"
 ISSUE_ID="${2:?issue-id required}"
 shift 2
 
 ROLE="main"
+ALLOW_MIRROR="false"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --role) ROLE="${2:?--role requires value}"; shift 2 ;;
+    --allow-mirror) ALLOW_MIRROR="true"; shift ;;
     *) echo "ERROR: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
+
+# FLY-153: refuse mirror slot unless --allow-mirror is passed. Absent sidecar
+# = legacy slot (pre-FLY-153 deploy), allowed. Present-but-malformed sidecar
+# is fail-closed so a corrupted lock dir doesn't silently allow Runner spawn.
+SLOT_MODE_FILE="/tmp/flywheel-test-slot-${SLOT}.lock/mode"
+if [[ -f "$SLOT_MODE_FILE" ]]; then
+  SLOT_MODE_VAL=$(cat "$SLOT_MODE_FILE" 2>/dev/null || echo "")
+  case "$SLOT_MODE_VAL" in
+    slot)
+      : ;;  # legacy mode, proceed
+    mirror)
+      if [[ "$ALLOW_MIRROR" != "true" ]]; then
+        echo "ERROR: slot ${SLOT} is in mirror mode (FLY-153 reply-discipline test topology)." >&2
+        echo "  Runner E2E in mirror mode is intentionally out of scope — chat-thread dedupe across" >&2
+        echo "  multiple Bridges sharing one channel is undefined behavior. Pass --allow-mirror to override." >&2
+        exit 1
+      fi
+      ;;
+    *)
+      echo "ERROR: slot ${SLOT} mode sidecar (${SLOT_MODE_FILE}) contains unknown value '${SLOT_MODE_VAL}'. Refusing to inject as a safety measure — run scripts/test-teardown.sh ${SLOT} and redeploy." >&2
+      exit 1
+      ;;
+  esac
+fi
 
 # FLY-115 fix: `ROLE` is used to derive the Runner worktree path for the trust
 # entry we write below. Unknown values would produce a path that doesn't match
