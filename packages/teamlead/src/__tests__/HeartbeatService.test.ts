@@ -513,12 +513,14 @@ describe("FLY-25: RegistryHeartbeatNotifier delivery contract", () => {
 			hbStore,
 		);
 
-		// Verify all three heartbeat event types are guardrail
+		// Verify all guardrail event types
 		const { GUARDRAIL_EVENT_TYPES } = await import("../bridge/lead-runtime.js");
 		expect(GUARDRAIL_EVENT_TYPES.has("session_stuck")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_orphaned")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_stale_completed")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_completed")).toBe(false);
+		// FLY-159: gate_timed_out must retry via HeartbeatService when Lead delivery fails
+		expect(GUARDRAIL_EVENT_TYPES.has("gate_timed_out")).toBe(true);
 
 		hbStore.close();
 	});

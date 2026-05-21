@@ -128,9 +128,18 @@ export type TimeoutBehavior = "fail-open" | "fail-close";
 export interface CheckpointConfig {
 	/** Whether this checkpoint is active. Default: false */
 	enabled?: boolean;
-	/** Timeout in ms before timeout_behavior kicks in. Default: 1_800_000 (30 min) */
+	/**
+	 * Timeout in ms before timeout_behavior kicks in.
+	 * Default: 172_800_000 (48h, FLY-159 `DEFAULT_GATE_TIMEOUT_MS`).
+	 * Floor: 14_400_000 (4h, FLY-159 `MIN_GATE_TIMEOUT_MS`) — values below
+	 * the floor are auto-raised by ConfigLoader (warn, not throw).
+	 */
 	timeout_ms?: number;
-	/** What happens on timeout (no response received). Default: 'fail-open' */
+	/**
+	 * What happens on timeout (no response received).
+	 * Default: 'fail-close' (FLY-159 `DEFAULT_TIMEOUT_BEHAVIOR`).
+	 * Set to 'fail-open' explicitly only when the gate is genuinely advisory.
+	 */
 	timeout_behavior?: TimeoutBehavior;
 	/** TTL in hours for cleanup after gate resolves. Default: 24 */
 	cleanup_ttl_hours?: number;

@@ -15,7 +15,10 @@ import type { EventFilter } from "./EventFilter.js";
 import type { ForumPostCreator } from "./ForumPostCreator.js";
 import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
-import type { LeadEventEnvelope } from "./lead-runtime.js";
+import {
+	GUARDRAIL_EVENT_TYPES,
+	type LeadEventEnvelope,
+} from "./lead-runtime.js";
 import {
 	isPostApproveShipComplete,
 	runPostShipFinalization,
@@ -1235,6 +1238,22 @@ export function createEventRouter(
 					}
 				}
 
+				// FLY-159: Copy gate_timed_out payload fields onto hookPayload so the
+				// Lead notification surface (chat thread / mailbox formatter) can
+				// render checkpoint name, wait duration, and the Runner's original
+				// message. Without this mapping, the Lead would only see a generic
+				// "gate_timed_out" envelope with no actionable detail.
+				if (event.event_type === "gate_timed_out") {
+					hookPayload.checkpoint = asString(payload.checkpoint);
+					hookPayload.waited_ms = asNumber(payload.waited_ms);
+					hookPayload.original_message = asString(payload.original_message);
+					hookPayload.timeout_behavior = asString(payload.timeout_behavior);
+					hookPayload.timeout_behavior_source = asString(
+						payload.timeout_behavior_source,
+					);
+					hookPayload.question_id = asString(payload.question_id);
+				}
+
 				// FLY-47: Classify event — priority hints + Forum gating
 				let updateForum = true; // default: update Forum when no filter
 				if (eventFilter) {
@@ -1278,14 +1297,38 @@ export function createEventRouter(
 				};
 				// FLY-80: Only mark delivered on success. On failure, leave undelivered
 				// so inbox-mcp can pick it up on next poll (CommDB is the reliable store).
+				// FLY-159 (Codex R2 Issue 1): runtime.deliver() returns {delivered:
+				// false, error} instead of throwing on Lead-side failures. Without
+				// recordDeliveryFailure on that branch, GUARDRAIL_EVENT_TYPES retry
+				// (HeartbeatService.retryUndeliveredGuardrailEvents) would never see
+				// these rows. Pattern mirrors HeartbeatService.ts:416.
+				const isGuardrail = GUARDRAIL_EVENT_TYPES.has(event.event_type);
 				runtime
 					.deliver(envelope)
-					.then(() => store.markLeadEventDelivered(seq))
+					.then((result) => {
+						if (result.delivered) {
+							store.markLeadEventDelivered(seq);
+						} else if (isGuardrail) {
+							store.recordDeliveryFailure(
+								seq,
+								result.error ?? "deliver returned delivered=false",
+							);
+						} else {
+							// Non-guardrail: keep legacy best-effort behavior — mark
+							// delivered to clear the row even if Lead didn't actually
+							// see it (inbox-mcp poll is the safety net here).
+							store.markLeadEventDelivered(seq);
+						}
+					})
 					.catch((err) => {
-						console.warn(
-							`[event-route] Delivery failed for seq=${seq} to ${lead.agentId}:`,
-							(err as Error).message,
-						);
+						if (isGuardrail) {
+							store.recordDeliveryFailure(seq, (err as Error).message);
+						} else {
+							console.warn(
+								`[event-route] Delivery failed for seq=${seq} to ${lead.agentId}:`,
+								(err as Error).message,
+							);
+						}
 					});
 			} catch (err) {
 				console.warn(

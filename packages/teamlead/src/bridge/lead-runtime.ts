@@ -20,6 +20,7 @@ export const GUARDRAIL_EVENT_TYPES = new Set([
 	"session_orphaned",
 	"session_stale_completed",
 	"runner_idle_detected", // FLY-92: idle watchdog events must be reliably delivered
+	"gate_timed_out", // FLY-159: Lead must reliably notify Annie when Runner gate times out (fail-close path only)
 ]);
 
 /** Monotonically sequenced event envelope for lead delivery. */

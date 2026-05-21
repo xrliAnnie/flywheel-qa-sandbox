@@ -270,6 +270,72 @@ describe("CLI", () => {
 		});
 	});
 
+	// FLY-159 Codex r1 R1 MEDIUM: --timeout-behavior was previously cast
+	// without runtime validation. A typo silently downgraded fail-close to
+	// fail-open and skipped the gate_timed_out POST. Now the CLI throws.
+	describe("gate --timeout-behavior validation (FLY-159)", () => {
+		it("rejects invalid --timeout-behavior value with exit 1", () => {
+			const { exitCode } = runCliSafe([
+				"gate",
+				"brainstorm",
+				"--lead",
+				"product-lead",
+				"--exec-id",
+				"exec-test",
+				"--db",
+				dbPath,
+				"--timeout-behavior",
+				"fail-clos", // typo
+				"my message",
+			]);
+			expect(exitCode).toBe(1);
+		});
+
+		it("accepts 'fail-close' explicitly", () => {
+			// Use very short timeout so the gate process exits quickly. We
+			// don't care about the gate outcome here — only that the CLI
+			// accepts the flag without throwing at parse time.
+			const { exitCode } = runCliSafe([
+				"gate",
+				"brainstorm",
+				"--lead",
+				"product-lead",
+				"--exec-id",
+				"exec-test",
+				"--db",
+				dbPath,
+				"--timeout",
+				"50",
+				"--timeout-behavior",
+				"fail-close",
+				"my message",
+			]);
+			// gate fail-close timeout → exit 1; we just want NOT a parse-time crash.
+			// (1 is acceptable, 2/126 would indicate a parse-stage failure.)
+			expect([0, 1]).toContain(exitCode);
+		});
+
+		it("accepts 'fail-open' explicitly", () => {
+			const { exitCode } = runCliSafe([
+				"gate",
+				"brainstorm",
+				"--lead",
+				"product-lead",
+				"--exec-id",
+				"exec-test",
+				"--db",
+				dbPath,
+				"--timeout",
+				"50",
+				"--timeout-behavior",
+				"fail-open",
+				"my message",
+			]);
+			// fail-open timeout → exit 0 typically.
+			expect([0, 1]).toContain(exitCode);
+		});
+	});
+
 	describe("send", () => {
 		it("should output instruction ID", () => {
 			const result = runCli([

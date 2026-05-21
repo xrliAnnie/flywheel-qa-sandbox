@@ -121,6 +121,18 @@ const FILTER_RULES: FilterRule[] = [
 			updateForum: false,
 		},
 	},
+	// FLY-159: Runner gate timed out (fail-close path only — fail-open never
+	// emits this event). Lead must inform Annie via Discord and offer
+	// retry/cancel options. updateForum=false because the session FSM didn't
+	// change (Runner exited but PR/issue state is unchanged).
+	{
+		match: (et) => et === "gate_timed_out",
+		result: {
+			priority: "high",
+			reason: "gate timed out — Lead notifies Annie via Chat",
+			updateForum: false,
+		},
+	},
 	{
 		match: (et) => et === "session_orphaned",
 		result: {

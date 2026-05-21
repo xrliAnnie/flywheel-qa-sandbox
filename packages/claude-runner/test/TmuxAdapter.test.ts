@@ -803,8 +803,8 @@ describe("TmuxAdapter", () => {
 			expect(envArgStr).toContain("FLYWHEEL_EXEC_ID=test-exec-1");
 		});
 
-		// FLY-102: BASH_MAX_TIMEOUT_MS env injection
-		it("execute() always injects BASH_MAX_TIMEOUT_MS=86400000", async () => {
+		// FLY-102 / FLY-159: BASH_MAX_TIMEOUT_MS env injection (49h to accommodate 48h gate timeout + 1h buffer)
+		it("execute() always injects BASH_MAX_TIMEOUT_MS=176400000", async () => {
 			const { fn, calls } = makeMockExec({ paneDead: true });
 			const adapter = new TmuxAdapter("flywheel", fn, 10);
 
@@ -812,7 +812,7 @@ describe("TmuxAdapter", () => {
 
 			const newWindow = calls.find((c) => c.args[0] === "new-window");
 			const envArgStr = newWindow!.args.join(" ");
-			expect(envArgStr).toContain("BASH_MAX_TIMEOUT_MS=86400000");
+			expect(envArgStr).toContain("BASH_MAX_TIMEOUT_MS=176400000");
 		});
 
 		// FLY-60 W2 (a): FLYWHEEL_LAND_STATUS_PATH injection so flywheel-comm
@@ -1184,6 +1184,125 @@ describe("TmuxAdapter", () => {
 			// the same. This keeps the most-recoverable path as default.
 			expect(joined).toContain("FLYWHEEL_RUNNER_STATE_DIR=");
 			expect(joined).not.toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+		});
+	});
+
+	// FLY-159 Codex r1 R1 HIGH: waiting cap must measure per-wait-period,
+	// not session-total. A 46h-active Runner that enters a 48h gate must
+	// still get a full 48h wait budget (+ 1h buffer = 49h cap).
+	describe("FLY-159: per-wait-period hard cap (Codex r1 R1)", () => {
+		const HARD_CAP_49H = 176_400_000;
+
+		it("returns false when not currently waiting (lastWaitStart=null)", () => {
+			expect(
+				TmuxAdapter._isWaitingPeriodExpired(null, Date.now(), HARD_CAP_49H),
+			).toBe(false);
+		});
+
+		it("returns false when wait elapsed < cap", () => {
+			const lastWaitStart = 1_000;
+			const now = lastWaitStart + 47 * 3600 * 1000; // 47h in
+			expect(
+				TmuxAdapter._isWaitingPeriodExpired(lastWaitStart, now, HARD_CAP_49H),
+			).toBe(false);
+		});
+
+		it("returns false at the exact cap boundary (not strictly greater)", () => {
+			const lastWaitStart = 1_000;
+			const now = lastWaitStart + HARD_CAP_49H;
+			expect(
+				TmuxAdapter._isWaitingPeriodExpired(lastWaitStart, now, HARD_CAP_49H),
+			).toBe(false);
+		});
+
+		it("returns true 1ms past the cap", () => {
+			const lastWaitStart = 1_000;
+			const now = lastWaitStart + HARD_CAP_49H + 1;
+			expect(
+				TmuxAdapter._isWaitingPeriodExpired(lastWaitStart, now, HARD_CAP_49H),
+			).toBe(true);
+		});
+
+		it("session-total time does NOT factor in (the HIGH bug fix)", () => {
+			// Simulate: Runner spent 46h on active work, THEN entered wait.
+			// Pre-fix: session_elapsed (46h+wait) was compared to 49h cap →
+			// wait killed at 3h, gate's 48h timer never fires → silent bypass.
+			// Post-fix: only the current wait window matters.
+			const sessionStart = 1_000;
+			const lastWaitStart = sessionStart + 46 * 3600 * 1000; // 46h into session
+			const now = lastWaitStart + 47 * 3600 * 1000; // 47h into wait, 93h session-total
+			expect(
+				TmuxAdapter._isWaitingPeriodExpired(lastWaitStart, now, HARD_CAP_49H),
+			).toBe(false);
+		});
+	});
+
+	// FLY-159 Codex r2+r3: outer hardTimeoutMs must be generous enough
+	// that the inner per-wait cap fires FIRST. Pre-fix it was 49h
+	// (session-total), which would preempt the inner cap. Round 2 fix used
+	// `* 3` multiplier — Codex r3 MEDIUM caught that 4+ sequential gates
+	// (brainstorm + N question + approve_to_ship) would still preempt.
+	// Final: `waitingBudget * 7` ≈ 14.3 days, fits inside setTimeout max.
+	// (Multiplier 14 → 7 when gate timeout bumped 24h → 48h; product stays
+	// ≈ 14 days.)
+	describe("FLY-159: outer ultra-safety hard timeout (Codex r2+r3)", () => {
+		const HARD_CAP_49H = 176_400_000;
+		const SET_TIMEOUT_MAX_MS = 2_147_483_647; // 2^31 - 1
+
+		it("is at least 7x the waiting budget so inner cap always fires first", () => {
+			const timeoutMs = 5_400_000; // 1.5h active
+			const outer = TmuxAdapter._computeOuterHardTimeoutMs(
+				timeoutMs,
+				HARD_CAP_49H,
+			);
+			expect(outer).toBeGreaterThanOrEqual(HARD_CAP_49H * 7);
+		});
+
+		it("never returns less than the active timeout (degenerate inputs)", () => {
+			const timeoutMs = 172_800_000; // 48h active (degenerate large)
+			const outer = TmuxAdapter._computeOuterHardTimeoutMs(timeoutMs, 0);
+			expect(outer).toBeGreaterThanOrEqual(timeoutMs);
+		});
+
+		it("equals waitingBudget * 7 at production defaults", () => {
+			const timeoutMs = 5_400_000; // 1.5h
+			const outer = TmuxAdapter._computeOuterHardTimeoutMs(
+				timeoutMs,
+				HARD_CAP_49H,
+			);
+			// 7 * 49h = 343h = 1.235 billion ms
+			expect(outer).toBe(HARD_CAP_49H * 7);
+		});
+
+		it("fits inside Node's setTimeout max (2^31-1 ms ≈ 24.85 days)", () => {
+			const outer = TmuxAdapter._computeOuterHardTimeoutMs(
+				5_400_000,
+				HARD_CAP_49H,
+			);
+			expect(outer).toBeLessThanOrEqual(SET_TIMEOUT_MAX_MS);
+		});
+
+		it("allows 46h active + 48h gate (94h realistic) without preempting", () => {
+			// Round 1 regression scenario, scaled for 48h gate timeout.
+			const outer = TmuxAdapter._computeOuterHardTimeoutMs(
+				5_400_000,
+				HARD_CAP_49H,
+			);
+			const realisticSessionMs = (46 + 48) * 3600 * 1000; // 94h
+			expect(outer).toBeGreaterThan(realisticSessionMs);
+		});
+
+		it("allows 4+ sequential 48h gates (Codex r3 regression)", () => {
+			// Worst-case Runner: brainstorm gate (48h) + 2 question gates
+			// (each 48h) + approve_to_ship gate (48h) = 192h waits + active
+			// time in between. Round 3 final multiplier (* 7) at 49h
+			// waitingBudget gives 343h — covers the 4-gate worst case.
+			const outer = TmuxAdapter._computeOuterHardTimeoutMs(
+				5_400_000,
+				HARD_CAP_49H,
+			);
+			const fourGateSessionMs = 4 * 48 * 3600 * 1000 + 5_400_000 * 4; // 192h waits + ~6h active
+			expect(outer).toBeGreaterThan(fourGateSessionMs);
 		});
 	});
 });

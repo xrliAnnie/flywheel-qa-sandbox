@@ -806,13 +806,13 @@ ${MINIMAL_CONFIG_YAML}
 ${checkpointsYaml}
 `;
 
-		it("accepts valid checkpoints config", async () => {
+		it("accepts valid checkpoints config (timeout_ms ≥ floor)", async () => {
 			readFile.mockResolvedValue(
 				withCheckpoints(`
 checkpoints:
   brainstorm:
     enabled: true
-    timeout_ms: 1800000
+    timeout_ms: 172800000
     timeout_behavior: fail-close
     cleanup_ttl_hours: 24
     stage: brainstorm
@@ -823,8 +823,83 @@ checkpoints:
 			);
 			const config = await loader.load("/p/config.yaml");
 			expect(config.checkpoints?.brainstorm?.enabled).toBe(true);
-			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(1800000);
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(172800000);
 			expect(config.checkpoints?.question?.timeout_behavior).toBe("fail-open");
+		});
+
+		// FLY-159: timeout_ms floor at 4h (MIN_GATE_TIMEOUT_MS = 14_400_000ms).
+		// Below-floor values are warn+raised (not throw) for boot continuity.
+		it("warns + raises timeout_ms below 4h floor (was 30min, now 4h)", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    enabled: true
+    timeout_ms: 1800000
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(14_400_000);
+			expect(warnSpy).toHaveBeenCalledWith(
+				expect.stringMatching(
+					/checkpoints\.brainstorm\.timeout_ms=1800000ms is below floor/,
+				),
+			);
+			warnSpy.mockRestore();
+		});
+
+		it("warns + raises timeout_ms = 1h (Designer-style misconfig)", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    timeout_ms: 3600000
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(14_400_000);
+			expect(warnSpy).toHaveBeenCalledTimes(1);
+			warnSpy.mockRestore();
+		});
+
+		it("passes timeout_ms = 4h (exact floor) unchanged + no warn", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    timeout_ms: 14400000
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(14_400_000);
+			expect(warnSpy).not.toHaveBeenCalled();
+			warnSpy.mockRestore();
+		});
+
+		it("passes timeout_ms = 12h (Designer real value) unchanged + no warn", async () => {
+			const warnSpy = vi
+				.spyOn(console, "warn")
+				.mockImplementation(() => undefined);
+			readFile.mockResolvedValue(
+				withCheckpoints(`
+checkpoints:
+  brainstorm:
+    timeout_ms: 43200000
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(43_200_000);
+			expect(warnSpy).not.toHaveBeenCalled();
+			warnSpy.mockRestore();
 		});
 
 		it("accepts config without checkpoints", async () => {

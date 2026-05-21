@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import { parseArgs } from "node:util";
+import {
+	DEFAULT_GATE_TIMEOUT_MS,
+	DEFAULT_TIMEOUT_BEHAVIOR,
+} from "flywheel-config";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
@@ -610,14 +614,36 @@ async function runGate(args: string[]): Promise<void> {
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
 	const timeoutMs = values.timeout
 		? Number.parseInt(values.timeout, 10)
-		: 3600_000; // default 1 hour
+		: DEFAULT_GATE_TIMEOUT_MS; // FLY-159: default 48h (was 1h)
 
-	// Default timeout behavior: fail-open (matches CheckpointConfig type definition).
-	// Individual checkpoints override via --timeout-behavior flag.
-	let timeoutBehavior: "fail-open" | "fail-close" = "fail-open";
-	if (values["timeout-behavior"]) {
-		timeoutBehavior = values["timeout-behavior"] as "fail-open" | "fail-close";
+	// Default timeout behavior: fail-close (FLY-159, was fail-open). Project
+	// YAML / explicit --timeout-behavior flag can opt back into fail-open for
+	// genuinely advisory gates.
+	//
+	// FLY-159 Codex r1 R1 MEDIUM: validate the flag value at parse time.
+	// Without this, a CLI typo ("fail-clos") was silently cast through the
+	// union type and fell into the fail-open timeout branch in gate.ts —
+	// downgrading the safer default and skipping the gate_timed_out event.
+	// (ConfigLoader already validates the YAML side; this closes the CLI gap.)
+	const explicitBehaviorFlag = values["timeout-behavior"] != null;
+	let timeoutBehavior: "fail-open" | "fail-close";
+	if (explicitBehaviorFlag) {
+		const raw = values["timeout-behavior"];
+		if (raw !== "fail-open" && raw !== "fail-close") {
+			throw new Error(
+				`--timeout-behavior must be "fail-open" or "fail-close" (got "${raw}")`,
+			);
+		}
+		timeoutBehavior = raw;
+	} else {
+		timeoutBehavior = DEFAULT_TIMEOUT_BEHAVIOR;
 	}
+	// FLY-159 (Codex R2 Issue 3): two-value source enum. The CLI cannot
+	// distinguish a Blueprint-injected flag from a hand-typed flag, so
+	// "flag" covers both.
+	const timeoutBehaviorSource: "default" | "flag" = explicitBehaviorFlag
+		? "flag"
+		: "default";
 
 	const cleanupTtlHours = values["cleanup-ttl"]
 		? Number.parseInt(values["cleanup-ttl"], 10)
@@ -631,6 +657,7 @@ async function runGate(args: string[]): Promise<void> {
 		dbPath,
 		timeoutMs,
 		timeoutBehavior,
+		timeoutBehaviorSource,
 		cleanupTtlHours,
 		stage: values.stage,
 	});

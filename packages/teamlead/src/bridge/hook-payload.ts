@@ -28,6 +28,12 @@ export interface HookPayload {
 	question_id?: string;
 	from_agent?: string;
 	comm_db_path?: string;
+	// FLY-159: gate_timed_out event fields (Lead notifies Annie via Discord)
+	waited_ms?: number;
+	original_message?: string;
+	timeout_behavior?: string;
+	/** "default" (no --timeout-behavior flag) | "flag" (flag was present) */
+	timeout_behavior_source?: string;
 	// GEO-292: PR tracking
 	pr_number?: number;
 	// FLY-59: Session role for multi-session-per-issue support
@@ -52,4 +58,31 @@ export function buildSessionKey(session: {
 	issue_id: string;
 }): string {
 	return `flywheel:${session.issue_identifier ?? session.issue_id}`;
+}
+
+/**
+ * FLY-159: Format a millisecond duration as a short human-readable string.
+ * Used by gate_timed_out formatters so Annie can read "waited 48h" / "waited
+ * 10s" instead of a raw ms count.
+ *
+ * Examples:
+ *   formatDurationMs(10_000)        → "10s"
+ *   formatDurationMs(90_000)        → "1m 30s"
+ *   formatDurationMs(3_600_000)     → "1h"
+ *   formatDurationMs(172_800_000)   → "48h"
+ *   formatDurationMs(5_400_000)     → "1h 30m"
+ *   formatDurationMs(undefined as never) → "—"
+ */
+export function formatDurationMs(ms: number | undefined | null): string {
+	if (ms == null || !Number.isFinite(ms) || ms < 0) return "—";
+	const totalSec = Math.floor(ms / 1000);
+	if (totalSec < 60) return `${totalSec}s`;
+	const totalMin = Math.floor(totalSec / 60);
+	if (totalMin < 60) {
+		const sec = totalSec % 60;
+		return sec === 0 ? `${totalMin}m` : `${totalMin}m ${sec}s`;
+	}
+	const hours = Math.floor(totalMin / 60);
+	const min = totalMin % 60;
+	return min === 0 ? `${hours}h` : `${hours}h ${min}m`;
 }

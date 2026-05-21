@@ -23,6 +23,7 @@ import type {
 	MailboxPayload,
 } from "flywheel-agent-team-transport";
 import { MailboxTransport } from "../mailbox/MailboxTransport.js";
+import { formatDurationMs } from "./hook-payload.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -211,6 +212,36 @@ export class MailboxLeadRuntime implements LeadRuntime {
 				"---",
 				`Reply to approve or provide feedback. Question ID: ${e.question_id}`,
 				`CommDB: ${e.comm_db_path}`,
+			];
+			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+			return lines.join("\n");
+		}
+
+		// FLY-159: gate_timed_out gets a special format so the Lead sees
+		// checkpoint name, how long Runner waited, the original message, and
+		// the timeout behavior (fail-close vs fail-open). Without this branch
+		// the generic formatter skips all gate_timed_out-specific fields and
+		// the Lead has nothing actionable to relay to Annie.
+		if (e.event_type === "gate_timed_out") {
+			const tag = e.checkpoint?.toUpperCase() ?? "GATE";
+			const issueRef = e.issue_identifier || e.issue_id;
+			const roleLabel =
+				e.session_role && e.session_role !== "main"
+					? `[${e.session_role.toUpperCase()}] `
+					: "";
+			const waited = formatDurationMs(e.waited_ms);
+			const behavior = e.timeout_behavior ?? "fail-close";
+			const source = e.timeout_behavior_source ?? "default";
+			const lines = [
+				`[Event #${env.seq}] ${roleLabel}gate_timed_out`,
+				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
+				`[${tag}] Gate timed out — waited ${waited} (behavior: ${behavior}, source: ${source})`,
+				"---",
+				"Original Runner message:",
+				e.original_message ?? "(no original message captured)",
+				"---",
+				`Question ID: ${e.question_id ?? "---"}`,
+				"Notify Annie via Discord — ask whether to retry or cancel.",
 			];
 			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 			return lines.join("\n");

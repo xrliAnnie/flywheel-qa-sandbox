@@ -198,7 +198,7 @@ export interface AdapterExecutionContext {
 
 	/** SQLite DB path for flywheel-comm CLI */
 	commDbPath?: string;
-	/** Timeout when waiting for Lead response (ms). Default: 43_200_000 (12h) */
+	/** Timeout when waiting for Lead response (ms). Default: 176_400_000 (49h, FLY-159 — 48h gate timeout + 1h buffer; was 12h pre-FLY-159, raised through 25h before settling at 49h) */
 	waitingTimeoutMs?: number;
 	/** Lead agent ID (for session registration) */
 	leadId?: string;

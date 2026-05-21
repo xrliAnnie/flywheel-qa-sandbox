@@ -81,6 +81,50 @@ export class TmuxAdapter implements IAdapter {
 		private transport?: RunnerSpawnTransport,
 	) {}
 
+	/**
+	 * FLY-159 Codex r1 R1 HIGH (test-visible): determine whether the current
+	 * waiting period has exceeded the per-wait hard cap. Pure function — no
+	 * Date.now, no DB, easy to unit test. See `checkDynamicTimeout` for the
+	 * wait-period vs session-total rationale.
+	 */
+	static _isWaitingPeriodExpired(
+		lastWaitStart: number | null,
+		now: number,
+		hardCap: number,
+	): boolean {
+		if (lastWaitStart === null) return false;
+		return now - lastWaitStart > hardCap;
+	}
+
+	/**
+	 * FLY-159 Codex r2+r3 (test-visible): outer `setTimeout` ultra-safety
+	 * net duration. The inner per-wait + per-active budgets are enforced
+	 * by `checkDynamicTimeout`'s polling loop; this outer timer is a
+	 * last-resort kill switch ONLY if the inner polling stalls (DB closed,
+	 * etc.).
+	 *
+	 * It must be generous enough that the inner cap always fires first
+	 * across any plausible session — otherwise the outer timer preempts
+	 * `resolveGate(0)` + `gate_timed_out` and silently bypasses Annie's
+	 * approval. Per Codex r3 MEDIUM, a fixed `* 3` multiplier breaks for
+	 * Runners with 4+ sequential gates (brainstorm + N questions +
+	 * approve_to_ship).
+	 *
+	 * Formula: `max(timeoutMs, waitingBudget * 7)` ≈ 7 sequential 49h
+	 * waits ≈ 14.3 days. Well beyond any plausible Runner session while
+	 * still finite enough to function as a stall-detection safety net.
+	 * (setTimeout max delay is 2^31-1 ms ≈ 24.85 days, so 14.3 days fits.
+	 * Multiplier bumped down from 14 → 7 because waitingBudget doubled
+	 * 25h → 49h with the 24h → 48h gate timeout shift; product remains
+	 * ≈ 14 days.)
+	 */
+	static _computeOuterHardTimeoutMs(
+		timeoutMs: number,
+		waitingBudgetMs: number,
+	): number {
+		return Math.max(timeoutMs, waitingBudgetMs * 7);
+	}
+
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
 		try {
 			const tmuxResult = this.execFileFn("tmux", ["-V"]);
@@ -293,10 +337,12 @@ export class TmuxAdapter implements IAdapter {
 			envArgs.push("-e", `FLYWHEEL_LAND_STATUS_PATH=${ctx.sentinelPath}`);
 		}
 
-		// FLY-102: Override Claude Code's Bash tool max timeout.
+		// FLY-102 / FLY-159: Override Claude Code's Bash tool max timeout.
 		// Default is 600,000ms (10 min) which kills gate commands that wait for
-		// human decisions. Set to 24h to match session timeout.
-		envArgs.push("-e", "BASH_MAX_TIMEOUT_MS=86400000");
+		// human decisions. Set to 49h = 48h gate timeout + 1h buffer so the
+		// gate CLI can fire its own fail-close path and emit gate_timed_out
+		// before the Bash tool kills it.
+		envArgs.push("-e", "BASH_MAX_TIMEOUT_MS=176400000");
 
 		// FLY-142 PR 1.2: merge transport-supplied env vars into envArgs.
 		// (`transportSpawnConfig` was computed earlier — reused here.)
@@ -513,7 +559,13 @@ export class TmuxAdapter implements IAdapter {
 	 *
 	 * We track `totalWaitingMs` — accumulated time spent in waiting state.
 	 * Normal timeout checks: (elapsed - totalWaitingMs) > normalTimeoutMs
-	 * Waiting hard cap: elapsed > waitingTimeoutMs (12h absolute limit)
+	 * Waiting hard cap: per-wait-period budget (NOT session-total) —
+	 *   (now - lastWaitStart) > waitingTimeoutMs (49h, FLY-159 = 48h gate +
+	 *   1h buffer). Codex r1 R1 HIGH: a session-total cap would let active
+	 *   work eat the wait budget, killing a gate before its own 48h timer
+	 *   fires and skipping resolveGate(0) + gate_timed_out notification.
+	 *   Each wait period gets its own 49h budget; entering a new wait resets
+	 *   the clock.
 	 */
 	private checkDynamicTimeout(
 		ctx: AdapterExecutionContext,
@@ -557,9 +609,15 @@ export class TmuxAdapter implements IAdapter {
 
 		const elapsed = now - start;
 		if (isWaiting) {
-			// While waiting: only enforce absolute hard cap
-			const hardCap = ctx.waitingTimeoutMs ?? 43_200_000; // 12h (FLY-97)
-			return { shouldTimeout: elapsed > hardCap, isWaiting };
+			const hardCap = ctx.waitingTimeoutMs ?? 176_400_000; // 49h
+			return {
+				shouldTimeout: TmuxAdapter._isWaitingPeriodExpired(
+					waitState.lastWaitStart,
+					now,
+					hardCap,
+				),
+				isWaiting,
+			};
 		}
 
 		// Not waiting: subtract accumulated waiting time from elapsed
@@ -614,11 +672,21 @@ export class TmuxAdapter implements IAdapter {
 				resolve(timedOut);
 			};
 
-			// Hard upper bound timeout (safety net)
-			const hardTimeoutMs = Math.max(
-				timeoutMs,
-				ctx.waitingTimeoutMs ?? timeoutMs,
-			);
+			// FLY-159 Codex r2 HIGH: when ctx.waitingTimeoutMs is set (production
+			// usage with dynamic gate timeout via CommDB), the outer ultra-safety
+			// net must be generous enough that the inner per-wait cap
+			// (checkDynamicTimeout) always fires first — otherwise a long active
+			// phase + 48h gate would be killed by this timer at 49h
+			// session-total, skipping `resolveGate(0)` + `gate_timed_out`.
+			// When unset (tests / non-waiting usage), there's no gate semantics
+			// so the outer timer keeps its legacy meaning of "absolute active
+			// budget."
+			const hardTimeoutMs = ctx.waitingTimeoutMs
+				? TmuxAdapter._computeOuterHardTimeoutMs(
+						timeoutMs,
+						ctx.waitingTimeoutMs,
+					)
+				: timeoutMs;
 			const timer = setTimeout(() => {
 				console.warn(
 					`[TmuxAdapter] Session ${claudeSessionId} hard timeout after ${hardTimeoutMs}ms. Window ${windowId} will be cleaned up.`,

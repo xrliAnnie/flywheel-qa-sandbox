@@ -105,6 +105,64 @@ describe("CommDBLeadRuntime", () => {
 			expect(content).toContain("CommDB: /tmp/comm.db");
 		});
 
+		it("FLY-159: formats gate_timed_out with checkpoint + duration + original message", async () => {
+			const envelope = makeEnvelope({
+				event_type: "gate_timed_out",
+				checkpoint: "brainstorm",
+				waited_ms: 172_800_000,
+				original_message: "my brainstorm understanding draft",
+				timeout_behavior: "fail-close",
+				timeout_behavior_source: "default",
+				question_id: "q-uuid-1",
+				chat_thread_id: "chat-thread-159",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("[Event #1] gate_timed_out");
+			expect(content).toContain(
+				"[BRAINSTORM] Gate timed out — waited 48h (behavior: fail-close, source: default)",
+			);
+			expect(content).toContain("Original Runner message:");
+			expect(content).toContain("my brainstorm understanding draft");
+			expect(content).toContain("Question ID: q-uuid-1");
+			expect(content).toContain("Notify Annie via Discord");
+			expect(content).toContain("Chat-Thread: chat-thread-159");
+			expect(content).not.toContain("Timestamp:");
+		});
+
+		it("FLY-159: gate_timed_out fail-open + flag source renders distinctly", async () => {
+			const envelope = makeEnvelope({
+				event_type: "gate_timed_out",
+				checkpoint: "approve_to_ship",
+				waited_ms: 10_000,
+				original_message: "ready to ship",
+				timeout_behavior: "fail-open",
+				timeout_behavior_source: "flag",
+				question_id: "q-uuid-2",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain(
+				"[APPROVE_TO_SHIP] Gate timed out — waited 10s (behavior: fail-open, source: flag)",
+			);
+			expect(content).toContain("ready to ship");
+		});
+
+		it("FLY-159: gate_timed_out missing optionals → safe defaults", async () => {
+			const envelope = makeEnvelope({
+				event_type: "gate_timed_out",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("[GATE] Gate timed out — waited —");
+			expect(content).toContain("(behavior: fail-close, source: default)");
+			expect(content).toContain("(no original message captured)");
+			expect(content).toContain("Question ID: ---");
+		});
+
 		it("returns failure when CommDB throws", async () => {
 			mockInsertInstruction.mockImplementationOnce(() => {
 				throw new Error("disk full");

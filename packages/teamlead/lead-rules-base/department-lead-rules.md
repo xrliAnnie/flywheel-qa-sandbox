@@ -139,6 +139,42 @@ The base rule is name-agnostic; the project file plugs in your concrete name.
 
 ---
 
+## Gate Timeout Handling (FLY-159, strictly enforced)
+
+When the Bridge delivers a `gate_timed_out` event to you, a Runner you spawned has been waiting at a gate checkpoint for at least the configured timeout (default 48h) without anyone responding. The Runner has already exited fail-close — its tmux session is gone, the CommDB question is expired, and no further work will happen on that issue until you act.
+
+The event payload includes:
+
+- `checkpoint` — `brainstorm` / `approve_to_ship` / `question` / project-specific gate name
+- `waited_ms` — actual wait duration in milliseconds (typically ~48h)
+- `original_message` — what the Runner posted when it opened the gate (truncated to 500 chars)
+- `execution_id`, `issue_id`, `issue_identifier`, `issue_title` — for thread routing
+- `timeout_behavior` — always `"fail-close"` for this event type (fail-open gates never emit `gate_timed_out`)
+- `timeout_behavior_source` — `"default"` if the CLI used the default behavior, `"flag"` if a flag was passed (Blueprint-injected or hand-typed)
+
+### Required action
+
+1. Locate the chat thread for `issue_identifier` (the same thread you use for routine session updates on that issue). If no thread exists yet, the standard issue-thread resolution rules apply.
+2. Post **one** message addressed to the operator. Keep it short — Annie is busy, she needs the facts and a choice, not a wall of text. Template:
+
+   > `<ISSUE-ID>` Runner 在 `<checkpoint>` 等了约 `<waited_hours>` 小时没等到回复，已退出（fail-close）。需要决定：retry 重启 Runner，还是 cancel 这个 issue？Runner 原话：`<original_message>`
+
+3. Wait for the operator's reply. Do **not** auto-spawn a new Runner. Do **not** mark the issue Done. Do **not** post a Forum status update — `gate_timed_out` is intentionally `updateForum: false` because the session FSM didn't actually change.
+4. When the operator replies:
+   - **retry** → spawn a fresh Runner on the same issue (standard spawn path)
+   - **cancel** → post acknowledgment in thread; if the issue tracker allows, move the issue to a blocked/cancelled state per project convention
+   - **other guidance** → follow it; the operator may want to manually answer the original gate question via another channel first
+
+### Boundary: don't confuse this with `session_stuck`
+
+`session_stuck` means the Runner process is alive but not making progress (idle watchdog). `gate_timed_out` means the Runner deliberately exited because a human gate didn't get a human answer. Different events, different prompts to Annie.
+
+### Reliability note
+
+The `gate_timed_out` event is on the GUARDRAIL retry path (Bridge → Lead delivery is retried for ~5 min). However, if the Bridge was completely offline when the Runner timed out, the event POST itself may have been lost — in that case you will never receive the event, and the indirect detection paths (FLY-92 idle watchdog, Runner session timeout) will eventually surface the dead Runner. If a Runner has been silent for >49h on a gated issue and you have not seen any related event, treat that as the same situation and follow the same retry/cancel prompt.
+
+---
+
 ## Order of precedence
 
 This file is the **abstract contract**. Your project's `department-lead-rules.md` is appended **after** this file and may instantiate (almost always) or override (rare safety-relevant cases) the rules above. If your project file disagrees with this base on a topic both touch, the project's later statement wins per Claude prompt-stacking semantics — but project authors should treat that as a yellow flag and prefer extension over override.
