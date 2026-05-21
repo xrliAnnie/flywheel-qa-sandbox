@@ -186,6 +186,105 @@ describe("MailboxLeadRuntime", () => {
 			expect(content).toContain("CommDB: /tmp/comm.db");
 		});
 
+		it("FLY-159: formats gate_timed_out with checkpoint + duration + original message", async () => {
+			const transport = makeMockTransport();
+			const runtime = new MailboxLeadRuntime({
+				leadId: "cos-lead",
+				transport,
+			});
+
+			await runtime.deliver(
+				makeEnvelope({
+					event: {
+						event_type: "gate_timed_out",
+						execution_id: "exec-t",
+						issue_id: "issue-t",
+						issue_identifier: "FLY-159",
+						checkpoint: "brainstorm",
+						waited_ms: 172_800_000,
+						original_message: "my brainstorm understanding draft",
+						timeout_behavior: "fail-close",
+						timeout_behavior_source: "default",
+						question_id: "q-uuid-1",
+						chat_thread_id: "chat-thread-159",
+					},
+				}),
+			);
+
+			const content = (transport.write as ReturnType<typeof vi.fn>).mock
+				.calls[0][0].payload.content as string;
+			expect(content).toContain("[Event #42] gate_timed_out");
+			expect(content).toContain("Issue: FLY-159");
+			expect(content).toContain(
+				"[BRAINSTORM] Gate timed out — waited 48h (behavior: fail-close, source: default)",
+			);
+			expect(content).toContain("Original Runner message:");
+			expect(content).toContain("my brainstorm understanding draft");
+			expect(content).toContain("Question ID: q-uuid-1");
+			expect(content).toContain("Notify Annie via Discord");
+			expect(content).toContain("Chat-Thread: chat-thread-159");
+			// generic formatter fields should NOT appear (no double-formatting)
+			expect(content).not.toContain("Timestamp:");
+		});
+
+		it("FLY-159: gate_timed_out fail-open path renders behavior=fail-open + source=flag", async () => {
+			const transport = makeMockTransport();
+			const runtime = new MailboxLeadRuntime({
+				leadId: "cos-lead",
+				transport,
+			});
+
+			await runtime.deliver(
+				makeEnvelope({
+					event: {
+						event_type: "gate_timed_out",
+						execution_id: "exec-t2",
+						issue_id: "issue-t2",
+						checkpoint: "approve_to_ship",
+						waited_ms: 10_000,
+						original_message: "ready to ship",
+						timeout_behavior: "fail-open",
+						timeout_behavior_source: "flag",
+						question_id: "q-uuid-2",
+					},
+				}),
+			);
+
+			const content = (transport.write as ReturnType<typeof vi.fn>).mock
+				.calls[0][0].payload.content as string;
+			expect(content).toContain(
+				"[APPROVE_TO_SHIP] Gate timed out — waited 10s (behavior: fail-open, source: flag)",
+			);
+			expect(content).toContain("ready to ship");
+		});
+
+		it("FLY-159: gate_timed_out with missing optional fields uses sensible defaults", async () => {
+			const transport = makeMockTransport();
+			const runtime = new MailboxLeadRuntime({
+				leadId: "cos-lead",
+				transport,
+			});
+
+			await runtime.deliver(
+				makeEnvelope({
+					event: {
+						event_type: "gate_timed_out",
+						execution_id: "exec-t3",
+						issue_id: "issue-t3",
+						// no checkpoint, no waited_ms, no original_message,
+						// no timeout_behavior, no source, no question_id
+					},
+				}),
+			);
+
+			const content = (transport.write as ReturnType<typeof vi.fn>).mock
+				.calls[0][0].payload.content as string;
+			expect(content).toContain("[GATE] Gate timed out — waited —");
+			expect(content).toContain("(behavior: fail-close, source: default)");
+			expect(content).toContain("(no original message captured)");
+			expect(content).toContain("Question ID: ---");
+		});
+
 		it("session_role label appears for non-main sessions", async () => {
 			const transport = makeMockTransport();
 			const runtime = new MailboxLeadRuntime({

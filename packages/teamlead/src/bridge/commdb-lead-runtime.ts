@@ -10,6 +10,7 @@
  */
 
 import { CommDB } from "flywheel-comm/db";
+import { formatDurationMs } from "./hook-payload.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -88,6 +89,35 @@ export class CommDBLeadRuntime implements LeadRuntime {
 				`CommDB: ${e.comm_db_path}`,
 			];
 			// FLY-91: Include Chat-Thread hint for gate questions
+			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+			return lines.join("\n");
+		}
+
+		// FLY-159: gate_timed_out gets a special format so Lead notifications
+		// surface checkpoint, wait duration, original Runner message, and
+		// fail-close vs fail-open behavior. Generic formatter (below) would
+		// otherwise drop these fields.
+		if (e.event_type === "gate_timed_out") {
+			const tag = e.checkpoint?.toUpperCase() ?? "GATE";
+			const issueRef = e.issue_identifier || e.issue_id;
+			const roleLabel =
+				e.session_role && e.session_role !== "main"
+					? `[${e.session_role.toUpperCase()}] `
+					: "";
+			const waited = formatDurationMs(e.waited_ms);
+			const behavior = e.timeout_behavior ?? "fail-close";
+			const source = e.timeout_behavior_source ?? "default";
+			const lines = [
+				`[Event #${env.seq}] ${roleLabel}gate_timed_out`,
+				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
+				`[${tag}] Gate timed out — waited ${waited} (behavior: ${behavior}, source: ${source})`,
+				"---",
+				"Original Runner message:",
+				e.original_message ?? "(no original message captured)",
+				"---",
+				`Question ID: ${e.question_id ?? "---"}`,
+				"Notify Annie via Discord — ask whether to retry or cancel.",
+			];
 			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 			return lines.join("\n");
 		}

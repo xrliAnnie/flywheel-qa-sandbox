@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { CheckpointsConfig, SkillsConfig } from "flywheel-config";
+import { DEFAULT_GATE_TIMEOUT_MS } from "flywheel-config";
 import type {
 	AdapterExecutionResult,
 	DecisionResult,
@@ -500,7 +501,10 @@ export class Blueprint {
 					this.checkpointConfig,
 				)) {
 					if (!cpConfig.enabled) continue;
-					const timeoutMs = cpConfig.timeout_ms ?? 1_800_000;
+					// FLY-159: default to 48h (was 30 min) so the gate timeout is
+					// long enough that humans waking up in the morning still find
+					// a Runner waiting for them. Project YAML can override.
+					const timeoutMs = cpConfig.timeout_ms ?? DEFAULT_GATE_TIMEOUT_MS;
 					const flags = [`--timeout ${timeoutMs}`];
 					if (cpConfig.timeout_behavior) {
 						flags.push(`--timeout-behavior ${cpConfig.timeout_behavior}`);
@@ -520,8 +524,9 @@ export class Blueprint {
 							"Before writing any code, you MUST confirm your understanding with your Lead.",
 							"a. Read the issue and codebase. Form your understanding.",
 							`b. Run: \`node ${commCliPath} gate brainstorm --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your understanding: [what] [how] [expected outcome]"\``,
-							"c. This command BLOCKS until your Lead confirms. Do NOT write code until it returns.",
+							"c. This command BLOCKS until your Lead confirms (default 48h timeout). Do NOT write code until it returns.",
 							"d. Read the response. If corrections were provided, adjust your approach.",
+							"e. If the command exits with a non-zero code (timeout fail-close), STOP immediately and do NOT continue writing code. Your Lead will be notified via Discord by the gate_timed_out event.",
 						);
 					} else if (cpName === "approve_to_ship") {
 						systemPromptLines.push(
@@ -529,9 +534,10 @@ export class Blueprint {
 							"APPROVE GATE (MANDATORY — do NOT skip):",
 							"After creating the PR, you MUST wait for approval before shipping.",
 							`a. Run: \`node ${commCliPath} gate approve_to_ship --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "PR created: <url>. Ready for review."\``,
-							"b. This command BLOCKS until approval. Do NOT exit until it returns.",
+							"b. This command BLOCKS until approval (default 48h timeout). Do NOT exit until it returns.",
 							"c. If changes were requested, address them and re-submit gate.",
-							"d. Once approved, SHIP the PR immediately:",
+							"d. If the command exits with a non-zero code (timeout fail-close), STOP immediately. Do NOT ship without approval. Your Lead will be notified via Discord by the gate_timed_out event.",
+							"e. Once approved, SHIP the PR immediately:",
 							`   - Run \`node ${commCliPath} stage set ship\``,
 							'   - Post :cool: to trigger deploy: `gh pr comment <NUMBER> --body ":cool:"`',
 							"   - Wait for the PR to be merged by the deploy workflow (poll `gh pr view <NUMBER> --json state -q '.state'` every 30s until MERGED, max 10 min)",
@@ -552,7 +558,8 @@ export class Blueprint {
 							"QUESTION GATE (use when needed):",
 							"When you have a question that blocks your progress:",
 							`a. Run: \`node ${commCliPath} gate question --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your question here"\``,
-							"b. This command BLOCKS until your Lead responds.",
+							"b. This command BLOCKS until your Lead responds (default 48h timeout).",
+							"c. If the command exits with a non-zero code (timeout fail-close), STOP immediately. Your Lead will be notified via Discord by the gate_timed_out event.",
 						);
 					} else {
 						systemPromptLines.push(
@@ -560,7 +567,8 @@ export class Blueprint {
 							`${cpName.toUpperCase()} GATE:`,
 							`When you reach the ${cpName} checkpoint:`,
 							`a. Run: \`node ${commCliPath} gate ${cpName} --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your message"\``,
-							"b. This command BLOCKS until your Lead responds.",
+							"b. This command BLOCKS until your Lead responds (default 48h timeout).",
+							"c. If the command exits with a non-zero code (timeout fail-close), STOP immediately. Your Lead will be notified via Discord by the gate_timed_out event.",
 						);
 					}
 				}
@@ -689,7 +697,7 @@ export class Blueprint {
 				sessionDisplayName: `${hydrated.issueId} ${cleanIssueTitle(hydrated.issueTitle)}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
 				commDbPath,
-				waitingTimeoutMs: 43_200_000, // FLY-97: 12h when waiting for Lead
+				waitingTimeoutMs: 176_400_000, // FLY-97 base, raised FLY-159 to 49h: 48h gate timeout + 1h buffer
 				leadId: ctx.leadId,
 				projectName: ctx.projectName,
 				bridgeUrl: resolveBridgeUrl(),

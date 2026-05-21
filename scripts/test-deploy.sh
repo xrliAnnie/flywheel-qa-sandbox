@@ -486,7 +486,7 @@ decision_layer:
 checkpoints:
   approve_to_ship:
     enabled: true
-    timeout_ms: 3600000      # 1h
+    timeout_ms: 14400000     # 4h (FLY-159: ConfigLoader floor; anything lower is warn+raised)
     timeout_behavior: fail-close
 EOF
 log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"

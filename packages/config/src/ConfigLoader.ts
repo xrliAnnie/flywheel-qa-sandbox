@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { parse } from "yaml";
-import type { FlywheelConfig } from "./types.js";
+import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
+import type { CheckpointConfig, FlywheelConfig } from "./types.js";
 
 /** Function signature for reading a file — injected for testability */
 export type ReadFileFn = (path: string) => Promise<string>;
@@ -125,13 +126,21 @@ export class ConfigLoader {
 						`checkpoints.${name}.timeout_behavior must be "fail-open" or "fail-close", got "${cp.timeout_behavior}"`,
 					);
 				}
-				if (
-					cp.timeout_ms != null &&
-					(typeof cp.timeout_ms !== "number" || cp.timeout_ms <= 0)
-				) {
-					throw new Error(
-						`checkpoints.${name}.timeout_ms must be a positive number`,
-					);
+				if (cp.timeout_ms != null) {
+					if (typeof cp.timeout_ms !== "number" || cp.timeout_ms <= 0) {
+						throw new Error(
+							`checkpoints.${name}.timeout_ms must be a positive number`,
+						);
+					}
+					// FLY-159: warn + raise below-floor values (don't throw — preserve
+					// boot continuity for projects deployed before the floor existed).
+					if (cp.timeout_ms < MIN_GATE_TIMEOUT_MS) {
+						console.warn(
+							`[ConfigLoader] checkpoints.${name}.timeout_ms=${cp.timeout_ms}ms is below floor (${MIN_GATE_TIMEOUT_MS}ms = 4h), raising to floor. ` +
+								`Set this explicitly in .flywheel/config.yaml to silence this warning.`,
+						);
+						(cp as CheckpointConfig).timeout_ms = MIN_GATE_TIMEOUT_MS;
+					}
 				}
 				if (
 					cp.cleanup_ttl_hours != null &&

@@ -62,6 +62,22 @@ describe("EventFilter", () => {
 			expect(result.priority).toBe("high");
 		});
 
+		// FLY-159
+		it("gate_timed_out → notify_agent (high) + no Forum update", () => {
+			const result = filter.classify(
+				"gate_timed_out",
+				makePayload({
+					status: "running",
+					checkpoint: "brainstorm",
+					waited_ms: 172_800_000,
+					timeout_behavior: "fail-close",
+				}),
+			);
+			expect(result.priority).toBe("high");
+			expect(result.updateForum).toBe(false);
+			expect(result.reason).toMatch(/gate timed out/);
+		});
+
 		it("session_orphaned → notify_agent (normal)", () => {
 			const result = filter.classify(
 				"session_orphaned",

@@ -5,6 +5,14 @@ import {
 	writeContentRef,
 } from "../utils/content-ref.js";
 
+/**
+ * Source of `timeoutBehavior` value. Two-value enum (FLY-159 Codex R2 Issue 3):
+ * - "default": CLI received no `--timeout-behavior` flag, default value applied
+ * - "flag": CLI received an explicit `--timeout-behavior` flag (whether typed
+ *           by a human or injected by Blueprint — the CLI cannot distinguish)
+ */
+export type TimeoutBehaviorSource = "default" | "flag";
+
 export interface GateArgs {
 	checkpoint: string;
 	lead: string;
@@ -15,8 +23,10 @@ export interface GateArgs {
 	timeoutBehavior: "fail-open" | "fail-close";
 	cleanupTtlHours: number;
 	pollIntervalMs?: number;
-	/** If set, report this stage to Bridge after creating the gate question (fail-open). */
+	/** If set, report this stage to Bridge after creating the gate question (best-effort). */
 	stage?: string;
+	/** FLY-159: provenance of `timeoutBehavior` for `gate_timed_out` payload. Default: "default". */
+	timeoutBehaviorSource?: TimeoutBehaviorSource;
 }
 
 export interface GateResult {
@@ -33,6 +43,11 @@ export interface GateResult {
  * Infrastructure errors (DB open/write/read failures) respect timeoutBehavior:
  * - fail-close gates: propagate the error (exit 1)
  * - fail-open gates: return {status: "error", exitCode: 0} so the runner continues
+ *
+ * Timeout (FLY-159):
+ * - Always cleanup CommDB pending question via resolveGate(0)
+ * - fail-close: best-effort POST gate_timed_out event + stderr stop msg + exitCode=1
+ * - fail-open:  stderr "continuing" msg + exitCode=0 (no event POST, by design)
  */
 export async function gate(args: GateArgs): Promise<GateResult> {
 	let questionId: string | undefined;
@@ -49,16 +64,7 @@ export async function gate(args: GateArgs): Promise<GateResult> {
 			// Best-effort cleanup: if question was already written, expire it immediately
 			// so getPendingQuestions() (which filters by expires_at > now) won't return it
 			if (questionId) {
-				try {
-					const cleanupDb = new CommDB(args.dbPath);
-					try {
-						cleanupDb.resolveGate(questionId, 0); // 0 hours = expire NOW
-					} finally {
-						cleanupDb.close();
-					}
-				} catch {
-					// Cleanup failed too — TTL will handle it eventually
-				}
+				safeResolveGate(args.dbPath, questionId);
 			}
 			return { status: "error", exitCode: 0 };
 		}
@@ -100,13 +106,14 @@ async function gateInner(
 	// Notify outer scope that question was created (for cleanup on error)
 	onQuestionCreated(questionId);
 
-	// Phase 1b: Report stage if configured (fail-open — don't block on error)
+	// Phase 1b: Report stage if configured (best-effort — don't block on error)
 	if (args.stage) {
-		await reportStageFailOpen(args.stage);
+		await reportStageBestEffort(args.stage);
 	}
 
 	// Phase 2: Poll for response
-	const deadline = Date.now() + args.timeoutMs;
+	const start = Date.now();
+	const deadline = start + args.timeoutMs;
 
 	while (Date.now() < deadline) {
 		const remaining = deadline - Date.now();
@@ -144,9 +151,29 @@ async function gateInner(
 		}
 	}
 
-	// Phase 3: Timeout
-	const exitCode = args.timeoutBehavior === "fail-close" ? 1 : 0;
-	return { status: "timeout", exitCode };
+	// Phase 3: Timeout — FLY-159
+	// Always: cleanup CommDB question so GatePoller / bootstrap don't relay
+	// it after the Runner has stopped polling.
+	const waitedMs = Date.now() - start;
+	safeResolveGate(args.dbPath, questionId);
+
+	if (args.timeoutBehavior === "fail-close") {
+		// Best-effort emit gate_timed_out so Lead can notify Annie via Discord.
+		// fail-close *only* — fail-open gates explicitly opt into "no answer is
+		// fine, keep going", emitting a high-priority Annie alert there would be
+		// noise (Codex R2 Issue 2).
+		await reportGateTimedOutBestEffort(args, waitedMs, questionId);
+		console.error(
+			`[gate] TIMEOUT (fail-close) after ${waitedMs}ms checkpoint=${args.checkpoint}; Runner should stop`,
+		);
+		return { status: "timeout", exitCode: 1 };
+	}
+
+	// fail-open path
+	console.error(
+		`[gate] TIMEOUT (fail-open) after ${waitedMs}ms; continuing as configured`,
+	);
+	return { status: "timeout", exitCode: 0 };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -154,10 +181,32 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Report stage to Bridge via HTTP POST. Fail-open: errors are logged but don't throw.
- * Inlined here (instead of calling stage.ts) to avoid process.exit() side effects.
+ * Best-effort cleanup of a CommDB gate question — expire it immediately so
+ * `getPendingQuestions()` (filter by `expires_at > now`) stops returning it.
+ *
+ * Used by both fail-open and fail-close timeout paths (FLY-159 Codex R1 Issue 3),
+ * and by the infrastructure-error catch path above. Errors are swallowed; the
+ * TTL on the row will reap stale rows eventually if this fails.
  */
-async function reportStageFailOpen(stageName: string): Promise<void> {
+function safeResolveGate(dbPath: string, questionId: string): void {
+	try {
+		const cleanupDb = new CommDB(dbPath);
+		try {
+			cleanupDb.resolveGate(questionId, 0); // 0 hours = expire NOW
+		} finally {
+			cleanupDb.close();
+		}
+	} catch {
+		// Cleanup failed too — TTL will handle it eventually
+	}
+}
+
+/**
+ * Report stage to Bridge via HTTP POST. Best-effort: errors are logged but
+ * don't throw. Inlined here (instead of calling stage.ts) to avoid
+ * process.exit() side effects.
+ */
+async function reportStageBestEffort(stageName: string): Promise<void> {
 	const bridgeUrl = process.env.FLYWHEEL_BRIDGE_URL;
 	const execId = process.env.FLYWHEEL_EXEC_ID;
 	const issueId = process.env.FLYWHEEL_ISSUE_ID;
@@ -176,13 +225,70 @@ async function reportStageFailOpen(stageName: string): Promise<void> {
 		payload: { stage: stageName },
 	};
 
+	await postEventBestEffort(bridgeUrl, ingestToken, body);
+}
+
+/**
+ * FLY-159: Report `gate_timed_out` event to Bridge. Best-effort — errors are
+ * swallowed because the Runner is already exiting fail-close; we never want a
+ * Bridge outage to block the exit. Lead-side delivery reliability is handled
+ * by GUARDRAIL_EVENT_TYPES + HeartbeatService retry (post-ingest only).
+ *
+ * Payload fields are documented in HookPayload (packages/teamlead/src/bridge/
+ * hook-payload.ts) and consumed by event-route.ts mapping for `gate_timed_out`.
+ */
+async function reportGateTimedOutBestEffort(
+	args: GateArgs,
+	waitedMs: number,
+	questionId: string,
+): Promise<void> {
+	const bridgeUrl = process.env.FLYWHEEL_BRIDGE_URL;
+	const execId = process.env.FLYWHEEL_EXEC_ID;
+	const issueId = process.env.FLYWHEEL_ISSUE_ID;
+	const projectName = process.env.FLYWHEEL_PROJECT_NAME;
+	const ingestToken = process.env.FLYWHEEL_INGEST_TOKEN;
+
+	if (!bridgeUrl || !execId || !issueId || !projectName) return;
+
+	// Truncate original_message to 500 chars to keep event payload small
+	// (full content already lives in CommDB content_ref if it was large).
+	const truncated =
+		args.message.length > 500 ? `${args.message.slice(0, 500)}…` : args.message;
+
+	const body = {
+		event_id: randomUUID(),
+		execution_id: execId,
+		issue_id: issueId,
+		project_name: projectName,
+		event_type: "gate_timed_out",
+		source: "flywheel-comm",
+		payload: {
+			checkpoint: args.checkpoint,
+			exec_id: execId,
+			lead_id: args.lead,
+			waited_ms: waitedMs,
+			original_message: truncated,
+			timeout_behavior: args.timeoutBehavior,
+			timeout_behavior_source: args.timeoutBehaviorSource ?? "default",
+			question_id: questionId,
+		},
+	};
+
+	await postEventBestEffort(bridgeUrl, ingestToken, body);
+}
+
+async function postEventBestEffort(
+	bridgeUrl: string,
+	ingestToken: string | undefined,
+	body: unknown,
+): Promise<void> {
 	const headers: Record<string, string> = {
 		"Content-Type": "application/json",
 	};
 	if (ingestToken) headers.Authorization = `Bearer ${ingestToken}`;
 
 	const controller = new AbortController();
-	const timeout = setTimeout(() => controller.abort(), 2000);
+	const timer = setTimeout(() => controller.abort(), 2000);
 	try {
 		await fetch(`${bridgeUrl}/events`, {
 			method: "POST",
@@ -191,8 +297,8 @@ async function reportStageFailOpen(stageName: string): Promise<void> {
 			signal: controller.signal,
 		});
 	} catch {
-		// fail-open
+		// best-effort
 	} finally {
-		clearTimeout(timeout);
+		clearTimeout(timer);
 	}
 }
