@@ -196,6 +196,31 @@ export class MailboxLeadRuntime implements LeadRuntime {
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
 
+		// FLY-161: runner_question — non-blocking ask from Runner. The Runner
+		// continues working regardless of when the Lead responds, so the prompt
+		// must NOT prefix with a checkpoint tag (no `[BRAINSTORM]`/`[REVIEW]`)
+		// and must lead with "non-blocking" framing.
+		if (e.event_type === "runner_question") {
+			const issueRef = e.issue_identifier || e.issue_id;
+			const roleLabel =
+				e.session_role && e.session_role !== "main"
+					? `[${e.session_role.toUpperCase()}] `
+					: "";
+			const lines = [
+				`[Event #${env.seq}] ${roleLabel}runner_question`,
+				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
+				"[ASK] Runner is asking (non-blocking — Runner continues working):",
+				"---",
+				e.summary ?? "(no content)",
+				"---",
+				`Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`,
+				`Question ID: ${e.question_id}`,
+				`CommDB: ${e.comm_db_path}`,
+			];
+			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+			return lines.join("\n");
+		}
+
 		if (e.event_type === "gate_question") {
 			const tag = e.checkpoint?.toUpperCase() ?? "GATE";
 			const issueRef = e.issue_identifier || e.issue_id;
@@ -363,6 +388,30 @@ export class MailboxLeadRuntime implements LeadRuntime {
 			}
 			sections.push(
 				'Action: For each, relay to Annie, then: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> "reply"',
+			);
+			sections.push("");
+		}
+
+		// FLY-161: non-blocking Runner questions (`flywheel-comm ask`). Lead
+		// surfaces these to Annie, but the Runner is NOT blocked — phrase the
+		// snapshot text accordingly so the Lead doesn't treat them like gates.
+		if (snapshot.pendingRunnerQuestions?.length) {
+			sections.push("### Pending Runner Questions");
+			for (const rq of snapshot.pendingRunnerQuestions) {
+				const issue = rq.issueIdentifier ?? rq.executionId;
+				const roleLabel =
+					rq.sessionRole && rq.sessionRole !== "main"
+						? `[${rq.sessionRole.toUpperCase()}] `
+						: "";
+				const threadHint = rq.chatThreadId
+					? ` (Chat-Thread: ${rq.chatThreadId})`
+					: "";
+				sections.push(
+					`- ${roleLabel}[ASK] ${issue} (ID: ${rq.questionId}, DB: ${rq.commDbPath})${threadHint}: ${rq.content.slice(0, 200)}${rq.content.length > 200 ? "..." : ""}`,
+				);
+			}
+			sections.push(
+				'Action: Surface each to Annie (Runner is continuing work — non-blocking). Reply with: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> "reply"',
 			);
 			sections.push("");
 		}

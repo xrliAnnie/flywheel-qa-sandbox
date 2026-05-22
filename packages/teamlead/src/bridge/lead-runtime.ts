@@ -43,6 +43,13 @@ export interface LeadBootstrap {
 	memoryRecall: string | null;
 	/** FLY-62: Pending gate questions awaiting Annie's response */
 	pendingGateQuestions?: BootstrapGateQuestion[];
+	/**
+	 * FLY-161: Pending non-blocking Runner questions (`flywheel-comm ask`)
+	 * awaiting Lead surface to Annie. Distinct bucket from `pendingGateQuestions`
+	 * so the prompt can frame them as non-blocking (Runner continues working
+	 * regardless of when the Lead responds).
+	 */
+	pendingRunnerQuestions?: BootstrapRunnerQuestion[];
 }
 
 /** FLY-62: Gate question included in bootstrap for crash recovery */
@@ -56,6 +63,31 @@ export interface BootstrapGateQuestion {
 	createdAt: string;
 	/** FLY-59: Session role for distinguishing concurrent same-issue gate questions */
 	sessionRole?: string;
+}
+
+/**
+ * FLY-161: Non-blocking Runner question (from `flywheel-comm ask`, checkpoint
+ * is NULL in CommDB). Routes by `q.to_agent` (the Lead the Runner explicitly
+ * named), unlike `BootstrapGateQuestion` which is gated by source session
+ * label-routing. Survives Runner completion — the question stays pending in
+ * the bootstrap until the Lead responds (or the CommDB row TTLs out).
+ */
+export interface BootstrapRunnerQuestion {
+	questionId: string;
+	executionId: string;
+	issueIdentifier?: string;
+	content: string;
+	commDbPath: string;
+	createdAt: string;
+	/** FLY-59 parity: session role for non-main sessions */
+	sessionRole?: string;
+	/**
+	 * FLY-91 + FLY-161 R4: Chat thread for the target Lead's chatChannel
+	 * (resolved from `targetLead.chatChannel`, NOT from source session labels —
+	 * `runner_question` routes by `to_agent`, so chat-thread routing follows
+	 * the target Lead, not the source session's label-derived Lead).
+	 */
+	chatThreadId?: string;
 }
 
 export interface BootstrapSession {

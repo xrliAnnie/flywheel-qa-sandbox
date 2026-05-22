@@ -87,6 +87,28 @@ describe("CommDBLeadRuntime", () => {
 			expect(content).toContain("Forum: forum-456");
 		});
 
+		it("formats runner_question with [ASK] non-blocking framing (FLY-161)", async () => {
+			const envelope = makeEnvelope({
+				event_type: "runner_question",
+				question_id: "q-r-1",
+				summary: "Should I use UTC?",
+				comm_db_path: "/tmp/comm.db",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("[Event #1] runner_question");
+			expect(content).toContain(
+				"[ASK] Runner is asking (non-blocking — Runner continues working):",
+			);
+			expect(content).toContain("Should I use UTC?");
+			expect(content).toContain("Question ID: q-r-1");
+			expect(content).toContain("flywheel-comm respond");
+			// runner_question must NOT carry a checkpoint tag.
+			expect(content).not.toContain("[BRAINSTORM]");
+			expect(content).not.toContain("[REVIEW]");
+		});
+
 		it("formats gate_question with special format", async () => {
 			const envelope = makeEnvelope({
 				event_type: "gate_question",
@@ -213,6 +235,36 @@ describe("CommDBLeadRuntime", () => {
 			);
 			const content = mockInsertInstruction.mock.calls[0][2] as string;
 			expect(content).toContain("FLY-99: Test [running]");
+		});
+
+		it("includes pending runner questions in bootstrap (FLY-161)", async () => {
+			const snapshot: LeadBootstrap = {
+				leadId: "lead-peter",
+				activeSessions: [],
+				pendingDecisions: [],
+				recentFailures: [],
+				recentEvents: [],
+				memoryRecall: null,
+				pendingRunnerQuestions: [
+					{
+						questionId: "q-runner-1",
+						executionId: "exec-runner",
+						issueIdentifier: "FLY-161",
+						content: "Should we use UTC?",
+						commDbPath: "/tmp/comm.db",
+						createdAt: "2026-05-21T00:00:00Z",
+						chatThreadId: "thread-fly-161",
+					},
+				],
+			};
+			await runtime.sendBootstrap(snapshot);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("### Pending Runner Questions");
+			expect(content).toContain("[ASK] FLY-161");
+			expect(content).toContain("Should we use UTC?");
+			expect(content).toContain("Chat-Thread: thread-fly-161");
+			expect(content).toContain("non-blocking");
 		});
 
 		it("includes pending gate questions in bootstrap", async () => {

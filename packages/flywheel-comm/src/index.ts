@@ -26,7 +26,7 @@ function printUsage(): void {
 	console.log(`Usage: flywheel-comm <command> [options]
 
 Commands:
-  ask       Ask your Lead a question
+  ask       Ask your Lead a question (non-blocking; Lead notified ≤1 poll tick via Bridge)
   check     Check if a question has been answered
   gate      Block at a checkpoint until Lead responds (ask+poll+resolve)
   pending   List unanswered questions for a lead
