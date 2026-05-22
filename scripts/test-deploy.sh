@@ -304,11 +304,8 @@ BOT_TOKEN_ENV=$(jq -r ".slots[${SLOT_IDX}].tokenEnvVar" "$SLOTS_FILE")
 BOT_ID=$(jq -r ".slots[${SLOT_IDX}].botAppId" "$SLOTS_FILE")
 CHAT_CHANNEL_ID=$(jq -r ".slots[${SLOT_IDX}].channelId" "$SLOTS_FILE")
 SLOT_ROLE=$(jq -r ".slots[${SLOT_IDX}].role" "$SLOTS_FILE")
-# FLY-115 v1.24.2 Gap C: forum channel is optional — empty means no forum thread
-# creation. `jq // empty` returns "" when the key is absent, which we filter out
-# in the FLYWHEEL_PROJECTS jq builder below to satisfy ProjectConfig's
-# "forumChannel must be non-empty string or absent" rule.
-FORUM_CHANNEL_ID=$(jq -r ".slots[${SLOT_IDX}].forumChannelId // empty" "$SLOTS_FILE")
+# FLY-163: forum concept removed. forumChannelId field (if still present in
+# legacy test-slots.json) is ignored. No FORUM_CHANNEL_ID extraction needed.
 
 # FLY-153: identitySource selects which GeoForge3D identity.md to load. Optional;
 # falls back to legacy role-based mapping (cos→cos-lead, lead→product-lead) so
@@ -674,18 +671,11 @@ else
 fi
 
 # ── Generate FLYWHEEL_PROJECTS JSON ───────────────────
-# FLY-115 v1.24.2 Gap 1 + Gap C: Use `jq -n` to build FLYWHEEL_PROJECTS so that:
-#   - `botTokenEnv` is always present → Lead/Bridge resolve token via the
-#     per-slot env var instead of falling back to DISCORD_BOT_TOKEN (Gap 1).
-#   - `forumChannel` key is added only when `forumChannelId` is non-empty.
-#     ProjectConfig's validator rejects empty strings / nulls but accepts an
-#     absent key — see packages/teamlead/src/ProjectConfig.ts:100-110.
-#     Until Annie populates the test guild's forum channels, FORUM_CHANNEL_ID
-#     stays empty and the key is omitted, so Bridge still starts cleanly.
-# Note: TEST_PROJECT_NAME is defined earlier (after the sandbox clone) so the
-# v1.24.3 sandbox config write can reuse it; the assignment is left here in
-# comment form for traceability.
-# TEST_PROJECT_NAME="test-slot-${SLOT}"  # moved up to ~line 292 (FLY-115 v1.24.3)
+# FLY-115 v1.24.2 Gap 1: Use `jq -n` to build FLYWHEEL_PROJECTS so that
+# `botTokenEnv` is always present → Lead/Bridge resolve token via the per-slot
+# env var instead of falling back to DISCORD_BOT_TOKEN.
+# FLY-163: forumChannel field removed; ProjectConfig now strips any deprecated
+# forumChannel key with a warning at load time.
 FLYWHEEL_PROJECTS=$(jq -n \
   --arg projectName "$TEST_PROJECT_NAME" \
   --arg projectRoot "$HOST_REPO" \
@@ -693,26 +683,21 @@ FLYWHEEL_PROJECTS=$(jq -n \
   --arg agentId "$AGENT_ID" \
   --arg chatChannel "$CHAT_CHANNEL_ID" \
   --arg botTokenEnv "$BOT_TOKEN_ENV" \
-  --arg forumChannel "$FORUM_CHANNEL_ID" \
   '
   [{
     projectName: $projectName,
     projectRoot: $projectRoot,
     projectRepo: $projectRepo,
     leads: [
-      ({
+      {
         agentId: $agentId,
         chatChannel: $chatChannel,
         botTokenEnv: $botTokenEnv,
         match: { labels: ["*"] }
-      } + (if ($forumChannel != "") then { forumChannel: $forumChannel } else {} end))
+      }
     ]
   }]
   ')
-
-if [[ -z "$FORUM_CHANNEL_ID" ]]; then
-  log "WARN: slot ${SLOT} has no forumChannelId in $SLOTS_FILE — forum thread creation will be skipped (Gap C §11.2 env gate pending)"
-fi
 
 # FLY-153 R2 #3: persist FLYWHEEL_PROJECTS to disk so the smoke test (and any
 # operator) can deterministically inspect the routing config without scraping

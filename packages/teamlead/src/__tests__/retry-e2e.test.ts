@@ -408,32 +408,6 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 		inflightStore.close();
 	});
 
-	// ── Thread unarchive on retry ───────────────────────────────
-
-	it("retry unarchives thread for the issue", async () => {
-		store.upsertSession({
-			execution_id: "old-exec",
-			issue_id: "issue-10",
-			project_name: "geoforge3d",
-			status: "failed",
-		});
-		store.upsertThread("thread-10", "channel-1", "issue-10");
-		store.markArchived("thread-10");
-
-		const res = await fetch(`${baseUrl}/api/actions/retry`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ execution_id: "old-exec" }),
-		});
-
-		expect(res.status).toBe(200);
-
-		// Thread should be unarchived
-		const eligible = store.getEligibleForCleanup(0);
-		const _threadForIssue = eligible.find((c) => c.issue_id === "issue-10");
-		// If unarchived, it won't appear in cleanup candidates (archived_at is null)
-		// Let's verify via the session that retry_successor is set
-		const oldSession = store.getSession("old-exec");
-		expect(oldSession!.retry_successor).toBeDefined();
-	});
+	// FLY-163: "retry unarchives thread for the issue" test removed —
+	// forum thread archive concept gone.
 });

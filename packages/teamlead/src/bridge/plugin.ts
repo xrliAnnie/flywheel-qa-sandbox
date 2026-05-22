@@ -5,7 +5,6 @@ import express from "express";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
-import { CleanupService, FetchDiscordClient } from "../CleanupService.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import {
 	type HeartbeatNotifier,
@@ -29,8 +28,6 @@ import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
-import { ForumPostCreator } from "./ForumPostCreator.js";
-import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { GatePoller } from "./gate-poller.js";
 import {
 	createBlockedMarkerReader,
@@ -419,9 +416,11 @@ export function createBridgeApp(
 	retryDispatcher?: IRetryDispatcher,
 	cipherWriter?: CipherWriter,
 	eventFilter?: EventFilter,
-	forumTagUpdater?: ForumTagUpdater,
+	/** FLY-163: positional slot kept (was forumTagUpdater); now ignored. */
+	_unusedForumTagUpdater?: unknown,
 	registry?: RuntimeRegistry,
-	forumPostCreator?: ForumPostCreator,
+	/** FLY-163: positional slot kept (was forumPostCreator); now ignored. */
+	_unusedForumPostCreator?: unknown,
 	memoryService?: MemoryService,
 	captureSessionFn?: CaptureSessionFn,
 	startDispatcher?: IStartDispatcher,
@@ -506,7 +505,7 @@ export function createBridgeApp(
 			retryDispatcher,
 			cipherWriter,
 			eventFilter,
-			forumTagUpdater,
+			undefined, // _unusedForumTagUpdater (FLY-163)
 			registry,
 			onApproved,
 		),
@@ -523,9 +522,7 @@ export function createBridgeApp(
 			cipherWriter,
 			transitionOpts,
 			eventFilter,
-			forumTagUpdater,
 			registry,
-			forumPostCreator,
 		),
 	);
 
@@ -556,7 +553,7 @@ export function createBridgeApp(
 			retryDispatcher,
 			cipherWriter,
 			eventFilter,
-			forumTagUpdater,
+			undefined, // _unusedForumTagUpdater (FLY-163)
 			registry,
 			onApproved,
 		),
@@ -931,62 +928,7 @@ export function createBridgeApp(
 		},
 	);
 
-	// Forum tag update — proxy to Discord API (GEO-167)
-	app.post(
-		"/api/forum-tag",
-		tokenAuthMiddleware(config.apiToken),
-		async (req, res) => {
-			const { thread_id, tag_ids } = req.body as {
-				thread_id?: string;
-				tag_ids?: string[];
-			};
-			if (!thread_id || typeof thread_id !== "string") {
-				res.status(400).json({ error: "thread_id is required" });
-				return;
-			}
-			if (
-				!Array.isArray(tag_ids) ||
-				!tag_ids.every((t) => typeof t === "string")
-			) {
-				res.status(400).json({ error: "tag_ids must be a string array" });
-				return;
-			}
-			if (!config.discordBotToken) {
-				res.status(503).json({ error: "Discord bot token not configured" });
-				return;
-			}
-			try {
-				const discordRes = await fetch(
-					`https://discord.com/api/v10/channels/${thread_id}`,
-					{
-						method: "PATCH",
-						headers: {
-							Authorization: `Bot ${config.discordBotToken}`,
-							"Content-Type": "application/json",
-						},
-						body: JSON.stringify({ applied_tags: tag_ids }),
-					},
-				);
-				if (!discordRes.ok) {
-					const body = await discordRes.text();
-					console.warn(
-						`[forum-tag] Discord returned ${discordRes.status}: ${body}`,
-					);
-					res
-						.status(discordRes.status)
-						.json({ error: "Discord API error", detail: body });
-					return;
-				}
-				res.json({ ok: true });
-			} catch (err) {
-				console.error(
-					"[forum-tag] Discord API call failed:",
-					(err as Error).message,
-				);
-				res.status(502).json({ error: "Failed to reach Discord API" });
-			}
-		},
-	);
+	// FLY-163: /api/forum-tag route removed — Discord Forum concept gone.
 
 	// CIPHER principle confirmation route
 	if (cipherWriter) {
@@ -1320,7 +1262,7 @@ export function createBridgeApp(
 		);
 	}
 
-	// Discord guild ID endpoint (GEO-187) — agent can query to build Forum Thread links
+	// Discord guild ID endpoint (GEO-187) — agent can query to build Discord channel/thread links
 	app.get(
 		"/api/config/discord-guild-id",
 		tokenAuthMiddleware(config.apiToken),
@@ -1460,7 +1402,6 @@ export async function startBridge(
 		retryDispatcher?: IRetryDispatcher;
 		startDispatcher?: IStartDispatcher;
 		cipherWriter?: CipherWriter;
-		statusTagMap?: Record<string, string[]>;
 		memoryService?: MemoryService;
 		registry?: RuntimeRegistry;
 	},
@@ -1602,49 +1543,8 @@ export async function startBridge(
 		}, 30_000);
 	}
 
-	// GEO-187: EventFilter + ForumTagUpdater
+	// GEO-187 / FLY-163: EventFilter only — Forum tag updater + post creator removed.
 	const eventFilter = new EventFilter();
-	const statusTagMap = opts?.statusTagMap ?? config.statusTagMap ?? {};
-
-	// GEO-253: 3-state + multi-forum startup diagnostics
-	const allLeads = projects.flatMap((p) => p.leads);
-	// GEO-275: exclude leads without forumChannel (e.g., PM leads) from forum-related diagnostics
-	const forumLeads = allLeads.filter((l) => l.forumChannel != null);
-	const leadsWithMap = forumLeads.filter((l) => l.statusTagMap != null);
-	const leadsWithoutMap = forumLeads.filter((l) => l.statusTagMap == null);
-	const globalEmpty = Object.keys(statusTagMap).length === 0;
-
-	if (globalEmpty && leadsWithMap.length === 0) {
-		console.warn(
-			"[Bridge] No statusTagMap configured (global or per-lead) — ForumTagUpdater will skip all tag updates.",
-		);
-	} else if (
-		globalEmpty &&
-		leadsWithoutMap.length > 0 &&
-		leadsWithMap.length > 0
-	) {
-		console.warn(
-			`[Bridge] Global statusTagMap is empty. ${leadsWithMap.length}/${forumLeads.length} leads have per-lead statusTagMap. ` +
-				`Leads missing config: ${leadsWithoutMap.map((l) => l.agentId).join(", ")} — these will skip tag updates.`,
-		);
-	} else if (globalEmpty) {
-		console.log(
-			"[Bridge] Global statusTagMap is empty; all leads have per-lead statusTagMap configured.",
-		);
-	} else if (!globalEmpty && leadsWithoutMap.length > 0) {
-		const uniqueForums = new Set(forumLeads.map((l) => l.forumChannel));
-		if (uniqueForums.size > 1) {
-			console.warn(
-				`[Bridge] Multiple forum channels detected but ${leadsWithoutMap.length} lead(s) lack per-lead statusTagMap ` +
-					`and will fallback to global STATUS_TAG_MAP (which may contain wrong tag IDs): ` +
-					`${leadsWithoutMap.map((l) => l.agentId).join(", ")}`,
-			);
-		}
-	}
-	const forumTagUpdater = new ForumTagUpdater(statusTagMap);
-
-	// GEO-195: ForumPostCreator — Bridge auto-creates Forum Posts
-	const forumPostCreator = new ForumPostCreator(store, statusTagMap);
 
 	// GEO-288: Standup service (v2 — no scheduler, triggered by external cron)
 	const standupChannel = process.env.STANDUP_CHANNEL;
@@ -1798,9 +1698,9 @@ export async function startBridge(
 		retryDispatcher,
 		opts?.cipherWriter,
 		eventFilter,
-		forumTagUpdater,
+		undefined, // _unusedForumTagUpdater (FLY-163)
 		registry,
-		forumPostCreator,
+		undefined, // _unusedForumPostCreator (FLY-163)
 		opts?.memoryService,
 		defaultCaptureSession,
 		startDispatcher,
@@ -1865,18 +1765,7 @@ export async function startBridge(
 	);
 	heartbeatService.start();
 
-	let cleanupService: CleanupService | null = null;
-	if (config.discordBotToken) {
-		const dc = new FetchDiscordClient(config.discordBotToken);
-		cleanupService = new CleanupService(
-			store,
-			dc,
-			config.cleanupThresholdMinutes ?? 1440,
-			config.cleanupIntervalMs ?? 3_600_000,
-		);
-		cleanupService.start();
-		console.log("[Bridge] CleanupService started");
-	}
+	// FLY-163: CleanupService removed (forum thread cleanup gone).
 
 	// FLY-62: Gate question poller
 	const gatePoller = new GatePoller({
@@ -1970,7 +1859,6 @@ export async function startBridge(
 
 	const close = async () => {
 		heartbeatService?.stop();
-		cleanupService?.stop();
 		gatePoller.stop();
 		idleWatchdog.stop();
 		leadWatchdog.stop();

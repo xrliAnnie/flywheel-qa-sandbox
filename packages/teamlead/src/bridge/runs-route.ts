@@ -18,7 +18,7 @@ import type { StateStore } from "../StateStore.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 
-/** Poll interval / max wait for Forum Post thread_id to appear on session. */
+/** Poll interval / max wait for chat thread_id to appear on session (FLY-91). */
 const THREAD_POLL_INTERVAL_MS = 500;
 const THREAD_POLL_MAX_MS = 5000;
 
@@ -49,7 +49,7 @@ export function createRunsRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
 	maxConcurrentRunners: number,
-	discordGuildId?: string,
+	_discordGuildId?: string, // FLY-163: unused after forumLink removal; kept for callsite stability
 	chatThreadsEnabled?: boolean,
 ): Router {
 	const router = Router();
@@ -398,11 +398,9 @@ export function createRunsRouter(
 				codexSkip,
 			});
 
-			// FLY-24 + FLY-91: Poll for Forum thread_id AND chatThreadId.
-			// Both are created by emitStarted() which is fire-and-forget from Blueprint.
-			// Forum post is fire-and-forget inside emitStarted, chat thread is awaited —
-			// but either could finish first, so poll until both are found (or timeout).
-			let threadId: string | undefined;
+			// FLY-91: Poll for chatThreadId. emitStarted() awaits chat thread
+			// creation, but we poll defensively in case of race or transient
+			// failure.
 			let chatThreadId: string | undefined;
 			const chatChannel = (() => {
 				if (!chatThreadsEnabled || !leadId) return undefined;
@@ -410,19 +408,16 @@ export function createRunsRouter(
 				return proj?.leads.find((l) => l.agentId === leadId)?.chatChannel;
 			})();
 
-			const deadline = Date.now() + THREAD_POLL_MAX_MS;
-			while (Date.now() < deadline) {
-				await new Promise((r) => setTimeout(r, THREAD_POLL_INTERVAL_MS));
-				const session = store.getSession(result.executionId);
-				if (!threadId && session?.thread_id) threadId = session.thread_id;
-				if (!chatThreadId && chatChannel) {
+			if (chatChannel) {
+				const deadline = Date.now() + THREAD_POLL_MAX_MS;
+				while (Date.now() < deadline) {
+					await new Promise((r) => setTimeout(r, THREAD_POLL_INTERVAL_MS));
 					chatThreadId = store.getChatThreadByIssue(
 						issueId,
 						chatChannel,
 					)?.thread_id;
+					if (chatThreadId) break;
 				}
-				// Exit when both are resolved (or chat threads disabled)
-				if (threadId && (chatThreadId || !chatChannel)) break;
 			}
 
 			// FLY-137 Phase 5: persist agent dispatch metadata + codex-skip
@@ -452,17 +447,10 @@ export function createRunsRouter(
 				return;
 			}
 
-			const forumLink =
-				threadId && discordGuildId
-					? `https://discord.com/channels/${discordGuildId}/${threadId}`
-					: undefined;
-
 			res.json({
 				success: true,
 				executionId: result.executionId,
 				issueId: result.issueId,
-				threadId,
-				forumLink,
 				chatThreadId,
 				message: `Runner started for ${issueId}`,
 			});

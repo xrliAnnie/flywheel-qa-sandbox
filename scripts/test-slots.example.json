@@ -3,7 +3,7 @@
 	"_setup": "Create bots at discord.com/developers/applications, channels in Discord server",
 	"_role": "slot.role selects FLYWHEEL_LEAD_ROLE (cos vs lead — picks the base rule file: cos-lead-rules.md vs department-lead-rules.md). Required.",
 	"_identitySource": "FLY-153: slot.identitySource selects which GeoForge3D .lead/<dir>/identity.md to source. Allowlist: cos-lead | product-lead | ops-lead. Optional — pre-FLY-153 configs without this field fall back to role mapping (cos→cos-lead, lead→product-lead). MUST be set for slot 3 to load Oliver instead of Peter (mirror cascade coverage requires it).",
-	"_forumChannel": "FLY-115 v1.24.2 Gap C: forumChannelId is OPTIONAL. Create a Forum-type channel in the test guild per slot and grant the bot VIEW_CHANNEL, SEND_MESSAGES, SEND_MESSAGES_IN_THREADS, CREATE_PUBLIC_THREADS, MANAGE_THREADS. Omitting / empty string → test-deploy.sh logs a WARN and Bridge starts without forum support (ProjectConfig.forumChannel is absent rather than empty — packages/teamlead/src/ProjectConfig.ts:100-110).",
+	"_fly163": "FLY-163: forumChannelId / forumChannelName fields are removed. test-deploy.sh no longer reads them. ProjectConfig strips any deprecated forumChannel key with a warning at load time.",
 	"_mirrorChannel": "FLY-153: top-level mirrorChannel block is OPTIONAL. Required only for `test-deploy.sh --mode mirror`. Create one shared text channel in the test guild and invite bots flywheel-test-1/2/3 (View Channel + Send Messages + Read Message History). See packages/qa-framework/README.md §Mirror Mode for step-by-step.",
 	"slots": [
 		{
@@ -17,8 +17,6 @@
 			"tokenEnvVar": "TEST_BOT_TOKEN_1",
 			"channelId": "<channel-id>",
 			"channelName": "cos-test",
-			"forumChannelId": "<forum-channel-id-or-empty>",
-			"forumChannelName": "forum-test-1",
 			"bridgePort": 19871
 		},
 		{
@@ -32,8 +30,6 @@
 			"tokenEnvVar": "TEST_BOT_TOKEN_2",
 			"channelId": "<channel-id>",
 			"channelName": "product-lead-test",
-			"forumChannelId": "<forum-channel-id-or-empty>",
-			"forumChannelName": "forum-test-2",
 			"bridgePort": 19872
 		},
 		{
@@ -47,8 +43,6 @@
 			"tokenEnvVar": "TEST_BOT_TOKEN_3",
 			"channelId": "<channel-id>",
 			"channelName": "ops-lead-test",
-			"forumChannelId": "<forum-channel-id-or-empty>",
-			"forumChannelName": "forum-test-3",
 			"bridgePort": 19873
 		},
 		{
@@ -62,8 +56,6 @@
 			"tokenEnvVar": "TEST_BOT_TOKEN_4",
 			"channelId": "<channel-id>",
 			"channelName": "finance-lead-test",
-			"forumChannelId": "<forum-channel-id-or-empty>",
-			"forumChannelName": "forum-test-4",
 			"bridgePort": 19874
 		}
 	],

@@ -41,8 +41,6 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
-import { ForumPostCreator } from "./ForumPostCreator.js";
-import { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { type ProjectRuntime, RunDispatcher } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import type { BridgeConfig } from "./types.js";
@@ -405,25 +403,19 @@ export async function setupRunInfrastructure(
 			const tmuxSessionName = sanitizeTmuxName(`runner-${project.projectName}`);
 
 			const eventFilter = new EventFilter();
-			const statusTagMap = config.statusTagMap ?? {};
-			const forumTagUpdater = new ForumTagUpdater(statusTagMap);
-			// FLY-24: ForumPostCreator so DirectEventSink can create Forum Posts on session_started
-			const forumPostCreator = new ForumPostCreator(store, statusTagMap);
 			// FLY-91: Use shared ChatThreadCreator if provided (Round 3), else create per-project (backward compat)
 			const chatThreadCreator =
 				runInfraOpts?.chatThreadCreator ??
 				(config.chatThreadsEnabled ? new ChatThreadCreator(store) : undefined);
 			console.log(
-				`[RunInfra] ${project.projectName}: ForumPostCreator created, hasRegistry=${!!registry}, hasGlobalBotToken=${!!config.discordBotToken}, chatThreads=${!!chatThreadCreator}`,
+				`[RunInfra] ${project.projectName}: hasRegistry=${!!registry}, hasGlobalBotToken=${!!config.discordBotToken}, chatThreads=${!!chatThreadCreator}`,
 			);
 			const directSink = new DirectEventSink(
 				store,
 				config,
 				projects,
 				eventFilter,
-				forumTagUpdater,
 				registry,
-				forumPostCreator,
 				chatThreadCreator,
 			);
 

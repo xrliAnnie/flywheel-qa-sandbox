@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type LeadConfig,
 	loadProjects,
@@ -8,15 +8,13 @@ import {
 } from "../ProjectConfig.js";
 
 describe("LeadConfig type", () => {
-	it("LeadConfig has agentId, forumChannel, chatChannel, and match.labels", () => {
+	it("LeadConfig has agentId, chatChannel, and match.labels", () => {
 		const lead: LeadConfig = {
 			agentId: "product-lead",
-			forumChannel: "123456",
 			chatChannel: "789",
 			match: { labels: ["Product"] },
 		};
 		expect(lead.agentId).toBe("product-lead");
-		expect(lead.forumChannel).toBe("123456");
 		expect(lead.chatChannel).toBe("789");
 		expect(lead.match.labels).toEqual(["Product"]);
 	});
@@ -28,7 +26,6 @@ describe("LeadConfig type", () => {
 			leads: [
 				{
 					agentId: "eng-lead",
-					forumChannel: "789",
 					chatChannel: "012",
 					match: { labels: ["Engineering"] },
 				},
@@ -70,7 +67,6 @@ describe("loadProjects validation", () => {
 				projectRoot: "/tmp",
 				leads: [
 					{
-						forumChannel: "123",
 						chatChannel: "456",
 						match: { labels: ["bug"] },
 					},
@@ -78,42 +74,6 @@ describe("loadProjects validation", () => {
 			},
 		]);
 		expect(() => loadProjects()).toThrow(/agentId/);
-	});
-
-	it("accepts lead without forumChannel (GEO-275: PM leads)", () => {
-		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
-			{
-				projectName: "test",
-				projectRoot: "/tmp",
-				leads: [
-					{
-						agentId: "pm-lead",
-						chatChannel: "456",
-						match: { labels: ["PM"] },
-					},
-				],
-			},
-		]);
-		const projects = loadProjects();
-		expect(projects[0]!.leads[0]!.forumChannel).toBeUndefined();
-	});
-
-	it("throws when leads[].forumChannel is empty string", () => {
-		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
-			{
-				projectName: "test",
-				projectRoot: "/tmp",
-				leads: [
-					{
-						agentId: "bot",
-						forumChannel: "",
-						chatChannel: "456",
-						match: { labels: ["bug"] },
-					},
-				],
-			},
-		]);
-		expect(() => loadProjects()).toThrow(/forumChannel/);
 	});
 
 	it("throws when leads[].chatChannel is missing", () => {
@@ -124,7 +84,6 @@ describe("loadProjects validation", () => {
 				leads: [
 					{
 						agentId: "bot",
-						forumChannel: "123",
 						match: { labels: ["bug"] },
 					},
 				],
@@ -141,7 +100,6 @@ describe("loadProjects validation", () => {
 				leads: [
 					{
 						agentId: "bot",
-						forumChannel: "123",
 						chatChannel: "456",
 					},
 				],
@@ -158,7 +116,6 @@ describe("loadProjects validation", () => {
 				leads: [
 					{
 						agentId: "bot",
-						forumChannel: "123",
 						chatChannel: "456",
 						match: { labels: [] },
 					},
@@ -176,7 +133,6 @@ describe("loadProjects validation", () => {
 				leads: [
 					{
 						agentId: "a",
-						forumChannel: "1",
 						chatChannel: "2",
 						match: { labels: ["X"] },
 					},
@@ -188,7 +144,6 @@ describe("loadProjects validation", () => {
 				leads: [
 					{
 						agentId: "b",
-						forumChannel: "3",
 						chatChannel: "4",
 						match: { labels: ["Y"] },
 					},
@@ -206,7 +161,6 @@ describe("loadProjects validation", () => {
 				leads: [
 					{
 						agentId: "product-lead",
-						forumChannel: "123",
 						chatChannel: "456",
 						match: { labels: ["Product"] },
 					},
@@ -219,7 +173,6 @@ describe("loadProjects validation", () => {
 	});
 
 	it("returns empty array when projects.json does not exist (ENOENT)", () => {
-		// Override HOME to a non-existent dir so projects.json won't be found
 		const origHome = process.env.HOME;
 		delete process.env.FLYWHEEL_PROJECTS;
 		process.env.HOME = "/tmp/flywheel-test-nonexistent-dir";
@@ -238,6 +191,212 @@ describe("loadProjects validation", () => {
 	});
 });
 
+describe("FLY-163: deprecated field handling", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+	let warnSpy: ReturnType<typeof vi.spyOn>;
+
+	beforeEach(() => {
+		warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		warnSpy.mockRestore();
+		if (originalEnv === undefined) {
+			delete process.env.FLYWHEEL_PROJECTS;
+		} else {
+			process.env.FLYWHEEL_PROJECTS = originalEnv;
+		}
+	});
+
+	it("strips deprecated forumChannel field with warning", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "product-lead",
+						forumChannel: "deprecated-id",
+						chatChannel: "456",
+						match: { labels: ["Product"] },
+					},
+				],
+			},
+		]);
+		const projects = loadProjects();
+		expect(
+			(projects[0]!.leads[0]! as Record<string, unknown>).forumChannel,
+		).toBeUndefined();
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringMatching(/forumChannel.*deprecated.*FLY-163/),
+		);
+	});
+
+	it("strips deprecated statusTagMap field with warning", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "product-lead",
+						chatChannel: "456",
+						match: { labels: ["Product"] },
+						statusTagMap: { running: ["tag-1"] },
+					},
+				],
+			},
+		]);
+		const projects = loadProjects();
+		expect(
+			(projects[0]!.leads[0]! as Record<string, unknown>).statusTagMap,
+		).toBeUndefined();
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringMatching(/statusTagMap.*deprecated.*FLY-163/),
+		);
+	});
+});
+
+describe("FLY-163: PM/Triage canSpawnRunners validator", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+	let warnSpy: ReturnType<typeof vi.spyOn>;
+
+	beforeEach(() => {
+		warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		warnSpy.mockRestore();
+		if (originalEnv === undefined) {
+			delete process.env.FLYWHEEL_PROJECTS;
+		} else {
+			process.env.FLYWHEEL_PROJECTS = originalEnv;
+		}
+	});
+
+	function makeLead(overrides: Record<string, unknown> = {}) {
+		return JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "lead-x",
+						chatChannel: "456",
+						match: { labels: ["PM"] },
+						...overrides,
+					},
+				],
+			},
+		]);
+	}
+
+	it("accepts PM label + explicit canSpawnRunners: false", () => {
+		process.env.FLYWHEEL_PROJECTS = makeLead({ canSpawnRunners: false });
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.canSpawnRunners).toBe(false);
+	});
+
+	it("throws on PM label + explicit canSpawnRunners: true", () => {
+		process.env.FLYWHEEL_PROJECTS = makeLead({ canSpawnRunners: true });
+		expect(() => loadProjects()).toThrow(/PM\/Triage.*canSpawnRunners/);
+	});
+
+	it("throws on PM label + canSpawnRunners absent (default true)", () => {
+		process.env.FLYWHEEL_PROJECTS = makeLead({});
+		expect(() => loadProjects()).toThrow(/PM\/Triage.*canSpawnRunners/);
+	});
+
+	it("accepts dept-only label + canSpawnRunners absent (defaults to true)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "product-lead",
+						chatChannel: "456",
+						match: { labels: ["Product"] },
+					},
+				],
+			},
+		]);
+		const projects = loadProjects();
+		expect(projects[0]!.leads[0]!.canSpawnRunners).toBe(true);
+	});
+
+	it("throws on multi-label including PM + canSpawnRunners absent", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "lead-x",
+						chatChannel: "456",
+						match: { labels: ["PM", "Bug"] },
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/PM\/Triage.*canSpawnRunners/);
+	});
+
+	it("PM/Triage matching is case-insensitive and trim-tolerant", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "lead-x",
+						chatChannel: "456",
+						match: { labels: ["pm "] },
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/PM\/Triage.*canSpawnRunners/);
+	});
+
+	it("Triage label is treated like PM", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "lead-x",
+						chatChannel: "456",
+						match: { labels: ["Triage"] },
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/PM\/Triage.*canSpawnRunners/);
+	});
+
+	it("validator runs AFTER deprecated forumChannel strip", () => {
+		// Even with deprecated forumChannel present, the validator should reject
+		// a PM lead missing canSpawnRunners: false — the strip happens first.
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "lead-x",
+						forumChannel: "ignored-dep",
+						chatChannel: "456",
+						match: { labels: ["PM"] },
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/PM\/Triage.*canSpawnRunners/);
+	});
+});
+
 describe("resolveLeadForIssue", () => {
 	const projects: ProjectEntry[] = [
 		{
@@ -246,13 +405,11 @@ describe("resolveLeadForIssue", () => {
 			leads: [
 				{
 					agentId: "product-lead",
-					forumChannel: "111",
 					chatChannel: "111-chat",
 					match: { labels: ["Product"] },
 				},
 				{
 					agentId: "eng-lead",
-					forumChannel: "333",
 					chatChannel: "333-chat",
 					match: { labels: ["Engineering", "Backend"] },
 				},
@@ -265,7 +422,6 @@ describe("resolveLeadForIssue", () => {
 			leads: [
 				{
 					agentId: "marketing-lead",
-					forumChannel: "222",
 					chatChannel: "222-chat",
 					match: { labels: ["Marketing"] },
 				},
@@ -335,96 +491,6 @@ describe("resolveLeadForIssue", () => {
 	});
 });
 
-describe("statusTagMap validation (GEO-253)", () => {
-	const originalEnv = process.env.FLYWHEEL_PROJECTS;
-
-	afterEach(() => {
-		if (originalEnv === undefined) {
-			delete process.env.FLYWHEEL_PROJECTS;
-		} else {
-			process.env.FLYWHEEL_PROJECTS = originalEnv;
-		}
-	});
-
-	const baseLead = {
-		agentId: "product-lead",
-		forumChannel: "123",
-		chatChannel: "456",
-		match: { labels: ["Product"] },
-	};
-
-	function makeProject(leadOverrides: Record<string, unknown>) {
-		return JSON.stringify([
-			{
-				projectName: "test",
-				projectRoot: "/tmp",
-				leads: [{ ...baseLead, ...leadOverrides }],
-			},
-		]);
-	}
-
-	it("accepts lead without statusTagMap (uses global fallback)", () => {
-		process.env.FLYWHEEL_PROJECTS = makeProject({});
-		const projects = loadProjects();
-		expect(projects[0]!.leads[0]!.statusTagMap).toBeUndefined();
-	});
-
-	it("accepts valid statusTagMap", () => {
-		process.env.FLYWHEEL_PROJECTS = makeProject({
-			statusTagMap: { running: ["tag-1"], failed: ["tag-2"] },
-		});
-		const projects = loadProjects();
-		expect(projects[0]!.leads[0]!.statusTagMap).toEqual({
-			running: ["tag-1"],
-			failed: ["tag-2"],
-		});
-	});
-
-	it("throws on empty statusTagMap {}", () => {
-		process.env.FLYWHEEL_PROJECTS = makeProject({ statusTagMap: {} });
-		expect(() => loadProjects()).toThrow(/must not be empty/);
-	});
-
-	it("throws when statusTagMap is an array", () => {
-		process.env.FLYWHEEL_PROJECTS = makeProject({ statusTagMap: ["tag-1"] });
-		expect(() => loadProjects()).toThrow(/non-array object/);
-	});
-
-	it("throws when statusTagMap is null", () => {
-		process.env.FLYWHEEL_PROJECTS = makeProject({ statusTagMap: null });
-		expect(() => loadProjects()).toThrow(/non-null/);
-	});
-
-	it("throws when statusTagMap value is empty array", () => {
-		process.env.FLYWHEEL_PROJECTS = makeProject({
-			statusTagMap: { running: [] },
-		});
-		expect(() => loadProjects()).toThrow(/non-empty array/);
-	});
-
-	it("throws when statusTagMap value contains empty string tag ID", () => {
-		process.env.FLYWHEEL_PROJECTS = makeProject({
-			statusTagMap: { running: [""] },
-		});
-		expect(() => loadProjects()).toThrow(/non-empty string/);
-	});
-
-	it("throws when statusTagMap value contains non-string tag ID", () => {
-		process.env.FLYWHEEL_PROJECTS = makeProject({
-			statusTagMap: { running: [123] },
-		});
-		expect(() => loadProjects()).toThrow(/non-empty string/);
-	});
-
-	it("LeadConfig type includes optional statusTagMap", () => {
-		const lead: LeadConfig = {
-			...baseLead,
-			statusTagMap: { running: ["tag-r"], completed: ["tag-c"] },
-		};
-		expect(lead.statusTagMap?.running).toEqual(["tag-r"]);
-	});
-});
-
 describe("memoryAllowedUsers validation", () => {
 	const originalEnv = process.env.FLYWHEEL_PROJECTS;
 
@@ -438,7 +504,6 @@ describe("memoryAllowedUsers validation", () => {
 
 	const validLead = {
 		agentId: "product-lead",
-		forumChannel: "123",
 		chatChannel: "456",
 		match: { labels: ["Product"] },
 	};
@@ -517,7 +582,6 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 
 	const baseLead = {
 		agentId: "product-lead",
-		forumChannel: "123",
 		chatChannel: "456",
 		match: { labels: ["Product"] },
 	};
@@ -547,7 +611,6 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 				leads: [{ ...baseLead, botTokenEnv: "TEST_PETER_TOKEN" }],
 			},
 		]);
-		// Should not throw, just warn — falls back to DISCORD_BOT_TOKEN
 		const projects = loadProjects();
 		expect(projects[0]!.leads[0]!.botToken).toBeUndefined();
 	});
@@ -574,7 +637,6 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 			},
 		]);
 		const projects = loadProjects();
-		// botToken from JSON should be stripped (no botTokenEnv to resolve)
 		expect(projects[0]!.leads[0]!.botToken).toBeUndefined();
 	});
 
@@ -621,7 +683,6 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 			},
 		]);
 		const projects = loadProjects();
-		// Should use resolved env var, not the raw JSON value
 		expect(projects[0]!.leads[0]!.botToken).toBe("env-resolved-value");
 	});
 });
@@ -634,13 +695,11 @@ describe("validateMemoryIds", () => {
 			leads: [
 				{
 					agentId: "product-lead",
-					forumChannel: "x",
 					chatChannel: "y",
 					match: { labels: ["Product"] },
 				},
 				{
 					agentId: "ops-lead",
-					forumChannel: "x2",
 					chatChannel: "y2",
 					match: { labels: ["Operations"] },
 				},
@@ -654,7 +713,6 @@ describe("validateMemoryIds", () => {
 			leads: [
 				{
 					agentId: "eng-lead",
-					forumChannel: "a",
 					chatChannel: "b",
 					match: { labels: ["Engineering"] },
 				},
@@ -819,7 +877,6 @@ describe("FLY-83 alert fields", () => {
 	function validLead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 		return {
 			agentId: "product-lead",
-			forumChannel: "111",
 			chatChannel: "222",
 			match: { labels: ["Product"] },
 			...overrides,

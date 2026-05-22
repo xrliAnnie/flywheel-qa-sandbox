@@ -123,12 +123,6 @@ describe("StateStore", () => {
 		expect(stuckIds).not.toContain("recent-1");
 	});
 
-	it("upsertThread + getThreadIssue round-trip", () => {
-		store.upsertThread("1234.5678", "C07XXX", "GEO-95");
-		const issueId = store.getThreadIssue("1234.5678");
-		expect(issueId).toBe("GEO-95");
-	});
-
 	it("upsertSession ignores running after terminal (failed→running no-op)", () => {
 		store.upsertSession(makeSession({ status: "failed", last_error: "oops" }));
 		expect(store.getSession("exec-1")!.status).toBe("failed");
@@ -147,96 +141,9 @@ describe("StateStore", () => {
 		expect(store.getSession("exec-1")!.status).toBe("completed");
 	});
 
-	// --- v1.0 Phase 1: thread_id ---
-
-	it("upsertSession stores and retrieves thread_id", () => {
-		store.upsertSession(makeSession({ thread_id: "1234.5678" }));
-		const s = store.getSession("exec-1");
-		expect(s!.thread_id).toBe("1234.5678");
-	});
-
-	it("upsertSession preserves thread_id via COALESCE on update", () => {
-		store.upsertSession(makeSession({ thread_id: "1234.5678" }));
-		// Update without thread_id — should preserve existing value
-		store.upsertSession(makeSession({ status: "awaiting_review" }));
-		const s = store.getSession("exec-1");
-		expect(s!.thread_id).toBe("1234.5678");
-		expect(s!.status).toBe("awaiting_review");
-	});
-
-	it("setSessionThreadId updates only the thread field", () => {
-		store.upsertSession(makeSession());
-		store.setSessionThreadId("exec-1", "9999.1111");
-		const s = store.getSession("exec-1");
-		expect(s!.thread_id).toBe("9999.1111");
-		expect(s!.status).toBe("running"); // unchanged
-	});
-
-	it("setSessionThreadId is no-op if session does not exist", () => {
-		// Should not throw
-		store.setSessionThreadId("nonexistent", "1234.5678");
-	});
-
-	// --- v1.0 Phase 1: getThreadByIssue ---
-
-	it("getThreadByIssue returns thread for known issue", () => {
-		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
-		const thread = store.getThreadByIssue("GEO-42");
-		expect(thread).toBeDefined();
-		expect(thread!.thread_id).toBe("1234.5678");
-		expect(thread!.channel).toBe("C07XXX");
-	});
-
-	it("getThreadByIssue returns undefined for unknown issue", () => {
-		expect(store.getThreadByIssue("UNKNOWN-1")).toBeUndefined();
-	});
-
-	it("getThreadByIssue returns updated thread after re-upsert", () => {
-		store.upsertThread("old.1111", "C07XXX", "GEO-42");
-		store.upsertThread("new.2222", "C07YYY", "GEO-42");
-		const thread = store.getThreadByIssue("GEO-42");
-		expect(thread!.thread_id).toBe("new.2222");
-		expect(thread!.channel).toBe("C07YYY");
-	});
-
-	// --- v1.0 Phase 1: upsertThread one-issue-one-thread ---
-
-	it("upsertThread replaces old thread for same issue", () => {
-		store.upsertThread("old.1111", "C07XXX", "GEO-42");
-		store.upsertThread("new.2222", "C07XXX", "GEO-42");
-		// Old thread should be gone
-		expect(store.getThreadIssue("old.1111")).toBeUndefined();
-		// New thread maps to the issue
-		expect(store.getThreadIssue("new.2222")).toBe("GEO-42");
-	});
-
-	it("upsertThread handles same thread_id + same issue (idempotent)", () => {
-		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
-		store.upsertThread("1234.5678", "C07XXX", "GEO-42");
-		expect(store.getThreadIssue("1234.5678")).toBe("GEO-42");
-	});
-
-	// --- v1.0 Phase 1: migration cleans duplicate threads ---
-
-	it("migrate cleans up duplicate issue_id entries in conversation_threads", async () => {
-		// Manually insert duplicate records bypassing upsertThread
-		store.db.run(
-			"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES ('ts1', 'C1', 'GEO-99')",
-		);
-		// Temporarily drop the unique index so we can insert a duplicate
-		store.db.run("DROP INDEX IF EXISTS idx_threads_issue");
-		store.db.run(
-			"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES ('ts2', 'C1', 'GEO-99')",
-		);
-		// Re-run migrate — should clean up and recreate index
-		store.migrate();
-		// Should have exactly one record for GEO-99 (the one with higher rowid = ts2)
-		const thread = store.getThreadByIssue("GEO-99");
-		expect(thread).toBeDefined();
-		expect(thread!.thread_id).toBe("ts2");
-		// Old one should be gone
-		expect(store.getThreadIssue("ts1")).toBeUndefined();
-	});
+	// FLY-163: forum thread CRUD tests (upsertThread, getThreadByIssue,
+	// getThreadIssue, setSessionThreadId, conversation_threads migration
+	// cleanup) removed — conversation_threads table dropped.
 
 	// --- v1.0 Phase 1: getLatestSessionByIssueAndStatuses ---
 
@@ -483,17 +390,16 @@ describe("StateStore", () => {
 
 	// --- GEO-163: migration tests ---
 
-	it("fresh DB creates thread_id column directly (case a)", async () => {
-		// Fresh DB — DDL has thread_id, no migration needed
+	it("fresh DB has sessions.thread_id physical column (deprecated, FLY-163)", async () => {
+		// Fresh DB — DDL keeps the thread_id column as deprecated. TS layer
+		// no longer reads/writes it; this is a schema-survival check.
 		const fresh = await StateStore.create(":memory:");
-		fresh.upsertSession(makeSession({ thread_id: "fresh-thread-123" }));
-		const s = fresh.getSession("exec-1");
-		expect(s!.thread_id).toBe("fresh-thread-123");
-
-		// conversation_threads also uses thread_id
-		fresh.upsertThread("ct-fresh-123", "C07XXX", "GEO-95");
-		const thread = fresh.getThreadByIssue("GEO-95");
-		expect(thread!.thread_id).toBe("ct-fresh-123");
+		const stmt = fresh.db.prepare(
+			"SELECT 1 FROM pragma_table_info('sessions') WHERE name='thread_id'",
+		);
+		const hasCol = stmt.step();
+		stmt.free();
+		expect(hasCol).toBe(true);
 		fresh.close();
 	});
 
@@ -617,19 +523,21 @@ describe("StateStore", () => {
 		// Run migration
 		store2.migrate();
 
-		// Verify columns were renamed and data cleared (user_version < 2)
-		const s = store2.getSession("e1");
-		expect(s).toBeDefined();
-		// thread_id should be NULL after cutover cleanup
-		expect(s!.thread_id).toBeUndefined();
-
-		// conversation_threads should be empty after cutover cleanup
-		const thread = store2.getThreadByIssue("i1");
-		expect(thread).toBeUndefined();
-
-		// Can insert new data with thread_id
-		store2.setSessionThreadId("e1", "new-discord-id");
-		expect(store2.getSession("e1")!.thread_id).toBe("new-discord-id");
+		// Verify sessions.slack_thread_ts column was renamed to thread_id
+		// (physical column kept as deprecated under FLY-163)
+		const probe = store2.db.prepare(
+			"SELECT 1 FROM pragma_table_info('sessions') WHERE name='thread_id'",
+		);
+		const hasNewCol = probe.step();
+		probe.free();
+		expect(hasNewCol).toBe(true);
+		// conversation_threads should have been dropped by FLY-163 migration
+		const tableProbe = store2.db.prepare(
+			"SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_threads'",
+		);
+		const tableExists = tableProbe.step();
+		tableProbe.free();
+		expect(tableExists).toBe(false);
 
 		store2.close();
 	});
@@ -692,165 +600,76 @@ describe("StateStore", () => {
 			"INSERT INTO sessions (execution_id, issue_id, project_name, status) VALUES ('e1', 'i1', 'p', 'running')",
 		);
 
-		// Run migration — should ADD thread_id column
+		// Run migration — should ADD thread_id column (kept as deprecated)
 		store2.migrate();
 
-		// Verify thread_id column exists and works
-		store2.setSessionThreadId("e1", "added-thread-id");
-		expect(store2.getSession("e1")!.thread_id).toBe("added-thread-id");
+		// Verify thread_id column exists (FLY-163: physical column kept)
+		const probe = store2.db.prepare(
+			"SELECT 1 FROM pragma_table_info('sessions') WHERE name='thread_id'",
+		);
+		const hasCol = probe.step();
+		probe.free();
+		expect(hasCol).toBe(true);
 
 		store2.close();
 	});
 
-	const toSqlite3 = (d: Date) =>
-		d
-			.toISOString()
-			.replace("T", " ")
-			.replace(/\.\d+Z$/, "");
-	it("getEligibleForCleanup returns completed beyond threshold", () => {
-		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(
-			makeSession({
-				execution_id: "e1",
-				issue_id: "GEO-100",
-				status: "completed",
-				started_at: past,
-				last_activity_at: past,
-			}),
-		);
-		store.upsertThread("thread-100", "CH1", "GEO-100");
-		expect(store.getEligibleForCleanup(1440)).toHaveLength(1);
-	});
-	it("getEligibleForCleanup excludes failed", () => {
-		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(
-			makeSession({
-				execution_id: "e1",
-				issue_id: "GEO-100",
-				status: "failed",
-				started_at: past,
-				last_activity_at: past,
-			}),
-		);
-		store.upsertThread("thread-100", "CH1", "GEO-100");
-		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
-	});
-	it("getEligibleForCleanup excludes archived", () => {
-		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(
-			makeSession({
-				execution_id: "e1",
-				issue_id: "GEO-100",
-				status: "completed",
-				started_at: past,
-				last_activity_at: past,
-			}),
-		);
-		store.upsertThread("thread-100", "CH1", "GEO-100");
-		store.markArchived("thread-100");
-		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
-	});
-	it("markArchived + clearArchived cycle", () => {
-		const past = toSqlite3(new Date(Date.now() - 25 * 60 * 60 * 1000));
-		store.upsertSession(
-			makeSession({
-				execution_id: "e1",
-				issue_id: "GEO-100",
-				status: "completed",
-				started_at: past,
-				last_activity_at: past,
-			}),
-		);
-		store.upsertThread("thread-100", "CH1", "GEO-100");
-		store.markArchived("thread-100");
-		expect(store.getEligibleForCleanup(1440)).toHaveLength(0);
-		store.clearArchived("thread-100");
-		expect(store.getEligibleForCleanup(1440)).toHaveLength(1);
-	});
+	// FLY-163: getEligibleForCleanup / markArchived / clearArchived /
+	// markDiscordMissing / getThreadIssue tests removed — forum thread cleanup
+	// path (CleanupService + conversation_threads.discord_missing_at) deleted.
+	// The `toSqlite3` helper used only by those tests is removed with them.
 
-	// --- GEO-200: discord_missing_at + markDiscordMissing ---
+	it("FLY-163 migration drops conversation_threads from a legacy DB", async () => {
+		// Create a legacy DB with the conversation_threads table + a few rows +
+		// archived columns. Re-open through StateStore.create() and confirm the
+		// migration drops the table, leaves sessions intact (with thread_id
+		// physical column preserved as deprecated).
+		const path = "/tmp/fly163-legacy.sqlite";
+		try {
+			const fs = await import("node:fs");
+			const initSqlJs = (await import("sql.js")).default;
+			const SQL = await initSqlJs();
+			const seed = new SQL.Database();
+			seed.run(`CREATE TABLE conversation_threads (
+				thread_id TEXT PRIMARY KEY,
+				channel TEXT NOT NULL,
+				issue_id TEXT,
+				summary TEXT,
+				last_updated TEXT NOT NULL DEFAULT (datetime('now')),
+				archived_at TEXT,
+				cleanup_notified_at TEXT,
+				discord_missing_at TEXT
+			)`);
+			seed.run(
+				"INSERT INTO conversation_threads (thread_id, channel, issue_id) VALUES (?, ?, ?)",
+				["legacy-1", "CH1", "GEO-LEG-1"],
+			);
+			fs.writeFileSync(path, Buffer.from(seed.export()));
+			seed.close();
 
-	it("getThreadByIssue skips threads marked discord_missing", () => {
-		store.upsertThread("thread-200", "CH1", "GEO-200");
-		expect(store.getThreadByIssue("GEO-200")).toBeDefined();
-
-		store.markDiscordMissing("thread-200");
-		expect(store.getThreadByIssue("GEO-200")).toBeUndefined();
-	});
-
-	it("getThreadByIssue still returns archived threads (archived_at != discord_missing_at)", () => {
-		store.upsertThread("thread-201", "CH1", "GEO-201");
-		store.markArchived("thread-201");
-		// archived_at should NOT filter out
-		expect(store.getThreadByIssue("GEO-201")).toBeDefined();
-		expect(store.getThreadByIssue("GEO-201")!.thread_id).toBe("thread-201");
-	});
-
-	it("markDiscordMissing clears sessions.thread_id", () => {
-		store.upsertSession(
-			makeSession({
-				execution_id: "exec-miss-1",
-				issue_id: "GEO-202",
-				status: "running",
-			}),
-		);
-		store.upsertThread("thread-202", "CH1", "GEO-202");
-		store.setSessionThreadId("exec-miss-1", "thread-202");
-		expect(store.getSession("exec-miss-1")!.thread_id).toBe("thread-202");
-
-		store.markDiscordMissing("thread-202");
-		expect(store.getSession("exec-miss-1")!.thread_id).toBeUndefined();
-	});
-
-	it("markDiscordMissing writes timestamp", () => {
-		store.upsertThread("thread-203", "CH1", "GEO-203");
-		store.markDiscordMissing("thread-203");
-		// Verify via raw SQL that discord_missing_at is set
-		const stmt = store.db.prepare(
-			"SELECT discord_missing_at FROM conversation_threads WHERE thread_id = ?",
-		);
-		stmt.bind(["thread-203"]);
-		expect(stmt.step()).toBe(true);
-		const row = stmt.getAsObject() as Record<string, unknown>;
-		stmt.free();
-		expect(row.discord_missing_at).toBeTruthy();
-	});
-
-	it("markDiscordMissing is idempotent", () => {
-		store.upsertThread("thread-204", "CH1", "GEO-204");
-		store.markDiscordMissing("thread-204");
-		store.markDiscordMissing("thread-204");
-		expect(store.getThreadByIssue("GEO-204")).toBeUndefined();
-	});
-
-	it("getThreadIssue returns undefined for discord_missing thread", () => {
-		store.upsertThread("thread-205", "CH1", "GEO-205");
-		expect(store.getThreadIssue("thread-205")).toBe("GEO-205");
-
-		store.markDiscordMissing("thread-205");
-		expect(store.getThreadIssue("thread-205")).toBeUndefined();
-	});
-
-	it("getEligibleForCleanup excludes discord_missing threads", () => {
-		// Set up a completed session with a thread
-		store.upsertSession(
-			makeSession({
-				execution_id: "exec-cleanup-1",
-				issue_id: "GEO-206",
-				status: "completed",
-				last_activity_at: "2020-01-01 00:00:00",
-			}),
-		);
-		store.upsertThread("thread-206", "CH1", "GEO-206");
-
-		// Should be eligible before marking missing
-		const before = store.getEligibleForCleanup(1);
-		expect(before.some((c) => c.thread_id === "thread-206")).toBe(true);
-
-		// After marking missing, should be excluded
-		store.markDiscordMissing("thread-206");
-		const after = store.getEligibleForCleanup(1);
-		expect(after.some((c) => c.thread_id === "thread-206")).toBe(false);
+			const migrated = await StateStore.create(path);
+			const stmt = migrated.db.prepare(
+				"SELECT name FROM sqlite_master WHERE type='table' AND name='conversation_threads'",
+			);
+			const dropped = !stmt.step();
+			stmt.free();
+			expect(dropped).toBe(true);
+			// chat_threads operations still work
+			migrated.upsertChatThread(
+				"thread-abc",
+				"channel-xyz",
+				"issue-1",
+				"lead-1",
+			);
+			expect(
+				migrated.getChatThreadByIssue("issue-1", "channel-xyz"),
+			).toBeDefined();
+		} finally {
+			try {
+				const fs = await import("node:fs");
+				fs.unlinkSync(path);
+			} catch {}
+		}
 	});
 
 	// --- GEO-292: pr_number, session_stage, stage_updated_at ---

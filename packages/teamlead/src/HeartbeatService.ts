@@ -251,7 +251,6 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			issue_title: session.issue_title,
 			project_name: session.project_name,
 			status: session.status,
-			thread_id: session.thread_id,
 			minutes_since_activity: minutes,
 			session_role: session.session_role ?? "main",
 		};
@@ -267,7 +266,6 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			issue_title: session.issue_title,
 			project_name: session.project_name,
 			status: "failed",
-			thread_id: session.thread_id,
 			minutes_since_activity: minutes,
 			session_role: session.session_role ?? "main",
 		};
@@ -283,7 +281,6 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			issue_title: session.issue_title,
 			project_name: session.project_name,
 			status: session.status,
-			thread_id: session.thread_id,
 			notification_context: `Session ${session.status} ${hours}h ago but tmux still alive. Please check if it can be closed.`,
 			session_role: session.session_role ?? "main",
 		};
@@ -342,7 +339,6 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		hookPayload: HookPayload,
 	): Promise<void> {
 		let agentId: string;
-		let forumChannel: string | undefined;
 		let chatChannel: string;
 		let runtime: import("./bridge/lead-runtime.js").LeadRuntime;
 		try {
@@ -354,8 +350,6 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			);
 			runtime = resolved.runtime;
 			agentId = resolved.lead.agentId;
-			const existingThread = this.store.getThreadByIssue(session.issue_id);
-			forumChannel = existingThread?.channel ?? resolved.lead.forumChannel;
 			chatChannel = resolved.lead.chatChannel;
 		} catch {
 			console.warn(
@@ -364,7 +358,6 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			return;
 		}
 
-		hookPayload.forum_channel = forumChannel;
 		hookPayload.chat_channel = chatChannel;
 
 		// FLY-91: Fill chat_thread_id for Lead thread routing

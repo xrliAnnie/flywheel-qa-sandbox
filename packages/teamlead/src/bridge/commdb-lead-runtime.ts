@@ -174,8 +174,6 @@ export class CommDBLeadRuntime implements LeadRuntime {
 			lines.push(`Context: ${e.notification_context}`);
 		if (e.pr_number) lines.push(`PR: #${e.pr_number}`);
 		if (e.stage_context) lines.push(`Note: ${e.stage_context}`);
-		if (e.thread_id) lines.push(`Forum-Thread: ${e.thread_id}`);
-		if (e.forum_channel) lines.push(`Forum: ${e.forum_channel}`);
 		// FLY-91: Chat thread hint for per-issue conversation
 		if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 

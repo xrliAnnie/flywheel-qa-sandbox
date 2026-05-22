@@ -15,9 +15,10 @@
  *   - v1.27 Discord channel router
  *
  * The registry is tolerant of un-normalized input (hand-written test fixtures
- * that don't run through `loadProjects()`): `canSpawnRunners` is recomputed
- * from `forumChannel` if the field is undefined. Production code paths still
- * normalize once at config load to avoid recomputation per call.
+ * that don't run through `loadProjects()`): `canSpawnRunners` defaults to
+ * `true` when the field is undefined (FLY-163 — explicit `false` opt-out for
+ * PM/triage Leads). Production code paths still normalize once at config load
+ * to avoid recomputation per call.
  */
 
 import {
@@ -55,13 +56,14 @@ export type IssueClassification =
  * Returns the effective `canSpawnRunners` for a lead, defending against
  * un-normalized input (hand-written test fixtures).
  *   - explicit boolean → use it
- *   - undefined        → derive from `Boolean(forumChannel)`
+ *   - undefined        → default to `true` (FLY-163: PM/triage Leads must
+ *                        explicitly set `canSpawnRunners: false`)
  */
 function effectiveCanSpawn(lead: LeadConfig): boolean {
 	if (typeof lead.canSpawnRunners === "boolean") {
 		return lead.canSpawnRunners;
 	}
-	return Boolean(lead.forumChannel);
+	return true;
 }
 
 export class DepartmentRegistry {

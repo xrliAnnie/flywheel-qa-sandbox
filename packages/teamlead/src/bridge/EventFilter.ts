@@ -1,19 +1,15 @@
 import type { HookPayload } from "./hook-payload.js";
 
 /**
- * FLY-47: EventFilter classifies events for two purposes:
- * 1. Priority hints for Lead (high = MUST Chat, normal = optional FYI)
- * 2. Forum gating — decides which events trigger Forum tag updates
- *
- * ALL events are delivered to Lead unconditionally. EventFilter does NOT
- * control delivery — it only annotates and gates Forum updates.
+ * FLY-47 / FLY-163: EventFilter classifies events for priority hints to Lead
+ * (high = MUST Chat, normal = optional FYI). After FLY-163 (forum removed),
+ * the filter only annotates priority + reason; ALL events are delivered to
+ * Lead unconditionally.
  */
 
 export interface FilterResult {
 	priority: "high" | "normal" | "low";
 	reason: string;
-	/** Whether this event should trigger a Forum tag update */
-	updateForum: boolean;
 }
 
 interface FilterRule {
@@ -22,7 +18,7 @@ interface FilterRule {
 }
 
 const FILTER_RULES: FilterRule[] = [
-	// === HIGH + Forum — status-changing events Lead MUST notify Annie about ===
+	// === HIGH — status-changing events Lead MUST notify Annie about ===
 	{
 		match: (et, p) =>
 			et === "session_completed" &&
@@ -30,7 +26,6 @@ const FILTER_RULES: FilterRule[] = [
 		result: {
 			priority: "high",
 			reason: "PR ready for review — Lead notifies Annie in Chat",
-			updateForum: true,
 		},
 	},
 	{
@@ -40,7 +35,6 @@ const FILTER_RULES: FilterRule[] = [
 		result: {
 			priority: "high",
 			reason: "blocked — Lead escalates to Annie in Chat",
-			updateForum: true,
 		},
 	},
 	{
@@ -48,25 +42,15 @@ const FILTER_RULES: FilterRule[] = [
 		result: {
 			priority: "high",
 			reason: "session failed — Lead escalates to Annie in Chat",
-			updateForum: true,
 		},
 	},
+	// FLY-163: collapsed two session_started rules (forum vs no-forum) into one
+	// chat-only entry. The old payload.thread_id branch is gone.
 	{
-		match: (et, p) => et === "session_started" && !p.thread_id,
+		match: (et) => et === "session_started",
 		result: {
 			priority: "high",
-			reason:
-				"session started — Lead announces to Annie in Chat + Bridge creates Forum Post",
-			updateForum: true,
-		},
-	},
-	{
-		match: (et, p) => et === "session_started" && !!p.thread_id,
-		result: {
-			priority: "high",
-			reason:
-				"session started (retry/reopen) — Lead announces to Annie in Chat with Forum link",
-			updateForum: true,
+			reason: "session started — Lead announces to Annie in Chat",
 		},
 	},
 	// FLY-58: approved_to_ship — Runner still needs to ship
@@ -76,7 +60,6 @@ const FILTER_RULES: FilterRule[] = [
 		result: {
 			priority: "high",
 			reason: "approved to ship — Lead notifies Runner via gate unblock",
-			updateForum: true,
 		},
 	},
 	// FLY-58: ship complete (completed or legacy approved)
@@ -89,48 +72,44 @@ const FILTER_RULES: FilterRule[] = [
 		result: {
 			priority: "high",
 			reason: "ship complete — Lead notifies Annie in Chat",
-			updateForum: true,
 		},
 	},
-	// Catch-all for session_completed with unrecognized status — still update Forum
+	// Catch-all for session_completed with unrecognized status
 	{
 		match: (et) => et === "session_completed",
 		result: {
 			priority: "normal",
-			reason: "session completed — Forum update for status tracking",
-			updateForum: true,
+			reason: "session completed",
 		},
 	},
 
-	// === NORMAL + Forum — status changes that update Forum but don't require Chat ===
+	// === NORMAL — status changes that don't require Chat ===
 	{
 		match: (et) => et === "action_executed",
 		result: {
 			priority: "normal",
 			reason: "action executed",
-			updateForum: true,
 		},
 	},
 
-	// === HIGH + NO Forum — urgent events requiring Lead Chat notification ===
+	// === HIGH — urgent events requiring Lead Chat notification ===
 	{
 		match: (et) => et === "session_stuck",
 		result: {
 			priority: "high",
 			reason: "session stuck — notify Annie via Chat",
-			updateForum: false,
 		},
 	},
 	// FLY-159: Runner gate timed out (fail-close path only — fail-open never
 	// emits this event). Lead must inform Annie via Discord and offer
-	// retry/cancel options. updateForum=false because the session FSM didn't
-	// change (Runner exited but PR/issue state is unchanged).
+	// retry/cancel options.
+	// FLY-163: Forum gating dropped — chat is the sole surface, so updateForum
+	// is no longer modeled on FilterResult.
 	{
 		match: (et) => et === "gate_timed_out",
 		result: {
 			priority: "high",
 			reason: "gate timed out — Lead notifies Annie via Chat",
-			updateForum: false,
 		},
 	},
 	{
@@ -138,7 +117,6 @@ const FILTER_RULES: FilterRule[] = [
 		result: {
 			priority: "normal",
 			reason: "session orphaned",
-			updateForum: false,
 		},
 	},
 	{
@@ -146,7 +124,6 @@ const FILTER_RULES: FilterRule[] = [
 		result: {
 			priority: "normal",
 			reason: "stale completed session — tmux still alive",
-			updateForum: false,
 		},
 	},
 	{
@@ -154,7 +131,6 @@ const FILTER_RULES: FilterRule[] = [
 		result: {
 			priority: "normal",
 			reason: "cipher principle proposed",
-			updateForum: false,
 		},
 	},
 ];
@@ -162,7 +138,6 @@ const FILTER_RULES: FilterRule[] = [
 const DEFAULT_RESULT: FilterResult = {
 	priority: "normal",
 	reason: "default — no matching rule",
-	updateForum: false,
 };
 
 export class EventFilter {
@@ -189,7 +164,6 @@ export class EventFilter {
 				issue_id: payload.issue_id ?? payload.issue_identifier ?? "",
 				priority: result.priority,
 				reason: result.reason,
-				updateForum: result.updateForum,
 				timestamp: new Date().toISOString(),
 			}),
 		);

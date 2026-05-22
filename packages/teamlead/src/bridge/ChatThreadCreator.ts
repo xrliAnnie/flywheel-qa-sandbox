@@ -1,7 +1,7 @@
 /**
  * FLY-91: ChatThreadCreator — Bridge creates per-issue chat threads in chatChannel.
- * Modeled after ForumPostCreator. Uses validateThreadExists for 404 detection,
- * AbortController for 5s fail-open timeout on Discord API.
+ * Uses validateThreadExists for 404 detection, AbortController for 5s fail-open
+ * timeout on Discord API.
  */
 
 import type { StateStore } from "../StateStore.js";

@@ -4,16 +4,10 @@ import { join } from "node:path";
 
 export interface LeadConfig {
 	agentId: string;
-	/** Discord Forum channel ID. Optional: PM leads (no Runner) may omit this. */
-	forumChannel?: string;
 	chatChannel: string;
 	match: {
 		labels: string[];
 	};
-	/** Status → Discord Forum tag ID mapping for this lead's forum channel (GEO-253).
-	 *  Once defined, fully replaces the global STATUS_TAG_MAP for this lead.
-	 *  Omit to fall back to global STATUS_TAG_MAP. */
-	statusTagMap?: Record<string, string[]>;
 	/** Env var name for this lead's Discord bot token (e.g., "PETER_BOT_TOKEN"). */
 	botTokenEnv?: string;
 	/** Resolved bot token (populated at load time from botTokenEnv). NOT from JSON input. */
@@ -37,15 +31,16 @@ export interface LeadConfig {
 	 */
 	alertFallbackToCore?: boolean;
 	/**
-	 * FLY-127: Whether this Lead is authorized to spawn Runners via
+	 * FLY-127 / FLY-163: Bridge spawn authorization — independent of Discord
+	 * channel features. Whether this Lead is authorized to spawn Runners via
 	 * `POST /api/runs/start`. The Bridge enforces this server-side.
 	 *
-	 * Default (when field is absent): derived from `forumChannel` —
-	 *   - `forumChannel` set     → defaults to `true`  (typical department lead)
-	 *   - `forumChannel` missing → defaults to `false` (typical PM / triage lead)
+	 * Default (when field is absent): `true`. PM / triage Leads MUST explicitly
+	 * set `"canSpawnRunners": false` — the PM/Triage validator (see
+	 * `loadProjects()`) throws if a Lead's `match.labels` includes "PM" or
+	 * "Triage" (case-insensitive) without an explicit `canSpawnRunners: false`.
 	 *
-	 * Explicit `true` / `false` always wins. After `loadProjects()`, this field
-	 * is normalized to a boolean (no `undefined`).
+	 * After `loadProjects()`, this field is normalized to a boolean (no `undefined`).
 	 */
 	canSpawnRunners?: boolean;
 	/**
@@ -157,16 +152,22 @@ export function loadProjects(): ProjectEntry[] {
 					`Project "${entry.projectName}" leads[${i}].agentId: must be a non-empty string`,
 				);
 			}
-			// GEO-275: forumChannel is optional (PM leads don't need a forum)
-			if (lead.forumChannel !== undefined) {
-				if (
-					typeof lead.forumChannel !== "string" ||
-					lead.forumChannel.length === 0
-				) {
-					throw new Error(
-						`Project "${entry.projectName}" leads[${i}].forumChannel: if provided, must be a non-empty string`,
-					);
-				}
+			// FLY-163: Strip deprecated forumChannel / statusTagMap before validation.
+			// Existing fork configs may still have these fields; warn loudly but
+			// don't break startup. The next-release follow-up will hard-fail.
+			if ((lead as Record<string, unknown>).forumChannel !== undefined) {
+				console.warn(
+					`[loadProjects] "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+						`'forumChannel' is deprecated (FLY-163), ignoring`,
+				);
+				delete (lead as Record<string, unknown>).forumChannel;
+			}
+			if ((lead as Record<string, unknown>).statusTagMap !== undefined) {
+				console.warn(
+					`[loadProjects] "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+						`'statusTagMap' is deprecated (FLY-163), ignoring`,
+				);
+				delete (lead as Record<string, unknown>).statusTagMap;
 			}
 			if (
 				typeof lead.chatChannel !== "string" ||
@@ -216,35 +217,6 @@ export function loadProjects(): ProjectEntry[] {
 				);
 			}
 
-			// GEO-253: validate optional statusTagMap
-			const stm = lead.statusTagMap;
-			if (stm !== undefined) {
-				if (typeof stm !== "object" || stm === null || Array.isArray(stm)) {
-					throw new Error(
-						`Project "${entry.projectName}" leads[${i}].statusTagMap: must be a non-null, non-array object`,
-					);
-				}
-				if (Object.keys(stm).length === 0) {
-					throw new Error(
-						`Project "${entry.projectName}" leads[${i}].statusTagMap: must not be empty (omit the field to use global fallback)`,
-					);
-				}
-				for (const [status, tagIds] of Object.entries(stm)) {
-					if (!Array.isArray(tagIds) || tagIds.length === 0) {
-						throw new Error(
-							`Project "${entry.projectName}" leads[${i}].statusTagMap["${status}"]: must be a non-empty array of tag ID strings`,
-						);
-					}
-					for (const tagId of tagIds) {
-						if (typeof tagId !== "string" || tagId.length === 0) {
-							throw new Error(
-								`Project "${entry.projectName}" leads[${i}].statusTagMap["${status}"]: each tag ID must be a non-empty string`,
-							);
-						}
-					}
-				}
-			}
-
 			// GEO-252: resolve per-lead bot token from env var
 			// Validate botTokenEnv type if present
 			if (
@@ -289,13 +261,30 @@ export function loadProjects(): ProjectEntry[] {
 					`Project "${entry.projectName}" leads[${i}].canSpawnRunners: must be a boolean, got ${JSON.stringify(lead.canSpawnRunners)}`,
 				);
 			}
-			// FLY-127: Normalize canSpawnRunners — auto-derive from forumChannel
-			// when the field is absent, so DepartmentRegistry reads a deterministic
-			// boolean. Existing prod configs (without the field) keep working —
-			// dept Leads with a forumChannel become spawn-authorized; PM-only Leads
-			// (no forum) become spawn-denied. Explicit `true`/`false` always wins.
+			// FLY-127 / FLY-163: Normalize canSpawnRunners default to `true`.
+			// PM / triage Leads must explicitly opt out with `canSpawnRunners: false`.
+			// The PM/Triage validator below enforces this.
 			if (lead.canSpawnRunners === undefined) {
-				lead.canSpawnRunners = Boolean(lead.forumChannel);
+				lead.canSpawnRunners = true;
+			}
+
+			// FLY-163: PM/Triage validator — runs AFTER deprecated-field strip
+			// AND AFTER canSpawnRunners normalization. PM / triage Leads must
+			// explicitly opt out of spawn authorization; if they default-true,
+			// fail loudly so the operator notices.
+			const PM_LABELS = ["pm", "triage"];
+			const labelsLower: string[] = (match.labels as unknown[])
+				.filter((s): s is string => typeof s === "string")
+				.map((s) => s.trim().toLowerCase());
+			const hasPmLabel = labelsLower.some((l: string) => PM_LABELS.includes(l));
+			if (hasPmLabel && lead.canSpawnRunners !== false) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+						`match.labels contains PM/Triage (${labelsLower.join(",")}) but ` +
+						`canSpawnRunners is not false. PM/Triage leads must explicitly ` +
+						`set "canSpawnRunners": false. ` +
+						`(FLY-163: canSpawnRunners no longer derives from forumChannel.)`,
+				);
 			}
 			// Strip any raw botToken from JSON input first — secrets must come via env vars
 			delete lead.botToken;

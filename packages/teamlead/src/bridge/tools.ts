@@ -151,9 +151,8 @@ export function createQueryRouter(
 		}
 
 		const result = omitIssueId(session);
-		// FLY-80: Removed thread fallback from conversation_threads.
-		// Thread inheritance is handled by event-route.ts, Forum creation by ForumPostCreator.
-		// Injecting stale conversation_threads entries caused Leads to post to deleted threads.
+		// FLY-163: forum conversation_threads removed; per-issue chat threads
+		// surface via chat_thread_id on hook payloads.
 		res.json(result);
 	});
 
@@ -262,70 +261,9 @@ export function createQueryRouter(
 		});
 	});
 
-	// --- v1.0 Phase 1: Thread management + action resolution ---
-
-	router.post("/threads/upsert", (req, res) => {
-		const { thread_id, channel, issue_id, execution_id } = req.body ?? {};
-		if (!thread_id || !channel || !issue_id || !execution_id) {
-			res.status(400).json({
-				error: "thread_id, channel, issue_id, and execution_id are required",
-			});
-			return;
-		}
-
-		// Coerce to string — Discord snowflake IDs exceed Number.MAX_SAFE_INTEGER
-		const safeThreadId = String(thread_id);
-		const safeChannel = String(channel);
-
-		// 1. Verify execution exists
-		const session = store.getSession(String(execution_id));
-		if (!session) {
-			res
-				.status(404)
-				.json({ error: `No session found for execution_id ${execution_id}` });
-			return;
-		}
-
-		// 2. Verify issue_id matches
-		if (session.issue_id !== issue_id) {
-			res.status(400).json({
-				error: `issue_id mismatch: session has "${session.issue_id}", request has "${issue_id}"`,
-			});
-			return;
-		}
-
-		// 3. Check thread_id not already bound to a different issue
-		const existingIssue = store.getThreadIssue(safeThreadId);
-		if (existingIssue && existingIssue !== issue_id) {
-			res.status(409).json({
-				error: `thread_id ${safeThreadId} is already bound to issue ${existingIssue}`,
-			});
-			return;
-		}
-
-		// 4. Upsert thread + bind session
-		store.upsertThread(safeThreadId, safeChannel, issue_id);
-		store.setSessionThreadId(String(execution_id), safeThreadId);
-
-		res.json({ ok: true });
-	});
-
-	router.get("/thread/:thread_id", (req, res) => {
-		const threadId = req.params.thread_id;
-		const issueId = store.getThreadIssue(threadId);
-		if (!issueId) {
-			res.json({ found: false });
-			return;
-		}
-
-		const latestSession = store.getSessionByIssue(issueId);
-		res.json({
-			found: true,
-			issue_id: issueId,
-			issue_identifier: latestSession?.issue_identifier,
-			latest_execution: latestSession ? omitIssueId(latestSession) : undefined,
-		});
-	});
+	// FLY-163: /threads/upsert + /thread/:thread_id routes removed — forum thread
+	// concept gone. Per-issue chat threads are managed internally by
+	// DirectEventSink + StateStore.chat_threads.
 
 	router.get("/resolve-action", (req, res) => {
 		const issueId = req.query.issue_id as string;

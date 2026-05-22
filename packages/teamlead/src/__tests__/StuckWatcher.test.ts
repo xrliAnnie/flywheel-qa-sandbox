@@ -161,7 +161,6 @@ describe("WebhookStuckNotifier (RegistryHeartbeatNotifier via re-export)", () =>
 			project_name: "geo",
 			status: "running",
 			issue_identifier: "GEO-100",
-			thread_id: "1234.5678",
 		};
 
 		await notifier.onSessionStuck(session, 30);
@@ -172,8 +171,7 @@ describe("WebhookStuckNotifier (RegistryHeartbeatNotifier via re-export)", () =>
 		expect(env.sessionKey).toBe("flywheel:GEO-100");
 		expect(env.event.event_type).toBe("session_stuck");
 		expect(env.event.minutes_since_activity).toBe(30);
-		expect(env.event.thread_id).toBe("1234.5678");
-		expect(env.event.forum_channel).toBe("test-channel");
+		// FLY-163: thread_id + forum_channel removed from HookPayload
 
 		hbStore.close();
 	});

@@ -12,11 +12,6 @@ import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
-import type { ForumPostCreator } from "./bridge/ForumPostCreator.js";
-import {
-	type ForumTagUpdater,
-	postThreadStatusMessage,
-} from "./bridge/ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import {
@@ -25,7 +20,6 @@ import {
 } from "./bridge/post-ship-finalization.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
-import { validateThreadExists } from "./bridge/thread-validator.js";
 import type { BridgeConfig } from "./bridge/types.js";
 import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -42,9 +36,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		private config: BridgeConfig,
 		private projects: ProjectEntry[],
 		private eventFilter?: EventFilter,
-		private forumTagUpdater?: ForumTagUpdater,
 		private registry?: RuntimeRegistry,
-		private forumPostCreator?: ForumPostCreator,
 		private chatThreadCreator?: ChatThreadCreator,
 	) {}
 
@@ -81,98 +73,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			stage_updated_at: now,
 			session_role: env.sessionRole ?? "main",
 		});
-
-		// Thread inheritance (same as event-route.ts)
-		const existingThread = this.store.getThreadByIssue(env.issueId);
-		if (existingThread) {
-			// GEO-200: Validate thread still exists + per-lead bot token (GEO-252)
-			let botToken = this.config.discordBotToken;
-			if (this.registry) {
-				try {
-					const labels = this.store.getSessionLabels(env.executionId);
-					const { lead } = this.registry.resolveWithLead(
-						this.projects,
-						env.projectName,
-						labels,
-					);
-					botToken = lead.botToken ?? this.config.discordBotToken;
-				} catch {
-					// Partial registry (lead not registered yet) — fall back to global token
-				}
-			}
-			let threadValid = true;
-			if (botToken) {
-				threadValid = await validateThreadExists(
-					existingThread.thread_id,
-					botToken,
-					{
-						markDiscordMissing: (id) => this.store.markDiscordMissing(id),
-					},
-				);
-			}
-			if (threadValid) {
-				this.store.setSessionThreadId(
-					env.executionId,
-					existingThread.thread_id,
-				);
-				this.store.clearArchived(existingThread.thread_id);
-			}
-		}
-
-		// FLY-24: ForumPostCreator — fire-and-forget (preserves EventFilter notification semantics).
-		// Must NOT await before pushNotification: if thread_id is set before EventFilter runs,
-		// session_started gets classified as "forum_only" instead of "notify_agent", suppressing
-		// the Lead notification. Same pattern as event-route.ts:245.
-		// The /api/runs/start poll reads store directly, so it picks up thread_id async.
-		if (
-			!this.store.getSession(env.executionId)?.thread_id &&
-			this.forumPostCreator
-		) {
-			const eventLabels = env.labels ?? [];
-			try {
-				const { lead: fpLead } = resolveLeadForIssue(
-					this.projects,
-					env.projectName,
-					eventLabels,
-				);
-				// GEO-275: skip Forum Post creation for leads without forumChannel
-				if (fpLead.forumChannel) {
-					const botToken = fpLead.botToken ?? this.config.discordBotToken;
-					// Resolve issue title: prefer env, fall back to session history
-					const resolvedTitle =
-						env.issueTitle ??
-						this.store.getSessionByIssue(env.issueId)?.issue_title ??
-						undefined;
-					this.forumPostCreator
-						.ensureForumPost({
-							forumChannelId: fpLead.forumChannel,
-							issueId: env.issueId,
-							issueIdentifier: env.issueIdentifier,
-							issueTitle: resolvedTitle,
-							executionId: env.executionId,
-							status: "running",
-							discordBotToken: botToken,
-							statusTagMap: fpLead.statusTagMap,
-						})
-						.then((result) => {
-							console.log(
-								`[DirectEventSink] ensureForumPost: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
-							);
-						})
-						.catch((err: Error) => {
-							console.warn(
-								`[DirectEventSink] ensureForumPost failed for ${env.issueId}:`,
-								err.message,
-							);
-						});
-				}
-			} catch (err) {
-				console.warn(
-					`[DirectEventSink] resolveLeadForIssue threw for project="${env.projectName}" labels=${JSON.stringify(eventLabels)}:`,
-					(err as Error).message,
-				);
-			}
-		}
 
 		// FLY-91: Await chat thread creation so first notification includes chat_thread_id.
 		// Unlike ForumPost (fire-and-forget), chat_thread_id doesn't affect EventFilter
@@ -377,7 +277,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		this.pushNotification(env, "session_completed", "running");
+		this.pushNotification(env, "session_completed");
 
 		// FLY-102: Post-approve-ship finalization (tmux cleanup → notifier → archive).
 		// Gated by predicate so only approve-ship completions (not route=needs_review
@@ -455,7 +355,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		this.pushNotification(env, "session_failed", "running");
+		this.pushNotification(env, "session_failed");
 	}
 
 	async emitHeartbeat(env: EventEnvelope): Promise<void> {
@@ -467,19 +367,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		this.pending = [];
 	}
 
-	private pushNotification(
-		env: EventEnvelope,
-		eventType: string,
-		previousStatus?: string,
-	): void {
+	private pushNotification(env: EventEnvelope, eventType: string): void {
 		const session = this.store.getSession(env.executionId);
 		if (!session) return;
 
-		// FLY-24 debug: trace tag update prerequisites
 		console.log(
 			`[DirectEventSink] pushNotification: exec=${env.executionId} event=${eventType} ` +
 				`registry=${!!this.registry} eventFilter=${!!this.eventFilter} ` +
-				`tagUpdater=${!!this.forumTagUpdater} threadId=${session.thread_id ?? "none"} ` +
 				`status=${session.status}`,
 		);
 
@@ -494,8 +388,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				env.projectName,
 				labels,
 			);
-			const existingThread = this.store.getThreadByIssue(env.issueId);
-			const forumChannel = existingThread?.channel ?? lead.forumChannel;
 			const sessionKey = buildSessionKey(session);
 			const hookPayload: HookPayload = {
 				event_type: eventType,
@@ -511,8 +403,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				lines_removed: session.lines_removed,
 				summary: session.summary,
 				last_error: session.last_error,
-				thread_id: session.thread_id,
-				forum_channel: forumChannel,
 				chat_channel: lead.chatChannel,
 				issue_labels: labels,
 				session_role: session.session_role ?? "main",
@@ -528,8 +418,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 
 			const doDeliver = async () => {
-				// FLY-47: Classify event — priority hints + Forum gating
-				let updateForum = true; // default: update Forum when no filter
+				// FLY-47 / FLY-163: Classify event — priority hints (chat-only).
 				if (this.eventFilter) {
 					const filterResult = this.eventFilter.classify(
 						eventType,
@@ -537,43 +426,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					);
 					hookPayload.filter_priority = filterResult.priority;
 					hookPayload.notification_context = filterResult.reason;
-					updateForum = filterResult.updateForum;
 				}
-
-				// Forum tag update — only for status-changing events
-				let tagResult: HookPayload["forum_tag_update_result"];
-				if (updateForum && this.forumTagUpdater) {
-					// FLY-24 Bug 2: Re-read session to get latest thread_id.
-					const freshSession = this.store.getSession(env.executionId);
-					const freshThreadId = freshSession?.thread_id ?? session.thread_id;
-					const tagStatus = freshSession?.status ?? session.status ?? "";
-					console.log(
-						`[DirectEventSink] updateTag: exec=${env.executionId} threadId=${freshThreadId ?? "none"} ` +
-							`status=${tagStatus} event=${eventType} lead=${lead.agentId} ` +
-							`botToken=${(lead.botToken ?? this.config.discordBotToken) ? "set" : "MISSING"} ` +
-							`statusTagMap=${lead.statusTagMap ? JSON.stringify(Object.keys(lead.statusTagMap)) : "none(using-global)"}`,
-					);
-					tagResult = await this.forumTagUpdater.updateTag({
-						threadId: freshThreadId,
-						status: tagStatus,
-						eventType,
-						discordBotToken: lead.botToken ?? this.config.discordBotToken,
-						statusTagMap: lead.statusTagMap,
-					});
-					console.log(
-						`[DirectEventSink] updateTag result: ${tagResult} for exec=${env.executionId}`,
-					);
-					// FLY-24: Post status change message to Forum thread
-					if (tagResult === "succeeded" && previousStatus) {
-						await postThreadStatusMessage({
-							threadId: freshThreadId,
-							previousStatus,
-							newStatus: tagStatus,
-							botToken: lead.botToken ?? this.config.discordBotToken,
-						});
-					}
-				}
-				hookPayload.forum_tag_update_result = tagResult;
 
 				// FLY-47: Always deliver ALL events to Lead
 				const eventId = `direct-${env.executionId}-${eventType}-${Date.now()}`;

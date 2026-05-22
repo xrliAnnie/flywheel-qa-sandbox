@@ -581,8 +581,8 @@ describe("Action tools", () => {
 			expect(store.getSession("e1")!.status).toBe("rejected");
 		});
 
-		// GEO-275: no-forum lead action hook
-		it("approve sends action_executed hook with undefined forum_channel for no-forum lead", async () => {
+		// FLY-163: dept lead with no forum still routes to chat_channel
+		it("approve sends action_executed hook routed via chat_channel", async () => {
 			const noForumProjects: ProjectEntry[] = [
 				{
 					projectName: "geoforge3d",
@@ -592,7 +592,8 @@ describe("Action tools", () => {
 							agentId: "pm-lead",
 							chatChannel: "core-channel",
 							match: { labels: ["PM"] },
-							// No forumChannel
+							// FLY-163: PM leads must explicitly opt out
+							canSpawnRunners: false,
 						},
 					],
 				},
@@ -635,7 +636,7 @@ describe("Action tools", () => {
 				undefined,
 				undefined,
 				undefined,
-				undefined,
+				undefined, // _unusedForumTagUpdater (FLY-163)
 				nfRegistry,
 			);
 
@@ -645,7 +646,6 @@ describe("Action tools", () => {
 			const payload = nfEnvelopes[0].event;
 			expect(payload.event_type).toBe("action_executed");
 			expect(payload.action).toBe("approve");
-			expect(payload.forum_channel).toBeUndefined();
 			expect(payload.chat_channel).toBe("core-channel");
 		});
 	});
