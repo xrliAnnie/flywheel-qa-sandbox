@@ -24,6 +24,11 @@ export interface HookPayload {
 	action_target_status?: string;
 	action_reason?: string;
 	// FLY-62: gate_question event fields
+	// FLY-161: runner_question reuses question_id / from_agent / comm_db_path /
+	// summary — same schema as gate_question, but `checkpoint` is undefined for
+	// runner_question (non-blocking Runner ask via `flywheel-comm ask`). The
+	// distinguishing fields are `event_type` ("gate_question" vs "runner_question")
+	// and the presence/absence of `checkpoint`.
 	checkpoint?: string;
 	question_id?: string;
 	from_agent?: string;

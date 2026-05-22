@@ -100,7 +100,8 @@ Current version: see `doc/VERSION`
 | FLY-152 v1.27.0: shared channel reply discipline (base layer + Layer 1 tests) | ✅ Merged (PR #180) |
 | FLY-142 v1.27.1: vendor-neutral mailbox transport — Runner wake bug fix | ✅ Merged (PR #186) |
 | FLY-153 v1.27.0: QA framework mirror-channel mode for multi-Lead cascade + better-sqlite3 root cause fix | ✅ Merged (PR #183) |
-| FLY-159 v1.28.0: Generic gate timeout 48h default + fail-close + Discord escalation (gate_timed_out event) + Runner caps 49h + ConfigLoader 4h floor | 🚧 In progress (PR #190) |
+| FLY-159 v1.28.0: Generic gate timeout 48h default + fail-close + Discord escalation (gate_timed_out event) + Runner caps 49h + ConfigLoader 4h floor | ✅ Merged (PR #190) |
+| FLY-161 v1.28.1: Runner `flywheel-comm ask` → `runner_question` Bridge event (Lead inbox + Annie ping) | ⏳ Pending ship |
 
 ## Doc Structure & Lifecycle
 

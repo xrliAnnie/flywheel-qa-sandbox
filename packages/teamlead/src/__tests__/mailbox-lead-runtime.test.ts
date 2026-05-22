@@ -155,6 +155,39 @@ describe("MailboxLeadRuntime", () => {
 			expect(content).toContain("Forum-Thread: thread-x");
 		});
 
+		it("formats runner_question with [ASK] non-blocking framing (FLY-161)", async () => {
+			const transport = makeMockTransport();
+			const runtime = new MailboxLeadRuntime({
+				leadId: "product-lead",
+				transport,
+			});
+
+			await runtime.deliver(
+				makeEnvelope({
+					event: {
+						event_type: "runner_question",
+						execution_id: "exec-r",
+						issue_id: "issue-r",
+						issue_identifier: "FLY-161",
+						summary: "Use UTC?",
+						question_id: "q-r-1",
+						comm_db_path: "/tmp/comm.db",
+					},
+				}),
+			);
+
+			const content = (transport.write as ReturnType<typeof vi.fn>).mock
+				.calls[0][0].payload.content as string;
+			expect(content).toContain("[Event #42] runner_question");
+			expect(content).toContain(
+				"[ASK] Runner is asking (non-blocking — Runner continues working):",
+			);
+			expect(content).toContain("Use UTC?");
+			expect(content).toContain("Question ID: q-r-1");
+			expect(content).toContain("flywheel-comm respond");
+			expect(content).not.toContain("[BRAINSTORM]");
+		});
+
 		it("formats gate_question event with special structure", async () => {
 			const transport = makeMockTransport();
 			const runtime = new MailboxLeadRuntime({
@@ -464,6 +497,42 @@ describe("MailboxLeadRuntime", () => {
 					memoryRecall: null,
 				}),
 			).rejects.toThrow(/bootstrap write failed/);
+		});
+
+		it("renders Pending Runner Questions section with Chat-Thread row (FLY-161)", async () => {
+			const transport = makeMockTransport();
+			const runtime = new MailboxLeadRuntime({
+				leadId: "product-lead",
+				transport,
+			});
+
+			await runtime.sendBootstrap({
+				leadId: "product-lead",
+				activeSessions: [],
+				pendingDecisions: [],
+				recentFailures: [],
+				recentEvents: [],
+				memoryRecall: null,
+				pendingRunnerQuestions: [
+					{
+						questionId: "q-r-2",
+						executionId: "exec-r-2",
+						issueIdentifier: "FLY-161",
+						content: "Default timezone?",
+						commDbPath: "/tmp/comm.db",
+						createdAt: "2026-05-21T00:00:00Z",
+						chatThreadId: "thread-product-fly161",
+					},
+				],
+			});
+
+			const content = (transport.write as ReturnType<typeof vi.fn>).mock
+				.calls[0][0].payload.content as string;
+			expect(content).toContain("### Pending Runner Questions");
+			expect(content).toContain("[ASK] FLY-161");
+			expect(content).toContain("Default timezone?");
+			expect(content).toContain("Chat-Thread: thread-product-fly161");
+			expect(content).toContain("non-blocking");
 		});
 
 		it("bootstrap flywheelId is timestamp-based (non-idempotent across restarts)", async () => {

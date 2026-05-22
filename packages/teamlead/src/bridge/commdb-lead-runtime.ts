@@ -69,6 +69,31 @@ export class CommDBLeadRuntime implements LeadRuntime {
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
 
+		// FLY-161: runner_question — non-blocking Runner ask. Distinct prompt
+		// shape from gate_question: no checkpoint tag, framing emphasises
+		// "Runner continues working", points the Lead at `flywheel-comm respond`
+		// explicitly so the prompt is self-contained.
+		if (e.event_type === "runner_question") {
+			const issueRef = e.issue_identifier || e.issue_id;
+			const roleLabel =
+				e.session_role && e.session_role !== "main"
+					? `[${e.session_role.toUpperCase()}] `
+					: "";
+			const lines = [
+				`[Event #${env.seq}] ${roleLabel}runner_question`,
+				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
+				"[ASK] Runner is asking (non-blocking — Runner continues working):",
+				"---",
+				e.summary ?? "(no content)",
+				"---",
+				`Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`,
+				`Question ID: ${e.question_id}`,
+				`CommDB: ${e.comm_db_path}`,
+			];
+			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+			return lines.join("\n");
+		}
+
 		// FLY-62: gate_question gets a special format
 		if (e.event_type === "gate_question") {
 			const tag = e.checkpoint?.toUpperCase() ?? "GATE";
@@ -238,6 +263,29 @@ export class CommDBLeadRuntime implements LeadRuntime {
 			}
 			sections.push(
 				'Action: For each, relay to Annie, then: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> "reply"',
+			);
+			sections.push("");
+		}
+
+		// FLY-161: non-blocking Runner asks (`flywheel-comm ask`). Listed as a
+		// separate section so the Lead doesn't conflate them with hard gates.
+		if (snapshot.pendingRunnerQuestions?.length) {
+			sections.push("### Pending Runner Questions");
+			for (const rq of snapshot.pendingRunnerQuestions) {
+				const issue = rq.issueIdentifier ?? rq.executionId;
+				const roleLabel =
+					rq.sessionRole && rq.sessionRole !== "main"
+						? `[${rq.sessionRole.toUpperCase()}] `
+						: "";
+				const threadHint = rq.chatThreadId
+					? ` (Chat-Thread: ${rq.chatThreadId})`
+					: "";
+				sections.push(
+					`- ${roleLabel}[ASK] ${issue} (ID: ${rq.questionId}, DB: ${rq.commDbPath})${threadHint}: ${rq.content.slice(0, 200)}${rq.content.length > 200 ? "..." : ""}`,
+				);
+			}
+			sections.push(
+				'Action: Surface each to Annie (Runner is continuing work — non-blocking). Reply with: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> "reply"',
 			);
 			sections.push("");
 		}

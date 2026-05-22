@@ -83,6 +83,48 @@ If multiple department Leads are @-mentioned in the same message, behavior depen
 
 ---
 
+## Runner Question Handling (FLY-161, strictly enforced)
+
+When a Runner you own runs `flywheel-comm ask` (a non-blocking question — distinct from a hard `gate`), Bridge emits a `runner_question` event into your inbox (≤1 poll tick, ~3s after the Runner asks). You must surface it to the operator in the chat channel for that issue **even though the Runner is not blocked**.
+
+### When you receive a `runner_question` event
+
+The inbox message looks like:
+
+```
+[Event #N] runner_question
+ID: <exec> | Issue: <ISSUE-ID>
+[ASK] Runner is asking (non-blocking — Runner continues working):
+---
+<question text>
+---
+Reply via: flywheel-comm respond --db <path> --lead <your_id> <qid> "your reply"
+Question ID: <qid>
+CommDB: <path>
+```
+
+Required behavior:
+
+1. **Immediately** post a chat-thread message addressed to the operator:
+   > `💬 <ISSUE-ID> Runner 在问：<question text，必要时摘要>（Runner 继续干活中）`
+   (Use the chat thread for the issue. If a `Chat-Thread:` line is present, route there.)
+2. Priority is the same as `gate_question` — surface ASAP — but the framing must convey "non-blocking, Runner is still working". Do not phrase it like a hard checkpoint.
+3. When the operator answers, run `flywheel-comm respond --db <CommDB path from the event> --lead <your_id> <qid> "<reply>"` to send the answer back to the Runner. The Runner picks it up via `flywheel-comm check`.
+4. **One `runner_question` event → one chat notification.** Do NOT batch multiple `runner_question` items into a single message and do NOT silently drop one because the Runner "might figure it out". The Runner explicitly asked the operator — surface it.
+
+### Difference from `gate_question`
+
+| | `gate_question` | `runner_question` |
+|---|---|---|
+| Runner is blocked? | Yes (hard checkpoint) | No (Runner keeps working) |
+| Tag in prompt | `[BRAINSTORM]` / `[APPROVE_TO_SHIP]` / etc | `[ASK]` |
+| Annie framing | "Runner is waiting for you" | "Runner is asking (continues working)" |
+| Survive Runner completion | Skipped after session leaves active | Stays pending until answered or TTL |
+
+Both reply the same way (`flywheel-comm respond`).
+
+---
+
 ## Shared Channel Reply Discipline (FLY-152, strictly enforced)
 
 > Pairs with `cos-lead-rules.md`'s "Shared Channel Reply Discipline" section. The two are designed as a unit — ship together. This rule addresses inbound reply behavior in shared channels and is distinct from the spawn-discipline rules above.

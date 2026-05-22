@@ -475,15 +475,20 @@ export class Blueprint {
 			systemPromptLines.unshift(...onboardPreamble);
 		}
 
-		// GEO-206: Inject flywheel-comm ask instructions when Lead is available
+		// GEO-206 / FLY-161: Inject flywheel-comm ask instructions when Lead is available
 		if (ctx.leadId) {
 			systemPromptLines.push(
 				`Prefer independent implementation. If you encounter a major ambiguity ` +
 					`(architecture choice, API design, priority conflict) that you cannot safely ` +
-					`resolve alone, use \`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} "your question"\` ` +
-					`to ask your Lead. Then continue with other work and periodically run ` +
-					`\`node ${commCliPath} check {question_id}\` to check for a response. ` +
-					`If no response arrives before your session ends, use your best judgment.`,
+					`resolve alone but is NOT a hard checkpoint, use ` +
+					`\`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} "your question"\` ` +
+					`— this is NON-BLOCKING: Bridge surfaces the question to your Lead within ~3 seconds ` +
+					`(one GatePoller tick) while you continue working on other parts of the task. ` +
+					`Then periodically run \`node ${commCliPath} check {question_id}\` to check for a response. ` +
+					`If no response arrives before your session ends, use your best judgment. ` +
+					`For HARD CHECKPOINTS where you MUST wait for a Lead decision before continuing ` +
+					`(e.g. brainstorm understanding, approve_to_ship), use the \`gate\` commands described ` +
+					`later in this prompt — those BLOCK until the Lead responds.`,
 			);
 			// GEO-266: Inbox instructions — auto-injected via PostToolUse hook, with manual fallback
 			systemPromptLines.push(
