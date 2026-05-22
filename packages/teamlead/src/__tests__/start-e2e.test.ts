@@ -46,15 +46,14 @@ const testProjects: ProjectEntry[] = [
 				chatChannel: "test-ops-chat",
 				match: { labels: ["Ops"] },
 			},
-			// FLY-127: cos-lead with no forumChannel → loadProjects derives
-			// canSpawnRunners=false. Used for `lead_cannot_spawn` tests.
-			// (Hand-written fixture skips loadProjects, so we rely on
-			// DepartmentRegistry's `effectiveCanSpawn` fallback to derive
-			// from forumChannel at runtime.)
+			// FLY-127 / FLY-163: cos-lead has explicit canSpawnRunners: false.
+			// Used for `lead_cannot_spawn` tests. (Hand-written fixture skips
+			// loadProjects PM/Triage validator, so we set the field directly.)
 			{
 				agentId: "cos-lead",
 				chatChannel: "test-cos-chat",
 				match: { labels: ["PM"] },
+				canSpawnRunners: false,
 			},
 		],
 	},
@@ -457,7 +456,7 @@ describe("Start API E2E", () => {
 			expect(mockDispatcher.start).not.toHaveBeenCalled();
 		});
 
-		it("403 DEPT_SCOPE_REJECT lead_cannot_spawn when cos-lead (no forumChannel) calls /start", async () => {
+		it("403 DEPT_SCOPE_REJECT lead_cannot_spawn when cos-lead (canSpawnRunners: false) calls /start", async () => {
 			await mockIssueLabels(["PM"]);
 			const res = await fetch(`${baseUrl}/api/runs/start`, {
 				method: "POST",

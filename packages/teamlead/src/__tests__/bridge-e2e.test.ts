@@ -332,8 +332,8 @@ describe("Bridge E2E lifecycle", () => {
 		expect(body.count).toBe(2);
 	});
 
-	// GEO-275: full lifecycle with a no-forum PM lead
-	it("full lifecycle works for lead without forumChannel", async () => {
+	// FLY-163: full lifecycle for a PM lead (formerly "no forum")
+	it("full lifecycle works for PM lead routed via chat_channel", async () => {
 		const noForumProjects: ProjectEntry[] = [
 			{
 				projectName: "geoforge3d",
@@ -342,15 +342,14 @@ describe("Bridge E2E lifecycle", () => {
 				leads: [
 					{
 						agentId: "product-lead",
-						forumChannel: "test-channel",
 						chatChannel: "test-chat",
 						match: { labels: ["Product"] },
 					},
 					{
 						agentId: "pm-lead",
-						// No forumChannel — PM lead
 						chatChannel: "core-channel",
 						match: { labels: ["PM"] },
+						canSpawnRunners: false,
 					},
 				],
 			},
@@ -456,9 +455,8 @@ describe("Bridge E2E lifecycle", () => {
 			);
 			expect(pmEnvelopes.length).toBeGreaterThanOrEqual(1);
 
-			// 4. Verify forum_channel is undefined in pm-lead envelopes
+			// 4. Verify chat_channel routing in pm-lead envelopes (FLY-163: forum_channel removed)
 			for (const env of pmEnvelopes) {
-				expect(env.event.forum_channel).toBeUndefined();
 				expect(env.event.chat_channel).toBe("core-channel");
 			}
 
@@ -487,9 +485,9 @@ describe("Bridge E2E lifecycle", () => {
 			);
 			expect(prodEnvelopes.length).toBeGreaterThanOrEqual(1);
 
-			// Product lead envelopes SHOULD have forum_channel
+			// FLY-163: forum_channel field removed; product lead envelopes route via chat_channel.
 			const prodEnv = prodEnvelopes[prodEnvelopes.length - 1]!;
-			expect(prodEnv.event.forum_channel).toBe("test-channel");
+			expect(prodEnv.event.chat_channel).toBe("test-chat");
 		} finally {
 			await new Promise<void>((resolve, reject) => {
 				server2.close((err) => (err ? reject(err) : resolve()));

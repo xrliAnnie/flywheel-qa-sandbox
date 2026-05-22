@@ -301,7 +301,6 @@ describe("RegistryHeartbeatNotifier", () => {
 			project_name: "geo",
 			status: "running",
 			issue_identifier: "GEO-100",
-			thread_id: "1234.5678",
 		};
 
 		await notifier.onSessionStuck(session, 30);
@@ -312,8 +311,7 @@ describe("RegistryHeartbeatNotifier", () => {
 		expect(env.sessionKey).toBe("flywheel:GEO-100");
 		expect(env.event.event_type).toBe("session_stuck");
 		expect(env.event.minutes_since_activity).toBe(30);
-		expect(env.event.thread_id).toBe("1234.5678");
-		expect(env.event.forum_channel).toBe("test-channel");
+		// FLY-163: thread_id + forum_channel removed from HookPayload
 
 		hbStore.close();
 	});
@@ -332,7 +330,6 @@ describe("RegistryHeartbeatNotifier", () => {
 			project_name: "geo",
 			status: "running",
 			issue_identifier: "GEO-200",
-			thread_id: "5678.1234",
 		};
 
 		await notifier.onSessionOrphaned(session, 75);
@@ -344,8 +341,7 @@ describe("RegistryHeartbeatNotifier", () => {
 		expect(env.event.event_type).toBe("session_orphaned");
 		expect(env.event.status).toBe("failed");
 		expect(env.event.minutes_since_activity).toBe(75);
-		expect(env.event.thread_id).toBe("5678.1234");
-		expect(env.event.forum_channel).toBe("test-channel");
+		// FLY-163: thread_id + forum_channel removed from HookPayload
 
 		hbStore.close();
 	});
@@ -373,8 +369,8 @@ describe("RegistryHeartbeatNotifier", () => {
 		hbStore.close();
 	});
 
-	// GEO-275: no-forum lead heartbeat notification
-	it("sends session_stuck with undefined forum_channel for no-forum lead", async () => {
+	// FLY-163: PM/triage lead heartbeat notification (formerly "no-forum")
+	it("sends session_stuck for PM lead routed via chat_channel", async () => {
 		const noForumProjects: ProjectEntry[] = [
 			{
 				projectName: "geo-nf",
@@ -384,7 +380,7 @@ describe("RegistryHeartbeatNotifier", () => {
 						agentId: "pm-lead",
 						chatChannel: "core-channel",
 						match: { labels: ["PM"] },
-						// No forumChannel
+						canSpawnRunners: false,
 					},
 				],
 			},
@@ -427,7 +423,6 @@ describe("RegistryHeartbeatNotifier", () => {
 
 		expect(envelopes).toHaveLength(1);
 		expect(envelopes[0].event.event_type).toBe("session_stuck");
-		expect(envelopes[0].event.forum_channel).toBeUndefined();
 		expect(envelopes[0].event.chat_channel).toBe("core-channel");
 
 		hbStore.close();

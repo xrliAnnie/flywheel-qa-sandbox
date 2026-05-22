@@ -128,8 +128,7 @@ cat > "$STATE_DIR/access.json" << 'EOF'
   "dmPolicy": "pairing",
   "allowFrom": ["1138241636057481306"],
   "groups": {
-    "{chat-channel-id}": { "requireMention": false, "allowFrom": [] },
-    "{forum-channel-id}": { "requireMention": false, "allowFrom": [] }
+    "{chat-channel-id}": { "requireMention": false, "allowFrom": [] }
   },
   "pending": {}
 }
@@ -193,11 +192,14 @@ Add or update the lead entry in `~/.flywheel/projects.json`:
 ```json
 {
   "agentId": "{lead-name}",
-  "forumChannel": "{forum-id}",
   "chatChannel": "{chat-id}",
   "match": { "labels": ["{Label}"] }
 }
 ```
+
+> FLY-163: forum channel concept removed. If your config still has a
+> `forumChannel` field, ProjectConfig strips it with a deprecation warning at
+> load — clean it up next time you edit projects.json.
 
 ---
 

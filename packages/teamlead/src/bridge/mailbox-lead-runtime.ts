@@ -301,8 +301,6 @@ export class MailboxLeadRuntime implements LeadRuntime {
 		}
 		if (e.pr_number) lines.push(`PR: #${e.pr_number}`);
 		if (e.stage_context) lines.push(`Note: ${e.stage_context}`);
-		if (e.thread_id) lines.push(`Forum-Thread: ${e.thread_id}`);
-		if (e.forum_channel) lines.push(`Forum: ${e.forum_channel}`);
 		if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 
 		lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);

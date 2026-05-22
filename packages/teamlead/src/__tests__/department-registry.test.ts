@@ -1,5 +1,5 @@
 /**
- * FLY-127: DepartmentRegistry — server-side spawn scope authorization.
+ * FLY-127 / FLY-163: DepartmentRegistry — server-side spawn scope authorization.
  *
  * Decision precedence in isLeadInScope:
  *   1. project_unknown
@@ -10,8 +10,9 @@
  *   6. label_mismatch
  *   7. ok
  *
- * canSpawnRunners semantics:
- *   - Defaults to Boolean(forumChannel) when the field is absent
+ * canSpawnRunners semantics (FLY-163):
+ *   - Defaults to `true` when the field is absent (PM/triage leads must opt out
+ *     with explicit `canSpawnRunners: false`)
  *   - Explicit value (true/false) always wins
  *   - Registry must defend even if loadProjects() normalization is bypassed
  *     (e.g., hand-written ProjectEntry[] in tests)
@@ -27,44 +28,43 @@ const baseProject = (): ProjectEntry => ({
 	leads: [
 		{
 			agentId: "product-lead",
-			forumChannel: "p-forum",
 			chatChannel: "p-chat",
 			match: { labels: ["Product"] },
 		},
 		{
 			agentId: "ops-lead",
-			forumChannel: "o-forum",
 			chatChannel: "o-chat",
 			match: { labels: ["Operations"] },
 		},
 		{
 			agentId: "cos-lead",
-			// no forumChannel → auto-derives canSpawnRunners=false
 			chatChannel: "c-chat",
 			match: { labels: ["PM"] },
+			// FLY-163: PM/triage leads MUST set explicit canSpawnRunners: false
+			canSpawnRunners: false,
 		},
 	],
 });
 
 describe("DepartmentRegistry — canSpawnRunners", () => {
-	it("auto-derives true when forumChannel is set and field absent", () => {
+	it("defaults to true when field is absent (FLY-163)", () => {
 		const registry = new DepartmentRegistry([baseProject()]);
 		expect(registry.canSpawnRunners("TestProject", "product-lead")).toBe(true);
 	});
 
-	it("auto-derives false when forumChannel is missing and field absent", () => {
+	it("explicit false honored for PM/triage lead (FLY-163)", () => {
 		const registry = new DepartmentRegistry([baseProject()]);
 		expect(registry.canSpawnRunners("TestProject", "cos-lead")).toBe(false);
 	});
 
-	it("explicit true overrides forumChannel-absent default", () => {
+	it("explicit true on a PM lead is honored by registry (validator is in loadProjects, not here)", () => {
 		const project = baseProject();
 		project.leads[2]!.canSpawnRunners = true;
 		const registry = new DepartmentRegistry([project]);
 		expect(registry.canSpawnRunners("TestProject", "cos-lead")).toBe(true);
 	});
 
-	it("explicit false overrides forumChannel-present default", () => {
+	it("explicit false overrides default-true for a dept lead", () => {
 		const project = baseProject();
 		project.leads[0]!.canSpawnRunners = false;
 		const registry = new DepartmentRegistry([project]);
@@ -213,7 +213,7 @@ describe("DepartmentRegistry — isLeadInScope (precedence)", () => {
 
 	it("precedence 3: lead_cannot_spawn beats label checks", () => {
 		const registry = new DepartmentRegistry([baseProject()]);
-		// cos-lead has PM label but cannot spawn (no forumChannel).
+		// cos-lead has PM label + explicit canSpawnRunners: false (FLY-163).
 		// Even if we hand it an Operations label, reason should be lead_cannot_spawn,
 		// not label_mismatch — the precedence rule.
 		const d = registry.isLeadInScope("TestProject", "cos-lead", ["Operations"]);

@@ -46,7 +46,6 @@ cat > "$PROJECTS_FILE" <<JSON
     "leads": [
       {
         "agentId": "test-lead",
-        "forumChannel": "222222222222222222",
         "chatChannel": "333333333333333333",
         "alertChannel": "444444444444444444",
         "alertBotTokenEnv": "FLYWHEEL_TEST_BOT_TOKEN",

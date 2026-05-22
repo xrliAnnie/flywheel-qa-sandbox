@@ -15,10 +15,6 @@ import type { Session, StateStore } from "../StateStore.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { AUTO_CLOSE_STATES, closeRunner } from "./close-runner.js";
 import type { EventFilter } from "./EventFilter.js";
-import {
-	type ForumTagUpdater,
-	postThreadStatusMessage,
-} from "./ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
@@ -64,7 +60,6 @@ function sendActionHook(
 	targetStatus: string,
 	reason?: string,
 	eventFilter?: EventFilter,
-	forumTagUpdater?: ForumTagUpdater,
 	registry?: RuntimeRegistry,
 	config?: BridgeConfig,
 ): void {
@@ -78,8 +73,6 @@ function sendActionHook(
 			session.project_name,
 			labels,
 		);
-		const existingThread = store.getThreadByIssue(session.issue_id);
-		const forumChannel = existingThread?.channel ?? lead.forumChannel;
 		const hookPayload: HookPayload = {
 			event_type: "action_executed",
 			execution_id: session.execution_id,
@@ -88,8 +81,6 @@ function sendActionHook(
 			issue_title: session.issue_title,
 			project_name: session.project_name,
 			status: targetStatus,
-			thread_id: session.thread_id,
-			forum_channel: forumChannel,
 			chat_channel: lead.chatChannel,
 			issue_labels: labels,
 			session_role: session.session_role ?? "main",
@@ -109,8 +100,7 @@ function sendActionHook(
 		}
 
 		const doDeliver = async () => {
-			// FLY-47: Classify event — priority hints + Forum gating
-			let updateForum = true; // default: update Forum when no filter
+			// FLY-47 / FLY-163: Classify event — priority hints (chat-only).
 			if (eventFilter) {
 				const filterResult = eventFilter.classify(
 					"action_executed",
@@ -118,31 +108,7 @@ function sendActionHook(
 				);
 				hookPayload.filter_priority = filterResult.priority;
 				hookPayload.notification_context = filterResult.reason;
-				updateForum = filterResult.updateForum;
 			}
-
-			// Forum tag update — only for status-changing events
-			let tagResult: HookPayload["forum_tag_update_result"];
-			if (updateForum && forumTagUpdater) {
-				tagResult = await forumTagUpdater.updateTag({
-					threadId: session.thread_id,
-					status: targetStatus,
-					eventType: "action_executed",
-					action,
-					discordBotToken: lead.botToken ?? config?.discordBotToken,
-					statusTagMap: lead.statusTagMap,
-				});
-				// FLY-24: Post status change message to Forum thread
-				if (tagResult === "succeeded") {
-					await postThreadStatusMessage({
-						threadId: session.thread_id,
-						previousStatus: sourceStatus,
-						newStatus: targetStatus,
-						botToken: lead.botToken ?? config?.discordBotToken,
-					});
-				}
-			}
-			hookPayload.forum_tag_update_result = tagResult;
 
 			// FLY-47: Always deliver ALL events to Lead
 			const eventId = `action-${executionId}-${action}-${Date.now()}`;
@@ -193,7 +159,8 @@ export async function approveExecution(
 	config?: BridgeConfig,
 	cipherWriter?: CipherWriter,
 	eventFilter?: EventFilter,
-	forumTagUpdater?: ForumTagUpdater,
+	/** FLY-163: positional slot kept (was forumTagUpdater); now ignored. */
+	_unusedForumTagUpdater?: unknown,
 	registry?: RuntimeRegistry,
 	_onApproved?: (executionId: string, session: Session) => void,
 ): Promise<ActionResult> {
@@ -281,7 +248,6 @@ export async function approveExecution(
 		"approved_to_ship",
 		undefined,
 		eventFilter,
-		forumTagUpdater,
 		registry,
 		config,
 	);
@@ -361,7 +327,8 @@ export async function transitionSession(
 	cipherWriter?: CipherWriter,
 	projects?: ProjectEntry[],
 	eventFilter?: EventFilter,
-	forumTagUpdater?: ForumTagUpdater,
+	/** FLY-163: positional slot kept (was forumTagUpdater); now ignored. */
+	_unusedForumTagUpdater?: unknown,
 	registry?: RuntimeRegistry,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
@@ -441,17 +408,11 @@ export async function transitionSession(
 		targetStatus,
 		reason,
 		eventFilter,
-		forumTagUpdater,
 		registry,
 		config,
 	);
 
-	if (action === "retry") {
-		const thread = store.getThreadByIssue(session.issue_id);
-		if (thread?.thread_id) {
-			store.clearArchived(thread.thread_id);
-		}
-	}
+	// FLY-163: retry no longer un-archives a forum thread (forum removed).
 
 	// FLY-116: when an action transitions session to an AUTO_CLOSE state
 	// (rejected / deferred / shelved / terminated), also kill tmux + close
@@ -497,7 +458,6 @@ async function handleRetry(
 	config?: BridgeConfig,
 	projects?: ProjectEntry[],
 	eventFilter?: EventFilter,
-	forumTagUpdater?: ForumTagUpdater,
 	ceoContext?: string,
 	registry?: RuntimeRegistry,
 ): Promise<ActionResult> {
@@ -702,11 +662,7 @@ async function handleRetry(
 			});
 		}
 
-		// Unarchive thread
-		const thread = store.getThreadByIssue(session.issue_id);
-		if (thread?.thread_id) {
-			store.clearArchived(thread.thread_id);
-		}
+		// FLY-163: forum thread unarchive removed (forum gone).
 
 		// Post Linear comment (best-effort)
 		postRetryComment(
@@ -727,7 +683,6 @@ async function handleRetry(
 			"running",
 			reason,
 			eventFilter,
-			forumTagUpdater,
 			registry,
 			config,
 		);
@@ -777,7 +732,6 @@ async function handleTerminate(
 	config?: BridgeConfig,
 	projects?: ProjectEntry[],
 	eventFilter?: EventFilter,
-	forumTagUpdater?: ForumTagUpdater,
 	registry?: RuntimeRegistry,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
@@ -866,7 +820,6 @@ async function handleTerminate(
 		"terminated",
 		"Terminated by CEO",
 		eventFilter,
-		forumTagUpdater,
 		registry,
 		config,
 	);
@@ -931,7 +884,8 @@ export function createActionRouter(
 	retryDispatcher?: IRetryDispatcher,
 	cipherWriter?: CipherWriter,
 	eventFilter?: EventFilter,
-	forumTagUpdater?: ForumTagUpdater,
+	/** FLY-163: positional slot kept (was forumTagUpdater); now ignored. */
+	_unusedForumTagUpdater?: unknown,
 	registry?: RuntimeRegistry,
 	onApproved?: (executionId: string, session: Session) => void,
 ): Router {
@@ -970,7 +924,7 @@ export function createActionRouter(
 					config,
 					cipherWriter,
 					eventFilter,
-					forumTagUpdater,
+					undefined, // _unusedForumTagUpdater (FLY-163)
 					registry,
 					onApproved,
 				);
@@ -1014,7 +968,6 @@ export function createActionRouter(
 					config,
 					projects,
 					eventFilter,
-					forumTagUpdater,
 					registry,
 				);
 				if (terminateResult.success) {
@@ -1057,7 +1010,6 @@ export function createActionRouter(
 						config,
 						projects,
 						eventFilter,
-						forumTagUpdater,
 						typeof context === "string" ? context : undefined,
 						registry,
 					);
@@ -1086,7 +1038,7 @@ export function createActionRouter(
 						cipherWriter,
 						projects,
 						eventFilter,
-						forumTagUpdater,
+						undefined, // _unusedForumTagUpdater (FLY-163)
 						registry,
 					);
 					if (actionResult.success) {
@@ -1127,7 +1079,7 @@ export function createActionRouter(
 					cipherWriter,
 					projects,
 					eventFilter,
-					forumTagUpdater,
+					undefined, // _unusedForumTagUpdater (FLY-163)
 					registry,
 				);
 				if (actionResult.success) {

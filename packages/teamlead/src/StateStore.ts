@@ -59,7 +59,6 @@ export interface SessionUpsert {
 	diff_summary?: string;
 	commit_messages?: string;
 	changed_file_paths?: string;
-	thread_id?: string;
 	session_params?: string;
 	heartbeat_at?: string;
 	adapter_type?: string;
@@ -106,7 +105,6 @@ export interface Session {
 	diff_summary?: string;
 	commit_messages?: string;
 	changed_file_paths?: string;
-	thread_id?: string;
 	session_params?: string;
 	heartbeat_at?: string;
 	adapter_type?: string;
@@ -129,13 +127,7 @@ export interface Session {
 	codex_skip?: boolean;
 }
 
-export interface CleanupCandidate {
-	thread_id: string;
-	issue_id: string;
-	status: string;
-	last_activity_at: string;
-	cleanup_notified_at: string | null;
-}
+// FLY-163: CleanupCandidate removed (CleanupService gone).
 
 export class StateStore {
 	private db: Database;
@@ -221,15 +213,11 @@ export class StateStore {
 			)
 		`);
 
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS conversation_threads (
-				thread_id TEXT PRIMARY KEY,
-				channel TEXT NOT NULL,
-				issue_id TEXT,
-				summary TEXT,
-				last_updated TEXT NOT NULL DEFAULT (datetime('now'))
-			)
-		`);
+		// FLY-163: forum `conversation_threads` table dropped. Per-issue chat
+		// threads live in `chat_threads` (FLY-91). The `sessions.thread_id`
+		// physical column is kept for backward compat (deprecated; no TS surface
+		// reads/writes it) and will be removed in a follow-up via table-rename.
+		this.db.run("DROP TABLE IF EXISTS conversation_threads");
 
 		// Migration: rename slack_thread_ts → thread_id (existing DBs)
 		// Three cases: (a) fresh DB → DDL already has thread_id, skip
@@ -255,29 +243,10 @@ export class StateStore {
 		}
 		// Case (a): fresh DB — thread_id already in DDL, nothing to do
 
-		// Same logic for conversation_threads
-		const hasOldThreadTs = this.db.exec(
-			"SELECT 1 FROM pragma_table_info('conversation_threads') WHERE name='thread_ts'",
-		);
-		const hasNewThreadId = this.db.exec(
-			"SELECT 1 FROM pragma_table_info('conversation_threads') WHERE name='thread_id'",
-		);
-		if (hasOldThreadTs.length > 0 && hasOldThreadTs[0]!.values.length > 0) {
-			this.db.run(
-				"ALTER TABLE conversation_threads RENAME COLUMN thread_ts TO thread_id",
-			);
-		} else if (
-			hasNewThreadId.length === 0 ||
-			hasNewThreadId[0]!.values.length === 0
-		) {
-			this.db.run("ALTER TABLE conversation_threads ADD COLUMN thread_id TEXT");
-		}
-
 		// Cutover: clear stale Slack thread mappings (one-time, guarded by user_version)
 		const versionResult = this.db.exec("PRAGMA user_version");
 		const currentVersion = (versionResult[0]?.values[0]?.[0] as number) ?? 0;
 		if (currentVersion < 2) {
-			this.db.run("DELETE FROM conversation_threads");
 			this.db.run("UPDATE sessions SET thread_id = NULL");
 			this.db.run("PRAGMA user_version = 2");
 		}
@@ -319,30 +288,7 @@ export class StateStore {
 			this.db.run("ALTER TABLE sessions ADD COLUMN issue_labels TEXT");
 		} catch {}
 
-		// GEO-169: cleanup tracking columns
-		try {
-			this.db.run(
-				"ALTER TABLE conversation_threads ADD COLUMN archived_at TEXT",
-			);
-		} catch {
-			/* exists */
-		}
-		try {
-			this.db.run(
-				"ALTER TABLE conversation_threads ADD COLUMN cleanup_notified_at TEXT",
-			);
-		} catch {
-			/* exists */
-		}
-
-		// GEO-200: Track threads that no longer exist in Discord
-		try {
-			this.db.run(
-				"ALTER TABLE conversation_threads ADD COLUMN discord_missing_at TEXT",
-			);
-		} catch {
-			/* exists */
-		}
+		// FLY-163: GEO-169 / GEO-200 conversation_threads ALTERs removed (table dropped).
 
 		// GEO-292: PR number + session stage tracking
 		try {
@@ -396,20 +342,8 @@ export class StateStore {
 			/* exists */
 		}
 
-		// Rebuild unique index with current column name
+		// FLY-163: drop legacy conversation_threads index (table is gone).
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
-		// Ensure one issue = one canonical thread: clean up historical duplicates
-		this.db.run(`
-			DELETE FROM conversation_threads
-			WHERE rowid NOT IN (
-				SELECT MAX(rowid) FROM conversation_threads
-				WHERE issue_id IS NOT NULL
-				GROUP BY issue_id
-			) AND issue_id IS NOT NULL
-		`);
-		this.db.run(
-			"CREATE UNIQUE INDEX IF NOT EXISTS idx_threads_issue ON conversation_threads(issue_id)",
-		);
 
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_events_execution ON session_events(execution_id)",
@@ -533,11 +467,10 @@ export class StateStore {
 				last_error, decision_route, decision_reasoning,
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
-				thread_id,
 				session_params, heartbeat_at, adapter_type, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -561,7 +494,6 @@ export class StateStore {
 				diff_summary = COALESCE(excluded.diff_summary, diff_summary),
 				commit_messages = COALESCE(excluded.commit_messages, commit_messages),
 				changed_file_paths = COALESCE(excluded.changed_file_paths, changed_file_paths),
-				thread_id = COALESCE(excluded.thread_id, thread_id),
 				session_params = COALESCE(excluded.session_params, session_params),
 				heartbeat_at = COALESCE(excluded.heartbeat_at, heartbeat_at),
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
@@ -598,7 +530,6 @@ export class StateStore {
 				session.diff_summary ?? null,
 				session.commit_messages ?? null,
 				session.changed_file_paths ?? null,
-				session.thread_id ?? null,
 				session.session_params ?? null,
 				session.heartbeat_at ?? null,
 				session.adapter_type ?? null,
@@ -635,11 +566,10 @@ export class StateStore {
 				last_error, decision_route, decision_reasoning,
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
-				thread_id,
 				session_params, heartbeat_at, adapter_type, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -663,7 +593,6 @@ export class StateStore {
 				diff_summary = COALESCE(excluded.diff_summary, diff_summary),
 				commit_messages = COALESCE(excluded.commit_messages, commit_messages),
 				changed_file_paths = COALESCE(excluded.changed_file_paths, changed_file_paths),
-				thread_id = COALESCE(excluded.thread_id, thread_id),
 				session_params = COALESCE(excluded.session_params, session_params),
 				heartbeat_at = COALESCE(excluded.heartbeat_at, heartbeat_at),
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
@@ -700,7 +629,6 @@ export class StateStore {
 				fields.diff_summary ?? null,
 				fields.commit_messages ?? null,
 				fields.changed_file_paths ?? null,
-				fields.thread_id ?? null,
 				fields.session_params ?? null,
 				fields.heartbeat_at ?? null,
 				fields.adapter_type ?? null,
@@ -751,7 +679,6 @@ export class StateStore {
 			diff_summary: "diff_summary",
 			commit_messages: "commit_messages",
 			changed_file_paths: "changed_file_paths",
-			thread_id: "thread_id",
 			session_params: "session_params",
 			heartbeat_at: "heartbeat_at",
 			adapter_type: "adapter_type",
@@ -951,65 +878,8 @@ export class StateStore {
 		return undefined;
 	}
 
-	upsertThread(threadId: string, channel: string, issueId: string): void {
-		// One issue = one canonical thread: remove any prior mapping for this issue
-		// (unless it's the same thread_id, in which case the INSERT handles it)
-		this.db.run(
-			"DELETE FROM conversation_threads WHERE issue_id = ? AND thread_id != ?",
-			[issueId, threadId],
-		);
-		this.db.run(
-			`INSERT INTO conversation_threads (thread_id, channel, issue_id)
-			 VALUES (?, ?, ?)
-			 ON CONFLICT(thread_id) DO UPDATE SET
-				channel = excluded.channel,
-				issue_id = excluded.issue_id,
-				last_updated = datetime('now')`,
-			[threadId, channel, issueId],
-		);
-		this.save();
-	}
-
-	getThreadIssue(threadId: string): string | undefined {
-		const stmt = this.db.prepare(
-			"SELECT issue_id FROM conversation_threads WHERE thread_id = ? AND discord_missing_at IS NULL",
-		);
-		stmt.bind([threadId]);
-		if (stmt.step()) {
-			const row = stmt.getAsObject() as Record<string, unknown>;
-			stmt.free();
-			return row.issue_id as string;
-		}
-		stmt.free();
-		return undefined;
-	}
-
-	getThreadByIssue(
-		issueId: string,
-	): { thread_id: string; channel: string } | undefined {
-		const stmt = this.db.prepare(
-			"SELECT thread_id, channel FROM conversation_threads WHERE issue_id = ? AND discord_missing_at IS NULL",
-		);
-		stmt.bind([issueId]);
-		if (stmt.step()) {
-			const row = stmt.getAsObject() as Record<string, unknown>;
-			stmt.free();
-			return {
-				thread_id: row.thread_id as string,
-				channel: row.channel as string,
-			};
-		}
-		stmt.free();
-		return undefined;
-	}
-
-	setSessionThreadId(executionId: string, threadId: string): void {
-		this.db.run("UPDATE sessions SET thread_id = ? WHERE execution_id = ?", [
-			threadId,
-			executionId,
-		]);
-		this.save();
-	}
+	// FLY-163: upsertThread / getThreadIssue / getThreadByIssue /
+	// setSessionThreadId removed — conversation_threads table dropped.
 
 	getLatestSessionByIssueAndStatuses(
 		issueId: string,
@@ -1206,69 +1076,9 @@ export class StateStore {
 		return undefined;
 	}
 
-	getEligibleForCleanup(thresholdMinutes: number): CleanupCandidate[] {
-		const stmt = this.db.prepare(`
-			SELECT ct.thread_id, ct.issue_id, latest.status, latest.last_activity_at, ct.cleanup_notified_at
-			FROM conversation_threads ct
-			INNER JOIN (
-				SELECT issue_id, status, last_activity_at,
-					ROW_NUMBER() OVER (PARTITION BY issue_id ORDER BY last_activity_at DESC, started_at DESC, execution_id DESC) AS rn
-				FROM sessions
-			) latest ON latest.issue_id = ct.issue_id AND latest.rn = 1
-			WHERE latest.status IN ('completed', 'approved', 'approved_to_ship')
-				AND latest.last_activity_at < datetime('now', '-' || ? || ' minutes')
-				AND ct.thread_id IS NOT NULL AND ct.archived_at IS NULL AND ct.discord_missing_at IS NULL
-			ORDER BY latest.last_activity_at ASC
-		`);
-		stmt.bind([thresholdMinutes]);
-		const rows: CleanupCandidate[] = [];
-		while (stmt.step()) {
-			const row = stmt.getAsObject() as Record<string, unknown>;
-			rows.push({
-				thread_id: row.thread_id as string,
-				issue_id: row.issue_id as string,
-				status: row.status as string,
-				last_activity_at: row.last_activity_at as string,
-				cleanup_notified_at: (row.cleanup_notified_at as string) ?? null,
-			});
-		}
-		stmt.free();
-		return rows;
-	}
-	markArchived(threadId: string): void {
-		this.db.run(
-			"UPDATE conversation_threads SET archived_at = datetime('now') WHERE thread_id = ?",
-			[threadId],
-		);
-		this.save();
-	}
-	markCleanupNotified(threadId: string): void {
-		this.db.run(
-			"UPDATE conversation_threads SET cleanup_notified_at = datetime('now') WHERE thread_id = ?",
-			[threadId],
-		);
-		this.save();
-	}
-	clearArchived(threadId: string): void {
-		this.db.run(
-			"UPDATE conversation_threads SET archived_at = NULL, cleanup_notified_at = NULL WHERE thread_id = ?",
-			[threadId],
-		);
-		this.save();
-	}
-
-	/** GEO-200: Mark thread as no longer existing in Discord + clear all session references. */
-	markDiscordMissing(threadId: string): void {
-		this.db.run(
-			"UPDATE conversation_threads SET discord_missing_at = datetime('now') WHERE thread_id = ?",
-			[threadId],
-		);
-		// Clear stale session references
-		this.db.run("UPDATE sessions SET thread_id = NULL WHERE thread_id = ?", [
-			threadId,
-		]);
-		this.save();
-	}
+	// FLY-163: forum thread cleanup methods (getEligibleForCleanup, markArchived,
+	// markCleanupNotified, clearArchived, markDiscordMissing) removed — forum
+	// channel concept gone.
 
 	// --- FLY-91: Chat thread CRUD (per-issue threads in chatChannel) ---
 
@@ -1369,7 +1179,6 @@ export class StateStore {
 			diff_summary: (row.diff_summary as string) ?? undefined,
 			commit_messages: (row.commit_messages as string) ?? undefined,
 			changed_file_paths: (row.changed_file_paths as string) ?? undefined,
-			thread_id: (row.thread_id as string) ?? undefined,
 			session_params: (row.session_params as string) ?? undefined,
 			heartbeat_at: (row.heartbeat_at as string) ?? undefined,
 			adapter_type: (row.adapter_type as string) ?? undefined,

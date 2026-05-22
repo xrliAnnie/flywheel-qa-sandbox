@@ -134,7 +134,6 @@ describe("MailboxLeadRuntime", () => {
 						lines_added: 100,
 						lines_removed: 20,
 						pr_number: 99,
-						thread_id: "thread-x",
 						session_role: "main",
 					},
 				}),
@@ -152,7 +151,8 @@ describe("MailboxLeadRuntime", () => {
 			);
 			expect(content).toContain("Commits: 3 | +100/-20");
 			expect(content).toContain("PR: #99");
-			expect(content).toContain("Forum-Thread: thread-x");
+			// FLY-163: Forum-Thread line removed
+			expect(content).not.toContain("Forum-Thread");
 		});
 
 		it("formats runner_question with [ASK] non-blocking framing (FLY-161)", async () => {

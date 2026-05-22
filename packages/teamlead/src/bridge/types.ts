@@ -11,7 +11,7 @@ export interface BridgeConfig {
 	dbPath: string;
 	ingestToken?: string;
 	apiToken?: string;
-	/** @deprecated Use ProjectEntry.leads[].forumChannel instead (GEO-152). */
+	/** @deprecated Pre-FLY-163 default fallback channel. Per-lead chatChannel now drives notifications. */
 	notificationChannel: string;
 	/** Default lead agent ID for project-less notifications (e.g., CIPHER proposals). */
 	defaultLeadAgentId: string;
@@ -19,13 +19,9 @@ export interface BridgeConfig {
 	stuckCheckIntervalMs: number;
 	orphanThresholdMinutes: number;
 	discordBotToken?: string;
-	cleanupIntervalMs?: number;
-	cleanupThresholdMinutes?: number;
-	// GEO-187: Linear API proxy + Forum thread links
+	// GEO-187: Linear API proxy
 	linearApiKey?: string;
 	discordGuildId?: string;
-	/** Status → Discord Forum tag ID mapping (JSON string from env). */
-	statusTagMap?: Record<string, string[]>;
 	/** GEO-267: Maximum concurrent Runner executions (default 3). */
 	maxConcurrentRunners: number;
 	/** FLY-91: Enable per-issue chat thread creation in chatChannel. */

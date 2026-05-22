@@ -9,11 +9,9 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
+import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import type { EventFilter } from "./EventFilter.js";
-import type { ForumPostCreator } from "./ForumPostCreator.js";
-import type { ForumTagUpdater } from "./ForumTagUpdater.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import {
 	GUARDRAIL_EVENT_TYPES,
@@ -25,7 +23,6 @@ import {
 } from "./post-ship-finalization.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
-import { validateThreadExists } from "./thread-validator.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 interface IngestEvent {
@@ -342,9 +339,7 @@ export function createEventRouter(
 	cipherWriter?: CipherWriter,
 	transitionOpts?: ApplyTransitionOpts,
 	eventFilter?: EventFilter,
-	forumTagUpdater?: ForumTagUpdater,
 	registry?: RuntimeRegistry,
-	forumPostCreator?: ForumPostCreator,
 ): Router {
 	const router = Router();
 
@@ -466,100 +461,8 @@ export function createEventRouter(
 					});
 				}
 
-				if (!transitionRejected) {
-					// Inherit existing thread for this issue — but only if another session
-					// is still active (e.g., QA alongside main). If all prior sessions are
-					// terminal, the new execution gets its own Forum post.
-					const existingThread = store.getThreadByIssue(event.issue_id);
-					if (existingThread) {
-						// FLY-80: Only reuse thread if another active session owns it.
-						// A terminated/completed session's thread should not be inherited —
-						// each new execution lifecycle gets a fresh Forum post.
-						// Exclude current execution from the search — we want to know
-						// if a *different* active session exists for thread sharing.
-						const activeSession = store.getLatestSessionByIssueAndStatuses(
-							event.issue_id,
-							["running", "awaiting_review", "approved_to_ship"],
-							event.execution_id,
-						);
-						const hasOtherActiveSession = !!activeSession;
-
-						if (hasOtherActiveSession) {
-							// GEO-200: Validate thread still exists in Discord before inheriting
-							const { lead: valLead } = resolveLeadForIssue(
-								projects,
-								event.project_name,
-								eventLabels,
-							);
-							const botToken = valLead.botToken ?? config.discordBotToken;
-							let threadValid = true;
-							if (botToken) {
-								threadValid = await validateThreadExists(
-									existingThread.thread_id,
-									botToken,
-									{
-										markDiscordMissing: (id) => store.markDiscordMissing(id),
-									},
-								);
-							}
-							if (threadValid) {
-								store.setSessionThreadId(
-									event.execution_id,
-									existingThread.thread_id,
-								);
-								store.clearArchived(existingThread.thread_id);
-							} else {
-								console.warn(
-									`[event-route] Thread ${existingThread.thread_id} missing from Discord, will create new`,
-								);
-							}
-						} else {
-							console.log(
-								`[event-route] No active session owns thread ${existingThread.thread_id} for ${event.issue_id}, creating new Forum post`,
-							);
-						}
-					}
-
-					// ForumPostCreator: fire-and-forget (preserves EventFilter notification semantics)
-					if (
-						!store.getSession(event.execution_id)?.thread_id &&
-						forumPostCreator
-					) {
-						const { lead: fpLead } = resolveLeadForIssue(
-							projects,
-							event.project_name,
-							eventLabels,
-						);
-						// GEO-275: skip Forum Post creation for leads without forumChannel (e.g., PM lead)
-						if (fpLead.forumChannel) {
-							// Resolve issue title: prefer event payload, fall back to session history
-							const resolvedTitle =
-								asString(payload.issueTitle) ??
-								store.getSessionByIssue(event.issue_id)?.issue_title ??
-								undefined;
-							forumPostCreator
-								.ensureForumPost({
-									forumChannelId: fpLead.forumChannel,
-									issueId: event.issue_id,
-									issueIdentifier: resolveIdentifier(payload, event.issue_id),
-									issueTitle: resolvedTitle,
-									executionId: event.execution_id,
-									status: "running",
-									// GEO-252: per-lead token. Note: labels may be overwritten on
-									// session_completed/failed, but thread ownership is consistent
-									// because ForumPostCreator only runs once (session_started).
-									discordBotToken: fpLead.botToken ?? config.discordBotToken,
-									statusTagMap: fpLead.statusTagMap,
-								})
-								.catch((err) => {
-									console.warn(
-										`[event-route] ForumPostCreator failed for ${event.issue_id}:`,
-										(err as Error).message,
-									);
-								});
-						}
-					}
-				}
+				// FLY-163: Forum thread inheritance + ForumPostCreator removed.
+				// Per-issue chat thread creation runs in DirectEventSink (FLY-91).
 			} else if (event.event_type === "worktree_ready") {
 				// FLY-137: Blueprint reports the resolved worktree path
 				// immediately after `WorktreeManager.create()` returns. We
@@ -1203,8 +1106,6 @@ export function createEventRouter(
 					event.project_name,
 					labels,
 				);
-				const existingThread = store.getThreadByIssue(event.issue_id);
-				const forumChannel = existingThread?.channel ?? lead.forumChannel;
 				const sessionKey = buildSessionKey(session);
 				const hookPayload: HookPayload = {
 					event_type: event.event_type,
@@ -1220,8 +1121,6 @@ export function createEventRouter(
 					lines_removed: session.lines_removed,
 					summary: session.summary,
 					last_error: session.last_error,
-					thread_id: session.thread_id,
-					forum_channel: forumChannel,
 					chat_channel: lead.chatChannel,
 					issue_labels: labels,
 					pr_number: session.pr_number,
@@ -1254,8 +1153,7 @@ export function createEventRouter(
 					hookPayload.question_id = asString(payload.question_id);
 				}
 
-				// FLY-47: Classify event — priority hints + Forum gating
-				let updateForum = true; // default: update Forum when no filter
+				// FLY-47 / FLY-163: Classify event — priority hints (chat-only).
 				if (eventFilter) {
 					const filterResult = eventFilter.classify(
 						event.event_type,
@@ -1263,21 +1161,7 @@ export function createEventRouter(
 					);
 					hookPayload.filter_priority = filterResult.priority;
 					hookPayload.notification_context = filterResult.reason;
-					updateForum = filterResult.updateForum;
 				}
-
-				// Forum tag update — only for status-changing events
-				let tagResult: HookPayload["forum_tag_update_result"];
-				if (updateForum && forumTagUpdater) {
-					tagResult = await forumTagUpdater.updateTag({
-						threadId: session.thread_id,
-						status: session.status ?? "",
-						eventType: event.event_type,
-						discordBotToken: lead.botToken ?? config.discordBotToken,
-						statusTagMap: lead.statusTagMap,
-					});
-				}
-				hookPayload.forum_tag_update_result = tagResult;
 
 				// FLY-47: Always deliver ALL events to Lead — Lead decides routing
 				// (mirrors Agent Team pattern: all teammate messages reach the lead)

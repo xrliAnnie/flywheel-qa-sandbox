@@ -354,7 +354,6 @@ function toBootstrapSession(s: Session): BootstrapSession {
 		projectName: s.project_name,
 		status: s.status,
 		startedAt: s.started_at,
-		threadId: s.thread_id,
 		sessionRole: s.session_role,
 	};
 }

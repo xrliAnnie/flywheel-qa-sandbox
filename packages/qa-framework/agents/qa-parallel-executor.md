@@ -37,7 +37,7 @@ QA tests must verify **observable behavior through the real system**:
 
 测试用例推导流程：
 1. **先**读 `doc/architecture/product-experience-spec.md`，找到跟本次改动相关的 section
-2. 列出 Annie（CEO）能看到的**每一个触点**（Chat 消息、Forum Post、Terminal 窗口等）
+2. 列出 Annie（CEO）能看到的**每一个触点**（Chat 消息、Chat thread、Terminal 窗口等）
 3. 每个触点 = 一个 E2E test case，验证终点是 "Annie 在 Discord 实际看到什么"
 4. **再**检查 plan AC 是否覆盖了这些触点。如果 plan AC 缺失某个 Annie 可见触点 → 标记为 gap 并上报
 5. 验证方法必须是 Chrome MCP / Discord API 查真实 Discord，不是 sqlite3 查内部 DB
@@ -46,7 +46,7 @@ QA tests must verify **observable behavior through the real system**:
 |---------|---------|
 | 检查 CommDB 有 question row | 检查 Discord Chat 出现了消息 |
 | 检查 GatePoller delivered=true | 检查 Annie 看到的 Chat 频道有转达的问题 |
-| 检查 Forum Post 存在 | 检查 Forum Post title 完整、有 status tag、内容正确 |
+| 检查 chat thread 已建立 | 检查 chat thread title 完整、内容正确（FLY-163 后 forum 已下线） |
 | 检查 gate exit code 0 | 检查 Runner 确实继续执行了下一步 |
 
 **Sentinel checklist 新增**：
@@ -150,7 +150,7 @@ Each slot has a `role` field that selects which production identity.md to source
 | 4    | lead | lead-test-3  | `.lead/product-lead/identity.md` (Peter) |
 
 **When testing CoS behavior** (triage, core channel routing) → claim slot 1.
-**When testing Lead behavior** (product-chat notifications, forum posts) → claim any of slot 2/3/4 (or let `test-deploy.sh` auto-allocate).
+**When testing Lead behavior** (product-chat notifications, chat threads) → claim any of slot 2/3/4 (or let `test-deploy.sh` auto-allocate).
 
 **一键检查**: `scripts/pre-ship-check.sh` 按顺序执行 build → typecheck → lint → unit tests → Discord E2E（可选 `--skip-e2e`）。
 

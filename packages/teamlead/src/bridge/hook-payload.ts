@@ -12,8 +12,6 @@ export interface HookPayload {
 	lines_removed?: number;
 	summary?: string;
 	last_error?: string;
-	thread_id?: string;
-	forum_channel?: string;
 	chat_channel?: string;
 	issue_labels?: string[];
 	// stuck-specific
@@ -48,12 +46,6 @@ export interface HookPayload {
 	// EventFilter fields (GEO-187)
 	filter_priority?: "high" | "normal" | "low";
 	notification_context?: string;
-	forum_tag_update_result?:
-		| "skipped"
-		| "attempted"
-		| "succeeded"
-		| "failed"
-		| "no_thread";
 	// FLY-91: Chat thread for per-issue conversation in chatChannel
 	chat_thread_id?: string;
 }

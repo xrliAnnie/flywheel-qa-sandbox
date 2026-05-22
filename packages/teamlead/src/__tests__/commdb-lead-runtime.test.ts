@@ -70,8 +70,6 @@ describe("CommDBLeadRuntime", () => {
 				lines_removed: 20,
 				filter_priority: "high",
 				notification_context: "PR ready for review",
-				thread_id: "thread-123",
-				forum_channel: "forum-456",
 			});
 			await runtime.deliver(envelope);
 
@@ -83,8 +81,9 @@ describe("CommDBLeadRuntime", () => {
 			expect(content).toContain("Commits: 3 | +100/-20");
 			expect(content).toContain("Priority: high");
 			expect(content).toContain("Context: PR ready for review");
-			expect(content).toContain("Forum-Thread: thread-123");
-			expect(content).toContain("Forum: forum-456");
+			// FLY-163: Forum-Thread / Forum: lines removed
+			expect(content).not.toContain("Forum-Thread");
+			expect(content).not.toContain("Forum:");
 		});
 
 		it("formats runner_question with [ASK] non-blocking framing (FLY-161)", async () => {
@@ -330,14 +329,13 @@ describe("CommDBLeadRuntime", () => {
 		it("includes Chat-Thread in generic envelope when chat_thread_id is set", async () => {
 			const envelope = makeEnvelope({
 				chat_thread_id: "chat-thread-789",
-				thread_id: "forum-thread-123",
-				forum_channel: "forum-456",
 			});
 			await runtime.deliver(envelope);
 
 			const content = mockInsertInstruction.mock.calls[0][2] as string;
 			expect(content).toContain("Chat-Thread: chat-thread-789");
-			expect(content).toContain("Forum-Thread: forum-thread-123");
+			// FLY-163: Forum-Thread line removed
+			expect(content).not.toContain("Forum-Thread");
 		});
 
 		it("includes Chat-Thread in gate_question special format", async () => {
@@ -357,14 +355,13 @@ describe("CommDBLeadRuntime", () => {
 		});
 
 		it("omits Chat-Thread when chat_thread_id is not set", async () => {
-			const envelope = makeEnvelope({
-				thread_id: "forum-thread-123",
-			});
+			const envelope = makeEnvelope({});
 			await runtime.deliver(envelope);
 
 			const content = mockInsertInstruction.mock.calls[0][2] as string;
 			expect(content).not.toContain("Chat-Thread:");
-			expect(content).toContain("Forum-Thread: forum-thread-123");
+			// FLY-163: Forum-Thread line removed
+			expect(content).not.toContain("Forum-Thread");
 		});
 
 		it("includes chatThreadId in bootstrap active sessions", async () => {
