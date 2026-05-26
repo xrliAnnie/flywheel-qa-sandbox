@@ -31,6 +31,7 @@ import type {
 	LeadRuntime,
 	LeadRuntimeHealth,
 } from "./lead-runtime.js";
+import { formatArtifactDelivery } from "./proofshot-deliver.js";
 
 export interface MailboxLeadRuntimeOptions {
 	/** Lead agent id (also serves as the team name + recipient inbox name). */
@@ -240,6 +241,11 @@ export class MailboxLeadRuntime implements LeadRuntime {
 			];
 			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 			return lines.join("\n");
+		}
+
+		// GEO-151: ProofShot artifact delivery → Lead invokes Discord MCP reply.
+		if (e.event_type === "artifact_delivery") {
+			return formatArtifactDelivery(env);
 		}
 
 		// FLY-159: gate_timed_out gets a special format so the Lead sees

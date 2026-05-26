@@ -8,6 +8,7 @@ import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import {
 	GUARDRAIL_EVENT_TYPES,
 	type LeadEventEnvelope,
+	RETRYABLE_LEAD_EVENT_TYPES,
 } from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import {
@@ -300,7 +301,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			}
 		}
 
-		const eventTypes = [...GUARDRAIL_EVENT_TYPES];
+		const eventTypes = [...RETRYABLE_LEAD_EVENT_TYPES];
 		for (const leadId of leadIds) {
 			const undelivered = this.store.getUndeliveredGuardrailEvents(
 				leadId,

@@ -13,12 +13,19 @@ import { cleanupMessages } from "./commands/cleanup-messages.js";
 import { complete } from "./commands/complete.js";
 import { gate } from "./commands/gate.js";
 import { inbox } from "./commands/inbox.js";
+import { type NotifyArgs, notify } from "./commands/notify.js";
 import { pending } from "./commands/pending.js";
 import { respond } from "./commands/respond.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
+import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
+import {
+	type VisualCaptureArgs,
+	visualCapture,
+	visualCaptureStdout,
+} from "./commands/visual-capture.js";
 import { CommDB } from "./db.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 
@@ -41,6 +48,9 @@ Commands:
   complete  Emit session_completed terminal event to Bridge (Runner use)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   cleanup   Delete read messages older than TTL (default 24h)
+  visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
+  notify    POST artifact_emitted event to Bridge after capture+Read (GEO-151)
+  set-artifact   Register build output (.glb/.stl/.3mf) path for 3D capture (GEO-151)
 
 Global options:
   --db <path>       Explicit DB path
@@ -109,6 +119,15 @@ async function main(): Promise<void> {
 			break;
 		case "cleanup":
 			runCleanup(commandArgs);
+			break;
+		case "visual-capture":
+			await runVisualCapture(commandArgs);
+			break;
+		case "notify":
+			await runNotify(commandArgs);
+			break;
+		case "set-artifact":
+			await runSetArtifact(commandArgs);
 			break;
 		default:
 			console.error(`Unknown command: ${command}`);
@@ -553,6 +572,184 @@ async function runStage(args: string[]): Promise<void> {
 		stageName: stageName ?? "",
 		planPath: values.plan,
 	});
+}
+
+async function runSetArtifact(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"model-path": { type: "string" },
+			"exec-id": { type: "string" },
+			"issue-id": { type: "string" },
+			"project-name": { type: "string" },
+			"bridge-url": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+
+	if (!values["model-path"]) {
+		console.error("set-artifact: --model-path required");
+		process.exit(1);
+	}
+
+	const setArgs: SetArtifactArgs = {
+		modelPath: values["model-path"],
+		execId: values["exec-id"],
+		issueId: values["issue-id"],
+		projectName: values["project-name"],
+		bridgeUrl: values["bridge-url"],
+	};
+
+	try {
+		const result = await setArtifact(setArgs);
+		process.exit(result.exitCode);
+	} catch (err) {
+		console.error(
+			`set-artifact: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		process.exit(1);
+	}
+}
+
+async function runNotify(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			kind: { type: "string", default: "artifact" },
+			path: { type: "string", multiple: true },
+			"paths-from": { type: "string" },
+			"exec-id": { type: "string" },
+			"issue-id": { type: "string" },
+			"project-name": { type: "string" },
+			"dedup-key": { type: "string" },
+			attempt: { type: "string" },
+			"bridge-url": { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+		},
+		allowPositionals: false,
+	});
+
+	const kind = (values.kind ?? "artifact") as "artifact" | "status";
+	if (kind !== "artifact" && kind !== "status") {
+		console.error(`notify: --kind must be "artifact" or "status"`);
+		process.exit(1);
+	}
+
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const notifyArgs: NotifyArgs = {
+		kind,
+		paths: values.path,
+		pathsFrom: values["paths-from"],
+		execId: values["exec-id"],
+		issueId: values["issue-id"],
+		projectName: values["project-name"],
+		dedupKey: values["dedup-key"],
+		attempt: values.attempt,
+		bridgeUrl: values["bridge-url"],
+		dbPath,
+	};
+
+	try {
+		const result = await notify(notifyArgs);
+		console.log(
+			`notify: posted=${result.posted} audit=${result.auditWritten} paths=${result.resolvedPaths.length}`,
+		);
+		process.exit(result.exitCode);
+	} catch (err) {
+		console.error(
+			`notify: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		process.exit(1);
+	}
+}
+
+async function runVisualCapture(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			kind: { type: "string" },
+			description: { type: "string" },
+			output: { type: "string" },
+			"dedup-key": { type: "string" },
+			attempt: { type: "string" },
+			"exec-id": { type: "string" },
+			"issue-id": { type: "string" },
+			"project-name": { type: "string" },
+			stage: { type: "string" },
+			"dev-command": { type: "string" },
+			"model-path": { type: "string" },
+			"model-viewer-url": { type: "string" },
+			angles: { type: "string" }, // comma-separated
+			"vision-token-budget": { type: "string" },
+			"png-limit": { type: "string" },
+			"preferred-port": { type: "string" },
+			notify: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
+
+	const kind = (values.kind ?? "ui") as "ui" | "3d";
+	if (kind !== "ui" && kind !== "3d") {
+		console.error(`visual-capture: --kind must be "ui" or "3d"`);
+		process.exit(1);
+	}
+
+	// Identity may come from CLI flags OR FLYWHEEL_* env (matches stage / complete).
+	const execId = values["exec-id"] ?? process.env.FLYWHEEL_EXEC_ID ?? "";
+	const issueId = values["issue-id"] ?? process.env.FLYWHEEL_ISSUE_ID ?? "";
+	const projectName =
+		values["project-name"] ?? process.env.FLYWHEEL_PROJECT_NAME ?? "";
+
+	const attempt = Number.parseInt(values.attempt ?? "1", 10);
+	if (!Number.isInteger(attempt) || attempt < 1) {
+		console.error(
+			`visual-capture: --attempt must be a positive integer (got: ${values.attempt})`,
+		);
+		process.exit(1);
+	}
+
+	const captureArgs: VisualCaptureArgs = {
+		kind,
+		description: values.description ?? "",
+		output: values.output ?? "",
+		dedupKey: values["dedup-key"] ?? "",
+		attempt,
+		execId,
+		issueId,
+		projectName,
+		stage: values.stage ?? "",
+		devCommand: values["dev-command"],
+		modelPath: values["model-path"],
+		modelViewerUrl: values["model-viewer-url"],
+		angles: values.angles
+			? values.angles.split(",").filter(Boolean)
+			: undefined,
+		visionTokenBudget: values["vision-token-budget"]
+			? Number.parseInt(values["vision-token-budget"], 10)
+			: undefined,
+		pngLimit: values["png-limit"]
+			? Number.parseInt(values["png-limit"], 10)
+			: undefined,
+		preferredPort: values["preferred-port"]
+			? Number.parseInt(values["preferred-port"], 10)
+			: undefined,
+		notify: values.notify,
+	};
+
+	try {
+		const result = await visualCapture(captureArgs);
+		const stdoutJson = visualCaptureStdout(result, {
+			dedupKey: captureArgs.dedupKey,
+			attempt: captureArgs.attempt,
+		});
+		console.log(JSON.stringify(stdoutJson, null, 2));
+	} catch (err) {
+		console.error(
+			`visual-capture failed: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		process.exit(1);
+	}
 }
 
 function runCleanup(args: string[]): void {

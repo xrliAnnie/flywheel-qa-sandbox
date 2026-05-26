@@ -15,6 +15,7 @@ import {
 	type AgentConfig,
 	type CheckpointsConfig,
 	ConfigLoader,
+	type SkillsConfig,
 } from "flywheel-config";
 import type { LLMClient } from "flywheel-core";
 import { sanitizeTmuxName } from "flywheel-core";
@@ -144,6 +145,7 @@ async function createRunBlueprint(
 	worktreeManager?: WorktreeManager, // FLY-95
 	agentDispatcher?: AgentDispatcher, // FLY-137 v1.27.2
 	flywheelRepoRoot?: string, // FLY-137 v1.27.2 (Codex Track A #1): Blueprint needs this to resolve shipped-generic agent_file
+	skillsConfig?: SkillsConfig, // GEO-151: ProofShot + skill commands surfaced to Blueprint
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -314,7 +316,7 @@ async function createRunBlueprint(
 			worktreeManager, // FLY-95: per-Runner worktree isolation
 			skillInjector,
 			evidenceCollector,
-			undefined, // skillsConfig
+			skillsConfig, // GEO-151: wired through from project .flywheel/config.yaml
 			decisionLayer,
 			eventEmitter,
 			agentDispatcher, // FLY-137 v1.27.2: wired (was undefined pre-v1.27.2)
@@ -410,19 +412,15 @@ export async function setupRunInfrastructure(
 			console.log(
 				`[RunInfra] ${project.projectName}: hasRegistry=${!!registry}, hasGlobalBotToken=${!!config.discordBotToken}, chatThreads=${!!chatThreadCreator}`,
 			);
-			const directSink = new DirectEventSink(
-				store,
-				config,
-				projects,
-				eventFilter,
-				registry,
-				chatThreadCreator,
-			);
-
-			// FLY-47 + FLY-137 v1.27.2: Load per-project checkpoint + agents config
+			// GEO-151: Load per-project .flywheel/config.yaml BEFORE DirectEventSink
+			// so we can pass skillsConfig.proofshot into both DirectEventSink ctor
+			// (for session_started persistence) and createRunBlueprint (Blueprint slot).
+			// Restructured from previous post-DirectEventSink load.
+			// FLY-47 + FLY-137 v1.27.2: also loads per-project checkpoint + agents config
 			let checkpointConfig: CheckpointsConfig | undefined;
 			let agentsConfig: Record<string, AgentConfig> | undefined;
 			let defaultAgentName: string | undefined;
+			let skillsConfig: SkillsConfig | undefined;
 			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
 			try {
 				const configLoader = new ConfigLoader(async (p) =>
@@ -432,15 +430,26 @@ export async function setupRunInfrastructure(
 				checkpointConfig = flywheelConfig?.checkpoints;
 				agentsConfig = flywheelConfig?.agents;
 				defaultAgentName = flywheelConfig?.default_agent;
+				skillsConfig = flywheelConfig?.skills;
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-					// No config file — no checkpoints, no agents block.
+					// No config file — no checkpoints, no agents block, no skills.
 					// AgentDispatcher will still be constructed (empty agents map) so the
 					// shipped-generic fallback kicks in for zero-config projects.
 				} else {
 					throw err;
 				}
 			}
+
+			const directSink = new DirectEventSink(
+				store,
+				config,
+				projects,
+				eventFilter,
+				registry,
+				chatThreadCreator,
+				skillsConfig, // GEO-151: ProofShotConfig persisted via emitStarted patch
+			);
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).
@@ -459,6 +468,7 @@ export async function setupRunInfrastructure(
 				worktreeManager, // FLY-95
 				agentDispatcher, // FLY-137 v1.27.2
 				flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1)
+				skillsConfig, // GEO-151: wired into Blueprint slot 7
 			);
 
 			projectRuntimes.set(project.projectName, {

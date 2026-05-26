@@ -109,6 +109,18 @@ export class CommDB {
 				}
 			}
 		}
+		if (!columns.some((c) => c.name === "attachments")) {
+			// GEO-151: ProofShot artifact paths stored as JSON-encoded string[].
+			// Same race-tolerance pattern as delivered_at above.
+			try {
+				this.db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
+			} catch (err) {
+				const msg = (err as Error).message ?? "";
+				if (!/duplicate column name: attachments/i.test(msg)) {
+					throw err;
+				}
+			}
+		}
 		this.db.exec(
 			"CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(checkpoint) WHERE checkpoint IS NOT NULL",
 		);
@@ -292,6 +304,36 @@ export class CommDB {
          VALUES (?, ?, ?, 'instruction', ?)`,
 			)
 			.run(id, fromAgent, toAgent, content);
+		return id;
+	}
+
+	/**
+	 * GEO-151: best-effort audit row for a ProofShot artifact_emitted event.
+	 * Uses `type='progress'` + `content_type='artifact'` since the existing
+	 * messages.type CHECK constraint only allows
+	 * ('question','response','instruction','progress') — see schema at top of
+	 * file. Attachments stored as JSON-encoded string[] in the `attachments`
+	 * column added by the GEO-151 migration above.
+	 *
+	 * `content` carries a short summary line ("artifact_emitted: N file(s)")
+	 * so the audit row is human-readable in `messages` inspections.
+	 *
+	 * Caller-side is fail-open: notify command catches throws and continues
+	 * (the primary path is POST /events).
+	 */
+	insertArtifactProgress(
+		fromAgent: string,
+		toAgent: string,
+		paths: string[],
+	): string {
+		const id = randomUUID();
+		const summary = `artifact_emitted: ${paths.length} file(s)`;
+		this.db
+			.prepare(
+				`INSERT INTO messages (id, from_agent, to_agent, type, content, content_type, attachments)
+         VALUES (?, ?, ?, 'progress', ?, 'artifact', ?)`,
+			)
+			.run(id, fromAgent, toAgent, summary, JSON.stringify(paths));
 		return id;
 	}
 

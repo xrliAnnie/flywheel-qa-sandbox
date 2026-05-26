@@ -707,6 +707,13 @@ _launch_claude() {
     -e "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
     -e "HOME=${HOME}"
     -e "PATH=${PATH}"
+    # GEO-151 QA cycle 1 fix: L3 screencapture skill prompt references
+    # `$FLYWHEEL_TEAMLEAD_SCRIPT_DIR/find-window.sh`. Export at line ~1215
+    # only sets it in the launcher shell — `tmux new-window -e` strips
+    # anything not in this allowlist, so the Lead pane saw empty and the
+    # skill fell back to a slow `find /` recursive scan. Same tmux env
+    # barrier pattern FLY-142 fixed for CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS.
+    -e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
   )
 
   # FLY-142 PR 1.2: Agent Team transport env vars. Set by
@@ -1197,6 +1204,33 @@ if [ -d "$LEAD_RULES_DIR" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$DEPT_RULES")
     log "Appending department lead rules: ${DEPT_RULES}"
   fi
+fi
+
+# ════════════════════════════════════════════════════════════════
+# GEO-151 L3: macOS screencapture skill (Lead-side)
+# ════════════════════════════════════════════════════════════════
+#
+# Append a small prompt that teaches the Lead model how to invoke
+# `screencapture -l` via the find-window.sh helper when Annie explicitly
+# asks for a window screenshot. The skill includes a narrow trigger
+# contract so it doesn't false-fire on PR / code / discussion mentions.
+#
+# Env-gate: `LEAD_DISABLE_SCREENCAPTURE_SKILL=1` skips this entirely.
+# Useful when iterating on the trigger contract or when Annie wants the
+# skill off for a particular Lead. Export FLYWHEEL_TEAMLEAD_SCRIPT_DIR
+# so the prompt can find `find-window.sh` by an explicit path.
+export FLYWHEEL_TEAMLEAD_SCRIPT_DIR="$SCRIPT_DIR"
+
+if [ "${LEAD_DISABLE_SCREENCAPTURE_SKILL:-0}" != "1" ]; then
+  SCREENCAP_SKILL="${SCRIPT_DIR}/screencapture-l3-skill.md"
+  if [ -f "$SCREENCAP_SKILL" ] && [ -r "$SCREENCAP_SKILL" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$SCREENCAP_SKILL")
+    log "Appending L3 screencapture skill: ${SCREENCAP_SKILL}"
+  else
+    log "WARNING: L3 screencapture skill missing at ${SCREENCAP_SKILL} — screencapture skill not loaded"
+  fi
+else
+  log "L3 screencapture skill disabled via LEAD_DISABLE_SCREENCAPTURE_SKILL=1"
 fi
 
 # ════════════════════════════════════════════════════════════════

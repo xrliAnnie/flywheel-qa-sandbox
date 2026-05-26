@@ -101,6 +101,84 @@ export class ConfigLoader {
 			);
 		}
 
+		// skills.proofshot (optional — GEO-151)
+		const skills = c.skills as Record<string, unknown> | undefined;
+		if (skills != null) {
+			if (typeof skills !== "object" || Array.isArray(skills)) {
+				throw new Error("skills must be a YAML mapping (object)");
+			}
+			const ps = skills.proofshot as Record<string, unknown> | undefined;
+			if (ps != null) {
+				if (typeof ps !== "object" || Array.isArray(ps)) {
+					throw new Error(
+						"skills.proofshot must be a YAML mapping (object), not an array or scalar",
+					);
+				}
+				if (ps.enabled != null && typeof ps.enabled !== "boolean") {
+					throw new Error("skills.proofshot.enabled must be a boolean");
+				}
+				if (ps.dev_command != null && typeof ps.dev_command !== "string") {
+					throw new Error("skills.proofshot.dev_command must be a string");
+				}
+				if (
+					ps.port != null &&
+					(typeof ps.port !== "number" ||
+						!Number.isInteger(ps.port) ||
+						ps.port <= 0)
+				) {
+					throw new Error("skills.proofshot.port must be a positive integer");
+				}
+				if (
+					ps.capture_stages != null &&
+					(!Array.isArray(ps.capture_stages) ||
+						!ps.capture_stages.every((s) => typeof s === "string"))
+				) {
+					throw new Error(
+						"skills.proofshot.capture_stages must be an array of strings",
+					);
+				}
+				if (
+					ps.vision_default != null &&
+					typeof ps.vision_default !== "boolean"
+				) {
+					throw new Error("skills.proofshot.vision_default must be a boolean");
+				}
+				if (
+					ps.vision_token_budget != null &&
+					(typeof ps.vision_token_budget !== "number" ||
+						ps.vision_token_budget <= 0)
+				) {
+					throw new Error(
+						"skills.proofshot.vision_token_budget must be a positive number",
+					);
+				}
+				if (
+					ps.model_viewer_url != null &&
+					typeof ps.model_viewer_url !== "string"
+				) {
+					throw new Error("skills.proofshot.model_viewer_url must be a string");
+				}
+				if (
+					ps.model_capture_angles != null &&
+					(!Array.isArray(ps.model_capture_angles) ||
+						!ps.model_capture_angles.every((a) => typeof a === "string"))
+				) {
+					throw new Error(
+						"skills.proofshot.model_capture_angles must be an array of strings",
+					);
+				}
+				if (
+					ps.artifact_path_allowlist != null &&
+					(!Array.isArray(ps.artifact_path_allowlist) ||
+						!ps.artifact_path_allowlist.every((p) => typeof p === "string"))
+				) {
+					throw new Error(
+						"skills.proofshot.artifact_path_allowlist must be an array of strings (regex patterns)",
+					);
+				}
+			}
+		}
+
 		// checkpoints (optional — FLY-47)
 		const checkpoints = c.checkpoints as Record<string, unknown> | undefined;
 		if (

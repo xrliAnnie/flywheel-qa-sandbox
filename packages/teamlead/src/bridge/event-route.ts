@@ -11,6 +11,8 @@ import {
 } from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { handleArtifactEvent } from "./artifact-event.js";
+import { commDbPathForProject } from "./commdb-path.js";
 import type { EventFilter } from "./EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import {
@@ -21,9 +23,13 @@ import {
 	isPostApproveShipComplete,
 	runPostShipFinalization,
 } from "./post-ship-finalization.js";
+import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
+
+// Re-export so existing callers (if any) keep working.
+export { commDbPathForProject } from "./commdb-path.js";
 
 interface IngestEvent {
 	event_id: string;
@@ -105,9 +111,7 @@ function formatNotification(session: Session, eventType: string): string {
 // being self-authorizing.
 // ---------------------------------------------------------------------------
 
-function commDbPathForProject(projectName: string): string {
-	return join(homedir(), ".flywheel", "comm", projectName, "comm.db");
-}
+// commDbPathForProject moved to "./commdb-path.js" so the helper is shared with proofshot-trigger.ts.
 
 /**
  * Resolve the Runner worktree path for the session. Falls back to
@@ -948,6 +952,22 @@ export function createEventRouter(
 						handleCodexAutoTrigger(store, event, stage, planPath);
 					}
 
+					// GEO-151: ProofShot auto-trigger. Reads
+					// `session_params.proofshot.config` (persisted by
+					// DirectEventSink.emitStarted) and filters on
+					// `config.capture_stages`. Default config has enabled=false
+					// → handler short-circuits for projects that don't opt in.
+					// Fire-and-forget: handler is async but parent stage
+					// transition must not block on mailbox write.
+					void handleProofShotAutoTrigger(store, projects, event, stage).catch(
+						(err: unknown) => {
+							console.warn(
+								`[proofshot-trigger] async handler threw for ${event.execution_id} stage=${stage}:`,
+								err instanceof Error ? err.message : err,
+							);
+						},
+					);
+
 					// FLY-60 W2: post-merge re-finalize path. When stage=completed
 					// and the payload carries `landing_status.status="merged"`, the
 					// Runner has finished shipping and rewritten land-status.json
@@ -1086,6 +1106,70 @@ export function createEventRouter(
 				store.patchSessionMetadata(event.execution_id, {
 					issue_identifier: event.issue_id,
 				});
+			}
+		}
+
+		// GEO-151 B8: Runner registered a build artifact (.glb/.stl/.3mf).
+		// Persist into session_params.last_artifact.model_path so the next
+		// stage_changed=test fires the 3D capture branch in
+		// handleProofShotAutoTrigger (GeoForge3D only). Fire-and-forget;
+		// we still let the generic "always deliver" block run so the Lead
+		// gets a notice that a build output was registered.
+		if (event.event_type === "last_artifact_set") {
+			const modelPath = asString(payload.model_path);
+			if (modelPath) {
+				const cur = store.getSessionParams(event.execution_id) ?? {};
+				const lastArtifact =
+					typeof cur.last_artifact === "object" && cur.last_artifact !== null
+						? (cur.last_artifact as Record<string, unknown>)
+						: {};
+				store.setSessionParams(event.execution_id, {
+					...cur,
+					last_artifact: { ...lastArtifact, model_path: modelPath },
+				});
+				console.log(
+					`[event-route] last_artifact_set: ${event.execution_id} model_path=${modelPath}`,
+				);
+			} else {
+				console.warn(
+					`[event-route] last_artifact_set missing payload.model_path for ${event.execution_id}`,
+				);
+			}
+		}
+
+		// GEO-151: ProofShot artifact_emitted has a specialized delivery path
+		// (resolves chat thread + builds artifact_delivery HookPayload + posts
+		// to appendLeadEvent + runtime.deliver with correlation). If we hand
+		// off here, skip the generic "always deliver" block below so the same
+		// event doesn't produce TWO Lead inbox messages (one typed, one
+		// generic).
+		if (event.event_type === "artifact_emitted" && registry) {
+			try {
+				const result = await handleArtifactEvent(store, projects, registry, {
+					event_id: event.event_id,
+					execution_id: event.execution_id,
+					issue_id: event.issue_id,
+					project_name: event.project_name,
+					payload,
+				});
+				if (result.handled) {
+					res.json({
+						ok: true,
+						artifact_delivery: {
+							seq: result.seq,
+							delivered: result.delivered,
+						},
+					});
+					return;
+				}
+				// not handled → fall through to generic path (logs only since
+				// there's no Lead resolvable). Better than silently dropping.
+			} catch (err) {
+				console.error(
+					`[event-route] handleArtifactEvent threw for ${event.execution_id}:`,
+					(err as Error).message,
+				);
+				// Same fallthrough as above.
 			}
 		}
 

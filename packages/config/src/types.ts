@@ -86,6 +86,37 @@ export interface SkillsConfig {
 	test_framework?: string;
 	/** Custom landing command (e.g. "/ship-pr"). If unset, uses default flywheel-land skill. */
 	land_command?: string;
+	/** GEO-151 ProofShot integration: browser/UI/3D visual verification */
+	proofshot?: ProofShotConfig;
+}
+
+/**
+ * GEO-151 ProofShot integration config — auto-trigger visual capture on stage_changed,
+ * route artifacts to Lead → Discord via reliable LeadEvent journal.
+ *
+ * Loaded from `<projectRoot>/.flywheel/config.yaml` `skills.proofshot` section.
+ * Persisted into `session_params.proofshot.config` by DirectEventSink.emitStarted()
+ * so Bridge event-route handlers can read it without re-loading project config.
+ */
+export interface ProofShotConfig {
+	/** Enable ProofShot auto-trigger. Default: false (safer rollout). */
+	enabled?: boolean;
+	/** Dev server start command (e.g., "pnpm dev"). Required for L2 web verification. */
+	dev_command?: string;
+	/** Preferred dev server port. Wrapper picks free port near this. Default: 3000. */
+	port?: number;
+	/** Pipeline stages where auto-trigger fires. Default: ["test","code_review","pr_created"]. */
+	capture_stages?: string[];
+	/** Run V1 (Runner Read selected artifacts) after capture. Default: true. */
+	vision_default?: boolean;
+	/** Vision token budget cap for selectVisionArtifacts(). Default: 10000. */
+	vision_token_budget?: number;
+	/** 3D model viewer URL template. GeoForge3D-specific (no default). */
+	model_viewer_url?: string;
+	/** 3D capture angles. Default: ["front","side","iso","top"]. */
+	model_capture_angles?: string[];
+	/** Artifact path allowlist (regex). Default: ['^/Users/.+/\\.flywheel/screens/','^/tmp/flywheel-screens/']. */
+	artifact_path_allowlist?: string[];
 }
 
 /** Agent dispatch configuration — v0.6 Step 1; FLY-137 v1.27.2 dept-aware */

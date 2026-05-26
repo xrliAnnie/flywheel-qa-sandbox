@@ -23,6 +23,21 @@ export const GUARDRAIL_EVENT_TYPES = new Set([
 	"gate_timed_out", // FLY-159: Lead must reliably notify Annie when Runner gate times out (fail-close path only)
 ]);
 
+/**
+ * GEO-151: All event types that the HeartbeatService redelivery loop should
+ * retry when `runtime.deliver` returns `{delivered:false}` or throws. Includes
+ * the guardrail set plus `artifact_delivery` so a ProofShot capture that the
+ * Lead failed to forward to Discord doesn't silently disappear.
+ *
+ * Bounded by existing `MAX_DELIVERY_ATTEMPTS` (5) — after exhaustion the row
+ * stays undelivered with `last_error` populated, FLY-83 stuck alert tells
+ * Annie.
+ */
+export const RETRYABLE_LEAD_EVENT_TYPES = new Set<string>([
+	...GUARDRAIL_EVENT_TYPES,
+	"artifact_delivery",
+]);
+
 /** Monotonically sequenced event envelope for lead delivery. */
 export interface LeadEventEnvelope {
 	seq: number;

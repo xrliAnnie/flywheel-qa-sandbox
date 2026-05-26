@@ -4,6 +4,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { DEFAULT_PROOFSHOT_CONFIG, type SkillsConfig } from "flywheel-config";
 import type {
 	EventEnvelope,
 	ExecutionEventEmitter,
@@ -18,6 +19,10 @@ import {
 	isPostApproveShipComplete,
 	runPostShipFinalization,
 } from "./bridge/post-ship-finalization.js";
+import {
+	getProofShotParams,
+	patchSessionParams,
+} from "./bridge/proofshot-session.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
 import type { BridgeConfig } from "./bridge/types.js";
@@ -38,6 +43,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		private eventFilter?: EventFilter,
 		private registry?: RuntimeRegistry,
 		private chatThreadCreator?: ChatThreadCreator,
+		/**
+		 * GEO-151: Project SkillsConfig (from `<projectRoot>/.flywheel/config.yaml`).
+		 * Used by `emitStarted()` to persist effective `proofshot.config` into
+		 * `session_params` so Bridge event-route handlers can read it without
+		 * re-loading the YAML file. Optional — projects that don't ship a config
+		 * file (or omit `skills`) fall back to `DEFAULT_PROOFSHOT_CONFIG`
+		 * (`enabled=false`), which makes ProofShot a no-op for them.
+		 */
+		private skillsConfig?: SkillsConfig,
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
@@ -73,6 +87,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			stage_updated_at: now,
 			session_role: env.sessionRole ?? "main",
 		});
+
+		// GEO-151: Persist effective proofshot config into session_params so
+		// Bridge event-route handlers can read it without re-loading config.
+		// Uses patchSessionParams (read-modify-write) so a replayed session_started
+		// event does NOT clobber existing `proofshot.runs` or `last_artifact`
+		// state from prior captures in the same execution (Bridge restart safety).
+		this.persistProofShotConfig(env.executionId);
 
 		// FLY-91: Await chat thread creation so first notification includes chat_thread_id.
 		// Unlike ForumPost (fire-and-forget), chat_thread_id doesn't affect EventFilter
@@ -365,6 +386,33 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	async flush(): Promise<void> {
 		await Promise.allSettled(this.pending);
 		this.pending = [];
+	}
+
+	/**
+	 * GEO-151: Persist the effective ProofShot config into
+	 * `session_params.proofshot.config` so Bridge event-route handlers can read
+	 * it without needing to re-load `.flywheel/config.yaml`.
+	 *
+	 * Replay-safe: uses `patchSessionParams` (read-modify-write) so a duplicate
+	 * or replayed `session_started` event on an execution that already has
+	 * `proofshot.runs` (from earlier captures in the same session) does NOT
+	 * clobber that run state.
+	 *
+	 * Only overwrites `proofshot.config`; preserves `proofshot.runs` and
+	 * unrelated `session_params` keys (e.g., `last_artifact`).
+	 */
+	private persistProofShotConfig(executionId: string): void {
+		const effective = this.skillsConfig?.proofshot ?? DEFAULT_PROOFSHOT_CONFIG;
+		patchSessionParams(this.store, executionId, (cur) => {
+			const prior = getProofShotParams(cur);
+			return {
+				...cur,
+				proofshot: {
+					...prior,
+					config: effective,
+				},
+			};
+		});
 	}
 
 	private pushNotification(env: EventEnvelope, eventType: string): void {
