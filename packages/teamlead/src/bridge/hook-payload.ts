@@ -48,6 +48,25 @@ export interface HookPayload {
 	notification_context?: string;
 	// FLY-91: Chat thread for per-issue conversation in chatChannel
 	chat_thread_id?: string;
+
+	// GEO-151: ProofShot artifact delivery fields. Only populated when
+	// `event_type === "artifact_delivery"`. HookPayload remains a single
+	// interface (not a discriminated union) — event_type is the discriminator
+	// and these fields are optional so existing call sites keep compiling.
+	/** Absolute paths to artifact files for Lead → Discord MCP delivery. */
+	paths?: string[];
+	/** "ui" or "3d" — drives formatting hint in proofshot-deliver.md. */
+	kind?: "ui" | "3d";
+	/** `${execId}|${stage}|${captureKind}` — correlation key (wire snake_case). */
+	dedup_key?: string;
+	/** 1-based retry attempt — handler checks `runs[dedup_key].attempt === attempt`. */
+	attempt?: number;
+	/** Discord plugin per-file size cap (default 25 MB). */
+	size_cap_bytes?: number;
+	/** Discord plugin per-message file count cap (default 10). */
+	file_count_cap?: number;
+	/** Markdown line appended to Discord message when any file exceeds cap. */
+	oversize_fallback_text?: string;
 }
 
 export function buildSessionKey(session: {

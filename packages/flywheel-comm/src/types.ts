@@ -10,9 +10,16 @@ export interface Message {
 	expires_at: string;
 	checkpoint: string | null;
 	content_ref: string | null;
-	content_type: "text" | "ref";
+	/** GEO-151: added "artifact" for ProofShot artifact_emitted audit rows. */
+	content_type: "text" | "ref" | "artifact";
 	resolved_at: string | null;
 	delivered_at: string | null;
+	/**
+	 * GEO-151: JSON-encoded `string[]` of artifact file paths. Populated by
+	 * `insertArtifactProgress` (type='progress' + content_type='artifact').
+	 * Null for non-artifact rows. SQL column added by the GEO-151 migration.
+	 */
+	attachments: string | null;
 }
 
 export interface CheckResult {
