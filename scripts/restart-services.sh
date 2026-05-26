@@ -698,16 +698,56 @@ restart_lead() {
     log "Lead $lead_id restarted (PID $new_pid, liveness check OK)"
 }
 
-# FLY-98: Trigger cmux linked session refresh after Lead restart.
+# FLY-98 + FLY-129 Phase 8: Trigger cmux linked-session refresh + (Path A)
+# cmux UI surface invalidation after Lead restart.
 # Must be called OUTSIDE do_restart_all_leads to preserve stdout contract.
 # Uses repo script directly (not ~/.flywheel/bin copy) to avoid stale-install rollout gap.
+#
+# FLY-129 Phase 8 Path A (H2 fix): after the tmux-only refresh lands, call
+# `cmux refresh-surfaces --workspace <ref>` for each Lead workspace ref to
+# invalidate the cmux Electron-side pane cache that would otherwise show
+# the old (pre-restart) zsh / Claude process.
+#
+# Gated by env var FLYWHEEL_CMUX_H2_FIX (default: refresh-surfaces).
+# Set to "none" to disable Path A while leaving Path B (--close-for-restart)
+# usable as an operator escape hatch. See doc/engineer/research/new/FLY-129-refresh-surfaces-spike.md.
 trigger_cmux_refresh() {
     local sync_script="${FLYWHEEL_DIR}/scripts/flywheel-cmux-sync.sh"
-    if [[ -x "$sync_script" ]]; then
-        # Wait 5s for new Lead tmux windows to initialize, then do tmux-only refresh
-        (sleep 5 && "$sync_script" --refresh >> "/tmp/flywheel-cmux-sync.log" 2>&1) &
-        log "cmux refresh scheduled (background, 5s delay)"
+    if [[ ! -x "$sync_script" ]]; then
+        return 0
     fi
+    # Step 1: tmux-only refresh (unchanged, FLY-98).
+    (sleep 5 && "$sync_script" --refresh >> "/tmp/flywheel-cmux-sync.log" 2>&1) &
+    log "cmux refresh scheduled (background, 5s delay)"
+
+    # Step 2: Phase 8 Path A — cmux refresh-surfaces per Lead ref (10s after
+    # refresh so linked sessions are settled). No-op if cmux CLI missing or
+    # the env var disables it.
+    local h2_mode="${FLYWHEEL_CMUX_H2_FIX:-refresh-surfaces}"
+    if [[ "$h2_mode" != "refresh-surfaces" ]]; then
+        log "cmux refresh-surfaces disabled (FLYWHEEL_CMUX_H2_FIX=$h2_mode)"
+        return 0
+    fi
+    if ! command -v cmux >/dev/null 2>&1; then
+        log "cmux CLI not on PATH — skipping refresh-surfaces step"
+        return 0
+    fi
+    (
+        sleep 10
+        local rc=0
+        local refs
+        refs=$("$sync_script" --list-lead-refs 2>>"/tmp/flywheel-cmux-sync.log") || rc=$?
+        if [[ $rc -ne 0 || -z "$refs" ]]; then
+            echo "[trigger_cmux_refresh] no lead refs to refresh (rc=$rc)" >> "/tmp/flywheel-cmux-sync.log"
+            exit 0
+        fi
+        while read -r ref; do
+            [[ -z "$ref" ]] && continue
+            cmux refresh-surfaces --workspace "$ref" >> "/tmp/flywheel-cmux-sync.log" 2>&1 || true
+            echo "[trigger_cmux_refresh] refresh-surfaces ws=$ref" >> "/tmp/flywheel-cmux-sync.log"
+        done <<< "$refs"
+    ) &
+    log "cmux refresh-surfaces scheduled (background, 10s delay)"
 }
 
 # Restart all Leads. Outputs "skipped:N failed:M" to stdout.
