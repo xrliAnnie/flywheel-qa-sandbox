@@ -12,6 +12,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import { resolveCommBackend } from "flywheel-config";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -253,11 +254,11 @@ export class TmuxAdapter implements IAdapter {
 		//
 		// Default (env unset / "mailbox"): write sentinel + don't disable.
 		// Rollback ("commdb"): skip sentinel write + force disable in Runner env.
-		const backendRaw = (
-			process.env.FLYWHEEL_COMM_BACKEND ?? "mailbox"
-		).toLowerCase();
-		const backend: "mailbox" | "commdb" =
-			backendRaw === "commdb" ? "commdb" : "mailbox";
+		// FLY-168: use the shared flywheel-config parser (adds .trim() — the
+		// prior inline copy didn't trim, so `FLYWHEEL_COMM_BACKEND=" commdb "`
+		// silently routed as mailbox here while the shell launcher treated it
+		// as rollback). Single source of truth now.
+		const backend = resolveCommBackend();
 
 		if (backend === "mailbox") {
 			try {

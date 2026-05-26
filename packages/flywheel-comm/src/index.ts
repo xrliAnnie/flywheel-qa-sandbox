@@ -80,7 +80,7 @@ async function main(): Promise<void> {
 			runRespond(commandArgs);
 			break;
 		case "send":
-			runSend(commandArgs);
+			await runSend(commandArgs);
 			break;
 		case "inbox":
 			runInbox(commandArgs);
@@ -250,7 +250,7 @@ function runRespond(args: string[]): void {
 	}
 }
 
-function runSend(args: string[]): void {
+async function runSend(args: string[]): Promise<void> {
 	const { values, positionals } = parseArgs({
 		args,
 		options: {
@@ -276,7 +276,7 @@ function runSend(args: string[]): void {
 	}
 
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	const instructionId = send({
+	const instructionId = await send({
 		fromAgent: values.from,
 		toAgent: values.to,
 		content,

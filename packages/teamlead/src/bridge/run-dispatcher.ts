@@ -7,6 +7,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
 import { openTmuxViewer } from "flywheel-core";
 import type { AgentDispatcher } from "flywheel-edge-worker";
@@ -83,9 +84,15 @@ function buildAgentTeamIdentity(
 		// LeadEventRouter), but guard anyway.
 		return {};
 	}
+	// FLY-168: share the single identity derivation with `flywheel-comm send`
+	// mailbox dual-write so the spawn side and the send side can never diverge.
+	const { agentName, teamName } = deriveRunnerMailboxIdentity(
+		executionId,
+		leadId,
+	);
 	return {
-		runnerAgentName: `runner-${executionId.slice(0, 8)}`,
-		agentTeamName: leadId,
+		runnerAgentName: agentName,
+		agentTeamName: teamName,
 		vendor: "claude-code",
 	};
 }

@@ -1,5 +1,7 @@
 export type { ReadFileFn } from "./ConfigLoader.js";
 export { ConfigLoader } from "./ConfigLoader.js";
+export type { CommBackend } from "./comm-backend.js";
+export { resolveCommBackend } from "./comm-backend.js";
 export {
 	DEFAULT_GATE_TIMEOUT_MS,
 	DEFAULT_TIMEOUT_BEHAVIOR,

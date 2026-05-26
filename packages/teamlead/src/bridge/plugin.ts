@@ -2,6 +2,10 @@ import { timingSafeEqual } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+import {
+	type CommBackend,
+	resolveCommBackend as resolveCommBackendShared,
+} from "flywheel-config";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
@@ -77,17 +81,12 @@ import type { BridgeConfig } from "./types.js";
  * plan §B-2 Codex r3 critical #1; Batch 2 PR 2.1 will swap it for
  * StructuredInboxRouter once await-mcp ships.
  */
-type CommBackend = "mailbox" | "commdb";
-
-export function resolveCommBackend(): CommBackend {
-	const raw = (process.env.FLYWHEEL_COMM_BACKEND ?? "mailbox").toLowerCase();
-	if (raw === "commdb") return "commdb";
-	if (raw === "mailbox" || raw === "") return "mailbox";
-	console.warn(
-		`[Bridge] Unrecognized FLYWHEEL_COMM_BACKEND="${raw}" — falling back to "mailbox" default. Set to "mailbox" or "commdb" explicitly.`,
-	);
-	return "mailbox";
-}
+// FLY-168: `resolveCommBackend` moved to `flywheel-config` so non-teamlead
+// packages (flywheel-comm, claude-runner) share ONE parser. Re-exported here
+// (with the legacy `CommBackend` type alias) so existing importers of
+// `./plugin.js` — run-dispatcher.ts, run-infra.ts — keep working unchanged.
+export type { CommBackend };
+export const resolveCommBackend = resolveCommBackendShared;
 
 /**
  * FLY-47 → FLY-142 PR 1.4: per-Lead runtime factory. Selects MailboxLeadRuntime
