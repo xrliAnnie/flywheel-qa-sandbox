@@ -25,6 +25,13 @@ STALE_STATE="${STALE_STATE:-/tmp/flywheel-cmux-stale.state}"
 CLEANUP_DELAY_SECONDS="${FLYWHEEL_CMUX_CLEANUP_DELAY:-30}"
 CONSERVATIVE_CLEANUP_SECONDS="${FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP:-300}"
 
+# FLY-129 Phase 1: single-watcher lock pushed down from autostart into sync script.
+# Any path that starts --watch goes through the same lock; double-mutex protects
+# the stale-lock reap from race conditions.
+# Env override: FLYWHEEL_CMUX_WATCHER_LOCK_DIR for tests.
+WATCHER_LOCK_DIR="${FLYWHEEL_CMUX_WATCHER_LOCK_DIR:-/tmp/flywheel-cmux-watcher.lock}"
+WATCHER_REAP_MUTEX="${WATCHER_LOCK_DIR}.reap"
+
 # ── Functions ──
 
 # FLY-129: log to stderr so callers in pipelines (e.g. `cmux_call list-workspaces | sed`)
@@ -77,25 +84,75 @@ cmux_health_check() {
     log "ERROR: To fix: ls -l $socket; defaults write com.cmuxterm.app socketControlMode -string allowAll && quit cmux app + relaunch"
     return 2
   fi
-  log "WARN: cmux ping failed transiently (rc=$rc, out='${out}', err='${err_text}')"
+  # FLY-129 Phase 7 (R2-2): do NOT log here per-tick. Stash the diagnostic
+  # so cmux_health_check_or_die can include it in the ONE transition log
+  # when state actually flips.
+  CMUX_HEALTH_LAST_DIAG="rc=$rc out='${out}' err='${err_text}'"
   return 3
 }
 
-# FLY-129: gate helper used both at startup and every minute in watch_loop.
-# Returns:
+# FLY-129 Phase 7: gate helper used both at startup and every tick in
+# watch_loop. State-machine logging — emits at most ONE line per state
+# transition, not per tick. Returns:
 #   0 — healthy (caller can run cmux operations)
 #   2 — auth rejected (this function exits 1; never returns)
 #   non-zero (1/3) — recoverable; caller should SKIP cmux operations this tick
-# Designed for use as a gate: `if cmux_health_check_or_die; then sync_additive; fi`
 cmux_health_check_or_die() {
   local rc=0
   cmux_health_check || rc=$?
-  case $rc in
-    0) return 0 ;;
-    1) log "INFO: cmux socket missing — skipping cmux ops this tick (will retry)"; return 1 ;;
-    2) log "FATAL: cmux IPC auth rejected — exiting so autostart lock releases for next cmux-pane-spawned watcher"; exit 1 ;;
-    3) return 3 ;;  # transient; warn already logged in cmux_health_check
-  esac
+  # rc=2 fatal — always log immediately (immediate-log preserved per R2-2);
+  # exit 1 so the autostart EXIT trap releases the lock for the next watcher.
+  if [[ $rc -eq 2 ]]; then
+    log "FATAL: cmux IPC auth rejected — exiting so autostart lock releases for next cmux-pane-spawned watcher"
+    exit 1
+  fi
+
+  local last="$CMUX_HEALTH_LAST_RC"
+  if [[ $rc -eq 0 ]]; then
+    # Healthy. If we were previously unhealthy, log recovery once.
+    if [[ "$last" != "0" ]]; then
+      local since="$CMUX_HEALTH_FAIL_SINCE"
+      local now; now=$(date +%s)
+      local for_s=0
+      [[ -n "$since" ]] && for_s=$((now - since))
+      log "INFO: cmux recovered after ${for_s}s (was rc=$last, $CMUX_HEALTH_FAIL_COUNT consecutive ticks)"
+      CMUX_HEALTH_FAIL_SINCE=""
+      CMUX_HEALTH_FAIL_COUNT=0
+      CMUX_HEALTH_LAST_DIAG=""
+    fi
+    CMUX_HEALTH_LAST_RC=0
+    return 0
+  fi
+
+  # Unhealthy (rc=1 or rc=3). Log once on transition; stay silent on repeats.
+  if [[ "$last" != "$rc" ]]; then
+    CMUX_HEALTH_FAIL_SINCE=$(date +%s)
+    CMUX_HEALTH_FAIL_COUNT=1
+    case $rc in
+      1) log "WARN: cmux socket missing — skipping cmux ops (will retry)" ;;
+      3) log "WARN: cmux unhealthy — diag=${CMUX_HEALTH_LAST_DIAG:-<empty>}" ;;
+    esac
+  else
+    CMUX_HEALTH_FAIL_COUNT=$((CMUX_HEALTH_FAIL_COUNT + 1))
+  fi
+  CMUX_HEALTH_LAST_RC="$rc"
+  return $rc
+}
+
+# FLY-129 Phase 7: backoff curve. Healthy ticks pay 15s; the longer we've
+# been unhealthy, the longer the sleep. Capped at 300s so a long outage
+# doesn't push us past a Lead-restart's "tick" expectation by an hour.
+next_sleep_seconds() {
+  local count="${1:-0}"
+  if (( count <= 1 )); then
+    echo 15
+  elif (( count <= 5 )); then
+    echo 30
+  elif (( count <= 10 )); then
+    echo 60
+  else
+    echo 300
+  fi
 }
 
 # FLY-129: wrap cmux call so stderr goes to log (via stderr, not /dev/null).
@@ -144,33 +201,242 @@ get_tmux_agent_windows() {
 }
 
 get_cmux_workspaces() {
-  # Returns raw workspace list from cmux. FLY-129: stderr now goes to log
-  # via cmux_call instead of being discarded.
+  # DEPRECATED (FLY-129 Phase 3): returns the legacy text format from cmux.
+  # New code MUST use get_cmux_workspaces_json. This is retained only as a
+  # safety net for any path that depends on the text parse. No new code paths
+  # should reference this. FLY-129 follow-up: delete once Phase 3 has soaked.
   cmux_call list-workspaces || true
 }
 
+# FLY-129 Phase 3 (R2-1, R3-1): JSON-based cmux workspace state.
+#
+# Module-level state — track JSON-health transition so we emit ONE log line
+# on first failure and ONE on recovery, instead of spamming every 15s tick
+# while cmux is down. Reset per `source` (so unit tests start clean).
+CMUX_JSON_LAST_STATE="${CMUX_JSON_LAST_STATE:-unknown}"  # unknown|ok|fail
+
+# FLY-129 Phase 7 (scope #7, R2-2): cmux ping health-check transition log.
+# cmux_health_check itself MUST NOT log rc=3 transients — the previous
+# inline `log "WARN: cmux ping failed transiently..."` line printed once
+# per 15s tick even while the rc=3 state was stable. Transition logging
+# now lives ONLY in cmux_health_check_or_die's state machine below.
+CMUX_HEALTH_LAST_RC="${CMUX_HEALTH_LAST_RC:-0}"     # 0/1/3 — last observed health rc
+CMUX_HEALTH_FAIL_SINCE=""                            # epoch when state last entered non-zero
+CMUX_HEALTH_FAIL_COUNT="${CMUX_HEALTH_FAIL_COUNT:-0}"  # consecutive non-zero ticks (for backoff)
+CMUX_HEALTH_LAST_DIAG=""                             # last probe stderr (reported in transition log)
+
+get_cmux_workspaces_json() {
+  # Returns raw `cmux --json list-workspaces` output on stdout, rc=0.
+  # On any failure (rc!=0 OR invalid JSON) returns NON-ZERO with empty stdout
+  # and emits a single transition log. Callers MUST distinguish rc=0 from
+  # rc≠0 — they MUST NOT treat empty stdout as "no workspaces" because that
+  # would race cmux mutations during JSON outages.
+  #
+  # Why not use cmux_call: cmux_call logs WARN on every failure. We want
+  # transition-only logging to keep the watcher quiet during sustained
+  # cmux-down windows.
+  local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
+  local err_file raw rc=0
+  err_file=$(mktemp)
+  raw=$(cmux --socket "$socket" --json list-workspaces 2>"$err_file") || rc=$?
+  local err_text
+  err_text=$(cat "$err_file" 2>/dev/null || true)
+  rm -f "$err_file"
+
+  if [[ $rc -ne 0 ]]; then
+    if [[ "$CMUX_JSON_LAST_STATE" != "fail" ]]; then
+      log "WARN: cmux --json list-workspaces failed (rc=$rc): ${err_text:-<empty>} — cmux mutation skipped"
+      CMUX_JSON_LAST_STATE="fail"
+    fi
+    return 1
+  fi
+  # Codex R1 MEDIUM: parse alone is not enough. A degenerate response like
+  # `{}` or `{"error":"..."}` parses fine but lacks the `workspaces` array,
+  # which would let downstream helpers treat "no workspaces" as truth and
+  # blindly create workspaces. Require the schema shape we depend on.
+  if ! printf '%s' "$raw" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+if not isinstance(d, dict) or not isinstance(d.get("workspaces"), list):
+    sys.exit(1)
+' >/dev/null 2>&1; then
+    if [[ "$CMUX_JSON_LAST_STATE" != "fail" ]]; then
+      log "WARN: cmux --json list-workspaces returned invalid JSON or missing 'workspaces' array — cmux mutation skipped"
+      CMUX_JSON_LAST_STATE="fail"
+    fi
+    return 1
+  fi
+  if [[ "$CMUX_JSON_LAST_STATE" == "fail" ]]; then
+    log "INFO: cmux --json list-workspaces recovered"
+  fi
+  CMUX_JSON_LAST_STATE="ok"
+  printf '%s' "$raw"
+}
+
+workspace_refs_for() {
+  # Tri-state (R3-1):
+  #   rc=0 + stdout = one ref per line for workspaces whose title matches $1
+  #     (empty stdout when no match — distinguishable from rc=2 by exit code)
+  #   rc=2 + empty stdout = JSON unavailable. Callers MUST NOT treat this as
+  #     "not found" — doing so would race a cmux mutation during a JSON outage.
+  # The two-step form `raw=$(get_cmux_workspaces_json) || return 2` keeps
+  # rc=2 visible to the caller; piping directly into python via `set -o
+  # pipefail` would swallow the get_cmux_workspaces_json failure signal.
+  local name="$1" raw
+  raw=$(get_cmux_workspaces_json) || return 2
+  printf '%s' "$raw" | python3 -c '
+import sys, json
+name = sys.argv[1]
+for w in json.load(sys.stdin).get("workspaces", []):
+    if w.get("title") == name:
+        ref = w.get("ref", "")
+        if ref:
+            print(ref)
+' "$name"
+}
+
 workspace_exists_for() {
-  local window_name="$1"
-  # Exact match: workspace title must match exactly (not substring)
-  # cmux list-workspaces format: "* workspace:N  <title>  [selected]" or "  workspace:N  <title>"
-  # Strip leading "* " or spaces → normalize to "workspace:N <title> [selected]?"
-  get_cmux_workspaces | sed 's/^[* ]*//' | awk -v name="$window_name" '{
-    if ($2 == name) { found=1; exit }
-  } END { exit !found }'
+  # Tri-state (R3-1):
+  #   rc=0  workspace with title $1 exists
+  #   rc=1  workspace with title $1 does NOT exist
+  #   rc=2  JSON unavailable — caller MUST NOT treat as rc=1
+  local name="$1" refs
+  refs=$(workspace_refs_for "$name") || return 2
+  [[ -n "$refs" ]] && return 0
+  return 1
 }
 
 get_workspace_ref_for() {
-  local window_name="$1"
-  # Return workspace:N ref for a given title (for targeted operations)
-  # After stripping "* "/spaces: $1=workspace:N, $2=title
-  get_cmux_workspaces | sed 's/^[* ]*//' | awk -v name="$window_name" '{
-    if ($2 == name) { print $1; exit }
-  }'
+  # Backward-compat shim — returns first matching ref. NOT safe as a
+  # mutation gate because it cannot distinguish "not found" from "JSON
+  # unavailable" (both produce empty stdout). Mutation callers (cleanup /
+  # reconcile / create) MUST call workspace_refs_for directly and check $?.
+  workspace_refs_for "$1" | head -1
 }
 
 get_all_workspace_refs() {
-  # Return sorted list of all workspace:N refs
-  get_cmux_workspaces | sed 's/^[* ]*//' | awk '{print $1}' | sort
+  # Tri-state — rc=2 on JSON failure, empty stdout. Read-only callers may
+  # treat empty stdout as "no workspaces"; mutation callers must check rc.
+  local raw
+  raw=$(get_cmux_workspaces_json) || return 2
+  printf '%s' "$raw" | python3 -c '
+import sys, json
+for w in json.load(sys.stdin).get("workspaces", []):
+    ref = w.get("ref", "")
+    if ref:
+        print(ref)
+' | sort
+}
+
+get_ghost_workspace_refs() {
+  # Tri-state — rc=2 on JSON failure. Returns refs whose title is missing
+  # (null / empty / legacy "~" tilde-placeholder). Phase 4 ghost reaper
+  # uses this; mutation callers MUST check rc.
+  local raw
+  raw=$(get_cmux_workspaces_json) || return 2
+  printf '%s' "$raw" | python3 -c '
+import sys, json
+for w in json.load(sys.stdin).get("workspaces", []):
+    title = w.get("title")
+    if title is None or title == "" or title == "~":
+        ref = w.get("ref", "")
+        if ref:
+            print(ref)
+'
+}
+
+close_workspace_by_ref() {
+  # Single chokepoint for all cmux workspace closes. Audit log per call;
+  # FLYWHEEL_CMUX_DRY_RUN=1 short-circuits the actual cmux call but still
+  # logs (so a dry-run inspection still shows what would have happened).
+  local ws_ref="$1" reason="$2"
+  local dry="${FLYWHEEL_CMUX_DRY_RUN:-0}"
+  log "[audit] close workspace=$ws_ref reason=$reason dry_run=$dry"
+  [[ "$dry" == "1" ]] && return 0
+  cmux_call close-workspace --workspace "$ws_ref" || true
+}
+
+# FLY-129 Phase 4 (scope #3): periodic ghost reaper.
+# A "ghost" workspace is one whose title is null / empty / legacy "~".
+# In production we've seen up to 26 of these accumulate. Reaping removes
+# the visible clutter and frees Electron-side surface state.
+# Fail-closed: rc=2 on the JSON gate → return 0 (next tick retries).
+reap_ghost_workspaces() {
+  local refs
+  refs=$(get_ghost_workspace_refs) || return 0  # JSON unavailable → skip
+  [[ -z "$refs" ]] && return 0
+  while read -r ref; do
+    [[ -z "$ref" ]] && continue
+    close_workspace_by_ref "$ref" "ghost-reaper"
+  done <<< "$refs"
+}
+
+# FLY-129 Phase 6 (scope #2, R2-6): periodic dedup of workspaces with the
+# same title. Tie-breaker (highest priority kept):
+#   1. pinned (if cmux JSON exposes the field)
+#   2. selected
+#   3. highest workspace:N number (cmux ID is monotonically increasing
+#      and not reused, so the newest is the most likely live one — the
+#      stale UI-cache copy is typically the older ID)
+# Refs that don't match ^workspace:\d+$ are prefixed with "SKIP " on stdout
+# so they're logged (not closed) — avoids taking a destructive action on
+# a malformed entry.
+dedup_workspaces_by_title() {
+  local raw
+  raw=$(get_cmux_workspaces_json) || return 0  # JSON unavailable → skip
+
+  # Python emits two kinds of stdout lines:
+  #   "SKIP <ref> <title>"  → malformed ref; log + skip
+  #   "<ref>"               → close (loser in the dedup group)
+  local plan
+  plan=$(printf '%s' "$raw" | python3 -c '
+import sys, json, re
+data = json.load(sys.stdin)
+ws = data.get("workspaces", [])
+by_title = {}
+for w in ws:
+    title = w.get("title")
+    ref = w.get("ref", "")
+    if not title or not ref:
+        continue
+    by_title.setdefault(title, []).append(w)
+
+REF_RE = re.compile(r"^workspace:(\d+)$")
+
+for title, group in by_title.items():
+    if len(group) < 2:
+        continue
+    valid = []
+    for w in group:
+        if REF_RE.match(w.get("ref", "")):
+            valid.append(w)
+        else:
+            print("SKIP " + w.get("ref", "") + " " + title)
+    if len(valid) < 2:
+        continue
+    def key(w):
+        n = int(REF_RE.match(w["ref"]).group(1))
+        return (
+            1 if w.get("pinned") else 0,
+            1 if w.get("selected") else 0,
+            n,
+        )
+    valid.sort(key=key)
+    for w in valid[:-1]:
+        print(w["ref"])
+') || return 0
+  [[ -z "$plan" ]] && return 0
+  while read -r line; do
+    [[ -z "$line" ]] && continue
+    if [[ "$line" == SKIP\ * ]]; then
+      log "WARN: dedup skipping malformed ref: ${line#SKIP }"
+      continue
+    fi
+    close_workspace_by_ref "$line" "dedup-newest-wins"
+  done <<< "$plan"
 }
 
 linked_session_exists() {
@@ -186,8 +452,13 @@ is_pane_alive() {
   # Returns 0 (alive) if at least one matching window has a live pane.
   # Returns 1 (dead / missing) otherwise.
   local wname="$1"
+  # FLY-129 Phase 5 (Codex R2 MEDIUM fix): use awk -F'|' literal field
+  # compare instead of `grep "|name$"`. The grep form interprets `.`/`[`/
+  # `]` in window names as regex (repro: `foo.bar[1]` was matched against
+  # `foo-bar-1` etc), causing false-positive "alive" reads + false-positive
+  # cleanups elsewhere via the inverted predicate at cleanup_stale_conservative.
   local sessions
-  sessions=$(get_tmux_agent_windows | grep "|${wname}\$" || true)
+  sessions=$(get_tmux_agent_windows | awk -F'|' -v n="$wname" '$3 == n' || true)
   [[ -z "$sessions" ]] && return 1
 
   while IFS='|' read -r sess wid name; do
@@ -203,27 +474,95 @@ is_pane_alive() {
 
 cleanup_workspace_for() {
   # FLY-102: Clean up a single cmux workspace + linked session by window name.
-  # Extracted from cleanup_stale_workspaces so event-signaled cleanup can reuse it.
-  # Safe to call even if workspace or linked session no longer exists.
-  local agent_name="$1"
+  # FLY-129 Phase 3/5 (R3-1 + R4-1): hybrid fail-closed.
+  #   - cmux close is gated by JSON availability (skip on rc=2 — would race a
+  #     stale state if we tried to close blindly during a JSON outage).
+  #   - tmux kill + STALE_STATE drain are UNCONDITIONAL because tmux state
+  #     and the on-disk stale-state file are local; they don't depend on
+  #     cmux JSON. Skipping them would leak a linked tmux session and let
+  #     STALE_STATE grow unbounded across cmux outages.
+  # FLY-129 Phase 3 (R2-6 dup handling): close ALL matching refs (dedup
+  # convergence), not just the first one.
+  local agent_name="$1" refs
   local view_session="${VIEW_PREFIX}${agent_name}"
 
-  # 1. Close cmux workspace (if it exists)
-  local ws_ref
-  ws_ref=$(get_workspace_ref_for "$agent_name")
-  if [[ -n "$ws_ref" ]]; then
-    cmux_call close-workspace --workspace "$ws_ref" || true
+  # 1. cmux close — gated by JSON availability (R4-1: only this is gated).
+  if refs=$(workspace_refs_for "$agent_name"); then
+    while read -r ref; do
+      [[ -z "$ref" ]] && continue
+      close_workspace_by_ref "$ref" "stale-${agent_name}"
+    done <<< "$refs"
+  else
+    log "WARN: cmux JSON unavailable; skipping cmux close for $agent_name this tick"
   fi
 
-  # 2. Kill the linked session (never kill the source session)
+  # 2. Local tmux kill — unconditional (cmux-independent state).
   tmux kill-session -t "=$view_session" 2>/dev/null || true
+
+  # 3. STALE_STATE drain — unconditional (Phase 5).
+  drain_stale_state_row "$agent_name"
+}
+
+# FLY-129 Phase 5 (scope #5, Codex R1 Issue 7): drain_stale_state_row.
+# Uses `awk -F'|'` literal-field comparison (NOT sed regex) because
+# agent_name may contain regex metacharacters (e.g. window names with
+# brackets / dots that sed would treat as character classes / wildcards).
+drain_stale_state_row() {
+  local name="$1"
+  [[ -f "$STALE_STATE" ]] || return 0
+  local tmp
+  tmp=$(mktemp "${STALE_STATE}.XXXX") || return 0
+  awk -F'|' -v n="$name" '$1 != n { print }' "$STALE_STATE" > "$tmp"
+  mv "$tmp" "$STALE_STATE"
+}
+
+# FLY-129 Phase 5: GC the STALE_STATE file at watcher startup. Removes any
+# row whose agent_name no longer corresponds to a live linked session or
+# active tmux window — those entries are leftover from a previous watcher
+# instance that didn't finish its cleanup before dying.
+gc_stale_state_file() {
+  [[ -f "$STALE_STATE" ]] || return 0
+  local current_agents linked_sessions tmp
+  current_agents=$(get_tmux_agent_windows | cut -d'|' -f3)
+  linked_sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null | grep "^${VIEW_PREFIX}" || true)
+  tmp=$(mktemp "${STALE_STATE}.XXXX") || return 0
+  while IFS='|' read -r name ts; do
+    [[ -z "$name" ]] && continue
+    # Keep if a tmux agent window exists OR a linked session exists for it.
+    if echo "$current_agents" | grep -qx "$name" \
+       || echo "$linked_sessions" | grep -qx "${VIEW_PREFIX}${name}"; then
+      printf '%s|%s\n' "$name" "$ts" >> "$tmp"
+    fi
+  done < "$STALE_STATE"
+  mv "$tmp" "$STALE_STATE"
 }
 
 create_workspace_for_window() {
+  # FLY-129 Phase 3 (R3-1): fail-closed at function top.
+  #   - Snapshot JSON ONCE for this create attempt and reuse it for both
+  #     the existence check and the refs_before snapshot. Avoids two
+  #     extra cmux JSON calls + closes the window where another tick's
+  #     create could slip in between our reads.
+  #   - rc=2 on the JSON gate → exit 0 (skip this create; next tick retries).
   local source_session="$1"
   local window_id="$2"
   local window_name="$3"
   local view_session="${VIEW_PREFIX}${window_name}"
+
+  local raw_before
+  raw_before=$(get_cmux_workspaces_json) || return 0  # JSON unavailable → skip
+
+  # Existence check against the snapshot — inline so we never read rc=2 as
+  # "not found" (workspace_exists_for would do the right thing but it'd
+  # re-fetch JSON; we already have it).
+  if printf '%s' "$raw_before" | python3 -c '
+import sys, json
+name = sys.argv[1]
+exists = any(w.get("title") == name for w in json.load(sys.stdin).get("workspaces", []))
+sys.exit(0 if exists else 1)
+' "$window_name"; then
+    return 0  # already exists, nothing to create
+  fi
 
   log "Creating workspace for: $window_name ($window_id) from session $source_session"
 
@@ -236,9 +575,15 @@ create_workspace_for_window() {
   # FLY-98: use =name exact match to survive window ID changes across restarts
   tmux select-window -t "=${view_session}:=${window_name}" 2>/dev/null || true
 
-  # 3. Snapshot workspace refs before creation
+  # 3. refs_before from the snapshot we already have (no extra cmux call).
   local refs_before
-  refs_before=$(get_all_workspace_refs)
+  refs_before=$(printf '%s' "$raw_before" | python3 -c '
+import sys, json
+for w in json.load(sys.stdin).get("workspaces", []):
+    ref = w.get("ref", "")
+    if ref:
+        print(ref)
+' | sort)
 
   # 4. Create cmux workspace attaching to the linked session
   # FLY-98: original `2>/dev/null` swallowed real errors (it does NOT prevent
@@ -250,10 +595,22 @@ create_workspace_for_window() {
     return 0
   fi
 
-  # 5. Find the new workspace ref by diffing before/after (no selection-state dependency)
-  local refs_after new_ref
-  refs_after=$(get_all_workspace_refs)
-  new_ref=$(grep -vFxf <(echo "$refs_before") <(echo "$refs_after") | head -1 || true)
+  # 5. Race protection: re-snapshot after create. If JSON is unavailable
+  # here we can't rename — log + return; the window will be unnamed cmux-side
+  # until next reconcile pass.
+  local raw_after refs_after new_ref
+  raw_after=$(get_cmux_workspaces_json) || {
+    log "WARN: cmux JSON unavailable post-create; cannot rename $window_name this tick"
+    return 0
+  }
+  refs_after=$(printf '%s' "$raw_after" | python3 -c '
+import sys, json
+for w in json.load(sys.stdin).get("workspaces", []):
+    ref = w.get("ref", "")
+    if ref:
+        print(ref)
+' | sort)
+  new_ref=$(grep -vFxf <(printf '%s' "$refs_before") <(printf '%s' "$refs_after") | head -1 || true)
 
   # 6. Rename using the exact ref — immune to user tab switching
   if [[ -n "$new_ref" ]]; then
@@ -299,25 +656,41 @@ refresh_linked_sessions() {
 }
 
 reconcile_existing_workspaces() {
-  # For workspaces that exist but have no linked session (e.g., after Lead restart
-  # or cmux reopen with stale workspace), close the broken workspace and let the
-  # create phase rebuild it from scratch. This is more reliable than respawn-pane,
-  # which may not work on all pane states.
-  local tmux_windows
+  # FLY-129 Phase 3 (R3-1): for workspaces that exist but have no linked
+  # session (e.g., after Lead restart or cmux reopen with stale workspace),
+  # close the broken workspace and let the create phase rebuild it.
+  #
+  # Fail-closed gate: snapshot JSON ONCE at the top of this reconcile pass
+  # (one call instead of per-candidate). rc=2 → return 0 — next tick retries.
+  # All closes go through close_workspace_by_ref (single audit log path).
+  local tmux_windows raw
   tmux_windows=$(get_tmux_agent_windows)
   [[ -z "$tmux_windows" ]] && return 0
+  raw=$(get_cmux_workspaces_json) || return 0  # JSON unavailable → skip
 
   while IFS='|' read -r src_sess wid wname; do
     local view_session="${VIEW_PREFIX}${wname}"
-    # Workspace exists but linked session doesn't → close workspace (create phase will rebuild)
-    if workspace_exists_for "$wname" && ! linked_session_exists "$view_session"; then
-      log "Reconciling: closing stale workspace for '$wname' (linked session dead)"
-      local ws_ref
-      ws_ref=$(get_workspace_ref_for "$wname")
-      if [[ -n "$ws_ref" ]]; then
-        cmux_call close-workspace --workspace "$ws_ref" || true
-      fi
-    fi
+    # Skip if the linked session is alive — nothing to reconcile.
+    linked_session_exists "$view_session" && continue
+    # Find ALL refs matching this window name (dup-tolerant; Phase 6 dedup
+    # also runs later but we still close every matching ref here in case
+    # dedup hasn't run this tick).
+    local refs
+    refs=$(printf '%s' "$raw" | python3 -c '
+import sys, json
+name = sys.argv[1]
+for w in json.load(sys.stdin).get("workspaces", []):
+    if w.get("title") == name:
+        ref = w.get("ref", "")
+        if ref:
+            print(ref)
+' "$wname")
+    [[ -z "$refs" ]] && continue
+    log "Reconciling: closing stale workspace(s) for '$wname' (linked session dead)"
+    while read -r ref; do
+      [[ -z "$ref" ]] && continue
+      close_workspace_by_ref "$ref" "reconcile-${wname}-linked-dead"
+    done <<< "$refs"
   done <<< "$tmux_windows"
 }
 
@@ -358,11 +731,35 @@ register_session_hooks() {
   # EMPTY for after-new-window and pane-exited (even though the man page lists
   # them). The plain names correctly resolve to the session/window where the
   # hook fired. Empirically verified + enforced by integration test.
-  tmux set-hook -t "$session" 'after-new-window[500]' \
-    "run-shell -b 'echo \"create|#{session_name}|#{window_id}|#{window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
-  tmux set-hook -t "$session" 'pane-exited[500]' \
-    "run-shell -b 'echo \"exited|#{session_name}|#{window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
-  log "Hooks registered on session: $session"
+  #
+  # FLY-129 Phase 2 (scope #6, Codex R1 Issue 6): silence the per-tick "Hooks
+  # registered" log spam. Read current hooks once via show-hooks; if both
+  # after-new-window[500] AND pane-exited[500] are present (exact name match,
+  # anchored regex), return silently. Otherwise re-register the missing one
+  # (set-hook is idempotent — overwriting the same hook at [500] is cheap)
+  # and emit ONE log line per recovery, not per tick.
+  local current_hooks have_create=0 have_exited=0
+  current_hooks=$(tmux show-hooks -t "$session" 2>/dev/null || true)
+  if grep -q '^after-new-window\[500\]' <<<"$current_hooks"; then
+    have_create=1
+  fi
+  if grep -q '^pane-exited\[500\]' <<<"$current_hooks"; then
+    have_exited=1
+  fi
+  if (( have_create == 1 && have_exited == 1 )); then
+    return 0
+  fi
+
+  if (( have_create == 0 )); then
+    tmux set-hook -t "$session" 'after-new-window[500]' \
+      "run-shell -b 'echo \"create|#{session_name}|#{window_id}|#{window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
+  fi
+  if (( have_exited == 0 )); then
+    tmux set-hook -t "$session" 'pane-exited[500]' \
+      "run-shell -b 'echo \"exited|#{session_name}|#{window_name}\" >> $EVENT_FILE'" 2>/dev/null || true
+  fi
+  local was=$((have_create + have_exited))
+  log "Hooks (re-)registered on $session: was $was/2"
 }
 
 register_global_hooks() {
@@ -531,7 +928,12 @@ _drain_file() {
           flywheel|runner-*) ;;
           *) continue ;;
         esac
-        if ! workspace_exists_for "$wname"; then
+        # FLY-129 Phase 3 (R3-1): tri-state workspace_exists_for.
+        #   rc=0 found → skip; rc=1 not found → create; rc=2 JSON
+        #   unavailable → skip this tick (would race a stale state).
+        local _exists_rc=0
+        workspace_exists_for "$wname" || _exists_rc=$?
+        if [[ $_exists_rc -eq 1 ]]; then
           create_workspace_for_window "$session" "$wid" "$wname"
         fi
         ;;
@@ -599,18 +1001,25 @@ cleanup_stale_conservative() {
   while read -r sess; do
     local agent_name="${sess#${VIEW_PREFIX}}"
     if ! is_pane_alive "$agent_name"; then
+      # FLY-129 Phase 5 (Codex R1 MEDIUM fix): replace `grep "^name|"` with
+      # awk -F'|' literal field compare so window names containing regex
+      # metacharacters (`.` / `[` / `]` etc) match correctly and don't
+      # accidentally consume neighbouring rows.
       local first_stale
-      first_stale=$(grep "^${agent_name}|" "$STALE_STATE" 2>/dev/null | cut -d'|' -f2 || true)
+      first_stale=$(awk -F'|' -v n="$agent_name" '$1 == n { print $2; exit }' "$STALE_STATE" 2>/dev/null || true)
       if [[ -z "$first_stale" ]]; then
         echo "${agent_name}|${now}" >> "$STALE_STATE"
       elif (( now - first_stale >= CONSERVATIVE_CLEANUP_SECONDS )); then
         log "Conservative cleanup: $sess (stale for $((now - first_stale))s)"
         cleanup_workspace_for "$agent_name"
-        sed -i '' "/^${agent_name}|/d" "$STALE_STATE" 2>/dev/null || true
+        # drain_stale_state_row uses the same awk -F'|' literal compare
+        # (Phase 5). Centralizes the "remove this agent from STALE_STATE"
+        # operation so a future regex-safety fix only has to land there.
+        drain_stale_state_row "$agent_name"
       fi
     else
-      # Pane is alive again → clear stale marker
-      sed -i '' "/^${agent_name}|/d" "$STALE_STATE" 2>/dev/null || true
+      # Pane is alive again → clear stale marker (literal-compare drain).
+      drain_stale_state_row "$agent_name"
     fi
   done <<< "$linked_sessions"
 }
@@ -631,49 +1040,61 @@ sync_additive_bootstrap() {
   refresh_linked_sessions
 
   # 3. Create missing workspaces. No cleanup of existing ones.
+  # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1 (not found).
   while IFS='|' read -r src_sess wid wname; do
-    if ! workspace_exists_for "$wname"; then
+    local _exists_rc=0
+    workspace_exists_for "$wname" || _exists_rc=$?
+    if [[ $_exists_rc -eq 1 ]]; then
       create_workspace_for_window "$src_sess" "$wid" "$wname"
     fi
   done <<< "$tmux_windows"
 }
 
 sync_additive() {
-  # Called every 60s. Mirrors bootstrap, plus conservative cleanup + hook
-  # top-up for sessions that existed before the watcher started.
+  # Called every 60s. Mirrors bootstrap, plus conservative cleanup, hook
+  # top-up, ghost reaping (Phase 4), and dedup (Phase 6).
   register_hooks_on_new_sessions
 
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
   if [[ -z "$tmux_windows" ]]; then
     cleanup_stale_conservative
+    # Even with no agent windows, reap ghosts so cmux UI clutter doesn't
+    # accumulate during quiet periods.
+    reap_ghost_workspaces
     return 0
   fi
 
   reconcile_existing_workspaces
   refresh_linked_sessions
 
+  # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1.
   while IFS='|' read -r src_sess wid wname; do
-    if ! workspace_exists_for "$wname"; then
+    local _exists_rc=0
+    workspace_exists_for "$wname" || _exists_rc=$?
+    if [[ $_exists_rc -eq 1 ]]; then
       create_workspace_for_window "$src_sess" "$wid" "$wname"
     fi
   done <<< "$tmux_windows"
+
+  # FLY-129 Phase 4 + Phase 6: ghost reap + dedup. Both fail-closed on
+  # JSON-unavailable — they no-op rather than mis-acting on stale state.
+  reap_ghost_workspaces
+  dedup_workspaces_by_title
 
   cleanup_stale_conservative
 }
 
 watch_loop() {
   # Polling loop for --watch mode. Wrapped in a function so `local` is legal.
-  local tick=0
+  # FLY-129 Phase 7: backoff while unhealthy. Healthy ticks stay at 15s so
+  # event drain latency is unchanged; degraded paths back off up to 300s.
+  local tick=0 sleep_seconds=15
   while true; do
-    sleep 15
+    sleep "$sleep_seconds"
     tick=$((tick + 1))
 
-    # FLY-129 R2: gate ALL cmux-touching work behind the health check, every
-    # tick (15s). drain_events / process_pending_cleanups CAN call cmux
-    # (create_workspace_for_window, cleanup_workspace_for), so we must check
-    # health before we let them touch cmux.
-    #
+    # FLY-129 R2: gate ALL cmux-touching work behind the health check.
     # rc=2 (Access denied / kernel perm-denied) → cmux_health_check_or_die
     # exits 1 → autostart EXIT trap releases the lock.
     # rc=0 healthy → run drain + cleanup; every 4th tick also run sync_additive.
@@ -688,6 +1109,9 @@ watch_loop() {
       if (( tick % 4 == 0 )); then
         sync_additive
       fi
+      sleep_seconds=15
+    else
+      sleep_seconds=$(next_sleep_seconds "$CMUX_HEALTH_FAIL_COUNT")
     fi
   done
 }
@@ -714,6 +1138,11 @@ watch_main() {
   register_global_hooks
   register_hooks_on_new_sessions
 
+  # FLY-129 Phase 5: one-shot GC of any STALE_STATE rows whose agents no
+  # longer have a tmux window or linked session. Cleans up rows leaked by
+  # a previous watcher that crashed mid-cleanup.
+  gc_stale_state_file
+
   # Gate cmux-touching bootstrap: if cmux is broken (rc=2 already exited),
   # skip the full sync but still enter the watch loop. drain_events / loop
   # will retry health every minute.
@@ -724,6 +1153,17 @@ watch_main() {
 }
 
 sync_once() {
+  # FLY-129 Phase 1 (research §3.3 Option b): if a --watch process is already
+  # running, --once's aggressive cleanup_stale_workspaces would race with the
+  # watcher's additive create + conservative cleanup. Detect and exit 0 with
+  # a guidance line telling the operator to use --refresh instead (tmux-only,
+  # cmux-socket-free, race-free).
+  if pgrep -f "flywheel-cmux-sync(\.sh)? +--watch" >/dev/null 2>&1; then
+    echo "flywheel-cmux-sync: --watch is already running" >&2
+    echo "  → use 'flywheel-cmux-sync --refresh' for tmux-side repair (safe)" >&2
+    exit 0
+  fi
+
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
 
@@ -740,15 +1180,126 @@ sync_once() {
   refresh_linked_sessions
 
   # 3. Create missing workspaces
+  # FLY-129 Phase 3 (R3-1): tri-state — only act on rc=1.
   while IFS='|' read -r src_sess wid wname; do
-    if workspace_exists_for "$wname"; then
-      continue
+    local _exists_rc=0
+    workspace_exists_for "$wname" || _exists_rc=$?
+    if [[ $_exists_rc -eq 1 ]]; then
+      create_workspace_for_window "$src_sess" "$wid" "$wname"
     fi
-    create_workspace_for_window "$src_sess" "$wid" "$wname"
   done <<< "$tmux_windows"
 
   # 4. Cleanup stale (dead windows → close workspace + kill linked session)
   cleanup_stale_workspaces
+
+  # 5. FLY-129 Phase 4 + Phase 6: ghost reap + dedup (manual full-sync mode
+  #    benefits from the same hygiene the periodic watcher gives).
+  reap_ghost_workspaces
+  dedup_workspaces_by_title
+}
+
+# FLY-129 Phase 8 (Path A): list cmux workspace refs that belong to Lead
+# windows (i.e. windows in the FLYWHEEL_SESSION tmux session). Used by
+# restart-services.sh trigger_cmux_refresh to scope refresh-surfaces to
+# only the Leads (don't touch Runner workspaces).
+# Output: one ref per line. Empty on JSON failure (rc=2 propagated).
+list_lead_refs() {
+  local windows raw
+  windows=$(tmux list-windows -t "$FLYWHEEL_SESSION" -F "#{window_name}" 2>/dev/null || true)
+  [[ -z "$windows" ]] && return 0
+  raw=$(get_cmux_workspaces_json) || return 0
+  while read -r wname; do
+    [[ -z "$wname" ]] && continue
+    [[ "$wname" == "zsh" || "$wname" == "bash" ]] && continue
+    printf '%s' "$raw" | python3 -c '
+import sys, json
+name = sys.argv[1]
+for w in json.load(sys.stdin).get("workspaces", []):
+    if w.get("title") == name:
+        ref = w.get("ref", "")
+        if ref:
+            print(ref)
+' "$wname"
+  done <<< "$windows"
+}
+
+# FLY-129 Phase 1: watcher lock acquire/release.
+#
+# Why double-mutex (main lock + reap mutex):
+#   The stale-lock cleanup ("owner dead → remove dir → mkdir my own") is two
+#   non-atomic steps. Without a serialization point, two contenders can both
+#   observe `owner_pid` dead, both `rm -rf` the dir, then both `mkdir` —
+#   the second mkdir fails but the first wrote its $$ over the second's view.
+#   The reap mutex (a sibling directory) ensures only ONE process is doing
+#   the rm+mkdir sequence at a time. The other process must wait, then
+#   retry from step 1 (the dir may now be owned by a live process).
+#
+# Round 2 R2-3: explicit failure branch — if mkdir of the lock dir fails AFTER
+# we released the reap mutex (because a contender slipped in), we retry from
+# step 1 with bounded attempts (≤3). After exhaustion we exit 0 (already-running
+# is the only safe interpretation).
+acquire_watcher_lock() {
+  local attempt
+  for attempt in 1 2 3; do
+    # Step 1 — lock dir exists + owner alive ⇒ already-running, exit 0.
+    if [[ -d "$WATCHER_LOCK_DIR" ]]; then
+      local owner_pid
+      owner_pid=$(cat "$WATCHER_LOCK_DIR/pid" 2>/dev/null || echo "")
+      if [[ -n "$owner_pid" ]] && kill -0 "$owner_pid" 2>/dev/null; then
+        log "watcher already running (pid=$owner_pid), exiting"
+        exit 0
+      fi
+    fi
+    # Step 2 — lock dir missing OR owner dead ⇒ try to grab the reap mutex.
+    if mkdir "$WATCHER_REAP_MUTEX" 2>/dev/null; then
+      # We hold the reap mutex — serialize the stale-lock cleanup.
+      # Step 3 — re-verify under mutex (TOCTOU defense).
+      if [[ -d "$WATCHER_LOCK_DIR" ]]; then
+        local owner_pid2
+        owner_pid2=$(cat "$WATCHER_LOCK_DIR/pid" 2>/dev/null || echo "")
+        if [[ -n "$owner_pid2" ]] && kill -0 "$owner_pid2" 2>/dev/null; then
+          rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
+          log "watcher already running (pid=$owner_pid2, post-mutex), exiting"
+          exit 0
+        fi
+        rm -rf "$WATCHER_LOCK_DIR"  # truly stale
+      fi
+      # Step 4 — try to acquire the lock dir.
+      if mkdir "$WATCHER_LOCK_DIR" 2>/dev/null; then
+        echo "$$" > "$WATCHER_LOCK_DIR/pid"
+        rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
+        # FLY-129 Phase 1 (Codex R1 HIGH fix): split traps so TERM/INT
+        # actually terminates the watcher. Previously `trap release_watcher_lock
+        # EXIT INT TERM` released the lock then bash continued running the
+        # watch_loop, leaving a lock-less but still-alive watcher — exactly
+        # the double-watcher race the lock was meant to prevent.
+        trap release_watcher_lock EXIT
+        trap 'release_watcher_lock; exit 130' INT
+        trap 'release_watcher_lock; exit 143' TERM
+        return 0
+      fi
+      # mkdir failed — contender created the dir between our rm and mkdir.
+      # Drop reap mutex and retry from step 1 (the new owner may be alive).
+      rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
+    else
+      # Another process holds the reap mutex — back off then retry from step 1.
+      sleep 1
+    fi
+  done
+  log "watcher lock acquire exhausted retries after 3 attempts, exiting"
+  exit 0
+}
+
+release_watcher_lock() {
+  # Only remove the lock dir if we still own it. Defensive against
+  # "another process took over my PID" (rare but possible after a long crash).
+  local owner_pid
+  owner_pid=$(cat "$WATCHER_LOCK_DIR/pid" 2>/dev/null || echo "")
+  if [[ "$owner_pid" == "$$" ]]; then
+    rm -rf "$WATCHER_LOCK_DIR" 2>/dev/null || true
+  fi
+  # Always drop the reap mutex (no-op if not held).
+  rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
 }
 
 # ── Main ──
@@ -759,6 +1310,10 @@ fi
 
 case "${1:-}" in
   --watch)
+    # FLY-129 Phase 1: lock acquisition pushed down from autostart so EVERY
+    # entry path to --watch is gated (autostart, manual invocation, supervisor
+    # respawn, etc.). Lock release is wired via trap inside acquire_watcher_lock.
+    acquire_watcher_lock
     # FLY-129: full --watch body lives in watch_main() so it can use `local`
     # and so health-check gating can wrap cmux ops cleanly.
     watch_main
@@ -770,11 +1325,18 @@ case "${1:-}" in
   --once|"")
     sync_once
     ;;
+  --list-lead-refs)
+    # FLY-129 Phase 8 Path A: print cmux workspace refs for Lead windows.
+    # Used by restart-services.sh trigger_cmux_refresh to scope
+    # `cmux refresh-surfaces` to Leads (not Runners).
+    list_lead_refs
+    ;;
   *)
-    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh]"
-    echo "  --once    Full sync with aggressive cleanup (cmux + tmux). Manual use from inside cmux."
-    echo "  --watch   Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
-    echo "  --refresh tmux-only linked session repair. Safe from anywhere."
+    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--list-lead-refs]"
+    echo "  --once             Full sync with aggressive cleanup (cmux + tmux). Manual use from inside cmux."
+    echo "  --watch            Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
+    echo "  --refresh          tmux-only linked session repair. Safe from anywhere."
+    echo "  --list-lead-refs   Print Lead cmux workspace refs (Phase 8 Path A)."
     exit 1
     ;;
 esac

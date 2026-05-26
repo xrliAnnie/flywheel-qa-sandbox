@@ -377,6 +377,100 @@ else
   fi
 fi
 
+# ── FLY-129 Phase 1: concurrent watcher lock acquire (R2-4) ───────────
+#
+# Why an integration test (not a mock unit test):
+#   bash 3.2 has no $BASHPID, so subshells `( ... ) &` inside a single
+#   parent share `$$`. A mock-based concurrency assertion would compare
+#   two identical PIDs and pass trivially. The real concurrency property —
+#   "exactly one process wins the lock, the other observes alive owner
+#   and exits 0" — requires two independent `/bin/bash -c` children with
+#   distinct kernel PIDs.
+
+echo
+echo "── FLY-129 Phase 1: concurrent watcher lock acquire ──"
+
+INT_LOCK_DIR="/tmp/fly129-int-lock.$$"
+INT_LOCK_PIDFILE="${INT_LOCK_DIR}/pid"
+SYNC_SCRIPT_PATH="$(cd "$(dirname "$0")" && pwd)/flywheel-cmux-sync.sh"
+
+# Stale lock with dead PID — both contenders should observe + try to reap.
+rm -rf "$INT_LOCK_DIR" "${INT_LOCK_DIR}.reap"
+mkdir -p "$INT_LOCK_DIR"
+echo "999999" > "$INT_LOCK_PIDFILE"
+
+LOG_A="/tmp/fly129-int-a.$$.log"
+LOG_B="/tmp/fly129-int-b.$$.log"
+rm -f "$LOG_A" "$LOG_B"
+
+# Spawn inline — must NOT wrap in `$(spawn_child)` because that creates a
+# subshell whose `$!` resolves to the subshell PID, not the bash -c child PID.
+# We need the actual `/bin/bash -c` child PID to assert which contender won.
+/bin/bash -c "
+  export FLYWHEEL_CMUX_WATCHER_LOCK_DIR='$INT_LOCK_DIR'
+  source '$SYNC_SCRIPT_PATH'
+  acquire_watcher_lock
+  echo \"acquired by \$\$\" > '$LOG_A'
+  sleep 60
+" &
+PID_A=$!
+
+/bin/bash -c "
+  export FLYWHEEL_CMUX_WATCHER_LOCK_DIR='$INT_LOCK_DIR'
+  source '$SYNC_SCRIPT_PATH'
+  acquire_watcher_lock
+  echo \"acquired by \$\$\" > '$LOG_B'
+  sleep 60
+" &
+PID_B=$!
+
+# Let both children race through acquire.
+sleep 2
+
+# Exactly one should still be alive (the lock winner). The other should
+# have exited 0 after observing the alive owner via post-mutex re-verify.
+ALIVE_A=0; ALIVE_B=0
+kill -0 "$PID_A" 2>/dev/null && ALIVE_A=1
+kill -0 "$PID_B" 2>/dev/null && ALIVE_B=1
+
+if (( ALIVE_A + ALIVE_B == 1 )); then
+  pass "integration_lock_concurrent_stale_reap: exactly one contender survives"
+else
+  fail "integration_lock_concurrent_stale_reap: expected 1 survivor, got ALIVE_A=$ALIVE_A ALIVE_B=$ALIVE_B"
+fi
+
+PID_IN_LOCK=$(cat "$INT_LOCK_PIDFILE" 2>/dev/null || echo "")
+WINNER_PID=""
+(( ALIVE_A == 1 )) && WINNER_PID="$PID_A"
+(( ALIVE_B == 1 )) && WINNER_PID="$PID_B"
+
+if [[ -n "$WINNER_PID" && "$PID_IN_LOCK" == "$WINNER_PID" ]]; then
+  pass "lock pid file contains winner's child PID ($PID_IN_LOCK)"
+elif [[ "$PID_IN_LOCK" == "$$" ]]; then
+  fail "lock pid file is PARENT \$\$ — bash-3.2 subshell trap (assertion not allowed)"
+else
+  fail "lock pid file ('$PID_IN_LOCK') does not match winner PID ('$WINNER_PID')"
+fi
+
+# Note: we do NOT assert that `kill -TERM <winner>` triggers the EXIT trap
+# within a short window. On bash 3.2 (macOS system bash), signals delivered
+# while the shell is waiting on an external command (`sleep`) are queued
+# until that command returns. The trap WILL fire eventually (when sleep
+# returns), and in production the next watcher autostart's reap path
+# handles any stale lock dir if the trap hasn't yet run. Asserting trap
+# timing here would just measure the bash-3.2 signal-deferral quirk.
+#
+# Instead, separately verify that release_watcher_lock IS called on a
+# normal exit (covered by the test_lock_acquire_stale_pid_clean unit
+# test in scripts/test-cmux-sync.sh, where the subshell's normal exit
+# fires the trap).
+
+# Cleanup: kill both children and reset state.
+kill -TERM "$PID_A" "$PID_B" 2>/dev/null || true
+# Give signals a moment to land. Best-effort.
+sleep 1
+rm -rf "$INT_LOCK_DIR" "${INT_LOCK_DIR}.reap" "$LOG_A" "$LOG_B"
+
 # ── Summary ───────────────────────────────────────────────────────────
 
 echo
