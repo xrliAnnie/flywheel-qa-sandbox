@@ -240,6 +240,64 @@ describe("FLY-91: ChatThreadCreator", () => {
 		const stored = store.getChatThreadByIssue("issue-1", "ch-123");
 		expect(stored?.thread_id).toBe("thread-lead");
 	});
+
+	// FLY-162 Codex R3 issue #2: Every Discord message POST out of
+	// ChatThreadCreator must carry `allowed_mentions: { parse: [] }` so a
+	// Linear issue title (or anything else) containing `@everyone`/`@here`/
+	// role text cannot trigger a real ping. Covers Step 1 (initial channel
+	// message on create) and the reuse-path notification ping.
+
+	it("FLY-162: Step 1 channel POST sets allowed_mentions: { parse: [] }", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "msg-am-1" }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "thread-am-1" }),
+			});
+
+		await creator.ensureChatThread({
+			chatChannelId: "ch-am",
+			issueId: "issue-am",
+			issueIdentifier: "FLY-162",
+			issueTitle: "@everyone test",
+			botToken: "bot-token",
+		});
+
+		const [, msgOpts] = mockFetch.mock.calls[0]!;
+		const msgBody = JSON.parse(msgOpts.body);
+		expect(msgBody.allowed_mentions).toEqual({ parse: [] });
+	});
+
+	it("FLY-162: reuse-path notification POST sets allowed_mentions: { parse: [] }", async () => {
+		// Pre-seed mapping so we hit the reuse path
+		store.upsertChatThread("thread-reuse", "ch-am", "issue-am");
+
+		// Call 1: validateThreadExists GET → 200
+		// Call 2: addThreadMember PUT (no-op if no ownerUserId)
+		// Call 3: postChannelNotification POST — this is the one we assert.
+		// Match the existing "reuses..." test pattern: 2 fetch calls suffice
+		// when no ownerUserId is provided.
+		mockFetch
+			.mockResolvedValueOnce({ ok: true, status: 200 })
+			.mockResolvedValueOnce({ ok: true });
+
+		await creator.ensureChatThread({
+			chatChannelId: "ch-am",
+			issueId: "issue-am",
+			issueIdentifier: "FLY-162",
+			issueTitle: "Reuse path",
+			botToken: "bot-token",
+		});
+
+		// The last call is the notification POST.
+		const lastCall = mockFetch.mock.calls[mockFetch.mock.calls.length - 1]!;
+		const [, notifyOpts] = lastCall;
+		const notifyBody = JSON.parse(notifyOpts.body);
+		expect(notifyBody.allowed_mentions).toEqual({ parse: [] });
+	});
 });
 
 describe("FLY-91: StateStore chat_threads CRUD", () => {

@@ -32,6 +32,36 @@ TOTAL_SLOTS=$(jq '.slots | length' "$SLOTS_FILE")
 
 log() { echo "[test-deploy] $(date +%H:%M:%S) $*" >&2; }
 
+# ── FLY-162: reply-by-issue opt-in for test slot ──────
+# When `TEST_REPLY_BY_ISSUE=1`, the test Bridge starts with the
+# reply-by-issue routes enabled (TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true)
+# AND a per-slot TEAMLEAD_API_TOKEN. Both Bridge AND Lead env get the
+# same token — Bridge to validate /api/* requests, Lead so its curl
+# templates have $TEAMLEAD_API_TOKEN populated.
+#
+# Without TEST_REPLY_BY_ISSUE=1, behavior is unchanged: token is unset
+# (env -u TEAMLEAD_API_TOKEN), reply.by_issue flag is off, all existing
+# QA suites keep working.
+#
+# Plan AC11 + Codex R3 #1 + R4 LOW #2.
+if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+  # Allow caller to override via TEST_API_TOKEN; otherwise generate a
+  # random per-slot token. We compute it once here so the same string
+  # flows into both Bridge and Lead env blocks below.
+  if [[ -z "${TEST_API_TOKEN:-}" ]]; then
+    if command -v uuidgen >/dev/null 2>&1; then
+      TEST_TEAMLEAD_API_TOKEN="fly-162-test-$(uuidgen | tr -d '-' | head -c 12)"
+    else
+      TEST_TEAMLEAD_API_TOKEN="fly-162-test-$(date +%s)-$$"
+    fi
+  else
+    TEST_TEAMLEAD_API_TOKEN="$TEST_API_TOKEN"
+  fi
+  log "TEST_REPLY_BY_ISSUE=1 — reply-by-issue routes will be enabled with TEAMLEAD_API_TOKEN=${TEST_TEAMLEAD_API_TOKEN:0:24}…"
+else
+  TEST_TEAMLEAD_API_TOKEN=""
+fi
+
 # ── Slot allocation ───────────────────────────────────
 claim_slot() {
   local slot_num="$1"
@@ -172,7 +202,7 @@ SANDBOX_PUSH_PERM=$(gh api "repos/${SANDBOX_SLUG}" --jq '.permissions.push' 2>/d
 #
 # Order: better-sqlite3 native compile + require() probe, THEN TypeScript
 # build of the dist artifacts Bridge imports at runtime.
-log "Preflight under ${REBUILD_LOCK}: better-sqlite3 native compile + flywheel-edge-worker build"
+log "Preflight under ${REBUILD_LOCK}: better-sqlite3 native compile + flywheel-edge-worker build + flywheel-teamlead build"
 LOCK_TIMEOUT=300
 waited=0
 while ! mkdir "$REBUILD_LOCK" 2>/dev/null; do
@@ -237,12 +267,20 @@ trap release_preflight_lock EXIT
   #    /api/runs/start spawns Runners against stale origin/main dist.
   pnpm --filter flywheel-edge-worker build || exit 13
 
-  # 3. Assert the env fallback actually landed in the built artifact. Cheaper
+  # 3. FLY-162 QA round 1: rebuild teamlead dist too. scripts/run-bridge.ts
+  #    imports compiled artifacts from packages/teamlead/dist (route handlers,
+  #    config loader, plugin). Without this rebuild, edits to tools.ts /
+  #    config.ts / plugin.ts (e.g. new POST /api/chat-threads/send route) are
+  #    invisible to the running Bridge — it still serves the old dist. QA hit
+  #    this exact trap on the first FLY-162 deploy ("404 not found" on /send).
+  pnpm --filter flywheel-teamlead build || exit 15
+
+  # 4. Assert the env fallback actually landed in the built artifact. Cheaper
   #    than rerunning unit tests under the lock, and it catches the case where
   #    someone forgets to rebuild after editing src.
   grep -q 'FLYWHEEL_RUNNER_START_POINT' \
     "$REPO_ROOT/packages/edge-worker/dist/WorktreeManager.js" || exit 14
-) || fail_preflight "preflight failed (better-sqlite3 rebuild, edge-worker build, or dist freshness check)"
+) || fail_preflight "preflight failed (better-sqlite3 rebuild, edge-worker build, teamlead build, or dist freshness check)"
 
 release_preflight_lock
 trap - EXIT
@@ -593,20 +631,26 @@ This slot subscribes to the test guild shared mirror channel
 - All OTHER production channel IDs ("Channel Isolation Rules" enumerated
   channels not equal to \`#geoforge3d-core\`) remain production-only — you
   MUST NOT post to them.
-- **Your ONLY channel** for any outbound message: \`<#${CHAT_CHANNEL_ID}>\`.
-- If a received message has a \`chat_id\` other than \`${CHAT_CHANNEL_ID}\`,
-  silently ignore it (no reply, no action).
+- **Your ONLY top-level channel** for any outbound message: \`<#${CHAT_CHANNEL_ID}>\`.
+- **Threads inside your channel are in-scope** (FLY-162). Channel scope =
+  \`chat_id == ${CHAT_CHANNEL_ID}\` OR the inbound message is in a thread whose
+  \`parent_id == ${CHAT_CHANNEL_ID}\` (Discord plugin exposes \`parent_id\` on
+  thread message envelopes). If \`parent_id\` is missing or you cannot infer
+  it, fall back to \`GET /api/chat-threads/by-thread/<chat_id>\` — a 200 with
+  any \`issueId\` confirms the thread is yours; a 404 means it is not. Only
+  silent-ignore when both checks say "not yours" or when \`chat_id\` is a
+  production channel ID enumerated in the production identity below.
 - **Behavior rules** (when to announce session_started / session_completed /
   session_failed, message format, reactions) STILL apply — but only inside
-  \`<#${CHAT_CHANNEL_ID}>\`.
+  \`<#${CHAT_CHANNEL_ID}>\` and its threads.
 MIRROR_BLOCK
 )
 else
   CHANNEL_SCOPE_BLOCK=$(cat <<SLOT_BLOCK
-- **Your ONLY channel**: <#${CHAT_CHANNEL_ID}> (channel ID \`${CHAT_CHANNEL_ID}\`)
-- **Ignore** all other channel IDs in "Channel Isolation Rules", "Core Channel Routing", "Discord Channel IDs", etc. — those belong to production.
-- If a received message has a \`chat_id\` other than \`${CHAT_CHANNEL_ID}\`, silently ignore it (no reply, no action).
-- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${CHAT_CHANNEL_ID}>.
+- **Your ONLY top-level channel**: <#${CHAT_CHANNEL_ID}> (channel ID \`${CHAT_CHANNEL_ID}\`)
+- **Ignore** all other production channel IDs in "Channel Isolation Rules", "Core Channel Routing", "Discord Channel IDs", etc. — those belong to production.
+- **Threads inside your channel are in-scope** (FLY-162). Channel scope = \`chat_id == ${CHAT_CHANNEL_ID}\` OR the inbound message is in a thread whose \`parent_id == ${CHAT_CHANNEL_ID}\` (Discord plugin exposes \`parent_id\` on thread message envelopes). If \`parent_id\` is missing or you cannot infer it, fall back to \`GET /api/chat-threads/by-thread/<chat_id>\` — a 200 with any \`issueId\` confirms the thread is yours; a 404 means it is not. Only silent-ignore when both checks say "not yours" or when \`chat_id\` is a production channel ID enumerated below.
+- **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${CHAT_CHANNEL_ID}> and its threads.
 SLOT_BLOCK
 )
 fi
@@ -659,7 +703,13 @@ cat "$PROD_IDENTITY" >> "${SLOT_DIR}/test-identity.md"
 # ── Stage shared Lead rules ──────────────────────────
 # claude-lead.sh reads \${PROJECT_DIR}/.lead/shared/*.md (FLY-26). Without this
 # the test Lead misses department-lead-rules.md which defines announce behavior.
-SHARED_SRC="${HOME}/Dev/GeoForge3D/.lead/shared"
+#
+# FLY-162: when testing a rule change that lives on a feature branch (not yet
+# merged to GeoForge3D main), set GEOFORGE3D_LEAD_RULES_SRC to the worktree
+# path so the test slot picks up the rule under test. Without this override,
+# the test Lead reads from main and silently misses unmerged rules — which
+# was the original FLY-162 TC-01 false-negative root cause.
+SHARED_SRC="${GEOFORGE3D_LEAD_RULES_SRC:-${HOME}/Dev/GeoForge3D/.lead/shared}"
 SHARED_DST="${HOST_REPO}/.lead/shared"
 if [[ -d "$SHARED_SRC" ]]; then
   mkdir -p "$SHARED_DST"
@@ -722,6 +772,7 @@ env -u DISCORD_BOT_TOKEN \
   DISCORD_STATE_DIR="${SLOT_DIR}/discord-state" \
   AGENT_SOURCE="${SLOT_DIR}/test-identity.md" \
   FLYWHEEL_LEAD_ROLE="${SLOT_ROLE}" \
+  TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
   bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
     "${AGENT_ID}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" \
     > "${LEAD_LOG}" 2>&1 &
@@ -819,8 +870,18 @@ fi
 # FLYWHEEL_BRIDGE_URL to the Runner; FLYWHEEL_RUNNER_START_POINT so the
 # Runner worktree HEAD tracks sandbox <from-branch>; LINEAR_API_KEY so
 # /api/runs/start PreHydrator can verify issues against Linear; stdout +
-# stderr redirected to bridge.log for QA observability. Unset
-# TEAMLEAD_API_TOKEN so /api/* routes don't require auth in test.
+# stderr redirected to bridge.log for QA observability.
+#
+# Default: env -u TEAMLEAD_API_TOKEN so /api/* routes don't require
+# auth in test (matches the original FLY-96 baseline).
+#
+# FLY-162 (when TEST_REPLY_BY_ISSUE=1): inject TEAMLEAD_API_TOKEN +
+# TEAMLEAD_CHAT_THREADS_ENABLED=true + TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true
+# + TEAMLEAD_REPLY_GUARD_ENABLED=true (Layer 2) so the test slot can
+# exercise both the reply-by-issue routes and the preventive reply-guard.
+# The same token was injected into the Lead env above so the Lead's curl
+# templates authenticate; TEAMLEAD_ISSUE_PREFIXES defaults to FLY,GEO via
+# claude-lead.sh.
 log "Starting test Bridge on port ${SLOT_PORT} (from-branch=${FROM_BRANCH})"
 # FLY-115 v1.24.2 Gap 1 (Codex R1 LOW fix): also pass the per-lead token
 # under the name the ProjectConfig references in `botTokenEnv` (e.g.
@@ -829,17 +890,35 @@ log "Starting test Bridge on port ${SLOT_PORT} (from-branch=${FROM_BRANCH})"
 # (packages/teamlead/src/ProjectConfig.ts:179-189). Fallback works for a
 # single-slot test but masks a real misconfiguration (wrong tokenEnvVar,
 # wrong .env key). Exporting both keeps botTokenEnv load-bearing.
-env -u TEAMLEAD_API_TOKEN \
-  TEAMLEAD_PORT="${SLOT_PORT}" \
-  DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
-  "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
-  TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
-  TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
-  FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
-  LINEAR_API_KEY="${LINEAR_API_KEY}" \
-  FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
-  npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
-  > "${SLOT_DIR}/bridge.log" 2>&1 &
+if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
+  env \
+    TEAMLEAD_PORT="${SLOT_PORT}" \
+    DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
+    "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
+    TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
+    TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
+    FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+    LINEAR_API_KEY="${LINEAR_API_KEY}" \
+    FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
+    TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
+    TEAMLEAD_CHAT_THREADS_ENABLED=true \
+    TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true \
+    TEAMLEAD_REPLY_GUARD_ENABLED=true \
+    npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
+    > "${SLOT_DIR}/bridge.log" 2>&1 &
+else
+  env -u TEAMLEAD_API_TOKEN \
+    TEAMLEAD_PORT="${SLOT_PORT}" \
+    DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
+    "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
+    TEAMLEAD_DB_PATH="${SLOT_DIR}/teamlead.db" \
+    TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
+    FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+    LINEAR_API_KEY="${LINEAR_API_KEY}" \
+    FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
+    npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
+    > "${SLOT_DIR}/bridge.log" 2>&1 &
+fi
 BRIDGE_PID=$!
 echo "$BRIDGE_PID" > "${SLOT_DIR}/bridge.pid"
 # Update slot lock with long-lived Bridge PID (prevents stale-lock misdetection)

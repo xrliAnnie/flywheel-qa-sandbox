@@ -176,6 +176,12 @@ PROJECT_DIR_LOGICAL="$(cd "$PROJECT_DIR_RAW" && pwd)"
 PROJECT_DIR="$(cd "$PROJECT_DIR_RAW" && pwd -P)"
 export BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 export TEAMLEAD_API_TOKEN="${TEAMLEAD_API_TOKEN:-}"
+# FLY-162 Layer 2: configured issue prefixes for the Discord plugin's reply
+# guard. The plugin uses these for its local fail-closed scan when the Bridge
+# guard call is unavailable (only blocks issue-bearing top-level posts during
+# Bridge outages; free-form chat still fails open). Bridge owns the
+# authoritative classification; this is the offline fallback list.
+export TEAMLEAD_ISSUE_PREFIXES="${TEAMLEAD_ISSUE_PREFIXES:-FLY,GEO}"
 # GEO-246: Per-lead Discord state directory for channel/token isolation.
 # Each lead gets its own .env (bot token) and access.json (channel list).
 # Default: ~/.claude/channels/discord-<lead-id>/
@@ -703,6 +709,11 @@ _launch_claude() {
     -e "FLYWHEEL_PROJECT_NAME=${PROJECT_NAME}"
     -e "BRIDGE_URL=${BRIDGE_URL:-}"
     -e "TEAMLEAD_API_TOKEN=${TEAMLEAD_API_TOKEN:-}"
+    # FLY-162 Layer 2: tmux panes do NOT inherit launcher env (see note below),
+    # so the Discord plugin's reply-guard fallback prefix scan needs this
+    # explicitly — otherwise a custom TEAMLEAD_ISSUE_PREFIXES silently degrades
+    # to FLY,GEO during Bridge-unavailable fail-closed checks (Codex code-review MED).
+    -e "TEAMLEAD_ISSUE_PREFIXES=${TEAMLEAD_ISSUE_PREFIXES:-FLY,GEO}"
     -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
     -e "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
     -e "HOME=${HOME}"
