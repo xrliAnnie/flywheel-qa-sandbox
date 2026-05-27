@@ -495,4 +495,527 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(capturedCtx[0].botToken).toBe("global-fallback-token");
 		});
 	});
+
+	// ─── POST /api/chat-threads/send (FLY-162 P2) ─────────────────
+	//
+	// Plan §4.1 + AC1–AC4 + AC13. Validates:
+	//   • feature flag (`replyByIssueEnabled`) gate
+	//   • param validation (incl. issueId/issueIdentifier mismatch)
+	//   • lookup-first (existing row reused, ensureChatThread NOT called)
+	//   • ensure-on-miss (ensureChatThread called exactly once on first send)
+	//   • split + sequential post (mock fetch for Discord)
+	//   • allowed_mentions: { parse: [] } on every chunk
+	//   • fail-fast 502 envelope with failedChunkIndex + remainingText
+
+	describe("POST /api/chat-threads/send (FLY-162)", () => {
+		// `mockFetch` is an injectable fetch mock passed via
+		// QueryRouterOptions.discordFetch — keeps it isolated from the global
+		// fetch the test `request()` helper uses to hit the test server.
+		let mockFetch: ReturnType<typeof vi.fn>;
+
+		beforeEach(() => {
+			mockFetch = vi.fn();
+		});
+
+		it("returns 404 when replyByIssueEnabled is false", async () => {
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: false,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "hello",
+			});
+			expect(res.status).toBe(404);
+			expect((res.body as { error: string }).error).toMatch(
+				/reply.by_issue not enabled/i,
+			);
+		});
+
+		it("returns 404 when chatThreadsEnabled is false (even if replyByIssueEnabled is true) — Codex code-review R1 MED", async () => {
+			// Operator misconfigures: flips reply-by-issue but forgets
+			// (or rolls back) chatThreadsEnabled. Without the combined
+			// gate, the route would still resolve, ensure threads, and
+			// POST as the bot. Must fail closed.
+			createTestServer({
+				chatThreadsEnabled: false,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "hello",
+			});
+			expect(res.status).toBe(404);
+			expect((res.body as { error: string }).error).toMatch(
+				/chat threads not enabled/i,
+			);
+			// No Discord POST attempted
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+
+		it("returns 400 when neither issueId nor issueIdentifier provided", async () => {
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "hello",
+			});
+			expect(res.status).toBe(400);
+		});
+
+		it("returns 400 when text is missing", async () => {
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(400);
+		});
+
+		it("returns 404 for unknown project (validateChatThreadParams 404)", async () => {
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "NoSuchProject",
+				text: "hello",
+			});
+			expect(res.status).toBe(404);
+		});
+
+		it("returns 403 when lead not configured for project", async () => {
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-100",
+				leadId: "lead-unknown",
+				projectName: "TestProject",
+				text: "hello",
+			});
+			expect(res.status).toBe(403);
+		});
+
+		it("returns 400 when channel does not match lead.chatChannel", async () => {
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-999",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "hello",
+			});
+			expect(res.status).toBe(400);
+		});
+
+		it("returns 400 when issueId and issueIdentifier mismatch (Codex R2 #3)", async () => {
+			mockIssue = (id: string) => ({
+				id,
+				identifier: "FLY-999", // different from what caller will pass
+				title: "Mismatch test",
+			});
+
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				globalBotToken: "global-token",
+			});
+			process.env.LINEAR_API_KEY = "test-key";
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				issueIdentifier: "FLY-162",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "hello",
+			});
+			expect(res.status).toBe(400);
+			expect((res.body as { error: string }).error).toMatch(/mismatch/i);
+		});
+
+		it("happy path REUSE: row exists → ensureChatThread NOT called, posts to thread, returns created=false (AC1)", async () => {
+			// Pre-seed the row so lookup hits
+			store.upsertChatThread("t-reuse", "ch-100", "uuid-fly-162", "lead-alpha");
+
+			const ensureCalls: ChatThreadContext[] = [];
+			const creator = createFakeCreator(async (ctx) => {
+				ensureCalls.push(ctx);
+				return { created: false, threadId: "should-not-be-called" };
+			});
+
+			// Mock Discord POST chunk
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ id: "msg-r1" }),
+			});
+
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				chatThreadCreator: creator,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "reuse text",
+			});
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({
+				threadId: "t-reuse",
+				messageIds: ["msg-r1"],
+				created: false,
+			});
+
+			// AC1: ensureChatThread MUST NOT be called on the reuse path
+			expect(ensureCalls).toHaveLength(0);
+
+			// allowed_mentions on the chunk POST
+			const [postUrl, postOpts] = mockFetch.mock.calls[0]!;
+			expect(postUrl).toBe(
+				"https://discord.com/api/v10/channels/t-reuse/messages",
+			);
+			const body = JSON.parse((postOpts as RequestInit).body as string);
+			expect(body.allowed_mentions).toEqual({ parse: [] });
+		});
+
+		it("happy path FIRST-SEND: row missing → ensureChatThread called once, then chunk posted (AC2)", async () => {
+			const ensureCalls: ChatThreadContext[] = [];
+			const creator = createFakeCreator(async (ctx) => {
+				ensureCalls.push(ctx);
+				// Simulate ensure: insert row so subsequent code sees it
+				store.upsertChatThread(
+					"t-fresh",
+					ctx.chatChannelId,
+					ctx.issueId,
+					ctx.leadId,
+				);
+				return { created: true, threadId: "t-fresh" };
+			});
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ id: "msg-f1" }),
+			});
+			process.env.LINEAR_API_KEY = "test-key";
+
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				chatThreadCreator: creator,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueIdentifier: "FLY-91",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "first send",
+			});
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({
+				threadId: "t-fresh",
+				messageIds: ["msg-f1"],
+				created: true,
+			});
+			expect(ensureCalls).toHaveLength(1);
+		});
+
+		it("returns 503 when no bot token available", async () => {
+			store.upsertChatThread("t-1", "ch-200", "uuid-fly-162", "lead-beta");
+
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				// no globalBotToken; lead-beta has no per-lead token either
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-200",
+				leadId: "lead-beta",
+				projectName: "TestProject",
+				text: "needs token",
+			});
+			expect(res.status).toBe(503);
+			expect((res.body as { error: string }).error).toMatch(/bot token/i);
+		});
+
+		it("split long text: posts ≥2 chunks, allowed_mentions on each (AC4)", async () => {
+			// Build text > MAX_DISCORD_MESSAGE_LENGTH so it splits
+			const long = `${"a".repeat(1900)}\n${"b".repeat(500)}`;
+			store.upsertChatThread("t-long", "ch-100", "uuid-fly-162", "lead-alpha");
+
+			mockFetch
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve({ id: "msg-c0" }),
+				})
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve({ id: "msg-c1" }),
+				});
+
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: long,
+			});
+			expect(res.status).toBe(200);
+			const body = res.body as { messageIds: string[] };
+			expect(body.messageIds).toEqual(["msg-c0", "msg-c1"]);
+
+			// allowed_mentions on every POST
+			for (const call of mockFetch.mock.calls) {
+				const parsed = JSON.parse((call[1] as RequestInit).body as string);
+				expect(parsed.allowed_mentions).toEqual({ parse: [] });
+			}
+		});
+
+		it("partial fail mid-stream: returns 502 with failedChunkIndex + remainingText (AC4)", async () => {
+			// 3-chunk text
+			const long = `${"a".repeat(1900)}\n${"b".repeat(1900)}\n${"c".repeat(
+				500,
+			)}`;
+			store.upsertChatThread(
+				"t-partial",
+				"ch-100",
+				"uuid-fly-162",
+				"lead-alpha",
+			);
+
+			mockFetch
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve({ id: "msg-p0" }),
+				})
+				.mockResolvedValueOnce({
+					ok: false,
+					status: 429,
+					text: () => Promise.resolve("rate limited"),
+				});
+			// 3rd POST must NOT happen — fail-fast.
+
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: "uuid-fly-162",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: long,
+			});
+			expect(res.status).toBe(502);
+			const body = res.body as Record<string, unknown>;
+			expect(body.threadId).toBe("t-partial");
+			expect(body.messageIds).toEqual(["msg-p0"]);
+			expect(body.chunksSent).toBe(1);
+			expect(body.chunksTotal).toBe(3);
+			expect(body.failedChunkIndex).toBe(1);
+			expect(typeof body.remainingText).toBe("string");
+			expect((body.remainingText as string).length).toBeGreaterThan(0);
+			// Fail-fast — only 2 fetches issued
+			expect(mockFetch).toHaveBeenCalledTimes(2);
+		});
+	});
+
+	// ─── GET /api/chat-threads/by-thread/:threadId (FLY-162 P3) ───
+	//
+	// Plan §4.1 + AC5–AC8. Validates:
+	//   • feature flag (gated on `chatThreadsEnabled`, NOT
+	//     `replyByIssueEnabled` — inbound enrich useful even when
+	//     outbound disabled, per AC7)
+	//   • happy path with session enrichment
+	//   • happy path without session row (identifier/title/project null)
+	//   • 404 when thread not registered
+	//   • does NOT call Linear (pure local lookup)
+
+	describe("GET /api/chat-threads/by-thread/:threadId (FLY-162)", () => {
+		it("returns 404 when chatThreadsEnabled=false (AC7)", async () => {
+			createTestServer({
+				chatThreadsEnabled: false,
+				replyByIssueEnabled: true, // doesn't matter — gated on chatThreadsEnabled
+			});
+			const res = await request(
+				server,
+				"GET",
+				"/api/chat-threads/by-thread/t-x",
+			);
+			expect(res.status).toBe(404);
+			expect((res.body as { error: string }).error).toMatch(
+				/chat threads not enabled/i,
+			);
+		});
+
+		it("returns 404 when thread not registered (AC6)", async () => {
+			createTestServer({
+				chatThreadsEnabled: true,
+			});
+			const res = await request(
+				server,
+				"GET",
+				"/api/chat-threads/by-thread/t-unknown",
+			);
+			expect(res.status).toBe(404);
+			expect((res.body as { error: string }).error).toMatch(/not registered/i);
+		});
+
+		it("happy path WITHOUT session row: returns null enrichment fields (AC5)", async () => {
+			store.upsertChatThread(
+				"t-bare",
+				"ch-100",
+				"uuid-no-session",
+				"lead-alpha",
+			);
+			createTestServer({
+				chatThreadsEnabled: true,
+			});
+
+			const res = await request(
+				server,
+				"GET",
+				"/api/chat-threads/by-thread/t-bare",
+			);
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({
+				threadId: "t-bare",
+				channelId: "ch-100",
+				issueId: "uuid-no-session",
+				issueIdentifier: null,
+				issueTitle: null,
+				projectName: null,
+			});
+		});
+
+		it("happy path WITH session row: returns identifier/title/projectName (AC5)", async () => {
+			store.upsertChatThread(
+				"t-rich",
+				"ch-100",
+				"uuid-fly-162-enriched",
+				"lead-alpha",
+			);
+			// Seed a session row so getSessionByIssue enriches
+			store.upsertSession({
+				execution_id: "exec-rich",
+				issue_id: "uuid-fly-162-enriched",
+				project_name: "TestProject",
+				status: "running",
+				issue_identifier: "FLY-162",
+				issue_title: "Enriched session",
+				last_activity_at: new Date().toISOString(),
+			});
+
+			createTestServer({
+				chatThreadsEnabled: true,
+			});
+
+			const res = await request(
+				server,
+				"GET",
+				"/api/chat-threads/by-thread/t-rich",
+			);
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({
+				threadId: "t-rich",
+				channelId: "ch-100",
+				issueId: "uuid-fly-162-enriched",
+				issueIdentifier: "FLY-162",
+				issueTitle: "Enriched session",
+				projectName: "TestProject",
+			});
+		});
+
+		it("does NOT call Linear (AC8 — pure local lookup)", async () => {
+			// Use the existing test class's `searchIssues`/`issue` mocks by setting them.
+			// If the route called Linear, mockIssue would be invoked; assert it isn't.
+			let issueCalled = false;
+			mockIssue = (id: string) => {
+				issueCalled = true;
+				return { id, identifier: "FLY-162", title: "Should not be called" };
+			};
+			store.upsertChatThread("t-local", "ch-100", "uuid-local", "lead-alpha");
+			createTestServer({
+				chatThreadsEnabled: true,
+			});
+
+			const res = await request(
+				server,
+				"GET",
+				"/api/chat-threads/by-thread/t-local",
+			);
+			expect(res.status).toBe(200);
+			expect(issueCalled).toBe(false);
+		});
+	});
 });

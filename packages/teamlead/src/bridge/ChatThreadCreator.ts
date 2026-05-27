@@ -107,7 +107,12 @@ export class ChatThreadCreator {
 						Authorization: `Bot ${ctx.botToken}`,
 						"Content-Type": "application/json",
 					},
-					body: JSON.stringify({ content: messageContent }),
+					// FLY-162 Codex R3 #2: never let issue title / generated
+					// notification text trigger @everyone/@here/role pings.
+					body: JSON.stringify({
+						content: messageContent,
+						allowed_mentions: { parse: [] },
+					}),
 					signal: controller.signal,
 				},
 			);
@@ -254,7 +259,10 @@ export class ChatThreadCreator {
 						Authorization: `Bot ${ctx.botToken}`,
 						"Content-Type": "application/json",
 					},
-					body: JSON.stringify({ content }),
+					// FLY-162 Codex R3 #2: notification text is generated, but
+					// belt-and-suspenders — block any future label-injection
+					// path from triggering @everyone/@here/role pings.
+					body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
 					signal: controller.signal,
 				},
 			);

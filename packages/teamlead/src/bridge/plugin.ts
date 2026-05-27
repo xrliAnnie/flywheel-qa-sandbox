@@ -539,6 +539,14 @@ export function createBridgeApp(
 			chatThreadCreator: opts?.chatThreadCreator,
 			globalBotToken: opts?.globalBotToken,
 			discordOwnerUserId: config.discordOwnerUserId,
+			// FLY-162: gate /api/chat-threads/send + /by-thread routes on
+			// BridgeConfig.replyByIssueEnabled. Validated at startup that
+			// apiToken is set when this is true (see config.ts).
+			replyByIssueEnabled: config.replyByIssueEnabled,
+			// FLY-162 Layer 2: gate /api/discord/reply-guard + configured issue
+			// prefixes. Validated at startup that apiToken is set when enabled.
+			replyGuardEnabled: config.replyGuardEnabled,
+			issuePrefixes: config.issuePrefixes,
 		}),
 	);
 	app.use(

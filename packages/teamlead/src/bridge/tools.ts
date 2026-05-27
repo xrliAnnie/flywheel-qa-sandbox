@@ -11,6 +11,11 @@ import {
 	validateChatThreadParams,
 } from "./chat-thread-register.js";
 import { filterSessionsByLead } from "./lead-scope.js";
+import {
+	type ChatClassification,
+	evaluateReplyGuard,
+	scanIssueTokens,
+} from "./reply-guard.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import type { StatusQueryResult } from "./runner-status.js";
 import {
@@ -39,6 +44,32 @@ export interface QueryRouterOptions {
 	chatThreadCreator?: ChatThreadCreator;
 	globalBotToken?: string;
 	discordOwnerUserId?: string;
+	/**
+	 * FLY-162 P2: enables `POST /api/chat-threads/send` and (P3)
+	 * `GET /api/chat-threads/by-thread/:threadId`. When false, both
+	 * routes return 404 `{ error: "reply.by_issue not enabled" }`.
+	 * Wired in from `BridgeConfig.replyByIssueEnabled` (config.ts).
+	 */
+	replyByIssueEnabled?: boolean;
+	/**
+	 * FLY-162 P2: optional fetch override for Discord HTTP calls made by
+	 * the `/send` route. Defaults to global `fetch`. Tests inject a mock
+	 * so they can stub Discord responses without colliding with their
+	 * own use of `fetch` to call the test Express server.
+	 */
+	discordFetch?: typeof fetch;
+	/**
+	 * FLY-162 Layer 2: enables `POST /api/discord/reply-guard`. When false,
+	 * the route returns `{ allow: true }` (guard disabled = allow everything),
+	 * so the plugin proceeds normally. Wired from `BridgeConfig.replyGuardEnabled`.
+	 */
+	replyGuardEnabled?: boolean;
+	/**
+	 * FLY-162 Layer 2: configured team prefixes counted as issue tokens by the
+	 * reply-guard. Wired from `BridgeConfig.issuePrefixes`. Defaults to
+	 * `["FLY","GEO"]` when omitted.
+	 */
+	issuePrefixes?: string[];
 }
 
 function omitIssueId(
@@ -57,6 +88,9 @@ export function createQueryRouter(
 	const captureSessionFn = opts?.captureSessionFn;
 	const statusQueryFn = opts?.statusQueryFn;
 	const chatThreadsEnabled = opts?.chatThreadsEnabled;
+	const replyByIssueEnabled = opts?.replyByIssueEnabled ?? false;
+	const replyGuardEnabled = opts?.replyGuardEnabled ?? false;
+	const issuePrefixes = opts?.issuePrefixes ?? ["FLY", "GEO"];
 	const router = Router();
 
 	router.get("/sessions", (req, res) => {
@@ -550,6 +584,251 @@ export function createQueryRouter(
 		res.json({ threadId: result.threadId, created: result.created });
 	});
 
+	// --- FLY-162 P2: Lead reply-by-issue ---
+	//
+	// Endpoint: POST /api/chat-threads/send
+	// Body: { issueId? | issueIdentifier?, channelId, leadId, projectName,
+	//         text, replyTo? }
+	// Returns 200 { threadId, messageIds, created } on success,
+	//         502 { error, threadId, messageIds, chunksSent, chunksTotal,
+	//               failedChunkIndex, remainingText } on partial fail.
+	//
+	// Design: lookup-first. Only the FIRST send for an issue should call
+	// `ensureChatThread()` (which posts a main-channel "thread created"
+	// notification). All subsequent sends reuse the existing row and post
+	// directly to the thread via `postDiscordMessageToChannel`.
+
+	router.post("/chat-threads/send", async (req, res) => {
+		// FLY-162 Codex code-review R1 MED: fail closed on EITHER flag
+		// being off. Plan §Q6.1 status code map specifies both
+		// `chatThreadsEnabled=false` and `replyByIssueEnabled=false` →
+		// 404, matching how `/create` and `/register` gate on
+		// `chatThreadsEnabled`. Without this guard, an operator who
+		// flipped only `TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true` (and
+		// forgot to keep `TEAMLEAD_CHAT_THREADS_ENABLED=true`) would
+		// still let the route POST as the Discord bot.
+		if (!chatThreadsEnabled) {
+			res.status(404).json({ error: "Chat threads not enabled" });
+			return;
+		}
+		if (!replyByIssueEnabled) {
+			res.status(404).json({ error: "reply.by_issue not enabled" });
+			return;
+		}
+
+		const {
+			issueId: bodyIssueId,
+			issueIdentifier: bodyIdentifier,
+			channelId,
+			leadId,
+			projectName,
+			text,
+			replyTo,
+		} = (req.body ?? {}) as {
+			issueId?: string;
+			issueIdentifier?: string;
+			channelId?: string;
+			leadId?: string;
+			projectName?: string;
+			text?: string;
+			replyTo?: string;
+		};
+
+		if (
+			(!bodyIssueId && !bodyIdentifier) ||
+			!channelId ||
+			!leadId ||
+			!projectName ||
+			typeof text !== "string" ||
+			text.length === 0
+		) {
+			res.status(400).json({
+				error:
+					"channelId, leadId, projectName, text, and at least one of issueId/issueIdentifier are required",
+			});
+			return;
+		}
+
+		// Validate project / lead / channel (shared with /create + /register)
+		const validation = validateChatThreadParams(
+			{ channelId, leadId, projectName },
+			projects,
+		);
+		if (!validation.ok) {
+			res.status(validation.status).json({ error: validation.error });
+			return;
+		}
+
+		// Resolve issueId. If only identifier given, fetch via Linear; if
+		// both given, fetch the issueId record and validate identifier
+		// matches (Codex R2 #3). Skip Linear if only issueId given AND a
+		// row already exists in StateStore for that issueId — reuse path
+		// doesn't need preflight.
+		let resolvedIssueId: string;
+		const lookupRowDirect = bodyIssueId
+			? store.getChatThreadByIssue(bodyIssueId, channelId)
+			: undefined;
+
+		if (bodyIssueId && lookupRowDirect && !bodyIdentifier) {
+			// Pure reuse, no identifier crosscheck needed; skip Linear
+			resolvedIssueId = bodyIssueId;
+		} else {
+			// Need Linear (either resolving identifier→UUID, or cross-validating)
+			if (!process.env.LINEAR_API_KEY) {
+				res.status(503).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+			try {
+				const { LinearClient } = await import("@linear/sdk");
+				const client = new LinearClient({
+					apiKey: process.env.LINEAR_API_KEY,
+				});
+
+				if (bodyIssueId) {
+					// Path: issueId given (possibly with identifier crosscheck)
+					const issue = await client.issue(bodyIssueId);
+					if (!issue) {
+						res.status(404).json({
+							error: `Issue ${bodyIssueId} not found in Linear`,
+						});
+						return;
+					}
+					if (bodyIdentifier && issue.identifier !== bodyIdentifier) {
+						res.status(400).json({
+							error: `issueId and issueIdentifier mismatch (issueId resolves to ${issue.identifier}, got ${bodyIdentifier})`,
+						});
+						return;
+					}
+					resolvedIssueId = bodyIssueId;
+				} else {
+					// Identifier-only path: resolve to UUID
+					const results = await client.searchIssues(bodyIdentifier!);
+					const matched = results.nodes.find(
+						(i: { identifier: string }) => i.identifier === bodyIdentifier,
+					);
+					if (!matched) {
+						res.status(404).json({
+							error: `Issue "${bodyIdentifier}" not found in Linear`,
+						});
+						return;
+					}
+					resolvedIssueId = matched.id;
+				}
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				res.status(502).json({ error: `Cannot verify issue: ${msg}` });
+				return;
+			}
+		}
+
+		// Resolve bot token (per-lead or global fallback)
+		const botToken = validation.leadConfig.botToken ?? opts?.globalBotToken;
+		if (!botToken) {
+			res.status(503).json({ error: "No Discord bot token available" });
+			return;
+		}
+
+		// Lookup-first: only call ensureChatThread on row miss (AC1 + AC2)
+		let threadId: string;
+		let created = false;
+		const existing = store.getChatThreadByIssue(resolvedIssueId, channelId);
+		if (existing) {
+			threadId = existing.thread_id;
+		} else {
+			if (!opts?.chatThreadCreator) {
+				res.status(503).json({ error: "ChatThreadCreator not initialized" });
+				return;
+			}
+			let ensureResult: ChatThreadResult;
+			try {
+				ensureResult = await opts.chatThreadCreator.ensureChatThread({
+					chatChannelId: channelId,
+					issueId: resolvedIssueId,
+					issueIdentifier: bodyIdentifier,
+					botToken,
+					leadId,
+					ownerUserId: opts.discordOwnerUserId,
+				});
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				res.status(502).json({ error: `Thread creation failed: ${msg}` });
+				return;
+			}
+			if (ensureResult.error || !ensureResult.threadId) {
+				res.status(502).json({
+					error: ensureResult.error ?? "ChatThreadCreator returned no threadId",
+				});
+				return;
+			}
+			threadId = ensureResult.threadId;
+			created = ensureResult.created;
+		}
+
+		// Sequential POST via helper (handles split + allowed_mentions)
+		const { postDiscordMessageToChannel } = await import("./discord-utils.js");
+		const postResult = await postDiscordMessageToChannel(
+			threadId,
+			text,
+			botToken,
+			replyTo ? { replyTo } : {},
+			opts?.discordFetch,
+		);
+
+		if (!postResult.ok) {
+			res.status(502).json({
+				error: postResult.error,
+				threadId,
+				messageIds: postResult.messageIds,
+				chunksSent: postResult.chunksSent,
+				chunksTotal: postResult.chunksTotal,
+				failedChunkIndex: postResult.failedChunkIndex,
+				remainingText: postResult.remainingText,
+			});
+			return;
+		}
+
+		res.json({
+			threadId,
+			messageIds: postResult.messageIds,
+			created,
+		});
+	});
+
+	// --- FLY-162 P3: Lead reverse-lookup by Discord thread id ---
+	//
+	// Endpoint: GET /api/chat-threads/by-thread/:threadId
+	// Returns 200 { threadId, channelId, issueId, issueIdentifier,
+	//               issueTitle, projectName }; the last three are null
+	//               when no session row exists yet (still 200, AC5).
+	// Returns 404 when chat threads feature disabled (AC7), or when the
+	// thread is not registered / has been marked missing (AC6).
+	//
+	// Pure local StateStore lookup — does NOT call Linear (AC8). Gated
+	// on `chatThreadsEnabled` (not `replyByIssueEnabled`) because
+	// inbound enrichment is still useful when outbound is rolled back.
+
+	router.get("/chat-threads/by-thread/:threadId", (req, res) => {
+		if (!chatThreadsEnabled) {
+			res.status(404).json({ error: "Chat threads not enabled" });
+			return;
+		}
+		const threadId = req.params.threadId;
+		const row = store.getChatThreadByThreadId(threadId);
+		if (!row) {
+			res.status(404).json({ error: "Thread not registered" });
+			return;
+		}
+		const session = store.getSessionByIssue(row.issue_id);
+		res.json({
+			threadId: row.thread_id,
+			channelId: row.channel_id,
+			issueId: row.issue_id,
+			issueIdentifier: session?.issue_identifier ?? null,
+			issueTitle: session?.issue_title ?? null,
+			projectName: session?.project_name ?? null,
+		});
+	});
+
 	router.get("/chat-threads", (req, res) => {
 		if (!chatThreadsEnabled) {
 			res.status(404).json({ error: "Chat threads not enabled" });
@@ -569,6 +848,92 @@ export function createQueryRouter(
 		res.json({
 			threadId: row?.thread_id ?? null,
 		});
+	});
+
+	// FLY-162 Layer 2: preventive reply-guard. The forked Discord plugin calls
+	// this before `reply` / `edit_message` sends. The Bridge classifies the
+	// target chatId (the Lead's chatChannel top level / a registered issue
+	// thread / other) and scans the text for configured-prefix issue tokens,
+	// then denies issue content posted at the chatChannel top level. See §12.
+	//
+	// When the flag is OFF we return `{ allow: true }` (200) — guard disabled
+	// means allow everything — so the plugin proceeds normally rather than
+	// triggering its Bridge-unavailable fail-closed path. Auth is enforced by
+	// the plugin-level token middleware (validated at startup that
+	// replyGuardEnabled implies apiToken is set).
+	router.post("/discord/reply-guard", (req, res) => {
+		if (!replyGuardEnabled) {
+			res.json({ allow: true });
+			return;
+		}
+
+		const body = (req.body ?? {}) as Record<string, unknown>;
+		const { projectName, leadId, chatId, text } = body;
+
+		// Codex code-review LOW: require all four to be strings, not just
+		// truthy. A non-string chatId (e.g. {}) would otherwise reach
+		// store.getChatThreadByThreadId() and throw inside the DB binding,
+		// turning a malformed request into a 500.
+		if (
+			typeof projectName !== "string" ||
+			projectName.trim().length === 0 ||
+			typeof leadId !== "string" ||
+			leadId.trim().length === 0 ||
+			typeof chatId !== "string" ||
+			chatId.trim().length === 0 ||
+			typeof text !== "string"
+		) {
+			res.status(400).json({
+				error:
+					"projectName, leadId, chatId (non-empty strings) and text (string) are required",
+			});
+			return;
+		}
+
+		// Resolve project first, then the lead within it (Codex R1 #1: leadId
+		// alone is ambiguous across projects that reuse role-style ids).
+		const project = projects.find((p) => p.projectName === projectName);
+		const leadConfig = project?.leads.find((l) => l.agentId === leadId);
+		if (!project || !leadConfig) {
+			// Unknown project/lead: fail-open (do not block) but log a bypass so
+			// a misconfiguration is visible rather than silently disabling the guard.
+			console.warn(
+				`[reply-guard] guard_bypass: unknown project/lead projectName=${projectName} leadId=${leadId}`,
+			);
+			res.json({ allow: true, reason: "guard_bypass" });
+			return;
+		}
+
+		// Classify the target chat.
+		let classification: ChatClassification;
+		let boundIssueIdentifier: string | null = null;
+		if (chatId === leadConfig.chatChannel) {
+			classification = "channel-top-level";
+		} else {
+			const row = store.getChatThreadByThreadId(chatId);
+			if (row) {
+				classification = "issue-thread";
+				const session = store.getSessionByIssue(row.issue_id);
+				boundIssueIdentifier = session?.issue_identifier ?? null;
+			} else {
+				classification = "other";
+			}
+		}
+
+		const issueTokens = scanIssueTokens(text, issuePrefixes);
+		const decision = evaluateReplyGuard({
+			classification,
+			boundIssueIdentifier,
+			issueTokens,
+		});
+
+		if (decision.telemetry) {
+			console.warn(
+				`[reply-guard] ${decision.telemetry} lead=${leadId} bound=${boundIssueIdentifier ?? "?"} foreign=${(decision.issues ?? []).join(",")}`,
+			);
+		}
+
+		res.json(decision);
 	});
 
 	return router;
