@@ -141,3 +141,28 @@ export function getStructuredRequestDir(leadName: string): string {
 export function getStructuredResponseDir(runnerName: string): string {
 	return join(getStateDir(), "inbox-structured", runnerName, "responses");
 }
+
+/**
+ * Derive a Runner's Agent Team mailbox identity from its execution id + the
+ * owning Lead id. This is the SINGLE source of truth for the mapping used at
+ * Runner spawn (`run-dispatcher.ts:buildAgentTeamIdentity`) AND at message
+ * send (`flywheel-comm send` mailbox dual-write, FLY-168).
+ *
+ *   agentName = `runner-${execId.slice(0, 8)}`   (claude-code `--agent-name`)
+ *   teamName  = leadId                            (claude-code `--team-name`)
+ *
+ * The inbox the Runner's stock `useInboxPoller` reads is therefore
+ * `getClaudeInboxPath(teamName, agentName)`. Keeping the derivation here (not
+ * inlined at each call site) prevents the two sides from silently diverging.
+ *
+ * NOTE: the 8-char execId slice is an ACCEPTED existing constraint — it is the
+ * already-shipped Runner identity, so FLY-168 must reuse it to reach live
+ * Runner inboxes. It is a 32-bit namespace, not a globally collision-proof id;
+ * widening it would be a separate compatibility project.
+ */
+export function deriveRunnerMailboxIdentity(
+	executionId: string,
+	leadId: string,
+): { agentName: string; teamName: string } {
+	return { agentName: `runner-${executionId.slice(0, 8)}`, teamName: leadId };
+}
