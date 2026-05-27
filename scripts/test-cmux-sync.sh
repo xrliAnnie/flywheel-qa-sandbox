@@ -36,6 +36,7 @@ trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 export EVENT_FILE="$TMPDIR_ROOT/events"
 export CLEANUP_PENDING="$TMPDIR_ROOT/cleanup-pending"
 export STALE_STATE="$TMPDIR_ROOT/stale.state"
+export HEAL_STATE="$TMPDIR_ROOT/heal.state"  # FLY-169
 export FLYWHEEL_CMUX_CLEANUP_DELAY=30
 export FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP=300
 
@@ -87,7 +88,18 @@ tmux() {
       echo "$MOCK_TMUX_SESSIONS"
       ;;
     has-session)
-      local target="${2#=}"
+      # Parse the -t target properly (callers pass `has-session -t "=name"`).
+      # FLY-169: the old `${2#=}` read "-t" literally, so linked_session_exists
+      # always returned false. Only linked_session_exists calls this, and no
+      # test exercised it before FLY-169, so correct parsing is safe.
+      shift
+      local target=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -t) target="${2#=}"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
       echo "$MOCK_TMUX_SESSIONS" | grep -qx "$target"
       ;;
     display-message)
@@ -125,7 +137,74 @@ tmux() {
         esac
       done
       ;;
-    new-session|select-window|new-window)
+    list-clients)
+      # FLY-169: tmux list-clients -t '=<view_session>'.
+      #   - session NOT in MOCK_TMUX_CLIENTS → rc=1 (tmux error / no session) →
+      #     callers fail closed.
+      #   - "vs=N"     → rc=0, N client lines (static).
+      #   - "vs=N1,N2" → per-call sequence (for TOCTOU): 1st call N1, 2nd N2…
+      #     clamped to the last value. Counter is per view_session, reset by
+      #     reset_mocks.
+      shift
+      local lc_target=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -t) lc_target="$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      local vs="${lc_target#=}"
+      local spec
+      spec=$(echo "$MOCK_TMUX_CLIENTS" | awk -F= -v k="$vs" '$1==k{print $2; f=1} END{if(!f) print "__ERR__"}')
+      if [[ "$spec" == "__ERR__" ]]; then
+        return 1   # session not mocked → tmux error
+      fi
+      local cnt_file="$TMPDIR_ROOT/clients.$(echo "$vs" | tr -c 'A-Za-z0-9_.-' '_').n"
+      local n=0
+      if [[ -f "$cnt_file" ]]; then n=$(cat "$cnt_file"); fi
+      n=$((n + 1)); echo "$n" > "$cnt_file"
+      local val
+      val=$(echo "$spec" | awk -F, -v i="$n" '{ if (i>NF) i=NF; print $i }')
+      local j=1
+      while [[ $j -le ${val:-0} ]]; do echo "client$j"; j=$((j + 1)); done
+      return 0
+      ;;
+    select-window)
+      # FLY-169: capture select-window targets so tests can assert active-window
+      # repair (heal) and the create-time ready gate.
+      shift
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -t) MOCK_TMUX_SELECTS+="$2"$'\n'; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      # Honor MOCK_TMUX_SELECT_FAIL (for the §2.6 create-gate test).
+      if [[ "${MOCK_TMUX_SELECT_FAIL:-0}" == "1" ]]; then return 1; fi
+      return 0
+      ;;
+    new-session)
+      # FLY-169: faithfully register the -s session so linked_session_exists
+      # reflects it afterward (mirrors production; the §2.6 create gate depends
+      # on the linked session existing after new-session).
+      shift
+      local ns_name=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -s) ns_name="$2"; shift 2 ;;
+          -t) shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      if [[ -n "$ns_name" ]] && ! echo "$MOCK_TMUX_SESSIONS" | grep -qx "$ns_name"; then
+        if [[ -n "$MOCK_TMUX_SESSIONS" ]]; then
+          MOCK_TMUX_SESSIONS="${MOCK_TMUX_SESSIONS}"$'\n'"${ns_name}"
+        else
+          MOCK_TMUX_SESSIONS="$ns_name"
+        fi
+      fi
+      ;;
+    new-window)
       : ;;  # noop
     *)
       return 0 ;;
@@ -159,8 +238,42 @@ cmux() {
         echo "$MOCK_CMUX_WORKSPACES"
       fi
       ;;
-    close-workspace|new-workspace|rename-workspace)
+    close-workspace|new-workspace|rename-workspace|send|send-key|refresh-surfaces)
+      # FLY-169: capture send / send-key / refresh-surfaces too (with their
+      # --surface args) so tests can assert surface-scoped self-heal sends.
       MOCK_CMUX_OPS+="$*"$'\n'
+      ;;
+    read-screen)
+      # FLY-169: bare-shell gate reads the surface screen. MOCK_CMUX_READSCREEN
+      # is the screen text (last non-empty line drives the prompt-sigil check).
+      if [[ "${MOCK_CMUX_READSCREEN_FAIL:-0}" == "1" ]]; then return 1; fi
+      printf '%s\n' "$MOCK_CMUX_READSCREEN"
+      ;;
+    list-pane-surfaces)
+      # FLY-169: cmux --json list-pane-surfaces --workspace <ref>.
+      #   MOCK_CMUX_SURFACES_FAIL=1    → cmux failure (rc=1)
+      #   MOCK_CMUX_SURFACES_INVALID=1 → malformed JSON (parse must fail closed)
+      #   else build {"surfaces":[{ref,type,selected}...]} from MOCK_CMUX_SURFACES
+      #   lines formatted "wsref;;surfaceref;;type;;selected" (selected="true"/"").
+      shift
+      local lps_ws=""
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --workspace) lps_ws="$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      if [[ "${MOCK_CMUX_SURFACES_FAIL:-0}" == "1" ]]; then return 1; fi
+      if [[ "${MOCK_CMUX_SURFACES_INVALID:-0}" == "1" ]]; then
+        echo "not json"
+        return 0
+      fi
+      echo "$MOCK_CMUX_SURFACES" | awk -F';;' -v w="$lps_ws" '
+        BEGIN { printf "{\"surfaces\":[" ; first=1 }
+        $1==w { if(!first) printf "," ; first=0 ;
+                sel = ($4=="true") ? "true" : "false" ;
+                printf "{\"ref\":\"%s\",\"type\":\"%s\",\"selected\":%s}", $2, $3, sel }
+        END { print "]}" }'
       ;;
     *) return 0 ;;
   esac
@@ -188,9 +301,20 @@ reset_mocks() {
   MOCK_TMUX_KILLED=""
   MOCK_PGREP_HIT="0"
   MOCK_SHOW_HOOKS=""
+  # FLY-169 mocks
+  MOCK_TMUX_CLIENTS=""        # lines "view_session=N" or "view_session=N1,N2" (per-call seq)
+  MOCK_TMUX_SELECTS=""        # captured select-window targets
+  MOCK_TMUX_SELECT_FAIL="0"   # 1 = select-window returns rc=1 (create-gate test)
+  MOCK_CMUX_SURFACES=""       # lines "wsref;;title;;surfaceref"
+  MOCK_CMUX_SURFACES_FAIL="0" # 1 = list-pane-surfaces cmux failure
+  MOCK_CMUX_SURFACES_INVALID="0" # 1 = list-pane-surfaces returns malformed JSON
+  MOCK_CMUX_READSCREEN="user@host ~ %"   # bare-shell screen (prompt sigil) by default
+  MOCK_CMUX_READSCREEN_FAIL="0"          # 1 = read-screen cmux failure
+  CMUX_HEAL_ON_RECOVERY="0"
   # FLY-129 Phase 3: reset JSON transition state so per-test logging is clean.
   CMUX_JSON_LAST_STATE="unknown"
-  rm -f "$EVENT_FILE" "$CLEANUP_PENDING" "$STALE_STATE"
+  rm -f "$EVENT_FILE" "$CLEANUP_PENDING" "$STALE_STATE" "$HEAL_STATE"
+  rm -f "$TMPDIR_ROOT"/clients.*.n
   rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
 }
 
@@ -1653,6 +1777,289 @@ echo ""
 echo "═══ FLY-129 Phase 8: H2 fix (list_lead_refs only — Path A) ═══"
 test_list_lead_refs_returns_only_flywheel
 test_json_missing_workspaces_key_treated_as_fail
+
+# ════════════════════════════════════════════════════════════════
+# FLY-169: event-driven cmux workspace attach self-heal
+# Run with errexit ON to mirror production (`set -euo pipefail`) and prove the
+# self_heal_one_workspace loop survives the deliberate rc=1/2 returns from
+# self_heal_workspace_ref (R6-#1).
+# ════════════════════════════════════════════════════════════════
+echo ""
+echo "═══ FLY-169: cmux attach self-heal ═══"
+set -e   # deterministic errexit for this block (regardless of earlier set +e)
+
+# Fixture: one Lead window "lead-a" with a live linked session + one workspace
+# (workspace:1) titled "lead-a" (managed) with a selected terminal surface
+# (surface:1). $1 = client spec for view session cmux-lead-a (e.g. "0","1","0,2").
+# Detection keys on the 0-client STATE + managed workspace title, NOT the
+# surface title (which is the live foreground process, not the create command).
+fly169_setup_one() {
+  reset_mocks
+  MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a'
+  MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"}]}'
+  MOCK_CMUX_SURFACES="workspace:1;;surface:1;;terminal;;true"
+  MOCK_TMUX_CLIENTS="cmux-lead-a=${1}"
+}
+
+# Test 1: 0-client → ONE atomic re-attach send (cmd + newline) scoped to the
+# selected terminal surface, NO separate send-key, + select-window + refresh
+fly169_setup_one 0
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1 --surface surface:1 tmux attach -t '=cmux-lead-a'"; then
+  pass "0-client: atomic send scoped to --workspace + selected --surface with attach cmd"
+else
+  fail "expected surface-scoped attach send; got: $MOCK_CMUX_OPS"
+fi
+if echo "$MOCK_CMUX_OPS" | grep -q "send-key"; then
+  fail "atomic re-attach must NOT use a separate send-key (text→Enter gap); got: $MOCK_CMUX_OPS"
+else
+  pass "atomic: no separate send-key (newline embedded in the single send)"
+fi
+if echo "$MOCK_CMUX_OPS" | grep -q "refresh-surfaces"; then pass "refresh-surfaces after heal"; else fail "missing refresh-surfaces"; fi
+if echo "$MOCK_TMUX_SELECTS" | grep -q "=cmux-lead-a:=lead-a"; then pass "select-window points at agent window"; else fail "missing select-window"; fi
+
+# Test 2: client>0 (attached) → MUST NOT send (Claude-prompt safety), only select-window
+fly169_setup_one 1
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q "send"; then
+  fail "CRITICAL: must NOT send into an attached surface (Claude prompt risk); got: $MOCK_CMUX_OPS"
+else
+  pass "attached: no send (never types into Claude prompt)"
+fi
+if echo "$MOCK_TMUX_SELECTS" | grep -q "=cmux-lead-a:=lead-a"; then pass "attached: select-window only (safe)"; else fail "expected select-window when attached"; fi
+
+# Test 3: workspace has NO terminal surface (e.g. only a browser pane) → no send
+fly169_setup_one 0
+MOCK_CMUX_SURFACES="workspace:1;;surface:1;;browser;;true"
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q "send"; then fail "must NOT send when no terminal surface"; else pass "no terminal surface: not touched"; fi
+if [[ -z "$MOCK_TMUX_SELECTS" ]]; then pass "no terminal surface: no select-window (healed=0)"; else fail "unexpected select-window: $MOCK_TMUX_SELECTS"; fi
+
+# Test 3b (structural no-hijack): self_heal_sweep_all only iterates agent windows
+# (get_tmux_agent_windows). A user's workspace whose title is NOT an agent window
+# name is never targeted, even if it's detached with a terminal surface.
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a'   # only lead-a is an agent window
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a\ncmux-random-user-ws'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"},{"title":"random-user-ws","ref":"workspace:9"}]}'
+MOCK_CMUX_SURFACES=$'workspace:1;;surface:1;;terminal;;true\nworkspace:9;;surface:9;;terminal;;true'
+MOCK_TMUX_CLIENTS=$'cmux-lead-a=1\ncmux-random-user-ws=0'   # lead-a attached; random ws detached
+self_heal_sweep_all
+if echo "$MOCK_CMUX_OPS" | grep -q "workspace:9"; then
+  fail "HIJACK: swept a non-agent-window user workspace (workspace:9)"
+else
+  pass "structural no-hijack: non-agent-window workspace never swept"
+fi
+
+# Test 4: multiple terminal surfaces, one selected → send targets the SELECTED one
+fly169_setup_one 0
+MOCK_CMUX_SURFACES=$'workspace:1;;surface:9;;terminal;;\nworkspace:1;;surface:7;;terminal;;true'
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q -- "--surface surface:7 tmux attach"; then
+  pass "multi-surface: send targets the SELECTED terminal surface:7 (not surface:9)"
+else
+  fail "wrong surface targeted; got: $MOCK_CMUX_OPS"
+fi
+
+# Test 4b (Codex CR R3 HIGH): target view session has 0 clients, BUT the selected
+# surface is attached to a DIFFERENT tmux session (read-screen shows a tmux
+# status bar, not a prompt sigil) → bare-shell gate MUST block the send.
+fly169_setup_one 0
+MOCK_CMUX_READSCREEN='[cmux-other-lead:win* 1:claude  2:zsh     "host" 23:58 26-May-26'
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q "send"; then
+  fail "CRITICAL: surface attached to ANOTHER session (status bar) must NOT receive a send"
+else
+  pass "bare-shell gate: surface attached elsewhere (status bar) → no send"
+fi
+
+# Test 4c: read-screen failure → fail-closed, no send
+fly169_setup_one 0
+MOCK_CMUX_READSCREEN_FAIL=1
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q "send"; then fail "must fail-closed on read-screen failure"; else pass "read-screen failure → no send (fail-closed)"; fi
+
+# Test 5: duplicate workspace refs (dup title) → iterate ALL, send to each intent ref
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"},{"title":"lead-a","ref":"workspace:2"}]}'
+MOCK_CMUX_SURFACES=$'workspace:1;;surface:1;;terminal;;true\nworkspace:2;;surface:2;;terminal;;true'
+MOCK_TMUX_CLIENTS="cmux-lead-a=0"
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1 --surface surface:1" \
+   && echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:2 --surface surface:2"; then
+  pass "dup refs: iterates all (no dedup-winner guess)"
+else
+  fail "expected sends to both dup refs; got: $MOCK_CMUX_OPS"
+fi
+
+# Test 6: tmux list-clients error → fail-closed, no send
+fly169_setup_one 0
+MOCK_TMUX_CLIENTS=""   # cmux-lead-a not mocked → list-clients rc=1
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q "send"; then fail "must fail-closed on list-clients error"; else pass "list-clients error: no send (fail-closed)"; fi
+
+# Test 7: malformed list-pane-surfaces JSON → no send, no traceback
+fly169_setup_one 0
+MOCK_CMUX_SURFACES_INVALID=1
+heal_out=$(self_heal_one_workspace "lead-a" 2>&1)
+if echo "$MOCK_CMUX_OPS" | grep -q "send"; then fail "must fail-closed on malformed surfaces JSON"; else pass "malformed JSON: no send"; fi
+if echo "$heal_out" | grep -qi "traceback"; then fail "Python traceback leaked"; else pass "malformed JSON: no traceback"; fi
+
+# Test 8: TOCTOU — first count 0, recheck before send flips to >0 → no send
+fly169_setup_one 0
+MOCK_TMUX_CLIENTS="cmux-lead-a=0,2"   # call1=0 (outer), call2=2 (recheck) → block send
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q "send"; then fail "TOCTOU: must NOT send when client appears before send"; else pass "TOCTOU recheck blocks send"; fi
+
+# Test 8b: mid-loop TOCTOU (dup refs) — first ref sends, then client appears → 2nd ref not sent
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"},{"title":"lead-a","ref":"workspace:2"}]}'
+MOCK_CMUX_SURFACES=$'workspace:1;;surface:1;;terminal;;true\nworkspace:2;;surface:2;;terminal;;true'
+MOCK_TMUX_CLIENTS="cmux-lead-a=0,0,2"  # outer=0, ref1 GATE1=0 (atomic send), ref2 GATE1=2 (break)
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1"; then pass "mid-loop: first ref sent"; else fail "first ref should send"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:2"; then fail "second ref must NOT send after client appears"; else pass "mid-loop: loop breaks before second ref"; fi
+
+# Test 8c (Codex CR R1+R4 HIGH — designed out): the re-attach is a SINGLE
+# atomic send (cmd + embedded newline), so there is NO text→Enter gap at all.
+# Assert exactly one send op and zero send-key ops on a normal heal.
+fly169_setup_one 0
+self_heal_one_workspace "lead-a"
+SEND_N=$(echo "$MOCK_CMUX_OPS" | grep -c "^send --workspace workspace:1" || true)
+SENDKEY_N=$(echo "$MOCK_CMUX_OPS" | grep -c "^send-key" || true)
+if [[ "$SEND_N" == "1" && "$SENDKEY_N" == "0" ]]; then
+  pass "atomic re-attach: exactly 1 send, 0 send-key (no text→Enter gap)"
+else
+  fail "expected 1 send + 0 send-key; got send=$SEND_N send-key=$SENDKEY_N. Ops: $MOCK_CMUX_OPS"
+fi
+
+# Test 9 / 17: linked session dead → skip (reconcile's job, not self-heal's)
+fly169_setup_one 0
+MOCK_TMUX_SESSIONS="flywheel"   # no cmux-lead-a → linked session dead
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -qE "send|close-workspace|new-workspace"; then
+  fail "self-heal must not send/close/create on linked-dead (reconcile's job)"
+else
+  pass "linked-dead: self-heal no-ops (deferred to reconcile)"
+fi
+
+# Test 10: workspace_refs_for rc=2 (cmux JSON unavailable) → skip
+fly169_setup_one 0
+MOCK_CMUX_JSON_FAIL=1
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_CMUX_OPS" | grep -q "send"; then fail "must skip on workspace JSON rc=2"; else pass "JSON rc=2: no send (skip tick)"; fi
+
+# Test 11: verify-at-create is ref-scoped — heals via new_ref BEFORE rename
+# (workspace not yet title-addressable). self_heal_workspace_ref takes the ref.
+reset_mocks
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+MOCK_CMUX_SURFACES="workspace:5;;surface:5;;terminal;;true"
+MOCK_TMUX_CLIENTS="cmux-lead-a=0"
+hr=0
+self_heal_workspace_ref "lead-a" "workspace:5" || hr=$?
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:5 --surface surface:5 tmux attach"; then
+  pass "verify-at-create: ref-scoped heal works pre-rename (via new_ref)"
+else
+  fail "ref-scoped send failed; got: $MOCK_CMUX_OPS"
+fi
+[[ "$hr" == "0" ]] && pass "self_heal_workspace_ref rc=0 on send attempt" || fail "expected rc=0, got $hr"
+
+# Test 12: create-time §2.6 gate — select-window failure defers new-workspace
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-b'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-b'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'   # lead-b not present → create proceeds to gate
+MOCK_TMUX_SELECT_FAIL=1
+create_workspace_for_window "flywheel" "@1" "lead-b" >/dev/null 2>&1 || true
+if echo "$MOCK_CMUX_OPS" | grep -q "new-workspace"; then
+  fail "must NOT new-workspace when select-window fails (§2.6 gate)"
+else
+  pass "create gate: defers new-workspace on select-window failure"
+fi
+
+# Test 13a: event wiring — 'create' event for an EXISTING workspace → self-heal
+fly169_setup_one 0
+printf 'create|flywheel|@1|lead-a\n' > "$TMPDIR_ROOT/ev169"
+_drain_file "$TMPDIR_ROOT/ev169"
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1 --surface surface:1"; then
+  pass "wiring: create-event (existing ws) triggers self-heal"
+else
+  fail "create-exists wiring did not self-heal; got: $MOCK_CMUX_OPS"
+fi
+
+# Test 13b: event wiring — 'register' event → sweep that session → self-heal
+fly169_setup_one 0
+printf 'register|flywheel\n' > "$TMPDIR_ROOT/ev169"
+_drain_file "$TMPDIR_ROOT/ev169"
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1"; then
+  pass "wiring: register-event sweeps session → self-heal"
+else
+  fail "register wiring did not self-heal; got: $MOCK_CMUX_OPS"
+fi
+
+# Test 13c: ANTI-POLLING regression — sync_additive (60s periodic) must NOT self-heal
+fly169_setup_one 0   # detached + heal-able workspace
+sync_additive >/dev/null 2>&1 || true
+if echo "$MOCK_CMUX_OPS" | grep -qE "send --workspace|send-key"; then
+  fail "REGRESSION: sync_additive must NOT self-heal (Annie vetoed periodic scan)"
+else
+  pass "anti-polling: sync_additive does not self-heal (event-driven only)"
+fi
+
+# Test 15: cmux health-recovery sets one-shot flag (NOT per-tick)
+fly169_setup_one 0
+cmux_health_check() { return 0; }   # override: healthy (safe — Phase 7 health tests already ran)
+CMUX_HEALTH_LAST_RC=1               # was unhealthy → recovery transition
+CMUX_HEAL_ON_RECOVERY=0
+cmux_health_check_or_die >/dev/null 2>&1 || true
+[[ "$CMUX_HEAL_ON_RECOVERY" == "1" ]] && pass "health-recovery: sets one-shot heal flag" || fail "recovery flag not set"
+CMUX_HEALTH_LAST_RC=0               # already healthy → no transition
+CMUX_HEAL_ON_RECOVERY=0
+cmux_health_check_or_die >/dev/null 2>&1 || true
+[[ "$CMUX_HEAL_ON_RECOVERY" == "0" ]] && pass "health-recovery: no flag on steady healthy (not per-tick)" || fail "flag wrongly set when already healthy"
+
+# Test 16: --once is a manual rescue path — sweeps + heals existing bare-zsh
+fly169_setup_one 0
+MOCK_PGREP_HIT=0   # no watcher running → sync_once proceeds
+sync_once >/dev/null 2>&1 || true
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1 --surface surface:1"; then
+  pass "--once: manual rescue sweeps + heals bare-zsh"
+else
+  fail "--once did not heal; got: $MOCK_CMUX_OPS"
+fi
+
+# Test 14: heal-state transition log (once) + clear on recovery
+fly169_setup_one 0
+rm -f "$HEAL_STATE"
+self_heal_one_workspace "lead-a"                       # detached → logs once, writes HEAL_STATE row
+if grep -q '^lead-a|' "$HEAL_STATE" 2>/dev/null; then pass "heal-state: row written on re-attach"; else fail "expected HEAL_STATE row for lead-a"; fi
+MOCK_TMUX_CLIENTS="cmux-lead-a=1"                       # now attached
+self_heal_one_workspace "lead-a"                       # attached branch → clears row
+if grep -q '^lead-a|' "$HEAL_STATE" 2>/dev/null; then fail "HEAL_STATE row should be cleared on recovery"; else pass "heal-state: row cleared when re-attached"; fi
+
+# Test 18: errexit safety (R6-#1) — first ref rc=1 must NOT abort the loop
+# (this whole block runs under `set -e`; reaching here already exercises it,
+# but assert explicitly that a no-intent first ref still lets a later ref heal).
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"},{"title":"lead-a","ref":"workspace:2"}]}'
+# workspace:1 has NO terminal surface (browser → rc=1 skip); workspace:2 does (rc=0)
+MOCK_CMUX_SURFACES=$'workspace:1;;surface:1;;browser;;true\nworkspace:2;;surface:2;;terminal;;true'
+MOCK_TMUX_CLIENTS="cmux-lead-a=0"
+self_heal_one_workspace "lead-a"   # under set -e: rc=1 from ref1 must not abort
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:2 --surface surface:2"; then
+  pass "errexit-safe: rc=1 first ref does not abort; later ref still heals"
+else
+  fail "errexit/loop continuation failed; got: $MOCK_CMUX_OPS"
+fi
+
+set +e   # restore lenient mode for the summary
 
 # ════════════════════════════════════════════════════════════════
 # Summary
