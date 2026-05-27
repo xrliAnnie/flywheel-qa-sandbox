@@ -22,6 +22,11 @@ VIEW_PREFIX="cmux-"  # Linked session naming: cmux-<window_name>
 EVENT_FILE="${EVENT_FILE:-/tmp/flywheel-cmux-events}"
 CLEANUP_PENDING="${CLEANUP_PENDING:-/tmp/flywheel-cmux-cleanup-pending}"
 STALE_STATE="${STALE_STATE:-/tmp/flywheel-cmux-stale.state}"
+# FLY-169: heal-state file — transition-only logging for attach self-heal.
+# Deliberately SEPARATE from STALE_STATE (which drives conservative cleanup and
+# is drained by stale-session paths). Mixing heal markers into STALE_STATE would
+# get them drained immediately for live panes or misread as cleanup state.
+HEAL_STATE="${HEAL_STATE:-/tmp/flywheel-cmux-heal.state}"
 CLEANUP_DELAY_SECONDS="${FLYWHEEL_CMUX_CLEANUP_DELAY:-30}"
 CONSERVATIVE_CLEANUP_SECONDS="${FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP:-300}"
 
@@ -119,6 +124,11 @@ cmux_health_check_or_die() {
       CMUX_HEALTH_FAIL_SINCE=""
       CMUX_HEALTH_FAIL_COUNT=0
       CMUX_HEALTH_LAST_DIAG=""
+      # FLY-169: cmux just came back. A restart while this watcher stayed alive
+      # produces no tmux create/register event and no re-bootstrap, so any
+      # workspace that landed as bare zsh would stay broken. Flag a one-shot
+      # heal sweep for watch_loop to consume on this healthy tick.
+      CMUX_HEAL_ON_RECOVERY=1
     fi
     CMUX_HEALTH_LAST_RC=0
     return 0
@@ -224,6 +234,13 @@ CMUX_HEALTH_LAST_RC="${CMUX_HEALTH_LAST_RC:-0}"     # 0/1/3 — last observed he
 CMUX_HEALTH_FAIL_SINCE=""                            # epoch when state last entered non-zero
 CMUX_HEALTH_FAIL_COUNT="${CMUX_HEALTH_FAIL_COUNT:-0}"  # consecutive non-zero ticks (for backoff)
 CMUX_HEALTH_LAST_DIAG=""                             # last probe stderr (reported in transition log)
+
+# FLY-169: set to 1 on the cmux unhealthy→healthy transition (in
+# cmux_health_check_or_die); consumed ONCE by watch_loop to run a one-shot
+# self_heal_sweep_all. Event-driven (on recovery), NOT an idle poll — covers
+# a cmux restart while the same watcher process stays alive (no tmux event,
+# no re-bootstrap).
+CMUX_HEAL_ON_RECOVERY="${CMUX_HEAL_ON_RECOVERY:-0}"
 
 get_cmux_workspaces_json() {
   # Returns raw `cmux --json list-workspaces` output on stdout, rc=0.
@@ -537,6 +554,252 @@ gc_stale_state_file() {
   mv "$tmp" "$STALE_STATE"
 }
 
+# ── FLY-169: cmux workspace attach self-heal ──
+#
+# Problem: `cmux new-workspace --command "tmux attach -t '=<view>'"` can fail
+# at create time (race / quoting); cmux falls back to a bare login shell with
+# no retry/verify. The workspace stays bare zsh until manually re-attached.
+#
+# Design: EVENT-DRIVEN self-heal — NO new periodic scan (Annie vetoed polling;
+# her machine crashes under load). Heal only fires at event boundaries where
+# attach can actually fail: verify-at-create, create/register drain events,
+# watcher bootstrap, cmux health-recovery, and `--once`. The existing FLY-129
+# `sync_additive` 60s reconcile is intentionally left untouched (out of scope).
+#
+# Detection (never type into an attached Lead's Claude prompt):
+#   MANAGED: workspace title == agent window name (enforced by callers via
+#            workspace_refs_for(wname) + self-heal only running for agent
+#            windows). This is the durable "managed attach workspace" signal —
+#            NOT the surface title, which is the live foreground process and
+#            becomes "~" once the failed attach drops to a bare shell.
+#   STATE  : `tmux list-clients -t '=<view_session>'` succeeds AND count == 0.
+#   SHELL  : the target surface's screen looks like a bare shell (prompt sigil),
+#            proving it's not attached to some OTHER session's Claude.
+# The re-attach is a SINGLE atomic `cmux send` (attach command + embedded
+# newline) targeting the selected terminal --surface — no separate send-key
+# Enter, so there is no two-injection gap. Any uncertainty (tmux/cmux/JSON/
+# read-screen failure) fails closed → no send.
+
+# tmux client count for a view session. rc!=0 on tmux command failure (target
+# missing / session raced away) so callers fail closed. Empty output = 0
+# clients = SUCCESS (tmux exits 0 with no lines).
+view_session_client_count() {
+  local view_session="$1" out
+  out=$(tmux list-clients -t "=${view_session}" 2>/dev/null) || return 1
+  printf '%s' "$out" | grep -c . || true
+}
+
+# Print the ref of the workspace's selected terminal surface (or the first
+# terminal surface if none is marked selected). rc=1 (no stdout) if there is no
+# terminal surface / bad JSON / cmux failure — defensive parse, no Python
+# traceback leaks (fail closed).
+#
+# Why NOT match on surface title (spike finding, FLY-169): a cmux surface's
+# title is the CURRENT foreground process, not the create-time --command. When
+# the `tmux attach` command exits/fails (the bug state — bare shell), the title
+# becomes "~" (the shell cwd), NOT "tmux attach …". So a title==attach gate is
+# inverted: it would only match while ALREADY attached (clients>0, which we
+# skip) and never in the detached bare-shell state we need to heal. The durable
+# "this is a managed attach workspace" signal is the WORKSPACE title == agent
+# window name (enforced by the caller via workspace_refs_for / agent-window
+# sweeps), not the surface title. The send still targets the selected terminal
+# surface for precision; the no-send-when-attached safety rests on the 0-client
+# STATE check (0 clients ⟹ no tmux client ⟹ surface cannot be showing Claude).
+workspace_terminal_surface_ref() {
+  local ref="$1" raw
+  raw=$(cmux_call --json list-pane-surfaces --workspace "$ref") || return 1
+  printf '%s' "$raw" | python3 -c '
+import sys, json
+try:
+    data = json.load(sys.stdin)
+    surfaces = data.get("surfaces")
+    if not isinstance(surfaces, list):
+        sys.exit(1)
+    terms = [s for s in surfaces
+             if isinstance(s, dict) and s.get("type") == "terminal"
+             and (s.get("ref") or s.get("id"))]
+    if not terms:
+        sys.exit(1)
+    selected = [s for s in terms if s.get("selected")]
+    pick = (selected or terms)[0]
+    print(pick.get("ref") or pick.get("id"))
+    sys.exit(0)
+except Exception:
+    sys.exit(1)
+' || return 1
+}
+
+# rc=0 only if the surface's screen looks like a BARE SHELL (its last non-empty
+# line ends in a shell prompt sigil: % / $ / #). rc=1 otherwise (tmux status
+# bar = attached to some session, a TUI, read-screen failure, or anything we
+# can't positively classify) — FAIL CLOSED. This is the gate that prevents
+# typing into a surface attached to a DIFFERENT tmux session's Claude prompt
+# (Codex CR R3 HIGH): an attached surface's bottom line is the tmux status bar,
+# never a lone prompt sigil, regardless of which session it's attached to.
+# Runs only at a heal attempt (event-driven), not as a periodic scan.
+surface_looks_like_bare_shell() {
+  local ref="$1" surface_ref="$2" screen last
+  screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref") || return 1
+  last=$(printf '%s\n' "$screen" | awk 'NF{l=$0} END{print l}')
+  last=$(printf '%s' "$last" | sed 's/[[:space:]]*$//')   # strip trailing whitespace
+  case "$last" in
+    *'%'|*'$'|*'#') return 0 ;;   # shell prompt → bare shell → safe to send
+    *) return 1 ;;                # status bar / TUI / unknown → fail closed
+  esac
+}
+
+# Transition-only logging for self-heal (mirrors drain_stale_state_row's
+# literal awk -F'|' compare — agent names may contain regex metachars). Log
+# ONCE per window when it enters the "re-attaching" state; clear on recovery.
+heal_state_log_once() {
+  local name="$1" msg="$2"
+  touch "$HEAL_STATE" 2>/dev/null || true
+  if ! awk -F'|' -v n="$name" '$1 == n { found=1 } END { exit(found ? 0 : 1) }' "$HEAL_STATE" 2>/dev/null; then
+    printf '%s|%s\n' "$name" "$(date +%s)" >> "$HEAL_STATE"
+    log "$msg"
+  fi
+}
+
+heal_state_clear() {
+  local name="$1"
+  [[ -f "$HEAL_STATE" ]] || return 0
+  local tmp
+  tmp=$(mktemp "${HEAL_STATE}.XXXX") || return 0
+  awk -F'|' -v n="$name" '$1 != n { print }' "$HEAL_STATE" > "$tmp"
+  mv "$tmp" "$HEAL_STATE"
+}
+
+# GC HEAL_STATE rows whose window no longer exists (watcher startup).
+gc_heal_state_file() {
+  [[ -f "$HEAL_STATE" ]] || return 0
+  local current_agents tmp
+  current_agents=$(get_tmux_agent_windows | cut -d'|' -f3)
+  tmp=$(mktemp "${HEAL_STATE}.XXXX") || return 0
+  while IFS='|' read -r name ts; do
+    [[ -z "$name" ]] && continue
+    if echo "$current_agents" | grep -qx "$name"; then
+      printf '%s|%s\n' "$name" "$ts" >> "$tmp"
+    fi
+  done < "$HEAL_STATE"
+  mv "$tmp" "$HEAL_STATE"
+}
+
+# Ref-scoped self-heal primitive. Heals ONE known cmux workspace ref. Used by
+# verify-at-create with the freshly-created new_ref (works BEFORE rename, since
+# it doesn't resolve by title) and by self_heal_one_workspace per resolved ref.
+# Returns: 0 = send attempted (best-effort; cmux send failure is not an error)
+#          1 = skip (no attach-intent surface / cmux/JSON / tmux uncertainty)
+#          2 = a client appeared (attached) — caller should stop sending
+self_heal_workspace_ref() {
+  local wname="$1" ref="$2"
+  local view_session="${VIEW_PREFIX}${wname}"
+  [[ -z "$ref" ]] && return 1
+  # Target the workspace's selected terminal surface (see
+  # workspace_terminal_surface_ref for why title-intent matching is wrong).
+  local surface_ref
+  surface_ref=$(workspace_terminal_surface_ref "$ref") || return 1
+  [[ -z "$surface_ref" ]] && return 1
+  # SAFETY GATE 1 — target view session has 0 clients. Necessary but NOT
+  # sufficient: 0 clients on cmux-$wname does not prove the surface isn't
+  # attached to a DIFFERENT tmux session showing Claude (Codex CR R3 HIGH).
+  local clients
+  clients=$(view_session_client_count "$view_session") || return 1   # tmux error → fail-closed
+  [[ "$clients" -gt 0 ]] && return 2                                  # attached to target → stop
+  # SAFETY GATE 2 — POSITIVELY confirm the surface is a BARE SHELL before
+  # typing. surface_looks_like_bare_shell requires the screen's last non-empty
+  # line to END in a shell prompt sigil (% / $ / #). This is a POSITIVE proof,
+  # not a status-bar-absence check: a surface attached to ANY tmux session
+  # shows either a status bar or a TUI (Claude) at the bottom — neither ends in
+  # a lone prompt sigil — so the gate fails closed for attached-elsewhere
+  # surfaces REGARDLESS of whether tmux's status bar is enabled (Codex CR
+  # R3 HIGH + R4 MEDIUM). read-screen failure → fail closed.
+  surface_looks_like_bare_shell "$ref" "$surface_ref" || return 1
+  # ATOMIC re-attach: send the attach command WITH a trailing newline in ONE
+  # `cmux send`. There is NO separate `send-key Enter`, so there is no
+  # text→Enter gap for a client to attach into between two injections (Codex
+  # CR R1 + R4 HIGH). Both gates above are checked immediately before this
+  # single injection. printf -v preserves the trailing newline (command
+  # substitution would strip it).
+  local attach_cmd
+  printf -v attach_cmd "tmux attach -t '=%s'\n" "$view_session"
+  heal_state_log_once "$wname" "Self-heal: re-attaching '$wname' (0 clients on $view_session, ws $ref surface $surface_ref)"
+  cmux_call send --workspace "$ref" --surface "$surface_ref" "$attach_cmd" || true
+  return 0
+}
+
+# Heal one window by name: resolve all matching workspace refs (title), then
+# heal each via the ref-scoped primitive. Attach-only — the "workspace exists
+# but linked session is dead" case is reconcile_existing_workspaces' job.
+self_heal_one_workspace() {
+  local wname="$1"
+  local view_session="${VIEW_PREFIX}${wname}"
+  # Need a live linked session to attach to.
+  linked_session_exists "$view_session" || return 0
+
+  # Mutation path uses workspace_refs_for with rc=2 handling (NOT
+  # get_workspace_ref_for, which is unsafe as a mutation gate).
+  local refs rc=0
+  refs=$(workspace_refs_for "$wname") || rc=$?
+  [[ $rc -eq 2 ]] && return 0          # JSON unavailable → skip (event-time tradeoff)
+  [[ -z "$refs" ]] && return 0
+
+  # STATE: only "tmux succeeded AND count==0" = detached. Per view_session
+  # (shared by all dup workspaces for this window name).
+  local clients
+  clients=$(view_session_client_count "$view_session") || return 0   # tmux error → fail-closed
+  if [[ "$clients" -gt 0 ]]; then
+    tmux select-window -t "=${view_session}:=${wname}" 2>/dev/null || true   # safe, no surface input
+    heal_state_clear "$wname"
+    return 0
+  fi
+
+  # 0 clients → maybe detached. Don't guess the dedup winner; iterate ALL refs
+  # and heal each via the ref-scoped primitive. rc=2 (client appeared mid-loop)
+  # → stop sending to remaining refs. The `|| hr=$?` capture is REQUIRED under
+  # `set -euo pipefail` — a bare `cmd; hr=$?` would abort on the rc=1/2 returns.
+  local healed=0 ref hr
+  while read -r ref; do
+    [[ -z "$ref" ]] && continue
+    hr=0
+    self_heal_workspace_ref "$wname" "$ref" || hr=$?
+    case "$hr" in
+      0) healed=1 ;;
+      1) ;;          # normal skip (no intent / fail-closed)
+      2) break ;;    # client appeared mid-loop → stop sending
+      *) log "WARN: unexpected self-heal rc=$hr for $wname ref=$ref" ;;
+    esac
+  done <<< "$refs"
+
+  if [[ "$healed" -eq 1 ]]; then
+    tmux select-window -t "=${view_session}:=${wname}" 2>/dev/null || true
+    cmux_call refresh-surfaces || true
+  fi
+}
+
+# One-shot sweep of ALL agent windows (bootstrap / health-recovery / --once).
+self_heal_sweep_all() {
+  local tmux_windows
+  tmux_windows=$(get_tmux_agent_windows)
+  [[ -z "$tmux_windows" ]] && return 0
+  local _s _wid wname
+  while IFS='|' read -r _s _wid wname; do
+    [[ -z "$wname" ]] && continue
+    self_heal_one_workspace "$wname"
+  done <<< "$tmux_windows"
+}
+
+# One-shot sweep of a single session's agent windows (register event). Catches
+# windows that existed before the per-session hooks were registered.
+self_heal_sweep_session() {
+  local target="$1" tmux_windows
+  tmux_windows=$(get_tmux_agent_windows)
+  [[ -z "$tmux_windows" ]] && return 0
+  local s _wid wname
+  while IFS='|' read -r s _wid wname; do
+    [[ "$s" == "$target" && -n "$wname" ]] && self_heal_one_workspace "$wname"
+  done <<< "$tmux_windows"
+}
+
 create_workspace_for_window() {
   # FLY-129 Phase 3 (R3-1): fail-closed at function top.
   #   - Snapshot JSON ONCE for this create attempt and reuse it for both
@@ -571,9 +834,18 @@ sys.exit(0 if exists else 1)
     tmux new-session -d -t "$source_session" -s "$view_session" 2>/dev/null || true
   fi
 
-  # 2. Select the target window in the linked session (by exact name, not ID)
-  # FLY-98: use =name exact match to survive window ID changes across restarts
-  tmux select-window -t "=${view_session}:=${window_name}" 2>/dev/null || true
+  # 2. (FLY-169 §2.6) Ready gate: require the linked session to exist AND the
+  #    target window to select successfully before creating the cmux workspace.
+  #    `tmux has-session` alone only proves new-session didn't fail; a failed
+  #    select-window can still create a workspace pointing at the wrong window
+  #    (window 0 zsh). On failure, defer — the next create event retries, and
+  #    verify-at-create / bootstrap / health-recovery sweeps also cover it.
+  #    FLY-98: =name exact match survives window ID changes across restarts.
+  if ! linked_session_exists "$view_session" \
+     || ! tmux select-window -t "=${view_session}:=${window_name}" 2>/dev/null; then
+    log "WARN: $view_session not ready (session/select-window) — deferring create for $window_name"
+    return 0
+  fi
 
   # 3. refs_before from the snapshot we already have (no extra cmux call).
   local refs_before
@@ -600,7 +872,7 @@ for w in json.load(sys.stdin).get("workspaces", []):
   # until next reconcile pass.
   local raw_after refs_after new_ref
   raw_after=$(get_cmux_workspaces_json) || {
-    log "WARN: cmux JSON unavailable post-create; cannot rename $window_name this tick"
+    log "WARN: cmux JSON unavailable post-create; cannot rename or verify-attach $window_name this tick (deferred to later event / --once)"
     return 0
   }
   refs_after=$(printf '%s' "$raw_after" | python3 -c '
@@ -615,6 +887,29 @@ for w in json.load(sys.stdin).get("workspaces", []):
   # 6. Rename using the exact ref — immune to user tab switching
   if [[ -n "$new_ref" ]]; then
     cmux_call rename-workspace --workspace "$new_ref" "$window_name" || true
+  fi
+
+  # 7. (FLY-169 §2.5) Verify-at-create + bounded retry — the primary fix.
+  #    cmux falls back to a bare login shell when the attach fails at create;
+  #    here we confirm a tmux client actually attached and, if not, re-drive the
+  #    attach. Ref-scoped via new_ref so it works regardless of the rename above
+  #    (a freshly created workspace is only title-addressable after rename).
+  #    Bounded (<=3 attempts, <=3s).
+  #    NOTE (Codex CR R1 MEDIUM): create_workspace_for_window is also invoked by
+  #    sync_additive's missing-workspace branch (60s). This verify therefore can
+  #    run from that path — but ONLY when a workspace is genuinely MISSING and
+  #    being created (rare), NOT on every tick and NOT as an all-workspace scan.
+  #    It is correct to verify on EVERY create path (event OR missing-create);
+  #    gating it to event-only would reintroduce the bug for sync_additive-born
+  #    workspaces. "Zero new idle load" holds: no create → no verify.
+  if [[ -n "$new_ref" ]]; then
+    local vc_attempt vc_clients
+    for vc_attempt in 1 2 3; do
+      vc_clients=$(view_session_client_count "$view_session") || break  # tmux error → stop (fail-closed)
+      [[ "$vc_clients" -gt 0 ]] && break                                # attached — done
+      self_heal_workspace_ref "$window_name" "$new_ref" || true         # re-drive attach (ref-scoped, gated)
+      sleep 1
+    done
   fi
 }
 
@@ -935,6 +1230,12 @@ _drain_file() {
         workspace_exists_for "$wname" || _exists_rc=$?
         if [[ $_exists_rc -eq 1 ]]; then
           create_workspace_for_window "$session" "$wid" "$wname"
+        elif [[ $_exists_rc -eq 0 ]]; then
+          # FLY-169: workspace already exists — event-driven attach self-heal.
+          # A window-recreate event for an existing workspace can mean its
+          # surface lost the attach (bare zsh). Heal that one workspace only;
+          # no-op when already attached (it just re-selects the window).
+          self_heal_one_workspace "$wname"
         fi
         ;;
       exited)
@@ -951,6 +1252,11 @@ _drain_file() {
         local session="$arg1"
         [[ -z "$session" ]] && continue
         register_session_hooks "$session"
+        # FLY-169: a new session appearing = Lead restart / Runner spawn. Sweep
+        # that session's windows once to re-attach any that landed as bare zsh,
+        # including windows created before these hooks were registered (the
+        # registration race that periodic polling previously masked).
+        self_heal_sweep_session "$session"
         ;;
       unlinked)
         # FLY-60 W4b: window-unlinked global hook fires on tmux kill-window
@@ -1048,6 +1354,11 @@ sync_additive_bootstrap() {
       create_workspace_for_window "$src_sess" "$wid" "$wname"
     fi
   done <<< "$tmux_windows"
+
+  # 4. (FLY-169) One-shot attach self-heal sweep — covers watcher startup /
+  #    cmux restart (watcher re-spawns) / reboot. Re-attaches any pre-existing
+  #    workspace that landed as bare zsh. Event boundary (startup), not a poll.
+  self_heal_sweep_all
 }
 
 sync_additive() {
@@ -1104,6 +1415,14 @@ watch_loop() {
     local hc_rc=0
     cmux_health_check_or_die || hc_rc=$?
     if [[ $hc_rc -eq 0 ]]; then
+      # FLY-169: consume the cmux recovery flag ONCE (set by the health check
+      # above on an unhealthy→healthy transition). One-shot heal sweep — covers
+      # a cmux restart while this watcher stayed alive (no tmux event, no
+      # re-bootstrap). NOT a per-tick scan: the flag is only set on recovery.
+      if [[ "$CMUX_HEAL_ON_RECOVERY" == "1" ]]; then
+        CMUX_HEAL_ON_RECOVERY=0
+        self_heal_sweep_all
+      fi
       drain_events
       process_pending_cleanups
       if (( tick % 4 == 0 )); then
@@ -1142,6 +1461,10 @@ watch_main() {
   # longer have a tmux window or linked session. Cleans up rows leaked by
   # a previous watcher that crashed mid-cleanup.
   gc_stale_state_file
+
+  # FLY-169: GC heal-state rows whose window no longer exists (leaked by a
+  # previous watcher). Keeps transition-only heal logging accurate.
+  gc_heal_state_file
 
   # Gate cmux-touching bootstrap: if cmux is broken (rc=2 already exited),
   # skip the full sync but still enter the watch loop. drain_events / loop
@@ -1196,6 +1519,11 @@ sync_once() {
   #    benefits from the same hygiene the periodic watcher gives).
   reap_ghost_workspaces
   dedup_workspaces_by_title
+
+  # 6. (FLY-169) Manual attach self-heal sweep. `--once` is an explicit
+  #    operator action (not idle load), so it doubles as a zero-idle rescue
+  #    path: re-attach any existing bare-zsh workspace on demand.
+  self_heal_sweep_all
 }
 
 # FLY-129 Phase 8 (Path A): list cmux workspace refs that belong to Lead
