@@ -130,8 +130,8 @@ describe("send/inbox round-trip", () => {
 		rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	it("should complete a send → inbox round-trip", () => {
-		const instId = send({
+	it("should complete a send → inbox round-trip", async () => {
+		const instId = await send({
 			fromAgent: "product-lead",
 			toAgent: "exec-123",
 			content: "Stop current work and switch to GEO-999",
@@ -148,8 +148,8 @@ describe("send/inbox round-trip", () => {
 		expect(result.instructions[0]!.from_agent).toBe("product-lead");
 	});
 
-	it("should mark instructions as read after inbox retrieval", () => {
-		send({
+	it("should mark instructions as read after inbox retrieval", async () => {
+		await send({
 			fromAgent: "product-lead",
 			toAgent: "exec-123",
 			content: "Instruction 1",
@@ -165,14 +165,14 @@ describe("send/inbox round-trip", () => {
 		expect(second.instructions).toHaveLength(0);
 	});
 
-	it("should isolate instructions per runner", () => {
-		send({
+	it("should isolate instructions per runner", async () => {
+		await send({
 			fromAgent: "product-lead",
 			toAgent: "exec-A",
 			content: "For runner A",
 			dbPath,
 		});
-		send({
+		await send({
 			fromAgent: "product-lead",
 			toAgent: "exec-B",
 			content: "For runner B",
@@ -188,14 +188,14 @@ describe("send/inbox round-trip", () => {
 		expect(inboxB.instructions[0]!.content).toBe("For runner B");
 	});
 
-	it("should receive instructions from multiple leads", () => {
-		send({
+	it("should receive instructions from multiple leads", async () => {
+		await send({
 			fromAgent: "product-lead",
 			toAgent: "exec-123",
 			content: "From product",
 			dbPath,
 		});
-		send({
+		await send({
 			fromAgent: "ops-lead",
 			toAgent: "exec-123",
 			content: "From ops",

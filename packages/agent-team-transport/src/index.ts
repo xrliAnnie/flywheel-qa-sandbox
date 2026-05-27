@@ -36,7 +36,7 @@ export {
 } from "./claude/team-bootstrap.js";
 export { CodexAdapter } from "./codex/CodexAdapter.js";
 // Path helpers (vendor-neutral parts only — claude-specific helpers stay in claude/)
-export { getStateDir } from "./path-helpers.js";
+export { deriveRunnerMailboxIdentity, getStateDir } from "./path-helpers.js";
 // Types (vendor-neutral)
 export type {
 	AvailabilitySignal,
