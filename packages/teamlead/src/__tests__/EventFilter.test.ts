@@ -104,6 +104,15 @@ describe("EventFilter", () => {
 			);
 			expect(result.priority).toBe("normal");
 		});
+
+		it("session_monitoring_lost → normal (FLY-172, advisory not Annie-emergency)", () => {
+			const result = filter.classify(
+				"session_monitoring_lost",
+				makePayload({ status: "running" }),
+			);
+			expect(result.priority).toBe("normal");
+			expect(result.reason).toContain("monitoring lost");
+		});
 	});
 
 	describe("Chat-track events — Lead MUST notify Annie in Chat (FLY-47)", () => {

@@ -3,6 +3,11 @@ import {
 	applyTransition,
 } from "./applyTransition.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
+import {
+	applyQuarantineFallback,
+	type MarkerReconcilerDeps,
+	tryReconcileComplete,
+} from "./bridge/complete-marker-reconciler.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import {
@@ -26,6 +31,27 @@ export interface HeartbeatNotifier {
 	): Promise<void>;
 	/** GEO-270: Stale session patrol — tmux still alive after terminal state. */
 	onSessionStale(session: Session, hoursSinceActivity: number): Promise<void>;
+	/**
+	 * FLY-172: Bridge lost monitoring of a still-running Runner (heartbeat went
+	 * stale but tmux is alive — typically after a Flywheel restart). One-time
+	 * advisory so the Lead knows to fall back to driving the Runner via tmux.
+	 */
+	onSessionMonitoringLost(
+		session: Session,
+		minutesSinceHeartbeat: number,
+	): Promise<void>;
+}
+
+/**
+ * FLY-172: how HeartbeatService reaches the marker reconciler. The reconciler
+ * itself never probes tmux — HeartbeatService owns liveness (Codex guidance #1).
+ */
+export interface MonitorReconcileConfig {
+	bridgeBaseUrl: string;
+	ingestToken?: string;
+	fetchFn?: typeof fetch;
+	markerDir?: string;
+	quarantineDir?: string;
 }
 
 /**
@@ -39,6 +65,19 @@ export class HeartbeatService {
 	private notifiedOrphans = new Set<string>();
 	private notifiedStale = new Set<string>();
 	private lastStaleCheckAt = 0;
+	/**
+	 * FLY-172: execIds for which a `session_monitoring_lost` advisory was already
+	 * sent this Bridge-process lifetime (one-time advisory). Members are still
+	 * alive-but-detached; removed the moment the reconcile pass observes tmux
+	 * dead, so `checkStuck()`/`reapOrphans()` resume normal signaling.
+	 */
+	private notifiedMonitorLost = new Set<string>();
+	/**
+	 * FLY-172: execIds with a marker whose replay transiently failed THIS cycle —
+	 * `reapOrphans()` must skip force-failing them (retry next cycle). Rebuilt
+	 * each `reconcileMonitorLoss()` pass so it never goes stale.
+	 */
+	private markerRetryPending = new Set<string>();
 
 	constructor(
 		private store: StateStore,
@@ -49,6 +88,8 @@ export class HeartbeatService {
 		private transitionOpts?: ApplyTransitionOpts,
 		private staleThresholdHours: number = 24,
 		private staleCheckIntervalMs: number = 6 * 3_600_000,
+		/** FLY-172: marker reconcile wiring; when absent, monitor-loss reconcile is a no-op. */
+		private monitorReconcile?: MonitorReconcileConfig,
 	) {}
 
 	start(): void {
@@ -73,9 +114,150 @@ export class HeartbeatService {
 		if (this.notifier instanceof RegistryHeartbeatNotifier) {
 			await this.notifier.retryUndeliveredGuardrailEvents();
 		}
+		// FLY-172: reconcile monitoring loss BEFORE stuck/orphan detection so the
+		// monitor-lost / marker-retry skip sets are current. This pass is the
+		// single owner of tmux probing for running sessions (Codex guidance #1).
+		// Only awaited when wired (production) — skipping the await when
+		// unconfigured keeps checkStuck's synchronous getStuckSessions call on the
+		// same tick (preserves existing fake-timer test timing).
+		if (this.monitorReconcile) {
+			await this.reconcileMonitorLoss();
+		}
 		await this.checkStuck();
 		await this.reapOrphans();
 		await this.checkStaleCompleted();
+	}
+
+	/**
+	 * FLY-172: For running sessions whose heartbeat has gone stale (≥ stuck
+	 * threshold — i.e. the Bridge stopped receiving heartbeats, the fingerprint
+	 * of monitoring loss after a restart): try the completion marker FIRST (a
+	 * valid terminal marker wins over tmux liveness — a finished `needs_review`
+	 * Runner can keep its tmux window open), and only if there is no usable
+	 * marker, probe tmux. tmux alive → one-time advisory, never force-fail.
+	 * tmux dead → leave it for `reapOrphans` to force-fail at the orphan
+	 * threshold. Owns `notifiedMonitorLost` and `markerRetryPending`.
+	 */
+	async reconcileMonitorLoss(): Promise<void> {
+		this.markerRetryPending.clear();
+		if (!this.monitorReconcile) return; // not wired (e.g. unit tests) → no-op
+
+		// Candidate set: running + heartbeat stale ≥ stuck threshold.
+		const candidates = this.store.getOrphanSessions(this.thresholdMinutes);
+		const candidateIds = new Set(candidates.map((s) => s.execution_id));
+		// Prune monitor-lost advisory dedup for sessions no longer candidates
+		// (e.g. they completed and left `running`).
+		for (const id of this.notifiedMonitorLost) {
+			if (!candidateIds.has(id)) this.notifiedMonitorLost.delete(id);
+		}
+
+		const deps: MarkerReconcilerDeps = {
+			store: this.store,
+			bridgeBaseUrl: this.monitorReconcile.bridgeBaseUrl,
+			ingestToken: this.monitorReconcile.ingestToken,
+			fetchFn: this.monitorReconcile.fetchFn,
+			markerDir: this.monitorReconcile.markerDir,
+			quarantineDir: this.monitorReconcile.quarantineDir,
+		};
+
+		for (const session of candidates) {
+			const execId = session.execution_id;
+
+			// 1) Marker-first. A valid terminal marker proves the Runner finished.
+			const outcome = await tryReconcileComplete(execId, deps);
+			if (
+				outcome.kind === "reconciled" ||
+				outcome.kind === "duplicate_terminal"
+			) {
+				// Session is now at its true terminal status. No longer monitor-lost.
+				this.notifiedMonitorLost.delete(execId);
+				continue;
+			}
+			if (outcome.kind === "transient_failed") {
+				// Keep marker; block reapOrphans from force-failing this cycle.
+				this.markerRetryPending.add(execId);
+				continue;
+			}
+			if (outcome.kind === "quarantined") {
+				const alive = await this.isSessionTmuxAlive(session);
+				applyQuarantineFallback({
+					store: this.store,
+					transitionOpts: this.transitionOpts,
+					executionId: execId,
+					issueId: session.issue_id,
+					projectName: session.project_name,
+					tmuxAlive: alive,
+					routeStatus: outcome.routeStatus,
+					quarantinePath: outcome.quarantinePath,
+				});
+				if (alive) {
+					// CODEX R1 HIGH FIX: marker was moved to quarantine, so reapOrphans
+					// can no longer see it. The Runner is STILL alive — if we don't
+					// protect it here, reapOrphans would force-fail a live Runner once
+					// past the orphan threshold (re-triggering GEO-374). Treat it as
+					// monitoring-lost: one-time advisory + add to the skip set.
+					await this.emitMonitorLostOnce(session);
+				} else {
+					// tmux dead → applyQuarantineFallback already forced a terminal
+					// status; drop any prior monitor-lost dedup.
+					this.notifiedMonitorLost.delete(execId);
+				}
+				continue;
+			}
+
+			// 2) No marker (absent) → probe tmux.
+			const alive = await this.isSessionTmuxAlive(session);
+			if (alive) {
+				// Runner still working, Bridge blind. One-time advisory; do NOT
+				// force-fail and do NOT refresh heartbeat_at (keeps the session
+				// orphan-eligible so the very next cycle re-verifies liveness).
+				await this.emitMonitorLostOnce(session);
+			} else {
+				// tmux gone, no marker → genuine orphan; let reapOrphans force-fail
+				// it at the orphan threshold. Drop any prior monitor-lost dedup.
+				this.notifiedMonitorLost.delete(execId);
+			}
+		}
+	}
+
+	/**
+	 * FLY-172: send the one-time `session_monitoring_lost` advisory for an
+	 * alive-but-detached Runner and add it to `notifiedMonitorLost` so both
+	 * `checkStuck()` and `reapOrphans()` skip it. Idempotent per Bridge-process
+	 * lifetime; on delivery failure it is NOT deduped (retried next cycle).
+	 */
+	private async emitMonitorLostOnce(session: Session): Promise<void> {
+		const execId = session.execution_id;
+		if (this.notifiedMonitorLost.has(execId)) return;
+		let minutesSince = this.thresholdMinutes;
+		if (session.heartbeat_at) {
+			minutesSince = Math.round(
+				(Date.now() -
+					new Date(`${session.heartbeat_at.replace(" ", "T")}Z`).getTime()) /
+					60_000,
+			);
+		}
+		try {
+			await this.notifier.onSessionMonitoringLost(session, minutesSince);
+			this.notifiedMonitorLost.add(execId);
+		} catch {
+			// delivery failed — retry advisory next cycle (don't dedup)
+		}
+	}
+
+	/** FLY-172: resolve + probe tmux for a session. Single owner of liveness. */
+	private async isSessionTmuxAlive(session: Session): Promise<boolean> {
+		if (!session.project_name) return false;
+		const target = getTmuxTargetFromCommDb(
+			session.execution_id,
+			session.project_name,
+		);
+		if (!target) return false;
+		try {
+			return await isTmuxWindowAlive(target.tmuxWindow);
+		} catch {
+			return false;
+		}
 	}
 
 	private async checkStuck(): Promise<void> {
@@ -88,6 +270,12 @@ export class HeartbeatService {
 		}
 
 		for (const session of stuck) {
+			// FLY-172: a monitoring-lost (alive-but-detached) Runner looks "stuck"
+			// (last_activity stale) only because the Bridge lost its reporting
+			// channel — suppress the false session_stuck. The reconcile pass that
+			// just ran owns this set and removes dead sessions, so this never
+			// over-suppresses a Runner that later died.
+			if (this.notifiedMonitorLost.has(session.execution_id)) continue;
 			if (this.notifiedStuck.has(session.execution_id)) continue;
 
 			let minutesSince = this.thresholdMinutes;
@@ -172,6 +360,14 @@ export class HeartbeatService {
 		}
 
 		for (const session of orphans) {
+			// FLY-172: skip sessions the reconcile pass classified this cycle as
+			// alive-but-detached (monitor-lost) or as having a marker pending
+			// retry. reapOrphans does NOT probe tmux itself — the reconcile pass
+			// is the single owner of liveness (Codex guidance #1). When neither
+			// set contains the session, it is a genuine orphan (tmux gone / no
+			// usable marker) and the existing force-fail behavior applies.
+			if (this.notifiedMonitorLost.has(session.execution_id)) continue;
+			if (this.markerRetryPending.has(session.execution_id)) continue;
 			if (this.notifiedOrphans.has(session.execution_id)) continue;
 
 			let minutesSince = this.orphanThresholdMinutes;
@@ -283,6 +479,26 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			project_name: session.project_name,
 			status: session.status,
 			notification_context: `Session ${session.status} ${hours}h ago but tmux still alive. Please check if it can be closed.`,
+			session_role: session.session_role ?? "main",
+		};
+		await this.deliverHook(session, hookPayload);
+	}
+
+	async onSessionMonitoringLost(
+		session: Session,
+		minutes: number,
+	): Promise<void> {
+		const label = session.issue_identifier ?? session.issue_id;
+		const hookPayload: HookPayload = {
+			event_type: "session_monitoring_lost",
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			issue_identifier: session.issue_identifier,
+			issue_title: session.issue_title,
+			project_name: session.project_name,
+			status: session.status,
+			minutes_since_activity: minutes,
+			notification_context: `Runner ${label} lost Bridge monitoring (no heartbeat for ${minutes}m, likely after a Flywheel restart) but its tmux session is still alive and working. Please keep an eye on it and drive it directly via tmux if needed.`,
 			session_role: session.session_role ?? "main",
 		};
 		await this.deliverHook(session, hookPayload);
