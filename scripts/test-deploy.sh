@@ -733,20 +733,31 @@ FLYWHEEL_PROJECTS=$(jq -n \
   --arg agentId "$AGENT_ID" \
   --arg chatChannel "$CHAT_CHANNEL_ID" \
   --arg botTokenEnv "$BOT_TOKEN_ENV" \
+  --arg slotRole "$SLOT_ROLE" \
   '
-  [{
-    projectName: $projectName,
-    projectRoot: $projectRoot,
-    projectRepo: $projectRepo,
-    leads: [
-      {
-        agentId: $agentId,
-        chatChannel: $chatChannel,
-        botTokenEnv: $botTokenEnv,
-        match: { labels: ["*"] }
-      }
-    ]
-  }]
+  # FLY-173: for the cos test slot the chatChannel IS the test project core
+  # channel (mirrors Simba in prod where cos-lead.chatChannel == generalChannel).
+  # Setting generalChannel here makes the Bridge route classify cos-slot core
+  # posts as core-channel (allow) and lets claude-lead.sh derive a non-empty
+  # DISCORD_CORE_CHANNEL for the test pane — needed for AC12 (Bridge-down core
+  # fail-open). Department slots leave generalChannel unset (no exemption,
+  # cross-talk guard intact).
+  [
+    ({
+      projectName: $projectName,
+      projectRoot: $projectRoot,
+      projectRepo: $projectRepo,
+      leads: [
+        {
+          agentId: $agentId,
+          chatChannel: $chatChannel,
+          botTokenEnv: $botTokenEnv,
+          match: { labels: ["*"] }
+        }
+      ]
+    })
+    | if $slotRole == "cos" then . + { generalChannel: $chatChannel } else . end
+  ]
   ')
 
 # FLY-153 R2 #3: persist FLYWHEEL_PROJECTS to disk so the smoke test (and any
