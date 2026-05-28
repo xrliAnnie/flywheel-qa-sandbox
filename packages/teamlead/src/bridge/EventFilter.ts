@@ -127,6 +127,16 @@ const FILTER_RULES: FilterRule[] = [
 		},
 	},
 	{
+		// FLY-172: Bridge lost monitoring of a live Runner (restart). Advisory —
+		// reliably delivered (guardrail) but not an Annie-facing emergency, so
+		// priority normal (Codex review decision #4).
+		match: (et) => et === "session_monitoring_lost",
+		result: {
+			priority: "normal",
+			reason: "monitoring lost — Runner alive, Lead should watch via tmux",
+		},
+	},
+	{
 		match: (et) => et === "cipher_principle_proposed",
 		result: {
 			priority: "normal",

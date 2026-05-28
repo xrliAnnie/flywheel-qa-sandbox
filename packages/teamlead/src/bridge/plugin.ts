@@ -28,6 +28,10 @@ import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
+import {
+	buildLoopbackBaseUrl,
+	reconcileCompleteFailedMarkers,
+} from "./complete-marker-reconciler.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
@@ -1745,6 +1749,7 @@ export async function startBridge(
 					onSessionStuck: async () => {},
 					onSessionOrphaned: async () => {},
 					onSessionStale: async () => {},
+					onSessionMonitoringLost: async () => {},
 				};
 
 	// GEO-270: Stale session patrol config (local variables, not in BridgeConfig)
@@ -1760,6 +1765,11 @@ export async function startBridge(
 		return Number.isFinite(v) && v >= 1 ? v : 6 * 3_600_000;
 	})();
 
+	// FLY-172: loopback base URL for marker replay — must match the actual
+	// listener (config.host may be 127.0.0.1 / localhost / ::1), so derive it
+	// from config.host + the real listening port (IPv6 bracketed).
+	const loopbackBaseUrl = buildLoopbackBaseUrl(config.host, port);
+
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -1769,7 +1779,31 @@ export async function startBridge(
 		transitionOpts,
 		staleThresholdHours,
 		staleCheckIntervalMs,
+		{
+			bridgeBaseUrl: loopbackBaseUrl,
+			ingestToken: config.ingestToken,
+		},
 	);
+
+	// FLY-172: boot drain — reconcile complete-failed markers left by Runners
+	// that finished during a restart window (their `flywheel-comm complete` POST
+	// hit a down Bridge). Event-driven (boot), no new timer. Best-effort: a
+	// failure here must not block Bridge startup.
+	try {
+		await reconcileCompleteFailedMarkers({
+			store,
+			bridgeBaseUrl: loopbackBaseUrl,
+			ingestToken: config.ingestToken,
+			transitionOpts,
+			getTmuxTarget: getTmuxTargetFromCommDb,
+			isTmuxWindowAlive,
+		});
+	} catch (err) {
+		console.error(
+			`[Bridge] FLY-172 boot marker drain failed (non-fatal): ${(err as Error).message}`,
+		);
+	}
+
 	heartbeatService.start();
 
 	// FLY-163: CleanupService removed (forum thread cleanup gone).
