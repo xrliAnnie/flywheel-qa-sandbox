@@ -784,6 +784,7 @@ env -u DISCORD_BOT_TOKEN \
   AGENT_SOURCE="${SLOT_DIR}/test-identity.md" \
   FLYWHEEL_LEAD_ROLE="${SLOT_ROLE}" \
   TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
+  FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
   bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
     "${AGENT_ID}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" \
     > "${LEAD_LOG}" 2>&1 &
