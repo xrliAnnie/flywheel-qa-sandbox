@@ -907,7 +907,14 @@ export function createQueryRouter(
 		// Classify the target chat.
 		let classification: ChatClassification;
 		let boundIssueIdentifier: string | null = null;
-		if (chatId === leadConfig.chatChannel) {
+		// FLY-173: the project core channel (generalChannel) is exempt and is
+		// checked FIRST — for the cos-lead (Simba) the core channel IS its
+		// chatChannel, so this must win over the channel-top-level branch below,
+		// otherwise core triage/overview messages with issue tokens get denied.
+		// When generalChannel is unset, behavior is unchanged (backward compatible).
+		if (project.generalChannel && chatId === project.generalChannel) {
+			classification = "core-channel";
+		} else if (chatId === leadConfig.chatChannel) {
 			classification = "channel-top-level";
 		} else {
 			const row = store.getChatThreadByThreadId(chatId);

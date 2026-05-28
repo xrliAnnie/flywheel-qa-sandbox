@@ -146,6 +146,26 @@ describe("evaluateReplyGuard", () => {
 			}),
 		).toEqual({ allow: true });
 	});
+
+	// FLY-173: core-channel classification is always allowed (triage overview /
+	// cross-issue coordination legitimately lists issue numbers in core).
+	it("ALLOWS 'core-channel' with >=1 issue token (FLY-173)", () => {
+		expect(
+			evaluateReplyGuard({
+				classification: "core-channel",
+				issueTokens: ["FLY-159", "GEO-200"],
+			}),
+		).toEqual({ allow: true });
+	});
+
+	it("ALLOWS 'core-channel' with zero issue tokens", () => {
+		expect(
+			evaluateReplyGuard({
+				classification: "core-channel",
+				issueTokens: [],
+			}),
+		).toEqual({ allow: true });
+	});
 });
 
 // ──────────────────────────────────────────────────────────────────────
@@ -349,5 +369,139 @@ describe("POST /api/discord/reply-guard (route)", () => {
 		});
 		expect(res.body.allow).toBe(true);
 		expect(res.body.reason).toBe("guard_bypass");
+	});
+});
+
+// ──────────────────────────────────────────────────────────────────────
+// 3. FLY-173 — core-channel exemption (generalChannel)
+// ──────────────────────────────────────────────────────────────────────
+
+describe("POST /api/discord/reply-guard — FLY-173 core exemption", () => {
+	let store: StateStore;
+	let server: Server;
+
+	// Models the production roster: cos-lead (Simba)'s chatChannel IS the
+	// project core channel (generalChannel == ch-core), while a department lead
+	// (Peter) has a distinct private chatChannel.
+	const CORE_PROJECT: ProjectEntry = {
+		projectName: "CoreProj",
+		projectRoot: "/tmp/core",
+		generalChannel: "ch-core",
+		leads: [
+			{
+				agentId: "cos-lead",
+				chatChannel: "ch-core", // == generalChannel (the Simba collapse)
+				match: { labels: ["PM"] },
+				botToken: "tok-cos",
+				canSpawnRunners: false,
+			},
+			{
+				agentId: "product-lead",
+				chatChannel: "ch-peter", // distinct department channel
+				match: { labels: ["Product"] },
+				botToken: "tok-peter",
+			},
+		],
+	} as ProjectEntry;
+
+	// Same roster but generalChannel omitted — proves backward compatibility
+	// (no exemption; cos-lead's core posts still get the old behavior).
+	const NO_GENERAL_PROJECT: ProjectEntry = {
+		projectName: "NoGen",
+		projectRoot: "/tmp/nogen",
+		leads: [
+			{
+				agentId: "cos-lead",
+				chatChannel: "ch-core",
+				match: { labels: ["PM"] },
+				botToken: "tok-cos",
+				canSpawnRunners: false,
+			},
+		],
+	} as ProjectEntry;
+
+	function serve(project: ProjectEntry, opts: QueryRouterOptions) {
+		const app = express();
+		app.use(express.json());
+		app.use("/api", createQueryRouter(store, [project], opts));
+		server = createServer(app);
+		server.listen(0);
+		return server;
+	}
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	afterEach(() => {
+		if (server) server.close();
+	});
+
+	// AC2: Simba posting a triage list with issue tokens in core (which == his
+	// chatChannel) must be ALLOWED — core exemption wins over channel-top-level.
+	it("ALLOWS cos-lead issue tokens in core channel (== chatChannel)", async () => {
+		serve(CORE_PROJECT, {
+			replyGuardEnabled: true,
+			issuePrefixes: ["FLY", "GEO"],
+		});
+		const res = await request(server, "POST", "/api/discord/reply-guard", {
+			projectName: "CoreProj",
+			leadId: "cos-lead",
+			chatId: "ch-core",
+			text: "Triage: GEO-374 (high), FLY-159, GEO-378 — these can start in parallel",
+		});
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ allow: true });
+	});
+
+	// AC3 regression: department lead's PRIVATE chatChannel (!= generalChannel)
+	// still DENIES issue tokens at top level (cross-talk guard intact).
+	it("STILL DENIES issue tokens at a department chatChannel top level", async () => {
+		serve(CORE_PROJECT, {
+			replyGuardEnabled: true,
+			issuePrefixes: ["FLY", "GEO"],
+		});
+		const res = await request(server, "POST", "/api/discord/reply-guard", {
+			projectName: "CoreProj",
+			leadId: "product-lead",
+			chatId: "ch-peter", // department private channel, not core
+			text: "GEO-372 status: in review",
+		});
+		expect(res.status).toBe(200);
+		expect(res.body.allow).toBe(false);
+		expect(res.body.reason).toBe("issue_at_top_level");
+	});
+
+	// A department lead posting into the core channel is also exempt (core wins
+	// regardless of which lead is posting).
+	it("ALLOWS department lead issue tokens in core channel", async () => {
+		serve(CORE_PROJECT, {
+			replyGuardEnabled: true,
+			issuePrefixes: ["FLY", "GEO"],
+		});
+		const res = await request(server, "POST", "/api/discord/reply-guard", {
+			projectName: "CoreProj",
+			leadId: "product-lead",
+			chatId: "ch-core",
+			text: "FLY-159 and GEO-200 both ready",
+		});
+		expect(res.body).toEqual({ allow: true });
+	});
+
+	// AC4 backward compat: generalChannel unset → no exemption → cos-lead's core
+	// post (core == chatChannel) falls back to channel-top-level DENY (old behavior).
+	it("backward-compatible: no generalChannel → channel-top-level DENY preserved", async () => {
+		serve(NO_GENERAL_PROJECT, {
+			replyGuardEnabled: true,
+			issuePrefixes: ["FLY", "GEO"],
+		});
+		const res = await request(server, "POST", "/api/discord/reply-guard", {
+			projectName: "NoGen",
+			leadId: "cos-lead",
+			chatId: "ch-core",
+			text: "GEO-374 high priority",
+		});
+		expect(res.body.allow).toBe(false);
+		expect(res.body.reason).toBe("issue_at_top_level");
 	});
 });

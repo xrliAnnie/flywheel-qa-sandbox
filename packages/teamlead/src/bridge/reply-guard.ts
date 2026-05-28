@@ -21,7 +21,16 @@
  * See plan §12 (doc/engineer/plan/inprogress/v1.28.0-FLY-162-lead-thread-routing.md).
  */
 
-export type ChatClassification = "channel-top-level" | "issue-thread" | "other";
+export type ChatClassification =
+	| "channel-top-level"
+	| "issue-thread"
+	| "other"
+	// FLY-173: the project core channel (ProjectEntry.generalChannel). Coordination
+	// / triage-overview / cross-issue messages legitimately reference issue tokens
+	// here, so it is ALWAYS allowed — even when the core channel coincides with a
+	// Lead's chatChannel (the cos-lead / Simba case, where the two IDs are equal).
+	// The route classifies core BEFORE channel-top-level so this exemption wins.
+	| "core-channel";
 
 export interface ReplyGuardDecision {
 	allow: boolean;
@@ -81,6 +90,14 @@ export function evaluateReplyGuard(params: {
 	issueTokens: string[];
 }): ReplyGuardDecision {
 	const { classification, boundIssueIdentifier, issueTokens } = params;
+
+	// FLY-173: the project core channel is exempt — coordination / triage-overview
+	// / cross-issue messages here legitimately list issue numbers. Always allow,
+	// regardless of issue tokens. (Classified by the route via generalChannel,
+	// ahead of channel-top-level, so the cos-lead/core overlap resolves here.)
+	if (classification === "core-channel") {
+		return { allow: true };
+	}
 
 	// Hard rule: issue token(s) at the Lead's chatChannel top level -> deny.
 	if (classification === "channel-top-level" && issueTokens.length >= 1) {

@@ -261,6 +261,24 @@ if [ -z "$PROJECT_NAME" ]; then
 fi
 export PROJECT_NAME
 
+# FLY-173: resolve THIS project's core channel (generalChannel) for the Discord
+# plugin's Bridge-unavailable core fail-open fallback. STRICT per-pane derivation
+# (Codex design-review R1 #3): read it from the SAME project config the Bridge
+# uses (loadProjects → honors FLYWHEEL_PROJECTS / projects.json identically),
+# NEVER the inherited global $DISCORD_CORE_CHANNEL — that global may diverge from
+# the project's generalChannel and would otherwise let the plugin allow a channel
+# the Bridge does not classify as core. When the project has no generalChannel,
+# LEAD_CORE_CHANNEL stays empty → the plugin applies no core exemption (and the
+# Bridge, also lacking generalChannel, denies → consistent, no divergence).
+LEAD_CORE_CHANNEL=$(node -e "
+  import('file://${SCRIPT_DIR}/../dist/ProjectConfig.js').then(({ loadProjects }) => {
+    try {
+      const m = loadProjects().find(e => e.projectName === process.argv[1]);
+      if (m && m.generalChannel) process.stdout.write(m.generalChannel);
+    } catch {}
+  }).catch(() => {});
+" "$PROJECT_NAME" 2>/dev/null)
+
 # GEO-246: Include PROJECT_NAME in session file to avoid cross-project collisions.
 # e.g., ~/.flywheel/claude-sessions/geoforge3d-product-lead.session-id
 SESSION_ID_FILE="${SESSION_DIR}/${PROJECT_NAME}-${LEAD_ID}.session-id"
@@ -714,6 +732,13 @@ _launch_claude() {
     # explicitly — otherwise a custom TEAMLEAD_ISSUE_PREFIXES silently degrades
     # to FLY,GEO during Bridge-unavailable fail-closed checks (Codex code-review MED).
     -e "TEAMLEAD_ISSUE_PREFIXES=${TEAMLEAD_ISSUE_PREFIXES:-FLY,GEO}"
+    # FLY-173: project core channel for the Discord plugin's Bridge-unavailable
+    # core fail-open. Set UNCONDITIONALLY (resolved value or empty) so it OVERRIDES
+    # any inherited global DISCORD_CORE_CHANNEL in the pane — strict per-pane
+    # derivation (Codex R1 #3). Empty when the project has no generalChannel →
+    # plugin applies no core exemption. tmux `new-window -e` does not inherit env,
+    # so this explicit pass is required (same barrier as TEAMLEAD_ISSUE_PREFIXES).
+    -e "DISCORD_CORE_CHANNEL=${LEAD_CORE_CHANNEL:-}"
     -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
     -e "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
     -e "HOME=${HOME}"
