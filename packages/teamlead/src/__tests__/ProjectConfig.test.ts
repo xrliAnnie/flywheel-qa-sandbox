@@ -189,6 +189,61 @@ describe("loadProjects validation", () => {
 		process.env.FLYWHEEL_PROJECTS = "not valid json{{{";
 		expect(() => loadProjects()).toThrow();
 	});
+
+	// FLY-173: generalChannel (project core channel) validation.
+	const baseLeads = [
+		{
+			agentId: "cos-lead",
+			chatChannel: "ch-core",
+			match: { labels: ["PM"] },
+			canSpawnRunners: false,
+		},
+	];
+
+	it("accepts a valid generalChannel (non-empty string)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				generalChannel: "ch-core",
+				leads: baseLeads,
+			},
+		]);
+		const projects = loadProjects();
+		expect(projects[0]!.generalChannel).toBe("ch-core");
+	});
+
+	it("accepts a project with generalChannel omitted (optional)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{ projectName: "test", projectRoot: "/tmp", leads: baseLeads },
+		]);
+		const projects = loadProjects();
+		expect(projects[0]!.generalChannel).toBeUndefined();
+	});
+
+	it("throws when generalChannel is an empty string", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				generalChannel: "",
+				leads: baseLeads,
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/generalChannel/);
+	});
+
+	it("throws when generalChannel is not a string", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				generalChannel: 12345,
+				leads: baseLeads,
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/generalChannel/);
+	});
 });
 
 describe("FLY-163: deprecated field handling", () => {
