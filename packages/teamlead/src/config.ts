@@ -1,5 +1,6 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parseFounderConsentConfig } from "./bridge/founder-consent/config.js";
 import type { BridgeConfig } from "./bridge/types.js";
 
 export type { BridgeConfig };
@@ -147,5 +148,9 @@ export function loadConfig(): BridgeConfig {
 		// prefixes. Validation (must have apiToken) happens above.
 		replyGuardEnabled,
 		issuePrefixes,
+		// FLY-175 Track 2: founder-consent hard gate. Parsed from
+		// FLYWHEEL_FOUNDER_CONSENT_* env. decisionMode defaults to "off" so a
+		// boot without explicit opt-in is byte-compatible with pre-Track-2.
+		founderConsent: parseFounderConsentConfig(process.env),
 	};
 }

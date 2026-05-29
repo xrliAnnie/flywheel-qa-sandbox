@@ -105,15 +105,16 @@ describe("commands round-trip", () => {
 		expect(pendingQs[0]!.from_agent).toBe("runner");
 	});
 
-	it("should throw when responding to non-existent question", () => {
-		expect(() =>
+	it("should throw when responding to non-existent question", async () => {
+		// FLY-175: respond() is now async (gated checkpoints route via Bridge).
+		await expect(
 			respond({
 				questionId: "non-existent",
 				fromAgent: "product-lead",
 				answer: "Answer",
 				dbPath,
 			}),
-		).toThrow("not found");
+		).rejects.toThrow("not found");
 	});
 });
 

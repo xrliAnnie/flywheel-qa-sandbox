@@ -57,8 +57,18 @@ Global options:
   --project <name>  Project name (resolves to ~/.flywheel/comm/<name>/comm.db)
   --json            Output as JSON
 
+respond options:
+  --bridge-url <url>  Route an approve_to_ship gate response through the Bridge
+                      founder-consent wrapper (FLY-175). Required for the
+                      approve_to_ship checkpoint unless BRIDGE_URL env is set;
+                      omitting it for that gate is fail-closed (refuses to write).
+
 Environment:
-  FLYWHEEL_COMM_DB  DB path (overridden by --db)`);
+  FLYWHEEL_COMM_DB           DB path (overridden by --db)
+  BRIDGE_URL                 Default Bridge URL for the approve_to_ship gate route
+  TEAMLEAD_API_TOKEN         Bearer token for the Bridge gate-response endpoint
+  FLYWHEEL_COMM_BYPASS_BRIDGE Set =1 for emergency direct write of an
+                             approve_to_ship gate (loud audit row + stderr warning)`);
 }
 
 async function main(): Promise<void> {
@@ -87,7 +97,7 @@ async function main(): Promise<void> {
 			runPending(commandArgs);
 			break;
 		case "respond":
-			runRespond(commandArgs);
+			await runRespond(commandArgs);
 			break;
 		case "send":
 			await runSend(commandArgs);
@@ -233,13 +243,16 @@ function runPending(args: string[]): void {
 	}
 }
 
-function runRespond(args: string[]): void {
+async function runRespond(args: string[]): Promise<void> {
 	const { values, positionals } = parseArgs({
 		args,
 		options: {
 			lead: { type: "string" },
 			db: { type: "string" },
 			project: { type: "string" },
+			// FLY-175: route approve_to_ship gate responses through the Bridge
+			// founder-consent wrapper. Falls back to BRIDGE_URL env when unset.
+			"bridge-url": { type: "string" },
 			json: { type: "boolean", default: false },
 		},
 		allowPositionals: true,
@@ -260,7 +273,14 @@ function runRespond(args: string[]): void {
 	}
 
 	const dbPath = resolveDbPath({ db: values.db, project: values.project });
-	respond({ questionId, fromAgent: values.lead, answer, dbPath });
+	await respond({
+		questionId,
+		fromAgent: values.lead,
+		answer,
+		dbPath,
+		bridgeUrl: values["bridge-url"],
+		projectName: values.project,
+	});
 
 	if (values.json) {
 		console.log(JSON.stringify({ status: "ok", question_id: questionId }));

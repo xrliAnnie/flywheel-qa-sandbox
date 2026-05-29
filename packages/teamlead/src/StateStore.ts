@@ -67,6 +67,8 @@ export interface SessionUpsert {
 	retry_successor?: string;
 	issue_labels?: string;
 	pr_number?: number;
+	/** FLY-175: PR head SHA when known — cache-key salt for approve consent. */
+	pr_head_sha?: string;
 	session_stage?: string;
 	stage_updated_at?: string;
 	/** FLY-59: Session role for multi-session-per-issue */
@@ -113,6 +115,8 @@ export interface Session {
 	retry_successor?: string;
 	issue_labels?: string;
 	pr_number?: number;
+	/** FLY-175: PR head SHA when known — cache-key salt for approve consent. */
+	pr_head_sha?: string;
 	session_stage?: string;
 	stage_updated_at?: string;
 	/** FLY-59: Session role for multi-session-per-issue */
@@ -312,6 +316,13 @@ export class StateStore {
 			this.db.run(
 				"ALTER TABLE sessions ADD COLUMN session_role TEXT DEFAULT 'main'",
 			);
+		} catch {
+			/* exists */
+		}
+
+		// FLY-175: PR head SHA for founder-consent approve cache-key salt.
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN pr_head_sha TEXT");
 		} catch {
 			/* exists */
 		}
@@ -1187,6 +1198,7 @@ export class StateStore {
 			retry_successor: (row.retry_successor as string) ?? undefined,
 			issue_labels: (row.issue_labels as string) ?? undefined,
 			pr_number: (row.pr_number as number) ?? undefined,
+			pr_head_sha: (row.pr_head_sha as string) ?? undefined,
 			session_stage: (row.session_stage as string) ?? undefined,
 			stage_updated_at: (row.stage_updated_at as string) ?? undefined,
 			session_role: (row.session_role as string) ?? undefined,
@@ -1195,6 +1207,46 @@ export class StateStore {
 			agent_match_method: (row.agent_match_method as string) ?? undefined,
 			plan_path: (row.plan_path as string) ?? undefined,
 			codex_skip: row.codex_skip ? !!(row.codex_skip as number) : undefined,
+		};
+	}
+
+	/**
+	 * FLY-175: minimal session shape the founder-consent evaluator needs.
+	 * Avoids the middleware reaching into the full Session row + parses the
+	 * label snapshot into a string array. Returns undefined if no session.
+	 */
+	getSessionForConsentLookup(executionId: string):
+		| {
+				issue_id: string;
+				issue_identifier?: string;
+				project_name: string;
+				session_role?: string;
+				session_status: string;
+				issue_labels: string[];
+				pr_number?: number;
+				pr_head_sha?: string;
+		  }
+		| undefined {
+		const s = this.getSession(executionId);
+		if (!s) return undefined;
+		let labels: string[] = [];
+		if (s.issue_labels) {
+			try {
+				const parsed = JSON.parse(s.issue_labels);
+				if (Array.isArray(parsed)) labels = parsed.map((x) => String(x));
+			} catch {
+				/* malformed snapshot — treat as no labels */
+			}
+		}
+		return {
+			issue_id: s.issue_id,
+			issue_identifier: s.issue_identifier,
+			project_name: s.project_name,
+			session_role: s.session_role,
+			session_status: s.status,
+			issue_labels: labels,
+			pr_number: s.pr_number,
+			pr_head_sha: s.pr_head_sha,
 		};
 	}
 

@@ -1,3 +1,5 @@
+import type { FounderConsentConfig } from "./founder-consent/config.js";
+
 export function sqliteDatetime(): string {
 	return new Date()
 		.toISOString()
@@ -48,6 +50,13 @@ export interface BridgeConfig {
 	 * counts as issue tokens. Normalized to uppercase at load time.
 	 */
 	issuePrefixes: string[];
+	/**
+	 * FLY-175 Track 2: founder-consent hard gate. Parsed from
+	 * `FLYWHEEL_FOUNDER_CONSENT_*` env. Optional — when absent or
+	 * `decisionMode === "off"` the evaluator is never constructed and Bridge
+	 * behavior is byte-identical to pre-Track-2.
+	 */
+	founderConsent?: FounderConsentConfig;
 }
 
 // ──────────────────────────────────────────────────────────────────────

@@ -103,6 +103,15 @@ export class CommDBLeadRuntime implements LeadRuntime {
 				e.session_role && e.session_role !== "main"
 					? `[${e.session_role.toUpperCase()}] `
 					: "";
+			// FLY-175 Track 2: approve_to_ship MUST route through the Bridge
+			// founder-consent wrapper. Append --bridge-url $BRIDGE_URL to the
+			// rendered reply command for that checkpoint ONLY; other checkpoints
+			// keep the legacy direct command. The --db hint is always present
+			// (the CLI still opens CommDB locally to read the checkpoint).
+			const replyCmd =
+				e.checkpoint === "approve_to_ship"
+					? `Reply via: flywheel-comm respond --db ${e.comm_db_path} --bridge-url $BRIDGE_URL --lead <your_id> ${e.question_id} "your reply"`
+					: `Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`;
 			const lines = [
 				`[Event #${env.seq}] ${roleLabel}gate_question`,
 				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
@@ -110,7 +119,8 @@ export class CommDBLeadRuntime implements LeadRuntime {
 				"---",
 				e.summary ?? "(no content)",
 				"---",
-				`Reply to approve or provide feedback. Question ID: ${e.question_id}`,
+				replyCmd,
+				`Question ID: ${e.question_id}`,
 				`CommDB: ${e.comm_db_path}`,
 			];
 			// FLY-91: Include Chat-Thread hint for gate questions

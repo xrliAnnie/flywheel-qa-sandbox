@@ -229,6 +229,13 @@ export class MailboxLeadRuntime implements LeadRuntime {
 				e.session_role && e.session_role !== "main"
 					? `[${e.session_role.toUpperCase()}] `
 					: "";
+			// FLY-175 Track 2: approve_to_ship routes through the Bridge
+			// founder-consent wrapper (append --bridge-url $BRIDGE_URL); other
+			// checkpoints keep the legacy command. --db hint always present.
+			const replyCmd =
+				e.checkpoint === "approve_to_ship"
+					? `Reply via: flywheel-comm respond --db ${e.comm_db_path} --bridge-url $BRIDGE_URL --lead <your_id> ${e.question_id} "your reply"`
+					: `Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`;
 			const lines = [
 				`[Event #${env.seq}] ${roleLabel}gate_question`,
 				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
@@ -236,7 +243,8 @@ export class MailboxLeadRuntime implements LeadRuntime {
 				"---",
 				e.summary ?? "(no content)",
 				"---",
-				`Reply to approve or provide feedback. Question ID: ${e.question_id}`,
+				replyCmd,
+				`Question ID: ${e.question_id}`,
 				`CommDB: ${e.comm_db_path}`,
 			];
 			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);

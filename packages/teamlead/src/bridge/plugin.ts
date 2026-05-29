@@ -36,6 +36,7 @@ import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
+import { buildFounderConsentWiring } from "./founder-consent/wiring.js";
 import { GatePoller } from "./gate-poller.js";
 import {
 	createBlockedMarkerReader,
@@ -436,6 +437,28 @@ export function createBridgeApp(
 
 	app.use(express.json({ limit: "512kb" }));
 
+	// FLY-175 Track 2: founder-consent hard gate. Returns null when
+	// decisionMode=off (default) — `fcMw()` then yields a no-op handler so the
+	// reserved-endpoint stacks are byte-compatible with pre-Track-2.
+	const fcWiring = buildFounderConsentWiring(store, projects, config);
+	const fcNoop: express.RequestHandler = (_q, _s, next) => next();
+	const fcMw = (
+		mount: "action_router" | "close_tmux" | "close_runner",
+	): express.RequestHandler =>
+		fcWiring ? fcWiring.middlewareFor(mount) : fcNoop;
+	if (fcWiring) {
+		const mode = config.founderConsent?.decisionMode ?? "off";
+		if (mode === "off") {
+			console.log(
+				"[founder-consent] Track 2 present, decisionMode=off — Surface A no-op, gate route pass-through (no enforcement, no audit)",
+			);
+		} else {
+			console.log(
+				`[founder-consent] Track 2 ENABLED — decisionMode=${mode} (audit.db=${config.founderConsent?.auditDbPath})`,
+			);
+		}
+	}
+
 	// Health — no auth
 	app.get("/health", (_req, res) => {
 		const active = store.getActiveSessions();
@@ -500,6 +523,7 @@ export function createBridgeApp(
 	// Dashboard actions — no auth (loopback only, same handlers as /api/actions)
 	app.use(
 		"/actions",
+		fcMw("action_router"),
 		createActionRouter(
 			store,
 			projects,
@@ -556,6 +580,7 @@ export function createBridgeApp(
 	app.use(
 		"/api/actions",
 		tokenAuthMiddleware(config.apiToken),
+		fcMw("action_router"),
 		createActionRouter(
 			store,
 			projects,
@@ -570,10 +595,33 @@ export function createBridgeApp(
 		),
 	);
 
+	// FLY-175 Track 2 Surface B + debug endpoint (auth-required). The gate
+	// router is mounted whenever Track 2 is compiled in — INCLUDING when
+	// decisionMode=off, where it pass-through-writes the response. This is
+	// required because the patched `flywheel-comm respond` CLI always routes
+	// approve_to_ship through this endpoint; a 404 here would block every ship
+	// during the default-off rollout (Codex R1 HIGH). The audit debug endpoint
+	// only exists when the evaluator/audit store are constructed (mode != off).
+	if (fcWiring) {
+		app.use(
+			"/api/founder-consent/runner-gate-response",
+			tokenAuthMiddleware(config.apiToken),
+			fcWiring.gateRouter,
+		);
+		if (fcWiring.debugRouter) {
+			app.use(
+				"/api/founder-consent/audit",
+				tokenAuthMiddleware(config.apiToken),
+				fcWiring.debugRouter,
+			);
+		}
+	}
+
 	// GEO-270: Close stale tmux session (resource cleanup, no status change)
 	app.post(
 		"/api/sessions/:executionId/close-tmux",
 		tokenAuthMiddleware(config.apiToken),
+		fcMw("close_tmux"),
 		async (req, res) => {
 			const executionId = req.params.executionId as string;
 			const { leadId } = (req.body ?? {}) as { leadId?: string };
@@ -646,6 +694,7 @@ export function createBridgeApp(
 	app.post(
 		"/api/sessions/:executionId/close-runner",
 		tokenAuthMiddleware(config.apiToken),
+		fcMw("close_runner"),
 		async (req, res) => {
 			const executionId = req.params.executionId as string;
 			const { leadId, reason, executorType } = (req.body ?? {}) as {
