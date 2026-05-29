@@ -29,6 +29,15 @@ export type { SessionsArgs } from "./commands/sessions.js";
 export { sessions } from "./commands/sessions.js";
 export { CommDB } from "./db.js";
 export type {
+	AuditDecision,
+	AuditDecisionSource,
+	FounderConsentAuditRow,
+} from "./founder-consent-audit.js";
+export {
+	FOUNDER_CONSENT_AUDIT_SCHEMA,
+	FounderConsentAuditStore,
+} from "./founder-consent-audit.js";
+export type {
 	ArtifactFile,
 	SelectionResult,
 } from "./select-vision-artifacts.js";

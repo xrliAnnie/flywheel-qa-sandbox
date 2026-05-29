@@ -253,6 +253,17 @@ export class CommDB {
 			.get(questionId) as Message | undefined;
 	}
 
+	/**
+	 * FLY-175: Look up any message by its id. Used by the founder-consent gate
+	 * (Bridge wrapper + `flywheel-comm respond`) to read a question's
+	 * `checkpoint` field without trusting a caller-supplied value.
+	 */
+	getMessageById(id: string): Message | undefined {
+		return this.db.prepare("SELECT * FROM messages WHERE id = ?").get(id) as
+			| Message
+			| undefined;
+	}
+
 	getPendingQuestions(leadId: string): Message[] {
 		return this.db
 			.prepare(

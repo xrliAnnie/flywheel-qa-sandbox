@@ -25,6 +25,25 @@ When you (the Lead) need to message a Runner agent, choose the path by purpose:
   ```
 - The Bridge bootstrap message includes the exact command for each pending
   gate question — copy-paste it.
+
+### FLY-175 Track 2 — `approve_to_ship` is founder-gated
+
+The `approve_to_ship` checkpoint (the merge-to-`main` gate) is a **reserved,
+founder-only action**. Its reply command in your inbox envelope now carries an
+extra `--bridge-url $BRIDGE_URL` flag:
+```bash
+flywheel-comm respond --db <DB-path> --bridge-url $BRIDGE_URL \
+  --lead <your-id> <question-id> "<your-reply>"
+```
+- **Why**: the CLI routes the response through the Bridge founder-consent
+  evaluator, which verifies the founder authorized this ship in the issue's
+  chat thread before the CommDB response is written.
+- **Fail-closed**: if you omit `--bridge-url` (and `BRIDGE_URL` is unset) for an
+  `approve_to_ship` gate, the CLI **refuses** to write and exits non-zero. You
+  cannot resolve this gate directly. Always copy-paste the exact command from
+  the envelope — it already includes the flag.
+- Other checkpoints (`clarify_question`, project-specific gates) are unchanged
+  and use the plain command without `--bridge-url`.
 - Why this still uses CommDB: the Runner's gate-wait loop polls CommDB
   directly via `getResponse(questionId)`. It does NOT go through the
   `inbox-check.sh` hook, so it is unaffected by the FLY-142 wake bug. PR 1.4
