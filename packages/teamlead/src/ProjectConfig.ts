@@ -301,6 +301,21 @@ export function loadProjects(): ProjectEntry[] {
 			}
 		}
 
+		// FLY-173: validate optional generalChannel (project core channel). It
+		// is used as a routing authority by the reply-guard (core-channel
+		// exemption) and by LeadAlertNotifier (alert→core fallback), so a
+		// malformed value must fail loudly at the config boundary, not silently
+		// disable the exemption.
+		if (
+			entry?.generalChannel !== undefined &&
+			(typeof entry.generalChannel !== "string" ||
+				entry.generalChannel.length === 0)
+		) {
+			throw new Error(
+				`Project "${entry.projectName}" generalChannel: if provided, must be a non-empty string, got ${JSON.stringify(entry.generalChannel)}`,
+			);
+		}
+
 		// Validate optional memoryAllowedUsers (GEO-204)
 		const memoryAllowedUsers = entry?.memoryAllowedUsers;
 		if (memoryAllowedUsers !== undefined) {
