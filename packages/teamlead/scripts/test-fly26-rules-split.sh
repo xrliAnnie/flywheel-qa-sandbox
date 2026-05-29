@@ -545,6 +545,15 @@ simulate_append_logic() {
     fi
   fi
 
+  # FLY-175: founder-only authority (universal — both cos and dept roles)
+  # Loaded AFTER the role-specific base files so this rule appears late
+  # enough in the prompt to dominate adjacent content. Optional — missing
+  # base file is a no-op (pre-FLY-175 backward compat).
+  BASE_FOUNDER_AUTH_RULES="${base_dir}/founder-only-authority.md"
+  if [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r "$BASE_FOUNDER_AUTH_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_AUTH_RULES")
+  fi
+
   # FLY-26 PROJECT block (loaded AFTER base)
   if [ -d "$lead_rules_dir" ]; then
     COMMON_RULES="${lead_rules_dir}/common-rules.md"
@@ -673,8 +682,9 @@ if [ ! -d "$BASE_FILES_DIR" ]; then
   FAIL=$((FAIL+1)); echo "  FAIL: Test 6.7 setup: base dir not found at $BASE_FILES_DIR"
 else
   # Scan the rule files only (not README.md which legitimately documents
-  # examples of project-side concrete data).
-  RULE_FILES=("$BASE_FILES_DIR/department-lead-rules.md" "$BASE_FILES_DIR/cos-lead-rules.md")
+  # examples of project-side concrete data). FLY-175: include
+  # founder-only-authority.md so its generic voice is enforced as well.
+  RULE_FILES=("$BASE_FILES_DIR/department-lead-rules.md" "$BASE_FILES_DIR/cos-lead-rules.md" "$BASE_FILES_DIR/founder-only-authority.md")
   # Names that should never appear in base rule files (examples of project
   # concretes that belong in the project layer).
   FORBIDDEN_NAMES_RE='\b(Peter|Oliver|Simba|Annie)\b'
@@ -699,6 +709,136 @@ else
     FAIL=$((FAIL+1)); echo "  FAIL: Test 6.7: base rule files leak hardcoded Discord IDs. Run: grep -nE '$FORBIDDEN_IDS_RE' ${RULE_FILES[*]}"
   fi
 fi
+
+# Test 6.8 (FLY-175): founder-only-authority.md MUST load for BOTH cos and
+# dept roles. This rule is universal — any Lead with Bridge action
+# credentials could otherwise call /api/actions/approve or close-tmux.
+echo "--- Test 6.8: FLY-175 founder-only-authority loads for BOTH cos and dept roles ---"
+BASE_DIR_68="$TMPDIR/base-68"
+PROJECT_DIR_68="$TMPDIR/project-68"
+mkdir -p "$BASE_DIR_68" "$PROJECT_DIR_68"
+echo "# BASE dept rules" > "$BASE_DIR_68/department-lead-rules.md"
+echo "# BASE cos rules" > "$BASE_DIR_68/cos-lead-rules.md"
+echo "# BASE founder-only-authority" > "$BASE_DIR_68/founder-only-authority.md"
+echo "# Common" > "$PROJECT_DIR_68/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_68/department-lead-rules.md"
+# Dept Lead loads founder-only-authority
+ARGS_68_DEPT=$(simulate_append_logic "$BASE_DIR_68" "$PROJECT_DIR_68" "product-lead")
+assert_contains "$ARGS_68_DEPT" "$BASE_DIR_68/founder-only-authority.md" "Test 6.8: dept Lead loads founder-only-authority"
+# Cos-lead loads founder-only-authority
+ARGS_68_COS=$(simulate_append_logic "$BASE_DIR_68" "$PROJECT_DIR_68" "cos-lead")
+assert_contains "$ARGS_68_COS" "$BASE_DIR_68/founder-only-authority.md" "Test 6.8: cos-lead loads founder-only-authority"
+# Test slot (synthetic LEAD_ID, FLYWHEEL_LEAD_ROLE=lead) loads it
+FLYWHEEL_LEAD_ROLE=lead
+ARGS_68_SLOT_LEAD=$(simulate_append_logic "$BASE_DIR_68" "$PROJECT_DIR_68" "flywheel-test-2")
+unset FLYWHEEL_LEAD_ROLE
+assert_contains "$ARGS_68_SLOT_LEAD" "$BASE_DIR_68/founder-only-authority.md" "Test 6.8: synthetic dept test slot loads founder-only-authority"
+# Test slot (synthetic LEAD_ID, FLYWHEEL_LEAD_ROLE=cos) loads it
+FLYWHEEL_LEAD_ROLE=cos
+ARGS_68_SLOT_COS=$(simulate_append_logic "$BASE_DIR_68" "$PROJECT_DIR_68" "flywheel-test-1")
+unset FLYWHEEL_LEAD_ROLE
+assert_contains "$ARGS_68_SLOT_COS" "$BASE_DIR_68/founder-only-authority.md" "Test 6.8: synthetic cos test slot loads founder-only-authority"
+
+# Test 6.9 (FLY-175): backward compat — missing founder-only-authority.md
+# silently skipped (no failure, no warning). Preserves pre-FLY-175 behavior
+# on older flywheel checkouts.
+echo "--- Test 6.9: FLY-175 missing founder-only-authority.md silently skipped (backward compat) ---"
+BASE_DIR_69="$TMPDIR/base-69"
+PROJECT_DIR_69="$TMPDIR/project-69"
+mkdir -p "$BASE_DIR_69" "$PROJECT_DIR_69"
+echo "# BASE dept rules" > "$BASE_DIR_69/department-lead-rules.md"
+# Intentionally NOT creating founder-only-authority.md
+echo "# Common" > "$PROJECT_DIR_69/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_69/department-lead-rules.md"
+ARGS_69=$(simulate_append_logic "$BASE_DIR_69" "$PROJECT_DIR_69" "product-lead")
+assert_contains "$ARGS_69" "$BASE_DIR_69/department-lead-rules.md" "Test 6.9: dept rules still loaded when founder-auth missing"
+assert_not_contains "$ARGS_69" "founder-only-authority.md" "Test 6.9: founder-only-authority silently skipped when absent"
+
+# Test 6.10 (FLY-175): real base file ships with the repo and lives at
+# the expected path. This guards against accidental deletion / rename.
+echo "--- Test 6.10: FLY-175 real founder-only-authority.md ships in lead-rules-base ---"
+REAL_BASE_DIR_610="$(cd "$(dirname "$0")/../lead-rules-base" && pwd)"
+assert_file_exists "$REAL_BASE_DIR_610/founder-only-authority.md" "Test 6.10: founder-only-authority.md present in flywheel checkout"
+
+# Test 6.11 (FLY-175, Codex Round 1 LOW): load order — founder-only-authority
+# MUST appear AFTER role-specific base (department-lead-rules.md / cos-lead-
+# rules.md) and BEFORE project-side common/dept rules. The prompt-stacking
+# semantics is "later rule wins", so we want the universal founder rule late
+# enough to dominate role-specific guidance but early enough that project
+# layer (which adds concrete examples) can still extend it.
+echo "--- Test 6.11: FLY-175 load order — role base < founder-only < project rules ---"
+BASE_DIR_611="$TMPDIR/base-611"
+PROJECT_DIR_611="$TMPDIR/project-611"
+mkdir -p "$BASE_DIR_611" "$PROJECT_DIR_611"
+echo "# BASE dept rules" > "$BASE_DIR_611/department-lead-rules.md"
+echo "# BASE founder-only-authority" > "$BASE_DIR_611/founder-only-authority.md"
+echo "# PROJECT common rules" > "$PROJECT_DIR_611/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_611/department-lead-rules.md"
+ARGS_611=$(simulate_append_logic "$BASE_DIR_611" "$PROJECT_DIR_611" "product-lead")
+DEPT_BASE_POS_611=$(echo "$ARGS_611" | grep -bo "$BASE_DIR_611/department-lead-rules.md" | head -1 | cut -d: -f1)
+FOUNDER_POS_611=$(echo "$ARGS_611" | grep -bo "$BASE_DIR_611/founder-only-authority.md" | head -1 | cut -d: -f1)
+PCOM_POS_611=$(echo "$ARGS_611" | grep -bo "$PROJECT_DIR_611/common-rules.md" | head -1 | cut -d: -f1)
+PDEP_POS_611=$(echo "$ARGS_611" | grep -bo "$PROJECT_DIR_611/department-lead-rules.md" | head -1 | cut -d: -f1)
+if [ -n "$DEPT_BASE_POS_611" ] && [ -n "$FOUNDER_POS_611" ] && [ "$DEPT_BASE_POS_611" -lt "$FOUNDER_POS_611" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.11: role base < founder-only-authority ($DEPT_BASE_POS_611 < $FOUNDER_POS_611)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.11: role base must precede founder-only-authority (role=$DEPT_BASE_POS_611 founder=$FOUNDER_POS_611)"
+fi
+if [ -n "$FOUNDER_POS_611" ] && [ -n "$PCOM_POS_611" ] && [ "$FOUNDER_POS_611" -lt "$PCOM_POS_611" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.11: founder-only-authority < project-common ($FOUNDER_POS_611 < $PCOM_POS_611)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.11: founder-only-authority must precede project-common (founder=$FOUNDER_POS_611 pcom=$PCOM_POS_611)"
+fi
+if [ -n "$FOUNDER_POS_611" ] && [ -n "$PDEP_POS_611" ] && [ "$FOUNDER_POS_611" -lt "$PDEP_POS_611" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.11: founder-only-authority < project-dept ($FOUNDER_POS_611 < $PDEP_POS_611)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.11: founder-only-authority must precede project-dept (founder=$FOUNDER_POS_611 pdep=$PDEP_POS_611)"
+fi
+
+# Test 6.12 (FLY-175, Codex Round 1 LOW): content sentinel — the shipped rule
+# file must be non-empty and contain the canonical anchor heading. Guards
+# against the file being accidentally emptied or replaced with placeholder.
+echo "--- Test 6.12: FLY-175 founder-only-authority.md content sentinel ---"
+REAL_FOUNDER_FILE_612="$REAL_BASE_DIR_610/founder-only-authority.md"
+if [ -s "$REAL_FOUNDER_FILE_612" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.12: founder-only-authority.md is non-empty"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.12: founder-only-authority.md is empty or missing"
+fi
+if grep -q "# Founder-Only Authority" "$REAL_FOUNDER_FILE_612" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.12: founder-only-authority.md has canonical anchor heading"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.12: founder-only-authority.md missing '# Founder-Only Authority' heading"
+fi
+# Sanity: reserved-action list must mention every callable endpoint that
+# can end a Runner's life, at BOTH /api/actions/* AND /actions/* dashboard
+# alias prefixes (plugin.ts mounts the same createActionRouter on both).
+# Includes retry, which force-closes the prior preserved Runner via
+# handleRetry() → closeRunner({forcePreserved:true}). Codex Round 1 HIGH
+# fix (approve, terminate, reject, defer, shelve, close-tmux, close-runner)
+# + Codex Round 2 HIGH fix (/actions/* aliases + retry) regression guards.
+for keyword in \
+  "/api/actions/approve" \
+  "/api/actions/terminate" \
+  "/api/actions/reject" \
+  "/api/actions/defer" \
+  "/api/actions/shelve" \
+  "/api/actions/retry" \
+  "/actions/approve" \
+  "/actions/terminate" \
+  "/actions/reject" \
+  "/actions/defer" \
+  "/actions/shelve" \
+  "/actions/retry" \
+  "close-tmux" \
+  "close-runner" \
+  ; do
+  if grep -qF "$keyword" "$REAL_FOUNDER_FILE_612" 2>/dev/null; then
+    PASS=$((PASS+1)); echo "  PASS: Test 6.12: founder-only-authority.md mentions reserved endpoint '$keyword'"
+  else
+    FAIL=$((FAIL+1)); echo "  FAIL: Test 6.12: founder-only-authority.md must mention reserved endpoint '$keyword' so the Lead has no plausible-deniability gap"
+  fi
+done
 
 # ═══════════════════════════════════════════════════════════════
 # Summary

@@ -170,6 +170,10 @@ sequenceDiagram
 - ❌ Runner 不能在 Annie approve 前 merge PR
 - ❌ Runner 不能在整个 flow 完成前关闭 tmux
 - ❌ Lead 不能在 Annie 确认 ship 前 shutdown
+- ❌ **Lead 不能在 Annie 明确授权前调 `/api/actions/approve`（merge to main）**（FLY-175 Track 1
+  enforcement: `packages/teamlead/lead-rules-base/founder-only-authority.md`；Track 2 Bridge
+  hard gate TBD per `doc/engineer/plan/draft/v1.29.0-FLY-175-founder-consent-hard-gate.md`）
+- ❌ **Lead 不能在 Annie 明确指示前 close-tmux / close-runner / terminate Runner**（同上）
 
 ### 2.3 通知协议（双轨）
 

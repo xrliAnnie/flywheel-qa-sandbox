@@ -1217,6 +1217,17 @@ else
   fi
 fi
 
+# ── FLY-175: Founder-Only Authority (universal — both cos and dept roles) ──
+# The two reserved actions (merge-to-main, stop-runner) are founder-only.
+# This rule loads for EVERY Lead role, regardless of cos vs dept, because
+# any Lead with Bridge action credentials could otherwise invoke them.
+# Optional — missing base file is a no-op (pre-FLY-175 backward compat).
+BASE_FOUNDER_AUTH_RULES="${BASE_RULES_DIR}/founder-only-authority.md"
+if [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r "$BASE_FOUNDER_AUTH_RULES" ]; then
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_AUTH_RULES")
+  log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
+fi
+
 # ── FLY-26: project-side shared rules (concrete data) ──
 if [ -d "$LEAD_RULES_DIR" ]; then
   COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
