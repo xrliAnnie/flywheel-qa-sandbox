@@ -1208,6 +1208,20 @@ if [ "$IS_COS_ROLE" = false ]; then
     log "FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping runner-messaging-rules.md so Lead stays on legacy flywheel-comm path consistent with Runner spawn"
   fi
   unset _runnermsg_backend
+
+  # ── FLY-178: Executor Routing by Work Type (non-cos dept leads only) ──
+  # Leads route to the executor that owns the issue end to end, chosen by the
+  # ACTUAL work type (pass agentName), not just the issue label. This is
+  # spawn-only behavior, so only non-cos roles (which spawn Runners) load it.
+  # Placed OUTSIDE the FLYWHEEL_COMM_BACKEND=commdb guard above on purpose:
+  # executor routing is independent of the Runner messaging transport and must
+  # load on both the mailbox and commdb-rollback paths. Optional — missing
+  # base file is a no-op (backward compat with older flywheel checkouts).
+  BASE_EXECUTOR_ROUTING_RULES="${BASE_RULES_DIR}/executor-routing.md"
+  if [ -f "$BASE_EXECUTOR_ROUTING_RULES" ] && [ -r "$BASE_EXECUTOR_ROUTING_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_EXECUTOR_ROUTING_RULES")
+    log "Appending base executor-routing rules: ${BASE_EXECUTOR_ROUTING_RULES}"
+  fi
 else
   # Cos-lead base: Department Routing Discipline (one Lead per spawn message)
   BASE_COS_RULES="${BASE_RULES_DIR}/cos-lead-rules.md"

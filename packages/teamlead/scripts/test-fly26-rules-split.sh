@@ -538,6 +538,16 @@ simulate_append_logic() {
     if [ -f "$BASE_DEPT_RULES" ] && [ -r "$BASE_DEPT_RULES" ]; then
       CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEPT_RULES")
     fi
+    # FLY-178: executor-routing (non-cos only — spawn-only behavior). In
+    # production claude-lead.sh interposes the CONDITIONAL runner-messaging-
+    # rules.md between dept-rules and this append; the simulator omits that
+    # optional file. executor-routing loads independent of the messaging
+    # backend, so its position relative to founder-only / project (asserted
+    # in Tests 6.15) is unaffected by that omission.
+    BASE_EXECUTOR_ROUTING_RULES="${base_dir}/executor-routing.md"
+    if [ -f "$BASE_EXECUTOR_ROUTING_RULES" ] && [ -r "$BASE_EXECUTOR_ROUTING_RULES" ]; then
+      CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_EXECUTOR_ROUTING_RULES")
+    fi
   else
     BASE_COS_RULES="${base_dir}/cos-lead-rules.md"
     if [ -f "$BASE_COS_RULES" ] && [ -r "$BASE_COS_RULES" ]; then
@@ -684,7 +694,7 @@ else
   # Scan the rule files only (not README.md which legitimately documents
   # examples of project-side concrete data). FLY-175: include
   # founder-only-authority.md so its generic voice is enforced as well.
-  RULE_FILES=("$BASE_FILES_DIR/department-lead-rules.md" "$BASE_FILES_DIR/cos-lead-rules.md" "$BASE_FILES_DIR/founder-only-authority.md")
+  RULE_FILES=("$BASE_FILES_DIR/department-lead-rules.md" "$BASE_FILES_DIR/cos-lead-rules.md" "$BASE_FILES_DIR/founder-only-authority.md" "$BASE_FILES_DIR/executor-routing.md")
   # Names that should never appear in base rule files (examples of project
   # concretes that belong in the project layer).
   FORBIDDEN_NAMES_RE='\b(Peter|Oliver|Simba|Annie)\b'
@@ -839,6 +849,108 @@ for keyword in \
     FAIL=$((FAIL+1)); echo "  FAIL: Test 6.12: founder-only-authority.md must mention reserved endpoint '$keyword' so the Lead has no plausible-deniability gap"
   fi
 done
+
+# ═══════════════════════════════════════════════════════════════
+# Test Group 6 (FLY-178): executor-routing.md base rule (non-cos only)
+# ═══════════════════════════════════════════════════════════════
+echo ""
+echo "=== Test Group 6 (FLY-178): executor-routing base rule ==="
+
+# Test 6.13: dept Lead gets executor-routing; cos-lead does NOT (spawn-only).
+echo "--- Test 6.13: dept Lead gets executor-routing, cos-lead does NOT ---"
+BASE_DIR_613="$TMPDIR/base-613"
+PROJECT_DIR_613="$TMPDIR/project-613"
+mkdir -p "$BASE_DIR_613" "$PROJECT_DIR_613"
+echo "# BASE department rules" > "$BASE_DIR_613/department-lead-rules.md"
+echo "# BASE cos rules" > "$BASE_DIR_613/cos-lead-rules.md"
+echo "# BASE executor routing" > "$BASE_DIR_613/executor-routing.md"
+echo "# Common" > "$PROJECT_DIR_613/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_613/department-lead-rules.md"
+ARGS_613_DEPT=$(simulate_append_logic "$BASE_DIR_613" "$PROJECT_DIR_613" "product-lead")
+assert_contains "$ARGS_613_DEPT" "$BASE_DIR_613/executor-routing.md" "Test 6.13: dept Lead gets executor-routing"
+ARGS_613_COS=$(simulate_append_logic "$BASE_DIR_613" "$PROJECT_DIR_613" "cos-lead")
+assert_not_contains "$ARGS_613_COS" "$BASE_DIR_613/executor-routing.md" "Test 6.13: cos-lead does NOT get executor-routing (cos never spawns Runners)"
+
+# Test 6.14: backward compat — missing executor-routing.md silently skipped.
+echo "--- Test 6.14: missing executor-routing.md silently skipped (backward compat) ---"
+BASE_DIR_614="$TMPDIR/base-614"
+PROJECT_DIR_614="$TMPDIR/project-614"
+mkdir -p "$BASE_DIR_614" "$PROJECT_DIR_614"
+echo "# BASE department rules" > "$BASE_DIR_614/department-lead-rules.md"
+# Intentionally NOT creating executor-routing.md
+echo "# Common" > "$PROJECT_DIR_614/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_614/department-lead-rules.md"
+ARGS_614=$(simulate_append_logic "$BASE_DIR_614" "$PROJECT_DIR_614" "product-lead")
+assert_contains "$ARGS_614" "$BASE_DIR_614/department-lead-rules.md" "Test 6.14: dept rules still loaded when executor-routing missing"
+assert_not_contains "$ARGS_614" "executor-routing.md" "Test 6.14: executor-routing silently skipped when absent"
+
+# Test 6.15: load order — role base < executor-routing < founder-only < project.
+# (Production interposes the conditional runner-messaging-rules.md between role
+# base and executor-routing; the simulator omits that optional file, which does
+# not affect executor-routing's position relative to founder-only / project.)
+echo "--- Test 6.15: load order — role base < executor-routing < founder-only < project ---"
+BASE_DIR_615="$TMPDIR/base-615"
+PROJECT_DIR_615="$TMPDIR/project-615"
+mkdir -p "$BASE_DIR_615" "$PROJECT_DIR_615"
+echo "# BASE department rules" > "$BASE_DIR_615/department-lead-rules.md"
+echo "# BASE executor routing" > "$BASE_DIR_615/executor-routing.md"
+echo "# BASE founder-only-authority" > "$BASE_DIR_615/founder-only-authority.md"
+echo "# PROJECT common rules" > "$PROJECT_DIR_615/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_615/department-lead-rules.md"
+ARGS_615=$(simulate_append_logic "$BASE_DIR_615" "$PROJECT_DIR_615" "product-lead")
+DEPT_POS_615=$(echo "$ARGS_615" | grep -bo "$BASE_DIR_615/department-lead-rules.md" | head -1 | cut -d: -f1)
+EXEC_POS_615=$(echo "$ARGS_615" | grep -bo "$BASE_DIR_615/executor-routing.md" | head -1 | cut -d: -f1)
+FOUNDER_POS_615=$(echo "$ARGS_615" | grep -bo "$BASE_DIR_615/founder-only-authority.md" | head -1 | cut -d: -f1)
+PDEP_POS_615=$(echo "$ARGS_615" | grep -bo "$PROJECT_DIR_615/department-lead-rules.md" | head -1 | cut -d: -f1)
+if [ -n "$DEPT_POS_615" ] && [ -n "$EXEC_POS_615" ] && [ "$DEPT_POS_615" -lt "$EXEC_POS_615" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.15: role base < executor-routing ($DEPT_POS_615 < $EXEC_POS_615)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.15: role base must precede executor-routing (role=$DEPT_POS_615 exec=$EXEC_POS_615)"
+fi
+if [ -n "$EXEC_POS_615" ] && [ -n "$FOUNDER_POS_615" ] && [ "$EXEC_POS_615" -lt "$FOUNDER_POS_615" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.15: executor-routing < founder-only ($EXEC_POS_615 < $FOUNDER_POS_615)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.15: executor-routing must precede founder-only (exec=$EXEC_POS_615 founder=$FOUNDER_POS_615)"
+fi
+if [ -n "$FOUNDER_POS_615" ] && [ -n "$PDEP_POS_615" ] && [ "$FOUNDER_POS_615" -lt "$PDEP_POS_615" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.15: founder-only < project-dept ($FOUNDER_POS_615 < $PDEP_POS_615)"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.15: founder-only must precede project-dept (founder=$FOUNDER_POS_615 pdep=$PDEP_POS_615)"
+fi
+
+# Test 6.16: real base file ships + content sentinel (guards against deletion/rename/empty).
+echo "--- Test 6.16: real executor-routing.md ships + content sentinel ---"
+REAL_EXEC_FILE_616="$REAL_BASE_DIR_610/executor-routing.md"
+assert_file_exists "$REAL_EXEC_FILE_616" "Test 6.16: executor-routing.md present in flywheel checkout"
+if [ -s "$REAL_EXEC_FILE_616" ]; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.16: executor-routing.md is non-empty"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.16: executor-routing.md is empty or missing"
+fi
+if grep -q "# Executor Routing by Work Type" "$REAL_EXEC_FILE_616" 2>/dev/null; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.16: executor-routing.md has canonical anchor heading"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.16: executor-routing.md missing '# Executor Routing by Work Type' heading"
+fi
+
+# Test 6.17: test slots — FLYWHEEL_LEAD_ROLE=lead gets executor-routing; =cos does not.
+echo "--- Test 6.17: test slots — lead role gets executor-routing, cos role does not ---"
+BASE_DIR_617="$TMPDIR/base-617"
+PROJECT_DIR_617="$TMPDIR/project-617"
+mkdir -p "$BASE_DIR_617" "$PROJECT_DIR_617"
+echo "# BASE department rules" > "$BASE_DIR_617/department-lead-rules.md"
+echo "# BASE cos rules" > "$BASE_DIR_617/cos-lead-rules.md"
+echo "# BASE executor routing" > "$BASE_DIR_617/executor-routing.md"
+echo "# Common" > "$PROJECT_DIR_617/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_617/department-lead-rules.md"
+FLYWHEEL_LEAD_ROLE=lead
+ARGS_617_LEAD=$(simulate_append_logic "$BASE_DIR_617" "$PROJECT_DIR_617" "flywheel-test-2")
+unset FLYWHEEL_LEAD_ROLE
+assert_contains "$ARGS_617_LEAD" "$BASE_DIR_617/executor-routing.md" "Test 6.17: synthetic lead test slot gets executor-routing"
+FLYWHEEL_LEAD_ROLE=cos
+ARGS_617_COS=$(simulate_append_logic "$BASE_DIR_617" "$PROJECT_DIR_617" "flywheel-test-1")
+unset FLYWHEEL_LEAD_ROLE
+assert_not_contains "$ARGS_617_COS" "$BASE_DIR_617/executor-routing.md" "Test 6.17: synthetic cos test slot does NOT get executor-routing"
 
 # ═══════════════════════════════════════════════════════════════
 # Summary
