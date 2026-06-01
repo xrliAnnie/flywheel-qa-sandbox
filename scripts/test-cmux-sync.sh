@@ -2059,6 +2059,235 @@ else
   fail "errexit/loop continuation failed; got: $MOCK_CMUX_OPS"
 fi
 
+set +e   # restore lenient mode for the new FLY-177 tests (process juggling)
+
+# ════════════════════════════════════════════════════════════════
+# FLY-177: ④ refresh_linked_sessions selects by LIVE window_id (not name)
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-177 ④ refresh selects live window_id, skips stale dup"
+reset_mocks
+# Two same-name windows: @1 (remain-on-exit DEAD) + @2 (live). Old name-based
+# select would land on @1 (lowest index); ④ must pick @2.
+MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a\nflywheel|@2|lead-a'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+MOCK_PANE_DEAD=$'flywheel:@1=1\nflywheel:@2=0'
+refresh_linked_sessions || true
+if echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@2" \
+   && ! echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@1"; then
+  pass "④ selects live @2, skips dead @1 (no stale-window drift)"
+else
+  fail "④ dup-name: expected select =cmux-lead-a:@2 only; got: $(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')"
+fi
+
+echo "Test: FLY-177 ④ single live window still selected (equivalence)"
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@5|lead-a'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+MOCK_PANE_DEAD=$'flywheel:@5=0'
+refresh_linked_sessions || true
+if echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@5"; then
+  pass "④ single live window selected by id"
+else
+  fail "④ single-live: expected select =cmux-lead-a:@5; got: $(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')"
+fi
+
+echo "Test: FLY-177 ④ all-dead window → no select"
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@9|lead-a'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+MOCK_PANE_DEAD=$'flywheel:@9=1'
+refresh_linked_sessions || true
+if [[ -z "$MOCK_TMUX_SELECTS" ]]; then
+  pass "④ dead-only window: no select (leaves to reconcile / restart)"
+else
+  fail "④ dead-only: expected no select; got: $(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-177: CHURN ROOT CAUSE — self-heal sweep must not abort the watcher under
+# `set -euo pipefail` when no agent window matches the target session.
+#
+# Bug: self_heal_sweep_session's loop body's final statement is
+#   `[[ "$s" == "$target" && -n "$wname" ]] && self_heal_one_workspace "$wname"`
+# When the LAST agent window does NOT belong to $target, the `[[ ]]` is false and
+# the `while` loop's exit status is 1. It is called bare in _drain_file's
+# `register)` arm under errexit, so that stray 1 aborted the watcher → launchd
+# KeepAlive respawned it every ~30s. Production trigger: every `register|<session>`
+# event for a `cmux-*` linked session (fired by session-created when the watcher
+# creates a linked session — no agent window is ever in a cmux-* session) and for
+# `flywheel` whenever a runner-* window sorts last. The churn began the instant
+# runner-geoforge3d appeared (the log shows ~40min stable flywheel-only, then 30s
+# churn from 15:56 onward when GEO-381's linked-session creation started firing
+# register events). Reproduced under a subshell with production's errexit/pipefail.
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-177 self_heal_sweep_session no-match returns 0 under errexit (no churn)"
+reset_mocks
+# flywheel + runner windows; the LAST entry (runner) is what makes the trailing
+# `[[ s==target ]]` false for a cmux-* / flywheel target — exactly production.
+MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a\nrunner-geoforge3d|@8|GEO-381-x'
+MOCK_TMUX_SESSIONS=$'flywheel\nrunner-geoforge3d'
+sss_rc=0
+( set -euo pipefail; self_heal_sweep_session "cmux-GEO-381-x" ) >/dev/null 2>&1 || sss_rc=$?
+if [[ "$sss_rc" -eq 0 ]]; then
+  pass "self_heal_sweep_session: no-match target returns 0 (no errexit abort)"
+else
+  fail "REGRESSION: self_heal_sweep_session returned $sss_rc on no-match → would churn watcher"
+fi
+
+echo "Test: FLY-177 register|cmux-* drain does not abort watcher under errexit (churn repro)"
+reset_mocks
+# Production churn repro: session-created on a cmux-* linked session drains through
+# the register) arm → self_heal_sweep_session(non-agent target) → (pre-fix) rc=1
+# → set -e abort → launchd respawn. The whole drain must survive errexit.
+MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a\nrunner-geoforge3d|@8|GEO-381-x'
+MOCK_TMUX_SESSIONS=$'flywheel\nrunner-geoforge3d\ncmux-lead-a\ncmux-GEO-381-x'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"},{"title":"GEO-381-x","ref":"workspace:2"}]}'
+MOCK_CMUX_SURFACES=$'workspace:1;;surface:1;;terminal;;true\nworkspace:2;;surface:2;;terminal;;true'
+MOCK_TMUX_CLIENTS=$'cmux-lead-a=1\ncmux-GEO-381-x=1'
+printf 'register|cmux-GEO-381-x\n' > "$TMPDIR_ROOT/ev177-churn"
+drain_rc=0
+( set -euo pipefail; _drain_file "$TMPDIR_ROOT/ev177-churn" ) >/dev/null 2>&1 || drain_rc=$?
+if [[ "$drain_rc" -eq 0 ]]; then
+  pass "register|cmux-* drain survives errexit (watcher would NOT respawn-churn)"
+else
+  fail "REGRESSION: _drain_file aborted (rc=$drain_rc) on register|cmux-* → 30s churn"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-177: _pid_is_watcher parsing — real function (deterministic cases)
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-177 _pid_is_watcher real parsing"
+# Negative cases are deterministic everywhere: empty pid, and a live non-watcher
+# (this test process — its command is bash/test-cmux-sync, not the watcher).
+if ! _pid_is_watcher "" && ! _pid_is_watcher "$$"; then
+  pass "_pid_is_watcher: false for empty pid and a live non-watcher process"
+else
+  fail "_pid_is_watcher: should be false for empty/non-watcher (got true)"
+fi
+# Positive case depends on `ps -o command=` reflecting `exec -a` argv0, which is
+# environment-sensitive (sandboxes can hide it). Feature-detect: only assert if
+# ps actually shows the spoofed argv; otherwise skip (Codex R1 flakiness note).
+bash -c 'exec -a "flywheel-cmux-sync --watch" sleep 5' &
+piw_pid=$!
+sleep 0.4
+piw_cmd=$(ps -o command= -p "$piw_pid" 2>/dev/null || true)
+if [[ "$piw_cmd" == *flywheel-cmux-sync* && "$piw_cmd" == *--watch* ]]; then
+  if _pid_is_watcher "$piw_pid"; then
+    pass "_pid_is_watcher: true for a real watcher-like command"
+  else
+    fail "_pid_is_watcher: false-negative for watcher command '$piw_cmd'"
+  fi
+else
+  echo "  ⏭  ps does not reflect exec -a argv here — skipping _pid_is_watcher positive case"
+fi
+kill "$piw_pid" 2>/dev/null
+
+# ════════════════════════════════════════════════════════════════
+# FLY-177: supervised blocking-acquire (FLYWHEEL_CMUX_SUPERVISED=1)
+# Deterministic: override _pid_is_watcher to consult MOCK_WATCHER_PIDS so the
+# lock state-machine is tested without depending on ps/exec -a (Codex R1).
+# ════════════════════════════════════════════════════════════════
+MOCK_WATCHER_PIDS=""
+_pid_is_watcher() {
+  local p="$1"
+  [[ -z "$p" ]] && return 1
+  case " ${MOCK_WATCHER_PIDS} " in *" $p "*) return 0 ;; *) return 1 ;; esac
+}
+
+echo "Test: FLY-177 supervised acquires immediately on free lock"
+reset_mocks
+rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
+sup_err="$TMPDIR_ROOT/sup-free.err"
+( FLYWHEEL_CMUX_SUPERVISED=1; acquire_watcher_lock ) >/dev/null 2>"$sup_err"
+sup_rc=$?
+if [[ $sup_rc -eq 0 ]] && ! grep -qE "waiting|already running" "$sup_err"; then
+  pass "supervised: acquires immediately when lock free"
+else
+  fail "supervised free-lock: rc=$sup_rc err=$(cat "$sup_err" 2>/dev/null)"
+fi
+
+echo "Test: FLY-177 supervised reaps live NON-watcher owner (PID-reuse guard)"
+reset_mocks
+rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
+sleep 30 & nonwatcher_pid=$!          # live, but NOT in MOCK_WATCHER_PIDS
+MOCK_WATCHER_PIDS=""
+mkdir -p "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR"
+echo "$nonwatcher_pid" > "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR/pid"
+sup_err="$TMPDIR_ROOT/sup-nonwatcher.err"
+SUPERVISED_WAIT_SECONDS=1
+( FLYWHEEL_CMUX_SUPERVISED=1; acquire_watcher_lock ) >/dev/null 2>"$sup_err"
+sup_rc=$?
+SUPERVISED_WAIT_SECONDS=15
+kill "$nonwatcher_pid" 2>/dev/null
+if [[ $sup_rc -eq 0 ]] && grep -q "is not a watcher (stale), reaping" "$sup_err"; then
+  pass "supervised: live non-watcher owner reaped (no infinite wait)"
+else
+  fail "supervised non-watcher: rc=$sup_rc err=$(cat "$sup_err" 2>/dev/null)"
+fi
+
+echo "Test: FLY-177 supervised blocks for live watcher, takes over on its death"
+reset_mocks
+rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
+sleep 60 & fake_watcher=$!
+MOCK_WATCHER_PIDS="$fake_watcher"     # mark this live pid as a watcher
+export MOCK_WATCHER_PIDS              # visible to the backgrounded subshell
+mkdir -p "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR"
+echo "$fake_watcher" > "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR/pid"
+sup_err="$TMPDIR_ROOT/sup-block.err"
+# Codex R2 LOW: marker distinguishes a genuine `acquire_watcher_lock` RETURN
+# (→ `&& touch`) from any `exit 0` path inside acquire (which skips the `&&`).
+sup_marker="$TMPDIR_ROOT/sup-takeover.marker"
+rm -f "$sup_marker"
+SUPERVISED_WAIT_SECONDS=1; export SUPERVISED_WAIT_SECONDS
+( FLYWHEEL_CMUX_SUPERVISED=1; acquire_watcher_lock && touch "$sup_marker" ) >/dev/null 2>"$sup_err" &
+acq_pid=$!
+sleep 3
+if kill -0 "$acq_pid" 2>/dev/null && grep -q "waiting" "$sup_err" && [[ ! -f "$sup_marker" ]]; then
+  pass "supervised: blocks while a live watcher owns the lock (no exit-churn, not yet acquired)"
+else
+  alive="n"; kill -0 "$acq_pid" 2>/dev/null && alive="y"
+  fail "supervised block: acq alive=$alive marker=$([[ -f "$sup_marker" ]] && echo y || echo n) err=$(cat "$sup_err" 2>/dev/null)"
+  kill "$acq_pid" 2>/dev/null
+fi
+kill "$fake_watcher" 2>/dev/null   # owner dies → acquire should take over
+took_over=0
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  if ! kill -0 "$acq_pid" 2>/dev/null; then took_over=1; break; fi
+  sleep 1
+done
+SUPERVISED_WAIT_SECONDS=15; export SUPERVISED_WAIT_SECONDS
+if [[ $took_over -eq 1 ]] && [[ -f "$sup_marker" ]]; then
+  pass "supervised: takes over after lock owner dies (acquire returned → marker)"
+else
+  fail "supervised takeover: exited=$took_over marker=$([[ -f "$sup_marker" ]] && echo y || echo n)"
+  kill "$acq_pid" 2>/dev/null
+fi
+wait "$acq_pid" 2>/dev/null
+unset MOCK_WATCHER_PIDS
+
+# ════════════════════════════════════════════════════════════════
+# FLY-177: launchd wrapper — PATH resolution + exec (manage real PID)
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-177 launchd-minimal PATH resolves cmux + tmux"
+if env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin /bin/bash -c '
+  export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+  command -v cmux >/dev/null 2>&1 && command -v tmux >/dev/null 2>&1'; then
+  pass "expanded PATH resolves cmux + tmux from minimal launchd env"
+elif ! { [[ -x /opt/homebrew/bin/cmux ]] || [[ -x /usr/local/bin/cmux ]]; }; then
+  echo "  ⏭  cmux not installed on host — skipping launchd PATH resolution test"
+else
+  fail "expanded PATH failed to resolve cmux/tmux from minimal env"
+fi
+
+echo "Test: FLY-177 autostart execs watcher + sets launchd PATH"
+AUTOSTART_SH="$SCRIPT_DIR/flywheel-cmux-autostart.sh"
+if grep -qE '^exec "\$SYNC_SCRIPT" --watch' "$AUTOSTART_SH" \
+   && grep -qE 'export PATH="/opt/homebrew/bin' "$AUTOSTART_SH"; then
+  pass "autostart: exec watcher (launchd manages real PID) + PATH expansion present"
+else
+  fail "autostart: missing 'exec \$SYNC_SCRIPT --watch' or PATH expansion"
+fi
+
 set +e   # restore lenient mode for the summary
 
 # ════════════════════════════════════════════════════════════════

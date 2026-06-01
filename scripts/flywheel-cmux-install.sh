@@ -81,9 +81,51 @@ else
   fi
 fi
 
-# 6. Note: watchers should be started ONLY through flywheel-cmux-autostart
-# (which holds /tmp/flywheel-cmux-watcher.lock for single-instance gating).
-# Direct `flywheel-cmux-sync --watch` skips the lock and may race with another
-# watcher; reserve that for manual debugging.
+# 6. Provision launchd supervision for the watcher (FLY-177).
+# Without this the watcher is only started by the `.zshrc` path when a shell
+# opens inside cmux — if it dies and no new cmux shell opens, it stays dead
+# (the cmux Lead columns then go blank until manually restarted). A launchd
+# KeepAlive job makes it auto-respawn. The plist sets FLYWHEEL_CMUX_SUPERVISED=1
+# so the launchd instance BLOCK-WAITS for any `.zshrc`-started watcher to exit
+# instead of fast-exit + KeepAlive respawn churn; the single-instance lock keeps
+# the two start paths race-safe. Set FLYWHEEL_CMUX_INSTALL_SKIP_LAUNCHCTL=1 to
+# render + lint the plist but skip the (side-effecting) load — used by tests/CI.
+PLIST_TEMPLATE="$REPO_DIR/scripts/com.flywheel.cmux-watcher.plist.template"
+PLIST_DEST="$HOME/Library/LaunchAgents/com.flywheel.cmux-watcher.plist"
+WATCHER_LABEL="com.flywheel.cmux-watcher"
+if [[ ! -f "$PLIST_TEMPLATE" ]]; then
+  echo "[install] WARNING: plist template not found: $PLIST_TEMPLATE — skipping launchd provisioning"
+elif ! command -v launchctl >/dev/null 2>&1; then
+  echo "[install] (Skipped launchd watcher provisioning: 'launchctl' not available — non-macOS host)"
+else
+  echo "[install] Provisioning launchd watcher ($WATCHER_LABEL)..."
+  mkdir -p "$HOME/Library/LaunchAgents"
+  # Render __HOME__ → $HOME (no hard-coded user path checked into the repo).
+  sed "s|__HOME__|$HOME|g" "$PLIST_TEMPLATE" > "$PLIST_DEST"
+  # Validate before loading.
+  if command -v plutil >/dev/null 2>&1; then
+    if ! plutil -lint "$PLIST_DEST" >/dev/null; then
+      echo "[install] ERROR: rendered plist failed plutil -lint: $PLIST_DEST"; exit 1
+    fi
+  fi
+  if [[ "${FLYWHEEL_CMUX_INSTALL_SKIP_LAUNCHCTL:-0}" == "1" ]]; then
+    echo "[install] (FLYWHEEL_CMUX_INSTALL_SKIP_LAUNCHCTL=1 — rendered + linted plist, skipped load)"
+  else
+    # Idempotent (re)load: bootout if already loaded, then bootstrap.
+    launchctl bootout "gui/$(id -u)/$WATCHER_LABEL" 2>/dev/null || true
+    if launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null; then
+      echo "[install] ✓ launchd watcher bootstrapped (KeepAlive)"
+    else
+      echo "[install] WARNING: launchctl bootstrap failed — check 'launchctl print gui/$(id -u)/$WATCHER_LABEL'"
+    fi
+  fi
+fi
+
+# 7. Note: start watchers ONLY via flywheel-cmux-autostart or the launchd job.
+# Both paths funnel into `flywheel-cmux-sync --watch`, which holds the
+# single-instance lock (FLY-129 pushed lock acquisition DOWN into the `--watch`
+# dispatcher — so `--watch` does NOT skip the lock). Concurrent autostart +
+# launchd starts are therefore race-safe and never double-run. launchd is the
+# steady-state owner; the `.zshrc` autostart is the fallback.
 
 echo "[install] Done. Restart cmux to activate."
