@@ -59,3 +59,13 @@ jobs:
 
       - name: Integration test — cmux-sync hooks
         run: bash scripts/test-cmux-sync-hooks-integration.sh
+
+      # FLY-183: Discord adapter orphan reaper tests. Hermetic — the reaper's
+      # process-table source is injected (FLY183_PS_OVERRIDE) and all spawned
+      # processes are test-owned, so this never touches a real adapter. lsof is
+      # needed for the cwd-probe / identity-label cases (T3/T4).
+      - name: Install lsof for adapter-reap test
+        run: sudo apt-get update && sudo apt-get install -y lsof
+
+      - name: Test — Discord adapter orphan reaper (FLY-183)
+        run: bash packages/teamlead/scripts/__tests__/adapter-reap.test.sh
