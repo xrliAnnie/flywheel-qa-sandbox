@@ -93,6 +93,24 @@ for tool in jq sqlite3 curl shasum; do
   fi
 done
 
+# ── Discord-INDEPENDENT meta-alert escape (FLY-182 §4.5.1) ──
+# Resolve our own dir early so the meta-alert escape is reachable from EVERY
+# failure branch — including unknown-lead, which exits before the later
+# dead_letter() definition. meta-alert.sh self-debounces per reason and
+# OVERWRITES its marker, so repeated calls neither spam nor grow unbounded.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+fire_meta_alert() {
+  # $1 = reason, $2 = title, $3 = body. Best-effort; never breaks the caller.
+  if [ -x "${SCRIPT_DIR}/meta-alert.sh" ]; then
+    "${SCRIPT_DIR}/meta-alert.sh" "$1" "$2" "$3" || true
+  fi
+}
+
+# Escape single quotes for sqlite3 string literals (parity with the TS
+# sqlString() claimer). sqlite3-over-stdin can't bind params, so we double any
+# embedded single quote to avoid breaking the claim transaction / local DB.
+sql_quote() { printf '%s' "$1" | sed "s/'/''/g"; }
+
 # ── Config resolution (projects.json SSOT) ──────────────────
 PROJECTS_JSON="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
 if [ ! -f "$PROJECTS_JSON" ]; then
@@ -112,6 +130,13 @@ LEAD_CFG=$(jq -c --arg p "$PROJECT_NAME" --arg l "$LEAD_ID" '
 
 if [ -z "$LEAD_CFG" ] || [ "$LEAD_CFG" = "null" ]; then
   log "ERROR: lead '$LEAD_ID' not found in project '$PROJECT_NAME' (projects.json)"
+  # FLY-182: unknown-lead is a PERMANENT failure (config drift / renamed lead).
+  # Surface it via the Discord-independent meta-alert so it never goes silent —
+  # parity with LeadAlertNotifier, which dead-letters unknown-lead.
+  fire_meta_alert \
+    "alert_dead_lettered" \
+    "LeadAlert dropped (shell path)" \
+    "Lead '${LEAD_ID}' not found in project '${PROJECT_NAME}' (projects.json). Alert (kind=${KIND}) dropped — config drift or renamed lead."
   exit 1
 fi
 
@@ -179,7 +204,7 @@ CREATE TABLE IF NOT EXISTS alert_claims (
   claimed_at INTEGER NOT NULL
 );
 BEGIN IMMEDIATE;
-INSERT OR IGNORE INTO alert_claims VALUES ('${EVENT_ID}', '${LEAD_ID}', '${KIND}', strftime('%s','now'));
+INSERT OR IGNORE INTO alert_claims VALUES ('${EVENT_ID}', '$(sql_quote "$LEAD_ID")', '${KIND}', strftime('%s','now'));
 SELECT changes();
 COMMIT;
 SQL
@@ -213,8 +238,8 @@ QUEUE_DIR="${HOME}/.flywheel/alert-queue"
 mkdir -p "$QUEUE_DIR"
 QUEUE_PATH="${QUEUE_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}.json"
 
-enqueue() {
-  local reason="$1"
+write_record() {
+  # $1 = target path, $2 = reason
   jq -n \
     --arg leadId "$LEAD_ID" \
     --arg projectName "$PROJECT_NAME" \
@@ -224,20 +249,41 @@ enqueue() {
     --arg body "$BODY" \
     --arg severity "$SEVERITY" \
     --arg queuedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg queueReason "$reason" \
+    --arg queueReason "$2" \
     '{leadId: $leadId, projectName: $projectName, eventId: $eventId,
       eventType: $eventType, title: $title, body: $body,
       severity: $severity, queuedAt: $queuedAt, queueReason: $queueReason}' \
-    > "$QUEUE_PATH"
-  log "queued to $QUEUE_PATH (reason=$reason)"
+    > "$1"
+}
+
+enqueue() {
+  write_record "$QUEUE_PATH" "$1"
+  log "queued to $QUEUE_PATH (reason=$1)"
+}
+
+# FLY-182 §4.5.1: PERMANENT failures (config gap, bad token, permanent 4xx)
+# must NOT be queued for blind retry — that was the 1667-backlog root cause.
+# Dead-letter (audit) + fire a Discord-INDEPENDENT meta-alert so the silent
+# failure surfaces even when the Bridge is down.
+DEAD_LETTER_DIR="${HOME}/.flywheel/alert-deadletter"
+dead_letter() {
+  local reason="$1"
+  mkdir -p "$DEAD_LETTER_DIR"
+  local dl_path="${DEAD_LETTER_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}.json"
+  write_record "$dl_path" "$reason"
+  log "dead-lettered to $dl_path (reason=$reason)"
+  fire_meta_alert \
+    "alert_dead_lettered" \
+    "LeadAlert dropped (shell path)" \
+    "Lead '${LEAD_ID}' alert dead-lettered (reason=${reason}, kind=${KIND}). Discord alert path misconfigured/down."
 }
 
 if [ -z "$CHANNEL_ID" ]; then
-  enqueue "no-channel"
+  dead_letter "no-channel"
   exit 2
 fi
 if [ -z "$TOKEN" ]; then
-  enqueue "no-token"
+  dead_letter "no-token"
   exit 2
 fi
 
@@ -261,10 +307,14 @@ rm -f /tmp/lead-alert-$$.out
 log "Discord POST failed HTTP=$HTTP_CODE body=$RESP_BODY"
 
 # Keep the claim — it marks "someone took responsibility for this eventId".
-# The queue file is the durable retry record; Bridge's drainQueue() reruns the
-# POST directly (bypasses the claim check) every 60s until delivery succeeds.
-# Releasing the claim here would let a concurrent Bridge live-path fire a
-# second POST on the same eventId, breaking the "one alert per signature"
-# invariant.
-enqueue "discord-${HTTP_CODE}"
+# Classify the failure (FLY-182 §4.2 parity with LeadAlertNotifier):
+#   5xx / 429 / 000(network) → TRANSIENT → queue for Bridge drainQueue retry.
+#   other 4xx (401/403/404 — bad token, forbidden, channel gone) → PERMANENT
+#     → dead-letter + meta-alert (retry is pointless).
+if [ "$HTTP_CODE" -ge 500 ] 2>/dev/null \
+  || [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "000" ]; then
+  enqueue "discord-${HTTP_CODE}"
+  exit 2
+fi
+dead_letter "discord-${HTTP_CODE}"
 exit 2

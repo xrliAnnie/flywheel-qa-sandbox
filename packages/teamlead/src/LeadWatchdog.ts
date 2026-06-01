@@ -77,6 +77,13 @@ export interface LeadWatchdogConfig {
 	 */
 	claimsReaderMatchAll?: boolean;
 	logger?: (msg: string) => void;
+	/**
+	 * FLY-182 B3: when true, suppress `pane_hash_stuck` for panes that look
+	 * alive-but-idle (see `isIdleHealthyPane`). Default OFF — only enable after
+	 * the recognizer is validated against real idle/busy/blocked/frozen Lead
+	 * pane fixtures (FLY-169 lesson: mocks encode wrong TUI assumptions).
+	 */
+	suppressIdleHealthy?: boolean;
 }
 
 interface LeadState {
@@ -249,6 +256,24 @@ export class LeadWatchdog {
 			return;
 		}
 
+		// FLY-182 B3: a Lead that is alive but IDLE has a naturally static pane
+		// (no spinner / no "esc to interrupt") → the pane hash never changes and
+		// the legacy threshold misfires `pane_hash_stuck`. In production 1447 of
+		// 1667 queued alerts were exactly this. When suppression is enabled
+		// (default OFF until QA validates the recognizer against real
+		// idle/busy/blocked/frozen pane fixtures — FLY-169 lesson) AND this is an
+		// unknown freeze (no blocked pattern) AND the pane looks idle-healthy,
+		// treat the Lead as alive-idle and do NOT alert. Blocked patterns above
+		// still fire; uncertain panes still escalate (fail-open to alerting).
+		if (
+			this.config.suppressIdleHealthy &&
+			kind === "pane_hash_stuck" &&
+			isIdleHealthyPane(pane)
+		) {
+			state.state = "Healthy";
+			return;
+		}
+
 		// Fix 1: unknown freeze — keep the legacy 3-cycle threshold so we
 		// don't alert prematurely on routine TUI quiescence.
 		if (state.stuckCycles >= this.config.paneHashAlertCycles) {
@@ -388,6 +413,50 @@ function classify(pane: string): AlertEventType {
 		if (tokens.some((t) => t.test(lower))) return kind;
 	}
 	return "pane_hash_stuck";
+}
+
+/** Markers that the Claude Code TUI is actively WORKING (must NOT suppress). */
+const WORKING_MARKERS: RegExp[] = [
+	/esc to interrupt/i,
+	/\bthinking\b/i,
+	/\bworking\b/i,
+	/tokens?\b.*\b(?:used|remaining)/i,
+	/\besc\b.*\bcancel\b/i,
+];
+
+/** High-confidence markers of an idle, ready-for-input Claude Code TUI. */
+const IDLE_READY_MARKERS: RegExp[] = [
+	/\?\s*for shortcuts/i,
+	/shift\+tab to cycle/i,
+	/\btry "/i, // the placeholder hint shown in an empty idle input box
+];
+
+/**
+ * FLY-182 B3 — recognize an alive-but-IDLE Claude Code Lead pane.
+ *
+ * NARROW allowlist, defaults to `false` on any uncertainty (fail-open to
+ * alerting — a missed-suppression merely keeps a false positive, while a wrong
+ * suppression would hide a real freeze). Returns `true` ONLY when:
+ *  - no blocked-prompt keyword (rate_limit / usage_limit / login / permission),
+ *  - no "actively working" marker (spinner / esc-to-interrupt / token counter),
+ *  - AND a high-confidence ready-for-input marker is present.
+ *
+ * NOTE: the exact marker set MUST be validated against real idle/busy/blocked/
+ * frozen Lead pane captures (QA, test slot) before enabling suppression in
+ * production (`suppressIdleHealthy`). The structure is the contract; the regexes
+ * are a conservative first pass.
+ */
+export function isIdleHealthyPane(pane: string): boolean {
+	if (!pane) return false;
+	const lower = pane.toLowerCase();
+	// Any known blocked pattern → NOT idle-healthy (let it alert as classified).
+	for (const { tokens } of BLOCKED_KEYWORDS) {
+		if (tokens.some((t) => t.test(lower))) return false;
+	}
+	// Actively working → NOT idle (and a frozen working pane IS a real stuck).
+	if (WORKING_MARKERS.some((t) => t.test(pane))) return false;
+	// Require a high-confidence idle-ready marker.
+	return IDLE_READY_MARKERS.some((t) => t.test(pane));
 }
 
 function titleFor(kind: AlertEventType): string {

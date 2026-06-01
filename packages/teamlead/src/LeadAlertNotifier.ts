@@ -20,13 +20,29 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
+	statSync,
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { MetaAlertReason } from "./MetaAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
+
+/**
+ * FLY-182 Track B: minimal sink so LeadAlertNotifier can fire a Discord-
+ * independent meta-alert when its own delivery path fails (config gap,
+ * permanent failure, drain stuck). Satisfied by `MetaAlertNotifier`.
+ */
+export interface MetaAlertSink {
+	notify(input: {
+		reason: MetaAlertReason;
+		title: string;
+		body: string;
+	}): Promise<unknown>;
+}
 
 export type AlertEventType =
 	| "rate_limit"
@@ -54,6 +70,8 @@ export interface AlertResult {
 	skipped?: "duplicate" | "no-channel" | "no-token" | "unknown-lead";
 	queued?: boolean;
 	dmSent?: boolean;
+	/** FLY-182: payload routed to dead-letter (permanent failure, no retry). */
+	deadLettered?: boolean;
 }
 
 export type FetchLike = typeof globalThis.fetch;
@@ -83,9 +101,40 @@ export interface LeadAlertNotifierConfig {
 	claimsReader?: ClaimsReader;
 	claimsClaimer?: ClaimsClaimer;
 	logger?: (msg: string) => void;
+	/** FLY-182: Discord-independent meta-alert sink (best-effort). */
+	metaAlert?: MetaAlertSink;
+	/** FLY-182: dead-letter dir (default ~/.flywheel/alert-deadletter). */
+	deadLetterDir?: string;
+	/** FLY-182: max queue files before oldest are dead-lettered (default 500). */
+	queueMax?: number;
+	/** FLY-182: max queue-file age before dead-lettered (default 3 days). */
+	queueMaxAgeMs?: number;
 }
 
+/** Queue reasons that are PERMANENT — config doesn't change at runtime, so
+ * retrying is pointless. These are dead-lettered on drain regardless of
+ * whether today's config could now resolve a channel (Codex design R1#3 —
+ * prevents the legacy `no-channel` backlog from flooding core on config flip). */
+const PERMANENT_QUEUE_REASONS = new Set([
+	"no-channel",
+	"no-token",
+	"unknown-lead",
+]);
+
+const DEFAULT_QUEUE_MAX = 500;
+const DEFAULT_QUEUE_MAX_AGE_MS = 259_200_000; // 3 days
+
 const DISCORD_API = "https://discord.com/api/v10";
+
+/** Result of a Discord POST attempt. `transient` failures are retryable. */
+type PostOutcome =
+	| { ok: true }
+	| { ok: false; status?: number; transient: boolean };
+
+/** 5xx and 429 are transient (retry); other 4xx are permanent (dead-letter). */
+function isTransientStatus(status: number): boolean {
+	return status >= 500 || status === 429;
+}
 
 export class LeadAlertNotifier {
 	private store: StateStore;
@@ -95,6 +144,10 @@ export class LeadAlertNotifier {
 	private claimsReader?: ClaimsReader;
 	private claimsClaimer?: ClaimsClaimer;
 	private logger: (msg: string) => void;
+	private metaAlert?: MetaAlertSink;
+	private deadLetterDir: string;
+	private queueMax: number;
+	private queueMaxAgeMs: number;
 
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
@@ -109,7 +162,57 @@ export class LeadAlertNotifier {
 			((msg) => {
 				console.log(`[LeadAlertNotifier] ${msg}`);
 			});
+		this.metaAlert = config.metaAlert;
+		this.deadLetterDir =
+			config.deadLetterDir ?? join(homedir(), ".flywheel", "alert-deadletter");
+		this.queueMax = config.queueMax ?? DEFAULT_QUEUE_MAX;
+		this.queueMaxAgeMs = config.queueMaxAgeMs ?? DEFAULT_QUEUE_MAX_AGE_MS;
 		mkdirSync(this.queueDir, { recursive: true });
+	}
+
+	/** Fire a meta-alert (Discord-independent), best-effort — never throws. */
+	private async fireMetaAlert(
+		reason: MetaAlertReason,
+		title: string,
+		body: string,
+	): Promise<void> {
+		if (!this.metaAlert) return;
+		try {
+			await this.metaAlert.notify({ reason, title, body });
+		} catch (err) {
+			this.logger(`meta-alert notify failed: ${(err as Error).message}`);
+		}
+	}
+
+	/**
+	 * Route a payload to the dead-letter dir (PERMANENT failure — never retried,
+	 * kept for audit) and fire a meta-alert so the silent failure surfaces.
+	 */
+	private async deadLetter(
+		payload: AlertPayload,
+		reason: string,
+	): Promise<void> {
+		try {
+			mkdirSync(this.deadLetterDir, { recursive: true });
+			const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+			const file = `${stamp}-${payload.leadId}-${payload.eventType}.json`;
+			writeFileSync(
+				join(this.deadLetterDir, file),
+				JSON.stringify(
+					{ ...payload, deadLetteredAt: new Date().toISOString(), reason },
+					null,
+					2,
+				),
+				"utf-8",
+			);
+		} catch (err) {
+			this.logger(`dead-letter write failed: ${(err as Error).message}`);
+		}
+		await this.fireMetaAlert(
+			"alert_dead_lettered",
+			"LeadAlert dropped (dead-letter)",
+			`A Lead alert could not be delivered and was dead-lettered (reason=${reason}, lead=${payload.leadId}, type=${payload.eventType}). The Discord alert path may be misconfigured or down.`,
+		);
 	}
 
 	async alert(payload: AlertPayload): Promise<AlertResult> {
@@ -118,7 +221,11 @@ export class LeadAlertNotifier {
 			this.logger(
 				`unknown lead: project=${payload.projectName} leadId=${payload.leadId}`,
 			);
-			return { skipped: "unknown-lead" };
+			// Permanent routing failure (Codex CR R1) — dead-letter for audit
+			// (deadLetter() also fires the Discord-independent meta-alert) so the
+			// dropped payload is recorded, not just announced.
+			await this.deadLetter(payload, "unknown-lead");
+			return { skipped: "unknown-lead", deadLettered: true };
 		}
 		const { lead, project } = resolved;
 
@@ -178,23 +285,32 @@ export class LeadAlertNotifier {
 			return { skipped: "duplicate" };
 		}
 
-		// Step 4: Resolve channel + token.
+		// Step 4: Resolve channel + token. Both are PERMANENT failures (config
+		// doesn't change at runtime) — dead-letter + meta-alert, do NOT queue
+		// for blind retry (FLY-182: the no-channel retry loop was the 1667
+		// backlog root cause).
 		const channel = this.resolveChannel(lead, project);
 		if (!channel) {
-			this.enqueue(payload, "no-channel");
-			return { skipped: "no-channel", queued: true };
+			await this.deadLetter(payload, "no-channel");
+			return { skipped: "no-channel", deadLettered: true };
 		}
 		const token = this.resolveToken(lead);
 		if (!token) {
-			this.enqueue(payload, "no-token");
-			return { skipped: "no-token", queued: true };
+			await this.deadLetter(payload, "no-token");
+			return { skipped: "no-token", deadLettered: true };
 		}
 
-		// Step 5: Fire the Discord POST.
-		const sent = await this.postMessage(channel, token, payload);
-		if (!sent) {
-			this.enqueue(payload, "discord-5xx");
-			return { queued: true };
+		// Step 5: Fire the Discord POST. Classify failures: transient (5xx /
+		// 429 / network) → queue for retry; permanent (other 4xx — bad token,
+		// forbidden, channel gone) → dead-letter (retry is pointless).
+		const outcome = await this.postMessage(channel, token, payload);
+		if (!outcome.ok) {
+			if (outcome.transient) {
+				this.enqueue(payload, `discord-${outcome.status ?? "net"}`);
+				return { queued: true };
+			}
+			await this.deadLetter(payload, `discord-${outcome.status ?? "4xx"}`);
+			return { deadLettered: true };
 		}
 
 		// Step 6: Severe follow-up DM (best-effort; never alters primary result).
@@ -207,42 +323,140 @@ export class LeadAlertNotifier {
 	}
 
 	/**
-	 * Retry everything in the queue directory. Oldest first. Files for alerts
-	 * that succeed are removed; anything else stays for the next pass.
+	 * Drain the retry queue. Oldest first. Successes are unlinked; TRANSIENT
+	 * failures stay for the next pass; everything else (permanent reason,
+	 * malformed, unknown lead, unresolved channel/token, permanent 4xx, aged
+	 * out, over cap) is moved to the dead-letter dir so the queue can never
+	 * grow without bound or spin forever at sent=0 (FLY-182).
+	 *
+	 * Does NOT fire meta-alerts per file (would be 1667× on a backlog drain);
+	 * returns `deadLettered` so the caller (Bridge drain loop) can fire ONE
+	 * debounced meta-alert when dead-lettering occurs.
 	 */
-	async drainQueue(): Promise<{ sent: number; remaining: number }> {
-		const entries = readdirSync(this.queueDir)
+	async drainQueue(): Promise<{
+		sent: number;
+		remaining: number;
+		deadLettered: number;
+	}> {
+		let entries = readdirSync(this.queueDir)
 			.filter((f) => f.endsWith(".json"))
-			.sort();
+			.sort(); // names start with an ISO-ish stamp → lexical ≈ chronological
 		let sent = 0;
+		let deadLettered = 0;
+
+		// Cap: dead-letter the oldest beyond queueMax before doing any work.
+		if (entries.length > this.queueMax) {
+			const overflow = entries.slice(0, entries.length - this.queueMax);
+			for (const file of overflow) {
+				this.moveQueueFileToDeadLetter(file, "queue-cap");
+				deadLettered++;
+			}
+			entries = entries.slice(entries.length - this.queueMax);
+		}
+
 		for (const file of entries) {
 			const path = join(this.queueDir, file);
-			let payload: AlertPayload;
+			let parsed: AlertPayload & { queueReason?: string; queuedAt?: string };
 			try {
-				payload = JSON.parse(readFileSync(path, "utf-8")) as AlertPayload;
+				parsed = JSON.parse(readFileSync(path, "utf-8"));
 			} catch (err) {
-				this.logger(
-					`skip malformed queue entry ${file}: ${(err as Error).message}`,
-				);
+				// Malformed → dead-letter (never skip forever — Codex CR R2#2).
+				this.logger(`malformed queue entry ${file}: ${(err as Error).message}`);
+				this.moveQueueFileToDeadLetter(file, "malformed");
+				deadLettered++;
 				continue;
 			}
-			const resolved = this.resolveLead(payload.leadId, payload.projectName);
-			if (!resolved) continue;
+
+			// Aging.
+			if (this.queueFileAgeMs(parsed.queuedAt, path) > this.queueMaxAgeMs) {
+				this.moveQueueFileToDeadLetter(file, "aged-out");
+				deadLettered++;
+				continue;
+			}
+
+			// Recorded permanent reason → dead-letter REGARDLESS of whether
+			// today's config can resolve a channel (Codex design R1#3: stops the
+			// legacy no-channel backlog flooding core after fallbackToCore flip).
+			if (
+				parsed.queueReason &&
+				PERMANENT_QUEUE_REASONS.has(parsed.queueReason)
+			) {
+				this.moveQueueFileToDeadLetter(file, `permanent-${parsed.queueReason}`);
+				deadLettered++;
+				continue;
+			}
+
+			const resolved = this.resolveLead(parsed.leadId, parsed.projectName);
+			if (!resolved) {
+				this.moveQueueFileToDeadLetter(file, "unknown-lead");
+				deadLettered++;
+				continue;
+			}
 			const { lead, project } = resolved;
 			const channel = this.resolveChannel(lead, project);
 			const token = this.resolveToken(lead);
-			if (!channel || !token) continue;
+			if (!channel || !token) {
+				// Config problem — permanent. Dead-letter, don't spin.
+				this.moveQueueFileToDeadLetter(
+					file,
+					channel ? "no-token" : "no-channel",
+				);
+				deadLettered++;
+				continue;
+			}
 
-			const ok = await this.postMessage(channel, token, payload);
-			if (ok) {
+			const outcome = await this.postMessage(channel, token, parsed);
+			if (outcome.ok) {
 				unlinkSync(path);
 				sent++;
+			} else if (!outcome.transient) {
+				// Permanent 4xx → dead-letter (retry pointless).
+				this.moveQueueFileToDeadLetter(
+					file,
+					`discord-${outcome.status ?? "4xx"}`,
+				);
+				deadLettered++;
 			}
+			// transient → leave for the next pass.
 		}
+
 		const remaining = readdirSync(this.queueDir).filter((f) =>
 			f.endsWith(".json"),
 		).length;
-		return { sent, remaining };
+		return { sent, remaining, deadLettered };
+	}
+
+	/** Move a queue file into the dead-letter dir (no retry, kept for audit). */
+	private moveQueueFileToDeadLetter(file: string, reason: string): void {
+		const src = join(this.queueDir, file);
+		try {
+			mkdirSync(this.deadLetterDir, { recursive: true });
+			renameSync(src, join(this.deadLetterDir, `${reason}-${file}`));
+		} catch (err) {
+			this.logger(
+				`dead-letter move failed for ${file} (${reason}): ${(err as Error).message}`,
+			);
+			// Best-effort: remove so a permanently-broken file can't loop forever.
+			try {
+				unlinkSync(src);
+			} catch {
+				/* already gone */
+			}
+		}
+	}
+
+	/** Age of a queue file in ms — from `queuedAt` if present, else file mtime. */
+	private queueFileAgeMs(queuedAt: string | undefined, path: string): number {
+		const now = Date.now();
+		if (queuedAt) {
+			const t = Date.parse(queuedAt);
+			if (!Number.isNaN(t)) return now - t;
+		}
+		try {
+			return now - statSync(path).mtimeMs;
+		} catch {
+			return 0;
+		}
 	}
 
 	private resolveLead(
@@ -280,7 +494,7 @@ export class LeadAlertNotifier {
 		channelId: string,
 		token: string,
 		payload: AlertPayload,
-	): Promise<boolean> {
+	): Promise<PostOutcome> {
 		const url = `${DISCORD_API}/channels/${channelId}/messages`;
 		try {
 			const res = await this.fetchFn(url, {
@@ -298,14 +512,19 @@ export class LeadAlertNotifier {
 				this.logger(
 					`Discord POST ${res.status} ${res.statusText} for ${payload.leadId}/${payload.eventType}: ${text}`,
 				);
-				return false;
+				return {
+					ok: false,
+					status: res.status,
+					transient: isTransientStatus(res.status),
+				};
 			}
-			return true;
+			return { ok: true };
 		} catch (err) {
+			// Network/transport error — transient, retry via queue.
 			this.logger(
 				`Discord POST threw for ${payload.leadId}/${payload.eventType}: ${(err as Error).message}`,
 			);
-			return false;
+			return { ok: false, transient: true };
 		}
 	}
 
@@ -336,7 +555,7 @@ export class LeadAlertNotifier {
 				)?.()) ?? {};
 			const dmChannelId = body.id;
 			if (!dmChannelId) return false;
-			return this.postMessage(dmChannelId, token, payload);
+			return (await this.postMessage(dmChannelId, token, payload)).ok;
 		} catch (err) {
 			this.logger(`DM fan-out failed: ${(err as Error).message}`);
 			return false;
@@ -354,6 +573,59 @@ export class LeadAlertNotifier {
 		};
 		writeFileSync(path, JSON.stringify(record, null, 2), "utf-8");
 	}
+}
+
+/** A Lead whose alert path can never deliver with the current config. */
+export interface UnreachableAlertLead {
+	projectName: string;
+	leadId: string;
+	reason: string;
+}
+
+/**
+ * FLY-182 (§4.1): find Leads whose alert channel/token cannot resolve from
+ * config — the silent gap that broke alerting for 25 days. Called at Bridge
+ * startup so a misconfigured alert path is surfaced LOUDLY instead of failing
+ * silently. Token check is config-shape only (a configured env var may still
+ * be empty at runtime; that surfaces as a permanent no-token dead-letter).
+ */
+export function findUnreachableAlertLeads(
+	projects: ProjectEntry[],
+): UnreachableAlertLead[] {
+	const out: UnreachableAlertLead[] = [];
+	for (const project of projects) {
+		for (const lead of project.leads) {
+			const hasChannel =
+				!!lead.alertChannel ||
+				(!!lead.alertFallbackToCore && !!project.generalChannel);
+			if (!hasChannel) {
+				out.push({
+					projectName: project.projectName,
+					leadId: lead.agentId,
+					reason:
+						"no alertChannel and no alertFallbackToCore+generalChannel — alerts cannot resolve a channel",
+				});
+				continue;
+			}
+			// Codex CR R1: check the token actually RESOLVES at runtime, not just
+			// that an env-var NAME is configured — a misspelled/unset env var would
+			// otherwise pass startup and only surface as a dead-letter on the first
+			// real alert.
+			const tokenEnvName = lead.alertBotTokenEnv ?? lead.botTokenEnv;
+			const tokenResolves =
+				(!!tokenEnvName && !!process.env[tokenEnvName]) || !!lead.botToken;
+			if (!tokenResolves) {
+				out.push({
+					projectName: project.projectName,
+					leadId: lead.agentId,
+					reason: tokenEnvName
+						? `alert token env "${tokenEnvName}" is not set / empty (and no inline botToken)`
+						: "no alertBotTokenEnv / botTokenEnv / botToken configured",
+				});
+			}
+		}
+	}
+	return out;
 }
 
 function formatContent(payload: AlertPayload): string {

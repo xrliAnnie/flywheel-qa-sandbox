@@ -2,7 +2,11 @@ import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type AlertPayload, LeadAlertNotifier } from "../LeadAlertNotifier.js";
+import {
+	type AlertPayload,
+	findUnreachableAlertLeads,
+	LeadAlertNotifier,
+} from "../LeadAlertNotifier.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 
@@ -58,14 +62,17 @@ function buildPayload(overrides: Partial<AlertPayload> = {}): AlertPayload {
 describe("LeadAlertNotifier", () => {
 	let store: StateStore;
 	let queueDir: string;
+	let deadLetterDir: string;
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
 		queueDir = mkdtempSync(join(tmpdir(), "fly83-queue-"));
+		deadLetterDir = mkdtempSync(join(tmpdir(), "fly182-dl-"));
 	});
 
 	afterEach(() => {
 		rmSync(queueDir, { recursive: true, force: true });
+		rmSync(deadLetterDir, { recursive: true, force: true });
 	});
 
 	it("POSTs to alertChannel with resolved bot token and claims dedup row", async () => {
@@ -219,26 +226,130 @@ describe("LeadAlertNotifier", () => {
 		);
 	});
 
-	it("returns skipped=no-channel and queues when no alert route is configured", async () => {
+	it("FLY-182: no-channel is a PERMANENT failure → dead-letter + meta-alert, NOT queue", async () => {
+		const fetchFn = vi.fn();
+		const metaAlert = { notify: vi.fn().mockResolvedValue(undefined) };
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir,
+			metaAlert,
+		});
+
+		const result = await notifier.alert(buildPayload({ leadId: "ops-lead" }));
+
+		expect(result.skipped).toBe("no-channel");
+		expect(result.deadLettered).toBe(true);
+		expect(fetchFn).not.toHaveBeenCalled();
+		// NOT queued (the 1667-backlog root cause) — dead-lettered instead.
+		expect(readdirSync(queueDir).length).toBe(0);
+		const dl = readdirSync(deadLetterDir);
+		expect(dl.length).toBe(1);
+		expect(
+			JSON.parse(readFileSync(join(deadLetterDir, dl[0]!), "utf-8")).leadId,
+		).toBe("ops-lead");
+		// Meta-alert fired so the silent gap surfaces.
+		expect(metaAlert.notify).toHaveBeenCalledTimes(1);
+		expect(metaAlert.notify.mock.calls[0]![0].reason).toBe(
+			"alert_dead_lettered",
+		);
+	});
+
+	it("FLY-182: permanent Discord 4xx (e.g. 403) → dead-letter, not queue", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 403,
+			statusText: "Forbidden",
+			text: async () => "missing access",
+		});
+		const metaAlert = { notify: vi.fn().mockResolvedValue(undefined) };
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir,
+			metaAlert,
+		});
+
+		const result = await notifier.alert(buildPayload());
+		expect(result.deadLettered).toBe(true);
+		expect(readdirSync(queueDir).length).toBe(0);
+		expect(readdirSync(deadLetterDir).length).toBe(1);
+	});
+
+	it("FLY-182: transient 429 stays queued (retryable)", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 429,
+			statusText: "Too Many Requests",
+			text: async () => "rate limited",
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir,
+		});
+		const result = await notifier.alert(buildPayload());
+		expect(result.queued).toBe(true);
+		expect(readdirSync(queueDir).length).toBe(1);
+		expect(readdirSync(deadLetterDir).length).toBe(0);
+	});
+
+	it("FLY-182: drainQueue dead-letters legacy permanent (no-channel) files regardless of current config", async () => {
+		// Simulate the production backlog: a queue file recorded as no-channel.
 		const fetchFn = vi.fn();
 		const notifier = new LeadAlertNotifier({
 			store,
 			projects: testProjects,
 			fetchFn,
 			queueDir,
+			deadLetterDir,
 		});
-
-		const result = await notifier.alert(buildPayload({ leadId: "ops-lead" }));
-
-		expect(result.skipped).toBe("no-channel");
-		expect(fetchFn).not.toHaveBeenCalled();
-
-		const queued = readdirSync(queueDir);
-		expect(queued.length).toBe(1);
-		const written = JSON.parse(
-			readFileSync(join(queueDir, queued[0]!), "utf-8"),
+		// Hand-write a legacy queue file (queueReason=no-channel) for a lead that
+		// CAN now resolve a channel (cos-lead) — must still be dead-lettered.
+		const legacy = {
+			...buildPayload({ leadId: "cos-lead" }),
+			queuedAt: new Date().toISOString(),
+			queueReason: "no-channel",
+		};
+		const { writeFileSync } = await import("node:fs");
+		writeFileSync(
+			join(queueDir, "2026-05-04T00-00-00-000Z-cos-lead-pane_hash_stuck.json"),
+			JSON.stringify(legacy),
+			"utf-8",
 		);
-		expect(written.leadId).toBe("ops-lead");
+
+		const drained = await notifier.drainQueue();
+		expect(drained.deadLettered).toBe(1);
+		expect(drained.sent).toBe(0);
+		expect(fetchFn).not.toHaveBeenCalled(); // never POSTed to core
+		expect(readdirSync(queueDir).length).toBe(0);
+		expect(readdirSync(deadLetterDir).length).toBe(1);
+	});
+
+	it("FLY-182: drainQueue dead-letters malformed files instead of skipping forever", async () => {
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: vi.fn(),
+			queueDir,
+			deadLetterDir,
+		});
+		const { writeFileSync } = await import("node:fs");
+		writeFileSync(
+			join(queueDir, "2026-01-01T00-00-00-000Z-x-y.json"),
+			"{not json",
+			"utf-8",
+		);
+		const drained = await notifier.drainQueue();
+		expect(drained.deadLettered).toBe(1);
+		expect(readdirSync(queueDir).length).toBe(0);
+		expect(readdirSync(deadLetterDir).length).toBe(1);
 	});
 
 	it("queues to disk on Discord 5xx so a later drain can retry", async () => {
@@ -349,19 +460,80 @@ describe("LeadAlertNotifier", () => {
 		);
 	});
 
-	it("skips alert for unknown lead and does not throw", async () => {
+	it("FLY-182: unknown lead dead-letters (audit) + does not throw or POST", async () => {
 		const fetchFn = vi.fn();
 		const notifier = new LeadAlertNotifier({
 			store,
 			projects: testProjects,
 			fetchFn,
 			queueDir,
+			deadLetterDir,
 		});
 
 		const result = await notifier.alert(
 			buildPayload({ leadId: "unknown-lead" }),
 		);
 		expect(result.skipped).toBe("unknown-lead");
+		expect(result.deadLettered).toBe(true);
 		expect(fetchFn).not.toHaveBeenCalled();
+		expect(readdirSync(queueDir).length).toBe(0);
+		expect(readdirSync(deadLetterDir).length).toBe(1);
+	});
+});
+
+describe("findUnreachableAlertLeads (FLY-182 §4.1 startup validation)", () => {
+	it("flags leads with no channel route and no token source", () => {
+		const unreachable = findUnreachableAlertLeads(testProjects);
+		// ops-lead has neither alertChannel nor fallback-to-core → unreachable.
+		expect(unreachable.map((u) => u.leadId)).toContain("ops-lead");
+		// cos-lead (alertChannel) + product-lead (fallback+generalChannel) reachable.
+		expect(unreachable.map((u) => u.leadId)).not.toContain("cos-lead");
+		expect(unreachable.map((u) => u.leadId)).not.toContain("product-lead");
+	});
+
+	it("flags a lead whose token env var is configured but not resolvable at runtime", () => {
+		const prev = process.env.FLY182_MISSING_TOKEN;
+		delete process.env.FLY182_MISSING_TOKEN;
+		const proj: ProjectEntry[] = [
+			{
+				projectName: "p",
+				projectRoot: "/tmp/p",
+				generalChannel: "core",
+				leads: [
+					{
+						agentId: "l1",
+						forumChannel: "f",
+						chatChannel: "c",
+						match: { labels: [] },
+						alertChannel: "chan",
+						alertBotTokenEnv: "FLY182_MISSING_TOKEN", // not set in env
+					},
+				],
+			},
+		];
+		const unreachable = findUnreachableAlertLeads(proj);
+		expect(unreachable.map((u) => u.leadId)).toContain("l1");
+		if (prev !== undefined) process.env.FLY182_MISSING_TOKEN = prev;
+	});
+
+	it("returns empty when every lead has a resolvable channel + token", () => {
+		const ok: ProjectEntry[] = [
+			{
+				projectName: "p",
+				projectRoot: "/tmp/p",
+				generalChannel: "core",
+				leads: [
+					{
+						agentId: "l1",
+						forumChannel: "f",
+						chatChannel: "c",
+						match: { labels: [] },
+						alertChannel: "chan",
+						botToken: "tok",
+					},
+				],
+			},
+		];
+		expect(findUnreachableAlertLeads(ok)).toEqual([]);
 	});
 });
