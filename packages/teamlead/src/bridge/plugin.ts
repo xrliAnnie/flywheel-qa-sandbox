@@ -91,6 +91,19 @@ export type { CommBackend };
 export const resolveCommBackend = resolveCommBackendShared;
 
 /**
+ * FLY-182: resolve the per-write mailbox timeout from
+ * `FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS`. Returns `undefined` (→ MailboxLeadRuntime
+ * default of 3000ms) when unset, empty, or not a positive integer.
+ */
+export function resolveMailboxWriteTimeoutMs(): number | undefined {
+	const raw = process.env.FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS;
+	if (raw === undefined || raw.trim().length === 0) return undefined;
+	const n = Number(raw);
+	if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return undefined;
+	return n;
+}
+
+/**
  * FLY-47 → FLY-142 PR 1.4: per-Lead runtime factory. Selects MailboxLeadRuntime
  * (default, fixes wake bug) or CommDBLeadRuntime (rollback) based on
  * FLYWHEEL_COMM_BACKEND env var. Throws on transport readiness failure.
@@ -155,7 +168,15 @@ export async function createLeadRuntime(
 		console.log(
 			`[Bridge] Lead "${lead.agentId}" using mailbox runtime (FLY-142 PR 1.4 default)`,
 		);
-		return new MailboxLeadRuntime({ leadId: lead.agentId, transport });
+		// FLY-182: allow tuning the per-write timeout via env. Default stays
+		// 3000ms (MailboxLeadRuntime default) for byte-compat. With prune
+		// keeping inbox files small this is rarely the bottleneck, but the knob
+		// gives an escape hatch under heavy concurrency.
+		return new MailboxLeadRuntime({
+			leadId: lead.agentId,
+			transport,
+			writeTimeoutMs: resolveMailboxWriteTimeoutMs(),
+		});
 	}
 
 	// Rollback path — CommDB runtime. Requires inbox-mcp PID lease alive.
