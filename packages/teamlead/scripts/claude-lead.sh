@@ -201,6 +201,11 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # SCRIPT_DIR is packages/teamlead/scripts; FLYWHEEL_ROOT is three levels up.
 FLYWHEEL_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 export FLYWHEEL_ROOT
+# FLY-183: Discord adapter orphan reaper. Sourced here (after SCRIPT_DIR, before
+# _launch_claude is defined) so `reap_orphan_adapters` is available in the launch
+# path. The lib defines functions only; it does not change shell options.
+# shellcheck source=lib/reap-orphan-adapters.sh
+source "${SCRIPT_DIR}/lib/reap-orphan-adapters.sh"
 # FLY-83: Ensure all alert-path directories exist before anything can fail.
 # - blocked/  : marker files pausing supervisor until Annie clears them
 # - alert-queue/ : LeadAlertNotifier spills here when Discord POST fails
@@ -703,8 +708,23 @@ _launch_claude() {
 
   local window_name="${PROJECT_NAME}-${LEAD_ID}"
 
+  # FLY-183: Reap orphaned Discord adapters before launching a new Claude.
+  # Sequence matters (Codex design review #3): on a supervisor restart the stale
+  # window below may still hold a LIVE old Claude (ppid!=1, skipped by reap);
+  # killing it then creates exactly the orphan we must clean. So:
+  #   pre-sweep (historical orphans) -> kill stale window -> bounded settle
+  #   (let old Claude die + its adapter reparent to launchd) -> re-sweep.
+  # `|| true` belt: reap is internally fail-open, but never let it abort launch.
+  reap_orphan_adapters || true
+
   # Kill stale window with same name (from previous crash)
   tmux kill-window -t "=flywheel:=${window_name}" 2>/dev/null || true
+
+  # FLY-183: bounded settle for the just-killed Claude to exit and its adapter
+  # to reparent to launchd (ppid==1), then re-sweep to reap that fresh orphan
+  # before the new Claude (and its new adapter) starts. One-shot, not periodic.
+  sleep 0.5
+  reap_orphan_adapters || true
 
   # Build env injection args (explicit per-window, match TmuxAdapter pattern).
   # FLY-60 W6 v2: ALSO override the un-prefixed LEAD_ID and PROJECT_NAME
@@ -866,6 +886,15 @@ cleanup() {
     # Force kill if still alive
     tmux kill-window -t "$LEAD_WINDOW_ID" 2>/dev/null || true
   fi
+
+  # FLY-183: best-effort reap of this Lead's adapter on graceful shutdown.
+  # Timing caveat (Codex design review #3): the just-killed Claude's adapter may
+  # not have reparented to launchd (ppid==1) yet, so this is best-effort only --
+  # a short settle improves the odds, but the durable guarantee is Layer 2
+  # (in-adapter ppid self-clean) plus the next launch's pre/re-sweep. Never block
+  # shutdown on it.
+  sleep 0.5
+  reap_orphan_adapters || true
 
   # Kill any background jobs (race window)
   local bg_pids
