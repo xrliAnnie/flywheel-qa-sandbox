@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AlertPayload } from "../LeadAlertNotifier.js";
-import { computeEventId, LeadWatchdog } from "../LeadWatchdog.js";
+import {
+	computeEventId,
+	isIdleHealthyPane,
+	LeadWatchdog,
+} from "../LeadWatchdog.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 
@@ -202,6 +206,90 @@ describe("LeadWatchdog", () => {
 		await wd.pollOnce();
 		expect(notifier.alert).toHaveBeenCalledTimes(1);
 		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
+	});
+
+	it("FLY-182 B3: suppressIdleHealthy=true → does NOT alert on an idle-ready pane", async () => {
+		const notifier = makeNotifier();
+		const wd = new LeadWatchdog({
+			pollIntervalMs: 30_000,
+			paneHashStuckCycles: 2,
+			paneHashAlertCycles: 3,
+			cooldownMs: 300_000,
+			projects,
+			store,
+			notifier: notifier.alert,
+			locateWindowFn: async () => ({
+				windowId: "@7",
+				windowName: "geoforge3d-cos-lead",
+			}),
+			captureFn: async () =>
+				'│ > Try "edit <file>"                    │\n? for shortcuts',
+			claimsReader: async () => new Set(),
+			blockedMarkerReader: async () => [],
+			now: () => 0,
+			suppressIdleHealthy: true,
+		});
+		await wd.pollOnce();
+		await wd.pollOnce();
+		await wd.pollOnce();
+		await wd.pollOnce();
+		// Idle-but-alive pane: never escalated to pane_hash_stuck.
+		expect(notifier.alert).not.toHaveBeenCalled();
+		expect(wd.getState("cos-lead")).toBe("Healthy");
+	});
+
+	it("FLY-182 B3: suppressIdleHealthy=true → STILL alerts on a frozen WORKING pane", async () => {
+		const notifier = makeNotifier();
+		const wd = new LeadWatchdog({
+			pollIntervalMs: 30_000,
+			paneHashStuckCycles: 2,
+			paneHashAlertCycles: 3,
+			cooldownMs: 300_000,
+			projects,
+			store,
+			notifier: notifier.alert,
+			locateWindowFn: async () => ({
+				windowId: "@7",
+				windowName: "geoforge3d-cos-lead",
+			}),
+			// Frozen mid-operation (spinner / esc to interrupt) → a REAL stuck.
+			captureFn: async () => "Thinking… (esc to interrupt)",
+			claimsReader: async () => new Set(),
+			blockedMarkerReader: async () => [],
+			now: () => 0,
+			suppressIdleHealthy: true,
+		});
+		await wd.pollOnce();
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
+	});
+
+	it("FLY-182 B3: suppressIdleHealthy=false (default) → alerts on idle pane (unchanged behavior)", async () => {
+		const notifier = makeNotifier();
+		const wd = new LeadWatchdog({
+			pollIntervalMs: 30_000,
+			paneHashStuckCycles: 2,
+			paneHashAlertCycles: 3,
+			cooldownMs: 300_000,
+			projects,
+			store,
+			notifier: notifier.alert,
+			locateWindowFn: async () => ({
+				windowId: "@7",
+				windowName: "geoforge3d-cos-lead",
+			}),
+			captureFn: async () => "? for shortcuts",
+			claimsReader: async () => new Set(),
+			blockedMarkerReader: async () => [],
+			now: () => 0,
+			// suppressIdleHealthy omitted → default OFF.
+		});
+		await wd.pollOnce();
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
 	});
 
 	it("resets stuck counter and stays Healthy when pane changes", async () => {
@@ -498,5 +586,33 @@ describe("LeadWatchdog", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+});
+
+describe("isIdleHealthyPane (FLY-182 B3 recognizer)", () => {
+	it("returns true for a high-confidence idle-ready pane", () => {
+		expect(isIdleHealthyPane("│ > │\n? for shortcuts")).toBe(true);
+		expect(isIdleHealthyPane('Try "fix the bug"\nshift+tab to cycle')).toBe(
+			true,
+		);
+	});
+
+	it("returns false when actively working (must not suppress a real freeze)", () => {
+		expect(
+			isIdleHealthyPane("Thinking… (esc to interrupt)\n? for shortcuts"),
+		).toBe(false);
+		expect(isIdleHealthyPane("Working… 1234 tokens used")).toBe(false);
+	});
+
+	it("returns false for blocked patterns (let them alert as classified)", () => {
+		expect(isIdleHealthyPane("usage limit reached\n? for shortcuts")).toBe(
+			false,
+		);
+		expect(isIdleHealthyPane("rate-limit hit\n? for shortcuts")).toBe(false);
+	});
+
+	it("returns false on uncertainty (no idle marker) — fail-open to alerting", () => {
+		expect(isIdleHealthyPane("")).toBe(false);
+		expect(isIdleHealthyPane("some random frozen output")).toBe(false);
 	});
 });

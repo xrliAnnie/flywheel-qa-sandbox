@@ -15,9 +15,13 @@ import {
 	HeartbeatService,
 	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
-import { LeadAlertNotifier } from "../LeadAlertNotifier.js";
+import {
+	findUnreachableAlertLeads,
+	LeadAlertNotifier,
+} from "../LeadAlertNotifier.js";
 import { LeadWatchdog } from "../LeadWatchdog.js";
 import { locateLeadWindow } from "../LeadWindowLocator.js";
+import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
 import {
 	type LeadConfig,
 	type ProjectEntry,
@@ -1912,12 +1916,44 @@ export async function startBridge(
 	const claimsClaimer = createClaimsClaimer();
 	const blockedMarkerReader = createBlockedMarkerReader();
 	const leadPaneCaptureFn = defaultLeadPaneCapture();
+	// FLY-182 Track B: Discord-independent meta-alert sink. LeadAlert must never
+	// fail silently — when the Discord path is broken (config gap, permanent
+	// failure, drain stuck, Lead not consuming), surface it via osascript +
+	// local file.
+	const metaAlertNotifier = new MetaAlertNotifier();
+	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
+		console.log(
+			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
+		);
+	});
 	const leadAlertNotifier = new LeadAlertNotifier({
 		store,
 		projects,
 		claimsReader,
 		claimsClaimer,
+		metaAlert: metaAlertNotifier,
 	});
+
+	// FLY-182 §4.1: surface any Lead whose alert channel/token cannot resolve
+	// from config — the silent gap that broke alerting for 25 days. LOUD log +
+	// one meta-alert (debounced) so it never goes unnoticed again.
+	const unreachableAlertLeads = findUnreachableAlertLeads(projects);
+	if (unreachableAlertLeads.length > 0) {
+		for (const u of unreachableAlertLeads) {
+			console.error(
+				`[Bridge] ALERT-UNREACHABLE lead="${u.leadId}" project="${u.projectName}": ${u.reason}`,
+			);
+		}
+		void metaAlertNotifier.notify({
+			reason: "alert_unreachable_config",
+			title: "Lead alert channel(s) not configured",
+			body: `${unreachableAlertLeads.length} Lead(s) cannot deliver alerts: ${unreachableAlertLeads
+				.map((u) => u.leadId)
+				.join(
+					", ",
+				)}. Alerts for them will dead-letter, not reach Annie. Fix projects.json (alertChannel or alertFallbackToCore + generalChannel).`,
+		});
+	}
 	const leadWatchdog = new LeadWatchdog({
 		pollIntervalMs: 30_000,
 		paneHashStuckCycles: 2,
@@ -1931,6 +1967,9 @@ export async function startBridge(
 		captureFn: leadPaneCaptureFn,
 		claimsReader,
 		blockedMarkerReader,
+		// FLY-182 B3: default OFF until the idle-pane recognizer is validated
+		// against real Lead pane fixtures (set FLYWHEEL_PANE_IDLE_SUPPRESS=1).
+		suppressIdleHealthy: process.env.FLYWHEEL_PANE_IDLE_SUPPRESS === "1",
 	});
 	leadWatchdog.start();
 	console.log(
@@ -1946,18 +1985,103 @@ export async function startBridge(
 	// a drain stalls past the 60s interval (slow Discord), an overlapping drain
 	// would re-POST the same still-present queue file → duplicate alert, which
 	// breaks the "one alert per 10-min bucket" invariant. Skip when busy.
+	// FLY-182 §4.5 / §3.1.4: connect Track A's mailbox-overflow markers to
+	// alerting. A marker means a Lead's unread inbox crossed the threshold
+	// (not consuming) — surface it via the Discord-independent channel.
+	const checkMailboxOverflowMarkers = async (
+		meta: MetaAlertNotifier,
+	): Promise<void> => {
+		try {
+			const { getStateDir } = await import("flywheel-agent-team-transport");
+			const { readdir, readFile } = await import("node:fs/promises");
+			const { join: pjoin } = await import("node:path");
+			const dir = pjoin(getStateDir(), "mailbox-overflow");
+			let files: string[];
+			try {
+				files = (await readdir(dir)).filter((f) => f.endsWith(".json"));
+			} catch {
+				return; // dir absent → nothing to report
+			}
+			if (files.length === 0) return;
+			const leads: string[] = [];
+			for (const f of files) {
+				try {
+					const m = JSON.parse(await readFile(pjoin(dir, f), "utf-8"));
+					leads.push(`${m.team}/${m.recipient}(unread=${m.unread})`);
+				} catch {
+					/* skip unreadable marker */
+				}
+			}
+			await meta.notify({
+				reason: "mailbox_overflow",
+				title: "Lead not consuming mailbox",
+				body: `Unread mailbox overflow: ${leads.join(", ") || files.join(", ")}. A Lead may be stuck or not consuming its inbox.`,
+			});
+		} catch (err) {
+			console.warn(
+				`[Bridge] mailbox-overflow check failed: ${(err as Error).message}`,
+			);
+		}
+	};
+
+	// FLY-182 §4.5: self-monitoring thresholds (env-tunable). The watchdog must
+	// not go silent — meta-alerts ride the EXISTING 60s drain timer (no new
+	// periodic load, FLY-129). MetaAlertNotifier debounces per reason (10min),
+	// so repeated cycles collapse to one alert.
+	const metaAlertStuckCycles = (() => {
+		const raw = process.env.FLYWHEEL_ALERT_DRAIN_STUCK_CYCLES;
+		const n = raw ? Number(raw) : Number.NaN;
+		return Number.isInteger(n) && n > 0 ? n : 5; // ~5min at 60s cadence
+	})();
+	const alertQueueOverflow = (() => {
+		const raw = process.env.FLYWHEEL_ALERT_QUEUE_MAX;
+		const n = raw ? Number(raw) : Number.NaN;
+		return Number.isInteger(n) && n > 0 ? n : 500;
+	})();
+	let drainStuckCycles = 0;
 	let leadAlertDraining = false;
 	const leadAlertDrainTimer = setInterval(() => {
 		if (leadAlertDraining) return;
 		leadAlertDraining = true;
 		leadAlertNotifier
 			.drainQueue()
-			.then(({ sent, remaining }) => {
-				if (sent > 0 || remaining > 0) {
+			.then(async ({ sent, remaining, deadLettered }) => {
+				if (sent > 0 || remaining > 0 || deadLettered > 0) {
 					console.log(
-						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining}`,
+						`[Bridge] LeadAlert drain sent=${sent} remaining=${remaining} deadLettered=${deadLettered}`,
 					);
 				}
+				// Dead-letters happened → surface (Discord-independent).
+				if (deadLettered > 0) {
+					await metaAlertNotifier.notify({
+						reason: "alert_dead_lettered",
+						title: "LeadAlert dead-lettered alerts",
+						body: `${deadLettered} alert(s) were dead-lettered during drain (remaining=${remaining}). Check ~/.flywheel/alert-deadletter and the Discord alert config.`,
+					});
+				}
+				// No progress while items remain → drain is stuck.
+				if (sent === 0 && remaining > 0) {
+					drainStuckCycles++;
+					if (drainStuckCycles >= metaAlertStuckCycles) {
+						await metaAlertNotifier.notify({
+							reason: "drain_stuck",
+							title: "LeadAlert drainQueue stuck",
+							body: `drainQueue has made no progress for ${drainStuckCycles} cycles (remaining=${remaining}). The Discord alert path is likely down or misconfigured.`,
+						});
+					}
+				} else {
+					drainStuckCycles = 0;
+				}
+				// Queue over cap.
+				if (remaining > alertQueueOverflow) {
+					await metaAlertNotifier.notify({
+						reason: "queue_overflow",
+						title: "LeadAlert queue overflow",
+						body: `The alert queue holds ${remaining} entries (> ${alertQueueOverflow}).`,
+					});
+				}
+				// Track A mailbox-overflow markers → a Lead is not consuming its inbox.
+				await checkMailboxOverflowMarkers(metaAlertNotifier);
 			})
 			.catch((err: Error) => {
 				console.warn(`[Bridge] LeadAlert drain failed: ${err.message}`);
