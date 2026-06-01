@@ -46,8 +46,17 @@ This matches `class Project extends Base` semantics: subclass declarations sit o
 | [`department-lead-rules.md`](department-lead-rules.md) | Department Leads (non-cos roles) | FLY-127 Action Gate, Multi-Lead Mentions handling, Bridge rejection diagnostic templates; FLY-152 Shared Channel Reply Discipline |
 | [`cos-lead-rules.md`](cos-lead-rules.md) | Cos-lead role only | FLY-127 Department Routing Discipline (one Lead per backend spawn directive); FLY-152 Shared Channel Reply Discipline |
 | [`founder-only-authority.md`](founder-only-authority.md) | **Every** Lead role (cos AND dept) | FLY-175 Track 1 — merge-to-main and stop-runner are founder-only authorized actions; Lead self-judgment is not consent |
+| [`executor-routing.md`](executor-routing.md) | Department Leads (non-cos roles) | FLY-178 — route the Runner executor by the ACTUAL work type (pass `agentName`), end-to-end ownership; engineering executors self-research, so engineering work is not pre-staged through a PM executor |
 
 All files are appended via `--append-system-prompt-file` in `packages/teamlead/scripts/claude-lead.sh`. They are conditional: if a base file is missing, behavior is identical to pre-FLY-127 (no failure, no warning — backward compatible for old flywheel checkouts).
+
+> **Pattern note (FLY-178)**: `executor-routing.md` is a base file whose
+> project-side instantiation does **not** use a same-named project file.
+> Instead, the concrete executor names / work-type→executor map / `curl`
+> live in the project's `department-lead-rules.md` "Start Runner" subsection
+> (a small, documented deviation from the same-filename inheritance pattern —
+> chosen to avoid a new project file + extra wiring for a few lines of
+> concrete data).
 
 ## Backward compatibility
 
