@@ -27,6 +27,12 @@ import { mkdir, readFile, rename, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { type MailboxPayload, MailboxWriteError } from "../types.js";
+import {
+	pruneMainEntries,
+	pruneSidecarRecords,
+	resolvePrunePolicy,
+	updateOverflowMarker,
+} from "./mailbox-prune.js";
 
 // Stock claude-code lock options. MUST match exactly (see plan §2.0.6).
 const LOCK_OPTIONS = {
@@ -216,9 +222,13 @@ export async function markEntriesAsReadUnderLock(args: {
 	predicate: (entry: TeammateMessage) => boolean;
 }): Promise<number> {
 	await ensureFileExists(args.inboxPath, "[]");
+	const policy = resolvePrunePolicy();
 	const lockPath = `${args.inboxPath}.lock`;
 	let flipped = 0;
-	await withFileLock(args.inboxPath, lockPath, async () => {
+	// Return overflow info from the locked critical section so control-flow
+	// analysis sees the assignment (assigning a captured `let` inside the
+	// async callback would not narrow the type for the post-lock read).
+	const overflow = await withFileLock(args.inboxPath, lockPath, async () => {
 		const messages = await readMailboxEntries(args.inboxPath);
 		const next = messages.map((m) => {
 			if (args.predicate(m) && !m.read) {
@@ -227,13 +237,28 @@ export async function markEntriesAsReadUnderLock(args: {
 			}
 			return m;
 		});
-		if (flipped > 0) {
+		// FLY-182: prune read entries inside the same lock (zero extra lock).
+		const pruned = pruneMainEntries(next, policy, Date.now());
+		// Write when we flipped a read flag OR dropped any old read entry.
+		if (flipped > 0 || pruned.droppedCount > 0) {
 			const tempPath = `${args.inboxPath}.tmp.${process.pid}.${Date.now()}.${Math.random()
 				.toString(36)
 				.slice(2, 8)}`;
-			await writeFile(tempPath, JSON.stringify(next, null, 2), "utf-8");
+			await writeFile(tempPath, JSON.stringify(pruned.kept, null, 2), "utf-8");
 			await rename(tempPath, args.inboxPath);
 		}
+		return {
+			unreadCount: pruned.unreadCount,
+			oldestUnreadTs: pruned.oldestUnreadTs,
+		};
+	});
+	// FLY-182: update unread-overflow marker outside the lock (best-effort).
+	await updateOverflowMarker({
+		inboxPath: args.inboxPath,
+		unreadCount: overflow.unreadCount,
+		oldestUnreadTs: overflow.oldestUnreadTs,
+		policy,
+		now: Date.now(),
 	});
 	return flipped;
 }
@@ -488,7 +513,14 @@ async function sidecarFinalize(args: SidecarFinalizeArgs): Promise<void> {
 					}
 				: r,
 		);
-		await rewriteJsonLines(args.sidecarPath, updated);
+		// FLY-182: prune old finalized sidecar records inside the same lock
+		// (idempotency-first — within-retention finalized are never dropped).
+		const pruned = pruneSidecarRecords(
+			updated,
+			resolvePrunePolicy(),
+			Date.now(),
+		);
+		await rewriteJsonLines(args.sidecarPath, pruned);
 	});
 }
 
@@ -506,13 +538,23 @@ async function writeMainEntryUnderLock(args: WriteMainArgs): Promise<void> {
 	// Pre-lock invariant (Codex r3 medium #4): file must exist.
 	await ensureFileExists(args.inboxPath, "[]");
 
+	const policy = resolvePrunePolicy();
 	const lockPath = `${args.inboxPath}.lock`;
+	let overflow: { unreadCount: number; oldestUnreadTs: number | null };
 	try {
-		await withFileLock(args.inboxPath, lockPath, async () => {
+		// Return overflow info from the locked section (see note in
+		// markEntriesAsReadUnderLock — direct assignment from `await` narrows
+		// correctly; a callback-captured `let` would not).
+		overflow = await withFileLock(args.inboxPath, lockPath, async () => {
 			// Re-read after lock acquired (matches stock pattern at
 			// teammateMailbox.ts:171).
 			const messages = await readMailboxEntries(args.inboxPath);
 			messages.push(args.newEntry);
+
+			// FLY-182: prune read entries inside the lock (zero extra lock).
+			// Never drops unread; preserves original order (only old read
+			// dropped). This bounds the file so writeVerified stays fast.
+			const pruned = pruneMainEntries(messages, policy, Date.now());
 
 			// Atomic temp + rename for crash safety beyond stock semantics.
 			// Atomic-rename within the locked critical section ALSO
@@ -521,8 +563,12 @@ async function writeMainEntryUnderLock(args: WriteMainArgs): Promise<void> {
 			const tempPath = `${args.inboxPath}.tmp.${process.pid}.${Date.now()}.${Math.random()
 				.toString(36)
 				.slice(2, 8)}`;
-			await writeFile(tempPath, JSON.stringify(messages, null, 2), "utf-8");
+			await writeFile(tempPath, JSON.stringify(pruned.kept, null, 2), "utf-8");
 			await rename(tempPath, args.inboxPath);
+			return {
+				unreadCount: pruned.unreadCount,
+				oldestUnreadTs: pruned.oldestUnreadTs,
+			};
 		});
 	} catch (error) {
 		if (error instanceof MailboxWriteError) throw error;
@@ -534,6 +580,16 @@ async function writeMainEntryUnderLock(args: WriteMainArgs): Promise<void> {
 			{ cause: error as Error },
 		);
 	}
+
+	// FLY-182: update unread-overflow marker outside the lock (best-effort,
+	// never throws — exposes "Lead not consuming" without dropping unread).
+	await updateOverflowMarker({
+		inboxPath: args.inboxPath,
+		unreadCount: overflow.unreadCount,
+		oldestUnreadTs: overflow.oldestUnreadTs,
+		policy,
+		now: Date.now(),
+	});
 }
 
 // ============================================================================
