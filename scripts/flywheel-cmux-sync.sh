@@ -37,6 +37,14 @@ CONSERVATIVE_CLEANUP_SECONDS="${FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP:-300}"
 WATCHER_LOCK_DIR="${FLYWHEEL_CMUX_WATCHER_LOCK_DIR:-/tmp/flywheel-cmux-watcher.lock}"
 WATCHER_REAP_MUTEX="${WATCHER_LOCK_DIR}.reap"
 
+# FLY-177: when launched under launchd (plist sets FLYWHEEL_CMUX_SUPERVISED=1),
+# a watcher that finds the lock held by a LIVE watcher blocks-waits to take over
+# instead of `exit 0`. With KeepAlive=true a fast exit would respawn-churn every
+# ThrottleInterval (FLY-129 forbids new periodic load); blocking keeps launchd's
+# process as the steady-state owner without churn. Wait interval overridable for
+# tests. The `.zshrc` autostart path leaves this unset → keeps fast exit 0.
+SUPERVISED_WAIT_SECONDS="${FLYWHEEL_CMUX_SUPERVISED_WAIT:-15}"
+
 # ── Functions ──
 
 # FLY-129: log to stderr so callers in pipelines (e.g. `cmux_call list-workspaces | sed`)
@@ -786,6 +794,12 @@ self_heal_sweep_all() {
     [[ -z "$wname" ]] && continue
     self_heal_one_workspace "$wname"
   done <<< "$tmux_windows"
+  # FLY-177: explicit success. Best-effort sweep — never let a stray non-zero
+  # from the loop propagate. This function is the LAST statement of
+  # sync_additive_bootstrap, which runs in watch_main's `if cmux_health_check_or_die;
+  # then sync_additive_bootstrap; fi` then-branch under `set -euo pipefail`; a
+  # non-zero return there would abort the watcher at startup (§8 zero-churn).
+  return 0
 }
 
 # One-shot sweep of a single session's agent windows (register event). Catches
@@ -798,6 +812,20 @@ self_heal_sweep_session() {
   while IFS='|' read -r s _wid wname; do
     [[ "$s" == "$target" && -n "$wname" ]] && self_heal_one_workspace "$wname"
   done <<< "$tmux_windows"
+  # FLY-177 (churn root cause): explicit success. The loop body's final
+  # statement is `[[ cond ]] && self_heal_one_workspace`; whenever the LAST
+  # agent window does NOT belong to $target, the `[[ ]]` is false and the
+  # `while` loop's exit status is 1. This happens in the common production case:
+  # a `register|<session>` drain event for a `cmux-*` linked session (fired by
+  # session-created when the watcher creates a linked session — no agent window
+  # is ever in a cmux-* session, so nothing matches) or for `flywheel` while a
+  # `runner-*` window sorts last. self_heal_sweep_session is called bare in the
+  # `register)` arm of _drain_file under `set -euo pipefail`, so that stray
+  # non-zero aborted the watcher → launchd KeepAlive respawned it every ~30s
+  # (the FLY-177 churn). Self-heal is best-effort; its status must never kill
+  # the watcher. Verified: the churn started the instant runner-geoforge3d
+  # appeared (linked-session creation began firing register events).
+  return 0
 }
 
 create_workspace_for_window() {
@@ -934,18 +962,36 @@ cleanup_stale_workspaces() {
 }
 
 refresh_linked_sessions() {
-  # FLY-98: tmux-only repair — re-select correct window by name in existing linked sessions.
+  # FLY-98: tmux-only repair — re-select correct window in existing linked sessions.
   # Safe to call from outside cmux (no cmux CLI dependency).
   # Fixes stale current-window pointers after Lead restart (window ID changed, name unchanged).
+  #
+  # FLY-177 (④): select by LIVE window_id, not by name. The old `=name` exact
+  # match picks the LOWEST-index same-name window, which can be a stale
+  # remain-on-exit DEAD window left after a Lead restart (claude-lead.sh kills
+  # the old window first, but kill can fail / linger) → the view would land on a
+  # dead pane. We instead probe `#{pane_dead}` on the specific window_id and only
+  # select live ones. Among same-name LIVE windows the highest-index (last
+  # iterated) wins deterministically. Pure tmux, idempotent, no cmux IPC, no new
+  # periodic load (FLY-129) — runs only inside the existing additive/bootstrap
+  # passes, so it does not touch the FLY-102 high-frequency surface.
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
   [[ -z "$tmux_windows" ]] && return 0
 
+  local src_sess wid wname
   while IFS='|' read -r src_sess wid wname; do
+    [[ -z "$wname" || -z "$wid" ]] && continue
     local view_session="${VIEW_PREFIX}${wname}"
-    if linked_session_exists "$view_session"; then
-      # Re-select window by exact name — idempotent, harmless if already correct
-      tmux select-window -t "=${view_session}:=${wname}" 2>/dev/null || true
+    linked_session_exists "$view_session" || continue
+    # ID-scoped liveness (NOT the name-based is_pane_alive, which would report a
+    # dead row as alive when a different same-name window is live).
+    local dead
+    dead=$(tmux display-message -p -t "=${src_sess}:${wid}" "#{pane_dead}" 2>/dev/null || echo "1")
+    if [[ "$dead" == "0" ]]; then
+      # Select by window_id — grouped sessions share the window object, so the
+      # id is a valid target-window in the view session. Idempotent.
+      tmux select-window -t "=${view_session}:${wid}" 2>/dev/null || true
     fi
   done <<< "$tmux_windows"
 }
@@ -1566,18 +1612,50 @@ for w in json.load(sys.stdin).get("workspaces", []):
 # we released the reap mutex (because a contender slipped in), we retry from
 # step 1 with bounded attempts (≤3). After exhaustion we exit 0 (already-running
 # is the only safe interpretation).
+# FLY-177: true if PID's command looks like a `flywheel-cmux-sync --watch`.
+# Guards the supervised block-wait against PID reuse: a recycled PID belonging
+# to some unrelated process must NOT make a launchd watcher wait forever — it is
+# treated as a stale lock and reaped instead.
+_pid_is_watcher() {
+  local pid="$1" cmd
+  [[ -z "$pid" ]] && return 1
+  cmd=$(ps -o command= -p "$pid" 2>/dev/null || true)
+  [[ "$cmd" == *flywheel-cmux-sync* && "$cmd" == *--watch* ]]
+}
+
 acquire_watcher_lock() {
-  local attempt
-  for attempt in 1 2 3; do
-    # Step 1 — lock dir exists + owner alive ⇒ already-running, exit 0.
+  # FLY-177: supervised (launchd) mode blocks-waits for a live watcher to exit
+  # rather than exiting itself (no KeepAlive respawn churn). Unsupervised
+  # (.zshrc) mode keeps the original fast `exit 0` so it never competes with a
+  # live launchd owner.
+  local supervised=0
+  [[ "${FLYWHEEL_CMUX_SUPERVISED:-}" == "1" ]] && supervised=1
+  local attempt=0
+  while true; do
+    # Step 1 — lock dir exists + owner alive.
     if [[ -d "$WATCHER_LOCK_DIR" ]]; then
       local owner_pid
       owner_pid=$(cat "$WATCHER_LOCK_DIR/pid" 2>/dev/null || echo "")
       if [[ -n "$owner_pid" ]] && kill -0 "$owner_pid" 2>/dev/null; then
-        log "watcher already running (pid=$owner_pid), exiting"
-        exit 0
+        if [[ "$supervised" == "1" ]] && _pid_is_watcher "$owner_pid"; then
+          # Supervised: block-wait for the live watcher to exit, then take over.
+          # Do NOT exit (avoids respawn churn) and do NOT consume reap attempts.
+          # No lock is held during the wait, so a launchd TERM/bootout simply
+          # terminates this process cleanly (no orphan, no stale lock).
+          log "supervised: watcher already running (pid=$owner_pid), waiting ${SUPERVISED_WAIT_SECONDS}s to take over"
+          sleep "$SUPERVISED_WAIT_SECONDS"
+          continue
+        fi
+        if [[ "$supervised" != "1" ]]; then
+          log "watcher already running (pid=$owner_pid), exiting"
+          exit 0
+        fi
+        # Supervised but owner is alive yet NOT a watcher (PID reuse) → stale;
+        # fall through to reap below.
+        log "supervised: lock owner pid=$owner_pid is not a watcher (stale), reaping"
       fi
     fi
+    attempt=$((attempt + 1))
     # Step 2 — lock dir missing OR owner dead ⇒ try to grab the reap mutex.
     if mkdir "$WATCHER_REAP_MUTEX" 2>/dev/null; then
       # We hold the reap mutex — serialize the stale-lock cleanup.
@@ -1586,11 +1664,22 @@ acquire_watcher_lock() {
         local owner_pid2
         owner_pid2=$(cat "$WATCHER_LOCK_DIR/pid" 2>/dev/null || echo "")
         if [[ -n "$owner_pid2" ]] && kill -0 "$owner_pid2" 2>/dev/null; then
-          rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
-          log "watcher already running (pid=$owner_pid2, post-mutex), exiting"
-          exit 0
+          if [[ "$supervised" == "1" ]] && _pid_is_watcher "$owner_pid2"; then
+            # A live watcher (re)appeared under the mutex → release + block-wait.
+            rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
+            log "supervised: watcher already running (pid=$owner_pid2, post-mutex), waiting ${SUPERVISED_WAIT_SECONDS}s to take over"
+            sleep "$SUPERVISED_WAIT_SECONDS"
+            attempt=0   # a supervised wait is not a reap-race attempt
+            continue
+          fi
+          if [[ "$supervised" != "1" ]]; then
+            rmdir "$WATCHER_REAP_MUTEX" 2>/dev/null || true
+            log "watcher already running (pid=$owner_pid2, post-mutex), exiting"
+            exit 0
+          fi
+          # Supervised + alive non-watcher → stale; reap below.
         fi
-        rm -rf "$WATCHER_LOCK_DIR"  # truly stale
+        rm -rf "$WATCHER_LOCK_DIR"  # truly stale (dead owner, or supervised non-watcher)
       fi
       # Step 4 — try to acquire the lock dir.
       if mkdir "$WATCHER_LOCK_DIR" 2>/dev/null; then
@@ -1613,9 +1702,13 @@ acquire_watcher_lock() {
       # Another process holds the reap mutex — back off then retry from step 1.
       sleep 1
     fi
+    # Bounded retry for the reap-race livelock (unchanged for the unsupervised
+    # path). Supervised block-waits reset `attempt`, so they never trip this.
+    if [[ "$attempt" -ge 3 ]]; then
+      log "watcher lock acquire exhausted retries after 3 attempts, exiting"
+      exit 0
+    fi
   done
-  log "watcher lock acquire exhausted retries after 3 attempts, exiting"
-  exit 0
 }
 
 release_watcher_lock() {

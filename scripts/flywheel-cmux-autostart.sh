@@ -10,16 +10,24 @@
 LOG="/tmp/flywheel-cmux-watcher.log"
 SYNC_SCRIPT="$HOME/.flywheel/bin/flywheel-cmux-sync"
 
+# ── PATH for launchd (FLY-177) ──
+#
+# This wrapper is the entry for BOTH the `.zshrc` autostart path AND the launchd
+# plist (com.flywheel.cmux-watcher). launchd gives a process only the minimal
+# PATH `/usr/bin:/bin:/usr/sbin:/sbin`; the watcher shells out to `cmux`
+# (/opt/homebrew/bin) and `tmux` (/usr/local/bin). Prepend Homebrew/local so the
+# launchd-spawned watcher can find them. Idempotent + harmless on the `.zshrc`
+# path (that shell already has a full PATH). Mirrors flywheel-lead-wrapper.sh.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
 # ── Run watcher ──
 #
-# FLY-129: do NOT `exec` the sync script. `exec` would replace this shell,
-# which means our EXIT trap (if we ever add one) won't fire. Today the
-# lock release lives inside the sync script's own EXIT trap, so this is
-# mostly belt-and-suspenders — but keeping the wrapper shell alive means
-# the autostart entry can grow side effects in the future without surgery.
-#
-# Tradeoff: 1 long-running bash wrapper per host (negligible — ~5MB RSS).
-
-"$SYNC_SCRIPT" --watch >> "$LOG" 2>&1
-exit_code=$?
-exit "$exit_code"
+# FLY-177: `exec` the sync script so the watcher process REPLACES this wrapper.
+# Under launchd (KeepAlive) the managed PID must be the real watcher, not a
+# wrapper shell — otherwise `bootout`/`kickstart -k`/TERM would signal the
+# wrapper and could leave the child watcher orphaned (still holding the lock →
+# respawn churn). The single-instance lock + its release trap live INSIDE
+# flywheel-cmux-sync.sh (FLY-129), so no wrapper-side EXIT trap is needed.
+# `.zshrc`'s `flywheel-cmux-autostart &!` still works with exec — it just
+# backgrounds the real watcher instead of a wrapper shell.
+exec "$SYNC_SCRIPT" --watch >> "$LOG" 2>&1
