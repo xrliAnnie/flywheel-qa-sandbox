@@ -647,3 +647,77 @@ describe("local-server (proofshot/local-server.ts)", () => {
 		).rejects.toThrow(/not found/);
 	});
 });
+
+describe("visualCapture — FLY-188 agent-browser env passthrough", () => {
+	let tmpRoot: string;
+
+	beforeEach(() => {
+		tmpRoot = join(tmpdir(), `vc-fly188-${Date.now()}-${Math.random()}`);
+		mkdirSync(tmpRoot, { recursive: true });
+	});
+
+	afterEach(() => {
+		try {
+			rmSync(tmpRoot, { recursive: true, force: true });
+		} catch {}
+	});
+
+	/** Stub that records the opts each runProofShot call received + seeds artifacts. */
+	function recordingArgs(
+		output: string,
+		overrides: Partial<VisualCaptureArgs>,
+		sink: Array<{ args: string[]; opts?: { env?: NodeJS.ProcessEnv } }>,
+	): VisualCaptureArgs {
+		return baseArgs({
+			output,
+			runProofShot: (args, opts) => {
+				sink.push({ args, opts });
+				seedFixture(output, [
+					{ name: "SUMMARY.md", bytes: 50 },
+					{ name: "step-ui.png", bytes: 4000 },
+				]);
+			},
+			...overrides,
+		});
+	}
+
+	it("forwards agentBrowserProfile to every proofshot call via AGENT_BROWSER_PROFILE env", async () => {
+		const output = join(tmpRoot, "profile");
+		const seen: Array<{ args: string[]; opts?: { env?: NodeJS.ProcessEnv } }> =
+			[];
+		await visualCapture(
+			recordingArgs(output, { agentBrowserProfile: "/tmp/qa-profile" }, seen),
+		);
+		expect(seen.length).toBeGreaterThan(0);
+		for (const call of seen) {
+			expect(call.opts?.env?.AGENT_BROWSER_PROFILE).toBe("/tmp/qa-profile");
+			// process.env is preserved (env is a superset, not a replacement).
+			expect(call.opts?.env?.PATH).toBe(process.env.PATH);
+		}
+	});
+
+	it("forwards agentBrowserStreamPort via AGENT_BROWSER_STREAM_PORT env (stringified)", async () => {
+		const output = join(tmpRoot, "stream");
+		const seen: Array<{ args: string[]; opts?: { env?: NodeJS.ProcessEnv } }> =
+			[];
+		await visualCapture(
+			recordingArgs(output, { agentBrowserStreamPort: 9223 }, seen),
+		);
+		expect(seen.length).toBeGreaterThan(0);
+		for (const call of seen) {
+			expect(call.opts?.env?.AGENT_BROWSER_STREAM_PORT).toBe("9223");
+		}
+	});
+
+	it("passes NO env override when neither profile nor stream is set (byte-compatible)", async () => {
+		const output = join(tmpRoot, "none");
+		const seen: Array<{ args: string[]; opts?: { env?: NodeJS.ProcessEnv } }> =
+			[];
+		await visualCapture(recordingArgs(output, {}, seen));
+		expect(seen.length).toBeGreaterThan(0);
+		// No override → runner invoked exactly as before: no second opts arg.
+		for (const call of seen) {
+			expect(call.opts).toBeUndefined();
+		}
+	});
+});
