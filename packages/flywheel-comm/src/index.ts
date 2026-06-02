@@ -705,6 +705,10 @@ async function runVisualCapture(args: string[]): Promise<void> {
 			"png-limit": { type: "string" },
 			"preferred-port": { type: "string" },
 			notify: { type: "boolean", default: false },
+			// FLY-188: forward an agent-browser persistent profile (login state,
+			// "Recipe B") + optional live-stream port to ProofShot's browser.
+			"agent-browser-profile": { type: "string" },
+			"agent-browser-stream-port": { type: "string" },
 		},
 		allowPositionals: false,
 	});
@@ -727,6 +731,26 @@ async function runVisualCapture(args: string[]): Promise<void> {
 			`visual-capture: --attempt must be a positive integer (got: ${values.attempt})`,
 		);
 		process.exit(1);
+	}
+
+	// FLY-188: agent-browser profile (CLI flag OR AGENT_BROWSER_PROFILE env).
+	const agentBrowserProfile =
+		values["agent-browser-profile"] ?? process.env.AGENT_BROWSER_PROFILE;
+
+	// FLY-188: optional live-stream port (deferred feature, env hook only).
+	let agentBrowserStreamPort: number | undefined;
+	if (values["agent-browser-stream-port"] != null) {
+		const raw = values["agent-browser-stream-port"];
+		// Require the whole token to be digits — Number.parseInt would silently
+		// accept "9223abc" / "9223.5" and forward a truncated 9223.
+		const port = /^\d+$/.test(raw) ? Number(raw) : Number.NaN;
+		if (!Number.isInteger(port) || port < 1 || port > 65535) {
+			console.error(
+				`visual-capture: --agent-browser-stream-port must be an integer 1-65535 (got: ${raw})`,
+			);
+			process.exit(1);
+		}
+		agentBrowserStreamPort = port;
 	}
 
 	const captureArgs: VisualCaptureArgs = {
@@ -755,6 +779,8 @@ async function runVisualCapture(args: string[]): Promise<void> {
 			? Number.parseInt(values["preferred-port"], 10)
 			: undefined,
 		notify: values.notify,
+		agentBrowserProfile,
+		agentBrowserStreamPort,
 	};
 
 	try {

@@ -90,12 +90,28 @@ export interface VisualCaptureArgs {
 	preferredPort?: number;
 	/** Auto-call `flywheel-comm notify --paths-from <manifest>`. Default FALSE. */
 	notify?: boolean;
+	/**
+	 * FLY-188: agent-browser persistent profile (path or Chrome profile name)
+	 * forwarded to ProofShot's underlying `agent-browser` via the
+	 * `AGENT_BROWSER_PROFILE` env. Gives the headless capture browser a
+	 * reusable login state ("Recipe B") so QA can screenshot logged-in pages
+	 * and commit the artifacts. Undefined → ProofShot's default ephemeral
+	 * browser (byte-compatible with prior behavior).
+	 */
+	agentBrowserProfile?: string;
+	/**
+	 * FLY-188 (deferred feature, env hook only): forward
+	 * `AGENT_BROWSER_STREAM_PORT` so a human can watch the capture live via
+	 * agent-browser's WebSocket stream. Not deeply wired this iteration —
+	 * see `doc/qa/qa-context.md` (stream is a follow-up). Undefined → no stream.
+	 */
+	agentBrowserStreamPort?: number;
 	/** Discovery options (test seam). */
 	discoverOptions?: DiscoverOptions;
 	/** Inject a runner for unit tests. Default: real execFileSync. */
 	runProofShot?: (
 		args: string[],
-		opts?: { input?: string; cwd?: string },
+		opts?: { input?: string; cwd?: string; env?: NodeJS.ProcessEnv },
 	) => void;
 	/** Inject a port probe (test seam). */
 	findPort?: (preferredPort: number) => number | null;
@@ -133,7 +149,19 @@ export async function visualCapture(
 ): Promise<VisualCaptureResult> {
 	validateArgs(args);
 
-	const runProofShot = args.runProofShot ?? defaultRunProofShot;
+	const baseRunProofShot = args.runProofShot ?? defaultRunProofShot;
+	// FLY-188: when the caller requests an agent-browser profile (or stream
+	// port), wrap the runner so every `proofshot` subprocess inherits the
+	// AGENT_BROWSER_* env (ProofShot spawns `agent-browser`, which reads it).
+	// No override → use the runner as-is (opts stay undefined, byte-compatible
+	// with prior behavior).
+	const proofShotEnv = buildProofShotEnv(args);
+	const runProofShot: (
+		a: string[],
+		opts?: { input?: string; cwd?: string; env?: NodeJS.ProcessEnv },
+	) => void = proofShotEnv
+		? (a, opts = {}) => baseRunProofShot(a, { ...opts, env: proofShotEnv })
+		: baseRunProofShot;
 	const findPort = args.findPort ?? defaultFindPort;
 	const runNotify = args.runNotify ?? defaultRunNotify;
 	const preferredPort = args.preferredPort ?? DEFAULT_PORT_RANGE_START;
@@ -353,13 +381,34 @@ async function buildStartArgs(params: BuildStartArgsParams): Promise<string[]> {
 
 function defaultRunProofShot(
 	args: string[],
-	opts: { input?: string; cwd?: string } = {},
+	opts: { input?: string; cwd?: string; env?: NodeJS.ProcessEnv } = {},
 ): void {
 	execFileSync("proofshot", args, {
 		stdio: ["pipe", "inherit", "inherit"],
 		input: opts.input,
 		cwd: opts.cwd,
+		// undefined → execFileSync inherits process.env (byte-compatible).
+		env: opts.env,
 	});
+}
+
+/**
+ * FLY-188: build the env overlay handed to the `proofshot` subprocess (which
+ * spawns `agent-browser`). Returns `undefined` when nothing needs overriding
+ * so the runner is invoked exactly as before (no env opt at all).
+ */
+function buildProofShotEnv(
+	args: VisualCaptureArgs,
+): NodeJS.ProcessEnv | undefined {
+	const overrides: Record<string, string> = {};
+	if (args.agentBrowserProfile) {
+		overrides.AGENT_BROWSER_PROFILE = args.agentBrowserProfile;
+	}
+	if (args.agentBrowserStreamPort != null) {
+		overrides.AGENT_BROWSER_STREAM_PORT = String(args.agentBrowserStreamPort);
+	}
+	if (Object.keys(overrides).length === 0) return undefined;
+	return { ...process.env, ...overrides };
 }
 
 function defaultFindPort(preferredPort: number): number | null {
