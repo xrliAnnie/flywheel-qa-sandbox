@@ -1284,6 +1284,17 @@ if [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r "$BASE_FOUNDER_AUTH_RULES" ]; then
   log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
 fi
 
+# ── FLY-203: Founder HTML delivery (universal — both roles) ──
+# Any HTML artifact the founder asks to see must be delivered via
+# `flywheel-comm publish-report` (one message: title + full-page image +
+# link), never as a local file path. Loads for EVERY Lead role.
+# Optional — missing base file is a no-op (pre-FLY-203 backward compat).
+BASE_HTML_DELIVERY_RULES="${BASE_RULES_DIR}/founder-html-delivery.md"
+if [ -f "$BASE_HTML_DELIVERY_RULES" ] && [ -r "$BASE_HTML_DELIVERY_RULES" ]; then
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_HTML_DELIVERY_RULES")
+  log "Appending base founder-html-delivery rules: ${BASE_HTML_DELIVERY_RULES}"
+fi
+
 # ── FLY-26: project-side shared rules (concrete data) ──
 if [ -d "$LEAD_RULES_DIR" ]; then
   COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"

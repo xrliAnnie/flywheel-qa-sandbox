@@ -46,6 +46,7 @@ This matches `class Project extends Base` semantics: subclass declarations sit o
 | [`department-lead-rules.md`](department-lead-rules.md) | Department Leads (non-cos roles) | FLY-127 Action Gate, Multi-Lead Mentions handling, Bridge rejection diagnostic templates; FLY-152 Shared Channel Reply Discipline |
 | [`cos-lead-rules.md`](cos-lead-rules.md) | Cos-lead role only | FLY-127 Department Routing Discipline (one Lead per backend spawn directive); FLY-152 Shared Channel Reply Discipline |
 | [`founder-only-authority.md`](founder-only-authority.md) | **Every** Lead role (cos AND dept) | FLY-175 Track 1 — merge-to-main and stop-runner are founder-only authorized actions; Lead self-judgment is not consent |
+| `founder-html-delivery.md` | universal (cos + dept) | FLY-203: any HTML artifact the founder asks to see is delivered via `flywheel-comm publish-report` (one message: title + full-page image + link); local file paths are never posted as delivery |
 | [`executor-routing.md`](executor-routing.md) | Department Leads (non-cos roles) | FLY-178 — route the Runner executor by the ACTUAL work type (pass `agentName`), end-to-end ownership; engineering executors self-research, so engineering work is not pre-staged through a PM executor |
 
 All files are appended via `--append-system-prompt-file` in `packages/teamlead/scripts/claude-lead.sh`. They are conditional: if a base file is missing, behavior is identical to pre-FLY-127 (no failure, no warning — backward compatible for old flywheel checkouts).

@@ -560,8 +560,14 @@ simulate_append_logic() {
   # enough in the prompt to dominate adjacent content. Optional — missing
   # base file is a no-op (pre-FLY-175 backward compat).
   BASE_FOUNDER_AUTH_RULES="${base_dir}/founder-only-authority.md"
+  BASE_HTML_DELIVERY_RULES="${base_dir}/founder-html-delivery.md"
   if [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r "$BASE_FOUNDER_AUTH_RULES" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_AUTH_RULES")
+  fi
+
+  # FLY-203: founder-html-delivery rules (universal, mirrors claude-lead.sh)
+  if [ -f "$BASE_HTML_DELIVERY_RULES" ] && [ -r "$BASE_HTML_DELIVERY_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_HTML_DELIVERY_RULES")
   fi
 
   # FLY-26 PROJECT block (loaded AFTER base)
@@ -694,7 +700,7 @@ else
   # Scan the rule files only (not README.md which legitimately documents
   # examples of project-side concrete data). FLY-175: include
   # founder-only-authority.md so its generic voice is enforced as well.
-  RULE_FILES=("$BASE_FILES_DIR/department-lead-rules.md" "$BASE_FILES_DIR/cos-lead-rules.md" "$BASE_FILES_DIR/founder-only-authority.md" "$BASE_FILES_DIR/executor-routing.md")
+  RULE_FILES=("$BASE_FILES_DIR/department-lead-rules.md" "$BASE_FILES_DIR/cos-lead-rules.md" "$BASE_FILES_DIR/founder-only-authority.md" "$BASE_FILES_DIR/executor-routing.md" "$BASE_FILES_DIR/founder-html-delivery.md")
   # Names that should never appear in base rule files (examples of project
   # concretes that belong in the project layer).
   FORBIDDEN_NAMES_RE='\b(Peter|Oliver|Simba|Annie)\b'
@@ -951,6 +957,44 @@ FLYWHEEL_LEAD_ROLE=cos
 ARGS_617_COS=$(simulate_append_logic "$BASE_DIR_617" "$PROJECT_DIR_617" "flywheel-test-1")
 unset FLYWHEEL_LEAD_ROLE
 assert_not_contains "$ARGS_617_COS" "$BASE_DIR_617/executor-routing.md" "Test 6.17: synthetic cos test slot does NOT get executor-routing"
+
+# ═══════════════════════════════════════════════════════════════
+# Test 6.18 (FLY-203): founder-html-delivery.md — universal load for BOTH
+# roles, silent skip when missing, ordered BEFORE project-side rules, and
+# the SHIPPED file carries the canonical command + no-local-path anchors.
+# ═══════════════════════════════════════════════════════════════
+echo "--- Test 6.18: FLY-203 founder-html-delivery — both roles, missing-skip, ordering, content sentinel ---"
+BASE_DIR_618="$TMPDIR/base-618"
+PROJECT_DIR_618="$TMPDIR/project-618"
+mkdir -p "$BASE_DIR_618" "$PROJECT_DIR_618"
+echo "# BASE department rules" > "$BASE_DIR_618/department-lead-rules.md"
+echo "# BASE cos rules" > "$BASE_DIR_618/cos-lead-rules.md"
+echo "# BASE founder html delivery" > "$BASE_DIR_618/founder-html-delivery.md"
+echo "# Common" > "$PROJECT_DIR_618/common-rules.md"
+echo "# PROJECT department rules" > "$PROJECT_DIR_618/department-lead-rules.md"
+ARGS_618_DEPT=$(simulate_append_logic "$BASE_DIR_618" "$PROJECT_DIR_618" "product-lead")
+assert_contains "$ARGS_618_DEPT" "$BASE_DIR_618/founder-html-delivery.md" "Test 6.18: dept Lead loads founder-html-delivery"
+ARGS_618_COS=$(simulate_append_logic "$BASE_DIR_618" "$PROJECT_DIR_618" "cos-lead")
+assert_contains "$ARGS_618_COS" "$BASE_DIR_618/founder-html-delivery.md" "Test 6.18: cos-lead loads founder-html-delivery"
+# Ordering: base html-delivery before project common rules (positional compare)
+HTML_THEN_COMMON_618="${ARGS_618_DEPT#*founder-html-delivery.md}"
+case "$HTML_THEN_COMMON_618" in
+  *common-rules.md*)
+    PASS=$((PASS+1)); echo "  PASS: Test 6.18: founder-html-delivery loads before project common rules" ;;
+  *)
+    FAIL=$((FAIL+1)); echo "  FAIL: Test 6.18: founder-html-delivery must load before project common rules" ;;
+esac
+# Backward compat: missing file silently skipped
+rm "$BASE_DIR_618/founder-html-delivery.md"
+ARGS_618_MISSING=$(simulate_append_logic "$BASE_DIR_618" "$PROJECT_DIR_618" "product-lead")
+assert_not_contains "$ARGS_618_MISSING" "founder-html-delivery.md" "Test 6.18: missing founder-html-delivery silently skipped"
+# Content sentinel on the SHIPPED file
+SHIPPED_618="$BASE_FILES_DIR/founder-html-delivery.md"
+if [ -f "$SHIPPED_618" ] && grep -q "flywheel-comm publish-report" "$SHIPPED_618" && grep -qi "Never post a local file path" "$SHIPPED_618"; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.18: shipped founder-html-delivery.md has canonical command + no-local-path anchors"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.18: shipped founder-html-delivery.md missing or lacks canonical anchors"
+fi
 
 # ═══════════════════════════════════════════════════════════════
 # Summary
