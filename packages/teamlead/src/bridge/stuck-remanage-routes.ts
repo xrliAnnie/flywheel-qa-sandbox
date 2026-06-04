@@ -166,15 +166,24 @@ export function createStuckRemanageRouter(
 			noted_by: leadId,
 			note,
 		});
-		store.insertEvent({
-			event_id: `stuck-disposition-${executionId}-${fingerprint}-${now()}-${++auditSeq}`,
-			execution_id: executionId,
-			issue_id: session.issue_id,
-			project_name: session.project_name,
-			event_type: "stuck_disposition_set",
-			source: "bridge.stuck-remanage",
-			payload: { leadId, fingerprint, disposition, snoozeUntilMs, note },
-		});
+		// Trace row is secondary — the stuck_dispositions receipt above IS the
+		// authoritative record, so a trace failure logs but does not fail the
+		// request (the Lead's judgment is already durably persisted).
+		try {
+			store.insertEvent({
+				event_id: `stuck-disposition-${executionId}-${fingerprint}-${now()}-${++auditSeq}`,
+				execution_id: executionId,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: "stuck_disposition_set",
+				source: "bridge.stuck-remanage",
+				payload: { leadId, fingerprint, disposition, snoozeUntilMs, note },
+			});
+		} catch (err) {
+			console.error(
+				`[stuck-disposition] trace event write failed for ${executionId}: ${(err as Error).message}`,
+			);
+		}
 		res.json({ ok: true, disposition });
 	});
 
@@ -190,12 +199,17 @@ export function createStuckRemanageRouter(
 		const fingerprint = body.episode_fingerprint;
 		const phrase = typeof body.phrase === "string" ? body.phrase : "continue";
 
-		/** Audit EVERY attempt — sent or refused (Codex R1 HIGH-2). */
+		/**
+		 * Audit EVERY attempt (Codex design R1 HIGH-2). Returns false when the
+		 * row could not be persisted — callers treat that as FAIL-CLOSED (Codex
+		 * PR review R1 MEDIUM-1: a best-effort audit would let an un-audited
+		 * keystroke reach tmux, or an un-audited refusal vanish).
+		 */
 		const audit = (
-			result: "sent" | "refused",
+			result: "attempt" | "sent" | "refused",
 			reason: string,
 			session?: { issue_id: string; project_name: string },
-		) => {
+		): boolean => {
 			try {
 				store.insertEvent({
 					event_id: `recovery-nudge-${executionId}-${now()}-${++auditSeq}`,
@@ -207,10 +221,12 @@ export function createStuckRemanageRouter(
 					source: "bridge.stuck-remanage",
 					payload: { leadId, fingerprint, phrase, result, reason },
 				});
+				return true;
 			} catch (err) {
 				console.error(
 					`[recovery-nudge] audit write failed for ${executionId}: ${(err as Error).message}`,
 				);
+				return false;
 			}
 		};
 
@@ -219,7 +235,16 @@ export function createStuckRemanageRouter(
 			reason: string,
 			session?: { issue_id: string; project_name: string },
 		) => {
-			audit("refused", reason, session);
+			const audited = audit("refused", reason, session);
+			if (!audited) {
+				// No action was taken, but the refusal itself must be on record —
+				// surface the audit outage instead of silently degrading.
+				res.status(503).json({
+					nudged: false,
+					error: `${reason} [audit store unavailable — refusal not persisted; fail-closed]`,
+				});
+				return;
+			}
 			res.status(status).json({ nudged: false, error: reason });
 		};
 
@@ -344,6 +369,21 @@ export function createStuckRemanageRouter(
 			refuse(409, "no tmux target found for this execution", session);
 			return;
 		}
+
+		// Codex PR review R1 MEDIUM-1: the attempt is persisted BEFORE the
+		// keystroke. If the audit store is down, NO keystroke is sent — an
+		// un-audited terminal write must be impossible, not merely unlikely.
+		if (
+			!audit("attempt", `sending "${phrase}" to ${target.tmuxWindow}`, session)
+		) {
+			res.status(503).json({
+				nudged: false,
+				error:
+					"audit store unavailable — refusing fail-closed (no keystroke sent)",
+			});
+			return;
+		}
+
 		const sendResult = await sendKeys(target.tmuxWindow, phrase);
 		if (!sendResult.sent) {
 			refuse(
@@ -355,16 +395,30 @@ export function createStuckRemanageRouter(
 		}
 
 		// Implicit disposition (plan §3.4): a successful nudge IS the Lead's
-		// handled_remanaged receipt — suppresses the Q7 Annie fallback.
-		store.setStuckDisposition({
-			execution_id: executionId,
-			episode_fingerprint: fingerprint,
-			disposition: "handled_remanaged",
-			noted_by: leadId,
-			note: `recovery-nudge "${phrase}" sent to ${target.tmuxWindow}`,
-		});
+		// handled_remanaged receipt — suppresses the Q7 Annie fallback. A write
+		// failure here must NOT report the (already sent) nudge as failed —
+		// surface a warning instead so the Lead writes the receipt explicitly;
+		// the missing receipt fails SAFE (Q7 over-pages, never silences).
+		let dispositionWarning: string | undefined;
+		try {
+			store.setStuckDisposition({
+				execution_id: executionId,
+				episode_fingerprint: fingerprint,
+				disposition: "handled_remanaged",
+				noted_by: leadId,
+				note: `recovery-nudge "${phrase}" sent to ${target.tmuxWindow}`,
+			});
+		} catch (err) {
+			dispositionWarning = `nudge SENT but the handled_remanaged receipt could not be written (${(err as Error).message}) — write the disposition explicitly or Annie will be paged after the grace window`;
+			console.error(`[recovery-nudge] ${executionId}: ${dispositionWarning}`);
+		}
+		// Best-effort: the durable "attempt" row above already guarantees the trail.
 		audit("sent", `nudge sent to ${target.tmuxWindow}`, session);
-		res.json({ nudged: true, tmuxWindow: target.tmuxWindow });
+		res.json({
+			nudged: true,
+			tmuxWindow: target.tmuxWindow,
+			...(dispositionWarning ? { warning: dispositionWarning } : {}),
+		});
 	});
 
 	return router;

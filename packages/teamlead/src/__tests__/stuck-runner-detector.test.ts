@@ -530,3 +530,79 @@ describe("StuckRunnerDetector — Q7 fallback (unhandled → Annie)", () => {
 		expect(h.alertUnhandled).not.toHaveBeenCalled();
 	});
 });
+
+// ── Codex PR R1 MEDIUM-2: decision-time session re-read ──
+
+describe("StuckRunnerDetector — decision-time session re-read (MEDIUM-2)", () => {
+	it("a snapshot that flipped to awaiting_review mid-poll is NOT escalated (episode cleared)", async () => {
+		const h = harness({
+			refreshSession: () => session({ status: "awaiting_review" }),
+		});
+		h.setOutput("stuck silent");
+		// snapshot still claims running on both polls
+		await stagnate(h, session({ status: "running" }));
+		expect(h.emit).not.toHaveBeenCalled();
+		expect(h.detector.episodeFor("exec-1")).toBeUndefined();
+	});
+
+	it("a mid-poll flip to needs_review gray zone is NOT escalated", async () => {
+		const h = harness({
+			refreshSession: () =>
+				session({ status: "running", decision_route: "needs_review" }),
+		});
+		h.setOutput("stuck silent");
+		await stagnate(h, session());
+		expect(h.emit).not.toHaveBeenCalled();
+	});
+
+	it("session row vanishing mid-poll clears the episode without escalating", async () => {
+		let gone = false;
+		const h = harness({
+			refreshSession: () => (gone ? undefined : session()),
+		});
+		h.setOutput("stuck silent");
+		h.clock.now = T0;
+		await h.detector.checkSession(session());
+		expect(h.detector.episodeFor("exec-1")).toBeDefined();
+		gone = true;
+		h.clock.now = T0 + STUCK_THRESHOLD_MS;
+		const r = await h.detector.checkSession(session());
+		expect(r).toBeNull();
+		expect(h.emit).not.toHaveBeenCalled();
+		expect(h.detector.episodeFor("exec-1")).toBeUndefined();
+	});
+
+	it("re-read failure fails closed (skip, keep the episode clock)", async () => {
+		let shouldThrow = false;
+		const h = harness({
+			refreshSession: () => {
+				if (shouldThrow) throw new Error("db hiccup");
+				return session();
+			},
+		});
+		h.setOutput("stuck silent");
+		h.clock.now = T0;
+		await h.detector.checkSession(session());
+		shouldThrow = true;
+		h.clock.now = T0 + STUCK_THRESHOLD_MS;
+		const r = await h.detector.checkSession(session());
+		expect(r).toBeNull();
+		expect(h.emit).not.toHaveBeenCalled();
+		expect(h.detector.episodeFor("exec-1")?.firstStagnantAt).toBe(T0);
+		// recovery → escalates off the still-stuck episode
+		shouldThrow = false;
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + 1;
+		await h.detector.checkSession(session());
+		expect(h.emit).toHaveBeenCalledTimes(1);
+	});
+
+	it("escalation payload carries the FRESH session, not the stale snapshot", async () => {
+		const h = harness({
+			refreshSession: () => session({ issue_identifier: "FRESH-1" }),
+		});
+		h.setOutput("stuck silent");
+		await stagnate(h, session({ issue_identifier: "STALE-0" }));
+		expect(h.emit).toHaveBeenCalledTimes(1);
+		expect(h.emitted[0]!.session.issue_identifier).toBe("FRESH-1");
+	});
+});

@@ -243,9 +243,51 @@ describe("POST /:executionId/recovery-nudge (plan §3.5 — restricted primitive
 		expect(h.store.getStuckDisposition("exec-1", STUCK_FP)?.disposition).toBe(
 			"handled_remanaged",
 		);
+		// Two-phase audit (Codex PR R1 MEDIUM-1): durable "attempt" BEFORE the
+		// keystroke, "sent" after.
 		const audits = nudgeAudits(h);
-		expect(audits).toHaveLength(1);
-		expect((audits[0]!.payload as { result: string }).result).toBe("sent");
+		expect(audits.map((a) => (a.payload as { result: string }).result)).toEqual(
+			["attempt", "sent"],
+		);
+	});
+
+	it("MEDIUM-1: audit store down on a refusal path → 503, refusal not silently degraded", async () => {
+		vi.spyOn(h.store, "insertEvent").mockImplementation(() => {
+			throw new Error("disk full");
+		});
+		const r = await post(h, "/api/sessions/exec-1/recovery-nudge", {
+			...valid,
+			phrase: "ship it",
+		});
+		expect(r.status).toBe(503);
+		expect(String(r.json.error)).toContain("audit store unavailable");
+		expect(h.sendKeys).not.toHaveBeenCalled();
+	});
+
+	it("MEDIUM-1: audit store down with ALL gates passing → 503 and NO keystroke is sent", async () => {
+		vi.spyOn(h.store, "insertEvent").mockImplementation(() => {
+			throw new Error("disk full");
+		});
+		const r = await post(h, "/api/sessions/exec-1/recovery-nudge", valid);
+		expect(r.status).toBe(503);
+		expect(String(r.json.error)).toContain("no keystroke sent");
+		expect(h.sendKeys).not.toHaveBeenCalled();
+		expect(h.store.getStuckDisposition("exec-1", STUCK_FP)).toBeUndefined();
+	});
+
+	it("disposition write failure AFTER a sent nudge → 200 with warning (nudge already out, fails safe)", async () => {
+		vi.spyOn(h.store, "setStuckDisposition").mockImplementation(() => {
+			throw new Error("db locked");
+		});
+		const r = await post(h, "/api/sessions/exec-1/recovery-nudge", valid);
+		expect(r.status).toBe(200);
+		expect(r.json.nudged).toBe(true);
+		expect(String(r.json.warning)).toContain("handled_remanaged");
+		expect(h.sendKeys).toHaveBeenCalledTimes(1);
+		// trail still complete: attempt + sent
+		expect(
+			nudgeAudits(h).map((a) => (a.payload as { result: string }).result),
+		).toEqual(["attempt", "sent"]);
 	});
 
 	it("refuses any phrase outside the allowlist (audited)", async () => {

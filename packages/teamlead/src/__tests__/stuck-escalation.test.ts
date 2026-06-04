@@ -292,6 +292,36 @@ describe("env knobs (plan §3.7)", () => {
 		}
 	});
 
+	it("factory wires decision-time re-read from store.getSession (MEDIUM-2)", async () => {
+		const store = mockStore();
+		// Live row says awaiting_review even though the caller's snapshot says running.
+		const getSession = vi.fn(() => makeSession({ status: "awaiting_review" }));
+		(store as Record<string, unknown>).getSession = getSession;
+		const { registry } = mockRegistry();
+		const detector = buildStuckRunnerDetector({
+			store: store as never,
+			projects: testProjects,
+			runtimeRegistry: registry as never,
+			notifier: { alert: vi.fn(async () => ({ sent: true })) },
+			env: { FLYWHEEL_STUCK_THRESHOLD_MS: "1000" } as NodeJS.ProcessEnv,
+			now: (() => {
+				let t = 0;
+				return () => {
+					t += 2000;
+					return t;
+				};
+			})(),
+			log: () => {},
+		});
+		expect(detector).not.toBeNull();
+		const frame = { ok: true as const, output: "frozen frame" };
+		await detector!.checkSession(makeSession({ status: "running" }), frame);
+		await detector!.checkSession(makeSession({ status: "running" }), frame);
+		expect(getSession).toHaveBeenCalledWith("exec-1");
+		// stale running snapshot must NOT have escalated
+		expect(store.appendLeadEvent).not.toHaveBeenCalled();
+	});
+
 	it("buildStuckRunnerDetector returns null when disabled", () => {
 		const store = mockStore();
 		const { registry } = mockRegistry();

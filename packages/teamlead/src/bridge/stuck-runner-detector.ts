@@ -78,6 +78,15 @@ export interface StuckRunnerDetectorDeps {
 	 */
 	emit: (payload: StuckEscalationPayload) => Promise<boolean>;
 	/**
+	 * Decision-time session re-read (plan §3.1.3; Codex PR review R1
+	 * MEDIUM-2): the caller's session object is a poll-start snapshot — if
+	 * `/events` flips the session to awaiting_review / approved_to_ship /
+	 * needs_review while the poll is in flight, the stale `running` snapshot
+	 * must NOT escalate. Returning undefined means the session is gone
+	 * (episode cleared). A thrown error fails closed (skip this poll).
+	 */
+	refreshSession?: (executionId: string) => Session | undefined;
+	/**
 	 * Read the persisted Lead disposition for one episode (plan §3.4). The
 	 * detector consults it (a) before re-paging the Lead for an episode that
 	 * was already judged (Bridge-restart rebuild, Codex R1 LOW-7) and (b) in
@@ -156,9 +165,12 @@ export class StuckRunnerDetector {
 	 * reusing it keeps the cost at ONE tmux capture-pane per session per poll).
 	 */
 	async checkSession(
-		session: Session,
+		sessionSnapshot: Session,
 		precaptured?: CaptureOutcome,
 	): Promise<StuckCandidateResult | null> {
+		// `sessionSnapshot` is the caller's poll-start view; `session` below is
+		// re-pointed at the live row by the decision-time re-read (MEDIUM-2).
+		let session = sessionSnapshot;
 		const execId = session.execution_id;
 
 		const capture =
@@ -171,6 +183,36 @@ export class StuckRunnerDetector {
 				`[StuckDetector] capture failed for ${execId}: ${capture.error} — skipping (fail-closed)`,
 			);
 			return null;
+		}
+
+		// Decision-time re-read (plan §3.1.3; Codex PR R1 MEDIUM-2): the caller's
+		// session is a poll-start snapshot. Re-read the live row so a session
+		// that flipped to awaiting_review/approved_to_ship/needs_review (or any
+		// other label) while this poll was in flight is excluded by the status
+		// hard gate below, not escalated off stale data.
+		if (this.deps.refreshSession) {
+			let fresh: Session | undefined;
+			try {
+				fresh = this.deps.refreshSession(execId);
+			} catch (err) {
+				// Fail closed: can't confirm the live status ⇒ don't escalate and
+				// don't touch the episode clock this poll.
+				this.deps.log?.(
+					`[StuckDetector] session re-read failed for ${execId}: ${
+						err instanceof Error ? err.message : String(err)
+					} — skipping (fail-closed)`,
+				);
+				return null;
+			}
+			if (!fresh) {
+				// Session row vanished mid-poll — nothing to escalate; drop episode.
+				this.episodes.delete(execId);
+				this.deps.log?.(
+					`[StuckDetector] ${execId} no longer in StateStore — episode cleared`,
+				);
+				return null;
+			}
+			session = fresh;
 		}
 
 		let hasPendingGate = false;

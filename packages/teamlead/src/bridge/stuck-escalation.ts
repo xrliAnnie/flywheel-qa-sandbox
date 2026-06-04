@@ -307,6 +307,9 @@ export function buildStuckRunnerDetector(
 		}),
 		hasPendingGate: (executionId, projectName) =>
 			hasPendingGateFromCommDb(executionId, projectName),
+		// Decision-time status re-read (Codex PR R1 MEDIUM-2): never escalate
+		// off the watchdog's poll-start snapshot.
+		refreshSession: (executionId) => opts.store.getSession(executionId),
 		emit: createStuckEscalationEmitter(opts),
 		getDisposition: (executionId, fingerprint) =>
 			opts.store.getStuckDisposition(executionId, fingerprint),
