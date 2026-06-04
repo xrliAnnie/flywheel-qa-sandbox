@@ -10,7 +10,11 @@
  */
 
 import { CommDB } from "flywheel-comm/db";
-import { formatDurationMs, formatStuckEscalation } from "./hook-payload.js";
+import {
+	formatDurationMs,
+	formatMisroutedReport,
+	formatStuckEscalation,
+} from "./hook-payload.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -165,6 +169,13 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		// mailbox/commdb parity by construction.
 		if (e.event_type === "runner_stuck_escalation") {
 			return formatStuckEscalation(env);
+		}
+
+		// FLY-208 A2: misrouted-report advisory (black-hole inbox patrol).
+		// Shared renderer — same parity-by-construction rationale as
+		// formatStuckEscalation (FLY-195 lesson).
+		if (e.event_type === "runner_misrouted_report") {
+			return formatMisroutedReport(env);
 		}
 
 		// FLY-59: Prefix role label for non-main sessions

@@ -33,6 +33,21 @@ export interface HookPayload {
 	action_source_status?: string;
 	action_target_status?: string;
 	action_reason?: string;
+	// FLY-208 A2: runner_misrouted_report fields (black-hole inbox patrol).
+	// A Runner used stock SendMessage to:"team-lead" — a recipient that does
+	// not exist in Flywheel's lead-named teams; the message landed in an
+	// auto-created inbox file nobody polls. The patrol surfaces it as an
+	// advisory so "claimed delivered but nobody received" can never be silent.
+	/** Sender of the misrouted mailbox message (e.g. "runner-433d4078"). */
+	misroute_from?: string;
+	/** Original mailbox timestamp (ISO) of the misrouted message. */
+	misrouted_at?: string;
+	/** Fixed guidance for the Lead (wrong channel; reply via flywheel-comm send). */
+	misroute_hint?: string;
+	/** Aggregate path only: JSONL archive of the full backlog batch. */
+	misroute_archive_path?: string;
+	/** Aggregate path only: number of misrouted messages in the batch. */
+	misroute_count?: number;
 	// FLY-62: gate_question event fields
 	// FLY-161: runner_question reuses question_id / from_agent / comm_db_path /
 	// summary — same schema as gate_question, but `checkpoint` is undefined for
@@ -176,6 +191,54 @@ export function formatStuckEscalation(
 	}
 	if (e.stage_context) lines.push(`Note: ${e.stage_context}`);
 	if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+	lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);
+	return lines.join("\n");
+}
+
+// ── FLY-208 A2: shared runner_misrouted_report renderer ──
+
+/**
+ * FLY-208 A2 (production incident 2026-06-04, sub LEARN-12 exec 433d4078):
+ * Runners reported via stock `SendMessage to:"team-lead"` — a recipient that
+ * does not exist in Flywheel's lead-named teams. The stock tool auto-creates
+ * the inbox file and returns success, so the reports silently black-holed
+ * (product-lead's file held 184 of them). The GatePoller patrol surfaces
+ * each misrouted message (or an aggregated backlog) as this advisory.
+ *
+ * SHARED between MailboxLeadRuntime and CommDBLeadRuntime on purpose —
+ * same parity-by-construction rationale as formatStuckEscalation above
+ * (FLY-195 lesson: the drift between payload and rendered text IS the bug
+ * class).
+ */
+export function formatMisroutedReport(
+	env: StuckEscalationEnvelopeLike,
+): string {
+	const e = env.event;
+	const lines = [
+		`[Event #${env.seq}] runner_misrouted_report`,
+		`Project: ${e.project_name ?? "—"} | Lead: ${e.chat_channel ?? ""}`.trimEnd(),
+	];
+	if (e.misroute_archive_path) {
+		// Aggregate backlog advisory (count > threshold): originals archived,
+		// not replayed one-by-one.
+		lines.push(
+			`MISROUTED BACKLOG: ${e.misroute_count ?? "?"} runner report(s) were sent to the black-hole "team-lead" inbox (stock SendMessage, wrong recipient name) and never reached you.`,
+			`The full originals are archived (JSONL): ${e.misroute_archive_path}`,
+			"They are historical — review the archive if needed; do NOT assume any of them was handled.",
+		);
+	} else {
+		lines.push(
+			`MISROUTED REPORT from ${e.misroute_from ?? e.from_agent ?? "?"} (sent ${e.misrouted_at ?? "?"}):`,
+			'This Runner used stock SendMessage to "team-lead" — a black-hole inbox nobody polls. The message below never reached you through a real channel.',
+			"---",
+			e.summary ?? "(no content)",
+			"---",
+		);
+	}
+	lines.push(
+		e.misroute_hint ??
+			"Reply to the Runner via `flywheel-comm send` (NOT SendMessage). The Runner may be on a pre-FLY-208 prompt that doesn't know the report-back protocol.",
+	);
 	lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);
 	return lines.join("\n");
 }

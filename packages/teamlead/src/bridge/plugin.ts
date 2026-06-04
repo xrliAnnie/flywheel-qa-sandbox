@@ -1,6 +1,6 @@
 import { timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
 import {
@@ -1955,12 +1955,36 @@ export async function startBridge(
 	// FLY-163: CleanupService removed (forum thread cleanup gone).
 
 	// FLY-62: Gate question poller
+	// FLY-208 A2: wire the black-hole inbox patrol transport. Mailbox mode
+	// only — commdb/rollback mode leaves transport undefined and the patrol is
+	// a complete no-op. There is no reusable transport instance in scope here
+	// (createLeadRuntime builds its own per-runtime instance), so build one;
+	// wiring failure is non-fatal (patrol off, question relay unaffected).
+	let misroutePatrolTransport:
+		| import("./gate-poller.js").MisroutePatrolTransport
+		| undefined;
+	let misrouteArchiveDir: string | undefined;
+	if (resolveCommBackend() === "mailbox") {
+		try {
+			const { AgentTeamTransportFactory, getStateDir } = await import(
+				"flywheel-agent-team-transport"
+			);
+			misroutePatrolTransport = AgentTeamTransportFactory.fromEnv();
+			misrouteArchiveDir = join(getStateDir(), "misroute-archive");
+		} catch (err) {
+			console.warn(
+				`[Bridge] FLY-208 misroute patrol wiring failed (patrol off, non-fatal): ${(err as Error).message}`,
+			);
+		}
+	}
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
 		projects,
 		store,
 		runtimeRegistry: registry,
 		chatThreadsEnabled: config.chatThreadsEnabled,
+		transport: misroutePatrolTransport,
+		misrouteArchiveDir,
 	});
 	gatePoller.start();
 

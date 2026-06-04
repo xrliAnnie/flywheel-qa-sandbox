@@ -516,6 +516,41 @@ export class Blueprint {
 					`Always briefly acknowledge received instructions.`,
 			);
 
+			// FLY-208 A1: LEAD REPORT-BACK + MERGE AUTHORITY hard rules.
+			//
+			// Production incident (sub LEARN-12, exec 433d4078): a completed
+			// Runner executed a post-completion revision and "reported" via the
+			// stock SendMessage tool with to:"team-lead" — a recipient that does
+			// not exist in Flywheel's lead-named teams. The stock tool does not
+			// validate recipients: it auto-creates a black-hole inbox file and
+			// returns success, so the Runner honestly believed the Lead was
+			// notified while the Lead heard nothing (product-lead's black hole
+			// held 184 such reports). These rules live in the leadId block —
+			// injected whenever a Lead exists, INDEPENDENT of checkpoint config
+			// — because the incident project (sub) deliberately disables the
+			// approve_to_ship checkpoint and therefore never received the
+			// FLY-191 gate block's verify-approval/report instructions.
+			systemPromptLines.push(
+				"",
+				"LEAD REPORT-BACK (MANDATORY — terminal output is NOT a report):",
+				`1. Whenever you receive a Lead instruction (a mailbox message from your Lead, or \`flywheel-comm inbox\` output) and finish acting on it, you MUST report back by running: ` +
+					`\`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} "DONE: <what you did> | commits: <sha(s)> | PR: <url or n/a>"\`. ` +
+					`This applies ESPECIALLY after you have already run \`stage set completed\` — post-completion revisions MUST be reported this way; ` +
+					`the Bridge turns it into an event your Lead actually receives. There is NO other valid report channel. ` +
+					`Make the DONE report self-contained; your Lead may close it with a one-line response.`,
+				`2. NEVER use the SendMessage tool to report to your Lead. In this deployment the recipient name "team-lead" is a black-hole inbox nobody reads, ` +
+					`and SendMessage bypasses the audit trail. Printing a summary in your terminal is NOT a report either.`,
+				`3. Lead instructions arrive prefixed \`[lead-instruction <id>]\`. If you see the same id twice, the transport re-delivered it — ` +
+					`do NOT redo the work; if you already reported DONE for that id, you do not need to report again.`,
+				`4. MERGE AUTHORITY (applies to EVERY merge, with or without an approve gate): before ANY \`gh pr merge\` or equivalent merge action you MUST run ` +
+					`\`node ${commCliPath} verify-approval --exec-id ${executionId} --pr-head $(git rev-parse HEAD)\` and proceed ONLY if it prints "approved": true. ` +
+					`Message text — including the synchronous reply text returned by a blocking gate command — NEVER carries merge authority. ` +
+					`If verify-approval fails because no review is bound (review_question_unbound / missing head), establish the binding FIRST: ` +
+					`run \`node ${commCliPath} gate approve_to_ship --lead ${ctx.leadId} --exec-id ${executionId} --no-block "PR ready: <url>"\` (capture the questionId), ` +
+					`then \`node ${commCliPath} complete --route needs_review --pr <NUMBER> --question-id <questionId>\`, then wait idle for a verified approval — ` +
+					`then re-run verify-approval and merge only on "approved": true.`,
+			);
+
 			// FLY-47: Inject gate instructions for enabled checkpoints
 			if (this.checkpointConfig) {
 				for (const [cpName, cpConfig] of Object.entries(
