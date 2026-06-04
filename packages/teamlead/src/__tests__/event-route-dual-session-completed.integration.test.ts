@@ -322,9 +322,10 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		expect(runPostShipSpy).not.toHaveBeenCalled();
 
 		// 4. Runner ships PR and emits session_completed with no decision route
-		//    (natural completion). Pre-fix the strict guard early-returned and
-		//    the session stayed in approved_to_ship; now it must land in
-		//    completed and fire runPostShipFinalization exactly once.
+		//    (natural completion) and NO merged landing evidence. FLY-208 5a:
+		//    completes (unstick) but finalization is SUPPRESSED — merge
+		//    evidence is now required (Codex design R2 #1); the evidence-gap
+		//    marker is persisted for FLY-210 to finish cleanup later.
 		const completeRes = await postEvent({
 			event_id: "evtD-complete",
 			execution_id: execId,
@@ -336,7 +337,110 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		});
 		expect(completeRes.status).toBe(200);
 		expect(store.getSession(execId)!.status).toBe("completed");
+		expect(runPostShipSpy).not.toHaveBeenCalled();
+		const dParams = JSON.parse(
+			store.getSession(execId)!.session_params ?? "{}",
+		) as { fly208_evidence_gap?: { route?: string | null } };
+		expect(dParams.fly208_evidence_gap).toBeTruthy();
+	});
+
+	it("Scenario D2 (FLY-208): approved_to_ship + route=undefined + MERGED landing → completed + post-ship fires once", async () => {
+		const execId = "exec-scenarioD2";
+		const issueId = "issue-scenarioD2";
+		await postEvent({
+			event_id: "evtD2-start",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d",
+			event_type: "session_started",
+			payload: { issueIdentifier: "GEO-D2", issueTitle: "Scenario D2" },
+		});
+		await postEvent({
+			event_id: "evtD2-needs",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: { decision: { route: "needs_review" }, evidence: {} },
+		});
+		expect(store.getSession(execId)!.status).toBe("awaiting_review");
+		expect(
+			applyTransition(transitionOpts, execId, "approved_to_ship", {
+				executionId: execId,
+				issueId,
+				projectName: "geoforge3d",
+				trigger: "action:approve",
+			}).ok,
+		).toBe(true);
+
+		const completeRes = await postEvent({
+			event_id: "evtD2-complete",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { reasoning: "natural completion" },
+				evidence: { landingStatus: { status: "merged", prNumber: 42 } },
+			},
+		});
+		expect(completeRes.status).toBe(200);
+		expect(store.getSession(execId)!.status).toBe("completed");
 		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
+	});
+
+	it("Scenario D3 (FLY-208 5a): approved_to_ship + route=needs_review + NOT merged → completed with evidence-gap (no FSM reject, no finalization)", async () => {
+		// The LEARN-12 incident shape: ratify flipped the session to
+		// approved_to_ship, the Runner re-sent complete with needs_review and a
+		// landing signal stuck at ready_to_merge (sub never injects the
+		// rewrite instruction). Pre-FLY-208 this mapped to awaiting_review,
+		// the FSM rejected approved_to_ship → awaiting_review, and the session
+		// was permanently stuck (close_runner protects approved_to_ship).
+		const execId = "exec-scenarioD3";
+		const issueId = "issue-scenarioD3";
+		await postEvent({
+			event_id: "evtD3-start",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d",
+			event_type: "session_started",
+			payload: { issueIdentifier: "GEO-D3", issueTitle: "Scenario D3" },
+		});
+		await postEvent({
+			event_id: "evtD3-needs",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: { decision: { route: "needs_review" }, evidence: {} },
+		});
+		expect(
+			applyTransition(transitionOpts, execId, "approved_to_ship", {
+				executionId: execId,
+				issueId,
+				projectName: "geoforge3d",
+				trigger: "runner_gate_response",
+			}).ok,
+		).toBe(true);
+
+		const completeRes = await postEvent({
+			event_id: "evtD3-complete",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "needs_review" },
+				evidence: { landingStatus: { status: "ready_to_merge", prNumber: 16 } },
+			},
+		});
+		expect(completeRes.status).toBe(200);
+		expect(store.getSession(execId)!.status).toBe("completed");
+		expect(runPostShipSpy).not.toHaveBeenCalled();
+		const d3Params = JSON.parse(
+			store.getSession(execId)!.session_params ?? "{}",
+		) as { fly208_evidence_gap?: { landing_status?: string | null } };
+		expect(d3Params.fly208_evidence_gap?.landing_status).toBe("ready_to_merge");
 	});
 
 	// FLY-115 v1.24.5 (Codex R3 HIGH regression guard): the pre-R3 status
@@ -401,38 +505,31 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		// 4. Runner reports ship FAILED via session_completed with
 		//    route="blocked". The R3 fix routes through the `route==="blocked"`
 		//    branch (status="blocked") instead of the natural-completion
-		//    fallback. The FSM then rejects approved_to_ship → blocked, so the
-		//    session stays at approved_to_ship — but, critically, the FSM
-		//    rejection sets transitionRejected and gates `runPostShipFinalization`
-		//    OUT. That's the regression guard: failed ship must NEVER trigger
-		//    Runner tmux teardown / chat thread archive.
-		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		try {
-			const blockedRes = await postEvent({
-				event_id: "evtE-blocked",
-				execution_id: execId,
-				issue_id: issueId,
-				project_name: "geoforge3d",
-				event_type: "session_completed",
-				payload: {
-					decision: { route: "blocked", reasoning: "ship gate failed" },
-					evidence: {},
-				},
-			});
-			expect(blockedRes.status).toBe(200);
-			// FSM rejection leaves session in approved_to_ship (workflow-fsm.ts:131).
-			expect(store.getSession(execId)!.status).toBe("approved_to_ship");
-			// Pre-R3: status="completed" → finalization fired. Post-R3: gated out.
-			expect(runPostShipSpy).not.toHaveBeenCalled();
-			// Sanity: FSM rejection logged at error level so triage sees it.
-			const errorCalls = errorSpy.mock.calls
-				.map((args) => args.join(" "))
-				.join("\n");
-			expect(errorCalls).toContain("FSM rejected");
-			expect(errorCalls).toContain("target=blocked");
-		} finally {
-			errorSpy.mockRestore();
-		}
+		//    fallback. FLY-208 5a: the FSM now ALLOWS approved_to_ship →
+		//    blocked (the missing edge was the same stuck-state family as the
+		//    LEARN-12 incident — the rejection used to leave the session in
+		//    approved_to_ship forever with close_runner protecting it). The
+		//    regression guard stands: failed ship must NEVER trigger Runner
+		//    tmux teardown / chat thread archive — now via status="blocked"
+		//    (≠ completed) gating finalization out, not via an FSM rejection.
+		const blockedRes = await postEvent({
+			event_id: "evtE-blocked",
+			execution_id: execId,
+			issue_id: issueId,
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "blocked", reasoning: "ship gate failed" },
+				evidence: {},
+			},
+		});
+		expect(blockedRes.status).toBe(200);
+		// FLY-208: ship failure lands in "blocked" (human-unblockable:
+		// deferred/shelved/terminated exits) instead of being silently
+		// swallowed by an FSM rejection.
+		expect(store.getSession(execId)!.status).toBe("blocked");
+		// Failed ship still never triggers finalization.
+		expect(runPostShipSpy).not.toHaveBeenCalled();
 	});
 
 	it("Scenario B: docs-only compressed pipeline — running → completed fires post-ship once", async () => {

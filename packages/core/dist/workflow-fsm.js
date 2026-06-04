@@ -97,7 +97,13 @@ export const WORKFLOW_TRANSITIONS = {
         "shelved",
         "terminated",
     ],
-    approved_to_ship: ["completed", "failed", "terminated"],
+    // FLY-208 5a (Codex design R2 #2): `blocked` added — event-route's
+    // route=blocked branch always claimed "ship failed after approval →
+    // blocked" semantics, but the edge was missing, so applyTransition
+    // rejected it and the session stayed stuck in approved_to_ship (the same
+    // latent stuck-state family as the LEARN-12 incident). `blocked` already
+    // has human-unblock exits (deferred/shelved/terminated).
+    approved_to_ship: ["completed", "blocked", "failed", "terminated"],
     blocked: ["deferred", "shelved", "terminated"],
     failed: ["shelved", "terminated"],
     rejected: ["shelved", "terminated"],

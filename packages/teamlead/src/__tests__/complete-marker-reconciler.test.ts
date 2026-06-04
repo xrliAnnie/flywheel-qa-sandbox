@@ -1,4 +1,5 @@
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readdirSync,
@@ -119,6 +120,27 @@ describe("expectedStatusFromMarker (event-route parity, Codex R2 #6)", () => {
 			"blocked",
 		);
 	});
+	it("FLY-208 5a (Codex PR-2 R1 HIGH): approved_to_ship + needs_review/auto_approve + NOT merged → completed (evidence-gap parity)", () => {
+		// /events now unsticks approved_to_ship re-completions without merge
+		// evidence to "completed". A stale "awaiting_review" expectation here
+		// would quarantine a correctly-reconciled marker and the boot-drain
+		// fallback could force the session to "failed" — a false failure on
+		// the exact Bridge-down recovery path markers protect.
+		expect(
+			expectedStatusFromMarker(mk("needs_review", false), "approved_to_ship"),
+		).toBe("completed");
+		expect(
+			expectedStatusFromMarker(mk("auto_approve", false), "approved_to_ship"),
+		).toBe("completed");
+		// Merged stays completed; blocked stays blocked (FSM edge added).
+		expect(
+			expectedStatusFromMarker(mk("needs_review", true), "approved_to_ship"),
+		).toBe("completed");
+		expect(
+			expectedStatusFromMarker(mk("blocked", false), "approved_to_ship"),
+		).toBe("blocked");
+	});
+
 	it("undefined route + approved_to_ship → completed (natural completion)", () => {
 		expect(
 			expectedStatusFromMarker(mk(undefined, false), "approved_to_ship"),
@@ -166,6 +188,38 @@ describe("tryReconcileComplete", () => {
 		const store = makeStore();
 		const r = await tryReconcileComplete("nope", baseDeps(store));
 		expect(r.kind).toBe("absent");
+	});
+
+	it("FLY-208 5a regression (Codex PR-2 R1 HIGH): approved_to_ship + needs_review + ready_to_merge marker reconciles to completed — NO quarantine", async () => {
+		// The evidence-gap unstick: /events maps this replay to "completed".
+		// Pre-fix the reconciler expected "awaiting_review", saw "completed",
+		// quarantined the marker, and boot drain could force the
+		// successfully-unstuck session to "failed".
+		writeMarker(markerDir, "execGap", {
+			payload: {
+				decision: { route: "needs_review" },
+				evidence: { landingStatus: { status: "ready_to_merge", prNumber: 16 } },
+				sessionRole: "main",
+			},
+		});
+		const store = makeStore({ execGap: { status: "approved_to_ship" } });
+		const fetchFn = vi.fn(async () => {
+			// Replay through /events lands the 5a mapping.
+			store.sessions.set("execGap", { status: "completed" });
+			return new Response(JSON.stringify({ ok: true }), { status: 200 });
+		});
+		const r = await tryReconcileComplete(
+			"execGap",
+			baseDeps(store, fetchFn as never),
+		);
+		expect(r).toEqual({ kind: "reconciled", status: "completed" });
+		// Marker deleted as reconciled; nothing quarantined.
+		expect(readdirSync(markerDir)).not.toContain("execGap.json");
+		expect(
+			existsSync(quarantineDir) ? readdirSync(quarantineDir) : [],
+		).toHaveLength(0);
+		// Session keeps the unstuck terminal status.
+		expect(store.sessions.get("execGap")?.status).toBe("completed");
 	});
 
 	it("reconciled: replay drives session to expected terminal, deletes marker", async () => {

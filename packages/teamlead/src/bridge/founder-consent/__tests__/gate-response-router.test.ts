@@ -244,3 +244,139 @@ describe("gate-response-router (Surface B)", () => {
 		db.close();
 	});
 });
+
+// ── FLY-208 6b: approval-intent plain text gets a WARNING (write unchanged) ──
+//
+// Production incident: the Lead replied `APPROVE — founder 批准在案...` to an
+// approve_to_ship gate; only JSON {"approved": true} approves, so the text
+// was silently recorded as feedback → verify-approval refused → ratify retry
+// loop. The router now flags the intent in the HTTP response (the respond CLI
+// prints it to stderr); the write behavior is deliberately unchanged.
+describe("gate-response-router — approval-intent warning (FLY-208 6b)", () => {
+	function mkPassthroughServer() {
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api/founder-consent/runner-gate-response",
+			createGateResponseRouter({
+				evaluator: undefined,
+				resolveContext: async () => null,
+				getSessionProject: () => ({ project_name: PROJECT }),
+				configuredProjects: new Set([PROJECT]),
+				commRoot: join(dir, "comm"),
+			}),
+		);
+		server = createServer(app);
+		server.listen(0);
+	}
+
+	it("pass-through + plain-text APPROVE → warning, still written as feedback", async () => {
+		const qid = seedQuestion("approve_to_ship");
+		mkPassthroughServer();
+		const res = await request(
+			"POST",
+			"/api/founder-consent/runner-gate-response",
+			{
+				questionId: qid,
+				leadId: "lead-x",
+				answer: "APPROVE — founder 批准在案,可以 merge",
+				executionId: "exec-1",
+			},
+		);
+		expect(res.status).toBe(200);
+		const body = res.body as { warning?: string };
+		expect(body.warning).toContain("Recorded as FEEDBACK");
+		expect(body.warning).toContain('{"approved": true}');
+		expect(body.warning).toContain("re-request review");
+		// Write behavior unchanged: the text landed verbatim.
+		const db = new CommDB(commDbPath, false);
+		expect(db.getResponse(qid)?.content).toContain("APPROVE — founder");
+		db.close();
+	});
+
+	it("pass-through + JSON approval → NO warning", async () => {
+		const qid = seedQuestion("approve_to_ship");
+		mkPassthroughServer();
+		const res = await request(
+			"POST",
+			"/api/founder-consent/runner-gate-response",
+			{
+				questionId: qid,
+				leadId: "lead-x",
+				answer: '{"approved": true}',
+				executionId: "exec-1",
+			},
+		);
+		expect(res.status).toBe(200);
+		expect((res.body as { warning?: string }).warning).toBeUndefined();
+	});
+
+	it("pass-through + ordinary feedback text → NO warning", async () => {
+		const qid = seedQuestion("approve_to_ship");
+		mkPassthroughServer();
+		const res = await request(
+			"POST",
+			"/api/founder-consent/runner-gate-response",
+			{
+				questionId: qid,
+				leadId: "lead-x",
+				answer: "needs more tests before ship",
+				executionId: "exec-1",
+			},
+		);
+		expect(res.status).toBe(200);
+		expect((res.body as { warning?: string }).warning).toBeUndefined();
+	});
+
+	it("evaluator-allow path + plain-text approval intent → warning", async () => {
+		const qid = seedQuestion("approve_to_ship");
+		mkServer(fakeEvaluator("allow"));
+		const res = await request(
+			"POST",
+			"/api/founder-consent/runner-gate-response",
+			{
+				questionId: qid,
+				leadId: "lead-x",
+				answer: "Approved, go ahead",
+				executionId: "exec-1",
+			},
+		);
+		expect(res.status).toBe(200);
+		expect((res.body as { warning?: string }).warning).toContain(
+			"Recorded as FEEDBACK",
+		);
+	});
+
+	it("alreadyResponded retry surfaces the warning for an approval-intent prior answer", async () => {
+		const qid = seedQuestion("approve_to_ship");
+		mkPassthroughServer();
+		const first = await request(
+			"POST",
+			"/api/founder-consent/runner-gate-response",
+			{
+				questionId: qid,
+				leadId: "lead-x",
+				answer: "APPROVE — ship it",
+				executionId: "exec-1",
+			},
+		);
+		expect(first.status).toBe(200);
+		const retry = await request(
+			"POST",
+			"/api/founder-consent/runner-gate-response",
+			{
+				questionId: qid,
+				leadId: "lead-x",
+				answer: "APPROVE — ship it",
+				executionId: "exec-1",
+			},
+		);
+		expect(retry.status).toBe(200);
+		expect(
+			(retry.body as { alreadyResponded?: boolean }).alreadyResponded,
+		).toBe(true);
+		expect((retry.body as { warning?: string }).warning).toContain(
+			"Recorded as FEEDBACK",
+		);
+	});
+});

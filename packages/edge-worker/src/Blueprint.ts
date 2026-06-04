@@ -549,6 +549,16 @@ export class Blueprint {
 					`run \`node ${commCliPath} gate approve_to_ship --lead ${ctx.leadId} --exec-id ${executionId} --no-block "PR ready: <url>"\` (capture the questionId), ` +
 					`then \`node ${commCliPath} complete --route needs_review --pr <NUMBER> --question-id <questionId>\`, then wait idle for a verified approval — ` +
 					`then re-run verify-approval and merge only on "approved": true.`,
+				// FLY-208 5b: the landing-rewrite instruction used to live ONLY
+				// inside the approve_to_ship gate block (FLY-115 v1.24.5) —
+				// projects that disable that checkpoint (the incident project)
+				// never saw it, the signal stayed "ready_to_merge", and the
+				// Bridge could not prove the ship (evidence-gap completion +
+				// the approved_to_ship stuck-state, FLY-208 finding 5).
+				`5. AFTER any verified merge (and ONLY once the PR is actually merged): rewrite the landing signal to merged and report completion — ` +
+					`\`mkdir -p $(dirname ${landSignalPath}); MERGE_SHA=$(gh pr view <NUMBER> --json mergeCommit -q '.mergeCommit.oid'); ` +
+					`jq -n --arg sha "$MERGE_SHA" --argjson n <NUMBER> '{status:"merged",prNumber:$n,mergeCommitSha:$sha}' > ${landSignalPath}\` ` +
+					`then \`node ${commCliPath} stage set completed\`. Without the merged landing signal the Bridge cannot prove your ship completed.`,
 			);
 
 			// FLY-47: Inject gate instructions for enabled checkpoints

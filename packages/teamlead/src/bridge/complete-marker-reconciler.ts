@@ -158,11 +158,18 @@ export function expectedStatusFromMarker(
 		return null;
 	}
 
-	if (route === "needs_review") {
-		return landing === "merged" ? "completed" : "awaiting_review";
-	}
-	if (route === "auto_approve") {
-		return landing === "merged" ? "completed" : "awaiting_review";
+	if (route === "needs_review" || route === "auto_approve") {
+		if (landing === "merged") return "completed";
+		// FLY-208 5a (Codex PR-2 R1 HIGH): /events now maps
+		// approved_to_ship + needs_review/auto_approve WITHOUT merged landing
+		// to "completed" (evidence-gap unstick) instead of the FSM-invalid
+		// awaiting_review. This expectation copy MUST mirror it — the stale
+		// "awaiting_review" expectation made tryReconcileComplete() quarantine
+		// a correctly-reconciled marker, and applyQuarantineFallback() could
+		// then force the successfully-unstuck session to "failed" on boot
+		// drain (a false failure on the exact Bridge-down recovery path the
+		// markers exist to protect).
+		return isPostApproveShip ? "completed" : "awaiting_review";
 	}
 	if (route === "blocked") {
 		return "blocked";

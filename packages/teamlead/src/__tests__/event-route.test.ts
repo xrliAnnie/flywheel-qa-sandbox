@@ -1358,3 +1358,122 @@ describe("Event route — issue_identifier fallback (GEO-202)", () => {
 		expect(session!.issue_identifier).toBe("GEO-95");
 	});
 });
+
+// ── FLY-208 7a: stage_context honesty (no reverse assertions from stale snapshots) ──
+//
+// Production incident: stage_changed(completed) said "PR #16 is OPEN ... do
+// NOT tell Annie the PR is merged" 31 seconds AFTER the merge, and "No PR
+// detected" 53 seconds after PR creation — both inferred solely from
+// session.pr_number existence. Now: the event's own landing_status proves a
+// merge; everything else is labeled a timestamped snapshot with a verify
+// instruction. Live PR querying is FLY-210.
+describe("Event route — stage_context honesty (FLY-208 7a)", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+	let capturedEnvelopes: LeadEventEnvelope[];
+
+	beforeEach(async () => {
+		const mock = createMockRegistry();
+		capturedEnvelopes = mock.envelopes;
+		store = await StateStore.create(":memory:");
+		const config = makeConfig();
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			config,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			mock.registry,
+		);
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+	});
+
+	afterEach(async () => {
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		store.close();
+	});
+
+	async function post(body: Record<string, unknown>): Promise<void> {
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(body),
+		});
+		await new Promise((r) => setTimeout(r, 100));
+	}
+
+	function lastStageContext(): string | undefined {
+		const stageEnvs = capturedEnvelopes.filter(
+			(e) => e.event.event_type === "stage_changed",
+		);
+		return stageEnvs[stageEnvs.length - 1]?.event.stage_context;
+	}
+
+	it("merged landing in the event → states the merge (with sha), no hedging needed", async () => {
+		await post(makeEvent());
+		store.patchSessionMetadata("exec-1", { pr_number: 16 });
+		await post(
+			makeEvent({
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: { status: "merged", mergeCommitSha: "a6c5d4c7" },
+				},
+			}),
+		);
+		const ctx = lastStageContext();
+		expect(ctx).toContain("PR #16 was merged by the Runner");
+		expect(ctx).toContain("a6c5d4c7");
+		expect(ctx).not.toContain("do NOT tell Annie");
+	});
+
+	it("PR known but landing not merged → timestamped snapshot + verify instruction, NO reverse assertion", async () => {
+		await post(makeEvent({ execution_id: "exec-7a2" }));
+		store.patchSessionMetadata("exec-7a2", { pr_number: 16 });
+		await post(
+			makeEvent({
+				execution_id: "exec-7a2",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: { status: "ready_to_merge", prNumber: 16 },
+				},
+			}),
+		);
+		const ctx = lastStageContext();
+		expect(ctx).toContain("status snapshot at");
+		expect(ctx).toContain("gh pr view 16");
+		// The incident's reverse assertions are gone:
+		expect(ctx).not.toContain("is OPEN");
+		expect(ctx).not.toContain("do NOT tell Annie");
+	});
+
+	it("no PR recorded → hedged wording (just-created PR may not be ingested yet)", async () => {
+		await post(makeEvent({ execution_id: "exec-7a3" }));
+		await post(
+			makeEvent({
+				execution_id: "exec-7a3",
+				event_type: "stage_changed",
+				payload: { stage: "completed" },
+			}),
+		);
+		const ctx = lastStageContext();
+		expect(ctx).toContain("No PR recorded as of");
+		expect(ctx).toContain("may not be ingested yet");
+		expect(ctx).not.toContain("No PR detected");
+	});
+});

@@ -26,6 +26,7 @@ import {
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
+import { patchSessionParams } from "./proofshot-session.js";
 import { emitRunnerReadyToCloseNotification } from "./runner-ready-to-close-notifier.js";
 
 /**
@@ -63,12 +64,46 @@ export function isPostApproveShipComplete(args: {
 	route: string | undefined;
 	landingStatus: { status?: string } | undefined;
 }): boolean {
+	// FLY-208 5a (Codex design R2 #1): merge evidence is REQUIRED in every
+	// branch. Previously `existingStatus === "approved_to_ship"` returned true
+	// with landingStatus undefined or "ready_to_merge" — which would run tmux
+	// teardown / ready-to-close notification / thread archive for the new
+	// evidence-gap completion path (approved_to_ship session whose Runner
+	// never rewrote the landing signal) even though nothing proves the PR
+	// merged. Finalization for evidence-gap completions is deferred to
+	// FLY-210 (PR-state freshness) or a manual close.
+	if (args.landingStatus?.status !== "merged") return false;
 	if (args.existingStatus === "approved_to_ship") return true;
-	if (args.landingStatus?.status === "merged") {
-		if (args.route === "auto_approve") return true;
-		if (args.route === "needs_review") return true; // FLY-120
-	}
+	if (args.route === "auto_approve") return true;
+	if (args.route === "needs_review") return true; // FLY-120
 	return false;
+}
+
+/**
+ * FLY-208 5a: persist the evidence-gap marker on a session completed WITHOUT
+ * merge evidence (approved_to_ship + auto_approve/needs_review + landing not
+ * "merged"). Stored inside the existing `session_params` JSON column —
+ * `patchSessionMetadata` is a column whitelist, so an ad-hoc field would
+ * silently no-op (Codex design R3 guardrail #1). Read-modify-write merge
+ * preserves whatever else lives in session_params (e.g. proofshot runs).
+ *
+ * FLY-210 consumes this marker: when later merge proof arrives (PR-head
+ * watcher / live PR query), it runs idempotent finalization WITHOUT a status
+ * transition (completed is terminal).
+ */
+export function markEvidenceGapCompletion(
+	store: StateStore,
+	executionId: string,
+	info: { route: string | undefined; landingStatus: string | undefined },
+): void {
+	patchSessionParams(store, executionId, (cur) => ({
+		...cur,
+		fly208_evidence_gap: {
+			at: new Date().toISOString(),
+			route: info.route ?? null,
+			landing_status: info.landingStatus ?? null,
+		},
+	}));
 }
 
 export interface PostShipOpts {
