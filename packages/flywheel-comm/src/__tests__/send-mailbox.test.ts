@@ -78,7 +78,8 @@ describe("send mailbox dual-write (FLY-168)", () => {
 			dbPath,
 		});
 
-		// CommDB instruction present
+		// CommDB instruction present — content is the ORIGINAL (no transport
+		// decoration in the audit record; FLY-208 B)
 		const db = new CommDB(dbPath);
 		const unread = db.getUnreadInstructions(EXEC);
 		db.close();
@@ -92,9 +93,68 @@ describe("send mailbox dual-write (FLY-168)", () => {
 		expect(entries).toHaveLength(1);
 		expect(entries[0]!.from).toBe(LEAD);
 		// payload.content maps to claude-code's `text` field — guards the
-		// {from,to,content} shape (NOT {from,text}) from writing undefined
-		expect(entries[0]!.text).toBe("switch to GEO-999");
+		// {from,to,content} shape (NOT {from,text}) from writing undefined.
+		// FLY-208 B: the Runner-visible text is prefixed with the CommDB id so
+		// vendor-layer at-least-once re-delivery is trivially recognizable.
+		expect(entries[0]!.text).toBe(
+			`[lead-instruction ${id}]\nswitch to GEO-999`,
+		);
 		expect(entries[0]!.read).toBe(false);
+	});
+
+	it("marks delivered_at after a successful mailbox wake (FLY-208 B)", async () => {
+		registerSession();
+		const id = await send({
+			fromAgent: LEAD,
+			toAgent: EXEC,
+			content: "revise per Annie feedback",
+			dbPath,
+		});
+
+		const db = new CommDB(dbPath);
+		const unread = db.getUnreadInstructions(EXEC);
+		db.close();
+		expect(unread).toHaveLength(1);
+		expect(unread[0]!.id).toBe(id);
+		// Semantics: "transport write returned ok" (raw write, NOT verified) —
+		// distinguishes delivered-to-mailbox from never-delivered in the audit
+		// trail. read_at stays NULL (no reliable Runner-side ack point).
+		expect(unread[0]!.delivered_at).not.toBeNull();
+		expect(unread[0]!.read_at ?? null).toBeNull();
+	});
+
+	it("leaves delivered_at NULL in rollback mode (commdb backend)", async () => {
+		process.env.FLYWHEEL_COMM_BACKEND = "commdb";
+		registerSession();
+		await send({
+			fromAgent: LEAD,
+			toAgent: EXEC,
+			content: "rollback no delivered_at",
+			dbPath,
+		});
+		const db = new CommDB(dbPath);
+		const unread = db.getUnreadInstructions(EXEC);
+		db.close();
+		expect(unread[0]!.delivered_at ?? null).toBeNull();
+	});
+
+	it("leaves delivered_at NULL when the mailbox write fails", async () => {
+		registerSession();
+		const badCfg = join(tmpDir, "not-a-dir-2");
+		writeFileSync(badCfg, "x");
+		process.env.CLAUDE_CONFIG_DIR = badCfg;
+
+		await send({
+			fromAgent: LEAD,
+			toAgent: EXEC,
+			content: "mailbox fails, no delivered_at",
+			dbPath,
+		});
+		const db = new CommDB(dbPath);
+		const unread = db.getUnreadInstructions(EXEC);
+		db.close();
+		expect(unread).toHaveLength(1);
+		expect(unread[0]!.delivered_at ?? null).toBeNull();
 	});
 
 	it("does NOT write the mailbox in rollback mode (FLYWHEEL_COMM_BACKEND=commdb)", async () => {

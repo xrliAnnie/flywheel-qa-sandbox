@@ -23,7 +23,11 @@ import type {
 	MailboxPayload,
 } from "flywheel-agent-team-transport";
 import { MailboxTransport } from "../mailbox/MailboxTransport.js";
-import { formatDurationMs, formatStuckEscalation } from "./hook-payload.js";
+import {
+	formatDurationMs,
+	formatMisroutedReport,
+	formatStuckEscalation,
+} from "./hook-payload.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -294,6 +298,13 @@ export class MailboxLeadRuntime implements LeadRuntime {
 		// mailbox/commdb parity by construction.
 		if (e.event_type === "runner_stuck_escalation") {
 			return formatStuckEscalation(env);
+		}
+
+		// FLY-208 A2: misrouted-report advisory (black-hole inbox patrol).
+		// Shared renderer — same parity-by-construction rationale as
+		// formatStuckEscalation (FLY-195 lesson).
+		if (e.event_type === "runner_misrouted_report") {
+			return formatMisroutedReport(env);
 		}
 
 		const roleLabel =
