@@ -63,6 +63,8 @@ import { RuntimeRegistry } from "./runtime-registry.js";
 import { captureSession as defaultCaptureSession } from "./session-capture.js";
 import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
+import { buildStuckRunnerDetector } from "./stuck-escalation.js";
+import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
 import {
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
@@ -828,6 +830,22 @@ export function createBridgeApp(
 				error: result.error,
 			});
 		},
+	);
+
+	// FLY-195: Lead remanage endpoints for stuck-runner episodes —
+	// explicit disposition receipts (plan §3.4) + the restricted recovery
+	// nudge (plan §3.5, allowlist + all-gates + audit). Deliberately NOT in
+	// the FLY-175 reserved set (light actions); restart/kill/ship stay
+	// founder-gated. Auth is applied per-route INSIDE the router so this
+	// mount cannot leak tokenAuth onto unrelated /api/sessions/* layers.
+	app.use(
+		"/api/sessions",
+		createStuckRemanageRouter({
+			store,
+			projects: projects ?? [],
+			captureSessionFn: defaultCaptureSession,
+			auth: tokenAuthMiddleware(config.apiToken),
+		}),
 	);
 
 	// GEO-270: Scan for stale sessions (manual/cron trigger)
@@ -1914,19 +1932,6 @@ export async function startBridge(
 	});
 	gatePoller.start();
 
-	// FLY-92: Runner idle watchdog — detects stuck Runners via tmux capture-pane
-	const idleWatchdog = new RunnerIdleWatchdog({
-		pollIntervalMs: 30_000,
-		waitingThresholdCycles: 2,
-		projects,
-		store,
-		runtimeRegistry: registry,
-		captureSessionFn: defaultCaptureSession,
-		chatThreadsEnabled: config.chatThreadsEnabled,
-	});
-	idleWatchdog.start();
-	console.log("[Bridge] RunnerIdleWatchdog started (30s poll)");
-
 	// FLY-83: Lead liveness watchdog — external pane-hash observation for
 	// Claude Code TUI. Pairs with scripts/lead-alert.sh (shell-owned alert
 	// path) via cross-process claims.db dedup.
@@ -1976,6 +1981,34 @@ export async function startBridge(
 				)}. Alerts for them will dead-letter, not reach Annie. Fix projects.json (alertChannel or alertFallbackToCore + generalChannel).`,
 		});
 	}
+
+	// FLY-92: Runner idle watchdog — detects stuck Runners via tmux capture-pane.
+	// FLY-195: also drives the stuck-runner detector from the SAME 30s poll
+	// (no new periodic timer, FLY-169) using the SAME per-session capture.
+	// Created after leadAlertNotifier because the detector's Q7 fallback
+	// (runner_stuck_unhandled) pages Annie through it.
+	const stuckDetector = buildStuckRunnerDetector({
+		store,
+		projects,
+		runtimeRegistry: registry,
+		chatThreadsEnabled: config.chatThreadsEnabled,
+		notifier: leadAlertNotifier,
+	});
+	const idleWatchdog = new RunnerIdleWatchdog({
+		pollIntervalMs: 30_000,
+		waitingThresholdCycles: 2,
+		projects,
+		store,
+		runtimeRegistry: registry,
+		captureSessionFn: defaultCaptureSession,
+		chatThreadsEnabled: config.chatThreadsEnabled,
+		stuckDetector,
+	});
+	idleWatchdog.start();
+	console.log(
+		`[Bridge] RunnerIdleWatchdog started (30s poll${stuckDetector ? ", FLY-195 stuck detection ON" : ", FLY-195 stuck detection OFF (FLYWHEEL_STUCK_DETECT=0)"})`,
+	);
+
 	const leadWatchdog = new LeadWatchdog({
 		pollIntervalMs: 30_000,
 		paneHashStuckCycles: 2,

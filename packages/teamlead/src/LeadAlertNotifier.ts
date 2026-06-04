@@ -50,7 +50,11 @@ export type AlertEventType =
 	| "login_expired"
 	| "permission_blocked"
 	| "crash_loop"
-	| "pane_hash_stuck";
+	| "pane_hash_stuck"
+	// FLY-195 (plan §3.6 Q7): a stuck-runner episode the owning Lead did not
+	// dispose of within the grace window — Bridge pages Annie directly.
+	// eventId format: `runner-stuck-unhandled:${execution_id}:${fingerprint}`.
+	| "runner_stuck_unhandled";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 

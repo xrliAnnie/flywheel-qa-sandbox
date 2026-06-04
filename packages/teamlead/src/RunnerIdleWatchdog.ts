@@ -15,6 +15,10 @@ import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { parseSessionLabels } from "./bridge/lead-scope.js";
 import { createStatusQuery } from "./bridge/runner-status.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
+import type {
+	CaptureOutcome,
+	StuckRunnerDetector,
+} from "./bridge/stuck-runner-detector.js";
 import type { CaptureSessionFn } from "./bridge/tools.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import { resolveLeadForIssue } from "./ProjectConfig.js";
@@ -29,6 +33,14 @@ export interface IdleWatchdogConfig {
 	captureSessionFn: CaptureSessionFn;
 	/** FLY-91: Enable per-issue chat thread hints in idle event payloads. */
 	chatThreadsEnabled?: boolean;
+	/**
+	 * FLY-195: optional stuck-runner detector, driven from THIS poll (FLY-169:
+	 * no new periodic timers) and fed this watchdog's own capture (one tmux
+	 * capture-pane per session per poll). Independent state from the idle
+	 * dedup machinery (Codex R1 LOW-8) — the 90s runner_idle_detected cadence
+	 * is unchanged.
+	 */
+	stuckDetector?: StuckRunnerDetector | null;
 }
 
 type IdleStatus = "waiting" | "idle" | "unknown";
@@ -84,6 +96,8 @@ export class RunnerIdleWatchdog {
 			for (const key of this.stateMap.keys()) {
 				if (!activeIds.has(key)) this.stateMap.delete(key);
 			}
+			// FLY-195: stuck episodes for gone executions are dropped the same way.
+			this.config.stuckDetector?.pruneInactive(activeIds);
 
 			for (const session of sessions) {
 				await this.checkSession(session);
@@ -95,10 +109,30 @@ export class RunnerIdleWatchdog {
 
 	private async checkSession(session: Session): Promise<void> {
 		try {
-			const { result, captureErrorStatus } = await this.statusQuery.query(
-				session.execution_id,
-				session.project_name,
-			);
+			const { result, captureErrorStatus, output } =
+				await this.statusQuery.query(
+					session.execution_id,
+					session.project_name,
+				);
+
+			// FLY-195: drive the stuck detector off this SAME capture. Any capture
+			// problem (infra error or tmux-unreachable "unknown") is handed over as
+			// { ok: false } so the detector fails closed (skips without touching
+			// the episode clock).
+			if (this.config.stuckDetector) {
+				const outcome: CaptureOutcome =
+					captureErrorStatus === undefined && output !== undefined
+						? { ok: true, output }
+						: { ok: false, error: result.reason };
+				try {
+					await this.config.stuckDetector.checkSession(session, outcome);
+				} catch (err) {
+					console.warn(
+						`[IdleWatchdog] stuck check error for ${session.execution_id}:`,
+						err instanceof Error ? err.message : String(err),
+					);
+				}
+			}
 
 			// Skip idle notification for infra errors (400/404/CommDB 502).
 			// Only tmux-unreachable (no captureErrorStatus) is a valid idle signal.

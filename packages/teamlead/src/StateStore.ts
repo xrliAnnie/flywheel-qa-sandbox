@@ -35,6 +35,41 @@ export interface SessionEvent {
 	source: string;
 }
 
+/**
+ * FLY-195 (plan §3.4): Lead disposition receipt for one stuck episode.
+ *
+ * `handled_remanaged` is written IMPLICITLY by the Bridge recovery-nudge
+ * endpoint on a successful nudge; the other values are written EXPLICITLY by
+ * the Lead via `POST /api/sessions/:executionId/stuck-disposition`.
+ */
+export const STUCK_DISPOSITIONS = [
+	"handled_remanaged",
+	"false_positive",
+	"legitimate_wait",
+	"snooze",
+	"needs_founder",
+] as const;
+export type StuckDisposition = (typeof STUCK_DISPOSITIONS)[number];
+
+/** Disposition values a Lead may write explicitly (handled_remanaged is implicit-only). */
+export const EXPLICIT_STUCK_DISPOSITIONS: readonly StuckDisposition[] = [
+	"false_positive",
+	"legitimate_wait",
+	"snooze",
+	"needs_founder",
+];
+
+export interface StuckDispositionRow {
+	execution_id: string;
+	episode_fingerprint: string;
+	disposition: StuckDisposition;
+	/** Epoch ms until which a `snooze` disposition suppresses; null otherwise. */
+	snooze_until_ms: number | null;
+	noted_by: string | null;
+	note: string | null;
+	created_at: string;
+}
+
 export interface SessionUpsert {
 	execution_id: string;
 	issue_id: string;
@@ -460,6 +495,24 @@ export class StateStore {
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_threads_issue_channel ON chat_threads(issue_id, channel_id)",
 		);
+
+		// FLY-195: Lead disposition receipts for stuck-runner episodes (plan §3.4).
+		// One row per (execution, episode fingerprint). The Lead's judgment is
+		// AUTHORITATIVE: the Bridge fallback (runner_stuck_unhandled Annie alert)
+		// suppresses on any row here, and the detector consults it to avoid
+		// re-paging the Lead for an already-judged episode after a Bridge restart.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS stuck_dispositions (
+				execution_id TEXT NOT NULL,
+				episode_fingerprint TEXT NOT NULL,
+				disposition TEXT NOT NULL,
+				snooze_until_ms INTEGER,
+				noted_by TEXT,
+				note TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				PRIMARY KEY (execution_id, episode_fingerprint)
+			)
+		`);
 
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
@@ -1580,6 +1633,72 @@ export class StateStore {
 			[leadId, eventId],
 		);
 		return rows.length > 0 && (rows[0]?.values?.length ?? 0) > 0;
+	}
+
+	// --- FLY-195: stuck-episode disposition receipts (plan §3.4) ---
+
+	/**
+	 * Upsert the Lead's disposition for one stuck episode. Last write wins
+	 * (e.g. snooze → false_positive refinement). Persisted immediately —
+	 * the Q7 fallback does a durable re-read right before paging Annie
+	 * (Codex design R2 LOW-R2-2).
+	 */
+	setStuckDisposition(input: {
+		execution_id: string;
+		episode_fingerprint: string;
+		disposition: StuckDisposition;
+		snooze_until_ms?: number | null;
+		noted_by?: string | null;
+		note?: string | null;
+	}): void {
+		if (!STUCK_DISPOSITIONS.includes(input.disposition)) {
+			throw new Error(`Invalid stuck disposition: ${input.disposition}`);
+		}
+		this.db.run(
+			`INSERT INTO stuck_dispositions
+			   (execution_id, episode_fingerprint, disposition, snooze_until_ms, noted_by, note)
+			 VALUES (?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(execution_id, episode_fingerprint) DO UPDATE SET
+			   disposition = excluded.disposition,
+			   snooze_until_ms = excluded.snooze_until_ms,
+			   noted_by = excluded.noted_by,
+			   note = excluded.note,
+			   created_at = datetime('now')`,
+			[
+				input.execution_id,
+				input.episode_fingerprint,
+				input.disposition,
+				input.snooze_until_ms ?? null,
+				input.noted_by ?? null,
+				input.note ?? null,
+			],
+		);
+		this.save();
+	}
+
+	/** Read the disposition receipt for one stuck episode (undefined = none). */
+	getStuckDisposition(
+		executionId: string,
+		episodeFingerprint: string,
+	): StuckDispositionRow | undefined {
+		const result = this.db.exec(
+			`SELECT execution_id, episode_fingerprint, disposition, snooze_until_ms,
+			        noted_by, note, created_at
+			 FROM stuck_dispositions
+			 WHERE execution_id = ? AND episode_fingerprint = ?`,
+			[executionId, episodeFingerprint],
+		);
+		const row = result[0]?.values[0];
+		if (!row) return undefined;
+		return {
+			execution_id: row[0] as string,
+			episode_fingerprint: row[1] as string,
+			disposition: row[2] as StuckDisposition,
+			snooze_until_ms: (row[3] as number | null) ?? null,
+			noted_by: (row[4] as string | null) ?? null,
+			note: (row[5] as string | null) ?? null,
+			created_at: row[6] as string,
+		};
 	}
 
 	// --- FLY-25: Delivery tracking ---
