@@ -94,3 +94,5 @@ new
 doc//engineer/exploration/archive:
 FLY-11-terminal-mcp-tool.md
 ```
+
+> Reviewed note: QA-S1 revision marker 20260604-1044
