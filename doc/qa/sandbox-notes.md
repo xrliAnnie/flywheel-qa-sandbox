@@ -33,7 +33,7 @@
 - 三个关键脚本：`test-deploy.sh`（clone sandbox 到 slot 目录并启动测试 Bridge/Lead）、`inject-linear-issue.sh`（直接 POST `/api/runs/start` spawn Runner）、`test-teardown.sh`（杀进程、清 worktree/branch、删 SLOT_DIR 与 CommDB）。
 - 前置条件：shell 导出 `LINEAR_API_KEY`、`gh` CLI 对 sandbox fork 有 push 权限、fork 已存在、被测分支已推送到 sandbox；`test-deploy.sh` 在 pre-flight 缺任一项即 exit 2 快速失败。
 - Runner worktree 起点由 `FLYWHEEL_RUNNER_START_POINT` 环境变量控制（FLY-95 的 `WorktreeManager.create()` fallback），仅测试 Bridge 设置该变量，生产行为保持 `origin/main` 不变。
-- 配套文档与契约：`doc/qa/framework/real-runner-e2e-guide.md`（端到端演练）、`sandbox-sync-guide.md`（fork 生命周期）、`contracts/PLAN_SOURCE_CONTRACT.md`（plan 文件获取契约）、`skills/SKILL_INTERFACE.md`（测试 skill 接口契约）。
+- 配套文档与契约：`doc/qa/framework/real-runner-e2e-guide.md`（端到端演练）、`doc/qa/framework/sandbox-sync-guide.md`（fork 生命周期）、`packages/qa-framework/contracts/PLAN_SOURCE_CONTRACT.md`（plan 文件获取契约）、`packages/qa-framework/skills/SKILL_INTERFACE.md`（测试 skill 接口契约）。
 
 ## `ls -R doc/ | head -50` output
 
