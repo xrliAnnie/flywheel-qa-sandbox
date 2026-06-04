@@ -25,6 +25,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	DEFAULT_RETENTION_BYTES,
 	DEFAULT_RETENTION_MAX,
+	DEFAULT_RETENTION_MAX_AGE_MS,
 	injectHeadMeta,
 	REPORT_REGISTRY_INTERNALS,
 	ReportHtmlInvalidError,
@@ -56,7 +57,12 @@ describe("ReportRegistry", () => {
 	});
 
 	function makeRegistry(
-		opts: { retentionMax?: number; retentionBytes?: number } = {},
+		opts: {
+			retentionMax?: number;
+			retentionBytes?: number;
+			retentionMaxAgeMs?: number;
+			now?: () => number;
+		} = {},
 	) {
 		return new ReportRegistry(dir, {
 			...opts,
@@ -184,6 +190,142 @@ describe("ReportRegistry", () => {
 	it("default caps are 100 entries / 10MB", () => {
 		expect(DEFAULT_RETENTION_MAX).toBe(100);
 		expect(DEFAULT_RETENTION_BYTES).toBe(10 * 1024 * 1024);
+	});
+
+	// ── TTL expiry (founder requirement: links die after 7 days) ────────
+
+	it("default TTL is 7 days", () => {
+		expect(DEFAULT_RETENTION_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
+	});
+
+	it("entries older than the TTL are pruned at the next publish", () => {
+		let clock = Date.parse("2026-06-04T00:00:00Z");
+		const reg = makeRegistry({ now: () => clock });
+		const s1 = reg.stagePublish("p", HTML, "old");
+		s1.commit();
+		// 8 days later: a new publish must drop the expired entry
+		clock += 8 * 24 * 60 * 60 * 1000;
+		const s2 = reg.stagePublish("p", HTML, "new");
+		expect(s2.deployFiles.map((f) => f.file)).not.toContain(
+			`r/${s1.entry.token}/index.html`,
+		);
+		s2.commit();
+		expect(reg.list().map((e) => e.token)).toEqual([s2.entry.token]);
+		expect(existsSync(join(dir, "files", `${s1.entry.token}.html`))).toBe(
+			false,
+		);
+	});
+
+	it("entries younger than the TTL survive (boundary)", () => {
+		let clock = Date.parse("2026-06-04T00:00:00Z");
+		const reg = makeRegistry({ now: () => clock });
+		const s1 = reg.stagePublish("p", HTML, "young");
+		s1.commit();
+		clock += 6 * 24 * 60 * 60 * 1000; // 6 days — inside TTL
+		const s2 = reg.stagePublish("p", HTML, "new");
+		expect(s2.deployFiles.map((f) => f.file)).toContain(
+			`r/${s1.entry.token}/index.html`,
+		);
+		s2.abort();
+	});
+
+	it("an entry EXACTLY at the TTL boundary is pruned (>= semantics)", () => {
+		let clock = Date.parse("2026-06-04T00:00:00Z");
+		const reg = makeRegistry({ now: () => clock });
+		const s1 = reg.stagePublish("p", HTML, "boundary");
+		s1.commit();
+		clock += 7 * 24 * 60 * 60 * 1000; // exactly 7 days
+		const s2 = reg.stagePublish("p", HTML, "new");
+		expect(s2.deployFiles.map((f) => f.file)).not.toContain(
+			`r/${s1.entry.token}/index.html`,
+		);
+		s2.abort();
+	});
+
+	it("malformed createdAt is never TTL-pruned (NaN age guard)", () => {
+		let clock = Date.parse("2026-06-04T00:00:00Z");
+		const reg = makeRegistry({ now: () => clock });
+		const s1 = reg.stagePublish("p", HTML);
+		s1.commit();
+		// corrupt the committed createdAt
+		const regPath = join(dir, "registry.json");
+		const data = JSON.parse(readFileSync(regPath, "utf-8"));
+		data.reports[0].createdAt = "not-a-date";
+		writeFileSync(regPath, JSON.stringify(data), "utf-8");
+		clock += 30 * 24 * 60 * 60 * 1000;
+		const s2 = reg.stagePublish("p", HTML);
+		// guard keeps it (conservative: unknown age ≠ expired)
+		expect(s2.deployFiles.map((f) => f.file)).toContain(
+			`r/${s1.entry.token}/index.html`,
+		);
+		s2.abort();
+	});
+
+	it("retentionMaxAgeMs: 0 disables age-based expiry", () => {
+		let clock = Date.parse("2026-06-04T00:00:00Z");
+		const reg = makeRegistry({ retentionMaxAgeMs: 0, now: () => clock });
+		const s1 = reg.stagePublish("p", HTML);
+		s1.commit();
+		clock += 365 * 24 * 60 * 60 * 1000; // a year
+		const s2 = reg.stagePublish("p", HTML);
+		expect(s2.deployFiles.map((f) => f.file)).toContain(
+			`r/${s1.entry.token}/index.html`,
+		);
+		s2.abort();
+	});
+
+	it("an extremely large TTL behaves as never-expiring without overflow surprises", () => {
+		let clock = Date.parse("2026-06-04T00:00:00Z");
+		const reg = makeRegistry({
+			retentionMaxAgeMs: 99999999 * 24 * 60 * 60 * 1000,
+			now: () => clock,
+		});
+		const s1 = reg.stagePublish("p", HTML);
+		s1.commit();
+		clock += 3650 * 24 * 60 * 60 * 1000; // 10 years
+		const s2 = reg.stagePublish("p", HTML);
+		expect(s2.deployFiles.map((f) => f.file)).toContain(
+			`r/${s1.entry.token}/index.html`,
+		);
+		s2.abort();
+	});
+
+	it("TTL coexists with count cap — whichever hits first wins", () => {
+		let clock = Date.parse("2026-06-04T00:00:00Z");
+		const reg = makeRegistry({ retentionMax: 2, now: () => clock });
+		const s1 = reg.stagePublish("p", HTML, "a");
+		s1.commit();
+		clock += 1000;
+		const s2 = reg.stagePublish("p", HTML, "b");
+		s2.commit();
+		// count cap prunes s1 (TTL not reached)
+		clock += 1000;
+		const s3 = reg.stagePublish("p", HTML, "c");
+		expect(s3.deployFiles.map((f) => f.file)).not.toContain(
+			`r/${s1.entry.token}/index.html`,
+		);
+		s3.commit();
+		// TTL prunes everything older than 7d regardless of count
+		clock += 8 * 24 * 60 * 60 * 1000;
+		const s4 = reg.stagePublish("p", HTML, "d");
+		const paths = s4.deployFiles.map((f) => f.file);
+		expect(paths).not.toContain(`r/${s2.entry.token}/index.html`);
+		expect(paths).not.toContain(`r/${s3.entry.token}/index.html`);
+		expect(paths).toContain(`r/${s4.entry.token}/index.html`);
+		s4.abort();
+	});
+
+	it("abort after TTL staging leaves expired entries on disk untouched", () => {
+		let clock = Date.parse("2026-06-04T00:00:00Z");
+		const reg = makeRegistry({ now: () => clock });
+		const s1 = reg.stagePublish("p", HTML);
+		s1.commit();
+		clock += 8 * 24 * 60 * 60 * 1000;
+		const s2 = reg.stagePublish("p", HTML);
+		s2.abort();
+		// abort = zero fs change: the expired entry is still committed state
+		expect(reg.list().map((e) => e.token)).toEqual([s1.entry.token]);
+		expect(existsSync(join(dir, "files", `${s1.entry.token}.html`))).toBe(true);
 	});
 
 	// ── commit failure boundaries (R2#2) ────────────────────────────────
