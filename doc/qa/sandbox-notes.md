@@ -36,3 +36,60 @@ Summary of `packages/qa-framework/README.md`:
 - **Pre-requisites**: `LINEAR_API_KEY` in env, authenticated `gh` CLI with sandbox push access, the sandbox fork existing, and the branch under test pushed to the sandbox — `test-deploy.sh` fails fast (exit 2) if any are missing.
 - **Runner start point**: `WorktreeManager.create()` (FLY-95) reads `FLYWHEEL_RUNNER_START_POINT` as fallback start point; only the test Bridge sets it, so production behavior (`origin/main`) is unchanged.
 - **Guides & contracts**: `doc/qa/framework/real-runner-e2e-guide.md` (E2E walkthrough), `doc/qa/framework/sandbox-sync-guide.md` (fork lifecycle), `contracts/PLAN_SOURCE_CONTRACT.md` (plan-file handoff), `skills/SKILL_INTERFACE.md` (test-skill interface).
+
+## doc/ tree snapshot
+
+Output of `ls -R doc/ | head -50`:
+
+```
+VERSION
+architecture
+engineer
+plan
+qa
+reference
+retro
+
+doc//architecture:
+archive
+capability-matrix.md
+flywheel-agent-architecture-diagram.html
+flywheel-agent-architecture-diagram.mmd
+flywheel-agent-architecture-diagram.svg
+product-experience-spec.md
+v0.2-architecture.md
+v2.0-product-vision.md
+
+doc//architecture/archive:
+v0.1.0-flywheel-orchestrator.md
+
+doc//engineer:
+deep-research
+exploration
+implementation
+plan
+research
+
+doc//engineer/deep-research:
+001-decision-layer-gemini.md
+002-decision-layer-chatgpt.md
+003-stripe-minions-part1.md
+004-stripe-minions-part2.md
+005-cloudflare-code-mode.md
+006-boris-cherny-claude-code-future.md
+007-parallel-ai-agents-pkarnal.md
+008-agent-orchestrator-ao.md
+009-ramp-inspect-background-agent.md
+010-ai-agent-frameworks-2026.md
+010-gastown-steve-yegge.md
+claude-code-terminal-pane-management.md
+multi-agent-architecture-best-practices.md
+
+doc//engineer/exploration:
+archive
+backlog
+new
+
+doc//engineer/exploration/archive:
+FLY-11-terminal-mcp-tool.md
+```
