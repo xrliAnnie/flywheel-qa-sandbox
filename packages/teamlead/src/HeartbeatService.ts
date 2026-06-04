@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -90,6 +91,14 @@ export class HeartbeatService {
 		private staleCheckIntervalMs: number = 6 * 3_600_000,
 		/** FLY-172: marker reconcile wiring; when absent, monitor-loss reconcile is a no-op. */
 		private monitorReconcile?: MonitorReconcileConfig,
+		/**
+		 * FLY-191 Phase 2: review window for awaiting_review sessions, anchored
+		 * on the persisted `awaiting_review_entered_at`. On expiry the Bridge
+		 * emits `gate_timed_out` via loopback /events (same FLY-159 escalation
+		 * the CLI used) — notification ONLY, the idle runner is NOT killed.
+		 * Inherits FLY-159's default: 48h.
+		 */
+		private reviewTimeoutHours: number = 48,
 	) {}
 
 	start(): void {
@@ -126,6 +135,85 @@ export class HeartbeatService {
 		await this.checkStuck();
 		await this.reapOrphans();
 		await this.checkStaleCompleted();
+		await this.checkAwaitingReviewTimeout();
+	}
+
+	/**
+	 * FLY-191 Phase 2: Bridge-side review timeout. With `gate --no-block` the
+	 * gate CLI process no longer owns the 48h countdown (it exits immediately),
+	 * so the deadline moves here: awaiting_review sessions whose persisted
+	 * `awaiting_review_entered_at` is older than `reviewTimeoutHours` get ONE
+	 * `gate_timed_out` event via loopback /events (canonical FLY-159 path —
+	 * Lead notification + Annie escalation, classify/filter, guardrail retry).
+	 *
+	 * Deliberately does NOT kill or transition the runner — it is healthy and
+	 * idle; the timeout is a human-attention escalation, not a failure
+	 * (plan §3.3). Dedup is the persisted `gate_timeout_notified_at` stamp
+	 * (cleared on every fresh awaiting_review entry, so a re-review window
+	 * gets its own escalation; survives Bridge restarts — in-memory sets
+	 * would re-notify after every restart).
+	 *
+	 * Reuses the existing heartbeat timer (no new periodic load — FLY-169/172
+	 * norm) and the FLY-172 loopback wiring; absent that wiring (legacy/test
+	 * construction) the pass is a no-op.
+	 */
+	async checkAwaitingReviewTimeout(): Promise<void> {
+		if (!this.monitorReconcile) return;
+		const timedOut = this.store.getAwaitingReviewTimedOut(
+			this.reviewTimeoutHours,
+		);
+		if (timedOut.length === 0) return;
+
+		const fetchFn = this.monitorReconcile.fetchFn ?? fetch;
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+		};
+		if (this.monitorReconcile.ingestToken) {
+			headers.Authorization = `Bearer ${this.monitorReconcile.ingestToken}`;
+		}
+
+		for (const session of timedOut) {
+			const enteredAt = session.awaiting_review_entered_at;
+			if (!enteredAt) continue; // query excludes these; belt-and-braces
+			const waitedMs =
+				Date.now() - new Date(`${enteredAt.replace(" ", "T")}Z`).getTime();
+			const body = {
+				event_id: randomUUID(),
+				execution_id: session.execution_id,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: "gate_timed_out",
+				source: "bridge.heartbeat",
+				payload: {
+					checkpoint: "approve_to_ship",
+					exec_id: session.execution_id,
+					waited_ms: waitedMs,
+					original_message: `Review window expired: awaiting_review since ${enteredAt} (FLY-191 Bridge-side timeout). Runner is idle and reachable — NOT killed. Approve/reject/feedback to resolve.`,
+					timeout_behavior: "fail-close",
+					timeout_behavior_source: "bridge",
+				},
+			};
+			try {
+				const res = await fetchFn(
+					`${this.monitorReconcile.bridgeBaseUrl}/events`,
+					{ method: "POST", headers, body: JSON.stringify(body) },
+				);
+				if (res.ok) {
+					// Stamp ONLY on accepted delivery — a Bridge-side 5xx retries
+					// next cycle. (Lead-side delivery reliability beyond ingest is
+					// owned by the FLY-159 guardrail retry machinery.)
+					this.store.markGateTimeoutNotified(session.execution_id);
+				} else {
+					console.error(
+						`[HeartbeatService] gate_timed_out loopback HTTP ${res.status} for ${session.execution_id}; will retry next cycle`,
+					);
+				}
+			} catch (err) {
+				console.error(
+					`[HeartbeatService] gate_timed_out loopback failed for ${session.execution_id}: ${(err as Error).message}; will retry next cycle`,
+				);
+			}
+		}
 	}
 
 	/**

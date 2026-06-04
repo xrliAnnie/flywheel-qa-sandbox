@@ -240,6 +240,15 @@ export interface AdapterExecutionContext {
 	bridgeUrl?: string;
 	/** Optional ingest token for Bridge authentication */
 	bridgeIngestToken?: string;
+	/**
+	 * FLY-191 Phase 2: the Bridge's StateStore path, propagated to the Runner
+	 * env as FLYWHEEL_STATE_DB_PATH so `flywheel-comm verify-approval` reads
+	 * the SAME StateStore the Bridge writes. Without it both sides only agree
+	 * by the ~/.flywheel/teamlead.db default-path coincidence — any deployment
+	 * with a custom TEAMLEAD_DB_PATH (test slots, future multi-Bridge) would
+	 * leave the Runner verifying against the wrong DB and fail-closed forever.
+	 */
+	stateDbPath?: string;
 
 	// -- Callbacks --
 

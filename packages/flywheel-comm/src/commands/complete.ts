@@ -32,6 +32,17 @@ type Evidence = {
 	diffSummary: string;
 	changedFilePaths: string[];
 	commitMessages: string[];
+	/**
+	 * FLY-191 Phase 2 (§5.5.2): the worktree HEAD at completion time. For
+	 * route=needs_review this is the PR head the review request is bound to;
+	 * the Bridge persists it as `sessions.pr_head_sha`, and `verify-approval`
+	 * fail-closes unless the approval matches the runner's CURRENT head.
+	 * Omitted (NOT defaulted) when git is unavailable — verify-approval treats
+	 * a missing persisted sha as not-approved. Field name matches
+	 * ExecutionEvidence.headSha (the in-process emitter path) so both /events
+	 * producers stay field-aligned.
+	 */
+	headSha?: string;
 };
 
 type Payload = {
@@ -41,6 +52,13 @@ type Payload = {
 	summary?: string;
 	exitReason: string;
 	issueIdentifier?: string;
+	/**
+	 * FLY-191 Phase 2 (Codex PR R1 CRITICAL): the CommDB question id from
+	 * `gate approve_to_ship --no-block` — binds this review request to ONE
+	 * exact question. The Bridge persists it as the session's
+	 * review_question_id; verify-approval honors a response ONLY on it.
+	 */
+	reviewQuestionId?: string;
 };
 
 export interface CompleteOpts {
@@ -51,6 +69,8 @@ export interface CompleteOpts {
 	summary?: string;
 	exitReason?: string;
 	baseRef?: string;
+	/** FLY-191 Phase 2: questionId from `gate --no-block` (route=needs_review). */
+	questionId?: string;
 }
 
 export async function complete(opts: CompleteOpts): Promise<void> {
@@ -94,6 +114,10 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	};
 	if (summary) payload.summary = summary;
 	if (issueIdentifier) payload.issueIdentifier = issueIdentifier;
+	// FLY-191 Phase 2: only meaningful for review requests; pass through as-is
+	// (Bridge validates + fail-closes on absence for needs_review).
+	if (opts.questionId?.trim())
+		payload.reviewQuestionId = opts.questionId.trim();
 
 	const body = {
 		event_id: randomUUID(),
@@ -231,6 +255,13 @@ function collectEvidence(args: {
 		changedFilePaths,
 		commitMessages,
 	};
+	// FLY-191 Phase 2: bind this completion to the exact head being submitted
+	// for review. Full sha only; on git failure leave the field absent
+	// (verify-approval fail-closes on a missing persisted sha — never guess).
+	const headSha = git(["rev-parse", "HEAD"]).trim().toLowerCase();
+	if (/^[0-9a-f]{40}$/.test(headSha)) {
+		evidence.headSha = headSha;
+	}
 	if (merged && pr !== undefined) {
 		evidence.landingStatus = { status: "merged", prNumber: pr };
 	}

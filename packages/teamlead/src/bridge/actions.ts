@@ -11,7 +11,11 @@ import {
 import { DepartmentRegistry } from "../department-registry.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
-import type { Session, StateStore } from "../StateStore.js";
+import {
+	REVIEW_BINDING_UNBOUND,
+	type Session,
+	type StateStore,
+} from "../StateStore.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { AUTO_CLOSE_STATES, closeRunner } from "./close-runner.js";
 import type { EventFilter } from "./EventFilter.js";
@@ -19,6 +23,7 @@ import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
+import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
@@ -179,6 +184,15 @@ export async function approveExecution(
 		};
 	}
 
+	function commDbPathFor(projectName: string): string {
+		// FLY-191: FLYWHEEL_COMM_ROOT override (tests / non-standard installs);
+		// default matches flywheel-comm's resolveDbPath convention.
+		const root =
+			process.env.FLYWHEEL_COMM_ROOT?.trim() ||
+			join(homedir(), ".flywheel", "comm");
+		return join(root, projectName, "comm.db");
+	}
+
 	const project = projects.find((p) => p.projectName === session.project_name);
 	if (!project) {
 		return {
@@ -188,6 +202,100 @@ export async function approveExecution(
 	}
 
 	const ceoActionTimestamp = new Date().toISOString();
+
+	// FLY-191 Phase 2 (Codex PR R1 HIGH-3): write the CommDB gate response
+	// BEFORE the FSM transition. The old order flipped approved_to_ship first;
+	// if the gate was missing/expired or the CommDB write failed, the session
+	// was stranded: verify-approval fail-closes (no response), the review
+	// timeout stops (status left awaiting_review no more), and approve can't
+	// be retried (status gate above). Now: no response written → no
+	// transition → the action FAILS retryably and the session stays
+	// awaiting_review. Idempotent: a previously-written approval response
+	// counts as written (so an FSM-rejected attempt can be retried).
+	let gateUnblocked = false;
+	try {
+		const commDbPath = commDbPathFor(session.project_name);
+		const db = new CommDB(commDbPath, false);
+		try {
+			// Bound question first (Codex PR R1 CRITICAL): the session's CURRENT
+			// review request. ONLY true legacy sessions (binding column never
+			// written — NULL) fall back to the latest pending gate. The
+			// REVIEW_BINDING_UNBOUND sentinel (R2 HIGH-1) means a Phase-2
+			// completion arrived WITHOUT a questionId: approving it would
+			// strand the session (verify-approval can never pass) — refuse and
+			// point at the recovery path instead.
+			let targetQuestionId: string | undefined;
+			const boundId = session.review_question_id?.trim();
+			if (boundId === REVIEW_BINDING_UNBOUND) {
+				return {
+					success: false,
+					message: `Cannot approve ${identifier ?? executionId}: the review request is missing its question binding (completion arrived without --question-id). Approving would strand the session — ask the runner to re-request review (gate --no-block, then complete --route needs_review --question-id <id>).`,
+				};
+			}
+			if (boundId) {
+				const bound = db.getMessageById(boundId);
+				if (
+					bound &&
+					bound.type === "question" &&
+					bound.checkpoint === "approve_to_ship" &&
+					bound.from_agent === executionId
+				) {
+					targetQuestionId = bound.id;
+				}
+			} else {
+				const pendingGate = db.getPendingGateByRunner(
+					executionId,
+					"approve_to_ship",
+				);
+				targetQuestionId = pendingGate?.id;
+			}
+
+			if (!targetQuestionId) {
+				return {
+					success: false,
+					message: `Cannot approve ${identifier ?? executionId}: no ${boundId ? `valid bound review question (${boundId})` : "pending approve_to_ship gate"} in CommDB — nothing for the runner's verify-approval to honor. Session stays awaiting_review; investigate the runner's review request and retry.`,
+				};
+			}
+
+			const existingResponse = db.getResponse(targetQuestionId);
+			if (existingResponse) {
+				// Idempotent retry only for a prior APPROVAL; an existing
+				// feedback answer means the review already concluded
+				// differently — approve must not silently overwrite it.
+				let priorApproved = false;
+				try {
+					priorApproved =
+						JSON.parse(existingResponse.content)?.approved === true;
+				} catch {
+					/* non-approval */
+				}
+				if (!priorApproved) {
+					return {
+						success: false,
+						message: `Cannot approve ${identifier ?? executionId}: review question ${targetQuestionId} already has a non-approval answer. The runner must address it and re-request review.`,
+					};
+				}
+				gateUnblocked = true; // already written — proceed to transition
+			} else {
+				db.insertResponse(
+					targetQuestionId,
+					"bridge",
+					JSON.stringify({ approved: true }),
+				);
+				gateUnblocked = true;
+			}
+		} finally {
+			db.close();
+		}
+	} catch (err) {
+		console.error(
+			`[actions] CommDB gate respond FAILED for ${executionId}: ${(err as Error).message}.`,
+		);
+		return {
+			success: false,
+			message: `Cannot approve ${identifier ?? executionId}: CommDB gate response write failed (${(err as Error).message}). Session stays awaiting_review; retry once CommDB is reachable.`,
+		};
+	}
 
 	// FLY-58: Transition to approved_to_ship (not approved, not merge)
 	let transitionRejected = false;
@@ -266,46 +374,24 @@ export async function approveExecution(
 		}
 	}
 
-	// FLY-58: Respond to CommDB approve_to_ship gate to unblock Runner.
-	// Race note: if Annie approves before Runner creates the gate question,
-	// gateUnblocked will be false. In practice this is sub-second and impossible
-	// because Annie must manually review the PR first. If we ever add programmatic
-	// auto-approve, add a retry or check session state in the gate polling loop.
-	let gateUnblocked = false;
+	// FLY-191 Phase 2: the runner may be IDLE (gate --no-block), not polling —
+	// wake it with a plain-text mailbox message AFTER the transition (so a
+	// woken runner's verify-approval sees approved_to_ship). The wake is a
+	// HINT only (forgeable transport); ship authority is verify-approval. For
+	// a legacy blocking-gate runner the gate poll loop resolves from the
+	// response written above; the extra mailbox message is harmless and
+	// reinforces the verify-before-ship contract. Best-effort — failure is
+	// recorded as runner_wake_failed telemetry inside sendRunnerWake.
 	try {
-		const commDbPath = join(
-			homedir(),
-			".flywheel",
-			"comm",
-			session.project_name,
-			"comm.db",
-		);
-		const db = new CommDB(commDbPath, false);
+		const db = new CommDB(commDbPathFor(session.project_name), false);
 		try {
-			const pendingGate = db.getPendingGateByRunner(
-				executionId,
-				"approve_to_ship",
-			);
-			if (pendingGate) {
-				db.insertResponse(
-					pendingGate.id,
-					"bridge",
-					JSON.stringify({ approved: true }),
-				);
-				gateUnblocked = true;
-			}
+			await sendRunnerWake(store, db, executionId, session, "approval_wake");
 		} finally {
 			db.close();
 		}
 	} catch (err) {
 		console.error(
-			`[actions] CommDB gate respond FAILED for ${executionId}: ${(err as Error).message}. Runner may be stuck on approve_to_ship gate.`,
-		);
-	}
-
-	if (!gateUnblocked) {
-		console.warn(
-			`[actions] approve succeeded but gate NOT unblocked for ${executionId}. Runner may need manual intervention if it's waiting on approve_to_ship gate.`,
+			`[actions] approval wake skipped for ${executionId}: ${(err as Error).message}`,
 		);
 	}
 

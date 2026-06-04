@@ -465,7 +465,15 @@ export function createBridgeApp(
 	// FLY-175 Track 2: founder-consent hard gate. Returns null when
 	// decisionMode=off (default) — `fcMw()` then yields a no-op handler so the
 	// reserved-endpoint stacks are byte-compatible with pre-Track-2.
-	const fcWiring = buildFounderConsentWiring(store, projects, config);
+	// FLY-191 Phase 2: transitionOpts lets the gate-response endpoint flip
+	// awaiting_review → approved_to_ship (parity with /api/actions/approve).
+	const fcWiring = buildFounderConsentWiring(
+		store,
+		projects,
+		config,
+		undefined,
+		transitionOpts,
+	);
 	const fcNoop: express.RequestHandler = (_q, _s, next) => next();
 	const fcMw = (
 		mount: "action_router" | "close_tmux" | "close_runner",
@@ -630,7 +638,21 @@ export function createBridgeApp(
 	if (fcWiring) {
 		app.use(
 			"/api/founder-consent/runner-gate-response",
-			tokenAuthMiddleware(config.apiToken),
+			// FLY-191 Phase 2 (Codex PR R1 HIGH-4): this endpoint WRITES the
+			// approve_to_ship gate response — the ship authority's trusted
+			// source. tokenAuthMiddleware no-ops when apiToken is unset (fine
+			// for read-ish action routes, NOT for this one): refuse outright on
+			// tokenless deployments instead of exposing an unauthenticated
+			// approval write. The CLI side already requires TEAMLEAD_API_TOKEN
+			// (respond.ts routeThroughBridge), so this aligns Bridge with CLI.
+			config.apiToken
+				? tokenAuthMiddleware(config.apiToken)
+				: (((_req, res) => {
+						res.status(503).json({
+							error:
+								"founder-consent gate-response endpoint disabled: TEAMLEAD_API_TOKEN is not configured (refusing unauthenticated approval writes)",
+						});
+					}) as express.RequestHandler),
 			fcWiring.gateRouter,
 		);
 		if (fcWiring.debugRouter) {

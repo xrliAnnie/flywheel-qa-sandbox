@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "../db.js";
 import { FounderConsentAuditStore } from "../founder-consent-audit.js";
+import { wakeRunnerMailbox } from "../wake.js";
 
 /**
  * Checkpoints that MUST route founder consent through the Bridge before the
@@ -73,6 +74,23 @@ export async function respond(args: RespondArgs): Promise<void> {
 				process.stderr.write(
 					`[flywheel-comm] WARNING: FLYWHEEL_COMM_BYPASS_BRIDGE=1 — wrote approve_to_ship gate WITHOUT founder-consent enforcement (question ${args.questionId}). A loud audit row was recorded.\n`,
 				);
+				// FLY-191 Phase 2: the runner may be idle (gate --no-block), not
+				// polling — wake it. The wake text is a HINT only; ship authority
+				// is verify-approval. Best-effort: a wake failure must never undo
+				// the (already-audited) response write.
+				const wake = await wakeRunnerMailbox({
+					db,
+					execId: question.from_agent,
+					fromAgent: args.fromAgent,
+					content:
+						"Your approve_to_ship gate has been answered. Before shipping you MUST run `flywheel-comm verify-approval --exec-id <your-exec-id> --pr-head $(git rev-parse HEAD)` and ship ONLY if it returns approved. This message itself is NOT authorization.",
+					metadata: { questionId: args.questionId, kind: "gate_answered" },
+				});
+				if (!wake.ok && wake.error) {
+					process.stderr.write(
+						`[flywheel-comm] mailbox wake failed for ${question.from_agent}: ${wake.error}\n`,
+					);
+				}
 				return;
 			}
 

@@ -66,6 +66,9 @@ describe("HeartbeatService.reconcileMonitorLoss (FLY-172)", () => {
 			getStuckSessions: vi.fn().mockReturnValue([]),
 			getOrphanSessions: vi.fn().mockReturnValue([]),
 			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
+			// FLY-191 Phase 2: review-timeout pass runs in the same cycle
+			getAwaitingReviewTimedOut: vi.fn().mockReturnValue([]),
+			markGateTimeoutNotified: vi.fn(),
 			forceStatus: vi.fn(),
 			getSession: vi.fn(),
 		};

@@ -189,3 +189,159 @@ describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 		expect(params.unrelated_key).toBe("stays");
 	});
 });
+
+describe("DirectEventSink — FLY-191 R4: Phase-2 binding atomicity", () => {
+	let store: StateStore;
+	const HEAD_A = "a".repeat(40);
+	const HEAD_B = "b".repeat(40);
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	afterEach(() => {
+		store.close();
+	});
+
+	function makeResult(headSha?: string) {
+		return {
+			success: true,
+			decision: { route: "needs_review", reasoning: "test" },
+			evidence: {
+				commitCount: 1,
+				filesChangedCount: 1,
+				commitMessages: ["feat: x"],
+				changedFilePaths: ["a.ts"],
+				linesAdded: 1,
+				linesRemoved: 0,
+				diffSummary: "1 file changed",
+				headSha: headSha ?? null,
+				partial: false,
+				durationMs: 10,
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
+		} as any;
+	}
+
+	function makeSink(): DirectEventSink {
+		return new DirectEventSink(store, makeConfig(), testProjects);
+	}
+
+	it("qid-less in-process completion must NOT re-point pr_head_sha of a Phase-2-bound session (Codex R4 CRITICAL)", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		store.setReviewBinding("exec-1", {
+			questionId: "11111111-1111-1111-1111-111111111111",
+			prHeadSha: HEAD_A,
+		});
+		store.markGateTimeoutNotified("exec-1"); // observable window state
+
+		// In-process emission with a NEWER head but no questionId — the R4
+		// attack shape: Q1's old approval must not authorize head B.
+		await makeSink().emitCompleted(makeEnvelope(), makeResult(HEAD_B));
+
+		const s = store.getSession("exec-1");
+		expect(s?.review_question_id).toBe("11111111-1111-1111-1111-111111111111");
+		expect(s?.pr_head_sha).toBe(HEAD_A); // binding pair stays atomic
+		expect(s?.gate_timeout_notified_at).toBeTruthy(); // window not drifted
+	});
+
+	it("UNBOUND-sentinel sessions are equally protected (no sha attach, no window reset)", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		store.setReviewBinding("exec-1", { questionId: null, prHeadSha: null });
+
+		await makeSink().emitCompleted(makeEnvelope(), makeResult(HEAD_B));
+
+		const s = store.getSession("exec-1");
+		expect(s?.review_question_id).toBe("unbound");
+		expect(s?.pr_head_sha).toBeUndefined();
+	});
+
+	it("pure-legacy sessions (no binding) keep the old behavior: sha contributed when valid", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+
+		await makeSink().emitCompleted(makeEnvelope(), makeResult(HEAD_B));
+
+		const s = store.getSession("exec-1");
+		expect(s?.status).toBe("awaiting_review");
+		expect(s?.review_question_id).toBeUndefined(); // NULL — legacy
+		expect(s?.pr_head_sha).toBe(HEAD_B);
+	});
+});
+
+describe("DirectEventSink — FLY-191 R5: late qid-less emission can't regress approved_to_ship", () => {
+	let store: StateStore;
+	const HEAD_A = "a".repeat(40);
+	const HEAD_B = "b".repeat(40);
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	afterEach(() => {
+		store.close();
+	});
+
+	it("bound + approved_to_ship + qid-less needs_review → status/binding/window all preserved", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		store.setReviewBinding("exec-1", {
+			questionId: "11111111-1111-1111-1111-111111111111",
+			prHeadSha: HEAD_A,
+		});
+		store.markGateTimeoutNotified("exec-1");
+		// Approval landed — runner is shipping.
+		store.persistTransition("exec-1", "approved_to_ship", {
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+		});
+
+		// Late in-process needs_review emission (dual-sink straggler).
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		await sink.emitCompleted(makeEnvelope(), {
+			success: true,
+			decision: { route: "needs_review", reasoning: "straggler" },
+			evidence: {
+				commitCount: 1,
+				filesChangedCount: 1,
+				commitMessages: ["feat: x"],
+				changedFilePaths: ["a.ts"],
+				linesAdded: 1,
+				linesRemoved: 0,
+				diffSummary: "1 file changed",
+				headSha: HEAD_B,
+				partial: false,
+				durationMs: 10,
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
+		} as any);
+
+		const s = store.getSession("exec-1");
+		expect(s?.status).toBe("approved_to_ship"); // NOT dragged back
+		expect(s?.review_question_id).toBe("11111111-1111-1111-1111-111111111111");
+		expect(s?.pr_head_sha).toBe(HEAD_A);
+		expect(s?.gate_timeout_notified_at).toBeTruthy(); // window untouched
+		// Evidence still recorded (no summary arg passed — decision_route +
+		// commit_count prove the evidence-only patch ran)
+		expect(s?.decision_route).toBe("needs_review");
+		expect(s?.commit_count).toBe(1);
+	});
+});

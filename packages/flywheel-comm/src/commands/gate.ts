@@ -27,13 +27,29 @@ export interface GateArgs {
 	stage?: string;
 	/** FLY-159: provenance of `timeoutBehavior` for `gate_timed_out` payload. Default: "default". */
 	timeoutBehaviorSource?: TimeoutBehaviorSource;
+	/**
+	 * FLY-191 Phase 2: non-blocking mode. Insert the question (identical
+	 * checkpoint/TTL metadata to the blocking path) + report stage, then return
+	 * immediately with the questionId. MUST NOT poll, resolve, or expire the
+	 * question — it stays pending so GatePoller relays it to the Lead and the
+	 * founder-consent path can answer it later, after this process has exited.
+	 * The runner goes idle and is woken by a plain-text mailbox message; ship
+	 * authority comes from `verify-approval` (trusted-source re-check), never
+	 * from the wake message itself.
+	 */
+	noBlock?: boolean;
 }
 
 export interface GateResult {
-	status: "answered" | "timeout" | "error";
+	status: "answered" | "timeout" | "error" | "pending";
 	content?: string;
 	approved?: boolean;
 	exitCode: number;
+	/**
+	 * FLY-191 Phase 2: set in no-block mode — the CommDB question id, so the
+	 * runner/Bridge logs can correlate the eventual approval with this request.
+	 */
+	questionId?: string;
 }
 
 /**
@@ -109,6 +125,17 @@ async function gateInner(
 	// Phase 1b: Report stage if configured (best-effort — don't block on error)
 	if (args.stage) {
 		await reportStageBestEffort(args.stage);
+	}
+
+	// FLY-191 Phase 2: no-block mode — question is parked for the
+	// founder-consent approval path; return immediately. Deliberately NO
+	// resolveGate/expiry here: the pending question must remain visible to
+	// GatePoller (Lead relay) and the founder-consent wrapper after this
+	// process exits. Timeout escalation moves Bridge-side
+	// (HeartbeatService.checkAwaitingReviewTimeout, keyed on the persisted
+	// awaiting_review_entered_at — NOT on this process's lifetime).
+	if (args.noBlock) {
+		return { status: "pending", questionId, exitCode: 0 };
 	}
 
 	// Phase 2: Poll for response
