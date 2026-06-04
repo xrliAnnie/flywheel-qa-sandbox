@@ -1,41 +1,46 @@
-# Sandbox Notes — flywheel-qa-sandbox
+# QA Sandbox Notes — flywheel-qa-sandbox
 
 **Issue**: FLY-202 (QA sandbox fixture — slot harness real-Runner E2E task)
 **Date**: 2026-06-04
 
-## What this repo is for
+## Overview
 
-`flywheel-qa-sandbox` 是 Flywheel 主仓库（`xrliAnnie/flywheel`）的一个专用 fork，唯一用途是为 QA Test Slot Framework（FLY-96 + FLY-115）提供一个**安全的真实 Runner E2E 演练场**。每个 test slot 会把本仓库 clone 到 `/tmp/flywheel-test-slot-<N>/project-slot-<N>`，然后启动一个测试 Bridge 和测试 Lead，再通过 `scripts/inject-linear-issue.sh`（即 `POST /api/runs/start`）注入一个真实的 Linear issue，spawn 出一个真实的 Claude Code Runner 对着这个 sandbox 工作。
+`flywheel-qa-sandbox` 是从 `xrliAnnie/flywheel` main seed 出来的 **standalone QA sandbox 仓库**（GitHub 不允许同账号 fork 自己的仓库，所以它不是真正的 fork，而是靠手动同步保持与生产 main 一致，见 `doc/qa/framework/sandbox-sync-guide.md` §3），作为 Flywheel test-slot E2E 框架（FLY-96 + FLY-115）的目标仓库。`scripts/test-deploy.sh` 会把这个仓库 clone 到 `/tmp/flywheel-test-slot-<N>/project-slot-<N>`，每个 slot 启动一个 test Bridge + test Lead，再通过 `scripts/inject-linear-issue.sh`（POST `/api/runs/start`）注入真实 Linear issue 来 spawn 一个 real Runner。Runner 产生的分支、commit、PR 全部落在这个 sandbox 上，与生产仓库完全隔离。
 
-之所以需要独立的 sandbox fork，是因为 E2E 测试中的 Runner 是「真的」—— 它会建 branch、提交 commit、推送到 remote、开 PR、甚至 merge。这些副作用如果发生在生产仓库上会污染主线历史、触发生产 CI/CD、并与真实开发工作冲突。把所有副作用隔离在 fork 里，QA 流水线就可以反复全链路演练（onboard → implement → PR → review gate → ship）而不产生任何生产风险。仓库里散落的 `qa-probe.txt`、`qa-verify.txt` 等文件就是历次演练留下的痕迹。
+之所以需要独立 sandbox，是因为 slot 框架不支持 synthetic / fixture 模式——每个 slot 都是 real Runner 端到端跑完整 pipeline（onboard → implement → PR → CI → merge）。如果直接用生产 flywheel 仓库，QA 跑出的测试分支、PR 和 merge commit 会污染生产历史；独立的 sandbox 仓库让 QA 流程可以反复执行、随时重置（参见 `doc/qa/framework/sandbox-sync-guide.md`）。
 
-本文件本身也是一个 QA fixture：FLY-202 之所以存在，是因为 `inject-linear-issue.sh` 需要一个真实存在、PreHydrator 可见的 Linear issue 来 spawn sandbox Runner（FLY-197 指出文档里引用的 `FLY-SBX-1` 并不存在）。这个任务被刻意设计成小而多步（写文档 → 加表格 → 总结 README → 嵌入命令输出 → 开 PR），从而给 QA harness 一个可观测的「工作中途窗口」。
+本文件本身就是一个 QA fixture 的产物：FLY-202 提供了一个真实的、PreHydrator 可见的 Linear issue，供 E2E 测试给 sandbox Runner 派发一个小而稳定的多步骤任务（FLY-197 发现文档中引用的 `FLY-SBX-1` 并不存在，FLY-202 填补了这个空缺）。该 issue 仅供 test-slot 使用，生产 Lead / Runner 不应认领。
 
-## Top-level directories
+## Top-Level Directories
 
 | Directory | Description |
 |-----------|-------------|
-| `doc/` | 主文档树：architecture、engineer（exploration/research/plan）、qa、reference、retro 及 `VERSION` |
-| `docs/` | 轻量运维文档：`CONTRIB.md` 与 `RUNBOOK.md` |
-| `packages/` | pnpm monorepo 的 TypeScript 包（claude-runner、core、edge-worker、flywheel-comm、qa-framework 等） |
-| `patches/` | pnpm 依赖补丁（当前仅 `mem0ai@2.3.0.patch`） |
-| `scripts/` | 运维与 E2E 脚本：test slot 部署/注入/清理、daily standup、session cleanup 等 |
-| `supabase/` | Supabase 资产（`migrations/` 数据库迁移） |
+| `.claude/` | Claude Code 项目配置：commands、skills、orchestrator、`qa-config.yaml` |
+| `.github/` | GitHub Actions workflows（CI） |
+| `.serena/` | Serena MCP 的项目索引与配置 |
+| `doc/` | 主文档树：architecture / engineer / plan / qa / reference / retro + `VERSION` |
+| `docs/` | 贡献者文档（`CONTRIB.md`、`RUNBOOK.md`） |
+| `packages/` | pnpm monorepo 包：claude-runner、core、edge-worker、flywheel-comm、qa-framework、teamlead 等 |
+| `patches/` | pnpm 依赖补丁（`mem0ai@2.3.0.patch`） |
+| `scripts/` | 运维与 QA/E2E 脚本（test-deploy、inject-linear-issue、test-teardown、daily-standup 等） |
+| `supabase/` | Supabase 配置与数据库 migrations |
 
-## Summary of `packages/qa-framework/README.md`
+## packages/qa-framework/README.md Summary
 
-- `flywheel-qa-framework` 是可复用的 QA Agent 框架，提供 plan-aware 的测试流水线，从 GeoForge3D 的 QA Agent v2（GEO-308）抽取而来。
-- 双层架构：Layer 1 是框架本身（agents、skills、orchestrator、TypeScript config loader），Layer 2 是各项目的 `.claude/qa-config.yaml` 等项目侧配置，通过 `config-bridge.sh` 桥接。
-- Quick Start：复制 `templates/qa-config.yaml` 到项目、填入 domains/API/test skills、创建 test suite 配置，QA agent 即按配置执行。
-- 核心是 5-Step Protocol：① Onboard（加载配置、获取 plan、校验环境）② Analyze + Plan（提取验收标准、生成 test spec）③ Research（读 OpenAPI/领域文档/既有测试）④ Write + Execute（写 ad hoc 测试并迭代到全绿）⑤ Finalize（更新 skill 文件、回归、出报告）。
-- 配置 schema 见 `templates/qa-config.yaml`，TypeScript 类型经 `import { QaConfig } from 'flywheel-qa-framework'` 暴露。
-- Test Slot Framework（FLY-96 + FLY-115）支持并行隔离的 slot 环境，每个 slot 跑**真实 Runner** 对接 `xrliAnnie/flywheel-qa-sandbox`，不支持任何 synthetic/fixture 模式。
-- 三个关键脚本：`test-deploy.sh`（clone sandbox 到 slot 目录并启动测试 Bridge/Lead）、`inject-linear-issue.sh`（直接 POST `/api/runs/start` spawn Runner）、`test-teardown.sh`（杀进程、清 worktree/branch、删 SLOT_DIR 与 CommDB）。
-- 前置条件：shell 导出 `LINEAR_API_KEY`、`gh` CLI 对 sandbox fork 有 push 权限、fork 已存在、被测分支已推送到 sandbox；`test-deploy.sh` 在 pre-flight 缺任一项即 exit 2 快速失败。
-- Runner worktree 起点由 `FLYWHEEL_RUNNER_START_POINT` 环境变量控制（FLY-95 的 `WorktreeManager.create()` fallback），仅测试 Bridge 设置该变量，生产行为保持 `origin/main` 不变。
-- 配套文档与契约：`doc/qa/framework/real-runner-e2e-guide.md`（端到端演练）、`sandbox-sync-guide.md`（fork 生命周期）、`contracts/PLAN_SOURCE_CONTRACT.md`（plan 文件获取契约）、`skills/SKILL_INTERFACE.md`（测试 skill 接口契约）。
+- `flywheel-qa-framework` 是可复用的 QA Agent 框架，提供 plan-aware 的测试 pipeline。
+- 从 GeoForge3D 的 QA Agent v2（GEO-308）提取，定义通用 5-step QA protocol，任何项目通过项目侧配置即可接入。
+- 两层架构：Layer 1 是框架本身（agents / skills / orchestrator / TypeScript config loader），Layer 2 是项目侧的 `.claude/qa-config.yaml`，经 `config-bridge.sh` 桥接消费。
+- Quick Start：复制 `templates/qa-config.yaml` 到项目 → 填写 domains / API 配置 / test skills → 创建 test suite 配置 → QA agent 读取配置运行协议。
+- 5-Step Protocol：Onboard → Analyze + Plan → Research → Write + Execute → Finalize。
+- Config schema 见 `templates/qa-config.yaml`（带完整注释）；TypeScript 类型通过 `import { QaConfig } from 'flywheel-qa-framework'` 获得。
+- `examples/geoforge3d/` 提供完整的 GeoForge3D 配置示例。
+- Test Slot Framework（FLY-96 + FLY-115）：并行隔离的 test slot，每个 slot 对 `xrliAnnie/flywheel-qa-sandbox` 跑 real Runner E2E，不支持 synthetic / fixture 模式。
+- 三个核心脚本：`test-deploy.sh`（clone sandbox + 启动 test Bridge/Lead）、`inject-linear-issue.sh`（直接 POST `/api/runs/start` spawn Runner）、`test-teardown.sh`（清理 tmux/Lead/Bridge、worktree、slot 目录与 CommDB）。
+- 前置条件：`LINEAR_API_KEY`、`gh` CLI 对 sandbox 仓库有 push 权限、sandbox 仓库存在（README 中称 "fork"，实际为 standalone repo）、被测分支已推到 sandbox；缺任一项 `test-deploy.sh` pre-flight 直接 exit 2。
+- Runner worktree 起点由 `FLYWHEEL_RUNNER_START_POINT` env 控制（仅 test Bridge 设置；生产 launcher 不设置，默认 `origin/main` 行为不变）。
+- Contracts：`packages/qa-framework/contracts/PLAN_SOURCE_CONTRACT.md`（QA agent 跨 worktree 获取 plan 文件）与 `packages/qa-framework/skills/SKILL_INTERFACE.md`（所有 QA test skill 的接口契约）。
 
-## `ls -R doc/ | head -50` output
+## `ls -R doc/ | head -50` Output
 
 ```
 VERSION
@@ -89,3 +94,5 @@ new
 doc//engineer/exploration/archive:
 FLY-11-terminal-mcp-tool.md
 ```
+
+> Reviewed note: QA-S1 revision marker 20260604-1044
