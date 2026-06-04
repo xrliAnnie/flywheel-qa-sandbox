@@ -122,6 +122,8 @@ function createMockRegistry(runtime?: ReturnType<typeof createMockRuntime>) {
 type StatusResponse = {
 	result: { status: string; reason: string; stale_seconds?: number };
 	captureErrorStatus?: number;
+	/** FLY-195: raw capture passthrough for the stuck detector. */
+	output?: string;
 };
 
 // Build a watchdog with a mocked statusQuery for deterministic testing
@@ -129,6 +131,8 @@ function createTestWatchdog(opts: {
 	sessions?: Session[];
 	statusResponses?: StatusResponse[];
 	delivered?: boolean;
+	/** FLY-195: fake stuck detector to assert the wiring contract. */
+	stuckDetector?: { checkSession: any; pruneInactive: any };
 }) {
 	const sessions = opts.sessions ?? [makeSession()];
 	const store = createMockStore(sessions);
@@ -155,6 +159,7 @@ function createTestWatchdog(opts: {
 		store: store as any,
 		runtimeRegistry: registry as any,
 		captureSessionFn: captureSessionFn as any,
+		stuckDetector: opts.stuckDetector as any,
 	};
 
 	const watchdog = new RunnerIdleWatchdog(config);
@@ -773,6 +778,101 @@ describe("RunnerIdleWatchdog", () => {
 			expect(runtime2.deliver).toHaveBeenCalledTimes(1);
 
 			watchdog2.stop();
+		});
+	});
+
+	describe("FLY-195 stuck-detector wiring", () => {
+		function fakeDetector() {
+			return {
+				checkSession: vi.fn(async () => null),
+				pruneInactive: vi.fn(),
+			};
+		}
+
+		it("passes its OWN capture to the detector as a precaptured outcome", async () => {
+			const detector = fakeDetector();
+			const { watchdog } = createTestWatchdog({
+				statusResponses: [
+					{
+						result: { status: "executing", reason: "active" },
+						output: "live terminal frame",
+					},
+				],
+				stuckDetector: detector,
+			});
+			await watchdog.pollOnce();
+			expect(detector.checkSession).toHaveBeenCalledTimes(1);
+			const [sessionArg, outcomeArg] = detector.checkSession.mock.calls[0];
+			expect(sessionArg.execution_id).toBe("exec-1");
+			expect(outcomeArg).toEqual({ ok: true, output: "live terminal frame" });
+			watchdog.stop();
+		});
+
+		it("hands infra errors over as { ok:false } (detector fails closed)", async () => {
+			const detector = fakeDetector();
+			const { watchdog } = createTestWatchdog({
+				statusResponses: [
+					{
+						result: { status: "unknown", reason: "CommDB 502" },
+						captureErrorStatus: 502,
+					},
+				],
+				stuckDetector: detector,
+			});
+			await watchdog.pollOnce();
+			const [, outcomeArg] = detector.checkSession.mock.calls[0];
+			expect(outcomeArg.ok).toBe(false);
+			watchdog.stop();
+		});
+
+		it("tmux-unreachable (unknown, no HTTP status) is also { ok:false }", async () => {
+			const detector = fakeDetector();
+			const { watchdog } = createTestWatchdog({
+				statusResponses: [
+					{ result: { status: "unknown", reason: "tmux window not found" } },
+				],
+				stuckDetector: detector,
+			});
+			await watchdog.pollOnce();
+			const [, outcomeArg] = detector.checkSession.mock.calls[0];
+			expect(outcomeArg.ok).toBe(false);
+			watchdog.stop();
+		});
+
+		it("prunes detector episodes with the active running set each poll", async () => {
+			const detector = fakeDetector();
+			const { watchdog } = createTestWatchdog({ stuckDetector: detector });
+			await watchdog.pollOnce();
+			expect(detector.pruneInactive).toHaveBeenCalledWith(new Set(["exec-1"]));
+			watchdog.stop();
+		});
+
+		it("a throwing detector does not break idle detection", async () => {
+			const detector = {
+				checkSession: vi.fn(async () => {
+					throw new Error("detector boom");
+				}),
+				pruneInactive: vi.fn(),
+			};
+			const { watchdog, store } = createTestWatchdog({
+				statusResponses: [
+					{ result: { status: "idle", reason: "bare shell" }, output: "$" },
+				],
+				stuckDetector: detector,
+			});
+			await watchdog.pollOnce();
+			// idle event still emitted despite the stuck-detector throwing
+			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
+			watchdog.stop();
+		});
+
+		it("watchdog without a detector behaves exactly as before (no-op)", async () => {
+			const { watchdog, store } = createTestWatchdog({
+				statusResponses: [{ result: { status: "idle", reason: "bare shell" } }],
+			});
+			await watchdog.pollOnce();
+			expect(store.appendLeadEvent).toHaveBeenCalledTimes(1);
+			watchdog.stop();
 		});
 	});
 

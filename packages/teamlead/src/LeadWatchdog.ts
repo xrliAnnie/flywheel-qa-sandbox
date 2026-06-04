@@ -544,6 +544,10 @@ function titleFor(kind: AlertEventType): string {
 			return "Lead crash-looping";
 		case "pane_hash_stuck":
 			return "Lead pane has been frozen";
+		// FLY-195: never emitted by LeadWatchdog (the stuck-runner detector owns
+		// it and builds its own title); case exists for switch exhaustiveness.
+		case "runner_stuck_unhandled":
+			return "Runner stuck unhandled";
 	}
 }
 
@@ -574,5 +578,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "Lead has crashed repeatedly. Check the supervisor log under ~/.flywheel/logs/ — likely Claude CLI / config issue.";
 		case "pane_hash_stuck":
 			return "Lead pane has been frozen for several poll cycles with no recognizable blocked-prompt pattern. Open the tmux pane to investigate.";
+		// FLY-195: never emitted by LeadWatchdog (see titleFor).
+		case "runner_stuck_unhandled":
+			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";
 	}
 }

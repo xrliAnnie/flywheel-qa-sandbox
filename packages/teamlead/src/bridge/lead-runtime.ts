@@ -22,6 +22,7 @@ export const GUARDRAIL_EVENT_TYPES = new Set([
 	"runner_idle_detected", // FLY-92: idle watchdog events must be reliably delivered
 	"gate_timed_out", // FLY-159: Lead must reliably notify Annie when Runner gate times out (fail-close path only)
 	"session_monitoring_lost", // FLY-172: Lead must reliably learn it lost monitoring of a live Runner (fall back to tmux)
+	"runner_stuck_escalation", // FLY-195: stuck-candidate handoff to owning Lead — Lead judges + re-manages (plan §3.2)
 ]);
 
 /**

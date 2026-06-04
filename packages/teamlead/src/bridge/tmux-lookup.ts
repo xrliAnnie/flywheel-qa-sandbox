@@ -126,6 +126,36 @@ export async function isTmuxWindowAlive(tmuxWindow: string): Promise<boolean> {
 }
 
 /**
+ * FLY-195: type a literal line of text into a tmux window and press Enter.
+ *
+ * Used ONLY by the restricted recovery-nudge endpoint (plan §3.5) — the text
+ * it sends is allowlist-gated upstream; this helper just performs the
+ * keystroke delivery. `-l` sends the text literally (no key-name expansion)
+ * and `--` guards a leading dash. Enter is sent as a second send-keys, the
+ * same pattern TrustPromptHandler uses against the Claude Code TUI.
+ */
+export async function sendKeysToWindow(
+	tmuxWindow: string,
+	text: string,
+): Promise<{ sent: boolean; error?: string }> {
+	try {
+		await execFileAsync(
+			"tmux",
+			["send-keys", "-t", tmuxWindow, "-l", "--", text],
+			{ timeout: TMUX_TIMEOUT },
+		);
+		await execFileAsync("tmux", ["send-keys", "-t", tmuxWindow, "Enter"], {
+			timeout: TMUX_TIMEOUT,
+		});
+		return { sent: true };
+	} catch (err) {
+		const msg = (err as Error).message ?? String(err);
+		console.error(`[tmux-lookup] send-keys error: ${msg}`);
+		return { sent: false, error: msg };
+	}
+}
+
+/**
  * Kill a specific tmux window (not the whole session).
  *
  * Takes the full CommDB tmux_window target (e.g. "runner-geoforge3d:@42").

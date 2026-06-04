@@ -1251,6 +1251,19 @@ if [ "$IS_COS_ROLE" = false ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_EXECUTOR_ROUTING_RULES")
     log "Appending base executor-routing rules: ${BASE_EXECUTOR_ROUTING_RULES}"
   fi
+
+  # ── FLY-195: Stuck-Runner Re-Manage (non-cos dept leads only) ──
+  # Defines how a Lead judges + re-manages a runner_stuck_escalation event
+  # (ladder: mailbox wake → restricted recovery nudge; disposition receipts;
+  # Annie ping cadence). Only roles that manage Runners load it. Loaded on
+  # BOTH messaging backends (the ladder references "your normal Runner
+  # messaging path", which the runner-messaging rules define per backend).
+  # Optional — missing base file is a no-op (backward compat).
+  BASE_STUCK_REMANAGE_RULES="${BASE_RULES_DIR}/stuck-runner-remanage.md"
+  if [ -f "$BASE_STUCK_REMANAGE_RULES" ] && [ -r "$BASE_STUCK_REMANAGE_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_STUCK_REMANAGE_RULES")
+    log "Appending base stuck-runner-remanage rules: ${BASE_STUCK_REMANAGE_RULES}"
+  fi
 else
   # Cos-lead base: Department Routing Discipline (one Lead per spawn message)
   BASE_COS_RULES="${BASE_RULES_DIR}/cos-lead-rules.md"
