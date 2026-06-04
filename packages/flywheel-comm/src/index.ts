@@ -15,6 +15,10 @@ import { gate } from "./commands/gate.js";
 import { inbox } from "./commands/inbox.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
 import { pending } from "./commands/pending.js";
+import {
+	type PublishReportArgs,
+	publishReport,
+} from "./commands/publish-report.js";
 import { respond } from "./commands/respond.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
@@ -57,6 +61,12 @@ Commands:
   cleanup   Delete read messages older than TTL (default 24h)
   visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
   notify    POST artifact_emitted event to Bridge after capture+Read (GEO-151)
+  publish-report   Publish HTML report to hosting + deliver to Discord as
+            screenshot preview + unguessable link (FLY-203). Flags:
+            --html <file> --project <name> [--title <t>] [--channel <id>]
+            [--no-screenshot]. Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN,
+            FLYWHEEL_REMOTE_REPORTS=0 disables. Always prints a one-line
+            JSON envelope to stdout.
   set-artifact   Register build output (.glb/.stl/.3mf) path for 3D capture (GEO-151)
 
 Global options:
@@ -142,6 +152,9 @@ async function main(): Promise<void> {
 			break;
 		case "visual-capture":
 			await runVisualCapture(commandArgs);
+			break;
+		case "publish-report":
+			await runPublishReport(commandArgs);
 			break;
 		case "notify":
 			await runNotify(commandArgs);
@@ -742,6 +755,68 @@ async function runNotify(args: string[]): Promise<void> {
 		);
 		process.exit(1);
 	}
+}
+
+async function runPublishReport(args: string[]): Promise<void> {
+	// stdout contract (FLY-203, code review R1#3): EVERY exit path of this
+	// wrapper — including flag/parse errors — prints exactly one compact
+	// JSON envelope to stdout. Diagnostics go to stderr.
+	const failEnvelope = (error: string): never => {
+		console.error(`publish-report: ${error}`);
+		console.log(
+			JSON.stringify({
+				url: null,
+				reportId: null,
+				messageId: null,
+				screenshot: null,
+				delivered: false,
+				error,
+			}),
+		);
+		process.exit(1);
+	};
+
+	let values: {
+		html?: string;
+		project?: string;
+		title?: string;
+		channel?: string;
+		"no-screenshot"?: boolean;
+	};
+	try {
+		values = parseArgs({
+			args,
+			options: {
+				html: { type: "string" },
+				project: { type: "string" },
+				title: { type: "string" },
+				channel: { type: "string" },
+				"no-screenshot": { type: "boolean", default: false },
+			},
+			allowPositionals: false,
+		}).values;
+	} catch (err) {
+		return failEnvelope(`invalid arguments: ${(err as Error).message}`);
+	}
+
+	if (!values.html) {
+		return failEnvelope("--html <file> is required");
+	}
+	if (!values.project) {
+		return failEnvelope("--project <name> is required");
+	}
+
+	const reportArgs: PublishReportArgs = {
+		htmlPath: values.html,
+		project: values.project,
+		title: values.title,
+		channelId: values.channel,
+		noScreenshot: values["no-screenshot"],
+	};
+
+	const { envelope, exitCode } = await publishReport(reportArgs);
+	console.log(JSON.stringify(envelope));
+	process.exit(exitCode);
 }
 
 async function runVisualCapture(args: string[]): Promise<void> {
