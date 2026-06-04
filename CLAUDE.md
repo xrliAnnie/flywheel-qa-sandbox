@@ -89,24 +89,13 @@ Current version: see `doc/VERSION`
 | FLY-92: Runner idle watchdog — system-level idle detection + bubble up | ✅ Merged (PR #137) |
 | FLY-96: QA testing infrastructure — 4-slot parallel Discord E2E (1 cos + 3 lead) | ✅ Merged (PR #144) |
 | FLY-115: QA Test Slot Framework — Real Runner Support (A1 + W1 + F1) | ✅ Merged (PR #157) |
-| FLY-115 v1.24.1: framework fix — Runner trust prompt + Lead tail pipe + teardown portability | ✅ Merged (PR #158) |
-| FLY-108: Session status flip — Runner-driven session_completed + Bridge route guard | ✅ Merged (PR #155) |
-| FLY-115 v1.24.2-v1.24.5: framework consolidated — env gaps + sandbox config + respond path + post-merge finalization (FLY-120 closed) | ✅ Merged (PR #162) |
-| FLY-109: Lead resume no longer silently drops flywheel-inbox events (delivered_at + ack tool + dialog poller) | ✅ Merged (PR #154) |
-| FLY-99: Runner crash on residual worktree — pre-create cleanup (orphan dir + stale branch) | ✅ Merged (PR #153) |
-| FLY-83: Lead daemon stuck detection + Annie Discord alerts (LeadWatchdog Bridge-side, pattern-first ≤30s) | ✅ Merged (PR #156) |
-| FLY-110 v1.25.0: cmux-sync pane-died global hook — fix event cleanup never firing in production (5+ min → ~30-45s typical) | ✅ Merged (PR #166) |
-| FLY-137 v1.27.0: Runner pipeline wire-up bugs — propagate FLYWHEEL_BRIDGE_URL + fix Linear apiKey | ✅ Merged (PR #185) |
-| FLY-152 v1.27.0: shared channel reply discipline (base layer + Layer 1 tests) | ✅ Merged (PR #180) |
-| FLY-142 v1.27.1: vendor-neutral mailbox transport — Runner wake bug fix | ✅ Merged (PR #186) |
-| FLY-153 v1.27.0: QA framework mirror-channel mode for multi-Lead cascade + better-sqlite3 root cause fix | ✅ Merged (PR #183) |
-| FLY-159 v1.28.0: Generic gate timeout 48h default + fail-close + Discord escalation (gate_timed_out event) + Runner caps 49h + ConfigLoader 4h floor | ✅ Merged (PR #190) |
-| FLY-161 v1.28.1: Runner `flywheel-comm ask` → `runner_question` Bridge event (Lead inbox + Annie ping) | ⏳ Pending ship |
-| FLY-168 v1.28.2: `flywheel-comm send` mailbox dual-write — wake idle awaiting_review Runner (mailbox + CommDB audit, zero migration; shared `deriveRunnerMailboxIdentity` + `resolveCommBackend`→flywheel-config) | ✅ Merged (PR #198) |
-| FLY-169 v1.28.3: cmux workspace attach self-heal — event-driven (verify-at-create + register/bootstrap/health-recovery/`--once` sweeps, zero new periodic load); 3-gate safety (managed title + 0-client + bare-shell read-screen) → atomic re-attach send. Real-cmux spike caught a title-intent no-op the mocks missed | ✅ Merged (PR #200) |
-| FLY-172 v1.29.0: Runner heartbeat orphan reconcile — Bridge restart no longer false-fails a live tmux Runner (GEO-374 incident). Event-driven `reconcileMonitorLoss()` (marker-first → tmux probe → one-time `session_monitoring_lost` advisory, no heartbeat refresh) + boot drain of orphaned `flywheel-comm complete` markers (replay via loopback `/events`, verify terminal status before delete, quarantine + FSM fallback). Zero new periodic timer. Real `/events`+FSM integration + real-tmux probe tests | ✅ Merged (PR #202) |
-| FLY-175 Track 1 v1.29.1: Founder-Only Authority — **transitional contract** routing merge-to-main + Runner-lifecycle actions through the founder during the current calibration window (v1.29.x). Not framed as permanent; Lead judgment is treated as input (presented in chat thread) not act-trigger. Reserved actions cover every callable path via `/api/actions/*` AND `/actions/*` dashboard alias (Codex R2-caught dual-mount in `plugin.ts:501`) including approve / terminate / reject / defer / shelve / retry + direct close-tmux / close-runner + catch-all for future endpoints. New base file `packages/teamlead/lead-rules-base/founder-only-authority.md` loaded by every Lead role (cos + dept) via `claude-lead.sh`. **Future autonomy roadmap** section explicitly maps how the contract narrows over v1.29.x → v1.3x → v1.4x as Track 2 audit corpus matures. Track 2 (Bridge hard gate via `FounderConsentEvaluator` + Haiku, per-action-type threshold knobs, audit-table-driven calibration corpus) deferred to follow-up PR | ✅ Merged (PR #204) |
-| FLY-175 Track 2 v1.29.3: Founder-Consent **Bridge hard gate** — server-side enforcement of the Track 1 reserved-action contract. `FounderConsentEvaluator` (Haiku 4.5) reached from two surfaces: HTTP middleware on 14 reserved endpoints (`/api/actions/*` + `/actions/*` alias + close-tmux/close-runner) AND a patched `flywheel-comm respond --bridge-url` wrapper that closes the production `approve_to_ship` ship path (Codex R1 HIGH-1). Every decision writes a `founder_consent_audit` row (separate better-sqlite3 `~/.flywheel/audit.db`, shared by Bridge + CLI) — the **calibration corpus** for Track 3, not a debug log. 3-mode `DECISION_MODE` (off\|audit_only\|enforce), **default off** for byte-compat; 3-phase rollout (Phase 0 audit-only → Phase 1 enforce → Phase 2 relax). Fail-closed by default; session-bound cache (approve bypasses cache w/o pr_head_sha); 16 env knobs. CLI fail-closed for `approve_to_ship` (BRIDGE_URL or emergency `FLYWHEEL_COMM_BYPASS_BRIDGE=1`). Codex code review APPROVED (2 rounds, xhigh — R1 HIGH caught gate-route-404-when-off). 95 tests + Surface A integration + reverse-compat sentinel | ⏳ Pending ship (PR #205) |
+| FLY-108: Runner-driven session_completed + Bridge route guard | ✅ Merged (PR #1) |
+| FLY-99: QA pipeline execution — milestone record | ✅ Merged |
+| FLY-124: QA pipeline execution — milestone record | ✅ Merged (PR #7, #8, #9, #11, #12) |
+| FLY-135: QA pipeline execution — milestone record | ✅ Merged |
+| FLY-134: QA pipeline execution — milestone record | ✅ Merged |
+| FLY-133: QA pipeline execution — milestone record | ✅ Merged |
+| FLY-138: [QA-FLY-127 sandbox] Product-Test label only (S1 happy path) — milestone record | ✅ Merged |
 
 ## Doc Structure & Lifecycle
 

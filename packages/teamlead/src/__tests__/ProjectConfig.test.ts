@@ -932,6 +932,7 @@ describe("FLY-83 alert fields", () => {
 	function validLead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 		return {
 			agentId: "product-lead",
+			forumChannel: "111",
 			chatChannel: "222",
 			match: { labels: ["Product"] },
 			...overrides,

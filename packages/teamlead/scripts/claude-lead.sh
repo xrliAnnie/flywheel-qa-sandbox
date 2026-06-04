@@ -640,12 +640,6 @@ LEAD_WINDOW_ID=""
 # codes between words, breaking regex matching on the raw byte stream. capture-pane
 # returns the rendered screen content without ANSI codes, making grep reliable.
 #
-# FLY-83 note: blocked-prompt classification (rate_limit / usage_limit /
-# login_expired / permission_blocked) is owned by the Bridge-side LeadWatchdog
-# (packages/teamlead/src/LeadWatchdog.ts), which uses the SAME capture-pane
-# approach against the rendered screen and avoids the ANSI byte-stream
-# mismatches that doomed the earlier expect-script sentinel-exit-code path.
-#
 # The poller runs in the background and auto-exits on confirm or timeout.
 
 mkdir -p "${HOME}/.flywheel/logs" 2>/dev/null || true
@@ -771,50 +765,6 @@ _launch_claude() {
     # barrier pattern FLY-142 fixed for CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS.
     -e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
   )
-
-  # FLY-142 PR 1.2: Agent Team transport env vars. Set by
-  # `eval "$(agent-team-transport lead-env ...)"` earlier in the script
-  # (no-op if transport CLI not on PATH, vars stay unset). Propagate into
-  # tmux pane so claude-code's useInboxPoller activates with the same paths
-  # the launcher knows about (Codex r1 high #5: stock binary uses
-  # CLAUDE_CONFIG_DIR; the legacy FLYWHEEL_TEAMS_* env namespace is banned).
-  #
-  # QA-found bug (2026-05-12, FLY-142 verify): empty propagation is NOT a
-  # no-op. `tmux new-window -e CLAUDE_CONFIG_DIR=` sets the var to empty
-  # string in the pane, which claude-code distinguishes from "unset" — empty
-  # string sends it looking for trust state at the wrong path, retriggering
-  # the Trust dialog even when ~/.claude.json:hasTrustDialogAccepted=true is
-  # set. Only propagate when the launcher actually has a value.
-  if [ -n "${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS:-}" ]; then
-    env_args+=(-e "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=${CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS}")
-  fi
-  if [ -n "${CLAUDE_CONFIG_DIR:-}" ]; then
-    env_args+=(-e "CLAUDE_CONFIG_DIR=${CLAUDE_CONFIG_DIR}")
-  fi
-  if [ -n "${FLYWHEEL_AGENT_BACKEND:-}" ]; then
-    env_args+=(-e "FLYWHEEL_AGENT_BACKEND=${FLYWHEEL_AGENT_BACKEND}")
-  fi
-  if [ -n "${FLYWHEEL_STATE_DIR:-}" ]; then
-    env_args+=(-e "FLYWHEEL_STATE_DIR=${FLYWHEEL_STATE_DIR}")
-  fi
-
-  # FLY-143 (QA-found): tmux `new-window -e` does NOT inherit the launcher's
-  # env, so any `${VAR}` referenced in the merged .mcp.json must be passed
-  # explicitly or Claude marks the server "needs authentication".
-  # Scan the final .mcp.json and append each required env var with its
-  # current value (or empty if unset — empty preserves the variable name in
-  # the Lead pane so `${VAR:-default}` semantics still work).
-  if [ -n "${MCP_CONFIG_FILE:-}" ] && [ -f "${MCP_CONFIG_FILE}" ]; then
-    local _req_var _added_count=0
-    while IFS= read -r _req_var; do
-      [ -z "$_req_var" ] && continue
-      env_args+=(-e "${_req_var}=${!_req_var:-}")
-      _added_count=$((_added_count + 1))
-    done < <(list_required_envs "$MCP_CONFIG_FILE")
-    if [ "$_added_count" -gt 0 ]; then
-      log "MCP env propagation: forwarded ${_added_count} required env var(s) to tmux pane"
-    fi
-  fi
 
   # FLY-109: Launch claude directly (no expect wrapper). Dev-channels dialog
   # is handled by background capture-pane poller started below.
@@ -1049,6 +999,72 @@ write_atomic_mcp_config "$MCP_CONFIG_FILE" \
   "$inbox_server" \
   "$gbrain_server"
 log "MCP config: ${MCP_CONFIG_FILE} (mode 0600, atomic)"
+
+# FLY-109 (b): Pre-seed enableAllProjectMcpServers so project .mcp.json servers
+# are auto-approved on resume (no interactive dialog dependency).
+#
+# Target: <LEAD_WORKSPACE>/.claude/settings.local.json (localSettings layer).
+#
+# Why this path, not ~/.claude.json:
+# Upstream Claude Code reads enableAllProjectMcpServers via getSettings_DEPRECATED(),
+# which returns the merged settings tree. It also runs
+# migrateEnableAllProjectMcpServersToSettings() on startup: a value found at
+# ~/.claude.json.projects[cwd].enableAllProjectMcpServers is copied to localSettings
+# only when localSettings.enableAllProjectMcpServers is undefined, then deleted from
+# ~/.claude.json regardless. Consequence: seeding ~/.claude.json is a noop whenever
+# localSettings already has a decision (especially a prior `false`), and is wiped
+# on every startup. Writing localSettings directly overrides prior decisions and
+# survives restarts.
+#
+# Each Lead owns its own workspace dir, so a per-workspace lock is sufficient.
+_SETTINGS_LOCAL_JSON="${LEAD_WORKSPACE}/.claude/settings.local.json"
+_MCP_LOCK_HELD=false
+if command -v jq >/dev/null 2>&1; then
+  mkdir -p "$(dirname "$_SETTINGS_LOCAL_JSON")" 2>/dev/null || true
+
+  # mkdir is atomic on POSIX — serves as a spinlock for concurrent writers.
+  # Stale lock detection: if lock dir is >60s old, a previous process was
+  # killed mid-write. Remove it and retry. Uses -mmin +1 (integer, macOS
+  # find does not support fractional minutes).
+  _lock_dir="${_SETTINGS_LOCAL_JSON}.flywheel-lock"
+  _lock_acquired=false
+  for _i in $(seq 1 50); do
+    if mkdir "$_lock_dir" 2>/dev/null; then
+      _lock_acquired=true
+      _MCP_LOCK_HELD=true
+      break
+    fi
+    # Stale lock check: dir older than 1 minute is definitely orphaned
+    if find "$_lock_dir" -maxdepth 0 -mmin +1 -print 2>/dev/null | grep -q .; then
+      rmdir "$_lock_dir" 2>/dev/null || true
+      log "MCP approval: removed stale lock dir"
+    fi
+    sleep 0.2
+  done
+
+  if [ "$_lock_acquired" = "true" ]; then
+    # Create empty settings.local.json if missing (fresh workspace).
+    # Inside the lock to prevent concurrent creates from racing.
+    if [ ! -f "$_SETTINGS_LOCAL_JSON" ]; then
+      echo '{}' > "$_SETTINGS_LOCAL_JSON"
+      log "MCP approval: created ${_SETTINGS_LOCAL_JSON}"
+    fi
+
+    _tmp_settings="$(mktemp "${_SETTINGS_LOCAL_JSON}.tmp.XXXXXX")"
+    if jq '.enableAllProjectMcpServers = true' \
+       "$_SETTINGS_LOCAL_JSON" > "$_tmp_settings" 2>/dev/null; then
+      mv "$_tmp_settings" "$_SETTINGS_LOCAL_JSON"
+      log "MCP approval: enableAllProjectMcpServers=true in ${_SETTINGS_LOCAL_JSON}"
+    else
+      rm -f "$_tmp_settings" 2>/dev/null || true
+      log "WARNING: Failed to pre-seed enableAllProjectMcpServers (jq error)"
+    fi
+    rmdir "$_lock_dir" 2>/dev/null || true
+    _MCP_LOCK_HELD=false
+  else
+    log "WARNING: Could not acquire lock on ${_SETTINGS_LOCAL_JSON} after 10s, skipping MCP pre-seed"
+  fi
+fi
 
 # FLY-109 (b): Pre-seed enableAllProjectMcpServers so project .mcp.json servers
 # are auto-approved on resume (no interactive dialog dependency).

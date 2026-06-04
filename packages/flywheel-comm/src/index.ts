@@ -53,7 +53,6 @@ Commands:
   search    Search tmux output for a regex pattern
   stage     Report pipeline stage to Bridge (Runner use)
   complete  Emit session_completed terminal event to Bridge (Runner use)
-  await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   cleanup   Delete read messages older than TTL (default 24h)
   visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
   notify    POST artifact_emitted event to Bridge after capture+Read (GEO-151)
@@ -130,12 +129,6 @@ async function main(): Promise<void> {
 			break;
 		case "complete":
 			await runComplete(commandArgs);
-			break;
-		case "await-codex-gate":
-			await runAwaitCodexGate(commandArgs);
-			break;
-		case "verify-approval":
-			runVerifyApproval(commandArgs);
 			break;
 		case "cleanup":
 			runCleanup(commandArgs);
@@ -514,19 +507,35 @@ async function runSearch(args: string[]): Promise<void> {
 	}
 }
 
-function runVerifyApproval(args: string[]): void {
+async function runComplete(args: string[]): Promise<void> {
 	const { values } = parseArgs({
 		args,
 		options: {
-			"exec-id": { type: "string" },
-			"pr-head": { type: "string" },
-			db: { type: "string" },
-			project: { type: "string" },
-			"state-db": { type: "string" },
-			json: { type: "boolean", default: false },
+			route: { type: "string" },
+			pr: { type: "string" },
+			merged: { type: "boolean", default: false },
+			"session-role": { type: "string" },
+			summary: { type: "string" },
+			"exit-reason": { type: "string" },
+			"base-ref": { type: "string" },
 		},
 		allowPositionals: false,
 	});
+
+	await complete({
+		route: values.route ?? "",
+		pr: values.pr ? Number.parseInt(values.pr, 10) : undefined,
+		merged: values.merged ?? false,
+		sessionRole: values["session-role"],
+		summary: values.summary,
+		exitReason: values["exit-reason"],
+		baseRef: values["base-ref"],
+	});
+}
+
+async function runStage(args: string[]): Promise<void> {
+	const subcommand = args[0];
+	const stageName = args[1];
 
 	if (!values["exec-id"]) {
 		throw new Error("--exec-id is required");

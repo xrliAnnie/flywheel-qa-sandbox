@@ -537,6 +537,25 @@ export function createEventRouter(
 					| { status?: string }
 					| undefined;
 
+				// FLY-108 Decision 4: strict route guard. A payload with a foreign or
+				// missing route is almost always an emitter bug (GEO-362 Variant A) —
+				// fail loudly instead of silently falling through to "completed".
+				const VALID_ROUTES = new Set([
+					"auto_approve",
+					"needs_review",
+					"blocked",
+				]);
+				if (!route || !VALID_ROUTES.has(route)) {
+					console.warn(
+						`[event-route] session_completed ${event.execution_id} has invalid route ` +
+							`(${route ?? "undefined"}) — skipping FSM update. ` +
+							`Expected one of ${[...VALID_ROUTES].join(", ")}. ` +
+							`Likely Runner emitter bug or deprecated code path.`,
+					);
+					res.json({ ok: true, warning: "invalid route skipped" });
+					return;
+				}
+
 				// FLY-58: If session is approved_to_ship, Runner finished shipping
 				// → go straight to completed (no Decision Layer needed).
 				// Looked up BEFORE the strict-route guard so the natural-completion
@@ -549,67 +568,13 @@ export function createEventRouter(
 				const isPostApproveShip =
 					existingSession?.status === "approved_to_ship";
 
-				// FLY-108 Decision 4: strict route guard. A payload with a foreign or
-				// missing route is almost always an emitter bug (GEO-362 Variant A) —
-				// fail loudly instead of silently falling through to "completed".
-				// Codex R2 (FLY-115 v1.24.5): exempt `approved_to_ship` sessions so
-				// the natural-completion path keeps working — DirectEventSink already
-				// allows this via its `else status = "completed"` branch, and the
-				// HTTP /events sink must have parity (otherwise a Runner that ships
-				// after Annie :cool: gets dropped here and the Lead never sees the
-				// terminal completion).
-				const VALID_ROUTES = new Set([
-					"auto_approve",
-					"needs_review",
-					"blocked",
-				]);
-				if (!isPostApproveShip && (!route || !VALID_ROUTES.has(route))) {
-					console.warn(
-						`[event-route] session_completed ${event.execution_id} has invalid route ` +
-							`(${route ?? "undefined"}) — skipping FSM update. ` +
-							`Expected one of ${[...VALID_ROUTES].join(", ")}. ` +
-							`Likely Runner emitter bug or deprecated code path.`,
-					);
-					res.json({ ok: true, warning: "invalid route skipped" });
-					return;
-				}
-
-				// FLY-108: status mapping. Mirrors DirectEventSink.emitCompleted
-				// (DirectEventSink.ts:258-274) — explicit failure routes win over
-				// the post-approve-ship natural-completion fallback so a ship that
-				// fails (`route="blocked"`) ends in `blocked`, not `completed`.
-				//
-				// Codex R3 (FLY-115 v1.24.5): pre-R3 code put the
-				// `if (isPostApproveShip)` branch first, which incorrectly mapped
-				// `approved_to_ship + route="blocked"` to `completed` and then
-				// ran post-ship cleanup on a failed ship. Order is now:
-				//   1. route="needs_review" (with merged → completed shortcut)
-				//   2. route="auto_approve" (with merged → completed shortcut)
-				//   3. route="blocked" → blocked
-				//   4. route=undefined → only reachable when isPostApproveShip is
-				//      true (guard above rejects undefined route otherwise) →
-				//      completed (natural-completion path).
-				//
-				// Pinned by:
-				//   - DirectEventSink.test.ts:798-820 (blocked → no finalization)
-				//   - DirectEventSink.test.ts:822-841 (undefined → completed)
-				//   - event-route-dual-session-completed Scenario D (undefined HTTP)
-				//   - event-route-dual-session-completed Scenario E (blocked HTTP)
+				// FLY-108: status mapping. Guard above ensures route ∈ VALID_ROUTES,
+				// so no `else status = "completed"` fallback is reachable here.
 				let status: string;
-				if (route === "needs_review") {
-					// FLY-115 v1.24.5 (FLY-120): mirror the auto_approve+merged
-					// short-circuit so a Runner that self-merges after Lead
-					// unblocks `approve_to_ship` (e.g. via flywheel-comm respond)
-					// reaches "completed" instead of being stuck in
-					// "awaiting_review" with a PR already on main. Sister fix
-					// in DirectEventSink.emitCompleted; both paths must agree
-					// because emitCompleted is in-process while this is the
-					// HTTP /events sink.
-					if (landingStatus?.status === "merged") {
-						status = "completed";
-					} else {
-						status = "awaiting_review";
-					}
+				if (isPostApproveShip) {
+					status = "completed";
+				} else if (route === "needs_review") {
+					status = "awaiting_review";
 				} else if (route === "auto_approve") {
 					if (landingStatus?.status === "merged") {
 						// FLY-58: auto_approve + merged → completed (not approved)
@@ -617,20 +582,9 @@ export function createEventRouter(
 					} else {
 						status = "awaiting_review";
 					}
-				} else if (route === "blocked") {
-					// Ship failed (or otherwise blocked). Even for sessions that
-					// were previously `approved_to_ship`, an explicit blocked route
-					// means the ship did not complete — must NOT finalize.
-					// Sister branch: DirectEventSink.ts:273.
-					status = "blocked";
 				} else {
-					// route is undefined here — only reachable when
-					// isPostApproveShip is true (the strict route guard above
-					// rejects undefined route otherwise). Natural-completion
-					// path: Annie :cool: → Runner ships → session_completed with
-					// no decision route. Sister branch:
-					// DirectEventSink.ts:274 (`else status = "completed"`).
-					status = "completed";
+					// Guard ensures route === "blocked" is the only remaining case.
+					status = "blocked";
 				}
 
 				// FLY-59: Read session role from completed event payload

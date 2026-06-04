@@ -30,49 +30,6 @@ export interface LeadConfig {
 	 * core channel (Simba's cos-chat) instead of dropping them.
 	 */
 	alertFallbackToCore?: boolean;
-	/**
-	 * FLY-127 / FLY-163: Bridge spawn authorization — independent of Discord
-	 * channel features. Whether this Lead is authorized to spawn Runners via
-	 * `POST /api/runs/start`. The Bridge enforces this server-side.
-	 *
-	 * Default (when field is absent): `true`. PM / triage Leads MUST explicitly
-	 * set `"canSpawnRunners": false` — the PM/Triage validator (see
-	 * `loadProjects()`) throws if a Lead's `match.labels` includes "PM" or
-	 * "Triage" (case-insensitive) without an explicit `canSpawnRunners: false`.
-	 *
-	 * After `loadProjects()`, this field is normalized to a boolean (no `undefined`).
-	 */
-	canSpawnRunners?: boolean;
-	/**
-	 * FLY-137 v1.27.2: optional explicit department identifier. If absent,
-	 * `resolveLeadDepartment(lead)` derives it from `match.labels[0]?.toLowerCase()`.
-	 *
-	 * Used by `DepartmentRegistry.getLeadDepartment(projectName, leadId)` and
-	 * `getDepartmentForIssue(projectName, issueLabels)` to feed AgentDispatcher's
-	 * dept-aware step 2.
-	 */
-	department?: string;
-}
-
-/**
- * FLY-137 v1.27.2: resolve a Lead's department.
- *
- * Returns the explicit `LeadConfig.department` if set, else falls back to
- * the first match label (lowercased) — preserves backward compat with FLY-127
- * label-based dispatch for projects that don't yet set `department` explicitly.
- *
- * Returns `undefined` only if both `department` is unset AND `match.labels` is
- * empty (shouldn't happen after `loadProjects()` validation, but defensive).
- */
-export function resolveLeadDepartment(lead: LeadConfig): string | undefined {
-	if (typeof lead.department === "string" && lead.department.length > 0) {
-		return lead.department;
-	}
-	const firstLabel = lead.match?.labels?.[0];
-	if (typeof firstLabel === "string" && firstLabel.length > 0) {
-		return firstLabel.toLowerCase();
-	}
-	return undefined;
 }
 
 export interface ProjectEntry {
@@ -250,40 +207,6 @@ export function loadProjects(): ProjectEntry[] {
 			) {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}].alertFallbackToCore: must be a boolean, got ${JSON.stringify(lead.alertFallbackToCore)}`,
-				);
-			}
-			// FLY-127: validate optional canSpawnRunners type
-			if (
-				lead.canSpawnRunners !== undefined &&
-				typeof lead.canSpawnRunners !== "boolean"
-			) {
-				throw new Error(
-					`Project "${entry.projectName}" leads[${i}].canSpawnRunners: must be a boolean, got ${JSON.stringify(lead.canSpawnRunners)}`,
-				);
-			}
-			// FLY-127 / FLY-163: Normalize canSpawnRunners default to `true`.
-			// PM / triage Leads must explicitly opt out with `canSpawnRunners: false`.
-			// The PM/Triage validator below enforces this.
-			if (lead.canSpawnRunners === undefined) {
-				lead.canSpawnRunners = true;
-			}
-
-			// FLY-163: PM/Triage validator — runs AFTER deprecated-field strip
-			// AND AFTER canSpawnRunners normalization. PM / triage Leads must
-			// explicitly opt out of spawn authorization; if they default-true,
-			// fail loudly so the operator notices.
-			const PM_LABELS = ["pm", "triage"];
-			const labelsLower: string[] = (match.labels as unknown[])
-				.filter((s): s is string => typeof s === "string")
-				.map((s) => s.trim().toLowerCase());
-			const hasPmLabel = labelsLower.some((l: string) => PM_LABELS.includes(l));
-			if (hasPmLabel && lead.canSpawnRunners !== false) {
-				throw new Error(
-					`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
-						`match.labels contains PM/Triage (${labelsLower.join(",")}) but ` +
-						`canSpawnRunners is not false. PM/Triage leads must explicitly ` +
-						`set "canSpawnRunners": false. ` +
-						`(FLY-163: canSpawnRunners no longer derives from forumChannel.)`,
 				);
 			}
 			// Strip any raw botToken from JSON input first — secrets must come via env vars

@@ -109,18 +109,6 @@ export class CommDB {
 				}
 			}
 		}
-		if (!columns.some((c) => c.name === "attachments")) {
-			// GEO-151: ProofShot artifact paths stored as JSON-encoded string[].
-			// Same race-tolerance pattern as delivered_at above.
-			try {
-				this.db.exec("ALTER TABLE messages ADD COLUMN attachments TEXT");
-			} catch (err) {
-				const msg = (err as Error).message ?? "";
-				if (!/duplicate column name: attachments/i.test(msg)) {
-					throw err;
-				}
-			}
-		}
 		this.db.exec(
 			"CREATE INDEX IF NOT EXISTS idx_messages_checkpoint ON messages(checkpoint) WHERE checkpoint IS NOT NULL",
 		);

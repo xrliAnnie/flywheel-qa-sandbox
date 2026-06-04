@@ -237,32 +237,6 @@ describe("session_completed route guard (FLY-108)", () => {
 		expect(store.getSession("exec-nr")!.status).toBe("awaiting_review");
 	});
 
-	// FLY-115 v1.24.5 (FLY-120): when the Lead unblocks `approve_to_ship` via
-	// `flywheel-comm respond` (production path) the Runner can resume, merge
-	// the PR itself, and emit session_completed before the Bridge's approve
-	// action has run. Status must short-circuit to "completed" — leaving it at
-	// "awaiting_review" used to make Lead notify Annie about a PR already on
-	// main (Round 5 deadlock evidence).
-	it("route=needs_review + landingStatus.merged → completed (FLY-120)", async () => {
-		await startRunning("exec-nr-merged", "issue-nr-merged");
-
-		const res = await postCompleted({
-			event_id: "evt-nr-merged",
-			execution_id: "exec-nr-merged",
-			issue_id: "issue-nr-merged",
-			project_name: "geoforge3d",
-			event_type: "session_completed",
-			payload: {
-				decision: { route: "needs_review" },
-				evidence: {
-					landingStatus: { status: "merged", prNumber: 7 },
-				},
-			},
-		});
-		expect(res.status).toBe(200);
-		expect(store.getSession("exec-nr-merged")!.status).toBe("completed");
-	});
-
 	it("route=blocked → blocked", async () => {
 		await startRunning("exec-blk", "issue-blk");
 

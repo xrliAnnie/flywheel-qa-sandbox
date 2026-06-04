@@ -1,28 +1,23 @@
 #!/bin/bash
 # FLY-83: Independent Lead alert emitter.
 #
-# Called by claude-lead.sh supervisor on crash-loop escalation. Lives in
-# shell so it works even when the Bridge (Node.js) is down.
+# Called by claude-lead.sh supervisor on blocked-prompt exits (100/101/102)
+# and on crash-loop escalation. Lives in shell so it works even when the
+# Bridge (Node.js) is down.
 #
 # Responsibilities:
 #   1. Resolve alert channel + bot token from ~/.flywheel/projects.json.
-#   2. Generate eventId = sha1(projectName|leadId|kind|signature).
-#      - signature defaults to today's date (YYYYMMDD) so a crash-looping
-#        Lead alerts at most once per day per (project, lead, kind).
-#      - --signature lets callers override (e.g., a pane content hash for
-#        future kinds that mirror the Bridge-side LeadWatchdog formula).
+#   2. Generate eventId = sha1(leadId + kind + 10min-bucket).
 #   3. Claim dedup via ~/.flywheel/alerts/claims.db (single sqlite3 tx,
-#      BEGIN IMMEDIATE + INSERT OR IGNORE + SELECT changes()) — the SAME
-#      table the Bridge `LeadAlertNotifier.claimsClaimer` writes to.
+#      BEGIN IMMEDIATE + INSERT OR IGNORE + SELECT changes()).
 #   4. Post to Discord; on failure spill to ~/.flywheel/alert-queue/.
 #
 # Usage:
 #   lead-alert.sh \
 #     --lead <lead-id> --project <project-name> \
-#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck> \
+#     --kind <rate_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck> \
 #     --severity <info|warning|severe> \
-#     --title <string> --body <string> \
-#     [--signature <string>]
+#     --title <string> --body <string>
 #
 # Exit codes:
 #   0 — posted or already claimed (both are success: no double-alert)
@@ -35,7 +30,7 @@ log() {
 }
 
 usage() {
-  sed -n '3,33p' "$0" >&2
+  sed -n '3,30p' "$0" >&2
   exit 1
 }
 
@@ -45,18 +40,16 @@ KIND=""
 SEVERITY="warning"
 TITLE=""
 BODY=""
-SIGNATURE=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --lead)      LEAD_ID="${2:?--lead requires a value}"; shift 2 ;;
-    --project)   PROJECT_NAME="${2:?--project requires a value}"; shift 2 ;;
-    --kind)      KIND="${2:?--kind requires a value}"; shift 2 ;;
-    --severity)  SEVERITY="${2:?--severity requires a value}"; shift 2 ;;
-    --title)     TITLE="${2:?--title requires a value}"; shift 2 ;;
-    --body)      BODY="${2:?--body requires a value}"; shift 2 ;;
-    --signature) SIGNATURE="${2:?--signature requires a value}"; shift 2 ;;
-    -h|--help)   usage ;;
+    --lead)     LEAD_ID="${2:?--lead requires a value}"; shift 2 ;;
+    --project)  PROJECT_NAME="${2:?--project requires a value}"; shift 2 ;;
+    --kind)     KIND="${2:?--kind requires a value}"; shift 2 ;;
+    --severity) SEVERITY="${2:?--severity requires a value}"; shift 2 ;;
+    --title)    TITLE="${2:?--title requires a value}"; shift 2 ;;
+    --body)     BODY="${2:?--body requires a value}"; shift 2 ;;
+    -h|--help)  usage ;;
     *)
       log "ERROR: unknown flag '$1'"
       usage
@@ -70,7 +63,7 @@ if [ -z "$LEAD_ID" ] || [ -z "$PROJECT_NAME" ] || [ -z "$KIND" ] || [ -z "$TITLE
 fi
 
 case "$KIND" in
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck) ;;
+  rate_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     exit 1
@@ -93,24 +86,6 @@ for tool in jq sqlite3 curl shasum; do
   fi
 done
 
-# ── Discord-INDEPENDENT meta-alert escape (FLY-182 §4.5.1) ──
-# Resolve our own dir early so the meta-alert escape is reachable from EVERY
-# failure branch — including unknown-lead, which exits before the later
-# dead_letter() definition. meta-alert.sh self-debounces per reason and
-# OVERWRITES its marker, so repeated calls neither spam nor grow unbounded.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-fire_meta_alert() {
-  # $1 = reason, $2 = title, $3 = body. Best-effort; never breaks the caller.
-  if [ -x "${SCRIPT_DIR}/meta-alert.sh" ]; then
-    "${SCRIPT_DIR}/meta-alert.sh" "$1" "$2" "$3" || true
-  fi
-}
-
-# Escape single quotes for sqlite3 string literals (parity with the TS
-# sqlString() claimer). sqlite3-over-stdin can't bind params, so we double any
-# embedded single quote to avoid breaking the claim transaction / local DB.
-sql_quote() { printf '%s' "$1" | sed "s/'/''/g"; }
-
 # ── Config resolution (projects.json SSOT) ──────────────────
 PROJECTS_JSON="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
 if [ ! -f "$PROJECTS_JSON" ]; then
@@ -130,13 +105,6 @@ LEAD_CFG=$(jq -c --arg p "$PROJECT_NAME" --arg l "$LEAD_ID" '
 
 if [ -z "$LEAD_CFG" ] || [ "$LEAD_CFG" = "null" ]; then
   log "ERROR: lead '$LEAD_ID' not found in project '$PROJECT_NAME' (projects.json)"
-  # FLY-182: unknown-lead is a PERMANENT failure (config drift / renamed lead).
-  # Surface it via the Discord-independent meta-alert so it never goes silent —
-  # parity with LeadAlertNotifier, which dead-letters unknown-lead.
-  fire_meta_alert \
-    "alert_dead_lettered" \
-    "LeadAlert dropped (shell path)" \
-    "Lead '${LEAD_ID}' not found in project '${PROJECT_NAME}' (projects.json). Alert (kind=${KIND}) dropped — config drift or renamed lead."
   exit 1
 fi
 
@@ -167,25 +135,14 @@ if [ -z "$TOKEN" ] && [ -n "$LEAD_BOT_TOKEN_ENV" ]; then
   fi
 fi
 
-# ── Event ID (Fix 3: signature-based) ──────────────────────
-# Formula: sha1(projectName|leadId|kind|signature).
-# MUST match Bridge-side `computeEventId` in LeadWatchdog.ts (pipe
-# separators, same field order, lowercase hex output) so cross-process
-# dedup actually works.
-#
-# Default signature = today's date (UTC, YYYYMMDD). For crash-loop alerts
-# this collapses repeated supervisor escalations within a day to one alert.
-# Callers may pass --signature to mirror Bridge's pane-content-hash
-# signature for kinds that have rich pane context (rare from shell side).
-if [ -z "$SIGNATURE" ]; then
-  SIGNATURE=$(LC_ALL=C date -u +%Y%m%d)
-fi
-
-EVENT_ID=$(LC_ALL=C printf '%s|%s|%s|%s' "$PROJECT_NAME" "$LEAD_ID" "$KIND" "$SIGNATURE" \
-  | LC_ALL=C shasum -a 1 \
-  | awk '{print $1}')
+# ── Event ID (sha1 of leadId|kind|10min-bucket) ────────────
+# MUST match Bridge-side formula in LeadWatchdog.ts (pipe separators, not
+# colons) or cross-process dedup silently breaks.
+NOW_EPOCH=$(date +%s)
+BUCKET=$((NOW_EPOCH / 600))
+EVENT_ID=$(LC_ALL=C printf '%s|%s|%s' "$LEAD_ID" "$KIND" "$BUCKET" | LC_ALL=C shasum -a 1 | awk '{print $1}')
 if [ -z "$EVENT_ID" ]; then
-  log "ERROR: shasum failed to produce EVENT_ID (project=$PROJECT_NAME lead=$LEAD_ID kind=$KIND signature=$SIGNATURE)" >&2
+  log "ERROR: shasum failed to produce EVENT_ID (lead=$LEAD_ID kind=$KIND bucket=$BUCKET)" >&2
   exit 3
 fi
 
@@ -204,7 +161,7 @@ CREATE TABLE IF NOT EXISTS alert_claims (
   claimed_at INTEGER NOT NULL
 );
 BEGIN IMMEDIATE;
-INSERT OR IGNORE INTO alert_claims VALUES ('${EVENT_ID}', '$(sql_quote "$LEAD_ID")', '${KIND}', strftime('%s','now'));
+INSERT OR IGNORE INTO alert_claims VALUES ('${EVENT_ID}', '${LEAD_ID}', '${KIND}', strftime('%s','now'));
 SELECT changes();
 COMMIT;
 SQL
@@ -220,7 +177,7 @@ CLAIM_RESULT=$(sqlite3 "$CLAIMS_DB" <<<"$CLAIM_SQL" 2>&1) || {
 # Last non-empty stdout line is the SELECT changes() result.
 CLAIMED=$(printf '%s\n' "$CLAIM_RESULT" | awk 'NF' | tail -n 1)
 if [ "$CLAIMED" != "1" ]; then
-  log "already claimed event_id=$EVENT_ID lead=$LEAD_ID kind=$KIND signature=$SIGNATURE, skipping"
+  log "already claimed event_id=$EVENT_ID lead=$LEAD_ID kind=$KIND, skipping"
   exit 0
 fi
 
@@ -238,8 +195,8 @@ QUEUE_DIR="${HOME}/.flywheel/alert-queue"
 mkdir -p "$QUEUE_DIR"
 QUEUE_PATH="${QUEUE_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}.json"
 
-write_record() {
-  # $1 = target path, $2 = reason
+enqueue() {
+  local reason="$1"
   jq -n \
     --arg leadId "$LEAD_ID" \
     --arg projectName "$PROJECT_NAME" \
@@ -249,41 +206,20 @@ write_record() {
     --arg body "$BODY" \
     --arg severity "$SEVERITY" \
     --arg queuedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    --arg queueReason "$2" \
+    --arg queueReason "$reason" \
     '{leadId: $leadId, projectName: $projectName, eventId: $eventId,
       eventType: $eventType, title: $title, body: $body,
       severity: $severity, queuedAt: $queuedAt, queueReason: $queueReason}' \
-    > "$1"
-}
-
-enqueue() {
-  write_record "$QUEUE_PATH" "$1"
-  log "queued to $QUEUE_PATH (reason=$1)"
-}
-
-# FLY-182 §4.5.1: PERMANENT failures (config gap, bad token, permanent 4xx)
-# must NOT be queued for blind retry — that was the 1667-backlog root cause.
-# Dead-letter (audit) + fire a Discord-INDEPENDENT meta-alert so the silent
-# failure surfaces even when the Bridge is down.
-DEAD_LETTER_DIR="${HOME}/.flywheel/alert-deadletter"
-dead_letter() {
-  local reason="$1"
-  mkdir -p "$DEAD_LETTER_DIR"
-  local dl_path="${DEAD_LETTER_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}.json"
-  write_record "$dl_path" "$reason"
-  log "dead-lettered to $dl_path (reason=$reason)"
-  fire_meta_alert \
-    "alert_dead_lettered" \
-    "LeadAlert dropped (shell path)" \
-    "Lead '${LEAD_ID}' alert dead-lettered (reason=${reason}, kind=${KIND}). Discord alert path misconfigured/down."
+    > "$QUEUE_PATH"
+  log "queued to $QUEUE_PATH (reason=$reason)"
 }
 
 if [ -z "$CHANNEL_ID" ]; then
-  dead_letter "no-channel"
+  enqueue "no-channel"
   exit 2
 fi
 if [ -z "$TOKEN" ]; then
-  dead_letter "no-token"
+  enqueue "no-token"
   exit 2
 fi
 
@@ -307,14 +243,10 @@ rm -f /tmp/lead-alert-$$.out
 log "Discord POST failed HTTP=$HTTP_CODE body=$RESP_BODY"
 
 # Keep the claim — it marks "someone took responsibility for this eventId".
-# Classify the failure (FLY-182 §4.2 parity with LeadAlertNotifier):
-#   5xx / 429 / 000(network) → TRANSIENT → queue for Bridge drainQueue retry.
-#   other 4xx (401/403/404 — bad token, forbidden, channel gone) → PERMANENT
-#     → dead-letter + meta-alert (retry is pointless).
-if [ "$HTTP_CODE" -ge 500 ] 2>/dev/null \
-  || [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "000" ]; then
-  enqueue "discord-${HTTP_CODE}"
-  exit 2
-fi
-dead_letter "discord-${HTTP_CODE}"
+# The queue file is the durable retry record; Bridge's drainQueue() reruns the
+# POST directly (bypasses the claim check) every 60s until delivery succeeds.
+# Releasing the claim here would let a concurrent Bridge live-path fire a
+# second POST on the same eventId, breaking the "one alert per 10-min bucket"
+# invariant.
+enqueue "discord-${HTTP_CODE}"
 exit 2
