@@ -973,4 +973,106 @@ checkpoints:
 			);
 		});
 	});
+
+	// FLY-205: doc_flow validation
+	describe("doc_flow validation", () => {
+		const withDocFlow = (docFlowYaml: string) => `
+${MINIMAL_CONFIG_YAML}
+${docFlowYaml}
+`;
+
+		it("accepts valid enabled doc_flow config", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: true
+  default_department: content
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.doc_flow?.enabled).toBe(true);
+			expect(config.doc_flow?.default_department).toBe("content");
+		});
+
+		it("accepts absent doc_flow (feature off, backward compatible)", async () => {
+			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.doc_flow).toBeUndefined();
+		});
+
+		it("rejects enabled=true without default_department", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: true
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/default_department is required when doc_flow\.enabled is true/,
+			);
+		});
+
+		it("rejects default_department with illegal characters (path safety)", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: true
+  default_department: "../escape"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/default_department must be a non-empty lowercase directory name/,
+			);
+		});
+
+		it("rejects malformed default_department even when enabled=false (fail loudly before flip-on)", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: false
+  default_department: "Has Spaces"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/default_department must be a non-empty lowercase directory name/,
+			);
+		});
+
+		it("rejects non-mapping doc_flow", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow: "yes"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/doc_flow must be a YAML mapping/,
+			);
+		});
+
+		it("rejects non-boolean doc_flow.enabled", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: "yes"
+  default_department: content
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/doc_flow\.enabled must be a boolean/,
+			);
+		});
+
+		it("accepts enabled=false with valid default_department (pre-staged config)", async () => {
+			readFile.mockResolvedValue(
+				withDocFlow(`
+doc_flow:
+  enabled: false
+  default_department: product
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.doc_flow?.enabled).toBe(false);
+			expect(config.doc_flow?.default_department).toBe("product");
+		});
+	});
 });

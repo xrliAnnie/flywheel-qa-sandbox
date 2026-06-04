@@ -135,6 +135,10 @@ export interface SessionUpsert {
 	 * invalidating approvals on earlier questions — no timestamp-tie games.
 	 */
 	review_question_id?: string;
+	/** FLY-205: Lead-judged doc tier ("full" | "plan_only" | "none"). Retry reuses. */
+	doc_tier?: string;
+	/** FLY-205: Linear issue URL persisted at start (doc header continuity on retry). */
+	issue_url?: string;
 }
 
 export interface Session {
@@ -189,6 +193,10 @@ export interface Session {
 	gate_timeout_notified_at?: string;
 	/** FLY-191 Phase 2: CommDB question id of the CURRENT review request (verify-approval binding). */
 	review_question_id?: string;
+	/** FLY-205: Lead-judged doc tier ("full" | "plan_only" | "none"). Retry reuses. */
+	doc_tier?: string;
+	/** FLY-205: Linear issue URL persisted at start (doc header continuity on retry). */
+	issue_url?: string;
 }
 
 // FLY-163: CleanupCandidate removed (CleanupService gone).
@@ -447,6 +455,20 @@ export class StateStore {
 			/* exists */
 		}
 
+		// FLY-205: doc-flow tier (Lead-judged at spawn; retry reuses it — never
+		// silently upgrades back to full) + Linear issue URL (doc header line;
+		// persisted at start so retry prompts keep the same header as start).
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN doc_tier TEXT");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN issue_url TEXT");
+		} catch {
+			/* exists */
+		}
+
 		// FLY-163: drop legacy conversation_threads index (table is gone).
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
 
@@ -598,8 +620,9 @@ export class StateStore {
 				summary, diff_summary, commit_messages, changed_file_paths,
 				session_params, heartbeat_at, adapter_type, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
-				pr_number, session_stage, stage_updated_at, session_role
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				pr_number, session_stage, stage_updated_at, session_role,
+				doc_tier, issue_url
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -633,7 +656,9 @@ export class StateStore {
 				pr_number = COALESCE(excluded.pr_number, pr_number),
 				session_stage = COALESCE(excluded.session_stage, session_stage),
 				stage_updated_at = COALESCE(excluded.stage_updated_at, stage_updated_at),
-				session_role = COALESCE(excluded.session_role, session_role)
+				session_role = COALESCE(excluded.session_role, session_role),
+				doc_tier = COALESCE(excluded.doc_tier, doc_tier),
+				issue_url = COALESCE(excluded.issue_url, issue_url)
 			`,
 			[
 				session.execution_id,
@@ -670,6 +695,8 @@ export class StateStore {
 				session.session_stage ?? null,
 				session.stage_updated_at ?? null,
 				session.session_role ?? null,
+				session.doc_tier ?? null,
+				session.issue_url ?? null,
 			],
 		);
 		if (enteringAwaitingReview) {
@@ -706,8 +733,9 @@ export class StateStore {
 				summary, diff_summary, commit_messages, changed_file_paths,
 				session_params, heartbeat_at, adapter_type, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
-				pr_number, session_stage, stage_updated_at, session_role
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				pr_number, session_stage, stage_updated_at, session_role,
+				doc_tier, issue_url
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -741,7 +769,9 @@ export class StateStore {
 				pr_number = COALESCE(excluded.pr_number, pr_number),
 				session_stage = COALESCE(excluded.session_stage, session_stage),
 				stage_updated_at = COALESCE(excluded.stage_updated_at, stage_updated_at),
-				session_role = COALESCE(excluded.session_role, session_role)
+				session_role = COALESCE(excluded.session_role, session_role),
+				doc_tier = COALESCE(excluded.doc_tier, doc_tier),
+				issue_url = COALESCE(excluded.issue_url, issue_url)
 			`,
 			[
 				executionId,
@@ -778,6 +808,8 @@ export class StateStore {
 				fields.session_stage ?? null,
 				fields.stage_updated_at ?? null,
 				fields.session_role ?? null,
+				fields.doc_tier ?? null,
+				fields.issue_url ?? null,
 			],
 		);
 		if (enteringAwaitingReview) {
@@ -881,6 +913,9 @@ export class StateStore {
 			codex_skip: "codex_skip",
 			// FLY-191 Phase 2: PR head binding for verify-approval (§5.5.2)
 			pr_head_sha: "pr_head_sha",
+			// FLY-205: doc-flow tier + Linear URL (retry continuity)
+			doc_tier: "doc_tier",
+			issue_url: "issue_url",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -1469,6 +1504,9 @@ export class StateStore {
 			gate_timeout_notified_at:
 				(row.gate_timeout_notified_at as string) ?? undefined,
 			review_question_id: (row.review_question_id as string) ?? undefined,
+			// FLY-205: doc-flow tier + Linear URL (retry continuity)
+			doc_tier: (row.doc_tier as string) ?? undefined,
+			issue_url: (row.issue_url as string) ?? undefined,
 		};
 	}
 

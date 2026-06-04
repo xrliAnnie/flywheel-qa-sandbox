@@ -4,6 +4,7 @@ import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import { ACTION_DEFINITIONS, closeRunnerTerminalView } from "flywheel-core";
 import type { ActionResult, CipherWriter } from "flywheel-edge-worker";
+import { parseDocTier } from "flywheel-edge-worker/dist/Blueprint.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -25,6 +26,7 @@ import { matchesLead } from "./lead-scope.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
+import { waitForSession } from "./session-wait.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
@@ -724,6 +726,12 @@ async function handleRetry(
 			// previously-overridden Runner stays on the same agent across
 			// retries.
 			agentName: session.agent_name,
+			// FLY-205: REUSE the predecessor's doc tier — never silently upgrade
+			// a plan_only/none run back to full on retry. Missing value
+			// (pre-FLY-205 session) → undefined → Blueprint defaults to "full".
+			// issue_url keeps the doc header identical between start and retry.
+			docTier: parseDocTier(session.doc_tier),
+			issueUrl: session.issue_url,
 		});
 
 		// Link predecessor → successor
@@ -735,7 +743,11 @@ async function handleRetry(
 		// patchSessionMetadata is a no-op if the new row hasn't been created
 		// yet (Blueprint creates it inside dispatch()); this defensive guard
 		// avoids racing.
-		const newSession = store.getSession(result.newExecutionId);
+		// FLY-205 (Codex code R1 HIGH-2): the dispatcher returns as soon as
+		// blueprint.run() is kicked off; the successor row is created later by
+		// emitStarted(). A bare getSession() guard here races row creation and
+		// can silently skip the patch in production — wait (bounded) instead.
+		const newSession = await waitForSession(store, result.newExecutionId);
 		if (newSession) {
 			store.patchSessionMetadata(result.newExecutionId, {
 				codex_skip: retryCodexSkip ? 1 : 0,
@@ -745,7 +757,17 @@ async function handleRetry(
 							agent_match_method: session.agent_match_method ?? "override",
 						}
 					: {}),
+				// FLY-205 (Codex design R2 #1): persist tier + URL on the retry
+				// SUCCESSOR row too — without this, a second retry would read an
+				// empty doc_tier and drift back to "full".
+				doc_tier: parseDocTier(session.doc_tier) ?? "full",
+				...(session.issue_url ? { issue_url: session.issue_url } : {}),
 			});
+		} else {
+			console.warn(
+				`[retry] Successor session ${result.newExecutionId} not registered within wait window — ` +
+					`doc_tier/codex_skip metadata NOT persisted (retry-of-retry may re-default).`,
+			);
 		}
 
 		// FLY-163: forum thread unarchive removed (forum gone).

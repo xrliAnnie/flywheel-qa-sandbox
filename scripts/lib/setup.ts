@@ -524,6 +524,7 @@ export async function setupComponents(
 			agentDispatcher,
 			flywheelConfig?.checkpoints, // FLY-47: checkpoint gate config
 			flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1): Blueprint resolves shipped-generic
+			flywheelConfig?.doc_flow, // FLY-205: LAST param by contract (Codex design R2 #5)
 		);
 
 		return {

@@ -238,6 +238,37 @@ export class ConfigLoader {
 			}
 		}
 
+		// doc_flow (optional — FLY-205)
+		const docFlow = c.doc_flow as Record<string, unknown> | undefined;
+		if (docFlow != null) {
+			if (typeof docFlow !== "object" || Array.isArray(docFlow)) {
+				throw new Error(
+					"doc_flow must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (typeof docFlow.enabled !== "boolean") {
+				throw new Error("doc_flow.enabled must be a boolean");
+			}
+			// default_department is validated whenever PRESENT (even with
+			// enabled=false) so a disabled-but-malformed config fails loudly
+			// instead of detonating later when someone flips enabled on.
+			if (docFlow.default_department != null) {
+				if (
+					typeof docFlow.default_department !== "string" ||
+					!/^[a-z0-9-]+$/.test(docFlow.default_department)
+				) {
+					throw new Error(
+						`doc_flow.default_department must be a non-empty lowercase directory name matching ^[a-z0-9-]+$ (no slashes, dots, spaces or uppercase), got "${docFlow.default_department}"`,
+					);
+				}
+			}
+			if (docFlow.enabled === true && docFlow.default_department == null) {
+				throw new Error(
+					"doc_flow.default_department is required when doc_flow.enabled is true",
+				);
+			}
+		}
+
 		// agents (optional — v0.6)
 		const agents = c.agents as Record<string, unknown> | undefined;
 		if (

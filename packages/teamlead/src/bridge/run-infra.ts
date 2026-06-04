@@ -15,6 +15,7 @@ import {
 	type AgentConfig,
 	type CheckpointsConfig,
 	ConfigLoader,
+	type DocFlowConfig,
 	type SkillsConfig,
 } from "flywheel-config";
 import type { LLMClient } from "flywheel-core";
@@ -146,6 +147,7 @@ async function createRunBlueprint(
 	agentDispatcher?: AgentDispatcher, // FLY-137 v1.27.2
 	flywheelRepoRoot?: string, // FLY-137 v1.27.2 (Codex Track A #1): Blueprint needs this to resolve shipped-generic agent_file
 	skillsConfig?: SkillsConfig, // GEO-151: ProofShot + skill commands surfaced to Blueprint
+	docFlowConfig?: DocFlowConfig, // FLY-205: doc-flow baseline (DOC-FLOW prompt block when enabled)
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -322,6 +324,7 @@ async function createRunBlueprint(
 			agentDispatcher, // FLY-137 v1.27.2: wired (was undefined pre-v1.27.2)
 			checkpointConfig, // FLY-47
 			flywheelRepoRoot, // FLY-137 v1.27.2: Blueprint resolves shipped-generic agent_file from this root
+			docFlowConfig, // FLY-205: LAST param by contract (Codex design R2 #5)
 		);
 
 		const cleanup = async () => {
@@ -421,6 +424,7 @@ export async function setupRunInfrastructure(
 			let agentsConfig: Record<string, AgentConfig> | undefined;
 			let defaultAgentName: string | undefined;
 			let skillsConfig: SkillsConfig | undefined;
+			let docFlowConfig: DocFlowConfig | undefined;
 			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
 			try {
 				const configLoader = new ConfigLoader(async (p) =>
@@ -431,6 +435,7 @@ export async function setupRunInfrastructure(
 				agentsConfig = flywheelConfig?.agents;
 				defaultAgentName = flywheelConfig?.default_agent;
 				skillsConfig = flywheelConfig?.skills;
+				docFlowConfig = flywheelConfig?.doc_flow; // FLY-205
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 					// No config file — no checkpoints, no agents block, no skills.
@@ -469,6 +474,7 @@ export async function setupRunInfrastructure(
 				agentDispatcher, // FLY-137 v1.27.2
 				flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1)
 				skillsConfig, // GEO-151: wired into Blueprint slot 7
+				docFlowConfig, // FLY-205
 			);
 
 			projectRuntimes.set(project.projectName, {
