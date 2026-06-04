@@ -1,4 +1,5 @@
 import { timingSafeEqual } from "node:crypto";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
@@ -55,6 +56,8 @@ import { createMemoryRouter } from "./memory-route.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
+import { ReportRegistry } from "./report-registry.js";
+import { createReportsRouter } from "./reports-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import { setupRunInfrastructure } from "./run-infra.js";
 import { createStatusQuery } from "./runner-status.js";
@@ -1494,6 +1497,35 @@ export function createBridgeApp(
 		);
 	} else {
 		app.use("/api/publish-html", publishHtmlRouter);
+	}
+
+	// FLY-203: /api/reports — remote report pipeline (publish + deliver).
+	// Auth ownership (Codex R2#4): the plugin layer owns auth. Unlike
+	// publish-html, this surface posts as a bot and reads local files, so it
+	// NEVER runs unauthenticated — no apiToken → always 503.
+	const reportsBaseDir =
+		process.env.FLYWHEEL_REPORTS_DIR ??
+		resolve(homedir(), ".flywheel", "reports");
+	const reportsEnabled = process.env.FLYWHEEL_REMOTE_REPORTS !== "0";
+	const reportsRouter = createReportsRouter({
+		enabled: reportsEnabled,
+		vercelToken: opts?.vercelToken,
+		discordBotToken: opts?.globalBotToken,
+		projects,
+		registry: new ReportRegistry(reportsBaseDir),
+	});
+	if (config.apiToken) {
+		app.use(
+			"/api/reports",
+			tokenAuthMiddleware(config.apiToken),
+			reportsRouter,
+		);
+	} else {
+		app.use("/api/reports", (_req, res) => {
+			res.status(503).json({
+				error: "reports API requires TEAMLEAD_API_TOKEN",
+			});
+		});
 	}
 
 	// Catch-all 404 (must be after all routes)
