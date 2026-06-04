@@ -3,11 +3,14 @@ import { STUCK_THRESHOLD_MS } from "../bridge/stuck-candidate.js";
 import {
 	type CaptureOutcome,
 	defaultHasPendingReviewSignal,
+	dispositionSuppresses,
+	LEAD_GRACE_MS,
 	type StuckEscalationPayload,
 	StuckRunnerDetector,
 	type StuckRunnerDetectorDeps,
+	type StuckUnhandledPayload,
 } from "../bridge/stuck-runner-detector.js";
-import type { Session } from "../StateStore.js";
+import type { Session, StuckDispositionRow } from "../StateStore.js";
 
 const T0 = 1_000_000_000_000;
 
@@ -234,5 +237,296 @@ describe("StuckRunnerDetector — episode lifecycle", () => {
 		h.clock.now = T0 + STUCK_THRESHOLD_MS * 2;
 		await h.detector.checkSession(session());
 		expect(failingEmit).toHaveBeenCalledTimes(2);
+	});
+
+	it("retries emit when emit resolves false (e.g. no owning Lead)", async () => {
+		const emit = vi.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+		const h = harness({ emit });
+		h.setOutput("stuck silent");
+		await stagnate(h);
+		expect(emit).toHaveBeenCalledTimes(1);
+		expect(h.detector.episodeFor("exec-1")?.escalated).toBe(false);
+		h.clock.now = T0 + STUCK_THRESHOLD_MS * 2;
+		await h.detector.checkSession(session());
+		expect(emit).toHaveBeenCalledTimes(2);
+		expect(h.detector.episodeFor("exec-1")?.escalatedAt).toBe(
+			T0 + STUCK_THRESHOLD_MS * 2,
+		);
+	});
+
+	it("uses a precaptured outcome without calling its own capture dep", async () => {
+		const captureSpy = vi.fn(async (): Promise<CaptureOutcome> => {
+			throw new Error("must not be called");
+		});
+		const h = harness({ capture: captureSpy });
+		h.clock.now = T0;
+		await h.detector.checkSession(session(), { ok: true, output: "frozen" });
+		h.clock.now = T0 + STUCK_THRESHOLD_MS;
+		await h.detector.checkSession(session(), { ok: true, output: "frozen" });
+		expect(captureSpy).not.toHaveBeenCalled();
+		expect(h.emit).toHaveBeenCalledTimes(1);
+	});
+
+	it("precaptured { ok:false } fails closed (skip, keep clock)", async () => {
+		const h = harness();
+		h.clock.now = T0;
+		await h.detector.checkSession(session(), { ok: true, output: "frozen" });
+		h.clock.now = T0 + STUCK_THRESHOLD_MS;
+		const r = await h.detector.checkSession(session(), {
+			ok: false,
+			error: "infra error",
+		});
+		expect(r).toBeNull();
+		expect(h.emit).not.toHaveBeenCalled();
+		expect(h.detector.episodeFor("exec-1")?.firstStagnantAt).toBe(T0);
+	});
+});
+
+// ── FLY-195 plan §3.4: disposition consult on the escalation path ──
+
+function dispositionRow(
+	over: Partial<StuckDispositionRow> = {},
+): StuckDispositionRow {
+	return {
+		execution_id: "exec-1",
+		episode_fingerprint: "x",
+		disposition: "false_positive",
+		snooze_until_ms: null,
+		noted_by: "product-lead",
+		note: null,
+		created_at: "2026-06-03",
+		...over,
+	};
+}
+
+describe("dispositionSuppresses", () => {
+	it("suppresses on any non-snooze disposition", () => {
+		for (const d of [
+			"handled_remanaged",
+			"false_positive",
+			"legitimate_wait",
+			"needs_founder",
+		] as const) {
+			expect(
+				dispositionSuppresses(dispositionRow({ disposition: d }), T0),
+			).toBe(true);
+		}
+	});
+
+	it("snooze suppresses only until expiry; missing ts never suppresses", () => {
+		const snooze = dispositionRow({
+			disposition: "snooze",
+			snooze_until_ms: T0 + 1,
+		});
+		expect(dispositionSuppresses(snooze, T0)).toBe(true);
+		expect(dispositionSuppresses(snooze, T0 + 1)).toBe(false);
+		expect(
+			dispositionSuppresses(
+				dispositionRow({ disposition: "snooze", snooze_until_ms: null }),
+				T0,
+			),
+		).toBe(false);
+	});
+
+	it("no row never suppresses", () => {
+		expect(dispositionSuppresses(undefined, T0)).toBe(false);
+	});
+});
+
+describe("StuckRunnerDetector — disposition on escalation (Bridge-restart rebuild)", () => {
+	it("does NOT re-page the Lead for an episode already judged (persisted disposition)", async () => {
+		const h = harness({
+			getDisposition: () => dispositionRow({ disposition: "false_positive" }),
+		});
+		h.setOutput("stuck silent");
+		await stagnate(h);
+		expect(h.emit).not.toHaveBeenCalled();
+		const ep = h.detector.episodeFor("exec-1");
+		expect(ep?.escalated).toBe(true);
+		expect(ep?.annieAlerted).toBe(true);
+	});
+
+	it("an EXPIRED snooze does not suppress — Lead is re-paged", async () => {
+		const h = harness({
+			getDisposition: () =>
+				dispositionRow({ disposition: "snooze", snooze_until_ms: T0 - 1 }),
+		});
+		h.setOutput("stuck silent");
+		await stagnate(h);
+		expect(h.emit).toHaveBeenCalledTimes(1);
+	});
+
+	it("disposition read error on escalation path → emit anyway (over-page, never drop)", async () => {
+		const h = harness({
+			getDisposition: () => {
+				throw new Error("db hiccup");
+			},
+		});
+		h.setOutput("stuck silent");
+		await stagnate(h);
+		expect(h.emit).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ── FLY-195 plan §3.6: Q7 fallback (runner_stuck_unhandled) ──
+
+interface Q7Harness extends Harness {
+	alerts: StuckUnhandledPayload[];
+	alertUnhandled: ReturnType<typeof vi.fn>;
+	setDisposition: (row: StuckDispositionRow | undefined) => void;
+}
+
+function q7harness(over: Partial<StuckRunnerDetectorDeps> = {}): Q7Harness {
+	let row: StuckDispositionRow | undefined;
+	const alerts: StuckUnhandledPayload[] = [];
+	const alertUnhandled = vi.fn(async (p: StuckUnhandledPayload) => {
+		alerts.push(p);
+		return true;
+	});
+	const h = harness({
+		getDisposition: () => row,
+		alertUnhandled,
+		...over,
+	}) as Q7Harness;
+	h.alerts = alerts;
+	h.alertUnhandled = alertUnhandled;
+	h.setDisposition = (r) => {
+		row = r;
+	};
+	return h;
+}
+
+/** Stagnate → escalate at T0+threshold, then advance past the grace window. */
+async function escalateAndPassGrace(h: Q7Harness): Promise<void> {
+	h.setOutput("stuck silent");
+	await stagnate(h); // escalates at T0 + STUCK_THRESHOLD_MS
+	h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS;
+	await h.detector.checkSession(session());
+}
+
+describe("StuckRunnerDetector — Q7 fallback (unhandled → Annie)", () => {
+	it("no disposition past grace → alerts Annie exactly once", async () => {
+		const h = q7harness();
+		await escalateAndPassGrace(h);
+		expect(h.alertUnhandled).toHaveBeenCalledTimes(1);
+		const p = h.alerts[0]!;
+		expect(p.session.execution_id).toBe("exec-1");
+		expect(p.escalatedAt).toBe(T0 + STUCK_THRESHOLD_MS);
+		expect(p.stuckMinutes).toBeGreaterThanOrEqual(10);
+		// further polls: same episode, no re-alert
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS * 3;
+		await h.detector.checkSession(session());
+		expect(h.alertUnhandled).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not alert before the grace window elapses", async () => {
+		const h = q7harness();
+		h.setOutput("stuck silent");
+		await stagnate(h);
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS - 1;
+		await h.detector.checkSession(session());
+		expect(h.alertUnhandled).not.toHaveBeenCalled();
+	});
+
+	it("a disposition arriving during grace suppresses the Annie alert (re-read at claim time, Codex R2 LOW-R2-2)", async () => {
+		const h = q7harness();
+		h.setOutput("stuck silent");
+		await stagnate(h);
+		// Lead writes the receipt AFTER the escalation, BEFORE grace expiry.
+		h.setDisposition(dispositionRow({ disposition: "legitimate_wait" }));
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS;
+		await h.detector.checkSession(session());
+		expect(h.alertUnhandled).not.toHaveBeenCalled();
+		expect(h.detector.episodeFor("exec-1")?.annieAlerted).toBe(true);
+	});
+
+	it("an unexpired snooze suppresses; after expiry (still stuck) Annie is alerted", async () => {
+		const h = q7harness();
+		h.setOutput("stuck silent");
+		await stagnate(h);
+		const expiry = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS * 2;
+		h.setDisposition(
+			dispositionRow({ disposition: "snooze", snooze_until_ms: expiry }),
+		);
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS;
+		await h.detector.checkSession(session());
+		expect(h.alertUnhandled).not.toHaveBeenCalled();
+		// Snooze expired, episode still frozen → page Annie.
+		h.clock.now = expiry + 1;
+		await h.detector.checkSession(session());
+		expect(h.alertUnhandled).toHaveBeenCalledTimes(1);
+	});
+
+	it("alert failure (throw) retries on the next poll", async () => {
+		const failing = vi
+			.fn()
+			.mockRejectedValueOnce(new Error("discord down"))
+			.mockResolvedValue(true);
+		const h = q7harness({ alertUnhandled: failing });
+		await escalateAndPassGrace(h);
+		expect(failing).toHaveBeenCalledTimes(1);
+		expect(h.detector.episodeFor("exec-1")?.annieAlerted).toBeFalsy();
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS + 30_000;
+		await h.detector.checkSession(session());
+		expect(failing).toHaveBeenCalledTimes(2);
+		expect(h.detector.episodeFor("exec-1")?.annieAlerted).toBe(true);
+	});
+
+	it("alert resolving false retries on the next poll", async () => {
+		const declining = vi
+			.fn()
+			.mockResolvedValueOnce(false)
+			.mockResolvedValue(true);
+		const h = q7harness({ alertUnhandled: declining });
+		await escalateAndPassGrace(h);
+		expect(declining).toHaveBeenCalledTimes(1);
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS + 30_000;
+		await h.detector.checkSession(session());
+		expect(declining).toHaveBeenCalledTimes(2);
+	});
+
+	it("disposition re-read error defers (neither pages nor terminally suppresses)", async () => {
+		let shouldThrow = false;
+		const h = q7harness({
+			getDisposition: () => {
+				if (shouldThrow) throw new Error("db hiccup");
+				return undefined;
+			},
+		});
+		h.setOutput("stuck silent");
+		await stagnate(h);
+		shouldThrow = true;
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS;
+		await h.detector.checkSession(session());
+		expect(h.alertUnhandled).not.toHaveBeenCalled();
+		expect(h.detector.episodeFor("exec-1")?.annieAlerted).toBeFalsy();
+		// Read recovers → alert goes out.
+		shouldThrow = false;
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS + 30_000;
+		await h.detector.checkSession(session());
+		expect(h.alertUnhandled).toHaveBeenCalledTimes(1);
+	});
+
+	it("output changing after escalation clears the episode — no Annie alert", async () => {
+		const h = q7harness();
+		h.setOutput("stuck silent");
+		await stagnate(h);
+		h.setOutput("runner resumed!");
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS;
+		await h.detector.checkSession(session());
+		expect(h.alertUnhandled).not.toHaveBeenCalled();
+		// fresh episode (not escalated)
+		expect(h.detector.episodeFor("exec-1")?.escalated).toBe(false);
+	});
+
+	it("grace window does not start while the escalation emit is still failing", async () => {
+		const emit = vi.fn().mockResolvedValue(false);
+		const h = q7harness({ emit });
+		h.setOutput("stuck silent");
+		await stagnate(h);
+		// emit never persisted → escalatedAt unset → no Q7 alert even far past grace.
+		h.clock.now = T0 + STUCK_THRESHOLD_MS + LEAD_GRACE_MS * 5;
+		await h.detector.checkSession(session());
+		expect(h.alertUnhandled).not.toHaveBeenCalled();
 	});
 });

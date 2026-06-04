@@ -82,6 +82,19 @@ export interface StuckEpisodeState {
 	firstStagnantAt: number;
 	/** Whether a stuck escalation has already been emitted for this episode. */
 	escalated: boolean;
+	/**
+	 * Wall-clock (ms) when the escalation was emitted (or suppressed because a
+	 * persisted disposition already judged this episode). Anchors the Q7
+	 * fallback grace window (plan §3.6). Set by the detector layer, preserved
+	 * here while the episode continues.
+	 */
+	escalatedAt?: number;
+	/**
+	 * True once the Q7 fallback has resolved for this episode — either Annie
+	 * was alerted (runner_stuck_unhandled) or a Lead disposition terminally
+	 * suppressed the alert. One Annie alert per episode (Codex R1 MEDIUM-5).
+	 */
+	annieAlerted?: boolean;
 }
 
 export interface StuckCandidateInput {
@@ -143,22 +156,38 @@ export function detectStreamErrorSignature(output: string): boolean {
 }
 
 /**
- * Best-effort detection of Claude Code's interactive input box at the bottom.
+ * Detection of Claude Code's interactive input box at the bottom of a pane.
  *
- * EVIDENCE ONLY. The box renders with box-drawing borders and a `>` prompt; the
- * exact glyphs are version-dependent, so this is a placeholder.
- * TODO(FLY-195 spike §5): pin against a real captured idle frame before relying
- * on this for anything beyond an evidence hint.
+ * Pinned against the REAL committed pane fixtures from FLY-193
+ * (`packages/teamlead/src/__tests__/fixtures/lead-panes/`) — actual production
+ * captures of the Claude Code TUI (FLY-169 lesson: never trust an assumed
+ * rendering). The current TUI renders:
+ *
+ *     ───────────────...──────── @agent ──     ← box-top rule
+ *     ❯                                         ← prompt (U+276F)
+ *     ──────────────────...──────────────       ← box-bottom rule
+ *     Opus 4.8/xhigh | ⚡agent | ... | ctx 11%  ← status bar
+ *     ⏵⏵ bypass permissions on (shift+tab ...)
+ *
+ * Older TUI versions boxed the prompt as `│ > │` inside `╭─╮/╰─╯` corners —
+ * both renderings are accepted. The prompt sits ABOVE the multi-line status
+ * bar, so the scan window is the last 10 non-empty lines (a 4-line window
+ * misses it — caught by the real fixtures).
+ *
+ * Used as EVIDENCE in the escalation payload AND as one of the hard gates of
+ * the restricted recovery-nudge endpoint (plan §3.5): a nudge is only sent
+ * into a frame that visibly shows an idle input box.
  */
 export function detectInputBoxPresent(output: string): boolean {
 	const tail = output
 		.split("\n")
 		.filter((l) => l.trim().length > 0)
-		.slice(-4);
-	// Claude prompt line inside the box, e.g. "│ > " (with or without text).
-	const promptLine = /[│|]\s*>\s/;
-	// Box border drawn with rounded/heavy corners.
-	const boxBorder = /[╭╰─╯╮]{3,}/;
+		.slice(-10);
+	// Prompt line: current TUI `❯` at line start, or legacy boxed `│ > `,
+	// or a bare `> ` prompt. With or without typed text after it.
+	const promptLine = /^\s*(❯|>\s|[│|]\s*>\s?)/;
+	// Box rule: a long run of `─` (current TUI) or rounded corners (legacy).
+	const boxBorder = /(─{8,}|[╭╰╮╯]─*)/;
 	const hasPrompt = tail.some((l) => promptLine.test(l));
 	const hasBorder = tail.some((l) => boxBorder.test(l));
 	return hasPrompt && hasBorder;
@@ -233,12 +262,9 @@ export function evaluateStuckCandidate(
 		};
 	}
 
-	// Same output as last poll: episode continues.
-	const episode: StuckEpisodeState = {
-		fingerprint: fp,
-		firstStagnantAt: input.prior!.firstStagnantAt,
-		escalated: input.prior!.escalated,
-	};
+	// Same output as last poll: episode continues. Spread preserves the
+	// detector-layer fields (escalatedAt / annieAlerted) across polls.
+	const episode: StuckEpisodeState = { ...input.prior! };
 	const stagnantMs = input.now - episode.firstStagnantAt;
 
 	if (stagnantMs < thresholdMs) {

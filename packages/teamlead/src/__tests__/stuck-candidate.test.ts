@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
 	detectInputBoxPresent,
@@ -85,8 +87,8 @@ describe("detectStreamErrorSignature (strict)", () => {
 	});
 });
 
-describe("detectInputBoxPresent (evidence, best-effort)", () => {
-	it("detects a Claude input box at the bottom", () => {
+describe("detectInputBoxPresent (pinned against real pane fixtures)", () => {
+	it("detects a legacy boxed Claude input box at the bottom", () => {
 		const out = "some work\n╭───────────────╮\n│ > │\n╰───────────────╯";
 		expect(detectInputBoxPresent(out)).toBe(true);
 	});
@@ -94,6 +96,31 @@ describe("detectInputBoxPresent (evidence, best-effort)", () => {
 		expect(detectInputBoxPresent("⎿ Running tests...\n  PASS 12/12")).toBe(
 			false,
 		);
+	});
+
+	// FLY-169 lesson: never trust an assumed TUI rendering — pin against the
+	// REAL committed pane captures from FLY-193 (same Claude Code TUI that
+	// Runners render). The prompt sits ABOVE a 3-line status bar, which is
+	// exactly what a too-small scan window misses.
+	const fixturesDir = join(__dirname, "fixtures", "lead-panes");
+	for (const fixture of [
+		"idle-cos-lead.txt",
+		"idle-ops-lead.txt",
+		"idle-product-lead.txt",
+		"idle-product-lead-ctx100.txt",
+	]) {
+		it(`detects the idle input box in real capture ${fixture}`, () => {
+			const pane = readFileSync(join(fixturesDir, fixture), "utf8");
+			expect(detectInputBoxPresent(pane)).toBe(true);
+		});
+	}
+
+	it("is false for the real resume-menu freeze capture (no idle input box)", () => {
+		const pane = readFileSync(
+			join(fixturesDir, "freeze-resume-menu.txt"),
+			"utf8",
+		);
+		expect(detectInputBoxPresent(pane)).toBe(false);
 	});
 });
 

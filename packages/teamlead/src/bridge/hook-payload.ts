@@ -16,6 +16,18 @@ export interface HookPayload {
 	issue_labels?: string[];
 	// stuck-specific
 	minutes_since_activity?: number;
+	// FLY-195: runner_stuck_escalation evidence fields (plan §3.1/§3.2).
+	// Evidence ONLY — the Lead judges; none of these are act-triggers.
+	/** Whole minutes the runner's terminal output has been unchanged. */
+	stuck_minutes?: number;
+	/** Stable fingerprint of this stuck episode — echo it back when writing a disposition or nudging. */
+	episode_fingerprint?: string;
+	/** Trailing non-empty terminal lines (helps the Lead judge fast). */
+	terminal_tail?: string;
+	/** Canonical `API Error: ... Stream idle timeout` signature seen in the tail. */
+	stream_error_signature?: boolean;
+	/** Claude interactive input box visible at the bottom (idle-at-prompt). */
+	input_box_present?: boolean;
 	// action-specific fields (GEO-167)
 	action?: string;
 	action_source_status?: string;

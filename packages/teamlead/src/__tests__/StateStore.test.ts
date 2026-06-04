@@ -792,3 +792,98 @@ describe("StateStore", () => {
 		expect(s!.stage_updated_at).toBeUndefined();
 	});
 });
+
+// ── FLY-195: stuck-episode disposition receipts (plan §3.4) ──
+describe("StateStore — stuck dispositions (FLY-195)", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("returns undefined when no disposition exists", () => {
+		expect(
+			store.getStuckDisposition("exec-1", "aaaaaaaaaaaaaaaa"),
+		).toBeUndefined();
+	});
+
+	it("writes and reads back a disposition", () => {
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: "aaaaaaaaaaaaaaaa",
+			disposition: "false_positive",
+			noted_by: "product-lead",
+			note: "runner was mid long build",
+		});
+		const row = store.getStuckDisposition("exec-1", "aaaaaaaaaaaaaaaa");
+		expect(row).toBeDefined();
+		expect(row!.disposition).toBe("false_positive");
+		expect(row!.noted_by).toBe("product-lead");
+		expect(row!.snooze_until_ms).toBeNull();
+	});
+
+	it("is keyed per (execution, fingerprint) — other episodes unaffected", () => {
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: "aaaaaaaaaaaaaaaa",
+			disposition: "legitimate_wait",
+		});
+		expect(
+			store.getStuckDisposition("exec-1", "bbbbbbbbbbbbbbbb"),
+		).toBeUndefined();
+		expect(
+			store.getStuckDisposition("exec-2", "aaaaaaaaaaaaaaaa"),
+		).toBeUndefined();
+	});
+
+	it("upserts: a later write replaces the disposition (snooze → false_positive)", () => {
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: "aaaaaaaaaaaaaaaa",
+			disposition: "snooze",
+			snooze_until_ms: 1_000_000,
+		});
+		expect(
+			store.getStuckDisposition("exec-1", "aaaaaaaaaaaaaaaa")!.snooze_until_ms,
+		).toBe(1_000_000);
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: "aaaaaaaaaaaaaaaa",
+			disposition: "false_positive",
+		});
+		const row = store.getStuckDisposition("exec-1", "aaaaaaaaaaaaaaaa");
+		expect(row!.disposition).toBe("false_positive");
+		expect(row!.snooze_until_ms).toBeNull();
+	});
+
+	it("rejects an invalid disposition value", () => {
+		expect(() =>
+			store.setStuckDisposition({
+				execution_id: "exec-1",
+				episode_fingerprint: "aaaaaaaaaaaaaaaa",
+				// @ts-expect-error invalid on purpose
+				disposition: "approve_everything",
+			}),
+		).toThrow(/Invalid stuck disposition/);
+	});
+
+	it("survives a save/reload cycle (durable for Q7 re-read)", async () => {
+		const { mkdtempSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join: joinPath } = await import("node:path");
+		const dir = mkdtempSync(joinPath(tmpdir(), "fly195-"));
+		const dbPath = joinPath(dir, "state.db");
+		const s1 = await StateStore.create(dbPath);
+		s1.setStuckDisposition({
+			execution_id: "exec-9",
+			episode_fingerprint: "cccccccccccccccc",
+			disposition: "needs_founder",
+			noted_by: "ops-lead",
+		});
+		s1.close();
+		const s2 = await StateStore.create(dbPath);
+		const row = s2.getStuckDisposition("exec-9", "cccccccccccccccc");
+		expect(row?.disposition).toBe("needs_founder");
+		s2.close();
+	});
+});
