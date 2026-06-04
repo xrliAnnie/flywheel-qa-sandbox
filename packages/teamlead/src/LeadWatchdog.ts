@@ -78,10 +78,12 @@ export interface LeadWatchdogConfig {
 	claimsReaderMatchAll?: boolean;
 	logger?: (msg: string) => void;
 	/**
-	 * FLY-182 B3: when true, suppress `pane_hash_stuck` for panes that look
-	 * alive-but-idle (see `isIdleHealthyPane`). Default OFF — only enable after
-	 * the recognizer is validated against real idle/busy/blocked/frozen Lead
-	 * pane fixtures (FLY-169 lesson: mocks encode wrong TUI assumptions).
+	 * FLY-182 B3 / FLY-193: when true, suppress `pane_hash_stuck` for panes that
+	 * look alive-but-idle (see `isIdleHealthyPane`). The recognizer is now
+	 * validated against committed real Lead pane fixtures
+	 * (`__tests__/fixtures/lead-panes/`) so the Bridge wires this ON by default
+	 * (override `FLYWHEEL_PANE_IDLE_SUPPRESS=0` to force off). Left optional here
+	 * (undefined → falsy) so unit tests opt in explicitly.
 	 */
 	suppressIdleHealthy?: boolean;
 }
@@ -415,48 +417,117 @@ function classify(pane: string): AlertEventType {
 	return "pane_hash_stuck";
 }
 
-/** Markers that the Claude Code TUI is actively WORKING (must NOT suppress). */
+/**
+ * LIVE "operation in flight" markers — operations whose indicator is removed the
+ * moment they finish, so a static pane that still shows one is genuinely frozen
+ * mid-operation (→ must alert):
+ *  - `esc to interrupt` / `esc to cancel`: the interrupt hint during generation.
+ *  - `Compacting conversation`: the auto-compact progress overlay (verified to
+ *    disappear once compaction completes — a Lead at ctx 100% mid-compact).
+ *
+ * Deliberately NOT included: the spinner glyph + elapsed-timer line
+ * (`✢ … (11m 3s · almost done thinking)`) and the old bare-word markers
+ * (`thinking` / `working` / token counter). Those **linger** in the transcript
+ * after an extended-thinking turn completes, and the Lead's own scrollback
+ * chatter ("runners are now working", "15,540 tokens used") trips them — that
+ * over-match is exactly what defeated suppression for product-lead (FLY-193).
+ *
+ * KNOWN LIMITATION: a Lead genuinely hung mid-EXTENDED-THINKING (a frozen
+ * `… almost done thinking` line with no interrupt hint) is indistinguishable
+ * from idle-after-extended-thinking by a single static capture, so it is
+ * suppressed (favouring no-spam). Such hangs are rare; the Lead remains
+ * observable via tmux. An interrupt/cancel hint or a frozen compact still alert.
+ */
 const WORKING_MARKERS: RegExp[] = [
 	/esc to interrupt/i,
-	/\bthinking\b/i,
-	/\bworking\b/i,
-	/tokens?\b.*\b(?:used|remaining)/i,
-	/\besc\b.*\bcancel\b/i,
+	/\besc\b[^\n]*\bto cancel\b/i,
+	/compacting conversation/i,
 ];
 
-/** High-confidence markers of an idle, ready-for-input Claude Code TUI. */
+/**
+ * High-confidence markers of an idle, ready-for-input Claude Code TUI. The first
+ * three are the empty-input-box hints; the last two are the persistent status
+ * bar (model + permissions + context gauge) which is the most reliable anchor —
+ * it survives even when `shift+tab to cycle` is replaced by `N shell` for a Lead
+ * with a background shell running.
+ */
 const IDLE_READY_MARKERS: RegExp[] = [
 	/\?\s*for shortcuts/i,
 	/shift\+tab to cycle/i,
 	/\btry "/i, // the placeholder hint shown in an empty idle input box
+	/⏵⏵\s+bypass permissions/i, // status-bar permissions indicator
+	/\bctx\s+\d+%/i, // status-bar context gauge
 ];
 
 /**
- * FLY-182 B3 — recognize an alive-but-IDLE Claude Code Lead pane.
+ * The top border of the input box, rendered as a long horizontal rule ending in
+ * the agent handle: `──…── @product-lead ──`. Used to locate the live render
+ * region (input box + status bar) at the bottom of the pane.
+ */
+const INPUT_BOX_TOP = /─{6,}[^\n]*@[\w-]+\s+─/u;
+
+/**
+ * FLY-193: extract the LIVE render region of a pane — the input box and status
+ * bar at the bottom, plus a few lines above to catch a spinner that is actively
+ * rendering (or frozen) immediately above the box.
+ *
+ * Why: `LeadWatchdog` captures 200 lines of scrollback (`capture-pane -S -200`).
+ * Scanning the whole capture for working/idle markers gets poisoned by STALE
+ * lines — a Lead that printed "…thinking…" or "…working…" 50 lines ago and is
+ * now idle would never be recognized as idle (false positive persists). The live
+ * TUI render is always the LAST thing in the pane, so we anchor to it.
+ */
+function liveRegion(pane: string): string {
+	const lines = pane.replace(/\r/g, "").split("\n");
+	let boxIdx = -1;
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (INPUT_BOX_TOP.test(lines[i]!)) {
+			boxIdx = i;
+			break;
+		}
+	}
+	// 4 lines above the box top captures a spinner rendering just above the
+	// input box; if no box border is found (e.g. a startup resume/compact menu
+	// that has not rendered the normal TUI), fall back to the last 12 lines.
+	const start =
+		boxIdx >= 0 ? Math.max(0, boxIdx - 4) : Math.max(0, lines.length - 12);
+	return lines.slice(start).join("\n");
+}
+
+/**
+ * FLY-182 B3 / FLY-193 — recognize an alive-but-IDLE Claude Code Lead pane.
  *
  * NARROW allowlist, defaults to `false` on any uncertainty (fail-open to
  * alerting — a missed-suppression merely keeps a false positive, while a wrong
- * suppression would hide a real freeze). Returns `true` ONLY when:
+ * suppression would hide a real freeze). Evaluated against the LIVE render
+ * region (see `liveRegion`), NOT the whole 200-line scrollback. Returns `true`
+ * ONLY when, in that region:
  *  - no blocked-prompt keyword (rate_limit / usage_limit / login / permission),
- *  - no "actively working" marker (spinner / esc-to-interrupt / token counter),
- *  - AND a high-confidence ready-for-input marker is present.
+ *  - no live "operation in flight" marker (esc-to-interrupt/cancel, or an
+ *    in-progress compact), and
+ *  - a high-confidence ready-for-input marker is present.
  *
- * NOTE: the exact marker set MUST be validated against real idle/busy/blocked/
- * frozen Lead pane captures (QA, test slot) before enabling suppression in
- * production (`suppressIdleHealthy`). The structure is the contract; the regexes
- * are a conservative first pass.
+ * Real-freeze safety: a startup resume/compact menu has no idle marker (and the
+ * compact prompt carries "esc to cancel"), so it returns `false` → still alerts;
+ * a frozen auto-compact still shows "Compacting conversation" → still alerts.
+ * Validated against committed real fixtures in
+ * `__tests__/fixtures/lead-panes/` (real idle Leads incl. a ctx-100% capture
+ * must-suppress; the documented resume menu, compact prompt, and a frozen
+ * compact must-NOT-suppress).
  */
 export function isIdleHealthyPane(pane: string): boolean {
 	if (!pane) return false;
-	const lower = pane.toLowerCase();
-	// Any known blocked pattern → NOT idle-healthy (let it alert as classified).
+	const region = liveRegion(pane);
+	const lower = region.toLowerCase();
+	// Any known blocked pattern in the live region → NOT idle-healthy.
 	for (const { tokens } of BLOCKED_KEYWORDS) {
 		if (tokens.some((t) => t.test(lower))) return false;
 	}
-	// Actively working → NOT idle (and a frozen working pane IS a real stuck).
-	if (WORKING_MARKERS.some((t) => t.test(pane))) return false;
-	// Require a high-confidence idle-ready marker.
-	return IDLE_READY_MARKERS.some((t) => t.test(pane));
+	// A live operation in flight (or frozen mid-operation) → NOT idle. A frozen
+	// working pane IS a real stuck condition we must keep alerting on.
+	if (WORKING_MARKERS.some((t) => t.test(region))) return false;
+	// Require a high-confidence idle-ready marker in the live region.
+	return IDLE_READY_MARKERS.some((t) => t.test(region));
 }
 
 function titleFor(kind: AlertEventType): string {

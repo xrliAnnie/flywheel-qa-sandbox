@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AlertPayload } from "../LeadAlertNotifier.js";
 import {
@@ -7,6 +10,14 @@ import {
 } from "../LeadWatchdog.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
+
+const FIXTURES_DIR = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"fixtures",
+	"lead-panes",
+);
+const loadFixture = (name: string): string =>
+	readFileSync(join(FIXTURES_DIR, name), "utf-8");
 
 const singleLeadProjects: ProjectEntry[] = [
 	{
@@ -614,5 +625,95 @@ describe("isIdleHealthyPane (FLY-182 B3 recognizer)", () => {
 	it("returns false on uncertainty (no idle marker) — fail-open to alerting", () => {
 		expect(isIdleHealthyPane("")).toBe(false);
 		expect(isIdleHealthyPane("some random frozen output")).toBe(false);
+	});
+});
+
+describe("isIdleHealthyPane — real Lead pane fixtures (FLY-193)", () => {
+	// must-SUPPRESS: real captures of healthy, idle Leads (2026-06-02, the
+	// production GeoForge3D cos/ops/product Leads). `idle-product-lead-ctx100.txt`
+	// is the ctx-100% idle pane from the production incident — proof that a full
+	// context window does NOT by itself defeat the recognizer (the leak was stale
+	// scrollback, not the `ctx 100%` line).
+	it.each([
+		["idle-cos-lead.txt"],
+		["idle-ops-lead.txt"],
+		["idle-product-lead.txt"],
+		["idle-product-lead-ctx100.txt"],
+	])("suppresses a real healthy-idle Lead pane: %s", (fixture) => {
+		expect(isIdleHealthyPane(loadFixture(fixture))).toBe(true);
+	});
+
+	// must-NOT-SUPPRESS: genuine freezes / stuck operations. The resume menu is
+	// the exact text from the documented production freeze ("Resume from
+	// summary?"); the compact PROMPT is the context-limit gate ("esc to cancel");
+	// `freeze-compacting.txt` is a real auto-compact in progress (a frozen one is
+	// a genuine stuck operation). Suppressing any would HIDE a real problem.
+	it.each([
+		["freeze-resume-menu.txt"],
+		["freeze-compact-prompt.txt"],
+		["freeze-compacting.txt"],
+	])(
+		"does NOT suppress a real freeze / stuck op — still alerts: %s",
+		(fixture) => {
+			expect(isIdleHealthyPane(loadFixture(fixture))).toBe(false);
+		},
+	);
+
+	it("ignores STALE working-markers in scrollback — only the live region counts", () => {
+		const pane = loadFixture("idle-product-lead.txt");
+		// Guard: the fixture genuinely contains the whole-page-scan trap (stale
+		// "working"/"thinking"/"tokens used" chatter in history above the box).
+		// If a future re-capture loses it, this assertion flags that the fixture
+		// no longer exercises the regression.
+		expect(/\bworking\b|\bthinking\b|tokens?\b.*\bused\b/i.test(pane)).toBe(
+			true,
+		);
+		// …yet the live render region is a clean idle prompt → suppressed.
+		expect(isIdleHealthyPane(pane)).toBe(true);
+	});
+});
+
+describe("LeadWatchdog — suppression wired through tickLead on real fixtures (FLY-193)", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	const makeWatchdog = (fixture: string, notifier: NotifierStub) =>
+		new LeadWatchdog({
+			pollIntervalMs: 30_000,
+			paneHashStuckCycles: 2,
+			paneHashAlertCycles: 3,
+			cooldownMs: 300_000,
+			projects,
+			store,
+			notifier: notifier.alert,
+			locateWindowFn: async () => ({
+				windowId: "@7",
+				windowName: "geoforge3d-cos-lead",
+			}),
+			captureFn: async () => loadFixture(fixture),
+			claimsReader: async () => new Set(),
+			blockedMarkerReader: async () => [],
+			now: () => 0,
+			suppressIdleHealthy: true,
+		});
+
+	it("does NOT alert across many cycles on a real idle Lead pane", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("idle-product-lead.txt", notifier);
+		for (let i = 0; i < 5; i++) await wd.pollOnce();
+		expect(notifier.alert).not.toHaveBeenCalled();
+		expect(wd.getState("cos-lead")).toBe("Healthy");
+	});
+
+	it("STILL alerts on a real resume-menu freeze even with suppression ON", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("freeze-resume-menu.txt", notifier);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
 	});
 });

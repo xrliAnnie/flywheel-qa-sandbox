@@ -1989,9 +1989,14 @@ export async function startBridge(
 		captureFn: leadPaneCaptureFn,
 		claimsReader,
 		blockedMarkerReader,
-		// FLY-182 B3: default OFF until the idle-pane recognizer is validated
-		// against real Lead pane fixtures (set FLYWHEEL_PANE_IDLE_SUPPRESS=1).
-		suppressIdleHealthy: process.env.FLYWHEEL_PANE_IDLE_SUPPRESS === "1",
+		// FLY-193: default ON now that the idle-pane recognizer is validated
+		// against committed real Lead pane fixtures (see
+		// LeadWatchdog `__tests__/fixtures/lead-panes/`). The recognizer is
+		// fail-open (only suppresses a high-confidence alive-idle pane; every
+		// real freeze — resume/compact menu, frozen-mid-work — still alerts).
+		// Escape hatch: set FLYWHEEL_PANE_IDLE_SUPPRESS=0 to force suppression OFF
+		// and restore the legacy always-alert-on-stuck-pane behavior.
+		suppressIdleHealthy: process.env.FLYWHEEL_PANE_IDLE_SUPPRESS !== "0",
 	});
 	leadWatchdog.start();
 	console.log(
