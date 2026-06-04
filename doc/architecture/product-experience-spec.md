@@ -317,9 +317,13 @@ Onboard → Brainstorm(interactive) → Research → Plan → Design Review
 → Implement → Code Review → PR → [QA] → Annie Approve → Ship → Cleanup
 ```
 
-- **不可跳过任何阶段**
-- **不可在 Annie approve 前 merge PR**
-- **不可在整个 flow 完成前关闭**
+- **阶段取舍由 Lead 按 issue 难度判定**（FLY-205，启用 doc-flow 的项目；中等及以下必须在 Discord 知会 Annie，她可随时要求补回）：
+  - 复杂 issue：exploration / research / plan 三份齐全，缺一不可
+  - 中等 issue：可只写 plan（知会注明"中等，只写 plan"）
+  - 简单 issue：可零文档直接实现（知会注明"简单，跳过文档"）
+  - 档位只控制**文档产出**：brainstorm gate / approve gate / executor 硬性确认环节任何档位都不可跳
+- **不可在 Annie approve 前 merge PR**（不变，任何难度）
+- **不可在整个 flow 完成前关闭**（不变）
 - **整套 flow 是原子化的完整 workflow**
 
 ### 4.2 权限

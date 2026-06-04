@@ -27,6 +27,19 @@ export interface RetryRequest {
 	 * back to the stored session value otherwise.
 	 */
 	codexSkip?: boolean;
+	/**
+	 * FLY-205: doc tier carried over from the predecessor session row
+	 * (`session.doc_tier`). Retry must REUSE the original tier — a missing
+	 * value (pre-FLY-205 session) falls back to "full" downstream. Never let
+	 * a retry silently upgrade a plan_only/none run back to full docs.
+	 */
+	docTier?: "full" | "plan_only" | "none";
+	/**
+	 * FLY-205: Linear issue URL from the predecessor session row
+	 * (`session.issue_url`) — keeps the DOC-FLOW header identical between
+	 * start and retry prompts.
+	 */
+	issueUrl?: string;
 }
 
 export interface RetryResult {
@@ -77,6 +90,14 @@ export interface StartRequest {
 	 * without re-hitting Linear at every transition.
 	 */
 	codexSkip?: boolean;
+	/**
+	 * FLY-205: Lead-judged doc tier (validated at the runs-route boundary via
+	 * `parseDocTier`). Undefined → effective "full" downstream. Persisted on
+	 * the session row (effective value) so retry reuses it.
+	 */
+	docTier?: "full" | "plan_only" | "none";
+	/** FLY-205: Linear issue URL from runs-route preflight (DOC-FLOW header). */
+	issueUrl?: string;
 }
 
 export interface StartResult {

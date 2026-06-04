@@ -745,6 +745,13 @@ _launch_claude() {
     -e "FLYWHEEL_COMM_CLI=${FLYWHEEL_COMM_CLI:-}"
     -e "PROJECT_NAME=${PROJECT_NAME}"
     -e "FLYWHEEL_PROJECT_NAME=${PROJECT_NAME}"
+    # FLY-205: project root path for the doc-flow Lead rule's config self-check
+    # (doc-flow-rules.md reads $FLYWHEEL_PROJECT_DIR/.flywheel/config.yaml).
+    # tmux `new-window -e` does not inherit launcher env, and LEAD_WORKSPACE
+    # isolation makes pwd useless — explicit pass is the ONLY reliable source
+    # (Codex design R3 #1). Missing env in the pane → rule fails safe to
+    # "doc-flow not enabled" (zero behavior change).
+    -e "FLYWHEEL_PROJECT_DIR=${PROJECT_DIR}"
     -e "BRIDGE_URL=${BRIDGE_URL:-}"
     -e "TEAMLEAD_API_TOKEN=${TEAMLEAD_API_TOKEN:-}"
     # FLY-162 Layer 2: tmux panes do NOT inherit launcher env (see note below),
@@ -1263,6 +1270,19 @@ if [ "$IS_COS_ROLE" = false ]; then
   if [ -f "$BASE_STUCK_REMANAGE_RULES" ] && [ -r "$BASE_STUCK_REMANAGE_RULES" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_STUCK_REMANAGE_RULES")
     log "Appending base stuck-runner-remanage rules: ${BASE_STUCK_REMANAGE_RULES}"
+  fi
+
+  # ── FLY-205: Doc-Flow tier judgment + founder notification (non-cos dept
+  # leads only). Judging the doc tier and passing `docTier` at spawn is
+  # spawn-only behavior — cos-lead (canSpawnRunners: false) must not load it
+  # (Codex design R1 #6). The rule text itself is conditional on the project
+  # enabling doc_flow in .flywheel/config.yaml (self-check via
+  # $FLYWHEEL_PROJECT_DIR); un-enabled projects see zero behavior change.
+  # Optional — missing base file is a no-op (backward compat).
+  BASE_DOC_FLOW_RULES="${BASE_RULES_DIR}/doc-flow-rules.md"
+  if [ -f "$BASE_DOC_FLOW_RULES" ] && [ -r "$BASE_DOC_FLOW_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DOC_FLOW_RULES")
+    log "Appending base doc-flow rules: ${BASE_DOC_FLOW_RULES}"
   fi
 else
   # Cos-lead base: Department Routing Discipline (one Lead per spawn message)

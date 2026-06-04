@@ -171,6 +171,9 @@ export class RetryDispatcher implements IRetryDispatcher {
 			agentName: req.agentName,
 			issueLabels: req.issueLabels,
 			owningDept: req.owningDept,
+			// FLY-205: predecessor's tier + URL — retry NEVER re-defaults the tier
+			docTier: req.docTier,
+			issueUrl: req.issueUrl,
 			// FLY-142 PR 1.4: Agent Team identity so Runner spawn flips
 			// claude-code into teammate mode and `useInboxPoller` reads
 			// MailboxLeadRuntime's writes. No-op on rollback path.
@@ -429,6 +432,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			agentName: req.agentName,
 			issueLabels: req.issueLabels,
 			owningDept: req.owningDept,
+			// FLY-205: doc-flow tier + issue URL (runs-route validates/persists)
+			docTier: req.docTier,
+			issueUrl: req.issueUrl,
 			// FLY-142 PR 1.4: same as start() path — wire Agent Team identity
 			// so Runner reads Lead's mailbox via stock useInboxPoller.
 			...buildAgentTeamIdentity(executionId, req.leadId),

@@ -181,6 +181,29 @@ export interface CheckpointConfig {
 /** Checkpoint configuration map — added to FlywheelConfig */
 export type CheckpointsConfig = Record<string, CheckpointConfig>;
 
+/**
+ * FLY-205: department-first doc-flow baseline configuration.
+ *
+ * When enabled, Runners receive a DOC-FLOW system-prompt block instructing
+ * them to produce process docs (exploration/research/plan) under
+ * `<department>/doc/<ISSUE-KEY>-<slug>/` according to the Lead-judged
+ * doc tier. Absent or `enabled: false` → feature fully off (byte-compatible
+ * spawn prompt).
+ */
+export interface DocFlowConfig {
+	enabled: boolean;
+	/**
+	 * Department directory name (e.g. "content", "product"). REQUIRED when
+	 * `enabled === true` (ConfigLoader enforces). Optional in the type because
+	 * a valid disabled config may omit it — consumers must runtime-narrow
+	 * inside their `enabled === true` branch (a required type here would let
+	 * TS consumers wrongly trust a value that disabled configs don't carry).
+	 * Used as the doc-path fallback whenever the issue's owning department
+	 * cannot be resolved to a concrete string.
+	 */
+	default_department?: string;
+}
+
 /** Reactions configuration (Phase 2+, interface reserved) */
 export interface ReactionsConfig {
 	"changes-requested"?: {
@@ -222,4 +245,6 @@ export interface FlywheelConfig {
 	default_agent?: string;
 	/** Checkpoint gates — human-in-the-loop confirmation points */
 	checkpoints?: CheckpointsConfig;
+	/** FLY-205: department-first doc-flow baseline. Absent = off. */
+	doc_flow?: DocFlowConfig;
 }

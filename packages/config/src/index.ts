@@ -23,6 +23,7 @@ export type {
 	CheckpointsConfig,
 	CIConfig,
 	DecisionLayerConfig,
+	DocFlowConfig,
 	FlywheelConfig,
 	OrchestratorConfig,
 	ParallelConfig,

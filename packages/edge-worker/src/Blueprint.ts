@@ -3,7 +3,11 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { CheckpointsConfig, SkillsConfig } from "flywheel-config";
+import type {
+	CheckpointsConfig,
+	DocFlowConfig,
+	SkillsConfig,
+} from "flywheel-config";
 import { DEFAULT_GATE_TIMEOUT_MS } from "flywheel-config";
 import type {
 	AdapterExecutionResult,
@@ -27,6 +31,43 @@ import type { GitResultChecker } from "./GitResultChecker.js";
 import type { HydratedContext, PreHydrator } from "./PreHydrator.js";
 import type { SkillInjector } from "./SkillInjector.js";
 import type { WorktreeInfo, WorktreeManager } from "./WorktreeManager.js";
+
+/**
+ * FLY-205: Lead-judged doc tier — controls DOCUMENT OUTPUT ONLY (checkpoint
+ * gates and executor hard gates apply at every tier).
+ *
+ * SINGLE SOURCE OF TRUTH for the enum (Codex R4 note): HTTP input validation
+ * (runs-route), StateStore persistence, retry reuse, and prompt assembly all
+ * import from here — no layer hand-rolls the value set.
+ */
+export const DOC_TIERS = ["full", "plan_only", "none"] as const;
+export type DocTier = (typeof DOC_TIERS)[number];
+
+/**
+ * FLY-205: parse an untrusted value into a DocTier.
+ * Returns undefined for anything that is not exactly one of DOC_TIERS —
+ * callers decide whether undefined means "reject" (HTTP boundary) or
+ * "fall back to full" (persisted-row read).
+ */
+export function parseDocTier(value: unknown): DocTier | undefined {
+	return DOC_TIERS.includes(value as DocTier) ? (value as DocTier) : undefined;
+}
+
+/**
+ * FLY-205: resolve the department directory segment for doc-flow paths.
+ * `owningDept` carries the literal `"multiple"` for the FLY-127 ambiguous
+ * case — that must NEVER become a directory name (Codex design R1 #1), so
+ * only a concrete non-"multiple" string wins; everything else falls back to
+ * the project's configured default department.
+ */
+export function resolveDocFlowDepartment(
+	owningDept: string | "multiple" | undefined,
+	defaultDepartment: string,
+): string {
+	return typeof owningDept === "string" && owningDept !== "multiple"
+		? owningDept
+		: defaultDepartment;
+}
 
 /** Result of a Blueprint execution */
 export interface BlueprintResult {
@@ -73,6 +114,13 @@ export interface BlueprintContext {
 	// FLY-24 — Pre-fetched issue metadata (overrides PreHydrator on conflict)
 	issueTitle?: string;
 	issueIdentifier?: string;
+	// FLY-205 — Linear issue URL from runs-route preflight (start) or session
+	// row (retry). Baked into the DOC-FLOW header line; absent → key-only
+	// degraded header.
+	issueUrl?: string;
+	// FLY-205 — Lead-judged doc tier. Defaults to "full" when omitted
+	// (fail-safe: no Lead signal → full docs, never silently fewer).
+	docTier?: DocTier;
 	// FLY-59 — Session role for multi-session-per-issue support
 	sessionRole?: string;
 	// FLY-116 — Per-runner Terminal viewer hook. Fired by TmuxAdapter
@@ -233,6 +281,13 @@ export class Blueprint {
 		// returns `agentFileRoot: "flywheel"`, agent content load logs a warning
 		// and the system prompt falls back to baseline (same as v1.27.0 behavior).
 		private flywheelRepoRoot?: string,
+		// FLY-205 — optional doc-flow config from project .flywheel/config.yaml.
+		// MUST stay the LAST constructor parameter (Codex design R2 #5: long
+		// positional constructor — inserting between checkpointConfig and
+		// flywheelRepoRoot would silently misalign existing call sites and
+		// break shipped-generic agent resolution). Absent/disabled → no
+		// DOC-FLOW prompt block (byte-compatible spawn prompt).
+		private docFlowConfig?: DocFlowConfig,
 	) {}
 
 	async run(
@@ -471,6 +526,77 @@ export class Blueprint {
 			path.dirname(__filename),
 			"../../flywheel-comm/dist/index.js",
 		);
+
+		// FLY-205: DOC-FLOW block — project doc conventions, injected ONLY when
+		// the project's .flywheel/config.yaml enables doc_flow. Unshifted BEFORE
+		// the onboard preamble unshift below, so the final order reads:
+		//   [onboard preamble] → [DOC-FLOW] → [6-step base flow].
+		// Controls DOCUMENT OUTPUT ONLY — checkpoint gates and executor hard
+		// gates apply at every tier (locked semantics, Codex design R1 #5).
+		// Disabled/absent config → zero lines added (byte-compatible prompt).
+		if (this.docFlowConfig?.enabled === true) {
+			const defaultDepartment = this.docFlowConfig.default_department;
+			if (!defaultDepartment) {
+				// ConfigLoader enforces presence when enabled; defensive fail-safe
+				// to byte-compat rather than injecting a broken path.
+				console.warn(
+					"[Blueprint] doc_flow.enabled is true but default_department is missing — skipping DOC-FLOW injection (run ConfigLoader validation on this project's config)",
+				);
+			} else {
+				const tier: DocTier = ctx.docTier ?? "full";
+				const dept = resolveDocFlowDepartment(
+					ctx.owningDept,
+					defaultDepartment,
+				);
+				const issueKey = ctx.issueIdentifier ?? hydrated.issueId;
+				const docDir = `${dept}/doc/${issueKey}-<slug>`;
+				const headerIssueLine = ctx.issueUrl
+					? `Issue: ${issueKey} (${ctx.issueUrl})`
+					: `Issue: ${issueKey} (URL 不可得,只写 issue 号)`;
+				const docFlowLines = [
+					"DOC-FLOW (project doc conventions — this project has doc_flow enabled):",
+					`Doc tier for this task: ${tier} (set by your Lead; full = default).`,
+					"This tier controls DOCUMENT OUTPUT ONLY — all checkpoint gates and your",
+					"agent-role gates (brainstorm confirmation etc.) still apply at every tier.",
+					`Folder: ${docDir}/ — before creating it, \`ls ${dept}/doc/\` and REUSE any`,
+					`existing folder with the ${issueKey}- prefix; derive a 2-4 word lowercase`,
+					"kebab slug from the issue title. Docs travel with your branch and merge",
+					"to main in your PR. Do NOT create status subdirectories (no draft/new/",
+					"inprogress/archive) — progress lives in Linear only.",
+				];
+				if (tier === "full") {
+					docFlowLines.push(
+						"- full: BEFORE writing implementation code, produce exploration.md,",
+						`  research.md, plan.md in that folder. Run \`node ${commCliPath} stage set`,
+						"  brainstorm|research|plan` as you enter each phase; after writing plan.md run",
+						`  \`node ${commCliPath} stage set design_review --plan ${docDir}/plan.md\``,
+						"  and follow the existing design-review gate flow before implementing.",
+					);
+				} else if (tier === "plan_only") {
+					docFlowLines.push(
+						"- plan_only: produce only plan.md in that folder before implementation,",
+						`  then run \`node ${commCliPath} stage set design_review --plan ${docDir}/plan.md\``,
+						"  and follow the existing design-review gate flow before implementing.",
+					);
+				} else {
+					docFlowLines.push(
+						"- none: no process docs required for this task (your Lead judged it simple",
+						"  and has notified the founder; she may still ask for docs later — comply).",
+					);
+				}
+				if (tier !== "none") {
+					docFlowLines.push(
+						"Every doc starts with title + 3 lines:",
+						`  # ${issueKey} <短标题> — <文档类型: 探索/调研/实施计划>`,
+						`  ${headerIssueLine}`,
+						"  日期: <today, YYYY-MM-DD>",
+						"  基于: <同文件夹上游文档名,如 research.md;没有就写 无>",
+					);
+				}
+				docFlowLines.push("");
+				systemPromptLines.unshift(...docFlowLines);
+			}
+		}
 
 		// FLY-137 v1.27.2: onboard stage preamble. Reports intent BEFORE attempting
 		// the onboard skill so the dashboard reflects that the Runner started

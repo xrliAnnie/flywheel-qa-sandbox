@@ -41,8 +41,12 @@ const testProjects: ProjectEntry[] = [
 	},
 ];
 
-/** Mock IRetryDispatcher that records dispatch calls and resolves immediately. */
-function createMockDispatcher(): IRetryDispatcher & {
+/** Mock IRetryDispatcher that records dispatch calls and resolves immediately.
+ * FLY-205: creates the successor session row like production eventually does
+ * (emitStarted) — handleRetry now waits for the row before patching metadata
+ * (waitForSession, Codex code R1 HIGH-2), so a mock that never creates it
+ * would stall the wait window. */
+function createMockDispatcher(store: StateStore): IRetryDispatcher & {
 	calls: RetryRequest[];
 	rejectNext?: string;
 } {
@@ -65,8 +69,15 @@ function createMockDispatcher(): IRetryDispatcher & {
 				throw new Error(msg);
 			}
 			calls.push(req);
+			const newExecutionId = randomUUID();
+			store.upsertSession({
+				execution_id: newExecutionId,
+				issue_id: req.issueId,
+				project_name: req.projectName,
+				status: "running",
+			});
 			return {
-				newExecutionId: randomUUID(),
+				newExecutionId,
 				oldExecutionId: req.oldExecutionId,
 			};
 		},
@@ -108,7 +119,7 @@ describe("Retry E2E — composite action with mock dispatcher", () => {
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
-		dispatcher = createMockDispatcher();
+		dispatcher = createMockDispatcher(store);
 		const app = createBridgeApp(
 			store,
 			testProjects,

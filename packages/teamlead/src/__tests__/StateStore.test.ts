@@ -887,3 +887,93 @@ describe("StateStore — stuck dispositions (FLY-195)", () => {
 		s2.close();
 	});
 });
+
+// FLY-205 — doc_tier + issue_url persistence: BOTH write paths must round-trip
+// (Codex design R3 #2: a column reachable from the type but missing from a
+// handwritten SQL list would silently not persist).
+describe("FLY-205 — doc_tier / issue_url persistence", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("upsertSession write path round-trips doc_tier + issue_url", () => {
+		store.upsertSession({
+			execution_id: "e-205-a",
+			issue_id: "LEARN-21",
+			project_name: "sub",
+			status: "running",
+			doc_tier: "plan_only",
+			issue_url: "https://linear.app/x/issue/LEARN-21",
+		});
+		const s = store.getSession("e-205-a");
+		expect(s?.doc_tier).toBe("plan_only");
+		expect(s?.issue_url).toBe("https://linear.app/x/issue/LEARN-21");
+	});
+
+	it("patchSessionMetadata write path round-trips doc_tier + issue_url", () => {
+		store.upsertSession({
+			execution_id: "e-205-b",
+			issue_id: "LEARN-22",
+			project_name: "sub",
+			status: "running",
+		});
+		store.patchSessionMetadata("e-205-b", {
+			doc_tier: "none",
+			issue_url: "https://linear.app/x/issue/LEARN-22",
+		});
+		const s = store.getSession("e-205-b");
+		expect(s?.doc_tier).toBe("none");
+		expect(s?.issue_url).toBe("https://linear.app/x/issue/LEARN-22");
+	});
+
+	it("persistTransition write path round-trips doc_tier + issue_url", () => {
+		store.persistTransition("e-205-c", "running", {
+			issue_id: "LEARN-23",
+			project_name: "sub",
+			doc_tier: "full",
+			issue_url: "https://linear.app/x/issue/LEARN-23",
+		});
+		const s = store.getSession("e-205-c");
+		expect(s?.doc_tier).toBe("full");
+		expect(s?.issue_url).toBe("https://linear.app/x/issue/LEARN-23");
+	});
+
+	it("values survive file-backed close/reopen (migration column is real)", async () => {
+		const dbPath = `/tmp/fly205-statestore-test-${Date.now()}.db`;
+		const s1 = await StateStore.create(dbPath);
+		s1.upsertSession({
+			execution_id: "e-205-d",
+			issue_id: "LEARN-24",
+			project_name: "sub",
+			status: "running",
+			doc_tier: "plan_only",
+			issue_url: "https://linear.app/x/issue/LEARN-24",
+		});
+		s1.close();
+		const s2 = await StateStore.create(dbPath);
+		const s = s2.getSession("e-205-d");
+		expect(s?.doc_tier).toBe("plan_only");
+		expect(s?.issue_url).toBe("https://linear.app/x/issue/LEARN-24");
+		s2.close();
+	});
+
+	it("COALESCE semantics: later upsert without tier does not clobber stored tier", () => {
+		store.upsertSession({
+			execution_id: "e-205-e",
+			issue_id: "LEARN-25",
+			project_name: "sub",
+			status: "running",
+			doc_tier: "none",
+		});
+		// e.g. a heartbeat-ish upsert that doesn't carry doc_tier
+		store.upsertSession({
+			execution_id: "e-205-e",
+			issue_id: "LEARN-25",
+			project_name: "sub",
+			status: "running",
+		});
+		expect(store.getSession("e-205-e")?.doc_tier).toBe("none");
+	});
+});

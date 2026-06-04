@@ -12,11 +12,17 @@
  */
 
 import { Router } from "express";
+import {
+	DOC_TIERS,
+	type DocTier,
+	parseDocTier,
+} from "flywheel-edge-worker/dist/Blueprint.js";
 import { DepartmentRegistry } from "../department-registry.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
+import { waitForSession } from "./session-wait.js";
 
 /** Poll interval / max wait for chat thread_id to appear on session (FLY-91). */
 const THREAD_POLL_INTERVAL_MS = 500;
@@ -121,6 +127,33 @@ export function createRunsRouter(
 			agentName = rawAgentName;
 		}
 
+		// FLY-205: optional Lead-judged doc tier body field.
+		// Semantics:
+		//   - undefined / null / missing → effective tier "full" (fail-safe:
+		//     no Lead signal → full docs, never silently fewer)
+		//   - one of DOC_TIERS → that tier
+		//   - anything else → 400 INVALID_DOC_TIER (machine-only payload,
+		//     FLY-127 shape; validated synchronously at the boundary like
+		//     agentName — never let a bad enum reach Blueprint)
+		const rawDocTier = req.body.docTier;
+		let docTier: DocTier | undefined;
+		if (rawDocTier === undefined || rawDocTier === null) {
+			docTier = undefined;
+		} else {
+			const parsedTier = parseDocTier(rawDocTier);
+			if (!parsedTier) {
+				res.status(400).json({
+					success: false,
+					code: "INVALID_DOC_TIER",
+					reason: "unknown_tier",
+					allowed: [...DOC_TIERS],
+					silent: false,
+				});
+				return;
+			}
+			docTier = parsedTier;
+		}
+
 		// FLY-59: Per-role dedup — same issue can have main + qa concurrently
 		const role =
 			(typeof sessionRole === "string" ? sessionRole : undefined) ?? "main";
@@ -169,9 +202,11 @@ export function createRunsRouter(
 		}
 
 		// Pre-flight: verify issue exists in Linear before dispatching.
-		// Also captures title/identifier for session metadata patching (FLY-24 Bug 1).
+		// Also captures title/identifier for session metadata patching (FLY-24 Bug 1)
+		// and the issue URL for DOC-FLOW header continuity (FLY-205).
 		let issueTitle: string | undefined;
 		let issueIdentifier: string | undefined;
+		let issueUrl: string | undefined;
 		// FLY-127: labels are needed by both the FLY-80 auto-resolve path AND the
 		// new department-scope check. Fetch once, reuse for both.
 		let issueLabelNames: string[] = [];
@@ -190,6 +225,7 @@ export function createRunsRouter(
 			}
 			issueTitle = issue.title;
 			issueIdentifier = issue.identifier;
+			issueUrl = issue.url;
 
 			// FLY-127: fetch labels regardless of whether leadId is provided.
 			// Auto-resolve (FLY-80) and dept-scope check (FLY-127) both need them.
@@ -396,6 +432,9 @@ export function createRunsRouter(
 				owningDept,
 				// FLY-137 Phase 5: Codex auto-trigger snapshot
 				codexSkip,
+				// FLY-205: doc-flow tier + issue URL (header continuity)
+				docTier,
+				issueUrl,
 			});
 
 			// FLY-91: Poll for chatThreadId. emitStarted() awaits chat thread
@@ -421,10 +460,15 @@ export function createRunsRouter(
 			}
 
 			// FLY-137 Phase 5: persist agent dispatch metadata + codex-skip
-			// snapshot now that the session row exists. patchSessionMetadata
-			// is a no-op (no rows) if Blueprint failed before emitStarted —
-			// the FLY-80 ghost-start guard below covers that case.
-			const persistedSession = store.getSession(result.executionId);
+			// snapshot now that the session row exists.
+			// FLY-205 (Codex code R1 HIGH-2): start() returns as soon as
+			// blueprint.run() is kicked off; the row is created later by
+			// emitStarted(). Without chat threads the THREAD_POLL above never
+			// runs, so a bare getSession() here races row creation and the
+			// patch (incl. doc_tier) silently skips — wait (bounded) instead.
+			// A genuinely failed start still falls through to the FLY-80
+			// ghost-start guard below.
+			const persistedSession = await waitForSession(store, result.executionId);
 			if (persistedSession) {
 				const matchMethod: string | undefined = agentName
 					? "override"
@@ -433,6 +477,11 @@ export function createRunsRouter(
 					agent_name: agentName ?? undefined,
 					agent_match_method: matchMethod,
 					codex_skip: codexSkip ? 1 : 0,
+					// FLY-205: persist the EFFECTIVE tier (explicit "full" when the
+					// Lead sent nothing) so retry reuses exactly what this run got —
+					// never a silent re-default. issue_url for header continuity.
+					doc_tier: docTier ?? "full",
+					issue_url: issueUrl,
 				});
 			}
 

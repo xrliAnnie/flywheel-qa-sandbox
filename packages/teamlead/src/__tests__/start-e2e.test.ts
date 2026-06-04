@@ -21,6 +21,8 @@ vi.mock("@linear/sdk", () => ({
 		issue: vi.fn().mockResolvedValue({
 			title: "Test Issue",
 			identifier: "GEO-TEST",
+			// FLY-205: issue URL captured at preflight for DOC-FLOW header continuity
+			url: "https://linear.app/test/issue/GEO-TEST",
 			// FLY-80 + FLY-127: Auto-resolve leadId AND dept-scope check use labels.
 			labels: vi.fn().mockResolvedValue({
 				nodes: [{ name: "Product" }],
@@ -198,6 +200,10 @@ describe("Start API E2E", () => {
 			// FLY-137 Phase 5: codex-skip label snapshot at run start.
 			// Mock issue has no codex-skip label → false.
 			codexSkip: false,
+			// FLY-205: docTier omitted → undefined (effective full downstream);
+			// issueUrl captured from the Linear preflight mock.
+			docTier: undefined,
+			issueUrl: "https://linear.app/test/issue/GEO-TEST",
 		});
 	}, 15_000);
 
@@ -524,6 +530,66 @@ describe("Start API E2E", () => {
 			});
 			expect(res.status).toBe(200);
 			expect(mockDispatcher.start).toHaveBeenCalledOnce();
+		}, 15_000);
+	});
+
+	// FLY-205 — docTier boundary validation + transport + persistence
+	describe("FLY-205 — docTier", () => {
+		it("valid docTier passes through to dispatcher and persists EFFECTIVE tier + issue_url", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-TEST",
+					projectName: "TestProject",
+					docTier: "plan_only",
+				}),
+			});
+			expect(res.status).toBe(200);
+			const startReq = mockDispatcher.start.mock.calls[0]![0];
+			expect(startReq.docTier).toBe("plan_only");
+			expect(startReq.issueUrl).toBe("https://linear.app/test/issue/GEO-TEST");
+			const session = store.getSession("exec-GEO-TEST");
+			expect(session?.doc_tier).toBe("plan_only");
+			expect(session?.issue_url).toBe("https://linear.app/test/issue/GEO-TEST");
+		}, 15_000);
+
+		it("invalid docTier → 400 INVALID_DOC_TIER (boundary-validated, never reaches dispatcher)", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-TEST",
+					projectName: "TestProject",
+					docTier: "medium",
+				}),
+			});
+			expect(res.status).toBe(400);
+			const body = (await res.json()) as {
+				code: string;
+				allowed: string[];
+			};
+			expect(body.code).toBe("INVALID_DOC_TIER");
+			expect(body.allowed).toEqual(["full", "plan_only", "none"]);
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		}, 15_000);
+
+		it("omitted docTier → dispatcher gets undefined, session persists effective 'full'", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-TEST",
+					projectName: "TestProject",
+				}),
+			});
+			expect(res.status).toBe(200);
+			const startReq = mockDispatcher.start.mock.calls[0]![0];
+			expect(startReq.docTier).toBeUndefined();
+			// EFFECTIVE tier persisted: retry must reuse "full" explicitly,
+			// never re-default (Codex design R2 #1).
+			const session = store.getSession("exec-GEO-TEST");
+			expect(session?.doc_tier).toBe("full");
 		}, 15_000);
 	});
 });
