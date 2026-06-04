@@ -40,6 +40,8 @@ import { join } from "node:path";
 
 export const DEFAULT_RETENTION_MAX = 100;
 export const DEFAULT_RETENTION_BYTES = 10 * 1024 * 1024; // 10 MB
+/** Founder requirement (2026-06-04): report links expire after 7 days. */
+export const DEFAULT_RETENTION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 const ROBOTS_TXT = "User-agent: *\nDisallow: /\n";
 const NOINDEX_META = '<meta name="robots" content="noindex">';
@@ -87,6 +89,10 @@ export interface StagedPublish {
 export interface ReportRegistryOptions {
 	retentionMax?: number;
 	retentionBytes?: number;
+	/** Max report age in ms (default 7 days). 0 disables age-based expiry. */
+	retentionMaxAgeMs?: number;
+	/** Clock seam for tests. Defaults to Date.now. */
+	now?: () => number;
 	/** Test seam — defaults to crypto.randomBytes hex. */
 	randomHex?: (bytes: number) => string;
 	/** Warn sink (defaults to console.warn) — test seam. */
@@ -99,6 +105,8 @@ export class ReportRegistry {
 	private readonly registryPath: string;
 	private readonly retentionMax: number;
 	private readonly retentionBytes: number;
+	private readonly retentionMaxAgeMs: number;
+	private readonly now: () => number;
 	private readonly randomHex: (bytes: number) => string;
 	private readonly warn: (msg: string) => void;
 
@@ -108,6 +116,9 @@ export class ReportRegistry {
 		this.registryPath = join(baseDir, "registry.json");
 		this.retentionMax = opts.retentionMax ?? DEFAULT_RETENTION_MAX;
 		this.retentionBytes = opts.retentionBytes ?? DEFAULT_RETENTION_BYTES;
+		this.retentionMaxAgeMs =
+			opts.retentionMaxAgeMs ?? DEFAULT_RETENTION_MAX_AGE_MS;
+		this.now = opts.now ?? (() => Date.now());
 		this.randomHex =
 			opts.randomHex ?? ((n: number) => randomBytes(n).toString("hex"));
 		this.warn = opts.warn ?? ((msg) => console.warn(msg));
@@ -147,14 +158,39 @@ export class ReportRegistry {
 			token: this.randomHex(16),
 			projectName,
 			title,
-			createdAt: new Date().toISOString(),
+			createdAt: new Date(this.now()).toISOString(),
 			bytes: Buffer.byteLength(hardened, "utf-8"),
 		};
 
-		// Prune oldest-first until both caps hold. The new entry is newest so
-		// it always survives (single report ≤512KB ≪ bytes cap).
-		const all = [...committed.reports, entry];
+		// Prune in two passes; whichever rule hits first wins, they coexist.
+		//
+		// Pass 1 — TTL (founder requirement: links expire after 7 days).
+		// Enforced LAZILY at publish time, hooked on this existing action per
+		// the no-new-periodic-timer discipline (FLY-169): an expired link
+		// dies at the NEXT publish, which redeploys without it. No publishes
+		// → no redeploy → an expired link may outlive its TTL until one
+		// happens; with normal report cadence that window is small.
+		//
+		// Pass 2 — count/bytes caps, oldest-first. The new entry is newest
+		// so it always survives (single report ≤512KB ≪ bytes cap).
+		const nowMs = this.now();
+		const all: ReportEntry[] = [];
 		const pruned: ReportEntry[] = [];
+		for (const e of [...committed.reports, entry]) {
+			const age = nowMs - Date.parse(e.createdAt);
+			// >= : the expiry instant itself counts as expired (Codex R1 — with
+			// lazy enforcement and an aligned publish cadence, a `>` here would
+			// stretch an exactly-7-day-old link a full extra cycle).
+			if (
+				this.retentionMaxAgeMs > 0 &&
+				Number.isFinite(age) &&
+				age >= this.retentionMaxAgeMs
+			) {
+				pruned.push(e);
+			} else {
+				all.push(e);
+			}
+		}
 		let totalBytes = all.reduce((s, e) => s + e.bytes, 0);
 		while (
 			all.length > this.retentionMax ||

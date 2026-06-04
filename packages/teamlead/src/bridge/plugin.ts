@@ -56,7 +56,10 @@ import { createMemoryRouter } from "./memory-route.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
-import { ReportRegistry } from "./report-registry.js";
+import {
+	DEFAULT_RETENTION_MAX_AGE_MS,
+	ReportRegistry,
+} from "./report-registry.js";
 import { createReportsRouter } from "./reports-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import { setupRunInfrastructure } from "./run-infra.js";
@@ -310,6 +313,15 @@ function isLeaseAlive(
 function safeCompare(a: string, b: string): boolean {
 	if (a.length !== b.length) return false;
 	return timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
+/** FLY-203: parse FLYWHEEL_REPORTS_TTL_DAYS (days) → ms. Invalid/absent →
+ * default 7 days; "0" disables age-based expiry. */
+function resolveReportsTtlMs(raw: string | undefined): number {
+	if (raw !== undefined && /^\d+$/.test(raw.trim())) {
+		return Number(raw.trim()) * 24 * 60 * 60 * 1000;
+	}
+	return DEFAULT_RETENTION_MAX_AGE_MS;
 }
 
 function tokenAuthMiddleware(token?: string): express.RequestHandler {
@@ -1512,7 +1524,13 @@ export function createBridgeApp(
 		vercelToken: opts?.vercelToken,
 		discordBotToken: opts?.globalBotToken,
 		projects,
-		registry: new ReportRegistry(reportsBaseDir),
+		registry: new ReportRegistry(reportsBaseDir, {
+			// FLY-203 follow-up (founder): report links expire after 7 days.
+			// FLYWHEEL_REPORTS_TTL_DAYS overrides (positive integer; 0 disables).
+			retentionMaxAgeMs: resolveReportsTtlMs(
+				process.env.FLYWHEEL_REPORTS_TTL_DAYS,
+			),
+		}),
 	});
 	if (config.apiToken) {
 		app.use(
