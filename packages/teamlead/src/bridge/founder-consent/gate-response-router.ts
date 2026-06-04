@@ -83,6 +83,30 @@ function isApprovalAnswer(answer: string): boolean {
 }
 
 /**
+ * FLY-208 6b (Codex design R2 #4): a plain-text reply with obvious approval
+ * intent (e.g. `APPROVE — founder 批准在案...`, the production incident) is
+ * silently recorded as changes_requested feedback because only JSON
+ * `{"approved": true}` approves. Detect the intent and return a WARNING for
+ * the HTTP response (the respond CLI prints it to stderr) — the write
+ * behavior is deliberately unchanged. The remediation text accounts for
+ * idx_unique_response (one response per question): re-sending JSON on the
+ * SAME question would 409, so the Lead must have the Runner re-request
+ * review and answer the NEW question.
+ */
+const APPROVAL_INTENT_RE = /^\s*"?approved?\b/i;
+
+function approvalIntentWarning(answer: string): string | undefined {
+	if (isApprovalAnswer(answer)) return undefined;
+	if (!APPROVAL_INTENT_RE.test(answer)) return undefined;
+	return (
+		"Recorded as FEEDBACK, not approval — only the exact JSON '{\"approved\": true}' approves " +
+		"(verify-approval will NOT honor this text). This question now has its single response " +
+		"(one per question); to actually approve, have the Runner re-request review and answer " +
+		"the NEW question with '{\"approved\": true}'."
+	);
+}
+
+/**
  * Run the post-write hook without ever failing the request — the CommDB
  * response row is already durably written; the transition/wake side effects
  * are best-effort and surface their own telemetry.
@@ -235,7 +259,11 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 					answer: priorResponse.content,
 					db,
 				});
-				res.json({ success: true, alreadyResponded: true });
+				res.json({
+					success: true,
+					alreadyResponded: true,
+					warning: approvalIntentWarning(priorResponse.content),
+				});
 				return;
 			}
 
@@ -251,7 +279,11 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 					answer,
 					db,
 				});
-				res.json({ success: true, passthrough: true });
+				res.json({
+					success: true,
+					passthrough: true,
+					warning: approvalIntentWarning(answer),
+				});
 				return;
 			}
 
@@ -308,7 +340,11 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 				answer,
 				db,
 			});
-			res.json({ success: true, auditId: decision.auditId });
+			res.json({
+				success: true,
+				auditId: decision.auditId,
+				warning: approvalIntentWarning(answer),
+			});
 		} catch (err) {
 			deps.logger?.warn(
 				`[founder-consent] gate-response error: ${(err as Error).message}`,

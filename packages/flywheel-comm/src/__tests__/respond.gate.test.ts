@@ -99,6 +99,65 @@ describe("respond() fail-closed gate (§11.2)", () => {
 		expect(hasResponse(qid)).toBe(false);
 	});
 
+	it("FLY-208 6b: bridge response warning is printed to stderr", async () => {
+		const qid = seed("approve_to_ship");
+		const warning =
+			"Recorded as FEEDBACK, not approval — only the exact JSON ...";
+		const fetchImpl = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({ success: true, passthrough: true, warning }),
+		})) as unknown as typeof fetch;
+		const stderrSpy = vi
+			.spyOn(process.stderr, "write")
+			.mockImplementation(() => true);
+		try {
+			await respond({
+				questionId: qid,
+				fromAgent: "lead-x",
+				answer: "APPROVE — looks good",
+				dbPath,
+				projectName: "Proj",
+				bridgeUrl: "http://localhost:9999",
+				env: { TEAMLEAD_API_TOKEN: "tok" },
+				fetchImpl,
+			});
+			const writes = stderrSpy.mock.calls.map((c) => String(c[0])).join("");
+			expect(writes).toContain("WARNING");
+			expect(writes).toContain("Recorded as FEEDBACK");
+		} finally {
+			stderrSpy.mockRestore();
+		}
+	});
+
+	it("FLY-208 6b: no warning in bridge response → nothing extra on stderr", async () => {
+		const qid = seed("approve_to_ship");
+		const fetchImpl = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({ success: true }),
+		})) as unknown as typeof fetch;
+		const stderrSpy = vi
+			.spyOn(process.stderr, "write")
+			.mockImplementation(() => true);
+		try {
+			await respond({
+				questionId: qid,
+				fromAgent: "lead-x",
+				answer: '{"approved": true}',
+				dbPath,
+				projectName: "Proj",
+				bridgeUrl: "http://localhost:9999",
+				env: { TEAMLEAD_API_TOKEN: "tok" },
+				fetchImpl,
+			});
+			const writes = stderrSpy.mock.calls.map((c) => String(c[0])).join("");
+			expect(writes).not.toContain("WARNING:");
+		} finally {
+			stderrSpy.mockRestore();
+		}
+	});
+
 	it("approve_to_ship + bridge returns non-2xx → throws, no local write", async () => {
 		const qid = seed("approve_to_ship");
 		const fetchImpl = vi.fn(async () => ({

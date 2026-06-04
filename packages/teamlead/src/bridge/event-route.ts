@@ -25,6 +25,7 @@ import {
 } from "./lead-runtime.js";
 import {
 	isPostApproveShipComplete,
+	markEvidenceGapCompletion,
 	runPostShipFinalization,
 } from "./post-ship-finalization.js";
 import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
@@ -596,6 +597,17 @@ export function createEventRouter(
 				//   - event-route-dual-session-completed Scenario D (undefined HTTP)
 				//   - event-route-dual-session-completed Scenario E (blocked HTTP)
 				let status: string;
+				// FLY-208 5a: a session ALREADY approved_to_ship that re-completes
+				// with auto_approve/needs_review but WITHOUT merged landing used to
+				// map to awaiting_review — an FSM-invalid transition from
+				// approved_to_ship (rejected → session stuck there forever; the
+				// LEARN-12 incident: sub disables the approve checkpoint, so its
+				// Runner never gets the landing-rewrite instruction and the signal
+				// stays "ready_to_merge"). Unstick by completing WITH an
+				// evidence-gap marker; post-ship finalization is suppressed for it
+				// (isPostApproveShipComplete now requires merged landing) — see
+				// markEvidenceGapCompletion / FLY-210 for the later cleanup.
+				let evidenceGap = false;
 				if (route === "needs_review") {
 					// FLY-115 v1.24.5 (FLY-120): mirror the auto_approve+merged
 					// short-circuit so a Runner that self-merges after Lead
@@ -607,6 +619,9 @@ export function createEventRouter(
 					// HTTP /events sink.
 					if (landingStatus?.status === "merged") {
 						status = "completed";
+					} else if (isPostApproveShip) {
+						status = "completed";
+						evidenceGap = true;
 					} else {
 						status = "awaiting_review";
 					}
@@ -614,6 +629,9 @@ export function createEventRouter(
 					if (landingStatus?.status === "merged") {
 						// FLY-58: auto_approve + merged → completed (not approved)
 						status = "completed";
+					} else if (isPostApproveShip) {
+						status = "completed";
+						evidenceGap = true;
 					} else {
 						status = "awaiting_review";
 					}
@@ -629,8 +647,15 @@ export function createEventRouter(
 					// rejects undefined route otherwise). Natural-completion
 					// path: Annie :cool: → Runner ships → session_completed with
 					// no decision route. Sister branch:
-					// DirectEventSink.ts:274 (`else status = "completed"`).
+					// DirectEventSink.ts (`else status = "completed"`).
 					status = "completed";
+					// FLY-208 5a: even the natural-completion path completes
+					// WITHOUT merge proof when the landing signal was never
+					// rewritten — mark the gap so FLY-210 can finish the
+					// (now-suppressed) post-ship cleanup once proof arrives.
+					if (landingStatus?.status !== "merged") {
+						evidenceGap = true;
+					}
 				}
 
 				// FLY-59: Read session role from completed event payload
@@ -771,6 +796,20 @@ export function createEventRouter(
 						);
 						patchCompletionEvidence();
 						writeReviewBinding();
+
+						// FLY-208 5a: evidence-gap completion — persist the marker
+						// (FLY-210 consumes it) and warn loudly.
+						if (evidenceGap) {
+							markEvidenceGapCompletion(store, event.execution_id, {
+								route,
+								landingStatus: landingStatus?.status,
+							});
+							console.warn(
+								`[event-route] FLY-208 evidence-gap completion for ${event.execution_id}: ` +
+									`approved_to_ship + route=${route} but landing=${landingStatus?.status ?? "(none)"} — ` +
+									`completed WITHOUT merge evidence; post-ship finalization suppressed (FLY-210 owns later cleanup)`,
+							);
+						}
 
 						// GEO-292: Auto-infer stage from landing status (only advance, never regress)
 						if (prNumber) {
@@ -1310,12 +1349,28 @@ export function createEventRouter(
 				};
 
 				// FLY-47: Add stage_context for stage_changed events to prevent Lead misinterpretation
+				// FLY-208 7a: the old text asserted PR state purely from
+				// session.pr_number existence and said it with full confidence —
+				// production showed it claiming "is OPEN ... do NOT tell Annie the
+				// PR is merged" 31 seconds AFTER the merge, and "No PR detected"
+				// 53 seconds after PR creation. Now: use the event's own
+				// landing_status when it proves a merge; otherwise label the line
+				// as a snapshot and tell the Lead to verify — never assert the
+				// negative. Live PR querying is FLY-210 scope.
 				if (event.event_type === "stage_changed") {
 					const stage = asString(payload.stage);
 					if (stage === "completed") {
-						hookPayload.stage_context = session.pr_number
-							? `Runner completed work. PR #${session.pr_number} is OPEN and needs review/merge — do NOT tell Annie the PR is merged.`
-							: "Runner completed work. No PR detected — verify status before reporting to Annie.";
+						const stageLanding = payload.landing_status as
+							| { status?: string; mergeCommitSha?: string }
+							| undefined;
+						const snapshotTs = new Date().toISOString();
+						if (stageLanding?.status === "merged") {
+							hookPayload.stage_context = `Runner completed work. PR #${session.pr_number ?? "?"} was merged by the Runner${stageLanding.mergeCommitSha ? ` (sha ${stageLanding.mergeCommitSha})` : ""}.`;
+						} else if (session.pr_number) {
+							hookPayload.stage_context = `Runner completed work. PR #${session.pr_number} status snapshot at ${snapshotTs}: last known not merged — verify with \`gh pr view ${session.pr_number}\` before reporting merge status to Annie.`;
+						} else {
+							hookPayload.stage_context = `Runner completed work. No PR recorded as of ${snapshotTs} (a just-created PR may not be ingested yet) — verify before reporting to Annie.`;
+						}
 					}
 				}
 

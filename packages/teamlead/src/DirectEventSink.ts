@@ -17,6 +17,7 @@ import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import {
 	isPostApproveShipComplete,
+	markEvidenceGapCompletion,
 	runPostShipFinalization,
 } from "./bridge/post-ship-finalization.js";
 import {
@@ -217,7 +218,31 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		const landingStatus = result.evidence?.landingStatus as
 			| { status?: string }
 			| undefined;
+		// FLY-102: capture existing status BEFORE upsertSession writes the new
+		// one. isPostApproveShipComplete needs the approved_to_ship → completed
+		// transition; FLY-208 5a additionally needs it for the status mapping
+		// itself (hoisted above the mapping for that reason).
+		const preExistingSession = this.store.getSession(env.executionId);
+		// FLY-208 5a × FLY-191 R5 interaction: a Phase-2-BOUND session's
+		// status is owned by the HTTP `complete --question-id` path — this
+		// in-process sink must never unstick (or otherwise move) it, or the
+		// R5 protection (late qid-less emission can't regress/advance an
+		// approved_to_ship session) regresses. The 5a evidence-gap unstick via
+		// THIS sink therefore applies to legacy (non-bound) sessions only;
+		// bound sessions get unstuck through event-route, which has its own
+		// binding-aware handling.
+		const desPhase2Bound = !!preExistingSession?.review_question_id;
+		const isPostApproveShip =
+			preExistingSession?.status === "approved_to_ship" && !desPhase2Bound;
+
 		let status: string;
+		// FLY-208 5a: approved_to_ship + auto_approve/needs_review WITHOUT
+		// merged landing used to map to awaiting_review — FSM-invalid from
+		// approved_to_ship → rejected → stuck forever (LEARN-12 incident).
+		// Complete with an evidence-gap marker instead; finalization suppressed
+		// (isPostApproveShipComplete requires merged landing). Sister mapping:
+		// event-route.ts session_completed — both sinks MUST agree.
+		let evidenceGap = false;
 		if (route === "needs_review") {
 			// FLY-115 v1.24.5 (FLY-120): if the Runner already finished shipping
 			// (Lead unblocked the approve_to_ship gate via flywheel-comm respond,
@@ -227,14 +252,33 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// already on main was still waiting for :cool:. Mirrors the
 			// auto_approve+merged branch and the post-approve-ship completion
 			// guard at packages/teamlead/src/bridge/event-route.ts:344-354.
-			status =
-				landingStatus?.status === "merged" ? "completed" : "awaiting_review";
+			if (landingStatus?.status === "merged") {
+				status = "completed";
+			} else if (isPostApproveShip) {
+				status = "completed";
+				evidenceGap = true;
+			} else {
+				status = "awaiting_review";
+			}
 		} else if (route === "auto_approve") {
 			// FLY-58: merged → completed (not approved)
-			status =
-				landingStatus?.status === "merged" ? "completed" : "awaiting_review";
+			if (landingStatus?.status === "merged") {
+				status = "completed";
+			} else if (isPostApproveShip) {
+				status = "completed";
+				evidenceGap = true;
+			} else {
+				status = "awaiting_review";
+			}
 		} else if (route === "blocked") status = "blocked";
-		else status = "completed";
+		else {
+			status = "completed";
+			// FLY-208 5a: natural completion (no route) from approved_to_ship
+			// without merge proof — mark the gap (FLY-210 finishes cleanup).
+			if (isPostApproveShip && landingStatus?.status !== "merged") {
+				evidenceGap = true;
+			}
+		}
 
 		const prNumber = result.evidence?.landingStatus?.prNumber;
 
@@ -247,10 +291,6 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			inferredStage = landingStatusValue === "merged" ? "ship" : "pr_created";
 		}
 
-		// FLY-102: capture existing status BEFORE upsertSession writes the new one.
-		// isPostApproveShipComplete needs to see approved_to_ship → completed transition.
-		const preExistingSession = this.store.getSession(env.executionId);
-
 		// FLY-191 Phase 2 (Codex R4 CRITICAL + R5 HIGH): a Phase-2-bound
 		// session's status/binding/window are owned by the HTTP
 		// `complete --question-id` path. Computed BEFORE upsertSession (R5):
@@ -259,7 +299,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// has no FSM guard for that edge) and re-stamp the review window via
 		// the entry-stamp logic — leaving verify-approval fail-closed on
 		// status mismatch until a manual re-approve.
-		const phase2Bound = !!preExistingSession?.review_question_id;
+		const phase2Bound = desPhase2Bound;
 		const evidenceOnly =
 			status === "awaiting_review" &&
 			phase2Bound &&
@@ -311,6 +351,20 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				pr_number: prNumber,
 				session_role: env.sessionRole ?? "main",
 			});
+		}
+
+		// FLY-208 5a: evidence-gap completion — persist the marker (FLY-210
+		// consumes it) and warn loudly. Sister write: event-route.ts.
+		if (evidenceGap && !evidenceOnly) {
+			markEvidenceGapCompletion(this.store, env.executionId, {
+				route,
+				landingStatus: landingStatus?.status,
+			});
+			console.warn(
+				`[DirectEventSink] FLY-208 evidence-gap completion for ${env.executionId}: ` +
+					`approved_to_ship + route=${route} but landing=${landingStatus?.status ?? "(none)"} — ` +
+					`completed WITHOUT merge evidence; post-ship finalization suppressed (FLY-210 owns later cleanup)`,
+			);
 		}
 
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId

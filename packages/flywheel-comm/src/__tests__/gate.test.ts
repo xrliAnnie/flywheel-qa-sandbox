@@ -95,6 +95,70 @@ describe("gate command", () => {
 		expect(result.approved).toBe(true);
 	});
 
+	it("FLY-208 6c-②: approve_to_ship + plain-text reply → caution line appended", async () => {
+		// Production incident: the blocking gate returned the Lead's raw
+		// "APPROVE — ..." text and the Runner merged on it BEFORE
+		// verify-approval. Non-structured-approval answers on approve_to_ship
+		// now carry an explicit caution.
+		const gatePromise = gate(
+			baseArgs({ checkpoint: "approve_to_ship", timeoutMs: 5000 }),
+		);
+		await sleep(100);
+		const db = new CommDB(dbPath);
+		try {
+			const questions = db.getPendingQuestions("product-lead");
+			db.insertResponse(
+				questions[0].id,
+				"product-lead",
+				"APPROVE — founder 批准在案,可以 merge",
+			);
+		} finally {
+			db.close();
+		}
+		const result = await gatePromise;
+		expect(result.status).toBe("answered");
+		expect(result.approved).toBeUndefined();
+		expect(result.content).toContain("APPROVE — founder 批准在案");
+		expect(result.content).toContain(
+			"NOT verified approval — run verify-approval before any merge",
+		);
+	});
+
+	it("FLY-208 6c-②: approve_to_ship + structured JSON approval → NO caution line", async () => {
+		const gatePromise = gate(
+			baseArgs({ checkpoint: "approve_to_ship", timeoutMs: 5000 }),
+		);
+		await sleep(100);
+		const db = new CommDB(dbPath);
+		try {
+			const questions = db.getPendingQuestions("product-lead");
+			db.insertResponse(
+				questions[0].id,
+				"product-lead",
+				JSON.stringify({ approved: true }),
+			);
+		} finally {
+			db.close();
+		}
+		const result = await gatePromise;
+		expect(result.approved).toBe(true);
+		expect(result.content).not.toContain("NOT verified approval");
+	});
+
+	it("FLY-208 6c-②: non-approve checkpoints keep replies undecorated", async () => {
+		const gatePromise = gate(baseArgs({ timeoutMs: 5000 })); // brainstorm
+		await sleep(100);
+		const db = new CommDB(dbPath);
+		try {
+			const questions = db.getPendingQuestions("product-lead");
+			db.insertResponse(questions[0].id, "product-lead", "Looks good!");
+		} finally {
+			db.close();
+		}
+		const result = await gatePromise;
+		expect(result.content).toBe("Looks good!");
+	});
+
 	it("should create question with checkpoint column", async () => {
 		// Start gate then immediately check DB
 		const gatePromise = gate(baseArgs({ timeoutMs: 200 }));

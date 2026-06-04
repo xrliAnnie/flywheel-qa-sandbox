@@ -12,6 +12,7 @@
 import { CommDB } from "flywheel-comm/db";
 import {
 	formatDurationMs,
+	formatGateQuestion,
 	formatMisroutedReport,
 	formatStuckEscalation,
 } from "./hook-payload.js";
@@ -100,36 +101,9 @@ export class CommDBLeadRuntime implements LeadRuntime {
 
 		// FLY-62: gate_question gets a special format
 		if (e.event_type === "gate_question") {
-			const tag = e.checkpoint?.toUpperCase() ?? "GATE";
-			const issueRef = e.issue_identifier || e.issue_id;
-			// FLY-59: Role label for non-main sessions
-			const roleLabel =
-				e.session_role && e.session_role !== "main"
-					? `[${e.session_role.toUpperCase()}] `
-					: "";
-			// FLY-175 Track 2: approve_to_ship MUST route through the Bridge
-			// founder-consent wrapper. Append --bridge-url $BRIDGE_URL to the
-			// rendered reply command for that checkpoint ONLY; other checkpoints
-			// keep the legacy direct command. The --db hint is always present
-			// (the CLI still opens CommDB locally to read the checkpoint).
-			const replyCmd =
-				e.checkpoint === "approve_to_ship"
-					? `Reply via: flywheel-comm respond --db ${e.comm_db_path} --bridge-url $BRIDGE_URL --lead <your_id> ${e.question_id} "your reply"`
-					: `Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`;
-			const lines = [
-				`[Event #${env.seq}] ${roleLabel}gate_question`,
-				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
-				`[${tag}] Runner asks:`,
-				"---",
-				e.summary ?? "(no content)",
-				"---",
-				replyCmd,
-				`Question ID: ${e.question_id}`,
-				`CommDB: ${e.comm_db_path}`,
-			];
-			// FLY-91: Include Chat-Thread hint for gate questions
-			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
-			return lines.join("\n");
+			// FLY-208 6a: shared renderer (parity-by-construction; the
+			// approve_to_ship JSON-shape guidance must not drift between runtimes).
+			return formatGateQuestion(env);
 		}
 
 		// FLY-159: gate_timed_out gets a special format so Lead notifications

@@ -45,6 +45,10 @@ describe("WorkflowFSM", () => {
 		// FLY-58: approved_to_ship transitions
 		["approved_to_ship", "completed"],
 		["approved_to_ship", "failed"],
+		// FLY-208 5a: ship failed/blocked AFTER approval — event-route's
+		// route=blocked branch needs this edge or the session sticks in
+		// approved_to_ship forever (LEARN-12 stuck-state family).
+		["approved_to_ship", "blocked"],
 		// GEO-168: blocked/failed/rejected → running removed (retry is composite)
 		["blocked", "deferred"],
 		["blocked", "shelved"],

@@ -52,14 +52,35 @@ function seedThread(store: StateStore): void {
 // ── Predicate tests ──────────────────────────────────────────
 
 describe("isPostApproveShipComplete", () => {
-	it("returns true when existingStatus === 'approved_to_ship'", () => {
+	it("returns true for approved_to_ship + merged landing (FLY-208 5a: merge evidence required)", () => {
+		expect(
+			isPostApproveShipComplete({
+				existingStatus: "approved_to_ship",
+				route: undefined,
+				landingStatus: { status: "merged" },
+			}),
+		).toBe(true);
+	});
+
+	it("returns FALSE for approved_to_ship WITHOUT merge evidence (FLY-208 5a evidence-gap suppression)", () => {
+		// Pre-FLY-208 this returned true on existingStatus alone — which would
+		// run tmux teardown / ready-to-close / thread archive for the
+		// evidence-gap unstick path even though nothing proves the PR merged
+		// (Codex design R2 #1). Cleanup for these is owned by FLY-210.
 		expect(
 			isPostApproveShipComplete({
 				existingStatus: "approved_to_ship",
 				route: undefined,
 				landingStatus: undefined,
 			}),
-		).toBe(true);
+		).toBe(false);
+		expect(
+			isPostApproveShipComplete({
+				existingStatus: "approved_to_ship",
+				route: "needs_review",
+				landingStatus: { status: "ready_to_merge" },
+			}),
+		).toBe(false);
 	});
 
 	it("returns true for auto_approve + merged", () => {

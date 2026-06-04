@@ -152,6 +152,22 @@ async function routeThroughBridge(opts: {
 			`flywheel-comm: Bridge refused approve_to_ship gate (HTTP ${res.status}): ${detail}`,
 		);
 	}
+
+	// FLY-208 6b: the gate-response endpoint flags plain-text replies with
+	// approval intent (only JSON {"approved": true} actually approves; the
+	// production incident's "APPROVE — ..." text was silently recorded as
+	// feedback). Surface the warning to the Lead on stderr — stdout stays
+	// reserved for the caller's structured output.
+	try {
+		const body = (await res.json()) as { warning?: string };
+		if (body?.warning) {
+			process.stderr.write(
+				`[flywheel-comm respond] WARNING: ${body.warning}\n`,
+			);
+		}
+	} catch {
+		// Non-JSON success body — nothing to surface.
+	}
 }
 
 function writeBypassAudit(

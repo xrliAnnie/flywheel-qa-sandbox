@@ -161,6 +161,17 @@ describe("Blueprint LEAD REPORT-BACK rules (FLY-208 A1)", () => {
 		expect(prompt).toContain("--question-id");
 	});
 
+	it("teaches the post-merge landing-rewrite on checkpoint-disabled projects (FLY-208 5b)", async () => {
+		const prompt = await buildPrompt({ leadId: "sub-lead" });
+		// Previously only inside the approve_to_ship gate block — the incident
+		// project disables that checkpoint, never rewrote the signal, and the
+		// Bridge couldn't prove the ship (evidence-gap + stuck approved_to_ship).
+		expect(prompt).toContain('{status:"merged"');
+		expect(prompt).toContain("mergeCommit");
+		expect(prompt).toContain("land-status.json");
+		expect(prompt).toContain("stage set completed");
+	});
+
 	it("keeps coexistence with the FLY-191 approve gate block when checkpoints ARE enabled", async () => {
 		const prompt = await buildPrompt({
 			leadId: "product-lead",

@@ -242,3 +242,53 @@ export function formatMisroutedReport(
 	lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);
 	return lines.join("\n");
 }
+
+// ── FLY-208 6a: shared gate_question renderer ──
+
+/**
+ * FLY-208 6a (Codex design R2 #5): MailboxLeadRuntime and CommDBLeadRuntime
+ * carried near-duplicate gate_question formatters — exactly the drift class
+ * that bit FLY-195. Extracted BEFORE changing the approve command text so the
+ * required-JSON-shape guidance cannot diverge between runtimes.
+ *
+ * The approve_to_ship reply guidance is the production-incident fix: the
+ * founder-consent wiring only honors `{"approved": true}` (JSON), and a
+ * plain-text "APPROVE — ..." reply was silently recorded as feedback,
+ * forcing a ratify retry loop (FLY-208 finding 6). The template now states
+ * the required shape instead of the misleading generic "your reply".
+ */
+export function formatGateQuestion(env: StuckEscalationEnvelopeLike): string {
+	const e = env.event;
+	const tag = e.checkpoint?.toUpperCase() ?? "GATE";
+	const issueRef = e.issue_identifier || e.issue_id;
+	const roleLabel =
+		e.session_role && e.session_role !== "main"
+			? `[${e.session_role.toUpperCase()}] `
+			: "";
+	// FLY-175 Track 2: approve_to_ship MUST route through the Bridge
+	// founder-consent wrapper (--bridge-url). Other checkpoints keep the
+	// legacy direct command. The --db hint is always present.
+	const isApprove = e.checkpoint === "approve_to_ship";
+	const replyCmd = isApprove
+		? `Reply via: flywheel-comm respond --db ${e.comm_db_path} --bridge-url $BRIDGE_URL --lead <your_id> ${e.question_id} '{"approved": true}'`
+		: `Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`;
+	const lines = [
+		`[Event #${env.seq}] ${roleLabel}gate_question`,
+		`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
+		`[${tag}] Runner asks:`,
+		"---",
+		e.summary ?? "(no content)",
+		"---",
+		replyCmd,
+	];
+	if (isApprove) {
+		lines.push(
+			`APPROVAL SHAPE: to approve you MUST answer with the exact JSON '{"approved": true}' — ` +
+				`any plain text (even starting with "APPROVE") is recorded as FEEDBACK, not approval. ` +
+				`To reject / request changes, answer with plain-text feedback.`,
+		);
+	}
+	lines.push(`Question ID: ${e.question_id}`, `CommDB: ${e.comm_db_path}`);
+	if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+	return lines.join("\n");
+}

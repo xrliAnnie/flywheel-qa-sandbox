@@ -159,7 +159,7 @@ async function gateInner(
 					writeDb.close();
 				}
 
-				const content = response.content;
+				let content = response.content;
 				// If original was ref, try to parse structured response
 				let approved: boolean | undefined;
 				try {
@@ -169,6 +169,17 @@ async function gateInner(
 					}
 				} catch {
 					// Plain text response — not structured
+				}
+
+				// FLY-208 6c-②: the blocking gate hands the Lead's raw reply text
+				// straight back to the Runner. In the production incident the
+				// Runner read a plain-text "APPROVE — ..." reply as authorization
+				// and merged BEFORE verify-approval. Only structured
+				// {"approved": true} carries authority — for approve_to_ship,
+				// stamp every non-structured-approval answer with an explicit
+				// caution so the returned text can never read as a license.
+				if (args.checkpoint === "approve_to_ship" && approved !== true) {
+					content = `${content}\n\nNOTE: this reply text is NOT verified approval — run verify-approval before any merge.`;
 				}
 
 				return { status: "answered", content, approved, exitCode: 0 };
