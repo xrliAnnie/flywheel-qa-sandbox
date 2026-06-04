@@ -6,12 +6,19 @@ own has shown **unchanged terminal output for ≥10 minutes while
 NO judgment — it is a patient tripwire. **You are the judge.** The event is a
 candidate, never a verdict.
 
-The event payload carries evidence to help you judge fast:
-`stuck_minutes`, `terminal_tail` (last lines of the pane),
-`stream_error_signature` (the canonical `API Error: … Stream idle timeout`
-line was seen), `input_box_present` (idle input box at the bottom), and
-**`episode_fingerprint`** — keep this fingerprint; every action below echoes
-it back.
+The event message carries evidence to help you judge fast: stuck minutes,
+a truncated terminal tail, `stream_error_signature` (the canonical
+`API Error: … Stream idle timeout` line was seen), `input_box_present`
+(idle input box at the bottom), and the **episode fingerprint** on its own
+labeled line:
+
+```
+Episode-Fingerprint: <16 hex chars>
+```
+
+Copy that value EXACTLY — every action below echoes it back as
+`episode_fingerprint`. If the line is missing or shows `(missing)`, do NOT
+guess: report it in the issue thread instead of calling the endpoints.
 
 ## Step 1 — Look, then judge
 

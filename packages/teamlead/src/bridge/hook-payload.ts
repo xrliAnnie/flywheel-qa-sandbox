@@ -114,3 +114,68 @@ export function formatDurationMs(ms: number | undefined | null): string {
 	const min = totalMin % 60;
 	return min === 0 ? `${hours}h` : `${hours}h ${min}m`;
 }
+
+// ── FLY-195 hotfix: shared runner_stuck_escalation renderer ──
+
+/**
+ * Structural envelope shape (avoids importing LeadEventEnvelope — lead-runtime
+ * already imports this module; an import here would create a cycle).
+ */
+export interface StuckEscalationEnvelopeLike {
+	seq: number;
+	event: HookPayload;
+	sessionKey: string;
+	timestamp: string;
+}
+
+const STUCK_TAIL_MAX_LINES = 8;
+const STUCK_TAIL_MAX_CHARS = 600;
+
+/**
+ * FLY-195 hotfix (production incident 2026-06-03, GEO-397 double-page):
+ * the escalation EVENT carried `episode_fingerprint` / `stuck_minutes` /
+ * `terminal_tail`, but neither Lead runtime RENDERED them — the Lead was told
+ * to "echo this episode_fingerprint" while "this" was never printed. The
+ * Lead's (correct!) disposition POST then failed validation, the grace window
+ * expired, and EVERY escalation auto-paged Annie — defeating the Q6/Q7 design.
+ *
+ * SHARED between MailboxLeadRuntime and CommDBLeadRuntime on purpose: the two
+ * generic formatters are intentional near-duplicates, and this bug class IS
+ * the drift between event payload and rendered text. One renderer, one truth.
+ *
+ * The fingerprint line is machine-extractable: `Episode-Fingerprint: <16hex>`.
+ */
+export function formatStuckEscalation(
+	env: StuckEscalationEnvelopeLike,
+): string {
+	const e = env.event;
+	const roleLabel =
+		e.session_role && e.session_role !== "main"
+			? `[${e.session_role.toUpperCase()}] `
+			: "";
+	const issueRef = e.issue_identifier || e.issue_id || "—";
+	const lines = [
+		`[Event #${env.seq}] ${roleLabel}runner_stuck_escalation`,
+		`ID: ${e.execution_id || "—"} | Issue: ${issueRef}`,
+		`STUCK candidate: output unchanged for ${e.stuck_minutes ?? "?"} min while status=${e.status ?? "running"} — judge and re-manage (candidate, NOT a verdict).`,
+		`Episode-Fingerprint: ${e.episode_fingerprint ?? "(missing)"}`,
+		'(echo this fingerprint EXACTLY as "episode_fingerprint" in your stuck-disposition / recovery-nudge call)',
+		`Evidence: input_box_present=${e.input_box_present ?? "?"} | stream_error_signature=${e.stream_error_signature ?? "?"}`,
+	];
+	if (e.terminal_tail) {
+		const tailLines = e.terminal_tail.split("\n").slice(-STUCK_TAIL_MAX_LINES);
+		let tail = tailLines.join("\n");
+		if (tail.length > STUCK_TAIL_MAX_CHARS) {
+			tail = tail.slice(-STUCK_TAIL_MAX_CHARS);
+		}
+		lines.push(
+			"--- terminal tail (truncated; capture live before acting) ---",
+			tail,
+			"---",
+		);
+	}
+	if (e.stage_context) lines.push(`Note: ${e.stage_context}`);
+	if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+	lines.push(`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`);
+	return lines.join("\n");
+}
