@@ -1,4 +1,8 @@
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import type http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
@@ -52,7 +56,35 @@ describe("Bridge E2E lifecycle", () => {
 		Authorization: "Bearer ingest-secret",
 	};
 
+	// FLY-191 Phase 2 (Codex PR R1 HIGH-3): approve requires a writable CommDB
+	// gate — sandbox comm root + seeded pending gate question. The completion
+	// event must carry the questionId (R2 HIGH-1: a Phase-2 needs_review
+	// without it gets the UNBOUND sentinel and approve refuses).
+	let commRoot: string;
+	let seededGateQid: string;
+
 	beforeEach(async () => {
+		commRoot = mkdtempSync(join(tmpdir(), "fly191-e2e-comm-"));
+		process.env.FLYWHEEL_COMM_ROOT = commRoot;
+		mkdirSync(join(commRoot, "geoforge3d"), { recursive: true });
+		const commDb = new CommDB(join(commRoot, "geoforge3d", "comm.db"), true);
+		commDb.registerSession(
+			"exec-e2e",
+			"sess:win",
+			"geoforge3d",
+			undefined,
+			"product-lead",
+		);
+		seededGateQid = commDb.insertQuestion(
+			"exec-e2e",
+			"product-lead",
+			"PR ready",
+			{
+				checkpoint: "approve_to_ship",
+			},
+		);
+		commDb.close();
+
 		store = await StateStore.create(":memory:");
 		const app = createBridgeApp(store, testProjects, makeConfig());
 		server = app.listen(0, "127.0.0.1");
@@ -67,6 +99,8 @@ describe("Bridge E2E lifecycle", () => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
+		rmSync(commRoot, { recursive: true, force: true });
+		delete process.env.FLYWHEEL_COMM_ROOT;
 	});
 
 	it("full lifecycle: start → complete → query → approve", async () => {
@@ -113,6 +147,7 @@ describe("Bridge E2E lifecycle", () => {
 						linesRemoved: 45,
 					},
 					summary: "Refactored auth module",
+					reviewQuestionId: seededGateQid,
 				},
 			}),
 		});

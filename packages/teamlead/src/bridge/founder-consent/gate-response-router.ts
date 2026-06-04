@@ -37,11 +37,74 @@ export interface GateResponseRouterDeps {
 	getSessionProject: (
 		executionId: string,
 	) => { project_name: string } | undefined;
+	/**
+	 * FLY-191 Phase 2 (Codex PR R1 CRITICAL): the session's CURRENT review
+	 * question id (StateStore review_question_id). When set, answers to ANY
+	 * other approve_to_ship question from that runner are rejected (409) —
+	 * a re-review instantly invalidates the old question, so a Lead replying
+	 * to a stale Discord relay can't approve the wrong request. When the
+	 * session has no binding (legacy blocking-gate flow), behavior is
+	 * unchanged (byte-compat with the default-off rollout).
+	 */
+	getCurrentReviewQuestionId?: (executionId: string) => string | undefined;
 	/** Configured project names (validates a caller-supplied projectName). */
 	configuredProjects: ReadonlySet<string>;
 	/** Override the comm root (tests). Defaults to ~/.flywheel/comm. */
 	commRoot?: string;
 	logger?: { info: (m: string) => void; warn: (m: string) => void };
+	/**
+	 * FLY-191 Phase 2: invoked AFTER a successful CommDB response write (both
+	 * the pass-through and the consent-allow paths — this endpoint is the
+	 * production `flywheel-comm respond --bridge-url` ship path, so it must
+	 * have parity with `/api/actions/approve`):
+	 *   - approval answers (structured `{"approved": true}`) → flip
+	 *     awaiting_review → approved_to_ship (Codex R2 MEDIUM-1) + wake;
+	 *   - non-approval answers (changes_requested feedback) → wake only,
+	 *     NOT terminal (plan §3.2(ii)).
+	 * Best-effort: a hook failure must never fail the request — the response
+	 * row is already durably written; implementations log + emit telemetry.
+	 */
+	onResponseWritten?: (info: {
+		executionId: string;
+		questionId: string;
+		leadId: string;
+		answer: string;
+		db: CommDB;
+	}) => Promise<void>;
+}
+
+/** Structured-approval classifier — the only shape verify-approval honors. */
+function isApprovalAnswer(answer: string): boolean {
+	try {
+		return JSON.parse(answer)?.approved === true;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Run the post-write hook without ever failing the request — the CommDB
+ * response row is already durably written; the transition/wake side effects
+ * are best-effort and surface their own telemetry.
+ */
+async function runPostWriteHook(
+	deps: GateResponseRouterDeps,
+	info: {
+		executionId: string;
+		questionId: string;
+		leadId: string;
+		answer: string;
+		db: CommDB;
+	},
+): Promise<void> {
+	if (!deps.onResponseWritten) return;
+	try {
+		await deps.onResponseWritten(info);
+	} catch (err) {
+		deps.logger?.warn(
+			`[founder-consent] post-write hook failed for ${info.executionId} (response already written): ${(err as Error).message}`,
+		);
+	}
 }
 
 export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
@@ -128,11 +191,66 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 				return;
 			}
 
+			// FLY-191 Phase 2 (Codex PR R1 CRITICAL): only the CURRENT review
+			// question is answerable once a binding exists. The "unbound"
+			// sentinel (R2 HIGH-1 — Phase-2 completion arrived without a
+			// questionId) matches nothing, so it correctly rejects ALL
+			// answers; recovery is the runner re-requesting review.
+			const currentReviewId = deps.getCurrentReviewQuestionId?.(
+				question.from_agent,
+			);
+			if (currentReviewId && currentReviewId !== questionId) {
+				res.status(409).json({
+					error: "stale_review_question",
+					detail: `question ${questionId} is not the runner's current review request (${currentReviewId}); a re-review superseded it (or the review request is missing its binding — runner must re-request review)`,
+					currentReviewQuestionId: currentReviewId,
+				});
+				return;
+			}
+
+			// FLY-191 Phase 2 (Codex R2 HIGH-2): idempotent retry. CommDB
+			// enforces ONE response per question (idx_unique_response), so a
+			// retry after "response written, transition/wake failed" would hit
+			// the unique constraint and never re-run the recovery hook. A
+			// matching prior answer (same approval-ness) skips the write and
+			// re-runs the hook — the hook is idempotent (transition only from
+			// awaiting_review; wake re-delivery is best-effort by design). A
+			// CONFLICTING prior answer is a hard 409: the question is answered;
+			// a different decision needs a fresh review round.
+			const priorResponse = db.getResponse(questionId);
+			if (priorResponse) {
+				if (
+					isApprovalAnswer(priorResponse.content) !== isApprovalAnswer(answer)
+				) {
+					res.status(409).json({
+						error: "question_already_answered",
+						detail: `question ${questionId} already has a ${isApprovalAnswer(priorResponse.content) ? "approval" : "feedback"} response; a different decision requires a new review round`,
+					});
+					return;
+				}
+				await runPostWriteHook(deps, {
+					executionId: question.from_agent,
+					questionId,
+					leadId,
+					answer: priorResponse.content,
+					db,
+				});
+				res.json({ success: true, alreadyResponded: true });
+				return;
+			}
+
 			// PASS-THROUGH (DECISION_MODE=off): no evaluator → write the response
 			// without a consent check. Keeps the CLI→Bridge ship path functional
 			// during the default-off rollout (see GateResponseRouterDeps.evaluator).
 			if (!deps.evaluator) {
 				db.insertResponse(questionId, leadId, answer);
+				await runPostWriteHook(deps, {
+					executionId: question.from_agent,
+					questionId,
+					leadId,
+					answer,
+					db,
+				});
 				res.json({ success: true, passthrough: true });
 				return;
 			}
@@ -183,6 +301,13 @@ export function createGateResponseRouter(deps: GateResponseRouterDeps): Router {
 
 			// 5. Allow: write the response (same path approveExecution uses).
 			db.insertResponse(questionId, leadId, answer);
+			await runPostWriteHook(deps, {
+				executionId: question.from_agent,
+				questionId,
+				leadId,
+				answer,
+				db,
+			});
 			res.json({ success: true, auditId: decision.auditId });
 		} catch (err) {
 			deps.logger?.warn(

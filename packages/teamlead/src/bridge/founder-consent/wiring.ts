@@ -16,9 +16,14 @@
 
 import { type Request, type Response, Router } from "express";
 import { AnthropicLLMClient } from "flywheel-claude-runner";
+import {
+	type ApplyTransitionOpts,
+	applyTransition,
+} from "../../applyTransition.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
-import type { BridgeConfig } from "../types.js";
+import { sendRunnerWake } from "../runner-wake.js";
+import { type BridgeConfig, sqliteDatetime } from "../types.js";
 import {
 	type FounderConsentAuditStore,
 	openAuditStore,
@@ -70,7 +75,16 @@ export function buildFounderConsentWiring(
 		>[0]["fetchImpl"];
 		now?: () => number;
 		nowIso?: () => string;
+		/** FLY-191: gate-router comm root override (tests). */
+		gateCommRoot?: string;
 	},
+	/**
+	 * FLY-191 Phase 2: when provided, gate-response writes flip
+	 * awaiting_review → approved_to_ship via the FSM (Codex R2 MEDIUM-1 —
+	 * parity with /api/actions/approve) before the wake. Without it the wake
+	 * still fires but the status flip is skipped (legacy/test wiring).
+	 */
+	transitionOpts?: ApplyTransitionOpts,
 ): FounderConsentWiring | null {
 	const fc = config.founderConsent;
 	if (!fc) return null; // Track 2 not compiled into this config at all.
@@ -129,14 +143,103 @@ export function buildFounderConsentWiring(
 		return sess ? { project_name: sess.project_name } : undefined;
 	};
 
+	// FLY-191 Phase 2: post-write hook for the gate-response endpoint (the
+	// production `flywheel-comm respond --bridge-url` ship path). An approval
+	// answer (structured {"approved": true} — the only shape verify-approval
+	// honors) flips awaiting_review → approved_to_ship (R2 MEDIUM-1) and sends
+	// an approval wake; any other answer is changes_requested feedback → wake
+	// only, NOT terminal (§3.2(ii)). Best-effort throughout (the router
+	// catches hook errors; sendRunnerWake never throws).
+	const onResponseWritten = async (info: {
+		executionId: string;
+		questionId: string;
+		leadId: string;
+		answer: string;
+		db: Parameters<typeof sendRunnerWake>[1];
+	}): Promise<void> => {
+		let approved = false;
+		try {
+			approved = JSON.parse(info.answer)?.approved === true;
+		} catch {
+			// non-JSON answer → feedback
+		}
+
+		const session = store.getSession(info.executionId);
+		if (!session) {
+			logger.warn(
+				`gate-response post-write: no StateStore session for ${info.executionId}; skipping transition + wake`,
+			);
+			return;
+		}
+
+		if (approved && transitionOpts) {
+			// Parity with approveExecution: only flip from awaiting_review (a
+			// post-approve re-write or odd state must not regress/disturb FSM).
+			if (session.status === "awaiting_review") {
+				const result = applyTransition(
+					transitionOpts,
+					info.executionId,
+					"approved_to_ship",
+					{
+						executionId: info.executionId,
+						issueId: session.issue_id,
+						projectName: session.project_name,
+						trigger: "runner_gate_response",
+					},
+					{ last_activity_at: sqliteDatetime() },
+				);
+				if (!result.ok) {
+					// Recoverable (Codex R2 HIGH-2): the router's idempotent-retry
+					// path re-runs this hook on a repeat respond, so a transient
+					// FSM/store failure here converges on retry.
+					logger.warn(
+						`gate-response approval written but FSM rejected approved_to_ship for ${info.executionId}: ${result.error} — retry the respond to re-run the transition`,
+					);
+				}
+			} else if (session.status === "approved_to_ship") {
+				// Idempotent retry after a previously-completed transition —
+				// nothing to do but re-deliver the wake below.
+			} else {
+				logger.warn(
+					`gate-response approval written for ${info.executionId} but status is "${session.status}" (expected awaiting_review) — transition skipped`,
+				);
+			}
+		}
+
+		await sendRunnerWake(
+			store,
+			info.db,
+			info.executionId,
+			session,
+			approved ? "approval_wake" : "feedback_wake",
+			// Codex PR R1 MEDIUM-5: carry the questionId + (for feedback) the
+			// actual feedback text so the idle runner can act on the wake
+			// without hunting for context. Non-authoritative either way.
+			{
+				questionId: info.questionId,
+				feedbackText: approved ? undefined : info.answer,
+			},
+		);
+	};
+
+	// FLY-191 Phase 2 (Codex PR R1 CRITICAL): the gate router rejects answers
+	// to anything but the session's CURRENT review question (when bound).
+	const getCurrentReviewQuestionId = (
+		executionId: string,
+	): string | undefined =>
+		store.getSession(executionId)?.review_question_id ?? undefined;
+
 	// ── Off: pass-through gate router only, no evaluator/audit/debug ──
 	if (!enabled) {
 		const gateDeps: GateResponseRouterDeps = {
 			evaluator: undefined,
 			resolveContext,
 			getSessionProject,
+			getCurrentReviewQuestionId,
 			configuredProjects,
 			logger,
+			onResponseWritten,
+			commRoot: overrides?.gateCommRoot,
 		};
 		return {
 			resolveContext,
@@ -184,8 +287,11 @@ export function buildFounderConsentWiring(
 		evaluator,
 		resolveContext,
 		getSessionProject,
+		getCurrentReviewQuestionId,
 		configuredProjects,
 		logger,
+		onResponseWritten,
+		commRoot: overrides?.gateCommRoot,
 	};
 
 	return {

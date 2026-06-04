@@ -81,6 +81,25 @@ export interface SessionUpsert {
 	plan_path?: string;
 	/** FLY-137 Phase 5: codex-skip label snapshotted at run start (0|1) */
 	codex_skip?: number;
+	/**
+	 * FLY-191 Phase 2: when the session ENTERED awaiting_review (deadline
+	 * anchor for the Bridge-side 48h review timeout). Set only on entry —
+	 * NEVER drifted by later activity/approval attempts (Codex R1 MEDIUM-6);
+	 * a re-review request (changes_requested → new needs_review) re-enters
+	 * the state and resets it.
+	 */
+	awaiting_review_entered_at?: string;
+	/** FLY-191 Phase 2: dedup stamp — when gate_timed_out was last notified for the CURRENT awaiting_review entry. */
+	gate_timeout_notified_at?: string;
+	/**
+	 * FLY-191 Phase 2 (Codex PR R1 CRITICAL): the CommDB question id of the
+	 * CURRENT review request. verify-approval honors a response ONLY on this
+	 * exact question; Surface B rejects answers to any other approve_to_ship
+	 * question. Set (with pr_head_sha) by `setReviewBinding` on every
+	 * needs_review completion; a re-review overwrites it, instantly
+	 * invalidating approvals on earlier questions — no timestamp-tie games.
+	 */
+	review_question_id?: string;
 }
 
 export interface Session {
@@ -129,9 +148,25 @@ export interface Session {
 	plan_path?: string;
 	/** FLY-137 Phase 5: codex-skip label snapshotted at run start (boolean) */
 	codex_skip?: boolean;
+	/** FLY-191 Phase 2: when the session ENTERED awaiting_review (timeout deadline anchor). */
+	awaiting_review_entered_at?: string;
+	/** FLY-191 Phase 2: gate_timed_out dedup stamp for the current awaiting_review entry. */
+	gate_timeout_notified_at?: string;
+	/** FLY-191 Phase 2: CommDB question id of the CURRENT review request (verify-approval binding). */
+	review_question_id?: string;
 }
 
 // FLY-163: CleanupCandidate removed (CleanupService gone).
+
+/**
+ * FLY-191 Phase 2 (Codex R2 HIGH-1): sentinel stored in
+ * `sessions.review_question_id` when a Phase-2 needs_review completion
+ * carried no usable questionId. Distinguishes "binding required but missing"
+ * (approval REFUSED — fail-closed) from NULL = "pre-Phase-2 legacy session"
+ * (legacy approve fallback allowed). Mirrored in
+ * flywheel-comm/src/commands/verify-approval.ts — keep the values in sync.
+ */
+export const REVIEW_BINDING_UNBOUND = "unbound";
 
 export class StateStore {
 	private db: Database;
@@ -353,6 +388,30 @@ export class StateStore {
 			/* exists */
 		}
 
+		// FLY-191 Phase 2: persisted awaiting_review entry timestamp (Bridge-side
+		// 48h review-timeout anchor; must survive Bridge restarts — NOT the
+		// mutable last_activity_at) + gate_timed_out dedup stamp + the CURRENT
+		// review question binding (Codex PR R1 CRITICAL).
+		try {
+			this.db.run(
+				"ALTER TABLE sessions ADD COLUMN awaiting_review_entered_at TEXT",
+			);
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run(
+				"ALTER TABLE sessions ADD COLUMN gate_timeout_notified_at TEXT",
+			);
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN review_question_id TEXT");
+		} catch {
+			/* exists */
+		}
+
 		// FLY-163: drop legacy conversation_threads index (table is gone).
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
 
@@ -469,6 +528,12 @@ export class StateStore {
 			return; // Ignore: terminal → running is not allowed
 		}
 
+		// FLY-191 Phase 2: stamp awaiting_review entry on this legacy write
+		// path too (same semantics as persistTransition).
+		const enteringAwaitingReview =
+			session.status === "awaiting_review" &&
+			existing?.status !== "awaiting_review";
+
 		this.db.run(
 			`INSERT INTO sessions (
 				execution_id, issue_id, project_name, status,
@@ -554,6 +619,9 @@ export class StateStore {
 				session.session_role ?? null,
 			],
 		);
+		if (enteringAwaitingReview) {
+			this.stampAwaitingReviewEntry(session.execution_id);
+		}
 		this.save();
 	}
 
@@ -568,6 +636,12 @@ export class StateStore {
 		status: string,
 		fields: Partial<SessionUpsert>,
 	): void {
+		// FLY-191 Phase 2: detect entry into awaiting_review BEFORE the upsert
+		// (needs the pre-write status). Stamped after the write succeeds.
+		const enteringAwaitingReview = this.isEnteringAwaitingReview(
+			executionId,
+			status,
+		);
 		this.db.run(
 			`INSERT INTO sessions (
 				execution_id, issue_id, project_name, status,
@@ -653,6 +727,53 @@ export class StateStore {
 				fields.session_role ?? null,
 			],
 		);
+		if (enteringAwaitingReview) {
+			this.stampAwaitingReviewEntry(executionId);
+		}
+		this.save();
+	}
+
+	/**
+	 * FLY-191 Phase 2: true when this write moves the session INTO
+	 * awaiting_review from a different (or no) prior status. A same-status
+	 * re-upsert must NOT count — that would drift the review deadline
+	 * (Codex R1 MEDIUM-6: approval attempts / feedback / keepalives must not
+	 * extend the 48h window). A genuine re-entry (changes_requested →
+	 * re-request review) DOES count and resets the deadline by design.
+	 */
+	private isEnteringAwaitingReview(
+		executionId: string,
+		newStatus: string,
+	): boolean {
+		if (newStatus !== "awaiting_review") return false;
+		return this.getSession(executionId)?.status !== "awaiting_review";
+	}
+
+	/**
+	 * Stamp the awaiting_review entry time + clear the gate_timed_out dedup
+	 * stamp (a fresh entry opens a fresh review window — a new timeout
+	 * notification is allowed for it).
+	 */
+	private stampAwaitingReviewEntry(executionId: string): void {
+		this.db.run(
+			`UPDATE sessions SET
+				awaiting_review_entered_at = datetime('now'),
+				gate_timeout_notified_at = NULL
+			 WHERE execution_id = ?`,
+			[executionId],
+		);
+	}
+
+	/**
+	 * FLY-191 Phase 2: explicit review-window reset for a RE-REQUEST while the
+	 * session is already awaiting_review (changes_requested → runner re-posts
+	 * for review → fresh `needs_review` completion). The FSM has no
+	 * awaiting_review self-loop, so the event sinks call this instead of
+	 * applyTransition for that case. Event-id idempotency upstream guards
+	 * against replays re-stamping.
+	 */
+	resetAwaitingReviewWindow(executionId: string): void {
+		this.stampAwaitingReviewEntry(executionId);
 		this.save();
 	}
 
@@ -705,6 +826,8 @@ export class StateStore {
 			agent_match_method: "agent_match_method",
 			plan_path: "plan_path",
 			codex_skip: "codex_skip",
+			// FLY-191 Phase 2: PR head binding for verify-approval (§5.5.2)
+			pr_head_sha: "pr_head_sha",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -733,10 +856,18 @@ export class StateStore {
 		lastActivityAt: string,
 		lastError?: string,
 	): void {
+		// FLY-191 Phase 2: same entry-stamp semantics as persistTransition.
+		const enteringAwaitingReview = this.isEnteringAwaitingReview(
+			executionId,
+			status,
+		);
 		this.db.run(
 			`UPDATE sessions SET status = ?, last_activity_at = ?, last_error = ? WHERE execution_id = ?`,
 			[status, lastActivityAt, lastError ?? null, executionId],
 		);
+		if (enteringAwaitingReview) {
+			this.stampAwaitingReviewEntry(executionId);
+		}
 		this.save();
 	}
 
@@ -803,6 +934,78 @@ export class StateStore {
 		}
 		stmt.free();
 		return rows;
+	}
+
+	/**
+	 * FLY-191 Phase 2: awaiting_review sessions whose review window has
+	 * expired and that have NOT yet been notified for the current entry.
+	 * Anchored on the persisted `awaiting_review_entered_at` (survives Bridge
+	 * restarts; never drifted by activity). `gate_timeout_notified_at` is
+	 * cleared on every fresh entry (stampAwaitingReviewEntry), so a plain
+	 * IS NULL check dedups exactly once per review window. Rows with a NULL
+	 * entry timestamp (pre-migration legacy) are excluded — no anchor means
+	 * no deadline claim (fail-quiet, they age out via existing patrols).
+	 */
+	getAwaitingReviewTimedOut(thresholdHours: number): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE status = 'awaiting_review'
+			   AND awaiting_review_entered_at IS NOT NULL
+			   AND awaiting_review_entered_at < datetime('now', ?)
+			   AND gate_timeout_notified_at IS NULL`,
+		);
+		stmt.bind([`-${thresholdHours} hours`]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/** FLY-191 Phase 2: dedup stamp — gate_timed_out notified for the current awaiting_review entry. */
+	markGateTimeoutNotified(executionId: string): void {
+		this.db.run(
+			"UPDATE sessions SET gate_timeout_notified_at = datetime('now') WHERE execution_id = ?",
+			[executionId],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-191 Phase 2 (Codex PR R1 CRITICAL + HIGH-2; R2 HIGH-1): bind the
+	 * session to its CURRENT review request. Called on EVERY needs_review
+	 * completion arriving via the HTTP /events path with whatever the event
+	 * carried — NEVER retaining a previous review's binding (a stale
+	 * questionId/pr_head_sha surviving a re-review is exactly the §5.5
+	 * fail-closed contract violation).
+	 *
+	 * Tri-state `review_question_id` (Codex R2 HIGH-1):
+	 *   - real id  → Phase-2 review, approvable only on that exact question;
+	 *   - 'unbound' (REVIEW_BINDING_UNBOUND) → a Phase-2 completion arrived
+	 *     WITHOUT a usable questionId. Approval paths REFUSE (the runner
+	 *     can never verify-approval) — the runner must re-request review
+	 *     with `--question-id`. Without this sentinel, a binding-less
+	 *     Phase-2 session would fall into the legacy branch below and get
+	 *     stranded in approved_to_ship.
+	 *   - NULL → true pre-Phase-2 legacy session (this method never ran):
+	 *     legacy blocking-gate approve fallback stays byte-compatible.
+	 */
+	setReviewBinding(
+		executionId: string,
+		binding: { questionId: string | null; prHeadSha: string | null },
+	): void {
+		this.db.run(
+			"UPDATE sessions SET review_question_id = ?, pr_head_sha = ? WHERE execution_id = ?",
+			[
+				binding.questionId ?? REVIEW_BINDING_UNBOUND,
+				binding.prHeadSha,
+				executionId,
+			],
+		);
+		this.save();
 	}
 
 	getSessionByIdentifier(identifier: string): Session | undefined {
@@ -1207,6 +1410,12 @@ export class StateStore {
 			agent_match_method: (row.agent_match_method as string) ?? undefined,
 			plan_path: (row.plan_path as string) ?? undefined,
 			codex_skip: row.codex_skip ? !!(row.codex_skip as number) : undefined,
+			// FLY-191 Phase 2: review-timeout anchor + dedup stamp + review binding
+			awaiting_review_entered_at:
+				(row.awaiting_review_entered_at as string) ?? undefined,
+			gate_timeout_notified_at:
+				(row.gate_timeout_notified_at as string) ?? undefined,
+			review_question_id: (row.review_question_id as string) ?? undefined,
 		};
 	}
 

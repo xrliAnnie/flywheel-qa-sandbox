@@ -10,7 +10,11 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
-import type { Session, StateStore } from "../StateStore.js";
+import {
+	REVIEW_BINDING_UNBOUND,
+	type Session,
+	type StateStore,
+} from "../StateStore.js";
 import { handleArtifactEvent } from "./artifact-event.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import type { EventFilter } from "./EventFilter.js";
@@ -632,7 +636,112 @@ export function createEventRouter(
 				// FLY-59: Read session role from completed event payload
 				const completedSessionRole = asString(payload.sessionRole) ?? "main";
 
-				if (transitionOpts) {
+				// FLY-191 Phase 2 (§5.5.2 + Codex PR R1 CRITICAL/HIGH-2): the review
+				// BINDING — the exact gate questionId + PR head this review request
+				// is for. External input → validate at the boundary (full 40-hex
+				// sha; uuid-shaped questionId); malformed values become NULL.
+				// Written via setReviewBinding on EVERY awaiting_review outcome so a
+				// re-review can never inherit a previous review's binding — a
+				// missing/garbled value CLEARS the column (verify-approval
+				// fail-closes on NULLs) instead of silently retaining stale data.
+				const prHeadShaRaw = asString(evidence?.headSha)?.toLowerCase();
+				const prHeadSha =
+					prHeadShaRaw && /^[0-9a-f]{40}$/.test(prHeadShaRaw)
+						? prHeadShaRaw
+						: undefined;
+				const reviewQidRaw = asString(payload.reviewQuestionId)?.trim();
+				const reviewQuestionId =
+					reviewQidRaw && /^[0-9a-fA-F-]{8,64}$/.test(reviewQidRaw)
+						? reviewQidRaw
+						: undefined;
+				const writeReviewBinding = (): void => {
+					if (status !== "awaiting_review") return;
+					store.setReviewBinding(event.execution_id, {
+						questionId: reviewQuestionId ?? null,
+						prHeadSha: prHeadSha ?? null,
+					});
+				};
+
+				// FLY-191 Phase 2: shared completion-evidence patch (used by both the
+				// normal transition success branch and the re-review branch below).
+				// pr_head_sha deliberately NOT here — it is owned by
+				// setReviewBinding (NULL-capable; patch skips undefined).
+				const patchCompletionEvidence = (): void => {
+					const prNumber = asNumber(
+						(evidence?.landingStatus as Record<string, unknown> | undefined)
+							?.prNumber,
+					);
+					store.patchSessionMetadata(event.execution_id, {
+						decision_route: route,
+						decision_reasoning: asString(decision?.reasoning),
+						commit_count: asNumber(evidence?.commitCount),
+						files_changed: asNumber(evidence?.filesChangedCount),
+						lines_added: asNumber(evidence?.linesAdded),
+						lines_removed: asNumber(evidence?.linesRemoved),
+						summary: asString(payload.summary),
+						diff_summary: asString(evidence?.diffSummary),
+						commit_messages: Array.isArray(evidence?.commitMessages)
+							? (evidence.commitMessages as string[]).join("\n")
+							: undefined,
+						changed_file_paths: Array.isArray(evidence?.changedFilePaths)
+							? (evidence.changedFilePaths as string[]).join("\n")
+							: undefined,
+						pr_number: prNumber,
+					});
+				};
+
+				// FLY-191 Phase 2: review RE-REQUEST. A fresh needs_review completion
+				// while ALREADY awaiting_review (changes_requested → runner re-posted
+				// for review) is legal but has no FSM self-loop — handle explicitly:
+				// reset the review window (deadline + timeout-dedup stamp), refresh
+				// the PR-head binding (the re-review is for a NEW head), and fall
+				// through to the normal Lead-notification flow below (the Lead must
+				// learn a re-review was requested). Replays can't re-stamp:
+				// insertEvent event_id dedup short-circuits upstream.
+				const isReReview =
+					status === "awaiting_review" &&
+					existingSession?.status === "awaiting_review";
+
+				if (isReReview) {
+					// Codex PR R3 HIGH: dual-sink protection. The in-process emitter
+					// (ExecutionEventEmitter/TeamLeadClient) also POSTs needs_review
+					// completions and NEVER carries a reviewQuestionId. If this
+					// qid-less completion lands on a session that already has a REAL
+					// binding (set by the runner's `flywheel-comm complete
+					// --question-id ...`), writing the UNBOUND sentinel here would
+					// clobber the good binding and permanently fail-close approval.
+					// Treat it as a duplicate emission of the SAME review: keep the
+					// binding, keep the deadline (no window drift), patch evidence
+					// only. A GENUINE re-review that forgot --question-id degrades
+					// safely too — the old binding stays, its question can't approve
+					// the new head (pr_head_sha unchanged → mismatch), and recovery
+					// is re-requesting review properly.
+					const existingBinding = existingSession?.review_question_id;
+					const protectedBinding =
+						!reviewQuestionId &&
+						!!existingBinding &&
+						existingBinding !== REVIEW_BINDING_UNBOUND;
+
+					store.patchSessionMetadata(event.execution_id, {
+						last_activity_at: now,
+						// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
+						issue_identifier: asString(payload.issueIdentifier) || undefined,
+						issue_title: asString(payload.issueTitle),
+						session_role: completedSessionRole,
+					});
+					patchCompletionEvidence();
+					if (protectedBinding) {
+						console.log(
+							`[event-route] qid-less needs_review for ${event.execution_id} with a real binding (${existingBinding}) — treating as duplicate dual-sink emission; binding + review window preserved`,
+						);
+					} else {
+						store.resetAwaitingReviewWindow(event.execution_id);
+						writeReviewBinding();
+						console.log(
+							`[event-route] re-review request for ${event.execution_id}: window reset, questionId=${reviewQuestionId ?? "(unbound)"}, pr_head_sha=${prHeadSha ?? "(cleared)"}`,
+						);
+					}
+				} else if (transitionOpts) {
 					const result = applyTransition(
 						transitionOpts,
 						event.execution_id,
@@ -660,23 +769,8 @@ export function createEventRouter(
 							(evidence?.landingStatus as Record<string, unknown> | undefined)
 								?.prNumber,
 						);
-						store.patchSessionMetadata(event.execution_id, {
-							decision_route: route,
-							decision_reasoning: asString(decision?.reasoning),
-							commit_count: asNumber(evidence?.commitCount),
-							files_changed: asNumber(evidence?.filesChangedCount),
-							lines_added: asNumber(evidence?.linesAdded),
-							lines_removed: asNumber(evidence?.linesRemoved),
-							summary: asString(payload.summary),
-							diff_summary: asString(evidence?.diffSummary),
-							commit_messages: Array.isArray(evidence?.commitMessages)
-								? (evidence.commitMessages as string[]).join("\n")
-								: undefined,
-							changed_file_paths: Array.isArray(evidence?.changedFilePaths)
-								? (evidence.changedFilePaths as string[]).join("\n")
-								: undefined,
-							pr_number: prNumber,
-						});
+						patchCompletionEvidence();
+						writeReviewBinding();
 
 						// GEO-292: Auto-infer stage from landing status (only advance, never regress)
 						if (prNumber) {
@@ -729,6 +823,10 @@ export function createEventRouter(
 						pr_number: legacyPrNumber,
 						session_role: completedSessionRole,
 					});
+
+					// FLY-191 Phase 2: upsertSession's column list doesn't carry the
+					// review binding — write it separately on the legacy path too.
+					writeReviewBinding();
 
 					// GEO-292: Auto-infer stage for legacy path (only advance, never regress)
 					if (legacyPrNumber) {

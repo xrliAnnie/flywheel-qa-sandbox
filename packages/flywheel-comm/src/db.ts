@@ -301,6 +301,12 @@ export class CommDB {
 			.get(runnerId, checkpoint) as Message | undefined;
 	}
 
+	// NOTE (FLY-191 Codex PR R1 CRITICAL): no "latest gate question" helper on
+	// purpose. SQLite created_at has 1s resolution and UUID ids don't sort by
+	// insertion order, so "latest" is ambiguous under same-second re-reviews.
+	// verify-approval binds to the session's persisted review_question_id
+	// instead (StateStore.setReviewBinding).
+
 	// ── Instruction (Phase 2) ──
 
 	insertInstruction(

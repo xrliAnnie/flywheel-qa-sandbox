@@ -21,6 +21,7 @@ import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
+import { verifyApproval } from "./commands/verify-approval.js";
 import {
 	type VisualCaptureArgs,
 	visualCapture,
@@ -35,7 +36,13 @@ function printUsage(): void {
 Commands:
   ask       Ask your Lead a question (non-blocking; Lead notified ≤1 poll tick via Bridge)
   check     Check if a question has been answered
-  gate      Block at a checkpoint until Lead responds (ask+poll+resolve)
+  gate      Block at a checkpoint until Lead responds (ask+poll+resolve).
+            With --no-block (FLY-191): park the question + return questionId
+            JSON immediately; runner goes idle and is woken by mailbox.
+  verify-approval  MANDATORY pre-ship authority check (FLY-191): re-verify the
+            approve_to_ship gate response + StateStore approved_to_ship +
+            pr_head_sha against --pr-head $(git rev-parse HEAD). Fail-closed;
+            exit 0 only when approved. The wake message itself is NEVER authority.
   pending   List unanswered questions for a lead
   respond   Respond to a runner's question
   send      Send an instruction to a runner (Lead use)
@@ -126,6 +133,9 @@ async function main(): Promise<void> {
 			break;
 		case "await-codex-gate":
 			await runAwaitCodexGate(commandArgs);
+			break;
+		case "verify-approval":
+			runVerifyApproval(commandArgs);
 			break;
 		case "cleanup":
 			runCleanup(commandArgs);
@@ -504,6 +514,52 @@ async function runSearch(args: string[]): Promise<void> {
 	}
 }
 
+function runVerifyApproval(args: string[]): void {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			"pr-head": { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			"state-db": { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
+
+	if (!values["exec-id"]) {
+		throw new Error("--exec-id is required");
+	}
+	if (!values["pr-head"]) {
+		throw new Error(
+			"--pr-head is required (full sha: --pr-head $(git rev-parse HEAD))",
+		);
+	}
+
+	const dbPath = resolveDbPath({ db: values.db, project: values.project });
+	const result = verifyApproval({
+		execId: values["exec-id"],
+		prHead: values["pr-head"],
+		dbPath,
+		stateDbPath: values["state-db"],
+	});
+
+	// Always emit structured JSON — the runner's ship decision branches on it
+	// (plus the exit code for bash chaining: 0 approved, 1 not approved).
+	console.log(
+		JSON.stringify({
+			approved: result.approved,
+			reason: result.reason,
+			questionId: result.questionId,
+			responseFrom: result.responseFrom,
+			status: result.status,
+			expectedPrHeadSha: result.expectedPrHeadSha,
+		}),
+	);
+	process.exit(result.exitCode);
+}
+
 async function runComplete(args: string[]): Promise<void> {
 	const { values } = parseArgs({
 		args,
@@ -515,6 +571,9 @@ async function runComplete(args: string[]): Promise<void> {
 			summary: { type: "string" },
 			"exit-reason": { type: "string" },
 			"base-ref": { type: "string" },
+			// FLY-191 Phase 2: bind the review request to the exact gate
+			// question from `gate --no-block` (route=needs_review).
+			"question-id": { type: "string" },
 		},
 		allowPositionals: false,
 	});
@@ -527,6 +586,7 @@ async function runComplete(args: string[]): Promise<void> {
 		summary: values.summary,
 		exitReason: values["exit-reason"],
 		baseRef: values["base-ref"],
+		questionId: values["question-id"],
 	});
 }
 
@@ -834,6 +894,10 @@ async function runGate(args: string[]): Promise<void> {
 			db: { type: "string" },
 			project: { type: "string" },
 			json: { type: "boolean", default: false },
+			// FLY-191 Phase 2: park the question and return immediately (runner
+			// goes idle instead of freezing in the poll loop). Output is always
+			// structured JSON in this mode so the runner can log the questionId.
+			"no-block": { type: "boolean", default: false },
 		},
 		allowPositionals: true,
 	});
@@ -903,9 +967,20 @@ async function runGate(args: string[]): Promise<void> {
 		timeoutBehaviorSource,
 		cleanupTtlHours,
 		stage: values.stage,
+		noBlock: values["no-block"],
 	});
 
-	if (values.json) {
+	if (values["no-block"]) {
+		// FLY-191 Phase 2: always structured JSON so the runner can correlate
+		// the eventual approval (questionId) and Blueprint can assert on shape.
+		console.log(
+			JSON.stringify({
+				status: result.status,
+				questionId: result.questionId,
+				checkpoint,
+			}),
+		);
+	} else if (values.json) {
 		console.log(JSON.stringify(result));
 	} else if (result.status === "answered") {
 		console.log(result.content ?? "");

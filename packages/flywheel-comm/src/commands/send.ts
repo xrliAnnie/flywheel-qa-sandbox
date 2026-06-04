@@ -1,9 +1,5 @@
-import {
-	AgentTeamTransportFactory,
-	deriveRunnerMailboxIdentity,
-} from "flywheel-agent-team-transport";
-import { resolveCommBackend } from "flywheel-config";
 import { CommDB } from "../db.js";
+import { wakeRunnerMailbox } from "../wake.js";
 
 export interface SendArgs {
 	fromAgent: string;
@@ -34,55 +30,26 @@ export interface SendArgs {
  */
 export async function send(args: SendArgs): Promise<string> {
 	const db = new CommDB(args.dbPath);
-	let id: string;
 	try {
-		id = db.insertInstruction(args.fromAgent, args.toAgent, args.content);
+		const id = db.insertInstruction(args.fromAgent, args.toAgent, args.content);
 
-		// Rollback mode (FLYWHEEL_COMM_BACKEND=commdb): the Runner has no mailbox
-		// sentinel and the hook injects CommDB instructions directly — do NOT
-		// write the mailbox.
-		if (resolveCommBackend() !== "mailbox") {
-			return id;
-		}
-
-		// Resolve the Runner's mailbox identity from its session row. lead_id +
-		// execution_id are both populated on the production spawn path; if the
-		// session or lead_id is missing we degrade to CommDB-only (best-effort).
-		const session = db.getSession(args.toAgent);
-		if (!session?.lead_id) {
+		// FLY-191: wake logic extracted to wake.ts (shared with the approval
+		// write-sites). Semantics unchanged from FLY-168: best-effort, CommDB
+		// row is the durable record, diagnostics to stderr only.
+		const wake = await wakeRunnerMailbox({
+			db,
+			execId: args.toAgent,
+			fromAgent: args.fromAgent,
+			content: args.content,
+			metadata: { flywheelId: id, execId: args.toAgent },
+		});
+		if (wake.skippedReason === "no_session_lead") {
 			console.warn(
 				`[flywheel-comm send] no session/lead_id for ${args.toAgent}; mailbox wake skipped (CommDB instruction written)`,
 			);
-			return id;
-		}
-
-		const { agentName, teamName } = deriveRunnerMailboxIdentity(
-			args.toAgent,
-			session.lead_id,
-		);
-
-		try {
-			const transport = AgentTeamTransportFactory.fromEnv();
-			await transport.write({
-				// In this architecture leadName === teamName === leadId: each Lead
-				// owns one team named after itself, and the Runner inbox lives at
-				// teams/<leadId>/inboxes/<agentName>.json.
-				leadName: teamName,
-				recipient: agentName,
-				payload: {
-					from: args.fromAgent,
-					to: agentName,
-					content: args.content,
-					metadata: { flywheelId: id, execId: args.toAgent },
-				},
-			});
-		} catch (err) {
-			// Best-effort wake — never block on mailbox failure. CommDB row is the
-			// durable record; surface loudly on stderr for ops recovery.
+		} else if (wake.error) {
 			console.error(
-				`[flywheel-comm send] mailbox wake failed for ${args.toAgent}: ${
-					(err as Error).message
-				}`,
+				`[flywheel-comm send] mailbox wake failed for ${args.toAgent}: ${wake.error}`,
 			);
 		}
 

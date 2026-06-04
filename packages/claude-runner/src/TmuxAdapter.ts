@@ -307,6 +307,12 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.bridgeIngestToken) {
 			envArgs.push("-e", `FLYWHEEL_INGEST_TOKEN=${ctx.bridgeIngestToken}`);
 		}
+		// FLY-191 Phase 2: verify-approval must read the SAME StateStore the
+		// Bridge writes (QA-caught: custom TEAMLEAD_DB_PATH deployments left
+		// the Runner on the default-path DB → fail-closed forever).
+		if (ctx.stateDbPath) {
+			envArgs.push("-e", `FLYWHEEL_STATE_DB_PATH=${ctx.stateDbPath}`);
+		}
 		if (ctx.projectName) {
 			envArgs.push("-e", `FLYWHEEL_PROJECT_NAME=${ctx.projectName}`);
 		}

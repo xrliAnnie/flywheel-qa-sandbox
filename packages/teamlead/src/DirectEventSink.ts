@@ -251,28 +251,67 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// isPostApproveShipComplete needs to see approved_to_ship → completed transition.
 		const preExistingSession = this.store.getSession(env.executionId);
 
-		this.store.upsertSession({
-			execution_id: env.executionId,
-			issue_id: env.issueId,
-			project_name: env.projectName,
-			status,
-			last_activity_at: now,
-			decision_route: route,
-			decision_reasoning: result.decision?.reasoning,
-			commit_count: result.evidence?.commitCount,
-			files_changed: result.evidence?.filesChangedCount,
-			lines_added: result.evidence?.linesAdded,
-			lines_removed: result.evidence?.linesRemoved,
-			summary,
-			diff_summary: result.evidence?.diffSummary,
-			commit_messages: result.evidence?.commitMessages?.join("\n"),
-			changed_file_paths: result.evidence?.changedFilePaths?.join("\n"),
-			// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
-			issue_identifier: env.issueIdentifier || undefined,
-			issue_title: env.issueTitle,
-			pr_number: prNumber,
-			session_role: env.sessionRole ?? "main",
-		});
+		// FLY-191 Phase 2 (Codex R4 CRITICAL + R5 HIGH): a Phase-2-bound
+		// session's status/binding/window are owned by the HTTP
+		// `complete --question-id` path. Computed BEFORE upsertSession (R5):
+		// a late qid-less needs_review emission landing AFTER approval would
+		// otherwise drag approved_to_ship back to awaiting_review (upsertSession
+		// has no FSM guard for that edge) and re-stamp the review window via
+		// the entry-stamp logic — leaving verify-approval fail-closed on
+		// status mismatch until a manual re-approve.
+		const phase2Bound = !!preExistingSession?.review_question_id;
+		const evidenceOnly =
+			status === "awaiting_review" &&
+			phase2Bound &&
+			preExistingSession !== undefined &&
+			preExistingSession.status !== "awaiting_review";
+
+		if (evidenceOnly) {
+			// No status write, no entry stamp — metadata/evidence only.
+			this.store.patchSessionMetadata(env.executionId, {
+				last_activity_at: now,
+				decision_route: route,
+				decision_reasoning: result.decision?.reasoning,
+				commit_count: result.evidence?.commitCount,
+				files_changed: result.evidence?.filesChangedCount,
+				lines_added: result.evidence?.linesAdded,
+				lines_removed: result.evidence?.linesRemoved,
+				summary,
+				diff_summary: result.evidence?.diffSummary,
+				commit_messages: result.evidence?.commitMessages?.join("\n"),
+				changed_file_paths: result.evidence?.changedFilePaths?.join("\n"),
+				issue_identifier: env.issueIdentifier || undefined,
+				issue_title: env.issueTitle,
+				pr_number: prNumber,
+				session_role: env.sessionRole ?? "main",
+			});
+			console.warn(
+				`[DirectEventSink] qid-less needs_review for Phase-2-bound ${env.executionId} while status="${preExistingSession?.status}" — evidence-only (status/binding/window owned by the HTTP binding path)`,
+			);
+		} else {
+			this.store.upsertSession({
+				execution_id: env.executionId,
+				issue_id: env.issueId,
+				project_name: env.projectName,
+				status,
+				last_activity_at: now,
+				decision_route: route,
+				decision_reasoning: result.decision?.reasoning,
+				commit_count: result.evidence?.commitCount,
+				files_changed: result.evidence?.filesChangedCount,
+				lines_added: result.evidence?.linesAdded,
+				lines_removed: result.evidence?.linesRemoved,
+				summary,
+				diff_summary: result.evidence?.diffSummary,
+				commit_messages: result.evidence?.commitMessages?.join("\n"),
+				changed_file_paths: result.evidence?.changedFilePaths?.join("\n"),
+				// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
+				issue_identifier: env.issueIdentifier || undefined,
+				issue_title: env.issueTitle,
+				pr_number: prNumber,
+				session_role: env.sessionRole ?? "main",
+			});
+		}
 
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId
 		{
@@ -282,6 +321,44 @@ export class DirectEventSink implements ExecutionEventEmitter {
 					issue_identifier: env.issueId,
 				});
 			}
+		}
+
+		// FLY-191 Phase 2 (§5.5.2; Codex R2 HIGH-1 scoping + R4 CRITICAL): this
+		// in-process sink is the LEGACY headless path — it has no gate
+		// questionId source, so it must NEVER touch a Phase-2 review binding
+		// in ANY part (the questionId AND the pr_head_sha are one atomic pair
+		// owned by the HTTP `complete --question-id` path). R4 attack shape:
+		// session bound to Q1+headA; a qid-less in-process emission carrying
+		// headB would otherwise patch pr_head_sha=B while the binding stays
+		// Q1 — letting Q1's (old) approval authorize the NEW head B through
+		// verify-approval. So: any existing Phase-2 binding (real id OR the
+		// UNBOUND sentinel) → evidence-only here, no sha write, no window
+		// reset (no deadline drift from duplicate emissions). Pure-legacy
+		// sessions (binding NULL — setReviewBinding never ran) keep the old
+		// behavior: contribute pr_head_sha when valid + reset the window on
+		// re-review.
+		if (status === "awaiting_review" && !phase2Bound) {
+			const headShaRaw = result.evidence?.headSha?.toLowerCase();
+			if (headShaRaw && /^[0-9a-f]{40}$/.test(headShaRaw)) {
+				this.store.patchSessionMetadata(env.executionId, {
+					pr_head_sha: headShaRaw,
+				});
+			}
+		}
+
+		// FLY-191 Phase 2: review RE-REQUEST parity with event-route — a fresh
+		// needs_review completion while already awaiting_review resets the
+		// review window (upsertSession's entry-stamp deliberately ignores
+		// same-status writes, so reset explicitly here). Phase-2-bound
+		// sessions are excluded (R4): their window is owned by the HTTP
+		// binding path; a qid-less duplicate must not extend the deadline.
+		if (
+			status === "awaiting_review" &&
+			preExistingSession?.status === "awaiting_review" &&
+			route === "needs_review" &&
+			!phase2Bound
+		) {
+			this.store.resetAwaitingReviewWindow(env.executionId);
 		}
 
 		// GEO-292: Stage auto-inference (only advance, never regress)

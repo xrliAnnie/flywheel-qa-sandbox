@@ -62,6 +62,10 @@ describe("complete command", () => {
 			if (a[0] === "rev-parse" && a[1] === "--abbrev-ref" && a[2] === "HEAD") {
 				return "feat/v1.23.0-FLY-108-session-status-flip\n";
 			}
+			// FLY-191: bare HEAD sha for evidence.headSha
+			if (a[0] === "rev-parse" && a[1] === "HEAD" && a.length === 2) {
+				return `${"c".repeat(40)}\n`;
+			}
 			if (a[0] === "merge-base") {
 				return "abc123base\n";
 			}
@@ -143,6 +147,49 @@ describe("complete command", () => {
 			"test: add tests",
 			"refactor: cleanup",
 		]);
+
+		// FLY-191 Phase 2 (§5.5.2): completion binds the exact worktree HEAD —
+		// the Bridge persists it as pr_head_sha for verify-approval.
+		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("FLY-191: --question-id travels as payload.reviewQuestionId (review binding)", async () => {
+		await complete({
+			route: "needs_review",
+			merged: false,
+			questionId: "55555555-5555-5555-5555-555555555555",
+		});
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		expect(body.payload.reviewQuestionId).toBe(
+			"55555555-5555-5555-5555-555555555555",
+		);
+	});
+
+	it("FLY-191: no --question-id → payload.reviewQuestionId absent", async () => {
+		await complete({ route: "needs_review", merged: false });
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		expect(body.payload.reviewQuestionId).toBeUndefined();
+	});
+
+	it("FLY-191: malformed/unavailable git HEAD → evidence.headSha ABSENT (fail-closed downstream)", async () => {
+		execFileSyncMock.mockImplementation((cmd, args) => {
+			if (cmd !== "git") throw new Error(`unexpected cmd ${cmd}`);
+			const a = (args ?? []) as string[];
+			if (a[0] === "rev-parse" && a[1] === "HEAD" && a.length === 2) {
+				return "fatal: not a git repository\n"; // garbage, not a sha
+			}
+			return "";
+		});
+
+		await complete({ route: "needs_review", merged: false });
+
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		// Never guess: absent field → verify-approval fail-closes on the
+		// missing persisted sha rather than matching garbage.
+		expect(body.payload.evidence.headSha).toBeUndefined();
 	});
 
 	it("missing --route → exit 1", async () => {
