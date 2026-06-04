@@ -10,7 +10,7 @@
  */
 
 import { CommDB } from "flywheel-comm/db";
-import { formatDurationMs } from "./hook-payload.js";
+import { formatDurationMs, formatStuckEscalation } from "./hook-payload.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -155,6 +155,16 @@ export class CommDBLeadRuntime implements LeadRuntime {
 			];
 			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 			return lines.join("\n");
+		}
+
+		// FLY-195 hotfix: runner_stuck_escalation MUST render the
+		// episode_fingerprint (+ stuck evidence) — the generic formatter below
+		// drops them, the Lead cannot echo the fingerprint, its disposition
+		// POST fails validation, and the Q7 fallback false-pages Annie
+		// (production incident 2026-06-03, GEO-397). Shared renderer keeps
+		// mailbox/commdb parity by construction.
+		if (e.event_type === "runner_stuck_escalation") {
+			return formatStuckEscalation(env);
 		}
 
 		// FLY-59: Prefix role label for non-main sessions
