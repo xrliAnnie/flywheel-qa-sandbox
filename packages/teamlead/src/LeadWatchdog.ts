@@ -96,6 +96,12 @@ interface LeadState {
 	/** Signature of the pane that triggered the last alert, used as the
 	 * mute key while the pane stays unchanged inside Cooldown. */
 	cooldownSignature: string | null;
+	/** FLY-220: the blocked-keyword kind of the CURRENT alerted episode (null when
+	 * the Lead is not in an already-alerted block). Cleared when the live state no
+	 * longer classifies as a blocked kind (recovery) so the next genuine block
+	 * fires fresh. Makes a real block alert once-per-episode regardless of pane
+	 * churn. */
+	episodeKind: AlertEventType | null;
 }
 
 const BLOCKED_KEYWORDS: Array<{ kind: AlertEventType; tokens: RegExp[] }> = [
@@ -213,21 +219,41 @@ export class LeadWatchdog {
 			return;
 		}
 
-		const hash = hashPane(pane);
+		// FLY-220: classify the Lead's OWN live state (echo/scrollback stripped) up
+		// front, so recovery is detected on EVERY tick — even one where the pane
+		// changed (a working/idle recovery churns the pane and would otherwise
+		// early-return below before classification). The moment the live state stops
+		// showing the alerted block, the episode is over → clear it so the next
+		// genuine block fires fresh (Codex R5 HIGH-1: an episode must never outlive
+		// the condition that opened it, or a real new block of the same kind is
+		// silenced forever).
+		const kind = classify(pane);
+		if (state.episodeKind !== null && state.episodeKind !== kind) {
+			state.episodeKind = null;
+		}
+
+		// FLY-220: CHANGE-DETECTION + cooldown signature hash the Lead's OWN live
+		// state (echo/scrollback stripped). A persistent real block therefore
+		// accumulates `stuckCycles` and fires its FIRST alert even while the Bridge's
+		// own alert echoes churn the full pane every poll (Codex R6 HIGH-1: a
+		// full-pane hash changed every poll → never reached the threshold → the real
+		// block's first alert was never sent). The eventId is computed SEPARATELY
+		// from the full pane in `emitAlert` (FLY-83/shell parity, distinct episodes).
+		const liveHash = hashPane(ownStateRegion(pane));
 		if (state.lastHash === null) {
 			// First capture in this lead's lifecycle. Establish baseline; do not
 			// alert yet because we need at least one prior tick to confirm the
 			// pane is genuinely settled (not mid-render).
-			state.lastHash = hash;
+			state.lastHash = liveHash;
 			state.stuckCycles = 1;
 			if (state.state === "AwaitingFirstCapture") state.state = "Healthy";
 			return;
 		}
-		if (hash !== state.lastHash) {
-			// Pane content changed. Reset stuck tracking. (Fix 4) Cooldown is
+		if (liveHash !== state.lastHash) {
+			// Live state changed. Reset stuck tracking. (Fix 4) Cooldown is
 			// signature-scoped: any change drops cooldown immediately so the
 			// next genuine stuck (with a different signature) can fire fresh.
-			state.lastHash = hash;
+			state.lastHash = liveHash;
 			state.stuckCycles = 1;
 			state.cooldownSignature = null;
 			state.state = "Healthy";
@@ -235,16 +261,14 @@ export class LeadWatchdog {
 		}
 		state.stuckCycles += 1;
 
-		// Same pane signature as the last alert — stay muted. The signature
-		// includes pane content (Fix 3), so a different stuck condition will
-		// produce a different signature and bypass this guard.
-		if (state.state === "Cooldown" && state.cooldownSignature === hash) {
+		// Same live-state signature as the last alert — stay muted.
+		if (state.state === "Cooldown" && state.cooldownSignature === liveHash) {
 			return;
 		}
 		// If we're somehow still in Cooldown but the signature no longer
 		// matches (defensive — change branch above already handles the
 		// common case), exit cooldown so classification can run.
-		if (state.state === "Cooldown" && state.cooldownSignature !== hash) {
+		if (state.state === "Cooldown" && state.cooldownSignature !== liveHash) {
 			state.state = "Healthy";
 			state.cooldownSignature = null;
 		}
@@ -263,7 +287,16 @@ export class LeadWatchdog {
 			return;
 		}
 
-		const kind = classify(pane);
+		// FLY-220 episode dedup: a GENUINE block alerts ONCE per episode. Once we
+		// have alerted this kind, stay muted until the Lead RECOVERS (the every-tick
+		// recovery check above cleared `episodeKind`). This — not the pane-hash
+		// cooldown, which drifts as alert echoes/scrollback churn the pane — is what
+		// makes a real rate_limit/usage cap fire once instead of forever (Annie's
+		// "it never stops" report).
+		if (kind !== "pane_hash_stuck" && state.episodeKind === kind) {
+			state.state = "Silent";
+			return;
+		}
 
 		// Fix 1: pattern-first alert. Once the pane has been stable for at
 		// least `paneHashStuckCycles` (default 2 → ~60s) AND we recognize a
@@ -273,7 +306,10 @@ export class LeadWatchdog {
 			kind !== "pane_hash_stuck" &&
 			state.stuckCycles >= this.config.paneHashStuckCycles
 		) {
-			await this.emitAlert(projectName, leadId, pane, state, kind, hash);
+			// FLY-220: mark this episode alerted so the same ongoing block stays
+			// muted until the Lead recovers (kind → pane_hash_stuck above).
+			state.episodeKind = kind;
+			await this.emitAlert(projectName, leadId, pane, state, kind, liveHash);
 			return;
 		}
 
@@ -304,7 +340,7 @@ export class LeadWatchdog {
 				pane,
 				state,
 				"pane_hash_stuck",
-				hash,
+				liveHash,
 			);
 			return;
 		}
@@ -320,14 +356,15 @@ export class LeadWatchdog {
 		pane: string,
 		state: LeadState,
 		kind: AlertEventType,
-		paneHash: string,
+		liveHash: string,
 	): Promise<void> {
-		// Fix 3: signature-based eventId. The pane hash is a stable
-		// fingerprint of the actual stuck content; pairing it with
-		// projectName + leadId + kind makes the eventId reproducible across
-		// Bridge restarts (no bucket aliasing) and naturally distinct after
-		// recovery+re-stuck (different pane content → different signature).
-		const eventId = computeEventId(projectName, leadId, kind, paneHash);
+		// Fix 3: signature-based eventId. Computed from the FULL pane (FLY-220:
+		// NOT the live-state `liveHash` used for change-detection) so it stays
+		// byte-for-byte in sync with `scripts/lead-alert.sh` (cross-process
+		// claims.db parity) and naturally distinct after recovery+re-stuck
+		// (the surrounding scrollback differs between episodes). `liveHash` is
+		// only the in-process cooldown signature.
+		const eventId = computeEventId(projectName, leadId, kind, hashPane(pane));
 
 		// Shell-side claim check (single-direction read). Atomic claim still
 		// happens inside LeadAlertNotifier.alert() via claimsClaimer (Fix 2);
@@ -367,14 +404,14 @@ export class LeadWatchdog {
 			} else {
 				state.state = "Cooldown";
 			}
-			state.cooldownSignature = paneHash;
+			state.cooldownSignature = liveHash;
 			state.lastAlertAtMs = this.now();
 		} catch (err) {
 			this.logger(
 				`notifier threw for ${leadId}/${kind}: ${(err as Error).message}`,
 			);
 			state.state = "Cooldown";
-			state.cooldownSignature = paneHash;
+			state.cooldownSignature = liveHash;
 			state.lastAlertAtMs = this.now();
 		}
 	}
@@ -388,6 +425,7 @@ export class LeadWatchdog {
 				stuckCycles: 0,
 				lastAlertAtMs: null,
 				cooldownSignature: null,
+				episodeKind: null,
 			};
 			this.leadStates.set(leadId, state);
 		}
@@ -429,7 +467,10 @@ export function computeEventId(
 }
 
 function classify(pane: string): AlertEventType {
-	const lower = pane.toLowerCase();
+	// FLY-220: scan the Lead's OWN live state, not the full pane — an alert
+	// echoed back into the pane (shared core channel) must never re-classify as
+	// that same blocked state. FLY-193 live-region scoping + echo/template strip.
+	const lower = ownStateRegion(pane).toLowerCase();
 	for (const { kind, tokens } of BLOCKED_KEYWORDS) {
 		if (tokens.some((t) => t.test(lower))) return kind;
 	}
@@ -514,6 +555,57 @@ function liveRegion(pane: string): string {
 }
 
 /**
+ * FLY-220 — signals that a pane line STARTS an alert echo (a Bridge alert posted
+ * to a SHARED core channel echoes into every Lead's pane). These are
+ * BRIDGE-UNIQUE — text a real Claude Code TUI never emits about itself — so
+ * stripping a line on them alone can NEVER hide a genuine Lead block (Codex R1
+ * HIGH-1). Inbound messages render `←`-prefixed and are usually truncated to one
+ * line (see the real `idle-product-lead.txt` fixture); the `(<lead> / <kind>)`
+ * signature + the canned titles cover a non-`←` first line too.
+ */
+const INBOUND_ECHO_LINE = /^\s*←/;
+const ALERT_ECHO_START =
+	/\(\s*[a-z0-9-]+\s*\/\s*(?:rate_limit|usage_limit|login_expired|permission_blocked|pane_hash_stuck|crash_loop|runner_stuck_unhandled)\s*\)|\blead hit (?:rate|usage) limit\b|\blead login expired\b|\blead waiting on permission prompt\b|\blead pane has been frozen\b|\blead crash-looping\b|\brunner stuck unhandled\b/i;
+
+/**
+ * FLY-220 — the Lead's OWN live state text: the live render region (FLY-193) with
+ * inbound-Discord echoes and the Bridge's own alert template removed (line by
+ * line). EVERY blocked-keyword read (`classify`, `isIdleHealthyPane`,
+ * `isTransientThrottlePane`) goes through this, so an alert echoed back into a
+ * pane (or a stale one in the live region) can never re-trigger the same alert —
+ * root cure for the cross-Lead alert-amplification loop on a shared channel.
+ *
+ * A line is dropped ONLY when it is unambiguously NOT the Lead's own state:
+ *  - `←`-prefixed (an inbound Discord message — tmux's inbound marker), OR
+ *  - it carries a Bridge-UNIQUE alert signature (`ALERT_ECHO_START`: the
+ *    `(<lead> / <kind>)` token or a canned title — text a real Claude TUI never
+ *    emits about itself).
+ *
+ * Deliberately a per-line filter with NO body-continuation stripping (Codex R3):
+ * real inbound echoes render TRUNCATED to a single `←` line (see the committed
+ * `idle-product-lead.txt` fixture — even the kind is cut: `pane_hash_stuc…`), so
+ * the alert body never appears on its own line. Trying to strip a "wrapped body"
+ * would risk swallowing a genuine block rendered right after an echo — and hiding
+ * a real block is worse than a duplicate alarm. If a future REAL capture ever
+ * shows a multi-line (wrapped) echo, the un-stripped body would at worst produce
+ * one extra alarm (fail-toward-alerting), never a hidden block.
+ *
+ * Echoes are removed from the FULL pane BEFORE the live-region window is taken
+ * (Codex R7 HIGH-2): otherwise several inbound echoes accumulating between a real
+ * block line and the input box would consume the window's 4-line budget and push
+ * the genuine block out of view → classify misses it → first alert never fires.
+ */
+function ownStateRegion(pane: string): string {
+	const withoutEchoes = pane
+		.split("\n")
+		.filter(
+			(line) => !INBOUND_ECHO_LINE.test(line) && !ALERT_ECHO_START.test(line),
+		)
+		.join("\n");
+	return liveRegion(withoutEchoes);
+}
+
+/**
  * FLY-182 B3 / FLY-193 — recognize an alive-but-IDLE Claude Code Lead pane.
  *
  * NARROW allowlist, defaults to `false` on any uncertainty (fail-open to
@@ -536,7 +628,9 @@ function liveRegion(pane: string): string {
  */
 export function isIdleHealthyPane(pane: string): boolean {
 	if (!pane) return false;
-	const region = liveRegion(pane);
+	// FLY-220: ignore inbound-echo / Bridge-alert-template lines so an echoed
+	// alert in the live region can't make a healthy idle Lead look blocked.
+	const region = ownStateRegion(pane);
 	const lower = region.toLowerCase();
 	// Any known blocked pattern in the live region → NOT idle-healthy.
 	for (const { tokens } of BLOCKED_KEYWORDS) {
@@ -617,7 +711,9 @@ const INTERRUPT_HINT = /esc to interrupt/i;
  */
 export function isTransientThrottlePane(pane: string): boolean {
 	if (!pane) return false;
-	const region = liveRegion(pane);
+	// FLY-220: own-state region (echo/template stripped) — consistent with
+	// classify/isIdleHealthyPane so an echoed alert never affects suppression.
+	const region = ownStateRegion(pane);
 	const lower = region.toLowerCase();
 	// Must carry a transient-throttle marker in the live region.
 	if (!TRANSIENT_THROTTLE_MARKERS.some((t) => t.test(lower))) return false;

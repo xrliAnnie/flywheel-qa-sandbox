@@ -970,3 +970,338 @@ describe("LeadWatchdog — FLY-218 transient-529 suppression wired through tickL
 		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
 	});
 });
+
+describe("LeadWatchdog — FLY-220 alert-echo loop (blocked-keyword classifier echo immunity)", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	const makeWatchdog = (
+		fixture: string,
+		notifier: NotifierStub,
+		suppressIdleHealthy = true,
+	) =>
+		new LeadWatchdog({
+			pollIntervalMs: 30_000,
+			paneHashStuckCycles: 2,
+			paneHashAlertCycles: 3,
+			cooldownMs: 300_000,
+			projects,
+			store,
+			notifier: notifier.alert,
+			locateWindowFn: async () => ({
+				windowId: "@7",
+				windowName: "geoforge3d-cos-lead",
+			}),
+			captureFn: async () => loadFixture(fixture),
+			claimsReader: async () => new Set(),
+			blockedMarkerReader: async () => [],
+			now: () => 0,
+			suppressIdleHealthy,
+		});
+
+	// The self-amplifying loop: a rate_limit alert posted to a SHARED core channel
+	// echoes into every Lead's pane (`← discord · Peter: ⚠️ **Lead hit rate limit**
+	// (product-lead / rate_limit) …`). The classifier read that echo back as a Lead
+	// rate_limit state → re-fired → re-echoed → 3 Leads amplified each other.
+	it("PRODUCTION REPLAY: an inbound rate_limit alert echo fires ZERO alerts", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("rate-limit-alert-echo.txt", notifier, true);
+		for (let i = 0; i < 6; i++) await wd.pollOnce();
+		expect(notifier.alert).not.toHaveBeenCalled();
+		expect(wd.getState("cos-lead")).toBe("Healthy");
+	});
+
+	it("never classifies an alert echo as rate_limit even with suppression OFF", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("rate-limit-alert-echo.txt", notifier, false);
+		for (let i = 0; i < 4; i++) await wd.pollOnce();
+		for (const p of notifier.results) {
+			expect(p.eventType).not.toBe("rate_limit");
+		}
+	});
+
+	it("isIdleHealthyPane treats an idle Lead with an echoed alert as healthy", () => {
+		// Without echo-stripping the echoed "rate limit" in the live region makes
+		// isIdleHealthyPane return false (blocked keyword) — wrongly un-suppressing.
+		expect(isIdleHealthyPane(loadFixture("rate-limit-alert-echo.txt"))).toBe(
+			true,
+		);
+	});
+
+	it("a REAL rate-limit pane (Lead's own 429, no echo) STILL alerts rate_limit once", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("rate-limit-real.txt", notifier, true);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("rate_limit");
+	});
+
+	it("a real rate-limit pane is NOT idle-healthy (must alert)", () => {
+		expect(isIdleHealthyPane(loadFixture("rate-limit-real.txt"))).toBe(false);
+	});
+
+	// Codex R1 HIGH-2: the fix must cover ALL blocked kinds, not just rate_limit.
+	it("a login_expired alert echo fires ZERO alerts (never login_expired)", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("login-expired-alert-echo.txt", notifier, true);
+		for (let i = 0; i < 6; i++) await wd.pollOnce();
+		expect(notifier.alert).not.toHaveBeenCalled();
+	});
+
+	it("usage_limit and permission echoes (inline) never re-classify as that kind", async () => {
+		const STATUS =
+			"\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ctx 20%";
+		for (const echo of [
+			`← discord · Peter: ⚠️ **Lead hit usage limit** (product-lead / usage_limit) Claude Code usage limit hit. Top up Anthropic billing…${STATUS}`,
+			`← discord · Simba: ⚠️ **Lead waiting on permission prompt** (cos-lead / permission_blocked) Approve / deny it in the tmux pane.${STATUS}`,
+		]) {
+			const notifier = makeNotifier();
+			const wd = new LeadWatchdog({
+				pollIntervalMs: 30_000,
+				paneHashStuckCycles: 2,
+				paneHashAlertCycles: 3,
+				cooldownMs: 300_000,
+				projects,
+				store,
+				notifier: notifier.alert,
+				locateWindowFn: async () => ({
+					windowId: "@7",
+					windowName: "geoforge3d-cos-lead",
+				}),
+				captureFn: async () => echo,
+				claimsReader: async () => new Set(),
+				blockedMarkerReader: async () => [],
+				now: () => 0,
+				suppressIdleHealthy: true,
+			});
+			for (let i = 0; i < 4; i++) await wd.pollOnce();
+			for (const p of notifier.results) {
+				expect(["usage_limit", "permission_blocked"]).not.toContain(
+					p.eventType,
+				);
+			}
+		}
+	});
+
+	// Codex R1 HIGH-1: a STANDALONE line carrying the Bridge's canned BODY text but
+	// NOT an echo (no `←` above it) must NOT be stripped — a real block still alerts.
+	it("a real block with Bridge-like body wording (no echo) STILL alerts rate_limit", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog(
+			"rate-limit-real-bridge-wording.txt",
+			notifier,
+			true,
+		);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("rate_limit");
+	});
+
+	// Codex R3: a benign inbound message line is dropped, but a REAL block rendered
+	// right after it must NOT be hidden — it still alerts (no body-continuation strip
+	// means a real block is never swallowed; the fail-direction is alerting).
+	it("a real block right after a benign inbound message STILL alerts rate_limit", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("inbound-then-real-block.txt", notifier, true);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("rate_limit");
+	});
+});
+
+// FLY-220 (Annie's core point): a GENUINE block must alert ONCE per episode and
+// STOP when the Lead recovers — not re-fire on every pane churn. This is the
+// dedup + recovery layer (episode-kind dedup + own-state hashing), separate from
+// the echo-immunity above.
+describe("LeadWatchdog — FLY-220 episode dedup + recovery (real block alerts once, stops on recovery)", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	const BOX = "──────────────────────────────────────────────── @cos-lead ──";
+	const STATUS =
+		"────\n  Opus 4.8/xhigh | ⚡cos-lead | ctx 31%\n  5h ██████████ 99%  |  7d ░░░░░░░░░░ 70%\n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
+	// A Lead REALLY rate-limited; `echoes` of the Bridge's own alert accumulate in
+	// its pane over time (the full pane churns, the live state does not).
+	const realBlock = (echoes: number): string => {
+		let e = "";
+		for (let i = 0; i < echoes; i++)
+			e +=
+				"← discord · Oliver: ⚠️ **Lead hit rate limit** (ops-lead / rate_limit)\n";
+		return `⏺ My own session is rate limited.\n${e}  ⎿  API Error (429): rate limit exceeded.\n${BOX}\n❯\n${STATUS}`;
+	};
+	const recovered = `⏺ Recovered, back to work.\n${BOX}\n❯\n${STATUS}`;
+
+	const makeWd = (notifier: NotifierStub, captureFn: () => string) =>
+		new LeadWatchdog({
+			pollIntervalMs: 30_000,
+			paneHashStuckCycles: 2,
+			paneHashAlertCycles: 3,
+			cooldownMs: 1_800_000,
+			projects,
+			store,
+			notifier: notifier.alert,
+			locateWindowFn: async () => ({
+				windowId: "@7",
+				windowName: "geoforge3d-cos-lead",
+			}),
+			captureFn: async () => captureFn(),
+			claimsReader: async () => new Set(),
+			blockedMarkerReader: async () => [],
+			now: () => 1_700_000_000_000,
+			suppressIdleHealthy: true,
+		});
+
+	it("a persistent real block + churning echoes fires EXACTLY ONCE", async () => {
+		const notifier = makeNotifier();
+		let echoes = 0;
+		const wd = makeWd(notifier, () => realBlock(echoes));
+		// 6 echo bursts, each stable for 3 polls (a new echo arrives between bursts).
+		for (let b = 0; b < 6; b++) {
+			await wd.pollOnce();
+			await wd.pollOnce();
+			await wd.pollOnce();
+			echoes++;
+		}
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("rate_limit");
+	});
+
+	it("recovery stops the alert; a NEW block after recovery fires fresh", async () => {
+		const notifier = makeNotifier();
+		let phase: "block" | "ok" = "block";
+		const wd = makeWd(notifier, () =>
+			phase === "block" ? realBlock(0) : recovered,
+		);
+		// Episode 1: real block → one alert.
+		await wd.pollOnce();
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		// Recovery → no further alerts.
+		phase = "ok";
+		for (let i = 0; i < 4; i++) await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		// Episode 2: blocked again → fires fresh.
+		phase = "block";
+		await wd.pollOnce();
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(2);
+		expect(notifier.results[1]!.eventType).toBe("rate_limit");
+	});
+
+	// Codex R5 HIGH-1: a WORKING recovery (changing panes, never a stable idle) must
+	// still clear the episode — recovery is evaluated every tick before the
+	// change-detection early-return, so a new block of the same kind fires fresh.
+	it("a WORKING recovery (churning panes) between two blocks → second block fires fresh", async () => {
+		const notifier = makeNotifier();
+		let phase = 0;
+		const block = realBlock(0);
+		const working = (n: number) =>
+			`⏺ working on task ${n}\n✻ Cooking… (esc to interrupt)\n${BOX}\n❯\n${STATUS}`;
+		const wd = makeWd(notifier, () => {
+			// 0,1 = block ; 2,3 = working (changing) ; 4,5 = block again
+			if (phase <= 1) return block;
+			if (phase <= 3) return working(phase);
+			return block;
+		});
+		await wd.pollOnce();
+		phase = 1;
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1); // ep1
+		phase = 2;
+		await wd.pollOnce();
+		phase = 3;
+		await wd.pollOnce(); // working recovery (changing panes, never stable idle)
+		phase = 4;
+		await wd.pollOnce();
+		phase = 5;
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(2); // ep2 fires fresh
+		expect(notifier.results[1]!.eventType).toBe("rate_limit");
+	});
+
+	// Codex R5 HIGH-2: a re-block after recovery must get a FRESH eventId (so the
+	// cross-process claims.db / lead_events UNIQUE does not permanently dedup it).
+	it("a re-block after recovery produces a DISTINCT eventId", async () => {
+		const notifier = makeNotifier();
+		let phase: "b1" | "ok" | "b2" = "b1";
+		const ctx = {
+			b1: `⏺ episode one context\n  ⎿  API Error (429): rate limit exceeded.\n${BOX}\n❯\n${STATUS}`,
+			ok: `⏺ recovered and working\n✻ Cooking… (esc to interrupt)\n${BOX}\n❯\n${STATUS}`,
+			b2: `⏺ episode two context\n  ⎿  API Error (429): rate limit exceeded.\n${BOX}\n❯\n${STATUS}`,
+		};
+		const wd = makeWd(notifier, () => ctx[phase]);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		phase = "ok";
+		await wd.pollOnce();
+		await wd.pollOnce();
+		phase = "b2";
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(2);
+		expect(notifier.results[0]!.eventId).not.toBe(notifier.results[1]!.eventId);
+	});
+
+	// Codex R6 HIGH-1: a real block whose pane receives a DIFFERENT echo every poll
+	// must still fire its FIRST alert. Change-detection hashes the stripped live
+	// state, so the persistent block stays stable and reaches the threshold even as
+	// the full pane churns (a full-pane hash would reset every poll → never fire).
+	it("first alert fires even when a different echo lands every poll", async () => {
+		const notifier = makeNotifier();
+		let n = 0;
+		const wd = makeWd(notifier, () => {
+			n++;
+			return `⏺ rate limited\n← discord · L${n}: ⚠️ **Lead hit rate limit** (l-${n} / rate_limit)\n  ⎿  API Error (429): rate limit exceeded.\n${BOX}\n❯\n${STATUS}`;
+		});
+		for (let i = 0; i < 6; i++) await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("rate_limit");
+	});
+
+	// Codex R7 HIGH-2: several echoes ACCUMULATING between the real block line and
+	// the input box must not push the block out of the live-region window (echoes
+	// are stripped from the full pane BEFORE the window is taken).
+	it("a real block survives 6 echoes accumulated between it and the input box", async () => {
+		const echoes = Array.from(
+			{ length: 6 },
+			(_, i) =>
+				`← discord · L${i}: ⚠️ **Lead hit rate limit** (l-${i} / rate_limit)`,
+		).join("\n");
+		const notifier = makeNotifier();
+		const wd = makeWd(
+			notifier,
+			() =>
+				`  ⎿  API Error (429): rate limit exceeded.\n${echoes}\n${BOX}\n❯\n${STATUS}`,
+		);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("rate_limit");
+	});
+
+	// Inverse: the same 6 accumulated echoes with NO real block → still 0 (immunity
+	// preserved by the front-of-pane echo strip).
+	it("6 accumulated echoes with no real block → ZERO alerts", async () => {
+		const echoes = Array.from(
+			{ length: 6 },
+			(_, i) =>
+				`← discord · L${i}: ⚠️ **Lead hit rate limit** (l-${i} / rate_limit)`,
+		).join("\n");
+		const notifier = makeNotifier();
+		const wd = makeWd(
+			notifier,
+			() => `⏺ idle\n${echoes}\n${BOX}\n❯\n${STATUS}`,
+		);
+		for (let i = 0; i < 4; i++) await wd.pollOnce();
+		expect(notifier.alert).not.toHaveBeenCalled();
+	});
+});
