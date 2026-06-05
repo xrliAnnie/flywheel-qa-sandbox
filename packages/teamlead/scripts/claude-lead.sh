@@ -1315,6 +1315,19 @@ if [ -f "$BASE_HTML_DELIVERY_RULES" ] && [ -r "$BASE_HTML_DELIVERY_RULES" ]; the
   log "Appending base founder-html-delivery rules: ${BASE_HTML_DELIVERY_RULES}"
 fi
 
+# ── FLY-223: Cross-Department Lead Channel (universal — both roles) ──
+# Behavior + five-Lead roster for the shared #leads-roundtable channel where all
+# five Leads are present at once. Loads for EVERY Lead role (cos + dept) because
+# every Lead participates. The rule is inert unless the Lead's identity.md also
+# whitelists the cross-department channel ID (so older checkouts / projects that
+# have not joined the channel see zero behavior change). Optional — missing base
+# file is a no-op (pre-FLY-223 backward compat).
+BASE_CROSS_DEPT_RULES="${BASE_RULES_DIR}/cross-dept-channel-rules.md"
+if [ -f "$BASE_CROSS_DEPT_RULES" ] && [ -r "$BASE_CROSS_DEPT_RULES" ]; then
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_CROSS_DEPT_RULES")
+  log "Appending base cross-dept-channel rules: ${BASE_CROSS_DEPT_RULES}"
+fi
+
 # ── FLY-26: project-side shared rules (concrete data) ──
 if [ -d "$LEAD_RULES_DIR" ]; then
   COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
