@@ -348,12 +348,19 @@ describe("DOC-FLOW with project agent.md (coexistence + constructor slot regress
 		expect(prompt).toContain("DOC-FLOW");
 	});
 
-	it("OFF sentinel for shipped-generic fallback: absent config → zero doc-flow text anywhere in the prompt (Codex code R1 HIGH-1)", async () => {
+	it("OFF sentinel for shipped-generic fallback: absent config → injected DOC-FLOW block absent (Codex code R1 HIGH-1; FLY-217 allows static override-B prose)", async () => {
 		// Zero-config projects use the STATIC shipped generic-executor.md as
-		// their prompt surface. With doc_flow absent, the prompt must carry NO
-		// doc-flow content at all — neither from Blueprint injection nor from
-		// static executor prose (a static doc-flow section would change prompt
-		// bytes for production projects with the feature off).
+		// their prompt surface. The byte-compat guarantee that must hold with
+		// doc_flow absent is that the runtime-injected DOC-FLOW *block* (the one
+		// Blueprint conditionally unshifts, carrying real dept/issue/tier values)
+		// is NOT present.
+		//
+		// FLY-217 update: generic-executor.md now carries conditional doc-flow
+		// HANDLING instructions (override B: "If a DOC-FLOW block is present
+		// elsewhere in this prompt …"). That static prose legitimately mentions
+		// "DOC-FLOW"/"doc-flow path" and is INERT when no block is injected — so
+		// we assert on the injected block's distinctive markers, not the bare
+		// word the override references.
 		const repoRoot = path.resolve(__dirname, "../../../..");
 		const adapter = makeMockAdapter();
 		const dispatcher = new AgentDispatcher({}, undefined, repoRoot);
@@ -383,8 +390,11 @@ describe("DOC-FLOW with project agent.md (coexistence + constructor slot regress
 			.calls[0]![0] as AdapterExecutionContext;
 		const prompt = call.appendSystemPrompt ?? "";
 		expect(prompt).toContain("Generic Executor");
-		expect(prompt).not.toContain("DOC-FLOW");
-		expect(prompt.toLowerCase()).not.toContain("doc-flow");
-		expect(prompt).not.toContain("doc_flow");
+		// FLY-217: assert the runtime-injected DOC-FLOW block is absent (its
+		// distinctive header + lines), NOT the bare word — generic-executor.md's
+		// override-B prose legitimately contains "DOC-FLOW"/"doc-flow path".
+		expect(prompt).not.toContain("DOC-FLOW (project doc conventions");
+		expect(prompt).not.toContain("doc_flow enabled");
+		expect(prompt).not.toContain("Doc tier for this task:");
 	});
 });
