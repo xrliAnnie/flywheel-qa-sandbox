@@ -6,6 +6,7 @@ import type { AlertPayload } from "../LeadAlertNotifier.js";
 import {
 	computeEventId,
 	isIdleHealthyPane,
+	isTransientThrottlePane,
 	LeadWatchdog,
 } from "../LeadWatchdog.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -710,6 +711,258 @@ describe("LeadWatchdog — suppression wired through tickLead on real fixtures (
 	it("STILL alerts on a real resume-menu freeze even with suppression ON", async () => {
 		const notifier = makeNotifier();
 		const wd = makeWatchdog("freeze-resume-menu.txt", notifier);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
+	});
+});
+
+describe("isTransientThrottlePane (FLY-218 recognizer)", () => {
+	// A live 529 always renders inside the normal TUI, so the status bar (the
+	// live-TUI anchor the recognizer requires) is present. These minimal panes
+	// append one to stay realistic.
+	const STATUS_BAR =
+		"\n  ⏵⏵ bypass permissions on (shift+tab to cycle) · ctx 31%";
+
+	it("returns true for the exact production transient-529 wording", () => {
+		expect(
+			isTransientThrottlePane(
+				`Server is temporarily limiting requests (not your usage limit)${STATUS_BAR}`,
+			),
+		).toBe(true);
+	});
+
+	it("returns true on the disclaimer alone (the substring that defeats usage_limit)", () => {
+		expect(isTransientThrottlePane(`not your usage limit${STATUS_BAR}`)).toBe(
+			true,
+		);
+	});
+
+	it("returns true for the overloaded_error API error type", () => {
+		expect(
+			isTransientThrottlePane(
+				`API Error: 529 {"type":"overloaded_error"}${STATUS_BAR}`,
+			),
+		).toBe(true);
+	});
+
+	it("returns FALSE for a real usage cap (must still alert)", () => {
+		expect(isTransientThrottlePane(`usage limit reached${STATUS_BAR}`)).toBe(
+			false,
+		);
+		expect(
+			isTransientThrottlePane(
+				`claude code: usage limit exceeded.${STATUS_BAR}`,
+			),
+		).toBe(false);
+	});
+
+	it("returns FALSE without a live-TUI anchor (fail-open to alerting)", () => {
+		// A bare throttle line with no status bar / idle hint — e.g. it shares a
+		// menu-overlay region — is NOT suppressed (Codex R1 masking guard b).
+		expect(
+			isTransientThrottlePane(
+				"Server is temporarily limiting requests (not your usage limit)\n❯ ",
+			),
+		).toBe(false);
+	});
+
+	it("returns FALSE on empty / idle / unrelated panes", () => {
+		expect(isTransientThrottlePane("")).toBe(false);
+		expect(isTransientThrottlePane('Try "fix the bug"\n? for shortcuts')).toBe(
+			false,
+		);
+		expect(isTransientThrottlePane("some random frozen output")).toBe(false);
+	});
+
+	it("is live-region scoped — a STALE 529 line in scrollback does NOT suppress", () => {
+		// The throttle happened earlier and is now far up in scrollback; the live
+		// render region at the bottom is a clean idle prompt. Recognizing the stale
+		// line would wrongly suppress a later real freeze, so it must return false.
+		const pane = loadFixture("throttle-529-stale-scrollback.txt");
+		// Guard: the fixture really does carry the stale throttle text up top.
+		expect(/not your usage limit/i.test(pane)).toBe(true);
+		expect(isTransientThrottlePane(pane)).toBe(false);
+	});
+});
+
+describe("isTransientThrottlePane — real-frame fixtures (FLY-218)", () => {
+	it("suppresses a live transient-529 throttle pane", () => {
+		expect(isTransientThrottlePane(loadFixture("throttle-529-live.txt"))).toBe(
+			true,
+		);
+	});
+
+	it("does NOT suppress a genuine usage-limit pane", () => {
+		expect(isTransientThrottlePane(loadFixture("usage-limit-real.txt"))).toBe(
+			false,
+		);
+	});
+
+	// Codex R1 HIGH: a stale throttle line must not mask a NEWER must-alert state
+	// that shares its live region.
+	it("does NOT suppress when a real usage cap shares the live region (masking guard a)", () => {
+		expect(
+			isTransientThrottlePane(loadFixture("throttle-529-then-usage-cap.txt")),
+		).toBe(false);
+	});
+
+	it("does NOT suppress when a frozen resume menu shares the live region (masking guard b)", () => {
+		expect(
+			isTransientThrottlePane(loadFixture("throttle-529-then-resume-menu.txt")),
+		).toBe(false);
+	});
+
+	it("does NOT suppress when a frozen auto-compact shares the live region (masking guard c)", () => {
+		const pane = loadFixture("throttle-529-then-compacting.txt");
+		expect(isTransientThrottlePane(pane)).toBe(false);
+		// Non-vacuous: the throttle line IS inside the live region — drop only the
+		// compacting marker and the SAME pane would suppress, proving the veto (not
+		// an out-of-region throttle) is what flips this case.
+		const withoutCompact = pane.replace(/✳ Compacting conversation[^\n]*/i, "");
+		expect(isTransientThrottlePane(withoutCompact)).toBe(true);
+	});
+
+	// Codex R3: distinguish a live 529 retry from a frozen normal turn that
+	// merely has a stale throttle line above it.
+	it("suppresses a SETTLED 529 error (no esc-to-interrupt, no retry hint)", () => {
+		expect(
+			isTransientThrottlePane(loadFixture("throttle-529-settled.txt")),
+		).toBe(true);
+	});
+
+	it("does NOT suppress a frozen normal turn (esc-to-interrupt, NO retry hint) above a stale 529 (masking guard d)", () => {
+		const pane = loadFixture("throttle-529-then-frozen-work.txt");
+		expect(isTransientThrottlePane(pane)).toBe(false);
+		// Non-vacuous: add a retry hint to the in-flight line and the SAME pane
+		// suppresses — proving the throttle is in-region and the retry-evidence
+		// gate (not an out-of-region throttle) is what flips this case.
+		const asLiveRetry = pane.replace(
+			/✻ Cooking… \(esc to interrupt\)/i,
+			"✻ Cooking… (esc to interrupt · retrying)",
+		);
+		expect(isTransientThrottlePane(asLiveRetry)).toBe(true);
+	});
+});
+
+describe("LeadWatchdog — FLY-218 transient-529 suppression wired through tickLead", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	const makeWatchdog = (
+		fixture: string,
+		notifier: NotifierStub,
+		suppressIdleHealthy = false,
+	) =>
+		new LeadWatchdog({
+			pollIntervalMs: 30_000,
+			paneHashStuckCycles: 2,
+			paneHashAlertCycles: 3,
+			cooldownMs: 300_000,
+			projects,
+			store,
+			notifier: notifier.alert,
+			locateWindowFn: async () => ({
+				windowId: "@7",
+				windowName: "geoforge3d-cos-lead",
+			}),
+			captureFn: async () => loadFixture(fixture),
+			claimsReader: async () => new Set(),
+			blockedMarkerReader: async () => [],
+			now: () => 0,
+			suppressIdleHealthy,
+		});
+
+	it("PRODUCTION REPLAY: a live transient-529 throttle fires ZERO alerts across many cycles", async () => {
+		// The core bug: classify() matched "usage limit" inside "not your usage
+		// limit" → usage_limit "Top up billing" false alert; and even un-matched it
+		// would fall through to pane_hash_stuck. The transient recognizer must
+		// short-circuit BOTH — regardless of suppressIdleHealthy.
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("throttle-529-live.txt", notifier, false);
+		for (let i = 0; i < 6; i++) await wd.pollOnce();
+		expect(notifier.alert).not.toHaveBeenCalled();
+		expect(wd.getState("cos-lead")).toBe("Healthy");
+	});
+
+	it("a genuine usage-limit pane STILL alerts exactly once (usage_limit)", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("usage-limit-real.txt", notifier, false);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("usage_limit");
+	});
+
+	it("regex tightening: a STALE scrollback 529 never classifies as usage_limit", async () => {
+		// classify() scans the WHOLE pane, so a stale "not your usage limit" line in
+		// scrollback would trip the old loose regex → false usage_limit. With the
+		// tightened regex it classifies as pane_hash_stuck instead (and would be
+		// idle-suppressed in prod). Run with suppression OFF so any alert surfaces:
+		// the only assertion that matters is it is NOT usage_limit.
+		const notifier = makeNotifier();
+		const wd = makeWatchdog(
+			"throttle-529-stale-scrollback.txt",
+			notifier,
+			false,
+		);
+		for (let i = 0; i < 4; i++) await wd.pollOnce();
+		for (const p of notifier.results) {
+			expect(p.eventType).not.toBe("usage_limit");
+		}
+	});
+
+	// Codex R1 HIGH: the masking scenarios Codex reproduced — a stale throttle
+	// line in the same live region as a NEWER must-alert state must NOT be
+	// suppressed (the real state still alerts).
+	it("MASKING GUARD a: a real cap right below a stale 529 STILL alerts usage_limit", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("throttle-529-then-usage-cap.txt", notifier, true);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("usage_limit");
+	});
+
+	it("MASKING GUARD b: a frozen resume menu above a stale 529 STILL alerts pane_hash_stuck", async () => {
+		// suppressIdleHealthy ON (production default) — the menu has no idle anchor,
+		// so it is neither throttle-suppressed nor idle-suppressed → it must alert.
+		const notifier = makeNotifier();
+		const wd = makeWatchdog(
+			"throttle-529-then-resume-menu.txt",
+			notifier,
+			true,
+		);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
+	});
+
+	it("MASKING GUARD c: a frozen auto-compact above a stale 529 STILL alerts pane_hash_stuck", async () => {
+		// "Compacting conversation" is a FLY-193 must-alert and never a 529 retry,
+		// so the throttle suppression is vetoed and the freeze still escalates.
+		const notifier = makeNotifier();
+		const wd = makeWatchdog("throttle-529-then-compacting.txt", notifier, true);
+		await wd.pollOnce();
+		await wd.pollOnce();
+		await wd.pollOnce();
+		expect(notifier.alert).toHaveBeenCalledTimes(1);
+		expect(notifier.results[0]!.eventType).toBe("pane_hash_stuck");
+	});
+
+	it("MASKING GUARD d: a frozen normal turn (no retry hint) above a stale 529 STILL alerts pane_hash_stuck", async () => {
+		const notifier = makeNotifier();
+		const wd = makeWatchdog(
+			"throttle-529-then-frozen-work.txt",
+			notifier,
+			true,
+		);
 		await wd.pollOnce();
 		await wd.pollOnce();
 		await wd.pollOnce();
