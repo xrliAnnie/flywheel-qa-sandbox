@@ -561,6 +561,7 @@ simulate_append_logic() {
   # base file is a no-op (pre-FLY-175 backward compat).
   BASE_FOUNDER_AUTH_RULES="${base_dir}/founder-only-authority.md"
   BASE_HTML_DELIVERY_RULES="${base_dir}/founder-html-delivery.md"
+  BASE_CROSS_DEPT_RULES="${base_dir}/cross-dept-channel-rules.md"
   if [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r "$BASE_FOUNDER_AUTH_RULES" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_AUTH_RULES")
   fi
@@ -568,6 +569,11 @@ simulate_append_logic() {
   # FLY-203: founder-html-delivery rules (universal, mirrors claude-lead.sh)
   if [ -f "$BASE_HTML_DELIVERY_RULES" ] && [ -r "$BASE_HTML_DELIVERY_RULES" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_HTML_DELIVERY_RULES")
+  fi
+
+  # FLY-223: cross-dept-channel rules (universal, mirrors claude-lead.sh)
+  if [ -f "$BASE_CROSS_DEPT_RULES" ] && [ -r "$BASE_CROSS_DEPT_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_CROSS_DEPT_RULES")
   fi
 
   # FLY-26 PROJECT block (loaded AFTER base)
@@ -700,6 +706,11 @@ else
   # Scan the rule files only (not README.md which legitimately documents
   # examples of project-side concrete data). FLY-175: include
   # founder-only-authority.md so its generic voice is enforced as well.
+  # FLY-223: cross-dept-channel-rules.md is DELIBERATELY excluded — it is the
+  # deployment-global cross-department roster (concrete Lead names + bot IDs by
+  # design, since the #leads-roundtable channel spans projects and has no
+  # per-project layer to instantiate it). Adding it here would fail by design;
+  # its extensibility contract (add-a-Lead = one roster row) lives in that file.
   RULE_FILES=("$BASE_FILES_DIR/department-lead-rules.md" "$BASE_FILES_DIR/cos-lead-rules.md" "$BASE_FILES_DIR/founder-only-authority.md" "$BASE_FILES_DIR/executor-routing.md" "$BASE_FILES_DIR/founder-html-delivery.md")
   # Names that should never appear in base rule files (examples of project
   # concretes that belong in the project layer).
@@ -994,6 +1005,41 @@ if [ -f "$SHIPPED_618" ] && grep -q "flywheel-comm publish-report" "$SHIPPED_618
   PASS=$((PASS+1)); echo "  PASS: Test 6.18: shipped founder-html-delivery.md has canonical command + no-local-path anchors"
 else
   FAIL=$((FAIL+1)); echo "  FAIL: Test 6.18: shipped founder-html-delivery.md missing or lacks canonical anchors"
+fi
+
+# Test 6.19 (FLY-223): cross-dept-channel-rules.md is a UNIVERSAL base file —
+# loads for BOTH cos and dept roles (every Lead is present in #leads-roundtable),
+# a missing file is a silent no-op, and the shipped file carries the canonical
+# anchors. Mirrors the founder-html-delivery (6.18) universal-block contract.
+echo "--- Test 6.19: FLY-223 cross-dept-channel-rules loads for BOTH roles + no-op when missing ---"
+BASE_DIR_619="$TMPDIR/base-619"
+PROJECT_DIR_619="$TMPDIR/project-619"
+mkdir -p "$BASE_DIR_619" "$PROJECT_DIR_619"
+echo "# BASE dept rules" > "$BASE_DIR_619/department-lead-rules.md"
+echo "# BASE cos rules" > "$BASE_DIR_619/cos-lead-rules.md"
+echo "# BASE cross-dept" > "$BASE_DIR_619/cross-dept-channel-rules.md"
+echo "# Common" > "$PROJECT_DIR_619/common-rules.md"
+# dept role loads it
+ARGS_619_DEPT=$(simulate_append_logic "$BASE_DIR_619" "$PROJECT_DIR_619" "product-lead")
+assert_contains "$ARGS_619_DEPT" "$BASE_DIR_619/cross-dept-channel-rules.md" "Test 6.19: dept Lead loads cross-dept-channel rules"
+# cos role loads it (the cos-lead Simba is in the cross-dept channel too)
+ARGS_619_COS=$(simulate_append_logic "$BASE_DIR_619" "$PROJECT_DIR_619" "cos-lead")
+assert_contains "$ARGS_619_COS" "$BASE_DIR_619/cross-dept-channel-rules.md" "Test 6.19: cos-lead loads cross-dept-channel rules"
+# synthetic test slot (FLYWHEEL_LEAD_ROLE=cos) loads it
+FLYWHEEL_LEAD_ROLE=cos
+ARGS_619_SLOT=$(simulate_append_logic "$BASE_DIR_619" "$PROJECT_DIR_619" "flywheel-test-1")
+unset FLYWHEEL_LEAD_ROLE
+assert_contains "$ARGS_619_SLOT" "$BASE_DIR_619/cross-dept-channel-rules.md" "Test 6.19: synthetic cos test slot loads cross-dept-channel rules"
+# missing file silently skipped (backward compat with older checkouts)
+rm "$BASE_DIR_619/cross-dept-channel-rules.md"
+ARGS_619_MISSING=$(simulate_append_logic "$BASE_DIR_619" "$PROJECT_DIR_619" "product-lead")
+assert_not_contains "$ARGS_619_MISSING" "cross-dept-channel-rules.md" "Test 6.19: missing cross-dept-channel-rules silently skipped"
+# shipped file present + content sentinel (guards against empty/rename)
+SHIPPED_619="$BASE_FILES_DIR/cross-dept-channel-rules.md"
+if [ -f "$SHIPPED_619" ] && grep -q "leads-roundtable" "$SHIPPED_619" && grep -qi "requireMention" "$SHIPPED_619"; then
+  PASS=$((PASS+1)); echo "  PASS: Test 6.19: shipped cross-dept-channel-rules.md present with canonical anchors"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: Test 6.19: shipped cross-dept-channel-rules.md missing or lacks canonical anchors"
 fi
 
 # ═══════════════════════════════════════════════════════════════
