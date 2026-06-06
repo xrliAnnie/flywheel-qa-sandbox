@@ -217,6 +217,42 @@ export interface ReactionsConfig {
 }
 
 /**
+ * FLY-123: role names recognized by the role → adapter resolver.
+ * Phase 1 implements lead + runner; reviewer/triager are reserved.
+ */
+export type RoleName = "lead" | "runner" | "reviewer" | "triager";
+
+export const ROLE_NAMES: readonly RoleName[] = [
+	"lead",
+	"runner",
+	"reviewer",
+	"triager",
+];
+
+/**
+ * FLY-123: Phase 1 executor backends. Names match AdapterRegistry keys
+ * registered in run-infra (`claude-tmux` → TmuxAdapter,
+ * `codex-tmux` → CodexTmuxAdapter).
+ */
+export type ExecutorBackend = "claude-tmux" | "codex-tmux";
+
+export const EXECUTOR_BACKENDS: readonly ExecutorBackend[] = [
+	"claude-tmux",
+	"codex-tmux",
+];
+
+/** FLY-123: per-role backend binding in project config. */
+export interface RoleBackendConfig {
+	/** Executor backend (AdapterRegistry key), e.g. "codex-tmux". */
+	backend: ExecutorBackend;
+	/** Optional model override for this role. */
+	model?: string;
+}
+
+/** FLY-123: role → backend map (`roles:` block in .flywheel/config.yaml). */
+export type RoleBackendMap = Partial<Record<RoleName, RoleBackendConfig>>;
+
+/**
  * Root Flywheel project configuration.
  * Loaded from .flywheel/config.yaml in the target project.
  */
@@ -245,6 +281,13 @@ export interface FlywheelConfig {
 	default_agent?: string;
 	/** Checkpoint gates — human-in-the-loop confirmation points */
 	checkpoints?: CheckpointsConfig;
+	/**
+	 * FLY-123: optional per-role executor backend bindings.
+	 * Absent → built-in defaults (everything claude-tmux). Validated by
+	 * ConfigLoader: unknown role keys and unknown backends are REJECTED
+	 * (misspelled keys must not silently no-op).
+	 */
+	roles?: RoleBackendMap;
 	/** FLY-205: department-first doc-flow baseline. Absent = off. */
 	doc_flow?: DocFlowConfig;
 }

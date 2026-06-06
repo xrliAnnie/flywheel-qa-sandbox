@@ -10,6 +10,7 @@ import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
 import { check } from "./commands/check.js";
 import { cleanupMessages } from "./commands/cleanup-messages.js";
+import { codexResume } from "./commands/codex-resume.js";
 import { complete } from "./commands/complete.js";
 import { gate } from "./commands/gate.js";
 import { inbox } from "./commands/inbox.js";
@@ -144,6 +145,9 @@ async function main(): Promise<void> {
 		case "await-codex-gate":
 			await runAwaitCodexGate(commandArgs);
 			break;
+		case "codex-resume":
+			await runCodexResume(commandArgs);
+			break;
 		case "verify-approval":
 			runVerifyApproval(commandArgs);
 			break;
@@ -167,6 +171,30 @@ async function main(): Promise<void> {
 			printUsage();
 			process.exit(1);
 	}
+}
+
+/**
+ * FLY-123: zero-interpolation Codex cycle launcher (R2 #2). The ONLY
+ * command shape the Codex mailbox watcher may inject into a runner shell.
+ */
+async function runCodexResume(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			state: { type: "string" },
+			message: { type: "string" },
+		},
+		allowPositionals: false,
+	});
+	if (!values.state) {
+		console.error("codex-resume: --state <absolute path> is required");
+		process.exit(2);
+	}
+	const exitCode = await codexResume({
+		statePath: values.state,
+		...(values.message !== undefined && { message: values.message }),
+	});
+	process.exit(exitCode);
 }
 
 function runAsk(args: string[]): void {

@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { parseFounderConsentConfig } from "./bridge/founder-consent/config.js";
+import { RunnerAdmissionController } from "./bridge/runner-admission.js";
 import type { BridgeConfig } from "./bridge/types.js";
 
 export type { BridgeConfig };
@@ -126,18 +127,10 @@ export function loadConfig(): BridgeConfig {
 		discordBotToken: process.env.DISCORD_BOT_TOKEN,
 		linearApiKey: process.env.LINEAR_API_KEY,
 		discordGuildId: process.env.DISCORD_GUILD_ID,
-		maxConcurrentRunners: (() => {
-			const n = parseInt(
-				process.env.TEAMLEAD_MAX_CONCURRENT_RUNNERS ?? "3",
-				10,
-			);
-			if (!Number.isFinite(n) || n < 1 || n > 20) {
-				throw new Error(
-					`TEAMLEAD_MAX_CONCURRENT_RUNNERS must be 1-20, got ${process.env.TEAMLEAD_MAX_CONCURRENT_RUNNERS}`,
-				);
-			}
-			return n;
-		})(),
+		// FLY-123 WS-D (P4): the TEAMLEAD_MAX_CONCURRENT_RUNNERS hard cap is
+		// retired. Admission is pure resource pressure (load + memory), tunable
+		// via FLYWHEEL_RUNNER_LOAD_PER_CORE / FLYWHEEL_RUNNER_MIN_FREE_MEM_MB.
+		runnerAdmission: RunnerAdmissionController.fromEnv(),
 		// FLY-91: Chat thread feature flag (env: TEAMLEAD_CHAT_THREADS_ENABLED=true)
 		chatThreadsEnabled: process.env.TEAMLEAD_CHAT_THREADS_ENABLED === "true",
 		discordOwnerUserId: process.env.DISCORD_OWNER_USER_ID,

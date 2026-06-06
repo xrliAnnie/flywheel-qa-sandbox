@@ -14,6 +14,10 @@
  */
 
 import type { CommDB } from "flywheel-comm/db";
+import {
+	defaultGateMarkerDir,
+	readGateMarker,
+} from "flywheel-comm/gate-marker";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
 import type { StateStore } from "../StateStore.js";
 
@@ -86,12 +90,34 @@ export async function sendRunnerWake(
 ): Promise<void> {
 	let detail: string;
 	try {
+		// FLY-123 (code review R1 MEDIUM-4): route the wake by the TARGET
+		// runner's transport backend when a question-bound gate marker exists
+		// — never the process-wide env (Phase 1 locks the Bridge env to
+		// claude-code; a Codex runner's wake would land in the wrong mailbox).
+		// Markerless questions (all Claude runners) keep the legacy fromEnv
+		// path byte-compatibly. Best-effort: the adapter's CommDB belt covers
+		// a missed wake, but the wake should still go to the right place.
+		let backend: string | undefined;
+		if (wakeDetail?.questionId) {
+			try {
+				const marker = readGateMarker(
+					defaultGateMarkerDir(),
+					wakeDetail.questionId,
+				);
+				if (marker && marker.executionId === executionId) {
+					backend = marker.vendor;
+				}
+			} catch {
+				// marker unreadable — legacy routing
+			}
+		}
 		const wake = await wakeRunnerMailbox({
 			db,
 			execId: executionId,
 			fromAgent: "bridge",
 			content: wakeText(kind, executionId, session.project_name, wakeDetail),
 			metadata: { kind, questionId: wakeDetail?.questionId },
+			...(backend && { backend }),
 		});
 		if (wake.ok) return;
 		// Rollback mode (FLYWHEEL_COMM_BACKEND=commdb): the PostToolUse hook

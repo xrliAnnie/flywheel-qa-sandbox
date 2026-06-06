@@ -1379,7 +1379,6 @@ export function createBridgeApp(
 			store,
 			projects,
 			config.linearApiKey,
-			config.maxConcurrentRunners,
 			startDispatcher,
 		),
 	);
@@ -1471,7 +1470,7 @@ export function createBridgeApp(
 			startDispatcher,
 			store,
 			projects,
-			config.maxConcurrentRunners,
+			config.runnerAdmission,
 			config.discordGuildId,
 			config.chatThreadsEnabled,
 		);
@@ -1801,7 +1800,6 @@ export async function startBridge(
 			store,
 			projects,
 			standupBotToken,
-			config.maxConcurrentRunners,
 			config.stuckThresholdMinutes,
 			standupStaleThresholdHours,
 			standupChannel,

@@ -238,6 +238,48 @@ export class ConfigLoader {
 			}
 		}
 
+		// roles (optional — FLY-123): per-role executor backend bindings.
+		// Strict validation per Codex design review R1 #7 — a misspelled role
+		// key or backend must fail at load time, not silently no-op until
+		// adapter lookup.
+		const roles = c.roles as Record<string, unknown> | undefined;
+		if (roles != null && (typeof roles !== "object" || Array.isArray(roles))) {
+			throw new Error(
+				"roles must be a YAML mapping (object), not an array or scalar",
+			);
+		}
+		if (roles && typeof roles === "object") {
+			const validRoles = new Set(["lead", "runner", "reviewer", "triager"]);
+			const validBackends = new Set(["claude-tmux", "codex-tmux"]);
+			for (const [roleName, roleRaw] of Object.entries(roles)) {
+				if (!validRoles.has(roleName)) {
+					throw new Error(
+						`roles.${roleName} is not a recognized role. Valid roles: ${[...validRoles].join(", ")}`,
+					);
+				}
+				if (!roleRaw || typeof roleRaw !== "object" || Array.isArray(roleRaw)) {
+					throw new Error(`roles.${roleName} must be an object`);
+				}
+				const role = roleRaw as Record<string, unknown>;
+				if (typeof role.backend !== "string" || role.backend.length === 0) {
+					throw new Error(`roles.${roleName}.backend is required`);
+				}
+				if (!validBackends.has(role.backend)) {
+					throw new Error(
+						`roles.${roleName}.backend "${role.backend}" is not supported. Valid backends: ${[...validBackends].join(", ")}`,
+					);
+				}
+				if (
+					role.model != null &&
+					(typeof role.model !== "string" || role.model.trim().length === 0)
+				) {
+					throw new Error(
+						`roles.${roleName}.model must be a non-empty string when set`,
+					);
+				}
+			}
+		}
+
 		// doc_flow (optional — FLY-205)
 		const docFlow = c.doc_flow as Record<string, unknown> | undefined;
 		if (docFlow != null) {

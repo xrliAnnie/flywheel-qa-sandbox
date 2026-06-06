@@ -8,6 +8,7 @@ import {
 	RetryDispatcher,
 	RunDispatcher,
 } from "../bridge/run-dispatcher.js";
+import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 
 // Mock flywheel-core openTmuxViewer (no-op in tests)
 vi.mock("flywheel-core", async (importOriginal) => {
@@ -36,7 +37,11 @@ function makeRuntime(projectName: string): [string, ProjectRuntime] {
 describe("RunDispatcher", () => {
 	it("start() returns executionId and issueId", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
-		const dispatcher = new RunDispatcher(runtimes, [], 3);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
 
 		const result = await dispatcher.start({
 			issueId: "GEO-1",
@@ -49,7 +54,11 @@ describe("RunDispatcher", () => {
 
 	it("start() rejects when shutting down", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
-		const dispatcher = new RunDispatcher(runtimes, [], 3);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
 		dispatcher.stopAccepting();
 
 		await expect(
@@ -57,25 +66,33 @@ describe("RunDispatcher", () => {
 		).rejects.toThrow("shutting down");
 	});
 
-	it("start() rejects when max concurrent reached", async () => {
+	it("FLY-123 WS-D (P4): start() defers under resource pressure (not a count cap)", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
-		const dispatcher = new RunDispatcher(runtimes, [], 1);
+		// Admission controller under load → defers regardless of count.
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysDefer(),
+		);
 
-		// First start succeeds
-		await dispatcher.start({
-			issueId: "GEO-1",
-			projectName: "TestProject",
-		});
-
-		// Second should fail (max=1)
+		// Even the FIRST start is deferred when the box is under pressure —
+		// admission is resource-based, not count-based. Typed error (R1 #4) so
+		// the route maps it to 429, not 500.
 		await expect(
-			dispatcher.start({ issueId: "GEO-2", projectName: "TestProject" }),
-		).rejects.toThrow("Max concurrent runners");
+			dispatcher.start({ issueId: "GEO-1", projectName: "TestProject" }),
+		).rejects.toMatchObject({
+			name: "AdmissionDeferredError",
+			reason: "load_pressure",
+		});
 	});
 
 	it("start() rejects duplicate issue", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
-		const dispatcher = new RunDispatcher(runtimes, [], 3);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
 
 		await dispatcher.start({
 			issueId: "GEO-1",
@@ -89,7 +106,11 @@ describe("RunDispatcher", () => {
 
 	it("start() rejects unknown project", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
-		const dispatcher = new RunDispatcher(runtimes, [], 3);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
 
 		await expect(
 			dispatcher.start({ issueId: "GEO-1", projectName: "NoSuchProject" }),
@@ -98,7 +119,11 @@ describe("RunDispatcher", () => {
 
 	it("getInflightCount() tracks inflight runs", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
-		const dispatcher = new RunDispatcher(runtimes, [], 3);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
 
 		expect(dispatcher.getInflightCount()).toBe(0);
 
@@ -130,7 +155,11 @@ describe("RunDispatcher", () => {
 				},
 			],
 		]);
-		const dispatcher = new RunDispatcher(runtimes, [], 3);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
 
 		await dispatcher.start({
 			issueId: "GEO-1",
@@ -213,7 +242,11 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 				},
 			],
 		]);
-		const dispatcher = new RunDispatcher(runtimes, [], 3);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
 
 		await dispatcher.start({
 			issueId: "GEO-1",
@@ -245,7 +278,11 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 				},
 			],
 		]);
-		const dispatcher = new RunDispatcher(runtimes, [], 3);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
 
 		await dispatcher.start({
 			issueId: "GEO-1",
@@ -295,7 +332,11 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 
 	it("FLY-59: same issue different roles can run concurrently", async () => {
 		const runtimes = new Map([makeRuntime("TestProject")]);
-		const dispatcher = new RunDispatcher(runtimes, [], 5);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
 
 		// Start main role
 		const r1 = await dispatcher.start({
@@ -336,7 +377,11 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 				},
 			],
 		]);
-		const dispatcher = new RunDispatcher(runtimes, [], 5);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
 
 		// Start "qa" role — stays inflight
 		await dispatcher.start({
@@ -402,7 +447,11 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 					},
 				],
 			]);
-			const dispatcher = new RunDispatcher(runtimes, [], 3);
+			const dispatcher = new RunDispatcher(
+				runtimes,
+				[],
+				RunnerAdmissionController.alwaysAdmit(),
+			);
 
 			const result = await dispatcher.start({
 				issueId: "GEO-1",
@@ -438,7 +487,11 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 					},
 				],
 			]);
-			const dispatcher = new RunDispatcher(runtimes, [], 3);
+			const dispatcher = new RunDispatcher(
+				runtimes,
+				[],
+				RunnerAdmissionController.alwaysAdmit(),
+			);
 
 			await dispatcher.start({
 				issueId: "GEO-1",
@@ -470,7 +523,11 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 					},
 				],
 			]);
-			const dispatcher = new RunDispatcher(runtimes, [], 3);
+			const dispatcher = new RunDispatcher(
+				runtimes,
+				[],
+				RunnerAdmissionController.alwaysAdmit(),
+			);
 
 			await dispatcher.start({
 				issueId: "GEO-1",

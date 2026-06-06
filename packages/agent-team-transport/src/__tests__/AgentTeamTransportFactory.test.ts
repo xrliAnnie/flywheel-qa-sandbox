@@ -1,8 +1,9 @@
 /**
  * AgentTeamTransportFactory tests.
  *
- * Validates env-based backend selection + loud failure for unimplemented
- * adapters (Codex stub).
+ * Validates env-based backend selection. FLY-123: the Codex adapter is
+ * real (boot-throw removed per plan 1.8); the Phase 1 Lead-context guard
+ * is covered here and in factory-backend.test.ts.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -36,11 +37,10 @@ describe("AgentTeamTransportFactory", () => {
 		expect(adapter.vendorId()).toBe("claude-code");
 	});
 
-	it("throws loud at boot when FLYWHEEL_AGENT_BACKEND=codex (stub not implemented)", () => {
+	it("FLY-123: FLYWHEEL_AGENT_BACKEND=codex returns the codex adapter (boot-throw removed — plan 1.8, Spike-\u03b4 passed)", () => {
 		process.env.FLYWHEEL_AGENT_BACKEND = "codex";
-		expect(() => AgentTeamTransportFactory.fromEnv()).toThrow(
-			/CodexAdapter is not implemented yet/,
-		);
+		const adapter = AgentTeamTransportFactory.fromEnv();
+		expect(adapter.vendorId()).toBe("codex");
 	});
 
 	it("rejects unknown backend with helpful error", () => {

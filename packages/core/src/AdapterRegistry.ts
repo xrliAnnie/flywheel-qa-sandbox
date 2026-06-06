@@ -8,6 +8,7 @@ import type { IAdapter } from "./adapter-types.js";
  */
 export class AdapterRegistry {
 	private adapters = new Map<string, IAdapter>();
+	private factories = new Map<string, () => IAdapter>();
 	private defaultAdapterName: string | null = null;
 
 	/**
@@ -34,11 +35,31 @@ export class AdapterRegistry {
 	}
 
 	/**
+	 * FLY-123: Register a factory under a name. `get(name)` invokes the
+	 * factory on EVERY call, returning a fresh adapter instance per
+	 * execution.
+	 *
+	 * Why factories (Codex design review R1 #6): the production
+	 * `makeAdapter` closure this registry replaces constructed a fresh
+	 * `TmuxAdapter` per execution. Registering singleton INSTANCES would
+	 * silently change the lifetime of instance-level mutable state
+	 * (`preflightDone`, Codex watcher/session state) — two concurrent
+	 * Runners would share one instance. Factory registration preserves the
+	 * per-execution-fresh semantics byte-compatibly.
+	 */
+	registerFactory(name: string, factory: () => IAdapter): void {
+		this.factories.set(name, factory);
+		if (this.defaultAdapterName === null) {
+			this.defaultAdapterName = name;
+		}
+	}
+
+	/**
 	 * Set the default adapter by name.
 	 * @throws Error if the adapter is not registered.
 	 */
 	setDefault(name: string): void {
-		if (!this.adapters.has(name)) {
+		if (!this.adapters.has(name) && !this.factories.has(name)) {
 			throw new Error(
 				`Cannot set default: adapter "${name}" is not registered. Available: ${this.availableNames().join(", ")}`,
 			);
@@ -48,9 +69,18 @@ export class AdapterRegistry {
 
 	/**
 	 * Get an adapter by name.
+	 *
+	 * Factory registrations (`registerFactory`) take precedence and return a
+	 * NEW instance per call; instance registrations (`register`/`registerAs`)
+	 * return the singleton.
+	 *
 	 * @throws Error if the adapter is not registered.
 	 */
 	get(name: string): IAdapter {
+		const factory = this.factories.get(name);
+		if (factory) {
+			return factory();
+		}
 		const adapter = this.adapters.get(name);
 		if (!adapter) {
 			throw new Error(
@@ -72,9 +102,9 @@ export class AdapterRegistry {
 	}
 
 	/**
-	 * List registered adapter names.
+	 * List registered adapter names (instances + factories).
 	 */
 	availableNames(): string[] {
-		return [...this.adapters.keys()];
+		return [...new Set([...this.adapters.keys(), ...this.factories.keys()])];
 	}
 }

@@ -10,16 +10,22 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { AnthropicLLMClient, TmuxAdapter } from "flywheel-claude-runner";
+import {
+	AnthropicLLMClient,
+	CodexTmuxAdapter,
+	scrubOrphanedCodexHomes,
+	TmuxAdapter,
+} from "flywheel-claude-runner";
 import {
 	type AgentConfig,
 	type CheckpointsConfig,
 	ConfigLoader,
 	type DocFlowConfig,
+	type RoleBackendMap,
 	type SkillsConfig,
 } from "flywheel-config";
 import type { LLMClient } from "flywheel-core";
-import { sanitizeTmuxName } from "flywheel-core";
+import { AdapterRegistry, sanitizeTmuxName } from "flywheel-core";
 import {
 	AgentDispatcher,
 	AuditLogger,
@@ -277,24 +283,57 @@ async function createRunBlueprint(
 		let transport:
 			| import("flywheel-agent-team-transport").IAgentTeamTransport
 			| undefined;
+		let codexTransport:
+			| import("flywheel-agent-team-transport").IAgentTeamTransport
+			| undefined;
 		if (commBackend === "mailbox") {
 			const { AgentTeamTransportFactory } = await import(
 				"flywheel-agent-team-transport"
 			);
 			transport = AgentTeamTransportFactory.fromEnv();
+			// FLY-123 (R4 #1): the Codex executor needs the CODEX transport for
+			// its mailbox watcher — explicit forBackend, never the env-selected
+			// transport above (which is claude-code in Phase 1 production).
+			codexTransport = AgentTeamTransportFactory.forBackend("codex");
 		}
-		// 6th positional arg is FLY-142 PR 1.2 transport (positions 2-5 are
-		// execFileFn/pollIntervalMs/defaultTimeoutMs/hookServer — keep
-		// defaults by passing undefined/5000/sessionTimeoutMs/hookServer).
-		const makeAdapter = (_name: string) =>
-			new TmuxAdapter(
-				tmuxSessionName,
-				undefined,
-				5000,
-				sessionTimeoutMs,
-				hookServer,
-				transport,
-			);
+		// FLY-123 (R1 #6): AdapterRegistry with FACTORY registrations replaces
+		// the name-ignoring makeAdapter closure. Factories preserve the
+		// per-execution-fresh instance semantics the closure had — singleton
+		// instances would share preflightDone/watcher state across concurrent
+		// Runners. 6th positional arg is the FLY-142 transport (positions 2-5:
+		// execFileFn/pollIntervalMs/defaultTimeoutMs/hookServer).
+		const adapterRegistry = new AdapterRegistry();
+		adapterRegistry.registerFactory(
+			"claude-tmux",
+			() =>
+				new TmuxAdapter(
+					tmuxSessionName,
+					undefined,
+					5000,
+					sessionTimeoutMs,
+					hookServer,
+					transport,
+				),
+		);
+		adapterRegistry.registerFactory(
+			"codex-tmux",
+			() =>
+				new CodexTmuxAdapter(
+					tmuxSessionName,
+					undefined,
+					5000,
+					sessionTimeoutMs,
+					hookServer,
+					// Structural seam (same pattern as TmuxAdapter's
+					// RunnerSpawnTransport): claude-runner declares a minimal
+					// CodexRunnerTransport shape to avoid importing the transport
+					// package; IAgentTeamTransport satisfies it at runtime but the
+					// mailbox-message param variance needs the assert.
+					codexTransport as unknown as import("flywheel-claude-runner").CodexRunnerTransport,
+				),
+		);
+		adapterRegistry.setDefault("claude-tmux");
+		const makeAdapter = (name: string) => adapterRegistry.get(name);
 		const shell = {
 			execFile: async (cmd: string, args: string[], cwd: string) => {
 				try {
@@ -390,6 +429,31 @@ export async function setupRunInfrastructure(
 		runInfraOpts?.flywheelRepoRoot,
 	);
 
+	// FLY-123 R1 MED #3 (crash-recovery credential janitor): if the Bridge was
+	// killed mid-run the per-runner CODEX_HOME's `finally` token-scrub never
+	// fired, leaving a live GH_TOKEN in the retained home's config.toml. Strip
+	// it from every retained home that is NOT a currently-live runner
+	// (running/awaiting_review keep their token — they may resume). Runs once.
+	try {
+		const liveExecIds = new Set(
+			store
+				.getActiveSessions()
+				.filter((s) => s.status === "running" || s.status === "awaiting_review")
+				.map((s) => s.execution_id),
+		);
+		const scrubbed = scrubOrphanedCodexHomes(liveExecIds);
+		if (scrubbed > 0) {
+			console.log(
+				`[RunInfra] FLY-123: scrubbed credentials from ${scrubbed} orphaned codex home(s) at startup`,
+			);
+		}
+	} catch (err) {
+		console.warn(
+			"[RunInfra] FLY-123: codex-home credential scrub failed:",
+			(err as Error).message,
+		);
+	}
+
 	for (const project of projects) {
 		try {
 			// FLY-95: Prune orphan worktrees from previous runs on startup
@@ -424,6 +488,7 @@ export async function setupRunInfrastructure(
 			let agentsConfig: Record<string, AgentConfig> | undefined;
 			let defaultAgentName: string | undefined;
 			let skillsConfig: SkillsConfig | undefined;
+			let rolesConfig: RoleBackendMap | undefined;
 			let docFlowConfig: DocFlowConfig | undefined;
 			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
 			try {
@@ -435,6 +500,9 @@ export async function setupRunInfrastructure(
 				agentsConfig = flywheelConfig?.agents;
 				defaultAgentName = flywheelConfig?.default_agent;
 				skillsConfig = flywheelConfig?.skills;
+				// FLY-123: per-role executor backend bindings (validated by
+				// ConfigLoader — unknown roles/backends rejected at load)
+				rolesConfig = flywheelConfig?.roles;
 				docFlowConfig = flywheelConfig?.doc_flow; // FLY-205
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
@@ -482,6 +550,7 @@ export async function setupRunInfrastructure(
 				projectRoot: project.projectRoot,
 				tmuxSessionName,
 				agentDispatcher, // FLY-137 v1.27.2: exposed for sync agentName validation in runs-route
+				rolesConfig, // FLY-123: project roles layer for RoleAdapterResolver
 			});
 			cleanupHandles.push(cleanup);
 
@@ -500,14 +569,14 @@ export async function setupRunInfrastructure(
 		);
 	} else {
 		console.log(
-			`[RunInfra] ${projectRuntimes.size}/${projects.length} project(s) ready (maxConcurrent: ${config.maxConcurrentRunners})`,
+			`[RunInfra] ${projectRuntimes.size}/${projects.length} project(s) ready (admission: resource-based, uncapped — FLY-123 WS-D)`,
 		);
 	}
 
 	return new RunDispatcher(
 		projectRuntimes,
 		cleanupHandles,
-		config.maxConcurrentRunners,
+		config.runnerAdmission,
 	);
 }
 

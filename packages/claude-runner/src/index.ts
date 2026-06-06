@@ -13,6 +13,29 @@ export { ClaudeCodeAdapter } from "./ClaudeCodeAdapter.js";
 export { ClaudeCodeRunner } from "./ClaudeCodeRunner.js";
 // Compat re-exports — ClaudeRunner stays exported (test-scripts depend on it, Wave 6 cleanup)
 export { AbortError, ClaudeRunner } from "./ClaudeRunner.js";
+// Adapter implementations (GEO-157)
+export {
+	type CodexRunnerTransport,
+	CodexTmuxAdapter,
+	type CodexWakeWatcher,
+	codexSessionStateDir,
+} from "./CodexTmuxAdapter.js";
+// FLY-123 WS-A/WS-B/WS-C/P5: per-runner CODEX_HOME provisioning + credential
+// lifecycle + repo-owned rotation shim resolver
+export {
+	codexHomeDir,
+	codexHomesRoot,
+	discoverAccountPool,
+	flywheelCodexBin,
+	provisionCodexHome,
+	removeCodexHome,
+	renderCodexHomeConfig,
+	SECRET_ENV_VARS,
+	scrubCodexHomeCredential,
+	scrubOrphanedCodexHomes,
+	sourceCodexDir,
+	stripSecretEnv,
+} from "./codex-home.js";
 export {
 	availableTools,
 	getAllTools,
@@ -27,7 +50,6 @@ export {
 	ClaudeMessageFormatter,
 	type IMessageFormatter,
 } from "./formatter.js";
-// Adapter implementations (GEO-157)
 export { TmuxAdapter } from "./TmuxAdapter.js";
 export type { ExecFileFn } from "./TmuxRunner.js";
 export { TmuxRunner } from "./TmuxRunner.js";

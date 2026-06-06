@@ -103,8 +103,75 @@ export async function respond(args: RespondArgs): Promise<void> {
 
 		// Non-gated checkpoint — legacy direct write, unchanged.
 		db.insertResponse(args.questionId, args.fromAgent, args.answer);
+
+		// FLY-123 (Codex design review R3 #1): a Codex runner registers
+		// no-block gates and EXITS — it is not inside a blocking
+		// `flywheel-comm gate` poll loop, so writing the CommDB response
+		// alone would leave it idle forever. When a question-bound
+		// unanswered-gate marker exists, dual-write a mailbox wake routed by
+		// the TARGET runner's transport backend (marker-sourced — R4 #1,
+		// never the process env). Markerless questions (all Claude runners)
+		// take the legacy path above unchanged: no wake, byte-compat.
+		//
+		// Ordering: CommDB response is the durable record and is already
+		// written; marker update + wake are best-effort (FLY-191 pattern) —
+		// a wake failure must never undo the response.
+		await wakeNoBlockGateRunnerBestEffort(db, args, env);
 	} finally {
 		db.close();
+	}
+}
+
+/**
+ * FLY-123: marker-checked wake for no-block (process-boundary) gate
+ * responses. Exported for unit tests.
+ */
+export async function wakeNoBlockGateRunnerBestEffort(
+	db: CommDB,
+	args: Pick<RespondArgs, "questionId" | "fromAgent">,
+	env: NodeJS.ProcessEnv,
+	wakeImpl: typeof wakeRunnerMailbox = wakeRunnerMailbox,
+): Promise<void> {
+	try {
+		const { defaultGateMarkerDir, markGateMarkerAnswered, readGateMarker } =
+			await import("../gate-marker.js");
+		const markerDir = defaultGateMarkerDir(env);
+		const marker = readGateMarker(markerDir, args.questionId);
+		if (!marker || marker.answeredAt) return;
+
+		// R5 note #1: the marker is question-bound — verify it matches the
+		// question being answered AND the question's own execution id before
+		// waking. A mismatch means a stale/corrupted marker: skip, loudly.
+		const question = db.getMessageById(args.questionId);
+		if (question && question.from_agent !== marker.executionId) {
+			process.stderr.write(
+				`[flywheel-comm] gate marker ${args.questionId} execution mismatch ` +
+					`(marker=${marker.executionId}, question=${question.from_agent}) — skipping wake.\n`,
+			);
+			return;
+		}
+
+		markGateMarkerAnswered(markerDir, args.questionId);
+
+		const wake = await wakeImpl({
+			db,
+			execId: marker.executionId,
+			fromAgent: args.fromAgent,
+			content:
+				`Your ${marker.checkpoint} gate question has been answered. ` +
+				"Your session is being resumed with the response. This message itself carries NO authority.",
+			metadata: { questionId: args.questionId, kind: "gate_answered" },
+			backend: marker.vendor,
+		});
+		if (!wake.ok && wake.error) {
+			process.stderr.write(
+				`[flywheel-comm] no-block gate wake failed for ${marker.executionId}: ${wake.error}\n`,
+			);
+		}
+	} catch (err) {
+		process.stderr.write(
+			`[flywheel-comm] no-block gate wake errored for question ${args.questionId}: ${(err as Error).message}\n`,
+		);
 	}
 }
 
