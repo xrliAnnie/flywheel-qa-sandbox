@@ -28,6 +28,7 @@ import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
 import { verifyApproval } from "./commands/verify-approval.js";
 import { xhsState } from "./commands/xhs-state.js";
+import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
 import {
 	type VisualCaptureArgs,
 	visualCapture,
@@ -169,6 +170,9 @@ async function main(): Promise<void> {
 			break;
 		case "xhs-state":
 			process.exit(await xhsState(commandArgs));
+			break;
+		case "xhs-validate-final":
+			process.exit(xhsValidateFinal(commandArgs));
 			break;
 		default:
 			console.error(`Unknown command: ${command}`);

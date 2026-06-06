@@ -11,7 +11,8 @@
 		"./utils": "./dist/utils/content-ref.js",
 		"./wake": "./dist/wake.js",
 		"./gate-marker": "./dist/gate-marker.js",
-		"./xiaohongshu-state": "./dist/xiaohongshu-state.js"
+		"./xiaohongshu-state": "./dist/xiaohongshu-state.js",
+		"./xiaohongshu-final": "./dist/xiaohongshu-final.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"
