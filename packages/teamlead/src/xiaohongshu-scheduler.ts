@@ -22,6 +22,10 @@ import type {
 import { XIAOHONGSHU_DEFAULT_MAX_FETCH } from "flywheel-config";
 import {
 	isDue,
+	readState,
+	setTriggerIssueId,
+	withCollectionLock,
+	writeState,
 	type XiaohongshuState,
 } from "flywheel-comm/xiaohongshu-state";
 import type { ProjectEntry } from "./ProjectConfig.js";
@@ -128,4 +132,126 @@ export function planLearningRuns(deps: PlannerDeps): CollectionDecision[] {
 		}
 	}
 	return out;
+}
+
+// ─── Executor (side-effecting) ────────────────────────────────────────────────
+
+/** Result of a /api/runs/start call. 409 = an active session already exists. */
+export type StartRunResult =
+	| { ok: true; executionId: string }
+	| { ok: false; status: number; message: string };
+
+export interface ExecutorDeps {
+	/** State dir (same the skill/CLI uses). */
+	stateDir: string;
+	/**
+	 * Create the fixed trigger Linear issue for a collection (Bridge
+	 * /api/linear/create-issue: team + dept-label name→id + target project +
+	 * run-param body). Called ONCE per collection (create-if-absent); returns the
+	 * created issue id.
+	 */
+	createTriggerIssue: (plan: CollectionRunPlan) => Promise<string>;
+	/** POST /api/runs/start for the trigger issue. */
+	startRun: (args: {
+		issueId: string;
+		projectName: string;
+		leadId: string;
+	}) => Promise<StartRunResult>;
+	log?: (msg: string) => void;
+	alert?: (msg: string) => void;
+}
+
+export interface ExecuteReport {
+	spawned: string[];
+	skipped: { collectionId: string; reason: string }[];
+	errors: { collectionId: string; detail: string }[];
+}
+
+/**
+ * Execute a planned tick (option A lease model): the Runner — not the scheduler
+ * — owns the run-level lease (run_key = its exec id; it acquires/renews/releases
+ * it). The scheduler's safety is defense-in-depth: the shell wrapper's FLY-176
+ * re-entry lockdir (no overlapping ticks) + the runs/start 409 active-session
+ * guard + the Runner's own lease + Runner-set-next-due. A Runner that dies
+ * before setting next-due leaves the collection due → next tick re-spawns =
+ * desired fail-soft retry.
+ *
+ * Per collection: create-if-absent the fixed trigger issue (id persisted in
+ * state under the collection mutex, reused every tick), then start a Runner on
+ * it. 409 → skip quietly (already running); other error → record + alert; never
+ * abort the rest.
+ */
+export async function executeLearningPlan(
+	decisions: CollectionDecision[],
+	deps: ExecutorDeps,
+): Promise<ExecuteReport> {
+	const report: ExecuteReport = { spawned: [], skipped: [], errors: [] };
+	for (const d of decisions) {
+		if (d.action === "skip") {
+			report.skipped.push({ collectionId: d.collectionId, reason: d.reason });
+			if (d.reason === "tuple_invalid") {
+				deps.alert?.(
+					`[xhs-scheduler] ${d.project}/${d.collectionId} routing invalid: ${d.detail}`,
+				);
+			}
+			continue;
+		}
+		const { plan } = d;
+		try {
+			// Create-if-absent the fixed trigger issue, reusing the persisted id.
+			// The one-time network create runs under the collection mutex — safe
+			// because the FLY-176 lockdir guarantees a single scheduler tick, and
+			// the Runner only takes the mutex for short state writes.
+			const triggerIssueId = await withCollectionLock(
+				deps.stateDir,
+				plan.project,
+				plan.collectionId,
+				async () => {
+					const s = readState(deps.stateDir, plan.project, plan.collectionId);
+					if (s.triggerIssueId) return s.triggerIssueId;
+					const id = await deps.createTriggerIssue(plan);
+					writeState(deps.stateDir, setTriggerIssueId(s, id));
+					return id;
+				},
+			);
+
+			const r = await deps.startRun({
+				issueId: triggerIssueId,
+				projectName: plan.project,
+				leadId: plan.leadId,
+			});
+			if (r.ok) {
+				report.spawned.push(plan.collectionId);
+				deps.log?.(
+					`[xhs-scheduler] spawned ${plan.project}/${plan.collectionId} (${r.executionId}) on ${triggerIssueId}`,
+				);
+			} else if (r.status === 409) {
+				// Active session already exists — the in-flight guard. Not an error.
+				report.skipped.push({
+					collectionId: plan.collectionId,
+					reason: "already_active",
+				});
+				deps.log?.(
+					`[xhs-scheduler] ${plan.project}/${plan.collectionId} already active (409) — skip`,
+				);
+			} else {
+				report.errors.push({
+					collectionId: plan.collectionId,
+					detail: `runs/start ${r.status}: ${r.message}`,
+				});
+				deps.alert?.(
+					`[xhs-scheduler] ${plan.project}/${plan.collectionId} start failed (${r.status}): ${r.message}`,
+				);
+			}
+		} catch (err) {
+			report.errors.push({
+				collectionId: plan.collectionId,
+				detail: (err as Error).message,
+			});
+			deps.alert?.(
+				`[xhs-scheduler] ${plan.project}/${plan.collectionId} errored: ${(err as Error).message}`,
+			);
+		}
+	}
+	return report;
 }

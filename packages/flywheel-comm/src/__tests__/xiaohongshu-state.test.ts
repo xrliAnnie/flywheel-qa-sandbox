@@ -22,6 +22,7 @@ import {
 	recordPending,
 	releaseLease,
 	renewLease,
+	setTriggerIssueId,
 	stateFilePath,
 	withCollectionLock,
 	writeState,
@@ -267,5 +268,23 @@ describe("withCollectionLock (mkdir-mutex)", () => {
 			},
 			{ staleMs: 10 * 60 * 1000 },
 		);
+	});
+});
+
+describe("triggerIssueId (FLY-222 #2)", () => {
+	it("emptyState starts with null triggerIssueId", () => {
+		expect(fresh().triggerIssueId).toBeNull();
+	});
+
+	it("setTriggerIssueId records + round-trips through write/read", () => {
+		writeState(dir, setTriggerIssueId(fresh(), "ISSUE-42"));
+		expect(readState(dir, PROJECT, COLLECTION).triggerIssueId).toBe("ISSUE-42");
+	});
+
+	it("readState normalizes a pre-field state file to null (backward compat)", () => {
+		const s = fresh() as Record<string, unknown>;
+		delete s.triggerIssueId;
+		writeFileSync(stateFilePath(dir, PROJECT, COLLECTION), JSON.stringify(s));
+		expect(readState(dir, PROJECT, COLLECTION).triggerIssueId).toBeNull();
 	});
 });

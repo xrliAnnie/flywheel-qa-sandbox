@@ -2,18 +2,24 @@
  * FLY-222: scheduler planning-core tests (planLearningRuns).
  */
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
 	FlywheelConfig,
 	XiaohongshuCollectionConfig,
 } from "flywheel-config";
 import {
 	emptyState,
+	readState,
 	type XiaohongshuState,
 } from "flywheel-comm/xiaohongshu-state";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import {
 	type CollectionDecision,
+	type CollectionRunPlan,
+	executeLearningPlan,
 	planLearningRuns,
 } from "../xiaohongshu-scheduler.js";
 
@@ -135,5 +141,145 @@ describe("planLearningRuns", () => {
 		expect(decisions).toHaveLength(2);
 		expect(decisions[0]).toMatchObject({ action: "skip", collectionId: "bad" });
 		expect(decisions[1]).toMatchObject({ action: "spawn" });
+	});
+});
+
+describe("executeLearningPlan", () => {
+	let dir: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "xhs-exec-"));
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	const PLAN: CollectionRunPlan = {
+		project: "sub",
+		collectionId: "c1",
+		collectionLabel: "AI-视频",
+		leadId: "sub-lead",
+		departmentLabel: "Sub",
+		targetLinearProject: "Flywheel Sandbox",
+		cadence: "weekly",
+		maxFetch: 20,
+		videoOptIn: false,
+	};
+	const spawnDecision: CollectionDecision = { action: "spawn", plan: PLAN };
+
+	it("creates the trigger issue once, persists it, and starts a run", async () => {
+		const createTriggerIssue = vi.fn(async () => "ISSUE-1");
+		const startRun = vi.fn(async () => ({
+			ok: true as const,
+			executionId: "exec-1",
+		}));
+		const r = await executeLearningPlan([spawnDecision], {
+			stateDir: dir,
+			createTriggerIssue,
+			startRun,
+		});
+		expect(r.spawned).toEqual(["c1"]);
+		expect(createTriggerIssue).toHaveBeenCalledTimes(1);
+		expect(startRun).toHaveBeenCalledWith({
+			issueId: "ISSUE-1",
+			projectName: "sub",
+			leadId: "sub-lead",
+		});
+		expect(readState(dir, "sub", "c1").triggerIssueId).toBe("ISSUE-1");
+	});
+
+	it("reuses the persisted trigger issue on the next tick (no re-create)", async () => {
+		const createTriggerIssue = vi.fn(async () => "ISSUE-1");
+		const startRun = vi.fn(async () => ({
+			ok: true as const,
+			executionId: "e",
+		}));
+		const deps = { stateDir: dir, createTriggerIssue, startRun };
+		await executeLearningPlan([spawnDecision], deps);
+		await executeLearningPlan([spawnDecision], deps);
+		expect(createTriggerIssue).toHaveBeenCalledTimes(1); // only first tick
+		expect(startRun).toHaveBeenCalledTimes(2); // both ticks
+	});
+
+	it("treats runs/start 409 as a quiet skip (in-flight guard, not an error)", async () => {
+		const alert = vi.fn();
+		const r = await executeLearningPlan([spawnDecision], {
+			stateDir: dir,
+			createTriggerIssue: async () => "ISSUE-1",
+			startRun: async () => ({ ok: false, status: 409, message: "active" }),
+			alert,
+		});
+		expect(r.skipped).toContainEqual({
+			collectionId: "c1",
+			reason: "already_active",
+		});
+		expect(r.errors).toEqual([]);
+		expect(alert).not.toHaveBeenCalled();
+	});
+
+	it("records + alerts on a non-409 start error, without aborting others", async () => {
+		const alert = vi.fn();
+		const r = await executeLearningPlan(
+			[
+				{ action: "spawn", plan: { ...PLAN, collectionId: "bad" } },
+				{ action: "spawn", plan: { ...PLAN, collectionId: "good" } },
+			],
+			{
+				stateDir: dir,
+				createTriggerIssue: async (p) => `ISSUE-${p.collectionId}`,
+				startRun: async ({ issueId }) =>
+					issueId === "ISSUE-bad"
+						? { ok: false, status: 500, message: "boom" }
+						: { ok: true, executionId: "e" },
+				alert,
+			},
+		);
+		expect(r.errors.map((e) => e.collectionId)).toEqual(["bad"]);
+		expect(r.spawned).toEqual(["good"]);
+		expect(alert).toHaveBeenCalledTimes(1);
+	});
+
+	it("records an error if createTriggerIssue throws", async () => {
+		const r = await executeLearningPlan([spawnDecision], {
+			stateDir: dir,
+			createTriggerIssue: async () => {
+				throw new Error("linear down");
+			},
+			startRun: async () => ({ ok: true, executionId: "e" }),
+		});
+		expect(r.errors).toHaveLength(1);
+		expect(r.errors[0].detail).toMatch(/linear down/);
+	});
+
+	it("passes through skip decisions (alert on tuple_invalid, quiet on not_due)", async () => {
+		const alert = vi.fn();
+		const r = await executeLearningPlan(
+			[
+				{
+					action: "skip",
+					project: "sub",
+					collectionId: "ti",
+					reason: "tuple_invalid",
+					detail: "bad",
+				},
+				{
+					action: "skip",
+					project: "sub",
+					collectionId: "nd",
+					reason: "not_due",
+					detail: "later",
+				},
+			],
+			{
+				stateDir: dir,
+				createTriggerIssue: async () => "x",
+				startRun: async () => ({ ok: true, executionId: "e" }),
+				alert,
+			},
+		);
+		expect(r.skipped.map((s) => s.reason).sort()).toEqual([
+			"not_due",
+			"tuple_invalid",
+		]);
+		expect(alert).toHaveBeenCalledTimes(1); // only tuple_invalid
 	});
 });

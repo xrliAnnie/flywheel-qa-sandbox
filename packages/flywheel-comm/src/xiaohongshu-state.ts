@@ -89,6 +89,13 @@ export interface XiaohongshuState {
 	pending: PendingNote[];
 	/** Active run-level lease, or null. */
 	lease: Lease | null;
+	/**
+	 * FLY-222 #2: the fixed, reused trigger Linear issue id for this collection.
+	 * Set on first scheduler tick (create-if-absent); reused every tick after
+	 * (the scheduler re-spawns a Runner on the SAME issue; the runs/start 409
+	 * guard keeps a second concurrent spawn out). null = not created yet.
+	 */
+	triggerIssueId: string | null;
 	/** Next due time (ISO) per cadence; null = compute on first schedule. */
 	nextDueAt: string | null;
 	/** operationId -> record (local fast-path; Linear marker+query is authoritative). */
@@ -140,6 +147,7 @@ export function emptyState(
 		processed: [],
 		pending: [],
 		lease: null,
+		triggerIssueId: null,
 		nextDueAt: null,
 		operations: {},
 		lastRunAt: null,
@@ -169,6 +177,9 @@ export function readState(
 			`xiaohongshu-state: unsupported state version ${parsed.version} in ${file} (expected ${XIAOHONGSHU_STATE_VERSION})`,
 		);
 	}
+	// Forward-compat default for fields added after a state file was first
+	// written (additive, same version — no migration needed).
+	if (parsed.triggerIssueId === undefined) parsed.triggerIssueId = null;
 	return parsed;
 }
 
@@ -392,6 +403,14 @@ export function releaseLease(
 		return { ok: false, state, reason: "not_owner", heldBy: existing.owner };
 	}
 	return { ok: true, state: { ...state, lease: null } };
+}
+
+/** Record the fixed trigger issue id (set once on create; reused thereafter). */
+export function setTriggerIssueId(
+	state: XiaohongshuState,
+	triggerIssueId: string,
+): XiaohongshuState {
+	return { ...state, triggerIssueId };
 }
 
 // ─── Diff + pending ──────────────────────────────────────────────────────────
