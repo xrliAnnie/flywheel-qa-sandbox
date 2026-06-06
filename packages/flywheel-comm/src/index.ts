@@ -27,6 +27,7 @@ import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
 import { verifyApproval } from "./commands/verify-approval.js";
+import { xhsState } from "./commands/xhs-state.js";
 import {
 	type VisualCaptureArgs,
 	visualCapture,
@@ -165,6 +166,9 @@ async function main(): Promise<void> {
 			break;
 		case "set-artifact":
 			await runSetArtifact(commandArgs);
+			break;
+		case "xhs-state":
+			process.exit(await xhsState(commandArgs));
 			break;
 		default:
 			console.error(`Unknown command: ${command}`);
