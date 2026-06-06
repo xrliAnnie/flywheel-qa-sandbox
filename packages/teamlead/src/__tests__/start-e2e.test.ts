@@ -7,6 +7,10 @@ import type http from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { IStartDispatcher } from "../bridge/retry-dispatcher.js";
+import {
+	AdmissionDeferredError,
+	RunnerAdmissionController,
+} from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -71,7 +75,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
-		maxConcurrentRunners: 2,
+		runnerAdmission: RunnerAdmissionController.alwaysAdmit(),
 		...overrides,
 	};
 }
@@ -260,32 +264,103 @@ describe("Start API E2E", () => {
 		expect(body.message).toContain("already has an active session");
 	});
 
-	it("POST exceeding maxConcurrentRunners → 429", async () => {
-		// Insert 2 running sessions to fill the cap (maxConcurrentRunners=2)
-		store.upsertSession({
-			execution_id: "running-1",
-			issue_id: "GEO-R1",
-			project_name: "TestProject",
-			status: "running",
-		});
-		store.upsertSession({
-			execution_id: "running-2",
-			issue_id: "GEO-R2",
-			project_name: "TestProject",
-			status: "running",
-		});
+	it("FLY-123 WS-D (P4): POST deferred under resource pressure → 429 (load_pressure, no count cap)", async () => {
+		// Resource-based backpressure replaces the retired N-cap: a Bridge whose
+		// admission controller is under load defers a NEW runner regardless of
+		// how many already run. Spin a separate app with a deferring controller.
+		const deferApp = createBridgeApp(
+			store,
+			testProjects,
+			makeConfig({ runnerAdmission: RunnerAdmissionController.alwaysDefer() }),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			mockDispatcher,
+		);
+		const deferServer = deferApp.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) =>
+			deferServer.once("listening", resolve),
+		);
+		const addr = deferServer.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		try {
+			const res = await fetch(`http://127.0.0.1:${port}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-OVERFLOW",
+					projectName: "TestProject",
+				}),
+			});
+			expect(res.status).toBe(429);
+			const body = (await res.json()) as { message: string; reason?: string };
+			expect(body.reason).toBe("load_pressure");
+			expect(body.message).toContain("admission deferred");
+		} finally {
+			await new Promise<void>((resolve, reject) =>
+				deferServer.close((e) => (e ? reject(e) : resolve())),
+			);
+		}
+	});
 
-		const res = await fetch(`${baseUrl}/api/runs/start`, {
-			method: "POST",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({
-				issueId: "GEO-OVERFLOW",
-				projectName: "TestProject",
+	it("FLY-123 WS-D (R1 #4): dispatcher-side admission race → typed 429, NOT 500", async () => {
+		// Route precheck admits (default makeConfig = alwaysAdmit), but the
+		// dispatcher's own check defers (load crossed the threshold in between)
+		// and throws AdmissionDeferredError. The catch must map it to 429 with
+		// the reason — never a 500 string-match miss.
+		const throwingDispatcher = {
+			...mockDispatcher,
+			start: vi.fn(async () => {
+				throw new AdmissionDeferredError(
+					"memory_pressure",
+					"free 100MB < floor 1024MB",
+				);
 			}),
-		});
-		expect(res.status).toBe(429);
-		const body = (await res.json()) as { message: string };
-		expect(body.message).toContain("Max concurrent runners");
+		} as unknown as typeof mockDispatcher;
+		const raceApp = createBridgeApp(
+			store,
+			testProjects,
+			makeConfig(), // route admits
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			throwingDispatcher,
+		);
+		const raceServer = raceApp.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => raceServer.once("listening", resolve));
+		const addr = raceServer.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		try {
+			const res = await fetch(`http://127.0.0.1:${port}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-RACE",
+					projectName: "TestProject",
+				}),
+			});
+			expect(res.status).toBe(429);
+			const body = (await res.json()) as { reason?: string };
+			expect(body.reason).toBe("memory_pressure");
+		} finally {
+			await new Promise<void>((resolve, reject) =>
+				raceServer.close((e) => (e ? reject(e) : resolve())),
+			);
+		}
 	});
 
 	it("POST with Linear API failure → 502", async () => {
@@ -347,12 +422,13 @@ describe("Start API E2E", () => {
 			running: number;
 			inflight: number;
 			total: number;
-			max: number;
+			max: number | null;
 		};
 		expect(body.running).toBe(1);
 		expect(body.inflight).toBe(1);
 		expect(body.total).toBe(2);
-		expect(body.max).toBe(2);
+		// FLY-123 WS-D (P4): uncapped — `null` = unbounded (never `max: 0`).
+		expect(body.max).toBeNull();
 	});
 
 	// FLY-127 R3 Layer 2: server-side department scope enforcement.

@@ -26,7 +26,8 @@ export interface TriageDataResponse {
 		running: number;
 		inflight: number;
 		total: number;
-		max: number;
+		/** FLY-123 WS-D (P4): `null` = uncapped (resource-based admission). */
+		max: number | null;
 	};
 }
 
@@ -41,7 +42,6 @@ export function createTriageDataRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
 	linearApiKey: string | undefined,
-	maxConcurrentRunners: number,
 	startDispatcher?: IStartDispatcher,
 ): Router {
 	const router = Router();
@@ -106,7 +106,8 @@ export function createTriageDataRouter(
 					running,
 					inflight,
 					total: running + inflight,
-					max: maxConcurrentRunners,
+					// FLY-123 WS-D (P4): uncapped — `null` = unbounded (never `max: 0`).
+					max: null,
 				},
 			};
 

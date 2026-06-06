@@ -134,7 +134,40 @@ async function gateInner(
 	// process exits. Timeout escalation moves Bridge-side
 	// (HeartbeatService.checkAwaitingReviewTimeout, keyed on the persisted
 	// awaiting_review_entered_at — NOT on this process's lifetime).
+	//
+	// FLY-123: when FLYWHEEL_GATE_MARKER_DIR is set (Codex runner env,
+	// injected by CodexTmuxAdapter), also write the question-bound
+	// unanswered-gate marker. The marker is what (a) lets the adapter
+	// classify the subsequent process exit as awaiting_gate instead of
+	// terminal, and (b) lets `respond` route the mailbox wake through the
+	// target runner's transport backend (Codex R3/R4). Marker write failure
+	// is FAIL-CLOSED (throw → non-zero exit → the model sees the failure and
+	// can retry) — a silently missing marker would strand the runner forever.
+	// Claude runners never have the env set → no marker → byte-compat.
 	if (args.noBlock) {
+		const markerDir = process.env.FLYWHEEL_GATE_MARKER_DIR?.trim();
+		if (markerDir) {
+			const { writeGateMarker } = await import("../gate-marker.js");
+			writeGateMarker(markerDir, {
+				questionId,
+				executionId: args.execId,
+				backend: process.env.FLYWHEEL_RUNNER_BACKEND_ID?.trim() || "codex-tmux",
+				vendor: process.env.FLYWHEEL_RUNNER_VENDOR_ID?.trim() || "codex",
+				checkpoint: args.checkpoint,
+				// FLY-123 code review R1 HIGH-2: persist the checkpoint's
+				// CONFIGURED gate semantics — the adapter-owned deadline must
+				// honor --timeout/--timeout-behavior/--cleanup-ttl exactly as
+				// the blocking path would (FLY-159 parity).
+				timeoutMs: args.timeoutMs,
+				timeoutBehavior: args.timeoutBehavior,
+				timeoutBehaviorSource: args.timeoutBehaviorSource ?? "default",
+				cleanupTtlHours: args.cleanupTtlHours,
+				message:
+					args.message.length > 500
+						? `${args.message.slice(0, 500)}…`
+						: args.message,
+			});
+		}
 		return { status: "pending", questionId, exitCode: 0 };
 	}
 

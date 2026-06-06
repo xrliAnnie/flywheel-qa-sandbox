@@ -1,4 +1,5 @@
 import type { FounderConsentConfig } from "./founder-consent/config.js";
+import type { RunnerAdmissionController } from "./runner-admission.js";
 
 export function sqliteDatetime(): string {
 	return new Date()
@@ -24,8 +25,13 @@ export interface BridgeConfig {
 	// GEO-187: Linear API proxy
 	linearApiKey?: string;
 	discordGuildId?: string;
-	/** GEO-267: Maximum concurrent Runner executions (default 3). */
-	maxConcurrentRunners: number;
+	/**
+	 * FLY-123 WS-D (P4): runner admission by REAL resource pressure (load +
+	 * memory). Replaces the retired `maxConcurrentRunners` hard cap (GEO-267) —
+	 * runner count is uncapped; admission defers only under genuine
+	 * load/memory pressure, never because of a count.
+	 */
+	runnerAdmission: RunnerAdmissionController;
 	/** FLY-91: Enable per-issue chat thread creation in chatChannel. */
 	chatThreadsEnabled?: boolean;
 	/** FLY-91: Discord user ID to auto-add as thread member (e.g., server owner). */

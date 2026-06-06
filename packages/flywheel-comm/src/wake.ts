@@ -37,6 +37,21 @@ export interface WakeRunnerArgs {
 	/** Plain text body. Carries NO authority by design. */
 	content: string;
 	metadata?: Record<string, unknown>;
+	/**
+	 * FLY-123 (Codex design review R4 #1): explicit TRANSPORT backend of the
+	 * target runner ("claude-code" | "codex"). When set, the wake routes via
+	 * `AgentTeamTransportFactory.forBackend(backend)` — NOT the process-wide
+	 * `fromEnv()` — so a Codex runner's wake reaches the Codex mailbox even
+	 * though the Bridge env is locked to claude-code in Phase 1. Callers get
+	 * the value from the unanswered-gate marker (written by the runner's own
+	 * gate-register, which knows its backend). Absent → legacy `fromEnv()`
+	 * behavior (claude approve_to_ship path, byte-compat).
+	 */
+	backend?: string;
+	/** Injectable for tests. */
+	transportFactory?: (
+		backend: "claude-code" | "codex",
+	) => Pick<ReturnType<typeof AgentTeamTransportFactory.forBackend>, "write">;
 }
 
 export async function wakeRunnerMailbox(
@@ -60,7 +75,27 @@ export async function wakeRunnerMailbox(
 	);
 
 	try {
-		const transport = AgentTeamTransportFactory.fromEnv();
+		// FLY-123 R4 #1: backend-scoped routing when the caller knows the
+		// target runner's transport backend (from the gate marker). Unknown
+		// backend strings are an error, not a silent fallback — a misrouted
+		// wake means a permanently idle runner.
+		let transport: Pick<
+			ReturnType<typeof AgentTeamTransportFactory.forBackend>,
+			"write"
+		>;
+		if (args.backend !== undefined) {
+			if (args.backend !== "claude-code" && args.backend !== "codex") {
+				return {
+					ok: false,
+					error: `unsupported wake transport backend "${args.backend}" (expected "claude-code" | "codex")`,
+				};
+			}
+			transport = (
+				args.transportFactory ?? AgentTeamTransportFactory.forBackend
+			)(args.backend);
+		} else {
+			transport = AgentTeamTransportFactory.fromEnv();
+		}
 		await transport.write({
 			// leadName === teamName === leadId: each Lead owns one team named
 			// after itself; the Runner inbox lives at

@@ -22,11 +22,23 @@ import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
+import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
 
 /** Poll interval / max wait for chat thread_id to appear on session (FLY-91). */
 const THREAD_POLL_INTERVAL_MS = 500;
 const THREAD_POLL_MAX_MS = 5000;
+
+/**
+ * FLY-123 QA Finding 3: ghost-start guard deadline. Reuses FLY-205's
+ * `waitForSession` helper (used for the metadata patch above) with a more
+ * generous ceiling — the row is created by Blueprint.emitStarted() which
+ * races dispatcher.start()'s immediate return, and a slow Codex spawn blocks
+ * the event loop AFTER the row exists, so a live runner registers well within
+ * this window while a genuine ghost (threw before emitStarted) correctly
+ * times out. 30s headroom over the codex spawn latency QA measured (~3.4s).
+ */
+const GHOST_GUARD_SESSION_WAIT_MS = 30_000;
 
 /**
  * FLY-127: Read the dept-scope reject feature flag.
@@ -54,7 +66,7 @@ export function createRunsRouter(
 	startDispatcher: IStartDispatcher,
 	store: StateStore,
 	projects: ProjectEntry[],
-	maxConcurrentRunners: number,
+	runnerAdmission: RunnerAdmissionController,
 	_discordGuildId?: string, // FLY-163: unused after forumLink removal; kept for callsite stability
 	chatThreadsEnabled?: boolean,
 ): Router {
@@ -172,16 +184,18 @@ export function createRunsRouter(
 			return;
 		}
 
-		// Concurrency cap: StateStore running + inflight reservations
-		const runningInStore = activeSessions.filter(
-			(s) => s.status === "running",
-		).length;
-		const inflightCount = startDispatcher.getInflightCount();
-		const totalActive = runningInStore + inflightCount;
-		if (totalActive >= maxConcurrentRunners) {
+		// FLY-123 WS-D (P4): resource-based admission — no count cap. Defer only
+		// under real load/memory pressure, with a typed reason (never a string-
+		// matched "Max concurrent" message).
+		const admission = runnerAdmission.tryAdmit();
+		if (!admission.admit) {
+			const runningInStore = activeSessions.filter(
+				(s) => s.status === "running",
+			).length;
 			res.status(429).json({
 				success: false,
-				message: `Max concurrent runners reached (${maxConcurrentRunners}). Running: ${runningInStore}, inflight: ${inflightCount}`,
+				reason: admission.reason,
+				message: `Runner admission deferred (${admission.reason}): ${admission.detail}. Running: ${runningInStore}, inflight: ${startDispatcher.getInflightCount()}`,
 			});
 			return;
 		}
@@ -487,11 +501,32 @@ export function createRunsRouter(
 
 			// FLY-80: Verify session was actually registered (detect ghost starts).
 			// If Blueprint.run() failed before emitStarted(), no session exists.
-			const finalSession = store.getSession(result.executionId);
+			//
+			// FLY-123 QA Finding 3 (HIGH): this MUST be a poll, not a one-shot
+			// check. `dispatcher.start()` returns immediately (Blueprint.run is
+			// detached) and Blueprint reaches `emitStarted()` — which creates
+			// the session row — only after `await hydrate()`. The chatThread
+			// poll above is an unreliable proxy: it breaks early when a thread
+			// already exists for the issue (e.g. a prior run / a re-label),
+			// so the row may not exist yet when we get here. A one-shot check
+			// then false-500s a perfectly live runner — and a Codex spawn (a
+			// slow synchronous `codex --version` + window setup blocks the
+			// event loop after emitStarted) widened the window enough that QA
+			// hit it every time. A false 500 is the FLY-172 failure class: the
+			// Lead may double-spawn on retry or mark a running session failed.
+			//
+			// The row is created BEFORE the adapter's blocking spawn work, so a
+			// genuinely-alive runner registers quickly once the loop yields;
+			// only a true ghost (Blueprint threw before emitStarted) stays
+			// absent for the full deadline. One bounded-poll helper, not two —
+			// reuses FLY-205's `waitForSession` with the ghost-guard deadline.
+			const finalSession = await waitForSession(store, result.executionId, {
+				timeoutMs: GHOST_GUARD_SESSION_WAIT_MS,
+			});
 			if (!finalSession) {
 				res.status(500).json({
 					success: false,
-					message: `Runner failed to start — session not registered after ${THREAD_POLL_MAX_MS}ms. Check Bridge logs for errors.`,
+					message: `Runner failed to start — session not registered after ${GHOST_GUARD_SESSION_WAIT_MS}ms. Check Bridge logs for errors.`,
 				});
 				return;
 			}
@@ -524,13 +559,21 @@ export function createRunsRouter(
 				});
 				return;
 			}
+			// FLY-123 WS-D (R1 MED #4): dispatcher-side resource admission can
+			// defer AFTER the route precheck admitted (load crossed the
+			// threshold in between). It throws a typed AdmissionDeferredError →
+			// 429 with the reason, never a 500 string-match miss.
+			if (err instanceof Error && err.name === "AdmissionDeferredError") {
+				const e = err as Error & { reason?: string };
+				res.status(429).json({
+					success: false,
+					reason: e.reason,
+					message: e.message,
+				});
+				return;
+			}
 			const message = err instanceof Error ? err.message : String(err);
-			if (
-				message.includes("Max concurrent") ||
-				message.includes("max concurrent")
-			) {
-				res.status(429).json({ success: false, message });
-			} else if (message.includes("already in progress")) {
+			if (message.includes("already in progress")) {
 				res.status(409).json({ success: false, message });
 			} else if (message.includes("No runtime for project")) {
 				res.status(404).json({ success: false, message });
@@ -550,7 +593,9 @@ export function createRunsRouter(
 			running,
 			inflight,
 			total: running + inflight,
-			max: maxConcurrentRunners,
+			// FLY-123 WS-D (P4): uncapped — no numeric ceiling. `null` signals
+			// "unbounded" to the dashboard (never report `max: 0`).
+			max: null,
 		});
 	});
 

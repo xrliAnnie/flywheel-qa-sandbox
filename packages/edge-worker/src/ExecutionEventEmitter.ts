@@ -90,6 +90,8 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				exitReason: result.exitReason,
 				consecutiveFailures: result.consecutiveFailures,
 				sessionRole: env.sessionRole,
+				// FLY-123 R1 #4: adapter resume params (e.g. Codex threadId)
+				sessionParams: result.sessionParams,
 			},
 		});
 	}

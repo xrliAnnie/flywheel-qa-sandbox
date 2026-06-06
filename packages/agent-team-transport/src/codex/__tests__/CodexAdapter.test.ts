@@ -1,133 +1,226 @@
 /**
- * CodexAdapter stub tests.
- *
- * Per plan v1.27.1 §2.0.5: stub MUST be instantiable (compile-time
- * interface assertion) but EVERY method MUST throw `not implemented`. This
- * makes accidental production activation fail loud.
+ * FLY-123: CodexAdapter (transport) — flywheel-owned mailbox semantics +
+ * external watcher. Replaces the FLY-142 §11 stub contract tests (the stub
+ * is de-stubbed by plan item 1.6; Spike-δ validated the underlying
+ * semantics on 2026-06-03).
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MailboxMessage } from "../../types.js";
+import { CodexAdapter, type CodexMailboxWatcher } from "../CodexAdapter.js";
 
-import { describe, expect, it, vi } from "vitest";
-import type { ILogger } from "../../types.js";
-import { CodexAdapter } from "../CodexAdapter.js";
+const TEAM = "product-lead";
+const AGENT = "runner-abc12345";
 
-const noopLogger: ILogger = {
-	debug: vi.fn(),
-	info: vi.fn(),
-	warn: vi.fn(),
-	error: vi.fn(),
-};
+describe("CodexAdapter transport (FLY-123)", () => {
+	let dir: string;
+	let adapter: CodexAdapter;
 
-describe("CodexAdapter (stub)", () => {
-	it("is instantiable without throwing", () => {
-		expect(() => new CodexAdapter()).not.toThrow();
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "fly123-codex-transport-"));
+		adapter = new CodexAdapter({ teamsDir: dir, watcherPollIntervalMs: 25 });
+	});
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
 	});
 
-	it("vendorId() returns 'codex' (only safe method)", () => {
-		const a = new CodexAdapter();
-		expect(a.vendorId()).toBe("codex");
+	function payload(content: string, flywheelId?: string) {
+		return {
+			from: TEAM,
+			to: AGENT,
+			content,
+			...(flywheelId && { metadata: { flywheelId } }),
+		};
+	}
+
+	it("vendorId + capabilities (external-watcher, soft preflight)", () => {
+		expect(adapter.vendorId()).toBe("codex");
+		const caps = adapter.capabilities();
+		expect(caps.wakeMode).toBe("external-watcher");
+		expect(caps.preflightIsHardGate).toBe(false);
+		expect(caps.requiresStableAgentIdentity).toBe(true);
 	});
 
-	it("capabilities() throws not-implemented", () => {
-		const a = new CodexAdapter();
-		expect(() => a.capabilities()).toThrow(/not implemented yet/);
+	it("getInboxPath sanitizes components under the codex teams root", () => {
+		const p = adapter.getInboxPath("lead/../x", "agent name");
+		expect(p.startsWith(dir)).toBe(true);
+		expect(p).toContain("lead----x");
+		expect(p).toContain("agent-name.json");
+		expect(p).not.toContain("..");
 	});
 
-	it("getInboxPath throws", () => {
-		expect(() => new CodexAdapter().getInboxPath("lead", "agent")).toThrow(
-			/not implemented yet/,
+	it("write → readUnread → ack round-trip", async () => {
+		const res = await adapter.write({
+			leadName: TEAM,
+			recipient: AGENT,
+			payload: payload("hello runner"),
+		});
+		expect(res.idempotent).toBe(false);
+		expect(res.finalized).toBe(true);
+
+		const unread = await adapter.readUnread({
+			leadName: TEAM,
+			agentName: AGENT,
+		});
+		expect(unread).toHaveLength(1);
+		expect(unread[0]?.content).toBe("hello runner");
+		expect(unread[0]?.read).toBe(false);
+
+		await adapter.ack({
+			leadName: TEAM,
+			agentName: AGENT,
+			messageIds: [unread[0]?.id as string],
+		});
+		expect(
+			await adapter.readUnread({ leadName: TEAM, agentName: AGENT }),
+		).toHaveLength(0);
+	});
+
+	it("flywheelId dedupe: second write is idempotent + finalized", async () => {
+		await adapter.write({
+			leadName: TEAM,
+			recipient: AGENT,
+			payload: payload("once", "fid-1"),
+		});
+		const second = await adapter.write({
+			leadName: TEAM,
+			recipient: AGENT,
+			payload: payload("once", "fid-1"),
+		});
+		expect(second.idempotent).toBe(true);
+		expect(second.finalized).toBe(true);
+		expect(
+			await adapter.readUnread({ leadName: TEAM, agentName: AGENT }),
+		).toHaveLength(1);
+	});
+
+	it("verifyLastWrite passes on match, throws verify_mismatch otherwise", async () => {
+		await adapter.write({
+			leadName: TEAM,
+			recipient: AGENT,
+			payload: payload("the content"),
+		});
+		await expect(
+			adapter.verifyLastWrite({
+				leadName: TEAM,
+				recipient: AGENT,
+				expected: payload("the content"),
+			}),
+		).resolves.toBeUndefined();
+		await expect(
+			adapter.verifyLastWrite({
+				leadName: TEAM,
+				recipient: AGENT,
+				expected: payload("different"),
+			}),
+		).rejects.toMatchObject({ code: "verify_mismatch" });
+	});
+
+	it("dedupeKey is the persisted message id (stable across reads)", async () => {
+		await adapter.write({
+			leadName: TEAM,
+			recipient: AGENT,
+			payload: payload("x"),
+		});
+		const [a] = await adapter.readUnread({ leadName: TEAM, agentName: AGENT });
+		const [b] = await adapter.readUnread({ leadName: TEAM, agentName: AGENT });
+		expect(adapter.dedupeKey(a as MailboxMessage)).toBe(
+			adapter.dedupeKey(b as MailboxMessage),
 		);
 	});
 
-	it("getStateDir throws", () => {
-		expect(() => new CodexAdapter().getStateDir()).toThrow(
-			/not implemented yet/,
-		);
-	});
-
-	it("write throws", async () => {
-		await expect(
-			new CodexAdapter().write({
-				leadName: "lead",
-				recipient: "agent",
-				payload: { from: "x", to: "y", content: "z" },
-			}),
-		).rejects.toThrow(/not implemented yet/);
-	});
-
-	it("verifyLastWrite throws", async () => {
-		await expect(
-			new CodexAdapter().verifyLastWrite({
-				leadName: "lead",
-				recipient: "agent",
-				expected: { from: "x", to: "y", content: "z" },
-			}),
-		).rejects.toThrow(/not implemented yet/);
-	});
-
-	it("readUnread throws", async () => {
-		await expect(
-			new CodexAdapter().readUnread({
-				leadName: "lead",
-				agentName: "agent",
-			}),
-		).rejects.toThrow(/not implemented yet/);
-	});
-
-	it("ack throws", async () => {
-		await expect(
-			new CodexAdapter().ack({
-				leadName: "lead",
-				agentName: "agent",
-				messageIds: [],
-			}),
-		).rejects.toThrow(/not implemented yet/);
-	});
-
-	it("dedupeKey throws", () => {
+	it("buildLeadSpawnConfig throws (Lead=codex is Phase 3)", () => {
 		expect(() =>
-			new CodexAdapter().dedupeKey({
-				id: "x",
-				from: "a",
-				to: "b",
-				content: "c",
-				ts: 0,
-				read: false,
-			}),
-		).toThrow(/not implemented yet/);
+			adapter.buildLeadSpawnConfig({ leadName: TEAM, teamName: TEAM }),
+		).toThrow(/Phase 3/);
 	});
 
-	it("createReceiver throws", () => {
-		expect(() =>
-			new CodexAdapter().createReceiver({
-				leadName: "lead",
-				runnerName: "r",
-				teamName: "t",
-			}),
-		).toThrow(/not implemented yet/);
+	it("buildRunnerSpawnConfig contributes no claude flags", () => {
+		const cfg = adapter.buildRunnerSpawnConfig({
+			leadName: TEAM,
+			runnerName: AGENT,
+			teamName: TEAM,
+		});
+		expect(cfg.args).toEqual([]);
+		expect(cfg.env.FLYWHEEL_RUNNER_VENDOR_ID).toBe("codex");
 	});
 
-	it("buildRunnerSpawnConfig throws", () => {
-		expect(() =>
-			new CodexAdapter().buildRunnerSpawnConfig({
-				leadName: "lead",
-				runnerName: "r",
-				teamName: "t",
-			}),
-		).toThrow(/not implemented yet/);
+	it("preflight reports cli presence via injectable exec", async () => {
+		const ok = new CodexAdapter({
+			teamsDir: dir,
+			execFileFn: () => "codex-cli 0.135.0\n",
+		});
+		const res = await ok.preflight();
+		expect(res.ok).toBe(true);
+
+		const missing = new CodexAdapter({
+			teamsDir: dir,
+			execFileFn: () => {
+				throw new Error("ENOENT");
+			},
+		});
+		const bad = await missing.preflight();
+		expect(bad.ok).toBe(false);
+		expect(bad.availabilitySignals[0]?.name).toBe("codex:cli-not-found");
 	});
 
-	it("buildLeadSpawnConfig throws", () => {
-		expect(() =>
-			new CodexAdapter().buildLeadSpawnConfig({
-				leadName: "lead",
-				teamName: "t",
-			}),
-		).toThrow(/not implemented yet/);
-	});
+	describe("CodexMailboxWatcher", () => {
+		it("delivers new unread messages once, acks them, reports health", async () => {
+			const watcher = adapter.createReceiver({
+				leadName: TEAM,
+				runnerName: AGENT,
+				teamName: TEAM,
+			}) as CodexMailboxWatcher;
+			const delivered: MailboxMessage[] = [];
+			watcher.onDelivered = (m) => delivered.push(m);
 
-	it("preflight throws", async () => {
-		await expect(
-			new CodexAdapter().preflight({ logger: noopLogger }),
-		).rejects.toThrow(/not implemented yet/);
+			await watcher.start();
+			await adapter.write({
+				leadName: TEAM,
+				recipient: AGENT,
+				payload: payload("wake up"),
+			});
+
+			await vi.waitFor(() => expect(delivered).toHaveLength(1), {
+				timeout: 2000,
+			});
+			expect(delivered[0]?.content).toBe("wake up");
+
+			// acked → no redelivery on subsequent scans
+			await new Promise((r) => setTimeout(r, 80));
+			expect(delivered).toHaveLength(1);
+			expect(
+				await adapter.readUnread({ leadName: TEAM, agentName: AGENT }),
+			).toHaveLength(0);
+
+			const health = await watcher.health();
+			expect(health.ok).toBe(true);
+			expect(health.lastEventTs).toBeTruthy();
+
+			await watcher.stop();
+			expect((await watcher.health()).ok).toBe(false);
+		});
+
+		it("messages written before start are delivered on initial scan", async () => {
+			await adapter.write({
+				leadName: TEAM,
+				recipient: AGENT,
+				payload: payload("early"),
+			});
+			const watcher = adapter.createReceiver({
+				leadName: TEAM,
+				runnerName: AGENT,
+				teamName: TEAM,
+			}) as CodexMailboxWatcher;
+			const delivered: MailboxMessage[] = [];
+			watcher.onDelivered = (m) => delivered.push(m);
+			await watcher.start();
+			await vi.waitFor(() => expect(delivered).toHaveLength(1), {
+				timeout: 2000,
+			});
+			await watcher.stop();
+		});
 	});
 });

@@ -377,6 +377,24 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
+		// FLY-123 (Codex design review R1 #4): persist adapter session-resume
+		// params (e.g. Codex threadId). MERGE-patch, never replace — proofshot
+		// state (GEO-151 `proofshot.*`, `last_artifact`) lives under the same
+		// session_params JSON and must not be clobbered.
+		if (result.sessionParams && Object.keys(result.sessionParams).length > 0) {
+			try {
+				const existing = this.store.getSessionParams(env.executionId) ?? {};
+				this.store.setSessionParams(env.executionId, {
+					...existing,
+					...result.sessionParams,
+				});
+			} catch (err) {
+				console.warn(
+					`[DirectEventSink] sessionParams persist failed for ${env.executionId}: ${(err as Error).message}`,
+				);
+			}
+		}
+
 		// FLY-191 Phase 2 (§5.5.2; Codex R2 HIGH-1 scoping + R4 CRITICAL): this
 		// in-process sink is the LEGACY headless path — it has no gate
 		// questionId source, so it must NEVER touch a Phase-2 review binding

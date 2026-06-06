@@ -37,7 +37,8 @@ export interface StandupReport {
 	systemStatus: {
 		runningCount: number;
 		awaitingReviewCount: number;
-		maxRunners: number;
+		/** FLY-123 WS-D (P4): `null` = uncapped (resource-based admission). */
+		maxRunners: number | null;
 		stuckCount: number;
 		oldCompletedFailedBlockedCount: number;
 		staleThresholdHours: number;
@@ -111,7 +112,6 @@ function resolveOwner(
 export async function aggregateStandup(
 	store: StateStore,
 	targetProjectName: string,
-	maxConcurrentRunners: number,
 	projects: ProjectEntry[],
 	stuckThresholdMinutes: number,
 	staleThresholdHours: number,
@@ -167,7 +167,8 @@ export async function aggregateStandup(
 		systemStatus: {
 			runningCount,
 			awaitingReviewCount,
-			maxRunners: maxConcurrentRunners,
+			// FLY-123 WS-D (P4): uncapped — no numeric ceiling.
+			maxRunners: null,
 			stuckCount,
 			oldCompletedFailedBlockedCount,
 			staleThresholdHours,
@@ -195,7 +196,7 @@ export function formatStandupReport(
 	// System Status
 	lines.push("### System Status");
 	lines.push(
-		`- Running Runners: **${systemStatus.runningCount}**/${systemStatus.maxRunners}`,
+		`- Running Runners: **${systemStatus.runningCount}**/${systemStatus.maxRunners ?? "∞"}`,
 	);
 	lines.push(`- Awaiting Review: **${systemStatus.awaitingReviewCount}**`);
 	lines.push(`- Stuck: **${systemStatus.stuckCount}**`);
@@ -274,7 +275,7 @@ function buildFormattedReport(
 
 	lines.push("### System Status");
 	lines.push(
-		`- Running Runners: **${systemStatus.runningCount}**/${systemStatus.maxRunners}`,
+		`- Running Runners: **${systemStatus.runningCount}**/${systemStatus.maxRunners ?? "∞"}`,
 	);
 	lines.push(`- Awaiting Review: **${systemStatus.awaitingReviewCount}**`);
 	lines.push(`- Stuck: **${systemStatus.stuckCount}**`);
@@ -325,7 +326,8 @@ export class StandupService {
 		private store: StateStore,
 		private projects: ProjectEntry[],
 		private discordBotToken: string | undefined,
-		private maxConcurrentRunners: number,
+		// FLY-123 WS-D (P4): maxConcurrentRunners removed — admission is
+		// resource-based; standup reports uncapped capacity.
 		private stuckThresholdMinutes: number,
 		private staleThresholdHours: number,
 		private standupChannel: string | undefined,
@@ -337,7 +339,6 @@ export class StandupService {
 		return aggregateStandup(
 			this.store,
 			projectName,
-			this.maxConcurrentRunners,
 			this.projects,
 			this.stuckThresholdMinutes,
 			this.staleThresholdHours,

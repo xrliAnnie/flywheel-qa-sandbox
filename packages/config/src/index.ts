@@ -16,6 +16,11 @@ export {
 	DEFAULT_PROOFSHOT_VISION_TOKEN_BUDGET,
 } from "./proofshot-defaults.js";
 export type {
+	RunnerLabelSelection,
+	RunnerVendorType,
+} from "./runner-label.js";
+export { parseRunnerLabels } from "./runner-label.js";
+export type {
 	AgentConfig,
 	AgentNodeConfig,
 	AutonomyLevel,
@@ -24,13 +29,18 @@ export type {
 	CIConfig,
 	DecisionLayerConfig,
 	DocFlowConfig,
+	ExecutorBackend,
 	FlywheelConfig,
 	OrchestratorConfig,
 	ParallelConfig,
 	ProofShotConfig,
 	ReactionsConfig,
+	RoleBackendConfig,
+	RoleBackendMap,
+	RoleName,
 	RunnerConfig,
 	SkillsConfig,
 	TeamConfig,
 	TimeoutBehavior,
 } from "./types.js";
+export { EXECUTOR_BACKENDS, ROLE_NAMES } from "./types.js";

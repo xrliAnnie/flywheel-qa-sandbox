@@ -4,8 +4,8 @@
  * Per plan v1.27.1 §2.0.3, the transport surface is split into five facets
  * (writer / reader / receiver-wake / spawn / preflight) plus an aggregate
  * `IAgentTeamTransport`. ClaudeCodeAdapter implements all five; CodexAdapter
- * is a stub throwing "not implemented" until spike-δ validates Codex CLI
- * session/wake semantics.
+ * implements them for real since FLY-123 Phase 1 (Spike-δ validated the
+ * Codex CLI session/wake semantics on 2026-06-03).
  *
  * **Vendor neutrality discipline**: production code outside
  * `packages/agent-team-transport/src/claude/**` MUST NOT import claude-code

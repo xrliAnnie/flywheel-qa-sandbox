@@ -9,6 +9,7 @@
 import { randomUUID } from "node:crypto";
 import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
+import type { RoleBackendMap } from "flywheel-config";
 import { openTmuxViewer } from "flywheel-core";
 import type { AgentDispatcher } from "flywheel-edge-worker";
 import type {
@@ -24,6 +25,11 @@ import type {
 	StartRequest,
 	StartResult,
 } from "./retry-dispatcher.js";
+import { resolveRoleAdapter } from "./role-adapter-resolver.js";
+import {
+	AdmissionDeferredError,
+	RunnerAdmissionController,
+} from "./runner-admission.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
 
 export interface ProjectRuntime {
@@ -38,6 +44,11 @@ export interface ProjectRuntime {
 	 * the runs-route catch block for a proper 400 INVALID_AGENT_NAME response.
 	 */
 	agentDispatcher: AgentDispatcher;
+	/**
+	 * FLY-123: project `.flywheel/config.yaml` `roles:` block — the
+	 * project-config layer of RoleAdapterResolver precedence.
+	 */
+	rolesConfig?: RoleBackendMap;
 }
 
 /**
@@ -62,10 +73,36 @@ export interface ProjectRuntime {
  * transport branch, but spawn flows weren't passing the required identity
  * fields. Result: mailbox written by Lead, never read by Runner.
  */
-function buildAgentTeamIdentity(
+function buildRunnerSpawnFields(
 	executionId: string,
 	leadId: string | undefined,
-): Pick<BlueprintContext, "runnerAgentName" | "agentTeamName" | "vendor"> {
+	issueLabels: string[] | undefined,
+	rolesConfig: RoleBackendMap | undefined,
+): Pick<
+	BlueprintContext,
+	| "runnerAgentName"
+	| "agentTeamName"
+	| "vendor"
+	| "runnerBackend"
+	| "runnerModel"
+> {
+	// FLY-123: resolve the executor backend for the runner role —
+	// task(label) > project roles config > FLYWHEEL_RUNNER_BACKEND env >
+	// built-in claude-tmux. With nothing configured this resolves to
+	// claude-tmux + vendor claude-code, making the returned fields
+	// byte-identical to the pre-FLY-123 buildAgentTeamIdentity output
+	// (plus runnerBackend="claude-tmux", which is also Blueprint's default).
+	const resolved = resolveRoleAdapter({
+		role: "runner",
+		...(issueLabels && { issueLabels }),
+		...(rolesConfig && { projectRoles: rolesConfig }),
+	});
+	const backendFields: Pick<BlueprintContext, "runnerBackend" | "runnerModel"> =
+		{
+			runnerBackend: resolved.backend,
+			...(resolved.model && { runnerModel: resolved.model }),
+		};
+
 	// FLY-142 PR #186 Codex Round 1 MEDIUM: share the single
 	// `resolveCommBackend` parser with `plugin.ts:createLeadRuntime` so
 	// unknown / typo'd env values fall back to mailbox consistently across
@@ -75,25 +112,29 @@ function buildAgentTeamIdentity(
 	// the Runner side while the Bridge side carried on writing mailbox.
 	if (resolveCommBackend() !== "mailbox") {
 		// Rollback path — CommDB hook flow, no Agent Team identity needed.
-		return {};
+		return backendFields;
 	}
 	if (!leadId) {
 		// No Lead → no Agent Team to join. Runner spawns without transport
 		// wiring (same as pre-FLY-142). This shouldn't happen on the
 		// production path (req.leadId is required when dispatched from
 		// LeadEventRouter), but guard anyway.
-		return {};
+		return backendFields;
 	}
 	// FLY-168: share the single identity derivation with `flywheel-comm send`
 	// mailbox dual-write so the spawn side and the send side can never diverge.
+	// FLY-123: same identity for codex — the codex mailbox watcher and the
+	// respond wake both derive from it (deriveRunnerMailboxIdentity is the
+	// single source of truth across vendors).
 	const { agentName, teamName } = deriveRunnerMailboxIdentity(
 		executionId,
 		leadId,
 	);
 	return {
+		...backendFields,
 		runnerAgentName: agentName,
 		agentTeamName: teamName,
-		vendor: "claude-code",
+		vendor: resolved.vendor,
 	};
 }
 
@@ -174,12 +215,16 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// FLY-205: predecessor's tier + URL — retry NEVER re-defaults the tier
 			docTier: req.docTier,
 			issueUrl: req.issueUrl,
-			// FLY-142 PR 1.4: Agent Team identity so Runner spawn flips
-			// claude-code into teammate mode and `useInboxPoller` reads
-			// MailboxLeadRuntime's writes. No-op on rollback path.
+			// FLY-142 PR 1.4 + FLY-123: Agent Team identity + executor backend
+			// resolution. No-op on rollback path (backend fields still set).
 			// Uses runnerAgentName/agentTeamName/vendor — distinct from
 			// FLY-137's agentName (dispatcher key) above.
-			...buildAgentTeamIdentity(newExecutionId, req.leadId),
+			...buildRunnerSpawnFields(
+				newExecutionId,
+				req.leadId,
+				req.issueLabels,
+				runtime.rolesConfig,
+			),
 			retryContext: {
 				predecessorExecutionId: req.oldExecutionId,
 				previousError: req.previousError,
@@ -320,13 +365,14 @@ export class RetryDispatcher implements IRetryDispatcher {
 
 /**
  * RunDispatcher — extends RetryDispatcher with start() for new executions.
- * Adds maxConcurrentRunners concurrency control.
+ * FLY-123 WS-D (P4): admission is resource-based (load + memory), not a
+ * hardcoded N — uncapped runner count.
  */
 export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 	constructor(
 		blueprintsByProject: Map<string, ProjectRuntime>,
 		cleanupHandles: Array<() => Promise<void>>,
-		private maxConcurrentRunners: number = 3,
+		private runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
 	) {
 		super(blueprintsByProject, cleanupHandles);
 	}
@@ -380,10 +426,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			throw new Error("RunDispatcher is shutting down");
 		}
 
-		if (this.getInflightCount() >= this.maxConcurrentRunners) {
-			throw new Error(
-				`Max concurrent runners reached (${this.maxConcurrentRunners}). Currently inflight: ${this.getInflightCount()}`,
-			);
+		// FLY-123 WS-D (P4): resource-based admission — defer only under real
+		// load/memory pressure, never a count cap. Typed error → route maps to
+		// 429 with the reason (R1 MED #4), never a 500 string-match miss.
+		const decision = this.runnerAdmission.tryAdmit();
+		if (!decision.admit) {
+			throw new AdmissionDeferredError(decision.reason, decision.detail);
 		}
 
 		const role = req.sessionRole ?? "main";
@@ -435,9 +483,14 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// FLY-205: doc-flow tier + issue URL (runs-route validates/persists)
 			docTier: req.docTier,
 			issueUrl: req.issueUrl,
-			// FLY-142 PR 1.4: same as start() path — wire Agent Team identity
-			// so Runner reads Lead's mailbox via stock useInboxPoller.
-			...buildAgentTeamIdentity(executionId, req.leadId),
+			// FLY-142 PR 1.4 + FLY-123: same as retry path — Agent Team identity
+			// + executor backend resolution (labels > roles config > env > claude).
+			...buildRunnerSpawnFields(
+				executionId,
+				req.leadId,
+				req.issueLabels,
+				runtime.rolesConfig,
+			),
 			// FLY-116: spawn macOS Terminal viewer once tmux window exists
 			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
 				openTmuxViewer({

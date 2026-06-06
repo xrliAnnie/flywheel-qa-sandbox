@@ -538,6 +538,35 @@ export function createEventRouter(
 					| { status?: string }
 					| undefined;
 
+				// FLY-123 (Codex design review R1 #4): persist adapter session-
+				// resume params (e.g. Codex threadId) on the HTTP sink path —
+				// parity with DirectEventSink. MERGE-patch (proofshot state
+				// shares the session_params JSON). Placed BEFORE the strict
+				// route guard: resume metadata must survive even a malformed
+				// route emission.
+				const sessionParamsPayload = payload.sessionParams as
+					| Record<string, unknown>
+					| undefined;
+				if (
+					sessionParamsPayload &&
+					typeof sessionParamsPayload === "object" &&
+					!Array.isArray(sessionParamsPayload) &&
+					Object.keys(sessionParamsPayload).length > 0
+				) {
+					try {
+						const existingParams =
+							store.getSessionParams(event.execution_id) ?? {};
+						store.setSessionParams(event.execution_id, {
+							...existingParams,
+							...sessionParamsPayload,
+						});
+					} catch (err) {
+						console.warn(
+							`[event-route] sessionParams persist failed for ${event.execution_id}: ${(err as Error).message}`,
+						);
+					}
+				}
+
 				// FLY-58: If session is approved_to_ship, Runner finished shipping
 				// → go straight to completed (no Decision Layer needed).
 				// Looked up BEFORE the strict-route guard so the natural-completion

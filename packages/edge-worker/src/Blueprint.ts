@@ -77,6 +77,14 @@ export interface BlueprintResult {
 	tmuxWindow?: string;
 	durationMs?: number;
 	error?: string;
+	/**
+	 * FLY-123 (Codex design review R1 #4): adapter session-resume params
+	 * (e.g. Codex `threadId`). Previously `runInner()` dropped
+	 * `AdapterExecutionResult.sessionParams` on the floor — StateStore could
+	 * store it but the event chain never carried it. Passed through both
+	 * event sinks into `sessions.session_params`.
+	 */
+	sessionParams?: Record<string, unknown>;
 	// v0.2
 	worktreePath?: string;
 	evidence?: ExecutionEvidence;
@@ -176,6 +184,17 @@ export interface BlueprintContext {
 	leadSessionId?: string;
 	/** UI color hint for `--agent-color` (e.g., `"cyan"`). */
 	agentColor?: string;
+
+	// FLY-123 — role → adapter resolution (plan §3).
+
+	/**
+	 * Executor backend (AdapterRegistry key) resolved by RoleAdapterResolver
+	 * in the dispatcher: `"claude-tmux"` | `"codex-tmux"`. Absent →
+	 * `"claude-tmux"` (byte-compat default).
+	 */
+	runnerBackend?: string;
+	/** Optional model override resolved alongside the backend (label/roles). */
+	runnerModel?: string;
 }
 
 /**
@@ -339,7 +358,10 @@ export class Blueprint {
 		env: EventEnvelope,
 		hydrated: HydratedContext,
 	): Promise<BlueprintResult> {
-		const adapter = this.getAdapter(ctx.runnerName);
+		// FLY-123: adapter lookup is by EXECUTOR BACKEND (registry key), not by
+		// ctx.runnerName (a display-ish field the old makeAdapter closure
+		// ignored anyway). Absent → claude-tmux, byte-compat with production.
+		const adapter = this.getAdapter(ctx.runnerBackend ?? "claude-tmux");
 		const startTime = Date.now();
 		const executionId = env.executionId;
 		let cwd = projectRoot;
@@ -710,16 +732,33 @@ export class Blueprint {
 					const flagStr = flags.join(" ");
 
 					if (cpName === "brainstorm") {
-						systemPromptLines.push(
-							"",
-							"BRAINSTORM GATE (MANDATORY — do NOT skip):",
-							"Before writing any code, you MUST confirm your understanding with your Lead.",
-							"a. Read the issue and codebase. Form your understanding.",
-							`b. Run: \`node ${commCliPath} gate brainstorm --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your understanding: [what] [how] [expected outcome]"\``,
-							"c. This command BLOCKS until your Lead confirms (default 48h timeout). Do NOT write code until it returns.",
-							"d. Read the response. If corrections were provided, adjust your approach.",
-							"e. If the command exits with a non-zero code (timeout fail-close), STOP immediately and do NOT continue writing code. Your Lead will be notified via Discord by the gate_timed_out event.",
-						);
+						// FLY-123 (Codex design review R3 #1): a Codex runner CANNOT
+						// sit inside the blocking gate process — its gate model is
+						// process-boundary (register + END TURN; the adapter resumes
+						// it with the Lead's reply). Claude text below is byte-identical
+						// to pre-FLY-123.
+						if (ctx.vendor === "codex") {
+							systemPromptLines.push(
+								"",
+								"BRAINSTORM GATE (MANDATORY — do NOT skip):",
+								"Before writing any code, you MUST confirm your understanding with your Lead.",
+								"a. Read the issue and codebase. Form your understanding.",
+								`b. Run: \`node ${commCliPath} gate brainstorm --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} --no-block "Your understanding: [what] [how] [expected outcome]"\` — it returns immediately.`,
+								"c. Then END YOUR TURN: make your final message the exact understanding you submitted, and STOP. Do NOT write code. Your session will be resumed automatically with your Lead's response.",
+								"d. When resumed, the first message is your Lead's response. If corrections were provided, adjust your approach before writing code.",
+							);
+						} else {
+							systemPromptLines.push(
+								"",
+								"BRAINSTORM GATE (MANDATORY — do NOT skip):",
+								"Before writing any code, you MUST confirm your understanding with your Lead.",
+								"a. Read the issue and codebase. Form your understanding.",
+								`b. Run: \`node ${commCliPath} gate brainstorm --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your understanding: [what] [how] [expected outcome]"\``,
+								"c. This command BLOCKS until your Lead confirms (default 48h timeout). Do NOT write code until it returns.",
+								"d. Read the response. If corrections were provided, adjust your approach.",
+								"e. If the command exits with a non-zero code (timeout fail-close), STOP immediately and do NOT continue writing code. Your Lead will be notified via Discord by the gate_timed_out event.",
+							);
+						}
 					} else if (cpName === "approve_to_ship") {
 						// FLY-191 Phase 2: non-blocking review flow. The runner posts
 						// the review request and goes IDLE (reachable via mailbox)
@@ -756,23 +795,43 @@ export class Blueprint {
 							"g. Ordinary messages (questions, instructions — not approval/feedback): handle them, reply if needed, then keep waiting at this checkpoint.",
 						);
 					} else if (cpName === "question") {
-						systemPromptLines.push(
-							"",
-							"QUESTION GATE (use when needed):",
-							"When you have a question that blocks your progress:",
-							`a. Run: \`node ${commCliPath} gate question --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your question here"\``,
-							"b. This command BLOCKS until your Lead responds (default 48h timeout).",
-							"c. If the command exits with a non-zero code (timeout fail-close), STOP immediately. Your Lead will be notified via Discord by the gate_timed_out event.",
-						);
+						if (ctx.vendor === "codex") {
+							systemPromptLines.push(
+								"",
+								"QUESTION GATE (use when needed):",
+								"When you have a question that blocks your progress:",
+								`a. Run: \`node ${commCliPath} gate question --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} --no-block "Your question here"\` — it returns immediately.`,
+								"b. Then END YOUR TURN: make your final message the exact question, and STOP. Your session will be resumed automatically with your Lead's response.",
+							);
+						} else {
+							systemPromptLines.push(
+								"",
+								"QUESTION GATE (use when needed):",
+								"When you have a question that blocks your progress:",
+								`a. Run: \`node ${commCliPath} gate question --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your question here"\``,
+								"b. This command BLOCKS until your Lead responds (default 48h timeout).",
+								"c. If the command exits with a non-zero code (timeout fail-close), STOP immediately. Your Lead will be notified via Discord by the gate_timed_out event.",
+							);
+						}
 					} else {
-						systemPromptLines.push(
-							"",
-							`${cpName.toUpperCase()} GATE:`,
-							`When you reach the ${cpName} checkpoint:`,
-							`a. Run: \`node ${commCliPath} gate ${cpName} --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your message"\``,
-							"b. This command BLOCKS until your Lead responds (default 48h timeout).",
-							"c. If the command exits with a non-zero code (timeout fail-close), STOP immediately. Your Lead will be notified via Discord by the gate_timed_out event.",
-						);
+						if (ctx.vendor === "codex") {
+							systemPromptLines.push(
+								"",
+								`${cpName.toUpperCase()} GATE:`,
+								`When you reach the ${cpName} checkpoint:`,
+								`a. Run: \`node ${commCliPath} gate ${cpName} --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} --no-block "Your message"\` — it returns immediately.`,
+								"b. Then END YOUR TURN: make your final message the exact checkpoint message, and STOP. Your session will be resumed automatically with your Lead's response.",
+							);
+						} else {
+							systemPromptLines.push(
+								"",
+								`${cpName.toUpperCase()} GATE:`,
+								`When you reach the ${cpName} checkpoint:`,
+								`a. Run: \`node ${commCliPath} gate ${cpName} --lead ${ctx.leadId} --exec-id ${executionId} ${flagStr} "Your message"\``,
+								"b. This command BLOCKS until your Lead responds (default 48h timeout).",
+								"c. If the command exits with a non-zero code (timeout fail-close), STOP immediately. Your Lead will be notified via Discord by the gate_timed_out event.",
+							);
+						}
 					}
 				}
 			}
@@ -896,6 +955,10 @@ export class Blueprint {
 				),
 				permissionMode: "bypassPermissions",
 				appendSystemPrompt: systemPrompt,
+				// FLY-123: model override resolved by RoleAdapterResolver
+				// (label / roles config). Claude path previously passed no
+				// model — absent stays absent (byte-compat).
+				...(ctx.runnerModel !== undefined && { model: ctx.runnerModel }),
 				timeoutMs,
 				sessionDisplayName: `${hydrated.issueId} ${cleanIssueTitle(hydrated.issueTitle)}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
@@ -1002,6 +1065,8 @@ export class Blueprint {
 			durationMs: result.durationMs,
 			worktreePath: worktreeInfo?.worktreePath,
 			evidence,
+			// FLY-123 R1 #4: carry adapter resume params to the event sinks
+			sessionParams: result.sessionParams,
 		};
 	}
 
@@ -1121,6 +1186,8 @@ export class Blueprint {
 			projectId: hydrated.projectId,
 			exitReason: execCtx.exitReason,
 			consecutiveFailures: execCtx.consecutiveFailures,
+			// FLY-123 R1 #4: carry adapter resume params to the event sinks
+			sessionParams: result.sessionParams,
 		};
 	}
 

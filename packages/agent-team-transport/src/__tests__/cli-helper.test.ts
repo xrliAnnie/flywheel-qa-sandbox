@@ -203,14 +203,15 @@ describe("CLI helper — quote safety", () => {
 });
 
 // ============================================================================
-// Backend switching (Codex stub)
+// Backend switching (FLY-123: CodexAdapter is real — boot-throw removed)
 // ============================================================================
 
 describe("CLI helper — backend selection", () => {
-	it("FLYWHEEL_AGENT_BACKEND=codex throws loud at boot", async () => {
-		await expect(
-			runCli(["vendor"], { FLYWHEEL_AGENT_BACKEND: "codex" }),
-		).rejects.toMatchObject({ code: 2 });
+	it("FLY-123: FLYWHEEL_AGENT_BACKEND=codex selects the codex adapter (plan 1.8)", async () => {
+		const { stdout } = await runCli(["vendor"], {
+			FLYWHEEL_AGENT_BACKEND: "codex",
+		});
+		expect(stdout.trim()).toBe("codex");
 	});
 });
 
