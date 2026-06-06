@@ -10,7 +10,8 @@
 		"./db": "./dist/lib.js",
 		"./utils": "./dist/utils/content-ref.js",
 		"./wake": "./dist/wake.js",
-		"./gate-marker": "./dist/gate-marker.js"
+		"./gate-marker": "./dist/gate-marker.js",
+		"./xiaohongshu-state": "./dist/xiaohongshu-state.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"
