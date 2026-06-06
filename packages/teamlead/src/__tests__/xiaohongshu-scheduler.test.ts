@@ -238,6 +238,26 @@ describe("executeLearningPlan", () => {
 		expect(alert).toHaveBeenCalledTimes(1);
 	});
 
+	it("treats a 500 'already in progress' duplicate as a quiet skip (Codex #1)", async () => {
+		const alert = vi.fn();
+		const r = await executeLearningPlan([spawnDecision], {
+			stateDir: dir,
+			createTriggerIssue: async () => "ISSUE-1",
+			startRun: async () => ({
+				ok: false,
+				status: 500,
+				message: "Issue already in progress",
+			}),
+			alert,
+		});
+		expect(r.skipped).toContainEqual({
+			collectionId: "c1",
+			reason: "already_active",
+		});
+		expect(r.errors).toEqual([]);
+		expect(alert).not.toHaveBeenCalled();
+	});
+
 	it("records an error if createTriggerIssue throws", async () => {
 		const r = await executeLearningPlan([spawnDecision], {
 			stateDir: dir,

@@ -168,6 +168,15 @@ export interface ExecuteReport {
 }
 
 /**
+ * Whether a non-409 start error is really a duplicate-spawn the dispatcher
+ * caught atomically (Codex option-A review #1) — treated as a quiet in-flight
+ * skip, not an error/alert.
+ */
+function isDuplicateSpawn(message: string): boolean {
+	return /already\s+(in\s+progress|active|has an active)/i.test(message);
+}
+
+/**
  * Execute a planned tick (option A lease model): the Runner — not the scheduler
  * — owns the run-level lease (run_key = its exec id; it acquires/renews/releases
  * it). The scheduler's safety is defense-in-depth: the shell wrapper's FLY-176
@@ -225,14 +234,19 @@ export async function executeLearningPlan(
 				deps.log?.(
 					`[xhs-scheduler] spawned ${plan.project}/${plan.collectionId} (${r.executionId}) on ${triggerIssueId}`,
 				);
-			} else if (r.status === 409) {
+			} else if (r.status === 409 || isDuplicateSpawn(r.message)) {
 				// Active session already exists — the in-flight guard. Not an error.
+				// Codex option-A review (non-blocking #1): a duplicate that races past
+				// the route's StateStore check is caught atomically by RunDispatcher
+				// but can surface as a 500 with an "already in progress"-style message
+				// rather than a clean 409. Treat that message as the same quiet skip so
+				// the in-flight guard never false-alerts.
 				report.skipped.push({
 					collectionId: plan.collectionId,
 					reason: "already_active",
 				});
 				deps.log?.(
-					`[xhs-scheduler] ${plan.project}/${plan.collectionId} already active (409) — skip`,
+					`[xhs-scheduler] ${plan.project}/${plan.collectionId} already active (${r.status}) — skip`,
 				);
 			} else {
 				report.errors.push({
