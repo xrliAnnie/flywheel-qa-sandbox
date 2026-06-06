@@ -17,7 +17,17 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-const VALID_ROUTES = new Set(["auto_approve", "needs_review", "blocked"]);
+// FLY-222 #1: `no_code` is the terminal route for a runner-driven no-code /
+// no-merge clean success (e.g. the scheduled learning Runner — reads, analyzes,
+// creates issue drafts + memory, never writes code or merges). The Bridge maps
+// it to terminal `completed` (NOT awaiting_review), so the runner doesn't get
+// stuck and a fixed reusable trigger issue isn't 409-blocked next cadence.
+const VALID_ROUTES = new Set([
+	"auto_approve",
+	"needs_review",
+	"blocked",
+	"no_code",
+]);
 
 const ATTEMPT_COUNT = 4;
 const ATTEMPT_TIMEOUT_MS = 5000;
@@ -86,6 +96,14 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	}
 	if (opts.merged && (opts.pr === undefined || opts.pr === null)) {
 		console.error("--merged requires --pr <number>");
+		process.exit(1);
+	}
+	// FLY-222 #1: no_code is a no-merge completion — reject contradictory flags
+	// so a misuse can't silently look like a merged completion.
+	if (opts.route === "no_code" && (opts.merged || opts.pr !== undefined)) {
+		console.error(
+			"--route no_code is for no-code/no-merge completions; do not pass --merged or --pr",
+		);
 		process.exit(1);
 	}
 

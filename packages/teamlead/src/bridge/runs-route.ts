@@ -179,7 +179,10 @@ export function createRunsRouter(
 		if (alreadyActive) {
 			res.status(409).json({
 				success: false,
-				message: `Issue ${issueId} already has an active session for role "${role}" (${alreadyActive.execution_id}, status: ${alreadyActive.status})`,
+				// FLY-229: hint re-engagement. Conditional language — Bridge FSM
+				// status alone doesn't prove tmux liveness, so point at
+				// runner_terminal_list to confirm parked-alive before re-engaging.
+				message: `Issue ${issueId} already has an active session for role "${role}" (${alreadyActive.execution_id}, status: ${alreadyActive.status}). If that session is parked and still alive (idle), re-engage it via 'flywheel-comm send' / SendMessage instead of starting a new run — check runner_terminal_list (class=parked-alive).`,
 			});
 			return;
 		}

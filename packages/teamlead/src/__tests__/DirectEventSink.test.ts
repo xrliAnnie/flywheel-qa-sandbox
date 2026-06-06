@@ -345,3 +345,52 @@ describe("DirectEventSink — FLY-191 R5: late qid-less emission can't regress a
 		expect(s?.commit_count).toBe(1);
 	});
 });
+
+describe("DirectEventSink — FLY-222 #1: no_code → terminal completed", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+	afterEach(() => {
+		store.close();
+	});
+
+	function noCodeResult() {
+		return {
+			success: true,
+			decision: { route: "no_code", reasoning: "learning run, no code" },
+			evidence: {
+				commitCount: 0,
+				filesChangedCount: 0,
+				commitMessages: [],
+				changedFilePaths: [],
+				linesAdded: 0,
+				linesRemoved: 0,
+				diffSummary: "",
+				headSha: null,
+				partial: false,
+				durationMs: 10,
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
+		} as any;
+	}
+
+	it("running + route=no_code (no merge) → completed (NOT awaiting_review), decision_route persisted", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+
+		await new DirectEventSink(store, makeConfig(), testProjects).emitCompleted(
+			makeEnvelope(),
+			noCodeResult(),
+		);
+
+		const s = store.getSession("exec-1");
+		expect(s?.status).toBe("completed");
+		expect(s?.decision_route).toBe("no_code");
+	});
+});

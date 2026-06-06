@@ -278,6 +278,29 @@ describe("session_completed route guard (FLY-108)", () => {
 		expect(store.getSession("exec-blk")!.status).toBe("blocked");
 	});
 
+	// FLY-222 #1: no-code/no-merge clean success → terminal completed (NOT
+	// awaiting_review). Mirrors DirectEventSink.
+	it("route=no_code (no merge) → completed, decision_route persisted", async () => {
+		await startRunning("exec-nc", "issue-nc");
+
+		const res = await postCompleted({
+			event_id: "evt-nc",
+			execution_id: "exec-nc",
+			issue_id: "issue-nc",
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "no_code" },
+				evidence: {},
+				summary: "2 issues created, 3 learnings recorded",
+			},
+		});
+		expect(res.status).toBe(200);
+		const s = store.getSession("exec-nc")!;
+		expect(s.status).toBe("completed");
+		expect(s.decision_route).toBe("no_code");
+	});
+
 	it("FSM reject logs at error level with pre-state + target + route", async () => {
 		// Put session into a terminal state first via a legit transition.
 		await startRunning("exec-fsm-rej", "issue-fsm-rej");

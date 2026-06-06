@@ -220,6 +220,33 @@ describe("complete command", () => {
 		);
 	});
 
+	// FLY-222 #1: no_code terminal route
+	it("FLY-222: route=no_code is accepted and posts decision.route=no_code", async () => {
+		await complete({ route: "no_code", merged: false, summary: "2 issues" });
+		expect(mockFetch).toHaveBeenCalled();
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		expect(body.payload.decision).toEqual({ route: "no_code" });
+		expect(body.payload.summary).toBe("2 issues");
+	});
+
+	it("FLY-222: route=no_code with --merged → exit 1 (contradictory)", async () => {
+		await expect(
+			complete({ route: "no_code", pr: 7, merged: true }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("no_code is for no-code/no-merge"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("FLY-222: route=no_code with --pr → exit 1 (contradictory)", async () => {
+		await expect(
+			complete({ route: "no_code", pr: 7, merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
 	it("missing FLYWHEEL_EXEC_ID → exit 1 with explicit env name", async () => {
 		delete process.env.FLYWHEEL_EXEC_ID;
 		await expect(

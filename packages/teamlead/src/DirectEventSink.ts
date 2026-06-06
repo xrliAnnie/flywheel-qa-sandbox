@@ -271,7 +271,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				status = "awaiting_review";
 			}
 		} else if (route === "blocked") status = "blocked";
-		else {
+		else if (route === "no_code") {
+			// FLY-222 #1: no-code/no-merge clean success → terminal completed.
+			// Sister branch: event-route.ts. evidenceGap stays false (not an
+			// approved_to_ship merge-evidence gap); runPostShipFinalization is
+			// gated on merged landing so it cannot fire for a no-merge completion.
+			status = "completed";
+		} else {
 			status = "completed";
 			// FLY-208 5a: natural completion (no route) from approved_to_ship
 			// without merge proof — mark the gap (FLY-210 finishes cleanup).

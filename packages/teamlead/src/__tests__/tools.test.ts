@@ -689,13 +689,33 @@ describe("GEO-259: leadId filtering on query routes", () => {
 		expect(body.count).toBe(0);
 	});
 
-	it("mode=by_identifier ignores leadId", async () => {
+	// FLY-228 (Codex R2 MED-3): by_identifier now scopes by leadId WHEN provided
+	// (so close_runner --abandon's 0/>1 disambiguation runs on the in-scope set).
+	it("mode=by_identifier WITHOUT leadId returns the session (unchanged)", async () => {
 		const res = await fetch(
-			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-102&leadId=product-lead`,
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-102`,
 		);
 		const body = await res.json();
 		expect(body.count).toBe(1);
 		expect(body.sessions[0].execution_id).toBe("ops-1");
+	});
+
+	it("mode=by_identifier WITH leadId filters out an out-of-scope session", async () => {
+		// GEO-102 is an Operations issue; product-lead must not see it.
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-102&leadId=product-lead`,
+		);
+		const body = await res.json();
+		expect(body.count).toBe(0);
+	});
+
+	it("mode=by_identifier WITH matching leadId returns the in-scope session", async () => {
+		const res = await fetch(
+			`${baseUrl}/api/sessions?mode=by_identifier&identifier=GEO-101&leadId=product-lead`,
+		);
+		const body = await res.json();
+		expect(body.count).toBe(1);
+		expect(body.sessions[0].execution_id).toBe("prod-2");
 	});
 
 	it("GET /api/sessions/:id/history?leadId filters history", async () => {

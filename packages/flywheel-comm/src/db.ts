@@ -523,6 +523,50 @@ export class CommDB {
 			.all(...params) as Session[];
 	}
 
+	/**
+	 * FLY-229: recent terminal (completed/timeout) sessions, for parked-alive
+	 * detection in `runner_terminal_list`. Lead-scoped IN SQL — the
+	 * `(lead_id = ? OR lead_id IS NULL)` predicate is applied BEFORE `LIMIT` so an
+	 * in-scope parked-alive row can't be pushed out of the window by another
+	 * Lead's newer rows. Ordered by `COALESCE(ended_at, started_at) DESC` —
+	 * `ended_at` is the "parked since" clock (stamped by `updateSessionStatus`);
+	 * parked-alive sessions are inherently recent, so a recency cap yields no
+	 * realistic false-negative. `leadId === undefined` → no scope predicate
+	 * (mirrors the unscoped form of `getActiveSessions`).
+	 */
+	getRecentTerminalSessions(
+		projectName: string,
+		leadId: string | undefined,
+		limit: number,
+	): Session[] {
+		const scoped = leadId != null;
+		const sql =
+			"SELECT * FROM sessions WHERE project_name = ? AND status IN ('completed','timeout')" +
+			(scoped ? " AND (lead_id = ? OR lead_id IS NULL)" : "") +
+			" ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?";
+		const params: Array<string | number> = scoped
+			? [projectName, leadId as string, limit]
+			: [projectName, limit];
+		return this.db.prepare(sql).all(...params) as Session[];
+	}
+
+	/**
+	 * FLY-229: count of terminal (completed/timeout) sessions matching the SAME
+	 * scope as `getRecentTerminalSessions` — drives the truncation summary line
+	 * when more terminal rows exist than the probe cap.
+	 */
+	countTerminalSessions(projectName: string, leadId?: string): number {
+		const scoped = leadId != null;
+		const sql =
+			"SELECT COUNT(*) AS n FROM sessions WHERE project_name = ? AND status IN ('completed','timeout')" +
+			(scoped ? " AND (lead_id = ? OR lead_id IS NULL)" : "");
+		const params: string[] = scoped
+			? [projectName, leadId as string]
+			: [projectName];
+		const row = this.db.prepare(sql).get(...params) as { n: number };
+		return row.n;
+	}
+
 	close(): void {
 		this.db.close();
 	}

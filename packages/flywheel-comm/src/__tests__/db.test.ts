@@ -274,6 +274,87 @@ describe("CommDB", () => {
 				db.listSessions("geoforge3d", ["running", "timeout"]),
 			).toHaveLength(2);
 		});
+
+		// FLY-229: parked-alive detection helpers
+		describe("getRecentTerminalSessions / countTerminalSessions", () => {
+			it("returns only completed/timeout rows for the project (not running)", () => {
+				db.registerSession(
+					"run-1",
+					"@1",
+					"geoforge3d",
+					"GEO-1",
+					"product-lead",
+				);
+				db.registerSession(
+					"done-1",
+					"@2",
+					"geoforge3d",
+					"GEO-2",
+					"product-lead",
+				);
+				db.registerSession("to-1", "@3", "geoforge3d", "GEO-3", "product-lead");
+				db.registerSession(
+					"other-1",
+					"@4",
+					"other-proj",
+					"GEO-4",
+					"product-lead",
+				);
+				db.updateSessionStatus("done-1", "completed");
+				db.updateSessionStatus("to-1", "timeout");
+				db.updateSessionStatus("other-1", "completed");
+
+				const rows = db.getRecentTerminalSessions("geoforge3d", undefined, 50);
+				expect(rows.map((r) => r.execution_id).sort()).toEqual([
+					"done-1",
+					"to-1",
+				]);
+				expect(db.countTerminalSessions("geoforge3d")).toBe(2);
+			});
+
+			it("Lead-scopes in SQL (lead_id = leadId OR NULL) BEFORE limit", () => {
+				// Other lead's row is NEWER (registered+completed last) so it sorts
+				// first; without SQL scoping a limit=1 would drop the in-scope row.
+				db.registerSession("mine", "@1", "geoforge3d", "GEO-1", "product-lead");
+				db.registerSession("legacy", "@2", "geoforge3d", "GEO-2"); // lead_id NULL
+				db.registerSession("theirs", "@3", "geoforge3d", "GEO-3", "ops-lead");
+				db.updateSessionStatus("mine", "completed");
+				db.updateSessionStatus("legacy", "completed");
+				db.updateSessionStatus("theirs", "completed");
+
+				const scoped = db.getRecentTerminalSessions(
+					"geoforge3d",
+					"product-lead",
+					50,
+				);
+				expect(scoped.map((r) => r.execution_id).sort()).toEqual([
+					"legacy", // NULL lead_id visible to everyone
+					"mine",
+				]);
+				expect(scoped.some((r) => r.execution_id === "theirs")).toBe(false);
+				expect(db.countTerminalSessions("geoforge3d", "product-lead")).toBe(2);
+
+				// in-scope row survives even when out-of-scope rows fill a tight limit
+				const limited = db.getRecentTerminalSessions(
+					"geoforge3d",
+					"product-lead",
+					1,
+				);
+				expect(limited).toHaveLength(1);
+				expect(["mine", "legacy"]).toContain(limited[0]!.execution_id);
+			});
+
+			it("respects the limit", () => {
+				for (let i = 0; i < 5; i++) {
+					db.registerSession(`e${i}`, `@${i}`, "geoforge3d", `GEO-${i}`);
+					db.updateSessionStatus(`e${i}`, "completed");
+				}
+				expect(
+					db.getRecentTerminalSessions("geoforge3d", undefined, 3),
+				).toHaveLength(3);
+				expect(db.countTerminalSessions("geoforge3d")).toBe(5);
+			});
+		});
 	});
 
 	describe("cleanupReadMessages", () => {
