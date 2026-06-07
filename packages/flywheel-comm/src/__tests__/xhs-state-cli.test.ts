@@ -125,3 +125,55 @@ describe("xhs-state CLI", () => {
 		expect(exitSpy).toHaveBeenCalledWith(2);
 	});
 });
+
+describe("xhs-state CLI — F2 owner-fencing (zombie write after takeover)", () => {
+	it("allows a mutating write by the current lease owner", async () => {
+		expect((await run("acquire-lease", "--owner", "r1")).ok).toBe(true);
+		const code = await xhsState([
+			"mark-processed", "--project", P, "--collection", C,
+			"--state-dir", dir, "--note-id", "n1", "--owner", "r1",
+		]);
+		expect(code).toBe(0);
+		expect((await run("read")).processed).toEqual(["n1"]);
+	});
+
+	it("REJECTS (exit 2) a mutating write when a DIFFERENT owner holds the lease", async () => {
+		// r1 holds the lease; a stale zombie r0 tries to advance state.
+		expect((await run("acquire-lease", "--owner", "r1")).ok).toBe(true);
+		out = [];
+		const code = await xhsState([
+			"mark-processed", "--project", P, "--collection", C,
+			"--state-dir", dir, "--note-id", "zombie", "--owner", "r0",
+		]);
+		expect(code).toBe(2);
+		expect(JSON.parse(out.filter((x) => x.trim()).pop()!)).toMatchObject({
+			ok: false, reason: "not_lease_owner", heldBy: "r1",
+		});
+		// the zombie write did NOT land
+		expect((await run("read")).processed).not.toContain("zombie");
+	});
+
+	it("allows a mutating write with no --owner (backward compat / scheduler path)", async () => {
+		const code = await xhsState([
+			"mark-processed", "--project", P, "--collection", C,
+			"--state-dir", dir, "--note-id", "n2",
+		]);
+		expect(code).toBe(0);
+		expect((await run("read")).processed).toContain("n2");
+	});
+
+	it("fences record-op-intent / set-next-due / mark-op-done too", async () => {
+		expect((await run("acquire-lease", "--owner", "r1")).ok).toBe(true);
+		for (const argv of [
+			["record-op-intent", "--note-id", "n", "--kind", "issue", "--candidate-id", "c"],
+			["set-next-due", "--cadence", "weekly"],
+		]) {
+			out = [];
+			const code = await xhsState([
+				argv[0], "--project", P, "--collection", C, "--state-dir", dir,
+				...argv.slice(1), "--owner", "r0",
+			]);
+			expect(code).toBe(2);
+		}
+	});
+});

@@ -90,7 +90,7 @@ YAML
 - **A9.2 不同 collection 单 MCP 串行不失败**:两个**不同** collection 同夜 due → 各自 Runner 起(不同 trigger issue,不被 409 串行)→ 都打单 MCP 浏览器(127.0.0.1:18060)。
   - **预期**:MCP 调用在 server 处**串行排队**(慢),但**长超时兜住、都成功**,无超时失败、无死锁。确认是 **intended 串行**非意外。
   - **verdict**:两 collection 都完成(慢可接受)、无失败 → PASS。
-- **A9.3 Runner-持 lease**:两 Runner 同收藏夹被 mutex/lease 挡;旧 owner 晚写被 run-key 拒;stale-takeover(过期 lease 被新 owner 接管)。
+- **A9.3 Runner-持 lease**:两 Runner 同收藏夹被 mutex/lease 挡;stale-takeover(过期 lease 被新 owner 接管);**旧 owner 晚写被 run-key 拒 —— 现对 lease 操作 AND 数据写(mark-processed 等,经 #2 owner-fencing)都成立**(qa-fly-222 F2 修后,见下方 #2 节)。
 - **A9.4 死在 set-next-due 前 → fail-soft re-spawn**:kill 一个 Runner(在建完 issue、set-next-due 前)→ session 终态后 + 下一 tick → **re-spawn**(collection 仍 due),**不产生僵尸并发**(老 session 终态 → 409 不再挡)。
   - **verdict**:下轮 re-spawn 发生、无并发僵尸 → PASS(fail-soft 重试)。
 
@@ -100,16 +100,13 @@ YAML
 
 ---
 
-## #2 owner-fencing 硬化验(A0-A10 期间一并做 + 验)
+## #2 owner-fencing —— **已实现(qa-fly-222 F2),A0-A10 只需实机复验**
 
-Codex option-A 复核 non-blocking #2:lease 非 fencing token → 给 mutating `xhs-state` 命令加可选 `--owner`(校验 lease owner 再写)。
-
-- **做**:`xhs-state` 的 `mark-processed / record-pending / set-next-due / record-op-intent / mark-op-done` 加可选 `--owner <RK>`;在 `mutate()` 的 read-modify-write 内,若传了 `--owner` 且 `state.lease?.owner` 存在且 ≠ owner → 拒写(exit≠0 + reason);SKILL.md 让 Runner 全程带 `--owner $RUN_KEY`。
-- **验**:
-  - 持 lease 的 owner 带 `--owner` 写 → 成功;
-  - **非 owner**(或 lease 已被 takeover)带 `--owner` 写 → **拒**(zombie 写被挡);
-  - 无 lease(scheduler 的 triggerIssueId 写,option A scheduler 不持 lease)→ 不传 `--owner`,正常写(向后兼容)。
-- **verdict**:zombie 写被 fence 拒、owner 写通、无 --owner 向后兼容 → PASS。
+Codex option-A 复核 non-blocking #2 + qa-fly-222 F2:lease 非 fencing token → 已给 mutating `xhs-state` 命令加 `--owner` 校验(校验 lease owner 再写)。**已实现 + 单测过**(commit `feat(FLY-222): F2 owner-fencing`):
+- `mark-processed / record-pending / set-next-due / record-op-intent / mark-op-done` 收 `--owner`;`mutate()` 在 read-modify-write 内,若传 `fenceOwner` 且 `state.lease` 存在且 `lease.owner !== fenceOwner` → **拒写(exit 2,emit `{ok:false,reason:"not_lease_owner",heldBy}`)**。lease 命令(acquire/renew/release)走自身 lib CAS,不 fence。SKILL.md step 9/10 全程带 `--owner "$RUN_KEY"` + `not_lease_owner` → fail-soft 停手。
+- **单测覆盖(xhs-state-cli.test.ts)**:owner 写通 / 异 owner 写拒(exit 2,zombie 不落)/ 无 `--owner` 向后兼容(scheduler 无-lease triggerIssueId 写)/ record-op-intent+set-next-due 也 fence。
+- **A0-A10 实机复验**:真 stale-takeover(r1 持 lease → 超 TTL → r2 接管)后,老 r1 的 zombie `mark-processed --owner r1` 被拒(`heldBy: r2`)、不污染 r2 的 processed。**A9.3 的"旧 owner 晚写被 run-key 拒"现对数据写也成立(不只 lease)。**
+- **verdict**:zombie 数据写被 fence 拒、owner 写通、向后兼容 → PASS。
 
 ---
 

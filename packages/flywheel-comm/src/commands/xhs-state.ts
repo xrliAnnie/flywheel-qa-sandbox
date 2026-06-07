@@ -80,7 +80,15 @@ function parseNoteIds(raw: string | undefined): string[] {
  * Run a mutating transition under the collection mutex: read → transform →
  * (optionally write). `transform` returns the next state plus an optional
  * `output` to emit; returning `write: false` skips the write (e.g. rejected
- * lease acquire) so a no-op never rewrites the file.
+ * lease acquire) so a no-op never rewrites the file. Returns the CLI exit code.
+ *
+ * F2 owner-fencing (Codex option-A review #2 / qa-fly-222): when `fenceOwner` is
+ * set and a DIFFERENT owner holds the lease, the write is REJECTED (exit 2, no
+ * mutation) — so a stale/zombie Runner whose lease was taken over cannot still
+ * advance processed/pending/operations. Data-mutating subcommands pass
+ * `fenceOwner` (the Runner's RUN_KEY); lease ops do their own owner CAS in-lib
+ * and pass only `owner` (lock metadata). When no `fenceOwner`/no lease, behavior
+ * is unchanged (the scheduler's lease-less triggerIssueId path stays valid).
  */
 async function mutate(
 	c: CommonOpts,
@@ -89,21 +97,33 @@ async function mutate(
 		write: boolean;
 		output: unknown;
 	},
-	owner?: string,
-): Promise<void> {
-	const out = await withCollectionLock(
+	opts: { owner?: string; fenceOwner?: string } = {},
+): Promise<number> {
+	const result = await withCollectionLock(
 		c.stateDir,
 		c.project,
 		c.collection,
 		() => {
 			const current = readState(c.stateDir, c.project, c.collection);
+			if (
+				opts.fenceOwner &&
+				current.lease &&
+				current.lease.owner !== opts.fenceOwner
+			) {
+				return { fenced: true as const, heldBy: current.lease.owner };
+			}
 			const { state, write, output } = transform(current);
 			if (write) writeState(c.stateDir, state);
-			return output;
+			return { fenced: false as const, output };
 		},
-		owner ? { owner } : {},
+		opts.owner ? { owner: opts.owner } : {},
 	);
-	emit(out);
+	if (result.fenced) {
+		emit({ ok: false, reason: "not_lease_owner", heldBy: result.heldBy });
+		return 2;
+	}
+	emit(result.output);
+	return 0;
 }
 
 export async function xhsState(argv: string[]): Promise<number> {
@@ -168,7 +188,7 @@ export async function xhsState(argv: string[]): Promise<number> {
 						output: { ok: r.ok, reason: r.reason, heldBy: r.heldBy, lease: r.state.lease },
 					};
 				},
-				values.owner,
+				{ owner: values.owner },
 			);
 			return 0;
 		}
@@ -178,7 +198,7 @@ export async function xhsState(argv: string[]): Promise<number> {
 			await mutate(c, (s) => {
 				const r = renewLease(s, values.owner as string, new Date(), ttlMs);
 				return { state: r.state, write: r.ok, output: { ok: r.ok, reason: r.reason } };
-			}, values.owner);
+			}, { owner: values.owner });
 			return 0;
 		}
 
@@ -187,29 +207,35 @@ export async function xhsState(argv: string[]): Promise<number> {
 			await mutate(c, (s) => {
 				const r = releaseLease(s, values.owner as string);
 				return { state: r.state, write: r.ok, output: { ok: r.ok, reason: r.reason } };
-			}, values.owner);
+			}, { owner: values.owner });
 			return 0;
 		}
 
 		case "mark-processed": {
 			const noteId = values["note-id"];
 			if (!noteId) fail("--note-id is required");
-			await mutate(c, (s) => ({
-				state: markProcessed(s, noteId),
-				write: true,
-				output: { ok: true },
-			}));
-			return 0;
+			return await mutate(
+				c,
+				(s) => ({
+					state: markProcessed(s, noteId),
+					write: true,
+					output: { ok: true },
+				}),
+				{ owner: values.owner, fenceOwner: values.owner },
+			);
 		}
 
 		case "record-pending": {
 			const noteIds = parseNoteIds(values["note-ids"]);
-			await mutate(c, (s) => ({
-				state: recordPending(s, noteIds),
-				write: true,
-				output: { ok: true },
-			}));
-			return 0;
+			return await mutate(
+				c,
+				(s) => ({
+					state: recordPending(s, noteIds),
+					write: true,
+					output: { ok: true },
+				}),
+				{ owner: values.owner, fenceOwner: values.owner },
+			);
 		}
 
 		case "set-next-due": {
@@ -221,12 +247,15 @@ export async function xhsState(argv: string[]): Promise<number> {
 			} catch (err) {
 				fail((err as Error).message);
 			}
-			await mutate(c, (s) => ({
-				state: { ...s, nextDueAt },
-				write: true,
-				output: { ok: true, nextDueAt },
-			}));
-			return 0;
+			return await mutate(
+				c,
+				(s) => ({
+					state: { ...s, nextDueAt },
+					write: true,
+					output: { ok: true, nextDueAt },
+				}),
+				{ owner: values.owner, fenceOwner: values.owner },
+			);
 		}
 
 		case "record-op-intent": {
@@ -237,34 +266,44 @@ export async function xhsState(argv: string[]): Promise<number> {
 			if (!kind || !OUTPUT_KINDS.has(kind))
 				fail(`--kind must be one of ${[...OUTPUT_KINDS].join(", ")}`);
 			if (!candidateId) fail("--candidate-id is required");
-			await mutate(c, (s) => {
-				const r = recordOperationIntent(s, {
-					noteId,
-					outputKind: kind,
-					candidateId,
-				});
-				return { state: r.state, write: true, output: { ok: true, opId: r.id } };
-			});
-			return 0;
+			return await mutate(
+				c,
+				(s) => {
+					const r = recordOperationIntent(s, {
+						noteId,
+						outputKind: kind,
+						candidateId,
+					});
+					return {
+						state: r.state,
+						write: true,
+						output: { ok: true, opId: r.id },
+					};
+				},
+				{ owner: values.owner, fenceOwner: values.owner },
+			);
 		}
 
 		case "mark-op-done": {
 			const opId = values["op-id"];
 			if (!opId) fail("--op-id is required");
-			await mutate(c, (s) => {
-				if (!findOperation(s, opId))
-					fail(`unknown op-id ${opId} (record intent first)`);
-				return {
-					state: markOperationDone(
-						s,
-						opId,
-						values["issue-id"] ? { issueId: values["issue-id"] } : {},
-					),
-					write: true,
-					output: { ok: true },
-				};
-			});
-			return 0;
+			return await mutate(
+				c,
+				(s) => {
+					if (!findOperation(s, opId))
+						fail(`unknown op-id ${opId} (record intent first)`);
+					return {
+						state: markOperationDone(
+							s,
+							opId,
+							values["issue-id"] ? { issueId: values["issue-id"] } : {},
+						),
+						write: true,
+						output: { ok: true },
+					};
+				},
+				{ owner: values.owner, fenceOwner: values.owner },
+			);
 		}
 
 		case "find-op": {
