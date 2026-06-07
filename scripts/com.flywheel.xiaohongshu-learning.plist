@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  FLY-222 scheduled-learning tick. DRAFT — source-controlled only; NOT yet
+  installed into ~/Library/LaunchAgents. Install/bootstrap during A0-A10 after
+  the wiring is verified. Runs nightly at 02:30 (offset from daily-standup's
+  03:00 so the two don't contend). The wrapper takes a FLY-176 re-entry lock and
+  the per-collection cadence/lease keep actual work spaced out.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.flywheel.xiaohongshu-learning</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/xiaorongli/Dev/flywheel/scripts/xiaohongshu-learning-tick.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>2</integer>
+        <key>Minute</key><integer>30</integer>
+    </dict>
+    <key>StandardOutPath</key><string>/tmp/flywheel-xhs-scheduler.log</string>
+    <key>StandardErrorPath</key><string>/tmp/flywheel-xhs-scheduler.log</string>
+</dict>
+</plist>
