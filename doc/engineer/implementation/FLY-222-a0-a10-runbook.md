@@ -130,6 +130,7 @@ Codex option-A 复核 non-blocking #2 + qa-fly-222 F2:lease 非 fencing token �
 | memory-B 写 | slot Bridge 无 Supabase memory backend → `/api/memory/add` 失败 | **环境缺,非 222 逻辑**:接线对 + 失败路按设计降级(Lead 认 contract → 写失败 → ACK `failed` 不静默 → Runner 留 intent → pending 重试)。生产 Bridge 有 Supabase(GEO-145)即成 |
 | trigger projectId | trigger issue 没进 Sandbox project | createTriggerIssue 设 `projectId`=target(`7334cf6`)→ FLY-235 落 Sandbox ✅ |
 | MCP flaky | 单 rod 浏览器 `get_collection_content` 超时 | 具体 retry-after-idle(~3 次 backoff)再 fail-soft(`ea90899`)→ round-2 冲过 ✅ |
+| I | qa **杀 parked Runner** 后,terminal `completed` session 被 FLY-172 reconcile 翻成 `blocked` | **测试操作产物,非 222**(可能 228/FLY-172 域)。222 的 `no_code` route 在**完成时刻全对**,处理路 run 稳在 `completed`/no_code;翻 `blocked` 是事后人为杀进程触发的 reconcile,**不是 no_code bug**。别误读 FINDINGS.md 里这条为 222 缺陷 |
 
 ## 收口
 - 全 A1-A10 + #2 fencing PASS → 报 team-lead(不自报 ship);Annie ship 令前不 merge(founder-only)。
