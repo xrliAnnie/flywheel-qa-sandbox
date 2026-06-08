@@ -140,6 +140,20 @@ async function main(): Promise<void> {
 				`dept label "${plan.departmentLabel}" not found in Linear team for ${plan.project}`,
 			);
 		}
+		// Place the trigger (control) issue in the SAME Linear project as the
+		// outputs (target_linear_project) — keeps a collection's control + output
+		// issues together, and satisfies the QA "test issues only in the sandbox
+		// project" discipline. Best-effort: if the project name can't be resolved,
+		// fall back to a team-only issue (still routes via the dept label).
+		let projectId: string | undefined;
+		try {
+			const projs = await linear.projects({
+				filter: { name: { eq: plan.targetLinearProject } },
+			});
+			projectId = projs.nodes[0]?.id;
+		} catch {
+			projectId = undefined;
+		}
 		// The trigger issue body carries the run params the skill reads.
 		const description = [
 			"FLY-222 scheduled-learning trigger issue (auto-created; reused every tick).",
@@ -161,6 +175,7 @@ async function main(): Promise<void> {
 			title: `[xhs-learning] ${plan.collectionLabel} (${plan.project})`,
 			description,
 			labelIds: [labelMatch.id],
+			...(projectId ? { projectId } : {}),
 		});
 		const issue = await created.issue;
 		if (!issue?.id) {
