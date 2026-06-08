@@ -411,4 +411,66 @@ describe("DirectEventSink — FLY-222 #1: no_code → terminal completed", () =>
 
 		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
 	});
+
+	// FLY-228 Finding K (qa-fly-222): a parked-alive no_code Runner reaches terminal
+	// `completed`; the Lead closes it → tmux dies → Blueprint.run resolves
+	// success=false and re-emits a route=blocked completion. The already-terminal
+	// session must be IMMUNE — not flipped to blocked, decision_route not overwritten.
+	function blockedResult() {
+		return {
+			success: false,
+			decision: { route: "blocked", reasoning: "runner closed / pane died" },
+			evidence: {
+				commitCount: 0,
+				filesChangedCount: 0,
+				commitMessages: [],
+				changedFilePaths: [],
+				linesAdded: 0,
+				linesRemoved: 0,
+				diffSummary: "",
+				headSha: null,
+				partial: false,
+				durationMs: 10,
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
+		} as any;
+	}
+
+	it("Finding K: completed/no_code session is terminal-immune to a spurious route=blocked re-emission (lead-close)", async () => {
+		// First: legitimate no_code completion → completed.
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		await sink.emitCompleted(makeEnvelope(), noCodeResult());
+		expect(store.getSession("exec-1")?.status).toBe("completed");
+		expect(store.getSession("exec-1")?.decision_route).toBe("no_code");
+
+		// Then: the spurious post-close route=blocked re-emission must be ignored.
+		await sink.emitCompleted(makeEnvelope(), blockedResult());
+		const s = store.getSession("exec-1");
+		expect(s?.status).toBe("completed"); // NOT blocked
+		expect(s?.decision_route).toBe("no_code"); // not overwritten to blocked
+	});
+
+	it.each(["completed", "terminated", "shelved", "approved"])(
+		"terminal %s is immune to a spurious blocked re-emission",
+		async (terminal) => {
+			store.upsertSession({
+				execution_id: "exec-1",
+				issue_id: "issue-1",
+				project_name: "geoforge3d",
+				status: terminal,
+			});
+			await new DirectEventSink(
+				store,
+				makeConfig(),
+				testProjects,
+			).emitCompleted(makeEnvelope(), blockedResult());
+			expect(store.getSession("exec-1")?.status).toBe(terminal);
+		},
+	);
 });

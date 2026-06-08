@@ -5,6 +5,7 @@
 
 import { randomUUID } from "node:crypto";
 import { DEFAULT_PROOFSHOT_CONFIG, type SkillsConfig } from "flywheel-config";
+import { WORKFLOW_TRANSITIONS } from "flywheel-core";
 import type {
 	EventEnvelope,
 	ExecutionEventEmitter,
@@ -306,6 +307,32 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			if (isPostApproveShip && landingStatus?.status !== "merged") {
 				evidenceGap = true;
 			}
+		}
+
+		// FLY-222 #1 / FLY-228 (Codex-routed Finding K / I): a session already in a
+		// NO-OUT-EDGE terminal state (completed / terminated / shelved / approved)
+		// must NOT be moved or have its decision_route overwritten by a spurious
+		// second completion. Concrete repro: a parked-alive `no_code` Runner reaches
+		// terminal `completed`, the Lead closes it (lead_close_runner kills tmux),
+		// `Blueprint.run` then resolves `success=false` and re-emits a
+		// `session_completed` whose Decision-Layer route is `blocked` → without this
+		// guard `upsertSession` (no FSM edge check) flips `completed`→`blocked`,
+		// mislabeling every learning Runner as failed. The HTTP /events sink is
+		// already protected because it routes through `applyTransition` (which
+		// rejects the illegal edge); this in-process sink uses `upsertSession`, so
+		// mirror that rejection explicitly. Fully ignore (no status change, no
+		// metadata/decision_route overwrite) — the session already reached its true
+		// terminal outcome.
+		if (
+			preExistingSession &&
+			status !== preExistingSession.status &&
+			(WORKFLOW_TRANSITIONS[preExistingSession.status]?.length ?? -1) === 0
+		) {
+			console.warn(
+				`[DirectEventSink] ignoring spurious "${status}" completion for already-terminal ${env.executionId} ` +
+					`(status="${preExistingSession.status}", route="${route ?? "none"}") — terminal-immune (FLY-228 Finding K)`,
+			);
+			return;
 		}
 
 		const prNumber = result.evidence?.landingStatus?.prNumber;
