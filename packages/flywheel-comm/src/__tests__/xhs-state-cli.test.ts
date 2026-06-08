@@ -199,3 +199,25 @@ describe("xhs-state CLI — set-bootstrapped (codex MEDIUM-6)", () => {
 		expect((await run("read")).bootstrapped).toBe(false);
 	});
 });
+
+describe("xhs-state CLI — drop-pending (codex MEDIUM-5)", () => {
+	it("drops a pending note without processing it; owner-fenced", async () => {
+		await run("record-pending", "--note-ids", JSON.stringify(["p1", "p2"]));
+		expect((await run("drop-pending", "--note-id", "p1")).ok).toBe(true);
+		const s = await run("read");
+		expect(s.pending.map((p: any) => p.noteId)).toEqual(["p2"]);
+		expect(s.processed).not.toContain("p1");
+	});
+
+	it("REJECTS drop-pending (exit 2) for a non-lease-owner", async () => {
+		await run("record-pending", "--note-ids", JSON.stringify(["p1"]));
+		expect((await run("acquire-lease", "--owner", "r1")).ok).toBe(true);
+		out = [];
+		const code = await xhsState([
+			"drop-pending", "--project", P, "--collection", C,
+			"--state-dir", dir, "--note-id", "p1", "--owner", "r0",
+		]);
+		expect(code).toBe(2);
+		expect((await run("read")).pending.map((p: any) => p.noteId)).toEqual(["p1"]);
+	});
+});

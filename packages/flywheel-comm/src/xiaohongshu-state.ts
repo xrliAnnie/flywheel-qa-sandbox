@@ -244,6 +244,54 @@ function removeLockAtomic(lockDir: string, tag: string): void {
 	rmSync(quarantine, { recursive: true, force: true });
 }
 
+/**
+ * Release a lock WE acquired, safely even against a stale-takeover. Rename the
+ * lock dir out of the shared path FIRST (atomic), so our subsequent delete can
+ * only ever touch the quarantined copy — never whatever now sits at the shared
+ * path — THEN inspect the token: ours → delete; someone else's (a takeover
+ * slipped in while our critical section ran past staleMs) → rename it back so we
+ * never destroy their live lock. This closes the read-token-then-delete window
+ * (the prior two-step read+rename could delete a fresh holder's lock).
+ *
+ * Note: this matters only if a reaper fired DURING our critical section, which
+ * requires that section to outlast staleMs (5 min). withCollectionLock sections
+ * are bounded short by construction (a state read-modify-write, or the one-time
+ * trigger-issue create) — the long "one Runner per collection" wait is the
+ * run-level lease, NOT this mutex — so a mid-section reap is not reachable in
+ * practice; this is defense-in-depth.
+ */
+function releaseOwnedLock(lockDir: string, myToken: string): void {
+	const quarantine = `${lockDir}.release.${process.pid}.${Date.now()}.${Math.random()
+		.toString(36)
+		.slice(2, 8)}`;
+	try {
+		renameSync(lockDir, quarantine);
+	} catch {
+		return; // already gone (reaped) — nothing of ours to remove
+	}
+	let mine = false;
+	try {
+		const meta = JSON.parse(
+			readFileSync(join(quarantine, "meta.json"), "utf-8"),
+		) as LockMeta;
+		mine = meta.token === myToken;
+	} catch {
+		mine = false;
+	}
+	if (mine) {
+		rmSync(quarantine, { recursive: true, force: true });
+		return;
+	}
+	// We moved a lock that is NOT ours (a takeover replaced ours). Put it back so
+	// the current holder keeps its lock; if the path was re-taken in the tiny
+	// window, leave the orphan for a later reap rather than clobber.
+	try {
+		renameSync(quarantine, lockDir);
+	} catch {
+		rmSync(quarantine, { recursive: true, force: true });
+	}
+}
+
 function lockDirPath(
 	stateDir: string,
 	project: string,
@@ -335,21 +383,9 @@ export async function withCollectionLock<T>(
 	} finally {
 		if (acquired) {
 			try {
-				// Release ONLY if the lock is still ours — a stale-takeover may have
-				// replaced it (e.g. our critical section outran staleMs). Verifying
-				// the token means we never delete a lock someone else now holds.
-				let stillMine = false;
-				try {
-					const meta = JSON.parse(
-						readFileSync(join(lockDir, "meta.json"), "utf-8"),
-					) as LockMeta;
-					stillMine = meta.token === myToken;
-				} catch {
-					// No/unreadable meta (our best-effort meta write may have failed) →
-					// do NOT delete; stale-reap (mtime) cleans an orphan up later.
-					stillMine = false;
-				}
-				if (stillMine) removeLockAtomic(lockDir, "release");
+				// Rename-out → check-token → delete-if-ours / restore-if-not, so we
+				// never delete a lock a stale-takeover handed to a new holder.
+				releaseOwnedLock(lockDir, myToken);
 			} catch {
 				/* TTL/stale-takeover will reap it if removal fails */
 			}
@@ -514,6 +550,22 @@ export function markProcessed(
 	return {
 		...state,
 		processed,
+		pending: state.pending.filter((p) => p.noteId !== noteId),
+	};
+}
+
+/**
+ * Drop a noteId from `pending` WITHOUT marking it processed — for a pending note
+ * that slid out of the fetchable 200-window (it can never be processed now, but
+ * `mark-processed` would falsely record it as done + pollute the diff). Idempotent.
+ */
+export function dropPending(
+	state: XiaohongshuState,
+	noteId: string,
+): XiaohongshuState {
+	if (!state.pending.some((p) => p.noteId === noteId)) return state;
+	return {
+		...state,
 		pending: state.pending.filter((p) => p.noteId !== noteId),
 	};
 }

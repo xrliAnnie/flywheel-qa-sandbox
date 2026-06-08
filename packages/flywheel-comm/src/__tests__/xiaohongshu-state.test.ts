@@ -10,6 +10,7 @@ import {
 	acquireLease,
 	computeNewNoteIds,
 	computeNextDueAt,
+	dropPending,
 	emptyState,
 	findOperation,
 	isDue,
@@ -367,5 +368,17 @@ describe("bootstrapped flag (codex MEDIUM-6 — empty-collection first run)", ()
 		};
 		writeFileSync(file, JSON.stringify(legacy));
 		expect(readState(dir, PROJECT, COLLECTION).bootstrapped).toBe(false);
+	});
+});
+
+describe("dropPending (codex MEDIUM-5 — out-of-window pending)", () => {
+	it("removes a noteId from pending WITHOUT marking it processed; idempotent", () => {
+		let s = recordPending(fresh(), ["p1", "p2"]);
+		s = dropPending(s, "p1");
+		expect(s.pending.map((p) => p.noteId)).toEqual(["p2"]);
+		expect(s.processed).not.toContain("p1"); // dropped, NOT processed
+		// idempotent / unknown id = no-op (same ref)
+		expect(dropPending(s, "p1")).toBe(s);
+		expect(dropPending(s, "nope")).toBe(s);
 	});
 });

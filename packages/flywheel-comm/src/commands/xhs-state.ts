@@ -27,6 +27,7 @@ import {
 	computeNewNoteIds,
 	computeNextDueAt,
 	defaultStateDir,
+	dropPending,
 	findOperation,
 	isDue,
 	markBootstrapped,
@@ -219,6 +220,20 @@ export async function xhsState(argv: string[]): Promise<number> {
 				c,
 				(s) => ({
 					state: markProcessed(s, noteId),
+					write: true,
+					output: { ok: true },
+				}),
+				{ owner: values.owner, fenceOwner: values.owner },
+			);
+		}
+
+		case "drop-pending": {
+			const noteId = values["note-id"];
+			if (!noteId) fail("--note-id is required");
+			return await mutate(
+				c,
+				(s) => ({
+					state: dropPending(s, noteId),
 					write: true,
 					output: { ok: true },
 				}),
