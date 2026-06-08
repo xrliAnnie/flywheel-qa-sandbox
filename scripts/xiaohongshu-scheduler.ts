@@ -43,10 +43,13 @@ import {
 	type StartRunResult,
 } from "../packages/teamlead/dist/xiaohongshu-scheduler.js";
 
-const BRIDGE_URL = (process.env.BRIDGE_URL ?? "http://localhost:9876").replace(
-	/\/+$/,
-	"",
-);
+// Accept BRIDGE_URL or FLYWHEEL_BRIDGE_URL (the latter is what most Flywheel
+// components + the QA slots use); fall back to the default Bridge port.
+const BRIDGE_URL = (
+	process.env.BRIDGE_URL ??
+	process.env.FLYWHEEL_BRIDGE_URL ??
+	"http://localhost:9876"
+).replace(/\/+$/, "");
 const API_TOKEN = process.env.TEAMLEAD_API_TOKEN;
 const LINEAR_API_KEY = process.env.LINEAR_API_KEY;
 
