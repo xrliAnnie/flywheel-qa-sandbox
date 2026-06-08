@@ -33,8 +33,14 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { LinearClient } from "@linear/sdk";
-import { ConfigLoader, type FlywheelConfig } from "flywheel-config";
-import { defaultStateDir, readState } from "flywheel-comm/xiaohongshu-state";
+// Workspace packages are imported by RELATIVE dist path (matching
+// scripts/run-bridge.ts) — bare names like "flywheel-config" do not resolve via
+// `npx tsx` from scripts/ (not symlinked into the root node_modules).
+import { ConfigLoader, type FlywheelConfig } from "../packages/config/dist/index.js";
+import {
+	defaultStateDir,
+	readState,
+} from "../packages/flywheel-comm/dist/xiaohongshu-state.js";
 import { loadProjects } from "../packages/teamlead/dist/ProjectConfig.js";
 import {
 	type CollectionRunPlan,
