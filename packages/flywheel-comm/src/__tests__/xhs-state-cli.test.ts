@@ -221,3 +221,20 @@ describe("xhs-state CLI — drop-pending (codex MEDIUM-5)", () => {
 		expect((await run("read")).pending.map((p: any) => p.noteId)).toEqual(["p1"]);
 	});
 });
+
+describe("xhs-state CLI — fence after lease release (codex r3 NEW HIGH)", () => {
+	it("REJECTS a --owner write when NO lease is held (zombie after takeover+release)", async () => {
+		// No lease at all (e.g. B took over, finished, released → lease=null). A
+		// resurrected zombie A must NOT be able to advance state.
+		out = [];
+		const code = await xhsState([
+			"mark-processed", "--project", P, "--collection", C,
+			"--state-dir", dir, "--note-id", "zombie", "--owner", "r0",
+		]);
+		expect(code).toBe(2);
+		expect(JSON.parse(out.filter((x) => x.trim()).pop()!)).toMatchObject({
+			ok: false, reason: "not_lease_owner",
+		});
+		expect((await run("read")).processed).not.toContain("zombie");
+	});
+})

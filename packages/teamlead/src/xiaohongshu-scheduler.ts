@@ -225,20 +225,24 @@ export async function executeLearningPlan(
 		}
 		const { plan } = d;
 		try {
-			// Create-if-absent the fixed trigger issue, reusing the persisted id.
-			// The one-time network create runs under the collection mutex — safe
-			// because the FLY-176 lockdir guarantees a single scheduler tick, and
-			// the Runner only takes the mutex for short state writes.
-			const triggerIssueId = await withCollectionLock(
+			// createTriggerIssue is the NETWORK step (find-or-create the fixed trigger
+			// issue by a stable title + sync its body to the CURRENT params). It runs
+			// OUTSIDE the collection mutex — the mutex must NEVER wrap a network call,
+			// so its critical sections stay bounded sub-second and a stale-reap can
+			// never fire mid-section (codex r3 HIGH-2). Safe to run lock-free here:
+			// it is idempotent (the stable-title query dedups) and FLY-176 guarantees
+			// a single scheduler tick, so there is no concurrent create.
+			const triggerIssueId = await deps.createTriggerIssue(plan);
+			// Persist the id with a fast, network-free critical section.
+			await withCollectionLock(
 				deps.stateDir,
 				plan.project,
 				plan.collectionId,
-				async () => {
+				() => {
 					const s = readState(deps.stateDir, plan.project, plan.collectionId);
-					if (s.triggerIssueId) return s.triggerIssueId;
-					const id = await deps.createTriggerIssue(plan);
-					writeState(deps.stateDir, setTriggerIssueId(s, id));
-					return id;
+					if (s.triggerIssueId !== triggerIssueId) {
+						writeState(deps.stateDir, setTriggerIssueId(s, triggerIssueId));
+					}
 				},
 			);
 

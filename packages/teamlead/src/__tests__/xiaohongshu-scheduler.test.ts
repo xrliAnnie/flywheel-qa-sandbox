@@ -199,7 +199,10 @@ describe("executeLearningPlan", () => {
 		expect(readState(dir, "sub", "c1").triggerIssueId).toBe("ISSUE-1");
 	});
 
-	it("reuses the persisted trigger issue on the next tick (no re-create)", async () => {
+	it("calls createTriggerIssue each tick (find-or-create + body re-sync) on the SAME id, no duplicate", async () => {
+		// createTriggerIssue is now idempotent (find-or-create by stable title) and
+		// runs OUTSIDE the mutex; it is invoked every tick to re-sync the trigger
+		// body to current config, always returning the same id — no duplicate issue.
 		const createTriggerIssue = vi.fn(async () => "ISSUE-1");
 		const startRun = vi.fn(async () => ({
 			ok: true as const,
@@ -208,8 +211,9 @@ describe("executeLearningPlan", () => {
 		const deps = { stateDir: dir, createTriggerIssue, startRun };
 		await executeLearningPlan([spawnDecision], deps);
 		await executeLearningPlan([spawnDecision], deps);
-		expect(createTriggerIssue).toHaveBeenCalledTimes(1); // only first tick
+		expect(createTriggerIssue).toHaveBeenCalledTimes(2); // each tick re-syncs body
 		expect(startRun).toHaveBeenCalledTimes(2); // both ticks
+		expect(readState(dir, "sub", "c1").triggerIssueId).toBe("ISSUE-1");
 	});
 
 	it("treats runs/start 409 as a quiet skip (in-flight guard, not an error)", async () => {

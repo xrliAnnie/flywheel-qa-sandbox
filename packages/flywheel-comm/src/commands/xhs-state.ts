@@ -107,12 +107,21 @@ async function mutate(
 		c.collection,
 		() => {
 			const current = readState(c.stateDir, c.project, c.collection);
+			// Owner-fence: when a fenceOwner is given, the caller MUST currently
+			// hold the lease. Rejecting only on a *different-owner* lease left a hole
+			// (codex r3 HIGH): after a stale-takeover Runner B finished and RELEASED
+			// the lease (lease=null), a resurrected zombie A would pass the fence and
+			// corrupt state. So require an EXISTING lease owned by fenceOwner — reject
+			// if there is no lease at all, too. (The scheduler path passes no
+			// fenceOwner and is unaffected.)
 			if (
 				opts.fenceOwner &&
-				current.lease &&
-				current.lease.owner !== opts.fenceOwner
+				(!current.lease || current.lease.owner !== opts.fenceOwner)
 			) {
-				return { fenced: true as const, heldBy: current.lease.owner };
+				return {
+					fenced: true as const,
+					heldBy: current.lease?.owner ?? null,
+				};
 			}
 			const { state, write, output } = transform(current);
 			if (write) writeState(c.stateDir, state);

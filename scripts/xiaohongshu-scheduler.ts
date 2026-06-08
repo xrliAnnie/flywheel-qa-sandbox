@@ -25,7 +25,7 @@
  *   - exact @linear/sdk shapes: `client.teams()`, `client.issueLabels({filter:
  *     {team:{id:{eq}}}})`, `client.createIssue({teamId,labelIds,description})`
  *     and `(await created.issue).id` — confirm against the installed SDK version;
- *   - `config.linear.team_id` is a resolvable team id OR key (resolveTeamId
+ *   - `config.linear.team_id` is a resolvable team id OR key (resolveTeam
  *     tries both);
  *   - the trigger-issue body YAML is what the skill reads for run params.
  */
@@ -109,10 +109,12 @@ async function main(): Promise<void> {
 		now: () => new Date(),
 	});
 
-	// Resolve a project's Linear team (by key OR id) once, cached.
-	const teamIdCache = new Map<string, string>();
-	async function resolveTeamId(projectName: string): Promise<string> {
-		const cached = teamIdCache.get(projectName);
+	// Resolve a project's Linear team (by key OR id) once, cached → {id, key}.
+	const teamCache = new Map<string, { id: string; key: string }>();
+	async function resolveTeam(
+		projectName: string,
+	): Promise<{ id: string; key: string }> {
+		const cached = teamCache.get(projectName);
 		if (cached) return cached;
 		const cfgTeam = configMap.get(projectName)?.linear?.team_id;
 		if (!cfgTeam) {
@@ -127,8 +129,9 @@ async function main(): Promise<void> {
 				`Linear team "${cfgTeam}" (project ${projectName}) not found`,
 			);
 		}
-		teamIdCache.set(projectName, match.id);
-		return match.id;
+		const resolved = { id: match.id, key: match.key };
+		teamCache.set(projectName, resolved);
+		return resolved;
 	}
 
 	// Strict target-project resolution: the control issue MUST land in the named
@@ -151,22 +154,50 @@ async function main(): Promise<void> {
 		return only.id;
 	}
 
+	// The trigger body carries the run params the skill reads — including the
+	// resolved `linear_team` key (the skill needs it for create_issue). Rebuilt
+	// fresh each tick so a config change (cadence / max_fetch / target project)
+	// propagates (codex r3 MEDIUM: stale body never refreshed).
+	function triggerBody(plan: CollectionRunPlan, teamKey: string): string {
+		return [
+			"FLY-222 scheduled-learning trigger issue (auto-created; resynced every tick).",
+			"",
+			"```yaml",
+			`xiaohongshu_learning_run:`,
+			`  project: ${plan.project}`,
+			`  collection_id: ${plan.collectionId}`,
+			`  collection_label: ${plan.collectionLabel}`,
+			`  lead_id: ${plan.leadId}`,
+			`  linear_team: ${teamKey}`,
+			`  target_linear_project: ${plan.targetLinearProject}`,
+			`  cadence: ${plan.cadence}`,
+			`  max_fetch: ${plan.maxFetch}`,
+			`  video_opt_in: ${plan.videoOptIn}`,
+			"```",
+		].join("\n");
+	}
+
 	async function createTriggerIssue(plan: CollectionRunPlan): Promise<string> {
-		const teamId = await resolveTeamId(plan.project);
+		const team = await resolveTeam(plan.project);
+		const description = triggerBody(plan, team.key);
 		// Stable dedup key built from IMMUTABLE fields (project + collection_id),
 		// NOT the mutable label. createTriggerIssue is find-or-create: if a crash
 		// happened between a prior create and the local triggerIssueId persist, the
 		// next tick FINDS this issue by title and reuses it — no duplicate trigger.
 		const stableTitle = `[xhs-learning] ${plan.project} / ${plan.collectionId}`;
 		const existing = await linear.issues({
-			filter: { team: { id: { eq: teamId } }, title: { eq: stableTitle } },
+			filter: { team: { id: { eq: team.id } }, title: { eq: stableTitle } },
 		});
 		const found = existing.nodes[0];
-		if (found?.id) return found.id;
+		if (found?.id) {
+			// Re-sync the body so a config change propagates to the Runner.
+			await linear.updateIssue(found.id, { description });
+			return found.id;
+		}
 
 		// dept-label name → id (case-insensitive) within the team
 		const labels = await linear.issueLabels({
-			filter: { team: { id: { eq: teamId } } },
+			filter: { team: { id: { eq: team.id } } },
 		});
 		const want = plan.departmentLabel.trim().toLowerCase();
 		const labelMatch = labels.nodes.find(
@@ -180,24 +211,8 @@ async function main(): Promise<void> {
 		// Place the trigger (control) issue in the SAME Linear project as the
 		// outputs (target_linear_project) — strict (see resolveTargetProjectId).
 		const projectId = await resolveTargetProjectId(plan.targetLinearProject);
-		// The trigger issue body carries the run params the skill reads.
-		const description = [
-			"FLY-222 scheduled-learning trigger issue (auto-created; reused every tick).",
-			"",
-			"```yaml",
-			`xiaohongshu_learning_run:`,
-			`  project: ${plan.project}`,
-			`  collection_id: ${plan.collectionId}`,
-			`  collection_label: ${plan.collectionLabel}`,
-			`  lead_id: ${plan.leadId}`,
-			`  target_linear_project: ${plan.targetLinearProject}`,
-			`  cadence: ${plan.cadence}`,
-			`  max_fetch: ${plan.maxFetch}`,
-			`  video_opt_in: ${plan.videoOptIn}`,
-			"```",
-		].join("\n");
 		const created = await linear.createIssue({
-			teamId,
+			teamId: team.id,
 			title: stableTitle,
 			description,
 			labelIds: [labelMatch.id],
