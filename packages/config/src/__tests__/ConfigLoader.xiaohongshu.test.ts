@@ -164,6 +164,20 @@ describe("ConfigLoader — xiaohongshu_learning (FLY-222)", () => {
 			).rejects.toThrow(/collection_id must be a non-empty string/);
 		});
 
+		it("rejects a collection_id that violates the state-segment charset (codex MEDIUM)", async () => {
+			await expect(
+				load(
+					withXhs(`  enabled: true
+  collections:
+    - collection_id: "bad/id"
+      label: "x"
+      lead_id: "sub-lead"
+      department_label: "Sub"
+      target_linear_project: "Sub"`),
+				),
+			).rejects.toThrow(/collection_id "bad\/id" must match/);
+		});
+
 		it("rejects an unknown cadence", async () => {
 			await expect(
 				load(

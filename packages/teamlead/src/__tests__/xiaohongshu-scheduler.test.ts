@@ -124,6 +124,18 @@ describe("planLearningRuns", () => {
 		expect(d).toMatchObject({ action: "skip", reason: "tuple_invalid" });
 	});
 
+	it("isolates a readState failure to that collection (codex MEDIUM — no tick abort)", () => {
+		const deps = {
+			...makeDeps(cfgWith(ONE_COLLECTION)),
+			readState: () => {
+				throw new Error("corrupt state file");
+			},
+		};
+		const d = only(planLearningRuns(deps));
+		expect(d).toMatchObject({ action: "skip", reason: "state_error" });
+		if (d.action === "skip") expect(d.detail).toMatch(/corrupt state file/);
+	});
+
 	it("emits nothing when config is disabled / absent / has no collections", () => {
 		expect(planLearningRuns(makeDeps(null))).toEqual([]);
 		expect(

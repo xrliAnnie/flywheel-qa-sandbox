@@ -33,12 +33,56 @@ export type FinalValidation =
 	| { valid: true; final: FinalEnvelope }
 	| { valid: false; reason: string };
 
+/** Optional candidate manifests to bind the FINAL to what was actually presented. */
+export interface FinalValidateOpts {
+	/** If provided, every `keep` id (and `edits` key) MUST be one of these. */
+	candidateIds?: string[];
+	/** If provided, every `learnings` id MUST be one of these. */
+	learningIds?: string[];
+}
+
 function isPlainObject(v: unknown): v is Record<string, unknown> {
 	return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
 function isStringArray(v: unknown): v is string[] {
 	return Array.isArray(v) && v.every((x) => typeof x === "string");
+}
+
+/**
+ * Validate an id list: array of NON-empty, UNIQUE strings; and — when an
+ * `allowed` manifest is given — every id must be one presented at the gate (no
+ * fabricated/unknown ids slip through the authority boundary).
+ */
+function validateIdList(
+	v: unknown,
+	field: string,
+	allowed?: string[],
+): { ok: true; ids: string[] } | { ok: false; reason: string } {
+	if (!isStringArray(v)) {
+		return { ok: false, reason: `\`${field}\` must be an array of strings` };
+	}
+	const allow = allowed ? new Set(allowed) : null;
+	const seen = new Set<string>();
+	for (const id of v) {
+		if (id.trim() === "") {
+			return { ok: false, reason: `\`${field}\` contains an empty id` };
+		}
+		if (seen.has(id)) {
+			return {
+				ok: false,
+				reason: `\`${field}\` contains a duplicate id ${JSON.stringify(id)}`,
+			};
+		}
+		seen.add(id);
+		if (allow && !allow.has(id)) {
+			return {
+				ok: false,
+				reason: `\`${field}\` id ${JSON.stringify(id)} was not a presented candidate`,
+			};
+		}
+	}
+	return { ok: true, ids: v };
 }
 
 /**
@@ -50,6 +94,7 @@ function isStringArray(v: unknown): v is string[] {
 export function validateFinalResponse(
 	raw: string,
 	expectedRunKey: string,
+	opts: FinalValidateOpts = {},
 ): FinalValidation {
 	if (typeof expectedRunKey !== "string" || expectedRunKey.trim() === "") {
 		return { valid: false, reason: "expected run key is empty" };
@@ -86,31 +131,57 @@ export function validateFinalResponse(
 		};
 	}
 
-	if (!isStringArray(parsed.keep)) {
-		return { valid: false, reason: "`keep` must be an array of strings" };
+	const keepRes = validateIdList(parsed.keep, "keep", opts.candidateIds);
+	if (!keepRes.ok) return { valid: false, reason: keepRes.reason };
+	const keepSet = new Set(keepRes.ids);
+
+	// `edits` (optional): a mapping of candidate id → edit object. Each key must be
+	// a KEPT candidate (you cannot edit a draft you did not keep), each value must
+	// be an object, and any title/body/summary it carries must be a non-empty
+	// string (reject null / non-string — they would corrupt the created issue).
+	if (parsed.edits !== undefined) {
+		if (!isPlainObject(parsed.edits)) {
+			return { valid: false, reason: "`edits` must be an object when present" };
+		}
+		for (const [k, v] of Object.entries(parsed.edits)) {
+			if (!keepSet.has(k)) {
+				return {
+					valid: false,
+					reason: `\`edits\` key ${JSON.stringify(k)} is not in \`keep\``,
+				};
+			}
+			if (!isPlainObject(v)) {
+				return {
+					valid: false,
+					reason: `\`edits.${k}\` must be an object`,
+				};
+			}
+			for (const f of ["title", "body", "summary"] as const) {
+				if (f in v && (typeof v[f] !== "string" || (v[f] as string).trim() === "")) {
+					return {
+						valid: false,
+						reason: `\`edits.${k}.${f}\` must be a non-empty string when present`,
+					};
+				}
+			}
+		}
 	}
 
-	if (parsed.edits !== undefined && !isPlainObject(parsed.edits)) {
-		return { valid: false, reason: "`edits` must be an object when present" };
-	}
-
-	if (parsed.learnings !== undefined && !isStringArray(parsed.learnings)) {
-		return {
-			valid: false,
-			reason: "`learnings` must be an array of strings when present",
-		};
+	let learnings: string[] | undefined;
+	if (parsed.learnings !== undefined) {
+		const lRes = validateIdList(parsed.learnings, "learnings", opts.learningIds);
+		if (!lRes.ok) return { valid: false, reason: lRes.reason };
+		learnings = lRes.ids;
 	}
 
 	const final: FinalEnvelope = {
 		final: true,
 		runKey: parsed.runKey,
-		keep: parsed.keep,
+		keep: keepRes.ids,
 		...(parsed.edits !== undefined
 			? { edits: parsed.edits as Record<string, unknown> }
 			: {}),
-		...(parsed.learnings !== undefined
-			? { learnings: parsed.learnings as string[] }
-			: {}),
+		...(learnings !== undefined ? { learnings } : {}),
 	};
 	return { valid: true, final };
 }

@@ -2,7 +2,7 @@
  * FLY-222: xiaohongshu-state core-library tests.
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -15,6 +15,7 @@ import {
 	isDue,
 	isLeaseTakeable,
 	markOperationDone,
+	markBootstrapped,
 	markProcessed,
 	operationId,
 	readState,
@@ -63,6 +64,7 @@ describe("path safety", () => {
 describe("read/write (atomic, default-empty)", () => {
 	it("returns a fresh empty state when no file exists", () => {
 		const s = readState(dir, PROJECT, COLLECTION);
+		expect(s.bootstrapped).toBe(false);
 		expect(s.processed).toEqual([]);
 		expect(s.lease).toBeNull();
 	});
@@ -251,6 +253,30 @@ describe("withCollectionLock (mkdir-mutex)", () => {
 		expect(ran).toBe(true);
 	});
 
+	it("release deletes the lock when it is still ours (token match)", async () => {
+		const lockBase = join(dir, `${PROJECT}__${COLLECTION}.lock`);
+		await withCollectionLock(dir, PROJECT, COLLECTION, () => {});
+		expect(existsSync(lockBase)).toBe(false);
+	});
+
+	it("release does NOT delete a lock that was taken over (codex HIGH — token mismatch)", async () => {
+		const lockBase = join(dir, `${PROJECT}__${COLLECTION}.lock`);
+		await withCollectionLock(dir, PROJECT, COLLECTION, () => {
+			// Simulate a stale-takeover mid-section: another holder rewrote the lock
+			// meta with a DIFFERENT token. Our release must not delete their lock.
+			writeFileSync(
+				join(lockBase, "meta.json"),
+				JSON.stringify({
+					pid: process.pid,
+					acquiredAt: new Date().toISOString(),
+					token: "another-holder-token",
+				}),
+			);
+		});
+		expect(existsSync(lockBase)).toBe(true);
+		rmSync(lockBase, { recursive: true, force: true });
+	});
+
 	it("times out if the lock is held and not stale", async () => {
 		await withCollectionLock(
 			dir,
@@ -285,5 +311,61 @@ describe("triggerIssueId (FLY-222 #2)", () => {
 		delete s.triggerIssueId;
 		writeFileSync(stateFilePath(dir, PROJECT, COLLECTION), JSON.stringify(s));
 		expect(readState(dir, PROJECT, COLLECTION).triggerIssueId).toBeNull();
+	});
+});
+
+describe("bootstrapped flag (codex MEDIUM-6 — empty-collection first run)", () => {
+	it("markBootstrapped sets the flag idempotently", () => {
+		const s0 = emptyState(PROJECT, COLLECTION);
+		expect(s0.bootstrapped).toBe(false);
+		const s1 = markBootstrapped(s0);
+		expect(s1.bootstrapped).toBe(true);
+		// idempotent — returns the same object when already set
+		expect(markBootstrapped(s1)).toBe(s1);
+	});
+
+	it("persists bootstrapped across read/write (empty window stays bootstrapped)", () => {
+		writeState(dir, markBootstrapped(emptyState(PROJECT, COLLECTION)));
+		const reread = readState(dir, PROJECT, COLLECTION);
+		expect(reread.bootstrapped).toBe(true);
+		expect(reread.processed).toEqual([]); // empty collection, but bootstrapped
+	});
+
+	it("forward-compat: an old state file w/o `bootstrapped` but with processed history reads as bootstrapped", () => {
+		const file = join(dir, `${PROJECT}__${COLLECTION}.json`);
+		const legacy = {
+			version: emptyState(PROJECT, COLLECTION).version,
+			project: PROJECT,
+			collectionId: COLLECTION,
+			processed: ["n1"],
+			pending: [],
+			lease: null,
+			triggerIssueId: null,
+			nextDueAt: null,
+			operations: {},
+			lastRunAt: null,
+			updatedAt: new Date().toISOString(),
+		};
+		writeFileSync(file, JSON.stringify(legacy));
+		expect(readState(dir, PROJECT, COLLECTION).bootstrapped).toBe(true);
+	});
+
+	it("forward-compat: an old EMPTY state w/o `bootstrapped` reads as not bootstrapped", () => {
+		const file = join(dir, `${PROJECT}__${COLLECTION}.json`);
+		const legacy = {
+			version: emptyState(PROJECT, COLLECTION).version,
+			project: PROJECT,
+			collectionId: COLLECTION,
+			processed: [],
+			pending: [],
+			lease: null,
+			triggerIssueId: null,
+			nextDueAt: null,
+			operations: {},
+			lastRunAt: null,
+			updatedAt: new Date().toISOString(),
+		};
+		writeFileSync(file, JSON.stringify(legacy));
+		expect(readState(dir, PROJECT, COLLECTION).bootstrapped).toBe(false);
 	});
 });

@@ -14,7 +14,10 @@
 
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
-import { validateFinalResponse } from "../xiaohongshu-final.js";
+import {
+	type FinalValidateOpts,
+	validateFinalResponse,
+} from "../xiaohongshu-final.js";
 
 function readStdin(): string {
 	try {
@@ -24,12 +27,31 @@ function readStdin(): string {
 	}
 }
 
+/** Parse a `--candidate-ids` / `--learning-ids` JSON string array, or undefined. */
+function parseIdManifest(v: string | undefined, flag: string): string[] | undefined {
+	if (v === undefined) return undefined;
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(v);
+	} catch {
+		process.stderr.write(`xhs-validate-final: ${flag} must be a JSON array\n`);
+		process.exit(2);
+	}
+	if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) {
+		process.stderr.write(`xhs-validate-final: ${flag} must be a JSON array of strings\n`);
+		process.exit(2);
+	}
+	return parsed as string[];
+}
+
 export function xhsValidateFinal(argv: string[]): number {
 	const { values } = parseArgs({
 		args: argv,
 		options: {
 			"run-key": { type: "string" },
 			"response-file": { type: "string" },
+			"candidate-ids": { type: "string" },
+			"learning-ids": { type: "string" },
 		},
 		allowPositionals: false,
 	});
@@ -40,11 +62,17 @@ export function xhsValidateFinal(argv: string[]): number {
 		return 2;
 	}
 
+	const opts: FinalValidateOpts = {};
+	const candidateIds = parseIdManifest(values["candidate-ids"], "--candidate-ids");
+	if (candidateIds) opts.candidateIds = candidateIds;
+	const learningIds = parseIdManifest(values["learning-ids"], "--learning-ids");
+	if (learningIds) opts.learningIds = learningIds;
+
 	const raw = values["response-file"]
 		? readFileSync(values["response-file"], "utf-8")
 		: readStdin();
 
-	const result = validateFinalResponse(raw, runKey);
+	const result = validateFinalResponse(raw, runKey, opts);
 	if (result.valid) {
 		process.stdout.write(`${JSON.stringify(result.final)}\n`);
 		return 0;

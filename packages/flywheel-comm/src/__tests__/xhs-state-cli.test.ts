@@ -48,6 +48,7 @@ async function run(...extra: string[]): Promise<any> {
 describe("xhs-state CLI", () => {
 	it("read returns a fresh empty state", async () => {
 		const s = await run("read");
+		expect(s.bootstrapped).toBe(false);
 		expect(s.processed).toEqual([]);
 		expect(s.lease).toBeNull();
 	});
@@ -174,5 +175,27 @@ describe("xhs-state CLI — F2 owner-fencing (zombie write after takeover)", () 
 			]);
 			expect(code).toBe(2);
 		}
+	});
+});
+
+describe("xhs-state CLI — set-bootstrapped (codex MEDIUM-6)", () => {
+	it("sets the bootstrapped flag (idempotent) and is owner-fenced", async () => {
+		expect((await run("read")).bootstrapped).toBe(false);
+		expect((await run("set-bootstrapped")).ok).toBe(true);
+		expect((await run("read")).bootstrapped).toBe(true);
+		// idempotent
+		expect((await run("set-bootstrapped")).ok).toBe(true);
+		expect((await run("read")).bootstrapped).toBe(true);
+	});
+
+	it("REJECTS set-bootstrapped (exit 2) for a non-lease-owner", async () => {
+		expect((await run("acquire-lease", "--owner", "r1")).ok).toBe(true);
+		out = [];
+		const code = await xhsState([
+			"set-bootstrapped", "--project", P, "--collection", C,
+			"--state-dir", dir, "--owner", "r0",
+		]);
+		expect(code).toBe(2);
+		expect((await run("read")).bootstrapped).toBe(false);
 	});
 });

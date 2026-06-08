@@ -361,9 +361,18 @@ export class ConfigLoader {
 							throw new Error(`${where}.${field} must be a non-empty string`);
 						}
 					}
+					// collection_id is a state-file path segment (project__cid.json), so
+					// it must match the SAME charset the state layer's safeSegment
+					// enforces. Catch a bad id at the config boundary, not later as a
+					// readState throw that would wedge the whole scheduler tick.
+					const cid = col.collection_id as string;
+					if (!/^[A-Za-z0-9._-]+$/.test(cid)) {
+						throw new Error(
+							`${where}.collection_id "${cid}" must match ^[A-Za-z0-9._-]+$ (it is used as a state-file path segment)`,
+						);
+					}
 					// Duplicate collection_id within one project = ambiguous state
 					// keying (state file is per project__collection_id) → reject.
-					const cid = col.collection_id as string;
 					if (seenIds.has(cid)) {
 						throw new Error(
 							`${where}.collection_id "${cid}" is duplicated; each collection_id must be unique within a project`,

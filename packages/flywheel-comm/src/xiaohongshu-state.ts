@@ -82,13 +82,17 @@ export interface XiaohongshuState {
 	project: string;
 	collectionId: string;
 	/**
-	 * noteIds fully processed (all side-effects committed). Also the first-run
-	 * signal: an EMPTY `processed` means this collection has never been seen, so
-	 * the run baselines the current window (marks it processed without proposing,
-	 * to avoid flooding) instead of processing it all. (There is no separate
-	 * `bootstrapped` flag — `processed.length === 0` is the single source of truth
-	 * for "first run".)
+	 * Whether the first-run baseline has happened. The first run records the
+	 * current window as a baseline (marks it processed WITHOUT proposing, to avoid
+	 * flooding on a collection saved for months) and sets this flag — even when
+	 * the window is EMPTY. `processed.length === 0` is NOT a sufficient first-run
+	 * signal: an empty collection's first run leaves `processed` empty, and the
+	 * later first real notes would then be wrongly baselined-and-skipped. So the
+	 * skill keys "first run" off `!bootstrapped`, and sets it via `set-bootstrapped`
+	 * (mark-bootstrapped) at the end of the baseline run regardless of window size.
 	 */
+	bootstrapped: boolean;
+	/** noteIds fully processed (all side-effects committed). */
 	processed: string[];
 	/** noteIds seen but not yet processed. */
 	pending: PendingNote[];
@@ -148,6 +152,7 @@ export function emptyState(
 		version: XIAOHONGSHU_STATE_VERSION,
 		project,
 		collectionId,
+		bootstrapped: false,
 		processed: [],
 		pending: [],
 		lease: null,
@@ -184,6 +189,14 @@ export function readState(
 	// Forward-compat default for fields added after a state file was first
 	// written (additive, same version — no migration needed).
 	if (parsed.triggerIssueId === undefined) parsed.triggerIssueId = null;
+	// A state file written before `bootstrapped` existed but with processed
+	// history is, by definition, already past its baseline → treat as bootstrapped
+	// (so we don't re-baseline a collection that has real processed notes).
+	if ((parsed as Partial<XiaohongshuState>).bootstrapped === undefined) {
+		parsed.bootstrapped = Array.isArray(parsed.processed)
+			? parsed.processed.length > 0
+			: false;
+	}
 	return parsed;
 }
 
@@ -203,6 +216,32 @@ interface LockMeta {
 	owner?: string;
 	pid: number;
 	acquiredAt: string;
+	/**
+	 * Unique per-acquisition token. The release path deletes the lock ONLY when
+	 * this still matches the holder's token, so a process whose lock was
+	 * stale-reaped + re-acquired by someone else never deletes the new holder's
+	 * lock (HIGH: confused lock-removal → concurrent critical-section entry).
+	 */
+	token: string;
+}
+
+/** A unique-enough lock token without pulling in a crypto import. */
+function newLockToken(): string {
+	return `${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * Atomically remove a lock dir by renaming it to a unique quarantine path first,
+ * then deleting the quarantine. The rename is the arbiter: only ONE caller wins
+ * it (the rest get ENOENT), so two concurrent reapers can never both "succeed"
+ * and have the second delete a fresh lock the first's retry just created.
+ */
+function removeLockAtomic(lockDir: string, tag: string): void {
+	const quarantine = `${lockDir}.${tag}.${process.pid}.${Date.now()}.${Math.random()
+		.toString(36)
+		.slice(2, 8)}`;
+	renameSync(lockDir, quarantine); // throws ENOENT if another caller already moved it
+	rmSync(quarantine, { recursive: true, force: true });
 }
 
 function lockDirPath(
@@ -244,6 +283,7 @@ export async function withCollectionLock<T>(
 	const deadline = Date.now() + timeoutMs;
 
 	mkdirSync(dirname(lockDir), { recursive: true });
+	const myToken = newLockToken();
 
 	let acquired = false;
 	for (;;) {
@@ -255,11 +295,12 @@ export async function withCollectionLock<T>(
 			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
 			// Held — is it stale (holder crashed)?
 			if (isLockStale(lockDir, staleMs)) {
-				// Best-effort removal; the next mkdir is the real arbiter.
+				// Atomically rename-then-delete: only one reaper wins the rename,
+				// so we never delete a fresh lock another reaper's retry just made.
 				try {
-					rmSync(lockDir, { recursive: true, force: true });
+					removeLockAtomic(lockDir, "stale");
 				} catch {
-					/* lost the race to remove — fine, loop and retry mkdir */
+					/* lost the rename race (ENOENT) — fine, loop and retry mkdir */
 				}
 				continue;
 			}
@@ -281,6 +322,7 @@ export async function withCollectionLock<T>(
 				owner: opts.owner,
 				pid: process.pid,
 				acquiredAt: new Date().toISOString(),
+				token: myToken,
 			} satisfies LockMeta),
 			{ mode: 0o600 },
 		);
@@ -293,7 +335,21 @@ export async function withCollectionLock<T>(
 	} finally {
 		if (acquired) {
 			try {
-				rmSync(lockDir, { recursive: true, force: true });
+				// Release ONLY if the lock is still ours — a stale-takeover may have
+				// replaced it (e.g. our critical section outran staleMs). Verifying
+				// the token means we never delete a lock someone else now holds.
+				let stillMine = false;
+				try {
+					const meta = JSON.parse(
+						readFileSync(join(lockDir, "meta.json"), "utf-8"),
+					) as LockMeta;
+					stillMine = meta.token === myToken;
+				} catch {
+					// No/unreadable meta (our best-effort meta write may have failed) →
+					// do NOT delete; stale-reap (mtime) cleans an orphan up later.
+					stillMine = false;
+				}
+				if (stillMine) removeLockAtomic(lockDir, "release");
 			} catch {
 				/* TTL/stale-takeover will reap it if removal fails */
 			}
@@ -415,6 +471,15 @@ export function setTriggerIssueId(
 	triggerIssueId: string,
 ): XiaohongshuState {
 	return { ...state, triggerIssueId };
+}
+
+/**
+ * Mark the first-run baseline as done. Set at the END of the baseline run
+ * regardless of how many notes the window had (including an EMPTY collection),
+ * so a later first batch of notes is not mis-baselined. Idempotent.
+ */
+export function markBootstrapped(state: XiaohongshuState): XiaohongshuState {
+	return state.bootstrapped ? state : { ...state, bootstrapped: true };
 }
 
 // ─── Diff + pending ──────────────────────────────────────────────────────────

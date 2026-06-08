@@ -53,7 +53,7 @@ export type CollectionDecision =
 			action: "skip";
 			project: string;
 			collectionId: string;
-			reason: "tuple_invalid" | "not_due";
+			reason: "tuple_invalid" | "not_due" | "state_error";
 			detail: string;
 	  };
 
@@ -103,7 +103,21 @@ export function planLearningRuns(deps: PlannerDeps): CollectionDecision[] {
 				continue;
 			}
 
-			const state = deps.readState(project.projectName, col.collection_id);
+			let state: XiaohongshuState;
+			try {
+				state = deps.readState(project.projectName, col.collection_id);
+			} catch (err) {
+				// A corrupt/unsafe state read for ONE collection must not abort the
+				// whole tick (per-collection failure isolation).
+				out.push({
+					action: "skip",
+					project: project.projectName,
+					collectionId: col.collection_id,
+					reason: "state_error",
+					detail: (err as Error).message,
+				});
+				continue;
+			}
 			if (!isDue(state, deps.now())) {
 				out.push({
 					action: "skip",
@@ -201,6 +215,10 @@ export async function executeLearningPlan(
 			if (d.reason === "tuple_invalid") {
 				deps.alert?.(
 					`[xhs-scheduler] ${d.project}/${d.collectionId} routing invalid: ${d.detail}`,
+				);
+			} else if (d.reason === "state_error") {
+				deps.alert?.(
+					`[xhs-scheduler] ${d.project}/${d.collectionId} state read failed: ${d.detail}`,
 				);
 			}
 			continue;

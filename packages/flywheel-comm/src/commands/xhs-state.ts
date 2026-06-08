@@ -29,6 +29,7 @@ import {
 	defaultStateDir,
 	findOperation,
 	isDue,
+	markBootstrapped,
 	markOperationDone,
 	markProcessed,
 	readState,
@@ -220,6 +221,20 @@ export async function xhsState(argv: string[]): Promise<number> {
 					state: markProcessed(s, noteId),
 					write: true,
 					output: { ok: true },
+				}),
+				{ owner: values.owner, fenceOwner: values.owner },
+			);
+		}
+
+		case "set-bootstrapped": {
+			// Mark the first-run baseline done (set even on an empty window, so a
+			// later first batch of notes is not mis-baselined). Idempotent.
+			return await mutate(
+				c,
+				(s) => ({
+					state: markBootstrapped(s),
+					write: true,
+					output: { ok: true, bootstrapped: true },
 				}),
 				{ owner: values.owner, fenceOwner: values.owner },
 			);

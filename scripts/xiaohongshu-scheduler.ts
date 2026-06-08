@@ -131,8 +131,39 @@ async function main(): Promise<void> {
 		return match.id;
 	}
 
+	// Strict target-project resolution: the control issue MUST land in the named
+	// project. A silent team-only fallback would misplace it and violate the
+	// routing contract — so a miss/ambiguity throws and the executor skips +
+	// alerts this one collection (the others still run).
+	async function resolveTargetProjectId(name: string): Promise<string> {
+		const projs = await linear.projects({ filter: { name: { eq: name } } });
+		const nodes = projs.nodes;
+		if (nodes.length === 0) {
+			throw new Error(`target_linear_project "${name}" not found in Linear`);
+		}
+		if (nodes.length > 1) {
+			throw new Error(
+				`target_linear_project "${name}" is ambiguous (${nodes.length} matches)`,
+			);
+		}
+		const only = nodes[0];
+		if (!only?.id) throw new Error(`target_linear_project "${name}" has no id`);
+		return only.id;
+	}
+
 	async function createTriggerIssue(plan: CollectionRunPlan): Promise<string> {
 		const teamId = await resolveTeamId(plan.project);
+		// Stable dedup key built from IMMUTABLE fields (project + collection_id),
+		// NOT the mutable label. createTriggerIssue is find-or-create: if a crash
+		// happened between a prior create and the local triggerIssueId persist, the
+		// next tick FINDS this issue by title and reuses it — no duplicate trigger.
+		const stableTitle = `[xhs-learning] ${plan.project} / ${plan.collectionId}`;
+		const existing = await linear.issues({
+			filter: { team: { id: { eq: teamId } }, title: { eq: stableTitle } },
+		});
+		const found = existing.nodes[0];
+		if (found?.id) return found.id;
+
 		// dept-label name → id (case-insensitive) within the team
 		const labels = await linear.issueLabels({
 			filter: { team: { id: { eq: teamId } } },
@@ -147,19 +178,8 @@ async function main(): Promise<void> {
 			);
 		}
 		// Place the trigger (control) issue in the SAME Linear project as the
-		// outputs (target_linear_project) — keeps a collection's control + output
-		// issues together, and satisfies the QA "test issues only in the sandbox
-		// project" discipline. Best-effort: if the project name can't be resolved,
-		// fall back to a team-only issue (still routes via the dept label).
-		let projectId: string | undefined;
-		try {
-			const projs = await linear.projects({
-				filter: { name: { eq: plan.targetLinearProject } },
-			});
-			projectId = projs.nodes[0]?.id;
-		} catch {
-			projectId = undefined;
-		}
+		// outputs (target_linear_project) — strict (see resolveTargetProjectId).
+		const projectId = await resolveTargetProjectId(plan.targetLinearProject);
 		// The trigger issue body carries the run params the skill reads.
 		const description = [
 			"FLY-222 scheduled-learning trigger issue (auto-created; reused every tick).",
@@ -178,10 +198,10 @@ async function main(): Promise<void> {
 		].join("\n");
 		const created = await linear.createIssue({
 			teamId,
-			title: `[xhs-learning] ${plan.collectionLabel} (${plan.project})`,
+			title: stableTitle,
 			description,
 			labelIds: [labelMatch.id],
-			...(projectId ? { projectId } : {}),
+			projectId,
 		});
 		const issue = await created.issue;
 		if (!issue?.id) {
