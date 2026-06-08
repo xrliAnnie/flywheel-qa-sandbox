@@ -223,6 +223,21 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// transition; FLY-208 5a additionally needs it for the status mapping
 		// itself (hoisted above the mapping for that reason).
 		const preExistingSession = this.store.getSession(env.executionId);
+
+		// FLY-222 #1 (Codex code-review MED-2): no_code is ONLY a running→completed
+		// terminal. A no_code emission for a non-running (e.g. review-gated) session
+		// must NOT clear that state — skip the status write entirely (symmetric
+		// with event-route.ts's strict-guard skip; the session_completed audit
+		// event above is still recorded). Without this, a non-running no_code would
+		// fall through to the `else` default below, which also maps to `completed`.
+		if (route === "no_code" && preExistingSession?.status !== "running") {
+			console.warn(
+				`[DirectEventSink] route=no_code for non-running ${env.executionId} ` +
+					`(status=${preExistingSession?.status ?? "none"}) — skipping ` +
+					`(no_code only terminalizes a running runner)`,
+			);
+			return;
+		}
 		// FLY-208 5a × FLY-191 R5 interaction: a Phase-2-BOUND session's
 		// status is owned by the HTTP `complete --question-id` path — this
 		// in-process sink must never unstick (or otherwise move) it, or the

@@ -606,6 +606,21 @@ export function createEventRouter(
 					return;
 				}
 
+				// FLY-222 #1 (Codex code-review MED-2): no_code is ONLY a
+				// running→completed terminal. Reject it from any non-running
+				// pre-existing state so a review-gated runner (awaiting_review /
+				// approved_to_ship) cannot clear its gate via no_code without merge
+				// evidence / evidence-gap / finalization. Skip like an invalid route.
+				if (route === "no_code" && existingSession?.status !== "running") {
+					console.warn(
+						`[event-route] session_completed ${event.execution_id} route=no_code ` +
+							`from non-running status (${existingSession?.status ?? "none"}) — ` +
+							`skipping (no_code only terminalizes a running runner).`,
+					);
+					res.json({ ok: true, warning: "no_code from non-running skipped" });
+					return;
+				}
+
 				// FLY-108: status mapping. Mirrors DirectEventSink.emitCompleted
 				// (DirectEventSink.ts:258-274) — explicit failure routes win over
 				// the post-approve-ship natural-completion fallback so a ship that

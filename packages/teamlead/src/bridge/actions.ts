@@ -29,7 +29,7 @@ import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { waitForSession } from "./session-wait.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
-import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
+import { killTmuxWindow, lookupTmuxTarget } from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 type ExecFn = (
@@ -928,7 +928,10 @@ export async function handleTerminate(
 	}
 
 	const priorStatus = session.status;
-	const auditReason = reason?.trim() || "Terminated by CEO";
+	// FLY-228 (Codex code-review LOW-4): cap the reason at 500 chars HERE so
+	// EVERY caller (not just the MCP abandon client) gets the same bound on the
+	// persisted last_error / hook audit content.
+	const auditReason = (reason?.trim() || "Terminated by CEO").slice(0, 500);
 
 	// 1) TRANSITION FIRST (race-safe): if a concurrent change made this illegal,
 	// fail here with the FSM + tmux untouched.
@@ -965,15 +968,18 @@ export async function handleTerminate(
 
 	// 3) Cleanup (OBSERVABLE partial-failure): kill tmux via CommDB (source of
 	// truth, not StateStore.tmux_session — see tmux-lookup.ts) + close viewer.
+	// Codex code-review MED-3: a CommDB read error (corruption/lock) is NOT the
+	// same as "already gone" — we can't verify tmux liveness, so it must surface
+	// as cleanup-pending rather than a false success.
 	let cleanupError: string | undefined;
-	const tmuxTarget = session.project_name
-		? getTmuxTargetFromCommDb(executionId, session.project_name)
-		: undefined;
-	if (tmuxTarget) {
-		const killResult = await killTmuxWindow(tmuxTarget.tmuxWindow);
+	const lookup = session.project_name
+		? lookupTmuxTarget(executionId, session.project_name)
+		: ({ kind: "gone" } as const);
+	if (lookup.kind === "found") {
+		const killResult = await killTmuxWindow(lookup.target.tmuxWindow);
 		if (killResult.killed) {
 			// FLY-116: also close per-runner Terminal viewer tab + linked viewer.
-			const identity = resolveTerminalViewIdentity(session, tmuxTarget);
+			const identity = resolveTerminalViewIdentity(session, lookup.target);
 			if (identity) {
 				await closeRunnerTerminalView({
 					baseSessionName: identity.sessionName,
@@ -987,23 +993,28 @@ export async function handleTerminate(
 			}
 		} else if (killResult.error) {
 			cleanupError = killResult.error;
-			console.error(
-				`[terminate] tmux kill failed for ${tmuxTarget.tmuxWindow} (FSM already terminated): ${killResult.error}`,
-			);
-			store.insertEvent({
-				event_id: `terminate-cleanup-failed-${executionId}`,
-				execution_id: executionId,
-				issue_id: session.issue_id,
-				project_name: session.project_name,
-				event_type: "lead_terminate_cleanup_failed",
-				source: "bridge.terminate",
-				payload: {
-					tmuxError: cleanupError,
-					previousStatus: priorStatus,
-					reason: auditReason,
-				},
-			});
 		}
+	} else if (lookup.kind === "error") {
+		// Could not read CommDB → cannot confirm the tmux window is gone.
+		cleanupError = `tmux target lookup failed: ${lookup.error}`;
+	}
+	if (cleanupError) {
+		console.error(
+			`[terminate] cleanup failed for ${executionId} (FSM already terminated): ${cleanupError}`,
+		);
+		store.insertEvent({
+			event_id: `terminate-cleanup-failed-${executionId}`,
+			execution_id: executionId,
+			issue_id: session.issue_id,
+			project_name: session.project_name,
+			event_type: "lead_terminate_cleanup_failed",
+			source: "bridge.terminate",
+			payload: {
+				tmuxError: cleanupError,
+				previousStatus: priorStatus,
+				reason: auditReason,
+			},
+		});
 	}
 
 	// 4) Hook (fires regardless — the FSM transition is the authoritative outcome).

@@ -393,4 +393,22 @@ describe("DirectEventSink — FLY-222 #1: no_code → terminal completed", () =>
 		expect(s?.status).toBe("completed");
 		expect(s?.decision_route).toBe("no_code");
 	});
+
+	// Codex code-review MED-2: no_code must NOT clear a non-running (review-gated)
+	// session — skip the status write (symmetric with event-route's skip).
+	it("awaiting_review + route=no_code → status unchanged (skipped)", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+
+		await new DirectEventSink(store, makeConfig(), testProjects).emitCompleted(
+			makeEnvelope(),
+			noCodeResult(),
+		);
+
+		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
+	});
 });

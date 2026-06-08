@@ -70,7 +70,16 @@ export function defaultQuarantineDir(): string {
 	);
 }
 
-const VALID_ROUTES = new Set(["auto_approve", "needs_review", "blocked"]);
+// FLY-222 #1 (Codex code-review MED-1): `no_code` must be a recognized route
+// here too, else a fail-close marker from `complete --route no_code` (Bridge
+// unreachable) is quarantined as unreplayable and the no-code run is wrongly
+// force-failed / left stuck on boot drain.
+const VALID_ROUTES = new Set([
+	"auto_approve",
+	"needs_review",
+	"blocked",
+	"no_code",
+]);
 const TERMINAL_STATUSES = new Set([
 	"completed",
 	"awaiting_review",
@@ -173,6 +182,13 @@ export function expectedStatusFromMarker(
 	}
 	if (route === "blocked") {
 		return "blocked";
+	}
+	if (route === "no_code") {
+		// FLY-222 #1 (Codex code-review MED-2 parity): no_code only terminalizes a
+		// RUNNING runner. From any non-running state, fail closed (null →
+		// quarantine), mirroring event-route.ts's non-running skip — a no_code
+		// marker must never clear a review-gated session.
+		return currentStatus === "running" ? "completed" : null;
 	}
 	// route undefined here only reachable when isPostApproveShip — natural completion.
 	return "completed";

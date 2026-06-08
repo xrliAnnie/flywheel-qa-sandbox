@@ -301,6 +301,32 @@ describe("session_completed route guard (FLY-108)", () => {
 		expect(s.decision_route).toBe("no_code");
 	});
 
+	// FLY-222 #1 (Codex code-review MED-2): no_code must NOT terminalize a
+	// non-running (review-gated) session — it can only complete a running one.
+	it("route=no_code from awaiting_review → skipped, status unchanged", async () => {
+		store.upsertSession({
+			execution_id: "exec-nc2",
+			issue_id: "issue-nc2",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-NC2",
+		});
+
+		const res = await postCompleted({
+			event_id: "evt-nc2",
+			execution_id: "exec-nc2",
+			issue_id: "issue-nc2",
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: { decision: { route: "no_code" }, evidence: {} },
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.warning).toBe("no_code from non-running skipped");
+		// still parked — the review gate was NOT cleared
+		expect(store.getSession("exec-nc2")!.status).toBe("awaiting_review");
+	});
+
 	it("FSM reject logs at error level with pre-state + target + route", async () => {
 		// Put session into a terminal state first via a legit transition.
 		await startRunning("exec-fsm-rej", "issue-fsm-rej");

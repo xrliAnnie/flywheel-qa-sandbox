@@ -120,6 +120,23 @@ describe("expectedStatusFromMarker (event-route parity, Codex R2 #6)", () => {
 			"blocked",
 		);
 	});
+	// FLY-222 #1 (Codex code-review MED-1 + MED-2 parity): no_code marker maps to
+	// completed ONLY from a running session; from any non-running state it is
+	// null (quarantine), so a no_code marker can't clear a review-gated session.
+	it("no_code from running → completed; from non-running → null", () => {
+		expect(expectedStatusFromMarker(mk("no_code", false), "running")).toBe(
+			"completed",
+		);
+		expect(
+			expectedStatusFromMarker(mk("no_code", false), "awaiting_review"),
+		).toBeNull();
+		expect(
+			expectedStatusFromMarker(mk("no_code", false), "approved_to_ship"),
+		).toBeNull();
+		expect(
+			expectedStatusFromMarker(mk("no_code", false), undefined),
+		).toBeNull();
+	});
 	it("FLY-208 5a (Codex PR-2 R1 HIGH): approved_to_ship + needs_review/auto_approve + NOT merged → completed (evidence-gap parity)", () => {
 		// /events now unsticks approved_to_ship re-completions without merge
 		// evidence to "completed". A stale "awaiting_review" expectation here

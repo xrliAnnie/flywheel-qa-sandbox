@@ -27,39 +27,68 @@ export interface TmuxTarget {
 }
 
 /**
- * Resolve tmux target from CommDB.
- * Returns undefined if DB missing, session not registered, or on error.
- * Logs real CommDB errors (corruption, lock) — does NOT silently swallow.
+ * FLY-228 (Codex code-review MED-3): discriminated tmux-target lookup.
+ *   - `found`: target resolved.
+ *   - `gone`:  DB missing / session not registered / no tmux_window → there is
+ *              genuinely nothing to clean up (callers treat as cleanup success).
+ *   - `error`: CommDB READ error (corruption / lock) → we could NOT determine
+ *              whether tmux is alive; callers must treat this as cleanup-pending
+ *              (never report unqualified success while the process may be live).
  */
-export function getTmuxTargetFromCommDb(
+export type TmuxTargetLookup =
+	| { kind: "found"; target: TmuxTarget }
+	| { kind: "gone" }
+	| { kind: "error"; error: string };
+
+export function lookupTmuxTarget(
 	executionId: string,
 	projectName: string,
-): TmuxTarget | undefined {
-	// Path traversal guard (same as session-capture.ts)
-	if (/[/\\]|\.\./.test(projectName)) return undefined;
+): TmuxTargetLookup {
+	// Path traversal guard (same as session-capture.ts) — an invalid project
+	// name means there is nothing we can/should clean up.
+	if (/[/\\]|\.\./.test(projectName)) return { kind: "gone" };
 
 	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
-	if (!existsSync(dbPath)) return undefined;
+	if (!existsSync(dbPath)) return { kind: "gone" };
 
 	let db: CommDB | undefined;
 	try {
 		db = CommDB.openReadonly(dbPath);
 		const session = db.getSession(executionId);
-		if (!session?.tmux_window) return undefined;
+		if (!session?.tmux_window) return { kind: "gone" };
 		const tw = session.tmux_window;
 		const colonIdx = tw.indexOf(":");
 		return {
-			tmuxWindow: tw,
-			sessionName: colonIdx >= 0 ? tw.slice(0, colonIdx) : tw,
+			kind: "found",
+			target: {
+				tmuxWindow: tw,
+				sessionName: colonIdx >= 0 ? tw.slice(0, colonIdx) : tw,
+			},
 		};
 	} catch (err) {
-		console.error(
-			`[tmux-lookup] CommDB read error for ${executionId}: ${(err as Error).message}`,
-		);
-		return undefined;
+		const msg = (err as Error).message;
+		console.error(`[tmux-lookup] CommDB read error for ${executionId}: ${msg}`);
+		return { kind: "error", error: msg };
 	} finally {
 		db?.close();
 	}
+}
+
+/**
+ * Resolve tmux target from CommDB.
+ * Returns undefined if DB missing, session not registered, or on error.
+ * Logs real CommDB errors (corruption, lock) — does NOT silently swallow.
+ *
+ * NOTE: collapses `gone` and `error` to `undefined`. Callers that must
+ * distinguish a CommDB read error from "already gone" (e.g. terminate's
+ * observable partial-failure contract) should use `lookupTmuxTarget` directly.
+ */
+export function getTmuxTargetFromCommDb(
+	executionId: string,
+	projectName: string,
+): TmuxTarget | undefined {
+	const r = lookupTmuxTarget(executionId, projectName);
+	return r.kind === "found" ? r.target : undefined;
 }
 
 /**

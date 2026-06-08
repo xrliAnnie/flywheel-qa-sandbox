@@ -11,9 +11,9 @@ import { CommDB } from "flywheel-comm/db";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock tmux-lookup: control target presence + kill outcome per test.
+// Mock tmux-lookup: control target presence/lookup outcome + kill outcome.
 vi.mock("../bridge/tmux-lookup.js", () => ({
-	getTmuxTargetFromCommDb: vi.fn(),
+	lookupTmuxTarget: vi.fn(),
 	killTmuxWindow: vi.fn(),
 }));
 // Avoid real macOS Terminal automation in the kill-success path.
@@ -24,13 +24,10 @@ vi.mock("flywheel-core", async (importOriginal) => ({
 
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { handleTerminate } from "../bridge/actions.js";
-import {
-	getTmuxTargetFromCommDb,
-	killTmuxWindow,
-} from "../bridge/tmux-lookup.js";
+import { killTmuxWindow, lookupTmuxTarget } from "../bridge/tmux-lookup.js";
 import { StateStore } from "../StateStore.js";
 
-const getTarget = vi.mocked(getTmuxTargetFromCommDb);
+const lookup = vi.mocked(lookupTmuxTarget);
 const kill = vi.mocked(killTmuxWindow);
 
 describe("handleTerminate (FLY-228)", () => {
@@ -43,9 +40,9 @@ describe("handleTerminate (FLY-228)", () => {
 		opts = { store, fsm: new WorkflowFSM(WORKFLOW_TRANSITIONS) };
 		commRoot = mkdtempSync(join(tmpdir(), "fly228-terminate-comm-"));
 		process.env.FLYWHEEL_COMM_ROOT = commRoot;
-		getTarget.mockReset();
+		lookup.mockReset();
 		kill.mockReset();
-		getTarget.mockReturnValue(undefined); // no tmux target by default
+		lookup.mockReturnValue({ kind: "gone" }); // no tmux target by default
 		kill.mockResolvedValue({ killed: true });
 	});
 
@@ -113,17 +110,17 @@ describe("handleTerminate (FLY-228)", () => {
 		const res = await handleTerminate(store, "e1", opts);
 		expect(res.success).toBe(false);
 		expect(res.message).toContain("Cannot terminate");
-		expect(getTarget).not.toHaveBeenCalled();
+		expect(lookup).not.toHaveBeenCalled();
 		expect(kill).not.toHaveBeenCalled();
 		expect(store.getSession("e1")!.status).toBe("completed");
 	});
 
 	it("tmux-kill failure → success:false + cleanupPending, FSM still terminated + audit event", async () => {
 		seedAwaitingReview();
-		getTarget.mockReturnValue({
-			tmuxWindow: "sess:@9",
-			projectName: "geoforge3d",
-		} as ReturnType<typeof getTmuxTargetFromCommDb>);
+		lookup.mockReturnValue({
+			kind: "found",
+			target: { tmuxWindow: "sess:@9", sessionName: "sess" },
+		});
 		kill.mockResolvedValue({ killed: false, error: "permission denied" });
 
 		const res = await handleTerminate(store, "e1", opts);
@@ -139,17 +136,60 @@ describe("handleTerminate (FLY-228)", () => {
 		).toBe(true);
 	});
 
+	// Codex code-review MED-3: a CommDB read error is NOT "already gone".
+	it("tmux target LOOKUP error → success:false + cleanupPending + audit (can't confirm tmux gone)", async () => {
+		seedAwaitingReview();
+		lookup.mockReturnValue({ kind: "error", error: "database is locked" });
+
+		const res = await handleTerminate(store, "e1", opts);
+
+		expect(res.success).toBe(false);
+		expect(res.cleanupPending).toBe(true);
+		expect(store.getSession("e1")!.status).toBe("terminated");
+		expect(kill).not.toHaveBeenCalled(); // never reached kill — lookup failed
+		const events = store.getEventsByExecution("e1");
+		expect(
+			events.some((e) => e.event_type === "lead_terminate_cleanup_failed"),
+		).toBe(true);
+	});
+
+	it("tmux 'gone' (not registered / db missing) → success:true (nothing to clean)", async () => {
+		seedAwaitingReview();
+		lookup.mockReturnValue({ kind: "gone" });
+		const res = await handleTerminate(store, "e1", opts);
+		expect(res.success).toBe(true);
+		expect(res.cleanupPending).toBeUndefined();
+		expect(kill).not.toHaveBeenCalled();
+		expect(store.getSession("e1")!.status).toBe("terminated");
+	});
+
 	it("tmux-kill success with a target → success:true", async () => {
 		seedAwaitingReview();
-		getTarget.mockReturnValue({
-			tmuxWindow: "sess:@9",
-			projectName: "geoforge3d",
-		} as ReturnType<typeof getTmuxTargetFromCommDb>);
+		lookup.mockReturnValue({
+			kind: "found",
+			target: { tmuxWindow: "sess:@9", sessionName: "sess" },
+		});
 		kill.mockResolvedValue({ killed: true });
 		const res = await handleTerminate(store, "e1", opts);
 		expect(res.success).toBe(true);
 		expect(res.cleanupPending).toBeUndefined();
 		expect(store.getSession("e1")!.status).toBe("terminated");
+	});
+
+	// Codex code-review LOW-4: reason capped at 500 in handleTerminate itself.
+	it("caps an oversized reason at 500 chars in the audit", async () => {
+		seedAwaitingReview();
+		await handleTerminate(
+			store,
+			"e1",
+			opts,
+			undefined,
+			[],
+			undefined,
+			undefined,
+			"x".repeat(900),
+		);
+		expect(store.getSession("e1")!.last_error).toHaveLength(500);
 	});
 
 	it("resolves a bound approve_to_ship gate so it no longer shows pending", async () => {
