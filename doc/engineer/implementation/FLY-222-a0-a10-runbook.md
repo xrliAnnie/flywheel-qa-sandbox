@@ -110,6 +110,27 @@ Codex option-A 复核 non-blocking #2 + qa-fly-222 F2:lease 非 fencing token �
 
 ---
 
+## E2E Results — qa-fly-222 真机闭环(2026-06-08,slot 3 / Bridge :19873,生产没碰)
+
+隔离测试槽(`test-slot-3`,集成分支 `qa/fly-222-228-e2e` = 222+228)真机端到端,**全 PASS**。证据:`/tmp/qa-fly222/FINDINGS.md` + Sandbox **FLY-236 / FLY-237**。
+
+- **A1 bootstrap happy-path(clean-run)**:读真 Suno 视频 → 7 笔记 baseline(`processed[]`)→ `set-next-due`(daily)→ `release-lease` → `complete --route no_code` → StateStore `completed`/no_code。(run#1 MCP 没冲过 = fail-soft = **A10** 也实测到。)
+- **round-2 处理路(H-fixed skill)**:读真 Suno 教程 → 3 issue 草稿 + 4 learnings → **prune gate**(扮 Annie 留 2 砍 1)→ `xhs-validate-final`(run_key 校验)→ **`create_issue` FLY-236 + FLY-237 落 Flywheel Sandbox**(砍的没建 = prune 尊重;provenance + **opId marker in description** = crash-safe dedup)→ memory-B → note 留 pending(下轮重试,issue opId dedup)→ `no_code` 终态。
+- **wiring 全验**:① skill 从 `~/.claude/skills/` 发现(Runner HOME=真~)② flywheel-comm 走注入的 **`$FLYWHEEL_COMM_CLI`**(无全局/无 symlink;= spawn 这次 build 的 dist,带 xhs-state)③ xhs MCP = Runner 继承 user `~/.claude.json`(+ skill curl 是可移植主路径)④ `linear` MCP buildMcpConfig 注入 → create_issue。
+- **承重不变量**:#4 FINAL fail-close、lease CAS、#2 owner-fencing、idempotency(opId)、no_code 终态(228,qa-228 独立验)全 live 经过。
+
+### 处置的 finding
+| # | 现象 | 处置 |
+|---|------|------|
+| C | entry bare-import → tsx ERR_MODULE_NOT_FOUND | 改相对 dist import(`a96c154`)✅ |
+| D | learning Runner 拿不到 flywheel-comm(无全局/PATH) | skill 走注入的 `$FLYWHEEL_COMM_CLI`(`93c92b6`);main TmuxAdapter:330 pre-existing 注入 → 无需重 build Bridge ✅ |
+| G | Runner 即兴 `complete --exec-id` → exit1 自纠 | §10 写明不传 --exec-id(读 `$FLYWHEEL_EXEC_ID`)(`8be9ad6`)✅ |
+| H | `bootstrapped` flag 从没被 set → **round-2 always-bootstrap 吞新笔记永不提议**(潜伏真 bug) | 删 flag,`processed`空=首run信号(`e26e590`+`8be9ad6`,475/475)✅ |
+| E | 首次 Runner 撞 folder-trust 框挡注入(pre-trusted 即正常) | 228/框架(spawn 前自动 trust),非 222 |
+| memory-B 写 | slot Bridge 无 Supabase memory backend → `/api/memory/add` 失败 | **环境缺,非 222 逻辑**:接线对 + 失败路按设计降级(Lead 认 contract → 写失败 → ACK `failed` 不静默 → Runner 留 intent → pending 重试)。生产 Bridge 有 Supabase(GEO-145)即成 |
+| trigger projectId | trigger issue 没进 Sandbox project | createTriggerIssue 设 `projectId`=target(`7334cf6`)→ FLY-235 落 Sandbox ✅ |
+| MCP flaky | 单 rod 浏览器 `get_collection_content` 超时 | 具体 retry-after-idle(~3 次 backoff)再 fail-soft(`ea90899`)→ round-2 冲过 ✅ |
+
 ## 收口
 - 全 A1-A10 + #2 fencing PASS → 报 team-lead(不自报 ship);Annie ship 令前不 merge(founder-only)。
 - 真机证据(截图/命令输出/state json/Linear sandbox issue 链接)留到 Annie 验收完(feedback_qa_evidence_survives_until_annie)。
