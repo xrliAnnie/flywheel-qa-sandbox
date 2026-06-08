@@ -100,9 +100,9 @@ describe("ConfigLoader — xiaohongshu_learning (FLY-222)", () => {
 
 	describe("rejections (static shape)", () => {
 		it("rejects a scalar xiaohongshu_learning", async () => {
-			await expect(load(`${BASE_CONFIG}\nxiaohongshu_learning: "nope"`)).rejects.toThrow(
-				/must be a YAML mapping/,
-			);
+			await expect(
+				load(`${BASE_CONFIG}\nxiaohongshu_learning: "nope"`),
+			).rejects.toThrow(/must be a YAML mapping/);
 		});
 
 		it("rejects a non-boolean enabled", async () => {
@@ -126,7 +126,9 @@ describe("ConfigLoader — xiaohongshu_learning (FLY-222)", () => {
 		it("rejects enabled:true with empty collections", async () => {
 			await expect(
 				load(withXhs(`  enabled: true\n  collections: []`)),
-			).rejects.toThrow(/non-empty array when xiaohongshu_learning.enabled is true/);
+			).rejects.toThrow(
+				/non-empty array when xiaohongshu_learning.enabled is true/,
+			);
 		});
 
 		it.each([
@@ -145,7 +147,9 @@ describe("ConfigLoader — xiaohongshu_learning (FLY-222)", () => {
 			].filter((l) => !l.includes(`${field}:`));
 			await expect(
 				load(
-					withXhs(`  enabled: true\n  collections:\n    -\n${lines.join("\n")}`),
+					withXhs(
+						`  enabled: true\n  collections:\n    -\n${lines.join("\n")}`,
+					),
 				),
 			).rejects.toThrow(new RegExp(`${field} must be a non-empty string`));
 		});

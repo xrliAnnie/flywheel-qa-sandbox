@@ -27,13 +27,13 @@ import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
 import { verifyApproval } from "./commands/verify-approval.js";
-import { xhsState } from "./commands/xhs-state.js";
-import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
 import {
 	type VisualCaptureArgs,
 	visualCapture,
 	visualCaptureStdout,
 } from "./commands/visual-capture.js";
+import { xhsState } from "./commands/xhs-state.js";
+import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
 import { CommDB } from "./db.js";
 import { resolveDbPath } from "./resolve-db-path.js";
 

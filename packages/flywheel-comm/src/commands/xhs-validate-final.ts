@@ -28,7 +28,10 @@ function readStdin(): string {
 }
 
 /** Parse a `--candidate-ids` / `--learning-ids` JSON string array, or undefined. */
-function parseIdManifest(v: string | undefined, flag: string): string[] | undefined {
+function parseIdManifest(
+	v: string | undefined,
+	flag: string,
+): string[] | undefined {
 	if (v === undefined) return undefined;
 	let parsed: unknown;
 	try {
@@ -38,7 +41,9 @@ function parseIdManifest(v: string | undefined, flag: string): string[] | undefi
 		process.exit(2);
 	}
 	if (!Array.isArray(parsed) || !parsed.every((x) => typeof x === "string")) {
-		process.stderr.write(`xhs-validate-final: ${flag} must be a JSON array of strings\n`);
+		process.stderr.write(
+			`xhs-validate-final: ${flag} must be a JSON array of strings\n`,
+		);
 		process.exit(2);
 	}
 	return parsed as string[];
@@ -63,7 +68,10 @@ export function xhsValidateFinal(argv: string[]): number {
 	}
 
 	const opts: FinalValidateOpts = {};
-	const candidateIds = parseIdManifest(values["candidate-ids"], "--candidate-ids");
+	const candidateIds = parseIdManifest(
+		values["candidate-ids"],
+		"--candidate-ids",
+	);
 	if (candidateIds) opts.candidateIds = candidateIds;
 	const learningIds = parseIdManifest(values["learning-ids"], "--learning-ids");
 	if (learningIds) opts.learningIds = learningIds;

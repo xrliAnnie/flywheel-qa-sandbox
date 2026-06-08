@@ -67,7 +67,11 @@ describe("xhs-state CLI", () => {
 	it("mark-processed persists and diff reflects it", async () => {
 		expect((await run("mark-processed", "--note-id", "n1")).ok).toBe(true);
 		expect((await run("read")).processed).toEqual(["n1"]);
-		const d = await run("diff", "--note-ids", JSON.stringify(["n1", "n2", "n3"]));
+		const d = await run(
+			"diff",
+			"--note-ids",
+			JSON.stringify(["n1", "n2", "n3"]),
+		);
 		expect(d.new).toEqual(["n2", "n3"]);
 	});
 
@@ -104,23 +108,32 @@ describe("xhs-state CLI", () => {
 
 	it("record-pending then mark-processed drops from pending", async () => {
 		await run("record-pending", "--note-ids", JSON.stringify(["n1", "n2"]));
-		expect((await run("read")).pending.map((p: any) => p.noteId).sort()).toEqual([
-			"n1",
+		expect(
+			(await run("read")).pending.map((p: any) => p.noteId).sort(),
+		).toEqual(["n1", "n2"]);
+		await run("mark-processed", "--note-id", "n1");
+		expect((await run("read")).pending.map((p: any) => p.noteId)).toEqual([
 			"n2",
 		]);
-		await run("mark-processed", "--note-id", "n1");
-		expect((await run("read")).pending.map((p: any) => p.noteId)).toEqual(["n2"]);
 	});
 
 	it("validation errors exit non-zero (process.exit mocked)", async () => {
-		const exitSpy = vi
-			.spyOn(process, "exit")
-			.mockImplementation(((code?: number) => {
-				throw new Error(`exit:${code}`);
-			}) as never);
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+			code?: number,
+		) => {
+			throw new Error(`exit:${code}`);
+		}) as never);
 		// missing --owner on acquire-lease → fail() → exit(2)
 		await expect(
-			xhsState(["acquire-lease", "--project", P, "--collection", C, "--state-dir", dir]),
+			xhsState([
+				"acquire-lease",
+				"--project",
+				P,
+				"--collection",
+				C,
+				"--state-dir",
+				dir,
+			]),
 		).rejects.toThrow(/exit:2/);
 		expect(exitSpy).toHaveBeenCalledWith(2);
 	});
@@ -130,8 +143,17 @@ describe("xhs-state CLI — F2 owner-fencing (zombie write after takeover)", () 
 	it("allows a mutating write by the current lease owner", async () => {
 		expect((await run("acquire-lease", "--owner", "r1")).ok).toBe(true);
 		const code = await xhsState([
-			"mark-processed", "--project", P, "--collection", C,
-			"--state-dir", dir, "--note-id", "n1", "--owner", "r1",
+			"mark-processed",
+			"--project",
+			P,
+			"--collection",
+			C,
+			"--state-dir",
+			dir,
+			"--note-id",
+			"n1",
+			"--owner",
+			"r1",
 		]);
 		expect(code).toBe(0);
 		expect((await run("read")).processed).toEqual(["n1"]);
@@ -142,12 +164,23 @@ describe("xhs-state CLI — F2 owner-fencing (zombie write after takeover)", () 
 		expect((await run("acquire-lease", "--owner", "r1")).ok).toBe(true);
 		out = [];
 		const code = await xhsState([
-			"mark-processed", "--project", P, "--collection", C,
-			"--state-dir", dir, "--note-id", "zombie", "--owner", "r0",
+			"mark-processed",
+			"--project",
+			P,
+			"--collection",
+			C,
+			"--state-dir",
+			dir,
+			"--note-id",
+			"zombie",
+			"--owner",
+			"r0",
 		]);
 		expect(code).toBe(2);
 		expect(JSON.parse(out.filter((x) => x.trim()).pop()!)).toMatchObject({
-			ok: false, reason: "not_lease_owner", heldBy: "r1",
+			ok: false,
+			reason: "not_lease_owner",
+			heldBy: "r1",
 		});
 		// the zombie write did NOT land
 		expect((await run("read")).processed).not.toContain("zombie");
@@ -155,8 +188,15 @@ describe("xhs-state CLI — F2 owner-fencing (zombie write after takeover)", () 
 
 	it("allows a mutating write with no --owner (backward compat / scheduler path)", async () => {
 		const code = await xhsState([
-			"mark-processed", "--project", P, "--collection", C,
-			"--state-dir", dir, "--note-id", "n2",
+			"mark-processed",
+			"--project",
+			P,
+			"--collection",
+			C,
+			"--state-dir",
+			dir,
+			"--note-id",
+			"n2",
 		]);
 		expect(code).toBe(0);
 		expect((await run("read")).processed).toContain("n2");
@@ -165,13 +205,29 @@ describe("xhs-state CLI — F2 owner-fencing (zombie write after takeover)", () 
 	it("fences record-op-intent / set-next-due / mark-op-done too", async () => {
 		expect((await run("acquire-lease", "--owner", "r1")).ok).toBe(true);
 		for (const argv of [
-			["record-op-intent", "--note-id", "n", "--kind", "issue", "--candidate-id", "c"],
+			[
+				"record-op-intent",
+				"--note-id",
+				"n",
+				"--kind",
+				"issue",
+				"--candidate-id",
+				"c",
+			],
 			["set-next-due", "--cadence", "weekly"],
 		]) {
 			out = [];
 			const code = await xhsState([
-				argv[0], "--project", P, "--collection", C, "--state-dir", dir,
-				...argv.slice(1), "--owner", "r0",
+				argv[0],
+				"--project",
+				P,
+				"--collection",
+				C,
+				"--state-dir",
+				dir,
+				...argv.slice(1),
+				"--owner",
+				"r0",
 			]);
 			expect(code).toBe(2);
 		}
@@ -192,8 +248,15 @@ describe("xhs-state CLI — set-bootstrapped (codex MEDIUM-6)", () => {
 		expect((await run("acquire-lease", "--owner", "r1")).ok).toBe(true);
 		out = [];
 		const code = await xhsState([
-			"set-bootstrapped", "--project", P, "--collection", C,
-			"--state-dir", dir, "--owner", "r0",
+			"set-bootstrapped",
+			"--project",
+			P,
+			"--collection",
+			C,
+			"--state-dir",
+			dir,
+			"--owner",
+			"r0",
 		]);
 		expect(code).toBe(2);
 		expect((await run("read")).bootstrapped).toBe(false);
@@ -214,11 +277,22 @@ describe("xhs-state CLI — drop-pending (codex MEDIUM-5)", () => {
 		expect((await run("acquire-lease", "--owner", "r1")).ok).toBe(true);
 		out = [];
 		const code = await xhsState([
-			"drop-pending", "--project", P, "--collection", C,
-			"--state-dir", dir, "--note-id", "p1", "--owner", "r0",
+			"drop-pending",
+			"--project",
+			P,
+			"--collection",
+			C,
+			"--state-dir",
+			dir,
+			"--note-id",
+			"p1",
+			"--owner",
+			"r0",
 		]);
 		expect(code).toBe(2);
-		expect((await run("read")).pending.map((p: any) => p.noteId)).toEqual(["p1"]);
+		expect((await run("read")).pending.map((p: any) => p.noteId)).toEqual([
+			"p1",
+		]);
 	});
 });
 
@@ -228,13 +302,23 @@ describe("xhs-state CLI — fence after lease release (codex r3 NEW HIGH)", () =
 		// resurrected zombie A must NOT be able to advance state.
 		out = [];
 		const code = await xhsState([
-			"mark-processed", "--project", P, "--collection", C,
-			"--state-dir", dir, "--note-id", "zombie", "--owner", "r0",
+			"mark-processed",
+			"--project",
+			P,
+			"--collection",
+			C,
+			"--state-dir",
+			dir,
+			"--note-id",
+			"zombie",
+			"--owner",
+			"r0",
 		]);
 		expect(code).toBe(2);
 		expect(JSON.parse(out.filter((x) => x.trim()).pop()!)).toMatchObject({
-			ok: false, reason: "not_lease_owner",
+			ok: false,
+			reason: "not_lease_owner",
 		});
 		expect((await run("read")).processed).not.toContain("zombie");
 	});
-})
+});

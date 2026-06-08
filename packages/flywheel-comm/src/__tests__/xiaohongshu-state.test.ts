@@ -2,7 +2,13 @@
  * FLY-222: xiaohongshu-state core-library tests.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -15,8 +21,8 @@ import {
 	findOperation,
 	isDue,
 	isLeaseTakeable,
-	markOperationDone,
 	markBootstrapped,
+	markOperationDone,
 	markProcessed,
 	operationId,
 	readState,
@@ -143,7 +149,11 @@ describe("diff + pending", () => {
 	});
 
 	it("recordPending is idempotent and bumps attempts; markProcessed drops pending", () => {
-		let s = recordPending(fresh(), ["n1", "n2"], new Date("2026-06-06T00:00:00Z"));
+		let s = recordPending(
+			fresh(),
+			["n1", "n2"],
+			new Date("2026-06-06T00:00:00Z"),
+		);
 		expect(s.pending.map((p) => p.noteId).sort()).toEqual(["n1", "n2"]);
 		s = recordPending(s, ["n1"]);
 		expect(s.pending.find((p) => p.noteId === "n1")?.attempts).toBe(2);

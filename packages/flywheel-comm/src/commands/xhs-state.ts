@@ -196,7 +196,12 @@ export async function xhsState(argv: string[]): Promise<number> {
 					return {
 						state: r.state,
 						write: r.ok,
-						output: { ok: r.ok, reason: r.reason, heldBy: r.heldBy, lease: r.state.lease },
+						output: {
+							ok: r.ok,
+							reason: r.reason,
+							heldBy: r.heldBy,
+							lease: r.state.lease,
+						},
 					};
 				},
 				{ owner: values.owner },
@@ -206,19 +211,35 @@ export async function xhsState(argv: string[]): Promise<number> {
 
 		case "renew-lease": {
 			if (!values.owner) fail("--owner is required");
-			await mutate(c, (s) => {
-				const r = renewLease(s, values.owner as string, new Date(), ttlMs);
-				return { state: r.state, write: r.ok, output: { ok: r.ok, reason: r.reason } };
-			}, { owner: values.owner });
+			await mutate(
+				c,
+				(s) => {
+					const r = renewLease(s, values.owner as string, new Date(), ttlMs);
+					return {
+						state: r.state,
+						write: r.ok,
+						output: { ok: r.ok, reason: r.reason },
+					};
+				},
+				{ owner: values.owner },
+			);
 			return 0;
 		}
 
 		case "release-lease": {
 			if (!values.owner) fail("--owner is required");
-			await mutate(c, (s) => {
-				const r = releaseLease(s, values.owner as string);
-				return { state: r.state, write: r.ok, output: { ok: r.ok, reason: r.reason } };
-			}, { owner: values.owner });
+			await mutate(
+				c,
+				(s) => {
+					const r = releaseLease(s, values.owner as string);
+					return {
+						state: r.state,
+						write: r.ok,
+						output: { ok: r.ok, reason: r.reason },
+					};
+				},
+				{ owner: values.owner },
+			);
 			return 0;
 		}
 

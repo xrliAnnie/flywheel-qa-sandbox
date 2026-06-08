@@ -157,7 +157,10 @@ export function validateFinalResponse(
 				};
 			}
 			for (const f of ["title", "body", "summary"] as const) {
-				if (f in v && (typeof v[f] !== "string" || (v[f] as string).trim() === "")) {
+				if (
+					f in v &&
+					(typeof v[f] !== "string" || (v[f] as string).trim() === "")
+				) {
 					return {
 						valid: false,
 						reason: `\`edits.${k}.${f}\` must be a non-empty string when present`,
@@ -169,7 +172,11 @@ export function validateFinalResponse(
 
 	let learnings: string[] | undefined;
 	if (parsed.learnings !== undefined) {
-		const lRes = validateIdList(parsed.learnings, "learnings", opts.learningIds);
+		const lRes = validateIdList(
+			parsed.learnings,
+			"learnings",
+			opts.learningIds,
+		);
 		if (!lRes.ok) return { valid: false, reason: lRes.reason };
 		learnings = lRes.ids;
 	}

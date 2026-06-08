@@ -5,15 +5,15 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-	FlywheelConfig,
-	XiaohongshuCollectionConfig,
-} from "flywheel-config";
 import {
 	emptyState,
 	readState,
 	type XiaohongshuState,
 } from "flywheel-comm/xiaohongshu-state";
+import type {
+	FlywheelConfig,
+	XiaohongshuCollectionConfig,
+} from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import {
@@ -26,7 +26,11 @@ import {
 const NOW = new Date("2026-06-06T00:00:00Z");
 
 function lead(agentId: string, labels: string[], canSpawn = true): LeadConfig {
-	return { agentId, match: { labels }, canSpawnRunners: canSpawn } as LeadConfig;
+	return {
+		agentId,
+		match: { labels },
+		canSpawnRunners: canSpawn,
+	} as LeadConfig;
 }
 function project(name: string, leads: LeadConfig[]): ProjectEntry {
 	return { projectName: name, leads } as ProjectEntry;

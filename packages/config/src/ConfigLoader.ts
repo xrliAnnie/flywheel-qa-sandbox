@@ -338,14 +338,16 @@ export class ConfigLoader {
 			}
 			if (xhs.collections != null) {
 				if (!Array.isArray(xhs.collections)) {
-					throw new Error(
-						"xiaohongshu_learning.collections must be an array",
-					);
+					throw new Error("xiaohongshu_learning.collections must be an array");
 				}
 				const seenIds = new Set<string>();
 				xhs.collections.forEach((entry: unknown, i: number) => {
 					const where = `xiaohongshu_learning.collections[${i}]`;
-					if (entry == null || typeof entry !== "object" || Array.isArray(entry)) {
+					if (
+						entry == null ||
+						typeof entry !== "object" ||
+						Array.isArray(entry)
+					) {
 						throw new Error(`${where} must be a mapping (object)`);
 					}
 					const col = entry as Record<string, unknown>;

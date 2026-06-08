@@ -459,7 +459,9 @@ export function acquireLease(
 		};
 	}
 	const acquiredAt =
-		existing && existing.owner === owner ? existing.acquiredAt : now.toISOString();
+		existing && existing.owner === owner
+			? existing.acquiredAt
+			: now.toISOString();
 	const lease: Lease = {
 		owner,
 		acquiredAt,
@@ -694,13 +696,18 @@ export function computeNextDueAt(
 ): string {
 	const ms = CADENCE_MS[cadence];
 	if (ms == null) {
-		throw new Error(`xiaohongshu-state: unknown cadence ${JSON.stringify(cadence)}`);
+		throw new Error(
+			`xiaohongshu-state: unknown cadence ${JSON.stringify(cadence)}`,
+		);
 	}
 	return new Date(from.getTime() + ms).toISOString();
 }
 
 /** Is the collection due now? (true when nextDueAt is null/in the past). */
-export function isDue(state: XiaohongshuState, now: Date = new Date()): boolean {
+export function isDue(
+	state: XiaohongshuState,
+	now: Date = new Date(),
+): boolean {
 	if (!state.nextDueAt) return true;
 	return now.getTime() >= new Date(state.nextDueAt).getTime();
 }

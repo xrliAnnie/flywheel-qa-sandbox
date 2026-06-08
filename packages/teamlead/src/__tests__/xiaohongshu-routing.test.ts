@@ -23,9 +23,7 @@ function project(name: string, leads: LeadConfig[]): ProjectEntry {
 }
 
 const PROJECTS: ProjectEntry[] = [
-	project("sub", [
-		lead("sub-lead", ["Sub"], true),
-	]),
+	project("sub", [lead("sub-lead", ["Sub"], true)]),
 	project("geoforge3d", [
 		lead("product-lead", ["Product"], true),
 		lead("ops-lead", ["Operations"], true),

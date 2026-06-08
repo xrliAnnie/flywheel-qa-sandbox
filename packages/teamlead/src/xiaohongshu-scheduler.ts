@@ -15,11 +15,6 @@
  * the tick).
  */
 
-import type {
-	FlywheelConfig,
-	XiaohongshuCollectionConfig,
-} from "flywheel-config";
-import { XIAOHONGSHU_DEFAULT_MAX_FETCH } from "flywheel-config";
 import {
 	isDue,
 	readState,
@@ -28,6 +23,11 @@ import {
 	writeState,
 	type XiaohongshuState,
 } from "flywheel-comm/xiaohongshu-state";
+import type {
+	FlywheelConfig,
+	XiaohongshuCollectionConfig,
+} from "flywheel-config";
+import { XIAOHONGSHU_DEFAULT_MAX_FETCH } from "flywheel-config";
 import type { ProjectEntry } from "./ProjectConfig.js";
 import {
 	type RoutingTupleResult,

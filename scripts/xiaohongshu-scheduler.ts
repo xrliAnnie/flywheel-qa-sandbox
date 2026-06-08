@@ -36,7 +36,10 @@ import { LinearClient } from "@linear/sdk";
 // Workspace packages are imported by RELATIVE dist path (matching
 // scripts/run-bridge.ts) — bare names like "flywheel-config" do not resolve via
 // `npx tsx` from scripts/ (not symlinked into the root node_modules).
-import { ConfigLoader, type FlywheelConfig } from "../packages/config/dist/index.js";
+import {
+	ConfigLoader,
+	type FlywheelConfig,
+} from "../packages/config/dist/index.js";
 import {
 	defaultStateDir,
 	readState,

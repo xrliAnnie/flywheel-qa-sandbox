@@ -218,8 +218,12 @@ describe("validateFinalResponse — strict id + edits validation (codex HIGH-3)"
 	});
 
 	it("rejects duplicate / empty learnings", () => {
-		expect(validateFinalResponse(final({ learnings: ["l1", "l1"] }), RK).valid).toBe(false);
-		expect(validateFinalResponse(final({ learnings: [""] }), RK).valid).toBe(false);
+		expect(
+			validateFinalResponse(final({ learnings: ["l1", "l1"] }), RK).valid,
+		).toBe(false);
+		expect(validateFinalResponse(final({ learnings: [""] }), RK).valid).toBe(
+			false,
+		);
 	});
 
 	it("enforces the candidate manifest subset when provided", () => {

@@ -38,10 +38,7 @@ export interface LearningRoutingTuple {
 }
 
 /** Leads whose `match.labels` include `label` (case-insensitive). */
-function leadsMatchingLabel(
-	leads: LeadConfig[],
-	label: string,
-): LeadConfig[] {
+function leadsMatchingLabel(leads: LeadConfig[], label: string): LeadConfig[] {
 	const want = label.trim().toLowerCase();
 	return leads.filter((l) =>
 		(l.match?.labels ?? []).some((x) => x.trim().toLowerCase() === want),
