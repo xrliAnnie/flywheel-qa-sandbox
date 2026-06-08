@@ -380,6 +380,48 @@ describe("tryReconcileComplete", () => {
 		const r = await tryReconcileComplete("../etc/passwd", baseDeps(store));
 		expect(r.kind).toBe("absent");
 	});
+
+	// FLY-222 #1 (Codex code-review R2 MED): a no_code marker that lost its
+	// response AFTER the Bridge already completed the run must NOT regress
+	// completed→failed. The unreplayable (non-running) marker on an already
+	// terminal session is a duplicate → deleted, no quarantine, no POST.
+	it("no_code marker for already-completed session → duplicate_terminal (no quarantine, no POST)", async () => {
+		writeMarker(markerDir, "execNC", {
+			payload: { decision: { route: "no_code" }, evidence: {} },
+		});
+		const store = makeStore({ execNC: { status: "completed" } });
+		const fetchFn = vi.fn();
+		const r = await tryReconcileComplete(
+			"execNC",
+			baseDeps(store, fetchFn as never),
+		);
+		expect(r.kind).toBe("duplicate_terminal");
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(store.forceStatus).not.toHaveBeenCalled();
+		// deleted, not quarantined (dir never created)
+		expect(existsSync(join(markerDir, "execNC.json"))).toBe(false);
+		expect(existsSync(quarantineDir) ? readdirSync(quarantineDir) : []).toEqual(
+			[],
+		);
+	});
+
+	// no_code marker on a RUNNING session replays normally to completed.
+	it("no_code marker for running session → replays (reconciled)", async () => {
+		writeMarker(markerDir, "execNCr", {
+			payload: { decision: { route: "no_code" }, evidence: {} },
+		});
+		const store = makeStore({ execNCr: { status: "running" } });
+		const fetchFn = vi.fn(async () => {
+			store.sessions.set("execNCr", { status: "completed" });
+			return new Response(JSON.stringify({ ok: true }), { status: 200 });
+		});
+		const r = await tryReconcileComplete(
+			"execNCr",
+			baseDeps(store, fetchFn as never),
+		);
+		expect(r.kind).toBe("reconciled");
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
 });
 
 describe("applyQuarantineFallback (Codex R2 #3)", () => {
@@ -481,6 +523,28 @@ describe("applyQuarantineFallback (Codex R2 #3)", () => {
 			expect.stringContaining("/q/d5.json"),
 		);
 	});
+
+	// FLY-222 #1 (Codex code-review R2 MED): the fallback rescues a `running`-stuck
+	// dead Runner ONLY. A non-running session must never be force-failed by a
+	// stale quarantined marker (completed→failed regression / review-gate clear).
+	it.each(["completed", "awaiting_review", "approved_to_ship", "blocked"])(
+		"tmux dead but status=%s (not running) → no mutation",
+		(status) => {
+			mockedApplyTransition.mockReset().mockReturnValue({ ok: true } as never);
+			const store = makeStore({ dn: { status } });
+			applyQuarantineFallback({
+				store: store as never,
+				transitionOpts: { fake: true } as never,
+				executionId: "dn",
+				tmuxAlive: false,
+				quarantinePath: "/q/dn.json",
+				log: () => {},
+			});
+			expect(store.forceStatus).not.toHaveBeenCalled();
+			expect(mockedApplyTransition).not.toHaveBeenCalled();
+			expect(store.sessions.get("dn")?.status).toBe(status);
+		},
+	);
 });
 
 describe("reconcileCompleteFailedMarkers (boot drain, Codex R1 #2)", () => {

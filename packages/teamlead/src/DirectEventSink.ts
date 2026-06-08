@@ -213,8 +213,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			source: "direct-event-sink",
 		});
 
-		// Status mapping (aligned with event-route.ts)
-		const route = result.decision?.route;
+		// Status mapping (aligned with event-route.ts).
+		// FLY-222 #1 (Codex code-review R2 HIGH-1): widen to `string` at this
+		// consumption boundary so the sink can legally RECOGNIZE a runtime
+		// `no_code` route. The Decision Layer's generated-route allowlist
+		// (`DecisionRoute`) stays intentionally restricted — `no_code` is a
+		// runner-emitted completion route, not a Decision Layer output — so we do
+		// not pollute that type; the HTTP `/events` sink already reads route as a
+		// plain string for the same reason.
+		const route: string | undefined = result.decision?.route;
 		const landingStatus = result.evidence?.landingStatus as
 			| { status?: string }
 			| undefined;

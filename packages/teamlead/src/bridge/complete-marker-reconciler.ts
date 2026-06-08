@@ -288,8 +288,22 @@ export async function tryReconcileComplete(
 	const currentStatus = deps.store.getSession(execId)?.status;
 	const expectedStatus = expectedStatusFromMarker(body, currentStatus);
 	if (expectedStatus === null) {
+		// FLY-222 #1 (Codex code-review R2 MED): if the session already reached a
+		// terminal state, an unreplayable/stale marker (e.g. a no_code marker that
+		// lost its response AFTER the Bridge already completed the run, or any
+		// non-running no_code) is MOOT — it must NOT regress that state via the
+		// quarantine fallback (completed→failed) or clear a review gate. Treat as a
+		// duplicate (delete, no quarantine, no fallback mutation).
+		if (currentStatus && TERMINAL_STATUSES.has(currentStatus)) {
+			safeUnlink(markerPath, log);
+			log(
+				`[complete-reconciler] unreplayable marker for already-terminal ${execId} (status=${currentStatus}) — duplicate, deleted`,
+			);
+			return { kind: "duplicate_terminal", status: currentStatus };
+		}
 		// Strict route guard would 200+warning this — not replayable to a known
-		// terminal state. Quarantine and let caller fallback.
+		// terminal state. Quarantine and let caller fallback (which itself only
+		// mutates a session still stuck in `running` — see applyQuarantineFallback).
 		const qp = moveToQuarantine(markerPath, quarantineDir, fileName, log);
 		log(
 			`[complete-reconciler] unreplayable route quarantined ${execId}: ${qp}`,
@@ -429,6 +443,18 @@ export function applyQuarantineFallback(args: {
 	if (args.tmuxAlive) {
 		log(
 			`[complete-reconciler] ${args.executionId}: marker quarantined but tmux alive — leaving running, advisory will fire`,
+		);
+		return;
+	}
+	// FLY-222 #1 (Codex code-review R2 MED): this fallback exists ONLY to rescue a
+	// dead Runner left stuck in `running`. A session that already progressed off
+	// `running` (completed / awaiting_review / approved_to_ship / any terminal)
+	// must NOT be forced to `failed` by a stale quarantined marker — that would
+	// regress completed→failed or clear a review gate. Leave it untouched.
+	const currentStatus = args.store.getSession(args.executionId)?.status;
+	if (currentStatus !== "running") {
+		log(
+			`[complete-reconciler] ${args.executionId}: quarantined marker but status=${currentStatus ?? "none"} (not running) — leaving as-is (no fallback mutation)`,
 		);
 		return;
 	}
