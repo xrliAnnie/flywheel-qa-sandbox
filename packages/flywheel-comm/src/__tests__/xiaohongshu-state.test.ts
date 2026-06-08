@@ -63,7 +63,6 @@ describe("path safety", () => {
 describe("read/write (atomic, default-empty)", () => {
 	it("returns a fresh empty state when no file exists", () => {
 		const s = readState(dir, PROJECT, COLLECTION);
-		expect(s.bootstrapped).toBe(false);
 		expect(s.processed).toEqual([]);
 		expect(s.lease).toBeNull();
 	});

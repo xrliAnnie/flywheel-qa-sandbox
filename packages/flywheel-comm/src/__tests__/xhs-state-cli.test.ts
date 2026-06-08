@@ -48,7 +48,6 @@ async function run(...extra: string[]): Promise<any> {
 describe("xhs-state CLI", () => {
 	it("read returns a fresh empty state", async () => {
 		const s = await run("read");
-		expect(s.bootstrapped).toBe(false);
 		expect(s.processed).toEqual([]);
 		expect(s.lease).toBeNull();
 	});

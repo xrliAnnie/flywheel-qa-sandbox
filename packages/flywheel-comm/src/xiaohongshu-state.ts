@@ -81,9 +81,14 @@ export interface XiaohongshuState {
 	version: typeof XIAOHONGSHU_STATE_VERSION;
 	project: string;
 	collectionId: string;
-	/** First run records the current window as a baseline instead of processing all. */
-	bootstrapped: boolean;
-	/** noteIds fully processed (all side-effects committed). */
+	/**
+	 * noteIds fully processed (all side-effects committed). Also the first-run
+	 * signal: an EMPTY `processed` means this collection has never been seen, so
+	 * the run baselines the current window (marks it processed without proposing,
+	 * to avoid flooding) instead of processing it all. (There is no separate
+	 * `bootstrapped` flag — `processed.length === 0` is the single source of truth
+	 * for "first run".)
+	 */
 	processed: string[];
 	/** noteIds seen but not yet processed. */
 	pending: PendingNote[];
@@ -143,7 +148,6 @@ export function emptyState(
 		version: XIAOHONGSHU_STATE_VERSION,
 		project,
 		collectionId,
-		bootstrapped: false,
 		processed: [],
 		pending: [],
 		lease: null,
