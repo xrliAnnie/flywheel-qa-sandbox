@@ -752,6 +752,12 @@ trigger_cmux_refresh() {
 
 # Restart all Leads. Outputs "skipped:N failed:M" to stdout.
 # All logs go to stderr; stdout is machine-readable only.
+# FLY-231: production-candidate resolver (_prod_membership / _classify_restart_manifest)
+# lives in a sourceable lib so its deploy-gating logic is unit-testable. FLYWHEEL_DIR
+# is set above; node + jq are required (already preconditions of this script).
+# shellcheck source=lib/restart-candidate.sh
+source "${FLYWHEEL_DIR}/scripts/lib/restart-candidate.sh"
+
 do_restart_all_leads() {
     local skipped=0
     local failed=0
@@ -778,13 +784,37 @@ do_restart_all_leads() {
         fi
     done < <(pgrep -af "claude-lead.sh" 2>/dev/null || true)
 
-    # Restart Leads that have manifests (pass manifest path directly)
+    # Restart Leads that have manifests (pass manifest path directly).
+    # FLY-231 fail-closed resolver: only restart manifests whose (projectName,
+    # leadId) match the HOST production projects.json. Skip test-slot-owned
+    # manifests (leadId flywheel-test-*) WITHOUT counting them — they must not
+    # block deployed-sha advance. Any OTHER non-matching manifest (config drift /
+    # removed projects entry / typo) counts as failed → blocks sha advance + alerts,
+    # instead of being silently restarted into claude-lead.sh's notfound fail-STOP
+    # (Codex R6 BLOCKER-1). "Cannot match" is NEVER treated as test-slot.
     for mf in ${manifests[@]+"${manifests[@]}"}; do
-        local rc=0
-        restart_lead "$mf" >&2 || rc=$?
-        if (( rc == 1 )); then
-            failed=$((failed + 1))
-        fi
+        local lid pn
+        lid=$(jq -r '.leadId' "$mf")
+        pn=$(jq -r '.projectName' "$mf")
+        case "$(_classify_restart_manifest "$lid" "$pn")" in
+            skip-test)
+                log "Skipping test-slot manifest (lifecycle-owned, not deploy-blocking): $mf (lead=$lid)" >&2
+                continue
+                ;;
+            restart)
+                local rc=0
+                restart_lead "$mf" >&2 || rc=$?
+                if (( rc == 1 )); then
+                    failed=$((failed + 1))
+                fi
+                ;;
+            *)  # fail — config drift / removed entry / typo / loadProjects error.
+                # NOT a test slot and NOT a host-config match → block deploy
+                # (counts as failed → deployed-sha not advanced + Annie alerted).
+                log "ERROR: manifest $mf (project=$pn lead=$lid) is NOT in host projects.json and is NOT a test slot — refusing to restart (config drift?). Blocking deploy." >&2
+                failed=$((failed + 1))
+                ;;
+        esac
     done
 
     if (( ${#manifests[@]} == 0 && skipped == 0 )); then

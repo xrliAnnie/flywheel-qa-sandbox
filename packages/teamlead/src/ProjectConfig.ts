@@ -52,6 +52,23 @@ export interface LeadConfig {
 	 * dept-aware step 2.
 	 */
 	department?: string;
+	/**
+	 * FLY-231: companion (non-engineering) Lead marker — a warm persona agent
+	 * (e.g. Mufasa, Belle) wrapped in Flywheel Lead infra for launchd residency +
+	 * Discord adapter + LeadWatchdog coverage, but with NO Runner spawning, NO
+	 * code, and NO engineering-governance rules. `claude-lead.sh` reads this
+	 * (single source of truth) to skip the eng-governance base rules and trim the
+	 * companion's capability surface.
+	 *
+	 * Default behavior when absent: NOT a companion (identical to all pre-FLY-231
+	 * Leads). Deliberately NOT normalized — consumers MUST check `=== true` so an
+	 * absent/false field is the standard non-companion path with zero shape change
+	 * to existing in-memory Lead objects (Codex design review R2 MEDIUM-9).
+	 *
+	 * Orthogonal to `canSpawnRunners`: cos-lead is `canSpawnRunners: false` but is
+	 * NOT a companion, so companion-ness cannot be derived from spawn capability.
+	 */
+	companion?: boolean;
 }
 
 /**
@@ -266,6 +283,15 @@ export function loadProjects(): ProjectEntry[] {
 			// The PM/Triage validator below enforces this.
 			if (lead.canSpawnRunners === undefined) {
 				lead.canSpawnRunners = true;
+			}
+			// FLY-231: validate optional companion type. Deliberately NOT normalized
+			// (Codex R2 MEDIUM-9): consumers use `=== true`, so absent/false leaves the
+			// existing in-memory Lead object shape unchanged (byte-compat for the 5
+			// existing Leads). Only type-check when present.
+			if (lead.companion !== undefined && typeof lead.companion !== "boolean") {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].companion: must be a boolean, got ${JSON.stringify(lead.companion)}`,
+				);
 			}
 
 			// FLY-163: PM/Triage validator — runs AFTER deprecated-field strip

@@ -296,6 +296,19 @@ teardown_slot() {
     rm -f "$SESSION_ID_FILE"
   fi
 
+  # ── Step 4b (FLY-231): Delete this slot's manifest ────
+  # claude-lead.sh writes ~/.flywheel/manifests/<project>-<lead>.json on start.
+  # test-teardown never removed it, so stale test-slot manifests accumulated.
+  # A production deploy's restart-services.sh iterates ALL manifests; with the
+  # new always-query fail-STOP, a leftover test-slot manifest would otherwise be
+  # hit on restart. restart-services.sh now skips flywheel-test-* manifests, but
+  # we ALSO delete it here so it does not pile up (Codex R6 BLOCKER-1 hygiene).
+  local SLOT_MANIFEST="${HOME}/.flywheel/manifests/${PROJECT_NAME}-${AGENT_ID}.json"
+  if [[ -f "$SLOT_MANIFEST" ]]; then
+    log "Deleting test-slot manifest: ${SLOT_MANIFEST}"
+    rm -f "$SLOT_MANIFEST"
+  fi
+
   # ── Step 5: Kill Bridge process ───────────────────────
   local BRIDGE_PID_FILE="${SLOT_DIR}/bridge.pid"
   if [[ -f "$BRIDGE_PID_FILE" ]]; then
