@@ -246,6 +246,89 @@ describe("loadProjects validation", () => {
 	});
 });
 
+// FLY-231: companion (non-engineering) Lead marker.
+describe("loadProjects companion validation", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+	afterEach(() => {
+		if (originalEnv === undefined) delete process.env.FLYWHEEL_PROJECTS;
+		else process.env.FLYWHEEL_PROJECTS = originalEnv;
+	});
+
+	const companionLead = (companion: unknown) => ({
+		agentId: "mufasa-lead",
+		chatChannel: "ch-growth",
+		match: { labels: ["growth"] },
+		canSpawnRunners: false,
+		...(companion === undefined ? {} : { companion }),
+	});
+
+	it("preserves companion: true", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "growth",
+				projectRoot: "/tmp",
+				leads: [companionLead(true)],
+			},
+		]);
+		expect(loadProjects()[0]!.leads[0]!.companion).toBe(true);
+	});
+
+	it("leaves companion undefined when absent (NOT normalized to false)", () => {
+		// Codex R2 MEDIUM-9: do not normalize — keep existing in-memory shape so
+		// the 5 existing Leads are byte-identical. Consumers check `=== true`.
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "growth",
+				projectRoot: "/tmp",
+				leads: [companionLead(undefined)],
+			},
+		]);
+		expect(loadProjects()[0]!.leads[0]!.companion).toBeUndefined();
+	});
+
+	it("preserves explicit companion: false", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "growth",
+				projectRoot: "/tmp",
+				leads: [companionLead(false)],
+			},
+		]);
+		expect(loadProjects()[0]!.leads[0]!.companion).toBe(false);
+	});
+
+	it("throws when companion is not a boolean", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "growth",
+				projectRoot: "/tmp",
+				leads: [companionLead("yes")],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/companion/);
+	});
+
+	it("is orthogonal to canSpawnRunners (cos-lead is canSpawnRunners:false but NOT companion)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "gf",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "cos-lead",
+						chatChannel: "ch",
+						match: { labels: ["PM"] },
+						canSpawnRunners: false,
+					},
+				],
+			},
+		]);
+		const lead = loadProjects()[0]!.leads[0]!;
+		expect(lead.canSpawnRunners).toBe(false);
+		expect(lead.companion).toBeUndefined();
+	});
+});
+
 describe("FLY-163: deprecated field handling", () => {
 	const originalEnv = process.env.FLYWHEEL_PROJECTS;
 	let warnSpy: ReturnType<typeof vi.spyOn>;

@@ -284,6 +284,77 @@ LEAD_CORE_CHANNEL=$(node -e "
   }).catch(() => {});
 " "$PROJECT_NAME" 2>/dev/null)
 
+# ── FLY-231: companion role detection (single source of truth) ──────────────
+# A companion Lead (Mufasa / Belle) is a non-engineering persona agent wrapped in
+# Flywheel infra. The ONLY source of truth is `companion: true` on the lead in
+# projects.json (Codex R3 BLOCKER-1). This MUST run here — after PROJECT_NAME is
+# resolved but BEFORE any role-dependent side-effect (manifest write, agent/rule
+# sync, Discord plugin check-update, global PostCompact hook install, .mcp.json
+# construction, Agent Team transport, bootstrap) — so an inconclusive result
+# fail-STOPs with zero side effects (Codex R4 HIGH-4).
+#
+# NO `FLYWHEEL_LEAD_ROLE` bypass (Codex R4 BLOCKER-1): always query; only an EXACT
+# projectName+leadId match yields companion/noncompanion. `error`/`notfound`
+# fail-STOP (non-zero exit) — never fall open to a wider role, because a
+# fail-open companion would silently get eng rules + Bridge token + bootstrap, and
+# a successfully-started noncompanion process is "healthy" so the supervisor would
+# not self-heal it after config recovers. launchd KeepAlive retries on a transient
+# read (Codex R3 corrected the earlier "supervisor self-heals" assumption).
+_companion_query() {
+  node -e "
+    import('file://${SCRIPT_DIR}/../dist/ProjectConfig.js').then(({ loadProjects }) => {
+      let projects;
+      try { projects = loadProjects(); } catch { process.stdout.write('error'); return; }
+      const p = projects.find(e => e.projectName === process.argv[1]);
+      if (!p) { process.stdout.write('notfound'); return; }
+      const lead = (p.leads || []).find(l => l.agentId === process.argv[2]);
+      if (!lead) { process.stdout.write('notfound'); return; }
+      process.stdout.write(lead.companion === true ? 'companion' : 'noncompanion');
+    }).catch(() => { process.stdout.write('error'); });
+  " "$PROJECT_NAME" "$LEAD_ID" 2>/dev/null
+}
+
+# fail-STOP alert: best-effort, dedup'd via lead-alert.sh claims.db daily
+# signature (at most one alert/day per project+lead+kind → launchd KeepAlive 30s
+# retries do not spam). Independent of the Bridge. In the 'notfound' case the lead
+# may be unresolvable from projects.json (lead-alert.sh then exits 1) — we already
+# logged loudly, so this is purely additive (Codex R6 HIGH-3).
+_companion_failstop_alert() {
+  local body="$1"
+  local alert_sh="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
+  if [ -x "$alert_sh" ]; then
+    "$alert_sh" \
+      --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+      --kind companion_config_error --severity severe \
+      --title "Companion Lead failed to start" \
+      --body "$body" \
+      >/dev/null 2>&1 || true
+  fi
+}
+
+COMPANION_STATE="$(_companion_query)"
+if [ "$COMPANION_STATE" = "error" ]; then
+  log "companion role query returned error; retrying once..."
+  COMPANION_STATE="$(_companion_query)"
+fi
+
+IS_COMPANION_ROLE=false
+case "$COMPANION_STATE" in
+  companion)
+    IS_COMPANION_ROLE=true
+    log "Role: companion (projects.json companion:true) — skipping engineering-governance rules + capability"
+    ;;
+  noncompanion)
+    : # standard Lead path — existing IS_COS_ROLE logic decides cos vs dept (unchanged)
+    ;;
+  *)
+    log "ERROR: companion role detection inconclusive (state='${COMPANION_STATE:-empty}') for ${PROJECT_NAME}/${LEAD_ID}."
+    log "Refusing to start (fail-STOP) so a companion is never silently mis-run as an engineering Lead, and an engineering Lead never silently mis-run as companion."
+    _companion_failstop_alert "Role detection inconclusive (state='${COMPANION_STATE:-empty}') for ${PROJECT_NAME}/${LEAD_ID}; refusing to start (fail-STOP). Check ~/.flywheel/projects.json for this companion's entry."
+    exit 1
+    ;;
+esac
+
 # GEO-246: Include PROJECT_NAME in session file to avoid cross-project collisions.
 # e.g., ~/.flywheel/claude-sessions/geoforge3d-product-lead.session-id
 SESSION_ID_FILE="${SESSION_DIR}/${PROJECT_NAME}-${LEAD_ID}.session-id"
@@ -497,7 +568,12 @@ FLYWHEEL_BIN="${HOME}/.flywheel/bin"
 CHECK_SCRIPT="${FLYWHEEL_BIN}/check-discord-plugin.sh"
 UPDATE_SCRIPT="${FLYWHEEL_BIN}/update-discord-plugin.sh"
 
-if [ ! -x "$CHECK_SCRIPT" ] || [ ! -x "$UPDATE_SCRIPT" ]; then
+# FLY-231 dry-run: the launch-plan test runs in an isolated HOME with no
+# ~/.flywheel/bin scripts — skip the plugin fork check/update (it mutates the
+# shared plugin cache and is irrelevant to argv/env assembly).
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+  log "DRY-RUN: skipping Discord plugin fork check"
+elif [ ! -x "$CHECK_SCRIPT" ] || [ ! -x "$UPDATE_SCRIPT" ]; then
   log "ERROR: Discord plugin fork scripts not found or not executable:"
   log "  check:  $CHECK_SCRIPT"
   log "  update: $UPDATE_SCRIPT"
@@ -505,7 +581,7 @@ if [ ! -x "$CHECK_SCRIPT" ] || [ ! -x "$UPDATE_SCRIPT" ]; then
   exit 1
 fi
 
-if ! "$CHECK_SCRIPT"; then
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ] && ! "$CHECK_SCRIPT"; then
   log "Discord plugin cache is not fork version, updating..."
   "$UPDATE_SCRIPT"
   # Re-check after update — hard fail if still not matching
@@ -514,7 +590,7 @@ if ! "$CHECK_SCRIPT"; then
     exit 1
   fi
 fi
-log "Discord plugin fork check: OK"
+[ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ] || log "Discord plugin fork check: OK"
 
 # ── GEO-285: Install PostCompact hook ─────────────────────
 # Requires jq for idempotent JSON merge. Skip gracefully if not installed.
@@ -582,8 +658,15 @@ install_post_compact_hook() {
   mv "$tmpfile" "$settings_file"
   log "PostCompact hook installed: $hook_script"
 }
-if command -v jq >/dev/null 2>&1; then
+# FLY-231: companion skips installing the PostCompact bootstrap hook (it doesn't
+# want to (re)install the engineering bootstrap re-send). Note the hook is GLOBAL
+# in ~/.claude/settings.json and may already be installed by other Leads — the
+# real companion guard is the FLYWHEEL_LEAD_COMPANION=1 pane marker that makes the
+# stable hook early-exit before any bootstrap curl (post-compact-bootstrap.sh).
+if [ "$IS_COMPANION_ROLE" != true ] && command -v jq >/dev/null 2>&1; then
   install_post_compact_hook
+elif [ "$IS_COMPANION_ROLE" = true ]; then
+  log "Companion: skipping PostCompact hook install (global hook honors FLYWHEEL_LEAD_COMPANION marker)"
 fi
 
 # ── GEO-285: Early auto-compact + env exports ─────────────
@@ -700,31 +783,70 @@ ensure_tmux_session() {
   tmux new-session -Ad -s flywheel -x 200 -y 50 2>/dev/null || true
 }
 
+# FLY-231: structured dry-run launch plan (FLYWHEEL_LEAD_DRY_RUN=1). Emits the
+# final argv + pane-env KEY+status (NEVER the value — Codex R3 BLOCKER-4 secret
+# safety: bot/teamlead/openai tokens etc. must never be echoed) + the MCP server
+# names actually written to .mcp.json + role/gates. Consumed by the reverse-compat
+# sentinel + companion capability tests. Reads the caller's `env_args` array via
+# bash dynamic scope (it is `local` in _launch_claude, the only caller).
+_emit_launch_plan() {
+  printf 'LAUNCH_PLAN_BEGIN\n'
+  printf 'ROLE\t%s\n' "$([ "$IS_COMPANION_ROLE" = true ] && echo companion || echo standard)"
+  printf 'ROLE_SOURCE\tprojects-query\n'
+  printf 'COMPANION_STATE\t%s\n' "${COMPANION_STATE:-}"
+  printf 'INBOX_MCP_ENABLED\t%s\n' "${INBOX_MCP_ENABLED:-false}"
+  local a
+  for a in "$@"; do printf 'ARG\t%s\n' "$a"; done
+  local e key val
+  for e in "${env_args[@]}"; do
+    [ "$e" = "-e" ] && continue
+    key="${e%%=*}"
+    val="${e#*=}"
+    if [ -z "$val" ]; then
+      printf 'PANE_ENV\t%s\tempty\n' "$key"
+    else
+      printf 'PANE_ENV\t%s\tset\n' "$key"
+    fi
+  done
+  if [ -f "${MCP_CONFIG_FILE:-}" ] && command -v jq >/dev/null 2>&1; then
+    jq -r 'if has("mcpServers") then .mcpServers else . end | keys[]' "$MCP_CONFIG_FILE" 2>/dev/null \
+      | while IFS= read -r s; do printf 'MCP_SERVER\t%s\n' "$s"; done
+  fi
+  printf 'LAUNCH_PLAN_END\n'
+}
+
 # Launch Claude in a tmux window within the flywheel session.
 # Uses -P -F to capture window_id (like TmuxAdapter).
 # Uses -e to inject per-window environment (no shell inheritance in shared session).
 _launch_claude() {
-  ensure_tmux_session
-
   local window_name="${PROJECT_NAME}-${LEAD_ID}"
 
-  # FLY-183: Reap orphaned Discord adapters before launching a new Claude.
-  # Sequence matters (Codex design review #3): on a supervisor restart the stale
-  # window below may still hold a LIVE old Claude (ppid!=1, skipped by reap);
-  # killing it then creates exactly the orphan we must clean. So:
-  #   pre-sweep (historical orphans) -> kill stale window -> bounded settle
-  #   (let old Claude die + its adapter reparent to launchd) -> re-sweep.
-  # `|| true` belt: reap is internally fail-open, but never let it abort launch.
-  reap_orphan_adapters || true
+  # FLY-231 dry-run: a structured launch-plan test (byte-compat sentinel + companion
+  # capability assertions) must NOT touch the shared `flywheel` tmux session, which
+  # is NOT HOME-isolated. Skip all tmux side effects here; env_args still builds
+  # below so the plan captures the real pane env. The emit+return is just before
+  # the actual `tmux new-window`.
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+    ensure_tmux_session
 
-  # Kill stale window with same name (from previous crash)
-  tmux kill-window -t "=flywheel:=${window_name}" 2>/dev/null || true
+    # FLY-183: Reap orphaned Discord adapters before launching a new Claude.
+    # Sequence matters (Codex design review #3): on a supervisor restart the stale
+    # window below may still hold a LIVE old Claude (ppid!=1, skipped by reap);
+    # killing it then creates exactly the orphan we must clean. So:
+    #   pre-sweep (historical orphans) -> kill stale window -> bounded settle
+    #   (let old Claude die + its adapter reparent to launchd) -> re-sweep.
+    # `|| true` belt: reap is internally fail-open, but never let it abort launch.
+    reap_orphan_adapters || true
 
-  # FLY-183: bounded settle for the just-killed Claude to exit and its adapter
-  # to reparent to launchd (ppid==1), then re-sweep to reap that fresh orphan
-  # before the new Claude (and its new adapter) starts. One-shot, not periodic.
-  sleep 0.5
-  reap_orphan_adapters || true
+    # Kill stale window with same name (from previous crash)
+    tmux kill-window -t "=flywheel:=${window_name}" 2>/dev/null || true
+
+    # FLY-183: bounded settle for the just-killed Claude to exit and its adapter
+    # to reparent to launchd (ppid==1), then re-sweep to reap that fresh orphan
+    # before the new Claude (and its new adapter) starts. One-shot, not periodic.
+    sleep 0.5
+    reap_orphan_adapters || true
+  fi
 
   # Build env injection args (explicit per-window, match TmuxAdapter pattern).
   # FLY-60 W6 v2: ALSO override the un-prefixed LEAD_ID and PROJECT_NAME
@@ -736,13 +858,32 @@ _launch_claude() {
   # was identity.md prompt-only, which could not override env-var leak.
   # In production this is a no-op (Annie's shell already has the right
   # values); in test slots it ensures the per-invocation slot values win.
+  #
+  # FLY-231: companion capability — explicitly EMPTY the high-privilege pane creds
+  # (Codex R2 HIGH-5: emptied, not merely "not added"; the wrapper `set -a` sources
+  # the whole ~/.flywheel/.env, so per-pane override is required). Acceptance = the
+  # Bridge token is UNUSABLE in the companion pane (BRIDGE_URL is not a secret;
+  # emptying it just removes the convenient localhost Bridge handle). For
+  # non-companion these resolve to the exact prior values → byte-identical env.
+  local _cz_teamlead_token="${TEAMLEAD_API_TOKEN:-}"
+  local _cz_bridge_url="${BRIDGE_URL:-}"
+  local _cz_comm_cli="${FLYWHEEL_COMM_CLI:-}"
+  local _cz_comm_db="${FLYWHEEL_COMM_DB:-}"
+  local _cz_openai_key="${OPENAI_API_KEY:-}"
+  if [ "$IS_COMPANION_ROLE" = true ]; then
+    _cz_teamlead_token=""
+    _cz_bridge_url=""
+    _cz_comm_cli=""
+    _cz_comm_db=""
+    _cz_openai_key=""
+  fi
   local env_args=(
     -e "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN:-}"
     -e "DISCORD_STATE_DIR=${DISCORD_STATE_DIR:-}"
     -e "LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
-    -e "FLYWHEEL_COMM_DB=${FLYWHEEL_COMM_DB:-}"
-    -e "FLYWHEEL_COMM_CLI=${FLYWHEEL_COMM_CLI:-}"
+    -e "FLYWHEEL_COMM_DB=${_cz_comm_db}"
+    -e "FLYWHEEL_COMM_CLI=${_cz_comm_cli}"
     -e "PROJECT_NAME=${PROJECT_NAME}"
     -e "FLYWHEEL_PROJECT_NAME=${PROJECT_NAME}"
     # FLY-205: project root path for the doc-flow Lead rule's config self-check
@@ -752,8 +893,8 @@ _launch_claude() {
     # (Codex design R3 #1). Missing env in the pane → rule fails safe to
     # "doc-flow not enabled" (zero behavior change).
     -e "FLYWHEEL_PROJECT_DIR=${PROJECT_DIR}"
-    -e "BRIDGE_URL=${BRIDGE_URL:-}"
-    -e "TEAMLEAD_API_TOKEN=${TEAMLEAD_API_TOKEN:-}"
+    -e "BRIDGE_URL=${_cz_bridge_url}"
+    -e "TEAMLEAD_API_TOKEN=${_cz_teamlead_token}"
     # FLY-162 Layer 2: tmux panes do NOT inherit launcher env (see note below),
     # so the Discord plugin's reply-guard fallback prefix scan needs this
     # explicitly — otherwise a custom TEAMLEAD_ISSUE_PREFIXES silently degrades
@@ -767,7 +908,7 @@ _launch_claude() {
     # so this explicit pass is required (same barrier as TEAMLEAD_ISSUE_PREFIXES).
     -e "DISCORD_CORE_CHANNEL=${LEAD_CORE_CHANNEL:-}"
     -e "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=${CLAUDE_AUTOCOMPACT_PCT_OVERRIDE:-70}"
-    -e "OPENAI_API_KEY=${OPENAI_API_KEY:-}"
+    -e "OPENAI_API_KEY=${_cz_openai_key}"
     -e "HOME=${HOME}"
     -e "PATH=${PATH}"
     # GEO-151 QA cycle 1 fix: L3 screencapture skill prompt references
@@ -778,6 +919,13 @@ _launch_claude() {
     # barrier pattern FLY-142 fixed for CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS.
     -e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
   )
+
+  # FLY-231: companion marker — only added for companion panes (non-companion env
+  # is byte-identical, no such entry). Read by the GLOBAL stable
+  # post-compact-bootstrap.sh hook to early-exit before any bootstrap curl.
+  if [ "$IS_COMPANION_ROLE" = true ]; then
+    env_args+=(-e "FLYWHEEL_LEAD_COMPANION=1")
+  fi
 
   # FLY-142 PR 1.2: Agent Team transport env vars. Set by
   # `eval "$(agent-team-transport lead-env ...)"` earlier in the script
@@ -821,6 +969,13 @@ _launch_claude() {
     if [ "$_added_count" -gt 0 ]; then
       log "MCP env propagation: forwarded ${_added_count} required env var(s) to tmux pane"
     fi
+  fi
+
+  # FLY-231 dry-run: env_args is now fully assembled (incl. MCP-required-env
+  # propagation). Emit the structured launch-plan and return WITHOUT launching.
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+    _emit_launch_plan "$@"
+    return 0
   fi
 
   # FLY-109: Launch claude directly (no expect wrapper). Dev-channels dialog
@@ -952,7 +1107,12 @@ export PATH="${FLYWHEEL_BIN_DIR:-$HOME/.flywheel/bin}:$PATH"
 GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
 
 terminal_server='{}'
-if [ -d "$TERMINAL_MCP_DIR" ]; then
+if [ "$IS_COMPANION_ROLE" = true ]; then
+  # FLY-231: companion has no Runner / Bridge-action surface — do NOT register
+  # flywheel-terminal (it would inject BRIDGE_URL + TEAMLEAD_API_TOKEN, the
+  # reserved-action handle a companion must not have).
+  log "Companion: flywheel-terminal MCP NOT registered"
+elif [ -d "$TERMINAL_MCP_DIR" ]; then
   TERMINAL_MCP_BIN="$(cd "$TERMINAL_MCP_DIR" && pwd)/index.js"
   # FLY-102: inject BRIDGE_URL + TEAMLEAD_API_TOKEN so close_runner tool
   # can reach the Bridge /api/sessions/:id/close-runner endpoint.
@@ -982,7 +1142,11 @@ fi
 # FLY-47: Inbox MCP for CommDB → Lead channel push delivery
 INBOX_MCP_ENABLED=false
 inbox_server='{}'
-if [ -d "$INBOX_MCP_DIR" ]; then
+if [ "$IS_COMPANION_ROLE" = true ]; then
+  # FLY-231: companion has no Runner mailbox / inbox need — leave disabled
+  # (also skips the inbox-ack rule + post-launch inbox poller downstream).
+  log "Companion: flywheel-inbox MCP NOT registered"
+elif [ -d "$INBOX_MCP_DIR" ]; then
   INBOX_MCP_BIN="$(cd "$INBOX_MCP_DIR" && pwd)/index.js"
   COMM_DB_PATH="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
   inbox_server=$(jq -n \
@@ -1009,7 +1173,10 @@ fi
 
 # FLY-90: gbrain MCP for project Wiki.
 gbrain_server='{}'
-if [ -n "$GBRAIN_PATH" ] && [ -f "$HOME/.gbrain/config.json" ]; then
+if [ "$IS_COMPANION_ROLE" = true ]; then
+  # FLY-231: companion has no project Wiki — reserved infra MCP stays empty.
+  log "Companion: gbrain MCP NOT registered"
+elif [ -n "$GBRAIN_PATH" ] && [ -f "$HOME/.gbrain/config.json" ]; then
   gbrain_server=$(jq -n --arg bin "$GBRAIN_PATH" \
     '{"gbrain": {command: $bin, args: ["serve"]}}')
   log "GBrain MCP: enabled (project Wiki)"
@@ -1041,11 +1208,20 @@ RESERVED_INFRA_NAMES="flywheel-terminal,flywheel-inbox,gbrain"
 # shellcheck source=lib/mcp-inherit.sh
 source "${SCRIPT_DIR}/lib/mcp-inherit.sh"
 
-USER_MCP_FRAGMENT=$(build_user_mcp_fragment \
-  "${HOME}/.claude.json" \
-  "$RESERVED_INFRA_NAMES" \
-  "$LEAD_USER_MCP_BLACKLIST" \
-  "${FLYWHEEL_LEAD_MCP_EXCLUDE:-}")
+# FLY-231: companion gets NO user-scope MCP at all (project-scope default-deny in
+# the generated .mcp.json). Note (per plan §2.4, Path A): this only controls the
+# .mcp.json the launcher writes; enabled-plugin-bundled MCP still load at runtime —
+# an accepted residual under the on-machine/Annie-only threat model (Codex R3).
+if [ "$IS_COMPANION_ROLE" = true ]; then
+  USER_MCP_FRAGMENT='{}'
+  log "Companion: no user-scope MCP inherited (.mcp.json user fragment empty)"
+else
+  USER_MCP_FRAGMENT=$(build_user_mcp_fragment \
+    "${HOME}/.claude.json" \
+    "$RESERVED_INFRA_NAMES" \
+    "$LEAD_USER_MCP_BLACKLIST" \
+    "${FLYWHEEL_LEAD_MCP_EXCLUDE:-}")
+fi
 
 # Atomic write — mktemp + chmod 600 + mv. Fixes prior 0644 mode that exposed
 # TEAMLEAD_API_TOKEN inside flywheel-terminal env, and removes partial-read
@@ -1129,6 +1305,16 @@ CLAUDE_ARGS=(
   --permission-mode bypassPermissions
 )
 
+# FLY-231: companion-only `--effort medium`. The old atlas/belle daemons pinned
+# medium because default/high effort triggered a "drafts a reply but never calls
+# the discord reply tool → goes silent" bug. Keep that stability mitigation on
+# the first cutover (Codex R1 BLOCKER-3). Companion-only — existing Leads get NO
+# `--effort` flag (argv byte-identical, asserted by the reverse-compat sentinel).
+if [ "$IS_COMPANION_ROLE" = true ]; then
+  CLAUDE_ARGS+=(--effort medium)
+  log "Companion: --effort medium (silent-reply-bug mitigation)"
+fi
+
 # FLY-143: claude-in-chrome — env-gated, default OFF.
 # `--chrome` + `--permission-mode bypassPermissions` together set
 # CLAUDE_CHROME_PERMISSION_MODE=skip_all_permission_checks (verified upstream
@@ -1208,9 +1394,41 @@ fi
 # Loaded BEFORE the project's own shared rules so the project file extends
 # (and may override) the abstract base contracts. Optional — missing base
 # file is a no-op, preserving pre-FLY-127 behavior on older checkouts.
+# FLY-231: BASE_RULES_DIR is the fixed shipped path in production. It is
+# overridable ONLY under FLYWHEEL_LEAD_DRY_RUN=1 (hermetic tests, e.g. assert
+# companion fail-STOP when companion-safety-contract.md is absent). Honoring the
+# override on the real launch path would let a stray env var swap the companion's
+# only safety boundary or make existing Leads skip all governance rules (Codex
+# code-review R2 HIGH-1) — so production IGNORES FLYWHEEL_BASE_RULES_DIR entirely.
 BASE_RULES_DIR="${SCRIPT_DIR}/../lead-rules-base"
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ] && [ -n "${FLYWHEEL_BASE_RULES_DIR:-}" ]; then
+  BASE_RULES_DIR="$FLYWHEEL_BASE_RULES_DIR"
+fi
 
-if [ "$IS_COS_ROLE" = false ]; then
+if [ "$IS_COMPANION_ROLE" = true ]; then
+  # ── FLY-231: companion base rules ──
+  # A companion gets NONE of the engineering-governance base rules (department /
+  # cos / runner-messaging / executor-routing / stuck-remanage / doc-flow) — they
+  # would pollute the persona, which is the whole product. In their place, one
+  # short safety contract (replaces founder-only-authority's reserved-action guard
+  # below, which is also skipped for companion). cross-dept rules still load
+  # (companion is in #leads-roundtable) — see the universal block further down.
+  BASE_COMPANION_SAFETY="${BASE_RULES_DIR}/companion-safety-contract.md"
+  if [ -f "$BASE_COMPANION_SAFETY" ] && [ -r "$BASE_COMPANION_SAFETY" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_COMPANION_SAFETY")
+    log "Appending companion safety contract: ${BASE_COMPANION_SAFETY}"
+  else
+    # FLY-231 (Codex code-review HIGH-2): fail-STOP, do NOT start. The companion
+    # also skips founder-only-authority, so this contract is its ONLY hard
+    # behavioral boundary. Starting a Bash + bypassPermissions session without it
+    # is worse than not starting. (Dry-run still emits the plan + exits cleanly so
+    # the test harness can observe; only a real launch is refused.)
+    log "ERROR: companion safety contract missing/unreadable at ${BASE_COMPANION_SAFETY}"
+    log "Refusing to start companion (fail-STOP) — its only safety boundary is absent."
+    _companion_failstop_alert "companion-safety-contract.md missing/unreadable at ${BASE_COMPANION_SAFETY} for ${PROJECT_NAME}/${LEAD_ID}; refusing to start (a companion must not run without its safety boundary)."
+    exit 1
+  fi
+elif [ "$IS_COS_ROLE" = false ]; then
   # Department Lead base: Action Gate + Multi-Lead Mentions + Bridge rejection diagnostics
   BASE_DEPT_RULES="${BASE_RULES_DIR}/department-lead-rules.md"
   if [ -f "$BASE_DEPT_RULES" ] && [ -r "$BASE_DEPT_RULES" ]; then
@@ -1299,7 +1517,9 @@ fi
 # any Lead with Bridge action credentials could otherwise invoke them.
 # Optional — missing base file is a no-op (pre-FLY-175 backward compat).
 BASE_FOUNDER_AUTH_RULES="${BASE_RULES_DIR}/founder-only-authority.md"
-if [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r "$BASE_FOUNDER_AUTH_RULES" ]; then
+if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r "$BASE_FOUNDER_AUTH_RULES" ]; then
+  # FLY-231: companion skips this 20KB reserved-action contract — the short
+  # companion-safety-contract.md (above) covers its boundary in a non-engineering tone.
   CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_AUTH_RULES")
   log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
 fi
@@ -1310,7 +1530,8 @@ fi
 # link), never as a local file path. Loads for EVERY Lead role.
 # Optional — missing base file is a no-op (pre-FLY-203 backward compat).
 BASE_HTML_DELIVERY_RULES="${BASE_RULES_DIR}/founder-html-delivery.md"
-if [ -f "$BASE_HTML_DELIVERY_RULES" ] && [ -r "$BASE_HTML_DELIVERY_RULES" ]; then
+if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_HTML_DELIVERY_RULES" ] && [ -r "$BASE_HTML_DELIVERY_RULES" ]; then
+  # FLY-231: companion produces no HTML reports — skip.
   CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_HTML_DELIVERY_RULES")
   log "Appending base founder-html-delivery rules: ${BASE_HTML_DELIVERY_RULES}"
 fi
@@ -1341,7 +1562,9 @@ if [ -d "$LEAD_RULES_DIR" ]; then
 
   # Department lead rules — only for non-cos roles (manage Runners). Cos-lead
   # (Simba role) does not load this file because it doesn't spawn Runners.
-  if [ "$IS_COS_ROLE" = false ]; then
+  # FLY-231: companion also skips the dept-rules requirement (R5 HIGH-5) — a
+  # companion never manages Runners even if its project somehow has .lead/shared.
+  if [ "$IS_COS_ROLE" = false ] && [ "$IS_COMPANION_ROLE" != true ]; then
     DEPT_RULES="${LEAD_RULES_DIR}/department-lead-rules.md"
     if [ ! -f "$DEPT_RULES" ] || [ ! -r "$DEPT_RULES" ]; then
       echo "[lead] ERROR: Required department rule file missing or unreadable: ${DEPT_RULES}"
@@ -1368,7 +1591,10 @@ fi
 # so the prompt can find `find-window.sh` by an explicit path.
 export FLYWHEEL_TEAMLEAD_SCRIPT_DIR="$SCRIPT_DIR"
 
-if [ "${LEAD_DISABLE_SCREENCAPTURE_SKILL:-0}" != "1" ]; then
+if [ "$IS_COMPANION_ROLE" = true ]; then
+  # FLY-231: companion has no screenshot duty — skip the L3 screencapture skill.
+  log "Companion: L3 screencapture skill skipped"
+elif [ "${LEAD_DISABLE_SCREENCAPTURE_SKILL:-0}" != "1" ]; then
   SCREENCAP_SKILL="${SCRIPT_DIR}/screencapture-l3-skill.md"
   if [ -f "$SCREENCAP_SKILL" ] && [ -r "$SCREENCAP_SKILL" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$SCREENCAP_SKILL")
@@ -1395,7 +1621,12 @@ fi
 # Default `FLYWHEEL_AGENT_BACKEND=claude-code`. Set `FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT=1`
 # to bypass preflight (for emergency / dev iteration).
 
-if command -v agent-team-transport >/dev/null 2>&1; then
+if [ "$IS_COMPANION_ROLE" = true ]; then
+  # FLY-231: companion has no Runner mailbox / Agent Team need — skip the entire
+  # transport wiring (preflight, lead-env merge, lead-args). No mailbox identity is
+  # injected; the companion talks to Annie via the Discord plugin only.
+  log "Companion: skipping Agent Team transport wiring (no Runner mailbox)"
+elif command -v agent-team-transport >/dev/null 2>&1; then
   # Preflight gate: refuse to start Lead if backend is broken.
   if [ "${FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT:-0}" != "1" ]; then
     if ! agent-team-transport preflight >/dev/null 2>&1; then
@@ -1471,7 +1702,13 @@ else
   # the rollback path consistently with the other two gates above.
   _commbackend_raw="${FLYWHEEL_COMM_BACKEND:-mailbox}"
   _commbackend_lc=$(normalize_comm_backend)
-  if [ "$_commbackend_lc" = "commdb" ]; then
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+    # FLY-231 dry-run: the isolated launch-plan test has no agent-team-transport
+    # on PATH. Skip the wiring (and its mailbox-backend FATAL) — transport
+    # contributes env + identity args that are out of scope for the rule/MCP/cred
+    # byte-compat assertions and are unchanged by the companion edit.
+    log "DRY-RUN: agent-team-transport CLI not on PATH — skipping wiring (no FATAL)"
+  elif [ "$_commbackend_lc" = "commdb" ]; then
     log "Agent Team transport: agent-team-transport CLI not on PATH (skipping wiring — FLYWHEEL_COMM_BACKEND=commdb rollback path active)"
   else
     log "FATAL: agent-team-transport CLI not on PATH but FLYWHEEL_COMM_BACKEND='${_commbackend_raw}' selects the mailbox path"
@@ -1485,6 +1722,16 @@ fi
 # ════════════════════════════════════════════════════════════════
 # Layer 2: Recovery Loop
 # ════════════════════════════════════════════════════════════════
+
+# FLY-231 dry-run: CLAUDE_ARGS + env + MCP are now fully assembled. Emit the
+# structured launch plan and exit BEFORE the supervisor loop, PID file, bootstrap,
+# and any tmux launch — zero production side effects (tests isolate HOME so the
+# manifest/identity/.mcp.json writes above land in a throwaway dir).
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+  log "DRY-RUN: emitting launch plan (no tmux / no bootstrap / no launch)"
+  _launch_claude "${CLAUDE_ARGS[@]}" --session-id "DRY-RUN-SESSION"
+  exit 0
+fi
 
 # GEO-285: Crash recovery with exponential backoff.
 # - Fresh start: generate UUID → bootstrap → save → claude --session-id
@@ -1536,8 +1783,17 @@ while true; do
     SESSION_ID=$(uuidgen | tr '[:upper:]' '[:lower:]')
     log "[restart #${RESTART_COUNT}] Fresh start with session ${SESSION_ID}"
 
-    # Bootstrap only on fresh start — resumed sessions already have context
-    send_bootstrap
+    # Bootstrap only on fresh start — resumed sessions already have context.
+    # FLY-231: companion skips the engineering bootstrap (it carries
+    # "## Bootstrap — Lead" / sessions / Runner questions — engineering-toned
+    # content that pollutes a companion persona; the persona itself is injected via
+    # --agent identity.md and survives compaction). The global PostCompact hook is
+    # separately gated by the FLYWHEEL_LEAD_COMPANION pane marker.
+    if [ "$IS_COMPANION_ROLE" != true ]; then
+      send_bootstrap
+    else
+      log "Companion: skipping engineering bootstrap (persona via --agent identity.md)"
+    fi
 
     # Check shutdown flag after bootstrap (sleep may have been interrupted)
     if [ "$SHOULD_EXIT" -ne 0 ]; then

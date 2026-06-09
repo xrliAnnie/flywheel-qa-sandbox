@@ -19,7 +19,7 @@
 # Usage:
 #   lead-alert.sh \
 #     --lead <lead-id> --project <project-name> \
-#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck> \
+#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error> \
 #     --severity <info|warning|severe> \
 #     --title <string> --body <string> \
 #     [--signature <string>]
@@ -70,7 +70,7 @@ if [ -z "$LEAD_ID" ] || [ -z "$PROJECT_NAME" ] || [ -z "$KIND" ] || [ -z "$TITLE
 fi
 
 case "$KIND" in
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck) ;;
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     exit 1
@@ -115,10 +115,22 @@ sql_quote() { printf '%s' "$1" | sed "s/'/''/g"; }
 PROJECTS_JSON="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
 if [ ! -f "$PROJECTS_JSON" ]; then
   log "ERROR: projects.json not found at $PROJECTS_JSON"
+  # FLY-231 (Codex code-review HIGH-1): the companion fail-STOP path calls this
+  # exactly when projects.json is missing/unreadable. Without a Discord-INDEPENDENT
+  # meta-alert here, the alert is silently lost (the channel can't be resolved from
+  # the very file that's gone). Surface it so Annie still learns a Lead won't start.
+  fire_meta_alert \
+    "alert_dead_lettered" \
+    "LeadAlert dropped (shell path)" \
+    "projects.json not found at ${PROJECTS_JSON}; alert (lead=${LEAD_ID} project=${PROJECT_NAME} kind=${KIND}) dropped — config missing."
   exit 1
 fi
 
-LEAD_CFG=$(jq -c --arg p "$PROJECT_NAME" --arg l "$LEAD_ID" '
+# Capture jq failure (corrupt/unreadable JSON) explicitly — under `set -e` a bare
+# `VAR=$(jq ...)` would abort BEFORE the emptiness check below, skipping the
+# meta-alert (Codex code-review HIGH-1). `if ! VAR=$(...)` suppresses set -e and
+# lets us route corrupt config to the Discord-independent escape too.
+if ! LEAD_CFG=$(jq -c --arg p "$PROJECT_NAME" --arg l "$LEAD_ID" '
   .[] | select(.projectName == $p) as $proj
   | $proj.leads[] | select(.agentId == $l)
   | { alertChannel: .alertChannel,
@@ -126,7 +138,14 @@ LEAD_CFG=$(jq -c --arg p "$PROJECT_NAME" --arg l "$LEAD_ID" '
       alertDmUserId: .alertDmUserId,
       alertFallbackToCore: (.alertFallbackToCore // false),
       botTokenEnv: .botTokenEnv,
-      generalChannel: $proj.generalChannel }' "$PROJECTS_JSON" 2>/dev/null)
+      generalChannel: $proj.generalChannel }' "$PROJECTS_JSON" 2>/dev/null); then
+  log "ERROR: failed to parse projects.json at $PROJECTS_JSON (corrupt?)"
+  fire_meta_alert \
+    "alert_dead_lettered" \
+    "LeadAlert dropped (shell path)" \
+    "projects.json unreadable/corrupt at ${PROJECTS_JSON}; alert (lead=${LEAD_ID} project=${PROJECT_NAME} kind=${KIND}) dropped — config parse error."
+  exit 1
+fi
 
 if [ -z "$LEAD_CFG" ] || [ "$LEAD_CFG" = "null" ]; then
   log "ERROR: lead '$LEAD_ID' not found in project '$PROJECT_NAME' (projects.json)"

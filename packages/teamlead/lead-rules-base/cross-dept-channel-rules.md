@@ -37,14 +37,15 @@ This is distinct from your own project's channels:
 | **Simba** | Chief of Staff (cos) | geoforge3d | `1487339075563290745` | `<@1487339075563290745>` |
 | **Hiro** | Joy-Con Product Lead | joycon-typeless | `1511264922137395230` | `<@1511264922137395230>` |
 | **Asha** | Sub Content Lead | sub | `1511599686899859517` | `<@1511599686899859517>` |
+| **Mufasa** | Growth Companion (non-eng) | growth | `1499895683287748679` | `<@1499895683287748679>` |
+| **Belle** | Life Assistant (non-eng companion) | personal-assistant | `1509701064935477318` | `<@1509701064935477318>` |
 
 Annie = `<@1138241636057481306>`.
 
-> **Future members** (not yet onboarded as Flywheel Leads — join once they are):
-> `mufasa`, `belle`. Adding either is a data-only change: append a roster row
-> here, add the channel to that Lead's `access.json`, and add its bot ID to every
-> existing member's `allowBots`. No architecture change, no edits to the existing
-> Leads' `identity.md`.
+> **Mufasa** and **Belle** (FLY-231) are **companion** Leads — warm personal agents,
+> not engineering Leads. They participate here like the others (addressed by name /
+> `@`-mention, mention-gated) but own no Runners and no code. Address them by name
+> only when you actually need them.
 
 ## When YOU reply (strict — only when addressed)
 
