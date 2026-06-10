@@ -1513,6 +1513,22 @@ elif [ "$IS_COS_ROLE" = false ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DOC_FLOW_RULES")
     log "Appending base doc-flow rules: ${BASE_DOC_FLOW_RULES}"
   fi
+
+  # ── FLY-222: Xiaohongshu memory-write delegation (non-cos dept leads only) ──
+  # A xiaohongshu-learning Runner holds NO Bridge /api/* token by design
+  # (FLY-175 least-privilege), so it delegates its "things learned" → memory
+  # write to its spawning Lead (path B): the Lead writes via /api/memory/add
+  # with its own TEAMLEAD_API_TOKEN, idempotent on op_id/run_key, then acks.
+  # Only roles that spawn Runners receive such requests, so cos-lead
+  # (canSpawnRunners: false) does not load it. The rule is INERT unless a
+  # [XHS-MEMORY-WRITE] request actually arrives (projects without
+  # xiaohongshu_learning config never see it). Optional — missing base file is a
+  # no-op (backward compat with older flywheel checkouts).
+  BASE_XHS_MEMORY_RULES="${BASE_RULES_DIR}/xiaohongshu-memory-rules.md"
+  if [ -f "$BASE_XHS_MEMORY_RULES" ] && [ -r "$BASE_XHS_MEMORY_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_XHS_MEMORY_RULES")
+    log "Appending base xiaohongshu-memory rules: ${BASE_XHS_MEMORY_RULES}"
+  fi
 else
   # Cos-lead base: Department Routing Discipline (one Lead per spawn message)
   BASE_COS_RULES="${BASE_RULES_DIR}/cos-lead-rules.md"

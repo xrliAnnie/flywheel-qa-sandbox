@@ -42,5 +42,14 @@ export type {
 	SkillsConfig,
 	TeamConfig,
 	TimeoutBehavior,
+	XiaohongshuCadence,
+	XiaohongshuCollectionConfig,
+	XiaohongshuLearningConfig,
 } from "./types.js";
-export { EXECUTOR_BACKENDS, ROLE_NAMES } from "./types.js";
+export {
+	EXECUTOR_BACKENDS,
+	ROLE_NAMES,
+	XIAOHONGSHU_CADENCES,
+	XIAOHONGSHU_DEFAULT_MAX_FETCH,
+	XIAOHONGSHU_MAX_FETCH_CEILING,
+} from "./types.js";
