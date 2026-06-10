@@ -52,6 +52,20 @@ roles:
 		expect(config.roles?.lead?.backend).toBe("claude-tmux");
 	});
 
+	it("[FLY-241] trims surrounding whitespace on a set model (quoted padded value)", async () => {
+		// A quoted padded model passes the non-empty check but would reach the
+		// CLI as `--model "  claude-fable-5  "` (rejected → Runner won't start).
+		// ConfigLoader normalizes it to the bare id on load.
+		const yaml = `${BASE}
+roles:
+  runner:
+    backend: claude-tmux
+    model: "  claude-fable-5  "
+`;
+		const config = await loaderFor(yaml).load("fake.yaml");
+		expect(config.roles?.runner?.model).toBe("claude-fable-5");
+	});
+
 	it("rejects misspelled role keys", async () => {
 		const yaml = `${BASE}
 roles:
