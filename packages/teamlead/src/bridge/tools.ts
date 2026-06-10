@@ -122,7 +122,7 @@ export function createQueryRouter(
 				break;
 			}
 			case "by_identifier": {
-				// Specific lookup — leadId not applied (caller knows the identifier)
+				// Specific lookup by issue identifier.
 				const identifier = req.query.identifier as string;
 				if (!identifier) {
 					res.status(400).json({
@@ -150,6 +150,13 @@ export function createQueryRouter(
 					const session = store.getSessionByIdentifier(identifier);
 					sessions = session ? [session] : [];
 				}
+				// FLY-228 (Codex R2 MED-3): when leadId is supplied, scope the
+				// candidate set to this Lead BEFORE the caller's 0/>1 disambiguation
+				// (e.g. close_runner --abandon). Without this, an out-of-scope
+				// same-identifier parked execution could trip the >1 guard or be
+				// selected only to fail the terminate scope check later. leadId
+				// OMITTED → unchanged behavior (existing close_runner lookup).
+				sessions = filterSessionsByLead(sessions, leadId, projects);
 				// FLY-80: Removed stale thread fallback (see /sessions/:id comment)
 				res.json({
 					sessions: sessions.map(omitIssueId),
