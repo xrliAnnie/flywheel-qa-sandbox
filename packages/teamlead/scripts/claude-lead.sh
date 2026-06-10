@@ -1305,6 +1305,25 @@ CLAUDE_ARGS=(
   --permission-mode bypassPermissions
 )
 
+# FLY-241: per-Lead model override. When `FLYWHEEL_LEAD_MODEL` is set (per-Lead
+# via the launchd plist EnvironmentVariables), pass it through as `--model` so a
+# coding-heavy Lead can run a different model (e.g. claude-fable-5) while every
+# other Lead keeps the account default. UNSET (the default) appends NOTHING —
+# argv stays byte-identical to pre-FLY-241, asserted by the FLY-231 reverse-compat
+# sentinel (T8 golden has no `--model`).
+#
+# Trim surrounding whitespace before the empty check so a stray-space plist value
+# (e.g. " ") is treated as UNSET rather than injecting `--model "  "` — which the
+# claude CLI rejects and would crash the Lead at startup (failure-path hygiene).
+# Do NOT lowercase: model ids can be case-sensitive.
+_fly241_lead_model="${FLYWHEEL_LEAD_MODEL:-}"
+_fly241_lead_model="${_fly241_lead_model#"${_fly241_lead_model%%[![:space:]]*}"}"
+_fly241_lead_model="${_fly241_lead_model%"${_fly241_lead_model##*[![:space:]]}"}"
+if [ -n "$_fly241_lead_model" ]; then
+  CLAUDE_ARGS+=(--model "$_fly241_lead_model")
+  log "Lead model override: --model ${_fly241_lead_model} (FLY-241)"
+fi
+
 # FLY-231: companion-only `--effort medium`. The old atlas/belle daemons pinned
 # medium because default/high effort triggered a "drafts a reply but never calls
 # the discord reply tool → goes silent" bug. Keep that stability mitigation on

@@ -114,6 +114,24 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 		expect(ctx.runnerModel).toBe("gpt-5.5-codex");
 	});
 
+	// FLY-241: per-project Runner model override on the DEFAULT claude backend.
+	// A coding-heavy project (GeoForge3D / JoyCon) keeps claude-tmux but pins a
+	// stronger/cheaper model (claude-fable-5) via `.flywheel/config.yaml`:
+	//   roles: { runner: { backend: claude-tmux, model: claude-fable-5 } }
+	// This proves the EXACT deploy shape threads model → ctx.runnerModel WITHOUT
+	// flipping the vendor to codex. Downstream links are pre-covered:
+	//   ctx.runnerModel → adapter.execute({model})  : Blueprint.ts:961
+	//   adapter model   → `--model` CLI arg         : TmuxAdapter.test.ts ("passes --model when specified")
+	it("[FLY-241] claude-tmux project roles model override → runnerModel, vendor stays claude-code", async () => {
+		dispatcher = makeDispatcher({
+			runner: { backend: "claude-tmux", model: "claude-fable-5" },
+		});
+		const ctx = await startAndWait(dispatcher);
+		expect(ctx.runnerBackend).toBe("claude-tmux");
+		expect(ctx.runnerModel).toBe("claude-fable-5");
+		expect(ctx.vendor).toBe("claude-code");
+	});
+
 	it("claude label pins back over codex project config", async () => {
 		dispatcher = makeDispatcher({ runner: { backend: "codex-tmux" } });
 		const ctx = await startAndWait(dispatcher, ["claude"]);
