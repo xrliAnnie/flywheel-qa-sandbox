@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Router } from "express";
@@ -28,7 +29,7 @@ import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { waitForSession } from "./session-wait.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
-import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
+import { killTmuxWindow, lookupTmuxTarget } from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 type ExecFn = (
@@ -56,6 +57,19 @@ export const ACTION_TARGET_STATUS: Record<string, string> = {
 	retry: "running",
 	shelve: "shelved",
 };
+
+/**
+ * Resolve the per-project CommDB path. FLY-191: `FLYWHEEL_COMM_ROOT` override
+ * (tests / non-standard installs); default matches flywheel-comm's
+ * `resolveDbPath` convention. Module-scoped so both `approveExecution` (gate
+ * unblock) and `handleTerminate` (FLY-228 gate resolution) share it.
+ */
+function commDbPathFor(projectName: string): string {
+	const root =
+		process.env.FLYWHEEL_COMM_ROOT?.trim() ||
+		join(homedir(), ".flywheel", "comm");
+	return join(root, projectName, "comm.db");
+}
 
 /** Send post-action hook notification via RuntimeRegistry (best-effort, fire-and-forget). */
 function sendActionHook(
@@ -184,15 +198,6 @@ export async function approveExecution(
 			success: false,
 			message: `Cannot approve ${identifier ?? executionId}: status is "${session.status}", expected "awaiting_review"`,
 		};
-	}
-
-	function commDbPathFor(projectName: string): string {
-		// FLY-191: FLYWHEEL_COMM_ROOT override (tests / non-standard installs);
-		// default matches flywheel-comm's resolveDbPath convention.
-		const root =
-			process.env.FLYWHEEL_COMM_ROOT?.trim() ||
-			join(homedir(), ".flywheel", "comm");
-		return join(root, projectName, "comm.db");
 	}
 
 	const project = projects.find((p) => p.projectName === session.project_name);
@@ -832,8 +837,71 @@ async function postRetryComment(
 	}
 }
 
-/** GEO-187/FLY-44: Terminate a session by killing its tmux and transitioning to terminated. */
-async function handleTerminate(
+/**
+ * FLY-228: best-effort resolve a terminated session's parked `approve_to_ship`
+ * gate so an abandoned review no longer shows pending. Ownership-validated
+ * exactly like the approve path (a question with checkpoint `approve_to_ship`
+ * from THIS runner) before expiring it — NO approval-shaped response, NO wake.
+ * Only runs when the session was parked (priorStatus `awaiting_review` or a
+ * `review_question_id` is bound), so running/blocked/failed callers never open
+ * CommDB. All failures are swallowed (best-effort; must not affect the
+ * already-committed transition).
+ */
+function resolveTerminatedGate(
+	session: Session,
+	priorStatus: string,
+	executionId: string,
+): void {
+	if (priorStatus !== "awaiting_review" && !session.review_question_id) return;
+	const commDbPath = commDbPathFor(session.project_name);
+	// No CommDB for this project → nothing to resolve (don't log a scary
+	// "Database not found"; gate resolution is purely best-effort).
+	if (!existsSync(commDbPath)) return;
+	try {
+		const db = new CommDB(commDbPath, false);
+		try {
+			let questionId: string | undefined;
+			const boundId = session.review_question_id?.trim();
+			if (boundId && boundId !== REVIEW_BINDING_UNBOUND) {
+				const bound = db.getMessageById(boundId);
+				if (
+					bound &&
+					bound.type === "question" &&
+					bound.checkpoint === "approve_to_ship" &&
+					bound.from_agent === executionId
+				) {
+					questionId = bound.id;
+				}
+			} else if (!boundId) {
+				questionId = db.getPendingGateByRunner(
+					executionId,
+					"approve_to_ship",
+				)?.id;
+			}
+			if (questionId) db.resolveGate(questionId, 0);
+		} finally {
+			db.close();
+		}
+	} catch (e) {
+		console.warn(
+			`[terminate] best-effort gate resolve failed for ${executionId}: ${(e as Error).message}`,
+		);
+	}
+}
+
+/** GEO-187/FLY-44: Terminate a session by transitioning to terminated and
+ * tearing down its tmux + Terminal viewer.
+ *
+ * FLY-228: TRANSITION-FIRST. The FSM transition runs BEFORE any tmux kill, so a
+ * concurrent state change that makes the transition illegal fails with the FSM
+ * (and tmux) untouched — no "tmux dead + FSM still active" zombie. Cleanup is
+ * then best-effort but OBSERVABLE: if the tmux kill genuinely fails, the action
+ * returns `success:false` + `cleanupPending:true` (the FSM row is already
+ * terminal — admission is unblocked — but the process may still be alive, so we
+ * never report unqualified success). `reason` (when provided) is recorded in the
+ * transition + hook audit; absent → the legacy "Terminated by CEO".
+ */
+export async function handleTerminate(
 	store: StateStore,
 	executionId: string,
 	transitionOpts?: ApplyTransitionOpts,
@@ -841,6 +909,7 @@ async function handleTerminate(
 	projects?: ProjectEntry[],
 	eventFilter?: EventFilter,
 	registry?: RuntimeRegistry,
+	reason?: string,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -858,39 +927,14 @@ async function handleTerminate(
 		};
 	}
 
-	// Kill tmux session via CommDB (source of truth, not StateStore.tmux_session
-	// which is unreliably populated in production — see tmux-lookup.ts)
-	const tmuxTarget = session.project_name
-		? getTmuxTargetFromCommDb(executionId, session.project_name)
-		: undefined;
-	if (tmuxTarget) {
-		const killResult = await killTmuxWindow(tmuxTarget.tmuxWindow);
-		if (!killResult.killed && killResult.error) {
-			console.error(
-				`[terminate] tmux kill failed for ${tmuxTarget.tmuxWindow}: ${killResult.error}`,
-			);
-			return {
-				success: false,
-				message: `Failed to kill tmux window ${tmuxTarget.tmuxWindow}: ${killResult.error}`,
-			};
-		}
+	const priorStatus = session.status;
+	// FLY-228 (Codex code-review LOW-4): cap the reason at 500 chars HERE so
+	// EVERY caller (not just the MCP abandon client) gets the same bound on the
+	// persisted last_error / hook audit content.
+	const auditReason = (reason?.trim() || "Terminated by CEO").slice(0, 500);
 
-		// FLY-116: also close per-runner Terminal viewer tab + linked viewer session
-		const identity = resolveTerminalViewIdentity(session, tmuxTarget);
-		if (identity) {
-			await closeRunnerTerminalView({
-				baseSessionName: identity.sessionName,
-				projectName: identity.projectName,
-				executionId: identity.executionId,
-				windowId: identity.windowId,
-				sessionRole: identity.sessionRole,
-			}).catch((e: Error) =>
-				console.warn(`[terminate] terminal close warn: ${e.message}`),
-			);
-		}
-	}
-
-	// Transition to terminated
+	// 1) TRANSITION FIRST (race-safe): if a concurrent change made this illegal,
+	// fail here with the FSM + tmux untouched.
 	if (transitionOpts) {
 		const result = applyTransition(
 			transitionOpts,
@@ -902,7 +946,7 @@ async function handleTerminate(
 				projectName: session.project_name,
 				trigger: "terminate",
 			},
-			{ last_activity_at: sqliteDatetime(), last_error: "Terminated by CEO" },
+			{ last_activity_at: sqliteDatetime(), last_error: auditReason },
 		);
 		if (!result.ok) {
 			return {
@@ -915,24 +959,86 @@ async function handleTerminate(
 			session.execution_id,
 			"terminated",
 			sqliteDatetime(),
-			"Terminated by CEO",
+			auditReason,
 		);
 	}
 
+	// 2) Best-effort: resolve a parked approve_to_ship gate (no response, no wake).
+	resolveTerminatedGate(session, priorStatus, executionId);
+
+	// 3) Cleanup (OBSERVABLE partial-failure): kill tmux via CommDB (source of
+	// truth, not StateStore.tmux_session — see tmux-lookup.ts) + close viewer.
+	// Codex code-review MED-3: a CommDB read error (corruption/lock) is NOT the
+	// same as "already gone" — we can't verify tmux liveness, so it must surface
+	// as cleanup-pending rather than a false success.
+	let cleanupError: string | undefined;
+	const lookup = session.project_name
+		? lookupTmuxTarget(executionId, session.project_name)
+		: ({ kind: "gone" } as const);
+	if (lookup.kind === "found") {
+		const killResult = await killTmuxWindow(lookup.target.tmuxWindow);
+		if (killResult.killed) {
+			// FLY-116: also close per-runner Terminal viewer tab + linked viewer.
+			const identity = resolveTerminalViewIdentity(session, lookup.target);
+			if (identity) {
+				await closeRunnerTerminalView({
+					baseSessionName: identity.sessionName,
+					projectName: identity.projectName,
+					executionId: identity.executionId,
+					windowId: identity.windowId,
+					sessionRole: identity.sessionRole,
+				}).catch((e: Error) =>
+					console.warn(`[terminate] terminal close warn: ${e.message}`),
+				);
+			}
+		} else if (killResult.error) {
+			cleanupError = killResult.error;
+		}
+	} else if (lookup.kind === "error") {
+		// Could not read CommDB → cannot confirm the tmux window is gone.
+		cleanupError = `tmux target lookup failed: ${lookup.error}`;
+	}
+	if (cleanupError) {
+		console.error(
+			`[terminate] cleanup failed for ${executionId} (FSM already terminated): ${cleanupError}`,
+		);
+		store.insertEvent({
+			event_id: `terminate-cleanup-failed-${executionId}`,
+			execution_id: executionId,
+			issue_id: session.issue_id,
+			project_name: session.project_name,
+			event_type: "lead_terminate_cleanup_failed",
+			source: "bridge.terminate",
+			payload: {
+				tmuxError: cleanupError,
+				previousStatus: priorStatus,
+				reason: auditReason,
+			},
+		});
+	}
+
+	// 4) Hook (fires regardless — the FSM transition is the authoritative outcome).
 	sendActionHook(
 		store,
 		projects ?? [],
 		executionId,
 		"terminate",
-		session.status,
+		priorStatus,
 		"terminated",
-		"Terminated by CEO",
+		auditReason,
 		eventFilter,
 		registry,
 		config,
 	);
 
 	const id = session.issue_identifier ?? executionId;
+	if (cleanupError) {
+		return {
+			success: false,
+			cleanupPending: true,
+			message: `${id} transitioned to terminated, but tmux cleanup failed: ${cleanupError}. The FSM row is terminal (no longer blocks admission); re-run close_runner to reap the tmux window.`,
+		};
+	}
 	return {
 		success: true,
 		message: `${id} terminated successfully`,
@@ -1054,7 +1160,7 @@ export function createActionRouter(
 				return;
 			}
 			case "terminate": {
-				const { execution_id: eid } = req.body ?? {};
+				const { execution_id: eid, reason: terminateReason } = req.body ?? {};
 				if (!eid || typeof eid !== "string") {
 					res.status(400).json({ error: "execution_id is required" });
 					return;
@@ -1077,6 +1183,8 @@ export function createActionRouter(
 					projects,
 					eventFilter,
 					registry,
+					// FLY-228: optional audit reason (e.g. close_runner --abandon).
+					typeof terminateReason === "string" ? terminateReason : undefined,
 				);
 				if (terminateResult.success) {
 					res.json({
@@ -1089,6 +1197,10 @@ export function createActionRouter(
 						success: false,
 						message: terminateResult.message,
 						action: "terminate",
+						// FLY-228: signal FSM-terminated-but-tmux-cleanup-pending so the
+						// caller (close_runner --abandon) can distinguish it from a hard
+						// "could not terminate" failure.
+						...(terminateResult.cleanupPending ? { cleanupPending: true } : {}),
 					});
 				}
 				return;

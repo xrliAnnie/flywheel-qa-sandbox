@@ -5,6 +5,7 @@
 
 import { randomUUID } from "node:crypto";
 import { DEFAULT_PROOFSHOT_CONFIG, type SkillsConfig } from "flywheel-config";
+import { WORKFLOW_TRANSITIONS } from "flywheel-core";
 import type {
 	EventEnvelope,
 	ExecutionEventEmitter,
@@ -213,8 +214,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			source: "direct-event-sink",
 		});
 
-		// Status mapping (aligned with event-route.ts)
-		const route = result.decision?.route;
+		// Status mapping (aligned with event-route.ts).
+		// FLY-222 #1 (Codex code-review R2 HIGH-1): widen to `string` at this
+		// consumption boundary so the sink can legally RECOGNIZE a runtime
+		// `no_code` route. The Decision Layer's generated-route allowlist
+		// (`DecisionRoute`) stays intentionally restricted — `no_code` is a
+		// runner-emitted completion route, not a Decision Layer output — so we do
+		// not pollute that type; the HTTP `/events` sink already reads route as a
+		// plain string for the same reason.
+		const route: string | undefined = result.decision?.route;
 		const landingStatus = result.evidence?.landingStatus as
 			| { status?: string }
 			| undefined;
@@ -223,6 +231,21 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// transition; FLY-208 5a additionally needs it for the status mapping
 		// itself (hoisted above the mapping for that reason).
 		const preExistingSession = this.store.getSession(env.executionId);
+
+		// FLY-222 #1 (Codex code-review MED-2): no_code is ONLY a running→completed
+		// terminal. A no_code emission for a non-running (e.g. review-gated) session
+		// must NOT clear that state — skip the status write entirely (symmetric
+		// with event-route.ts's strict-guard skip; the session_completed audit
+		// event above is still recorded). Without this, a non-running no_code would
+		// fall through to the `else` default below, which also maps to `completed`.
+		if (route === "no_code" && preExistingSession?.status !== "running") {
+			console.warn(
+				`[DirectEventSink] route=no_code for non-running ${env.executionId} ` +
+					`(status=${preExistingSession?.status ?? "none"}) — skipping ` +
+					`(no_code only terminalizes a running runner)`,
+			);
+			return;
+		}
 		// FLY-208 5a × FLY-191 R5 interaction: a Phase-2-BOUND session's
 		// status is owned by the HTTP `complete --question-id` path — this
 		// in-process sink must never unstick (or otherwise move) it, or the
@@ -271,13 +294,47 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				status = "awaiting_review";
 			}
 		} else if (route === "blocked") status = "blocked";
-		else {
+		else if (route === "no_code") {
+			// FLY-222 #1: no-code/no-merge clean success → terminal completed.
+			// Sister branch: event-route.ts. evidenceGap stays false (not an
+			// approved_to_ship merge-evidence gap); runPostShipFinalization is
+			// gated on merged landing so it cannot fire for a no-merge completion.
+			status = "completed";
+		} else {
 			status = "completed";
 			// FLY-208 5a: natural completion (no route) from approved_to_ship
 			// without merge proof — mark the gap (FLY-210 finishes cleanup).
 			if (isPostApproveShip && landingStatus?.status !== "merged") {
 				evidenceGap = true;
 			}
+		}
+
+		// FLY-222 #1 / FLY-228 (Codex-routed Finding K / I): a session already in a
+		// NO-OUT-EDGE terminal state (completed / terminated / shelved / approved)
+		// must NOT be touched by ANY subsequent completion — neither a
+		// status-CHANGING one (e.g. a spurious route=`blocked` re-emission after a
+		// Lead closes a parked-alive `no_code` Runner → would flip
+		// `completed`→`blocked`) NOR a SAME-status duplicate (`completed`→
+		// `completed`, which would otherwise overwrite decision_route/evidence and
+		// double-notify). The HTTP /events sink is already protected: it routes
+		// through `applyTransition`, which rejects EVERY edge out of a no-out-edge
+		// terminal state (including `completed`→`completed`). This in-process sink
+		// uses `upsertSession` (no FSM edge check), so mirror that rejection
+		// explicitly and fully ignore (no status write, no metadata/decision_route
+		// overwrite, no notification). The FIRST legitimate completion is
+		// unaffected — at that point the pre-existing status is `running` (or
+		// another out-edged state), so the guard does not fire. Re-finalization /
+		// evidence-gap backfill (FLY-208/210) does NOT go through this path (it uses
+		// patchSessionMetadata / markEvidenceGapCompletion), so it is unaffected.
+		if (
+			preExistingSession &&
+			(WORKFLOW_TRANSITIONS[preExistingSession.status]?.length ?? -1) === 0
+		) {
+			console.warn(
+				`[DirectEventSink] ignoring duplicate/spurious "${status}" completion for already-terminal ${env.executionId} ` +
+					`(status="${preExistingSession.status}", route="${route ?? "none"}") — terminal-immune (FLY-228 Finding K)`,
+			);
+			return;
 		}
 
 		const prNumber = result.evidence?.landingStatus?.prNumber;

@@ -1490,6 +1490,17 @@ elif [ "$IS_COS_ROLE" = false ]; then
     log "Appending base stuck-runner-remanage rules: ${BASE_STUCK_REMANAGE_RULES}"
   fi
 
+  # ── FLY-229: Runner Re-Engage vs Terminate (non-cos dept leads only) ──
+  # Iteration-loop standard op: a parked-alive runner (finished one round, tmux +
+  # agent still idle/alive) is RE-ENGAGEABLE via the normal Runner messaging path
+  # — don't terminate + new-run. Only roles that manage Runners load it. Optional
+  # — missing base file is a no-op (backward compat).
+  BASE_REENGAGE_RULES="${BASE_RULES_DIR}/runner-reengage-rules.md"
+  if [ -f "$BASE_REENGAGE_RULES" ] && [ -r "$BASE_REENGAGE_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_REENGAGE_RULES")
+    log "Appending base runner-reengage rules: ${BASE_REENGAGE_RULES}"
+  fi
+
   # ── FLY-205: Doc-Flow tier judgment + founder notification (non-cos dept
   # leads only). Judging the doc tier and passing `docTier` at spawn is
   # spawn-only behavior — cos-lead (canSpawnRunners: false) must not load it

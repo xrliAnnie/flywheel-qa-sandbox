@@ -262,6 +262,9 @@ describe("Start API E2E", () => {
 		expect(res.status).toBe(409);
 		const body = (await res.json()) as { message: string };
 		expect(body.message).toContain("already has an active session");
+		// FLY-229: the 409 hints re-engagement instead of terminate+new-run.
+		expect(body.message).toContain("re-engage");
+		expect(body.message).toContain("runner_terminal_list");
 	});
 
 	it("FLY-123 WS-D (P4): POST deferred under resource pressure → 429 (load_pressure, no count cap)", async () => {

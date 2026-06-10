@@ -345,3 +345,177 @@ describe("DirectEventSink — FLY-191 R5: late qid-less emission can't regress a
 		expect(s?.commit_count).toBe(1);
 	});
 });
+
+describe("DirectEventSink — FLY-222 #1: no_code → terminal completed", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+	afterEach(() => {
+		store.close();
+	});
+
+	function noCodeResult() {
+		return {
+			success: true,
+			decision: { route: "no_code", reasoning: "learning run, no code" },
+			evidence: {
+				commitCount: 0,
+				filesChangedCount: 0,
+				commitMessages: [],
+				changedFilePaths: [],
+				linesAdded: 0,
+				linesRemoved: 0,
+				diffSummary: "",
+				headSha: null,
+				partial: false,
+				durationMs: 10,
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
+		} as any;
+	}
+
+	it("running + route=no_code (no merge) → completed (NOT awaiting_review), decision_route persisted", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+
+		await new DirectEventSink(store, makeConfig(), testProjects).emitCompleted(
+			makeEnvelope(),
+			noCodeResult(),
+		);
+
+		const s = store.getSession("exec-1");
+		expect(s?.status).toBe("completed");
+		expect(s?.decision_route).toBe("no_code");
+	});
+
+	// Codex code-review MED-2: no_code must NOT clear a non-running (review-gated)
+	// session — skip the status write (symmetric with event-route's skip).
+	it("awaiting_review + route=no_code → status unchanged (skipped)", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+
+		await new DirectEventSink(store, makeConfig(), testProjects).emitCompleted(
+			makeEnvelope(),
+			noCodeResult(),
+		);
+
+		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
+	});
+
+	// FLY-228 Finding K (qa-fly-222): a parked-alive no_code Runner reaches terminal
+	// `completed`; the Lead closes it → tmux dies → Blueprint.run resolves
+	// success=false and re-emits a route=blocked completion. The already-terminal
+	// session must be IMMUNE — not flipped to blocked, decision_route not overwritten.
+	function blockedResult() {
+		return {
+			success: false,
+			decision: { route: "blocked", reasoning: "runner closed / pane died" },
+			evidence: {
+				commitCount: 0,
+				filesChangedCount: 0,
+				commitMessages: [],
+				changedFilePaths: [],
+				linesAdded: 0,
+				linesRemoved: 0,
+				diffSummary: "",
+				headSha: null,
+				partial: false,
+				durationMs: 10,
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
+		} as any;
+	}
+
+	it("Finding K: completed/no_code session is terminal-immune to a spurious route=blocked re-emission (lead-close)", async () => {
+		// First: legitimate no_code completion → completed.
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		await sink.emitCompleted(makeEnvelope(), noCodeResult());
+		expect(store.getSession("exec-1")?.status).toBe("completed");
+		expect(store.getSession("exec-1")?.decision_route).toBe("no_code");
+
+		// Then: the spurious post-close route=blocked re-emission must be ignored.
+		await sink.emitCompleted(makeEnvelope(), blockedResult());
+		const s = store.getSession("exec-1");
+		expect(s?.status).toBe("completed"); // NOT blocked
+		expect(s?.decision_route).toBe("no_code"); // not overwritten to blocked
+	});
+
+	// Codex K-fix review MED: a SAME-status duplicate completion (completed→completed)
+	// must also be ignored — it would otherwise overwrite decision_route/evidence +
+	// double-notify, inconsistent with the HTTP sink (applyTransition rejects
+	// completed→completed too).
+	it("duplicate same-status completion on a completed/no_code session is ignored (no decision_route/evidence overwrite)", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		await sink.emitCompleted(makeEnvelope(), noCodeResult());
+		const first = store.getSession("exec-1");
+		expect(first?.status).toBe("completed");
+		expect(first?.decision_route).toBe("no_code");
+
+		// A second `completed` emission with a DIFFERENT route + evidence must NOT
+		// overwrite the terminal session's recorded route/evidence.
+		const dupCompleted = {
+			success: true,
+			decision: { route: "auto_approve", reasoning: "dup" },
+			evidence: {
+				commitCount: 99,
+				filesChangedCount: 42,
+				commitMessages: ["dup"],
+				changedFilePaths: ["x.ts"],
+				linesAdded: 1,
+				linesRemoved: 0,
+				diffSummary: "dup",
+				headSha: null,
+				partial: false,
+				durationMs: 10,
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
+		} as any;
+		await sink.emitCompleted(makeEnvelope(), dupCompleted);
+
+		const after = store.getSession("exec-1");
+		expect(after?.status).toBe("completed");
+		expect(after?.decision_route).toBe("no_code"); // not overwritten to auto_approve
+		expect(after?.commit_count).toBe(0); // evidence not overwritten with 99/42
+		expect(after?.files_changed).toBe(0);
+	});
+
+	it.each(["completed", "terminated", "shelved", "approved"])(
+		"terminal %s is immune to a spurious blocked re-emission",
+		async (terminal) => {
+			store.upsertSession({
+				execution_id: "exec-1",
+				issue_id: "issue-1",
+				project_name: "geoforge3d",
+				status: terminal,
+			});
+			await new DirectEventSink(
+				store,
+				makeConfig(),
+				testProjects,
+			).emitCompleted(makeEnvelope(), blockedResult());
+			expect(store.getSession("exec-1")?.status).toBe(terminal);
+		},
+	);
+});
