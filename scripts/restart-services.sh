@@ -512,25 +512,96 @@ fi
 # Bridge stop / start
 # ════════════════════════════════════════════════════════════════
 
+# ── FLY-239: precise Bridge-stop targeting ──────────────────────────────
+# The old `pgrep -f "run-bridge.ts"` over-matched. Its command-line substring
+# also appears in:
+#   • QA-slot Bridges running from `worktrees/<slot>/scripts/run-bridge.ts`
+#     (a different Bridge, on a different port — must NEVER be killed here), and
+#   • the npm/tsx wrapper PIDs of any run-bridge invocation.
+# So a deploy restart could cross-kill a live QA-slot Bridge, and the multi-PID
+# string fed straight into `kill`/`kill -0` behaved unreliably (the historical
+# "multi-PID kill bug"). Instead we locate the REAL production Bridge by the
+# port it LISTENS on (authoritative, one process), then walk up its own
+# run-bridge ancestor tree (listener → tsx → npm wrapper) so launchd KeepAlive
+# re-spawns cleanly. A `worktrees/` path is never targeted, belt-and-suspenders.
+
+# Bridge TCP port, parsed from BRIDGE_URL (default 9876).
+bridge_port() {
+    local p
+    p="$(printf '%s' "$BRIDGE_URL" | sed -E 's#^.*:([0-9]+).*$#\1#')"
+    if [[ "$p" =~ ^[0-9]+$ ]]; then printf '%s\n' "$p"; else printf '9876\n'; fi
+}
+
+# Seams (overridable in tests): port listeners + process introspection.
+_listeners_on_port() { lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true; }
+_ppid_of()           { ps -o ppid= -p "$1" 2>/dev/null | tr -dc '0-9'; }
+_args_of()           { ps -o command= -p "$1" 2>/dev/null; }
+
+# Given a port-listener PID, emit that PID plus the ancestor PIDs that belong to
+# the SAME run-bridge invocation, stopping at launchd (ppid 0/1) or the first
+# ancestor that is not part of this run-bridge tree. Never emits a worktree PID.
+collect_bridge_tree() {
+    local pid="$1" cur ppid args
+    [[ -z "$pid" ]] && return 0
+    args="$(_args_of "$pid")"
+    case "$args" in *worktrees/*) return 0 ;; esac   # not a production Bridge
+    printf '%s\n' "$pid"
+    cur="$pid"
+    while :; do
+        ppid="$(_ppid_of "$cur")"
+        [[ -z "$ppid" || "$ppid" == 0 || "$ppid" == 1 ]] && break
+        args="$(_args_of "$ppid")"
+        case "$args" in
+            *worktrees/*)   break ;;                 # don't climb into a worktree wrapper
+            *run-bridge.ts*) printf '%s\n' "$ppid"; cur="$ppid" ;;
+            *)              break ;;
+        esac
+    done
+}
+
+# Resolve the full set of production-Bridge PIDs to stop (deduped).
+bridge_target_pids() {
+    local port listener
+    port="$(bridge_port)"
+    {
+        while IFS= read -r listener; do
+            [[ -z "$listener" ]] && continue
+            collect_bridge_tree "$listener"
+        done < <(_listeners_on_port "$port")
+    } | awk 'NF && !seen[$0]++'
+}
+
 stop_bridge() {
-    local pid
-    pid=$(pgrep -f "run-bridge.ts" || true)
-    if [[ -z "$pid" ]]; then
-        log "Bridge not running, nothing to stop"
+    local port pids
+    port="$(bridge_port)"
+    pids="$(bridge_target_pids)"
+    if [[ -z "$pids" ]]; then
+        log "Bridge not listening on :$port, nothing to stop"
         return 0
     fi
-    log "Stopping Bridge (PID $pid)..."
-    kill -TERM "$pid"
-    local wait_count=0
-    while kill -0 "$pid" 2>/dev/null && (( wait_count < 120 )); do
+    # shellcheck disable=SC2086
+    log "Stopping Bridge (port :$port, PIDs: $(echo $pids | tr '\n' ' '))..."
+    local p
+    for p in $pids; do kill -TERM "$p" 2>/dev/null || true; done
+    local wait_count=0 alive
+    while (( wait_count < 120 )); do
+        alive=0
+        for p in $pids; do kill -0 "$p" 2>/dev/null && { alive=1; break; }; done
+        (( alive == 0 )) && break
         sleep 1
-        ((wait_count++))
+        # NOT `((wait_count++))`: post-increment returns the OLD value (0 on the
+        # first pass), so the arithmetic command exits 1 and `set -e` aborts the
+        # whole deploy mid-stop. Assignment form always exits 0.
+        wait_count=$((wait_count + 1))
     done
-    if kill -0 "$pid" 2>/dev/null; then
-        log "WARNING: Bridge still alive after 120s, force killing"
-        kill -9 "$pid" 2>/dev/null || true
-    fi
-    log "Bridge stopped (was PID $pid, waited ${wait_count}s)"
+    for p in $pids; do
+        if kill -0 "$p" 2>/dev/null; then
+            log "WARNING: Bridge PID $p still alive after 120s, force killing"
+            kill -9 "$p" 2>/dev/null || true
+        fi
+    done
+    # shellcheck disable=SC2086
+    log "Bridge stopped (PIDs: $(echo $pids | tr '\n' ' '), waited ${wait_count}s)"
 }
 
 start_bridge() {
@@ -623,7 +694,11 @@ restart_lead() {
             local wait_count=0
             while kill -0 "$pid" 2>/dev/null && (( wait_count < 60 )); do
                 sleep 1
-                ((wait_count++))
+                # FLY-239: assignment form, not `((wait_count++))` — the latter
+                # exits 1 on the first pass (n=0) and `set -e` would abort the
+                # Lead restart here (the supervisor is always alive at this
+                # point). Same footgun fixed in stop_bridge.
+                wait_count=$((wait_count + 1))
             done
             # Fail-fast: refuse to start new supervisor if old is still alive
             if kill -0 "$pid" 2>/dev/null; then

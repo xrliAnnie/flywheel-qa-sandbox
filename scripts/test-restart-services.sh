@@ -1187,6 +1187,152 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════════
+# FLY-239: Bridge-stop targeting — locate the real Bridge by listening
+# port, never cross-kill a QA-slot worktree Bridge, walk its own tree.
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-239 stop_bridge targeting"
+
+# Copies of the targeting helpers from restart-services.sh (the real script
+# top-level-execs, so we can't source it). Seams (_listeners_on_port/_ppid_of/
+# _args_of) are overridden below with a fake process table.
+bridge_port() {
+    local p
+    p="$(printf '%s' "$BRIDGE_URL" | sed -E 's#^.*:([0-9]+).*$#\1#')"
+    if [[ "$p" =~ ^[0-9]+$ ]]; then printf '%s\n' "$p"; else printf '9876\n'; fi
+}
+collect_bridge_tree() {
+    local pid="$1" cur ppid args
+    [[ -z "$pid" ]] && return 0
+    args="$(_args_of "$pid")"
+    case "$args" in *worktrees/*) return 0 ;; esac
+    printf '%s\n' "$pid"
+    cur="$pid"
+    while :; do
+        ppid="$(_ppid_of "$cur")"
+        [[ -z "$ppid" || "$ppid" == 0 || "$ppid" == 1 ]] && break
+        args="$(_args_of "$ppid")"
+        case "$args" in
+            *worktrees/*)   break ;;
+            *run-bridge.ts*) printf '%s\n' "$ppid"; cur="$ppid" ;;
+            *)              break ;;
+        esac
+    done
+}
+bridge_target_pids() {
+    local port listener
+    port="$(bridge_port)"
+    {
+        while IFS= read -r listener; do
+            [[ -z "$listener" ]] && continue
+            collect_bridge_tree "$listener"
+        done < <(_listeners_on_port "$port")
+    } | awk 'NF && !seen[$0]++'
+}
+
+# Fake process table:
+#   PROD : 100(listener,:9876) → 101(tsx) → 102(npm wrapper) → launchd(1)
+#   QA   : 200(listener,:9999, worktrees/) → 201(tsx,worktrees/) → 202(npm,worktrees/) → 1
+# Note 100's own args have NO "run-bridge.ts" (mirrors the real tsx node), and
+# 201/202 DO contain "run-bridge.ts" — exactly what made `pgrep -f run-bridge.ts`
+# cross-kill the QA Bridge. Port-based selection must ignore them.
+_listeners_on_port() {
+    case "$1" in
+        9876) echo 100 ;;
+        9999) echo 200 ;;
+        *)    : ;;
+    esac
+}
+_ppid_of() {
+    case "$1" in
+        100) echo 101 ;; 101) echo 102 ;; 102) echo 1 ;;
+        200) echo 201 ;; 201) echo 202 ;; 202) echo 1 ;;
+        *)   echo "" ;;
+    esac
+}
+_args_of() {
+    case "$1" in
+        100) echo "/opt/node --require /Users/x/Dev/flywheel/node_modules/.../tsx/preflight.cjs --import .../loader.mjs" ;;
+        101) echo "node /Users/x/Dev/flywheel/node_modules/.bin/../tsx/dist/cli.mjs scripts/run-bridge.ts" ;;
+        102) echo "npm exec tsx scripts/run-bridge.ts" ;;
+        200) echo "/opt/node --require /Users/x/Dev/flywheel/worktrees/qa-slot/node_modules/.../preflight.cjs" ;;
+        201) echo "node /Users/x/Dev/flywheel/worktrees/qa-slot/node_modules/.../tsx/cli.mjs worktrees/qa-slot/scripts/run-bridge.ts" ;;
+        202) echo "npm exec tsx /Users/x/Dev/flywheel/worktrees/qa-slot/scripts/run-bridge.ts" ;;
+        *)   echo "" ;;
+    esac
+}
+
+# 1) bridge_port parses BRIDGE_URL; falls back to 9876.
+BRIDGE_URL="http://localhost:9876"; [[ "$(bridge_port)" == "9876" ]] \
+    && pass "bridge_port: parses :9876" || fail "bridge_port: got $(bridge_port)"
+BRIDGE_URL="http://localhost"; [[ "$(bridge_port)" == "9876" ]] \
+    && pass "bridge_port: fallback 9876 when no port" || fail "bridge_port fallback: got $(bridge_port)"
+BRIDGE_URL="http://127.0.0.1:9999"; [[ "$(bridge_port)" == "9999" ]] \
+    && pass "bridge_port: parses :9999" || fail "bridge_port: got $(bridge_port)"
+
+# 2) collect_bridge_tree walks the prod tree (listener + tsx + npm wrapper).
+tree="$(collect_bridge_tree 100 | tr '\n' ' ' | sed 's/ $//')"
+[[ "$tree" == "100 101 102" ]] \
+    && pass "collect_bridge_tree: prod tree = 100 101 102" \
+    || fail "collect_bridge_tree prod: got '$tree'"
+
+# 3) collect_bridge_tree refuses a worktree listener (QA Bridge).
+tree="$(collect_bridge_tree 200 | tr '\n' ' ' | sed 's/ $//')"
+[[ -z "$tree" ]] \
+    && pass "collect_bridge_tree: worktree listener yields nothing" \
+    || fail "collect_bridge_tree worktree: got '$tree'"
+
+# 4) REGRESSION: with the prod port, target set is ONLY the prod tree — the QA
+#    Bridge (200/201/202) is never selected even though 201/202 match run-bridge.ts.
+BRIDGE_URL="http://localhost:9876"
+targets="$(bridge_target_pids | tr '\n' ' ' | sed 's/ $//')"
+if [[ "$targets" == "100 101 102" ]]; then
+    pass "bridge_target_pids: prod port selects only prod tree (no QA cross-kill)"
+else
+    fail "bridge_target_pids: got '$targets' (expected '100 101 102')"
+fi
+if echo "$targets" | grep -qE '\b20[012]\b'; then
+    fail "bridge_target_pids: LEAKED a QA-slot PID into kill set: '$targets'"
+else
+    pass "bridge_target_pids: no QA-slot PID in kill set"
+fi
+
+# 5) Empty when nothing listens on the configured port.
+BRIDGE_URL="http://localhost:1234"
+[[ -z "$(bridge_target_pids)" ]] \
+    && pass "bridge_target_pids: empty when port has no listener" \
+    || fail "bridge_target_pids: expected empty for unused port"
+
+# 6) REGRESSION (Codex R1 HIGH): the TERM→wait loop must NOT abort under
+#    `set -euo pipefail`. `((wait_count++))` exits 1 on the first pass (n=0),
+#    which `set -e` turns into a mid-stop deploy abort. The assignment idiom
+#    must complete all iterations. Run the exact loop shape in a clean shell.
+if out=$(bash -c '
+    set -euo pipefail
+    wait_count=0
+    pids="999999991 999999992"   # non-existent PIDs → kill -0 fails fast
+    while (( wait_count < 3 )); do
+        alive=0
+        for p in $pids; do kill -0 "$p" 2>/dev/null && { alive=1; break; }; done
+        # force the wait path regardless of liveness for this regression
+        wait_count=$((wait_count + 1))
+    done
+    echo "LOOP_COMPLETED:$wait_count"
+' 2>/dev/null) && [[ "$out" == "LOOP_COMPLETED:3" ]]; then
+    pass "stop_bridge wait loop: set -e safe increment completes (no mid-stop abort)"
+else
+    fail "stop_bridge wait loop: aborted under set -e (out='$out')"
+fi
+# Negative control: prove the OLD `((wait_count++))` idiom WOULD abort.
+if bash -c 'set -euo pipefail; n=0; ((n++)); echo ok' >/dev/null 2>&1; then
+    fail "negative control: ((n++)) did NOT abort under set -e (test assumption broken)"
+else
+    pass "negative control: ((n++)) aborts under set -e (confirms the regression)"
+fi
+
+# restore for any later tests
+BRIDGE_URL="http://localhost:9876"
+
+# ════════════════════════════════════════════════════════════════
 # Summary
 # ════════════════════════════════════════════════════════════════
 echo ""
