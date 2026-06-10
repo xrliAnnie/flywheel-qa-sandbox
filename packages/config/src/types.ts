@@ -204,6 +204,75 @@ export interface DocFlowConfig {
 	default_department?: string;
 }
 
+/**
+ * FLY-222: per-collection learning cadence.
+ */
+export type XiaohongshuCadence = "daily" | "weekly" | "biweekly" | "monthly";
+
+/** FLY-222: the set of valid cadence values (runtime guard for validation). */
+export const XIAOHONGSHU_CADENCES: readonly XiaohongshuCadence[] = [
+	"daily",
+	"weekly",
+	"biweekly",
+	"monthly",
+];
+
+/** FLY-222: hard ceiling on per-run fetch (MCP `limit` cap; collection has no cursor). */
+export const XIAOHONGSHU_MAX_FETCH_CEILING = 200;
+/** FLY-222: default per-run fetch when a collection omits `max_fetch`. */
+export const XIAOHONGSHU_DEFAULT_MAX_FETCH = 20;
+
+/**
+ * FLY-222: one Xiaohongshu collection a Lead periodically "studies".
+ *
+ * `lead_id` / `department_label` / `target_linear_project` are three distinct
+ * routing fields (Codex R1 plan §2.5): `department_label` is the real Linear
+ * label used to route the scheduler-created trigger issue to the right Lead;
+ * `target_linear_project` is where output ("things to do") issues land. The
+ * full routing-tuple cross-check (Lead exists + canSpawnRunners, label routes
+ * uniquely to lead_id, Linear team/project/label resolve) is a RUNTIME check
+ * the scheduler performs (graceful skip + bounded alert on failure) — NOT a
+ * config-load-time throw. ConfigLoader only validates static shape here.
+ */
+export interface XiaohongshuCollectionConfig {
+	/** MCP collection id (from `list_collections`). */
+	collection_id: string;
+	/** Human label for logs / trigger issue title (e.g. "AI-视频"). */
+	label: string;
+	/** Lead agentId that studies this collection (must exist + canSpawnRunners). */
+	lead_id: string;
+	/** Real Linear label routing the trigger issue to `lead_id` (name, not id). */
+	department_label: string;
+	/** Linear project (by name) where output "things to do" issues are created. */
+	target_linear_project: string;
+	/** Study cadence. Default: "weekly". */
+	cadence?: XiaohongshuCadence;
+	/** Max notes processed per run (1..200). Default: 20. Unseen overflow stays pending. */
+	max_fetch?: number;
+}
+
+/**
+ * FLY-222: department-Lead periodic Xiaohongshu-collection "study" baseline.
+ *
+ * When enabled, a thin scheduler periodically spawns a Runner (via a fixed,
+ * reused trigger Linear issue per collection) that fetches the collection,
+ * analyzes notes (incl. video body), proposes Linear-issue drafts to Annie via
+ * a prune gate, then creates the kept issues + records learnings to project
+ * memory. Absent or `enabled: false` → feature fully off (byte-compatible).
+ */
+export interface XiaohongshuLearningConfig {
+	/** Enable periodic learning. Default: false (safe rollout). */
+	enabled?: boolean;
+	/**
+	 * One-time consent to send downloaded video bodies to Google/Gemini for
+	 * analysis. Default: false. When false, video notes degrade to
+	 * caption+comments — yt-dlp/Gemini are NOT invoked.
+	 */
+	video_opt_in?: boolean;
+	/** Collections to study. Each is independently scheduled + state-tracked. */
+	collections?: XiaohongshuCollectionConfig[];
+}
+
 /** Reactions configuration (Phase 2+, interface reserved) */
 export interface ReactionsConfig {
 	"changes-requested"?: {
@@ -290,4 +359,6 @@ export interface FlywheelConfig {
 	roles?: RoleBackendMap;
 	/** FLY-205: department-first doc-flow baseline. Absent = off. */
 	doc_flow?: DocFlowConfig;
+	/** FLY-222: periodic Xiaohongshu-collection learning. Absent = off. */
+	xiaohongshu_learning?: XiaohongshuLearningConfig;
 }

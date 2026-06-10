@@ -2,6 +2,10 @@ import * as path from "node:path";
 import { parse } from "yaml";
 import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
 import type { CheckpointConfig, FlywheelConfig } from "./types.js";
+import {
+	XIAOHONGSHU_CADENCES,
+	XIAOHONGSHU_MAX_FETCH_CEILING,
+} from "./types.js";
 
 /** Function signature for reading a file — injected for testability */
 export type ReadFileFn = (path: string) => Promise<string>;
@@ -307,6 +311,105 @@ export class ConfigLoader {
 			if (docFlow.enabled === true && docFlow.default_department == null) {
 				throw new Error(
 					"doc_flow.default_department is required when doc_flow.enabled is true",
+				);
+			}
+		}
+
+		// xiaohongshu_learning (optional — FLY-222)
+		// Static SHAPE validation only. The routing-tuple cross-check (Lead
+		// exists + canSpawnRunners, department_label routes uniquely to lead_id,
+		// Linear team/project/label resolve) is a RUNTIME check the scheduler
+		// performs against projects.json + Linear — on failure it skips that
+		// collection with a bounded alert, NOT a config-load throw. Like
+		// doc_flow, fields are validated whenever PRESENT (even enabled=false)
+		// so a disabled-but-malformed config fails loudly instead of later.
+		const xhs = c.xiaohongshu_learning as Record<string, unknown> | undefined;
+		if (xhs != null) {
+			if (typeof xhs !== "object" || Array.isArray(xhs)) {
+				throw new Error(
+					"xiaohongshu_learning must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (xhs.enabled != null && typeof xhs.enabled !== "boolean") {
+				throw new Error("xiaohongshu_learning.enabled must be a boolean");
+			}
+			if (xhs.video_opt_in != null && typeof xhs.video_opt_in !== "boolean") {
+				throw new Error("xiaohongshu_learning.video_opt_in must be a boolean");
+			}
+			if (xhs.collections != null) {
+				if (!Array.isArray(xhs.collections)) {
+					throw new Error("xiaohongshu_learning.collections must be an array");
+				}
+				const seenIds = new Set<string>();
+				xhs.collections.forEach((entry: unknown, i: number) => {
+					const where = `xiaohongshu_learning.collections[${i}]`;
+					if (
+						entry == null ||
+						typeof entry !== "object" ||
+						Array.isArray(entry)
+					) {
+						throw new Error(`${where} must be a mapping (object)`);
+					}
+					const col = entry as Record<string, unknown>;
+					for (const field of [
+						"collection_id",
+						"label",
+						"lead_id",
+						"department_label",
+						"target_linear_project",
+					] as const) {
+						const v = col[field];
+						if (typeof v !== "string" || v.trim() === "") {
+							throw new Error(`${where}.${field} must be a non-empty string`);
+						}
+					}
+					// collection_id is a state-file path segment (project__cid.json), so
+					// it must match the SAME charset the state layer's safeSegment
+					// enforces. Catch a bad id at the config boundary, not later as a
+					// readState throw that would wedge the whole scheduler tick.
+					const cid = col.collection_id as string;
+					if (!/^[A-Za-z0-9._-]+$/.test(cid)) {
+						throw new Error(
+							`${where}.collection_id "${cid}" must match ^[A-Za-z0-9._-]+$ (it is used as a state-file path segment)`,
+						);
+					}
+					// Duplicate collection_id within one project = ambiguous state
+					// keying (state file is per project__collection_id) → reject.
+					if (seenIds.has(cid)) {
+						throw new Error(
+							`${where}.collection_id "${cid}" is duplicated; each collection_id must be unique within a project`,
+						);
+					}
+					seenIds.add(cid);
+					if (
+						col.cadence != null &&
+						!XIAOHONGSHU_CADENCES.includes(col.cadence as never)
+					) {
+						throw new Error(
+							`${where}.cadence must be one of ${XIAOHONGSHU_CADENCES.join(", ")}, got "${col.cadence}"`,
+						);
+					}
+					if (col.max_fetch != null) {
+						if (
+							typeof col.max_fetch !== "number" ||
+							!Number.isInteger(col.max_fetch) ||
+							col.max_fetch < 1 ||
+							col.max_fetch > XIAOHONGSHU_MAX_FETCH_CEILING
+						) {
+							throw new Error(
+								`${where}.max_fetch must be an integer between 1 and ${XIAOHONGSHU_MAX_FETCH_CEILING}, got "${col.max_fetch}"`,
+							);
+						}
+					}
+				});
+			}
+			// enabled with nothing to study is a config mistake — fail loudly.
+			if (
+				xhs.enabled === true &&
+				(!Array.isArray(xhs.collections) || xhs.collections.length === 0)
+			) {
+				throw new Error(
+					"xiaohongshu_learning.collections must be a non-empty array when xiaohongshu_learning.enabled is true",
 				);
 			}
 		}
