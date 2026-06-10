@@ -11,6 +11,7 @@
 		"./utils": "./dist/utils/content-ref.js",
 		"./wake": "./dist/wake.js",
 		"./gate-marker": "./dist/gate-marker.js",
+		"./verify-approval": "./dist/commands/verify-approval.js",
 		"./xiaohongshu-state": "./dist/xiaohongshu-state.js",
 		"./xiaohongshu-final": "./dist/xiaohongshu-final.js"
 	},

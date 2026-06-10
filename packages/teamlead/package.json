@@ -18,6 +18,7 @@
 	},
 	"dependencies": {
 		"@linear/sdk": "60.0.0",
+		"better-sqlite3": "^12.8.0",
 		"chokidar": "^4.0.3",
 		"express": "^5.2.1",
 		"flywheel-agent-team-transport": "workspace:*",
@@ -26,9 +27,11 @@
 		"flywheel-config": "workspace:*",
 		"flywheel-core": "workspace:*",
 		"flywheel-edge-worker": "workspace:*",
-		"sql.js": "^1.14.1"
+		"sql.js": "^1.14.1",
+		"yaml": "^2.7.1"
 	},
 	"devDependencies": {
+		"@types/better-sqlite3": "^7.6.13",
 		"@types/express": "^5.0.6",
 		"@types/node": "^20.0.0",
 		"@types/sql.js": "^1.4.9",

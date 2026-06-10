@@ -22,6 +22,16 @@ import {
 } from "../LeadAlertNotifier.js";
 import { LeadWatchdog } from "../LeadWatchdog.js";
 import { locateLeadWindow } from "../LeadWindowLocator.js";
+import { CodexLeadOutboundHandler } from "../lead-backends/codex/CodexLeadOutboundHandler.js";
+import { buildLeadDiscordSend } from "../lead-backends/codex/leadDiscordSend.js";
+import { SqliteOutboundDedupStore } from "../lead-backends/codex/SqliteOutboundDedupStore.js";
+import {
+	buildAuthorizeLeadChannel,
+	buildLeadOutboundExpressHandler,
+	buildResolveBotToken,
+	loadProjectLeadRoles,
+	paneWatchdogProjects,
+} from "../lead-backends/codexLeadBridgeWiring.js";
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
 import {
 	type LeadConfig,
@@ -682,6 +692,33 @@ export function createBridgeApp(
 	}
 
 	// GEO-270: Close stale tmux session (resource cleanup, no status change)
+	// FLY-224: Codex Lead outbound — apiToken-guarded reserved endpoint the Codex
+	// Lead runtime POSTs its replies to (durable idempotencyKey dedup → exactly-once
+	// Discord delivery via the per-Lead bot token). Additive; registered only when
+	// apiToken is configured (reserved endpoints require it) → no-op otherwise.
+	if (config.apiToken) {
+		const codexLeadOutbound = buildLeadOutboundExpressHandler(
+			new CodexLeadOutboundHandler({
+				store: new SqliteOutboundDedupStore(
+					join(homedir(), ".flywheel", "codex-lead-outbound-dedup.db"),
+				),
+				send: buildLeadDiscordSend({
+					resolveBotToken: buildResolveBotToken(projects, process.env),
+				}),
+				expectedApiToken: config.apiToken,
+				// Anti-impersonation: a Lead may only post to its own channels (FLY-246).
+				authorizeLeadChannel: buildAuthorizeLeadChannel(projects),
+			}),
+		);
+		app.post(
+			"/api/lead-outbound/send",
+			tokenAuthMiddleware(config.apiToken),
+			(req, res) => {
+				void codexLeadOutbound(req, res);
+			},
+		);
+	}
+
 	app.post(
 		"/api/sessions/:executionId/close-tmux",
 		tokenAuthMiddleware(config.apiToken),
@@ -2086,7 +2123,15 @@ export async function startBridge(
 		paneHashStuckCycles: 2,
 		paneHashAlertCycles: 3,
 		cooldownMs: 30 * 60_000,
-		projects,
+		// FLY-224 Phase 6b: exclude Codex-backed projects (no tmux pane) from the
+		// pane-text watchdog. Backend = real source (.flywheel/config.yaml
+		// roles.lead.backend). BYTE-COMPAT: a project with no roles.lead config →
+		// claude-code → identical list (no-op).
+		projects: paneWatchdogProjects(
+			projects,
+			(p) => loadProjectLeadRoles(p.projectRoot),
+			process.env,
+		),
 		store,
 		notifier: (payload) => leadAlertNotifier.alert(payload),
 		locateWindowFn: (projectName, leadId) =>
