@@ -14,9 +14,11 @@
 set -euo pipefail
 
 MANIFEST="${1:?Usage: flywheel-lead-wrapper.sh <manifest-path>}"
-FLYWHEEL_DIR="${HOME}/Dev/flywheel"
-ENV_FILE="${HOME}/.flywheel/.env"
-PID_DIR="${HOME}/.flywheel/pids"
+# FLY-224: overridable defaults (testability seams). Unset in production launchd,
+# so the resolved values — and therefore behavior — are byte-identical to before.
+FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
+ENV_FILE="${FLYWHEEL_WRAPPER_ENV_FILE:-${HOME}/.flywheel/.env}"
+PID_DIR="${FLYWHEEL_WRAPPER_PID_DIR:-${HOME}/.flywheel/pids}"
 
 log() {
   echo "[wrapper] $(date '+%H:%M:%S') $*"
@@ -84,6 +86,11 @@ WORKSPACE=$(jq -r '.workspace // ""' "$MANIFEST")
 #   security note about bypassPermissions + --chrome.
 MCP_EXCLUDE=$(jq -r '.mcpExclude // ""' "$MANIFEST")
 CHROME_ENABLED=$(jq -r '.chromeEnabled // false' "$MANIFEST")
+# FLY-224 Phase 2: vendor-pluggable Lead backend. Absent / "claude-code" → the
+# existing claude-lead.sh path (byte-identical). "codex-app-server" → codex-lead.sh.
+# The single source of truth is .flywheel/config.yaml roles.lead.backend, resolved
+# once and written into the manifest as leadBackend.backendId (Phase 0A §1).
+LEAD_BACKEND=$(jq -r '.leadBackend.backendId // "claude-code"' "$MANIFEST")
 
 # Validate critical fields
 if [ -z "$LEAD_ID" ] || [ "$LEAD_ID" = "null" ]; then
@@ -143,14 +150,35 @@ ARGS+=(--bot-token-env "$BOT_TOKEN_ENV")
 
 log "Starting Lead '${LEAD_ID}' (project: ${PROJECT_NAME}, subdir: ${SUBDIR:-root}, workspace: ${WORKSPACE:-default})"
 
-# ── exec claude-lead.sh ───────────────────────────────────────
-# exec replaces this wrapper process, so launchd directly manages
-# the claude-lead.sh supervisor (correct PID tracking, signal delivery).
-LEAD_SCRIPT="${FLYWHEEL_DIR}/packages/teamlead/scripts/claude-lead.sh"
-if [ ! -x "$LEAD_SCRIPT" ]; then
-  log "ERROR: claude-lead.sh not found or not executable: ${LEAD_SCRIPT}"
-  exit 1
-fi
-
-cd "${FLYWHEEL_DIR}/packages/teamlead"
-exec "$LEAD_SCRIPT" "${ARGS[@]}"
+# ── exec the backend launcher ─────────────────────────────────
+# exec replaces this wrapper process, so launchd directly manages the Lead
+# supervisor (correct PID tracking, signal delivery).
+#
+# FLY-224 Phase 2: dispatch by resolved backend. The codex branch is opt-in via
+# the manifest; the claude branch is byte-identical to the pre-FLY-224 behavior
+# (same script, same cd, same exec, same args) so existing Leads are unaffected.
+case "$LEAD_BACKEND" in
+  codex-app-server)
+    LEAD_SCRIPT="${FLYWHEEL_DIR}/packages/teamlead/scripts/codex-lead.sh"
+    if [ ! -x "$LEAD_SCRIPT" ]; then
+      log "ERROR: codex-lead.sh not found or not executable: ${LEAD_SCRIPT}"
+      exit 1
+    fi
+    log "Backend: codex-app-server → codex-lead.sh"
+    cd "${FLYWHEEL_DIR}/packages/teamlead"
+    exec "$LEAD_SCRIPT" "${ARGS[@]}"
+    ;;
+  claude-code | "" | null)
+    LEAD_SCRIPT="${FLYWHEEL_DIR}/packages/teamlead/scripts/claude-lead.sh"
+    if [ ! -x "$LEAD_SCRIPT" ]; then
+      log "ERROR: claude-lead.sh not found or not executable: ${LEAD_SCRIPT}"
+      exit 1
+    fi
+    cd "${FLYWHEEL_DIR}/packages/teamlead"
+    exec "$LEAD_SCRIPT" "${ARGS[@]}"
+    ;;
+  *)
+    log "ERROR: unknown lead backend '${LEAD_BACKEND}' (expected claude-code | codex-app-server)."
+    exit 1
+    ;;
+esac
