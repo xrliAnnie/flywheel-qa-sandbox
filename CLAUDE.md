@@ -122,6 +122,7 @@ Current version: see `doc/VERSION`
 | FLY-222 v1.36.2: 小红书定期学习 — Xiaohongshu periodic learning(定时抓取 + 学习管线;`flywheel-config` `xiaohongshu_learning` 配置 + scheduler) | ✅ Merged (PR #243) |
 | FLY-241 v1.38.0: per-agent 模型开关 — Lead `--model` + Runner roles config 的 per-agent model override。**Fable 全队 apply**(Peter/Hiro 等 Lead `--model` 覆盖 + Runner 继承 Lead 模型) | ✅ Merged (PR #242) |
 | FLY-224 v1.39.0: Codex 当 Lead — **vendor-pluggable Lead**(Codex `app-server` 作首个非-Claude Lead backend,Claude path 字节不变)+ companion **Mufasa 真机上线**(business Codex 账号、隔离 `~/.codex-mufasa`、direct 出站、persona 注入=`identity.md`→thread `baseInstructions`,前/后对比验过工程腔→温暖陪练)。**scope-B 全审 5/6 APPROVED**(HIGH-1 app-server policy pin + write-capable fail-close / HIGH-2 dedup TOCTOU 原子 claim / HIGH-3 模糊失败不盲发 / HIGH-4 inbound at-least-once durable cursor + 耦合 durable-accept / persona fail-closed);冒用完整 per-Lead auth → **FLY-246**、founder action path → **FLY-245**。Codex review ~6 轮;476+ 测、PR merge 撞 doc/VERSION+exports 冲突 + 依赖 dist 旧 + 没-leads project 崩 + lint noAssignInExpressions 全解 | ✅ Merged (PR #244) |
+| FLY-250: Mufasa repoint 回主仓 main dist + launchd 收编(`com.flywheel.lead.growth-mufasa-lead`,KeepAlive 1s 自起实测,token 经 wrapper source .env 不进 plist 明文)+ fly-224/fly-231 worktree 清理(merged 分支保留)+ **companion Lead ship 纪律固化**:merge 后 repoint 回 main + 纳入 launchd = ship 流程标准一环,做完才许删 worktree(`doc/engineer/implementation/companion-lead-ship-discipline.md`,FLY-224/231 两次漏项的补账)。硬停止点 = Annie #mufasa 真聊验证回话后才删 worktree;thread-id 前后逐字一致(记忆延续铁证) | ✅ Merged (PR #246) |
 
 ## Doc Structure & Lifecycle
 
