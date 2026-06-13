@@ -45,6 +45,7 @@ export type StuckExclusionReason =
 	| "not_running"
 	| "parked_review_status" // awaiting_review / approved_to_ship (FLY-191)
 	| "pending_gate" // unanswered gate question in CommDB
+	| "recent_comm_activity" // FLY-253 L1: runner messaged its Lead recently (alive)
 	| "pending_review_signal" // gray zone: needs_review emitted, status not yet flipped
 	| "output_changing" // output changed since last poll (no stagnation yet)
 	| "below_threshold" // stagnant but < threshold
@@ -107,6 +108,16 @@ export interface StuckCandidateInput {
 	prior?: StuckEpisodeState;
 	/** True if CommDB has an unanswered gate question from this execution. */
 	hasPendingGate: boolean;
+	/**
+	 * FLY-253 L1: true if this execution sent ANY CommDB message within the
+	 * activity window (default 30 min). A runner that recently messaged its
+	 * Lead (DONE report / instruction receipt / question) is mechanically
+	 * alive, however static its pane looks — the pane is a rendering, CommDB
+	 * is behavior (LEARN-57: a parked interactive runner's real liveness
+	 * channel was CommDB; the detector only watched the pane). Optional for
+	 * byte-compat: absent ⇒ false ⇒ pre-FLY-253 behavior.
+	 */
+	hasRecentCommActivity?: boolean;
 	/**
 	 * True if there is durable evidence the Runner just finished and is awaiting
 	 * review even though the status row hasn't flipped yet (gray zone). Caller
@@ -209,6 +220,7 @@ function extractTail(output: string, lines: number): string {
  * Hard safety gates (in order), any of which excludes (and clears the episode):
  *   1. status !== "running"               → not_running / parked_review_status
  *   2. hasPendingGate                     → pending_gate
+ *   2.5 hasRecentCommActivity (FLY-253)   → recent_comm_activity
  *   3. hasPendingReviewSignal (gray zone) → pending_review_signal
  * Then stagnation tracking:
  *   4. output changed / first sighting    → start a fresh episode, output_changing
@@ -234,6 +246,21 @@ export function evaluateStuckCandidate(
 	// Gate 2: legitimately parked at a gate.
 	if (input.hasPendingGate) {
 		return { candidate: false, exclusion: "pending_gate", episode: null };
+	}
+
+	// Gate 2.5 (FLY-253 L1): recent CommDB outbound activity ⇒ alive. Clears
+	// the episode INCLUDING an already-escalated one — intentional semantics:
+	// the runner messaging its Lead refutes the stuck condition that justified
+	// the escalation, so a pending Q7 grace dies with the episode (never page
+	// Annie about a runner that just talked to its Lead). Worst-case detection
+	// delay for a runner that freezes right after its last message: activity
+	// window + threshold (+ grace for Q7) — a delay, not a miss.
+	if (input.hasRecentCommActivity) {
+		return {
+			candidate: false,
+			exclusion: "recent_comm_activity",
+			episode: null,
+		};
 	}
 
 	// Gate 3: gray zone — needs_review emitted but status row not yet flipped.

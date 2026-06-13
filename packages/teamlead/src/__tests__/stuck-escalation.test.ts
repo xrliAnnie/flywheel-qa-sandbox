@@ -4,9 +4,11 @@
  * and the Lead-rules pin (ladder constants must not drift from the prompt).
  */
 
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { CommDB } from "flywheel-comm/db";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	GUARDRAIL_EVENT_TYPES,
 	RETRYABLE_LEAD_EVENT_TYPES,
@@ -15,8 +17,12 @@ import {
 	buildStuckRunnerDetector,
 	createStuckEscalationEmitter,
 	createStuckUnhandledAlerter,
+	parseNonNegativeIntEnv,
+	probeCommSignalsFromCommDb,
+	stuckCommActivityMs,
 	stuckDetectionEnabled,
 	stuckEscalationEventId,
+	stuckLatchTtlMs,
 	stuckLeadGraceMs,
 	stuckThresholdMs,
 	stuckUnhandledEventId,
@@ -196,7 +202,7 @@ describe("createStuckUnhandledAlerter (Q7)", () => {
 		};
 	}
 
-	it("pages via the notifier with the MEDIUM-5 eventId format and no raw pane content", async () => {
+	it("pages via the notifier with the generation eventId format and no raw pane content", async () => {
 		const alert = vi.fn(async () => ({ sent: true }));
 		const alerter = createStuckUnhandledAlerter(
 			testProjects,
@@ -208,15 +214,37 @@ describe("createStuckUnhandledAlerter (Q7)", () => {
 		const payload = alert.mock.calls[0]![0] as Record<string, unknown>;
 		expect(payload.eventType).toBe("runner_stuck_unhandled");
 		expect(payload.eventId).toBe(
-			stuckUnhandledEventId("exec-1", "abcdef0123456789"),
+			stuckUnhandledEventId("exec-1", "abcdef0123456789", 5_000),
 		);
+		// FLY-253 (Codex R2 #3): escalatedAt generation salt — a persistent
+		// fingerprint-only dedup would swallow the second-generation Q7 after a
+		// re-arm / TTL reminder when the Lead stays silent again.
 		expect(payload.eventId).toBe(
-			"runner-stuck-unhandled:exec-1:abcdef0123456789",
+			"runner-stuck-unhandled:exec-1:abcdef0123456789:5000",
 		);
 		expect(payload.leadId).toBe("product-lead");
 		expect(payload.severity).toBe("warning");
 		// privacy: body explains, but carries no terminal capture
 		expect(String(payload.body)).not.toContain("❯");
+	});
+
+	it("two generations of the same frozen frame produce DISTINCT eventIds (claims dedup must not swallow the second)", () => {
+		const g1 = stuckUnhandledEventId("exec-1", "abcdef0123456789", 5_000);
+		const g2 = stuckUnhandledEventId("exec-1", "abcdef0123456789", 9_000);
+		expect(g1).not.toBe(g2);
+	});
+
+	it("Q7 body is honest about the Lead (busy, down, or stuck — §3.3)", async () => {
+		const alert = vi.fn(async () => ({ sent: true }));
+		const alerter = createStuckUnhandledAlerter(
+			testProjects,
+			{ alert },
+			() => {},
+		);
+		await alerter(unhandledPayload());
+		const payload = alert.mock.calls[0]![0] as Record<string, unknown>;
+		expect(String(payload.body)).toContain("busy, down, or stuck");
+		expect(String(payload.body)).not.toContain("down or stuck too");
 	});
 
 	it("treats queued and duplicate outcomes as resolved", async () => {
@@ -290,6 +318,39 @@ describe("env knobs (plan §3.7)", () => {
 				} as NodeJS.ProcessEnv),
 			).toBe(600_000);
 		}
+	});
+
+	// FLY-253 knobs — `0` is a VALID value here ("off"), unlike the positive knobs.
+	it("parseNonNegativeIntEnv accepts 0 (does not fall back) and rejects junk", () => {
+		expect(parseNonNegativeIntEnv("0", 99)).toBe(0);
+		expect(parseNonNegativeIntEnv("5", 99)).toBe(5);
+		expect(parseNonNegativeIntEnv(undefined, 99)).toBe(99);
+		expect(parseNonNegativeIntEnv("", 99)).toBe(99);
+		expect(parseNonNegativeIntEnv("abc", 99)).toBe(99);
+		expect(parseNonNegativeIntEnv("-5", 99)).toBe(99);
+	});
+
+	it("activity window: default 30 min; 0 disables L1", () => {
+		expect(stuckCommActivityMs({} as NodeJS.ProcessEnv)).toBe(1_800_000);
+		expect(
+			stuckCommActivityMs({
+				FLYWHEEL_STUCK_COMM_ACTIVITY_MS: "0",
+			} as NodeJS.ProcessEnv),
+		).toBe(0);
+		expect(
+			stuckCommActivityMs({
+				FLYWHEEL_STUCK_COMM_ACTIVITY_MS: "60000",
+			} as NodeJS.ProcessEnv),
+		).toBe(60_000);
+	});
+
+	it("latch TTL: default 72h; 0 = permanent", () => {
+		expect(stuckLatchTtlMs({} as NodeJS.ProcessEnv)).toBe(259_200_000);
+		expect(
+			stuckLatchTtlMs({
+				FLYWHEEL_STUCK_LATCH_TTL_MS: "0",
+			} as NodeJS.ProcessEnv),
+		).toBe(0);
 	});
 
 	it("factory wires decision-time re-read from store.getSession (MEDIUM-2)", async () => {
@@ -393,5 +454,82 @@ describe("stuck-runner-remanage Lead rules pin", () => {
 			"utf8",
 		);
 		expect(sh).toContain("stuck-runner-remanage.md");
+	});
+});
+
+// ── FLY-253 L1: combined CommDB probe (REAL better-sqlite3 files —
+// feedback_mock_tests_need_integration_complement: the SQL-clock-domain
+// window comparison must be verified against a real database) ──
+
+describe("probeCommSignalsFromCommDb (FLY-253, real sqlite)", () => {
+	let dir: string;
+	let oldHome: string | undefined;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "fly253-probe-"));
+		oldHome = process.env.HOME;
+		process.env.HOME = dir; // os.homedir() honors $HOME on POSIX
+	});
+
+	afterEach(() => {
+		process.env.HOME = oldHome;
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	function seedCommDb(project: string): CommDB {
+		const dbPath = join(dir, ".flywheel", "comm", project, "comm.db");
+		return new CommDB(dbPath);
+	}
+
+	it("missing comm.db ⇒ both signals false", () => {
+		expect(probeCommSignalsFromCommDb("exec-1", "geo", 60_000)).toEqual({
+			hasPendingGate: false,
+			hasRecentOutbound: false,
+		});
+	});
+
+	it("a just-sent message ⇒ hasRecentOutbound true; an answered question ⇒ no pending gate", () => {
+		const db = seedCommDb("geo");
+		const qid = db.insertQuestion("exec-1", "product-lead", "DONE: report");
+		db.insertResponse(qid, "product-lead", "ok");
+		db.close();
+		expect(probeCommSignalsFromCommDb("exec-1", "geo", 60_000)).toEqual({
+			hasPendingGate: false,
+			hasRecentOutbound: true,
+		});
+	});
+
+	it("an unanswered question ⇒ BOTH pending gate and recent outbound", () => {
+		const db = seedCommDb("geo");
+		db.insertQuestion("exec-1", "product-lead", "blocking?");
+		db.close();
+		expect(probeCommSignalsFromCommDb("exec-1", "geo", 60_000)).toEqual({
+			hasPendingGate: true,
+			hasRecentOutbound: true,
+		});
+	});
+
+	it("window=0 short-circuits to hard false BEFORE the activity query (Codex R2 #5)", () => {
+		const db = seedCommDb("geo");
+		db.insertQuestion("exec-1", "product-lead", "DONE");
+		db.close();
+		const signals = probeCommSignalsFromCommDb("exec-1", "geo", 0);
+		expect(signals.hasRecentOutbound).toBe(false);
+	});
+
+	it("path-traversal project names are rejected (both false)", () => {
+		expect(probeCommSignalsFromCommDb("exec-1", "../geo", 60_000)).toEqual({
+			hasPendingGate: false,
+			hasRecentOutbound: false,
+		});
+	});
+
+	it("other executions' messages do not count", () => {
+		const db = seedCommDb("geo");
+		db.insertQuestion("other-exec", "product-lead", "noise");
+		db.close();
+		expect(
+			probeCommSignalsFromCommDb("exec-1", "geo", 60_000).hasRecentOutbound,
+		).toBe(false);
 	});
 });

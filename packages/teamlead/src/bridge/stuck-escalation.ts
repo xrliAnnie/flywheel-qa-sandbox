@@ -31,6 +31,7 @@ import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { parseSessionLabels } from "./lead-scope.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import {
+	type CommSignals,
 	LEAD_GRACE_MS,
 	type StuckEscalationPayload,
 	StuckRunnerDetector,
@@ -55,6 +56,20 @@ function parsePositiveIntEnv(
 	return Number.isFinite(n) && n > 0 ? n : fallback;
 }
 
+/**
+ * FLY-253 (Codex R1 #6): like parsePositiveIntEnv but `0` is a VALID value
+ * ("feature off"), not a fall-through to the default. Shared by the L1
+ * activity window and the L2 latch TTL.
+ */
+export function parseNonNegativeIntEnv(
+	raw: string | undefined,
+	fallback: number,
+): number {
+	if (raw === undefined || raw === "") return fallback;
+	const n = Number.parseInt(raw, 10);
+	return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 /** `FLYWHEEL_STUCK_THRESHOLD_MS` — stagnation patience (default 10 min). */
 export function stuckThresholdMs(env: NodeJS.ProcessEnv = process.env): number {
 	return parsePositiveIntEnv(env.FLYWHEEL_STUCK_THRESHOLD_MS, 600_000);
@@ -63,6 +78,36 @@ export function stuckThresholdMs(env: NodeJS.ProcessEnv = process.env): number {
 /** `FLYWHEEL_STUCK_LEAD_GRACE_MS` — Q7 fallback grace (default 5 min). */
 export function stuckLeadGraceMs(env: NodeJS.ProcessEnv = process.env): number {
 	return parsePositiveIntEnv(env.FLYWHEEL_STUCK_LEAD_GRACE_MS, LEAD_GRACE_MS);
+}
+
+/**
+ * FLY-253 L1: `FLYWHEEL_STUCK_COMM_ACTIVITY_MS` — how recently the runner
+ * must have sent a CommDB message to be exempt from stuck candidacy.
+ * Default 30 min; `0` disables the exemption (legacy behavior).
+ */
+export const STUCK_COMM_ACTIVITY_MS = 1_800_000;
+export function stuckCommActivityMs(
+	env: NodeJS.ProcessEnv = process.env,
+): number {
+	return parseNonNegativeIntEnv(
+		env.FLYWHEEL_STUCK_COMM_ACTIVITY_MS,
+		STUCK_COMM_ACTIVITY_MS,
+	);
+}
+
+/**
+ * FLY-253 L2: `FLYWHEEL_STUCK_LATCH_TTL_MS` — server-side TTL written into
+ * execution-scoped `legitimate_wait` / `needs_founder` latches (as
+ * `snooze_until_ms`). Default 72h; `0` = permanent latch (no expiry).
+ * Parsed ONCE at the plugin/config layer and injected into the remanage
+ * router as `latchTtlMs` (Codex R2 #5).
+ */
+export const STUCK_LATCH_TTL_MS = 259_200_000; // 72h
+export function stuckLatchTtlMs(env: NodeJS.ProcessEnv = process.env): number {
+	return parseNonNegativeIntEnv(
+		env.FLYWHEEL_STUCK_LATCH_TTL_MS,
+		STUCK_LATCH_TTL_MS,
+	);
 }
 
 // ── Pending-gate predicate (plan §3.1.4 hard gate 2) ──
@@ -88,6 +133,48 @@ export function hasPendingGateFromCommDb(
 	try {
 		db = CommDB.openReadonly(dbPath);
 		return db.hasPendingQuestionsFrom(executionId);
+	} finally {
+		db?.close();
+	}
+}
+
+/**
+ * FLY-253: combined CommDB probe — BOTH liveness signals from ONE readonly
+ * open per session per poll (Codex R1 #6: CommDB.db is private, so the
+ * second query lives in a public CommDB method, not raw SQL here).
+ *
+ *   - hasPendingGate: unanswered question ⇒ legitimately parked (gate 2).
+ *   - hasRecentOutbound: any message from this exec within the activity
+ *     window ⇒ alive (gate 2.5, L1). `activityWindowMs = 0` SHORT-CIRCUITS
+ *     to hard false BEFORE the query (Codex R2 #5: "off" must never depend
+ *     on a query result). Window comparison happens entirely inside
+ *     SQLite's UTC clock domain (CommDB.hasRecentMessagesFrom).
+ *
+ * Missing comm.db ⇒ both false (no questions, no activity). Real DB errors
+ * THROW so the detector's fail-closed handling treats the session as parked.
+ */
+export function probeCommSignalsFromCommDb(
+	executionId: string,
+	projectName: string,
+	activityWindowMs: number,
+): CommSignals {
+	// Path traversal guard (same as hasPendingGateFromCommDb).
+	if (/[/\\]|\.\./.test(projectName)) {
+		return { hasPendingGate: false, hasRecentOutbound: false };
+	}
+	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
+	if (!existsSync(dbPath)) {
+		return { hasPendingGate: false, hasRecentOutbound: false };
+	}
+
+	let db: CommDB | undefined;
+	try {
+		db = CommDB.openReadonly(dbPath);
+		const hasPendingGate = db.hasPendingQuestionsFrom(executionId);
+		const hasRecentOutbound =
+			activityWindowMs > 0 &&
+			db.hasRecentMessagesFrom(executionId, Math.ceil(activityWindowMs / 1000));
+		return { hasPendingGate, hasRecentOutbound };
 	} finally {
 		db?.close();
 	}
@@ -218,12 +305,23 @@ export interface UnhandledAlertSink {
 	alert(payload: AlertPayload): Promise<AlertResult>;
 }
 
-/** Stable Annie-alert event id (Codex R1 MEDIUM-5 format). */
+/**
+ * Stable Annie-alert event id (Codex R1 MEDIUM-5 format).
+ *
+ * FLY-253 (Codex R2 #3): `escalatedAt` is the GENERATION salt. The claims.db
+ * and lead_events dedups are persistent, so a fingerprint-only id would
+ * silently swallow a legitimate second Q7 for the same frozen frame after a
+ * re-arm / TTL reminder cycle (the notifier reports duplicates as resolved
+ * and the detector would mark annieAlerted). Granularity shift is
+ * documented in the plan §6: per-generation paging is only reachable when
+ * the Lead never wrote any disposition.
+ */
 export function stuckUnhandledEventId(
 	executionId: string,
 	fingerprint: string,
+	escalatedAt: number,
 ): string {
-	return `runner-stuck-unhandled:${executionId}:${fingerprint}`;
+	return `runner-stuck-unhandled:${executionId}:${fingerprint}:${escalatedAt}`;
 }
 
 /**
@@ -241,7 +339,7 @@ export function createStuckUnhandledAlerter(
 ): (payload: StuckUnhandledPayload) => Promise<boolean> {
 	const logFn = log ?? ((msg: string) => console.log(msg));
 	return async (payload: StuckUnhandledPayload): Promise<boolean> => {
-		const { session, episodeFingerprint, stuckMinutes } = payload;
+		const { session, episodeFingerprint, stuckMinutes, escalatedAt } = payload;
 		const labels = parseSessionLabels(session);
 		let lead: LeadConfig;
 		try {
@@ -259,12 +357,19 @@ export function createStuckUnhandledAlerter(
 		const result = await notifier.alert({
 			leadId: lead.agentId,
 			projectName: session.project_name,
-			eventId: stuckUnhandledEventId(session.execution_id, episodeFingerprint),
+			eventId: stuckUnhandledEventId(
+				session.execution_id,
+				episodeFingerprint,
+				escalatedAt,
+			),
 			eventType: "runner_stuck_unhandled",
 			title: `Runner stuck UNHANDLED: ${issue}`,
+			// FLY-253 §3.3 honesty fix: "may be down or stuck too" was a lie when
+			// the Lead was merely busy for 5 minutes (LEARN-57: Asha had disposed
+			// the previous episode 27s after its escalation).
 			body:
 				`Runner for ${issue} (execution ${session.execution_id}) has had unchanged terminal output for ~${stuckMinutes} min while status=running. ` +
-				`The Bridge escalated to ${lead.agentId} but no disposition receipt arrived within the grace window — the Lead may be down or stuck too. ` +
+				`The Bridge escalated to ${lead.agentId} but no disposition receipt arrived within the grace window — the Lead may be busy, down, or stuck. ` +
 				`Check the Lead first, then the runner's tmux window. (FLY-195 Q7 fallback)`,
 			severity: "warning",
 			sessionKey: session.execution_id,
@@ -300,19 +405,28 @@ export function buildStuckRunnerDetector(
 	if (!stuckDetectionEnabled(env)) return null;
 	const log = opts.log ?? ((msg: string) => console.log(msg));
 
+	const activityWindowMs = stuckCommActivityMs(env);
 	return new StuckRunnerDetector({
 		capture: async () => ({
 			ok: false,
 			error: "no precaptured output provided (watchdog must pass capture)",
 		}),
-		hasPendingGate: (executionId, projectName) =>
-			hasPendingGateFromCommDb(executionId, projectName),
+		// FLY-253 L1: both CommDB signals from one readonly open per session.
+		probeCommSignals: (executionId, projectName) =>
+			probeCommSignalsFromCommDb(executionId, projectName, activityWindowMs),
 		// Decision-time status re-read (Codex PR R1 MEDIUM-2): never escalate
 		// off the watchdog's poll-start snapshot.
 		refreshSession: (executionId) => opts.store.getSession(executionId),
 		emit: createStuckEscalationEmitter(opts),
-		getDisposition: (executionId, fingerprint) =>
-			opts.store.getStuckDisposition(executionId, fingerprint),
+		// FLY-253 L2: exact + execution-sentinel rows; precedence in detector.
+		getDispositionRows: (executionId, fingerprint) =>
+			opts.store.getStuckDispositionRows(executionId, fingerprint),
+		consumeExpiredDispositions: (executionId, fingerprint, nowMs) =>
+			opts.store.consumeExpiredStuckDispositions(
+				executionId,
+				fingerprint,
+				nowMs,
+			),
 		alertUnhandled: createStuckUnhandledAlerter(
 			opts.projects,
 			opts.notifier,

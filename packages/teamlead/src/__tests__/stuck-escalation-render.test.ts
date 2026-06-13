@@ -350,9 +350,11 @@ describe("round-trip: escalation text → disposition/nudge accepted", () => {
 			},
 		);
 		expect(res.status).toBe(200);
-		expect(store.getStuckDisposition("exec-1", fp!)?.disposition).toBe(
-			"legitimate_wait",
-		);
+		// FLY-253: legitimate_wait latches the EXECUTION — the receipt lands on
+		// the '*' sentinel (read via the rows API the detector uses).
+		expect(
+			store.getStuckDispositionRows("exec-1", fp!).sentinel?.disposition,
+		).toBe("legitimate_wait");
 	});
 
 	it("the same extracted fingerprint passes the recovery-nudge gates end-to-end", async () => {

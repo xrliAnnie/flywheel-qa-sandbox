@@ -5,11 +5,19 @@
  *   - capture the runner's terminal (FAIL-CLOSED on error — never treat a
  *     tmux/CommDB probe failure as "stuck"; lesson from FLY-191 PR #213 R1,
  *     where a probe error was misread as "dead" and could reap a live runner);
- *   - query "legitimately parked" predicates (pending gate / pending review);
+ *   - query "legitimately parked" predicates (pending gate / recent CommDB
+ *     activity (FLY-253 L1) / pending review);
  *   - maintain the per-execution stuck-episode map (separate from the FLY-92
  *     idle state — Codex R1 LOW-8);
  *   - emit a `runner_stuck_escalation` once per episode (dedup) to the owning
  *     Lead via an injected emitter.
+ *
+ * FLY-253 (L2): Lead dispositions can be EXECUTION-scoped (sentinel row,
+ * episode_fingerprint='*') so one `legitimate_wait` latches the whole runner
+ * instead of one pane frame — the LEARN-57 incident was a disposition
+ * treadmill where every pane change spawned a new episode that invalidated
+ * the Lead's receipt. Timed receipts (snooze / TTL'd latches) expire into a
+ * one-shot "reminder" that re-asks the LEAD (not Annie) once.
  *
  * All dependencies are injected so this is unit-testable without tmux/DB/Bridge.
  * It owns NO timer — the caller (RunnerIdleWatchdog) drives it from the existing
@@ -36,6 +44,18 @@ export type CaptureOutcome =
 	| { ok: true; output: string }
 	| { ok: false; error: string };
 
+/**
+ * FLY-253: the two CommDB liveness signals, probed together (ONE readonly
+ * open per session per poll — the production probe lives in
+ * stuck-escalation.ts `probeCommSignalsFromCommDb`).
+ */
+export interface CommSignals {
+	/** Runner has an unanswered gate question (legitimately parked). */
+	hasPendingGate: boolean;
+	/** Runner sent ANY CommDB message within the activity window (L1). */
+	hasRecentOutbound: boolean;
+}
+
 export interface StuckEscalationPayload {
 	session: Session;
 	evidence: StuckEvidence;
@@ -55,6 +75,20 @@ export interface StuckUnhandledPayload {
 	escalatedAt: number;
 }
 
+/** Both rows that can govern one episode (FLY-253 L2). */
+export interface StuckDispositionRows {
+	/** Row keyed to this exact episode fingerprint. */
+	exact?: StuckDispositionRow;
+	/** Execution-scoped sentinel row (episode_fingerprint='*'). */
+	sentinel?: StuckDispositionRow;
+}
+
+/** The row chosen by precedence, and whether it currently suppresses. */
+export interface StuckDispositionSelection {
+	row: StuckDispositionRow;
+	effective: boolean;
+}
+
 export interface StuckRunnerDetectorDeps {
 	/**
 	 * Capture the runner's terminal output. MUST return { ok:false } on any
@@ -65,8 +99,12 @@ export interface StuckRunnerDetectorDeps {
 		executionId: string,
 		projectName: string,
 	) => Promise<CaptureOutcome>;
-	/** True ⇒ runner has an unanswered gate question (legitimately parked). */
-	hasPendingGate: (executionId: string, projectName: string) => boolean;
+	/**
+	 * Probe BOTH CommDB liveness signals (pending gate + recent outbound) in
+	 * one call (FLY-253 L1: one readonly open per session per poll). Throwing
+	 * fails closed — the session is treated as parked for this poll.
+	 */
+	probeCommSignals: (executionId: string, projectName: string) => CommSignals;
 	/**
 	 * True ⇒ durable "awaiting review" signal even if status row not yet flipped
 	 * (gray zone). Default derives from the session's decision_route.
@@ -87,23 +125,43 @@ export interface StuckRunnerDetectorDeps {
 	 */
 	refreshSession?: (executionId: string) => Session | undefined;
 	/**
-	 * Read the persisted Lead disposition for one episode (plan §3.4). The
-	 * detector consults it (a) before re-paging the Lead for an episode that
-	 * was already judged (Bridge-restart rebuild, Codex R1 LOW-7) and (b) in
-	 * the Q7 fallback, including a durable re-read right before paging Annie
-	 * (Codex R2 LOW-R2-2).
+	 * Read BOTH persisted Lead disposition rows for one episode (FLY-253 L2):
+	 * the exact-fingerprint row and the execution-scoped '*' sentinel. The
+	 * detector picks between them via `selectStuckDisposition` (a) before
+	 * re-paging the Lead (Bridge-restart rebuild, Codex R1 LOW-7) and (b) in
+	 * the Q7 fallback durable re-read (Codex R2 LOW-R2-2).
 	 */
-	getDisposition?: (
+	getDispositionRows?: (
 		executionId: string,
 		episodeFingerprint: string,
-	) => StuckDispositionRow | undefined;
+	) => StuckDispositionRows;
+	/**
+	 * FLY-253 (Codex R2 #2): delete CURRENTLY-EXPIRED timed rows among
+	 * {exact, '*'} — an expired receipt is a ONE-SHOT reminder token. Must
+	 * guard with `snooze_until_ms <= now` so a concurrently-refreshed row
+	 * survives.
+	 *
+	 * REQUIRED (Codex code R1 MEDIUM-4): an optional consumer silently
+	 * recreates the infinite-reminder treadmill if a future wiring forgets it
+	 * (expired rows never consumed ⇒ Lead re-reminded every generation, Annie
+	 * never paged). The escalation path treats a throw as fail-closed (roll
+	 * back + retry); the Q7 path resets the episode (see maybeAlertUnhandled —
+	 * Codex code R1 HIGH-2).
+	 */
+	consumeExpiredDispositions: (
+		executionId: string,
+		episodeFingerprint: string,
+		nowMs: number,
+	) => void;
 	/**
 	 * Q7 fallback (plan §3.6): page Annie about an episode no Lead disposed of
 	 * within the grace window. MUST dedup internally per eventId
-	 * `runner-stuck-unhandled:${execution_id}:${fingerprint}` (the
-	 * LeadAlertNotifier claims path). Returns true once the alert is claimed /
-	 * sent so the detector marks the episode resolved; false/throw ⇒ retry
-	 * next poll.
+	 * `runner-stuck-unhandled:${execution_id}:${fingerprint}:${escalatedAt}`
+	 * (the LeadAlertNotifier claims path; escalatedAt is the generation salt —
+	 * FLY-253 Codex R2 #3: a fingerprint-only id would let the persistent
+	 * claims dedup swallow the fallback for a post-re-arm/TTL second
+	 * generation). Returns true once the alert is claimed / sent so the
+	 * detector marks the episode resolved; false/throw ⇒ retry next poll.
 	 */
 	alertUnhandled?: (payload: StuckUnhandledPayload) => Promise<boolean>;
 	/** Grace before the Q7 fallback fires (default LEAD_GRACE_MS). */
@@ -116,7 +174,16 @@ export interface StuckRunnerDetectorDeps {
 	log?: (msg: string) => void;
 }
 
-/** True when a disposition row currently suppresses (snooze must be unexpired). */
+/**
+ * True when a disposition row currently suppresses.
+ *
+ * FLY-253: generalized to TIME-BOUNDED semantics — any row with a non-NULL
+ * `snooze_until_ms` suppresses only until that instant (snooze AND the TTL'd
+ * execution latches both ride this). A NULL row is a terminal receipt
+ * (episode-level false_positive / handled_remanaged, or a TTL=0 permanent
+ * latch). Exception kept from FLY-195: a `snooze` row with a missing
+ * timestamp is malformed and never suppresses (fail toward alerting).
+ */
 export function dispositionSuppresses(
 	row: StuckDispositionRow | undefined,
 	now: number,
@@ -125,7 +192,48 @@ export function dispositionSuppresses(
 	if (row.disposition === "snooze") {
 		return row.snooze_until_ms != null && row.snooze_until_ms > now;
 	}
+	if (row.snooze_until_ms != null) return row.snooze_until_ms > now;
 	return true;
+}
+
+/**
+ * FLY-253 (Codex R1 #3): precedence between the exact row and the execution
+ * sentinel. ANY currently-effective row suppresses (effective exact wins for
+ * attribution); only when neither is effective does an expired row surface —
+ * it drives the one-shot reminder reset. An unconditional exact-first pick
+ * would let an expired exact snooze shadow an active sentinel legitimate_wait
+ * and re-open the alert treadmill.
+ */
+export function selectStuckDisposition(
+	rows: StuckDispositionRows,
+	now: number,
+): StuckDispositionSelection | undefined {
+	const { exact, sentinel } = rows;
+	if (exact && dispositionSuppresses(exact, now)) {
+		return { row: exact, effective: true };
+	}
+	if (sentinel && dispositionSuppresses(sentinel, now)) {
+		return { row: sentinel, effective: true };
+	}
+	if (exact) return { row: exact, effective: false };
+	if (sentinel) return { row: sentinel, effective: false };
+	return undefined;
+}
+
+/**
+ * An expired selection only triggers the reminder reset when it is a TIMED
+ * receipt that lapsed (snooze / TTL latch). A malformed untimed snooze is
+ * treated as "no receipt" (pre-FLY-253 posture: missing ts never suppresses,
+ * and must not loop reminders either).
+ */
+function isExpiredTimedReceipt(
+	selection: StuckDispositionSelection | undefined,
+): boolean {
+	return (
+		selection !== undefined &&
+		!selection.effective &&
+		selection.row.snooze_until_ms != null
+	);
 }
 
 /** Default gray-zone predicate: a needs_review route is a pending-review signal. */
@@ -154,6 +262,21 @@ export class StuckRunnerDetector {
 	/** Test/diagnostic accessor. */
 	episodeFor(executionId: string): StuckEpisodeState | undefined {
 		return this.episodes.get(executionId);
+	}
+
+	/**
+	 * FLY-253 (Codex R1 #1): re-arm stuck detection for an execution after the
+	 * Lead cleared its latch. Deleting the DB sentinel alone cannot reach the
+	 * in-memory episode (already marked escalated/annieAlerted) — this drops
+	 * it so the next poll rebuilds a fresh episode and re-escalates after the
+	 * threshold, same fingerprint, no pane change required. Called by the
+	 * stuck-remanage route via the plugin's late-bound holder.
+	 */
+	rearmExecution(executionId: string): void {
+		this.episodes.delete(executionId);
+		this.deps.log?.(
+			`[StuckDetector] ${executionId} re-armed — episode state cleared`,
+		);
 	}
 
 	/**
@@ -215,14 +338,15 @@ export class StuckRunnerDetector {
 			session = fresh;
 		}
 
-		let hasPendingGate = false;
+		let signals: CommSignals;
 		try {
-			hasPendingGate = this.deps.hasPendingGate(execId, session.project_name);
+			signals = this.deps.probeCommSignals(execId, session.project_name);
 		} catch (err) {
-			// Same fail-closed posture: if we cannot determine "parked at a gate",
-			// assume parked (do not escalate) rather than risk nudging a gate-waiter.
+			// Same fail-closed posture: if we cannot determine "parked at a gate /
+			// recently active", assume parked (do not escalate) rather than risk
+			// nudging a gate-waiter.
 			this.deps.log?.(
-				`[StuckDetector] pending-gate query failed for ${execId}: ${
+				`[StuckDetector] CommDB probe failed for ${execId}: ${
 					err instanceof Error ? err.message : String(err)
 				} — treating as parked (fail-closed)`,
 			);
@@ -234,7 +358,8 @@ export class StuckRunnerDetector {
 			output: capture.output,
 			now: this.now(),
 			prior: this.episodes.get(execId),
-			hasPendingGate,
+			hasPendingGate: signals.hasPendingGate,
+			hasRecentCommActivity: signals.hasRecentOutbound,
 			hasPendingReviewSignal: this.hasPendingReviewSignal(session),
 			thresholdMs: this.deps.thresholdMs,
 		});
@@ -247,27 +372,60 @@ export class StuckRunnerDetector {
 		}
 
 		if (result.candidate && result.evidence && result.episode) {
-			// Bridge-restart rebuild (Codex R1 LOW-7): if a persisted disposition
-			// already judged this exact episode (same execution + fingerprint),
-			// do NOT re-page the Lead — the in-memory map was lost, but the
-			// receipt is authoritative. An expired snooze does not suppress.
-			const disposition = this.readDispositionSafe(
+			// Bridge-restart rebuild (Codex R1 LOW-7): a persisted disposition —
+			// exact OR execution sentinel (FLY-253 L2) — already judged this
+			// runner; do NOT re-page the Lead. The in-memory map was lost, but
+			// the receipt is authoritative.
+			const selection = this.readDispositionSafe(
 				execId,
 				result.episode.fingerprint,
 			);
-			if (dispositionSuppresses(disposition, this.now())) {
-				// snooze is NOT terminal: leave annieAlerted unset so the Q7 pass
-				// keeps re-reading and can page on expiry ("ask me again later").
+			if (selection?.effective) {
+				// Terminal-by-time (Codex R2 #1): only an UNTIMED receipt (NULL
+				// snooze_until_ms — episode false_positive/handled_remanaged or a
+				// permanent latch) terminally resolves the Q7 pass. Any timed row
+				// (snooze / TTL'd latch) leaves annieAlerted unset so the Q7 pass
+				// keeps re-reading and observes the expiry ("ask me again later").
 				this.episodes.set(execId, {
 					...result.episode,
 					escalated: true,
 					escalatedAt: this.now(),
-					annieAlerted: disposition?.disposition !== "snooze",
+					annieAlerted: selection.row.snooze_until_ms == null,
 				});
 				this.deps.log?.(
-					`[StuckDetector] ${execId} episode ${result.episode.fingerprint} already judged (${disposition?.disposition}) — suppressing re-escalation`,
+					`[StuckDetector] ${execId} episode ${result.episode.fingerprint} already judged (${selection.row.disposition}${selection.row.episode_fingerprint === "*" ? ", execution latch" : ""}) — suppressing re-escalation`,
 				);
 			} else {
+				if (isExpiredTimedReceipt(selection)) {
+					// Reminder path (Codex R2 #2): the receipt lapsed — consume it
+					// (one-shot token) BEFORE emitting so the next grace expiry pages
+					// Annie instead of looping reminders forever.
+					try {
+						this.deps.consumeExpiredDispositions(
+							execId,
+							result.episode.fingerprint,
+							this.now(),
+						);
+					} catch (err) {
+						// Fail closed, and roll back the candidate's escalated flag
+						// (Codex R3 LOW-1): without the rollback the next poll lands in
+						// already_escalated with no escalatedAt — permanently neither
+						// emitting nor paging.
+						this.episodes.set(execId, {
+							...result.episode,
+							escalated: false,
+						});
+						this.deps.log?.(
+							`[StuckDetector] expired-receipt consume failed for ${execId}: ${
+								err instanceof Error ? err.message : String(err)
+							} — will retry next poll`,
+						);
+						return result;
+					}
+					this.deps.log?.(
+						`[StuckDetector] ${execId} expired ${selection?.row.disposition} receipt consumed — reminding the Lead`,
+					);
+				}
 				await this.emitEscalation(session, result.evidence, result.episode);
 			}
 		} else if (result.exclusion === "already_escalated" && result.episode) {
@@ -286,7 +444,11 @@ export class StuckRunnerDetector {
 	 * Q7 fallback (plan §3.6): the escalation went out, the episode is still
 	 * stuck, and the grace window elapsed without a Lead disposition → page
 	 * Annie directly (covers "Lead is down / also stuck"). Lead dispositions
-	 * are authoritative (Codex R1 HIGH-1): any current receipt suppresses.
+	 * are authoritative (Codex R1 HIGH-1): any currently-effective receipt
+	 * (exact or execution sentinel) suppresses. An EXPIRED timed receipt
+	 * triggers the reminder reset instead of paging (FLY-253: snooze/TTL
+	 * expiry re-asks the LEAD first; Annie only if the Lead stays silent
+	 * through the new grace).
 	 */
 	private async maybeAlertUnhandled(
 		session: Session,
@@ -305,11 +467,14 @@ export class StuckRunnerDetector {
 		// re-read from the persistent store in the same pass that claims the
 		// Annie alert, eliminating the avoidable race where a receipt landed
 		// after the escalation but before this fallback pass.
-		let disposition: StuckDispositionRow | undefined;
+		let selection: StuckDispositionSelection | undefined;
 		try {
-			disposition = this.deps.getDisposition?.(
-				session.execution_id,
-				episode.fingerprint,
+			selection = selectStuckDisposition(
+				this.deps.getDispositionRows?.(
+					session.execution_id,
+					episode.fingerprint,
+				) ?? {},
+				now,
 			);
 		} catch (err) {
 			// Transient read failure: neither page (might violate a real receipt)
@@ -321,18 +486,53 @@ export class StuckRunnerDetector {
 			);
 			return;
 		}
-		if (dispositionSuppresses(disposition, now)) {
-			// snooze suppresses only until expiry — do NOT mark terminal; this
-			// pass re-reads each poll and pages once the snooze lapses (still
-			// stuck). Other dispositions resolve the episode for good.
-			if (disposition?.disposition !== "snooze") {
+		if (selection?.effective) {
+			// Terminal-by-time (Codex R2 #1): an untimed receipt resolves the
+			// episode for good; a timed one (snooze / TTL latch) keeps this pass
+			// re-reading each poll so the expiry is observed.
+			if (selection.row.snooze_until_ms == null) {
 				this.episodes.set(session.execution_id, {
 					...episode,
 					annieAlerted: true,
 				});
 			}
 			this.deps.log?.(
-				`[StuckDetector] ${session.execution_id} episode ${episode.fingerprint} disposed (${disposition?.disposition}) — unhandled alert suppressed`,
+				`[StuckDetector] ${session.execution_id} episode ${episode.fingerprint} disposed (${selection.row.disposition}) — unhandled alert suppressed`,
+			);
+			return;
+		}
+		if (isExpiredTimedReceipt(selection)) {
+			// Reminder reset (FLY-253, Codex R1 #2 + R2 #2): consume the expired
+			// receipt (one-shot token), then drop the in-memory episode. The next
+			// polls rebuild a fresh episode → threshold → a NEW escalation to the
+			// LEAD, re-anchoring the grace; Annie is paged only if the Lead stays
+			// silent again.
+			//
+			// Codex code R1 HIGH-2: the episode is reset EVEN IF consume throws.
+			// StateStore (sql.js) mutates memory before persisting — a save()
+			// failure can leave the rows already gone; keeping the old escalated
+			// episode would let the next poll read "no receipt" and page Annie
+			// directly off the OLD grace, skipping the Lead reminder. Resetting
+			// unconditionally forces every outcome back through the candidate
+			// path (fresh threshold → consume-if-still-there → emit to the LEAD
+			// first); the only cost of a spurious reset is one extra threshold
+			// wait, never a skipped reminder.
+			try {
+				this.deps.consumeExpiredDispositions(
+					session.execution_id,
+					episode.fingerprint,
+					now,
+				);
+			} catch (err) {
+				this.deps.log?.(
+					`[StuckDetector] expired-receipt consume failed for ${session.execution_id}: ${
+						err instanceof Error ? err.message : String(err)
+					} — episode reset anyway (Lead-reminder-first guarantee)`,
+				);
+			}
+			this.episodes.delete(session.execution_id);
+			this.deps.log?.(
+				`[StuckDetector] ${session.execution_id} ${selection?.row.disposition} expired — reminder reset (the Lead will be re-asked after the threshold)`,
 			);
 			return;
 		}
@@ -370,9 +570,12 @@ export class StuckRunnerDetector {
 	private readDispositionSafe(
 		executionId: string,
 		fingerprint: string,
-	): StuckDispositionRow | undefined {
+	): StuckDispositionSelection | undefined {
 		try {
-			return this.deps.getDisposition?.(executionId, fingerprint);
+			return selectStuckDisposition(
+				this.deps.getDispositionRows?.(executionId, fingerprint) ?? {},
+				this.now(),
+			);
 		} catch (err) {
 			this.deps.log?.(
 				`[StuckDetector] disposition read failed for ${executionId}: ${

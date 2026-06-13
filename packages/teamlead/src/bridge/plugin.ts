@@ -79,8 +79,12 @@ import { RuntimeRegistry } from "./runtime-registry.js";
 import { captureSession as defaultCaptureSession } from "./session-capture.js";
 import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
-import { buildStuckRunnerDetector } from "./stuck-escalation.js";
+import {
+	buildStuckRunnerDetector,
+	stuckLatchTtlMs,
+} from "./stuck-escalation.js";
 import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
+import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import {
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
@@ -461,6 +465,21 @@ export interface BridgeAppOptions {
 	chatThreadCreator?: ChatThreadCreator;
 	/** FLY-91 Round 3: Global Discord bot token for thread creation fallback. */
 	globalBotToken?: string;
+	/**
+	 * FLY-253 (Codex R2 #4): late-bound holder connecting the stuck-remanage
+	 * router's `re_arm` to the live StuckRunnerDetector. The router mounts
+	 * inside createBridgeApp (pre-listen) but the detector is only created
+	 * post-listen in startBridge — so the router gets a STABLE callback that
+	 * reads this holder at call time. `current` stays null when detection is
+	 * disabled (FLYWHEEL_STUCK_DETECT=0): re_arm still deletes the DB latch.
+	 */
+	stuckDetectorHolder?: { current: StuckRunnerDetector | null };
+	/**
+	 * FLY-253 L2: TTL for execution-scoped latches, parsed ONCE from
+	 * `FLYWHEEL_STUCK_LATCH_TTL_MS` at startup (Codex R2 #5) and injected
+	 * into the remanage router. Undefined ⇒ router default (72h).
+	 */
+	stuckLatchTtlMs?: number;
 }
 
 export function createBridgeApp(
@@ -897,6 +916,13 @@ export function createBridgeApp(
 			projects: projects ?? [],
 			captureSessionFn: defaultCaptureSession,
 			auth: tokenAuthMiddleware(config.apiToken),
+			// FLY-253: stable callback over the late-bound holder (Codex R2 #4);
+			// null holder / null detector ⇒ no-op, DB latch still deleted.
+			onRearm: (executionId) =>
+				opts?.stuckDetectorHolder?.current?.rearmExecution(executionId),
+			...(opts?.stuckLatchTtlMs !== undefined
+				? { latchTtlMs: opts.stuckLatchTtlMs }
+				: {}),
 		}),
 	);
 
@@ -1899,6 +1925,13 @@ export async function startBridge(
 		}
 	}
 
+	// FLY-253 (Codex R2 #4): the remanage router mounts inside createBridgeApp,
+	// but the StuckRunnerDetector is only created post-listen — give the router
+	// a stable holder it reads at re_arm time.
+	const stuckDetectorHolder: { current: StuckRunnerDetector | null } = {
+		current: null,
+	};
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -1920,6 +1953,9 @@ export async function startBridge(
 			vercelToken,
 			chatThreadCreator,
 			globalBotToken: config.discordBotToken,
+			// FLY-253: holder filled after the detector is created post-listen.
+			stuckDetectorHolder,
+			stuckLatchTtlMs: stuckLatchTtlMs(),
 		},
 	);
 
@@ -2103,6 +2139,10 @@ export async function startBridge(
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		notifier: leadAlertNotifier,
 	});
+	// FLY-253 (Codex R2 #4): late-bind the detector into the holder the
+	// remanage router already captured — re_arm can now reach the in-memory
+	// episode map. Stays null when detection is disabled.
+	stuckDetectorHolder.current = stuckDetector;
 	const idleWatchdog = new RunnerIdleWatchdog({
 		pollIntervalMs: 30_000,
 		waitingThresholdCycles: 2,

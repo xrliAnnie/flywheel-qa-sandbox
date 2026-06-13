@@ -438,6 +438,30 @@ export class CommDB {
 		return row.cnt > 0;
 	}
 
+	/**
+	 * FLY-253 (L1): True if this execution sent ANY CommDB message within the
+	 * last `windowSeconds`. Liveness signal for the Bridge stuck-runner
+	 * detector — a runner that recently messaged its Lead (DONE report,
+	 * instruction receipt, question) is alive, however static its pane looks.
+	 *
+	 * The comparison stays entirely in SQLite's UTC clock domain
+	 * (`created_at` DEFAULT CURRENT_TIMESTAMP vs `datetime('now', ...)`) —
+	 * no JS date parsing of timezone-less strings. Strict `>`: a message
+	 * exactly at the window edge is outside.
+	 */
+	hasRecentMessagesFrom(execId: string, windowSeconds: number): boolean {
+		const seconds = Math.max(0, Math.floor(windowSeconds));
+		const row = this.db
+			.prepare(
+				`SELECT 1 as hit FROM messages
+         WHERE from_agent = ?
+         AND created_at > datetime('now', '-' || ? || ' seconds')
+         LIMIT 1`,
+			)
+			.get(execId, seconds) as { hit: number } | undefined;
+		return row !== undefined;
+	}
+
 	// ── Session Registry (Phase 2) ──
 
 	registerSession(

@@ -171,6 +171,54 @@ describe("evaluateStuckCandidate — pending-gate / review exclusions", () => {
 		expect(second.episode).toBeNull();
 	});
 
+	// FLY-253 L1: a runner that recently messaged its Lead via CommDB is alive,
+	// however static its pane looks (LEARN-57: the real liveness channel was
+	// CommDB, the detector only watched the pane).
+	it("never flags a runner with recent CommDB outbound activity (even if long-stagnant)", () => {
+		const r = runStagnant("parked after DONE report", {
+			hasRecentCommActivity: true,
+		});
+		expect(r.candidate).toBe(false);
+		expect(r.exclusion).toBe("recent_comm_activity");
+		expect(r.episode).toBeNull();
+	});
+
+	it("gate order: pending_gate wins over recent_comm_activity", () => {
+		const r = runStagnant("parked", {
+			hasPendingGate: true,
+			hasRecentCommActivity: true,
+		});
+		expect(r.exclusion).toBe("pending_gate");
+	});
+
+	it("recent activity cancels an already-escalated episode (intentional: activity refutes the stuck condition, pending Q7 dies with it)", () => {
+		const escalated: StuckEpisodeState = {
+			fingerprint: fingerprintOutput("frozen frame"),
+			firstStagnantAt: T0 - STUCK_THRESHOLD_MS,
+			escalated: true,
+			escalatedAt: T0 - 1000,
+		};
+		const r = evaluateStuckCandidate(
+			baseInput({
+				output: "frozen frame",
+				prior: escalated,
+				hasRecentCommActivity: true,
+			}),
+		);
+		expect(r.candidate).toBe(false);
+		expect(r.exclusion).toBe("recent_comm_activity");
+		expect(r.episode).toBeNull();
+	});
+
+	it("absent hasRecentCommActivity behaves exactly like false (byte-compat)", () => {
+		const withFalse = runStagnant("same frame", {
+			hasRecentCommActivity: false,
+		});
+		const without = runStagnant("same frame");
+		expect(withFalse.candidate).toBe(true);
+		expect(without.candidate).toBe(true);
+	});
+
 	it("never flags the gray zone (needs_review emitted, status not yet flipped)", () => {
 		const r = evaluateStuckCandidate(
 			baseInput({
