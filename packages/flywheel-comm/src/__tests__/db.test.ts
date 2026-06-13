@@ -1,6 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CommDB } from "../db.js";
 
@@ -214,6 +215,61 @@ describe("CommDB", () => {
 		it("should not be affected by other runners questions", () => {
 			db.insertQuestion("other-exec", "product-lead", "Q from other?");
 			expect(db.hasPendingQuestionsFrom("my-exec")).toBe(false);
+		});
+	});
+
+	// FLY-253: liveness signal for the Bridge stuck-runner detector (L1).
+	describe("hasRecentMessagesFrom", () => {
+		/** Backdate every message from an exec via a second raw connection. */
+		const backdate = (execId: string, seconds: number) => {
+			const raw = new Database(join(tmpDir, "comm.db"));
+			raw
+				.prepare(
+					`UPDATE messages SET created_at = datetime('now', '-' || ? || ' seconds')
+					 WHERE from_agent = ?`,
+				)
+				.run(seconds, execId);
+			raw.close();
+		};
+
+		it("returns true for a message sent just now within the window", () => {
+			db.insertQuestion("exec-live", "sub-lead", "DONE: report");
+			expect(db.hasRecentMessagesFrom("exec-live", 60)).toBe(true);
+		});
+
+		it("returns false when the exec has no messages at all", () => {
+			db.insertQuestion("other-exec", "sub-lead", "Q?");
+			expect(db.hasRecentMessagesFrom("exec-quiet", 60)).toBe(false);
+		});
+
+		it("returns false when the only message is older than the window", () => {
+			db.insertQuestion("exec-old", "sub-lead", "Q?");
+			backdate("exec-old", 120);
+			expect(db.hasRecentMessagesFrom("exec-old", 60)).toBe(false);
+		});
+
+		it("uses a strict > boundary (message exactly at window edge is outside)", () => {
+			db.insertQuestion("exec-edge", "sub-lead", "Q?");
+			backdate("exec-edge", 60);
+			expect(db.hasRecentMessagesFrom("exec-edge", 60)).toBe(false);
+		});
+
+		it("keeps a message comfortably inside the window", () => {
+			db.insertQuestion("exec-in", "sub-lead", "Q?");
+			backdate("exec-in", 10);
+			expect(db.hasRecentMessagesFrom("exec-in", 60)).toBe(true);
+		});
+
+		it("counts ANY message type from the exec (responses too)", () => {
+			const qId = db.insertQuestion("sub-lead", "exec-resp", "instruction?");
+			db.insertResponse(qId, "exec-resp", "receipt");
+			expect(db.hasRecentMessagesFrom("exec-resp", 60)).toBe(true);
+		});
+
+		it("returns false for a zero window (only future rows could match)", () => {
+			db.insertQuestion("exec-zero", "sub-lead", "Q?");
+			backdate("exec-zero", 1);
+			expect(db.hasRecentMessagesFrom("exec-zero", 0)).toBe(false);
 		});
 	});
 

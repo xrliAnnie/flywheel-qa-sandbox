@@ -888,6 +888,152 @@ describe("StateStore — stuck dispositions (FLY-195)", () => {
 	});
 });
 
+// ── FLY-253: execution-scoped latch storage ('*' sentinel rows) ──
+describe("StateStore — FLY-253 stuck disposition rows / latch / consume", () => {
+	let store: StateStore;
+	const FP = "aaaaaaaaaaaaaaaa";
+	const NOW = 1_000_000_000_000;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	const writeExact = (over: Record<string, unknown> = {}) =>
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: FP,
+			disposition: "false_positive",
+			...over,
+		});
+	const writeSentinel = (over: Record<string, unknown> = {}) =>
+		store.setStuckDisposition({
+			execution_id: "exec-1",
+			episode_fingerprint: "*",
+			disposition: "legitimate_wait",
+			...over,
+		});
+
+	describe("getStuckDispositionRows", () => {
+		it("returns empty when nothing exists", () => {
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact).toBeUndefined();
+			expect(rows.sentinel).toBeUndefined();
+		});
+
+		it("returns the exact row only", () => {
+			writeExact();
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact?.disposition).toBe("false_positive");
+			expect(rows.sentinel).toBeUndefined();
+		});
+
+		it("returns the sentinel row only", () => {
+			writeSentinel();
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact).toBeUndefined();
+			expect(rows.sentinel?.disposition).toBe("legitimate_wait");
+			expect(rows.sentinel?.episode_fingerprint).toBe("*");
+		});
+
+		it("returns both when both exist; other executions unaffected", () => {
+			writeExact();
+			writeSentinel();
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact?.disposition).toBe("false_positive");
+			expect(rows.sentinel?.disposition).toBe("legitimate_wait");
+			const other = store.getStuckDispositionRows("exec-2", FP);
+			expect(other.exact).toBeUndefined();
+			expect(other.sentinel).toBeUndefined();
+		});
+
+		it("sentinel applies to ANY fingerprint of the execution", () => {
+			writeSentinel();
+			const rows = store.getStuckDispositionRows("exec-1", "bbbbbbbbbbbbbbbb");
+			expect(rows.sentinel?.disposition).toBe("legitimate_wait");
+		});
+	});
+
+	describe("clearExecutionStuckReceipts (re_arm)", () => {
+		it("deletes the sentinel AND episode rows (Codex code R1 HIGH-1: a residual effective exact row must not survive re_arm)", () => {
+			writeExact();
+			writeSentinel();
+			store.clearExecutionStuckReceipts("exec-1");
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.sentinel).toBeUndefined();
+			expect(rows.exact).toBeUndefined();
+		});
+
+		it("is a no-op when nothing exists, and scoped to the execution", () => {
+			store.setStuckDisposition({
+				execution_id: "exec-2",
+				episode_fingerprint: FP,
+				disposition: "false_positive",
+			});
+			expect(() => store.clearExecutionStuckReceipts("exec-1")).not.toThrow();
+			expect(store.getStuckDispositionRows("exec-2", FP).exact).toBeDefined();
+		});
+	});
+
+	describe("consumeExpiredStuckDispositions (one-shot reminder token)", () => {
+		it("deletes expired exact AND expired sentinel together", () => {
+			writeExact({ disposition: "snooze", snooze_until_ms: NOW - 1 });
+			writeSentinel({
+				disposition: "legitimate_wait",
+				snooze_until_ms: NOW - 5,
+			});
+			store.consumeExpiredStuckDispositions("exec-1", FP, NOW);
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact).toBeUndefined();
+			expect(rows.sentinel).toBeUndefined();
+		});
+
+		it("keeps future-dated rows (concurrent Lead refresh survives)", () => {
+			writeSentinel({ disposition: "snooze", snooze_until_ms: NOW + 60_000 });
+			store.consumeExpiredStuckDispositions("exec-1", FP, NOW);
+			expect(
+				store.getStuckDispositionRows("exec-1", FP).sentinel,
+			).toBeDefined();
+		});
+
+		it("keeps untimed rows (NULL snooze_until_ms is a terminal receipt, never consumed)", () => {
+			writeExact(); // false_positive, NULL
+			writeSentinel(); // legitimate_wait permanent (TTL=0)
+			store.consumeExpiredStuckDispositions("exec-1", FP, NOW);
+			const rows = store.getStuckDispositionRows("exec-1", FP);
+			expect(rows.exact).toBeDefined();
+			expect(rows.sentinel).toBeDefined();
+		});
+
+		it("boundary: snooze_until_ms == now is expired (<=) and consumed", () => {
+			writeSentinel({ disposition: "snooze", snooze_until_ms: NOW });
+			store.consumeExpiredStuckDispositions("exec-1", FP, NOW);
+			expect(
+				store.getStuckDispositionRows("exec-1", FP).sentinel,
+			).toBeUndefined();
+		});
+
+		it("does not touch other fingerprints or executions", () => {
+			store.setStuckDisposition({
+				execution_id: "exec-1",
+				episode_fingerprint: "bbbbbbbbbbbbbbbb",
+				disposition: "snooze",
+				snooze_until_ms: NOW - 1,
+			});
+			store.setStuckDisposition({
+				execution_id: "exec-2",
+				episode_fingerprint: FP,
+				disposition: "snooze",
+				snooze_until_ms: NOW - 1,
+			});
+			store.consumeExpiredStuckDispositions("exec-1", FP, NOW);
+			expect(
+				store.getStuckDispositionRows("exec-1", "bbbbbbbbbbbbbbbb").exact,
+			).toBeDefined();
+			expect(store.getStuckDispositionRows("exec-2", FP).exact).toBeDefined();
+		});
+	});
+});
+
 // FLY-205 — doc_tier + issue_url persistence: BOTH write paths must round-trip
 // (Codex design R3 #2: a column reachable from the type but missing from a
 // handwritten SQL list would silently not persist).

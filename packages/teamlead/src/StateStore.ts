@@ -1728,6 +1728,85 @@ export class StateStore {
 		);
 		const row = result[0]?.values[0];
 		if (!row) return undefined;
+		return this.stuckRowFromValues(row);
+	}
+
+	/**
+	 * FLY-253 (L2): read BOTH disposition rows that can govern one episode —
+	 * the exact (episode_fingerprint = fp) row and the execution-scoped
+	 * sentinel (episode_fingerprint = '*') row. The detector picks between
+	 * them with a precedence rule evaluated against `now` (effective exact >
+	 * effective sentinel > expired — Codex R1 #3: an unconditional exact-first
+	 * LIMIT 1 would let an expired exact snooze shadow an active sentinel
+	 * legitimate_wait and re-open the alert treadmill).
+	 */
+	getStuckDispositionRows(
+		executionId: string,
+		episodeFingerprint: string,
+	): { exact?: StuckDispositionRow; sentinel?: StuckDispositionRow } {
+		const result = this.db.exec(
+			`SELECT execution_id, episode_fingerprint, disposition, snooze_until_ms,
+			        noted_by, note, created_at
+			 FROM stuck_dispositions
+			 WHERE execution_id = ? AND episode_fingerprint IN (?, '*')`,
+			[executionId, episodeFingerprint],
+		);
+		const out: { exact?: StuckDispositionRow; sentinel?: StuckDispositionRow } =
+			{};
+		for (const values of result[0]?.values ?? []) {
+			const row = this.stuckRowFromValues(values);
+			if (row.episode_fingerprint === "*") out.sentinel = row;
+			else out.exact = row;
+		}
+		return out;
+	}
+
+	/**
+	 * FLY-253 (L2, re_arm): delete ALL governing receipts for this execution —
+	 * the '*' sentinel AND every episode-scoped row (Codex code R1 HIGH-1: an
+	 * effective exact row on the SAME frozen fingerprint would otherwise keep
+	 * suppressing after re_arm, and a Bridge restart would not fix it).
+	 * re_arm means "I want detection live again" — stale frame judgments go
+	 * with it. No audit is lost: every disposition wrote a session_events
+	 * trace row; stuck_dispositions is the live suppression state, not the
+	 * audit trail. The route layer pairs this with the detector's
+	 * `rearmExecution()` so the in-memory episode is reset too.
+	 */
+	clearExecutionStuckReceipts(executionId: string): void {
+		this.db.run(`DELETE FROM stuck_dispositions WHERE execution_id = ?`, [
+			executionId,
+		]);
+		this.save();
+	}
+
+	/**
+	 * FLY-253 (L2, reminder reset): consume CURRENTLY-EXPIRED timed rows among
+	 * {exact fp, '*'} for this execution — an expired receipt is a ONE-SHOT
+	 * reminder token (Codex R2 #2: leaving it in place re-resets the episode
+	 * on every grace expiry → infinite Lead reminders, Annie never paged).
+	 *
+	 * The `snooze_until_ms <= :now` predicate is the concurrency guard: a row
+	 * the Lead refreshed (new future expiry) between read and consume is NOT
+	 * deleted. Untimed rows (NULL) are terminal receipts and never consumed.
+	 */
+	consumeExpiredStuckDispositions(
+		executionId: string,
+		episodeFingerprint: string,
+		nowMs: number,
+	): void {
+		this.db.run(
+			`DELETE FROM stuck_dispositions
+			 WHERE execution_id = ?
+			 AND episode_fingerprint IN (?, '*')
+			 AND snooze_until_ms IS NOT NULL
+			 AND snooze_until_ms <= ?`,
+			[executionId, episodeFingerprint, nowMs],
+		);
+		this.save();
+	}
+
+	/** Map a raw stuck_dispositions row tuple to the typed shape. */
+	private stuckRowFromValues(row: unknown[]): StuckDispositionRow {
 		return {
 			execution_id: row[0] as string,
 			episode_fingerprint: row[1] as string,

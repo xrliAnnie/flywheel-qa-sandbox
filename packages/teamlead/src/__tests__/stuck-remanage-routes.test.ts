@@ -209,9 +209,10 @@ describe("POST /:executionId/stuck-disposition (plan §3.4)", () => {
 			snooze_until_ms: Date.now() + 60_000,
 		});
 		expect(ok.status).toBe(200);
-		expect(h.store.getStuckDisposition("exec-1", STUCK_FP)?.disposition).toBe(
-			"snooze",
-		);
+		// FLY-253: snooze is execution-scoped now — it lands on the '*' sentinel.
+		expect(
+			h.store.getStuckDispositionRows("exec-1", STUCK_FP).sentinel?.disposition,
+		).toBe("snooze");
 	});
 
 	it("404 for an unknown session", async () => {
@@ -439,14 +440,300 @@ describe("auth wiring", () => {
 				leadId: "product-lead",
 				episode_fingerprint: STUCK_FP,
 			});
+			// FLY-253 (Codex code R1 LOW-5): re_arm rides the SAME middleware —
+			// pin it explicitly so the special-case can never drift ahead of auth.
+			const r3 = await post(h2, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				disposition: "re_arm",
+			});
 			expect(r1.status).toBe(401);
 			expect(r2.status).toBe(401);
+			expect(r3.status).toBe(401);
 			expect(h2.sendKeys).not.toHaveBeenCalled();
 		} finally {
 			await new Promise<void>((resolve, reject) =>
 				h2.server.close((err) => (err ? reject(err) : resolve())),
 			);
 			h2.store.close();
+		}
+	});
+});
+
+// ── FLY-253 L2: execution-scoped latch writes + re_arm ──
+
+describe("FLY-253 — disposition scope mapping (server-side)", () => {
+	const T0 = 1_000_000_000_000;
+	const TTL = 259_200_000; // 72h
+
+	async function bootLatch(over: Partial<StuckRemanageRouterOptions> = {}) {
+		return boot({ latchTtlMs: TTL, now: () => T0, ...over });
+	}
+
+	async function closeH(h: Awaited<ReturnType<typeof boot>>) {
+		await new Promise<void>((resolve, reject) =>
+			h.server.close((err) => (err ? reject(err) : resolve())),
+		);
+		h.store.close();
+	}
+
+	it("legitimate_wait writes the '*' sentinel with server-computed TTL and provenance note", async () => {
+		const h = await bootLatch();
+		try {
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "legitimate_wait",
+				note: "runner parked waiting for the founder",
+			});
+			expect(r.status).toBe(200);
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.sentinel?.disposition).toBe("legitimate_wait");
+			expect(rows.sentinel?.snooze_until_ms).toBe(T0 + TTL);
+			expect(rows.sentinel?.note).toContain(`(episode ${STUCK_FP})`);
+			expect(rows.sentinel?.note).toContain("founder");
+			expect(rows.exact).toBeUndefined();
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("needs_founder also latches the execution (sentinel + TTL)", async () => {
+		const h = await bootLatch();
+		try {
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "needs_founder",
+			});
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.sentinel?.disposition).toBe("needs_founder");
+			expect(rows.sentinel?.snooze_until_ms).toBe(T0 + TTL);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("latchTtlMs=0 ⇒ permanent latch (NULL snooze_until_ms)", async () => {
+		const h = await bootLatch({ latchTtlMs: 0 });
+		try {
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "legitimate_wait",
+			});
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.sentinel?.snooze_until_ms).toBeNull();
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("snooze is execution-scoped too, with the Lead-provided expiry", async () => {
+		const h = await bootLatch();
+		try {
+			const until = T0 + 3_600_000;
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "snooze",
+				snooze_until_ms: until,
+			});
+			expect(r.status).toBe(200);
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.sentinel?.disposition).toBe("snooze");
+			expect(rows.sentinel?.snooze_until_ms).toBe(until);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("snooze horizon is CLAMPED to latchTtlMs (Codex code R1 MEDIUM-3: a multi-year snooze must not become a near-permanent execution mute)", async () => {
+		const h = await bootLatch();
+		try {
+			const tenYears = T0 + 10 * 365 * 24 * 3_600_000;
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "snooze",
+				snooze_until_ms: tenYears,
+			});
+			expect(r.status).toBe(200);
+			// Codex code R2 LOW: the response echoes the EFFECTIVE (clamped)
+			// expiry so the Lead never plans around a value that wasn't stored.
+			expect(r.json.snooze_until_ms).toBe(T0 + TTL);
+			expect(r.json.scope).toBe("execution");
+			expect(
+				h.store.getStuckDispositionRows("exec-1", STUCK_FP).sentinel
+					?.snooze_until_ms,
+			).toBe(T0 + TTL);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("latchTtlMs=0 (operator allows permanent latches) ⇒ snooze horizon not clamped", async () => {
+		const h = await bootLatch({ latchTtlMs: 0 });
+		try {
+			const farFuture = T0 + 10 * 365 * 24 * 3_600_000;
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "snooze",
+				snooze_until_ms: farFuture,
+			});
+			expect(
+				h.store.getStuckDispositionRows("exec-1", STUCK_FP).sentinel
+					?.snooze_until_ms,
+			).toBe(farFuture);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("false_positive stays EPISODE-scoped (exact row, no sentinel)", async () => {
+		const h = await bootLatch();
+		try {
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "false_positive",
+			});
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.exact?.disposition).toBe("false_positive");
+			expect(rows.exact?.snooze_until_ms).toBeNull();
+			expect(rows.sentinel).toBeUndefined();
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("provenance suffix survives a 500-char note (Codex R1 #8: truncate the user note, keep the fingerprint)", async () => {
+		const h = await bootLatch();
+		try {
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "legitimate_wait",
+				note: "x".repeat(600),
+			});
+			const note = h.store.getStuckDispositionRows("exec-1", STUCK_FP).sentinel
+				?.note;
+			expect(note).toContain(`(episode ${STUCK_FP})`);
+			expect((note ?? "").length).toBeLessThanOrEqual(500);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("'*' as episode_fingerprint input is rejected (sentinel is server semantics, not client input)", async () => {
+		const h = await bootLatch();
+		try {
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: "*",
+				disposition: "legitimate_wait",
+			});
+			expect(r.status).toBe(400);
+		} finally {
+			await closeH(h);
+		}
+	});
+});
+
+describe("FLY-253 — re_arm", () => {
+	async function closeH(h: Awaited<ReturnType<typeof boot>>) {
+		await new Promise<void>((resolve, reject) =>
+			h.server.close((err) => (err ? reject(err) : resolve())),
+		);
+		h.store.close();
+	}
+
+	it("deletes the sentinel AND episode rows (Codex code R1 HIGH-1: a residual effective exact row would keep suppressing the still-frozen fingerprint), calls onRearm, writes a trace event (no fingerprint required)", async () => {
+		const onRearm = vi.fn();
+		const h = await boot({ latchTtlMs: 0, onRearm });
+		try {
+			// Seed: a sentinel latch + an exact episode receipt on the SAME
+			// fingerprint (the combination that survived in the pre-fix design).
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "legitimate_wait",
+			});
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "false_positive",
+			});
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				disposition: "re_arm",
+			});
+			expect(r.status).toBe(200);
+			expect(r.json.ok).toBe(true);
+			const rows = h.store.getStuckDispositionRows("exec-1", STUCK_FP);
+			expect(rows.sentinel).toBeUndefined();
+			expect(rows.exact).toBeUndefined();
+			expect(onRearm).toHaveBeenCalledWith("exec-1");
+			const traces = h.store
+				.getEventsByExecution("exec-1")
+				.filter((e) => e.event_type === "stuck_disposition_set")
+				.filter(
+					(e) =>
+						(e.payload as Record<string, unknown>)?.disposition === "re_arm",
+				);
+			expect(traces).toHaveLength(1);
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("re_arm still enforces leadId + session existence + lead scope (Codex R2 #4 boundary)", async () => {
+		const onRearm = vi.fn();
+		const h = await boot({ onRearm });
+		try {
+			const noLead = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				disposition: "re_arm",
+			});
+			expect(noLead.status).toBe(400);
+			const noSession = await post(
+				h,
+				"/api/sessions/exec-ghost/stuck-disposition",
+				{ leadId: "product-lead", disposition: "re_arm" },
+			);
+			expect(noSession.status).toBe(404);
+			const wrongLead = await post(
+				h,
+				"/api/sessions/exec-1/stuck-disposition",
+				{
+					leadId: "other-lead",
+					disposition: "re_arm",
+				},
+			);
+			expect(wrongLead.status).toBe(403);
+			expect(onRearm).not.toHaveBeenCalled();
+		} finally {
+			await closeH(h);
+		}
+	});
+
+	it("re_arm without onRearm wiring still deletes the DB row (detector disabled)", async () => {
+		const h = await boot({ latchTtlMs: 0 });
+		try {
+			await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				episode_fingerprint: STUCK_FP,
+				disposition: "legitimate_wait",
+			});
+			const r = await post(h, "/api/sessions/exec-1/stuck-disposition", {
+				leadId: "product-lead",
+				disposition: "re_arm",
+			});
+			expect(r.status).toBe(200);
+			expect(
+				h.store.getStuckDispositionRows("exec-1", STUCK_FP).sentinel,
+			).toBeUndefined();
+		} finally {
+			await closeH(h);
 		}
 	});
 });

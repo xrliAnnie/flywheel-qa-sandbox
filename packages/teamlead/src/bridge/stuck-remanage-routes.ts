@@ -34,7 +34,10 @@ import {
 import { matchesLead } from "./lead-scope.js";
 import { isCaptureError } from "./session-capture.js";
 import { detectInputBoxPresent, fingerprintOutput } from "./stuck-candidate.js";
-import { hasPendingGateFromCommDb } from "./stuck-escalation.js";
+import {
+	hasPendingGateFromCommDb,
+	STUCK_LATCH_TTL_MS,
+} from "./stuck-escalation.js";
 import {
 	getTmuxTargetFromCommDb,
 	sendKeysToWindow,
@@ -73,6 +76,23 @@ export interface StuckRemanageRouterOptions {
 		projectName: string,
 	) => TmuxTarget | undefined;
 	now?: () => number;
+	/**
+	 * FLY-253 L2: server-side TTL (ms) written into execution-scoped
+	 * `legitimate_wait` / `needs_founder` latches as `snooze_until_ms`.
+	 * `0` = permanent (NULL). Parsed ONCE at the plugin/config layer from
+	 * `FLYWHEEL_STUCK_LATCH_TTL_MS` and injected here (Codex R2 #5 — tests
+	 * inject the value, never mutate global env). Default 72h.
+	 */
+	latchTtlMs?: number;
+	/**
+	 * FLY-253 (Codex R1 #1): notify the live detector that an execution was
+	 * re-armed so its in-memory episode (already marked escalated/annieAlerted
+	 * by the latch suppression) is reset too — a DB delete alone cannot reach
+	 * it. Wired by plugin.ts via a late-bound holder (Codex R2 #4: the router
+	 * mounts before the detector exists). Absent/null-holder ⇒ no-op (detector
+	 * disabled); the DB row is still deleted.
+	 */
+	onRearm?: (executionId: string) => void;
 }
 
 export function createStuckRemanageRouter(
@@ -83,6 +103,7 @@ export function createStuckRemanageRouter(
 	const sendKeys = opts.sendKeys ?? sendKeysToWindow;
 	const getTmuxTarget = opts.getTmuxTarget ?? getTmuxTargetFromCommDb;
 	const now = opts.now ?? (() => Date.now());
+	const latchTtlMs = opts.latchTtlMs ?? STUCK_LATCH_TTL_MS;
 	const auth: RequestHandler = opts.auth ?? ((_req, _res, next) => next());
 	// Audit event_ids carry a monotonic uniquifier: two attempts in the same
 	// millisecond must NOT collide on the session_events UNIQUE(event_id)
@@ -107,6 +128,64 @@ export function createStuckRemanageRouter(
 			res.status(400).json({ error: "leadId is required in request body" });
 			return;
 		}
+
+		// ── FLY-253: re_arm (latch operation, not a disposition) ──
+		// Placed AFTER auth (route middleware) + leadId, and it runs its own
+		// session-existence + lead-scope checks BEFORE acting (Codex R2 #4 /
+		// R1 #8: the special-case must not bypass any safety check). No
+		// fingerprint required — it clears the EXECUTION latch.
+		if (body.disposition === "re_arm") {
+			const session = store.getSession(executionId);
+			if (!session) {
+				res.status(404).json({ error: "Session not found" });
+				return;
+			}
+			try {
+				if (!matchesLead(session, leadId, projects)) {
+					res.status(403).json({
+						error: `Session ${executionId} is outside lead "${leadId}" scope`,
+					});
+					return;
+				}
+			} catch (err) {
+				res.status(403).json({
+					error: `Lead scope check failed: ${(err as Error).message}`,
+				});
+				return;
+			}
+			// Clears the sentinel AND all episode rows (Codex code R1 HIGH-1: an
+			// effective exact receipt on the still-frozen fingerprint would
+			// otherwise keep suppressing after re_arm).
+			store.clearExecutionStuckReceipts(executionId);
+			// Reach the live detector's in-memory episode (Codex R1 #1). The
+			// late-bound holder is null when detection is disabled — DB rows are
+			// already gone either way.
+			try {
+				opts.onRearm?.(executionId);
+			} catch (err) {
+				console.error(
+					`[stuck-disposition] onRearm callback failed for ${executionId}: ${(err as Error).message}`,
+				);
+			}
+			try {
+				store.insertEvent({
+					event_id: `stuck-disposition-${executionId}-rearm-${now()}-${++auditSeq}`,
+					execution_id: executionId,
+					issue_id: session.issue_id,
+					project_name: session.project_name,
+					event_type: "stuck_disposition_set",
+					source: "bridge.stuck-remanage",
+					payload: { leadId, disposition: "re_arm" },
+				});
+			} catch (err) {
+				console.error(
+					`[stuck-disposition] trace event write failed for ${executionId}: ${(err as Error).message}`,
+				);
+			}
+			res.json({ ok: true, disposition: "re_arm" });
+			return;
+		}
+
 		const fingerprint = body.episode_fingerprint;
 		if (typeof fingerprint !== "string" || !FINGERPRINT_RE.test(fingerprint)) {
 			res.status(400).json({
@@ -118,7 +197,7 @@ export function createStuckRemanageRouter(
 		const disposition = body.disposition as StuckDisposition;
 		if (!EXPLICIT_STUCK_DISPOSITIONS.includes(disposition)) {
 			res.status(400).json({
-				error: `disposition must be one of: ${EXPLICIT_STUCK_DISPOSITIONS.join(", ")} (handled_remanaged is recorded implicitly by a successful recovery-nudge)`,
+				error: `disposition must be one of: ${EXPLICIT_STUCK_DISPOSITIONS.join(", ")}, or re_arm (handled_remanaged is recorded implicitly by a successful recovery-nudge)`,
 			});
 			return;
 		}
@@ -156,13 +235,50 @@ export function createStuckRemanageRouter(
 			return;
 		}
 
-		const note =
-			typeof body.note === "string" ? body.note.slice(0, NOTE_MAX) : null;
+		// ── FLY-253 L2: scope mapping (SERVER semantics, not client input) ──
+		// legitimate_wait / needs_founder / snooze describe the RUNNER, not one
+		// pane frame → execution-scoped sentinel row ('*'), so one receipt
+		// latches every later episode (the LEARN-57 treadmill fix). The TTL'd
+		// latches get a server-computed expiry (snooze keeps the Lead's own).
+		// false_positive stays episode-scoped: "it is actually working" is a
+		// frame-level judgment that self-resolves when output changes — an
+		// execution-wide false_positive would mask a later true freeze.
+		const isExecutionScoped =
+			disposition === "legitimate_wait" ||
+			disposition === "needs_founder" ||
+			disposition === "snooze";
+		const userNote = typeof body.note === "string" ? body.note : null;
+		let rowFingerprint = fingerprint;
+		let rowSnoozeUntilMs = snoozeUntilMs;
+		let note: string | null;
+		if (isExecutionScoped) {
+			rowFingerprint = "*";
+			if (disposition !== "snooze") {
+				rowSnoozeUntilMs = latchTtlMs > 0 ? now() + latchTtlMs : null;
+			} else if (latchTtlMs > 0 && rowSnoozeUntilMs != null) {
+				// Codex code R1 MEDIUM-3: an execution-scoped snooze now mutes the
+				// WHOLE runner, so the Lead-provided horizon is clamped to the same
+				// bounded-blind-spot ceiling as the latches (a multi-year snooze
+				// would otherwise be a near-permanent execution mute). latchTtlMs=0
+				// means the operator allows permanent latches — no clamp then.
+				rowSnoozeUntilMs = Math.min(rowSnoozeUntilMs, now() + latchTtlMs);
+			}
+			// Provenance FIRST, user note truncated to the remaining budget
+			// (Codex R1 #8: a 500-char note must not squeeze out the fingerprint).
+			const provenance = `(episode ${fingerprint})`;
+			const budget = NOTE_MAX - provenance.length - 1;
+			note = userNote
+				? `${userNote.slice(0, Math.max(0, budget))} ${provenance}`
+				: provenance;
+		} else {
+			note = userNote ? userNote.slice(0, NOTE_MAX) : null;
+		}
+
 		store.setStuckDisposition({
 			execution_id: executionId,
-			episode_fingerprint: fingerprint,
+			episode_fingerprint: rowFingerprint,
 			disposition,
-			snooze_until_ms: snoozeUntilMs,
+			snooze_until_ms: rowSnoozeUntilMs,
 			noted_by: leadId,
 			note,
 		});
@@ -177,14 +293,29 @@ export function createStuckRemanageRouter(
 				project_name: session.project_name,
 				event_type: "stuck_disposition_set",
 				source: "bridge.stuck-remanage",
-				payload: { leadId, fingerprint, disposition, snoozeUntilMs, note },
+				payload: {
+					leadId,
+					fingerprint,
+					disposition,
+					snoozeUntilMs: rowSnoozeUntilMs,
+					note,
+					scope: isExecutionScoped ? "execution" : "episode",
+				},
 			});
 		} catch (err) {
 			console.error(
 				`[stuck-disposition] trace event write failed for ${executionId}: ${(err as Error).message}`,
 			);
 		}
-		res.json({ ok: true, disposition });
+		// Echo the EFFECTIVE expiry (Codex code R2 LOW: the snooze horizon may
+		// have been clamped server-side — the Lead must not plan around a
+		// snooze_until_ms that is not what was stored).
+		res.json({
+			ok: true,
+			disposition,
+			scope: isExecutionScoped ? "execution" : "episode",
+			snooze_until_ms: rowSnoozeUntilMs,
+		});
 	});
 
 	// ── 2. Restricted recovery nudge (plan §3.5) ──

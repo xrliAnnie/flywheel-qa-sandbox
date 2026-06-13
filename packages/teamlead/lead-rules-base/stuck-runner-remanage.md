@@ -39,9 +39,15 @@ outcomes:
 **① Mailbox wake first.** Send the Runner an ordinary message via your normal
 Runner messaging path (`SendMessage` — see runner-messaging rules): ask it to
 continue / report state. Then **wait a bounded `MAILBOX_WAKE_WAIT_MS` = 60
-seconds (60_000 ms)** and **re-capture the terminal**. If output changed, the
-Runner is back — you are done (no disposition needed; the Bridge clears the
-episode automatically when output changes).
+seconds (60_000 ms)** and **re-capture the terminal**. Two outcomes:
+
+- Output changed because the Runner **resumed real work** → done (no
+  disposition needed; the Bridge clears the episode when output changes).
+- The Runner only acknowledged and is **still legitimately waiting** (on a
+  human / an external system) → you MUST also write `legitimate_wait` or
+  `snooze` (Step 3). FLY-253: without the receipt, your wake itself
+  guarantees the next episode ~15 minutes later (the pane change restarts
+  the stagnation clock) — this drove the LEARN-57 alert treadmill.
 
 **② Restricted recovery nudge.** Only if the re-capture shows the SAME frozen
 frame still parked at an idle input box, call the Bridge's restricted nudge:
@@ -88,12 +94,28 @@ Dispositions: `false_positive` | `legitimate_wait` |
 `snooze` (requires `"snooze_until_ms": <epoch ms>`) | `needs_founder`.
 (`handled_remanaged` is implicit via a successful nudge.)
 
+**Scope (FLY-253)** — your receipt's reach depends on what you judged:
+
+| disposition | reach | expires |
+|---|---|---|
+| `legitimate_wait` | the WHOLE runner — every later episode of this execution stays silent, whatever the pane does | after ~72h the Bridge asks you ONCE more (still parked? one more curl) |
+| `needs_founder` | the whole runner (in the founder's court) | same ~72h re-ask |
+| `snooze` | the whole runner | your `snooze_until_ms`, capped at the same ~72h ceiling (the response echoes the effective value) — on expiry the Bridge re-asks YOU first (not Annie) |
+| `false_positive` | this pane frame only ("actually working" — output will change by itself) | n/a |
+
+Pick `snooze` when the wait has a known deadline; `legitimate_wait` for an
+open-ended park. **`re_arm`** is the undo: when the runner is back to real
+work and you want stuck detection live again before the TTL, POST the same
+endpoint with `{"leadId":"<your-lead-id>","disposition":"re_arm"}` (no
+fingerprint needed) — it clears the runner-wide latch.
+
 **Why this matters**: if no disposition lands within ~5 minutes of the
 escalation and the Runner is still frozen, the Bridge assumes YOU are down
 too and pages Annie directly (`runner_stuck_unhandled`). Your receipt is
 authoritative — writing `false_positive` / `legitimate_wait` / `snooze`
 suppresses that page. Not writing one means Annie gets pinged about
-something you already looked at.
+something you already looked at. One `legitimate_wait` now covers the whole
+park — you will NOT be re-paged per pane twitch (FLY-253).
 
 ## Step 4 — Notify Annie (cadence)
 
