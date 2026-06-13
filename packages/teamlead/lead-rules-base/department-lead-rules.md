@@ -324,7 +324,7 @@ The event payload includes:
 
    > `<ISSUE-ID>` Runner 在 `<checkpoint>` 等了约 `<waited_hours>` 小时没等到回复，已退出（fail-close）。需要决定：retry 重启 Runner，还是 cancel 这个 issue？Runner 原话：`<original_message>`
 
-3. Wait for the operator's reply. Do **not** auto-spawn a new Runner. Do **not** mark the issue Done. Do **not** post a Forum status update — `gate_timed_out` is intentionally `updateForum: false` because the session FSM didn't actually change.
+3. Wait for the operator's reply. Do **not** auto-spawn a new Runner. Do **not** mark the issue Done. Do **not** post any extra status update beyond the one message above — the session FSM didn't actually change, so there is nothing else to report.
 4. When the operator replies:
    - **retry** → spawn a fresh Runner on the same issue (standard spawn path)
    - **cancel** → post acknowledgment in thread; if the issue tracker allows, move the issue to a blocked/cancelled state per project convention
