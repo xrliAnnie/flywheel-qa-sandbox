@@ -37,6 +37,7 @@ export EVENT_FILE="$TMPDIR_ROOT/events"
 export CLEANUP_PENDING="$TMPDIR_ROOT/cleanup-pending"
 export STALE_STATE="$TMPDIR_ROOT/stale.state"
 export HEAL_STATE="$TMPDIR_ROOT/heal.state"  # FLY-169
+export CMUX_SOCK_IDENT_FILE="$TMPDIR_ROOT/sock-ident"  # FLY-254
 export FLYWHEEL_CMUX_CLEANUP_DELAY=30
 export FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP=300
 
@@ -226,11 +227,34 @@ cmux() {
   case "${1:-}" in
     list-workspaces)
       if (( json_mode == 1 )); then
+        # FLY-254 CR-R3: optional identity flip "during" a JSON IPC. Writes
+        # the new identity to a FILE (this mock often runs inside $(...)
+        # subshells; cmux_socket_identity's test override reads the file) on
+        # the MOCK_JSON_FLIP_AT-th list-workspaces call. Used to reproduce
+        # the generation-flip-during-current_selected_ref race.
+        if [[ -n "${MOCK_JSON_FLIP_IDENT:-}" ]]; then
+          local jf_file="$TMPDIR_ROOT/jsoncalls.n" jf_n=0
+          [[ -f "$jf_file" ]] && jf_n=$(cat "$jf_file")
+          jf_n=$((jf_n + 1)); echo "$jf_n" > "$jf_file"
+          if [[ "$jf_n" -ge "${MOCK_JSON_FLIP_AT:-1}" ]]; then
+            printf '%s' "$MOCK_JSON_FLIP_IDENT" > "$TMPDIR_ROOT/mock-ident.override"
+          fi
+        fi
         if [[ "$MOCK_CMUX_JSON_FAIL" == "1" ]]; then
           return 1
         fi
         if [[ "$MOCK_CMUX_JSON_INVALID" == "1" ]]; then
           echo "not json"
+        elif [[ -n "${MOCK_CMUX_JSON_SEQ_N:-}" ]]; then
+          # FLY-254: per-call JSON sequence read from files
+          # $TMPDIR_ROOT/wsjson.<i> (1..MOCK_CMUX_JSON_SEQ_N, clamped to the
+          # last). File-based counter — list-workspaces runs inside $(...)
+          # subshells. Used by the readiness-wait partial-restore tests.
+          local wj_file="$TMPDIR_ROOT/wsjson.n" wj_n=0
+          [[ -f "$wj_file" ]] && wj_n=$(cat "$wj_file")
+          wj_n=$((wj_n + 1)); echo "$wj_n" > "$wj_file"
+          (( wj_n > MOCK_CMUX_JSON_SEQ_N )) && wj_n=$MOCK_CMUX_JSON_SEQ_N
+          cat "$TMPDIR_ROOT/wsjson.$wj_n"
         else
           echo "$MOCK_CMUX_WORKSPACES_JSON"
         fi
@@ -243,9 +267,57 @@ cmux() {
       # --surface args) so tests can assert surface-scoped self-heal sends.
       MOCK_CMUX_OPS+="$*"$'\n'
       ;;
+    select-workspace)
+      # FLY-254: capture the focus mutation AND reflect it in the workspace
+      # JSON selected flags, so current_selected_ref sees focus changes the
+      # way real cmux reports them. Mutating globals is safe here:
+      # select-workspace is always invoked via cmux_call directly (never
+      # inside $(...)), so this runs in the main shell.
+      # CR-R4: the ops line also records the identity observed AT MUTATION
+      # TIME (ident=…) — ordering regression guard: any bookkeeping slipped
+      # between the final stat and the select shows up as ident=B here.
+      MOCK_CMUX_OPS+="$* ident=$(cmux_socket_identity)"$'\n'
+      local sw_ref=""
+      shift
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --workspace) sw_ref="$2"; shift 2 ;;
+          *) shift ;;
+        esac
+      done
+      if [[ -n "$sw_ref" ]]; then
+        local sw_new
+        sw_new=$(printf '%s' "$MOCK_CMUX_WORKSPACES_JSON" | python3 -c '
+import sys, json
+ref = sys.argv[1]
+d = json.load(sys.stdin)
+for w in d.get("workspaces", []):
+    w["selected"] = (w.get("ref") == ref)
+print(json.dumps(d))' "$sw_ref" 2>/dev/null)
+        [[ -n "$sw_new" ]] && MOCK_CMUX_WORKSPACES_JSON="$sw_new"
+      fi
+      # CR-R6 LOW: optional forced exit code — proves a REAL cmux rc (e.g. 99)
+      # is never misread as a guard block.
+      return "${MOCK_CMUX_SELECT_RC:-0}"
+      ;;
     read-screen)
       # FLY-169: bare-shell gate reads the surface screen. MOCK_CMUX_READSCREEN
       # is the screen text (last non-empty line drives the prompt-sigil check).
+      # FLY-254: MOCK_CMUX_READSCREEN_SEQ adds a per-call sequence — comma-
+      # separated values, "FAIL" = rc=1, anything else = screen text; clamped
+      # to the last value. Counter is FILE-based because read-screen is invoked
+      # inside $(...) subshells (same pattern as the list-clients counters and
+      # FLY-242's panedead counters).
+      if [[ -n "${MOCK_CMUX_READSCREEN_SEQ:-}" ]]; then
+        local rs_file="$TMPDIR_ROOT/readscreen.n" rs_n=0
+        [[ -f "$rs_file" ]] && rs_n=$(cat "$rs_file")
+        rs_n=$((rs_n + 1)); echo "$rs_n" > "$rs_file"
+        local rs_v
+        rs_v=$(echo "$MOCK_CMUX_READSCREEN_SEQ" | awk -F, -v i="$rs_n" '{ if (i>NF) i=NF; print $i }')
+        if [[ "$rs_v" == "FAIL" ]]; then return 1; fi
+        printf '%s\n' "$rs_v"
+        return 0
+      fi
       if [[ "${MOCK_CMUX_READSCREEN_FAIL:-0}" == "1" ]]; then return 1; fi
       printf '%s\n' "$MOCK_CMUX_READSCREEN"
       ;;
@@ -311,10 +383,30 @@ reset_mocks() {
   MOCK_CMUX_READSCREEN="user@host ~ %"   # bare-shell screen (prompt sigil) by default
   MOCK_CMUX_READSCREEN_FAIL="0"          # 1 = read-screen cmux failure
   CMUX_HEAL_ON_RECOVERY="0"
+  # FLY-254 mocks
+  MOCK_CMUX_READSCREEN_SEQ=""   # per-call read-screen sequence ("FAIL,text,…")
+  MOCK_CMUX_JSON_SEQ_N=""       # per-call list-workspaces JSON files (wsjson.<i>)
+  MOCK_SOCK_IDENT=""            # cmux_socket_identity override value
+  MOCK_SOCK_PRESENT="0"         # cmux_socket_present override (1 = socket exists)
+  MOCK_SLEEPS=0                 # sleep-mock call counter
+  MOCK_SLEEP_ARGS=""            # sleep-mock recorded durations
+  MOCK_SLEEP_HOOK=""            # eval'd on each mocked sleep (flip state mid-wait)
+  HEAL_RENDER_ESCALATE=0
+  REOPEN_CONSUMED_THIS_TICK=0
+  REOPEN_CACHE_IDENT=""         # FLY-254 CR-M6 in-process cache
+  REOPEN_CACHE_STATE=""
+  HEAL_SWEEP_GEN_IDENT=""       # FLY-254 CR-HIGH-2 generation pin
+  HEAL_GEN_CHANGED=0            # FLY-254 CR-R2-HIGH-1 generation-changed latch
+  MOCK_JSON_FLIP_IDENT=""       # FLY-254 CR-R3: identity flip during a JSON IPC
+  MOCK_JSON_FLIP_AT=""
+  MOCK_MKTEMP_HOOK=""           # FLY-254 CR-R5: eval'd at cmux_call_guarded's mktemp
+  MOCK_CMUX_SELECT_RC=""        # FLY-254 CR-R6: force select-workspace exit code
+  rm -f "$TMPDIR_ROOT"/jsoncalls.n "$TMPDIR_ROOT"/mock-ident.override "$TMPDIR_ROOT"/gmk.n 2>/dev/null
   # FLY-129 Phase 3: reset JSON transition state so per-test logging is clean.
   CMUX_JSON_LAST_STATE="unknown"
   rm -f "$EVENT_FILE" "$CLEANUP_PENDING" "$STALE_STATE" "$HEAL_STATE"
   rm -f "$TMPDIR_ROOT"/clients.*.n
+  rm -f "$CMUX_SOCK_IDENT_FILE" "$TMPDIR_ROOT"/readscreen.n "$TMPDIR_ROOT"/wsjson.n "$TMPDIR_ROOT"/wsjson.[0-9]* 2>/dev/null
   rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
 }
 
@@ -2287,6 +2379,783 @@ if grep -qE '^exec "\$SYNC_SCRIPT" --watch' "$AUTOSTART_SH" \
 else
   fail "autostart: missing 'exec \$SYNC_SCRIPT --watch' or PATH expansion"
 fi
+
+set +e   # restore lenient mode before the FLY-254 section + summary
+
+# ════════════════════════════════════════════════════════════════
+# FLY-254: render-escalated reopen sweep
+# ════════════════════════════════════════════════════════════════
+# Test-only overrides. Socket identity/presence are pure-stat probes in prod;
+# here they're driven by MOCK_ vars. `sleep` is mocked: counts calls and runs
+# an optional hook so tests can flip state "during" a wait. This section runs
+# LAST — overriding sleep cannot affect earlier tests.
+# Identity override file takes precedence over the MOCK_ var: the cmux mock's
+# JSON-flip hook runs inside $(...) subshells and can only signal the parent
+# via a file (FLY-254 CR-R3 race tests).
+cmux_socket_identity() {
+  if [[ -f "$TMPDIR_ROOT/mock-ident.override" ]]; then
+    cat "$TMPDIR_ROOT/mock-ident.override"
+    return 0
+  fi
+  printf '%s' "${MOCK_SOCK_IDENT:-}"
+}
+cmux_socket_present() { [[ "${MOCK_SOCK_PRESENT:-0}" == "1" ]]; }
+sleep() { MOCK_SLEEPS=$((MOCK_SLEEPS + 1)); MOCK_SLEEP_ARGS+="${1:-} "; eval "${MOCK_SLEEP_HOOK:-}" || true; }
+# CR-R5: mutation-boundary hook — fires ONLY for cmux_call_guarded's own
+# mktemp (FUNCNAME survives the $(...) subshell), i.e. the last bookkeeping
+# step before the actual cmux mutation. State changes must cross the subshell
+# via files (mock-ident.override).
+mktemp() {
+  if [[ "${FUNCNAME[1]:-}" == "cmux_call_guarded" && -n "${MOCK_MKTEMP_HOOK:-}" ]]; then
+    eval "$MOCK_MKTEMP_HOOK" || true
+  fi
+  command mktemp "$@"
+}
+
+# Standard escalation scenario: one Lead window 'lead-a' (ws workspace:7,
+# unrendered surface), user's tab = workspace:1 ('home', selected).
+setup_escalation_scenario() {
+  reset_mocks
+  MOCK_TMUX_WINDOWS="flywheel|@7|lead-a"
+  MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+  MOCK_TMUX_CLIENTS="cmux-lead-a=0"
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"home","ref":"workspace:1","selected":true},{"title":"lead-a","ref":"workspace:7"}]}'
+  MOCK_CMUX_SURFACES="workspace:7;;surface:7;;terminal;;true"
+  MOCK_CMUX_READSCREEN_SEQ="FAIL,annie@mac ~ %"
+  export FLYWHEEL_CMUX_RENDER_WAIT_TICKS=3
+  unset FLYWHEEL_CMUX_REOPEN_SWEEP 2>/dev/null || true
+}
+
+echo "Test: FLY-254 escalation happy path (focus → render → full gates → send → restore)"
+setup_escalation_scenario
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:7"; then
+  pass "escalation focuses the broken workspace (select-workspace ws7)"
+else fail "expected select-workspace ws7; ops: $MOCK_CMUX_OPS"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7 --surface surface:7 tmux attach"; then
+  pass "atomic send fired after render + full gate re-run"
+else fail "expected attach send to ws7; ops: $MOCK_CMUX_OPS"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:1"; then
+  pass "focus restored to original tab (ws1)"
+else fail "expected restore select-workspace ws1; ops: $MOCK_CMUX_OPS"; fi
+
+echo "Test: FLY-254 R1-HIGH-1 race — client appears at the FINAL pre-send check"
+setup_escalation_scenario
+MOCK_TMUX_CLIENTS="cmux-lead-a=0,0,0,1"   # 4th client-count call (final ⑤) → 1
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
+  fail "client appeared at final check but send still fired"
+else pass "final pre-send 0-client re-check blocks the send (race closed)"; fi
+
+echo "Test: FLY-254 R1-HIGH-1 drift — ref no longer resolves from wname after focus"
+setup_escalation_scenario
+MOCK_SLEEP_HOOK='MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"title\":\"home\",\"ref\":\"workspace:1\"},{\"title\":\"renamed\",\"ref\":\"workspace:7\",\"selected\":true}]}"'
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
+  fail "ref drifted (title renamed) after focus but send still fired"
+else pass "fresh MANAGED re-check blocks send after title drift"; fi
+
+echo "Test: FLY-254 render timeout — budget exhausted, summary log, sweep continues + restores"
+setup_escalation_scenario
+MOCK_CMUX_READSCREEN_SEQ="FAIL"   # clamped: every read fails — never renders
+export FLYWHEEL_CMUX_RENDER_WAIT_TICKS=2
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
+  fail "render never completed but send fired"
+else pass "no send on render timeout (fail-closed)"; fi
+if grep -q "render timeout" "$TMPDIR_ROOT/t254.log"; then
+  pass "one summary log on render timeout"
+else fail "expected 'render timeout' summary log"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:1"; then
+  pass "focus still restored after timeout"
+else fail "expected restore to ws1 after timeout; ops: $MOCK_CMUX_OPS"; fi
+
+echo "Test: FLY-254 positively-not-a-shell after render → fail closed"
+setup_escalation_scenario
+MOCK_CMUX_READSCREEN_SEQ="FAIL,[0] 0:zsh* | mac | 12:00"   # renders into a status bar
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
+  fail "non-shell screen after render but send fired"
+else pass "bare-shell positive proof still gates the escalated send"; fi
+
+echo "Test: FLY-254 focus snapshot fail-closed (no unique selected ref)"
+setup_escalation_scenario
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"home","ref":"workspace:1"},{"title":"lead-a","ref":"workspace:7"}]}'
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace"; then
+  fail "no restorable snapshot but focus mutation happened"
+else pass "zero selected → zero focus mutations (fail-closed)"; fi
+setup_escalation_scenario
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"home","ref":"workspace:1","selected":true},{"title":"lead-a","ref":"workspace:7","selected":true}]}'
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace"; then
+  fail "ambiguous (2x selected) snapshot but focus mutation happened"
+else pass "multiple selected → zero focus mutations (fail-closed)"; fi
+
+echo "Test: FLY-254 R2-M5 mid-sweep user intervention stops remaining escalation"
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@7|lead-a\nflywheel|@8|lead-b'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a\ncmux-lead-b'
+MOCK_TMUX_CLIENTS=$'cmux-lead-a=0\ncmux-lead-b=0'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"home","ref":"workspace:1","selected":true},{"title":"lead-a","ref":"workspace:7"},{"title":"lead-b","ref":"workspace:8"},{"title":"elsewhere","ref":"workspace:99"}]}'
+MOCK_CMUX_SURFACES=$'workspace:7;;surface:7;;terminal;;true\nworkspace:8;;surface:8;;terminal;;true'
+MOCK_CMUX_READSCREEN_SEQ="FAIL,annie@mac ~ %,FAIL"
+export FLYWHEEL_CMUX_RENDER_WAIT_TICKS=3
+# User clicks ws99 during lead-a's render wait (sleep #1) — lead-b's pre-focus
+# check must detect it, stop ALL remaining focus escalation, and never restore.
+MOCK_SLEEP_HOOK='[[ "$MOCK_SLEEPS" -eq 1 ]] && MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"title\":\"home\",\"ref\":\"workspace:1\"},{\"title\":\"lead-a\",\"ref\":\"workspace:7\"},{\"title\":\"lead-b\",\"ref\":\"workspace:8\"},{\"title\":\"elsewhere\",\"ref\":\"workspace:99\",\"selected\":true}]}"'
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:8"; then
+  fail "user intervened but lead-b was still focused"
+else pass "user intervention stops remaining focus escalation (no ws8 focus)"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:1"; then
+  fail "user intervened but focus was restored anyway (user's choice stomped)"
+else pass "no restore after user intervention (user's selection wins)"; fi
+if grep -q "user switched tabs" "$TMPDIR_ROOT/t254.log"; then
+  pass "user-intervention transition logged"
+else fail "expected 'user switched tabs' log"; fi
+
+echo "Test: FLY-254 R3-M2 end-form — user switches AFTER the last forced focus"
+setup_escalation_scenario
+# Flip selected to ws99 during lead-a's render wait; lead-a still heals (its
+# gates are client/shell-based), but the EPILOGUE must see selected≠last_forced
+# and skip the restore.
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"home","ref":"workspace:1","selected":true},{"title":"lead-a","ref":"workspace:7"},{"title":"elsewhere","ref":"workspace:99"}]}'
+MOCK_SLEEP_HOOK='[[ "$MOCK_SLEEPS" -eq 1 ]] && MOCK_CMUX_WORKSPACES_JSON="{\"workspaces\":[{\"title\":\"home\",\"ref\":\"workspace:1\"},{\"title\":\"lead-a\",\"ref\":\"workspace:7\"},{\"title\":\"elsewhere\",\"ref\":\"workspace:99\",\"selected\":true}]}"'
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:1"; then
+  fail "selected changed after last focus but restore fired (zero-restore violated)"
+else pass "final selected re-check skips restore (end-form user switch)"; fi
+if grep -q "keeping user's selection" "$TMPDIR_ROOT/t254.log"; then
+  pass "epilogue logs the kept user selection"
+else fail "expected 'keeping user's selection' log"; fi
+
+echo "Test: FLY-254 generation state machine (three-field fixtures)"
+reset_mocks
+MOCK_SOCK_IDENT="11:22:333"
+reopen_detector_check 2>"$TMPDIR_ROOT/t254.log"
+if [[ "$(cat "$CMUX_SOCK_IDENT_FILE" 2>/dev/null)" == "11:22:333|pending|0" ]]; then
+  pass "missing file → arm identity|pending|0"
+else fail "expected arm; file: $(cat "$CMUX_SOCK_IDENT_FILE" 2>/dev/null || echo '<none>')"; fi
+if grep -q "cmux reopen detected" "$TMPDIR_ROOT/t254.log"; then
+  pass "arm logs reopen detection"
+else fail "expected reopen-detected log"; fi
+# Churn immunity: same identity + done → detector must NOT re-arm.
+echo "11:22:333|done|1" > "$CMUX_SOCK_IDENT_FILE"
+reopen_detector_check 2>/dev/null
+if [[ "$(cat "$CMUX_SOCK_IDENT_FILE")" == "11:22:333|done|1" ]]; then
+  pass "same identity + done → no re-arm (watcher churn immunity)"
+else fail "done generation was re-armed: $(cat "$CMUX_SOCK_IDENT_FILE")"; fi
+# Identity change → new pending generation.
+MOCK_SOCK_IDENT="44:55:666"
+reopen_detector_check 2>/dev/null
+if [[ "$(cat "$CMUX_SOCK_IDENT_FILE")" == "44:55:666|pending|0" ]]; then
+  pass "identity change → new generation armed"
+else fail "expected new arm; file: $(cat "$CMUX_SOCK_IDENT_FILE")"; fi
+
+echo "Test: FLY-254 consume — attempts increment before sweep, done after"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="11:22:333"
+echo "11:22:333|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+consume_pending_reopen_sweep 2>/dev/null
+if [[ "$(cat "$CMUX_SOCK_IDENT_FILE")" == "11:22:333|done|1" ]]; then
+  pass "consume: pending|0 → done|1 (normal completion)"
+else fail "expected done|1; file: $(cat "$CMUX_SOCK_IDENT_FILE")"; fi
+if [[ "$REOPEN_CONSUMED_THIS_TICK" == "1" ]]; then
+  pass "REOPEN_CONSUMED_THIS_TICK set (recovery-sweep coalesce signal)"
+else fail "expected REOPEN_CONSUMED_THIS_TICK=1"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7"; then
+  pass "consume actually ran the escalated sweep (send fired)"
+else fail "expected escalated sweep send; ops: $MOCK_CMUX_OPS"; fi
+
+echo "Test: FLY-254 crash resume — pending|1 re-consumed; already-attached workspaces no-op"
+setup_escalation_scenario
+# lead-b is ALREADY attached (clients=1) — a resume must not focus or send it.
+MOCK_TMUX_WINDOWS=$'flywheel|@7|lead-a\nflywheel|@8|lead-b'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a\ncmux-lead-b'
+MOCK_TMUX_CLIENTS=$'cmux-lead-a=0\ncmux-lead-b=1'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"home","ref":"workspace:1","selected":true},{"title":"lead-a","ref":"workspace:7"},{"title":"lead-b","ref":"workspace:8"}]}'
+MOCK_CMUX_SURFACES=$'workspace:7;;surface:7;;terminal;;true\nworkspace:8;;surface:8;;terminal;;true'
+MOCK_SOCK_IDENT="11:22:333"
+echo "11:22:333|pending|1" > "$CMUX_SOCK_IDENT_FILE"
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+if [[ "$(cat "$CMUX_SOCK_IDENT_FILE")" == "11:22:333|done|2" ]]; then
+  pass "crash resume: pending|1 → done|2"
+else fail "expected done|2; file: $(cat "$CMUX_SOCK_IDENT_FILE")"; fi
+if grep -q "resuming pending re-attach sweep" "$TMPDIR_ROOT/t254.log"; then
+  pass "resume logged"
+else fail "expected resume log"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "workspace:8"; then
+  fail "resume touched the already-attached workspace (ws8): $MOCK_CMUX_OPS"
+else pass "resume no-ops the already-attached workspace (residue only)"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7"; then
+  pass "resume healed the residual broken workspace (ws7)"
+else fail "expected ws7 heal on resume; ops: $MOCK_CMUX_OPS"; fi
+
+echo "Test: FLY-254 R3-HIGH-1 durable attempt budget — pending|3 never consumed"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="11:22:333"
+echo "11:22:333|pending|3" > "$CMUX_SOCK_IDENT_FILE"
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace\|send --workspace"; then
+  fail "attempt budget exhausted but sweep still ran"
+else pass "attempt budget exhausted → zero focus/send"; fi
+if grep -q "attempt budget exhausted" "$TMPDIR_ROOT/t254.log"; then
+  pass "give-up logged once"
+else fail "expected budget-exhausted log"; fi
+if [[ "$(cat "$CMUX_SOCK_IDENT_FILE")" == "11:22:333|done|3" ]]; then
+  pass "exhausted generation flipped to done (no further consumption)"
+else fail "expected done|3; file: $(cat "$CMUX_SOCK_IDENT_FILE")"; fi
+
+echo "Test: FLY-254 malformed state file → fail-closed reset, no escalation"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="11:22:333"
+echo "garbage-no-pipes" > "$CMUX_SOCK_IDENT_FILE"
+reopen_detector_check 2>"$TMPDIR_ROOT/t254.log"
+if [[ "$(cat "$CMUX_SOCK_IDENT_FILE")" == "11:22:333|done|0" ]]; then
+  pass "malformed → reset to done (no escalation off corrupt state)"
+else fail "expected reset to done|0; file: $(cat "$CMUX_SOCK_IDENT_FILE")"; fi
+if grep -q "malformed generation state" "$TMPDIR_ROOT/t254.log"; then
+  pass "malformed reset logged"
+else fail "expected malformed log"; fi
+
+echo "Test: FLY-254 attempt-write failure → zero escalation that round (fail-closed)"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="11:22:333"
+mkdir -p "$TMPDIR_ROOT/ro"
+SAVED_IDENT_FILE="$CMUX_SOCK_IDENT_FILE"
+CMUX_SOCK_IDENT_FILE="$TMPDIR_ROOT/ro/sock-ident"
+echo "11:22:333|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+chmod 555 "$TMPDIR_ROOT/ro"
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+chmod 755 "$TMPDIR_ROOT/ro"
+CMUX_SOCK_IDENT_FILE="$SAVED_IDENT_FILE"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace\|send --workspace"; then
+  fail "attempt counter could not be persisted but sweep still ran"
+else pass "unpersistable attempt counter → no escalated sweep (fail-closed)"; fi
+
+echo "Test: FLY-254 R2-M4 readiness — partial set held stable must NOT early-exit"
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@7|lead-a\nflywheel|@8|lead-b'
+printf '%s' '{"workspaces":[{"title":"lead-a","ref":"workspace:7"}]}' > "$TMPDIR_ROOT/wsjson.1"
+printf '%s' '{"workspaces":[{"title":"lead-a","ref":"workspace:7"}]}' > "$TMPDIR_ROOT/wsjson.2"
+printf '%s' '{"workspaces":[{"title":"lead-a","ref":"workspace:7"},{"title":"lead-b","ref":"workspace:8"}]}' > "$TMPDIR_ROOT/wsjson.3"
+MOCK_CMUX_JSON_SEQ_N=3
+export FLYWHEEL_CMUX_READINESS_TICKS=5
+reopen_readiness_wait 2>/dev/null
+WS_READS=$(cat "$TMPDIR_ROOT/wsjson.n" 2>/dev/null || echo 0)
+if [[ "$WS_READS" -ge 3 ]]; then
+  pass "readiness waited past the stable partial set (expected-set check, $WS_READS reads)"
+else fail "readiness early-exited on a stable PARTIAL set after $WS_READS reads"; fi
+
+echo "Test: FLY-254 readiness budget exhausted → proceed + log missing names"
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@7|lead-a\nflywheel|@8|lead-b'
+printf '%s' '{"workspaces":[{"title":"lead-a","ref":"workspace:7"}]}' > "$TMPDIR_ROOT/wsjson.1"
+MOCK_CMUX_JSON_SEQ_N=1
+export FLYWHEEL_CMUX_READINESS_TICKS=2
+reopen_readiness_wait 2>"$TMPDIR_ROOT/t254.log"
+if grep -q "readiness budget exhausted" "$TMPDIR_ROOT/t254.log" \
+   && grep -q "lead-b" "$TMPDIR_ROOT/t254.log"; then
+  pass "budget exhaustion logged with the missing window name"
+else fail "expected exhausted+missing log; got: $(cat "$TMPDIR_ROOT/t254.log")"; fi
+
+echo "Test: FLY-254 R2-HIGH-2 sliced sleeps — rc=1 socket reappearance wakes early"
+reset_mocks
+CMUX_HEALTH_LAST_RC=1
+export FLYWHEEL_CMUX_SOCKET_PROBE_SLICE=3
+MOCK_SLEEP_HOOK='[[ "$MOCK_SLEEPS" -ge 2 ]] && MOCK_SOCK_PRESENT=1'
+reopen_aware_sleep 30 2>/dev/null
+if [[ "$MOCK_SLEEPS" -eq 2 ]]; then
+  pass "rc=1: woke on socket reappearance after 2 slices (not 10)"
+else fail "rc=1: expected 2 slices, got $MOCK_SLEEPS"; fi
+
+echo "Test: FLY-254 R2-HIGH-2 sliced sleeps — rc=3 stale-socket identity change wakes early"
+reset_mocks
+CMUX_HEALTH_LAST_RC=3
+echo "old:1:1|done|1" > "$CMUX_SOCK_IDENT_FILE"
+MOCK_SOCK_IDENT="old:1:1"
+MOCK_SLEEP_HOOK='[[ "$MOCK_SLEEPS" -ge 2 ]] && MOCK_SOCK_IDENT="new:2:2"'
+reopen_aware_sleep 30 2>/dev/null
+if [[ "$MOCK_SLEEPS" -eq 2 ]]; then
+  pass "rc=3: woke on identity change after 2 slices (stale-socket blind spot closed)"
+else fail "rc=3: expected 2 slices, got $MOCK_SLEEPS"; fi
+
+echo "Test: FLY-254 healthy sleep stays a single plain sleep"
+reset_mocks
+CMUX_HEALTH_LAST_RC=0
+reopen_aware_sleep 15 2>/dev/null
+if [[ "$MOCK_SLEEPS" -eq 1 ]]; then
+  pass "rc=0: one plain sleep (byte-identical cadence)"
+else fail "rc=0: expected 1 sleep, got $MOCK_SLEEPS"; fi
+
+echo "Test: FLY-254 kill switch — FLYWHEEL_CMUX_REOPEN_SWEEP=0 reverts to FLY-169 status quo"
+setup_escalation_scenario
+export FLYWHEEL_CMUX_REOPEN_SWEEP=0
+MOCK_SOCK_IDENT="11:22:333"
+reopen_detector_check 2>/dev/null
+if [[ ! -f "$CMUX_SOCK_IDENT_FILE" ]]; then
+  pass "off: detector writes no state file"
+else fail "off: state file was created"; fi
+echo "11:22:333|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+consume_pending_reopen_sweep 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace\|send"; then
+  fail "off: consume still acted"
+else pass "off: consume is a no-op"; fi
+CMUX_HEALTH_LAST_RC=1
+MOCK_SLEEPS=0
+reopen_aware_sleep 30 2>/dev/null
+if [[ "$MOCK_SLEEPS" -eq 1 ]]; then
+  pass "off: unhealthy sleep is one plain sleep (no slicing)"
+else fail "off: expected 1 sleep, got $MOCK_SLEEPS"; fi
+# Regression sentinel: escalation never fires from a plain (FLY-169) sweep,
+# and the event-path heal stays fail-closed on read-screen failure.
+setup_escalation_scenario
+MOCK_CMUX_READSCREEN_SEQ="FAIL"
+self_heal_sweep_all 2>/dev/null   # NOT escalated
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace\|send --workspace"; then
+  fail "plain sweep escalated or sent on unreadable surface"
+else pass "plain sweep: read-screen failure stays fail-closed (FLY-169 verbatim)"; fi
+
+echo "Test: FLY-254 invalid env knobs fall back to defaults"
+reset_mocks
+V=$(validated_int_env TEST_KNOB "abc" 6 60 2>/dev/null)
+[[ "$V" == "6" ]] && pass "non-numeric → default" || fail "non-numeric: got $V"
+V=$(validated_int_env TEST_KNOB "0" 6 60 2>/dev/null)
+[[ "$V" == "6" ]] && pass "zero → default" || fail "zero: got $V"
+V=$(validated_int_env TEST_KNOB "999" 6 60 2>/dev/null)
+[[ "$V" == "6" ]] && pass "over-max → default" || fail "over-max: got $V"
+V=$(validated_int_env TEST_KNOB "08" 6 60 2>/dev/null)
+[[ "$V" == "8" ]] && pass "leading zero → base-10 (no octal trap)" || fail "leading zero: got $V"
+
+echo "Test: FLY-254 set -euo pipefail survival (sweep + consume return 0 on failure paths)"
+setup_escalation_scenario
+MOCK_CMUX_READSCREEN_SEQ="FAIL"
+export FLYWHEEL_CMUX_RENDER_WAIT_TICKS=2
+SURVIVED=$( (set -euo pipefail
+  HEAL_RENDER_ESCALATE=1
+  self_heal_sweep_all
+  MOCK_SOCK_IDENT="11:22:333"
+  echo "11:22:333|pending|3" > "$CMUX_SOCK_IDENT_FILE"
+  consume_pending_reopen_sweep
+  reopen_detector_check
+  CMUX_HEALTH_LAST_RC=0
+  reopen_aware_sleep 15
+  echo SURVIVED) 2>/dev/null )
+if [[ "$SURVIVED" == *SURVIVED* ]]; then
+  pass "all FLY-254 entry points survive set -euo pipefail on failure paths"
+else fail "a FLY-254 path killed the watcher under set -e"; fi
+
+echo "Test: FLY-254 wiring structure (watch_loop coalesce + bootstrap replace + sliced sleep)"
+SYNC_SH="$SCRIPT_DIR/flywheel-cmux-sync.sh"
+if grep -q 'REOPEN_CONSUMED_THIS_TICK" != "1"' "$SYNC_SH"; then
+  pass "watch_loop coalesces recovery sweep with the escalated consume"
+else fail "missing recovery-sweep coalesce guard"; fi
+if grep -q 'BOOTSTRAP_SKIP_HEAL_SWEEP=1 sync_additive_bootstrap' "$SYNC_SH"; then
+  pass "bootstrap consume replaces the legacy bootstrap sweep when pending"
+else fail "missing bootstrap replace wiring"; fi
+if grep -q 'reopen_aware_sleep "\$sleep_seconds"' "$SYNC_SH"; then
+  pass "watch_loop sleeps through reopen_aware_sleep"
+else fail "watch_loop still uses plain sleep"; fi
+if grep -q 'REOPEN_CACHE_STATE" == "pending"' "$SYNC_SH"; then
+  pass "watch_loop consume is cache-gated (CR-M6: settled done = zero file IO)"
+else fail "missing cache gate on the consume call"; fi
+# CR-R1 L9: scan the FULL sync_once body (the old -A20 only saw 20 lines).
+if ! awk '/^sync_once\(\)/,/^}$/' "$SYNC_SH" | grep -q 'reopen\|escalat\|HEAL_RENDER'; then
+  pass "--once does not participate in escalation / generation consumption (full body)"
+else fail "--once gained reopen behavior (must stay non-escalated)"; fi
+
+echo "Test: FLY-254 bootstrap skip flag suppresses the legacy heal sweep"
+setup_escalation_scenario
+MOCK_CMUX_READSCREEN_SEQ=""
+MOCK_CMUX_READSCREEN="annie@mac ~ %"   # legacy heal WOULD send without the flag
+BOOTSTRAP_SKIP_HEAL_SWEEP=1 sync_additive_bootstrap 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
+  fail "skip flag set but bootstrap sweep still healed"
+else pass "BOOTSTRAP_SKIP_HEAL_SWEEP=1 suppresses the bootstrap heal sweep"; fi
+setup_escalation_scenario
+MOCK_CMUX_READSCREEN_SEQ=""
+MOCK_CMUX_READSCREEN="annie@mac ~ %"
+sync_additive_bootstrap 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7"; then
+  pass "without the flag the bootstrap heal sweep still heals (status quo)"
+else fail "bootstrap sweep stopped healing; ops: $MOCK_CMUX_OPS"; fi
+
+# ── FLY-254 Codex code review R1 findings — behavioral coverage ──
+
+echo "Test: FLY-254 CR-HIGH-1 — already-readable escalated fast path hits the in-helper final guard"
+setup_escalation_scenario
+MOCK_CMUX_READSCREEN_SEQ="annie@mac ~ %"   # readable immediately — no focus needed
+MOCK_TMUX_CLIENTS="cmux-lead-a=0,0,1"      # 3rd client read = the helper's final guard → 1
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
+  fail "client appeared at the helper guard but the fast path still sent"
+else pass "fast path blocked by the in-helper final 0-client guard"; fi
+
+echo "Test: FLY-254 CR-HIGH-1 — client appearing during bookkeeping blocks the render-loop send"
+setup_escalation_scenario
+MOCK_TMUX_CLIENTS="cmux-lead-a=0,0,0,1"    # 4th read = in-helper guard after bookkeeping
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
+  fail "client appeared during bookkeeping but send still fired"
+else pass "render-loop send blocked by the in-helper final guard"; fi
+
+echo "Test: FLY-254 CR-HIGH-2 — identity flip during readiness aborts the consume"
+setup_escalation_scenario
+MOCK_TMUX_WINDOWS=$'flywheel|@7|lead-a\nflywheel|@9|lead-c'   # lead-c has no workspace → readiness waits
+MOCK_SOCK_IDENT="A:1:1"
+echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+export FLYWHEEL_CMUX_READINESS_TICKS=2
+MOCK_SLEEP_HOOK='[[ "$MOCK_SLEEPS" -ge 1 ]] && MOCK_SOCK_IDENT="B:2:2"'
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace\|send --workspace"; then
+  fail "consume swept after the generation changed during readiness"
+else pass "no sweep on a generation whose budget was never charged"; fi
+if grep -q "generation changed during readiness" "$TMPDIR_ROOT/t254.log"; then
+  pass "readiness-abort logged"
+else fail "expected readiness-abort log"; fi
+if grep -q "^A:1:1|pending|1$" "$CMUX_SOCK_IDENT_FILE"; then
+  pass "old generation NOT marked done (next tick arms the new identity cleanly)"
+else fail "file: $(cat "$CMUX_SOCK_IDENT_FILE")"; fi
+export FLYWHEEL_CMUX_READINESS_TICKS=5
+
+echo "Test: FLY-254 CR-HIGH-2 — generation pin stops focus escalation mid-sweep"
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@7|lead-a\nflywheel|@8|lead-b'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a\ncmux-lead-b'
+MOCK_TMUX_CLIENTS=$'cmux-lead-a=0\ncmux-lead-b=0'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"home","ref":"workspace:1","selected":true},{"title":"lead-a","ref":"workspace:7"},{"title":"lead-b","ref":"workspace:8"}]}'
+MOCK_CMUX_SURFACES=$'workspace:7;;surface:7;;terminal;;true\nworkspace:8;;surface:8;;terminal;;true'
+MOCK_CMUX_READSCREEN_SEQ="FAIL,annie@mac ~ %,FAIL"
+export FLYWHEEL_CMUX_RENDER_WAIT_TICKS=3
+MOCK_SOCK_IDENT="A:1:1"
+echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+MOCK_SLEEP_HOOK='[[ "$MOCK_SLEEPS" -ge 1 ]] && MOCK_SOCK_IDENT="B:2:2"'   # flips during lead-a render wait
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:8"; then
+  fail "generation changed mid-sweep but lead-b was still focused"
+else pass "generation pin stops remaining focus escalation"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:1"; then
+  fail "restore fired after a mid-sweep generation change"
+else pass "no restore after a mid-sweep generation change"; fi
+if grep -q "generation changed mid-sweep" "$TMPDIR_ROOT/t254.log"; then
+  pass "mid-sweep abort logged"
+else fail "expected mid-sweep abort log"; fi
+
+echo "Test: FLY-254 CR-M3 — unwritable HEAL_STATE cannot kill the watcher"
+setup_escalation_scenario
+SAVED_HEAL_STATE="$HEAL_STATE"
+HEAL_STATE="$TMPDIR_ROOT/healdir"
+mkdir -p "$HEAL_STATE"
+SURVIVED=$( (set -euo pipefail
+  HEAL_RENDER_ESCALATE=1
+  self_heal_sweep_all
+  echo SURVIVED) 2>/dev/null )
+HEAL_STATE="$SAVED_HEAL_STATE"
+if [[ "$SURVIVED" == *SURVIVED* ]]; then
+  pass "escalated sweep survives HEAL_STATE being a directory under set -e"
+else fail "HEAL_STATE-as-directory killed the sweep"; fi
+
+echo "Test: FLY-254 CR-M4 — arithmetic overflow / out-of-range attempts are malformed"
+reset_mocks
+MOCK_SOCK_IDENT="O:1:1"
+echo "O:1:1|pending|99999999999999999999" > "$CMUX_SOCK_IDENT_FILE"
+consume_pending_reopen_sweep 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace\|send --workspace"; then
+  fail "overflow attempts field was consumed"
+else pass "overflow attempts → not consumable"; fi
+reopen_detector_check 2>/dev/null
+if grep -q "^O:1:1|done|0$" "$CMUX_SOCK_IDENT_FILE"; then
+  pass "detector resets the overflow state to done (fail-closed)"
+else fail "file: $(cat "$CMUX_SOCK_IDENT_FILE")"; fi
+reset_mocks
+MOCK_SOCK_IDENT="O:1:1"
+echo "O:1:1|pending|4" > "$CMUX_SOCK_IDENT_FILE"   # beyond writer's representable set
+consume_pending_reopen_sweep 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace\|send --workspace"; then
+  fail "attempts=4 (unrepresentable) was consumed"
+else pass "attempts outside 0..3 → malformed, not consumable"; fi
+V=$(validated_int_env TEST_KNOB "18446744073709551617" 6 60 2>/dev/null)
+if [[ "$V" == "6" ]]; then
+  pass "64-bit wrap value → default (lexical length cap)"
+else fail "wrap value accepted: got $V"; fi
+
+echo "Test: FLY-254 CR-M5 — malformed selected ref disables focus mutations"
+setup_escalation_scenario
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"home","ref":"not-a-workspace-ref","selected":true},{"title":"lead-a","ref":"workspace:7"}]}'
+HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>/dev/null
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace"; then
+  fail "illegal selected ref accepted as a focus snapshot"
+else pass "illegal selected ref → zero focus mutations (fail-closed)"; fi
+
+echo "Test: FLY-254 CR-M6 — settled generation costs the healthy tick zero file IO"
+reset_mocks
+MOCK_SOCK_IDENT="S:1:1"
+write_generation_state "S:1:1" done 1 2>/dev/null   # warms the in-process cache
+rm -f "$CMUX_SOCK_IDENT_FILE"                        # remove the file entirely
+reopen_detector_check 2>/dev/null                    # fast path must not read/recreate it
+if [[ ! -f "$CMUX_SOCK_IDENT_FILE" ]]; then
+  pass "detector fast path: zero file IO when identity matches the cache"
+else fail "detector touched the state file on the steady-state fast path"; fi
+
+echo "Test: FLY-254 CR-M6/L9 behavioral — persistent done-write failure cannot exceed the durable budget"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="X:1:1"
+echo "X:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+# Wrap the writer: 'done' writes fail persistently; everything else is real.
+eval "$(declare -f write_generation_state | sed '1s/write_generation_state/write_generation_state_real/')"
+write_generation_state() {
+  if [[ "$2" == "done" ]]; then return 1; fi
+  write_generation_state_real "$@"
+}
+TOTAL_SWEEPS=0
+for _round in 1 2 3 4 5; do
+  # Simulate a watcher restart: cold cache + fresh per-call mock counters.
+  REOPEN_CACHE_IDENT=""; REOPEN_CACHE_STATE=""
+  rm -f "$TMPDIR_ROOT"/clients.*.n "$TMPDIR_ROOT"/readscreen.n
+  MOCK_CMUX_OPS=""
+  consume_pending_reopen_sweep 2>>"$TMPDIR_ROOT/t254.log"
+  if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7"; then
+    TOTAL_SWEEPS=$((TOTAL_SWEEPS + 1))
+  fi
+done
+eval "$(declare -f write_generation_state_real | sed '1s/write_generation_state_real/write_generation_state/')"
+unset -f write_generation_state_real
+if [[ "$TOTAL_SWEEPS" -eq 3 ]]; then
+  pass "exactly 3 sweeps across restarts under persistent done-write failure (durable cap)"
+else fail "expected 3 sweeps under done-write failure, got $TOTAL_SWEEPS"; fi
+if grep -q "attempt budget exhausted" "$TMPDIR_ROOT/t254.log"; then
+  pass "give-up logged after budget exhaustion"
+else fail "expected give-up log"; fi
+
+echo "Test: FLY-254 CR-L8 — slice larger than total cannot oversleep"
+reset_mocks
+CMUX_HEALTH_LAST_RC=1
+export FLYWHEEL_CMUX_SOCKET_PROBE_SLICE=60
+reopen_aware_sleep 15 2>/dev/null
+if [[ "$MOCK_SLEEP_ARGS" == "15 " ]]; then
+  pass "single min(slice,total) step of 15s (requested total honored)"
+else fail "oversleep: slept '$MOCK_SLEEP_ARGS' for a 15s request"; fi
+export FLYWHEEL_CMUX_SOCKET_PROBE_SLICE=3
+
+echo "Test: FLY-254 CR-M7 — probe structure (unrendered diagnostic + trap restore + ref validation)"
+PROBE_SH="$SCRIPT_DIR/fly254-p0-probe.sh"
+if grep -q 'Terminal surface not found' "$PROBE_SH" \
+   && grep -q 'trap restore_focus EXIT' "$PROBE_SH" \
+   && grep -q "trap 'exit 130' INT" "$PROBE_SH" \
+   && grep -q 'is_ws_ref' "$PROBE_SH"; then
+  pass "probe requires the unrendered diagnostic, arms restore-on-EXIT + terminating signal traps, validates refs"
+else fail "probe missing diagnostic requirement / trap split / ref validation"; fi
+
+echo "Test: FLY-254 CR-R2-HIGH-1 — single-workspace identity flip during render wait: zero send, zero restore"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="A:1:1"
+echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+MOCK_CMUX_READSCREEN_SEQ="FAIL,annie@mac ~ %"   # would render fine — but the generation flips first
+MOCK_SLEEP_HOOK='[[ "$MOCK_SLEEPS" -ge 1 ]] && MOCK_SOCK_IDENT="B:2:2"'   # flips during the render wait
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:7"; then
+  pass "focus happened on generation A (pre-flip)"
+else fail "expected the initial ws7 focus; ops: $MOCK_CMUX_OPS"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
+  fail "send landed on generation B (uncharged cross-generation send)"
+else pass "no send after the generation flipped (post-render-wait re-check)"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:1"; then
+  fail "restore landed on generation B"
+else pass "no restore after the generation flipped (latch suppresses epilogue)"; fi
+if grep -q "generation changed mid-sweep" "$TMPDIR_ROOT/t254.log"; then
+  pass "mid-sweep generation flip logged"
+else fail "expected mid-sweep flip log"; fi
+
+echo "Test: FLY-254 CR-R2-M2 behavioral — TERM during probe polling terminates + restores exactly once"
+# (TERM, not INT: background jobs in a non-interactive shell ignore SIGINT
+# per POSIX — the INT trap is for interactive operator use and shares the
+# exact same exit-via-EXIT-trap mechanism being tested here.)
+mkdir -p "$TMPDIR_ROOT/fakebin"
+FAKE_CMUX_LOG="$TMPDIR_ROOT/fakecmux.log"
+> "$FAKE_CMUX_LOG"
+cat > "$TMPDIR_ROOT/fakebin/cmux" <<FAKECMUX
+#!/bin/bash
+LOG="$FAKE_CMUX_LOG"
+if [[ "\$1" == "--socket" ]]; then shift 2; fi
+if [[ "\$1" == "--json" ]]; then shift; fi
+case "\$1" in
+  ping) echo PONG ;;
+  list-workspaces)
+    echo '{"workspaces":[{"title":"home","ref":"workspace:1","selected":true},{"title":"lead-a","ref":"workspace:7"}]}' ;;
+  read-screen)
+    echo "Error: internal_error: ERROR: Terminal surface not found" >&2
+    exit 1 ;;
+  select-workspace)
+    echo "select \$*" >> "\$LOG"
+    echo OK ;;
+  *) echo OK ;;
+esac
+FAKECMUX
+chmod +x "$TMPDIR_ROOT/fakebin/cmux"
+# A unix socket file so the probe's [[ -S ]] precheck passes. CR-R3 LOW:
+# AF_UNIX bind is rejected in some sandboxes — capability-check and SKIP
+# (matching the harness's existing real-tmux skip pattern) instead of
+# failing the whole run.
+if ! python3 -c "import socket; s=socket.socket(socket.AF_UNIX); s.bind('$TMPDIR_ROOT/fake.sock')" 2>/dev/null; then
+  echo "  ⏭  AF_UNIX bind unavailable (sandbox/restricted env) — skipping probe signal test"
+  rm -f "$TMPDIR_ROOT/fake.sock" 2>/dev/null
+else
+  CMUX_SOCKET_PATH="$TMPDIR_ROOT/fake.sock" PATH="$TMPDIR_ROOT/fakebin:$PATH" \
+    /bin/bash "$SCRIPT_DIR/fly254-p0-probe.sh" > "$TMPDIR_ROOT/probe.out" 2>&1 &
+  PROBE_PID=$!
+  # Wait until the target focus is logged (probe is in its polling loop), then TERM.
+  for _i in $(seq 1 50); do
+    grep -q "workspace:7" "$FAKE_CMUX_LOG" 2>/dev/null && break
+    command sleep 0.2
+  done
+  kill -TERM "$PROBE_PID" 2>/dev/null
+  PROBE_RC=0
+  wait "$PROBE_PID" || PROBE_RC=$?
+  if [[ "$PROBE_RC" -eq 143 ]]; then
+    pass "TERM terminates the probe (rc=143, no zombie polling)"
+  else fail "expected rc=143 on TERM, got $PROBE_RC; out: $(tail -3 "$TMPDIR_ROOT/probe.out")"; fi
+  RESTORES=$(grep -c "select-workspace --workspace workspace:1" "$FAKE_CMUX_LOG" 2>/dev/null)
+  if [[ "$RESTORES" -eq 1 ]]; then
+    pass "exactly one restore to the original tab on interrupt"
+  else fail "expected 1 restore, got $RESTORES; log: $(cat "$FAKE_CMUX_LOG")"; fi
+  if grep -q "RESULT: PASS" "$TMPDIR_ROOT/probe.out"; then
+    fail "interrupted probe still reported PASS"
+  else pass "no PASS verdict from an interrupted probe"; fi
+  rm -f "$TMPDIR_ROOT/fake.sock"
+fi
+
+echo "Test: FLY-254 CR-R3-HIGH-1 — identity flip DURING the pre-focus selected-ref IPC"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="A:1:1"
+echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+# JSON call #4 is the pre-focus current_selected_ref (1=readiness, 2=sweep
+# snapshot, 3=one_workspace refs, 4=pre-focus read). The flip lands while
+# that IPC is in flight; the re-stat immediately before select-workspace
+# must catch it — ZERO focus on generation B.
+MOCK_JSON_FLIP_IDENT="B:2:2"
+MOCK_JSON_FLIP_AT=4
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace\|send --workspace"; then
+  fail "focus/send landed on generation B (flip during pre-focus IPC); ops: $MOCK_CMUX_OPS"
+else pass "pre-select re-stat blocks the focus after a flip during the JSON IPC"; fi
+if grep -q "generation changed mid-sweep" "$TMPDIR_ROOT/t254.log"; then
+  pass "latch logged for the pre-focus IPC flip"
+else fail "expected mid-sweep flip log"; fi
+
+echo "Test: FLY-254 CR-R3-HIGH-1 — identity flip DURING the epilogue selected-ref IPC"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="A:1:1"
+echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+# JSON call #6 is the epilogue current_selected_ref (5 = render-loop refs).
+# The heal completes on A; the flip lands during the epilogue read; the
+# pre-restore re-stat must skip the restore — generation B keeps its focus.
+MOCK_JSON_FLIP_IDENT="B:2:2"
+MOCK_JSON_FLIP_AT=6
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7"; then
+  pass "heal completed on generation A before the flip"
+else fail "expected the ws7 heal on A; ops: $MOCK_CMUX_OPS"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:1"; then
+  fail "restore landed on generation B (flip during epilogue IPC)"
+else pass "pre-restore re-stat blocks the restore after a flip during the JSON IPC"; fi
+if grep -q "generation changed before restore" "$TMPDIR_ROOT/t254.log"; then
+  pass "latch logged for the epilogue IPC flip"
+else fail "expected before-restore flip log"; fi
+
+echo "Test: FLY-254 CR-R4-HIGH-1 — the final stat is the GENUINE last op before the restore mutation"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="A:1:1"
+echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+# Hook `log`: flip the identity the moment the restored-focus message is
+# emitted. With the log AFTER the mutation the flip lands too late and the
+# select mock records ident=A; a regression (log before select) would make
+# the flip land first and the mock would record ident=B.
+eval "$(declare -f log | sed '1s/^log/log_real_254/')"
+log() {
+  # CR-R5 M2 honesty fix: match BOTH message forms — against the pre-R4 code
+  # ("restoring focus", emitted BEFORE the mutation) this hook flips first
+  # and the select records ident=B → the test goes RED; against the fixed
+  # code ("restored focus", after the mutation) it stays green.
+  if [[ "$*" == *"restor"*"focus"* ]]; then
+    printf '%s' "B:2:2" > "$TMPDIR_ROOT/mock-ident.override"
+  fi
+  log_real_254 "$@"
+}
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+eval "$(declare -f log_real_254 | sed '1s/^log_real_254/log/')"
+unset -f log_real_254
+RESTORE_LINE=$(echo "$MOCK_CMUX_OPS" | grep "select-workspace --workspace workspace:1")
+if [[ "$RESTORE_LINE" == *"ident=A:1:1"* ]]; then
+  pass "restore mutation observed generation A (no bookkeeping between stat and select)"
+else fail "restore observed the wrong generation: $RESTORE_LINE"; fi
+
+# ── CR-R5 HIGH-1: the wrapper's own mktemp is the last bookkeeping step —
+# the guard must run AFTER it. The hook below flips the identity exactly at
+# the Nth guarded mktemp (guarded mktemps in the happy path: 1=pre-focus
+# select, 2=send, 3=restore). Against the pre-R5 implementation (guards
+# outside the wrapper) every one of these flips lands AFTER the guard and
+# the mutation executes on B — red/green verified by stashing the fix.
+MKTEMP_FLIP_HOOK='gn=0; [[ -f "$TMPDIR_ROOT/gmk.n" ]] && gn=$(cat "$TMPDIR_ROOT/gmk.n"); gn=$((gn+1)); echo "$gn" > "$TMPDIR_ROOT/gmk.n"; [[ "$gn" -ge "${MOCK_MKTEMP_FLIP_AT:-1}" ]] && printf "%s" "B:2:2" > "$TMPDIR_ROOT/mock-ident.override"'
+
+echo "Test: FLY-254 CR-R5-HIGH-1 — identity flip at the wrapper's mktemp blocks the FOCUS"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="A:1:1"
+echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+MOCK_MKTEMP_FLIP_AT=1
+MOCK_MKTEMP_HOOK="$MKTEMP_FLIP_HOOK"
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace\|send --workspace"; then
+  fail "mutation executed on generation B (flip at the wrapper mktemp); ops: $MOCK_CMUX_OPS"
+else pass "in-wrapper guard blocks the focus after a flip at the wrapper's mktemp"; fi
+if grep -q "generation changed mid-sweep" "$TMPDIR_ROOT/t254.log"; then
+  pass "latch logged for the wrapper-boundary flip"
+else fail "expected mid-sweep flip log"; fi
+
+echo "Test: FLY-254 CR-R5-HIGH-1 — identity flip at the wrapper's mktemp blocks the SEND"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="A:1:1"
+echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+MOCK_MKTEMP_FLIP_AT=2   # 1=pre-focus select (passes on A), 2=the send
+MOCK_MKTEMP_HOOK="$MKTEMP_FLIP_HOOK"
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:7 ident=A:1:1"; then
+  pass "focus executed on generation A (pre-flip)"
+else fail "expected the ws7 focus on A; ops: $MOCK_CMUX_OPS"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
+  fail "send executed on generation B (flip at the wrapper mktemp)"
+else pass "in-wrapper guard blocks the send after a flip at the wrapper's mktemp"; fi
+
+echo "Test: FLY-254 CR-R5-HIGH-1 — identity flip at the wrapper's mktemp blocks the RESTORE"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="A:1:1"
+echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+MOCK_MKTEMP_FLIP_AT=3   # 1=pre-focus select, 2=send, 3=the restore
+MOCK_MKTEMP_HOOK="$MKTEMP_FLIP_HOOK"
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7"; then
+  pass "heal completed on generation A before the flip"
+else fail "expected the ws7 heal on A; ops: $MOCK_CMUX_OPS"; fi
+if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:1"; then
+  fail "restore executed on generation B (flip at the wrapper mktemp)"
+else pass "in-wrapper guard blocks the restore after a flip at the wrapper's mktemp"; fi
+if grep -q "generation changed before restore" "$TMPDIR_ROOT/t254.log"; then
+  pass "latch logged for the wrapper-boundary restore flip"
+else fail "expected before-restore flip log"; fi
+
+echo "Test: FLY-254 CR-R6-LOW — a real cmux exit code is never misread as a guard block"
+setup_escalation_scenario
+MOCK_SOCK_IDENT="A:1:1"
+echo "A:1:1|pending|0" > "$CMUX_SOCK_IDENT_FILE"
+MOCK_CMUX_SELECT_RC=99   # the old sentinel value, now a plain cmux failure
+consume_pending_reopen_sweep 2>"$TMPDIR_ROOT/t254.log"
+MOCK_CMUX_SELECT_RC=""
+if grep -q "generation changed mid-sweep" "$TMPDIR_ROOT/t254.log"; then
+  fail "cmux rc=99 was misread as a generation-change guard block"
+else pass "cmux rc=99 handled as a plain select failure (GUARD_WAS_BLOCKED side channel)"; fi
+if grep -q "WARN: cmux select-workspace failed (rc=99)" "$TMPDIR_ROOT/t254.log"; then
+  pass "plain cmux failure logged through the wrapper's WARN path"
+else fail "expected the wrapper WARN for rc=99; log: $(grep WARN "$TMPDIR_ROOT/t254.log" | head -2)"; fi
 
 set +e   # restore lenient mode for the summary
 

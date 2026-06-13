@@ -30,6 +30,19 @@ HEAL_STATE="${HEAL_STATE:-/tmp/flywheel-cmux-heal.state}"
 CLEANUP_DELAY_SECONDS="${FLYWHEEL_CMUX_CLEANUP_DELAY:-30}"
 CONSERVATIVE_CLEANUP_SECONDS="${FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP:-300}"
 
+# FLY-254: cmux app-reopen one-shot re-attach sweep.
+# Generation state file — single line `<identity>|<state>|<attempts>`,
+# state ∈ pending|done. identity = the cmux socket's filesystem identity
+# (device:inode:birthtime); a change means a NEW cmux app instance bound the
+# socket path (= app reopen). Durable across watcher restarts so watcher churn
+# can never replay a consumed generation (Codex R1 HIGH-2 / R2 HIGH-1).
+CMUX_SOCK_IDENT_FILE="${CMUX_SOCK_IDENT_FILE:-/tmp/flywheel-cmux-sock-ident}"
+# Durable attempt budget per generation: first attempt + bounded crash resumes.
+# Fixed constant, deliberately NOT env-tunable — the bound is a safety property
+# (caps total focus disturbance even if `done` can never be persisted), not a
+# knob (Codex R3 HIGH-1).
+REOPEN_ATTEMPT_LIMIT=3
+
 # FLY-129 Phase 1: single-watcher lock pushed down from autostart into sync script.
 # Any path that starts --watch goes through the same lock; double-mutex protects
 # the stale-lock reap from race conditions.
@@ -192,6 +205,88 @@ cmux_call() {
   return $rc
 }
 
+# FLY-254 (Codex CR R5 HIGH-1): guarded cmux wrapper for escalated mutations.
+# cmux_call's first action is an external `mktemp` — caller-side final guards
+# therefore left a bookkeeping window between the last check and the actual
+# cmux invocation (a reopen or client-attach in that window crossed the
+# generation budget or bypassed the final 0-client send guard). Here the temp
+# file is prepared FIRST and the caller-supplied guard function runs as the
+# GENUINE last operation before `cmux` — no subprocess, no bookkeeping in
+# between. Guard contract: return 0 to proceed; non-zero blocks the call (set
+# GUARD_BLOCK_RC for the caller's skip/healed distinction). Blocked-ness is
+# signalled via the GUARD_WAS_BLOCKED side channel — NOT an exit-code
+# sentinel, which a real cmux exit code could collide with (Codex CR R6 LOW).
+# rc is cmux's own rc when the call ran; rc=1 + GUARD_WAS_BLOCKED=1 when the
+# guard blocked. The plain cmux_call above is untouched (feature-off paths
+# byte-identical).
+GUARD_BLOCK_RC=0
+GUARD_WAS_BLOCKED=0
+cmux_call_guarded() {
+  local guard_fn="$1"; shift
+  local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
+  local err_file rc=0 guard_rc=0
+  GUARD_WAS_BLOCKED=0
+  err_file=$(mktemp) || return 1
+  "$guard_fn" || guard_rc=$?
+  if [[ $guard_rc -ne 0 ]]; then
+    rm -f "$err_file"
+    GUARD_WAS_BLOCKED=1
+    return 1
+  fi
+  cmux --socket "$socket" "$@" 2>"$err_file" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    local err_text
+    err_text=$(cat "$err_file" 2>/dev/null || true)
+    log "WARN: cmux $1 failed (rc=$rc): ${err_text:-<empty>}"
+  fi
+  rm -f "$err_file"
+  return $rc
+}
+
+# FLY-254 guard: generation pin only (focus/restore mutations). Sets the
+# HEAL_GEN_CHANGED latch on mismatch. Runs inside cmux_call_guarded — the
+# last operation before the select-workspace mutation.
+_heal_focus_gen_guard() {
+  GUARD_BLOCK_RC=0
+  if [[ -n "${HEAL_SWEEP_GEN_IDENT:-}" ]]; then
+    local gi
+    gi=$(cmux_socket_identity)
+    if [[ "$gi" != "$HEAL_SWEEP_GEN_IDENT" ]]; then
+      HEAL_GEN_CHANGED=1
+      GUARD_BLOCK_RC=1
+      return 1
+    fi
+  fi
+  return 0
+}
+
+# FLY-254 guard: generation pin + FINAL 0-client check (escalated send).
+# Target view session is passed via _GUARD_VIEW_SESSION (bash has no
+# closures). GUARD_BLOCK_RC: 1 = fail-closed; 2 = client appeared (healed).
+_GUARD_VIEW_SESSION=""
+_heal_send_final_guard() {
+  GUARD_BLOCK_RC=0
+  if [[ -n "${HEAL_SWEEP_GEN_IDENT:-}" ]]; then
+    local gi
+    gi=$(cmux_socket_identity)
+    if [[ "$gi" != "$HEAL_SWEEP_GEN_IDENT" ]]; then
+      HEAL_GEN_CHANGED=1
+      GUARD_BLOCK_RC=1
+      return 1
+    fi
+  fi
+  local c
+  if ! c=$(view_session_client_count "$_GUARD_VIEW_SESSION"); then
+    GUARD_BLOCK_RC=1
+    return 1
+  fi
+  if [[ "$c" -gt 0 ]]; then
+    GUARD_BLOCK_RC=2
+    return 1
+  fi
+  return 0
+}
+
 get_tmux_agent_windows() {
   # Returns: session_name|window_id|window_name per line
   # Scans both 'flywheel' (Leads) and 'runner-*' (Runners) sessions.
@@ -249,6 +344,37 @@ CMUX_HEALTH_LAST_DIAG=""                             # last probe stderr (report
 # a cmux restart while the same watcher process stays alive (no tmux event,
 # no re-bootstrap).
 CMUX_HEAL_ON_RECOVERY="${CMUX_HEAL_ON_RECOVERY:-0}"
+
+# FLY-254: render-escalation + reopen-generation state (in-process).
+# HEAL_RENDER_ESCALATE is set ONLY by consume_pending_reopen_sweep around the
+# one escalated sweep — every other heal path keeps FLY-169 behavior verbatim.
+HEAL_RENDER_ESCALATE="${HEAL_RENDER_ESCALATE:-0}"
+HEAL_FOCUS_SNAPSHOT_OK=0    # 1 ⟺ exactly one legal selected ref was snapshotted
+HEAL_FOCUS_CHANGED=0        # 1 ⟺ this sweep performed at least one select-workspace
+HEAL_USER_INTERVENED=0      # 1 ⟺ user took focus mid-sweep → stop + never restore
+HEAL_ORIG_SELECTED=""       # selected ref snapshotted before the first focus
+HEAL_EXPECTED_SELECTED=""   # what selected SHOULD be now (orig, then last forced)
+HEAL_LAST_FORCED_REF=""     # last ref WE focused (epilogue restore guard)
+REOPEN_GEN_IDENT=""         # parsed generation file fields (read_generation_state)
+REOPEN_GEN_STATE=""
+REOPEN_GEN_ATTEMPTS=""
+REOPEN_CONSUMED_THIS_TICK=0 # 1 ⟺ consume ran an escalated sweep this tick
+# Codex CR R1 M6: in-process mirror of the generation file so the healthy
+# steady state pays exactly ONE stat per tick (no per-tick file reads). Kept
+# in sync by read_generation_state / write_generation_state; consume is only
+# entered while the cache says pending.
+REOPEN_CACHE_IDENT=""
+REOPEN_CACHE_STATE=""
+# Codex CR R1 HIGH-2: identity pinned for an escalated sweep's duration; every
+# focus mutation re-verifies the app instance hasn't changed mid-sweep.
+HEAL_SWEEP_GEN_IDENT=""
+# Codex CR R2 HIGH-1: generation-changed latch. The pre-focus pin check alone
+# leaves a window — the identity can flip DURING the render wait, after which
+# gates run against the NEW app and the send/restore would land there,
+# uncharged to its budget. The latch is set wherever a mismatch is observed
+# (post-render-wait, immediately before send, epilogue) and blocks ALL
+# remaining sends, focus mutations and the restore.
+HEAL_GEN_CHANGED=0
 
 get_cmux_workspaces_json() {
   # Returns raw `cmux --json list-workspaces` output on stdout, rc=0.
@@ -637,17 +763,32 @@ except Exception:
 ' || return 1
 }
 
-# rc=0 only if the surface's screen looks like a BARE SHELL (its last non-empty
-# line ends in a shell prompt sigil: % / $ / #). rc=1 otherwise (tmux status
-# bar = attached to some session, a TUI, read-screen failure, or anything we
-# can't positively classify) — FAIL CLOSED. This is the gate that prevents
-# typing into a surface attached to a DIFFERENT tmux session's Claude prompt
-# (Codex CR R3 HIGH): an attached surface's bottom line is the tmux status bar,
-# never a lone prompt sigil, regardless of which session it's attached to.
+# Tri-state SHELL gate (FLY-254 upgraded; rc=1/2 both read as fail-closed by
+# legacy `|| return 1` callers — byte-compatible):
+#   rc=0  the surface's screen is a BARE SHELL (last non-empty line ends in a
+#         shell prompt sigil: % / $ / #) — positive proof, safe to send.
+#   rc=1  read-screen SUCCEEDED but the screen is NOT a bare shell (tmux status
+#         bar = attached to some session, a TUI, anything unclassifiable) —
+#         deterministic FAIL CLOSED. This is the gate that prevents typing into
+#         a surface attached to a DIFFERENT tmux session's Claude prompt (Codex
+#         CR R3 HIGH): an attached surface's bottom line is the tmux status bar,
+#         never a lone prompt sigil.
+#   rc=2  read-screen ITSELF failed (surface not rendered — the cmux tabbed-
+#         terminal reopen state, `Terminal surface not found` — or cmux error).
+#         Legacy callers fail closed; the FLY-254 render-escalation context
+#         treats this as the "needs forced render" signal.
+# arg3 quiet=1 (FLY-254): escalation retries probe read-screen repeatedly while
+# a surface renders; per-failure WARNs via cmux_call would flood the log. The
+# quiet probe suppresses them — the caller logs ONE summary per workspace.
 # Runs only at a heal attempt (event-driven), not as a periodic scan.
 surface_looks_like_bare_shell() {
-  local ref="$1" surface_ref="$2" screen last
-  screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref") || return 1
+  local ref="$1" surface_ref="$2" quiet="${3:-0}" screen last
+  if [[ "$quiet" == "1" ]]; then
+    local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
+    screen=$(cmux --socket "$socket" read-screen --workspace "$ref" --surface "$surface_ref" 2>/dev/null) || return 2
+  else
+    screen=$(cmux_call read-screen --workspace "$ref" --surface "$surface_ref") || return 2
+  fi
   last=$(printf '%s\n' "$screen" | awk 'NF{l=$0} END{print l}')
   last=$(printf '%s' "$last" | sed 's/[[:space:]]*$//')   # strip trailing whitespace
   case "$last" in
@@ -663,7 +804,11 @@ heal_state_log_once() {
   local name="$1" msg="$2"
   touch "$HEAL_STATE" 2>/dev/null || true
   if ! awk -F'|' -v n="$name" '$1 == n { found=1 } END { exit(found ? 0 : 1) }' "$HEAL_STATE" 2>/dev/null; then
-    printf '%s|%s\n' "$name" "$(date +%s)" >> "$HEAL_STATE"
+    # FLY-254 (Codex CR R1 M3): best-effort append — an unwritable/directory
+    # HEAL_STATE must degrade to repeated logging, never kill the watcher
+    # under `set -euo pipefail` (the escalated consume path relies on this
+    # bookkeeping right before the injection guard).
+    printf '%s|%s\n' "$name" "$(date +%s)" >> "$HEAL_STATE" 2>/dev/null || true
     log "$msg"
   fi
 }
@@ -672,9 +817,15 @@ heal_state_clear() {
   local name="$1"
   [[ -f "$HEAL_STATE" ]] || return 0
   local tmp
-  tmp=$(mktemp "${HEAL_STATE}.XXXX") || return 0
-  awk -F'|' -v n="$name" '$1 != n { print }' "$HEAL_STATE" > "$tmp"
-  mv "$tmp" "$HEAL_STATE"
+  tmp=$(mktemp "${HEAL_STATE}.XXXX" 2>/dev/null) || return 0
+  # FLY-254 (Codex CR R1 M3): best-effort rewrite — failures clean up and
+  # return success so heal-state hygiene can never abort a sweep.
+  if ! awk -F'|' -v n="$name" '$1 != n { print }' "$HEAL_STATE" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 0
+  fi
+  mv "$tmp" "$HEAL_STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+  return 0
 }
 
 # GC HEAL_STATE rows whose window no longer exists (watcher startup).
@@ -690,6 +841,41 @@ gc_heal_state_file() {
     fi
   done < "$HEAL_STATE"
   mv "$tmp" "$HEAL_STATE"
+}
+
+# FLY-254: THE single atomic re-attach injection path — used by BOTH the plain
+# heal and the render-escalated heal. There must never be a second injection
+# path (Codex R1 HIGH-1). ATOMIC: the attach command is sent WITH a trailing
+# newline in ONE `cmux send` — no separate `send-key Enter`, so there is no
+# text→Enter gap for a client to attach into between two injections (Codex CR
+# R1 + R4 HIGH). printf -v preserves the trailing newline (command substitution
+# would strip it). Callers MUST have run every safety gate immediately before.
+heal_send_attach() {
+  local wname="$1" ref="$2" surface_ref="$3"
+  local view_session="${VIEW_PREFIX}${wname}"
+  local attach_cmd
+  printf -v attach_cmd "tmux attach -t '=%s'\n" "$view_session"
+  heal_state_log_once "$wname" "Self-heal: re-attaching '$wname' (0 clients on $view_session, ws $ref surface $surface_ref)"
+  # FLY-254 (Codex CR R1 HIGH-1 + R5 HIGH-1): under escalation the FINAL
+  # guards (generation pin + 0-client) run INSIDE cmux_call_guarded — after
+  # ALL bookkeeping (heal-state touch/awk/append + log + the wrapper's own
+  # mktemp), as the genuine last operation before the injection. A
+  # focus-triggered attach can complete during ANY of that bookkeeping; a
+  # client then means healed — sending would type into a live session.
+  # Single enforcement point for EVERY escalated send path (render loop AND
+  # the already-readable fast path). Plain (non-escalated) mode is
+  # byte-compatible: no guard, no extra calls. rc: 0 = sent (best-effort);
+  # 1 = fail-closed / generation changed; 2 = client appeared (do not send).
+  if [[ "${HEAL_RENDER_ESCALATE:-0}" == "1" ]]; then
+    _GUARD_VIEW_SESSION="$view_session"
+    cmux_call_guarded _heal_send_final_guard send --workspace "$ref" --surface "$surface_ref" "$attach_cmd" || true
+    if [[ "$GUARD_WAS_BLOCKED" == "1" ]]; then
+      return "${GUARD_BLOCK_RC:-1}"
+    fi
+    return 0   # send attempted — cmux failure is best-effort (legacy || true)
+  fi
+  cmux_call send --workspace "$ref" --surface "$surface_ref" "$attach_cmd" || true
+  return 0
 }
 
 # Ref-scoped self-heal primitive. Heals ONE known cmux workspace ref. Used by
@@ -714,25 +900,429 @@ self_heal_workspace_ref() {
   clients=$(view_session_client_count "$view_session") || return 1   # tmux error → fail-closed
   [[ "$clients" -gt 0 ]] && return 2                                  # attached to target → stop
   # SAFETY GATE 2 — POSITIVELY confirm the surface is a BARE SHELL before
-  # typing. surface_looks_like_bare_shell requires the screen's last non-empty
-  # line to END in a shell prompt sigil (% / $ / #). This is a POSITIVE proof,
-  # not a status-bar-absence check: a surface attached to ANY tmux session
-  # shows either a status bar or a TUI (Claude) at the bottom — neither ends in
-  # a lone prompt sigil — so the gate fails closed for attached-elsewhere
-  # surfaces REGARDLESS of whether tmux's status bar is enabled (Codex CR
-  # R3 HIGH + R4 MEDIUM). read-screen failure → fail closed.
-  surface_looks_like_bare_shell "$ref" "$surface_ref" || return 1
-  # ATOMIC re-attach: send the attach command WITH a trailing newline in ONE
-  # `cmux send`. There is NO separate `send-key Enter`, so there is no
-  # text→Enter gap for a client to attach into between two injections (Codex
-  # CR R1 + R4 HIGH). Both gates above are checked immediately before this
-  # single injection. printf -v preserves the trailing newline (command
-  # substitution would strip it).
-  local attach_cmd
-  printf -v attach_cmd "tmux attach -t '=%s'\n" "$view_session"
-  heal_state_log_once "$wname" "Self-heal: re-attaching '$wname' (0 clients on $view_session, ws $ref surface $surface_ref)"
-  cmux_call send --workspace "$ref" --surface "$surface_ref" "$attach_cmd" || true
+  # typing. rc=1 (positively not a shell) fails closed; rc=2 (surface not
+  # readable/rendered) fails closed UNLESS this is an escalated sweep, where
+  # it is the "needs forced render" signal (FLY-254). Quiet probe under
+  # escalation — the storm of per-retry WARNs is replaced by one summary.
+  local shell_rc=0
+  surface_looks_like_bare_shell "$ref" "$surface_ref" "${HEAL_RENDER_ESCALATE:-0}" || shell_rc=$?
+  if [[ $shell_rc -eq 2 && "${HEAL_RENDER_ESCALATE:-0}" == "1" ]]; then
+    local esc_rc=0
+    self_heal_render_escalate "$wname" "$ref" || esc_rc=$?
+    return $esc_rc
+  fi
+  [[ $shell_rc -ne 0 ]] && return 1
+  # Single injection helper. Under escalation its rc matters (Codex CR R1
+  # HIGH-1: the already-readable escalated fast path must hit the same final
+  # 0-client guard as the render loop); in plain mode it always returns 0.
+  local send_rc=0
+  heal_send_attach "$wname" "$ref" "$surface_ref" || send_rc=$?
+  [[ $send_rc -eq 2 ]] && return 2
+  [[ $send_rc -ne 0 ]] && return 1
   return 0
+}
+
+# ── FLY-254: render escalation + reopen generation state machine ──
+#
+# Problem: cmux is a tabbed terminal — after a bulk app reopen only the ACTIVE
+# tab's surface is rendered. Unrendered surfaces make read-screen fail
+# (`Terminal surface not found`), so the FLY-169 sweep fail-closes for every
+# inactive tab (production log 2026-06-11: 14 consecutive failures at 11:26;
+# the same heal chain succeeded for 9 workspaces at 11:39 after the founder
+# manually clicked through tabs = human-powered rendering).
+#
+# Fix (founder-prescribed): ONE intentional sweep per reopen that focuses each
+# broken workspace (`cmux select-workspace` forces the render), re-runs EVERY
+# FLY-169 safety gate, re-attaches, then restores the original focus. This is
+# event-driven (reopen evidence = socket identity change), NOT periodic polling
+# (vetoed). Steady state adds zero cmux IPC and zero tmux scans.
+
+# FLY-254: feature gate. `FLYWHEEL_CMUX_REOPEN_SWEEP=0` reverts every FLY-254
+# behavior to the FLY-169 status quo (kill switch; regression-sentinel-tested).
+reopen_sweep_enabled() {
+  [[ "${FLYWHEEL_CMUX_REOPEN_SWEEP:-1}" != "0" ]]
+}
+
+# FLY-254: validate a numeric env knob — positive integer within [1, max].
+# Echoes the validated value; falls back to the default with ONE log line.
+# `10#` forces base-10 so leading zeros can't trip octal arithmetic.
+validated_int_env() {
+  local name="$1" value="$2" default="$3" max="$4"
+  case "$value" in
+    ''|*[!0-9]*)
+      log "WARN: $name='$value' is not a positive integer — using default $default"
+      echo "$default"; return 0 ;;
+  esac
+  # Codex CR R1 M4: lexical length cap BEFORE arithmetic — a 20-digit string
+  # wraps bash arithmetic (e.g. 18446744073709551617 → 1) and would be
+  # silently accepted. All knobs have max ≤ 60, so >4 digits is never valid.
+  if [[ ${#value} -gt 4 ]]; then
+    log "WARN: $name='$value' out of range [1,$max] — using default $default"
+    echo "$default"; return 0
+  fi
+  value=$((10#$value))
+  if (( value < 1 || value > max )); then
+    log "WARN: $name=$value out of range [1,$max] — using default $default"
+    echo "$default"; return 0
+  fi
+  echo "$value"
+}
+
+# FLY-254: filesystem identity of the cmux socket (device:inode:birthtime).
+# Changes exactly when a new cmux app instance binds the socket path. Pure
+# stat — zero IPC. Empty output when the socket is missing/unreadable.
+# Overridable in tests.
+cmux_socket_identity() {
+  local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
+  stat -f '%d:%i:%B' "$socket" 2>/dev/null || true
+}
+
+# FLY-254: socket presence probe (bash builtin test — one stat syscall, no
+# subprocess). Wrapped as a function so tests can override it.
+cmux_socket_present() {
+  local socket="${CMUX_SOCKET_PATH:-$CMUX_SOCKET_PATH_DEFAULT}"
+  [[ -S "$socket" ]]
+}
+
+# FLY-254: parse the generation state file into REOPEN_GEN_{IDENT,STATE,ATTEMPTS}.
+# rc=0 parsed; rc=1 file missing; rc=2 malformed (callers fail closed).
+read_generation_state() {
+  REOPEN_GEN_IDENT=""; REOPEN_GEN_STATE=""; REOPEN_GEN_ATTEMPTS=""
+  [[ -f "$CMUX_SOCK_IDENT_FILE" ]] || return 1
+  local line
+  line=$(head -1 "$CMUX_SOCK_IDENT_FILE" 2>/dev/null || true)
+  case "$line" in
+    *"|"*"|"*) ;;
+    *) return 2 ;;
+  esac
+  local ident="${line%%|*}"
+  local rest="${line#*|}"
+  local state="${rest%%|*}"
+  local attempts="${rest#*|}"
+  [[ -z "$ident" ]] && return 2
+  case "$state" in pending|done) ;; *) return 2 ;; esac
+  # Codex CR R1 M4: lexical bound BEFORE any arithmetic — the writer can only
+  # ever produce 0..REOPEN_ATTEMPT_LIMIT(3); a huge digit string overflows
+  # bash arithmetic (observed parsing as -1, which would BYPASS the attempt
+  # cap). Anything outside the representable set is malformed.
+  case "$attempts" in 0|1|2|3) ;; *) return 2 ;; esac
+  REOPEN_GEN_IDENT="$ident"
+  REOPEN_GEN_STATE="$state"
+  REOPEN_GEN_ATTEMPTS="$attempts"
+  # Keep the in-process cache in sync (Codex CR R1 M6).
+  REOPEN_CACHE_IDENT="$ident"
+  REOPEN_CACHE_STATE="$state"
+  return 0
+}
+
+# FLY-254: atomic generation-state write (same-dir temp + mv, matching the
+# STALE_STATE pattern). rc!=0 on any failure — callers MUST fail closed.
+write_generation_state() {
+  local ident="$1" state="$2" attempts="$3"
+  local tmp
+  tmp=$(mktemp "${CMUX_SOCK_IDENT_FILE}.XXXX" 2>/dev/null) || return 1
+  printf '%s|%s|%s\n' "$ident" "$state" "$attempts" > "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  mv "$tmp" "$CMUX_SOCK_IDENT_FILE" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  # Keep the in-process cache in sync (Codex CR R1 M6). write is never called
+  # inside $(...), so this mutation persists.
+  REOPEN_CACHE_IDENT="$ident"
+  REOPEN_CACHE_STATE="$state"
+  return 0
+}
+
+# FLY-254: reopen evidence collector — called at watcher bootstrap and on each
+# healthy tick (one stat; zero IPC; no new periodic cmux/tmux load). Arms a
+# new generation (`identity|pending|0`) when the socket identity differs from
+# the persisted one. Fail-closed behaviors:
+#   - socket missing/unreadable → no evidence, no action;
+#   - malformed file → ONE log + reset to `done` (recover the file for FUTURE
+#     generations WITHOUT escalating off corrupt state);
+#   - arm write failure → ONE log, no arm (next tick retries).
+reopen_detector_check() {
+  reopen_sweep_enabled || return 0
+  local ident
+  ident=$(cmux_socket_identity)
+  [[ -z "$ident" ]] && return 0
+  # Steady-state fast path (Codex CR R1 M6): identity unchanged vs the
+  # in-process cache → nothing to arm. The healthy tick pays exactly the ONE
+  # stat above — zero file reads, zero subprocesses.
+  if [[ -n "$REOPEN_CACHE_IDENT" && "$ident" == "$REOPEN_CACHE_IDENT" ]]; then
+    return 0
+  fi
+  local rc=0
+  read_generation_state || rc=$?
+  if [[ $rc -eq 2 ]]; then
+    log "WARN: malformed generation state file — resetting to done (fail-closed, no escalation this generation)"
+    write_generation_state "$ident" done 0 || true
+    return 0
+  fi
+  if [[ $rc -eq 1 || "$REOPEN_GEN_IDENT" != "$ident" ]]; then
+    if write_generation_state "$ident" pending 0; then
+      log "INFO: cmux reopen detected (generation $ident) — arming one-shot re-attach sweep"
+    else
+      log "WARN: cannot persist generation state — skipping arm (fail-closed)"
+    fi
+  fi
+  return 0
+}
+
+# FLY-254: rc=0 ⟺ a pending generation matches the CURRENT socket identity and
+# the durable attempt budget is not exhausted (consumable right now).
+reopen_pending_ready() {
+  reopen_sweep_enabled || return 1
+  read_generation_state || return 1
+  [[ "$REOPEN_GEN_STATE" == "pending" ]] || return 1
+  local ident
+  ident=$(cmux_socket_identity)
+  [[ -n "$ident" && "$ident" == "$REOPEN_GEN_IDENT" ]] || return 1
+  [[ "$REOPEN_GEN_ATTEMPTS" -lt "$REOPEN_ATTEMPT_LIMIT" ]]
+}
+
+# FLY-254: print managed tmux window names with NO matching cmux workspace yet
+# (one per line; empty = everything restored). JSON unavailable → all names
+# (treated as not-ready). Used only by the readiness wait below.
+reopen_missing_workspaces() {
+  local tmux_windows raw
+  tmux_windows=$(get_tmux_agent_windows)
+  [[ -z "$tmux_windows" ]] && return 0
+  if ! raw=$(get_cmux_workspaces_json); then
+    echo "$tmux_windows" | cut -d'|' -f3
+    return 0
+  fi
+  local titles
+  titles=$(printf '%s' "$raw" | python3 -c '
+import sys, json
+for w in json.load(sys.stdin).get("workspaces", []):
+    t = w.get("title")
+    if t:
+        print(t)
+')
+  local _s _wid wname
+  while IFS='|' read -r _s _wid wname; do
+    [[ -z "$wname" ]] && continue
+    echo "$titles" | grep -qx -- "$wname" || echo "$wname"
+  done <<< "$tmux_windows"
+  return 0
+}
+
+# FLY-254: bounded wait for cmux to finish restoring workspaces after reopen.
+# Early exit when EVERY managed tmux window title has a matching workspace —
+# the tmux side is the EXPECTED set. (NOT "two stable samples": a partially
+# restored set can hold still for two samples and resume later — Codex R2 M4.)
+# Budget exhausted → proceed with the current set + log the missing names.
+reopen_readiness_wait() {
+  local ticks
+  ticks=$(validated_int_env FLYWHEEL_CMUX_READINESS_TICKS "${FLYWHEEL_CMUX_READINESS_TICKS:-5}" 5 60)
+  local i missing=""
+  for (( i = 0; i < ticks; i++ )); do
+    missing=$(reopen_missing_workspaces)
+    [[ -z "$missing" ]] && return 0
+    sleep 1
+  done
+  missing=$(reopen_missing_workspaces)
+  [[ -z "$missing" ]] && return 0
+  log "WARN: readiness budget exhausted; sweeping current set (missing: $(echo "$missing" | tr '\n' ' '))"
+  return 0
+}
+
+# FLY-254: THE single consumption point for a pending reopen generation.
+# Semantics (Codex R2 HIGH-1 + R3 HIGH-1): one normal attempt per generation;
+# bounded crash resume via the durable attempt counter (incremented BEFORE any
+# focus side effect); no replay after done; total escalated sweeps per
+# generation hard-capped at REOPEN_ATTEMPT_LIMIT even if `done` can never be
+# persisted. Sets REOPEN_CONSUMED_THIS_TICK=1 when a sweep actually ran so the
+# caller can coalesce the legacy recovery sweep (Codex R2 M3).
+consume_pending_reopen_sweep() {
+  REOPEN_CONSUMED_THIS_TICK=0
+  reopen_sweep_enabled || return 0
+  read_generation_state || return 0
+  [[ "$REOPEN_GEN_STATE" == "pending" ]] || return 0
+  local ident
+  ident=$(cmux_socket_identity)
+  [[ -n "$ident" && "$ident" == "$REOPEN_GEN_IDENT" ]] || return 0
+  if [[ "$REOPEN_GEN_ATTEMPTS" -ge "$REOPEN_ATTEMPT_LIMIT" ]]; then
+    log "WARN: generation $ident attempt budget exhausted — giving up escalation for this generation"
+    # Codex CR R1 M6: even if the done write keeps failing, the in-process
+    # cache flips to done so per-tick consumption (and this log) stops for
+    # this watcher's lifetime; a restart re-tries once (bounded).
+    if ! write_generation_state "$ident" done "$REOPEN_GEN_ATTEMPTS"; then
+      REOPEN_CACHE_IDENT="$ident"
+      REOPEN_CACHE_STATE="done"
+    fi
+    return 0
+  fi
+  # Durable attempt increment BEFORE any focus side effect (Codex R3 HIGH-1).
+  # Write failure → fail closed: no escalation this round, next tick retries.
+  local next_attempt=$((REOPEN_GEN_ATTEMPTS + 1))
+  if ! write_generation_state "$ident" pending "$next_attempt"; then
+    log "WARN: cannot persist attempt counter — skipping escalated sweep this tick (fail-closed)"
+    return 0
+  fi
+  if [[ "$REOPEN_GEN_ATTEMPTS" -gt 0 ]]; then
+    log "INFO: resuming pending re-attach sweep (generation $ident, attempt $next_attempt)"
+  fi
+  reopen_readiness_wait
+  # Codex CR R1 HIGH-2: the readiness wait takes seconds — the app can quit
+  # and reopen AGAIN during it. Sweeping then would mutate focus in a NEW
+  # generation whose budget was never charged, and writing `done` for the old
+  # identity would let the detector re-arm and sweep the new one a second
+  # time. Re-check identity here and pin it for the sweep's duration (each
+  # focus mutation re-verifies via HEAL_SWEEP_GEN_IDENT). On mismatch: abort
+  # WITHOUT done — the old generation can never match again, and the next
+  # detector tick arms the new identity cleanly.
+  local now_ident
+  now_ident=$(cmux_socket_identity)
+  if [[ "$now_ident" != "$ident" ]]; then
+    log "WARN: cmux generation changed during readiness wait — aborting consume (new generation will be armed)"
+    return 0
+  fi
+  HEAL_SWEEP_GEN_IDENT="$ident"
+  HEAL_RENDER_ESCALATE=1
+  self_heal_sweep_all
+  HEAL_RENDER_ESCALATE=0
+  HEAL_SWEEP_GEN_IDENT=""
+  REOPEN_CONSUMED_THIS_TICK=1
+  # Normal completion → done. A failed write keeps the FILE pending (a watcher
+  # restart re-consumes, bounded by the spent attempt counter), but the
+  # in-process cache flips to done so THIS watcher stops re-consuming per tick
+  # (Codex CR R1 M6).
+  if ! write_generation_state "$ident" done "$next_attempt"; then
+    log "WARN: cannot persist done state — generation stays pending on disk (bounded by attempt budget)"
+    REOPEN_CACHE_IDENT="$ident"
+    REOPEN_CACHE_STATE="done"
+  fi
+  return 0
+}
+
+# FLY-254: print the ref of THE selected workspace. rc!=0 unless exactly one
+# legal selected ref exists (JSON down / 0 / >1 selected → fail closed; callers
+# must not perform focus mutations without a restorable snapshot).
+current_selected_ref() {
+  local raw
+  raw=$(get_cmux_workspaces_json) || return 1
+  local refs
+  refs=$(printf '%s' "$raw" | python3 -c '
+import sys, json
+for w in json.load(sys.stdin).get("workspaces", []):
+    if w.get("selected") and w.get("ref"):
+        print(w["ref"])
+')
+  [[ $(printf '%s' "$refs" | grep -c .) -eq 1 ]] || return 1
+  # Codex CR R1 M5: the single selected ref must also be a LEGAL workspace
+  # ref — a malformed value would be fed to select-workspace on restore.
+  printf '%s' "$refs" | grep -qE '^workspace:[0-9]+$' || return 1
+  printf '%s\n' "$refs"
+}
+
+# FLY-254: render escalation — focus the workspace to force its surface to
+# render, then re-run EVERY safety gate before the single atomic send.
+# Preconditions (set by the escalated sweep): HEAL_FOCUS_SNAPSHOT_OK=1 (we can
+# restore focus afterwards) and HEAL_USER_INTERVENED=0 (the user hasn't taken
+# over). Returns: 0 = send attempted; 1 = skip (fail-closed / timeout / user
+# intervened); 2 = a client appeared (cmux re-ran the attach itself — healed).
+self_heal_render_escalate() {
+  local wname="$1" ref="$2"
+  local view_session="${VIEW_PREFIX}${wname}"
+  [[ "${HEAL_FOCUS_SNAPSHOT_OK:-0}" == "1" ]] || return 1
+  [[ "${HEAL_USER_INTERVENED:-0}" == "1" ]] && return 1
+  [[ "${HEAL_GEN_CHANGED:-0}" == "1" ]] && return 1
+  # Malformed refs must never be fed to a focus mutation (REF_RE caution,
+  # matching dedup_workspaces_by_title).
+  printf '%s' "$ref" | grep -qE '^workspace:[0-9]+$' || return 1
+  # GENERATION pin (Codex CR R1 HIGH-2): if the cmux app instance changed
+  # since this sweep's generation was consumed (reopen mid-sweep), every
+  # further focus mutation would land on a generation whose attempt budget
+  # was never charged. Fail closed: stop ALL remaining focus escalation and
+  # never restore (the new generation gets its own armed sweep).
+  if [[ -n "${HEAL_SWEEP_GEN_IDENT:-}" ]]; then
+    local now_ident
+    now_ident=$(cmux_socket_identity)
+    if [[ "$now_ident" != "$HEAL_SWEEP_GEN_IDENT" ]]; then
+      HEAL_GEN_CHANGED=1
+      log "Self-heal(render): cmux generation changed mid-sweep — aborting focus escalation"
+      return 1
+    fi
+  fi
+  # USER-INTERVENTION pre-check (Codex R2 M5): the current selected workspace
+  # must still be what WE expect — the original snapshot before our first
+  # focus, our last forced ref afterwards. Anything else = the user clicked a
+  # tab mid-sweep → stop ALL remaining focus escalation, never restore.
+  local cur
+  if ! cur=$(current_selected_ref); then
+    HEAL_USER_INTERVENED=1   # can't prove the user didn't take over → stop
+    return 1
+  fi
+  if [[ "$cur" != "$HEAL_EXPECTED_SELECTED" ]]; then
+    HEAL_USER_INTERVENED=1
+    log "Self-heal(render): user switched tabs — stopping focus escalation, keeping user's selection"
+    return 1
+  fi
+  # Codex CR R3 HIGH-1 + R5 HIGH-1: the selected-ref read above is a cmux
+  # JSON IPC and the wrapper's own mktemp is another subprocess — the
+  # generation can flip during EITHER. The generation re-check therefore
+  # runs INSIDE cmux_call_guarded, as the genuine last operation before the
+  # select-workspace mutation.
+  local sel_rc=0
+  cmux_call_guarded _heal_focus_gen_guard select-workspace --workspace "$ref" || sel_rc=$?
+  if [[ "$GUARD_WAS_BLOCKED" == "1" ]]; then
+    log "Self-heal(render): cmux generation changed mid-sweep — aborting focus escalation"
+    return 1
+  fi
+  [[ $sel_rc -ne 0 ]] && return 1   # cmux select failure → fail closed
+  HEAL_FOCUS_CHANGED=1
+  HEAL_LAST_FORCED_REF="$ref"
+  HEAL_EXPECTED_SELECTED="$ref"
+  log "Self-heal(render): focusing '$wname' (ws $ref) to force surface render"
+  local ticks
+  ticks=$(validated_int_env FLYWHEEL_CMUX_RENDER_WAIT_TICKS "${FLYWHEEL_CMUX_RENDER_WAIT_TICKS:-6}" 6 60)
+  local i surface_ref clients shell_rc refs send_rc now_ident
+  for (( i = 0; i < ticks; i++ )); do
+    sleep 0.5
+    # ⓪ GENERATION re-check after EVERY render wait (Codex CR R2 HIGH-1): the
+    #    identity can flip during the sleep; the gates below would otherwise
+    #    run against the NEW app (restored refs match) and the send would land
+    #    there, uncharged. Latch blocks all remaining sends/focus/restore.
+    if [[ -n "${HEAL_SWEEP_GEN_IDENT:-}" ]]; then
+      now_ident=$(cmux_socket_identity)
+      if [[ "$now_ident" != "$HEAL_SWEEP_GEN_IDENT" ]]; then
+        HEAL_GEN_CHANGED=1
+        log "Self-heal(render): cmux generation changed mid-sweep — aborting focus escalation"
+        return 1
+      fi
+    fi
+    # Full gate re-run before send (Codex R1 HIGH-1) — fixed order:
+    # ① fresh MANAGED: the ref must still resolve from this window name
+    #    (title drift / dedup / close during the wait → out).
+    refs=$(workspace_refs_for "$wname") || return 1   # JSON down → fail closed
+    printf '%s\n' "$refs" | grep -qx -- "$ref" || return 1
+    # ② fresh surface ref — rendering may have created a new surface.
+    surface_ref=$(workspace_terminal_surface_ref "$ref") || continue
+    [[ -z "$surface_ref" ]] && continue
+    # ③ clients == 0.
+    clients=$(view_session_client_count "$view_session") || return 1
+    [[ "$clients" -gt 0 ]] && return 2   # cmux re-ran the attach itself
+    # ④ bare-shell positive proof (quiet probe; summary logged on timeout).
+    shell_rc=0
+    surface_looks_like_bare_shell "$ref" "$surface_ref" 1 || shell_rc=$?
+    case $shell_rc in
+      0)
+        # ⑤ The FINAL 0-client re-check lives INSIDE heal_send_attach — after
+        #    all bookkeeping, immediately before the injection (Codex CR R1
+        #    HIGH-1: a focus-triggered attach can complete during the heal-
+        #    state bookkeeping). Single enforcement point for every escalated
+        #    send path. rc=2 = client appeared (healed), rc=1 = fail-closed.
+        send_rc=0
+        heal_send_attach "$wname" "$ref" "$surface_ref" || send_rc=$?
+        [[ $send_rc -eq 2 ]] && return 2
+        [[ $send_rc -ne 0 ]] && return 1
+        return 0
+        ;;
+      1) return 1 ;;   # positively NOT a shell → fail closed
+      2) ;;            # not rendered yet → keep waiting
+    esac
+  done
+  log "Self-heal(render): '$wname' render timeout — skipped"
+  return 1
 }
 
 # Heal one window by name: resolve all matching workspace refs (title), then
@@ -784,16 +1374,81 @@ self_heal_one_workspace() {
   fi
 }
 
-# One-shot sweep of ALL agent windows (bootstrap / health-recovery / --once).
+# One-shot sweep of ALL agent windows (bootstrap / health-recovery / --once /
+# FLY-254 escalated reopen consume).
 self_heal_sweep_all() {
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
   [[ -z "$tmux_windows" ]] && return 0
+
+  # FLY-254: escalated sweep — snapshot the user's selected workspace BEFORE
+  # any focus mutation. Fail-closed (Codex R1 M3): without exactly one legal
+  # selected ref we cannot restore afterwards, so focus mutations are disabled
+  # for this ENTIRE sweep (the plain non-escalated heal still runs).
+  HEAL_FOCUS_SNAPSHOT_OK=0
+  HEAL_FOCUS_CHANGED=0
+  HEAL_USER_INTERVENED=0
+  HEAL_GEN_CHANGED=0
+  HEAL_LAST_FORCED_REF=""
+  HEAL_ORIG_SELECTED=""
+  HEAL_EXPECTED_SELECTED=""
+  if [[ "${HEAL_RENDER_ESCALATE:-0}" == "1" ]]; then
+    if HEAL_ORIG_SELECTED=$(current_selected_ref); then
+      HEAL_FOCUS_SNAPSHOT_OK=1
+      HEAL_EXPECTED_SELECTED="$HEAL_ORIG_SELECTED"
+    else
+      log "Self-heal(render): no unique selected workspace — focus mutations disabled this sweep (fail-closed)"
+    fi
+  fi
+
   local _s _wid wname
   while IFS='|' read -r _s _wid wname; do
     [[ -z "$wname" ]] && continue
     self_heal_one_workspace "$wname"
   done <<< "$tmux_windows"
+
+  # FLY-254: single cleanup epilogue — the focus restore decision. Restore the
+  # original tab ONLY when (a) we actually moved focus, (b) the user never
+  # intervened, AND (c) a FINAL selected re-check (Codex R3 M2) proves the
+  # current selection is still OUR last forced ref — after the LAST forced
+  # focus there is no "next focus pre-check" left to detect a user switch, so
+  # the epilogue must re-verify before restoring. Mismatch / read failure /
+  # ambiguity → the user wins, no restore.
+  if [[ "$HEAL_FOCUS_CHANGED" == "1" && "$HEAL_USER_INTERVENED" == "0" && "$HEAL_GEN_CHANGED" == "0" && -n "$HEAL_ORIG_SELECTED" ]]; then
+    # Codex CR R2 HIGH-1: generation re-check before the restore too — a
+    # reopen after the LAST render wait would otherwise have the restore
+    # land in the new app instance. Mismatch SETS the latch (consistent
+    # latch semantics, Codex CR R3).
+    local _cur_ident=""
+    if [[ -n "${HEAL_SWEEP_GEN_IDENT:-}" ]]; then
+      _cur_ident=$(cmux_socket_identity)
+    fi
+    if [[ -n "${HEAL_SWEEP_GEN_IDENT:-}" && "$_cur_ident" != "$HEAL_SWEEP_GEN_IDENT" ]]; then
+      HEAL_GEN_CHANGED=1
+      log "Self-heal(render): cmux generation changed before restore — leaving focus as-is"
+    else
+      local _cur
+      if _cur=$(current_selected_ref) && [[ "$_cur" == "$HEAL_LAST_FORCED_REF" ]]; then
+        # Codex CR R3/R4/R5 HIGH-1: the selected-ref read above is a JSON
+        # IPC, `log` runs `date`, and the wrapper's mktemp is one more
+        # subprocess — so the generation re-check runs INSIDE
+        # cmux_call_guarded (last op before the restore mutation), and the
+        # success log comes AFTER the mutation.
+        local rest_rc=0
+        cmux_call_guarded _heal_focus_gen_guard select-workspace --workspace "$HEAL_ORIG_SELECTED" || rest_rc=$?
+        if [[ "$GUARD_WAS_BLOCKED" == "1" ]]; then
+          log "Self-heal(render): cmux generation changed before restore — leaving focus as-is"
+        elif [[ $rest_rc -ne 0 ]]; then
+          log "Self-heal(render): focus restore attempt failed (best-effort)"
+        else
+          log "Self-heal(render): restored focus to $HEAL_ORIG_SELECTED"
+        fi
+      else
+        log "Self-heal(render): user switched tabs during sweep — keeping user's selection"
+      fi
+    fi
+  fi
+
   # FLY-177: explicit success. Best-effort sweep — never let a stray non-zero
   # from the loop propagate. This function is the LAST statement of
   # sync_additive_bootstrap, which runs in watch_main's `if cmux_health_check_or_die;
@@ -1404,7 +2059,14 @@ sync_additive_bootstrap() {
   # 4. (FLY-169) One-shot attach self-heal sweep — covers watcher startup /
   #    cmux restart (watcher re-spawns) / reboot. Re-attaches any pre-existing
   #    workspace that landed as bare zsh. Event boundary (startup), not a poll.
-  self_heal_sweep_all
+  #    FLY-254 (Codex R2 M3): skipped when a pending reopen generation is about
+  #    to be consumed right after bootstrap — the escalated sweep is a SUPERSET
+  #    of this one (same window iteration + render capability), so running both
+  #    would only burn a wasted pass of read-screen failures.
+  if [[ "${BOOTSTRAP_SKIP_HEAL_SWEEP:-0}" != "1" ]]; then
+    self_heal_sweep_all
+  fi
+  return 0
 }
 
 sync_additive() {
@@ -1442,13 +2104,59 @@ sync_additive() {
   cleanup_stale_conservative
 }
 
+# FLY-254 (gap a): unhealthy-state sleep with app-open edge detection.
+# rc=0 (healthy) or feature off → plain sleep, BYTE-IDENTICAL cadence.
+# rc=1 (socket missing): sleep in slices; wake early when the socket appears.
+# rc=3 (socket present but ping failing — the stale socket a quit cmux app can
+# leave behind, observed live in Codex R2): wake early when the socket's
+# filesystem identity changes (a new app instance bound the path).
+# Both probes are pure stat — zero IPC; total sleep duration is unchanged, so
+# the backoff load curve is identical; nothing new runs while cmux is healthy.
+reopen_aware_sleep() {
+  local total="$1"
+  if ! reopen_sweep_enabled \
+     || [[ "$CMUX_HEALTH_LAST_RC" != "1" && "$CMUX_HEALTH_LAST_RC" != "3" ]]; then
+    sleep "$total"
+    return 0
+  fi
+  local slice
+  slice=$(validated_int_env FLYWHEEL_CMUX_SOCKET_PROBE_SLICE "${FLYWHEEL_CMUX_SOCKET_PROBE_SLICE:-3}" 3 60)
+  local ref_ident=""
+  if [[ "$CMUX_HEALTH_LAST_RC" == "3" ]]; then
+    # Reference identity for change detection: the persisted generation if
+    # readable, else the identity observed right now (sleep start).
+    if read_generation_state; then ref_ident="$REOPEN_GEN_IDENT"; fi
+    [[ -z "$ref_ident" ]] && ref_ident=$(cmux_socket_identity)
+  fi
+  local elapsed=0 now_ident remain step
+  while (( elapsed < total )); do
+    # Codex CR R1 L8: never oversleep — the final step is min(slice, remain)
+    # so a slice larger than the requested total cannot LENGTHEN the sleep.
+    remain=$((total - elapsed))
+    step=$slice
+    (( step > remain )) && step=$remain
+    sleep "$step"
+    elapsed=$((elapsed + step))
+    if [[ "$CMUX_HEALTH_LAST_RC" == "1" ]]; then
+      if cmux_socket_present; then return 0; fi
+    else
+      now_ident=$(cmux_socket_identity)
+      if [[ -n "$now_ident" && "$now_ident" != "$ref_ident" ]]; then return 0; fi
+    fi
+  done
+  return 0
+}
+
 watch_loop() {
   # Polling loop for --watch mode. Wrapped in a function so `local` is legal.
   # FLY-129 Phase 7: backoff while unhealthy. Healthy ticks stay at 15s so
   # event drain latency is unchanged; degraded paths back off up to 300s.
   local tick=0 sleep_seconds=15
   while true; do
-    sleep "$sleep_seconds"
+    # FLY-254 (gap a): unhealthy sleeps are sliced with a pure-stat app-open
+    # edge probe so a reopen is noticed in seconds instead of a full backoff
+    # window (up to 300s). Healthy sleeps are byte-identical plain sleeps.
+    reopen_aware_sleep "$sleep_seconds"
     tick=$((tick + 1))
 
     # FLY-129 R2: gate ALL cmux-touching work behind the health check.
@@ -1461,13 +2169,25 @@ watch_loop() {
     local hc_rc=0
     cmux_health_check_or_die || hc_rc=$?
     if [[ $hc_rc -eq 0 ]]; then
+      # FLY-254: collect reopen evidence (one stat) and consume a pending
+      # generation — readiness wait + ONE escalated sweep, durably bounded.
+      # consume is gated on the in-process cache (Codex CR R1 M6): a settled
+      # `done` generation costs the healthy tick zero file IO.
+      reopen_detector_check
+      if [[ "$REOPEN_CACHE_STATE" == "pending" ]]; then
+        consume_pending_reopen_sweep
+      fi
       # FLY-169: consume the cmux recovery flag ONCE (set by the health check
       # above on an unhealthy→healthy transition). One-shot heal sweep — covers
       # a cmux restart while this watcher stayed alive (no tmux event, no
       # re-bootstrap). NOT a per-tick scan: the flag is only set on recovery.
+      # FLY-254 (Codex R2 M3): coalesced — when the escalated sweep already ran
+      # this tick it is a superset of this recovery sweep; don't run both.
       if [[ "$CMUX_HEAL_ON_RECOVERY" == "1" ]]; then
         CMUX_HEAL_ON_RECOVERY=0
-        self_heal_sweep_all
+        if [[ "$REOPEN_CONSUMED_THIS_TICK" != "1" ]]; then
+          self_heal_sweep_all
+        fi
       fi
       drain_events
       process_pending_cleanups
@@ -1512,11 +2232,30 @@ watch_main() {
   # previous watcher). Keeps transition-only heal logging accurate.
   gc_heal_state_file
 
+  # FLY-254: log effective reopen-sweep knobs ONCE at startup — the deployment
+  # verification anchor (don't trust kickstart exit codes; read this line).
+  # validated_int_env also emits its one-time fallback WARNs here.
+  local _rw _rt _ps
+  _rw=$(validated_int_env FLYWHEEL_CMUX_RENDER_WAIT_TICKS "${FLYWHEEL_CMUX_RENDER_WAIT_TICKS:-6}" 6 60)
+  _rt=$(validated_int_env FLYWHEEL_CMUX_READINESS_TICKS "${FLYWHEEL_CMUX_READINESS_TICKS:-5}" 5 60)
+  _ps=$(validated_int_env FLYWHEEL_CMUX_SOCKET_PROBE_SLICE "${FLYWHEEL_CMUX_SOCKET_PROBE_SLICE:-3}" 3 60)
+  log "FLY-254 knobs: reopen-sweep=${FLYWHEEL_CMUX_REOPEN_SWEEP:-1} render-wait-ticks=${_rw} readiness-ticks=${_rt} probe-slice=${_ps}s attempt-limit=${REOPEN_ATTEMPT_LIMIT}"
+
   # Gate cmux-touching bootstrap: if cmux is broken (rc=2 already exited),
   # skip the full sync but still enter the watch loop. drain_events / loop
   # will retry health every minute.
   if cmux_health_check_or_die; then
-    sync_additive_bootstrap
+    # FLY-254 (Codex R2 M3): collect reopen evidence at bootstrap. When a
+    # pending generation is consumable, the escalated consume REPLACES the
+    # legacy bootstrap heal sweep this round (superset) and runs BEFORE the
+    # first watch_loop sleep — no wasted non-escalated pass, no extra 15s.
+    reopen_detector_check
+    if reopen_pending_ready; then
+      BOOTSTRAP_SKIP_HEAL_SWEEP=1 sync_additive_bootstrap
+      consume_pending_reopen_sweep
+    else
+      sync_additive_bootstrap
+    fi
   fi
   watch_loop
 }
