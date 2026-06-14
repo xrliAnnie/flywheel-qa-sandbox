@@ -3,6 +3,7 @@ import {
 	type LeadConfig,
 	loadProjects,
 	type ProjectEntry,
+	parseAndValidateProjects,
 	resolveLeadForIssue,
 	validateMemoryIds,
 } from "../ProjectConfig.js";
@@ -1234,5 +1235,91 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		// Fields must NOT be normalized into the in-memory object (FLY-231 pattern).
 		expect(Object.keys(lead)).not.toContain("model");
 		expect(Object.keys(lead)).not.toContain("backend");
+	});
+});
+
+describe("parseAndValidateProjects (FLY-247 inc2a R2#5 — pure validator)", () => {
+	const PROD_TOKEN_ENV = "FLY247_TEST_BOT_TOKEN";
+	const originalTok = process.env[PROD_TOKEN_ENV];
+
+	afterEach(() => {
+		if (originalTok === undefined) delete process.env[PROD_TOKEN_ENV];
+		else process.env[PROD_TOKEN_ENV] = originalTok;
+	});
+
+	function rawProject(leadOverrides: Record<string, unknown> = {}) {
+		return [
+			{
+				projectName: "geo",
+				projectRoot: "/tmp/geo",
+				leads: [
+					{
+						agentId: "product-lead",
+						chatChannel: "222",
+						match: { labels: ["Product"] },
+						...leadOverrides,
+					},
+				],
+			},
+		];
+	}
+
+	it("is pure: NEVER resolves botToken even when botTokenEnv is set + present in env", () => {
+		process.env[PROD_TOKEN_ENV] = "super-secret-token";
+		const projects = parseAndValidateProjects(
+			rawProject({ botTokenEnv: PROD_TOKEN_ENV }),
+		);
+		// The pure validator must not hydrate secrets — that's loadProjects' job.
+		expect(projects[0]!.leads[0]!.botToken).toBeUndefined();
+	});
+
+	it("strips a raw botToken supplied in JSON input (secret never trusted from config)", () => {
+		const projects = parseAndValidateProjects(
+			rawProject({ botToken: "pasted-in-by-mistake" }),
+		);
+		expect(projects[0]!.leads[0]!.botToken).toBeUndefined();
+	});
+
+	it("enforces the FLY-245 codex fail-close (cross-field rule) without env access", () => {
+		expect(() =>
+			parseAndValidateProjects(
+				rawProject({ backend: "codex-app-server" /* not companion */ }),
+			),
+		).toThrow(/companion: true AND/);
+	});
+
+	it("normalizes canSpawnRunners default to true (same as loadProjects)", () => {
+		const projects = parseAndValidateProjects(rawProject());
+		expect(projects[0]!.leads[0]!.canSpawnRunners).toBe(true);
+	});
+
+	it("byte-compat: loadProjects === parseAndValidateProjects + bot-token hydration", () => {
+		process.env[PROD_TOKEN_ENV] = "hydrated-token";
+		const raw = rawProject({
+			botTokenEnv: PROD_TOKEN_ENV,
+			model: "claude-fable-5",
+		});
+
+		// Path A: loadProjects (reads env JSON, validates, hydrates).
+		const prevEnv = process.env.FLYWHEEL_PROJECTS;
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify(raw);
+		const viaLoad = loadProjects();
+		if (prevEnv === undefined) delete process.env.FLYWHEEL_PROJECTS;
+		else process.env.FLYWHEEL_PROJECTS = prevEnv;
+
+		// Path B: pure validator + the same hydration loadProjects performs.
+		const viaPure = parseAndValidateProjects(JSON.parse(JSON.stringify(raw)));
+		for (const entry of viaPure) {
+			for (const lead of entry.leads) {
+				if (lead.botTokenEnv) {
+					const resolved = process.env[lead.botTokenEnv];
+					if (resolved) lead.botToken = resolved;
+				}
+			}
+		}
+
+		expect(viaLoad).toEqual(viaPure);
+		// And the secret WAS hydrated on the loadProjects path.
+		expect(viaLoad[0]!.leads[0]!.botToken).toBe("hydrated-token");
 	});
 });
