@@ -115,6 +115,14 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
   </tr></thead><tbody id="t-stuck"></tbody></table>
 </section>
 
+<section id="s-fleet" style="display:none">
+  <h2>Fleet <span id="fleet-config-state" style="text-transform:none;letter-spacing:0"></span></h2>
+  <table><thead><tr>
+    <th>Project</th><th>Lead</th><th>Backend</th><th>Model</th><th>Online</th><th>Drift</th>
+  </tr></thead><tbody id="t-fleet"></tbody></table>
+  <div class="empty" id="e-fleet" style="display:none">No fleet data</div>
+</section>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -232,6 +240,58 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
     renderActive(data.active);
     renderRecent(data.recent);
     renderStuck(data.stuck);
+    renderFleet(data.fleet);
+  }
+
+  // FLY-247: fleet section — absent payload field keeps the section hidden
+  // (default-off gate: zero-config deployments never show it).
+  var FLEET_DOTS = {
+    'ONLINE': '\u{1F7E2}', 'PARTIAL': '\u{1F7E1}', 'DEGRADED': '\u{1F7E1}',
+    'DOWN': '\u{1F534}', 'CONFLICT': '\u{1F534}', 'CONFLICT-CARRIER': '\u{1F534}',
+    'EXTERNAL': '\u{26AA}'
+  };
+  function renderFleet(fleet) {
+    var section = document.getElementById('s-fleet');
+    if (!fleet || !fleet.leads) { section.style.display = 'none'; return; }
+    section.style.display = '';
+    setText('fleet-config-state', fleet.configState === 'live' ? '' : '(' + fleet.configState + ')');
+    var tbody = document.getElementById('t-fleet');
+    var empty = document.getElementById('e-fleet');
+    if (!fleet.leads.length) { tbody.textContent = ''; empty.style.display = ''; return; }
+    empty.style.display = 'none';
+    tbody.textContent = '';
+    fleet.leads.forEach(function(l) {
+      var tr = document.createElement('tr');
+      var dot = FLEET_DOTS[l.presentation] || '\u{26AA}';
+      var model = l.configured.model || '(default)';
+      if (l.configured.backend === 'codex-app-server') {
+        model = model + ' [configured]'; // never claimed active (FLY-242 owns codex runtime)
+      }
+      var driftTxt = '-';
+      var driftRed = false;
+      if (l.drift === null) {
+        driftTxt = 'n/a (external)';
+      } else if (l.drift.model || l.drift.backend) {
+        driftTxt = (l.drift.model ? 'model ' : '') + (l.drift.backend ? 'backend' : '');
+        driftRed = true;
+      }
+      var src = l.configured.source === 'legacy' ? ' [legacy:migrate]' : '';
+      appendCell(tr, l.project);
+      appendCell(tr, l.leadId + (l.companion ? ' (companion)' : '') + ' — Runner follow: not yet wired (Increment 2)');
+      appendCell(tr, l.configured.backend + src);
+      appendCell(tr, model);
+      appendCell(tr, dot + ' ' + l.presentation);
+      var td = document.createElement('td');
+      td.textContent = driftTxt;
+      if (driftRed) td.style.color = 'var(--red, #ff3b30)';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    });
+  }
+  function appendCell(tr, text) {
+    var td = document.createElement('td');
+    td.textContent = text;
+    tr.appendChild(td);
   }
 
   function renderActive(sessions) {

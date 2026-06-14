@@ -35,6 +35,7 @@ import {
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
 import {
 	type LeadConfig,
+	loadProjects,
 	type ProjectEntry,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
@@ -51,6 +52,14 @@ import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
+import {
+	buildDefaultFleetProbeDeps,
+	ConfigSnapshotProvider,
+	defaultLegacyBackendOf,
+	FleetPoller,
+	type FleetSnapshot,
+	filterPaneWatchedLeads,
+} from "./fleet-data.js";
 import { buildFounderConsentWiring } from "./founder-consent/wiring.js";
 import { GatePoller } from "./gate-poller.js";
 import {
@@ -358,6 +367,12 @@ export class SseBroadcaster {
 	constructor(
 		private store: StateStore,
 		private stuckThresholdMinutes: number,
+		/**
+		 * FLY-247: returns the latest fleet snapshot, or undefined when the
+		 * default-off gate is closed (no lead configures fleet fields) — in
+		 * which case the payload is byte-identical to pre-FLY-247.
+		 */
+		private fleetSupplier?: () => FleetSnapshot | undefined,
 	) {}
 
 	addClient(res: express.Response): void {
@@ -365,6 +380,7 @@ export class SseBroadcaster {
 			const payload = buildDashboardPayload(
 				this.store,
 				this.stuckThresholdMinutes,
+				this.fleetSupplier?.(),
 			);
 			res.write(`event: state\ndata: ${JSON.stringify(payload)}\n\n`);
 		} catch (err) {
@@ -431,6 +447,7 @@ export class SseBroadcaster {
 				const payload = buildDashboardPayload(
 					this.store,
 					this.stuckThresholdMinutes,
+					this.fleetSupplier?.(),
 				);
 				const message = `event: state\ndata: ${JSON.stringify(payload)}\n\n`;
 				this.broadcastToClients(message);
@@ -1710,7 +1727,36 @@ export async function startBridge(
 	const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 	const executor = new DirectiveExecutor(store);
 	const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
-	const broadcaster = new SseBroadcaster(store, config.stuckThresholdMinutes);
+	// FLY-247: fleet config snapshot provider (hot fleet-field overlay onto
+	// the boot topology; structural change → restart-required, R3#4) + the
+	// 30s evidence poller (single probe owner for Dashboard + watchdog, R6#5).
+	const fleetConfigProvider = new ConfigSnapshotProvider(projects, {
+		loadProjects: () => loadProjects(),
+		envPinned: Boolean(process.env.FLYWHEEL_PROJECTS),
+		logger: (msg) => console.log(msg),
+	});
+	const fleetLegacyBackendOf = (p: ProjectEntry) => defaultLegacyBackendOf(p);
+	const fleetPoller = new FleetPoller({
+		provider: fleetConfigProvider,
+		legacyBackendOf: fleetLegacyBackendOf,
+		deps: buildDefaultFleetProbeDeps(),
+		logger: (msg) => console.log(msg),
+	});
+	fleetPoller.start();
+	console.log("[Bridge] FleetPoller started (30s evidence collection)");
+	// Default-off gate (R1#6): zero-config deployments keep a byte-identical
+	// SSE payload — the fleet key only appears when ≥1 lead opts in. The gate
+	// reads the CURRENT snapshot, so hot-adding config appears without a
+	// Bridge restart (requirement ⑤).
+	const fleetSupplier = (): FleetSnapshot | undefined => {
+		if (!fleetConfigProvider.hasExplicitFleetConfig()) return undefined;
+		return fleetPoller.snapshot() ?? undefined;
+	};
+	const broadcaster = new SseBroadcaster(
+		store,
+		config.stuckThresholdMinutes,
+		fleetSupplier,
+	);
 
 	// GEO-195: Initialize RuntimeRegistry — per-lead runtime selection
 	// GEO-267: Accept pre-created registry (from run-bridge.ts for DirectEventSink injection)
@@ -2163,15 +2209,32 @@ export async function startBridge(
 		paneHashStuckCycles: 2,
 		paneHashAlertCycles: 3,
 		cooldownMs: 30 * 60_000,
-		// FLY-224 Phase 6b: exclude Codex-backed projects (no tmux pane) from the
-		// pane-text watchdog. Backend = real source (.flywheel/config.yaml
-		// roles.lead.backend). BYTE-COMPAT: a project with no roles.lead config →
-		// claude-code → identical list (no-op).
+		// FLY-224 Phase 6b legacy baseline: exclude Codex-backed projects (no
+		// tmux pane) from the pane-text watchdog. BYTE-COMPAT: a project with
+		// no roles.lead config → claude-code → identical list (no-op).
 		projects: paneWatchdogProjects(
 			projects,
 			(p) => loadProjectLeadRoles(p.projectRoot),
 			process.env,
 		),
+		// FLY-247: per-lead dynamic membership, re-resolved EVERY tick from the
+		// current config snapshot + the poller's evidence map (one decision
+		// function shared with the Dashboard, R8#4). No/stale evidence for a
+		// codex-desired lead → desired-config exclusion (FLY-224 semantics);
+		// claude leads always watched; CONFLICT (live Claude under codex
+		// desire) keeps watching (漏报>误报). Legacy config.yaml stays as the
+		// fallback desired source for the dual-source window.
+		// NOTE (code-review H9): no project-level pre-filter here — the legacy
+		// config.yaml/env desired source feeds the PER-LEAD effectiveBackend
+		// inside filterPaneWatchedLeads. A project-level filter would remove an
+		// explicit-Claude lead living in a legacy-codex project before the
+		// shared decision function ever saw it.
+		projectsProvider: () =>
+			filterPaneWatchedLeads(
+				fleetConfigProvider.snapshot().projects,
+				fleetLegacyBackendOf,
+				fleetPoller.snapshot(),
+			),
 		store,
 		notifier: (payload) => leadAlertNotifier.alert(payload),
 		locateWindowFn: (projectName, leadId) =>

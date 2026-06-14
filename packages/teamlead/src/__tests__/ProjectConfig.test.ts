@@ -1095,3 +1095,144 @@ describe("FLY-83 alert fields", () => {
 		expect(() => loadProjects()).toThrow(/alertFallbackToCore/);
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLY-247 WI-1: per-lead fleet fields — leads[].{model, backend}
+// Plan: doc/engineer/plan/new/v1.40.0-FLY-247-fleet-config-dashboard.md §3.1
+// ─────────────────────────────────────────────────────────────────────────────
+describe("FLY-247 leads[].{model,backend} validation", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+
+	afterEach(() => {
+		if (originalEnv === undefined) {
+			delete process.env.FLYWHEEL_PROJECTS;
+		} else {
+			process.env.FLYWHEEL_PROJECTS = originalEnv;
+		}
+	});
+
+	function fleetLead(overrides: Partial<LeadConfig> = {}): LeadConfig {
+		return {
+			agentId: "product-lead",
+			chatChannel: "222",
+			match: { labels: ["Product"] },
+			...overrides,
+		};
+	}
+
+	function loadWith(lead: LeadConfig): ProjectEntry[] {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{ projectName: "geo", projectRoot: "/tmp/geo", leads: [lead] },
+		]);
+		return loadProjects();
+	}
+
+	it("accepts claude-code backend with a model, fields preserved verbatim", () => {
+		const projects = loadWith(
+			fleetLead({ model: "claude-fable-5", backend: "claude-code" }),
+		);
+		expect(projects[0]!.leads[0]!.model).toBe("claude-fable-5");
+		expect(projects[0]!.leads[0]!.backend).toBe("claude-code");
+	});
+
+	it("does NOT lowercase or trim-rewrite a valid model id (case-sensitive)", () => {
+		const projects = loadWith(fleetLead({ model: "Claude-Fable-5" }));
+		expect(projects[0]!.leads[0]!.model).toBe("Claude-Fable-5");
+	});
+
+	it("rejects empty-string model", () => {
+		expect(() => loadWith(fleetLead({ model: "" }))).toThrow(/model/);
+	});
+
+	it("rejects whitespace-only model", () => {
+		expect(() => loadWith(fleetLead({ model: "   " }))).toThrow(/model/);
+	});
+
+	it("rejects non-string model", () => {
+		expect(() =>
+			loadWith(fleetLead({ model: 5 as unknown as string })),
+		).toThrow(/model/);
+	});
+
+	it("rejects model containing control characters (plist safety boundary)", () => {
+		expect(() => loadWith(fleetLead({ model: "claude\nfable" }))).toThrow(
+			/model/,
+		);
+		expect(() => loadWith(fleetLead({ model: "claude\u0007fable" }))).toThrow(
+			/model/,
+		);
+	});
+
+	it("rejects unknown backend enum value (e.g. the Runner's claude-tmux)", () => {
+		expect(() =>
+			loadWith(
+				fleetLead({ backend: "claude-tmux" as unknown as "claude-code" }),
+			),
+		).toThrow(/backend/);
+	});
+
+	it("rejects codex-app-server backend on a non-companion lead (FLY-245 fail-close)", () => {
+		expect(() => loadWith(fleetLead({ backend: "codex-app-server" }))).toThrow(
+			/FLY-245/,
+		);
+	});
+
+	it("rejects codex-app-server when companion:true but canSpawnRunners defaults true", () => {
+		expect(() =>
+			loadWith(fleetLead({ backend: "codex-app-server", companion: true })),
+		).toThrow(/FLY-245/);
+	});
+
+	it("rejects codex-app-server when companion:true but canSpawnRunners explicitly true", () => {
+		expect(() =>
+			loadWith(
+				fleetLead({
+					backend: "codex-app-server",
+					companion: true,
+					canSpawnRunners: true,
+				}),
+			),
+		).toThrow(/FLY-245/);
+	});
+
+	it("accepts codex-app-server with companion:true AND canSpawnRunners:false", () => {
+		const projects = loadWith(
+			fleetLead({
+				backend: "codex-app-server",
+				companion: true,
+				canSpawnRunners: false,
+			}),
+		);
+		expect(projects[0]!.leads[0]!.backend).toBe("codex-app-server");
+	});
+
+	it("rejects unsafe identifier grammar (path separators) in agentId (R5#6)", () => {
+		expect(() => loadWith(fleetLead({ agentId: "../escape" }))).toThrow(
+			/agentId/,
+		);
+	});
+
+	it("rejects exact-key collisions across (projectName, agentId) pairs (R5#6)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "a-b",
+				projectRoot: "/tmp/ab",
+				leads: [{ agentId: "c", chatChannel: "1", match: { labels: ["P"] } }],
+			},
+			{
+				projectName: "a",
+				projectRoot: "/tmp/a",
+				leads: [{ agentId: "b-c", chatChannel: "2", match: { labels: ["P"] } }],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/collision/);
+	});
+
+	it("reverse-compat sentinel: leads without model/backend keep their exact object shape", () => {
+		const projects = loadWith(fleetLead());
+		const lead = projects[0]!.leads[0]!;
+		// Fields must NOT be normalized into the in-memory object (FLY-231 pattern).
+		expect(Object.keys(lead)).not.toContain("model");
+		expect(Object.keys(lead)).not.toContain("backend");
+	});
+});
