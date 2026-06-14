@@ -9,6 +9,7 @@ import {
 	buildTuiCommand,
 	ensureTuiWindow,
 	isTuiWindowAlive,
+	killTuiWindow,
 	type TuiWindowSpec,
 } from "../tui-window.js";
 
@@ -107,5 +108,32 @@ describe("isTuiWindowAlive (identity echo — #248 smoke finding)", () => {
 		expect(probe("growth-mufasa-lead 1")).toBe(false); // dead pane
 		expect(probe("other-window 0")).toBe(false); // tmux fell back to current window
 		expect(probe(undefined)).toBe(false); // tmux error → fail closed
+	});
+});
+
+describe("killTuiWindow (shutdown orphan teardown — review HIGH-1)", () => {
+	it("issues a name-scoped kill-window for the lead's TUI window", () => {
+		const calls: string[][] = [];
+		killTuiWindow(SPEC, {
+			exec: (cmd, args) => {
+				calls.push([cmd, ...args]);
+				return { ok: true };
+			},
+			log: () => {},
+		});
+		expect(calls).toEqual([
+			["tmux", "kill-window", "-t", "=flywheel:=growth-mufasa-lead"],
+		]);
+	});
+
+	it("fail-open: never throws when tmux exec throws (window already gone)", () => {
+		expect(() =>
+			killTuiWindow(SPEC, {
+				exec: () => {
+					throw new Error("no server running");
+				},
+				log: () => {},
+			}),
+		).not.toThrow();
 	});
 });

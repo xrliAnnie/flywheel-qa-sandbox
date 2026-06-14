@@ -19,7 +19,6 @@
  * is Phase 7 (QA, isolated env).
  */
 
-import type { CodexLeadProcess } from "./CodexLeadProcess.js";
 import type { TurnExecutor } from "./LeadInputRouter.js";
 
 interface ActiveTurn {
@@ -31,14 +30,42 @@ interface ActiveTurn {
 	promise: Promise<{ output: string }>;
 }
 
+/** The structural process surface the executor needs (FLY-259 PR-D): the
+ * concrete CodexLeadProcess satisfies it unchanged; the TUI runtime passes a
+ * demux FACADE so foreign (founder-terminal) turn events never reach the
+ * executor (TurnDemux is the first fence, belongsToTurn stays the second). */
+export interface CodexProcessLike {
+	on(
+		event: "notification",
+		cb: (method: string, params: unknown) => void,
+	): void;
+	on(event: "turnCompleted", cb: (params: unknown) => void): void;
+	on(
+		event: "exit",
+		cb: (code: number | null, signal: NodeJS.Signals | null) => void,
+	): void;
+	startTurn(args: {
+		threadId: string;
+		input: unknown[];
+		clientUserMessageId?: string;
+	}): Promise<string | undefined>;
+	request(
+		method: string,
+		params?: unknown,
+	): Promise<{
+		result?: unknown;
+		error?: { code: number; message: string; data?: unknown };
+	}>;
+}
+
 export interface CodexTurnExecutorOptions {
-	process: CodexLeadProcess;
+	process: CodexProcessLike;
 	threadId: string;
 	logger?: { warn: (m: string, c?: unknown) => void };
 }
 
 export class CodexTurnExecutor implements TurnExecutor {
-	private readonly proc: CodexLeadProcess;
+	private readonly proc: CodexProcessLike;
 	private readonly threadId: string;
 	private readonly logger: { warn: (m: string, c?: unknown) => void };
 	private active: ActiveTurn | null = null;

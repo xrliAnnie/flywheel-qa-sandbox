@@ -168,3 +168,26 @@ export function isTuiWindowAlive(
 	]);
 	return out === `${windowName} 0`;
 }
+
+/**
+ * Explicitly tear down the TUI window (FLY-259 PR-D review HIGH-1: on generation
+ * stop / runtime shutdown the founder's `codex resume --remote` window must be
+ * killed — leaving it alive orphans a TUI pointing at a dead daemon socket and
+ * violates the cutover "stop the sidecar/TUI first" contract). Targets the same
+ * `=session:=window` selector ensureTuiWindow creates; fail-open (never throws —
+ * a missing window is already the goal state).
+ */
+export function killTuiWindow(
+	spec: Pick<TuiWindowSpec, "projectName" | "leadId">,
+	deps: EnsureTuiWindowDeps = {},
+): void {
+	const exec = deps.exec ?? defaultExec;
+	const log = deps.log ?? (() => {});
+	const windowName = `${spec.projectName}-${spec.leadId}`;
+	try {
+		exec("tmux", ["kill-window", "-t", `=${TUI_TMUX_SESSION}:=${windowName}`]);
+		log(`tui-window: killed (${windowName})`);
+	} catch (err) {
+		log(`tui-window: kill failed (non-fatal): ${(err as Error).message}`);
+	}
+}

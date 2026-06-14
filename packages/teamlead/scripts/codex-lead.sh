@@ -90,6 +90,40 @@ export FLYWHEEL_CODEX_LEAD_BOT_TOKEN_ENV="$BOT_TOKEN_ENV"
 export FLYWHEEL_CODEX_LEAD_STATE_DIR="$STATE_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# FLY-259 ③: TUI mode — the Lead runs as the daemon-WS sidecar runtime and a
+# REAL interactive `codex resume --remote` TUI shares its thread in cmux.
+# Opt-in via FLYWHEEL_CODEX_LEAD_MODE=tui (default = FLY-224 headless,
+# byte-compatible). Requires FLYWHEEL_CODEX_TUI_CWD; home/daemon are ensured
+# fail-loud BEFORE the runtime starts (codex-lead-tui-home.sh contracts:
+# pins, standalone, auth — all validated there).
+if [ "${FLYWHEEL_CODEX_LEAD_MODE:-headless}" = "tui" ]; then
+  # argv is the single source for identity here (the headless path gets these
+  # from the launchd plist; exporting from argv removes the argv/env-mismatch
+  # footgun for the TUI runtime).
+  export FLYWHEEL_LEAD_ID="$LEAD_ID"
+  export FLYWHEEL_PROJECT_NAME="$PROJECT_NAME"
+  TUI_HOME_SH="${SCRIPT_DIR}/codex-lead-tui-home.sh"
+  # Honor the dry-run contract (review MED): in dry-run we must NOT touch the
+  # home or start the daemon — the runtime prints its report and exits. Only run
+  # the side-effecting ensures on a real start.
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+    FLYWHEEL_CODEX_TUI_HOME="$CODEX_HOME" FLYWHEEL_CODEX_TUI_CWD="${FLYWHEEL_CODEX_TUI_CWD:?FLYWHEEL_CODEX_TUI_CWD required in tui mode}"     /bin/bash "$TUI_HOME_SH" ensure-home
+    FLYWHEEL_CODEX_TUI_HOME="$CODEX_HOME" /bin/bash "$TUI_HOME_SH" ensure-daemon
+  fi
+  TUI_RUNTIME_DIST="${SCRIPT_DIR}/../dist/lead-backends/codex/codex-lead-tui-runtime.js"
+  TUI_RUNTIME_SRC="${SCRIPT_DIR}/../src/lead-backends/codex/codex-lead-tui-runtime.ts"
+  log "Starting codex TUI Lead '${LEAD_ID}' (project: ${PROJECT_NAME}, state: ${STATE_DIR}, ③ real terminal)"
+  if [ -f "$TUI_RUNTIME_DIST" ]; then
+    exec node "$TUI_RUNTIME_DIST"
+  elif [ -f "$TUI_RUNTIME_SRC" ] && command -v npx >/dev/null 2>&1; then
+    exec npx tsx "$TUI_RUNTIME_SRC"
+  else
+    log "ERROR: codex-lead-tui runtime entrypoint not found (build the teamlead package)."
+    exit 1
+  fi
+fi
+
 # Runtime entrypoint (built dist preferred; tsx fallback for dev).
 RUNTIME_DIST="${SCRIPT_DIR}/../dist/lead-backends/codex/codex-lead-runtime.js"
 RUNTIME_SRC="${SCRIPT_DIR}/../src/lead-backends/codex/codex-lead-runtime.ts"
