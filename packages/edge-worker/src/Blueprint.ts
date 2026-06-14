@@ -138,6 +138,18 @@ export interface BlueprintContext {
 		baseSessionName: string;
 		windowId: string;
 	}) => void;
+	// FLY-245 R2 HIGH-3 — fired the instant `tmux new-window` returns, BEFORE
+	// CommDB registration. The gateway-retry dispatcher binds it to its durable
+	// launch claim so a post-crash replay adopts the live Runner instead of
+	// re-driving (which would orphan it). Best-effort.
+	onTmuxWindowOpened?: (info: {
+		baseSessionName: string;
+		windowId: string;
+	}) => void;
+	// FLY-245 R5 HIGH — durable "Runner committed to start" record (gateway-retry
+	// path only). The adapter gates the Runner on this file + writes it at the
+	// commit point; the dispatcher adopts a replay ONLY if it exists.
+	launchCommitPath?: string;
 	// FLY-137 v1.27.2 — Lead override: explicit agent name; bypasses label-match dispatch
 	agentName?: string;
 	// FLY-137 v1.27.2 — Pre-normalized (lowercased) Linear labels passed by caller
@@ -979,6 +991,10 @@ export class Blueprint {
 				// FLY-116: forward callback so dispatcher can spawn Terminal viewer
 				// when TmuxAdapter creates the tmux window.
 				onTmuxWindowCreated: ctx.onTmuxWindowCreated,
+				// FLY-245 R2 HIGH-3: earliest durable launch-claim hook.
+				onTmuxWindowOpened: ctx.onTmuxWindowOpened,
+				// FLY-245 R5: durable commit record (gates the Runner start).
+				launchCommitPath: ctx.launchCommitPath,
 				// FLY-142 PR 1.4: forward Agent Team transport identity so
 				// TmuxAdapter.tryBuildTransportSpawnConfig() actually fires
 				// (was dead code in QA E1 verify because none of these were

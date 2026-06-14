@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { resolveCommBackend } from "flywheel-config";
 import type {
@@ -359,7 +359,49 @@ export class TmuxAdapter implements IAdapter {
 			}
 		}
 
-		// Launch Claude in a new tmux window WITH cwd
+		// FLY-245 R4/R5/R6 HIGH-3: TWO-PHASE gated launch for the gateway-retry path
+		// (the ONLY path that sets `launchCommitPath` + carries a durable launch
+		// claim). This adapter normally starts Claude AS PART of `tmux new-window`,
+		// so a recorded-but-never-started window could be mis-adopted on replay.
+		// Instead, the gateway path opens a tiny shell that BLOCKS on the durable
+		// COMMIT file and only `exec`s Claude once the adapter writes it.
+		//
+		// R6 HIGH: the commit file path is execId-DETERMINISTIC (so a replay finds
+		// it), hence SHARED across every attempt of the same execId. A bare
+		// existence gate would let a replay's write release BOTH a stale pre-crash
+		// gated shell AND the new one → two Runners. So the GATE is bound to a
+		// PER-LAUNCH unique token: each shell waits until the commit file CONTAINS
+		// ITS OWN token; the adapter writes its token (overwriting). A replay writes
+		// a DIFFERENT token, so the stale shell's `grep` never matches and it times
+		// out — only the matching shell `exec`s Claude. The file's mere EXISTENCE
+		// (any token) remains the dispatcher's execId-deterministic adopt record.
+		//   - crash before the commit write → no file → gated shell self-reaps;
+		//     replay sees no commit → re-drives (writes a fresh token);
+		//   - commit written → only THIS launch's shell `exec`s Claude; a replay
+		//     sees the file exists → adopts → exactly one started Runner.
+		// The non-gateway fleet path keeps the byte-identical direct `claude` launch.
+		const commitFile = ctx.launchCommitPath;
+		const launchToken = commitFile ? randomUUID() : undefined;
+		const windowCommand =
+			commitFile && launchToken
+				? [
+						"sh",
+						"-c",
+						// $0 = commit file; $1 = THIS launch's token; "$@" (after shift) =
+						// the claude args. Wait (bounded ~30s) until the commit file
+						// CONTAINS our exact token (a replay's different token won't match),
+						// then exec Claude so the pane process IS claude (remain-on-exit /
+						// pane-death detection unaffected). Timeout → exit (dead pane).
+						// `-qF` = quiet fixed-string (the token is a uuid — no regex chars).
+						'cf="$0"; tok="$1"; shift; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; exec claude "$@"',
+						commitFile,
+						launchToken,
+						...claudeArgs,
+					]
+				: ["claude", ...claudeArgs];
+
+		// Launch the tmux window WITH cwd (Claude directly on the fleet path; the
+		// gated waiting shell on the gateway-retry path).
 		const launchResult = this.execFileFn("tmux", [
 			"new-window",
 			"-P",
@@ -372,10 +414,38 @@ export class TmuxAdapter implements IAdapter {
 			windowName,
 			"-c",
 			ctx.cwd,
-			"claude",
-			...claudeArgs,
+			...windowCommand,
 		]);
 		const windowId = launchResult.stdout.trim();
+
+		// FLY-245 R5/R6 HIGH-3: write THIS launch's token to the durable COMMIT file
+		// = release ONLY this launch's gated shell. The file's existence is the
+		// dispatcher's execId-deterministic adopt record; the token content is the
+		// per-launch gate so a replay can't release a stale pre-crash shell. Single
+		// commit point: before it, Claude can't start (gated) and a replay re-drives
+		// (no file); after it, only this shell starts and a replay adopts (file
+		// present). On a write failure the gated shell never matches its token and
+		// self-reaps — a replay re-drives cleanly; no kill is required for safety.
+		if (commitFile && launchToken) {
+			try {
+				mkdirSync(dirname(commitFile), { recursive: true });
+				writeFileSync(commitFile, launchToken);
+			} catch (err) {
+				try {
+					this.execFileFn("tmux", [
+						"kill-window",
+						"-t",
+						`${this.sessionName}:${windowId}`,
+					]);
+				} catch {
+					// best-effort; the gated shell self-exits on its bounded timeout.
+				}
+				throw new Error(
+					`[TmuxAdapter] launch aborted: could not write durable commit for ${ctx.executionId} ` +
+						`(Claude never started; gated shell self-reaps): ${(err as Error).message}`,
+				);
+			}
+		}
 
 		// GEO-206 Phase 2: Register session in comm.db
 		// Store full tmux target (session:window) so capture works with any session name

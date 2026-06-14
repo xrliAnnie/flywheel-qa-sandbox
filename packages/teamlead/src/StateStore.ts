@@ -197,9 +197,26 @@ export interface Session {
 	doc_tier?: string;
 	/** FLY-205: Linear issue URL persisted at start (doc header continuity on retry). */
 	issue_url?: string;
+	/** FLY-245 D-a: monotonic revision incremented on every status transition.
+	 * The runner-lifecycle founder credential snapshots this; a stale confirmation
+	 * is rejected once it changes (plan §5.1). Defaults 0. */
+	lifecycle_revision?: number;
 }
 
 // FLY-163: CleanupCandidate removed (CleanupService gone).
+
+/** FLY-245 D2: one durable (gateway request id → successor execution id)
+ * binding in the retry dispatch intent WAL (plan §5.2.1). */
+export interface RetryDispatchIntent {
+	request_id: string;
+	successor_execution_id: string;
+	predecessor_execution_id: string;
+	/** 'intent' (WAL committed, dispatch not confirmed) | 'dispatched'.
+	 * Informational — never proof of start. */
+	state: "intent" | "dispatched";
+	created_at: string;
+	updated_at: string;
+}
 
 /**
  * FLY-191 Phase 2 (Codex R2 HIGH-1): sentinel stored in
@@ -469,6 +486,20 @@ export class StateStore {
 			/* exists */
 		}
 
+		// FLY-245 D-a: monotonic lifecycle revision — incremented on EVERY status
+		// transition (upsert / persistTransition / forceStatus). The runner-lifecycle
+		// founder credential snapshots this at request time; a stale confirmation is
+		// rejected when the revision has since changed (status can leave and return to
+		// the same value, so `status` alone is not a sufficient freshness signal —
+		// plan §5.1 / Codex R1#5). Defaults 0 so existing rows are backward-compatible.
+		try {
+			this.db.run(
+				"ALTER TABLE sessions ADD COLUMN lifecycle_revision INTEGER NOT NULL DEFAULT 0",
+			);
+		} catch {
+			/* exists */
+		}
+
 		// FLY-163: drop legacy conversation_threads index (table is gone).
 		this.db.run("DROP INDEX IF EXISTS idx_threads_issue");
 
@@ -533,6 +564,24 @@ export class StateStore {
 				note TEXT,
 				created_at TEXT NOT NULL DEFAULT (datetime('now')),
 				PRIMARY KEY (execution_id, episode_fingerprint)
+			)
+		`);
+
+		// FLY-245 D2: retry dispatch intent WAL (plan §5.2.1). The durable
+		// (gateway request id → successor execution id) binding, committed BEFORE
+		// the dispatcher runs. `state` is informational ('intent' → 'dispatched');
+		// crash recovery NEVER treats it as proof of start — the authoritative
+		// started evidence is the Runner's self-registered live tmux identity
+		// (bridge/started-evidence.ts). Exactly one successor id per request id,
+		// enforced by the PRIMARY KEY.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS retry_dispatch_intents (
+				request_id TEXT PRIMARY KEY,
+				successor_execution_id TEXT NOT NULL,
+				predecessor_execution_id TEXT NOT NULL,
+				state TEXT NOT NULL DEFAULT 'intent',
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 			)
 		`);
 
@@ -702,7 +751,29 @@ export class StateStore {
 		if (enteringAwaitingReview) {
 			this.stampAwaitingReviewEntry(session.execution_id);
 		}
+		// FLY-245 D-a: bump the monotonic lifecycle revision on a genuine status
+		// CHANGE (a new session keeps revision 0; a same-status re-upsert does not
+		// inflate it). The runner-lifecycle credential's freshness snapshot relies
+		// on this.
+		if (existing && existing.status !== session.status) {
+			this.bumpLifecycleRevision(session.execution_id);
+		}
 		this.save();
+	}
+
+	/** FLY-245 D-a: atomically increment a session's monotonic lifecycle revision.
+	 * Called by every status-write path on a real transition (plan §5.1). */
+	private bumpLifecycleRevision(executionId: string): void {
+		this.db.run(
+			"UPDATE sessions SET lifecycle_revision = lifecycle_revision + 1 WHERE execution_id = ?",
+			[executionId],
+		);
+	}
+
+	/** FLY-245 D-a: read a session's current monotonic lifecycle revision (0 if
+	 * the session is absent). */
+	getLifecycleRevision(executionId: string): number {
+		return this.getSession(executionId)?.lifecycle_revision ?? 0;
 	}
 
 	/**
@@ -722,6 +793,10 @@ export class StateStore {
 			executionId,
 			status,
 		);
+		// FLY-245 D-a: capture pre-write status to bump lifecycle revision on a
+		// genuine transition (this is the FSM-validated path; a new session keeps
+		// revision 0).
+		const preStatus = this.getSession(executionId)?.status;
 		this.db.run(
 			`INSERT INTO sessions (
 				execution_id, issue_id, project_name, status,
@@ -814,6 +889,9 @@ export class StateStore {
 		);
 		if (enteringAwaitingReview) {
 			this.stampAwaitingReviewEntry(executionId);
+		}
+		if (preStatus !== undefined && preStatus !== status) {
+			this.bumpLifecycleRevision(executionId);
 		}
 		this.save();
 	}
@@ -949,12 +1027,18 @@ export class StateStore {
 			executionId,
 			status,
 		);
+		// FLY-245 D-a: bump lifecycle revision on a forced status change too (this
+		// legacy path must not be a hole in the freshness counter — plan §5.1).
+		const preStatus = this.getSession(executionId)?.status;
 		this.db.run(
 			`UPDATE sessions SET status = ?, last_activity_at = ?, last_error = ? WHERE execution_id = ?`,
 			[status, lastActivityAt, lastError ?? null, executionId],
 		);
 		if (enteringAwaitingReview) {
 			this.stampAwaitingReviewEntry(executionId);
+		}
+		if (preStatus !== undefined && preStatus !== status) {
+			this.bumpLifecycleRevision(executionId);
 		}
 		this.save();
 	}
@@ -963,6 +1047,53 @@ export class StateStore {
 		this.db.run(
 			"UPDATE sessions SET retry_successor = ? WHERE execution_id = ?",
 			[successorId, executionId],
+		);
+		this.save();
+	}
+
+	// ── FLY-245 D2: retry dispatch intent WAL (plan §5.2.1) ──────────────────
+
+	/**
+	 * Durably bind a gateway request id to its pre-bound successor execution id
+	 * BEFORE dispatch. Throws on a duplicate request id (the PRIMARY KEY is the
+	 * exactly-one-successor guarantee — callers check `getRetryDispatchIntent`
+	 * first and treat an existing different binding as a conflict).
+	 */
+	recordRetryDispatchIntent(
+		requestId: string,
+		successorExecutionId: string,
+		predecessorExecutionId: string,
+	): void {
+		this.db.run(
+			`INSERT INTO retry_dispatch_intents
+			 (request_id, successor_execution_id, predecessor_execution_id, state)
+			 VALUES (?, ?, ?, 'intent')`,
+			[requestId, successorExecutionId, predecessorExecutionId],
+		);
+		this.save();
+	}
+
+	getRetryDispatchIntent(requestId: string): RetryDispatchIntent | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM retry_dispatch_intents WHERE request_id = ?",
+		);
+		stmt.bind([requestId]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as unknown as RetryDispatchIntent;
+			stmt.free();
+			return row;
+		}
+		stmt.free();
+		return undefined;
+	}
+
+	/** Mark the intent as dispatched (blueprint.run() kicked off). Informational
+	 * only — recovery reconciles against authoritative started evidence, never
+	 * this flag (plan §5.2.1 item 4). */
+	markRetryDispatchDispatched(requestId: string): void {
+		this.db.run(
+			"UPDATE retry_dispatch_intents SET state = 'dispatched', updated_at = datetime('now') WHERE request_id = ?",
+			[requestId],
 		);
 		this.save();
 	}
@@ -1507,6 +1638,9 @@ export class StateStore {
 			// FLY-205: doc-flow tier + Linear URL (retry continuity)
 			doc_tier: (row.doc_tier as string) ?? undefined,
 			issue_url: (row.issue_url as string) ?? undefined,
+			// FLY-245 D-a: monotonic lifecycle revision (defaults 0).
+			lifecycle_revision:
+				typeof row.lifecycle_revision === "number" ? row.lifecycle_revision : 0,
 		};
 	}
 

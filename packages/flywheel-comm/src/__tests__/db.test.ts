@@ -755,3 +755,134 @@ describe("CommDB", () => {
 		});
 	});
 });
+
+describe("CommDB — FLY-245 D-b lifecycle consent (ttl + atomic claim)", () => {
+	let db: CommDB;
+	let tmpDir: string;
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-d-b-"));
+		db = new CommDB(join(tmpDir, "comm.db"));
+	});
+	afterEach(() => {
+		db.close();
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	it("insertQuestion default TTL is far future (byte-compat ~72h)", () => {
+		const id = db.insertQuestion("lead", "founder", "q");
+		const m = db.getMessageById(id);
+		expect(m).toBeDefined();
+		// default +72h → well beyond 1h from now
+		expect(new Date(`${m?.expires_at}Z`).getTime()).toBeGreaterThan(
+			Date.now() + 60 * 60 * 1000,
+		);
+	});
+
+	it("insertQuestion ttlSeconds sets a short expiry", () => {
+		const id = db.insertQuestion("lead", "founder", "q", {
+			checkpoint: "runner_lifecycle:terminate",
+			ttlSeconds: 120,
+		});
+		const m = db.getMessageById(id);
+		const exp = new Date(`${m?.expires_at}Z`).getTime();
+		// ~2 minutes out, definitely under 1h
+		expect(exp).toBeLessThan(Date.now() + 60 * 60 * 1000);
+		expect(exp).toBeGreaterThan(Date.now());
+	});
+
+	it("a non-positive ttlSeconds falls back to the default", () => {
+		const id = db.insertQuestion("lead", "founder", "q", { ttlSeconds: 0 });
+		const m = db.getMessageById(id);
+		expect(new Date(`${m?.expires_at}Z`).getTime()).toBeGreaterThan(
+			Date.now() + 60 * 60 * 1000,
+		);
+	});
+
+	it("claimLifecycleConsent succeeds ONCE (at-most-once consumption)", () => {
+		const id = db.insertQuestion("lead", "founder", "stop FLY-1", {
+			checkpoint: "runner_lifecycle:terminate",
+			ttlSeconds: 300,
+		});
+		expect(db.claimLifecycleConsent(id, "runner_lifecycle:terminate")).toBe(
+			true,
+		);
+		// second claim loses — irreversible action authorized exactly once
+		expect(db.claimLifecycleConsent(id, "runner_lifecycle:terminate")).toBe(
+			false,
+		);
+	});
+
+	it("atomic claim across two INDEPENDENT connections — exactly one wins (Codex R1 LOW-11)", () => {
+		const dbPath = join(tmpDir, "comm.db");
+		const checkpoint = "runner_lifecycle:terminate";
+		// Two separately-opened handles on the same file — NOT the same CommDB
+		// instance called twice. The conditional UPDATE (`resolved_at IS NULL AND
+		// expires_at > now` + changes===1) is what serializes the race.
+		const a = new CommDB(dbPath);
+		const b = new CommDB(dbPath);
+		try {
+			const q1 = db.insertQuestion("lead", "founder", "q-race-1", {
+				checkpoint,
+				ttlSeconds: 300,
+			});
+			const wins1 = [
+				a.claimLifecycleConsent(q1, checkpoint),
+				b.claimLifecycleConsent(q1, checkpoint),
+			];
+			expect(wins1.filter(Boolean)).toHaveLength(1);
+
+			// Reverse arrival order on a fresh question — still exactly one winner.
+			const q2 = db.insertQuestion("lead", "founder", "q-race-2", {
+				checkpoint,
+				ttlSeconds: 300,
+			});
+			const wins2 = [
+				b.claimLifecycleConsent(q2, checkpoint),
+				a.claimLifecycleConsent(q2, checkpoint),
+			];
+			expect(wins2.filter(Boolean)).toHaveLength(1);
+
+			// The original handle (third independent connection) also sees them consumed.
+			expect(db.claimLifecycleConsent(q1, checkpoint)).toBe(false);
+			expect(db.claimLifecycleConsent(q2, checkpoint)).toBe(false);
+		} finally {
+			a.close();
+			b.close();
+		}
+	});
+
+	it("claim fails on a checkpoint mismatch (wrong action)", () => {
+		const id = db.insertQuestion("lead", "founder", "q", {
+			checkpoint: "runner_lifecycle:terminate",
+			ttlSeconds: 300,
+		});
+		expect(db.claimLifecycleConsent(id, "runner_lifecycle:defer")).toBe(false);
+		// still claimable under the correct checkpoint
+		expect(db.claimLifecycleConsent(id, "runner_lifecycle:terminate")).toBe(
+			true,
+		);
+	});
+
+	it("claim fails on an unknown question id (fail-closed)", () => {
+		expect(
+			db.claimLifecycleConsent("no-such-id", "runner_lifecycle:terminate"),
+		).toBe(false);
+	});
+
+	it("claim fails on an already-expired question (forced past expiry)", () => {
+		const id = db.insertQuestion("lead", "founder", "q", {
+			checkpoint: "runner_lifecycle:terminate",
+			ttlSeconds: 300,
+		});
+		// Force the expiry into the past (same raw-access pattern as the "expiry"
+		// suite above) — the `expires_at > now` guard must reject the claim.
+		(db as unknown as { db: import("better-sqlite3").Database }).db
+			.prepare(
+				"UPDATE messages SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+			)
+			.run(id);
+		expect(db.claimLifecycleConsent(id, "runner_lifecycle:terminate")).toBe(
+			false,
+		);
+	});
+});

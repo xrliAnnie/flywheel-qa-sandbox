@@ -12,22 +12,34 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+	existsSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	writeFileSync,
+} from "node:fs";
+import { homedir } from "node:os";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { assertGatewayOnlyToolSurface } from "./action-surface.js";
 import { buildCodexLeadMcpArgv } from "./buildCodexLeadMcpArgv.js";
 import { CodexDiscordGateway } from "./CodexDiscordGateway.js";
 import { type ChildTransport, CodexLeadProcess } from "./CodexLeadProcess.js";
 import { CodexLeadRuntime, type RuntimeWiring } from "./CodexLeadRuntime.js";
 import { CodexOutboundSender } from "./CodexOutboundSender.js";
 import { CodexTurnExecutor } from "./CodexTurnExecutor.js";
+import { assertConfinement, extractThreadDescriptor } from "./confinement.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
 import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import { LeadHealthProbe } from "./LeadHealthProbe.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
+import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
+import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
 
 export interface CodexLeadRuntimeConfig {
 	projectName: string;
@@ -63,6 +75,24 @@ export interface CodexLeadRuntimeConfig {
 	 * cannot run code / merge / ship). Write-capable modes are refused until a Codex
 	 * Lead's founder-gated action path exists (FLY-245). */
 	sandboxMode: CodexSandboxMode;
+	/** FLY-245 Phase A: canonical write-capable Lead scratch workspace (plan §3.3).
+	 * Resolved + validated (realpath; no overlap with control-plane/state/CODEX_HOME)
+	 * only for write-capable sandboxes when `FLYWHEEL_CODEX_LEAD_WORKSPACE` is set;
+	 * `undefined` for read-only companions (byte-compat). Pinned into the thread `cwd`
+	 * and the confinement `writable_roots`. */
+	workspace?: string;
+	/** FLY-245 F-b (write-capable only): founder Discord id — the thread-descriptor
+	 * assertion + the gateway's confirmation observer require it (release ⑤). */
+	founderId?: string;
+	/** FLY-245 F-b (write-capable only): Codex CLI versions vetted by the threat
+	 * matrix (release ⑤ — a version bump must re-pass QA before running). */
+	cliVersionAllowlist?: string[];
+	/** FLY-245 F-b (write-capable only): absolute path to the deployed gateway MCP
+	 * entry (dist gateway-main.js) — trusted, OUTSIDE the model's writableRoots. */
+	gatewayEntry?: string;
+	/** FLY-245 F-b (write-capable only): channel the founder-confirmation messages
+	 * post to (defaults to the Lead chat channel). */
+	gatewayConfirmChannelId?: string;
 }
 
 /** Codex app-server sandbox modes (schema `SandboxMode`). */
@@ -70,6 +100,146 @@ export type CodexSandboxMode =
 	| "read-only"
 	| "workspace-write"
 	| "danger-full-access";
+
+// ── FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) ──────────────
+//
+// A write-capable Codex Lead's exec sandbox must be pinned to `workspace-write`
+// with network OFF, a single narrow writable root (the canonical Lead scratch),
+// and a secret-scrubbing shell env policy. The scratch workspace must NOT overlap
+// the control-plane checkout, `~/.flywheel`, the per-Lead state dir, or CODEX_HOME
+// — otherwise a sandboxed model could write `comm.db`/`teamlead.db` (forging the
+// founder gate's trusted sources) or rewrite the launcher/gateway code that
+// launchd later runs OUTSIDE the sandbox (a persistent sandbox escape). Read
+// isolation is NOT relied upon (workspace-write can read outside the root — that
+// read/exfil surface is FLY-260, out of scope here); the guarantee here is WRITE
+// isolation + no path overlap.
+
+/** A path resolver used to canonicalize paths (injected in tests). */
+export type RealpathFn = (p: string) => string;
+
+/** Best-effort canonicalization: realpath when the path exists, else a lexical
+ * `resolve` (sensitive targets like the state dir may not exist yet at boot —
+ * a lexical compare is still sound for overlap detection). */
+function canonicalize(p: string, realpath: RealpathFn): string {
+	try {
+		return realpath(p);
+	} catch {
+		return resolve(p);
+	}
+}
+
+/** True when `a` is an ancestor of, descendant of, or equal to `b` (symmetric
+ * overlap). Both inputs must already be canonical/absolute. */
+export function pathsOverlap(a: string, b: string): boolean {
+	if (a === b) return true;
+	const under = (rel: string) =>
+		rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
+	// `b` under `a`  OR  `a` under `b`.
+	return under(relative(a, b)) || under(relative(b, a));
+}
+
+export interface LeadWorkspaceContext {
+	home: string;
+	flywheelDir: string;
+	stateDir: string;
+	codexHome: string;
+	/** Trusted control-plane / gateway / launcher paths that must stay writable-
+	 * isolated from the model's scratch (plan §3.3). */
+	trustedPaths?: string[];
+	realpath?: RealpathFn;
+}
+
+/**
+ * Resolve + validate the write-capable Lead scratch workspace (plan §3.3, R1#4 /
+ * R3-MED). FAIL-LOUD: throws a descriptive error on any violation. Returns the
+ * canonical absolute path to pin into both `cwd` and `writable_roots`.
+ *
+ *   - must be an absolute path that exists (realpath-canonicalized: resolves
+ *     symlinks / `..` / case-aliases so a crafted symlink can't smuggle the
+ *     scratch into a sensitive location);
+ *   - rejected when it EQUALS `$HOME` or is an ANCESTOR of `$HOME` (a normal
+ *     workspace is a *descendant* of home — that is allowed; the earlier
+ *     "reject any descendant" rule rejected every legitimate deployment, R1#4);
+ *   - rejected on symmetric overlap with `~/.flywheel`, the per-Lead state dir,
+ *     CODEX_HOME, or any trusted control-plane/gateway/launcher path.
+ */
+export function resolveLeadWorkspace(
+	raw: string,
+	ctx: LeadWorkspaceContext,
+): string {
+	const realpath = ctx.realpath ?? realpathSync;
+	const trimmed = raw.trim();
+	if (!trimmed || !isAbsolute(trimmed)) {
+		throw new Error(
+			`FLYWHEEL_CODEX_LEAD_WORKSPACE must be an absolute path (got "${raw}")`,
+		);
+	}
+	let canon: string;
+	try {
+		canon = realpath(trimmed);
+	} catch {
+		throw new Error(
+			`FLYWHEEL_CODEX_LEAD_WORKSPACE does not exist or is unreadable: ${trimmed} (create the dedicated Lead scratch dir first)`,
+		);
+	}
+	const home = canonicalize(ctx.home, realpath);
+	// $HOME rule: reject equal-to or ancestor-of home (NOT descendants).
+	if (canon === home) {
+		throw new Error(
+			`FLYWHEEL_CODEX_LEAD_WORKSPACE must not be $HOME itself: ${canon}`,
+		);
+	}
+	const homeUnderCanon = relative(canon, home);
+	if (
+		homeUnderCanon !== "" &&
+		!homeUnderCanon.startsWith("..") &&
+		!isAbsolute(homeUnderCanon)
+	) {
+		throw new Error(
+			`FLYWHEEL_CODEX_LEAD_WORKSPACE must not be an ancestor of $HOME: ${canon}`,
+		);
+	}
+	// Sensitive/trusted targets: reject symmetric overlap (canonicalized).
+	const sensitive: Array<[string, string]> = [
+		["~/.flywheel", ctx.flywheelDir],
+		["the Lead state dir", ctx.stateDir],
+		["CODEX_HOME", ctx.codexHome],
+		...(ctx.trustedPaths ?? []).map((p): [string, string] => [
+			"a trusted control-plane path",
+			p,
+		]),
+	];
+	for (const [label, target] of sensitive) {
+		if (!target) continue;
+		if (pathsOverlap(canon, canonicalize(target, realpath))) {
+			throw new Error(
+				`FLYWHEEL_CODEX_LEAD_WORKSPACE (${canon}) must not overlap ${label} (${target}) — the model could write trusted sources or launcher code`,
+			);
+		}
+	}
+	return canon;
+}
+
+/** Build the process-level `-c` confinement overrides for a write-capable Codex
+ * Lead (plan §3.1). Net OFF + single narrow writable root + secret-scrubbing
+ * shell env policy. read-only companions never call this (byte-compat). */
+export function buildConfinementArgv(canonicalWorkspace: string): string[] {
+	return [
+		"-c",
+		"sandbox_workspace_write.network_access=false",
+		"-c",
+		`sandbox_workspace_write.writable_roots=${JSON.stringify([canonicalWorkspace])}`,
+		"-c",
+		`shell_environment_policy.exclude=${JSON.stringify([
+			"FLYWHEEL_*",
+			"DISCORD_*",
+			"*TOKEN*",
+			"*SECRET*",
+			"*KEY*",
+			"CODEX_*",
+		])}`,
+	];
+}
 
 /** Parse + validate the runtime config from the environment. Fail-loud: a single
  * error lists ALL missing required vars (no silent half-config). The Bridge fields
@@ -138,6 +308,46 @@ export function parseCodexLeadRuntimeConfig(
 	}
 	const sandboxMode = sandboxRaw as CodexSandboxMode;
 
+	// FLY-245 Phase A: for a write-capable sandbox, resolve + validate the Lead
+	// scratch workspace when configured. Purely additive — when unset, `workspace`
+	// stays undefined and the write-capable release gate (buildCodexLeadRuntime →
+	// assertWriteCapableRelease) fail-closes.
+	let workspace: string | undefined;
+	let founderId: string | undefined;
+	let cliVersionAllowlist: string[] | undefined;
+	let gatewayEntry: string | undefined;
+	let gatewayConfirmChannelId: string | undefined;
+	if (sandboxMode !== "read-only") {
+		// Resolve the gateway deploy path FIRST — it (and the teamlead checkout +
+		// codex binary) are the trusted control-plane roots the scratch workspace
+		// must not overlap (R1 HIGH-2).
+		gatewayEntry =
+			env.FLYWHEEL_GATEWAY_ENTRY?.trim() || defaultGatewayEntryPath();
+		const rawWorkspace = env.FLYWHEEL_CODEX_LEAD_WORKSPACE?.trim();
+		if (rawWorkspace) {
+			workspace = resolveLeadWorkspace(rawWorkspace, {
+				home: homedir(),
+				flywheelDir: join(homedir(), ".flywheel"),
+				stateDir,
+				codexHome,
+				// R1 HIGH-2: production now SUPPLIES the trusted roots (the overlap
+				// option was wired in Phase A but never fed) — a workspace that
+				// overlaps the runtime checkout / gateway deploy dir / deps is rejected.
+				trustedPaths: resolveControlPlaneRoots(gatewayEntry, codexBin),
+			});
+		}
+		// FLY-245 F-b: the remaining write-capable release inputs (plan §7) —
+		// all optional at parse; assertWriteCapableRelease fail-closes on gaps.
+		founderId = env.FLYWHEEL_FOUNDER_DISCORD_USER_ID?.trim() || undefined;
+		const allowlist = (env.FLYWHEEL_CODEX_CLI_VERSION_ALLOWLIST ?? "")
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean);
+		cliVersionAllowlist = allowlist.length > 0 ? allowlist : undefined;
+		gatewayConfirmChannelId =
+			env.FLYWHEEL_GATEWAY_CONFIRM_CHANNEL_ID?.trim() || chatChannelId;
+	}
+
 	return {
 		projectName,
 		leadId,
@@ -159,7 +369,53 @@ export function parseCodexLeadRuntimeConfig(
 		outboundMode,
 		systemPromptFiles,
 		sandboxMode,
+		workspace,
+		founderId,
+		cliVersionAllowlist,
+		gatewayEntry,
+		gatewayConfirmChannelId,
 	};
+}
+
+/** The deployed gateway MCP entry next to this module (dist layout). Overridable
+ * via FLYWHEEL_GATEWAY_ENTRY (tests / non-standard deploys). */
+function defaultGatewayEntryPath(): string {
+	return fileURLToPath(new URL("./gateway/gateway-main.js", import.meta.url));
+}
+
+/** Walk up from `start` to the nearest directory containing a `package.json`
+ * (the teamlead package root — covers the runtime + launcher script + the
+ * node_modules dependency closure). Returns undefined if none is found. */
+function findPackageRoot(start: string): string | undefined {
+	let dir = start;
+	for (let i = 0; i < 12; i++) {
+		if (existsSync(join(dir, "package.json"))) return dir;
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return undefined;
+}
+
+/**
+ * FLY-245 R1 HIGH-2: the TRUSTED control-plane roots a write-capable Lead's
+ * scratch workspace must NOT overlap — the model could otherwise rewrite the
+ * code launchd later runs OUTSIDE the sandbox (persistent escape). Derived
+ * (never model-supplied): the teamlead package root (runtime + launcher +
+ * dependency closure), the gateway DEPLOY directory, and the codex binary.
+ * Passed into `resolveLeadWorkspace` as `trustedPaths` (the overlap check was
+ * wired in Phase A but production never supplied these).
+ */
+export function resolveControlPlaneRoots(
+	gatewayEntry: string | undefined,
+	codexBin: string,
+): string[] {
+	const roots: string[] = [];
+	const pkgRoot = findPackageRoot(dirname(fileURLToPath(import.meta.url)));
+	if (pkgRoot) roots.push(pkgRoot);
+	if (gatewayEntry) roots.push(dirname(gatewayEntry));
+	if (codexBin && isAbsolute(codexBin)) roots.push(codexBin);
+	return roots;
 }
 
 /** Build the `thread/start`|`thread/resume` params: the PINNED app-server policy
@@ -169,13 +425,18 @@ export function parseCodexLeadRuntimeConfig(
  * is always pinned), so the thread never starts with the app-server's permissive
  * defaults. */
 export function buildThreadParams(
-	config: Pick<CodexLeadRuntimeConfig, "sandboxMode">,
+	config: Pick<CodexLeadRuntimeConfig, "sandboxMode" | "workspace">,
 	baseInstructions: string | undefined,
 ): Record<string, unknown> {
 	const params: Record<string, unknown> = {
 		approvalPolicy: "never",
 		sandbox: config.sandboxMode,
 	};
+	// FLY-245 Phase A (plan §3.3, R7): pin cwd to the canonical Lead scratch for a
+	// write-capable Lead — an unpinned cwd auto-becomes a writable root (= the
+	// app-server's launch dir, indeterminate). read-only companions leave `workspace`
+	// undefined → no cwd → byte-compat with the FLY-224 thread params.
+	if (config.workspace) params.cwd = config.workspace;
 	if (baseInstructions) params.baseInstructions = baseInstructions;
 	return params;
 }
@@ -220,7 +481,127 @@ export function writeThreadId(path: string, threadId: string): void {
 	writeFileSync(path, threadId, "utf8");
 }
 
-/** Real ChildTransport over `codex app-server --strict-config -c …`. */
+// ── FLY-245 F-b: the write-capable release gate (plan §7) ────────────────────
+
+/** §3.5 (release ⑧, static half): explicitly disable the non-MCP action
+ * surfaces we can disable via config. `--strict-config` rejects unknown keys,
+ * so this list carries only keys verified against the real app-server; the
+ * remaining NON_MCP_ACTION_SURFACES (connectors/apps/hooks/multi-agent/
+ * skill-install/login) are enumerated + disabled during the Phase F
+ * real-machine threat-matrix QA, whose runtime tool-surface assertion
+ * (`assertActionToolSurface`, A3) is the load-bearing guard either way. */
+export function buildActionSurfaceDisableArgv(): string[] {
+	return ["-c", "tools.web_search=false"];
+}
+
+/** The validated write-capable release bundle (every field proven present). */
+export interface WriteCapableRelease {
+	workspace: string;
+	founderId: string;
+	cliVersionAllowlist: string[];
+	gatewayEntry: string;
+	gatewayConfirmChannelId: string;
+}
+
+/**
+ * FLY-245 §7 — the 8-condition release gate for a write-capable Codex Lead.
+ * Replaces the FLY-224 unconditional fail-close: the THROW SEMANTICS ARE
+ * PRESERVED for every incomplete configuration; only a configuration that
+ * proves ALL statically-checkable conditions unlocks the build, and the
+ * runtime assertions (thread descriptor ⑤, MCP inventory ④, action-surface ⑧)
+ * still fail the Lead closed after spawn on any drift.
+ *
+ *   ① sandbox === workspace-write (danger-full-access is REFUSED forever)
+ *   ② validated scratch workspace (realpath'd, non-overlapping — Phase A)
+ *   ③ confinement argv injected           (wired by buildCodexLeadRuntime)
+ *   ④ MCP allowlist = gateway only        (wired + runtime inventory assert)
+ *   ⑤ thread-descriptor assertion inputs: founder id + cliVersion allowlist
+ *   ⑥ gateway deployed at a trusted ABSOLUTE path outside the workspace
+ *   ⑦ broker secrets present (bot token + API token) + washed app-server env
+ *   ⑧ non-gateway action surfaces disabled (static argv here; runtime
+ *     tool-surface assertion via A3; full enumeration = Phase F QA)
+ */
+export function assertWriteCapableRelease(
+	config: CodexLeadRuntimeConfig,
+): WriteCapableRelease {
+	// ① danger-full-access is permanently refused — no condition set unlocks it.
+	if (config.sandboxMode === "danger-full-access") {
+		throw new Error(
+			'codex-lead-runtime: sandbox="danger-full-access" is permanently refused for a Codex Lead (FLY-245 §7 ①) — use workspace-write',
+		);
+	}
+	const failures: string[] = [];
+	if (config.sandboxMode !== "workspace-write") {
+		failures.push(`sandbox "${config.sandboxMode}" is not workspace-write (①)`);
+	}
+	if (!config.workspace) {
+		failures.push(
+			"FLYWHEEL_CODEX_LEAD_WORKSPACE missing/invalid — no validated scratch workspace (②)",
+		);
+	}
+	if (!config.founderId) {
+		failures.push("FLYWHEEL_FOUNDER_DISCORD_USER_ID missing (⑤)");
+	}
+	if (!config.cliVersionAllowlist || config.cliVersionAllowlist.length === 0) {
+		failures.push(
+			"FLYWHEEL_CODEX_CLI_VERSION_ALLOWLIST missing — a Codex version must pass the threat matrix before running write-capable (⑤)",
+		);
+	}
+	if (!config.gatewayEntry || !isAbsolute(config.gatewayEntry)) {
+		failures.push("gateway entry path missing/non-absolute (⑥)");
+	} else if (!existsSync(config.gatewayEntry)) {
+		failures.push(
+			`gateway entry not deployed at ${config.gatewayEntry} (⑥ — build the teamlead dist)`,
+		);
+	} else {
+		// Canonicalize (realpath) before the overlap check — the workspace is
+		// already canonical, and a symlinked entry must not smuggle past it.
+		let entryCanon: string;
+		try {
+			entryCanon = realpathSync(config.gatewayEntry);
+		} catch {
+			entryCanon = resolve(config.gatewayEntry);
+		}
+		if (config.workspace && pathsOverlap(entryCanon, config.workspace)) {
+			failures.push(
+				"gateway entry lies INSIDE the model-writable workspace — persistent-tamper risk (⑥/§3.3)",
+			);
+		}
+	}
+	if (!config.botToken) {
+		failures.push("DISCORD_BOT_TOKEN missing — broker has no bot token (⑦)");
+	}
+	if (!config.apiToken) {
+		failures.push(
+			"FLYWHEEL_API_TOKEN missing — the gateway cannot reach the Bridge action endpoints (⑦)",
+		);
+	}
+	if (!config.gatewayConfirmChannelId) {
+		failures.push("founder-confirmation channel missing (⑤/§5.6)");
+	}
+	if (failures.length > 0) {
+		throw new Error(
+			`codex-lead-runtime: write-capable sandbox REFUSED (fail-closed, FLY-245 §7) — ${failures.join("; ")}`,
+		);
+	}
+	return {
+		workspace: config.workspace as string,
+		founderId: config.founderId as string,
+		cliVersionAllowlist: config.cliVersionAllowlist as string[],
+		gatewayEntry: config.gatewayEntry as string,
+		gatewayConfirmChannelId: config.gatewayConfirmChannelId as string,
+	};
+}
+
+/** Real ChildTransport over `codex app-server --strict-config -c …`.
+ *
+ * FLY-245 Phase E (plan §6 item 1, Codex R1#3): the app-server env is WASHED of
+ * action secrets (`*TOKEN*` / `*SECRET*` / `*KEY*`) for EVERY Lead — read-only
+ * companions included. The model's exec shell inherits this env, so a secret
+ * here is a secret burned; action secrets travel only over the parent-runtime
+ * unix-socket broker (secret-broker.ts), which the sandboxed model cannot
+ * connect() to. This makes the FLY-224 read-only path "behavior-equivalent
+ * plus one env-washing layer", not byte-identical (plan §7.1). */
 export function spawnCodexAppServer(cfg: {
 	codexBin: string;
 	mcpArgv: string[];
@@ -229,7 +610,10 @@ export function spawnCodexAppServer(cfg: {
 }): ChildTransport {
 	const args = ["app-server", "--strict-config", ...cfg.mcpArgv];
 	const child = spawn(cfg.codexBin, args, {
-		env: { ...(cfg.baseEnv ?? process.env), CODEX_HOME: cfg.codexHome },
+		env: {
+			...washActionSecretEnv(cfg.baseEnv ?? process.env),
+			CODEX_HOME: cfg.codexHome,
+		},
 		stdio: ["pipe", "pipe", "pipe"],
 	});
 	child.stdout?.setEncoding("utf8");
@@ -270,17 +654,103 @@ export function buildCodexLeadRuntime(
 	const journal = new LeadJournal({
 		store: new SqliteJournalStore(config.journalDbPath),
 	});
-	const mcp = buildCodexLeadMcpArgv({ chrome: config.chrome });
+
+	// FLY-245 F-b: the write-capable release gate (plan §7) — replaces the
+	// FLY-224 unconditional fail-close. Every statically-checkable condition
+	// must hold or this THROWS (same fail-closed semantics as before); the
+	// runtime assertions below (MCP inventory ④, thread descriptor ⑤) close
+	// the rest after spawn. Read-only companions skip all of it (byte-compat
+	// modulo the Phase E env wash).
+	const writeCapable = config.sandboxMode !== "read-only";
+	const release = writeCapable ? assertWriteCapableRelease(config) : undefined;
+
+	// ⑦ broker: action secrets live in THIS process's memory and travel only
+	// over the unix socket the sandboxed model cannot connect() to (Phase E).
+	const brokerSocketPath = join(config.stateDir, "broker.sock");
+	const broker = release
+		? new SecretBroker({
+				socketPath: brokerSocketPath,
+				secrets: {
+					DISCORD_BOT_TOKEN: config.botToken,
+					FLYWHEEL_API_TOKEN: config.apiToken,
+				},
+			})
+		: undefined;
+
+	// ④ MCP allowlist: write-capable = EXACTLY the gateway (A2); read-only
+	// companions keep the FLY-224 chrome-gated path byte-for-byte.
+	const mcp = release
+		? buildCodexLeadMcpArgv({
+				chrome: config.chrome,
+				gateway: {
+					command: process.execPath,
+					args: [release.gatewayEntry],
+					envVarNames: [
+						"HOME",
+						"PATH",
+						"FLYWHEEL_LEAD_ID",
+						"FLYWHEEL_PROJECT_NAME",
+						"FLYWHEEL_FOUNDER_DISCORD_USER_ID",
+						"FLYWHEEL_GATEWAY_STATE_DIR",
+						"FLYWHEEL_GATEWAY_BROKER_SOCKET",
+						"FLYWHEEL_GATEWAY_CONFIRM_CHANNEL_ID",
+						"FLYWHEEL_BRIDGE_URL",
+						"FLYWHEEL_COMM_ROOT",
+						// R2 HIGH-5: the model's canonical writable scratch — the gateway's
+						// ship-preflight rejects a target worktree overlapping it. Without
+						// forwarding this, the gateway built untrustedRoots=[] and silently
+						// disabled the overlap check.
+						"FLYWHEEL_CODEX_LEAD_WORKSPACE",
+					],
+				},
+			})
+		: buildCodexLeadMcpArgv({ chrome: config.chrome });
 	for (const w of mcp.warnings) logger.warn(`MCP: ${w}`);
+
+	// ③ + ⑧(static): confinement config + action-surface disable argv precede
+	// the MCP overrides on the spawn command line (write-capable only).
+	const spawnArgv = release
+		? [
+				...buildConfinementArgv(release.workspace),
+				...buildActionSurfaceDisableArgv(),
+				...mcp.argv,
+			]
+		: mcp.argv;
+
+	// The gateway child resolves these env var NAMES from the app-server env —
+	// non-secret coordinates only (the wash strips anything secret-shaped).
+	const gatewayEnv: NodeJS.ProcessEnv | undefined = release
+		? {
+				...process.env,
+				FLYWHEEL_GATEWAY_STATE_DIR: config.stateDir,
+				FLYWHEEL_GATEWAY_BROKER_SOCKET: brokerSocketPath,
+				FLYWHEEL_GATEWAY_CONFIRM_CHANNEL_ID: release.gatewayConfirmChannelId,
+				FLYWHEEL_FOUNDER_DISCORD_USER_ID: release.founderId,
+				// R2 HIGH-5: pin the CANONICAL workspace (realpath'd at parse) — never
+				// trust whatever raw value the ambient env happened to carry, so the
+				// gateway's worktree-overlap check is always against the real scratch.
+				FLYWHEEL_CODEX_LEAD_WORKSPACE: release.workspace,
+			}
+		: undefined;
 
 	const proc = new CodexLeadProcess({
 		spawnChild: () =>
 			spawnCodexAppServer({
 				codexBin: config.codexBin,
-				mcpArgv: mcp.argv,
+				mcpArgv: spawnArgv,
 				codexHome: config.codexHome,
+				...(gatewayEnv ? { baseEnv: gatewayEnv } : {}),
 			}),
 	});
+
+	// ④ runtime half: collect MCP startup notifications; ensureThread blocks on
+	// "exactly the gateway, ready" before any thread starts (fail-closed).
+	const inventory = release ? new McpInventoryWatcher() : undefined;
+	if (inventory) {
+		proc.on("notification", (method, params) =>
+			inventory.record(method, params),
+		);
+	}
 
 	// Liveness + activity signals for the health probe.
 	let alive = true;
@@ -327,17 +797,12 @@ export function buildCodexLeadRuntime(
 			`persona: FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES set but no file was readable/non-empty: ${config.systemPromptFiles.join(", ")}`,
 		);
 	}
-	// FOUNDER-GATE SAFETY (FLY-224 review HIGH-1 / FLY-245): a write-capable sandbox
-	// would let the model run reserved actions (e.g. `gh pr merge`) in its OWN shell,
-	// bypassing the Bridge founder gate. The client-side enforcement primitive
-	// (CodexFounderPreflight) MUST be wired into such an action path first — that path
-	// is NOT built yet. Fail-closed: refuse to start a write-capable Codex Lead until
-	// then. A read-only companion has no reserved-action path and is safe.
-	if (config.sandboxMode !== "read-only") {
-		throw new Error(
-			`codex-lead-runtime: sandbox="${config.sandboxMode}" is write-capable, but the founder-gated action path for a Codex Lead is not implemented yet (FLY-245). Refusing to start — set FLYWHEEL_CODEX_LEAD_SANDBOX=read-only (companion) until then.`,
-		);
-	}
+	// FOUNDER-GATE SAFETY (FLY-224 HIGH-1 → FLY-245 §7): the unconditional
+	// write-capable fail-close is replaced by the 8-condition release gate
+	// (`assertWriteCapableRelease`, evaluated ABOVE before any wiring). The model
+	// still cannot self-authorize: confinement (③) blocks its shell's
+	// network/socket actions, the gateway (④) is its only action channel, and
+	// every reserved action there passes founder preflight/consent (C2/D).
 	const threadParams = buildThreadParams(config, baseInstructions);
 
 	const health = new LeadHealthProbe({
@@ -347,9 +812,46 @@ export function buildCodexLeadRuntime(
 	});
 
 	const steps = {
-		startProcess: () => proc.start(),
+		startProcess: async () => {
+			// ⑦ the broker must be listening BEFORE the app-server (and so the
+			// gateway child) comes up — the gateway fetches its secrets at startup.
+			if (broker) await broker.listen();
+			proc.start();
+		},
 		ensureThread: async (): Promise<string> => {
 			const saved = readThreadId(config.threadIdPath);
+			if (release && inventory) {
+				// ④ runtime inventory: EXACTLY the gateway, ready — or fail-closed.
+				await inventory.waitForExact(mcp.included, 30_000);
+				// ⑧ runtime tool-surface assertion (Codex code-review R1 HIGH-1):
+				// the model-callable tools advertised at startup must EQUAL the two
+				// reserved gateway tools — an empty/unproven surface or any extra
+				// connector/built-in egress tool fails the Lead closed BEFORE any
+				// thread is usable. (The MCP inventory above already guarantees no
+				// OTHER MCP server; this catches the tool granularity + non-MCP
+				// built-ins the Phase F threat matrix pins.)
+				assertGatewayOnlyToolSurface(inventory.observedTools());
+				// ⑤ thread-descriptor hard assertion on START **and** RESUME
+				// (R1#9): the echoed policy must equal the expected confinement;
+				// any drift (net on, extra root, wrong cwd, unvetted cliVersion)
+				// throws → the runtime exits fail-closed.
+				const expectation = {
+					workspace: release.workspace,
+					cliVersionAllowlist: release.cliVersionAllowlist,
+				};
+				if (saved) {
+					const { id, result } = await proc.resumeThreadWithResult(
+						saved,
+						threadParams,
+					);
+					assertConfinement(extractThreadDescriptor(result), expectation);
+					return id;
+				}
+				const { id, result } = await proc.startThreadWithResult(threadParams);
+				assertConfinement(extractThreadDescriptor(result), expectation);
+				writeThreadId(config.threadIdPath, id);
+				return id;
+			}
 			if (saved) {
 				// Re-pass baseInstructions on resume so a persona edit takes effect on
 				// restart (thread/resume accepts baseInstructions).
@@ -387,18 +889,19 @@ export function buildCodexLeadRuntime(
 				stopGateway: () => gateway.stop(),
 			};
 		},
-		shutdownProcess: () => proc.stop(),
+		shutdownProcess: async () => {
+			await proc.stop();
+			await broker?.close();
+		},
 		healthProbe: () => health.probe(),
 		logger,
 	};
 
-	// NOTE (FLY-245): the founder-gate enforcement primitive is `CodexFounderPreflight`
-	// (a read-only, fail-closed consumer of the same flywheel-comm `verifyApproval` as
-	// a Claude Lead). A read-only COMPANION has no merge/ship/runner-lifecycle action
-	// path, so there is nothing to gate here (the write-capable guard above fail-closes
-	// any Codex Lead that COULD act). When a write-capable Codex Lead role is added, its
-	// action path MUST construct + call CodexFounderPreflight.check() before each
-	// reserved action — it is intentionally NOT constructed-then-discarded here.
+	// NOTE (FLY-245): the founder-gate enforcement primitives live in the GATEWAY
+	// process (gateway-main.ts): CodexFounderPreflight (merge/ship, over the same
+	// flywheel-comm `verifyApproval` as a Claude Lead) + verifyLifecycleConsent
+	// behind the founder-confirmation edge (LifecycleOrchestrator). The runtime's
+	// job here is confinement: the model's ONLY action channel is that gateway.
 
 	return new CodexLeadRuntime(steps);
 }
@@ -431,7 +934,7 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 		`bridge env    : url=${config.bridgeUrl || "(unset — not needed in direct)"} apiToken=${config.apiToken ? redactSecret(config.apiToken) : "(unset — not needed in direct)"}`,
 		`prod Bridge   : ${noBridge ? "NOT CONNECTED (zero prod intrusion)" : "WILL CONNECT (bridge mode)"}`,
 		`persona       : ${persona ? `baseInstructions ${persona.length} chars from ${config.systemPromptFiles.length} file(s) → injected` : "(none — default Codex persona; set FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)"}`,
-		`policy        : approvalPolicy=never sandbox=${config.sandboxMode}${config.sandboxMode === "read-only" ? " (companion — read+chat only, cannot act)" : " ⚠️ WRITE-CAPABLE (refused at start — FLY-245)"}`,
+		`policy        : approvalPolicy=never sandbox=${config.sandboxMode}${config.sandboxMode === "read-only" ? " (companion — read+chat only, cannot act)" : " ⚠️ WRITE-CAPABLE (FLY-245 founder gate: 8-condition release + runtime confinement assertions)"}`,
 		`CODEX_HOME    : ${config.codexHome} (isolated per-Lead — not the host ~/.codex)`,
 		`codex bin     : ${config.codexBin}`,
 		`state dir     : ${config.stateDir}`,

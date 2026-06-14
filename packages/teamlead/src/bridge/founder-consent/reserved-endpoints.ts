@@ -103,6 +103,143 @@ export const RESERVED_ENDPOINTS: readonly ReservedEndpoint[] = [
 	},
 ] as const;
 
+// ── FLY-245 D-d: action-class metadata (plan §5.5 / Codex R2#4) ──────────────
+//
+// `RESERVED_ENDPOINTS` mixes lifecycle actions, the ship-gate `approve`, and the
+// `approve_to_ship_gate` Surface-B action, and most actions have a dual mount
+// (`/api/actions/*` + `/actions/*`). The Codex Lead gateway derives its
+// runner-lifecycle action enum from THIS single source of truth — so each action
+// needs explicit classification: which `kind` (exclude merge/ship from the
+// lifecycle enum), the ONE canonical execution endpoint (collapsing the dual
+// mount), the eligible target statuses (§5.4 resolution), the crash-recovery
+// idempotency class (§5.2.1 — `retry` is the only non-idempotent action), and the
+// postcondition verifier name (the verifier impls land in D-f/D2). A coverage test
+// asserts every reserved action is classified EXACTLY once, so a new reserved
+// endpoint can't silently drift out of the lifecycle authorization surface.
+
+export type ActionClassKind = "lifecycle" | "ship_gate";
+export type IdempotencyClass = "idempotent" | "non_idempotent";
+
+export interface ActionClassMeta {
+	action: ActionKey;
+	kind: ActionClassKind;
+	/** The ONE canonical execution endpoint (dual `/api/actions/*` + `/actions/*`
+	 * mounts collapse to this; close-* point at `/api/sessions/:id/close-*`). */
+	canonicalEndpoint: string;
+	/** Session statuses this lifecycle action may target (§5.4 exactly-one
+	 * resolution filter). Refined against the FSM in Phase F real-machine QA. */
+	eligibleStatuses: readonly string[];
+	/** Crash-recovery idempotency class (§5.2.1). */
+	idempotencyClass: IdempotencyClass;
+	/** Name of the postcondition verifier used during crash recovery (impl D-f/D2;
+	 * "n/a" for ship-gate actions, which are not gateway-executed lifecycle). */
+	postconditionVerifier: string;
+}
+
+export const ACTION_CLASS_METADATA: readonly ActionClassMeta[] = [
+	{
+		action: "terminate",
+		kind: "lifecycle",
+		canonicalEndpoint: "/api/actions/terminate",
+		eligibleStatuses: [
+			"running",
+			"awaiting_review",
+			"blocked",
+			"approved_to_ship",
+		],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "session_terminal",
+	},
+	{
+		action: "reject",
+		kind: "lifecycle",
+		canonicalEndpoint: "/api/actions/reject",
+		eligibleStatuses: ["awaiting_review"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "status_equals",
+	},
+	{
+		action: "defer",
+		kind: "lifecycle",
+		canonicalEndpoint: "/api/actions/defer",
+		eligibleStatuses: ["awaiting_review", "running"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "status_equals",
+	},
+	{
+		action: "shelve",
+		kind: "lifecycle",
+		canonicalEndpoint: "/api/actions/shelve",
+		eligibleStatuses: ["awaiting_review", "running", "blocked"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "status_equals",
+	},
+	{
+		action: "retry",
+		kind: "lifecycle",
+		canonicalEndpoint: "/api/actions/retry",
+		eligibleStatuses: ["failed", "blocked", "completed", "awaiting_review"],
+		idempotencyClass: "non_idempotent",
+		postconditionVerifier: "successor_started",
+	},
+	{
+		action: "close_tmux",
+		kind: "lifecycle",
+		canonicalEndpoint: "/api/sessions/:id/close-tmux",
+		eligibleStatuses: ["completed", "timeout", "failed", "awaiting_review"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "tmux_absent",
+	},
+	{
+		action: "close_runner",
+		kind: "lifecycle",
+		canonicalEndpoint: "/api/sessions/:id/close-runner",
+		eligibleStatuses: ["completed", "timeout", "failed", "awaiting_review"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "runner_absent",
+	},
+	{
+		action: "approve",
+		kind: "ship_gate",
+		canonicalEndpoint: "/api/actions/approve",
+		eligibleStatuses: ["awaiting_review"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "n/a",
+	},
+	{
+		action: "approve_to_ship_gate",
+		kind: "ship_gate",
+		canonicalEndpoint: "/api/founder-consent/runner-gate-response",
+		eligibleStatuses: ["awaiting_review"],
+		idempotencyClass: "idempotent",
+		postconditionVerifier: "n/a",
+	},
+] as const;
+
+/** Lookup the class metadata for an action (undefined if unclassified). */
+export function getActionClassMeta(
+	action: string,
+): ActionClassMeta | undefined {
+	return ACTION_CLASS_METADATA.find((m) => m.action === action);
+}
+
+/** The runner-lifecycle action enum DERIVED from the SSOT (excludes ship-gate
+ * actions). The gateway maps the model's intent only to one of these. */
+export const LIFECYCLE_ACTIONS: readonly ActionKey[] =
+	ACTION_CLASS_METADATA.filter((m) => m.kind === "lifecycle").map(
+		(m) => m.action,
+	);
+
+/** True when `action` is a gateway-executable runner-lifecycle action. */
+export function isLifecycleAction(action: string): boolean {
+	return LIFECYCLE_ACTIONS.includes(action as ActionKey);
+}
+
+/** The `runner_lifecycle:<action>` CommDB checkpoint for a lifecycle action. */
+export function lifecycleCheckpoint(action: string): string {
+	return `runner_lifecycle:${action}`;
+}
+
 /**
  * How a middleware mount resolves the action key + executionId for an
  * incoming request. The action router mounts read the action from the path

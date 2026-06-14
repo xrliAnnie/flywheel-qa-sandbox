@@ -1123,3 +1123,60 @@ describe("FLY-205 — doc_tier / issue_url persistence", () => {
 		expect(store.getSession("e-205-e")?.doc_tier).toBe("none");
 	});
 });
+
+describe("StateStore — FLY-245 D-a lifecycle_revision (monotonic freshness)", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("a new session starts at revision 0", () => {
+		store.upsertSession(makeSession({ status: "running" }));
+		expect(store.getLifecycleRevision("exec-1")).toBe(0);
+		expect(store.getSession("exec-1")?.lifecycle_revision).toBe(0);
+	});
+
+	it("upsertSession bumps the revision on a genuine status CHANGE", () => {
+		store.upsertSession(makeSession({ status: "running" }));
+		store.upsertSession(makeSession({ status: "awaiting_review" }));
+		expect(store.getLifecycleRevision("exec-1")).toBe(1);
+		store.upsertSession(makeSession({ status: "blocked" }));
+		expect(store.getLifecycleRevision("exec-1")).toBe(2);
+	});
+
+	it("a same-status re-upsert does NOT inflate the revision", () => {
+		store.upsertSession(makeSession({ status: "running" }));
+		store.upsertSession(makeSession({ status: "running", summary: "x" }));
+		store.upsertSession(makeSession({ status: "running", summary: "y" }));
+		expect(store.getLifecycleRevision("exec-1")).toBe(0);
+	});
+
+	it("persistTransition (FSM path) bumps on a transition", () => {
+		store.upsertSession(makeSession({ status: "running" }));
+		store.persistTransition("exec-1", "awaiting_review", {
+			issue_id: "GEO-95",
+			project_name: "geoforge3d",
+		});
+		expect(store.getLifecycleRevision("exec-1")).toBe(1);
+	});
+
+	it("forceStatus (legacy path) is NOT a hole — it bumps too", () => {
+		store.upsertSession(makeSession({ status: "running" }));
+		store.forceStatus("exec-1", "blocked", new Date(0).toISOString());
+		expect(store.getLifecycleRevision("exec-1")).toBe(1);
+	});
+
+	it("status leaving and RETURNING to the same value keeps climbing (the freshness point)", () => {
+		// running → blocked → running: status returns to 'running' but revision is
+		// now 2, so a confirmation snapshotted at revision 0 is stale.
+		const f = { issue_id: "GEO-95", project_name: "geoforge3d" };
+		store.upsertSession(makeSession({ status: "running" }));
+		store.persistTransition("exec-1", "blocked", f);
+		store.persistTransition("exec-1", "running", f);
+		expect(store.getLifecycleRevision("exec-1")).toBe(2);
+	});
+
+	it("getLifecycleRevision is 0 for an absent session", () => {
+		expect(store.getLifecycleRevision("nope")).toBe(0);
+	});
+});

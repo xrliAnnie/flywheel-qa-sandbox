@@ -5,6 +5,7 @@
  * integration spike harness — plan §6 real-tool row).
  */
 import {
+	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
@@ -41,6 +42,7 @@ class FakeTmux {
 	windowName = "";
 	sendKeys: string[] = [];
 	newWindowArgs: string[] = [];
+	killWindowArgs: string[][] = [];
 	/** Scenario hook: called per cycle with (cycle, state) — returns exit code etc. */
 	onCycle: (
 		cycle: number,
@@ -59,9 +61,11 @@ class FakeTmux {
 			switch (sub) {
 				case "-V":
 					return { stdout: "tmux 3.4" };
+				case "kill-window":
+					this.killWindowArgs.push(args);
+					return { stdout: "" };
 				case "has-session":
 				case "set-option":
-				case "kill-window":
 					return { stdout: "" };
 				case "new-window": {
 					this.newWindowArgs = args;
@@ -223,6 +227,38 @@ describe("CodexTmuxAdapter (FLY-123 §5.6 state machine)", () => {
 	it("type + no streaming", () => {
 		expect(adapter.type).toBe("codex-tmux");
 		expect(adapter.supportsStreaming).toBe(false);
+	});
+
+	// Codex R5 HIGH-3: the durable COMMIT is written the instant BEFORE the codex
+	// `send-keys` injection (the commit point) — so the dispatcher adopts a replay
+	// only once codex is actually injected; a crash before injection leaves NO
+	// commit and the dispatcher re-drives (never adopts the idle bare shell).
+	it("R5: writes the durable commit IMMEDIATELY before the codex send-keys injection", async () => {
+		const dir2 = mkdtempSync(join(tmpdir(), "fly245-codex-commit-"));
+		try {
+			const commitFile = join(dir2, "succ-9");
+			fake.onCycle = () => ({ exitCode: 0, lastMessage: "ok" });
+			expect(existsSync(commitFile)).toBe(false);
+			const result = await adapter.execute(
+				ctx({ launchCommitPath: commitFile }),
+			);
+			expect(result.success).toBe(true);
+			// codex was injected (the FLY-123 helper command) AND the commit exists
+			expect(fake.sendKeys).toHaveLength(1);
+			expect(fake.sendKeys[0]).toMatch(/^node \S+ codex-resume --state \S+$/);
+			expect(existsSync(commitFile)).toBe(true);
+		} finally {
+			rmSync(dir2, { recursive: true, force: true });
+		}
+	});
+
+	it("R5: the NON-gateway path (no launchCommitPath) writes NO commit (byte-unchanged injection)", async () => {
+		fake.onCycle = () => ({ exitCode: 0, lastMessage: "ok" });
+		const result = await adapter.execute(ctx());
+		expect(result.success).toBe(true);
+		expect(fake.sendKeys).toHaveLength(1);
+		// nothing extra — same fixed-shape injection
+		expect(fake.sendKeys[0]).toMatch(/^node \S+ codex-resume --state \S+$/);
 	});
 
 	it("happy path: fresh cycle, no gate → terminal success with threadId + resultText", async () => {

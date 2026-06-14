@@ -40,6 +40,14 @@ export interface RetryRequest {
 	 * start and retry prompts.
 	 */
 	issueUrl?: string;
+	/**
+	 * FLY-245 D2 (plan §5.2.1): gateway pre-bound successor execution id.
+	 * When present the dispatcher MUST use it instead of generating a fresh
+	 * randomUUID, so crash recovery can reconcile / idempotently re-drive by a
+	 * key that was durably bound BEFORE dispatch. Absent → legacy behavior
+	 * (fresh UUID), byte-compatible.
+	 */
+	successorExecutionId?: string;
 }
 
 export interface RetryResult {

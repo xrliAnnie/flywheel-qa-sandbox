@@ -1,3 +1,13 @@
+import { spawn } from "node:child_process";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AdapterExecutionContext } from "flywheel-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -29,6 +39,7 @@ function makeMockExec(
 		windowId?: string;
 		tmuxVersion?: string;
 		hasSessionError?: boolean;
+		killWindowThrows?: boolean;
 	} = {},
 ) {
 	const calls: ExecCall[] = [];
@@ -37,6 +48,7 @@ function makeMockExec(
 		windowId = "@42",
 		tmuxVersion = "tmux 3.4",
 		hasSessionError = true, // session doesn't exist by default
+		killWindowThrows = false,
 	} = options;
 
 	const fn = (cmd: string, args: string[]): { stdout: string } => {
@@ -84,6 +96,7 @@ function makeMockExec(
 			}
 
 			if (subcommand === "kill-window") {
+				if (killWindowThrows) throw new Error("tmux kill-window failed");
 				return { stdout: "" };
 			}
 		}
@@ -221,6 +234,136 @@ describe("TmuxAdapter", () => {
 
 		const newSession = calls.find((c) => c.args[0] === "new-session");
 		expect(newSession).toBeUndefined();
+	});
+
+	// ─── R5/R6 HIGH-3: durable commit-gated launch (gateway-retry path) ───────
+
+	it("R5/R6: the gateway path opens a TOKEN-gated shell; the commit file holds this launch's token", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "fly245-commit-"));
+		try {
+			const commitFile = join(tmp, "succ-9");
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+			await adapter.execute(makeCtx({ launchCommitPath: commitFile }));
+			const newWindow = calls.find(
+				(c) => c.cmd === "tmux" && c.args[0] === "new-window",
+			);
+			// gated shell: `sh -c '<grep -qF $tok>; exec claude "$@"' <commitFile> <token> ...`
+			expect(newWindow?.args).toContain("sh");
+			expect(newWindow?.args.some((a) => a.includes("grep -qF"))).toBe(true);
+			expect(newWindow?.args.some((a) => a.includes("exec claude"))).toBe(true);
+			expect(newWindow?.args).toContain(commitFile);
+			// the file holds THIS launch's token (a uuid) — the per-launch gate.
+			const written = readFileSync(commitFile, "utf8");
+			expect(written).toMatch(/^[0-9a-f-]{36}$/);
+			// and the token in the commit file is the SAME one the shell greps for.
+			expect(newWindow?.args).toContain(written);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	it("R6: two attempts of the SAME execId use DIFFERENT launch tokens (a replay can't release a stale shell)", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "fly245-twotoken-"));
+		try {
+			const commitFile = join(tmp, "succ-9");
+			// attempt A
+			const a = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", a.fn, 10).execute(
+				makeCtx({ launchCommitPath: commitFile }),
+			);
+			const tokenA = readFileSync(commitFile, "utf8");
+			// attempt B (replay, same execId → same commit path) overwrites with tokenB
+			const b = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", b.fn, 10).execute(
+				makeCtx({ launchCommitPath: commitFile }),
+			);
+			const tokenB = readFileSync(commitFile, "utf8");
+			expect(tokenA).not.toBe(tokenB);
+			// A's gated shell greps for tokenA; the file now holds tokenB → A never
+			// matches (stays gated, times out). B greps for tokenB → matches.
+			const aWin = a.calls.find(
+				(c) => c.cmd === "tmux" && c.args[0] === "new-window",
+			);
+			expect(aWin?.args).toContain(tokenA);
+			expect(aWin?.args).not.toContain(tokenB);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	it("R6: REAL sh gate — only the shell whose token is in the commit file proceeds (the other stays gated)", async () => {
+		// Run the ACTUAL gate snippet against a real /bin/sh to prove the per-token
+		// gate: with the commit file holding tokenB, a shell waiting on tokenA must
+		// NOT proceed, while a shell waiting on tokenB does.
+		const tmp = mkdtempSync(join(tmpdir(), "fly245-realgate-"));
+		try {
+			const commitFile = join(tmp, "succ-9");
+			writeFileSync(commitFile, "TOKEN-B"); // the re-drive (B) committed
+			// a SHORT-timeout variant of the production gate (~0.3s, then exit 1)
+			const gate =
+				'cf="$0"; tok="$1"; shift; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 15 ] && exit 1; sleep 0.02; n=$((n+1)); done; echo STARTED; exit 0';
+			const run = (token: string) =>
+				new Promise<{ code: number; out: string }>((resolve) => {
+					const child = spawn("sh", ["-c", gate, commitFile, token], {
+						stdio: ["ignore", "pipe", "ignore"],
+					});
+					let out = "";
+					child.stdout.on("data", (d) => {
+						out += d;
+					});
+					child.on("close", (code) => resolve({ code: code ?? -1, out }));
+				});
+			// the STALE shell (A) waits on tokenA → never matches (file holds B) → exits 1
+			const a = await run("TOKEN-A");
+			expect(a.out).not.toContain("STARTED");
+			expect(a.code).toBe(1);
+			// the matching shell (B) waits on tokenB → matches → STARTED
+			const b = await run("TOKEN-B");
+			expect(b.out).toContain("STARTED");
+			expect(b.code).toBe(0);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	it("R5: a commit-write failure ABORTS the launch — Claude never started (gated + no commit → replay re-drives)", async () => {
+		// point launchCommitPath at a path whose parent can't be created (a FILE),
+		// so mkdirSync/writeFileSync throws.
+		const tmp = mkdtempSync(join(tmpdir(), "fly245-commitfail-"));
+		try {
+			const blocker = join(tmp, "blocker");
+			writeFileSync(blocker, "x"); // a file where a dir is needed
+			const commitFile = join(blocker, "succ-9"); // parent is a file → ENOTDIR
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+			await expect(
+				adapter.execute(makeCtx({ launchCommitPath: commitFile })),
+			).rejects.toThrow(/launch aborted: could not write durable commit/i);
+			// gated shell was opened (claude not started), and we never polled
+			const newWindow = calls.find(
+				(c) => c.cmd === "tmux" && c.args[0] === "new-window",
+			);
+			expect(newWindow?.args.some((a) => a.includes("exec claude"))).toBe(true);
+			expect(existsSync(commitFile)).toBe(false); // no commit → replay re-drives
+			expect(
+				calls.find((c) => c.cmd === "tmux" && c.args[0] === "list-panes"),
+			).toBeUndefined();
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	it("the NORMAL fleet path (no launchCommitPath) launches Claude DIRECTLY (byte-unchanged)", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		await adapter.execute(makeCtx());
+		const newWindow = calls.find(
+			(c) => c.cmd === "tmux" && c.args[0] === "new-window",
+		);
+		// command segment is `claude ...` directly — no gating shell wrapper
+		expect(newWindow?.args).toContain("claude");
+		expect(newWindow?.args).not.toContain("sh");
 	});
 
 	// ─── Window launch ──────────────────────────────

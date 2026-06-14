@@ -284,6 +284,29 @@ export interface AdapterExecutionContext {
 		baseSessionName: string;
 		windowId: string;
 	}) => void;
+	/**
+	 * FLY-245 R2 HIGH-3 — fired SYNCHRONOUSLY the instant `tmux new-window`
+	 * returns a windowId, BEFORE CommDB registration (which is non-fatal) and
+	 * before the agent is usable. The gateway-retry dispatcher binds this to its
+	 * durable launch claim so a post-crash replay can discover the live Runner by
+	 * execId and adopt it rather than re-driving (which would orphan it). Distinct
+	 * from `onTmuxWindowCreated` (viewer spawn, fired later). Best-effort.
+	 */
+	onTmuxWindowOpened?: (info: {
+		baseSessionName: string;
+		windowId: string;
+	}) => void;
+	/**
+	 * FLY-245 R5 HIGH — the DURABLE "this Runner is committed to start" record.
+	 * Set ONLY on the gateway-retry path. The adapter GATES the Runner on this
+	 * path (Claude/Codex cannot start until the adapter writes this file) and
+	 * writes it at the single commit point. The dispatcher's post-crash adopt
+	 * decision is `claim exists + this file exists → adopt; else re-drive`, so a
+	 * window recorded but NEVER committed (crash between window-open and commit)
+	 * is re-driven, never adopted as a started Runner. Deterministic path keyed by
+	 * executionId so a replay (new Bridge process) computes the same path.
+	 */
+	launchCommitPath?: string;
 }
 
 // ---------------------------------------------------------------------------

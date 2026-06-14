@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+	assertMcpInventory,
 	buildCodexLeadMcpArgv,
 	CHROME_MCP_PACKAGE,
 	CHROME_SERVER_NAME,
+	GATEWAY_MCP_SERVER_NAME,
 	isValidChromeUrl,
 } from "../buildCodexLeadMcpArgv.js";
 
@@ -109,5 +111,70 @@ describe("isValidChromeUrl", () => {
 		expect(isValidChromeUrl("127.0.0.1:9222")).toBe(false); // no protocol
 		expect(isValidChromeUrl("not a url")).toBe(false);
 		expect(isValidChromeUrl("")).toBe(false);
+	});
+});
+
+describe("buildCodexLeadMcpArgv — FLY-245 Phase A2 write-capable allowlist", () => {
+	const gateway = {
+		command: "/opt/flywheel/gateway",
+		args: ["--stdio"],
+		envVarNames: ["FLYWHEEL_GATEWAY_SOCKET"],
+	};
+
+	it("write-capable: MCP set is EXACTLY the gateway", () => {
+		const r = buildCodexLeadMcpArgv({ gateway });
+		expect(r.included).toEqual([GATEWAY_MCP_SERVER_NAME]);
+		expect(r.argv).toContain(
+			`mcp_servers.${GATEWAY_MCP_SERVER_NAME}.command="/opt/flywheel/gateway"`,
+		);
+		expect(
+			r.argv.some((a) =>
+				a.startsWith(`mcp_servers.${GATEWAY_MCP_SERVER_NAME}.env_vars=`),
+			),
+		).toBe(true);
+	});
+
+	it("write-capable: a configured Chrome is force-excluded LOUDLY (gateway only)", () => {
+		const r = buildCodexLeadMcpArgv({
+			gateway,
+			chrome: { enabled: true, browserUrl: "http://127.0.0.1:9222" },
+		});
+		expect(r.included).toEqual([GATEWAY_MCP_SERVER_NAME]);
+		expect(r.included).not.toContain(CHROME_SERVER_NAME);
+		expect(r.warnings.join("\n")).toMatch(/chrome MCP force-excluded/);
+	});
+
+	it("read-only companion (no gateway): unchanged chrome behavior (byte-compat)", () => {
+		const r = buildCodexLeadMcpArgv({
+			chrome: { enabled: true, browserUrl: "http://127.0.0.1:9222" },
+		});
+		expect(r.included).toEqual([CHROME_SERVER_NAME]);
+	});
+});
+
+describe("assertMcpInventory (FLY-245 Phase A2 startup assertion)", () => {
+	it("passes when observed exactly equals the allowlist", () => {
+		expect(() =>
+			assertMcpInventory([GATEWAY_MCP_SERVER_NAME], [GATEWAY_MCP_SERVER_NAME]),
+		).not.toThrow();
+	});
+
+	it("rejects an UNEXPECTED server (e.g. an injected Chrome)", () => {
+		expect(() =>
+			assertMcpInventory(
+				[GATEWAY_MCP_SERVER_NAME, CHROME_SERVER_NAME],
+				[GATEWAY_MCP_SERVER_NAME],
+			),
+		).toThrow(/unexpected.*chrome_devtools/i);
+	});
+
+	it("rejects a MISSING required server", () => {
+		expect(() => assertMcpInventory([], [GATEWAY_MCP_SERVER_NAME])).toThrow(
+			/missing.*flywheel_gateway/i,
+		);
+	});
+
+	it("is order-independent", () => {
+		expect(() => assertMcpInventory(["b", "a"], ["a", "b"])).not.toThrow();
 	});
 });

@@ -321,6 +321,33 @@ describe("CodexLeadProcess — thread/turn", () => {
 		expect(await p).toBe("th_123");
 	});
 
+	it("startThreadWithResult returns id + raw result (FLY-245 Phase B policy echo)", async () => {
+		const { child, proc } = await started();
+		const p = proc.startThreadWithResult({ cwd: "/scratch" });
+		const id = child.lastFrame().id as number;
+		const result = {
+			thread: { id: "th_456", cliVersion: "0.139.0" },
+			cwd: "/scratch",
+			runtimeWorkspaceRoots: ["/scratch"],
+			approvalPolicy: "never",
+			sandbox: {
+				type: "workspaceWrite",
+				networkAccess: false,
+				writableRoots: ["/scratch"],
+			},
+		};
+		child.respond(id, result);
+		expect(await p).toEqual({ id: "th_456", result });
+	});
+
+	it("startThreadWithResult throws on a protocol error (no result leaked)", async () => {
+		const { child, proc } = await started();
+		const p = proc.startThreadWithResult({ cwd: "/scratch" });
+		const id = child.lastFrame().id as number;
+		child.respondError(id, -32603, "boom");
+		await expect(p).rejects.toMatchObject({ kind: "protocol" });
+	});
+
 	it("startTurn returns the turnId for later steer", async () => {
 		const { child, proc } = await started();
 		const p = proc.startTurn({

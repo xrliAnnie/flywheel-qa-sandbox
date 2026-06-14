@@ -31,14 +31,32 @@ import { createHash } from "node:crypto";
 export const CHROME_MCP_PACKAGE = "chrome-devtools-mcp@1.1.1";
 export const CHROME_SERVER_NAME = "chrome_devtools";
 
+/** FLY-245 Phase A2: the Flywheel Lead gateway MCP server — the ONLY MCP a
+ * write-capable Codex Lead is allowed to load (plan §3.2). Every MCP child runs
+ * OUTSIDE the exec sandbox (R1), so any other MCP (e.g. Chrome DevTools, which can
+ * drive authenticated GitHub / loopback Bridge pages) would be an action-bypass
+ * channel around the gateway. */
+export const GATEWAY_MCP_SERVER_NAME = "flywheel_gateway";
+
 export interface ChromeMcpConfig {
 	enabled: boolean;
 	/** Chrome remote-debugging URL, e.g. http://127.0.0.1:9222 (host + port). */
 	browserUrl?: string;
 }
 
+/** The resolved gateway MCP server command (built by the runtime in Phase F). */
+export interface GatewayMcpConfig {
+	command: string;
+	args: string[];
+	/** Env var NAMES only (never values) forwarded to the gateway child. */
+	envVarNames?: string[];
+}
+
 export interface CodexLeadMcpOptions {
 	chrome?: ChromeMcpConfig;
+	/** FLY-245 Phase A2: when set (write-capable Lead), the MCP allowlist is
+	 * EXACTLY this gateway — Chrome and every other MCP are force-excluded. */
+	gateway?: GatewayMcpConfig;
 }
 
 /** A resolved MCP server to inject (no raw secrets — env by NAME only). */
@@ -67,24 +85,44 @@ export function buildCodexLeadMcpArgv(
 	const specs: McpServerSpec[] = [];
 	const warnings: string[] = [];
 
-	// chrome-devtools-mcp — env-gated, non-critical.
-	if (opts.chrome?.enabled) {
-		const url = opts.chrome.browserUrl;
-		if (url && isValidChromeUrl(url)) {
-			specs.push({
-				name: CHROME_SERVER_NAME,
-				command: "npx",
-				// Concrete URL written into argv — never a literal "$URL".
-				args: ["-y", CHROME_MCP_PACKAGE, `--browser-url=${url}`],
-			});
-		} else {
+	if (opts.gateway) {
+		// FLY-245 Phase A2 — WRITE-CAPABLE: the allowlist is EXACTLY the gateway.
+		// Chrome (and any other MCP) is force-excluded: every MCP child runs outside
+		// the exec sandbox, so a second MCP would be an action-bypass around the
+		// gateway (plan §3.2). A configured Chrome is dropped LOUDLY (not silently).
+		if (opts.chrome?.enabled) {
 			warnings.push(
-				`chrome MCP enabled but browserUrl is missing/invalid (${url ?? "undefined"}) — skipped (degraded, no Chrome)`,
+				"chrome MCP force-excluded: a write-capable Codex Lead allows ONLY the flywheel_gateway MCP (plan §3.2)",
 			);
 		}
+		specs.push({
+			name: GATEWAY_MCP_SERVER_NAME,
+			command: opts.gateway.command,
+			args: opts.gateway.args,
+			...(opts.gateway.envVarNames
+				? { envVarNames: opts.gateway.envVarNames }
+				: {}),
+		});
+	} else {
+		// READ-ONLY companion path — unchanged (byte-compat with FLY-224).
+		// chrome-devtools-mcp — env-gated, non-critical.
+		if (opts.chrome?.enabled) {
+			const url = opts.chrome.browserUrl;
+			if (url && isValidChromeUrl(url)) {
+				specs.push({
+					name: CHROME_SERVER_NAME,
+					command: "npx",
+					// Concrete URL written into argv — never a literal "$URL".
+					args: ["-y", CHROME_MCP_PACKAGE, `--browser-url=${url}`],
+				});
+			} else {
+				warnings.push(
+					`chrome MCP enabled but browserUrl is missing/invalid (${url ?? "undefined"}) — skipped (degraded, no Chrome)`,
+				);
+			}
+		}
+		// Discord MCP is intentionally NOT injected (see module docstring).
 	}
-
-	// Discord MCP is intentionally NOT injected (see module docstring).
 
 	// Defense-in-depth: no spec may carry a raw secret value.
 	for (const s of specs) assertNoRawSecret(s);
@@ -92,6 +130,31 @@ export function buildCodexLeadMcpArgv(
 	const argv = specs.flatMap(specToArgv);
 	const configHash = hashConfig(specs);
 	return { argv, configHash, included: specs.map((s) => s.name), warnings };
+}
+
+/**
+ * FLY-245 Phase A2 — startup MCP inventory assertion (plan §3.2 / §3.4). The
+ * observed set of READY MCP servers (from app-server `mcpServer/startupStatus/
+ * updated` notifications) must EXACTLY equal the allowlist (`result.included`).
+ * Any extra (an injected Chrome / unknown connector) or any missing required
+ * server fails the Lead closed. Pure — the runtime collects the observed set and
+ * calls this before unlocking a write-capable Lead.
+ */
+export function assertMcpInventory(
+	observed: readonly string[],
+	allowed: readonly string[],
+): void {
+	const obs = new Set(observed);
+	const exp = new Set(allowed);
+	const extra = [...obs].filter((n) => !exp.has(n));
+	const missing = [...exp].filter((n) => !obs.has(n));
+	if (extra.length > 0 || missing.length > 0) {
+		throw new Error(
+			`FLY-245 MCP inventory mismatch: expected exactly [${[...exp].sort().join(", ")}], observed [${[...obs].sort().join(", ")}]` +
+				(extra.length ? ` — unexpected: [${extra.sort().join(", ")}]` : "") +
+				(missing.length ? ` — missing: [${missing.sort().join(", ")}]` : ""),
+		);
+	}
 }
 
 /** A chrome remote-debugging URL must be http(s) with a host AND an explicit port. */
