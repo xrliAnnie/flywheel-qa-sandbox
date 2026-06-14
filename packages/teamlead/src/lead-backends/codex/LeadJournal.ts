@@ -88,7 +88,7 @@ export interface JournalEntry {
 	id: string;
 	/** Caller idempotency key (Discord msg id / mailbox envelope seq). */
 	idempotencyKey: string;
-	source: "discord" | "mailbox";
+	source: "discord" | "mailbox" | "founder-terminal";
 	/** Opaque input content (text / serialized event). */
 	payload: string;
 	state: JournalState;
@@ -181,7 +181,7 @@ export class LeadJournal {
 	 */
 	accept(args: {
 		idempotencyKey: string;
-		source: "discord" | "mailbox";
+		source: "discord" | "mailbox" | "founder-terminal";
 		payload: string;
 	}): { accepted: boolean; entry: JournalEntry } {
 		if (!args.idempotencyKey)
@@ -198,6 +198,28 @@ export class LeadJournal {
 		};
 		const { inserted, entry } = this.store.insertAccepted(candidate);
 		return { accepted: inserted, entry };
+	}
+
+	/** FLY-259 PR-D (plan D5): record a founder-terminal turn as an
+	 * observe-only AUDIT row — TERMINAL state from birth (never appears in
+	 * listUnfinished, never gates the queue, never triggers outbound).
+	 * Idempotent via the turn-scoped key. */
+	recordObservation(args: {
+		idempotencyKey: string;
+		payload: string;
+		output?: string;
+	}): void {
+		const now = this.now();
+		this.store.insertAccepted({
+			id: `obs-${args.idempotencyKey}`,
+			idempotencyKey: args.idempotencyKey,
+			source: "founder-terminal",
+			payload: args.payload,
+			state: "completed",
+			...(args.output !== undefined ? { output: args.output } : {}),
+			createdAt: now,
+			updatedAt: now,
+		});
 	}
 
 	/** Persist `dispatching` BEFORE turn/start, carrying the correlation id. */

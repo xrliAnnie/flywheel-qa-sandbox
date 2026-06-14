@@ -64,6 +64,9 @@ export interface OutboundSender {
 	}): Promise<string>;
 	/** Deliver a previously-enqueued reply (canonical sender + Discord nonce). */
 	deliver(outboxId: string): Promise<void>;
+	/** Release any held resource (e.g. the outbox SQLite handle). Optional — a
+	 * stateless direct sender has nothing to close (FLY-259 PR-D review MED). */
+	close?(): void;
 }
 
 export interface LeadInput {

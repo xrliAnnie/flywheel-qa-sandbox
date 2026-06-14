@@ -149,6 +149,14 @@ export class CodexLeadProcessError extends Error {
 	constructor(
 		message: string,
 		readonly kind: "timeout" | "exited" | "protocol" | "closed",
+		/**
+		 * The JSON-RPC error code when `kind === "protocol"` (undefined otherwise).
+		 * Preserved structurally so callers can branch on the exact code rather
+		 * than substring-matching the message (FLY-259 PR-D review HIGH-3: the
+		 * turnless self-heal must gate on `-32600`, not on a fragile message
+		 * substring, or an unrelated resume failure would silently drop a thread).
+		 */
+		readonly rpcCode?: number,
 	) {
 		super(message);
 		this.name = "CodexLeadProcessError";
@@ -602,6 +610,7 @@ export class CodexLeadProcess {
 			throw new CodexLeadProcessError(
 				`${ctx} failed: ${res.error.message} (code ${res.error.code})`,
 				"protocol",
+				res.error.code,
 			);
 		}
 	}
