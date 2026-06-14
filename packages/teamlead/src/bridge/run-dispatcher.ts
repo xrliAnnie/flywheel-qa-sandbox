@@ -7,6 +7,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
 import type { RoleBackendMap } from "flywheel-config";
@@ -16,6 +19,7 @@ import type {
 	Blueprint,
 	BlueprintContext,
 } from "flywheel-edge-worker/dist/Blueprint.js";
+import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
 import type {
 	IRetryDispatcher,
@@ -31,6 +35,18 @@ import {
 	RunnerAdmissionController,
 } from "./runner-admission.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
+
+/**
+ * FLY-245 R5 HIGH — the durable "Runner committed to start" record for a
+ * gateway-bound execId. Deterministic path so a replay (new Bridge process)
+ * computes the SAME path. The adapter gates the Runner on this file and writes
+ * it at the commit point; the dispatcher adopts a replay ONLY if it exists (a
+ * window recorded but never committed → re-drive, never adopt). Keyed by execId
+ * (validated `[A-Za-z0-9-]{8,64}` at the route boundary — safe as a filename).
+ */
+export function launchCommitPath(executionId: string): string {
+	return join(homedir(), ".flywheel", "state", "launch-commits", executionId);
+}
 
 export interface ProjectRuntime {
 	blueprint: Blueprint;
@@ -148,6 +164,14 @@ export class RetryDispatcher implements IRetryDispatcher {
 	constructor(
 		protected blueprintsByProject: Map<string, ProjectRuntime>,
 		private cleanupHandles: Array<() => Promise<void>>,
+		/** FLY-245 D2 / R1 HIGH-3: durable cross-restart launch claim keyed by
+		 * execId (gateway pre-bound retry path only). Undefined → legacy behavior. */
+		protected launchClaims?: LaunchClaimStore,
+		/** FLY-245 R5: test seam for the durable commit-record existence check
+		 * (default: real `existsSync`). The adopt decision is `claim exists +
+		 * committed → adopt; else re-drive`. */
+		protected isCommitted: (execId: string) => boolean = (execId) =>
+			existsSync(launchCommitPath(execId)),
 	) {}
 
 	/** FLY-59: Composite inflight key for per-role dedup */
@@ -168,7 +192,21 @@ export class RetryDispatcher implements IRetryDispatcher {
 		const role = req.sessionRole ?? "main";
 		const key = this.inflightKey(req.issueId, role);
 
-		if (this.inflight.has(key)) {
+		const inflightEntry = this.inflight.get(key);
+		if (inflightEntry) {
+			// FLY-245 D2: a replay of the IDENTICAL gateway-bound dispatch (same
+			// pre-bound successor id) converges on the in-flight execution instead
+			// of erroring — exactly-one-started, never a silent second runner.
+			// Anything else (different/absent pre-bound id) keeps the legacy throw.
+			if (
+				req.successorExecutionId &&
+				inflightEntry.executionId === req.successorExecutionId
+			) {
+				return {
+					newExecutionId: inflightEntry.executionId,
+					oldExecutionId: req.oldExecutionId,
+				};
+			}
 			throw new Error(
 				`Retry already in progress for issue ${req.issueId} role ${role}`,
 			);
@@ -182,7 +220,47 @@ export class RetryDispatcher implements IRetryDispatcher {
 		// FLY-116: opener moved into BlueprintContext callback below
 		// (was: openTmuxViewer(runtime.tmuxSessionName) — fired too early without windowId).
 
-		const newExecutionId = randomUUID();
+		// FLY-245 D2 (plan §5.2.1): honor a gateway PRE-BOUND successor id so
+		// recovery can reconcile/re-drive by a durably-bound key; legacy callers
+		// (no pre-bound id) keep the self-generated UUID byte-for-byte.
+		const newExecutionId = req.successorExecutionId ?? randomUUID();
+
+		// FLY-245 R1/R2/R5 HIGH-3: durable cross-restart find-or-create. The
+		// in-flight map above only dedups within THIS process; after a Bridge crash
+		// the gateway replays the same pre-bound execId with an empty inflight map.
+		// A durable claim keyed by execId, checked BEFORE worktree/tmux creation,
+		// converges to EXACTLY ONE started Runner. The ADOPT signal is a durable
+		// COMMIT file (R5 HIGH): the adapter GATES the Runner on it — Claude/Codex
+		// cannot start until the adapter writes it at the single commit point — so
+		// "committed file exists" ⟺ "this execId's Runner was committed to start".
+		//   - first claim → proceed (the adapter will write the commit when it
+		//     reaches the commit point);
+		//   - already claimed + COMMITTED → adopt, NEVER start a second (the
+		//     committed Runner is starting / started / started-and-exited = one
+		//     started execution);
+		//   - already claimed + NOT committed → the prior attempt crashed BEFORE the
+		//     Runner was committed (e.g. between window-open and commit) → its gated
+		//     waiting shell self-reaps and was NEVER a live Runner, so re-drive the
+		//     SAME execId (FLY-99 converges). A recorded-but-never-committed window
+		//     is never mistaken for a started Runner (the R5 zero-convergence bug).
+		const committedDir = launchCommitPath(newExecutionId);
+		if (req.successorExecutionId && this.launchClaims) {
+			const claimResult = this.launchClaims.claim(newExecutionId, Date.now());
+			if (claimResult === "exists" && this.isCommitted(newExecutionId)) {
+				return {
+					newExecutionId,
+					oldExecutionId: req.oldExecutionId,
+				};
+			}
+			// not committed (or first claim) → proceed to (re-)drive. Ensure the
+			// commit dir exists so the adapter's commit write can't fail on mkdir.
+			try {
+				mkdirSync(join(committedDir, ".."), { recursive: true });
+			} catch {
+				// best-effort; the adapter also mkdir's defensively
+			}
+		}
+
 		const entry = {
 			executionId: newExecutionId,
 			promise: null! as Promise<void>,
@@ -233,6 +311,13 @@ export class RetryDispatcher implements IRetryDispatcher {
 				attempt: req.runAttempt,
 				reason: req.reason,
 			},
+			// R5 HIGH-3: durable COMMIT record for the gateway pre-bound path only.
+			// The adapter GATES the Runner on this file (Claude/Codex cannot start
+			// until the adapter writes it at the commit point) so a post-crash
+			// replay adopts ONLY a committed Runner, never a recorded-but-never-
+			// started gated shell. Deterministic path → a new Bridge computes the
+			// same path on replay.
+			launchCommitPath: req.successorExecutionId ? committedDir : undefined,
 			// FLY-116: spawn macOS Terminal viewer once tmux window exists
 			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
 				openTmuxViewer({
@@ -373,8 +458,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		blueprintsByProject: Map<string, ProjectRuntime>,
 		cleanupHandles: Array<() => Promise<void>>,
 		private runnerAdmission: RunnerAdmissionController = RunnerAdmissionController.alwaysAdmit(),
+		/** FLY-245 R1 HIGH-3: durable launch claim (gateway pre-bound retry path). */
+		launchClaims?: LaunchClaimStore,
+		/** FLY-245 R5: test seam for the commit-record existence check. */
+		isCommitted?: (execId: string) => boolean,
 	) {
-		super(blueprintsByProject, cleanupHandles);
+		super(blueprintsByProject, cleanupHandles, launchClaims, isCommitted);
 	}
 
 	/** FLY-59: Count all inflight entries (each issue+role combo counts separately) */

@@ -13,7 +13,8 @@
 		"./gate-marker": "./dist/gate-marker.js",
 		"./verify-approval": "./dist/commands/verify-approval.js",
 		"./xiaohongshu-state": "./dist/xiaohongshu-state.js",
-		"./xiaohongshu-final": "./dist/xiaohongshu-final.js"
+		"./xiaohongshu-final": "./dist/xiaohongshu-final.js",
+		"./verify-lifecycle-consent": "./dist/commands/verify-lifecycle-consent.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"

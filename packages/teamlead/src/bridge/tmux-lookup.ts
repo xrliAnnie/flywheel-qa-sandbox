@@ -119,6 +119,56 @@ export async function isTmuxSessionAlive(
 }
 
 /**
+ * A tmux error message that PROVES the window/session is genuinely absent — as
+ * opposed to a transient failure (timeout / ENOENT / EACCES) where we learned
+ * nothing. Shared by the boolean `isTmuxWindowAlive` and the tri-state
+ * `probeTmuxWindowLiveness` so they agree on what "provably dead" means.
+ */
+function isTmuxAbsenceMessage(msg: string): boolean {
+	return (
+		msg.includes("session not found") ||
+		msg.includes("can't find session") ||
+		msg.includes("window not found") ||
+		msg.includes("can't find window") ||
+		msg.includes("can't find pane") ||
+		msg.includes("no server running")
+	);
+}
+
+/**
+ * Tri-state per-window liveness (FLY-245 D2, Codex code-review R1 HIGH-4):
+ *   - `alive`         — `list-panes` succeeded;
+ *   - `dead`          — tmux PROVED the window/session is absent;
+ *   - `indeterminate` — timeout / ENOENT (tmux missing) / EACCES / any other
+ *                       error: we could NOT determine liveness.
+ *
+ * The retry-recovery path (started-evidence.ts) MUST distinguish `dead` from
+ * `indeterminate`: a transient probe failure read as "dead" would re-dispatch a
+ * second Runner for a non-idempotent retry. The legacy boolean
+ * `isTmuxWindowAlive` collapses both into `false` and is kept for callers whose
+ * existing semantics already treat "not provably alive" conservatively.
+ */
+export type TmuxWindowProbe = "alive" | "dead" | "indeterminate";
+
+export async function probeTmuxWindowLiveness(
+	tmuxWindow: string,
+): Promise<TmuxWindowProbe> {
+	try {
+		await execFileAsync("tmux", ["list-panes", "-t", tmuxWindow], {
+			timeout: TMUX_TIMEOUT,
+		});
+		return "alive";
+	} catch (err) {
+		const msg = (err as Error).message ?? String(err);
+		if (isTmuxAbsenceMessage(msg)) return "dead";
+		console.error(
+			`[tmux-lookup] list-panes INDETERMINATE (fail-closed for retry recovery): ${msg}`,
+		);
+		return "indeterminate";
+	}
+}
+
+/**
  * Check if a specific tmux window is alive.
  *
  * Takes the full CommDB tmux_window target (e.g. "runner-geoforge3d:@42")
@@ -129,7 +179,9 @@ export async function isTmuxSessionAlive(
  * alive, leading to false "still alive" reports for windows that have been
  * closed via `kill-window`. Use this helper for per-execution liveness.
  *
- * Returns false on benign errors (session/window not found, no server).
+ * Returns false on benign errors (session/window not found, no server). For the
+ * retry-recovery path that must NOT confuse a transient failure with "dead",
+ * use `probeTmuxWindowLiveness` instead.
  */
 export async function isTmuxWindowAlive(tmuxWindow: string): Promise<boolean> {
 	try {
@@ -139,14 +191,7 @@ export async function isTmuxWindowAlive(tmuxWindow: string): Promise<boolean> {
 		return true;
 	} catch (err) {
 		const msg = (err as Error).message ?? String(err);
-		if (
-			msg.includes("session not found") ||
-			msg.includes("can't find session") ||
-			msg.includes("window not found") ||
-			msg.includes("can't find window") ||
-			msg.includes("can't find pane") ||
-			msg.includes("no server running")
-		) {
+		if (isTmuxAbsenceMessage(msg)) {
 			return false;
 		}
 		console.error(`[tmux-lookup] list-panes error: ${msg}`);

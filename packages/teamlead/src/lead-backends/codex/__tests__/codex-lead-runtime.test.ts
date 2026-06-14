@@ -1,16 +1,33 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+
+const TEST_DIR = dirname(fileURLToPath(import.meta.url));
+
+import {
+	assertWriteCapableRelease,
+	buildActionSurfaceDisableArgv,
 	buildCodexLeadRuntime,
+	buildConfinementArgv,
 	buildThreadParams,
 	dryRunReport,
 	parseCodexLeadRuntimeConfig,
+	pathsOverlap,
 	readBaseInstructions,
 	readThreadId,
+	resolveLeadWorkspace,
 	writeThreadId,
 } from "../codex-lead-runtime.js";
+import { McpInventoryWatcher } from "../mcp-inventory.js";
 
 const silentLogger = { info: () => {}, warn: () => {}, error: () => {} };
 
@@ -197,7 +214,11 @@ describe("sandbox policy (review HIGH-1: pin approvalPolicy + sandbox)", () => {
 		});
 	});
 
-	it("buildCodexLeadRuntime FAIL-CLOSES a write-capable sandbox (no founder action path yet)", () => {
+	// FLY-245 F-b: FLIPPED from the FLY-224 unconditional fail-close — a
+	// write-capable sandbox WITHOUT the §7 release conditions still fail-closes
+	// (same throw semantics); WITH all of them it builds. See the dedicated
+	// release-gate matrix below for the full per-condition coverage.
+	it("buildCodexLeadRuntime still FAIL-CLOSES a write-capable sandbox missing the release conditions", () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly224-sandbox-"));
 		try {
 			const config = parseCodexLeadRuntimeConfig(
@@ -220,6 +241,214 @@ describe("sandbox policy (review HIGH-1: pin approvalPolicy + sandbox)", () => {
 		);
 		expect(report).toContain("approvalPolicy=never sandbox=read-only");
 		expect(report).toContain("cannot act");
+	});
+});
+
+describe("FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3)", () => {
+	let root: string;
+	let home: string;
+	let workspace: string;
+	let flywheelDir: string;
+	let stateDir: string;
+	let codexHome: string;
+	let ctx: () => Parameters<typeof resolveLeadWorkspace>[1];
+
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "fly245-A-"));
+		home = join(root, "home");
+		workspace = join(root, "scratch");
+		flywheelDir = join(home, ".flywheel");
+		stateDir = join(home, "state", "mufasa");
+		codexHome = join(home, ".codex-mufasa");
+		for (const d of [home, workspace, flywheelDir, stateDir, codexHome]) {
+			mkdirSync(d, { recursive: true });
+		}
+		ctx = () => ({ home, flywheelDir, stateDir, codexHome });
+	});
+	afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+	describe("pathsOverlap", () => {
+		it("detects equal / ancestor / descendant; rejects siblings", () => {
+			expect(pathsOverlap("/a/b", "/a/b")).toBe(true);
+			expect(pathsOverlap("/a", "/a/b")).toBe(true); // b under a
+			expect(pathsOverlap("/a/b", "/a")).toBe(true); // a under b
+			expect(pathsOverlap("/a/b", "/a/c")).toBe(false); // siblings
+			expect(pathsOverlap("/a/bc", "/a/b")).toBe(false); // prefix-not-path
+		});
+	});
+
+	describe("resolveLeadWorkspace", () => {
+		it("accepts a valid dedicated scratch (canonicalized)", () => {
+			expect(resolveLeadWorkspace(workspace, ctx())).toBe(
+				realpathSync(workspace),
+			);
+		});
+
+		it("rejects a non-absolute path", () => {
+			expect(() => resolveLeadWorkspace("relative/dir", ctx())).toThrow(
+				/absolute path/,
+			);
+		});
+
+		it("rejects a path that does not exist", () => {
+			expect(() => resolveLeadWorkspace(join(root, "nope"), ctx())).toThrow(
+				/does not exist/,
+			);
+		});
+
+		it("rejects $HOME itself and any ancestor of $HOME", () => {
+			expect(() => resolveLeadWorkspace(home, ctx())).toThrow(/\$HOME itself/);
+			expect(() => resolveLeadWorkspace(root, ctx())).toThrow(
+				/ancestor of \$HOME/,
+			);
+		});
+
+		it("rejects overlap with ~/.flywheel, state dir, CODEX_HOME", () => {
+			expect(() => resolveLeadWorkspace(flywheelDir, ctx())).toThrow(
+				/\.flywheel/,
+			);
+			expect(() => resolveLeadWorkspace(stateDir, ctx())).toThrow(/state dir/);
+			expect(() => resolveLeadWorkspace(codexHome, ctx())).toThrow(
+				/CODEX_HOME/,
+			);
+			// a parent of the state dir also overlaps (state dir under it).
+			expect(() => resolveLeadWorkspace(join(home, "state"), ctx())).toThrow(
+				/state dir/,
+			);
+		});
+
+		it("rejects a symlink that resolves into a sensitive dir (realpath defeats smuggling)", () => {
+			const sneaky = join(root, "sneaky-link");
+			symlinkSync(flywheelDir, sneaky);
+			expect(() => resolveLeadWorkspace(sneaky, ctx())).toThrow(/\.flywheel/);
+		});
+
+		it("rejects overlap with an explicit trusted control-plane path", () => {
+			const checkout = join(root, "flywheel-checkout");
+			mkdirSync(checkout, { recursive: true });
+			expect(() =>
+				resolveLeadWorkspace(checkout, { ...ctx(), trustedPaths: [checkout] }),
+			).toThrow(/trusted control-plane/);
+		});
+	});
+
+	describe("buildConfinementArgv", () => {
+		it("pins network OFF + single writable root + secret-scrubbing env policy", () => {
+			const argv = buildConfinementArgv("/scratch/lead");
+			expect(argv).toContain("sandbox_workspace_write.network_access=false");
+			expect(argv).toContain(
+				'sandbox_workspace_write.writable_roots=["/scratch/lead"]',
+			);
+			const exclude = argv.find((a) =>
+				a.startsWith("shell_environment_policy.exclude="),
+			);
+			expect(exclude).toBeDefined();
+			expect(exclude).toContain("*TOKEN*");
+			expect(exclude).toContain("CODEX_*");
+		});
+	});
+
+	describe("parseCodexLeadRuntimeConfig — workspace wiring", () => {
+		it("read-only: workspace ignored even if env is set (byte-compat)", () => {
+			const c = parseCodexLeadRuntimeConfig(
+				fullEnv({ FLYWHEEL_CODEX_LEAD_WORKSPACE: workspace }),
+			);
+			expect(c.sandboxMode).toBe("read-only");
+			expect(c.workspace).toBeUndefined();
+		});
+
+		it("write-capable + valid workspace → canonical workspace on config", () => {
+			const c = parseCodexLeadRuntimeConfig(
+				fullEnv({
+					FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+					FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
+					CODEX_HOME: codexHome,
+					FLYWHEEL_CODEX_LEAD_WORKSPACE: workspace,
+				}),
+			);
+			expect(c.workspace).toBe(realpathSync(workspace));
+		});
+
+		it("write-capable + workspace overlapping CODEX_HOME → throws at parse", () => {
+			expect(() =>
+				parseCodexLeadRuntimeConfig(
+					fullEnv({
+						FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+						CODEX_HOME: codexHome,
+						FLYWHEEL_CODEX_LEAD_WORKSPACE: codexHome,
+					}),
+				),
+			).toThrow(/CODEX_HOME/);
+		});
+
+		it("write-capable + no workspace env → undefined (fail-close at :336 still governs)", () => {
+			const c = parseCodexLeadRuntimeConfig(
+				fullEnv({ FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write" }),
+			);
+			expect(c.workspace).toBeUndefined();
+		});
+
+		// Codex code-review R1 HIGH-2: production must PASS the control-plane
+		// trusted roots into resolveLeadWorkspace (the overlap option was wired but
+		// never supplied). A workspace overlapping the gateway DEPLOY directory must
+		// now be rejected at parse — a model that can write that dir could rewrite
+		// the gateway code launchd later runs OUTSIDE the sandbox.
+		it("write-capable + workspace overlapping the gateway deploy dir → throws at parse (HIGH-2)", () => {
+			const deployDir = join(root, "deploy");
+			mkdirSync(deployDir, { recursive: true });
+			const gw = join(deployDir, "gateway-main.js");
+			writeFileSync(gw, "// deployed\n");
+			expect(() =>
+				parseCodexLeadRuntimeConfig(
+					fullEnv({
+						FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+						FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
+						CODEX_HOME: codexHome,
+						FLYWHEEL_GATEWAY_ENTRY: gw,
+						// the workspace IS the gateway deploy directory → symmetric overlap
+						FLYWHEEL_CODEX_LEAD_WORKSPACE: deployDir,
+					}),
+				),
+			).toThrow(/trusted control-plane path|overlap/i);
+		});
+
+		it("write-capable + workspace overlapping the teamlead checkout (deps closure) → throws at parse (HIGH-2)", () => {
+			// The teamlead package root is derived from the runtime module — a
+			// workspace at/above it would let the model rewrite the runtime + its
+			// dependency closure. Use the real package root as the workspace.
+			const pkgRoot = realpathSync(join(TEST_DIR, "..", "..", "..", ".."));
+			expect(() =>
+				parseCodexLeadRuntimeConfig(
+					fullEnv({
+						FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+						FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
+						CODEX_HOME: codexHome,
+						FLYWHEEL_CODEX_LEAD_WORKSPACE: pkgRoot,
+					}),
+				),
+			).toThrow(/trusted control-plane path|overlap/i);
+		});
+	});
+
+	describe("buildThreadParams — cwd pin", () => {
+		it("write-capable with workspace → cwd pinned", () => {
+			expect(
+				buildThreadParams(
+					{ sandboxMode: "workspace-write", workspace: "/scratch/lead" },
+					undefined,
+				),
+			).toEqual({
+				approvalPolicy: "never",
+				sandbox: "workspace-write",
+				cwd: "/scratch/lead",
+			});
+		});
+
+		it("read-only (no workspace) → NO cwd (byte-compat)", () => {
+			expect(
+				buildThreadParams({ sandboxMode: "read-only" }, undefined),
+			).toEqual({ approvalPolicy: "never", sandbox: "read-only" });
+		});
 	});
 });
 
@@ -310,5 +539,243 @@ describe("thread-id store", () => {
 		const path = join(dir, "thread-id");
 		writeThreadId(path, "   ");
 		expect(readThreadId(path)).toBeUndefined();
+	});
+});
+
+// ── FLY-245 F-b: the §7 write-capable release gate ───────────────────────────
+
+describe("FLY-245 F-b: write-capable release gate (plan §7)", () => {
+	let root: string;
+	let stateDir: string;
+	let workspace: string;
+	let gatewayEntry: string;
+
+	beforeEach(() => {
+		root = mkdtempSync(join(tmpdir(), "fly245-release-"));
+		stateDir = join(root, "state");
+		workspace = join(root, "workspace");
+		mkdirSync(stateDir, { recursive: true });
+		mkdirSync(workspace, { recursive: true });
+		const gwDir = join(root, "deploy");
+		mkdirSync(gwDir, { recursive: true });
+		gatewayEntry = join(gwDir, "gateway-main.js");
+		writeFileSync(gatewayEntry, "// deployed gateway entry stub\n");
+	});
+
+	afterEach(() => {
+		rmSync(root, { recursive: true, force: true });
+	});
+
+	function releaseEnv(
+		over: Record<string, string | undefined> = {},
+	): NodeJS.ProcessEnv {
+		return fullEnv({
+			FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
+			FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+			FLYWHEEL_CODEX_LEAD_WORKSPACE: workspace,
+			FLYWHEEL_FOUNDER_DISCORD_USER_ID: "annie-987",
+			FLYWHEEL_CODEX_CLI_VERSION_ALLOWLIST: "0.99.0",
+			FLYWHEEL_GATEWAY_ENTRY: gatewayEntry,
+			...over,
+		});
+	}
+
+	it("UNLOCKS: all release conditions present → buildCodexLeadRuntime succeeds", () => {
+		const config = parseCodexLeadRuntimeConfig(releaseEnv());
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).not.toThrow();
+	});
+
+	it("danger-full-access is PERMANENTLY refused, even with everything else present", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			releaseEnv({ FLYWHEEL_CODEX_LEAD_SANDBOX: "danger-full-access" }),
+		);
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
+			/permanently refused/i,
+		);
+	});
+
+	it("② missing workspace → fail-closed", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			releaseEnv({ FLYWHEEL_CODEX_LEAD_WORKSPACE: undefined }),
+		);
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
+			/WORKSPACE/,
+		);
+	});
+
+	it("⑤ missing founder id → fail-closed", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			releaseEnv({ FLYWHEEL_FOUNDER_DISCORD_USER_ID: undefined }),
+		);
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
+			/FOUNDER_DISCORD_USER_ID/,
+		);
+	});
+
+	it("⑤ missing cliVersion allowlist → fail-closed (a new Codex must re-pass the threat matrix)", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			releaseEnv({ FLYWHEEL_CODEX_CLI_VERSION_ALLOWLIST: undefined }),
+		);
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
+			/VERSION_ALLOWLIST/,
+		);
+	});
+
+	it("⑥ gateway entry not deployed → fail-closed", () => {
+		// Keep the deploy dir a SIBLING of the workspace (root/deploy vs
+		// root/workspace) so the new HIGH-2 trusted-root check doesn't fire first;
+		// the missing file is what we're testing (assertWriteCapableRelease ⑥).
+		const config = parseCodexLeadRuntimeConfig(
+			releaseEnv({
+				FLYWHEEL_GATEWAY_ENTRY: join(root, "deploy", "missing.js"),
+			}),
+		);
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
+			/gateway entry/i,
+		);
+	});
+
+	it("⑥ gateway entry INSIDE the model-writable workspace → fail-closed (tamper risk)", () => {
+		// With HIGH-2, the gateway DEPLOY dir is now a trusted root; an entry inside
+		// the workspace means the workspace overlaps that trusted root → rejected at
+		// PARSE (earlier than the assertWriteCapableRelease ⑥ check, same outcome).
+		const inside = join(workspace, "gateway-main.js");
+		writeFileSync(inside, "// tampered\n");
+		expect(() =>
+			parseCodexLeadRuntimeConfig(
+				releaseEnv({ FLYWHEEL_GATEWAY_ENTRY: inside }),
+			),
+		).toThrow(/trusted control-plane path|overlap|INSIDE the model-writable/i);
+	});
+
+	it("⑦ missing FLYWHEEL_API_TOKEN → fail-closed (gateway broker incomplete)", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			releaseEnv({ FLYWHEEL_API_TOKEN: undefined }),
+		);
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
+			/API_TOKEN/,
+		);
+	});
+
+	it("a refusal lists EVERY failed condition at once (operator-debuggable)", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			releaseEnv({
+				FLYWHEEL_CODEX_LEAD_WORKSPACE: undefined,
+				FLYWHEEL_FOUNDER_DISCORD_USER_ID: undefined,
+				FLYWHEEL_CODEX_CLI_VERSION_ALLOWLIST: undefined,
+			}),
+		);
+		expect(() => assertWriteCapableRelease(config)).toThrow(
+			/WORKSPACE.*FOUNDER_DISCORD_USER_ID.*VERSION_ALLOWLIST/s,
+		);
+	});
+
+	it("read-only companions never touch the release gate (byte-compat path)", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			fullEnv({ FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir }),
+		);
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).not.toThrow();
+	});
+
+	it("buildActionSurfaceDisableArgv pins the verified non-MCP disable keys (⑧ static)", () => {
+		expect(buildActionSurfaceDisableArgv()).toEqual([
+			"-c",
+			"tools.web_search=false",
+		]);
+	});
+});
+
+describe("FLY-245 F-b: McpInventoryWatcher (release ④ runtime half)", () => {
+	it("resolves once exactly the allowlist is ready", async () => {
+		const w = new McpInventoryWatcher();
+		w.record("mcpServer/startupStatus/updated", {
+			name: "flywheel_gateway",
+			status: "ready",
+		});
+		await expect(
+			w.waitForExact(["flywheel_gateway"], 500),
+		).resolves.toBeUndefined();
+	});
+
+	it("an EXTRA observed server fail-closes (injected Chrome / unknown connector)", async () => {
+		const w = new McpInventoryWatcher();
+		w.record("mcpServer/startupStatus/updated", {
+			name: "flywheel_gateway",
+			status: "ready",
+		});
+		w.record("mcpServer/startupStatus/updated", {
+			name: "chrome_devtools",
+			status: "starting",
+		});
+		await expect(w.waitForExact(["flywheel_gateway"], 500)).rejects.toThrow(
+			/unexpected server/i,
+		);
+	});
+
+	it("a FAILED required server fail-closes", async () => {
+		const w = new McpInventoryWatcher();
+		w.record("mcpServer/startupStatus/updated", {
+			name: "flywheel_gateway",
+			status: "failed",
+		});
+		await expect(w.waitForExact(["flywheel_gateway"], 500)).rejects.toThrow(
+			/reported "failed"/i,
+		);
+	});
+
+	it("never-ready → timeout fail-closes (an unconfirmed gateway can't unlock)", async () => {
+		const w = new McpInventoryWatcher();
+		await expect(w.waitForExact(["flywheel_gateway"], 200, 20)).rejects.toThrow(
+			/timed out/i,
+		);
+	});
+
+	it("alternate notification shapes (server.{name,status}) are parsed", async () => {
+		const w = new McpInventoryWatcher();
+		w.record("mcpServer/startupStatus/updated", {
+			server: { name: "flywheel_gateway", status: "running" },
+		});
+		await expect(
+			w.waitForExact(["flywheel_gateway"], 500),
+		).resolves.toBeUndefined();
+	});
+
+	it("unrelated notifications are ignored", () => {
+		const w = new McpInventoryWatcher();
+		w.record("turn/completed", { name: "x", status: "ready" });
+		expect(w.observedServers()).toEqual([]);
+	});
+
+	// Codex code-review R1 HIGH-1: the watcher must ALSO collect the advertised
+	// model-callable tool names (feeds the ⑧ tool-surface assertion).
+	it("collects tool names from a `tools: [...]` advertisement", () => {
+		const w = new McpInventoryWatcher();
+		w.record("mcpServer/tools/listChanged", {
+			tools: [
+				{ name: "request_runner_lifecycle" },
+				{ name: "relay_ship_decision" },
+			],
+		});
+		expect(new Set(w.observedTools())).toEqual(
+			new Set(["request_runner_lifecycle", "relay_ship_decision"]),
+		);
+	});
+
+	it("collects a tool name from string-array and single-tool shapes", () => {
+		const w = new McpInventoryWatcher();
+		w.record("notifications/tools/list_changed", { tools: ["web_search"] });
+		w.record("mcpServer/tool/added", { tool: "github_connector" });
+		expect(new Set(w.observedTools())).toEqual(
+			new Set(["web_search", "github_connector"]),
+		);
+	});
+
+	it("a non-tool notification contributes no tools (empty → ⑧ fails closed)", () => {
+		const w = new McpInventoryWatcher();
+		w.record("mcpServer/startupStatus/updated", {
+			name: "flywheel_gateway",
+			status: "ready",
+		});
+		expect(w.observedTools()).toEqual([]);
 	});
 });

@@ -24,10 +24,15 @@ import type { EventFilter } from "./EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
+import { reconcileGatewayRetry } from "./retry-dispatch-wal.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { waitForSession } from "./session-wait.js";
+import {
+	checkStartedEvidence,
+	type StartedEvidence,
+} from "./started-evidence.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import { killTmuxWindow, lookupTmuxTarget } from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
@@ -543,6 +548,18 @@ export async function transitionSession(
 }
 
 /** GEO-168: Composite retry handler — eligibility check → dispatch → lineage → Linear comment. */
+/** FLY-245 D2: gateway pre-bound dispatch context for a retry (plan §5.2.1).
+ * `checkEvidence` is injectable for tests; production uses the real
+ * started-evidence checker. */
+export interface GatewayRetryDispatch {
+	gatewayRequestId: string;
+	successorExecutionId: string;
+	checkEvidence?: (
+		executionId: string,
+		projectName: string,
+	) => Promise<StartedEvidence>;
+}
+
 async function handleRetry(
 	store: StateStore,
 	retryDispatcher: IRetryDispatcher,
@@ -553,6 +570,7 @@ async function handleRetry(
 	eventFilter?: EventFilter,
 	ceoContext?: string,
 	registry?: RuntimeRegistry,
+	gatewayDispatch?: GatewayRetryDispatch,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	if (!session) {
@@ -560,6 +578,44 @@ async function handleRetry(
 			success: false,
 			message: `No session found for execution_id ${executionId}`,
 		};
+	}
+
+	// FLY-245 D2 (plan §5.2.1): gateway-bound retries reconcile against the
+	// durable intent WAL BEFORE eligibility — a replay of a request whose
+	// successor already STARTED must converge on it (report success, repair
+	// lineage) regardless of what the predecessor's status has since become;
+	// the action already happened. First attempts commit the binding here
+	// (before dispatch) and then flow through the normal eligibility checks.
+	if (gatewayDispatch) {
+		const verdict = await reconcileGatewayRetry(
+			store,
+			{
+				gatewayRequestId: gatewayDispatch.gatewayRequestId,
+				successorExecutionId: gatewayDispatch.successorExecutionId,
+				predecessorExecutionId: executionId,
+				projectName: session.project_name,
+			},
+			{ checkEvidence: gatewayDispatch.checkEvidence ?? checkStartedEvidence },
+		);
+		if (verdict.kind === "converged") {
+			return {
+				success: true,
+				message: `Retry already started for ${session.issue_identifier ?? executionId}: successor ${verdict.successorExecutionId} is live (idempotent replay, no second runner)`,
+			};
+		}
+		if (verdict.kind === "conflict") {
+			return {
+				success: false,
+				message: `Gateway request ${gatewayDispatch.gatewayRequestId} is already bound to successor ${verdict.boundSuccessorExecutionId}; refusing a second binding`,
+			};
+		}
+		if (verdict.kind === "fail_closed") {
+			return {
+				success: false,
+				message: `Cannot prove whether the bound successor already started (${verdict.detail}); refusing to re-dispatch (fail-closed)`,
+			};
+		}
+		// "proceed": intent WAL committed — dispatch below with the pre-bound id.
 	}
 
 	const actionDef = ACTION_DEFINITIONS.find((d) => d.action === "retry");
@@ -706,8 +762,18 @@ async function handleRetry(
 		);
 	}
 
+	// R2 MED-6: the dispatch call and the POST-dispatch bookkeeping are split into
+	// TWO try blocks. A throw from `dispatch()` itself is PRE-start (admission
+	// deferred / inflight conflict / no runtime / durable claim) — nothing has
+	// started, so a clean failure (→ HTTP 4xx → gateway `not_dispatched`) is
+	// correct. But once `dispatch()` RETURNS, the Runner is starting and the
+	// successor execId is bound; a subsequent StateStore/bookkeeping error must
+	// NOT be reported as a clean failure (the gateway would read the 4xx as
+	// "never dispatched" and allow a SECOND successor). So post-dispatch errors
+	// are logged but STILL report success with the bound successor id.
+	let result: { newExecutionId: string; oldExecutionId: string };
 	try {
-		const result = await retryDispatcher.dispatch({
+		result = await retryDispatcher.dispatch({
 			oldExecutionId: executionId,
 			issueId: session.issue_id,
 			issueIdentifier: session.issue_identifier,
@@ -737,17 +803,32 @@ async function handleRetry(
 			// issue_url keeps the doc header identical between start and retry.
 			docTier: parseDocTier(session.doc_tier),
 			issueUrl: session.issue_url,
+			// FLY-245 D2: gateway pre-bound successor id (plan §5.2.1) — the
+			// dispatcher uses it instead of a fresh randomUUID so recovery can
+			// reconcile by the durably-bound key. Absent for legacy retries.
+			successorExecutionId: gatewayDispatch?.successorExecutionId,
 		});
+	} catch (err) {
+		// PRE-dispatch failure — provably nothing started. Safe to terminalize.
+		const msg = err instanceof Error ? err.message : String(err);
+		return { success: false, message: `Retry dispatch failed: ${msg}` };
+	}
 
+	// ── Post-dispatch: the Runner is starting; the successor is bound. Any error
+	//    from here is best-effort bookkeeping and must NOT flip the result to a
+	//    "not dispatched" failure (R2 MED-6). ───────────────────────────────────
+	try {
 		// Link predecessor → successor
 		store.setRetrySuccessor(executionId, result.newExecutionId);
+		// FLY-245 D2: blueprint.run() kicked off — flip the WAL to 'dispatched'
+		// (informational; recovery still trusts only started evidence).
+		if (gatewayDispatch) {
+			store.markRetryDispatchDispatched(gatewayDispatch.gatewayRequestId);
+		}
 
 		// FLY-137 Phase 5: persist codex_skip + agent_name + agent_match_method
 		// on the NEW session row so event-route stage_changed reads the right
 		// values for the retried Runner (instead of inheriting from the old row).
-		// patchSessionMetadata is a no-op if the new row hasn't been created
-		// yet (Blueprint creates it inside dispatch()); this defensive guard
-		// avoids racing.
 		// FLY-205 (Codex code R1 HIGH-2): the dispatcher returns as soon as
 		// blueprint.run() is kicked off; the successor row is created later by
 		// emitStarted(). A bare getSession() guard here races row creation and
@@ -799,15 +880,18 @@ async function handleRetry(
 			registry,
 			config,
 		);
-
-		return {
-			success: true,
-			message: `${session.issue_identifier ?? executionId} retry dispatched → ${result.newExecutionId} (attempt #${runAttempt})`,
-		};
 	} catch (err) {
-		const msg = err instanceof Error ? err.message : String(err);
-		return { success: false, message: `Retry dispatch failed: ${msg}` };
+		// The dispatch ALREADY started — never report not-dispatched. Log + go on.
+		console.error(
+			`[retry] post-dispatch bookkeeping failed for successor ${result.newExecutionId} ` +
+				`(the Runner is already starting — NOT reporting as not-dispatched): ${(err as Error).message}`,
+		);
 	}
+
+	return {
+		success: true,
+		message: `${session.issue_identifier ?? executionId} retry dispatched → ${result.newExecutionId} (attempt #${runAttempt})`,
+	};
 }
 
 /** Post a comment on the Linear issue noting the retry (best-effort). */
@@ -1206,9 +1290,45 @@ export function createActionRouter(
 				return;
 			}
 			case "retry": {
-				const { execution_id: eid, reason, context } = req.body ?? {};
+				const {
+					execution_id: eid,
+					reason,
+					context,
+					gateway_request_id: gwRequestId,
+					successor_execution_id: gwSuccessorId,
+				} = req.body ?? {};
 				if (!eid || typeof eid !== "string") {
 					res.status(400).json({ error: "execution_id is required" });
+					return;
+				}
+				// FLY-245 D2 boundary validation (plan §5.2.1): the gateway
+				// pre-bound dispatch fields travel together and are format-checked
+				// at the system boundary. Both-or-neither; sane charsets only.
+				const hasGwReq =
+					gwRequestId !== undefined &&
+					gwRequestId !== null &&
+					gwRequestId !== "";
+				const hasGwSucc =
+					gwSuccessorId !== undefined &&
+					gwSuccessorId !== null &&
+					gwSuccessorId !== "";
+				if (hasGwReq !== hasGwSucc) {
+					res.status(400).json({
+						error:
+							"gateway_request_id and successor_execution_id must be provided together",
+					});
+					return;
+				}
+				if (
+					hasGwReq &&
+					(typeof gwRequestId !== "string" ||
+						!/^[A-Za-z0-9_.:-]{6,128}$/.test(gwRequestId) ||
+						typeof gwSuccessorId !== "string" ||
+						!/^[A-Za-z0-9-]{8,64}$/.test(gwSuccessorId))
+				) {
+					res.status(400).json({
+						error: "malformed gateway_request_id or successor_execution_id",
+					});
 					return;
 				}
 				{
@@ -1232,6 +1352,12 @@ export function createActionRouter(
 						eventFilter,
 						typeof context === "string" ? context : undefined,
 						registry,
+						hasGwReq
+							? {
+									gatewayRequestId: gwRequestId as string,
+									successorExecutionId: gwSuccessorId as string,
+								}
+							: undefined,
 					);
 					if (retryResult.success) {
 						res.json({

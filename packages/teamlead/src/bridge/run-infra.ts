@@ -49,6 +49,7 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
+import { LaunchClaimStore } from "./launch-claim-store.js";
 import { type ProjectRuntime, RunDispatcher } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import type { BridgeConfig } from "./types.js";
@@ -573,10 +574,17 @@ export async function setupRunInfrastructure(
 		);
 	}
 
+	// FLY-245 R1 HIGH-3: durable launch claim keyed by execId — survives a Bridge
+	// crash so a gateway retry replay converges to exactly one started Runner.
+	const launchClaims = new LaunchClaimStore(
+		join(homedir(), ".flywheel", "state", "launch-claims.db"),
+	);
+
 	return new RunDispatcher(
 		projectRuntimes,
 		cleanupHandles,
 		config.runnerAdmission,
+		launchClaims,
 	);
 }
 

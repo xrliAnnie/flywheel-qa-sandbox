@@ -305,6 +305,14 @@ export class CodexTmuxAdapter implements IAdapter {
 		]);
 		const windowId = launch.stdout.trim();
 
+		// FLY-245 R5 HIGH-3: the durable COMMIT for a Codex Runner is written at the
+		// injection point (right before the FIRST `send-keys` that launches codex,
+		// in `injectAtIdlePrompt`) — NOT here. Until then the window is just a bare
+		// shell with no codex; a crash before that injection leaves NO commit file,
+		// so the dispatcher re-drives (never adopts the idle bare shell as a started
+		// Runner). `ctx.launchCommitPath` (gateway path only) is threaded to the
+		// injection.
+
 		// CommDB session registration (parity with TmuxAdapter)
 		let registeredSession = false;
 		if (ctx.commDbPath) {
@@ -639,7 +647,12 @@ export class CodexTmuxAdapter implements IAdapter {
 			mode: 0o600,
 		});
 
-		await this.injectAtIdlePrompt(windowId, statePath);
+		await this.injectAtIdlePrompt(
+			windowId,
+			statePath,
+			undefined,
+			ctx.launchCommitPath,
+		);
 
 		// Wait for the done marker (heartbeats + active timeout + pane probe).
 		const activeBudget = ctx.timeoutMs ?? this.defaultTimeoutMs;
@@ -675,6 +688,10 @@ export class CodexTmuxAdapter implements IAdapter {
 		windowId: string,
 		statePath: string,
 		dedupeKey?: string,
+		/** FLY-245 R5: gateway-retry durable commit path. Written the INSTANT
+		 * before the codex `send-keys` (the commit point), so the dispatcher's
+		 * adopt sees a committed Runner only once codex is actually injected. */
+		commitPath?: string,
 	): Promise<void> {
 		const commCli = this.resolveCommCli();
 		for (const token of [commCli, statePath]) {
@@ -700,6 +717,13 @@ export class CodexTmuxAdapter implements IAdapter {
 					statePath,
 					...(dedupeKey ? ["--message", dedupeKey] : []),
 				].join(" ");
+				// R5 HIGH-3: write the durable commit IMMEDIATELY before send-keys (the
+				// single codex commit point). Idempotent across resume cycles. A failure
+				// here aborts before injection → no commit → the dispatcher re-drives.
+				if (commitPath) {
+					mkdirSync(dirname(commitPath), { recursive: true });
+					writeFileSync(commitPath, "");
+				}
 				this.execFileFn("tmux", ["send-keys", "-t", windowId, cmd, "Enter"]);
 				return;
 			}

@@ -381,6 +381,31 @@ export class CodexLeadProcess {
 		return this.extractThreadId(res) || threadId;
 	}
 
+	/**
+	 * FLY-245 Phase B: like `startThread`/`resumeThread` but also surfaces the raw
+	 * result so the runtime can extract + HARD-ASSERT the policy echo (sandbox /
+	 * cwd / runtimeWorkspaceRoots / approvalPolicy / cliVersion) for a write-capable
+	 * Lead (plan §3.4). `extractThreadId` still throws on a protocol error / missing
+	 * id, so a failed start never returns a result here.
+	 */
+	async startThreadWithResult(
+		params?: Record<string, unknown>,
+	): Promise<{ id: string; result: unknown }> {
+		const res = await this.request("thread/start", params ?? {});
+		const id = this.extractThreadId(res);
+		return { id, result: res.result };
+	}
+
+	async resumeThreadWithResult(
+		threadId: string,
+		params?: Record<string, unknown>,
+	): Promise<{ id: string; result: unknown }> {
+		const res = await this.request("thread/resume", { threadId, ...params });
+		this.throwOnError(res, "thread/resume");
+		const id = this.extractThreadId(res) || threadId;
+		return { id, result: res.result };
+	}
+
 	/** Start a turn. Returns the active turnId (for later turn/steer). */
 	async startTurn(args: {
 		threadId: string;

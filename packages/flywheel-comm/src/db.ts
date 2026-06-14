@@ -193,24 +193,71 @@ export class CommDB {
 			checkpoint?: string;
 			contentRef?: string;
 			contentType?: "text" | "ref";
+			/** FLY-245 D-b: override the default +72h TTL with a custom window (e.g.
+			 * a minutes-scale runner-lifecycle confirmation, plan §5.1). A
+			 * non-positive/non-finite value falls back to the schema default. */
+			ttlSeconds?: number;
 		},
 	): string {
 		const id = randomUUID();
-		this.db
-			.prepare(
-				`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type)
+		const ttl = opts?.ttlSeconds;
+		const customTtl =
+			typeof ttl === "number" && Number.isFinite(ttl) && ttl > 0;
+		if (customTtl) {
+			this.db
+				.prepare(
+					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type, expires_at)
+         VALUES (?, ?, ?, 'question', ?, ?, ?, ?, datetime('now', ?))`,
+				)
+				.run(
+					id,
+					fromAgent,
+					toAgent,
+					content,
+					opts?.checkpoint ?? null,
+					opts?.contentRef ?? null,
+					opts?.contentType ?? "text",
+					`+${Math.floor(ttl as number)} seconds`,
+				);
+		} else {
+			// Default-TTL path (byte-compat with the pre-FLY-245 schema default).
+			this.db
+				.prepare(
+					`INSERT INTO messages (id, from_agent, to_agent, type, content, checkpoint, content_ref, content_type)
          VALUES (?, ?, ?, 'question', ?, ?, ?, ?)`,
-			)
-			.run(
-				id,
-				fromAgent,
-				toAgent,
-				content,
-				opts?.checkpoint ?? null,
-				opts?.contentRef ?? null,
-				opts?.contentType ?? "text",
-			);
+				)
+				.run(
+					id,
+					fromAgent,
+					toAgent,
+					content,
+					opts?.checkpoint ?? null,
+					opts?.contentRef ?? null,
+					opts?.contentType ?? "text",
+				);
+		}
 		return id;
+	}
+
+	/**
+	 * FLY-245 D-b: atomically CLAIM a runner-lifecycle consent for execution.
+	 * `resolveGate` is an unconditional UPDATE (can't prevent a double-consume), so
+	 * lifecycle execution uses this conditional claim: set `resolved_at` ONLY if the
+	 * question is still un-consumed and un-expired, scoped to the expected
+	 * `runner_lifecycle:<action>` checkpoint. Returns true ONLY for the single
+	 * caller that won the claim (`changes === 1`) — at-most-once consumption of a
+	 * confirmation (a terminate is irreversible, so this is stronger than the
+	 * idempotent merge/ship path). Plan §5.3 / Codex R1#6.
+	 */
+	claimLifecycleConsent(questionId: string, checkpoint: string): boolean {
+		const info = this.db
+			.prepare(
+				`UPDATE messages SET resolved_at = datetime('now')
+         WHERE id = ? AND type = 'question' AND checkpoint = ?
+           AND resolved_at IS NULL AND expires_at > datetime('now')`,
+			)
+			.run(questionId, checkpoint);
+		return info.changes === 1;
 	}
 
 	/**

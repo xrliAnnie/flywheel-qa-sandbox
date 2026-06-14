@@ -1,6 +1,11 @@
 import type { Request } from "express";
 import { describe, expect, it } from "vitest";
 import {
+	ACTION_CLASS_METADATA,
+	getActionClassMeta,
+	isLifecycleAction,
+	LIFECYCLE_ACTIONS,
+	lifecycleCheckpoint,
 	RESERVED_ENDPOINTS,
 	resolveReservedAction,
 } from "../reserved-endpoints.js";
@@ -78,5 +83,67 @@ describe("resolveReservedAction", () => {
 			mkReq({ path: "/terminate", body: { executionId: "exec-x" } }),
 		);
 		expect(r).toEqual({ action: "terminate", executionId: "exec-x" });
+	});
+});
+
+describe("FLY-245 D-d: action-class metadata (SSOT classification, R2#4)", () => {
+	it("classifies EVERY reserved action EXACTLY once (no drift)", () => {
+		const reservedActions = new Set(RESERVED_ENDPOINTS.map((e) => e.action));
+		const metaActions = ACTION_CLASS_METADATA.map((m) => m.action);
+		// exactly once: no duplicates
+		expect(new Set(metaActions).size).toBe(metaActions.length);
+		// same set as the reserved endpoints (a new reserved endpoint with an
+		// unclassified action fails this).
+		expect(new Set(metaActions)).toEqual(reservedActions);
+	});
+
+	it("LIFECYCLE_ACTIONS excludes the ship-gate actions", () => {
+		expect(LIFECYCLE_ACTIONS).not.toContain("approve");
+		expect(LIFECYCLE_ACTIONS).not.toContain("approve_to_ship_gate");
+		expect([...LIFECYCLE_ACTIONS].sort()).toEqual(
+			[
+				"close_runner",
+				"close_tmux",
+				"defer",
+				"reject",
+				"retry",
+				"shelve",
+				"terminate",
+			].sort(),
+		);
+		expect(isLifecycleAction("terminate")).toBe(true);
+		expect(isLifecycleAction("approve")).toBe(false);
+		expect(isLifecycleAction("unknown")).toBe(false);
+	});
+
+	it("every lifecycle action has a verifier, eligible statuses, and a canonical endpoint", () => {
+		for (const m of ACTION_CLASS_METADATA.filter(
+			(x) => x.kind === "lifecycle",
+		)) {
+			expect(m.postconditionVerifier).not.toBe("n/a");
+			expect(m.postconditionVerifier.length).toBeGreaterThan(0);
+			expect(m.eligibleStatuses.length).toBeGreaterThan(0);
+			expect(m.canonicalEndpoint).toMatch(/^\/api\//);
+		}
+	});
+
+	it("retry is the ONLY non-idempotent action (§5.2.1)", () => {
+		const nonIdem = ACTION_CLASS_METADATA.filter(
+			(m) => m.idempotencyClass === "non_idempotent",
+		).map((m) => m.action);
+		expect(nonIdem).toEqual(["retry"]);
+	});
+
+	it("close-* canonical endpoints point at the session-close mounts (not the action router)", () => {
+		expect(getActionClassMeta("close_tmux")?.canonicalEndpoint).toBe(
+			"/api/sessions/:id/close-tmux",
+		);
+		expect(getActionClassMeta("close_runner")?.canonicalEndpoint).toBe(
+			"/api/sessions/:id/close-runner",
+		);
+	});
+
+	it("lifecycleCheckpoint maps an action to its CommDB checkpoint", () => {
+		expect(lifecycleCheckpoint("terminate")).toBe("runner_lifecycle:terminate");
 	});
 });
