@@ -437,9 +437,18 @@ if command -v jq >/dev/null 2>&1; then
   # dropping `mcpExclude` / `chromeEnabled` and re-broadening MCP scope.
   _existing_mcp_exclude=""
   _existing_chrome_enabled="false"
+  # FLY-247: preserve the fleet carrier fields (`model`, `leadBackend.backendId`)
+  # across the boot-time rewrite. fleet apply is the authoritative writer; this
+  # preserve only stops a launchd self-restart BETWEEN two applies from
+  # silently dropping the fields (and with them the FLYWHEEL_LEAD_MODEL env on
+  # the next `daemon install`). Absent fields stay absent — never injected.
+  _existing_model=""
+  _existing_lead_backend=""
   if [ -f "$MANIFEST_FILE" ]; then
     _existing_mcp_exclude=$(jq -r '.mcpExclude // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
     _existing_chrome_enabled=$(jq -r '.chromeEnabled // false' "$MANIFEST_FILE" 2>/dev/null || echo "false")
+    _existing_model=$(jq -r '.model // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
+    _existing_lead_backend=$(jq -r '.leadBackend.backendId // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
   fi
   _final_mcp_exclude="${FLYWHEEL_LEAD_MCP_EXCLUDE-$_existing_mcp_exclude}"
   if [ "${FLYWHEEL_LEAD_CHROME_ENABLED:-}" = "true" ]; then
@@ -450,6 +459,11 @@ if command -v jq >/dev/null 2>&1; then
     _final_chrome_enabled="$_existing_chrome_enabled"
   fi
 
+  # FLY-247 R7#3: atomic self-write (temp + jq validate + rename). The old
+  # direct `> "$MANIFEST_FILE"` redirect could leave a truncated canonical
+  # manifest if boot was interrupted mid-write — breaking the hash premises
+  # of the fleet transaction journal and rollback CAS.
+  _manifest_tmp="${MANIFEST_FILE}.tmp.$$"
   jq -n \
     --arg leadId "$LEAD_ID" \
     --arg projectDir "$PROJECT_DIR" \
@@ -460,13 +474,20 @@ if command -v jq >/dev/null 2>&1; then
     --arg pid "$$" \
     --arg mcpExclude "$_final_mcp_exclude" \
     --argjson chromeEnabled "$_final_chrome_enabled" \
+    --arg model "$_existing_model" \
+    --arg leadBackendId "$_existing_lead_backend" \
     '{
        leadId: $leadId, projectDir: $projectDir, projectName: $projectName,
        subdir: $subdir, workspace: $workspace, botTokenEnv: $botTokenEnv,
        mcpExclude: $mcpExclude, chromeEnabled: $chromeEnabled,
        pid: ($pid | tonumber)
-     }' \
-    > "$MANIFEST_FILE"
+     }
+     | (if $model != "" then . + {model: $model} else . end)
+     | (if $leadBackendId != "" then . + {leadBackend: {backendId: $leadBackendId}} else . end)' \
+    > "$_manifest_tmp" \
+    && jq empty "$_manifest_tmp" 2>/dev/null \
+    && mv "$_manifest_tmp" "$MANIFEST_FILE" \
+    || { rm -f "$_manifest_tmp"; log "WARNING: manifest write failed — keeping previous manifest"; }
   log "Manifest written: ${MANIFEST_FILE} (mcpExclude=\"${_final_mcp_exclude}\", chromeEnabled=${_final_chrome_enabled})"
 else
   log "WARNING: jq not found. Manifest not written — auto-restart will skip this Lead."

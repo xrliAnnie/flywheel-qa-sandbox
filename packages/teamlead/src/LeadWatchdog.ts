@@ -63,6 +63,13 @@ export interface LeadWatchdogConfig {
 	paneHashAlertCycles: number;
 	cooldownMs: number;
 	projects: ProjectEntry[];
+	/**
+	 * FLY-247: dynamic per-tick membership (config snapshot + fleet evidence
+	 * map resolved by the caller). When provided it supersedes the static
+	 * `projects` list on every poll; state for leads that leave the
+	 * membership is cleaned up (no stale cooldown/hash carryover).
+	 */
+	projectsProvider?: () => ProjectEntry[];
 	store: StateStore;
 	notifier: NotifierFn;
 	locateWindowFn: LocateWindowFn;
@@ -122,6 +129,11 @@ const BLOCKED_KEYWORDS: Array<{ kind: AlertEventType; tokens: RegExp[] }> = [
 	},
 ];
 
+/** FLY-247 R3#4: composite per-lead state key. */
+function stateKey(projectName: string, leadId: string): string {
+	return `${projectName}:${leadId}`;
+}
+
 export class LeadWatchdog {
 	private leadStates = new Map<string, LeadState>();
 	private timerHandle: ReturnType<typeof setInterval> | null = null;
@@ -156,17 +168,41 @@ export class LeadWatchdog {
 		await this.poll();
 	}
 
-	getState(leadId: string): LeadWatchdogState {
-		return this.leadStates.get(leadId)?.state ?? "AwaitingFirstCapture";
+	getState(leadId: string, projectName?: string): LeadWatchdogState {
+		if (projectName !== undefined) {
+			return (
+				this.leadStates.get(stateKey(projectName, leadId))?.state ??
+				"AwaitingFirstCapture"
+			);
+		}
+		// Back-compat single-arg lookup: match any project's entry for this
+		// leadId (pre-FLY-247 keying was bare leadId).
+		for (const [key, st] of this.leadStates) {
+			if (key.endsWith(`:${leadId}`)) return st.state;
+		}
+		return "AwaitingFirstCapture";
 	}
 
 	private async poll(): Promise<void> {
 		if (this.polling) return;
 		this.polling = true;
 		try {
-			for (const project of this.config.projects) {
+			const projects = this.config.projectsProvider
+				? this.config.projectsProvider()
+				: this.config.projects;
+			const membership = new Set<string>();
+			for (const project of projects) {
 				for (const lead of project.leads) {
+					membership.add(stateKey(project.projectName, lead.agentId));
 					await this.tickLead(project.projectName, lead.agentId);
+				}
+			}
+			// FLY-247 R3#4: drop state for removed/excluded leads so a
+			// re-included lead starts fresh and same-name leads across
+			// projects never share cooldown/hash state.
+			if (this.config.projectsProvider) {
+				for (const key of this.leadStates.keys()) {
+					if (!membership.has(key)) this.leadStates.delete(key);
 				}
 			}
 		} finally {
@@ -175,7 +211,9 @@ export class LeadWatchdog {
 	}
 
 	private async tickLead(projectName: string, leadId: string): Promise<void> {
-		const state = this.getOrInit(leadId);
+		// FLY-247 R3#4: state keyed by (projectName, leadId) — two projects
+		// with a same-named lead must never share cooldown/hash state.
+		const state = this.getOrInit(stateKey(projectName, leadId));
 
 		// 1. Blocked marker takes precedence. supervisor already alerted, stay silent.
 		try {

@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 
 export interface LeadConfig {
 	agentId: string;
@@ -69,6 +70,34 @@ export interface LeadConfig {
 	 * NOT a companion, so companion-ness cannot be derived from spawn capability.
 	 */
 	companion?: boolean;
+	/**
+	 * FLY-247: per-Lead model override — the single source of truth for "which
+	 * model does this Lead run on" (previously a hand-edited plist env that any
+	 * `flywheel-daemon.sh install` silently wiped).
+	 *
+	 * Only effective for the `claude-code` backend (flows into the launchd plist
+	 * as `FLYWHEEL_LEAD_MODEL` via `fleet apply` → manifest → `generate_plist`).
+	 * For codex Leads it is display-only ("configured", never claimed active).
+	 *
+	 * Absent = account default model. Deliberately NOT normalized (FLY-231
+	 * pattern): absent stays absent so existing in-memory Lead objects keep
+	 * their exact shape (reverse-compat).
+	 */
+	model?: string;
+	/**
+	 * FLY-247: per-Lead backend (vendor) — `"claude-code" | "codex-app-server"`
+	 * (the Lead seam from FLY-224, NOT the Runner's `claude-tmux`).
+	 *
+	 * Cross-field invariant (FLY-245 fail-close): `"codex-app-server"` is only
+	 * legal on a read-only companion — requires `companion === true` AND
+	 * `canSpawnRunners` resolving to `false`. Write-capable Codex Leads are not
+	 * unlocked; config load throws on a contradictory state, with the runtime
+	 * sandbox fail-close (`codex-lead-runtime.ts`) as the second line of defense.
+	 *
+	 * Absent = `"claude-code"` semantics via `effectiveLeadBackend()`; the field
+	 * itself is NOT normalized into the object (reverse-compat).
+	 */
+	backend?: LeadBackendId;
 }
 
 /**
@@ -136,6 +165,12 @@ export function loadProjects(): ProjectEntry[] {
 	}
 
 	const seen = new Set<string>();
+	// FLY-247 R5#6: exact keys `${projectName}-${agentId}` become filesystem
+	// path components (manifests, plists, txn artifacts) and evidence-map
+	// keys. Enforce a safe identifier grammar and GLOBAL key uniqueness
+	// ("a-b"+"c" and "a"+"b-c" both produce "a-b-c") at the schema boundary.
+	const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+	const seenExactKeys = new Set<string>();
 	for (const entry of raw) {
 		if (
 			typeof entry?.projectName !== "string" ||
@@ -149,6 +184,11 @@ export function loadProjects(): ProjectEntry[] {
 			throw new Error(`Duplicate projectName: "${entry.projectName}"`);
 		}
 		seen.add(entry.projectName);
+		if (!SAFE_ID.test(entry.projectName)) {
+			throw new Error(
+				`Project "${entry.projectName}": projectName must match ${SAFE_ID} (it becomes a filesystem path component)`,
+			);
+		}
 
 		// Validate leads config (GEO-152: 1:N multi-lead routing)
 		const leads = entry?.leads;
@@ -292,6 +332,63 @@ export function loadProjects(): ProjectEntry[] {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}].companion: must be a boolean, got ${JSON.stringify(lead.companion)}`,
 				);
+			}
+
+			// FLY-247 R5#6: agentId grammar + global exact-key uniqueness.
+			if (typeof lead.agentId === "string" && !SAFE_ID.test(lead.agentId)) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].agentId: must match ${SAFE_ID} (it becomes a filesystem path component), got ${JSON.stringify(lead.agentId)}`,
+				);
+			}
+			const exactKey = `${entry.projectName}-${lead.agentId}`;
+			if (seenExactKeys.has(exactKey)) {
+				throw new Error(
+					`Exact-key collision: "${exactKey}" is produced by more than one (projectName, agentId) pair — manifests/plists/evidence would collide. Rename one.`,
+				);
+			}
+			seenExactKeys.add(exactKey);
+
+			// FLY-247: validate optional per-lead fleet fields (model, backend).
+			// Deliberately NOT normalized (FLY-231 pattern): absent fields stay
+			// absent so existing in-memory Lead objects keep their exact shape.
+			if (lead.model !== undefined) {
+				if (typeof lead.model !== "string" || lead.model.trim().length === 0) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].model: must be a non-empty string, got ${JSON.stringify(lead.model)}`,
+					);
+				}
+				// Plist/system safety boundary (plan §3.1): the model value flows
+				// into a launchd plist; reject NUL / C0 control chars / DEL outright
+				// rather than trusting downstream escaping alone.
+				// biome-ignore lint/suspicious/noControlCharactersInRegex: deliberate control-char boundary check
+				if (/[\u0000-\u001f\u007f]/.test(lead.model)) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].model: contains control characters (newline/NUL/C0), got ${JSON.stringify(lead.model)}`,
+					);
+				}
+			}
+			if (lead.backend !== undefined) {
+				if (
+					lead.backend !== "claude-code" &&
+					lead.backend !== "codex-app-server"
+				) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].backend: must be "claude-code" | "codex-app-server" (the Lead backend seam, not the Runner's executor id), got ${JSON.stringify(lead.backend)}`,
+					);
+				}
+				// Cross-field invariant (runs AFTER canSpawnRunners normalization
+				// above): codex-app-server is only legal on a read-only companion.
+				if (
+					lead.backend === "codex-app-server" &&
+					(lead.companion !== true || lead.canSpawnRunners !== false)
+				) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`backend "codex-app-server" requires companion: true AND ` +
+							`canSpawnRunners: false. Write-capable Codex Leads are not ` +
+							`unlocked (FLY-245 fail-close).`,
+					);
+				}
 			}
 
 			// FLY-163: PM/Triage validator — runs AFTER deprecated-field strip

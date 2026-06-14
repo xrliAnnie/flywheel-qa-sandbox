@@ -82,3 +82,49 @@ describe("partitionLeadsForPaneWatchdog", () => {
 		expect(excluded).toEqual([]);
 	});
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLY-247 WI-1: effectiveLeadBackend — shared desired-backend precedence
+// (explicit leads[].backend > legacy roles/env > claude default). One function
+// consumed by Dashboard, watchdog partition, and (via conformance fixtures)
+// the fleet CLI — so all consumers give the same answer.
+// ─────────────────────────────────────────────────────────────────────────────
+import { effectiveLeadBackend } from "../lead-backend.js";
+
+describe("FLY-247 effectiveLeadBackend", () => {
+	it("explicit backend wins over legacy", () => {
+		expect(effectiveLeadBackend("codex-app-server", "claude-code")).toEqual({
+			backend: "codex-app-server",
+			source: "explicit",
+		});
+	});
+
+	it("legacy used when explicit absent", () => {
+		expect(effectiveLeadBackend(undefined, "codex-app-server")).toEqual({
+			backend: "codex-app-server",
+			source: "legacy",
+		});
+	});
+
+	it("legacy unknown string normalizes to claude-code but keeps legacy source", () => {
+		expect(effectiveLeadBackend(undefined, "weird-backend")).toEqual({
+			backend: "claude-code",
+			source: "legacy",
+		});
+	});
+
+	it("default claude-code when both absent", () => {
+		expect(effectiveLeadBackend(undefined, undefined)).toEqual({
+			backend: "claude-code",
+			source: "default",
+		});
+		expect(effectiveLeadBackend(undefined, null)).toEqual({
+			backend: "claude-code",
+			source: "default",
+		});
+		expect(effectiveLeadBackend(undefined, "")).toEqual({
+			backend: "claude-code",
+			source: "default",
+		});
+	});
+});

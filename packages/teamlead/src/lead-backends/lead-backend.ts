@@ -39,6 +39,33 @@ export function isPaneBasedLeadBackend(
 }
 
 /**
+ * FLY-247 §2.4: the unified desired-backend precedence — ONE answer for the
+ * Dashboard, the watchdog partition, and (via shared conformance fixtures) the
+ * fleet CLI's bash implementation:
+ *
+ *   1. explicit `leads[].backend` (projects.json)         → source "explicit"
+ *   2. legacy `.flywheel/config.yaml roles.lead.backend`
+ *      / `FLYWHEEL_LEAD_BACKEND` (FLY-224 path)           → source "legacy"
+ *   3. default                                             → "claude-code"
+ *
+ * A legacy value is normalized (unknown → claude-code) but keeps its "legacy"
+ * source so consumers can label it as migration-pending drift. Empty string /
+ * null / undefined legacy means "not set".
+ */
+export function effectiveLeadBackend(
+	explicit: LeadBackendId | undefined,
+	legacy?: string | undefined | null,
+): { backend: LeadBackendId; source: "explicit" | "legacy" | "default" } {
+	if (explicit !== undefined) {
+		return { backend: normalizeLeadBackend(explicit), source: "explicit" };
+	}
+	if (typeof legacy === "string" && legacy.length > 0) {
+		return { backend: normalizeLeadBackend(legacy), source: "legacy" };
+	}
+	return { backend: DEFAULT_LEAD_BACKEND, source: "default" };
+}
+
+/**
  * Partition projects/leads into those the pane-text watchdog should watch vs.
  * those to exclude (non-pane backends, e.g. Codex). Generic over the entry type
  * so callers pass `ProjectEntry[]` without coupling this module to it.
