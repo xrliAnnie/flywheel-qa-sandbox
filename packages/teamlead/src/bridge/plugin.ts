@@ -52,6 +52,8 @@ import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
+import { defaultFleetConsoleOptions, FleetConsole } from "./fleet-console.js";
+import { getFleetConsoleHtml } from "./fleet-console-html.js";
 import {
 	buildDefaultFleetProbeDeps,
 	ConfigSnapshotProvider,
@@ -60,6 +62,11 @@ import {
 	type FleetSnapshot,
 	filterPaneWatchedLeads,
 } from "./fleet-data.js";
+import {
+	handleApply,
+	handleStage,
+	loopbackSelfOrigin,
+} from "./fleet-routes.js";
 import { buildFounderConsentWiring } from "./founder-consent/wiring.js";
 import { GatePoller } from "./gate-poller.js";
 import {
@@ -497,6 +504,13 @@ export interface BridgeAppOptions {
 	 * into the remanage router. Undefined ⇒ router default (72h).
 	 */
 	stuckLatchTtlMs?: number;
+	/**
+	 * FLY-247 inc2a: the Fleet console (founder-admin surface). When present,
+	 * `GET /` renders the console and the `/api/fleet/*` routes are mounted
+	 * (loopback + same-origin + confirmToken; NO Bearer). Absent → byte-compat
+	 * (old dashboard, no fleet routes).
+	 */
+	fleetConsole?: FleetConsole;
 }
 
 export function createBridgeApp(
@@ -565,9 +579,14 @@ export function createBridgeApp(
 		});
 	});
 
-	// Dashboard — no auth (loopback only)
+	// Dashboard / Fleet console — no auth (loopback only). FLY-247 inc2a: when the
+	// console is wired, `GET /` renders the Fleet console (run-status板块 cut per
+	// Annie; the SSE payload fields are preserved, just not rendered). Otherwise
+	// the legacy operations dashboard (byte-compat).
 	app.get("/", (_req, res) => {
-		res.type("html").send(getDashboardHtml());
+		res
+			.type("html")
+			.send(opts?.fleetConsole ? getFleetConsoleHtml() : getDashboardHtml());
 	});
 
 	// SSE — no auth (loopback only)
@@ -648,6 +667,136 @@ export function createBridgeApp(
 			registry,
 		),
 	);
+
+	// FLY-247 inc2a: Fleet console founder-admin surface (§2.2). Mounted BEFORE
+	// the `/api` Bearer middleware so `/api/fleet/*` never hits it — the console
+	// authenticates via loopback + same-origin + single-use confirmToken + audit,
+	// NOT via TEAMLEAD_API_TOKEN (the browser holds no token). Gated on the
+	// console being wired (opts.fleetConsole); absent = byte-compat (no routes).
+	const fleetConsole = opts?.fleetConsole;
+	if (fleetConsole) {
+		const fleetRouteDeps = fleetConsole.routeDeps();
+		// Anti-DNS-rebinding + anti-CSRF (Codex R1 HIGH-1): the `Host` header is
+		// attacker-controllable, so a rebinding domain (evil.com → 127.0.0.1) would
+		// otherwise make Host AND Origin match. `loopbackSelfOrigin` rejects any
+		// non-loopback Host before it is trusted as the same-origin baseline.
+		const fleetHeaders = (
+			req: express.Request,
+		): Record<string, string | undefined> => ({
+			origin:
+				typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+			referer:
+				typeof req.headers.referer === "string"
+					? req.headers.referer
+					: undefined,
+		});
+
+		// Secret-free read model (loopback only; allowlisted DTO, never LeadConfig).
+		app.get("/api/fleet/snapshot", (req, res) => {
+			if (!loopbackSelfOrigin(req.headers.host)) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			try {
+				res.json(fleetConsole.buildSnapshot());
+			} catch (err) {
+				res.status(500).json({ error: (err as Error).message });
+			}
+		});
+
+		// Console-only SSE progress channel — SEPARATE from legacy /sse (which
+		// stays byte-identical). Reads the durable batch journals; on a batch
+		// reaching terminal it reconciles the apply-result audit row (R4 #5).
+		app.get("/api/fleet/progress", (req, res) => {
+			if (!loopbackSelfOrigin(req.headers.host)) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			// Refuse new SSE streams once the console is shutting down (Codex R5
+			// MEDIUM): a late reconnect during async teardown must NOT start a timer
+			// or reopen the audit DB.
+			if (fleetConsole.isClosed()) {
+				res.status(503).end();
+				return;
+			}
+			res.setHeader("Content-Type", "text/event-stream");
+			res.setHeader("Cache-Control", "no-cache");
+			res.setHeader("Connection", "keep-alive");
+			res.flushHeaders?.();
+			const seenTerminal = new Set<string>();
+			const push = (): void => {
+				let batches: ReturnType<FleetConsole["listProgress"]>;
+				try {
+					batches = fleetConsole.listProgress();
+				} catch {
+					return;
+				}
+				for (const b of batches) {
+					// Only mark a terminal batch "seen" once its apply-result audit row
+					// is confirmed written (Codex R1 MEDIUM-5: marking before the write
+					// permanently loses the row if the DB write fails); reconcile never
+					// throws, so the timer can't crash.
+					if (b.terminal && !seenTerminal.has(b.batchId)) {
+						if (fleetConsole.reconcileTerminalAudit(b.batchId)) {
+							seenTerminal.add(b.batchId);
+						}
+					}
+				}
+				res.write(`event: progress\ndata: ${JSON.stringify({ batches })}\n\n`);
+			};
+			push();
+			const timer = setInterval(push, 1000);
+			timer.unref?.();
+			// Track this SSE client so close() can end it (Codex R4 MEDIUM-1:
+			// server.close() doesn't terminate active responses → shutdown hang;
+			// an untracked timer could also reopen the audit DB after close()).
+			const stop = (): void => {
+				clearInterval(timer);
+				try {
+					res.end();
+				} catch {
+					// already closed
+				}
+			};
+			const unregister = fleetConsole.registerProgress(stop);
+			req.on("close", () => {
+				unregister();
+				clearInterval(timer);
+			});
+		});
+
+		// Stage: loopback host + same-origin → canonical request → confirmToken.
+		app.post("/api/fleet/stage", (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			const r = handleStage(
+				fleetRouteDeps,
+				req.body,
+				fleetHeaders(req),
+				selfOrigin,
+			);
+			res.status(r.status).json(r.body);
+		});
+
+		// Apply: loopback host + same-origin + confirmToken → launching → spawn.
+		app.post("/api/fleet/apply", (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			const r = handleApply(
+				fleetRouteDeps,
+				req.body,
+				fleetHeaders(req),
+				selfOrigin,
+			);
+			res.status(r.status).json(r.body);
+		});
+	}
 
 	// /api/* — api auth
 	app.use(
@@ -1758,6 +1907,65 @@ export async function startBridge(
 		fleetSupplier,
 	);
 
+	// FLY-247 inc2a: Fleet console (founder-admin surface). Local-first; default
+	// ON, `FLYWHEEL_FLEET_CONSOLE=0` falls back to the old dashboard + no fleet
+	// routes (byte-compat escape hatch). The console reads the live hot-overlay
+	// topology + computes everything server-side (secret-free DTO). Env-pinned
+	// (FLYWHEEL_PROJECTS) deployments can't run the engine (split-brain guard), so
+	// the console is disabled there too.
+	let fleetConsole: FleetConsole | undefined;
+	// Hoisted so close() can clear it (Codex R3 MEDIUM-1: a block-local timer +
+	// an un-closed console keep recovering batches / hold the audit handle after
+	// shutdown).
+	let fleetReconcileTimer: ReturnType<typeof setInterval> | undefined;
+	if (
+		process.env.FLYWHEEL_FLEET_CONSOLE !== "0" &&
+		!process.env.FLYWHEEL_PROJECTS
+	) {
+		try {
+			const here = dirname(fileURLToPath(import.meta.url));
+			const repoRoot =
+				process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+				resolve(here, "..", "..", "..", "..");
+			const fleetScriptPath = join(repoRoot, "scripts", "flywheel-fleet.sh");
+			fleetConsole = new FleetConsole(
+				defaultFleetConsoleOptions({
+					fleetScriptPath,
+					liveProjects: () => fleetConfigProvider.snapshot().projects,
+					legacyBackendOf: (p) => fleetLegacyBackendOf(p),
+					// Online dot from the live evidence poller (null/stale → unknown).
+					fleetEvidence: () => fleetPoller.snapshot(),
+					logger: (msg) => console.log(msg),
+				}),
+			);
+			// R8 #2: on boot, reconcile any interrupted batch by engine liveness
+			// (live → observe; dead → engine's own recover) + apply-result audit.
+			fleetConsole.reconcileOnStartup();
+			// Codex R2 MEDIUM-1/MEDIUM-2: reconciliation must NOT depend on an open
+			// SSE client. A periodic tick (idempotent: live→observe, terminal→audit
+			// no-op-if-present, dead→recover-once) recovers a stranded launching
+			// (early child exit) and reconciles apply-result audit within ~30s,
+			// without waiting for a Bridge restart or a console connection.
+			const fc = fleetConsole;
+			fleetReconcileTimer = setInterval(() => {
+				try {
+					fc.reconcileOnStartup();
+				} catch (e) {
+					console.warn(
+						`[Bridge] fleet reconcile tick failed: ${(e as Error).message}`,
+					);
+				}
+			}, 30_000);
+			fleetReconcileTimer.unref?.();
+			console.log(`[Bridge] Fleet console enabled (engine=${fleetScriptPath})`);
+		} catch (err) {
+			console.warn(
+				`[Bridge] Fleet console init failed — falling back to dashboard: ${(err as Error).message}`,
+			);
+			fleetConsole = undefined;
+		}
+	}
+
 	// GEO-195: Initialize RuntimeRegistry — per-lead runtime selection
 	// GEO-267: Accept pre-created registry (from run-bridge.ts for DirectEventSink injection)
 	const registry = opts?.registry ?? new RuntimeRegistry();
@@ -2002,6 +2210,7 @@ export async function startBridge(
 			// FLY-253: holder filled after the detector is created post-listen.
 			stuckDetectorHolder,
 			stuckLatchTtlMs: stuckLatchTtlMs(),
+			fleetConsole,
 		},
 	);
 
@@ -2392,6 +2601,10 @@ export async function startBridge(
 			await internalDispatcher.teardownRuntimes();
 		}
 		if (runtimeRetryTimer) clearInterval(runtimeRetryTimer);
+		// FLY-247 (Codex R3 MEDIUM-1): stop the fleet reconcile tick + close the
+		// console's audit handle on shutdown.
+		if (fleetReconcileTimer) clearInterval(fleetReconcileTimer);
+		fleetConsole?.close();
 		await registry.shutdownAll();
 		broadcaster.destroy();
 		await new Promise<void>((resolve, reject) => {

@@ -62,4 +62,38 @@ describe("FLY-247 bash suites (hermetic)", () => {
 			runSuite("scripts/__tests__/flywheel-fleet-report.test.sh"),
 		).not.toThrow();
 	}, 120_000);
+
+	// FLY-247 inc2a batch engine suites (were missing from the wrapper → not in
+	// CI). These cover the write-ahead journal, batch apply/restore, the
+	// --changes-file CLI, baseline/env-pinned rejects, owner-claim + CAS
+	// launching→running (Codex R2 HIGH-2), and crash recovery.
+	it("flywheel-fleet-journal write-ahead journal", () => {
+		expect(() =>
+			runSuite("scripts/__tests__/flywheel-fleet-journal.test.sh"),
+		).not.toThrow();
+	}, 120_000);
+
+	it("flywheel-fleet-batch primitives (write/restore/baseline)", () => {
+		expect(() =>
+			runSuite("scripts/__tests__/flywheel-fleet-batch.test.sh"),
+		).not.toThrow();
+	}, 120_000);
+
+	it("flywheel-fleet --changes-file CLI", () => {
+		expect(() =>
+			runSuite("scripts/__tests__/flywheel-fleet-changes-file.test.sh"),
+		).not.toThrow();
+	}, 120_000);
+
+	it("flywheel-fleet apply-batch orchestration (mid-fail/baseline/env-pinned)", () => {
+		expect(() =>
+			runSuite("scripts/__tests__/flywheel-fleet-apply-batch.test.sh"),
+		).not.toThrow();
+	}, 120_000);
+
+	it("flywheel-fleet batch recovery reconciliation", () => {
+		expect(() =>
+			runSuite("scripts/__tests__/flywheel-fleet-recover.test.sh"),
+		).not.toThrow();
+	}, 120_000);
 });

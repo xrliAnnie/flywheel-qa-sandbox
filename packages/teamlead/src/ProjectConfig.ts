@@ -160,6 +160,48 @@ export function loadProjects(): ProjectEntry[] {
 		}
 	}
 
+	const projects = parseAndValidateProjects(raw);
+
+	// Hydrate per-lead bot tokens from env. This is NOT part of pure validation,
+	// so `parseAndValidateProjects` stays env-free and reusable by the engine
+	// CLI validator and the Bridge fleet-admin API (FLY-247 inc2a, R2 #5).
+	for (const entry of projects) {
+		for (const lead of entry.leads) {
+			const botTokenEnv = lead.botTokenEnv;
+			if (typeof botTokenEnv === "string" && botTokenEnv.length > 0) {
+				const resolved = process.env[botTokenEnv];
+				if (resolved) {
+					lead.botToken = resolved;
+				} else {
+					console.warn(
+						`[loadProjects] "${entry.projectName}" lead "${lead.agentId}": ` +
+							`botTokenEnv="${botTokenEnv}" not found in env — will fall back to DISCORD_BOT_TOKEN`,
+					);
+				}
+			}
+		}
+	}
+
+	return projects;
+}
+
+/**
+ * FLY-247 inc2a (R2 #5): pure structural parse + validation, split from runtime
+ * secret hydration. Takes already-parsed JSON (`raw`) and returns validated
+ * `ProjectEntry[]` WITHOUT reading `process.env` or resolving bot tokens.
+ *
+ * This is the single validation authority reused by:
+ *   - `loadProjects()` (which then hydrates bot tokens from env), and
+ *   - the engine-side CLI validator (`validate-projects.js`) invoked by
+ *     `flywheel-fleet.sh` before every `projects.json` rename and during
+ *     recovery — so a bash writer can never fall back to `jq empty` and bypass
+ *     cross-field rules such as the FLY-245 codex fail-close.
+ *
+ * Behaviour is byte-identical to the pre-split `loadProjects` validation
+ * (canSpawnRunners normalization, deprecated-field strip, FLY-245 cross-field,
+ * raw-botToken strip), MINUS the env-based bot-token resolution.
+ */
+export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 	if (!Array.isArray(raw)) {
 		throw new Error("FLYWHEEL_PROJECTS must be a JSON array");
 	}
@@ -409,19 +451,10 @@ export function loadProjects(): ProjectEntry[] {
 						`(FLY-163: canSpawnRunners no longer derives from forumChannel.)`,
 				);
 			}
-			// Strip any raw botToken from JSON input first — secrets must come via env vars
+			// Strip any raw botToken from JSON input — secrets must come via env
+			// vars and are hydrated later (in loadProjects), keeping this
+			// validator pure/env-free (FLY-247 inc2a R2 #5).
 			delete lead.botToken;
-			const botTokenEnv = lead.botTokenEnv;
-			if (typeof botTokenEnv === "string" && botTokenEnv.length > 0) {
-				const resolved = process.env[botTokenEnv];
-				if (resolved) {
-					lead.botToken = resolved;
-				} else {
-					console.warn(
-						`[loadProjects] "${entry.projectName}" leads[${i}]: botTokenEnv="${botTokenEnv}" not found in env — will fall back to DISCORD_BOT_TOKEN`,
-					);
-				}
-			}
 		}
 
 		// FLY-173: validate optional generalChannel (project core channel). It

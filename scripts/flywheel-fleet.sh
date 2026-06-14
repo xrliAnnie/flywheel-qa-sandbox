@@ -38,6 +38,17 @@ export FLYWHEEL_DAEMON_SOURCED=1
 source "${SCRIPT_DIR}/flywheel-daemon.sh"
 set +e  # daemon's set -e must not make fleet's probe negatives fatal
 
+# FLY-247 inc2a: batch-mode libs (config-write flock, write-ahead journal, and
+# the canonical-request/baseline/per-key primitives + fleet_batch_apply
+# orchestration). Sourcing is side-effect-free — each guards its CLI/dispatch on
+# BASH_SOURCE==$0.
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/flywheel-config-lock.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/flywheel-fleet-journal.sh"
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/flywheel-fleet-batch.sh"
+
 PROJECTS_JSON="${HOME}/.flywheel/projects.json"
 FLEET_BACKUPS="${HOME}/.flywheel/fleet-backups"
 LOCK_DIR="${HOME}/.flywheel/restart.lock.d"
@@ -570,12 +581,35 @@ txn_update() {
   jq "$@" "$prog" "$txn" > "$tmp" && jq empty "$tmp" 2>/dev/null && mv "$tmp" "$txn"
 }
 
+# FLY-247 inc2a (§2.1): batch model-only apply driver. Validates the canonical
+# request, ensures the launching journal exists (the console API normally
+# creates it before spawn; create-if-absent keeps the CLI self-sufficient), then
+# runs fleet_batch_apply against the live config. env-pinned / baseline / lock
+# outcomes are journaled by fleet_batch_apply (not a hard die) so the console can
+# reconcile them.
+cmd_apply_batch() {
+  local cf="$1"
+  [ -f "$cf" ] || die "changes-file not found: $cf"
+  local vmsg
+  if ! vmsg=$(fleet_batch_validate_request "$cf" 2>&1); then
+    die "invalid changes-file: ${vmsg}"
+  fi
+  local batch_id; batch_id=$(jq -r '.batchId' "$cf")
+  if [ ! -f "$(batch_journal_path "$batch_id")" ]; then
+    local pre_sha; pre_sha=$(file_sha "$PROJECTS_JSON")
+    batch_journal_create "$batch_id" "$cf" "$pre_sha" \
+      || die "could not create batch journal for ${batch_id}"
+  fi
+  fleet_batch_apply "$cf" "$PROJECTS_JSON"
+}
+
 cmd_apply() {
-  local want_lead="" want_project="" yes=false dry_run=false rollback=false txn_id_arg=""
+  local want_lead="" want_project="" yes=false dry_run=false rollback=false txn_id_arg="" changes_file=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --lead) [ -n "${2:-}" ] || die "--lead requires a value"; want_lead="$2"; shift 2 ;;
       --project) [ -n "${2:-}" ] || die "--project requires a value"; want_project="$2"; shift 2 ;;
+      --changes-file) [ -n "${2:-}" ] || die "--changes-file requires a value"; changes_file="$2"; shift 2 ;;
       --yes) yes=true; shift ;;
       --dry-run) dry_run=true; shift ;;
       --rollback) rollback=true; shift ;;
@@ -583,6 +617,15 @@ cmd_apply() {
       *) die "apply: unknown argument $1" ;;
     esac
   done
+
+  # FLY-247 inc2a: batch model-only apply. The console API created the launching
+  # journal before spawn; here we validate the canonical request and drive the
+  # batch. The batch does NOT hold restart.lock.d — each per-key cutover (inc1
+  # single-key apply, a subprocess) acquires it itself (per-key granularity).
+  if [ -n "$changes_file" ]; then
+    cmd_apply_batch "$changes_file"
+    return $?
+  fi
 
   if [ "$rollback" = "true" ]; then
     cmd_rollback "$want_lead" "$txn_id_arg" "$yes"
@@ -1139,16 +1182,29 @@ cmd_rollback() {
 # ════════════════════════════════════════════════════════════════
 
 cmd_recover() {
-  local txn_id="" want_lead="" yes=false
+  local txn_id="" want_lead="" yes=false batch_id=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --txn) [ -n "${2:-}" ] || die "--txn requires a value"; txn_id="$2"; shift 2 ;;
+      --batch) [ -n "${2:-}" ] || die "--batch requires a value"; batch_id="$2"; shift 2 ;;
       --lead) [ -n "${2:-}" ] || die "--lead requires a value"; want_lead="$2"; shift 2 ;;
       --yes) yes=true; shift ;;
       *) die "recover: unknown argument $1" ;;
     esac
   done
-  [ -n "$txn_id" ] || die "recover requires --txn <id>"
+
+  # FLY-247 inc2a: batch recovery. Reconciles an interrupted `--changes-file`
+  # batch (launching → rejected; running → per-key reconcile → recover-required
+  # or terminal reduction). Echoes the resulting BatchStatus.
+  if [ -n "$batch_id" ]; then
+    validate_txn_id "$batch_id" || die "unsafe --batch value"
+    [ "$yes" = "true" ] || die "recover is mutating — requires explicit --yes"
+    guard_env_source
+    fleet_batch_recover "$PROJECTS_JSON" "$batch_id"
+    return $?
+  fi
+
+  [ -n "$txn_id" ] || die "recover requires --txn <id> (or --batch <id>)"
   validate_txn_id "$txn_id" || die "unsafe --txn value (R4-H4)"
   [ "$yes" = "true" ] || die "recover is mutating — requires explicit --yes"
   guard_env_source
