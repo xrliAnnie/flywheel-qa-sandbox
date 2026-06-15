@@ -134,6 +134,26 @@ describe("Blueprint approve_to_ship instruction (FLY-191 Phase 2)", () => {
 		expect(prompt).toContain("BRAINSTORM GATE");
 		expect(prompt).toContain("This command BLOCKS until your Lead confirms");
 	});
+
+	it("FLY-248: removed the timer self-merge fallback — Runner never self-merges, even after approval", async () => {
+		const prompt = await buildPromptWithCheckpoints();
+
+		// The 5-minute timeout self-merge fallback is GONE (the incident root cause):
+		// after a verified approval the Runner used to force-merge if the deploy
+		// workflow was slow. That direct `gh pr merge` path is the FLY-248 red line.
+		expect(prompt).not.toContain(
+			"If no deploy workflow merges within 5 minutes",
+		);
+		expect(prompt).not.toContain(
+			"merge directly: `gh pr merge <NUMBER> --squash --delete-branch`",
+		);
+
+		// Replacement: the :cool: deploy workflow is the only merge path; if it does
+		// not merge in the poll window the Runner reports blocked instead of self-merging.
+		expect(prompt).toContain("ONLY merge path");
+		expect(prompt).toContain("a Runner must never self-merge");
+		expect(prompt).toContain("complete --route blocked");
+	});
 });
 
 describe("resolveStateDbPathForRunner (FLY-191 — QA-caught wiring gap)", () => {
