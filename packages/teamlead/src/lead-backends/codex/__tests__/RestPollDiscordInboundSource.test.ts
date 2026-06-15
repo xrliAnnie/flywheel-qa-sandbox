@@ -305,6 +305,55 @@ describe("RestPollDiscordInboundSource — durable cursor (HIGH-4: no restart-ga
 		expect(seen.filter((id) => id === "2").length).toBeGreaterThanOrEqual(2); // retried
 		expect(seen).toContain("3");
 	});
+
+	it("FLY-267: a NEW channel whose first baseline fails does NOT replay history (per-channel baseline gate)", async () => {
+		// Mixed deploy: c1 resumes from a saved cursor; c2 (e.g. the newly-added
+		// roundtable) has OLD history and NO cursor, and its first baseline fetch
+		// fails. The global-`resumedAny` drain previously polled c2 WITHOUT `after`
+		// → replayed up to 50 historical messages (stale @mentions). The per-channel
+		// baseline gate must keep c2 baseline-only until ONE baseline succeeds.
+		const store = new InMemoryInboundCursorStore();
+		store.save("c1", "a1"); // c1 resumes after a1
+		const base = fakeDiscord({
+			c1: [msg("a1", "c1", "old"), msg("a2", "c1", "downtime")],
+			c2: [
+				msg("b1", "c2", "stale @ 1"),
+				msg("b2", "c2", "stale @ 2"),
+				msg("b3", "c2", "stale @ 3"),
+			],
+		}).fetchImpl;
+		let c2BaselineFailed = false;
+		const fetchImpl = (async (url: string, init?: unknown) => {
+			const ch = new URL(url).pathname.split("/")[4];
+			if (ch === "c2" && !c2BaselineFailed) {
+				c2BaselineFailed = true;
+				throw new Error("c2 baseline boom");
+			}
+			return base(url as never, init as never);
+		}) as unknown as typeof fetch;
+
+		const delivered: DiscordInboundMessage[] = [];
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: ["c1", "c2"],
+			fetchImpl,
+			setTimer: () => ({ cancel: () => {} }),
+			logger: silent,
+			cursorStore: store,
+		});
+		src.onMessage((m) => {
+			delivered.push(m);
+			return true;
+		});
+		await src.start(); // c1 resumes+drains a2; c2 baseline FAILS → stays baseline-only
+		await src.pollOnce(); // c2 baseline now succeeds → sets cursor, delivers NOTHING
+
+		const ids = delivered.map((m) => m.id);
+		expect(ids).toContain("a2"); // c1 downtime message delivered
+		expect(ids).not.toContain("b1"); // c2 OLD history NEVER replayed
+		expect(ids).not.toContain("b2");
+		expect(ids).not.toContain("b3");
+	});
 });
 
 describe("RestPollDiscordInboundSource — lifecycle", () => {

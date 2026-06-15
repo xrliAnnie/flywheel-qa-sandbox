@@ -56,11 +56,14 @@ export interface TurnExecutor {
 
 /** Abstracts the durable outbox + canonical Discord sender (Phase 4b). */
 export interface OutboundSender {
-	/** Durably enqueue the reply; returns an outboxId. Idempotent on idempotencyKey. */
+	/** Durably enqueue the reply; returns an outboxId. Idempotent on idempotencyKey.
+	 * FLY-267: `channelId` routes the reply to a specific channel (the inbound source
+	 * channel for a cross-dept input); omitted → the sender's default chat channel. */
 	enqueue(args: {
 		leadId: string;
 		text: string;
 		idempotencyKey: string;
+		channelId?: string;
 	}): Promise<string>;
 	/** Deliver a previously-enqueued reply (canonical sender + Discord nonce). */
 	deliver(outboxId: string): Promise<void>;
@@ -73,6 +76,10 @@ export interface LeadInput {
 	idempotencyKey: string;
 	source: "discord" | "mailbox";
 	payload: string;
+	/** FLY-267 回: the Discord channel a reply must route to (the inbound source
+	 * channel). Set by the gateway ONLY for cross-dept/shared-channel messages;
+	 * omitted for chat/core/mailbox → reply falls back to the default chat channel. */
+	replyChannelId?: string;
 }
 
 export interface LeadInputRouterOptions {
@@ -199,7 +206,9 @@ export class LeadInputRouter {
 			// Persist output AT model_completed (CR HIGH-1): if we crash before the
 			// outbox enqueue, recovery can still resend from the journal.
 			this.journal.toModelCompleted(id, output);
-			await this.deliverOutput(id, output);
+			// FLY-267 回: route the reply to the inbound source channel (cross-dept
+			// inputs carry replyChannelId; chat/core/mailbox leave it undefined → chat).
+			await this.deliverOutput(id, output, entry.replyChannelId);
 			this.journal.toCompleted(id);
 		} catch (err) {
 			// A side-effect MAY have run — never auto-retry; flag for human review.
@@ -211,11 +220,17 @@ export class LeadInputRouter {
 		}
 	}
 
-	private async deliverOutput(id: string, output: string): Promise<void> {
+	private async deliverOutput(
+		id: string,
+		output: string,
+		channelId?: string,
+	): Promise<void> {
 		const outboxId = await this.sender.enqueue({
 			leadId: this.leadId,
 			text: output,
 			idempotencyKey: `${id}:out`,
+			// FLY-267: undefined → sender's default chat channel (byte-compat).
+			...(channelId ? { channelId } : {}),
 		});
 		this.journal.toOutputPending(id, outboxId);
 		await this.sender.deliver(outboxId);
@@ -267,7 +282,8 @@ export class LeadInputRouter {
 						}
 						this.journal.toModelCompleted(entry.id, r.output);
 					}
-					await this.deliverOutput(entry.id, r.output);
+					// FLY-267: recovery resend must target the same source channel.
+					await this.deliverOutput(entry.id, r.output, entry.replyChannelId);
 					this.journal.toCompleted(entry.id);
 					return;
 				}
@@ -284,7 +300,12 @@ export class LeadInputRouter {
 				} else if (entry.output !== undefined) {
 					// model_completed: output was persisted in the journal (CR HIGH-1)
 					// → re-enqueue with the deterministic key (idempotent) + deliver.
-					await this.deliverOutput(entry.id, entry.output);
+					// FLY-267: route to the persisted source channel (else default chat).
+					await this.deliverOutput(
+						entry.id,
+						entry.output,
+						entry.replyChannelId,
+					);
 					this.journal.toCompleted(entry.id);
 				} else {
 					this.safeAmbiguous(

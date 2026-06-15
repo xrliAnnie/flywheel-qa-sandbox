@@ -122,6 +122,26 @@ describe("CodexOutboundSender — deliver", () => {
 		});
 	});
 
+	it("FLY-267: enqueue with channelId routes that reply to THAT channel (else default)", async () => {
+		const { post, calls } = fakePost(200);
+		const sender = make({ post });
+		const routed = await sender.enqueue({
+			leadId: "lead-a",
+			text: "in roundtable",
+			idempotencyKey: "r1:out",
+			channelId: "round-table",
+		});
+		await sender.deliver(routed);
+		expect(JSON.parse(calls[0].body).channelId).toBe("round-table");
+		const def = await sender.enqueue({
+			leadId: "lead-a",
+			text: "in chat",
+			idempotencyKey: "r2:out",
+		});
+		await sender.deliver(def);
+		expect(JSON.parse(calls[1].body).channelId).toBe("chan-1"); // fallback
+	});
+
 	it("is idempotent — a second deliver does not POST again", async () => {
 		const { post, calls } = fakePost(200);
 		const sender = make({ post });

@@ -211,6 +211,46 @@ describe("SqliteJournalStore — persistence + LeadJournal integration", () => {
 		store.close();
 	});
 
+	it("FLY-267: round-trips reply_channel_id; absent route reads back undefined", () => {
+		const store = new SqliteJournalStore(":memory:");
+		store.insertAccepted(entry({ id: "id-1", replyChannelId: "round-1" }));
+		store.insertAccepted(entry({ id: "id-2", idempotencyKey: "k2" })); // no route
+		expect(store.getById("id-1")?.replyChannelId).toBe("round-1");
+		expect(store.getById("id-2")?.replyChannelId).toBeUndefined();
+		store.close();
+	});
+
+	it("FLY-267: migrates a pre-267 DB (no reply_channel_id col); reopen is idempotent", async () => {
+		const path = join(dir, "pre267.db");
+		const Database = (await import("better-sqlite3")).default;
+		const raw = new Database(path);
+		raw.exec(`
+			CREATE TABLE journal (
+				id TEXT PRIMARY KEY, idempotency_key TEXT UNIQUE NOT NULL,
+				source TEXT NOT NULL, payload TEXT NOT NULL, state TEXT NOT NULL,
+				client_correlation_id TEXT, turn_id TEXT, output TEXT, outbox_id TEXT,
+				reason TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+			);`);
+		raw
+			.prepare(
+				`INSERT INTO journal (id, idempotency_key, source, payload, state, created_at, updated_at)
+				 VALUES ('old-1','ko','discord','p','accepted',1,1)`,
+			)
+			.run();
+		raw.close();
+		const s1 = new SqliteJournalStore(path); // migrate(): ADD COLUMN reply_channel_id
+		expect(s1.getById("old-1")?.replyChannelId).toBeUndefined(); // old row → null
+		s1.insertAccepted(
+			entry({ id: "id-9", idempotencyKey: "k9", replyChannelId: "round-9" }),
+		);
+		expect(s1.getById("id-9")?.replyChannelId).toBe("round-9");
+		s1.close();
+		// Reopen MUST be idempotent (no "duplicate column" error on the 2nd migrate).
+		const s2 = new SqliteJournalStore(path);
+		expect(s2.getById("id-9")?.replyChannelId).toBe("round-9");
+		s2.close();
+	});
+
 	it("drives a full LeadJournal lifecycle on the sqlite store", () => {
 		const store = new SqliteJournalStore(":memory:");
 		let n = 0;

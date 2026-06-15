@@ -37,6 +37,7 @@ interface Row {
 	output: string | null;
 	outbox_id: string | null;
 	reason: string | null;
+	reply_channel_id: string | null;
 	created_at: number;
 	updated_at: number;
 }
@@ -57,6 +58,7 @@ function rowToEntry(r: Row): JournalEntry {
 	if (r.output != null) e.output = r.output;
 	if (r.outbox_id != null) e.outboxId = r.outbox_id;
 	if (r.reason != null) e.reason = r.reason;
+	if (r.reply_channel_id != null) e.replyChannelId = r.reply_channel_id;
 	return e;
 }
 
@@ -80,6 +82,7 @@ export class SqliteJournalStore implements JournalStore {
 				output TEXT,
 				outbox_id TEXT,
 				reason TEXT,
+				reply_channel_id TEXT,
 				created_at INTEGER NOT NULL,
 				updated_at INTEGER NOT NULL
 			);
@@ -102,6 +105,11 @@ export class SqliteJournalStore implements JournalStore {
 		if (cols.some((c) => c.name === "seq")) {
 			this.db.exec("ALTER TABLE journal DROP COLUMN seq");
 		}
+		// FLY-267: add the nullable reply-route column to a pre-267 DB. Guarded by
+		// PRAGMA so a reopen (column already present) is a no-op — idempotent.
+		if (!cols.some((c) => c.name === "reply_channel_id")) {
+			this.db.exec("ALTER TABLE journal ADD COLUMN reply_channel_id TEXT");
+		}
 	}
 
 	close(): void {
@@ -117,8 +125,8 @@ export class SqliteJournalStore implements JournalStore {
 		const info = this.db
 			.prepare(
 				`INSERT INTO journal
-				 (id, idempotency_key, source, payload, state, created_at, updated_at)
-				 VALUES (@id, @idempotencyKey, @source, @payload, @state, @createdAt, @updatedAt)
+				 (id, idempotency_key, source, payload, state, reply_channel_id, created_at, updated_at)
+				 VALUES (@id, @idempotencyKey, @source, @payload, @state, @replyChannelId, @createdAt, @updatedAt)
 				 ON CONFLICT(idempotency_key) DO NOTHING`,
 			)
 			.run({
@@ -127,6 +135,7 @@ export class SqliteJournalStore implements JournalStore {
 				source: entry.source,
 				payload: entry.payload,
 				state: entry.state,
+				replyChannelId: entry.replyChannelId ?? null,
 				createdAt: entry.createdAt,
 				updatedAt: entry.updatedAt,
 			});

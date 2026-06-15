@@ -24,7 +24,10 @@ import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertGatewayOnlyToolSurface } from "./action-surface.js";
 import { buildCodexLeadMcpArgv } from "./buildCodexLeadMcpArgv.js";
-import { CodexDiscordGateway } from "./CodexDiscordGateway.js";
+import {
+	CodexDiscordGateway,
+	type DiscordInboundMessage,
+} from "./CodexDiscordGateway.js";
 import { type ChildTransport, CodexLeadProcess } from "./CodexLeadProcess.js";
 import { CodexLeadRuntime, type RuntimeWiring } from "./CodexLeadRuntime.js";
 import { CodexOutboundSender } from "./CodexOutboundSender.js";
@@ -37,6 +40,7 @@ import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
 import { McpInventoryWatcher } from "./mcp-inventory.js";
+import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
@@ -49,6 +53,15 @@ export interface CodexLeadRuntimeConfig {
 	chatChannelId: string;
 	coreChannelId?: string;
 	channelIds: string[];
+	/** FLY-267 收: cross-department / shared channel ids (e.g. #leads-roundtable),
+	 * merged into `channelIds` for inbound poll + gateway allowlist. ALSO the set
+	 * that is (判) mention-gated and (回) reply-routed. Empty (env unset) → the
+	 * single-channel byte-compat behavior (chat + optional core only). */
+	crossDeptChannelIds: string[];
+	/** FLY-267 判: optional name-mention regexes (e.g. `\bMufasa\b`), applied ONLY
+	 * to non-bot authors (a sibling bot must use an exact mention id). Empty (env
+	 * unset) → bot-id mention only (most precise; no false "talking about" trigger). */
+	mentionPatterns: string[];
 	bridgeUrl: string;
 	apiToken: string;
 	stateDir: string;
@@ -283,7 +296,45 @@ export function parseCodexLeadRuntimeConfig(
 	}
 
 	const coreChannelId = env.FLYWHEEL_LEAD_CORE_CHANNEL_ID?.trim() || undefined;
-	const channelIds = [chatChannelId, ...(coreChannelId ? [coreChannelId] : [])];
+	const baseChannels = [
+		chatChannelId,
+		...(coreChannelId ? [coreChannelId] : []),
+	];
+	// FLY-267 收: cross-dept / shared channels (e.g. #leads-roundtable). Deduped and
+	// stripped of any id already in base (a chat/core channel must NOT be mention-
+	// gated). `channelIds` keeps the base array EXACTLY when no cross-dept id is
+	// configured (byte-compat — no Set wrapping that could reorder/dedup base).
+	const crossSeen = new Set<string>();
+	const crossDeptChannelIds: string[] = [];
+	for (const id of (env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS ?? "")
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean)) {
+		if (baseChannels.includes(id) || crossSeen.has(id)) continue;
+		crossSeen.add(id);
+		crossDeptChannelIds.push(id);
+	}
+	const channelIds = [...baseChannels, ...crossDeptChannelIds];
+	// FLY-267 回 (Codex code-review R1 HIGH): a cross-dept reply in "bridge" outbound
+	// mode would be REJECTED by the Bridge — buildAuthorizeLeadChannel authorizes only
+	// the Lead's chatChannel + project generalChannel, so a roundtable send 403s and the
+	// journal row goes ambiguous. The Bridge can't authoritatively see this per-Lead
+	// runtime env, so we FAIL LOUD here rather than ship a silent 403. Cross-dept is
+	// supported in "direct" mode (Mufasa); server-side shared-channel authorization for
+	// bridge mode is a follow-up.
+	if (crossDeptChannelIds.length > 0 && outboundMode === "bridge") {
+		throw new Error(
+			"codex-lead-runtime: cross-dept channels (FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS) " +
+				"require DIRECT outbound mode — bridge mode would 403 a shared-channel reply " +
+				"(the Bridge authorizes only chat + generalChannel). Use direct mode, or wait " +
+				"for server-side shared-channel authorization (follow-up).",
+		);
+	}
+	// FLY-267 判: optional name-mention regexes (non-bot authors only; see isMentioned).
+	const mentionPatterns = (env.FLYWHEEL_LEAD_MENTION_PATTERNS ?? "")
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
 	const chromeEnabled = env.FLYWHEEL_LEAD_CHROME_ENABLED === "1";
 	const chrome = chromeEnabled
 		? { enabled: true, browserUrl: env.FLYWHEEL_LEAD_CHROME_URL?.trim() }
@@ -356,6 +407,8 @@ export function parseCodexLeadRuntimeConfig(
 		chatChannelId,
 		coreChannelId,
 		channelIds,
+		crossDeptChannelIds,
+		mentionPatterns,
 		bridgeUrl,
 		apiToken,
 		stateDir,
@@ -877,11 +930,30 @@ export function buildCodexLeadRuntime(
 				// Durable cursor: restart resumes instead of re-baselining (HIGH-4).
 				cursorStore: new FileInboundCursorStore(config.inboundCursorPath),
 			});
+			// FLY-267 判 + 回: when cross-dept channels are configured, gate them on
+			// mention AND route replies back to the source channel (chat/core stay
+			// always-handled + reply in chat). No cross-dept → neither hook → byte-compat.
+			const crossDeptSet = new Set(config.crossDeptChannelIds);
+			const shouldHandle =
+				config.crossDeptChannelIds.length > 0
+					? buildMentionGate({
+							botUserId: config.botUserId,
+							sharedChannelIds: config.crossDeptChannelIds,
+							mentionPatterns: config.mentionPatterns,
+						})
+					: undefined;
+			const resolveReplyChannelId =
+				config.crossDeptChannelIds.length > 0
+					? (m: DiscordInboundMessage) =>
+							crossDeptSet.has(m.channelId) ? m.channelId : undefined
+					: undefined;
 			const gateway = new CodexDiscordGateway({
 				source,
 				router,
 				botUserId: config.botUserId,
 				channelIds: config.channelIds,
+				...(shouldHandle ? { shouldHandle } : {}),
+				...(resolveReplyChannelId ? { resolveReplyChannelId } : {}),
 			});
 			return {
 				recover: () => router.recover(),
@@ -929,6 +1001,10 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 		`bot user id   : ${config.botUserId} (reused Discord bot — identity unchanged)`,
 		`bot token     : ${redactSecret(config.botToken)} (redacted)`,
 		`chat channel  : ${config.chatChannelId}${config.coreChannelId ? ` (+core ${config.coreChannelId})` : ""}`,
+		// FLY-267: surface the cross-dept / shared-channel config so it is auditable
+		// before a restart (which channels get mention-gated + reply-routed).
+		`cross-dept    : ${config.crossDeptChannelIds.length ? `${config.crossDeptChannelIds.join(", ")} (mention-gated + reply-routed)` : "(none — single-channel byte-compat)"}`,
+		`mention policy: ${config.crossDeptChannelIds.length ? (config.mentionPatterns.length ? `bot-id mention + name regex [${config.mentionPatterns.join(", ")}] (non-bot authors)` : "bot-id mention only") : "n/a (no shared channels)"}`,
 		`inbound       : REST poll (own bot token) — no Bridge`,
 		`outbound mode : ${config.outboundMode}${noBridge ? " → DIRECT post to Discord (own bot token), NO Bridge" : ` → Bridge ${config.bridgeUrl}`}`,
 		`bridge env    : url=${config.bridgeUrl || "(unset — not needed in direct)"} apiToken=${config.apiToken ? redactSecret(config.apiToken) : "(unset — not needed in direct)"}`,

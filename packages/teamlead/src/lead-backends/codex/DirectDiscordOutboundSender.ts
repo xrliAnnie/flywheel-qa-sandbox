@@ -22,6 +22,9 @@ type PostFn = typeof postDiscordMessageToChannel;
 
 interface OutboxEntry {
 	text: string;
+	/** FLY-267: channel this reply posts to — the per-message override resolved at
+	 * enqueue, else the sender's default chat channel. */
+	channelId: string;
 	status: "pending" | "sent";
 	messageId?: string;
 }
@@ -60,6 +63,7 @@ export class DirectDiscordOutboundSender implements OutboundSender {
 		leadId: string;
 		text: string;
 		idempotencyKey: string;
+		channelId?: string;
 	}): Promise<string> {
 		if (!args.idempotencyKey)
 			throw new Error(
@@ -69,6 +73,8 @@ export class DirectDiscordOutboundSender implements OutboundSender {
 		if (!this.outbox.has(args.idempotencyKey)) {
 			this.outbox.set(args.idempotencyKey, {
 				text: args.text,
+				// FLY-267: per-message override, else the default chat channel (byte-compat).
+				channelId: args.channelId ?? this.channelId,
 				status: "pending",
 			});
 		}
@@ -84,7 +90,7 @@ export class DirectDiscordOutboundSender implements OutboundSender {
 		}
 		if (entry.status === "sent") return; // locally idempotent
 		const res = await this.postImpl(
-			this.channelId,
+			entry.channelId, // FLY-267: routed channel (default = chat) resolved at enqueue
 			entry.text,
 			this.botToken,
 			{},

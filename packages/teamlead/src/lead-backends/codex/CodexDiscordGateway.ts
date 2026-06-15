@@ -36,6 +36,10 @@ export interface DiscordInboundMessage {
 	/** Whether the author is a bot (any bot, incl. this Lead or other Leads). */
 	authorBot: boolean;
 	content: string;
+	/** FLY-267: ids of users explicitly @-mentioned (Discord `mentions[].id`).
+	 * Optional/empty when unknown — mention detection then falls back to scanning
+	 * `content` for the `<@id>` / `<@!id>` token. */
+	mentions?: string[];
 }
 
 /** The injected Discord connection (real impl wraps discord.js / the adapter).
@@ -59,6 +63,11 @@ export interface CodexDiscordGatewayOptions {
 	channelIds: Iterable<string>;
 	/** Optional extra policy, applied after the mandatory filters. */
 	shouldHandle?: (msg: DiscordInboundMessage) => boolean;
+	/** FLY-267 回: resolve the channel a reply must route to for this message — the
+	 * inbound source channel for a cross-dept/shared input, else `undefined` so the
+	 * outbound sender uses its default chat channel. Omitted → always undefined
+	 * (byte-compat: replies always go to the chat channel as before). */
+	resolveReplyChannelId?: (msg: DiscordInboundMessage) => string | undefined;
 	logger?: {
 		debug?: (m: string, c?: unknown) => void;
 		warn: (m: string, c?: unknown) => void;
@@ -71,6 +80,9 @@ export class CodexDiscordGateway {
 	private readonly botUserId: string;
 	private readonly channelIds: Set<string>;
 	private readonly shouldHandle?: (msg: DiscordInboundMessage) => boolean;
+	private readonly resolveReplyChannelId?: (
+		msg: DiscordInboundMessage,
+	) => string | undefined;
 	private readonly logger: {
 		debug?: (m: string, c?: unknown) => void;
 		warn: (m: string, c?: unknown) => void;
@@ -87,6 +99,7 @@ export class CodexDiscordGateway {
 		this.botUserId = opts.botUserId;
 		this.channelIds = new Set(opts.channelIds);
 		this.shouldHandle = opts.shouldHandle;
+		this.resolveReplyChannelId = opts.resolveReplyChannelId;
 		this.logger = opts.logger ?? { warn: (m, c) => console.warn(m, c ?? "") };
 	}
 
@@ -120,10 +133,14 @@ export class CodexDiscordGateway {
 		// it is safe to advance past it.
 		if (!this.passesFilters(msg)) return true;
 		try {
+			// FLY-267 回: tag the input with the channel a reply must route to (the
+			// source channel for a cross-dept message; undefined → default chat).
+			const replyChannelId = this.resolveReplyChannelId?.(msg);
 			this.router.submit({
 				idempotencyKey: msg.id,
 				source: "discord",
 				payload: msg.content,
+				...(replyChannelId ? { replyChannelId } : {}),
 			});
 			return true;
 		} catch (err) {

@@ -54,6 +54,31 @@ describe("DirectDiscordOutboundSender", () => {
 		]);
 	});
 
+	it("FLY-267: enqueue with channelId routes the reply to THAT channel", async () => {
+		const { sender, calls } = make();
+		const id = await sender.enqueue({
+			leadId: "mufasa",
+			text: "in roundtable",
+			idempotencyKey: "e2:out",
+			channelId: "round-table",
+		});
+		await sender.deliver(id);
+		expect(calls).toEqual([
+			{ channelId: "round-table", text: "in roundtable", token: "mufasa-tok" },
+		]);
+	});
+
+	it("FLY-267: enqueue without channelId falls back to the default chat channel (byte-compat)", async () => {
+		const { sender, calls } = make();
+		const id = await sender.enqueue({
+			leadId: "mufasa",
+			text: "in chat",
+			idempotencyKey: "e3:out",
+		});
+		await sender.deliver(id);
+		expect(calls[0].channelId).toBe("chan-mufasa");
+	});
+
 	it("deliver is locally idempotent (second deliver does not re-post)", async () => {
 		const { sender, calls } = make();
 		const id = await sender.enqueue({
