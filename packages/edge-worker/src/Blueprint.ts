@@ -793,7 +793,7 @@ export class Blueprint {
 							`   - Run \`node ${commCliPath} stage set ship\``,
 							'   - Post :cool: to trigger deploy: `gh pr comment <NUMBER> --body ":cool:"`',
 							"   - Wait for the PR to be merged by the deploy workflow (poll `gh pr view <NUMBER> --json state -q '.state'` every 30s until MERGED, max 10 min)",
-							"   - If no deploy workflow merges within 5 minutes, merge directly: `gh pr merge <NUMBER> --squash --delete-branch`",
+							`   - The :cool: deploy workflow is the ONLY merge path — do NOT run \`gh pr merge\` yourself as a timeout fallback (FLY-248: a Runner must never self-merge, even after a verified approval; the project's own CI/CD + branch protection is the hard merge boundary). If the PR is still not MERGED after the poll window, do NOT ship: run \`node ${commCliPath} complete --route blocked --summary "ship workflow did not merge in the poll window"\` and STOP — a human will investigate.`,
 							// FLY-115 v1.24.5 (FLY-120): once the PR is actually merged we MUST
 							// rewrite the landing signal to status=\"merged\". Bridge's
 							// emitCompleted/event-route paths read landingStatus.status to decide
