@@ -134,12 +134,16 @@ export class CodexOutboundSender implements OutboundSender {
 		leadId: string;
 		text: string;
 		idempotencyKey: string;
+		channelId?: string;
 	}): Promise<string> {
 		if (!args.idempotencyKey)
 			throw new Error("CodexOutboundSender.enqueue: idempotencyKey required");
 		const outboxId = args.idempotencyKey;
 		const nonce = deterministicNonce(args.idempotencyKey);
 		const ts = this.now();
+		// FLY-267: per-message channel override (cross-dept reply), else the default
+		// chat channel (byte-compat). Persisted per row so deliver() + recovery target it.
+		const channelId = args.channelId ?? this.channelId;
 		this.db
 			.prepare(
 				`INSERT INTO outbox
@@ -153,7 +157,7 @@ export class CodexOutboundSender implements OutboundSender {
 				leadId: args.leadId,
 				text: args.text,
 				nonce,
-				channelId: this.channelId,
+				channelId,
 				ts,
 			});
 		return outboxId;

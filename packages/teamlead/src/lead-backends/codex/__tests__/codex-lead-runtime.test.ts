@@ -77,6 +77,77 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		});
 	});
 
+	// ── FLY-267 收: cross-dept channels merged into channelIds ──────────────
+	it("FLY-267: byte-compat — no cross-dept env leaves channelIds + crossDeptChannelIds untouched", () => {
+		const c = parseCodexLeadRuntimeConfig(fullEnv());
+		expect(c.channelIds).toEqual(["chan-chat"]); // exactly as before (no Set reorder)
+		expect(c.crossDeptChannelIds).toEqual([]);
+		expect(c.mentionPatterns).toEqual([]);
+	});
+
+	it("FLY-267: merges cross-dept channels into channelIds + exposes crossDeptChannelIds", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({
+				FLYWHEEL_LEAD_CORE_CHANNEL_ID: "chan-core",
+				FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "round-1, round-2",
+			}),
+		);
+		expect(c.channelIds).toEqual([
+			"chan-chat",
+			"chan-core",
+			"round-1",
+			"round-2",
+		]);
+		expect(c.crossDeptChannelIds).toEqual(["round-1", "round-2"]);
+	});
+
+	it("FLY-267: dedups cross-dept ids and excludes any that overlap chat/core", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({
+				FLYWHEEL_LEAD_CORE_CHANNEL_ID: "chan-core",
+				// chan-chat + chan-core already in base; round-1 duplicated
+				FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:
+					"chan-chat, round-1, round-1, chan-core, round-2",
+			}),
+		);
+		expect(c.crossDeptChannelIds).toEqual(["round-1", "round-2"]);
+		expect(c.channelIds).toEqual([
+			"chan-chat",
+			"chan-core",
+			"round-1",
+			"round-2",
+		]);
+	});
+
+	it("FLY-267: REFUSES bridge outbound mode + cross-dept channels (R1 HIGH — Bridge 403 footgun)", () => {
+		// The Bridge's buildAuthorizeLeadChannel only authorizes chat + generalChannel,
+		// so a roundtable reply in bridge mode would 403 → ambiguous. Fail loud at parse;
+		// server-side shared-channel authorization is a follow-up. (direct mode is fine.)
+		expect(() =>
+			parseCodexLeadRuntimeConfig(
+				fullEnv({
+					FLYWHEEL_CODEX_LEAD_OUTBOUND: "bridge",
+					FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "round-1",
+				}),
+			),
+		).toThrow(/cross-dept.*bridge|bridge.*cross-dept/i);
+	});
+
+	it("FLY-267: cross-dept channels ARE allowed in direct mode (default)", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({ FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "round-1" }),
+		);
+		expect(c.outboundMode).toBe("direct");
+		expect(c.crossDeptChannelIds).toEqual(["round-1"]);
+	});
+
+	it("FLY-267: parses mention patterns (comma-separated, trimmed)", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({ FLYWHEEL_LEAD_MENTION_PATTERNS: "\\bMufasa\\b , \\bMufu\\b" }),
+		);
+		expect(c.mentionPatterns).toEqual(["\\bMufasa\\b", "\\bMufu\\b"]);
+	});
+
 	it("fail-loud: lists ALL missing always-required env in one error", () => {
 		const env = fullEnv({
 			DISCORD_BOT_TOKEN: undefined,

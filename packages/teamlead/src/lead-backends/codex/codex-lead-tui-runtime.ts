@@ -27,7 +27,10 @@ import { existsSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { CodexDiscordGateway } from "./CodexDiscordGateway.js";
+import {
+	CodexDiscordGateway,
+	type DiscordInboundMessage,
+} from "./CodexDiscordGateway.js";
 import { CodexLeadProcess, CodexLeadProcessError } from "./CodexLeadProcess.js";
 import { CodexLeadRuntime, type RuntimeWiring } from "./CodexLeadRuntime.js";
 import { CodexOutboundSender } from "./CodexOutboundSender.js";
@@ -50,6 +53,7 @@ import { LeadHealthProbe } from "./LeadHealthProbe.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
+import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { extractTurnId, TurnDemux } from "./TurnDemux.js";
@@ -454,11 +458,30 @@ function buildTuiGeneration(
 							channelIds: config.channelIds,
 							cursorStore: new FileInboundCursorStore(config.inboundCursorPath),
 						});
+						// FLY-267 判 + 回: mirror the headless mention-gate + reply-routing so
+						// the TUI runtime does NOT spam shared channels and routes replies back
+						// to the source channel. No cross-dept → neither hook → byte-compat.
+						const crossDeptSet = new Set(config.crossDeptChannelIds);
+						const shouldHandle =
+							config.crossDeptChannelIds.length > 0
+								? buildMentionGate({
+										botUserId: config.botUserId,
+										sharedChannelIds: config.crossDeptChannelIds,
+										mentionPatterns: config.mentionPatterns,
+									})
+								: undefined;
+						const resolveReplyChannelId =
+							config.crossDeptChannelIds.length > 0
+								? (msg: DiscordInboundMessage) =>
+										crossDeptSet.has(msg.channelId) ? msg.channelId : undefined
+								: undefined;
 						const gateway = new CodexDiscordGateway({
 							source,
 							router,
 							botUserId: config.botUserId,
 							channelIds: config.channelIds,
+							...(shouldHandle ? { shouldHandle } : {}),
+							...(resolveReplyChannelId ? { resolveReplyChannelId } : {}),
 						});
 						// FIRST-BOOT/TURNLESS bootstrap turn (real-machine finding): the daemon
 						// persists a thread's rollout only at its FIRST TURN — a turnless

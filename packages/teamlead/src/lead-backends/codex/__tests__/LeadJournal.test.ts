@@ -31,6 +31,23 @@ describe("LeadJournal — idempotent intake", () => {
 		expect(r.entry.idempotencyKey).toBe("k1");
 	});
 
+	it("FLY-267: persists replyChannelId when provided (and leaves it undefined otherwise)", () => {
+		const { journal } = makeJournal();
+		const withRoute = journal.accept({
+			idempotencyKey: "kr",
+			source: "discord",
+			payload: "hi",
+			replyChannelId: "round-1",
+		});
+		expect(withRoute.entry.replyChannelId).toBe("round-1");
+		const noRoute = journal.accept({
+			idempotencyKey: "kn",
+			source: "discord",
+			payload: "hi",
+		});
+		expect(noRoute.entry.replyChannelId).toBeUndefined();
+	});
+
 	it("dedupes a duplicate idempotencyKey (accepted=false, same entry)", () => {
 		const { journal } = makeJournal();
 		const a = journal.accept({

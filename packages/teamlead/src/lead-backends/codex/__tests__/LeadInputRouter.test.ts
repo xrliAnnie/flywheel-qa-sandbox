@@ -51,17 +51,23 @@ class FakeExecutor implements TurnExecutor {
 }
 
 class FakeSender implements OutboundSender {
-	enqueued: Array<{ text: string; idempotencyKey: string }> = [];
+	enqueued: Array<{
+		text: string;
+		idempotencyKey: string;
+		channelId?: string;
+	}> = [];
 	delivered: string[] = [];
 	private seq = 0;
 	async enqueue(args: {
 		leadId: string;
 		text: string;
 		idempotencyKey: string;
+		channelId?: string;
 	}): Promise<string> {
 		this.enqueued.push({
 			text: args.text,
 			idempotencyKey: args.idempotencyKey,
+			channelId: args.channelId,
 		});
 		return `ob-${++this.seq}`;
 	}
@@ -351,5 +357,83 @@ describe("LeadInputRouter — recovery", () => {
 		expect(executor.startCalls).toHaveLength(0);
 		expect(sender.delivered).toEqual(["ob-existing"]);
 		expect(store.getById(entry.id)?.state).toBe("completed");
+	});
+});
+
+describe("LeadInputRouter — reply channel routing (FLY-267 回)", () => {
+	it("threads replyChannelId from the input to sender.enqueue (else undefined)", async () => {
+		const { router, sender } = make();
+		router.submit({
+			idempotencyKey: "kr",
+			source: "discord",
+			payload: "hi",
+			replyChannelId: "round-1",
+		});
+		router.submit({ idempotencyKey: "kn", source: "discord", payload: "hi" });
+		await router.whenIdle();
+		expect(sender.enqueued[0]?.channelId).toBe("round-1");
+		expect(sender.enqueued[1]?.channelId).toBeUndefined(); // chat → sender default
+	});
+
+	it("recovery (model_completed) re-enqueues to the persisted reply channel", async () => {
+		// A crash after model_completed but before enqueue: the route must survive in
+		// the journal so the recovered resend targets the source channel, not chat.
+		const { router, journal, sender } = make();
+		const { entry } = journal.accept({
+			idempotencyKey: "k",
+			source: "discord",
+			payload: "p",
+			replyChannelId: "round-1",
+		});
+		journal.toDispatching(entry.id, "c");
+		journal.toDispatched(entry.id, "t");
+		journal.toModelCompleted(entry.id, "persisted-reply");
+		await router.recover();
+		await router.whenIdle();
+		expect(sender.enqueued[0]?.text).toBe("persisted-reply");
+		expect(sender.enqueued[0]?.channelId).toBe("round-1");
+	});
+
+	it("output_pending recovery with a stateless (direct-mode) sender → ambiguous, never a wrong-channel send (finding-4 boundary)", async () => {
+		// DirectDiscordOutboundSender's outbox is in-memory: after a restart the
+		// outboxId is gone, so deliver() throws and the router conservatively marks
+		// the entry ambiguous. This is a PRE-EXISTING limitation affecting ALL direct
+		// replies (chat included) — FLY-267 does not regress it, and crucially it
+		// never mis-routes (it just doesn't resend). Verified so the boundary is auditable.
+		const store = new InMemoryJournalStore();
+		let c = 0;
+		const journal = new LeadJournal({
+			store,
+			idFactory: () => `e-${++c}`,
+			now: () => ++c,
+		});
+		const statelessSender: OutboundSender = {
+			enqueue: async () => "ob-x",
+			deliver: async (id) => {
+				throw new Error(`no outbox ${id}`); // lost after restart
+			},
+		};
+		const router = new LeadInputRouter({
+			leadId: "l",
+			threadId: "t",
+			journal,
+			executor: new FakeExecutor(),
+			sender: statelessSender,
+			correlationFactory: () => `corr-${++c}`,
+			logger: silent,
+		});
+		const { entry } = journal.accept({
+			idempotencyKey: "k",
+			source: "discord",
+			payload: "p",
+			replyChannelId: "round-1",
+		});
+		journal.toDispatching(entry.id, "c1");
+		journal.toDispatched(entry.id, "t1");
+		journal.toModelCompleted(entry.id, "out");
+		journal.toOutputPending(entry.id, "ob-stale");
+		await router.recover();
+		await router.whenIdle();
+		expect(store.getById(entry.id)?.state).toBe("ambiguous");
 	});
 });

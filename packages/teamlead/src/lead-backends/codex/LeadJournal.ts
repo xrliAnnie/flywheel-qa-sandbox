@@ -91,6 +91,12 @@ export interface JournalEntry {
 	source: "discord" | "mailbox" | "founder-terminal";
 	/** Opaque input content (text / serialized event). */
 	payload: string;
+	/** FLY-267 回: the Discord channel a reply must be routed to (the inbound
+	 * message's source channel), set ONLY for cross-dept/shared-channel inputs.
+	 * Absent → the outbound sender falls back to its default chat channel (byte-compat:
+	 * chat/core inputs and mailbox inputs reply in chat as before). Persisted so crash
+	 * recovery (model_completed resend) targets the right channel. */
+	replyChannelId?: string;
 	state: JournalState;
 	/** Set at `dispatching` — becomes turn/start's clientUserMessageId. */
 	clientCorrelationId?: string;
@@ -183,6 +189,8 @@ export class LeadJournal {
 		idempotencyKey: string;
 		source: "discord" | "mailbox" | "founder-terminal";
 		payload: string;
+		/** FLY-267 回: source channel to route the reply to (cross-dept inputs only). */
+		replyChannelId?: string;
 	}): { accepted: boolean; entry: JournalEntry } {
 		if (!args.idempotencyKey)
 			throw new Error("LeadJournal.accept: idempotencyKey is required");
@@ -192,6 +200,7 @@ export class LeadJournal {
 			idempotencyKey: args.idempotencyKey,
 			source: args.source,
 			payload: args.payload,
+			...(args.replyChannelId ? { replyChannelId: args.replyChannelId } : {}),
 			state: "accepted",
 			createdAt: ts,
 			updatedAt: ts,

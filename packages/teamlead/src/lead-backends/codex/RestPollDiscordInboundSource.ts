@@ -30,6 +30,8 @@ interface RawDiscordMessage {
 	channel_id?: string;
 	content?: string;
 	author?: { id?: string; bot?: boolean };
+	/** FLY-267: Discord populates `mentions` with the @-mentioned user objects. */
+	mentions?: Array<{ id?: string }>;
 }
 
 export interface RestPollSourceOptions {
@@ -64,6 +66,13 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 
 	private handler?: (msg: DiscordInboundMessage) => boolean;
 	private readonly lastSeen = new Map<string, string>();
+	/** FLY-267: channels that are resumed-from-cursor OR have completed ONE
+	 * successful baseline. A channel NOT in `ready` must never be polled without an
+	 * `after` cursor in the DELIVERY path — that replays history (e.g. a newly-added
+	 * cross-dept channel whose first baseline fetch failed at startup would otherwise
+	 * deliver up to `limit` stale messages, re-triggering old @mentions). pollOnce
+	 * baselines an unready channel (no delivery) and retries until one succeeds. */
+	private readonly ready = new Set<string>();
 	private timer: { cancel: () => void } | null = null;
 	private running = false;
 
@@ -99,31 +108,15 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 			const resumed = this.cursorStore?.load(channelId);
 			if (resumed) {
 				this.lastSeen.set(channelId, resumed);
+				this.ready.add(channelId); // resumed = ready (will poll with `after`)
 				resumedAny = true;
 				continue;
 			}
 			// FIRST run (no cursor): baseline to the latest message so history isn't
 			// replayed, and persist it so the NEXT start resumes instead of re-baselining.
-			try {
-				const latest = await this.fetchMessages(channelId, undefined);
-				const newest = latest[0]; // Discord returns newest-first
-				if (newest) {
-					this.lastSeen.set(channelId, newest.id);
-					try {
-						this.cursorStore?.save(channelId, newest.id);
-					} catch (err) {
-						this.logger.warn("baseline cursor persist failed", {
-							channelId,
-							err: (err as Error).message,
-						});
-					}
-				}
-			} catch (err) {
-				this.logger.warn("baseline poll failed", {
-					channelId,
-					err: (err as Error).message,
-				});
-			}
+			// A baseline FAILURE leaves the channel UNREADY (FLY-267) — pollOnce retries
+			// the baseline (no delivery) so a transient failure can't replay history.
+			await this.baselineChannel(channelId);
 		}
 		// DRAIN the downtime backlog NOW (HIGH-4): instead of trickling one page per
 		// poll interval, walk forward until caught up so a >limit gap is fully
@@ -144,6 +137,41 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 	}
 
 	/**
+	 * FLY-267: baseline a channel to its latest message WITHOUT delivering history,
+	 * then mark it `ready`. On a fetch failure the channel stays UNREADY (no `ready`
+	 * entry, no `lastSeen`) so pollOnce retries the baseline next cycle instead of
+	 * ever polling it without an `after` cursor (which would replay history). Returns
+	 * whether the baseline succeeded. Never throws.
+	 */
+	private async baselineChannel(channelId: string): Promise<boolean> {
+		try {
+			const latest = await this.fetchMessages(channelId, undefined);
+			const newest = latest[0]; // Discord returns newest-first
+			if (newest) {
+				this.lastSeen.set(channelId, newest.id);
+				try {
+					this.cursorStore?.save(channelId, newest.id);
+				} catch (err) {
+					this.logger.warn("baseline cursor persist failed", {
+						channelId,
+						err: (err as Error).message,
+					});
+				}
+			}
+			// Mark ready even for an empty channel (no `newest`): it has been observed,
+			// so the next poll's no-`after` fetch only sees genuinely NEW messages.
+			this.ready.add(channelId);
+			return true;
+		} catch (err) {
+			this.logger.warn("baseline poll failed", {
+				channelId,
+				err: (err as Error).message,
+			});
+			return false;
+		}
+	}
+
+	/**
 	 * One poll cycle across all channels (exposed for tests). Returns the number of
 	 * messages delivered this cycle — `start()` loops on this to DRAIN a downtime
 	 * backlog promptly (Discord's `after` paginates FORWARD: each page is the oldest
@@ -153,6 +181,15 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 	async pollOnce(): Promise<number> {
 		let delivered = 0;
 		for (const channelId of this.channelIds) {
+			// FLY-267 baseline gate: a channel that has NOT yet baselined (e.g. its
+			// startup baseline fetch failed) must be baselined here — NOT polled in
+			// the delivery path, which (with no `after`) would replay history. Baseline
+			// delivers nothing; once it succeeds the channel becomes `ready` and the
+			// NEXT poll fetches with `after`.
+			if (!this.ready.has(channelId)) {
+				await this.baselineChannel(channelId);
+				continue;
+			}
 			let messages: RawDiscordMessage[];
 			try {
 				messages = await this.fetchMessages(
@@ -217,6 +254,10 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 				authorId: m.author?.id ?? "",
 				authorBot: m.author?.bot === true,
 				content: m.content ?? "",
+				// FLY-267: explicit @-mention ids (for shared-channel mention-gating).
+				mentions: (m.mentions ?? [])
+					.map((u) => u.id)
+					.filter((id): id is string => Boolean(id)),
 			});
 		} catch (err) {
 			this.logger.warn("inbound handler threw (will retry)", {

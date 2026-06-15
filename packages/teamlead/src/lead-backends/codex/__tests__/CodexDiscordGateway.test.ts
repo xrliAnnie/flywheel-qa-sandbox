@@ -30,6 +30,7 @@ function fakeRouter() {
 		idempotencyKey: string;
 		source: string;
 		payload: string;
+		replyChannelId?: string;
 	}> = [];
 	return {
 		submits,
@@ -37,6 +38,7 @@ function fakeRouter() {
 			idempotencyKey: string;
 			source: "discord" | "mailbox";
 			payload: string;
+			replyChannelId?: string;
 		}) => {
 			submits.push(i);
 			return { accepted: true, entryId: i.idempotencyKey };
@@ -85,6 +87,32 @@ describe("CodexDiscordGateway — construction", () => {
 					channelIds: ["c"],
 				}),
 		).toThrow(/botUserId/);
+	});
+});
+
+describe("CodexDiscordGateway — reply routing (FLY-267 回)", () => {
+	it("attaches replyChannelId from resolveReplyChannelId to the submitted input", () => {
+		const { source, gw, router } = make({
+			// route replies for the cross-dept channel back to it; chat → undefined
+			resolveReplyChannelId: (m: DiscordInboundMessage) =>
+				m.channelId === "round-1" ? m.channelId : undefined,
+			channelIds: ["chat-1", "round-1"],
+		});
+		void gw.start();
+		source.emit(msg({ id: "x1", channelId: "round-1", content: "yo" }));
+		source.emit(msg({ id: "x2", channelId: "chat-1", content: "hi" }));
+		expect(router.submits[0]).toMatchObject({
+			idempotencyKey: "x1",
+			replyChannelId: "round-1",
+		});
+		expect(router.submits[1].replyChannelId).toBeUndefined(); // chat → default
+	});
+
+	it("no resolveReplyChannelId → replyChannelId always undefined (byte-compat)", () => {
+		const { source, gw, router } = make();
+		void gw.start();
+		source.emit(msg({ id: "y1", content: "hi" }));
+		expect(router.submits[0].replyChannelId).toBeUndefined();
 	});
 });
 
