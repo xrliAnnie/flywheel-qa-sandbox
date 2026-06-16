@@ -953,6 +953,28 @@ export class Blueprint {
 					)
 				: undefined;
 
+		// FLY-272: derive the HUMAN-READABLE display id for the tmux window name /
+		// cmux sidebar from the Linear-resolved identifier — NOT the raw `issueId`
+		// the Lead passed to /api/runs/start. Some Leads pass the opaque Linear
+		// issue UUID as `issueId` (sub's Lead) while others pass the identifier
+		// (joycon's Lead, GeoForge3D). A 36-char UUID is unreadable AND overruns
+		// the 50-char window-name budget, truncating the issue title to a
+		// meaningless fragment (the "Social"/"Packet" Annie saw). Prefer the
+		// runs-route preflight identifier (ctx.issueIdentifier), then the
+		// PreHydrator-resolved identifier (which already falls back to node.id).
+		// `issueId` below stays the raw value so keys/dedup/CommDB are unchanged;
+		// this only affects DISPLAY naming → byte-identical wherever the passed
+		// id already equals the identifier.
+		//
+		// Codex R1 LOW: use `||` + `.trim()`, not `??`, so an empty/whitespace
+		// identifier from Linear (`issue.identifier === ""`) also falls through —
+		// `??` only catches null/undefined and would leave a blank/leading-hyphen
+		// window name. The ultimate fallback is the raw issueId (validated
+		// non-empty at the /api/runs/start boundary), so the name is never blank.
+		const displayId =
+			ctx.issueIdentifier?.trim() ||
+			hydrated.issueIdentifier?.trim() ||
+			hydrated.issueId;
 		let result: AdapterExecutionResult;
 		try {
 			result = await adapter.execute({
@@ -960,11 +982,7 @@ export class Blueprint {
 				issueId: hydrated.issueId,
 				prompt,
 				cwd,
-				label: buildWindowLabel(
-					hydrated.issueId,
-					ctx.runnerName,
-					hydrated.issueTitle,
-				),
+				label: buildWindowLabel(displayId, ctx.runnerName, hydrated.issueTitle),
 				permissionMode: "bypassPermissions",
 				appendSystemPrompt: systemPrompt,
 				// FLY-123: model override resolved by RoleAdapterResolver
@@ -972,7 +990,7 @@ export class Blueprint {
 				// model — absent stays absent (byte-compat).
 				...(ctx.runnerModel !== undefined && { model: ctx.runnerModel }),
 				timeoutMs,
-				sessionDisplayName: `${hydrated.issueId} ${cleanIssueTitle(hydrated.issueTitle)}`,
+				sessionDisplayName: `${displayId} ${cleanIssueTitle(hydrated.issueTitle)}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
 				commDbPath,
 				waitingTimeoutMs: 176_400_000, // FLY-97 base, raised FLY-159 to 49h: 48h gate timeout + 1h buffer

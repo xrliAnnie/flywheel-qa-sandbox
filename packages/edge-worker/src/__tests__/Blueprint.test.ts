@@ -245,6 +245,104 @@ describe("Blueprint", () => {
 		expect(execCall.cwd).toBe("/project");
 	});
 
+	// FLY-272: the tmux window name / cmux sidebar must show the readable Linear
+	// identifier even when the Lead passed the opaque Linear issue UUID as the
+	// `issueId` body field (sub's Lead does this; joycon's passes the identifier).
+	// The 36-char UUID also blows the 50-char window-name budget so the issue
+	// title gets truncated to a meaningless fragment — the readable identifier
+	// (e.g. LEARN-70) keeps the title intact. Display naming derives from the
+	// resolved identifier; keys/dedup still use the raw issueId.
+	it("FLY-272: window label + display name use the hydrated identifier, not the raw UUID issueId", async () => {
+		const uuid = "3b39be21-a28f-4069-8264-bd6c89346534";
+		const fetchIssue = vi.fn(async () => ({
+			title: "Social media affirmation pack",
+			description: "desc",
+			identifier: "LEARN-70",
+		}));
+		const adapter = makeMockAdapter();
+		const blueprint = new Blueprint(
+			new PreHydrator(fetchIssue),
+			makeMockGitChecker(),
+			() => adapter,
+			makeMockShell(),
+		);
+
+		await blueprint.run(makeNode(uuid), "/project", makeContext());
+
+		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		expect(execCall.label).toBe(
+			"LEARN-70-claude-Social media affirmation pack",
+		);
+		expect(execCall.sessionDisplayName).toBe(
+			"LEARN-70 Social media affirmation pack",
+		);
+		expect(execCall.label).not.toContain(uuid);
+		expect(execCall.sessionDisplayName).not.toContain(uuid);
+	});
+
+	it("FLY-272: ctx.issueIdentifier (runs-route preflight) wins for display naming", async () => {
+		const uuid = "4a3037cb-f65c-4fd3-8a0e-075cc5706eee";
+		// Hydrator returns NO identifier (Linear stub fallback), but runs-route
+		// already resolved the identifier and threaded it on the context.
+		const fetchIssue = vi.fn(async () => ({
+			title: "Packet copy",
+			description: "desc",
+		}));
+		const adapter = makeMockAdapter();
+		const blueprint = new Blueprint(
+			new PreHydrator(fetchIssue),
+			makeMockGitChecker(),
+			() => adapter,
+			makeMockShell(),
+		);
+
+		await blueprint.run(
+			makeNode(uuid),
+			"/project",
+			makeContext({ issueIdentifier: "LEARN-72" }),
+		);
+
+		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		expect(execCall.label).toBe("LEARN-72-claude-Packet copy");
+		expect(execCall.sessionDisplayName).toBe("LEARN-72 Packet copy");
+		expect(execCall.label).not.toContain(uuid);
+		expect(execCall.sessionDisplayName).not.toContain(uuid);
+	});
+
+	it("FLY-272: empty/whitespace identifier falls through to the next id, never blank (Codex R1 LOW)", async () => {
+		// Defensive: `??` would have accepted an empty-string identifier and
+		// produced a blank/leading-hyphen window name. `|| .trim()` skips it.
+		// Here ctx.issueIdentifier is whitespace-only and the hydrator returns
+		// no identifier, so naming falls all the way through to the raw issueId.
+		const rawId = "GEO-555";
+		const fetchIssue = vi.fn(async () => ({
+			title: "Edge case",
+			description: "desc",
+			identifier: "   ", // Linear returned whitespace-only identifier
+		}));
+		const adapter = makeMockAdapter();
+		const blueprint = new Blueprint(
+			new PreHydrator(fetchIssue),
+			makeMockGitChecker(),
+			() => adapter,
+			makeMockShell(),
+		);
+
+		await blueprint.run(
+			makeNode(rawId),
+			"/project",
+			makeContext({ issueIdentifier: "  " }),
+		);
+
+		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+			.calls[0]![0] as AdapterExecutionContext;
+		// Falls through to hydrated.issueId (= node.id = rawId); never blank.
+		expect(execCall.label).toBe("GEO-555-claude-Edge case");
+		expect(execCall.sessionDisplayName).toBe("GEO-555 Edge case");
+	});
+
 	// ─── Success / failure ──────────────────────────
 
 	it("returns success when git has new commits (commitCount > 0)", async () => {
