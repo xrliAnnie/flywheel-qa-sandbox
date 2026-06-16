@@ -1325,6 +1325,29 @@ self_heal_render_escalate() {
   return 1
 }
 
+# FLY-280: select the LIVE same-name window in a view (linked) session, mirroring
+# the FLY-177 fix in refresh_linked_sessions. The legacy `select-window -t =name`
+# picks the LOWEST-index same-name window — which after a Lead crash/restart (with
+# `remain-on-exit on`) can be a stale remain-on-exit DEAD window, so the cmux pane
+# lands on a dead pane and renders frozen/blank. Resolve the live window_id by
+# probing #{pane_dead} on each same-name SOURCE window and select THAT id (grouped
+# sessions share the window object, so the id is a valid target-window in the view
+# session). Among same-name LIVE windows the highest-index wins deterministically
+# (matches refresh_linked_sessions). rc=0 ⟺ a live window was selected; rc=1 if
+# none live / name not found (caller then leaves the view untouched).
+select_live_view_window() {
+  local wname="$1" view_session="$2"
+  local src_sess wid w_name live_id="" dead
+  while IFS='|' read -r src_sess wid w_name; do
+    [[ "$w_name" != "$wname" ]] && continue
+    dead=$(tmux display-message -p -t "=${src_sess}:${wid}" "#{pane_dead}" 2>/dev/null || echo "1")
+    [[ "$dead" == "0" ]] && live_id="$wid"   # highest-index live wins (last assignment)
+  done < <(get_tmux_agent_windows)
+  [[ -z "$live_id" ]] && return 1
+  tmux select-window -t "=${view_session}:${live_id}" 2>/dev/null || true
+  return 0
+}
+
 # Heal one window by name: resolve all matching workspace refs (title), then
 # heal each via the ref-scoped primitive. Attach-only — the "workspace exists
 # but linked session is dead" case is reconcile_existing_workspaces' job.
@@ -1346,7 +1369,16 @@ self_heal_one_workspace() {
   local clients
   clients=$(view_session_client_count "$view_session") || return 0   # tmux error → fail-closed
   if [[ "$clients" -gt 0 ]]; then
-    tmux select-window -t "=${view_session}:=${wname}" 2>/dev/null || true   # safe, no surface input
+    # FLY-280: the view is still attached, but after a Lead restart its
+    # current-window can point at the just-killed (remain-on-exit DEAD) window —
+    # the pane then renders frozen even though a client is attached. Re-point to
+    # the LIVE same-name window (never the dead dup) and force an Electron surface
+    # repaint. Was: select by =name (lowest-index → could be the dead window) with
+    # no refresh-surfaces. refresh-surfaces only when a live window was actually
+    # re-pointed (no-op churn avoided when nothing live to render).
+    if select_live_view_window "$wname" "$view_session"; then
+      cmux_call refresh-surfaces || true
+    fi
     heal_state_clear "$wname"
     return 0
   fi
@@ -1369,7 +1401,9 @@ self_heal_one_workspace() {
   done <<< "$refs"
 
   if [[ "$healed" -eq 1 ]]; then
-    tmux select-window -t "=${view_session}:=${wname}" 2>/dev/null || true
+    # FLY-280: re-point by LIVE window_id (not =name, which could land on a stale
+    # dead dup after a restart); refresh-surfaces stays unconditional here.
+    select_live_view_window "$wname" "$view_session" || true
     cmux_call refresh-surfaces || true
   fi
 }
