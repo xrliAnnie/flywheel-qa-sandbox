@@ -673,6 +673,88 @@ describe("filterPaneWatchedLeads", () => {
 		const out = filterPaneWatchedLeads(projects, () => undefined, evidence);
 		expect(out).toHaveLength(1);
 	});
+
+	// FLY-259 PR-A′: the cutover declares growth/mufasa-lead backend="codex-app-server"
+	// in projects.json so the pane-text watchdog excludes Mufasa's ③ TUI pane (the
+	// Claude-shaped recognizers would otherwise misfire on it — FLY-218/220 class).
+	// Pins the realistic multi-Lead outcome: ONLY Mufasa drops; the 5 Claude Leads
+	// stay watched, by reference (the R8 "others unchanged" contract). Declaring the
+	// backend is necessary-but-not-sufficient — exclusion also needs FRESH poller
+	// evidence with paneWatch=false (H8), modeled here as EXTERNAL/no-claude.
+	it("FLY-259 cutover fleet: codex Mufasa excluded (fresh EXTERNAL evidence), 5 Claude Leads unchanged by reference", () => {
+		const claudeLeads = [
+			"peter-lead",
+			"simba-lead",
+			"hiro-lead",
+			"asha-lead",
+			"belle-lead",
+		];
+		const fleet: ProjectEntry[] = [
+			...claudeLeads.map((agentId, i) => ({
+				projectName: agentId,
+				projectRoot: `/proj/${agentId}`,
+				leads: [{ agentId, chatChannel: String(i), match: { labels: [] } }],
+			})),
+			{
+				projectName: "growth",
+				projectRoot: "/proj/growth",
+				leads: [
+					{
+						agentId: "mufasa-lead",
+						chatChannel: "9",
+						match: { labels: ["growth"] },
+						backend: "codex-app-server" as const,
+						companion: true,
+						canSpawnRunners: false,
+					},
+				],
+			},
+		];
+		const evidence: FleetSnapshot = {
+			collectedAt: new Date().toISOString(),
+			configState: "live",
+			leads: [
+				{
+					project: "growth",
+					leadId: "mufasa-lead",
+					key: "growth-mufasa-lead",
+					companion: true,
+					canSpawnRunners: false,
+					configured: {
+						model: null,
+						backend: "codex-app-server",
+						source: "explicit",
+					},
+					carrier: {
+						manifestExists: false,
+						plistExists: false,
+						manifestModel: null,
+						manifestBackend: null,
+						plistModel: null,
+					},
+					observed: {
+						management: "external-confirmed",
+						runtime: "no-claude-confirmed",
+						collectedAt: new Date().toISOString(),
+						degradationReasons: [],
+					},
+					presentation: "EXTERNAL",
+					paneWatch: false,
+					drift: null,
+				},
+			],
+		};
+		const out = filterPaneWatchedLeads(fleet, () => undefined, evidence);
+		// growth/Mufasa dropped entirely; the 5 Claude projects remain, in order.
+		expect(out.map((p) => p.projectName)).toEqual(claudeLeads);
+		// "others unchanged" is by REFERENCE — claude projects are passed through,
+		// never rebuilt (R8 contract; a rebuild would be a silent regression).
+		for (const cl of claudeLeads) {
+			expect(out.find((p) => p.projectName === cl)).toBe(
+				fleet.find((p) => p.projectName === cl),
+			);
+		}
+	});
 });
 
 // ── Dashboard payload gate (R1#6) ────────────────────────────────────────
