@@ -348,7 +348,9 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(res.body).toEqual({ threadId: "t-new-1", created: true });
 
 			expect(capturedCtx).toHaveLength(1);
-			expect(capturedCtx[0].issueId).toBe("uuid-fly-91");
+			// FLY-270: thread key is canonicalized to the identifier (matches the
+			// run-start thread; no session in this test → falls back to identifier).
+			expect(capturedCtx[0].issueId).toBe("FLY-91");
 			expect(capturedCtx[0].chatChannelId).toBe("ch-100");
 			expect(capturedCtx[0].botToken).toBe("lead-token-alpha");
 		});
@@ -397,7 +399,9 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(res.status).toBe(200);
 			expect(res.body).toEqual({ threadId: "t-resolved", created: true });
 
-			expect(capturedCtx[0].issueId).toBe("uuid-fly-91");
+			// FLY-270: thread key is canonicalized to the identifier (matches the
+			// run-start thread; no session in this test → falls back to identifier).
+			expect(capturedCtx[0].issueId).toBe("FLY-91");
 			expect(capturedCtx[0].issueIdentifier).toBe("FLY-91");
 		});
 
@@ -730,6 +734,50 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(body.allowed_mentions).toEqual({ parse: [] });
 		});
 
+		it("FLY-270: bare Linear-UUID issueId is NOT reused as an orphan — goes Linear + canonicalizes to identifier (Codex code-review #1)", async () => {
+			const realUuid = "adc32120-f260-42e0-90b8-968e55666e28";
+			// Pre-seed a UUID-keyed orphan row (a pre-fix duplicate). The gate must
+			// NOT serve this; it must canonicalize to the identifier-keyed thread.
+			store.upsertChatThread("t-orphan-uuid", "ch-100", realUuid, "lead-alpha");
+
+			const ensureCalls: ChatThreadContext[] = [];
+			const creator = createFakeCreator(async (ctx) => {
+				ensureCalls.push(ctx);
+				return { created: true, threadId: "t-canonical" };
+			});
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ id: "msg-u1" }),
+			});
+			process.env.LINEAR_API_KEY = "test-key";
+
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				chatThreadCreator: creator,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueId: realUuid,
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "uuid send",
+			});
+			expect(res.status).toBe(200);
+			// Did NOT serve the orphan; created the canonical identifier-keyed thread.
+			expect(res.body).toEqual({
+				threadId: "t-canonical",
+				messageIds: ["msg-u1"],
+				created: true,
+			});
+			expect(ensureCalls).toHaveLength(1);
+			expect(ensureCalls[0].issueId).toBe("FLY-91");
+		});
+
 		it("happy path FIRST-SEND: row missing → ensureChatThread called once, then chunk posted (AC2)", async () => {
 			const ensureCalls: ChatThreadContext[] = [];
 			const creator = createFakeCreator(async (ctx) => {
@@ -772,6 +820,9 @@ describe("chat-thread routes (tools.ts)", () => {
 				created: true,
 			});
 			expect(ensureCalls).toHaveLength(1);
+			// FLY-270: /send canonicalizes the thread key to the identifier (so it
+			// reuses the run-start thread, not a UUID-keyed duplicate).
+			expect(ensureCalls[0].issueId).toBe("FLY-91");
 		});
 
 		it("returns 503 when no bot token available", async () => {

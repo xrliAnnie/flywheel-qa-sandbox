@@ -79,6 +79,18 @@ function omitIssueId(
 	return { ...rest, identifier: issue_identifier };
 }
 
+/**
+ * FLY-270: true iff `s` is a Linear issue UUID (8-4-4-4-12 hex). Used to gate
+ * the /chat-threads/send early reuse: a bare UUID issueId must go through Linear
+ * so the thread key canonicalizes to the identifier-keyed run-start thread,
+ * rather than serving a pre-fix UUID-keyed orphan row.
+ */
+function isLinearUuid(s: string): boolean {
+	return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(
+		s,
+	);
+}
+
 export function createQueryRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -551,6 +563,15 @@ export function createQueryRouter(
 			return;
 		}
 
+		// FLY-270: canonicalize the thread key to the session's issue_id (matches
+		// the run-start thread; avoids identifier-vs-UUID duplicate threads).
+		resolvedIssueId =
+			(resolvedIdentifier
+				? store.getSessionByIdentifier(resolvedIdentifier)?.issue_id
+				: undefined) ??
+			resolvedIdentifier ??
+			resolvedIssueId;
+
 		// Resolve bot token (per-lead or global fallback)
 		const botToken = validation.leadConfig.botToken ?? opts?.globalBotToken;
 		if (!botToken) {
@@ -672,12 +693,23 @@ export function createQueryRouter(
 		// row already exists in StateStore for that issueId — reuse path
 		// doesn't need preflight.
 		let resolvedIssueId: string;
+		// FLY-270: track the identifier so we can canonicalize the thread key
+		// (to the session's issue_id) below — fixes identifier-vs-UUID dup threads.
+		let resolvedIdentifier: string | undefined;
 		const lookupRowDirect = bodyIssueId
 			? store.getChatThreadByIssue(bodyIssueId, channelId)
 			: undefined;
 
-		if (bodyIssueId && lookupRowDirect && !bodyIdentifier) {
-			// Pure reuse, no identifier crosscheck needed; skip Linear
+		if (
+			bodyIssueId &&
+			lookupRowDirect &&
+			!bodyIdentifier &&
+			!isLinearUuid(bodyIssueId)
+		) {
+			// Reuse an existing row only when issueId is NOT a Linear UUID: a bare
+			// UUID must go through Linear so the key canonicalizes to the
+			// identifier-keyed run-start thread instead of serving a pre-fix
+			// UUID-keyed orphan row (FLY-270 / Codex code review).
 			resolvedIssueId = bodyIssueId;
 		} else {
 			// Need Linear (either resolving identifier→UUID, or cross-validating)
@@ -707,6 +739,7 @@ export function createQueryRouter(
 						return;
 					}
 					resolvedIssueId = bodyIssueId;
+					resolvedIdentifier = issue.identifier;
 				} else {
 					// Identifier-only path: resolve to UUID
 					const results = await client.searchIssues(bodyIdentifier!);
@@ -720,6 +753,7 @@ export function createQueryRouter(
 						return;
 					}
 					resolvedIssueId = matched.id;
+					resolvedIdentifier = matched.identifier;
 				}
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -727,6 +761,17 @@ export function createQueryRouter(
 				return;
 			}
 		}
+
+		// FLY-270: canonical thread key = the session's stored issue_id (what
+		// run-start used = the identifier in practice), falling back to the
+		// identifier — never the bare Linear UUID. Keeps the Lead's /send thread
+		// the SAME as the run-start thread (fixes identifier-vs-UUID dup threads).
+		resolvedIssueId =
+			(resolvedIdentifier
+				? store.getSessionByIdentifier(resolvedIdentifier)?.issue_id
+				: undefined) ??
+			resolvedIdentifier ??
+			resolvedIssueId;
 
 		// Resolve bot token (per-lead or global fallback)
 		const botToken = validation.leadConfig.botToken ?? opts?.globalBotToken;

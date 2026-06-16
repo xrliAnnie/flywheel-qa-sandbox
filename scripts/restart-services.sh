@@ -64,6 +64,11 @@ notify_discord() {
         --max-time 5 || log "WARNING: Discord notification failed"
 }
 
+# FLY-270: severe alert = log + Discord, for self-surgery recovery failures that
+# need a human (e.g. Eng Lead not recovered after rollback — KeepAlive can't fix
+# a bad token/manifest/config).
+severe_alert() { log "SEVERE: $1"; notify_discord "🚨 $1"; }
+
 # ════════════════════════════════════════════════════════════════
 # Discord plugin fork detection
 # ════════════════════════════════════════════════════════════════
@@ -471,10 +476,35 @@ fi  # end PLUGIN_ONLY_RESTART guard
 # Idle wait
 # ════════════════════════════════════════════════════════════════
 
+# FLY-270: self-ship stabilization window. When this deploy was triggered by a
+# self-hosting ship handoff (markers present in self-ship-pending.d), requiring a
+# SINGLE count==0 sample is unsafe: the shipping Runner emits session_completed
+# and Bridge's runPostShipFinalization (tmux cleanup / thread archive) runs
+# fire-and-forget AFTER the session leaves the active set — so count can read 0
+# while finalization is still in flight. We therefore require TWO consecutive 0
+# samples (any non-zero resets) before stopping Bridge — a stabilization window,
+# NOT a completion barrier (it lowers the probability of interrupting
+# finalization, it does not prove completion). This is self-ship-ONLY so ordinary
+# Bridge deploys for other projects keep the single-0 fast path.
+_self_ship_active() {
+    local d="${SELF_SHIP_PENDING_DIR:-${HOME}/.flywheel/self-ship-pending.d}"
+    local f
+    shopt -s nullglob
+    for f in "$d"/*.json; do shopt -u nullglob; return 0; done
+    shopt -u nullglob
+    return 1
+}
+
 wait_for_idle() {
     local elapsed=0
     local consecutive_failures=0
     local max_consecutive_failures=3
+    local zero_streak=0
+    local required_zeros=1
+    if _self_ship_active; then
+        required_zeros=2
+        log "self-ship pending → stabilization window: requiring ${required_zeros} consecutive idle samples"
+    fi
     while (( elapsed < MAX_WAIT_SECONDS )); do
         local count
         local health_ok=true
@@ -486,11 +516,17 @@ wait_for_idle() {
                 return 0
             fi
             log "Health check failed (${consecutive_failures}/${max_consecutive_failures}), retrying..."
+            zero_streak=0
         else
             consecutive_failures=0
-            if (( count == 0 )); then return 0; fi
-            if (( elapsed == 0 || elapsed % 300 == 0 )); then
-                notify_discord "⏳ 等待 ${count} 个 active session idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
+            if (( count == 0 )); then
+                zero_streak=$((zero_streak + 1))
+                if (( zero_streak >= required_zeros )); then return 0; fi
+            else
+                zero_streak=0   # any active session resets the stabilization streak
+                if (( elapsed == 0 || elapsed % 300 == 0 )); then
+                    notify_discord "⏳ 等待 ${count} 个 active session idle... (${elapsed}s/${MAX_WAIT_SECONDS}s)"
+                fi
             fi
         fi
         sleep "$POLL_INTERVAL"
@@ -958,12 +994,22 @@ rollback_and_restart() {
             stop_bridge
             start_bridge
         fi
+        local rb_leads_failed=0
         if [[ "$restart_all_leads" == "true" ]]; then
-            do_restart_all_leads > /dev/null
+            # FLY-270 (R1#4): parse the Lead-restart result instead of discarding
+            # it. A rolled-back-but-NOT-recovered Eng Lead must be surfaced as a
+            # severe alert, never conflated with "code rolled back" success.
+            local rb_lead_result
+            rb_lead_result=$(do_restart_all_leads)
+            rb_leads_failed=$(echo "$rb_lead_result" | sed 's/.*failed:\([0-9]*\).*/\1/')
             # FLY-98: trigger cmux refresh after rollback restart
             trigger_cmux_refresh
         fi
-        notify_discord "⚠️ Flywheel 更新到 \`${CURRENT_HEAD:0:7}\` 失败。已回滚到 \`${rollback_sha:0:7}\` 并重启旧版本。"
+        if (( rb_leads_failed > 0 )); then
+            severe_alert "Flywheel 回滚到 \`${rollback_sha:0:7}\` 成功，但 ${rb_leads_failed} 个 Lead（含 Eng Lead？）未恢复——KeepAlive 重拉不了坏 token/manifest/config。需要手动开 terminal 检查。"
+        else
+            notify_discord "⚠️ Flywheel 更新到 \`${CURRENT_HEAD:0:7}\` 失败。已回滚到 \`${rollback_sha:0:7}\` 并重启旧版本（Lead 已恢复）。"
+        fi
     else
         notify_discord "🚨 Flywheel 更新失败且回滚 build 也失败。服务可能处于异常状态。需要手动介入。"
     fi

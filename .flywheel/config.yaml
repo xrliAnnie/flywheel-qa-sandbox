@@ -1,0 +1,76 @@
+# Flywheel self-hosting — Blueprint/Runner-side config (FLY-270).
+# Consumed by packages/config/src/ConfigLoader.ts (validate) +
+# packages/teamlead/src/bridge/run-infra.ts (checkpoints/agents/skills only).
+#
+# This onboards the flywheel repo ITSELF as a Flywheel project as a two-layer Flywheel team
+# (CoS Aunt Cass triages/routes + Eng Lead Tadashi spawns Runners) that drives FLY issues → Runner → auto PR. The self-hosting ship/restart
+# safety boundary lives in scripts/self-ship-restart.sh + update-flywheel.sh
+# (Method B durable queue), NOT here. See doc/engineer/plan/new/v1.47.0-FLY-270-self-onboard.md.
+
+project: flywheel
+
+linear:
+  # Flywheel issues are in the FLY team. NOTE: ConfigLoader requires this field
+  # truthy but it is NOT read at runtime (run-infra only reads checkpoints/agents/
+  # skills); scoping is enforced by projectName + the Lead's FLY-127 match.label
+  # (set in ~/.flywheel/projects.json, Annie cutover). See FLY-189 §1.4.
+  team_id: FLY
+
+runners:
+  default: claude
+  available:
+    claude:
+      type: claude
+      model: sonnet        # Runner model; Lead model is set per-fleet (FLY-241/247)
+
+teams:
+  - name: default
+    orchestrators:
+      - type: dag
+        runner: claude
+        budget_per_issue: 10
+
+decision_layer:
+  # Proposal-mode start (Annie-locked): Lead proposes, founder decides. merge /
+  # ship / runner-lifecycle stay founder-gated (FLY-175 founder-only-authority).
+  autonomy_level: advisor
+  escalation_channel: discord
+
+# Checkpoints: brainstorm (scope confirm) + question (generic Lead↔Annie gate) +
+# approve_to_ship (founder gate before merge — Tadashi's gate question must
+# state the self-ship Tier / restart blast radius, see identity.md).
+checkpoints:
+  brainstorm:
+    enabled: true
+    timeout_ms: 86400000        # 24h
+    timeout_behavior: fail-close
+  question:
+    enabled: true
+    timeout_ms: 86400000
+    timeout_behavior: fail-open
+  approve_to_ship:
+    enabled: true
+    timeout_ms: 86400000
+    timeout_behavior: fail-close
+
+# Executors: the flywheel repo's work is TypeScript/shell engineering + docs.
+# Two department executors (engineering) + a top-level generic catch-all. Kept
+# deliberately lean (not GeoForge3D's 7). department is inferred from the
+# .flywheel/agents/<dept>/ path.
+agents:
+  code:
+    agent_file: .flywheel/agents/engineering/code-executor.md
+    department: engineering
+    match:
+      labels: ["code", "feat", "fix", "refactor", "test", "infra", "tooling", "bug"]
+  docs:
+    agent_file: .flywheel/agents/engineering/docs-executor.md
+    department: engineering
+    match:
+      labels: ["doc", "docs", "research", "design", "plan"]
+  # Top-level catch-all (no department). Used when the Lead passes agentName:"general"
+  # or no executor label matches.
+  general:
+    agent_file: .flywheel/agents/general-executor.md
+    match:
+      labels: []
