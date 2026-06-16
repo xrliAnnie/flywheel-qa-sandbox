@@ -1800,6 +1800,33 @@ if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
   exit 0
 fi
 
+# ── FLY-282: self-healing roundtable allowBots provisioning ──────────────────
+# The Discord plugin drops a bot-authored message unless the author's bot id is
+# in this Lead's access.json `allowBots`. That whitelist was hand-maintained, so
+# sibling Lead bots couldn't @-mention each other in #leads-roundtable
+# (Cass→Simba, 2026-06-16). Here each Lead resolves its OWN authoritative bot id
+# (token → Discord /users/@me), publishes it to a shared registry, and unions
+# every registered peer id into its own allowBots — idempotent, atomic, and
+# self-healing on every restart. Runs ONCE before the supervisor loop; the
+# dry-run path above already exited, so the launch-plan sentinel stays byte-compat.
+# Best-effort (`|| true`): a provisioning failure must never abort a Lead launch.
+# No-op unless this Lead is a roundtable member AND the cross-dept channel env is
+# set (reuses the FLY-267 env; no new hardcoded roster/channel constant).
+if [ -n "${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-}" ] && [ -n "${DISCORD_BOT_TOKEN:-}" ]; then
+  _rt_cli="${SCRIPT_DIR}/../dist/roundtable-allowbots-cli.js"
+  if [ -f "$_rt_cli" ]; then
+    log "FLY-282: reconciling roundtable allowBots for ${LEAD_ID}"
+    node "$_rt_cli" \
+      --lead-id "$LEAD_ID" \
+      --token-env DISCORD_BOT_TOKEN \
+      --access-file "${DISCORD_STATE_DIR}/access.json" \
+      --registry-dir "${FLYWHEEL_ROUNDTABLE_REGISTRY_DIR:-${HOME}/.flywheel/roundtable-registry}" \
+      --channel-ids "$FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS" || true
+  else
+    log "FLY-282: roundtable-allowbots CLI not built ($_rt_cli) — skip (run: pnpm -F flywheel-teamlead build)"
+  fi
+fi
+
 # GEO-285: Crash recovery with exponential backoff.
 # - Fresh start: generate UUID → bootstrap → save → claude --session-id
 # - Resume: read session ID → claude --resume (no bootstrap)
