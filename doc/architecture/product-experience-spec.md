@@ -216,6 +216,7 @@ Runner 有问题 → 问 Lead → Lead 在 Chat 转达给 Annie → Annie 回答
 
 - 多个 Runner 的问题由 Lead 在 Chat 中统一汇总，标明是哪个 Runner/issue 的问题
 - Lead 是 Annie 和所有 Runner 之间的**唯一通信通道**
+- **(FLY-270) 落点 = per-issue `[ISSUE-ID]` thread**：上面 Runner↔Lead↔Annie 的双向转达，承载在该 issue 的 `[ISSUE-ID]` thread（dept-lead 频道下，如 `#flywheel-product` / `#geoforge3d-product-chat`）里，**不在频道顶层、不在 `#core`**。该 thread = {Annie, Lead, Runner} 协作空间：Runner 的 work 更新（Lead 转）+ Lead 自己的 update + Annie 的回话（Lead 转给 Runner）都在里面。Bridge 不自动发 thread（FLY-163 起）、Runner 发不了 Discord —— **Lead 是唯一能把内容写进 thread 的角色**。`#core` 只跨 issue/全局协调。
 
 ### 2.5 失败处理
 
@@ -394,7 +395,7 @@ Main Runner 创建 PR + Codex Review
 
 | 事项 | 状态 | 备注 |
 |------|------|------|
-| Chat 中是否用 thread 区分不同 issue 的对话 | 待定 | Annie 说 "值得商榷" |
+| Chat 中是否用 thread 区分不同 issue 的对话 | ✅ 已定 (FLY-270) | per-issue `[ISSUE-ID]` thread（dept-lead 频道下）= {Annie, Lead, Runner} 协作空间；该 issue 的所有 update + 双向对话都在 thread；`#core` 只跨 issue/全局协调。详见 §2.4。 |
 | /compound 是否加入 /spin 流程 | 待定 | 目前不在 spin 里 |
 | Context Window 管理策略 | 需要 research | 看 Claude Code 源码 |
 | 敏感数据过滤（FLY-39） | 需要实现 | Urgent，已有 issue |

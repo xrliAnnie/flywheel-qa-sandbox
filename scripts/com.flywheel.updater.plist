@@ -9,6 +9,19 @@
         <string>/bin/bash</string>
         <string>/Users/xiaorongli/Dev/flywheel/scripts/update-flywheel.sh</string>
     </array>
+    <!-- FLY-270: durable self-hosting ship queue. launchd keeps/re-launches this
+         job whenever the watched dir is NON-EMPTY, which bridges the window
+         between a Runner enqueueing a marker and the updater's final convergence
+         check + process exit (root-cures the single-marker lost-wakeup). The
+         updater removes a marker only after its target merge SHA is deployed;
+         blocked/corrupt markers move to a SEPARATE, unwatched dir so a stuck
+         marker can never hot-loop the job. Absolute path required (no '~'). -->
+    <key>QueueDirectories</key>
+    <array>
+        <string>/Users/xiaorongli/.flywheel/self-ship-pending.d</string>
+    </array>
+    <!-- Fallback sweep: pull origin/main if deployed-sha is behind, even with
+         no pending markers (covers a missed/failed handoff). -->
     <key>StartCalendarInterval</key>
     <array>
         <dict>
