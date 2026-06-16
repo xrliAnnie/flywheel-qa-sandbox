@@ -1888,6 +1888,7 @@ set -e   # deterministic errexit for this block (regardless of earlier set +e)
 fly169_setup_one() {
   reset_mocks
   MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a'
+  MOCK_PANE_DEAD=$'flywheel:@1=0'   # FLY-280: @1 live → live-id select resolves it
   MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"}]}'
   MOCK_CMUX_SURFACES="workspace:1;;surface:1;;terminal;;true"
@@ -1909,7 +1910,7 @@ else
   pass "atomic: no separate send-key (newline embedded in the single send)"
 fi
 if echo "$MOCK_CMUX_OPS" | grep -q "refresh-surfaces"; then pass "refresh-surfaces after heal"; else fail "missing refresh-surfaces"; fi
-if echo "$MOCK_TMUX_SELECTS" | grep -q "=cmux-lead-a:=lead-a"; then pass "select-window points at agent window"; else fail "missing select-window"; fi
+if echo "$MOCK_TMUX_SELECTS" | grep -q "=cmux-lead-a:@1"; then pass "select-window points at LIVE agent window (FLY-280 by id)"; else fail "missing select-window by live id"; fi
 
 # Test 2: client>0 (attached) → MUST NOT send (Claude-prompt safety), only select-window
 fly169_setup_one 1
@@ -1919,7 +1920,9 @@ if echo "$MOCK_CMUX_OPS" | grep -q "send"; then
 else
   pass "attached: no send (never types into Claude prompt)"
 fi
-if echo "$MOCK_TMUX_SELECTS" | grep -q "=cmux-lead-a:=lead-a"; then pass "attached: select-window only (safe)"; else fail "expected select-window when attached"; fi
+if echo "$MOCK_TMUX_SELECTS" | grep -q "=cmux-lead-a:@1"; then pass "attached: select-window by live id only (safe)"; else fail "expected select-window by live id when attached"; fi
+# FLY-280: attached branch now also repaints the Electron surface after re-point.
+if echo "$MOCK_CMUX_OPS" | grep -q "refresh-surfaces"; then pass "attached: refresh-surfaces repaint after re-point (FLY-280)"; else fail "expected refresh-surfaces in attached branch"; fi
 
 # Test 3: workspace has NO terminal surface (e.g. only a browser pane) → no send
 fly169_setup_one 0
@@ -2149,6 +2152,69 @@ if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:2 --surface surfa
   pass "errexit-safe: rc=1 first ref does not abort; later ref still heals"
 else
   fail "errexit/loop continuation failed; got: $MOCK_CMUX_OPS"
+fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-280: render-drift — self_heal_one_workspace must re-point the cmux view at
+# the LIVE same-name window (never a stale remain-on-exit DEAD window) and force a
+# refresh-surfaces repaint. Reproduces the cos-lead drift: a Lead crash/restart
+# (cos-lead exited 128 / respawned; eng-lead never crashed → only cos-lead drifts)
+# leaves a DEAD same-name window at a LOWER index. The legacy `select-window -t
+# =wname` picks the lowest-index window → the cmux pane lands on the dead pane and
+# renders frozen/blank, even though the view session still has a client attached.
+# Same root cause FLY-177 fixed in refresh_linked_sessions — self_heal lacked it.
+# ════════════════════════════════════════════════════════════════
+echo ""
+echo "═══ FLY-280: render-drift — live-window select + repaint ═══"
+
+# Scenario: Lead restarted. flywheel session now has TWO 'lead-a' windows —
+#   @7 DEAD (remain-on-exit leftover, LOWER index) + @9 LIVE (respawned, higher).
+# The cmux view session is STILL attached (clients>0) but its current-window can
+# point at the dead @7.
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@7|lead-a\nflywheel|@9|lead-a'
+MOCK_PANE_DEAD=$'flywheel:@7=1\nflywheel:@9=0'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"}]}'
+MOCK_CMUX_SURFACES="workspace:1;;surface:1;;terminal;;true"
+MOCK_TMUX_CLIENTS="cmux-lead-a=1"   # attached → exercises the clients>0 drift branch
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@9"; then
+  pass "drift: re-points the view at the LIVE window @9"
+else
+  fail "expected select of live window @9; got: $(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')"
+fi
+if echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@7"; then
+  fail "CRITICAL drift bug: selected the DEAD same-name window @7"
+else
+  pass "drift: never selects the dead window @7 (=name lowest-index trap avoided)"
+fi
+if echo "$MOCK_CMUX_OPS" | grep -q "refresh-surfaces"; then
+  pass "drift: forces refresh-surfaces repaint after re-point"
+else
+  fail "expected refresh-surfaces repaint; got: $(echo "$MOCK_CMUX_OPS" | tr '\n' ' ')"
+fi
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace"; then
+  fail "CRITICAL: attached surface must never receive a send (Claude-prompt risk)"
+else
+  pass "drift: attached surface receives no send (Claude-prompt safe)"
+fi
+
+# FLY-280 case 2: 0-client healed path also re-points by LIVE id (defensive — the
+# post-heal select must not land on the dead dup either).
+reset_mocks
+MOCK_TMUX_WINDOWS=$'flywheel|@7|lead-a\nflywheel|@9|lead-a'
+MOCK_PANE_DEAD=$'flywheel:@7=1\nflywheel:@9=0'
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"}]}'
+MOCK_CMUX_SURFACES="workspace:1;;surface:1;;terminal;;true"
+MOCK_TMUX_CLIENTS="cmux-lead-a=0"   # detached → heal + re-point
+self_heal_one_workspace "lead-a"
+if echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@9" \
+   && ! echo "$MOCK_TMUX_SELECTS" | grep -qx "=cmux-lead-a:@7"; then
+  pass "drift (0-client): post-heal re-point selects live @9, not dead @7"
+else
+  fail "0-client re-point wrong; got: $(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')"
 fi
 
 set +e   # restore lenient mode for the new FLY-177 tests (process juggling)
