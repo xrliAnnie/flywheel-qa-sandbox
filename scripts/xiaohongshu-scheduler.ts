@@ -1,10 +1,14 @@
 /**
  * FLY-222: thin scheduled-learning scheduler ENTRY (run via `npx tsx`).
  *
- * ⚠️ DRAFT — write-only, NOT yet wired into launchd. Verified end-to-end against
- * a real Bridge + the Flywheel Sandbox Linear project during A0-A10 (the runbook
- * at doc/engineer/implementation/FLY-222-a0-a10-runbook.md). Do NOT run against a
- * production Bridge or spawn real Runners outside that window.
+ * FLY-286: the post-hoc review model is now wired — the trigger body carries the
+ * post-hoc params (review_channel / first_run_cap / first_run_analyze_limit /
+ * auto_create) the skill reads, on top of the FLY-222 fields. The code is ready;
+ * **installing the launchd plist + the FIRST live run is the GATED pilot** (the
+ * CoS + Annie present, on safe machine load — never self-triggered). Until that
+ * pilot, do NOT load the plist against a production Bridge. (FLY-222 verified the
+ * mechanics end-to-end during A0-A10; FLY-286 verifies the post-hoc behaviour in
+ * the gated pilot.)
  *
  * Wires the real deps around the unit-tested decision core
  * (planLearningRuns + executeLearningPlan, packages/teamlead/src/
@@ -46,6 +50,7 @@ import {
 } from "../packages/flywheel-comm/dist/xiaohongshu-state.js";
 import { loadProjects } from "../packages/teamlead/dist/ProjectConfig.js";
 import {
+	buildTriggerBody,
 	type CollectionRunPlan,
 	executeLearningPlan,
 	planLearningRuns,
@@ -108,7 +113,11 @@ async function main(): Promise<void> {
 	const decisions = planLearningRuns({
 		projects,
 		loadProjectConfig: (name) => configMap.get(name) ?? null,
-		readState,
+		// PlannerDeps.readState is (project, collectionId); the flywheel-comm fn is
+		// (stateDir, project, collectionId) — bind stateDir so the planner reads the
+		// RIGHT collection state (codex PR-5 code R1: the bare ref shifted args).
+		readState: (project, collectionId) =>
+			readState(stateDir, project, collectionId),
 		now: () => new Date(),
 	});
 
@@ -157,32 +166,12 @@ async function main(): Promise<void> {
 		return only.id;
 	}
 
-	// The trigger body carries the run params the skill reads — including the
-	// resolved `linear_team` key (the skill needs it for create_issue). Rebuilt
-	// fresh each tick so a config change (cadence / max_fetch / target project)
-	// propagates (codex r3 MEDIUM: stale body never refreshed).
-	function triggerBody(plan: CollectionRunPlan, teamKey: string): string {
-		return [
-			"FLY-222 scheduled-learning trigger issue (auto-created; resynced every tick).",
-			"",
-			"```yaml",
-			`xiaohongshu_learning_run:`,
-			`  project: ${plan.project}`,
-			`  collection_id: ${plan.collectionId}`,
-			`  collection_label: ${plan.collectionLabel}`,
-			`  lead_id: ${plan.leadId}`,
-			`  linear_team: ${teamKey}`,
-			`  target_linear_project: ${plan.targetLinearProject}`,
-			`  cadence: ${plan.cadence}`,
-			`  max_fetch: ${plan.maxFetch}`,
-			`  video_opt_in: ${plan.videoOptIn}`,
-			"```",
-		].join("\n");
-	}
-
+	// The trigger body (buildTriggerBody, in the scheduler lib) is the YAML the
+	// skill reads — rebuilt fresh each tick so a config change propagates, and
+	// unit-tested there so a param-name typo can't silently break the contract.
 	async function createTriggerIssue(plan: CollectionRunPlan): Promise<string> {
 		const team = await resolveTeam(plan.project);
-		const description = triggerBody(plan, team.key);
+		const description = buildTriggerBody(plan, team.key);
 		// Stable dedup key built from IMMUTABLE fields (project + collection_id),
 		// NOT the mutable label. createTriggerIssue is find-or-create: if a crash
 		// happened between a prior create and the local triggerIssueId persist, the

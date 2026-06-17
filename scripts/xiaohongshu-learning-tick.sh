@@ -1,11 +1,13 @@
 #!/bin/bash
 # FLY-222: scheduled-learning tick — launchd entry wrapper.
 #
-# DRAFT — write-only, NOT yet installed into launchd. Verified during A0-A10.
-# Sources env, takes a FLY-176 re-entry lock (no overlapping ticks), truncates
-# its log, then runs the thin TS scheduler (which spawns Runners via the Bridge
-# and returns quickly — it does NOT wait for Runners). Do NOT point at a
-# production Bridge outside the A0-A10 window.
+# FLY-286: post-hoc model wired (the scheduler now passes review_channel /
+# first_run_cap / first_run_analyze_limit / auto_create). Code is ready; INSTALLING
+# this into launchd + the FIRST live run is the GATED pilot (CoS + Annie present,
+# safe machine load — never self-triggered). Sources env, takes a FLY-176 re-entry
+# lock (no overlapping ticks), truncates its log, then runs the thin TS scheduler
+# (which spawns Runners via the Bridge and returns quickly — it does NOT wait for
+# Runners). Do NOT load the plist against a production Bridge before that pilot.
 set -euo pipefail
 
 FLYWHEEL_DIR="${FLYWHEEL_DIR:-$HOME/Dev/flywheel}"
