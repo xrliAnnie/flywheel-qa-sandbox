@@ -11,6 +11,14 @@
 #   2. update-flywheel.sh via launchd (fallback)
 set -euo pipefail
 
+# FLY-299: when launched by the launchd updater (com.flywheel.updater), the
+# environment may carry only a minimal default PATH that lacks /usr/local/bin,
+# so `pnpm`/`node`/`git` are not found and the build silently fails. Prepend the
+# dirs where the toolchain lives so this script resolves them regardless of how
+# it was invoked (launchd, cron, interactive). Belt-and-suspenders with the
+# plist's EnvironmentVariables→PATH.
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}"
+
 # ════════════════════════════════════════════════════════════════
 # Configuration
 # ════════════════════════════════════════════════════════════════
