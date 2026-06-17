@@ -26,8 +26,14 @@ import {
 import type {
 	FlywheelConfig,
 	XiaohongshuCollectionConfig,
+	XiaohongshuReviewChannel,
 } from "flywheel-config";
-import { XIAOHONGSHU_DEFAULT_MAX_FETCH } from "flywheel-config";
+import {
+	XIAOHONGSHU_DEFAULT_FIRST_RUN_CAP,
+	XIAOHONGSHU_DEFAULT_MAX_FETCH,
+	XIAOHONGSHU_DEFAULT_REVIEW_CHANNEL,
+	XIAOHONGSHU_MAX_FETCH_CEILING,
+} from "flywheel-config";
 import type { ProjectEntry } from "./ProjectConfig.js";
 import {
 	type RoutingTupleResult,
@@ -45,6 +51,11 @@ export interface CollectionRunPlan {
 	cadence: string;
 	maxFetch: number;
 	videoOptIn: boolean;
+	// FLY-286 post-hoc params the skill reads (review surface + bounded auto-create).
+	reviewChannel: XiaohongshuReviewChannel;
+	firstRunCap: number;
+	firstRunAnalyzeLimit: number;
+	autoCreate: boolean;
 }
 
 export type CollectionDecision =
@@ -141,11 +152,55 @@ export function planLearningRuns(deps: PlannerDeps): CollectionDecision[] {
 					cadence: col.cadence ?? DEFAULT_CADENCE,
 					maxFetch: resolveMaxFetch(col),
 					videoOptIn,
+					// FLY-286 post-hoc params (resolved with the config defaults so the
+					// trigger body always carries a concrete value for the skill).
+					reviewChannel:
+						col.review_channel ?? XIAOHONGSHU_DEFAULT_REVIEW_CHANNEL,
+					firstRunCap: col.first_run_cap ?? XIAOHONGSHU_DEFAULT_FIRST_RUN_CAP,
+					firstRunAnalyzeLimit:
+						col.first_run_analyze_limit ?? XIAOHONGSHU_MAX_FETCH_CEILING,
+					autoCreate: col.auto_create ?? true,
 				},
 			});
 		}
 	}
 	return out;
+}
+
+/**
+ * Build the trigger-issue body (the YAML the skill reads for run params).
+ * Exported + pure so a typo in a param NAME — the highest-risk cross-artifact
+ * surface — is caught by a unit test (codex PR-5 R1#3). Rebuilt fresh each tick
+ * so a config change propagates. `base_url` is deliberately ABSENT: the skill
+ * reads `$FLYWHEEL_BRIDGE_URL` from its injected Runner env (single source of
+ * truth = the Runner's actual Bridge, never a possibly-stale URL in an issue).
+ */
+export function buildTriggerBody(
+	plan: CollectionRunPlan,
+	teamKey: string,
+): string {
+	return [
+		"FLY-222 scheduled-learning trigger issue (auto-created; resynced every tick).",
+		"",
+		"```yaml",
+		`xiaohongshu_learning_run:`,
+		`  project: ${plan.project}`,
+		`  collection_id: ${plan.collectionId}`,
+		`  collection_label: ${plan.collectionLabel}`,
+		`  lead_id: ${plan.leadId}`,
+		`  linear_team: ${teamKey}`,
+		`  target_linear_project: ${plan.targetLinearProject}`,
+		`  cadence: ${plan.cadence}`,
+		`  max_fetch: ${plan.maxFetch}`,
+		`  video_opt_in: ${plan.videoOptIn}`,
+		// FLY-286 post-hoc params the skill reads (review surface + bounded
+		// auto-create + first-run analyze window).
+		`  review_channel: ${plan.reviewChannel}`,
+		`  first_run_cap: ${plan.firstRunCap}`,
+		`  first_run_analyze_limit: ${plan.firstRunAnalyzeLimit}`,
+		`  auto_create: ${plan.autoCreate}`,
+		"```",
+	].join("\n");
 }
 
 // ─── Executor (side-effecting) ────────────────────────────────────────────────

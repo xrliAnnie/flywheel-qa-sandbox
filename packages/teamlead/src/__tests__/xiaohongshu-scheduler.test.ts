@@ -17,6 +17,7 @@ import type {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import {
+	buildTriggerBody,
 	type CollectionDecision,
 	type CollectionRunPlan,
 	executeLearningPlan,
@@ -94,6 +95,11 @@ describe("planLearningRuns", () => {
 				cadence: "weekly", // default
 				maxFetch: 20, // default
 				videoOptIn: false, // default
+				// FLY-286 post-hoc params resolved to their config defaults
+				reviewChannel: "web-local",
+				firstRunCap: 15,
+				firstRunAnalyzeLimit: 200,
+				autoCreate: true,
 			});
 		}
 	});
@@ -109,6 +115,30 @@ describe("planLearningRuns", () => {
 			expect(d.plan.maxFetch).toBe(13);
 			expect(d.plan.videoOptIn).toBe(true);
 		}
+	});
+
+	it("carries explicit FLY-286 post-hoc params (first_run_cap / auto_create / first_run_analyze_limit)", () => {
+		const cfg = cfgWith([
+			{
+				...ONE_COLLECTION[0],
+				first_run_cap: 3,
+				first_run_analyze_limit: 50,
+				auto_create: false,
+			},
+		]);
+		const d = only(planLearningRuns(makeDeps(cfg)));
+		if (d.action === "spawn") {
+			expect(d.plan.firstRunCap).toBe(3);
+			expect(d.plan.firstRunAnalyzeLimit).toBe(50);
+			expect(d.plan.autoCreate).toBe(false);
+			expect(d.plan.reviewChannel).toBe("web-local");
+		}
+	});
+
+	it("preserves the falsy first_run_cap: 0 (nullish-coalescing, not || → must NOT fall to 15)", () => {
+		const cfg = cfgWith([{ ...ONE_COLLECTION[0], first_run_cap: 0 }]);
+		const d = only(planLearningRuns(makeDeps(cfg)));
+		if (d.action === "spawn") expect(d.plan.firstRunCap).toBe(0);
 	});
 
 	it("skips a not-due collection", () => {
@@ -179,6 +209,10 @@ describe("executeLearningPlan", () => {
 		cadence: "weekly",
 		maxFetch: 20,
 		videoOptIn: false,
+		reviewChannel: "web-local",
+		firstRunCap: 15,
+		firstRunAnalyzeLimit: 200,
+		autoCreate: true,
 	};
 	const spawnDecision: CollectionDecision = { action: "spawn", plan: PLAN };
 
@@ -321,5 +355,53 @@ describe("executeLearningPlan", () => {
 			"tuple_invalid",
 		]);
 		expect(alert).toHaveBeenCalledTimes(1); // only tuple_invalid
+	});
+});
+
+describe("buildTriggerBody (the YAML the skill reads — cross-artifact contract)", () => {
+	const plan: CollectionRunPlan = {
+		project: "sub",
+		collectionId: "c1",
+		collectionLabel: "AI-视频",
+		leadId: "sub-lead",
+		departmentLabel: "Sub",
+		targetLinearProject: "Flywheel Sandbox",
+		cadence: "weekly",
+		maxFetch: 20,
+		videoOptIn: false,
+		reviewChannel: "web-local",
+		firstRunCap: 15,
+		firstRunAnalyzeLimit: 200,
+		autoCreate: true,
+	};
+	const body = buildTriggerBody(plan, "FLY");
+
+	it("emits every param name the skill reads", () => {
+		for (const key of [
+			"project:",
+			"collection_id:",
+			"collection_label:",
+			"lead_id:",
+			"linear_team:",
+			"target_linear_project:",
+			"cadence:",
+			"max_fetch:",
+			"video_opt_in:",
+			"review_channel:",
+			"first_run_cap:",
+			"first_run_analyze_limit:",
+			"auto_create:",
+		]) {
+			expect(body).toContain(key);
+		}
+		expect(body).toContain("review_channel: web-local");
+		expect(body).toContain("first_run_cap: 15");
+		expect(body).toContain("first_run_analyze_limit: 200");
+		expect(body).toContain("auto_create: true");
+		expect(body).toContain("linear_team: FLY");
+	});
+
+	it("deliberately EXCLUDES base_url (the skill reads $FLYWHEEL_BRIDGE_URL from env)", () => {
+		expect(body).not.toContain("base_url");
 	});
 });

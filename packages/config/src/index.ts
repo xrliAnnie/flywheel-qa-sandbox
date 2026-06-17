@@ -45,11 +45,15 @@ export type {
 	XiaohongshuCadence,
 	XiaohongshuCollectionConfig,
 	XiaohongshuLearningConfig,
+	XiaohongshuReviewChannel,
 } from "./types.js";
 export {
 	EXECUTOR_BACKENDS,
 	ROLE_NAMES,
 	XIAOHONGSHU_CADENCES,
+	XIAOHONGSHU_DEFAULT_FIRST_RUN_CAP,
 	XIAOHONGSHU_DEFAULT_MAX_FETCH,
+	XIAOHONGSHU_DEFAULT_REVIEW_CHANNEL,
 	XIAOHONGSHU_MAX_FETCH_CEILING,
+	XIAOHONGSHU_REVIEW_CHANNELS,
 } from "./types.js";
