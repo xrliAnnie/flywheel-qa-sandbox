@@ -8,8 +8,8 @@ import type {
 	XiaohongshuAnalysisRun,
 	XiaohongshuFeedbackFile,
 } from "flywheel-comm/xiaohongshu-analysis-store";
+import type { ReviewLocator } from "flywheel-comm/xiaohongshu-review-locator";
 import { beforeEach, describe, expect, it } from "vitest";
-import type { ReviewLocator } from "../bridge/xhs-review-locator.js";
 import {
 	createInMemoryTokenStore,
 	handleGetReview,

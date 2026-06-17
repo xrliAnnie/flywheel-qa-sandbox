@@ -21,9 +21,9 @@ import type {
 	XiaohongshuReviewAction,
 	XiaohongshuReviewActionKind,
 } from "flywheel-comm/xiaohongshu-analysis-store";
+import type { ReviewLocator } from "flywheel-comm/xiaohongshu-review-locator";
 import { isSameOrigin, loopbackSelfOrigin } from "./loopback-origin.js";
 import { buildReviewHtml } from "./xhs-review-html.js";
-import type { ReviewLocator } from "./xhs-review-locator.js";
 
 export const FEEDBACK_SCHEMA_VERSION = 1 as const;
 const SESSION_TTL_MS = 30 * 60 * 1000; // 30 min

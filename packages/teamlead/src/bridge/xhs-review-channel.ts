@@ -17,10 +17,8 @@ import type {
 	XiaohongshuAnalysisRun,
 	XiaohongshuFeedbackFile,
 } from "flywheel-comm/xiaohongshu-analysis-store";
-import {
-	type ReviewLocator,
-	XIAOHONGSHU_LOCATOR_SCHEMA_VERSION,
-} from "./xhs-review-locator.js";
+import { deliverReviewArtifacts } from "flywheel-comm/xiaohongshu-review-delivery";
+import type { ReviewLocator } from "flywheel-comm/xiaohongshu-review-locator";
 
 /** The seam reused by FLY-298 (web-public). */
 export interface ReviewChannel {
@@ -46,24 +44,20 @@ export interface WebLocalReviewChannelDeps {
 export function createWebLocalReviewChannel(
 	deps: WebLocalReviewChannelDeps,
 ): ReviewChannel {
-	const base = deps.baseUrl.replace(/\/+$/, "");
 	return {
 		deliver(run) {
-			const reportToken = deps.randomToken();
-			const deliveredAt = deps.now();
-			// Persist the run marked DELIVERED (codex code R1#3): the merged schema
-			// documents `review` as set once the review page is delivered. Stamp it
-			// so the stored run is consistent with the locator/URL we return.
-			deps.analysis.writeRun({ ...run, review: { reportToken, deliveredAt } });
-			deps.writeLocator({
-				schemaVersion: XIAOHONGSHU_LOCATOR_SCHEMA_VERSION,
-				reportToken,
-				project: run.project,
-				collectionId: run.collectionId,
-				runToken: run.runToken,
-				createdAt: deliveredAt,
+			// Shared pure artifact helper (codex R3#1): mint token + locator-first +
+			// delivered run. The adapter does NOT mutate XiaohongshuState (that
+			// owner-fenced step belongs to the CLI path only).
+			const { reportToken, url } = deliverReviewArtifacts({
+				writeRun: (r) => deps.analysis.writeRun(r),
+				writeLocator: deps.writeLocator,
+				run,
+				baseUrl: deps.baseUrl,
+				randomToken: deps.randomToken,
+				now: deps.now,
 			});
-			return { reportToken, url: `${base}/xhs-review/${reportToken}` };
+			return { reportToken, url };
 		},
 		collectFeedback(reportToken) {
 			const loc = deps.readLocator(reportToken);

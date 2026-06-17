@@ -11,7 +11,7 @@ import {
 	readLocator,
 	writeLocator,
 	XIAOHONGSHU_LOCATOR_SCHEMA_VERSION,
-} from "../bridge/xhs-review-locator.js";
+} from "../xiaohongshu-review-locator.js";
 
 let dir: string;
 beforeEach(() => {

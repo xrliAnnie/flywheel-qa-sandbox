@@ -792,6 +792,48 @@ export function recordFeedbackOperationIntent(
 	};
 }
 
+// ─── FLY-286: review delivery + pending-feedback pointers ─────────────────────
+
+/**
+ * Record that an analysis run was delivered for review (FLY-286). Sets the
+ * `lastAnalysisRunToken` / `lastReportToken` pointers and appends the run to the
+ * drainable `pendingFeedbackRunTokens` queue (dedup). Pure transform — the CLI
+ * wraps it in the collection lock + owner fence (like the other mutators).
+ */
+export function recordAnalysisDelivered(
+	state: XiaohongshuState,
+	args: { runToken: string; reportToken: string },
+): XiaohongshuState {
+	const pending = Array.isArray(state.pendingFeedbackRunTokens)
+		? state.pendingFeedbackRunTokens
+		: [];
+	return {
+		...state,
+		lastAnalysisRunToken: args.runToken,
+		lastReportToken: args.reportToken,
+		pendingFeedbackRunTokens: pending.includes(args.runToken)
+			? pending
+			: [...pending, args.runToken],
+	};
+}
+
+/**
+ * Drop a run from the pending-feedback queue once all its review actions have
+ * been consumed (FLY-286). Idempotent when the token is already absent.
+ */
+export function clearPendingFeedback(
+	state: XiaohongshuState,
+	runToken: string,
+): XiaohongshuState {
+	const pending = Array.isArray(state.pendingFeedbackRunTokens)
+		? state.pendingFeedbackRunTokens
+		: [];
+	return {
+		...state,
+		pendingFeedbackRunTokens: pending.filter((t) => t !== runToken),
+	};
+}
+
 // ─── Cadence / next-due ───────────────────────────────────────────────────────
 
 const CADENCE_MS: Record<string, number> = {

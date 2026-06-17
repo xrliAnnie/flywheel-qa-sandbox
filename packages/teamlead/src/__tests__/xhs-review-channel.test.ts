@@ -11,9 +11,12 @@ import {
 	createLocalFeedbackStore,
 	type XiaohongshuAnalysisRun,
 } from "flywheel-comm/xiaohongshu-analysis-store";
+import {
+	readLocator,
+	writeLocator,
+} from "flywheel-comm/xiaohongshu-review-locator";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createWebLocalReviewChannel } from "../bridge/xhs-review-channel.js";
-import { readLocator, writeLocator } from "../bridge/xhs-review-locator.js";
 
 let dir: string;
 beforeEach(() => {

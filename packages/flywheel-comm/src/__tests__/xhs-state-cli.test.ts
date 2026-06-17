@@ -354,3 +354,112 @@ describe("xhs-state CLI — fence after lease release (codex r3 NEW HIGH)", () =
 		expect((await run("read")).processed).not.toContain("zombie");
 	});
 });
+
+describe("xhs-state CLI — FLY-286 delivery + pending-feedback", () => {
+	it("record-analysis-delivered sets pointers + enqueues; clear drains; both owner-fenced", async () => {
+		await run("acquire-lease", "--owner", "RK");
+		const d = await run(
+			"record-analysis-delivered",
+			"--run-token",
+			"run-1",
+			"--report-token",
+			"rep1",
+			"--owner",
+			"RK",
+		);
+		expect(d.ok).toBe(true);
+		let st = await run("read");
+		expect(st.lastAnalysisRunToken).toBe("run-1");
+		expect(st.lastReportToken).toBe("rep1");
+		expect(st.pendingFeedbackRunTokens).toEqual(["run-1"]);
+
+		await run(
+			"clear-pending-feedback",
+			"--run-token",
+			"run-1",
+			"--owner",
+			"RK",
+		);
+		st = await run("read");
+		expect(st.pendingFeedbackRunTokens).toEqual([]);
+		// idempotent re-clear
+		expect(
+			(
+				await run(
+					"clear-pending-feedback",
+					"--run-token",
+					"run-1",
+					"--owner",
+					"RK",
+				)
+			).ok,
+		).toBe(true);
+	});
+
+	it("rejects record-analysis-delivered from a non-owner (fence)", async () => {
+		await run("acquire-lease", "--owner", "RK");
+		out = [];
+		const code = await xhsState([
+			"record-analysis-delivered",
+			"--project",
+			P,
+			"--collection",
+			C,
+			"--state-dir",
+			dir,
+			"--run-token",
+			"run-1",
+			"--report-token",
+			"rep1",
+			"--owner",
+			"stale",
+		]);
+		expect(code).toBe(2);
+		expect(JSON.parse(out.filter((x) => x.trim()).pop()!)).toMatchObject({
+			ok: false,
+			reason: "not_lease_owner",
+		});
+	});
+});
+
+describe("xhs-state CLI — FLY-286 delivery mutators require --owner (codex code R1#1)", () => {
+	it("record-analysis-delivered / clear-pending-feedback without --owner → exit 2, state unchanged", async () => {
+		await run("acquire-lease", "--owner", "RK");
+		const exitSpy = vi.spyOn(process, "exit").mockImplementation(((
+			c?: number,
+		) => {
+			throw new Error(`exit:${c}`);
+		}) as never);
+		await expect(
+			xhsState([
+				"record-analysis-delivered",
+				"--project",
+				P,
+				"--collection",
+				C,
+				"--state-dir",
+				dir,
+				"--run-token",
+				"run-1",
+				"--report-token",
+				"rep1",
+			]),
+		).rejects.toThrow("exit:2");
+		await expect(
+			xhsState([
+				"clear-pending-feedback",
+				"--project",
+				P,
+				"--collection",
+				C,
+				"--state-dir",
+				dir,
+				"--run-token",
+				"run-1",
+			]),
+		).rejects.toThrow("exit:2");
+		exitSpy.mockRestore();
+		// state untouched (no delivery pointer set)
+		expect((await run("read")).lastReportToken ?? null).toBeNull();
+	});
+});
