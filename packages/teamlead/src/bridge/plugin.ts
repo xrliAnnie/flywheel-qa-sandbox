@@ -8,6 +8,7 @@ import {
 	createLocalAnalysisStore,
 	createLocalFeedbackStore,
 } from "flywheel-comm/xiaohongshu-analysis-store";
+import { readLocator as readXhsLocator } from "flywheel-comm/xiaohongshu-review-locator";
 import {
 	defaultStateDir as xhsDefaultStateDir,
 	withCollectionLock as xhsWithCollectionLock,
@@ -119,7 +120,6 @@ import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
 import type { BridgeConfig } from "./types.js";
-import { readLocator as readXhsLocator } from "./xhs-review-locator.js";
 import {
 	createInMemoryTokenStore,
 	handleGetReview,

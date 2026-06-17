@@ -18,6 +18,8 @@
  *   record-feedback-op-intent --project --collection --note-id --action close|create --target <opId|candidateId> [--owner]
  *   mark-op-done   --project --collection --op-id [--issue-id]
  *   find-op        --project --collection --op-id
+ *   record-analysis-delivered --project --collection --run-token --report-token --owner   (FLY-286)
+ *   clear-pending-feedback    --project --collection --run-token --owner                  (FLY-286)
  *
  * Common: --state-dir overrides the default (else FLYWHEEL_XHS_STATE_DIR / ~).
  */
@@ -25,6 +27,7 @@
 import { parseArgs } from "node:util";
 import {
 	acquireLease,
+	clearPendingFeedback,
 	computeNewNoteIds,
 	computeNextDueAt,
 	defaultStateDir,
@@ -35,6 +38,7 @@ import {
 	markOperationDone,
 	markProcessed,
 	readState,
+	recordAnalysisDelivered,
 	recordFeedbackOperationIntent,
 	recordOperationIntent,
 	recordPending,
@@ -160,6 +164,8 @@ export async function xhsState(argv: string[]): Promise<number> {
 			"issue-id": { type: "string" },
 			action: { type: "string" },
 			target: { type: "string" },
+			"run-token": { type: "string" },
+			"report-token": { type: "string" },
 		},
 		allowPositionals: false,
 	});
@@ -410,6 +416,43 @@ export async function xhsState(argv: string[]): Promise<number> {
 			);
 			emit({ found: rec != null, record: rec ?? null });
 			return 0;
+		}
+
+		case "record-analysis-delivered": {
+			// FLY-286: set lastAnalysisRunToken/lastReportToken + enqueue the run for
+			// feedback (owner-fenced; called by the deliver CLI after artifacts).
+			const runToken = values["run-token"];
+			const reportToken = values["report-token"];
+			if (!runToken) fail("--run-token is required");
+			if (!reportToken) fail("--report-token is required");
+			// --owner is REQUIRED: without it `fenceOwner` is undefined and mutate()
+			// skips the lease fence entirely (codex code R1#1).
+			if (!values.owner) fail("--owner is required");
+			return await mutate(
+				c,
+				(s) => ({
+					state: recordAnalysisDelivered(s, { runToken, reportToken }),
+					write: true,
+					output: { ok: true },
+				}),
+				{ owner: values.owner, fenceOwner: values.owner },
+			);
+		}
+
+		case "clear-pending-feedback": {
+			// FLY-286: drop a fully-consumed run from the pending-feedback queue.
+			const runToken = values["run-token"];
+			if (!runToken) fail("--run-token is required");
+			if (!values.owner) fail("--owner is required"); // else fence is skipped (R1#1)
+			return await mutate(
+				c,
+				(s) => ({
+					state: clearPendingFeedback(s, runToken),
+					write: true,
+					output: { ok: true },
+				}),
+				{ owner: values.owner, fenceOwner: values.owner },
+			);
 		}
 
 		default:

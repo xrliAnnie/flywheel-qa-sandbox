@@ -32,6 +32,7 @@ import {
 	visualCapture,
 	visualCaptureStdout,
 } from "./commands/visual-capture.js";
+import { xhsAnalysis } from "./commands/xhs-analysis.js";
 import { xhsState } from "./commands/xhs-state.js";
 import { xhsValidateFinal } from "./commands/xhs-validate-final.js";
 import { CommDB } from "./db.js";
@@ -170,6 +171,9 @@ async function main(): Promise<void> {
 			break;
 		case "xhs-state":
 			process.exit(await xhsState(commandArgs));
+			break;
+		case "xhs-analysis":
+			process.exit(await xhsAnalysis(commandArgs));
 			break;
 		case "xhs-validate-final":
 			process.exit(xhsValidateFinal(commandArgs));
