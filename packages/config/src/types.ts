@@ -223,6 +223,23 @@ export const XIAOHONGSHU_MAX_FETCH_CEILING = 200;
 export const XIAOHONGSHU_DEFAULT_MAX_FETCH = 20;
 
 /**
+ * FLY-286: where the founder's post-hoc review of a learning run is delivered +
+ * collected. `web-local` = a Bridge-localhost interactive page (same-origin
+ * comment/action submit) reviewed at the computer. `web-public` (phone/public
+ * write backend) is FLY-298 and is NOT accepted by FLY-286's validation yet.
+ */
+export type XiaohongshuReviewChannel = "web-local";
+
+/** FLY-286: review channels FLY-286 accepts (FLY-298 will add "web-public"). */
+export const XIAOHONGSHU_REVIEW_CHANNELS: readonly XiaohongshuReviewChannel[] =
+	["web-local"];
+/** FLY-286: default review channel when a collection omits `review_channel`. */
+export const XIAOHONGSHU_DEFAULT_REVIEW_CHANNEL: XiaohongshuReviewChannel =
+	"web-local";
+/** FLY-286: default cap on auto-created issues during the first (baseline) run. */
+export const XIAOHONGSHU_DEFAULT_FIRST_RUN_CAP = 15;
+
+/**
  * FLY-222: one Xiaohongshu collection a Lead periodically "studies".
  *
  * `lead_id` / `department_label` / `target_linear_project` are three distinct
@@ -249,6 +266,30 @@ export interface XiaohongshuCollectionConfig {
 	cadence?: XiaohongshuCadence;
 	/** Max notes processed per run (1..200). Default: 20. Unseen overflow stays pending. */
 	max_fetch?: number;
+	/**
+	 * FLY-286: where the post-hoc review is delivered. Default: "web-local".
+	 * FLY-286 only accepts "web-local"; "web-public" (phone) ships in FLY-298.
+	 */
+	review_channel?: XiaohongshuReviewChannel;
+	/**
+	 * FLY-286: cap on issues AUTO-created during the first (baseline) run, so a
+	 * large historical backlog does not flood the founder's Linear. Default: 15.
+	 * Overflow useful posts become review-page candidates (not created). 0 = the
+	 * first run auto-creates nothing (all useful posts become candidates).
+	 */
+	first_run_cap?: number;
+	/**
+	 * FLY-286: max notes the first (baseline) run ANALYZES, distinct from the
+	 * steady-state `max_fetch`. Default: the MCP window cap (200). The first run
+	 * analyzes historical content rather than only baselining it.
+	 */
+	first_run_analyze_limit?: number;
+	/**
+	 * FLY-286: whether the Runner auto-creates issues for useful posts. Default:
+	 * true. When false, every useful post becomes a review-page candidate the
+	 * founder promotes — no issue is created without an explicit action.
+	 */
+	auto_create?: boolean;
 }
 
 /**

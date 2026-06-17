@@ -5,6 +5,7 @@ import type { CheckpointConfig, FlywheelConfig } from "./types.js";
 import {
 	XIAOHONGSHU_CADENCES,
 	XIAOHONGSHU_MAX_FETCH_CEILING,
+	XIAOHONGSHU_REVIEW_CHANNELS,
 } from "./types.js";
 
 /** Function signature for reading a file — injected for testability */
@@ -410,6 +411,43 @@ export class ConfigLoader {
 								`${where}.max_fetch must be an integer between 1 and ${XIAOHONGSHU_MAX_FETCH_CEILING}, got "${col.max_fetch}"`,
 							);
 						}
+					}
+					// FLY-286: review_channel (enum), first_run_cap (0..ceiling),
+					// first_run_analyze_limit (1..ceiling), auto_create (boolean).
+					if (
+						col.review_channel != null &&
+						!XIAOHONGSHU_REVIEW_CHANNELS.includes(col.review_channel as never)
+					) {
+						throw new Error(
+							`${where}.review_channel must be one of ${XIAOHONGSHU_REVIEW_CHANNELS.join(", ")}, got "${col.review_channel}"`,
+						);
+					}
+					if (col.first_run_cap != null) {
+						if (
+							typeof col.first_run_cap !== "number" ||
+							!Number.isInteger(col.first_run_cap) ||
+							col.first_run_cap < 0 ||
+							col.first_run_cap > XIAOHONGSHU_MAX_FETCH_CEILING
+						) {
+							throw new Error(
+								`${where}.first_run_cap must be an integer between 0 and ${XIAOHONGSHU_MAX_FETCH_CEILING}, got "${col.first_run_cap}"`,
+							);
+						}
+					}
+					if (col.first_run_analyze_limit != null) {
+						if (
+							typeof col.first_run_analyze_limit !== "number" ||
+							!Number.isInteger(col.first_run_analyze_limit) ||
+							col.first_run_analyze_limit < 1 ||
+							col.first_run_analyze_limit > XIAOHONGSHU_MAX_FETCH_CEILING
+						) {
+							throw new Error(
+								`${where}.first_run_analyze_limit must be an integer between 1 and ${XIAOHONGSHU_MAX_FETCH_CEILING}, got "${col.first_run_analyze_limit}"`,
+							);
+						}
+					}
+					if (col.auto_create != null && typeof col.auto_create !== "boolean") {
+						throw new Error(`${where}.auto_create must be a boolean`);
 					}
 				});
 			}

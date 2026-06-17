@@ -18,6 +18,7 @@ import {
 	computeNextDueAt,
 	dropPending,
 	emptyState,
+	feedbackOperationId,
 	findOperation,
 	isDue,
 	isLeaseTakeable,
@@ -26,6 +27,7 @@ import {
 	markProcessed,
 	operationId,
 	readState,
+	recordFeedbackOperationIntent,
 	recordOperationIntent,
 	recordPending,
 	releaseLease,
@@ -217,6 +219,80 @@ describe("operation idempotency", () => {
 		expect(() => markOperationDone(fresh(), "nope:x:issue:c")).toThrow(
 			/record intent first/,
 		);
+	});
+});
+
+describe("FLY-286 feedback operations", () => {
+	// A target opId is itself colon-delimited — the helper must accept it.
+	const TARGET_OPID = `${COLLECTION}:n1:issue:c0`;
+
+	it("feedbackOperationId is colon-safe even when target contains ':'", () => {
+		const id = feedbackOperationId(COLLECTION, "n1", "close", TARGET_OPID);
+		// shape: collection:noteId:kind:token — only these structural colons.
+		expect(id.startsWith(`${COLLECTION}:n1:feedback_close:`)).toBe(true);
+		const token = id.slice(`${COLLECTION}:n1:feedback_close:`.length);
+		expect(token).toMatch(/^[a-f0-9]{16}$/); // hashed, colon-free
+		expect(token.includes(":")).toBe(false);
+	});
+
+	it("is deterministic and distinguishes action + target", () => {
+		const a = feedbackOperationId(COLLECTION, "n1", "close", TARGET_OPID);
+		const a2 = feedbackOperationId(COLLECTION, "n1", "close", TARGET_OPID);
+		const create = feedbackOperationId(COLLECTION, "n1", "create", "cand-9");
+		const other = feedbackOperationId(COLLECTION, "n1", "close", "other-op");
+		expect(a).toBe(a2); // deterministic
+		expect(a).not.toBe(create); // action differs
+		expect(a).not.toBe(other); // target differs
+	});
+
+	it("recordFeedbackOperationIntent records, is idempotent, and reconciles done", () => {
+		const { id, state: s1 } = recordFeedbackOperationIntent(fresh(), {
+			noteId: "n1",
+			action: "close",
+			target: TARGET_OPID,
+		});
+		expect(findOperation(s1, id)?.status).toBe("intent");
+		expect(findOperation(s1, id)?.outputKind).toBe("feedback_close");
+		// raw target kept on the record for debugging; key stays colon-safe
+		expect(findOperation(s1, id)?.candidateId).toBe(TARGET_OPID);
+		// second intent must not clobber
+		const s1b = recordFeedbackOperationIntent(s1, {
+			noteId: "n1",
+			action: "close",
+			target: TARGET_OPID,
+		}).state;
+		expect(s1b.operations[id].status).toBe("intent");
+		const s2 = markOperationDone(s1b, id, { issueId: "FLY-777" });
+		expect(s2.operations[id].status).toBe("done");
+		expect(s2.operations[id].issueId).toBe("FLY-777");
+	});
+});
+
+describe("FLY-286 thin state fields", () => {
+	it("emptyState defaults the new review/feedback pointers", () => {
+		const s = fresh();
+		expect(s.lastAnalysisRunToken).toBeNull();
+		expect(s.lastReportToken).toBeNull();
+		expect(s.pendingFeedbackRunTokens).toEqual([]);
+	});
+
+	it("readState forward-compat defaults the FLY-286 fields on an older state file", () => {
+		// Write a v1 state file WITHOUT the FLY-286 fields, then read it back.
+		const legacy = { ...fresh() } as Record<string, unknown>;
+		legacy.lastAnalysisRunToken = undefined;
+		legacy.lastReportToken = undefined;
+		legacy.pendingFeedbackRunTokens = undefined;
+		delete legacy.lastAnalysisRunToken;
+		delete legacy.lastReportToken;
+		delete legacy.pendingFeedbackRunTokens;
+		writeFileSync(
+			stateFilePath(dir, PROJECT, COLLECTION),
+			JSON.stringify(legacy),
+		);
+		const s = readState(dir, PROJECT, COLLECTION);
+		expect(s.lastAnalysisRunToken).toBeNull();
+		expect(s.lastReportToken).toBeNull();
+		expect(s.pendingFeedbackRunTokens).toEqual([]);
 	});
 });
 

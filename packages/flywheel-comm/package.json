@@ -14,6 +14,7 @@
 		"./verify-approval": "./dist/commands/verify-approval.js",
 		"./xiaohongshu-state": "./dist/xiaohongshu-state.js",
 		"./xiaohongshu-final": "./dist/xiaohongshu-final.js",
+		"./xiaohongshu-analysis-store": "./dist/xiaohongshu-analysis-store.js",
 		"./verify-lifecycle-consent": "./dist/commands/verify-lifecycle-consent.js"
 	},
 	"bin": {

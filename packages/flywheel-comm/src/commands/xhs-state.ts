@@ -15,6 +15,7 @@
  *   record-pending --project --collection --note-ids <json array>
  *   set-next-due   --project --collection --cadence
  *   record-op-intent --project --collection --note-id --kind --candidate-id
+ *   record-feedback-op-intent --project --collection --note-id --action close|create --target <opId|candidateId> [--owner]
  *   mark-op-done   --project --collection --op-id [--issue-id]
  *   find-op        --project --collection --op-id
  *
@@ -34,12 +35,14 @@ import {
 	markOperationDone,
 	markProcessed,
 	readState,
+	recordFeedbackOperationIntent,
 	recordOperationIntent,
 	recordPending,
 	releaseLease,
 	renewLease,
 	withCollectionLock,
 	writeState,
+	type XiaohongshuFeedbackAction,
 	type XiaohongshuOutputKind,
 	type XiaohongshuState,
 } from "../xiaohongshu-state.js";
@@ -155,6 +158,8 @@ export async function xhsState(argv: string[]): Promise<number> {
 			"candidate-id": { type: "string" },
 			"op-id": { type: "string" },
 			"issue-id": { type: "string" },
+			action: { type: "string" },
+			target: { type: "string" },
 		},
 		allowPositionals: false,
 	});
@@ -333,6 +338,36 @@ export async function xhsState(argv: string[]): Promise<number> {
 						noteId,
 						outputKind: kind,
 						candidateId,
+					});
+					return {
+						state: r.state,
+						write: true,
+						output: { ok: true, opId: r.id },
+					};
+				},
+				{ owner: values.owner, fenceOwner: values.owner },
+			);
+		}
+
+		case "record-feedback-op-intent": {
+			// FLY-286: persist a colon-safe feedback action intent (close/create)
+			// BEFORE applying it externally. `--target` may itself be a
+			// colon-delimited op id; recordFeedbackOperationIntent hashes it into
+			// a colon-safe key (codex R2 watchpoint #1).
+			const noteId = values["note-id"];
+			const action = values.action as XiaohongshuFeedbackAction | undefined;
+			const target = values.target;
+			if (!noteId) fail("--note-id is required");
+			if (action !== "close" && action !== "create")
+				fail("--action must be one of close, create");
+			if (!target) fail("--target is required");
+			return await mutate(
+				c,
+				(s) => {
+					const r = recordFeedbackOperationIntent(s, {
+						noteId,
+						action,
+						target,
 					});
 					return {
 						state: r.state,

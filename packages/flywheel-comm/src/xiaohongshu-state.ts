@@ -25,6 +25,7 @@
  * so the skill can reconcile after a crash.
  */
 
+import { createHash } from "node:crypto";
 import {
 	mkdirSync,
 	readFileSync,
@@ -45,7 +46,19 @@ export const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
 /** A held mkdir-mutex older than this is treated as stale (holder crashed). */
 export const DEFAULT_LOCK_STALE_MS = 5 * 60 * 1000; // 5m
 
-export type XiaohongshuOutputKind = "issue" | "memory";
+/**
+ * External side-effect kinds tracked for crash-safe idempotency.
+ * FLY-222: `issue` (auto-create / kept draft), `memory` (learning write).
+ * FLY-286: `feedback_close` / `feedback_create` — the founder's post-hoc review
+ * actions (close an auto-created issue / create from a candidate). Like the
+ * others these are EXTERNAL effects, so they belong here (not in a local-only
+ * store); see `feedbackOperationId` for the colon-safe id encoding.
+ */
+export type XiaohongshuOutputKind =
+	| "issue"
+	| "memory"
+	| "feedback_close"
+	| "feedback_create";
 
 /** A note seen but not yet fully processed (max_fetch overflow or fail-soft retry). */
 export interface PendingNote {
@@ -110,6 +123,23 @@ export interface XiaohongshuState {
 	/** operationId -> record (local fast-path; Linear marker+query is authoritative). */
 	operations: Record<string, OperationRecord>;
 	lastRunAt: string | null;
+	/**
+	 * FLY-286: token of the most recent analysis run (key into the AnalysisStore).
+	 * The detailed per-post analysis lives in the AnalysisStore (kept out of this
+	 * thin state); this is just the pointer. null = none yet.
+	 */
+	lastAnalysisRunToken?: string | null;
+	/**
+	 * FLY-286: token of the most recent delivered review report (key into the
+	 * FeedbackStore for the founder's structured actions). null = none yet.
+	 */
+	lastReportToken?: string | null;
+	/**
+	 * FLY-286: run tokens whose review feedback has been collected but not yet
+	 * consumed (close/create applied). The nightly feedback-consume pass drains
+	 * these. Absent/empty = nothing pending.
+	 */
+	pendingFeedbackRunTokens?: string[];
 	updatedAt: string;
 }
 
@@ -160,6 +190,9 @@ export function emptyState(
 		nextDueAt: null,
 		operations: {},
 		lastRunAt: null,
+		lastAnalysisRunToken: null,
+		lastReportToken: null,
+		pendingFeedbackRunTokens: [],
 		updatedAt: now.toISOString(),
 	};
 }
@@ -197,6 +230,12 @@ export function readState(
 			? parsed.processed.length > 0
 			: false;
 	}
+	// FLY-286 additive fields (same version — forward-compat defaults).
+	if (parsed.lastAnalysisRunToken === undefined)
+		parsed.lastAnalysisRunToken = null;
+	if (parsed.lastReportToken === undefined) parsed.lastReportToken = null;
+	if (!Array.isArray(parsed.pendingFeedbackRunTokens))
+		parsed.pendingFeedbackRunTokens = [];
 	return parsed;
 }
 
@@ -678,6 +717,79 @@ export function markOperationDone(
 		updatedAt: now.toISOString(),
 	};
 	return { ...state, operations: { ...state.operations, [id]: record } };
+}
+
+// ─── FLY-286: feedback operations (post-hoc review actions) ───────────────────
+
+/** A feedback review action against a prior run's output. */
+export type XiaohongshuFeedbackAction = "close" | "create";
+
+/**
+ * FLY-286 (codex R2 watchpoint #1): stable, colon-SAFE idempotency id for a
+ * founder feedback action.
+ *
+ * The logical key includes a `target` (for `close` = the target issue's opId,
+ * which is itself `collection:noteId:kind:candidateId`; for `create` = the
+ * candidateId). `operationId()` rejects ':' inside its parts, so the raw target
+ * cannot pass through it. We hash the (possibly colon-containing) target into a
+ * fixed colon-free token and feed THAT as the candidate part, keeping the id in
+ * the same `collection:noteId:kind:token` shape as every other op (so it lives
+ * in the same `operations` map + reconciles the same way).
+ *
+ * `runToken` is deliberately NOT part of the id: a feedback action ("close issue
+ * X" / "create from candidate Z") must happen at-most-once GLOBALLY, even if the
+ * same review is re-delivered/re-consumed across runs — so the key is keyed on
+ * the target, not the run.
+ */
+export function feedbackOperationId(
+	collectionId: string,
+	noteId: string,
+	action: XiaohongshuFeedbackAction,
+	target: string,
+): string {
+	const kind: XiaohongshuOutputKind =
+		action === "close" ? "feedback_close" : "feedback_create";
+	const token = createHash("sha256").update(target).digest("hex").slice(0, 16);
+	// collectionId + noteId are colon-free (state-segment charset); token is hex.
+	return operationId(collectionId, noteId, kind, token);
+}
+
+/**
+ * Persist INTENT for a feedback action BEFORE applying it externally (mirror of
+ * `recordOperationIntent`). The raw `target` is kept on the record for
+ * debugging; the map KEY is the colon-safe `feedbackOperationId`. No-op if the
+ * record already exists (preserves an earlier `done` → at-most-once).
+ */
+export function recordFeedbackOperationIntent(
+	state: XiaohongshuState,
+	args: {
+		noteId: string;
+		action: XiaohongshuFeedbackAction;
+		/** close → target issue opId; create → candidateId. */
+		target: string;
+	},
+	now: Date = new Date(),
+): { id: string; state: XiaohongshuState } {
+	const id = feedbackOperationId(
+		state.collectionId,
+		args.noteId,
+		args.action,
+		args.target,
+	);
+	if (state.operations[id]) return { id, state };
+	const record: OperationRecord = {
+		operationId: id,
+		noteId: args.noteId,
+		outputKind: args.action === "close" ? "feedback_close" : "feedback_create",
+		candidateId: args.target,
+		status: "intent",
+		createdAt: now.toISOString(),
+		updatedAt: now.toISOString(),
+	};
+	return {
+		id,
+		state: { ...state, operations: { ...state.operations, [id]: record } },
+	};
 }
 
 // ─── Cadence / next-due ───────────────────────────────────────────────────────
