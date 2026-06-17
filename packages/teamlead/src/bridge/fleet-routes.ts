@@ -24,6 +24,7 @@ import {
 	newBatchId,
 } from "./fleet-admin.js";
 import type { FleetAdminAudit } from "./fleet-admin-audit.js";
+import { isSameOrigin, loopbackSelfOrigin } from "./loopback-origin.js";
 
 export interface FleetRouteDeps {
 	audit: FleetAdminAudit;
@@ -52,40 +53,11 @@ export type HttpResult = {
 	body: Record<string, unknown>;
 };
 
-/**
- * Anti-DNS-rebinding guard (Codex R1 HIGH-1): the `Host` header is
- * attacker-controllable, so before trusting it as the same-origin baseline we
- * require it to be a real loopback host. A rebinding domain (evil.com →
- * 127.0.0.1) carries a non-loopback Host and is rejected. Returns the validated
- * self-origin (`http://<host>`), or null when the host is not loopback.
- */
-export function loopbackSelfOrigin(host: string | undefined): string | null {
-	if (typeof host !== "string" || host.length === 0) return null;
-	const hostname = host.replace(/:\d+$/, ""); // strip :port (IPv4 / host / [::1])
-	if (
-		hostname !== "127.0.0.1" &&
-		hostname !== "localhost" &&
-		hostname !== "[::1]"
-	) {
-		return null;
-	}
-	return `http://${host}`;
-}
-
-/** Same-origin guard: Origin/Referer must be the Bridge's own loopback origin. */
-export function isSameOrigin(
-	headers: Record<string, string | undefined>,
-	selfOrigin: string,
-): boolean {
-	const origin = headers.origin ?? headers.Origin;
-	if (origin) return origin === selfOrigin;
-	const referer = headers.referer ?? headers.Referer;
-	if (referer)
-		return referer.startsWith(`${selfOrigin}/`) || referer === selfOrigin;
-	// No Origin/Referer (e.g. a non-browser caller) — treated as same-origin is
-	// NOT assumed; require one of them to be present and matching.
-	return false;
-}
+// FLY-286: loopbackSelfOrigin + isSameOrigin were moved to ./loopback-origin.js
+// so the web-local review route can share ONE implementation. Imported above for
+// internal use here; re-exported for back-compat (plugin.ts + fleet-routes tests
+// import them from this module).
+export { isSameOrigin, loopbackSelfOrigin };
 
 export interface StageBody {
 	changes: ConsoleChange[];

@@ -1,8 +1,17 @@
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes, timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import express from "express";
+// FLY-286 PR-2: web-local review route (gated on FLYWHEEL_XHS_REVIEW).
+import {
+	createLocalAnalysisStore,
+	createLocalFeedbackStore,
+} from "flywheel-comm/xiaohongshu-analysis-store";
+import {
+	defaultStateDir as xhsDefaultStateDir,
+	withCollectionLock as xhsWithCollectionLock,
+} from "flywheel-comm/xiaohongshu-state";
 import {
 	type CommBackend,
 	resolveCommBackend as resolveCommBackendShared,
@@ -110,6 +119,13 @@ import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
 import type { BridgeConfig } from "./types.js";
+import { readLocator as readXhsLocator } from "./xhs-review-locator.js";
+import {
+	createInMemoryTokenStore,
+	handleGetReview,
+	handlePostAction,
+	type XhsReviewDeps,
+} from "./xhs-review-routes.js";
 
 /**
  * FLY-142 PR 1.4: Backend selection — `mailbox` (default) or `commdb` (rollback).
@@ -796,6 +812,68 @@ export function createBridgeApp(
 			);
 			res.status(r.status).json(r.body);
 		});
+	}
+
+	// FLY-286 PR-2: web-local review surface. Mounted BEFORE the /api Bearer
+	// middleware (it lives OUTSIDE /api and authenticates via loopback Host +
+	// same-origin + a run-scoped session token — the browser holds no apiToken,
+	// mirroring the Fleet console). Gated on FLYWHEEL_XHS_REVIEW=1; absent/0 →
+	// routes are NOT registered at all (clean 404, byte-compat, no Bearer challenge).
+	if (process.env.FLYWHEEL_XHS_REVIEW === "1") {
+		const xhsStateDir = xhsDefaultStateDir();
+		const xhsDeps: XhsReviewDeps = {
+			analysis: createLocalAnalysisStore(xhsStateDir),
+			feedback: createLocalFeedbackStore(xhsStateDir),
+			readLocator: (t) => readXhsLocator(xhsStateDir, t),
+			runExclusive: (p, c, fn) => xhsWithCollectionLock(xhsStateDir, p, c, fn),
+			tokens: createInMemoryTokenStore(),
+			nonce: () => randomBytes(16).toString("hex"),
+			now: () => new Date().toISOString(),
+		};
+		const xhsHeaders = (
+			req: express.Request,
+		): Record<string, string | undefined> => ({
+			host: typeof req.headers.host === "string" ? req.headers.host : undefined,
+			origin:
+				typeof req.headers.origin === "string" ? req.headers.origin : undefined,
+			referer:
+				typeof req.headers.referer === "string"
+					? req.headers.referer
+					: undefined,
+		});
+		app.get("/xhs-review/:reportToken", async (req, res) => {
+			const r = await handleGetReview(
+				xhsDeps,
+				req.params.reportToken,
+				xhsHeaders(req),
+			);
+			if (r.headers) {
+				for (const [k, v] of Object.entries(r.headers)) res.setHeader(k, v);
+			}
+			if (typeof r.body === "string") {
+				res
+					.status(r.status)
+					.type(r.contentType ?? "text/plain")
+					.send(r.body);
+			} else {
+				res.status(r.status).json(r.body);
+			}
+		});
+		app.post(
+			"/xhs-review/:reportToken/action",
+			express.urlencoded({ extended: false, limit: "64kb" }),
+			async (req, res) => {
+				const r = await handlePostAction(
+					xhsDeps,
+					req.params.reportToken,
+					(req.body ?? {}) as Record<string, unknown>,
+					xhsHeaders(req),
+				);
+				res
+					.status(r.status)
+					.json(typeof r.body === "string" ? { message: r.body } : r.body);
+			},
+		);
 	}
 
 	// /api/* — api auth
