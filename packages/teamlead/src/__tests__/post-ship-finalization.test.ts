@@ -379,6 +379,66 @@ describe("runPostShipFinalization", () => {
 		expect(claims).toHaveLength(1);
 	});
 
+	it("FLY-292: writes a chat_thread_archived audit event on success", async () => {
+		await runPostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				discordOwnerUserId: "user-annie",
+				fallbackBotToken: undefined,
+			},
+			{ store, projects: PROJECTS },
+		);
+
+		const archived = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "chat_thread_archived");
+		expect(archived).toHaveLength(1);
+
+		const failed = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "chat_thread_archive_failed");
+		expect(failed).toHaveLength(0);
+	});
+
+	it("FLY-292: marks thread missing + audits failure when Discord 404s the thread", async () => {
+		// PATCH (archive) → 404; everything else → 200.
+		fetchImpl.mockImplementation(async (url: string, init: unknown) => {
+			const method = (init as { method?: string }).method ?? "GET";
+			if (method === "POST" && String(url).includes("/messages")) {
+				return new Response("{}", { status: 200 });
+			}
+			if (method === "PATCH") {
+				return new Response('{"message":"Unknown Channel"}', { status: 404 });
+			}
+			return new Response("{}", { status: 200 });
+		});
+
+		await runPostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				discordOwnerUserId: "user-annie",
+				fallbackBotToken: undefined,
+			},
+			{ store, projects: PROJECTS },
+		);
+
+		const failed = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "chat_thread_archive_failed");
+		expect(failed).toHaveLength(1);
+
+		// 404 → thread marked missing → no longer resolvable for this issue.
+		expect(store.getChatThreadByIssue("FLY-102", "chan-1")).toBeUndefined();
+	});
+
 	it("never throws when postMergeTmuxCleanup errors", async () => {
 		mockGetTmuxTarget.mockImplementationOnce(() => {
 			throw new Error("CommDB corrupted");
