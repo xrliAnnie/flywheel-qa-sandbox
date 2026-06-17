@@ -73,6 +73,40 @@ describe("ConfigLoader — xiaohongshu_learning (FLY-222)", () => {
 		expect(col?.max_fetch).toBe(13);
 	});
 
+	it("loads the FLY-286 per-collection review fields", async () => {
+		const cfg = await load(
+			withXhs(`  enabled: true
+  collections:
+    - collection_id: "6884765b0000000023036a58"
+      label: "claude"
+      lead_id: "flywheel-eng-lead"
+      department_label: "Flywheel"
+      target_linear_project: "Flywheel"
+      cadence: weekly
+      review_channel: web-local
+      first_run_cap: 15
+      first_run_analyze_limit: 200
+      auto_create: true`),
+		);
+		const col = cfg.xiaohongshu_learning?.collections?.[0];
+		expect(col?.review_channel).toBe("web-local");
+		expect(col?.first_run_cap).toBe(15);
+		expect(col?.first_run_analyze_limit).toBe(200);
+		expect(col?.auto_create).toBe(true);
+	});
+
+	it("allows the FLY-286 review fields to be omitted (runtime defaults applied later)", async () => {
+		const cfg = await load(
+			withXhs(`  enabled: true
+  collections:${VALID_COLLECTION}`),
+		);
+		const col = cfg.xiaohongshu_learning?.collections?.[0];
+		expect(col?.review_channel).toBeUndefined();
+		expect(col?.first_run_cap).toBeUndefined();
+		expect(col?.first_run_analyze_limit).toBeUndefined();
+		expect(col?.auto_create).toBeUndefined();
+	});
+
 	it("is absent-safe — config with no xiaohongshu_learning key loads (byte-compat)", async () => {
 		const cfg = await load(BASE_CONFIG);
 		expect(cfg.xiaohongshu_learning).toBeUndefined();
@@ -232,6 +266,74 @@ describe("ConfigLoader — xiaohongshu_learning (FLY-222)", () => {
       target_linear_project: "Sub"`),
 				),
 			).rejects.toThrow(/collection_id "dup" is duplicated/);
+		});
+
+		it("rejects an unknown review_channel (FLY-286)", async () => {
+			await expect(
+				load(
+					withXhs(`  enabled: true
+  collections:
+    - collection_id: "abc"
+      label: "x"
+      lead_id: "sub-lead"
+      department_label: "Sub"
+      target_linear_project: "Sub"
+      review_channel: web-public`),
+				),
+			).rejects.toThrow(/review_channel must be one of/);
+		});
+
+		it.each([-1, 201, 2.5])(
+			"rejects first_run_cap out of range / non-integer: %s (FLY-286)",
+			async (bad) => {
+				await expect(
+					load(
+						withXhs(`  enabled: true
+  collections:
+    - collection_id: "abc"
+      label: "x"
+      lead_id: "sub-lead"
+      department_label: "Sub"
+      target_linear_project: "Sub"
+      first_run_cap: ${bad}`),
+					),
+				).rejects.toThrow(/first_run_cap must be an integer between 0 and 200/);
+			},
+		);
+
+		it.each([0, 201, 2.5])(
+			"rejects first_run_analyze_limit out of range / non-integer: %s (FLY-286)",
+			async (bad) => {
+				await expect(
+					load(
+						withXhs(`  enabled: true
+  collections:
+    - collection_id: "abc"
+      label: "x"
+      lead_id: "sub-lead"
+      department_label: "Sub"
+      target_linear_project: "Sub"
+      first_run_analyze_limit: ${bad}`),
+					),
+				).rejects.toThrow(
+					/first_run_analyze_limit must be an integer between 1 and 200/,
+				);
+			},
+		);
+
+		it("rejects a non-boolean auto_create (FLY-286)", async () => {
+			await expect(
+				load(
+					withXhs(`  enabled: true
+  collections:
+    - collection_id: "abc"
+      label: "x"
+      lead_id: "sub-lead"
+      department_label: "Sub"
+      target_linear_project: "Sub"
+      auto_create: "yes"`),
+				),
+			).rejects.toThrow(/auto_create must be a boolean/);
 		});
 
 		it("validates collection shape even when enabled is false (loud-fail)", async () => {

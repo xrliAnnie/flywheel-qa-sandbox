@@ -99,6 +99,38 @@ describe("xhs-state CLI", () => {
 		expect(after.record.issueId).toBe("FLY-1");
 	});
 
+	it("record-feedback-op-intent encodes a colon-containing target (FLY-286)", async () => {
+		const target = `${C}:n1:issue:c0`; // an op id — itself colon-delimited
+		const intent = await run(
+			"record-feedback-op-intent",
+			"--note-id",
+			"n1",
+			"--action",
+			"close",
+			"--target",
+			target,
+		);
+		expect(intent.ok).toBe(true);
+		// colon-safe: only the structural colons, hashed token tail
+		expect(intent.opId).toMatch(
+			new RegExp(`^${C}:n1:feedback_close:[a-f0-9]{16}$`),
+		);
+		// idempotent: same args → same opId
+		const again = await run(
+			"record-feedback-op-intent",
+			"--note-id",
+			"n1",
+			"--action",
+			"close",
+			"--target",
+			target,
+		);
+		expect(again.opId).toBe(intent.opId);
+		const found = await run("find-op", "--op-id", intent.opId);
+		expect(found.found).toBe(true);
+		expect(found.record.outputKind).toBe("feedback_close");
+	});
+
 	it("set-next-due makes is-due false until the future", async () => {
 		const r = await run("set-next-due", "--cadence", "weekly");
 		expect(r.ok).toBe(true);
