@@ -18,6 +18,7 @@
  * errors — the orchestrator itself never throws.
  */
 
+import { randomUUID } from "node:crypto";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
@@ -216,18 +217,34 @@ export async function runPostShipFinalization(
 				thread.thread_id,
 				opts.discordOwnerUserId,
 				botToken,
-			).catch((err) =>
-				console.warn(
-					`[post-ship] removeUserFromChatThread failed:`,
-					(err as Error).message,
-				),
 			);
 		}
-		await archiveChatThread(thread.thread_id, botToken).catch((err) =>
-			console.warn(
-				`[post-ship] archiveChatThread failed:`,
-				(err as Error).message,
-			),
-		);
+
+		// FLY-292: deterministic archive — bounded retry + verify + 404→missing.
+		// Never throws; returns a structured result we audit so the event log
+		// can prove (or surface the failure of) the archive on every completion.
+		const archiveResult = await archiveChatThread(thread.thread_id, botToken, {
+			markDiscordMissing: (id) => store.markChatThreadMissing(id),
+		});
+
+		store.insertEvent({
+			event_id: archiveResult.archived
+				? `chat-thread-archived-${opts.executionId}`
+				: `chat-thread-archive-failed-${randomUUID()}`,
+			execution_id: opts.executionId,
+			issue_id: opts.issueId,
+			project_name: opts.projectName,
+			event_type: archiveResult.archived
+				? "chat_thread_archived"
+				: "chat_thread_archive_failed",
+			source: "bridge.post-ship-finalization",
+			payload: {
+				threadId: thread.thread_id,
+				attempts: archiveResult.attempts,
+				status: archiveResult.status ?? null,
+				reason: archiveResult.reason,
+				error: archiveResult.error ?? null,
+			},
+		});
 	}
 }
