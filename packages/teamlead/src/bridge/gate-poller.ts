@@ -87,12 +87,23 @@ export interface GatePollerConfig {
 	patrolEveryNTicks?: number;
 	/** FLY-208 A2: unread count above which the aggregate path kicks in (default 10). */
 	backlogThreshold?: number;
+	/** FLY-307 B: consecutive per-lead poll failures before the circuit opens (default 3). */
+	circuitThreshold?: number;
+	/** FLY-307 B: poll ticks a lead's circuit stays open before a probe (default 20 ≈ 60s at 3s). */
+	circuitCooldownTicks?: number;
+	/** FLY-307 A: poll ticks before retrying a failed stale-gate eviction write (default 20). */
+	evictionRetryTicks?: number;
 }
 
 /** The black-hole recipient name (stock claude-code lead convention). */
 const MISROUTE_AGENT_NAME = "team-lead";
 const DEFAULT_PATROL_EVERY_N_TICKS = 20;
 const DEFAULT_BACKLOG_THRESHOLD = 10;
+// FLY-307 B: per-lead circuit breaker defaults.
+const DEFAULT_CIRCUIT_THRESHOLD = 3;
+const DEFAULT_CIRCUIT_COOLDOWN_TICKS = 20;
+// FLY-307 A: backoff before retrying a failed stale-gate eviction write.
+const DEFAULT_EVICTION_RETRY_TICKS = 20;
 
 const MISROUTE_HINT =
 	"Reply to the Runner via `flywheel-comm send` (NOT SendMessage). " +
@@ -164,10 +175,36 @@ export class GatePoller {
 			// but presence in the active set is no longer a prerequisite.
 			for (const project of this.config.projects) {
 				for (const lead of project.leads) {
+					const leadKey = `${project.projectName}::${lead.agentId}`;
+					// FLY-307 B: while a lead's circuit is open, skip BOTH the
+					// question-relay duty AND the misroute patrol for that lead — the
+					// patrol also touches sql.js StateStore (deliverMisrouteEvent), so
+					// skipping only the relay would not fully isolate a poisoned WASM
+					// heap. `tickCount` still advances once per poll (above).
+					if (this.circuitEnabled() && this.circuitOpen(leadKey)) {
+						continue;
+					}
 					const dbPath = defaultGetCommDbPath(project.projectName);
+					let relayFailed = false;
 					try {
 						const pending = this.getPendingQuestions(dbPath, lead.agentId);
 						for (const question of pending) {
+							// FLY-307 A: short-circuit stale gates BEFORE the sql.js
+							// getSession() touch — that WASM op is the exact churn this
+							// fix removes. Only gate_questions (checkpoint != null) are
+							// ever evicted; runner_questions fall through untouched.
+							if (question.checkpoint != null) {
+								if (this.evictedGateIds.has(question.id)) continue;
+								const retryAt = this.evictionRetryAt.get(question.id);
+								if (retryAt !== undefined) {
+									// A prior eviction write failed. Suppress until the retry
+									// tick, then retry the cleanup write WITHOUT a getSession()
+									// touch (we already know it's a terminal stale gate).
+									if (this.tickCount < retryAt) continue;
+									this.evictTerminalGateQuestion(question, dbPath);
+									continue;
+								}
+							}
 							const session = this.config.store.getSession(question.from_agent);
 							if (!session) {
 								// Orphan question — from_agent references no known session.
@@ -180,17 +217,26 @@ export class GatePoller {
 							}
 							await this.relayToLead(lead, session, question, dbPath);
 						}
+						// FLY-307 B: a clean pass (no throw) closes the circuit.
+						if (this.circuitEnabled()) this.recordCircuitSuccess(leadKey);
 					} catch (err) {
+						relayFailed = true;
 						console.warn(
 							`[GatePoller] Error polling ${lead.agentId}:`,
 							err instanceof Error ? err.message : String(err),
 						);
+						// FLY-307 B: count the failed poll even if earlier questions in
+						// this iteration were delivered (no reset-on-partial-delivery).
+						if (this.circuitEnabled()) this.recordCircuitFailure(leadKey);
 					}
 
 					// FLY-208 A2: black-hole inbox patrol — fully isolated from
 					// the question-relay main duty (own try/catch; any error is
-					// a warn + skip, never a poll abort).
-					if (patrolDue) {
+					// a warn + skip, never a poll abort). FLY-307 B: a relay failure
+					// (which may have just opened the circuit) skips the patrol for
+					// this lead too — the patrol also touches sql.js StateStore, so
+					// running it after the failure would not isolate a poisoned heap.
+					if (patrolDue && !relayFailed) {
 						try {
 							await this.misroutePatrol(project, lead);
 						} catch (err) {
@@ -212,12 +258,110 @@ export class GatePoller {
 	private tickCount = 0;
 	private warnedMissingArchiveDir = false;
 
+	// FLY-307 A: stale gate_question eviction bookkeeping (process-local).
+	// `evictedGateIds` = cleanup write succeeded → skip permanently and silently.
+	// `evictionRetryAt` = cleanup write failed → suppress getSession()/warnings
+	// until tickCount reaches the stored tick, then retry the write.
+	private readonly evictedGateIds = new Set<string>();
+	private readonly evictionRetryAt = new Map<string, number>();
+
+	// FLY-307 B: per-lead circuit breaker keyed `projectName::agentId`.
+	private readonly circuitFailures = new Map<string, number>();
+	private readonly circuitCooldownUntil = new Map<string, number>();
+
 	private patrolEveryNTicks(): number {
 		return this.config.patrolEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
 	}
 
 	private backlogThreshold(): number {
 		return this.config.backlogThreshold ?? DEFAULT_BACKLOG_THRESHOLD;
+	}
+
+	// ── FLY-307 A: stale gate eviction ──────────────────────────────────────
+
+	private evictionRetryTicks(): number {
+		return this.config.evictionRetryTicks ?? DEFAULT_EVICTION_RETRY_TICKS;
+	}
+
+	/**
+	 * Expire a gate_question whose source session is terminal so
+	 * `getPendingQuestions` (filter `expires_at > now`) stops returning it —
+	 * the same primitive `gate.ts` uses for timeout cleanup (`resolveGate(qid, 0)`).
+	 *
+	 * Defense in depth (Codex R1 #6): refuses any `runner_question`
+	 * (checkpoint == null) as its first line — `resolveGate()` itself updates any
+	 * `type='question'` row by id with no checkpoint guard, and FLY-161 requires
+	 * runner_questions to survive session completion. Best-effort: a failed write
+	 * is recorded in `evictionRetryAt` for a low-cadence retry rather than a write
+	 * storm or a permanent in-memory ignore.
+	 */
+	private evictTerminalGateQuestion(
+		question: PendingQuestion,
+		dbPath: string,
+	): void {
+		if (question.checkpoint == null) return; // FLY-161 boundary
+		if (this.evictedGateIds.has(question.id)) return;
+		try {
+			const db = new CommDB(dbPath);
+			try {
+				db.resolveGate(question.id, 0); // 0h TTL = expire NOW
+			} finally {
+				db.close();
+			}
+			this.evictedGateIds.add(question.id);
+			this.evictionRetryAt.delete(question.id);
+			console.warn(
+				`[GatePoller] evicting stale gate_question qid=${question.id}: source session terminal`,
+			);
+		} catch (err) {
+			this.evictionRetryAt.set(
+				question.id,
+				this.tickCount + this.evictionRetryTicks(),
+			);
+			console.warn(
+				`[GatePoller] stale gate_question qid=${question.id} eviction write failed (retry in ${this.evictionRetryTicks()} ticks):`,
+				err instanceof Error ? err.message : String(err),
+			);
+		}
+	}
+
+	// ── FLY-307 B: per-lead circuit breaker ─────────────────────────────────
+
+	/** ON by default; `FLYWHEEL_GATEPOLLER_CIRCUIT=0` is the explicit bypass. */
+	private circuitEnabled(): boolean {
+		return process.env.FLYWHEEL_GATEPOLLER_CIRCUIT !== "0";
+	}
+
+	private circuitThreshold(): number {
+		return this.config.circuitThreshold ?? DEFAULT_CIRCUIT_THRESHOLD;
+	}
+
+	private circuitCooldownTicks(): number {
+		return this.config.circuitCooldownTicks ?? DEFAULT_CIRCUIT_COOLDOWN_TICKS;
+	}
+
+	private circuitOpen(leadKey: string): boolean {
+		const until = this.circuitCooldownUntil.get(leadKey);
+		return until !== undefined && this.tickCount < until;
+	}
+
+	private recordCircuitSuccess(leadKey: string): void {
+		this.circuitFailures.delete(leadKey);
+		this.circuitCooldownUntil.delete(leadKey);
+	}
+
+	private recordCircuitFailure(leadKey: string): void {
+		const n = (this.circuitFailures.get(leadKey) ?? 0) + 1;
+		this.circuitFailures.set(leadKey, n);
+		if (n >= this.circuitThreshold()) {
+			this.circuitCooldownUntil.set(
+				leadKey,
+				this.tickCount + this.circuitCooldownTicks(),
+			);
+			console.warn(
+				`[GatePoller] circuit OPEN for ${leadKey} after ${n} consecutive poll failures; cooling down ${this.circuitCooldownTicks()} ticks`,
+			);
+		}
 	}
 
 	/**
@@ -444,9 +588,11 @@ export class GatePoller {
 			//     reaching product-lead. Preserves the label-routing precedence
 			//     that the brainstorm session decided to keep for gate.
 			if (!ACTIVE_SESSION_STATUSES.has(session.status)) {
-				console.warn(
-					`[GatePoller] skipping gate_question qid=${question.id}: source session ${session.execution_id} status=${session.status} (not active)`,
-				);
+				// FLY-307 A: a gate from a terminal session can never be answered
+				// (the Runner is gone, and the active-session check already withholds
+				// delivery), so it would otherwise be re-polled every tick until its
+				// 48h TTL. Evict it from CommDB instead of log-skipping forever.
+				this.evictTerminalGateQuestion(question, dbPath);
 				return;
 			}
 			let scoped: boolean;

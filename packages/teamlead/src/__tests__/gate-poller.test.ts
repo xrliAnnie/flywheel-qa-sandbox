@@ -117,14 +117,38 @@ describe("GatePoller (FLY-161)", () => {
 		warnSpy.mockRestore();
 	});
 
-	function makePoller(opts?: { chatThreadsEnabled?: boolean }): GatePoller {
+	function makePoller(opts?: {
+		chatThreadsEnabled?: boolean;
+		circuitThreshold?: number;
+		circuitCooldownTicks?: number;
+		evictionRetryTicks?: number;
+		patrolEveryNTicks?: number;
+		transport?: import("../bridge/gate-poller.js").MisroutePatrolTransport;
+		misrouteArchiveDir?: string;
+	}): GatePoller {
 		return new GatePoller({
 			pollIntervalMs: 60_000, // not auto-started in tests
 			projects,
 			store,
 			runtimeRegistry: registry,
 			chatThreadsEnabled: opts?.chatThreadsEnabled,
+			circuitThreshold: opts?.circuitThreshold,
+			circuitCooldownTicks: opts?.circuitCooldownTicks,
+			evictionRetryTicks: opts?.evictionRetryTicks,
+			patrolEveryNTicks: opts?.patrolEveryNTicks,
+			transport: opts?.transport,
+			misrouteArchiveDir: opts?.misrouteArchiveDir,
 		});
+	}
+
+	/** Read still-pending questions for a lead directly from the on-disk CommDB. */
+	function pendingFor(leadId: string): unknown[] {
+		const db = new CommDB(dbPath);
+		try {
+			return db.getPendingQuestions(leadId);
+		} finally {
+			db.close();
+		}
 	}
 
 	function insertSession(
@@ -304,22 +328,244 @@ describe("GatePoller (FLY-161)", () => {
 		expect(warnedOrphan).toBe(true);
 	});
 
-	it("Case 8: skips gate_question when source session is completed (active-session check)", async () => {
+	it("Case 8 (FLY-307 A): EVICTS gate_question when source session is terminal", async () => {
 		insertSession("exec-stale", { status: "completed", labels: ["product"] });
-		insertQuestion({
+		const qid = insertQuestion({
 			execId: "exec-stale",
 			leadId: "product-lead",
 			content: "Stale gate",
 			checkpoint: "brainstorm",
 		});
+		expect(pendingFor("product-lead")).toHaveLength(1);
 
 		await runPoll(makePoller());
 
+		// No delivery, and the gate is now expired in CommDB (resolveGate(qid,0)).
 		expect(runtime.captured).toHaveLength(0);
-		const warnedStale = warnSpy.mock.calls.some((args: unknown[]) =>
-			JSON.stringify(args).includes("not active"),
+		expect(pendingFor("product-lead")).toHaveLength(0);
+		const warnedEvict = warnSpy.mock.calls.some((args: unknown[]) =>
+			JSON.stringify(args).includes(`evicting stale gate_question qid=${qid}`),
 		);
-		expect(warnedStale).toBe(true);
+		expect(warnedEvict).toBe(true);
+	});
+
+	it("Case 8b (FLY-307 A): second poll is silent — no re-warn, no getSession for evicted gate", async () => {
+		insertSession("exec-stale2", { status: "completed", labels: ["product"] });
+		insertQuestion({
+			execId: "exec-stale2",
+			leadId: "product-lead",
+			content: "Stale gate 2",
+			checkpoint: "brainstorm",
+		});
+
+		const poller = makePoller();
+		await runPoll(poller); // first poll evicts (getPendingQuestions still returned it)
+
+		// Re-insert is NOT possible (it's expired). Now spy getSession and poll again:
+		// the evicted gate must never reach getSession again, and never re-warn.
+		const getSessionSpy = vi.spyOn(store, "getSession");
+		warnSpy.mockClear();
+		await runPoll(poller);
+		await runPoll(poller);
+
+		expect(getSessionSpy).not.toHaveBeenCalled();
+		const reWarned = warnSpy.mock.calls.some((args: unknown[]) =>
+			JSON.stringify(args).includes("stale gate_question"),
+		);
+		expect(reWarned).toBe(false);
+		getSessionSpy.mockRestore();
+	});
+
+	it("Case 8c (FLY-307 A): write-failure → suppress getSession, retry cleanup after backoff", async () => {
+		insertSession("exec-stale3", { status: "completed", labels: ["product"] });
+		insertQuestion({
+			execId: "exec-stale3",
+			leadId: "product-lead",
+			content: "Stale gate 3",
+			checkpoint: "brainstorm",
+		});
+
+		// Make the first eviction write throw (simulated DB lock).
+		const resolveSpy = vi
+			.spyOn(CommDB.prototype, "resolveGate")
+			.mockImplementationOnce(() => {
+				throw new Error("database is locked");
+			});
+
+		const getSessionSpy = vi.spyOn(store, "getSession");
+		const poller = makePoller({ evictionRetryTicks: 2 });
+
+		await runPoll(poller); // tick 1: getSession called, resolveGate throws → retryAt = tick1 + 2
+		expect(getSessionSpy).toHaveBeenCalledTimes(1);
+		expect(pendingFor("product-lead")).toHaveLength(1); // still pending (write failed)
+
+		await runPoll(poller); // tick 2: within retry window → suppressed (no getSession)
+		expect(getSessionSpy).toHaveBeenCalledTimes(1);
+
+		await runPoll(poller); // tick 3: retry window elapsed → retries cleanup directly,
+		// WITHOUT another getSession() (we already know it's a terminal stale gate).
+		expect(getSessionSpy).toHaveBeenCalledTimes(1);
+		expect(pendingFor("product-lead")).toHaveLength(0); // evicted on retry
+
+		resolveSpy.mockRestore();
+		getSessionSpy.mockRestore();
+	});
+
+	it("Case 8d (FLY-307 A): runner_question from terminal session is NOT evicted (FLY-161 boundary)", async () => {
+		insertSession("exec-rq", { status: "completed", labels: ["product"] });
+		insertQuestion({
+			execId: "exec-rq",
+			leadId: "product-lead",
+			content: "Ask from finished session",
+			// no checkpoint → runner_question
+		});
+
+		const resolveSpy = vi.spyOn(CommDB.prototype, "resolveGate");
+		await runPoll(makePoller());
+
+		// Delivered as runner_question, and resolveGate was NEVER called.
+		expect(runtime.captured).toHaveLength(1);
+		expect(runtime.captured[0]!.envelope.event.event_type).toBe(
+			"runner_question",
+		);
+		expect(resolveSpy).not.toHaveBeenCalled();
+		expect(pendingFor("product-lead")).toHaveLength(1); // still pending
+		resolveSpy.mockRestore();
+	});
+
+	it("Case 10 (FLY-307 B): circuit opens after N consecutive failures and skips the lead", async () => {
+		insertSession("exec-trap", { status: "running", labels: ["product"] });
+		insertQuestion({
+			execId: "exec-trap",
+			leadId: "product-lead",
+			content: "Trips the WASM trap",
+		});
+
+		// Simulate the sql.js poison: getSession throws on every touch.
+		const getSessionSpy = vi
+			.spyOn(store, "getSession")
+			.mockImplementation(() => {
+				throw new Error("memory access out of bounds");
+			});
+
+		const poller = makePoller({ circuitThreshold: 3, circuitCooldownTicks: 5 });
+		await runPoll(poller); // fail 1 (getSession call 1)
+		await runPoll(poller); // fail 2 (call 2)
+		await runPoll(poller); // fail 3 → circuit OPEN (call 3)
+		expect(getSessionSpy).toHaveBeenCalledTimes(3);
+
+		await runPoll(poller); // circuit open → lead skipped, getSession NOT called
+		await runPoll(poller);
+		expect(getSessionSpy).toHaveBeenCalledTimes(3);
+
+		const warnedOpen = warnSpy.mock.calls.some((args: unknown[]) =>
+			JSON.stringify(args).includes("circuit OPEN"),
+		);
+		expect(warnedOpen).toBe(true);
+		getSessionSpy.mockRestore();
+	});
+
+	it("Case 10b (FLY-307 B): circuit resets after cooldown + a successful probe poll", async () => {
+		insertSession("exec-recover", { status: "running", labels: ["product"] });
+		insertQuestion({
+			execId: "exec-recover",
+			leadId: "product-lead",
+			content: "Recoverable",
+		});
+
+		const getSessionSpy = vi
+			.spyOn(store, "getSession")
+			.mockImplementation(() => {
+				throw new Error("memory access out of bounds");
+			});
+
+		const poller = makePoller({ circuitThreshold: 3, circuitCooldownTicks: 2 });
+		await runPoll(poller); // fail 1
+		await runPoll(poller); // fail 2
+		await runPoll(poller); // fail 3 → open at tick3, cooldownUntil = 3 + 2 = 5
+		expect(getSessionSpy).toHaveBeenCalledTimes(3);
+		await runPoll(poller); // tick4 < 5 → skipped
+		expect(getSessionSpy).toHaveBeenCalledTimes(3);
+
+		// Recover: stop throwing. tick5 → probe poll succeeds → circuit resets.
+		getSessionSpy.mockRestore();
+		await runPoll(poller); // tick5: probe (cooldown elapsed) → succeeds → reset
+		expect(runtime.captured).toHaveLength(1); // delivered on the probe
+	});
+
+	it("Case 10c (FLY-307 B): FLYWHEEL_GATEPOLLER_CIRCUIT=0 never skips a failing lead", async () => {
+		const prev = process.env.FLYWHEEL_GATEPOLLER_CIRCUIT;
+		process.env.FLYWHEEL_GATEPOLLER_CIRCUIT = "0";
+		try {
+			insertSession("exec-nocirc", { status: "running", labels: ["product"] });
+			insertQuestion({
+				execId: "exec-nocirc",
+				leadId: "product-lead",
+				content: "Always fails",
+			});
+			const getSessionSpy = vi
+				.spyOn(store, "getSession")
+				.mockImplementation(() => {
+					throw new Error("memory access out of bounds");
+				});
+
+			const poller = makePoller({ circuitThreshold: 2 });
+			await runPoll(poller);
+			await runPoll(poller);
+			await runPoll(poller);
+			await runPoll(poller);
+			// Circuit disabled → every poll still reaches getSession (never skipped).
+			expect(getSessionSpy).toHaveBeenCalledTimes(4);
+			getSessionSpy.mockRestore();
+		} finally {
+			if (prev === undefined) delete process.env.FLYWHEEL_GATEPOLLER_CIRCUIT;
+			else process.env.FLYWHEEL_GATEPOLLER_CIRCUIT = prev;
+		}
+	});
+
+	it("Case 10d (FLY-307 B): a relay failure skips the misroute patrol in the same tick", async () => {
+		insertSession("exec-patrolskip", {
+			status: "running",
+			labels: ["product"],
+		});
+		insertQuestion({
+			execId: "exec-patrolskip",
+			leadId: "product-lead",
+			content: "fails before patrol",
+		});
+		const getSessionSpy = vi
+			.spyOn(store, "getSession")
+			.mockImplementation(() => {
+				throw new Error("memory access out of bounds");
+			});
+		const readUnread = vi.fn(async () => []);
+		const transport = {
+			readUnread,
+			ack: vi.fn(async () => {}),
+		};
+		const archiveDir = join(tmpHome, "misroute-archive");
+
+		// patrolEveryNTicks=2 → patrol due on ticks 1,3,... — exactly the ticks
+		// where the relay fails (and on tick 3 the circuit also opens).
+		const poller = makePoller({
+			circuitThreshold: 3,
+			patrolEveryNTicks: 2,
+			transport,
+			misrouteArchiveDir: archiveDir,
+		});
+		await runPoll(poller); // tick1: patrolDue, relay fails → patrol skipped
+		await runPoll(poller); // tick2
+		await runPoll(poller); // tick3: patrolDue + circuit opens → patrol skipped
+
+		// The failing lead's patrol must never run (it would re-touch sql.js).
+		// Other leads (ops-lead, whose relay did NOT fail) still patrol normally —
+		// proving the skip is scoped to the failing lead, not a global disable.
+		const calls = readUnread.mock.calls.map(
+			(c) => (c[0] as { leadName: string }).leadName,
+		);
+		expect(calls.filter((l) => l === "product-lead")).toHaveLength(0);
+		expect(calls.filter((l) => l === "ops-lead").length).toBeGreaterThan(0);
+		getSessionSpy.mockRestore();
 	});
 
 	it("Case 9: skips gate_question when source session resolves to a different Lead (lead-scope check)", async () => {
