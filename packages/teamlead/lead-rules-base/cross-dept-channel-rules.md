@@ -25,8 +25,8 @@ This is distinct from your own project's channels:
 - Your project **chat channel** and **core channel** (in your `identity.md`) are
   for your department's work and Annie ↔ you conversation.
 - `#leads-roundtable` is cross-department. The Leads here own **different
-  projects** (geoforge3d / sub / joycon-typeless). Do not assume a message here
-  is about your project — read who is addressed and what is asked.
+  projects** (geoforge3d / sub / joycon-typeless / tidal-echo). Do not assume a
+  message here is about your project — read who is addressed and what is asked.
 
 ## Roster (current members)
 
@@ -37,6 +37,8 @@ This is distinct from your own project's channels:
 | **Simba** | Chief of Staff (cos) | geoforge3d | `1487339075563290745` | `<@1487339075563290745>` |
 | **Hiro** | Joy-Con Product Lead | joycon-typeless | `1511264922137395230` | `<@1511264922137395230>` |
 | **Asha** | Sub Content Lead | sub | `1511599686899859517` | `<@1511599686899859517>` |
+| **Triton** | Chief of Staff (cos) | tidal-echo | `1517034404080390234` | `<@1517034404080390234>` |
+| **Ariel** | Content Lead | tidal-echo | `1517038828089774111` | `<@1517038828089774111>` |
 | **Mufasa** | Growth Companion (non-eng) | growth | `1499895683287748679` | `<@1499895683287748679>` |
 | **Belle** | Life Assistant (non-eng companion) | personal-assistant | `1509701064935477318` | `<@1509701064935477318>` |
 
