@@ -42,6 +42,10 @@ import { LeadJournal } from "./LeadJournal.js";
 import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
+import {
+	isReadDenyEnabled,
+	resolveReadDenyThread,
+} from "./read-deny-profile.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
 
@@ -88,6 +92,12 @@ export interface CodexLeadRuntimeConfig {
 	 * cannot run code / merge / ship). Write-capable modes are refused until a Codex
 	 * Lead's founder-gated action path exists (FLY-245). */
 	sandboxMode: CodexSandboxMode;
+	/** FLY-260: read-deny hardening enabled (env FLYWHEEL_CODEX_LEAD_READ_DENY=1).
+	 * Default false (byte-compat). When true (read-only only — fail-loud otherwise),
+	 * the runtime omits the legacy `sandbox` thread param so the config's
+	 * `default_permissions` read-deny profile takes effect, and a pre-gateway gate
+	 * asserts the profile is active (see read-deny-profile.ts). */
+	readDeny: boolean;
 	/** FLY-245 Phase A: canonical write-capable Lead scratch workspace (plan §3.3).
 	 * Resolved + validated (realpath; no overlap with control-plane/state/CODEX_HOME)
 	 * only for write-capable sandboxes when `FLYWHEEL_CODEX_LEAD_WORKSPACE` is set;
@@ -359,6 +369,17 @@ export function parseCodexLeadRuntimeConfig(
 	}
 	const sandboxMode = sandboxRaw as CodexSandboxMode;
 
+	// FLY-260: read-deny hardening flag (default OFF = byte-compat). Only supported
+	// for a read-only Lead this PR; combining it with a write-capable sandbox is a
+	// parse-time fail-loud (write-capable read-deny would need the FLY-245
+	// confinement assertions reworked — explicitly out of scope, follow-up).
+	const readDeny = isReadDenyEnabled(env);
+	if (readDeny && sandboxMode !== "read-only") {
+		throw new Error(
+			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_READ_DENY=1 requires sandbox=read-only (got "${sandboxMode}") — write-capable read-deny is a FLY-245 follow-up`,
+		);
+	}
+
 	// FLY-245 Phase A: for a write-capable sandbox, resolve + validate the Lead
 	// scratch workspace when configured. Purely additive — when unset, `workspace`
 	// stays undefined and the write-capable release gate (buildCodexLeadRuntime →
@@ -422,6 +443,7 @@ export function parseCodexLeadRuntimeConfig(
 		outboundMode,
 		systemPromptFiles,
 		sandboxMode,
+		readDeny,
 		workspace,
 		founderId,
 		cliVersionAllowlist,
@@ -478,13 +500,22 @@ export function resolveControlPlaneRoots(
  * is always pinned), so the thread never starts with the app-server's permissive
  * defaults. */
 export function buildThreadParams(
-	config: Pick<CodexLeadRuntimeConfig, "sandboxMode" | "workspace">,
+	config: Pick<CodexLeadRuntimeConfig, "sandboxMode" | "workspace"> & {
+		readDeny?: boolean;
+	},
 	baseInstructions: string | undefined,
 ): Record<string, unknown> {
 	const params: Record<string, unknown> = {
 		approvalPolicy: "never",
-		sandbox: config.sandboxMode,
 	};
+	// FLY-260: under read-deny (read-only only), OMIT the legacy `sandbox` param — it
+	// would set activePermissionProfile=null and DISABLE the config's read-deny
+	// profile (permission profiles do not compose with legacy sandbox settings).
+	// Enforcement then comes from the CODEX_HOME config's `default_permissions`.
+	// Every other path keeps pinning `sandbox` (byte-compat).
+	if (!(config.readDeny && config.sandboxMode === "read-only")) {
+		params.sandbox = config.sandboxMode;
+	}
 	// FLY-245 Phase A (plan §3.3, R7): pin cwd to the canonical Lead scratch for a
 	// write-capable Lead — an unpinned cwd auto-becomes a writable root (= the
 	// app-server's launch dir, indeterminate). read-only companions leave `workspace`
@@ -905,6 +936,17 @@ export function buildCodexLeadRuntime(
 				writeThreadId(config.threadIdPath, id);
 				return id;
 			}
+			// FLY-260 read-deny pre-gateway enforcement gate (R2-B3). Fail-closed: a
+			// failure throws here, BEFORE wire()/startGateway, so the Discord gateway
+			// never starts on an unprotected shell. (Headless = no resume self-heal.)
+			if (config.readDeny) {
+				const { id, fresh } = await resolveReadDenyThread(proc, {
+					saved,
+					threadParams,
+				});
+				if (fresh) writeThreadId(config.threadIdPath, id);
+				return id;
+			}
 			if (saved) {
 				// Re-pass baseInstructions on resume so a persona edit takes effect on
 				// restart (thread/resume accepts baseInstructions).
@@ -1011,6 +1053,7 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 		`prod Bridge   : ${noBridge ? "NOT CONNECTED (zero prod intrusion)" : "WILL CONNECT (bridge mode)"}`,
 		`persona       : ${persona ? `baseInstructions ${persona.length} chars from ${config.systemPromptFiles.length} file(s) → injected` : "(none — default Codex persona; set FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)"}`,
 		`policy        : approvalPolicy=never sandbox=${config.sandboxMode}${config.sandboxMode === "read-only" ? " (companion — read+chat only, cannot act)" : " ⚠️ WRITE-CAPABLE (FLY-245 founder gate: 8-condition release + runtime confinement assertions)"}`,
+		`read-deny     : ${config.readDeny ? "ON (FLY-260) — legacy sandbox param OMITTED; CODEX_HOME config default_permissions=flywheel-lead-secret-deny enforces read-deny + env exclude; boot ephemeral-start asserts the profile; flag-on cutover MUST restart the remote-control daemon so it re-reads config (brief TUI blip; liveness loop recreates)" : "off (byte-compat — legacy sandbox pin in effect)"}`,
 		`CODEX_HOME    : ${config.codexHome} (isolated per-Lead — not the host ~/.codex)`,
 		`codex bin     : ${config.codexBin}`,
 		`state dir     : ${config.stateDir}`,

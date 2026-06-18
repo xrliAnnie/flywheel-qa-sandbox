@@ -35,6 +35,21 @@ describe("buildTuiCommand", () => {
 		expect(cmd.trim().endsWith("019eb-thread-id")).toBe(true);
 	});
 
+	it("FLY-260 readDeny: OMITS -s read-only (legacy pin would disable the profile), keeps approval_policy", () => {
+		const cmd = buildTuiCommand({ ...SPEC, readDeny: true });
+		expect(cmd).not.toContain("-s read-only");
+		expect(cmd).toContain(`-c 'approval_policy="never"'`); // still pinned
+		expect(cmd).toContain("codex resume");
+		expect(cmd.trim().endsWith("019eb-thread-id")).toBe(true);
+	});
+
+	it("FLY-260 readDeny=false/undefined keeps -s read-only (byte-compat)", () => {
+		expect(buildTuiCommand({ ...SPEC, readDeny: false })).toContain(
+			"-s read-only",
+		);
+		expect(buildTuiCommand(SPEC)).toContain("-s read-only");
+	});
+
 	it("boundary validation: shell-unsafe config values throw (fail-loud)", () => {
 		expect(() =>
 			buildTuiCommand({ ...SPEC, threadId: 'x"; rm -rf /; "' }),
