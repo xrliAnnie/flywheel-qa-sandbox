@@ -55,6 +55,7 @@ import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
+import { resolveReadDenyThread } from "./read-deny-profile.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { extractTurnId, TurnDemux } from "./TurnDemux.js";
 import {
@@ -418,6 +419,20 @@ function buildTuiGeneration(
 					startProcess: () => p.start(), // initialize/initialized over WS
 					ensureThread: async (): Promise<string> => {
 						const saved = readThreadId(config.threadIdPath);
+						// FLY-260 read-deny: the pre-gateway ephemeral-start enforcement gate +
+						// resume(+assert)/fresh-start decision lives in resolveReadDenyThread
+						// (fail-closed; throws BEFORE wire()/TUI window on any profile mismatch).
+						// The TUI turnless self-heal ("no rollout") is passed through as the
+						// resume-self-heal predicate. Flag-off keeps the legacy path below.
+						if (config.readDeny) {
+							const { id, fresh } = await resolveReadDenyThread(p, {
+								saved,
+								threadParams,
+								isResumeSelfHeal: isTurnlessRolloutError,
+							});
+							if (fresh) writeThreadId(config.threadIdPath, id);
+							return id;
+						}
 						if (saved) {
 							try {
 								await p.resumeThread(saved, threadParams); // re-pin (HIGH-1)
@@ -537,6 +552,9 @@ function buildTuiGeneration(
 							threadId,
 							cwd: config.tuiCwd,
 							codexBin: config.codexBin,
+							// FLY-260: omit `-s read-only` from the founder TUI resume so the
+							// read-deny profile stays active for the shared thread.
+							readDeny: config.readDeny,
 						};
 						// Identity-aware ensure (review R2 HIGH-2 + R3 MED-1 + R4 MED-1):
 						// ensureTuiHealthy does the UNCONDITIONAL ensure (PR-C stale-kill)

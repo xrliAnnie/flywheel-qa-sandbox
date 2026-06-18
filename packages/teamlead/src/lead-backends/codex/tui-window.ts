@@ -38,6 +38,11 @@ export interface TuiWindowSpec {
 	cwd: string;
 	/** codex binary (default "codex"). */
 	codexBin?: string;
+	/** FLY-260: when true, OMIT the legacy `-s read-only` flag — it would set
+	 * activePermissionProfile=null and disable the config's read-deny profile (the
+	 * founder TUI shares the thread's sandbox; the profile is the floor for both).
+	 * Default/undefined keeps the `-s read-only` pin (byte-compat). */
+	readDeny?: boolean;
 }
 
 /** The command string is executed by tmux via a shell — every interpolated
@@ -71,8 +76,12 @@ export function buildTuiCommand(spec: TuiWindowSpec): string {
 		"resume",
 		`--remote "unix://${sock}"`,
 		`-C "${spec.cwd}"`,
-		// R4 HIGH-4 command-line pin layer (config.toml + thread params are the others)
-		"-s read-only",
+		// R4 HIGH-4 command-line pin layer (config.toml + thread params are the others).
+		// FLY-260: under read-deny we MUST omit `-s read-only` — passing the legacy
+		// sandbox flag sets activePermissionProfile=null and disables the read-deny
+		// profile. The config's default_permissions + approval_policy pins are the
+		// floor instead (the daemon enforces them for every client of the thread).
+		...(spec.readDeny ? [] : ["-s read-only"]),
 		`-c 'approval_policy="never"'`,
 		spec.threadId,
 	].join(" ");

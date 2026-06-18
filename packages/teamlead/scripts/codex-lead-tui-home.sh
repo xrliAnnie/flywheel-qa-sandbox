@@ -34,6 +34,106 @@ HOME_DIR="${FLYWHEEL_CODEX_TUI_HOME:-}"
 [ -n "$HOME_DIR" ] || die "FLYWHEEL_CODEX_TUI_HOME is required"
 
 CONFIG="$HOME_DIR/config.toml"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+READ_DENY_FRAGMENT="$SCRIPT_DIR/templates/codex-read-deny-profile.toml"
+
+# FLY-260 read-deny mode (FLYWHEEL_CODEX_LEAD_READ_DENY=1): ATOMICALLY rewrite the
+# config to a known-safe [permissions]-profile shape — preserving only the existing
+# trusted [projects] (TOML-safe quoted) and GUARANTEEING no top-level sandbox_mode
+# (Codex R2 #1: a lingering legacy sandbox_mode disables the profile). The legacy
+# (flag-off) path is unchanged below. Validates the assembled config via tomllib
+# before swapping it in (key+value: sandbox_mode absent, default_permissions, every
+# filesystem rule == "deny", shell_environment_policy.exclude present, approval_policy).
+write_read_deny_config() {
+  local cwd="$1"
+  [ -f "$READ_DENY_FRAGMENT" ] || die "read-deny fragment missing: $READ_DENY_FRAGMENT (build the teamlead package / check templates/)"
+  local tmp
+  tmp="$(mktemp "${HOME_DIR}/.config.toml.readdeny.XXXXXX")" || die "mktemp failed"
+  # 1) the canonical read-deny shape (single source of truth).
+  cat "$READ_DENY_FRAGMENT" > "$tmp"
+  # 2) preserve existing trusted [projects] (TOML-safe) + ensure cwd is trusted.
+  python3 - "$CONFIG" "$cwd" >> "$tmp" <<'PYPROJ' || die "read-deny: failed to assemble trusted [projects] (parser missing or unparseable existing config)"
+import json, sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(2)
+cfg = {}
+try:
+    with open(sys.argv[1], "rb") as f:
+        cfg = tomllib.load(f)
+except FileNotFoundError:
+    cfg = {}
+except Exception:
+    sys.exit(3)
+cwd = sys.argv[2]
+projects = cfg.get("projects", {})
+if not isinstance(projects, dict):
+    sys.exit(4)
+trusted = {}
+for path, entry in projects.items():
+    if isinstance(entry, dict) and entry.get("trust_level") == "trusted":
+        trusted[path] = True
+trusted[cwd] = True  # always trust the Lead working dir (kills the boot trust menu)
+out = ["", "# Trusted project dirs (preserved + cwd) — TOML-safe quoted keys."]
+for path in trusted:
+    out.append(f'[projects.{json.dumps(path)}]')
+    out.append('trust_level = "trusted"')
+print("\n".join(out))
+PYPROJ
+  # 3) validate the assembled config BEFORE swapping it in (fail-closed).
+  python3 - "$tmp" <<'PYVAL' || { rm -f "$tmp"; die "read-deny config validation failed (effective values must be: NO top-level sandbox_mode; default_permissions=flywheel-lead-secret-deny; every [permissions.*.filesystem] rule == \"deny\"; [shell_environment_policy].exclude present; approval_policy=never)"; }
+import sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(2)
+try:
+    with open(sys.argv[1], "rb") as f:
+        cfg = tomllib.load(f)
+except Exception:
+    sys.exit(3)
+NAME = "flywheel-lead-secret-deny"
+# The canonical contract (must match read-deny-profile.ts + the committed fragment).
+# Codex code-review R1#2: validate the EXACT shape, not just "non-empty + all deny".
+EXPECT_EXTENDS = ":read-only"
+EXPECT_ENV = {"*TOKEN*", "*SECRET*", "*KEY*"}
+EXPECT_FS = {
+    "~/.codex**", "~/.ssh", "~/.aws", "~/.config/gh", "~/.config/gcloud",
+    "~/.npmrc", "~/.docker", "~/**/.env**",
+}
+if cfg.get("sandbox_mode") is not None:
+    sys.exit(10)  # legacy pin present → would disable the profile (Gotcha A)
+if cfg.get("default_permissions") != NAME:
+    sys.exit(11)
+if cfg.get("approval_policy") != "never":
+    sys.exit(12)
+# token-shaped env exclude must contain ALL THREE forms (not just one).
+sep = cfg.get("shell_environment_policy", {})
+if not isinstance(sep, dict):
+    sys.exit(13)
+excl = sep.get("exclude")
+if not isinstance(excl, list) or not EXPECT_ENV.issubset(set(excl)):
+    sys.exit(13)
+prof = cfg.get("permissions", {}).get(NAME, {})
+if not isinstance(prof, dict) or prof.get("extends") != EXPECT_EXTENDS:
+    sys.exit(18)
+fs = prof.get("filesystem", {})
+if not isinstance(fs, dict):
+    sys.exit(14)
+# key+value: every filesystem rule must be exactly "deny" (no read/write slipped in).
+for k, v in fs.items():
+    if v != "deny":
+        sys.exit(15)
+# EXACT canonical key set — rejects a weakened (missing key) OR widened (extra deny
+# outside the verified set, e.g. a blanket ~/.flywheel) filesystem map.
+if set(fs.keys()) != EXPECT_FS:
+    sys.exit(16)
+sys.exit(0)
+PYVAL
+  mv "$tmp" "$CONFIG"
+  log "config.toml written (read-deny profile + env exclude; no sandbox_mode)"
+}
 
 ensure_home() {
   local cwd="${FLYWHEEL_CODEX_TUI_CWD:-}"
@@ -47,6 +147,14 @@ ensure_home() {
   local standalone="$HOME_DIR/packages/standalone/current/codex"
   if [ ! -x "$standalone" ]; then
     die "standalone codex install missing at $standalone — the remote-control daemon requires it. Install with: CODEX_HOME=$HOME_DIR sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' (then REVERT any shell-profile PATH edit the installer makes — see FLY-259 spike notes)"
+  fi
+
+  # FLY-260: read-deny mode rewrites the config to a [permissions]-profile shape
+  # (replaces legacy steps 3+4). Auth + standalone (steps 1-2 above) still applied.
+  if [ "${FLYWHEEL_CODEX_LEAD_READ_DENY:-}" = "1" ]; then
+    write_read_deny_config "$cwd"
+    log "home OK (read-deny): $HOME_DIR"
+    return 0
   fi
 
   # 3. config.toml: write pins if absent; FAIL-CLOSE if present with drift.
@@ -138,6 +246,15 @@ ensure_daemon() {
   # even on a correctly provisioned home. Explicit override stays possible.
   local codex_bin="${FLYWHEEL_CODEX_BIN:-$HOME_DIR/packages/standalone/current/codex}"
   [ -x "$codex_bin" ] || die "codex binary not executable: $codex_bin (standalone install missing? see ensure-home)"
+  # FLY-260 (Codex R2 #2): under read-deny, a LONG-LIVED daemon would keep the OLD
+  # config it read at start (the rewritten read-deny config wouldn't take effect),
+  # so STOP it first to force a clean re-read on the next start. Best-effort (a
+  # not-running daemon makes stop a no-op). Flag-OFF keeps the idempotent start-only
+  # behavior (no daemon interruption on a normal restart — byte-compat).
+  if [ "${FLYWHEEL_CODEX_LEAD_READ_DENY:-}" = "1" ]; then
+    CODEX_HOME="$HOME_DIR" "$codex_bin" remote-control stop --json >/dev/null 2>&1 || true
+    log "read-deny: stopped any running daemon so it re-reads the rewritten config"
+  fi
   # `remote-control start` is idempotent (spike-verified: already-running →
   # status connected). Fail-loud otherwise — the supervisor retries with backoff.
   CODEX_HOME="$HOME_DIR" "$codex_bin" remote-control start --json \

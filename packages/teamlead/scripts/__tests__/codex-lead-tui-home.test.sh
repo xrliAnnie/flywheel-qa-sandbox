@@ -174,6 +174,48 @@ if FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/w" /bin/bash "$SUT" ens
 else
   pass "R4 MED-1: scalar projects fails closed"
 fi
+# ════════════════ FLY-260 read-deny mode (FLYWHEEL_CODEX_LEAD_READ_DENY=1) ════════════════
+
+# ── flag-on: rewrites to a profile config — NO sandbox_mode, deny list, env exclude, cwd trusted ──
+H=$(fresh_home 20)
+if FLYWHEEL_CODEX_LEAD_READ_DENY=1 FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" /bin/bash "$SUT" ensure-home >/dev/null 2>&1; then
+  pass "read-deny ensure-home succeeds on a provisioned home"
+else
+  fail "read-deny ensure-home should succeed"
+fi
+python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('sandbox_mode') is None else 1)" "$H/config.toml" \
+  && pass "read-deny: NO top-level sandbox_mode (Codex R2 #1)" || fail "read-deny: sandbox_mode must be absent"
+command grep -q 'default_permissions = "flywheel-lead-secret-deny"' "$H/config.toml" && pass "read-deny: default_permissions set" || fail "read-deny: default_permissions missing"
+command grep -q '"~/.codex\*\*" = "deny"' "$H/config.toml" && pass "read-deny: ~/.codex** deny present" || fail "read-deny: ~/.codex** deny missing"
+command grep -q '"~/\*\*/.env\*\*" = "deny"' "$H/config.toml" && pass "read-deny: ~/**/.env** deny present" || fail "read-deny: env-family deny missing"
+command grep -q '\[shell_environment_policy\]' "$H/config.toml" && pass "read-deny: shell_environment_policy present (env exclude)" || fail "read-deny: env exclude missing"
+! command grep -q '"~/.flywheel" = "deny"' "$H/config.toml" && pass "read-deny: ~/.flywheel NOT blanket-denied (COE Director)" || fail "read-deny: ~/.flywheel must not be blanket-denied"
+python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if (c.get('projects') or {}).get('/work/dir',{}).get('trust_level')=='trusted' else 1)" "$H/config.toml" \
+  && pass "read-deny: cwd trusted" || fail "read-deny: cwd trust missing"
+
+# ── flag-on REWRITES an OLD legacy config (sandbox_mode present) → no sandbox_mode (Codex R2 #1) ──
+H=$(fresh_home 21)
+printf 'sandbox_mode = "read-only"\napproval_policy = "never"\n[projects."/work/dir"]\ntrust_level = "trusted"\n' > "$H/config.toml"
+if FLYWHEEL_CODEX_LEAD_READ_DENY=1 FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" /bin/bash "$SUT" ensure-home >/dev/null 2>&1; then
+  python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if (c.get('sandbox_mode') is None and c.get('default_permissions')=='flywheel-lead-secret-deny') else 1)" "$H/config.toml" \
+    && pass "read-deny: old sandbox_mode config REWRITTEN (sandbox_mode gone, profile in)" || fail "read-deny: old config not rewritten cleanly"
+  python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if (c.get('projects') or {}).get('/work/dir',{}).get('trust_level')=='trusted' else 1)" "$H/config.toml" \
+    && pass "read-deny: pre-existing trusted project preserved" || fail "read-deny: trusted project not preserved"
+else
+  fail "read-deny: rewriting an old legacy config should succeed"
+fi
+
+# ── ensure-daemon flag-on: STOP then START (Codex R2 #2 — daemon re-reads config) ──
+H=$(fresh_home 22); : > "$MOCK_LOG"
+FLYWHEEL_CODEX_LEAD_READ_DENY=1 FLYWHEEL_CODEX_BIN="$T/bin/codex" FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" ensure-daemon >/dev/null 2>&1
+command grep -q "remote-control stop" "$MOCK_LOG" && pass "read-deny ensure-daemon: stop invoked (daemon re-reads config)" || fail "read-deny ensure-daemon: stop not invoked"
+command grep -q "remote-control start --json" "$MOCK_LOG" && pass "read-deny ensure-daemon: start invoked after stop" || fail "read-deny ensure-daemon: start not invoked"
+
+# ── ensure-daemon flag-OFF: start only, NO stop (byte-compat, no interruption) ──
+H=$(fresh_home 23); : > "$MOCK_LOG"
+FLYWHEEL_CODEX_BIN="$T/bin/codex" FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" ensure-daemon >/dev/null 2>&1
+! command grep -q "remote-control stop" "$MOCK_LOG" && pass "flag-off ensure-daemon: NO stop (byte-compat)" || fail "flag-off ensure-daemon: must not stop the daemon"
+
 echo "────────────────────────────"
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

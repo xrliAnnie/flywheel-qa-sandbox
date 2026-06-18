@@ -315,6 +315,66 @@ describe("sandbox policy (review HIGH-1: pin approvalPolicy + sandbox)", () => {
 	});
 });
 
+describe("FLY-260 read-deny flag (default OFF — byte-compat)", () => {
+	it("defaults readDeny=false (flag unset)", () => {
+		expect(parseCodexLeadRuntimeConfig(fullEnv()).readDeny).toBe(false);
+	});
+
+	it("FLYWHEEL_CODEX_LEAD_READ_DENY=1 sets readDeny on a read-only Lead", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({ FLYWHEEL_CODEX_LEAD_READ_DENY: "1" }),
+		);
+		expect(c.readDeny).toBe(true);
+		expect(c.sandboxMode).toBe("read-only");
+	});
+
+	it("readDeny + a write-capable sandbox is a parse-time fail-loud (R1-#8)", () => {
+		expect(() =>
+			parseCodexLeadRuntimeConfig(
+				fullEnv({
+					FLYWHEEL_CODEX_LEAD_READ_DENY: "1",
+					FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+				}),
+			),
+		).toThrow(/requires sandbox=read-only/);
+	});
+
+	it("buildThreadParams OMITS the legacy sandbox param under readDeny+read-only", () => {
+		expect(
+			buildThreadParams(
+				{ sandboxMode: "read-only", readDeny: true },
+				undefined,
+			),
+		).toEqual({ approvalPolicy: "never" });
+		// persona still flows through
+		expect(
+			buildThreadParams(
+				{ sandboxMode: "read-only", readDeny: true },
+				"You are Mufasa.",
+			),
+		).toEqual({ approvalPolicy: "never", baseInstructions: "You are Mufasa." });
+	});
+
+	it("buildThreadParams KEEPS sandbox when readDeny is off (byte-compat)", () => {
+		expect(
+			buildThreadParams(
+				{ sandboxMode: "read-only", readDeny: false },
+				undefined,
+			),
+		).toEqual({ approvalPolicy: "never", sandbox: "read-only" });
+	});
+
+	it("dry-run report surfaces read-deny ON", () => {
+		const report = dryRunReport(
+			parseCodexLeadRuntimeConfig(
+				fullEnv({ FLYWHEEL_CODEX_LEAD_READ_DENY: "1" }),
+			),
+		).join("\n");
+		expect(report).toContain("read-deny     : ON");
+		expect(report).toContain("flywheel-lead-secret-deny");
+	});
+});
+
 describe("FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3)", () => {
 	let root: string;
 	let home: string;
