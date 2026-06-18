@@ -52,6 +52,7 @@ import {
 import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import { StateStore } from "../StateStore.js";
 import { createActionRouter } from "./actions.js";
+import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import {
@@ -2410,6 +2411,22 @@ export async function startBridge(
 	});
 	gatePoller.start();
 
+	// FLY-307 C: Bridge event-loop self-watchdog — converts a main-loop hang
+	// (e.g. a spinning sql.js/WASM trap) into a launchd-restartable crash, the
+	// gap launchd KeepAlive can't cover. Default ON; `FLYWHEEL_BRIDGE_WATCHDOG=0`
+	// is the ops kill-switch. Auto-disabled under VITEST at this wiring boundary
+	// so general Bridge integration suites are never SIGKILLed by the worker
+	// (the dedicated watchdog tests exercise the real worker directly).
+	const bridgeWatchdog = new BridgeEventLoopWatchdog({
+		enabled: !process.env.VITEST,
+	});
+	bridgeWatchdog.start();
+	if (bridgeWatchdog.isEnabled()) {
+		console.log(
+			"[Bridge] EventLoopWatchdog started (worker-thread heartbeat; SIGKILL self on a confirmed main-loop stall → KeepAlive restart)",
+		);
+	}
+
 	// FLY-83: Lead liveness watchdog — external pane-hash observation for
 	// Claude Code TUI. Pairs with scripts/lead-alert.sh (shell-owned alert
 	// path) via cross-process claims.db dedup.
@@ -2662,6 +2679,7 @@ export async function startBridge(
 	const close = async () => {
 		heartbeatService?.stop();
 		gatePoller.stop();
+		bridgeWatchdog.stop();
 		idleWatchdog.stop();
 		leadWatchdog.stop();
 		clearInterval(leadAlertDrainTimer);
