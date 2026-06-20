@@ -101,7 +101,7 @@ inc2a 在 inc1 之上加:① `GET /` 从旧 Dashboard 换成 **Fleet 控制台**
 
 ## C. 批量级别切换操作流(控制台)
 
-1. 浏览器开 `:9876/` → 点某 Claude Lead 的「级别」chip → 选 Fable 5 / Opus 4.8 → 卡片蓝框 +「未应用」。
+1. 浏览器开 `:9876/` → 点某 Claude Lead 的「级别」chip → 选 Fable 5 / **Opus 4.8 (1M)**(FLY-360,= `claude-opus-4-8[1m]`,真用满 1M 窗口)/ Opus 4.8(account default,~200K)→ 卡片蓝框 +「未应用」。
 2. 顶部「应用 N 项更改」→ 确认框列全部 from→to(+ 重启/自动回滚警示)→「确认应用」。
 3. 逐项串行执行,同框 SSE 进度(备份→应用→验证→✓);失败项标红 + 自动回滚该项(成功项保留);回滚冲突 / 需恢复 → 标红 + runbook 提示(**绝不假称已保原状**)。
 4. **批量引擎细节**:API 在 spawn 前 exclusive-create `launching` 批次记录(`~/.flywheel/fleet-txns/batch-<id>.json`)→ detached 跑 `flywheel-fleet.sh apply --changes-file <cf>` → 每 key 走 inc1 已验证的 model-apply 相位机。锁序 `restart.lock.d`(inc1 mkdir,不动)→ config-write flock(新,python3 fcntl,短持自释)。

@@ -110,6 +110,16 @@ else
   fail "B1: model → FLYWHEEL_LEAD_MODEL env dict injected"
 fi
 
+# ── B2) FLY-360: bracketed 1M selector survives plist generation verbatim ──
+# `[` / `]` are not XML-special, so xml_escape must pass them through unchanged.
+write_manifest '"claude-opus-4-8[1m]"'
+generate_plist "$KEY" "$MANIFEST" >/dev/null
+if grep -qF "<key>FLYWHEEL_LEAD_MODEL</key><string>claude-opus-4-8[1m]</string>" "$PLIST"; then
+  pass "B2: bracketed 1M model id emitted verbatim in plist"
+else
+  fail "B2: bracketed 1M model id emitted verbatim in plist"
+fi
+
 # ── C) XML special characters escaped (R1#8) ─────────────────────────────
 write_manifest "\"a&b<c>d'e\\\"f\""
 generate_plist "$KEY" "$MANIFEST" >/dev/null

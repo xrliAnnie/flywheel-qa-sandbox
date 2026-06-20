@@ -23,9 +23,11 @@ function lead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 }
 
 describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () => {
-	it("Claude tiers = Fable 5 (explicit id) + Opus 4.8 (account default = null)", () => {
+	it("Claude tiers = Fable 5 + Opus 4.8 (1M) explicit + Opus 4.8 (account default = null)", () => {
 		expect(CLAUDE_TIER_OPTIONS).toEqual([
 			{ id: "claude-fable-5", label: "Fable 5" },
+			// FLY-360: explicit 1M-context selector (Claude Code CLI `[1m]` suffix).
+			{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)" },
 			{ id: null, label: "Opus 4.8" },
 		]);
 	});
@@ -46,6 +48,7 @@ describe("fleet-capabilities — allowedModelTargets (R6 #5)", () => {
 	it("Claude targets = tier ids ∪ {null} (account-default is a legal target)", () => {
 		const targets = computeAllowedModelTargets("claude-code");
 		expect(targets).toContain("claude-fable-5");
+		expect(targets).toContain("claude-opus-4-8[1m]"); // FLY-360: 1M selector authorized
 		expect(targets).toContain(null); // explicit → account default is legal
 	});
 

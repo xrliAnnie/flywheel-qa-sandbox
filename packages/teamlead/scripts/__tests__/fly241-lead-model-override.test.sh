@@ -100,6 +100,16 @@ PLAN=$(printf '%s' "$OUT" | plan_of)
 printf '%s' "$OUT" | grep -qF "$CANARY_BOT" && bad "T1 SECRET LEAK (bot token)" || ok "T1 no bot-token leak"
 rm -rf "$H"
 
+# ───────────────────── T1b: FLY-360 bracketed 1M selector → exact passthrough
+# The `[1m]` suffix must reach `--model` byte-for-byte: bash array quoting must
+# not word-split it or let `[1m]` undergo glob/pathname expansion.
+H=$(make_home); P=$(fixture_projects "$H")
+OUT=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d "FLYWHEEL_LEAD_MODEL=claude-opus-4-8[1m]")
+PLAN=$(printf '%s' "$OUT" | plan_of)
+[ "$(model_arg_present "$PLAN")" = "yes" ] && ok "T1b 1M SET → --model token present" || bad "T1b 1M SET → --model token missing"
+[ "$(model_arg_value "$PLAN")" = "claude-opus-4-8[1m]" ] && ok "T1b 1M SET → value claude-opus-4-8[1m] verbatim" || bad "T1b 1M SET → expected claude-opus-4-8[1m], got '$(model_arg_value "$PLAN")'"
+rm -rf "$H"
+
 # ──────────────────────────────────────── T2: UNSET → no --model (byte-compat)
 # Assert TOKEN absence (Codex LOW): `--model ""` would also yield an empty value,
 # so checking the value alone would miss a byte-compat-violating empty arg.

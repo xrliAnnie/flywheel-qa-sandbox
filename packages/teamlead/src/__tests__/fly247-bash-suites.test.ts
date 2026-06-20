@@ -51,6 +51,17 @@ describe("FLY-247 bash suites (hermetic)", () => {
 		).not.toThrow();
 	}, 120_000);
 
+	// FLY-360: wire the FLY-241 per-Lead model-override launch-plan suite into CI
+	// (it lives under packages/teamlead/scripts/__tests__, so it was NOT covered
+	// by this wrapper before). Includes the bracketed 1M-selector regression.
+	it("fly241 per-Lead model-override launch plan (incl. 1M bracket id)", () => {
+		expect(() =>
+			runSuite(
+				"packages/teamlead/scripts/__tests__/fly241-lead-model-override.test.sh",
+			),
+		).not.toThrow();
+	}, 120_000);
+
 	it("flywheel-fleet plan/apply/rollback/recover", () => {
 		expect(() =>
 			runSuite("scripts/__tests__/flywheel-fleet.test.sh"),

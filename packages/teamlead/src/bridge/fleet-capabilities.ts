@@ -5,10 +5,16 @@
  * the chips light up via a server-side rule change with zero UI edits.
  *
  * Canonical model facts (verified against `~/.flywheel/fleet-model-setup.md`):
- *   - Fable 5      → explicit model id  "claude-fable-5"
- *   - Opus 4.8     → account default    = JSON `null` (no model override)
- *   - Codex GPT-5  → display-only (the Codex thread carries no model; inc2a does
- *                    NOT switch Codex tiers — single read-only option)
+ *   - Fable 5         → explicit model id  "claude-fable-5"
+ *   - Opus 4.8 (1M)   → explicit model id  "claude-opus-4-8[1m]" (FLY-360). The
+ *                       `[1m]` suffix is the Claude Code CLI selector for the
+ *                       1M-context window; `claude-opus-4-8` is natively a 1M
+ *                       model at standard pricing, so this is a window selector,
+ *                       NOT a separate/pricier API model.
+ *   - Opus 4.8        → account default    = JSON `null` (no model override). In
+ *                       Claude Code this defaults the effective window to ~200K.
+ *   - Codex GPT-5     → display-only (the Codex thread carries no model; inc2a
+ *                       does NOT switch Codex tiers — single read-only option)
  */
 
 import {
@@ -34,9 +40,14 @@ export interface BackendOption {
 	disabledReason?: string;
 }
 
-/** Claude tier options: Fable 5 (explicit) + Opus 4.8 (account default = null). */
+/**
+ * Claude tier options: Fable 5 (explicit) + Opus 4.8 (1M) (explicit window
+ * selector, FLY-360) + Opus 4.8 (account default = null, ~200K window in Claude
+ * Code).
+ */
 export const CLAUDE_TIER_OPTIONS: readonly TierOption[] = [
 	{ id: "claude-fable-5", label: "Fable 5" },
+	{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)" },
 	{ id: null, label: "Opus 4.8" },
 ];
 

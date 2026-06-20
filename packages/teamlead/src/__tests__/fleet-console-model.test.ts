@@ -81,6 +81,15 @@ describe("fleet-console-model — buildConsoleSnapshot (R5 #1: default-off gate)
 		expect(view.currentModelLabel).toBe("Fable 5");
 	});
 
+	it("FLY-360: Lead with model=claude-opus-4-8[1m] → 'Opus 4.8 (1M)' label, id preserved", () => {
+		const view = buildConsoleLeadView(
+			"geo",
+			lead({ model: "claude-opus-4-8[1m]" }),
+		);
+		expect(view.currentModelId).toBe("claude-opus-4-8[1m]");
+		expect(view.currentModelLabel).toBe("Opus 4.8 (1M)");
+	});
+
 	it("migrated Mufasa → Codex backend, GPT-5 read-only, only-null model target", () => {
 		const snap = buildConsoleSnapshot(prodProjects());
 		const mufasa = snap.leads.find((l) => l.leadId === "mufasa")!;
