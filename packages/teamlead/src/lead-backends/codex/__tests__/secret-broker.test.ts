@@ -23,6 +23,30 @@ import {
 	washActionSecretEnv,
 } from "../secret-broker.js";
 
+/**
+ * FLY-350 code-review LOW-5: some managed sandboxes deny AF_UNIX `listen()`
+ * (EPERM/EACCES). Probe once; the socket-backed suite skips with an explicit
+ * reason there instead of failing/hanging. On a real machine + CI this is true,
+ * so the suite runs normally.
+ */
+const afUnixAvailable = await new Promise<boolean>((resolve) => {
+	const probePath = join(tmpdir(), `fly350-afunix-probe-${process.pid}.sock`);
+	const s = createServer();
+	s.once("error", () => resolve(false));
+	try {
+		s.listen(probePath, () => {
+			s.close(() => {
+				try {
+					rmSync(probePath, { force: true });
+				} catch {}
+				resolve(true);
+			});
+		});
+	} catch {
+		resolve(false);
+	}
+});
+
 describe("washActionSecretEnv (E)", () => {
 	it("strips every key containing TOKEN / SECRET / KEY (case-insensitive)", () => {
 		const washed = washActionSecretEnv({
@@ -68,7 +92,7 @@ describe("washActionSecretEnv (E)", () => {
 	});
 });
 
-describe("SecretBroker over unix socket (E)", () => {
+describe.skipIf(!afUnixAvailable)("SecretBroker over unix socket (E)", () => {
 	let dir: string;
 	let broker: SecretBroker | undefined;
 
@@ -121,7 +145,10 @@ describe("SecretBroker over unix socket (E)", () => {
 
 	it("fetch from a non-existent socket rejects (fail-closed, never empty secrets)", async () => {
 		await expect(
-			fetchSecretsFromBroker(join(dir, "nope.sock"), { timeoutMs: 500 }),
+			fetchSecretsFromBroker(join(dir, "nope.sock"), {
+				timeoutMs: 500,
+				retries: 0,
+			}),
 		).rejects.toThrow();
 	});
 
@@ -131,7 +158,7 @@ describe("SecretBroker over unix socket (E)", () => {
 		await broker.listen();
 		await broker.close();
 		await expect(
-			fetchSecretsFromBroker(socketPath, { timeoutMs: 500 }),
+			fetchSecretsFromBroker(socketPath, { timeoutMs: 500, retries: 0 }),
 		).rejects.toThrow();
 	});
 
@@ -143,7 +170,7 @@ describe("SecretBroker over unix socket (E)", () => {
 		await new Promise<void>((res) => server.listen(socketPath, res));
 		try {
 			await expect(
-				fetchSecretsFromBroker(socketPath, { timeoutMs: 500 }),
+				fetchSecretsFromBroker(socketPath, { timeoutMs: 500, retries: 0 }),
 			).rejects.toThrow();
 		} finally {
 			await new Promise<void>((res) => server.close(() => res()));
@@ -158,8 +185,93 @@ describe("SecretBroker over unix socket (E)", () => {
 		await new Promise<void>((res) => server.listen(socketPath, res));
 		try {
 			await expect(
-				fetchSecretsFromBroker(socketPath, { timeoutMs: 300 }),
+				fetchSecretsFromBroker(socketPath, { timeoutMs: 300, retries: 0 }),
 			).rejects.toThrow(/timeout/i);
+		} finally {
+			await new Promise<void>((res) => server.close(() => res()));
+		}
+	});
+
+	// FLY-350 race fix: an EMPTY read must reject with a CLEAR error (not an
+	// opaque JSON.parse "Unexpected end of JSON input" crash).
+	it("an EMPTY payload rejects with EMPTY_PAYLOAD (not a JSON.parse crash)", async () => {
+		const socketPath = join(dir, "empty.sock");
+		const server = createServer((conn) => {
+			conn.end(""); // accept + close with no data
+		});
+		await new Promise<void>((res) => server.listen(socketPath, res));
+		try {
+			await expect(
+				fetchSecretsFromBroker(socketPath, { timeoutMs: 300, retries: 0 }),
+			).rejects.toThrow(/EMPTY_PAYLOAD/);
+		} finally {
+			await new Promise<void>((res) => server.close(() => res()));
+		}
+	});
+
+	// FLY-350 race fix: a transient empty/failed connect is RETRIED — a respawn
+	// racing the broker becomes success, not a fatal child crash.
+	it("retries a transient empty read, then succeeds once the broker serves the payload", async () => {
+		const socketPath = join(dir, "flaky.sock");
+		let conns = 0;
+		// First 2 connections close empty (transient), the 3rd serves the payload.
+		const server = createServer((conn) => {
+			conns += 1;
+			if (conns < 3) conn.end("");
+			else conn.end(`${JSON.stringify(SECRETS)}\n`);
+		});
+		await new Promise<void>((res) => server.listen(socketPath, res));
+		try {
+			const fetched = await fetchSecretsFromBroker(socketPath, {
+				timeoutMs: 500,
+				retries: 3,
+				retryDelayMs: 10,
+			});
+			expect(fetched).toEqual(SECRETS);
+			expect(conns).toBe(3); // proved it retried past the 2 empty reads
+		} finally {
+			await new Promise<void>((res) => server.close(() => res()));
+		}
+	});
+
+	// LOW-5: a malformed (non-empty, unparseable) payload is a config error — it
+	// must FAIL FAST, not retry N times.
+	it("does NOT retry a malformed payload (fails fast, permanent error)", async () => {
+		const socketPath = join(dir, "malformed-fast.sock");
+		let conns = 0;
+		const server = createServer((conn) => {
+			conns += 1;
+			conn.end("not json"); // non-empty, unparseable
+		});
+		await new Promise<void>((res) => server.listen(socketPath, res));
+		try {
+			await expect(
+				fetchSecretsFromBroker(socketPath, {
+					timeoutMs: 500,
+					retries: 5,
+					retryDelayMs: 5,
+				}),
+			).rejects.toThrow();
+			expect(conns).toBe(1); // proved it did NOT retry past the first attempt
+		} finally {
+			await new Promise<void>((res) => server.close(() => res()));
+		}
+	});
+
+	it("exhausts retries on a persistently-empty broker and fails closed", async () => {
+		const socketPath = join(dir, "always-empty.sock");
+		const server = createServer((conn) => {
+			conn.end(""); // always empty
+		});
+		await new Promise<void>((res) => server.listen(socketPath, res));
+		try {
+			await expect(
+				fetchSecretsFromBroker(socketPath, {
+					timeoutMs: 300,
+					retries: 2,
+					retryDelayMs: 10,
+				}),
+			).rejects.toThrow(/failed after 3 attempt/);
 		} finally {
 			await new Promise<void>((res) => server.close(() => res()));
 		}

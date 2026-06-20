@@ -29,11 +29,26 @@ import {
 	resolveChannelAlias,
 } from "./alias-allowlist.js";
 import { parseLeadActionsConfig } from "./config.js";
+import { LEAD_ACTIONS_TOOLS } from "./mcp-config.js";
 import {
 	deriveSendIdempotencyKey,
 	SendIdempotencyCache,
 	SlidingWindowRateLimiter,
 } from "./send-guard.js";
+
+// FLY-350 code-review MED-4: tie the registered tool name to the SHARED constant
+// (single source of truth with the §10 gate's LEAD_ACTIONS_TOOLS). The content
+// profile exposes EXACTLY one tool; assert that invariant at load so the literal
+// below and the gate constant can never drift apart.
+const DISCORD_SEND_TOOL = "discord_send";
+if (
+	LEAD_ACTIONS_TOOLS.length !== 1 ||
+	LEAD_ACTIONS_TOOLS[0] !== DISCORD_SEND_TOOL
+) {
+	throw new Error(
+		`lead-actions: LEAD_ACTIONS_TOOLS must be exactly ["${DISCORD_SEND_TOOL}"] (got ${JSON.stringify(LEAD_ACTIONS_TOOLS)})`,
+	);
+}
 
 /** Append one durable audit row (metadata only — never the message text). */
 function appendAudit(auditPath: string, row: Record<string, unknown>): void {
@@ -103,7 +118,7 @@ export async function leadActionsMain(
 	});
 
 	server.tool(
-		"discord_send",
+		DISCORD_SEND_TOOL,
 		"Proactively post a message to one of YOUR allowlisted channels. `target` " +
 			'is an ALIAS ("chat" = your own channel, "roundtable" = the cross-' +
 			"department channel), NOT a channel id. Use this to START a message " +

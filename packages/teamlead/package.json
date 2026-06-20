@@ -1,7 +1,7 @@
 {
 	"name": "flywheel-teamlead",
 	"version": "0.5.0",
-	"description": "Flywheel bridge \u2014 REST API for Lead agent integration",
+	"description": "Flywheel bridge — REST API for Lead agent integration",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
@@ -18,6 +18,7 @@
 	},
 	"dependencies": {
 		"@linear/sdk": "60.0.0",
+		"@modelcontextprotocol/sdk": "^1.25.2",
 		"better-sqlite3": "^12.8.0",
 		"chokidar": "^4.0.3",
 		"express": "^5.2.1",
@@ -27,10 +28,10 @@
 		"flywheel-config": "workspace:*",
 		"flywheel-core": "workspace:*",
 		"flywheel-edge-worker": "workspace:*",
+		"smol-toml": "^1.6.1",
 		"sql.js": "^1.14.1",
-		"yaml": "^2.7.1",
 		"ws": "^8.19.0",
-		"@modelcontextprotocol/sdk": "^1.25.2",
+		"yaml": "^2.7.1",
 		"zod": "^3.23.0"
 	},
 	"devDependencies": {
@@ -38,8 +39,8 @@
 		"@types/express": "^5.0.6",
 		"@types/node": "^20.0.0",
 		"@types/sql.js": "^1.4.9",
+		"@types/ws": "^8.18.0",
 		"typescript": "^5.3.3",
-		"vitest": "^3.1.4",
-		"@types/ws": "^8.18.0"
+		"vitest": "^3.1.4"
 	}
 }

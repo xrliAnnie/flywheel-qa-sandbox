@@ -117,17 +117,28 @@ export class SecretBroker {
 	}
 }
 
+/** A NON-retryable (structural/config) error — distinguished from transient
+ * (empty / refused / timeout) so the retry loop fails fast on a misconfig. */
+function permanent(message: string): Error & { permanent: true } {
+	return Object.assign(new Error(message), { permanent: true as const });
+}
+
 /**
- * Gateway-side fetch: connect, read the single JSON payload, parse. Rejects on
- * a dead socket / malformed payload / timeout — NEVER resolves to an empty
- * fallback (fail-closed: a gateway without secrets must refuse to start its
- * action surface, not limp along).
+ * ONE connect→read→parse attempt. Rejects on a dead socket / EMPTY payload /
+ * malformed payload / timeout — NEVER resolves to an empty fallback (fail-closed:
+ * a gateway without secrets must refuse to start its action surface).
+ *
+ * FLY-350 race fix: an EMPTY/whitespace read is rejected with an explicit
+ * `EMPTY_PAYLOAD` error (NOT a raw `JSON.parse("")` → "Unexpected end of JSON
+ * input" crash). codex 0.141 ephemerally re-spawns an MCP child per built_tools
+ * call; a respawn that races the broker (connection accepted but the payload not
+ * yet/ever delivered, e.g. during a transient unavailability) must surface a
+ * clear, RETRYABLE error rather than crash the child opaquely.
  */
-export async function fetchSecretsFromBroker(
+function fetchSecretsOnce(
 	socketPath: string,
-	opts: { timeoutMs?: number } = {},
+	timeoutMs: number,
 ): Promise<Record<string, string>> {
-	const timeoutMs = opts.timeoutMs ?? 5000;
 	return new Promise<Record<string, string>>((resolve, reject) => {
 		const chunks: string[] = [];
 		const conn = createConnection(socketPath);
@@ -145,24 +156,78 @@ export async function fetchSecretsFromBroker(
 		});
 		conn.on("end", () => {
 			clearTimeout(timer);
+			const raw = chunks.join("");
+			// FLY-350: explicit empty/whitespace guard BEFORE JSON.parse — never let
+			// an empty read become an opaque "Unexpected end of JSON input" crash.
+			if (raw.trim().length === 0) {
+				reject(
+					new Error(
+						"fetchSecretsFromBroker: EMPTY_PAYLOAD (broker sent no data)",
+					),
+				);
+				return;
+			}
 			try {
-				const parsed: unknown = JSON.parse(chunks.join(""));
+				const parsed: unknown = JSON.parse(raw);
 				if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-					reject(new Error("fetchSecretsFromBroker: malformed payload"));
+					reject(permanent("fetchSecretsFromBroker: malformed payload"));
 					return;
 				}
 				for (const v of Object.values(parsed as Record<string, unknown>)) {
 					if (typeof v !== "string") {
 						reject(
-							new Error("fetchSecretsFromBroker: non-string secret value"),
+							permanent("fetchSecretsFromBroker: non-string secret value"),
 						);
 						return;
 					}
 				}
 				resolve(parsed as Record<string, string>);
 			} catch (err) {
-				reject(err as Error);
+				// A non-empty body that won't JSON.parse is a structural/config error
+				// (LOW-5): permanent — retrying the same garbage is pointless + noisy.
+				reject(permanent(`fetchSecretsFromBroker: ${(err as Error).message}`));
 			}
 		});
 	});
+}
+
+/**
+ * Gateway-side fetch: connect, read the single JSON payload, parse. Rejects on
+ * a dead socket / EMPTY / malformed payload / timeout — NEVER resolves to an
+ * empty fallback (fail-closed).
+ *
+ * FLY-350 race fix: RETRIES a transient failure (empty payload / connection
+ * refused / timeout) with a short backoff. The broker is a single parent-runtime
+ * listener serving EVERY ephemeral MCP (re)spawn; a respawn can momentarily race
+ * the listener (e.g. between accept and write under load, or a brief
+ * unavailability). A bounded retry turns those transients into success instead of
+ * a fatal child crash. A persistently-down broker still fails closed after the
+ * attempts are exhausted (the error names the last cause).
+ */
+export async function fetchSecretsFromBroker(
+	socketPath: string,
+	opts: { timeoutMs?: number; retries?: number; retryDelayMs?: number } = {},
+): Promise<Record<string, string>> {
+	const timeoutMs = opts.timeoutMs ?? 5000;
+	// Default 4 attempts (1 + 3 retries) over ~600ms — generous enough for a
+	// respawn racing the listener, bounded so a truly-down broker fails fast.
+	const retries = opts.retries ?? 3;
+	const retryDelayMs = opts.retryDelayMs ?? 200;
+	let lastErr: Error | undefined;
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		try {
+			return await fetchSecretsOnce(socketPath, timeoutMs);
+		} catch (err) {
+			lastErr = err as Error;
+			// LOW-5: a permanent (malformed/non-string) error won't fix on retry —
+			// fail fast rather than retry the same garbage N times.
+			if ((err as { permanent?: boolean }).permanent) throw lastErr;
+			if (attempt < retries) {
+				await new Promise((r) => setTimeout(r, retryDelayMs));
+			}
+		}
+	}
+	throw new Error(
+		`fetchSecretsFromBroker: failed after ${retries + 1} attempt(s): ${lastErr?.message ?? "unknown"}`,
+	);
 }

@@ -1,16 +1,27 @@
 /**
- * FLY-350 — lead-actions MCP server config shape + inventory gate (pure).
+ * FLY-350 — lead-actions MCP server config shape + the §10 config gate (pure).
  *
  * Single source of truth for (a) the `[mcp_servers.lead_actions]` the Codex TUI
  * daemon is configured with (written into CODEX_HOME/config.toml by
- * codex-lead-tui-home.sh) and (b) the EXACT model-callable tool surface the
- * runtime asserts before it lets the gateway / Discord polling start (§10 / R3#3
- * fail-closed inventory gate).
+ * codex-lead-tui-home.sh) and (b) the §10 fail-closed CONFIG assertion the runtime
+ * runs before daemon startup.
+ *
+ * § 10 gate model (race-fix design review, option C): codex 0.141 spawns the MCP
+ * child EPHEMERALLY per built_tools call (no persistent "ready" lifecycle status),
+ * so the old runtime "wait for the live MCP to report ready" gate false-times-out.
+ * Instead the runtime asserts the EFFECTIVE config.toml it is about to hand the
+ * daemon contains EXACTLY the trusted lead-actions MCP and nothing else — codex
+ * can only spawn what is configured, and the first-party MCP registers exactly
+ * `discord_send` (proved by the real-daemon integration test). Deterministic +
+ * race-free; the security property (model tool surface == exactly `discord_send`,
+ * no extra MCP, no secret in config) is preserved.
  *
  * SECRETLESS: the env here carries only NON-SECRET coordinates (the broker
  * socket path + lead/project/channel/state config). The Discord bot token is
  * NEVER here — the MCP child fetches it over the broker socket at startup.
  */
+
+import { parse as parseToml } from "smol-toml";
 
 /** The MCP server name as it appears in config.toml / the tool-name prefix. */
 export const LEAD_ACTIONS_MCP_SERVER_NAME = "lead_actions";
@@ -142,5 +153,160 @@ export function assertLeadActionsInventory(liveTools: Iterable<string>): void {
 				`missing=[${missing.join(", ")}] extra=[${extra.join(", ")}] ` +
 				`(approved=[${[...approved].join(", ")}])`,
 		);
+	}
+}
+
+/** Error thrown when the effective config.toml fails the §10 config gate. */
+export class ConfigGateError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ConfigGateError";
+	}
+}
+
+/** Keys that must NEVER appear anywhere in the mcp_servers config (a secret in
+ * config = the broker-only delivery invariant broken). */
+const SECRET_SHAPED_KEY = /TOKEN|SECRET|KEY/i;
+
+/**
+ * §10 CONFIG GATE (race-fix design review option C, HIGH-1): parse the EFFECTIVE
+ * `config.toml` the runtime is about to hand the codex daemon and HARD-ASSERT it
+ * contains EXACTLY the trusted lead-actions MCP and nothing else. Throws
+ * `ConfigGateError` on ANY drift — the runtime fail-closes before daemon startup.
+ *
+ * Asserts (precisely, per the design review):
+ *  1. the TOML parses (a parse failure is itself fail-closed at the caller);
+ *  2. `mcp_servers` has EXACTLY one key: `lead_actions` (reject every extra entry);
+ *  3. `[mcp_servers.lead_actions].command` === the expected node binary, and
+ *     `args` deep-equals the expected `[lead-actions-main.js]` (no alternate shape);
+ *  4. its `env` keys are EXACTLY the expected non-secret coordinate set, and each
+ *     value matches the runtime config (especially the broker socket path);
+ *  5. NO secret-shaped key (`*TOKEN*`/`*SECRET*`/`*KEY*`) appears anywhere under
+ *     `mcp_servers` (no `DISCORD_BOT_TOKEN`, no `env_vars` smuggling a token);
+ *  6. if `enabled_tools` is present it is EXACTLY `["discord_send"]`; otherwise it
+ *     must be absent (the surface is proved by the first-party MCP + real-daemon test).
+ *
+ * `expected` is the SAME `LeadActionsMcpServerConfig` the runtime built + wrote, so
+ * the gate proves the on-disk config was not tampered/extended between write and
+ * daemon startup, and that no other MCP can be spawned.
+ */
+export function assertLeadActionsConfigGate(
+	tomlContent: string,
+	expected: LeadActionsMcpServerConfig,
+): void {
+	let parsed: Record<string, unknown>;
+	try {
+		parsed = parseToml(tomlContent) as Record<string, unknown>;
+	} catch (err) {
+		throw new ConfigGateError(
+			`config.toml does not parse (fail-closed): ${(err as Error).message}`,
+		);
+	}
+	const mcp = parsed.mcp_servers;
+	if (!mcp || typeof mcp !== "object" || Array.isArray(mcp)) {
+		throw new ConfigGateError(
+			"config.toml has no [mcp_servers] table (fail-closed)",
+		);
+	}
+	const servers = mcp as Record<string, unknown>;
+	const names = Object.keys(servers);
+	// (2) exactly one server, named lead_actions.
+	if (names.length !== 1 || names[0] !== LEAD_ACTIONS_MCP_SERVER_NAME) {
+		throw new ConfigGateError(
+			`mcp_servers must be EXACTLY { ${LEAD_ACTIONS_MCP_SERVER_NAME} } — found [${names.join(", ")}] (fail-closed: codex must not be able to spawn any other MCP)`,
+		);
+	}
+	const srv = servers[LEAD_ACTIONS_MCP_SERVER_NAME];
+	if (!srv || typeof srv !== "object" || Array.isArray(srv)) {
+		throw new ConfigGateError("lead_actions server entry is malformed");
+	}
+	const s = srv as Record<string, unknown>;
+	// (2b) code-review HIGH-2: the server object's top-level keys must be EXACTLY a
+	// subset of the approved stdio shape — reject ANY unapproved key (e.g. `url` +
+	// `type = "streamable-http"`, which would make codex spawn a DIFFERENT transport
+	// / tool source than the trusted local stdio MCP). Option C's guarantee is
+	// "exact trusted stdio MCP and no alternate shape".
+	const APPROVED_SERVER_KEYS = new Set([
+		"command",
+		"args",
+		"env",
+		"enabled_tools",
+	]);
+	const unapproved = Object.keys(s).filter((k) => !APPROVED_SERVER_KEYS.has(k));
+	if (unapproved.length > 0) {
+		throw new ConfigGateError(
+			`lead_actions has unapproved field(s) [${unapproved.join(", ")}] — only [${[...APPROVED_SERVER_KEYS].join(", ")}] are allowed (no alternate transport/tool-source; fail-closed)`,
+		);
+	}
+	// (3) command + args exact.
+	if (s.command !== expected.command) {
+		throw new ConfigGateError(
+			`lead_actions.command must be ${JSON.stringify(expected.command)} (got ${JSON.stringify(s.command)})`,
+		);
+	}
+	const args = s.args;
+	if (
+		!Array.isArray(args) ||
+		args.length !== expected.args.length ||
+		args.some((a, i) => a !== expected.args[i])
+	) {
+		throw new ConfigGateError(
+			`lead_actions.args must be exactly ${JSON.stringify(expected.args)} (got ${JSON.stringify(args)})`,
+		);
+	}
+	// (5) NO secret-shaped key anywhere under mcp_servers — reject env_vars too.
+	const scanForSecrets = (obj: unknown, path: string): void => {
+		if (!obj || typeof obj !== "object") return;
+		for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
+			if (SECRET_SHAPED_KEY.test(k)) {
+				throw new ConfigGateError(
+					`secret-shaped key "${k}" found at ${path} — secrets must travel over the broker, never config.toml (fail-closed)`,
+				);
+			}
+			if (v && typeof v === "object") scanForSecrets(v, `${path}.${k}`);
+		}
+	};
+	scanForSecrets(srv, `mcp_servers.${LEAD_ACTIONS_MCP_SERVER_NAME}`);
+	// reject env_vars entirely (it would forward a host env var by NAME — a token path).
+	if ("env_vars" in s) {
+		throw new ConfigGateError(
+			"lead_actions must not declare env_vars (no host-env forwarding — secrets go over the broker)",
+		);
+	}
+	// (4) env keys EXACTLY the expected set + values match.
+	const env = s.env;
+	if (!env || typeof env !== "object" || Array.isArray(env)) {
+		throw new ConfigGateError("lead_actions.env is missing or malformed");
+	}
+	const envObj = env as Record<string, unknown>;
+	const expectedKeys = Object.keys(expected.env).sort();
+	const actualKeys = Object.keys(envObj).sort();
+	if (
+		actualKeys.length !== expectedKeys.length ||
+		actualKeys.some((k, i) => k !== expectedKeys[i])
+	) {
+		throw new ConfigGateError(
+			`lead_actions.env keys must be EXACTLY [${expectedKeys.join(", ")}] (got [${actualKeys.join(", ")}])`,
+		);
+	}
+	for (const k of expectedKeys) {
+		if (envObj[k] !== expected.env[k]) {
+			throw new ConfigGateError(
+				`lead_actions.env.${k} must be ${JSON.stringify(expected.env[k])} (got ${JSON.stringify(envObj[k])})`,
+			);
+		}
+	}
+	// (6) enabled_tools, if present, EXACTLY ["discord_send"].
+	if ("enabled_tools" in s) {
+		const et = s.enabled_tools;
+		if (
+			!Array.isArray(et) ||
+			et.length !== LEAD_ACTIONS_TOOLS.length ||
+			et.some((t, i) => t !== LEAD_ACTIONS_TOOLS[i])
+		) {
+			throw new ConfigGateError(
+				`lead_actions.enabled_tools, if present, must be exactly ${JSON.stringify(LEAD_ACTIONS_TOOLS)} (got ${JSON.stringify(et)})`,
+			);
+		}
 	}
 }
