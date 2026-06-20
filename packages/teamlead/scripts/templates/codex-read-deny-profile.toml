@@ -29,7 +29,7 @@ default_permissions = "flywheel-lead-secret-deny"
 approval_policy = "never"
 
 [shell_environment_policy]
-exclude = ["*TOKEN*", "*SECRET*", "*KEY*"]
+exclude = ["*TOKEN*", "*SECRET*", "*KEY*", "FLYWHEEL_LEAD_ACTIONS_*"]
 
 [permissions.flywheel-lead-secret-deny]
 extends = ":read-only"

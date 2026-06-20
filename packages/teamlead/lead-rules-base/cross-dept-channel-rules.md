@@ -83,8 +83,11 @@ visible to Annie and to the addressed Lead in one place.
 
 - This is a **free-form coordination** channel, not an issue thread. Quick
   cross-department questions, hand-offs, and availability checks belong here and
-  may be answered **directly in-channel** (reply with `chat_id` =
-  `1512578695468941333`).
+  may be answered **directly in this channel** (`#leads-roundtable`,
+  `1512578695468941333`). Reply using your **normal Lead transport**: a
+  Claude-backed Lead replies with its usual Discord reply tool addressed to the
+  inbound/current channel; a Codex-backed Lead's reactive reply is routed back to
+  the source channel automatically. Either way the reply lands in this channel.
 - If the coordination is **bound to a specific Linear issue** and produces a
   status/decision that belongs in that issue's record, still post the durable
   update to the issue's thread per FLY-162 — but a short cross-department

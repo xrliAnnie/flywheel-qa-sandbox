@@ -53,10 +53,16 @@ import { LeadHealthProbe } from "./LeadHealthProbe.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
+import {
+	assertLeadActionsInventory,
+	LEAD_ACTIONS_MCP_SERVER_NAME,
+} from "./lead-actions/mcp-config.js";
+import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import { resolveReadDenyThread } from "./read-deny-profile.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
+import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
 import { extractTurnId, TurnDemux } from "./TurnDemux.js";
 import {
 	ensureTuiWindow,
@@ -373,6 +379,20 @@ function buildTuiGeneration(
 				proc = new CodexLeadProcess({ spawnChild: () => transport });
 				if (lostCb) proc.on("exit", () => lostCb?.());
 
+				// FLY-350 §10 inventory gate (content-coordination only): record the
+				// daemon's MCP startup / tool advertisements from connection so the
+				// gateway can fail-closed-assert the tool surface before any Discord
+				// traffic. companion path: no watcher (byte-compat).
+				const inventoryWatcher =
+					config.codexProfile === "content-coordination"
+						? new McpInventoryWatcher()
+						: undefined;
+				if (inventoryWatcher) {
+					proc.on("notification", (method: string, params: unknown) =>
+						inventoryWatcher.record(method, params),
+					);
+				}
+
 				let alive = true;
 				let lastActivityAt: number | undefined;
 				proc.on("exit", () => {
@@ -457,6 +477,21 @@ function buildTuiGeneration(
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
+						// FLY-350 §10 fail-closed inventory gate (code-review HIGH-1): assert
+						// the lead-actions MCP advertises EXACTLY the approved tool surface
+						// BEFORE any model turn. The first-boot/turnless bootstrap turn below
+						// (facade.startTurn) could otherwise call discord_send — proactive
+						// Discord traffic that bypasses the gateway — before the assertion.
+						// A missing / extra / failed / timed-out inventory throws → the
+						// generation fails before ANY thread turn. companion path: no watcher
+						// → unchanged (byte-compat).
+						if (inventoryWatcher) {
+							await inventoryWatcher.waitForExact(
+								[LEAD_ACTIONS_MCP_SERVER_NAME],
+								30_000,
+							);
+							assertLeadActionsInventory(inventoryWatcher.observedTools());
+						}
 						const executor = new CodexTurnExecutor({
 							process: facade, // demuxed: foreign turns never arrive
 							threadId,
@@ -575,6 +610,8 @@ function buildTuiGeneration(
 						}
 						return {
 							recover: () => router.recover(),
+							// (FLY-350 §10 inventory gate runs at wire-top, before any model
+							// turn — code-review HIGH-1.)
 							startGateway: () => gateway.start(),
 							stopGateway: () => gateway.stop(),
 						};
@@ -653,12 +690,40 @@ export async function main(
 		"scripts",
 		"codex-lead-tui-home.sh",
 	);
+	// FLY-350 content-coordination: the runtime OWNS the broker → daemon ordering
+	// (R3#1). Start the parent SecretBroker (the lead-actions MCP child fetches the
+	// bot token over it) BEFORE the daemon, and WASH the daemon spawn env so no
+	// *TOKEN*/*SECRET*/*KEY* reaches the app-server process (R3#2). The companion
+	// path is unchanged (no broker, env as-is) → byte-compat / dormant.
+	const contentCoordination = config.codexProfile === "content-coordination";
+	const brokerSocketPath =
+		env.FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET?.trim() ||
+		join(config.stateDir, "lead-actions.sock");
+	let leadActionsBroker: SecretBroker | undefined;
+	if (contentCoordination) {
+		leadActionsBroker = new SecretBroker({
+			socketPath: brokerSocketPath,
+			secrets: { DISCORD_BOT_TOKEN: config.botToken },
+		});
+		await leadActionsBroker.listen();
+		console.warn(
+			`[codex-lead-tui-runtime] lead-actions broker listening (${brokerSocketPath})`,
+		);
+	}
 	const ensureDaemon = async () => {
 		await execFileP("/bin/bash", [homeScript, "ensure-daemon"], {
-			env: {
-				...env,
-				FLYWHEEL_CODEX_TUI_HOME: config.codexHome,
-			},
+			env: contentCoordination
+				? // R3#2: the daemon (app-server) must start with a SECRET-WASHED env —
+					// the bot token reaches the MCP child only over the broker, never the
+					// daemon process env.
+					{
+						...washActionSecretEnv(env),
+						FLYWHEEL_CODEX_TUI_HOME: config.codexHome,
+					}
+				: {
+						...env,
+						FLYWHEEL_CODEX_TUI_HOME: config.codexHome,
+					},
 		});
 	};
 	const supervisor = new DaemonConnectionSupervisor({
@@ -679,6 +744,9 @@ export async function main(
 					{ log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`) },
 				);
 			})
+			// FLY-350: tear down the lead-actions broker (releases the socket) on a
+			// real shutdown. No-op for the companion path (undefined).
+			.finally(() => leadActionsBroker?.close())
 			.finally(() => process.exit(0));
 	};
 	process.on("SIGTERM", () => shutdown("SIGTERM"));
@@ -693,6 +761,7 @@ export async function main(
 			{ projectName: config.projectName, leadId: config.leadId },
 			{ log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`) },
 		);
+		await leadActionsBroker?.close().catch(() => {});
 		throw err;
 	}
 	console.warn(

@@ -98,6 +98,26 @@ export interface LeadConfig {
 	 * itself is NOT normalized into the object (reverse-compat).
 	 */
 	backend?: LeadBackendId;
+	/**
+	 * FLY-350: Codex Lead capability profile (only meaningful for the
+	 * `codex-app-server` backend). Expresses which read-only Codex tier this Lead
+	 * runs as, instead of overloading `companion`:
+	 *   - "companion"            — pure 1:1 chat companion (no model-callable MCP).
+	 *   - "content-coordination" — read-only model exec + a narrow first-party
+	 *                              lead-actions MCP (proactive Discord send +
+	 *                              scoped Linear). Still NOT write-capable.
+	 * Write-capable Codex Leads remain fail-closed and are NOT a legal value here.
+	 *
+	 * Cross-field invariant (FLY-245/FLY-350): `codex-app-server` requires
+	 * `canSpawnRunners` resolving to false AND a recognized read-only tier —
+	 * either `companion === true` (tier defaults to "companion") OR an explicit
+	 * `codexProfile`. canSpawnRunners stays false until FLY-251 wires Codex Lead
+	 * runner-spawn end-to-end.
+	 *
+	 * Absent = unchanged behavior (derived from `companion`); NOT normalized into
+	 * the object (FLY-231 reverse-compat pattern).
+	 */
+	codexProfile?: "companion" | "content-coordination";
 }
 
 /**
@@ -418,17 +438,39 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 						`Project "${entry.projectName}" leads[${i}].backend: must be "claude-code" | "codex-app-server" (the Lead backend seam, not the Runner's executor id), got ${JSON.stringify(lead.backend)}`,
 					);
 				}
-				// Cross-field invariant (runs AFTER canSpawnRunners normalization
-				// above): codex-app-server is only legal on a read-only companion.
-				if (
-					lead.backend === "codex-app-server" &&
-					(lead.companion !== true || lead.canSpawnRunners !== false)
-				) {
+			}
+			// FLY-350: validate codexProfile value if present (only consulted for
+			// codex-app-server below). write-capable is NOT a legal value — write-
+			// capable Codex Leads stay fail-closed.
+			if (
+				lead.codexProfile !== undefined &&
+				lead.codexProfile !== "companion" &&
+				lead.codexProfile !== "content-coordination"
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+						`codexProfile must be "companion" | "content-coordination" ` +
+						`(write-capable Codex Leads are not unlocked — FLY-245), got ` +
+						`${JSON.stringify(lead.codexProfile)}`,
+				);
+			}
+			// Cross-field invariant (FLY-245/FLY-350, runs AFTER canSpawnRunners
+			// normalization above): codex-app-server is only legal on a read-only
+			// Codex tier with NO runner spawn — canSpawnRunners must resolve to false
+			// AND the Lead is a recognized read-only tier (companion: true, OR an
+			// explicit codexProfile). Write-capable Codex Leads stay fail-closed;
+			// Codex runner-spawn awaits FLY-251.
+			if (lead.backend === "codex-app-server") {
+				const recognizedReadOnlyTier =
+					lead.companion === true || lead.codexProfile !== undefined;
+				if (lead.canSpawnRunners !== false || !recognizedReadOnlyTier) {
 					throw new Error(
 						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
-							`backend "codex-app-server" requires companion: true AND ` +
-							`canSpawnRunners: false. Write-capable Codex Leads are not ` +
-							`unlocked (FLY-245 fail-close).`,
+							`backend "codex-app-server" requires canSpawnRunners: false AND a ` +
+							`read-only Codex tier (companion: true OR codexProfile: ` +
+							`"companion"|"content-coordination"). Write-capable Codex Leads ` +
+							`are not unlocked, and Codex runner-spawn awaits FLY-251 ` +
+							`(FLY-245 fail-close).`,
 					);
 				}
 			}

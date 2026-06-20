@@ -98,6 +98,14 @@ export interface CodexLeadRuntimeConfig {
 	 * `default_permissions` read-deny profile takes effect, and a pre-gateway gate
 	 * asserts the profile is active (see read-deny-profile.ts). */
 	readDeny: boolean;
+	/** FLY-350: Codex Lead capability profile (env FLYWHEEL_CODEX_LEAD_PROFILE).
+	 * "content-coordination" enables the narrow lead-actions MCP (proactive
+	 * discord_send + the parent broker + the §10 fail-closed inventory gate);
+	 * absent / anything else = "companion" = unchanged read-only companion
+	 * (byte-compat, lead-actions dormant). NEVER write-capable — both tiers keep
+	 * sandbox=read-only + read-deny. An unknown value falls SAFE to "companion"
+	 * (the MCP never silently activates on a typo). */
+	codexProfile: "companion" | "content-coordination";
 	/** FLY-245 Phase A: canonical write-capable Lead scratch workspace (plan §3.3).
 	 * Resolved + validated (realpath; no overlap with control-plane/state/CODEX_HOME)
 	 * only for write-capable sandboxes when `FLYWHEEL_CODEX_LEAD_WORKSPACE` is set;
@@ -379,6 +387,29 @@ export function parseCodexLeadRuntimeConfig(
 			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_READ_DENY=1 requires sandbox=read-only (got "${sandboxMode}") — write-capable read-deny is a FLY-245 follow-up`,
 		);
 	}
+	// FLY-350: capability profile. Only the EXACT string activates content-
+	// coordination (the lead-actions MCP); anything else falls SAFE to companion
+	// so a typo never silently enables the action surface. content-coordination is
+	// read-only model exec + an MCP — fail-loud if someone pairs it with a write-
+	// capable sandbox (it must keep sandbox=read-only, like a companion).
+	const codexProfile: "companion" | "content-coordination" =
+		env.FLYWHEEL_CODEX_LEAD_PROFILE?.trim() === "content-coordination"
+			? "content-coordination"
+			: "companion";
+	if (codexProfile === "content-coordination" && sandboxMode !== "read-only") {
+		throw new Error(
+			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE=content-coordination requires sandbox=read-only (got "${sandboxMode}") — the lead-actions tier is read-only model exec + MCP, never write-capable (FLY-350)`,
+		);
+	}
+	// Code-review HIGH-3: content-coordination MUST run under read-deny. Without it
+	// the home script takes the legacy read-only config (writes blocked, READS not),
+	// reopening the FLY-260 model-readable-secret class for a Lead that now has
+	// proactive outbound Discord. Fail-closed (the launcher must set READ_DENY=1).
+	if (codexProfile === "content-coordination" && !readDeny) {
+		throw new Error(
+			"codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE=content-coordination requires FLYWHEEL_CODEX_LEAD_READ_DENY=1 — the lead-actions tier must run under read-deny so a proactive-outbound Lead cannot read local secrets (FLY-260/FLY-350)",
+		);
+	}
 
 	// FLY-245 Phase A: for a write-capable sandbox, resolve + validate the Lead
 	// scratch workspace when configured. Purely additive — when unset, `workspace`
@@ -444,6 +475,7 @@ export function parseCodexLeadRuntimeConfig(
 		systemPromptFiles,
 		sandboxMode,
 		readDeny,
+		codexProfile,
 		workspace,
 		founderId,
 		cliVersionAllowlist,

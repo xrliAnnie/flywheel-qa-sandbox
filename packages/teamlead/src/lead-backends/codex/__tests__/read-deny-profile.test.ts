@@ -258,6 +258,15 @@ describe("read-deny config fragment — single source of truth cross-check", () 
 		}
 	});
 
+	// FLY-350 code-review HIGH-2: the lead-actions broker coordinate family must be
+	// hidden from the model exec shell (the MCP child gets it via config.toml env,
+	// the model never needs it; leaking the broker socket path is half a token-fetch
+	// if AF_UNIX connect-block ever regresses).
+	it("hides the FLY-350 lead-actions coordinate family from the model shell", () => {
+		expect(READ_DENY_ENV_EXCLUDE).toContain("FLYWHEEL_LEAD_ACTIONS_*");
+		expect(fragment).toContain('"FLYWHEEL_LEAD_ACTIONS_*"');
+	});
+
 	it("contains EVERY filesystem deny key with value 'deny'", () => {
 		for (const path of READ_DENY_FILESYSTEM_PATHS) {
 			expect(fragment).toContain(`"${path}" = "deny"`);

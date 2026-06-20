@@ -53,11 +53,20 @@ export const READ_DENY_FILESYSTEM_PATHS: readonly string[] = [
  * surface). Glob matching is case-INSENSITIVE (verified), so UPPER forms suffice.
  * Token-shaped ONLY — never a blanket FLYWHEEL_ / DISCORD_ removal (that would break
  * a COE Director's coordination env).
+ *
+ * FLY-350 code-review HIGH-2: also hide the `FLYWHEEL_LEAD_ACTIONS_*` coordinate
+ * family (notably the broker socket path) from the model exec shell. It is NOT a
+ * secret, but the lead-actions MCP child receives those coordinates via its
+ * config.toml `env` table — the MODEL never needs them, and leaking the broker
+ * socket path would hand a path-disclosure half of a token-fetch to the model if
+ * the AF_UNIX connect block ever regressed. This is a targeted family, NOT a
+ * blanket `FLYWHEEL_*`, so Director coordination env still survives.
  */
 export const READ_DENY_ENV_EXCLUDE: readonly string[] = [
 	"*TOKEN*",
 	"*SECRET*",
 	"*KEY*",
+	"FLYWHEEL_LEAD_ACTIONS_*",
 ];
 
 /**

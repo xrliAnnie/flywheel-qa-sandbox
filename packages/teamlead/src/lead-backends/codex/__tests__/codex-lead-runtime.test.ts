@@ -62,6 +62,51 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		expect(c.chrome).toBeUndefined();
 	});
 
+	// FLY-350: codexProfile (content-coordination enables the lead-actions MCP).
+	it("defaults codexProfile to companion when unset", () => {
+		expect(parseCodexLeadRuntimeConfig(fullEnv()).codexProfile).toBe(
+			"companion",
+		);
+	});
+
+	it("parses codexProfile=content-coordination from the exact env value (under read-deny)", () => {
+		expect(
+			parseCodexLeadRuntimeConfig(
+				fullEnv({
+					FLYWHEEL_CODEX_LEAD_PROFILE: "content-coordination",
+					FLYWHEEL_CODEX_LEAD_READ_DENY: "1",
+				}),
+			).codexProfile,
+		).toBe("content-coordination");
+	});
+
+	it("rejects content-coordination without read-deny (FLY-260/FLY-350 fail-closed)", () => {
+		expect(() =>
+			parseCodexLeadRuntimeConfig(
+				fullEnv({ FLYWHEEL_CODEX_LEAD_PROFILE: "content-coordination" }),
+			),
+		).toThrow(/requires FLYWHEEL_CODEX_LEAD_READ_DENY=1/);
+	});
+
+	it("falls SAFE to companion on an unknown codexProfile value (never silently enables the MCP)", () => {
+		expect(
+			parseCodexLeadRuntimeConfig(
+				fullEnv({ FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable" }),
+			).codexProfile,
+		).toBe("companion");
+	});
+
+	it("rejects content-coordination paired with a write-capable sandbox (read-only only)", () => {
+		expect(() =>
+			parseCodexLeadRuntimeConfig(
+				fullEnv({
+					FLYWHEEL_CODEX_LEAD_PROFILE: "content-coordination",
+					FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+				}),
+			),
+		).toThrow(/content-coordination requires sandbox=read-only/);
+	});
+
 	it("includes the core channel + chrome when set", () => {
 		const c = parseCodexLeadRuntimeConfig(
 			fullEnv({
