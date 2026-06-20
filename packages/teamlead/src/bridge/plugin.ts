@@ -61,6 +61,10 @@ import {
 } from "./complete-marker-reconciler.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
+import {
+	parseSweepExcludeEnv,
+	reconcileDoneButRunning,
+} from "./done-running-reconciler.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
 import { defaultFleetConsoleOptions, FleetConsole } from "./fleet-console.js";
@@ -2370,6 +2374,41 @@ export async function startBridge(
 	} catch (err) {
 		console.error(
 			`[Bridge] FLY-172 boot marker drain failed (non-fatal): ${(err as Error).message}`,
+		);
+	}
+
+	// FLY-324: boot sweep — clear "done-but-running" zombies. A no-PR / no-code
+	// / QA Runner that finished via `flywheel-comm stage set completed` only ever
+	// emitted a stage_changed event, which never transitioned the FSM off
+	// `running` (that flows through `session_completed`). Those sessions are
+	// stuck: close_runner rejects them, tmux + worktree linger, the idle watchdog
+	// false-positives session_stuck. The event-route handler fixes this going
+	// forward; this one-shot sweep unsticks the EXISTING backlog whose
+	// stage_changed already fired before the fix shipped. Runs AFTER the FLY-172
+	// marker drain so any session with a pending complete marker is routed by its
+	// real `complete --route` first, leaving only true stage-set-completed
+	// zombies (no decision_route, no pr_number). Status-only; no tmux/worktree
+	// touch — teardown stays with exec-id-scoped close_runner / boot tab-reaper.
+	// `FLYWHEEL_FLY324_SWEEP_EXCLUDE` (comma/space-separated execIds or issue
+	// identifiers) lets the Lead skip *parked* Runners — ones that reported
+	// stage=completed but are intentionally kept alive (e.g. a QA Runner holding
+	// a live browser tab, waiting to re-engage) — before the cutover restart.
+	// Best-effort: must not block Bridge startup.
+	try {
+		const sweepExclude = parseSweepExcludeEnv(
+			process.env.FLYWHEEL_FLY324_SWEEP_EXCLUDE,
+		);
+		const sweep = reconcileDoneButRunning(store, transitionOpts, {
+			exclude: sweepExclude,
+		});
+		if (sweep.scanned > 0) {
+			console.log(
+				`[Bridge] FLY-324 boot sweep: scanned=${sweep.scanned} reconciled=${sweep.reconciled} rejected=${sweep.rejected} skipped=${sweep.skipped} excluded=${sweep.excluded} done-but-running → completed`,
+			);
+		}
+	} catch (err) {
+		console.error(
+			`[Bridge] FLY-324 boot sweep failed (non-fatal): ${(err as Error).message}`,
 		);
 	}
 

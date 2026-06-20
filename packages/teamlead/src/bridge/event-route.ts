@@ -17,6 +17,10 @@ import {
 } from "../StateStore.js";
 import { handleArtifactEvent } from "./artifact-event.js";
 import { commDbPathForProject } from "./commdb-path.js";
+import {
+	hasPendingCompleteMarker,
+	isDoneButRunning,
+} from "./done-running-reconciler.js";
 import type { EventFilter } from "./EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import {
@@ -1259,13 +1263,60 @@ export function createEventRouter(
 									);
 								});
 							}
+						} else if (
+							landingStatus?.status !== "merged" &&
+							!landingStatus?.prNumber &&
+							isDoneButRunning(sessionAtStage ?? {}) &&
+							!hasPendingCompleteMarker(event.execution_id)
+						) {
+							// FLY-324: a no-PR / no-code / QA Runner that finishes via
+							// `flywheel-comm stage set completed` only emits this
+							// stage_changed event — `complete --route` (which drives the
+							// `session_completed` FSM transition) is never called. The
+							// session is then stuck at `running`: close_runner rejects it,
+							// its tmux + worktree linger until the next Bridge restart, and
+							// the idle watchdog false-positives session_stuck. `running →
+							// completed` is a legal FSM edge; apply it so the auto-close /
+							// reaper / notifier chain unblocks. isDoneButRunning guards on
+							// status===running + stage===completed + no decision_route + no
+							// pr_number; the non-merged landing check keeps the FLY-60 W2
+							// merged-ship path above as the sole owner of merged sessions.
+							//
+							// Design-review #3: also skip when the INCOMING land-status
+							// carries a prNumber. `stage set completed` attaches
+							// land-status.json (status + prNumber); a PR-created session
+							// whose `complete --route` was lost without a marker could match
+							// isDoneButRunning (pr_number not yet persisted), but a PR exists,
+							// so it must go through review, not be force-completed here.
+							//
+							// Scope (design-review #1): this live path treats a
+							// stage=completed report as a TERMINAL "done" assertion. A Runner
+							// that intends to stay parked must NOT report stage=completed. The
+							// Lead exclude list is a CUTOVER boot-sweep-only safety net for
+							// the pre-fix backlog where that contract wasn't yet in force.
+							if (transitionOpts) {
+								const r324 = applyTransition(
+									transitionOpts,
+									event.execution_id,
+									"completed",
+									ctx,
+									{ last_activity_at: now },
+								);
+								if (!r324.ok) {
+									console.warn(
+										`[event-route FLY-324] FSM rejected running→completed for ${event.execution_id}: ${r324.error}`,
+									);
+									transitionRejected = true;
+								}
+							}
 						}
 					}
 
-					// NOTE: stage_changed values OTHER than "completed" remain
-					// informational only — they do NOT trigger FSM transitions or
-					// orchestrators. The FSM status change for non-merged
-					// completion still flows through `session_completed`.
+					// NOTE: stage_changed values OTHER than "completed" (and the
+					// FLY-324 running→completed branch above) remain informational
+					// only — they do NOT trigger FSM transitions or orchestrators.
+					// The FSM status change for merged-ship completion flows through
+					// `session_completed` / the FLY-60 W2 merged branch.
 				}
 			}
 		} catch (err) {
