@@ -22,11 +22,23 @@ SUT="$SCRIPT_DIR/run-codex-lead-mufasa-tui.sh"
 T=$(mktemp -d /tmp/clmt.XXXXX) || { echo "FATAL: mktemp"; exit 1; }
 trap 'rm -rf "$T"' EXIT
 
+# R3 LOW-3: scrub launcher-behavior-changing vars from the AMBIENT parent env ONCE,
+# so a case that doesn't set them sees a clean baseline. Cases that WANT a var still
+# set it via inheritance into run_dry (which passes inherited env through). Without
+# this, a parent shell carrying FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS (e.g. a Lead
+# session) flips bridge cases to the cross-dept-conflict path (Codex R2/R3 finding).
+unset FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS FLYWHEEL_CODEX_LEAD_PROFILE \
+	FLYWHEEL_CODEX_LEAD_READ_DENY FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES \
+	FLYWHEEL_CODEX_LEAD_OUTBOUND FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET
+
 # Fake worktree with the built runtime + the tui-home script (a no-op stub; ensures
 # are skipped in dry-run, but the launcher checks the file exists).
 WT="$T/wt"
-mkdir -p "$WT/packages/teamlead/dist/lead-backends/codex" "$WT/packages/teamlead/scripts"
+mkdir -p "$WT/packages/teamlead/dist/lead-backends/codex/lead-actions" "$WT/packages/teamlead/scripts"
 printf '// stub\n' > "$WT/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js"
+# FLY-350: stub the lead-actions MCP build so a content-coordination dry-run passes
+# the launcher's "lead-actions MCP not built" existence check.
+printf '// stub\n' > "$WT/packages/teamlead/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
 printf '#!/bin/bash\nexit 0\n' > "$WT/packages/teamlead/scripts/codex-lead-tui-home.sh"
 chmod +x "$WT/packages/teamlead/scripts/codex-lead-tui-home.sh"
 
@@ -129,6 +141,47 @@ out=$(PATH="$T/bin:$PATH" FLY224_WORKTREE="$WT" FLYWHEEL_LEAD_DRY_RUN=1 \
 if [ "$rc" -ne 0 ] && printf '%s' "$out" | grep -qi "invalid — must be 'direct' or 'bridge'"; then
 	pass "invalid outbound (typo 'bridg') → fail-loud"
 else fail "invalid outbound should fail loud (rc=$rc, out=$out)"; fi
+
+# ── 9. FLY-350: content-coordination via ENV → content contract + coords + read-deny ──
+D=$(FLYWHEEL_CODEX_LEAD_PROFILE=content-coordination FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=123 run_dry env)
+if [ -f "$D" ]; then
+	spf=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
+	case "$spf" in
+		*content-coordination-contract.md) pass "content-coordination (env) → loads content contract" ;;
+		*) fail "content (env) should load content contract (got: $spf)" ;;
+	esac
+	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_READ_DENY)" = "1" ] && pass "content (env) → READ_DENY enforced" || fail "content (env) READ_DENY not enforced"
+	bs=$(envval "$D" FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET)
+	case "$bs" in */lead-actions.sock) pass "content (env) → broker socket coord set" ;; *) fail "content (env) broker coord wrong (got: $bs)" ;; esac
+else fail "content (env) dry-run produced no env dump"; fi
+
+# ── 10. FLY-350: content-coordination DERIVED from projects.json → same contract ──
+# R3 MED-1: the approved cutover changes ONLY projects.json. Assert the launcher
+# derives the profile AND that the persona contract reflects it (was the bug).
+FAKEHOME="$T/home10"; mkdir -p "$FAKEHOME/.flywheel"
+cat > "$FAKEHOME/.flywheel/projects.json" <<'JSON'
+[{"projectName":"growth","projectRoot":"/x","leads":[{"agentId":"mufasa-lead","chatChannel":"1","match":{"labels":["growth"]},"codexProfile":"content-coordination","canSpawnRunners":false,"backend":"codex-app-server"}]}]
+JSON
+D=$(HOME="$FAKEHOME" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=123 run_dry env)
+if [ -f "$D" ]; then
+	[ "$(envval "$D" FLYWHEEL_CODEX_LEAD_PROFILE)" = "content-coordination" ] && pass "projects.json codexProfile → FLYWHEEL_CODEX_LEAD_PROFILE derived" || fail "profile not derived from projects.json"
+	spf=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
+	case "$spf" in
+		*content-coordination-contract.md) pass "projects.json-derived → loads CONTENT contract (R3 MED-1 fixed)" ;;
+		*) fail "projects.json-derived still loads wrong contract (got: $spf)" ;;
+	esac
+else fail "content (projects.json) dry-run produced no env dump"; fi
+
+# ── 11. FLY-350: default (no profile) → companion contract, no lead-actions coords ──
+D=$(run_dry env)
+if [ -f "$D" ]; then
+	spf=$(envval "$D" FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)
+	case "$spf" in
+		*companion-safety-contract.md) pass "default → companion contract (byte-compat)" ;;
+		*) fail "default should load companion contract (got: $spf)" ;;
+	esac
+	[ -z "$(envval "$D" FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET)" ] && pass "default → NO lead-actions coords (dormant)" || fail "default should not set lead-actions coords"
+else fail "default dry-run produced no env dump"; fi
 
 echo ""
 echo "run-codex-lead-mufasa-tui.test.sh: $PASS passed, $FAIL failed"

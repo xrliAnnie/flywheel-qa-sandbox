@@ -44,7 +44,9 @@ describe("validate-projects CLI core (FLY-247 inc2a R2#5 / §2.6)", () => {
 			]),
 		);
 		expect(r.code).toBe(1);
-		expect(r.message).toMatch(/companion: true AND/);
+		// FLY-350: the cross-field invariant message changed (codexProfile tier
+		// added) — match the stable FLY-245 marker rather than the exact prose.
+		expect(r.message).toMatch(/FLY-245/);
 	});
 
 	it("code 1 rejects a non-array top-level", () => {

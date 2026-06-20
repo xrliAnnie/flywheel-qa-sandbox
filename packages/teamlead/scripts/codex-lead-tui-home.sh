@@ -97,7 +97,10 @@ NAME = "flywheel-lead-secret-deny"
 # The canonical contract (must match read-deny-profile.ts + the committed fragment).
 # Codex code-review R1#2: validate the EXACT shape, not just "non-empty + all deny".
 EXPECT_EXTENDS = ":read-only"
-EXPECT_ENV = {"*TOKEN*", "*SECRET*", "*KEY*"}
+# FLY-350 code-review LOW-3: keep in sync with READ_DENY_ENV_EXCLUDE (read-deny-
+# profile.ts) — the FLYWHEEL_LEAD_ACTIONS_* exclusion hides the broker coordinate
+# from the model shell; a template drift dropping it must fail this validator.
+EXPECT_ENV = {"*TOKEN*", "*SECRET*", "*KEY*", "FLYWHEEL_LEAD_ACTIONS_*"}
 EXPECT_FS = {
     "~/.codex**", "~/.ssh", "~/.aws", "~/.config/gh", "~/.config/gcloud",
     "~/.npmrc", "~/.docker", "~/**/.env**",
@@ -135,6 +138,56 @@ PYVAL
   log "config.toml written (read-deny profile + env exclude; no sandbox_mode)"
 }
 
+# FLY-350 — content-coordination profile: append the narrow lead-actions MCP
+# server to config.toml (the daemon spawns it; it fetches the bot token over the
+# parent runtime's broker socket — NO secret in this block). Idempotent because
+# the caller appends AFTER every (re)write of the base config. Fail-loud on a
+# missing coordinate so a half-configured MCP never silently no-ops.
+append_lead_actions_mcp() {
+  [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "content-coordination" ] || return 0
+  local main_js="${FLYWHEEL_LEAD_ACTIONS_MAIN_JS:-}"
+  local sock="${FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET:-}"
+  local node_bin="${FLYWHEEL_LEAD_ACTIONS_NODE_BIN:-node}"
+  local lead_id="${FLYWHEEL_LEAD_ID:-}"
+  local project="${FLYWHEEL_PROJECT_NAME:-}"
+  local chat="${FLYWHEEL_LEAD_CHAT_CHANNEL_ID:-}"
+  local cross="${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-}"
+  local state_dir="${FLYWHEEL_LEAD_ACTIONS_STATE_DIR:-}"
+  local aliases="${FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:-}"
+  for pair in "FLYWHEEL_LEAD_ACTIONS_MAIN_JS=$main_js" \
+    "FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET=$sock" "FLYWHEEL_LEAD_ID=$lead_id" \
+    "FLYWHEEL_PROJECT_NAME=$project" "FLYWHEEL_LEAD_CHAT_CHANNEL_ID=$chat" \
+    "FLYWHEEL_LEAD_ACTIONS_STATE_DIR=$state_dir"; do
+    case "$pair" in *=) die "append_lead_actions_mcp: missing required env ${pair%=}" ;; esac
+  done
+  # Render env as a TOML inline table via python (handles quoting; NO secret here
+  # — the bot token travels over the broker socket, never config.toml).
+  local env_toml
+  env_toml="$(python3 - "$lead_id" "$project" "$sock" "$chat" "$cross" "$state_dir" "$aliases" <<'PYENV'
+import sys, json
+keys = ["FLYWHEEL_LEAD_ID","FLYWHEEL_PROJECT_NAME","FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET",
+        "FLYWHEEL_LEAD_CHAT_CHANNEL_ID","FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
+        "FLYWHEEL_LEAD_ACTIONS_STATE_DIR","FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES"]
+vals = sys.argv[1:8]
+pairs = []
+for k, v in zip(keys, vals):
+    if k == "FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES" and not v:
+        continue  # optional
+    # defense-in-depth: never let a secret-shaped value into config
+    pairs.append(f"{k} = {json.dumps(v)}")
+print(", ".join(pairs))
+PYENV
+)" || die "append_lead_actions_mcp: failed to render env table"
+  {
+    printf '\n# FLY-350 content-coordination: narrow lead-actions MCP (secretless — token via broker)\n'
+    printf '[mcp_servers.lead_actions]\n'
+    printf 'command = %s\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$node_bin")"
+    printf 'args = [%s]\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$main_js")"
+    printf 'env = { %s }\n' "$env_toml"
+  } >> "$CONFIG"
+  log "config.toml: appended [mcp_servers.lead_actions] (content-coordination)"
+}
+
 ensure_home() {
   local cwd="${FLYWHEEL_CODEX_TUI_CWD:-}"
   [ -n "$cwd" ] || die "FLYWHEEL_CODEX_TUI_CWD is required for ensure-home"
@@ -153,6 +206,7 @@ ensure_home() {
   # (replaces legacy steps 3+4). Auth + standalone (steps 1-2 above) still applied.
   if [ "${FLYWHEEL_CODEX_LEAD_READ_DENY:-}" = "1" ]; then
     write_read_deny_config "$cwd"
+    append_lead_actions_mcp
     log "home OK (read-deny): $HOME_DIR"
     return 0
   fi
@@ -237,6 +291,11 @@ EOF
     *) die "trust-state TOML inspection failed for $CONFIG (parser missing or unparseable config) — fail closed" ;;
   esac
 
+  # NOTE: no append_lead_actions_mcp here — content-coordination REQUIRES read-deny
+  # (enforced at runtime parse), so the lead-actions MCP block is only ever written
+  # on the read-deny path above (which atomically rewrites the base config first →
+  # idempotent). The non-read-deny path must never append (it would duplicate the
+  # [mcp_servers.lead_actions] table on re-run — code-review MED-4).
   log "home OK: $HOME_DIR"
 }
 

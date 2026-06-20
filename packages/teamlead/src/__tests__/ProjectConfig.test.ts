@@ -1207,6 +1207,105 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		expect(projects[0]!.leads[0]!.backend).toBe("codex-app-server");
 	});
 
+	// FLY-350: codexProfile read-only tier (content-coordination) — capability via
+	// a narrow lead-actions MCP, NOT by opening the model shell / write-capable.
+	it("accepts codex-app-server with codexProfile:content-coordination AND canSpawnRunners:false", () => {
+		const projects = loadWith(
+			fleetLead({
+				backend: "codex-app-server",
+				codexProfile: "content-coordination",
+				canSpawnRunners: false,
+			}),
+		);
+		expect(projects[0]!.leads[0]!.backend).toBe("codex-app-server");
+		expect(projects[0]!.leads[0]!.codexProfile).toBe("content-coordination");
+	});
+
+	it("accepts codex-app-server with explicit codexProfile:companion AND canSpawnRunners:false", () => {
+		const projects = loadWith(
+			fleetLead({
+				backend: "codex-app-server",
+				codexProfile: "companion",
+				canSpawnRunners: false,
+			}),
+		);
+		expect(projects[0]!.leads[0]!.codexProfile).toBe("companion");
+	});
+
+	it("rejects codex-app-server codexProfile:content-coordination when canSpawnRunners defaults true (FLY-251 not landed)", () => {
+		expect(() =>
+			loadWith(
+				fleetLead({
+					backend: "codex-app-server",
+					codexProfile: "content-coordination",
+				}),
+			),
+		).toThrow(/FLY-245/);
+	});
+
+	it("rejects codex-app-server codexProfile:content-coordination with canSpawnRunners:true", () => {
+		expect(() =>
+			loadWith(
+				fleetLead({
+					backend: "codex-app-server",
+					codexProfile: "content-coordination",
+					canSpawnRunners: true,
+				}),
+			),
+		).toThrow(/FLY-245/);
+	});
+
+	it("rejects codexProfile:write-capable (not unlocked — FLY-245)", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "geo",
+				projectRoot: "/tmp/geo",
+				leads: [
+					{
+						agentId: "product-lead",
+						chatChannel: "222",
+						match: { labels: ["Product"] },
+						backend: "codex-app-server",
+						codexProfile: "write-capable",
+						canSpawnRunners: false,
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/codexProfile/);
+	});
+
+	it("rejects an unknown codexProfile value", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "geo",
+				projectRoot: "/tmp/geo",
+				leads: [
+					{
+						agentId: "product-lead",
+						chatChannel: "222",
+						match: { labels: ["Product"] },
+						backend: "codex-app-server",
+						codexProfile: "superuser",
+						canSpawnRunners: false,
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/codexProfile/);
+	});
+
+	it("codexProfile absent stays absent (not normalized — reverse-compat)", () => {
+		const projects = loadWith(
+			fleetLead({
+				backend: "codex-app-server",
+				companion: true,
+				canSpawnRunners: false,
+			}),
+		);
+		expect(Object.keys(projects[0]!.leads[0]!)).not.toContain("codexProfile");
+	});
+
 	it("rejects unsafe identifier grammar (path separators) in agentId (R5#6)", () => {
 		expect(() => loadWith(fleetLead({ agentId: "../escape" }))).toThrow(
 			/agentId/,
@@ -1285,7 +1384,7 @@ describe("parseAndValidateProjects (FLY-247 inc2a R2#5 — pure validator)", () 
 			parseAndValidateProjects(
 				rawProject({ backend: "codex-app-server" /* not companion */ }),
 			),
-		).toThrow(/companion: true AND/);
+		).toThrow(/FLY-245/);
 	});
 
 	it("normalizes canSpawnRunners default to true (same as loadProjects)", () => {
