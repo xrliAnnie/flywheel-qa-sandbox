@@ -764,6 +764,85 @@ describe("Event route — GEO-292 stage tracking", () => {
 		expect(store.getSession("exec-1")!.session_stage).toBe("brainstorm");
 	});
 
+	// FLY-324: a no-PR / no-code / QA Runner that finishes via
+	// `flywheel-comm stage set completed` only emits a stage_changed event.
+	// Before FLY-324 that left the FSM stuck at `running` (close_runner rejects
+	// it, tmux + worktree linger, idle watchdog false-positives session_stuck).
+	// The stage_changed=completed handler now transitions running→completed.
+	it("FLY-324: stage_changed=completed transitions a still-running session to completed", async () => {
+		await postEvent(); // session_started → running
+
+		const res = await postEvent({
+			event_id: "evt-fly324-done",
+			event_type: "stage_changed",
+			payload: { stage: "completed" },
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session!.status).toBe("completed");
+		expect(session!.session_stage).toBe("completed");
+	});
+
+	it("FLY-324: stage_changed=completed does NOT clobber an awaiting_review session", async () => {
+		await postEvent(); // running
+
+		// Dev Runner created a PR and requested review → awaiting_review.
+		await postEvent({
+			event_id: "evt-fly324-nr",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "needs_review" },
+				evidence: { commitCount: 1 },
+			},
+		});
+		expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+
+		// A late stage_changed=completed (no merged landing) must NOT pull the
+		// session back to completed — decision_route is set, so it is not a
+		// done-but-running zombie. Guard: only status===running is swept.
+		const res = await postEvent({
+			event_id: "evt-fly324-late",
+			event_type: "stage_changed",
+			payload: { stage: "completed" },
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+	});
+
+	// Design-review #3: a stage_changed=completed that carries a PR number in its
+	// landing_status must NOT be force-completed (a PR exists → it owes review),
+	// even if pr_number was not yet persisted and decision_route is unset.
+	it("FLY-324: stage_changed=completed with a landing PR number is NOT swept to completed", async () => {
+		await postEvent(); // running
+
+		const res = await postEvent({
+			event_id: "evt-fly324-haspr",
+			event_type: "stage_changed",
+			payload: {
+				stage: "completed",
+				landing_status: { status: "ready_to_merge", prNumber: 321 },
+			},
+		});
+		expect(res.status).toBe(200);
+		// Stays running — a PR session is not no-PR done; review path owns it.
+		expect(store.getSession("exec-1")!.status).toBe("running");
+	});
+
+	// Design-review #2: stage_changed=completed before any session row exists is a
+	// no-op (patchSessionMetadata is UPDATE-only; isDoneButRunning({}) is false),
+	// so FLY-324 never fabricates a transition for a non-existent session.
+	it("FLY-324: stage_changed=completed with no prior session row is a no-op", async () => {
+		const res = await postEvent({
+			execution_id: "exec-norow",
+			event_id: "evt-fly324-norow",
+			event_type: "stage_changed",
+			payload: { stage: "completed" },
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-norow")).toBeUndefined();
+	});
+
 	it("session_completed extracts pr_number from landingStatus.prNumber", async () => {
 		await postEvent();
 
