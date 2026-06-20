@@ -216,6 +216,50 @@ H=$(fresh_home 23); : > "$MOCK_LOG"
 FLYWHEEL_CODEX_BIN="$T/bin/codex" FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" ensure-daemon >/dev/null 2>&1
 ! command grep -q "remote-control stop" "$MOCK_LOG" && pass "flag-off ensure-daemon: NO stop (byte-compat)" || fail "flag-off ensure-daemon: must not stop the daemon"
 
+# ── FLY-350 HIGH-1: the SHELL-written content-coordination config.toml must PASS
+#    the runtime config gate (assertLeadActionsConfigGate). Highest-risk consistency
+#    contract — a key/value drift between the shell renderer and the gate would
+#    fail-close Mufasa at cutover. Runs the REAL ensure-home (read-deny + content-
+#    coordination) then the REAL gate against the result.
+GATE_JS="$SCRIPT_DIR/../dist/lead-backends/codex/lead-actions/mcp-config.js"
+if [ ! -f "$GATE_JS" ]; then
+  echo "  (skip shell→gate xcheck: dist not built — run pnpm --filter flywheel-teamlead build)"
+else
+  run_content_xcheck() {
+    local H; H=$(fresh_home "cc-$1")
+    FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+      FLYWHEEL_CODEX_LEAD_READ_DENY=1 FLYWHEEL_CODEX_LEAD_PROFILE=content-coordination \
+      FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/Users/x/dist/lead-actions/lead-actions-main.js" \
+      FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+      FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET="/Users/x/.flywheel/state/codex-lead/mufasa/lead-actions.sock" \
+      FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+      FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" \
+      FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="$2" \
+      FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/Users/x/.flywheel/state/codex-lead/mufasa" \
+      FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES="$3" \
+      /bin/bash "$SUT" ensure-home >/dev/null 2>&1 || { fail "shell→gate ($1): ensure-home failed"; return; }
+    GATE_JS="$GATE_JS" CFG="$H/config.toml" CROSS="$2" ALI="$3" node --input-type=module -e '
+      import { readFileSync } from "node:fs";
+      const { assertLeadActionsConfigGate, buildLeadActionsMcpServerConfig } = await import(process.env.GATE_JS);
+      const cross = process.env.CROSS ? process.env.CROSS.split(",").map(s=>s.trim()).filter(Boolean) : [];
+      const expected = buildLeadActionsMcpServerConfig({
+        nodeBin: "/usr/local/bin/node",
+        mainJsPath: "/Users/x/dist/lead-actions/lead-actions-main.js",
+        brokerSocketPath: "/Users/x/.flywheel/state/codex-lead/mufasa/lead-actions.sock",
+        leadId: "mufasa-lead", projectName: "growth",
+        chatChannelId: "1500600400238084307", crossDeptChannelIds: cross,
+        stateDir: "/Users/x/.flywheel/state/codex-lead/mufasa",
+        explicitAliases: process.env.ALI || undefined,
+      });
+      assertLeadActionsConfigGate(readFileSync(process.env.CFG, "utf8"), expected);
+    ' && pass "shell→gate ($1): ensure-home config.toml passes the runtime gate" \
+       || fail "shell→gate ($1): config.toml did NOT pass the runtime gate"
+  }
+  run_content_xcheck "one-crossdept" "1512578695468941333" ""
+  run_content_xcheck "no-crossdept" "" ""
+  run_content_xcheck "with-aliases" "1512578695468941333,1517226183341904032" "roundtable:1512578695468941333"
+fi
+
 echo "────────────────────────────"
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

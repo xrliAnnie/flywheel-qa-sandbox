@@ -23,7 +23,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -54,10 +54,9 @@ import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
 import {
-	assertLeadActionsInventory,
-	LEAD_ACTIONS_MCP_SERVER_NAME,
+	assertLeadActionsConfigGate,
+	buildLeadActionsMcpServerConfig,
 } from "./lead-actions/mcp-config.js";
-import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import { resolveReadDenyThread } from "./read-deny-profile.js";
@@ -379,19 +378,13 @@ function buildTuiGeneration(
 				proc = new CodexLeadProcess({ spawnChild: () => transport });
 				if (lostCb) proc.on("exit", () => lostCb?.());
 
-				// FLY-350 §10 inventory gate (content-coordination only): record the
-				// daemon's MCP startup / tool advertisements from connection so the
-				// gateway can fail-closed-assert the tool surface before any Discord
-				// traffic. companion path: no watcher (byte-compat).
-				const inventoryWatcher =
-					config.codexProfile === "content-coordination"
-						? new McpInventoryWatcher()
-						: undefined;
-				if (inventoryWatcher) {
-					proc.on("notification", (method: string, params: unknown) =>
-						inventoryWatcher.record(method, params),
-					);
-				}
+				// FLY-350 §10: the tool-surface guarantee is enforced by the CONFIG
+				// GATE in main() (assertLeadActionsConfigGate — exactly the lead_actions
+				// MCP, exact command/args/env, no secret) BEFORE the daemon starts. The
+				// old runtime "wait for the live MCP to report ready" watcher was removed
+				// (race-fix design review): codex 0.141 spawns the MCP EPHEMERALLY per
+				// turn with no persistent ready status, so that gate false-timed-out and
+				// tore Mufasa down. codex can only spawn what the (gated) config declares.
 
 				let alive = true;
 				let lastActivityAt: number | undefined;
@@ -477,21 +470,13 @@ function buildTuiGeneration(
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
-						// FLY-350 §10 fail-closed inventory gate (code-review HIGH-1): assert
-						// the lead-actions MCP advertises EXACTLY the approved tool surface
-						// BEFORE any model turn. The first-boot/turnless bootstrap turn below
-						// (facade.startTurn) could otherwise call discord_send — proactive
-						// Discord traffic that bypasses the gateway — before the assertion.
-						// A missing / extra / failed / timed-out inventory throws → the
-						// generation fails before ANY thread turn. companion path: no watcher
-						// → unchanged (byte-compat).
-						if (inventoryWatcher) {
-							await inventoryWatcher.waitForExact(
-								[LEAD_ACTIONS_MCP_SERVER_NAME],
-								30_000,
-							);
-							assertLeadActionsInventory(inventoryWatcher.observedTools());
-						}
+						// FLY-350 §10: the tool-surface guarantee is enforced by the CONFIG
+						// GATE in main() (assertLeadActionsConfigGate) BEFORE the daemon
+						// starts — not by a runtime "wait for the live MCP to report ready"
+						// gate here. codex 0.141 spawns the MCP ephemerally per turn with no
+						// persistent ready status, so the old gate false-timed-out (30s) and
+						// tore Mufasa down. codex can only spawn what the (gated) config
+						// declares; the first-party MCP registers exactly discord_send.
 						const executor = new CodexTurnExecutor({
 							process: facade, // demuxed: foreign turns never arrive
 							threadId,
@@ -610,8 +595,9 @@ function buildTuiGeneration(
 						}
 						return {
 							recover: () => router.recover(),
-							// (FLY-350 §10 inventory gate runs at wire-top, before any model
-							// turn — code-review HIGH-1.)
+							// (FLY-350 §10 tool-surface guarantee is enforced by the CONFIG
+							// GATE in main() — assertLeadActionsConfigGate, before the daemon
+							// starts — not by a runtime gate here. See main() / mcp-config.ts.)
 							startGateway: () => gateway.start(),
 							stopGateway: () => gateway.stop(),
 						};
@@ -701,6 +687,46 @@ export async function main(
 		join(config.stateDir, "lead-actions.sock");
 	let leadActionsBroker: SecretBroker | undefined;
 	if (contentCoordination) {
+		// FLY-350 §10 CONFIG GATE (race-fix design review, option C): BEFORE starting
+		// the broker / daemon, parse the EFFECTIVE config.toml the launcher wrote and
+		// HARD-ASSERT it contains EXACTLY the trusted lead-actions MCP and nothing else
+		// (no extra/injected MCP, exact command/args/env, no secret in config). codex
+		// 0.141 spawns the MCP ephemerally with no persistent "ready" lifecycle, so this
+		// deterministic config assertion replaces the old runtime "wait for ready" gate
+		// that false-timed-out. Fail-closed: a parse failure / missing file / any drift
+		// throws → the runtime exits before any daemon/MCP/Discord activity.
+		const mainJsPath = env.FLYWHEEL_LEAD_ACTIONS_MAIN_JS?.trim();
+		const stateDir = env.FLYWHEEL_LEAD_ACTIONS_STATE_DIR?.trim();
+		if (!mainJsPath || !stateDir) {
+			throw new Error(
+				"codex-lead-tui-runtime: content-coordination requires FLYWHEEL_LEAD_ACTIONS_MAIN_JS + FLYWHEEL_LEAD_ACTIONS_STATE_DIR (the launcher sets them) — refusing to start (fail-closed)",
+			);
+		}
+		const expectedMcp = buildLeadActionsMcpServerConfig({
+			nodeBin: env.FLYWHEEL_LEAD_ACTIONS_NODE_BIN?.trim() || "node",
+			mainJsPath,
+			brokerSocketPath,
+			leadId: config.leadId,
+			projectName: config.projectName,
+			chatChannelId: config.chatChannelId,
+			crossDeptChannelIds: config.crossDeptChannelIds,
+			stateDir,
+			explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
+		});
+		const configTomlPath = join(config.codexHome, "config.toml");
+		let configTomlContent: string;
+		try {
+			configTomlContent = readFileSync(configTomlPath, "utf8");
+		} catch (err) {
+			throw new Error(
+				`codex-lead-tui-runtime: cannot read ${configTomlPath} for the §10 config gate (fail-closed): ${(err as Error).message}`,
+			);
+		}
+		assertLeadActionsConfigGate(configTomlContent, expectedMcp);
+		console.warn(
+			"[codex-lead-tui-runtime] §10 config gate PASSED (lead_actions MCP exact, no extra server, no secret in config)",
+		);
+
 		leadActionsBroker = new SecretBroker({
 			socketPath: brokerSocketPath,
 			secrets: { DISCORD_BOT_TOKEN: config.botToken },
@@ -757,6 +783,14 @@ export async function main(
 		// Startup-failure path (review R2 HIGH-2): a generation may have created
 		// the TUI window before failing — tear it down so it never orphans, same
 		// as the signal handlers do.
+		// FLY-350 race-fix code-review HIGH-2: STOP the supervisor (which stops a
+		// half-started generation — the WS/process + the daemon it ensured) BEFORE
+		// closing the broker. Otherwise a generation that created a WS/process and
+		// then failed in wire() could leave the daemon/MCP side alive while the
+		// broker socket is removed (a respawn would then read an empty payload). The
+		// signal path already orders supervisor.stop() first; the startup catch must
+		// match it. Best-effort (we are failing closed regardless).
+		await supervisor.stop().catch(() => {});
 		killTuiWindow(
 			{ projectName: config.projectName, leadId: config.leadId },
 			{ log: (m) => console.warn(`[codex-lead-tui-runtime] ${m}`) },
