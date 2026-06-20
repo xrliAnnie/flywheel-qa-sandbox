@@ -105,6 +105,33 @@ describe("fleet-routes — handleStage", () => {
 		expect(d.audit.rows.some((x) => x.event === "staged")).toBe(true);
 	});
 
+	it("FLY-360: authorized 1M selector (claude-opus-4-8[1m]) → 200, to.model preserved exactly", () => {
+		// The bracket id must survive the stage boundary byte-for-byte (no trim /
+		// rewrite). allowedTargets authorizes it (in prod sourced from
+		// CLAUDE_TIER_OPTIONS via computeAllowedModelTargets).
+		const d = deps({
+			currentModels: () =>
+				new Map<string, string | null>([["geo-oliver", null]]),
+			allowedTargets: () =>
+				new Map<string, Array<string | null>>([
+					["geo-oliver", ["claude-fable-5", "claude-opus-4-8[1m]", null]],
+				]),
+		});
+		const r = handleStage(
+			d,
+			{ changes: [{ key: "geo-oliver", toModel: "claude-opus-4-8[1m]" }] },
+			SAME,
+			ORIGIN,
+		);
+		expect(r.status).toBe(200);
+		const req = r.body.canonicalRequest as CanonicalRequest;
+		expect(req.changes[0]).toEqual({
+			key: "geo-oliver",
+			from: { model: null },
+			to: { model: "claude-opus-4-8[1m]" },
+		});
+	});
+
 	it("cross-origin → 403", () => {
 		const r = handleStage(
 			deps(),

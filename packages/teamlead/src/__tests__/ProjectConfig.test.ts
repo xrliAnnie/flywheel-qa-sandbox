@@ -1141,6 +1141,11 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		expect(projects[0]!.leads[0]!.model).toBe("Claude-Fable-5");
 	});
 
+	it("FLY-360: accepts bracketed 1M selector and preserves brackets verbatim", () => {
+		const projects = loadWith(fleetLead({ model: "claude-opus-4-8[1m]" }));
+		expect(projects[0]!.leads[0]!.model).toBe("claude-opus-4-8[1m]");
+	});
+
 	it("rejects empty-string model", () => {
 		expect(() => loadWith(fleetLead({ model: "" }))).toThrow(/model/);
 	});
