@@ -6,6 +6,16 @@ on:
   pull_request:
     branches: [main]
 
+# FLY-350 (Z) R3-2: pin the GITHUB_TOKEN to the LEAST privilege CI needs
+# (read the repo to build/test — nothing else). Without an explicit block a
+# pull_request run gets the repo-DEFAULT token scope, which can include write
+# / issues / pull-requests — an INDIRECT action channel a model-authored PR
+# (opened via the gateway) could ride to comment / dispatch / merge, bypassing
+# the structural "Mufasa cannot :cool:" guarantee. default-deny + contents:read
+# closes it. (The `:cool:` ship workflow's own scope is FLY-367.)
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

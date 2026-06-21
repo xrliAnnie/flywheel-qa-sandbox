@@ -22,16 +22,11 @@
 
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { postDiscordMessageToChannel } from "../../../bridge/discord-utils.js";
+import { runDiscordSend } from "../discord-send-core.js";
 import { fetchSecretsFromBroker } from "../secret-broker.js";
-import {
-	AliasResolutionError,
-	resolveChannelAlias,
-} from "./alias-allowlist.js";
 import { parseLeadActionsConfig } from "./config.js";
 import { LEAD_ACTIONS_TOOLS } from "./mcp-config.js";
 import {
-	deriveSendIdempotencyKey,
 	SendIdempotencyCache,
 	SlidingWindowRateLimiter,
 } from "./send-guard.js";
@@ -48,15 +43,6 @@ if (
 	throw new Error(
 		`lead-actions: LEAD_ACTIONS_TOOLS must be exactly ["${DISCORD_SEND_TOOL}"] (got ${JSON.stringify(LEAD_ACTIONS_TOOLS)})`,
 	);
-}
-
-/** Append one durable audit row (metadata only — never the message text). */
-function appendAudit(auditPath: string, row: Record<string, unknown>): void {
-	try {
-		appendFileSync(auditPath, `${JSON.stringify(row)}\n`);
-	} catch {
-		// best-effort audit — never fail a send because the audit append failed.
-	}
 }
 
 /**
@@ -130,72 +116,22 @@ export async function leadActionsMain(
 			text: z.string().min(1).describe("Message text to post"),
 		},
 		async ({ target, text }) => {
-			// Authority is DERIVED server-side: alias → channel id, fail-closed.
-			let channelId: string;
-			try {
-				channelId = resolveChannelAlias(target, {
-					chatChannelId: cfg.chatChannelId,
-					crossDeptChannelIds: cfg.crossDeptChannelIds,
-					explicitAliases: cfg.explicitAliases,
-				});
-			} catch (e) {
-				const msg =
-					e instanceof AliasResolutionError
-						? e.message
-						: e instanceof Error
-							? e.message
-							: String(e);
-				return asText(`REFUSED: ${msg}`, true);
-			}
-
-			const now = Date.now();
-			const key = deriveSendIdempotencyKey(channelId, text);
-			const prior = idempotency.get(key, now);
-			if (prior) {
-				return asText(
-					`Already sent (idempotent) to ${target} → message ${prior}`,
-				);
-			}
-			if (!rateLimiter.tryAcquire(channelId, now)) {
-				appendAudit(auditPath, {
-					ts: now,
-					leadId: cfg.leadId,
-					project: cfg.projectName,
-					target,
-					channelId,
-					outcome: "rate_limited",
-				});
-				return asText(
-					`REFUSED: per-channel rate limit reached for ${target} (loop-safety) — try again shortly`,
-					true,
-				);
-			}
-
-			let res: Awaited<ReturnType<typeof postDiscordMessageToChannel>>;
-			try {
-				res = await postDiscordMessageToChannel(channelId, text, botToken);
-			} catch (e) {
-				return asText(
-					`REFUSED: discord send threw: ${e instanceof Error ? e.message : String(e)}`,
-					true,
-				);
-			}
-			if (!res.ok) {
-				return asText(`REFUSED: discord send failed: ${res.error}`, true);
-			}
-			const messageId = res.messageIds[0] ?? "";
-			idempotency.record(key, messageId, now);
-			appendAudit(auditPath, {
-				ts: now,
+			// FLY-350 (R1-4): delegate to the SHARED send core (alias gate →
+			// idempotency → rate limit → post → record → metadata audit). The
+			// gateway uses the exact same core, so the content-coordination and
+			// write-capable paths can never drift.
+			const r = await runDiscordSend(target, text, {
+				chatChannelId: cfg.chatChannelId,
+				crossDeptChannelIds: cfg.crossDeptChannelIds,
+				explicitAliases: cfg.explicitAliases,
+				botToken,
+				rateLimiter,
+				idempotency,
+				auditPath,
 				leadId: cfg.leadId,
-				project: cfg.projectName,
-				target,
-				channelId,
-				messageId,
-				textLen: text.length,
-				outcome: "sent",
+				projectName: cfg.projectName,
 			});
-			return asText(`Sent to ${target} (${channelId}) → message ${messageId}`);
+			return asText(r.text, r.isError);
 		},
 	);
 

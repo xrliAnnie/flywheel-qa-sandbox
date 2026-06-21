@@ -85,7 +85,7 @@ export function resolveTrustedGitPath(
  * `-c` flags have the highest precedence, so they override a hostile repo config
  * regardless of where it lives.
  */
-const GIT_SAFE_CONFIG = [
+export const GIT_SAFE_CONFIG = [
 	"-c",
 	"core.fsmonitor=false", // the demonstrated RCE — a program run on every status
 	"-c",

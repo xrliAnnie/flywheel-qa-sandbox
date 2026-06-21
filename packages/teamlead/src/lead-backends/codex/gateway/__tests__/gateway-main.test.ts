@@ -51,6 +51,42 @@ describe("parseGatewayConfig (F-a boundary)", () => {
 			}),
 		).toThrow(/invalid project/i);
 	});
+
+	// FLY-350 (Z) unit 3: discord_send channel coordinates. Optional (byte-compat
+	// with the FLY-245 gateway that had no discord_send) — absent → empty, and the
+	// alias resolver fails closed at call time. The SAME env var names as the
+	// lead-actions MCP (one contract across both proactive-send paths).
+	it("parses discord_send channel coordinates (chat + cross-dept + alias pins)", () => {
+		const cfg = parseGatewayConfig({
+			...FULL_ENV,
+			FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "chat-123",
+			FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "rt-1, rt-2 ,",
+			FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES: "roundtable:rt-2",
+		});
+		expect(cfg.chatChannelId).toBe("chat-123");
+		expect(cfg.crossDeptChannelIds).toEqual(["rt-1", "rt-2"]);
+		expect(cfg.explicitAliases).toEqual({ roundtable: "rt-2" });
+	});
+
+	it("channel coordinates default to empty when unset (byte-compat: no discord_send config)", () => {
+		const cfg = parseGatewayConfig(FULL_ENV);
+		expect(cfg.chatChannelId).toBe("");
+		expect(cfg.crossDeptChannelIds).toEqual([]);
+		expect(cfg.explicitAliases).toEqual({});
+	});
+
+	it("applies send-guard tuning defaults (loop-safety) and honors overrides", () => {
+		expect(parseGatewayConfig(FULL_ENV).sendRateMaxPerWindow).toBe(5);
+		const tuned = parseGatewayConfig({
+			...FULL_ENV,
+			FLYWHEEL_LEAD_ACTIONS_RATE_MAX: "2",
+			FLYWHEEL_LEAD_ACTIONS_RATE_WINDOW_MS: "30000",
+			FLYWHEEL_LEAD_ACTIONS_IDEMPOTENCY_TTL_MS: "45000",
+		});
+		expect(tuned.sendRateMaxPerWindow).toBe(2);
+		expect(tuned.sendRateWindowMs).toBe(30000);
+		expect(tuned.sendIdempotencyTtlMs).toBe(45000);
+	});
 });
 
 describe("mapHttpDispatchOutcome (F-a)", () => {

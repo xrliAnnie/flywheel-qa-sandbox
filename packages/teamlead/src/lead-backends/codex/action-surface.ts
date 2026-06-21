@@ -36,15 +36,28 @@ export const NON_MCP_ACTION_SURFACES = [
 export type NonMcpActionSurface = (typeof NON_MCP_ACTION_SURFACES)[number];
 
 /**
- * The SSOT of reserved gateway action tools a write-capable Codex Lead may reach
- * (245 scope). `gateway-main.ts` registers EXACTLY these; the runtime asserts the
- * model-callable surface equals this set. `start_runner`/`read_runner_tmux`/etc.
- * are FLY-251 and are deliberately NOT here yet — adding a tool to the gateway
- * MUST add it here, or the runtime assertion fail-closes (drift guard).
+ * The SSOT of gateway action tools a write-capable Codex Lead may reach.
+ * `gateway-main.ts` registers EXACTLY these; the runtime asserts the
+ * model-callable surface equals this set. Adding a tool to the gateway MUST add
+ * it here, or the runtime assertion fail-closes (drift guard).
+ *
+ * Two classes:
+ *  - FLY-245 RESERVED (founder-gated, per-handler CodexFounderPreflight /
+ *    lifecycle consent): `request_runner_lifecycle`, `relay_ship_decision`.
+ *  - FLY-350 (Z) SCOPED (NOT founder-gated — they cannot reach the merge red
+ *    line; alias/scope-gated + audited): `discord_send` (proactive roundtable/
+ *    chat post), `git_push` + `open_pr` (gateway-proxied PR — push a feature
+ *    branch / open a PR ≠ merge; the net-off shell holds no GH_TOKEN and the
+ *    gateway exposes no merge/:cool: tool, so self-merge is structurally
+ *    impossible).
+ * `start_runner`/`read_runner_tmux`/etc. are FLY-251 and deliberately NOT here.
  */
 export const GATEWAY_ACTION_TOOL_NAMES = [
 	"request_runner_lifecycle",
 	"relay_ship_decision",
+	"discord_send",
+	"git_push",
+	"open_pr",
 ] as const;
 
 /**

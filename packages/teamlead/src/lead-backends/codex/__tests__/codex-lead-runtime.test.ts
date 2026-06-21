@@ -88,12 +88,31 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		).toThrow(/requires FLYWHEEL_CODEX_LEAD_READ_DENY=1/);
 	});
 
-	it("falls SAFE to companion on an unknown codexProfile value (never silently enables the MCP)", () => {
-		expect(
+	it("FAIL-LOUD on an unknown codexProfile value (R2-4: never silently default)", () => {
+		expect(() =>
+			parseCodexLeadRuntimeConfig(
+				fullEnv({ FLYWHEEL_CODEX_LEAD_PROFILE: "bogus-tier" }),
+			),
+		).toThrow(/FLYWHEEL_CODEX_LEAD_PROFILE="bogus-tier" invalid/);
+	});
+
+	it("FLY-350 (Z): write-capable profile is valid WITH a workspace-write sandbox", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({
+				FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable",
+				FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+			}),
+		);
+		expect(c.codexProfile).toBe("write-capable");
+		expect(c.sandboxMode).toBe("workspace-write");
+	});
+
+	it("FLY-350 (Z): write-capable profile REQUIRES workspace-write (read-only → fail-loud)", () => {
+		expect(() =>
 			parseCodexLeadRuntimeConfig(
 				fullEnv({ FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable" }),
-			).codexProfile,
-		).toBe("companion");
+			),
+		).toThrow(/write-capable requires sandbox=workspace-write/);
 	});
 
 	it("rejects content-coordination paired with a write-capable sandbox (read-only only)", () => {
@@ -105,6 +124,19 @@ describe("parseCodexLeadRuntimeConfig", () => {
 				}),
 			),
 		).toThrow(/content-coordination requires sandbox=read-only/);
+	});
+
+	// FLY-350 (Z) M-3 (Codex review MEDIUM): the profile is the SSOT — a
+	// workspace-write sandbox under companion (the default) must fail-loud, never
+	// silently run write-capable with a companion label (config/fleet drift).
+	it("rejects workspace-write under the default companion profile (SSOT, fail-loud)", () => {
+		expect(() =>
+			parseCodexLeadRuntimeConfig(
+				fullEnv({ FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write" }),
+			),
+		).toThrow(
+			/workspace-write requires FLYWHEEL_CODEX_LEAD_PROFILE=write-capable/,
+		);
 	});
 
 	it("includes the core channel + chrome when set", () => {
@@ -260,6 +292,39 @@ describe("dryRunReport", () => {
 		expect(report).toContain("WILL CONNECT (bridge mode)");
 	});
 
+	// FLY-350 (Z) L-1 (Codex review LOW): a write-capable dry-run surfaces the
+	// audited Z-mode fields (gateway 5-tool surface, net-off, writable root, PR
+	// scope + GH-token source redacted, structural no-merge).
+	it("write-capable dry-run surfaces the (Z) gateway/net-off/PR-scope fields, GH token redacted", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly350-zdryrun-"));
+		try {
+			const ws = join(root, "scratch");
+			mkdirSync(ws, { recursive: true });
+			const report = dryRunReport(
+				parseCodexLeadRuntimeConfig(
+					fullEnv({
+						FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+						FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable",
+						FLYWHEEL_CODEX_LEAD_STATE_DIR: join(root, "state"),
+						FLYWHEEL_CODEX_LEAD_WORKSPACE: ws,
+						FLYWHEEL_GATEWAY_GITHUB_TOKEN: "ghp_zdryrun_secret_value",
+						FLYWHEEL_GATEWAY_PROJECT_REPO: "xrliAnnie/growth",
+					}),
+				),
+			).join("\n");
+			expect(report).toContain("(Z) gateway");
+			expect(report).toContain("git_push");
+			expect(report).toContain("open_pr");
+			expect(report).toContain("(Z) network   : OFF");
+			expect(report).toContain("xrliAnnie/growth");
+			expect(report).toContain("STRUCTURALLY impossible");
+			// the GH token is redacted, never leaked
+			expect(report).not.toContain("ghp_zdryrun_secret_value");
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("persona line: none by default, injected when systemPromptFiles read", () => {
 		const none = dryRunReport(parseCodexLeadRuntimeConfig(fullEnv())).join(
 			"\n",
@@ -306,7 +371,11 @@ describe("sandbox policy (review HIGH-1: pin approvalPolicy + sandbox)", () => {
 	it("accepts the valid sandbox modes + rejects an unknown one (fail-loud)", () => {
 		expect(
 			parseCodexLeadRuntimeConfig(
-				fullEnv({ FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write" }),
+				fullEnv({
+					FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+					// FLY-350 (Z) M-3: workspace-write now requires the write-capable profile (SSOT).
+					FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable",
+				}),
 			).sandboxMode,
 		).toBe("workspace-write");
 		expect(() =>
@@ -341,6 +410,9 @@ describe("sandbox policy (review HIGH-1: pin approvalPolicy + sandbox)", () => {
 				fullEnv({
 					FLYWHEEL_CODEX_LEAD_STATE_DIR: dir,
 					FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+					// M-3: workspace-write requires the profile; the release gate (not the
+					// parse profile check) is what this test asserts fail-closes.
+					FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable",
 				}),
 			);
 			expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
@@ -537,6 +609,7 @@ describe("FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3)", () => 
 			const c = parseCodexLeadRuntimeConfig(
 				fullEnv({
 					FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+					FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable",
 					FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
 					CODEX_HOME: codexHome,
 					FLYWHEEL_CODEX_LEAD_WORKSPACE: workspace,
@@ -550,6 +623,7 @@ describe("FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3)", () => 
 				parseCodexLeadRuntimeConfig(
 					fullEnv({
 						FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+						FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable",
 						CODEX_HOME: codexHome,
 						FLYWHEEL_CODEX_LEAD_WORKSPACE: codexHome,
 					}),
@@ -557,9 +631,12 @@ describe("FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3)", () => 
 			).toThrow(/CODEX_HOME/);
 		});
 
-		it("write-capable + no workspace env → undefined (fail-close at :336 still governs)", () => {
+		it("write-capable + no workspace env → undefined (fail-close at release gate still governs)", () => {
 			const c = parseCodexLeadRuntimeConfig(
-				fullEnv({ FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write" }),
+				fullEnv({
+					FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+					FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable",
+				}),
 			);
 			expect(c.workspace).toBeUndefined();
 		});
@@ -578,6 +655,7 @@ describe("FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3)", () => 
 				parseCodexLeadRuntimeConfig(
 					fullEnv({
 						FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+						FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable",
 						FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
 						CODEX_HOME: codexHome,
 						FLYWHEEL_GATEWAY_ENTRY: gw,
@@ -597,6 +675,7 @@ describe("FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3)", () => 
 				parseCodexLeadRuntimeConfig(
 					fullEnv({
 						FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+						FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable",
 						FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
 						CODEX_HOME: codexHome,
 						FLYWHEEL_CODEX_LEAD_WORKSPACE: pkgRoot,
@@ -748,10 +827,15 @@ describe("FLY-245 F-b: write-capable release gate (plan §7)", () => {
 		return fullEnv({
 			FLYWHEEL_CODEX_LEAD_STATE_DIR: stateDir,
 			FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+			// FLY-350 (Z) M-3: workspace-write requires the write-capable profile (SSOT).
+			FLYWHEEL_CODEX_LEAD_PROFILE: "write-capable",
 			FLYWHEEL_CODEX_LEAD_WORKSPACE: workspace,
 			FLYWHEEL_FOUNDER_DISCORD_USER_ID: "annie-987",
 			FLYWHEEL_CODEX_CLI_VERSION_ALLOWLIST: "0.99.0",
 			FLYWHEEL_GATEWAY_ENTRY: gatewayEntry,
+			// FLY-350 (Z) unit 5: a write-capable Lead is PR-capable.
+			FLYWHEEL_GATEWAY_GITHUB_TOKEN: "ghp_dummy_release_token",
+			FLYWHEEL_GATEWAY_PROJECT_REPO: "xrliAnnie/Flywheel",
 			...over,
 		});
 	}
@@ -761,9 +845,16 @@ describe("FLY-245 F-b: write-capable release gate (plan §7)", () => {
 		expect(() => buildCodexLeadRuntime(config, silentLogger)).not.toThrow();
 	});
 
-	it("danger-full-access is PERMANENTLY refused, even with everything else present", () => {
+	it("danger-full-access is PERMANENTLY refused by the release gate (everything else present)", () => {
+		// Route to the release gate's permanent-refusal: M-3's parse check
+		// (write-capable ⟺ workspace-write) would otherwise preempt a
+		// write-capable + danger-full-access combo. A companion profile parses, then
+		// the release gate (sandbox !== read-only) refuses danger-full-access.
 		const config = parseCodexLeadRuntimeConfig(
-			releaseEnv({ FLYWHEEL_CODEX_LEAD_SANDBOX: "danger-full-access" }),
+			releaseEnv({
+				FLYWHEEL_CODEX_LEAD_SANDBOX: "danger-full-access",
+				FLYWHEEL_CODEX_LEAD_PROFILE: "",
+			}),
 		);
 		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
 			/permanently refused/i,
@@ -830,6 +921,35 @@ describe("FLY-245 F-b: write-capable release gate (plan §7)", () => {
 		);
 		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
 			/API_TOKEN/,
+		);
+	});
+
+	// FLY-350 (Z) unit 5: write-capable = PR-capable → GH_TOKEN source + project
+	// repo are boot-time release conditions (the runtime probe re-checks scope).
+	it("(Z) missing FLYWHEEL_GATEWAY_GITHUB_TOKEN → fail-closed (PR-capable Lead needs the broker GH token)", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			releaseEnv({ FLYWHEEL_GATEWAY_GITHUB_TOKEN: undefined }),
+		);
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
+			/GATEWAY_GITHUB_TOKEN/,
+		);
+	});
+
+	it("(Z) missing FLYWHEEL_GATEWAY_PROJECT_REPO → fail-closed", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			releaseEnv({ FLYWHEEL_GATEWAY_PROJECT_REPO: undefined }),
+		);
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
+			/GATEWAY_PROJECT_REPO/,
+		);
+	});
+
+	it("(Z) malformed FLYWHEEL_GATEWAY_PROJECT_REPO slug → fail-closed", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			releaseEnv({ FLYWHEEL_GATEWAY_PROJECT_REPO: "not-a-slug" }),
+		);
+		expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
+			/owner\/repo.*slug/i,
 		);
 	});
 

@@ -1260,7 +1260,18 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		).toThrow(/FLY-245/);
 	});
 
-	it("rejects codexProfile:write-capable (not unlocked — FLY-245)", () => {
+	it("FLY-350 (Z): accepts codexProfile:write-capable (canSpawnRunners:false, not a companion)", () => {
+		const projects = loadWith(
+			fleetLead({
+				backend: "codex-app-server",
+				codexProfile: "write-capable",
+				canSpawnRunners: false,
+			}),
+		);
+		expect(projects[0].leads[0].codexProfile).toBe("write-capable");
+	});
+
+	it("FLY-350 (Z, R2-4): rejects codexProfile:write-capable combined with companion:true", () => {
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
 			{
 				projectName: "geo",
@@ -1272,12 +1283,13 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 						match: { labels: ["Product"] },
 						backend: "codex-app-server",
 						codexProfile: "write-capable",
+						companion: true,
 						canSpawnRunners: false,
 					},
 				],
 			},
 		]);
-		expect(() => loadProjects()).toThrow(/codexProfile/);
+		expect(() => loadProjects()).toThrow(/write-capable.*companion/);
 	});
 
 	it("rejects an unknown codexProfile value", () => {

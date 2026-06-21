@@ -22,7 +22,10 @@ import {
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertGatewayOnlyToolSurface } from "./action-surface.js";
+import {
+	assertGatewayOnlyToolSurface,
+	GATEWAY_ACTION_TOOL_NAMES,
+} from "./action-surface.js";
 import { buildCodexLeadMcpArgv } from "./buildCodexLeadMcpArgv.js";
 import {
 	CodexDiscordGateway,
@@ -34,6 +37,7 @@ import { CodexOutboundSender } from "./CodexOutboundSender.js";
 import { CodexTurnExecutor } from "./CodexTurnExecutor.js";
 import { assertConfinement, extractThreadDescriptor } from "./confinement.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
+import { parseOwnerRepo } from "./gateway/GitPushRunner.js";
 import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import { LeadHealthProbe } from "./LeadHealthProbe.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
@@ -99,13 +103,13 @@ export interface CodexLeadRuntimeConfig {
 	 * asserts the profile is active (see read-deny-profile.ts). */
 	readDeny: boolean;
 	/** FLY-350: Codex Lead capability profile (env FLYWHEEL_CODEX_LEAD_PROFILE).
-	 * "content-coordination" enables the narrow lead-actions MCP (proactive
-	 * discord_send + the parent broker + the §10 fail-closed inventory gate);
-	 * absent / anything else = "companion" = unchanged read-only companion
-	 * (byte-compat, lead-actions dormant). NEVER write-capable — both tiers keep
-	 * sandbox=read-only + read-deny. An unknown value falls SAFE to "companion"
-	 * (the MCP never silently activates on a typo). */
-	codexProfile: "companion" | "content-coordination";
+	 * "content-coordination" enables the narrow lead-actions MCP (read-only +
+	 * proactive discord_send); "write-capable" (Z) = net-off workspace-write shell +
+	 * the gateway (git_push/open_pr/discord_send); absent = "companion" = read-only
+	 * chat. An UNKNOWN value is fail-loud at parse (R2-4) — never a silent default,
+	 * so a launcher typo can't half-enable a tier. Profile ↔ sandbox consistency is
+	 * asserted in `parseCodexLeadRuntimeConfig`. */
+	codexProfile: CodexLeadProfile;
 	/** FLY-245 Phase A: canonical write-capable Lead scratch workspace (plan §3.3).
 	 * Resolved + validated (realpath; no overlap with control-plane/state/CODEX_HOME)
 	 * only for write-capable sandboxes when `FLYWHEEL_CODEX_LEAD_WORKSPACE` is set;
@@ -124,6 +128,16 @@ export interface CodexLeadRuntimeConfig {
 	/** FLY-245 F-b (write-capable only): channel the founder-confirmation messages
 	 * post to (defaults to the Lead chat channel). */
 	gatewayConfirmChannelId?: string;
+	/** FLY-350 (Z) unit 4 (write-capable only): the fine-grained GH_TOKEN
+	 * (contents:write + pull_requests:write) for gateway-proxied git_push/open_pr.
+	 * Served ONLY over the broker into the gateway child — NEVER the model shell
+	 * (net-off, no token). Optional: absent → the gateway's git_push/open_pr fail
+	 * closed at call time (the dormant FLY-245 path needs no GH token). */
+	githubToken?: string;
+	/** FLY-350 (Z) unit 4 (write-capable only): the project's GitHub repo slug
+	 * ("owner/repo") — scopes git_push/open_pr to THIS Lead's repo (never inferred
+	 * from model-controlled local git state). */
+	projectRepo?: string;
 }
 
 /** Codex app-server sandbox modes (schema `SandboxMode`). */
@@ -131,6 +145,18 @@ export type CodexSandboxMode =
 	| "read-only"
 	| "workspace-write"
 	| "danger-full-access";
+
+/** FLY-350: Codex Lead capability tiers. `companion` = read-only chat; `content-
+ * coordination` = read-only + the lead-actions MCP; `write-capable` (Z) = net-off
+ * workspace-write shell + the gateway (git_push/open_pr/discord_send). The runtime,
+ * ProjectConfig, and fleet-capabilities share this ONE enum so a typo/drift can
+ * never silently activate a tier (R2-4). */
+export const CODEX_LEAD_PROFILES = [
+	"companion",
+	"content-coordination",
+	"write-capable",
+] as const;
+export type CodexLeadProfile = (typeof CODEX_LEAD_PROFILES)[number];
 
 // ── FLY-245 Phase A: write-capable confinement (plan §3.1/§3.3) ──────────────
 //
@@ -387,18 +413,41 @@ export function parseCodexLeadRuntimeConfig(
 			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_READ_DENY=1 requires sandbox=read-only (got "${sandboxMode}") — write-capable read-deny is a FLY-245 follow-up`,
 		);
 	}
-	// FLY-350: capability profile. Only the EXACT string activates content-
-	// coordination (the lead-actions MCP); anything else falls SAFE to companion
-	// so a typo never silently enables the action surface. content-coordination is
-	// read-only model exec + an MCP — fail-loud if someone pairs it with a write-
-	// capable sandbox (it must keep sandbox=read-only, like a companion).
-	const codexProfile: "companion" | "content-coordination" =
-		env.FLYWHEEL_CODEX_LEAD_PROFILE?.trim() === "content-coordination"
-			? "content-coordination"
-			: "companion";
+	// FLY-350: capability profile. R2-4 (codex round-2 MED): an UNKNOWN profile is
+	// fail-loud — NOT a silent fall to companion. The old "anything else → companion"
+	// meant a launcher typo could run `sandbox=workspace-write` under an unrecognized
+	// profile (silent write-capable). Now the recognized set is explicit and a typo
+	// throws at parse. Profile ↔ sandbox consistency is asserted per tier.
+	const profileRaw = env.FLYWHEEL_CODEX_LEAD_PROFILE?.trim() || "companion";
+	if (!(CODEX_LEAD_PROFILES as readonly string[]).includes(profileRaw)) {
+		throw new Error(
+			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE="${profileRaw}" invalid (one of: ${CODEX_LEAD_PROFILES.join(", ")}) — fail-loud, never silently default (R2-4)`,
+		);
+	}
+	const codexProfile = profileRaw as CodexLeadProfile;
+	// content-coordination = read-only model exec + the lead-actions MCP (never write).
 	if (codexProfile === "content-coordination" && sandboxMode !== "read-only") {
 		throw new Error(
 			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE=content-coordination requires sandbox=read-only (got "${sandboxMode}") — the lead-actions tier is read-only model exec + MCP, never write-capable (FLY-350)`,
+		);
+	}
+	// FLY-350 (Z): write-capable = net-off workspace-write shell + the gateway
+	// (git_push/open_pr/discord_send). The profile and the sandbox are kept in a
+	// BIDIRECTIONAL lockstep so the profile is the SSOT (plan §3.5; Codex review
+	// MEDIUM — closes the "sandbox=workspace-write but profile=companion" drift
+	// where fleet/config would mislabel an actually-write-capable Lead):
+	//   - write-capable REQUIRES workspace-write (a write-capable read-only shell
+	//     is a contradiction), AND
+	//   - workspace-write REQUIRES the write-capable profile (no silent
+	//     write-capability under companion/content-coordination).
+	if (codexProfile === "write-capable" && sandboxMode !== "workspace-write") {
+		throw new Error(
+			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE=write-capable requires sandbox=workspace-write (got "${sandboxMode}") — the (Z) write-capable Lead is a net-off workspace-write shell + gateway (FLY-350)`,
+		);
+	}
+	if (sandboxMode === "workspace-write" && codexProfile !== "write-capable") {
+		throw new Error(
+			`codex-lead-runtime: sandbox=workspace-write requires FLYWHEEL_CODEX_LEAD_PROFILE=write-capable (got "${codexProfile}") — workspace-write IS the write-capable tier; the explicit profile is the SSOT so config/fleet/runtime can never drift (FLY-350 §3.5)`,
 		);
 	}
 	// Code-review HIGH-3: content-coordination MUST run under read-deny. Without it
@@ -420,6 +469,8 @@ export function parseCodexLeadRuntimeConfig(
 	let cliVersionAllowlist: string[] | undefined;
 	let gatewayEntry: string | undefined;
 	let gatewayConfirmChannelId: string | undefined;
+	let githubToken: string | undefined;
+	let projectRepo: string | undefined;
 	if (sandboxMode !== "read-only") {
 		// Resolve the gateway deploy path FIRST — it (and the teamlead checkout +
 		// codex binary) are the trusted control-plane roots the scratch workspace
@@ -449,6 +500,12 @@ export function parseCodexLeadRuntimeConfig(
 		cliVersionAllowlist = allowlist.length > 0 ? allowlist : undefined;
 		gatewayConfirmChannelId =
 			env.FLYWHEEL_GATEWAY_CONFIRM_CHANNEL_ID?.trim() || chatChannelId;
+		// FLY-350 (Z) unit 4: gateway-proxied PR inputs. The GH_TOKEN is a SECRET
+		// (broker-served into the gateway only — never the shell). projectRepo is a
+		// non-secret coordinate. Both optional at parse; git_push/open_pr fail
+		// closed at call time when the token/repo are absent.
+		githubToken = env.FLYWHEEL_GATEWAY_GITHUB_TOKEN?.trim() || undefined;
+		projectRepo = env.FLYWHEEL_GATEWAY_PROJECT_REPO?.trim() || undefined;
 	}
 
 	return {
@@ -481,6 +538,8 @@ export function parseCodexLeadRuntimeConfig(
 		cliVersionAllowlist,
 		gatewayEntry,
 		gatewayConfirmChannelId,
+		githubToken,
+		projectRepo,
 	};
 }
 
@@ -617,6 +676,13 @@ export interface WriteCapableRelease {
 	cliVersionAllowlist: string[];
 	gatewayEntry: string;
 	gatewayConfirmChannelId: string;
+	/** FLY-350 (Z) unit 5: gateway-proxied PR scope — the GH_TOKEN SOURCE (the
+	 * value is broker-served, never echoed in the release) + the validated
+	 * owner/repo. A write-capable (Z) Lead is PR-capable, so both are required at
+	 * boot (fail-loud); the runtime probe re-validates the token's actual scope
+	 * at call time. */
+	githubTokenConfigured: boolean;
+	projectRepo: string;
 }
 
 /**
@@ -695,6 +761,28 @@ export function assertWriteCapableRelease(
 	if (!config.gatewayConfirmChannelId) {
 		failures.push("founder-confirmation channel missing (⑤/§5.6)");
 	}
+	// FLY-350 (Z) unit 5: a write-capable Lead is PR-capable — the gateway-proxied
+	// git_push/open_pr REQUIRE a broker-served GH_TOKEN + a valid project repo.
+	// Boot-time fail-loud on the SOURCE (presence + slug shape); the runtime
+	// probeGitHubToken re-validates the token's actual scope/actor at call time.
+	if (!config.githubToken) {
+		failures.push(
+			"FLYWHEEL_GATEWAY_GITHUB_TOKEN missing — a write-capable (Z) Lead is PR-capable and needs the broker-served fine-grained GH_TOKEN (contents:write + pull_requests:write)",
+		);
+	}
+	if (!config.projectRepo) {
+		failures.push(
+			"FLYWHEEL_GATEWAY_PROJECT_REPO missing — git_push/open_pr must be scoped to an owner/repo",
+		);
+	} else {
+		try {
+			parseOwnerRepo(config.projectRepo);
+		} catch {
+			failures.push(
+				`FLYWHEEL_GATEWAY_PROJECT_REPO "${config.projectRepo}" is not a valid "owner/repo" slug`,
+			);
+		}
+	}
 	if (failures.length > 0) {
 		throw new Error(
 			`codex-lead-runtime: write-capable sandbox REFUSED (fail-closed, FLY-245 §7) — ${failures.join("; ")}`,
@@ -706,6 +794,8 @@ export function assertWriteCapableRelease(
 		cliVersionAllowlist: config.cliVersionAllowlist as string[],
 		gatewayEntry: config.gatewayEntry as string,
 		gatewayConfirmChannelId: config.gatewayConfirmChannelId as string,
+		githubTokenConfigured: Boolean(config.githubToken),
+		projectRepo: config.projectRepo as string,
 	};
 }
 
@@ -789,6 +879,11 @@ export function buildCodexLeadRuntime(
 				secrets: {
 					DISCORD_BOT_TOKEN: config.botToken,
 					FLYWHEEL_API_TOKEN: config.apiToken,
+					// FLY-350 (Z) unit 4: the fine-grained GH_TOKEN for gateway-proxied
+					// git_push/open_pr — broker-served into the gateway child ONLY, never
+					// the model shell. Omitted when unconfigured (git_push/open_pr then
+					// fail closed at call time).
+					...(config.githubToken ? { GITHUB_TOKEN: config.githubToken } : {}),
 				},
 			})
 		: undefined;
@@ -817,6 +912,15 @@ export function buildCodexLeadRuntime(
 						// forwarding this, the gateway built untrustedRoots=[] and silently
 						// disabled the overlap check.
 						"FLYWHEEL_CODEX_LEAD_WORKSPACE",
+						// FLY-350 (Z) unit 3: discord_send alias coordinates (non-secret).
+						// The gateway resolves "chat"/"roundtable" → channel id server-side.
+						"FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
+						"FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
+						"FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES",
+						// FLY-350 (Z) unit 4: gateway-proxied PR scope (non-secret;
+						// "owner/repo"). The GH_TOKEN itself travels over the broker, NOT
+						// the env — so it is deliberately NOT listed here.
+						"FLYWHEEL_GATEWAY_PROJECT_REPO",
 					],
 				},
 			})
@@ -846,6 +950,19 @@ export function buildCodexLeadRuntime(
 				// trust whatever raw value the ambient env happened to carry, so the
 				// gateway's worktree-overlap check is always against the real scratch.
 				FLYWHEEL_CODEX_LEAD_WORKSPACE: release.workspace,
+				// FLY-350 (Z) unit 3: discord_send alias coordinates (non-secret) —
+				// pin from the runtime config so the gateway's alias allowlist matches
+				// the Lead's actual chat + cross-dept channels. An alias pin
+				// (FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES), if set, passes through the
+				// inherited process.env above.
+				FLYWHEEL_LEAD_CHAT_CHANNEL_ID: config.chatChannelId,
+				FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:
+					config.crossDeptChannelIds.join(","),
+				// FLY-350 (Z) unit 4: non-secret PR scope (owner/repo). The GH_TOKEN
+				// travels over the broker, never the gateway child env.
+				...(config.projectRepo
+					? { FLYWHEEL_GATEWAY_PROJECT_REPO: config.projectRepo }
+					: {}),
 			}
 		: undefined;
 
@@ -1068,6 +1185,21 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 	const mcp = buildCodexLeadMcpArgv({ chrome: config.chrome });
 	const noBridge = config.outboundMode === "direct";
 	const persona = readBaseInstructions(config.systemPromptFiles);
+	// FLY-350 (Z) L-1 (Codex review LOW): a write-capable Lead's dry-run must
+	// surface the audited Z-mode fields — gateway injection + EXACT 5-tool surface,
+	// net-off, the single writable root, the project repo, and the GH-token SOURCE
+	// (redacted) — not the read-only MCP report. The values come from config; the
+	// release gate + runtime assertions are what ENFORCE them (this is disclosure).
+	const writeCapable = config.sandboxMode === "workspace-write";
+	const writeCapableLines = writeCapable
+		? [
+				`(Z) gateway   : flywheel_gateway MCP — tool surface = EXACTLY [${GATEWAY_ACTION_TOOL_NAMES.join(", ")}] (⑧ runtime assert)`,
+				`(Z) network   : OFF (buildConfinementArgv network_access=false — shell cannot curl/push)`,
+				`(Z) writable  : ${config.workspace ?? "(unset — release gate fail-closes)"} (ONLY writable root; net-off)`,
+				`(Z) PR scope  : repo=${config.projectRepo ?? "(unset — release gate fail-closes)"} GH_TOKEN=${config.githubToken ? `${redactSecret(config.githubToken)} (broker-served to gateway ONLY; washed from model env)` : "(unset — git_push/open_pr fail-closed)"}`,
+				`(Z) merge     : STRUCTURALLY impossible (no :cool:/merge tool, net-off shell, no shell token)`,
+			]
+		: [];
 	return [
 		"=== CODEX LEAD DRY RUN (nothing started) ===",
 		`ROLE          : lead / companion-style (project ${config.projectName})`,
@@ -1085,6 +1217,7 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 		`prod Bridge   : ${noBridge ? "NOT CONNECTED (zero prod intrusion)" : "WILL CONNECT (bridge mode)"}`,
 		`persona       : ${persona ? `baseInstructions ${persona.length} chars from ${config.systemPromptFiles.length} file(s) → injected` : "(none — default Codex persona; set FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)"}`,
 		`policy        : approvalPolicy=never sandbox=${config.sandboxMode}${config.sandboxMode === "read-only" ? " (companion — read+chat only, cannot act)" : " ⚠️ WRITE-CAPABLE (FLY-245 founder gate: 8-condition release + runtime confinement assertions)"}`,
+		...writeCapableLines,
 		`read-deny     : ${config.readDeny ? "ON (FLY-260) — legacy sandbox param OMITTED; CODEX_HOME config default_permissions=flywheel-lead-secret-deny enforces read-deny + env exclude; boot ephemeral-start asserts the profile; flag-on cutover MUST restart the remote-control daemon so it re-reads config (brief TUI blip; liveness loop recreates)" : "off (byte-compat — legacy sandbox pin in effect)"}`,
 		`CODEX_HOME    : ${config.codexHome} (isolated per-Lead — not the host ~/.codex)`,
 		`codex bin     : ${config.codexBin}`,
