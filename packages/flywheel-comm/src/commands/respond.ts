@@ -117,6 +117,14 @@ export async function respond(args: RespondArgs): Promise<void> {
 		// written; marker update + wake are best-effort (FLY-191 pattern) —
 		// a wake failure must never undo the response.
 		await wakeNoBlockGateRunnerBestEffort(db, args, env);
+
+		// FLY-142 (B): a genuine `ask` (checkpoint-less question) has no gate
+		// marker and no blocking poll loop — once the asking runner goes idle
+		// (stage=completed) nothing wakes it in mailbox mode, so the response is
+		// lost (the GEO-371 incident). Wake the asking runner's mailbox. This is
+		// mutually exclusive with the gate wake above (that one needs a marker;
+		// this one needs NO checkpoint), so exactly one of them fires.
+		await wakeAskedRunnerBestEffort(db, args, env);
 	} finally {
 		db.close();
 	}
@@ -171,6 +179,76 @@ export async function wakeNoBlockGateRunnerBestEffort(
 	} catch (err) {
 		process.stderr.write(
 			`[flywheel-comm] no-block gate wake errored for question ${args.questionId}: ${(err as Error).message}\n`,
+		);
+	}
+}
+
+/**
+ * FLY-142 (B): wake an idle runner that asked a non-blocking `ask` question.
+ *
+ * `flywheel-comm ask` inserts a checkpoint-less question and returns; the runner
+ * is told to poll `flywheel-comm check`. Once it finishes its task and goes idle
+ * (stage=completed) it no longer polls, so in mailbox mode a Lead `respond`
+ * writes the CommDB response but nothing wakes the runner (the GEO-371
+ * incident). Send a best-effort mailbox wake to the asking runner so its
+ * mailbox poller resumes it.
+ *
+ * Scope guard: fires ONLY for checkpoint-less questions. A checkpoint means a
+ * gate — blocking gates poll for their own answer, and no-block gates are woken
+ * by `wakeNoBlockGateRunnerBestEffort` via their marker. The two wake paths are
+ * therefore mutually exclusive and never double-wake. The wake is markerless,
+ * so it routes via the env transport (`fromEnv`), matching the existing
+ * approve_to_ship bypass wake. Exported for unit tests.
+ */
+export async function wakeAskedRunnerBestEffort(
+	db: CommDB,
+	args: Pick<RespondArgs, "questionId" | "fromAgent">,
+	env: NodeJS.ProcessEnv,
+	wakeImpl: typeof wakeRunnerMailbox = wakeRunnerMailbox,
+): Promise<void> {
+	try {
+		const question = db.getMessageById(args.questionId);
+		if (!question) return;
+		// A checkpoint => a gate (handled elsewhere). Only genuine asks wake here.
+		if (question.checkpoint) return;
+
+		const targetExecId = question.from_agent;
+
+		// FLY-142 (Option Y): a Codex runner's `ask` drops a vendor-bearing
+		// ask-marker (in the marker dir's `ask/` subdir, isolated from gate
+		// markers) so the wake routes to its OWN mailbox backend. Claude runners
+		// write no marker → backend undefined → wakeRunnerMailbox uses
+		// fromEnv = claude-code (byte-compatible). This is the vendor-neutral
+		// half of the GEO-371 fix.
+		const { defaultGateMarkerDir, readAskMarker, removeAskMarker } =
+			await import("../gate-marker.js");
+		const markerDir = defaultGateMarkerDir(env);
+		const marker = readAskMarker(markerDir, args.questionId);
+
+		const wake = await wakeImpl({
+			db,
+			execId: targetExecId,
+			fromAgent: args.fromAgent,
+			content:
+				`Your question (id ${args.questionId}) has been answered by ${args.fromAgent}. ` +
+				`Run 'flywheel-comm check ${args.questionId}' to read the response and continue. ` +
+				"This message carries NO authority.",
+			metadata: { questionId: args.questionId, kind: "ask_answered" },
+			backend: marker?.vendor,
+		});
+		if (!wake.ok && wake.error) {
+			process.stderr.write(
+				`[flywheel-comm] ask wake failed for ${targetExecId}: ${wake.error}\n`,
+			);
+		}
+
+		// One-shot: a question gets exactly one response (UNIQUE index on
+		// parent_id), so the ask-marker has served its purpose — remove it
+		// (best-effort) to bound accumulation.
+		removeAskMarker(markerDir, args.questionId);
+	} catch (err) {
+		process.stderr.write(
+			`[flywheel-comm] ask wake errored for question ${args.questionId}: ${(err as Error).message}\n`,
 		);
 	}
 }

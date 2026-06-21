@@ -149,3 +149,70 @@ export function listGateMarkersForExecution(
 	}
 	return result;
 }
+
+/**
+ * FLY-142 (Option Y): ask-markers mirror the gate-marker mechanism for the
+ * non-blocking `flywheel-comm ask`. They carry the asking runner's transport
+ * vendor so a Lead `respond` can route the mailbox wake to the RIGHT backend
+ * (Codex, not the env default) — the vendor-neutral fix for the GEO-371 wake.
+ *
+ * They live in an `ask/` SUBDIRECTORY of the marker dir so they are invisible
+ * to the gate-marker machinery: `readGateMarker` looks at `<dir>/<id>.json` and
+ * the adapter's `listGateMarkersForExecution` reads only `<dir>/*.json`
+ * (non-recursive, skipping the `ask` directory entry). An unanswered ask is
+ * therefore never misclassified as an awaiting-gate park, and the two wake
+ * paths never collide.
+ */
+export interface AskMarker {
+	questionId: string;
+	/** The runner that asked — the wake target. */
+	executionId: string;
+	/** Transport vendor id of the asking runner (e.g. "codex"). */
+	vendor: string;
+	createdAt: string;
+}
+
+function askMarkerDir(dir: string): string {
+	return join(dir, "ask");
+}
+
+export function writeAskMarker(
+	dir: string,
+	marker: Omit<AskMarker, "createdAt"> & { createdAt?: string },
+): void {
+	const adir = askMarkerDir(dir);
+	mkdirSync(adir, { recursive: true, mode: 0o700 });
+	const full: AskMarker = {
+		...marker,
+		createdAt: marker.createdAt ?? new Date().toISOString(),
+	};
+	writeFileSync(
+		markerPath(adir, marker.questionId),
+		JSON.stringify(full, null, 2),
+		{ encoding: "utf-8", mode: 0o600 },
+	);
+}
+
+export function readAskMarker(
+	dir: string,
+	questionId: string,
+): AskMarker | undefined {
+	const p = markerPath(askMarkerDir(dir), questionId);
+	if (!existsSync(p)) return undefined;
+	try {
+		const raw = JSON.parse(readFileSync(p, "utf-8")) as AskMarker;
+		if (raw.questionId !== questionId) return undefined; // corrupted / mismatched
+		return raw;
+	} catch {
+		return undefined;
+	}
+}
+
+export function removeAskMarker(dir: string, questionId: string): void {
+	try {
+		rmSync(markerPath(askMarkerDir(dir), questionId), { force: true });
+	} catch {
+		// best-effort — orphaned ask-markers (ask never answered) are tiny; a
+		// terminal sweep is a follow-up, mirroring gate-marker cleanup.
+	}
+}
