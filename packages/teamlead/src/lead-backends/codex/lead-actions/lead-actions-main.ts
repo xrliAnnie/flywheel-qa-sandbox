@@ -24,6 +24,7 @@ import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { runDiscordSend } from "../discord-send-core.js";
 import { fetchSecretsFromBroker } from "../secret-broker.js";
+import type { LeadActionsConfig } from "./config.js";
 import { parseLeadActionsConfig } from "./config.js";
 import { LEAD_ACTIONS_TOOLS } from "./mcp-config.js";
 import {
@@ -46,7 +47,50 @@ if (
 }
 
 /**
- * Assemble + run the lead-actions MCP server: broker secret → McpServer →
+ * FLY-304 — resolve the Discord bot token by config MODE, fail-closed.
+ *  - "broker" (content-coordination): fetch over the parent SecretBroker unix
+ *    socket — the token never touches the model env/config (UNCHANGED).
+ *  - "env-token" (full-access): read DISCORD_BOT_TOKEN from the MCP child's own
+ *    env. A full-access Lead has no broker but already carries the token in its
+ *    allowlisted env (Claude-equal); the runtime forwards it BY NAME via
+ *    `env_vars`, never as a literal in argv.
+ * Either path throws (fail-closed) if no token is available — a proactive-send
+ * server with no token must refuse to start, not limp along.
+ */
+export async function resolveLeadActionsBotToken(
+	cfg: Pick<LeadActionsConfig, "mode" | "brokerSocketPath">,
+	env: NodeJS.ProcessEnv,
+	deps: { fetchBroker: typeof fetchSecretsFromBroker } = {
+		fetchBroker: fetchSecretsFromBroker,
+	},
+): Promise<string> {
+	if (cfg.mode === "broker") {
+		if (!cfg.brokerSocketPath) {
+			throw new Error(
+				"lead-actions: broker mode requires a broker socket path (fail-closed)",
+			);
+		}
+		const secrets = await deps.fetchBroker(cfg.brokerSocketPath);
+		const token = secrets.DISCORD_BOT_TOKEN;
+		if (!token) {
+			throw new Error(
+				"lead-actions: broker did not supply DISCORD_BOT_TOKEN (fail-closed)",
+			);
+		}
+		return token;
+	}
+	// env-token (full-access)
+	const token = env.DISCORD_BOT_TOKEN?.trim();
+	if (!token) {
+		throw new Error(
+			"lead-actions: env-token mode but DISCORD_BOT_TOKEN is absent from the MCP child env (fail-closed)",
+		);
+	}
+	return token;
+}
+
+/**
+ * Assemble + run the lead-actions MCP server: token (broker | env) → McpServer →
  * discord_send tool → stdio transport (awaits forever in production).
  */
 export async function leadActionsMain(
@@ -54,15 +98,9 @@ export async function leadActionsMain(
 ): Promise<void> {
 	const cfg = parseLeadActionsConfig(env);
 
-	// Secret ONLY via the parent broker — fail-closed (a secretless action server
-	// must refuse, not limp along).
-	const secrets = await fetchSecretsFromBroker(cfg.brokerSocketPath);
-	const botToken = secrets.DISCORD_BOT_TOKEN;
-	if (!botToken) {
-		throw new Error(
-			"lead-actions: broker did not supply DISCORD_BOT_TOKEN (fail-closed)",
-		);
-	}
+	// FLY-304: token by MODE — broker (content-coordination) or env (full-access);
+	// fail-closed if absent (a secretless action server must refuse, not limp along).
+	const botToken = await resolveLeadActionsBotToken(cfg, env);
 
 	const rateLimiter = new SlidingWindowRateLimiter({
 		maxPerWindow: cfg.rateMaxPerWindow,

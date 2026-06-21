@@ -27,6 +27,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { LEAD_ACTIONS_MCP_SERVER_NAME } from "./lead-actions/mcp-config.js";
 
 export const CHROME_MCP_PACKAGE = "chrome-devtools-mcp@1.1.1";
 export const CHROME_SERVER_NAME = "chrome_devtools";
@@ -52,18 +53,43 @@ export interface GatewayMcpConfig {
 	envVarNames?: string[];
 }
 
+/** FLY-304: the lead-actions MCP server command for a FULL-ACCESS Codex Lead
+ * (proactive discord_send). Unlike the gateway, the bot token is forwarded BY
+ * NAME via `envVarNames` (it is already in the full-access app-server env,
+ * Claude-equal) — never a literal in argv. The non-secret channel coordinates
+ * travel as literal `env` values. */
+export interface LeadActionsMcpConfig {
+	command: string;
+	args: string[];
+	/** Literal NON-SECRET env values (channel coords, state dir). A secret-shaped
+	 * key (`*TOKEN*`/`*SECRET*`/`*KEY*`) is rejected — the token goes via
+	 * `envVarNames`, never a literal. */
+	env?: Record<string, string>;
+	/** Env var NAMES to forward from the app-server env (e.g. DISCORD_BOT_TOKEN) —
+	 * never values. */
+	envVarNames?: string[];
+}
+
 export interface CodexLeadMcpOptions {
 	chrome?: ChromeMcpConfig;
 	/** FLY-245 Phase A2: when set (write-capable Lead), the MCP allowlist is
 	 * EXACTLY this gateway — Chrome and every other MCP are force-excluded. */
 	gateway?: GatewayMcpConfig;
+	/** FLY-304: when set (full-access Lead), inject the lead-actions MCP
+	 * (proactive discord_send). MUTUALLY EXCLUSIVE with `gateway` — a write-capable
+	 * Lead is gateway-only (a 2nd out-of-sandbox MCP would bypass that allowlist). */
+	leadActions?: LeadActionsMcpConfig;
 }
 
-/** A resolved MCP server to inject (no raw secrets — env by NAME only). */
+/** A resolved MCP server to inject (no raw secrets — env values are NON-SECRET
+ * coordinates only; secrets travel by NAME via `envVarNames`). */
 export interface McpServerSpec {
 	name: string;
 	command: string;
 	args: string[];
+	/** Literal NON-SECRET env values (e.g. channel ids). Secret-shaped keys are
+	 * rejected by `assertNoRawSecret`. */
+	env?: Record<string, string>;
 	/** Names of env vars to forward (values resolved by the spawner) — never values. */
 	envVarNames?: string[];
 }
@@ -85,6 +111,19 @@ export function buildCodexLeadMcpArgv(
 	const specs: McpServerSpec[] = [];
 	const warnings: string[] = [];
 
+	// FLY-304: gateway (write-capable) and leadActions (full-access) are mutually
+	// exclusive. The gateway path is an EXACT allowlist (gateway-only) precisely
+	// because MCP children run OUTSIDE the exec sandbox; a 2nd action MCP alongside
+	// it would be an action-bypass channel around the gateway. Fail LOUD, never
+	// silently pick one.
+	if (opts.gateway && opts.leadActions) {
+		throw new Error(
+			"buildCodexLeadMcpArgv: gateway + leadActions are mutually exclusive — " +
+				"a write-capable Lead is gateway-only (FLY-245 §3.2); full-access uses " +
+				"leadActions and has no gateway (FLY-304)",
+		);
+	}
+
 	if (opts.gateway) {
 		// FLY-245 Phase A2 — WRITE-CAPABLE: the allowlist is EXACTLY the gateway.
 		// Chrome (and any other MCP) is force-excluded: every MCP child runs outside
@@ -104,6 +143,21 @@ export function buildCodexLeadMcpArgv(
 				: {}),
 		});
 	} else {
+		// FLY-304 FULL-ACCESS: inject the lead-actions MCP (proactive discord_send).
+		// Not a strict allowlist like the gateway — full-access is Claude-equal /
+		// unconfined, so chrome (below) may coexist. The bot token is forwarded BY
+		// NAME (envVarNames); only NON-SECRET coordinates travel as literal `env`.
+		if (opts.leadActions) {
+			specs.push({
+				name: LEAD_ACTIONS_MCP_SERVER_NAME,
+				command: opts.leadActions.command,
+				args: opts.leadActions.args,
+				...(opts.leadActions.env ? { env: opts.leadActions.env } : {}),
+				...(opts.leadActions.envVarNames
+					? { envVarNames: opts.leadActions.envVarNames }
+					: {}),
+			});
+		}
 		// READ-ONLY companion path — unchanged (byte-compat with FLY-224).
 		// chrome-devtools-mcp — env-gated, non-critical.
 		if (opts.chrome?.enabled) {
@@ -180,6 +234,13 @@ function specToArgv(spec: McpServerSpec): string[] {
 		"-c",
 		`${base}.args=${tomlValue(spec.args)}`,
 	];
+	// FLY-304: literal NON-SECRET env values (e.g. channel coords) as dotted
+	// overrides. Sorted for deterministic argv / configHash.
+	if (spec.env) {
+		for (const k of Object.keys(spec.env).sort()) {
+			out.push("-c", `${base}.env.${k}=${tomlValue(spec.env[k] as string)}`);
+		}
+	}
 	if (spec.envVarNames && spec.envVarNames.length > 0) {
 		out.push("-c", `${base}.env_vars=${tomlValue(spec.envVarNames)}`);
 	}
@@ -216,6 +277,42 @@ function assertNoRawSecret(spec: McpServerSpec): void {
 			);
 		}
 	}
+	// FLY-304: literal `env` values land verbatim in argv — they must be NON-SECRET
+	// coordinates only. Reject loudly if EITHER (a) the KEY is secret-shaped
+	// (DISCORD_BOT_TOKEN, *SECRET*, *KEY*) OR (b) the VALUE looks like a high-signal
+	// secret even under a benign key (code-review R1#1: a future caller must not be
+	// able to smuggle `{ SAFE_COORD: "sk-…" }` into argv). The token must travel by
+	// NAME via `env_vars` instead.
+	for (const [k, v] of Object.entries(spec.env ?? {})) {
+		if (/token|secret|api[_-]?key|password|bearer/i.test(k)) {
+			throw new Error(
+				`buildCodexLeadMcpArgv: literal env key "${k}" is secret-shaped — a secret must travel by NAME via env_vars, never as a literal value in argv`,
+			);
+		}
+		if (looksLikeSecretValue(v)) {
+			throw new Error(
+				`buildCodexLeadMcpArgv: literal env value for "${k}" looks like a secret (high-signal token form) — a secret must travel by NAME via env_vars, never as a literal value in argv`,
+			);
+		}
+	}
+}
+
+/** FLY-304 (code-review R1#1): does a literal env VALUE look like a high-signal
+ * secret? Catches the common token shapes (OpenAI `sk-`, GitHub `ghp_`/PAT, Slack
+ * `xox*`, JWT, Discord bot-token 3-part) + a `key=value`/`bearer` form — WITHOUT
+ * false-positiving on the non-secret coordinates this feature passes (numeric
+ * channel ids, names, filesystem paths, `alias:id` pins). Defense-in-depth so the
+ * builder enforces the "no raw secret value" invariant it documents. */
+function looksLikeSecretValue(v: unknown): boolean {
+	if (typeof v !== "string") return false;
+	return (
+		/(token|secret|api[_-]?key|password|bearer)\s*[=:]\s*\S/i.test(v) ||
+		/(sk-[A-Za-z0-9]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}|xox[baprs]-[A-Za-z0-9-]{8,}|Bearer\s+\S+)/.test(
+			v,
+		) ||
+		/eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/.test(v) || // JWT
+		/^[A-Za-z0-9_-]{24,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{20,}$/.test(v) // Discord bot token shape
+	);
 }
 
 /** Stable hash of the effective injected config (order-independent per server). */
@@ -227,6 +324,11 @@ function hashConfig(specs: McpServerSpec[]): string {
 				name: s.name,
 				command: s.command,
 				args: s.args,
+				env: s.env
+					? Object.fromEntries(
+							Object.entries(s.env).sort(([a], [b]) => a.localeCompare(b)),
+						)
+					: undefined,
 				envVarNames: [...(s.envVarNames ?? [])].sort(),
 			})),
 	);

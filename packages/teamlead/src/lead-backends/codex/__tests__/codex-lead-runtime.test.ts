@@ -440,8 +440,13 @@ describe("sandbox policy (review HIGH-1: pin approvalPolicy + sandbox)", () => {
 // ── FLY-350: generic full-access Codex Lead (= Claude-equal) ────────────────
 describe("FLY-350 full-access profile (= Claude-equal, opt-in)", () => {
 	let projDir: string;
+	// FLY-304: a real (stub) lead-actions entry so the runtime's existsSync
+	// fail-closed (resolveLeadActionsEntry) passes in tests where the dist isn't built.
+	let leadActionsEntry: string;
 	beforeEach(() => {
 		projDir = realpathSync(mkdtempSync(join(tmpdir(), "fly350-fa-proj-")));
+		leadActionsEntry = join(projDir, "lead-actions-main.js");
+		writeFileSync(leadActionsEntry, "// stub lead-actions entry\n");
 	});
 	afterEach(() => {
 		rmSync(projDir, { recursive: true, force: true });
@@ -452,6 +457,8 @@ describe("FLY-350 full-access profile (= Claude-equal, opt-in)", () => {
 			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
 			FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
 			FLYWHEEL_CODEX_LEAD_PROJECT_DIR: projDir,
+			// FLY-304: point at the stub entry (prod resolves dist next to the runtime).
+			FLYWHEEL_LEAD_ACTIONS_ENTRY: leadActionsEntry,
 			...over,
 		});
 	}
@@ -528,6 +535,131 @@ describe("FLY-350 full-access profile (= Claude-equal, opt-in)", () => {
 			// full-access constructs cleanly — its control is the founder-gate rule
 			// bundle + branch protection, not the confinement/gateway release gate.
 			expect(() => buildCodexLeadRuntime(config, silentLogger)).not.toThrow();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	// FLY-304: proactive discord_send wiring for full-access.
+	it("full-access wires proactive discord_send + surfaces roundtable AVAILABLE", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly304-state-"));
+		try {
+			const logs: string[] = [];
+			const cap = {
+				info: (m: string) => logs.push(m),
+				warn: () => {},
+				error: () => {},
+			};
+			const config = parseCodexLeadRuntimeConfig(
+				fullAccessEnv({
+					FLYWHEEL_CODEX_LEAD_STATE_DIR: dir,
+					FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "1512578695468941333",
+				}),
+			);
+			expect(config.leadActionsEntry).toBe(leadActionsEntry);
+			expect(() => buildCodexLeadRuntime(config, cap)).not.toThrow();
+			const line = logs.find((l) => /proactive discord_send enabled/.test(l));
+			expect(line).toBeDefined();
+			expect(line).toMatch(/roundtable available \(1512578695468941333\)/);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("full-access logs roundtable UNAVAILABLE when no cross-dept channel", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly304-state-"));
+		try {
+			const logs: string[] = [];
+			const cap = {
+				info: (m: string) => logs.push(m),
+				warn: () => {},
+				error: () => {},
+			};
+			const config = parseCodexLeadRuntimeConfig(
+				fullAccessEnv({ FLYWHEEL_CODEX_LEAD_STATE_DIR: dir }),
+			);
+			buildCodexLeadRuntime(config, cap);
+			expect(logs.some((l) => /roundtable UNAVAILABLE/.test(l))).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("full-access FAIL-CLOSES when the lead-actions entry is not deployed (item 2)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly304-state-"));
+		try {
+			const config = parseCodexLeadRuntimeConfig(
+				fullAccessEnv({
+					FLYWHEEL_CODEX_LEAD_STATE_DIR: dir,
+					FLYWHEEL_LEAD_ACTIONS_ENTRY: join(projDir, "does-not-exist.js"),
+				}),
+			);
+			expect(() => buildCodexLeadRuntime(config, silentLogger)).toThrow(
+				/lead-actions entry not deployed/,
+			);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	// FLY-304 R1#3: dry-run preflight must reflect the LIVE full-access MCP injection
+	// (lead_actions + token-by-name), never the token value.
+	it("dry-run reflects lead_actions injection + token-by-name, never the token value", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			fullAccessEnv({
+				DISCORD_BOT_TOKEN: "topsecrettoken1234567890",
+				FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "1512578695468941333",
+			}),
+		);
+		const report = dryRunReport(config).join("\n");
+		expect(report).toMatch(/MCP injected\s*:.*lead_actions/);
+		expect(report).toContain('env_vars=["DISCORD_BOT_TOKEN"]');
+		// the raw token VALUE must never appear (redacted bot-token line shows ≤4 chars).
+		expect(report).not.toContain("topsecrettoken1234567890");
+		// literal env carries non-secret coords only.
+		expect(report).toContain(
+			"mcp_servers.lead_actions.env.FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
+		);
+	});
+
+	// FLY-304 R1#2: full-access forwards the explicit roundtable alias pin so the
+	// documented multi-cross-dept disambiguation actually reaches the MCP child.
+	it("forwards FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES to the lead_actions child", () => {
+		const config = parseCodexLeadRuntimeConfig(
+			fullAccessEnv({
+				FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "111,222",
+				FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES: "roundtable:222",
+			}),
+		);
+		expect(config.leadActionsChannelAliases).toBe("roundtable:222");
+		const report = dryRunReport(config).join("\n");
+		expect(report).toContain(
+			'mcp_servers.lead_actions.env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES="roundtable:222"',
+		);
+	});
+
+	// R2#1: the boot log must reflect a valid pin (not say "ambiguous") so operator
+	// preflight evidence matches what the MCP child actually authorizes.
+	it("boot log reports the PINNED roundtable target for multi cross-dept (R2#1)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly304-state-"));
+		try {
+			const logs: string[] = [];
+			const cap = {
+				info: (m: string) => logs.push(m),
+				warn: () => {},
+				error: () => {},
+			};
+			const config = parseCodexLeadRuntimeConfig(
+				fullAccessEnv({
+					FLYWHEEL_CODEX_LEAD_STATE_DIR: dir,
+					FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "111,222",
+					FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES: "roundtable:222",
+				}),
+			);
+			buildCodexLeadRuntime(config, cap);
+			const line = logs.find((l) => /proactive discord_send enabled/.test(l));
+			expect(line).toMatch(/roundtable available \(pinned 222\)/);
+			expect(line).not.toMatch(/ambiguous/);
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}

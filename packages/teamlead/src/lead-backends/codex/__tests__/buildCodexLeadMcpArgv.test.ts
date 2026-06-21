@@ -178,3 +178,139 @@ describe("assertMcpInventory (FLY-245 Phase A2 startup assertion)", () => {
 		expect(() => assertMcpInventory(["b", "a"], ["a", "b"])).not.toThrow();
 	});
 });
+
+describe("buildCodexLeadMcpArgv — FLY-304 full-access leadActions (proactive discord_send)", () => {
+	const leadActions = {
+		command: "/usr/bin/node",
+		args: ["/dist/lead-actions/lead-actions-main.js"],
+		env: {
+			FLYWHEEL_LEAD_ID: "mufasa-lead",
+			FLYWHEEL_PROJECT_NAME: "growth",
+			FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
+			FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "1512578695468941333",
+			FLYWHEEL_LEAD_ACTIONS_STATE_DIR: "/state",
+		},
+		envVarNames: ["DISCORD_BOT_TOKEN"],
+	};
+
+	it("injects EXACTLY the lead_actions server with command + args", () => {
+		const r = buildCodexLeadMcpArgv({ leadActions });
+		expect(r.included).toEqual(["lead_actions"]);
+		expect(r.warnings).toEqual([]);
+		expect(r.argv).toContain(
+			'mcp_servers.lead_actions.command="/usr/bin/node"',
+		);
+		const argsEntry = r.argv.find((a) =>
+			a.startsWith("mcp_servers.lead_actions.args="),
+		);
+		expect(argsEntry).toContain("lead-actions-main.js");
+	});
+
+	it("emits non-secret channel coords as literal env.K=value (sorted)", () => {
+		const r = buildCodexLeadMcpArgv({ leadActions });
+		expect(r.argv).toContain(
+			'mcp_servers.lead_actions.env.FLYWHEEL_LEAD_ID="mufasa-lead"',
+		);
+		expect(r.argv).toContain(
+			'mcp_servers.lead_actions.env.FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307"',
+		);
+		expect(r.argv).toContain(
+			'mcp_servers.lead_actions.env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="1512578695468941333"',
+		);
+	});
+
+	it("forwards the bot token BY NAME via env_vars — never a literal value", () => {
+		const r = buildCodexLeadMcpArgv({ leadActions });
+		expect(r.argv).toContain(
+			'mcp_servers.lead_actions.env_vars=["DISCORD_BOT_TOKEN"]',
+		);
+		// the token NAME may appear (in env_vars), but never as a literal `env.X=`.
+		expect(
+			r.argv.some((a) => a.startsWith("mcp_servers.lead_actions.env.DISCORD")),
+		).toBe(false);
+	});
+
+	it("leadActions + chrome COEXIST (full-access is not a strict allowlist)", () => {
+		const r = buildCodexLeadMcpArgv({
+			leadActions,
+			chrome: { enabled: true, browserUrl: "http://127.0.0.1:9222" },
+		});
+		expect(r.included).toContain("lead_actions");
+		expect(r.included).toContain(CHROME_SERVER_NAME);
+	});
+
+	it("THROWS on gateway + leadActions (mutually exclusive)", () => {
+		expect(() =>
+			buildCodexLeadMcpArgv({
+				gateway: { command: "/gw", args: ["--stdio"] },
+				leadActions,
+			}),
+		).toThrow(/mutually exclusive/i);
+	});
+
+	it("REJECTS a secret-shaped literal env key (token must go via env_vars)", () => {
+		expect(() =>
+			buildCodexLeadMcpArgv({
+				leadActions: {
+					...leadActions,
+					env: { ...leadActions.env, DISCORD_BOT_TOKEN: "sk-leaked" },
+				},
+			}),
+		).toThrow(/secret-shaped/i);
+	});
+
+	it("REJECTS a secret-shaped literal env VALUE under a benign key (R1#1)", () => {
+		// A future caller must not smuggle a raw token under an innocent-looking key.
+		expect(() =>
+			buildCodexLeadMcpArgv({
+				leadActions: {
+					...leadActions,
+					env: { ...leadActions.env, SAFE_COORD: "sk-ABCDEF0123456789" },
+				},
+			}),
+		).toThrow(/looks like a secret/i);
+		// a GitHub token shape under a benign key is also rejected.
+		expect(() =>
+			buildCodexLeadMcpArgv({
+				leadActions: {
+					...leadActions,
+					env: { ...leadActions.env, NOTE: "ghp_ABCDEFGHIJ0123456789" },
+				},
+			}),
+		).toThrow(/looks like a secret/i);
+	});
+
+	it("does NOT false-positive on the real non-secret coords (ids, names, paths, alias pin)", () => {
+		expect(() =>
+			buildCodexLeadMcpArgv({
+				leadActions: {
+					...leadActions,
+					env: {
+						...leadActions.env,
+						FLYWHEEL_LEAD_ACTIONS_STATE_DIR: "/var/state/mufasa-lead",
+						FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:
+							"roundtable:1512578695468941333",
+					},
+				},
+			}),
+		).not.toThrow();
+	});
+
+	it("configHash includes literal env (differs when a coord differs)", () => {
+		const a = buildCodexLeadMcpArgv({ leadActions });
+		const b = buildCodexLeadMcpArgv({
+			leadActions: {
+				...leadActions,
+				env: { ...leadActions.env, FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "999" },
+			},
+		});
+		expect(a.configHash).not.toBe(b.configHash);
+	});
+
+	it("never embeds a raw token value anywhere in argv", () => {
+		const r = buildCodexLeadMcpArgv({ leadActions });
+		expect(r.argv.join(" ")).not.toMatch(
+			/(token|secret|api[_-]?key|password|bearer)\s*[=:]\s*\S/i,
+		);
+	});
+});
