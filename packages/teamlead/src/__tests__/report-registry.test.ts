@@ -486,4 +486,43 @@ describe("injectHeadMeta", () => {
 		);
 		expect(out).toContain("noindex");
 	});
+
+	// --- interactive reports: opt-in script nonce (P1 hosted copy-button fix) ---
+	const NONCE = REPORT_REGISTRY_INTERNALS.NONCE_PLACEHOLDER;
+
+	it("non-interactive report keeps the strict no-script CSP (byte-compat)", () => {
+		const out = injectHeadMeta(HTML, () => "deadbeef");
+		expect(out).toContain("default-src 'none'");
+		expect(out).not.toContain("script-src");
+		expect(out).not.toContain("nonce-");
+	});
+
+	it("opt-in placeholder → mints nonce, stamps <script>, relaxes CSP to script-src nonce", () => {
+		const html = `<html><head><title>t</title></head><body><button id="b">x</button><script nonce="${NONCE}">var x=1;</script></body></html>`;
+		const out = injectHeadMeta(html, () => "N0NCE123");
+		// placeholder replaced everywhere with the real nonce
+		expect(out).not.toContain(NONCE);
+		expect(out).toContain('<script nonce="N0NCE123">');
+		// CSP now allows exactly that nonce; default-src still 'none'
+		expect(out).toContain("script-src 'nonce-N0NCE123'");
+		expect(out).toContain("default-src 'none'");
+		expect(out).toContain("style-src 'unsafe-inline'");
+	});
+
+	it("each publish mints a fresh nonce (CSP + script tag agree)", () => {
+		const html = `<html><head></head><body><script nonce="${NONCE}">1;</script></body></html>`;
+		let n = 0;
+		const out = injectHeadMeta(html, () => `nonce${n++}`);
+		expect(out).toContain('<script nonce="nonce0">');
+		expect(out).toContain("script-src 'nonce-nonce0'");
+	});
+
+	it("placeholder appearing in (escaped) report TEXT cannot create an executable script", () => {
+		// Untrusted content is HTML-escaped by generators, so a literal placeholder in text is
+		// just text. It may flip the CSP to nonce mode, but there is no real <script> to run.
+		const html = `<html><head></head><body><pre>note text mentions ${NONCE} here</pre></body></html>`;
+		const out = injectHeadMeta(html, () => "XYZ");
+		expect(out).not.toContain(NONCE); // replaced as text
+		expect(out).not.toContain("<script"); // no real script tag exists → nothing executes
+	});
 });

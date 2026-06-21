@@ -48,6 +48,25 @@ const NOINDEX_META = '<meta name="robots" content="noindex">';
 const CSP_META =
 	"<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:;\">";
 
+/**
+ * Opt-in marker for interactive reports. A report generator that needs its OWN inline
+ * `<script>` to run on the hosted page emits `<script nonce="__CSP_NONCE__">…</script>`.
+ * injectHeadMeta then mints a real per-report nonce, swaps every placeholder for it, and
+ * serves a CSP that allows exactly that nonce (`script-src 'nonce-…'`).
+ *
+ * SECURITY contract: this only gates the GENERATOR's own scripts. It is safe ONLY because
+ * report generators HTML-escape untrusted content — an injected `<script>` in report content
+ * is escaped to text and can never execute, regardless of the nonce. Inline event-handler
+ * attributes (onclick=…) are NOT covered by a script nonce, so interactive reports must bind
+ * handlers via addEventListener inside the nonced <script>.
+ */
+const NONCE_PLACEHOLDER = "__CSP_NONCE__";
+
+/** CSP for reports that opt into scripts via the nonce placeholder (adds script-src). */
+function cspMetaWithScriptNonce(nonce: string): string {
+	return `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src 'unsafe-inline'; img-src data:;">`;
+}
+
 /** Thrown when report HTML lacks a <head> — route layer maps this to 400. */
 export class ReportHtmlInvalidError extends Error {
 	constructor(message: string) {
@@ -322,8 +341,23 @@ export class ReportRegistry {
  * "Content-Security-Policy">` tag must not suppress the real protective
  * injection — browsers don't apply body text as head policy.
  */
-export function injectHeadMeta(html: string): string {
-	const headMatch = /<head[^>]*>/i.exec(html);
+export function injectHeadMeta(
+	html: string,
+	nonceGen: () => string = () => randomBytes(16).toString("hex"),
+): string {
+	// Opt-in script execution (interactive reports): if the report embedded the nonce
+	// placeholder, mint a real per-report nonce, stamp it onto the report's own
+	// `<script nonce="…">` tags, and pick a CSP that allows exactly that nonce. Reports
+	// WITHOUT the placeholder keep the strict no-script CSP — byte-for-byte unchanged.
+	let working = html;
+	let cspMeta = CSP_META;
+	if (working.includes(NONCE_PLACEHOLDER)) {
+		const nonce = nonceGen();
+		working = working.split(NONCE_PLACEHOLDER).join(nonce);
+		cspMeta = cspMetaWithScriptNonce(nonce);
+	}
+
+	const headMatch = /<head[^>]*>/i.exec(working);
 	if (!headMatch) {
 		throw new ReportHtmlInvalidError(
 			"report HTML must be a complete document with a <head> element",
@@ -333,15 +367,15 @@ export function injectHeadMeta(html: string): string {
 	// Head content ends at </head>; for malformed docs fall back to <body>
 	// (head implicitly ends there), else treat the head as empty — injecting
 	// a duplicate meta is harmless, skipping a needed one is not.
-	const headClose = /<\/head>/i.exec(html.slice(headStart));
-	const bodyOpen = /<body[\s>]/i.exec(html.slice(headStart));
+	const headClose = /<\/head>/i.exec(working.slice(headStart));
+	const bodyOpen = /<body[\s>]/i.exec(working.slice(headStart));
 	const headEnd =
 		headClose !== null
 			? headStart + headClose.index
 			: bodyOpen !== null
 				? headStart + bodyOpen.index
 				: headStart;
-	const headContent = html.slice(headStart, headEnd);
+	const headContent = working.slice(headStart, headEnd);
 
 	// Attribute-order/whitespace-insensitive: match any <meta …> tag inside
 	// the head whose attributes include the marker, wherever it appears.
@@ -355,9 +389,9 @@ export function injectHeadMeta(html: string): string {
 
 	const inject: string[] = [];
 	if (!hasRobots) inject.push(NOINDEX_META);
-	if (!hasCsp) inject.push(CSP_META);
-	if (inject.length === 0) return html;
-	return `${html.slice(0, headStart)}\n${inject.join("\n")}${html.slice(headStart)}`;
+	if (!hasCsp) inject.push(cspMeta);
+	if (inject.length === 0) return working;
+	return `${working.slice(0, headStart)}\n${inject.join("\n")}${working.slice(headStart)}`;
 }
 
 /** Exposed for tests/docs. */
@@ -365,4 +399,6 @@ export const REPORT_REGISTRY_INTERNALS = {
 	ROBOTS_TXT,
 	NOINDEX_META,
 	CSP_META,
+	NONCE_PLACEHOLDER,
+	cspMetaWithScriptNonce,
 };
