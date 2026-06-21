@@ -110,17 +110,27 @@ export interface LeadConfig {
 	 *                              gateway (git_push/open_pr/discord_send). The
 	 *                              runtime confines it (FLY-245 net-off + GH_TOKEN in
 	 *                              the gateway only); merge stays founder-gated.
+	 *   - "full-access"          — FLY-350: a Claude-EQUAL Codex Lead (workspace-write
+	 *                              + network ON + local gh/git, NO gateway/broker/
+	 *                              confinement). The retained control is the team-wide
+	 *                              founder-gate rule bundle + branch protection (the
+	 *                              SAME model every Claude Lead runs under). Opt-in.
 	 *
 	 * Cross-field invariant (FLY-245/FLY-350): `codex-app-server` requires
 	 * `canSpawnRunners` resolving to false AND a recognized tier — either
-	 * `companion === true` OR an explicit `codexProfile`. `write-capable` additionally
-	 * requires `companion !== true` (a write tier is not a companion). canSpawnRunners
-	 * stays false until FLY-251 wires Codex Lead runner-spawn end-to-end.
+	 * `companion === true` OR an explicit `codexProfile`. `write-capable` and
+	 * `full-access` additionally require `companion !== true` (a write tier is not a
+	 * companion). canSpawnRunners stays false until FLY-251 wires Codex Lead
+	 * runner-spawn end-to-end.
 	 *
 	 * Absent = unchanged behavior (derived from `companion`); NOT normalized into
 	 * the object (FLY-231 reverse-compat pattern).
 	 */
-	codexProfile?: "companion" | "content-coordination" | "write-capable";
+	codexProfile?:
+		| "companion"
+		| "content-coordination"
+		| "write-capable"
+		| "full-access";
 }
 
 /**
@@ -478,12 +488,13 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				lead.codexProfile !== undefined &&
 				lead.codexProfile !== "companion" &&
 				lead.codexProfile !== "content-coordination" &&
-				lead.codexProfile !== "write-capable"
+				lead.codexProfile !== "write-capable" &&
+				lead.codexProfile !== "full-access"
 			) {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
 						`codexProfile must be "companion" | "content-coordination" | ` +
-						`"write-capable", got ${JSON.stringify(lead.codexProfile)}`,
+						`"write-capable" | "full-access", got ${JSON.stringify(lead.codexProfile)}`,
 				);
 			}
 			// Cross-field invariant (FLY-245/FLY-350, runs AFTER canSpawnRunners
@@ -509,6 +520,16 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
 							`codexProfile "write-capable" cannot be combined with companion: true ` +
 							`(a write-capable Lead is not a companion — FLY-350 R2-4).`,
+					);
+				}
+				// FLY-350: a full-access (= Claude-equal) Codex Lead is a write tier —
+				// never a companion. Reject the mixture so the declared capability is
+				// unambiguous (same SSOT discipline as write-capable above).
+				if (lead.codexProfile === "full-access" && lead.companion === true) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`codexProfile "full-access" cannot be combined with companion: true ` +
+							`(a full-access Lead is a Claude-equal write tier, not a companion — FLY-350).`,
 					);
 				}
 			}

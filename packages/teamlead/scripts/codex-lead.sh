@@ -91,6 +91,28 @@ export FLYWHEEL_CODEX_LEAD_STATE_DIR="$STATE_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ── FLY-350 H-2: full-access governance bundle (= Claude-equal red line) ──────
+# A full-access Codex Lead must load the SAME founder-only-authority contract +
+# role rules as the corresponding Claude Lead. The ordered base bundle comes from
+# the SHARED resolver (lead-rules-bundle.sh, parity-tested against claude-lead.sh)
+# and is appended to FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES (→ Codex baseInstructions,
+# AFTER the persona/identity files so persona establishes identity first, rules
+# extend it — mirrors claude-lead.sh's persona-then-append order). FAIL-CLOSED:
+# a missing REQUIRED governance file (founder-only-authority) aborts boot.
+# Gated on the explicit full-access profile only → every other tier (companion /
+# content-coordination / write-capable) is byte-compat (its launcher/plist owns
+# FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES unchanged).
+if [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ]; then
+  # shellcheck source=lead-rules-bundle.sh
+  . "${SCRIPT_DIR}/lead-rules-bundle.sh"
+  if ! assemble_full_access_governance "$LEAD_ID" "${SCRIPT_DIR}/../lead-rules-base"; then
+    log "ERROR: full-access governance bundle incomplete — a required rule file is missing (founder-only-authority)."
+    log "Refusing to start a full-access Codex Lead without its founder-gate contract (fail-closed, FLY-350 H-2)."
+    exit 1
+  fi
+  log "FLY-350 full-access governance bundle (${FLY350_FULL_ACCESS_ROLE:-dept}): ${FLY350_FULL_ACCESS_BUNDLE:-}"
+fi
+
 # FLY-259 ③: TUI mode — the Lead runs as the daemon-WS sidecar runtime and a
 # REAL interactive `codex resume --remote` TUI shares its thread in cmux.
 # Opt-in via FLYWHEEL_CODEX_LEAD_MODE=tui (default = FLY-224 headless,

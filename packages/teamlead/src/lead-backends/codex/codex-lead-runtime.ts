@@ -138,6 +138,13 @@ export interface CodexLeadRuntimeConfig {
 	 * ("owner/repo") — scopes git_push/open_pr to THIS Lead's repo (never inferred
 	 * from model-controlled local git state). */
 	projectRepo?: string;
+	/** FLY-350 full-access (Claude-equal) ONLY: the canonical project root the Lead
+	 * runs in — realpath-validated from FLYWHEEL_CODEX_LEAD_PROJECT_DIR (+ optional
+	 * SUBDIR). DISTINCT from the (Z) `workspace` scratch (M-1): a full-access Lead
+	 * works IN its project checkout like a Claude Lead, not in an isolated scratch.
+	 * Pinned as the thread `cwd` and the single `writable_roots` entry (net ON).
+	 * `undefined` for every non-full-access tier (byte-compat). */
+	fullAccessProjectRoot?: string;
 }
 
 /** Codex app-server sandbox modes (schema `SandboxMode`). */
@@ -148,13 +155,16 @@ export type CodexSandboxMode =
 
 /** FLY-350: Codex Lead capability tiers. `companion` = read-only chat; `content-
  * coordination` = read-only + the lead-actions MCP; `write-capable` (Z) = net-off
- * workspace-write shell + the gateway (git_push/open_pr/discord_send). The runtime,
- * ProjectConfig, and fleet-capabilities share this ONE enum so a typo/drift can
- * never silently activate a tier (R2-4). */
+ * workspace-write shell + the gateway (git_push/open_pr/discord_send); `full-access`
+ * = a Claude-EQUAL Lead (workspace-write + network ON + local gh/git, NO gateway/
+ * broker/release-gate; the retained control is the team-wide founder-gate rule
+ * bundle, not confinement). The runtime, ProjectConfig, and fleet-capabilities
+ * share this ONE enum so a typo/drift can never silently activate a tier (R2-4). */
 export const CODEX_LEAD_PROFILES = [
 	"companion",
 	"content-coordination",
 	"write-capable",
+	"full-access",
 ] as const;
 export type CodexLeadProfile = (typeof CODEX_LEAD_PROFILES)[number];
 
@@ -296,6 +306,151 @@ export function buildConfinementArgv(canonicalWorkspace: string): string[] {
 			"CODEX_*",
 		])}`,
 	];
+}
+
+/** FLY-350 full-access (= Claude-equal): the process-level `-c` overrides for a
+ * full-access Codex Lead. Workspace-write with network **ON** and the project root
+ * as the single writable root. Deliberately NO `shell_environment_policy.exclude`
+ * (the (Z) secret-scrub) — a full-access Lead keeps its gh/git/flywheel-comm env,
+ * exactly like a Claude Lead pane; the H-1 positive env allowlist (buildFullAccessEnv)
+ * is what bounds the env, not a Codex-side exclude. NO gateway/broker — the model
+ * uses local `gh`/`git`. The retained control is the founder-gate rule bundle +
+ * branch protection, NOT confinement (plan §2.1/§3). */
+export function buildFullAccessArgv(canonicalProjectRoot: string): string[] {
+	return [
+		"-c",
+		"sandbox_workspace_write.network_access=true",
+		"-c",
+		`sandbox_workspace_write.writable_roots=${JSON.stringify([canonicalProjectRoot])}`,
+	];
+}
+
+/** FLY-350 H-1: the positive env allowlist a FULL-ACCESS Codex Lead's app-server
+ * child inherits — a MIRROR of what a Claude Lead tmux pane actually gets
+ * (claude-lead.sh:901-942) PLUS the gh/git auth path Claude uses. A full-access
+ * Lead can READ the disk like a Claude pane (the accepted Claude-equal tradeoff,
+ * plan §3), but its process env is never HANDED a secret a Claude pane would not
+ * have. Non-secret shell basics (HOME/PATH/SHELL/…) keep gh/git/flywheel-comm
+ * functional. gh auth uses the on-disk `~/.config/gh` keyring via HOME (the same
+ * path Claude uses — no GH token in the Claude pane allowlist); GH_TOKEN/
+ * GITHUB_TOKEN/GH_CONFIG_DIR are listed ONLY so a deploy that opts into env-token
+ * auth is covered by the SSOT (the env-diff test asserts the result ⊆ this set). */
+export const FULL_ACCESS_ENV_ALLOWLIST = [
+	// non-secret shell basics (a functional shell for gh/git/flywheel-comm)
+	"HOME",
+	"PATH",
+	"SHELL",
+	"LANG",
+	"LC_ALL",
+	"TERM",
+	"TMPDIR",
+	"USER",
+	"LOGNAME",
+	// Claude Lead pane env — EXACTLY the names claude-lead.sh:901-942 injects into a
+	// Claude pane (Codex code-review HIGH: never a token a Claude pane does NOT have).
+	// NB: a Claude pane carries TEAMLEAD_API_TOKEN + BRIDGE_URL — NOT the FLYWHEEL_*
+	// aliases; the model's flywheel-comm uses the same TEAMLEAD_* names Claude uses.
+	"DISCORD_BOT_TOKEN",
+	"DISCORD_STATE_DIR",
+	"LEAD_ID",
+	"FLYWHEEL_LEAD_ID",
+	"FLYWHEEL_COMM_DB",
+	"FLYWHEEL_COMM_CLI",
+	"PROJECT_NAME",
+	"FLYWHEEL_PROJECT_NAME",
+	"FLYWHEEL_PROJECT_DIR",
+	"BRIDGE_URL",
+	"TEAMLEAD_API_TOKEN",
+	"TEAMLEAD_ISSUE_PREFIXES",
+	"DISCORD_CORE_CHANNEL",
+	"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE",
+	"OPENAI_API_KEY",
+	"FLYWHEEL_TEAMLEAD_SCRIPT_DIR",
+	// gh/git auth — the ONLY sanctioned addition beyond the Claude-pane set (plan
+	// H-1). Default is the on-disk keyring via HOME (the same path Claude uses, no
+	// GH token in the Claude pane); these cover an opt-in env-token deploy + keep
+	// the allowlist the SSOT for "what gh may use". The env-diff test pins the
+	// allowlist to EXACTLY {Claude-pane secrets ∪ this gh-auth set}.
+	"GH_TOKEN",
+	"GITHUB_TOKEN",
+	"GH_CONFIG_DIR",
+] as const;
+
+/** Build the FULL-ACCESS app-server child env from a source env via the positive
+ * allowlist (H-1). Absent vars are omitted (never injected empty — an empty
+ * `tmux`-style value can break tooling). NOT raw `process.env`. */
+export function buildFullAccessEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+	const out: NodeJS.ProcessEnv = {};
+	for (const name of FULL_ACCESS_ENV_ALLOWLIST) {
+		const v = env[name];
+		if (v !== undefined) out[name] = v;
+	}
+	return out;
+}
+
+/** Resolve + validate the FULL-ACCESS Lead project root (plan §2.1 M-1). FAIL-LOUD.
+ * Returns the canonical absolute path to pin into both `cwd` and `writable_roots`.
+ * A full-access Lead works IN its project checkout (Claude-equal), so — unlike the
+ * (Z) scratch — a descendant of $HOME is the normal case and is allowed. Rejected:
+ * a non-absolute / non-existent path, $HOME itself or an ancestor of it, or overlap
+ * with `~/.flywheel` / the Lead state dir / CODEX_HOME (the model must never be able
+ * to write the runtime's own journal/thread state or its CODEX_HOME). */
+export function resolveFullAccessProjectRoot(
+	rawRoot: string | undefined,
+	subdir: string | undefined,
+	ctx: LeadWorkspaceContext,
+): string {
+	const realpath = ctx.realpath ?? realpathSync;
+	const trimmed = (rawRoot ?? "").trim();
+	if (!trimmed || !isAbsolute(trimmed)) {
+		throw new Error(
+			`FLYWHEEL_CODEX_LEAD_PROJECT_DIR must be an absolute path for a full-access Codex Lead (got "${rawRoot ?? ""}")`,
+		);
+	}
+	const sub = (subdir ?? "").trim();
+	const joined = sub ? join(trimmed, sub) : trimmed;
+	let canon: string;
+	try {
+		canon = realpath(joined);
+	} catch {
+		throw new Error(
+			`full-access project root does not exist or is unreadable: ${joined} (FLYWHEEL_CODEX_LEAD_PROJECT_DIR${sub ? ` + SUBDIR=${sub}` : ""})`,
+		);
+	}
+	const home = canonicalize(ctx.home, realpath);
+	if (canon === home) {
+		throw new Error(
+			`full-access project root must not be $HOME itself: ${canon}`,
+		);
+	}
+	const homeUnderCanon = relative(canon, home);
+	if (
+		homeUnderCanon !== "" &&
+		!homeUnderCanon.startsWith("..") &&
+		!isAbsolute(homeUnderCanon)
+	) {
+		throw new Error(
+			`full-access project root must not be an ancestor of $HOME: ${canon}`,
+		);
+	}
+	const sensitive: Array<[string, string]> = [
+		["~/.flywheel", ctx.flywheelDir],
+		["the Lead state dir", ctx.stateDir],
+		["CODEX_HOME", ctx.codexHome],
+		...(ctx.trustedPaths ?? []).map((p): [string, string] => [
+			"a trusted control-plane path",
+			p,
+		]),
+	];
+	for (const [label, target] of sensitive) {
+		if (!target) continue;
+		if (pathsOverlap(canon, canonicalize(target, realpath))) {
+			throw new Error(
+				`full-access project root (${canon}) must not overlap ${label} (${target}) — the model could write the runtime's own state/CODEX_HOME`,
+			);
+		}
+	}
+	return canon;
 }
 
 /** Parse + validate the runtime config from the environment. Fail-loud: a single
@@ -445,9 +600,24 @@ export function parseCodexLeadRuntimeConfig(
 			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE=write-capable requires sandbox=workspace-write (got "${sandboxMode}") — the (Z) write-capable Lead is a net-off workspace-write shell + gateway (FLY-350)`,
 		);
 	}
-	if (sandboxMode === "workspace-write" && codexProfile !== "write-capable") {
+	// FLY-350 full-access (= Claude-equal): workspace-write with network ON + local
+	// gh/git. Like write-capable it REQUIRES workspace-write (a read-only "full-access"
+	// is a contradiction); unlike it, there is no gateway/broker/release-gate.
+	if (codexProfile === "full-access" && sandboxMode !== "workspace-write") {
 		throw new Error(
-			`codex-lead-runtime: sandbox=workspace-write requires FLYWHEEL_CODEX_LEAD_PROFILE=write-capable (got "${codexProfile}") — workspace-write IS the write-capable tier; the explicit profile is the SSOT so config/fleet/runtime can never drift (FLY-350 §3.5)`,
+			`codex-lead-runtime: FLYWHEEL_CODEX_LEAD_PROFILE=full-access requires sandbox=workspace-write (got "${sandboxMode}") — a full-access Codex Lead is workspace-write + network ON, Claude-equal (FLY-350)`,
+		);
+	}
+	// workspace-write is the SSOT-tied write tier: it requires EITHER the (Z)
+	// write-capable profile OR the full-access profile — never a silent companion/
+	// content-coordination write (config/fleet/runtime drift, R2-4 / §3.5).
+	if (
+		sandboxMode === "workspace-write" &&
+		codexProfile !== "write-capable" &&
+		codexProfile !== "full-access"
+	) {
+		throw new Error(
+			`codex-lead-runtime: sandbox=workspace-write requires FLYWHEEL_CODEX_LEAD_PROFILE=write-capable or full-access (got "${codexProfile}") — workspace-write IS a write tier; the explicit profile is the SSOT so config/fleet/runtime can never drift (FLY-350 §3.5)`,
 		);
 	}
 	// Code-review HIGH-3: content-coordination MUST run under read-deny. Without it
@@ -471,7 +641,24 @@ export function parseCodexLeadRuntimeConfig(
 	let gatewayConfirmChannelId: string | undefined;
 	let githubToken: string | undefined;
 	let projectRepo: string | undefined;
-	if (sandboxMode !== "read-only") {
+	// FLY-350 full-access: resolve the canonical project root (cwd + single writable
+	// root). REQUIRED + fail-loud for full-access; undefined for every other tier.
+	let fullAccessProjectRoot: string | undefined;
+	if (codexProfile === "full-access") {
+		fullAccessProjectRoot = resolveFullAccessProjectRoot(
+			env.FLYWHEEL_CODEX_LEAD_PROJECT_DIR,
+			env.FLYWHEEL_CODEX_LEAD_SUBDIR,
+			{
+				home: homedir(),
+				flywheelDir: join(homedir(), ".flywheel"),
+				stateDir,
+				codexHome,
+			},
+		);
+	}
+	// (Z) write-capable inputs — scoped to the write-capable profile (full-access
+	// shares the workspace-write sandbox but uses NONE of the gateway/scratch path).
+	if (codexProfile === "write-capable") {
 		// Resolve the gateway deploy path FIRST — it (and the teamlead checkout +
 		// codex binary) are the trusted control-plane roots the scratch workspace
 		// must not overlap (R1 HIGH-2).
@@ -540,6 +727,7 @@ export function parseCodexLeadRuntimeConfig(
 		gatewayConfirmChannelId,
 		githubToken,
 		projectRepo,
+		fullAccessProjectRoot,
 	};
 }
 
@@ -591,7 +779,10 @@ export function resolveControlPlaneRoots(
  * is always pinned), so the thread never starts with the app-server's permissive
  * defaults. */
 export function buildThreadParams(
-	config: Pick<CodexLeadRuntimeConfig, "sandboxMode" | "workspace"> & {
+	config: Pick<
+		CodexLeadRuntimeConfig,
+		"sandboxMode" | "workspace" | "fullAccessProjectRoot"
+	> & {
 		readDeny?: boolean;
 	},
 	baseInstructions: string | undefined,
@@ -611,7 +802,12 @@ export function buildThreadParams(
 	// write-capable Lead — an unpinned cwd auto-becomes a writable root (= the
 	// app-server's launch dir, indeterminate). read-only companions leave `workspace`
 	// undefined → no cwd → byte-compat with the FLY-224 thread params.
+	// FLY-350 full-access: pin cwd to the project root (same rationale; the two
+	// fields are mutually exclusive — a Lead is never both write-capable and
+	// full-access, enforced at parse).
 	if (config.workspace) params.cwd = config.workspace;
+	else if (config.fullAccessProjectRoot)
+		params.cwd = config.fullAccessProjectRoot;
 	if (baseInstructions) params.baseInstructions = baseInstructions;
 	return params;
 }
@@ -813,11 +1009,18 @@ export function spawnCodexAppServer(cfg: {
 	mcpArgv: string[];
 	codexHome: string;
 	baseEnv?: NodeJS.ProcessEnv;
+	/** FLY-350 full-access: when false, the `baseEnv` is used AS-IS — it is already
+	 * a curated positive allowlist (buildFullAccessEnv), and washing it would strip
+	 * the gh/Discord/Bridge auth a Claude-equal Lead needs. Default TRUE: every
+	 * confined / read-only / (Z) write-capable path keeps the unconditional
+	 * action-secret wash (byte-compat — the FLY-245 Phase E sentinel holds). */
+	washSecrets?: boolean;
 }): ChildTransport {
 	const args = ["app-server", "--strict-config", ...cfg.mcpArgv];
+	const base = cfg.baseEnv ?? process.env;
 	const child = spawn(cfg.codexBin, args, {
 		env: {
-			...washActionSecretEnv(cfg.baseEnv ?? process.env),
+			...(cfg.washSecrets === false ? base : washActionSecretEnv(base)),
 			CODEX_HOME: cfg.codexHome,
 		},
 		stdio: ["pipe", "pipe", "pipe"],
@@ -867,7 +1070,12 @@ export function buildCodexLeadRuntime(
 	// runtime assertions below (MCP inventory ④, thread descriptor ⑤) close
 	// the rest after spawn. Read-only companions skip all of it (byte-compat
 	// modulo the Phase E env wash).
-	const writeCapable = config.sandboxMode !== "read-only";
+	// FLY-350: branch on PROFILE, not `sandboxMode !== read-only`. full-access shares
+	// the workspace-write sandbox but takes a SEPARATE path — NO release gate / gateway
+	// / broker / confinement; its control is the founder-gate rule bundle + branch
+	// protection (plan §2.1/§3). Only the (Z) write-capable tier runs the §7 release.
+	const fullAccess = config.codexProfile === "full-access";
+	const writeCapable = !fullAccess && config.sandboxMode !== "read-only";
 	const release = writeCapable ? assertWriteCapableRelease(config) : undefined;
 
 	// ⑦ broker: action secrets live in THIS process's memory and travel only
@@ -928,14 +1136,21 @@ export function buildCodexLeadRuntime(
 	for (const w of mcp.warnings) logger.warn(`MCP: ${w}`);
 
 	// ③ + ⑧(static): confinement config + action-surface disable argv precede
-	// the MCP overrides on the spawn command line (write-capable only).
+	// the MCP overrides on the spawn command line (write-capable only). FLY-350
+	// full-access prepends buildFullAccessArgv (net ON + project writable root) but
+	// NO action-surface disable (a Claude-equal Lead keeps a normal agent surface).
 	const spawnArgv = release
 		? [
 				...buildConfinementArgv(release.workspace),
 				...buildActionSurfaceDisableArgv(),
 				...mcp.argv,
 			]
-		: mcp.argv;
+		: fullAccess
+			? [
+					...buildFullAccessArgv(config.fullAccessProjectRoot as string),
+					...mcp.argv,
+				]
+			: mcp.argv;
 
 	// The gateway child resolves these env var NAMES from the app-server env —
 	// non-secret coordinates only (the wash strips anything secret-shaped).
@@ -972,7 +1187,15 @@ export function buildCodexLeadRuntime(
 				codexBin: config.codexBin,
 				mcpArgv: spawnArgv,
 				codexHome: config.codexHome,
-				...(gatewayEnv ? { baseEnv: gatewayEnv } : {}),
+				// FLY-350 full-access: the app-server child inherits the H-1 positive
+				// env allowlist (Claude-pane mirror + gh auth) AS-IS — washSecrets:false
+				// so its gh/Discord/Bridge auth survives. Every other path keeps the
+				// unconditional action-secret wash (byte-compat).
+				...(fullAccess
+					? { baseEnv: buildFullAccessEnv(process.env), washSecrets: false }
+					: gatewayEnv
+						? { baseEnv: gatewayEnv }
+						: {}),
 			}),
 	});
 
@@ -1190,14 +1413,26 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 	// net-off, the single writable root, the project repo, and the GH-token SOURCE
 	// (redacted) — not the read-only MCP report. The values come from config; the
 	// release gate + runtime assertions are what ENFORCE them (this is disclosure).
-	const writeCapable = config.sandboxMode === "workspace-write";
-	const writeCapableLines = writeCapable
+	// FLY-350: full-access is ALSO workspace-write but is NOT the (Z) gateway tier —
+	// it gets a DIFFERENT disclosure (net ON, local gh/git, founder-gated merge).
+	const fullAccess = config.codexProfile === "full-access";
+	const writeCapableZ = config.sandboxMode === "workspace-write" && !fullAccess;
+	const writeCapableLines = writeCapableZ
 		? [
 				`(Z) gateway   : flywheel_gateway MCP — tool surface = EXACTLY [${GATEWAY_ACTION_TOOL_NAMES.join(", ")}] (⑧ runtime assert)`,
 				`(Z) network   : OFF (buildConfinementArgv network_access=false — shell cannot curl/push)`,
 				`(Z) writable  : ${config.workspace ?? "(unset — release gate fail-closes)"} (ONLY writable root; net-off)`,
 				`(Z) PR scope  : repo=${config.projectRepo ?? "(unset — release gate fail-closes)"} GH_TOKEN=${config.githubToken ? `${redactSecret(config.githubToken)} (broker-served to gateway ONLY; washed from model env)` : "(unset — git_push/open_pr fail-closed)"}`,
 				`(Z) merge     : STRUCTURALLY impossible (no :cool:/merge tool, net-off shell, no shell token)`,
+			]
+		: [];
+	const fullAccessLines = fullAccess
+		? [
+				`full-access   : ⚠️ = Claude-equal Lead (workspace-write + local gh/git; NO gateway/broker/release-gate)`,
+				`network       : ON (sandbox_workspace_write.network_access=true — local gh/git/curl like a Claude pane)`,
+				`writable      : ${config.fullAccessProjectRoot ?? "(unset — parse fail-loud)"} (cwd + ONLY writable root = the project checkout)`,
+				`env (H-1)     : positive allowlist (Claude-pane mirror + gh auth) — NO extra *TOKEN*/*SECRET*/*KEY*`,
+				`merge         : founder-gated by the founder-only-authority rule bundle + main branch protection (NOT structurally impossible — honest, = Claude Leads)`,
 			]
 		: [];
 	return [
@@ -1216,8 +1451,15 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 		`bridge env    : url=${config.bridgeUrl || "(unset — not needed in direct)"} apiToken=${config.apiToken ? redactSecret(config.apiToken) : "(unset — not needed in direct)"}`,
 		`prod Bridge   : ${noBridge ? "NOT CONNECTED (zero prod intrusion)" : "WILL CONNECT (bridge mode)"}`,
 		`persona       : ${persona ? `baseInstructions ${persona.length} chars from ${config.systemPromptFiles.length} file(s) → injected` : "(none — default Codex persona; set FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)"}`,
-		`policy        : approvalPolicy=never sandbox=${config.sandboxMode}${config.sandboxMode === "read-only" ? " (companion — read+chat only, cannot act)" : " ⚠️ WRITE-CAPABLE (FLY-245 founder gate: 8-condition release + runtime confinement assertions)"}`,
+		`policy        : approvalPolicy=never sandbox=${config.sandboxMode}${
+			config.sandboxMode === "read-only"
+				? " (companion — read+chat only, cannot act)"
+				: fullAccess
+					? " ⚠️ FULL-ACCESS (= Claude-equal; merge/ship founder-gated by rule bundle + branch protection)"
+					: " ⚠️ WRITE-CAPABLE (FLY-245 founder gate: 8-condition release + runtime confinement assertions)"
+		}`,
 		...writeCapableLines,
+		...fullAccessLines,
 		`read-deny     : ${config.readDeny ? "ON (FLY-260) — legacy sandbox param OMITTED; CODEX_HOME config default_permissions=flywheel-lead-secret-deny enforces read-deny + env exclude; boot ephemeral-start asserts the profile; flag-on cutover MUST restart the remote-control daemon so it re-reads config (brief TUI blip; liveness loop recreates)" : "off (byte-compat — legacy sandbox pin in effect)"}`,
 		`CODEX_HOME    : ${config.codexHome} (isolated per-Lead — not the host ~/.codex)`,
 		`codex bin     : ${config.codexBin}`,
