@@ -5,6 +5,7 @@ import {
 	type ProjectEntry,
 	parseAndValidateProjects,
 	resolveLeadForIssue,
+	resolveProjectLinearBinding,
 	validateMemoryIds,
 } from "../ProjectConfig.js";
 
@@ -1437,5 +1438,140 @@ describe("parseAndValidateProjects (FLY-247 inc2a R2#5 — pure validator)", () 
 		expect(viaLoad).toEqual(viaPure);
 		// And the secret WAS hydrated on the loadProjects path.
 		expect(viaLoad[0]!.leads[0]!.botToken).toBe("hydrated-token");
+	});
+});
+
+// FLY-371: per-Flywheel-project Linear binding (projectName → team/project/label).
+describe("FLY-371: ProjectEntry.linear binding validation", () => {
+	const validLead = {
+		agentId: "product-lead",
+		chatChannel: "456",
+		match: { labels: ["Product"] },
+	};
+	const base = (linear: unknown) => [
+		{
+			projectName: "test",
+			projectRoot: "/tmp",
+			leads: [validLead],
+			...(linear === "OMIT" ? {} : { linear }),
+		},
+	];
+
+	it("accepts entry with linear omitted (byte-compat, stays absent)", () => {
+		const out = parseAndValidateProjects(base("OMIT"));
+		expect("linear" in out[0]!).toBe(false);
+	});
+
+	// Codex R1 HIGH-1: the deployed roster literally has `linear: null`.
+	it("accepts linear: null WITHOUT throwing and preserves it (does not normalize)", () => {
+		const out = parseAndValidateProjects(base(null));
+		expect(out[0]!.linear).toBeNull();
+	});
+
+	it("accepts a full binding { team, project, label }", () => {
+		const binding = { team: "FLY", project: "Flywheel", label: "Flywheel" };
+		const out = parseAndValidateProjects(base(binding));
+		expect(out[0]!.linear).toEqual(binding);
+	});
+
+	it("accepts a team-only binding (project/label optional)", () => {
+		const out = parseAndValidateProjects(base({ team: "FLY" }));
+		expect(out[0]!.linear).toEqual({ team: "FLY" });
+	});
+
+	it("accepts a label-only-scope binding (team + label, no project — Polaris shape)", () => {
+		const out = parseAndValidateProjects(
+			base({ team: "GEO", label: "Polaris" }),
+		);
+		expect(out[0]!.linear).toEqual({ team: "GEO", label: "Polaris" });
+	});
+
+	it("throws when linear is a non-object (array)", () => {
+		expect(() => parseAndValidateProjects(base(["FLY"]))).toThrow(/linear/);
+	});
+
+	it("throws when linear is a non-object (string)", () => {
+		expect(() => parseAndValidateProjects(base("FLY"))).toThrow(/linear/);
+	});
+
+	it("throws when linear.team is missing", () => {
+		expect(() =>
+			parseAndValidateProjects(base({ project: "Flywheel" })),
+		).toThrow(/linear\.team/);
+	});
+
+	it("throws when linear.team is empty / whitespace-only (Codex R1 LOW-7)", () => {
+		expect(() => parseAndValidateProjects(base({ team: "  " }))).toThrow(
+			/linear\.team/,
+		);
+	});
+
+	it("throws when linear.team is not a string", () => {
+		expect(() => parseAndValidateProjects(base({ team: 42 }))).toThrow(
+			/linear\.team/,
+		);
+	});
+
+	it("throws when linear.project is empty / whitespace-only", () => {
+		expect(() =>
+			parseAndValidateProjects(base({ team: "FLY", project: " " })),
+		).toThrow(/linear\.project/);
+	});
+
+	it("throws when linear.label is not a string", () => {
+		expect(() =>
+			parseAndValidateProjects(base({ team: "FLY", label: 7 })),
+		).toThrow(/linear\.label/);
+	});
+
+	it("does NOT trim/normalize a valid stored binding value", () => {
+		const binding = { team: "FLY", project: "Flywheel", label: "Flywheel" };
+		const out = parseAndValidateProjects(base(binding));
+		expect(out[0]!.linear).toEqual(binding);
+	});
+});
+
+describe("FLY-371: resolveProjectLinearBinding", () => {
+	const projects: ProjectEntry[] = [
+		{
+			projectName: "flywheel",
+			projectRoot: "/tmp/flywheel",
+			leads: [{ agentId: "eng", chatChannel: "c", match: { labels: ["Eng"] } }],
+			linear: { team: "FLY", project: "Flywheel", label: "Flywheel" },
+		},
+		{
+			projectName: "no-binding",
+			projectRoot: "/tmp/nb",
+			leads: [{ agentId: "x", chatChannel: "c", match: { labels: ["X"] } }],
+		},
+		{
+			projectName: "null-binding",
+			projectRoot: "/tmp/null",
+			leads: [{ agentId: "y", chatChannel: "c", match: { labels: ["Y"] } }],
+			linear: null,
+		},
+	];
+
+	it("returns the binding for a project that has one", () => {
+		expect(resolveProjectLinearBinding(projects, "flywheel")).toEqual({
+			team: "FLY",
+			project: "Flywheel",
+			label: "Flywheel",
+		});
+	});
+
+	it("returns undefined for an unknown project", () => {
+		expect(resolveProjectLinearBinding(projects, "nope")).toBeUndefined();
+	});
+
+	it("returns undefined for a known project with no linear field", () => {
+		expect(resolveProjectLinearBinding(projects, "no-binding")).toBeUndefined();
+	});
+
+	// Codex R1 HIGH-1: null must coerce to undefined so consumers don't defend against null.
+	it("returns undefined (not null) for a project with linear: null", () => {
+		expect(
+			resolveProjectLinearBinding(projects, "null-binding"),
+		).toBeUndefined();
 	});
 });
