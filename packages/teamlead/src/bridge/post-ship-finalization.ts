@@ -227,6 +227,12 @@ export async function runPostShipFinalization(
 			markDiscordMissing: (id) => store.markChatThreadMissing(id),
 		});
 
+		// FLY-369: record archived_at so the archive-on-Done sweeper does not
+		// revisit a thread already archived by the ship path.
+		if (archiveResult.archived) {
+			store.markChatThreadArchived(thread.thread_id);
+		}
+
 		store.insertEvent({
 			event_id: archiveResult.archived
 				? `chat-thread-archived-${opts.executionId}`

@@ -23,6 +23,10 @@
 
 import { closeRunnerTerminalView } from "flywheel-core";
 import type { StateStore } from "../StateStore.js";
+import {
+	type CloseArchiveDeps,
+	maybeArchiveThreadOnClose,
+} from "./done-thread-archiver.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
 
@@ -68,6 +72,14 @@ export interface CloseRunnerOpts {
 	 * (no-op for AUTO_CLOSE_STATES which already close).
 	 */
 	forcePreserved?: boolean;
+	/**
+	 * FLY-369: when provided, a successful done-cleanup close (status=completed
+	 * with no other active runner for the issue) cascades to archiving the
+	 * issue's Discord chat thread via the central `maybeArchiveThreadOnClose`.
+	 * Absent (legacy/internal callers) → no archive. Fire-and-forget; archive
+	 * failures never affect the close result.
+	 */
+	archive?: CloseArchiveDeps;
 }
 
 export interface CloseRunnerResult {
@@ -156,6 +168,12 @@ export async function closeRunner(
 				forcedPreserved: forceClose || undefined,
 			},
 		});
+		// FLY-369: runner is closed (already gone) → central close→archive
+		// cascade. Guarded inside to done-cleanup (completed) + no other active
+		// runner. Runs only on this success path (Codex code review R6 #1).
+		if (opts.archive) {
+			await maybeArchiveThreadOnClose(store, session, opts.archive);
+		}
 		return { closed: true, alreadyGone: true };
 	}
 
@@ -212,6 +230,14 @@ export async function closeRunner(
 			previousStatus: forceClose ? session.status : undefined,
 		},
 	});
+
+	// FLY-369: central close→archive cascade — ONLY when the close actually
+	// succeeded (Codex code review R6 #1: a kill failure must NOT archive). The
+	// cascade is itself guarded to done-cleanup (completed) + no other active
+	// runner; it runs after terminal-tab cleanup and never affects the result.
+	if (res.killed && opts.archive) {
+		await maybeArchiveThreadOnClose(store, session, opts.archive);
+	}
 
 	return { closed: res.killed, error: res.error };
 }

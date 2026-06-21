@@ -904,6 +904,10 @@ export function createBridgeApp(
 			// prefixes. Validated at startup that apiToken is set when enabled.
 			replyGuardEnabled: config.replyGuardEnabled,
 			issuePrefixes: config.issuePrefixes,
+			// FLY-369: gate the privileged /chat-threads/archive route. The /api
+			// tokenAuthMiddleware no-ops when apiToken is unset, and chatThreads
+			// does not fail-start with one, so the route must fail closed itself.
+			apiTokenConfigured: Boolean(config.apiToken),
 		}),
 	);
 	app.use(
@@ -1127,6 +1131,13 @@ export function createBridgeApp(
 					reason,
 					leadId: leadIdTrimmed,
 					executorType,
+					// FLY-369: central close→archive cascade (done-cleanup + no
+					// other active runner). Archives via the Bridge-local sink.
+					archive: {
+						projects,
+						globalBotToken: opts?.globalBotToken,
+						discordOwnerUserId: config.discordOwnerUserId,
+					},
 				},
 				store,
 			);
@@ -2508,6 +2519,12 @@ export async function startBridge(
 			`[Bridge] FLY-324 boot sweep failed (non-fatal): ${(err as Error).message}`,
 		);
 	}
+
+	// FLY-369: archive-on-close. Archiving is driven by the Lead's close action
+	// via POST /api/chat-threads/archive (wired through createQueryRouter above) —
+	// NOT a standalone auto-poll on Linear "Done" (which the founder ruled out as
+	// premature). The ship path still archives on ship. No boot sweep / heartbeat
+	// piggyback here by design.
 
 	heartbeatService.start();
 

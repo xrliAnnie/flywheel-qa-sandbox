@@ -430,3 +430,26 @@ If the reverse-lookup returns 404 (thread not registered), do not invent an issu
 ### Failure fallback summary
 
 If `send` is unavailable (flag off, Bridge down, repeated 5xx), reply with `mcp__plugin_discord_discord__reply` to `$CHAT_CHANNEL` (top-level), and **include the issue identifier in the text** (e.g. `"[FLY-162] worker idle 15 min"`) so Annie still has context. Cross-thread reply via `chat_id=$CHAT_THREAD_ID` is only permitted as a legacy fallback when the inbound event payload carried `chat_thread_id` AND `send` returned 404 / `reply.by_issue` flag is off.
+
+### Archiving a thread on close (FLY-369)
+
+Archiving a chat thread is driven by the **close action**, NOT by Linear flipping to "Done" (a Done issue may still be under active discussion — archiving then is premature). It is **central**: you do not call an archive endpoint per close. When you close a Runner, the Bridge's close path decides and archives the thread for you.
+
+**When you close a done issue**, just:
+1. post your wrap-up message to the thread (via `POST /api/chat-threads/send`) and confirm it landed,
+2. close the Runner the normal way (`close-runner` — terminates the Runner + removes its worktree).
+
+The Bridge then auto-archives the issue's chat thread **iff** (a) this was a done-cleanup close (the session was `completed` — not a terminate/abandon/reject) **and** (b) the issue has no other active Runner. A mid-flight terminate/abandon does **not** archive. The ship path still archives on ship. The Bridge holds the bot token and performs the archive — never PATCH Discord directly.
+
+**Safety net**: archive-once — an archived thread is left alone; if the founder re-opens it by posting, Discord auto-unarchives it. The next done-close of that issue re-archives it.
+
+The low-level endpoint stays available for **backlog cleanup** (archiving old done-but-unarchived threads, one call per thread):
+
+```bash
+curl -s -X POST "$BRIDGE_URL/api/chat-threads/archive" \
+  -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"issueIdentifier":"FLY-366","channelId":"'"$CHAT_CHANNEL"'","leadId":"<your-agentId>","projectName":"<project>"}'
+# 200 {"threadId":"...","archived":true,"reason":"ok", ...}
+# 200 {"threadId":"...","archived":true,"reason":"already_archived", ...}  ← archive-once no-op
+```

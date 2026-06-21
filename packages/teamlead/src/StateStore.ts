@@ -542,7 +542,8 @@ export class StateStore {
 				issue_id TEXT,
 				lead_id TEXT,
 				created_at TEXT DEFAULT (datetime('now')),
-				discord_missing_at TEXT
+				discord_missing_at TEXT,
+				archived_at TEXT
 			)
 		`);
 		this.db.run(
@@ -587,6 +588,8 @@ export class StateStore {
 
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
+		// FLY-369: archived_at on chat_threads (archive-on-Done)
+		this.migrateChatThreadsArchivedColumn();
 	}
 
 	insertEvent(event: SessionEvent): boolean {
@@ -1541,9 +1544,16 @@ export class StateStore {
 	getChatThreadByIssue(
 		issueId: string,
 		channelId: string,
-	): { thread_id: string; channel_id: string } | undefined {
+	):
+		| {
+				thread_id: string;
+				channel_id: string;
+				lead_id: string | null;
+				archived_at: string | null;
+		  }
+		| undefined {
 		const stmt = this.db.prepare(
-			"SELECT thread_id, channel_id FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND discord_missing_at IS NULL",
+			"SELECT thread_id, channel_id, lead_id, archived_at FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND discord_missing_at IS NULL",
 		);
 		stmt.bind([issueId, channelId]);
 		if (stmt.step()) {
@@ -1552,6 +1562,8 @@ export class StateStore {
 			return {
 				thread_id: row.thread_id as string,
 				channel_id: row.channel_id as string,
+				lead_id: (row.lead_id as string) ?? null,
+				archived_at: (row.archived_at as string) ?? null,
 			};
 		}
 		stmt.free();
@@ -1582,6 +1594,20 @@ export class StateStore {
 	markChatThreadMissing(threadId: string): void {
 		this.db.run(
 			"UPDATE chat_threads SET discord_missing_at = datetime('now') WHERE thread_id = ?",
+			[threadId],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-369: mark a chat thread archived (archive-once record). The on-demand
+	 * archive endpoint treats a thread with `archived_at` set as already
+	 * archived and does not re-archive it, so if Annie re-opens it (Discord
+	 * auto-unarchives on a new message) we do not fight her.
+	 */
+	markChatThreadArchived(threadId: string): void {
+		this.db.run(
+			"UPDATE chat_threads SET archived_at = datetime('now') WHERE thread_id = ?",
 			[threadId],
 		);
 		this.save();
@@ -2056,6 +2082,20 @@ export class StateStore {
 				this.db.run(
 					"ALTER TABLE lead_events ADD COLUMN last_delivery_error TEXT",
 				);
+			}
+		} catch {
+			// Table may not exist yet (first run) — CREATE TABLE will handle it
+		}
+	}
+
+	/** FLY-369: add archived_at to chat_threads on legacy DBs (idempotent). */
+	private migrateChatThreadsArchivedColumn(): void {
+		try {
+			const info = this.db.exec("PRAGMA table_info(chat_threads)");
+			if (info.length === 0) return;
+			const columns = info[0]!.values.map((row) => row[1] as string);
+			if (!columns.includes("archived_at")) {
+				this.db.run("ALTER TABLE chat_threads ADD COLUMN archived_at TEXT");
 			}
 		} catch {
 			// Table may not exist yet (first run) — CREATE TABLE will handle it

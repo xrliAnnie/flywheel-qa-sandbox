@@ -402,6 +402,11 @@ describe("runPostShipFinalization", () => {
 			.getEventsByExecution("exec-1")
 			.filter((e) => e.event_type === "chat_thread_archive_failed");
 		expect(failed).toHaveLength(0);
+
+		// FLY-369: a ship-path archive marks archived_at (archive-once record).
+		expect(
+			store.getChatThreadByIssue("FLY-102", "chan-1")?.archived_at,
+		).toBeTruthy();
 	});
 
 	it("FLY-292: marks thread missing + audits failure when Discord 404s the thread", async () => {
