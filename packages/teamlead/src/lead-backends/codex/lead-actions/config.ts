@@ -13,8 +13,18 @@ import { parseExplicitAliases } from "./alias-allowlist.js";
 export interface LeadActionsConfig {
 	leadId: string;
 	projectName: string;
-	/** Unix socket the parent runtime's SecretBroker listens on. */
-	brokerSocketPath: string;
+	/**
+	 * FLY-304: how the MCP child obtains the Discord bot token.
+	 *  - "broker": content-coordination — fetched over the parent SecretBroker unix
+	 *    socket (net-off, secretless config; UNCHANGED).
+	 *  - "env-token": full-access (Claude-equal) — read from the MCP child's own env
+	 *    (DISCORD_BOT_TOKEN), since a full-access Lead has no broker but already
+	 *    carries the token in its allowlisted env.
+	 */
+	mode: "broker" | "env-token";
+	/** Unix socket the parent runtime's SecretBroker listens on. Present iff
+	 * `mode === "broker"`. */
+	brokerSocketPath?: string;
 	/** The Lead's own chat channel (alias "chat"). */
 	chatChannelId: string;
 	/** Configured cross-department channels (alias "roundtable" when exactly one). */
@@ -50,7 +60,6 @@ export function parseLeadActionsConfig(
 	};
 	const leadId = req("FLYWHEEL_LEAD_ID");
 	const projectName = req("FLYWHEEL_PROJECT_NAME");
-	const brokerSocketPath = req("FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET");
 	const chatChannelId = req("FLYWHEEL_LEAD_CHAT_CHANNEL_ID");
 	const stateDir = req("FLYWHEEL_LEAD_ACTIONS_STATE_DIR");
 	if (missing.length > 0) {
@@ -58,6 +67,15 @@ export function parseLeadActionsConfig(
 			`lead-actions: missing required env: ${missing.join(", ")}`,
 		);
 	}
+	// FLY-304: broker socket is OPTIONAL now. Present → broker mode (content-
+	// coordination, unchanged). Absent → env-token mode (full-access reads
+	// DISCORD_BOT_TOKEN from its own env). The actual token read + fail-closed
+	// lives in leadActionsMain (config.ts stays a pure coordinate parser).
+	const brokerSocketPath =
+		env.FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET?.trim() || undefined;
+	const mode: "broker" | "env-token" = brokerSocketPath
+		? "broker"
+		: "env-token";
 	if (/[/\\]|\.\./.test(projectName)) {
 		throw new Error(`lead-actions: invalid project name "${projectName}"`);
 	}
@@ -68,6 +86,7 @@ export function parseLeadActionsConfig(
 	return {
 		leadId,
 		projectName,
+		mode,
 		brokerSocketPath,
 		chatChannelId,
 		crossDeptChannelIds,

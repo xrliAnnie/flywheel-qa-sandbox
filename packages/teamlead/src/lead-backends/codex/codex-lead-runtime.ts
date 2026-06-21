@@ -26,7 +26,10 @@ import {
 	assertGatewayOnlyToolSurface,
 	GATEWAY_ACTION_TOOL_NAMES,
 } from "./action-surface.js";
-import { buildCodexLeadMcpArgv } from "./buildCodexLeadMcpArgv.js";
+import {
+	buildCodexLeadMcpArgv,
+	type LeadActionsMcpConfig,
+} from "./buildCodexLeadMcpArgv.js";
 import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
@@ -43,6 +46,7 @@ import { LeadHealthProbe } from "./LeadHealthProbe.js";
 import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
+import { parseExplicitAliases } from "./lead-actions/alias-allowlist.js";
 import { McpInventoryWatcher } from "./mcp-inventory.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
@@ -145,6 +149,17 @@ export interface CodexLeadRuntimeConfig {
 	 * Pinned as the thread `cwd` and the single `writable_roots` entry (net ON).
 	 * `undefined` for every non-full-access tier (byte-compat). */
 	fullAccessProjectRoot?: string;
+	/** FLY-304 full-access ONLY: absolute path to the deployed lead-actions MCP
+	 * entry (dist lead-actions-main.js) — the proactive discord_send server.
+	 * Resolved from FLYWHEEL_LEAD_ACTIONS_ENTRY or the dist default; existsSync-
+	 * validated at build (fail-closed). `undefined` for every non-full-access tier. */
+	leadActionsEntry?: string;
+	/** FLY-304 full-access ONLY: optional explicit alias pins
+	 * (FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES, e.g. "roundtable:<id>") forwarded to the
+	 * lead-actions MCP child so the operator's documented roundtable-disambiguation
+	 * path works for full-access too (code-review R1#2). Non-secret. `undefined` when
+	 * unset / non-full-access. */
+	leadActionsChannelAliases?: string;
 }
 
 /** Codex app-server sandbox modes (schema `SandboxMode`). */
@@ -644,6 +659,11 @@ export function parseCodexLeadRuntimeConfig(
 	// FLY-350 full-access: resolve the canonical project root (cwd + single writable
 	// root). REQUIRED + fail-loud for full-access; undefined for every other tier.
 	let fullAccessProjectRoot: string | undefined;
+	// FLY-304 full-access: the proactive discord_send MCP entry (mirrors the gateway
+	// entry resolution). Overridable via FLYWHEEL_LEAD_ACTIONS_ENTRY (tests / non-
+	// standard deploys); existsSync-validated at build (buildCodexLeadRuntime).
+	let leadActionsEntry: string | undefined;
+	let leadActionsChannelAliases: string | undefined;
 	if (codexProfile === "full-access") {
 		fullAccessProjectRoot = resolveFullAccessProjectRoot(
 			env.FLYWHEEL_CODEX_LEAD_PROJECT_DIR,
@@ -655,6 +675,12 @@ export function parseCodexLeadRuntimeConfig(
 				codexHome,
 			},
 		);
+		leadActionsEntry =
+			env.FLYWHEEL_LEAD_ACTIONS_ENTRY?.trim() || defaultLeadActionsEntryPath();
+		// Forward explicit alias pins so the documented multi-cross-dept roundtable
+		// disambiguation works for full-access (code-review R1#2).
+		leadActionsChannelAliases =
+			env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim() || undefined;
 	}
 	// (Z) write-capable inputs — scoped to the write-capable profile (full-access
 	// shares the workspace-write sandbox but uses NONE of the gateway/scratch path).
@@ -728,6 +754,8 @@ export function parseCodexLeadRuntimeConfig(
 		githubToken,
 		projectRepo,
 		fullAccessProjectRoot,
+		leadActionsEntry,
+		leadActionsChannelAliases,
 	};
 }
 
@@ -735,6 +763,71 @@ export function parseCodexLeadRuntimeConfig(
  * via FLYWHEEL_GATEWAY_ENTRY (tests / non-standard deploys). */
 function defaultGatewayEntryPath(): string {
 	return fileURLToPath(new URL("./gateway/gateway-main.js", import.meta.url));
+}
+
+/** FLY-304: the deployed lead-actions MCP entry next to this module (dist layout)
+ * — the proactive discord_send server for a FULL-ACCESS Codex Lead. Overridable
+ * via FLYWHEEL_LEAD_ACTIONS_ENTRY (tests / non-standard deploys). */
+function defaultLeadActionsEntryPath(): string {
+	return fileURLToPath(
+		new URL("./lead-actions/lead-actions-main.js", import.meta.url),
+	);
+}
+
+/** FLY-304 (codex review item 2): verify the trusted lead-actions MCP entry EXISTS
+ * BEFORE spawning the app-server, so a full-access Lead fails LOUD at boot (with a
+ * build hint) instead of silently starting a broken MCP command that only errors
+ * when the model first tries to call the tool. Returns the validated path. */
+function assertLeadActionsEntry(entry: string | undefined): string {
+	if (!entry || !existsSync(entry)) {
+		throw new Error(
+			`lead-actions entry not deployed at ${entry ?? "(unset)"} — build the ` +
+				`teamlead dist (pnpm --filter flywheel-teamlead build) before starting a ` +
+				`full-access Codex Lead with proactive discord_send (FLY-304)`,
+		);
+	}
+	return entry;
+}
+
+/** FLY-304: the lead-actions MCP options for a full-access Lead — SHARED by the live
+ * startup (buildCodexLeadRuntime) and the dry-run report so they can NEVER diverge
+ * (code-review R1#3). The bot token is forwarded BY NAME (env_vars) — never a literal;
+ * all literal env entries are NON-SECRET coordinates. `entry` is passed in (the live
+ * path existsSync-validates it first; dry-run discloses the configured path as-is). */
+function fullAccessLeadActionsMcpConfig(
+	config: Pick<
+		CodexLeadRuntimeConfig,
+		| "leadId"
+		| "projectName"
+		| "chatChannelId"
+		| "crossDeptChannelIds"
+		| "stateDir"
+		| "leadActionsChannelAliases"
+	>,
+	entry: string,
+): LeadActionsMcpConfig {
+	const env: Record<string, string> = {
+		FLYWHEEL_LEAD_ID: config.leadId,
+		FLYWHEEL_PROJECT_NAME: config.projectName,
+		FLYWHEEL_LEAD_CHAT_CHANNEL_ID: config.chatChannelId,
+		FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: config.crossDeptChannelIds.join(","),
+		FLYWHEEL_LEAD_ACTIONS_STATE_DIR: config.stateDir,
+		// R1#2: forward explicit alias pins so the documented roundtable
+		// disambiguation works for full-access (non-secret).
+		...(config.leadActionsChannelAliases
+			? {
+					FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:
+						config.leadActionsChannelAliases,
+				}
+			: {}),
+	};
+	return {
+		command: process.execPath,
+		args: [entry],
+		env,
+		// Token by NAME — already in the full-access app-server env; never a literal.
+		envVarNames: ["DISCORD_BOT_TOKEN"],
+	};
 }
 
 /** Walk up from `start` to the nearest directory containing a `package.json`
@@ -1132,8 +1225,42 @@ export function buildCodexLeadRuntime(
 					],
 				},
 			})
-		: buildCodexLeadMcpArgv({ chrome: config.chrome });
+		: fullAccess
+			? buildCodexLeadMcpArgv({
+					chrome: config.chrome,
+					// FLY-304: proactive discord_send for full-access (Claude-equal). The
+					// SAME audited lead-actions MCP content-coordination uses, via the SHARED
+					// helper (so the dry-run report cannot diverge). entry is existsSync-
+					// validated here (fail-closed); the bot token is by NAME (env_vars) —
+					// pinned into baseEnv below — never a literal. NO broker.
+					leadActions: fullAccessLeadActionsMcpConfig(
+						config,
+						assertLeadActionsEntry(config.leadActionsEntry),
+					),
+				})
+			: buildCodexLeadMcpArgv({ chrome: config.chrome });
 	for (const w of mcp.warnings) logger.warn(`MCP: ${w}`);
+	// FLY-304 (codex review item 5 + R2#1): make roundtable availability visible at
+	// boot. "roundtable" resolves when EXACTLY one cross-dept channel is configured,
+	// OR when an explicit roundtable pin selects one of several (mirror the alias
+	// resolver, so the log matches what the MCP child will actually authorize).
+	if (fullAccess) {
+		const ids = config.crossDeptChannelIds;
+		const pin = config.leadActionsChannelAliases
+			? parseExplicitAliases(config.leadActionsChannelAliases).roundtable
+			: undefined;
+		const rt =
+			ids.length === 1
+				? `available (${ids[0]})`
+				: pin && ids.includes(pin)
+					? `available (pinned ${pin})`
+					: ids.length === 0
+						? "UNAVAILABLE — set FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS to serve #leads-roundtable"
+						: `ambiguous (${ids.length} cross-dept channels — pin one via FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES)`;
+		logger.info(
+			`lead-actions: proactive discord_send enabled (chat=${config.chatChannelId}; roundtable ${rt})`,
+		);
+	}
 
 	// ③ + ⑧(static): confinement config + action-surface disable argv precede
 	// the MCP overrides on the spawn command line (write-capable only). FLY-350
@@ -1191,8 +1318,18 @@ export function buildCodexLeadRuntime(
 				// env allowlist (Claude-pane mirror + gh auth) AS-IS — washSecrets:false
 				// so its gh/Discord/Bridge auth survives. Every other path keeps the
 				// unconditional action-secret wash (byte-compat).
+				// FLY-304 (codex review item 3): pin DISCORD_BOT_TOKEN from the PARSED
+				// config (not just the allowlist copy) so the lead_actions env_vars
+				// by-name forward resolves even when config came from a different env
+				// object (tests / embedded callers). Still by NAME → never in argv.
 				...(fullAccess
-					? { baseEnv: buildFullAccessEnv(process.env), washSecrets: false }
+					? {
+							baseEnv: {
+								...buildFullAccessEnv(process.env),
+								DISCORD_BOT_TOKEN: config.botToken,
+							},
+							washSecrets: false,
+						}
 					: gatewayEnv
 						? { baseEnv: gatewayEnv }
 						: {}),
@@ -1405,7 +1542,20 @@ function redactSecret(s: string): string {
  * real cutover.
  */
 export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
-	const mcp = buildCodexLeadMcpArgv({ chrome: config.chrome });
+	// FLY-304 (code-review R1#3): mirror the LIVE full-access MCP injection so the
+	// preflight evidence (MCP injected / spawn cmd) actually shows `lead_actions` +
+	// env_vars=["DISCORD_BOT_TOKEN"] — the token NAME only, never its value. Uses the
+	// configured entry as-is (no existsSync throw — a dry-run describes, never aborts).
+	const mcp =
+		config.codexProfile === "full-access" && config.leadActionsEntry
+			? buildCodexLeadMcpArgv({
+					chrome: config.chrome,
+					leadActions: fullAccessLeadActionsMcpConfig(
+						config,
+						config.leadActionsEntry,
+					),
+				})
+			: buildCodexLeadMcpArgv({ chrome: config.chrome });
 	const noBridge = config.outboundMode === "direct";
 	const persona = readBaseInstructions(config.systemPromptFiles);
 	// FLY-350 (Z) L-1 (Codex review LOW): a write-capable Lead's dry-run must
