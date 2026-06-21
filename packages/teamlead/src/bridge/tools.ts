@@ -10,6 +10,10 @@ import {
 	validateAndRegisterChatThread,
 	validateChatThreadParams,
 } from "./chat-thread-register.js";
+import {
+	archiveThreadAndRecord,
+	resolveBotTokenForThread,
+} from "./done-thread-archiver.js";
 import { filterSessionsByLead } from "./lead-scope.js";
 import {
 	type ChatClassification,
@@ -70,6 +74,15 @@ export interface QueryRouterOptions {
 	 * `["FLY","GEO"]` when omitted.
 	 */
 	issuePrefixes?: string[];
+	/**
+	 * FLY-369: whether a Bearer API token is configured (`Boolean(config.apiToken)`).
+	 * `tokenAuthMiddleware` is a no-op when the token is unset, and
+	 * `chatThreadsEnabled` (unlike reply-by-issue) does not fail-start without
+	 * one — so the privileged `POST /chat-threads/archive` route fails closed
+	 * (503) when this is false. Defaults to `false` (fail-closed) so existing
+	 * router tests are unaffected.
+	 */
+	apiTokenConfigured?: boolean;
 }
 
 function omitIssueId(
@@ -103,6 +116,7 @@ export function createQueryRouter(
 	const replyByIssueEnabled = opts?.replyByIssueEnabled ?? false;
 	const replyGuardEnabled = opts?.replyGuardEnabled ?? false;
 	const issuePrefixes = opts?.issuePrefixes ?? ["FLY", "GEO"];
+	const apiTokenConfigured = opts?.apiTokenConfigured ?? false;
 	const router = Router();
 
 	router.get("/sessions", (req, res) => {
@@ -900,6 +914,198 @@ export function createQueryRouter(
 		res.json({
 			threadId: row?.thread_id ?? null,
 		});
+	});
+
+	// FLY-369: on-demand archive of an issue's chat thread (Done-but-not-shipped).
+	// Endpoint: POST /api/chat-threads/archive
+	// Body: { issueId? | issueIdentifier?, channelId, leadId, projectName }
+	// Archive ALWAYS goes through the Bridge-local archiveChatThread (Bridge holds
+	// the bot token). Fails closed (503) when no API token is configured, since
+	// tokenAuthMiddleware no-ops without one and chatThreadsEnabled does not
+	// fail-start with a token (Codex design review R1 #4). archive-on-Done auto
+	// archiving is separate (reconciler); this is the manual escape hatch.
+	router.post("/chat-threads/archive", async (req, res) => {
+		if (!chatThreadsEnabled) {
+			res.status(404).json({ error: "Chat threads not enabled" });
+			return;
+		}
+		if (!apiTokenConfigured) {
+			res.status(503).json({
+				error:
+					"archive endpoint requires TEAMLEAD_API_TOKEN (refusing unauthenticated privileged archive)",
+			});
+			return;
+		}
+
+		const {
+			issueId: bodyIssueId,
+			issueIdentifier: bodyIdentifier,
+			channelId,
+			leadId,
+			projectName,
+		} = (req.body ?? {}) as {
+			issueId?: string;
+			issueIdentifier?: string;
+			channelId?: string;
+			leadId?: string;
+			projectName?: string;
+		};
+
+		if (
+			(!bodyIssueId && !bodyIdentifier) ||
+			!channelId ||
+			!leadId ||
+			!projectName
+		) {
+			res.status(400).json({
+				error:
+					"channelId, leadId, projectName, and at least one of issueId/issueIdentifier are required",
+			});
+			return;
+		}
+
+		// validateChatThreadParams enforces caller scope/authz (the requesting Lead
+		// must be configured for this project + channel). The bot token used to
+		// archive, however, is resolved from the THREAD's recorded lead_id below
+		// (Codex code review R1 #1) — not the caller's — so a changed/multi-Lead
+		// ownership still archives with the correct bot.
+		const validation = validateChatThreadParams(
+			{ channelId, leadId, projectName },
+			projects,
+		);
+		if (!validation.ok) {
+			res.status(validation.status).json({ error: validation.error });
+			return;
+		}
+
+		// Canonicalize to the stored chat_threads.issue_id (FLY-270 key reality).
+		// An identifier maps through the session row to whatever run-start stored,
+		// so an identifier-only request cannot miss a UUID-keyed thread.
+		let canonicalKey: string;
+		if (bodyIssueId && bodyIdentifier) {
+			// Both given: cross-check requires Linear (parity with /send).
+			if (!process.env.LINEAR_API_KEY) {
+				res.status(400).json({
+					error:
+						"provide only one of issueId/issueIdentifier (cross-check needs LINEAR_API_KEY)",
+				});
+				return;
+			}
+			try {
+				const { LinearClient } = await import("@linear/sdk");
+				const client = new LinearClient({ apiKey: process.env.LINEAR_API_KEY });
+				const issue = await client.issue(bodyIssueId);
+				if (!issue) {
+					res
+						.status(404)
+						.json({ error: `Issue ${bodyIssueId} not found in Linear` });
+					return;
+				}
+				if (issue.identifier !== bodyIdentifier) {
+					res.status(400).json({
+						error: `issueId and issueIdentifier mismatch (issueId resolves to ${issue.identifier}, got ${bodyIdentifier})`,
+					});
+					return;
+				}
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				res.status(502).json({ error: `Cannot verify issue: ${msg}` });
+				return;
+			}
+			canonicalKey =
+				store.getSessionByIdentifier(bodyIdentifier)?.issue_id ??
+				bodyIdentifier;
+		} else if (bodyIdentifier) {
+			canonicalKey =
+				store.getSessionByIdentifier(bodyIdentifier)?.issue_id ??
+				bodyIdentifier;
+		} else {
+			// issueId only
+			const id = bodyIssueId as string;
+			canonicalKey = isLinearUuid(id)
+				? id
+				: (store.getSessionByIdentifier(id)?.issue_id ?? id);
+		}
+
+		let thread = store.getChatThreadByIssue(canonicalKey, channelId);
+
+		// UUID-only direct miss: resolve the identifier via Linear (if available)
+		// and retry, since post-FLY-270 threads are identifier-keyed.
+		if (
+			!thread &&
+			bodyIssueId &&
+			!bodyIdentifier &&
+			isLinearUuid(bodyIssueId) &&
+			process.env.LINEAR_API_KEY
+		) {
+			try {
+				const { LinearClient } = await import("@linear/sdk");
+				const client = new LinearClient({ apiKey: process.env.LINEAR_API_KEY });
+				const issue = await client.issue(bodyIssueId);
+				if (issue?.identifier) {
+					canonicalKey =
+						store.getSessionByIdentifier(issue.identifier)?.issue_id ??
+						issue.identifier;
+					thread = store.getChatThreadByIssue(canonicalKey, channelId);
+				}
+			} catch {
+				// best-effort; fall through to 404
+			}
+		}
+
+		if (!thread) {
+			res.status(404).json({
+				error: `No chat thread for issue ${canonicalKey} in channel ${channelId}`,
+			});
+			return;
+		}
+
+		// FLY-369 archive-once: a thread already archived is not re-archived, so a
+		// re-open (Discord auto-unarchive on a new message) is not fought. No-op 200.
+		if (thread.archived_at) {
+			res.json({
+				threadId: thread.thread_id,
+				archived: true,
+				reason: "already_archived",
+				attempts: 0,
+			});
+			return;
+		}
+
+		const session = store.getSessionByIssue(canonicalKey);
+		// Resolve the bot token from the THREAD's recorded lead_id first (Codex R1
+		// #1), matching the automatic sweep; labels are only used for the legacy
+		// fallback when the thread has no lead_id.
+		const botToken = resolveBotTokenForThread(projects, {
+			projectName,
+			leadId: thread.lead_id,
+			labels: session ? store.getSessionLabels(session.execution_id) : [],
+			fallbackBotToken: opts?.globalBotToken,
+		});
+		if (!botToken) {
+			res.status(503).json({ error: "No Discord bot token available" });
+			return;
+		}
+
+		const executionId =
+			session?.execution_id ?? `fly369-archive-${canonicalKey}`;
+
+		const result = await archiveThreadAndRecord(
+			store,
+			{
+				threadId: thread.thread_id,
+				issueId: canonicalKey,
+				projectName,
+				executionId,
+			},
+			botToken,
+			{
+				discordOwnerUserId: opts?.discordOwnerUserId,
+				fetchImpl: opts?.discordFetch,
+			},
+		);
+
+		res.json({ threadId: thread.thread_id, ...result });
 	});
 
 	// FLY-162 Layer 2: preventive reply-guard. The forked Discord plugin calls

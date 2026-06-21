@@ -793,6 +793,78 @@ describe("StateStore", () => {
 	});
 });
 
+// ── FLY-369: chat_threads archived_at — archive-once mark + lead_id readback ──
+describe("StateStore — FLY-369 chat thread archival", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("getChatThreadByIssue returns lead_id + null archived_at for a fresh thread", () => {
+		store.upsertChatThread("t-1", "ch-1", "FLY-100", "lead-a");
+		expect(store.getChatThreadByIssue("FLY-100", "ch-1")).toEqual({
+			thread_id: "t-1",
+			channel_id: "ch-1",
+			lead_id: "lead-a",
+			archived_at: null,
+		});
+	});
+
+	it("markChatThreadArchived sets archived_at (archive-once record)", () => {
+		store.upsertChatThread("t-1", "ch-1", "FLY-100", "lead-a");
+		expect(
+			store.getChatThreadByIssue("FLY-100", "ch-1")?.archived_at,
+		).toBeNull();
+
+		store.markChatThreadArchived("t-1");
+		expect(
+			store.getChatThreadByIssue("FLY-100", "ch-1")?.archived_at,
+		).toBeTruthy();
+	});
+
+	it("archived_at column survives a legacy DB without it (migration)", async () => {
+		const path = "/tmp/fly369-legacy-chat-threads.sqlite";
+		try {
+			const fs = await import("node:fs");
+			const initSqlJs = (await import("sql.js")).default;
+			const SQL = await initSqlJs();
+			const seed = new SQL.Database();
+			// Legacy chat_threads WITHOUT archived_at (pre-FLY-369 schema)
+			seed.run(`CREATE TABLE chat_threads (
+				thread_id TEXT PRIMARY KEY,
+				channel_id TEXT NOT NULL,
+				issue_id TEXT,
+				lead_id TEXT,
+				created_at TEXT DEFAULT (datetime('now')),
+				discord_missing_at TEXT
+			)`);
+			seed.run(
+				"INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id) VALUES (?, ?, ?, ?)",
+				["legacy-1", "ch-1", "FLY-99", "lead-a"],
+			);
+			fs.writeFileSync(path, Buffer.from(seed.export()));
+			seed.close();
+
+			const migrated = await StateStore.create(path);
+			// archived_at column now exists; legacy row reads back with null archived_at
+			expect(
+				migrated.getChatThreadByIssue("FLY-99", "ch-1")?.archived_at,
+			).toBeNull();
+			// and mark works on the migrated DB
+			migrated.markChatThreadArchived("legacy-1");
+			expect(
+				migrated.getChatThreadByIssue("FLY-99", "ch-1")?.archived_at,
+			).toBeTruthy();
+		} finally {
+			try {
+				const fs = await import("node:fs");
+				fs.unlinkSync(path);
+			} catch {}
+		}
+	});
+});
+
 // ── FLY-195: stuck-episode disposition receipts (plan §3.4) ──
 describe("StateStore — stuck dispositions (FLY-195)", () => {
 	let store: StateStore;

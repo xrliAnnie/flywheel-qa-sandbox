@@ -128,6 +128,44 @@ describe("closeRunner", () => {
 		).toBe(true);
 	});
 
+	it("FLY-369: a tmux kill failure does NOT archive (cascade only on success)", async () => {
+		// Seed a FULLY RESOLVABLE archive context (project + registered thread)
+		// so that the PRE-fix placement (cascade before the kill) WOULD have
+		// called archiveFn — i.e. this test actually exercises the success-gate.
+		seedSession(store, "completed");
+		store.upsertChatThread("t-x", "ch-x", "FLY-102", "lead-a");
+		const project = {
+			projectName: "flywheel",
+			projectRoot: "/tmp/fw",
+			leads: [
+				{
+					agentId: "lead-a",
+					chatChannel: "ch-x",
+					match: { labels: ["x"] },
+					botToken: "tok-a",
+				},
+			],
+		} as unknown as import("../ProjectConfig.js").ProjectEntry;
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "permission denied",
+		});
+		const archiveFn = vi.fn().mockResolvedValue({ archived: true });
+
+		const result = await closeRunner(
+			makeOpts({ archive: { projects: [project], archiveFn } }),
+			store,
+		);
+
+		// Close failed → thread must NOT be archived (premature-archive guard).
+		expect(result).toEqual({ closed: false, error: "permission denied" });
+		expect(archiveFn).not.toHaveBeenCalled();
+	});
+
 	// ───────── FLY-116: state split tests ─────────
 
 	it.each([["failed"], ["blocked"]])(

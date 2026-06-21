@@ -61,9 +61,14 @@ describe("FLY-91: ChatThreadCreator", () => {
 		expect(threadBody.name).toBe("[FLY-91] Discord thread reply");
 		expect(threadBody.auto_archive_duration).toBe(4320);
 
-		// Verify stored mapping
+		// Verify stored mapping (FLY-369: getChatThreadByIssue also returns lead_id + archived_at)
 		const stored = store.getChatThreadByIssue("issue-1", "ch-123");
-		expect(stored).toEqual({ thread_id: "thread-abc", channel_id: "ch-123" });
+		expect(stored).toEqual({
+			thread_id: "thread-abc",
+			channel_id: "ch-123",
+			lead_id: null,
+			archived_at: null,
+		});
 	});
 
 	it("reuses existing chat thread and posts channel notification", async () => {
@@ -314,7 +319,13 @@ describe("FLY-91: StateStore chat_threads CRUD", () => {
 	it("upsertChatThread + getChatThreadByIssue", () => {
 		store.upsertChatThread("t-1", "ch-1", "issue-1");
 		const result = store.getChatThreadByIssue("issue-1", "ch-1");
-		expect(result).toEqual({ thread_id: "t-1", channel_id: "ch-1" });
+		// FLY-369: getChatThreadByIssue now also returns lead_id + archived_at (null when unset).
+		expect(result).toEqual({
+			thread_id: "t-1",
+			channel_id: "ch-1",
+			lead_id: null,
+			archived_at: null,
+		});
 	});
 
 	it("returns undefined for non-existent issue", () => {

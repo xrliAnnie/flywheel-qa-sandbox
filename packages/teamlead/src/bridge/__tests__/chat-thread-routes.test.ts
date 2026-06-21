@@ -57,6 +57,14 @@ const TEST_PROJECT: ProjectEntry = {
 			match: { labels: ["beta"] },
 			// no botToken — should fall back to global
 		},
+		{
+			// FLY-369: a second lead used to verify the archive endpoint resolves
+			// the bot token from the THREAD's recorded lead_id, not the caller's.
+			agentId: "lead-gamma",
+			chatChannel: "ch-100",
+			match: { labels: ["gamma"] },
+			botToken: "lead-token-gamma",
+		},
 	],
 };
 
@@ -1067,6 +1075,229 @@ describe("chat-thread routes (tools.ts)", () => {
 			);
 			expect(res.status).toBe(200);
 			expect(issueCalled).toBe(false);
+		});
+	});
+
+	// ── FLY-369: POST /api/chat-threads/archive (on-demand archive) ──
+	describe("POST /api/chat-threads/archive (FLY-369)", () => {
+		let mockFetch: ReturnType<typeof vi.fn>;
+
+		beforeEach(() => {
+			// Discord PATCH archive → 200 { archived: true }
+			mockFetch = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				headers: { get: () => null },
+				json: async () => ({ archived: true }),
+				text: async () => "",
+			});
+		});
+
+		it("returns 404 when chatThreadsEnabled is false", async () => {
+			createTestServer({ chatThreadsEnabled: false, apiTokenConfigured: true });
+			const res = await request(server, "POST", "/api/chat-threads/archive", {
+				issueIdentifier: "FLY-91",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(404);
+		});
+
+		it("fails closed with 503 when no API token is configured (default)", async () => {
+			// apiTokenConfigured omitted → defaults to false → privileged route 503
+			createTestServer({ chatThreadsEnabled: true, discordFetch: mockFetch });
+			const res = await request(server, "POST", "/api/chat-threads/archive", {
+				issueIdentifier: "FLY-91",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(503);
+			expect((res.body as { error: string }).error).toMatch(
+				/TEAMLEAD_API_TOKEN/,
+			);
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+
+		it("returns 400 when no issue handle is provided", async () => {
+			createTestServer({ chatThreadsEnabled: true, apiTokenConfigured: true });
+			const res = await request(server, "POST", "/api/chat-threads/archive", {
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(400);
+		});
+
+		it("returns 403 when the lead is not configured for the project", async () => {
+			createTestServer({ chatThreadsEnabled: true, apiTokenConfigured: true });
+			const res = await request(server, "POST", "/api/chat-threads/archive", {
+				issueIdentifier: "FLY-91",
+				channelId: "ch-100",
+				leadId: "nope",
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(403);
+		});
+
+		it("identifier-only canonicalizes through the session to a non-identifier-keyed thread", async () => {
+			// Thread stored under issue_id (UUID), session maps FLY-91 → that UUID.
+			store.upsertSession({
+				execution_id: "exec-1",
+				issue_id: "uuid-abc",
+				issue_identifier: "FLY-91",
+				project_name: "TestProject",
+				status: "completed",
+			});
+			store.upsertChatThread("t-id", "ch-100", "uuid-abc", "lead-alpha");
+			createTestServer({
+				chatThreadsEnabled: true,
+				apiTokenConfigured: true,
+				discordFetch: mockFetch,
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/archive", {
+				issueIdentifier: "FLY-91",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(200);
+			expect((res.body as { archived: boolean }).archived).toBe(true);
+			expect((res.body as { threadId: string }).threadId).toBe("t-id");
+			// marked archived (archive-once record)
+			expect(
+				store.getChatThreadByIssue("uuid-abc", "ch-100")?.archived_at,
+			).toBeTruthy();
+			// archived via the bot token (per-lead), as a PATCH
+			expect(mockFetch).toHaveBeenCalledWith(
+				expect.stringContaining("/channels/t-id"),
+				expect.objectContaining({ method: "PATCH" }),
+			);
+		});
+
+		it("uuid-only archives a uuid-keyed thread directly (no Linear)", async () => {
+			store.upsertChatThread(
+				"t-uuid",
+				"ch-100",
+				"11111111-2222-3333-4444-555555555555",
+				"lead-alpha",
+			);
+			createTestServer({
+				chatThreadsEnabled: true,
+				apiTokenConfigured: true,
+				discordFetch: mockFetch,
+			});
+			const res = await request(server, "POST", "/api/chat-threads/archive", {
+				issueId: "11111111-2222-3333-4444-555555555555",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(200);
+			expect((res.body as { archived: boolean }).archived).toBe(true);
+		});
+
+		it("archives with the THREAD's recorded lead token, not the caller's (Codex R1 #1)", async () => {
+			// Thread recorded under lead-gamma; caller is lead-alpha (both on ch-100).
+			store.upsertSession({
+				execution_id: "exec-z",
+				issue_id: "uuid-z",
+				issue_identifier: "FLY-77",
+				project_name: "TestProject",
+				status: "completed",
+			});
+			store.upsertChatThread("t-gamma", "ch-100", "uuid-z", "lead-gamma");
+			createTestServer({
+				chatThreadsEnabled: true,
+				apiTokenConfigured: true,
+				discordFetch: mockFetch,
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/archive", {
+				issueIdentifier: "FLY-77",
+				channelId: "ch-100",
+				leadId: "lead-alpha", // caller
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(200);
+			expect((res.body as { archived: boolean }).archived).toBe(true);
+			// The Discord PATCH used the THREAD owner's token (lead-gamma), not the caller's.
+			expect(mockFetch).toHaveBeenCalledWith(
+				expect.stringContaining("/channels/t-gamma"),
+				expect.objectContaining({
+					method: "PATCH",
+					headers: expect.objectContaining({
+						Authorization: "Bot lead-token-gamma",
+					}),
+				}),
+			);
+		});
+
+		it("returns 400 on issueId/issueIdentifier mismatch (Linear cross-check)", async () => {
+			const orig = process.env.LINEAR_API_KEY;
+			process.env.LINEAR_API_KEY = "test-key";
+			mockIssue = (id: string) => ({ id, identifier: "FLY-91" });
+			try {
+				createTestServer({
+					chatThreadsEnabled: true,
+					apiTokenConfigured: true,
+					discordFetch: mockFetch,
+				});
+				const res = await request(server, "POST", "/api/chat-threads/archive", {
+					issueId: "uuid-fly-91",
+					issueIdentifier: "FLY-OTHER",
+					channelId: "ch-100",
+					leadId: "lead-alpha",
+					projectName: "TestProject",
+				});
+				expect(res.status).toBe(400);
+				expect((res.body as { error: string }).error).toMatch(/mismatch/i);
+			} finally {
+				if (orig) process.env.LINEAR_API_KEY = orig;
+				else delete process.env.LINEAR_API_KEY;
+			}
+		});
+
+		it("returns 404 when no chat thread exists for the issue", async () => {
+			createTestServer({
+				chatThreadsEnabled: true,
+				apiTokenConfigured: true,
+				discordFetch: mockFetch,
+			});
+			const res = await request(server, "POST", "/api/chat-threads/archive", {
+				issueIdentifier: "FLY-404",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(404);
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
+
+		it("archive-once: already-archived thread is a no-op (respects a Discord re-open)", async () => {
+			store.upsertChatThread("t-arch", "ch-100", "FLY-77b", "lead-alpha");
+			store.markChatThreadArchived("t-arch");
+			createTestServer({
+				chatThreadsEnabled: true,
+				apiTokenConfigured: true,
+				discordFetch: mockFetch,
+			});
+			const res = await request(server, "POST", "/api/chat-threads/archive", {
+				issueId: "FLY-77b",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			});
+			expect(res.status).toBe(200);
+			expect(res.body).toMatchObject({
+				threadId: "t-arch",
+				archived: true,
+				reason: "already_archived",
+			});
+			// no Discord PATCH — we do not re-archive (archive-once)
+			expect(mockFetch).not.toHaveBeenCalled();
 		});
 	});
 });
