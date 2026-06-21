@@ -22,7 +22,12 @@
  *     threat-matrix QA, not unit tests.
  */
 
-import { existsSync, realpathSync as nodeRealpathSync } from "node:fs";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	realpathSync as nodeRealpathSync,
+} from "node:fs";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { verifyApproval } from "flywheel-comm/verify-approval";
@@ -40,6 +45,12 @@ import {
 import { loadProjects } from "../../../ProjectConfig.js";
 import type { Session } from "../../../StateStore.js";
 import { CodexFounderPreflight } from "../CodexFounderPreflight.js";
+import { runDiscordSend } from "../discord-send-core.js";
+import { parseExplicitAliases } from "../lead-actions/alias-allowlist.js";
+import {
+	SendIdempotencyCache,
+	SlidingWindowRateLimiter,
+} from "../lead-actions/send-guard.js";
 import { fetchSecretsFromBroker } from "../secret-broker.js";
 import {
 	checkReactionConfirmation,
@@ -47,6 +58,17 @@ import {
 	FOUNDER_CONFIRM_EMOJI,
 	type TokenConfirmationMessage,
 } from "./founder-confirmation.js";
+import {
+	buildPushAuditRow,
+	buildRemoteUrl,
+	deriveBranchName,
+	makeGitPushExec,
+	materializeAndPush,
+	openPullRequest,
+	parseOwnerRepo,
+	probeGitHubToken,
+	readModelHeadSha,
+} from "./GitPushRunner.js";
 import {
 	LifecycleOrchestrator,
 	type ResolvedLifecycleTarget,
@@ -83,6 +105,28 @@ export interface GatewayConfig {
 	confirmTtlMs: number;
 	/** Observation poll interval (default 5s). */
 	pollIntervalMs: number;
+	// ── FLY-350 (Z) unit 3: discord_send channel coordinates ──────────────────
+	// The SAME contract as the lead-actions MCP (one alias→channel allowlist
+	// across both proactive-send paths). OPTIONAL (byte-compat with the FLY-245
+	// gateway that had no discord_send) — absent → empty, and `resolveChannelAlias`
+	// fails CLOSED at call time (the model can never send to an unconfigured alias).
+	/** The Lead's own chat channel id (alias "chat"). */
+	chatChannelId: string;
+	/** Configured cross-department channel ids (alias "roundtable" when exactly one). */
+	crossDeptChannelIds: string[];
+	/** Explicit alias→channelId pins (disambiguate multi/zero roundtable). */
+	explicitAliases: Record<string, string>;
+	/** Per-channel proactive-send cap per window (FLY-220 loop-safety). */
+	sendRateMaxPerWindow: number;
+	/** Proactive-send rate-limit window length (ms). */
+	sendRateWindowMs: number;
+	/** Idempotency TTL (ms) — a repeat (channel, text) within this collapses. */
+	sendIdempotencyTtlMs: number;
+	// ── FLY-350 (Z) unit 4: gateway-proxied PR scope ──────────────────────────
+	/** The project's GitHub repo slug ("owner/repo") — scopes git_push/open_pr.
+	 * OPTIONAL (absent → git_push/open_pr fail closed at call time). The GH_TOKEN
+	 * itself is a broker secret, NEVER config/env. */
+	projectRepo: string;
 }
 
 /** Parse + validate the gateway env. Fail-loud: lists ALL missing vars. */
@@ -110,6 +154,16 @@ export function parseGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
 		env.FLYWHEEL_COMM_ROOT?.trim() || join(env.HOME ?? "", ".flywheel", "comm");
 	const ttlRaw = Number(env.FLYWHEEL_GATEWAY_CONFIRM_TTL_MS);
 	const pollRaw = Number(env.FLYWHEEL_GATEWAY_POLL_INTERVAL_MS);
+	// FLY-350 (Z) unit 3: discord_send coords — OPTIONAL (byte-compat), same env
+	// var names + parser as the lead-actions MCP (one alias contract).
+	const crossDeptChannelIds = (env.FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS ?? "")
+		.split(",")
+		.map((s) => s.trim())
+		.filter((s) => s.length > 0);
+	const posInt = (raw: string | undefined, fallback: number): number => {
+		const n = Number(raw);
+		return Number.isFinite(n) && n > 0 ? n : fallback;
+	};
 	return {
 		leadId,
 		projectName,
@@ -127,6 +181,18 @@ export function parseGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
 		confirmTtlMs:
 			Number.isFinite(ttlRaw) && ttlRaw > 0 ? ttlRaw : 30 * 60 * 1000,
 		pollIntervalMs: Number.isFinite(pollRaw) && pollRaw > 0 ? pollRaw : 5000,
+		chatChannelId: env.FLYWHEEL_LEAD_CHAT_CHANNEL_ID?.trim() ?? "",
+		crossDeptChannelIds,
+		explicitAliases: parseExplicitAliases(
+			env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES,
+		),
+		sendRateMaxPerWindow: posInt(env.FLYWHEEL_LEAD_ACTIONS_RATE_MAX, 5),
+		sendRateWindowMs: posInt(env.FLYWHEEL_LEAD_ACTIONS_RATE_WINDOW_MS, 60_000),
+		sendIdempotencyTtlMs: posInt(
+			env.FLYWHEEL_LEAD_ACTIONS_IDEMPOTENCY_TTL_MS,
+			60_000,
+		),
+		projectRepo: env.FLYWHEEL_GATEWAY_PROJECT_REPO?.trim() ?? "",
 	};
 }
 
@@ -427,10 +493,27 @@ export async function gatewayMain(
 			"gateway: broker did not supply DISCORD_BOT_TOKEN + FLYWHEEL_API_TOKEN (fail-closed)",
 		);
 	}
+	// FLY-350 (Z) unit 4: the GH_TOKEN is OPTIONAL — present only for a Lead
+	// provisioned to open PRs. Absent → git_push/open_pr fail closed at call time
+	// (the FLY-245 dormant path + a non-PR Lead need no GH token). It lives ONLY
+	// here in gateway memory (broker-served); it is never in the model env/shell.
+	const githubToken = secrets.GITHUB_TOKEN;
 
 	const rest = discordRest(botToken);
 	const store = new LifecycleRequestStore(
 		join(cfg.stateDir, "lifecycle-requests.db"),
+	);
+
+	// FLY-350 (Z) unit 3: proactive-send loop-safety guards (FLY-220) — one
+	// instance per live gateway process; shared by every discord_send turn.
+	const sendRateLimiter = new SlidingWindowRateLimiter({
+		maxPerWindow: cfg.sendRateMaxPerWindow,
+		windowMs: cfg.sendRateWindowMs,
+	});
+	const sendIdempotency = new SendIdempotencyCache(cfg.sendIdempotencyTtlMs);
+	const discordSendAuditPath = join(
+		cfg.stateDir,
+		"gateway-discord-send-audit.jsonl",
 	);
 
 	// MED-7: restrict target resolution to THIS Lead's label-routing scope so a
@@ -627,7 +710,37 @@ export async function gatewayMain(
 	const founderPreflight = new CodexFounderPreflight({
 		verify: verifyApproval,
 	});
-	const gitRunner: GitRunner = makeTrustedGitRunner(resolveTrustedGitPath(env));
+	const trustedGitPath = resolveTrustedGitPath(env);
+	const gitRunner: GitRunner = makeTrustedGitRunner(trustedGitPath);
+	// FLY-350 (Z) unit 4: gateway-proxied git_push/open_pr support. The push
+	// exec is the hardened (no-inherited-config, minimal-env) git used to drive a
+	// CLEAN staging repo; the staging root lives under the per-Lead state dir —
+	// OUTSIDE the model's writableRoots (resolveLeadWorkspace already forbids the
+	// scratch from overlapping stateDir). owner/repo is the configured project
+	// repo (never inferred from model-local git state, R3-4).
+	const gitPushExec = makeGitPushExec(trustedGitPath);
+	const gitStagingRoot = join(cfg.stateDir, "git-staging");
+	const pushAuditPath = join(cfg.stateDir, "gateway-git-push-audit.jsonl");
+	// Best-effort metadata-only audit (NEVER the token — buildPushAuditRow never
+	// carries it; a failed append must not fail the action).
+	const appendGitPushAudit = (row: Record<string, unknown>): void => {
+		try {
+			mkdirSync(cfg.stateDir, { recursive: true });
+			appendFileSync(pushAuditPath, `${JSON.stringify(row)}\n`);
+		} catch {
+			// best-effort
+		}
+	};
+	let ownerRepo: { owner: string; repo: string } | undefined;
+	if (cfg.projectRepo) {
+		try {
+			ownerRepo = parseOwnerRepo(cfg.projectRepo);
+		} catch (e) {
+			process.stderr.write(
+				`[gateway] WARN invalid FLYWHEEL_GATEWAY_PROJECT_REPO (git_push/open_pr disabled): ${(e as Error).message}\n`,
+			);
+		}
+	}
 	// R2 HIGH-5: the model's writable scratch — a target worktree overlapping it
 	// is refused (forged-clean HEAD + repo-local-config risk). The runtime ALWAYS
 	// forwards FLYWHEEL_CODEX_LEAD_WORKSPACE (= the canonical release.workspace),
@@ -743,6 +856,210 @@ export async function gatewayMain(
 						: `Ship preflight DENIED: ${decision.reason}`,
 					!decision.allowed,
 				);
+			} catch (e) {
+				return asText(
+					`REFUSED: ${e instanceof Error ? e.message : String(e)}`,
+					true,
+				);
+			}
+		},
+	);
+
+	// FLY-350 (Z) unit 3: discord_send — proactive post to an ALLOWLISTED channel
+	// alias. NOT founder-gated (it cannot reach the merge red line): the model
+	// passes an alias only ("chat"/"roundtable"), the channel id is resolved
+	// SERVER-SIDE (fail-closed), and the send is rate-limited + idempotent +
+	// metadata-audited. Delegates to the SHARED runDiscordSend core (the exact
+	// same path as the content-coordination lead-actions MCP), so the two
+	// proactive-send surfaces can never drift.
+	server.tool(
+		"discord_send",
+		"Proactively post a message to one of YOUR allowlisted channels. `target` " +
+			'is an ALIAS ("chat" = your own channel, "roundtable" = the cross-' +
+			"department channel), NOT a channel id. Use this to START a message " +
+			"(reactive replies are sent automatically — no tool needed).",
+		{
+			target: z
+				.string()
+				.describe('Channel alias: "chat" or "roundtable" (not a raw id)'),
+			text: z.string().min(1).describe("Message text to post"),
+		},
+		async ({ target, text }) => {
+			const r = await runDiscordSend(target, text, {
+				chatChannelId: cfg.chatChannelId,
+				crossDeptChannelIds: cfg.crossDeptChannelIds,
+				explicitAliases: cfg.explicitAliases,
+				botToken,
+				rateLimiter: sendRateLimiter,
+				idempotency: sendIdempotency,
+				auditPath: discordSendAuditPath,
+				leadId: cfg.leadId,
+				projectName: cfg.projectName,
+			});
+			return asText(r.text, r.isError);
+		},
+	);
+
+	// FLY-350 (Z) unit 4: gateway-proxied PR. git_push + open_pr let a net-off
+	// write-capable Lead open a PR WITHOUT a shell token or shell network — the
+	// gateway holds the fine-grained GH_TOKEN (contents:write + pull_requests:write
+	// only) and does the push/PR. NOT founder-gated (push a feature branch / open a
+	// PR ≠ merge): the model cannot reach `gh pr merge` / `:cool:` (no such tool),
+	// branch protection + the absent merge tool keep the merge red line structural.
+	// Both derive the SAME server-side branch from the model HEAD (R4-4) so a
+	// git_push then open_pr line up. Fail-closed if the Lead has no GH_TOKEN/repo.
+	const requirePrPrereqs = ():
+		| { ok: true; owner: string; repo: string; token: string; worktree: string }
+		| { ok: false; reason: string } => {
+		if (!githubToken)
+			return { ok: false, reason: "no GH_TOKEN provisioned (fail-closed)" };
+		if (!ownerRepo)
+			return {
+				ok: false,
+				reason: "no/invalid project repo configured (fail-closed)",
+			};
+		if (!modelWorkspaceRoot)
+			return {
+				ok: false,
+				reason:
+					"FLYWHEEL_CODEX_LEAD_WORKSPACE not set — cannot locate the model worktree (fail-closed)",
+			};
+		return {
+			ok: true,
+			owner: ownerRepo.owner,
+			repo: ownerRepo.repo,
+			token: githubToken,
+			worktree: modelWorkspaceRoot,
+		};
+	};
+
+	server.tool(
+		"git_push",
+		"Push YOUR committed work (the model worktree's current HEAD) to a fresh " +
+			"feature branch on the project repo, via the gateway (your shell has no " +
+			"token/network). The branch is derived server-side; main/protected are " +
+			"refused; this is NOT a merge.",
+		{
+			issue: z
+				.string()
+				.min(1)
+				.describe(
+					"Issue identifier (e.g. FLY-350) — required; labels the branch",
+				),
+		},
+		async ({ issue }) => {
+			const pre = requirePrPrereqs();
+			if (!pre.ok) return asText(`REFUSED: ${pre.reason}`, true);
+			try {
+				const headSha = readModelHeadSha(pre.worktree, gitPushExec);
+				const branch = deriveBranchName({ leadId: cfg.leadId, issue, headSha });
+				const probe = await probeGitHubToken({
+					fetchImpl: fetch,
+					owner: pre.owner,
+					repo: pre.repo,
+					token: pre.token,
+				});
+				if (!probe.ok)
+					return asText(
+						`REFUSED: GH token probe failed: ${probe.reason}`,
+						true,
+					);
+				const res = materializeAndPush(
+					{
+						modelGitDir: join(pre.worktree, ".git"),
+						headSha,
+						remoteUrl: buildRemoteUrl(pre.owner, pre.repo),
+						branch,
+						token: pre.token,
+					},
+					{ gitPath: trustedGitPath, stagingRoot: gitStagingRoot },
+				);
+				appendGitPushAudit(
+					buildPushAuditRow({
+						ts: Date.now(),
+						leadId: cfg.leadId,
+						projectName: cfg.projectName,
+						repo: `${pre.owner}/${pre.repo}`,
+						branch,
+						localSha: headSha,
+						pushedSha: res.pushedSha,
+						actor: probe.actor,
+						outcome: res.ok ? "pushed" : `failed:${res.error ?? "unknown"}`,
+					}),
+				);
+				if (!res.ok) return asText(`REFUSED: ${res.error}`, true);
+				return asText(
+					`Pushed HEAD ${headSha} → branch ${branch} on ${pre.owner}/${pre.repo}. Open a PR with open_pr.`,
+				);
+			} catch (e) {
+				return asText(
+					`REFUSED: ${e instanceof Error ? e.message : String(e)}`,
+					true,
+				);
+			}
+		},
+	);
+
+	server.tool(
+		"open_pr",
+		"Open a pull request from YOUR pushed feature branch into the project's " +
+			"default branch (main). Run git_push first. This opens a PR for review — " +
+			"it does NOT merge (you cannot merge; the founder/CI own that).",
+		{
+			title: z.string().min(1).describe("PR title"),
+			body: z.string().describe("PR body (what changed + why)"),
+			issue: z
+				.string()
+				.min(1)
+				.describe(
+					"Issue identifier (required; must match the git_push that created the branch)",
+				),
+		},
+		async ({ title, body, issue }) => {
+			const pre = requirePrPrereqs();
+			if (!pre.ok) return asText(`REFUSED: ${pre.reason}`, true);
+			try {
+				const headSha = readModelHeadSha(pre.worktree, gitPushExec);
+				const branch = deriveBranchName({ leadId: cfg.leadId, issue, headSha });
+				const probe = await probeGitHubToken({
+					fetchImpl: fetch,
+					owner: pre.owner,
+					repo: pre.repo,
+					token: pre.token,
+				});
+				if (!probe.ok)
+					return asText(
+						`REFUSED: GH token probe failed: ${probe.reason}`,
+						true,
+					);
+				const pr = await openPullRequest({
+					fetchImpl: fetch,
+					owner: pre.owner,
+					repo: pre.repo,
+					token: pre.token,
+					head: branch,
+					base: "main",
+					title,
+					body,
+				});
+				appendGitPushAudit(
+					buildPushAuditRow({
+						ts: Date.now(),
+						leadId: cfg.leadId,
+						projectName: cfg.projectName,
+						repo: `${pre.owner}/${pre.repo}`,
+						branch,
+						localSha: headSha,
+						actor: probe.actor,
+						prNumber: pr.number,
+						prUrl: pr.url,
+						outcome: pr.ok
+							? "pr_opened"
+							: `pr_failed:${pr.reason ?? "unknown"}`,
+					}),
+				);
+				if (!pr.ok) return asText(`REFUSED: ${pr.reason}`, true);
+				return asText(`Opened PR #${pr.number}: ${pr.url}`);
 			} catch (e) {
 				return asText(
 					`REFUSED: ${e instanceof Error ? e.message : String(e)}`,

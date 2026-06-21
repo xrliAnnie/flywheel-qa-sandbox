@@ -106,18 +106,21 @@ export interface LeadConfig {
 	 *   - "content-coordination" — read-only model exec + a narrow first-party
 	 *                              lead-actions MCP (proactive Discord send +
 	 *                              scoped Linear). Still NOT write-capable.
-	 * Write-capable Codex Leads remain fail-closed and are NOT a legal value here.
+	 *   - "write-capable"        — FLY-350 (Z): net-off workspace-write shell + the
+	 *                              gateway (git_push/open_pr/discord_send). The
+	 *                              runtime confines it (FLY-245 net-off + GH_TOKEN in
+	 *                              the gateway only); merge stays founder-gated.
 	 *
 	 * Cross-field invariant (FLY-245/FLY-350): `codex-app-server` requires
-	 * `canSpawnRunners` resolving to false AND a recognized read-only tier —
-	 * either `companion === true` (tier defaults to "companion") OR an explicit
-	 * `codexProfile`. canSpawnRunners stays false until FLY-251 wires Codex Lead
-	 * runner-spawn end-to-end.
+	 * `canSpawnRunners` resolving to false AND a recognized tier — either
+	 * `companion === true` OR an explicit `codexProfile`. `write-capable` additionally
+	 * requires `companion !== true` (a write tier is not a companion). canSpawnRunners
+	 * stays false until FLY-251 wires Codex Lead runner-spawn end-to-end.
 	 *
 	 * Absent = unchanged behavior (derived from `companion`); NOT normalized into
 	 * the object (FLY-231 reverse-compat pattern).
 	 */
-	codexProfile?: "companion" | "content-coordination";
+	codexProfile?: "companion" | "content-coordination" | "write-capable";
 }
 
 /**
@@ -440,37 +443,43 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				}
 			}
 			// FLY-350: validate codexProfile value if present (only consulted for
-			// codex-app-server below). write-capable is NOT a legal value — write-
-			// capable Codex Leads stay fail-closed.
+			// codex-app-server below). "write-capable" (Z) is now a legal tier; an
+			// UNKNOWN value is still fail-loud (R2-4 — never silently default).
 			if (
 				lead.codexProfile !== undefined &&
 				lead.codexProfile !== "companion" &&
-				lead.codexProfile !== "content-coordination"
+				lead.codexProfile !== "content-coordination" &&
+				lead.codexProfile !== "write-capable"
 			) {
 				throw new Error(
 					`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
-						`codexProfile must be "companion" | "content-coordination" ` +
-						`(write-capable Codex Leads are not unlocked — FLY-245), got ` +
-						`${JSON.stringify(lead.codexProfile)}`,
+						`codexProfile must be "companion" | "content-coordination" | ` +
+						`"write-capable", got ${JSON.stringify(lead.codexProfile)}`,
 				);
 			}
 			// Cross-field invariant (FLY-245/FLY-350, runs AFTER canSpawnRunners
-			// normalization above): codex-app-server is only legal on a read-only
-			// Codex tier with NO runner spawn — canSpawnRunners must resolve to false
-			// AND the Lead is a recognized read-only tier (companion: true, OR an
-			// explicit codexProfile). Write-capable Codex Leads stay fail-closed;
-			// Codex runner-spawn awaits FLY-251.
+			// normalization above): codex-app-server requires canSpawnRunners:false
+			// (Codex runner-spawn awaits FLY-251) AND a recognized tier — companion:
+			// true OR an explicit codexProfile. FLY-350 (Z): "write-capable" is a
+			// recognized tier but is NOT a companion — reject the mixture so the
+			// declared capability is unambiguous (R2-4).
 			if (lead.backend === "codex-app-server") {
-				const recognizedReadOnlyTier =
+				const recognizedTier =
 					lead.companion === true || lead.codexProfile !== undefined;
-				if (lead.canSpawnRunners !== false || !recognizedReadOnlyTier) {
+				if (lead.canSpawnRunners !== false || !recognizedTier) {
 					throw new Error(
 						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
 							`backend "codex-app-server" requires canSpawnRunners: false AND a ` +
-							`read-only Codex tier (companion: true OR codexProfile: ` +
-							`"companion"|"content-coordination"). Write-capable Codex Leads ` +
-							`are not unlocked, and Codex runner-spawn awaits FLY-251 ` +
-							`(FLY-245 fail-close).`,
+							`recognized Codex tier (companion: true OR codexProfile: ` +
+							`"companion"|"content-coordination"|"write-capable"). Codex ` +
+							`runner-spawn awaits FLY-251 (FLY-245 fail-close).`,
+					);
+				}
+				if (lead.codexProfile === "write-capable" && lead.companion === true) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`codexProfile "write-capable" cannot be combined with companion: true ` +
+							`(a write-capable Lead is not a companion — FLY-350 R2-4).`,
 					);
 				}
 			}

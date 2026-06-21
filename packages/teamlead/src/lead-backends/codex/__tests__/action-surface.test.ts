@@ -25,10 +25,19 @@ describe("NON_MCP_ACTION_SURFACES (plan §3.5 checklist)", () => {
 });
 
 describe("GATEWAY_ACTION_TOOL_NAMES (the SSOT approved surface)", () => {
-	it("is EXACTLY the two reserved gateway tools (245 scope)", () => {
+	// FLY-350 (Z): the write-capable Mufasa gateway adds three NON-founder-gated,
+	// scoped+audited tools on top of the two FLY-245 reserved (founder-gated) ones:
+	//   - discord_send (proactive roundtable/chat post; alias-gated, unit 3)
+	//   - git_push / open_pr (gateway-proxied PR; net-off shell has no token, unit 4)
+	// Adding a tool to the gateway MUST be reflected here or the runtime ⑧
+	// assertion (assertGatewayOnlyToolSurface) fail-closes on the drift.
+	it("is EXACTLY the five gateway tools (FLY-245 reserved + FLY-350 (Z) scoped)", () => {
 		expect([...GATEWAY_ACTION_TOOL_NAMES]).toEqual([
 			"request_runner_lifecycle",
 			"relay_ship_decision",
+			"discord_send",
+			"git_push",
+			"open_pr",
 		]);
 	});
 });
@@ -37,7 +46,13 @@ describe("assertActionToolSurface (FLY-245 Phase A3 / R2#1 / Codex code-review R
 	it("passes when observed EXACTLY equals the approved gateway tools (order-independent)", () => {
 		expect(() =>
 			assertActionToolSurface(
-				["relay_ship_decision", "request_runner_lifecycle"],
+				[
+					"relay_ship_decision",
+					"request_runner_lifecycle",
+					"discord_send",
+					"git_push",
+					"open_pr",
+				],
 				GATEWAY_TOOLS,
 			),
 		).not.toThrow();
@@ -57,19 +72,24 @@ describe("assertActionToolSurface (FLY-245 Phase A3 / R2#1 / Codex code-review R
 		).toThrow(/missing/i);
 	});
 
+	const FIVE_TOOLS = [
+		"relay_ship_decision",
+		"request_runner_lifecycle",
+		"discord_send",
+		"git_push",
+		"open_pr",
+	];
+
 	it("rejects a built-in egress tool (web_search) leaking through", () => {
 		expect(() =>
-			assertActionToolSurface(
-				["relay_ship_decision", "request_runner_lifecycle", "web_search"],
-				GATEWAY_TOOLS,
-			),
+			assertActionToolSurface([...FIVE_TOOLS, "web_search"], GATEWAY_TOOLS),
 		).toThrow(/web_search/);
 	});
 
 	it("rejects a live connector beyond the gateway", () => {
 		expect(() =>
 			assertActionToolSurface(
-				["relay_ship_decision", "request_runner_lifecycle", "github_connector"],
+				[...FIVE_TOOLS, "github_connector"],
 				GATEWAY_TOOLS,
 			),
 		).toThrow(/action-surface assertion failed/);
@@ -78,12 +98,7 @@ describe("assertActionToolSurface (FLY-245 Phase A3 / R2#1 / Codex code-review R
 	it("lists ALL offending extra tools (sorted)", () => {
 		expect(() =>
 			assertActionToolSurface(
-				[
-					"relay_ship_decision",
-					"request_runner_lifecycle",
-					"zzz_tool",
-					"aaa_tool",
-				],
+				[...FIVE_TOOLS, "zzz_tool", "aaa_tool"],
 				GATEWAY_TOOLS,
 			),
 		).toThrow(/\[aaa_tool, zzz_tool\]/);
