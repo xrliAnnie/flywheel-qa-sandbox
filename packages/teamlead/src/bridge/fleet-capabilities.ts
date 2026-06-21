@@ -61,13 +61,16 @@ export const DISABLED_WRITE_LEAD_CODEX =
 	"write-capable Lead 切 Codex 需 FLY-245";
 
 /**
- * A Lead is "write-capable" — and therefore cannot legally run the Codex
- * backend (FLY-245 fail-close) — unless it is a read-only companion:
- * `companion === true` AND `canSpawnRunners === false`. Mirrors the cross-field
- * invariant enforced in `parseAndValidateProjects`.
+ * Whether a Lead can legally run the Codex backend. Post-FLY-245/FLY-350 a Codex
+ * Lead is no longer "companion-only": a read-only companion (`companion === true`),
+ * OR a Lead that declares an EXPLICIT `codexProfile` (companion / content-
+ * coordination / write-capable / full-access), is eligible — provided it does NOT
+ * spawn Runners (`canSpawnRunners === false`; Codex runner-spawn awaits FLY-251).
+ * Mirrors the cross-field invariant enforced in `parseAndValidateProjects`.
  */
 export function isCodexEligible(lead: LeadConfig): boolean {
-	return lead.companion === true && lead.canSpawnRunners === false;
+	if (lead.canSpawnRunners !== false) return false;
+	return lead.companion === true || lead.codexProfile !== undefined;
 }
 
 /** Tier options for the Lead's effective backend. */

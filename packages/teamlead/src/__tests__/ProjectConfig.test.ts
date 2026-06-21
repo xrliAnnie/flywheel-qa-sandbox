@@ -1293,6 +1293,49 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		expect(() => loadProjects()).toThrow(/write-capable.*companion/);
 	});
 
+	it("FLY-350: accepts codexProfile:full-access (canSpawnRunners:false, not a companion)", () => {
+		const projects = loadWith(
+			fleetLead({
+				backend: "codex-app-server",
+				codexProfile: "full-access",
+				canSpawnRunners: false,
+			}),
+		);
+		expect(projects[0].leads[0].codexProfile).toBe("full-access");
+	});
+
+	it("FLY-350: rejects codexProfile:full-access combined with companion:true", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "geo",
+				projectRoot: "/tmp/geo",
+				leads: [
+					{
+						agentId: "growth-lead",
+						chatChannel: "222",
+						match: { labels: ["Growth"] },
+						backend: "codex-app-server",
+						codexProfile: "full-access",
+						companion: true,
+						canSpawnRunners: false,
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/full-access.*companion/);
+	});
+
+	it("FLY-350: rejects codexProfile:full-access when canSpawnRunners defaults true (FLY-251 not landed)", () => {
+		expect(() =>
+			loadWith(
+				fleetLead({
+					backend: "codex-app-server",
+					codexProfile: "full-access",
+				}),
+			),
+		).toThrow(/FLY-245/);
+	});
+
 	it("rejects an unknown codexProfile value", () => {
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
 			{

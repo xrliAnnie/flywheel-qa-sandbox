@@ -78,6 +78,38 @@ describe("fleet-capabilities — isCodexEligible (FLY-245 mirror)", () => {
 			isCodexEligible(lead({ companion: true, canSpawnRunners: true })),
 		).toBe(false);
 	});
+
+	// FLY-350: a Codex Lead that declares an EXPLICIT codexProfile (incl. full-access)
+	// is a legitimate Codex backend — no longer "companion-only". Still gated by
+	// canSpawnRunners:false (FLY-251 owns Codex runner-spawn).
+	it("FLY-350: a full-access Codex Lead (explicit profile, non-spawning) is Codex-eligible", () => {
+		expect(
+			isCodexEligible(
+				lead({ codexProfile: "full-access", canSpawnRunners: false }),
+			),
+		).toBe(true);
+	});
+
+	it("FLY-350: content-coordination / write-capable Codex Leads are also eligible (explicit tiers)", () => {
+		expect(
+			isCodexEligible(
+				lead({ codexProfile: "write-capable", canSpawnRunners: false }),
+			),
+		).toBe(true);
+		expect(
+			isCodexEligible(
+				lead({ codexProfile: "content-coordination", canSpawnRunners: false }),
+			),
+		).toBe(true);
+	});
+
+	it("FLY-350: an explicit-profile Codex Lead that spawns runners is still NOT eligible (FLY-251)", () => {
+		expect(
+			isCodexEligible(
+				lead({ codexProfile: "full-access", canSpawnRunners: true }),
+			),
+		).toBe(false);
+	});
 });
 
 describe("fleet-capabilities — backendOptions (inc2a: all switches disabled)", () => {

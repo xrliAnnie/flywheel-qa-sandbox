@@ -1,6 +1,7 @@
 import {
 	mkdirSync,
 	mkdtempSync,
+	readFileSync,
 	realpathSync,
 	rmSync,
 	symlinkSync,
@@ -18,12 +19,16 @@ import {
 	buildActionSurfaceDisableArgv,
 	buildCodexLeadRuntime,
 	buildConfinementArgv,
+	buildFullAccessArgv,
+	buildFullAccessEnv,
 	buildThreadParams,
 	dryRunReport,
+	FULL_ACCESS_ENV_ALLOWLIST,
 	parseCodexLeadRuntimeConfig,
 	pathsOverlap,
 	readBaseInstructions,
 	readThreadId,
+	resolveFullAccessProjectRoot,
 	resolveLeadWorkspace,
 	writeThreadId,
 } from "../codex-lead-runtime.js";
@@ -429,6 +434,346 @@ describe("sandbox policy (review HIGH-1: pin approvalPolicy + sandbox)", () => {
 		);
 		expect(report).toContain("approvalPolicy=never sandbox=read-only");
 		expect(report).toContain("cannot act");
+	});
+});
+
+// ── FLY-350: generic full-access Codex Lead (= Claude-equal) ────────────────
+describe("FLY-350 full-access profile (= Claude-equal, opt-in)", () => {
+	let projDir: string;
+	beforeEach(() => {
+		projDir = realpathSync(mkdtempSync(join(tmpdir(), "fly350-fa-proj-")));
+	});
+	afterEach(() => {
+		rmSync(projDir, { recursive: true, force: true });
+	});
+
+	function fullAccessEnv(over: Record<string, string | undefined> = {}) {
+		return fullEnv({
+			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
+			FLYWHEEL_CODEX_LEAD_SANDBOX: "workspace-write",
+			FLYWHEEL_CODEX_LEAD_PROJECT_DIR: projDir,
+			...over,
+		});
+	}
+
+	it("parses full-access WITH a workspace-write sandbox + resolves the project root", () => {
+		const c = parseCodexLeadRuntimeConfig(fullAccessEnv());
+		expect(c.codexProfile).toBe("full-access");
+		expect(c.sandboxMode).toBe("workspace-write");
+		expect(c.fullAccessProjectRoot).toBe(projDir);
+		// full-access is NOT the (Z) write-capable path — no scratch workspace.
+		expect(c.workspace).toBeUndefined();
+	});
+
+	it("full-access REQUIRES workspace-write (read-only → fail-loud)", () => {
+		expect(() =>
+			parseCodexLeadRuntimeConfig(
+				fullAccessEnv({ FLYWHEEL_CODEX_LEAD_SANDBOX: undefined }),
+			),
+		).toThrow(/full-access requires sandbox=workspace-write/);
+	});
+
+	it("workspace-write now accepts full-access too (not only write-capable)", () => {
+		// The SSOT cross-field used to demand write-capable; full-access is a second
+		// legal workspace-write tier. Companion+workspace-write still fails (below).
+		expect(parseCodexLeadRuntimeConfig(fullAccessEnv()).sandboxMode).toBe(
+			"workspace-write",
+		);
+	});
+
+	it("full-access + read-deny is a parse-time fail-loud (read-deny is read-only only)", () => {
+		expect(() =>
+			parseCodexLeadRuntimeConfig(
+				fullAccessEnv({ FLYWHEEL_CODEX_LEAD_READ_DENY: "1" }),
+			),
+		).toThrow(/requires sandbox=read-only/);
+	});
+
+	it("full-access REQUIRES FLYWHEEL_CODEX_LEAD_PROJECT_DIR (missing → fail-loud)", () => {
+		expect(() =>
+			parseCodexLeadRuntimeConfig(
+				fullAccessEnv({ FLYWHEEL_CODEX_LEAD_PROJECT_DIR: undefined }),
+			),
+		).toThrow(/FLYWHEEL_CODEX_LEAD_PROJECT_DIR/);
+	});
+
+	it("honors FLYWHEEL_CODEX_LEAD_SUBDIR under the project root", () => {
+		mkdirSync(join(projDir, "growth"), { recursive: true });
+		const c = parseCodexLeadRuntimeConfig(
+			fullAccessEnv({ FLYWHEEL_CODEX_LEAD_SUBDIR: "growth" }),
+		);
+		expect(c.fullAccessProjectRoot).toBe(realpathSync(join(projDir, "growth")));
+	});
+
+	it("buildThreadParams pins cwd=projectRoot + workspace-write for full-access", () => {
+		expect(
+			buildThreadParams(
+				{ sandboxMode: "workspace-write", fullAccessProjectRoot: projDir },
+				undefined,
+			),
+		).toEqual({
+			approvalPolicy: "never",
+			sandbox: "workspace-write",
+			cwd: projDir,
+		});
+	});
+
+	it("buildCodexLeadRuntime BUILDS a full-access Lead (no release gate, no gateway/broker)", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly350-fa-state-"));
+		try {
+			const config = parseCodexLeadRuntimeConfig(
+				fullAccessEnv({ FLYWHEEL_CODEX_LEAD_STATE_DIR: dir }),
+			);
+			// Unlike write-capable (which fail-closes without the §7 release inputs),
+			// full-access constructs cleanly — its control is the founder-gate rule
+			// bundle + branch protection, not the confinement/gateway release gate.
+			expect(() => buildCodexLeadRuntime(config, silentLogger)).not.toThrow();
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("dry-run surfaces full-access: network ON, project root, NO gateway, merge founder-gated", () => {
+		const report = dryRunReport(
+			parseCodexLeadRuntimeConfig(fullAccessEnv()),
+		).join("\n");
+		expect(report).toContain("sandbox=workspace-write");
+		expect(report).toMatch(/full-access/i);
+		expect(report).toMatch(/network\s*:\s*ON/i);
+		expect(report).toContain(projDir);
+		// honest red line: merge is founder-gated (contract + branch protection), NOT
+		// the (Z) structural impossibility.
+		expect(report).toMatch(/founder-gate/i);
+		// no gateway / broker disclosure for full-access (local gh/git).
+		expect(report).not.toContain("flywheel_gateway MCP");
+	});
+});
+
+describe("resolveFullAccessProjectRoot", () => {
+	let home: string;
+	beforeEach(() => {
+		home = realpathSync(mkdtempSync(join(tmpdir(), "fly350-home-")));
+	});
+	afterEach(() => {
+		rmSync(home, { recursive: true, force: true });
+	});
+
+	function ctx(
+		over: Partial<Parameters<typeof resolveFullAccessProjectRoot>[2]> = {},
+	) {
+		return {
+			home,
+			flywheelDir: join(home, ".flywheel"),
+			stateDir: join(home, ".flywheel", "state", "codex-lead", "x"),
+			codexHome: join(home, ".codex-mufasa"),
+			...over,
+		};
+	}
+
+	it("resolves + realpath-canonicalizes an absolute project dir (no subdir)", () => {
+		const proj = realpathSync(mkdtempSync(join(tmpdir(), "fly350-proj-")));
+		try {
+			expect(resolveFullAccessProjectRoot(proj, undefined, ctx())).toBe(proj);
+		} finally {
+			rmSync(proj, { recursive: true, force: true });
+		}
+	});
+
+	it("joins + validates a subdir", () => {
+		const proj = realpathSync(mkdtempSync(join(tmpdir(), "fly350-proj-")));
+		mkdirSync(join(proj, "sub"), { recursive: true });
+		try {
+			expect(resolveFullAccessProjectRoot(proj, "sub", ctx())).toBe(
+				realpathSync(join(proj, "sub")),
+			);
+		} finally {
+			rmSync(proj, { recursive: true, force: true });
+		}
+	});
+
+	it("rejects a non-absolute path", () => {
+		expect(() =>
+			resolveFullAccessProjectRoot("relative/dir", undefined, ctx()),
+		).toThrow(/absolute path/);
+	});
+
+	it("rejects a non-existent path (fail-loud)", () => {
+		expect(() =>
+			resolveFullAccessProjectRoot("/no/such/fly350/dir", undefined, ctx()),
+		).toThrow(/does not exist/);
+	});
+
+	it("rejects overlap with the Lead state dir (model must not write runtime state)", () => {
+		const stateDir = join(home, ".flywheel", "state", "codex-lead", "x");
+		mkdirSync(stateDir, { recursive: true });
+		expect(() =>
+			resolveFullAccessProjectRoot(stateDir, undefined, ctx({ stateDir })),
+		).toThrow(/overlap/);
+	});
+
+	it("rejects overlap with CODEX_HOME", () => {
+		const codexHome = join(home, ".codex-mufasa");
+		mkdirSync(codexHome, { recursive: true });
+		expect(() =>
+			resolveFullAccessProjectRoot(codexHome, undefined, ctx({ codexHome })),
+		).toThrow(/overlap/);
+	});
+
+	it("rejects $HOME itself", () => {
+		expect(() => resolveFullAccessProjectRoot(home, undefined, ctx())).toThrow(
+			/\$HOME/,
+		);
+	});
+
+	it("ALLOWS a normal descendant of $HOME (e.g. ~/Dev/project)", () => {
+		const proj = join(home, "Dev", "project");
+		mkdirSync(proj, { recursive: true });
+		expect(resolveFullAccessProjectRoot(proj, undefined, ctx())).toBe(
+			realpathSync(proj),
+		);
+	});
+
+	// Codex review next-item: a SYMLINK whose realpath lands in a sensitive dir must
+	// NOT smuggle the project root past the overlap check (the resolver realpath-
+	// canonicalizes BEFORE comparing, like resolveLeadWorkspace).
+	it("rejects a symlink that realpath-resolves INTO CODEX_HOME (symlink bypass)", () => {
+		const codexHome = join(home, ".codex-mufasa");
+		mkdirSync(codexHome, { recursive: true });
+		const link = join(home, "innocent-looking-project");
+		symlinkSync(codexHome, link);
+		expect(() =>
+			resolveFullAccessProjectRoot(link, undefined, ctx({ codexHome })),
+		).toThrow(/overlap/);
+	});
+
+	// A subdir that escapes (via a symlink) back into a sensitive dir is also caught
+	// — the join + realpath collapses the indirection before the overlap check.
+	it("rejects a subdir symlink that resolves into the state dir", () => {
+		const proj = realpathSync(mkdtempSync(join(tmpdir(), "fly350-proj-")));
+		const stateDir = join(home, ".flywheel", "state", "codex-lead", "x");
+		mkdirSync(stateDir, { recursive: true });
+		// a "esc" entry under proj symlinks to the state dir, addressed via subdir
+		symlinkSync(realpathSync(stateDir), join(proj, "esc"));
+		try {
+			expect(() =>
+				resolveFullAccessProjectRoot(proj, "esc", ctx({ stateDir })),
+			).toThrow(/overlap/);
+		} finally {
+			rmSync(proj, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("buildFullAccessArgv (= Claude-equal: net ON, project writable, NO env wash)", () => {
+	it("sets network ON + the project root as the single writable root", () => {
+		const argv = buildFullAccessArgv("/Users/x/Dev/growth");
+		expect(argv).toEqual([
+			"-c",
+			"sandbox_workspace_write.network_access=true",
+			"-c",
+			'sandbox_workspace_write.writable_roots=["/Users/x/Dev/growth"]',
+		]);
+	});
+
+	it("does NOT emit a shell_environment_policy.exclude (full-access keeps its gh/git env)", () => {
+		expect(buildFullAccessArgv("/p").join(" ")).not.toContain(
+			"shell_environment_policy",
+		);
+	});
+});
+
+describe("buildFullAccessEnv (H-1: positive allowlist mirroring a Claude Lead pane)", () => {
+	it("keeps the allowlisted Claude-pane vars + gh auth, drops everything else", () => {
+		const out = buildFullAccessEnv({
+			HOME: "/Users/x",
+			PATH: "/usr/bin",
+			DISCORD_BOT_TOKEN: "discord", // Claude pane HAS this — allowed
+			TEAMLEAD_API_TOKEN: "tl", // Claude pane HAS this — allowed
+			OPENAI_API_KEY: "oai", // Claude pane HAS this — allowed
+			FLYWHEEL_COMM_DB: "/db",
+			BRIDGE_URL: "http://b", // Claude pane HAS this (NOT the FLYWHEEL_ alias)
+			// NOT in the Claude pane allowlist — must be dropped even though needed
+			// elsewhere; a full-access Lead must never get MORE secrets than Claude.
+			// FLYWHEEL_API_TOKEN is the Codex-caught extra (Claude has TEAMLEAD_API_TOKEN).
+			FLYWHEEL_API_TOKEN: "leak",
+			SOME_OTHER_LEAD_BOT_TOKEN: "leak",
+			VERCEL_TOKEN: "leak",
+			AWS_SECRET_ACCESS_KEY: "leak",
+			RANDOM_VAR: "leak",
+		});
+		expect(out.HOME).toBe("/Users/x");
+		expect(out.DISCORD_BOT_TOKEN).toBe("discord");
+		expect(out.TEAMLEAD_API_TOKEN).toBe("tl");
+		expect(out.BRIDGE_URL).toBe("http://b");
+		expect(out.FLYWHEEL_API_TOKEN).toBeUndefined(); // extra token — dropped
+		expect(out.SOME_OTHER_LEAD_BOT_TOKEN).toBeUndefined();
+		expect(out.VERCEL_TOKEN).toBeUndefined();
+		expect(out.AWS_SECRET_ACCESS_KEY).toBeUndefined();
+		expect(out.RANDOM_VAR).toBeUndefined();
+	});
+
+	it("env-diff: NO *TOKEN*/*SECRET*/*KEY* key outside the allowlist", () => {
+		const noisy: NodeJS.ProcessEnv = {};
+		for (const k of [
+			"FOO_TOKEN",
+			"BAR_SECRET",
+			"BAZ_KEY",
+			"ANTHROPIC_API_KEY",
+			"GITLAB_TOKEN",
+		]) {
+			noisy[k] = "leak";
+		}
+		const out = buildFullAccessEnv(noisy);
+		const survivingSecretShaped = Object.keys(out).filter((k) =>
+			/TOKEN|SECRET|KEY/i.test(k),
+		);
+		for (const k of survivingSecretShaped) {
+			expect(FULL_ACCESS_ENV_ALLOWLIST).toContain(k);
+		}
+		// none of the noisy non-allowlisted secrets survived
+		expect(out.ANTHROPIC_API_KEY).toBeUndefined();
+		expect(out.GITLAB_TOKEN).toBeUndefined();
+	});
+
+	it("omits allowlisted vars that are absent from the source env (no empty injection)", () => {
+		const out = buildFullAccessEnv({ HOME: "/Users/x", PATH: "/usr/bin" });
+		expect("DISCORD_BOT_TOKEN" in out).toBe(false);
+		expect("GH_TOKEN" in out).toBe(false);
+	});
+
+	// Codex code-review HIGH: the allowlist must never carry a SECRET a Claude pane
+	// does not. Bind every secret-shaped allowlist entry to what claude-lead.sh
+	// actually injects (claude-lead.sh:901-942 `-e "NAME=…"`) ∪ the sanctioned
+	// gh-auth set — so a future edit can't slip in e.g. FLYWHEEL_API_TOKEN again.
+	it("every secret-shaped allowlist entry IS injected by a Claude pane (or is sanctioned gh-auth)", () => {
+		const claudeSh = readFileSync(
+			join(TEST_DIR, "..", "..", "..", "..", "scripts", "claude-lead.sh"),
+			"utf8",
+		);
+		// names claude-lead.sh injects into the pane: `-e "NAME=...` and `-e NAME=...`
+		const claudePaneVars = new Set<string>();
+		for (const m of claudeSh.matchAll(/-e\s+"?([A-Z0-9_]+)=/g)) {
+			claudePaneVars.add(m[1] as string);
+		}
+		// sanity: the parse found the real Claude-pane token names
+		expect(claudePaneVars.has("TEAMLEAD_API_TOKEN")).toBe(true);
+		expect(claudePaneVars.has("DISCORD_BOT_TOKEN")).toBe(true);
+		// the ONLY secrets allowed beyond the Claude pane = the gh-auth set (plan H-1)
+		const SANCTIONED_GH_AUTH = new Set(["GH_TOKEN", "GITHUB_TOKEN"]);
+		const secretShaped = FULL_ACCESS_ENV_ALLOWLIST.filter((k) =>
+			/TOKEN|SECRET|KEY/i.test(k),
+		);
+		expect(secretShaped.length).toBeGreaterThan(0);
+		for (const k of secretShaped) {
+			expect(
+				claudePaneVars.has(k) || SANCTIONED_GH_AUTH.has(k),
+				`allowlist secret ${k} is NOT injected by a Claude pane and is not sanctioned gh-auth — extra secret exposure`,
+			).toBe(true);
+		}
+		// regression pins for the Codex-caught extras
+		expect(FULL_ACCESS_ENV_ALLOWLIST as readonly string[]).not.toContain(
+			"FLYWHEEL_API_TOKEN",
+		);
 	});
 });
 
