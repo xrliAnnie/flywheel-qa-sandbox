@@ -144,6 +144,24 @@ export function resolveLeadDepartment(lead: LeadConfig): string | undefined {
 	return undefined;
 }
 
+/**
+ * FLY-371: per-Flywheel-project Linear binding. Lets the Bridge resolve a
+ * Linear team / Project / scope-label from a Flywheel `projectName`, so Leads
+ * stop hardcoding "create in team X / project Y / label Z" in identity prose.
+ *
+ * Resolved by `/api/linear/create-issue`, `/api/linear/issues`, and
+ * `/api/triage/data` (see `bridge/linear-scope.ts`). Absent OR `null` ⇒ those
+ * endpoints behave exactly as before (explicit params required).
+ */
+export interface ProjectLinearBinding {
+	/** Linear team key (e.g. "FLY", "GEO"). REQUIRED when a binding is present. */
+	team: string;
+	/** Linear Project name. Optional — label-only-scoped COEs may have none. */
+	project?: string;
+	/** Scope label NAME. Optional. Applied on create, defaulted as filter on list/triage. */
+	label?: string;
+}
+
 export interface ProjectEntry {
 	projectName: string;
 	projectRoot: string;
@@ -152,6 +170,17 @@ export interface ProjectEntry {
 	generalChannel?: string;
 	/** Memory API user_id allowlist. Fail-closed: requests rejected if not configured. */
 	memoryAllowedUsers?: string[];
+	/**
+	 * FLY-371: optional Linear binding, resolved from `projectName` by the
+	 * create-issue / issues / triage endpoints. NOT normalized (FLY-231 pattern):
+	 * absent stays absent and `null` stays `null` so existing in-memory
+	 * ProjectEntry objects keep their exact shape. The `| null` is HONEST about
+	 * the deployed shape — the live `~/.flywheel/projects.json` literally carries
+	 * `linear: null` on every project (Codex R1 HIGH-1: treating "present"
+	 * as "must be a binding" would throw on `null` and break Bridge startup,
+	 * because `typeof null === "object"`).
+	 */
+	linear?: ProjectLinearBinding | null;
 }
 
 export function loadProjects(): ProjectEntry[] {
@@ -542,9 +571,66 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				}
 			}
 		}
+
+		// FLY-371: validate optional Linear binding.
+		// Codex R1 HIGH-1: `null` and `undefined` BOTH mean "no binding" and must
+		// short-circuit BEFORE the object/team checks — the deployed roster
+		// literally has `linear: null` on every project, and `typeof null ===
+		// "object"` would otherwise sail past an object check and then throw on the
+		// required `team`, breaking Bridge startup. Neither is normalized (FLY-231
+		// pattern): absent stays absent, null stays null.
+		const linear = (entry as Record<string, unknown>).linear;
+		if (linear != null) {
+			if (typeof linear !== "object" || Array.isArray(linear)) {
+				throw new Error(
+					`Project "${entry.projectName}" linear: if provided, must be an object { team, project?, label? }, got ${JSON.stringify(linear)}`,
+				);
+			}
+			const lb = linear as Record<string, unknown>;
+			// team is the minimal required field — nothing resolves without it.
+			// Codex R1 LOW-7: reject whitespace-only operator-authored routing values
+			// at the config boundary, not later as a confusing Linear 404.
+			if (typeof lb.team !== "string" || lb.team.trim().length === 0) {
+				throw new Error(
+					`Project "${entry.projectName}" linear.team: must be a non-empty string (Linear team key, e.g. "FLY"), got ${JSON.stringify(lb.team)}`,
+				);
+			}
+			if (
+				lb.project !== undefined &&
+				(typeof lb.project !== "string" || lb.project.trim().length === 0)
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" linear.project: if provided, must be a non-empty string (Linear Project name), got ${JSON.stringify(lb.project)}`,
+				);
+			}
+			if (
+				lb.label !== undefined &&
+				(typeof lb.label !== "string" || lb.label.trim().length === 0)
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" linear.label: if provided, must be a non-empty string (scope label name), got ${JSON.stringify(lb.label)}`,
+				);
+			}
+		}
 	}
 
 	return raw as ProjectEntry[];
+}
+
+/**
+ * FLY-371: resolve a Flywheel project's Linear binding by `projectName`.
+ *
+ * Returns `undefined` for: unknown project, a project with no `linear` field,
+ * OR a project with `linear: null` (Codex R1 HIGH-1 — null coerces to undefined
+ * so consumers never have to defend against null).
+ */
+export function resolveProjectLinearBinding(
+	projects: ProjectEntry[],
+	projectName: string,
+): ProjectLinearBinding | undefined {
+	return (
+		projects.find((p) => p.projectName === projectName)?.linear ?? undefined
+	);
 }
 
 export function getProjectRoot(

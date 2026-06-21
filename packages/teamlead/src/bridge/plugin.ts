@@ -93,6 +93,7 @@ import {
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { queryLinearIssues } from "./linear-query.js";
+import { resolveLinearScope, resolveProjectNameParam } from "./linear-scope.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
@@ -1443,6 +1444,9 @@ export function createBridgeApp(
 			}
 			const { title, description, priority, labels, team, project } =
 				req.body ?? {};
+			// FLY-371: optional Flywheel projectName → resolve a Linear binding
+			// (team / project / scope-label). Raw value validated inside the helper.
+			const projectNameRaw = req.body?.projectName;
 			if (!title || typeof title !== "string") {
 				res.status(400).json({ error: "title is required" });
 				return;
@@ -1488,16 +1492,31 @@ export function createBridgeApp(
 				const { LinearClient } = await import("@linear/sdk");
 				const client = new LinearClient({ apiKey: config.linearApiKey });
 
+				// FLY-371: resolve the Flywheel projectName → Linear binding (team /
+				// project / scope-label). Fail-loud (400/404) on a bad/unknown projectName;
+				// absent ⇒ binding undefined = byte-compatible (explicit params as before).
+				const binding = resolveProjectNameParam(projects, projectNameRaw);
+				if (!binding.ok) {
+					res.status(binding.status).json({ error: binding.error });
+					return;
+				}
+				// team / project default from the binding; explicit body params win.
+				const effectiveTeam = team ?? binding.binding?.team;
+				const effectiveProject = project ?? binding.binding?.project;
+				// binding-derived project must be team-scoped (Codex R2 HIGH-1);
+				// explicit project= keeps the legacy name-only path.
+				const projectFromBinding = !project && !!binding.binding?.project;
+
 				// GEO-298: Team resolution — by key if specified, require if >1 team
 				const allTeams = await client.teams();
 				let targetTeam: (typeof allTeams.nodes)[number] | undefined;
-				if (team) {
+				if (effectiveTeam) {
 					targetTeam = allTeams.nodes.find(
-						(t: { key: string }) => t.key === team,
+						(t: { key: string }) => t.key === effectiveTeam,
 					);
 					if (!targetTeam) {
 						res.status(404).json({
-							error: `Linear team with key "${team}" not found. Available: ${allTeams.nodes.map((t: { key: string }) => t.key).join(", ")}`,
+							error: `Linear team with key "${effectiveTeam}" not found. Available: ${allTeams.nodes.map((t: { key: string }) => t.key).join(", ")}`,
 						});
 						return;
 					}
@@ -1515,20 +1534,78 @@ export function createBridgeApp(
 					return;
 				}
 
-				// GEO-298: Project resolution — optional, by name
+				// GEO-298 / FLY-371: Project resolution — optional, by name.
 				let projectId: string | undefined;
-				if (project) {
-					const projects = await client.projects({
-						filter: { name: { eq: project } },
+				if (effectiveProject) {
+					if (projectFromBinding) {
+						// Team-scoped: a binding's (team, project) pair is authoritative, so
+						// resolve the project WITHIN the effective team — a same-named project
+						// on another team must not be picked (write-path safety).
+						const matchedProjects = await client.projects({
+							first: 2,
+							filter: {
+								name: { eq: effectiveProject },
+								accessibleTeams: { some: { id: { eq: targetTeam.id } } },
+							},
+						});
+						if (matchedProjects.nodes.length === 0) {
+							res.status(404).json({
+								error: `Linear project "${effectiveProject}" not found in team "${targetTeam.key}"`,
+							});
+							return;
+						}
+						if (matchedProjects.nodes.length > 1) {
+							res.status(400).json({
+								error: `Linear project "${effectiveProject}" is ambiguous in team "${targetTeam.key}" (multiple matches)`,
+							});
+							return;
+						}
+						projectId = matchedProjects.nodes[0]!.id;
+					} else {
+						// Explicit project= — legacy name-only resolution (unchanged).
+						const matchedProjects = await client.projects({
+							filter: { name: { eq: effectiveProject } },
+						});
+						const matched = matchedProjects.nodes[0];
+						if (!matched) {
+							res.status(404).json({
+								error: `Linear project "${effectiveProject}" not found`,
+							});
+							return;
+						}
+						projectId = matched.id;
+					}
+				}
+
+				// FLY-371: scope label resolution (name → id), TEAM-SCOPED (Codex R1
+				// HIGH-2). This is the only safety boundary between a label NAME and the
+				// id that create forwards straight to Linear as labelIds.
+				let labelIds: string[] | undefined = labels;
+				const scopeLabelName = binding.binding?.label;
+				if (scopeLabelName) {
+					const matches = await client.issueLabels({
+						first: 2,
+						filter: {
+							name: { eq: scopeLabelName },
+							team: { id: { eq: targetTeam.id } },
+						},
 					});
-					const matched = projects.nodes[0];
-					if (!matched) {
+					if (matches.nodes.length === 0) {
 						res.status(404).json({
-							error: `Linear project "${project}" not found`,
+							error: `Scope label "${scopeLabelName}" not found in team "${targetTeam.key}"`,
 						});
 						return;
 					}
-					projectId = matched.id;
+					if (matches.nodes.length > 1) {
+						res.status(400).json({
+							error: `Scope label "${scopeLabelName}" is ambiguous in team "${targetTeam.key}" (multiple matches)`,
+						});
+						return;
+					}
+					const scopeLabelId = matches.nodes[0]!.id;
+					const merged = Array.isArray(labels) ? [...labels] : [];
+					if (!merged.includes(scopeLabelId)) merged.push(scopeLabelId);
+					labelIds = merged;
 				}
 
 				const issue = await client.createIssue({
@@ -1536,9 +1613,10 @@ export function createBridgeApp(
 					title,
 					description: description ?? "",
 					priority: priority ?? 0,
-					labelIds: labels,
+					labelIds,
 					...(projectId && { projectId }),
 				});
+
 				const created = await issue.issue;
 				res.json({
 					ok: true,
@@ -1655,15 +1733,34 @@ export function createBridgeApp(
 
 			const slim = req.query.slim === "true" || req.query.slim === "1";
 
+			// FLY-371: resolve the Flywheel projectName → Linear binding and apply
+			// project / label defaults (explicit query params win). Fail-loud on a
+			// bad/unknown projectName; absent ⇒ byte-compatible.
+			const bound = resolveProjectNameParam(projects, req.query.projectName);
+			if (!bound.ok) {
+				res.status(bound.status).json({ error: bound.error });
+				return;
+			}
+			// Codex R2 LOW-3: drop blank label tokens (e.g. `?labels=` → [""]) BEFORE
+			// merging, so an empty value does not suppress the binding's label default.
+			const explicitLabels = labelsParam
+				? labelsParam
+						.split(",")
+						.map((l) => l.trim())
+						.filter(Boolean)
+				: undefined;
+			const scope = resolveLinearScope(bound.binding, {
+				project: project ?? undefined,
+				labels: explicitLabels,
+			});
+
 			try {
 				const result = await queryLinearIssues(config.linearApiKey, {
-					project: project ?? undefined,
+					project: scope.project,
 					states: stateParam
 						? stateParam.split(",").map((s) => s.trim())
 						: undefined,
-					labels: labelsParam
-						? labelsParam.split(",").map((l) => l.trim())
-						: undefined,
+					labels: scope.labels,
 					limit,
 					slim,
 				});
