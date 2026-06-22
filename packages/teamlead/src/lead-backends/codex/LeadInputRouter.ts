@@ -72,6 +72,24 @@ export interface OutboundSender {
 	close?(): void;
 }
 
+/**
+ * FLY-404 — the Discord "typing…" capability the router drives while a founder's
+ * message is being processed (parity with the Claude Lead, whose Discord plugin
+ * shows typing). `start`/`stop` are FIRE-AND-FORGET and MUST never throw — a
+ * typing failure can never break a reply turn. `channelId` undefined → the
+ * notifier's default chat channel (the channel the reply posts to). The concrete
+ * impl (keepalive loop + REST) is `DiscordTypingNotifier`; the router only depends
+ * on this narrow interface so it stays unit-testable with a fake.
+ */
+export interface TypingNotifier {
+	/** Begin showing "typing…" in `channelId` and keep it refreshed until stop(). */
+	start(channelId?: string): void;
+	/** Stop showing "typing…" in `channelId`. Idempotent. */
+	stop(channelId?: string): void;
+	/** Clear ALL active typing loops (shutdown / generation rebuild). */
+	close(): void;
+}
+
 export interface LeadInput {
 	idempotencyKey: string;
 	source: "discord" | "mailbox";
@@ -89,6 +107,10 @@ export interface LeadInputRouterOptions {
 	executor: TurnExecutor;
 	sender: OutboundSender;
 	correlationFactory?: () => string;
+	/** FLY-404: optional Discord typing indicator. Absent → no typing (byte-compat
+	 * with every existing caller/test). Driven across the whole model turn in
+	 * `processEntry` so the founder sees "typing…" while the Lead works. */
+	typing?: TypingNotifier;
 	logger?: {
 		warn: (m: string, c?: unknown) => void;
 		error: (m: string, c?: unknown) => void;
@@ -101,6 +123,7 @@ export class LeadInputRouter {
 	private readonly journal: LeadJournal;
 	private readonly executor: TurnExecutor;
 	private readonly sender: OutboundSender;
+	private readonly typing?: TypingNotifier;
 	private readonly corr: () => string;
 	private readonly logger: {
 		warn: (m: string, c?: unknown) => void;
@@ -118,6 +141,7 @@ export class LeadInputRouter {
 		this.journal = opts.journal;
 		this.executor = opts.executor;
 		this.sender = opts.sender;
+		this.typing = opts.typing;
 		this.corr =
 			opts.correlationFactory ?? (() => globalThis.crypto.randomUUID());
 		this.logger = opts.logger ?? {
@@ -196,20 +220,29 @@ export class LeadInputRouter {
 			// toDispatching returns the updated entry (carrying payload) — no need
 			// to re-read the store.
 			const entry = this.journal.toDispatching(id, corrId);
-			const turnId = await this.executor.startTurn({
-				threadId: this.threadId,
-				input: entry.payload,
-				clientUserMessageId: corrId,
-			});
-			this.journal.toDispatched(id, turnId);
-			const { output } = await this.executor.awaitCompletion(turnId);
-			// Persist output AT model_completed (CR HIGH-1): if we crash before the
-			// outbox enqueue, recovery can still resend from the journal.
-			this.journal.toModelCompleted(id, output);
-			// FLY-267 回: route the reply to the inbound source channel (cross-dept
-			// inputs carry replyChannelId; chat/core/mailbox leave it undefined → chat).
-			await this.deliverOutput(id, output, entry.replyChannelId);
-			this.journal.toCompleted(id);
+			// FLY-404: show "typing…" in the channel the founder will see the reply in
+			// (cross-dept → source channel; chat/core/mailbox → notifier default chat)
+			// for the WHOLE model turn, and ALWAYS stop it after (finally) so a mid-turn
+			// failure can never leak the indicator. start/stop never throw (by contract).
+			this.typing?.start(entry.replyChannelId);
+			try {
+				const turnId = await this.executor.startTurn({
+					threadId: this.threadId,
+					input: entry.payload,
+					clientUserMessageId: corrId,
+				});
+				this.journal.toDispatched(id, turnId);
+				const { output } = await this.executor.awaitCompletion(turnId);
+				// Persist output AT model_completed (CR HIGH-1): if we crash before the
+				// outbox enqueue, recovery can still resend from the journal.
+				this.journal.toModelCompleted(id, output);
+				// FLY-267 回: route the reply to the inbound source channel (cross-dept
+				// inputs carry replyChannelId; chat/core/mailbox leave it undefined → chat).
+				await this.deliverOutput(id, output, entry.replyChannelId);
+				this.journal.toCompleted(id);
+			} finally {
+				this.typing?.stop(entry.replyChannelId);
+			}
 		} catch (err) {
 			// A side-effect MAY have run — never auto-retry; flag for human review.
 			this.logger.error("processEntry failed → ambiguous", {

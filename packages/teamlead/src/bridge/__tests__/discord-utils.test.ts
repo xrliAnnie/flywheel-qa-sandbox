@@ -10,6 +10,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	MAX_DISCORD_MESSAGE_LENGTH,
 	postDiscordMessageToChannel,
+	sendTypingToChannel,
 	splitDiscordMessage,
 } from "../discord-utils.js";
 
@@ -197,5 +198,52 @@ describe("postDiscordMessageToChannel (FLY-162 P2)", () => {
 		expect(result.ok).toBe(false);
 		if (result.ok) throw new Error("expected fail");
 		expect(result.error).toMatch(/missing message id/i);
+	});
+});
+
+describe("sendTypingToChannel (FLY-404)", () => {
+	it("POSTs to /channels/{id}/typing as a bot, body-less, returns ok", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(null, { status: 204 }));
+		const res = await sendTypingToChannel(
+			"chan-1",
+			"bot-token",
+			fetchMock as unknown as typeof fetch,
+		);
+		expect(res.ok).toBe(true);
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const call = fetchMock.mock.calls[0];
+		expect(call[0]).toBe("https://discord.com/api/v10/channels/chan-1/typing");
+		const init = call[1] as RequestInit;
+		expect(init.method).toBe("POST");
+		const headers = init.headers as Record<string, string>;
+		expect(headers.Authorization).toBe("Bot bot-token");
+		// Typing endpoint takes NO body (no content → cannot echo-storm).
+		expect(init.body).toBeUndefined();
+	});
+
+	it("non-2xx response: returns { ok: false } with the status — never throws", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response("forbidden", { status: 403 }));
+		const res = await sendTypingToChannel(
+			"chan-2",
+			"bot-token",
+			fetchMock as unknown as typeof fetch,
+		);
+		expect(res.ok).toBe(false);
+		expect(res.error).toMatch(/Discord 403/);
+	});
+
+	it("network throw: returns { ok: false } with the error — never throws", async () => {
+		const fetchMock = vi.fn().mockRejectedValueOnce(new Error("ECONNREFUSED"));
+		const res = await sendTypingToChannel(
+			"chan-3",
+			"bot-token",
+			fetchMock as unknown as typeof fetch,
+		);
+		expect(res.ok).toBe(false);
+		expect(res.error).toMatch(/ECONNREFUSED/);
 	});
 });

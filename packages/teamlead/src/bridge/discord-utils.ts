@@ -177,3 +177,46 @@ export async function postDiscordMessageToChannel(
 
 	return { ok: true, messageIds };
 }
+
+// ──────────────────────────────────────────────────────────────────────
+// FLY-404: sendTypingToChannel — trigger the Discord "typing…" indicator.
+// ──────────────────────────────────────────────────────────────────────
+
+/**
+ * Trigger the Discord "typing…" indicator in a channel/thread as a bot
+ * (`POST /channels/{id}/typing` → 204 No Content). The indicator auto-expires
+ * after ~10 seconds, so a caller that wants sustained typing must re-call on an
+ * interval (see `DiscordTypingNotifier`).
+ *
+ * This is intentionally a BODY-LESS POST: the typing endpoint creates NO message,
+ * so it can never echo into a Lead's pane / trigger the FLY-220 self-amplifying
+ * storm class of bug (typing is inherently storm-immune).
+ *
+ * NEVER throws — returns `{ ok: false, error }` on any failure (HTTP non-2xx or a
+ * network error) so a typing failure can never break the reply turn that drives it.
+ * `fetchImpl` is injectable for unit tests; defaults to the global `fetch`.
+ */
+export async function sendTypingToChannel(
+	channelId: string,
+	botToken: string,
+	fetchImpl: typeof fetch = fetch,
+): Promise<{ ok: boolean; error?: string }> {
+	const url = `${DISCORD_API}/channels/${channelId}/typing`;
+	try {
+		const res = await fetchImpl(url, {
+			method: "POST",
+			headers: { Authorization: `Bot ${botToken}` },
+		});
+		if (!res.ok) {
+			const detail = await res.text().catch(() => "");
+			return {
+				ok: false,
+				error: `Discord ${res.status}: ${detail.slice(0, 200)}`,
+			};
+		}
+		return { ok: true };
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return { ok: false, error: `Discord typing POST failed: ${msg}` };
+	}
+}
