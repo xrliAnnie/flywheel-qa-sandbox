@@ -263,6 +263,46 @@ export async function archiveChatThread(
 	};
 }
 
+export interface AddThreadMemberDeps {
+	/** Test seam for Discord HTTP. */
+	fetchImpl?: typeof fetch;
+}
+
+/**
+ * FLY-91 / FLY-314: Add a user as a thread member so the thread appears in their
+ * Discord sidebar and notifications are enabled. Shared by ChatThreadCreator
+ * (per-issue threads) and RoundtableThreadManager (per-topic threads).
+ * Fire-and-forget — failures are logged but never thrown.
+ */
+export async function addThreadMember(
+	threadId: string,
+	userId: string,
+	botToken: string,
+	deps: AddThreadMemberDeps = {},
+): Promise<void> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	try {
+		const res = await fetchImpl(
+			`${DISCORD_API}/channels/${threadId}/thread-members/${userId}`,
+			{
+				method: "PUT",
+				headers: { Authorization: `Bot ${botToken}` },
+			},
+		);
+		if (!res.ok) {
+			const body = await res.text().catch(() => "");
+			console.warn(
+				`[chat-thread-utils] addThreadMember failed: ${res.status} ${body.slice(0, 200)}`,
+			);
+		}
+	} catch (err) {
+		console.warn(
+			`[chat-thread-utils] addThreadMember error:`,
+			(err as Error).message,
+		);
+	}
+}
+
 export interface RemoveUserDeps {
 	/** Test seam for Discord HTTP. */
 	fetchImpl?: typeof fetch;
