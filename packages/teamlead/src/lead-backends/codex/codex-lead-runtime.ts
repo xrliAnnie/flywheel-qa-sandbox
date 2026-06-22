@@ -40,6 +40,7 @@ import { CodexOutboundSender } from "./CodexOutboundSender.js";
 import { CodexTurnExecutor } from "./CodexTurnExecutor.js";
 import { assertConfinement, extractThreadDescriptor } from "./confinement.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
+import { DiscordTypingNotifier } from "./DiscordTypingNotifier.js";
 import { parseOwnerRepo } from "./gateway/GitPushRunner.js";
 import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import { LeadHealthProbe } from "./LeadHealthProbe.js";
@@ -90,6 +91,11 @@ export interface CodexLeadRuntimeConfig {
 	 * restart — low-risk first test); "bridge" uses /api/lead-outbound/send (prod
 	 * exactly-once). Default "direct". */
 	outboundMode: "direct" | "bridge";
+	/** FLY-404: show the Discord "typing…" indicator while processing a founder
+	 * message (parity with the Claude Lead). Default ON; the kill-switch
+	 * FLYWHEEL_CODEX_LEAD_TYPING=0 disables it (defensive — touches live Mufasa).
+	 * Posts via the Lead's own bot token, independent of the outbound mode. */
+	typingEnabled: boolean;
 	/** Persona/identity files (e.g. `.lead/<id>/identity.md` + companion-safety-
 	 * contract) read + concatenated into the thread's `baseInstructions` system
 	 * prompt — the Codex equivalent of claude-lead.sh's `--append-system-prompt-file`.
@@ -485,6 +491,8 @@ export function parseCodexLeadRuntimeConfig(
 
 	const outboundMode: "direct" | "bridge" =
 		env.FLYWHEEL_CODEX_LEAD_OUTBOUND === "bridge" ? "bridge" : "direct";
+	// FLY-404: Discord typing indicator — default ON, kill-switch via "=0".
+	const typingEnabled = env.FLYWHEEL_CODEX_LEAD_TYPING !== "0";
 
 	const leadId = req("FLYWHEEL_LEAD_ID");
 	const projectName = req("FLYWHEEL_PROJECT_NAME");
@@ -742,6 +750,7 @@ export function parseCodexLeadRuntimeConfig(
 		codexHome,
 		chrome,
 		outboundMode,
+		typingEnabled,
 		systemPromptFiles,
 		sandboxMode,
 		readDeny,
@@ -1468,12 +1477,22 @@ export function buildCodexLeadRuntime(
 		},
 		wire: async (threadId: string): Promise<RuntimeWiring> => {
 			const executor = new CodexTurnExecutor({ process: proc, threadId });
+			// FLY-404: Discord typing indicator (default ON; FLYWHEEL_CODEX_LEAD_TYPING=0
+			// disables). Posts with the Lead's own bot token in the reply channel while a
+			// founder message is processed; closed on stopGateway.
+			const typing = config.typingEnabled
+				? new DiscordTypingNotifier({
+						botToken: config.botToken,
+						defaultChannelId: config.chatChannelId,
+					})
+				: undefined;
 			const router = new LeadInputRouter({
 				leadId: config.leadId,
 				threadId,
 				journal,
 				executor,
 				sender,
+				...(typing ? { typing } : {}),
 			});
 			const source = new RestPollDiscordInboundSource({
 				botToken: config.botToken,
@@ -1509,7 +1528,15 @@ export function buildCodexLeadRuntime(
 			return {
 				recover: () => router.recover(),
 				startGateway: () => gateway.start(),
-				stopGateway: () => gateway.stop(),
+				stopGateway: async () => {
+					// FLY-404 (Codex review LOW): close the typing keepalive in a
+					// `finally` so a throwing gateway.stop() can never leak the interval.
+					try {
+						await gateway.stop();
+					} finally {
+						typing?.close();
+					}
+				},
 			};
 		},
 		shutdownProcess: async () => {
@@ -1598,6 +1625,9 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 		`mention policy: ${config.crossDeptChannelIds.length ? (config.mentionPatterns.length ? `bot-id mention + name regex [${config.mentionPatterns.join(", ")}] (non-bot authors)` : "bot-id mention only") : "n/a (no shared channels)"}`,
 		`inbound       : REST poll (own bot token) — no Bridge`,
 		`outbound mode : ${config.outboundMode}${noBridge ? " → DIRECT post to Discord (own bot token), NO Bridge" : ` → Bridge ${config.bridgeUrl}`}`,
+		// FLY-404: surface the typing indicator state so the operator can verify it
+		// before the Mufasa flip (parity with the Claude Lead's "typing…").
+		`typing        : ${config.typingEnabled ? "ON (Discord typing… while processing — parity with Claude Lead; kill-switch FLYWHEEL_CODEX_LEAD_TYPING=0)" : "OFF (FLYWHEEL_CODEX_LEAD_TYPING=0)"}`,
 		`bridge env    : url=${config.bridgeUrl || "(unset — not needed in direct)"} apiToken=${config.apiToken ? redactSecret(config.apiToken) : "(unset — not needed in direct)"}`,
 		`prod Bridge   : ${noBridge ? "NOT CONNECTED (zero prod intrusion)" : "WILL CONNECT (bridge mode)"}`,
 		`persona       : ${persona ? `baseInstructions ${persona.length} chars from ${config.systemPromptFiles.length} file(s) → injected` : "(none — default Codex persona; set FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES)"}`,

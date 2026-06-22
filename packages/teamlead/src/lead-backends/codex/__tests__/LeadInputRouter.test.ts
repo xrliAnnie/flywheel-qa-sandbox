@@ -437,3 +437,131 @@ describe("LeadInputRouter — reply channel routing (FLY-267 回)", () => {
 		expect(store.getById(entry.id)?.state).toBe("ambiguous");
 	});
 });
+
+describe("LeadInputRouter — typing indicator (FLY-404)", () => {
+	/** A recorder for the TypingNotifier interface + a shared event log so tests
+	 * can assert ORDERING (start before the turn, stop after delivery). */
+	function makeWithTyping() {
+		const store = new InMemoryJournalStore();
+		let c = 0;
+		const journal = new LeadJournal({
+			store,
+			idFactory: () => `e-${++c}`,
+			now: () => ++c,
+		});
+		const executor = new FakeExecutor();
+		const sender = new FakeSender();
+		const events: string[] = [];
+		const startCalls: Array<string | undefined> = [];
+		const stopCalls: Array<string | undefined> = [];
+		const typing = {
+			start: (ch?: string) => {
+				startCalls.push(ch);
+				events.push(`start:${ch ?? "default"}`);
+			},
+			stop: (ch?: string) => {
+				stopCalls.push(ch);
+				events.push(`stop:${ch ?? "default"}`);
+			},
+			close: () => events.push("close"),
+		};
+		// Wrap the executor + sender so the event log captures relative ordering.
+		const realStart = executor.startTurn.bind(executor);
+		executor.startTurn = async (a) => {
+			events.push("startTurn");
+			return realStart(a);
+		};
+		const realDeliver = sender.deliver.bind(sender);
+		sender.deliver = async (id: string) => {
+			events.push("deliver");
+			return realDeliver(id);
+		};
+		let corr = 0;
+		const router = new LeadInputRouter({
+			leadId: "lead-x",
+			threadId: "th-1",
+			journal,
+			executor,
+			sender,
+			typing,
+			correlationFactory: () => `corr-${++corr}`,
+			logger: silent,
+		});
+		return {
+			store,
+			journal,
+			executor,
+			sender,
+			router,
+			typing,
+			events,
+			startCalls,
+			stopCalls,
+		};
+	}
+
+	it("starts typing BEFORE the turn and stops it AFTER delivery (default chat channel)", async () => {
+		const { router, events, startCalls, stopCalls } = makeWithTyping();
+		router.submit({ idempotencyKey: "k1", source: "discord", payload: "hi" });
+		await router.whenIdle();
+		expect(events).toEqual([
+			"start:default",
+			"startTurn",
+			"deliver",
+			"stop:default",
+		]);
+		// A chat message carries no replyChannelId → notifier resolves its default.
+		expect(startCalls).toEqual([undefined]);
+		expect(stopCalls).toEqual([undefined]);
+	});
+
+	it("routes typing to the cross-dept source channel (replyChannelId)", async () => {
+		const { router, startCalls, stopCalls } = makeWithTyping();
+		router.submit({
+			idempotencyKey: "kr",
+			source: "discord",
+			payload: "hi",
+			replyChannelId: "round-1",
+		});
+		await router.whenIdle();
+		expect(startCalls).toEqual(["round-1"]);
+		expect(stopCalls).toEqual(["round-1"]);
+	});
+
+	it("ALWAYS stops typing even when the turn fails (no leaked indicator)", async () => {
+		const { router, executor, store, startCalls, stopCalls } = makeWithTyping();
+		executor.failStartFor = "boom";
+		const { entryId } = router.submit({
+			idempotencyKey: "k",
+			source: "discord",
+			payload: "boom",
+		});
+		await router.whenIdle();
+		expect(store.getById(entryId)?.state).toBe("ambiguous");
+		// start was called, and the finally guaranteed a matching stop.
+		expect(startCalls).toEqual([undefined]);
+		expect(stopCalls).toEqual([undefined]);
+	});
+
+	it("typing stays paired across serial turns (start/stop per entry)", async () => {
+		const { router, startCalls, stopCalls } = makeWithTyping();
+		router.submit({ idempotencyKey: "k1", source: "discord", payload: "a" });
+		router.submit({ idempotencyKey: "k2", source: "discord", payload: "b" });
+		await router.whenIdle();
+		expect(startCalls).toHaveLength(2);
+		expect(stopCalls).toHaveLength(2);
+	});
+
+	it("byte-compat: a router WITHOUT a typing notifier processes normally", async () => {
+		// `make()` (no typing) must still complete — the optional dependency is a no-op.
+		const { router, sender, store } = make();
+		const { entryId } = router.submit({
+			idempotencyKey: "k",
+			source: "discord",
+			payload: "hi",
+		});
+		await router.whenIdle();
+		expect(sender.delivered).toHaveLength(1);
+		expect(store.getById(entryId)?.state).toBe("completed");
+	});
+});

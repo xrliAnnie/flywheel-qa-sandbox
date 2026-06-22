@@ -49,6 +49,7 @@ import {
 } from "./codex-lead-runtime.js";
 import { DaemonConnectionSupervisor } from "./DaemonConnectionSupervisor.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
+import { DiscordTypingNotifier } from "./DiscordTypingNotifier.js";
 import { connectDaemonWs } from "./daemon-ws.js";
 import { FileInboundCursorStore } from "./InboundCursorStore.js";
 import { LeadHealthProbe } from "./LeadHealthProbe.js";
@@ -532,12 +533,23 @@ function buildTuiGeneration(
 							process: facade, // demuxed: foreign turns never arrive
 							threadId,
 						});
+						// FLY-404: Discord typing indicator (default ON; FLYWHEEL_CODEX_LEAD_TYPING=0
+						// disables). The TUI sidecar drives Discord I/O through this SAME router,
+						// so the founder sees "typing…" in Discord while a windowed Mufasa works.
+						// Closed on stopGateway (also fired on each generation rebuild).
+						const typing = config.typingEnabled
+							? new DiscordTypingNotifier({
+									botToken: config.botToken,
+									defaultChannelId: config.chatChannelId,
+								})
+							: undefined;
 						const router = new LeadInputRouter({
 							leadId: config.leadId,
 							threadId,
 							journal,
 							executor,
 							sender: builtSender,
+							...(typing ? { typing } : {}),
 						});
 						const source = new RestPollDiscordInboundSource({
 							botToken: config.botToken,
@@ -654,7 +666,16 @@ function buildTuiGeneration(
 							// GATE in main() — assertLeadActionsConfigGate, before the daemon
 							// starts — not by a runtime gate here. See main() / mcp-config.ts.)
 							startGateway: () => gateway.start(),
-							stopGateway: () => gateway.stop(),
+							stopGateway: async () => {
+								// FLY-404 (Codex review LOW): close the typing keepalive in a
+								// `finally` so a throwing gateway.stop() can never leak the
+								// interval across a generation rebuild.
+								try {
+									await gateway.stop();
+								} finally {
+									typing?.close();
+								}
+							},
 						};
 					},
 					shutdownProcess: () => p.stop(),
