@@ -43,6 +43,12 @@ export interface TuiWindowSpec {
 	 * founder TUI shares the thread's sandbox; the profile is the floor for both).
 	 * Default/undefined keeps the `-s read-only` pin (byte-compat). */
 	readDeny?: boolean;
+	/** FLY-398: when true (a windowed FULL-ACCESS TUI Lead, = Claude-equal), the
+	 * founder TUI must share the thread's `workspace-write` sandbox, so emit
+	 * `-s workspace-write` instead of the `-s read-only` pin (pin ③ of the five-pin
+	 * flip). Mutually exclusive with `readDeny` (full-access never runs read-deny;
+	 * the runtime config parse enforces this). Default/undefined → byte-compat. */
+	fullAccess?: boolean;
 }
 
 /** The command string is executed by tmux via a shell — every interpolated
@@ -77,11 +83,19 @@ export function buildTuiCommand(spec: TuiWindowSpec): string {
 		`--remote "unix://${sock}"`,
 		`-C "${spec.cwd}"`,
 		// R4 HIGH-4 command-line pin layer (config.toml + thread params are the others).
+		// FLY-398 (pin ③): a windowed FULL-ACCESS TUI Lead shares the thread's
+		// workspace-write sandbox → emit `-s workspace-write` so the founder TUI client
+		// matches the daemon/sidecar (a `-s read-only` here would downgrade the founder
+		// pane below the thread's actual sandbox).
 		// FLY-260: under read-deny we MUST omit `-s read-only` — passing the legacy
 		// sandbox flag sets activePermissionProfile=null and disables the read-deny
 		// profile. The config's default_permissions + approval_policy pins are the
 		// floor instead (the daemon enforces them for every client of the thread).
-		...(spec.readDeny ? [] : ["-s read-only"]),
+		...(spec.fullAccess
+			? ["-s workspace-write"]
+			: spec.readDeny
+				? []
+				: ["-s read-only"]),
 		`-c 'approval_policy="never"'`,
 		spec.threadId,
 	].join(" ");

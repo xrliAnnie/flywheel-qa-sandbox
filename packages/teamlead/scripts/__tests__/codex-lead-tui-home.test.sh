@@ -260,6 +260,75 @@ else
   run_content_xcheck "with-aliases" "1512578695468941333,1517226183341904032" "roundtable:1512578695468941333"
 fi
 
+# ════════════════ FLY-398 full-access (FLYWHEEL_CODEX_LEAD_PROFILE=full-access) ════════════════
+
+# ── ensure-home full-access: workspace-write + network ON + writable_roots, NOT read-deny ──
+H=$(fresh_home 30)
+if FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+   FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+   FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+   FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+   FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="456" \
+   FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" \
+   /bin/bash "$SUT" ensure-home >/dev/null 2>&1; then
+  pass "full-access ensure-home succeeds"
+else
+  fail "full-access ensure-home should succeed"
+fi
+python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('sandbox_mode')=='workspace-write' else 1)" "$H/config.toml" \
+  && pass "full-access: sandbox_mode=workspace-write" || fail "full-access: sandbox_mode wrong"
+python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sww=c.get('sandbox_workspace_write',{}); sys.exit(0 if (sww.get('network_access') is True and sww.get('writable_roots')==['/work/dir']) else 1)" "$H/config.toml" \
+  && pass "full-access: network ON + writable_roots=[cwd]" || fail "full-access: network/writable_roots wrong"
+python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('default_permissions') is None else 1)" "$H/config.toml" \
+  && pass "full-access: NO read-deny profile (Claude-equal reads disk)" || fail "full-access: must not carry read-deny profile"
+command grep -q 'default_tools_approval_mode = "approve"' "$H/config.toml" && pass "full-access: lead_actions approve mode written" || fail "full-access: approve mode missing"
+command grep -q 'env_vars = \["DISCORD_BOT_TOKEN"\]' "$H/config.toml" && pass "full-access: token forwarded by NAME (env_vars)" || fail "full-access: env_vars missing"
+! command grep -q "BROKER_SOCKET" "$H/config.toml" && pass "full-access: NO broker socket in config (token by name)" || fail "full-access: broker socket must not appear"
+
+# ── full-access ensure-daemon: STOP then START (pin ⑤ — daemon re-reads; no stale read-only daemon) ──
+H=$(fresh_home 31); : > "$MOCK_LOG"
+FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_BIN="$T/bin/codex" FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" ensure-daemon >/dev/null 2>&1
+command grep -q "remote-control stop" "$MOCK_LOG" && pass "full-access ensure-daemon: stop invoked (no stale read-only daemon)" || fail "full-access ensure-daemon: stop not invoked"
+command grep -q "remote-control start --json" "$MOCK_LOG" && pass "full-access ensure-daemon: start invoked after stop" || fail "full-access ensure-daemon: start not invoked"
+
+# ── shell→gate full-access xcheck: the SHELL-written config.toml passes the FULL-ACCESS runtime gate ──
+if [ -f "$GATE_JS" ]; then
+  run_fa_xcheck() {
+    local H; H=$(fresh_home "fa-$1")
+    FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+      FLYWHEEL_CODEX_LEAD_PROFILE=full-access \
+      FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/Users/x/dist/lead-actions/lead-actions-main.js" \
+      FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+      FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+      FLYWHEEL_LEAD_CHAT_CHANNEL_ID="1500600400238084307" \
+      FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS="$2" \
+      FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/Users/x/.flywheel/state/codex-lead/mufasa" \
+      FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES="$3" \
+      /bin/bash "$SUT" ensure-home >/dev/null 2>&1 || { fail "shell→gate FA ($1): ensure-home failed"; return; }
+    GATE_JS="$GATE_JS" CFG="$H/config.toml" CROSS="$2" ALI="$3" node --input-type=module -e '
+      import { readFileSync } from "node:fs";
+      const { assertFullAccessLeadActionsConfigGate, buildFullAccessLeadActionsMcpServerConfig, assertFullAccessSandboxConfig } = await import(process.env.GATE_JS);
+      const cross = process.env.CROSS ? process.env.CROSS.split(",").map(s=>s.trim()).filter(Boolean) : [];
+      const expected = buildFullAccessLeadActionsMcpServerConfig({
+        nodeBin: "/usr/local/bin/node",
+        mainJsPath: "/Users/x/dist/lead-actions/lead-actions-main.js",
+        leadId: "mufasa-lead", projectName: "growth",
+        chatChannelId: "1500600400238084307", crossDeptChannelIds: cross,
+        stateDir: "/Users/x/.flywheel/state/codex-lead/mufasa",
+        explicitAliases: process.env.ALI || undefined,
+      });
+      const toml = readFileSync(process.env.CFG, "utf8");
+      assertFullAccessLeadActionsConfigGate(toml, expected);
+      // Codex R1 HIGH-2: the shell-written sandbox section + writable_roots must pass the
+      // runtime sandbox gate against the validated project root (here = the ensure-home cwd).
+      assertFullAccessSandboxConfig(toml, "/work/dir");
+    ' && pass "shell→gate FA ($1): full-access config.toml passes the runtime gate (MCP + sandbox/writable_roots)" \
+       || fail "shell→gate FA ($1): config.toml did NOT pass the full-access gate"
+  }
+  run_fa_xcheck "one-crossdept" "1512578695468941333" ""
+  run_fa_xcheck "with-aliases" "1512578695468941333,1517226183341904032" "roundtable:1512578695468941333"
+fi
+
 echo "────────────────────────────"
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

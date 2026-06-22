@@ -90,5 +90,11 @@ else
 	if [ ! -d "${FLYWHEEL_CODEX_LEAD_PROJECT_DIR}" ]; then echo "project dir ${FLYWHEEL_CODEX_LEAD_PROJECT_DIR} missing" >&2; exit 1; fi
 fi
 
+# FLY-398 launcher-layer guard (NON-breaking warning): the HEADLESS app-server form is
+# NOT the production Codex Lead deployment form. Annie's hard rule (CLAUDE.md → "Codex
+# Lead Deployment — Windowed (TUI), Never Headless"): production Codex Leads must be
+# WINDOWED (cmux-visible) → use run-codex-lead-mufasa-tui-fullaccess.sh. This headless
+# launcher is kept as a low-level capability for tests / QA / rollback only.
+echo "[run-codex-lead-mufasa-fullaccess] ⚠️  HEADLESS app-server form — NOT the production Lead deployment form (Annie's rule: production Codex Leads are WINDOWED/TUI). Use run-codex-lead-mufasa-tui-fullaccess.sh for production; this headless launcher is for tests/QA/rollback only (FLY-398)." >&2
 echo "[run-codex-lead-mufasa-fullaccess] FULL-ACCESS (= Claude-equal) | runtime=${RUNTIME} projectDir=${FLYWHEEL_CODEX_LEAD_PROJECT_DIR} role=${FLY350_FULL_ACCESS_ROLE:-dept} dryRun=${FLYWHEEL_LEAD_DRY_RUN:-0}"
 exec node "${RUNTIME}"

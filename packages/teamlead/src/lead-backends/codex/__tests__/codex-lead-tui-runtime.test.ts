@@ -10,11 +10,56 @@ import {
 } from "../CodexLeadProcess.js";
 import type { CodexLeadRuntimeConfig } from "../codex-lead-runtime.js";
 import {
+	buildTuiDaemonEnv,
 	isTurnlessRolloutError,
 	parseCodexLeadTuiRuntimeConfig,
 	requirePersona,
 	wireDemuxedProcess,
 } from "../codex-lead-tui-runtime.js";
+
+describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Codex R1 HIGH-1)", () => {
+	const base = {
+		env: {
+			HOME: "/Users/x",
+			PATH: "/bin",
+			DISCORD_BOT_TOKEN: "tok-from-env",
+			TEAMLEAD_API_TOKEN: "api-tok",
+			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access", // present in source env
+			SOME_RANDOM_SECRET: "leak-me",
+		} as NodeJS.ProcessEnv,
+		codexHome: "/Users/x/.codex-mufasa",
+		botToken: "tok-cfg",
+	};
+
+	it("full-access: re-pins FLYWHEEL_CODEX_LEAD_PROFILE so ensure-daemon does stop-before-start", () => {
+		// THE bug Codex R1 HIGH-1 caught: buildFullAccessEnv strips
+		// FLYWHEEL_CODEX_LEAD_PROFILE, so without re-pinning, the home script's
+		// stop-before-start condition is false and a stale read-only daemon survives.
+		const e = buildTuiDaemonEnv({ ...base, profile: "full-access" });
+		expect(e.FLYWHEEL_CODEX_LEAD_PROFILE).toBe("full-access");
+		expect(e.FLYWHEEL_CODEX_LEAD_READ_DENY).toBe("0");
+		expect(e.FLYWHEEL_CODEX_TUI_HOME).toBe("/Users/x/.codex-mufasa");
+		// the bot token reaches the daemon (by NAME, for the lead_actions MCP child).
+		expect(e.DISCORD_BOT_TOKEN).toBe("tok-cfg");
+		// H-1 positive allowlist: a random non-allowlisted secret is NOT forwarded.
+		expect(e.SOME_RANDOM_SECRET).toBeUndefined();
+		// allowlisted Claude-pane env survives.
+		expect(e.TEAMLEAD_API_TOKEN).toBe("api-tok");
+	});
+
+	it("content-coordination: secret-washed (no token in daemon env)", () => {
+		const e = buildTuiDaemonEnv({ ...base, profile: "content-coordination" });
+		expect(e.DISCORD_BOT_TOKEN).toBeUndefined();
+		expect(e.SOME_RANDOM_SECRET).toBeUndefined();
+		expect(e.FLYWHEEL_CODEX_TUI_HOME).toBe("/Users/x/.codex-mufasa");
+	});
+
+	it("companion: raw env (byte-compat) + home pin", () => {
+		const e = buildTuiDaemonEnv({ ...base, profile: "companion" });
+		expect(e.SOME_RANDOM_SECRET).toBe("leak-me"); // raw — companion has no secrets in play
+		expect(e.FLYWHEEL_CODEX_TUI_HOME).toBe("/Users/x/.codex-mufasa");
+	});
+});
 
 function fakeProc() {
 	const handlers = new Map<string, ((...a: unknown[]) => void)[]>();

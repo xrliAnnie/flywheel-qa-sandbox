@@ -37,7 +37,9 @@ import { CodexOutboundSender } from "./CodexOutboundSender.js";
 import type { CodexProcessLike } from "./CodexTurnExecutor.js";
 import { CodexTurnExecutor } from "./CodexTurnExecutor.js";
 import {
+	buildFullAccessEnv,
 	buildThreadParams,
+	type CodexLeadProfile,
 	type CodexLeadRuntimeConfig,
 	dryRunReport,
 	parseCodexLeadRuntimeConfig,
@@ -54,7 +56,10 @@ import type { OutboundSender } from "./LeadInputRouter.js";
 import { LeadInputRouter } from "./LeadInputRouter.js";
 import { LeadJournal } from "./LeadJournal.js";
 import {
+	assertFullAccessLeadActionsConfigGate,
+	assertFullAccessSandboxConfig,
 	assertLeadActionsConfigGate,
+	buildFullAccessLeadActionsMcpServerConfig,
 	buildLeadActionsMcpServerConfig,
 } from "./lead-actions/mcp-config.js";
 import { buildMentionGate } from "./mention-gate.js";
@@ -96,6 +101,52 @@ export function parseCodexLeadTuiRuntimeConfig(
 		);
 	}
 	return { ...base, tuiCwd };
+}
+
+/**
+ * FLY-398 — the env a TUI daemon (`codex remote-control`) is started with, by tier.
+ * Extracted + exported so the runtime→home-script daemon-env boundary is unit-tested
+ * (Codex R1 HIGH-1: a direct shell test that pre-sets the profile would NOT have caught
+ * that the runtime path drops it).
+ *
+ *   - content-coordination → secret-WASHED env (broker-only token, never in daemon env).
+ *   - full-access (= Claude-equal) → the H-1 POSITIVE allowlist (`buildFullAccessEnv`,
+ *     Claude-pane mirror + gh auth) + the bot token by name (for the lead_actions MCP
+ *     child) + the daemon-control pins `FLYWHEEL_CODEX_LEAD_PROFILE=full-access` and
+ *     `FLYWHEEL_CODEX_LEAD_READ_DENY=0`. The pins are CRITICAL: `buildFullAccessEnv`
+ *     STRIPS `FLYWHEEL_CODEX_LEAD_PROFILE` (not in the allowlist), so without re-pinning
+ *     them the home script's `ensure_daemon` would NOT do stop-before-start and a stale
+ *     read-only daemon could survive the flip (pin ⑤ — Codex R1 HIGH-1). Non-secret.
+ *   - companion → raw env (byte-compat; no action secrets in play).
+ *
+ * Every branch sets `FLYWHEEL_CODEX_TUI_HOME` (the home script reads it for CODEX_HOME).
+ */
+export function buildTuiDaemonEnv(opts: {
+	profile: CodexLeadProfile;
+	env: NodeJS.ProcessEnv;
+	codexHome: string;
+	botToken: string;
+}): NodeJS.ProcessEnv {
+	const { profile, env, codexHome, botToken } = opts;
+	if (profile === "content-coordination") {
+		return {
+			...washActionSecretEnv(env),
+			FLYWHEEL_CODEX_TUI_HOME: codexHome,
+		};
+	}
+	if (profile === "full-access") {
+		return {
+			...buildFullAccessEnv(env),
+			DISCORD_BOT_TOKEN: botToken,
+			FLYWHEEL_CODEX_TUI_HOME: codexHome,
+			// Re-pin the daemon-control flags buildFullAccessEnv strips, so the home
+			// script's ensure-daemon does stop-before-start (no stale read-only daemon
+			// survives the flip — Codex R1 HIGH-1). Non-secret.
+			FLYWHEEL_CODEX_LEAD_PROFILE: "full-access",
+			FLYWHEEL_CODEX_LEAD_READ_DENY: "0",
+		};
+	}
+	return { ...env, FLYWHEEL_CODEX_TUI_HOME: codexHome };
 }
 
 // ── demuxed process facade (pure glue — unit-tested) ───────────────────────
@@ -575,6 +626,10 @@ function buildTuiGeneration(
 							// FLY-260: omit `-s read-only` from the founder TUI resume so the
 							// read-deny profile stays active for the shared thread.
 							readDeny: config.readDeny,
+							// FLY-398 (pin ③): a full-access TUI Lead shares the thread's
+							// workspace-write sandbox → the founder resume pane passes
+							// `-s workspace-write` (buildTuiCommand), not `-s read-only`.
+							fullAccess: config.codexProfile === "full-access",
 						};
 						// Identity-aware ensure (review R2 HIGH-2 + R3 MED-1 + R4 MED-1):
 						// ensureTuiHealthy does the UNCONDITIONAL ensure (PR-C stale-kill)
@@ -642,10 +697,17 @@ export async function main(
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<void> {
 	const config = parseCodexLeadTuiRuntimeConfig(env);
-	// HIGH-1 transplant: a write-capable TUI Lead is refused (chat-only contract).
-	if (config.sandboxMode !== "read-only") {
+	// FLY-398 (pin ①): a windowed FULL-ACCESS TUI Lead (= Claude-equal) IS now
+	// supported — it shares the thread's workspace-write sandbox in a cmux pane.
+	// Every OTHER non-read-only sandbox (the (Z) write-capable gateway tier,
+	// danger-full-access) stays refused for the TUI runtime — those remain
+	// headless-only (FLY-245/FLY-350 §2.3). The parser already enforces
+	// full-access ⟹ workspace-write (profile↔sandbox lockstep), so reaching here
+	// with full-access guarantees workspace-write.
+	const fullAccess = config.codexProfile === "full-access";
+	if (config.sandboxMode !== "read-only" && !fullAccess) {
 		throw new Error(
-			`codex-lead-tui-runtime: sandbox="${config.sandboxMode}" is write-capable — the ③ TUI Lead is chat-only until FLY-245. Refusing to start.`,
+			`codex-lead-tui-runtime: sandbox="${config.sandboxMode}" profile="${config.codexProfile}" is write-capable but not full-access — the ③ TUI Lead supports only read-only (companion/content-coordination) and full-access (Claude-equal); the (Z) write-capable gateway tier is headless-only (FLY-245). Refusing to start.`,
 		);
 	}
 	// Persona fail-close at boot (review MED — parity with headless). The same
@@ -736,20 +798,65 @@ export async function main(
 			`[codex-lead-tui-runtime] lead-actions broker listening (${brokerSocketPath})`,
 		);
 	}
+	// FLY-398 FULL-ACCESS (= Claude-equal): the lead_actions MCP (proactive
+	// discord_send) is injected via config.toml (written by ensure-home), with the
+	// bot token forwarded BY NAME (env_vars) — NO broker (Claude-equal). The §10
+	// config gate runs the FULL-ACCESS variant: it ALLOWS exactly approve +
+	// env_vars=[DISCORD_BOT_TOKEN] while still rejecting extra MCP / literal secrets
+	// / alternate fields. Fail-closed before the daemon starts.
+	if (fullAccess) {
+		const mainJsPath = env.FLYWHEEL_LEAD_ACTIONS_MAIN_JS?.trim();
+		const stateDir = env.FLYWHEEL_LEAD_ACTIONS_STATE_DIR?.trim();
+		if (!mainJsPath || !stateDir) {
+			throw new Error(
+				"codex-lead-tui-runtime: full-access requires FLYWHEEL_LEAD_ACTIONS_MAIN_JS + FLYWHEEL_LEAD_ACTIONS_STATE_DIR (the full-access TUI launcher sets them) — refusing to start (fail-closed)",
+			);
+		}
+		const expectedMcp = buildFullAccessLeadActionsMcpServerConfig({
+			nodeBin: env.FLYWHEEL_LEAD_ACTIONS_NODE_BIN?.trim() || "node",
+			mainJsPath,
+			leadId: config.leadId,
+			projectName: config.projectName,
+			chatChannelId: config.chatChannelId,
+			crossDeptChannelIds: config.crossDeptChannelIds,
+			stateDir,
+			explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
+		});
+		const configTomlPath = join(config.codexHome, "config.toml");
+		let configTomlContent: string;
+		try {
+			configTomlContent = readFileSync(configTomlPath, "utf8");
+		} catch (err) {
+			throw new Error(
+				`codex-lead-tui-runtime: cannot read ${configTomlPath} for the full-access §10 config gate (fail-closed): ${(err as Error).message}`,
+			);
+		}
+		assertFullAccessLeadActionsConfigGate(configTomlContent, expectedMcp);
+		// Codex R1 HIGH-2: also assert the SANDBOX shape (workspace-write + network ON +
+		// NO read-deny) and pin writable_roots to the runtime-VALIDATED project root —
+		// so a stale/overridden FLYWHEEL_CODEX_TUI_CWD can't point the daemon's writable
+		// root at an unvalidated path while the lead_actions block alone looks correct.
+		if (!config.fullAccessProjectRoot) {
+			throw new Error(
+				"codex-lead-tui-runtime: full-access requires a resolved fullAccessProjectRoot (parser invariant) — refusing to start (fail-closed)",
+			);
+		}
+		assertFullAccessSandboxConfig(
+			configTomlContent,
+			config.fullAccessProjectRoot,
+		);
+		console.warn(
+			"[codex-lead-tui-runtime] full-access §10 config gate PASSED (lead_actions MCP exact + sandbox=workspace-write/network-on + writable_roots=[validated project root], approve mode, token by-name, no broker)",
+		);
+	}
 	const ensureDaemon = async () => {
 		await execFileP("/bin/bash", [homeScript, "ensure-daemon"], {
-			env: contentCoordination
-				? // R3#2: the daemon (app-server) must start with a SECRET-WASHED env —
-					// the bot token reaches the MCP child only over the broker, never the
-					// daemon process env.
-					{
-						...washActionSecretEnv(env),
-						FLYWHEEL_CODEX_TUI_HOME: config.codexHome,
-					}
-				: {
-						...env,
-						FLYWHEEL_CODEX_TUI_HOME: config.codexHome,
-					},
+			env: buildTuiDaemonEnv({
+				profile: config.codexProfile,
+				env,
+				codexHome: config.codexHome,
+				botToken: config.botToken,
+			}),
 		});
 	};
 	const supervisor = new DaemonConnectionSupervisor({
