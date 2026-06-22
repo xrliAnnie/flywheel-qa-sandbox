@@ -617,7 +617,7 @@ class EngineIO:
                                    str(exp), c["name"], str(c["value"])]) + "\n")
         os.chmod(path, 0o600)
 
-    # -- consumer: deep multimodal read + extract (agy primary, paid API fallback+notify) --
+    # -- consumer: deep multimodal read + extract (Gemini-primary DEFAULT; agy opt-in FLY349_USE_AGY=1) --
     def analyze(self, meta, gate):
         d = self._ndir(meta["id"])
         det = self._detail(meta["id"])
@@ -648,29 +648,37 @@ class EngineIO:
                 "HONEST: 哪些是内容明确展示 vs 推断\n简洁中文。")
 
     def _deep_read(self, d, media, prompt, meta):
-        # 🔵 Founder's explicit informed decision (Annie, lead-instruction 737653df): these notes
-        # are her OWN curated + manually-reviewed saves (not random scrapes); she OWNS + ACCEPTS
-        # the prompt-injection risk of running the agy agent on them → agy (free Google Pro) is
-        # the DEFAULT analysis path, NO --sandbox. (The security review surfaced the agy-on-
-        # untrusted-content risk; Annie reviewed it and accepted it for this curated collection.)
-        # The #1 arg-injection validation is KEPT as zero-cost defense. Gemini File API is the
-        # FALLBACK on agy auth/failure OR invalid/agentic output (F0), with a Lead notification.
+        # Analysis backend (Annie's decision, relayed via Tadashi 2026-06-21): PROCESSING uses the
+        # paid Gemini File API (gemini-2.5-pro) as the DEFAULT — it is stable and, being pure
+        # inference, safe on untrusted content (no tool execution → injection can't escalate).
+        # agy (free Antigravity Pro, gemini-3.1-pro) was the prior default (737653df) but is
+        # unstable on multi-image notes (QA FLY-372 F0 = agentic chatter instead of a real read),
+        # so it is now OPT-IN only (FLY349_USE_AGY=1), reserved for the parallel agy-research
+        # issue and NOT used in processing. The #1 arg-injection validation is KEPT as zero-cost
+        # defense either way.
         text = None
-        try:
-            text = self._agy(d, media, prompt, meta)
-        except Exception as e:
-            print(f"[agy err {meta['id']}: {e}]", file=sys.stderr)
-        # F0 (QA FLY-372): validate STRUCTURED output. agy can return agentic chatter on
-        # multi-image notes; that must NOT pass as a real read → fall to Gemini File API (pure
-        # inference, no chatter). If THAT is also unstructured → raise so the note degrades to
-        # 'failed' and NEVER creates a fake/shallow issue (#5).
-        if not _valid_analysis(text):
-            if meta["id"] not in self._fallback_notified:
-                self._fallback_notified.add(meta["id"])
-                notify_lead(f"[FLY-349 引擎] agy 在 note {meta['id']} 返回无效/agentic 输出 → 切付费 Gemini API(~$0.05)。继续。")
+        if os.environ.get("FLY349_USE_AGY") == "1":
+            # agy opt-in (research path): agy primary; Gemini File API is the F0 fallback on agy
+            # auth/failure OR invalid/agentic output (with a one-time Lead notification per note).
+            try:
+                text = self._agy(d, media, prompt, meta)
+            except Exception as e:
+                print(f"[agy err {meta['id']}: {e}]", file=sys.stderr)
+            if not _valid_analysis(text):
+                if meta["id"] not in self._fallback_notified:
+                    self._fallback_notified.add(meta["id"])
+                    notify_lead(f"[FLY-349 引擎] agy 在 note {meta['id']} 返回无效/agentic 输出 → 切付费 Gemini API(~$0.05)。继续。")
+                text = self._gemini_api(media, prompt)
+        else:
+            # Gemini-primary (DEFAULT, the processing path): agy is deferred to the research issue
+            # and never invoked here — a Gemini failure/invalid output degrades the note (NO agy
+            # fallback), so processing never depends on the unstable agy path.
             text = self._gemini_api(media, prompt)
+        # F0 (QA FLY-372): a real deep-read MUST be the structured format. If the chosen backend
+        # produced unstructured/agentic output → raise so the note degrades to 'failed' and NEVER
+        # creates a fake/shallow issue (#5).
         if not _valid_analysis(text):
-            raise RuntimeError(f"analysis unstructured after agy + Gemini for {meta['id']} — degrade (no fake issue)")
+            raise RuntimeError(f"analysis unstructured for {meta['id']} — degrade (no fake issue)")
         return text
 
     def _agy(self, d, media, prompt, meta):
