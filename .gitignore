@@ -27,3 +27,7 @@ logs/
 .claude/worktrees/
 .claude/scheduled_tasks.lock
 avatar-candidates/
+
+# Python bytecode (FLY-387 hook tests)
+__pycache__/
+*.pyc
