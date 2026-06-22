@@ -679,6 +679,79 @@ install_post_compact_hook() {
   mv "$tmpfile" "$settings_file"
   log "PostCompact hook installed: $hook_script"
 }
+
+# ── FLY-387: Install discord-reply-enforcer Stop hook ─────────────────────
+# Collects the (previously ad-hoc, machine-local, Lead-ineffective) Stop hook
+# into Flywheel and installs it idempotently to a stable path. Fine-grained
+# .hooks.Stop merge: removes ONLY discord-reply-enforcer.py commands from each
+# Stop group (incl. a hand-installed ~/.claude/hooks/ one), PRESERVES sibling
+# hooks in the same group, drops emptied groups, then adds the stable entry if
+# absent. Fail-open: on malformed/invalid JSON, skip + WARN, never rewrite.
+# Installed for EVERY role INCLUDING companion (Belle was the recurring victim).
+install_discord_reply_enforcer_hook() {
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+    log "DRY-RUN: skipping discord-reply-enforcer Stop hook install"
+    return
+  fi
+
+  local src_script="${FLYWHEEL_ROOT}/scripts/hooks/discord-reply-enforcer.py"
+  if [ ! -f "$src_script" ]; then
+    log "WARNING: discord-reply-enforcer source not found: $src_script"
+    return
+  fi
+
+  local hook_script="${HOME}/.flywheel/bin/discord-reply-enforcer.py"
+  mkdir -p "$(dirname "$hook_script")"
+  cp "$src_script" "$hook_script"
+  chmod +x "$hook_script"
+  local cmd="python3 ${hook_script}"
+
+  local settings_file="${HOME}/.claude/settings.json"
+  mkdir -p "$(dirname "$settings_file")"
+
+  # NOTE: macOS ships jq 1.6, whose `jq empty` / filters return exit 0 even on a
+  # parse error (only an empty stdout signals failure). So validity is checked by
+  # OUTPUT non-emptiness, NOT exit code — otherwise a malformed settings.json
+  # would slip through and an empty merge result could clobber the file.
+  local existing="{}"
+  if [ -f "$settings_file" ]; then
+    existing=$(cat "$settings_file")
+    if [ -z "$(printf '%s' "$existing" | jq -c . 2>/dev/null)" ]; then
+      log "WARNING: $settings_file is not valid JSON. Skipping reply-enforcer hook install (file untouched)."
+      return
+    fi
+  fi
+
+  local merged
+  merged=$(printf '%s' "$existing" | jq --arg cmd "$cmd" '
+    .hooks = (.hooks // {}) |
+    .hooks.Stop = (if (.hooks.Stop | type) == "array" then .hooks.Stop else [] end) |
+    # Remove ONLY discord-reply-enforcer.py commands from each group; keep
+    # sibling hooks; drop groups that become empty.
+    .hooks.Stop = ([ .hooks.Stop[]
+        | .hooks = ([ (.hooks // [])[]
+            | select(((.command // "") | endswith("discord-reply-enforcer.py")) | not) ])
+      ] | map(select(((.hooks // []) | length) > 0))) |
+    # Add the stable-path entry if not already present.
+    if ([ .hooks.Stop[] | select(any((.hooks // [])[]; (.command // "") == $cmd)) ] | length) == 0
+    then .hooks.Stop += [{"hooks": [{"type": "command", "command": $cmd}]}]
+    else .
+    end
+  ' 2>/dev/null)
+
+  # Fail-open: a malformed input or failed merge yields empty/invalid output on
+  # jq 1.6 — never write an empty/invalid result over settings.json.
+  if [ -z "$merged" ] || [ -z "$(printf '%s' "$merged" | jq -c . 2>/dev/null)" ]; then
+    log "WARNING: reply-enforcer settings merge produced empty/invalid JSON. Skipping (file untouched)."
+    return
+  fi
+
+  local tmpfile
+  tmpfile=$(mktemp "${settings_file}.XXXXXX")
+  printf '%s\n' "$merged" > "$tmpfile"
+  mv "$tmpfile" "$settings_file"
+  log "discord-reply-enforcer Stop hook installed: $hook_script"
+}
 # FLY-231: companion skips installing the PostCompact bootstrap hook (it doesn't
 # want to (re)install the engineering bootstrap re-send). Note the hook is GLOBAL
 # in ~/.claude/settings.json and may already be installed by other Leads — the
@@ -688,6 +761,15 @@ if [ "$IS_COMPANION_ROLE" != true ] && command -v jq >/dev/null 2>&1; then
   install_post_compact_hook
 elif [ "$IS_COMPANION_ROLE" = true ]; then
   log "Companion: skipping PostCompact hook install (global hook honors FLYWHEEL_LEAD_COMPANION marker)"
+fi
+
+# FLY-387: install the discord-reply-enforcer Stop hook for EVERY role —
+# companion INCLUDED (unlike PostCompact). Belle (companion) was the recurring
+# victim of the outbound reply-leak this hook guards against.
+if command -v jq >/dev/null 2>&1; then
+  install_discord_reply_enforcer_hook
+else
+  log "WARNING: jq not found. Skipping discord-reply-enforcer Stop hook install."
 fi
 
 # ── GEO-285: Early auto-compact + env exports ─────────────
@@ -1614,6 +1696,18 @@ BASE_CROSS_DEPT_RULES="${BASE_RULES_DIR}/cross-dept-channel-rules.md"
 if [ -f "$BASE_CROSS_DEPT_RULES" ] && [ -r "$BASE_CROSS_DEPT_RULES" ]; then
   CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_CROSS_DEPT_RULES")
   log "Appending base cross-dept-channel rules: ${BASE_CROSS_DEPT_RULES}"
+fi
+
+# ── FLY-387: Discord outbound reply output-contract (universal — ALL roles) ──
+# Soft probability-reducer complementing the discord-reply-enforcer Stop hook
+# (candidate 2): always EXECUTE the reply tool, never emit its <invoke> XML as
+# plain text. Loads for EVERY Lead role INCLUDING companion (Belle was the
+# recurring victim) — every Lead replies on Discord, so no companion guard.
+# Optional — missing base file is a no-op (backward compat with older checkouts).
+BASE_DISCORD_REPLY_CONTRACT="${BASE_RULES_DIR}/discord-reply-contract.md"
+if [ -f "$BASE_DISCORD_REPLY_CONTRACT" ] && [ -r "$BASE_DISCORD_REPLY_CONTRACT" ]; then
+  CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DISCORD_REPLY_CONTRACT")
+  log "Appending base discord-reply-contract rules: ${BASE_DISCORD_REPLY_CONTRACT}"
 fi
 
 # ── FLY-26: project-side shared rules (concrete data) ──
