@@ -33,6 +33,7 @@ import {
 import { LeadWatchdog } from "../LeadWatchdog.js";
 import { locateLeadWindow } from "../LeadWindowLocator.js";
 import { CodexLeadOutboundHandler } from "../lead-backends/codex/CodexLeadOutboundHandler.js";
+import { FileInboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
 import { buildLeadDiscordSend } from "../lead-backends/codex/leadDiscordSend.js";
 import { SqliteOutboundDedupStore } from "../lead-backends/codex/SqliteOutboundDedupStore.js";
 import {
@@ -104,6 +105,9 @@ import {
 } from "./report-registry.js";
 import { createReportsRouter } from "./reports-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
+import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
+import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
+import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
 import { setupRunInfrastructure } from "./run-infra.js";
 import { createStatusQuery } from "./runner-status.js";
 import { createRunsRouter } from "./runs-route.js";
@@ -2564,6 +2568,32 @@ export async function startBridge(
 	});
 	gatePoller.start();
 
+	// FLY-314: roundtable per-topic auto-thread (Phase 1). Default OFF —
+	// loadRoundtableConfig returns undefined unless FLYWHEEL_ROUNDTABLE_ENABLED=1,
+	// so the byte-compat path constructs no poller and changes no behavior. When
+	// enabled, this is the central Bridge listener that auto-creates a thread off a
+	// roundtable topic message + pulls configured leads in as members. Reply-in-
+	// thread routing is Phase 2 (not here).
+	let roundtableThreadManager: RoundtableThreadManager | undefined;
+	const roundtableConfig = loadRoundtableConfig(process.env);
+	if (roundtableConfig) {
+		roundtableThreadManager = new RoundtableThreadManager({
+			store,
+			channelId: roundtableConfig.channelId,
+			botToken: roundtableConfig.botToken,
+			botUserId: roundtableConfig.botUserId,
+			trigger: buildTopicTrigger(roundtableConfig.trigger),
+			memberUserIds: roundtableConfig.memberUserIds,
+			triggerMode: roundtableConfig.triggerMode,
+			cursorStore: new FileInboundCursorStore(roundtableConfig.cursorPath),
+			pollIntervalMs: roundtableConfig.pollIntervalMs,
+		});
+		await roundtableThreadManager.start();
+		console.log(
+			`[Bridge] RoundtableThreadManager started — channel=${roundtableConfig.channelId}, trigger=${roundtableConfig.triggerMode}`,
+		);
+	}
+
 	// FLY-307 C: Bridge event-loop self-watchdog — converts a main-loop hang
 	// (e.g. a spinning sql.js/WASM trap) into a launchd-restartable crash, the
 	// gap launchd KeepAlive can't cover. Default ON; `FLYWHEEL_BRIDGE_WATCHDOG=0`
@@ -2832,6 +2862,7 @@ export async function startBridge(
 	const close = async () => {
 		heartbeatService?.stop();
 		gatePoller.stop();
+		await roundtableThreadManager?.stop();
 		bridgeWatchdog.stop();
 		idleWatchdog.stop();
 		leadWatchdog.stop();

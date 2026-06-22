@@ -550,6 +550,28 @@ export class StateStore {
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_threads_issue_channel ON chat_threads(issue_id, channel_id)",
 		);
 
+		// FLY-314: Roundtable per-topic threads. DELIBERATELY a separate table from
+		// chat_threads: roundtable topics are NOT issue/session-bound, and reusing
+		// chat_threads would leak synthetic ids through the issue-thread reverse
+		// lookup (/api/chat-threads/by-thread) and reply-guard's "issue-thread"
+		// classification (Codex design review R1#2). thread_id == source_message_id
+		// (Discord "start thread from message" invariant — the crash-recovery anchor).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS roundtable_topic_threads (
+				thread_id TEXT PRIMARY KEY,
+				channel_id TEXT NOT NULL,
+				source_message_id TEXT NOT NULL,
+				author_id TEXT,
+				trigger_mode TEXT,
+				created_at TEXT DEFAULT (datetime('now')),
+				discord_missing_at TEXT,
+				archived_at TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_roundtable_topic_msg ON roundtable_topic_threads(channel_id, source_message_id)",
+		);
+
 		// FLY-195: Lead disposition receipts for stuck-runner episodes (plan §3.4).
 		// One row per (execution, episode fingerprint). The Lead's judgment is
 		// AUTHORITATIVE: the Bridge fallback (runner_stuck_unhandled Annie alert)
@@ -1608,6 +1630,82 @@ export class StateStore {
 	markChatThreadArchived(threadId: string): void {
 		this.db.run(
 			"UPDATE chat_threads SET archived_at = datetime('now') WHERE thread_id = ?",
+			[threadId],
+		);
+		this.save();
+	}
+
+	// ── FLY-314: roundtable_topic_threads (separate from chat_threads) ──────────
+
+	/**
+	 * FLY-314: record a roundtable topic thread. `threadId` MUST equal the source
+	 * Discord message id (the "start thread from message" invariant), which is also
+	 * the crash-recovery anchor. Idempotent on thread_id.
+	 */
+	upsertRoundtableTopicThread(input: {
+		threadId: string;
+		channelId: string;
+		sourceMessageId: string;
+		authorId?: string;
+		triggerMode?: string;
+	}): void {
+		this.db.run(
+			`INSERT INTO roundtable_topic_threads
+				(thread_id, channel_id, source_message_id, author_id, trigger_mode)
+			 VALUES (?, ?, ?, ?, ?)
+			 ON CONFLICT(thread_id) DO UPDATE SET
+				channel_id = excluded.channel_id,
+				source_message_id = excluded.source_message_id,
+				author_id = excluded.author_id,
+				trigger_mode = excluded.trigger_mode`,
+			[
+				input.threadId,
+				input.channelId,
+				input.sourceMessageId,
+				input.authorId ?? null,
+				input.triggerMode ?? null,
+			],
+		);
+		this.save();
+	}
+
+	/** FLY-314: dedup lookup by (channel, source message). Excludes rows marked
+	 * discord_missing so a deleted thread can be re-created if the topic recurs. */
+	getRoundtableTopicThread(
+		channelId: string,
+		sourceMessageId: string,
+	):
+		| {
+				thread_id: string;
+				channel_id: string;
+				source_message_id: string;
+				author_id: string | null;
+				archived_at: string | null;
+		  }
+		| undefined {
+		const stmt = this.db.prepare(
+			"SELECT thread_id, channel_id, source_message_id, author_id, archived_at FROM roundtable_topic_threads WHERE channel_id = ? AND source_message_id = ? AND discord_missing_at IS NULL",
+		);
+		stmt.bind([channelId, sourceMessageId]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			return {
+				thread_id: row.thread_id as string,
+				channel_id: row.channel_id as string,
+				source_message_id: row.source_message_id as string,
+				author_id: (row.author_id as string) ?? null,
+				archived_at: (row.archived_at as string) ?? null,
+			};
+		}
+		stmt.free();
+		return undefined;
+	}
+
+	/** FLY-314: mark a roundtable topic thread missing (Discord 404). */
+	markRoundtableTopicThreadMissing(threadId: string): void {
+		this.db.run(
+			"UPDATE roundtable_topic_threads SET discord_missing_at = datetime('now') WHERE thread_id = ?",
 			[threadId],
 		);
 		this.save();

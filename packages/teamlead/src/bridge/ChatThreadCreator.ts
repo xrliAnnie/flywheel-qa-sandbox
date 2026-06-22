@@ -5,7 +5,10 @@
  */
 
 import type { StateStore } from "../StateStore.js";
-import { removeUserFromChatThread } from "./chat-thread-utils.js";
+import {
+	addThreadMember,
+	removeUserFromChatThread,
+} from "./chat-thread-utils.js";
 import { validateThreadExists } from "./thread-validator.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -69,7 +72,7 @@ export class ChatThreadCreator {
 				// FLY-91: Re-add owner as thread member (idempotent) — ensures
 				// sidebar visibility even if they previously left/were removed.
 				if (ctx.ownerUserId) {
-					await this.addThreadMember(
+					await addThreadMember(
 						existing.thread_id,
 						ctx.ownerUserId,
 						ctx.botToken,
@@ -175,7 +178,7 @@ export class ChatThreadCreator {
 
 			// 4. Auto-add owner as thread member (sidebar visibility + notifications)
 			if (ctx.ownerUserId) {
-				await this.addThreadMember(data.id, ctx.ownerUserId, ctx.botToken);
+				await addThreadMember(data.id, ctx.ownerUserId, ctx.botToken);
 			}
 
 			return { created: true, threadId: data.id };
@@ -199,37 +202,6 @@ export class ChatThreadCreator {
 		botToken: string,
 	): Promise<void> {
 		return removeUserFromChatThread(threadId, userId, botToken);
-	}
-
-	/**
-	 * FLY-91: Add a user as a thread member so the thread appears in their
-	 * sidebar and notifications are enabled. Fire-and-forget.
-	 */
-	private async addThreadMember(
-		threadId: string,
-		userId: string,
-		botToken: string,
-	): Promise<void> {
-		try {
-			const res = await fetch(
-				`${DISCORD_API}/channels/${threadId}/thread-members/${userId}`,
-				{
-					method: "PUT",
-					headers: { Authorization: `Bot ${botToken}` },
-				},
-			);
-			if (!res.ok) {
-				const body = await res.text().catch(() => "");
-				console.warn(
-					`[ChatThreadCreator] addThreadMember failed: ${res.status} ${body.slice(0, 200)}`,
-				);
-			}
-		} catch (err) {
-			console.warn(
-				`[ChatThreadCreator] addThreadMember error:`,
-				(err as Error).message,
-			);
-		}
 	}
 
 	/**
