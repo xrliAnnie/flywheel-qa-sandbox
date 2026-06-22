@@ -7,6 +7,7 @@ export type {
 	PostToolUseHookInput,
 } from "@anthropic-ai/claude-agent-sdk";
 export { AnthropicLLMClient } from "./AnthropicLLMClient.js";
+export { AntigravityTmuxAdapter } from "./AntigravityTmuxAdapter.js"; // FLY-493
 export { ClaudeAdapter } from "./ClaudeAdapter.js";
 export { ClaudeAdapterSession } from "./ClaudeAdapterSession.js";
 export { ClaudeCodeAdapter } from "./ClaudeCodeAdapter.js";

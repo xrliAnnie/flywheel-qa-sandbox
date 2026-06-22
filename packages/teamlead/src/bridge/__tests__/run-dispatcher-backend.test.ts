@@ -18,6 +18,9 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 
 	const origRunnerBackend = process.env.FLYWHEEL_RUNNER_BACKEND;
 	const origCommBackend = process.env.FLYWHEEL_COMM_BACKEND;
+	// FLY-493: the per-project CommDB is isolated to a fresh temp dir by the
+	// package vitest.setup.ts (FLYWHEEL_COMM_DIR), so preRegisterCommDb (start())
+	// never writes to the LIVE Bridge comm.db.
 
 	function makeRuntime(
 		rolesConfig?: ProjectRuntime["rolesConfig"],
@@ -154,5 +157,28 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 		expect(ctx.runnerBackend).toBe("codex-tmux");
 		expect(ctx.runnerAgentName).toBeUndefined();
 		expect(ctx.vendor).toBeUndefined();
+	});
+
+	// FLY-493: antigravity is a no-transport backend. Even on the mailbox
+	// default path WITH a leadId, the dispatcher must NOT wire Agent Team
+	// identity / vendor for it (Codex R1 #3 explicit test) — instead it sets the
+	// explicit no-transport marker `runnerTransportMode: "none"`.
+	it("[antigravity] label → antigravity-tmux, transportMode none, NO transport identity (mailbox+leadId)", async () => {
+		// mailbox is the default (no FLYWHEEL_COMM_BACKEND set), leadId present.
+		dispatcher = makeDispatcher();
+		const ctx = await startAndWait(dispatcher, ["antigravity"]);
+		expect(ctx.runnerBackend).toBe("antigravity-tmux");
+		expect(ctx.runnerTransportMode).toBe("none");
+		// No transport wiring despite mailbox + leadId:
+		expect(ctx.vendor).toBeUndefined();
+		expect(ctx.runnerAgentName).toBeUndefined();
+		expect(ctx.agentTeamName).toBeUndefined();
+	});
+
+	it("[antigravity] agy label alias also resolves the no-transport backend", async () => {
+		dispatcher = makeDispatcher();
+		const ctx = await startAndWait(dispatcher, ["agy"]);
+		expect(ctx.runnerBackend).toBe("antigravity-tmux");
+		expect(ctx.runnerTransportMode).toBe("none");
 	});
 });

@@ -13,7 +13,7 @@
 
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -22,11 +22,17 @@ import { join } from "node:path";
 // creates issue drafts + memory, never writes code or merges). The Bridge maps
 // it to terminal `completed` (NOT awaiting_review), so the runner doesn't get
 // stuck and a fixed reusable trigger issue isn't 409-blocked next cadence.
+// FLY-493: `pr_handoff` is the terminal route for a no-transport (antigravity)
+// Runner that builds + opens a PR but cannot be woken to drive the founder-gated
+// ship. The Bridge maps it to terminal `completed` (NOT awaiting_review, so no
+// wake-dependent approve loop) while recording PR + `ready_to_merge` evidence;
+// the founder ships the PR by hand. REQUIRES --pr, REJECTS --merged.
 const VALID_ROUTES = new Set([
 	"auto_approve",
 	"needs_review",
 	"blocked",
 	"no_code",
+	"pr_handoff",
 ]);
 
 const ATTEMPT_COUNT = 4;
@@ -34,7 +40,9 @@ const ATTEMPT_TIMEOUT_MS = 5000;
 const BACKOFF_MS = [1000, 2000, 4000] as const;
 
 type Evidence = {
-	landingStatus?: { status: "merged"; prNumber: number };
+	// FLY-493: `ready_to_merge` (pr_handoff) joins `merged` — a no-transport
+	// Runner records PR evidence without a merge.
+	landingStatus?: { status: "merged" | "ready_to_merge"; prNumber: number };
 	commitCount: number;
 	filesChangedCount: number;
 	linesAdded: number;
@@ -106,6 +114,29 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		);
 		process.exit(1);
 	}
+	// FLY-493: pr_handoff records an OPEN PR (no merge). PR evidence is mandatory
+	// (the handoff is ambiguous without it); --merged is contradictory.
+	if (opts.route === "pr_handoff") {
+		// Codex code review R1: the CLI parses --pr via parseInt, so a missing
+		// value or `--pr abc` yields NaN. NaN serializes to JSON `null`, which the
+		// event sinks would still terminalize — reject any non-positive-integer PR
+		// up front so a malformed handoff can never emit null PR evidence.
+		if (
+			opts.pr === undefined ||
+			opts.pr === null ||
+			!Number.isInteger(opts.pr) ||
+			opts.pr <= 0
+		) {
+			console.error("--route pr_handoff requires --pr <positive integer>");
+			process.exit(1);
+		}
+		if (opts.merged) {
+			console.error(
+				"--route pr_handoff is for an OPEN PR handed to the founder; do not pass --merged",
+			);
+			process.exit(1);
+		}
+	}
 
 	const execId = requireEnv("FLYWHEEL_EXEC_ID");
 	const issueId = requireEnv("FLYWHEEL_ISSUE_ID");
@@ -122,6 +153,14 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		merged: opts.merged,
 		pr: opts.pr,
 	});
+	// FLY-493: pr_handoff carries `ready_to_merge` landing evidence (the OPEN PR
+	// the founder will ship). Fail-closed: if a land-status file is present
+	// (FLYWHEEL_LAND_STATUS_PATH), its prNumber MUST match --pr — a mismatch is a
+	// wiring bug, fail loud rather than completing with ambiguous evidence.
+	if (opts.route === "pr_handoff" && opts.pr !== undefined) {
+		validateLandStatusPr(opts.pr);
+		evidence.landingStatus = { status: "ready_to_merge", prNumber: opts.pr };
+	}
 	const summary = opts.summary ?? evidence.commitMessages[0];
 
 	const payload: Payload = {
@@ -284,6 +323,35 @@ function collectEvidence(args: {
 		evidence.landingStatus = { status: "merged", prNumber: pr };
 	}
 	return evidence;
+}
+
+/**
+ * FLY-493: fail-closed validation that a present land-status file agrees with
+ * the --pr passed to `complete --route pr_handoff`. If `FLYWHEEL_LAND_STATUS_PATH`
+ * is unset or the file is absent, the --pr is the sole authority (no-op). If the
+ * file is present and its `prNumber` disagrees with --pr, exit 1 (loud) rather
+ * than emit ambiguous handoff evidence.
+ */
+function validateLandStatusPr(pr: number): void {
+	const path = process.env.FLYWHEEL_LAND_STATUS_PATH?.trim();
+	if (!path || !existsSync(path)) return;
+	let filePr: unknown;
+	try {
+		filePr = JSON.parse(readFileSync(path, "utf8"))?.prNumber;
+	} catch (err) {
+		console.error(
+			`[complete] pr_handoff: land-status file ${path} is unreadable/invalid JSON: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		);
+		process.exit(1);
+	}
+	if (filePr !== pr) {
+		console.error(
+			`[complete] pr_handoff: land-status prNumber (${String(filePr)}) does not match --pr (${pr}). Refusing to emit ambiguous handoff evidence.`,
+		);
+		process.exit(1);
+	}
 }
 
 function git(args: string[]): string {

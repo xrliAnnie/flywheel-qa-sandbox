@@ -88,6 +88,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			session_stage: "started",
 			stage_updated_at: now,
 			session_role: env.sessionRole ?? "main",
+			// FLY-493 (Codex code review R1): the PRODUCTION started path is this
+			// in-process sink — persist the resolved executor backend as
+			// adapter_type so the no-transport wake-guard (runner-wake.ts) can
+			// recognize an antigravity session. The HTTP /events session_started
+			// handler persists the same field for the loopback path.
+			adapter_type: env.runnerBackend,
 		});
 
 		// GEO-151: Persist effective proofshot config into session_params so
@@ -238,11 +244,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// with event-route.ts's strict-guard skip; the session_completed audit
 		// event above is still recorded). Without this, a non-running no_code would
 		// fall through to the `else` default below, which also maps to `completed`.
-		if (route === "no_code" && preExistingSession?.status !== "running") {
+		// FLY-493: pr_handoff (no-transport antigravity build+PR terminal) has the
+		// SAME running-only constraint as no_code — skip from any non-running
+		// state so it can't clear a review-gated session.
+		if (
+			(route === "no_code" || route === "pr_handoff") &&
+			preExistingSession?.status !== "running"
+		) {
 			console.warn(
-				`[DirectEventSink] route=no_code for non-running ${env.executionId} ` +
+				`[DirectEventSink] route=${route} for non-running ${env.executionId} ` +
 					`(status=${preExistingSession?.status ?? "none"}) — skipping ` +
-					`(no_code only terminalizes a running runner)`,
+					`(${route} only terminalizes a running runner)`,
 			);
 			return;
 		}
@@ -294,11 +306,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				status = "awaiting_review";
 			}
 		} else if (route === "blocked") status = "blocked";
-		else if (route === "no_code") {
+		else if (route === "no_code" || route === "pr_handoff") {
 			// FLY-222 #1: no-code/no-merge clean success → terminal completed.
 			// Sister branch: event-route.ts. evidenceGap stays false (not an
 			// approved_to_ship merge-evidence gap); runPostShipFinalization is
 			// gated on merged landing so it cannot fire for a no-merge completion.
+			//
+			// FLY-493 (Codex R3 #2): pr_handoff gets an EXPLICIT branch — it must
+			// NOT fall through to the unknown-route `else` below, which would let a
+			// pr_handoff for a non-running session clear review-gated state. The
+			// running-only guard above already returns early for non-running, but
+			// the explicit branch keeps the contract unambiguous.
 			status = "completed";
 		} else {
 			status = "completed";

@@ -123,6 +123,9 @@ describe("event-route gate_timed_out — payload propagation + guardrail retry",
 	let store: StateStore;
 	let server: http.Server;
 	let baseUrl: string;
+	// FLY-493: the per-project CommDB is isolated to a fresh temp dir by the
+	// package vitest.setup.ts (FLYWHEEL_COMM_DIR), so the Bridge gate handlers
+	// never write gate questions to the LIVE comm.db (the gate-watcher reads it).
 
 	async function startServer(
 		deliverResult: { delivered: boolean; error?: string } = {

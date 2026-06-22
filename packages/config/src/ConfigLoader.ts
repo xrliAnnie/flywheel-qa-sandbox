@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
 import type { CheckpointConfig, FlywheelConfig } from "./types.js";
 import {
+	EXECUTOR_BACKENDS,
 	XIAOHONGSHU_CADENCES,
 	XIAOHONGSHU_MAX_FETCH_CEILING,
 	XIAOHONGSHU_REVIEW_CHANNELS,
@@ -255,7 +256,9 @@ export class ConfigLoader {
 		}
 		if (roles && typeof roles === "object") {
 			const validRoles = new Set(["lead", "runner", "reviewer", "triager"]);
-			const validBackends = new Set(["claude-tmux", "codex-tmux"]);
+			// FLY-493 (Codex R1 #6): derive from EXECUTOR_BACKENDS so this list
+			// and the type can never drift (was a hardcoded parallel set).
+			const validBackends = new Set<string>(EXECUTOR_BACKENDS);
 			for (const [roleName, roleRaw] of Object.entries(roles)) {
 				if (!validRoles.has(roleName)) {
 					throw new Error(

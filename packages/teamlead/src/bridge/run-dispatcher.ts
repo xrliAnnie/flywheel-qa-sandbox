@@ -101,6 +101,7 @@ function buildRunnerSpawnFields(
 	| "vendor"
 	| "runnerBackend"
 	| "runnerModel"
+	| "runnerTransportMode"
 > {
 	// FLY-123: resolve the executor backend for the runner role —
 	// task(label) > project roles config > FLYWHEEL_RUNNER_BACKEND env >
@@ -113,11 +114,23 @@ function buildRunnerSpawnFields(
 		...(issueLabels && { issueLabels }),
 		...(rolesConfig && { projectRoles: rolesConfig }),
 	});
-	const backendFields: Pick<BlueprintContext, "runnerBackend" | "runnerModel"> =
-		{
-			runnerBackend: resolved.backend,
-			...(resolved.model && { runnerModel: resolved.model }),
-		};
+	// FLY-493: a no-transport backend (antigravity, transport === "none") carries
+	// an EXPLICIT marker so the absence of vendor/Agent-Team identity below is an
+	// intentional contract, not the legacy/rollback "default claude" absence.
+	const backendFields: Pick<
+		BlueprintContext,
+		"runnerBackend" | "runnerModel" | "runnerTransportMode"
+	> = {
+		runnerBackend: resolved.backend,
+		...(resolved.model && { runnerModel: resolved.model }),
+		...(resolved.transport === "none" && { runnerTransportMode: "none" }),
+	};
+	// A no-transport backend NEVER wires Agent Team identity — even on the
+	// mailbox-default path with a leadId. Return the backend (+ transport marker)
+	// only; there is no mailbox for the Lead to wake.
+	if (resolved.transport === "none") {
+		return backendFields;
+	}
 
 	// FLY-142 PR #186 Codex Round 1 MEDIUM: share the single
 	// `resolveCommBackend` parser with `plugin.ts:createLeadRuntime` so

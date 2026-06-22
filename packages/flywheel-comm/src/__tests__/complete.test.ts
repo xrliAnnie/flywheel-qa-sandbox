@@ -9,7 +9,7 @@
  * - Git field derivation (branch parse, commit count, diff numstat)
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -245,6 +245,68 @@ describe("complete command", () => {
 			complete({ route: "no_code", pr: 7, merged: false }),
 		).rejects.toThrow("process.exit(1)");
 		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	// FLY-493: pr_handoff terminal route (no-transport antigravity build+PR).
+	it("FLY-493: route=pr_handoff posts decision.route=pr_handoff with ready_to_merge landing evidence", async () => {
+		await complete({ route: "pr_handoff", pr: 42, merged: false });
+		expect(mockFetch).toHaveBeenCalled();
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		expect(body.payload.decision).toEqual({ route: "pr_handoff" });
+		// Fail-closed PR evidence: landingStatus carries ready_to_merge + prNumber.
+		expect(body.payload.evidence.landingStatus).toEqual({
+			status: "ready_to_merge",
+			prNumber: 42,
+		});
+		// headSha still bound (so downstream has the PR head).
+		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("FLY-493: route=pr_handoff WITHOUT --pr → exit 1 (PR evidence mandatory)", async () => {
+		await expect(
+			complete({ route: "pr_handoff", merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("pr_handoff requires --pr"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	// Codex code review R1: --pr parses via parseInt, so NaN / non-positive must
+	// NOT pass (NaN → JSON null, which the sinks would still terminalize).
+	it.each([Number.NaN, 0, -3, 1.5])(
+		"FLY-493: route=pr_handoff with non-positive-integer --pr (%s) → exit 1",
+		async (badPr) => {
+			await expect(
+				complete({ route: "pr_handoff", pr: badPr as number, merged: false }),
+			).rejects.toThrow("process.exit(1)");
+			expect(mockFetch).not.toHaveBeenCalled();
+		},
+	);
+
+	it("FLY-493: route=pr_handoff with --merged → exit 1 (contradictory)", async () => {
+		await expect(
+			complete({ route: "pr_handoff", pr: 42, merged: true }),
+		).rejects.toThrow("process.exit(1)");
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("FLY-493: pr_handoff validates FLYWHEEL_LAND_STATUS_PATH prNumber against --pr (mismatch → exit 1)", async () => {
+		const landPath = join(tmpHome, "land-status.json");
+		writeFileSync(
+			landPath,
+			JSON.stringify({ status: "ready_to_merge", prNumber: 999 }),
+		);
+		process.env.FLYWHEEL_LAND_STATUS_PATH = landPath;
+		await expect(
+			complete({ route: "pr_handoff", pr: 42, merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("land-status"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+		delete process.env.FLYWHEEL_LAND_STATUS_PATH;
 	});
 
 	it("missing FLYWHEEL_EXEC_ID → exit 1 with explicit env name", async () => {

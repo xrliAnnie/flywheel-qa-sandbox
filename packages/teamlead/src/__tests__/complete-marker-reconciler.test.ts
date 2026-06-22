@@ -123,6 +123,23 @@ describe("expectedStatusFromMarker (event-route parity, Codex R2 #6)", () => {
 	// FLY-222 #1 (Codex code-review MED-1 + MED-2 parity): no_code marker maps to
 	// completed ONLY from a running session; from any non-running state it is
 	// null (quarantine), so a no_code marker can't clear a review-gated session.
+	// FLY-493: pr_handoff marker behaves exactly like no_code (running→completed,
+	// non-running→null) so a fail-close pr_handoff marker is reconciled, not
+	// quarantined, and can never clear a review-gated session.
+	it("pr_handoff from running → completed; from non-running → null", () => {
+		expect(expectedStatusFromMarker(mk("pr_handoff", false), "running")).toBe(
+			"completed",
+		);
+		expect(
+			expectedStatusFromMarker(mk("pr_handoff", false), "awaiting_review"),
+		).toBeNull();
+		expect(
+			expectedStatusFromMarker(mk("pr_handoff", false), "approved_to_ship"),
+		).toBeNull();
+		expect(
+			expectedStatusFromMarker(mk("pr_handoff", false), undefined),
+		).toBeNull();
+	});
 	it("no_code from running → completed; from non-running → null", () => {
 		expect(expectedStatusFromMarker(mk("no_code", false), "running")).toBe(
 			"completed",

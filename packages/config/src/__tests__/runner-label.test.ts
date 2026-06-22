@@ -52,4 +52,26 @@ describe("parseRunnerLabels", () => {
 		expect(sel.runnerType).toBe("codex");
 		expect(sel.modelOverride).toBe("gpt-5.5-codex");
 	});
+
+	// FLY-493: Antigravity (agy) as a first-class runner vendor label.
+	it("resolves antigravity label (and agy alias), case-insensitive", () => {
+		expect(parseRunnerLabels(["antigravity"]).runnerType).toBe("antigravity");
+		expect(parseRunnerLabels(["agy"]).runnerType).toBe("antigravity");
+		expect(parseRunnerLabels(["Antigravity"]).runnerType).toBe("antigravity");
+		expect(parseRunnerLabels(["AGY"]).runnerType).toBe("antigravity");
+	});
+
+	it("antigravity label does not carry a model override on its own", () => {
+		expect(parseRunnerLabels(["antigravity"])).toEqual({
+			runnerType: "antigravity",
+		});
+	});
+
+	it("antigravity does not perturb existing agent labels", () => {
+		// Regression guard: non-antigravity labels resolve exactly as before.
+		expect(parseRunnerLabels(["codex"]).runnerType).toBe("codex");
+		expect(parseRunnerLabels(["claude"]).runnerType).toBe("claude");
+		expect(parseRunnerLabels(["gemini"]).runnerType).toBe("gemini");
+		expect(parseRunnerLabels(["cursor"]).runnerType).toBe("cursor");
+	});
 });

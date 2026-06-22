@@ -340,15 +340,19 @@ export const ROLE_NAMES: readonly RoleName[] = [
 ];
 
 /**
- * FLY-123: Phase 1 executor backends. Names match AdapterRegistry keys
- * registered in run-infra (`claude-tmux` → TmuxAdapter,
- * `codex-tmux` → CodexTmuxAdapter).
+ * Executor backends. Names match AdapterRegistry keys registered in run-infra
+ * (`claude-tmux` → TmuxAdapter, `codex-tmux` → CodexTmuxAdapter,
+ * `antigravity-tmux` → AntigravityTmuxAdapter).
+ *
+ * FLY-123: claude-tmux + codex-tmux. FLY-493: antigravity-tmux (Antigravity
+ * `agy` CLI, transport=none in v1).
  */
-export type ExecutorBackend = "claude-tmux" | "codex-tmux";
+export type ExecutorBackend = "claude-tmux" | "codex-tmux" | "antigravity-tmux";
 
 export const EXECUTOR_BACKENDS: readonly ExecutorBackend[] = [
 	"claude-tmux",
 	"codex-tmux",
+	"antigravity-tmux",
 ];
 
 /** FLY-123: per-role backend binding in project config. */

@@ -15,6 +15,7 @@ import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { commDbPathForProject } from "../bridge/commdb-path.js";
 import { getProofShotParams } from "../bridge/proofshot-session.js";
 import {
 	buildProofShotDedupKey,
@@ -293,14 +294,9 @@ describe("handleProofShotAutoTrigger (GEO-151 A2)", () => {
 			);
 			// No mailbox write
 			expect(mailboxWrites).toHaveLength(0);
-			// CommDB row written under tmpHome
-			const dbPath = join(
-				tmpHome,
-				".flywheel",
-				"comm",
-				"GeoForge3D",
-				"comm.db",
-			);
+			// CommDB row written under the FLYWHEEL_COMM_DIR-isolated root (FLY-493:
+			// resolve via the shared helper so it matches the Bridge write path).
+			const dbPath = commDbPathForProject("GeoForge3D");
 			const { CommDB } = await import("flywheel-comm/db");
 			const db = new CommDB(dbPath);
 			try {

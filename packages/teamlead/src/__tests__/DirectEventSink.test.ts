@@ -519,3 +519,98 @@ describe("DirectEventSink — FLY-222 #1: no_code → terminal completed", () =>
 		},
 	);
 });
+
+// FLY-493: pr_handoff (no-transport antigravity build+PR terminal) MUST behave
+// like no_code in the in-process sink — running→completed with PR evidence,
+// non-running→skipped, and a terminal session immune to a later duplicate.
+describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+	afterEach(() => {
+		store.close();
+	});
+
+	function prHandoffResult() {
+		return {
+			success: true,
+			decision: { route: "pr_handoff", reasoning: "antigravity build+PR" },
+			evidence: {
+				commitCount: 2,
+				filesChangedCount: 3,
+				commitMessages: ["feat: x"],
+				changedFilePaths: ["a.ts"],
+				linesAdded: 10,
+				linesRemoved: 1,
+				diffSummary: "3 files changed",
+				headSha: "c".repeat(40),
+				landingStatus: { status: "ready_to_merge", prNumber: 42 },
+				partial: false,
+				durationMs: 10,
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
+		} as any;
+	}
+
+	it("running + route=pr_handoff → completed (NOT awaiting_review), pr_number persisted", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+		await new DirectEventSink(store, makeConfig(), testProjects).emitCompleted(
+			makeEnvelope(),
+			prHandoffResult(),
+		);
+		const s = store.getSession("exec-1");
+		expect(s?.status).toBe("completed");
+		expect(s?.decision_route).toBe("pr_handoff");
+		expect(s?.pr_number).toBe(42);
+		// NEVER enters the wake-dependent approve loop:
+		expect(s?.review_question_id ?? null).toBeNull();
+	});
+
+	// Codex code review R1: the PRODUCTION started path is DirectEventSink, so it
+	// MUST persist the executor backend as adapter_type — otherwise the
+	// no-transport wake-guard (runner-wake) can't recognize an antigravity session.
+	it("emitStarted persists runnerBackend as session.adapter_type (no-transport wake-guard input)", async () => {
+		await new DirectEventSink(store, makeConfig(), testProjects).emitStarted(
+			makeEnvelope({ runnerBackend: "antigravity-tmux" }),
+		);
+		expect(store.getSession("exec-1")?.adapter_type).toBe("antigravity-tmux");
+	});
+
+	it("awaiting_review + route=pr_handoff → status unchanged (skipped, no strand-clear)", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		await new DirectEventSink(store, makeConfig(), testProjects).emitCompleted(
+			makeEnvelope(),
+			prHandoffResult(),
+		);
+		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
+	});
+
+	// Race (Codex R3 #1): a session already terminal-completed by the HTTP
+	// pr_handoff sink must NOT be moved to awaiting_review by a later duplicate.
+	it("completed (via pr_handoff) is terminal-immune to a later duplicate emission", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		await sink.emitCompleted(makeEnvelope(), prHandoffResult());
+		expect(store.getSession("exec-1")?.status).toBe("completed");
+		// Duplicate pr_handoff after terminal → still completed.
+		await sink.emitCompleted(makeEnvelope(), prHandoffResult());
+		expect(store.getSession("exec-1")?.status).toBe("completed");
+	});
+});

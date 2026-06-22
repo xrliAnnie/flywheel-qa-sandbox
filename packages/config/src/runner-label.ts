@@ -14,9 +14,19 @@
  * Semantics mirror RunnerSelectionService exactly (agent labels override
  * model labels; model labels can infer agent type) so the two paths cannot
  * diverge on the same label set.
+ *
+ * FLY-493: `antigravity` (alias `agy`) is a first-class runner vendor on the
+ * TeamLead dispatcher path ONLY. The legacy EdgeWorker `agentSession` path
+ * (`RunnerSelectionService`) is NOT updated — `[agent=agy]` is not wired there
+ * in v1 (see plan §4.1), so this is no longer a 1:1 mirror of that service.
  */
 
-export type RunnerVendorType = "claude" | "gemini" | "codex" | "cursor";
+export type RunnerVendorType =
+	| "claude"
+	| "gemini"
+	| "codex"
+	| "cursor"
+	| "antigravity";
 
 export interface RunnerLabelSelection {
 	/** Vendor inferred from labels — undefined when no runner label present. */
@@ -33,6 +43,13 @@ function isCodexModelLabel(label: string): boolean {
 function resolveAgentFromLabels(
 	labels: string[],
 ): RunnerVendorType | undefined {
+	// FLY-493: antigravity (alias `agy`) — checked first so an explicit
+	// opt-in to Antigravity is unambiguous. Distinct keywords; existing
+	// cursor/codex/gemini/claude precedence is unchanged for label sets that
+	// don't mention antigravity.
+	if (labels.includes("antigravity") || labels.includes("agy")) {
+		return "antigravity";
+	}
 	if (labels.includes("cursor")) return "cursor";
 	if (labels.includes("codex") || labels.includes("openai")) return "codex";
 	if (labels.includes("gemini")) return "gemini";

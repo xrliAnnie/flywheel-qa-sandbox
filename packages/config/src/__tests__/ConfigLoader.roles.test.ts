@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { ConfigLoader } from "../ConfigLoader.js";
+import { EXECUTOR_BACKENDS } from "../types.js";
 
 const BASE = `
 project: testproj
@@ -64,6 +65,32 @@ roles:
 `;
 		const config = await loaderFor(yaml).load("fake.yaml");
 		expect(config.roles?.runner?.model).toBe("claude-fable-5");
+	});
+
+	// FLY-493: antigravity-tmux is a valid executor backend.
+	it("accepts antigravity-tmux as a runner backend", async () => {
+		const yaml = `${BASE}
+roles:
+  runner:
+    backend: antigravity-tmux
+`;
+		const config = await loaderFor(yaml).load("fake.yaml");
+		expect(config.roles?.runner?.backend).toBe("antigravity-tmux");
+	});
+
+	// FLY-493 (Codex R1 #6): validBackends must be DERIVED from EXECUTOR_BACKENDS
+	// so the two lists cannot drift. Guard: every declared executor backend
+	// validates in a roles block.
+	it("every EXECUTOR_BACKENDS entry validates in a roles block", async () => {
+		for (const backend of EXECUTOR_BACKENDS) {
+			const yaml = `${BASE}
+roles:
+  runner:
+    backend: ${backend}
+`;
+			const config = await loaderFor(yaml).load("fake.yaml");
+			expect(config.roles?.runner?.backend).toBe(backend);
+		}
 	});
 
 	it("rejects misspelled role keys", async () => {

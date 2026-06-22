@@ -79,6 +79,10 @@ const VALID_ROUTES = new Set([
 	"needs_review",
 	"blocked",
 	"no_code",
+	// FLY-493: pr_handoff (no-transport antigravity build+PR terminal) must be
+	// recognized here too, else a fail-close marker from
+	// `complete --route pr_handoff` is quarantined as unreplayable.
+	"pr_handoff",
 ]);
 const TERMINAL_STATUSES = new Set([
 	"completed",
@@ -183,11 +187,12 @@ export function expectedStatusFromMarker(
 	if (route === "blocked") {
 		return "blocked";
 	}
-	if (route === "no_code") {
+	if (route === "no_code" || route === "pr_handoff") {
 		// FLY-222 #1 (Codex code-review MED-2 parity): no_code only terminalizes a
 		// RUNNING runner. From any non-running state, fail closed (null →
 		// quarantine), mirroring event-route.ts's non-running skip — a no_code
 		// marker must never clear a review-gated session.
+		// FLY-493: pr_handoff behaves identically (running→completed, else null).
 		return currentStatus === "running" ? "completed" : null;
 	}
 	// route undefined here only reachable when isPostApproveShip — natural completion.
