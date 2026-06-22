@@ -81,6 +81,14 @@ export interface CodexLeadMcpOptions {
 	leadActions?: LeadActionsMcpConfig;
 }
 
+/** FLY-398: codex 0.141 per-MCP-server tool-call approval mode
+ * (`mcp_servers.<name>.default_tools_approval_mode`). `prompt` (the default) ⇒ the
+ * app-server elicits approval before each tool call; a HEADLESS app-server advertises
+ * no elicitation capability, so codex auto-DECLINES → "user rejected MCP tool call".
+ * `approve` ⇒ auto-approve + execute without eliciting. `auto` ⇒ codex decides per
+ * tool. Only `approve`/`prompt`/`auto` are valid (codex `--strict-config` enforces). */
+export type McpToolsApprovalMode = "auto" | "prompt" | "approve";
+
 /** A resolved MCP server to inject (no raw secrets — env values are NON-SECRET
  * coordinates only; secrets travel by NAME via `envVarNames`). */
 export interface McpServerSpec {
@@ -92,6 +100,9 @@ export interface McpServerSpec {
 	env?: Record<string, string>;
 	/** Names of env vars to forward (values resolved by the spawner) — never values. */
 	envVarNames?: string[];
+	/** FLY-398: when set, emit `default_tools_approval_mode=<mode>` for this server
+	 * (omitted otherwise → codex default = `prompt`, byte-compat). */
+	defaultToolsApprovalMode?: McpToolsApprovalMode;
 }
 
 export interface CodexLeadMcpResult {
@@ -156,6 +167,14 @@ export function buildCodexLeadMcpArgv(
 				...(opts.leadActions.envVarNames
 					? { envVarNames: opts.leadActions.envVarNames }
 					: {}),
+				// FLY-398: auto-approve the trusted, alias-gated, rate-limited, audited
+				// lead_actions tools (discord_send). codex 0.141 otherwise elicits per-call
+				// approval, which a headless app-server (no elicitation capability)
+				// auto-declines → "user rejected MCP tool call" and discord_send never
+				// runs. This is an INVARIANT of injecting lead_actions (always trusted),
+				// not a caller-tunable knob; full-access is Claude-equal, so this is the
+				// audited "正路" — not a sandbox boundary (FLY-304 §4).
+				defaultToolsApprovalMode: "approve",
 			});
 		}
 		// READ-ONLY companion path — unchanged (byte-compat with FLY-224).
@@ -234,6 +253,13 @@ function specToArgv(spec: McpServerSpec): string[] {
 		"-c",
 		`${base}.args=${tomlValue(spec.args)}`,
 	];
+	// FLY-398: per-server tool-call approval mode (omitted → codex default `prompt`).
+	if (spec.defaultToolsApprovalMode) {
+		out.push(
+			"-c",
+			`${base}.default_tools_approval_mode=${tomlValue(spec.defaultToolsApprovalMode)}`,
+		);
+	}
 	// FLY-304: literal NON-SECRET env values (e.g. channel coords) as dotted
 	// overrides. Sorted for deterministic argv / configHash.
 	if (spec.env) {
@@ -330,6 +356,7 @@ function hashConfig(specs: McpServerSpec[]): string {
 						)
 					: undefined,
 				envVarNames: [...(s.envVarNames ?? [])].sort(),
+				defaultToolsApprovalMode: s.defaultToolsApprovalMode,
 			})),
 	);
 	return createHash("sha256").update(canonical).digest("hex").slice(0, 16);

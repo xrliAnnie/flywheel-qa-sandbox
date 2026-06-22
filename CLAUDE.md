@@ -262,6 +262,28 @@ When PR merges: `git mv doc/engineer/plan/inprogress/{file} doc/engineer/plan/ar
 | Decision Layer | Hard Rules + Haiku Triage + Verify + Route |
 | Runner | Claude Code CLI via tmux |
 | Cost tracking | N/A (Claude subscription, no per-token billing) |
+| Codex Lead deployment | **Windowed (TUI) only** — see below (FLY-398) |
+
+## Codex Lead Deployment — Windowed (TUI), Never Headless (FLY-398)
+
+**HARD RULE (Annie):** every **production** Codex lead/runner MUST be deployed in a
+**windowed** form (a real `codex resume --remote` TUI pane in cmux that the founder can
+see and drive) — **never** the headless `codex app-server` form. Annie must be able to
+watch them in cmux.
+
+- **Production Lead launcher = the TUI form.** Mufasa's production launcher is
+  `run-codex-lead-mufasa-tui-fullaccess.sh` (windowed full-access TUI), NOT
+  `run-codex-lead-mufasa-fullaccess.sh` (headless app-server).
+- The headless `codex app-server` full-access **backend** (FLY-350,
+  `codex-lead-runtime.ts` full-access path + `run-codex-lead-mufasa-fullaccess.sh`) is
+  **kept as a low-level capability** for tests / QA / rollback — it is **not deleted**,
+  but it is **not** the production Lead deployment form. The headless launcher carries a
+  loud banner pointing operators to the TUI launcher.
+- Windowed full-access is NOT a Codex-binary limitation — `codex resume --remote`
+  accepts `-s workspace-write`; the TUI runtime supports the `full-access` profile
+  (FLY-398). The MCP-tool-call approval gap is fixed in BOTH forms via
+  `default_tools_approval_mode = "approve"` (an unattended daemon has no one to answer
+  an elicitation, so both still need it).
 
 ## Tech Stack
 

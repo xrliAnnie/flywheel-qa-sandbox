@@ -50,6 +50,22 @@ describe("buildTuiCommand", () => {
 		expect(buildTuiCommand(SPEC)).toContain("-s read-only");
 	});
 
+	it("FLY-398 fullAccess: emits -s workspace-write (windowed full-access TUI), never -s read-only", () => {
+		const cmd = buildTuiCommand({ ...SPEC, fullAccess: true });
+		expect(cmd).toContain("-s workspace-write");
+		expect(cmd).not.toContain("-s read-only");
+		expect(cmd).toContain(`-c 'approval_policy="never"'`); // still pinned
+		expect(cmd).toContain("codex resume");
+		expect(cmd.trim().endsWith("019eb-thread-id")).toBe(true);
+	});
+
+	it("FLY-398 fullAccess=false/undefined keeps -s read-only (byte-compat)", () => {
+		expect(buildTuiCommand({ ...SPEC, fullAccess: false })).toContain(
+			"-s read-only",
+		);
+		expect(buildTuiCommand(SPEC)).not.toContain("-s workspace-write");
+	});
+
 	it("boundary validation: shell-unsafe config values throw (fail-loud)", () => {
 		expect(() =>
 			buildTuiCommand({ ...SPEC, threadId: 'x"; rm -rf /; "' }),

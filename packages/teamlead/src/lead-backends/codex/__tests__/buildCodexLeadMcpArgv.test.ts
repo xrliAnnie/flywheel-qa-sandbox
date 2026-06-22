@@ -314,3 +314,58 @@ describe("buildCodexLeadMcpArgv — FLY-304 full-access leadActions (proactive d
 		);
 	});
 });
+
+describe("buildCodexLeadMcpArgv — FLY-398 lead_actions auto-approve (default_tools_approval_mode)", () => {
+	const leadActions = {
+		command: "/usr/bin/node",
+		args: ["/dist/lead-actions/lead-actions-main.js"],
+		env: {
+			FLYWHEEL_LEAD_ID: "mufasa-lead",
+			FLYWHEEL_PROJECT_NAME: "growth",
+			FLYWHEEL_LEAD_CHAT_CHANNEL_ID: "1500600400238084307",
+			FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS: "1512578695468941333",
+			FLYWHEEL_LEAD_ACTIONS_STATE_DIR: "/state",
+		},
+		envVarNames: ["DISCORD_BOT_TOKEN"],
+	};
+
+	it("pins default_tools_approval_mode=approve for the trusted lead_actions server", () => {
+		// FLY-398 root cause: codex 0.141 gates MCP tool calls behind a per-server
+		// approval mode (default ⇒ elicitation). A headless app-server advertises no
+		// elicitation capability, so codex auto-DECLINES → "user rejected MCP tool
+		// call". Pinning the audited lead_actions server to "approve" auto-approves +
+		// executes discord_send without eliciting.
+		const r = buildCodexLeadMcpArgv({ leadActions });
+		expect(r.argv).toContain(
+			'mcp_servers.lead_actions.default_tools_approval_mode="approve"',
+		);
+	});
+
+	it("read-only companion (chrome) path emits NO approval-mode override (byte-compat)", () => {
+		const r = buildCodexLeadMcpArgv({
+			chrome: { enabled: true, browserUrl: "http://127.0.0.1:9222" },
+		});
+		expect(r.argv.some((a) => a.includes("default_tools_approval_mode"))).toBe(
+			false,
+		);
+	});
+
+	it("write-capable gateway path emits NO approval-mode override (byte-compat; out of scope)", () => {
+		const r = buildCodexLeadMcpArgv({
+			gateway: { command: "/gw", args: ["--stdio"] },
+		});
+		expect(r.argv.some((a) => a.includes("default_tools_approval_mode"))).toBe(
+			false,
+		);
+	});
+
+	it("the approval-mode override is reflected in configHash", () => {
+		// The effective injected config changed (a new -c override), so the manifest
+		// hash must change vs a spec without the approval mode.
+		const withApprove = buildCodexLeadMcpArgv({ leadActions }).configHash;
+		const chromeOnly = buildCodexLeadMcpArgv({
+			chrome: { enabled: true, browserUrl: "http://127.0.0.1:9222" },
+		}).configHash;
+		expect(withApprove).not.toBe(chromeOnly);
+	});
+});
