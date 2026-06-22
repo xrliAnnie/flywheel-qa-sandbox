@@ -20,6 +20,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { commDbPathForProject } from "../bridge/commdb-path.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -129,13 +130,9 @@ describe("event-route Codex auto-trigger (FLY-137 Phase 5)", () => {
 		to_agent: string;
 		content: string;
 	}[] {
-		const dbPath = join(
-			commDbDir,
-			".flywheel",
-			"comm",
-			"geoforge3d-codex-test",
-			"comm.db",
-		);
+		// FLY-493: resolve via the shared helper so it honors FLYWHEEL_COMM_DIR
+		// (the test-isolation override) — matches the path the Bridge writes.
+		const dbPath = commDbPathForProject("geoforge3d-codex-test");
 		if (!existsSync(dbPath)) return [];
 		const db = new CommDB(dbPath);
 		try {

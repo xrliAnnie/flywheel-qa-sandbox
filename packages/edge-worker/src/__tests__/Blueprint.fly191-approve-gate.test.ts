@@ -70,7 +70,9 @@ function makeMockAdapter(): IAdapter {
 	};
 }
 
-async function buildPromptWithCheckpoints(): Promise<string> {
+async function buildPromptWithCheckpoints(
+	ctxOverrides: Partial<BlueprintContext> = {},
+): Promise<string> {
 	const adapter = makeMockAdapter();
 	const blueprint = new Blueprint(
 		makeHydrator(),
@@ -93,6 +95,7 @@ async function buildPromptWithCheckpoints(): Promise<string> {
 		teamName: "eng",
 		runnerName: "claude",
 		leadId: "product-lead",
+		...ctxOverrides,
 	};
 	await blueprint.run(makeNode(), "/tmp/fly191-blueprint-test", ctx);
 	const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
@@ -133,6 +136,34 @@ describe("Blueprint approve_to_ship instruction (FLY-191 Phase 2)", () => {
 		// Out of scope (§7): brainstorm gate still blocks
 		expect(prompt).toContain("BRAINSTORM GATE");
 		expect(prompt).toContain("This command BLOCKS until your Lead confirms");
+	});
+
+	// FLY-493: a no-transport (antigravity) Runner gets the pr_handoff finish
+	// procedure INSTEAD of the wake-dependent approve gate.
+	it("FLY-493: runnerTransportMode=none → pr_handoff finish, NOT the approve/wake gate", async () => {
+		const prompt = await buildPromptWithCheckpoints({
+			runnerTransportMode: "none",
+		});
+
+		// pr_handoff finish procedure
+		expect(prompt).toContain("complete --route pr_handoff");
+		expect(prompt).toContain("no-transport backend");
+		expect(prompt).toContain('status:"ready_to_merge"');
+		expect(prompt).toContain("founder drives the founder-gated ship");
+
+		// MUST NOT inject the approve-gate CHECKPOINT block (the "gate
+		// approve_to_ship" / verify-approval phrases still appear in the
+		// always-on LEAD REPORT-BACK block, so we target checkpoint-only text).
+		expect(prompt).not.toContain("APPROVE GATE (MANDATORY");
+		expect(prompt).not.toContain("END YOUR TURN and wait");
+		expect(prompt).not.toContain("On VERIFIED approval, SHIP the PR");
+	});
+
+	it("FLY-493: claude (no runnerTransportMode) still gets the approve gate (regression)", async () => {
+		const prompt = await buildPromptWithCheckpoints();
+		expect(prompt).toContain("APPROVE GATE (MANDATORY");
+		expect(prompt).toContain("On VERIFIED approval, SHIP the PR");
+		expect(prompt).not.toContain("complete --route pr_handoff");
 	});
 
 	it("FLY-248: removed the timer self-merge fallback — Runner never self-merges, even after approval", async () => {

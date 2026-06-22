@@ -207,6 +207,19 @@ export interface BlueprintContext {
 	runnerBackend?: string;
 	/** Optional model override resolved alongside the backend (label/roles). */
 	runnerModel?: string;
+
+	/**
+	 * FLY-493 — explicit no-transport contract. Set to `"none"` ONLY for a
+	 * deliberately transport-less backend (antigravity-tmux: the `agy` CLI has
+	 * no claude-code Agent Team, so v1 has no Lead→Runner push-wake). This is
+	 * distinct from `vendor`/`runnerAgentName` being absent on the legacy/
+	 * rollback path: those mean "default claude behavior", while
+	 * `runnerTransportMode === "none"` means "this backend INTENTIONALLY has no
+	 * transport". Blueprint uses it to emit the `pr_handoff` finish procedure
+	 * (no `approve_to_ship` gate, no wake wait) — see the no-transport branch.
+	 * Absent ⇒ existing behavior (claude/codex).
+	 */
+	runnerTransportMode?: "none";
 }
 
 /**
@@ -346,6 +359,9 @@ export class Blueprint {
 			runAttempt: ctx.retryContext?.attempt,
 			// FLY-59: Propagate session role from context to event envelope
 			sessionRole: ctx.sessionRole,
+			// FLY-493: persist the resolved executor backend (→ session.adapter_type)
+			// so the no-transport wake-guard can recognize an antigravity session.
+			...(ctx.runnerBackend && { runnerBackend: ctx.runnerBackend }),
 		};
 
 		// Fire-and-forget started event (labels now populated)
@@ -771,6 +787,25 @@ export class Blueprint {
 								"e. If the command exits with a non-zero code (timeout fail-close), STOP immediately and do NOT continue writing code. Your Lead will be notified via Discord by the gate_timed_out event.",
 							);
 						}
+					} else if (
+						cpName === "approve_to_ship" &&
+						ctx.runnerTransportMode === "none"
+					) {
+						// FLY-493: a no-transport (antigravity) Runner CANNOT be woken,
+						// so it must NOT post the non-blocking approve gate (it would
+						// strand in awaiting_review → approved_to_ship with no actor to
+						// ship). Instead it terminates at `pr_handoff`: build → PR →
+						// notify the Lead → record ready_to_merge → complete. The
+						// founder ships the PR by hand (founder-gated, FLY-248).
+						systemPromptLines.push(
+							"",
+							"FINISH (no-transport backend — build+PR handoff, NOT a ship gate):",
+							"This backend has NO push-wake. Do NOT post an approve_to_ship gate, do NOT wait to be woken, do NOT ship. After your PR is open:",
+							`a. Tell your Lead the PR is ready (non-blocking): \`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} "DONE: PR <url> ready for human ship (no-transport runner; founder drives the founder-gated ship)"\``,
+							`b. Record the open PR as the landing signal: \`jq -n --argjson n <NUMBER> '{status:"ready_to_merge",prNumber:$n}' > ${landSignalPath}\``,
+							`c. Complete the session: \`node ${commCliPath} complete --route pr_handoff --pr <NUMBER>\` — this terminalizes you as 'completed' with the PR recorded (it never enters the approve/ship loop).`,
+							"d. Then STOP. Your build+PR work is done; the founder reviews and ships the PR.",
+						);
 					} else if (cpName === "approve_to_ship") {
 						// FLY-191 Phase 2: non-blocking review flow. The runner posts
 						// the review request and goes IDLE (reachable via mailbox)
@@ -1178,6 +1213,12 @@ export class Blueprint {
 			consecutiveFailures: ctx.consecutiveFailures ?? 0,
 			partial: evidence.partial,
 			landingStatus: evidence.landingStatus,
+			// FLY-493: forward the no-transport marker so the DecisionLayer routes
+			// a no-transport ready_to_merge build to `pr_handoff` (terminal),
+			// NOT the wake-dependent needs_review.
+			...(ctx.runnerTransportMode && {
+				runnerTransportMode: ctx.runnerTransportMode,
+			}),
 		};
 
 		let decision: DecisionResult;
@@ -1194,9 +1235,13 @@ export class Blueprint {
 			};
 		}
 
-		// Route → success mapping
+		// Route → success mapping. FLY-493: pr_handoff is a successful terminal
+		// build+PR completion (the no-transport Runner did its job; the founder
+		// ships the PR), so it counts as success — never a retry/failure.
 		const success =
-			decision.route === "auto_approve" || decision.route === "needs_review";
+			decision.route === "auto_approve" ||
+			decision.route === "needs_review" ||
+			decision.route === "pr_handoff";
 
 		// Window lifecycle based on decision
 		if (result.tmuxWindow) {

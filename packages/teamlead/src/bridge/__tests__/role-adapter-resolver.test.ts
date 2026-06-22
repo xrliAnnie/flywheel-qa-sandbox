@@ -22,6 +22,7 @@ describe("resolveRoleAdapter — built-in default", () => {
 	it("runner with nothing set → claude-tmux (byte-compat)", () => {
 		expect(resolveRoleAdapter({ role: "runner", env: EMPTY_ENV })).toEqual({
 			backend: "claude-tmux",
+			transport: "claude-code",
 			vendor: "claude-code",
 		});
 	});
@@ -29,6 +30,7 @@ describe("resolveRoleAdapter — built-in default", () => {
 	it("lead with nothing set → claude-tmux", () => {
 		expect(resolveRoleAdapter({ role: "lead", env: EMPTY_ENV })).toEqual({
 			backend: "claude-tmux",
+			transport: "claude-code",
 			vendor: "claude-code",
 		});
 	});
@@ -39,6 +41,7 @@ describe("resolveRoleAdapter — global env layer", () => {
 		const env = { FLYWHEEL_RUNNER_BACKEND: "codex-tmux" } as NodeJS.ProcessEnv;
 		expect(resolveRoleAdapter({ role: "runner", env })).toEqual({
 			backend: "codex-tmux",
+			transport: "codex",
 			vendor: "codex",
 		});
 	});
@@ -125,6 +128,7 @@ describe("resolveRoleAdapter — project config layer", () => {
 		});
 		expect(resolved).toEqual({
 			backend: "codex-tmux",
+			transport: "codex",
 			vendor: "codex",
 			model: "gpt-5.5",
 		});
@@ -149,7 +153,11 @@ describe("resolveRoleAdapter — task (label) layer", () => {
 			projectRoles: { runner: { backend: "claude-tmux" } },
 			env,
 		});
-		expect(resolved).toEqual({ backend: "codex-tmux", vendor: "codex" });
+		expect(resolved).toEqual({
+			backend: "codex-tmux",
+			transport: "codex",
+			vendor: "codex",
+		});
 	});
 
 	it("claude label beats project codex config (explicit pin-back)", () => {
@@ -170,6 +178,7 @@ describe("resolveRoleAdapter — task (label) layer", () => {
 		});
 		expect(resolved).toEqual({
 			backend: "codex-tmux",
+			transport: "codex",
 			vendor: "codex",
 			model: "gpt-5.5-codex",
 		});
@@ -201,5 +210,83 @@ describe("resolveRoleAdapter — task (label) layer", () => {
 			env: EMPTY_ENV,
 		});
 		expect(resolved.backend).toBe("claude-tmux");
+	});
+});
+
+// FLY-493: Antigravity is a first-class executor backend with NO transport.
+describe("resolveRoleAdapter — antigravity (transport=none, FLY-493)", () => {
+	it("EXECUTOR_TO_TRANSPORT maps antigravity-tmux → none", () => {
+		expect(EXECUTOR_TO_TRANSPORT["antigravity-tmux"]).toBe("none");
+	});
+
+	it("antigravity label → antigravity-tmux, transport none, NO vendor", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["antigravity"],
+			env: EMPTY_ENV,
+		});
+		expect(resolved).toEqual({
+			backend: "antigravity-tmux",
+			transport: "none",
+		});
+		expect(resolved.vendor).toBeUndefined();
+	});
+
+	it("agy label alias → antigravity-tmux", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["agy"],
+			env: EMPTY_ENV,
+		});
+		expect(resolved.backend).toBe("antigravity-tmux");
+		expect(resolved.transport).toBe("none");
+	});
+
+	it("FLYWHEEL_RUNNER_BACKEND=antigravity-tmux selects antigravity", () => {
+		const env = {
+			FLYWHEEL_RUNNER_BACKEND: "antigravity-tmux",
+		} as NodeJS.ProcessEnv;
+		const resolved = resolveRoleAdapter({ role: "runner", env });
+		expect(resolved.backend).toBe("antigravity-tmux");
+		expect(resolved.transport).toBe("none");
+	});
+
+	it("FLYWHEEL_RUNNER_BACKEND=agy (vendor alias) selects antigravity-tmux", () => {
+		const env = { FLYWHEEL_RUNNER_BACKEND: "agy" } as NodeJS.ProcessEnv;
+		expect(resolveRoleAdapter({ role: "runner", env }).backend).toBe(
+			"antigravity-tmux",
+		);
+	});
+
+	it("FLYWHEEL_RUNNER_BACKEND=antigravity (vendor alias) selects antigravity-tmux", () => {
+		const env = {
+			FLYWHEEL_RUNNER_BACKEND: "antigravity",
+		} as NodeJS.ProcessEnv;
+		expect(resolveRoleAdapter({ role: "runner", env }).backend).toBe(
+			"antigravity-tmux",
+		);
+	});
+
+	it("project roles antigravity-tmux → transport none", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			projectRoles: { runner: { backend: "antigravity-tmux" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved.backend).toBe("antigravity-tmux");
+		expect(resolved.transport).toBe("none");
+		expect(resolved.vendor).toBeUndefined();
+	});
+
+	it("claude/codex keep an explicit transport (regression guard)", () => {
+		expect(
+			resolveRoleAdapter({ role: "runner", env: EMPTY_ENV }).transport,
+		).toBe("claude-code");
+		expect(
+			resolveRoleAdapter({
+				role: "runner",
+				env: { FLYWHEEL_RUNNER_BACKEND: "codex-tmux" } as NodeJS.ProcessEnv,
+			}).transport,
+		).toBe("codex");
 	});
 });

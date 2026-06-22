@@ -60,13 +60,24 @@ export interface RunnerSpawnTransport {
 }
 
 export class TmuxAdapter implements IAdapter {
-	readonly type = "claude-tmux";
+	// FLY-493: overridable seam — AntigravityTmuxAdapter sets "antigravity-tmux".
+	// The claude default is unchanged, so claude behavior is byte-identical.
+	readonly type: string = "claude-tmux";
 	readonly supportsStreaming = false;
 	private preflightDone = false;
+	/**
+	 * FLY-493: the agentic-CLI binary this adapter launches. Overridable seam —
+	 * AntigravityTmuxAdapter sets "agy". Used by preflight, checkEnvironment, and
+	 * the tmux launch command. Default "claude" keeps the production path
+	 * byte-identical.
+	 */
+	protected readonly binaryName: string = "claude";
 
 	constructor(
 		private sessionName: string = "flywheel",
-		private execFileFn: ExecFileFn = defaultExecFile,
+		// FLY-493: protected so AntigravityTmuxAdapter's preflight can run agy
+		// probes through the same injectable (test-mockable) seam.
+		protected execFileFn: ExecFileFn = defaultExecFile,
 		private pollIntervalMs: number = 5000,
 		private defaultTimeoutMs: number = 86_400_000, // 24h safety net (FLY-97; idle detection via FLY-92 watchdog)
 		private hookServer?: IHookCallbackServer,
@@ -129,13 +140,13 @@ export class TmuxAdapter implements IAdapter {
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
 		try {
 			const tmuxResult = this.execFileFn("tmux", ["-V"]);
-			const claudeResult = this.execFileFn("claude", ["--version"]);
+			const cliResult = this.execFileFn(this.binaryName, ["--version"]);
 			return {
 				healthy: true,
-				message: "tmux and claude CLI available",
+				message: `tmux and ${this.binaryName} CLI available`,
 				details: {
 					tmux: tmuxResult.stdout.trim(),
-					claude: claudeResult.stdout.trim(),
+					[this.binaryName]: cliResult.stdout.trim(),
 				},
 			};
 		} catch (err) {
@@ -146,11 +157,20 @@ export class TmuxAdapter implements IAdapter {
 		}
 	}
 
+	/**
+	 * FLY-493: lazy one-time preflight, extracted as an overridable seam.
+	 * Default: tmux + `<binaryName> --version`. AntigravityTmuxAdapter overrides
+	 * to add a FAIL-CLOSED `agy` auth probe before declaring the session ready.
+	 */
+	protected runPreflight(): void {
+		this.execFileFn("tmux", ["-V"]);
+		this.execFileFn(this.binaryName, ["--version"]);
+	}
+
 	async execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
-		// Lazy preflight: check tmux AND claude on first run
+		// Lazy preflight: check tmux AND the agentic CLI on first run
 		if (!this.preflightDone) {
-			this.execFileFn("tmux", ["-V"]);
-			this.execFileFn("claude", ["--version"]);
+			this.runPreflight();
 			this.preflightDone = true;
 		}
 
@@ -209,8 +229,10 @@ export class TmuxAdapter implements IAdapter {
 		// compatible spawn (skipped wiring).
 		const transportSpawnConfig = this.tryBuildTransportSpawnConfig(ctx);
 
-		// Build claude args (interactive mode — NO --print, NO --output-format)
-		const claudeArgs = this.buildClaudeArgs(ctx, claudeSessionId);
+		// Build CLI args (interactive mode — NO --print, NO --output-format).
+		// FLY-493: `buildCliArgs` is an overridable seam; the claude default
+		// delegates to `buildClaudeArgs` (byte-identical).
+		const claudeArgs = this.buildCliArgs(ctx, claudeSessionId);
 
 		// Prepend transport-supplied identity flags BEFORE standard claudeArgs
 		// so the prompt (last positional) stays last.
@@ -393,12 +415,14 @@ export class TmuxAdapter implements IAdapter {
 						// then exec Claude so the pane process IS claude (remain-on-exit /
 						// pane-death detection unaffected). Timeout → exit (dead pane).
 						// `-qF` = quiet fixed-string (the token is a uuid — no regex chars).
-						'cf="$0"; tok="$1"; shift; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; exec claude "$@"',
+						// FLY-493: `exec ${binaryName}` (default "claude") — byte-identical
+						// claude launch; agy launches the same gated way.
+						`cf="$0"; tok="$1"; shift; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; exec ${this.binaryName} "$@"`,
 						commitFile,
 						launchToken,
 						...claudeArgs,
 					]
-				: ["claude", ...claudeArgs];
+				: [this.binaryName, ...claudeArgs];
 
 		// Launch the tmux window WITH cwd (Claude directly on the fleet path; the
 		// gated waiting shell on the gateway-retry path).
@@ -569,6 +593,19 @@ export class TmuxAdapter implements IAdapter {
 			// behavior rather than blocking the spawn).
 			return null;
 		}
+	}
+
+	/**
+	 * FLY-493: overridable CLI-arg seam. The claude default delegates to
+	 * `buildClaudeArgs` (byte-identical). AntigravityTmuxAdapter overrides this
+	 * to emit `agy` flags (which lack `--session-id`, `--permission-mode`,
+	 * `--append-system-prompt-file`, `--allowed-tools`, `--name`).
+	 */
+	protected buildCliArgs(
+		ctx: AdapterExecutionContext,
+		sessionId: string,
+	): string[] {
+		return this.buildClaudeArgs(ctx, sessionId);
 	}
 
 	private buildClaudeArgs(

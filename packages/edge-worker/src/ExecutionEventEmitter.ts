@@ -13,6 +13,14 @@ export interface EventEnvelope {
 	labels?: string[];
 	/** FLY-59: Session role for multi-session-per-issue support */
 	sessionRole?: string;
+	/**
+	 * FLY-493: the resolved executor backend ("claude-tmux" | "codex-tmux" |
+	 * "antigravity-tmux"). Persisted as `session.adapter_type` so the
+	 * dashboard/wake surfaces can see it — in particular so the no-transport
+	 * wake-guard recognizes an antigravity (transport=none) session and never
+	 * routes a wake to the env-default claude mailbox.
+	 */
+	runnerBackend?: string;
 }
 
 export interface ExecutionEventEmitter {
@@ -62,6 +70,8 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueTitle: env.issueTitle,
 				labels: env.labels,
 				sessionRole: env.sessionRole,
+				// FLY-493: executor backend → persisted as session.adapter_type.
+				runnerBackend: env.runnerBackend,
 			},
 		});
 		this.track(p);

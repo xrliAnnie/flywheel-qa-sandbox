@@ -431,6 +431,9 @@ export function createEventRouter(
 					eventLabels.length > 0 ? JSON.stringify(eventLabels) : undefined;
 				// FLY-59: Read session role from event payload
 				const eventSessionRole = asString(payload.sessionRole) ?? "main";
+				// FLY-493: persist the resolved executor backend as adapter_type so
+				// the no-transport wake-guard (and the dashboard) can see it.
+				const eventAdapterType = asString(payload.runnerBackend);
 
 				if (transitionOpts) {
 					const result = applyTransition(
@@ -448,6 +451,7 @@ export function createEventRouter(
 							session_stage: "started",
 							stage_updated_at: now,
 							session_role: eventSessionRole,
+							...(eventAdapterType && { adapter_type: eventAdapterType }),
 						},
 					);
 					if (!result.ok) {
@@ -471,6 +475,7 @@ export function createEventRouter(
 						session_stage: "started",
 						stage_updated_at: now,
 						session_role: eventSessionRole,
+						...(eventAdapterType && { adapter_type: eventAdapterType }),
 					});
 				}
 
@@ -598,6 +603,9 @@ export function createEventRouter(
 					"blocked",
 					// FLY-222 #1: no-code/no-merge clean success → terminal completed.
 					"no_code",
+					// FLY-493: pr_handoff — no-transport antigravity build+PR terminal
+					// (running→completed; never awaiting_review/approved_to_ship).
+					"pr_handoff",
 				]);
 				if (!isPostApproveShip && (!route || !VALID_ROUTES.has(route))) {
 					console.warn(
@@ -615,13 +623,20 @@ export function createEventRouter(
 				// pre-existing state so a review-gated runner (awaiting_review /
 				// approved_to_ship) cannot clear its gate via no_code without merge
 				// evidence / evidence-gap / finalization. Skip like an invalid route.
-				if (route === "no_code" && existingSession?.status !== "running") {
+				// FLY-493: pr_handoff has the SAME running-only constraint.
+				if (
+					(route === "no_code" || route === "pr_handoff") &&
+					existingSession?.status !== "running"
+				) {
 					console.warn(
-						`[event-route] session_completed ${event.execution_id} route=no_code ` +
+						`[event-route] session_completed ${event.execution_id} route=${route} ` +
 							`from non-running status (${existingSession?.status ?? "none"}) — ` +
-							`skipping (no_code only terminalizes a running runner).`,
+							`skipping (${route} only terminalizes a running runner).`,
 					);
-					res.json({ ok: true, warning: "no_code from non-running skipped" });
+					res.json({
+						ok: true,
+						warning: `${route} from non-running skipped`,
+					});
 					return;
 				}
 
@@ -691,7 +706,7 @@ export function createEventRouter(
 					// means the ship did not complete — must NOT finalize.
 					// Sister branch: DirectEventSink.ts:273.
 					status = "blocked";
-				} else if (route === "no_code") {
+				} else if (route === "no_code" || route === "pr_handoff") {
 					// FLY-222 #1: no-code/no-merge clean success → terminal completed.
 					// `running → completed` is a legal FSM edge. evidenceGap stays
 					// false (this is NOT an approved_to_ship merge-evidence gap — it
@@ -699,6 +714,13 @@ export function createEventRouter(
 					// it as a deferred-finalization). runPostShipFinalization is gated
 					// on merged landing (post-ship-finalization.ts:75), so it cannot
 					// fire here. Sister branch: DirectEventSink.ts.
+					//
+					// FLY-493: pr_handoff is the no-transport antigravity build+PR
+					// terminal — same running→completed mapping. Its landingStatus is
+					// `ready_to_merge` (NOT merged), so finalization is likewise gated
+					// off; the founder ships the PR by hand. No review binding is
+					// written (status !== "awaiting_review"), so the session never
+					// enters the wake-dependent approve loop.
 					status = "completed";
 				} else {
 					// route is undefined here — only reachable when

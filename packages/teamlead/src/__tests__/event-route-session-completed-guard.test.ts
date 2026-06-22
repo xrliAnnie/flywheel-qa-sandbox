@@ -301,6 +301,61 @@ describe("session_completed route guard (FLY-108)", () => {
 		expect(s.decision_route).toBe("no_code");
 	});
 
+	// FLY-493: pr_handoff (no-transport antigravity build+PR terminal) maps
+	// running→completed with PR/landing evidence, never awaiting_review.
+	it("route=pr_handoff from running → completed, pr_number + decision_route persisted, NO review binding", async () => {
+		await startRunning("exec-ph", "issue-ph");
+
+		const res = await postCompleted({
+			event_id: "evt-ph",
+			execution_id: "exec-ph",
+			issue_id: "issue-ph",
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "pr_handoff" },
+				evidence: {
+					landingStatus: { status: "ready_to_merge", prNumber: 77 },
+					headSha: "d".repeat(40),
+				},
+				summary: "PR #77 open — founder ship pending",
+			},
+		});
+		expect(res.status).toBe(200);
+		const s = store.getSession("exec-ph")!;
+		expect(s.status).toBe("completed");
+		expect(s.decision_route).toBe("pr_handoff");
+		expect(s.pr_number).toBe(77);
+		// Never enters the wake-dependent approve loop — no review binding written.
+		expect(s.review_question_id ?? null).toBeNull();
+	});
+
+	it("route=pr_handoff from awaiting_review → skipped, status unchanged", async () => {
+		store.upsertSession({
+			execution_id: "exec-ph2",
+			issue_id: "issue-ph2",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+			issue_identifier: "GEO-PH2",
+		});
+
+		const res = await postCompleted({
+			event_id: "evt-ph2",
+			execution_id: "exec-ph2",
+			issue_id: "issue-ph2",
+			project_name: "geoforge3d",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "pr_handoff" },
+				evidence: { landingStatus: { status: "ready_to_merge", prNumber: 5 } },
+			},
+		});
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as Record<string, unknown>;
+		expect(body.warning).toBe("pr_handoff from non-running skipped");
+		expect(store.getSession("exec-ph2")!.status).toBe("awaiting_review");
+	});
+
 	// FLY-222 #1 (Codex code-review MED-2): no_code must NOT terminalize a
 	// non-running (review-gated) session — it can only complete a running one.
 	it("route=no_code from awaiting_review → skipped, status unchanged", async () => {

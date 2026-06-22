@@ -12,6 +12,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	AnthropicLLMClient,
+	AntigravityTmuxAdapter,
 	CodexTmuxAdapter,
 	scrubOrphanedCodexHomes,
 	TmuxAdapter,
@@ -331,6 +332,22 @@ async function createRunBlueprint(
 					// package; IAgentTeamTransport satisfies it at runtime but the
 					// mailbox-message param variance needs the assert.
 					codexTransport as unknown as import("flywheel-claude-runner").CodexRunnerTransport,
+				),
+		);
+		// FLY-493: Antigravity (`agy`) executor backend — v1 transport=none, so
+		// NO transport arg (agy has no claude-code Agent Team mailbox). The
+		// vendor-neutral completion/timeout/comm.db machinery is inherited from
+		// TmuxAdapter; only the agy binary + args + fail-closed auth preflight
+		// differ. A no-transport runner finishes at `pr_handoff` (build+PR).
+		adapterRegistry.registerFactory(
+			"antigravity-tmux",
+			() =>
+				new AntigravityTmuxAdapter(
+					tmuxSessionName,
+					undefined,
+					5000,
+					sessionTimeoutMs,
+					hookServer,
 				),
 		);
 		adapterRegistry.setDefault("claude-tmux");

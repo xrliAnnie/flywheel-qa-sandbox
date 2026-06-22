@@ -20,6 +20,20 @@ import {
 } from "flywheel-comm/gate-marker";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
 import type { StateStore } from "../StateStore.js";
+import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
+
+/**
+ * FLY-493: a session whose executor backend has `transport: "none"` (antigravity)
+ * has no mailbox to wake. Recognize it from the persisted `adapter_type`.
+ */
+function isNoTransportBackend(adapterType: string | undefined): boolean {
+	if (!adapterType) return false;
+	return (
+		Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapterType) &&
+		EXECUTOR_TO_TRANSPORT[adapterType as keyof typeof EXECUTOR_TO_TRANSPORT] ===
+			"none"
+	);
+}
 
 export type WakeKind = "approval_wake" | "feedback_wake";
 
@@ -88,6 +102,34 @@ export async function sendRunnerWake(
 	kind: WakeKind,
 	wakeDetail?: WakeDetail,
 ): Promise<void> {
+	// FLY-493 (Codex R2 #1 defense-in-depth): a no-transport (antigravity)
+	// session has NO mailbox — routing a wake to the env-default claude mailbox
+	// would report a misleading success for a process that isn't listening. Skip
+	// it and record honest telemetry instead. (Design (B) terminalizes such
+	// runners at `pr_handoff` so this path is normally unreachable; this guard
+	// guarantees no false wake-success from ANY surface.)
+	const persisted = store.getSession(executionId);
+	if (isNoTransportBackend(persisted?.adapter_type)) {
+		console.warn(
+			`[runner-wake] ${kind} SKIPPED for ${executionId}: no-transport backend ` +
+				`(${persisted?.adapter_type}) has no mailbox to wake. The founder drives the ship.`,
+		);
+		try {
+			store.insertEvent({
+				event_id: `no-transport-wake-${executionId}-${Date.now()}`,
+				execution_id: executionId,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: "runner_wake_no_transport",
+				source: "bridge.runner-wake",
+				payload: { kind, adapterType: persisted?.adapter_type },
+			});
+		} catch {
+			// best-effort telemetry
+		}
+		return;
+	}
+
 	let detail: string;
 	try {
 		// FLY-123 (code review R1 MEDIUM-4): route the wake by the TARGET
