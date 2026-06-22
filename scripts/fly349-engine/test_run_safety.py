@@ -244,10 +244,63 @@ def test_gemini_fallback_raises_not_sentinel():
         R._gemini_key = orig
 
 
-def test_deep_read_degrades_when_both_analyzers_fail():
-    """F0 end-to-end: agy returns chatter (invalid) + Gemini fails → _deep_read RAISES so the
-    note degrades to failed/retry and NEVER creates a fake/shallow issue."""
+def _set_agy_env(val):
+    """Set/restore FLY349_USE_AGY around a test; returns the prior value."""
+    prev = os.environ.get("FLY349_USE_AGY")
+    if val is None:
+        os.environ.pop("FLY349_USE_AGY", None)
+    else:
+        os.environ["FLY349_USE_AGY"] = val
+    return prev
+
+
+def test_deep_read_gemini_primary_default():
+    """Annie's latest decision (relayed via Tadashi): processing DEFAULTS to Gemini-primary.
+    With FLY349_USE_AGY unset, _deep_read uses the Gemini API and NEVER invokes agy."""
     io = _io()
+    prev = _set_agy_env(None)
+    called = {"agy": False}
+    def agy_spy(*a, **k):
+        called["agy"] = True
+        return "USEFUL: yes\nSUMMARY: agy ran (should not in default mode)"
+    io._agy = agy_spy
+    io._gemini_api = lambda media, prompt: "USEFUL: yes\nSUMMARY: Gemini 读出 X\nKEYPOINTS:\n- a"
+    try:
+        out = io._deep_read("/tmp", ["/tmp/img0.png"], "p", {"id": "6a1828f7000000003502a0b3"})
+        check(not called["agy"], "default mode: agy NOT invoked (Gemini-primary)")
+        check("Gemini 读出 X" in out, "default mode returns the Gemini analysis")
+    finally:
+        _set_agy_env(prev)
+
+
+def test_deep_read_gemini_primary_raises_no_agy_fallback():
+    """Default Gemini-primary: a Gemini failure RAISES (note degrades) and does NOT fall back to
+    agy — agy is deferred to the parallel research issue, never used in processing."""
+    io = _io()
+    prev = _set_agy_env(None)
+    called = {"agy": False}
+    def agy_spy(*a, **k):
+        called["agy"] = True
+        return "USEFUL: yes\nSUMMARY: agy should not be a processing fallback"
+    io._agy = agy_spy
+    io._gemini_api = lambda media, prompt: (_ for _ in ()).throw(RuntimeError("gemini down"))
+    try:
+        raised = False
+        try:
+            io._deep_read("/tmp", ["/tmp/img0.png"], "p", {"id": "6a1828f7000000003502a0b3"})
+        except RuntimeError:
+            raised = True
+        check(raised, "Gemini fail in default mode → raise (degrade)")
+        check(not called["agy"], "default mode: no agy fallback after Gemini failure")
+    finally:
+        _set_agy_env(prev)
+
+
+def test_deep_read_degrades_when_both_analyzers_fail():
+    """F0 end-to-end (agy opt-in mode, FLY349_USE_AGY=1): agy returns chatter (invalid) + the
+    Gemini fallback fails → _deep_read RAISES so the note degrades and NEVER creates a fake issue."""
+    io = _io()
+    prev = _set_agy_env("1")
     io._agy = lambda d, media, prompt, meta: "waiting for the file search command to locate img0.png"
     def boom(media, prompt):
         raise RuntimeError("gemini down")
@@ -263,15 +316,21 @@ def test_deep_read_degrades_when_both_analyzers_fail():
         check(raised, "agy-invalid + gemini-fail → _deep_read raises (degrade, no fake issue)")
     finally:
         R.notify_lead = orig_notify
+        _set_agy_env(prev)
 
 
 def test_deep_read_returns_valid_agy_without_fallback():
-    """Happy path: a valid agy analysis is returned as-is (no paid Gemini fallback spent)."""
+    """agy opt-in (FLY349_USE_AGY=1) happy path: a valid agy analysis is returned as-is (no paid
+    Gemini fallback spent)."""
     io = _io()
-    io._agy = lambda d, media, prompt, meta: "USEFUL: yes\nSUMMARY: 讲了 X\nKEYPOINTS:\n- a"
-    io._gemini_api = lambda media, prompt: (_ for _ in ()).throw(AssertionError("must not fall back"))
-    out = io._deep_read("/tmp", ["/tmp/img0.png"], "p", {"id": "6a1828f7000000003502a0b3"})
-    check("USEFUL: yes" in out, "valid agy analysis returned without touching paid fallback")
+    prev = _set_agy_env("1")
+    try:
+        io._agy = lambda d, media, prompt, meta: "USEFUL: yes\nSUMMARY: 讲了 X\nKEYPOINTS:\n- a"
+        io._gemini_api = lambda media, prompt: (_ for _ in ()).throw(AssertionError("must not fall back"))
+        out = io._deep_read("/tmp", ["/tmp/img0.png"], "p", {"id": "6a1828f7000000003502a0b3"})
+        check("USEFUL: yes" in out, "agy opt-in: valid agy analysis returned without paid fallback")
+    finally:
+        _set_agy_env(prev)
 
 
 def test_download_failure_with_lost_login_escalates():
