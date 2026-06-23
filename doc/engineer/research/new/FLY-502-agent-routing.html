@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>哪类活派给谁 · Claude / Codex / Gemini(agy) / Kimi 对比 + 路由 · FLY-502</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de;
+    --card:#fff; --shadow:0 1px 3px rgba(0,0,0,0.06);
+    --claude:#d97757; --codex:#10a37f; --agy:#4285f4; --kimi:#7c4dff;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"SF Pro Text",sans-serif;line-height:1.6;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:980px;margin:0 auto;padding:38px 20px 80px}
+  .mono{font-family:"SF Mono",ui-monospace,monospace}
+  h1{font-size:30px;font-weight:700;letter-spacing:-.02em;margin:0 0 6px}
+  .sub{color:var(--dim);font-size:15px;margin:0 0 4px}
+  .issue-id{font-family:"SF Mono",monospace;color:var(--navy);font-weight:600;text-decoration:none}
+  .tldr{background:var(--card);border-radius:12px;box-shadow:var(--shadow);
+    border-left:4px solid var(--blue);padding:18px 22px;margin:22px 0 26px}
+  .tldr b{color:var(--navy)}
+  .section-title{font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--dim);margin:40px 0 14px;display:flex;align-items:center;gap:8px}
+  .section-title .dot{color:var(--red)}
+  .hint{font-size:12px;color:var(--dim);font-weight:500;text-transform:none;letter-spacing:0;margin-left:auto}
+  .card{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:20px 22px;margin:14px 0}
+  .card-title{font-size:17px;font-weight:700;margin:0 0 4px}
+  .card-sub{color:var(--dim);font-size:13px;margin:0 0 10px}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;
+    vertical-align:middle;margin-left:8px}
+  .b-green{background:rgba(52,199,89,.14);color:#1a7a37}
+  .b-amber{background:rgba(255,149,0,.16);color:#9a5b00}
+  .b-red{background:rgba(255,59,48,.14);color:#b3261c}
+  .b-blue{background:rgba(0,122,255,.14);color:#0a4ea3}
+  .b-purple{background:rgba(175,82,222,.16);color:#7a2ca0}
+
+  /* hero verdict strip */
+  .strip{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0 4px}
+  .agent{flex:1;min-width:222px;background:var(--card);border-radius:14px;box-shadow:var(--shadow);
+    padding:16px 18px;border-top:4px solid #ccc;cursor:pointer;transition:transform .12s,box-shadow .12s}
+  .agent:hover{transform:translateY(-2px);box-shadow:0 4px 14px rgba(0,0,0,.09)}
+  .agent.claude{border-top-color:var(--claude)} .agent.codex{border-top-color:var(--codex)} .agent.agy{border-top-color:var(--agy)} .agent.kimi{border-top-color:var(--kimi)}
+  .agent .nm{font-size:18px;font-weight:700;margin:0}
+  .agent .ml{font-size:12px;color:var(--dim);font-family:"SF Mono",monospace;margin:1px 0 9px}
+  .agent .one{font-size:13.5px;margin:0;font-weight:600}
+  .agent .for{font-size:12.5px;color:var(--dim);margin:7px 0 0}
+  .agent.dim{opacity:.42;filter:saturate(.6)}
+
+  /* comparison table */
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden;
+    box-shadow:var(--shadow);font-size:13.5px;margin:12px 0}
+  th,td{padding:10px 13px;text-align:left;vertical-align:top;border-bottom:1px solid #ececef}
+  th{background:#fafafc;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--dim);position:sticky}
+  tr:last-child td{border-bottom:none}
+  .cmp tbody tr.dimrow{cursor:pointer}
+  .cmp tbody tr.dimrow:hover{background:#fbfbfd}
+  .cmp td.dim-name{font-weight:600}
+  .lead{background:rgba(52,199,89,.13);font-weight:700;border-radius:6px}
+  .mid{color:#9a5b00}
+  .weak{color:var(--dim)}
+  .col-claude{color:var(--claude)} .col-codex{color:var(--codex)} .col-agy{color:var(--agy)} .col-kimi{color:var(--kimi)}
+  .detail td{background:#fafbfd;font-size:12.5px;color:#444;border-top:none}
+  .detail.hidden{display:none}
+  .winner-tag{font-size:11px;font-weight:700;color:#1a7a37}
+
+  /* routing picker */
+  .picker{display:flex;gap:8px;flex-wrap:wrap;margin:4px 0 14px}
+  .chip{font-size:13px;font-weight:600;padding:7px 14px;border-radius:20px;background:#fff;
+    border:1.5px solid #e2e2e6;cursor:pointer;color:#333;transition:all .12s}
+  .chip:hover{border-color:#c5c5cc}
+  .chip.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+  .route-out{background:linear-gradient(180deg,#fff,#fbfbfd);border-radius:14px;
+    box-shadow:0 2px 10px rgba(0,0,0,.07);border:1px solid #ececef;padding:22px 24px;margin:6px 0}
+  .route-out .pick{font-size:13px;color:var(--dim);margin:0 0 8px}
+  .route-out .ans{font-size:22px;font-weight:700;margin:0 0 6px}
+  .route-out .why{font-size:14px;margin:0;color:#333}
+  .route-pill{display:inline-block;font-size:13px;font-weight:700;padding:2px 12px;border-radius:8px;color:#fff;margin-left:4px}
+  .rp-claude{background:var(--claude)} .rp-codex{background:var(--codex)} .rp-agy{background:var(--agy)} .rp-kimi{background:var(--kimi)} .rp-other{background:var(--purple)}
+
+  /* decision blocks */
+  .decision{background:linear-gradient(180deg,#fff,#fbfbfd);border-radius:14px;
+    box-shadow:0 2px 10px rgba(0,0,0,.07);border:1px solid #ececef;padding:24px;margin:18px 0}
+  .decision.flag{border-left:5px solid var(--amber)}
+  .decision h2{margin:0 0 6px;font-size:20px}
+  .opt{display:flex;gap:14px;align-items:flex-start;padding:13px 0;border-bottom:1px solid #f0f0f2}
+  .opt:last-child{border-bottom:none}
+  .opt .k{font-family:"SF Mono",monospace;font-weight:700;font-size:14px;min-width:96px;color:var(--navy)}
+  .opt .body{flex:1}
+  .opt .head{font-weight:600;margin-bottom:2px}
+  .opt .meta{font-size:13px;color:var(--dim)}
+  .yes{color:#1a7a37;font-weight:700} .no{color:#b3261c;font-weight:700}
+  .pill{display:inline-block;background:#eef0f3;border-radius:6px;padding:1px 7px;font-size:12px;
+    font-family:"SF Mono",monospace;color:#444}
+  ul{margin:8px 0;padding-left:20px} li{margin:4px 0}
+  .foot{color:var(--dim);font-size:12px;margin-top:40px;border-top:1px solid #e2e2e6;padding-top:16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="sub">研究简报 · Flywheel · 2026-06-22 · <b>v2</b>（+Kimi +市面 coding agent +Deep Think API 计价）</p>
+  <h1>哪类活派给谁？四个 agent 对比 + 路由</h1>
+  <p class="sub"><a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-502">FLY-502</a>
+    · Claude / Codex / Gemini(agy) / Kimi 能力对比 + agy quota · owner Tadashi · Ron 跑 research · 为 agent-agnostic routing 拍板</p>
+
+  <div class="tldr">
+    <b>一句话：</b>四家头牌模型在<b>编码</b>上几乎并驾（Claude 略领最难档，Kimi 只有 vendor 自报、待验证），真正拉开差距的是<b>多模态</b>——
+    <b>视频分析只有 agy(Gemini) 和 Kimi 能打、视觉只有 agy</b>，生图是 agy / Codex 各擅长（Claude/Kimi 没有原生生图）。
+    路由骨架：<b>难编码→Claude，省钱编码→Codex，最省钱/开源→Kimi/OpenCode，视频/视觉/生图→agy</b>。
+    你个人「用 agy 生图+视频」：<b>免费档不够（Gemini Pro 自 3-25 付费独占），最低 $20 AI Pro</b>；
+    「Gemini 做 3D 打印模型」（Deep Think）<b>agy 拿不到，走 Gemini app·Ultra（$99.99 起）——自接 API 既要早期访问又因 thinking-token 计费而贵</b>。
+  </div>
+
+  <div class="section-title"><span class="dot">●</span> 四家定位（点卡片只看一家）
+    <span class="hint">▸ 点一张卡 = 聚焦它；再点一次复位</span></div>
+  <div class="strip" id="strip">
+    <div class="agent claude" data-agent="claude" onclick="focusAgent('claude')">
+      <p class="nm" style="color:var(--claude)">Claude</p>
+      <p class="ml">Claude Code · Opus 4.8</p>
+      <p class="one">🏆 编码 + agentic 工具编排最强</p>
+      <p class="for">派给：最难/多仓编码、对齐敏感、Flywheel 生产 Runner 默认</p>
+    </div>
+    <div class="agent codex" data-agent="codex" onclick="focusAgent('codex')">
+      <p class="nm" style="color:var(--codex)">Codex</p>
+      <p class="ml">OpenAI Codex · GPT-5.5 / 5.3-Codex</p>
+      <p class="one">💸 编码紧追 Claude，最便宜 + 生图快</p>
+      <p class="for">派给：一般编码、省成本编码、UI mockup 生图(gpt-image-2)、computer-use</p>
+    </div>
+    <div class="agent agy" data-agent="agy" onclick="focusAgent('agy')">
+      <p class="nm" style="color:var(--agy)">Gemini · agy</p>
+      <p class="ml">Antigravity · Gemini 3.1 Pro</p>
+      <p class="one">🎬 多模态之王：视频 / 视觉 / 生图</p>
+      <p class="for">派给：视频分析、品牌一致生图(Nano Banana Pro)、超长多模态上下文</p>
+    </div>
+    <div class="agent kimi" data-agent="kimi" onclick="focusAgent('kimi')">
+      <p class="nm" style="color:var(--kimi)">Kimi</p>
+      <p class="ml">Kimi Code · K2.7-Code（FLY-494 在接）</p>
+      <p class="one">💰 最便宜 + 开源 + video-in-context</p>
+      <p class="for">派给：最省钱/可自托管编码、video-in-context；⚠️ 编码 benchmark 仅 vendor 自报、待验证</p>
+    </div>
+  </div>
+
+  <div class="section-title"><span class="dot" style="color:var(--blue)">●</span> 能力对比（每维度谁强）
+    <span class="hint">▸ 点任一行展开数据 / 出处</span></div>
+  <table class="cmp" id="cmp">
+    <thead>
+      <tr><th style="width:19%">维度</th><th class="col-claude">Claude<br>Opus 4.8</th><th class="col-codex">Codex<br>GPT-5.x</th><th class="col-agy">agy<br>Gemini 3.1 Pro</th><th class="col-kimi">Kimi<br>K2.7-Code</th><th style="width:11%">谁强</th></tr>
+    </thead>
+    <tbody>
+      <tr class="dimrow" data-d="0"><td class="dim-name">编码 · SWE-bench Verified</td><td class="lead">88.6% 🟢</td><td class="mid">80.0%</td><td class="mid">80.6%</td><td class="weak">❓无独立数</td><td class="winner-tag">Claude</td></tr>
+      <tr class="detail hidden" data-for="0"><td colspan="6">真实 GitHub bug 修复通过率。前三家近乎并驾，Claude Opus 4.8 明显领先（4.7=87.6%）。Kimi K2.7-Code 截至 2026-06-12 <b>无独立第三方公开榜数据</b>。<span class="mono">来源 vals.ai / morphllm</span></td></tr>
+
+      <tr class="dimrow" data-d="1"><td class="dim-name">编码 · SWE-bench Pro（最难·多语言多仓）</td><td class="lead">69.2% 🟢</td><td class="mid">56.8%</td><td class="weak">46–54%</td><td class="weak">vendor 58.6*</td><td class="winner-tag">Claude</td></tr>
+      <tr class="detail hidden" data-for="1"><td colspan="6">更贴近真实工程的硬版本。Claude 大幅领先（4.6=64.3%→4.8=69.2%）；Codex 5.3 第二（56.8%）。Kimi <b>vendor 自报 58.6（声称高于 Opus 4.6/GPT-5.4），但无独立验证 → 当「待验证」</b>。<span class="mono">来源 morphllm/swe-bench-pro</span></td></tr>
+
+      <tr class="dimrow" data-d="2"><td class="dim-name">agentic / 工具编排</td><td class="lead">最成熟 🟢</td><td class="mid">native computer-use</td><td class="mid">Claude-Code-class</td><td class="mid">coder/explore/plan + ACP</td><td class="winner-tag">Claude</td></tr>
+      <tr class="detail hidden" data-for="2"><td colspan="6">Claude Code：parallel-subagent 动态工作流、codebase-scale 迁移。Codex：native computer-use、resume。agy：mirror Claude Code，Flywheel 里 transport=none 走 pr_handoff。Kimi：内置子 agent + <span class="mono">kimi acp</span> 程序化驱动面。</td></tr>
+
+      <tr class="dimrow" data-d="3"><td class="dim-name">视觉 / 图像理解</td><td class="mid">强</td><td class="mid">强 + computer-use</td><td class="lead">vision frontier 🟢</td><td class="mid">多模态(MoonViT-3D)</td><td class="winner-tag" style="color:var(--agy)">agy</td></tr>
+      <tr class="detail hidden" data-for="3"><td colspan="6">Gemini 3 Pro = 「vision frontier」：文档/空间/屏幕理解 SOTA。Kimi 有多模态视觉编码器 MoonViT-3D（视频底座），但图像理解未独立 benchmark。<span class="mono">来源 blog.google / roboflow</span></td></tr>
+
+      <tr class="dimrow" data-d="4"><td class="dim-name">视频分析 ⭐</td><td class="weak">仅抽帧</td><td class="weak">弱</td><td class="lead">Video-MMMU 榜首 🟢</td><td class="lead">video-in-context 🟢</td><td class="winner-tag" style="color:var(--agy)">agy / Kimi</td></tr>
+      <tr class="detail hidden" data-for="4"><td colspan="6"><b>路由的关键差异化。</b>Gemini 3 Pro 单 prompt 吃数小时视频、懂因果，Video-MMMU 第一。<b>Kimi 的差异点</b>：MoonViT-3D 把整段原片入 <b>coding 循环</b>的上下文（非抽帧）——录屏→UI 复刻/视觉 QA。Claude/GPT 只能抽帧。<span class="mono">来源 blog.google + FLY-492</span></td></tr>
+
+      <tr class="dimrow" data-d="5"><td class="dim-name">生图</td><td class="weak">无原生</td><td class="mid">GPT Image 2 · ~3s</td><td class="lead">Nano Banana Pro · 4K 🟢</td><td class="weak">无原生(coding 模型)</td><td class="winner-tag">agy / Codex</td></tr>
+      <tr class="detail hidden" data-for="5"><td colspan="6"><b>Claude/Kimi 无原生生图。</b>Nano Banana Pro：原生 16:9 至 4K、14 张参考图一致性、文字清晰，~10–15s。GPT Image 2：~3s（快 3–5×）、写实/UI mockup 最佳。Flywheel：<span class="pill">gemini-image</span> + <span class="pill">codex-image</span>。</td></tr>
+
+      <tr class="dimrow" data-d="6"><td class="dim-name">大上下文</td><td class="mid">200K / 1M 变体</td><td class="mid">数十万</td><td class="lead">1M · 多模态 🟢</td><td class="mid">256K</td><td class="winner-tag" style="color:var(--agy)">agy</td></tr>
+      <tr class="detail hidden" data-for="6"><td colspan="6">前三家顶端接近 1M，Gemini 优势在「多模态进上下文」（视频+文档+代码同 prompt）。Kimi 256K（1T MoE / 32B active）。</td></tr>
+
+      <tr class="dimrow" data-d="7"><td class="dim-name">推理（标准模式）</td><td class="lead">GPQA 93.6 / 对齐最佳 🟢</td><td class="mid">强 agentic + 科研</td><td class="mid">强 + Deep Think 档</td><td class="mid">coding 优化</td><td class="winner-tag">Claude</td></tr>
+      <tr class="detail hidden" data-for="7"><td colspan="6">Claude Opus 4.8：GPQA 93.6%、GDPval-AA 1890 Elo（领先）、对齐最佳。Gemini 有 Deep Think 极难推理档（见下方，agy CLI 拿不到）。Kimi K2.7 长程 coding 优化、省 30% thinking token。</td></tr>
+
+      <tr class="dimrow" data-d="8"><td class="dim-name">成本（API /1M token）</td><td class="mid">$5 / $25</td><td class="mid">$1.75 / $14</td><td class="mid">$2 / $12</td><td class="lead">$0.95 / $4 🟢</td><td class="winner-tag" style="color:var(--kimi)">Kimi</td></tr>
+      <tr class="detail hidden" data-for="8"><td colspan="6"><b>Kimi 最便宜</b>（cache hit $0.19/M input）<b>且 open-weight 可自托管（零 token 费）</b>。订阅：Claude Pro$20/Max$100-200；ChatGPT Plus$20/Pro$100；agy Free/$20/$100/$200。GPT-5.3-Codex $1.75/$14 是最便宜的顶级编码 API。</td></tr>
+
+      <tr class="dimrow" data-d="9"><td class="dim-name">速度</td><td class="mid">fast 2.5×</td><td class="lead">少 token→更快 🟢</td><td class="mid">Flash 极快 / Pro 中</td><td class="mid">省 think token</td><td class="winner-tag">Codex</td></tr>
+      <tr class="detail hidden" data-for="9"><td colspan="6">Codex GPT-5.5 用更少 token 达同效果。Claude fast=2.5×。Gemini 3.5 Flash 很快、Pro 中、生图 ~10-15s。Kimi 比 K2.6 省 30% thinking token。</td></tr>
+    </tbody>
+  </table>
+
+  <div class="section-title"><span class="dot" style="color:var(--purple)">●</span> 市面其它 coding agent，谁能当 Flywheel backend？</div>
+  <p class="card-sub" style="margin:-4px 0 8px">过滤器 = ① headless/CLI agentic（非纯 IDE）② tmux 可驱动 ③ 可插模型。行业现状：<b>65% 工程师每天用 2 个</b> coding agent——多 backend 本就是常态。</p>
+  <table>
+    <thead><tr><th style="width:15%">Agent</th><th style="width:20%">形态</th><th>关键差异</th><th style="width:24%">能当 Flywheel backend?</th></tr></thead>
+    <tbody>
+      <tr><td><b>OpenCode</b></td><td>终端原生（似 Claude Code，MIT）</td><td>75+ provider、LSP、隐私优先、免费（只付模型 token）</td><td class="yes">✅ 强候选 — Claude-Code-shaped、model-agnostic</td></tr>
+      <tr><td><b>Cline</b></td><td>VS Code/JetBrains 扩展 + CLI</td><td>开源 Apache-2.0、Plan/Act 审批、任意 OpenAI 兼容 + 本地(Ollama)</td><td class="yes">✅ 可（有 CLI、model-agnostic）</td></tr>
+      <tr><td><b>Gemini CLI / Goose</b></td><td>终端 agent（开源）</td><td>Gemini CLI 已并入 Antigravity；Goose(Block) 可插模型</td><td class="yes">✅ 可（Gemini CLI ≈ agy 路径）</td></tr>
+      <tr><td><b>Aider</b></td><td>git-native CLI</td><td>每次编辑=commit、开源免费、pioneer</td><td class="mid">△ 可，但 2026-05 后停更、未跟进前沿模型</td></tr>
+      <tr><td><b>Devin</b>（Cognition）</td><td>托管云自治平台</td><td>隔离云 VM、并行 Managed Devins、自动开 PR、67% PR-merge 率、$20/$500</td><td class="no">✗ 托管云（非本地 CLI；支持 ACP 远程驱动）</td></tr>
+      <tr><td><b>Cursor / Windsurf</b></td><td>AI-native IDE / VS Code fork</td><td>UX 标杆、Composer/Cascade 多文件、$20/$15</td><td class="no">✗ IDE，非 headless</td></tr>
+      <tr><td><b>Cody / Continue</b></td><td>IDE 助手 / 扩展</td><td>inline 补全 / autopilot；Cody 焦点被 Amp 取代</td><td class="no">✗ IDE 内</td></tr>
+    </tbody>
+  </table>
+  <div class="card purple">
+    <div class="card-title">结论 <span class="badge b-purple">backend 选型</span></div>
+    <p style="margin:0">Flywheel 现有四后端（Claude/Codex/agy/Kimi）已覆盖前沿。真正值得<b>追加评估的 backend = OpenCode</b>（MIT、Claude-Code-shaped、任意模型——最契合 agent-agnostic 策略），其次 Cline / Goose。<b>IDE（Cursor/Windsurf）和托管平台（Devin）不契合 headless-runner 模型</b>，不作 backend 候选（可作 Annie 个人开发工具）。参考：Terminal-Bench agent 榜 Codex CLI 83.4% 第一、Claude Code 78.9% 第二。</p>
+  </div>
+
+  <div class="section-title"><span class="dot" style="color:var(--green)">●</span> 路由器：选一类活，看派给谁
+    <span class="hint">▸ 点一个 task</span></div>
+  <div class="picker" id="picker">
+    <span class="chip on" data-r="video">视频分析 / video-in-context</span>
+    <span class="chip" data-r="hardcode">复杂/多仓编码</span>
+    <span class="chip" data-r="cheapcode">省成本编码</span>
+    <span class="chip" data-r="opensource">最省钱 / 开源可自托管</span>
+    <span class="chip" data-r="img-brand">生图 · 品牌一致/4K</span>
+    <span class="chip" data-r="img-ui">生图 · UI mockup/快</span>
+    <span class="chip" data-r="vision">屏幕/文档/空间视觉</span>
+    <span class="chip" data-r="longctx">超长多模态上下文</span>
+    <span class="chip" data-r="reason">最难推理/对齐</span>
+    <span class="chip" data-r="3d">草图→3D 打印模型</span>
+    <span class="chip" data-r="prod">Flywheel 生产 Runner</span>
+  </div>
+  <div class="route-out" id="routeOut">
+    <p class="pick" id="routePick"></p>
+    <p class="ans" id="routeAns"></p>
+    <p class="why" id="routeWhy"></p>
+  </div>
+
+  <div class="section-title"><span class="dot" style="color:var(--amber)">●</span> agy / Gemini 的 quota & 档位</div>
+  <table>
+    <thead><tr><th>档位</th><th>价格/月</th><th>可用模型</th><th>额度</th><th>坑</th></tr></thead>
+    <tbody>
+      <tr><td><b>Free</b></td><td>$0</td><td class="no">仅 Flash（Gemini Pro 自 2026-03-25 付费独占）</td><td>~20 req/天 + 5h 刷新 + 周上限</td><td>多人报 lockout；刷新不按宣传走</td></tr>
+      <tr><td><b>AI Pro</b> <span class="badge b-green">解锁正确模型</span></td><td>$20</td><td class="yes">全模型（含 3.1 Pro + Nano Banana Pro）</td><td>比 Free 高（量未公开）</td><td>重度用户报 7–10 天 lockout</td></tr>
+      <tr><td><b>AI Ultra</b></td><td>$100</td><td>全模型</td><td>~5× Pro</td><td>2026-06 新档，「较轻日常」</td></tr>
+      <tr><td><b>AI Ultra Max</b> <span class="badge b-purple">含 Deep Think</span></td><td>$200</td><td>全模型 + Deep Think</td><td>~20× Pro</td><td>原 $249.99</td></tr>
+    </tbody>
+  </table>
+
+  <div class="decision flag">
+    <h2>你的问题：主要用 agy 做生图 + 视频分析，够不够？</h2>
+    <p class="card-sub">直接答：<b>免费档不够</b>，因为你要的 Gemini 3.1 Pro（生图 + 视频）自 3-25 起免费档拿不到，只剩 Flash + ~20 req/天 + lockout。</p>
+    <div class="opt"><span class="k">最低</span><div class="body"><div class="head">AI Pro $20/mo</div><div class="meta">解锁 Gemini 3.1 Pro + Nano Banana Pro 生图。但即便 Pro 也有 7–10 天 lockout 报告。</div></div></div>
+    <div class="opt"><span class="k">重度日常</span><div class="body"><div class="head">AI Ultra $100（5×）或 Ultra Max $200（20×）</div><div class="meta">天天大量生图 + 视频时再升；先 $20 撞到 lockout 再说，别一上来就 $200。</div></div></div>
+    <div class="opt"><span class="k">省钱替代</span><div class="body"><div class="head">纯生图不一定要为 Antigravity 付费</div><div class="meta">你现成的 <span class="pill">codex-image</span>（gpt-image，ChatGPT Plus 免费额度、~3s、UI/文字最强）能兜大量生图；<span class="pill">gemini-image</span>/<span class="pill">gemini-video</span> 直打 Gemini。<b>agy 真正不可替代的是「视频分析」+ 集成 agentic IDE</b>——为这个付 $20 值。</div></div></div>
+  </div>
+
+  <div class="section-title"><span class="dot" style="color:var(--purple)">●</span> Gemini 3 Deep Think + 3D 建模（FLY-451）</div>
+  <div class="decision">
+    <h2>「Gemini 做 3D 打印模型」那个能力，agy 拿得到吗？→ <span class="no">拿不到</span></h2>
+    <p class="card-sub">Deep Think = 最大并行推理（"System 2"），建在 3.1 Pro 之上。2026-02 升级后能<b>读手绘草图 → 验证结构 → 导出可制造 3D 模型</b>：算载荷路径、建议材料厚度、为 SLA/SLS 优化拓扑——直接对口 GeoForge3D。</p>
+    <div class="opt"><span class="k">关键</span><div class="body"><div class="head">Deep Think 仅 Google AI Ultra 订阅（Gemini app）+ 限量 API 早期访问</div><div class="meta">它是一个<b>模式</b>，不是广泛开放的 model slug。每次查询要几分钟。HLE 41.0%、ARC-AGI-2 45.1%、奥赛金牌级。</div></div></div>
+    <div class="opt"><span class="k">agy 现状</span><div class="body"><div class="head"><span class="mono">agy models</span> = Flash / 3.1 Pro / Claude 4.6 / GPT-OSS —— 无 Deep Think slug</div><div class="meta">agy 的 Gemini 天花板 = gemini-3.1-pro <b>标准模式</b>，不是 Ultra 独占的 Deep Think。Deep Think 锁在 Gemini app，不在 Antigravity CLI 货架。</div></div></div>
+    <div class="opt"><span class="k">怎么办</span><div class="body"><div class="head">要「草图→3D 打印模型」→ 走 Gemini app 上 AI Ultra（$99.99 入门 / $200 顶配）</div><div class="meta">不是 agy CLI。agy 适合编码 / 标准 3.1 Pro 任务（视频分析、Nano Banana 生图），但今天解锁不了 Deep Think 的 3D 能力。<span class="mono">verify-later：agy 模型表日后可能加，依赖前重跑 agy models。</span></div></div></div>
+    <div class="opt"><span class="k">走 API 多少钱</span><div class="body"><div class="head">没有独立的「Deep Think」per-token SKU — 不建议自接 API</div><div class="meta">按 Gemini 3.1 Pro token 计：<b>$2/M input（≤200K）、$12/M output</b>，>200K 翻倍（$4/$18）。<b>但 Deep Think 把内部 thinking token 当 output 计费 + 海量并行推理 → 单次查询的计费 output 远高于普通 3.1 Pro，实际单次成本放大数倍</b>，每次还要几分钟。API 走 Google Cloud <b>早期访问</b>（限研究/企业）。<b>结论：Annie 走 AI Ultra 订阅（$99.99 起）最直接、最划算，别为 3D 自接 API。</b></div></div></div>
+  </div>
+
+  <p class="foot">
+    诚实分层：① <b>查证数据</b>=SWE-bench 分数、生图对比、订阅/API 价格、Deep Think 仅 Ultra 可用 + API 计价、Gemini Pro 免费档 3-25 下线、Kimi K2.7 价格/规格、coding-agent 扫描，均 WebSearch 实时拉取（知识截止 2026-01）。
+    ② <b>Flywheel 事实</b>=agy 模型货架来自 FLY-493；Kimi 形态/ACP/双兼容来自 FLY-492；transport=none / pr_handoff 见 FLY-493 plan。
+    ③ <b>待验证</b>=<b>Kimi K2.7-Code 编码 benchmark 仅 vendor 自报（58.6 SWE-bench Pro），截至 2026-06-12 无独立第三方公开榜</b>——当「待真实验证」，不当已证实。
+    ④ <b>口径</b>=「谁强」是头牌模型横向比较；价格/额度随厂商频繁调整（Antigravity 半年内多次砍免费档、付费档涨 9×），决策前以官网为准。
+    <br>完整研究：<span class="mono">doc/engineer/research/new/FLY-502-agent-capability-routing.md</span>
+  </p>
+
+</div>
+
+<script>
+  // ---- comparison table: row expand ----
+  document.querySelectorAll('#cmp tr.dimrow').forEach(function(r){
+    r.addEventListener('click', function(){
+      var d = r.getAttribute('data-d');
+      var det = document.querySelector('#cmp tr.detail[data-for="'+d+'"]');
+      if(det) det.classList.toggle('hidden');
+    });
+  });
+
+  // ---- hero strip: focus one agent ----
+  var focused = null;
+  function focusAgent(a){
+    var cards = document.querySelectorAll('#strip .agent');
+    if(focused === a){ focused = null; cards.forEach(function(c){c.classList.remove('dim');}); return; }
+    focused = a;
+    cards.forEach(function(c){ c.classList.toggle('dim', c.getAttribute('data-agent') !== a); });
+  }
+
+  // ---- routing picker ----
+  var ROUTES = {
+    video:    {pick:'视频分析 / video-in-context', cls:'rp-agy',   ans:'agy（Gemini）或 Kimi', why:'agy(Gemini 3.1 Pro) 视频理解最强（Video-MMMU 榜首、数小时视频/单 prompt）。Kimi 的差异点是把整段原片放进 coding 循环的上下文（MoonViT-3D，非抽帧）——录屏→UI 复刻/视觉 QA。Claude/GPT 只能抽帧。'},
+    hardcode: {pick:'复杂 / 多仓 / 最难编码', cls:'rp-claude', ans:'Claude（Opus 4.8）', why:'SWE-bench Pro 69.2% 领先，parallel-subagent 适合 codebase-scale 迁移；Codex 5.3（56.8%）是强力次选。'},
+    cheapcode:{pick:'一般 / 省成本编码', cls:'rp-codex', ans:'Codex（GPT-5.3-Codex）', why:'80% Verified、API $1.75/$14 最便宜的顶级编码器、native computer-use、速度快。'},
+    opensource:{pick:'最省钱 / 开源可自托管 backend', cls:'rp-kimi', ans:'Kimi（K2.7-Code）或 OpenCode', why:'Kimi API $0.95/$4（cache $0.19）+ open-weight 可自托管（零 token 费）+ OpenAI/Anthropic 双兼容（最易接 Path-A backend）。OpenCode = MIT、Claude-Code-shaped、任意模型。注意 Kimi 编码 benchmark 仅 vendor 自报、待真实验证。'},
+    'img-brand':{pick:'生图 · 品牌一致 / 16:9 / 4K', cls:'rp-agy', ans:'agy（Nano Banana Pro）', why:'原生 16:9 至 4K、最多 14 张参考图保持人物/品牌一致性、文字清晰、地理真实。'},
+    'img-ui': {pick:'生图 · UI mockup / 可读文字 / 要快', cls:'rp-codex', ans:'Codex（gpt-image-2）', why:'~3s（快 3–5×）、密集排版/写实/UI 文字最强，且在 ChatGPT Plus 免费额度内。Claude 无原生生图。'},
+    vision:   {pick:'屏幕 / 文档 / 空间视觉理解', cls:'rp-agy', ans:'agy（Gemini 3.1 Pro）', why:'Gemini 3 Pro 是 vision frontier：文档/空间/屏幕理解 SOTA。'},
+    longctx:  {pick:'超长多模态上下文（视频+文档同看）', cls:'rp-agy', ans:'agy（Gemini 3.1 Pro）', why:'1M 上下文里多模态最强——数小时视频 + 文档 + ~15k LOC 同一 prompt。'},
+    reason:   {pick:'最难推理 / 对齐敏感', cls:'rp-claude', ans:'Claude（Opus 4.8）', why:'GPQA 93.6%、GDPval-AA 1890 Elo 领先、对齐/诚实最佳。'},
+    '3d':     {pick:'草图 → 3D 打印模型', cls:'rp-other', ans:'Gemini app · Deep Think（AI Ultra $99.99起）', why:'⚠️ 不是 agy CLI！草图→可制造模型（SLA/SLS 拓扑）锁在 Gemini app 的 Deep Think，仅 AI Ultra（$99.99 入门 / $200 顶配，含 25,000 credits/月）。agy 没有 Deep Think slug。走 API？没有独立 Deep Think SKU，按 Gemini 3.1 Pro 计（$2/$12 per 1M），但 thinking-token 当 output 计费 + 海量并行推理 → 单次贵很多，且要早期访问资格——不建议自接 API。'},
+    prod:     {pick:'Flywheel 生产 Runner 默认', cls:'rp-claude', ans:'Claude（Claude Code）', why:'最成熟 agentic + Agent Team transport（邮箱唤醒、approve→ship 闭环）；agy=transport-none 走 pr_handoff。'}
+  };
+  function renderRoute(key){
+    var r = ROUTES[key]; if(!r) return;
+    document.getElementById('routePick').textContent = '▸ ' + r.pick;
+    document.getElementById('routeAns').innerHTML = '派给 <span class="route-pill '+r.cls+'">'+r.ans+'</span>';
+    document.getElementById('routeWhy').textContent = r.why;
+  }
+  document.querySelectorAll('#picker .chip').forEach(function(c){
+    c.addEventListener('click', function(){
+      document.querySelectorAll('#picker .chip').forEach(function(x){x.classList.remove('on');});
+      c.classList.add('on');
+      renderRoute(c.getAttribute('data-r'));
+    });
+  });
+  renderRoute('video'); // default
+</script>
+</body>
+</html>
