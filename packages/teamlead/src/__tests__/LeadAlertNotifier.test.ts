@@ -537,3 +537,153 @@ describe("findUnreachableAlertLeads (FLY-182 §4.1 startup validation)", () => {
 		expect(findUnreachableAlertLeads(ok)).toEqual([]);
 	});
 });
+
+describe("LeadAlertNotifier — FLY-368 unified alert channel", () => {
+	let store: StateStore;
+	let queueDir: string;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		queueDir = mkdtempSync(join(tmpdir(), "fly368-queue-"));
+	});
+	afterEach(() => {
+		rmSync(queueDir, { recursive: true, force: true });
+	});
+
+	it("routes ALL alerts to the unified channel (overriding per-lead alertChannel) and returns channelId+messageId", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "root-msg-123" }),
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: { channelId: "UNIFIED-CHAN", token: "unified-token" },
+		});
+
+		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+
+		expect(result.sent).toBe(true);
+		expect(result.channelId).toBe("UNIFIED-CHAN");
+		expect(result.messageId).toBe("root-msg-123");
+		const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+		// cos-lead.alertChannel is 1487340532610109520, but unified wins:
+		expect(url).toBe(
+			"https://discord.com/api/v10/channels/UNIFIED-CHAN/messages",
+		);
+		expect((init.headers as Record<string, string>).Authorization).toBe(
+			"Bot unified-token",
+		);
+	});
+
+	it("byte-compat: with NO unified config the result is exactly { sent: true } (no channelId/messageId)", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "should-not-be-read" }),
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+		});
+		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(result).toEqual({ sent: true });
+		expect(result).not.toHaveProperty("channelId");
+		expect(result).not.toHaveProperty("messageId");
+	});
+
+	it("a runner-stuck-unhandled alert routes a runner from a Lead that has no per-lead alertChannel to the unified channel", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "m-1" }),
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: { channelId: "UNIFIED-CHAN", token: "unified-token" },
+		});
+		// ops-lead has NO alertChannel and NO alertFallbackToCore → today it would
+		// dead-letter. Under unified routing it reaches the one channel.
+		const result = await notifier.alert(
+			buildPayload({
+				leadId: "ops-lead",
+				eventType: "runner_stuck_unhandled",
+				sessionKey: "exec-1",
+			}),
+		);
+		expect(result.sent).toBe(true);
+		expect(result.channelId).toBe("UNIFIED-CHAN");
+	});
+
+	it("unified root POST suppresses mentions (allowed_mentions {parse:[]})", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "m-1" }),
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: { channelId: "UNIFIED-CHAN", token: "unified-token" },
+		});
+		await notifier.alert(buildPayload());
+		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+
+	it("legacy (no unified) root POST does NOT add allowed_mentions (byte-compat)", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+		});
+		await notifier.alert(buildPayload());
+		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+		const body = JSON.parse(init.body as string);
+		expect(body).not.toHaveProperty("allowed_mentions");
+	});
+
+	it("findUnreachableAlertLeads: unified channel + token → nothing unreachable", () => {
+		expect(
+			findUnreachableAlertLeads(testProjects, {
+				channelId: "UNIFIED-CHAN",
+				token: "unified-token",
+			}),
+		).toEqual([]);
+	});
+
+	it("findUnreachableAlertLeads: unified channel + NO unified token → validate per-lead fallback token only", () => {
+		const out = findUnreachableAlertLeads(testProjects, {
+			channelId: "UNIFIED-CHAN",
+			token: null,
+		});
+		// ops-lead has no token of any kind → unreachable; cos/product have tokens.
+		expect(out.map((u) => u.leadId)).toEqual(["ops-lead"]);
+	});
+});

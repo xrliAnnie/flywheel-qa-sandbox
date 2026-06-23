@@ -373,6 +373,16 @@ export function createStuckUnhandledAlerter(
 				`Check the Lead first, then the runner's tmux window. (FLY-195 Q7 fallback)`,
 			severity: "warning",
 			sessionKey: session.execution_id,
+			// FLY-368: structured fingerprint so the auto-repair bot can reuse the
+			// runner recovery-nudge gates WITHOUT parsing it out of eventId (Codex
+			// R1 HIGH-2). formatContent ignores metadata → Discord text unchanged.
+			metadata: {
+				runnerStuck: {
+					executionId: session.execution_id,
+					episodeFingerprint,
+					escalatedAt,
+				},
+			},
 		});
 		return (
 			result.sent === true ||

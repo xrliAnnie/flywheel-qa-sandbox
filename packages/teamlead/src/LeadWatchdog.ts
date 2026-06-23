@@ -85,6 +85,24 @@ export interface LeadWatchdogConfig {
 	claimsReaderMatchAll?: boolean;
 	logger?: (msg: string) => void;
 	/**
+	 * FLY-368: real-time recovery hook (optimization, NOT the source of truth —
+	 * reconcile is). Fired when a previously-alerted Lead recovers: a blocked
+	 * episode clears (kind→null) or a pane_hash_stuck pane changes back to
+	 * healthy. The AlertChannelHub resolves the matching alert thread. Absent =
+	 * unchanged behavior (FLY-231 not-normalized pattern).
+	 */
+	onRecovery?: (
+		projectName: string,
+		leadId: string,
+		recoveredKind: AlertEventType,
+	) => void;
+	/**
+	 * FLY-368: called once at the end of every poll cycle so a reconcile pass can
+	 * piggyback this 30s cadence WITHOUT adding a second timer (FLY-169 discipline).
+	 * Wrapped fail-safe by the caller; errors must not wedge the poll loop.
+	 */
+	onPollComplete?: () => Promise<void> | void;
+	/**
 	 * FLY-182 B3 / FLY-193: when true, suppress `pane_hash_stuck` for panes that
 	 * look alive-but-idle (see `isIdleHealthyPane`). The recognizer is now
 	 * validated against committed real Lead pane fixtures
@@ -109,6 +127,10 @@ interface LeadState {
 	 * fires fresh. Makes a real block alert once-per-episode regardless of pane
 	 * churn. */
 	episodeKind: AlertEventType | null;
+	/** FLY-368: the kind of the LAST alert emitted for this lead, used to fire the
+	 * onRecovery hook exactly once when the lead recovers (covers both blocked
+	 * kinds and pane_hash_stuck). Null once recovery has been signaled. */
+	lastAlertedKind: AlertEventType | null;
 }
 
 const BLOCKED_KEYWORDS: Array<{ kind: AlertEventType; tokens: RegExp[] }> = [
@@ -205,6 +227,15 @@ export class LeadWatchdog {
 					if (!membership.has(key)) this.leadStates.delete(key);
 				}
 			}
+			// FLY-368: run the reconcile pass (or any post-poll work) on the SAME
+			// 30s cadence — no second timer. Wrapped so it can never wedge the poll.
+			if (this.config.onPollComplete) {
+				try {
+					await this.config.onPollComplete();
+				} catch (err) {
+					this.logger(`onPollComplete threw: ${(err as Error).message}`);
+				}
+			}
 		} finally {
 			this.polling = false;
 		}
@@ -267,6 +298,8 @@ export class LeadWatchdog {
 		// silenced forever).
 		const kind = classify(pane);
 		if (state.episodeKind !== null && state.episodeKind !== kind) {
+			// FLY-368: a blocked episode just cleared → fire the recovery hook once.
+			this.fireRecovery(projectName, leadId, state, state.episodeKind);
 			state.episodeKind = null;
 		}
 
@@ -291,6 +324,12 @@ export class LeadWatchdog {
 			// Live state changed. Reset stuck tracking. (Fix 4) Cooldown is
 			// signature-scoped: any change drops cooldown immediately so the
 			// next genuine stuck (with a different signature) can fire fresh.
+			// FLY-368: if we had alerted (pane_hash_stuck path — blocked kinds are
+			// handled by the episodeKind-clear above, which nulls lastAlertedKind),
+			// the pane moving = recovery → fire the hook once.
+			if (state.lastAlertedKind !== null) {
+				this.fireRecovery(projectName, leadId, state, state.lastAlertedKind);
+			}
 			state.lastHash = liveHash;
 			state.stuckCycles = 1;
 			state.cooldownSignature = null;
@@ -444,6 +483,8 @@ export class LeadWatchdog {
 			}
 			state.cooldownSignature = liveHash;
 			state.lastAlertAtMs = this.now();
+			// FLY-368: remember what we alerted so the recovery hook can fire once.
+			state.lastAlertedKind = kind;
 		} catch (err) {
 			this.logger(
 				`notifier threw for ${leadId}/${kind}: ${(err as Error).message}`,
@@ -451,6 +492,30 @@ export class LeadWatchdog {
 			state.state = "Cooldown";
 			state.cooldownSignature = liveHash;
 			state.lastAlertAtMs = this.now();
+			state.lastAlertedKind = kind;
+		}
+	}
+
+	/**
+	 * FLY-368: fire the optional recovery hook once and clear `lastAlertedKind` so
+	 * the same recovery is never signaled twice (the two call sites — blocked
+	 * episode clear, pane-hash change — would otherwise both fire in one tick).
+	 * Best-effort: a throwing hook must never break the watchdog tick.
+	 */
+	private fireRecovery(
+		projectName: string,
+		leadId: string,
+		state: LeadState,
+		recoveredKind: AlertEventType,
+	): void {
+		state.lastAlertedKind = null;
+		if (!this.config.onRecovery) return;
+		try {
+			this.config.onRecovery(projectName, leadId, recoveredKind);
+		} catch (err) {
+			this.logger(
+				`onRecovery threw for ${leadId}/${recoveredKind}: ${(err as Error).message}`,
+			);
 		}
 	}
 
@@ -464,6 +529,7 @@ export class LeadWatchdog {
 				lastAlertAtMs: null,
 				cooldownSignature: null,
 				episodeKind: null,
+				lastAlertedKind: null,
 			};
 			this.leadStates.set(leadId, state);
 		}
@@ -513,6 +579,64 @@ function classify(pane: string): AlertEventType {
 		if (tokens.some((t) => t.test(lower))) return kind;
 	}
 	return "pane_hash_stuck";
+}
+
+/**
+ * FLY-368: PUBLIC wrapper of the watchdog's pane classifier so the AlertChannelHub
+ * reconcile pass can decide whether a previously-alerted kind is still present —
+ * WITHOUT duplicating the (security-sensitive) private `classify`/`ownStateRegion`
+ * parsing (Codex R2 LOW-3). Same result as the internal classifier.
+ */
+export function classifyLeadAlertPane(pane: string): AlertEventType {
+	return classify(pane);
+}
+
+/**
+ * FLY-368: PUBLIC live-state hash of a Lead pane (echo/scrollback stripped). The
+ * reconcile pass uses this for the conservative two-capture rule on a
+ * `pane_hash_stuck` thread: the pane is only treated as recovered when this hash
+ * CHANGES across captures (a still-identical live region is still frozen).
+ */
+export function leadPaneLiveHash(pane: string): string {
+	return hashPane(ownStateRegion(pane));
+}
+
+/**
+ * FLY-368 — the resume-menu options + the "Enter to confirm" action hint. The
+ * resume menu lets a single Enter accept "Resume from summary (recommended)",
+ * which is the safe, reversible unstick a human does manually.
+ */
+const RESUME_MENU_MARKERS: RegExp[] = [
+	/resume from summary/i,
+	/resume full session/i,
+	/enter to confirm/i,
+];
+
+/**
+ * FLY-368 — shapes that look superficially similar but whose Enter does something
+ * NOT equivalent to acknowledging the resume menu (e.g. proactively STARTING a
+ * compaction). Their presence vetoes the safe-resume-Enter recognizer (Codex R1
+ * MEDIUM-7: compact prompt / in-flight compaction is a separate product decision).
+ */
+const NOT_RESUME_MENU_MARKERS: RegExp[] = [
+	/compact the conversation/i,
+	/compacting conversation/i,
+];
+
+/**
+ * FLY-368 — recognize the EXACT resume-menu shape that is safe for the
+ * auto-repair bot to clear with a single Enter. NARROW + fail-closed: returns
+ * true ONLY when all resume-menu markers are present AND no compact-prompt /
+ * compacting marker is. Validated against the real `freeze-resume-menu.txt`
+ * fixture (must-pass) and `freeze-compact-prompt.txt` / `freeze-compacting.txt`
+ * (must-fail). The Lead `permission_blocked` prompt never matches (no resume
+ * markers) and is intentionally NEVER auto-confirmed.
+ */
+export function isSafeResumeMenuForEnter(pane: string): boolean {
+	if (!pane) return false;
+	const region = ownStateRegion(pane);
+	if (NOT_RESUME_MENU_MARKERS.some((t) => t.test(region))) return false;
+	return RESUME_MENU_MARKERS.every((t) => t.test(region));
 }
 
 /**

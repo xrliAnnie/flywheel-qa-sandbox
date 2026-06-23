@@ -608,6 +608,54 @@ export class StateStore {
 			)
 		`);
 
+		// FLY-368: unified alert-channel per-error threads (active-mapping ONLY —
+		// the current live thread per incident; history lives in Discord / logs /
+		// alert_repair_attempts, NOT here). correlation_key = coarse key for
+		// resolve-by-kind: `${project}|${leadId}|${eventType}|${sessionKey??''}`.
+		// event_id + episode_signature are the fine key (a different event_id under
+		// the same correlation_key = a distinct, later episode → the stale row is
+		// resolved+archived, then openAlertThread() UPSERTs the new mapping).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS alert_threads (
+				correlation_key TEXT PRIMARY KEY,
+				event_id TEXT NOT NULL,
+				episode_signature TEXT,
+				thread_id TEXT NOT NULL,
+				root_message_id TEXT,
+				channel_id TEXT NOT NULL,
+				lead_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				event_type TEXT NOT NULL,
+				session_key TEXT,
+				repair_status TEXT,
+				opened_at TEXT NOT NULL DEFAULT (datetime('now')),
+				resolved_at TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_alert_threads_active ON alert_threads(resolved_at)",
+		);
+
+		// FLY-368: durable, fail-closed audit for auto-repair-bot terminal writes
+		// to a LEAD pane (the resume-menu Enter). Lead-level alerts have no real
+		// execution/issue, so they MUST NOT be forced into session_events; this is
+		// their purpose-built audit sink (mirrors the runner nudge's audit-before-
+		// send contract). Append-only.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS alert_repair_attempts (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				correlation_key TEXT NOT NULL,
+				event_id TEXT,
+				actor TEXT NOT NULL,
+				action TEXT NOT NULL,
+				lead_id TEXT,
+				project_name TEXT,
+				result TEXT NOT NULL,
+				reason TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
 		// FLY-369: archived_at on chat_threads (archive-on-Done)
@@ -1635,6 +1683,147 @@ export class StateStore {
 		this.save();
 	}
 
+	// ── FLY-368: alert_threads (unified-alert per-error thread, active-mapping) ──
+
+	/**
+	 * FLY-368: open OR replace the active alert thread for a correlation key.
+	 * Active-mapping semantics: a second call with a DIFFERENT event_id under the
+	 * same correlation_key OVERWRITES the mapping (the caller must resolve+archive
+	 * the prior Discord thread BEFORE calling this; this only owns the row). The
+	 * UPSERT clears resolved_at so the row is active again.
+	 */
+	openAlertThread(input: {
+		correlationKey: string;
+		eventId: string;
+		episodeSignature?: string | null;
+		threadId: string;
+		rootMessageId?: string | null;
+		channelId: string;
+		leadId: string;
+		projectName: string;
+		eventType: string;
+		sessionKey?: string | null;
+		repairStatus?: string | null;
+	}): void {
+		this.db.run(
+			`INSERT INTO alert_threads (
+				correlation_key, event_id, episode_signature, thread_id, root_message_id,
+				channel_id, lead_id, project_name, event_type, session_key, repair_status,
+				opened_at, resolved_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), NULL)
+			ON CONFLICT(correlation_key) DO UPDATE SET
+				event_id = excluded.event_id,
+				episode_signature = excluded.episode_signature,
+				thread_id = excluded.thread_id,
+				root_message_id = excluded.root_message_id,
+				channel_id = excluded.channel_id,
+				lead_id = excluded.lead_id,
+				project_name = excluded.project_name,
+				event_type = excluded.event_type,
+				session_key = excluded.session_key,
+				repair_status = excluded.repair_status,
+				opened_at = datetime('now'),
+				resolved_at = NULL`,
+			[
+				input.correlationKey,
+				input.eventId,
+				input.episodeSignature ?? null,
+				input.threadId,
+				input.rootMessageId ?? null,
+				input.channelId,
+				input.leadId,
+				input.projectName,
+				input.eventType,
+				input.sessionKey ?? null,
+				input.repairStatus ?? null,
+			],
+		);
+		this.save();
+	}
+
+	/** FLY-368: the ACTIVE (unresolved) alert thread for a correlation key, if any. */
+	getActiveAlertThread(correlationKey: string): AlertThreadRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM alert_threads WHERE correlation_key = ? AND resolved_at IS NULL",
+		);
+		stmt.bind([correlationKey]);
+		let out: AlertThreadRow | undefined;
+		if (stmt.step()) {
+			out = rowToAlertThread(stmt.getAsObject() as Record<string, unknown>);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** FLY-368: all ACTIVE alert threads (the reconcile-pass work list). */
+	listActiveAlertThreads(): AlertThreadRow[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM alert_threads WHERE resolved_at IS NULL ORDER BY opened_at ASC",
+		);
+		const out: AlertThreadRow[] = [];
+		while (stmt.step()) {
+			out.push(rowToAlertThread(stmt.getAsObject() as Record<string, unknown>));
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** FLY-368: update repair_status on the active row (pending|fixed|needs_human|n/a). */
+	setAlertRepairStatus(correlationKey: string, status: string): void {
+		this.db.run(
+			"UPDATE alert_threads SET repair_status = ? WHERE correlation_key = ? AND resolved_at IS NULL",
+			[status, correlationKey],
+		);
+		this.save();
+	}
+
+	/** FLY-368: mark the active alert thread resolved (recovery confirmed). */
+	resolveAlertThread(correlationKey: string): void {
+		this.db.run(
+			"UPDATE alert_threads SET resolved_at = datetime('now') WHERE correlation_key = ? AND resolved_at IS NULL",
+			[correlationKey],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-368: append a durable auto-repair attempt audit row. Returns true on
+	 * success, false on write failure — callers treat false as FAIL-CLOSED (no
+	 * keystroke is sent unless the `attempt` row persisted).
+	 */
+	recordAlertRepairAttempt(input: {
+		correlationKey: string;
+		eventId?: string | null;
+		actor: string;
+		action: string;
+		leadId?: string | null;
+		projectName?: string | null;
+		result: "attempt" | "sent" | "refused";
+		reason?: string | null;
+	}): boolean {
+		try {
+			this.db.run(
+				`INSERT INTO alert_repair_attempts (
+					correlation_key, event_id, actor, action, lead_id, project_name, result, reason
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.correlationKey,
+					input.eventId ?? null,
+					input.actor,
+					input.action,
+					input.leadId ?? null,
+					input.projectName ?? null,
+					input.result,
+					input.reason ?? null,
+				],
+			);
+			this.save();
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	// ── FLY-314: roundtable_topic_threads (separate from chat_threads) ──────────
 
 	/**
@@ -2212,4 +2401,39 @@ export interface LeadEventRow {
 	created_at: string;
 	delivery_attempts?: number;
 	last_delivery_error?: string;
+}
+
+/** FLY-368: a row of the alert_threads active-mapping table. */
+export interface AlertThreadRow {
+	correlation_key: string;
+	event_id: string;
+	episode_signature: string | null;
+	thread_id: string;
+	root_message_id: string | null;
+	channel_id: string;
+	lead_id: string;
+	project_name: string;
+	event_type: string;
+	session_key: string | null;
+	repair_status: string | null;
+	opened_at: string;
+	resolved_at: string | null;
+}
+
+function rowToAlertThread(row: Record<string, unknown>): AlertThreadRow {
+	return {
+		correlation_key: row.correlation_key as string,
+		event_id: row.event_id as string,
+		episode_signature: (row.episode_signature as string) ?? null,
+		thread_id: row.thread_id as string,
+		root_message_id: (row.root_message_id as string) ?? null,
+		channel_id: row.channel_id as string,
+		lead_id: row.lead_id as string,
+		project_name: row.project_name as string,
+		event_type: row.event_type as string,
+		session_key: (row.session_key as string) ?? null,
+		repair_status: (row.repair_status as string) ?? null,
+		opened_at: row.opened_at as string,
+		resolved_at: (row.resolved_at as string) ?? null,
+	};
 }
