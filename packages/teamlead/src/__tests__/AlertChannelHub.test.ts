@@ -265,18 +265,52 @@ describe("AlertChannelHub (FLY-368)", () => {
 	});
 });
 
-describe("createDiscordOps (FLY-368 allowed_mentions safety)", () => {
+describe("createDiscordOps (FLY-368 rework: repair chain + allowed_mentions)", () => {
 	it("posts thread messages with allowed_mentions {parse:[]}", async () => {
 		const fetchFn = vi.fn(async () => ({
 			ok: true,
+			status: 200,
 			json: async () => ({ id: "t" }),
 		})) as never;
-		const ops = createDiscordOps("tok", fetchFn);
+		const ops = createDiscordOps(() => ["cass-tok"], fetchFn);
 		await ops.postToThread("thread-1", "@everyone hi");
-		const [, init] = (
+		const [url, init] = (
 			fetchFn as unknown as { mock: { calls: [string, RequestInit][] } }
 		).mock.calls[0]!;
+		expect(url).toContain("/channels/thread-1/messages");
+		expect((init.headers as Record<string, string>).Authorization).toBe(
+			"Bot cass-tok",
+		);
 		const body = JSON.parse(init.body as string);
 		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+
+	it("falls through 401/403/404 to the next repair-chain bot", async () => {
+		const fetchFn = vi
+			.fn()
+			// first bot (Cass) → 403 no perms; second bot → 200
+			.mockResolvedValueOnce({ ok: false, status: 403 })
+			.mockResolvedValueOnce({ ok: true, status: 200 }) as never;
+		const ops = createDiscordOps(() => ["cass-tok", "alpha-tok"], fetchFn);
+		await ops.postToThread("thread-1", "hi");
+		const calls = (
+			fetchFn as unknown as { mock: { calls: [string, RequestInit][] } }
+		).mock.calls;
+		expect(calls).toHaveLength(2);
+		expect((calls[1]![1].headers as Record<string, string>).Authorization).toBe(
+			"Bot alpha-tok",
+		);
+	});
+
+	it("createThreadFromMessage tries first usable bot, returns its thread id", async () => {
+		const fetchFn = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({ id: "new-thread" }),
+		})) as never;
+		const ops = createDiscordOps(() => ["cass-tok"], fetchFn);
+		expect(await ops.createThreadFromMessage("ch", "msg", "name")).toBe(
+			"new-thread",
+		);
 	});
 });

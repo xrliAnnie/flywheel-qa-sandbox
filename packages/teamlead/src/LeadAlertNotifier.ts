@@ -27,6 +27,11 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+	buildRepairChain,
+	buildSendChain,
+	resolveFirstAvailableBotToken,
+} from "./bridge/alert-bot-chain.js";
 import type { MetaAlertReason } from "./MetaAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
@@ -106,14 +111,16 @@ export interface AlertResult {
 }
 
 /**
- * FLY-368: fleet-wide unified alert routing. When set, ALL Lead + Q7-runner
- * alerts route to one channel instead of each Lead's `alertChannel`, so Annie has
- * a single place to watch. `token` is the resolved bot token for that channel
- * (may be null → fall back to per-lead token resolution).
+ * FLY-368 (rework): fleet-wide unified alert routing. When set, ALL Lead +
+ * Q7-runner alerts route to one channel. The root alert is posted via the STUCK
+ * agent's OWN bot (correct attribution — the Bridge holds the token, so it works
+ * even if that agent is dead) with a fallback chain: own bot → repair bot (Cass)
+ * → alphabetical fleet (see `bridge/alert-bot-chain.ts`). `repairBotTokenEnv` is
+ * the env-var NAME of the repair/fallback bot (default `CASS_BOT_TOKEN`).
  */
 export interface UnifiedAlertConfig {
 	channelId: string;
-	token: string | null;
+	repairBotTokenEnv: string;
 }
 
 export type FetchLike = typeof globalThis.fetch;
@@ -180,6 +187,18 @@ type PostOutcome =
 /** 5xx and 429 are transient (retry); other 4xx are permanent (dead-letter). */
 function isTransientStatus(status: number): boolean {
 	return status >= 500 || status === 429;
+}
+
+/**
+ * FLY-368 rework (Codex code R1 MEDIUM): a permanent status that means "THIS bot
+ * can't post here" (auth/perms/not-a-member) → try the next bot in the send
+ * chain. Any other permanent 4xx (400/405/413/...) is a malformed request that
+ * fails identically for every bot → stop and dead-letter, don't burn the fleet.
+ * `undefined` (network error with no status) is NOT a fall-through (it's
+ * transient and handled before this is consulted).
+ */
+function isSendChainFallthrough(status: number | undefined): boolean {
+	return status === 401 || status === 403 || status === 404;
 }
 
 export class LeadAlertNotifier {
@@ -333,38 +352,58 @@ export class LeadAlertNotifier {
 			return { skipped: "duplicate" };
 		}
 
-		// Step 4: Resolve channel + token. Both are PERMANENT failures (config
-		// doesn't change at runtime) — dead-letter + meta-alert, do NOT queue
-		// for blind retry (FLY-182: the no-channel retry loop was the 1667
-		// backlog root cause).
+		// Step 4: Resolve channel (PERMANENT failure → dead-letter; config doesn't
+		// change at runtime). FLY-182: do NOT blind-retry no-channel.
 		const channel = this.resolveChannel(lead, project);
 		if (!channel) {
 			await this.deadLetter(payload, "no-channel");
 			return { skipped: "no-channel", deadLettered: true };
 		}
-		const token = this.resolveToken(lead);
-		if (!token) {
-			await this.deadLetter(payload, "no-token");
-			return { skipped: "no-token", deadLettered: true };
-		}
 
-		// Step 5: Fire the Discord POST. Classify failures: transient (5xx /
-		// 429 / network) → queue for retry; permanent (other 4xx — bad token,
-		// forbidden, channel gone) → dead-letter (retry is pointless).
-		const outcome = await this.postMessage(channel, token, payload);
-		if (!outcome.ok) {
-			if (outcome.transient) {
-				this.enqueue(payload, `discord-${outcome.status ?? "net"}`);
-				return { queued: true };
+		// Step 5: Fire the Discord POST.
+		// FLY-368 rework: in unified mode the root alert is posted via the
+		// owner-attributed send chain (stuck agent's own bot → Cass → alphabetical
+		// fleet, try-in-order, fall through 401/403/404). In legacy (per-lead) mode
+		// the single-token path is unchanged (byte-compat).
+		let messageId: string | undefined;
+		let usedToken: string | null = null;
+		if (this.unifiedAlert) {
+			const sent = await this.postAlertWithSendChain(payload, channel);
+			if (!sent.ok) {
+				if (sent.transient) {
+					this.enqueue(payload, `discord-${sent.status ?? "net"}`);
+					return { queued: true };
+				}
+				await this.deadLetter(payload, `discord-${sent.status ?? "4xx"}`);
+				return { deadLettered: true };
 			}
-			await this.deadLetter(payload, `discord-${outcome.status ?? "4xx"}`);
-			return { deadLettered: true };
+			messageId = sent.messageId;
+			usedToken = sent.usedToken ?? null;
+		} else {
+			const token = this.resolveToken(lead);
+			if (!token) {
+				await this.deadLetter(payload, "no-token");
+				return { skipped: "no-token", deadLettered: true };
+			}
+			const outcome = await this.postMessage(channel, token, payload);
+			if (!outcome.ok) {
+				if (outcome.transient) {
+					this.enqueue(payload, `discord-${outcome.status ?? "net"}`);
+					return { queued: true };
+				}
+				await this.deadLetter(payload, `discord-${outcome.status ?? "4xx"}`);
+				return { deadLettered: true };
+			}
+			messageId = outcome.messageId;
+			usedToken = token;
 		}
 
-		// Step 6: Severe follow-up DM (best-effort; never alters primary result).
+		// Step 6: Severe follow-up DM (best-effort). FLY-368 (Codex R1 LOW-3): use
+		// the WINNING root token so the DM comes from the same bot that visibly
+		// posted the root — not an independent re-resolve.
 		let dmSent = false;
-		if (payload.severity === "severe" && lead.alertDmUserId) {
-			dmSent = await this.sendDm(lead.alertDmUserId, token, payload);
+		if (payload.severity === "severe" && lead.alertDmUserId && usedToken) {
+			dmSent = await this.sendDm(lead.alertDmUserId, usedToken, payload);
 		}
 
 		// FLY-368: on the unified path, surface channel + posted message id so the
@@ -375,9 +414,63 @@ export class LeadAlertNotifier {
 			: { sent: true };
 		if (this.unifiedAlert) {
 			base.channelId = channel;
-			if (outcome.messageId) base.messageId = outcome.messageId;
+			if (messageId) base.messageId = messageId;
 		}
 		return base;
+	}
+
+	/**
+	 * FLY-368 rework: post the root alert via the owner-attributed send chain
+	 * (own bot → Cass → alphabetical fleet). Shared by `alert()` and
+	 * `drainQueue()` so the retry path uses the SAME logic (Codex R1 MEDIUM-2).
+	 *  - first 2xx wins (returns messageId + the winning token);
+	 *  - permanent rejection (401/403/404) on a candidate → try the next;
+	 *  - transient (429/5xx/network) → STOP, report transient (don't burn the
+	 *    chain on a blip; caller queues / leaves the queue file);
+	 *  - all candidates permanently fail / none resolve → ok:false, transient:false.
+	 * Tokens are resolved from env at call time (never persisted).
+	 */
+	private async postAlertWithSendChain(
+		payload: AlertPayload,
+		channel: string,
+	): Promise<{
+		ok: boolean;
+		messageId?: string;
+		usedTokenEnv?: string;
+		usedToken?: string;
+		transient?: boolean;
+		status?: number;
+	}> {
+		const repairEnv = this.unifiedAlert?.repairBotTokenEnv ?? "";
+		const chain = buildSendChain(this.projects, payload.leadId, repairEnv);
+		let lastStatus: number | undefined;
+		for (const tokenEnv of chain) {
+			const token = process.env[tokenEnv];
+			if (!token) continue;
+			const outcome = await this.postMessage(channel, token, payload);
+			if (outcome.ok) {
+				return {
+					ok: true,
+					messageId: outcome.messageId,
+					usedTokenEnv: tokenEnv,
+					usedToken: token,
+				};
+			}
+			if (outcome.transient) {
+				// Transient on this candidate → stop; the alert is retryable as a whole.
+				return { ok: false, transient: true, status: outcome.status };
+			}
+			// Permanent. ONLY 401/403/404 (this bot lacks channel perms) falls through
+			// to the next candidate (Codex code R1 MEDIUM). Any other permanent status
+			// (400/405/413/... — a malformed request that will fail identically for
+			// EVERY bot) stops immediately and dead-letters; trying the rest of the
+			// fleet would be pointless and noisy.
+			if (!isSendChainFallthrough(outcome.status)) {
+				return { ok: false, transient: false, status: outcome.status };
+			}
+			lastStatus = outcome.status;
+		}
+		return { ok: false, transient: false, status: lastStatus };
 	}
 
 	/**
@@ -452,17 +545,40 @@ export class LeadAlertNotifier {
 			}
 			const { lead, project } = resolved;
 			const channel = this.resolveChannel(lead, project);
-			const token = this.resolveToken(lead);
-			if (!channel || !token) {
+			if (!channel) {
 				// Config problem — permanent. Dead-letter, don't spin.
-				this.moveQueueFileToDeadLetter(
-					file,
-					channel ? "no-token" : "no-channel",
-				);
+				this.moveQueueFileToDeadLetter(file, "no-channel");
 				deadLettered++;
 				continue;
 			}
 
+			// FLY-368 rework (Codex R1 MEDIUM-2): drain retries use the SAME
+			// owner-attributed send chain as the first send in unified mode, so a
+			// queued alert is never re-sent via stale single-token logic. Chain is
+			// recomputed here (env/config may have changed); tokens are not stored.
+			if (this.unifiedAlert) {
+				const sentResult = await this.postAlertWithSendChain(parsed, channel);
+				if (sentResult.ok) {
+					unlinkSync(path);
+					sent++;
+				} else if (!sentResult.transient) {
+					// Every candidate permanently failed → dead-letter.
+					this.moveQueueFileToDeadLetter(
+						file,
+						`discord-${sentResult.status ?? "4xx"}`,
+					);
+					deadLettered++;
+				}
+				// transient → leave for the next pass.
+				continue;
+			}
+
+			const token = this.resolveToken(lead);
+			if (!token) {
+				this.moveQueueFileToDeadLetter(file, "no-token");
+				deadLettered++;
+				continue;
+			}
 			const outcome = await this.postMessage(channel, token, parsed);
 			if (outcome.ok) {
 				unlinkSync(path);
@@ -542,10 +658,12 @@ export class LeadAlertNotifier {
 		return null;
 	}
 
+	/**
+	 * Legacy (non-unified) per-lead token resolution — unchanged byte-compat.
+	 * The unified path no longer uses this; it resolves per-alert via the
+	 * owner-attributed send chain (`postAlertWithSendChain`).
+	 */
 	private resolveToken(lead: LeadConfig): string | null {
-		// FLY-368: in unified mode prefer the unified bot token; fall back to the
-		// per-lead token when the unified token is absent (matrix item 3).
-		if (this.unifiedAlert?.token) return this.unifiedAlert.token;
 		const envName = lead.alertBotTokenEnv ?? lead.botTokenEnv;
 		if (envName) {
 			const fromEnv = process.env[envName];
@@ -675,38 +793,32 @@ export interface UnreachableAlertLead {
  */
 export function findUnreachableAlertLeads(
 	projects: ProjectEntry[],
-	unified?: { channelId?: string; token?: string | null },
+	unified?: { channelId?: string; repairBotTokenEnv?: string },
 ): UnreachableAlertLead[] {
 	const out: UnreachableAlertLead[] = [];
-	// FLY-368 matrix (Codex R1 MEDIUM-9):
-	//  - unified channel set + unified token resolves → unified is the single
-	//    reachable path; per-lead channel/token are irrelevant → nothing to report.
-	//  - unified channel set + NO unified token → alerts fall back to the per-lead
-	//    token (channel is unified so channel is always fine) → validate per-lead
-	//    TOKEN only, never channel.
-	//  - unified channel unset → original per-lead channel+token validation.
-	const unifiedChannelSet = !!unified?.channelId;
-	const unifiedTokenResolves = !!unified?.token;
-	if (unifiedChannelSet && unifiedTokenResolves) {
+	// FLY-368 rework: in unified mode every alert resolves a token via the
+	// fleet-wide send chain (own → repair/Cass → alphabetical). A lead is
+	// therefore unreachable ONLY if the ENTIRE fleet has no resolvable bot token
+	// — a single fleet-wide failure, not per-lead noise. (The per-thread
+	// repair-bot fail-loud lives in plugin.ts.)
+	if (unified?.channelId) {
+		const repairEnv = unified.repairBotTokenEnv ?? "";
+		const anyBot = resolveFirstAvailableBotToken(
+			buildRepairChain(projects, repairEnv),
+		);
+		if (!anyBot) {
+			out.push({
+				projectName: "*",
+				leadId: "*",
+				reason:
+					"unified alert channel set but NO fleet bot token resolves (repair chain Cass→alpha empty) — alerts cannot be sent",
+			});
+		}
 		return out;
 	}
+	// Legacy (non-unified) per-lead channel+token validation — unchanged.
 	for (const project of projects) {
 		for (const lead of project.leads) {
-			if (unifiedChannelSet) {
-				// Channel is unified (always present); only the per-lead token matters.
-				const tokenEnvName = lead.alertBotTokenEnv ?? lead.botTokenEnv;
-				const tokenResolves =
-					(!!tokenEnvName && !!process.env[tokenEnvName]) || !!lead.botToken;
-				if (!tokenResolves) {
-					out.push({
-						projectName: project.projectName,
-						leadId: lead.agentId,
-						reason:
-							"unified alert channel set but no unified token, and this lead has no resolvable fallback token (alertBotTokenEnv/botTokenEnv/botToken)",
-					});
-				}
-				continue;
-			}
 			const hasChannel =
 				!!lead.alertChannel ||
 				(!!lead.alertFallbackToCore && !!project.generalChannel);

@@ -54,10 +54,14 @@ import {
 } from "../ProjectConfig.js";
 import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import { StateStore } from "../StateStore.js";
-// FLY-368: unified alert channel + per-error threading + conservative auto-repair.
 import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import { createActionRouter } from "./actions.js";
+// FLY-368: unified alert channel + per-error threading + conservative auto-repair.
+import {
+	buildRepairChain,
+	resolveFirstAvailableBotToken,
+} from "./alert-bot-chain.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
@@ -2644,19 +2648,22 @@ export async function startBridge(
 			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
 		);
 	});
-	// FLY-368: unified alert channel + per-error threading + conservative
-	// auto-repair. ALL three are default-off (env-gated) → unset = byte-identical
-	// to today. The aggregation/routing lives HERE in the always-up Bridge so the
-	// alert channel survives Lead restarts (the robustness invariant).
+	// FLY-368 (rework): unified alert channel + owner-attributed send + per-error
+	// threading + Cass-driven conservative auto-repair. ALL env-gated, default-off
+	// → unset = byte-identical to today. Aggregation/routing lives HERE in the
+	// always-up Bridge so the channel survives Lead restarts. The root alert posts
+	// via the STUCK agent's OWN bot (Bridge holds the token; works even if the
+	// agent is dead) → fallback Cass → alphabetical fleet.
 	const unifiedAlertChannelId = process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
-	const alertBotTokenEnvName = process.env.FLYWHEEL_ALERT_BOT_TOKEN_ENV;
-	const unifiedAlertToken = alertBotTokenEnvName
-		? (process.env[alertBotTokenEnvName] ?? null)
-		: null;
+	const repairBotTokenEnvName =
+		process.env.FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV ?? "CASS_BOT_TOKEN";
 	const alertThreadsEnabled = process.env.FLYWHEEL_ALERT_THREADS === "1";
 	const autoRepairEnabled = process.env.FLYWHEEL_AUTO_REPAIR === "1";
 	const unifiedAlert = unifiedAlertChannelId
-		? { channelId: unifiedAlertChannelId, token: unifiedAlertToken }
+		? {
+				channelId: unifiedAlertChannelId,
+				repairBotTokenEnv: repairBotTokenEnvName,
+			}
 		: undefined;
 
 	const leadAlertNotifier = new LeadAlertNotifier({
@@ -2668,29 +2675,58 @@ export async function startBridge(
 		unifiedAlert,
 	});
 
-	// FLY-368: per-error threading needs ONE bot identity for root/thread/ack/
-	// resolve. If threading is enabled without a usable unified token, fail LOUD
-	// (Codex R1 HIGH-3) — do NOT silently run threadless.
-	if (alertThreadsEnabled && !(unifiedAlertChannelId && unifiedAlertToken)) {
+	// FLY-368 rework: the repair chain (Cass → alphabetical fleet) drives thread
+	// creation + ack/repair/resolve. Resolve it at boot for the enable gate; the
+	// Hub re-resolves per call (env may change). Tokens never logged.
+	const repairChainEnvs = buildRepairChain(projects, repairBotTokenEnvName);
+	const repairChainResolves = !!resolveFirstAvailableBotToken(repairChainEnvs);
+	const firstRepairBot = resolveFirstAvailableBotToken(repairChainEnvs);
+	if (
+		unifiedAlertChannelId &&
+		firstRepairBot &&
+		firstRepairBot.tokenEnv !== repairBotTokenEnvName
+	) {
+		// Cass isn't the first usable repair bot (degraded attribution) — run on the
+		// alpha fallback but surface it LOUDLY: log + meta-alert (Codex code R1 LOW —
+		// an operator must know repair messages no longer come from Cass). Token-free.
+		console.warn(
+			`[Bridge] FLY-368: repair bot "${repairBotTokenEnvName}" not resolvable — repair thread messages will use fallback "${firstRepairBot.tokenEnv}".`,
+		);
+		void metaAlertNotifier.notify({
+			reason: "alert_unreachable_config",
+			title: "FLY-368 repair bot degraded",
+			body: `Configured repair bot env "${repairBotTokenEnvName}" did not resolve — auto-repair thread messages will be attributed to fallback "${firstRepairBot.tokenEnv}" instead of Aunt Cass.`,
+		});
+	}
+
+	// FLY-368 rework (Codex R1 HIGH-1): threading needs a RESOLVABLE repair CHAIN
+	// (any fleet bot), NOT one fixed token. Fail LOUD + disable threading ONLY when
+	// the entire repair chain is empty.
+	if (alertThreadsEnabled && !(unifiedAlertChannelId && repairChainResolves)) {
 		console.error(
-			"[Bridge] FLY-368: FLYWHEEL_ALERT_THREADS=1 but no usable unified alert channel+token " +
-				"(need FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID + a resolvable FLYWHEEL_ALERT_BOT_TOKEN_ENV) — threading DISABLED.",
+			"[Bridge] FLY-368: FLYWHEEL_ALERT_THREADS=1 but no usable unified channel + repair chain " +
+				"(need FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID + at least one resolvable fleet bot token) — threading DISABLED.",
 		);
 		void metaAlertNotifier.notify({
 			reason: "alert_unreachable_config",
 			title: "FLY-368 alert threading misconfigured",
-			body: "FLYWHEEL_ALERT_THREADS=1 but the unified alert channel/token is missing — per-error threads will NOT be created.",
+			body: "FLYWHEEL_ALERT_THREADS=1 but no unified channel / no resolvable repair-chain bot — per-error threads will NOT be created.",
 		});
 	}
 
-	// FLY-368: construct the Hub only when unified channel + threading + token are
-	// all present; otherwise the watchdogs route straight to the notifier (legacy).
+	// FLY-368 rework: Hub on when unified channel + threading + a resolvable repair
+	// chain; else watchdogs route straight to the notifier (legacy / root-only).
 	const alertHub =
-		unifiedAlert && alertThreadsEnabled && unifiedAlertToken
+		unifiedAlert && alertThreadsEnabled && repairChainResolves
 			? new AlertChannelHub({
 					store,
 					notifier: leadAlertNotifier,
-					discord: createDiscordOps(unifiedAlertToken),
+					// Repair-chain DiscordOps: Cass → alphabetical, resolved per call.
+					discord: createDiscordOps(() =>
+						buildRepairChain(projects, repairBotTokenEnvName)
+							.map((env) => process.env[env])
+							.filter((t): t is string => !!t),
+					),
 					// FLY-368: conservative auto-repair, default OFF. Only the two safe
 					// actions; reuses the audited runner-nudge + lead-resume-enter ops.
 					autoRepairBot: autoRepairEnabled
@@ -2753,10 +2789,11 @@ export async function startBridge(
 	// FLY-182 §4.1: surface any Lead whose alert channel/token cannot resolve
 	// from config — the silent gap that broke alerting for 25 days. LOUD log +
 	// one meta-alert (debounced) so it never goes unnoticed again.
-	// FLY-368: in unified mode the matrix relaxes per-lead checks (Codex MEDIUM-9).
+	// FLY-368 rework: in unified mode a lead is unreachable only if the whole
+	// fleet send-chain resolves nothing (per-lead noise removed).
 	const unreachableAlertLeads = findUnreachableAlertLeads(projects, {
 		channelId: unifiedAlertChannelId,
-		token: unifiedAlertToken,
+		repairBotTokenEnv: repairBotTokenEnvName,
 	});
 	if (unreachableAlertLeads.length > 0) {
 		for (const u of unreachableAlertLeads) {

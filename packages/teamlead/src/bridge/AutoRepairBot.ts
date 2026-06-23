@@ -56,7 +56,9 @@ export interface AutoRepairBotDeps {
 	logger?: (msg: string) => void;
 }
 
-const ACTOR = "auto-repair-bot";
+// FLY-368 rework: auto-repair is attributed to Aunt Cass (the fleet-recovery
+// CoS / "the fixer") — the audit actor reflects that. Gate logic is unchanged.
+const ACTOR = "aunt-cass";
 
 /** Account/billing/login/permission kinds the bot must NEVER touch — human-only. */
 const HUMAN_ONLY_REASON: Partial<Record<AlertPayload["eventType"], string>> = {
