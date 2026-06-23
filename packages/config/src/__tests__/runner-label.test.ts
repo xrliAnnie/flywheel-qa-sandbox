@@ -74,4 +74,27 @@ describe("parseRunnerLabels", () => {
 		expect(parseRunnerLabels(["gemini"]).runnerType).toBe("gemini");
 		expect(parseRunnerLabels(["cursor"]).runnerType).toBe("cursor");
 	});
+
+	// FLY-494: Kimi Code (kimi) as a first-class runner vendor label.
+	it("resolves kimi label (and kimi-code alias), case-insensitive", () => {
+		expect(parseRunnerLabels(["kimi"]).runnerType).toBe("kimi");
+		expect(parseRunnerLabels(["kimi-code"]).runnerType).toBe("kimi");
+		expect(parseRunnerLabels(["Kimi"]).runnerType).toBe("kimi");
+		expect(parseRunnerLabels(["KIMI-CODE"]).runnerType).toBe("kimi");
+	});
+
+	it("kimi label does not carry a model override on its own", () => {
+		expect(parseRunnerLabels(["kimi"])).toEqual({
+			runnerType: "kimi",
+		});
+	});
+
+	it("kimi does not perturb existing agent labels (incl. antigravity)", () => {
+		// Regression guard: adding kimi precedence leaves all others intact.
+		expect(parseRunnerLabels(["codex"]).runnerType).toBe("codex");
+		expect(parseRunnerLabels(["claude"]).runnerType).toBe("claude");
+		expect(parseRunnerLabels(["gemini"]).runnerType).toBe("gemini");
+		expect(parseRunnerLabels(["cursor"]).runnerType).toBe("cursor");
+		expect(parseRunnerLabels(["antigravity"]).runnerType).toBe("antigravity");
+	});
 });

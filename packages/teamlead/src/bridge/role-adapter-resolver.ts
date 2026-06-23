@@ -41,6 +41,8 @@ export type TransportMode = TransportBackend | "none";
  *
  * FLY-493: `antigravity-tmux` → `"none"` (the Antigravity `agy` CLI has no
  * claude-code Agent Team; v1 runs transport-less — plan §4.2).
+ * FLY-494: `kimi-tmux` → `"none"` (the Kimi Code `kimi` CLI likewise has no
+ * claude-code Agent Team; v1 transport-less, same no-transport lifecycle).
  */
 export const EXECUTOR_TO_TRANSPORT: Readonly<
 	Record<ExecutorBackend, TransportMode>
@@ -48,6 +50,7 @@ export const EXECUTOR_TO_TRANSPORT: Readonly<
 	"claude-tmux": "claude-code",
 	"codex-tmux": "codex",
 	"antigravity-tmux": "none",
+	"kimi-tmux": "none",
 };
 
 /** Vendor-type (label layer) → executor backend. */
@@ -55,6 +58,7 @@ const VENDOR_TO_EXECUTOR: Partial<Record<RunnerVendorType, ExecutorBackend>> = {
 	claude: "claude-tmux",
 	codex: "codex-tmux",
 	antigravity: "antigravity-tmux", // FLY-493
+	kimi: "kimi-tmux", // FLY-494
 	// gemini / cursor: no executor — label layer cannot resolve them.
 };
 
@@ -98,7 +102,8 @@ function parseEnvBackend(
 	if (
 		value === "claude-tmux" ||
 		value === "codex-tmux" ||
-		value === "antigravity-tmux"
+		value === "antigravity-tmux" ||
+		value === "kimi-tmux"
 	) {
 		return value;
 	}
@@ -111,6 +116,8 @@ function parseEnvBackend(
 	//
 	// FLY-493: `agy` is the short alias the label parser also accepts; normalize
 	// it to the `antigravity` vendor key before the lookup.
+	// FLY-494: `kimi` needs NO normalization — the vendor key IS `kimi` (unlike
+	// `agy`, whose alias differs from the `antigravity` vendor key).
 	const normalized = value === "agy" ? "antigravity" : value;
 	//
 	// `Object.hasOwn` guard is required: VENDOR_TO_EXECUTOR is a plain object,
@@ -126,7 +133,7 @@ function parseEnvBackend(
 	// validation spirit) — but env is read at dispatch time, so warn + ignore
 	// rather than crash the Bridge.
 	console.warn(
-		`[RoleAdapterResolver] ${envName}="${raw}" is not a supported backend (claude-tmux | codex-tmux | antigravity-tmux | claude | codex | antigravity | agy) — ignoring.`,
+		`[RoleAdapterResolver] ${envName}="${raw}" is not a supported backend (claude-tmux | codex-tmux | antigravity-tmux | kimi-tmux | claude | codex | antigravity | agy | kimi) — ignoring.`,
 	);
 	return undefined;
 }

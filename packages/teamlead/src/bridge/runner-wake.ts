@@ -23,8 +23,9 @@ import type { StateStore } from "../StateStore.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 
 /**
- * FLY-493: a session whose executor backend has `transport: "none"` (antigravity)
- * has no mailbox to wake. Recognize it from the persisted `adapter_type`.
+ * FLY-493: a session whose executor backend has `transport: "none"` (e.g.
+ * antigravity / kimi) has no mailbox to wake. Recognize it from the persisted
+ * `adapter_type` via the generic EXECUTOR_TO_TRANSPORT table.
  */
 function isNoTransportBackend(adapterType: string | undefined): boolean {
 	if (!adapterType) return false;
@@ -102,9 +103,10 @@ export async function sendRunnerWake(
 	kind: WakeKind,
 	wakeDetail?: WakeDetail,
 ): Promise<void> {
-	// FLY-493 (Codex R2 #1 defense-in-depth): a no-transport (antigravity)
-	// session has NO mailbox — routing a wake to the env-default claude mailbox
-	// would report a misleading success for a process that isn't listening. Skip
+	// FLY-493 (Codex R2 #1 defense-in-depth): a no-transport (e.g. antigravity /
+	// kimi) session has NO mailbox — routing a wake to the env-default claude
+	// mailbox would report a misleading success for a process that isn't
+	// listening. Skip
 	// it and record honest telemetry instead. (Design (B) terminalizes such
 	// runners at `pr_handoff` so this path is normally unreachable; this guard
 	// guarantees no false wake-success from ANY surface.)

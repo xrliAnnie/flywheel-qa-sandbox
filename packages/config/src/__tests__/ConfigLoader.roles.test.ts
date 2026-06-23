@@ -78,6 +78,17 @@ roles:
 		expect(config.roles?.runner?.backend).toBe("antigravity-tmux");
 	});
 
+	// FLY-494: kimi-tmux is a valid executor backend.
+	it("accepts kimi-tmux as a runner backend", async () => {
+		const yaml = `${BASE}
+roles:
+  runner:
+    backend: kimi-tmux
+`;
+		const config = await loaderFor(yaml).load("fake.yaml");
+		expect(config.roles?.runner?.backend).toBe("kimi-tmux");
+	});
+
 	// FLY-493 (Codex R1 #6): validBackends must be DERIVED from EXECUTOR_BACKENDS
 	// so the two lists cannot drift. Guard: every declared executor backend
 	// validates in a roles block.
