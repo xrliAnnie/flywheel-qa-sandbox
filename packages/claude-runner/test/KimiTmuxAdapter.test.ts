@@ -40,7 +40,7 @@ function makeMockExec(
 		calls.push({ cmd, args, opts: execOpts });
 		if (cmd === "kimi") {
 			if (args[0] === "--version") return { stdout: "kimi 0.18.0" };
-			// auth probe: -p "Reply ..." --yolo
+			// auth probe: -p "Reply ..." (alone — no --yolo/--auto)
 			if (args.includes("-p")) {
 				// Simulate a hung/timed-out probe that the bounded exec kills → throw.
 				if (authThrow) throw authThrow;
@@ -134,13 +134,17 @@ describe("KimiTmuxAdapter", () => {
 			makeCtx({ model: "kimi-for-coding" }),
 		);
 		const launch = launchCommand(calls);
-		// kimi flags present (verified against kimi 0.18.0 — FLY-494 live spike)
-		expect(launch).toContain("--yolo");
+		// kimi flags present (verified against kimi 0.18.0 with real auth)
 		expect(launch).toContain("--model");
 		expect(launch).toContain("kimi-for-coding");
 		expect(launch).toContain("-p");
-		// the doc-based `--print` flag does NOT exist in the shipped binary
+		// `-p` mode auto-approves tools by default AND the CLI hard-rejects
+		// combining --yolo/--auto with -p, so the launch must carry NEITHER.
+		expect(launch).not.toContain("--yolo");
+		expect(launch).not.toContain("--auto");
+		// the doc-based `--print` / `--afk` flags do NOT exist in the shipped binary
 		expect(launch).not.toContain("--print");
+		expect(launch).not.toContain("--afk");
 		// claude-only flags ABSENT
 		for (const claudeFlag of [
 			"--session-id",
@@ -151,6 +155,15 @@ describe("KimiTmuxAdapter", () => {
 		]) {
 			expect(launch).not.toContain(claudeFlag);
 		}
+	});
+
+	it("auth probe is `-p` ALONE (never combined with --yolo/--auto, which the CLI rejects)", async () => {
+		const { fn, calls } = makeMockExec();
+		await new KimiTmuxAdapter("flywheel", fn, 10).execute(makeCtx());
+		const probe = calls.find((c) => c.cmd === "kimi" && c.args.includes("-p"));
+		expect(probe).toBeDefined();
+		expect(probe?.args).not.toContain("--yolo");
+		expect(probe?.args).not.toContain("--auto");
 	});
 
 	it("no --model flag when ctx.model is unset", async () => {
