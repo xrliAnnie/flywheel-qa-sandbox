@@ -538,56 +538,150 @@ describe("findUnreachableAlertLeads (FLY-182 §4.1 startup validation)", () => {
 	});
 });
 
-describe("LeadAlertNotifier — FLY-368 unified alert channel", () => {
+describe("LeadAlertNotifier — FLY-368 rework: owner-attributed send chain", () => {
 	let store: StateStore;
 	let queueDir: string;
+	const saved: Record<string, string | undefined> = {};
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
-		queueDir = mkdtempSync(join(tmpdir(), "fly368-queue-"));
+		queueDir = mkdtempSync(join(tmpdir(), "fly368rw-queue-"));
+		// Set the fleet bot tokens this suite asserts attribution against.
+		for (const k of ["SIMBA_BOT_TOKEN", "PETER_BOT_TOKEN", "CASS_BOT_TOKEN"]) {
+			saved[k] = process.env[k];
+		}
+		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.PETER_BOT_TOKEN = "peter-tok";
+		process.env.CASS_BOT_TOKEN = "cass-tok";
 	});
 	afterEach(() => {
 		rmSync(queueDir, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
 	});
 
-	it("routes ALL alerts to the unified channel (overriding per-lead alertChannel) and returns channelId+messageId", async () => {
+	// testProjects: cos-lead=SIMBA_BOT_TOKEN, product-lead=PETER_BOT_TOKEN,
+	// ops-lead=(no botTokenEnv). Cass token env for repair/fallback = CASS_BOT_TOKEN.
+	const unified = {
+		channelId: "OPS-CHAN",
+		repairBotTokenEnv: "CASS_BOT_TOKEN",
+	};
+
+	it("posts the root alert via the STUCK lead's OWN bot (correct attribution)", async () => {
 		const fetchFn = vi.fn().mockResolvedValue({
 			ok: true,
 			status: 200,
 			statusText: "OK",
 			text: async () => "",
-			json: async () => ({ id: "root-msg-123" }),
+			json: async () => ({ id: "root-1" }),
 		});
 		const notifier = new LeadAlertNotifier({
 			store,
 			projects: testProjects,
 			fetchFn,
 			queueDir,
-			unifiedAlert: { channelId: "UNIFIED-CHAN", token: "unified-token" },
+			unifiedAlert: unified,
 		});
-
 		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
-
 		expect(result.sent).toBe(true);
-		expect(result.channelId).toBe("UNIFIED-CHAN");
-		expect(result.messageId).toBe("root-msg-123");
+		expect(result.channelId).toBe("OPS-CHAN");
+		expect(result.messageId).toBe("root-1");
 		const [url, init] = fetchFn.mock.calls[0] as [string, RequestInit];
-		// cos-lead.alertChannel is 1487340532610109520, but unified wins:
-		expect(url).toBe(
-			"https://discord.com/api/v10/channels/UNIFIED-CHAN/messages",
-		);
+		expect(url).toBe("https://discord.com/api/v10/channels/OPS-CHAN/messages");
+		// own bot = SIMBA (cos-lead), NOT a fixed unified token
 		expect((init.headers as Record<string, string>).Authorization).toBe(
-			"Bot unified-token",
+			"Bot simba-tok",
 		);
+		const body = JSON.parse(init.body as string);
+		expect(body.allowed_mentions).toEqual({ parse: [] });
 	});
 
-	it("byte-compat: with NO unified config the result is exactly { sent: true } (no channelId/messageId)", async () => {
+	it("a lead with no own bot (ops-lead) falls back to Cass", async () => {
 		const fetchFn = vi.fn().mockResolvedValue({
 			ok: true,
 			status: 200,
 			statusText: "OK",
 			text: async () => "",
-			json: async () => ({ id: "should-not-be-read" }),
+			json: async () => ({ id: "m-1" }),
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		const result = await notifier.alert(
+			buildPayload({ leadId: "ops-lead", eventType: "runner_stuck_unhandled" }),
+		);
+		expect(result.sent).toBe(true);
+		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
+		expect((init.headers as Record<string, string>).Authorization).toBe(
+			"Bot cass-tok",
+		);
+	});
+
+	it("403 on the stuck lead's bot (no channel perms) falls through to the next chain bot", async () => {
+		const fetchFn = vi
+			.fn()
+			// cos-lead's own bot (SIMBA) → 403; next chain bot (Cass) → 200
+			.mockResolvedValueOnce({
+				ok: false,
+				status: 403,
+				statusText: "Forbidden",
+				text: async () => "",
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				statusText: "OK",
+				text: async () => "",
+				json: async () => ({ id: "m-2" }),
+			});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(result.sent).toBe(true);
+		expect(fetchFn).toHaveBeenCalledTimes(2);
+		const [, init2] = fetchFn.mock.calls[1] as [string, RequestInit];
+		expect((init2.headers as Record<string, string>).Authorization).toBe(
+			"Bot cass-tok",
+		);
+	});
+
+	it("a transient (429) on the first chain bot does NOT burn the chain — queues", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 429,
+			statusText: "Too Many Requests",
+			text: async () => "",
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(result).toEqual({ queued: true });
+		// stopped at the first (transient) candidate — did not try the rest
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+
+	it("byte-compat: with NO unified config the result is exactly { sent: true }", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
 		});
 		const notifier = new LeadAlertNotifier({
 			store,
@@ -597,93 +691,85 @@ describe("LeadAlertNotifier — FLY-368 unified alert channel", () => {
 		});
 		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
 		expect(result).toEqual({ sent: true });
-		expect(result).not.toHaveProperty("channelId");
-		expect(result).not.toHaveProperty("messageId");
 	});
 
-	it("a runner-stuck-unhandled alert routes a runner from a Lead that has no per-lead alertChannel to the unified channel", async () => {
-		const fetchFn = vi.fn().mockResolvedValue({
-			ok: true,
-			status: 200,
-			statusText: "OK",
-			text: async () => "",
-			json: async () => ({ id: "m-1" }),
-		});
-		const notifier = new LeadAlertNotifier({
-			store,
-			projects: testProjects,
-			fetchFn,
-			queueDir,
-			unifiedAlert: { channelId: "UNIFIED-CHAN", token: "unified-token" },
-		});
-		// ops-lead has NO alertChannel and NO alertFallbackToCore → today it would
-		// dead-letter. Under unified routing it reaches the one channel.
-		const result = await notifier.alert(
-			buildPayload({
-				leadId: "ops-lead",
-				eventType: "runner_stuck_unhandled",
-				sessionKey: "exec-1",
-			}),
-		);
-		expect(result.sent).toBe(true);
-		expect(result.channelId).toBe("UNIFIED-CHAN");
-	});
-
-	it("unified root POST suppresses mentions (allowed_mentions {parse:[]})", async () => {
-		const fetchFn = vi.fn().mockResolvedValue({
-			ok: true,
-			status: 200,
-			statusText: "OK",
-			text: async () => "",
-			json: async () => ({ id: "m-1" }),
-		});
-		const notifier = new LeadAlertNotifier({
-			store,
-			projects: testProjects,
-			fetchFn,
-			queueDir,
-			unifiedAlert: { channelId: "UNIFIED-CHAN", token: "unified-token" },
-		});
-		await notifier.alert(buildPayload());
-		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
-		const body = JSON.parse(init.body as string);
-		expect(body.allowed_mentions).toEqual({ parse: [] });
-	});
-
-	it("legacy (no unified) root POST does NOT add allowed_mentions (byte-compat)", async () => {
-		const fetchFn = vi.fn().mockResolvedValue({
-			ok: true,
-			status: 200,
-			statusText: "OK",
-			text: async () => "",
-		});
-		const notifier = new LeadAlertNotifier({
-			store,
-			projects: testProjects,
-			fetchFn,
-			queueDir,
-		});
-		await notifier.alert(buildPayload());
-		const [, init] = fetchFn.mock.calls[0] as [string, RequestInit];
-		const body = JSON.parse(init.body as string);
-		expect(body).not.toHaveProperty("allowed_mentions");
-	});
-
-	it("findUnreachableAlertLeads: unified channel + token → nothing unreachable", () => {
+	it("findUnreachableAlertLeads: unified + a resolvable fleet bot → nothing unreachable", () => {
 		expect(
 			findUnreachableAlertLeads(testProjects, {
-				channelId: "UNIFIED-CHAN",
-				token: "unified-token",
+				channelId: "OPS-CHAN",
+				repairBotTokenEnv: "CASS_BOT_TOKEN",
 			}),
 		).toEqual([]);
 	});
 
-	it("findUnreachableAlertLeads: unified channel + NO unified token → validate per-lead fallback token only", () => {
+	it("findUnreachableAlertLeads: unified + NO fleet bot resolves → one fleet-wide entry", () => {
+		// unset every fleet token so the whole chain resolves nothing
+		for (const k of ["SIMBA_BOT_TOKEN", "PETER_BOT_TOKEN", "CASS_BOT_TOKEN"]) {
+			delete process.env[k];
+		}
 		const out = findUnreachableAlertLeads(testProjects, {
-			channelId: "UNIFIED-CHAN",
-			token: null,
+			channelId: "OPS-CHAN",
+			repairBotTokenEnv: "CASS_BOT_TOKEN",
 		});
-		// ops-lead has no token of any kind → unreachable; cos/product have tokens.
-		expect(out.map((u) => u.leadId)).toEqual(["ops-lead"]);
+		expect(out).toHaveLength(1);
+		expect(out[0]?.leadId).toBe("*");
+	});
+
+	it("a non-fallthrough permanent status (400) on the owner bot STOPS — does NOT try Cass — and dead-letters", async () => {
+		const dlDir = mkdtempSync(join(tmpdir(), "fly368rw-dl-"));
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 400,
+			statusText: "Bad Request",
+			text: async () => "",
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir: dlDir,
+			unifiedAlert: unified,
+		});
+		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(result.deadLettered).toBe(true);
+		// 400 is malformed for EVERY bot → only the owner bot was tried, not Cass/alpha.
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		rmSync(dlDir, { recursive: true, force: true });
+	});
+
+	it("drainQueue: a 400 also stops at the first candidate and dead-letters (same helper)", async () => {
+		const dlDir = mkdtempSync(join(tmpdir(), "fly368rw-dl2-"));
+		// First send: transient 5xx → queues.
+		const fetchTransient = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 503,
+			statusText: "Service Unavailable",
+			text: async () => "",
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: fetchTransient,
+			queueDir,
+			deadLetterDir: dlDir,
+			unifiedAlert: unified,
+		});
+		const queued = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(queued).toEqual({ queued: true });
+
+		// Drain with a 400 → stop at first candidate, dead-letter (not the whole fleet).
+		const fetch400 = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 400,
+			statusText: "Bad Request",
+			text: async () => "",
+		});
+		// swap the fetch impl for the drain
+		(notifier as unknown as { fetchFn: typeof fetch400 }).fetchFn = fetch400;
+		const drained = await notifier.drainQueue();
+		expect(drained.deadLettered).toBe(1);
+		expect(fetch400).toHaveBeenCalledTimes(1);
+		rmSync(dlDir, { recursive: true, force: true });
 	});
 });

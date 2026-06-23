@@ -33,62 +33,92 @@ import { fingerprintOutput } from "./stuck-candidate.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 
+/** A bot whose token can't post here (no channel perms) → try the next bot. */
+function isPermFallthrough(status: number): boolean {
+	return status === 401 || status === 403 || status === 404;
+}
+
 /**
- * FLY-368: production DiscordOps over the Discord REST API with one fixed bot
- * identity (the unified alert bot). Every message sends
- * `allowed_mentions: { parse: [] }` so an issue id / title / future body text
- * can never ping anyone (Codex R1 LOW-11, matching ChatThreadCreator).
+ * FLY-368 rework: production DiscordOps over the Discord REST API using the
+ * REPAIR chain (Cass → alphabetical fleet). `getTokens()` returns the ordered,
+ * resolved bot tokens at CALL time (env may change; tokens never cached). Each
+ * operation tries candidates in order: 2xx wins; 401/403/404 (that bot lacks
+ * channel perms) → next candidate; any other non-2xx → throw (the Hub's safe
+ * wrapper logs). Every message sends `allowed_mentions: { parse: [] }` so an
+ * issue id / title / body can never ping the channel (Codex R1 LOW-11).
  */
 export function createDiscordOps(
-	token: string,
+	getTokens: () => string[],
 	fetchFn: typeof globalThis.fetch = globalThis.fetch,
 ): DiscordOps {
-	const auth = {
+	const authHeaders = (token: string) => ({
 		Authorization: `Bot ${token}`,
 		"Content-Type": "application/json",
-	};
+	});
 	return {
 		async createThreadFromMessage(channelId, messageId, name) {
-			try {
-				const res = await fetchFn(
-					`${DISCORD_API}/channels/${channelId}/messages/${messageId}/threads`,
-					{
-						method: "POST",
-						headers: auth,
-						body: JSON.stringify({ name, auto_archive_duration: 1440 }),
-					},
-				);
-				if (!res.ok) return null;
-				const body = (await res.json()) as { id?: string };
-				return body.id ?? null;
-			} catch {
-				return null;
+			const tokens = getTokens();
+			for (const token of tokens) {
+				try {
+					const res = await fetchFn(
+						`${DISCORD_API}/channels/${channelId}/messages/${messageId}/threads`,
+						{
+							method: "POST",
+							headers: authHeaders(token),
+							body: JSON.stringify({ name, auto_archive_duration: 1440 }),
+						},
+					);
+					if (res.ok) {
+						const body = (await res.json()) as { id?: string };
+						return body.id ?? null;
+					}
+					if (isPermFallthrough(res.status)) continue; // this bot can't post → next
+					return null; // other failure → best-effort degrade to root-only
+				} catch {
+					return null;
+				}
 			}
+			return null; // no candidate could create the thread
 		},
 		async postToThread(threadId, content) {
-			const res = await fetchFn(
-				`${DISCORD_API}/channels/${threadId}/messages`,
-				{
-					method: "POST",
-					headers: auth,
-					body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
-				},
-			);
-			// Codex code R1 LOW-4: a non-2xx is a real failure — throw so the Hub's
-			// safe wrapper logs it instead of silently treating it as success.
-			if (!res.ok) {
+			const tokens = getTokens();
+			let lastStatus: number | undefined;
+			for (const token of tokens) {
+				const res = await fetchFn(
+					`${DISCORD_API}/channels/${threadId}/messages`,
+					{
+						method: "POST",
+						headers: authHeaders(token),
+						body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+					},
+				);
+				if (res.ok) return;
+				lastStatus = res.status;
+				if (isPermFallthrough(res.status)) continue;
+				// Non-perm failure → throw so the Hub's safe wrapper logs it.
 				throw new Error(`Discord postToThread ${res.status} for ${threadId}`);
 			}
+			throw new Error(
+				`Discord postToThread exhausted repair chain (last=${lastStatus ?? "no-token"}) for ${threadId}`,
+			);
 		},
 		async archiveThread(threadId) {
-			const res = await fetchFn(`${DISCORD_API}/channels/${threadId}`, {
-				method: "PATCH",
-				headers: auth,
-				body: JSON.stringify({ archived: true }),
-			});
-			if (!res.ok) {
+			const tokens = getTokens();
+			let lastStatus: number | undefined;
+			for (const token of tokens) {
+				const res = await fetchFn(`${DISCORD_API}/channels/${threadId}`, {
+					method: "PATCH",
+					headers: authHeaders(token),
+					body: JSON.stringify({ archived: true }),
+				});
+				if (res.ok) return;
+				lastStatus = res.status;
+				if (isPermFallthrough(res.status)) continue;
 				throw new Error(`Discord archiveThread ${res.status} for ${threadId}`);
 			}
+			throw new Error(
+				`Discord archiveThread exhausted repair chain (last=${lastStatus ?? "no-token"}) for ${threadId}`,
+			);
 		},
 	};
 }

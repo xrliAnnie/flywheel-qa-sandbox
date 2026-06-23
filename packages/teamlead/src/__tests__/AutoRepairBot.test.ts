@@ -62,7 +62,7 @@ describe("AutoRepairBot (FLY-368)", () => {
 		expect(r.action).toBe("runner_nudge");
 		expect(runnerNudge).toHaveBeenCalledTimes(1);
 		expect(runnerNudge.mock.calls[0]![0]).toMatchObject({
-			actor: "auto-repair-bot",
+			actor: "aunt-cass",
 			executionId: "exec-9",
 			fingerprint: "abcdef0123456789",
 			phrase: "continue",
