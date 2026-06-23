@@ -22,24 +22,24 @@ import { type ExecFileFn, TmuxAdapter } from "./TmuxAdapter.js";
  *      `--permission-mode` / `--append-system-prompt-file` / `--allowed-tools`
  *      / `--name`); the system+task prompt is bootstrapped from a 0600 file.
  *
- * **CLI flags verified against kimi 0.18.0** (`kimi --help`, FLY-494 live spike).
- * The earlier doc-based `--print` / `--afk` flags do NOT exist in the shipped
- * binary; the real flags are:
+ * **CLI flags verified against kimi 0.18.0 with REAL auth** (`kimi --help` +
+ * authenticated live tests, FLY-494). Two corrections happened:
+ *   1. the early doc-based `--print` / `--afk` flags do NOT exist; and
+ *   2. `--yolo` / `--auto` CANNOT be combined with `-p` — the CLI hard-rejects
+ *      `kimi -p … --yolo` with "Cannot combine --prompt with --yolo" (and the
+ *      same for `--auto`). The first spike missed this because an unauthenticated
+ *      `kimi -p` hangs BEFORE flag validation; the authenticated test exposed it.
+ * The real flags:
  *   - `-p TEXT` / `--prompt` : "Run one prompt non-interactively and print the
- *     response" — the headless agent-loop mode (kimi takes the prompt as a FLAG
- *     value, not a positional arg, unlike claude/agy).
- *   - `-y` / `--yolo` : "Automatically approve all actions" — the unattended
- *     auto-approve, parity with claude's `--dangerously-skip-permissions` /
- *     agy's `--dangerously-skip-permissions` (a `tmux` runner has no human to
- *     answer a permission prompt). (`--auto` is the softer "auto permission
- *     mode"; we want approve-ALL.)
- *   - `-m NAME` / `--model` : model override (combinable with `-p` + `--yolo`).
- * All kimi-specific flags live in `buildCliArgs` here — a one-line change if a
- * future kimi version shifts them. The fail-closed preflight guarantees a
- * missing / signed-out `kimi` throws LOUD rather than silently spawning a
- * useless pane (plan §0 caveat: this PR ships the WIRING + flag-verified
- * scaffold; full live usability still needs Kimi auth + an authenticated e2e
- * spike, which is gated on the founder logging in via `kimi login`).
+ *     response" — the headless agent loop. **`-p` mode auto-approves tool calls
+ *     by default** (verified: `kimi -p` created a file via its Write tool with no
+ *     prompt), so it needs NO separate approve flag — that IS the unattended
+ *     posture (and adding `--yolo`/`--auto` would make the CLI reject the launch).
+ *   - `-m NAME` / `--model` : model override (combinable with `-p`).
+ *     kimi takes the prompt as a FLAG value, not a positional arg (unlike
+ *     claude/agy). All kimi-specific flags live in `buildCliArgs` here.
+ * The fail-closed preflight guarantees a missing / signed-out `kimi` throws LOUD
+ * rather than silently spawning a useless pane.
  *
  * **Transport = none (v1).** kimi has no claude-code Agent Team, so no transport
  * is wired (the constructor passes no transport to super). Lead→Runner
@@ -100,9 +100,10 @@ export class KimiTmuxAdapter extends TmuxAdapter {
 		this.execFileFn(this.binaryName, ["--version"]);
 		let out: string;
 		try {
+			// `-p` ALONE (no --yolo/--auto — the CLI rejects combining them with -p).
 			const probe = this.execFileFn(
 				this.binaryName,
-				["-p", "Reply with exactly: KIMI_OK", "--yolo"],
+				["-p", "Reply with exactly: KIMI_OK"],
 				{ timeoutMs: KIMI_PREFLIGHT_TIMEOUT_MS },
 			);
 			out = probe.stdout ?? "";
@@ -129,16 +130,18 @@ export class KimiTmuxAdapter extends TmuxAdapter {
 	}
 
 	/**
-	 * FLY-494: kimi CLI args (verified against kimi 0.18.0 — FLY-494 live spike).
+	 * FLY-494: kimi CLI args (verified against kimi 0.18.0 with REAL auth).
 	 * kimi lacks claude's `--session-id`, `--permission-mode`,
-	 * `--append-system-prompt-file`, `--allowed-tools`, `--name`. We pass `--yolo`
-	 * (auto-approve ALL actions — unattended-runner posture, parity with the
-	 * claude/agy `--dangerously-skip-permissions`) + `--model` (if set) + a `-p`
-	 * seed prompt (`-p` = "run one prompt non-interactively and print the
-	 * response", the headless agent loop). Because kimi has no system-prompt flag
-	 * and the Flywheel procedure prompt is large (FLY-154 tmux argv overflow), the
-	 * combined system+task prompt is written to a 0600 per-execution file and `-p`
-	 * is a SHORT pointer that tells kimi to read and follow it.
+	 * `--append-system-prompt-file`, `--allowed-tools`, `--name`. The unattended
+	 * invocation is just `--model` (if set) + a `-p` seed prompt: `-p` runs one
+	 * prompt non-interactively, prints the response, AND auto-approves tool calls
+	 * by default — so it IS the unattended posture with NO separate approve flag.
+	 * Do NOT add `--yolo` / `--auto`: the CLI hard-rejects combining them with `-p`
+	 * ("Cannot combine --prompt with --yolo"), which would break every launch.
+	 * Because kimi has no system-prompt flag and the Flywheel procedure prompt is
+	 * large (FLY-154 tmux argv overflow), the combined system+task prompt is
+	 * written to a 0600 per-execution file and `-p` is a SHORT pointer that tells
+	 * kimi to read and follow it.
 	 *
 	 * `_sessionId` is accepted for signature parity (the adapter tracks it for
 	 * comm.db registration) but kimi has no `--session-id` to bind it to.
@@ -148,10 +151,6 @@ export class KimiTmuxAdapter extends TmuxAdapter {
 		_sessionId: string,
 	): string[] {
 		const args: string[] = [];
-		// Auto-approve ALL actions — the unattended-runner posture (a tmux runner
-		// has no human to answer a permission prompt). `-p` below runs the prompt
-		// non-interactively and prints the response.
-		args.push("--yolo");
 		if (ctx.model) args.push("--model", ctx.model);
 
 		const combined = [ctx.appendSystemPrompt, ctx.prompt]
