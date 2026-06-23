@@ -38,6 +38,7 @@ interface Row {
 	outbox_id: string | null;
 	reason: string | null;
 	reply_channel_id: string | null;
+	reply_route_json: string | null;
 	created_at: number;
 	updated_at: number;
 }
@@ -59,6 +60,17 @@ function rowToEntry(r: Row): JournalEntry {
 	if (r.outbox_id != null) e.outboxId = r.outbox_id;
 	if (r.reason != null) e.reason = r.reason;
 	if (r.reply_channel_id != null) e.replyChannelId = r.reply_channel_id;
+	// FLY-314 Phase 2: durable reply-in-thread route. A malformed/old-schema null
+	// → no replyRoute (byte-compat: the entry routes via replyChannelId as before).
+	if (r.reply_route_json != null) {
+		try {
+			e.replyRoute = JSON.parse(
+				r.reply_route_json,
+			) as JournalEntry["replyRoute"];
+		} catch {
+			// leave replyRoute unset on a corrupt value
+		}
+	}
 	return e;
 }
 
@@ -83,6 +95,7 @@ export class SqliteJournalStore implements JournalStore {
 				outbox_id TEXT,
 				reason TEXT,
 				reply_channel_id TEXT,
+				reply_route_json TEXT,
 				created_at INTEGER NOT NULL,
 				updated_at INTEGER NOT NULL
 			);
@@ -110,6 +123,11 @@ export class SqliteJournalStore implements JournalStore {
 		if (!cols.some((c) => c.name === "reply_channel_id")) {
 			this.db.exec("ALTER TABLE journal ADD COLUMN reply_channel_id TEXT");
 		}
+		// FLY-314 Phase 2: add the nullable reply-route JSON column to a pre-Phase-2
+		// DB. Old rows get null → no replyRoute → byte-compat (route via replyChannelId).
+		if (!cols.some((c) => c.name === "reply_route_json")) {
+			this.db.exec("ALTER TABLE journal ADD COLUMN reply_route_json TEXT");
+		}
 	}
 
 	close(): void {
@@ -125,8 +143,8 @@ export class SqliteJournalStore implements JournalStore {
 		const info = this.db
 			.prepare(
 				`INSERT INTO journal
-				 (id, idempotency_key, source, payload, state, reply_channel_id, created_at, updated_at)
-				 VALUES (@id, @idempotencyKey, @source, @payload, @state, @replyChannelId, @createdAt, @updatedAt)
+				 (id, idempotency_key, source, payload, state, reply_channel_id, reply_route_json, created_at, updated_at)
+				 VALUES (@id, @idempotencyKey, @source, @payload, @state, @replyChannelId, @replyRouteJson, @createdAt, @updatedAt)
 				 ON CONFLICT(idempotency_key) DO NOTHING`,
 			)
 			.run({
@@ -136,6 +154,9 @@ export class SqliteJournalStore implements JournalStore {
 				payload: entry.payload,
 				state: entry.state,
 				replyChannelId: entry.replyChannelId ?? null,
+				replyRouteJson: entry.replyRoute
+					? JSON.stringify(entry.replyRoute)
+					: null,
 				createdAt: entry.createdAt,
 				updatedAt: entry.updatedAt,
 			});

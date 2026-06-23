@@ -24,6 +24,8 @@ export interface RoundtableConfig {
 	triggerMode: RoundtableTriggerMode;
 	trigger: RoundtableTriggerConfig;
 	memberUserIds: string[];
+	/** FLY-314: thread the poller bot's OWN top-level messages too (echo relax). */
+	threadOwnBotMessages: boolean;
 	pollIntervalMs: number;
 	cursorPath: string;
 }
@@ -128,6 +130,7 @@ export function loadRoundtableConfig(env: Env): RoundtableConfig | undefined {
 		triggerMode,
 		trigger: { mode: triggerMode, prefixes, minMentions, leadUserIds },
 		memberUserIds,
+		threadOwnBotMessages: env.FLYWHEEL_ROUNDTABLE_THREAD_OWN_BOT === "1",
 		pollIntervalMs,
 		cursorPath,
 	};

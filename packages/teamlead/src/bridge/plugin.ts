@@ -2602,6 +2602,7 @@ export async function startBridge(
 			trigger: buildTopicTrigger(roundtableConfig.trigger),
 			memberUserIds: roundtableConfig.memberUserIds,
 			triggerMode: roundtableConfig.triggerMode,
+			threadOwnBotMessages: roundtableConfig.threadOwnBotMessages,
 			cursorStore: new FileInboundCursorStore(roundtableConfig.cursorPath),
 			pollIntervalMs: roundtableConfig.pollIntervalMs,
 		});

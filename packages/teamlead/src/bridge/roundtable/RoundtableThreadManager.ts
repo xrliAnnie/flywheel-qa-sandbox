@@ -71,6 +71,15 @@ export interface RoundtableThreadManagerOptions {
 	memberUserIds: string[];
 	/** Recorded on the row for audit (which trigger opened it). */
 	triggerMode: string;
+	/**
+	 * FLY-314: when true, the poller bot's OWN top-level messages are ALSO threaded
+	 * (echo immunity relaxed). Needed when the poller bot is itself a topic-poster
+	 * (e.g. the CoS broadcasting in #leads-roundtable) and Annie wants those
+	 * broadcasts threaded too. Safe: the manager never posts top-level in the parent
+	 * channel — seeds go into child threads which are never polled, so there is no
+	 * self-threading loop. Default false (echo immunity ON).
+	 */
+	threadOwnBotMessages?: boolean;
 	cursorStore: InboundCursorStore;
 	fetchImpl?: typeof fetch;
 	pollIntervalMs?: number;
@@ -99,6 +108,7 @@ export class RoundtableThreadManager {
 	private readonly trigger: (msg: RoundtableMessage) => boolean;
 	private readonly memberUserIds: string[];
 	private readonly triggerMode: string;
+	private readonly threadOwnBotMessages: boolean;
 	private readonly cursorStore: InboundCursorStore;
 	private readonly fetchImpl: typeof fetch;
 	private readonly pollIntervalMs: number;
@@ -130,6 +140,7 @@ export class RoundtableThreadManager {
 		this.trigger = opts.trigger;
 		this.memberUserIds = [...opts.memberUserIds];
 		this.triggerMode = opts.triggerMode;
+		this.threadOwnBotMessages = opts.threadOwnBotMessages ?? false;
 		this.cursorStore = opts.cursorStore;
 		this.fetchImpl = opts.fetchImpl ?? fetch;
 		this.pollIntervalMs = opts.pollIntervalMs ?? 3000;
@@ -283,8 +294,12 @@ export class RoundtableThreadManager {
 	 * permanent), false to HOLD (transient — retry next poll).
 	 */
 	async processMessage(msg: RoundtableMessage): Promise<boolean> {
-		// 1. Echo immunity — never act on the poller's own bot messages.
-		if (msg.authorId === this.botUserId) return true;
+		// 1. Echo immunity — skip the poller's own bot messages, UNLESS
+		// threadOwnBotMessages is set (then the bot's own top-level posts, e.g. a
+		// CoS broadcast, are threaded too). No loop: seeds live in child threads
+		// that the parent-only poll never sees.
+		if (!this.threadOwnBotMessages && msg.authorId === this.botUserId)
+			return true;
 		// 2. Trigger — `disabled` mode makes this always false (canary / byte-compat).
 		if (!this.trigger(msg)) return true;
 		// 3. Dedup — already opened a thread for this message.

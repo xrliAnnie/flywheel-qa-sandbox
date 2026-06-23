@@ -55,6 +55,10 @@ import {
 	isReadDenyEnabled,
 	resolveReadDenyThread,
 } from "./read-deny-profile.js";
+import {
+	buildReplyInThreadWiring,
+	type ReplyInThreadConfig,
+} from "./roundtable-reply-in-thread-wiring.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
 
@@ -75,6 +79,10 @@ export interface CodexLeadRuntimeConfig {
 	 * to non-bot authors (a sibling bot must use an exact mention id). Empty (env
 	 * unset) → bot-id mention only (most precise; no false "talking about" trigger). */
 	mentionPatterns: string[];
+	/** FLY-314 Phase 2: reply-in-thread (default-OFF). When enabled, roundtable
+	 * replies route INTO the topic thread + the Lead subscribes to topic threads to
+	 * see other Leads' in-thread replies. Undefined/disabled → FLY-267 behavior. */
+	replyInThread?: ReplyInThreadConfig;
 	bridgeUrl: string;
 	apiToken: string;
 	stateDir: string;
@@ -557,6 +565,39 @@ export function parseCodexLeadRuntimeConfig(
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
+	// FLY-314 Phase 2: reply-in-thread (default-OFF). The roundtable parent channel
+	// MUST be one of the cross-dept channels (so it is polled + mention-gated).
+	// `guildId` enables active-thread discovery; without it, only the immediate
+	// @-mention path subscribes.
+	let replyInThread: ReplyInThreadConfig | undefined;
+	if (env.FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD === "1") {
+		const parentChannelId =
+			(env.FLYWHEEL_ROUNDTABLE_CHANNEL_ID ?? "").trim() ||
+			crossDeptChannelIds[0] ||
+			"";
+		if (!parentChannelId) {
+			throw new Error(
+				"codex-lead-runtime: FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1 requires FLYWHEEL_ROUNDTABLE_CHANNEL_ID (roundtable parent) or a cross-dept channel",
+			);
+		}
+		if (!crossDeptChannelIds.includes(parentChannelId)) {
+			throw new Error(
+				`codex-lead-runtime: reply-in-thread parent ${parentChannelId} must be in FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS (so it is polled + mention-gated)`,
+			);
+		}
+		const capN = Number.parseInt(
+			(env.FLYWHEEL_ROUNDTABLE_REPLY_CAP ?? "").trim(),
+			10,
+		);
+		replyInThread = {
+			enabled: true,
+			parentChannelId,
+			...((env.FLYWHEEL_ROUNDTABLE_GUILD_ID ?? "").trim() || undefined
+				? { guildId: (env.FLYWHEEL_ROUNDTABLE_GUILD_ID ?? "").trim() }
+				: {}),
+			...(Number.isFinite(capN) && capN > 0 ? { cap: capN } : {}),
+		};
+	}
 	const chromeEnabled = env.FLYWHEEL_LEAD_CHROME_ENABLED === "1";
 	const chrome = chromeEnabled
 		? { enabled: true, browserUrl: env.FLYWHEEL_LEAD_CHROME_URL?.trim() }
@@ -739,6 +780,7 @@ export function parseCodexLeadRuntimeConfig(
 		channelIds,
 		crossDeptChannelIds,
 		mentionPatterns,
+		...(replyInThread ? { replyInThread } : {}),
 		bridgeUrl,
 		apiToken,
 		stateDir,
@@ -1486,6 +1528,22 @@ export function buildCodexLeadRuntime(
 						defaultChannelId: config.chatChannelId,
 					})
 				: undefined;
+			const source = new RestPollDiscordInboundSource({
+				botToken: config.botToken,
+				channelIds: config.channelIds,
+				// Durable cursor: restart resumes instead of re-baselining (HIGH-4).
+				cursorStore: new FileInboundCursorStore(config.inboundCursorPath),
+			});
+			// FLY-314 Phase 2: reply-in-thread wiring (default-OFF → undefined → FLY-267).
+			const replyInThread = config.replyInThread
+				? buildReplyInThreadWiring({
+						cfg: config.replyInThread,
+						botToken: config.botToken,
+						botUserId: config.botUserId,
+						crossDeptChannelIds: config.crossDeptChannelIds,
+						source,
+					})
+				: undefined;
 			const router = new LeadInputRouter({
 				leadId: config.leadId,
 				threadId,
@@ -1493,12 +1551,9 @@ export function buildCodexLeadRuntime(
 				executor,
 				sender,
 				...(typing ? { typing } : {}),
-			});
-			const source = new RestPollDiscordInboundSource({
-				botToken: config.botToken,
-				channelIds: config.channelIds,
-				// Durable cursor: restart resumes instead of re-baselining (HIGH-4).
-				cursorStore: new FileInboundCursorStore(config.inboundCursorPath),
+				...(replyInThread
+					? { ensureReplyRoute: replyInThread.ensureReplyRoute }
+					: {}),
 			});
 			// FLY-267 判 + 回: when cross-dept channels are configured, gate them on
 			// mention AND route replies back to the source channel (chat/core stay
@@ -1510,6 +1565,10 @@ export function buildCodexLeadRuntime(
 							botUserId: config.botUserId,
 							sharedChannelIds: config.crossDeptChannelIds,
 							mentionPatterns: config.mentionPatterns,
+							// FLY-314 Phase 2: topic threads are dynamic shared channels.
+							...(replyInThread
+								? { dynamicSharedChannels: replyInThread.registry }
+								: {}),
 						})
 					: undefined;
 			const resolveReplyChannelId =
@@ -1523,12 +1582,31 @@ export function buildCodexLeadRuntime(
 				botUserId: config.botUserId,
 				channelIds: config.channelIds,
 				...(shouldHandle ? { shouldHandle } : {}),
-				...(resolveReplyChannelId ? { resolveReplyChannelId } : {}),
+				// FLY-314 Phase 2 ON → registry allowlist + structured route supersede
+				// resolveReplyChannelId; OFF → FLY-267 source-channel routing.
+				...(replyInThread
+					? {
+							registry: replyInThread.registry,
+							resolveReplyRoute: replyInThread.resolveReplyRoute,
+						}
+					: resolveReplyChannelId
+						? { resolveReplyChannelId }
+						: {}),
 			});
 			return {
 				recover: () => router.recover(),
-				startGateway: () => gateway.start(),
+				startGateway: async () => {
+					// FLY-314 Phase 2 (Codex code review #1): START THE GATEWAY FIRST so
+					// `source.onMessage(handler)` is installed BEFORE discovery's
+					// `addChannel()` can drain a resumed thread — otherwise drained downtime
+					// messages hit a missing handler (safe-to-advance) and are dropped while
+					// the cursor advances past them.
+					await gateway.start();
+					await replyInThread?.start();
+				},
 				stopGateway: async () => {
+					// Stop discovery first (no addChannel mid-shutdown), then the gateway.
+					await replyInThread?.stop();
 					// FLY-404 (Codex review LOW): close the typing keepalive in a
 					// `finally` so a throwing gateway.stop() can never leak the interval.
 					try {

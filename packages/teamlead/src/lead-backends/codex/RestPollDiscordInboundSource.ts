@@ -73,6 +73,10 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 	 * deliver up to `limit` stale messages, re-triggering old @mentions). pollOnce
 	 * baselines an unready channel (no delivery) and retries until one succeeds. */
 	private readonly ready = new Set<string>();
+	/** FLY-314 Phase 2: runtime-subscribed roundtable topic thread channels. Kept
+	 * SEPARATE from the static base `channelIds` so base fetch order is byte-identical
+	 * when empty (the production Mufasa path when reply-in-thread is off). */
+	private readonly dynamicChannels = new Set<string>();
 	private timer: { cancel: () => void } | null = null;
 	private running = false;
 
@@ -180,7 +184,77 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 	 */
 	async pollOnce(): Promise<number> {
 		let delivered = 0;
-		for (const channelId of this.channelIds) {
+		for (const channelId of this.allChannels()) {
+			delivered += await this.pollChannelOnce(channelId);
+		}
+		return delivered;
+	}
+
+	/** Base channels (static) ∪ dynamic thread channels. Returns the base array
+	 * REFERENCE when no dynamic channel is subscribed, so fetch order is byte-identical
+	 * to the pre-Phase-2 production path (Codex review R2#4). */
+	private allChannels(): string[] {
+		return this.dynamicChannels.size === 0
+			? this.channelIds
+			: [...this.channelIds, ...this.dynamicChannels];
+	}
+
+	/**
+	 * FLY-314 Phase 2: dynamically subscribe to a topic thread channel. CURSOR-AWARE
+	 * (Codex review R1#4): resume from a saved cursor and drain the gap; only baseline
+	 * to latest when there is NO cursor (so a restart / cap-eviction re-add never drops
+	 * messages newer than the saved cursor). Idempotent; a base or already-subscribed
+	 * id is a no-op.
+	 */
+	async addChannel(channelId: string): Promise<void> {
+		if (
+			!channelId ||
+			this.channelIds.includes(channelId) ||
+			this.dynamicChannels.has(channelId)
+		) {
+			return;
+		}
+		this.dynamicChannels.add(channelId);
+		const resumed = this.cursorStore?.load(channelId);
+		if (resumed) {
+			this.lastSeen.set(channelId, resumed);
+			this.ready.add(channelId);
+			await this.drainChannel(channelId);
+		} else {
+			await this.baselineChannel(channelId);
+		}
+	}
+
+	/**
+	 * FLY-314 Phase 2: stop polling a dynamic channel. KEEPS its cursor/lastSeen so a
+	 * re-add RESUMES (Codex review R1#10: cap eviction drops the active polling slot,
+	 * it does NOT delete durable interest). A base channel is never removable.
+	 */
+	removeChannel(channelId: string): void {
+		this.dynamicChannels.delete(channelId);
+	}
+
+	isSubscribed(channelId: string): boolean {
+		return this.dynamicChannels.has(channelId);
+	}
+
+	get dynamicChannelCount(): number {
+		return this.dynamicChannels.size;
+	}
+
+	/** Drain ONE dynamic channel forward from its cursor (bounded), without touching
+	 * the base-channel poll order. Used by `addChannel` on resume. */
+	private async drainChannel(channelId: string): Promise<void> {
+		let safety = 1000;
+		while ((await this.pollChannelOnce(channelId)) > 0 && --safety > 0) {
+			// keep draining this channel's downtime gap
+		}
+	}
+
+	/** Poll a single channel once; returns the number of messages delivered. */
+	private async pollChannelOnce(channelId: string): Promise<number> {
+		let delivered = 0;
+		{
 			// FLY-267 baseline gate: a channel that has NOT yet baselined (e.g. its
 			// startup baseline fetch failed) must be baselined here — NOT polled in
 			// the delivery path, which (with no `after`) would replay history. Baseline
@@ -188,7 +262,7 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 			// NEXT poll fetches with `after`.
 			if (!this.ready.has(channelId)) {
 				await this.baselineChannel(channelId);
-				continue;
+				return delivered;
 			}
 			let messages: RawDiscordMessage[];
 			try {
@@ -201,9 +275,9 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 					channelId,
 					err: (err as Error).message,
 				});
-				continue;
+				return delivered;
 			}
-			if (messages.length === 0) continue;
+			if (messages.length === 0) return delivered;
 			// Discord returns newest-first; deliver oldest-first. Advance the cursor
 			// ONLY through messages the handler DURABLY accepted (HIGH-4 at-least-once):
 			// stop at the first message whose durable-accept failed so it (and every
