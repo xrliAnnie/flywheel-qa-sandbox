@@ -88,6 +88,10 @@ describe("DecisionLayer", () => {
 			"/project",
 		);
 		expect(result.route).toBe("pr_handoff");
+		// FLY-494: the pr_handoff reasoning is a GENERIC no-transport branch (Kimi
+		// hits it too) — it must NOT name a specific vendor.
+		expect(result.reasoning.toLowerCase()).not.toContain("antigravity");
+		expect(result.reasoning.toLowerCase()).not.toContain("kimi");
 	});
 
 	it("FLY-493: ready_to_merge WITHOUT runnerTransportMode → still needs_review (regression)", async () => {

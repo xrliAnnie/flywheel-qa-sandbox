@@ -19,6 +19,10 @@
  * TeamLead dispatcher path ONLY. The legacy EdgeWorker `agentSession` path
  * (`RunnerSelectionService`) is NOT updated — `[agent=agy]` is not wired there
  * in v1 (see plan §4.1), so this is no longer a 1:1 mirror of that service.
+ *
+ * FLY-494: `kimi` (alias `kimi-code`) is a first-class runner vendor on the
+ * same TeamLead dispatcher path, mirroring antigravity (also transport=none).
+ * Likewise NOT wired into the legacy `RunnerSelectionService`.
  */
 
 export type RunnerVendorType =
@@ -26,7 +30,8 @@ export type RunnerVendorType =
 	| "gemini"
 	| "codex"
 	| "cursor"
-	| "antigravity";
+	| "antigravity"
+	| "kimi";
 
 export interface RunnerLabelSelection {
 	/** Vendor inferred from labels — undefined when no runner label present. */
@@ -49,6 +54,11 @@ function resolveAgentFromLabels(
 	// don't mention antigravity.
 	if (labels.includes("antigravity") || labels.includes("agy")) {
 		return "antigravity";
+	}
+	// FLY-494: kimi (alias `kimi-code`) — distinct keyword, same first-class
+	// opt-in shape as antigravity. Does not collide with any existing vendor.
+	if (labels.includes("kimi") || labels.includes("kimi-code")) {
+		return "kimi";
 	}
 	if (labels.includes("cursor")) return "cursor";
 	if (labels.includes("codex") || labels.includes("openai")) return "codex";

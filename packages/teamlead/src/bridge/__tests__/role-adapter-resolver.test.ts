@@ -290,3 +290,58 @@ describe("resolveRoleAdapter — antigravity (transport=none, FLY-493)", () => {
 		).toBe("codex");
 	});
 });
+
+// FLY-494: Kimi Code is a first-class executor backend with NO transport.
+describe("resolveRoleAdapter — kimi (transport=none, FLY-494)", () => {
+	it("EXECUTOR_TO_TRANSPORT maps kimi-tmux → none", () => {
+		expect(EXECUTOR_TO_TRANSPORT["kimi-tmux"]).toBe("none");
+	});
+
+	it("kimi label → kimi-tmux, transport none, NO vendor", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["kimi"],
+			env: EMPTY_ENV,
+		});
+		expect(resolved).toEqual({
+			backend: "kimi-tmux",
+			transport: "none",
+		});
+		expect(resolved.vendor).toBeUndefined();
+	});
+
+	it("kimi-code label alias → kimi-tmux", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["kimi-code"],
+			env: EMPTY_ENV,
+		});
+		expect(resolved.backend).toBe("kimi-tmux");
+		expect(resolved.transport).toBe("none");
+	});
+
+	it("FLYWHEEL_RUNNER_BACKEND=kimi-tmux selects kimi", () => {
+		const env = { FLYWHEEL_RUNNER_BACKEND: "kimi-tmux" } as NodeJS.ProcessEnv;
+		const resolved = resolveRoleAdapter({ role: "runner", env });
+		expect(resolved.backend).toBe("kimi-tmux");
+		expect(resolved.transport).toBe("none");
+	});
+
+	it("FLYWHEEL_RUNNER_BACKEND=kimi (vendor alias) selects kimi-tmux", () => {
+		const env = { FLYWHEEL_RUNNER_BACKEND: "kimi" } as NodeJS.ProcessEnv;
+		expect(resolveRoleAdapter({ role: "runner", env }).backend).toBe(
+			"kimi-tmux",
+		);
+	});
+
+	it("project roles kimi-tmux → transport none", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			projectRoles: { runner: { backend: "kimi-tmux" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved.backend).toBe("kimi-tmux");
+		expect(resolved.transport).toBe("none");
+		expect(resolved.vendor).toBeUndefined();
+	});
+});

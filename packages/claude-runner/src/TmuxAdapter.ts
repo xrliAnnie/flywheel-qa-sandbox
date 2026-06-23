@@ -22,7 +22,21 @@ import type {
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
 
-export type ExecFileFn = (cmd: string, args: string[]) => { stdout: string };
+/**
+ * FLY-494: optional per-call exec options. `timeoutMs` bounds a single exec so a
+ * hanging external CLI (e.g. a signed-out / OAuth-stalled `kimi --print` auth
+ * probe) FAILS CLOSED instead of wedging the caller. Backward-compatible — every
+ * existing caller and mock omits it (so behavior is byte-identical: no timeout).
+ */
+export interface ExecFileOpts {
+	timeoutMs?: number;
+}
+
+export type ExecFileFn = (
+	cmd: string,
+	args: string[],
+	opts?: ExecFileOpts,
+) => { stdout: string };
 
 /**
  * TmuxAdapter — launches Claude Code in an interactive tmux window.
@@ -1008,11 +1022,16 @@ export class TmuxAdapter implements IAdapter {
 export function defaultExecFile(
 	cmd: string,
 	args: string[],
+	opts?: ExecFileOpts,
 ): { stdout: string } {
 	try {
 		const result = execFileSync(cmd, args, {
 			encoding: "utf-8",
 			stdio: ["pipe", "pipe", "pipe"],
+			// FLY-494: undefined → Node's default (0 = no timeout) = byte-identical
+			// for every existing call site that omits opts. A positive value kills
+			// the child on timeout so a bounded probe can fail closed.
+			timeout: opts?.timeoutMs,
 		});
 		return { stdout: result };
 	} catch (err) {

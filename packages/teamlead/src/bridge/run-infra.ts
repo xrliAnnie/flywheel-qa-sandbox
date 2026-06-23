@@ -14,6 +14,7 @@ import {
 	AnthropicLLMClient,
 	AntigravityTmuxAdapter,
 	CodexTmuxAdapter,
+	KimiTmuxAdapter,
 	scrubOrphanedCodexHomes,
 	TmuxAdapter,
 } from "flywheel-claude-runner";
@@ -343,6 +344,22 @@ async function createRunBlueprint(
 			"antigravity-tmux",
 			() =>
 				new AntigravityTmuxAdapter(
+					tmuxSessionName,
+					undefined,
+					5000,
+					sessionTimeoutMs,
+					hookServer,
+				),
+		);
+		// FLY-494: Kimi Code (`kimi`) executor backend — v1 transport=none, so
+		// NO transport arg (kimi has no claude-code Agent Team mailbox). Same
+		// vendor-neutral completion/timeout/comm.db machinery inherited from
+		// TmuxAdapter; only the kimi binary + args + fail-closed auth preflight
+		// differ. A no-transport runner finishes at `pr_handoff` (build+PR).
+		adapterRegistry.registerFactory(
+			"kimi-tmux",
+			() =>
+				new KimiTmuxAdapter(
 					tmuxSessionName,
 					undefined,
 					5000,

@@ -181,4 +181,23 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 		expect(ctx.runnerBackend).toBe("antigravity-tmux");
 		expect(ctx.runnerTransportMode).toBe("none");
 	});
+
+	// FLY-494: kimi is also a no-transport backend — same dispatcher contract.
+	it("[kimi] label → kimi-tmux, transportMode none, NO transport identity (mailbox+leadId)", async () => {
+		dispatcher = makeDispatcher();
+		const ctx = await startAndWait(dispatcher, ["kimi"]);
+		expect(ctx.runnerBackend).toBe("kimi-tmux");
+		expect(ctx.runnerTransportMode).toBe("none");
+		// No transport wiring despite mailbox + leadId:
+		expect(ctx.vendor).toBeUndefined();
+		expect(ctx.runnerAgentName).toBeUndefined();
+		expect(ctx.agentTeamName).toBeUndefined();
+	});
+
+	it("[kimi] kimi-code label alias also resolves the no-transport backend", async () => {
+		dispatcher = makeDispatcher();
+		const ctx = await startAndWait(dispatcher, ["kimi-code"]);
+		expect(ctx.runnerBackend).toBe("kimi-tmux");
+		expect(ctx.runnerTransportMode).toBe("none");
+	});
 });

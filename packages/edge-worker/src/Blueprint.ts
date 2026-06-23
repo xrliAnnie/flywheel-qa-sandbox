@@ -791,7 +791,7 @@ export class Blueprint {
 						cpName === "approve_to_ship" &&
 						ctx.runnerTransportMode === "none"
 					) {
-						// FLY-493: a no-transport (antigravity) Runner CANNOT be woken,
+						// FLY-493: a no-transport (e.g. antigravity / kimi) Runner CANNOT be woken,
 						// so it must NOT post the non-blocking approve gate (it would
 						// strand in awaiting_review → approved_to_ship with no actor to
 						// ship). Instead it terminates at `pr_handoff`: build → PR →

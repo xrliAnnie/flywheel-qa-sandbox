@@ -15,10 +15,10 @@ export interface EventEnvelope {
 	sessionRole?: string;
 	/**
 	 * FLY-493: the resolved executor backend ("claude-tmux" | "codex-tmux" |
-	 * "antigravity-tmux"). Persisted as `session.adapter_type` so the
-	 * dashboard/wake surfaces can see it — in particular so the no-transport
-	 * wake-guard recognizes an antigravity (transport=none) session and never
-	 * routes a wake to the env-default claude mailbox.
+	 * "antigravity-tmux" | "kimi-tmux"). Persisted as `session.adapter_type` so
+	 * the dashboard/wake surfaces can see it — in particular so the no-transport
+	 * wake-guard recognizes a no-transport (e.g. antigravity / kimi, transport=none)
+	 * session and never routes a wake to the env-default claude mailbox.
 	 */
 	runnerBackend?: string;
 }

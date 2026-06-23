@@ -59,6 +59,34 @@ describe("sendRunnerWake — FLY-493 no-transport guard", () => {
 		);
 	});
 
+	it("kimi-tmux session → SKIP wake, record runner_wake_no_transport, never touch CommDB (FLY-494)", async () => {
+		store.upsertSession({
+			execution_id: "exec-kimi",
+			issue_id: "issue-kimi",
+			project_name: "flywheel",
+			status: "approved_to_ship",
+			adapter_type: "kimi-tmux",
+		});
+
+		await expect(
+			sendRunnerWake(
+				store,
+				throwingDb,
+				"exec-kimi",
+				{ issue_id: "issue-kimi", project_name: "flywheel" },
+				"approval_wake",
+			),
+		).resolves.toBeUndefined();
+
+		const events = store.getEventsByExecution("exec-kimi");
+		expect(
+			events.some((e) => e.event_type === "runner_wake_no_transport"),
+		).toBe(true);
+		expect(events.some((e) => e.event_type === "runner_wake_failed")).toBe(
+			false,
+		);
+	});
+
 	it("claude-tmux session is NOT skipped by the no-transport guard (proceeds to wake path)", async () => {
 		store.upsertSession({
 			execution_id: "exec-claude",

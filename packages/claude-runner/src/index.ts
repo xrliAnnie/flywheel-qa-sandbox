@@ -51,6 +51,7 @@ export {
 	ClaudeMessageFormatter,
 	type IMessageFormatter,
 } from "./formatter.js";
+export { KimiTmuxAdapter } from "./KimiTmuxAdapter.js"; // FLY-494
 export { TmuxAdapter } from "./TmuxAdapter.js";
 export type { ExecFileFn } from "./TmuxRunner.js";
 export { TmuxRunner } from "./TmuxRunner.js";
