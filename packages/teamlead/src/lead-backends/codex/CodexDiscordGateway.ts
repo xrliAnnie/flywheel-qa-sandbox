@@ -27,6 +27,7 @@
  */
 
 import type { LeadInputRouter } from "./LeadInputRouter.js";
+import type { RoundtableReplyRoute } from "./roundtable-reply-route.js";
 
 export interface DiscordInboundMessage {
 	/** Discord message id — the idempotency key for journal dedup. */
@@ -68,6 +69,19 @@ export interface CodexDiscordGatewayOptions {
 	 * outbound sender uses its default chat channel. Omitted → always undefined
 	 * (byte-compat: replies always go to the chat channel as before). */
 	resolveReplyChannelId?: (msg: DiscordInboundMessage) => string | undefined;
+	/** FLY-314 Phase 2 (Codex R4): structured reply route — returns BOTH the channel
+	 * to reply to AND optional durable `replyRoute` metadata (so delivery can ensure a
+	 * topic thread exists first). When provided it SUPERSEDES resolveReplyChannelId.
+	 * Omitted → fall back to resolveReplyChannelId (byte-compat). */
+	resolveReplyRoute?: (msg: DiscordInboundMessage) => {
+		replyChannelId?: string;
+		replyRoute?: RoundtableReplyRoute;
+	};
+	/** FLY-314 Phase 2: dynamically-subscribed roundtable topic threads. A message
+	 * from one of these is allowlisted just like a configured channel (Codex review
+	 * R1#1 — the gateway has its OWN static allowlist; without this it would drop the
+	 * thread message even though RestPoll polls it). Omitted → only static channels. */
+	registry?: { has: (channelId: string) => boolean };
 	logger?: {
 		debug?: (m: string, c?: unknown) => void;
 		warn: (m: string, c?: unknown) => void;
@@ -83,6 +97,11 @@ export class CodexDiscordGateway {
 	private readonly resolveReplyChannelId?: (
 		msg: DiscordInboundMessage,
 	) => string | undefined;
+	private readonly resolveReplyRoute?: (msg: DiscordInboundMessage) => {
+		replyChannelId?: string;
+		replyRoute?: RoundtableReplyRoute;
+	};
+	private readonly registry?: { has: (channelId: string) => boolean };
 	private readonly logger: {
 		debug?: (m: string, c?: unknown) => void;
 		warn: (m: string, c?: unknown) => void;
@@ -100,6 +119,8 @@ export class CodexDiscordGateway {
 		this.channelIds = new Set(opts.channelIds);
 		this.shouldHandle = opts.shouldHandle;
 		this.resolveReplyChannelId = opts.resolveReplyChannelId;
+		this.resolveReplyRoute = opts.resolveReplyRoute;
+		this.registry = opts.registry;
 		this.logger = opts.logger ?? { warn: (m, c) => console.warn(m, c ?? "") };
 	}
 
@@ -133,14 +154,20 @@ export class CodexDiscordGateway {
 		// it is safe to advance past it.
 		if (!this.passesFilters(msg)) return true;
 		try {
-			// FLY-267 回: tag the input with the channel a reply must route to (the
-			// source channel for a cross-dept message; undefined → default chat).
-			const replyChannelId = this.resolveReplyChannelId?.(msg);
+			// FLY-267 回 / FLY-314 Phase 2: tag the input with the reply channel + (when
+			// applicable) durable replyRoute metadata. resolveReplyRoute supersedes the
+			// legacy resolveReplyChannelId when wired (Codex R4 structured route).
+			const route = this.resolveReplyRoute?.(msg);
+			const replyChannelId = route
+				? route.replyChannelId
+				: this.resolveReplyChannelId?.(msg);
+			const replyRoute = route?.replyRoute;
 			this.router.submit({
 				idempotencyKey: msg.id,
 				source: "discord",
 				payload: msg.content,
 				...(replyChannelId ? { replyChannelId } : {}),
+				...(replyRoute ? { replyRoute } : {}),
 			});
 			return true;
 		} catch (err) {
@@ -157,8 +184,14 @@ export class CodexDiscordGateway {
 	private passesFilters(msg: DiscordInboundMessage): boolean {
 		// ECHO IMMUNITY — never react to our own posts (FLY-220). Not overridable.
 		if (msg.authorId === this.botUserId) return false;
-		// Channel allowlist.
-		if (!this.channelIds.has(msg.channelId)) return false;
+		// Channel allowlist — static channels OR a dynamically-subscribed roundtable
+		// topic thread (FLY-314 Phase 2; registry is empty when the feature is off).
+		if (
+			!this.channelIds.has(msg.channelId) &&
+			!this.registry?.has(msg.channelId)
+		) {
+			return false;
+		}
 		// Empty / whitespace-only content (attachment-only, system messages).
 		if (!msg.content || msg.content.trim() === "") return false;
 		// A message with no id can't be deduped — drop it (defensive).

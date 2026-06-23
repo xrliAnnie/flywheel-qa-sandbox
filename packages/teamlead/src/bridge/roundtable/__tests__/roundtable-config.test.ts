@@ -75,6 +75,7 @@ describe("loadRoundtableConfig", () => {
 		expect(cfg?.trigger.prefixes).toEqual(["📋", "TOPIC:"]);
 		expect(cfg?.trigger.minMentions).toBe(2);
 		expect(cfg?.memberUserIds).toEqual([]);
+		expect(cfg?.threadOwnBotMessages).toBe(false);
 		expect(cfg?.pollIntervalMs).toBe(3000);
 		expect(cfg?.cursorPath).toBe(
 			join(homedir(), ".flywheel/roundtable-inbound-cursor.json"),
@@ -91,8 +92,10 @@ describe("loadRoundtableConfig", () => {
 			FLYWHEEL_ROUNDTABLE_MEMBER_USER_IDS: "m1,m2 , m3",
 			FLYWHEEL_ROUNDTABLE_POLL_INTERVAL_MS: "5000",
 			FLYWHEEL_ROUNDTABLE_INBOUND_CURSOR_PATH: "~/cursors/rt.json",
+			FLYWHEEL_ROUNDTABLE_THREAD_OWN_BOT: "1",
 		});
 		expect(cfg?.triggerMode).toBe("broadcast");
+		expect(cfg?.threadOwnBotMessages).toBe(true);
 		expect(cfg?.trigger.prefixes).toEqual(["A:", "B:"]);
 		expect(cfg?.trigger.minMentions).toBe(3);
 		expect(cfg?.trigger.leadUserIds).toEqual(["l1", "l2"]);

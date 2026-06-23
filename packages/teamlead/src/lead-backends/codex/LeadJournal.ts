@@ -30,6 +30,8 @@
  * index) by writing to a returned object.
  */
 
+import type { RoundtableReplyRoute } from "./roundtable-reply-route.js";
+
 export type JournalState =
 	| "accepted"
 	| "dispatching"
@@ -97,6 +99,12 @@ export interface JournalEntry {
 	 * chat/core inputs and mailbox inputs reply in chat as before). Persisted so crash
 	 * recovery (model_completed resend) targets the right channel. */
 	replyChannelId?: string;
+	/** FLY-314 Phase 2: durable reply-in-thread route metadata. When set (kind
+	 * `roundtable_thread_from_message`), delivery must ensure the topic thread exists
+	 * BEFORE sending — the Bridge poller may not have created it yet, and
+	 * `replyChannelId === sourceMessageId` is too weak a signal to infer this (Codex
+	 * design review R2#1/R3#1). Persisted so crash recovery re-ensures the same thread. */
+	replyRoute?: RoundtableReplyRoute;
 	state: JournalState;
 	/** Set at `dispatching` — becomes turn/start's clientUserMessageId. */
 	clientCorrelationId?: string;
@@ -191,6 +199,8 @@ export class LeadJournal {
 		payload: string;
 		/** FLY-267 回: source channel to route the reply to (cross-dept inputs only). */
 		replyChannelId?: string;
+		/** FLY-314 Phase 2: durable reply-in-thread route metadata. */
+		replyRoute?: RoundtableReplyRoute;
 	}): { accepted: boolean; entry: JournalEntry } {
 		if (!args.idempotencyKey)
 			throw new Error("LeadJournal.accept: idempotencyKey is required");
@@ -201,6 +211,7 @@ export class LeadJournal {
 			source: args.source,
 			payload: args.payload,
 			...(args.replyChannelId ? { replyChannelId: args.replyChannelId } : {}),
+			...(args.replyRoute ? { replyRoute: args.replyRoute } : {}),
 			state: "accepted",
 			createdAt: ts,
 			updatedAt: ts,

@@ -28,6 +28,7 @@ import type {
 	LeadJournal,
 	RecoveryAction,
 } from "./LeadJournal.js";
+import type { RoundtableReplyRoute } from "./roundtable-reply-route.js";
 
 /** Abstracts the app-server turn mechanics (real impl wraps CodexLeadProcess). */
 export interface TurnExecutor {
@@ -98,6 +99,9 @@ export interface LeadInput {
 	 * channel). Set by the gateway ONLY for cross-dept/shared-channel messages;
 	 * omitted for chat/core/mailbox → reply falls back to the default chat channel. */
 	replyChannelId?: string;
+	/** FLY-314 Phase 2: durable reply-in-thread route (set by the gateway for a
+	 * roundtable top-level message whose topic thread must be ensured before delivery). */
+	replyRoute?: RoundtableReplyRoute;
 }
 
 export interface LeadInputRouterOptions {
@@ -111,6 +115,9 @@ export interface LeadInputRouterOptions {
 	 * with every existing caller/test). Driven across the whole model turn in
 	 * `processEntry` so the founder sees "typing…" while the Lead works. */
 	typing?: TypingNotifier;
+	/** FLY-314 Phase 2: ensure a topic thread exists before delivery. Wired by the
+	 * runtime (it has the bot token + roundtable parent). Absent → no-op (byte-compat). */
+	ensureReplyRoute?: (route: RoundtableReplyRoute) => Promise<void>;
 	logger?: {
 		warn: (m: string, c?: unknown) => void;
 		error: (m: string, c?: unknown) => void;
@@ -124,6 +131,9 @@ export class LeadInputRouter {
 	private readonly executor: TurnExecutor;
 	private readonly sender: OutboundSender;
 	private readonly typing?: TypingNotifier;
+	private readonly ensureReplyRoute?: (
+		route: RoundtableReplyRoute,
+	) => Promise<void>;
 	private readonly corr: () => string;
 	private readonly logger: {
 		warn: (m: string, c?: unknown) => void;
@@ -142,6 +152,7 @@ export class LeadInputRouter {
 		this.executor = opts.executor;
 		this.sender = opts.sender;
 		this.typing = opts.typing;
+		this.ensureReplyRoute = opts.ensureReplyRoute;
 		this.corr =
 			opts.correlationFactory ?? (() => globalThis.crypto.randomUUID());
 		this.logger = opts.logger ?? {
@@ -238,7 +249,12 @@ export class LeadInputRouter {
 				this.journal.toModelCompleted(id, output);
 				// FLY-267 回: route the reply to the inbound source channel (cross-dept
 				// inputs carry replyChannelId; chat/core/mailbox leave it undefined → chat).
-				await this.deliverOutput(id, output, entry.replyChannelId);
+				await this.deliverOutput(
+					id,
+					output,
+					entry.replyChannelId,
+					entry.replyRoute,
+				);
 				this.journal.toCompleted(id);
 			} finally {
 				this.typing?.stop(entry.replyChannelId);
@@ -257,7 +273,11 @@ export class LeadInputRouter {
 		id: string,
 		output: string,
 		channelId?: string,
+		replyRoute?: RoundtableReplyRoute,
 	): Promise<void> {
+		// FLY-314 Phase 2 (Codex R3#1): ensure the topic thread exists BEFORE enqueue,
+		// for every path that re-enqueues (normal / reconcile / model_completed).
+		await this.ensureReplyRouteIfNeeded(replyRoute);
 		const outboxId = await this.sender.enqueue({
 			leadId: this.leadId,
 			text: output,
@@ -267,6 +287,28 @@ export class LeadInputRouter {
 		});
 		this.journal.toOutputPending(id, outboxId);
 		await this.sender.deliver(outboxId);
+	}
+
+	/**
+	 * FLY-314 Phase 2: ensure the reply's topic thread exists before delivery. A
+	 * common pre-delivery hook (Codex R3#1) so `output_pending` recovery can ensure
+	 * WITHOUT re-enqueueing (which would break direct-mode's ambiguous-after-restart
+	 * boundary). No-op unless the entry carries a `roundtable_thread_from_message`
+	 * route AND an `ensureReplyRoute` fn is wired (byte-compat). Best-effort: a failure
+	 * is logged, not thrown — the subsequent send surfaces any real problem.
+	 */
+	private async ensureReplyRouteIfNeeded(
+		route?: RoundtableReplyRoute,
+	): Promise<void> {
+		if (!route || !this.ensureReplyRoute) return;
+		if (route.kind !== "roundtable_thread_from_message") return;
+		try {
+			await this.ensureReplyRoute(route);
+		} catch (err) {
+			this.logger.warn("ensureReplyRoute failed (delivery will proceed)", {
+				err: (err as Error).message,
+			});
+		}
 	}
 
 	// ── recovery ────────────────────────────────────────────────────────────
@@ -316,7 +358,12 @@ export class LeadInputRouter {
 						this.journal.toModelCompleted(entry.id, r.output);
 					}
 					// FLY-267: recovery resend must target the same source channel.
-					await this.deliverOutput(entry.id, r.output, entry.replyChannelId);
+					await this.deliverOutput(
+						entry.id,
+						r.output,
+						entry.replyChannelId,
+						entry.replyRoute,
+					);
 					this.journal.toCompleted(entry.id);
 					return;
 				}
@@ -327,7 +374,11 @@ export class LeadInputRouter {
 			case "resend_output":
 				// model_completed/output_pending: re-send output only, never re-run.
 				if (entry.outboxId) {
-					// output_pending: the outbox already has it → just deliver.
+					// output_pending: the outbox already has it → just deliver. FLY-314
+					// Phase 2 (Codex R3#1): ensure the thread first, but do NOT re-enqueue
+					// via deliverOutput — that would break direct-mode's anti-duplicate
+					// "can't-prove → ambiguous" boundary for a stale output_pending row.
+					await this.ensureReplyRouteIfNeeded(entry.replyRoute);
 					await this.sender.deliver(entry.outboxId);
 					this.journal.toCompleted(entry.id);
 				} else if (entry.output !== undefined) {
@@ -338,6 +389,7 @@ export class LeadInputRouter {
 						entry.id,
 						entry.output,
 						entry.replyChannelId,
+						entry.replyRoute,
 					);
 					this.journal.toCompleted(entry.id);
 				} else {

@@ -28,6 +28,11 @@ export interface MentionGateOptions {
 	sharedChannelIds: Iterable<string>;
 	/** Optional name-mention regexes (e.g. `\bMufasa\b`); applied to non-bot authors. */
 	mentionPatterns?: string[];
+	/** FLY-314 Phase 2: dynamically-subscribed roundtable topic threads are ALSO shared
+	 * for gating — a bot in a topic thread must use an exact `<@id>` to trigger this
+	 * Lead (Codex review R1#2/#8: "every topic thread is a shared channel"; otherwise
+	 * every in-thread bot message could trigger a reply → A↔B loop). Empty when off. */
+	dynamicSharedChannels?: { has: (channelId: string) => boolean };
 }
 
 /** Compile name-mention patterns case-insensitively. A malformed pattern is skipped
@@ -76,9 +81,12 @@ export function buildMentionGate(
 	opts: MentionGateOptions,
 ): (msg: DiscordInboundMessage) => boolean {
 	const shared = new Set(opts.sharedChannelIds);
+	const dynamicShared = opts.dynamicSharedChannels;
 	const compiled = compileMentionPatterns(opts.mentionPatterns);
 	return (msg) => {
-		if (!shared.has(msg.channelId)) return true; // chat/core: unchanged
+		const isShared =
+			shared.has(msg.channelId) || dynamicShared?.has(msg.channelId) === true;
+		if (!isShared) return true; // chat/core: unchanged
 		return isMentioned(msg, opts.botUserId, compiled);
 	};
 }

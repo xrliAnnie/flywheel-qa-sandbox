@@ -66,6 +66,7 @@ import {
 import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
 import { resolveReadDenyThread } from "./read-deny-profile.js";
+import { buildReplyInThreadWiring } from "./roundtable-reply-in-thread-wiring.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { SecretBroker, washActionSecretEnv } from "./secret-broker.js";
 import { extractTurnId, TurnDemux } from "./TurnDemux.js";
@@ -543,6 +544,21 @@ function buildTuiGeneration(
 									defaultChannelId: config.chatChannelId,
 								})
 							: undefined;
+						const source = new RestPollDiscordInboundSource({
+							botToken: config.botToken,
+							channelIds: config.channelIds,
+							cursorStore: new FileInboundCursorStore(config.inboundCursorPath),
+						});
+						// FLY-314 Phase 2: reply-in-thread wiring (default-OFF → undefined).
+						const replyInThread = config.replyInThread
+							? buildReplyInThreadWiring({
+									cfg: config.replyInThread,
+									botToken: config.botToken,
+									botUserId: config.botUserId,
+									crossDeptChannelIds: config.crossDeptChannelIds,
+									source,
+								})
+							: undefined;
 						const router = new LeadInputRouter({
 							leadId: config.leadId,
 							threadId,
@@ -550,11 +566,9 @@ function buildTuiGeneration(
 							executor,
 							sender: builtSender,
 							...(typing ? { typing } : {}),
-						});
-						const source = new RestPollDiscordInboundSource({
-							botToken: config.botToken,
-							channelIds: config.channelIds,
-							cursorStore: new FileInboundCursorStore(config.inboundCursorPath),
+							...(replyInThread
+								? { ensureReplyRoute: replyInThread.ensureReplyRoute }
+								: {}),
 						});
 						// FLY-267 判 + 回: mirror the headless mention-gate + reply-routing so
 						// the TUI runtime does NOT spam shared channels and routes replies back
@@ -566,6 +580,9 @@ function buildTuiGeneration(
 										botUserId: config.botUserId,
 										sharedChannelIds: config.crossDeptChannelIds,
 										mentionPatterns: config.mentionPatterns,
+										...(replyInThread
+											? { dynamicSharedChannels: replyInThread.registry }
+											: {}),
 									})
 								: undefined;
 						const resolveReplyChannelId =
@@ -579,7 +596,14 @@ function buildTuiGeneration(
 							botUserId: config.botUserId,
 							channelIds: config.channelIds,
 							...(shouldHandle ? { shouldHandle } : {}),
-							...(resolveReplyChannelId ? { resolveReplyChannelId } : {}),
+							...(replyInThread
+								? {
+										registry: replyInThread.registry,
+										resolveReplyRoute: replyInThread.resolveReplyRoute,
+									}
+								: resolveReplyChannelId
+									? { resolveReplyChannelId }
+									: {}),
 						});
 						// FIRST-BOOT/TURNLESS bootstrap turn (real-machine finding): the daemon
 						// persists a thread's rollout only at its FIRST TURN — a turnless
@@ -665,8 +689,17 @@ function buildTuiGeneration(
 							// (FLY-350 §10 tool-surface guarantee is enforced by the CONFIG
 							// GATE in main() — assertLeadActionsConfigGate, before the daemon
 							// starts — not by a runtime gate here. See main() / mcp-config.ts.)
-							startGateway: () => gateway.start(),
+							startGateway: async () => {
+								// FLY-314 Phase 2 (Codex code review #1): gateway FIRST so the
+								// source.onMessage handler is installed before discovery's
+								// addChannel() can drain a resumed thread (else downtime thread
+								// messages are dropped + cursor advances past them).
+								await gateway.start();
+								await replyInThread?.start();
+							},
 							stopGateway: async () => {
+								// Stop discovery first (no addChannel mid-shutdown), then gateway.
+								await replyInThread?.stop();
 								// FLY-404 (Codex review LOW): close the typing keepalive in a
 								// `finally` so a throwing gateway.stop() can never leak the
 								// interval across a generation rebuild.

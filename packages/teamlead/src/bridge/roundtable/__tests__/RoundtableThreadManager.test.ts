@@ -127,6 +127,23 @@ describe("RoundtableThreadManager.processMessage", () => {
 		expect(countCreates(calls)).toBe(0);
 	});
 
+	it("threads the poller bot's OWN top-level message when threadOwnBotMessages is set (echo relax)", async () => {
+		const { impl, calls } = makeFetch({});
+		const m = mgr(store, impl, { threadOwnBotMessages: true });
+		const advance = await m.processMessage({
+			id: "10",
+			channelId: CH,
+			authorId: BOT_USER, // the poller's own bot (a CoS broadcast)
+			authorBot: true,
+			content: "Flywheel restarted — everyone check runners",
+			mentions: [],
+			mentionEveryone: false,
+		});
+		expect(advance).toBe(true);
+		expect(countCreates(calls)).toBe(1);
+		expect(store.getRoundtableTopicThread(CH, "10")?.thread_id).toBe("10");
+	});
+
 	it("no-ops when the trigger does not fire", async () => {
 		const { impl, calls } = makeFetch({});
 		const m = mgr(store, impl, {
