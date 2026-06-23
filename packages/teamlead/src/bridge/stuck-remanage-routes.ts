@@ -32,8 +32,14 @@ import {
 	type StuckDisposition,
 } from "../StateStore.js";
 import { matchesLead } from "./lead-scope.js";
-import { isCaptureError } from "./session-capture.js";
-import { detectInputBoxPresent, fingerprintOutput } from "./stuck-candidate.js";
+// FLY-368: the recovery-nudge gates + audit-before-send now live in a shared,
+// audited operation reused by BOTH this route and the auto-repair bot. Gate-4's
+// capture/fingerprint/input-box checks moved there too (their imports left this
+// file with them).
+import {
+	attemptRunnerRecoveryNudge,
+	NUDGE_ALLOWLIST as SHARED_NUDGE_ALLOWLIST,
+} from "./runner-recovery-nudge.js";
 import {
 	hasPendingGateFromCommDb,
 	STUCK_LATCH_TTL_MS,
@@ -45,8 +51,9 @@ import {
 } from "./tmux-lookup.js";
 import type { CaptureSessionFn } from "./tools.js";
 
-/** The ONLY phrases the recovery nudge may type (plan §3.5). Exact match. */
-export const NUDGE_ALLOWLIST: readonly string[] = ["continue"];
+/** The ONLY phrases the recovery nudge may type (plan §3.5). Re-exported from
+ * the shared operation so there is a single source of truth (FLY-368). */
+export const NUDGE_ALLOWLIST: readonly string[] = SHARED_NUDGE_ALLOWLIST;
 
 /** Episode fingerprints are 16 lowercase hex chars (see fingerprintOutput). */
 const FINGERPRINT_RE = /^[0-9a-f]{16}$/;
@@ -319,237 +326,35 @@ export function createStuckRemanageRouter(
 	});
 
 	// ── 2. Restricted recovery nudge (plan §3.5) ──
+	// FLY-368: the gates + audit-before-send now live in the shared, audited
+	// `attemptRunnerRecoveryNudge` operation (reused by the auto-repair bot). This
+	// route is a thin HTTP adapter over it — behavior is unchanged.
 	router.post("/:executionId/recovery-nudge", auth, async (req, res) => {
-		const executionId = req.params.executionId as string;
 		const body = (req.body ?? {}) as {
 			leadId?: string;
 			episode_fingerprint?: string;
 			phrase?: string;
 		};
-		const leadId = typeof body.leadId === "string" ? body.leadId.trim() : "";
-		const fingerprint = body.episode_fingerprint;
-		const phrase = typeof body.phrase === "string" ? body.phrase : "continue";
-
-		/**
-		 * Audit EVERY attempt (Codex design R1 HIGH-2). Returns false when the
-		 * row could not be persisted — callers treat that as FAIL-CLOSED (Codex
-		 * PR review R1 MEDIUM-1: a best-effort audit would let an un-audited
-		 * keystroke reach tmux, or an un-audited refusal vanish).
-		 */
-		const audit = (
-			result: "attempt" | "sent" | "refused",
-			reason: string,
-			session?: { issue_id: string; project_name: string },
-		): boolean => {
-			try {
-				store.insertEvent({
-					event_id: `recovery-nudge-${executionId}-${now()}-${++auditSeq}`,
-					execution_id: executionId,
-					issue_id: session?.issue_id ?? "unknown",
-					project_name: session?.project_name ?? "unknown",
-					event_type: "runner_recovery_nudge",
-					severity: result === "refused" ? "warning" : "info",
-					source: "bridge.stuck-remanage",
-					payload: { leadId, fingerprint, phrase, result, reason },
-				});
-				return true;
-			} catch (err) {
-				console.error(
-					`[recovery-nudge] audit write failed for ${executionId}: ${(err as Error).message}`,
-				);
-				return false;
-			}
-		};
-
-		const refuse = (
-			status: number,
-			reason: string,
-			session?: { issue_id: string; project_name: string },
-		) => {
-			const audited = audit("refused", reason, session);
-			if (!audited) {
-				// No action was taken, but the refusal itself must be on record —
-				// surface the audit outage instead of silently degrading.
-				res.status(503).json({
-					nudged: false,
-					error: `${reason} [audit store unavailable — refusal not persisted; fail-closed]`,
-				});
-				return;
-			}
-			res.status(status).json({ nudged: false, error: reason });
-		};
-
-		if (!leadId) {
-			refuse(400, "leadId is required in request body");
-			return;
-		}
-		// Gate 0: allowlist phrase — exact match, nothing else ever reaches tmux.
-		if (!NUDGE_ALLOWLIST.includes(phrase)) {
-			refuse(
-				400,
-				`phrase not in allowlist (${NUDGE_ALLOWLIST.join(", ")}) — other instructions must go via mailbox; lifecycle actions are founder-gated (FLY-175)`,
-			);
-			return;
-		}
-		if (typeof fingerprint !== "string" || !FINGERPRINT_RE.test(fingerprint)) {
-			refuse(
-				400,
-				"episode_fingerprint must be the 16-hex fingerprint from the runner_stuck_escalation event",
-			);
-			return;
-		}
-
-		const session = store.getSession(executionId);
-		if (!session) {
-			refuse(404, "Session not found");
-			return;
-		}
-		try {
-			if (!matchesLead(session, leadId, projects)) {
-				refuse(
-					403,
-					`Session ${executionId} is outside lead "${leadId}" scope`,
-					session,
-				);
-				return;
-			}
-		} catch (err) {
-			refuse(
-				403,
-				`Lead scope check failed: ${(err as Error).message}`,
-				session,
-			);
-			return;
-		}
-
-		// Gate 1: status re-read at send time — only a RUNNING session may be
-		// nudged. awaiting_review / approved_to_ship are FLY-191 idle-reachable
-		// review states; nudging there could type into a parked reviewee.
-		if (session.status !== "running") {
-			refuse(
-				409,
-				`status is "${session.status}" — only running sessions can be nudged`,
-				session,
-			);
-			return;
-		}
-		// Gate 2: pending-review gray zone (needs_review emitted, row not flipped).
-		if (session.decision_route === "needs_review") {
-			refuse(
-				409,
-				"session has a pending review signal (decision_route=needs_review)",
-				session,
-			);
-			return;
-		}
-		// Gate 3: pending CommDB gate question — legitimately parked; a nudge
-		// could be (mis)read as a gate answer. Fail CLOSED on probe error.
-		try {
-			if (hasPendingGate(executionId, session.project_name)) {
-				refuse(
-					409,
-					"runner has an unanswered gate/question — answer it instead of nudging",
-					session,
-				);
-				return;
-			}
-		} catch (err) {
-			refuse(
-				503,
-				`pending-gate probe failed (${(err as Error).message}) — refusing fail-closed`,
-				session,
-			);
-			return;
-		}
-		// Gate 4: live capture must still show THIS episode (fingerprint match ⇒
-		// output unchanged since escalation) AND an idle input box.
-		const capture = await captureSessionFn(
-			executionId,
-			session.project_name,
-			100,
+		const outcome = await attemptRunnerRecoveryNudge(
+			{
+				actor: "lead",
+				executionId: req.params.executionId as string,
+				leadId: typeof body.leadId === "string" ? body.leadId : "",
+				fingerprint: body.episode_fingerprint,
+				phrase: body.phrase,
+			},
+			{
+				store,
+				projects,
+				captureSessionFn,
+				hasPendingGate,
+				sendKeys,
+				getTmuxTarget,
+				now,
+				nextAuditSeq: () => ++auditSeq,
+			},
 		);
-		if (isCaptureError(capture)) {
-			refuse(
-				503,
-				`terminal capture failed (${capture.error}) — refusing fail-closed`,
-				session,
-			);
-			return;
-		}
-		const liveFingerprint = fingerprintOutput(capture.output);
-		if (liveFingerprint !== fingerprint) {
-			refuse(
-				409,
-				"episode fingerprint no longer matches the live terminal (output changed — the runner may have resumed); re-judge from a fresh capture",
-				session,
-			);
-			return;
-		}
-		if (!detectInputBoxPresent(capture.output)) {
-			refuse(
-				409,
-				"no idle input box visible at the bottom of the terminal — not the stuck-at-prompt shape this nudge is for",
-				session,
-			);
-			return;
-		}
-
-		// All gates passed — resolve the tmux window and send the phrase.
-		const target = getTmuxTarget(executionId, session.project_name);
-		if (!target) {
-			refuse(409, "no tmux target found for this execution", session);
-			return;
-		}
-
-		// Codex PR review R1 MEDIUM-1: the attempt is persisted BEFORE the
-		// keystroke. If the audit store is down, NO keystroke is sent — an
-		// un-audited terminal write must be impossible, not merely unlikely.
-		if (
-			!audit("attempt", `sending "${phrase}" to ${target.tmuxWindow}`, session)
-		) {
-			res.status(503).json({
-				nudged: false,
-				error:
-					"audit store unavailable — refusing fail-closed (no keystroke sent)",
-			});
-			return;
-		}
-
-		const sendResult = await sendKeys(target.tmuxWindow, phrase);
-		if (!sendResult.sent) {
-			refuse(
-				502,
-				`tmux send failed: ${sendResult.error ?? "unknown"}`,
-				session,
-			);
-			return;
-		}
-
-		// Implicit disposition (plan §3.4): a successful nudge IS the Lead's
-		// handled_remanaged receipt — suppresses the Q7 Annie fallback. A write
-		// failure here must NOT report the (already sent) nudge as failed —
-		// surface a warning instead so the Lead writes the receipt explicitly;
-		// the missing receipt fails SAFE (Q7 over-pages, never silences).
-		let dispositionWarning: string | undefined;
-		try {
-			store.setStuckDisposition({
-				execution_id: executionId,
-				episode_fingerprint: fingerprint,
-				disposition: "handled_remanaged",
-				noted_by: leadId,
-				note: `recovery-nudge "${phrase}" sent to ${target.tmuxWindow}`,
-			});
-		} catch (err) {
-			dispositionWarning = `nudge SENT but the handled_remanaged receipt could not be written (${(err as Error).message}) — write the disposition explicitly or Annie will be paged after the grace window`;
-			console.error(`[recovery-nudge] ${executionId}: ${dispositionWarning}`);
-		}
-		// Best-effort: the durable "attempt" row above already guarantees the trail.
-		audit("sent", `nudge sent to ${target.tmuxWindow}`, session);
-		res.json({
-			nudged: true,
-			tmuxWindow: target.tmuxWindow,
-			...(dispositionWarning ? { warning: dispositionWarning } : {}),
-		});
+		res.status(outcome.status).json(outcome.body);
 	});
 
 	return router;

@@ -60,6 +60,21 @@ export type AlertEventType =
 
 export type AlertSeverity = "info" | "warning" | "severe";
 
+/**
+ * FLY-368: optional structured metadata carried alongside an alert. NOT rendered
+ * into the Discord message (`formatContent` ignores it — byte-compat text), it is
+ * consumed by the AutoRepairBot for safe, gated recovery. `runnerStuck` lets the
+ * bot reuse the runner recovery-nudge gates without parsing safety-critical data
+ * out of the eventId string (Codex design R1 HIGH-2).
+ */
+export interface AlertMetadata {
+	runnerStuck?: {
+		executionId: string;
+		episodeFingerprint: string;
+		escalatedAt?: number;
+	};
+}
+
 export interface AlertPayload {
 	leadId: string;
 	projectName: string;
@@ -69,6 +84,8 @@ export interface AlertPayload {
 	body: string;
 	severity: AlertSeverity;
 	sessionKey?: string;
+	/** FLY-368: optional structured metadata (ignored by Discord rendering). */
+	metadata?: AlertMetadata;
 }
 
 export interface AlertResult {
@@ -78,6 +95,25 @@ export interface AlertResult {
 	dmSent?: boolean;
 	/** FLY-182: payload routed to dead-letter (permanent failure, no retry). */
 	deadLettered?: boolean;
+	/**
+	 * FLY-368: on a successful unified-channel POST, the channel + posted message
+	 * id so AlertChannelHub can open a thread off the root message. ONLY attached
+	 * on the unified+threading path (Codex R1 LOW-10: the legacy result stays
+	 * exactly `{ sent: true }`). Never carries a token.
+	 */
+	channelId?: string;
+	messageId?: string;
+}
+
+/**
+ * FLY-368: fleet-wide unified alert routing. When set, ALL Lead + Q7-runner
+ * alerts route to one channel instead of each Lead's `alertChannel`, so Annie has
+ * a single place to watch. `token` is the resolved bot token for that channel
+ * (may be null → fall back to per-lead token resolution).
+ */
+export interface UnifiedAlertConfig {
+	channelId: string;
+	token: string | null;
 }
 
 export type FetchLike = typeof globalThis.fetch;
@@ -115,6 +151,8 @@ export interface LeadAlertNotifierConfig {
 	queueMax?: number;
 	/** FLY-182: max queue-file age before dead-lettered (default 3 days). */
 	queueMaxAgeMs?: number;
+	/** FLY-368: when set, ALL alerts route to one unified channel. */
+	unifiedAlert?: UnifiedAlertConfig;
 }
 
 /** Queue reasons that are PERMANENT — config doesn't change at runtime, so
@@ -132,9 +170,11 @@ const DEFAULT_QUEUE_MAX_AGE_MS = 259_200_000; // 3 days
 
 const DISCORD_API = "https://discord.com/api/v10";
 
-/** Result of a Discord POST attempt. `transient` failures are retryable. */
+/** Result of a Discord POST attempt. `transient` failures are retryable.
+ * FLY-368: `messageId` is the posted message id (parsed from the Discord JSON
+ * response) on the unified path, so AlertChannelHub can open a thread off it. */
 type PostOutcome =
-	| { ok: true }
+	| { ok: true; messageId?: string }
 	| { ok: false; status?: number; transient: boolean };
 
 /** 5xx and 429 are transient (retry); other 4xx are permanent (dead-letter). */
@@ -154,6 +194,7 @@ export class LeadAlertNotifier {
 	private deadLetterDir: string;
 	private queueMax: number;
 	private queueMaxAgeMs: number;
+	private unifiedAlert?: UnifiedAlertConfig;
 
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
@@ -173,6 +214,7 @@ export class LeadAlertNotifier {
 			config.deadLetterDir ?? join(homedir(), ".flywheel", "alert-deadletter");
 		this.queueMax = config.queueMax ?? DEFAULT_QUEUE_MAX;
 		this.queueMaxAgeMs = config.queueMaxAgeMs ?? DEFAULT_QUEUE_MAX_AGE_MS;
+		this.unifiedAlert = config.unifiedAlert;
 		mkdirSync(this.queueDir, { recursive: true });
 	}
 
@@ -325,7 +367,17 @@ export class LeadAlertNotifier {
 			dmSent = await this.sendDm(lead.alertDmUserId, token, payload);
 		}
 
-		return dmSent ? { sent: true, dmSent: true } : { sent: true };
+		// FLY-368: on the unified path, surface channel + posted message id so the
+		// Hub can open a per-error thread. ONLY in unified mode (Codex R1 LOW-10:
+		// the legacy result object stays exactly `{ sent: true }`).
+		const base: AlertResult = dmSent
+			? { sent: true, dmSent: true }
+			: { sent: true };
+		if (this.unifiedAlert) {
+			base.channelId = channel;
+			if (outcome.messageId) base.messageId = outcome.messageId;
+		}
+		return base;
 	}
 
 	/**
@@ -480,6 +532,9 @@ export class LeadAlertNotifier {
 		lead: LeadConfig,
 		project: ProjectEntry,
 	): string | null {
+		// FLY-368: unified channel wins over per-lead routing when configured —
+		// this is what funnels every Lead/Q7-runner alert into one place.
+		if (this.unifiedAlert?.channelId) return this.unifiedAlert.channelId;
 		if (lead.alertChannel) return lead.alertChannel;
 		if (lead.alertFallbackToCore && project.generalChannel) {
 			return project.generalChannel;
@@ -488,6 +543,9 @@ export class LeadAlertNotifier {
 	}
 
 	private resolveToken(lead: LeadConfig): string | null {
+		// FLY-368: in unified mode prefer the unified bot token; fall back to the
+		// per-lead token when the unified token is absent (matrix item 3).
+		if (this.unifiedAlert?.token) return this.unifiedAlert.token;
 		const envName = lead.alertBotTokenEnv ?? lead.botTokenEnv;
 		if (envName) {
 			const fromEnv = process.env[envName];
@@ -511,6 +569,13 @@ export class LeadAlertNotifier {
 				},
 				body: JSON.stringify({
 					content: formatContent(payload),
+					// FLY-368 (Codex code R1 MEDIUM-3): suppress all mentions on the
+					// unified-channel root alert so an issue id / title / body can never
+					// @everyone/@here/@role-ping the channel. Gated on unified mode so the
+					// legacy per-lead POST body stays byte-identical.
+					...(this.unifiedAlert
+						? { allowed_mentions: { parse: [] as string[] } }
+						: {}),
 				}),
 			});
 			if (!res.ok) {
@@ -523,6 +588,19 @@ export class LeadAlertNotifier {
 					status: res.status,
 					transient: isTransientStatus(res.status),
 				};
+			}
+			// FLY-368: parse the posted message id ONLY in unified mode (so the
+			// legacy path is byte-identical and never depends on response parsing).
+			if (this.unifiedAlert) {
+				try {
+					const body =
+						(await (
+							res.json as undefined | (() => Promise<{ id?: string }>)
+						)?.()) ?? {};
+					return { ok: true, messageId: body.id };
+				} catch {
+					return { ok: true };
+				}
 			}
 			return { ok: true };
 		} catch (err) {
@@ -597,10 +675,38 @@ export interface UnreachableAlertLead {
  */
 export function findUnreachableAlertLeads(
 	projects: ProjectEntry[],
+	unified?: { channelId?: string; token?: string | null },
 ): UnreachableAlertLead[] {
 	const out: UnreachableAlertLead[] = [];
+	// FLY-368 matrix (Codex R1 MEDIUM-9):
+	//  - unified channel set + unified token resolves → unified is the single
+	//    reachable path; per-lead channel/token are irrelevant → nothing to report.
+	//  - unified channel set + NO unified token → alerts fall back to the per-lead
+	//    token (channel is unified so channel is always fine) → validate per-lead
+	//    TOKEN only, never channel.
+	//  - unified channel unset → original per-lead channel+token validation.
+	const unifiedChannelSet = !!unified?.channelId;
+	const unifiedTokenResolves = !!unified?.token;
+	if (unifiedChannelSet && unifiedTokenResolves) {
+		return out;
+	}
 	for (const project of projects) {
 		for (const lead of project.leads) {
+			if (unifiedChannelSet) {
+				// Channel is unified (always present); only the per-lead token matters.
+				const tokenEnvName = lead.alertBotTokenEnv ?? lead.botTokenEnv;
+				const tokenResolves =
+					(!!tokenEnvName && !!process.env[tokenEnvName]) || !!lead.botToken;
+				if (!tokenResolves) {
+					out.push({
+						projectName: project.projectName,
+						leadId: lead.agentId,
+						reason:
+							"unified alert channel set but no unified token, and this lead has no resolvable fallback token (alertBotTokenEnv/botTokenEnv/botToken)",
+					});
+				}
+				continue;
+			}
 			const hasChannel =
 				!!lead.alertChannel ||
 				(!!lead.alertFallbackToCore && !!project.generalChannel);

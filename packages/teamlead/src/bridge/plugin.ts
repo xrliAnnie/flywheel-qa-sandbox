@@ -27,6 +27,8 @@ import {
 	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
 import {
+	type AlertPayload,
+	type AlertResult,
 	findUnreachableAlertLeads,
 	LeadAlertNotifier,
 } from "../LeadAlertNotifier.js";
@@ -52,6 +54,9 @@ import {
 } from "../ProjectConfig.js";
 import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import { StateStore } from "../StateStore.js";
+// FLY-368: unified alert channel + per-error threading + conservative auto-repair.
+import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
+import { AutoRepairBot } from "./AutoRepairBot.js";
 import { createActionRouter } from "./actions.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
@@ -91,6 +96,7 @@ import {
 	createClaimsReader,
 	defaultLeadPaneCapture,
 } from "./lead-alert-helpers.js";
+import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { queryLinearIssues } from "./linear-query.js";
@@ -109,14 +115,19 @@ import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
 import { setupRunInfrastructure } from "./run-infra.js";
+import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
 import { createStatusQuery } from "./runner-status.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
-import { captureSession as defaultCaptureSession } from "./session-capture.js";
+import {
+	captureSession as defaultCaptureSession,
+	isCaptureError,
+} from "./session-capture.js";
 import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
 import {
 	buildStuckRunnerDetector,
+	hasPendingGateFromCommDb,
 	stuckLatchTtlMs,
 } from "./stuck-escalation.js";
 import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
@@ -125,6 +136,8 @@ import {
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
 	killTmuxWindow,
+	sendEnterToWindow,
+	sendKeysToWindow,
 } from "./tmux-lookup.js";
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
@@ -2631,18 +2644,120 @@ export async function startBridge(
 			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
 		);
 	});
+	// FLY-368: unified alert channel + per-error threading + conservative
+	// auto-repair. ALL three are default-off (env-gated) → unset = byte-identical
+	// to today. The aggregation/routing lives HERE in the always-up Bridge so the
+	// alert channel survives Lead restarts (the robustness invariant).
+	const unifiedAlertChannelId = process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
+	const alertBotTokenEnvName = process.env.FLYWHEEL_ALERT_BOT_TOKEN_ENV;
+	const unifiedAlertToken = alertBotTokenEnvName
+		? (process.env[alertBotTokenEnvName] ?? null)
+		: null;
+	const alertThreadsEnabled = process.env.FLYWHEEL_ALERT_THREADS === "1";
+	const autoRepairEnabled = process.env.FLYWHEEL_AUTO_REPAIR === "1";
+	const unifiedAlert = unifiedAlertChannelId
+		? { channelId: unifiedAlertChannelId, token: unifiedAlertToken }
+		: undefined;
+
 	const leadAlertNotifier = new LeadAlertNotifier({
 		store,
 		projects,
 		claimsReader,
 		claimsClaimer,
 		metaAlert: metaAlertNotifier,
+		unifiedAlert,
 	});
+
+	// FLY-368: per-error threading needs ONE bot identity for root/thread/ack/
+	// resolve. If threading is enabled without a usable unified token, fail LOUD
+	// (Codex R1 HIGH-3) — do NOT silently run threadless.
+	if (alertThreadsEnabled && !(unifiedAlertChannelId && unifiedAlertToken)) {
+		console.error(
+			"[Bridge] FLY-368: FLYWHEEL_ALERT_THREADS=1 but no usable unified alert channel+token " +
+				"(need FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID + a resolvable FLYWHEEL_ALERT_BOT_TOKEN_ENV) — threading DISABLED.",
+		);
+		void metaAlertNotifier.notify({
+			reason: "alert_unreachable_config",
+			title: "FLY-368 alert threading misconfigured",
+			body: "FLYWHEEL_ALERT_THREADS=1 but the unified alert channel/token is missing — per-error threads will NOT be created.",
+		});
+	}
+
+	// FLY-368: construct the Hub only when unified channel + threading + token are
+	// all present; otherwise the watchdogs route straight to the notifier (legacy).
+	const alertHub =
+		unifiedAlert && alertThreadsEnabled && unifiedAlertToken
+			? new AlertChannelHub({
+					store,
+					notifier: leadAlertNotifier,
+					discord: createDiscordOps(unifiedAlertToken),
+					// FLY-368: conservative auto-repair, default OFF. Only the two safe
+					// actions; reuses the audited runner-nudge + lead-resume-enter ops.
+					autoRepairBot: autoRepairEnabled
+						? new AutoRepairBot({
+								runnerNudge: (input) =>
+									attemptRunnerRecoveryNudge(input, {
+										store,
+										projects,
+										captureSessionFn: defaultCaptureSession,
+										hasPendingGate: hasPendingGateFromCommDb,
+										sendKeys: sendKeysToWindow,
+										getTmuxTarget: getTmuxTargetFromCommDb,
+										now: () => Date.now(),
+										nextAuditSeq: (() => {
+											let n = 0;
+											return () => ++n;
+										})(),
+									}),
+								leadResumeEnter: (input) =>
+									attemptLeadResumeEnter(input, {
+										store,
+										locateWindowFn: locateLeadWindow,
+										captureFn: leadPaneCaptureFn,
+										sendEnter: sendEnterToWindow,
+									}),
+							})
+						: undefined,
+					// Reconcile capture: locate the Lead window + grab its pane (null when
+					// no window) — the restart-safe recovery truth source.
+					capturePane: async (projectName, leadId) => {
+						const w = await locateLeadWindow(projectName, leadId);
+						if (!w) return null;
+						return leadPaneCaptureFn(w.windowId, 200);
+					},
+					// FLY-368 (Codex code R1 HIGH-1): runner reconcile capture — resolve a
+					// runner alert thread once the runner's terminal advanced past the
+					// stuck episode, even while status stays "running". null on capture
+					// error → leave the thread active (fail-closed).
+					captureRunner: async (executionId, projectName) => {
+						const c = await defaultCaptureSession(
+							executionId,
+							projectName,
+							100,
+						);
+						return isCaptureError(c) ? null : c.output;
+					},
+				})
+			: undefined;
+	if (alertHub) {
+		console.log(
+			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, auto-repair=${autoRepairEnabled ? "ON" : "OFF"})`,
+		);
+	}
+
+	// FLY-368: a single alert sink used by BOTH watchdogs. When the Hub is on it
+	// adds threading + auto-repair; otherwise it's the raw notifier (byte-compat).
+	const alertSink: { alert: (p: AlertPayload) => Promise<AlertResult> } =
+		alertHub ? { alert: (p) => alertHub.handle(p) } : leadAlertNotifier;
 
 	// FLY-182 §4.1: surface any Lead whose alert channel/token cannot resolve
 	// from config — the silent gap that broke alerting for 25 days. LOUD log +
 	// one meta-alert (debounced) so it never goes unnoticed again.
-	const unreachableAlertLeads = findUnreachableAlertLeads(projects);
+	// FLY-368: in unified mode the matrix relaxes per-lead checks (Codex MEDIUM-9).
+	const unreachableAlertLeads = findUnreachableAlertLeads(projects, {
+		channelId: unifiedAlertChannelId,
+		token: unifiedAlertToken,
+	});
 	if (unreachableAlertLeads.length > 0) {
 		for (const u of unreachableAlertLeads) {
 			console.error(
@@ -2670,7 +2785,11 @@ export async function startBridge(
 		projects,
 		runtimeRegistry: registry,
 		chatThreadsEnabled: config.chatThreadsEnabled,
-		notifier: leadAlertNotifier,
+		// FLY-368: route the Q7 runner_stuck_unhandled alert through the same sink
+		// as Lead alerts so it lands in the unified channel + gets a thread + the
+		// conservative auto-repair attempt (when enabled). Falls back to the raw
+		// notifier when the Hub is off (byte-compat).
+		notifier: alertSink,
 	});
 	// FLY-253 (Codex R2 #4): late-bind the detector into the holder the
 	// remanage router already captured — re_arm can now reach the in-memory
@@ -2723,12 +2842,23 @@ export async function startBridge(
 				fleetPoller.snapshot(),
 			),
 		store,
-		notifier: (payload) => leadAlertNotifier.alert(payload),
+		// FLY-368: route through the unified sink (Hub adds threading + auto-repair
+		// when enabled; otherwise this is the raw notifier — byte-compat).
+		notifier: (payload) => alertSink.alert(payload),
 		locateWindowFn: (projectName, leadId) =>
 			locateLeadWindow(projectName, leadId),
 		captureFn: leadPaneCaptureFn,
 		claimsReader,
 		blockedMarkerReader,
+		// FLY-368: real-time recovery → resolve the matching alert thread (an
+		// optimization; the reconcile pass below is the restart-safe truth source).
+		onRecovery: alertHub
+			? (projectName, leadId, recoveredKind) => {
+					void alertHub.onLeadRecovery(projectName, leadId, recoveredKind);
+				}
+			: undefined,
+		// FLY-368: piggyback the 30s poll to run the reconcile pass (no new timer).
+		onPollComplete: alertHub ? () => alertHub.reconcile() : undefined,
 		// FLY-193: default ON now that the idle-pane recognizer is validated
 		// against committed real Lead pane fixtures (see
 		// LeadWatchdog `__tests__/fixtures/lead-panes/`). The recognizer is

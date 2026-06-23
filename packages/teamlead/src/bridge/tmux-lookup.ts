@@ -230,6 +230,30 @@ export async function sendKeysToWindow(
 }
 
 /**
+ * FLY-368: send a bare Enter to a tmux window (no text typed first).
+ *
+ * Used ONLY by the auto-repair bot's Lead resume-menu unstick — accepting the
+ * "Resume from summary (recommended)" default is a single Enter, NOT a typed
+ * phrase, so `sendKeysToWindow` (which types text THEN Enter) is the wrong tool.
+ * The caller gates this behind `isSafeResumeMenuForEnter` + a durable
+ * audit-before-send (lead-resume-enter.ts).
+ */
+export async function sendEnterToWindow(
+	tmuxWindow: string,
+): Promise<{ sent: boolean; error?: string }> {
+	try {
+		await execFileAsync("tmux", ["send-keys", "-t", tmuxWindow, "Enter"], {
+			timeout: TMUX_TIMEOUT,
+		});
+		return { sent: true };
+	} catch (err) {
+		const msg = (err as Error).message ?? String(err);
+		console.error(`[tmux-lookup] send-enter error: ${msg}`);
+		return { sent: false, error: msg };
+	}
+}
+
+/**
  * Kill a specific tmux window (not the whole session).
  *
  * Takes the full CommDB tmux_window target (e.g. "runner-geoforge3d:@42").
