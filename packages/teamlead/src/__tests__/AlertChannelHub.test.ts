@@ -24,13 +24,18 @@ function payload(over: Partial<AlertPayload> = {}): AlertPayload {
 	};
 }
 
+// FLY-368 v1.58.0 (Codex LOW-3): posts capture the 3rd arg (opts) too — the mention
+// safety contract now lives partly there (needs_human → { mentionUserId }; ack /
+// attempted / resolved → none).
+type PostTuple = [string, string, { mentionUserId?: string } | undefined];
+
 function makeDiscord(): DiscordOps & {
 	created: string[];
-	posts: Array<[string, string]>;
+	posts: PostTuple[];
 	archived: string[];
 } {
 	const created: string[] = [];
-	const posts: Array<[string, string]> = [];
+	const posts: PostTuple[] = [];
 	const archived: string[] = [];
 	let n = 0;
 	return {
@@ -42,8 +47,8 @@ function makeDiscord(): DiscordOps & {
 			created.push(name);
 			return id;
 		},
-		async postToThread(threadId, content) {
-			posts.push([threadId, content]);
+		async postToThread(threadId, content, opts) {
+			posts.push([threadId, content, opts]);
 		},
 		async archiveThread(threadId) {
 			archived.push(threadId);
@@ -96,6 +101,15 @@ describe("AlertChannelHub (FLY-368)", () => {
 		const row = store.getActiveAlertThread("flywheel|tadashi|pane_hash_stuck|");
 		expect(row?.event_id).toBe("evt-2");
 		expect(row?.thread_id).toBe("thread-2");
+		// FLY-368 v1.58.0 (Codex LOW-4): the stale-replacement post is NOT a recovery
+		// — it must never claim the broke→fixed timeline ("已恢复"/"修好"/"Cass 自动修复").
+		const stalePost = discord.posts.find(([, c]) =>
+			c.includes("取代为新 incident"),
+		);
+		expect(stalePost).toBeDefined();
+		expect(stalePost![1]).not.toContain("已恢复");
+		expect(stalePost![1]).not.toContain("修好");
+		expect(stalePost![1]).not.toContain("Cass 自动修复");
 	});
 
 	it("queued result degrades to root-only (no thread)", async () => {
@@ -120,6 +134,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 		const discord = makeDiscord();
 		const notifier = { alert: vi.fn(async () => SENT) };
 		const bot = {
+			canAttempt: vi.fn(() => true),
 			attempt: vi.fn(async () => ({
 				outcome: "attempted" as const,
 				action: "lead_resume_enter",
@@ -141,6 +156,164 @@ describe("AlertChannelHub (FLY-368)", () => {
 			store.getActiveAlertThread("flywheel|tadashi|pane_hash_stuck|")
 				?.repair_status,
 		).toBe("attempted");
+	});
+
+	// ── FLY-368 v1.58.0: AUTO_REPAIR=ON wording + behavior rework ──
+
+	function repairBot(outcome: "attempted" | "needs_human", canAttempt = true) {
+		return {
+			canAttempt: vi.fn(() => canAttempt),
+			attempt: vi.fn(async () => ({
+				outcome,
+				action: outcome === "attempted" ? "lead_resume_enter" : "none",
+				detail:
+					outcome === "attempted"
+						? "🔧 已对 resume 菜单发送 Enter 解卡。"
+						: "API rate limit 触顶，账户类不自动修。",
+			})),
+		} as never;
+	}
+
+	it("ack says '正在尝试自动修复' only for a repairable kind", async () => {
+		const discord = makeDiscord();
+		const notifier = { alert: vi.fn(async () => SENT) };
+		const hub = new AlertChannelHub({
+			store,
+			notifier,
+			discord,
+			autoRepairBot: repairBot("attempted", true),
+		});
+		await hub.handle(payload({ eventType: "pane_hash_stuck" }));
+		const ack = discord.posts[0]![1];
+		expect(ack).toContain("收到");
+		expect(ack).toContain("正在尝试自动修复");
+	});
+
+	it("ack does NOT claim '正在尝试' for a non-repairable kind", async () => {
+		const discord = makeDiscord();
+		const notifier = { alert: vi.fn(async () => SENT) };
+		const hub = new AlertChannelHub({
+			store,
+			notifier,
+			discord,
+			autoRepairBot: repairBot("needs_human", false),
+		});
+		await hub.handle(payload({ eventType: "rate_limit", eventId: "rl" }));
+		const ack = discord.posts[0]![1];
+		expect(ack).toContain("收到");
+		expect(ack).not.toContain("正在尝试");
+	});
+
+	it("needs_human REALLY @-pings the founder when the env id is set", async () => {
+		const prev = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
+		process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "1138241636057481306";
+		try {
+			const discord = makeDiscord();
+			const notifier = { alert: vi.fn(async () => SENT) };
+			const hub = new AlertChannelHub({
+				store,
+				notifier,
+				discord,
+				autoRepairBot: repairBot("needs_human", false),
+			});
+			await hub.handle(payload({ eventType: "rate_limit", eventId: "rl" }));
+			const nh = discord.posts.find(([, c]) => c.includes("修不了"));
+			expect(nh).toBeDefined();
+			expect(nh![1]).toContain("<@1138241636057481306>");
+			expect(nh![2]).toEqual({ mentionUserId: "1138241636057481306" });
+		} finally {
+			if (prev === undefined)
+				delete process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
+			else process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = prev;
+		}
+	});
+
+	it("needs_human degrades to plain text (no ping) when founder id is unset/invalid", async () => {
+		const prev = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
+		process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "not-a-snowflake";
+		try {
+			const discord = makeDiscord();
+			const notifier = { alert: vi.fn(async () => SENT) };
+			const hub = new AlertChannelHub({
+				store,
+				notifier,
+				discord,
+				autoRepairBot: repairBot("needs_human", false),
+			});
+			await hub.handle(payload({ eventType: "rate_limit", eventId: "rl" }));
+			const nh = discord.posts.find(([, c]) => c.includes("修不了"));
+			expect(nh).toBeDefined();
+			expect(nh![1]).toContain("Annie");
+			expect(nh![1]).not.toContain("<@");
+			expect(nh![2]).toBeUndefined();
+		} finally {
+			if (prev === undefined)
+				delete process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
+			else process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = prev;
+		}
+	});
+
+	it("attempted result line NEVER pings (no mentionUserId)", async () => {
+		const prev = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
+		process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "1138241636057481306";
+		try {
+			const discord = makeDiscord();
+			const notifier = { alert: vi.fn(async () => SENT) };
+			const hub = new AlertChannelHub({
+				store,
+				notifier,
+				discord,
+				autoRepairBot: repairBot("attempted", true),
+			});
+			await hub.handle(payload({ eventType: "pane_hash_stuck" }));
+			for (const [, , opts] of discord.posts) {
+				expect(opts?.mentionUserId).toBeUndefined();
+			}
+		} finally {
+			if (prev === undefined)
+				delete process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
+			else process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = prev;
+		}
+	});
+
+	it("OFF path (no bot) ack is honest — no '等待人工'", async () => {
+		const discord = makeDiscord();
+		const notifier = { alert: vi.fn(async () => SENT) };
+		const hub = new AlertChannelHub({ store, notifier, discord });
+		await hub.handle(payload());
+		const ack = discord.posts[0]![1];
+		expect(ack).toContain("收到");
+		expect(ack).toContain("自动修复未启用");
+		expect(ack).not.toContain("等待人工");
+	});
+
+	it("resolve attributes 'Cass 自动修复' + broke→fixed timeline when Cass acted", async () => {
+		const discord = makeDiscord();
+		const notifier = { alert: vi.fn(async () => SENT) };
+		const hub = new AlertChannelHub({
+			store,
+			notifier,
+			discord,
+			autoRepairBot: repairBot("attempted", true),
+		});
+		await hub.handle(payload({ eventType: "pane_hash_stuck" }));
+		await hub.onLeadRecovery("flywheel", "tadashi", "pane_hash_stuck");
+		const resolved = discord.posts.find(([, c]) => c.includes("已恢复"));
+		expect(resolved).toBeDefined();
+		expect(resolved![1]).toContain("报警");
+		expect(resolved![1]).toContain("Cass 自动修复");
+		expect(resolved![1]).toMatch(/\d\d:\d\d/);
+	});
+
+	it("resolve does NOT credit Cass on self-heal (no bot / no attempt)", async () => {
+		const discord = makeDiscord();
+		const notifier = { alert: vi.fn(async () => SENT) };
+		const hub = new AlertChannelHub({ store, notifier, discord });
+		await hub.handle(payload());
+		await hub.onLeadRecovery("flywheel", "tadashi", "pane_hash_stuck");
+		const resolved = discord.posts.find(([, c]) => c.includes("已恢复"));
+		expect(resolved).toBeDefined();
+		expect(resolved![1]).not.toContain("Cass 自动修复");
 	});
 
 	it("onLeadRecovery posts recovered + archives + marks resolved", async () => {
@@ -283,6 +456,23 @@ describe("createDiscordOps (FLY-368 rework: repair chain + allowed_mentions)", (
 		);
 		const body = JSON.parse(init.body as string);
 		expect(body.allowed_mentions).toEqual({ parse: [] });
+	});
+
+	it("posts with allowed_mentions {users:[id]} when mentionUserId is given (FLY-368 v1.58.0)", async () => {
+		const fetchFn = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({ id: "t" }),
+		})) as never;
+		const ops = createDiscordOps(() => ["cass-tok"], fetchFn);
+		await ops.postToThread("thread-1", "<@123> needs you", {
+			mentionUserId: "123",
+		});
+		const [, init] = (
+			fetchFn as unknown as { mock: { calls: [string, RequestInit][] } }
+		).mock.calls[0]!;
+		const body = JSON.parse(init.body as string);
+		expect(body.allowed_mentions).toEqual({ users: ["123"] });
 	});
 
 	it("falls through 401/403/404 to the next repair-chain bot", async () => {
