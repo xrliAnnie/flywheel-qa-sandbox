@@ -54,6 +54,7 @@ graph LR
 | **P5** | **出站模式定了**(bridge ⊕ cross-dept,见 §2.2) | bridge:`.env` 有 `FLYWHEEL_BRIDGE_URL`+`FLYWHEEL_API_TOKEN` + Bridge 侧 mufasa 出站路由 + **未设 cross-dept**;direct:保 roundtable | 选错 → job 起不来 或 丢 roundtable 或 双发 |
 | **P6** | 主仓已 build 出 TUI runtime | `[ -f packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js ]`(merge 后 `pnpm -r build`) | launcher 报 "not built" |
 | **P7** | 独立 QA 全 PASS | qa-fly-259 报 plan §9 全链 FINAL PASS | 未验证就切 = 违反纪律 |
+| **P8** | **全局 `codex` 没被劫持进 Lead home**(FLY-513) | `python3 -c 'import os;print(os.path.realpath(os.path.expanduser("~/.local/bin/codex")))'` 必须**不在**任何 `~/.codex-*` 下(应是中立 `~/.local/share/flywheel-codex/<ver>/…`) | curl installer 副作用把全局 codex 指进 Lead home → standalone 自更新/flip churn 它 → **每个 runner 的 codex review gate 间歇挂**(blast radius ≥3 项目)。装完 standalone 后用 `ln -sfn ~/.local/share/flywheel-codex/<ver>/bin/codex ~/.local/bin/codex` 恢复中立全局 |
 
 ### 2.1 P1 — projects.json 声明 codex backend(看门狗排除的真源)
 

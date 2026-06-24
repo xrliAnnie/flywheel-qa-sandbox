@@ -93,6 +93,17 @@ export interface GatePollerConfig {
 	circuitCooldownTicks?: number;
 	/** FLY-307 A: poll ticks before retrying a failed stale-gate eviction write (default 20). */
 	evictionRetryTicks?: number;
+	/**
+	 * FLY-513: optional global-codex drift probe run on the SAME poll tick (zero
+	 * new periodic timer, FLY-169/172 discipline). Invoked OUTSIDE the
+	 * per-project/per-lead loops, fully error-isolated; MUST be cheap and MUST
+	 * NOT touch StateStore/CommDB (Codex design R2 LOW-2). Detects a global `codex`
+	 * that drifted into a Lead CODEX_HOME while the Bridge is running — the churn
+	 * window the boot check alone cannot cover. Absent → complete no-op.
+	 */
+	onHealthTick?: () => void | Promise<void>;
+	/** FLY-513: cadence for `onHealthTick` in poll ticks (default 20 ≈ 60s at 3s). */
+	healthCheckEveryNTicks?: number;
 }
 
 /** The black-hole recipient name (stock claude-code lead convention). */
@@ -163,6 +174,28 @@ export class GatePoller {
 			// reports are a minutes-scale human-loop event; every Nth tick
 			// (default 20 ≈ 60s at the production 3s interval) is plenty.
 			this.tickCount++;
+
+			// FLY-513: global-codex drift probe — piggybacks this same tick (zero
+			// new periodic timer). Runs OUTSIDE the (project,lead) loops, fully
+			// isolated (its own catch), and must not touch StateStore/CommDB. The
+			// alert debounce lives in the callback's MetaAlertNotifier, so a
+			// stuck-bad state pages at most once per debounce window.
+			// Codex code-review R1 LOW: `(tickCount - 1) % n === 0` fires on tick 1
+			// then every n — and unlike `tickCount % n === 1` it also works for n=1
+			// (every tick), so a clamped/low cadence never silently disables the probe.
+			if (
+				this.config.onHealthTick &&
+				(this.tickCount - 1) % this.healthCheckEveryNTicks() === 0
+			) {
+				void Promise.resolve()
+					.then(() => this.config.onHealthTick?.())
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] FLY-513 codex-health probe error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
 			const patrolDue =
 				this.misroutePatrolEnabled() &&
 				this.tickCount % this.patrolEveryNTicks() === 1;
@@ -271,6 +304,11 @@ export class GatePoller {
 
 	private patrolEveryNTicks(): number {
 		return this.config.patrolEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
+	}
+
+	// FLY-513: cadence for the optional global-codex drift probe (default 20 ≈ 60s).
+	private healthCheckEveryNTicks(): number {
+		return this.config.healthCheckEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
 	}
 
 	private backlogThreshold(): number {

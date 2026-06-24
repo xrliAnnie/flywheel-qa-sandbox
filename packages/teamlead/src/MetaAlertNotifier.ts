@@ -37,7 +37,12 @@ export type MetaAlertReason =
 	| "drain_stuck"
 	| "queue_overflow"
 	| "mailbox_overflow"
-	| "alert_unreachable_config";
+	| "alert_unreachable_config"
+	// FLY-513: the global `codex` binary the review gate resolves via PATH has
+	// drifted into a per-Lead CODEX_HOME (or CODEX_HOME env is bad). The codex
+	// review gate will transiently fail config-load; meta-alert so it is caught
+	// loudly instead of silently stalling every runner.
+	| "codex_global_unhealthy";
 
 export interface MetaAlertInput {
 	reason: MetaAlertReason;
