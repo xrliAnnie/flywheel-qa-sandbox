@@ -257,6 +257,59 @@ automated smoke.
   is the documented escape hatch if you really want to run Runners in a
   mirror slot.
 
+## Roundtable Mirror (FLY-529) — pre-ship E2E for #leads-roundtable features
+
+The default slots have no roundtable channel, so restart-gated roundtable
+features (FLY-314 auto-threading / reply-in-thread) could only be tested after
+ship. `--mode roundtable` adds an isolated `#test-leads-roundtable` mirror with
+its own runs table (`roundtable_topic_threads` in the per-slot `teamlead.db`)
+and a single auto-thread host.
+
+```bash
+# One-time (Annie): create #test-leads-roundtable, grant the HOST bot
+# Create Public Threads + Send Messages in Threads, then:
+scripts/setup-roundtable-channel.sh <channel-id>   # probes thread perms + installs
+
+# Deploy a 2-lead room (host runs the single auto-thread manager):
+scripts/test-deploy.sh --mode roundtable 1   # hostSlot
+scripts/test-deploy.sh --mode roundtable 2   # member
+scripts/qa-fly-529-roundtable-smoke.sh       # AC1 auto-thread + AC2/AC3 isolation/membership
+```
+
+- `roundtableChannel` in `test-slots.json`: `{ channelId, hostSlot, memberSlots, triggerMode }`.
+  `hostSlot`'s Bridge is the only one with `FLYWHEEL_ROUNDTABLE_ENABLED=1`
+  (exactly one manager → no duplicate threads); `memberSlots` (non-host) are the
+  bots the manager adds to each topic thread.
+- Runner E2E in roundtable mode is **out of scope** (same shared-channel multi-
+  Bridge boundary as mirror mode) — `inject-linear-issue.sh` refuses it unless
+  `--allow-roundtable`. Full multi-lead reply-in-thread is FLY-314's downstream QA.
+- Suite: `suites/fly-529-roundtable-mirror.md`.
+
+## Alert Mirror (FLY-529) — pre-ship E2E for #flywheel-alerts features
+
+`--alerts` routes the test Bridge's alerts to an isolated `#test-flywheel-alerts`
+and isolates **both** alert writer paths (Bridge `LeadAlertNotifier` + shell
+`scripts/lead-alert.sh`) so a test alert never lands in the production queue the
+live Bridge drains.
+
+```bash
+# One-time (Annie): create #test-flywheel-alerts, invite the repair/slot bots:
+scripts/setup-alert-channel.sh <channel-id>
+
+scripts/test-deploy.sh --alerts 1            # composable: --mode roundtable --alerts
+scripts/qa-fly-529-alert-smoke.sh 1          # AC4 channel + AC5 two-path isolation
+```
+
+- `alertChannel` in `test-slots.json`: `{ channelId, repairBotTokenEnv }`.
+- Isolation env (slot-local, set on Bridge AND Lead): `FLYWHEEL_ALERT_QUEUE_DIR`,
+  `FLYWHEEL_ALERT_DEADLETTER_DIR`, `FLYWHEEL_CLAIMS_DB`; `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID`
+  (Bridge) + per-lead `alertChannel` in the slot-local projects file (shell).
+- **Byte-compat**: with no `--alerts`, every override is unset → production paths
+  → identical to today. The override seam is byte-compat-tested
+  (`packages/teamlead/src/bridge/__tests__/alert-dirs.test.ts`,
+  `scripts/__tests__/lead-alert-dirs.test.sh`).
+- Suite: `suites/fly-529-alert-mirror.md`.
+
 ## Contracts
 
 - `contracts/PLAN_SOURCE_CONTRACT.md` — How QA agents obtain plan files across worktrees
