@@ -22,16 +22,18 @@
 # Pass --allow-mirror to override if you really know what you are doing.
 set -euo pipefail
 
-SLOT="${1:?Usage: inject-linear-issue.sh <slot> <issue-id> [--role main|qa] [--allow-mirror]}"
+SLOT="${1:?Usage: inject-linear-issue.sh <slot> <issue-id> [--role main|qa] [--allow-mirror] [--allow-roundtable]}"
 ISSUE_ID="${2:?issue-id required}"
 shift 2
 
 ROLE="main"
 ALLOW_MIRROR="false"
+ALLOW_ROUNDTABLE="false"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --role) ROLE="${2:?--role requires value}"; shift 2 ;;
     --allow-mirror) ALLOW_MIRROR="true"; shift ;;
+    --allow-roundtable) ALLOW_ROUNDTABLE="true"; shift ;;
     *) echo "ERROR: unknown arg '$1'" >&2; exit 1 ;;
   esac
 done
@@ -50,6 +52,19 @@ if [[ -f "$SLOT_MODE_FILE" ]]; then
         echo "ERROR: slot ${SLOT} is in mirror mode (FLY-153 reply-discipline test topology)." >&2
         echo "  Runner E2E in mirror mode is intentionally out of scope — chat-thread dedupe across" >&2
         echo "  multiple Bridges sharing one channel is undefined behavior. Pass --allow-mirror to override." >&2
+        exit 1
+      fi
+      ;;
+    roundtable)
+      # FLY-529: roundtable shares mirror's multi-Bridge shared-channel risk
+      # class. Runner E2E in roundtable topology is intentionally out of scope
+      # (the room is for roundtable auto-thread + alert mirror validation, not
+      # spawning Runners). Refuse by default; --allow-roundtable escapes.
+      if [[ "$ALLOW_ROUNDTABLE" != "true" ]]; then
+        echo "ERROR: slot ${SLOT} is in roundtable mode (FLY-529 roundtable-mirror topology)." >&2
+        echo "  Runner E2E in roundtable mode is intentionally out of scope — the test room exists to" >&2
+        echo "  validate roundtable auto-threading + alert isolation, not to spawn Runners. Pass" >&2
+        echo "  --allow-roundtable to override." >&2
         exit 1
       fi
       ;;

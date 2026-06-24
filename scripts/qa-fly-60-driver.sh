@@ -125,6 +125,11 @@ if [[ -f "$SLOT_MODE_FILE" ]]; then
       err "  Run 'scripts/test-teardown.sh ${SLOT}' first, then re-run without --mode mirror."
       exit 3
       ;;
+    roundtable)
+      err "slot ${SLOT} is in roundtable mode (FLY-529). qa-fly-60 hard-gate suite requires legacy slot mode."
+      err "  Run 'scripts/test-teardown.sh ${SLOT}' first, then re-run without --mode roundtable."
+      exit 3
+      ;;
     *)
       err "slot ${SLOT} mode sidecar (${SLOT_MODE_FILE}) contains unknown value '${SLOT_MODE_VAL}'. Refusing to start hard-gate suite — run scripts/test-teardown.sh ${SLOT} and redeploy."
       exit 3

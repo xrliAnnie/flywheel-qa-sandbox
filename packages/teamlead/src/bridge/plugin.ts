@@ -100,6 +100,7 @@ import {
 	createClaimsClaimer,
 	createClaimsReader,
 	defaultLeadPaneCapture,
+	resolveAlertDirsFromEnv,
 } from "./lead-alert-helpers.js";
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
@@ -2729,6 +2730,12 @@ export async function startBridge(
 		claimsClaimer,
 		metaAlert: metaAlertNotifier,
 		unifiedAlert,
+		// FLY-529: QA Testing Room alert isolation. Unset env → both fields
+		// undefined → notifier keeps its shared production defaults (byte-compat).
+		// The test Bridge sets FLYWHEEL_ALERT_QUEUE_DIR / _DEADLETTER_DIR to slot-
+		// local paths so test alerts never land in the production queue/dead-letter
+		// dirs the live Bridge drainer reads.
+		...resolveAlertDirsFromEnv(process.env),
 	});
 
 	// FLY-368 rework: the repair chain (Cass → alphabetical fleet) drives thread
