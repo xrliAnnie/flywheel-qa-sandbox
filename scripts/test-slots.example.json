@@ -5,6 +5,8 @@
 	"_identitySource": "FLY-153: slot.identitySource selects which GeoForge3D .lead/<dir>/identity.md to source. Allowlist: cos-lead | product-lead | ops-lead. Optional — pre-FLY-153 configs without this field fall back to role mapping (cos→cos-lead, lead→product-lead). MUST be set for slot 3 to load Oliver instead of Peter (mirror cascade coverage requires it).",
 	"_fly163": "FLY-163: forumChannelId / forumChannelName fields are removed. test-deploy.sh no longer reads them. ProjectConfig strips any deprecated forumChannel key with a warning at load time.",
 	"_mirrorChannel": "FLY-153: top-level mirrorChannel block is OPTIONAL. Required only for `test-deploy.sh --mode mirror`. Create one shared text channel in the test guild and invite bots flywheel-test-1/2/3 (View Channel + Send Messages + Read Message History). See packages/qa-framework/README.md §Mirror Mode for step-by-step.",
+	"_roundtableChannel": "FLY-529: top-level roundtableChannel block is OPTIONAL. Required only for `test-deploy.sh --mode roundtable`. Create a shared text channel (mirrors #leads-roundtable) in the test guild. hostSlot's bot ALSO needs Create Public Threads + Send Messages in Threads (the auto-thread manager creates threads). memberSlots = NON-host slot ids the manager adds to each topic thread. triggerMode = any_top_level (easiest for QA) | explicit_prefix | any_lead_mention. Run scripts/setup-roundtable-channel.sh <channel-id> to validate + install.",
+	"_alertChannel": "FLY-529: top-level alertChannel block is OPTIONAL. Required only for `test-deploy.sh --alerts`. Create an isolated alert channel (mirrors #flywheel-alerts) and invite the slot bot(s) + repair bot. repairBotTokenEnv defaults to the slot's tokenEnvVar. Run scripts/setup-alert-channel.sh <channel-id> to validate + install.",
 	"slots": [
 		{
 			"id": 1,
@@ -64,5 +66,17 @@
 	"mirrorChannel": {
 		"channelId": "<shared-mirror-channel-id>",
 		"channelName": "test-core-mirror"
+	},
+	"roundtableChannel": {
+		"channelId": "<test-leads-roundtable-channel-id>",
+		"channelName": "test-leads-roundtable",
+		"hostSlot": 1,
+		"memberSlots": [2],
+		"triggerMode": "any_top_level"
+	},
+	"alertChannel": {
+		"channelId": "<test-flywheel-alerts-channel-id>",
+		"channelName": "test-flywheel-alerts",
+		"repairBotTokenEnv": "TEST_BOT_TOKEN_1"
 	}
 }

@@ -38,6 +38,34 @@ const DEFAULT_TMUX_SESSION = process.env.FLYWHEEL_TMUX_SESSION ?? "flywheel";
 const CLAIMS_LOOKBACK_SECONDS = 3600;
 
 /**
+ * FLY-529: resolve the optional alert filesystem dir overrides from env, for
+ * the QA Testing Room's alert mirror. The test Bridge sets these to slot-local
+ * paths so its `LeadAlertNotifier` writes the alert queue / dead-letter under
+ * `${SLOT_DIR}/` instead of the shared production `~/.flywheel/alert-queue|
+ * alert-deadletter` — otherwise the live production Bridge's drainer picks up
+ * test alerts and posts them (cross-pickup).
+ *
+ * Byte-compat contract: an UNSET (or whitespace-only) env yields `undefined`
+ * for that field, so `LeadAlertNotifier`'s constructor keeps its existing
+ * `?? join(homedir(), ".flywheel", ...)` default. With neither env set the
+ * returned object is `{}` and production behavior is byte-identical.
+ *
+ * The claims.db path is NOT handled here — it is already env-overridable via
+ * `FLYWHEEL_CLAIMS_DB` (see `DEFAULT_CLAIMS_DB` above), and the test Bridge sets
+ * that directly.
+ */
+export function resolveAlertDirsFromEnv(
+	env: NodeJS.ProcessEnv | Record<string, string | undefined>,
+): { queueDir?: string; deadLetterDir?: string } {
+	const out: { queueDir?: string; deadLetterDir?: string } = {};
+	const queueDir = env.FLYWHEEL_ALERT_QUEUE_DIR?.trim();
+	const deadLetterDir = env.FLYWHEEL_ALERT_DEADLETTER_DIR?.trim();
+	if (queueDir) out.queueDir = queueDir;
+	if (deadLetterDir) out.deadLetterDir = deadLetterDir;
+	return out;
+}
+
+/**
  * Returns a ClaimsReader that reads eventIds claimed in the last hour from
  * `claims.db`. Missing DB / missing table → empty Set (caller treats as not
  * claimed and proceeds with Bridge-side dedup via StateStore).

@@ -12,6 +12,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
+# FLY-529: QA Testing Room roundtable + alert mirror env helpers (pure, sourceable).
+# shellcheck source=lib/qa-room.sh
+source "${SCRIPT_DIR}/lib/qa-room.sh"
+
 # ── Load environment ──────────────────────────────────
 ENV_FILE="${HOME}/.flywheel/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -115,6 +119,8 @@ claim_slot() {
 FROM_BRANCH=""
 REQUESTED_SLOT=""
 MODE="slot"   # FLY-153: slot (default, per-slot channel) | mirror (3-Lead shared channel)
+              # FLY-529: roundtable (test #leads-roundtable mirror + auto-thread host)
+ALERTS=0      # FLY-529: --alerts wires the isolated test alert channel (any mode)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-branch)
@@ -122,9 +128,11 @@ while [[ $# -gt 0 ]]; do
     --from-branch=*)
       FROM_BRANCH="${1#*=}"; shift ;;
     --mode)
-      MODE="${2:?--mode requires slot|mirror}"; shift 2 ;;
+      MODE="${2:?--mode requires slot|mirror|roundtable}"; shift 2 ;;
     --mode=*)
       MODE="${1#*=}"; shift ;;
+    --alerts)
+      ALERTS=1; shift ;;
     -h|--help)
       sed -n '2,12p' "$0"; exit 0 ;;
     [0-9]*)
@@ -142,9 +150,9 @@ FROM_BRANCH="${FROM_BRANCH:-main}"
 # gh/pnpm preflight. If the user asks for an impossible mirror config (slot 4,
 # missing mirrorChannel), fail in milliseconds instead of minutes.
 case "$MODE" in
-  slot|mirror) ;;
+  slot|mirror|roundtable) ;;
   *)
-    echo "ERROR: --mode must be 'slot' or 'mirror' (got '${MODE}')" >&2
+    echo "ERROR: --mode must be 'slot', 'mirror', or 'roundtable' (got '${MODE}')" >&2
     exit 1
     ;;
 esac
@@ -437,6 +445,99 @@ fi
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
 mkdir -p "${SLOT_DIR}/discord-state"
 
+# ── FLY-529: QA Room roundtable + alert mirror config + env arrays ─────────
+# Resolved here (after SLOT/SLOT_DIR, before access.json / FLYWHEEL_PROJECTS /
+# env blocks) so the values weave into all of them. LEAD_EXTRA_ENV /
+# BRIDGE_EXTRA_ENV start empty and are injected into the env invocations later
+# with the bash-3.2-safe `${arr[@]+"${arr[@]}"}` expansion (empty array under
+# `set -u` would otherwise abort).
+LEAD_EXTRA_ENV=()
+BRIDGE_EXTRA_ENV=()
+ROUNDTABLE_CHANNEL_ID=""
+ROUNDTABLE_IDENTITY_NOTE=""
+
+if [[ "$MODE" == "roundtable" ]]; then
+  ROUNDTABLE_CHANNEL_ID=$(jq -r '.roundtableChannel.channelId // empty' "$SLOTS_FILE")
+  if [[ -z "$ROUNDTABLE_CHANNEL_ID" || "$ROUNDTABLE_CHANNEL_ID" == "<test-leads-roundtable-channel-id>" ]]; then
+    echo "ERROR: --mode roundtable requires roundtableChannel.channelId in ${SLOTS_FILE}." >&2
+    echo "  Run scripts/setup-roundtable-channel.sh <channel-id> first (see packages/qa-framework/README.md §Roundtable Mirror)." >&2
+    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
+  fi
+  RT_HOST_SLOT=$(jq -r '.roundtableChannel.hostSlot // 1' "$SLOTS_FILE")
+  RT_TRIGGER_MODE=$(jq -r '.roundtableChannel.triggerMode // "any_top_level"' "$SLOTS_FILE")
+  RT_MEMBER_SLOTS=$(jq -c '.roundtableChannel.memberSlots // []' "$SLOTS_FILE")
+  RT_MEMBER_USER_IDS=$(qa_room_member_user_ids "$SLOTS_FILE" "$RT_MEMBER_SLOTS")
+
+  # Light reachability probe (the thread-CREATE permission probe lives in
+  # setup-roundtable-channel.sh; here we only confirm the channel is visible to
+  # this slot's bot so we fail before starting Lead + Bridge).
+  RT_PROBE_HTTP=$(curl -s -H "Authorization: Bot ${TEST_BOT_TOKEN}" \
+    "https://discord.com/api/v10/channels/${ROUNDTABLE_CHANNEL_ID}" \
+    -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+  if [[ "$RT_PROBE_HTTP" != "200" ]]; then
+    echo "ERROR: roundtable channel ${ROUNDTABLE_CHANNEL_ID} inaccessible to bot ${AGENT_ID} (HTTP ${RT_PROBE_HTTP})." >&2
+    echo "  Invite this bot + grant View/Send/Read; host bot also needs Create Public Threads + Send Messages in Threads." >&2
+    echo "  See scripts/setup-roundtable-channel.sh." >&2
+    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
+  fi
+
+  # Lead subscribes to the roundtable channel as its cross-dept channel.
+  LEAD_EXTRA_ENV+=("FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=${ROUNDTABLE_CHANNEL_ID}")
+  # Identity note (no backticks — this is a normal assignment, not a heredoc):
+  # tells the Lead the roundtable channel + its threads are ALSO in-scope so the
+  # slot's channel-isolation rules do not make it silent-ignore roundtable msgs.
+  ROUNDTABLE_IDENTITY_NOTE="- **Roundtable (FLY-529 test)**: <#${ROUNDTABLE_CHANNEL_ID}> (channel ID ${ROUNDTABLE_CHANNEL_ID}) is your SHARED cross-dept roundtable — it and its threads are ALSO in-scope (read + reply there); never silent-ignore it."
+  # Host slot's Bridge runs the single auto-thread manager (isolated cursor).
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && BRIDGE_EXTRA_ENV+=("$line")
+  done < <(qa_room_roundtable_bridge_env \
+    "$SLOT" "$RT_HOST_SLOT" "$ROUNDTABLE_CHANNEL_ID" "$BOT_TOKEN_ENV" "$BOT_ID" \
+    "$RT_TRIGGER_MODE" "$RT_MEMBER_USER_IDS" "$SLOT_DIR")
+  log "roundtable mode: channel=${ROUNDTABLE_CHANNEL_ID} hostSlot=${RT_HOST_SLOT} thisSlot=${SLOT} manager=$([[ "$SLOT" == "$RT_HOST_SLOT" ]] && echo ON || echo off) members=${RT_MEMBER_USER_IDS:-none}"
+fi
+
+if [[ "$ALERTS" == "1" ]]; then
+  ALERT_CHANNEL_ID=$(jq -r '.alertChannel.channelId // empty' "$SLOTS_FILE")
+  if [[ -z "$ALERT_CHANNEL_ID" || "$ALERT_CHANNEL_ID" == "<test-flywheel-alerts-channel-id>" ]]; then
+    echo "ERROR: --alerts requires alertChannel.channelId in ${SLOTS_FILE}." >&2
+    echo "  Run scripts/setup-alert-channel.sh <channel-id> first (see packages/qa-framework/README.md §Alert Mirror)." >&2
+    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
+  fi
+  ALERT_REPAIR_BOT_TOKEN_ENV=$(jq -r --arg d "$BOT_TOKEN_ENV" '.alertChannel.repairBotTokenEnv // $d' "$SLOTS_FILE")
+
+  # Reachability probe for the alert channel (this slot's bot must see it).
+  AL_PROBE_HTTP=$(curl -s -H "Authorization: Bot ${TEST_BOT_TOKEN}" \
+    "https://discord.com/api/v10/channels/${ALERT_CHANNEL_ID}" \
+    -o /dev/null -w "%{http_code}" 2>/dev/null || echo "000")
+  if [[ "$AL_PROBE_HTTP" != "200" ]]; then
+    echo "ERROR: alert channel ${ALERT_CHANNEL_ID} inaccessible to bot ${AGENT_ID} (HTTP ${AL_PROBE_HTTP})." >&2
+    echo "  Invite this bot with View/Send/Read. See scripts/setup-alert-channel.sh." >&2
+    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"; exit 1
+  fi
+
+  # Isolated alert dirs go to BOTH Bridge and Lead (two alert writer paths).
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && { BRIDGE_EXTRA_ENV+=("$line"); LEAD_EXTRA_ENV+=("$line"); }
+  done < <(qa_room_alert_iso_env "$SLOT_DIR")
+  # Unified channel + repair bot are Bridge-only.
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && BRIDGE_EXTRA_ENV+=("$line")
+  done < <(qa_room_alert_bridge_env "$ALERT_CHANNEL_ID" "$ALERT_REPAIR_BOT_TOKEN_ENV")
+  # The Bridge's owner-attributed send chain dereferences the repair bot token
+  # env by NAME. test-deploy sources ~/.flywheel/.env WITHOUT `set -a`, so an
+  # unexported repair token would not reach the child Bridge. When the repair
+  # env differs from the slot's own token env, pass its value through explicitly
+  # (never logged). Codex code R2 #2.
+  if [[ -n "$ALERT_REPAIR_BOT_TOKEN_ENV" && "$ALERT_REPAIR_BOT_TOKEN_ENV" != "$BOT_TOKEN_ENV" ]]; then
+    BRIDGE_EXTRA_ENV+=("${ALERT_REPAIR_BOT_TOKEN_ENV}=${!ALERT_REPAIR_BOT_TOKEN_ENV:-}")
+  fi
+  # Shell path (lead-alert.sh) resolves channel from the slot-local projects
+  # file + dereferences the per-slot token env — both must reach the Lead env.
+  LEAD_EXTRA_ENV+=("FLYWHEEL_PROJECTS_FILE=${SLOT_DIR}/flywheel-projects.json")
+  LEAD_EXTRA_ENV+=("${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}")
+  log "alerts mode: channel=${ALERT_CHANNEL_ID} repairBotEnv=${ALERT_REPAIR_BOT_TOKEN_ENV} (queue/claims/deadletter isolated to ${SLOT_DIR})"
+fi
+
 # FLY-115: per-slot normal clone eliminates cross-slot git contention
 # and avoids bare-clone refspec/spin.md gotchas.
 #
@@ -552,11 +653,23 @@ if [[ "$MODE" == "mirror" ]]; then
     )
     | unique
     ')
+elif [[ "$MODE" == "roundtable" ]]; then
+  # FLY-529: allowBots = self + the OTHER roundtable participant bots (host slot
+  # ∪ memberSlots, minus self) so cross-Lead bot delivery in the shared
+  # roundtable channel survives the plugin's pre-gate bot filter.
+  ALLOWBOTS_JSON=$(qa_room_roundtable_allowbots \
+    "$SLOTS_FILE" "$BOT_ID" "$SLOT" "$RT_HOST_SLOT" "$RT_MEMBER_SLOTS")
 fi
+# Groups: always the slot's own channel; roundtable mode adds the shared
+# roundtable channel so the Lead reads/posts there too.
+GROUPS_JSON=$(jq -n --arg chat "$CHAT_CHANNEL_ID" --arg rt "$ROUNDTABLE_CHANNEL_ID" '
+  ({ ($chat): { requireMention: false, allowFrom: [] } })
+  + (if ($rt | length) > 0 then { ($rt): { requireMention: false, allowFrom: [] } } else {} end)
+')
 cat > "${SLOT_DIR}/discord-state/access.json" <<EOF
-{"dmPolicy":"allowlist","allowFrom":[],"allowBots":${ALLOWBOTS_JSON},"groups":{"${CHAT_CHANNEL_ID}":{"requireMention":false,"allowFrom":[]}},"pending":{}}
+{"dmPolicy":"allowlist","allowFrom":[],"allowBots":${ALLOWBOTS_JSON},"groups":${GROUPS_JSON},"pending":{}}
 EOF
-log "access.json allowBots: $(echo "$ALLOWBOTS_JSON" | jq -c .)"
+log "access.json allowBots: $(echo "$ALLOWBOTS_JSON" | jq -c .) groups: $(echo "$GROUPS_JSON" | jq -c 'keys')"
 
 # ── Generate test identity.md from production template ──
 # FLY-96 QA bug fix: 4-line identity.md didn't define announce behavior
@@ -651,6 +764,7 @@ else
 - **Ignore** all other production channel IDs in "Channel Isolation Rules", "Core Channel Routing", "Discord Channel IDs", etc. — those belong to production.
 - **Threads inside your channel are in-scope** (FLY-162). Channel scope = \`chat_id == ${CHAT_CHANNEL_ID}\` OR the inbound message is in a thread whose \`parent_id == ${CHAT_CHANNEL_ID}\` (Discord plugin exposes \`parent_id\` on thread message envelopes). If \`parent_id\` is missing or you cannot infer it, fall back to \`GET /api/chat-threads/by-thread/<chat_id>\` — a 200 with any \`issueId\` confirms the thread is yours; a 404 means it is not. Only silent-ignore when both checks say "not yours" or when \`chat_id\` is a production channel ID enumerated below.
 - **Behavior rules** (when to announce session_started / session_completed / session_failed, message format, reactions) from the sections below STILL apply — but only inside <#${CHAT_CHANNEL_ID}> and its threads.
+${ROUNDTABLE_IDENTITY_NOTE}
 SLOT_BLOCK
 )
 fi
@@ -760,6 +874,19 @@ FLYWHEEL_PROJECTS=$(jq -n \
   ]
   ')
 
+# FLY-529: when --alerts is on, inject the test alert channel + token env into
+# the test lead's projects entry so the SHELL-side lead-alert.sh (which resolves
+# its channel from FLYWHEEL_PROJECTS_FILE, NOT the unified env) posts to the
+# isolated test channel instead of dead-lettering as unknown config.
+# alertBotTokenEnv = the SLOT's own token env (not the repair env): the shell
+# path posts via the lead's own bot, and ${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN} is
+# the env we guarantee is exported to the Lead (Codex code R1 #3). The repair
+# bot env stays Bridge-only (owner-attributed send chain).
+if [[ "$ALERTS" == "1" ]]; then
+  FLYWHEEL_PROJECTS=$(printf '%s' "$FLYWHEEL_PROJECTS" \
+    | qa_room_inject_alert_into_projects "$AGENT_ID" "$ALERT_CHANNEL_ID" "$BOT_TOKEN_ENV")
+fi
+
 # FLY-153 R2 #3: persist FLYWHEEL_PROJECTS to disk so the smoke test (and any
 # operator) can deterministically inspect the routing config without scraping
 # the live Bridge process env. Bridge still receives FLYWHEEL_PROJECTS via env
@@ -785,6 +912,7 @@ env -u DISCORD_BOT_TOKEN \
   FLYWHEEL_LEAD_ROLE="${SLOT_ROLE}" \
   TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
   FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
+  ${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"} \
   bash "${REPO_ROOT}/packages/teamlead/scripts/claude-lead.sh" \
     "${AGENT_ID}" "${HOST_REPO}" "${TEST_PROJECT_NAME}" \
     > "${LEAD_LOG}" 2>&1 &
@@ -916,10 +1044,21 @@ if [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     TEAMLEAD_CHAT_THREADS_ENABLED=true \
     TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true \
     TEAMLEAD_REPLY_GUARD_ENABLED=true \
+    ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
     npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
     > "${SLOT_DIR}/bridge.log" 2>&1 &
 else
+  # FLY-529: this is the "reply-by-issue OFF" default path. It already clears the
+  # inherited TEAMLEAD_API_TOKEN; it MUST also clear the reply-by-issue flags the
+  # production ~/.flywheel/.env now exports (TEAMLEAD_REPLY_BY_ISSUE_ENABLED /
+  # _REPLY_GUARD_ENABLED / _CHAT_THREADS_ENABLED). Otherwise the child Bridge
+  # inherits REPLY_BY_ISSUE_ENABLED=true with no token and loadConfig() fatals
+  # ("requires TEAMLEAD_API_TOKEN") — which broke every deploy from a sourced-env
+  # runner until this QA run caught it.
   env -u TEAMLEAD_API_TOKEN \
+    -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
+    -u TEAMLEAD_REPLY_GUARD_ENABLED \
+    -u TEAMLEAD_CHAT_THREADS_ENABLED \
     TEAMLEAD_PORT="${SLOT_PORT}" \
     DISCORD_BOT_TOKEN="${TEST_BOT_TOKEN}" \
     "${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}" \
@@ -928,6 +1067,7 @@ else
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
+    ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
     npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
     > "${SLOT_DIR}/bridge.log" 2>&1 &
 fi

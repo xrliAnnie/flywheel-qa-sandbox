@@ -253,7 +253,10 @@ esac
 CONTENT=$(printf '%s **%s** (%s / %s)\n%s' "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$BODY")
 
 # Spill to queue for later drain. Keep fields aligned with LeadAlertNotifier.
-QUEUE_DIR="${HOME}/.flywheel/alert-queue"
+# FLY-529: FLYWHEEL_ALERT_QUEUE_DIR isolates the QA Testing Room's shell-side
+# alert queue to a slot-local dir so test alerts never land in the production
+# queue the live Bridge drains. Unset → production default (byte-compat).
+QUEUE_DIR="${FLYWHEEL_ALERT_QUEUE_DIR:-${HOME}/.flywheel/alert-queue}"
 mkdir -p "$QUEUE_DIR"
 QUEUE_PATH="${QUEUE_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-${LEAD_ID}-${KIND}.json"
 
@@ -284,7 +287,7 @@ enqueue() {
 # must NOT be queued for blind retry — that was the 1667-backlog root cause.
 # Dead-letter (audit) + fire a Discord-INDEPENDENT meta-alert so the silent
 # failure surfaces even when the Bridge is down.
-DEAD_LETTER_DIR="${HOME}/.flywheel/alert-deadletter"
+DEAD_LETTER_DIR="${FLYWHEEL_ALERT_DEADLETTER_DIR:-${HOME}/.flywheel/alert-deadletter}"
 dead_letter() {
   local reason="$1"
   mkdir -p "$DEAD_LETTER_DIR"
