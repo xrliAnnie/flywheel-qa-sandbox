@@ -35,10 +35,69 @@ set +a
 # tsx, npx, node, jq, brew tools live outside that.
 export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}"
 
+# ── FLY-516: port preflight — guarantee :PORT is ours before binding ────────
+# Root-cures batch restart #2: an orphan Bridge stuck mid-close() keeps :9876
+# bound, so the launchd-respawned Bridge crash-loops on EADDRINUSE for ~30min.
+# Runs on EVERY launchd start (kickstart / bootout+bootstrap / KeepAlive
+# respawn), so it self-heals regardless of how the restart was triggered.
+# Decision logic + crash-loop detection live in scripts/lib/bridge-port.sh
+# (hermetically unit-tested); this wrapper only supplies the fail-loud fan-out.
+BRIDGE_PORT_LIB="${FLYWHEEL_DIR}/scripts/lib/bridge-port.sh"
+if [[ -f "$BRIDGE_PORT_LIB" ]]; then
+  # shellcheck source=lib/bridge-port.sh
+  source "$BRIDGE_PORT_LIB"
+
+  BRIDGE_URL="${BRIDGE_URL:-http://localhost:${TEAMLEAD_PORT:-9876}}"
+  BRIDGE_PORT="$(bp_port_from_url "$BRIDGE_URL")"
+  STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel/state}"
+  START_MARKER="${STATE_DIR}/bridge-wrapper-starts"
+  mkdir -p "$STATE_DIR" 2>/dev/null || true
+
+  # Fail-loud: meta-alert.sh is Bridge-INDEPENDENT (desktop + local file) so it
+  # surfaces even while the Bridge is down; Discord is best-effort on top. This
+  # overrides the lib's no-op bp_fail_loud seam.
+  META_ALERT="${FLYWHEEL_DIR}/scripts/meta-alert.sh"
+  bp_fail_loud() {
+    local reason="$1" title="$2" body="$3"
+    # >&2: never write to stdout — bp_launcher_preflight's verdict is captured via
+    # `$(...)`; stdout here would defeat the preflight branch (Codex R2 HIGH). The
+    # lib also redirects, but keep the override clean too.
+    log "FAIL-LOUD [$reason] $title — $body" >&2
+    [[ -x "$META_ALERT" ]] && "$META_ALERT" "$reason" "$title" "$body" || true
+    local token="${SIMBA_BOT_TOKEN:-${DISCORD_BOT_TOKEN:-}}"
+    if [[ -n "$token" && -n "${DISCORD_CORE_CHANNEL:-}" ]] && command -v jq >/dev/null 2>&1; then
+      curl -sf -X POST "https://discord.com/api/v10/channels/${DISCORD_CORE_CHANNEL}/messages" \
+        -H "Authorization: Bot ${token}" -H "Content-Type: application/json" \
+        -d "$(jq -n --arg c "🚨 ${title} — ${body}" '{content:$c}')" --max-time 5 >/dev/null 2>&1 || true
+    fi
+  }
+
+  PREFLIGHT_ACTION="$(bp_launcher_preflight "$BRIDGE_PORT" "$BRIDGE_URL" "$START_MARKER")"
+  case "$PREFLIGHT_ACTION" in
+    already-healthy)
+      log "Healthy Bridge already serving :${BRIDGE_PORT} — exit 0 (double-start guard)."
+      exit 0
+      ;;
+    stuck)
+      # bp_launcher_preflight already fired the fail-loud alert. Exit non-zero so
+      # launchd throttles (ThrottleInterval) rather than tight-looping on a port
+      # we can't bind; a human has been notified.
+      log "Port :${BRIDGE_PORT} could not be reclaimed — refusing to start (alerted). Exit 1."
+      exit 1
+      ;;
+    bind|*)
+      : # port is ours — proceed.
+      ;;
+  esac
+else
+  log "WARNING: ${BRIDGE_PORT_LIB} not found — skipping port preflight (degraded)."
+fi
+
 # ── PID lock — prevent double-start ────────────────────────────
-# When restart-services.sh races launchd KeepAlive (e.g., legacy nohup
-# branch already started a Bridge), exit cleanly. launchd will retry
-# after ThrottleInterval (30s) and take over if the prior instance dies.
+# Secondary guard for the pre-bind boot race (a peer wrapper has exec'd node but
+# not yet bound the port, so the port preflight above saw it "free"). The port
+# preflight is authoritative for an already-bound Bridge (it tells a healthy
+# server apart from a zombie via /health); this only covers the booting peer.
 if [[ -f "$PID_FILE" ]]; then
   EXISTING_PID=$(cat "$PID_FILE" 2>/dev/null || true)
   if [[ -n "${EXISTING_PID:-}" ]] && kill -0 "$EXISTING_PID" 2>/dev/null; then

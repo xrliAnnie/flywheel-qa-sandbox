@@ -542,6 +542,14 @@ export interface BridgeAppOptions {
 	 */
 	stuckDetectorHolder?: { current: StuckRunnerDetector | null };
 	/**
+	 * FLY-516: late-bound shutdown flag. The /health route mounts inside
+	 * createBridgeApp (pre-listen) but close() lives in startBridge — so /health
+	 * reads this holder at request time and close() flips it at teardown start.
+	 * Absent (standalone createBridgeApp / tests) ⇒ /health reports
+	 * shuttingDown:false (byte-compat). Mirrors stuckDetectorHolder.
+	 */
+	shutdownStateHolder?: { shuttingDown: boolean };
+	/**
 	 * FLY-253 L2: TTL for execution-scoped latches, parsed ONCE from
 	 * `FLYWHEEL_STUCK_LATCH_TTL_MS` at startup (Codex R2 #5) and injected
 	 * into the remanage router. Undefined ⇒ router default (72h).
@@ -615,8 +623,20 @@ export function createBridgeApp(
 	// Health — no auth
 	app.get("/health", (_req, res) => {
 		const active = store.getActiveSessions();
+		// FLY-516: startBridge's close() flips shutdownStateHolder.shuttingDown at
+		// the top of teardown, so /health stops claiming "ready" the moment
+		// shutdown begins. flywheel-bridge-wrapper.sh probes this to tell a healthy
+		// serving Bridge apart from a zombie stuck mid-close() that still answers
+		// /health 200 — the latter must yield its port, not be mistaken for a live
+		// double-start. Read at request time via the late-bound holder (mirrors
+		// stuckDetectorHolder); absent (standalone createBridgeApp) ⇒ false.
+		const shuttingDown = opts?.shutdownStateHolder?.shuttingDown === true;
 		res.json({
-			ok: true,
+			// `ok` is byte-compatible (true in steady state); it flips false during
+			// shutdown so the deploy health check + wrapper preflight treat a
+			// draining Bridge as not-ready. `shuttingDown` is additive.
+			ok: !shuttingDown,
+			shuttingDown,
 			uptime: process.uptime(),
 			sessions_count: active.length,
 		});
@@ -2398,6 +2418,12 @@ export async function startBridge(
 		current: null,
 	};
 
+	// FLY-516: shared shutdown flag — /health (in createBridgeApp) reads it,
+	// close() (below) flips it at teardown start.
+	const shutdownStateHolder: { shuttingDown: boolean } = {
+		shuttingDown: false,
+	};
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -2423,6 +2449,8 @@ export async function startBridge(
 			stuckDetectorHolder,
 			stuckLatchTtlMs: stuckLatchTtlMs(),
 			fleetConsole,
+			// FLY-516: /health reads this; close() flips it at teardown start.
+			shutdownStateHolder,
 		},
 	);
 
@@ -3028,6 +3056,12 @@ export async function startBridge(
 	leadAlertDrainTimer.unref?.();
 
 	const close = async () => {
+		// FLY-516: signal /health immediately so a respawn-racing wrapper sees
+		// `shuttingDown:true` and reclaims the port instead of yielding to this
+		// (about-to-die) instance. run-bridge.ts wraps this close() in a bounded
+		// timeout so the process — and thus the port — is released even if any
+		// await below hangs.
+		shutdownStateHolder.shuttingDown = true;
 		heartbeatService?.stop();
 		gatePoller.stop();
 		await roundtableThreadManager?.stop();

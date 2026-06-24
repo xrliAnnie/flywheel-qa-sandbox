@@ -8,6 +8,7 @@ import {
 	createMemoryService,
 	type MemoryService,
 } from "flywheel-edge-worker";
+import { runBoundedShutdown } from "./bridge/bounded-shutdown.js";
 import { EventFilter } from "./bridge/EventFilter.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
@@ -116,13 +117,17 @@ async function main() {
 		});
 	}
 
+	// FLY-516 (Codex R2): the `teamlead` bin is a second Bridge entry point with
+	// the same unbounded-shutdown footgun as scripts/run-bridge.ts — a hung close()
+	// would keep :9876 bound and crash-loop the respawn. Bound it identically.
+	const shutdownTimeoutMs = Number(
+		process.env.FLYWHEEL_BRIDGE_SHUTDOWN_TIMEOUT_MS ?? 20_000,
+	);
 	let shuttingDown = false;
 	const shutdown = async () => {
 		if (shuttingDown) return;
 		shuttingDown = true;
-		console.log("[Bridge] Shutting down...");
-		await close();
-		process.exit(0);
+		await runBoundedShutdown({ close, timeoutMs: shutdownTimeoutMs });
 	};
 
 	process.on("SIGINT", shutdown);
