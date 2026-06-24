@@ -79,3 +79,15 @@ jobs:
 
       - name: Test — Discord adapter orphan reaper (FLY-183)
         run: bash packages/teamlead/scripts/__tests__/adapter-reap.test.sh
+
+      # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
+      # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at
+      # the git boundary. `scan_for_secrets fleet/` fails CI if the committed
+      # fleet/ artifact ever contains secret-like content (e.g. a hand-edited
+      # artifact bypassing fleet-capture.sh's own gate — Codex design-review).
+      - name: Test — FLY-519 fleet provisioning + zero-secret gate
+        run: |
+          bash scripts/__tests__/fleet-sanitize.test.sh
+          bash scripts/__tests__/fleet-capture.test.sh
+          bash scripts/__tests__/provision-fleet-host.test.sh
+          bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
