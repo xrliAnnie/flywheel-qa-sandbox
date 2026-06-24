@@ -136,4 +136,51 @@ describe("AutoRepairBot (FLY-368)", () => {
 			expect(leadResumeEnter).not.toHaveBeenCalled();
 		},
 	);
+
+	// FLY-368 v1.58.0: canAttempt — pure predicate the Hub uses to word the ack
+	// honestly (only the two kinds the bot truly tries get "正在尝试自动修复…").
+	it("canAttempt is true only for the two repairable kinds", () => {
+		const { bot } = makeBot();
+		expect(bot.canAttempt("runner_stuck_unhandled")).toBe(true);
+		expect(bot.canAttempt("pane_hash_stuck")).toBe(true);
+		for (const k of [
+			"rate_limit",
+			"usage_limit",
+			"login_expired",
+			"permission_blocked",
+			"crash_loop",
+		] as const) {
+			expect(bot.canAttempt(k)).toBe(false);
+		}
+	});
+
+	// FLY-368 v1.58.0 (Codex LOW-1): canAttempt and attempt() must agree so the ack
+	// never claims a repair the bot won't try. Any kind canAttempt rejects → attempt
+	// returns needs_human / action:"none".
+	it("canAttempt(false) kinds always resolve to needs_human in attempt()", async () => {
+		const { bot } = makeBot();
+		for (const k of [
+			"rate_limit",
+			"usage_limit",
+			"login_expired",
+			"permission_blocked",
+			"crash_loop",
+		] as const) {
+			expect(bot.canAttempt(k)).toBe(false);
+			const r = await bot.attempt(payload({ eventType: k }), CK);
+			expect(r.outcome).toBe("needs_human");
+			expect(r.action).toBe("none");
+		}
+	});
+
+	// FLY-368 v1.58.0 (Plan C): the bot's needs_human detail is now reason-ONLY —
+	// the Hub owns the "🙋 @Annie …" framing + the real ping. The bot must not bake
+	// in its own "需要 Annie" text (would double up under the Hub's wrapper).
+	it("needs_human detail carries the reason only (no '需要 Annie' prefix)", async () => {
+		const { bot } = makeBot();
+		const r = await bot.attempt(payload({ eventType: "rate_limit" }), CK);
+		expect(r.outcome).toBe("needs_human");
+		expect(r.detail).not.toContain("需要 Annie");
+		expect(r.detail.length).toBeGreaterThan(0);
+	});
 });

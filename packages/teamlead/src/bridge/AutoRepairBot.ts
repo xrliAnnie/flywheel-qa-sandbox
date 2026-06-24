@@ -42,7 +42,13 @@ export interface RepairResult {
 	outcome: RepairOutcome;
 	/** "runner_nudge" | "lead_resume_enter" | "none" */
 	action: string;
-	/** Human-readable line the Hub posts into the per-error thread. */
+	/**
+	 * The line the Hub posts into the per-error thread.
+	 *  - `attempted`: the full Cass-voiced "🔧 已 …" line, posted verbatim.
+	 *  - `needs_human`: the REASON only (FLY-368 v1.58.0) — the Hub prepends the
+	 *    "🙋 @Annie …" framing + the real founder @-ping, so the escalation mention
+	 *    lives in exactly one place and never duplicates.
+	 */
 	detail: string;
 }
 
@@ -59,6 +65,12 @@ export interface AutoRepairBotDeps {
 // FLY-368 rework: auto-repair is attributed to Aunt Cass (the fleet-recovery
 // CoS / "the fixer") — the audit actor reflects that. Gate logic is unchanged.
 const ACTOR = "aunt-cass";
+
+// FLY-368 v1.58.0: single source of truth for the kinds Cass actually tries to
+// auto-repair. `canAttempt()` and `attempt()`'s dispatch both derive from this so
+// the Hub ack can never claim a repair that won't happen (Codex design LOW-1).
+const AUTO_ATTEMPT_EVENT_TYPES: ReadonlySet<AlertPayload["eventType"]> =
+	new Set(["runner_stuck_unhandled", "pane_hash_stuck"]);
 
 /** Account/billing/login/permission kinds the bot must NEVER touch — human-only. */
 const HUMAN_ONLY_REASON: Partial<Record<AlertPayload["eventType"], string>> = {
@@ -81,6 +93,16 @@ export class AutoRepairBot {
 	}
 
 	/**
+	 * FLY-368 v1.58.0: does Cass actually attempt a repair for this kind? A pure,
+	 * side-effect-free predicate the Hub uses to word the ack honestly (only these
+	 * kinds get "正在尝试自动修复…"; everything else is escalated to Annie). Shares
+	 * `AUTO_ATTEMPT_EVENT_TYPES` with `attempt()` so the two can never drift.
+	 */
+	canAttempt(eventType: AlertPayload["eventType"]): boolean {
+		return AUTO_ATTEMPT_EVENT_TYPES.has(eventType);
+	}
+
+	/**
 	 * Attempt a conservative repair for one alert. `correlationKey` is the Hub's
 	 * stable incident key (used for the Lead-Enter audit trail).
 	 */
@@ -97,11 +119,9 @@ export class AutoRepairBot {
 				const reason =
 					HUMAN_ONLY_REASON[payload.eventType] ??
 					"no safe auto-repair for this alert kind.";
-				return {
-					outcome: "needs_human",
-					action: "none",
-					detail: `🙋 需要 Annie：${reason}`,
-				};
+				// FLY-368 v1.58.0: reason-ONLY. The Hub owns the "🙋 @Annie …" framing
+				// + the real ping (so the @ is scoped to needs_human and not duplicated).
+				return { outcome: "needs_human", action: "none", detail: reason };
 			}
 		}
 	}
@@ -113,7 +133,7 @@ export class AutoRepairBot {
 				outcome: "needs_human",
 				action: "none",
 				detail:
-					"🙋 需要 Annie：stuck-runner alert lacks the structured fingerprint — refusing to nudge blind.",
+					"stuck-runner alert lacks the structured fingerprint — refusing to nudge blind.",
 			};
 		}
 		const outcome = await this.deps.runnerNudge({
@@ -136,7 +156,7 @@ export class AutoRepairBot {
 		return {
 			outcome: "needs_human",
 			action: "none",
-			detail: `🙋 需要 Annie：runner nudge 被安全闸拒绝（${outcome.body.error ?? "unknown"}）。`,
+			detail: `runner nudge 被安全闸拒绝（${outcome.body.error ?? "unknown"}）。`,
 		};
 	}
 
@@ -162,7 +182,7 @@ export class AutoRepairBot {
 		return {
 			outcome: "needs_human",
 			action: "none",
-			detail: `🙋 需要 Annie：${outcome.reason}`,
+			detail: outcome.reason,
 		};
 	}
 }

@@ -27,7 +27,7 @@ import {
 	isIdleHealthyPane,
 	leadPaneLiveHash,
 } from "../LeadWatchdog.js";
-import type { StateStore } from "../StateStore.js";
+import type { AlertThreadRow, StateStore } from "../StateStore.js";
 import type { AutoRepairBot } from "./AutoRepairBot.js";
 import { fingerprintOutput } from "./stuck-candidate.js";
 
@@ -80,16 +80,22 @@ export function createDiscordOps(
 			}
 			return null; // no candidate could create the thread
 		},
-		async postToThread(threadId, content) {
+		async postToThread(threadId, content, opts) {
 			const tokens = getTokens();
 			let lastStatus: number | undefined;
+			// FLY-368 v1.58.0: by default suppress ALL mentions (parse:[]); only a
+			// needs_human escalation opts in to a single REAL founder @-ping via
+			// `mentionUserId` (the id is runtime-validated as a snowflake by the Hub).
+			const allowed_mentions = opts?.mentionUserId
+				? { users: [opts.mentionUserId] }
+				: { parse: [] as string[] };
 			for (const token of tokens) {
 				const res = await fetchFn(
 					`${DISCORD_API}/channels/${threadId}/messages`,
 					{
 						method: "POST",
 						headers: authHeaders(token),
-						body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+						body: JSON.stringify({ content, allowed_mentions }),
 					},
 				);
 				if (res.ok) return;
@@ -131,8 +137,16 @@ export interface DiscordOps {
 		messageId: string,
 		name: string,
 	): Promise<string | null>;
-	/** Post a message into a thread (best-effort). */
-	postToThread(threadId: string, content: string): Promise<void>;
+	/**
+	 * Post a message into a thread (best-effort). FLY-368 v1.58.0: `opts.mentionUserId`
+	 * opts that one post into a single REAL user @-ping (allowed_mentions.users);
+	 * omitted → all mentions suppressed (parse:[]), the default for ack/attempted/resolve.
+	 */
+	postToThread(
+		threadId: string,
+		content: string,
+		opts?: { mentionUserId?: string },
+	): Promise<void>;
 	/** Archive a thread (best-effort). */
 	archiveThread(threadId: string): Promise<void>;
 }
@@ -262,14 +276,37 @@ export class AlertChannelHub {
 			sessionKey: payload.sessionKey ?? null,
 			repairStatus: this.deps.autoRepairBot ? "pending" : null,
 		});
+		// FLY-368 v1.58.0: ack is HONEST per kind (no premature "waiting for human"):
+		//  - Cass will try this kind → "正在尝试自动修复…"
+		//  - Cass can't (bot present, non-repairable kind) → bare "收到"; the
+		//    needs_human result line right below carries the real @Annie ping.
+		//  - auto-repair disabled (no bot) → say so + that it needs Annie.
+		const bot = this.deps.autoRepairBot;
+		const ackTail = !bot
+			? "自动修复未启用，需要 Annie。"
+			: bot.canAttempt(payload.eventType)
+				? "正在尝试自动修复…"
+				: "";
 		await this.safePostToThread(
 			threadId,
-			`🔧 收到（${payload.title}）。${this.deps.autoRepairBot ? "正在尝试安全自动修复…" : "等待人工处理。"}`,
+			`🔧 Cass 收到（${payload.title}）。${ackTail}`.trimEnd(),
 		);
 
-		if (this.deps.autoRepairBot) {
-			const repair = await this.deps.autoRepairBot.attempt(payload, ck);
-			await this.safePostToThread(threadId, repair.detail);
+		if (bot) {
+			const repair = await bot.attempt(payload, ck);
+			if (repair.outcome === "needs_human") {
+				// Cass genuinely can't fix this → the ONE place we REALLY @Annie.
+				const fid = this.founderId();
+				const mention = fid ? `<@${fid}>` : "Annie";
+				await this.safePostToThread(
+					threadId,
+					`🙋 ${mention} 这个 Cass 修不了，需要你：${repair.detail}`,
+					fid ? { mentionUserId: fid } : undefined,
+				);
+			} else {
+				// "attempted": a safe action was sent — posted verbatim, NEVER pings.
+				await this.safePostToThread(threadId, repair.detail);
+			}
 			// "attempted" (a safe action was sent, recovery not yet confirmed) vs
 			// "needs_human". The thread flips to resolved (✅ 已恢复) only when the
 			// reconcile/onRecovery path confirms recovery — never on send alone.
@@ -278,6 +315,18 @@ export class AlertChannelHub {
 				repair.outcome === "attempted" ? "attempted" : "needs_human",
 			);
 		}
+	}
+
+	/**
+	 * FLY-368 v1.58.0: the founder Discord id used for the needs_human @-ping,
+	 * resolved at CALL time (env may change). Accepts ONLY a Discord snowflake;
+	 * a present-but-malformed env returns undefined so the Hub degrades to plain
+	 * text rather than letting Discord reject the whole allowed_mentions body and
+	 * drop the escalation line (Codex design LOW-2).
+	 */
+	private founderId(): string | undefined {
+		const id = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID?.trim();
+		return id && /^\d{17,20}$/.test(id) ? id : undefined;
 	}
 
 	/** Real-time recovery hook fed by LeadWatchdog.onRecovery (an optimization). */
@@ -295,10 +344,35 @@ export class AlertChannelHub {
 	async resolve(correlationKey: string): Promise<void> {
 		const active = this.deps.store.getActiveAlertThread(correlationKey);
 		if (!active) return;
-		await this.safePostToThread(active.thread_id, `✅ 已恢复 ${this.hhmm()}。`);
+		await this.safePostToThread(active.thread_id, this.formatResolved(active));
 		await this.safeArchive(active.thread_id);
 		this.deps.store.resolveAlertThread(correlationKey);
 		this.reconcileHashes.delete(correlationKey);
+	}
+
+	/**
+	 * FLY-368 v1.58.0: the recovery line Annie asked for — "X 几点报警 → 几点修好".
+	 * `opened_at` (the alert/detection time) is the "broke" anchor; now is "fixed".
+	 * Cass is credited ONLY when she actually acted (repair_status === "attempted");
+	 * a self-heal / no-bot / needs_human recovery says "自行恢复" (no false credit).
+	 */
+	private formatResolved(row: AlertThreadRow): string {
+		const what = `${row.lead_id} ${row.event_type}`;
+		const broke = this.localHHMM(row.opened_at);
+		const fixed = this.hhmm();
+		return row.repair_status === "attempted"
+			? `✅ ${what} 已恢复 — ${broke} 报警 → ${fixed} 修好（Cass 自动修复）。`
+			: `✅ ${what} 已恢复 — ${broke} 报警 → ${fixed} 自行恢复。`;
+	}
+
+	/**
+	 * Format a SQLite `datetime('now')` value (UTC, no zone suffix) as local HH:MM.
+	 * Reuses the repo's established UTC-parse pattern (HeartbeatService etc.).
+	 */
+	private localHHMM(sqliteUtc: string): string {
+		const d = new Date(`${sqliteUtc.replace(" ", "T")}Z`);
+		if (Number.isNaN(d.getTime())) return "??:??";
+		return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 	}
 
 	/**
@@ -398,9 +472,10 @@ export class AlertChannelHub {
 	private async safePostToThread(
 		threadId: string,
 		content: string,
+		opts?: { mentionUserId?: string },
 	): Promise<void> {
 		try {
-			await this.deps.discord.postToThread(threadId, content);
+			await this.deps.discord.postToThread(threadId, content, opts);
 		} catch (err) {
 			this.logger(
 				`postToThread failed (${threadId}): ${(err as Error).message}`,
