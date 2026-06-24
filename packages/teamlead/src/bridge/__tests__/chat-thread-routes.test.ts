@@ -90,8 +90,15 @@ async function request(
 /** Creates a fake ChatThreadCreator for test injection. */
 function createFakeCreator(
 	impl: (ctx: ChatThreadContext) => Promise<ChatThreadResult>,
+	backfillImpl: (
+		ctx: ChatThreadContext,
+		threadId: string,
+	) => Promise<void> = async () => {},
 ): ChatThreadCreator {
-	return { ensureChatThread: impl } as ChatThreadCreator;
+	return {
+		ensureChatThread: impl,
+		backfillThreadName: backfillImpl,
+	} as ChatThreadCreator;
 }
 
 describe("chat-thread routes (tools.ts)", () => {
@@ -742,6 +749,66 @@ describe("chat-thread routes (tools.ts)", () => {
 			expect(body.allowed_mentions).toEqual({ parse: [] });
 		});
 
+		it("FLY-509: /send backfills an existing thread row with the resolved issue title", async () => {
+			store.upsertChatThread(
+				"t-existing-title",
+				"ch-100",
+				"FLY-91",
+				"lead-alpha",
+			);
+
+			const ensureCalls: ChatThreadContext[] = [];
+			const backfillCalls: Array<{
+				ctx: ChatThreadContext;
+				threadId: string;
+			}> = [];
+			const creator = createFakeCreator(
+				async (ctx) => {
+					ensureCalls.push(ctx);
+					return { created: false, threadId: "should-not-be-called" };
+				},
+				async (ctx, threadId) => {
+					backfillCalls.push({ ctx, threadId });
+				},
+			);
+
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ id: "msg-r-title" }),
+			});
+			process.env.LINEAR_API_KEY = "test-key";
+
+			createTestServer({
+				chatThreadsEnabled: true,
+				replyByIssueEnabled: true,
+				discordFetch: mockFetch,
+				chatThreadCreator: creator,
+				globalBotToken: "global-token",
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/send", {
+				issueIdentifier: "FLY-91",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+				text: "reuse with title",
+			});
+
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({
+				threadId: "t-existing-title",
+				messageIds: ["msg-r-title"],
+				created: false,
+			});
+			expect(ensureCalls).toHaveLength(0);
+			expect(backfillCalls).toHaveLength(1);
+			expect(backfillCalls[0].threadId).toBe("t-existing-title");
+			expect(backfillCalls[0].ctx.issueId).toBe("FLY-91");
+			expect(backfillCalls[0].ctx.issueIdentifier).toBe("FLY-91");
+			expect(backfillCalls[0].ctx.issueTitle).toBe("Chat thread feature");
+		});
+
 		it("FLY-270: bare Linear-UUID issueId is NOT reused as an orphan — goes Linear + canonicalizes to identifier (Codex code-review #1)", async () => {
 			const realUuid = "adc32120-f260-42e0-90b8-968e55666e28";
 			// Pre-seed a UUID-keyed orphan row (a pre-fix duplicate). The gate must
@@ -831,6 +898,7 @@ describe("chat-thread routes (tools.ts)", () => {
 			// FLY-270: /send canonicalizes the thread key to the identifier (so it
 			// reuses the run-start thread, not a UUID-keyed duplicate).
 			expect(ensureCalls[0].issueId).toBe("FLY-91");
+			expect(ensureCalls[0].issueTitle).toBe("Chat thread feature");
 		});
 
 		it("returns 503 when no bot token available", async () => {
