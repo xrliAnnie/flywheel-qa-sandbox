@@ -36,8 +36,53 @@ describe("Bridge scaffold", () => {
 		expect(res.status).toBe(200);
 		const body = await res.json();
 		expect(body.ok).toBe(true);
+		// FLY-516: additive field, false in steady state (byte-compat).
+		expect(body.shuttingDown).toBe(false);
 		expect(typeof body.uptime).toBe("number");
 		expect(body.sessions_count).toBe(0);
+
+		store.close();
+	});
+
+	// FLY-516: when the shared shutdown holder is flipped (close() does this at
+	// teardown start), /health must report shuttingDown:true and ok:false so the
+	// wrapper preflight reclaims the port instead of yielding to a draining
+	// (zombie-in-the-making) Bridge that still answers 200.
+	it("GET /health reflects shuttingDown via the shutdown holder", async () => {
+		const store = await StateStore.create(":memory:");
+		const holder = { shuttingDown: false };
+		const app = createBridgeApp(
+			store,
+			[],
+			makeConfig(),
+			undefined, // broadcaster
+			undefined, // transitionOpts
+			undefined, // retryDispatcher
+			undefined, // cipherWriter
+			undefined, // eventFilter
+			undefined, // _unusedForumTagUpdater
+			undefined, // registry
+			undefined, // _unusedForumPostCreator
+			undefined, // memoryService
+			undefined, // captureSessionFn
+			undefined, // startDispatcher
+			undefined, // standupService
+			undefined, // standupProjectName
+			{ shutdownStateHolder: holder },
+		);
+
+		const base = await startAndGetUrl(app, "/health");
+		const before = await (await fetch(base)).json();
+		expect(before.ok).toBe(true);
+		expect(before.shuttingDown).toBe(false);
+
+		// Simulate close() flipping the flag mid-flight.
+		holder.shuttingDown = true;
+		const duringRes = await fetch(base);
+		expect(duringRes.status).toBe(200); // still 200 (additive, not a 503)
+		const during = await duringRes.json();
+		expect(during.ok).toBe(false);
+		expect(during.shuttingDown).toBe(true);
 
 		store.close();
 	});

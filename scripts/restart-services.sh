@@ -556,6 +556,22 @@ fi
 # Bridge stop / start
 # ════════════════════════════════════════════════════════════════
 
+# FLY-516: shared port helpers (bp_confirm_port_released, bp_wait_port_free, …).
+# Route the lib's fail-loud seam through this script's existing Discord channel
+# plus the Bridge-independent meta-alert.
+# shellcheck source=lib/bridge-port.sh
+source "${FLYWHEEL_DIR}/scripts/lib/bridge-port.sh"
+bp_fail_loud() {
+    local reason="$1" title="$2" body="$3"
+    # >&2: never write to stdout — bp_confirm_port_released's verdict is captured
+    # via `$(...)` and any stdout here would defeat the fail-closed check
+    # (Codex R2 HIGH). The lib also redirects, but keep the override clean too.
+    log "FAIL-LOUD [$reason] $title — $body" >&2
+    notify_discord "🚨 ${title} — ${body}"
+    [[ -x "${FLYWHEEL_DIR}/scripts/meta-alert.sh" ]] && \
+        "${FLYWHEEL_DIR}/scripts/meta-alert.sh" "$reason" "$title" "$body" || true
+}
+
 # ── FLY-239: precise Bridge-stop targeting ──────────────────────────────
 # The old `pgrep -f "run-bridge.ts"` over-matched. Its command-line substring
 # also appears in:
@@ -646,6 +662,24 @@ stop_bridge() {
     done
     # shellcheck disable=SC2086
     log "Bridge stopped (PIDs: $(echo $pids | tr '\n' ' '), waited ${wait_count}s)"
+
+    # FLY-516: killing the PID(s) does NOT guarantee :port is released (a lingering
+    # socket / different holder). Confirm the port is actually free before handing
+    # off to start_bridge / launchd — otherwise the new Bridge crash-loops on
+    # EADDRINUSE (batch restart #2 wedge). bp_confirm_port_released polls, reclaims
+    # a surviving listener, and fail-louds (Discord + meta-alert) if it stays bound.
+    #
+    # FLY-516 (Codex R1 HIGH): fail-CLOSED. If the port is still stuck we must NOT
+    # let the deploy proceed to start_bridge + the /health check — the new Bridge
+    # can't bind, and the health probe would hit the OLD stuck holder (a legacy one
+    # answers `{ok:true}`) and FALSELY report success. Return non-zero so the caller
+    # aborts. The alert already fired inside bp_confirm_port_released.
+    if [[ "$(bp_confirm_port_released "$port")" == "stuck" ]]; then
+        log "ERROR: Bridge port :$port still bound after stop — refusing to continue (new Bridge can't bind; alerted). stop_bridge fail-closed."
+        return 1
+    fi
+    log "Bridge port :$port confirmed released"
+    return 0
 }
 
 start_bridge() {
@@ -999,7 +1033,15 @@ rollback_and_restart() {
     if pnpm -C "$FLYWHEEL_DIR" install --frozen-lockfile && \
        pnpm -C "$FLYWHEEL_DIR" build; then
         if [[ "$restart_bridge" == "true" ]]; then
-            stop_bridge
+            # FLY-516 (Codex R1 HIGH): stop_bridge is now fail-closed (returns 1 on
+            # a stuck port). Guard the bare call — under `set -e` an unguarded
+            # non-zero would abort the rollback silently. If the port can't be
+            # freed even during rollback, the old version can't bind either →
+            # severe alert + bail (a human must SIGKILL the listener).
+            if ! stop_bridge; then
+                severe_alert "Flywheel 回滚时 Bridge 端口 :$(bridge_port) 未能释放 — 无法重启旧版本。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
+                return 1
+            fi
             start_bridge
         fi
         local rb_leads_failed=0
@@ -1033,8 +1075,16 @@ deploy_and_verify() {
     notify_discord "🔄 开始更新 Flywheel: \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`"
 
     # Step 1: Stop Bridge FIRST (triggers stopAccepting + drain)
+    # FLY-516 (Codex R1 HIGH): fail-closed — if the old Bridge's port can't be
+    # freed, abort BEFORE start_bridge + the /health check (which would otherwise
+    # hit the stuck holder and falsely pass). bp_confirm_port_released already
+    # alerted; do NOT advance deployed-sha.
     if [[ "$restart_bridge" == "true" ]]; then
-        stop_bridge
+        if ! stop_bridge; then
+            log "ERROR: stop_bridge failed to free the port — aborting deploy (deployed-sha NOT advanced)."
+            notify_discord "🚨 Flywheel 部署中止: Bridge 端口未能释放,新 Bridge 无法 bind。需手动 SIGKILL listener (lsof -ti:$(bridge_port))。"
+            return 1
+        fi
     fi
 
     # Step 2: Build (Bridge is stopped, no race possible)
