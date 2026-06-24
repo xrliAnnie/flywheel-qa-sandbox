@@ -13,6 +13,8 @@ import { validateThreadExists } from "./thread-validator.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const CREATE_TIMEOUT_MS = 5_000;
+const DISCORD_THREAD_NAME_MAX = 100;
+const LINEAR_IDENTIFIER_RE = /^[A-Z][A-Z0-9]*-\d+$/;
 
 export interface ChatThreadContext {
 	chatChannelId: string;
@@ -29,6 +31,41 @@ export interface ChatThreadResult {
 	created: boolean;
 	threadId?: string;
 	error?: string;
+}
+
+function effectiveIssueKey(
+	ctx: Pick<ChatThreadContext, "issueId" | "issueIdentifier">,
+): string | undefined {
+	return (
+		ctx.issueIdentifier ??
+		(LINEAR_IDENTIFIER_RE.test(ctx.issueId) ? ctx.issueId : undefined)
+	);
+}
+
+function buildIssueThreadName(
+	ctx: Pick<ChatThreadContext, "issueId" | "issueIdentifier" | "issueTitle">,
+): string {
+	const issueKey = effectiveIssueKey(ctx);
+	if (issueKey) return `[${issueKey}] ${ctx.issueTitle ?? ctx.issueId}`;
+	return ctx.issueTitle ?? ctx.issueId;
+}
+
+function truncateDiscordThreadName(name: string): string {
+	return name.slice(0, DISCORD_THREAD_NAME_MAX);
+}
+
+function isPlaceholderThreadName(
+	currentName: string | undefined,
+	ctx: Pick<ChatThreadContext, "issueId" | "issueIdentifier">,
+): boolean {
+	if (!currentName) return false;
+	const issueKey = effectiveIssueKey(ctx);
+	if (!issueKey) return false;
+	const placeholders = new Set([issueKey]);
+	placeholders.add(`[${issueKey}]`);
+	placeholders.add(`[${issueKey}] ${issueKey}`);
+	placeholders.add(`[${issueKey}] ${ctx.issueId}`);
+	return placeholders.has(currentName);
 }
 
 export class ChatThreadCreator {
@@ -66,6 +103,7 @@ export class ChatThreadCreator {
 				},
 			);
 			if (valid) {
+				await this.maybeBackfillThreadName(ctx, existing.thread_id);
 				// FLY-91: Even when reusing existing thread, post a notification
 				// in the main channel so Annie sees the issue is active.
 				await this.postChannelNotification(ctx, existing.thread_id);
@@ -86,12 +124,11 @@ export class ChatThreadCreator {
 		// 2. Compose thread name + initial message visible in main channel.
 		// FLY-91 UX fix: "Start Thread from Message" makes the root message
 		// appear in the channel, so users can see the thread was created.
-		const threadName = ctx.issueIdentifier
-			? `[${ctx.issueIdentifier}] ${ctx.issueTitle ?? ctx.issueId}`
-			: (ctx.issueTitle ?? ctx.issueId);
+		const threadName = truncateDiscordThreadName(buildIssueThreadName(ctx));
 
-		const messageContent = ctx.issueIdentifier
-			? `🧵 **${ctx.issueIdentifier}** — ${ctx.issueTitle ?? "Runner session"}`
+		const issueKey = effectiveIssueKey(ctx);
+		const messageContent = issueKey
+			? `🧵 **${issueKey}** — ${ctx.issueTitle ?? "Runner session"}`
 			: `🧵 ${ctx.issueTitle ?? ctx.issueId}`;
 
 		const controller = new AbortController();
@@ -149,7 +186,7 @@ export class ChatThreadCreator {
 						"Content-Type": "application/json",
 					},
 					body: JSON.stringify({
-						name: threadName.slice(0, 100),
+						name: threadName,
 						auto_archive_duration: 4320, // 3 days
 					}),
 					signal: controller.signal,
@@ -202,6 +239,76 @@ export class ChatThreadCreator {
 		botToken: string,
 	): Promise<void> {
 		return removeUserFromChatThread(threadId, userId, botToken);
+	}
+
+	async backfillThreadName(
+		ctx: ChatThreadContext,
+		threadId: string,
+	): Promise<void> {
+		await this.maybeBackfillThreadName(ctx, threadId);
+	}
+
+	private async maybeBackfillThreadName(
+		ctx: ChatThreadContext,
+		threadId: string,
+	): Promise<void> {
+		if (!ctx.issueTitle) return;
+		if (!effectiveIssueKey(ctx)) return;
+		const desiredName = truncateDiscordThreadName(buildIssueThreadName(ctx));
+		if (!desiredName || desiredName === ctx.issueId) return;
+
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
+
+		try {
+			const getRes = await fetch(`${DISCORD_API}/channels/${threadId}`, {
+				method: "GET",
+				headers: { Authorization: `Bot ${ctx.botToken}` },
+				signal: controller.signal,
+			});
+			if (!getRes.ok) {
+				const body = await getRes.text().catch(() => "");
+				console.warn(
+					`[ChatThreadCreator] thread name backfill GET failed: ${getRes.status} ${body.slice(0, 200)}`,
+				);
+				return;
+			}
+
+			const data = (await getRes.json().catch(() => ({}))) as {
+				name?: unknown;
+			};
+			const currentName =
+				typeof data.name === "string" ? data.name.trim() : undefined;
+			if (!isPlaceholderThreadName(currentName, ctx)) return;
+			if (currentName === desiredName) return;
+
+			const patchRes = await fetch(`${DISCORD_API}/channels/${threadId}`, {
+				method: "PATCH",
+				headers: {
+					Authorization: `Bot ${ctx.botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ name: desiredName }),
+				signal: controller.signal,
+			});
+			if (!patchRes.ok) {
+				const body = await patchRes.text().catch(() => "");
+				console.warn(
+					`[ChatThreadCreator] thread name backfill PATCH failed: ${patchRes.status} ${body.slice(0, 200)}`,
+				);
+			}
+		} catch (err) {
+			const msg = (err as Error).message;
+			if ((err as Error).name === "AbortError") {
+				console.warn(
+					`[ChatThreadCreator] thread name backfill timed out after ${CREATE_TIMEOUT_MS}ms`,
+				);
+			} else {
+				console.warn(`[ChatThreadCreator] thread name backfill error:`, msg);
+			}
+		} finally {
+			clearTimeout(timeout);
+		}
 	}
 
 	/**

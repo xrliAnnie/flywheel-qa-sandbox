@@ -71,14 +71,81 @@ describe("FLY-91: ChatThreadCreator", () => {
 		});
 	});
 
+	it("includes issue title in first channel message and truncates thread name to Discord 100 chars", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "msg-title" }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "thread-title" }),
+			});
+
+		const longTitle = "Fix Bridge thread names ".repeat(8);
+		await creator.ensureChatThread({
+			chatChannelId: "ch-123",
+			issueId: "FLY-509",
+			issueIdentifier: "FLY-509",
+			issueTitle: longTitle,
+			botToken: "bot-token",
+		});
+
+		const msgBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+		expect(msgBody.content).toContain("FLY-509");
+		expect(msgBody.content).toContain("Fix Bridge thread names");
+
+		const threadBody = JSON.parse(mockFetch.mock.calls[1]![1].body);
+		expect(
+			threadBody.name.startsWith("[FLY-509] Fix Bridge thread names"),
+		).toBe(true);
+		expect(threadBody.name).toHaveLength(100);
+	});
+
+	it("uses identifier-shaped issueId as the display key when issueIdentifier is absent", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "msg-fallback" }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "thread-fallback" }),
+			});
+
+		await creator.ensureChatThread({
+			chatChannelId: "ch-123",
+			issueId: "FLY-509",
+			issueTitle: "Bridge thread names include issue title",
+			botToken: "bot-token",
+		});
+
+		const msgBody = JSON.parse(mockFetch.mock.calls[0]![1].body);
+		expect(msgBody.content).toContain("**FLY-509**");
+		expect(msgBody.content).toContain(
+			"Bridge thread names include issue title",
+		);
+
+		const threadBody = JSON.parse(mockFetch.mock.calls[1]![1].body);
+		expect(threadBody.name).toBe(
+			"[FLY-509] Bridge thread names include issue title",
+		);
+	});
+
 	it("reuses existing chat thread and posts channel notification", async () => {
 		// Pre-seed mapping
 		store.upsertChatThread("thread-existing", "ch-123", "issue-1");
 
 		// Call 1: validateThreadExists GET /channels/thread-existing → 200
-		// Call 2: POST channel notification
+		// Call 2: backfill GET /channels/thread-existing → custom name
+		// Call 3: POST channel notification
 		mockFetch
 			.mockResolvedValueOnce({ ok: true, status: 200 })
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[GEO-312] Test issue" }),
+			})
 			.mockResolvedValueOnce({ ok: true });
 
 		const result = await creator.ensureChatThread({
@@ -91,18 +158,105 @@ describe("FLY-91: ChatThreadCreator", () => {
 
 		expect(result.created).toBe(false);
 		expect(result.threadId).toBe("thread-existing");
-		// Two fetch calls: validate + channel notification
-		expect(mockFetch).toHaveBeenCalledTimes(2);
+		// Three fetch calls: validate + backfill check + channel notification
+		expect(mockFetch).toHaveBeenCalledTimes(3);
 		expect(mockFetch.mock.calls[0]![0]).toContain("/channels/thread-existing");
 
 		// Verify channel notification
-		const [notifUrl, notifOpts] = mockFetch.mock.calls[1]!;
+		const [notifUrl, notifOpts] = mockFetch.mock.calls[2]!;
 		expect(notifUrl).toBe(
 			"https://discord.com/api/v10/channels/ch-123/messages",
 		);
 		const notifBody = JSON.parse(notifOpts.body);
 		expect(notifBody.content).toContain("GEO-312");
 		expect(notifBody.content).toContain("<#thread-existing>");
+	});
+
+	it("renames an existing placeholder thread when issue title is available", async () => {
+		store.upsertChatThread("thread-existing", "ch-123", "FLY-509");
+		mockFetch
+			.mockResolvedValueOnce({ ok: true, status: 200 })
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-509] FLY-509" }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ id: "thread-existing" }),
+			})
+			.mockResolvedValueOnce({ ok: true });
+
+		await creator.ensureChatThread({
+			chatChannelId: "ch-123",
+			issueId: "FLY-509",
+			issueIdentifier: "FLY-509",
+			issueTitle: "Bridge thread names include issue title",
+			botToken: "bot-token",
+		});
+
+		expect(mockFetch.mock.calls[2]![0]).toBe(
+			"https://discord.com/api/v10/channels/thread-existing",
+		);
+		expect(mockFetch.mock.calls[2]![1].method).toBe("PATCH");
+		expect(JSON.parse(mockFetch.mock.calls[2]![1].body).name).toBe(
+			"[FLY-509] Bridge thread names include issue title",
+		);
+	});
+
+	it("renames an existing identifier-only placeholder when issueIdentifier is absent", async () => {
+		store.upsertChatThread("thread-fallback", "ch-123", "FLY-509");
+		mockFetch
+			.mockResolvedValueOnce({ ok: true, status: 200 })
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "FLY-509" }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ id: "thread-fallback" }),
+			})
+			.mockResolvedValueOnce({ ok: true });
+
+		await creator.ensureChatThread({
+			chatChannelId: "ch-123",
+			issueId: "FLY-509",
+			issueTitle: "Bridge thread names include issue title",
+			botToken: "bot-token",
+		});
+
+		expect(mockFetch.mock.calls[2]![1].method).toBe("PATCH");
+		expect(JSON.parse(mockFetch.mock.calls[2]![1].body).name).toBe(
+			"[FLY-509] Bridge thread names include issue title",
+		);
+	});
+
+	it("does not rename an existing custom thread name", async () => {
+		store.upsertChatThread("thread-custom", "ch-123", "FLY-509");
+		mockFetch
+			.mockResolvedValueOnce({ ok: true, status: 200 })
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "[FLY-509] already curated title" }),
+			})
+			.mockResolvedValueOnce({ ok: true });
+
+		await creator.ensureChatThread({
+			chatChannelId: "ch-123",
+			issueId: "FLY-509",
+			issueIdentifier: "FLY-509",
+			issueTitle: "Bridge thread names include issue title",
+			botToken: "bot-token",
+		});
+
+		expect(
+			mockFetch.mock.calls.some((call) => call[1]?.method === "PATCH"),
+		).toBe(false);
 	});
 
 	it("recreates thread when existing one returns 404", async () => {
@@ -281,12 +435,15 @@ describe("FLY-91: ChatThreadCreator", () => {
 		store.upsertChatThread("thread-reuse", "ch-am", "issue-am");
 
 		// Call 1: validateThreadExists GET → 200
-		// Call 2: addThreadMember PUT (no-op if no ownerUserId)
+		// Call 2: backfill GET → already titled, no PATCH
 		// Call 3: postChannelNotification POST — this is the one we assert.
-		// Match the existing "reuses..." test pattern: 2 fetch calls suffice
-		// when no ownerUserId is provided.
 		mockFetch
 			.mockResolvedValueOnce({ ok: true, status: 200 })
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-162] Reuse path" }),
+			})
 			.mockResolvedValueOnce({ ok: true });
 
 		await creator.ensureChatThread({

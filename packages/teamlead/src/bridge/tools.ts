@@ -710,6 +710,7 @@ export function createQueryRouter(
 		// FLY-270: track the identifier so we can canonicalize the thread key
 		// (to the session's issue_id) below — fixes identifier-vs-UUID dup threads.
 		let resolvedIdentifier: string | undefined;
+		let resolvedTitle: string | undefined;
 		const lookupRowDirect = bodyIssueId
 			? store.getChatThreadByIssue(bodyIssueId, channelId)
 			: undefined;
@@ -754,6 +755,7 @@ export function createQueryRouter(
 					}
 					resolvedIssueId = bodyIssueId;
 					resolvedIdentifier = issue.identifier;
+					resolvedTitle = issue.title;
 				} else {
 					// Identifier-only path: resolve to UUID
 					const results = await client.searchIssues(bodyIdentifier!);
@@ -768,6 +770,7 @@ export function createQueryRouter(
 					}
 					resolvedIssueId = matched.id;
 					resolvedIdentifier = matched.identifier;
+					resolvedTitle = matched.title;
 				}
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -800,6 +803,20 @@ export function createQueryRouter(
 		const existing = store.getChatThreadByIssue(resolvedIssueId, channelId);
 		if (existing) {
 			threadId = existing.thread_id;
+			if (opts?.chatThreadCreator) {
+				await opts.chatThreadCreator.backfillThreadName(
+					{
+						chatChannelId: channelId,
+						issueId: resolvedIssueId,
+						issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
+						issueTitle: resolvedTitle,
+						botToken,
+						leadId,
+						ownerUserId: opts.discordOwnerUserId,
+					},
+					threadId,
+				);
+			}
 		} else {
 			if (!opts?.chatThreadCreator) {
 				res.status(503).json({ error: "ChatThreadCreator not initialized" });
@@ -810,7 +827,8 @@ export function createQueryRouter(
 				ensureResult = await opts.chatThreadCreator.ensureChatThread({
 					chatChannelId: channelId,
 					issueId: resolvedIssueId,
-					issueIdentifier: bodyIdentifier,
+					issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
+					issueTitle: resolvedTitle,
 					botToken,
 					leadId,
 					ownerUserId: opts.discordOwnerUserId,
