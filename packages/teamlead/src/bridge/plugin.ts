@@ -65,6 +65,7 @@ import {
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
+import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import {
 	buildLoopbackBaseUrl,
 	reconcileCompleteFailedMarkers,
@@ -2602,6 +2603,22 @@ export async function startBridge(
 			);
 		}
 	}
+	// FLY-182 Track B / FLY-513: Discord-independent meta-alert sink. Constructed
+	// HERE (before GatePoller) so the FLY-513 global-codex drift probe can reuse
+	// this ONE notifier instance (shared per-reason debounce) on the poll tick —
+	// rather than a second notifier with split debounce/file state (Codex R2 LOW-1).
+	const metaAlertNotifier = new MetaAlertNotifier();
+	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
+		console.log(
+			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
+		);
+	});
+
+	// FLY-513: the global-codex drift probe does real PATH/realpath I/O against the
+	// host's actual `codex`. Disabled under VITEST (same boundary as
+	// BridgeEventLoopWatchdog below) so general Bridge integration suites never fire
+	// a meta-alert off the test machine's real (possibly contaminated) global codex.
+	const codexHealthEnabled = !process.env.VITEST;
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
 		projects,
@@ -2610,8 +2627,22 @@ export async function startBridge(
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		transport: misroutePatrolTransport,
 		misrouteArchiveDir,
+		// FLY-513: periodic global-codex drift detection (path-only, zero new timer).
+		// Default-on; `FLYWHEEL_CODEX_HEALTH_GUARD=0` short-circuits inside the probe.
+		onHealthTick: codexHealthEnabled
+			? () => {
+					void reportCodexGlobalHealth(metaAlertNotifier);
+				}
+			: undefined,
 	});
 	gatePoller.start();
+
+	// FLY-513: one-shot boot check — surfaces an already-contaminated global codex
+	// immediately at startup (the periodic probe then covers the running window).
+	// Non-fatal: reportCodexGlobalHealth never throws.
+	if (codexHealthEnabled) {
+		void reportCodexGlobalHealth(metaAlertNotifier);
+	}
 
 	// FLY-314: roundtable per-topic auto-thread (Phase 1). Default OFF —
 	// loadRoundtableConfig returns undefined unless FLYWHEEL_ROUNDTABLE_ENABLED=1,
@@ -2667,16 +2698,12 @@ export async function startBridge(
 	const claimsClaimer = createClaimsClaimer();
 	const blockedMarkerReader = createBlockedMarkerReader();
 	const leadPaneCaptureFn = defaultLeadPaneCapture();
-	// FLY-182 Track B: Discord-independent meta-alert sink. LeadAlert must never
-	// fail silently — when the Discord path is broken (config gap, permanent
-	// failure, drain stuck, Lead not consuming), surface it via osascript +
-	// local file.
-	const metaAlertNotifier = new MetaAlertNotifier();
-	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
-		console.log(
-			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
-		);
-	});
+	// FLY-182 Track B / FLY-513: Discord-independent meta-alert sink
+	// (`metaAlertNotifier`). Now constructed earlier (just before GatePoller) so
+	// FLY-513's global-codex drift probe reuses the same instance; the desktop-
+	// capability probe ran there. LeadAlert must never fail silently — when the
+	// Discord path is broken (config gap, permanent failure, drain stuck, Lead not
+	// consuming), it surfaces via osascript + local file through this same notifier.
 	// FLY-368 (rework): unified alert channel + owner-attributed send + per-error
 	// threading + Cass-driven conservative auto-repair. ALL env-gated, default-off
 	// → unset = byte-identical to today. Aggregation/routing lives HERE in the

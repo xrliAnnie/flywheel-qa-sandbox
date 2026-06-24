@@ -91,3 +91,8 @@ jobs:
           bash scripts/__tests__/fleet-capture.test.sh
           bash scripts/__tests__/provision-fleet-host.test.sh
           bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
+
+      # FLY-513: global-codex repoint apply-path (hermetic — fake HOME + fake
+      # source release + mock codex on PATH; never touches the real global symlink).
+      - name: Test — FLY-513 global-codex repoint apply-path
+        run: bash packages/teamlead/scripts/__tests__/fly-513-repoint.test.sh

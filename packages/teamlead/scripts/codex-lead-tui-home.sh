@@ -336,7 +336,27 @@ ensure_home() {
   # 2. standalone install required for the daemon backend — fail-loud, no auto-install.
   local standalone="$HOME_DIR/packages/standalone/current/codex"
   if [ ! -x "$standalone" ]; then
-    die "standalone codex install missing at $standalone — the remote-control daemon requires it. Install with: CODEX_HOME=$HOME_DIR sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' (then REVERT any shell-profile PATH edit the installer makes — see FLY-259 spike notes)"
+    die "standalone codex install missing at $standalone — the remote-control daemon requires it. Install with: CODEX_HOME=$HOME_DIR sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' (then REVERT any shell-profile PATH edit the installer makes AND restore the neutral global ~/.local/bin/codex symlink — see FLY-259 spike notes + FLY-513)"
+  fi
+
+  # FLY-513: warn (non-fatal) if the GLOBAL `codex` on PATH was hijacked INTO this
+  # Lead home by the curl installer's `~/.local/bin/codex` side effect. The global
+  # codex (every runner's codex review gate + every codex companion resolves it via
+  # PATH) must be a NEUTRAL, PINNED install — a Lead-home binary gets churned by the
+  # standalone updater + Lead flips and transiently fails config-load, stalling every
+  # runner's review gate. Warn only: an operator may have a deliberate setup, and
+  # ensure-home must stay idempotent for a compliant home.
+  local global_codex="$HOME/.local/bin/codex"
+  if [ -L "$global_codex" ] || [ -e "$global_codex" ]; then
+    local global_real
+    global_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$global_codex" 2>/dev/null || true)"
+    case "$global_real" in
+      "$HOME_DIR"/*)
+        log "WARNING (FLY-513): global codex $global_codex resolves INTO this Lead home: $global_real"
+        log "  → the standalone updater / Lead flips will churn it and transiently break EVERY runner's codex review gate."
+        log "  → restore a neutral pinned global, e.g.: ln -sfn ~/.local/share/flywheel-codex/<ver>/bin/codex $global_codex"
+        ;;
+    esac
   fi
 
   # FLY-398: full-access (= Claude-equal) rewrites the config to a workspace-write +
