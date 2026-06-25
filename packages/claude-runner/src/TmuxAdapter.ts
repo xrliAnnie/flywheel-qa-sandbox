@@ -23,13 +23,19 @@ import type {
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
 
 /**
- * FLY-494: optional per-call exec options. `timeoutMs` bounds a single exec so a
- * hanging external CLI (e.g. a signed-out / OAuth-stalled `kimi --print` auth
- * probe) FAILS CLOSED instead of wedging the caller. Backward-compatible — every
- * existing caller and mock omits it (so behavior is byte-identical: no timeout).
+ * FLY-494: optional per-call exec options.
+ * - `timeoutMs` bounds a single exec so a hanging external CLI (e.g. a slow
+ *   `kimi --version` whose ~18s cold start could otherwise wedge dispatch)
+ *   FAILS CLOSED instead of blocking the caller forever.
+ * - `env` is MERGED over the parent `process.env` for that one call (used to
+ *   force `NODE_OPTIONS=--dns-result-order=ipv4first` for kimi's IPv6-stall
+ *   prone startup). Merged — NOT replaced — so PATH etc. survive.
+ * Backward-compatible: every existing caller and mock omits both (so behavior is
+ * byte-identical — no timeout, inherited env).
  */
 export interface ExecFileOpts {
 	timeoutMs?: number;
+	env?: Record<string, string | undefined>;
 }
 
 export type ExecFileFn = (
@@ -179,6 +185,15 @@ export class TmuxAdapter implements IAdapter {
 	protected runPreflight(): void {
 		this.execFileFn("tmux", ["-V"]);
 		this.execFileFn(this.binaryName, ["--version"]);
+	}
+
+	/**
+	 * FLY-494: extra env vars injected into the runner's tmux pane (as `-e KEY=VAL`).
+	 * Overridable seam — the default returns `{}` so claude/codex/agy panes are
+	 * byte-identical. KimiTmuxAdapter overrides it to force IPv4-first DNS.
+	 */
+	protected extraPaneEnv(): Record<string, string> {
+		return {};
 	}
 
 	async execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -393,6 +408,14 @@ export class TmuxAdapter implements IAdapter {
 			for (const [key, value] of Object.entries(transportSpawnConfig.env)) {
 				envArgs.push("-e", `${key}=${value}`);
 			}
+		}
+
+		// FLY-494: per-adapter extra pane env (overridable seam). Default {} keeps
+		// every other adapter byte-identical. KimiTmuxAdapter injects
+		// NODE_OPTIONS=--dns-result-order=ipv4first so each kimi model call in the
+		// pane skips kimi 0.18.0's IPv6-resolution startup stall (~6s, FLY-494 F0).
+		for (const [key, value] of Object.entries(this.extraPaneEnv())) {
+			envArgs.push("-e", `${key}=${value}`);
 		}
 
 		// FLY-245 R4/R5/R6 HIGH-3: TWO-PHASE gated launch for the gateway-retry path
@@ -1032,6 +1055,10 @@ export function defaultExecFile(
 			// for every existing call site that omits opts. A positive value kills
 			// the child on timeout so a bounded probe can fail closed.
 			timeout: opts?.timeoutMs,
+			// FLY-494: MERGE over process.env (never replace — PATH etc. must
+			// survive) so a caller can force e.g. NODE_OPTIONS for one exec.
+			// undefined → execFileSync inherits process.env = byte-identical.
+			env: opts?.env ? { ...process.env, ...opts.env } : undefined,
 		});
 		return { stdout: result };
 	} catch (err) {
