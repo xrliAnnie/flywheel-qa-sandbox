@@ -1056,17 +1056,22 @@ _launch_claude() {
     env_args+=(-e "FLYWHEEL_STATE_DIR=${FLYWHEEL_STATE_DIR}")
   fi
 
-  # FLY-314 Phase 2 (Part b) / FLY-535: roundtable reply-in-thread plugin flags.
-  # The Discord plugin (MCP server) reads these from process.env to enable
-  # reply-into-topic-thread + the no-@ continuation anti-loop budget. tmux
-  # `new-window -e` does NOT inherit the launcher env, so forward each explicitly
-  # (same barrier as the vars above). Unset in the launcher — i.e. EVERY
-  # production Lead — means not forwarded => the plugin's loadRoundtableConfig
-  # sees nothing => OFF (FLY-220 mention-required), byte-compatible. Only the QA
-  # Room's test leads set these (via test-deploy roundtable mode).
+  # FLY-314 Phase 2 (Part b) / FLY-535 / FLY-569: roundtable reply-in-thread
+  # plugin flags. The Discord plugin (MCP server) reads these from process.env.
+  # tmux `new-window -e` does NOT inherit the launcher env, so forward each
+  # explicitly (same barrier as the vars above). Unset in the launcher means not
+  # forwarded => env-overlay empty.
+  #
+  # FLY-569: reply-in-thread is now DEFAULT-ON in the plugin, resolved from the
+  # SHARED NON-TOKEN file ~/.flywheel/roundtable.json (channelId only) when the
+  # per-lead env does not set FLYWHEEL_ROUNDTABLE_CHANNEL_ID — env still WINS, so
+  # forwarding these (when set) keeps wrapper-launched leads + the QA Room exact.
+  # FLYWHEEL_ROUNDTABLE_CONFIG_FILE overrides the shared-file path (QA Room /
+  # test isolation); unset => plugin uses the default path (byte-compatible).
   local _rt_var
   for _rt_var in FLYWHEEL_ROUNDTABLE_CHANNEL_ID FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD \
-    FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE FLYWHEEL_ROUNDTABLE_THREAD_BUDGET; do
+    FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE FLYWHEEL_ROUNDTABLE_THREAD_BUDGET \
+    FLYWHEEL_ROUNDTABLE_CONFIG_FILE; do
     if [ -n "${!_rt_var:-}" ]; then
       env_args+=(-e "${_rt_var}=${!_rt_var}")
     fi
