@@ -589,9 +589,23 @@ export function parseCodexLeadRuntimeConfig(
 			(env.FLYWHEEL_ROUNDTABLE_REPLY_CAP ?? "").trim(),
 			10,
 		);
+		// FLY-314 Part(b): no-@ in-thread continuation (default OFF = mention-required,
+		// byte-compat with FLY-220 hardening). Same env names as the Claude plugin.
+		const autoContinue = env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE === "1";
+		const budgetParsed = Number.parseInt(
+			(env.FLYWHEEL_ROUNDTABLE_THREAD_BUDGET ?? "").trim(),
+			10,
+		);
 		replyInThread = {
 			enabled: true,
 			parentChannelId,
+			// Only include autoContinue when ON — preserves the prior config shape when
+			// off (Codex code review R1 finding 3: keep the exact-shape test / OFF-config
+			// consumers byte-compatible).
+			...(autoContinue ? { autoContinue: true } : {}),
+			...(Number.isFinite(budgetParsed) && budgetParsed > 0
+				? { budgetN: budgetParsed }
+				: {}),
 			...((env.FLYWHEEL_ROUNDTABLE_GUILD_ID ?? "").trim() || undefined
 				? { guildId: (env.FLYWHEEL_ROUNDTABLE_GUILD_ID ?? "").trim() }
 				: {}),
@@ -1552,7 +1566,10 @@ export function buildCodexLeadRuntime(
 				sender,
 				...(typing ? { typing } : {}),
 				...(replyInThread
-					? { ensureReplyRoute: replyInThread.ensureReplyRoute }
+					? {
+							ensureReplyRoute: replyInThread.ensureReplyRoute,
+							onTopicEngaged: replyInThread.seedBudgetForRoute,
+						}
 					: {}),
 			});
 			// FLY-267 判 + 回: when cross-dept channels are configured, gate them on
@@ -1567,7 +1584,12 @@ export function buildCodexLeadRuntime(
 							mentionPatterns: config.mentionPatterns,
 							// FLY-314 Phase 2: topic threads are dynamic shared channels.
 							...(replyInThread
-								? { dynamicSharedChannels: replyInThread.registry }
+								? {
+										dynamicSharedChannels: replyInThread.registry,
+										autoContinue: replyInThread.autoContinue,
+										budgetStore: replyInThread.budgetStore,
+										budgetN: replyInThread.budgetN,
+									}
 								: {}),
 						})
 					: undefined;

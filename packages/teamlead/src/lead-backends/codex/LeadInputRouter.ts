@@ -118,6 +118,11 @@ export interface LeadInputRouterOptions {
 	/** FLY-314 Phase 2: ensure a topic thread exists before delivery. Wired by the
 	 * runtime (it has the bot token + roundtable parent). Absent → no-op (byte-compat). */
 	ensureReplyRoute?: (route: RoundtableReplyRoute) => Promise<void>;
+	/** FLY-314 Part(b): seed the anti-loop budget for a newly-engaged top-level topic.
+	 * Invoked ONLY when journal.accept() returns accepted (Codex code review R2 — a
+	 * budget reset must require a durably-accepted NEW topic, not an at-least-once
+	 * re-delivery of an old top-level message). Absent → no-op (byte-compat). */
+	onTopicEngaged?: (route: RoundtableReplyRoute) => void;
 	logger?: {
 		warn: (m: string, c?: unknown) => void;
 		error: (m: string, c?: unknown) => void;
@@ -134,6 +139,7 @@ export class LeadInputRouter {
 	private readonly ensureReplyRoute?: (
 		route: RoundtableReplyRoute,
 	) => Promise<void>;
+	private readonly onTopicEngaged?: (route: RoundtableReplyRoute) => void;
 	private readonly corr: () => string;
 	private readonly logger: {
 		warn: (m: string, c?: unknown) => void;
@@ -153,6 +159,7 @@ export class LeadInputRouter {
 		this.sender = opts.sender;
 		this.typing = opts.typing;
 		this.ensureReplyRoute = opts.ensureReplyRoute;
+		this.onTopicEngaged = opts.onTopicEngaged;
 		this.corr =
 			opts.correlationFactory ?? (() => globalThis.crypto.randomUUID());
 		this.logger = opts.logger ?? {
@@ -169,6 +176,11 @@ export class LeadInputRouter {
 	submit(input: LeadInput): { accepted: boolean; entryId: string } {
 		const { accepted, entry } = this.journal.accept(input);
 		if (accepted) {
+			// FLY-314 Part(b) / Codex code review R2: a budget reset (seed) happens ONLY
+			// for a durably-accepted NEW top-level topic — never on an at-least-once
+			// re-delivery (which dedups to accepted=false here). entry.replyRoute is set
+			// only for the top-level→thread route, so this fires exactly on topic engage.
+			if (entry.replyRoute) this.onTopicEngaged?.(entry.replyRoute);
 			this.queue.push(entry.id);
 			void this.pump();
 		}
