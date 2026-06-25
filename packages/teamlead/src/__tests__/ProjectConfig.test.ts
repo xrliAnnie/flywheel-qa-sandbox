@@ -4,6 +4,7 @@ import {
 	loadProjects,
 	type ProjectEntry,
 	parseAndValidateProjects,
+	resolveCanonicalProjectName,
 	resolveLeadForIssue,
 	resolveProjectLinearBinding,
 	validateMemoryIds,
@@ -1616,5 +1617,60 @@ describe("FLY-371: resolveProjectLinearBinding", () => {
 		expect(
 			resolveProjectLinearBinding(projects, "null-binding"),
 		).toBeUndefined();
+	});
+});
+
+describe("FLY-534: resolveCanonicalProjectName (case-insensitive projectName)", () => {
+	// Configured (canonical) project names are lowercase; callers (Leads, humans,
+	// cron) may send "Sub"/"SUB". projectName lookups throughout the runs path
+	// (dispatcher blueprintsByProject.get, dept-scope, lead-scope find) are
+	// case-SENSITIVE → a mismatched-case name yields `No runtime for project` /
+	// DEPT_SCOPE_REJECT project_unknown. Canonicalizing at the route boundary
+	// fixes every downstream surface at once.
+	const projects: ProjectEntry[] = [
+		{ projectName: "sub", projectRoot: "/x/sub", leads: [] },
+		{ projectName: "geoforge3d", projectRoot: "/x/geo", leads: [] },
+	];
+
+	it("returns the exact name unchanged when casing already matches", () => {
+		expect(resolveCanonicalProjectName(projects, "sub")).toBe("sub");
+	});
+
+	it("maps a differently-cased name to the configured canonical name", () => {
+		expect(resolveCanonicalProjectName(projects, "Sub")).toBe("sub");
+		expect(resolveCanonicalProjectName(projects, "SUB")).toBe("sub");
+		expect(resolveCanonicalProjectName(projects, "GeoForge3D")).toBe(
+			"geoforge3d",
+		);
+	});
+
+	it("returns the input unchanged for a genuinely unknown project (so it still rejects downstream)", () => {
+		expect(resolveCanonicalProjectName(projects, "nope")).toBe("nope");
+		expect(resolveCanonicalProjectName(projects, "Nope")).toBe("Nope");
+	});
+
+	it("prefers an exact-case match over a different-case one when both are configured", () => {
+		const mixed: ProjectEntry[] = [
+			{ projectName: "Sub", projectRoot: "/x/Sub", leads: [] },
+			{ projectName: "sub", projectRoot: "/x/sub", leads: [] },
+		];
+		// Exact "sub" must return "sub", not the earlier-listed "Sub".
+		expect(resolveCanonicalProjectName(mixed, "sub")).toBe("sub");
+		expect(resolveCanonicalProjectName(mixed, "Sub")).toBe("Sub");
+	});
+
+	// Codex R1 MEDIUM: an AMBIGUOUS case-insensitive match (config carries two
+	// projects differing only by case) must fail CLOSED — return the input
+	// unchanged so it 404s downstream — never silently pick one by config order.
+	it("fails closed (returns input) on a case-only collision when no exact match", () => {
+		const colliding: ProjectEntry[] = [
+			{ projectName: "Sub", projectRoot: "/x/Sub", leads: [] },
+			{ projectName: "sub", projectRoot: "/x/sub", leads: [] },
+		];
+		// "SUB" matches both case-insensitively → ambiguous → return raw.
+		expect(resolveCanonicalProjectName(colliding, "SUB")).toBe("SUB");
+		// An exactly-configured casing still resolves to itself.
+		expect(resolveCanonicalProjectName(colliding, "Sub")).toBe("Sub");
+		expect(resolveCanonicalProjectName(colliding, "sub")).toBe("sub");
 	});
 });
