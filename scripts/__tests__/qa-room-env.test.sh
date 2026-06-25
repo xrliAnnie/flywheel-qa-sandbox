@@ -45,6 +45,36 @@ else
   fail "roundtable empty memberIds" "$OUT"
 fi
 
+# ── FLY-314 Part b: reply-in-thread lead env OFF => emits NOTHING (byte-compat) ─
+OUT=$(qa_room_roundtable_lead_env "555" "0" "0" "2")
+if [[ -z "$OUT" ]]; then
+  pass "roundtable lead env OFF (replyInThread=0) emits nothing — byte-compatible"
+else
+  fail "roundtable lead env OFF should be empty" "$OUT"
+fi
+
+# ── FLY-314 Part b: reply-in-thread ON + autoContinue ON => full plugin flags ──
+OUT=$(qa_room_roundtable_lead_env "555" "1" "1" "3")
+if grep -q '^FLYWHEEL_ROUNDTABLE_CHANNEL_ID=555$' <<<"$OUT" \
+  && grep -q '^FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1$' <<<"$OUT" \
+  && grep -q '^FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=1$' <<<"$OUT" \
+  && grep -q '^FLYWHEEL_ROUNDTABLE_THREAD_BUDGET=3$' <<<"$OUT"; then
+  pass "roundtable lead env ON+autoContinue emits channel+reply+autocontinue+budget"
+else
+  fail "roundtable lead env ON+autoContinue" "$OUT"
+fi
+
+# ── FLY-314 Part b: replyInThread ON but autoContinue OFF => no autocontinue/budget ─
+OUT=$(qa_room_roundtable_lead_env "555" "1" "0" "2")
+if grep -q '^FLYWHEEL_ROUNDTABLE_CHANNEL_ID=555$' <<<"$OUT" \
+  && grep -q '^FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1$' <<<"$OUT" \
+  && ! grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE' <<<"$OUT" \
+  && ! grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_BUDGET' <<<"$OUT"; then
+  pass "roundtable lead env replyInThread-only omits autocontinue+budget (budget unused without autoContinue)"
+else
+  fail "roundtable lead env replyInThread-only" "$OUT"
+fi
+
 # ── alert iso env: queue/deadletter/claims all under slot dir ───────────────
 OUT=$(qa_room_alert_iso_env "/tmp/slot-7")
 if grep -q '^FLYWHEEL_ALERT_QUEUE_DIR=/tmp/slot-7/alert-queue$' <<<"$OUT" \
