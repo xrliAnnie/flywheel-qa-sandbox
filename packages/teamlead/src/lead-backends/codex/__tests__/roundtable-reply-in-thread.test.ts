@@ -41,6 +41,34 @@ describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", ()
 		});
 	});
 
+	it("autoContinue off by default (omitted from config = byte-compat shape)", () => {
+		const cfg = parseCodexLeadRuntimeConfig(
+			env({
+				FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1",
+				FLYWHEEL_ROUNDTABLE_CHANNEL_ID: RT,
+			}),
+		).replyInThread;
+		expect(cfg).toEqual({ enabled: true, parentChannelId: RT });
+		expect("autoContinue" in (cfg ?? {})).toBe(false);
+	});
+
+	it("FLY-314 Part(b): THREAD_AUTOCONTINUE=1 + THREAD_BUDGET → autoContinue + budgetN", () => {
+		const cfg = parseCodexLeadRuntimeConfig(
+			env({
+				FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1",
+				FLYWHEEL_ROUNDTABLE_CHANNEL_ID: RT,
+				FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE: "1",
+				FLYWHEEL_ROUNDTABLE_THREAD_BUDGET: "3",
+			}),
+		).replyInThread;
+		expect(cfg).toEqual({
+			enabled: true,
+			parentChannelId: RT,
+			autoContinue: true,
+			budgetN: 3,
+		});
+	});
+
 	it("flag=1 defaults parent to the sole cross-dept channel", () => {
 		const cfg = parseCodexLeadRuntimeConfig(
 			env({ FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1" }),

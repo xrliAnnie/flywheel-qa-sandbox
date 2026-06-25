@@ -567,7 +567,10 @@ function buildTuiGeneration(
 							sender: builtSender,
 							...(typing ? { typing } : {}),
 							...(replyInThread
-								? { ensureReplyRoute: replyInThread.ensureReplyRoute }
+								? {
+										ensureReplyRoute: replyInThread.ensureReplyRoute,
+										onTopicEngaged: replyInThread.seedBudgetForRoute,
+									}
 								: {}),
 						});
 						// FLY-267 判 + 回: mirror the headless mention-gate + reply-routing so
@@ -581,7 +584,12 @@ function buildTuiGeneration(
 										sharedChannelIds: config.crossDeptChannelIds,
 										mentionPatterns: config.mentionPatterns,
 										...(replyInThread
-											? { dynamicSharedChannels: replyInThread.registry }
+											? {
+													dynamicSharedChannels: replyInThread.registry,
+													autoContinue: replyInThread.autoContinue,
+													budgetStore: replyInThread.budgetStore,
+													budgetN: replyInThread.budgetN,
+												}
 											: {}),
 									})
 								: undefined;

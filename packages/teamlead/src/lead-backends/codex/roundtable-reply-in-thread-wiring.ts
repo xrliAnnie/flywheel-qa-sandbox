@@ -18,6 +18,11 @@ import {
 	type RoundtableReplyRoute,
 	resolveRoundtableReplyRoute,
 } from "./roundtable-reply-route.js";
+import {
+	createThreadBudgetStore,
+	seedThreadBudget,
+	type ThreadBudgetStore,
+} from "./roundtable-thread-budget.js";
 
 export interface ReplyInThreadConfig {
 	enabled: boolean;
@@ -28,6 +33,12 @@ export interface ReplyInThreadConfig {
 	guildId?: string;
 	cap?: number;
 	reconcileIntervalMs?: number;
+	/** FLY-314 Part(b): no-@ in-thread continuation inside topic threads, bounded by the
+	 * anti-loop budget. Default false → topic threads stay mention-required (byte-compat,
+	 * FLY-220). */
+	autoContinue?: boolean;
+	/** Per-thread bot-only continuation budget (conservative default 2). */
+	budgetN?: number;
 }
 
 export interface ReplyInThreadWiring {
@@ -36,6 +47,17 @@ export interface ReplyInThreadWiring {
 	resolveReplyRoute: (msg: DiscordInboundMessage) => ReplyRouteResult;
 	/** Ensure hook for the LeadInputRouter (creates the topic thread before delivery). */
 	ensureReplyRoute: (route: RoundtableReplyRoute) => Promise<void>;
+	/** Seed the anti-loop budget for a newly-engaged top-level topic. LeadInputRouter
+	 * MUST call this ONLY when journal.accept() returns accepted (Codex code review R2 —
+	 * a budget reset must require a durably-accepted new topic, not an at-least-once
+	 * re-delivery of an old one). No-op when autoContinue is off. */
+	seedBudgetForRoute: (route: RoundtableReplyRoute) => void;
+	/** FLY-314 Part(b): no-@ in-thread continuation enabled (kill-switch). */
+	autoContinue: boolean;
+	/** Per-thread bot-only anti-loop budget store (membership implicit = registry). */
+	budgetStore: ThreadBudgetStore;
+	/** Per-thread bot-only continuation budget. */
+	budgetN: number;
 	start(): Promise<void>;
 	stop(): Promise<void>;
 }
@@ -53,6 +75,10 @@ export function buildReplyInThreadWiring(opts: {
 	if (!opts.cfg.enabled) return undefined;
 
 	const registry = new RoundtableThreadRegistry();
+	const budgetStore = createThreadBudgetStore();
+	const budgetN =
+		opts.cfg.budgetN && opts.cfg.budgetN > 0 ? opts.cfg.budgetN : 2;
+	const autoContinue = opts.cfg.autoContinue === true;
 	const parentChannelId = opts.cfg.parentChannelId;
 	// Other cross-dept channels keep their FLY-267 source-channel reply (R2#2).
 	const staticCrossDept = new Set(
@@ -85,6 +111,12 @@ export function buildReplyInThreadWiring(opts: {
 		});
 		// Immediate subscribe (path i): once we route a reply INTO a topic thread, the
 		// Lead must also poll that thread to see other Leads' replies. Fire-and-forget.
+		// Subscribe is idempotent (registry-guarded) and needed regardless of dedup, so
+		// it is fine here. The budget SEED, however, must NOT happen in this pure resolver
+		// — it has to wait for DURABLE ACCEPT, else an at-least-once re-delivery of an old
+		// top-level message would re-seed before the journal dedups it (Codex code review
+		// R2). The seed is done by `seedBudgetForRoute`, which LeadInputRouter invokes only
+		// when journal.accept() returns accepted.
 		if (r.replyRoute) void subscribeImmediate(r.replyRoute.threadId);
 		return r;
 	};
@@ -117,10 +149,18 @@ export function buildReplyInThreadWiring(opts: {
 		}
 	};
 
+	const seedBudgetForRoute = (route: RoundtableReplyRoute): void => {
+		if (autoContinue) seedThreadBudget(budgetStore, route.threadId, budgetN);
+	};
+
 	return {
 		registry,
 		resolveReplyRoute,
 		ensureReplyRoute,
+		seedBudgetForRoute,
+		autoContinue,
+		budgetStore,
+		budgetN,
 		start: () => discovery?.start() ?? Promise.resolve(),
 		stop: () => discovery?.stop() ?? Promise.resolve(),
 	};

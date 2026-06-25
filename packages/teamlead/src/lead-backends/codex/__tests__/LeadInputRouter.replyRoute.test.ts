@@ -30,7 +30,7 @@ class FakeExecutor implements TurnExecutor {
 
 /** Build a router whose ensure + sender both append to a shared `order` array so
  * tests can assert the ensure-before-deliver ordering. */
-function makeRouter(opts: { ensure?: boolean } = {}) {
+function makeRouter(opts: { ensure?: boolean; seed?: boolean } = {}) {
 	const store = new InMemoryJournalStore();
 	let c = 0;
 	const journal = new LeadJournal({
@@ -41,6 +41,9 @@ function makeRouter(opts: { ensure?: boolean } = {}) {
 	const order: string[] = [];
 	const ensure = vi.fn(async (r: RoundtableReplyRoute) => {
 		order.push(`ensure:${r.threadId}`);
+	});
+	const onTopicEngaged = vi.fn((r: RoundtableReplyRoute) => {
+		order.push(`seed:${r.threadId}`);
 	});
 	const sender: OutboundSender = {
 		async enqueue(args) {
@@ -60,8 +63,9 @@ function makeRouter(opts: { ensure?: boolean } = {}) {
 		correlationFactory: () => "corr-1",
 		logger: silent,
 		...(opts.ensure ? { ensureReplyRoute: ensure } : {}),
+		...(opts.seed ? { onTopicEngaged } : {}),
 	});
-	return { router, journal, store, ensure, order };
+	return { router, journal, store, ensure, onTopicEngaged, order };
 }
 
 describe("LeadInputRouter — reply-in-thread ensure (FLY-314 Phase 2)", () => {
@@ -84,6 +88,53 @@ describe("LeadInputRouter — reply-in-thread ensure (FLY-314 Phase 2)", () => {
 		router.submit({ idempotencyKey: "k", source: "discord", payload: "hi" });
 		await router.whenIdle();
 		expect(ensure).not.toHaveBeenCalled();
+	});
+
+	// Codex code review R2: the budget seed must fire ONLY on durable accept of a NEW
+	// top-level topic — never on an at-least-once re-delivery (which dedups here).
+	it("seeds budget (onTopicEngaged) once on a NEW accepted top-level route", async () => {
+		const { router, onTopicEngaged } = makeRouter({ seed: true });
+		const r = router.submit({
+			idempotencyKey: "42",
+			source: "discord",
+			payload: "hi",
+			replyChannelId: "42",
+			replyRoute: ROUTE,
+		});
+		expect(r.accepted).toBe(true);
+		expect(onTopicEngaged).toHaveBeenCalledTimes(1);
+		expect(onTopicEngaged).toHaveBeenCalledWith(ROUTE);
+		await router.whenIdle();
+	});
+
+	it("does NOT seed on a DUPLICATE re-delivery (dedup → accepted=false → no reset)", async () => {
+		const { router, onTopicEngaged } = makeRouter({ seed: true });
+		const first = router.submit({
+			idempotencyKey: "42",
+			source: "discord",
+			payload: "hi",
+			replyChannelId: "42",
+			replyRoute: ROUTE,
+		});
+		const dup = router.submit({
+			idempotencyKey: "42", // same key → at-least-once re-delivery of the SAME message
+			source: "discord",
+			payload: "hi",
+			replyChannelId: "42",
+			replyRoute: ROUTE,
+		});
+		expect(first.accepted).toBe(true);
+		expect(dup.accepted).toBe(false);
+		// seeded exactly once (on the new accept), NOT again on the duplicate.
+		expect(onTopicEngaged).toHaveBeenCalledTimes(1);
+		await router.whenIdle();
+	});
+
+	it("does NOT seed when there is no replyRoute (in-thread / non-topic)", async () => {
+		const { router, onTopicEngaged } = makeRouter({ seed: true });
+		router.submit({ idempotencyKey: "k", source: "discord", payload: "hi" });
+		await router.whenIdle();
+		expect(onTopicEngaged).not.toHaveBeenCalled();
 	});
 
 	it("output_pending recovery ensures then delivers the SAME outbox — no re-enqueue (Codex R3#1)", async () => {
