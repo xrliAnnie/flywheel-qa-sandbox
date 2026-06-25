@@ -661,6 +661,45 @@ export function getProjectRoot(
 	return projects.find((p) => p.projectName === projectName)?.projectRoot;
 }
 
+/**
+ * FLY-534: resolve a caller-supplied `projectName` to the configured project's
+ * EXACT (canonical) name, case-insensitively.
+ *
+ * Configured project names are canonical (e.g. lowercase "sub"); callers —
+ * Leads, humans, cron — may send a differently-cased value ("Sub"/"SUB").
+ * Every projectName lookup on the runs path is case-SENSITIVE: the dispatcher's
+ * `blueprintsByProject.get(name)`, the dept-scope / lead-scope `projects.find
+ * (p => p.projectName === name)`, the CommDB path, the tmux session name. A
+ * case mismatch therefore surfaces as `No runtime for project: <name>` or a
+ * DEPT_SCOPE_REJECT `project_unknown`. Canonicalizing once at the route
+ * boundary makes ALL of those resolve consistently with a single configured
+ * name flowing downstream (no half-normalized "Sub" runner / comm.db / tmux).
+ *
+ * An EXACT-case match wins over a different-case one (so a deployment that
+ * legitimately configured both "Sub" and "sub" keeps exact semantics). A
+ * genuinely unknown project is returned unchanged so it still rejects
+ * downstream exactly as before — this never invents a project.
+ */
+export function resolveCanonicalProjectName(
+	projects: ProjectEntry[],
+	projectName: string,
+): string {
+	// Exact match first — never rewrite a name that is already configured as-is.
+	if (projects.some((p) => p.projectName === projectName)) {
+		return projectName;
+	}
+	// Case-insensitive fallback. If a (mis)configuration carries more than one
+	// project differing ONLY by case, the match is AMBIGUOUS — fail CLOSED
+	// (return the input unchanged so it rejects downstream as before) rather
+	// than silently pick one by config order. Project names are expected to be
+	// unique case-insensitively; this only guards the misconfigured case.
+	const lowered = projectName.toLowerCase();
+	const matches = projects.filter(
+		(p) => p.projectName.toLowerCase() === lowered,
+	);
+	return matches.length === 1 ? matches[0]!.projectName : projectName;
+}
+
 export function resolveLeadForIssue(
 	projects: ProjectEntry[],
 	projectName: string,

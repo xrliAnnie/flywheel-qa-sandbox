@@ -18,7 +18,11 @@ import {
 	parseDocTier,
 } from "flywheel-edge-worker/dist/Blueprint.js";
 import { DepartmentRegistry } from "../department-registry.js";
-import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
+import {
+	type ProjectEntry,
+	resolveCanonicalProjectName,
+	resolveLeadForIssue,
+} from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
@@ -88,7 +92,8 @@ export function createRunsRouter(
 			return;
 		}
 
-		const { issueId, projectName, sessionRole } = req.body;
+		const { issueId, sessionRole } = req.body;
+		const rawProjectName = req.body.projectName;
 		let leadId = req.body.leadId as string | undefined;
 
 		// Input validation
@@ -99,13 +104,24 @@ export function createRunsRouter(
 			});
 			return;
 		}
-		if (!projectName || typeof projectName !== "string") {
+		if (!rawProjectName || typeof rawProjectName !== "string") {
 			res.status(400).json({
 				success: false,
 				message: "projectName is required",
 			});
 			return;
 		}
+
+		// FLY-534: projectName is case-insensitive. Callers (Leads, humans, cron)
+		// may send "Sub"/"SUB" while config + cron canonicalize on "sub". Every
+		// downstream lookup here is case-SENSITIVE (dispatcher blueprintsByProject
+		// .get, dept-scope / lead-scope `=== projectName`, comm.db path, tmux
+		// session, BlueprintContext), so a case mismatch yields `No runtime for
+		// project` / DEPT_SCOPE_REJECT project_unknown. Canonicalize ONCE here, at
+		// the boundary, so the configured exact name flows to all of them — no
+		// downstream code reads `req.body.projectName` directly. Unknown projects
+		// pass through unchanged and still reject normally below.
+		const projectName = resolveCanonicalProjectName(projects, rawProjectName);
 
 		// FLY-137 v1.27.2: optional Lead override `agentName` body field.
 		// Semantics per Codex v1.27.0 Round 1 #2:
