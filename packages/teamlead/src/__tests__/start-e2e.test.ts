@@ -671,4 +671,57 @@ describe("Start API E2E", () => {
 			expect(session?.doc_tier).toBe("full");
 		}, 15_000);
 	});
+
+	// FLY-534 — projectName is case-insensitive. The configured project is
+	// "TestProject"; a caller sending it differently-cased ("testproject" /
+	// "TESTPROJECT") must resolve to the SAME runtime, and the dispatcher (plus
+	// every downstream surface — comm.db, tmux, BlueprintContext) must receive
+	// the configured CANONICAL name, not the caller's casing. Before the fix the
+	// case mismatch surfaced as DEPT_SCOPE_REJECT project_unknown / No runtime.
+	describe("FLY-534 — projectName case-insensitive", () => {
+		it("lowercase projectName resolves + dispatcher receives the canonical name", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-CASE-LO",
+					projectName: "testproject", // canonical is "TestProject"
+				}),
+			});
+			// Resolves (200), NOT a project_unknown reject.
+			expect(res.status).toBe(200);
+			// The dispatcher — and thus comm.db/tmux/BlueprintContext — gets the
+			// configured exact name, never the caller's "testproject".
+			const startReq = mockDispatcher.start.mock.calls[0]![0];
+			expect(startReq.projectName).toBe("TestProject");
+		}, 15_000);
+
+		it("uppercase projectName resolves to the canonical name too", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-CASE-UP",
+					projectName: "TESTPROJECT",
+				}),
+			});
+			expect(res.status).toBe(200);
+			const startReq = mockDispatcher.start.mock.calls[0]![0];
+			expect(startReq.projectName).toBe("TestProject");
+		}, 15_000);
+
+		it("exact-case projectName is unchanged (byte-compatible)", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-CASE-EXACT",
+					projectName: "TestProject",
+				}),
+			});
+			expect(res.status).toBe(200);
+			const startReq = mockDispatcher.start.mock.calls[0]![0];
+			expect(startReq.projectName).toBe("TestProject");
+		}, 15_000);
+	});
 });
