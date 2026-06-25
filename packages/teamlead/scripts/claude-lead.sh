@@ -1056,6 +1056,22 @@ _launch_claude() {
     env_args+=(-e "FLYWHEEL_STATE_DIR=${FLYWHEEL_STATE_DIR}")
   fi
 
+  # FLY-314 Phase 2 (Part b) / FLY-535: roundtable reply-in-thread plugin flags.
+  # The Discord plugin (MCP server) reads these from process.env to enable
+  # reply-into-topic-thread + the no-@ continuation anti-loop budget. tmux
+  # `new-window -e` does NOT inherit the launcher env, so forward each explicitly
+  # (same barrier as the vars above). Unset in the launcher — i.e. EVERY
+  # production Lead — means not forwarded => the plugin's loadRoundtableConfig
+  # sees nothing => OFF (FLY-220 mention-required), byte-compatible. Only the QA
+  # Room's test leads set these (via test-deploy roundtable mode).
+  local _rt_var
+  for _rt_var in FLYWHEEL_ROUNDTABLE_CHANNEL_ID FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD \
+    FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE FLYWHEEL_ROUNDTABLE_THREAD_BUDGET; do
+    if [ -n "${!_rt_var:-}" ]; then
+      env_args+=(-e "${_rt_var}=${!_rt_var}")
+    fi
+  done
+
   # FLY-143 (QA-found): tmux `new-window -e` does NOT inherit the launcher's
   # env, so any `${VAR}` referenced in the merged .mcp.json must be passed
   # explicitly or Claude marks the server "needs authentication".

@@ -32,6 +32,31 @@ qa_room_roundtable_bridge_env() {
 	return 0
 }
 
+# FLY-314 Phase 2 (Part b) / FLY-535: reply-in-thread plugin env for the test
+# LEAD pane. Both the host AND member roundtable slots run the Discord plugin and
+# reply inside topic threads, so this is emitted for ANY roundtable slot when
+# reply-in-thread is enabled in test-slots.json (roundtableChannel.replyInThread).
+# Default OFF => no lines => byte-compatible (the plugin's loadRoundtableConfig
+# sees nothing => FLY-220 mention-required, current behavior). These reach the
+# plugin MCP server via claude-lead.sh's env_args allowlist (tmux `new-window -e`
+# does NOT inherit env, so each var must be forwarded explicitly there).
+# Args: channelId replyInThread(0|1) autoContinue(0|1) threadBudget
+qa_room_roundtable_lead_env() {
+	local channel_id="$1" reply_in_thread="$2" auto_continue="$3" thread_budget="$4"
+	[[ "$reply_in_thread" == "1" ]] || return 0
+	printf '%s\n' \
+		"FLYWHEEL_ROUNDTABLE_CHANNEL_ID=${channel_id}" \
+		"FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1"
+	# no-@ in-thread continuation + its bounded anti-loop budget (FLY-314 Part b).
+	# budgetN is only consulted on the autoContinue path, so omit it when off.
+	if [[ "$auto_continue" == "1" ]]; then
+		printf '%s\n' "FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=1"
+		[[ -n "$thread_budget" ]] &&
+			printf '%s\n' "FLYWHEEL_ROUNDTABLE_THREAD_BUDGET=${thread_budget}"
+	fi
+	return 0
+}
+
 # Alert filesystem isolation env, shared by BOTH the Bridge LeadAlertNotifier
 # and the shell-side lead-alert.sh, so neither writer leaks into the production
 # queue/dead-letter/claims paths the live Bridge drains. Args: slotDir
