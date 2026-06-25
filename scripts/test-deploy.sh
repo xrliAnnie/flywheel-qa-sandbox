@@ -483,6 +483,19 @@ if [[ "$MODE" == "roundtable" ]]; then
 
   # Lead subscribes to the roundtable channel as its cross-dept channel.
   LEAD_EXTRA_ENV+=("FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS=${ROUNDTABLE_CHANNEL_ID}")
+  # FLY-314 Phase 2 (Part b) / FLY-535: reply-in-thread plugin flags for the LEAD
+  # pane (both host + member slots run the plugin and reply in topic threads).
+  # Gated on roundtableChannel.replyInThread in test-slots.json — DEFAULT false
+  # => no lines => byte-compatible (plugin stays FLY-220 mention-required). These
+  # are what the FLY-314 Part-b QA (multi-lead continuation + anti-loop budget)
+  # needs ON; without them the test Lead silently runs OFF = false-green.
+  RT_REPLY_IN_THREAD=$(jq -r '.roundtableChannel.replyInThread // false | if . then 1 else 0 end' "$SLOTS_FILE")
+  RT_AUTO_CONTINUE=$(jq -r '.roundtableChannel.autoContinue // false | if . then 1 else 0 end' "$SLOTS_FILE")
+  RT_THREAD_BUDGET=$(jq -r '.roundtableChannel.threadBudget // 2' "$SLOTS_FILE")
+  while IFS= read -r line; do
+    [[ -n "$line" ]] && LEAD_EXTRA_ENV+=("$line")
+  done < <(qa_room_roundtable_lead_env \
+    "$ROUNDTABLE_CHANNEL_ID" "$RT_REPLY_IN_THREAD" "$RT_AUTO_CONTINUE" "$RT_THREAD_BUDGET")
   # Identity note (no backticks — this is a normal assignment, not a heredoc):
   # tells the Lead the roundtable channel + its threads are ALSO in-scope so the
   # slot's channel-isolation rules do not make it silent-ignore roundtable msgs.
@@ -1080,10 +1093,14 @@ trap - EXIT
 log "Bridge PID: ${BRIDGE_PID}"
 
 # ── Step 4: Wait for Bridge HTTP ready ────────────────
+# FLY-535: 120s (was 30s) to match the Lead readiness budget — on a loaded shared
+# machine the Bridge (node loading the full teamlead dist) can take >30s to serve
+# /health while still starting normally. The kill -0 liveness check below still
+# fast-fails a genuinely crashed Bridge, so this only adds patience for slow starts.
 BRIDGE_READY=false
-for i in $(seq 1 30); do
+for i in $(seq 1 120); do
   if curl -sf "http://localhost:${SLOT_PORT}/health" >/dev/null 2>&1; then
-    log "Bridge ready on port ${SLOT_PORT}"
+    log "Bridge ready on port ${SLOT_PORT} (after ${i}s)"
     BRIDGE_READY=true
     break
   fi
@@ -1097,7 +1114,7 @@ for i in $(seq 1 30); do
 done
 
 if [[ "$BRIDGE_READY" != "true" ]]; then
-  log "ERROR: Bridge did not become ready within 30 seconds"
+  log "ERROR: Bridge did not become ready within 120 seconds"
   kill "$BRIDGE_PID" 2>/dev/null || true
   kill "$LEAD_BG_PID" 2>/dev/null || true
   rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
