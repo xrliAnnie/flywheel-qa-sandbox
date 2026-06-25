@@ -97,3 +97,27 @@ visible to Annie and to the addressed Lead in one place.
   full global analysis — that duplicates the other replying Lead.
 - Past-tense / narrative mention of your name (`"刚 Asha 帮我搞了 X"`) → a brief,
   closed acknowledgment only; do not take action or invite further conversation.
+
+## Topic threads — continue the discussion (FLY-314 Part b)
+
+When a topic is raised at the **top level** of `#leads-roundtable`, a **thread** is
+auto-created for it, and the addressed Leads' replies go **into that thread**. The
+"reply only when addressed" rule above governs the **top-level parent channel** (that
+is how a topic is *started* — by `@`-mentioning the Leads it concerns).
+
+**Inside a topic thread you are part of, the rule relaxes:** you may keep replying to
+the latest messages **without being `@`-mentioned each time** — that is the point of
+the thread (a real back-and-forth, like people talking in a room). New topic = a new
+top-level message = a new thread.
+
+Continue with discipline so the thread **converges** instead of looping:
+
+- **Only when you have something substantive to add** — a real answer, a correction, a
+  concrete next step, or material another participant asked for. If the topic is
+  resolved, you have already made your point, or you'd only be agreeing / repeating /
+  posting a bare "收到" — **stay silent**. Silence is the normal way a thread ends.
+- **Never reply to your own message**, and do not re-litigate a point already settled.
+- Keep it to **your department's slice**; don't restate what another Lead already said.
+- A thread naturally goes quiet when everyone is done — let it. (A bounded safety cap
+  also stops un-prompted bot-to-bot continuation automatically; do not rely on it —
+  exercise judgment first. A human stepping in, or a fresh `@`, always reopens the floor.)

@@ -20,6 +20,10 @@
  */
 
 import type { DiscordInboundMessage } from "./CodexDiscordGateway.js";
+import {
+	decideTopicThreadContinuation,
+	type ThreadBudgetStore,
+} from "./roundtable-thread-budget.js";
 
 export interface MentionGateOptions {
 	/** This Lead's own Discord bot user id. */
@@ -28,11 +32,20 @@ export interface MentionGateOptions {
 	sharedChannelIds: Iterable<string>;
 	/** Optional name-mention regexes (e.g. `\bMufasa\b`); applied to non-bot authors. */
 	mentionPatterns?: string[];
-	/** FLY-314 Phase 2: dynamically-subscribed roundtable topic threads are ALSO shared
-	 * for gating — a bot in a topic thread must use an exact `<@id>` to trigger this
-	 * Lead (Codex review R1#2/#8: "every topic thread is a shared channel"; otherwise
-	 * every in-thread bot message could trigger a reply → A↔B loop). Empty when off. */
+	/** FLY-314 Phase 2: dynamically-subscribed roundtable topic threads. By default they
+	 * are ALSO shared/mention-gated (FLY-220 safety). With `autoContinue` ON (Part(b))
+	 * they instead relax the @-requirement under the bounded anti-loop budget. Empty when
+	 * off. Membership is implicit — a thread is in this registry only because THIS Lead
+	 * participates in it. */
 	dynamicSharedChannels?: { has: (channelId: string) => boolean };
+	/** FLY-314 Part(b): enable no-@ continuation inside registered topic threads, bounded
+	 * by `budgetStore`. Default false → topic threads stay mention-required (byte-compat).
+	 * The kill-switch is the absence of this flag. */
+	autoContinue?: boolean;
+	/** Per-thread bot-only budget store (required when `autoContinue` is true). */
+	budgetStore?: ThreadBudgetStore;
+	/** Per-thread bot-only continuation budget (conservative default 2). */
+	budgetN?: number;
 }
 
 /** Compile name-mention patterns case-insensitively. A malformed pattern is skipped
@@ -83,10 +96,24 @@ export function buildMentionGate(
 	const shared = new Set(opts.sharedChannelIds);
 	const dynamicShared = opts.dynamicSharedChannels;
 	const compiled = compileMentionPatterns(opts.mentionPatterns);
+	const autoContinue = opts.autoContinue === true && !!opts.budgetStore;
+	const budgetN = opts.budgetN && opts.budgetN > 0 ? opts.budgetN : 2;
 	return (msg) => {
-		const isShared =
-			shared.has(msg.channelId) || dynamicShared?.has(msg.channelId) === true;
+		const isDynamicThread = dynamicShared?.has(msg.channelId) === true;
+		const isShared = shared.has(msg.channelId) || isDynamicThread;
 		if (!isShared) return true; // chat/core: unchanged
+		// FLY-314 Part(b): inside a registered topic thread (membership implicit), the
+		// @-requirement is relaxed under the bounded anti-loop budget. ALL bot-authored
+		// triggers — incl exact <@id> / quote-reply — flow through the budget and cannot
+		// bypass it (R1#1); a non-bot human always resets + is handled. The static shared
+		// PARENT channel is NOT relaxed (topics are still initiated by an explicit @).
+		if (isDynamicThread && autoContinue && opts.budgetStore) {
+			return decideTopicThreadContinuation(
+				{ threadId: msg.channelId, authorBot: msg.authorBot },
+				opts.budgetStore,
+				{ budgetN },
+			);
+		}
 		return isMentioned(msg, opts.botUserId, compiled);
 	};
 }
