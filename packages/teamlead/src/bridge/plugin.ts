@@ -21,6 +21,7 @@ import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
+import { FounderGatePendingNotifier } from "../FounderGatePendingNotifier.js";
 import {
 	type HeartbeatNotifier,
 	HeartbeatService,
@@ -2738,6 +2739,27 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+
+	// FLY-523: founder-gate-pending auto-notify. When a run sits in awaiting_review
+	// (implemented + code-review-passed, waiting for the founder to approve the
+	// ship) the founder is told DIRECTLY via the unified alert channel — no longer
+	// dependent on the Lead remembering to relay (the FLY-163 gap that left finished
+	// work silently waiting; e.g. FLY-349). Dedup + delivery reliability are owned by
+	// LeadAlertNotifier (claims.db + lead_events + queue/dead-letter), keyed on the
+	// per-review-window awaiting_review_entered_at. Default ON;
+	// FLYWHEEL_FOUNDER_GATE_NOTIFY=0 hard-disables (byte-compat: HeartbeatService is
+	// left without a notifier → checkFounderGatePending is a no-op). Wired here,
+	// AFTER leadAlertNotifier is built — heartbeatService.start() already ran, but
+	// the check no-ops until this setter lands (a few ms later, well within one tick).
+	if (process.env.FLYWHEEL_FOUNDER_GATE_NOTIFY !== "0") {
+		heartbeatService.setFounderGateNotifier(
+			new FounderGatePendingNotifier({
+				projects,
+				store,
+				alertNotifier: leadAlertNotifier,
+			}),
+		);
+	}
 
 	// FLY-368 rework: the repair chain (Cass → alphabetical fleet) drives thread
 	// creation + ack/repair/resolve. Resolve it at boot for the enable gate; the
