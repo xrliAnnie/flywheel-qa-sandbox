@@ -92,6 +92,26 @@ describe("StateStore", () => {
 		expect(ids).toEqual(["e1", "e2"]);
 	});
 
+	it("getAwaitingReviewSessions returns only awaiting_review (FLY-523)", () => {
+		store.upsertSession(makeSession({ execution_id: "r1", status: "running" }));
+		store.upsertSession(
+			makeSession({ execution_id: "r2", status: "awaiting_review" }),
+		);
+		store.upsertSession(
+			makeSession({ execution_id: "r3", status: "awaiting_review" }),
+		);
+		store.upsertSession(
+			makeSession({ execution_id: "r4", status: "approved_to_ship" }),
+		);
+		store.upsertSession(
+			makeSession({ execution_id: "r5", status: "completed" }),
+		);
+
+		const pending = store.getAwaitingReviewSessions();
+		const ids = pending.map((s) => s.execution_id).sort();
+		expect(ids).toEqual(["r2", "r3"]);
+	});
+
 	it("getStuckSessions returns sessions with old last_activity_at", () => {
 		// Use SQLite datetime format (YYYY-MM-DD HH:MM:SS) — no T/Z
 		const toSqlite = (d: Date) =>
