@@ -50,6 +50,31 @@ flywheel-comm respond --db <DB-path> --bridge-url $BRIDGE_URL \
   preserves this path; **Batch 2 PR 2.1** will replace it with await-mcp +
   `StructuredInboxRouter`.
 
+## Driving a parked / idle Runner — use a WAKING channel (FLY-369 RC-2)
+
+To **drive or unblock a parked (awaiting-lead / idle) Runner**, use a channel that
+**wakes** it: `SendMessage` (MCP) or `flywheel-comm send` (both write the Runner's
+mailbox → its poller injects your message as a new turn). Do **NOT** reach for
+`flywheel-comm respond` to answer a non-gate question as a way to "nudge" a parked
+Runner — for a non-gate, markerless question `respond` writes CommDB but **does not
+write the mailbox**, so it **silently fails to wake** the Runner (no error). That
+footgun stranded parked Runners (FLY-351 S2/S3 diff-approval). Keep `respond` for
+**gate answers only**.
+
+### Wake matrix (which path actually wakes a parked Runner)
+
+| Path | Wakes? | Why |
+|------|:------:|-----|
+| `SendMessage` / `flywheel-comm send` | ✅ | unconditional mailbox write (FLY-168) — the driver path |
+| `respond` to a checkpoint-less `ask` | ✅ | FLY-142 `wakeAskedRunnerBestEffort` (vendor-neutral) |
+| `respond` to a **marker-bearing** no-block gate (Codex) | ✅ | `wakeNoBlockGateRunnerBestEffort` via the gate marker |
+| `respond` to a markerless non-`approve_to_ship` checkpoint (Claude) | ❌ | byte-compat: blocking gates poll for their own answer, no marker → no wake |
+| `respond` to `approve_to_ship` | ✅ | Bridge founder-consent / bypass path writes the wake |
+
+Rule of thumb: to **drive** a Runner, use `SendMessage` / `send` (always wakes).
+Use `respond` only to **answer a gate** — and never as a way to push a parked
+Runner forward.
+
 ## Quick decision table
 
 | Scenario | Path |
