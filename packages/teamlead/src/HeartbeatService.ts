@@ -44,6 +44,22 @@ export interface HeartbeatNotifier {
 }
 
 /**
+ * FLY-523: notify the founder DIRECTLY (her alert channel / DM) when a run is
+ * founder-gate-pending — implemented + code-review-passed and sitting in
+ * `awaiting_review` waiting for her to approve the ship. This is the mechanism
+ * that replaces "the Lead has to remember to relay" (the FLY-163 gap that left
+ * finished work silently waiting). The production implementation
+ * (`FounderGatePendingNotifier`) routes via `LeadAlertNotifier`, so delivery
+ * reliability + dedup (claims.db + lead_events + queue/dead-letter) are reused;
+ * dedup is keyed on the per-review-window `awaiting_review_entered_at`, so a
+ * re-review naturally re-notifies. When no notifier is wired the check is a
+ * no-op (byte-compat / opt-out via `FLYWHEEL_FOUNDER_GATE_NOTIFY=0`).
+ */
+export interface FounderGateNotifier {
+	notifyGatePending(session: Session): Promise<void>;
+}
+
+/**
  * FLY-172: how HeartbeatService reaches the marker reconciler. The reconciler
  * itself never probes tmux — HeartbeatService owns liveness (Codex guidance #1).
  */
@@ -80,6 +96,13 @@ export class HeartbeatService {
 	 */
 	private markerRetryPending = new Set<string>();
 
+	/**
+	 * FLY-523: optional founder-gate-pending notifier. Injected post-construction
+	 * (the LeadAlertNotifier it wraps is built after HeartbeatService in plugin.ts)
+	 * via `setFounderGateNotifier`. Absent → `checkFounderGatePending` is a no-op.
+	 */
+	private founderGateNotifier?: FounderGateNotifier;
+
 	constructor(
 		private store: StateStore,
 		private notifier: HeartbeatNotifier,
@@ -100,6 +123,14 @@ export class HeartbeatService {
 		 */
 		private reviewTimeoutHours: number = 48,
 	) {}
+
+	/**
+	 * FLY-523: wire the founder-gate-pending notifier. Safe to call after
+	 * `start()` — the periodic `checkFounderGatePending` no-ops until it is set.
+	 */
+	setFounderGateNotifier(notifier: FounderGateNotifier): void {
+		this.founderGateNotifier = notifier;
+	}
 
 	start(): void {
 		if (this.timer) return;
@@ -136,6 +167,35 @@ export class HeartbeatService {
 		await this.reapOrphans();
 		await this.checkStaleCompleted();
 		await this.checkAwaitingReviewTimeout();
+		await this.checkFounderGatePending();
+	}
+
+	/**
+	 * FLY-523: founder-gate-pending auto-notify. Every cycle, find runs sitting in
+	 * `awaiting_review` (founder-gate-pending: implemented + code-review-passed,
+	 * waiting for the founder to approve the ship) and proactively notify the
+	 * founder via the injected notifier — so finished work never sits silently
+	 * waiting on the Lead to remember to relay it (FLY-163 gap). Reuses the
+	 * existing heartbeat timer (no new periodic load — FLY-169/172 norm).
+	 *
+	 * Dedup + delivery reliability live in the notifier (LeadAlertNotifier:
+	 * claims.db + lead_events + queue/dead-letter), keyed on the per-window
+	 * `awaiting_review_entered_at`, so it fires once per review window and a
+	 * re-review re-notifies. Absent a notifier (opt-out / legacy / tests) this is
+	 * a no-op — and we don't even consult the store, so there is zero added cost.
+	 */
+	async checkFounderGatePending(): Promise<void> {
+		if (!this.founderGateNotifier) return;
+		const pending = this.store.getAwaitingReviewSessions();
+		for (const session of pending) {
+			try {
+				await this.founderGateNotifier.notifyGatePending(session);
+			} catch (err) {
+				console.error(
+					`[HeartbeatService] founder-gate notify failed for ${session.execution_id}: ${(err as Error).message}`,
+				);
+			}
+		}
 	}
 
 	/**

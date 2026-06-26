@@ -61,7 +61,13 @@ export type AlertEventType =
 	// eventId format (FLY-253: escalatedAt = generation salt so a post-re-arm
 	// / post-TTL second fallback is not swallowed by the persistent dedup):
 	// `runner-stuck-unhandled:${execution_id}:${fingerprint}:${escalatedAt}`.
-	| "runner_stuck_unhandled";
+	| "runner_stuck_unhandled"
+	// FLY-523: a run is founder-gate-pending — implemented + code-review-passed and
+	// sitting in `awaiting_review`, waiting for the founder to approve the ship.
+	// Unlike the others this is NOT an incident; it routes to the same unified
+	// "founder action needed" channel so finished work never waits silently for the
+	// Lead to relay (FLY-163 gap). eventId: `founder-gate-pending:${execId}:${enteredAt}`.
+	| "founder_action_needed";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 
