@@ -266,40 +266,66 @@ export async function archiveChatThread(
 export interface AddThreadMemberDeps {
 	/** Test seam for Discord HTTP. */
 	fetchImpl?: typeof fetch;
+	/** FLY-576: per-attempt abort timeout. Default 5000ms (was unbounded before). */
+	timeoutMs?: number;
 }
+
+/**
+ * FLY-576: classified result of an add-thread-member attempt.
+ *  - "added": the user is (now) a member.
+ *  - "transient": 429 / 5xx / network / timeout — retrying may succeed.
+ *  - "permanent": 401/403/404 — retrying won't help (bad token / no perms / gone).
+ */
+export type AddMemberOutcome = "added" | "transient" | "permanent";
 
 /**
  * FLY-91 / FLY-314: Add a user as a thread member so the thread appears in their
  * Discord sidebar and notifications are enabled. Shared by ChatThreadCreator
  * (per-issue threads) and RoundtableThreadManager (per-topic threads).
- * Fire-and-forget — failures are logged but never thrown.
+ * Never throws.
+ *
+ * FLY-576: now returns a classified outcome so a caller that gates work on
+ * membership (the RoundtableThreadManager cursor) can hold-and-retry on transient
+ * failures vs. give up on permanent ones. Existing callers may ignore the return.
+ * Also bounded by a per-attempt abort timeout (default 5s) — a hung PUT must never
+ * stall a caller that awaits it.
  */
 export async function addThreadMember(
 	threadId: string,
 	userId: string,
 	botToken: string,
 	deps: AddThreadMemberDeps = {},
-): Promise<void> {
+): Promise<AddMemberOutcome> {
 	const fetchImpl = deps.fetchImpl ?? fetch;
+	const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	try {
 		const res = await fetchImpl(
 			`${DISCORD_API}/channels/${threadId}/thread-members/${userId}`,
 			{
 				method: "PUT",
 				headers: { Authorization: `Bot ${botToken}` },
+				signal: controller.signal,
 			},
 		);
-		if (!res.ok) {
-			const body = await res.text().catch(() => "");
-			console.warn(
-				`[chat-thread-utils] addThreadMember failed: ${res.status} ${body.slice(0, 200)}`,
-			);
-		}
+		if (res.ok) return "added";
+		const body = await res.text().catch(() => "");
+		console.warn(
+			`[chat-thread-utils] addThreadMember failed: thread=${threadId} user=${userId} ${res.status} ${body.slice(0, 200)}`,
+		);
+		// 408 / 429 / 5xx are retryable; other 4xx (401/403/404) are not.
+		if (res.status === 408 || res.status === 429 || res.status >= 500)
+			return "transient";
+		return "permanent";
 	} catch (err) {
 		console.warn(
-			`[chat-thread-utils] addThreadMember error:`,
+			`[chat-thread-utils] addThreadMember error: thread=${threadId} user=${userId}`,
 			(err as Error).message,
 		);
+		return "transient"; // network / abort / timeout → retryable
+	} finally {
+		clearTimeout(timer);
 	}
 }
 

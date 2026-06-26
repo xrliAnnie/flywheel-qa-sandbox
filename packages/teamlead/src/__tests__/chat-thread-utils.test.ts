@@ -5,6 +5,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import {
+	addThreadMember,
 	archiveChatThread,
 	removeUserFromChatThread,
 } from "../bridge/chat-thread-utils.js";
@@ -210,5 +211,65 @@ describe("removeUserFromChatThread", () => {
 				timeoutMs: 5,
 			}),
 		).resolves.toBeUndefined();
+	});
+});
+
+describe("addThreadMember (FLY-576: classified outcome)", () => {
+	it("returns 'added' on 2xx (204 no-content)", async () => {
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }));
+		await expect(
+			addThreadMember("t1", "u1", "bot", { fetchImpl }),
+		).resolves.toBe("added");
+	});
+
+	it("returns 'permanent' on 403 (missing perms — retry won't help)", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(403, { message: "no" }));
+		await expect(
+			addThreadMember("t1", "u1", "bot", { fetchImpl }),
+		).resolves.toBe("permanent");
+	});
+
+	it("returns 'permanent' on 404 (thread/user gone)", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(404, {}));
+		await expect(
+			addThreadMember("t1", "u1", "bot", { fetchImpl }),
+		).resolves.toBe("permanent");
+	});
+
+	it("returns 'transient' on 429 (rate limited — retryable)", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(429, {}));
+		await expect(
+			addThreadMember("t1", "u1", "bot", { fetchImpl }),
+		).resolves.toBe("transient");
+	});
+
+	it("returns 'transient' on 5xx (retryable)", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(503, {}));
+		await expect(
+			addThreadMember("t1", "u1", "bot", { fetchImpl }),
+		).resolves.toBe("transient");
+	});
+
+	it("returns 'transient' on 408 Request Timeout (retryable)", async () => {
+		const fetchImpl = vi.fn(async () => jsonResponse(408, {}));
+		await expect(
+			addThreadMember("t1", "u1", "bot", { fetchImpl }),
+		).resolves.toBe("transient");
+	});
+
+	it("returns 'transient' on a network error (never throws)", async () => {
+		const fetchImpl = vi.fn(async () => {
+			throw new Error("boom");
+		});
+		await expect(
+			addThreadMember("t1", "u1", "bot", { fetchImpl }),
+		).resolves.toBe("transient");
+	});
+
+	it("returns 'transient' on a hung request (AbortController timeout)", async () => {
+		const fetchImpl = hangingFetch();
+		await expect(
+			addThreadMember("t1", "u1", "bot", { fetchImpl, timeoutMs: 5 }),
+		).resolves.toBe("transient");
 	});
 });
