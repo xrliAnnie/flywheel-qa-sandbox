@@ -110,6 +110,24 @@ the latest messages **without being `@`-mentioned each time** — that is the po
 the thread (a real back-and-forth, like people talking in a room). New topic = a new
 top-level message = a new thread.
 
+**Who gets the thread surfaced (FLY-576) — `@` everyone you want in the TOP-LEVEL
+message.** When you open a topic, `@`-mention **every** Lead you want kept in the loop
+**in that top-level message**. Those Leads (plus the founder, always) are added as
+thread members, so the thread appears in their Discord sidebar and they receive its
+follow-up messages **without** needing a fresh `@` on every reply. This is the cheap,
+reliable way to make sure someone is surfaced — do not assume a Lead sees a thread just
+because the topic concerns them; if you want them in, name them up front.
+
+> **A mid-thread `@` does NOT add a durable member.** `@`-mentioning a Lead who was not
+> in the original top-level message only pings them for that one reply — it does **not**
+> pull them into the thread as a member (the auto-thread manager only reads the
+> top-level message). If you realize partway through that another Lead needs to be
+> in the loop for good, start the next beat as a **new top-level topic** that `@`s them.
+
+Being a member means the thread is **surfaced** to you (sidebar + you see new messages)
+— it does **not** mean you must reply to every message. Whether you reply still follows
+the discipline below (substantive add only); awareness ≠ auto-reply.
+
 Continue with discipline so the thread **converges** instead of looping:
 
 - **Only when you have something substantive to add** — a real answer, a correction, a

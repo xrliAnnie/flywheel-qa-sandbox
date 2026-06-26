@@ -10,6 +10,7 @@ const BOT_USER = "bot-self";
 interface CallLog {
 	method: string;
 	url: string;
+	body?: string;
 }
 
 /** Discord-shaped JSON Response stub. */
@@ -29,6 +30,10 @@ interface FetchScenario {
 	createResponse?: (msgId: string) => Response;
 	/** override GET /channels/{id} (recovery confirm). */
 	getChannelResponse?: (id: string) => Response;
+	/** FLY-576: override PUT thread-members/{userId} (default: 204 added). */
+	putMemberResponse?: (userId: string) => Response;
+	/** FLY-576: override PATCH /channels/{id} thread rename (default: 200 ok). */
+	patchResponse?: (id: string) => Response;
 }
 
 function makeFetch(scn: FetchScenario) {
@@ -36,7 +41,11 @@ function makeFetch(scn: FetchScenario) {
 	const messages = scn.messages ?? [];
 	const impl = vi.fn(async (url: string, init?: RequestInit) => {
 		const method = (init?.method ?? "GET").toUpperCase();
-		calls.push({ method, url });
+		calls.push({
+			method,
+			url,
+			body: typeof init?.body === "string" ? init.body : undefined,
+		});
 		// GET list messages
 		const listMatch = url.match(/\/channels\/([^/]+)\/messages\?(.*)$/);
 		if (method === "GET" && listMatch) {
@@ -63,7 +72,16 @@ function makeFetch(scn: FetchScenario) {
 		}
 		// PUT thread member
 		if (method === "PUT" && /\/thread-members\//.test(url)) {
-			return res(204, {});
+			const userId = url.split("/thread-members/")[1] ?? "";
+			return scn.putMemberResponse
+				? scn.putMemberResponse(userId)
+				: res(204, {});
+		}
+		// PATCH /channels/{id} (FLY-576 rename)
+		const patchMatch = url.match(/\/channels\/([^/]+)$/);
+		if (method === "PATCH" && patchMatch) {
+			const id = patchMatch[1];
+			return scn.patchResponse ? scn.patchResponse(id) : res(200, { id });
 		}
 		// GET /channels/{id} (recovery confirm)
 		const getChanMatch = url.match(/\/channels\/([^/]+)$/);
@@ -518,5 +536,232 @@ describe("RoundtableThreadManager poll loop + cursor", () => {
 		expect(n).toBe(1); // advanced despite the persist failure
 		expect(warn).toHaveBeenCalled();
 		expect(store.getRoundtableTopicThread(CH, "11")?.thread_id).toBe("11");
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// FLY-576 — founder membership + descriptive naming + reliable convergence
+// ─────────────────────────────────────────────────────────────────────────
+const putMemberIds = (calls: CallLog[]) =>
+	calls
+		.filter((c) => c.method === "PUT" && /\/thread-members\//.test(c.url))
+		.map((c) => c.url.split("/thread-members/")[1]);
+const patchCalls = (calls: CallLog[]) =>
+	calls.filter((c) => c.method === "PATCH" && /\/channels\/[^/]+$/.test(c.url));
+const createBody = (calls: CallLog[]) => {
+	const c = calls.find(
+		(x) =>
+			x.method === "POST" &&
+			/\/messages\/[^/]+\/threads$/.test(x.url) &&
+			x.body,
+	);
+	return c?.body ? (JSON.parse(c.body) as { name?: string }) : undefined;
+};
+const msg = (
+	over: Partial<Parameters<RoundtableThreadManager["processMessage"]>[0]> = {},
+) => ({
+	id: "42",
+	channelId: CH,
+	authorId: "u1",
+	authorBot: false,
+	content: "hello topic",
+	mentions: [] as string[],
+	mentionEveryone: false,
+	...over,
+});
+
+describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("created: ALWAYS adds the founder (union with mentions), filtering the bot", async () => {
+		const { impl, calls } = makeFetch({});
+		const m = mgr(store, impl, {
+			founderUserId: "founder-x",
+			memberUserIds: [],
+		});
+		const advance = await m.processMessage(
+			msg({ content: "<@lead-a> please look", mentions: ["lead-a", BOT_USER] }),
+		);
+		expect(advance).toBe(true);
+		expect(new Set(putMemberIds(calls))).toEqual(
+			new Set(["founder-x", "lead-a"]),
+		);
+		expect(putMemberIds(calls)).not.toContain(BOT_USER);
+		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
+	});
+
+	it("created: descriptive name strips Discord markup from the topic content", async () => {
+		const { impl, calls } = makeFetch({});
+		const m = mgr(store, impl);
+		await m.processMessage(
+			msg({
+				content: "<@123> <@!456> <@&7> <#8> <:wave:9> ship the membership fix",
+			}),
+		);
+		expect(createBody(calls)?.name).toBe("ship the membership fix");
+	});
+
+	it("created: mentions-only / empty content falls back to the placeholder name", async () => {
+		const { impl, calls } = makeFetch({});
+		const m = mgr(store, impl);
+		await m.processMessage(
+			msg({ content: "<@123> <@456>", mentions: ["123"] }),
+		);
+		expect(createBody(calls)?.name).toBe("Roundtable topic");
+	});
+
+	it("recovery: a placeholder-named thread (plugin won the race) gets PATCH-renamed to the topic", async () => {
+		const { impl, calls } = makeFetch({
+			createResponse: () => res(400, { code: 160004 }),
+			getChannelResponse: () =>
+				res(200, { type: 11, parent_id: CH, name: "Roundtable topic" }),
+		});
+		const m = mgr(store, impl, { founderUserId: "founder-x" });
+		const advance = await m.processMessage(
+			msg({ content: "fix the sidebar surfacing", mentions: [] }),
+		);
+		expect(advance).toBe(true);
+		// renamed to the descriptive topic
+		const patches = patchCalls(calls);
+		expect(patches).toHaveLength(1);
+		expect(JSON.parse(patches[0].body ?? "{}").name).toBe(
+			"fix the sidebar surfacing",
+		);
+		// founder + config members still added
+		expect(putMemberIds(calls)).toContain("founder-x");
+		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
+	});
+
+	it("recovery: a thread already bearing a descriptive name is NOT renamed", async () => {
+		const { impl, calls } = makeFetch({
+			createResponse: () => res(400, { code: 160004 }),
+			getChannelResponse: () =>
+				res(200, { type: 11, parent_id: CH, name: "an existing good name" }),
+		});
+		const m = mgr(store, impl);
+		await m.processMessage(msg());
+		expect(patchCalls(calls)).toHaveLength(0);
+		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
+	});
+
+	it("recovery: a transient GET-confirm failure HOLDS the cursor (no advance, no persist)", async () => {
+		const { impl } = makeFetch({
+			createResponse: () => res(400, { code: 160004 }),
+			getChannelResponse: () => res(503, {}),
+		});
+		const m = mgr(store, impl);
+		const advance = await m.processMessage(msg());
+		expect(advance).toBe(false);
+		expect(store.getRoundtableTopicThread(CH, "42")).toBeUndefined();
+	});
+
+	it("a transient member-add failure HOLDS the cursor (no persist) so the next poll retries", async () => {
+		const { impl } = makeFetch({ putMemberResponse: () => res(503, {}) });
+		const m = mgr(store, impl, { founderUserId: "founder-x" });
+		const advance = await m.processMessage(msg());
+		expect(advance).toBe(false);
+		expect(store.getRoundtableTopicThread(CH, "42")).toBeUndefined();
+	});
+
+	it("a permanent member-add failure (403) warns and still commits (advance, no wedge)", async () => {
+		const warn = vi.fn();
+		const { impl } = makeFetch({ putMemberResponse: () => res(403, {}) });
+		const m = mgr(store, impl, {
+			founderUserId: "founder-x",
+			logger: { warn },
+		});
+		const advance = await m.processMessage(msg());
+		expect(advance).toBe(true);
+		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
+	});
+
+	it("a transient rename failure HOLDS the cursor (no persist) so the name converges", async () => {
+		const { impl } = makeFetch({
+			createResponse: () => res(400, { code: 160004 }),
+			getChannelResponse: () =>
+				res(200, { type: 11, parent_id: CH, name: "Roundtable topic" }),
+			patchResponse: () => res(503, {}),
+		});
+		const m = mgr(store, impl);
+		const advance = await m.processMessage(msg({ content: "a real topic" }));
+		expect(advance).toBe(false);
+		expect(store.getRoundtableTopicThread(CH, "42")).toBeUndefined();
+	});
+
+	it("a permanent rename failure (403 — no MANAGE_THREADS) warns but membership still commits", async () => {
+		const warn = vi.fn();
+		const { impl, calls } = makeFetch({
+			createResponse: () => res(400, { code: 160004 }),
+			getChannelResponse: () =>
+				res(200, { type: 11, parent_id: CH, name: "Roundtable topic" }),
+			patchResponse: () => res(403, {}),
+		});
+		const m = mgr(store, impl, {
+			founderUserId: "founder-x",
+			logger: { warn },
+		});
+		const advance = await m.processMessage(msg({ content: "a real topic" }));
+		expect(advance).toBe(true); // membership converged even though rename failed
+		expect(putMemberIds(calls)).toContain("founder-x");
+		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
+	});
+
+	it("no founder configured → adds only configured members + mentions (byte-compat, no throw)", async () => {
+		const { impl, calls } = makeFetch({});
+		const m = mgr(store, impl, {
+			founderUserId: undefined,
+			memberUserIds: ["m1"],
+		});
+		const advance = await m.processMessage(msg({ mentions: ["lead-a"] }));
+		expect(advance).toBe(true);
+		expect(new Set(putMemberIds(calls))).toEqual(new Set(["m1", "lead-a"]));
+	});
+
+	it("idempotent re-run: a row already committed (dedup) skips re-work without a second create", async () => {
+		store.upsertRoundtableTopicThread({
+			threadId: "42",
+			channelId: CH,
+			sourceMessageId: "42",
+		});
+		const { impl, calls } = makeFetch({});
+		const m = mgr(store, impl, { founderUserId: "founder-x" });
+		const advance = await m.processMessage(msg());
+		expect(advance).toBe(true);
+		expect(countCreates(calls)).toBe(0);
+		expect(putMemberIds(calls)).toHaveLength(0); // already committed — no rework
+	});
+
+	it("two-pass convergence: a transient member-add holds (no row), then the 160004 recovery re-adds + commits", async () => {
+		// Pass 1: host bot creates the thread (201) but the member PUT fails transiently
+		// → hold, NO row. Pass 2: the same message re-processes, create now returns
+		// 160004 (the pass-1 thread exists), GET confirms, the member PUT succeeds → commit.
+		let pass = 0;
+		const { impl, calls } = makeFetch({
+			createResponse: () =>
+				pass === 0 ? res(201, { id: "42" }) : res(400, { code: 160004 }),
+			// pass-1 create named it from the content; the GET reflects that (no rename).
+			getChannelResponse: () =>
+				res(200, { type: 11, parent_id: CH, name: "hello topic" }),
+			putMemberResponse: () => (pass === 0 ? res(503, {}) : res(204, {})),
+		});
+		const m = mgr(store, impl, {
+			founderUserId: "founder-x",
+			memberUserIds: [],
+		});
+
+		const a1 = await m.processMessage(msg({ content: "hello topic" }));
+		expect(a1).toBe(false); // held — transient member add
+		expect(store.getRoundtableTopicThread(CH, "42")).toBeUndefined();
+
+		pass = 1;
+		const a2 = await m.processMessage(msg({ content: "hello topic" }));
+		expect(a2).toBe(true); // recovered + committed
+		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
+		expect(putMemberIds(calls)).toContain("founder-x");
+		// the descriptive name already matched → no rename needed in the recovery pass
+		expect(patchCalls(calls)).toHaveLength(0);
 	});
 });

@@ -104,6 +104,42 @@ describe("loadRoundtableConfig", () => {
 		expect(cfg?.cursorPath).toBe(join(homedir(), "cursors/rt.json"));
 	});
 
+	it("resolves founderUserId from DISCORD_OWNER_USER_ID (FLY-576)", () => {
+		const cfg = loadRoundtableConfig({
+			...REQUIRED,
+			DISCORD_OWNER_USER_ID: "1138241636057481306",
+		});
+		expect(cfg?.founderUserId).toBe("1138241636057481306");
+	});
+
+	it("founderUserId is undefined when DISCORD_OWNER_USER_ID is unset", () => {
+		expect(
+			loadRoundtableConfig({ ...REQUIRED })?.founderUserId,
+		).toBeUndefined();
+	});
+
+	it("founderUserId is undefined for a malformed DISCORD_OWNER_USER_ID (fail-open, no throw)", () => {
+		expect(
+			loadRoundtableConfig({
+				...REQUIRED,
+				DISCORD_OWNER_USER_ID: "not-a-snowflake",
+			})?.founderUserId,
+		).toBeUndefined();
+		expect(
+			loadRoundtableConfig({ ...REQUIRED, DISCORD_OWNER_USER_ID: "123" })
+				?.founderUserId,
+		).toBeUndefined();
+	});
+
+	it("does NOT inspect founder env when the feature is OFF (byte-compat early return — Codex R1#5)", () => {
+		expect(
+			loadRoundtableConfig({
+				FLYWHEEL_ROUNDTABLE_ENABLED: "0",
+				DISCORD_OWNER_USER_ID: "1138241636057481306",
+			}),
+		).toBeUndefined();
+	});
+
 	it("degrades an unknown trigger mode to disabled (warns, no throw)", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const cfg = loadRoundtableConfig({

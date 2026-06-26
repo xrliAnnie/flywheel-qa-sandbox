@@ -38,6 +38,12 @@ const THREAD_TYPES = new Set([10, 11, 12]);
 const AUTO_ARCHIVE_DURATION = 4320; // 3 days
 /** Cap on an honored 429 Retry-After so a hostile/huge value can't wedge the poll. */
 const MAX_RETRY_AFTER_MS = 60_000;
+/**
+ * FLY-576: the generic name the Belle plugin hard-codes when it wins the create
+ * race. Doubles as (a) the fallback when a topic message has no usable text and
+ * (b) the marker the recovery path looks for before renaming to a descriptive name.
+ */
+const ROUNDTABLE_PLACEHOLDER_NAME = "Roundtable topic";
 
 /** Discord sends Retry-After in (possibly fractional) seconds → ms. */
 function parseRetryAfterMs(
@@ -69,6 +75,13 @@ export interface RoundtableThreadManagerOptions {
 	trigger: (msg: RoundtableMessage) => boolean;
 	/** Discord user ids pulled into each new topic thread as members. */
 	memberUserIds: string[];
+	/**
+	 * FLY-576: the founder's Discord id — ALWAYS pulled into each topic thread as a
+	 * member (so the thread appears in the founder's sidebar + surfaces follow-up
+	 * messages), exactly like issue threads' ownerUserId. Undefined → degrade to
+	 * configured members + mentions only (byte-compat, no throw).
+	 */
+	founderUserId?: string;
 	/** Recorded on the row for audit (which trigger opened it). */
 	triggerMode: string;
 	/**
@@ -107,6 +120,7 @@ export class RoundtableThreadManager {
 	private readonly botUserId: string;
 	private readonly trigger: (msg: RoundtableMessage) => boolean;
 	private readonly memberUserIds: string[];
+	private readonly founderUserId: string | undefined;
 	private readonly triggerMode: string;
 	private readonly threadOwnBotMessages: boolean;
 	private readonly cursorStore: InboundCursorStore;
@@ -139,6 +153,7 @@ export class RoundtableThreadManager {
 		this.botUserId = opts.botUserId;
 		this.trigger = opts.trigger;
 		this.memberUserIds = [...opts.memberUserIds];
+		this.founderUserId = opts.founderUserId;
 		this.triggerMode = opts.triggerMode;
 		this.threadOwnBotMessages = opts.threadOwnBotMessages ?? false;
 		this.cursorStore = opts.cursorStore;
@@ -310,20 +325,30 @@ export class RoundtableThreadManager {
 		const result = await this.createThreadFromMessage(msg);
 		switch (result.kind) {
 			case "created":
-				this.persistAndDecorate(msg, result.threadId);
-				return true;
+				// Host bot won the create — the name is already descriptive, so pass it
+				// as currentName (no rename needed). commitThread returns false on a
+				// transient decorate failure to hold the cursor.
+				return await this.commitThread(msg, result.threadId, {
+					seed: true,
+					currentName: this.threadName(msg.content),
+				});
 			case "exists": {
-				// Recovery: a prior run created the Discord thread but lost the DB row.
-				// Confirm via GET (no second create) and persist the mapping.
-				const confirmed = await this.confirmThreadExists(msg.id);
-				if (confirmed) {
-					this.persistAndDecorate(msg, msg.id, { skipSeed: true });
-				} else {
+				// Recovery: someone (usually the Belle plugin's real-time gateway) created
+				// the thread first — confirm via GET (no second create), then decorate +
+				// rename. A transient confirm failure HOLDS the cursor so the next poll
+				// retries (otherwise a single 429/5xx would skip repair permanently).
+				const conf = await this.confirmThreadExists(msg.id);
+				if (conf.kind === "transient") return false; // hold — retry next poll
+				if (conf.kind === "absent") {
 					this.logger.warn(
 						`[RoundtableThreadManager] create said thread exists for ${msg.id} but GET did not confirm — skipping`,
 					);
+					return true;
 				}
-				return true;
+				return await this.commitThread(msg, msg.id, {
+					seed: false,
+					currentName: conf.name,
+				});
 			}
 			case "deleted":
 				return true; // message gone — nothing to thread
@@ -346,12 +371,58 @@ export class RoundtableThreadManager {
 		}
 	}
 
-	/** Persist the topic-thread mapping, then best-effort seed + member pull. */
-	private persistAndDecorate(
+	/**
+	 * FLY-576: decorate the topic thread, THEN persist the mapping (the commit point).
+	 *
+	 * Order matters for crash/transient safety:
+	 *  1. Add the founder + configured members + @-mentioned leads. Each add is
+	 *     awaited + classified — a transient failure returns false to HOLD the cursor
+	 *     (the next poll re-runs; PUT thread-member is idempotent). A permanent
+	 *     failure (bad token / no perms / gone) is warned and skipped (never wedge).
+	 *  2. Rename a placeholder-named thread (the Belle plugin hard-codes the
+	 *     placeholder) to a descriptive name — same hold-on-transient policy.
+	 *  3. Persist the row LAST. A crash before here re-runs idempotently via the
+	 *     160004 recovery path; a crash after here but before the cursor saves dedups
+	 *     out safely (the row now means the critical repair already completed). This
+	 *     is why dedup is only an optimization, not the safety property.
+	 *  4. Seed message is best-effort AFTER the commit (its failure never re-opens
+	 *     the strand risk).
+	 *
+	 * Returns true to advance the cursor, false to hold (transient — retry next poll).
+	 */
+	private async commitThread(
 		msg: RoundtableMessage,
 		threadId: string,
-		opts: { skipSeed?: boolean } = {},
-	): void {
+		opts: { seed: boolean; currentName?: string },
+	): Promise<boolean> {
+		// FLY-576 (Annie's T2 model + founder): the founder is ALWAYS a member; union
+		// with any configured base members and the leads the author @-mentioned. Skip
+		// the poller's own bot id and any undefined (e.g. founder unset).
+		const members = [
+			...new Set([this.founderUserId, ...this.memberUserIds, ...msg.mentions]),
+		].filter((id): id is string => Boolean(id) && id !== this.botUserId);
+		for (const userId of members) {
+			const outcome = await addThreadMember(threadId, userId, this.botToken, {
+				fetchImpl: this.fetchImpl,
+				timeoutMs: CREATE_TIMEOUT_MS,
+			});
+			if (outcome === "transient") return false; // hold — retry (PUT idempotent)
+			// "permanent" already warned inside addThreadMember — proceed (no wedge).
+		}
+
+		// Rename only when the creator left the generic placeholder (the Belle plugin
+		// path); the host bot's own create already set a descriptive name.
+		const desired = this.threadName(msg.content);
+		if (
+			opts.currentName === ROUNDTABLE_PLACEHOLDER_NAME &&
+			desired !== opts.currentName
+		) {
+			const outcome = await this.renameThread(threadId, desired);
+			if (outcome === "transient") return false; // hold — converge the name too
+			// "permanent" (e.g. no MANAGE_THREADS) already warned — membership stands.
+		}
+
+		// Commit point — persist only after the critical repair has converged.
 		this.store.upsertRoundtableTopicThread({
 			threadId,
 			channelId: this.channelId,
@@ -359,46 +430,68 @@ export class RoundtableThreadManager {
 			authorId: msg.authorId,
 			triggerMode: this.triggerMode,
 		});
-		// FLY-314 (Annie's T2 model): pull the leads the author @-mentioned into the
-		// thread, unioned with any configured base members (e.g. the founder for
-		// retro visibility). Skip the poller's own bot id. Fire-and-forget — a
-		// decoration failure never affects cursor advance.
-		const members = [
-			...new Set([...this.memberUserIds, ...msg.mentions]),
-		].filter((id) => id && id !== this.botUserId);
-		void this.decorateThread(threadId, opts.skipSeed === true, members);
+
+		if (opts.seed) void this.seedThread(threadId); // best-effort, after commit
+		return true;
 	}
 
-	private async decorateThread(
-		threadId: string,
-		skipSeed: boolean,
-		members: string[],
-	): Promise<void> {
-		if (!skipSeed) {
-			try {
-				await this.fetchImpl(`${DISCORD_API}/channels/${threadId}/messages`, {
-					method: "POST",
-					headers: {
-						Authorization: `Bot ${this.botToken}`,
-						"Content-Type": "application/json",
-					},
-					body: JSON.stringify({
-						content:
-							"🧵 Topic — relevant leads, please discuss in this thread.",
-						allowed_mentions: { parse: [] },
-					}),
-				});
-			} catch (err) {
-				this.logger.warn("[RoundtableThreadManager] seed message failed", {
-					threadId,
-					err: (err as Error).message,
-				});
-			}
-		}
-		for (const userId of members) {
-			await addThreadMember(threadId, userId, this.botToken, {
-				fetchImpl: this.fetchImpl,
+	/** Best-effort seed message so the thread shows a starting line. Never throws,
+	 * never holds the cursor (it runs AFTER the commit point). */
+	private async seedThread(threadId: string): Promise<void> {
+		try {
+			await this.fetchImpl(`${DISCORD_API}/channels/${threadId}/messages`, {
+				method: "POST",
+				headers: {
+					Authorization: `Bot ${this.botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					content: "🧵 Topic — relevant leads, please discuss in this thread.",
+					allowed_mentions: { parse: [] },
+				}),
 			});
+		} catch (err) {
+			this.logger.warn("[RoundtableThreadManager] seed message failed", {
+				threadId,
+				err: (err as Error).message,
+			});
+		}
+	}
+
+	/** PATCH /channels/{threadId} {name}. Classified like the member add: transient
+	 * (429/5xx/network/timeout) → caller holds the cursor; permanent (401/403/404,
+	 * e.g. Cass lacks MANAGE_THREADS) → warn + proceed (membership still converges). */
+	private async renameThread(
+		threadId: string,
+		name: string,
+	): Promise<"renamed" | "transient" | "permanent"> {
+		const controller = new AbortController();
+		const timer = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
+		try {
+			const res = await this.fetchImpl(`${DISCORD_API}/channels/${threadId}`, {
+				method: "PATCH",
+				headers: {
+					Authorization: `Bot ${this.botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ name }),
+				signal: controller.signal,
+			});
+			if (res.ok) return "renamed";
+			this.logger.warn(
+				`[RoundtableThreadManager] rename thread ${threadId} failed: HTTP ${res.status} (name stays generic)`,
+			);
+			if (res.status === 408 || res.status === 429 || res.status >= 500)
+				return "transient";
+			return "permanent";
+		} catch (err) {
+			this.logger.warn("[RoundtableThreadManager] rename thread error", {
+				threadId,
+				err: (err as Error).message,
+			});
+			return "transient";
+		} finally {
+			clearTimeout(timer);
 		}
 	}
 
@@ -461,9 +554,27 @@ export class RoundtableThreadManager {
 		}
 	}
 
-	/** GET /channels/{messageId} — confirm a thread owned by the roundtable channel
-	 * exists (recovery anchor: threadId === messageId). */
-	private async confirmThreadExists(messageId: string): Promise<boolean> {
+	/**
+	 * GET /channels/{messageId} — confirm a thread owned by the roundtable channel
+	 * exists (recovery anchor: threadId === messageId) AND read its current name (so
+	 * the caller can rename a placeholder).
+	 *
+	 * FLY-576: classified, not boolean. A transient failure (429/5xx/network/timeout)
+	 * must NOT be collapsed to "not confirmed" — that would advance the cursor and
+	 * skip the founder/member/rename repair forever. The caller holds the cursor on
+	 * "transient" and retries next poll.
+	 *  - "confirmed": is a thread under this channel; carries `name` if readable.
+	 *  - "absent": 200-but-not-a-matching-thread, 404, or a non-retryable 4xx — there
+	 *    is nothing to repair / retrying won't help.
+	 *  - "transient": retry next poll.
+	 */
+	private async confirmThreadExists(
+		messageId: string,
+	): Promise<
+		| { kind: "confirmed"; name?: string }
+		| { kind: "absent" }
+		| { kind: "transient" }
+	> {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
 		try {
@@ -471,18 +582,28 @@ export class RoundtableThreadManager {
 				headers: { Authorization: `Bot ${this.botToken}` },
 				signal: controller.signal,
 			});
-			if (!res.ok) return false;
-			const data = (await res.json().catch(() => ({}))) as {
-				type?: number;
-				parent_id?: string;
-			};
-			return (
-				typeof data.type === "number" &&
-				THREAD_TYPES.has(data.type) &&
-				data.parent_id === this.channelId
-			);
+			if (res.ok) {
+				const data = (await res.json().catch(() => ({}))) as {
+					type?: number;
+					parent_id?: string;
+					name?: unknown;
+				};
+				const isThread =
+					typeof data.type === "number" &&
+					THREAD_TYPES.has(data.type) &&
+					data.parent_id === this.channelId;
+				if (!isThread) return { kind: "absent" };
+				return {
+					kind: "confirmed",
+					name: typeof data.name === "string" ? data.name : undefined,
+				};
+			}
+			// 408 / 429 / 5xx → retry; everything else (404 gone, 401/403) → nothing to do.
+			if (res.status === 408 || res.status === 429 || res.status >= 500)
+				return { kind: "transient" };
+			return { kind: "absent" };
 		} catch {
-			return false;
+			return { kind: "transient" }; // network / abort / timeout → retry
 		} finally {
 			clearTimeout(timer);
 		}
@@ -516,9 +637,20 @@ export class RoundtableThreadManager {
 		};
 	}
 
-	/** Thread name from the topic content (truncated), fallback to a constant. */
+	/**
+	 * FLY-576: a descriptive thread name from the topic content. Strips Discord
+	 * markup (user/role/channel mentions, custom emoji) so the name reads as the
+	 * topic, not raw `<@id>` noise. Falls back to the placeholder when the message
+	 * has no usable text (e.g. mentions-only).
+	 */
 	private threadName(content: string): string {
-		const cleaned = content.replace(/\s+/g, " ").trim().slice(0, 80);
-		return (cleaned || "Roundtable topic").slice(0, 100);
+		const cleaned = content
+			.replace(/<a?:\w+:\d+>/g, "") // custom emoji <:x:1> / <a:x:1>
+			.replace(/<@[!&]?\d+>/g, "") // user <@1>/<@!1> + role <@&1> mentions
+			.replace(/<#\d+>/g, "") // channel mentions <#1>
+			.replace(/\s+/g, " ")
+			.trim()
+			.slice(0, 90);
+		return (cleaned || ROUNDTABLE_PLACEHOLDER_NAME).slice(0, 100);
 	}
 }
