@@ -932,11 +932,6 @@ function titleFor(kind: AlertEventType): string {
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
 			return "Runner stuck unhandled";
-		// FLY-523: never emitted by LeadWatchdog (FounderGatePendingNotifier owns
-		// founder-gate-pending alerts and builds its own title); case exists for
-		// switch exhaustiveness.
-		case "founder_action_needed":
-			return "Ready to ship — needs your approval";
 	}
 }
 
@@ -970,8 +965,5 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";
-		// FLY-523: never emitted by LeadWatchdog (see titleFor).
-		case "founder_action_needed":
-			return "A run is implemented and code-reviewed and is waiting for your ship approval.";
 	}
 }
