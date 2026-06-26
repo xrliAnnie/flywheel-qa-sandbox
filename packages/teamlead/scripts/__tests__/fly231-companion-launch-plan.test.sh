@@ -6,7 +6,7 @@
 # launch plan. This is the reverse-compat sentinel + companion capability proof
 # (Codex design review R3 BLOCKER-4 / R4 HIGH-4 / R5 / R6):
 #   - companion gets ONLY persona-friendly rules (companion-safety-contract +
-#     cross-dept) + --effort medium; NONE of the eng-governance rules; pane creds
+#     cross-dept) + --effort xhigh (FLY-583, was medium); NONE of the eng-governance rules; pane creds
 #     EMPTY (token unusable); no terminal/inbox/gbrain/user MCP; FLYWHEEL_LEAD_COMPANION set.
 #   - standard dept Lead is UNCHANGED (all eng rules + terminal/inbox MCP + creds
 #     SET; no companion items) — byte-compat by construction.
@@ -81,7 +81,13 @@ OUT=$(run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth); PLAN=$(printf '%s'
 printf '%s\n' "$PLAN" | has $'ROLE\tcompanion'                         && ok "T1 companion role" || bad "T1 companion role"
 printf '%s\n' "$PLAN" | grep -qF 'companion-safety-contract.md'        && ok "T1 has safety-contract" || bad "T1 has safety-contract"
 printf '%s\n' "$PLAN" | grep -qF 'cross-dept-channel-rules.md'         && ok "T1 has cross-dept" || bad "T1 has cross-dept"
-printf '%s\n' "$PLAN" | grep -qF $'ARG\t--effort'                      && ok "T1 has --effort medium" || bad "T1 has --effort medium"
+printf '%s\n' "$PLAN" | grep -qF $'ARG\t--effort'                      && ok "T1 has --effort flag" || bad "T1 has --effort flag"
+# FLY-583: companion effort is pinned to xhigh (was medium). Evidence showed medium
+# did NOT prevent the FLY-306/387 reply-leak (Belle leaked at xhigh too) and only
+# degraded capability against Annie's xhigh requirement — the real leak defense is
+# the discord-reply-enforcer Stop hook. Assert the value is xhigh and never medium.
+printf '%s\n' "$PLAN" | grep -qF $'ARG\txhigh'                         && ok "T1 effort value is xhigh (FLY-583)" || bad "T1 effort value is xhigh (FLY-583)"
+printf '%s\n' "$PLAN" | grep -qF $'ARG\tmedium'                        && bad "T1 effort must NOT be medium (FLY-583 regression)" || ok "T1 effort not medium (FLY-583 regression guard)"
 printf '%s\n' "$PLAN" | grep -qF 'founder-only-authority.md'           && bad "T1 must NOT have founder-only-authority" || ok "T1 no founder-only-authority"
 printf '%s\n' "$PLAN" | grep -qF 'department-lead-rules.md'            && bad "T1 must NOT have department-lead-rules" || ok "T1 no department-lead-rules"
 printf '%s\n' "$PLAN" | grep -qF 'screencapture-l3-skill.md'          && bad "T1 must NOT have screencapture" || ok "T1 no screencapture"
@@ -173,6 +179,11 @@ normalize_plan() {
     $1=="MCP_SERVER"{print "mcp="$2}
   ' | LC_ALL=C sort
 }
+# FLY-583: refreshed these goldens for PRE-EXISTING staleness, unrelated to the
+# companion effort change. The FLY-231 goldens predate later base rules that
+# claude-lead.sh now emits for standard/cos leads — discord-reply-contract.md
+# (FLY-387), runner-reengage-rules.md (FLY-229), xiaohongshu-memory-rules.md
+# (FLY-222). This sentinel is not wired into vitest/CI, so the drift went unnoticed.
 read -r -d '' DEPT_GOLDEN <<'G'
 env=BRIDGE_URL=set
 env=CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=set
@@ -198,14 +209,17 @@ mcp=flywheel-terminal
 role=standard
 rule=cross-dept-channel-rules.md
 rule=department-lead-rules.md
+rule=discord-reply-contract.md
 rule=doc-flow-rules.md
 rule=executor-routing.md
 rule=founder-html-delivery.md
 rule=founder-only-authority.md
 rule=inbox-ack-rule.md
 rule=runner-messaging-rules.md
+rule=runner-reengage-rules.md
 rule=screencapture-l3-skill.md
 rule=stuck-runner-remanage.md
+rule=xiaohongshu-memory-rules.md
 G
 read -r -d '' COS_GOLDEN <<'G'
 env=BRIDGE_URL=set
@@ -232,6 +246,7 @@ mcp=flywheel-terminal
 role=standard
 rule=cos-lead-rules.md
 rule=cross-dept-channel-rules.md
+rule=discord-reply-contract.md
 rule=founder-html-delivery.md
 rule=founder-only-authority.md
 rule=inbox-ack-rule.md

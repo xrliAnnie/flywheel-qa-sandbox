@@ -11,7 +11,7 @@
 #   - SPACES (FLYWHEEL_LEAD_MODEL="  ") → NO `--model` arg (trim → treated as unset;
 #            guards against injecting `--model "  "` which the claude CLI rejects)
 # Plus a companion-path check: the override is independent of the FLY-231
-# companion `--effort medium` block (both can coexist).
+# companion `--effort` block (xhigh as of FLY-583; both can coexist).
 #
 # Mirrors fly231-companion-launch-plan.test.sh: per-test isolated HOME, fixture
 # projects, dry-run exits before tmux. Requires built dist/ProjectConfig.js.
@@ -141,11 +141,17 @@ rm -rf "$H"
 
 # ─────────────────── T5: SET on a companion → --model coexists with --effort
 # The override is role-agnostic (operator opt-in per Lead via plist env). A
-# companion still gets its FLY-231 `--effort medium`; the model flag is additive.
+# companion still gets its companion `--effort` (xhigh as of FLY-583); the model flag is additive.
 H=$(make_home); P=$(fixture_projects "$H")
 PLAN=$(run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth FLYWHEEL_LEAD_MODEL=claude-fable-5 | plan_of)
 [ "$(model_arg_value "$PLAN")" = "claude-fable-5" ] && ok "T5 companion SET → --model present" || bad "T5 companion SET → expected claude-fable-5, got '$(model_arg_value "$PLAN")'"
 printf '%s\n' "$PLAN" | grep -qF $'ARG\t--effort' && ok "T5 companion still has --effort (additive)" || bad "T5 companion lost --effort"
+# FLY-583: companion effort value is xhigh, never medium. This is the CI-gated
+# regression guard (fly247-bash-suites.test.ts wires THIS suite into vitest; the
+# fuller fly231 launch-plan sentinel asserts the same but is not in CI). medium
+# was a stale FLY-231 mitigation that did NOT prevent the FLY-306/387 reply leak.
+printf '%s\n' "$PLAN" | grep -qF $'ARG\txhigh' && ok "T5 companion effort is xhigh (FLY-583)" || bad "T5 companion effort is xhigh (FLY-583)"
+printf '%s\n' "$PLAN" | grep -qF $'ARG\tmedium' && bad "T5 companion effort must NOT be medium (FLY-583)" || ok "T5 companion effort not medium (FLY-583)"
 rm -rf "$H"
 
 # ─────────────────────────── T6: production claude-lead.sh has the FLY-241 gate
