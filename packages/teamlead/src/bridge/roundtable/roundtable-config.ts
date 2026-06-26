@@ -24,6 +24,10 @@ export interface RoundtableConfig {
 	triggerMode: RoundtableTriggerMode;
 	trigger: RoundtableTriggerConfig;
 	memberUserIds: string[];
+	/** FLY-576: founder Discord id (from DISCORD_OWNER_USER_ID) — always pulled
+	 * into each topic thread as a member, like issue threads' ownerUserId. Undefined
+	 * when the env is unset/malformed (degrades to mentions-only; never throws). */
+	founderUserId?: string;
 	/** FLY-314: thread the poller bot's OWN top-level messages too (echo relax). */
 	threadOwnBotMessages: boolean;
 	pollIntervalMs: number;
@@ -109,6 +113,14 @@ export function loadRoundtableConfig(env: Env): RoundtableConfig | undefined {
 	const leadUserIds = splitCsv(env.FLYWHEEL_ROUNDTABLE_LEAD_USER_IDS);
 	const memberUserIds = splitCsv(env.FLYWHEEL_ROUNDTABLE_MEMBER_USER_IDS);
 
+	// FLY-576: the founder is always pulled into each topic thread as a member —
+	// reuse the SAME source the (already-working) issue threads use
+	// (DISCORD_OWNER_USER_ID). Parsed fail-open: unset/malformed → undefined →
+	// degrade to mentions-only membership, never throw. Only reached when the
+	// feature is ENABLED (the early return above guards byte-compat OFF).
+	const founderRaw = (env.DISCORD_OWNER_USER_ID ?? "").trim();
+	const founderUserId = /^\d{17,20}$/.test(founderRaw) ? founderRaw : undefined;
+
 	const pollParsed = Number.parseInt(
 		(env.FLYWHEEL_ROUNDTABLE_POLL_INTERVAL_MS ?? "").trim(),
 		10,
@@ -130,6 +142,7 @@ export function loadRoundtableConfig(env: Env): RoundtableConfig | undefined {
 		triggerMode,
 		trigger: { mode: triggerMode, prefixes, minMentions, leadUserIds },
 		memberUserIds,
+		founderUserId,
 		threadOwnBotMessages: env.FLYWHEEL_ROUNDTABLE_THREAD_OWN_BOT === "1",
 		pollIntervalMs,
 		cursorPath,

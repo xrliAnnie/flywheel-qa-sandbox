@@ -2661,6 +2661,7 @@ export async function startBridge(
 			botUserId: roundtableConfig.botUserId,
 			trigger: buildTopicTrigger(roundtableConfig.trigger),
 			memberUserIds: roundtableConfig.memberUserIds,
+			founderUserId: roundtableConfig.founderUserId,
 			triggerMode: roundtableConfig.triggerMode,
 			threadOwnBotMessages: roundtableConfig.threadOwnBotMessages,
 			cursorStore: new FileInboundCursorStore(roundtableConfig.cursorPath),
