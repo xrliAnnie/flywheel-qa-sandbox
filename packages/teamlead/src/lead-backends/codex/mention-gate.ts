@@ -22,6 +22,7 @@
 import type { DiscordInboundMessage } from "./CodexDiscordGateway.js";
 import {
 	decideTopicThreadContinuation,
+	seedThreadBudget,
 	type ThreadBudgetStore,
 } from "./roundtable-thread-budget.js";
 
@@ -102,18 +103,34 @@ export function buildMentionGate(
 		const isDynamicThread = dynamicShared?.has(msg.channelId) === true;
 		const isShared = shared.has(msg.channelId) || isDynamicThread;
 		if (!isShared) return true; // chat/core: unchanged
-		// FLY-314 Part(b): inside a registered topic thread (membership implicit), the
-		// @-requirement is relaxed under the bounded anti-loop budget. ALL bot-authored
-		// triggers — incl exact <@id> / quote-reply — flow through the budget and cannot
-		// bypass it (R1#1); a non-bot human always resets + is handled. The static shared
-		// PARENT channel is NOT relaxed (topics are still initiated by an explicit @).
-		if (isDynamicThread && autoContinue && opts.budgetStore) {
-			return decideTopicThreadContinuation(
-				{ threadId: msg.channelId, authorBot: msg.authorBot },
-				opts.budgetStore,
-				{ budgetN },
-			);
+		if (isDynamicThread) {
+			// FLY-576: a NON-BOT human (founder/operator) in a registered topic thread —
+			// membership is implicit (the thread is in the registry only because THIS Lead
+			// joined it) — is handled WITHOUT an @ by DEFAULT. The human message also resets
+			// the bot budget (a genuine reset event), so any subsequent bot continuation (when
+			// autoContinue is on) starts fresh. A human cannot form a bot-to-bot loop →
+			// structurally melee-immune.
+			if (!msg.authorBot) {
+				if (opts.budgetStore) {
+					seedThreadBudget(opts.budgetStore, msg.channelId, budgetN);
+				}
+				return true;
+			}
+			// FLY-314 Part(b): a BOT-authored trigger relaxes the @-requirement only under the
+			// bounded anti-loop budget (autoContinue). ALL bot triggers — incl exact <@id> /
+			// quote-reply — flow through the budget and cannot bypass it (R1#1). With
+			// autoContinue OFF (production default) a bot stays mention-required → no melee.
+			if (autoContinue && opts.budgetStore) {
+				return decideTopicThreadContinuation(
+					{ threadId: msg.channelId, authorBot: msg.authorBot },
+					opts.budgetStore,
+					{ budgetN },
+				);
+			}
+			return isMentioned(msg, opts.botUserId, compiled);
 		}
+		// The static shared PARENT channel is NOT relaxed (topics are still initiated by an
+		// explicit @ / name) — unchanged.
 		return isMentioned(msg, opts.botUserId, compiled);
 	};
 }
