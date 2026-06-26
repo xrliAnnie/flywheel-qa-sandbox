@@ -1213,29 +1213,6 @@ export class StateStore {
 		return rows;
 	}
 
-	/**
-	 * FLY-523: all sessions currently founder-gate-pending — i.e. sitting in
-	 * `awaiting_review`, waiting for the founder to approve the ship. Unlike
-	 * `getAwaitingReviewTimedOut`, there is NO age threshold: the founder is
-	 * notified as soon as the run enters the gate (her pain point is the silence,
-	 * not lateness). Dedup is owned by the caller's notifier (keyed on the
-	 * persisted `awaiting_review_entered_at`), so this returns every such session
-	 * every cycle.
-	 */
-	getAwaitingReviewSessions(): Session[] {
-		const stmt = this.db.prepare(
-			"SELECT * FROM sessions WHERE status = 'awaiting_review'",
-		);
-		const rows: Session[] = [];
-		while (stmt.step()) {
-			rows.push(
-				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
-			);
-		}
-		stmt.free();
-		return rows;
-	}
-
 	getStuckSessions(thresholdMinutes: number): Session[] {
 		const stmt = this.db.prepare(
 			"SELECT * FROM sessions WHERE status = 'running' AND last_activity_at < datetime('now', ?)",
