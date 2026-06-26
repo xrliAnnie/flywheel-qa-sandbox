@@ -357,6 +357,8 @@ If your project file does not instantiate these, the rule still works (the Lead 
 
 Every Lead reply that is **bound to a Linear issue** (status update, Q&A, design decision, cross-issue reference, runner observation) MUST go through `POST /api/chat-threads/send`. Bridge looks up the canonical chat thread for `(issueId, chatChannel)` and posts there. This is the only correct way to keep Annie's view of different issues in different threads — replying directly with `discord.reply(chat_id=$CHAT_THREAD_ID)` works today only when the inbound event payload carries `chat_thread_id`; **`send` works in every case**, including when you're acting on a session you haven't received an event for in this turn.
 
+> **Runner lifecycle events are mandatory relays (FLY-369 RC-1).** This is not only for replies you *choose* to send: **every** Runner lifecycle event (`session_completed`, `session_failed`, `runner_stuck_escalation`, `runner_question`, parked-awaiting-lead) MUST be relayed to the `[FLY-XX]` thread — relay is the default, silence is the bug. And **"Runner delivered" ≠ "acceptance met" ≠ "OK to mark Done"**: never report a Runner finishing (or Linear auto-flipping to Done on a PR merge) as acceptance. The full discipline (patrol + done≠accepted + driving parked Runners) lives in `runner-patrol-rules.md`.
+
 ### Decision: which tool to use
 
 | Message intent | Tool | Example chat_id / endpoint |

@@ -48,6 +48,7 @@ This matches `class Project extends Base` semantics: subclass declarations sit o
 | [`founder-only-authority.md`](founder-only-authority.md) | **Every** Lead role (cos AND dept) | FLY-175 Track 1 — merge-to-main and stop-runner are founder-only authorized actions; Lead self-judgment is not consent |
 | `founder-html-delivery.md` | universal (cos + dept) | FLY-203: any HTML artifact the founder asks to see is delivered via `flywheel-comm publish-report` (one message: title + full-page image + link); local file paths are never posted as delivery |
 | [`executor-routing.md`](executor-routing.md) | Department Leads (non-cos roles) | FLY-178 — route the Runner executor by the ACTUAL work type (pass `agentName`), end-to-end ownership; engineering executors self-research, so engineering work is not pre-staged through a PM executor |
+| [`runner-patrol-rules.md`](runner-patrol-rules.md) | Department Leads (non-cos roles; both mailbox + commdb) | FLY-369 — relay every Runner lifecycle event to the `[FLY-XX]` thread (runner-done ≠ acceptance-met), drive parked Runners via a waking channel (never `respond` for non-gate), proactively patrol your Runners, and make continuation Runners read the committed plan first |
 
 All files are appended via `--append-system-prompt-file` in `packages/teamlead/scripts/claude-lead.sh`. They are conditional: if a base file is missing, behavior is identical to pre-FLY-127 (no failure, no warning — backward compatible for old flywheel checkouts).
 
@@ -67,8 +68,11 @@ All files are appended via `--append-system-prompt-file` in `packages/teamlead/s
 ## Adding new base rules
 
 1. Create `lead-rules-base/<descriptive-name>.md` with generic voice
-2. Add a `--append-system-prompt-file` invocation in `claude-lead.sh`, conditional on the file existing (and gated to the right Lead role if appropriate)
+2. Wire it into **both** load paths so they cannot drift:
+   - `claude-lead.sh` — add a `--append-system-prompt-file` invocation, conditional on the file existing, gated to the right Lead role
+   - `lead-rules-bundle.sh` — add a matching `_lrb_emit` for the same role (this is the shared resolver the Codex full-access path uses)
 3. Update the table above
-4. Update `test-fly26-rules-split.sh` to assert the new file appears in `CLAUDE_ARGS` and is positioned before any project-side counterpart
+4. **Primary gate** — update `packages/teamlead/src/__tests__/lead-rules-bundle.test.ts`: add the file to the pinned per-role ordered bundle. Its parity tests then assert `claude-lead.sh` references the file in the same monotonic order, so the resolver and `claude-lead.sh` cannot drift. (The older `test-fly26-rules-split.sh` shell simulator is stale relative to the modern `claude-lead.sh` and is no longer the primary coverage; update it only if your team still treats it as live.)
+5. Optionally add a content-contract fixture (see `fly369-patrol-rule.test.ts` / `fly222-memory-rule.test.ts`) pinning the rule's key elements against future trims.
 
 Avoid: project-specific names, tool IDs, channel IDs, URLs, Annie's name, dept-name → Lead-name mappings. Those live in the project layer.
