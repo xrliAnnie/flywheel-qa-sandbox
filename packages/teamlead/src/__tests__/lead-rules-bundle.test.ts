@@ -72,6 +72,7 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"executor-routing.md",
 			"stuck-runner-remanage.md",
 			"runner-reengage-rules.md",
+			"runner-patrol-rules.md",
 			"doc-flow-rules.md",
 			"xiaohongshu-memory-rules.md",
 			"founder-only-authority.md",
@@ -80,9 +81,13 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		]);
 	});
 
-	it("dept (commdb) → SKIPS runner-messaging (mirrors claude-lead.sh guard)", () => {
+	it("dept (commdb) → SKIPS runner-messaging but STILL loads runner-patrol (FLY-369: patrol is backend-independent)", () => {
 		const { lines } = runBundle("dept", BASE_RULES_DIR, "commdb", "1");
 		expect(names(lines)).not.toContain("runner-messaging-rules.md");
+		// FLY-369: RC-1 relay / RC-3 patrol / RC-6 handoff are backend-independent,
+		// so patrol loads on the commdb rollback path too (its RC-2 section is
+		// self-contained for commdb — it does NOT rely on runner-messaging-rules.md).
+		expect(names(lines)).toContain("runner-patrol-rules.md");
 		expect(names(lines)[0]).toBe("department-lead-rules.md");
 		expect(names(lines)[1]).toBe("executor-routing.md");
 	});
