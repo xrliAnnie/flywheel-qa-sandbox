@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { DiscordInboundMessage } from "../CodexDiscordGateway.js";
 import { buildMentionGate } from "../mention-gate.js";
 import { RoundtableThreadRegistry } from "../RoundtableThreadRegistry.js";
+import { createThreadBudgetStore } from "../roundtable-thread-budget.js";
 
 const BOT_A = "lead-a";
 const THREAD = "topic-thread-1";
@@ -74,5 +75,86 @@ describe("buildMentionGate — dynamic shared threads (FLY-314 Phase 2, FLY-220 
 		});
 		// a thread id with no dynamic registry → not shared → handled (unchanged)
 		expect(gate(msg({ channelId: THREAD, content: "x" }))).toBe(true);
+	});
+});
+
+describe("buildMentionGate — FLY-576 non-bot (founder) relaxation in member threads, DEFAULT-ON", () => {
+	function memberGate(extra: Record<string, unknown> = {}) {
+		const registry = new RoundtableThreadRegistry();
+		registry.add(THREAD); // registry membership == this Lead joined the thread
+		return buildMentionGate({
+			botUserId: BOT_A,
+			sharedChannelIds: ["roundtable-parent"],
+			mentionPatterns: ["\\bLeadA\\b"],
+			dynamicSharedChannels: registry,
+			// production shape: reply-in-thread on, autoContinue OFF (no budgetStore/autoContinue)
+			...extra,
+		});
+	}
+
+	it("THE FIX: non-bot human in a member thread, no @ / no name, autoContinue OFF → handled", () => {
+		const gate = memberGate();
+		expect(
+			gate(
+				msg({
+					authorBot: false,
+					authorId: "annie",
+					content: "ok let us go with plan B",
+				}),
+			),
+		).toBe(true);
+	});
+
+	it("bot path unchanged: bot in a member thread, no @, autoContinue OFF → dropped (no melee)", () => {
+		const gate = memberGate();
+		expect(gate(msg({ authorBot: true, content: "just chatting" }))).toBe(
+			false,
+		);
+	});
+
+	it("bot path unchanged: bot exact @-id in a member thread, autoContinue OFF → handled", () => {
+		const gate = memberGate();
+		expect(
+			gate(
+				msg({
+					authorBot: true,
+					mentions: [BOT_A],
+					content: `<@${BOT_A}> ping`,
+				}),
+			),
+		).toBe(true);
+	});
+
+	it("static shared PARENT channel (not a thread) stays mention-required for non-bot", () => {
+		const gate = memberGate();
+		// non-bot in the parent channel with no @ / no name → still gated (relaxation is thread-only)
+		expect(
+			gate(
+				msg({
+					channelId: "roundtable-parent",
+					authorBot: false,
+					content: "hello room",
+				}),
+			),
+		).toBe(false);
+	});
+
+	it("non-bot human message seeds/refills the bot budget (reset event) when a budgetStore is present", () => {
+		const store = createThreadBudgetStore();
+		const gate = memberGate({ budgetStore: store, budgetN: 2 });
+		gate(msg({ authorBot: false, authorId: "annie", content: "go" }));
+		expect(store.budgets.get(THREAD)).toBe(2);
+	});
+
+	it("autoContinue ON: non-bot human still handled (unchanged)", () => {
+		const store = createThreadBudgetStore();
+		const gate = memberGate({
+			autoContinue: true,
+			budgetStore: store,
+			budgetN: 2,
+		});
+		expect(
+			gate(msg({ authorBot: false, authorId: "annie", content: "anything" })),
+		).toBe(true);
 	});
 });
