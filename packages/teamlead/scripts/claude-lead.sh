@@ -1448,14 +1448,19 @@ if [ -n "$_fly241_lead_model" ]; then
   log "Lead model override: --model ${_fly241_lead_model} (FLY-241)"
 fi
 
-# FLY-231: companion-only `--effort medium`. The old atlas/belle daemons pinned
-# medium because default/high effort triggered a "drafts a reply but never calls
-# the discord reply tool → goes silent" bug. Keep that stability mitigation on
-# the first cutover (Codex R1 BLOCKER-3). Companion-only — existing Leads get NO
-# `--effort` flag (argv byte-identical, asserted by the reverse-compat sentinel).
+# FLY-231 / FLY-583: companion effort. FLY-231 originally pinned `--effort medium`
+# on the theory that default/high effort triggered the "drafts a reply but never
+# calls the discord reply tool → goes silent" leak (FLY-306). FLY-583 disproved
+# that hypothesis with evidence: Belle leaked the reply tool-call as plain text at
+# `--effort xhigh` too, so medium did NOT prevent the leak — it only capped her
+# capability against Annie's explicit "keep Belle on xhigh" requirement. The real,
+# effort-independent leak defense is the discord-reply-enforcer Stop hook (FLY-387),
+# which catches an unexecuted reply and nudges a resend (verified recovering Belle
+# live). So pin companions to xhigh (capability), never medium. Companion-only —
+# existing Leads still get NO `--effort` flag (argv byte-identical, sentinel-asserted).
 if [ "$IS_COMPANION_ROLE" = true ]; then
-  CLAUDE_ARGS+=(--effort medium)
-  log "Companion: --effort medium (silent-reply-bug mitigation)"
+  CLAUDE_ARGS+=(--effort xhigh)
+  log "Companion: --effort xhigh (FLY-583; leak defense is the discord-reply-enforcer hook, not effort)"
 fi
 
 # FLY-143: claude-in-chrome — env-gated, default OFF.
