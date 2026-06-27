@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type {
 	CheckpointsConfig,
 	DocFlowConfig,
+	FounderUxGateConfig,
 	SkillsConfig,
 } from "flywheel-config";
 import { DEFAULT_GATE_TIMEOUT_MS } from "flywheel-config";
@@ -332,6 +333,11 @@ export class Blueprint {
 		// break shipped-generic agent resolution). Absent/disabled → no
 		// DOC-FLOW prompt block (byte-compatible spawn prompt).
 		private docFlowConfig?: DocFlowConfig,
+		// FLY-598 — optional founder-UX gate config. MUST stay the LAST
+		// constructor parameter (same positional-alignment contract as
+		// docFlowConfig). Absent or mode==="off" → no founder-UX prompt block
+		// (byte-compatible spawn prompt).
+		private founderUxGateConfig?: FounderUxGateConfig,
 	) {}
 
 	async run(
@@ -646,6 +652,40 @@ export class Blueprint {
 				docFlowLines.push("");
 				systemPromptLines.unshift(...docFlowLines);
 			}
+		}
+
+		// FLY-598: FOUNDER-UX GATE block — injected ONLY when the project enables
+		// founder_ux_gate (mode !== off). Absent/off → zero lines added
+		// (byte-compatible prompt). The judgment ("is this founder-facing UX") is
+		// model-driven loose guidance, not a hardcoded rule (Annie decision #2);
+		// the HARD enforcement is the Bridge (await-founder-ux-gate fail-closed +
+		// stage_changed→implement guard). Self-declare guidance is shown for ALL
+		// runs (Codex R2-#5: the backup trigger must not depend on pre-flagging).
+		const founderUxMode = this.founderUxGateConfig?.mode;
+		if (founderUxMode && founderUxMode !== "off") {
+			const fuxLines = [
+				"FOUNDER-UX GATE (this project enables founder_ux_gate):",
+				"FOUNDER-FACING UX = anything the founder (Annie) directly sees or operates",
+				"— notifications, flows, Discord messages, report layouts, command",
+				"interactions, visuals, copy. (Examples, not a checklist — use judgment.)",
+				"For such work the UX must be brainstormed with Annie and approved by HER",
+				"before any implementation code.",
+				"",
+				"Self-declare (backup): if this issue involves founder-facing UX and was not",
+				`already flagged, run \`node ${commCliPath} declare-founder-ux "<one-line why>"\`.`,
+				"It prints the exact next steps and opens the gate for this run.",
+				"",
+				"If this run IS founder-facing UX, BEFORE entering implement you MUST:",
+				"  1. Brainstorm the UX with Annie; capture the agreed UX in a canonical",
+				"     UX-brief file (e.g. <dept>/doc/<issue>-<slug>/ux-brief.md).",
+				"  2. Have your Lead record Annie's natural-language approval (she replies in",
+				"     Discord). Then block on the gate before writing implementation code:",
+				`       node ${commCliPath} await-founder-ux-gate --ux-file <ux-brief>`,
+				"     It fail-closes until Annie's verified sign-off for THIS ux-brief exists.",
+				`  3. Enter implement WITH the brief: \`node ${commCliPath} stage set implement --ux-file <ux-brief>\`.`,
+				"",
+			];
+			systemPromptLines.unshift(...fuxLines);
 		}
 
 		// FLY-137 v1.27.2: onboard stage preamble. Reports intent BEFORE attempting

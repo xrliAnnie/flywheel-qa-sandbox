@@ -1714,6 +1714,36 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r
   log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
 fi
 
+# ── FLY-598: Founder-facing UX judgment (universal — cos + dept, NOT companion) ──
+# Loads ONLY when this project enables the founder-UX gate
+# (founder_ux_gate.mode != off in .flywheel/config.yaml). Unlike doc-flow-rules
+# (always-appended + self-checking), this is CONDITIONALLY appended so an
+# un-enabled project (mode off / absent) sees ZERO Lead prompt change
+# (Codex R3-#3 / R2-#6 byte-compat). Guides whoever writes/triages issues
+# (cos + dept) to judge founder-facing UX and apply the `founder-facing-ux` label;
+# judgment is model-driven loose guidance, the enforcement is the Bridge gate.
+BASE_FOUNDER_UX_RULES="${BASE_RULES_DIR}/founder-ux-rules.md"
+if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_FOUNDER_UX_RULES" ] && [ -r "$BASE_FOUNDER_UX_RULES" ]; then
+  # Read founder_ux_gate.mode from the project config WITHOUT aborting under
+  # `set -euo pipefail`: only awk when the config file exists, and `|| true` so a
+  # missing/malformed config (awk exit != 0) never kills the launch (a missing
+  # config simply means "gate off" → no append). This is why doc-flow-rules above
+  # self-checks inside the rule file instead — this block is the one shell-side read.
+  FOUNDER_UX_MODE=""
+  _founder_ux_cfg="${PROJECT_DIR}/.flywheel/config.yaml"
+  if [ -f "$_founder_ux_cfg" ]; then
+    FOUNDER_UX_MODE="$(awk '
+      /^founder_ux_gate:/ { inblk=1; next }
+      inblk && /^[^[:space:]]/ { inblk=0 }
+      inblk && $1 == "mode:" { v=$2; gsub(/["'"'"',]/, "", v); print v; exit }
+    ' "$_founder_ux_cfg" 2>/dev/null || true)"
+  fi
+  if [ -n "$FOUNDER_UX_MODE" ] && [ "$FOUNDER_UX_MODE" != "off" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_UX_RULES")
+    log "Appending base founder-ux rules (founder_ux_gate.mode=${FOUNDER_UX_MODE}): ${BASE_FOUNDER_UX_RULES}"
+  fi
+fi
+
 # ── FLY-203: Founder HTML delivery (universal — both roles) ──
 # Any HTML artifact the founder asks to see must be delivered via
 # `flywheel-comm publish-report` (one message: title + full-page image +

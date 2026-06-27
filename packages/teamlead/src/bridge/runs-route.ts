@@ -25,6 +25,7 @@ import {
 } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
+import { resolveFounderFacingUx } from "./founder-ux/trigger.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
@@ -243,6 +244,10 @@ export function createRunsRouter(
 		// FLY-127: labels are needed by both the FLY-80 auto-resolve path AND the
 		// new department-scope check. Fetch once, reuse for both.
 		let issueLabelNames: string[] = [];
+		// FLY-598 (Codex R1 MEDIUM): track whether the label fetch FAILED (distinct
+		// from "fetched, but empty"). A failed read must NOT silently downgrade the
+		// founder-facing-ux primary trigger to "not founder-facing" (fail-open).
+		let issueLabelsFetchFailed = false;
 		try {
 			const { LinearClient } = await import("@linear/sdk");
 			const client = new LinearClient({
@@ -272,6 +277,10 @@ export function createRunsRouter(
 				);
 				// Leave issueLabelNames empty — dept-scope check will treat as
 				// `issue_no_department_label` and reject (when enforcement is on).
+				// FLY-598 (Codex R1 MEDIUM): record the failure so the founder-ux
+				// snapshot fail-closes rather than treating an unreadable label set
+				// as "not founder-facing".
+				issueLabelsFetchFailed = true;
 			}
 
 			// FLY-80: Auto-resolve leadId from project config if not provided.
@@ -417,6 +426,23 @@ export function createRunsRouter(
 		// touching Linear at transition time.
 		const codexSkip = normalizedIssueLabels.includes("codex-skip");
 
+		// FLY-598: snapshot the founder-facing-ux label at run start (same
+		// "label-before-trigger" semantics as codex-skip). This is the RECORD of
+		// the Lead's judgment (the Lead applies the label per loose guidance — no
+		// hardcoded classifier). A Runner can also self-declare later via
+		// `declare-founder-ux`. The flag is inert unless founder_ux_gate.mode != off,
+		// so snapshotting it is byte-compatible at the prompt/stage layer.
+		//
+		// FLY-598 (Codex R1 MEDIUM): fail-closed on a label-read failure. If we
+		// could not read the issue's labels we cannot prove it is NOT founder-facing,
+		// so treat it AS founder-facing (the primary trigger must never fail-open on a
+		// Linear outage). This only has teeth when the gate is enabled (mode != off);
+		// with the default off mode the flag is inert, so this is byte-compatible.
+		const founderFacingUx = resolveFounderFacingUx(
+			normalizedIssueLabels,
+			issueLabelsFetchFailed,
+		);
+
 		// FLY-137 v1.27.2 (Codex Track A #2): validate `agentName` SYNCHRONOUSLY
 		// before kicking off any async work. Without this, InvalidAgentNameError
 		// thrown deep inside Blueprint.run() gets swallowed by the .catch() chain
@@ -510,6 +536,8 @@ export function createRunsRouter(
 					agent_name: agentName ?? undefined,
 					agent_match_method: matchMethod,
 					codex_skip: codexSkip ? 1 : 0,
+					// FLY-598: founder-facing-ux label snapshot (inert unless gate active)
+					founder_facing_ux: founderFacingUx ? 1 : 0,
 					// FLY-205: persist the EFFECTIVE tier (explicit "full" when the
 					// Lead sent nothing) so retry reuses exactly what this run got —
 					// never a silent re-default. issue_url for header continuity.

@@ -205,6 +205,37 @@ export interface DocFlowConfig {
 }
 
 /**
+ * FLY-598: founder-facing-UX gate rollout mode.
+ * - `off`     — feature fully inert; ZERO prompt/rule/stage text change (byte-compatible).
+ * - `audit_only` — judgment prose + self-declare injection active, signoff evaluated +
+ *   audited, but plan→implement is NEVER blocked (deliberate prompt change).
+ * - `enforce` — founder-facing issues without a verified Annie UX sign-off are hard-blocked
+ *   from entering `implement`.
+ */
+export type FounderUxGateMode = "off" | "audit_only" | "enforce";
+
+/** FLY-598: valid founder_ux_gate modes (runtime guard for validation). */
+export const FOUNDER_UX_GATE_MODES: readonly FounderUxGateMode[] = [
+	"off",
+	"audit_only",
+	"enforce",
+];
+
+/** FLY-598: default mode when `founder_ux_gate` is absent — fully off (byte-compatible). */
+export const FOUNDER_UX_GATE_DEFAULT_MODE: FounderUxGateMode = "off";
+
+/**
+ * FLY-598: founder-facing UX gate — enforce "brainstorm UX with the founder before
+ * building founder-facing UX". Absent or `mode: off` → feature fully off (byte-compatible
+ * spawn prompt + Lead rule set + stage path). Kept deliberately separate from the FLY-175
+ * `founderConsent` decision mode so this gate can never toggle the reserved-action consent.
+ */
+export interface FounderUxGateConfig {
+	/** Rollout mode. Absent key → treated as `off`. */
+	mode: FounderUxGateMode;
+}
+
+/**
  * FLY-222: per-collection learning cadence.
  */
 export type XiaohongshuCadence = "daily" | "weekly" | "biweekly" | "monthly";
@@ -412,4 +443,6 @@ export interface FlywheelConfig {
 	doc_flow?: DocFlowConfig;
 	/** FLY-222: periodic Xiaohongshu-collection learning. Absent = off. */
 	xiaohongshu_learning?: XiaohongshuLearningConfig;
+	/** FLY-598: founder-facing UX gate. Absent or mode:off = fully off (byte-compatible). */
+	founder_ux_gate?: FounderUxGateConfig;
 }

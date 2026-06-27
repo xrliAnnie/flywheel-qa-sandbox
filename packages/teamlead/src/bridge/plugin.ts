@@ -94,6 +94,7 @@ import {
 	loopbackSelfOrigin,
 } from "./fleet-routes.js";
 import { buildFounderConsentWiring } from "./founder-consent/wiring.js";
+import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
 import {
 	createBlockedMarkerReader,
@@ -741,6 +742,22 @@ export function createBridgeApp(
 			issueStatusEmojiEnabled ? opts?.chatThreadCreator : undefined,
 		),
 	);
+
+	// FLY-598: founder-facing UX gate routes. Mounted BEFORE the broad `/api`
+	// token middleware so the ingest-token status READ is not shadowed by the
+	// api-token middleware (Codex R3-#1). Always mounted (per-request, operates
+	// on session state) — byte-compatible at the prompt/stage layer; the
+	// per-project mode gates the runner injection + the stage guard, not these
+	// routes. Signoff WRITE fail-closes unless apiToken is set AND distinct from
+	// the ingest token (Codex R2-#1 / R3-#2).
+	mountFounderUxRoutes(app, {
+		store,
+		projects,
+		founderUserId: config.founderConsent?.founderUserId ?? "",
+		ingestToken: config.ingestToken,
+		apiToken: config.apiToken,
+		discordBotToken: config.discordBotToken,
+	});
 
 	// FLY-247 inc2a: Fleet console founder-admin surface (§2.2). Mounted BEFORE
 	// the `/api` Bearer middleware so `/api/fleet/*` never hits it — the console

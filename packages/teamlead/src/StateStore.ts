@@ -139,6 +139,12 @@ export interface SessionUpsert {
 	doc_tier?: string;
 	/** FLY-205: Linear issue URL persisted at start (doc header continuity on retry). */
 	issue_url?: string;
+	/** FLY-598: founder-facing-ux flag (Lead label snapshot OR Runner self-declare), 0|1. */
+	founder_facing_ux?: number;
+	/** FLY-598: Bridge-written, founder-verified UX sign-off record (JSON; bound to uxHash). */
+	founder_ux_signoff_json?: string;
+	/** FLY-598: per-run snapshot of founder_ux_gate.mode (off|audit_only|enforce). */
+	founder_ux_gate_mode?: string;
 }
 
 export interface Session {
@@ -197,6 +203,12 @@ export interface Session {
 	doc_tier?: string;
 	/** FLY-205: Linear issue URL persisted at start (doc header continuity on retry). */
 	issue_url?: string;
+	/** FLY-598: founder-facing-ux flag (Lead label snapshot OR Runner self-declare). */
+	founder_facing_ux?: boolean;
+	/** FLY-598: Bridge-written, founder-verified UX sign-off record (JSON; bound to uxHash). */
+	founder_ux_signoff_json?: string;
+	/** FLY-598: per-run snapshot of founder_ux_gate.mode (off|audit_only|enforce). */
+	founder_ux_gate_mode?: string;
 	/** FLY-245 D-a: monotonic revision incremented on every status transition.
 	 * The runner-lifecycle founder credential snapshots this; a stale confirmation
 	 * is rejected once it changes (plan §5.1). Defaults 0. */
@@ -454,6 +466,33 @@ export class StateStore {
 			this.db.run(
 				"ALTER TABLE sessions ADD COLUMN codex_skip INTEGER NOT NULL DEFAULT 0",
 			);
+		} catch {
+			/* exists */
+		}
+		// FLY-598: founder-facing UX gate. `founder_facing_ux` = Lead label snapshot
+		// at run start OR Runner self-declaration (1 = gate active for this run).
+		// `founder_ux_signoff_json` = the Bridge-written, founder-identity-verified
+		// sign-off record (bound to a canonical UX-brief uxHash); only the privileged
+		// record path writes it, the Runner reads it via the status route.
+		try {
+			this.db.run(
+				"ALTER TABLE sessions ADD COLUMN founder_facing_ux INTEGER NOT NULL DEFAULT 0",
+			);
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run(
+				"ALTER TABLE sessions ADD COLUMN founder_ux_signoff_json TEXT",
+			);
+		} catch {
+			/* exists */
+		}
+		// FLY-598: per-run snapshot of founder_ux_gate.mode (off|audit_only|enforce),
+		// captured at run start from the project config; the Layer B stage guard
+		// reads it. Absent → treated as "off".
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN founder_ux_gate_mode TEXT");
 		} catch {
 			/* exists */
 		}
@@ -1077,6 +1116,10 @@ export class StateStore {
 			// FLY-205: doc-flow tier + Linear URL (retry continuity)
 			doc_tier: "doc_tier",
 			issue_url: "issue_url",
+			// FLY-598: founder-facing UX gate flag + sign-off record + mode snapshot
+			founder_facing_ux: "founder_facing_ux",
+			founder_ux_signoff_json: "founder_ux_signoff_json",
+			founder_ux_gate_mode: "founder_ux_gate_mode",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -1961,6 +2004,13 @@ export class StateStore {
 			// FLY-205: doc-flow tier + Linear URL (retry continuity)
 			doc_tier: (row.doc_tier as string) ?? undefined,
 			issue_url: (row.issue_url as string) ?? undefined,
+			// FLY-598: founder-facing UX gate flag + sign-off record
+			founder_facing_ux: row.founder_facing_ux
+				? !!(row.founder_facing_ux as number)
+				: undefined,
+			founder_ux_signoff_json:
+				(row.founder_ux_signoff_json as string) ?? undefined,
+			founder_ux_gate_mode: (row.founder_ux_gate_mode as string) ?? undefined,
 			// FLY-245 D-a: monotonic lifecycle revision (defaults 0).
 			lifecycle_revision:
 				typeof row.lifecycle_revision === "number" ? row.lifecycle_revision : 0,

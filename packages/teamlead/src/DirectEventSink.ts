@@ -54,6 +54,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		 * (`enabled=false`), which makes ProofShot a no-op for them.
 		 */
 		private skillsConfig?: SkillsConfig,
+		/**
+		 * FLY-598: the project's founder_ux_gate.mode (off|audit_only|enforce),
+		 * snapshotted onto the session at start so the Layer B stage guard reads
+		 * it per-run. Absent → the guard treats the run as "off".
+		 */
+		private founderUxGateMode?: string,
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
@@ -102,6 +108,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// event does NOT clobber existing `proofshot.runs` or `last_artifact`
 		// state from prior captures in the same execution (Bridge restart safety).
 		this.persistProofShotConfig(env.executionId);
+
+		// FLY-598: snapshot founder_ux_gate.mode onto the session (a dedicated
+		// column, not session_params) so the Layer B stage guard reads the run's
+		// effective mode without re-loading the project config. upsertSession's
+		// fixed column list doesn't carry it, so patch after the upsert. Absent →
+		// guard treats the run as "off" (byte-compatible).
+		if (this.founderUxGateMode) {
+			this.store.patchSessionMetadata(env.executionId, {
+				founder_ux_gate_mode: this.founderUxGateMode,
+			});
+		}
 
 		// FLY-91: Await chat thread creation so first notification includes chat_thread_id.
 		// Unlike ForumPost (fire-and-forget), chat_thread_id doesn't affect EventFilter
