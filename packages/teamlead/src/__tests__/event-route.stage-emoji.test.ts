@@ -80,7 +80,15 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 		vi.restoreAllMocks();
 	});
 
-	function buildApp(creator?: ChatThreadCreator) {
+	function buildApp(
+		creator?: ChatThreadCreator,
+		reconnectHolder?: {
+			current: {
+				isReconnecting: (id: string) => boolean;
+				clearReconnecting: (id: string) => void;
+			} | null;
+		},
+	) {
 		const app = express();
 		app.use(express.json());
 		app.use(
@@ -94,6 +102,9 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 				undefined,
 				undefined,
 				creator,
+				undefined, // removeCleanWorktree
+				undefined, // FLY-560 featureFlags (undefined → emoji-stamp ON, byte-compat)
+				reconnectHolder,
 			),
 		);
 		return app;
@@ -166,5 +177,35 @@ describe("FLY-560: event-route stage-emoji stamping", () => {
 		const res = await postStage(buildApp(fakeCreator), "bogus", "evt-4");
 		expect(res.ok).toBe(true);
 		expect(stampSpy).not.toHaveBeenCalled();
+	});
+
+	it("FLY-623: an ACCEPTED stage_changed clears reconnecting (channel proven live)", async () => {
+		const clearReconnecting = vi.fn();
+		const holder = {
+			current: { isReconnecting: () => true, clearReconnecting },
+		};
+		store.upsertChatThread(THREAD_ID, CHAT_CHANNEL, ISSUE_ID);
+		const res = await postStage(
+			buildApp(fakeCreator, holder),
+			"implement",
+			"evt-rc-1",
+		);
+		expect(res.ok).toBe(true);
+		expect(clearReconnecting).toHaveBeenCalledWith(EXEC_ID);
+	});
+
+	it("FLY-623 (Codex R1 HIGH): an invalid/rejected stage does NOT clear reconnecting", async () => {
+		const clearReconnecting = vi.fn();
+		const holder = {
+			current: { isReconnecting: () => true, clearReconnecting },
+		};
+		const res = await postStage(
+			buildApp(fakeCreator, holder),
+			"bogus",
+			"evt-rc-2",
+		);
+		expect(res.ok).toBe(true);
+		// stage rejected before persist → suppression must NOT be cleared
+		expect(clearReconnecting).not.toHaveBeenCalled();
 	});
 });

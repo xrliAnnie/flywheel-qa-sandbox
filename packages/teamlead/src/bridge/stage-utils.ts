@@ -123,10 +123,27 @@ export const BLOCKED_EMOJI = "🔴";
 /** Word paired with 🔴 (cross-cutting Blocked marker). Not stamped in v1. */
 export const BLOCKED_WORD = "受阻";
 
+/**
+ * FLY-623: cross-cutting "monitoring re-connecting" marker. Like BLOCKED_EMOJI
+ * it is NOT a pipeline stage (a Runner can be re-adopted at any stage) — so it
+ * is deliberately absent from STAGE_EMOJI/STAGE_ORDER/VALID_STAGES and never
+ * returned by stageEmoji(). It is stamped onto the `[FLY-XX]` thread title while
+ * a Runner is detached-but-alive after a Bridge restart (HeartbeatService
+ * re-adopt), so the founder reads "⚠️重连中" instead of a frozen "🔨实现中", and
+ * cleared back to the real/terminal badge once the Runner's own event channel is
+ * proven live again. Included in the recognized status-emoji universe below so
+ * prefix stripping + re-stamping stay forward-compatible.
+ */
+export const RECONNECTING_EMOJI = "⚠️";
+
+/** Word paired with ⚠️ (cross-cutting monitoring re-connecting marker). */
+export const RECONNECTING_WORD = "重连中";
+
 /** All emoji the status-prefix logic may have placed at the front of a title. */
 const ALL_STATUS_EMOJI: ReadonlySet<string> = new Set([
 	...Object.values(STAGE_EMOJI),
 	BLOCKED_EMOJI,
+	RECONNECTING_EMOJI,
 ]);
 
 /**
@@ -148,6 +165,7 @@ const EMOJI_TO_WORDS: Readonly<Record<string, readonly string[]>> = (() => {
 		if (word) add(emoji, word);
 	}
 	add(BLOCKED_EMOJI, BLOCKED_WORD);
+	add(RECONNECTING_EMOJI, RECONNECTING_WORD); // FLY-623
 	const out: Record<string, string[]> = {};
 	for (const [emoji, set] of Object.entries(sets)) {
 		out[emoji] = [...set].sort((a, b) => b.length - a.length);
@@ -181,6 +199,19 @@ export function stageBadge(
 	if (!withWord) return emoji;
 	const word = STAGE_WORD[stage];
 	return word ? `${emoji}${word}` : emoji;
+}
+
+/**
+ * FLY-623: build the cross-cutting reconnecting badge:
+ *   withWord=false → `⚠️`        (emoji only)
+ *   withWord=true  → `⚠️重连中`   (emoji + short word)
+ * Mirrors stageBadge()'s emoji-only vs emoji+word modes so Display-A respects
+ * the same FLYWHEEL_ISSUE_STATUS_WORD setting as the stage badges.
+ */
+export function reconnectingBadge(withWord: boolean): string {
+	return withWord
+		? `${RECONNECTING_EMOJI}${RECONNECTING_WORD}`
+		: RECONNECTING_EMOJI;
 }
 
 /**

@@ -10,6 +10,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
+import type { ReconnectController } from "../HeartbeatService.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import {
 	REVIEW_BINDING_UNBOUND,
@@ -534,6 +535,11 @@ export function createEventRouter(
 		issueStatusEmojiEnabled?: boolean;
 		issueAttachPinEnabled?: boolean;
 	},
+	// FLY-623: late-bound holder → live HeartbeatService reconnecting set. A
+	// genuine, accepted runner event proves the runner's event channel is live
+	// again, so it leaves the reconnecting state (resumes normal monitoring +
+	// clears the "⚠️重连中" title). Absent / kill-switch → no-op.
+	reconnectHolder?: { current: ReconnectController | null },
 ): Router {
 	const router = Router();
 	const issueStatusEmojiEnabled =
@@ -592,6 +598,17 @@ export function createEventRouter(
 			res.json({ ok: true, duplicate: true });
 			return;
 		}
+
+		// FLY-623 (Codex code-review R1 HIGH): clearing reconnecting must happen
+		// ONLY after an event is genuinely ACCEPTED + PERSISTED — never here, right
+		// after the dedup guard, because a malformed / spurious / invalid-route
+		// terminal event passes the dedup but then early-returns (non-running guard,
+		// FSM rejection, invalid route) leaving the session `running`. Clearing here
+		// would let such an event strip the reconnecting suppression + "⚠️重连中"
+		// title and let false stuck/idle/orphan alarms resume. Instead: clear inside
+		// the accepted+persisted `stage_changed` path (below, the live-progress
+		// proof), and let the reconcile cycle's `status !== "running"` check own
+		// terminal removal (post-persist, so a rejected terminal never clears).
 
 		// Update session read model
 		const now = sqliteDatetime();
@@ -1392,6 +1409,16 @@ export function createEventRouter(
 						stage_updated_at: now,
 						last_activity_at: now,
 					});
+
+					// FLY-623 (Codex code-review R1 HIGH): a genuinely ACCEPTED +
+					// PERSISTED stage_changed proves the Runner's own event channel is
+					// live again AND it is still running — leave the reconnecting state
+					// so normal stuck/orphan/idle monitoring resumes. The
+					// stampStageEmojiForSession call just below restamps the real stage
+					// badge (clearing "⚠️重连中"). Placed AFTER the persist + the FLY-598
+					// implement-gate early-return, so a rejected stage never clears.
+					// Terminal removal is owned by the reconcile cycle's status check.
+					reconnectHolder?.current?.clearReconnecting(event.execution_id);
 
 					// FLY-560 Feature A: auto-stamp the stage emoji onto the issue's
 					// [FLY-XX] thread title so Annie reads status at a glance. Wired
