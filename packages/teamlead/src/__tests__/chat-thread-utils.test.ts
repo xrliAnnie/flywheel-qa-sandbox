@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	addThreadMember,
 	archiveChatThread,
+	pinThreadMessage,
 	removeUserFromChatThread,
 } from "../bridge/chat-thread-utils.js";
 
@@ -271,5 +272,60 @@ describe("addThreadMember (FLY-576: classified outcome)", () => {
 		await expect(
 			addThreadMember("t1", "u1", "bot", { fetchImpl, timeoutMs: 5 }),
 		).resolves.toBe("transient");
+	});
+});
+
+describe("pinThreadMessage (FLY-560 Feature C)", () => {
+	it("targets the new Message-resource pin endpoint and returns pinned on 204", async () => {
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 204 }));
+		const res = await pinThreadMessage("thread1", "msg1", "bot", {
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		expect(res.outcome).toBe("pinned");
+		const url = (fetchImpl.mock.calls[0] as unknown[])[0] as string;
+		expect(url).toBe(
+			"https://discord.com/api/v10/channels/thread1/messages/pins/msg1",
+		);
+		const init = (fetchImpl.mock.calls[0] as unknown[])[1] as {
+			method: string;
+		};
+		expect(init.method).toBe("PUT");
+	});
+
+	it("returns forbidden on 403 (missing PIN_MESSAGES)", async () => {
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(JSON.stringify({ code: 50013 }), { status: 403 }),
+		);
+		const res = await pinThreadMessage("t", "m", "bot", {
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		expect(res).toEqual({ outcome: "forbidden", status: 403 });
+	});
+
+	it("returns missing on 404 (message deleted)", async () => {
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 404 }));
+		const res = await pinThreadMessage("t", "m", "bot", {
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		expect(res).toEqual({ outcome: "missing", status: 404 });
+	});
+
+	it("returns error on 5xx", async () => {
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 500 }));
+		const res = await pinThreadMessage("t", "m", "bot", {
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		expect(res.outcome).toBe("error");
+	});
+
+	it("returns error (never throws) on network failure", async () => {
+		const fetchImpl = vi.fn(async () => {
+			throw new Error("ECONNRESET");
+		});
+		const res = await pinThreadMessage("t", "m", "bot", {
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		expect(res.outcome).toBe("error");
 	});
 });

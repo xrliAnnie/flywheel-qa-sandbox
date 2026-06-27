@@ -592,7 +592,10 @@ export class StateStore {
 				lead_id TEXT,
 				created_at TEXT DEFAULT (datetime('now')),
 				discord_missing_at TEXT,
-				archived_at TEXT
+				archived_at TEXT,
+				attach_pin_message_id TEXT,
+				attach_pin_command TEXT,
+				attach_pin_pinned_at TEXT
 			)
 		`);
 		this.db.run(
@@ -709,6 +712,7 @@ export class StateStore {
 		this.migrateLeadEventsDeliveryColumns();
 		// FLY-369: archived_at on chat_threads (archive-on-Done)
 		this.migrateChatThreadsArchivedColumn();
+		this.migrateChatThreadsAttachPinColumns();
 	}
 
 	insertEvent(event: SessionEvent): boolean {
@@ -1778,6 +1782,68 @@ export class StateStore {
 		this.save();
 	}
 
+	/**
+	 * FLY-560 Feature C: record the runner-attach pinned-message state for an
+	 * issue's chat thread. `pinnedAt` is set (ISO/datetime string) ONLY after a
+	 * pin is confirmed; left null when the message is posted but not yet pinned
+	 * (e.g. pin 403) so the next stage retries the pin (self-heal).
+	 */
+	setChatThreadAttachPin(
+		issueId: string,
+		channelId: string,
+		state: { messageId: string; command: string; pinnedAt: string | null },
+	): void {
+		this.db.run(
+			`UPDATE chat_threads
+			 SET attach_pin_message_id = ?, attach_pin_command = ?, attach_pin_pinned_at = ?
+			 WHERE issue_id = ? AND channel_id = ?`,
+			[
+				state.messageId,
+				state.command,
+				state.pinnedAt ?? null,
+				issueId,
+				channelId,
+			],
+		);
+		this.save();
+	}
+
+	getChatThreadAttachPin(
+		issueId: string,
+		channelId: string,
+	):
+		| { messageId: string; command: string; pinnedAt: string | null }
+		| undefined {
+		const stmt = this.db.prepare(
+			"SELECT attach_pin_message_id, attach_pin_command, attach_pin_pinned_at FROM chat_threads WHERE issue_id = ? AND channel_id = ?",
+		);
+		stmt.bind([issueId, channelId]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			const messageId = (row.attach_pin_message_id as string) ?? null;
+			if (!messageId) return undefined; // no pin recorded yet
+			return {
+				messageId,
+				command: (row.attach_pin_command as string) ?? "",
+				pinnedAt: (row.attach_pin_pinned_at as string) ?? null,
+			};
+		}
+		stmt.free();
+		return undefined;
+	}
+
+	/** FLY-560 Feature C: clear the attach-pin record (e.g. message deleted). */
+	clearChatThreadAttachPin(issueId: string, channelId: string): void {
+		this.db.run(
+			`UPDATE chat_threads
+			 SET attach_pin_message_id = NULL, attach_pin_command = NULL, attach_pin_pinned_at = NULL
+			 WHERE issue_id = ? AND channel_id = ?`,
+			[issueId, channelId],
+		);
+		this.save();
+	}
+
 	// ── FLY-368: alert_threads (unified-alert per-error thread, active-mapping) ──
 
 	/**
@@ -2485,6 +2551,35 @@ export class StateStore {
 			const columns = info[0]!.values.map((row) => row[1] as string);
 			if (!columns.includes("archived_at")) {
 				this.db.run("ALTER TABLE chat_threads ADD COLUMN archived_at TEXT");
+			}
+		} catch {
+			// Table may not exist yet (first run) — CREATE TABLE will handle it
+		}
+	}
+
+	/**
+	 * FLY-560 Feature C: add the runner-attach pin columns to chat_threads on
+	 * legacy DBs (idempotent). Mirrors migrateChatThreadsArchivedColumn.
+	 */
+	private migrateChatThreadsAttachPinColumns(): void {
+		try {
+			const info = this.db.exec("PRAGMA table_info(chat_threads)");
+			if (info.length === 0) return;
+			const columns = info[0]!.values.map((row) => row[1] as string);
+			if (!columns.includes("attach_pin_message_id")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN attach_pin_message_id TEXT",
+				);
+			}
+			if (!columns.includes("attach_pin_command")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN attach_pin_command TEXT",
+				);
+			}
+			if (!columns.includes("attach_pin_pinned_at")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN attach_pin_pinned_at TEXT",
+				);
 			}
 		} catch {
 			// Table may not exist yet (first run) — CREATE TABLE will handle it

@@ -1252,3 +1252,92 @@ describe("StateStore — FLY-245 D-a lifecycle_revision (monotonic freshness)", 
 		expect(store.getLifecycleRevision("nope")).toBe(0);
 	});
 });
+
+// ── FLY-560 Feature C: runner-attach pin state ──
+describe("StateStore — runner-attach pin (FLY-560)", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("getChatThreadAttachPin returns undefined when no pin recorded", () => {
+		store.upsertChatThread("t-1", "ch-1", "FLY-100", "lead-a");
+		expect(store.getChatThreadAttachPin("FLY-100", "ch-1")).toBeUndefined();
+	});
+
+	it("set/get attach pin round-trips (pinnedAt null then set)", () => {
+		store.upsertChatThread("t-1", "ch-1", "FLY-100", "lead-a");
+		store.setChatThreadAttachPin("FLY-100", "ch-1", {
+			messageId: "m-1",
+			command: "tmux attach -t '=cmux-FLY-100-x'",
+			pinnedAt: null,
+		});
+		expect(store.getChatThreadAttachPin("FLY-100", "ch-1")).toEqual({
+			messageId: "m-1",
+			command: "tmux attach -t '=cmux-FLY-100-x'",
+			pinnedAt: null,
+		});
+		store.setChatThreadAttachPin("FLY-100", "ch-1", {
+			messageId: "m-1",
+			command: "tmux attach -t '=cmux-FLY-100-x'",
+			pinnedAt: "2026-06-27T12:00:00Z",
+		});
+		expect(store.getChatThreadAttachPin("FLY-100", "ch-1")?.pinnedAt).toBe(
+			"2026-06-27T12:00:00Z",
+		);
+	});
+
+	it("clearChatThreadAttachPin nulls the pin record", () => {
+		store.upsertChatThread("t-1", "ch-1", "FLY-100", "lead-a");
+		store.setChatThreadAttachPin("FLY-100", "ch-1", {
+			messageId: "m-1",
+			command: "cmd",
+			pinnedAt: "2026-06-27T12:00:00Z",
+		});
+		store.clearChatThreadAttachPin("FLY-100", "ch-1");
+		expect(store.getChatThreadAttachPin("FLY-100", "ch-1")).toBeUndefined();
+	});
+
+	it("attach-pin columns survive a legacy DB without them (migration)", async () => {
+		const path = "/tmp/fly560-legacy-chat-threads.sqlite";
+		try {
+			const fs = await import("node:fs");
+			const initSqlJs = (await import("sql.js")).default;
+			const SQL = await initSqlJs();
+			const seed = new SQL.Database();
+			// Legacy chat_threads WITHOUT attach_pin_* (pre-FLY-560 schema)
+			seed.run(`CREATE TABLE chat_threads (
+				thread_id TEXT PRIMARY KEY,
+				channel_id TEXT NOT NULL,
+				issue_id TEXT,
+				lead_id TEXT,
+				created_at TEXT DEFAULT (datetime('now')),
+				discord_missing_at TEXT,
+				archived_at TEXT
+			)`);
+			seed.run(
+				"INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id) VALUES (?, ?, ?, ?)",
+				["legacy-1", "ch-1", "FLY-99", "lead-a"],
+			);
+			fs.writeFileSync(path, Buffer.from(seed.export()));
+			seed.close();
+
+			const migrated = await StateStore.create(path);
+			expect(migrated.getChatThreadAttachPin("FLY-99", "ch-1")).toBeUndefined();
+			migrated.setChatThreadAttachPin("FLY-99", "ch-1", {
+				messageId: "m-9",
+				command: "cmd",
+				pinnedAt: null,
+			});
+			expect(migrated.getChatThreadAttachPin("FLY-99", "ch-1")?.messageId).toBe(
+				"m-9",
+			);
+		} finally {
+			try {
+				const fs = await import("node:fs");
+				fs.unlinkSync(path);
+			} catch {}
+		}
+	});
+});
