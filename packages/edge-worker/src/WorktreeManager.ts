@@ -32,8 +32,32 @@ export interface WorktreeInfo {
 export interface ExternalWorktree {
 	path: string;
 	branch: string | null;
+	/** FLY-603: HEAD commit sha from porcelain (null for bare). Needed by the
+	 *  reconciler for squash-safe merged detection (headRefOid == HEAD). */
+	head: string | null;
 	isDetached: boolean;
 	isBare: boolean;
+}
+
+/**
+ * FLY-603: Role-aware worktree key — the single source of how a runner
+ * worktree is named, shared by Blueprint (create path) and the post-ship /
+ * reconciler cleanup so the two can never drift.
+ *
+ * IMPORTANT: `identifier` is opaque and preserved BYTE-FOR-BYTE (e.g. `FLY-603`
+ * stays `FLY-603`, never lowercased). ONLY `sessionRole` is sanitized — this
+ * mirrors Blueprint.ts exactly: strip non `[a-zA-Z0-9-]`, lowercase, fallback
+ * to `main` when empty. For the `main` role the key is just the identifier;
+ * for any other role it is `${identifier}-${sanitizedRole}`.
+ */
+export function deriveWorktreeKey(
+	identifier: string,
+	sessionRole?: string,
+): string {
+	const role =
+		(sessionRole ?? "main").replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() ||
+		"main";
+	return role === "main" ? identifier : `${identifier}-${role}`;
 }
 
 // ─── Default exec ────────────────────────────────
@@ -326,6 +350,134 @@ export class WorktreeManager {
 
 		return pruned;
 	}
+
+	// ─── FLY-603: dirty-safe cleanup + key resolvers ──────────────
+
+	/**
+	 * FLY-603: Expected sibling worktree `{ path, branch }` for an issue key —
+	 * public wrapper over the private path math so callers (post-ship cleanup)
+	 * never reimplement repoSlug/baseDir semantics in teamlead code.
+	 */
+	expectedWorktree(
+		mainRepoPath: string,
+		projectName: string,
+		issueKey: string,
+	): { path: string; branch: string } {
+		return {
+			path: this.worktreeDir(mainRepoPath, projectName, issueKey),
+			branch: this.worktreeName(mainRepoPath, issueKey),
+		};
+	}
+
+	/**
+	 * FLY-603: Parse the worktree key from a registered branch name.
+	 * `<repoSlug>-<key>` → `<key>` (e.g. `flywheel-FLY-603-qa` → `FLY-603-qa`).
+	 * Returns null for non-matching / null branches.
+	 */
+	parseWorktreeKeyFromBranch(
+		mainRepoPath: string,
+		branch: string | null,
+	): string | null {
+		if (!branch) return null;
+		const prefix = `${this.repoSlug(mainRepoPath)}-`;
+		return branch.startsWith(prefix) ? branch.slice(prefix.length) : null;
+	}
+
+	/**
+	 * FLY-603: Path-authoritative worktree key from an exact worktree path.
+	 * The dir basename is always `<repoSlug>-<key>` for both sibling and
+	 * baseDir layouts; the parent must match the project's expected prefix dir,
+	 * otherwise we return null (fail-closed — do not trust an unexpected path).
+	 * Uses repoSlug, NOT projectName, so `projectName !== repoSlug` is safe.
+	 */
+	parseWorktreeKeyFromPath(
+		mainRepoPath: string,
+		projectName: string,
+		worktreePath: string,
+	): string | null {
+		const prefix = `${this.repoSlug(mainRepoPath)}-`;
+		const base = path.basename(worktreePath);
+		if (!base.startsWith(prefix)) return null;
+		const expectedParent = this.baseDir
+			? path.join(this.baseDir, projectName)
+			: path.dirname(mainRepoPath);
+		if (path.dirname(worktreePath) !== expectedParent) return null;
+		return base.slice(prefix.length);
+	}
+
+	/**
+	 * FLY-603 (Codex code-review R1 HIGH-2): resolve the REGISTERED worktree at
+	 * an exact path from `git worktree list` (authoritative branch/detached
+	 * state), so Layer A can refuse to delete a worktree whose registered branch
+	 * is null/detached or not the one it expects — instead of inventing a branch.
+	 * Returns null when no worktree is registered at that exact path.
+	 */
+	async getRegisteredWorktree(
+		mainRepoPath: string,
+		worktreePath: string,
+	): Promise<ExternalWorktree | null> {
+		const worktrees = await this.list(mainRepoPath);
+		return worktrees.find((wt) => wt.path === worktreePath) ?? null;
+	}
+
+	/**
+	 * FLY-603: Dirty-safe removal by exact path — `git worktree remove` WITHOUT
+	 * `--force` (refuses dirty/locked trees, a second safety net behind the
+	 * caller's own dirty-guard), then `git branch -D <branch>` if provided.
+	 * Never the forceful rename+rm path of `remove()`. Never throws.
+	 */
+	async removeCleanWorktreeByPath(
+		mainRepoPath: string,
+		worktreePath: string,
+		branch?: string | null,
+	): Promise<{ removed: boolean; branchDeleted: boolean; error?: string }> {
+		try {
+			await this.exec(
+				"git",
+				["-C", mainRepoPath, "worktree", "remove", worktreePath],
+				mainRepoPath,
+			);
+		} catch (err) {
+			return {
+				removed: false,
+				branchDeleted: false,
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+		let branchDeleted = false;
+		if (branch) {
+			try {
+				await this.exec(
+					"git",
+					["-C", mainRepoPath, "branch", "-D", branch],
+					mainRepoPath,
+				);
+				branchDeleted = true;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				if (!msg.includes("not found")) {
+					return { removed: true, branchDeleted: false, error: msg };
+				}
+			}
+		}
+		return { removed: true, branchDeleted };
+	}
+
+	/**
+	 * FLY-603: Reconciler removal that uses the EXACT path/branch from `list()`
+	 * (never recomputed from a key), delegating to the dirty-safe primitive.
+	 */
+	async removeRegisteredWorktree(
+		mainRepoPath: string,
+		wt: ExternalWorktree,
+		opts?: { deleteBranch?: boolean },
+	): Promise<{ removed: boolean; branchDeleted: boolean; error?: string }> {
+		return this.removeCleanWorktreeByPath(
+			mainRepoPath,
+			wt.path,
+			opts?.deleteBranch ? wt.branch : null,
+		);
+	}
 }
 
 // ─── Porcelain parser ────────────────────────────
@@ -340,12 +492,15 @@ function parsePorcelain(output: string): ExternalWorktree[] {
 
 		let wtPath = "";
 		let branch: string | null = null;
+		let head: string | null = null;
 		let isDetached = false;
 		let isBare = false;
 
 		for (const line of lines) {
 			if (line.startsWith("worktree ")) {
 				wtPath = line.slice("worktree ".length);
+			} else if (line.startsWith("HEAD ")) {
+				head = line.slice("HEAD ".length);
 			} else if (line.startsWith("branch refs/heads/")) {
 				branch = line.slice("branch refs/heads/".length);
 			} else if (line === "detached") {
@@ -356,7 +511,7 @@ function parsePorcelain(output: string): ExternalWorktree[] {
 		}
 
 		if (wtPath) {
-			worktrees.push({ path: wtPath, branch, isDetached, isBare });
+			worktrees.push({ path: wtPath, branch, head, isDetached, isBare });
 		}
 	}
 

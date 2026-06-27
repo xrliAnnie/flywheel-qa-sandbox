@@ -56,6 +56,8 @@ import { LaunchClaimStore } from "./launch-claim-store.js";
 import { type ProjectRuntime, RunDispatcher } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import type { BridgeConfig } from "./types.js";
+import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
+import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
 
 /**
  * Build a fetchIssue function that tries Linear API, falls back to StateStore.
@@ -445,6 +447,11 @@ export interface RunInfraOptions {
 	 * `AgentDispatcher` to resolve the shipped `agents/generic-executor.md` fallback.
 	 */
 	flywheelRepoRoot?: string;
+	/**
+	 * FLY-603 Layer A: worktree-cleanup closure from the Bridge composition
+	 * root, set on the DirectEventSink so its post-ship finalization can clean.
+	 */
+	removeCleanWorktree?: WorktreeCleanupFn;
 }
 
 export async function setupRunInfrastructure(
@@ -502,7 +509,28 @@ export async function setupRunInfrastructure(
 				);
 			} catch (err) {
 				console.warn(
-					`[RunInfra] ${project.projectName}: worktree prune failed:`,
+					`[RunInfra] ${project.projectName}: worktree prune failed (non-fatal):`,
+					(err as Error).message,
+				);
+			}
+
+			// FLY-603 Layer B: boot reconciler sweep — drains merged+clean
+			// worktrees the on-merge hook missed (unhappy paths). Fail-closed +
+			// non-fatal: any setup failure (gh unavailable / list error) → no-op.
+			try {
+				const reconciled = await reconcileProjectWorktrees(
+					store,
+					worktreeManager,
+					project,
+				);
+				if (reconciled.length > 0) {
+					console.log(
+						`[RunInfra] ${project.projectName}: reconciled ${reconciled.length} merged worktree(s)`,
+					);
+				}
+			} catch (err) {
+				console.warn(
+					`[RunInfra] ${project.projectName}: worktree reconcile failed (non-fatal):`,
 					(err as Error).message,
 				);
 			}
@@ -564,6 +592,8 @@ export async function setupRunInfrastructure(
 				skillsConfig, // GEO-151: ProofShotConfig persisted via emitStarted patch
 				founderUxGateConfig?.mode, // FLY-598: mode snapshot onto session at start
 			);
+			// FLY-603 Layer A: wire the shared cleanup closure onto this sink.
+			directSink.removeCleanWorktree = runInfraOpts?.removeCleanWorktree;
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).
