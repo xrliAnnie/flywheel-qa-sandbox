@@ -301,6 +301,89 @@ describe("FLY-605 emitFounderReplyDeliveryForThread (Part B)", () => {
 		expect(handoff.mock.calls[0][0]).toContain("founder-reply-ambiguous-T1-");
 	});
 
+	it.each([["backend_commdb"], ["no_session_lead"]] as const)(
+		"🔴 ship wake skipped ({ok:false, skippedReason:%s}, no error) → NO marker, cursor NOT advanced (Codex ship-gate #2)",
+		async (skippedReason) => {
+			const { store, events } = makeStore();
+			const cursorStore = new InMemoryInboundCursorStore();
+			const wakeImpl = vi.fn(async () => ({
+				ok: false,
+				skippedReason,
+			})) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+			const reply: RawMsg = {
+				id: snowflakeAt(Date.now() - 30 * 60_000),
+				content: "approved",
+				author: { id: OWNER },
+			};
+			await emitFounderReplyDeliveryForThread(
+				ctx(),
+				[q("q1", "approve_to_ship")],
+				{
+					store,
+					fetchImpl: discordGet([reply]),
+					cursorStore,
+					wakeImpl,
+					respondImpl: vi.fn(
+						async () => undefined,
+					) as unknown as FounderReplyDeliverDeps["respondImpl"],
+					commDbFactory: () => makeCommDb(["q1"]) as never,
+				},
+			);
+			// No wake delivered → ship reply NOT consumed: no durable marker, cursor
+			// stays put (next sub-cadence retries). A skip-audit event IS recorded.
+			expect(
+				events.some((e) => e.event_id.startsWith("founder-ship-wake-")),
+			).toBe(false);
+			expect(
+				events.some((e) =>
+					e.event_id.startsWith("founder_ship_reply_wake_skipped"),
+				),
+			).toBe(true);
+			expect(cursorStore.load("T1")).toBeUndefined();
+		},
+	);
+
+	it("🔴 ship wake skip is transient: a later successful wake delivers + advances (Codex ship-gate #2)", async () => {
+		const { store, events } = makeStore();
+		const cursorStore = new InMemoryInboundCursorStore();
+		const reply: RawMsg = {
+			id: snowflakeAt(Date.now() - 30 * 60_000),
+			content: "approved",
+			author: { id: OWNER },
+		};
+		const wakeImpl = vi
+			.fn()
+			.mockResolvedValueOnce({ ok: false, skippedReason: "no_session_lead" })
+			.mockResolvedValueOnce({
+				ok: true,
+			}) as unknown as FounderReplyDeliverDeps["wakeImpl"];
+		const deps: FounderReplyDeliverDeps = {
+			store,
+			fetchImpl: discordGet([reply]),
+			cursorStore,
+			wakeImpl,
+			respondImpl: vi.fn(
+				async () => undefined,
+			) as unknown as FounderReplyDeliverDeps["respondImpl"],
+			commDbFactory: () => makeCommDb(["q1"]) as never,
+		};
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(cursorStore.load("T1")).toBeUndefined(); // skipped → not advanced
+		await emitFounderReplyDeliveryForThread(
+			ctx(),
+			[q("q1", "approve_to_ship")],
+			deps,
+		);
+		expect(
+			events.some((e) => e.event_id.startsWith("founder-ship-wake-")),
+		).toBe(true); // waked on retry
+		expect(cursorStore.load("T1")).toBe(reply.id); // advanced after real wake
+	});
+
 	it("ambiguous handoff failure → cursor not advanced (Codex R3 #2)", async () => {
 		const { store } = makeStore();
 		const cursorStore = new InMemoryInboundCursorStore();

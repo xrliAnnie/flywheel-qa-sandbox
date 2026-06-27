@@ -261,8 +261,21 @@ async function processFounderMessage(
 					msgId: msg.id,
 				},
 			});
-			if (!wake.ok && wake.error) {
-				allOk = false; // transient — retry this message next sub-cadence
+			if (!wake.ok) {
+				// FLY-605 (Codex ship-gate #2): NO wake was delivered. This covers
+				// both a transient transport error (wake.error) AND the skip cases
+				// wakeRunnerMailbox returns with NO error — backend_commdb (rollback
+				// mode) / no_session_lead. Ship inbound is WAKE-only, so this wake is
+				// the ONLY delivery action: we must NOT write the durable marker and
+				// must NOT let the processed-through cursor advance past this founder
+				// reply, or the reply is permanently dropped. Audit the reason, stop
+				// (allOk=false) → re-tried next sub-cadence; the still-pending recheck
+				// drops it once the gate resolves another way.
+				audit(store, ctx, q.executionId, "founder_ship_reply_wake_skipped", {
+					reason: wake.error ?? wake.skippedReason ?? "unknown",
+					msgId: msg.id,
+				});
+				allOk = false;
 				continue;
 			}
 			store.insertEvent({
