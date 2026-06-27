@@ -23,6 +23,7 @@ import {
 	type CheckpointsConfig,
 	ConfigLoader,
 	type DocFlowConfig,
+	type FounderUxGateConfig,
 	type RoleBackendMap,
 	type SkillsConfig,
 } from "flywheel-config";
@@ -157,6 +158,7 @@ async function createRunBlueprint(
 	flywheelRepoRoot?: string, // FLY-137 v1.27.2 (Codex Track A #1): Blueprint needs this to resolve shipped-generic agent_file
 	skillsConfig?: SkillsConfig, // GEO-151: ProofShot + skill commands surfaced to Blueprint
 	docFlowConfig?: DocFlowConfig, // FLY-205: doc-flow baseline (DOC-FLOW prompt block when enabled)
+	founderUxGateConfig?: FounderUxGateConfig, // FLY-598: founder-UX gate prompt injection when mode != off
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -398,7 +400,8 @@ async function createRunBlueprint(
 			agentDispatcher, // FLY-137 v1.27.2: wired (was undefined pre-v1.27.2)
 			checkpointConfig, // FLY-47
 			flywheelRepoRoot, // FLY-137 v1.27.2: Blueprint resolves shipped-generic agent_file from this root
-			docFlowConfig, // FLY-205: LAST param by contract (Codex design R2 #5)
+			docFlowConfig, // FLY-205
+			founderUxGateConfig, // FLY-598: LAST param by contract (Codex design R2 #5)
 		);
 
 		const cleanup = async () => {
@@ -525,6 +528,7 @@ export async function setupRunInfrastructure(
 			let skillsConfig: SkillsConfig | undefined;
 			let rolesConfig: RoleBackendMap | undefined;
 			let docFlowConfig: DocFlowConfig | undefined;
+			let founderUxGateConfig: FounderUxGateConfig | undefined;
 			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
 			try {
 				const configLoader = new ConfigLoader(async (p) =>
@@ -539,6 +543,7 @@ export async function setupRunInfrastructure(
 				// ConfigLoader — unknown roles/backends rejected at load)
 				rolesConfig = flywheelConfig?.roles;
 				docFlowConfig = flywheelConfig?.doc_flow; // FLY-205
+				founderUxGateConfig = flywheelConfig?.founder_ux_gate; // FLY-598
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 					// No config file — no checkpoints, no agents block, no skills.
@@ -557,6 +562,7 @@ export async function setupRunInfrastructure(
 				registry,
 				chatThreadCreator,
 				skillsConfig, // GEO-151: ProofShotConfig persisted via emitStarted patch
+				founderUxGateConfig?.mode, // FLY-598: mode snapshot onto session at start
 			);
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
@@ -578,6 +584,7 @@ export async function setupRunInfrastructure(
 				flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1)
 				skillsConfig, // GEO-151: wired into Blueprint slot 7
 				docFlowConfig, // FLY-205
+				founderUxGateConfig, // FLY-598
 			);
 
 			projectRuntimes.set(project.projectName, {

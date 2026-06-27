@@ -1075,4 +1075,67 @@ doc_flow:
 			expect(config.doc_flow?.default_department).toBe("product");
 		});
 	});
+
+	// FLY-598: founder_ux_gate validation
+	describe("founder_ux_gate validation", () => {
+		const withGate = (gateYaml: string) => `
+${MINIMAL_CONFIG_YAML}
+${gateYaml}
+`;
+
+		it("accepts absent founder_ux_gate (feature off, backward compatible)", async () => {
+			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_ux_gate).toBeUndefined();
+		});
+
+		it.each(["off", "audit_only", "enforce"])(
+			"accepts valid mode %s",
+			async (mode) => {
+				readFile.mockResolvedValue(
+					withGate(`
+founder_ux_gate:
+  mode: ${mode}
+`),
+				);
+				const config = await loader.load("/p/config.yaml");
+				expect(config.founder_ux_gate?.mode).toBe(mode);
+			},
+		);
+
+		it("rejects an unknown mode", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: blocking
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_ux_gate\.mode must be one of/,
+			);
+		});
+
+		it("rejects a missing mode key", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  enabled: true
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_ux_gate\.mode must be one of/,
+			);
+		});
+
+		it("rejects a non-mapping founder_ux_gate", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate: "enforce"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_ux_gate must be a YAML mapping/,
+			);
+		});
+	});
 });

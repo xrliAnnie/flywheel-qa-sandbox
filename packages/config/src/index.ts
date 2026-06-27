@@ -31,6 +31,8 @@ export type {
 	DocFlowConfig,
 	ExecutorBackend,
 	FlywheelConfig,
+	FounderUxGateConfig,
+	FounderUxGateMode,
 	OrchestratorConfig,
 	ParallelConfig,
 	ProofShotConfig,
@@ -49,6 +51,8 @@ export type {
 } from "./types.js";
 export {
 	EXECUTOR_BACKENDS,
+	FOUNDER_UX_GATE_DEFAULT_MODE,
+	FOUNDER_UX_GATE_MODES,
 	ROLE_NAMES,
 	XIAOHONGSHU_CADENCES,
 	XIAOHONGSHU_DEFAULT_FIRST_RUN_CAP,

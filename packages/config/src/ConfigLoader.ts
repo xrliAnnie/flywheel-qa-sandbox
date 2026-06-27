@@ -4,6 +4,7 @@ import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
 import type { CheckpointConfig, FlywheelConfig } from "./types.js";
 import {
 	EXECUTOR_BACKENDS,
+	FOUNDER_UX_GATE_MODES,
 	XIAOHONGSHU_CADENCES,
 	XIAOHONGSHU_MAX_FETCH_CEILING,
 	XIAOHONGSHU_REVIEW_CHANNELS,
@@ -325,6 +326,31 @@ export class ConfigLoader {
 			if (docFlow.enabled === true && docFlow.default_department == null) {
 				throw new Error(
 					"doc_flow.default_department is required when doc_flow.enabled is true",
+				);
+			}
+		}
+
+		// founder_ux_gate (optional — FLY-598). Absent → off (byte-compatible).
+		// Kept separate from FLY-175 founderConsent so this gate can never toggle
+		// reserved-action consent. Shape validated whenever PRESENT so a malformed
+		// config fails loudly instead of silently no-op-ing the gate.
+		const founderUxGate = c.founder_ux_gate as
+			| Record<string, unknown>
+			| undefined;
+		if (founderUxGate != null) {
+			if (typeof founderUxGate !== "object" || Array.isArray(founderUxGate)) {
+				throw new Error(
+					"founder_ux_gate must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (
+				typeof founderUxGate.mode !== "string" ||
+				!FOUNDER_UX_GATE_MODES.includes(
+					founderUxGate.mode as (typeof FOUNDER_UX_GATE_MODES)[number],
+				)
+			) {
+				throw new Error(
+					`founder_ux_gate.mode must be one of ${FOUNDER_UX_GATE_MODES.join(" | ")}, got "${String(founderUxGate.mode)}"`,
 				);
 			}
 		}
