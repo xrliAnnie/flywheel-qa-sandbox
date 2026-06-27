@@ -719,6 +719,14 @@ export function createBridgeApp(
 	);
 
 	// /events — ingest auth
+	//
+	// FLY-560 Feature A: auto-stamp pipeline-stage emoji onto issue thread
+	// titles. Default ON; set FLYWHEEL_ISSUE_STATUS_EMOJI=0 to disable. Passing
+	// the creator only when enabled keeps byte-compat (createEventRouter without
+	// it = no stamping). Naturally a no-op when chat threads are off
+	// (opts.chatThreadCreator is only set when chatThreadsEnabled).
+	const issueStatusEmojiEnabled =
+		process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0";
 	app.use(
 		"/events",
 		tokenAuthMiddleware(config.ingestToken),
@@ -730,6 +738,7 @@ export function createBridgeApp(
 			transitionOpts,
 			eventFilter,
 			registry,
+			issueStatusEmojiEnabled ? opts?.chatThreadCreator : undefined,
 		),
 	);
 
