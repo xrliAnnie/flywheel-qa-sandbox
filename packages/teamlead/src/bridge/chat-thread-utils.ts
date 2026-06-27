@@ -70,7 +70,7 @@ function defaultSleep(ms: number): Promise<void> {
 }
 
 /** Discord sends Retry-After in (possibly fractional) seconds. */
-function parseRetryAfterMs(header: string | null): number | undefined {
+export function parseRetryAfterMs(header: string | null): number | undefined {
 	if (!header) return undefined;
 	const secs = Number(header);
 	if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
