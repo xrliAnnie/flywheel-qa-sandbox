@@ -1,7 +1,7 @@
 # QA Sandbox Notes — flywheel-qa-sandbox
 
 **Issue**: FLY-202 (QA sandbox fixture — slot harness real-Runner E2E task)
-**Date**: 2026-06-04
+**Date**: 2026-06-27
 
 ## Overview
 
@@ -35,10 +35,10 @@
 - Config schema 见 `templates/qa-config.yaml`（带完整注释）；TypeScript 类型通过 `import { QaConfig } from 'flywheel-qa-framework'` 获得。
 - `examples/geoforge3d/` 提供完整的 GeoForge3D 配置示例。
 - Test Slot Framework（FLY-96 + FLY-115）：并行隔离的 test slot，每个 slot 对 `xrliAnnie/flywheel-qa-sandbox` 跑 real Runner E2E，不支持 synthetic / fixture 模式。
-- 三个核心脚本：`test-deploy.sh`（clone sandbox + 启动 test Bridge/Lead）、`inject-linear-issue.sh`（直接 POST `/api/runs/start` spawn Runner）、`test-teardown.sh`（清理 tmux/Lead/Bridge、worktree、slot 目录与 CommDB）。
-- 前置条件：`LINEAR_API_KEY`、`gh` CLI 对 sandbox 仓库有 push 权限、sandbox 仓库存在（README 中称 "fork"，实际为 standalone repo）、被测分支已推到 sandbox；缺任一项 `test-deploy.sh` pre-flight 直接 exit 2。
+- 三个核心脚本：`test-deploy.sh`（clone sandbox + 启动 test Bridge/Lead，并设置 `FLYWHEEL_RUNNER_START_POINT`）、`inject-linear-issue.sh`（直接 POST `/api/runs/start` spawn Runner）、`test-teardown.sh`（清理 tmux/Lead/Bridge、FLY-95 worktree、slot-local 分支、`SLOT_DIR` 与 CommDB）。
+- 前置条件：`LINEAR_API_KEY`、`gh` CLI 对 sandbox 仓库有 push 权限、sandbox 仓库存在、被测分支已推到 sandbox；缺任一项 `test-deploy.sh` pre-flight 直接 exit 2。
 - Runner worktree 起点由 `FLYWHEEL_RUNNER_START_POINT` env 控制（仅 test Bridge 设置；生产 launcher 不设置，默认 `origin/main` 行为不变）。
-- Contracts：`packages/qa-framework/contracts/PLAN_SOURCE_CONTRACT.md`（QA agent 跨 worktree 获取 plan 文件）与 `packages/qa-framework/skills/SKILL_INTERFACE.md`（所有 QA test skill 的接口契约）。
+- Contracts：`contracts/PLAN_SOURCE_CONTRACT.md`（QA agent 跨 worktree 获取 plan 文件）与 `skills/SKILL_INTERFACE.md`（所有 QA test skill 的接口契约）。
 
 ## `ls -R doc/ | head -50` Output
 
@@ -95,4 +95,4 @@ doc//engineer/exploration/archive:
 FLY-11-terminal-mcp-tool.md
 ```
 
-> Reviewed note: QA-S1 revision marker 20260604-1044
+> Reviewed note: QA-S2 revision marker 20260627 — slot harness E2E re-run
