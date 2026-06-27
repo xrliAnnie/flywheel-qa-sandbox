@@ -150,6 +150,7 @@ import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
 import type { BridgeConfig } from "./types.js";
+import { makeBridgeWorktreeCleanup } from "./worktree-cleanup.js";
 import {
 	createInMemoryTokenStore,
 	handleGetReview,
@@ -719,6 +720,11 @@ export function createBridgeApp(
 		),
 	);
 
+	// FLY-603 Layer A: build the worktree-cleanup closure ONCE at the
+	// composition root (hoisted high enough to reach both /events and the
+	// DirectEventSink created later in setupRunInfrastructure).
+	const removeCleanWorktree = makeBridgeWorktreeCleanup(store, projects);
+
 	// /events — ingest auth
 	//
 	// FLY-560 Feature A: auto-stamp pipeline-stage emoji onto issue thread
@@ -740,6 +746,7 @@ export function createBridgeApp(
 			eventFilter,
 			registry,
 			issueStatusEmojiEnabled ? opts?.chatThreadCreator : undefined,
+			removeCleanWorktree,
 		),
 	);
 
@@ -2422,7 +2429,13 @@ export async function startBridge(
 				config,
 				projects,
 				registry,
-				{ chatThreadCreator },
+				{
+					chatThreadCreator,
+					// FLY-603: stateless cleanup closure (own instance here — the
+					// /events one at the createEventRouter call site is a different
+					// function scope; both wrap the same factory).
+					removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
+				},
 			);
 			startDispatcher = dispatcher;
 			internalDispatcher = dispatcher;

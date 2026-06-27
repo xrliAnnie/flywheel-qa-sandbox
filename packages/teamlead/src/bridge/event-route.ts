@@ -39,6 +39,7 @@ import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
+import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
 // Re-export so existing callers (if any) keep working.
 export { commDbPathForProject } from "./commdb-path.js";
@@ -441,6 +442,8 @@ export function createEventRouter(
 	eventFilter?: EventFilter,
 	registry?: RuntimeRegistry,
 	chatThreadCreator?: ChatThreadCreator,
+	// FLY-603 Layer A: optional worktree-cleanup closure (composition root).
+	removeCleanWorktree?: WorktreeCleanupFn,
 ): Router {
 	const router = Router();
 
@@ -1093,7 +1096,7 @@ export function createEventRouter(
 								: undefined,
 							fallbackBotToken: config.discordBotToken,
 						},
-						{ store, projects },
+						{ store, projects, removeCleanWorktree },
 					).catch((err) => {
 						console.error(
 							`[event-route] runPostShipFinalization failed for ${event.execution_id}:`,
@@ -1429,7 +1432,7 @@ export function createEventRouter(
 											: undefined,
 										fallbackBotToken: config.discordBotToken,
 									},
-									{ store, projects },
+									{ store, projects, removeCleanWorktree },
 								).catch((err) => {
 									console.error(
 										`[event-route W2] runPostShipFinalization failed for ${event.execution_id}:`,

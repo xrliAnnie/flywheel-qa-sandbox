@@ -4,7 +4,11 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { type WorktreeExecFn, WorktreeManager } from "../WorktreeManager.js";
+import {
+	deriveWorktreeKey,
+	type WorktreeExecFn,
+	WorktreeManager,
+} from "../WorktreeManager.js";
 
 const execFileAsync = promisify(execFile);
 async function gitCmd(cwd: string, ...args: string[]): Promise<string> {
@@ -392,12 +396,14 @@ describe("WorktreeManager", () => {
 			expect(list[0]).toEqual({
 				path: "/main/repo",
 				branch: "main",
+				head: "abc1234",
 				isDetached: false,
 				isBare: false,
 			});
 			expect(list[1]).toEqual({
 				path: "/home/user/.flywheel/worktrees/proj/repo-GEO-42",
 				branch: "repo-GEO-42",
+				head: "def5678",
 				isDetached: false,
 				isBare: false,
 			});
@@ -1032,6 +1038,182 @@ describe("WorktreeManager", () => {
 				issueId: "GEO-LOOP",
 			});
 			expect(fs.existsSync(final.worktreePath)).toBe(true);
+		});
+	});
+
+	// ── FLY-603: deriveWorktreeKey + head parse + dirty-safe removal ──
+	describe("FLY-603 deriveWorktreeKey()", () => {
+		it("main role → identifier unchanged (byte-for-byte)", () => {
+			expect(deriveWorktreeKey("FLY-603", "main")).toBe("FLY-603");
+			expect(deriveWorktreeKey("FLY-603")).toBe("FLY-603");
+			expect(deriveWorktreeKey("FLY-603", undefined)).toBe("FLY-603");
+		});
+		it("non-main role → identifier-role with role sanitized", () => {
+			expect(deriveWorktreeKey("FLY-603", "qa")).toBe("FLY-603-qa");
+			expect(deriveWorktreeKey("FLY-603", "designer")).toBe("FLY-603-designer");
+		});
+		it("identifier is preserved byte-for-byte, only role lowercased/stripped", () => {
+			// identifier keeps case (FLY-603 stays FLY-603, NOT fly-603)
+			expect(deriveWorktreeKey("FLY-603", "QA")).toBe("FLY-603-qa");
+			expect(deriveWorktreeKey("uuid-123", "qa")).toBe("uuid-123-qa");
+			// role sanitization parity with Blueprint (QA/../hack → qahack)
+			expect(deriveWorktreeKey("FLY-603", "QA/../hack")).toBe("FLY-603-qahack");
+			// all-unsafe role → main → bare identifier
+			expect(deriveWorktreeKey("FLY-603", "///")).toBe("FLY-603");
+			expect(deriveWorktreeKey("FLY-603", "")).toBe("FLY-603");
+		});
+	});
+
+	describe("FLY-603 list() parses HEAD", () => {
+		it("captures head sha from porcelain", async () => {
+			const { fn } = makeMockExec([{ stdout: PORCELAIN_TWO_WORKTREES }]);
+			const mgr = new WorktreeManager({}, fn);
+			const list = await mgr.list("/main/repo");
+			expect(list[0].head).toBe("abc1234");
+			expect(list[1].head).toBe("def5678");
+		});
+		it("detached head still captured", async () => {
+			const { fn } = makeMockExec([{ stdout: PORCELAIN_DETACHED }]);
+			const mgr = new WorktreeManager({}, fn);
+			const list = await mgr.list("/main/repo");
+			expect(list[1]).toMatchObject({ branch: null, head: "9999999" });
+		});
+	});
+
+	describe("FLY-603 key resolvers", () => {
+		it("parseWorktreeKeyFromBranch strips repoSlug- prefix", () => {
+			const mgr = new WorktreeManager();
+			expect(
+				mgr.parseWorktreeKeyFromBranch(
+					"/Users/x/Dev/flywheel",
+					"flywheel-FLY-603",
+				),
+			).toBe("FLY-603");
+			expect(
+				mgr.parseWorktreeKeyFromBranch(
+					"/Users/x/Dev/flywheel",
+					"flywheel-FLY-603-qa",
+				),
+			).toBe("FLY-603-qa");
+			expect(
+				mgr.parseWorktreeKeyFromBranch("/Users/x/Dev/flywheel", "main"),
+			).toBeNull();
+			expect(
+				mgr.parseWorktreeKeyFromBranch("/Users/x/Dev/flywheel", null),
+			).toBeNull();
+		});
+		it("parseWorktreeKeyFromPath uses repoSlug not projectName (projectName !== repoSlug)", () => {
+			const mgr = new WorktreeManager();
+			// sibling layout: parent = dirname(mainRepoPath)
+			expect(
+				mgr.parseWorktreeKeyFromPath(
+					"/Users/x/Dev/flywheel",
+					"SomeOtherProjectName",
+					"/Users/x/Dev/flywheel-FLY-603-qa",
+				),
+			).toBe("FLY-603-qa");
+			// wrong parent → fail-closed null
+			expect(
+				mgr.parseWorktreeKeyFromPath(
+					"/Users/x/Dev/flywheel",
+					"proj",
+					"/somewhere/else/flywheel-FLY-603",
+				),
+			).toBeNull();
+		});
+		it("parseWorktreeKeyFromPath honors baseDir layout", () => {
+			const mgr = new WorktreeManager({ baseDir: "/wt" });
+			expect(
+				mgr.parseWorktreeKeyFromPath(
+					"/Users/x/Dev/flywheel",
+					"proj",
+					"/wt/proj/flywheel-FLY-603-qa",
+				),
+			).toBe("FLY-603-qa");
+		});
+		it("expectedWorktree returns sibling path + branch", () => {
+			const mgr = new WorktreeManager();
+			expect(
+				mgr.expectedWorktree("/Users/x/Dev/flywheel", "proj", "FLY-603"),
+			).toEqual({
+				path: "/Users/x/Dev/flywheel-FLY-603",
+				branch: "flywheel-FLY-603",
+			});
+		});
+	});
+
+	describe("FLY-603 removeCleanWorktreeByPath()", () => {
+		it("uses git worktree remove WITHOUT --force, then branch -D", async () => {
+			const { fn, calls } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
+			const mgr = new WorktreeManager({}, fn);
+			const res = await mgr.removeCleanWorktreeByPath(
+				"/main/repo",
+				"/main/repo-GEO-42",
+				"repo-GEO-42",
+			);
+			expect(res).toEqual({ removed: true, branchDeleted: true });
+			expect(calls[0].args).toEqual([
+				"-C",
+				"/main/repo",
+				"worktree",
+				"remove",
+				"/main/repo-GEO-42",
+			]);
+			expect(calls[0].args).not.toContain("--force");
+			expect(calls[1].args).toEqual([
+				"-C",
+				"/main/repo",
+				"branch",
+				"-D",
+				"repo-GEO-42",
+			]);
+		});
+		it("dirty worktree → git refuses → removed:false, no branch -D", async () => {
+			const { fn, calls } = makeMockExec([
+				new Error("contains modified or untracked files, use --force"),
+			]);
+			const mgr = new WorktreeManager({}, fn);
+			const res = await mgr.removeCleanWorktreeByPath(
+				"/main/repo",
+				"/main/repo-GEO-42",
+				"repo-GEO-42",
+			);
+			expect(res.removed).toBe(false);
+			expect(res.error).toContain("modified or untracked");
+			expect(calls).toHaveLength(1); // never reached branch -D
+		});
+		it("branch already gone → removed:true, branchDeleted:false (not an error)", async () => {
+			const { fn } = makeMockExec([
+				{ stdout: "" },
+				new Error("error: branch 'x' not found."),
+			]);
+			const mgr = new WorktreeManager({}, fn);
+			const res = await mgr.removeCleanWorktreeByPath(
+				"/main/repo",
+				"/main/repo-GEO-42",
+				"repo-GEO-42",
+			);
+			expect(res).toEqual({ removed: true, branchDeleted: false });
+		});
+	});
+
+	describe("FLY-603 removeRegisteredWorktree()", () => {
+		it("removes by exact wt.path (never recomputed) + deletes branch", async () => {
+			const { fn, calls } = makeMockExec([{ stdout: "" }, { stdout: "" }]);
+			const mgr = new WorktreeManager({}, fn);
+			const wt = {
+				path: "/some/weird/manually-made-path",
+				branch: "repo-GEO-99",
+				head: "deadbeef",
+				isDetached: false,
+				isBare: false,
+			};
+			const res = await mgr.removeRegisteredWorktree("/main/repo", wt, {
+				deleteBranch: true,
+			});
+			expect(res.removed).toBe(true);
+			// exact path used, not a recomputed sibling path
+			expect(calls[0].args).toContain("/some/weird/manually-made-path");
 		});
 	});
 });
