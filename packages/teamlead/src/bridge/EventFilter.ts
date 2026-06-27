@@ -137,6 +137,17 @@ const FILTER_RULES: FilterRule[] = [
 		},
 	},
 	{
+		// FLY-623: Bridge re-adopted a live Runner after a restart (readopt-ON happy
+		// path). Founder-facing signal is the Display-A "⚠️重连中" title; this Lead
+		// notice is a low-priority FYI ("runner alive, monitoring restored"), emitted
+		// at most once per reconnecting episode and NOT a retryable guardrail.
+		match: (et) => et === "session_monitoring_reestablished",
+		result: {
+			priority: "low",
+			reason: "monitoring re-established via tmux — Runner alive",
+		},
+	},
+	{
 		match: (et) => et === "cipher_principle_proposed",
 		result: {
 			priority: "normal",

@@ -304,6 +304,31 @@ export class ChatThreadCreator {
 		return next;
 	}
 
+	/**
+	 * FLY-623 Display-A: stamp the cross-cutting "⚠️重连中" reconnecting marker
+	 * (`badge` non-null) or clear it back to the real/terminal badge (`badge` is the
+	 * stage badge, or null to strip the prefix entirely). Serialized through the
+	 * SAME per-thread chain as stage stamps so a reconnecting stamp and a
+	 * stage_changed stamp never race; idempotent (a no-op PATCH is skipped).
+	 */
+	async stampStatusBadge(
+		ctx: ChatThreadContext,
+		threadId: string,
+		badge: string | null,
+	): Promise<void> {
+		const prev = this.stampChains.get(threadId) ?? Promise.resolve();
+		const next = prev
+			.catch(() => undefined)
+			.then(() => this.stampBadgeNow(ctx, threadId, badge));
+		this.stampChains.set(threadId, next);
+		void next.finally(() => {
+			if (this.stampChains.get(threadId) === next) {
+				this.stampChains.delete(threadId);
+			}
+		});
+		return next;
+	}
+
 	private async stampStageEmojiNow(
 		ctx: ChatThreadContext,
 		threadId: string,
@@ -311,8 +336,23 @@ export class ChatThreadCreator {
 		withWord: boolean,
 	): Promise<void> {
 		const badge = stageBadge(stage, withWord);
-		if (!badge) return;
+		if (!badge) return; // unknown stage → no-op
+		return this.stampBadgeNow(ctx, threadId, badge);
+	}
 
+	/**
+	 * FLY-623: stamp an arbitrary leading status badge onto the thread title
+	 * (e.g. the cross-cutting "⚠️重连中" reconnecting marker), or STRIP the status
+	 * prefix when `badge` is null. Same idempotent / churn-safe mechanics as stage
+	 * stamping (GET → swap only the leading status badge → skip the no-op PATCH);
+	 * `splitStatusEmoji` peels any recognized status emoji (incl. ⚠️), so this and
+	 * stage stamping interleave cleanly and re-stamping is idempotent.
+	 */
+	private async stampBadgeNow(
+		ctx: ChatThreadContext,
+		threadId: string,
+		badge: string | null,
+	): Promise<void> {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
 
@@ -352,7 +392,9 @@ export class ChatThreadCreator {
 			}
 			if (!base) return;
 
-			const desired = truncateDiscordThreadName(`${badge} ${base}`);
+			const desired = truncateDiscordThreadName(
+				badge ? `${badge} ${base}` : base,
+			);
 			if (currentName === desired) return; // already stamped — skip PATCH
 
 			const patchRes = await fetch(`${DISCORD_API}/channels/${threadId}`, {
