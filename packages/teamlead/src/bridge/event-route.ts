@@ -9,13 +9,14 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import type { ProjectEntry } from "../ProjectConfig.js";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import {
 	REVIEW_BINDING_UNBOUND,
 	type Session,
 	type StateStore,
 } from "../StateStore.js";
 import { handleArtifactEvent } from "./artifact-event.js";
+import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import {
 	hasPendingCompleteMarker,
@@ -345,6 +346,90 @@ function handleCodexAutoTrigger(
 	}
 }
 
+/** Parse the JSON-encoded `issue_labels` column into a string[] (tolerant). */
+function parseIssueLabels(raw: string | undefined): string[] {
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed)
+			? parsed.filter((x): x is string => typeof x === "string")
+			: [];
+	} catch {
+		return [];
+	}
+}
+
+/**
+ * FLY-560 UX iteration: emoji-only vs emoji+word badge mode. Default emoji+word
+ * (Annie's feedback — emoji alone is hard to memorise); set
+ * `FLYWHEEL_ISSUE_STATUS_WORD=0` to fall back to emoji-only. Read at stamp time
+ * so a flag flip takes effect on the next stage transition without a code path
+ * change (and so the createEventRouter signature stays untouched).
+ */
+function issueStatusWordEnabled(): boolean {
+	return process.env.FLYWHEEL_ISSUE_STATUS_WORD !== "0";
+}
+
+/**
+ * FLY-560 Feature A: fire-and-forget stamp of the current stage's badge onto
+ * the issue's `[FLY-XX]` chat thread title. Resolves the issue's lead (for its
+ * product channel + bot token), finds the existing thread, and delegates to
+ * ChatThreadCreator.stampStageEmoji. Silent on any miss (no lead/channel/token,
+ * or thread not created yet) — the next stage_changed reconciles. Never throws
+ * into the event handler.
+ */
+function stampStageEmojiForSession(
+	deps: {
+		store: StateStore;
+		projects: ProjectEntry[];
+		config: BridgeConfig;
+		chatThreadCreator: ChatThreadCreator;
+	},
+	session: Session,
+	stage: string,
+): void {
+	let chatChannel: string | undefined;
+	let botToken: string | undefined;
+	let leadId: string | undefined;
+	try {
+		const { lead } = resolveLeadForIssue(
+			deps.projects,
+			session.project_name,
+			parseIssueLabels(session.issue_labels),
+		);
+		chatChannel = lead.chatChannel;
+		botToken = lead.botToken ?? deps.config.discordBotToken;
+		leadId = lead.agentId;
+	} catch {
+		return; // project/lead not resolvable — skip
+	}
+	if (!chatChannel || !botToken) return;
+
+	const thread = deps.store.getChatThreadByIssue(session.issue_id, chatChannel);
+	if (!thread) return; // thread not created yet — a later stage_changed catches it
+
+	void deps.chatThreadCreator
+		.stampStageEmoji(
+			{
+				chatChannelId: chatChannel,
+				issueId: session.issue_id,
+				issueIdentifier: session.issue_identifier,
+				issueTitle: session.issue_title,
+				botToken,
+				leadId,
+			},
+			thread.thread_id,
+			stage,
+			issueStatusWordEnabled(),
+		)
+		.catch((err: unknown) => {
+			console.warn(
+				`[event-route] stage-emoji stamp failed for ${session.execution_id}:`,
+				err instanceof Error ? err.message : err,
+			);
+		});
+}
+
 export function createEventRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -353,6 +438,7 @@ export function createEventRouter(
 	transitionOpts?: ApplyTransitionOpts,
 	eventFilter?: EventFilter,
 	registry?: RuntimeRegistry,
+	chatThreadCreator?: ChatThreadCreator,
 ): Router {
 	const router = Router();
 
@@ -1159,6 +1245,21 @@ export function createEventRouter(
 						stage_updated_at: now,
 						last_activity_at: now,
 					});
+
+					// FLY-560 Feature A: auto-stamp the stage emoji onto the issue's
+					// [FLY-XX] thread title so Annie reads status at a glance. Wired
+					// only when the feature flag is on (plugin.ts passes the creator);
+					// fully fire-and-forget so it never blocks/breaks the transition.
+					if (chatThreadCreator) {
+						const sessionForStamp = store.getSession(event.execution_id);
+						if (sessionForStamp) {
+							stampStageEmojiForSession(
+								{ store, projects, config, chatThreadCreator },
+								sessionForStamp,
+								stage,
+							);
+						}
+					}
 
 					// FLY-137 Phase 5: Codex auto-trigger fires on design_review
 					// and pr_created. Honors codex-skip label snapshot (writes

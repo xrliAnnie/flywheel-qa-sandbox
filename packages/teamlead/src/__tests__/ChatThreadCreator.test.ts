@@ -462,6 +462,370 @@ describe("FLY-91: ChatThreadCreator", () => {
 	});
 });
 
+describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
+	let store: StateStore;
+	let creator: ChatThreadCreator;
+
+	beforeEach(async () => {
+		vi.clearAllMocks();
+		store = await StateStore.create(":memory:");
+		creator = new ChatThreadCreator(store);
+	});
+
+	afterEach(() => {
+		store.close();
+		vi.restoreAllMocks();
+	});
+
+	const ctx = (over: Record<string, unknown> = {}) => ({
+		chatChannelId: "ch-1",
+		issueId: "FLY-560",
+		issueIdentifier: "FLY-560",
+		issueTitle: "Discord issue status",
+		botToken: "bot-token",
+		...over,
+	});
+
+	it("prefixes a bare title with the stage emoji (GET then PATCH)", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-560] Discord issue status" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "implement");
+
+		expect(mockFetch).toHaveBeenCalledTimes(2);
+		const [getUrl, getOpts] = mockFetch.mock.calls[0]!;
+		expect(getUrl).toBe("https://discord.com/api/v10/channels/thread-1");
+		expect(getOpts.method).toBe("GET");
+		const [patchUrl, patchOpts] = mockFetch.mock.calls[1]!;
+		expect(patchUrl).toBe("https://discord.com/api/v10/channels/thread-1");
+		expect(patchOpts.method).toBe("PATCH");
+		expect(JSON.parse(patchOpts.body).name).toBe(
+			"🔨 [FLY-560] Discord issue status",
+		);
+	});
+
+	it("is idempotent — no PATCH when the desired emoji is already present", async () => {
+		mockFetch.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			json: () =>
+				Promise.resolve({ name: "🔨 [FLY-560] Discord issue status" }),
+		});
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "implement");
+
+		expect(mockFetch).toHaveBeenCalledTimes(1); // GET only, no PATCH
+		expect(mockFetch.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(
+			false,
+		);
+	});
+
+	it("replaces a stale stage emoji while preserving the title", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🧠 [FLY-560] Discord issue status" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "implement");
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🔨 [FLY-560] Discord issue status",
+		);
+	});
+
+	it("derives the base from the current name when issueTitle is absent", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "🧠 [FLY-560] Curated title" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({ issueTitle: undefined, issueIdentifier: undefined }),
+			"thread-1",
+			"test",
+		);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🧪 [FLY-560] Curated title",
+		);
+	});
+
+	it("upgrades a placeholder title using ctx when issueTitle is known", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-560]" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "implement");
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🔨 [FLY-560] Discord issue status",
+		);
+	});
+
+	it("no-ops (no fetch) for an unknown stage", async () => {
+		await creator.stampStageEmoji(ctx(), "thread-1", "nonsense");
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("does not throw and does not PATCH when GET fails", async () => {
+		mockFetch.mockResolvedValueOnce({
+			ok: false,
+			status: 404,
+			text: () => Promise.resolve("Unknown Channel"),
+		});
+
+		await expect(
+			creator.stampStageEmoji(ctx(), "thread-1", "implement"),
+		).resolves.toBeUndefined();
+		expect(mockFetch).toHaveBeenCalledTimes(1);
+	});
+
+	it("swallows a PATCH failure (e.g. 429 rate limit) without throwing", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-560] Discord issue status" }),
+			})
+			.mockResolvedValueOnce({
+				ok: false,
+				status: 429,
+				text: () => Promise.resolve("rate limited"),
+			});
+
+		await expect(
+			creator.stampStageEmoji(ctx(), "thread-1", "implement"),
+		).resolves.toBeUndefined();
+	});
+
+	it("truncates the emoji-prefixed name to Discord's 100-char limit", async () => {
+		const longTitle = "X".repeat(200);
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: `[FLY-560] ${longTitle}` }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({ issueTitle: longTitle }),
+			"thread-1",
+			"implement",
+		);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name.length).toBe(100);
+	});
+
+	// FLY-560 Codex R1 MEDIUM: Feature A manages only the leading emoji. A
+	// manually-curated title must be preserved (emoji swapped), NOT overwritten
+	// with the stored Linear title rebuilt from ctx.
+	it("preserves a curated title and swaps only the emoji (no ctx rebuild)", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🔨 [FLY-560] manually shortened" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		// ctx.issueTitle = "Discord issue status" — must NOT clobber the curated text.
+		await creator.stampStageEmoji(ctx(), "thread-1", "test");
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🧪 [FLY-560] manually shortened",
+		);
+	});
+
+	// FLY-560 Codex R1 HIGH: concurrent fire-and-forget stamps on the SAME thread
+	// must serialize — otherwise both read the old title before either writes.
+	it("serializes concurrent stamps on the same thread (no read-then-write race)", async () => {
+		// Stateful mock: GET returns the live title, PATCH updates it. With
+		// serialization the second stamp's GET sees the first's PATCH result.
+		let currentTitle = "[FLY-560] Discord issue status";
+		mockFetch.mockImplementation(
+			async (_url: string, opts: { method?: string; body?: string }) => {
+				if ((opts?.method ?? "GET") === "GET") {
+					return {
+						ok: true,
+						status: 200,
+						json: () => Promise.resolve({ name: currentTitle }),
+					};
+				}
+				currentTitle = JSON.parse(opts.body as string).name;
+				return { ok: true, status: 200 };
+			},
+		);
+
+		// Fire two stamps concurrently; brainstorm (🧠) is submitted first, then
+		// implement (🔨). Serialized → call order GET,PATCH,GET,PATCH and the
+		// LATEST stage (🔨) is the title that lands last.
+		await Promise.all([
+			creator.stampStageEmoji(ctx(), "thread-race", "brainstorm"),
+			creator.stampStageEmoji(ctx(), "thread-race", "implement"),
+		]);
+
+		const methods = mockFetch.mock.calls.map((c) => c[1]?.method ?? "GET");
+		expect(methods).toEqual(["GET", "PATCH", "GET", "PATCH"]);
+		expect(currentTitle).toBe("🔨 [FLY-560] Discord issue status");
+	});
+});
+
+describe("FLY-560 UX iteration: ChatThreadCreator.stampStageEmoji emoji+word mode", () => {
+	let store: StateStore;
+	let creator: ChatThreadCreator;
+
+	beforeEach(async () => {
+		vi.clearAllMocks();
+		store = await StateStore.create(":memory:");
+		creator = new ChatThreadCreator(store);
+	});
+
+	afterEach(() => {
+		store.close();
+		vi.restoreAllMocks();
+	});
+
+	const ctx = (over: Record<string, unknown> = {}) => ({
+		chatChannelId: "ch-1",
+		issueId: "FLY-560",
+		issueIdentifier: "FLY-560",
+		issueTitle: "Discord issue status",
+		botToken: "bot-token",
+		...over,
+	});
+
+	it("withWord=true prefixes the emoji+word badge (glued word, then space)", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-560] Discord issue status" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "implement", true);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🔨实现中 [FLY-560] Discord issue status",
+		);
+	});
+
+	it("withWord defaults to false (byte-compat) → emoji-only badge", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-560] Discord issue status" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "implement");
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🔨 [FLY-560] Discord issue status",
+		);
+	});
+
+	it("is idempotent in word mode — no PATCH when the badge already matches", async () => {
+		mockFetch.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			json: () =>
+				Promise.resolve({ name: "🔨实现中 [FLY-560] Discord issue status" }),
+		});
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "implement", true);
+
+		expect(mockFetch).toHaveBeenCalledTimes(1); // GET only, no PATCH
+	});
+
+	it("swaps a stale emoji+word badge for the new stage's badge (word peeled)", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🔨实现中 [FLY-560] Discord issue status" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "code_review", true);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"👀代码审 [FLY-560] Discord issue status",
+		);
+	});
+
+	it("flips an emoji+word title to emoji-only when the flag is off (word peeled)", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🔨实现中 [FLY-560] Discord issue status" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "code_review", false);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"👀 [FLY-560] Discord issue status",
+		);
+	});
+
+	it("upgrades an emoji-only title to emoji+word when the flag turns on", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🔨 [FLY-560] Discord issue status" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "implement", true);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🔨实现中 [FLY-560] Discord issue status",
+		);
+	});
+
+	it("preserves a curated title in word mode, swapping only the badge", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🔨实现中 [FLY-560] manually shortened" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "test", true);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🧪QA [FLY-560] manually shortened",
+		);
+	});
+});
+
 describe("FLY-91: StateStore chat_threads CRUD", () => {
 	let store: StateStore;
 
