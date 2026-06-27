@@ -80,6 +80,31 @@ export function stuckLeadGraceMs(env: NodeJS.ProcessEnv = process.env): number {
 	return parsePositiveIntEnv(env.FLYWHEEL_STUCK_LEAD_GRACE_MS, LEAD_GRACE_MS);
 }
 
+/** FLY-628 default for {@link idleWatchdogPollMs} — ~1 hour. */
+export const DEFAULT_IDLE_POLL_MS = 3_600_000; // ~1h
+
+/**
+ * FLY-628: `FLYWHEEL_IDLE_POLL_MS` — the RunnerIdleWatchdog poll cadence (the
+ * "stall watchdog"). Band-aid (Annie, 2026-06-27): the watchdog used to capture
+ * every running Runner's tmux pane every ~30s and wake the owning Lead on the
+ * first waiting/idle/unknown read. For a parked / long-running Runner (a test
+ * suite or a Codex review legitimately sits silent for minutes) that is a false
+ * positive every cadence — each one reloads the Lead's whole context to answer,
+ * burning tokens. The default is stretched to ~1h to stop the bleed.
+ *
+ * The same poll also drives the FLY-195 stuck detector, so genuine-stuck
+ * detection is NOT removed (FLY-369) — only its cadence relaxes to ~1h
+ * (worst-case ~1h to first detect, an accepted trade vs. the token waste). A
+ * real smart recognizer (parked-aware / cheap probe / backoff) is the follow-up
+ * rethink (FLY-626). Lives beside the stuck knobs because it is the timer that
+ * drives both. Tunable without a redeploy via the env var.
+ */
+export function idleWatchdogPollMs(
+	env: NodeJS.ProcessEnv = process.env,
+): number {
+	return parsePositiveIntEnv(env.FLYWHEEL_IDLE_POLL_MS, DEFAULT_IDLE_POLL_MS);
+}
+
 /**
  * FLY-253 L1: `FLYWHEEL_STUCK_COMM_ACTIVITY_MS` — how recently the runner
  * must have sent a CommDB message to be exempt from stuck candidacy.

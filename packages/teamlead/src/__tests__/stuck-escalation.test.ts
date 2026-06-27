@@ -17,6 +17,8 @@ import {
 	buildStuckRunnerDetector,
 	createStuckEscalationEmitter,
 	createStuckUnhandledAlerter,
+	DEFAULT_IDLE_POLL_MS,
+	idleWatchdogPollMs,
 	parseNonNegativeIntEnv,
 	probeCommSignalsFromCommDb,
 	stuckCommActivityMs,
@@ -317,6 +319,26 @@ describe("env knobs (plan §3.7)", () => {
 					FLYWHEEL_STUCK_THRESHOLD_MS: bad,
 				} as NodeJS.ProcessEnv),
 			).toBe(600_000);
+		}
+	});
+
+	// FLY-628: idle-watchdog poll cadence — band-aid default stretched to ~1h.
+	it("idleWatchdogPollMs defaults to ~1h and honors a valid override", () => {
+		expect(DEFAULT_IDLE_POLL_MS).toBe(3_600_000);
+		expect(idleWatchdogPollMs({} as NodeJS.ProcessEnv)).toBe(3_600_000);
+		expect(
+			idleWatchdogPollMs({
+				FLYWHEEL_IDLE_POLL_MS: "120000",
+			} as NodeJS.ProcessEnv),
+		).toBe(120_000);
+		// junk / non-positive falls back to the ~1h default (a 0 must not turn
+		// the watchdog into a hot 0ms loop).
+		for (const bad of ["abc", "-5", "0", ""]) {
+			expect(
+				idleWatchdogPollMs({
+					FLYWHEEL_IDLE_POLL_MS: bad,
+				} as NodeJS.ProcessEnv),
+			).toBe(3_600_000);
 		}
 	});
 
