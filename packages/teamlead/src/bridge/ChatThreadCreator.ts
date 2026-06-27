@@ -7,6 +7,7 @@
 import type { StateStore } from "../StateStore.js";
 import {
 	addThreadMember,
+	pinThreadMessage,
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
 import { splitStatusEmoji, stageBadge } from "./stage-utils.js";
@@ -377,6 +378,288 @@ export class ChatThreadCreator {
 			} else {
 				console.warn(
 					`[ChatThreadCreator] stage-emoji stamp error:`,
+					(err as Error).message,
+				);
+			}
+		} finally {
+			clearTimeout(timeout);
+		}
+	}
+
+	/**
+	 * FLY-560 Feature C: per-thread serialization chain for the runner-attach pin
+	 * (same rationale as `stampChains`): concurrent fire-and-forget calls for the
+	 * same thread must run in submission order so two adjacent calls can't both
+	 * read "no message yet" and double-POST the pin.
+	 */
+	private attachChains = new Map<string, Promise<void>>();
+
+	/**
+	 * FLY-560 Feature C: ensure the issue thread has a pinned, copy-pasteable
+	 * `tmux attach` rescue command (`command`), kept current via the pin state
+	 * machine below. Fire-and-forget; serialized per thread; never throws.
+	 *
+	 * `deps` injects the pin call + clock for tests.
+	 */
+	async ensureRunnerAttachPin(
+		ctx: ChatThreadContext,
+		threadId: string,
+		command: string,
+		deps: {
+			pinImpl?: typeof pinThreadMessage;
+			now?: () => string;
+		} = {},
+	): Promise<void> {
+		const resolved = {
+			pinImpl: deps.pinImpl ?? pinThreadMessage,
+			now: deps.now ?? (() => new Date().toISOString()),
+		};
+		const prev = this.attachChains.get(threadId) ?? Promise.resolve();
+		const next = prev
+			.catch(() => undefined)
+			.then(() =>
+				this.ensureRunnerAttachPinNow(ctx, threadId, command, resolved),
+			);
+		this.attachChains.set(threadId, next);
+		void next.finally(() => {
+			if (this.attachChains.get(threadId) === next) {
+				this.attachChains.delete(threadId);
+			}
+		});
+		return next;
+	}
+
+	/** Render the pinned attach message (Annie-approved demo format). */
+	private buildAttachMessageContent(
+		ctx: ChatThreadContext,
+		command: string,
+	): string {
+		const key = effectiveIssueKey(ctx);
+		const label = key ? `[${key}]` : (ctx.issueTitle ?? ctx.issueId);
+		return (
+			`📌 **${label} Runner terminal** — copy & run to attach to this issue's runner:\n` +
+			"```\n" +
+			`${command}\n` +
+			"```\n" +
+			"_自动更新：runner 重起/换人时命令跟着变；runner 结束后命令失效（那时也不用 attach）。_"
+		);
+	}
+
+	private async postAttachMessage(
+		threadId: string,
+		content: string,
+		botToken: string,
+		signal: AbortSignal,
+	): Promise<string | undefined> {
+		const res = await fetch(`${DISCORD_API}/channels/${threadId}/messages`, {
+			method: "POST",
+			headers: {
+				Authorization: `Bot ${botToken}`,
+				"Content-Type": "application/json",
+			},
+			// allowed_mentions parse:[] — the command/title text must never trigger
+			// @everyone/@here/role pings (mirrors ensureChatThread).
+			body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+			signal,
+		});
+		if (!res.ok) {
+			const body = await res.text().catch(() => "");
+			console.warn(
+				`[ChatThreadCreator] attach-pin POST failed: ${res.status} ${body.slice(0, 200)}`,
+			);
+			return undefined;
+		}
+		const data = (await res.json().catch(() => ({}))) as { id?: unknown };
+		return typeof data.id === "string" ? data.id : undefined;
+	}
+
+	private async editAttachMessage(
+		threadId: string,
+		messageId: string,
+		content: string,
+		botToken: string,
+		signal: AbortSignal,
+	): Promise<"ok" | "missing" | "error"> {
+		const res = await fetch(
+			`${DISCORD_API}/channels/${threadId}/messages/${messageId}`,
+			{
+				method: "PATCH",
+				headers: {
+					Authorization: `Bot ${botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ content, allowed_mentions: { parse: [] } }),
+				signal,
+			},
+		);
+		if (res.ok) return "ok";
+		if (res.status === 404) return "missing";
+		const body = await res.text().catch(() => "");
+		console.warn(
+			`[ChatThreadCreator] attach-pin PATCH failed: ${res.status} ${body.slice(0, 200)}`,
+		);
+		return "error";
+	}
+
+	/** POST a fresh attach message, record it, and pin it. */
+	private async postAndPinAttach(
+		ctx: ChatThreadContext,
+		threadId: string,
+		command: string,
+		content: string,
+		signal: AbortSignal,
+		deps: { pinImpl: typeof pinThreadMessage; now: () => string },
+	): Promise<void> {
+		const messageId = await this.postAttachMessage(
+			threadId,
+			content,
+			ctx.botToken,
+			signal,
+		);
+		if (!messageId) return; // POST failed — next stage retries
+		this.store.setChatThreadAttachPin(ctx.issueId, ctx.chatChannelId, {
+			messageId,
+			command,
+			pinnedAt: null,
+		});
+		const pin = await deps.pinImpl(threadId, messageId, ctx.botToken);
+		if (pin.outcome === "pinned") {
+			this.store.setChatThreadAttachPin(ctx.issueId, ctx.chatChannelId, {
+				messageId,
+				command,
+				pinnedAt: deps.now(),
+			});
+		} else if (pin.outcome === "missing") {
+			// Codex code R1 MED-2: the just-posted message is already gone (404).
+			// Don't retain a known-missing record — clear it so the next stage
+			// reposts fresh (bounded: no same-call repost loop on a flapping 404).
+			this.store.clearChatThreadAttachPin(ctx.issueId, ctx.chatChannelId);
+		}
+		// forbidden/error: leave pinnedAt null → next stage retries the pin.
+	}
+
+	/**
+	 * FLY-560 Feature C pin state machine. See plan §组件 3:
+	 *  - no record → POST + pin.
+	 *  - command changed → EDIT in place (+ pin if not yet pinned). 404 → repost.
+	 *  - command same + pinned → skip (zero churn).
+	 *  - command same + NOT pinned → retry pin (self-heal after perms fixed).
+	 *  - any pin/edit 404 → clear + repost in this same serialized call.
+	 */
+	private async ensureRunnerAttachPinNow(
+		ctx: ChatThreadContext,
+		threadId: string,
+		command: string,
+		deps: { pinImpl: typeof pinThreadMessage; now: () => string },
+	): Promise<void> {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
+		try {
+			const content = this.buildAttachMessageContent(ctx, command);
+			const pinState = this.store.getChatThreadAttachPin(
+				ctx.issueId,
+				ctx.chatChannelId,
+			);
+
+			if (!pinState) {
+				await this.postAndPinAttach(
+					ctx,
+					threadId,
+					command,
+					content,
+					controller.signal,
+					deps,
+				);
+				return;
+			}
+
+			if (pinState.command !== command) {
+				const edit = await this.editAttachMessage(
+					threadId,
+					pinState.messageId,
+					content,
+					ctx.botToken,
+					controller.signal,
+				);
+				if (edit === "missing") {
+					this.store.clearChatThreadAttachPin(ctx.issueId, ctx.chatChannelId);
+					await this.postAndPinAttach(
+						ctx,
+						threadId,
+						command,
+						content,
+						controller.signal,
+						deps,
+					);
+					return;
+				}
+				if (edit === "error") return; // next stage retries
+				// edit ok: command updated; an edit never unpins, so keep pinnedAt —
+				// but if it was never pinned, ensure it is now.
+				let pinnedAt = pinState.pinnedAt;
+				if (!pinnedAt) {
+					const pin = await deps.pinImpl(
+						threadId,
+						pinState.messageId,
+						ctx.botToken,
+					);
+					if (pin.outcome === "pinned") pinnedAt = deps.now();
+					else if (pin.outcome === "missing") {
+						this.store.clearChatThreadAttachPin(ctx.issueId, ctx.chatChannelId);
+						await this.postAndPinAttach(
+							ctx,
+							threadId,
+							command,
+							content,
+							controller.signal,
+							deps,
+						);
+						return;
+					}
+				}
+				this.store.setChatThreadAttachPin(ctx.issueId, ctx.chatChannelId, {
+					messageId: pinState.messageId,
+					command,
+					pinnedAt,
+				});
+				return;
+			}
+
+			// command unchanged
+			if (pinState.pinnedAt) return; // already pinned — zero churn
+
+			// posted but not yet pinned (e.g. earlier pin 403) → retry the pin.
+			const pin = await deps.pinImpl(
+				threadId,
+				pinState.messageId,
+				ctx.botToken,
+			);
+			if (pin.outcome === "pinned") {
+				this.store.setChatThreadAttachPin(ctx.issueId, ctx.chatChannelId, {
+					messageId: pinState.messageId,
+					command,
+					pinnedAt: deps.now(),
+				});
+			} else if (pin.outcome === "missing") {
+				this.store.clearChatThreadAttachPin(ctx.issueId, ctx.chatChannelId);
+				await this.postAndPinAttach(
+					ctx,
+					threadId,
+					command,
+					content,
+					controller.signal,
+					deps,
+				);
+			}
+			// forbidden/error: leave pinnedAt null → next stage retries.
+		} catch (err) {
+			if ((err as Error).name === "AbortError") {
+				console.warn(
+					`[ChatThreadCreator] attach-pin timed out after ${CREATE_TIMEOUT_MS}ms`,
+				);
+			} else {
+				console.warn(
+					`[ChatThreadCreator] attach-pin error:`,
 					(err as Error).message,
 				);
 			}

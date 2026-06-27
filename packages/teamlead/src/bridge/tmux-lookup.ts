@@ -27,6 +27,111 @@ export interface TmuxTarget {
 }
 
 /**
+ * FLY-560 Feature C: a resolved attach target for the founder's pinned
+ * `tmux attach` rescue command.
+ *  - `cmux`: the per-runner cmux linked session `cmux-<window_name>` — lands
+ *    exactly on that runner's window, isolated from the shared base session,
+ *    and its name is stable across runner restarts (window_name = issueId +
+ *    runner + title; only the `@id` changes). Preferred.
+ *  - `base`: degraded fallback when the cmux linked session can't be resolved
+ *    (cmux not running / probe indeterminate) — attach the shared base session
+ *    and `select-window` to the exact window id.
+ */
+export interface AttachTarget {
+	kind: "cmux" | "base";
+	/** Session name to attach to (cmux linked session, or base session). */
+	session: string;
+	/** Full `base:@id` window target — only set/used for the base fallback. */
+	tmuxWindow?: string;
+}
+
+/** Test seam: run a tmux subcommand and return its stdout. */
+export type TmuxRunner = (args: string[]) => Promise<{ stdout: string }>;
+
+const defaultTmuxRunner: TmuxRunner = (args) =>
+	execFileAsync("tmux", args, { timeout: TMUX_TIMEOUT });
+
+/**
+ * FLY-560 Feature C: resolve the best `tmux attach` target for a runner's
+ * window. Reads the live tmux server: get the window's `window_name`, build the
+ * cmux linked-session name `cmux-<window_name>`, and verify it exists with an
+ * EXACT (`=`) match (cmux-sync's own convention — avoids prefix-match attaching
+ * to the wrong session). Any failure (display-message error, cmux session
+ * absent, probe timeout) degrades to the base-session fallback, which always
+ * works. Never throws.
+ */
+export async function resolveCmuxAttachTarget(
+	tmuxWindow: string,
+	runTmux: TmuxRunner = defaultTmuxRunner,
+): Promise<AttachTarget> {
+	const colonIdx = tmuxWindow.indexOf(":");
+	const baseSession =
+		colonIdx >= 0 ? tmuxWindow.slice(0, colonIdx) : tmuxWindow;
+	try {
+		const { stdout } = await runTmux([
+			"display-message",
+			"-p",
+			"-t",
+			tmuxWindow,
+			"#{window_name}",
+		]);
+		const windowName = stdout.trim();
+		if (windowName) {
+			const cmuxSession = `cmux-${windowName}`;
+			try {
+				// Exact-match probe — `=` prevents fnmatch/prefix resolution.
+				await runTmux(["has-session", "-t", `=${cmuxSession}`]);
+				return { kind: "cmux", session: cmuxSession };
+			} catch {
+				// cmux session absent or probe failed — fall through to base.
+			}
+		}
+	} catch {
+		// display-message failed (window gone / tmux missing) — base fallback.
+	}
+	return { kind: "base", session: baseSession, tmuxWindow };
+}
+
+/** FLY-560 Feature C: options for rendering the attach command. */
+export interface AttachCommandOpts {
+	/**
+	 * Machine-aware extension point (multi-machine future, NOT used in
+	 * single-machine mode): when set, the local command is wrapped as
+	 * `ssh <sshHost> -t '<local cmd>'` so Annie can attach to a runner on a
+	 * different host (e.g. over Tailscale). The session lives on the runner's
+	 * machine; cross-machine attach needs the machine identity. Left unset today.
+	 */
+	sshHost?: string;
+}
+
+/**
+ * FLY-560 Feature C: render the copy-pasteable `tmux attach` command for a
+ * resolved target. Uses EXACT (`=`) tmux targets (matches cmux-sync) so a
+ * prefix collision can never attach Annie to the wrong session. Structured as
+ * `<optional ssh prefix> + tmux attach …` for the machine-aware future.
+ */
+export function buildAttachCommand(
+	target: AttachTarget,
+	opts: AttachCommandOpts = {},
+): string {
+	let cmd: string;
+	if (target.kind === "cmux") {
+		cmd = `tmux attach -t '=${target.session}'`;
+	} else {
+		// Degraded fallback: attach the shared base session, then jump to the
+		// exact window. NOTE: changes the base session's active window for any
+		// client attached directly to it (cmux uses linked sessions, so normally
+		// unaffected). The `\;` separates tmux commands at the shell.
+		cmd = `tmux attach -t '=${target.session}' \\; select-window -t '=${target.tmuxWindow}'`;
+	}
+	if (opts.sshHost) {
+		const escaped = cmd.replace(/'/g, "'\\''");
+		cmd = `ssh ${opts.sshHost} -t '${escaped}'`;
+	}
+	return cmd;
+}
+
+/**
  * FLY-228 (Codex code-review MED-3): discriminated tmux-target lookup.
  *   - `found`: target resolved.
  *   - `gone`:  DB missing / session not registered / no tmux_window → there is

@@ -734,6 +734,11 @@ export function createBridgeApp(
 	// (opts.chatThreadCreator is only set when chatThreadsEnabled).
 	const issueStatusEmojiEnabled =
 		process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0";
+	// FLY-560 Feature C: pin a `tmux attach` rescue command on each issue thread.
+	// Default ON; set FLYWHEEL_ISSUE_ATTACH_PIN=0 to disable. Independent from the
+	// emoji flag — the creator is passed when EITHER feature is on, and each
+	// behaviour is gated separately inside createEventRouter (all 4 combos clean).
+	const issueAttachPinEnabled = process.env.FLYWHEEL_ISSUE_ATTACH_PIN !== "0";
 	app.use(
 		"/events",
 		tokenAuthMiddleware(config.ingestToken),
@@ -745,8 +750,11 @@ export function createBridgeApp(
 			transitionOpts,
 			eventFilter,
 			registry,
-			issueStatusEmojiEnabled ? opts?.chatThreadCreator : undefined,
+			issueStatusEmojiEnabled || issueAttachPinEnabled
+				? opts?.chatThreadCreator
+				: undefined,
 			removeCleanWorktree,
+			{ issueStatusEmojiEnabled, issueAttachPinEnabled },
 		),
 	);
 
