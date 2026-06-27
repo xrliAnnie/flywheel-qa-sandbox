@@ -25,9 +25,23 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { readContentRef } from "flywheel-comm/utils";
+import {
+	type InboundCursorStore,
+	InMemoryInboundCursorStore,
+} from "../lead-backends/codex/InboundCursorStore.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
+import {
+	isDiscordSnowflake,
+	parseSqliteUtcMs,
+} from "./founder-notify-utils.js";
+import {
+	emitFounderReplyDeliveryForThread,
+	type FounderReplyThreadCtx,
+	type PendingQuestionForThread,
+} from "./founder-reply-deliverer.js";
+import { emitFounderThreadNotification } from "./founder-thread-notifier.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
@@ -104,6 +118,24 @@ export interface GatePollerConfig {
 	onHealthTick?: () => void | Promise<void>;
 	/** FLY-513: cadence for `onHealthTick` in poll ticks (default 20 ≈ 60s at 3s). */
 	healthCheckEveryNTicks?: number;
+
+	// ── FLY-605: bidirectional in-thread founder relay fallback ──
+	/** Global Discord bot token fallback (lead.botToken takes precedence). */
+	discordBotToken?: string;
+	/** Founder Discord user id (DISCORD_OWNER_USER_ID) — @mention + author match. */
+	discordOwnerUserId?: string;
+	/** Test seam for Discord HTTP (passed to notifier/deliverer). */
+	fetchImpl?: typeof fetch;
+	/** Part A grace before the in-thread fallback fires (default 10min). */
+	founderThreadNotifyGraceMs?: number;
+	/** Part A transient-retry TIME budget (default 45min); not a fast tick count. */
+	founderThreadRetryBudgetMs?: number;
+	/** Part B grace before auto-delivering a founder reply (default 10min). */
+	founderReplyDeliverGraceMs?: number;
+	/** Part B slow sub-cadence in poll ticks (default 20 ≈ 60s at 3s). */
+	founderReplyDeliverEveryNTicks?: number;
+	/** Part B thread-read cursor store (default in-memory). */
+	cursorStore?: InboundCursorStore;
 }
 
 /** The black-hole recipient name (stock claude-code lead convention). */
@@ -248,10 +280,41 @@ export class GatePoller {
 								);
 								continue;
 							}
-							await this.relayToLead(lead, session, question, dbPath);
+							// FLY-605 Part A (Codex R2 #3): relayToLead and the founder-thread
+							// fallback get SEPARATE try/catch so a Lead-runtime throw from the
+							// relay never prevents the post-grace fallback for this question.
+							try {
+								await this.relayToLead(lead, session, question, dbPath);
+							} catch (relayErr) {
+								relayFailed = true;
+								console.warn(
+									`[GatePoller] relayToLead threw for ${lead.agentId} (qid=${question.id}):`,
+									relayErr instanceof Error
+										? relayErr.message
+										: String(relayErr),
+								);
+							}
+							try {
+								await this.maybeEmitFounderThreadFallback(
+									lead,
+									session,
+									question,
+									dbPath,
+								);
+							} catch (fbErr) {
+								console.warn(
+									`[GatePoller] founder-thread fallback error for ${lead.agentId} (qid=${question.id}):`,
+									fbErr instanceof Error ? fbErr.message : String(fbErr),
+								);
+							}
 						}
-						// FLY-307 B: a clean pass (no throw) closes the circuit.
-						if (this.circuitEnabled()) this.recordCircuitSuccess(leadKey);
+						// FLY-307 B: a clean pass closes the circuit; a relay throw counts as
+						// a failure (preserves the pre-FLY-605 break-on-throw circuit semantics
+						// while letting the founder-thread fallback still run — Codex R2 #3).
+						if (this.circuitEnabled()) {
+							if (relayFailed) this.recordCircuitFailure(leadKey);
+							else this.recordCircuitSuccess(leadKey);
+						}
 					} catch (err) {
 						relayFailed = true;
 						console.warn(
@@ -279,6 +342,23 @@ export class GatePoller {
 							);
 						}
 					}
+				}
+			}
+
+			// FLY-605 Part B: founder-reply inbound auto-delivery on a slow
+			// sub-cadence (~60s). Piggybacks this tick (zero new timer); fully
+			// isolated — its errors never abort the poll loop.
+			if (
+				this.founderReplyDeliverEnabled() &&
+				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
+			) {
+				try {
+					await this.founderReplyDeliverPass();
+				} catch (err) {
+					console.warn(
+						"[GatePoller] founder-reply deliver pass error:",
+						err instanceof Error ? err.message : String(err),
+					);
 				}
 			}
 		} finally {
@@ -728,5 +808,338 @@ export class GatePoller {
 		// FLY-47/FLY-77: Chat relay removed. Lead receives the event via the
 		// configured LeadRuntime (CommDB instruction or mailbox) and relays to
 		// Annie in chatChannel using its own Discord identity.
+	}
+
+	// ── FLY-605 Part A: in-thread founder fallback (outbound runner→founder) ──
+
+	/**
+	 * qid → terminal (posted / permanent / skipped / retry-budget-exhausted):
+	 * never notify again this process. Durable cross-restart dedup is the
+	 * `founder-thread-notify-<qid>` session_events marker.
+	 */
+	/**
+	 * FLY-605 (Codex code-review #3): in-process processed-through cursor used
+	 * for Part B when no file-backed cursor is wired (e.g. commdb/rollback path).
+	 * Without it, every sub-cadence would re-scan from the oldest pending question.
+	 */
+	private readonly defaultReplyCursor = new InMemoryInboundCursorStore();
+	private readonly founderNotifyDone = new Set<string>();
+	/** qid → transient-failure retry state (TIME budget, not a fast tick count). */
+	private readonly founderNotifyRetry = new Map<
+		string,
+		{ firstFailedAtMs: number; nextAttemptAtMs: number; attempts: number }
+	>();
+
+	private founderThreadNotifyEnabled(): boolean {
+		return process.env.FLYWHEEL_FOUNDER_THREAD_NOTIFY !== "0";
+	}
+
+	private founderThreadGraceMs(): number {
+		return this.config.founderThreadNotifyGraceMs ?? 10 * 60_000;
+	}
+
+	private founderThreadRetryBudgetMs(): number {
+		return this.config.founderThreadRetryBudgetMs ?? 45 * 60_000;
+	}
+
+	private writeFounderThreadMarker(
+		question: PendingQuestion,
+		session: Session,
+		reason: string,
+	): void {
+		this.config.store.insertEvent({
+			event_id: `founder-thread-notify-${question.id}`,
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			project_name: session.project_name,
+			event_type: "founder_thread_notify_done",
+			severity: reason === "transient_budget_exhausted" ? "warning" : "info",
+			source: "bridge.gate-poller",
+			payload: { questionId: question.id, reason },
+		});
+		this.founderNotifyDone.add(question.id);
+		this.founderNotifyRetry.delete(question.id);
+	}
+
+	private async maybeEmitFounderThreadFallback(
+		lead: LeadConfig,
+		session: Session,
+		question: PendingQuestion,
+		_dbPath: string,
+	): Promise<void> {
+		if (!this.founderThreadNotifyEnabled()) return;
+		if (!this.config.chatThreadsEnabled) return;
+		const cp = question.checkpoint;
+		if (cp !== "brainstorm" && cp !== "approve_to_ship") return; // v1 scope
+
+		// Same liveness + scope gate as the gate-question relay path.
+		if (!ACTIVE_SESSION_STATUSES.has(session.status)) return;
+		try {
+			if (!matchesLead(session, lead.agentId, this.config.projects)) return;
+		} catch {
+			return;
+		}
+
+		// Grace: the gate must have sat unanswered ≥ grace (= "the Lead dropped it").
+		const createdMs = parseSqliteUtcMs(question.created_at);
+		if (createdMs === null) return;
+		const now = Date.now();
+		if (now - createdMs < this.founderThreadGraceMs()) return;
+
+		// Dedup: terminal in-process, or a durable marker survived a restart.
+		if (this.founderNotifyDone.has(question.id)) return;
+		const marker = `founder-thread-notify-${question.id}`;
+		if (
+			this.config.store
+				.getEventsByExecution(session.execution_id)
+				.some((e) => e.event_id === marker)
+		) {
+			this.founderNotifyDone.add(question.id);
+			return;
+		}
+
+		// Transient backoff: respect the per-qid nextAttemptAt window.
+		const retry = this.founderNotifyRetry.get(question.id);
+		if (retry && now < retry.nextAttemptAtMs) return;
+
+		const thread = this.config.store.getChatThreadByIssue(
+			session.issue_id,
+			lead.chatChannel,
+		);
+		const botToken = lead.botToken ?? this.config.discordBotToken;
+		const ownerUserId = this.config.discordOwnerUserId;
+
+		let summary = question.content;
+		if (question.content_type === "ref" && question.content_ref) {
+			summary = readContentRef(question.content_ref) ?? question.content;
+		}
+
+		const result = await emitFounderThreadNotification(
+			{
+				questionId: question.id,
+				checkpoint: cp,
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				issueIdentifier: session.issue_identifier,
+				projectName: session.project_name,
+				summary,
+				ageMinutes: Math.round((now - createdMs) / 60_000),
+				thread,
+				botToken,
+				ownerUserId,
+			},
+			{ store: this.config.store, fetchImpl: this.config.fetchImpl },
+		);
+
+		if (result.kind === "transient_failed") {
+			// TIME budget (Codex R1 #4): keep retrying until the budget elapses or
+			// the gate is answered (drops out of pending). Honor Retry-After.
+			const prev = retry ?? {
+				firstFailedAtMs: now,
+				nextAttemptAtMs: now,
+				attempts: 0,
+			};
+			const attempts = prev.attempts + 1;
+			if (now - prev.firstFailedAtMs >= this.founderThreadRetryBudgetMs()) {
+				this.writeFounderThreadMarker(
+					question,
+					session,
+					"transient_budget_exhausted",
+				);
+				return;
+			}
+			const backoff = Math.min(
+				result.retryAfterMs ?? 30_000 * 2 ** (attempts - 1),
+				5 * 60_000,
+			);
+			this.founderNotifyRetry.set(question.id, {
+				firstFailedAtMs: prev.firstFailedAtMs,
+				nextAttemptAtMs: now + backoff,
+				attempts,
+			});
+			return;
+		}
+
+		// posted / permanent_failed / skipped → terminal: durable marker + done.
+		this.writeFounderThreadMarker(question, session, result.kind);
+	}
+
+	// ── FLY-605 Part B: founder-reply inbound delivery (founder→runner) ──
+
+	private founderReplyDeliverEnabled(): boolean {
+		return process.env.FLYWHEEL_FOUNDER_REPLY_DELIVER !== "0";
+	}
+
+	private founderReplyDeliverGraceMs(): number {
+		return this.config.founderReplyDeliverGraceMs ?? 10 * 60_000;
+	}
+
+	private founderReplyDeliverEveryNTicks(): number {
+		return (
+			this.config.founderReplyDeliverEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS
+		);
+	}
+
+	/**
+	 * Per (project, lead): take the past-grace pending questions, group them by
+	 * issue thread, and let `emitFounderReplyDeliveryForThread` read each thread
+	 * once and auto-deliver / WAKE / hand off as appropriate.
+	 */
+	private async founderReplyDeliverPass(): Promise<void> {
+		if (!this.config.chatThreadsEnabled) return;
+		const ownerUserId = this.config.discordOwnerUserId;
+		if (!isDiscordSnowflake(ownerUserId)) return;
+		const graceMs = this.founderReplyDeliverGraceMs();
+		const now = Date.now();
+
+		for (const project of this.config.projects) {
+			for (const lead of project.leads) {
+				const botToken = lead.botToken ?? this.config.discordBotToken;
+				if (!botToken) continue;
+				const dbPath = defaultGetCommDbPath(project.projectName);
+
+				let pending: PendingQuestion[];
+				try {
+					const db = CommDB.openReadonly(dbPath);
+					try {
+						pending = db.getPendingQuestions(lead.agentId) as PendingQuestion[];
+					} finally {
+						db.close();
+					}
+				} catch {
+					continue; // CommDB not present yet
+				}
+
+				// Group past-grace pending questions by issue thread.
+				const byThread = new Map<
+					string,
+					{ ctx: FounderReplyThreadCtx; questions: PendingQuestionForThread[] }
+				>();
+				for (const q of pending) {
+					const createdMs = parseSqliteUtcMs(q.created_at);
+					if (createdMs === null || now - createdMs < graceMs) continue;
+					const session = this.config.store.getSession(q.from_agent);
+					if (!session) continue;
+					const thread = this.config.store.getChatThreadByIssue(
+						session.issue_id,
+						lead.chatChannel,
+					);
+					if (!thread?.thread_id) continue;
+					let group = byThread.get(thread.thread_id);
+					if (!group) {
+						group = {
+							ctx: {
+								issueId: session.issue_id,
+								projectName: project.projectName,
+								threadId: thread.thread_id,
+								botToken,
+								ownerUserId: ownerUserId as string,
+								graceMs,
+								commDbPath: dbPath,
+								leadId: lead.agentId,
+							},
+							questions: [],
+						};
+						byThread.set(thread.thread_id, group);
+					}
+					group.questions.push({
+						questionId: q.id,
+						checkpoint: q.checkpoint,
+						executionId: q.from_agent,
+						createdAtMs: createdMs,
+					});
+				}
+
+				const deliverAmbiguousToLead = this.makeAmbiguousHandoff(
+					lead,
+					project.projectName,
+				);
+				for (const { ctx, questions } of byThread.values()) {
+					try {
+						await emitFounderReplyDeliveryForThread(ctx, questions, {
+							store: this.config.store,
+							fetchImpl: this.config.fetchImpl,
+							cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
+							deliverAmbiguousToLead,
+						});
+					} catch (err) {
+						console.warn(
+							`[GatePoller] founder-reply deliver error (thread=${ctx.threadId}):`,
+							err instanceof Error ? err.message : String(err),
+						);
+					}
+				}
+			}
+		}
+	}
+
+	/**
+	 * Durable ambiguous-message handoff to the Lead via the SAME LeadRuntime path
+	 * GatePoller uses for gate questions (Codex R3 #2). Returns true only when the
+	 * event is durably accepted + delivered; on failure the deliverer stops the
+	 * cursor before that message so the manual-relay handoff is never lost.
+	 */
+	private makeAmbiguousHandoff(
+		lead: LeadConfig,
+		projectName: string,
+	): (eventId: string, payload: Record<string, unknown>) => Promise<boolean> {
+		return async (eventId, payload) => {
+			if (this.config.store.isLeadEventDelivered(lead.agentId, eventId)) {
+				// FLY-605 (Codex code-review R2 #1): a prior pass may have set the
+				// in-memory delivered mark and then had flush() throw (the deliverer
+				// caught the thread error and did NOT advance the cursor that pass).
+				// Re-flush here so the "already delivered in memory" short-circuit can
+				// never let the cursor advance past a marker that never reached disk.
+				// A flush() failure propagates → emitFounderReplyDeliveryForThread
+				// throws → the per-thread catch leaves the cursor un-advanced → retry.
+				this.config.store.flush();
+				return true;
+			}
+			const issueId = String(payload.issueId ?? "");
+			const answer = String(payload.answer ?? "");
+			const hookPayload: HookPayload = {
+				event_type: "founder_reply_ambiguous",
+				execution_id: "",
+				issue_id: issueId,
+				project_name: projectName,
+				status: "founder_reply_ambiguous",
+				summary:
+					"🧵 Annie 在该 issue thread 回复了，但有多个 open question、Bridge 无法确定她答的是哪个 —— " +
+					`请人工 relay 给对应 runner。回复内容：${answer}`,
+				chat_thread_id: String(payload.threadId ?? ""),
+			};
+			const seq = this.config.store.appendLeadEvent(
+				lead.agentId,
+				eventId,
+				"founder_reply_ambiguous",
+				JSON.stringify(hookPayload),
+				issueId,
+			);
+			const runtime = this.config.runtimeRegistry.getForLead(lead.agentId);
+			if (!runtime) return false;
+			const result = await runtime.deliver({
+				seq,
+				event: hookPayload,
+				sessionKey: issueId,
+				leadId: lead.agentId,
+				timestamp: new Date().toISOString(),
+			});
+			if (result.delivered) {
+				this.config.store.markLeadEventDelivered(seq);
+				// FLY-605 (Codex code-review #2): force the lead_events append +
+				// delivered mark to disk BEFORE we return true — the deliverer
+				// advances (and immediately persists) the thread cursor on success,
+				// and appendLeadEvent/markLeadEventDelivered do NOT auto-save. Without
+				// this flush a crash after the cursor write could drop the manual-relay
+				// handoff while the cursor permanently skips the founder message.
+				this.config.store.flush();
+				return true;
+			}
+			this.config.store.recordDeliveryFailure(
+				seq,
+				result.error ?? "deliver returned false",
+			);
+			return false;
+		};
 	}
 }

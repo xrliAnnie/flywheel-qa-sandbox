@@ -2600,6 +2600,10 @@ export async function startBridge(
 		| import("./gate-poller.js").MisroutePatrolTransport
 		| undefined;
 	let misrouteArchiveDir: string | undefined;
+	// FLY-605: persistent founder-reply thread cursor path (state dir is only
+	// reachable through the dynamically-imported getStateDir below). Unset →
+	// GatePoller falls back to an in-memory cursor.
+	let founderReplyCursorPath: string | undefined;
 	if (resolveCommBackend() === "mailbox") {
 		try {
 			const { AgentTeamTransportFactory, getStateDir } = await import(
@@ -2607,6 +2611,7 @@ export async function startBridge(
 			);
 			misroutePatrolTransport = AgentTeamTransportFactory.fromEnv();
 			misrouteArchiveDir = join(getStateDir(), "misroute-archive");
+			founderReplyCursorPath = join(getStateDir(), "founder-reply-cursor.json");
 		} catch (err) {
 			console.warn(
 				`[Bridge] FLY-208 misroute patrol wiring failed (patrol off, non-fatal): ${(err as Error).message}`,
@@ -2637,6 +2642,13 @@ export async function startBridge(
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		transport: misroutePatrolTransport,
 		misrouteArchiveDir,
+		// FLY-605: bidirectional in-thread founder relay fallback. owner/token
+		// from config; the founder-reply cursor persists across restarts.
+		discordBotToken: config.discordBotToken,
+		discordOwnerUserId: config.discordOwnerUserId,
+		cursorStore: founderReplyCursorPath
+			? new FileInboundCursorStore(founderReplyCursorPath)
+			: undefined,
 		// FLY-513: periodic global-codex drift detection (path-only, zero new timer).
 		// Default-on; `FLYWHEEL_CODEX_HEALTH_GUARD=0` short-circuits inside the probe.
 		onHealthTick: codexHealthEnabled

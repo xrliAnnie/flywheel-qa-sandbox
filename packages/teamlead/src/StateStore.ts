@@ -267,6 +267,16 @@ export class StateStore {
 		writeFileSync(this.dbPath, Buffer.from(data));
 	}
 
+	/**
+	 * FLY-605: force-persist pending mutations (e.g. lead_events written by
+	 * `appendLeadEvent` / `markLeadEventDelivered`, which do NOT auto-save) to
+	 * disk. Callers that must guarantee durability before a follow-on durable
+	 * write (e.g. advancing a thread cursor) call this explicitly.
+	 */
+	flush(): void {
+		this.save();
+	}
+
 	migrate(): void {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS session_events (
