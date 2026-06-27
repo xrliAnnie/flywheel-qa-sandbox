@@ -38,6 +38,11 @@ import {
 import { handleProofShotAutoTrigger } from "./proofshot-trigger.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
+import {
+	buildAttachCommand,
+	getTmuxTargetFromCommDb,
+	resolveCmuxAttachTarget,
+} from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
@@ -433,6 +438,83 @@ function stampStageEmojiForSession(
 		});
 }
 
+/**
+ * FLY-560 Feature C: fire-and-forget ensure of the pinned `tmux attach` rescue
+ * command on the issue's `[FLY-XX]` chat thread. Resolves the lead/channel/token
+ * + thread (same as stampStageEmojiForSession), resolves the runner's tmux
+ * window from CommDB → cmux linked-session attach target, and delegates to
+ * ChatThreadCreator.ensureRunnerAttachPin. Silent on any miss (no lead/channel/
+ * token, thread not created yet, tmux_window not registered yet) — the next
+ * stage_changed reconciles. Never throws into the event handler.
+ */
+function pinRunnerAttachForSession(
+	deps: {
+		store: StateStore;
+		projects: ProjectEntry[];
+		config: BridgeConfig;
+		chatThreadCreator: ChatThreadCreator;
+	},
+	session: Session,
+): void {
+	let chatChannel: string | undefined;
+	let botToken: string | undefined;
+	let leadId: string | undefined;
+	try {
+		const { lead } = resolveLeadForIssue(
+			deps.projects,
+			session.project_name,
+			parseIssueLabels(session.issue_labels),
+		);
+		chatChannel = lead.chatChannel;
+		botToken = lead.botToken ?? deps.config.discordBotToken;
+		leadId = lead.agentId;
+	} catch {
+		return; // project/lead not resolvable — skip
+	}
+	if (!chatChannel || !botToken) return;
+
+	const thread = deps.store.getChatThreadByIssue(session.issue_id, chatChannel);
+	if (!thread) return; // thread not created yet — a later stage_changed catches it
+
+	const resolvedChannel = chatChannel;
+	const resolvedToken = botToken;
+	const threadId = thread.thread_id;
+	// Codex code R1 MED-1 / R2: the CommDB read (getTmuxTargetFromCommDb opens a
+	// better-sqlite3 file with busy_timeout=5s) must NOT run on the request call
+	// stack — a locked comm.db could otherwise stall the stage_changed response.
+	// An async IIFE would run synchronously up to its first `await`, so push the
+	// ENTIRE chain (incl. the sync CommDB read) past a real async boundary via
+	// Promise.resolve().then — the handler returns before any of it runs.
+	void Promise.resolve()
+		.then(async () => {
+			const target = getTmuxTargetFromCommDb(
+				session.execution_id,
+				session.project_name,
+			);
+			if (!target) return; // tmux_window not registered yet — next stage reconciles
+			const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
+			const command = buildAttachCommand(attach);
+			await deps.chatThreadCreator.ensureRunnerAttachPin(
+				{
+					chatChannelId: resolvedChannel,
+					issueId: session.issue_id,
+					issueIdentifier: session.issue_identifier,
+					issueTitle: session.issue_title,
+					botToken: resolvedToken,
+					leadId,
+				},
+				threadId,
+				command,
+			);
+		})
+		.catch((err: unknown) => {
+			console.warn(
+				`[event-route] attach-pin failed for ${session.execution_id}:`,
+				err instanceof Error ? err.message : err,
+			);
+		});
+}
+
 export function createEventRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -444,8 +526,19 @@ export function createEventRouter(
 	chatThreadCreator?: ChatThreadCreator,
 	// FLY-603 Layer A: optional worktree-cleanup closure (composition root).
 	removeCleanWorktree?: WorktreeCleanupFn,
+	// FLY-560 Feature C: independent gating for the two chat-thread behaviours
+	// (emoji stamp vs attach pin). Defaults keep byte-compat: when a creator is
+	// passed without flags, emoji stamping stays ON (Feature A) and attach pin
+	// stays OFF (opt-in). plugin.ts passes the resolved env flags.
+	featureFlags?: {
+		issueStatusEmojiEnabled?: boolean;
+		issueAttachPinEnabled?: boolean;
+	},
 ): Router {
 	const router = Router();
+	const issueStatusEmojiEnabled =
+		featureFlags?.issueStatusEmojiEnabled !== false;
+	const issueAttachPinEnabled = featureFlags?.issueAttachPinEnabled === true;
 
 	// Dedicated heartbeat route — lightweight, no session_events write, no lead notification
 	router.post("/heartbeat", (req, res) => {
@@ -1304,14 +1397,28 @@ export function createEventRouter(
 					// [FLY-XX] thread title so Annie reads status at a glance. Wired
 					// only when the feature flag is on (plugin.ts passes the creator);
 					// fully fire-and-forget so it never blocks/breaks the transition.
-					if (chatThreadCreator) {
+					if (
+						chatThreadCreator &&
+						(issueStatusEmojiEnabled || issueAttachPinEnabled)
+					) {
 						const sessionForStamp = store.getSession(event.execution_id);
 						if (sessionForStamp) {
-							stampStageEmojiForSession(
-								{ store, projects, config, chatThreadCreator },
-								sessionForStamp,
-								stage,
-							);
+							if (issueStatusEmojiEnabled) {
+								stampStageEmojiForSession(
+									{ store, projects, config, chatThreadCreator },
+									sessionForStamp,
+									stage,
+								);
+							}
+							// FLY-560 Feature C: keep the pinned `tmux attach` command
+							// current (post on first stage once tmux_window registers;
+							// update only when the command changes).
+							if (issueAttachPinEnabled) {
+								pinRunnerAttachForSession(
+									{ store, projects, config, chatThreadCreator },
+									sessionForStamp,
+								);
+							}
 						}
 					}
 

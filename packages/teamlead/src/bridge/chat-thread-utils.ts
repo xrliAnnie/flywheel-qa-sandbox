@@ -329,6 +329,81 @@ export async function addThreadMember(
 	}
 }
 
+export interface PinThreadMessageDeps {
+	/** Test seam for Discord HTTP. */
+	fetchImpl?: typeof fetch;
+	/** Per-attempt abort timeout. Default 5000ms. */
+	timeoutMs?: number;
+}
+
+/**
+ * FLY-560 Feature C: outcome of a pin attempt, so the caller's pin state
+ * machine can decide whether to record success, retry later, or repost.
+ *  - "pinned":    the message is (now) pinned.
+ *  - "forbidden": 403 — the bot lacks the pin permission (PIN_MESSAGES). The
+ *                 message stays posted-but-unpinned; the next stage retries.
+ *  - "missing":   404 — the message is gone (deleted); caller should repost.
+ *  - "error":     429 / 5xx / network / timeout — transient; retry next stage.
+ */
+export type PinOutcome = "pinned" | "forbidden" | "missing" | "error";
+
+export interface PinResult {
+	outcome: PinOutcome;
+	status?: number;
+}
+
+/**
+ * FLY-560 Feature C: pin a message in a channel/thread via the current Discord
+ * Message-resource endpoint `PUT /channels/{channelId}/messages/pins/{messageId}`
+ * (requires PIN_MESSAGES; the old Channel-resource `/pins/{id}` route is
+ * deprecated). A thread IS a channel, so `channelId` is the thread id. Pinning
+ * is idempotent (re-pinning an already-pinned message succeeds), which the
+ * self-heal retry relies on. Never throws.
+ */
+export async function pinThreadMessage(
+	threadId: string,
+	messageId: string,
+	botToken: string,
+	deps: PinThreadMessageDeps = {},
+): Promise<PinResult> {
+	const fetchImpl = deps.fetchImpl ?? fetch;
+	const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		const res = await fetchImpl(
+			`${DISCORD_API}/channels/${threadId}/messages/pins/${messageId}`,
+			{
+				method: "PUT",
+				headers: { Authorization: `Bot ${botToken}` },
+				signal: controller.signal,
+			},
+		);
+		if (res.ok || res.status === 204)
+			return { outcome: "pinned", status: res.status };
+		const body = await res.text().catch(() => "");
+		if (res.status === 403) {
+			console.warn(
+				`[chat-thread-utils] pinThreadMessage forbidden (missing PIN_MESSAGES): thread=${threadId} ${res.status} ${body.slice(0, 200)}`,
+			);
+			return { outcome: "forbidden", status: 403 };
+		}
+		if (res.status === 404) return { outcome: "missing", status: 404 };
+		console.warn(
+			`[chat-thread-utils] pinThreadMessage failed: thread=${threadId} ${res.status} ${body.slice(0, 200)}`,
+		);
+		return { outcome: "error", status: res.status };
+	} catch (err) {
+		console.warn(
+			`[chat-thread-utils] pinThreadMessage error: thread=${threadId}`,
+			(err as Error).message,
+		);
+		return { outcome: "error" };
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 export interface RemoveUserDeps {
 	/** Test seam for Discord HTTP. */
 	fetchImpl?: typeof fetch;
