@@ -29,6 +29,7 @@ import {
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import { patchSessionParams } from "./proofshot-session.js";
 import { emitRunnerReadyToCloseNotification } from "./runner-ready-to-close-notifier.js";
+import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
 /**
  * Shared predicate — aligns with event-route.ts + DirectEventSink
@@ -123,6 +124,13 @@ export interface PostShipOpts {
 export interface PostShipDeps {
 	store: StateStore;
 	projects: ProjectEntry[];
+	/**
+	 * FLY-603 Layer A: optional worktree-cleanup closure, built at the Bridge
+	 * composition root and threaded into all three finalization call sites so
+	 * the HTTP /events router (which has no WorktreeManager) can clean too.
+	 * Absent → no worktree cleanup (byte-compat for callers that don't wire it).
+	 */
+	removeCleanWorktree?: WorktreeCleanupFn;
 }
 
 /**
@@ -174,6 +182,27 @@ export async function runPostShipFinalization(
 		);
 		return { tmuxClosed: false, errors: [(err as Error).message] };
 	});
+
+	// ── (1.5) FLY-603 Layer A worktree cleanup — AFTER tmux close (runner cwd is
+	// the worktree), BEFORE notifier. The closure self-guards on positive tmux
+	// close + clean tree + path-authority and never throws. ──
+	if (deps.removeCleanWorktree) {
+		await deps
+			.removeCleanWorktree({
+				executionId: opts.executionId,
+				issueId: opts.issueId,
+				issueIdentifier: opts.issueIdentifier,
+				projectName: opts.projectName,
+				tmuxClosed: cleanup.tmuxClosed,
+				tmuxErrors: cleanup.errors,
+			})
+			.catch((err) => {
+				console.error(
+					`[post-ship] worktree cleanup failed:`,
+					(err as Error).message,
+				);
+			});
+	}
 
 	// ── Resolve lead + thread ONCE, reused by notifier AND archiver ──
 	let chatChannel: string | undefined;

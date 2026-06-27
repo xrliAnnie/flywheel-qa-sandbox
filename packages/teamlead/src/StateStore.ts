@@ -1266,6 +1266,48 @@ export class StateStore {
 		return rows;
 	}
 
+	/**
+	 * FLY-603 Layer B: sessions whose worktree must NOT be reconciled — the
+	 * protected status set for a project. `pending` IS included: it is a real
+	 * persisted status (schema default; `worktree_ready` upserts a pending
+	 * session before `session_started`). Returns rows; the path-authoritative
+	 * key derivation happens at composition level (it needs WorktreeManager).
+	 */
+	listWorktreeProtectionSessions(projectName: string): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE project_name = ? AND status IN ('running', 'awaiting_review', 'approved_to_ship', 'pending')",
+		);
+		stmt.bind([projectName]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-603 Layer B: all sessions for a project (any status) — candidates for
+	 * the independent live-runner probe (a terminal session with a still-live
+	 * tmux must keep its worktree).
+	 */
+	getProjectSessions(projectName: string): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE project_name = ?",
+		);
+		stmt.bind([projectName]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
 	getStuckSessions(thresholdMinutes: number): Session[] {
 		const stmt = this.db.prepare(
 			"SELECT * FROM sessions WHERE status = 'running' AND last_activity_at < datetime('now', ?)",

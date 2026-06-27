@@ -28,6 +28,7 @@ import {
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
 import type { BridgeConfig } from "./bridge/types.js";
+import type { WorktreeCleanupFn } from "./bridge/worktree-cleanup.js";
 import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
 
@@ -37,6 +38,13 @@ function sqliteDatetime(): string {
 
 export class DirectEventSink implements ExecutionEventEmitter {
 	private pending: Promise<void>[] = [];
+
+	/**
+	 * FLY-603 Layer A: worktree-cleanup closure, set by the Bridge composition
+	 * root after construction (kept off the long constructor). Absent → no
+	 * worktree cleanup on this path (byte-compat).
+	 */
+	public removeCleanWorktree?: WorktreeCleanupFn;
 
 	constructor(
 		private store: StateStore,
@@ -572,7 +580,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							: undefined,
 						fallbackBotToken: this.config.discordBotToken,
 					},
-					{ store: this.store, projects: this.projects },
+					{
+						store: this.store,
+						projects: this.projects,
+						removeCleanWorktree: this.removeCleanWorktree,
+					},
 				),
 			);
 		}

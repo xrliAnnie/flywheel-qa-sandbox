@@ -32,6 +32,7 @@ import type { GitResultChecker } from "./GitResultChecker.js";
 import type { HydratedContext, PreHydrator } from "./PreHydrator.js";
 import type { SkillInjector } from "./SkillInjector.js";
 import type { WorktreeInfo, WorktreeManager } from "./WorktreeManager.js";
+import { deriveWorktreeKey } from "./WorktreeManager.js";
 
 /**
  * FLY-205: Lead-judged doc tier — controls DOCUMENT OUTPUT ONLY (checkpoint
@@ -404,11 +405,10 @@ export class Blueprint {
 		// ── Worktree setup (v0.2 — own try/catch) ──────────────
 		if (this.worktreeManager) {
 			const projectName = ctx.projectName ?? ctx.teamName;
-			// FLY-95: Role-aware worktree naming to prevent main/QA collision
-			const rawRole = ctx.sessionRole ?? "main";
-			const role =
-				rawRole.replace(/[^a-zA-Z0-9-]/g, "").toLowerCase() || "main";
-			const worktreeIssueId = role === "main" ? node.id : `${node.id}-${role}`;
+			// FLY-95: Role-aware worktree naming to prevent main/QA collision.
+			// FLY-603: extracted into the shared deriveWorktreeKey() helper so the
+			// post-ship / reconciler cleanup derives the exact same key (no drift).
+			const worktreeIssueId = deriveWorktreeKey(node.id, ctx.sessionRole);
 			try {
 				await this.worktreeManager.removeIfExists(
 					projectRoot,
