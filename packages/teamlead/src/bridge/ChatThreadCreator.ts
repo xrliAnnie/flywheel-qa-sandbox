@@ -9,6 +9,7 @@ import {
 	addThreadMember,
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
+import { splitStatusEmoji, stageBadge } from "./stage-utils.js";
 import { validateThreadExists } from "./thread-validator.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -71,6 +72,16 @@ function isPlaceholderThreadName(
 export class ChatThreadCreator {
 	/** Inflight dedup: concurrent calls for the same (issueId, channelId) share one promise. */
 	private inflight = new Map<string, Promise<ChatThreadResult>>();
+
+	/**
+	 * FLY-560 Codex R1 HIGH: per-thread serialization chain for stage-emoji
+	 * stamps. Stamps are fire-and-forget on each `stage_changed`; without this,
+	 * two adjacent stamps for the same thread could both read the old title
+	 * before either writes (double-PATCH the same emoji, defeating the
+	 * idempotent skip + the 2-rename/10-min budget) or land out of order
+	 * (final emoji ≠ latest stage). Chaining runs them in submission order.
+	 */
+	private stampChains = new Map<string, Promise<void>>();
 
 	constructor(private store: StateStore) {}
 
@@ -246,6 +257,132 @@ export class ChatThreadCreator {
 		threadId: string,
 	): Promise<void> {
 		await this.maybeBackfillThreadName(ctx, threadId);
+	}
+
+	/**
+	 * FLY-560 Feature A: stamp the current pipeline stage's status badge onto the
+	 * front of the issue thread title so Annie reads the status at a glance —
+	 * e.g. `🔨 [FLY-560] Title` (emoji-only) or `🔨实现中 [FLY-560] Title`
+	 * (emoji+word). Driven automatically from the `stage_changed` event; the Lead
+	 * never touches it.
+	 *
+	 * `withWord` (FLY-560 UX iteration): when true the badge carries a short word
+	 * after the emoji (Annie's feedback — emoji alone is hard to memorise). The
+	 * production wiring reads it from `FLYWHEEL_ISSUE_STATUS_WORD` (default ON);
+	 * it defaults to false here so an omitted arg keeps the emoji-only behaviour.
+	 *
+	 * Idempotent + churn-safe: reads the current name, swaps only the leading
+	 * status badge (the title text is preserved, or rebuilt from `ctx` when the
+	 * issue title is known), and skips the PATCH when the desired name already
+	 * matches. Unknown stages no-op. Fire-and-forget: every failure path (GET
+	 * 404, PATCH 429 rate-limit, timeout) is swallowed so the caller's stage
+	 * transition is never blocked or broken — the next stage_changed reconciles.
+	 */
+	async stampStageEmoji(
+		ctx: ChatThreadContext,
+		threadId: string,
+		stage: string,
+		withWord = false,
+	): Promise<void> {
+		// FLY-560 Codex R1 HIGH: serialize per thread. Concurrent fire-and-forget
+		// stamps for the same thread are chained so they run in submission order
+		// (== stage order, since the Runner reports stages sequentially): the
+		// same-emoji skip stays idempotent and the last stamp — the latest stage —
+		// is the one whose PATCH lands last. Each link re-reads the live title.
+		const prev = this.stampChains.get(threadId) ?? Promise.resolve();
+		const next = prev
+			.catch(() => undefined)
+			.then(() => this.stampStageEmojiNow(ctx, threadId, stage, withWord));
+		this.stampChains.set(threadId, next);
+		// Drop the chain entry once it drains to its tail (bounded map growth).
+		void next.finally(() => {
+			if (this.stampChains.get(threadId) === next) {
+				this.stampChains.delete(threadId);
+			}
+		});
+		return next;
+	}
+
+	private async stampStageEmojiNow(
+		ctx: ChatThreadContext,
+		threadId: string,
+		stage: string,
+		withWord: boolean,
+	): Promise<void> {
+		const badge = stageBadge(stage, withWord);
+		if (!badge) return;
+
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
+
+		try {
+			const getRes = await fetch(`${DISCORD_API}/channels/${threadId}`, {
+				method: "GET",
+				headers: { Authorization: `Bot ${ctx.botToken}` },
+				signal: controller.signal,
+			});
+			if (!getRes.ok) {
+				const body = await getRes.text().catch(() => "");
+				console.warn(
+					`[ChatThreadCreator] stage-emoji GET failed: ${getRes.status} ${body.slice(0, 200)}`,
+				);
+				return;
+			}
+
+			const data = (await getRes.json().catch(() => ({}))) as {
+				name?: unknown;
+			};
+			const currentName =
+				typeof data.name === "string" ? data.name.trim() : undefined;
+
+			// Base title (without status emoji). FLY-560 Codex R1 MEDIUM: Feature A
+			// manages ONLY the leading emoji — preserve the existing title text
+			// (including any manual curation), swapping just the emoji. Rebuild the
+			// canonical `[FLY-XX] Title` from ctx only when the current title is a
+			// placeholder (or empty) and the real title is known.
+			const currentBase = splitStatusEmoji(currentName ?? "").base;
+			let base: string | undefined;
+			if (currentBase && !isPlaceholderThreadName(currentBase, ctx)) {
+				base = currentBase;
+			} else if (ctx.issueTitle && effectiveIssueKey(ctx)) {
+				base = buildIssueThreadName(ctx);
+			} else if (currentBase) {
+				base = currentBase;
+			}
+			if (!base) return;
+
+			const desired = truncateDiscordThreadName(`${badge} ${base}`);
+			if (currentName === desired) return; // already stamped — skip PATCH
+
+			const patchRes = await fetch(`${DISCORD_API}/channels/${threadId}`, {
+				method: "PATCH",
+				headers: {
+					Authorization: `Bot ${ctx.botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ name: desired }),
+				signal: controller.signal,
+			});
+			if (!patchRes.ok) {
+				const body = await patchRes.text().catch(() => "");
+				console.warn(
+					`[ChatThreadCreator] stage-emoji PATCH failed: ${patchRes.status} ${body.slice(0, 200)}`,
+				);
+			}
+		} catch (err) {
+			if ((err as Error).name === "AbortError") {
+				console.warn(
+					`[ChatThreadCreator] stage-emoji stamp timed out after ${CREATE_TIMEOUT_MS}ms`,
+				);
+			} else {
+				console.warn(
+					`[ChatThreadCreator] stage-emoji stamp error:`,
+					(err as Error).message,
+				);
+			}
+		} finally {
+			clearTimeout(timeout);
+		}
 	}
 
 	private async maybeBackfillThreadName(
