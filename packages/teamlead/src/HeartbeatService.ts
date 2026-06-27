@@ -3,6 +3,10 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "./applyTransition.js";
+import type {
+	ChatThreadContext,
+	ChatThreadCreator,
+} from "./bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import {
 	applyQuarantineFallback,
@@ -17,6 +21,7 @@ import {
 	RETRYABLE_LEAD_EVENT_TYPES,
 } from "./bridge/lead-runtime.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
+import { reconnectingBadge, stageBadge } from "./bridge/stage-utils.js";
 import {
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
@@ -36,11 +41,44 @@ export interface HeartbeatNotifier {
 	 * FLY-172: Bridge lost monitoring of a still-running Runner (heartbeat went
 	 * stale but tmux is alive — typically after a Flywheel restart). One-time
 	 * advisory so the Lead knows to fall back to driving the Runner via tmux.
+	 * FLY-623: this is the LEGACY (FLYWHEEL_HEARTBEAT_READOPT=0) path's advisory;
+	 * the readopt-ON path uses onSessionMonitoringReestablished instead.
 	 */
 	onSessionMonitoringLost(
 		session: Session,
 		minutesSinceHeartbeat: number,
 	): Promise<void>;
+	/**
+	 * FLY-623: readopt-ON happy path — the Bridge re-adopted a live detached
+	 * Runner after a restart (heartbeat re-established via tmux liveness). A
+	 * one-time, low-priority, NON-retryable FYI per reconnecting episode (the
+	 * founder-facing signal is the Display-A "⚠️重连中" title, not this). An
+	 * implementation that owns a chat thread also stamps the reconnecting title
+	 * here.
+	 */
+	onSessionMonitoringReestablished(
+		session: Session,
+		minutesSinceHeartbeat: number,
+	): Promise<void>;
+	/**
+	 * FLY-623: re-stamp the real/terminal status badge on a Runner's thread title
+	 * once it leaves the reconnecting state (strips the "⚠️重连中" marker). Optional
+	 * + best-effort: a notifier without a chat thread (legacy / tests) no-ops.
+	 */
+	clearReconnectStamp?(session: Session): void;
+}
+
+/**
+ * FLY-623: the narrow read/clear surface the event path + idle watchdog use on
+ * HeartbeatService's reconnecting set, threaded via a late-bound holder (the
+ * service is constructed after the router/watchdog are wired). `HeartbeatService`
+ * implements it.
+ */
+export interface ReconnectController {
+	/** True while a Runner is re-adopted (detached but tmux-alive) after a restart. */
+	isReconnecting(executionId: string): boolean;
+	/** Drop a Runner from the reconnecting set on a genuine event / terminal / death. */
+	clearReconnecting(executionId: string): void;
 }
 
 /**
@@ -60,7 +98,7 @@ export interface MonitorReconcileConfig {
  * and orphan sessions (running but heartbeat has gone stale).
  * Sends one notification per execution per condition, deduped in-memory.
  */
-export class HeartbeatService {
+export class HeartbeatService implements ReconnectController {
 	private timer: NodeJS.Timeout | null = null;
 	private notifiedStuck = new Set<string>();
 	private notifiedOrphans = new Set<string>();
@@ -79,6 +117,18 @@ export class HeartbeatService {
 	 * each `reconcileMonitorLoss()` pass so it never goes stale.
 	 */
 	private markerRetryPending = new Set<string>();
+	/**
+	 * FLY-623: execIds currently RE-ADOPTED after a Bridge restart (detached but
+	 * tmux-alive). The single source of truth for the reconnecting lifecycle:
+	 * while a member is here we refresh its heartbeat each cycle (treating
+	 * tmux-liveness as the fallback heartbeat source for a Runner whose in-process
+	 * poll loop died with the previous Bridge), suppress stuck/orphan/idle, and
+	 * show the "⚠️重连中" title. A member leaves on a genuine runner event
+	 * (clearReconnecting), tmux death, or a terminal marker. Used only on the
+	 * readopt-ON path; stays empty when FLYWHEEL_HEARTBEAT_READOPT=0 (exact FLY-172
+	 * legacy behavior preserved).
+	 */
+	private reconnecting = new Set<string>();
 
 	constructor(
 		private store: StateStore,
@@ -217,29 +267,20 @@ export class HeartbeatService {
 	}
 
 	/**
-	 * FLY-172: For running sessions whose heartbeat has gone stale (≥ stuck
-	 * threshold — i.e. the Bridge stopped receiving heartbeats, the fingerprint
-	 * of monitoring loss after a restart): try the completion marker FIRST (a
-	 * valid terminal marker wins over tmux liveness — a finished `needs_review`
-	 * Runner can keep its tmux window open), and only if there is no usable
-	 * marker, probe tmux. tmux alive → one-time advisory, never force-fail.
-	 * tmux dead → leave it for `reapOrphans` to force-fail at the orphan
-	 * threshold. Owns `notifiedMonitorLost` and `markerRetryPending`.
+	 * FLY-623: kill-switch — readopt is ON by default (the FLY-172 advisory-only
+	 * behavior is the bug: a restart-orphaned but live Runner stays permanently
+	 * monitoring-lost). `FLYWHEEL_HEARTBEAT_READOPT=0` reverts to the exact FLY-172
+	 * legacy path (no re-adopt, no reconnecting set, no boot-seed, no Display-A).
+	 * Read at cycle/boot time so a flip needs no restart and no signature change.
 	 */
-	async reconcileMonitorLoss(): Promise<void> {
-		this.markerRetryPending.clear();
-		if (!this.monitorReconcile) return; // not wired (e.g. unit tests) → no-op
+	private readoptEnabled(): boolean {
+		return process.env.FLYWHEEL_HEARTBEAT_READOPT !== "0";
+	}
 
-		// Candidate set: running + heartbeat stale ≥ stuck threshold.
-		const candidates = this.store.getOrphanSessions(this.thresholdMinutes);
-		const candidateIds = new Set(candidates.map((s) => s.execution_id));
-		// Prune monitor-lost advisory dedup for sessions no longer candidates
-		// (e.g. they completed and left `running`).
-		for (const id of this.notifiedMonitorLost) {
-			if (!candidateIds.has(id)) this.notifiedMonitorLost.delete(id);
-		}
-
-		const deps: MarkerReconcilerDeps = {
+	/** FLY-172: marker-reconciler deps, or null when monitor-reconcile isn't wired. */
+	private buildMarkerDeps(): MarkerReconcilerDeps | null {
+		if (!this.monitorReconcile) return null;
+		return {
 			store: this.store,
 			bridgeBaseUrl: this.monitorReconcile.bridgeBaseUrl,
 			ingestToken: this.monitorReconcile.ingestToken,
@@ -247,22 +288,59 @@ export class HeartbeatService {
 			markerDir: this.monitorReconcile.markerDir,
 			quarantineDir: this.monitorReconcile.quarantineDir,
 		};
+	}
+
+	/**
+	 * FLY-172 + FLY-623: For running sessions whose heartbeat has gone stale
+	 * (≥ stuck threshold — the fingerprint of monitoring loss after a restart):
+	 * try the completion marker FIRST (a valid terminal marker wins over tmux
+	 * liveness), and only if there is no usable marker, probe tmux.
+	 *
+	 * - readopt OFF (`FLYWHEEL_HEARTBEAT_READOPT=0`): exact FLY-172 — tmux alive →
+	 *   one-time advisory, never force-fail, never refresh heartbeat.
+	 * - readopt ON (default, FLY-623): tmux alive → RE-ADOPT (refresh heartbeat so
+	 *   the session reads healthy + no false stuck/orphan/idle), once-per-episode
+	 *   "re-established" advisory + "⚠️重连中" title. Members of `reconnecting` are
+	 *   re-processed through the SAME marker-first order each cycle (so a later
+	 *   terminal marker still wins — no stay-loop bypass).
+	 *
+	 * tmux dead → leave it for `reapOrphans` to force-fail at the orphan threshold.
+	 * Owns `notifiedMonitorLost`, `reconnecting`, and `markerRetryPending`.
+	 */
+	async reconcileMonitorLoss(): Promise<void> {
+		this.markerRetryPending.clear();
+		const deps = this.buildMarkerDeps();
+		if (!deps) return; // not wired (e.g. unit tests) → no-op
+		if (this.readoptEnabled()) {
+			await this.reconcileMonitorLossReadopt(deps);
+		} else {
+			await this.reconcileMonitorLossLegacy(deps);
+		}
+	}
+
+	/** FLY-172 legacy path (readopt OFF): advisory-only, never refresh heartbeat. */
+	private async reconcileMonitorLossLegacy(
+		deps: MarkerReconcilerDeps,
+	): Promise<void> {
+		// Candidate set: running + heartbeat stale ≥ stuck threshold.
+		const candidates = this.store.getOrphanSessions(this.thresholdMinutes);
+		const candidateIds = new Set(candidates.map((s) => s.execution_id));
+		// Prune monitor-lost advisory dedup for sessions no longer candidates.
+		for (const id of this.notifiedMonitorLost) {
+			if (!candidateIds.has(id)) this.notifiedMonitorLost.delete(id);
+		}
 
 		for (const session of candidates) {
 			const execId = session.execution_id;
-
-			// 1) Marker-first. A valid terminal marker proves the Runner finished.
 			const outcome = await tryReconcileComplete(execId, deps);
 			if (
 				outcome.kind === "reconciled" ||
 				outcome.kind === "duplicate_terminal"
 			) {
-				// Session is now at its true terminal status. No longer monitor-lost.
 				this.notifiedMonitorLost.delete(execId);
 				continue;
 			}
 			if (outcome.kind === "transient_failed") {
-				// Keep marker; block reapOrphans from force-failing this cycle.
 				this.markerRetryPending.add(execId);
 				continue;
 			}
@@ -279,33 +357,188 @@ export class HeartbeatService {
 					quarantinePath: outcome.quarantinePath,
 				});
 				if (alive) {
-					// CODEX R1 HIGH FIX: marker was moved to quarantine, so reapOrphans
-					// can no longer see it. The Runner is STILL alive — if we don't
-					// protect it here, reapOrphans would force-fail a live Runner once
-					// past the orphan threshold (re-triggering GEO-374). Treat it as
-					// monitoring-lost: one-time advisory + add to the skip set.
+					// CODEX R1 HIGH FIX (FLY-172): marker moved to quarantine but the
+					// Runner is STILL alive — treat as monitoring-lost so reapOrphans
+					// skips it (else a live Runner gets force-failed → GEO-374).
 					await this.emitMonitorLostOnce(session);
 				} else {
-					// tmux dead → applyQuarantineFallback already forced a terminal
-					// status; drop any prior monitor-lost dedup.
 					this.notifiedMonitorLost.delete(execId);
 				}
 				continue;
 			}
 
-			// 2) No marker (absent) → probe tmux.
 			const alive = await this.isSessionTmuxAlive(session);
 			if (alive) {
-				// Runner still working, Bridge blind. One-time advisory; do NOT
-				// force-fail and do NOT refresh heartbeat_at (keeps the session
-				// orphan-eligible so the very next cycle re-verifies liveness).
 				await this.emitMonitorLostOnce(session);
 			} else {
-				// tmux gone, no marker → genuine orphan; let reapOrphans force-fail
-				// it at the orphan threshold. Drop any prior monitor-lost dedup.
 				this.notifiedMonitorLost.delete(execId);
 			}
 		}
+	}
+
+	/**
+	 * FLY-623 readopt path (default): re-adopt detached-but-alive Runners. Each
+	 * cycle processes the UNION (deduped by execId) of stale-heartbeat candidates
+	 * AND current `reconnecting` members (re-fetched — once re-adopted their
+	 * heartbeat is fresh so they drop out of `getOrphanSessions`), all through the
+	 * same marker-first order. This closes the R1 HIGH-1 stay-loop bypass.
+	 */
+	private async reconcileMonitorLossReadopt(
+		deps: MarkerReconcilerDeps,
+	): Promise<void> {
+		const byId = new Map<string, Session>();
+		for (const s of this.store.getOrphanSessions(this.thresholdMinutes)) {
+			byId.set(s.execution_id, s);
+		}
+		// Re-fetch reconnecting members so they keep going through marker-first
+		// (R1 HIGH-1) even though their refreshed heartbeat hid them above.
+		for (const execId of [...this.reconnecting]) {
+			if (byId.has(execId)) continue;
+			const s = this.store.getSession(execId);
+			if (s) byId.set(execId, s);
+			else this.clearReconnecting(execId); // gone entirely
+		}
+		// Legacy advisory dedup is unused on this path; keep it pruned to candidates.
+		for (const id of this.notifiedMonitorLost) {
+			if (!byId.has(id)) this.notifiedMonitorLost.delete(id);
+		}
+
+		for (const session of byId.values()) {
+			await this.reconcileCandidateReadopt(session, deps);
+		}
+	}
+
+	/**
+	 * FLY-623: marker-first → quarantine → tmux probe → re-adopt for one candidate
+	 * on the readopt path. Shared by the per-cycle union pass and `seedReconnecting`.
+	 */
+	private async reconcileCandidateReadopt(
+		session: Session,
+		deps: MarkerReconcilerDeps,
+	): Promise<void> {
+		const execId = session.execution_id;
+
+		// A reconnecting member terminalized by an accepted event (its status is no
+		// longer `running`) leaves reconnecting + gets its terminal title re-stamped.
+		if (session.status !== "running") {
+			this.clearReconnecting(execId);
+			return;
+		}
+
+		// 1) Marker-first. A valid terminal marker proves the Runner finished.
+		const outcome = await tryReconcileComplete(execId, deps);
+		if (
+			outcome.kind === "reconciled" ||
+			outcome.kind === "duplicate_terminal"
+		) {
+			this.clearReconnecting(execId);
+			return;
+		}
+		if (outcome.kind === "transient_failed") {
+			this.markerRetryPending.add(execId);
+			return;
+		}
+		if (outcome.kind === "quarantined") {
+			const alive = await this.isSessionTmuxAlive(session);
+			applyQuarantineFallback({
+				store: this.store,
+				transitionOpts: this.transitionOpts,
+				executionId: execId,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				tmuxAlive: alive,
+				routeStatus: outcome.routeStatus,
+				quarantinePath: outcome.quarantinePath,
+			});
+			if (alive) await this.enterReconnecting(session);
+			else this.clearReconnecting(execId);
+			return;
+		}
+
+		// 2) No marker (absent) → probe tmux.
+		const alive = await this.isSessionTmuxAlive(session);
+		if (alive) await this.enterReconnecting(session);
+		else this.clearReconnecting(execId);
+	}
+
+	/**
+	 * FLY-623 boot-seed: at Bridge boot, AFTER the FLY-172 marker drain AND the
+	 * FLY-324 done-but-running sweep, and BEFORE `start()` / RunnerIdleWatchdog,
+	 * seed reconnecting state for pre-existing `running` sessions (their in-process
+	 * poll loop died with the previous Bridge process). This makes the in-memory
+	 * set restart-safe (re-seeded every boot → survives repeated restarts) and
+	 * closes the on-boot false-alarm window (a parked Runner already has stale
+	 * `last_activity_at`, so `checkStuck` could fire before the first reconcile).
+	 * No-op when not wired or readopt OFF.
+	 */
+	async seedReconnecting(): Promise<void> {
+		const deps = this.buildMarkerDeps();
+		if (!deps || !this.readoptEnabled()) return;
+		this.markerRetryPending.clear();
+		const running = this.store
+			.getActiveSessions()
+			.filter((s) => s.status === "running");
+		for (const session of running) {
+			await this.reconcileCandidateReadopt(session, deps);
+		}
+	}
+
+	/**
+	 * FLY-623: re-adopt a detached-but-alive Runner. Refresh its heartbeat every
+	 * cycle (tmux-liveness IS the heartbeat now), and ONCE per reconnecting episode
+	 * emit the low-priority "re-established" advisory + stamp the "⚠️重连中" title.
+	 */
+	private async enterReconnecting(session: Session): Promise<void> {
+		const execId = session.execution_id;
+		// minutesSince from the (pre-refresh) heartbeat — informational only.
+		let minutesSince = this.thresholdMinutes;
+		if (session.heartbeat_at) {
+			minutesSince = Math.round(
+				(Date.now() -
+					new Date(`${session.heartbeat_at.replace(" ", "T")}Z`).getTime()) /
+					60_000,
+			);
+		}
+		// Re-adopt: refresh heartbeat so the session reads healthy (no false
+		// stuck/orphan/idle) — every cycle while tmux is alive.
+		this.store.updateHeartbeat(execId);
+		if (this.reconnecting.has(execId)) return; // stay (already this episode)
+		this.reconnecting.add(execId);
+		// Once-per-episode FYI + Display-A stamp. Best-effort — a failed FYI must
+		// not block re-adopt, and it is NOT retried (non-guardrail event type).
+		try {
+			await this.notifier.onSessionMonitoringReestablished(
+				session,
+				minutesSince,
+			);
+		} catch {
+			// best-effort advisory
+		}
+	}
+
+	/**
+	 * FLY-623: a reconnecting Runner's event channel is proven live again (or it
+	 * reached a terminal/dead state). Remove it from the reconnecting set so normal
+	 * stuck/orphan/idle monitoring resumes, and re-stamp the real/terminal status
+	 * badge (strips "⚠️重连中"). Idempotent + safe when not reconnecting (no-op).
+	 * Called from the event path (genuine runner event) and the reconcile cycle
+	 * (terminal/dead). Synchronous + fire-and-forget for use from event handlers.
+	 */
+	clearReconnecting(executionId: string): void {
+		if (!this.reconnecting.delete(executionId)) return; // not reconnecting → no-op
+		const session = this.store.getSession(executionId);
+		if (session) this.notifier.clearReconnectStamp?.(session);
+	}
+
+	/**
+	 * FLY-623: read-only predicate for the separate `RunnerIdleWatchdog` /
+	 * `StuckRunnerDetector` paths (which independently poll running sessions). They
+	 * skip idle notification + stuck-episode advancement while a Runner is
+	 * reconnecting, so a restart-orphaned-but-alive Runner doesn't trigger false
+	 * idle/stuck alarms.
+	 */
+	isReconnecting(executionId: string): boolean {
+		return this.reconnecting.has(executionId);
 	}
 
 	/**
@@ -348,6 +581,19 @@ export class HeartbeatService {
 		}
 	}
 
+	/**
+	 * FLY-172 + FLY-623: a session whose stuck/orphan signals must be suppressed
+	 * because it is monitoring-lost (legacy advisory) OR re-adopted (readopt). The
+	 * reconcile pass owns both sets and removes dead/terminal sessions, so this
+	 * never over-suppresses a Runner that later actually died.
+	 */
+	private isMonitorSuppressed(executionId: string): boolean {
+		return (
+			this.notifiedMonitorLost.has(executionId) ||
+			this.reconnecting.has(executionId)
+		);
+	}
+
 	private async checkStuck(): Promise<void> {
 		const stuck = this.store.getStuckSessions(this.thresholdMinutes);
 
@@ -358,12 +604,13 @@ export class HeartbeatService {
 		}
 
 		for (const session of stuck) {
-			// FLY-172: a monitoring-lost (alive-but-detached) Runner looks "stuck"
-			// (last_activity stale) only because the Bridge lost its reporting
-			// channel — suppress the false session_stuck. The reconcile pass that
-			// just ran owns this set and removes dead sessions, so this never
-			// over-suppresses a Runner that later died.
-			if (this.notifiedMonitorLost.has(session.execution_id)) continue;
+			// FLY-172 + FLY-623: a monitoring-lost / re-adopted (alive-but-detached)
+			// Runner looks "stuck" (last_activity stale) only because the Bridge lost
+			// its reporting channel — suppress the false session_stuck. Re-adopt
+			// refreshes heartbeat_at but NOT last_activity_at, so without this the
+			// re-adopted session would trade a false orphan for a false stuck (plan
+			// §3.4 regression guard). The reconcile pass owns both sets.
+			if (this.isMonitorSuppressed(session.execution_id)) continue;
 			if (this.notifiedStuck.has(session.execution_id)) continue;
 
 			let minutesSince = this.thresholdMinutes;
@@ -448,13 +695,13 @@ export class HeartbeatService {
 		}
 
 		for (const session of orphans) {
-			// FLY-172: skip sessions the reconcile pass classified this cycle as
-			// alive-but-detached (monitor-lost) or as having a marker pending
-			// retry. reapOrphans does NOT probe tmux itself — the reconcile pass
-			// is the single owner of liveness (Codex guidance #1). When neither
-			// set contains the session, it is a genuine orphan (tmux gone / no
-			// usable marker) and the existing force-fail behavior applies.
-			if (this.notifiedMonitorLost.has(session.execution_id)) continue;
+			// FLY-172 + FLY-623: skip sessions the reconcile pass classified this
+			// cycle as alive-but-detached (monitor-lost / re-adopted) or as having a
+			// marker pending retry. reapOrphans does NOT probe tmux itself — the
+			// reconcile pass is the single owner of liveness (Codex guidance #1).
+			// When none of the sets contains the session, it is a genuine orphan
+			// (tmux gone / no usable marker) and the existing force-fail applies.
+			if (this.isMonitorSuppressed(session.execution_id)) continue;
 			if (this.markerRetryPending.has(session.execution_id)) continue;
 			if (this.notifiedOrphans.has(session.execution_id)) continue;
 
@@ -525,6 +772,12 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		private store: StateStore,
 		private eventFilter?: EventFilter,
 		private chatThreadsEnabled?: boolean,
+		/**
+		 * FLY-623 Display-A: when wired (issue-status-emoji feature ON), stamp /
+		 * clear the "⚠️重连中" reconnecting marker on the issue's chat-thread title.
+		 * Absent → Display-A no-ops (the re-adopt heartbeat fix still works).
+		 */
+		private chatThreadCreator?: ChatThreadCreator,
 	) {}
 
 	async onSessionStuck(session: Session, minutes: number): Promise<void> {
@@ -590,6 +843,110 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			session_role: session.session_role ?? "main",
 		};
 		await this.deliverHook(session, hookPayload);
+	}
+
+	/**
+	 * FLY-623: readopt-ON happy path. The Bridge re-adopted a live detached Runner
+	 * after a restart. Stamp the Display-A "⚠️重连中" title (founder signal) and
+	 * deliver a one-time, low-priority, NON-retryable FYI to the Lead. Best-effort:
+	 * `session_monitoring_reestablished` is not in GUARDRAIL/RETRYABLE sets, so
+	 * deliverHook marks it delivered regardless and it is never re-delivered.
+	 */
+	async onSessionMonitoringReestablished(
+		session: Session,
+		minutes: number,
+	): Promise<void> {
+		const label = session.issue_identifier ?? session.issue_id;
+		const hookPayload: HookPayload = {
+			event_type: "session_monitoring_reestablished",
+			execution_id: session.execution_id,
+			issue_id: session.issue_id,
+			issue_identifier: session.issue_identifier,
+			issue_title: session.issue_title,
+			project_name: session.project_name,
+			status: session.status,
+			minutes_since_activity: minutes,
+			notification_context: `Runner ${label} was re-adopted after a Flywheel restart — monitoring re-established via tmux (heartbeat had been stale ${minutes}m). It is alive and being watched again; no action needed.`,
+			session_role: session.session_role ?? "main",
+		};
+		// Display-A: stamp the ⚠️重连中 marker (fire-and-forget, best-effort).
+		this.stampReconnect(session, "enter");
+		await this.deliverHook(session, hookPayload);
+	}
+
+	/**
+	 * FLY-623: a Runner left the reconnecting state — re-stamp its real/terminal
+	 * status badge (strips "⚠️重连中"). Best-effort + synchronous-return so it is
+	 * safe to call from a fire-and-forget event handler.
+	 */
+	clearReconnectStamp(session: Session): void {
+		this.stampReconnect(session, "clear");
+	}
+
+	/**
+	 * FLY-623 Display-A: stamp / clear the reconnecting marker on the issue's chat
+	 * thread. Resolves the issue's lead (channel + bot token) + thread, then either
+	 * stamps "⚠️重连中" (enter) or restores the real/terminal badge (clear). Silent
+	 * no-op on any miss (Display-A disabled, no lead/channel/token, thread not yet
+	 * created). Never throws into the caller.
+	 */
+	private stampReconnect(session: Session, mode: "enter" | "clear"): void {
+		if (!this.chatThreadCreator) return; // Display-A not wired → no-op
+		let chatChannel: string;
+		let botToken: string;
+		let leadId: string;
+		try {
+			const labels = this.store.getSessionLabels(session.execution_id);
+			const { lead } = this.registry.resolveWithLead(
+				this.projects,
+				session.project_name,
+				labels,
+			);
+			if (!lead.chatChannel || !lead.botToken) return;
+			chatChannel = lead.chatChannel;
+			botToken = lead.botToken;
+			leadId = lead.agentId;
+		} catch {
+			return; // lead/project not resolvable → skip
+		}
+		const thread = this.store.getChatThreadByIssue(
+			session.issue_id,
+			chatChannel,
+		);
+		if (!thread) return; // thread not created yet
+
+		const withWord = process.env.FLYWHEEL_ISSUE_STATUS_WORD !== "0";
+		const ctx: ChatThreadContext = {
+			chatChannelId: chatChannel,
+			issueId: session.issue_id,
+			issueIdentifier: session.issue_identifier,
+			issueTitle: session.issue_title,
+			botToken,
+			leadId,
+		};
+
+		let badge: string | null;
+		if (mode === "enter") {
+			badge = reconnectingBadge(withWord);
+		} else if (session.status === "completed") {
+			badge = stageBadge("completed", withWord) ?? null;
+		} else if (session.status === "running" && session.session_stage) {
+			// Cleared while still running (e.g. a stage_changed proved the channel
+			// live) → restore the current real stage badge.
+			badge = stageBadge(session.session_stage, withWord) ?? null;
+		} else {
+			// failed / blocked / unknown terminal → strip the prefix to the base title.
+			badge = null;
+		}
+
+		void this.chatThreadCreator
+			.stampStatusBadge(ctx, thread.thread_id, badge)
+			.catch((err: unknown) => {
+				console.warn(
+					`[heartbeat-notify] reconnect ${mode} stamp failed for ${session.execution_id}:`,
+					err instanceof Error ? err.message : err,
+				);
+			});
 	}
 
 	/**

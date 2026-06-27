@@ -24,6 +24,7 @@ import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import {
 	type HeartbeatNotifier,
 	HeartbeatService,
+	type ReconnectController,
 	RegistryHeartbeatNotifier,
 } from "../HeartbeatService.js";
 import {
@@ -547,6 +548,15 @@ export interface BridgeAppOptions {
 	 */
 	stuckDetectorHolder?: { current: StuckRunnerDetector | null };
 	/**
+	 * FLY-623 (Codex R2 MED-5): late-bound holder connecting the event router +
+	 * idle watchdog to the live HeartbeatService reconnecting set. Both are wired
+	 * inside createBridgeApp (pre-listen) but HeartbeatService is constructed
+	 * post-listen in startBridge — so they read this holder at call time. `current`
+	 * stays null on the kill-switch / standalone path (no reconnecting suppression
+	 * or clear), which is byte-compatible with pre-FLY-623 behavior.
+	 */
+	reconnectHolder?: { current: ReconnectController | null };
+	/**
 	 * FLY-516: late-bound shutdown flag. The /health route mounts inside
 	 * createBridgeApp (pre-listen) but close() lives in startBridge — so /health
 	 * reads this holder at request time and close() flips it at teardown start.
@@ -756,6 +766,7 @@ export function createBridgeApp(
 				: undefined,
 			removeCleanWorktree,
 			{ issueStatusEmojiEnabled, issueAttachPinEnabled },
+			opts?.reconnectHolder,
 		),
 	);
 
@@ -2474,6 +2485,13 @@ export async function startBridge(
 		shuttingDown: false,
 	};
 
+	// FLY-623: shared reconnecting-set holder — the event router + idle watchdog
+	// (wired in createBridgeApp) read it, HeartbeatService (created post-listen)
+	// fills it. Null until then / on the kill-switch path = no reconnect handling.
+	const reconnectHolder: { current: ReconnectController | null } = {
+		current: null,
+	};
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -2501,6 +2519,8 @@ export async function startBridge(
 			fleetConsole,
 			// FLY-516: /health reads this; close() flips it at teardown start.
 			shutdownStateHolder,
+			// FLY-623: event router reads this to clear reconnecting on a real event.
+			reconnectHolder,
 		},
 	);
 
@@ -2524,12 +2544,19 @@ export async function startBridge(
 					store,
 					eventFilter,
 					config.chatThreadsEnabled,
+					// FLY-623 Display-A: stamp/clear the "⚠️重连中" title only when the
+					// issue-status-emoji feature is ON (same gate as the event-route
+					// stamper); absent → re-adopt still works, just no title marker.
+					process.env.FLYWHEEL_ISSUE_STATUS_EMOJI !== "0"
+						? chatThreadCreator
+						: undefined,
 				)
 			: {
 					onSessionStuck: async () => {},
 					onSessionOrphaned: async () => {},
 					onSessionStale: async () => {},
 					onSessionMonitoringLost: async () => {},
+					onSessionMonitoringReestablished: async () => {},
 				};
 
 	// GEO-270: Stale session patrol config (local variables, not in BridgeConfig)
@@ -2564,6 +2591,11 @@ export async function startBridge(
 			ingestToken: config.ingestToken,
 		},
 	);
+
+	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
+	// router + idle watchdog via the late-bound holder, now that HeartbeatService
+	// exists. Stays null on the kill-switch / no-registry path (byte-compat).
+	reconnectHolder.current = heartbeatService;
 
 	// FLY-172: boot drain — reconcile complete-failed markers left by Runners
 	// that finished during a restart window (their `flywheel-comm complete` POST
@@ -2624,6 +2656,23 @@ export async function startBridge(
 	// NOT a standalone auto-poll on Linear "Done" (which the founder ruled out as
 	// premature). The ship path still archives on ship. No boot sweep / heartbeat
 	// piggyback here by design.
+
+	// FLY-623 (Codex R2 HIGH-2 / R3 LOW-1): boot-seed reconnecting state for
+	// pre-existing `running` sessions whose in-process poll loop died with the
+	// previous Bridge process. Runs AFTER the FLY-172 marker drain AND the FLY-324
+	// done-but-running sweep (so a stage=completed zombie is terminalized first and
+	// never briefly enters reconnecting / gets a ⚠️重连中 title), and BEFORE
+	// heartbeatService.start() / RunnerIdleWatchdog.start() — closing the on-boot
+	// false-stuck/idle window and making the in-memory set restart-safe (re-seeded
+	// every boot → survives repeated restarts). No-op on the kill-switch path.
+	// Best-effort: must not block Bridge startup.
+	try {
+		await heartbeatService.seedReconnecting();
+	} catch (err) {
+		console.error(
+			`[Bridge] FLY-623 reconnect boot-seed failed (non-fatal): ${(err as Error).message}`,
+		);
+	}
 
 	heartbeatService.start();
 
@@ -2974,6 +3023,12 @@ export async function startBridge(
 		captureSessionFn: defaultCaptureSession,
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		stuckDetector,
+		// FLY-623 (Codex R2 HIGH-3): suppress idle/stuck signals for a Runner that
+		// was re-adopted after a Bridge restart (alive-but-detached) — its idle/stuck
+		// appearance is an artifact of monitoring loss, not a real stall. Reads the
+		// live HeartbeatService set via the holder; null/kill-switch → no suppression.
+		isReconnecting: (execId) =>
+			reconnectHolder.current?.isReconnecting(execId) ?? false,
 	});
 	idleWatchdog.start();
 	console.log(

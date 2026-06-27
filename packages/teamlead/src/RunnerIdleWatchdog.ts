@@ -41,6 +41,16 @@ export interface IdleWatchdogConfig {
 	 * is unchanged.
 	 */
 	stuckDetector?: StuckRunnerDetector | null;
+	/**
+	 * FLY-623: read-only predicate — true while a Runner is RE-ADOPTED after a
+	 * Bridge restart (detached but tmux-alive; owned by HeartbeatService). Such a
+	 * Runner's idle/stuck signals are an artifact of monitoring loss, not a real
+	 * stall (the in-process poll loop died with the previous Bridge), so we skip
+	 * both idle notification and stuck-detector episode advancement while true and
+	 * resume normal detection once it clears. Wired via the late-bound holder in
+	 * plugin.ts; absent (tests/legacy) → no suppression (current behavior).
+	 */
+	isReconnecting?: (executionId: string) => boolean;
 }
 
 type IdleStatus = "waiting" | "idle" | "unknown";
@@ -108,6 +118,13 @@ export class RunnerIdleWatchdog {
 	}
 
 	private async checkSession(session: Session): Promise<void> {
+		// FLY-623: a Runner re-adopted after a Bridge restart is alive-but-detached;
+		// its idle/stuck signals are an artifact of monitoring loss, not a real
+		// stall. Skip BOTH idle notification and stuck-detector episode advancement
+		// while reconnecting (resumes once HeartbeatService clears the state).
+		if (this.config.isReconnecting?.(session.execution_id)) {
+			return;
+		}
 		try {
 			const { result, captureErrorStatus, output } =
 				await this.statusQuery.query(
