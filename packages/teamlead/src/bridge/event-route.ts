@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
+import type { FounderUxGateMode } from "flywheel-config";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import {
@@ -23,6 +24,7 @@ import {
 	isDoneButRunning,
 } from "./done-running-reconciler.js";
 import type { EventFilter } from "./EventFilter.js";
+import { evaluateFounderUxStageGuard } from "./founder-ux/stage-guard.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import {
 	GUARDRAIL_EVENT_TYPES,
@@ -1236,10 +1238,59 @@ export function createEventRouter(
 						});
 					}
 				}
+			} else if (event.event_type === "founder_ux_declared") {
+				// FLY-598 trigger C (backup): a Runner self-declared this run as
+				// founder-facing UX (the Lead's label may have been missed). Set the
+				// flag so the gate applies; the Runner CLI already printed the
+				// fail-closed next-step sequence. (Founder notification is best-effort
+				// follow-up; the gate enforces regardless of notification.)
+				store.patchSessionMetadata(event.execution_id, {
+					founder_facing_ux: 1,
+					last_activity_at: now,
+				});
+				console.log(
+					`[FLY-598] founder_ux_declared for ${event.execution_id}: ${asString(payload.reason) ?? "(no reason)"}`,
+				);
+				res.json({ ok: true, declared: true });
+				return;
 			} else if (event.event_type === "stage_changed") {
 				// GEO-292: Runner-reported pipeline stage change
 				const stage = asString(payload.stage);
 				if (stage && VALID_STAGES.has(stage)) {
+					// FLY-598 Layer B: founder-UX gate. On entry into `implement`, a
+					// founder-facing run must carry a verified Annie sign-off bound to
+					// the current ux_hash. enforce → reject (FOUNDER_UX_SIGNOFF_REQUIRED,
+					// which `stage set implement` fail-closes on) BEFORE recording the
+					// stage; audit_only → log + proceed; off / non-founder-facing → pass.
+					if (stage === "implement") {
+						const guardSession = store.getSession(event.execution_id);
+						const mode =
+							(guardSession?.founder_ux_gate_mode as
+								| FounderUxGateMode
+								| undefined) ?? "off";
+						const guard = evaluateFounderUxStageGuard(store, mode, {
+							executionId: event.execution_id,
+							incomingStage: "implement",
+							uxHash: asString(payload.ux_hash),
+						});
+						if (guard.decision === "block") {
+							console.warn(
+								`[FLY-598] founder-ux gate BLOCK implement for ${event.execution_id}: ${guard.reason}`,
+							);
+							res.status(409).json({
+								ok: false,
+								error: guard.code,
+								reason: guard.reason,
+							});
+							return;
+						}
+						if (guard.decision === "audit") {
+							console.warn(
+								`[FLY-598] founder-ux gate AUDIT (audit_only, not blocked) implement for ${event.execution_id}: ${guard.reason}`,
+							);
+						}
+					}
+
 					store.patchSessionMetadata(event.execution_id, {
 						session_stage: stage,
 						stage_updated_at: now,

@@ -12,6 +12,11 @@ import { check } from "./commands/check.js";
 import { cleanupMessages } from "./commands/cleanup-messages.js";
 import { codexResume } from "./commands/codex-resume.js";
 import { complete } from "./commands/complete.js";
+import {
+	awaitFounderUxGate,
+	declareFounderUx,
+	recordFounderUxSignoff,
+} from "./commands/founder-ux.js";
 import { gate } from "./commands/gate.js";
 import { inbox } from "./commands/inbox.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
@@ -147,6 +152,15 @@ async function main(): Promise<void> {
 			break;
 		case "await-codex-gate":
 			await runAwaitCodexGate(commandArgs);
+			break;
+		case "declare-founder-ux":
+			await runDeclareFounderUx(commandArgs);
+			break;
+		case "record-founder-ux-signoff":
+			await runRecordFounderUxSignoff(commandArgs);
+			break;
+		case "await-founder-ux-gate":
+			await runAwaitFounderUxGate(commandArgs);
 			break;
 		case "codex-resume":
 			await runCodexResume(commandArgs);
@@ -680,6 +694,61 @@ async function runAwaitCodexGate(args: string[]): Promise<void> {
 	});
 }
 
+// FLY-598: founder-facing UX gate CLI runners.
+async function runDeclareFounderUx(args: string[]): Promise<void> {
+	const { values, positionals } = parseArgs({
+		args,
+		options: { "exec-id": { type: "string" }, reason: { type: "string" } },
+		allowPositionals: true,
+	});
+	await declareFounderUx({
+		execId: values["exec-id"],
+		reason: values.reason ?? positionals[0] ?? "",
+	});
+}
+
+async function runRecordFounderUxSignoff(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			"ux-file": { type: "string" },
+			"annie-msg-id": { type: "string" },
+			"bridge-url": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+	await recordFounderUxSignoff({
+		execId: values["exec-id"],
+		uxFile: values["ux-file"] ?? "",
+		annieMsgId: values["annie-msg-id"] ?? "",
+		bridgeUrl: values["bridge-url"],
+	});
+}
+
+async function runAwaitFounderUxGate(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			"ux-file": { type: "string" },
+			"bridge-url": { type: "string" },
+			timeout: { type: "string" },
+			"poll-interval": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+	await awaitFounderUxGate({
+		execId: values["exec-id"],
+		uxFile: values["ux-file"] ?? "",
+		bridgeUrl: values["bridge-url"],
+		timeoutMs: values.timeout ? Number.parseInt(values.timeout, 10) : undefined,
+		pollIntervalMs: values["poll-interval"]
+			? Number.parseInt(values["poll-interval"], 10)
+			: undefined,
+	});
+}
+
 async function runStage(args: string[]): Promise<void> {
 	const subcommand = args[0];
 	const stageName = args[1];
@@ -689,13 +758,15 @@ async function runStage(args: string[]): Promise<void> {
 		args: flagArgs,
 		options: {
 			plan: { type: "string" },
+			"ux-file": { type: "string" },
+			"ux-hash": { type: "string" },
 		},
 		allowPositionals: false,
 	});
 
 	if (!subcommand) {
 		console.error(
-			"Usage: flywheel-comm stage set <stage> [--plan <relative-path>]",
+			"Usage: flywheel-comm stage set <stage> [--plan <relative-path>] [--ux-file <path> | --ux-hash <hash>]",
 		);
 		process.exit(1);
 	}
@@ -704,6 +775,8 @@ async function runStage(args: string[]): Promise<void> {
 		subcommand,
 		stageName: stageName ?? "",
 		planPath: values.plan,
+		uxFile: values["ux-file"],
+		uxHash: values["ux-hash"],
 	});
 }
 
