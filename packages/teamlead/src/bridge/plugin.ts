@@ -135,6 +135,7 @@ import { StandupService } from "./standup-service.js";
 import {
 	buildStuckRunnerDetector,
 	hasPendingGateFromCommDb,
+	idleWatchdogPollMs,
 	stuckLatchTtlMs,
 } from "./stuck-escalation.js";
 import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
@@ -2955,8 +2956,17 @@ export async function startBridge(
 	// remanage router already captured — re_arm can now reach the in-memory
 	// episode map. Stays null when detection is disabled.
 	stuckDetectorHolder.current = stuckDetector;
+	// FLY-628 band-aid: stretch the poll cadence (was a 30s hardcode) to ~1h so
+	// parked / long-running Runners stop tripping false idle alerts that wake the
+	// Lead and burn tokens. Env-tunable; the same poll still drives the FLY-195
+	// stuck detector, so genuine-stuck detection survives (FLY-369), just at ~1h.
+	// waitingThresholdCycles stays 2 (Annie's call): a "waiting" Runner is only
+	// alerted after two consecutive ~1h polls (~2h), which is the accepted trade
+	// — quieter alerts beat faster waiting-state detection. A smarter recognizer
+	// (parked-aware / cheap probe / backoff) is the FLY-626 follow-up.
+	const idlePollMs = idleWatchdogPollMs();
 	const idleWatchdog = new RunnerIdleWatchdog({
-		pollIntervalMs: 30_000,
+		pollIntervalMs: idlePollMs,
 		waitingThresholdCycles: 2,
 		projects,
 		store,
@@ -2967,7 +2977,7 @@ export async function startBridge(
 	});
 	idleWatchdog.start();
 	console.log(
-		`[Bridge] RunnerIdleWatchdog started (30s poll${stuckDetector ? ", FLY-195 stuck detection ON" : ", FLY-195 stuck detection OFF (FLYWHEEL_STUCK_DETECT=0)"})`,
+		`[Bridge] RunnerIdleWatchdog started (${Math.round(idlePollMs / 1000)}s poll${stuckDetector ? ", FLY-195 stuck detection ON" : ", FLY-195 stuck detection OFF (FLYWHEEL_STUCK_DETECT=0)"})`,
 	);
 
 	const leadWatchdog = new LeadWatchdog({
