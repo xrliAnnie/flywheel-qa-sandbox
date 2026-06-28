@@ -137,6 +137,8 @@ import {
 	buildStuckRunnerDetector,
 	hasPendingGateFromCommDb,
 	idleWatchdogPollMs,
+	probeQuietSignals,
+	stuckCommActivityMs,
 	stuckLatchTtlMs,
 } from "./stuck-escalation.js";
 import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
@@ -2577,6 +2579,24 @@ export async function startBridge(
 	// from config.host + the real listening port (IPv6 bracketed).
 	const loopbackBaseUrl = buildLoopbackBaseUrl(config.host, port);
 
+	// FLY-626: shared cheap quiet-signal probe for the stall watchdogs
+	// (HeartbeatService session_stuck + RunnerIdleWatchdog runner_idle_detected).
+	// Suppresses the (token-expensive) Lead wake for a legitimately-quiet runner
+	// (self-declared park/busy, parked at a gate, recently active).
+	// `FLYWHEEL_QUIET_CLASSIFIER=0` disables it → pre-FLY-626 all-wake behavior.
+	const quietClassifierEnabled = process.env.FLYWHEEL_QUIET_CLASSIFIER !== "0";
+	const quietSignalsProbe = quietClassifierEnabled
+		? (session: {
+				execution_id: string;
+				project_name: string;
+				status: string;
+			}) =>
+				probeQuietSignals(session, {
+					activityWindowMs: stuckCommActivityMs(),
+					nowMs: Date.now(),
+				})
+		: undefined;
+
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -2590,6 +2610,8 @@ export async function startBridge(
 			bridgeBaseUrl: loopbackBaseUrl,
 			ingestToken: config.ingestToken,
 		},
+		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
+		quietSignalsProbe,
 	);
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
@@ -3023,6 +3045,8 @@ export async function startBridge(
 		captureSessionFn: defaultCaptureSession,
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		stuckDetector,
+		// FLY-626: shared quiet-signal probe (defined above with HeartbeatService).
+		quietSignalsProbe,
 		// FLY-623 (Codex R2 HIGH-3): suppress idle/stuck signals for a Runner that
 		// was re-adopted after a Bridge restart (alive-but-detached) — its idle/stuck
 		// appearance is an artifact of monitoring loss, not a real stall. Reads the

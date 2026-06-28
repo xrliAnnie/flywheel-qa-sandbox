@@ -20,6 +20,7 @@ import {
 	type LeadEventEnvelope,
 	RETRYABLE_LEAD_EVENT_TYPES,
 } from "./bridge/lead-runtime.js";
+import { classifyQuiet, type QuietSignals } from "./bridge/quiet-classifier.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import { reconnectingBadge, stageBadge } from "./bridge/stage-utils.js";
 import {
@@ -149,6 +150,15 @@ export class HeartbeatService implements ReconnectController {
 		 * Inherits FLY-159's default: 48h.
 		 */
 		private reviewTimeoutHours: number = 48,
+		/**
+		 * FLY-626: cheap, stateless quiet-signal probe consulted BEFORE the
+		 * (token-expensive) `session_stuck` Lead wake. A legitimately-quiet runner
+		 * (self-declared park/busy, parked at a gate, recently active) is
+		 * suppressed. Absent ⇒ no suppression (byte-compat). Applies ONLY to the
+		 * `session_stuck` advisory — orphan force-fail + monitoring-lost stay
+		 * owned by heartbeat + tmux liveness (Codex R1 #4).
+		 */
+		private quietSignalsProbe?: (session: Session) => QuietSignals,
 	) {}
 
 	start(): void {
@@ -582,6 +592,33 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	/**
+	 * FLY-626: true when the cheap quiet-signal probe classifies the session as
+	 * legitimately quiet, so the `session_stuck` wake must be suppressed. No probe
+	 * ⇒ false (byte-compat). Fails OPEN on error (a transient comm.db read problem
+	 * never hides a genuinely stuck runner — FLY-369). Scoped to the session_stuck
+	 * advisory ONLY; orphan reaping / monitoring-lost are not gated here.
+	 */
+	private isStuckWakeSuppressed(session: Session): boolean {
+		if (!this.quietSignalsProbe) return false;
+		try {
+			const result = classifyQuiet(this.quietSignalsProbe(session));
+			if (!result.mayWake) {
+				console.log(
+					`[HeartbeatService] FLY-626 suppressed session_stuck for ${session.execution_id} (${result.verdict})`,
+				);
+				return true;
+			}
+			return false;
+		} catch (err) {
+			console.warn(
+				`[HeartbeatService] FLY-626 quiet probe failed for ${session.execution_id} (fail-open):`,
+				(err as Error).message,
+			);
+			return false;
+		}
+	}
+
+	/**
 	 * FLY-172 + FLY-623: a session whose stuck/orphan signals must be suppressed
 	 * because it is monitoring-lost (legacy advisory) OR re-adopted (readopt). The
 	 * reconcile pass owns both sets and removes dead/terminal sessions, so this
@@ -612,6 +649,10 @@ export class HeartbeatService implements ReconnectController {
 			// §3.4 regression guard). The reconcile pass owns both sets.
 			if (this.isMonitorSuppressed(session.execution_id)) continue;
 			if (this.notifiedStuck.has(session.execution_id)) continue;
+			// FLY-626: a legitimately-quiet runner (self-declared park/busy, parked
+			// at a gate, recently active) must not wake the Lead with session_stuck.
+			// Advisory-only — reapOrphans force-fail + monitoring-lost are untouched.
+			if (this.isStuckWakeSuppressed(session)) continue;
 
 			let minutesSince = this.thresholdMinutes;
 			if (session.last_activity_at) {
