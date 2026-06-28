@@ -129,6 +129,19 @@ export interface StartRequest {
 	 * <parentExecutionId>`.
 	 */
 	qaContext?: QaContext;
+	/**
+	 * FLY-643: when true, the runner's executor backend is resolved WITHOUT the
+	 * issue's vendor labels (project roles config > env > built-in claude-tmux).
+	 * `issueLabels` is still carried on the BlueprintContext for Lead/thread
+	 * routing — only the backend-selection label layer is bypassed.
+	 *
+	 * Auto-QA sets this so a QA runner spawned on a separate QA·FLY-XX issue (or
+	 * mirroring the parent's labels) cannot inherit the parent task's vendor
+	 * backend (e.g. `agy`/`kimi` → no-transport) and must run on the normal
+	 * transported Claude lane (Claude-in-Chrome E2E). Absent → existing
+	 * label-driven backend resolution (byte-compatible).
+	 */
+	ignoreRunnerLabelSelection?: boolean;
 }
 
 export interface StartResult {

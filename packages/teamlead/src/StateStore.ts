@@ -247,9 +247,21 @@ export interface RetryDispatchIntent {
 export interface AutoQaRecord {
 	parent_execution_id: string;
 	target_pr_head_sha: string;
+	/** The PARENT (implementer) issue id — what is being verified. */
 	issue_id: string;
 	project_name: string;
 	qa_execution_id?: string;
+	/**
+	 * FLY-643: the SEPARATE `QA·FLY-XX` Linear issue this record's QA runner runs
+	 * on (its own issue + thread + runner), distinct from `issue_id` (the parent).
+	 * Persisted at issue-creation time so a crash between create + spawn re-uses
+	 * the same QA issue on reconcile instead of creating a duplicate. Absent on
+	 * pre-FLY-643 / not-yet-created records.
+	 */
+	qa_issue_id?: string;
+	qa_issue_identifier?: string;
+	qa_issue_title?: string;
+	qa_issue_url?: string;
 	status: "running" | "passed" | "failed" | "superseded" | "stuck";
 	verdict_event_id?: string;
 	started_at: string;
@@ -746,6 +758,10 @@ export class StateStore {
 				issue_id TEXT NOT NULL,
 				project_name TEXT NOT NULL,
 				qa_execution_id TEXT,
+				qa_issue_id TEXT,
+				qa_issue_identifier TEXT,
+				qa_issue_title TEXT,
+				qa_issue_url TEXT,
 				status TEXT NOT NULL DEFAULT 'running',
 				verdict_event_id TEXT,
 				started_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -766,6 +782,8 @@ export class StateStore {
 		// FLY-369: archived_at on chat_threads (archive-on-Done)
 		this.migrateChatThreadsArchivedColumn();
 		this.migrateChatThreadsAttachPinColumns();
+		// FLY-643: qa_issue_* columns on auto_qa_record (separate QA issue)
+		this.migrateAutoQaRecordQaIssueColumns();
 	}
 
 	insertEvent(event: SessionEvent): boolean {
@@ -1772,6 +1790,10 @@ export class StateStore {
 			issue_id: row.issue_id as string,
 			project_name: row.project_name as string,
 			qa_execution_id: (row.qa_execution_id as string) ?? undefined,
+			qa_issue_id: (row.qa_issue_id as string) ?? undefined,
+			qa_issue_identifier: (row.qa_issue_identifier as string) ?? undefined,
+			qa_issue_title: (row.qa_issue_title as string) ?? undefined,
+			qa_issue_url: (row.qa_issue_url as string) ?? undefined,
 			status: row.status as AutoQaRecord["status"],
 			verdict_event_id: (row.verdict_event_id as string) ?? undefined,
 			started_at: row.started_at as string,
@@ -1816,6 +1838,41 @@ export class StateStore {
 		this.db.run(
 			"UPDATE auto_qa_record SET qa_execution_id = ? WHERE parent_execution_id = ? AND target_pr_head_sha = ?",
 			[qaExecutionId, parentExecutionId, targetPrHeadSha],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-643: persist the SEPARATE QA Linear issue this record's QA runs on.
+	 * Written immediately after the Linear issue is created and BEFORE the QA
+	 * runner spawns, so a crash mid-spawn lets reconcile re-use this QA issue
+	 * (re-spawn the runner) instead of creating a duplicate.
+	 */
+	setAutoQaIssue(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+		qaIssue: {
+			issueId: string;
+			issueIdentifier?: string;
+			issueTitle?: string;
+			issueUrl?: string;
+		},
+	): void {
+		this.db.run(
+			`UPDATE auto_qa_record
+			    SET qa_issue_id = ?,
+			        qa_issue_identifier = ?,
+			        qa_issue_title = ?,
+			        qa_issue_url = ?
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?`,
+			[
+				qaIssue.issueId,
+				qaIssue.issueIdentifier ?? null,
+				qaIssue.issueTitle ?? null,
+				qaIssue.issueUrl ?? null,
+				parentExecutionId,
+				targetPrHeadSha,
+			],
 		);
 		this.save();
 	}
@@ -2815,6 +2872,32 @@ export class StateStore {
 				this.db.run(
 					"ALTER TABLE chat_threads ADD COLUMN attach_pin_pinned_at TEXT",
 				);
+			}
+		} catch {
+			// Table may not exist yet (first run) — CREATE TABLE will handle it
+		}
+	}
+
+	/**
+	 * FLY-643: add the separate-QA-issue columns to auto_qa_record on legacy DBs
+	 * (idempotent). Mirrors migrateChatThreads*Columns. A pre-FLY-643 record has
+	 * NULLs here (no QA issue yet) — coordinator treats absent qa_issue_id as
+	 * "not created" and creates one.
+	 */
+	private migrateAutoQaRecordQaIssueColumns(): void {
+		try {
+			const info = this.db.exec("PRAGMA table_info(auto_qa_record)");
+			if (info.length === 0) return;
+			const columns = info[0]!.values.map((row) => row[1] as string);
+			for (const col of [
+				"qa_issue_id",
+				"qa_issue_identifier",
+				"qa_issue_title",
+				"qa_issue_url",
+			]) {
+				if (!columns.includes(col)) {
+					this.db.run(`ALTER TABLE auto_qa_record ADD COLUMN ${col} TEXT`);
+				}
 			}
 		} catch {
 			// Table may not exist yet (first run) — CREATE TABLE will handle it

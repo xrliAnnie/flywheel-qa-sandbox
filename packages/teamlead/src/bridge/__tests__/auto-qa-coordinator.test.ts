@@ -3,6 +3,7 @@ import { StateStore } from "../../StateStore.js";
 import {
 	AutoQaCoordinator,
 	type AutoQaSideEffects,
+	type QaIssueRef,
 	type QaPolicyDecision,
 	type QaResultEvent,
 } from "../auto-qa-coordinator.js";
@@ -11,14 +12,36 @@ import type { StartRequest } from "../retry-dispatcher.js";
 const SHA = "a".repeat(40);
 const SHA2 = "b".repeat(40);
 
-function fakeEffects() {
-	const posts: string[] = [];
+// FLY-643: the separate QA·FLY-XX Linear issue the fake createQaIssue returns.
+const QA_ISSUE: QaIssueRef = {
+	issueId: "qa-issue-uuid",
+	issueIdentifier: "FLY-700",
+	issueTitle: "QA · FLY-1 — Test issue",
+	issueUrl: "https://linear.app/x/issue/FLY-700",
+};
+
+function fakeEffects(opts?: {
+	createQaIssueImpl?: (args: {
+		parent: { issue_id: string };
+		prHeadSha: string;
+	}) => Promise<QaIssueRef | undefined> | QaIssueRef | undefined;
+}) {
+	const posts: { text: string; issueId: string }[] = [];
 	const wakes: { summary: string }[] = [];
 	const alerts: string[] = [];
+	const createCalls: { issueId: string; prHeadSha: string }[] = [];
 	const counters = { shipReady: 0 };
 	const effects: AutoQaSideEffects = {
-		postThread: ({ text }) => {
-			posts.push(text);
+		postThread: ({ session, text }) => {
+			posts.push({ text, issueId: session.issue_id });
+		},
+		createQaIssue: (args) => {
+			createCalls.push({
+				issueId: args.parent.issue_id,
+				prHeadSha: args.prHeadSha,
+			});
+			if (opts?.createQaIssueImpl) return opts.createQaIssueImpl(args);
+			return QA_ISSUE;
 		},
 		notifyShipReady: () => {
 			counters.shipReady += 1;
@@ -30,7 +53,7 @@ function fakeEffects() {
 			alerts.push(reason);
 		},
 	};
-	return { effects, posts, wakes, alerts, counters };
+	return { effects, posts, wakes, alerts, createCalls, counters };
 }
 
 async function setup(opts?: {
@@ -38,9 +61,13 @@ async function setup(opts?: {
 	startImpl?: (
 		req: StartRequest,
 	) => Promise<{ executionId: string; issueId: string }>;
+	createQaIssueImpl?: (args: {
+		parent: { issue_id: string };
+		prHeadSha: string;
+	}) => Promise<QaIssueRef | undefined> | QaIssueRef | undefined;
 }) {
 	const store = await StateStore.create(":memory:");
-	const f = fakeEffects();
+	const f = fakeEffects({ createQaIssueImpl: opts?.createQaIssueImpl });
 	const startCalls: StartRequest[] = [];
 	const start = vi.fn(async (req: StartRequest) => {
 		startCalls.push(req);
@@ -59,8 +86,10 @@ async function setup(opts?: {
 		start,
 		startCalls,
 		posts: f.posts,
+		postTexts: () => f.posts.map((p) => p.text),
 		wakes: f.wakes,
 		alerts: f.alerts,
+		createCalls: f.createCalls,
 		counters: f.counters,
 	};
 }
@@ -100,27 +129,57 @@ describe("AutoQaCoordinator.onMainAwaitingReview", () => {
 		s = await setup();
 	});
 
-	it("spawns an independent QA runner pinned to the reviewed commit + claims a held record + posts 🧪", async () => {
+	it("FLY-643: creates a separate QA issue + spawns the QA runner ON it (pinned to the reviewed commit) + claims a held record + posts 🧪 to the parent thread", async () => {
 		const main = awaitingMain(s.store);
 		await s.coord.onMainAwaitingReview(main);
+
+		// A separate QA Linear issue was created for the parent + reviewed head.
+		expect(s.createCalls).toEqual([{ issueId: "FLY-1", prHeadSha: SHA }]);
 
 		expect(s.start).toHaveBeenCalledTimes(1);
 		const req = s.startCalls[0];
 		expect(req.sessionRole).toBe("qa");
 		expect(req.agentName).toBe("qa");
 		expect(req.startPoint).toBe(SHA);
-		expect(req.issueId).toBe("FLY-1");
+		// Spawned on the SEPARATE QA issue, NOT the parent (FLY-1).
+		expect(req.issueId).toBe("qa-issue-uuid");
+		expect(req.issueIdentifier).toBe("FLY-700");
+		// Backend pinned to the transported Claude lane (FLY-643).
+		expect(req.ignoreRunnerLabelSelection).toBe(true);
+		// QA context points back at the PARENT being verified.
 		expect(req.qaContext).toEqual({
 			parentExecutionId: "main-1",
 			prHeadSha: SHA,
 			prNumber: 42,
 			branch: "fly-1",
+			parentIssueIdentifier: "FLY-1",
+			parentIssueUrl: undefined,
 		});
 
 		const rec = s.store.getAutoQaRecord("main-1", SHA);
 		expect(rec?.status).toBe("running");
 		expect(rec?.qa_execution_id).toBe("qa-1");
-		expect(s.posts.some((p) => p.includes("🧪"))).toBe(true);
+		// The record carries the separate QA issue (durable for reconcile re-use).
+		expect(rec?.qa_issue_id).toBe("qa-issue-uuid");
+		expect(rec?.qa_issue_identifier).toBe("FLY-700");
+
+		// 🧪 started goes to the PARENT thread (FYI for the founder), referencing
+		// the separate QA issue.
+		const started = s.posts.find((p) => p.text.includes("🧪"));
+		expect(started).toBeDefined();
+		expect(started?.issueId).toBe("FLY-1");
+		expect(started?.text).toContain("FLY-700");
+	});
+
+	it("FLY-643: createQaIssue failure → record stuck + Lead alert, no QA spawn (fail-closed)", async () => {
+		const s2 = await setup({ createQaIssueImpl: () => undefined });
+		const main = awaitingMain(s2.store);
+		await s2.coord.onMainAwaitingReview(main);
+		expect(s2.start).not.toHaveBeenCalled();
+		expect(s2.store.getAutoQaRecord("main-1", SHA)?.status).toBe("stuck");
+		expect(
+			s2.alerts.some((a) => a.includes("could not create the QA issue")),
+		).toBe(true);
 	});
 
 	it("dedups a repeated awaiting_review for the SAME head — exactly one QA spawn", async () => {
@@ -183,10 +242,11 @@ describe("AutoQaCoordinator.onQaResult", () => {
 		s = await setup();
 	});
 
-	function qaSession(store: StateStore) {
+	// FLY-643: the QA runner now lives on its OWN separate QA issue, not FLY-1.
+	function qaSession(store: StateStore, issueId = "qa-issue-uuid") {
 		store.upsertSession({
 			execution_id: "qa-1",
-			issue_id: "FLY-1",
+			issue_id: issueId,
 			project_name: "proj",
 			status: "running",
 			session_role: "qa",
@@ -229,7 +289,7 @@ describe("AutoQaCoordinator.onQaResult", () => {
 		expect(s.wakes.length).toBe(0);
 	});
 
-	it("FAIL → record failed + implementer woken with report; founder NOT notified", async () => {
+	it("FAIL → record failed + implementer woken; founder NOT notified; 🔴 to QA thread NOT parent (FLY-643)", async () => {
 		await primeRunningQa();
 		await s.coord.onQaResult(
 			verdict({ status: "fail", summary: "button broken" }),
@@ -237,7 +297,14 @@ describe("AutoQaCoordinator.onQaResult", () => {
 		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("failed");
 		expect(s.counters.shipReady).toBe(0);
 		expect(s.wakes[0]?.summary).toContain("button broken");
-		expect(s.posts.some((p) => p.includes("🔴"))).toBe(true);
+		// 🔴 goes to the QA issue's OWN thread, NOT the parent thread (the founder
+		// watches the parent; a non-green QA must not surface there).
+		const failPost = s.posts.find((p) => p.text.includes("🔴"));
+		expect(failPost).toBeDefined();
+		expect(failPost?.issueId).toBe("qa-issue-uuid");
+		expect(
+			s.posts.some((p) => p.text.includes("🔴") && p.issueId === "FLY-1"),
+		).toBe(false);
 	});
 
 	it("drops a STALE verdict (verdict head != parent current head)", async () => {
@@ -330,7 +397,7 @@ describe("AutoQaCoordinator.reconcileOnStartup", () => {
 		expect(s.counters.shipReady).toBe(0);
 	});
 
-	it("claimed-but-unspawned (crash mid-spawn) → reconcile spawns", async () => {
+	it("claimed-but-unspawned (crash before QA issue created) → reconcile creates the QA issue + spawns", async () => {
 		const s = await setup();
 		awaitingMain(s.store);
 		s.store.claimAutoQaRecord({
@@ -340,7 +407,38 @@ describe("AutoQaCoordinator.reconcileOnStartup", () => {
 			projectName: "proj",
 		});
 		await s.coord.reconcileOnStartup();
+		// No qa_issue_id yet → reconcile creates one + spawns on it.
+		expect(s.createCalls.length).toBe(1);
 		expect(s.start).toHaveBeenCalledTimes(1);
+		expect(s.startCalls[0]?.issueId).toBe("qa-issue-uuid");
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.qa_execution_id).toBe(
+			"qa-1",
+		);
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.qa_issue_id).toBe(
+			"qa-issue-uuid",
+		);
+	});
+
+	it("FLY-643: claimed + QA issue already created (crash AFTER create, before spawn) → reconcile re-uses it, does NOT create a duplicate", async () => {
+		const s = await setup();
+		awaitingMain(s.store);
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		// Simulate the crash window: the QA issue was created + persisted, but the
+		// runner spawn never completed (qa_execution_id still null).
+		s.store.setAutoQaIssue("main-1", SHA, {
+			issueId: "existing-qa-issue",
+			issueIdentifier: "FLY-701",
+		});
+		await s.coord.reconcileOnStartup();
+		// MUST NOT create a second QA issue — re-uses the persisted one.
+		expect(s.createCalls.length).toBe(0);
+		expect(s.start).toHaveBeenCalledTimes(1);
+		expect(s.startCalls[0]?.issueId).toBe("existing-qa-issue");
 		expect(s.store.getAutoQaRecord("main-1", SHA)?.qa_execution_id).toBe(
 			"qa-1",
 		);

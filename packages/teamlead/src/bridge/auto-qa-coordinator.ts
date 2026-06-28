@@ -64,13 +64,36 @@ export interface QaPolicyDecision {
 }
 
 /**
+ * FLY-643: the separate `QA·FLY-XX` Linear issue an auto-QA run is tracked on.
+ * Returned by `createQaIssue`; persisted on the AutoQaRecord so a crash mid-spawn
+ * re-uses it (no duplicate issue) and the 🧪 thread post can reference it.
+ */
+export interface QaIssueRef {
+	issueId: string;
+	issueIdentifier?: string;
+	issueTitle?: string;
+	issueUrl?: string;
+}
+
+/**
  * Side-effects the coordinator drives. Injected so the orchestration is
- * unit-testable with fakes; the concrete Discord-thread / wake / Lead-alert
- * implementations are wired in plugin.ts (P2).
+ * unit-testable with fakes; the concrete Discord-thread / wake / Lead-alert /
+ * Linear-issue implementations are wired in plugin.ts (P2).
  */
 export interface AutoQaSideEffects {
 	/** Post a deterministic key-state line to the issue's chat thread. */
 	postThread(args: { session: Session; text: string }): Promise<void> | void;
+	/**
+	 * FLY-643: create the SEPARATE `QA·FLY-XX` Linear issue (mirroring the parent
+	 * issue's team / project / labels) the auto-QA runner will run on. Returns the
+	 * created issue ref, or `undefined` on any failure (missing Linear key, API
+	 * error) — the coordinator then marks the record `stuck` + Lead-alerts
+	 * (fail-closed; the founder is NOT surfaced).
+	 */
+	createQaIssue(args: {
+		parent: Session;
+		prHeadSha: string;
+	}): Promise<QaIssueRef | undefined> | QaIssueRef | undefined;
 	/**
 	 * PASS: surface the in-thread founder ship-ready notification. This is the
 	 * ONLY founder-facing emission in the whole flow, and it fires only after QA
@@ -182,23 +205,83 @@ export class AutoQaCoordinator {
 		await this.spawnQa(session, sha);
 	}
 
-	/** Spawn (or re-spawn) the QA Runner for an already-claimed record. */
+	/**
+	 * Spawn (or re-spawn) the QA Runner for an already-claimed record.
+	 *
+	 * FLY-643: QA now runs on a SEPARATE `QA·FLY-XX` Linear issue (its own issue +
+	 * thread + runner), not the parent's. The QA issue is created lazily here and
+	 * persisted on the record BEFORE the runner spawns, so a crash mid-spawn lets
+	 * reconcile re-use it (no duplicate issue) on the next pass.
+	 */
 	private async spawnQa(session: Session, sha: string): Promise<void> {
+		// Resolve (or create) the separate QA Linear issue. A record that already
+		// carries a qa_issue_id is a reconcile re-spawn → re-use it, never create a
+		// second issue.
+		const record = this.deps.store.getAutoQaRecord(session.execution_id, sha);
+		let qaIssue: QaIssueRef | undefined = record?.qa_issue_id
+			? {
+					issueId: record.qa_issue_id,
+					issueIdentifier: record.qa_issue_identifier,
+					issueTitle: record.qa_issue_title,
+					issueUrl: record.qa_issue_url,
+				}
+			: undefined;
+
+		if (!qaIssue) {
+			try {
+				qaIssue =
+					(await this.deps.effects.createQaIssue({
+						parent: session,
+						prHeadSha: sha,
+					})) ?? undefined;
+			} catch (err) {
+				qaIssue = undefined;
+				this.warn(
+					`createQaIssue threw for ${session.issue_id} @ ${sha.slice(0, 8)}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			}
+			if (!qaIssue?.issueId) {
+				// FAIL-CLOSED: no QA issue ⇒ no QA runner. Held parent → Lead-only
+				// alert, founder not surfaced.
+				this.warn(
+					`createQaIssue FAILED for ${session.issue_id} @ ${sha.slice(0, 8)} — marking stuck`,
+				);
+				this.deps.store.setAutoQaStatus(session.execution_id, sha, "stuck", {});
+				await this.deps.effects.alertLeadPipelineError({
+					session,
+					issueId: session.issue_id,
+					projectName: session.project_name,
+					reason: `auto-QA could not create the QA issue for ${session.issue_id}. Held — founder NOT surfaced.`,
+				});
+				return;
+			}
+			// Persist BEFORE spawning so a crash mid-spawn re-uses this QA issue.
+			this.deps.store.setAutoQaIssue(session.execution_id, sha, qaIssue);
+		}
+
 		const qaContext: QaContext = {
 			parentExecutionId: session.execution_id,
 			prHeadSha: sha,
 			prNumber: session.pr_number,
 			branch: session.branch,
+			parentIssueIdentifier: session.issue_identifier,
+			parentIssueUrl: session.issue_url,
 		};
 		try {
 			const result = await this.deps.startDispatcher.start({
-				issueId: session.issue_id,
+				// FLY-643: spawn on the SEPARATE QA issue, not the parent.
+				issueId: qaIssue.issueId,
+				issueIdentifier: qaIssue.issueIdentifier,
+				issueTitle: qaIssue.issueTitle,
+				issueUrl: qaIssue.issueUrl,
 				projectName: session.project_name,
 				sessionRole: "qa",
 				agentName: this.qaAgentName,
+				// Parent labels flow for Lead/thread routing; the backend is pinned
+				// to the transported Claude lane via ignoreRunnerLabelSelection so a
+				// vendor label (agy/kimi/codex) can't pick the QA backend (FLY-643).
 				issueLabels: parseIssueLabels(session.issue_labels),
-				issueTitle: session.issue_title,
-				issueIdentifier: session.issue_identifier,
+				ignoreRunnerLabelSelection: true,
 				startPoint: sha,
 				qaContext,
 			});
@@ -208,15 +291,17 @@ export class AutoQaCoordinator {
 				result.executionId,
 			);
 			this.log(
-				`spawned QA ${result.executionId} for ${session.issue_id} @ ${sha.slice(0, 8)} (parent ${session.execution_id})`,
+				`spawned QA ${result.executionId} on ${qaIssue.issueIdentifier ?? qaIssue.issueId} for ${session.issue_id} @ ${sha.slice(0, 8)} (parent ${session.execution_id})`,
 			);
+			const qaRef = qaIssue.issueIdentifier ?? qaIssue.issueId;
 			await this.deps.effects.postThread({
 				session,
-				text: `🧪 自动 QA 开始 — 独立 Runner 在验证此 PR（reviewed commit \`${sha.slice(0, 8)}\`）。QA 全绿前不会打扰 founder。`,
+				text: `🧪 自动 QA 开始 — 独立 Runner 在单独的 QA issue ${qaRef} 上验证此 PR（reviewed commit \`${sha.slice(0, 8)}\`）。QA 全绿前不会打扰 founder。`,
 			});
 		} catch (err) {
 			// NEVER leave a held parent with no QA runner. Mark stuck + Lead-only
-			// alert; the founder is not surfaced (held), the Lead investigates.
+			// alert; the founder is not surfaced (held), the Lead investigates. The
+			// QA issue stays recorded so a manual re-drive can re-use it.
 			const msg = err instanceof Error ? err.message : String(err);
 			this.warn(
 				`spawn FAILED for ${session.issue_id} @ ${sha.slice(0, 8)}: ${msg} — marking stuck`,
@@ -226,7 +311,7 @@ export class AutoQaCoordinator {
 				session,
 				issueId: session.issue_id,
 				projectName: session.project_name,
-				reason: `auto-QA spawn failed for ${session.issue_id}: ${msg}. Held — founder NOT surfaced.`,
+				reason: `auto-QA spawn failed for ${session.issue_id} (QA issue ${qaIssue.issueIdentifier ?? qaIssue.issueId}): ${msg}. Held — founder NOT surfaced.`,
 			});
 		}
 	}
@@ -269,19 +354,19 @@ export class AutoQaCoordinator {
 			return;
 		}
 
-		// Linkage: the reporting session must be a QA session for the SAME issue.
-		// (Defends against a foreign/forged verdict gating someone else's ship.)
+		// Linkage: the reporting session must be a QA session. FLY-643: it runs on
+		// its OWN separate `QA·FLY-XX` issue now, so we no longer require
+		// `qaSession.issue_id === parent.issue_id` — the AUTHORITATIVE binding is
+		// `record.qa_execution_id === reportedQaExec` (checked below), which ties
+		// the verdict to the EXACT QA runner this record spawned (strictly stronger
+		// than an issue-equality check). Here we only reject a non-QA session.
 		const qaSession = this.deps.store.getSession(reportedQaExec);
-		if (
-			!qaSession ||
-			(qaSession.session_role ?? "main") !== "qa" ||
-			qaSession.issue_id !== parent.issue_id
-		) {
+		if (!qaSession || (qaSession.session_role ?? "main") !== "qa") {
 			await this.deps.effects.alertLeadPipelineError({
 				session: parent,
 				issueId: parent.issue_id,
 				projectName: parent.project_name,
-				reason: `auto-QA: rejected a qa_result from ${reportedQaExec} (not a QA session for ${parent.issue_id}). Ignored.`,
+				reason: `auto-QA: rejected a qa_result from ${reportedQaExec} (not a QA session). Ignored.`,
 			});
 			return;
 		}
@@ -361,8 +446,13 @@ export class AutoQaCoordinator {
 				`QA FAIL for ${parent.issue_id} (${targetExec}) — waking implementer, founder NOT notified`,
 			);
 			await this.deps.effects.feedbackWakeMain({ session: parent, summary });
+			// FLY-643: a QA FAIL is Lead-facing — post to the QA issue's OWN thread,
+			// NOT the parent thread (the founder watches the parent thread; surfacing
+			// a non-green QA there would violate "don't bother the founder before QA
+			// is green"). The implementer is woken above; the Lead drives the
+			// dev-fix → QA-retest loop and only escalates on a real deadlock.
 			await this.deps.effects.postThread({
-				session: parent,
+				session: qaSession,
 				text: `🔴 自动 QA 未通过 → 已把报告交回实现 Runner 修复（founder 不打扰）。\n${truncate(summary, 600)}`,
 			});
 		}
