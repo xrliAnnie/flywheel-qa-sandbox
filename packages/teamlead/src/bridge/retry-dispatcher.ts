@@ -1,5 +1,12 @@
 /** GEO-168: IRetryDispatcher interface — retry creates a new execution. */
 
+// FLY-579: QaContext is defined in edge-worker (Blueprint owns the prompt
+// rendering); teamlead depends on edge-worker, so we import the type here for
+// StartRequest. Defining it in teamlead would invert the dependency.
+import type { QaContext } from "flywheel-edge-worker/dist/Blueprint.js";
+
+export type { QaContext };
+
 export interface RetryRequest {
 	oldExecutionId: string;
 	issueId: string;
@@ -106,6 +113,22 @@ export interface StartRequest {
 	docTier?: "full" | "plan_only" | "none";
 	/** FLY-205: Linear issue URL from runs-route preflight (DOC-FLOW header). */
 	issueUrl?: string;
+	/**
+	 * FLY-579: explicit git start point for the worktree (a commit SHA / ref).
+	 * Threaded to `WorktreeManager.create({ startPoint })`. The Auto-QA
+	 * coordinator passes the parent main session's `pr_head_sha` so the QA
+	 * worktree is pinned to the exact reviewed commit (NOT `origin/main`).
+	 * Absent → existing behavior (`FLYWHEEL_RUNNER_START_POINT` / `origin/main`).
+	 */
+	startPoint?: string;
+	/**
+	 * FLY-579: QA-runner context. Present ONLY for `sessionRole === "qa"`
+	 * Auto-QA spawns. Blueprint renders it into a QA-mode prompt (independent
+	 * verification of `parentExecutionId`'s PR at `prHeadSha`) and the QA runner
+	 * reports its verdict back via `flywheel-comm qa-result --target-exec
+	 * <parentExecutionId>`.
+	 */
+	qaContext?: QaContext;
 }
 
 export interface StartResult {

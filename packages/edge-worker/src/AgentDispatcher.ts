@@ -25,6 +25,7 @@ export type AgentMatchMethod =
 	| "label"
 	| "default"
 	| "shipped-generic"
+	| "shipped-qa"
 	| "override";
 
 export interface AgentDispatchResult {
@@ -130,6 +131,16 @@ export function parsedDept(agentFile: string): string | null {
 const RESERVED_GENERIC_AGENT_NAME = "generic";
 
 /**
+ * FLY-579: reserved QA agent name. The Auto-QA coordinator spawns with
+ * `agentName: "qa"`. Resolution: a project-declared `agents.qa` (e.g.
+ * flywheel's `.flywheel/agents/engineering/qa-executor.md`) takes precedence
+ * (project override); otherwise the shipped project-agnostic
+ * `agents/qa-executor.md` is used — so EVERY project gets an independent QA
+ * runner without declaring one.
+ */
+const RESERVED_QA_AGENT_NAME = "qa";
+
+/**
  * Synthesize the shipped-generic AgentConfig. The `agent_file` is relative to the
  * Flywheel repo root; Blueprint resolves it via the `agentFileRoot: "flywheel"` discriminant.
  */
@@ -141,6 +152,23 @@ function shippedGenericResult(): AgentDispatchResult {
 			match: { labels: [] },
 		},
 		matchMethod: "shipped-generic",
+		agentFileRoot: "flywheel",
+		department: undefined,
+	};
+}
+
+/**
+ * FLY-579: synthesize the shipped project-agnostic QA AgentConfig. `agent_file`
+ * is relative to the Flywheel repo root (resolved via `agentFileRoot: "flywheel"`).
+ */
+function shippedQaResult(): AgentDispatchResult {
+	return {
+		agentName: RESERVED_QA_AGENT_NAME,
+		agentConfig: {
+			agent_file: "agents/qa-executor.md",
+			match: { labels: [] },
+		},
+		matchMethod: "shipped-qa",
 		agentFileRoot: "flywheel",
 		department: undefined,
 	};
@@ -230,6 +258,12 @@ export class AgentDispatcher {
 		if (name === RESERVED_GENERIC_AGENT_NAME) {
 			return shippedGenericResult();
 		}
+		// FLY-579: reserved "qa" resolves to a project override when declared,
+		// else the shipped project-agnostic QA executor — so every project gets
+		// an independent QA runner without declaring one.
+		if (name === RESERVED_QA_AGENT_NAME && !this.agents[name]) {
+			return shippedQaResult();
+		}
 		const cfg = this.agents[name];
 		if (!cfg) {
 			throw new InvalidAgentNameError(name, this.availableNames());
@@ -245,7 +279,14 @@ export class AgentDispatcher {
 
 	/** v1.27.2: introspection helper for INVALID_AGENT_NAME responses + tests. */
 	availableNames(): string[] {
-		return [...Object.keys(this.agents), RESERVED_GENERIC_AGENT_NAME];
+		// FLY-579: "qa" is always available (shipped fallback) even when the
+		// project doesn't declare it. Dedup if the project DOES declare `qa`.
+		const names = new Set([
+			...Object.keys(this.agents),
+			RESERVED_GENERIC_AGENT_NAME,
+			RESERVED_QA_AGENT_NAME,
+		]);
+		return [...names];
 	}
 
 	private labelsMatch(cfg: AgentConfig, issueLabels: string[]): boolean {

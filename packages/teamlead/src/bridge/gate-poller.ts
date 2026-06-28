@@ -31,6 +31,7 @@ import {
 } from "../lead-backends/codex/InboundCursorStore.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { isQaHeld } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import {
 	isDiscordSnowflake,
@@ -278,6 +279,18 @@ export class GatePoller {
 								console.warn(
 									`[GatePoller] orphan question — no session for from_agent=${question.from_agent} (qid=${question.id}, lead=${lead.agentId})`,
 								);
+								continue;
+							}
+							// FLY-579: QA-held — do NOT surface the parent's approve_to_ship
+							// gate to the Lead/founder until QA is green. Skip BOTH the relay
+							// and the founder-thread fallback, and do NOT evict (the question
+							// must survive so it can be surfaced once QA passes; verify-approval
+							// remains bound to it). Same isQaHeld predicate as event-route +
+							// HeartbeatService so the three surfaces cannot drift.
+							if (
+								question.checkpoint === "approve_to_ship" &&
+								isQaHeld(this.config.store, session)
+							) {
 								continue;
 							}
 							// FLY-605 Part A (Codex R2 #3): relayToLead and the founder-thread

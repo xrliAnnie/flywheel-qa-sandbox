@@ -11,6 +11,8 @@ import type {
 	ExecutionEventEmitter,
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
+import type { AutoQaCoordinator } from "./bridge/auto-qa-coordinator.js";
+import { isQaHeld } from "./bridge/auto-qa-held.js";
 import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
@@ -45,6 +47,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	 * worktree cleanup on this path (byte-compat).
 	 */
 	public removeCleanWorktree?: WorktreeCleanupFn;
+
+	/**
+	 * FLY-579 (Codex R1 HIGH-1): late-bound auto-QA coordinator holder, set by
+	 * the composition root after construction (the coordinator is built later, in
+	 * startBridge). This in-process completed path is a production / dual-sink
+	 * emitter, so it MUST drive auto-QA + suppress the founder review-required
+	 * delivery exactly like the HTTP /events route — otherwise a held founder
+	 * gate leaks here. Absent / `.current` undefined → byte-compatible (isQaHeld
+	 * is always false with no held record).
+	 */
+	public autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
 
 	constructor(
 		private store: StateStore,
@@ -547,7 +560,41 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		this.pushNotification(env, "session_completed");
+		// FLY-579 (Codex R1 HIGH-1): this in-process completed path is a
+		// production / dual-sink emitter — it must drive auto-QA and suppress the
+		// founder review-required delivery exactly like the HTTP /events route, or
+		// a held founder gate leaks here. onMainAwaitingReview is idempotent
+		// (atomic record claim) so a concurrent event-route claim is a no-op.
+		if (
+			status === "awaiting_review" &&
+			(env.sessionRole ?? "main") === "main" &&
+			this.autoQaCoordinator?.current
+		) {
+			const mainSession = this.store.getSession(env.executionId);
+			if (mainSession) {
+				try {
+					await this.autoQaCoordinator.current.onMainAwaitingReview(
+						mainSession,
+					);
+				} catch (err) {
+					console.error(
+						`[DirectEventSink] onMainAwaitingReview threw for ${env.executionId}: ${(err as Error).message}`,
+					);
+				}
+			}
+		}
+
+		// FLY-579: hold the founder while QA-held — suppress the review-required
+		// delivery (the 🧪 / ship-ready posts reach the thread via the
+		// coordinator's ThreadPoster, not this sink). isQaHeld is false with no
+		// held record, so this is byte-compatible when auto-QA is off.
+		if (isQaHeld(this.store, this.store.getSession(env.executionId))) {
+			console.log(
+				`[DirectEventSink] FLY-579 QA-held: suppressing review-required delivery for ${env.executionId}`,
+			);
+		} else {
+			this.pushNotification(env, "session_completed");
+		}
 
 		// FLY-102: Post-approve-ship finalization (tmux cleanup → notifier → archive).
 		// Gated by predicate so only approve-ship completions (not route=needs_review

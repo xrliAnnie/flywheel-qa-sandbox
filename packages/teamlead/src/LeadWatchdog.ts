@@ -932,6 +932,10 @@ function titleFor(kind: AlertEventType): string {
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_stuck_unhandled":
 			return "Runner stuck unhandled";
+		// FLY-579: never emitted by LeadWatchdog (AutoQaEffects builds its own
+		// title); case exists for switch exhaustiveness.
+		case "auto_qa_stuck":
+			return "Auto-QA pipeline stuck";
 	}
 }
 
@@ -965,5 +969,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-195: never emitted by LeadWatchdog (see titleFor).
 		case "runner_stuck_unhandled":
 			return "A stuck Runner episode received no Lead disposition within the grace window. Check the owning Lead, then the runner tmux window.";
+		// FLY-579: never emitted by LeadWatchdog (AutoQaEffects builds its own body).
+		case "auto_qa_stuck":
+			return "The auto-QA pipeline could not proceed (spawn failed, no verdict, or a fail-closed pr_head_sha). The founder was NOT surfaced; investigate the QA Runner.";
 	}
 }

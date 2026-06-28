@@ -10,7 +10,9 @@
  */
 
 import type { EventEnvelope } from "flywheel-edge-worker";
+import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -612,5 +614,77 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 		// Duplicate pr_handoff after terminal → still completed.
 		await sink.emitCompleted(makeEnvelope(), prHandoffResult());
 		expect(store.getSession("exec-1")?.status).toBe("completed");
+	});
+});
+
+describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH-1)", () => {
+	let store: StateStore;
+	const SHA = "a".repeat(40);
+
+	function captureRegistry(): {
+		registry: RuntimeRegistry;
+		delivered: string[];
+	} {
+		const delivered: string[] = [];
+		const registry = {
+			resolveWithLead: () => ({
+				runtime: {
+					deliver: async (env: { event: { event_type: string } }) => {
+						delivered.push(env.event.event_type);
+						return { delivered: true };
+					},
+				},
+				lead: { agentId: "product-lead", chatChannel: "chat-ch-1" },
+			}),
+		} as unknown as RuntimeRegistry;
+		return { registry, delivered };
+	}
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+	afterEach(() => store.close());
+
+	function needsReviewResult(): BlueprintResult {
+		return {
+			decision: { route: "needs_review" },
+			evidence: { headSha: SHA },
+		} as unknown as BlueprintResult;
+	}
+
+	it("suppresses the review-required delivery when the awaiting_review main is QA-held", async () => {
+		const { registry, delivered } = captureRegistry();
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			undefined,
+			registry,
+		);
+		await sink.emitStarted(makeEnvelope());
+		// A held record exists for (exec-1, reviewed head) → founder must stay out.
+		store.claimAutoQaRecord({
+			parentExecutionId: "exec-1",
+			targetPrHeadSha: SHA,
+			issueId: "issue-1",
+			projectName: "geoforge3d",
+		});
+		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
+		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
+		expect(delivered).not.toContain("session_completed");
+	});
+
+	it("byte-compat: with NO held record the review-required delivery fires", async () => {
+		const { registry, delivered } = captureRegistry();
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			undefined,
+			registry,
+		);
+		await sink.emitStarted(makeEnvelope());
+		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
+		expect(delivered).toContain("session_completed");
 	});
 });
