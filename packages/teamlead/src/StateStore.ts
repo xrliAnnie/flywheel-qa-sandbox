@@ -231,6 +231,33 @@ export interface RetryDispatchIntent {
 }
 
 /**
+ * FLY-579 P1: durable record for the auto-QA pipeline. One row per
+ * (parent main execution, reviewed PR head sha). It is the source of truth
+ * for "this awaiting_review main session is QA-held" — written BEFORE the QA
+ * Runner is spawned (so no relayer can observe the parent as an ordinary
+ * review gate first) and read by the shared `isQaHeld` predicate.
+ *
+ * status:
+ *  - running    — QA spawned (or claimed, pre-spawn), verdict pending → HOLD founder
+ *  - passed     — QA verdict PASS → release founder ship-ready notification
+ *  - failed     — QA verdict FAIL → routed back to implementer (founder NOT notified)
+ *  - superseded — a newer reviewed head opened a fresh record; this one is dead
+ *  - stuck      — spawn failed or QA died without a verdict → Lead-only pipeline error
+ */
+export interface AutoQaRecord {
+	parent_execution_id: string;
+	target_pr_head_sha: string;
+	issue_id: string;
+	project_name: string;
+	qa_execution_id?: string;
+	status: "running" | "passed" | "failed" | "superseded" | "stuck";
+	verdict_event_id?: string;
+	started_at: string;
+	completed_at?: string;
+	notified_at?: string;
+}
+
+/**
  * FLY-191 Phase 2 (Codex R2 HIGH-1): sentinel stored in
  * `sessions.review_question_id` when a Phase-2 needs_review completion
  * carried no usable questionId. Distinguishes "binding required but missing"
@@ -707,6 +734,32 @@ export class StateStore {
 				created_at TEXT NOT NULL DEFAULT (datetime('now'))
 			)
 		`);
+
+		// FLY-579 P1: auto-QA pipeline durable record. Keyed by (parent main
+		// execution, reviewed PR head sha) so a re-review against a new head opens
+		// a fresh record while a repeated awaiting_review for the SAME head dedups
+		// to one QA spawn. Written before the QA Runner spawns (held-first).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS auto_qa_record (
+				parent_execution_id TEXT NOT NULL,
+				target_pr_head_sha TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				qa_execution_id TEXT,
+				status TEXT NOT NULL DEFAULT 'running',
+				verdict_event_id TEXT,
+				started_at TEXT NOT NULL DEFAULT (datetime('now')),
+				completed_at TEXT,
+				notified_at TEXT,
+				PRIMARY KEY (parent_execution_id, target_pr_head_sha)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_auto_qa_record_qa_exec ON auto_qa_record(qa_execution_id)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_auto_qa_record_status ON auto_qa_record(status)",
+		);
 
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
@@ -1708,6 +1761,188 @@ export class StateStore {
 			[threadId, channelId, issueId, leadId ?? null],
 		);
 		this.save();
+	}
+
+	// ── FLY-579 P1: auto-QA record CRUD ──────────────────────────────────────
+
+	private rowToAutoQaRecord(row: Record<string, unknown>): AutoQaRecord {
+		return {
+			parent_execution_id: row.parent_execution_id as string,
+			target_pr_head_sha: row.target_pr_head_sha as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			qa_execution_id: (row.qa_execution_id as string) ?? undefined,
+			status: row.status as AutoQaRecord["status"],
+			verdict_event_id: (row.verdict_event_id as string) ?? undefined,
+			started_at: row.started_at as string,
+			completed_at: (row.completed_at as string) ?? undefined,
+			notified_at: (row.notified_at as string) ?? undefined,
+		};
+	}
+
+	/**
+	 * Atomically claim a QA record for (parent, head). Returns true if a NEW
+	 * record was inserted (caller should spawn QA), false if one already exists
+	 * (dedup — QA already claimed/running/done for this exact head). INSERT OR
+	 * IGNORE makes the claim race-safe against concurrent awaiting_review events.
+	 */
+	claimAutoQaRecord(input: {
+		parentExecutionId: string;
+		targetPrHeadSha: string;
+		issueId: string;
+		projectName: string;
+	}): boolean {
+		this.db.run(
+			`INSERT OR IGNORE INTO auto_qa_record
+			   (parent_execution_id, target_pr_head_sha, issue_id, project_name, status, started_at)
+			 VALUES (?, ?, ?, ?, 'running', datetime('now'))`,
+			[
+				input.parentExecutionId,
+				input.targetPrHeadSha,
+				input.issueId,
+				input.projectName,
+			],
+		);
+		const inserted = this.db.getRowsModified() > 0;
+		this.save();
+		return inserted;
+	}
+
+	setAutoQaQaExecutionId(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+		qaExecutionId: string,
+	): void {
+		this.db.run(
+			"UPDATE auto_qa_record SET qa_execution_id = ? WHERE parent_execution_id = ? AND target_pr_head_sha = ?",
+			[qaExecutionId, parentExecutionId, targetPrHeadSha],
+		);
+		this.save();
+	}
+
+	/**
+	 * Transition a record's status. Terminal states (passed/failed/stuck) stamp
+	 * completed_at. `notifiedAt: true` stamps notified_at (PASS founder
+	 * ship-ready notification sent — release dedup). verdictEventId is the
+	 * qa_result event id (idempotency anchor against duplicate verdicts).
+	 */
+	setAutoQaStatus(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+		status: AutoQaRecord["status"],
+		opts: { verdictEventId?: string; notifiedAt?: boolean },
+	): void {
+		const terminal =
+			status === "passed" || status === "failed" || status === "stuck";
+		this.db.run(
+			`UPDATE auto_qa_record
+			    SET status = ?,
+			        verdict_event_id = COALESCE(?, verdict_event_id),
+			        completed_at = CASE WHEN ? THEN datetime('now') ELSE completed_at END,
+			        notified_at = CASE WHEN ? THEN datetime('now') ELSE notified_at END
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?`,
+			[
+				status,
+				opts.verdictEventId ?? null,
+				terminal ? 1 : 0,
+				opts.notifiedAt ? 1 : 0,
+				parentExecutionId,
+				targetPrHeadSha,
+			],
+		);
+		this.save();
+	}
+
+	/** Mark all of a parent's still-running records superseded EXCEPT keepSha. */
+	supersedeOtherAutoQaRecords(
+		parentExecutionId: string,
+		keepSha: string,
+	): void {
+		this.db.run(
+			`UPDATE auto_qa_record SET status = 'superseded'
+			  WHERE parent_execution_id = ? AND target_pr_head_sha != ? AND status = 'running'`,
+			[parentExecutionId, keepSha],
+		);
+		this.save();
+	}
+
+	getAutoQaRecord(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+	): AutoQaRecord | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE parent_execution_id = ? AND target_pr_head_sha = ?",
+		);
+		stmt.bind([parentExecutionId, targetPrHeadSha]);
+		let rec: AutoQaRecord | undefined;
+		if (stmt.step()) {
+			rec = this.rowToAutoQaRecord(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return rec;
+	}
+
+	getAutoQaRecordByQaExec(qaExecutionId: string): AutoQaRecord | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE qa_execution_id = ?",
+		);
+		stmt.bind([qaExecutionId]);
+		let rec: AutoQaRecord | undefined;
+		if (stmt.step()) {
+			rec = this.rowToAutoQaRecord(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return rec;
+	}
+
+	listAutoQaRecordsByParent(parentExecutionId: string): AutoQaRecord[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE parent_execution_id = ? ORDER BY started_at",
+		);
+		stmt.bind([parentExecutionId]);
+		const out: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			out.push(
+				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return out;
+	}
+
+	listRunningAutoQaRecords(): AutoQaRecord[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE status = 'running' ORDER BY started_at",
+		);
+		const out: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			out.push(
+				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** Records that PASSED QA but whose founder ship-ready notification was
+	 * never confirmed (notified_at IS NULL) — reconcile re-notifies these so a
+	 * crash between status=passed and the notification can't strand the change. */
+	listPassedUnnotifiedAutoQaRecords(): AutoQaRecord[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE status = 'passed' AND notified_at IS NULL ORDER BY started_at",
+		);
+		const out: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			out.push(
+				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return out;
 	}
 
 	getChatThreadByIssue(

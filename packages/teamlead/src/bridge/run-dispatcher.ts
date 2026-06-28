@@ -585,6 +585,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// FLY-205: doc-flow tier + issue URL (runs-route validates/persists)
 			docTier: req.docTier,
 			issueUrl: req.issueUrl,
+			// FLY-579: worktree start point (QA pins to parent pr_head_sha) + QA context
+			startPoint: req.startPoint,
+			qaContext: req.qaContext,
 			// FLY-142 PR 1.4 + FLY-123: same as retry path — Agent Team identity
 			// + executor backend resolution (labels > roles config > env > claude).
 			...buildRunnerSpawnFields(

@@ -3,6 +3,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "./applyTransition.js";
+import { isQaHeld } from "./bridge/auto-qa-held.js";
 import type {
 	ChatThreadContext,
 	ChatThreadCreator,
@@ -235,6 +236,12 @@ export class HeartbeatService implements ReconnectController {
 		for (const session of timedOut) {
 			const enteredAt = session.awaiting_review_entered_at;
 			if (!enteredAt) continue; // query excludes these; belt-and-braces
+			// FLY-579: QA-held — do NOT escalate a founder `gate_timed_out` while
+			// independent QA is still running/failed. The founder is intentionally
+			// not surfaced until QA is green; a QA stall is a Lead-only pipeline
+			// error (owned by AutoQaCoordinator), never a founder review timeout.
+			// Same isQaHeld predicate as event-route + GatePoller (no drift).
+			if (isQaHeld(this.store, session)) continue;
 			const waitedMs =
 				Date.now() - new Date(`${enteredAt.replace(" ", "T")}Z`).getTime();
 			const body = {

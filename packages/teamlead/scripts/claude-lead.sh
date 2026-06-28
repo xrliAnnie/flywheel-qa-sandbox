@@ -1677,6 +1677,18 @@ elif [ "$IS_COS_ROLE" = false ]; then
     log "Appending base doc-flow rules: ${BASE_DOC_FLOW_RULES}"
   fi
 
+  # ── FLY-579: auto-QA pipeline contract (non-cos dept leads only) ──
+  # Describes the automatic code-review → independent-QA → founder-gate flow so a
+  # Lead never has to remember to spawn QA and never surfaces the founder before
+  # QA is green. INERT unless the project opts in (qa.auto in its config.yaml);
+  # the prose is harmless on non-opted-in projects. Optional — missing base file
+  # is a no-op (backward compat with older flywheel checkouts).
+  BASE_AUTO_QA_RULES="${BASE_RULES_DIR}/auto-qa-pipeline.md"
+  if [ -f "$BASE_AUTO_QA_RULES" ] && [ -r "$BASE_AUTO_QA_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_AUTO_QA_RULES")
+    log "Appending base auto-QA pipeline rules: ${BASE_AUTO_QA_RULES}"
+  fi
+
   # ── FLY-222: Xiaohongshu memory-write delegation (non-cos dept leads only) ──
   # A xiaohongshu-learning Runner holds NO Bridge /api/* token by design
   # (FLY-175 least-privilege), so it delegates its "things learned" → memory

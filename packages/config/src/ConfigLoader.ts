@@ -330,6 +330,34 @@ export class ConfigLoader {
 			}
 		}
 
+		// qa (optional — FLY-579). Absent or auto:false → off (byte-compatible).
+		// Shape validated whenever PRESENT so a malformed config fails loudly.
+		const qa = c.qa as Record<string, unknown> | undefined;
+		if (qa != null) {
+			if (typeof qa !== "object" || Array.isArray(qa)) {
+				throw new Error(
+					"qa must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (typeof qa.auto !== "boolean") {
+				throw new Error("qa.auto must be a boolean");
+			}
+			if (qa.skip_labels != null) {
+				if (
+					!Array.isArray(qa.skip_labels) ||
+					qa.skip_labels.some((l) => typeof l !== "string")
+				) {
+					throw new Error("qa.skip_labels must be an array of strings");
+				}
+			}
+			if (
+				qa.agent != null &&
+				(typeof qa.agent !== "string" || qa.agent.length === 0)
+			) {
+				throw new Error("qa.agent must be a non-empty string");
+			}
+		}
+
 		// founder_ux_gate (optional — FLY-598). Absent → off (byte-compatible).
 		// Kept separate from FLY-175 founderConsent so this gate can never toggle
 		// reserved-action consent. Shape validated whenever PRESENT so a malformed

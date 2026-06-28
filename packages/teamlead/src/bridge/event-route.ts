@@ -18,6 +18,8 @@ import {
 	type StateStore,
 } from "../StateStore.js";
 import { handleArtifactEvent } from "./artifact-event.js";
+import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
+import { isQaHeld } from "./auto-qa-held.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import {
@@ -540,6 +542,13 @@ export function createEventRouter(
 	// again, so it leaves the reconnecting state (resumes normal monitoring +
 	// clears the "⚠️重连中" title). Absent / kill-switch → no-op.
 	reconnectHolder?: { current: ReconnectController | null },
+	// FLY-579: auto-QA pipeline coordinator, passed as a late-bound holder (same
+	// pattern as reconnectHolder) because it is built AFTER createBridgeApp returns
+	// (it needs the LeadAlertNotifier, constructed later in startBridge). A main
+	// session entering awaiting_review spawns independent QA + holds the founder;
+	// qa_result events drive the verdict. Holder absent / .current undefined →
+	// existing behaviour byte-for-byte (no held records exist, isQaHeld is false).
+	autoQaCoordinator?: { current: AutoQaCoordinator | undefined },
 ): Router {
 	const router = Router();
 	const issueStatusEmojiEnabled =
@@ -596,6 +605,24 @@ export function createEventRouter(
 
 		if (!isNew) {
 			res.json({ ok: true, duplicate: true });
+			return;
+		}
+
+		// FLY-579: a QA verdict is not a session-lifecycle transition (the QA
+		// session's own completion is separate). Drive the coordinator's PASS/FAIL
+		// branch and return. Idempotency is enforced by insertEvent dedup (above)
+		// AND the coordinator's record-status check (defence in depth).
+		if (event.event_type === "qa_result") {
+			if (autoQaCoordinator?.current) {
+				try {
+					await autoQaCoordinator.current.onQaResult(event);
+				} catch (err) {
+					console.error(
+						`[event-route] onQaResult threw for ${event.execution_id}: ${(err as Error).message}`,
+					);
+				}
+			}
+			res.json({ ok: true });
 			return;
 		}
 
@@ -1729,6 +1756,28 @@ export function createEventRouter(
 
 		// Best-effort notification push via RuntimeRegistry (GEO-195)
 		const session = store.getSession(event.execution_id);
+
+		// FLY-579: a main session that just entered awaiting_review (code review
+		// passed, approve gate opened) → drive the auto-QA pipeline. This runs
+		// BEFORE the always-deliver block below so the held record exists by the
+		// time the QA-held suppression check is evaluated (held-first ordering,
+		// plan §7.1). Coordinator absent / not-main / not-awaiting_review → no-op.
+		if (
+			event.event_type === "session_completed" &&
+			autoQaCoordinator?.current &&
+			session &&
+			(session.session_role ?? "main") === "main" &&
+			session.status === "awaiting_review"
+		) {
+			try {
+				await autoQaCoordinator.current.onMainAwaitingReview(session);
+			} catch (err) {
+				console.error(
+					`[event-route] onMainAwaitingReview threw for ${event.execution_id}: ${(err as Error).message}`,
+				);
+			}
+		}
+
 		if (session && registry) {
 			try {
 				// GEO-152: fallback to payload labels when session labels are empty
@@ -1817,57 +1866,72 @@ export function createEventRouter(
 					hookPayload.notification_context = filterResult.reason;
 				}
 
-				// FLY-47: Always deliver ALL events to Lead — Lead decides routing
-				// (mirrors Agent Team pattern: all teammate messages reach the lead)
-				const seq = store.appendLeadEvent(
-					lead.agentId,
-					event.event_id,
-					event.event_type,
-					JSON.stringify(hookPayload),
-					sessionKey,
-				);
-				const envelope: LeadEventEnvelope = {
-					seq,
-					event: hookPayload,
-					sessionKey,
-					leadId: lead.agentId,
-					timestamp: new Date().toISOString(),
-				};
-				// FLY-80: Only mark delivered on success. On failure, leave undelivered
-				// so inbox-mcp can pick it up on next poll (CommDB is the reliable store).
-				// FLY-159 (Codex R2 Issue 1): runtime.deliver() returns {delivered:
-				// false, error} instead of throwing on Lead-side failures. Without
-				// recordDeliveryFailure on that branch, GUARDRAIL_EVENT_TYPES retry
-				// (HeartbeatService.retryUndeliveredGuardrailEvents) would never see
-				// these rows. Pattern mirrors HeartbeatService.ts:416.
-				const isGuardrail = GUARDRAIL_EVENT_TYPES.has(event.event_type);
-				runtime
-					.deliver(envelope)
-					.then((result) => {
-						if (result.delivered) {
-							store.markLeadEventDelivered(seq);
-						} else if (isGuardrail) {
-							store.recordDeliveryFailure(
-								seq,
-								result.error ?? "deliver returned delivered=false",
-							);
-						} else {
-							// Non-guardrail: keep legacy best-effort behavior — mark
-							// delivered to clear the row even if Lead didn't actually
-							// see it (inbox-mcp poll is the safety net here).
-							store.markLeadEventDelivered(seq);
-						}
-					})
-					.catch((err) => {
-						if (isGuardrail) {
-							store.recordDeliveryFailure(seq, (err as Error).message);
-						} else {
-							console.warn(
-								`[event-route] Delivery failed for seq=${seq} to ${lead.agentId}:`,
-								(err as Error).message,
-							);
-						}
-					});
+				// FLY-579: QA-held — do NOT surface "review required" to the
+				// founder until QA is green. The GatePoller (approve gate) and
+				// HeartbeatService (gate_timed_out) suppress in parallel via the
+				// same isQaHeld predicate; the 🧪 QA-started post and the (on-pass)
+				// ship-ready notification reach the issue thread through the
+				// coordinator's ThreadPoster, NOT this block.
+				if (
+					event.event_type === "session_completed" &&
+					isQaHeld(store, session)
+				) {
+					console.log(
+						`[event-route] FLY-579 QA-held: suppressing review-required Lead delivery for ${event.execution_id}`,
+					);
+				} else {
+					// FLY-47: Always deliver ALL events to Lead — Lead decides routing
+					// (mirrors Agent Team pattern: all teammate messages reach the lead)
+					const seq = store.appendLeadEvent(
+						lead.agentId,
+						event.event_id,
+						event.event_type,
+						JSON.stringify(hookPayload),
+						sessionKey,
+					);
+					const envelope: LeadEventEnvelope = {
+						seq,
+						event: hookPayload,
+						sessionKey,
+						leadId: lead.agentId,
+						timestamp: new Date().toISOString(),
+					};
+					// FLY-80: Only mark delivered on success. On failure, leave undelivered
+					// so inbox-mcp can pick it up on next poll (CommDB is the reliable store).
+					// FLY-159 (Codex R2 Issue 1): runtime.deliver() returns {delivered:
+					// false, error} instead of throwing on Lead-side failures. Without
+					// recordDeliveryFailure on that branch, GUARDRAIL_EVENT_TYPES retry
+					// (HeartbeatService.retryUndeliveredGuardrailEvents) would never see
+					// these rows. Pattern mirrors HeartbeatService.ts:416.
+					const isGuardrail = GUARDRAIL_EVENT_TYPES.has(event.event_type);
+					runtime
+						.deliver(envelope)
+						.then((result) => {
+							if (result.delivered) {
+								store.markLeadEventDelivered(seq);
+							} else if (isGuardrail) {
+								store.recordDeliveryFailure(
+									seq,
+									result.error ?? "deliver returned delivered=false",
+								);
+							} else {
+								// Non-guardrail: keep legacy best-effort behavior — mark
+								// delivered to clear the row even if Lead didn't actually
+								// see it (inbox-mcp poll is the safety net here).
+								store.markLeadEventDelivered(seq);
+							}
+						})
+						.catch((err) => {
+							if (isGuardrail) {
+								store.recordDeliveryFailure(seq, (err as Error).message);
+							} else {
+								console.warn(
+									`[event-route] Delivery failed for seq=${seq} to ${lead.agentId}:`,
+									(err as Error).message,
+								);
+							}
+						});
+				} // end else (FLY-579 QA-held review-required suppression)
 			} catch (err) {
 				console.warn(
 					`[event-route] Unknown project "${event.project_name}" — skipping notification:`,
