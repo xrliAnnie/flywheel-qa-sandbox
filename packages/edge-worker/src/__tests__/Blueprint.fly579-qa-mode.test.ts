@@ -200,4 +200,42 @@ describe("buildQaModeSystemPromptLines (unit)", () => {
 		expect(text).not.toContain("on branch");
 		expect(text).toContain("sha123");
 	});
+
+	it("FLY-643: verifies the PARENT issue when running on a separate QA issue", () => {
+		const lines = buildQaModeSystemPromptLines(
+			{
+				parentExecutionId: "p",
+				prHeadSha: "sha123",
+				parentIssueIdentifier: "FLY-643",
+				parentIssueUrl: "https://linear.app/x/issue/FLY-643",
+			},
+			// The runner's OWN issueId is the separate QA issue.
+			"FLY-700",
+			"/cli.js",
+			"qa-exec-1",
+		);
+		const text = lines.join("\n");
+		// Verifies the parent, not its own QA issue.
+		expect(text).toContain("verifying FLY-643");
+		expect(text).not.toContain("verifying FLY-700");
+		expect(text).toContain("https://linear.app/x/issue/FLY-643");
+		// Disambiguates its own tracking issue from the change under test.
+		expect(text).toContain("its own tracking issue FLY-700");
+		expect(text).toContain("verify FLY-643, not this QA issue");
+		// target-exec still binds to the parent execution.
+		expect(text).toContain("--target-exec p");
+	});
+
+	it("FLY-643: byte-compatible fallback — no parentIssueIdentifier verifies issueId", () => {
+		const lines = buildQaModeSystemPromptLines(
+			{ parentExecutionId: "p", prHeadSha: "sha123" },
+			"FLY-1",
+			"/cli.js",
+			"e1",
+		);
+		const text = lines.join("\n");
+		expect(text).toContain("verifying FLY-1");
+		// No separate-issue disambiguation line on the legacy path.
+		expect(text).not.toContain("its own tracking issue");
+	});
 });

@@ -89,11 +89,20 @@ export interface ProjectRuntime {
  * transport branch, but spawn flows weren't passing the required identity
  * fields. Result: mailbox written by Lead, never read by Runner.
  */
-function buildRunnerSpawnFields(
+export function buildRunnerSpawnFields(
 	executionId: string,
 	leadId: string | undefined,
 	issueLabels: string[] | undefined,
 	rolesConfig: RoleBackendMap | undefined,
+	/**
+	 * FLY-643: when true, omit `issueLabels` from executor-backend resolution so
+	 * the issue's vendor labels can't pick the backend (falls to project roles
+	 * config > env > built-in claude-tmux). Labels are still used for Lead/thread
+	 * routing elsewhere — only the backend label layer is bypassed. Auto-QA sets
+	 * this so a QA runner can't inherit the parent's vendor backend. Default
+	 * false → existing label-driven resolution (byte-compatible).
+	 */
+	ignoreRunnerLabelSelection?: boolean,
 ): Pick<
 	BlueprintContext,
 	| "runnerAgentName"
@@ -109,9 +118,11 @@ function buildRunnerSpawnFields(
 	// claude-tmux + vendor claude-code, making the returned fields
 	// byte-identical to the pre-FLY-123 buildAgentTeamIdentity output
 	// (plus runnerBackend="claude-tmux", which is also Blueprint's default).
+	// FLY-643: a QA runner (ignoreRunnerLabelSelection) skips the label layer so
+	// the parent's vendor labels can't select its backend.
 	const resolved = resolveRoleAdapter({
 		role: "runner",
-		...(issueLabels && { issueLabels }),
+		...(!ignoreRunnerLabelSelection && issueLabels && { issueLabels }),
 		...(rolesConfig && { projectRoles: rolesConfig }),
 	});
 	// FLY-493: a no-transport backend (antigravity, transport === "none") carries
@@ -590,11 +601,15 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			qaContext: req.qaContext,
 			// FLY-142 PR 1.4 + FLY-123: same as retry path — Agent Team identity
 			// + executor backend resolution (labels > roles config > env > claude).
+			// FLY-643: a QA start passes ignoreRunnerLabelSelection so the parent's
+			// vendor labels can't pick the QA backend (issueLabels still flow below
+			// for Lead/thread routing).
 			...buildRunnerSpawnFields(
 				executionId,
 				req.leadId,
 				req.issueLabels,
 				runtime.rolesConfig,
+				req.ignoreRunnerLabelSelection,
 			),
 			// FLY-116: spawn macOS Terminal viewer once tmux window exists
 			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {

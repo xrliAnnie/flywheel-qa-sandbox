@@ -200,4 +200,52 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 		expect(ctx.runnerBackend).toBe("kimi-tmux");
 		expect(ctx.runnerTransportMode).toBe("none");
 	});
+
+	// FLY-643: a QA start sets ignoreRunnerLabelSelection so the parent issue's
+	// vendor labels (mirrored onto the QA issue / passed for routing) cannot pick
+	// the QA backend. The QA runner must stay on the transported Claude lane
+	// (Claude-in-Chrome E2E), never a no-transport backend.
+	it("[FLY-643] ignoreRunnerLabelSelection: an `agy` label does NOT make QA no-transport", async () => {
+		dispatcher = makeDispatcher();
+		await dispatcher.start({
+			issueId: "qa-issue",
+			projectName: "proj",
+			leadId: "product-lead",
+			issueLabels: ["Product", "agy"],
+			ignoreRunnerLabelSelection: true,
+		} as Parameters<RunDispatcher["start"]>[0]);
+		await dispatcher.drain();
+		const ctx = captured as BlueprintContext;
+		expect(ctx.runnerBackend).toBe("claude-tmux");
+		expect(ctx.runnerTransportMode).not.toBe("none");
+		// Transported lane → Agent Team identity is wired (mailbox default + leadId).
+		expect(ctx.vendor).toBe("claude-code");
+		expect(ctx.runnerAgentName).toMatch(/^runner-/);
+		// Labels still flow to the runner for Lead/thread routing.
+		expect(ctx.issueLabels).toEqual(["Product", "agy"]);
+	});
+
+	it("[FLY-643] WITHOUT the flag, an `agy` label still picks antigravity (byte-compat)", async () => {
+		dispatcher = makeDispatcher();
+		const ctx = await startAndWait(dispatcher, ["Product", "agy"]);
+		expect(ctx.runnerBackend).toBe("antigravity-tmux");
+		expect(ctx.runnerTransportMode).toBe("none");
+	});
+
+	it("[FLY-643] ignoreRunnerLabelSelection still honors project roles config", async () => {
+		// The flag only bypasses the LABEL layer — explicit project config still
+		// applies (documented boundary: project may set a non-claude QA backend).
+		dispatcher = makeDispatcher({ runner: { backend: "codex-tmux" } });
+		await dispatcher.start({
+			issueId: "qa-issue",
+			projectName: "proj",
+			leadId: "product-lead",
+			issueLabels: ["agy"],
+			ignoreRunnerLabelSelection: true,
+		} as Parameters<RunDispatcher["start"]>[0]);
+		await dispatcher.drain();
+		const ctx = captured as BlueprintContext;
+		// Label `agy` ignored; project roles config wins.
+		expect(ctx.runnerBackend).toBe("codex-tmux");
+	});
 });

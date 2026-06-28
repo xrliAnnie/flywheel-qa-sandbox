@@ -153,6 +153,49 @@ describe("StateStore auto_qa_record", () => {
 		expect(running.map((r) => r.parent_execution_id)).toEqual(["p1"]);
 	});
 
+	it("setAutoQaIssue persists the separate QA Linear issue (FLY-643)", async () => {
+		const store = await freshStore();
+		store.claimAutoQaRecord({
+			parentExecutionId: "parent-1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-643",
+			projectName: "proj",
+		});
+		// Pre-FLY-643 / pre-create state: no QA issue yet.
+		expect(
+			store.getAutoQaRecord("parent-1", SHA_A)?.qa_issue_id,
+		).toBeUndefined();
+
+		store.setAutoQaIssue("parent-1", SHA_A, {
+			issueId: "qa-issue-uuid",
+			issueIdentifier: "FLY-700",
+			issueTitle: "QA · FLY-643 — separate issue",
+			issueUrl: "https://linear.app/x/issue/FLY-700",
+		});
+		const rec = store.getAutoQaRecord("parent-1", SHA_A);
+		expect(rec?.qa_issue_id).toBe("qa-issue-uuid");
+		expect(rec?.qa_issue_identifier).toBe("FLY-700");
+		expect(rec?.qa_issue_title).toBe("QA · FLY-643 — separate issue");
+		expect(rec?.qa_issue_url).toBe("https://linear.app/x/issue/FLY-700");
+		// The parent issue_id is unchanged — qa_issue_id is a distinct column.
+		expect(rec?.issue_id).toBe("FLY-643");
+	});
+
+	it("setAutoQaIssue tolerates optional fields being absent", async () => {
+		const store = await freshStore();
+		store.claimAutoQaRecord({
+			parentExecutionId: "p",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-643",
+			projectName: "proj",
+		});
+		store.setAutoQaIssue("p", SHA_A, { issueId: "qa-only-id" });
+		const rec = store.getAutoQaRecord("p", SHA_A);
+		expect(rec?.qa_issue_id).toBe("qa-only-id");
+		expect(rec?.qa_issue_identifier).toBeUndefined();
+		expect(rec?.qa_issue_url).toBeUndefined();
+	});
+
 	it("persists across reopen (durable, survives Bridge restart)", async () => {
 		const store = await freshStore();
 		store.claimAutoQaRecord({
