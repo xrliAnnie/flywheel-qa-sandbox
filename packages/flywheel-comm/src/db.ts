@@ -28,6 +28,14 @@ CREATE TABLE IF NOT EXISTS sessions (
   ended_at      DATETIME,
   status        TEXT DEFAULT 'running' CHECK(status IN ('running','completed','timeout'))
 );
+CREATE TABLE IF NOT EXISTS runner_declared_states (
+  execution_id  TEXT PRIMARY KEY,
+  kind          TEXT NOT NULL CHECK(kind IN ('parked','long_task')),
+  reason        TEXT,
+  created_at    INTEGER NOT NULL,
+  expires_at    INTEGER,
+  updated_at    INTEGER NOT NULL
+);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_response ON messages(parent_id) WHERE type = 'response';
 CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(to_agent, type, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id);
@@ -35,6 +43,22 @@ CREATE INDEX IF NOT EXISTS idx_messages_expires ON messages(expires_at);
 CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project_name);
 CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status);
 `;
+
+/**
+ * FLY-626: a runner's self-declared liveness intent. `parked` = done-but-alive
+ * (idle by design, kept for iteration; may be indefinite — `expires_at` null).
+ * `long_task` = actively working on something that legitimately produces no pane
+ * activity for a while (codex review, big build) — always bounded by `expires_at`.
+ * Timestamps are epoch milliseconds (Codex R2 LOW #3).
+ */
+export interface RunnerDeclaredState {
+	execution_id: string;
+	kind: "parked" | "long_task";
+	reason: string | null;
+	created_at: number;
+	expires_at: number | null;
+	updated_at: number;
+}
 
 export class CommDB {
 	private db: Database.Database;
@@ -507,6 +531,76 @@ export class CommDB {
 			)
 			.get(execId, seconds) as { hit: number } | undefined;
 		return row !== undefined;
+	}
+
+	// ── FLY-626: Runner self-declared state (park / busy / unpark) ──
+
+	/**
+	 * FLY-626: Upsert a runner's self-declared liveness marker. `expiresAtMs` null
+	 * means indefinite (only valid for `parked`; `long_task` is always bounded by
+	 * the caller). All timestamps are epoch ms (Codex R2 LOW #3). REPLACE so a
+	 * re-declaration (park→busy, renew) atomically supersedes the prior row.
+	 */
+	upsertDeclaredState(
+		execId: string,
+		kind: "parked" | "long_task",
+		reason: string | null,
+		nowMs: number,
+		expiresAtMs: number | null,
+	): void {
+		this.db
+			.prepare(
+				`INSERT INTO runner_declared_states
+           (execution_id, kind, reason, created_at, expires_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(execution_id) DO UPDATE SET
+           kind = excluded.kind,
+           reason = excluded.reason,
+           expires_at = excluded.expires_at,
+           updated_at = excluded.updated_at`,
+			)
+			.run(execId, kind, reason, nowMs, expiresAtMs, nowMs);
+	}
+
+	/** FLY-626: Remove a runner's self-declared marker (`unpark` or Lead re-engagement). */
+	clearDeclaredState(execId: string): void {
+		this.db
+			.prepare("DELETE FROM runner_declared_states WHERE execution_id = ?")
+			.run(execId);
+	}
+
+	/**
+	 * FLY-626: Return the runner's CURRENTLY-EFFECTIVE declared state, or null.
+	 * A marker with `expires_at` <= nowMs (strict) is treated as expired → null.
+	 *
+	 * Readonly-tolerant (Codex R1 #5 / R2 #3): the Bridge reads via
+	 * `CommDB.openReadonly()`, which skips schema creation — a DB whose writer
+	 * never created this table yields "no such table". That must read as
+	 * "no marker", never throw. Any other error propagates.
+	 */
+	getEffectiveDeclaredState(
+		execId: string,
+		nowMs: number,
+	): RunnerDeclaredState | null {
+		let row: RunnerDeclaredState | undefined;
+		try {
+			row = this.db
+				.prepare(
+					`SELECT execution_id, kind, reason, created_at, expires_at, updated_at
+           FROM runner_declared_states WHERE execution_id = ?`,
+				)
+				.get(execId) as RunnerDeclaredState | undefined;
+		} catch (err) {
+			if (
+				/no such table: runner_declared_states/i.test((err as Error).message)
+			) {
+				return null;
+			}
+			throw err;
+		}
+		if (!row) return null;
+		if (row.expires_at !== null && row.expires_at <= nowMs) return null;
+		return row;
 	}
 
 	// ── Session Registry (Phase 2) ──

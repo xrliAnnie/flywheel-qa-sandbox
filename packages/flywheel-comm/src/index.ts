@@ -13,6 +13,11 @@ import { cleanupMessages } from "./commands/cleanup-messages.js";
 import { codexResume } from "./commands/codex-resume.js";
 import { complete } from "./commands/complete.js";
 import {
+	type DeclareStateOpts,
+	declareState,
+	parseDuration,
+} from "./commands/declare-state.js";
+import {
 	awaitFounderUxGate,
 	declareFounderUx,
 	recordFounderUxSignoff,
@@ -146,6 +151,15 @@ async function main(): Promise<void> {
 			break;
 		case "stage":
 			await runStage(commandArgs);
+			break;
+		case "park":
+			runDeclareState("park", commandArgs);
+			break;
+		case "busy":
+			runDeclareState("busy", commandArgs);
+			break;
+		case "unpark":
+			runDeclareState("unpark", commandArgs);
 			break;
 		case "complete":
 			await runComplete(commandArgs);
@@ -433,6 +447,96 @@ function runInbox(args: string[]): void {
 		for (const inst of result.instructions) {
 			console.log(`[${inst.id}] from ${inst.from_agent}: ${inst.content}`);
 		}
+	}
+}
+
+/**
+ * FLY-626: `park` / `busy` / `unpark` — a runner self-declares its liveness
+ * intent so the stall watchdogs do not waste a Lead wake on it. Writes the
+ * marker to CommDB. exec-id defaults to FLYWHEEL_EXEC_ID; an explicit
+ * `--exec-id` is a LOUD debug override (Codex R1 #5 — a runner declares only
+ * for itself).
+ */
+function runDeclareState(
+	action: "park" | "busy" | "unpark",
+	args: string[],
+): void {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			reason: { type: "string" },
+			until: { type: "string" }, // park
+			task: { type: "string" }, // busy
+			expect: { type: "string" }, // busy
+		},
+		allowPositionals: false,
+	});
+
+	const envExecId = process.env.FLYWHEEL_EXEC_ID;
+	let execId = envExecId;
+	if (values["exec-id"]) {
+		execId = values["exec-id"];
+		if (values["exec-id"] !== envExecId) {
+			console.error(
+				`[flywheel-comm ${action}] WARNING: --exec-id override (${values["exec-id"]}) — a runner should declare only for itself ($FLYWHEEL_EXEC_ID). Use only for debug/test.`,
+			);
+		}
+	}
+	if (!execId) {
+		console.error(
+			`[flywheel-comm ${action}] FLYWHEEL_EXEC_ID is required (or pass --exec-id for debug)`,
+		);
+		process.exit(1);
+	}
+
+	// Parse the duration flag relevant to the action.
+	let durationMs: number | null = null;
+	const rawDuration =
+		action === "busy"
+			? values.expect
+			: action === "park"
+				? values.until
+				: undefined;
+	if (rawDuration !== undefined) {
+		const parsed = parseDuration(rawDuration);
+		if (parsed === null) {
+			console.error(
+				`[flywheel-comm ${action}] invalid duration "${rawDuration}" — use e.g. 30m, 2h, 90s`,
+			);
+			process.exit(1);
+		}
+		durationMs = parsed;
+	}
+
+	const dbPath = resolveDbPath({
+		db: values.db,
+		project: values.project ?? process.env.FLYWHEEL_PROJECT_NAME,
+	});
+	const db = new CommDB(dbPath);
+	try {
+		const opts: DeclareStateOpts = {
+			action,
+			execId,
+			nowMs: Date.now(),
+			reason:
+				action === "busy" ? (values.task ?? null) : (values.reason ?? null),
+			durationMs,
+		};
+		const result = declareState(db, opts);
+		if (action === "unpark") {
+			console.log(`Cleared declared state for ${execId}`);
+		} else {
+			const until =
+				result.expiresAtMs === null
+					? "indefinite"
+					: new Date(result.expiresAtMs).toISOString();
+			console.log(`Declared ${result.kind} for ${execId} (until: ${until})`);
+		}
+	} finally {
+		db.close();
 	}
 }
 
