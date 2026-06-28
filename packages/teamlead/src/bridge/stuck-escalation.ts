@@ -29,6 +29,7 @@ import { resolveChatThreadId } from "./chat-thread-utils.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { parseSessionLabels } from "./lead-scope.js";
+import type { QuietSignals } from "./quiet-classifier.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import {
 	type CommSignals,
@@ -203,6 +204,61 @@ export function probeCommSignalsFromCommDb(
 	} finally {
 		db?.close();
 	}
+}
+
+/**
+ * FLY-626: read the runner's CURRENTLY-EFFECTIVE self-declared marker kind
+ * (`parked` / `long_task`) from CommDB, or null. Readonly + missing-table
+ * tolerant (CommDB.getEffectiveDeclaredState). Missing comm.db ⇒ null.
+ */
+export function probeDeclaredStateFromCommDb(
+	executionId: string,
+	projectName: string,
+	nowMs: number,
+): "parked" | "long_task" | null {
+	if (/[/\\]|\.\./.test(projectName)) return null;
+	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
+	if (!existsSync(dbPath)) return null;
+	let db: CommDB | undefined;
+	try {
+		db = CommDB.openReadonly(dbPath);
+		return db.getEffectiveDeclaredState(executionId, nowMs)?.kind ?? null;
+	} finally {
+		db?.close();
+	}
+}
+
+/**
+ * FLY-626: build the cheap, stateless {@link QuietSignals} for a session — ONE
+ * readonly comm.db probe per session (gate + recent-comm) plus the declared
+ * marker. Used by the stall watchdogs to consult `classifyQuiet` BEFORE a
+ * token-expensive Lead wake. `hasPendingReviewSignal` is left to the caller
+ * (default false): the watchdogs only poll `running` sessions, and the
+ * awaiting_review/approved_to_ship review-park is already covered by the
+ * status check inside `classifyQuiet`.
+ */
+export function probeQuietSignals(
+	session: { execution_id: string; project_name: string; status: string },
+	opts: { activityWindowMs: number; nowMs: number },
+): QuietSignals {
+	const { execution_id, project_name, status } = session;
+	const comm = probeCommSignalsFromCommDb(
+		execution_id,
+		project_name,
+		opts.activityWindowMs,
+	);
+	const declaredKind = probeDeclaredStateFromCommDb(
+		execution_id,
+		project_name,
+		opts.nowMs,
+	);
+	return {
+		status,
+		hasPendingGate: comm.hasPendingGate,
+		hasRecentComm: comm.hasRecentOutbound,
+		hasPendingReviewSignal: false,
+		declaredKind,
+	};
 }
 
 // ── Escalation emitter (plan §3.2) ──

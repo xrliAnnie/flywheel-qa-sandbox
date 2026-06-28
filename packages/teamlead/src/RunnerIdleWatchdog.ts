@@ -13,6 +13,7 @@ import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { parseSessionLabels } from "./bridge/lead-scope.js";
+import { classifyQuiet, type QuietSignals } from "./bridge/quiet-classifier.js";
 import { createStatusQuery } from "./bridge/runner-status.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import type {
@@ -41,6 +42,14 @@ export interface IdleWatchdogConfig {
 	 * is unchanged.
 	 */
 	stuckDetector?: StuckRunnerDetector | null;
+	/**
+	 * FLY-626: cheap, stateless quiet-signal probe consulted BEFORE a (token-
+	 * expensive) Lead wake. When it classifies the session as legitimately quiet
+	 * (self_parked / self_long_task / pending_gate / recent_comm / review /
+	 * parked_review_status), `runner_idle_detected` is suppressed. Absent ⇒ no
+	 * suppression (byte-compat — pre-FLY-626 behavior). Injected for tests.
+	 */
+	quietSignalsProbe?: (session: Session) => QuietSignals;
 	/**
 	 * FLY-623: read-only predicate — true while a Runner is RE-ADOPTED after a
 	 * Bridge restart (detached but tmux-alive; owned by HeartbeatService). Such a
@@ -177,6 +186,14 @@ export class RunnerIdleWatchdog {
 
 			state.lastStatus = result.status;
 
+			// FLY-626: before any (token-expensive) Lead wake, consult the cheap
+			// quiet classifier. A legitimately-quiet runner (self-declared
+			// park/busy, parked at a gate, recently active, gray-zone review) is
+			// suppressed; only `quiet_unexplained` (or no probe wired = byte-compat)
+			// may wake. Advisory-only path — orphan/force-fail liveness is untouched.
+			const quietSuppressed =
+				result.status !== "executing" && this.isWakeSuppressed(session);
+
 			if (result.status === "executing") {
 				// Active — clear dedup state; transitionCounter uses Date.now() on next idle
 				state.waitingCycleCount = 0;
@@ -185,7 +202,8 @@ export class RunnerIdleWatchdog {
 				state.waitingCycleCount++;
 				if (
 					state.waitingCycleCount >= this.config.waitingThresholdCycles &&
-					state.notifiedForStatus !== "waiting"
+					state.notifiedForStatus !== "waiting" &&
+					!quietSuppressed
 				) {
 					state.transitionCounter = Date.now();
 					const persisted = await this.emitIdleEvent(
@@ -200,7 +218,7 @@ export class RunnerIdleWatchdog {
 				// "idle" or "unknown" — immediate trigger; break waiting streak
 				state.waitingCycleCount = 0;
 				const idleStatus = result.status as IdleStatus;
-				if (state.notifiedForStatus !== idleStatus) {
+				if (state.notifiedForStatus !== idleStatus && !quietSuppressed) {
 					state.transitionCounter = Date.now();
 					const persisted = await this.emitIdleEvent(
 						session,
@@ -218,6 +236,33 @@ export class RunnerIdleWatchdog {
 				`[IdleWatchdog] Error checking ${session.execution_id}:`,
 				err instanceof Error ? err.message : String(err),
 			);
+		}
+	}
+
+	/**
+	 * FLY-626: true when a cheap quiet-signal probe classifies the session as
+	 * legitimately quiet (not `quiet_unexplained`), so the idle wake must be
+	 * suppressed. No probe wired ⇒ false (byte-compat). A probe error fails
+	 * OPEN (returns false → the wake still fires) so a transient comm.db read
+	 * problem can never silently hide a genuinely stuck runner (FLY-369).
+	 */
+	private isWakeSuppressed(session: Session): boolean {
+		if (!this.config.quietSignalsProbe) return false;
+		try {
+			const result = classifyQuiet(this.config.quietSignalsProbe(session));
+			if (!result.mayWake) {
+				console.log(
+					`[IdleWatchdog] FLY-626 suppressed idle wake for ${session.execution_id} (${result.verdict})`,
+				);
+				return true;
+			}
+			return false;
+		} catch (err) {
+			console.warn(
+				`[IdleWatchdog] FLY-626 quiet probe failed for ${session.execution_id} (fail-open, wake allowed):`,
+				err instanceof Error ? err.message : String(err),
+			);
+			return false;
 		}
 	}
 

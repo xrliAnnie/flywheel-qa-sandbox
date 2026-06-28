@@ -33,6 +33,15 @@ export async function send(args: SendArgs): Promise<string> {
 	try {
 		const id = db.insertInstruction(args.fromAgent, args.toAgent, args.content);
 
+		// FLY-626: a Lead/founder instruction to the runner is a RE-ENGAGEMENT —
+		// it clears any self-declared park/busy marker so the stall watchdogs
+		// resume normal monitoring. Without this, an indefinite `park` could
+		// survive re-engagement and keep suppressing runner_idle_detected /
+		// session_stuck for a runner that is no longer intentionally parked
+		// (Codex code-review #1 — protects the FLY-369 "never silently hide a
+		// genuinely stuck runner" posture). No-op when no marker exists.
+		db.clearDeclaredState(args.toAgent);
+
 		// FLY-191: wake logic extracted to wake.ts (shared with the approval
 		// write-sites). Semantics unchanged from FLY-168: best-effort, CommDB
 		// row is the durable record, diagnostics to stderr only.
