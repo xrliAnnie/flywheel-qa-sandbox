@@ -254,6 +254,16 @@ export interface QaContext {
 	prNumber?: number;
 	/** The implementer's branch name, when known. */
 	branch?: string;
+	/**
+	 * FLY-643: the PARENT (implementer) issue identifier being verified (e.g.
+	 * "FLY-643"). When auto-QA runs on a SEPARATE `QA·FLY-XX` issue, the runner's
+	 * own `issueId` is the QA issue — this carries the actual issue under test so
+	 * the prompt says "verifying FLY-643" not "verifying the QA issue". Absent on
+	 * the legacy same-issue / manual path (falls back to the runner's issueId).
+	 */
+	parentIssueIdentifier?: string;
+	/** FLY-643: the PARENT issue URL, so the QA runner can read what it gates. */
+	parentIssueUrl?: string;
 }
 
 /**
@@ -275,9 +285,22 @@ export function buildQaModeSystemPromptLines(
 ): string[] {
 	const prNote = qaContext.prNumber ? ` (PR #${qaContext.prNumber})` : "";
 	const branchNote = qaContext.branch ? ` on branch ${qaContext.branch}` : "";
+	// FLY-643: when auto-QA runs on a SEPARATE QA·FLY-XX issue, `issueId` is the
+	// QA issue itself — verify the PARENT issue instead. Falls back to `issueId`
+	// on the legacy same-issue / manual path (no parentIssueIdentifier).
+	const verifying = qaContext.parentIssueIdentifier ?? issueId;
+	const parentUrlNote = qaContext.parentIssueUrl
+		? ` — read the issue at ${qaContext.parentIssueUrl}`
+		: "";
 	return [
 		"You are an INDEPENDENT QA Runner (Flywheel Auto-QA, FLY-579). You did NOT implement this change and you must NOT modify it (qa-developer-separation).",
-		`You are verifying ${issueId}${prNote} at the reviewed commit ${qaContext.prHeadSha}${branchNote}. Your git worktree is already checked out at that exact commit (clean, read-only).`,
+		`You are verifying ${verifying}${prNote} at the reviewed commit ${qaContext.prHeadSha}${branchNote}${parentUrlNote}. Your git worktree is already checked out at that exact commit (clean, read-only).`,
+		...(qaContext.parentIssueIdentifier &&
+		qaContext.parentIssueIdentifier !== issueId
+			? [
+					`(This QA runs on its own tracking issue ${issueId}; the change under test lives on ${verifying} — verify ${verifying}, not this QA issue.)`,
+				]
+			: []),
 		"",
 		"Steps:",
 		"1. Read the issue, its product spec / plan, and the PR diff at the pinned commit.",
@@ -608,8 +631,14 @@ export class Blueprint {
 		// land / doc-flow / brainstorm / approve-gate blocks below.
 		const isQaRunner = !!ctx.qaContext;
 
+		// FLY-643: an Auto-QA runner verifies the PARENT issue under test. When it
+		// runs on a SEPARATE QA·FLY-XX issue, `hydrated.issueId` is the QA issue —
+		// point the prompt at the parent (qaContext.parentIssueIdentifier) so it
+		// doesn't read "QA the QA issue". Falls back to its own issueId on the
+		// legacy same-issue / manual path.
+		const qaTarget = ctx.qaContext?.parentIssueIdentifier ?? hydrated.issueId;
 		const prompt = isQaRunner
-			? `Independently QA ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`
+			? `Independently QA ${qaTarget} at the reviewed commit (its own tracking issue is ${hydrated.issueId}: ${hydrated.issueTitle}).\n\n${hydrated.issueDescription}`
 			: `Implement ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`;
 
 		const systemPromptLines: string[] = isQaRunner

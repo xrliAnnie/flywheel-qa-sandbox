@@ -11,14 +11,16 @@
 When a Runner you own passes code review, opens its PR, and enters
 `awaiting_review`, the Bridge **automatically**:
 
-1. Spawns an **independent QA Runner** (a *different* session from the
-   implementer — the implementer must never verify their own work), pinned to
-   the exact reviewed commit.
+1. **Creates a separate `QA·FLY-XX` Linear issue** (its own issue + thread +
+   runner — like the manual `QA·FLY-XXX` issues), mirroring the parent issue's
+   team / project / labels, and spawns an **independent QA Runner** on it (a
+   *different* session from the implementer — the implementer must never verify
+   their own work), pinned to the exact reviewed commit.
 2. **Holds the founder.** The approve/ship gate is NOT surfaced to the founder
    while QA is running. You will not see a "review required" relay for that
    session, and the gate question is held (not relayed, not timed-out).
-3. Stamps the issue's `[FLY-XX]` thread with **🧪QA** and posts a "QA started"
-   line.
+3. Posts a 🧪 "QA started" FYI on the **parent** issue's thread (referencing the
+   new `QA·FLY-XX` issue). The QA Runner stamps **🧪QA** on its own QA thread.
 
 You do **not** spawn QA by hand, and you do **not** surface the founder for a
 session that is QA-held. The founder is genuinely never bothered before QA is
@@ -26,15 +28,18 @@ green — that is the contract.
 
 ## The two outcomes
 
-- **QA PASS** → the Bridge posts an in-thread "ready to ship" notification and
-  the approve gate surfaces to the founder through the normal relay. From here
-  it is the ordinary founder-gated ship — merge/ship stay founder-only
-  (founder-only-authority is unchanged).
+- **QA PASS** → the Bridge posts an in-thread "ready to ship" notification on the
+  **parent** issue's thread and the approve gate surfaces to the founder through
+  the normal relay. From here it is the ordinary founder-gated ship — merge/ship
+  stay founder-only (founder-only-authority is unchanged).
 - **QA FAIL** → the Bridge wakes the implementer Runner with the QA report
-  (a `feedback_wake`, the changes-requested loop). The implementer fixes,
-  pushes a new head, and re-requests review — which re-triggers a fresh QA. The
-  **founder is not notified** on fail. If the implementer and QA deadlock
-  (≥3 rounds), that escalates to you, not the founder.
+  (a `feedback_wake`, the changes-requested loop) and posts 🔴 on the
+  **`QA·FLY-XX` issue's own thread** — **NOT** the parent thread (a non-green QA
+  must never surface to the founder). The implementer fixes, pushes a new head,
+  and re-requests review — which re-triggers a fresh QA. The **founder is not
+  notified** on fail; QA-fail is **Lead-facing** — you drive the
+  dev-fix → QA-retest loop. If the implementer and QA deadlock (≥3 rounds), that
+  escalates to you, not the founder.
 
 ## When the pipeline itself is stuck
 

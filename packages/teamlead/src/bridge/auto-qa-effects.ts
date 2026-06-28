@@ -18,12 +18,43 @@ import { CommDB } from "flywheel-comm/db";
 import type { LeadAlertNotifier } from "../LeadAlertNotifier.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { AutoQaRecord, Session, StateStore } from "../StateStore.js";
-import type { AutoQaSideEffects } from "./auto-qa-coordinator.js";
+import type { AutoQaSideEffects, QaIssueRef } from "./auto-qa-coordinator.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { postDiscordMessageToChannel } from "./discord-utils.js";
 import { buildSessionKey } from "./hook-payload.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { BridgeConfig } from "./types.js";
+
+/**
+ * FLY-643: minimal structural view of the `@linear/sdk` surface the QA-issue
+ * creation needs. Kept local + injectable so the effect is unit-testable with a
+ * fake client (no network). The SDK returns `LinearFetch<T>` (= Promise<T>);
+ * `await` handles both a Promise and a plain value, so the fakes can be sync.
+ */
+export interface LinearClientLike {
+	issue(id: string): Promise<LinearIssueLike> | LinearIssueLike;
+	createIssue(input: {
+		teamId: string;
+		title: string;
+		description?: string;
+		labelIds?: string[];
+		projectId?: string;
+	}): Promise<LinearIssuePayloadLike> | LinearIssuePayloadLike;
+}
+export interface LinearIssueLike {
+	identifier?: string;
+	title?: string;
+	url?: string;
+	team?: Promise<{ id: string } | undefined> | { id: string } | undefined;
+	project?: Promise<{ id: string } | undefined> | { id: string } | undefined;
+	labels(): Promise<{ nodes: { id: string }[] }> | { nodes: { id: string }[] };
+}
+export interface LinearIssuePayloadLike {
+	issue?:
+		| Promise<{ id?: string; identifier?: string; url?: string } | undefined>
+		| { id?: string; identifier?: string; url?: string }
+		| undefined;
+}
 
 export interface AutoQaEffectsDeps {
 	store: StateStore;
@@ -35,6 +66,13 @@ export interface AutoQaEffectsDeps {
 	fetchImpl?: typeof fetch;
 	/** Test seam for the alert eventId salt (defaults to Date.now). */
 	now?: () => number;
+	/**
+	 * FLY-643: test seam for the Linear client used by `createQaIssue`. Defaults
+	 * to a real `@linear/sdk` client built from `config.linearApiKey` (lazy
+	 * import). Returns undefined when no API key is configured → createQaIssue
+	 * fails closed.
+	 */
+	linearClientFactory?: (apiKey: string) => LinearClientLike;
 }
 
 export class AutoQaEffects implements AutoQaSideEffects {
@@ -82,6 +120,81 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			console.warn(
 				`[auto-qa-effects] thread post failed for ${args.session.issue_id}: ${res.error}`,
 			);
+		}
+	}
+
+	/**
+	 * FLY-643: create the separate `QA·FLY-XX` Linear issue the auto-QA runner
+	 * runs on, mirroring the PARENT issue's team / project / labels (read straight
+	 * from the parent Linear issue — production projects.json carries no `linear`
+	 * binding, so we never rely on one). Returns undefined on any failure so the
+	 * coordinator fails closed (record stuck + Lead alert; founder NOT surfaced).
+	 */
+	async createQaIssue(args: {
+		parent: Session;
+		prHeadSha: string;
+	}): Promise<QaIssueRef | undefined> {
+		const apiKey = this.deps.config.linearApiKey;
+		if (!apiKey) {
+			console.warn(
+				"[auto-qa-effects] createQaIssue: no LINEAR_API_KEY — cannot create QA issue",
+			);
+			return undefined;
+		}
+		try {
+			const client = this.deps.linearClientFactory
+				? this.deps.linearClientFactory(apiKey)
+				: await defaultLinearClient(apiKey);
+			const parentIssue = await client.issue(args.parent.issue_id);
+			const team = await parentIssue.team;
+			if (!team?.id) {
+				console.warn(
+					`[auto-qa-effects] createQaIssue: parent ${args.parent.issue_id} has no team — cannot create QA issue`,
+				);
+				return undefined;
+			}
+			const project = await parentIssue.project;
+			const labelConn = await parentIssue.labels();
+			const labelIds = (labelConn?.nodes ?? [])
+				.map((l) => l.id)
+				.filter((id): id is string => typeof id === "string");
+
+			const { title, description } = buildQaIssueContent({
+				parentIdentifier:
+					args.parent.issue_identifier ?? parentIssue.identifier,
+				parentTitle: args.parent.issue_title ?? parentIssue.title,
+				parentUrl: args.parent.issue_url ?? parentIssue.url,
+				prNumber: args.parent.pr_number,
+				prHeadSha: args.prHeadSha,
+			});
+
+			const payload = await client.createIssue({
+				teamId: team.id,
+				title,
+				description,
+				...(labelIds.length > 0 && { labelIds }),
+				...(project?.id && { projectId: project.id }),
+			});
+			const created = await payload.issue;
+			if (!created?.id) {
+				console.warn(
+					"[auto-qa-effects] createQaIssue: Linear returned no created issue",
+				);
+				return undefined;
+			}
+			return {
+				issueId: created.id,
+				issueIdentifier: created.identifier,
+				issueTitle: title,
+				issueUrl: created.url,
+			};
+		} catch (err) {
+			console.warn(
+				`[auto-qa-effects] createQaIssue failed for ${args.parent.issue_id}: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+			return undefined;
 		}
 	}
 
@@ -180,4 +293,40 @@ function parseLabels(raw: string | undefined): string[] {
 	} catch {
 		return [];
 	}
+}
+
+/**
+ * FLY-643: pure builder for the separate QA issue's title + description.
+ * Extracted so the content shape is unit-testable without the Linear client.
+ */
+export function buildQaIssueContent(args: {
+	parentIdentifier?: string;
+	parentTitle?: string;
+	parentUrl?: string;
+	prNumber?: number;
+	prHeadSha: string;
+}): { title: string; description: string } {
+	const ident = args.parentIdentifier ?? "(unknown)";
+	const parentTitle = (args.parentTitle ?? "").trim();
+	const titleSuffix = parentTitle ? ` — ${truncate(parentTitle, 160)}` : "";
+	const title = `QA · ${ident}${titleSuffix}`;
+	const lines = [
+		`Independent auto-QA (Flywheel FLY-579 pipeline) of **${ident}**.`,
+		"",
+		`- Parent issue: ${args.parentUrl ?? ident}`,
+		...(args.prNumber ? [`- PR: #${args.prNumber}`] : []),
+		`- Reviewed commit (pinned): \`${args.prHeadSha}\``,
+		"",
+		"Verify the pinned commit per the shipped qa-executor contract (real-machine E2E, read-only — do NOT modify source). Report the verdict via `flywheel-comm qa-result --target-exec <parent>` then `complete --route no_code`. This issue is the QA runner's own tracking issue; the change under test lives on the parent.",
+	];
+	return { title, description: lines.join("\n") };
+}
+
+async function defaultLinearClient(apiKey: string): Promise<LinearClientLike> {
+	const { LinearClient } = await import("@linear/sdk");
+	return new LinearClient({ apiKey }) as unknown as LinearClientLike;
+}
+
+function truncate(s: string, max: number): string {
+	return s.length > max ? `${s.slice(0, max)}…` : s;
 }

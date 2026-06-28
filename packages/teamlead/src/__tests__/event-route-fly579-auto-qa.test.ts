@@ -83,6 +83,13 @@ describe("event-route ↔ AutoQaCoordinator (FLY-579)", () => {
 			postThread: ({ text }) => {
 				posts.push(text);
 			},
+			// FLY-643: auto-QA creates a separate QA·FLY-XX issue to run on.
+			createQaIssue: () => ({
+				issueId: "qa-issue-uuid",
+				issueIdentifier: "FLY-700",
+				issueTitle: "QA · FLY-579 — auto-qa",
+				issueUrl: "https://linear.app/x/issue/FLY-700",
+			}),
 			notifyShipReady: () => {
 				shipReady += 1;
 			},
@@ -181,16 +188,22 @@ describe("event-route ↔ AutoQaCoordinator (FLY-579)", () => {
 		});
 		expect(res.status).toBe(200);
 
-		// QA spawned, pinned to the reviewed commit, with QA context.
+		// QA spawned on the SEPARATE QA issue, pinned to the reviewed commit, with
+		// QA context pointing back at the parent + the backend pinned to the
+		// transported Claude lane (FLY-643).
 		expect(startCalls).toHaveLength(1);
 		expect(startCalls[0].sessionRole).toBe("qa");
+		expect(startCalls[0].issueId).toBe("qa-issue-uuid");
+		expect(startCalls[0].ignoreRunnerLabelSelection).toBe(true);
 		expect(startCalls[0].startPoint).toBe(HEAD);
 		expect(startCalls[0].qaContext?.prHeadSha).toBe(HEAD);
+		expect(startCalls[0].qaContext?.parentExecutionId).toBe("main-1");
 
-		// Durable held record exists.
+		// Durable held record exists, with the separate QA issue persisted.
 		const rec = store.getAutoQaRecord("main-1", HEAD);
 		expect(rec?.status).toBe("running");
 		expect(rec?.qa_execution_id).toBe("qa-1");
+		expect(rec?.qa_issue_id).toBe("qa-issue-uuid");
 	});
 
 	it("qa_result(pass) → record passed + founder ship-ready released", async () => {
