@@ -30,6 +30,7 @@ import {
 	type PublishReportArgs,
 	publishReport,
 } from "./commands/publish-report.js";
+import { qaResult } from "./commands/qa-result.js";
 import { respond } from "./commands/respond.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
@@ -72,6 +73,7 @@ Commands:
   stage     Report pipeline stage to Bridge (Runner use)
   complete  Emit session_completed terminal event to Bridge (Runner use)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
+  qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
   cleanup   Delete read messages older than TTL (default 24h)
   visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
   notify    POST artifact_emitted event to Bridge after capture+Read (GEO-151)
@@ -166,6 +168,9 @@ async function main(): Promise<void> {
 			break;
 		case "await-codex-gate":
 			await runAwaitCodexGate(commandArgs);
+			break;
+		case "qa-result":
+			await runQaResult(commandArgs);
 			break;
 		case "declare-founder-ux":
 			await runDeclareFounderUx(commandArgs);
@@ -758,6 +763,28 @@ async function runComplete(args: string[]): Promise<void> {
 		exitReason: values["exit-reason"],
 		baseRef: values["base-ref"],
 		questionId: values["question-id"],
+	});
+}
+
+async function runQaResult(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			"target-exec": { type: "string" },
+			status: { type: "string" },
+			summary: { type: "string" },
+			"pr-head": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+
+	await qaResult({
+		status: values.status ?? "",
+		targetExec: values["target-exec"] ?? "",
+		summary: values.summary,
+		execId: values["exec-id"],
+		prHeadSha: values["pr-head"],
 	});
 }
 

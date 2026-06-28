@@ -61,7 +61,12 @@ export type AlertEventType =
 	// eventId format (FLY-253: escalatedAt = generation salt so a post-re-arm
 	// / post-TTL second fallback is not swallowed by the persistent dedup):
 	// `runner-stuck-unhandled:${execution_id}:${fingerprint}:${escalatedAt}`.
-	| "runner_stuck_unhandled";
+	| "runner_stuck_unhandled"
+	// FLY-579: the auto-QA pipeline could not proceed (spawn failed, QA ended
+	// without a verdict, or a fail-closed pr_head_sha). A Lead-only alert — the
+	// founder is intentionally never surfaced for a non-green QA. NOT a
+	// founder-facing notification (those go to the issue thread).
+	| "auto_qa_stuck";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 

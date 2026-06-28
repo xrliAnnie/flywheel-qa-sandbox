@@ -50,6 +50,7 @@ import { PreHydrator } from "flywheel-edge-worker/dist/PreHydrator.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
+import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
@@ -452,6 +453,12 @@ export interface RunInfraOptions {
 	 * root, set on the DirectEventSink so its post-ship finalization can clean.
 	 */
 	removeCleanWorktree?: WorktreeCleanupFn;
+	/**
+	 * FLY-579: late-bound auto-QA coordinator holder, set on the DirectEventSink
+	 * so the in-process completed path drives auto-QA + suppresses the founder
+	 * gate (Codex R1 HIGH-1). Absent → byte-compatible.
+	 */
+	autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
 }
 
 export async function setupRunInfrastructure(
@@ -594,6 +601,9 @@ export async function setupRunInfrastructure(
 			);
 			// FLY-603 Layer A: wire the shared cleanup closure onto this sink.
 			directSink.removeCleanWorktree = runInfraOpts?.removeCleanWorktree;
+			// FLY-579 (Codex R1 HIGH-1): give the in-process completed path the
+			// auto-QA coordinator holder so it spawns QA + holds the founder.
+			directSink.autoQaCoordinator = runInfraOpts?.autoQaCoordinator;
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).

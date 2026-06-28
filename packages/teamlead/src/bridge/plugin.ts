@@ -63,6 +63,10 @@ import {
 	buildRepairChain,
 	resolveFirstAvailableBotToken,
 } from "./alert-bot-chain.js";
+import { loadQaConfigByProject } from "./auto-qa-config-source.js";
+import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
+import { AutoQaEffects } from "./auto-qa-effects.js";
+import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
@@ -559,6 +563,14 @@ export interface BridgeAppOptions {
 	 */
 	reconnectHolder?: { current: ReconnectController | null };
 	/**
+	 * FLY-579: late-bound holder for the auto-QA coordinator. The /events route
+	 * mounts inside createBridgeApp (pre-listen), but the coordinator is built
+	 * later in startBridge (it needs the LeadAlertNotifier) — so the event router
+	 * reads `.current` at request time. Absent / `.current` undefined ⇒ auto-QA
+	 * fully dormant (no held records, byte-compatible).
+	 */
+	autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
+	/**
 	 * FLY-516: late-bound shutdown flag. The /health route mounts inside
 	 * createBridgeApp (pre-listen) but close() lives in startBridge — so /health
 	 * reads this holder at request time and close() flips it at teardown start.
@@ -579,6 +591,19 @@ export interface BridgeAppOptions {
 	 * (old dashboard, no fleet routes).
 	 */
 	fleetConsole?: FleetConsole;
+}
+
+/** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
+function parseJsonStringArray(raw: string | undefined): string[] {
+	if (!raw) return [];
+	try {
+		const parsed = JSON.parse(raw);
+		return Array.isArray(parsed)
+			? parsed.filter((x): x is string => typeof x === "string")
+			: [];
+	} catch {
+		return [];
+	}
 }
 
 export function createBridgeApp(
@@ -769,6 +794,7 @@ export function createBridgeApp(
 			removeCleanWorktree,
 			{ issueStatusEmojiEnabled, issueAttachPinEnabled },
 			opts?.reconnectHolder,
+			opts?.autoQaCoordinator,
 		),
 	);
 
@@ -2442,6 +2468,15 @@ export async function startBridge(
 	// so a single instance serves both roles.
 	// Track the internal dispatcher separately for cleanup — if a caller injects
 	// retryDispatcher but not startDispatcher, they are different instances.
+	// FLY-579: late-bound auto-QA coordinator holder — read by the event router
+	// (createBridgeApp) AND the in-process DirectEventSink (via
+	// setupRunInfrastructure below). The coordinator is built post-listen (it
+	// needs the LeadAlertNotifier), so .current stays undefined until then =
+	// auto-QA dormant (byte-compatible).
+	const autoQaCoordinatorHolder: { current: AutoQaCoordinator | undefined } = {
+		current: undefined,
+	};
+
 	let startDispatcher = opts?.startDispatcher;
 	let internalDispatcher: IRetryDispatcher | undefined;
 	if (!startDispatcher) {
@@ -2457,6 +2492,9 @@ export async function startBridge(
 					// /events one at the createEventRouter call site is a different
 					// function scope; both wrap the same factory).
 					removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
+					// FLY-579: the in-process completed path drives auto-QA + holds
+					// the founder via this same holder.
+					autoQaCoordinator: autoQaCoordinatorHolder,
 				},
 			);
 			startDispatcher = dispatcher;
@@ -2523,6 +2561,8 @@ export async function startBridge(
 			shutdownStateHolder,
 			// FLY-623: event router reads this to clear reconnecting on a real event.
 			reconnectHolder,
+			// FLY-579: event router reads this to drive the auto-QA pipeline.
+			autoQaCoordinator: autoQaCoordinatorHolder,
 		},
 	);
 
@@ -2869,6 +2909,57 @@ export async function startBridge(
 		// dirs the live Bridge drainer reads.
 		...resolveAlertDirsFromEnv(process.env),
 	});
+
+	// FLY-579: build the auto-QA coordinator now that the LeadAlertNotifier exists
+	// (the effects need it for Lead-only pipeline-error alerts). Per-project qa
+	// config is loaded from the CANONICAL project roots (never a PR worktree). The
+	// holder is read lazily by the event router, so filling it here (post-listen)
+	// is correct; the durable `auto_qa_record` table — NOT the reconcile timing —
+	// guarantees GatePoller/Heartbeat suppression survives a restart, so the
+	// startup reconcile (re-spawn / re-notify / mark-stuck) safely runs after the
+	// timers. No startDispatcher (can't spawn QA) ⇒ coordinator stays dormant.
+	if (startDispatcher) {
+		try {
+			const qaConfigByProject = await loadQaConfigByProject(projects);
+			const optInCount = projects.filter(
+				(p) => qaConfigByProject.get(p.projectName)?.auto,
+			).length;
+			const autoQaEffects = new AutoQaEffects({
+				store,
+				projects,
+				config,
+				leadAlertNotifier,
+			});
+			autoQaCoordinatorHolder.current = new AutoQaCoordinator({
+				store,
+				startDispatcher,
+				resolveQaPolicy: (session) =>
+					resolveAutoQaPolicy({
+						qaConfig: qaConfigByProject.get(session.project_name),
+						issueLabels: parseJsonStringArray(session.issue_labels),
+					}),
+				effects: autoQaEffects,
+				logger: {
+					log: (m) => console.log(m),
+					warn: (m) => console.warn(m),
+				},
+			});
+			void autoQaCoordinatorHolder.current
+				.reconcileOnStartup()
+				.catch((err) =>
+					console.warn(
+						`[auto-qa] reconcileOnStartup failed: ${(err as Error).message}`,
+					),
+				);
+			console.log(
+				`[auto-qa] coordinator wired (${optInCount}/${projects.length} projects with qa.auto)`,
+			);
+		} catch (err) {
+			console.warn(
+				`[auto-qa] coordinator wiring failed: ${(err as Error).message} — auto-QA disabled this boot`,
+			);
+		}
+	}
 
 	// FLY-368 rework: the repair chain (Cass → alphabetical fleet) drives thread
 	// creation + ack/repair/resolve. Resolve it at boot for the enable gate; the

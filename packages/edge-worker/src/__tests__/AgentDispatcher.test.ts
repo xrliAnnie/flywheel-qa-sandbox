@@ -334,6 +334,72 @@ describe("AgentDispatcher", () => {
 		expect(result.agentFileRoot).toBe("flywheel");
 	});
 
+	// ─── FLY-579 reserved "qa" resolution ─────────
+
+	it("dispatchByName('qa') returns shipped-qa when project declares no qa agent", () => {
+		// makeAgents() has no `qa` entry → shipped fallback so every project
+		// gets an independent QA runner without declaring one.
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatchByName("qa");
+		expect(result.agentName).toBe("qa");
+		expect(result.matchMethod).toBe("shipped-qa");
+		expect(result.agentFileRoot).toBe("flywheel");
+		expect(result.agentConfig.agent_file).toBe("agents/qa-executor.md");
+	});
+
+	it("dispatchByName('qa') uses the project override when declared", () => {
+		const agents: Record<string, AgentConfig> = {
+			...makeAgents(),
+			qa: {
+				agent_file: ".flywheel/agents/engineering/qa-executor.md",
+				department: "engineering",
+				match: { labels: ["qa", "testing"] },
+			},
+		};
+		const dispatcher = new AgentDispatcher(
+			agents,
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatchByName("qa");
+		expect(result.agentName).toBe("qa");
+		// project override → not the shipped fallback
+		expect(result.matchMethod).toBe("override");
+		expect(result.agentFileRoot).toBe("project");
+		expect(result.agentConfig.agent_file).toBe(
+			".flywheel/agents/engineering/qa-executor.md",
+		);
+		expect(result.department).toBe("engineering");
+	});
+
+	it("'qa' is always an available name (shipped fallback) even when undeclared", () => {
+		const dispatcher = new AgentDispatcher(
+			makeAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		expect(dispatcher.availableNames()).toContain("qa");
+		// no duplicate when the project DOES declare qa
+		const withQa = new AgentDispatcher(
+			{
+				...makeAgents(),
+				qa: {
+					agent_file: ".flywheel/agents/engineering/qa-executor.md",
+					department: "engineering",
+					match: { labels: ["qa"] },
+				},
+			},
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const names = withQa.availableNames();
+		expect(names.filter((n) => n === "qa")).toHaveLength(1);
+	});
+
 	it("dispatchByName throws InvalidAgentNameError on unknown name", () => {
 		const dispatcher = new AgentDispatcher(
 			makeAgents(),
@@ -380,7 +446,7 @@ describe("AgentDispatcher", () => {
 
 	// ─── availableNames ───────────────────────────
 
-	it("availableNames includes all configured + generic", () => {
+	it("availableNames includes all configured + generic + qa (FLY-579)", () => {
 		const dispatcher = new AgentDispatcher(
 			makeAgents(),
 			undefined,
@@ -393,6 +459,9 @@ describe("AgentDispatcher", () => {
 			"operations",
 			"general",
 			"generic",
+			// FLY-579: "qa" is always available (shipped fallback) so the Auto-QA
+			// coordinator can spawn `agentName: "qa"` on any project.
+			"qa",
 		]);
 	});
 });

@@ -222,6 +222,75 @@ export interface BlueprintContext {
 	 * Absent ⇒ existing behavior (claude/codex).
 	 */
 	runnerTransportMode?: "none";
+
+	/**
+	 * FLY-579: explicit git start point for the worktree (a commit SHA / ref).
+	 * Threaded to `WorktreeManager.create({ startPoint })`. The Auto-QA
+	 * coordinator passes the parent main session's `pr_head_sha` so the QA
+	 * worktree is pinned to the exact reviewed commit. Absent ⇒ existing
+	 * behavior (`FLYWHEEL_RUNNER_START_POINT` / `origin/main`).
+	 */
+	startPoint?: string;
+
+	/**
+	 * FLY-579: QA-runner context. Present ONLY for `sessionRole === "qa"`
+	 * Auto-QA spawns. Blueprint renders a QA-mode prompt (independent
+	 * verification — no implement/branch/push/PR, no approve-gate/ship) and the
+	 * QA runner reports its verdict via `flywheel-comm qa-result`.
+	 */
+	qaContext?: QaContext;
+}
+
+/**
+ * FLY-579: context injected into an Auto-QA runner's prompt so it knows which
+ * PR / commit / parent session it is independently verifying.
+ */
+export interface QaContext {
+	/** The main (implementer) session this QA run gates. */
+	parentExecutionId: string;
+	/** The reviewed commit the QA worktree is pinned to (`pr_head_sha`). */
+	prHeadSha: string;
+	/** GitHub PR number, when known. */
+	prNumber?: number;
+	/** The implementer's branch name, when known. */
+	branch?: string;
+}
+
+/**
+ * FLY-579: build the QA-mode runner prompt lines. An Auto-QA runner does
+ * INDEPENDENT verification of an already-implemented + code-reviewed change at a
+ * pinned commit. It must NOT implement / branch / push / PR / approve / ship —
+ * its terminal action is a structured `qa-result` verdict then
+ * `complete --route no_code`, which is how the pipeline gates the founder.
+ *
+ * Exported so the QA prompt contract can be unit-tested directly (in addition to
+ * the Blueprint.run() integration test that asserts a QA ctx produces these
+ * lines and omits the implement/ship contract).
+ */
+export function buildQaModeSystemPromptLines(
+	qaContext: QaContext,
+	issueId: string,
+	commCliPath: string,
+	executionId: string,
+): string[] {
+	const prNote = qaContext.prNumber ? ` (PR #${qaContext.prNumber})` : "";
+	const branchNote = qaContext.branch ? ` on branch ${qaContext.branch}` : "";
+	return [
+		"You are an INDEPENDENT QA Runner (Flywheel Auto-QA, FLY-579). You did NOT implement this change and you must NOT modify it (qa-developer-separation).",
+		`You are verifying ${issueId}${prNote} at the reviewed commit ${qaContext.prHeadSha}${branchNote}. Your git worktree is already checked out at that exact commit (clean, read-only).`,
+		"",
+		"Steps:",
+		"1. Read the issue, its product spec / plan, and the PR diff at the pinned commit.",
+		"2. Plan the verification scenarios from the product spec — who actually uses this and is the flow right.",
+		"3. Run real-machine E2E for user-facing flows (Claude-in-Chrome for browser surfaces, NOT Playwright) plus the package's own tests. API-returns-200 is not a product pass.",
+		"4. Do NOT implement, do NOT create a feature branch, do NOT push, do NOT open a GitHub PR, do NOT run an approve/ship gate. Read-only git inspection is fine; never modify source/config.",
+		"",
+		"QA VERDICT (MANDATORY — this is how the pipeline gates the founder):",
+		`a. Report your verdict STRUCTURALLY: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${qaContext.parentExecutionId} --status pass|fail --summary "<what you tested + verdict + any blocking issue>"\``,
+		`b. Then terminate: \`node ${commCliPath} complete --route no_code\`.`,
+		"PASS → the pipeline notifies the founder (in the issue thread) that the change is ready to ship; the founder still does the ship approval (your PASS merges nothing). FAIL → the pipeline routes your report back to the implementer for a fix and re-spawns QA; the founder is NOT notified — hand the implementer exact scenario / expected-vs-actual / severity.",
+		'The structured qa-result IS your deliverable — emit it even if the run is rough. Never use the stock SendMessage to:"team-lead" channel.',
+	];
 }
 
 /**
@@ -419,6 +488,10 @@ export class Blueprint {
 					mainRepoPath: projectRoot,
 					projectName,
 					issueId: worktreeIssueId,
+					// FLY-579: QA pins the worktree to the reviewed commit
+					// (parent pr_head_sha). Absent → WorktreeManager falls back to
+					// FLYWHEEL_RUNNER_START_POINT / origin/main (existing behavior).
+					startPoint: ctx.startPoint,
 				});
 				cwd = worktreeInfo.worktreePath;
 			} catch (error) {
@@ -525,17 +598,31 @@ export class Blueprint {
 			landingEnabled && (skillInjectionSucceeded || hasLandCommand);
 
 		// ── Build prompt + system prompt ──────────────────────
-		const prompt = `Implement ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`;
+		// FLY-579: an Auto-QA runner (sessionRole="qa", qaContext present) does
+		// INDEPENDENT verification of an already-implemented + code-reviewed change.
+		// It must NOT receive the implement/branch/push/PR or approve-gate/ship
+		// contract (that contradicts its read-only QA role). Its detailed protocol
+		// comes from the shipped qa-executor agent file (injected as agentContext);
+		// the QA base steps + structured verdict are appended after commCliPath is
+		// resolved. So we start the QA prompt empty here and skip the implement /
+		// land / doc-flow / brainstorm / approve-gate blocks below.
+		const isQaRunner = !!ctx.qaContext;
 
-		const systemPromptLines = [
-			"You are working on a Linear issue. Follow these steps:",
-			"1. Read the codebase and understand the context (CLAUDE.md, relevant files).",
-			"2. Implement the requested changes following TDD.",
-			"3. Create a feature branch, commit your changes.",
-			"4. Push the branch and create a GitHub PR.",
-		];
+		const prompt = isQaRunner
+			? `Independently QA ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`
+			: `Implement ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`;
 
-		if (canLand) {
+		const systemPromptLines: string[] = isQaRunner
+			? []
+			: [
+					"You are working on a Linear issue. Follow these steps:",
+					"1. Read the codebase and understand the context (CLAUDE.md, relevant files).",
+					"2. Implement the requested changes following TDD.",
+					"3. Create a feature branch, commit your changes.",
+					"4. Push the branch and create a GitHub PR.",
+				];
+
+		if (!isQaRunner && canLand) {
 			// v0.6: land after PR creation (v1.0 Phase 2: no merge — report readiness only)
 			if (hasLandCommand) {
 				systemPromptLines.push(
@@ -551,7 +638,7 @@ export class Blueprint {
 				"6. After writing the landing signal (ready_to_merge or failed), exit the session.",
 				`Landing signal path: ${landSignalPath}`,
 			);
-		} else {
+		} else if (!isQaRunner) {
 			// Legacy behavior: stop after PR
 			systemPromptLines.push(
 				"5. Verify CI passes. If CI fails, fix and push again.",
@@ -583,6 +670,20 @@ export class Blueprint {
 			"../../flywheel-comm/dist/index.js",
 		);
 
+		// FLY-579: QA-mode skeleton + structured verdict (needs commCliPath +
+		// executionId). The shipped qa-executor agent file carries the detailed
+		// protocol; these lines are the minimal base steps + the qa-result gate.
+		if (isQaRunner && ctx.qaContext) {
+			systemPromptLines.push(
+				...buildQaModeSystemPromptLines(
+					ctx.qaContext,
+					hydrated.issueId,
+					commCliPath,
+					executionId,
+				),
+			);
+		}
+
 		// FLY-205: DOC-FLOW block — project doc conventions, injected ONLY when
 		// the project's .flywheel/config.yaml enables doc_flow. Unshifted BEFORE
 		// the onboard preamble unshift below, so the final order reads:
@@ -590,7 +691,8 @@ export class Blueprint {
 		// Controls DOCUMENT OUTPUT ONLY — checkpoint gates and executor hard
 		// gates apply at every tier (locked semantics, Codex design R1 #5).
 		// Disabled/absent config → zero lines added (byte-compatible prompt).
-		if (this.docFlowConfig?.enabled === true) {
+		// FLY-579: a QA runner produces no docs → skip doc-flow.
+		if (!isQaRunner && this.docFlowConfig?.enabled === true) {
 			const defaultDepartment = this.docFlowConfig.default_department;
 			if (!defaultDepartment) {
 				// ConfigLoader enforces presence when enabled; defensive fail-safe
@@ -783,6 +885,16 @@ export class Blueprint {
 					this.checkpointConfig,
 				)) {
 					if (!cpConfig.enabled) continue;
+					// FLY-579: a QA runner does not brainstorm and does not ship —
+					// skip those gates. It keeps the `question` gate (it can ask its
+					// Lead). Its terminal action is the qa-result verdict + complete
+					// --route no_code (injected above), not an approve_to_ship gate.
+					if (
+						isQaRunner &&
+						(cpName === "brainstorm" || cpName === "approve_to_ship")
+					) {
+						continue;
+					}
 					// FLY-159: default to 48h (was 30 min) so the gate timeout is
 					// long enough that humans waking up in the morning still find
 					// a Runner waiting for them. Project YAML can override.
