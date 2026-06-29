@@ -95,6 +95,8 @@ describe("event-route ↔ AutoQaCoordinator (FLY-579)", () => {
 			},
 			feedbackWakeMain: () => {},
 			alertLeadPipelineError: () => {},
+			// FLY-630 ②: parent-thread stage badge (no-op fake — verified separately).
+			stampIssueStage: () => {},
 		};
 		const coordinator = new AutoQaCoordinator({
 			store,

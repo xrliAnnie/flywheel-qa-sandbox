@@ -19,6 +19,7 @@ import type { LeadAlertNotifier } from "../LeadAlertNotifier.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { AutoQaRecord, Session, StateStore } from "../StateStore.js";
 import type { AutoQaSideEffects, QaIssueRef } from "./auto-qa-coordinator.js";
+import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { postDiscordMessageToChannel } from "./discord-utils.js";
 import { buildSessionKey } from "./hook-payload.js";
@@ -62,6 +63,11 @@ export interface AutoQaEffectsDeps {
 	config: BridgeConfig;
 	/** Lead-only alert sink for pipeline errors (alert channel). */
 	leadAlertNotifier?: LeadAlertNotifier;
+	/**
+	 * FLY-630 ②: drives the PARENT issue thread's stage badge during the QA phase.
+	 * Undefined when the chat-thread feature is off → `stampIssueStage` no-ops.
+	 */
+	chatThreadCreator?: ChatThreadCreator;
 	/** Test seam for Discord HTTP. */
 	fetchImpl?: typeof fetch;
 	/** Test seam for the alert eventId salt (defaults to Date.now). */
@@ -280,6 +286,77 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			severity: "warning",
 			sessionKey: args.session ? buildSessionKey(args.session) : undefined,
 		});
+	}
+
+	/**
+	 * FLY-630 ②: stamp the PARENT issue's `[FLY-XX]` thread badge for the QA phase.
+	 * Mirrors event-route's `stampStageEmojiForSession` (resolve lead → channel +
+	 * bot token → existing thread → delegate to ChatThreadCreator.stampStageEmoji),
+	 * so it routes through the SAME per-thread coalescing writer as runner-driven
+	 * stage stamps (no race, latest wins). Gated by the SAME feature flags so the
+	 * default-off byte-compat path changes nothing; fire-and-forget + best-effort,
+	 * never throws into the QA lifecycle.
+	 *
+	 * FLY-630 (Codex R1 HIGH): the stamp is FIRE-AND-FORGET — we do NOT await the
+	 * ChatThreadCreator drain. That drain can now sleep through a 429 Retry-After
+	 * (up to ~10 min). The coordinator awaits this method, and `/events` /
+	 * DirectEventSink await the coordinator, so awaiting the drain would block the
+	 * QA lifecycle (and the runner's event response) for minutes under Discord
+	 * rename rate limits. The synchronous lead/thread resolution runs inline; only
+	 * the network drain is detached (mirrors event-route's stampStageEmojiForSession).
+	 */
+	stampIssueStage(args: { session: Session; stage: string }): void {
+		// Respect the same kill switch as the runner-driven stamp path (event-route).
+		if (process.env.FLYWHEEL_ISSUE_STATUS_EMOJI === "0") return;
+		const creator = this.deps.chatThreadCreator;
+		if (!creator) return; // chat-thread feature off → nothing to stamp
+
+		let chatChannel: string | undefined;
+		let botToken: string | undefined;
+		let leadId: string | undefined;
+		try {
+			const { lead } = resolveLeadForIssue(
+				this.deps.projects,
+				args.session.project_name,
+				parseLabels(args.session.issue_labels),
+			);
+			chatChannel = lead.chatChannel;
+			botToken = lead.botToken ?? this.deps.config.discordBotToken;
+			leadId = lead.agentId;
+		} catch {
+			return; // project/lead not resolvable — skip
+		}
+		if (!chatChannel || !botToken) return;
+
+		const thread = this.deps.store.getChatThreadByIssue(
+			args.session.issue_id,
+			chatChannel,
+		);
+		if (!thread) return; // thread not created yet — best-effort, skip
+
+		// Fire-and-forget: kick off the (possibly minutes-long, 429-retrying) drain
+		// without awaiting it. The call itself enqueues synchronously.
+		void creator
+			.stampStageEmoji(
+				{
+					chatChannelId: chatChannel,
+					issueId: args.session.issue_id,
+					issueIdentifier: args.session.issue_identifier,
+					issueTitle: args.session.issue_title,
+					botToken,
+					leadId,
+				},
+				thread.thread_id,
+				args.stage,
+				process.env.FLYWHEEL_ISSUE_STATUS_WORD !== "0",
+			)
+			.catch((err: unknown) => {
+				console.warn(
+					`[auto-qa-effects] stampIssueStage failed for ${args.session.issue_id}: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			});
 	}
 }
 

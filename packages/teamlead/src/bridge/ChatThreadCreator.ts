@@ -7,6 +7,7 @@
 import type { StateStore } from "../StateStore.js";
 import {
 	addThreadMember,
+	parseRetryAfterMs,
 	pinThreadMessage,
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
@@ -17,6 +18,76 @@ const DISCORD_API = "https://discord.com/api/v10";
 const CREATE_TIMEOUT_MS = 5_000;
 const DISCORD_THREAD_NAME_MAX = 100;
 const LINEAR_IDENTIFIER_RE = /^[A-Z][A-Z0-9]*-\d+$/;
+
+/**
+ * FLY-630 ①: how many times the coalescing title writer re-attempts a single
+ * thread after a Discord 429 (rename rate limit) before giving up for this
+ * episode. Each retry honors the server's Retry-After and re-reads the LATEST
+ * desired badge, so the final stage always lands within the rate-limit window
+ * instead of being silently dropped. A small cap is enough — Discord's rename
+ * budget reopens in ≤10 min and the next `stage_changed` re-stamps anyway.
+ */
+const MAX_RATE_LIMIT_RETRIES = 5;
+/**
+ * FLY-630 ①: cap an honored Retry-After. Discord's thread-rename limit is
+ * ~2/10-min, so a real Retry-After can be up to ~10 min — honor it (the pending
+ * drain is just an in-memory promise, it blocks nothing), but cap so a hostile /
+ * absurd value can't hold the per-thread writer forever.
+ */
+const MAX_RETRY_AFTER_MS = 600_000;
+/** FLY-630 ①: fallback wait when a 429 carries no parseable Retry-After. */
+const DEFAULT_RETRY_AFTER_MS = 10_000;
+
+function defaultTitleWriteSleep(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * FLY-630 ①: extract the honored backoff from a Discord 429. Prefers the
+ * `Retry-After` header (seconds, possibly fractional); falls back to the JSON
+ * body's `retry_after` (Discord sends both); else a modest default. Never
+ * throws — a malformed/absent value degrades to the default.
+ */
+async function retryAfterMsFrom(res: Response): Promise<number> {
+	const header =
+		typeof res.headers?.get === "function"
+			? res.headers.get("retry-after")
+			: null;
+	const fromHeader = parseRetryAfterMs(header);
+	if (fromHeader != null) return fromHeader;
+	if (typeof res.json === "function") {
+		const body = (await res.json().catch(() => null)) as {
+			retry_after?: unknown;
+		} | null;
+		const secs = Number(body?.retry_after);
+		if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
+	}
+	return DEFAULT_RETRY_AFTER_MS;
+}
+
+/**
+ * FLY-630 ①: outcome of one GET+PATCH title write. `rate_limited` carries the
+ * honored Retry-After so the coalescing drain can wait then retry the latest
+ * target; `noop` means the desired title was already present (idempotent skip).
+ */
+type TitleWriteResult =
+	| { status: "ok" }
+	| { status: "noop" }
+	| { status: "error" }
+	| { status: "rate_limited"; retryAfterMs: number };
+
+/**
+ * FLY-630 ①: per-thread coalescing state for the title writer. `target` always
+ * holds the LATEST requested badge (string badge, or null to strip the prefix);
+ * `dirty` means an unwritten target is pending; `done` is the shared drain
+ * promise every concurrent request awaits.
+ */
+interface TitleWriteState {
+	ctx: ChatThreadContext;
+	target: string | null;
+	dirty: boolean;
+	done: Promise<void>;
+}
 
 export interface ChatThreadContext {
 	chatChannelId: string;
@@ -75,16 +146,39 @@ export class ChatThreadCreator {
 	private inflight = new Map<string, Promise<ChatThreadResult>>();
 
 	/**
-	 * FLY-560 Codex R1 HIGH: per-thread serialization chain for stage-emoji
-	 * stamps. Stamps are fire-and-forget on each `stage_changed`; without this,
-	 * two adjacent stamps for the same thread could both read the old title
-	 * before either writes (double-PATCH the same emoji, defeating the
-	 * idempotent skip + the 2-rename/10-min budget) or land out of order
-	 * (final emoji ≠ latest stage). Chaining runs them in submission order.
+	 * FLY-560 Codex R1 HIGH / FLY-630 ①: per-thread COALESCING title writer.
+	 *
+	 * Stamps are fire-and-forget on each `stage_changed`. The original design
+	 * chained every stamp (FIFO) so two adjacent stamps couldn't read-then-write
+	 * race. FLY-630 replaces the FIFO chain with coalesce-to-latest: each request
+	 * records only the LATEST desired badge for the thread; if a writer is already
+	 * draining that thread, the request just updates the target and rides the same
+	 * drain. Two problems this fixes:
+	 *   (1) Discord caps thread renames at ~2/10-min. A rapid burst
+	 *       (implement→pr_created→code_review) used to spend a PATCH on every
+	 *       intermediate stage and 429 on the latest, which was then dropped → the
+	 *       title stuck on an old stage. Coalescing collapses intermediates; the
+	 *       latest is what gets written.
+	 *   (2) A 429 used to be swallowed (fire-and-forget). The drain now honors
+	 *       Retry-After and retries the LATEST target, so the final stage always
+	 *       lands within the rate-limit window.
+	 * Single-writer-per-thread still serializes (no read-then-write race), and the
+	 * idempotent no-op skip + base-title preservation are unchanged.
 	 */
-	private stampChains = new Map<string, Promise<void>>();
+	private titleWriters = new Map<string, TitleWriteState>();
 
-	constructor(private store: StateStore) {}
+	/**
+	 * @param store StateStore for chat-thread mappings.
+	 * @param titleWriteSleep test seam for the 429 Retry-After backoff sleep
+	 *   (default real `setTimeout`); injected as an immediate resolve in tests so
+	 *   the retry path runs without real waits.
+	 */
+	constructor(
+		private store: StateStore,
+		private readonly titleWriteSleep: (
+			ms: number,
+		) => Promise<void> = defaultTitleWriteSleep,
+	) {}
 
 	async ensureChatThread(ctx: ChatThreadContext): Promise<ChatThreadResult> {
 		const key = `${ctx.issueId}:${ctx.chatChannelId}`;
@@ -285,30 +379,16 @@ export class ChatThreadCreator {
 		stage: string,
 		withWord = false,
 	): Promise<void> {
-		// FLY-560 Codex R1 HIGH: serialize per thread. Concurrent fire-and-forget
-		// stamps for the same thread are chained so they run in submission order
-		// (== stage order, since the Runner reports stages sequentially): the
-		// same-emoji skip stays idempotent and the last stamp — the latest stage —
-		// is the one whose PATCH lands last. Each link re-reads the live title.
-		const prev = this.stampChains.get(threadId) ?? Promise.resolve();
-		const next = prev
-			.catch(() => undefined)
-			.then(() => this.stampStageEmojiNow(ctx, threadId, stage, withWord));
-		this.stampChains.set(threadId, next);
-		// Drop the chain entry once it drains to its tail (bounded map growth).
-		void next.finally(() => {
-			if (this.stampChains.get(threadId) === next) {
-				this.stampChains.delete(threadId);
-			}
-		});
-		return next;
+		const badge = stageBadge(stage, withWord);
+		if (!badge) return; // unknown stage → no-op (no fetch, no writer)
+		return this.enqueueTitleWrite(threadId, ctx, badge);
 	}
 
 	/**
 	 * FLY-623 Display-A: stamp the cross-cutting "⚠️重连中" reconnecting marker
 	 * (`badge` non-null) or clear it back to the real/terminal badge (`badge` is the
-	 * stage badge, or null to strip the prefix entirely). Serialized through the
-	 * SAME per-thread chain as stage stamps so a reconnecting stamp and a
+	 * stage badge, or null to strip the prefix entirely). Routed through the SAME
+	 * per-thread coalescing writer as stage stamps so a reconnecting stamp and a
 	 * stage_changed stamp never race; idempotent (a no-op PATCH is skipped).
 	 */
 	async stampStatusBadge(
@@ -316,43 +396,97 @@ export class ChatThreadCreator {
 		threadId: string,
 		badge: string | null,
 	): Promise<void> {
-		const prev = this.stampChains.get(threadId) ?? Promise.resolve();
-		const next = prev
-			.catch(() => undefined)
-			.then(() => this.stampBadgeNow(ctx, threadId, badge));
-		this.stampChains.set(threadId, next);
-		void next.finally(() => {
-			if (this.stampChains.get(threadId) === next) {
-				this.stampChains.delete(threadId);
-			}
-		});
-		return next;
-	}
-
-	private async stampStageEmojiNow(
-		ctx: ChatThreadContext,
-		threadId: string,
-		stage: string,
-		withWord: boolean,
-	): Promise<void> {
-		const badge = stageBadge(stage, withWord);
-		if (!badge) return; // unknown stage → no-op
-		return this.stampBadgeNow(ctx, threadId, badge);
+		return this.enqueueTitleWrite(threadId, ctx, badge);
 	}
 
 	/**
-	 * FLY-623: stamp an arbitrary leading status badge onto the thread title
-	 * (e.g. the cross-cutting "⚠️重连中" reconnecting marker), or STRIP the status
-	 * prefix when `badge` is null. Same idempotent / churn-safe mechanics as stage
-	 * stamping (GET → swap only the leading status badge → skip the no-op PATCH);
-	 * `splitStatusEmoji` peels any recognized status emoji (incl. ⚠️), so this and
-	 * stage stamping interleave cleanly and re-stamping is idempotent.
+	 * FLY-630 ①: coalesce a title-write request into the per-thread writer. Records
+	 * the LATEST desired badge; if a writer is already draining this thread, it
+	 * just updates the target (intermediate stages collapse) and rides the same
+	 * drain promise. Otherwise it starts a fresh drain. Returns the shared drain
+	 * promise so callers (and tests) can await settle, but it is fire-and-forget at
+	 * the production call sites.
 	 */
-	private async stampBadgeNow(
+	private enqueueTitleWrite(
+		threadId: string,
+		ctx: ChatThreadContext,
+		target: string | null,
+	): Promise<void> {
+		const existing = this.titleWriters.get(threadId);
+		if (existing) {
+			// A writer is mid-drain — point it at the latest target. It re-reads
+			// `target` at the top of its next loop iteration, so the intermediate is
+			// coalesced away and only the latest badge is written.
+			existing.ctx = ctx;
+			existing.target = target;
+			existing.dirty = true;
+			return existing.done;
+		}
+		const state: TitleWriteState = {
+			ctx,
+			target,
+			dirty: true,
+			done: Promise.resolve(),
+		};
+		state.done = this.drainTitleWrites(threadId, state);
+		this.titleWriters.set(threadId, state);
+		return state.done;
+	}
+
+	/**
+	 * FLY-630 ①: single per-thread drain loop. Writes the latest target; on a 429
+	 * waits the honored Retry-After then retries the (possibly-advanced) latest
+	 * target so the final stage always lands. Exits only when no newer target is
+	 * pending; deletes the writer entry so a later stamp starts a fresh drain.
+	 */
+	private async drainTitleWrites(
+		threadId: string,
+		state: TitleWriteState,
+	): Promise<void> {
+		try {
+			let rateLimitRetries = 0;
+			while (state.dirty) {
+				state.dirty = false;
+				const ctx = state.ctx;
+				const target = state.target;
+				const result = await this.writeTitleOnce(ctx, threadId, target);
+				if (
+					result.status === "rate_limited" &&
+					rateLimitRetries < MAX_RATE_LIMIT_RETRIES
+				) {
+					rateLimitRetries += 1;
+					// Retry the LATEST target (it may have advanced while we waited).
+					state.dirty = true;
+					await this.titleWriteSleep(
+						Math.min(result.retryAfterMs, MAX_RETRY_AFTER_MS),
+					);
+				} else if (result.status === "ok" || result.status === "noop") {
+					// A successful write resets the retry budget for the next target.
+					// If a newer target arrived during the write, `state.dirty` is set
+					// and the loop writes it next; otherwise the loop exits.
+					rateLimitRetries = 0;
+				}
+				// `error` / retries-exhausted: do NOT spin — loop only if a newer
+				// target was queued during the write (state.dirty set by enqueue).
+				// The next stage_changed reconciles a dropped write.
+			}
+		} finally {
+			this.titleWriters.delete(threadId);
+		}
+	}
+
+	/**
+	 * FLY-630 ①: perform ONE GET+PATCH title write. Stamps `badge` onto the leading
+	 * status position (or STRIPS the status prefix when `badge` is null), preserving
+	 * the rest of the title (incl. manual curation) and skipping the no-op PATCH.
+	 * Returns a structured result so the drain can honor a 429 Retry-After. Never
+	 * throws — every failure path is logged and mapped to a result.
+	 */
+	private async writeTitleOnce(
 		ctx: ChatThreadContext,
 		threadId: string,
 		badge: string | null,
-	): Promise<void> {
+	): Promise<TitleWriteResult> {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
 
@@ -363,11 +497,17 @@ export class ChatThreadCreator {
 				signal: controller.signal,
 			});
 			if (!getRes.ok) {
+				if (getRes.status === 429) {
+					return {
+						status: "rate_limited",
+						retryAfterMs: await retryAfterMsFrom(getRes),
+					};
+				}
 				const body = await getRes.text().catch(() => "");
 				console.warn(
 					`[ChatThreadCreator] stage-emoji GET failed: ${getRes.status} ${body.slice(0, 200)}`,
 				);
-				return;
+				return { status: "error" };
 			}
 
 			const data = (await getRes.json().catch(() => ({}))) as {
@@ -390,12 +530,12 @@ export class ChatThreadCreator {
 			} else if (currentBase) {
 				base = currentBase;
 			}
-			if (!base) return;
+			if (!base) return { status: "noop" };
 
 			const desired = truncateDiscordThreadName(
 				badge ? `${badge} ${base}` : base,
 			);
-			if (currentName === desired) return; // already stamped — skip PATCH
+			if (currentName === desired) return { status: "noop" }; // already stamped
 
 			const patchRes = await fetch(`${DISCORD_API}/channels/${threadId}`, {
 				method: "PATCH",
@@ -407,11 +547,21 @@ export class ChatThreadCreator {
 				signal: controller.signal,
 			});
 			if (!patchRes.ok) {
+				if (patchRes.status === 429) {
+					// FLY-630 ①: do NOT swallow the rate limit — surface it so the drain
+					// retries the latest target after Discord's Retry-After.
+					return {
+						status: "rate_limited",
+						retryAfterMs: await retryAfterMsFrom(patchRes),
+					};
+				}
 				const body = await patchRes.text().catch(() => "");
 				console.warn(
 					`[ChatThreadCreator] stage-emoji PATCH failed: ${patchRes.status} ${body.slice(0, 200)}`,
 				);
+				return { status: "error" };
 			}
+			return { status: "ok" };
 		} catch (err) {
 			if ((err as Error).name === "AbortError") {
 				console.warn(
@@ -423,6 +573,7 @@ export class ChatThreadCreator {
 					(err as Error).message,
 				);
 			}
+			return { status: "error" };
 		} finally {
 			clearTimeout(timeout);
 		}

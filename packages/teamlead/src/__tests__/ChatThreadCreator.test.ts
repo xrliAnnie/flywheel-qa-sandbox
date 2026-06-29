@@ -469,7 +469,9 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 	beforeEach(async () => {
 		vi.clearAllMocks();
 		store = await StateStore.create(":memory:");
-		creator = new ChatThreadCreator(store);
+		// FLY-630: inject an immediate sleep so the 429 Retry-After backoff path
+		// runs without real waits in tests.
+		creator = new ChatThreadCreator(store, () => Promise.resolve());
 	});
 
 	afterEach(() => {
@@ -596,22 +598,122 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		expect(mockFetch).toHaveBeenCalledTimes(1);
 	});
 
-	it("swallows a PATCH failure (e.g. 429 rate limit) without throwing", async () => {
-		mockFetch
-			.mockResolvedValueOnce({
-				ok: true,
-				status: 200,
-				json: () => Promise.resolve({ name: "[FLY-560] Discord issue status" }),
-			})
-			.mockResolvedValueOnce({
-				ok: false,
-				status: 429,
-				text: () => Promise.resolve("rate limited"),
-			});
+	// FLY-630 ①: a 429 must NOT be swallowed. The writer honors Retry-After and
+	// retries, so the stage badge eventually lands instead of sticking on the old
+	// title. (Sleep is injected as immediate in beforeEach.)
+	it("retries after a 429 (Retry-After) and lands the badge without throwing", async () => {
+		let currentTitle = "[FLY-560] Discord issue status";
+		let patchCount = 0;
+		mockFetch.mockImplementation(
+			async (_url: string, opts: { method?: string; body?: string }) => {
+				if ((opts?.method ?? "GET") === "GET") {
+					return {
+						ok: true,
+						status: 200,
+						json: () => Promise.resolve({ name: currentTitle }),
+					};
+				}
+				patchCount += 1;
+				if (patchCount === 1) {
+					return {
+						ok: false,
+						status: 429,
+						headers: {
+							get: (k: string) => (k === "retry-after" ? "0.05" : null),
+						},
+						text: () => Promise.resolve("rate limited"),
+					};
+				}
+				currentTitle = JSON.parse(opts.body as string).name;
+				return { ok: true, status: 200 };
+			},
+		);
 
 		await expect(
 			creator.stampStageEmoji(ctx(), "thread-1", "implement"),
 		).resolves.toBeUndefined();
+
+		// First PATCH 429'd; the retry re-issued GET+PATCH and the badge landed.
+		expect(patchCount).toBe(2);
+		expect(currentTitle).toBe("🔨 [FLY-560] Discord issue status");
+	});
+
+	// FLY-630 ①: rapid transitions that pile up while a write is in flight coalesce
+	// to the LATEST stage — the intermediate (pr_created/⏳) is never PATCHed, so the
+	// 2-rename/10-min budget is spent on the latest, not on transitional states.
+	it("coalesces queued stamps to the latest target (intermediate skipped)", async () => {
+		let currentTitle = "[FLY-560] Discord issue status";
+		let releaseFirstGet!: () => void;
+		const firstGet = new Promise<void>((r) => {
+			releaseFirstGet = r;
+		});
+		let getCount = 0;
+		const patched: string[] = [];
+		mockFetch.mockImplementation(
+			async (_url: string, opts: { method?: string; body?: string }) => {
+				if ((opts?.method ?? "GET") === "GET") {
+					getCount += 1;
+					if (getCount === 1) await firstGet; // hold the first GET open
+					return {
+						ok: true,
+						status: 200,
+						json: () => Promise.resolve({ name: currentTitle }),
+					};
+				}
+				currentTitle = JSON.parse(opts.body as string).name;
+				patched.push(currentTitle);
+				return { ok: true, status: 200 };
+			},
+		);
+
+		// implement (🔨) starts the writer; while its GET is held, pr_created (⏳)
+		// and code_review (👀) queue. Only the latest (👀) should follow 🔨.
+		const p1 = creator.stampStageEmoji(ctx(), "thread-1", "implement");
+		const p2 = creator.stampStageEmoji(ctx(), "thread-1", "pr_created");
+		const p3 = creator.stampStageEmoji(ctx(), "thread-1", "code_review");
+		releaseFirstGet();
+		await Promise.all([p1, p2, p3]);
+
+		expect(patched).toEqual([
+			"🔨 [FLY-560] Discord issue status",
+			"👀 [FLY-560] Discord issue status",
+		]);
+		expect(currentTitle).toBe("👀 [FLY-560] Discord issue status");
+	});
+
+	// FLY-630 ①: persistent 429 (budget never reopens within the retry cap) stops
+	// retrying instead of spinning forever — never throws; the next stage_changed
+	// reconciles. With MAX_RATE_LIMIT_RETRIES=5 the first attempt + 5 retries = 6
+	// PATCH attempts.
+	it("gives up after the retry cap on a persistent 429 (no infinite loop)", async () => {
+		let patchCount = 0;
+		mockFetch.mockImplementation(
+			async (_url: string, opts: { method?: string }) => {
+				if ((opts?.method ?? "GET") === "GET") {
+					return {
+						ok: true,
+						status: 200,
+						json: () =>
+							Promise.resolve({ name: "[FLY-560] Discord issue status" }),
+					};
+				}
+				patchCount += 1;
+				return {
+					ok: false,
+					status: 429,
+					headers: {
+						get: (k: string) => (k === "retry-after" ? "0.01" : null),
+					},
+					text: () => Promise.resolve("rate limited"),
+				};
+			},
+		);
+
+		await expect(
+			creator.stampStageEmoji(ctx(), "thread-1", "implement"),
+		).resolves.toBeUndefined();
+
+		expect(patchCount).toBe(6); // 1 initial + 5 retries
 	});
 
 	it("truncates the emoji-prefixed name to Discord's 100-char limit", async () => {
