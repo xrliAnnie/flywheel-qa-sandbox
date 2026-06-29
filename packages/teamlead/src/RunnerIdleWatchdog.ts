@@ -83,10 +83,18 @@ export class RunnerIdleWatchdog {
 
 	start(): void {
 		if (this.timerHandle) return;
-		this.timerHandle = setInterval(
-			() => this.poll(),
-			this.config.pollIntervalMs,
-		);
+		// FLY-639: `poll()` already contains its own try/catch, but guard the timer
+		// callback too — an async poll() that somehow rejects must NEVER become an
+		// unhandled rejection (Node's default would exit the whole Bridge; the
+		// production crash-loop). Belt-and-suspenders on top of poll()'s catch.
+		this.timerHandle = setInterval(() => {
+			void this.poll().catch((err) => {
+				console.error(
+					"[IdleWatchdog] unexpected poll rejection (contained, Bridge stays up):",
+					err instanceof Error ? err.message : String(err),
+				);
+			});
+		}, this.config.pollIntervalMs);
 	}
 
 	stop(): void {
@@ -120,6 +128,21 @@ export class RunnerIdleWatchdog {
 
 			for (const session of sessions) {
 				await this.checkSession(session);
+			}
+		} catch (err) {
+			// FLY-639: the proven Bridge crash path. `getActiveSessions()` is the one
+			// StateStore touch above the per-session try/catch; a sql.js corruption
+			// ("no such table: sessions" / "null function or function signature
+			// mismatch") thrown here used to reject this un-awaited poll() →
+			// unhandled rejection → Bridge exit 1. Contain it: log, attempt a
+			// best-effort StateStore self-heal, and skip this cycle.
+			console.warn(
+				"[IdleWatchdog] poll error (skipping cycle, Bridge stays up):",
+				err instanceof Error ? err.message : String(err),
+			);
+			// Byte-compat: old mock stores (tests) may lack the method.
+			if (typeof this.config.store.recoverFromCorruption === "function") {
+				this.config.store.recoverFromCorruption(err);
 			}
 		} finally {
 			this.polling = false;

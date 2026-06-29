@@ -134,6 +134,27 @@ describe("HeartbeatService", () => {
 		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
 	});
 
+	// --- FLY-639: StateStore corruption containment + self-heal ---
+
+	it("check() never rejects on a StateStore throw — it logs, self-heals, and skips the cycle", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const recoverSpy = vi.fn();
+		(store as { recoverFromCorruption?: unknown }).recoverFromCorruption =
+			recoverSpy;
+		store.getStuckSessions.mockImplementation(() => {
+			throw new Error("no such table: sessions");
+		});
+
+		// Contract: check() resolves (never rejects) so the timer can't crash the Bridge.
+		await expect(service.check()).resolves.toBeUndefined();
+
+		expect(errSpy).toHaveBeenCalled();
+		expect(recoverSpy).toHaveBeenCalledTimes(1);
+		expect(recoverSpy.mock.calls[0]![0]).toBeInstanceOf(Error);
+
+		errSpy.mockRestore();
+	});
+
 	// --- Orphan reaping ---
 
 	it("reapOrphans() detects orphan, force-fails, and notifies", async () => {

@@ -88,6 +88,8 @@ function createMockStore(sessions: Session[] = []) {
 			if (ev) ev.delivered = true;
 		}),
 		recordDeliveryFailure: vi.fn((_seq: number, _error: string) => {}),
+		// FLY-639: self-heal hook the watchdog calls when a poll throws.
+		recoverFromCorruption: vi.fn((_err: unknown) => false),
 		_events: events,
 		_resetEvents: () => {
 			events = [];
@@ -888,5 +890,41 @@ describe("RunnerIdleWatchdog", () => {
 			// Should not throw on double stop
 			watchdog.stop();
 		});
+	});
+});
+
+// --- FLY-639: poll() crash containment + StateStore self-heal ---
+
+describe("RunnerIdleWatchdog FLY-639 crash containment", () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
+	it("getActiveSessions throwing does NOT reject poll() — it logs, self-heals, and skips", async () => {
+		const { watchdog, store } = createTestWatchdog({});
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		store.getActiveSessions.mockImplementation(() => {
+			throw new Error("no such table: sessions");
+		});
+
+		// MUST resolve (not reject) — a rejection here is the production crash.
+		await expect(watchdog.pollOnce()).resolves.toBeUndefined();
+
+		expect(warnSpy).toHaveBeenCalled();
+		// Best-effort StateStore self-heal invoked with the thrown error.
+		expect(store.recoverFromCorruption).toHaveBeenCalledTimes(1);
+		expect(store.recoverFromCorruption.mock.calls[0]![0]).toBeInstanceOf(Error);
+		// No idle event emitted on a failed poll.
+		expect(store.appendLeadEvent).not.toHaveBeenCalled();
+
+		// polling flag is released so the next cycle can run.
+		store.getActiveSessions.mockReturnValue([]);
+		await expect(watchdog.pollOnce()).resolves.toBeUndefined();
+
+		warnSpy.mockRestore();
+		watchdog.stop();
 	});
 });
