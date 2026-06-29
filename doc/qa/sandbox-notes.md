@@ -1,25 +1,25 @@
 # QA Sandbox Notes — flywheel-qa-sandbox
 
 **Issue**: FLY-202 (QA sandbox fixture — slot harness real-Runner E2E task)
-**Date**: 2026-06-04
+**Date**: 2026-06-29
 
 ## Overview
 
-`flywheel-qa-sandbox` 是从 `xrliAnnie/flywheel` main seed 出来的 **standalone QA sandbox 仓库**（GitHub 不允许同账号 fork 自己的仓库，所以它不是真正的 fork，而是靠手动同步保持与生产 main 一致，见 `doc/qa/framework/sandbox-sync-guide.md` §3），作为 Flywheel test-slot E2E 框架（FLY-96 + FLY-115）的目标仓库。`scripts/test-deploy.sh` 会把这个仓库 clone 到 `/tmp/flywheel-test-slot-<N>/project-slot-<N>`，每个 slot 启动一个 test Bridge + test Lead，再通过 `scripts/inject-linear-issue.sh`（POST `/api/runs/start`）注入真实 Linear issue 来 spawn 一个 real Runner。Runner 产生的分支、commit、PR 全部落在这个 sandbox 上，与生产仓库完全隔离。
+`flywheel-qa-sandbox` 是从 `xrliAnnie/flywheel` main seed 出来的 **standalone QA sandbox 仓库**（GitHub 不允许同账号 fork 自己的仓库，所以它不是真正的 fork，而是靠手动同步保持与生产 main 一致，见 `doc/qa/framework/sandbox-sync-guide.md`），作为 Flywheel test-slot E2E 框架（FLY-96 + FLY-115）的目标仓库。`scripts/test-deploy.sh` 会把这个仓库 clone 到 `/tmp/flywheel-test-slot-<N>/project-slot-<N>`，每个 slot 启动一个 test Bridge + test Lead，再通过 `scripts/inject-linear-issue.sh`（直接 POST `/api/runs/start`）注入真实 Linear issue 来 spawn 一个 real Runner。Runner 产生的分支、commit、PR 全部落在这个 sandbox 上，与生产仓库完全隔离。
 
-之所以需要独立 sandbox，是因为 slot 框架不支持 synthetic / fixture 模式——每个 slot 都是 real Runner 端到端跑完整 pipeline（onboard → implement → PR → CI → merge）。如果直接用生产 flywheel 仓库，QA 跑出的测试分支、PR 和 merge commit 会污染生产历史；独立的 sandbox 仓库让 QA 流程可以反复执行、随时重置（参见 `doc/qa/framework/sandbox-sync-guide.md`）。
+之所以需要独立 sandbox，是因为 slot 框架不支持 synthetic / fixture 模式——每个 slot 都是 real Runner 端到端跑完整 pipeline（onboard → implement → PR → CI → merge）。如果直接用生产 flywheel 仓库，QA 跑出的测试分支、PR 和 merge commit 会污染生产历史；独立的 sandbox 仓库让 QA 流程可以反复执行、随时重置。每跑完一轮，`scripts/test-teardown.sh` 负责清理 tmux/Lead/Bridge、worktree、slot 目录与 CommDB。
 
-本文件本身就是一个 QA fixture 的产物：FLY-202 提供了一个真实的、PreHydrator 可见的 Linear issue，供 E2E 测试给 sandbox Runner 派发一个小而稳定的多步骤任务（FLY-197 发现文档中引用的 `FLY-SBX-1` 并不存在，FLY-202 填补了这个空缺）。该 issue 仅供 test-slot 使用，生产 Lead / Runner 不应认领。
+本文件本身就是一个 QA fixture 的产物：FLY-202 提供了一个真实的、PreHydrator 可见的 Linear issue，供 E2E 测试给 sandbox Runner 派发一个小而稳定的多步骤任务（FLY-197 发现文档中引用的 `FLY-SBX-1` 并不存在，FLY-202 填补了这个空缺）。该 issue 仅供 test-slot 使用，**生产 Lead / Runner 不应认领**。
 
 ## Top-Level Directories
 
 | Directory | Description |
 |-----------|-------------|
-| `.claude/` | Claude Code 项目配置：commands、skills、orchestrator、`qa-config.yaml` |
+| `.claude/` | Claude Code 项目配置：commands、skills、orchestrator、`qa-config.yaml` 等 |
 | `.github/` | GitHub Actions workflows（CI） |
 | `.serena/` | Serena MCP 的项目索引与配置 |
 | `doc/` | 主文档树：architecture / engineer / plan / qa / reference / retro + `VERSION` |
-| `docs/` | 贡献者文档（`CONTRIB.md`、`RUNBOOK.md`） |
+| `docs/` | 贡献者文档（`CONTRIB.md`、`RUNBOOK.md` 等） |
 | `packages/` | pnpm monorepo 包：claude-runner、core、edge-worker、flywheel-comm、qa-framework、teamlead 等 |
 | `patches/` | pnpm 依赖补丁（`mem0ai@2.3.0.patch`） |
 | `scripts/` | 运维与 QA/E2E 脚本（test-deploy、inject-linear-issue、test-teardown、daily-standup 等） |
@@ -51,7 +51,7 @@ qa
 reference
 retro
 
-doc//architecture:
+doc/architecture:
 archive
 capability-matrix.md
 flywheel-agent-architecture-diagram.html
@@ -61,17 +61,17 @@ product-experience-spec.md
 v0.2-architecture.md
 v2.0-product-vision.md
 
-doc//architecture/archive:
+doc/architecture/archive:
 v0.1.0-flywheel-orchestrator.md
 
-doc//engineer:
+doc/engineer:
 deep-research
 exploration
 implementation
 plan
 research
 
-doc//engineer/deep-research:
+doc/engineer/deep-research:
 001-decision-layer-gemini.md
 002-decision-layer-chatgpt.md
 003-stripe-minions-part1.md
@@ -86,13 +86,13 @@ doc//engineer/deep-research:
 claude-code-terminal-pane-management.md
 multi-agent-architecture-best-practices.md
 
-doc//engineer/exploration:
+doc/engineer/exploration:
 archive
 backlog
 new
 
-doc//engineer/exploration/archive:
+doc/engineer/exploration/archive:
 FLY-11-terminal-mcp-tool.md
 ```
 
-> Reviewed note: QA-S1 revision marker 20260604-1044
+> Reviewed note: QA-S2 revision marker 20260629 — slot harness real-Runner E2E re-run
