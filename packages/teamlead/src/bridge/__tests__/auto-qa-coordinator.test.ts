@@ -30,6 +30,8 @@ function fakeEffects(opts?: {
 	const wakes: { summary: string }[] = [];
 	const alerts: string[] = [];
 	const createCalls: { issueId: string; prHeadSha: string }[] = [];
+	// FLY-630 ②: parent-thread badge stamps (issueId + stage), in call order.
+	const stamps: { issueId: string; stage: string }[] = [];
 	const counters = { shipReady: 0 };
 	const effects: AutoQaSideEffects = {
 		postThread: ({ session, text }) => {
@@ -52,8 +54,11 @@ function fakeEffects(opts?: {
 		alertLeadPipelineError: ({ reason }) => {
 			alerts.push(reason);
 		},
+		stampIssueStage: ({ session, stage }) => {
+			stamps.push({ issueId: session.issue_id, stage });
+		},
 	};
-	return { effects, posts, wakes, alerts, createCalls, counters };
+	return { effects, posts, wakes, alerts, createCalls, stamps, counters };
 }
 
 async function setup(opts?: {
@@ -90,6 +95,7 @@ async function setup(opts?: {
 		wakes: f.wakes,
 		alerts: f.alerts,
 		createCalls: f.createCalls,
+		stamps: f.stamps,
 		counters: f.counters,
 	};
 }
@@ -169,6 +175,11 @@ describe("AutoQaCoordinator.onMainAwaitingReview", () => {
 		expect(started).toBeDefined();
 		expect(started?.issueId).toBe("FLY-1");
 		expect(started?.text).toContain("FLY-700");
+
+		// FLY-630 ②: the PARENT thread badge reflects the issue's real pipeline
+		// stage — QA is running, so it is stamped to "test" (🧪QA), not left frozen
+		// on the implementer's approve stage (⏳待批).
+		expect(s.stamps).toContainEqual({ issueId: "FLY-1", stage: "test" });
 	});
 
 	it("FLY-643: createQaIssue failure → record stuck + Lead alert, no QA spawn (fail-closed)", async () => {
@@ -287,6 +298,9 @@ describe("AutoQaCoordinator.onQaResult", () => {
 		expect(rec?.notified_at).toBeTruthy();
 		expect(s.counters.shipReady).toBe(1);
 		expect(s.wakes.length).toBe(0);
+		// FLY-630 ②: QA green → parent thread re-stamped to "approve" (⏳待批) — now
+		// genuinely awaiting the founder.
+		expect(s.stamps).toContainEqual({ issueId: "FLY-1", stage: "approve" });
 	});
 
 	it("FAIL → record failed + implementer woken; founder NOT notified; 🔴 to QA thread NOT parent (FLY-643)", async () => {
@@ -305,6 +319,9 @@ describe("AutoQaCoordinator.onQaResult", () => {
 		expect(
 			s.posts.some((p) => p.text.includes("🔴") && p.issueId === "FLY-1"),
 		).toBe(false);
+		// FLY-630 ②: QA failed → parent thread re-stamped to "implement" (🔨实现中) —
+		// the implementer is being woken to fix, not a stale 🧪QA.
+		expect(s.stamps).toContainEqual({ issueId: "FLY-1", stage: "implement" });
 	});
 
 	it("drops a STALE verdict (verdict head != parent current head)", async () => {

@@ -2,13 +2,16 @@
  * FLY-643: AutoQaEffects.createQaIssue — creates the separate QA·FLY-XX Linear
  * issue mirroring the parent's team / project / labels, fail-closed on any error.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { Session } from "../../StateStore.js";
+import { StateStore } from "../../StateStore.js";
 import {
 	AutoQaEffects,
 	buildQaIssueContent,
 	type LinearClientLike,
 } from "../auto-qa-effects.js";
+import type { ChatThreadCreator } from "../ChatThreadCreator.js";
 
 const SHA = "a".repeat(40);
 
@@ -195,5 +198,161 @@ describe("AutoQaEffects.createQaIssue (FLY-643)", () => {
 			prHeadSha: SHA,
 		});
 		expect(ref).toBeUndefined();
+	});
+});
+
+describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
+	const ORIG_EMOJI = process.env.FLYWHEEL_ISSUE_STATUS_EMOJI;
+	const ORIG_WORD = process.env.FLYWHEEL_ISSUE_STATUS_WORD;
+
+	const projects: ProjectEntry[] = [
+		{
+			projectName: "proj",
+			projectRoot: "/x",
+			leads: [
+				{
+					agentId: "lead-1",
+					chatChannel: "chan-1",
+					botToken: "bot-token",
+					match: { labels: ["engineer"] },
+				},
+			],
+		} as ProjectEntry,
+	];
+
+	function fakeCreator() {
+		const calls: {
+			threadId: string;
+			stage: string;
+			withWord: boolean;
+			channel: string;
+		}[] = [];
+		const creator = {
+			stampStageEmoji: vi.fn(
+				async (
+					ctx: { chatChannelId: string },
+					threadId: string,
+					stage: string,
+					withWord: boolean,
+				) => {
+					calls.push({
+						threadId,
+						stage,
+						withWord,
+						channel: ctx.chatChannelId,
+					});
+				},
+			),
+		} as unknown as ChatThreadCreator;
+		return { creator, calls };
+	}
+
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		delete process.env.FLYWHEEL_ISSUE_STATUS_EMOJI;
+		delete process.env.FLYWHEEL_ISSUE_STATUS_WORD;
+	});
+	afterEach(() => {
+		store.close();
+		if (ORIG_EMOJI === undefined)
+			delete process.env.FLYWHEEL_ISSUE_STATUS_EMOJI;
+		else process.env.FLYWHEEL_ISSUE_STATUS_EMOJI = ORIG_EMOJI;
+		if (ORIG_WORD === undefined) delete process.env.FLYWHEEL_ISSUE_STATUS_WORD;
+		else process.env.FLYWHEEL_ISSUE_STATUS_WORD = ORIG_WORD;
+	});
+
+	const session = (over: Partial<Session> = {}): Session =>
+		({
+			execution_id: "main-1",
+			issue_id: "FLY-1",
+			project_name: "proj",
+			issue_identifier: "FLY-1",
+			issue_title: "Test issue",
+			issue_labels: JSON.stringify(["engineer"]),
+			...over,
+		}) as Session;
+
+	it("stamps the parent thread's badge via ChatThreadCreator (resolves lead → channel → thread)", async () => {
+		store.upsertChatThread("thread-1", "chan-1", "FLY-1");
+		const { creator, calls } = fakeCreator();
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			chatThreadCreator: creator,
+		});
+
+		await effects.stampIssueStage({ session: session(), stage: "test" });
+
+		expect(calls).toEqual([
+			{
+				threadId: "thread-1",
+				stage: "test",
+				withWord: true,
+				channel: "chan-1",
+			},
+		]);
+	});
+
+	it("no-ops when the feature flag is off (FLYWHEEL_ISSUE_STATUS_EMOJI=0)", async () => {
+		process.env.FLYWHEEL_ISSUE_STATUS_EMOJI = "0";
+		store.upsertChatThread("thread-1", "chan-1", "FLY-1");
+		const { creator, calls } = fakeCreator();
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			chatThreadCreator: creator,
+		});
+
+		await effects.stampIssueStage({ session: session(), stage: "approve" });
+
+		expect(calls).toEqual([]);
+	});
+
+	it("respects FLYWHEEL_ISSUE_STATUS_WORD=0 (emoji-only)", async () => {
+		process.env.FLYWHEEL_ISSUE_STATUS_WORD = "0";
+		store.upsertChatThread("thread-1", "chan-1", "FLY-1");
+		const { creator, calls } = fakeCreator();
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			chatThreadCreator: creator,
+		});
+
+		await effects.stampIssueStage({ session: session(), stage: "implement" });
+
+		expect(calls[0]?.withWord).toBe(false);
+	});
+
+	it("no-ops (no throw) when the parent thread does not exist yet", () => {
+		const { creator, calls } = fakeCreator();
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			chatThreadCreator: creator,
+		});
+
+		// FLY-630 (Codex R1): stampIssueStage is fire-and-forget (returns void) — it
+		// must not throw when there is nothing to stamp.
+		expect(() =>
+			effects.stampIssueStage({ session: session(), stage: "test" }),
+		).not.toThrow();
+		expect(calls).toEqual([]);
+	});
+
+	it("no-ops when chatThreadCreator is not wired (feature off)", () => {
+		store.upsertChatThread("thread-1", "chan-1", "FLY-1");
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+		});
+		expect(() =>
+			effects.stampIssueStage({ session: session(), stage: "test" }),
+		).not.toThrow();
 	});
 });
