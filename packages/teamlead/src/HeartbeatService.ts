@@ -179,24 +179,41 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	async check(): Promise<void> {
-		// FLY-25: Retry undelivered guardrail events from PREVIOUS cycles first,
-		// before detection generates new events in this cycle.
-		if (this.notifier instanceof RegistryHeartbeatNotifier) {
-			await this.notifier.retryUndeliveredGuardrailEvents();
+		// FLY-639: the whole cycle is wrapped so a StateStore sql.js error
+		// (getStuckSessions / getOrphanSessions / getActiveSessions / …) can NEVER
+		// crash the Bridge via this heartbeat loop. Contract: check() itself never
+		// rejects — on any throw it logs, attempts a best-effort StateStore
+		// self-heal, and skips the cycle. (start() still wraps check() in a .catch()
+		// as belt-and-suspenders.)
+		try {
+			// FLY-25: Retry undelivered guardrail events from PREVIOUS cycles first,
+			// before detection generates new events in this cycle.
+			if (this.notifier instanceof RegistryHeartbeatNotifier) {
+				await this.notifier.retryUndeliveredGuardrailEvents();
+			}
+			// FLY-172: reconcile monitoring loss BEFORE stuck/orphan detection so the
+			// monitor-lost / marker-retry skip sets are current. This pass is the
+			// single owner of tmux probing for running sessions (Codex guidance #1).
+			// Only awaited when wired (production) — skipping the await when
+			// unconfigured keeps checkStuck's synchronous getStuckSessions call on the
+			// same tick (preserves existing fake-timer test timing).
+			if (this.monitorReconcile) {
+				await this.reconcileMonitorLoss();
+			}
+			await this.checkStuck();
+			await this.reapOrphans();
+			await this.checkStaleCompleted();
+			await this.checkAwaitingReviewTimeout();
+		} catch (err) {
+			console.error(
+				"[HeartbeatService] check error (skipping cycle, Bridge stays up):",
+				err instanceof Error ? err.message : String(err),
+			);
+			// Byte-compat: old mock stores (tests) may lack the method.
+			if (typeof this.store.recoverFromCorruption === "function") {
+				this.store.recoverFromCorruption(err);
+			}
 		}
-		// FLY-172: reconcile monitoring loss BEFORE stuck/orphan detection so the
-		// monitor-lost / marker-retry skip sets are current. This pass is the
-		// single owner of tmux probing for running sessions (Codex guidance #1).
-		// Only awaited when wired (production) — skipping the await when
-		// unconfigured keeps checkStuck's synchronous getStuckSessions call on the
-		// same tick (preserves existing fake-timer test timing).
-		if (this.monitorReconcile) {
-			await this.reconcileMonitorLoss();
-		}
-		await this.checkStuck();
-		await this.reapOrphans();
-		await this.checkStaleCompleted();
-		await this.checkAwaitingReviewTimeout();
 	}
 
 	/**

@@ -181,13 +181,34 @@ export class GatePoller {
 
 	start(): void {
 		if (this.timerHandle) return;
-		this.timerHandle = setInterval(
-			() => this.poll(),
-			this.config.pollIntervalMs,
-		);
+		// FLY-639: guard the timer callback so an async poll() that somehow rejects
+		// can never become an unhandled rejection that exits the Bridge. poll()'s
+		// internals are already wrapped (per-lead + founder-reply try/catch), this
+		// is belt-and-suspenders for any scaffolding throw above those.
+		this.timerHandle = setInterval(() => {
+			void this.poll().catch((err) => {
+				console.error(
+					"[GatePoller] unexpected poll rejection (contained, Bridge stays up):",
+					err instanceof Error ? err.message : String(err),
+				);
+			});
+		}, this.config.pollIntervalMs);
 		console.log(
 			`[GatePoller] Started (interval: ${this.config.pollIntervalMs}ms)`,
 		);
+	}
+
+	/**
+	 * FLY-639: best-effort StateStore self-heal hook. A poll error may be a sql.js
+	 * corruption ("no such table" / "null function …"); ask the store to rebuild
+	 * itself from the last persisted image so the next lead/cycle is healthy. The
+	 * store's own throttle ensures one corruption episode triggers at most one
+	 * rebuild even though several leads in a tick may each land here.
+	 */
+	private maybeRecoverStore(err: unknown): void {
+		if (typeof this.config.store.recoverFromCorruption === "function") {
+			this.config.store.recoverFromCorruption(err);
+		}
 	}
 
 	stop(): void {
@@ -306,6 +327,8 @@ export class GatePoller {
 										? relayErr.message
 										: String(relayErr),
 								);
+								// FLY-639 (Codex code R1 HIGH): relayToLead touches StateStore (isLeadEventDelivered / appendLeadEvent / markLeadEventDelivered / recordDeliveryFailure) — self-heal on corruption (relayFailed already set keeps FLY-307 circuit semantics).
+								this.maybeRecoverStore(relayErr);
 							}
 							try {
 								await this.maybeEmitFounderThreadFallback(
@@ -319,6 +342,8 @@ export class GatePoller {
 									`[GatePoller] founder-thread fallback error for ${lead.agentId} (qid=${question.id}):`,
 									fbErr instanceof Error ? fbErr.message : String(fbErr),
 								);
+								// FLY-639 (Codex code R1 HIGH): maybeEmitFounderThreadFallback touches StateStore (getEventsByExecution / getChatThreadByIssue / emitFounderThreadNotification) — self-heal on corruption.
+								this.maybeRecoverStore(fbErr);
 							}
 						}
 						// FLY-307 B: a clean pass closes the circuit; a relay throw counts as
@@ -337,6 +362,12 @@ export class GatePoller {
 						// FLY-307 B: count the failed poll even if earlier questions in
 						// this iteration were delivered (no reset-on-partial-delivery).
 						if (this.circuitEnabled()) this.recordCircuitFailure(leadKey);
+						// FLY-639: a sql.js corruption thrown by getSession/getPendingQuestions
+						// here is contained by this catch (no Bridge crash). Attempt a
+						// best-effort StateStore self-heal so the next lead/cycle is healthy.
+						// Complementary to the FLY-307 circuit: circuit isolates the poisoned
+						// path, recover repairs the underlying store.
+						this.maybeRecoverStore(err);
 					}
 
 					// FLY-208 A2: black-hole inbox patrol — fully isolated from
@@ -353,6 +384,8 @@ export class GatePoller {
 								`[GatePoller] misroute patrol error for ${lead.agentId}:`,
 								err instanceof Error ? err.message : String(err),
 							);
+							// FLY-639 (Codex code R1 HIGH): misroutePatrol → deliverMisrouteEvent touches StateStore (isLeadEventDelivered / appendLeadEvent / markLeadEventDelivered / recordDeliveryFailure) — self-heal on corruption.
+							this.maybeRecoverStore(err);
 						}
 					}
 				}
@@ -372,6 +405,9 @@ export class GatePoller {
 						"[GatePoller] founder-reply deliver pass error:",
 						err instanceof Error ? err.message : String(err),
 					);
+					// FLY-639: this pass also touches StateStore (getSession /
+					// getChatThreadByIssue / appendLeadEvent) — self-heal on corruption.
+					this.maybeRecoverStore(err);
 				}
 			}
 		} finally {
@@ -1080,6 +1116,8 @@ export class GatePoller {
 							`[GatePoller] founder-reply deliver error (thread=${ctx.threadId}):`,
 							err instanceof Error ? err.message : String(err),
 						);
+						// FLY-639 (Codex code R1 HIGH): per-thread founder-reply delivery touches StateStore (isLeadEventDelivered / appendLeadEvent / markLeadEventDelivered / flush / recordDeliveryFailure) — self-heal on corruption.
+						this.maybeRecoverStore(err);
 					}
 				}
 			}
