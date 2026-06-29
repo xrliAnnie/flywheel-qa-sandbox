@@ -19,8 +19,13 @@
 
 import { closeRunnerTerminalView } from "flywheel-core";
 import type { StateStore } from "../StateStore.js";
+import { deleteCommDbSession } from "./commdb-session-prune.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
-import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
+import {
+	getTmuxTargetFromCommDb,
+	killCmuxLinkedSession,
+	killTmuxWindow,
+} from "./tmux-lookup.js";
 
 // ── Types ───────────────────────────────────────────────
 
@@ -54,6 +59,11 @@ export async function postMergeTmuxCleanup(
 	try {
 		const target = getTmuxTargetFromCommDb(opts.executionId, opts.projectName);
 		if (target) {
+			// FLY-638: tear down the per-runner cmux LINKED session BEFORE the
+			// window kill (display-message needs the window alive). Best-effort.
+			await killCmuxLinkedSession(target.tmuxWindow).catch((e: Error) =>
+				result.errors.push(`cmux: ${e.message}`),
+			);
 			const killResult = await killTmuxWindow(target.tmuxWindow);
 			result.tmuxClosed = killResult.killed;
 			if (killResult.error) {
@@ -82,6 +92,11 @@ export async function postMergeTmuxCleanup(
 					if (closeRes.error) {
 						result.errors.push(`terminal: ${closeRes.error}`);
 					}
+				}
+				// FLY-638: post-merge tmux is gone → drop the dead CommDB session
+				// row so it doesn't linger in runner_terminal_list / bootstrap.
+				if (killResult.killed) {
+					deleteCommDbSession(opts.executionId, opts.projectName);
 				}
 			}
 		}

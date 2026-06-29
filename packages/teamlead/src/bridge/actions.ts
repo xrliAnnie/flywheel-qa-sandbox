@@ -20,6 +20,7 @@ import {
 } from "../StateStore.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { AUTO_CLOSE_STATES, closeRunner } from "./close-runner.js";
+import { deleteCommDbSession } from "./commdb-session-prune.js";
 import type { EventFilter } from "./EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
@@ -34,7 +35,11 @@ import {
 	type StartedEvidence,
 } from "./started-evidence.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
-import { killTmuxWindow, lookupTmuxTarget } from "./tmux-lookup.js";
+import {
+	killCmuxLinkedSession,
+	killTmuxWindow,
+	lookupTmuxTarget,
+} from "./tmux-lookup.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 
 type ExecFn = (
@@ -1060,8 +1065,16 @@ export async function handleTerminate(
 		? lookupTmuxTarget(executionId, session.project_name)
 		: ({ kind: "gone" } as const);
 	if (lookup.kind === "found") {
+		// FLY-638: tear down the per-runner cmux LINKED session BEFORE the window
+		// kill (display-message needs the window alive). Best-effort.
+		await killCmuxLinkedSession(lookup.target.tmuxWindow).catch((e: Error) =>
+			console.warn(`[terminate] cmux session close warn: ${e.message}`),
+		);
 		const killResult = await killTmuxWindow(lookup.target.tmuxWindow);
 		if (killResult.killed) {
+			// FLY-638: terminated runner's tmux is gone → drop its CommDB session
+			// row so it doesn't linger in runner_terminal_list / bootstrap.
+			deleteCommDbSession(executionId, session.project_name);
 			// FLY-116: also close per-runner Terminal viewer tab + linked viewer.
 			const identity = resolveTerminalViewIdentity(session, lookup.target);
 			if (identity) {
