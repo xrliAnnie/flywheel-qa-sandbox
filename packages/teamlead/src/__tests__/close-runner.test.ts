@@ -1,4 +1,6 @@
+import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "../bridge/close-runner.js";
 import { StateStore } from "../StateStore.js";
 
@@ -7,9 +9,19 @@ import { StateStore } from "../StateStore.js";
 const mockGetTmuxTarget = vi.fn();
 const mockKillTmuxWindow = vi.fn();
 
+const mockKillCmuxLinkedSession = vi.fn(async () => ({ killed: true }));
+
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
 	killTmuxWindow: (...args: unknown[]) => mockKillTmuxWindow(...args),
+	killCmuxLinkedSession: (...args: unknown[]) =>
+		mockKillCmuxLinkedSession(...args),
+}));
+
+// FLY-638: stub the CommDB prune so tests never touch the real comm.db on disk.
+const mockDeleteCommDbSession = vi.fn(() => true);
+vi.mock("../bridge/commdb-session-prune.js", () => ({
+	deleteCommDbSession: (...args: unknown[]) => mockDeleteCommDbSession(...args),
 }));
 
 function makeOpts(overrides: Record<string, unknown> = {}) {
@@ -281,6 +293,136 @@ describe("closeRunner", () => {
 			.getEventsByExecution("exec-1")
 			.filter((e) => e.event_type === "lead_close_runner");
 		expect(audits).toHaveLength(2);
+	});
+
+	// ───────── FLY-638: done-mode finalize ─────────
+
+	function transitionOpts(): ApplyTransitionOpts {
+		return { store, fsm: new WorkflowFSM(WORKFLOW_TRANSITIONS) };
+	}
+
+	it.each([["running"], ["awaiting_review"], ["approved_to_ship"]])(
+		"finalizeDone transitions %s → completed, then closes (alreadyGone)",
+		async (status) => {
+			seedSession(store, status);
+			mockGetTmuxTarget.mockReturnValue(undefined); // tmux already gone
+
+			const result = await closeRunner(
+				makeOpts({ finalizeDone: true, transitionOpts: transitionOpts() }),
+				store,
+			);
+
+			expect(result).toEqual({ closed: true, alreadyGone: true });
+			// Session was finalized to completed.
+			expect(store.getSession("exec-1")?.status).toBe("completed");
+			const events = store.getEventsByExecution("exec-1");
+			const finalized = events.find(
+				(e) => e.event_type === "lead_close_runner_finalized",
+			);
+			expect(finalized).toBeDefined();
+			expect((finalized!.payload as { fromStatus?: string }).fromStatus).toBe(
+				status,
+			);
+			// Normal close audit still written.
+			expect(events.some((e) => e.event_type === "lead_close_runner")).toBe(
+				true,
+			);
+		},
+	);
+
+	it("finalizeDone kills tmux when a target exists (parked-but-done runner)", async () => {
+		seedSession(store, "awaiting_review");
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "FLY-102:@0",
+			sessionName: "FLY-102",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+
+		const result = await closeRunner(
+			makeOpts({ finalizeDone: true, transitionOpts: transitionOpts() }),
+			store,
+		);
+
+		expect(result).toEqual({ closed: true, error: undefined });
+		expect(mockKillTmuxWindow).toHaveBeenCalledWith("FLY-102:@0");
+		expect(store.getSession("exec-1")?.status).toBe("completed");
+	});
+
+	it("finalizeDone fires the FLY-369 archive cascade (completed + sole runner)", async () => {
+		seedSession(store, "awaiting_review");
+		store.upsertChatThread("t-x", "ch-x", "FLY-102", "lead-a");
+		const project = {
+			projectName: "flywheel",
+			projectRoot: "/tmp/fw",
+			leads: [
+				{
+					agentId: "lead-a",
+					chatChannel: "ch-x",
+					match: { labels: ["x"] },
+					botToken: "tok-a",
+				},
+			],
+		} as unknown as import("../ProjectConfig.js").ProjectEntry;
+		mockGetTmuxTarget.mockReturnValue(undefined);
+		const archiveFn = vi.fn().mockResolvedValue({ archived: true });
+
+		const result = await closeRunner(
+			makeOpts({
+				finalizeDone: true,
+				transitionOpts: transitionOpts(),
+				archive: { projects: [project], archiveFn },
+			}),
+			store,
+		);
+
+		expect(result.closed).toBe(true);
+		// Finalize → completed unlocks the archive cascade.
+		expect(archiveFn).toHaveBeenCalledTimes(1);
+	});
+
+	it("finalizeDone is a no-op on a non-source state (already completed → normal close)", async () => {
+		seedSession(store, "completed");
+		mockGetTmuxTarget.mockReturnValue(undefined);
+
+		const result = await closeRunner(
+			makeOpts({ finalizeDone: true, transitionOpts: transitionOpts() }),
+			store,
+		);
+
+		expect(result).toEqual({ closed: true, alreadyGone: true });
+		const events = store.getEventsByExecution("exec-1");
+		// No finalize event — status was already terminal.
+		expect(
+			events.some((e) => e.event_type === "lead_close_runner_finalized"),
+		).toBe(false);
+	});
+
+	it("finalizeDone WITHOUT transitionOpts → finalize_done_unavailable (no FSM bypass)", async () => {
+		seedSession(store, "awaiting_review");
+		mockGetTmuxTarget.mockReturnValue(undefined);
+
+		const result = await closeRunner(makeOpts({ finalizeDone: true }), store);
+
+		expect(result).toEqual({
+			closed: false,
+			error: "finalize_done_unavailable",
+		});
+		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
+	});
+
+	it("WITHOUT finalizeDone, awaiting_review is still rejected (unchanged default)", async () => {
+		seedSession(store, "awaiting_review");
+
+		const result = await closeRunner(
+			makeOpts({ transitionOpts: transitionOpts() }),
+			store,
+		);
+
+		expect(result).toEqual({
+			closed: false,
+			error: "status_not_eligible:awaiting_review",
+		});
+		expect(store.getSession("exec-1")?.status).toBe("awaiting_review");
 	});
 
 	it("CLOSE_ELIGIBLE_STATES contains exactly 7 non-running outcomes", () => {

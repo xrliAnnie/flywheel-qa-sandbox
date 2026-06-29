@@ -5,6 +5,8 @@ import {
 	ABANDON_STATUSES_PARAM,
 	buildRunnerListText,
 	classifyRunnerRow,
+	DONE_STATUS_SET,
+	DONE_STATUSES_PARAM,
 	formatRunnerRow,
 	mapWithConcurrency,
 	REENGAGE_HINT,
@@ -158,6 +160,20 @@ describe("abandon status set", () => {
 			"approved_to_ship",
 		]);
 		expect(ABANDON_STATUSES_PARAM).toBe("awaiting_review,approved_to_ship");
+	});
+});
+
+// FLY-638: done-mode lookup status set (running + the two parked states).
+describe("done status set", () => {
+	it("is running + the parked states (mirrors FINALIZE_DONE_SOURCE_STATES)", () => {
+		expect([...DONE_STATUS_SET]).toEqual([
+			"running",
+			"awaiting_review",
+			"approved_to_ship",
+		]);
+		expect(DONE_STATUSES_PARAM).toBe(
+			"running,awaiting_review,approved_to_ship",
+		);
 	});
 });
 

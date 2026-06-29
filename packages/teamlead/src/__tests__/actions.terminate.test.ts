@@ -15,6 +15,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	lookupTmuxTarget: vi.fn(),
 	killTmuxWindow: vi.fn(),
+	killCmuxLinkedSession: vi.fn(async () => ({ killed: true })),
+}));
+// FLY-638: stub the CommDB prune so tests never touch the real comm.db on disk.
+vi.mock("../bridge/commdb-session-prune.js", () => ({
+	deleteCommDbSession: vi.fn(() => true),
 }));
 // Avoid real macOS Terminal automation in the kill-success path.
 vi.mock("flywheel-core", async (importOriginal) => ({

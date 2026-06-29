@@ -11,6 +11,7 @@ import { z } from "zod";
 import {
 	ABANDON_STATUSES_PARAM,
 	buildRunnerListText,
+	DONE_STATUSES_PARAM,
 	mapWithConcurrency,
 	type RunnerRow,
 	validateAbandonReason,
@@ -453,6 +454,7 @@ server.tool(
 		"  → Cleanup happens later when the user transitions to retry/reject/defer/shelve/terminate.",
 		"REJECTS: running, awaiting_review, approved, approved_to_ship — those must be approved/rejected first.",
 		"To CANCEL/ABANDON a parked runner (awaiting_review / approved_to_ship — founder decided NOT to ship): set abandon=true. This routes to the terminate action (FSM→terminated + tmux/viewer teardown + audit), so you don't have to raw `tmux kill`. abandon is a terminate-class reserved action (founder-consent gated, same as terminate) and REQUIRES a reason.",
+		"FLY-638 — to FINALIZE a DONE-but-stuck runner (ship SUCCEEDED so it parked at awaiting_review/approved_to_ship, or QA PASSED so it's still running, but it exited before its final `stage set completed`): set done=true. This transitions it to completed via the FSM, THEN closes (kills tmux window + cmux session + viewer tab) and archives the issue thread (the FLY-369 close→archive cascade). Use done=true (NOT abandon) when the work finished successfully — abandon=true marks it terminated (an abort) and does NOT archive. done and abandon are mutually exclusive.",
 		"Use after Annie confirms closure, or per team-lead pre-authorized rules.",
 		"Idempotent: if the tmux window is already gone, returns success.",
 	].join(" "),
@@ -480,8 +482,14 @@ server.tool(
 			.describe(
 				"Cancel/abandon a PARKED runner (awaiting_review / approved_to_ship). Routes to the terminate action (FSM→terminated). Default false (normal close, which rejects parked states).",
 			),
+		done: z
+			.boolean()
+			.default(false)
+			.describe(
+				"FLY-638: FINALIZE a DONE-but-stuck runner (ship succeeded / QA passed but it never emitted its final `stage set completed`). Transitions running/awaiting_review/approved_to_ship → completed via the FSM, then closes + archives. Use this (NOT abandon) for successful work. Mutually exclusive with abandon. Default false.",
+			),
 	},
-	async ({ issue_identifier, execution_id, reason, abandon }) => {
+	async ({ issue_identifier, execution_id, reason, abandon, done }) => {
 		if (!issue_identifier && !execution_id) {
 			return {
 				content: [
@@ -502,6 +510,21 @@ server.tool(
 					{
 						type: "text" as const,
 						text: "Error: BRIDGE_URL / TEAMLEAD_API_TOKEN not configured",
+					},
+				],
+				isError: true,
+			};
+		}
+
+		// FLY-638: done and abandon are mutually exclusive (one finalizes a
+		// successful runner, the other aborts it) — reject the contradiction up
+		// front rather than silently preferring one.
+		if (abandon && done) {
+			return {
+				content: [
+					{
+						type: "text" as const,
+						text: "Error: abandon and done are mutually exclusive. Use done=true to finalize a runner whose work SUCCEEDED, or abandon=true to terminate one you are NOT shipping.",
 					},
 				],
 				isError: true,
@@ -541,12 +564,15 @@ server.tool(
 				// the >1 guard whenever an old completed run coexists with the
 				// current parked one) — and scope the lookup to THIS lead so an
 				// out-of-scope same-identifier parked run can't trip the >1 guard.
+				// FLY-638 done: resolve a DONE-but-stuck runner by the parked/running
+				// status set, lead-scoped (same disambiguation reasoning as abandon).
 				const lookupStatuses = abandon
 					? ABANDON_STATUSES_PARAM
-					: "blocked,completed,deferred,failed,rejected,shelved,terminated";
-				const leadScope = abandon
-					? `&leadId=${encodeURIComponent(leadId)}`
-					: "";
+					: done
+						? DONE_STATUSES_PARAM
+						: "blocked,completed,deferred,failed,rejected,shelved,terminated";
+				const leadScope =
+					abandon || done ? `&leadId=${encodeURIComponent(leadId)}` : "";
 				const lookupUrl = `${bridgeUrl}/api/sessions?mode=by_identifier&identifier=${encodeURIComponent(issue_identifier)}&statuses=${encodeURIComponent(lookupStatuses)}${leadScope}`;
 				const r = await fetch(lookupUrl, {
 					headers: { Authorization: `Bearer ${token}` },
@@ -572,7 +598,9 @@ server.tool(
 								type: "text" as const,
 								text: abandon
 									? `Error: no parked (awaiting_review / approved_to_ship) session for ${issue_identifier} in your scope. Nothing to abandon — if the runner is still running, terminate it instead; if it already finished, use a normal close.`
-									: `Error: no closable session for ${issue_identifier}. If a Runner is currently running, wait for completion or pass execution_id explicitly.`,
+									: done
+										? `Error: no done-but-stuck (running / awaiting_review / approved_to_ship) session for ${issue_identifier} in your scope. Nothing to finalize — if it already reached completed/rejected/etc, use a normal close.`
+										: `Error: no closable session for ${issue_identifier}. If a Runner is currently running, wait for completion or pass execution_id explicitly.`,
 							},
 						],
 						isError: true,
@@ -583,7 +611,7 @@ server.tool(
 						content: [
 							{
 								type: "text" as const,
-								text: `Error: ${json.sessions.length} ${abandon ? "parked" : "closable"} sessions for ${issue_identifier} — pass execution_id explicitly to disambiguate. Candidates: ${json.sessions.map((s) => `${s.execution_id}(${s.status})`).join(", ")}`,
+								text: `Error: ${json.sessions.length} ${abandon ? "parked" : done ? "done-but-stuck" : "closable"} sessions for ${issue_identifier} — pass execution_id explicitly to disambiguate. Candidates: ${json.sessions.map((s) => `${s.execution_id}(${s.status})`).join(", ")}`,
 							},
 						],
 						isError: true,
@@ -606,7 +634,9 @@ server.tool(
 
 			// FLY-228 abandon → terminate action (reuses handleTerminate teardown +
 			// founder-consent + audit; FSM→terminated kills the zombie awaiting_review
-			// row). Normal close → close-runner endpoint (unchanged).
+			// row). Normal close → close-runner endpoint (unchanged). FLY-638 done →
+			// the SAME close-runner endpoint with done=true (FSM finalize → completed
+			// → close + archive cascade).
 			const r = abandon
 				? await fetch(`${bridgeUrl}/api/actions/terminate`, {
 						method: "POST",
@@ -628,7 +658,11 @@ server.tool(
 								Authorization: `Bearer ${token}`,
 								"Content-Type": "application/json",
 							},
-							body: JSON.stringify({ leadId, reason }),
+							body: JSON.stringify({
+								leadId,
+								reason,
+								...(done && { done: true }),
+							}),
 						},
 					);
 			const body = await r.text();

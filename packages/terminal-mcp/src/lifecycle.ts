@@ -90,6 +90,22 @@ export const ABANDON_STATUS_SET = [
 
 export const ABANDON_STATUSES_PARAM = ABANDON_STATUS_SET.join(",");
 
+/**
+ * FLY-638: the FSM states a `close_runner --done` may resolve by issue lookup —
+ * a done-but-stuck runner sits in one of these (ship succeeded → parked at
+ * awaiting_review/approved_to_ship, or QA passed → still running but emitted no
+ * final `complete`). Mirrors FINALIZE_DONE_SOURCE_STATES on the Bridge side. Like
+ * abandon, the lookup is scoped to the calling Lead so a same-identifier run in
+ * another Lead's scope can't trip the >1 disambiguation guard.
+ */
+export const DONE_STATUS_SET = [
+	"running",
+	"awaiting_review",
+	"approved_to_ship",
+] as const;
+
+export const DONE_STATUSES_PARAM = DONE_STATUS_SET.join(",");
+
 /** Max length for an abandon reason (written to the terminate audit trail). */
 export const ABANDON_REASON_MAX = 500;
 
