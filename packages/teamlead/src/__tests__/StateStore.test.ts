@@ -1,6 +1,6 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionEvent, SessionUpsert } from "../StateStore.js";
-import { StateStore } from "../StateStore.js";
+import { isSqlJsCorruptionError, StateStore } from "../StateStore.js";
 
 function makeEvent(overrides: Partial<SessionEvent> = {}): SessionEvent {
 	return {
@@ -1338,6 +1338,203 @@ describe("StateStore — runner-attach pin (FLY-560)", () => {
 				const fs = await import("node:fs");
 				fs.unlinkSync(path);
 			} catch {}
+		}
+	});
+});
+
+// --- FLY-639: sql.js corruption self-heal + unrecoverable escalation ---
+
+describe("StateStore FLY-639 corruption recovery", () => {
+	const CORRUPTION = "no such table: sessions";
+
+	describe("isSqlJsCorruptionError", () => {
+		it("matches the production WASM + missing-table signatures", () => {
+			expect(
+				isSqlJsCorruptionError(
+					new Error(
+						"RuntimeError: null function or function signature mismatch",
+					),
+				),
+			).toBe(true);
+			expect(isSqlJsCorruptionError(new Error("no such table: sessions"))).toBe(
+				true,
+			);
+			expect(
+				isSqlJsCorruptionError(new Error("database disk image is malformed")),
+			).toBe(true);
+			expect(isSqlJsCorruptionError(new Error("Out Of Memory"))).toBe(true);
+			expect(
+				isSqlJsCorruptionError(new Error("memory access out of bounds")),
+			).toBe(true);
+			// plain string + Error both supported
+			expect(isSqlJsCorruptionError("no such table: lead_events")).toBe(true);
+		});
+
+		it("does NOT match ordinary errors", () => {
+			expect(
+				isSqlJsCorruptionError(new Error("UNIQUE constraint failed")),
+			).toBe(false);
+			expect(isSqlJsCorruptionError(new Error("boom"))).toBe(false);
+			expect(isSqlJsCorruptionError(undefined)).toBe(false);
+			expect(isSqlJsCorruptionError(null)).toBe(false);
+		});
+	});
+
+	it("ignores non-corruption errors (DB untouched, returns false)", async () => {
+		const store = await StateStore.create(":memory:");
+		store.upsertSession(makeSession({ execution_id: "keep-1" }));
+		expect(store.recoverFromCorruption(new Error("UNIQUE constraint"))).toBe(
+			false,
+		);
+		// DB still usable + unchanged
+		expect(store.getSession("keep-1")).toBeTruthy();
+		store.close();
+	});
+
+	it(":memory: recovery returns true and leaves a usable (empty) DB", async () => {
+		const store = await StateStore.create(":memory:");
+		store.upsertSession(makeSession({ execution_id: "mem-1" }));
+		const recovered = store.recoverFromCorruption(new Error(CORRUPTION));
+		expect(recovered).toBe(true);
+		// :memory: has no disk image → rebuild is an empty DB, but getActiveSessions
+		// must WORK (not throw) — that is the crash-containment contract.
+		expect(() => store.getActiveSessions()).not.toThrow();
+		expect(store.getActiveSessions()).toEqual([]);
+		store.close();
+	});
+
+	it("on-disk recovery: saved session survives, unflushed lead event does NOT", async () => {
+		const { mkdtempSync, rmSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join: joinPath } = await import("node:path");
+		const dir = mkdtempSync(joinPath(tmpdir(), "fly639-"));
+		const dbPath = joinPath(dir, "state.db");
+		const store = await StateStore.create(dbPath);
+		try {
+			// upsertSession auto-saves → persisted to disk.
+			store.upsertSession(makeSession({ execution_id: "disk-1" }));
+			// appendLeadEvent does NOT flush → in-memory only.
+			store.appendLeadEvent("lead-1", "evt-1", "x", "{}");
+			// sanity: before recovery the lead event exists in memory.
+			expect(store.tryClaimLeadEvent("lead-1", "evt-1", "x", "{}")).toBe(false);
+
+			const recovered = store.recoverFromCorruption(new Error(CORRUPTION));
+			expect(recovered).toBe(true);
+
+			// Session survived (it was saved to disk before corruption).
+			expect(store.getSession("disk-1")).toBeTruthy();
+			// Unflushed lead event is gone (reload reads the last persisted image).
+			// tryClaim returns true ⇒ the row was absent.
+			expect(store.tryClaimLeadEvent("lead-1", "evt-1", "x", "{}")).toBe(true);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("escalates to onUnrecoverableCorruption after maxRecoveryFailures consecutive rebuild failures", async () => {
+		const store = await StateStore.create(":memory:");
+		const onUnrecoverable = vi.fn();
+		store.onUnrecoverableCorruption = onUnrecoverable;
+		// Force every rebuild to throw (simulate a dead WASM module).
+		(store as unknown as { sqlModule: unknown }).sqlModule = {
+			Database: class {
+				constructor() {
+					throw new Error("dead module");
+				}
+			},
+		};
+
+		const max = (store as unknown as { maxRecoveryFailures: number })
+			.maxRecoveryFailures;
+		for (let i = 0; i < max; i++) {
+			// Reset the throttle so each call is a distinct recovery episode.
+			(
+				store as unknown as { lastRecoveryAttemptAt: number }
+			).lastRecoveryAttemptAt = 0;
+			expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
+		}
+		expect(onUnrecoverable).toHaveBeenCalledTimes(1);
+		store.close();
+	});
+
+	it("throttle: a rapid second corruption call does not attempt a second rebuild", async () => {
+		const store = await StateStore.create(":memory:");
+		store.onUnrecoverableCorruption = vi.fn();
+		let builds = 0;
+		(store as unknown as { sqlModule: unknown }).sqlModule = {
+			Database: class {
+				constructor() {
+					builds++;
+					throw new Error("dead module");
+				}
+			},
+		};
+		// First call attempts a rebuild (fails). Second call within the throttle
+		// window is skipped — same episode, not a new attempt.
+		expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
+		expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
+		expect(builds).toBe(1);
+		expect(
+			(store as unknown as { recoveryFailures: number }).recoveryFailures,
+		).toBe(1);
+		store.close();
+	});
+
+	it("a successful recovery resets the failure counter", async () => {
+		const store = await StateStore.create(":memory:");
+		const onUnrecoverable = vi.fn();
+		store.onUnrecoverableCorruption = onUnrecoverable;
+		const goodModule = (store as unknown as { sqlModule: unknown }).sqlModule;
+		// One failed attempt.
+		(store as unknown as { sqlModule: unknown }).sqlModule = {
+			Database: class {
+				constructor() {
+					throw new Error("dead module");
+				}
+			},
+		};
+		(
+			store as unknown as { lastRecoveryAttemptAt: number }
+		).lastRecoveryAttemptAt = 0;
+		expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
+		expect(
+			(store as unknown as { recoveryFailures: number }).recoveryFailures,
+		).toBe(1);
+		// Restore a working module → a real recovery resets the counter.
+		(store as unknown as { sqlModule: unknown }).sqlModule = goodModule;
+		(
+			store as unknown as { lastRecoveryAttemptAt: number }
+		).lastRecoveryAttemptAt = 0;
+		expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(true);
+		expect(
+			(store as unknown as { recoveryFailures: number }).recoveryFailures,
+		).toBe(0);
+		expect(onUnrecoverable).not.toHaveBeenCalled();
+		store.close();
+	});
+
+	it("a MALFORMED on-disk image is NOT a silent empty-DB success — it counts as a rebuild failure (Codex code R1 MEDIUM)", async () => {
+		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join: joinPath } = await import("node:path");
+		const dir = mkdtempSync(joinPath(tmpdir(), "fly639-malformed-"));
+		const dbPath = joinPath(dir, "state.db");
+		const store = await StateStore.create(dbPath);
+		try {
+			store.upsertSession(makeSession({ execution_id: "disk-2" })); // valid, saved
+			// Corrupt the persisted image on disk: a file that EXISTS but is malformed.
+			writeFileSync(dbPath, Buffer.from("not a valid sqlite image"));
+			store.onUnrecoverableCorruption = vi.fn();
+			// Recovery must NOT silently return an empty DB and claim success: the
+			// malformed image makes `new Database(bytes)` throw -> counted failure.
+			expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
+			expect(
+				(store as unknown as { recoveryFailures: number }).recoveryFailures,
+			).toBe(1);
+		} finally {
+			store.close();
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });

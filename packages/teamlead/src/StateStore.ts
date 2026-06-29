@@ -1,6 +1,35 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import initSqlJs, { type Database } from "sql.js";
+import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
+
+/**
+ * FLY-639: sql.js / WASM error signatures that mean the current DB instance can
+ * no longer be trusted and must be rebuilt — NOT a recoverable logical error.
+ * `null function or function signature mismatch` = WASM indirect-call-table
+ * corruption (the production incident); `no such table` = a corrupted instance
+ * that lost its schema; the rest are the well-known sql.js fatal modes. Matched
+ * case-insensitively as substrings. Ordinary errors (e.g. UNIQUE constraint)
+ * deliberately do NOT match, so they never trigger a reload.
+ */
+const SQLJS_CORRUPTION_SIGNATURES = [
+	"null function or function signature mismatch",
+	"no such table",
+	"database disk image is malformed",
+	"out of memory",
+	"memory access out of bounds",
+] as const;
+
+/**
+ * FLY-639: true when `err` looks like sql.js/WASM corruption that requires a DB
+ * rebuild rather than continuing on a poisoned instance. Exported for tests.
+ */
+export function isSqlJsCorruptionError(err: unknown): boolean {
+	const msg =
+		err instanceof Error ? err.message : typeof err === "string" ? err : "";
+	if (!msg) return false;
+	const lower = msg.toLowerCase();
+	return SQLJS_CORRUPTION_SIGNATURES.some((sig) => lower.includes(sig));
+}
 
 /** All statuses that represent a final outcome (used by dashboard, queries). */
 export const OUTCOME_STATUSES = [
@@ -282,10 +311,43 @@ export const REVIEW_BINDING_UNBOUND = "unbound";
 export class StateStore {
 	private db: Database;
 	private dbPath: string;
+	/** FLY-639: retained sql.js module, so a corrupt DB can be rebuilt synchronously. */
+	private sqlModule: SqlJsStatic;
 
-	private constructor(db: Database, dbPath: string) {
+	// --- FLY-639: best-effort corruption self-heal + unrecoverable escalation ---
+	/** Consecutive failed rebuilds; reset to 0 on a successful recovery. */
+	private recoveryFailures = 0;
+	/** Epoch-ms of the last ACTUAL rebuild attempt (storm guard). */
+	private lastRecoveryAttemptAt = 0;
+	/** Max consecutive failed rebuilds before escalating to a clean restart. */
+	private readonly maxRecoveryFailures = 3;
+	/**
+	 * Min gap between actual rebuild attempts. GatePoller polls every ~3s and a
+	 * single tick can hit the same corrupt store across multiple leads; without
+	 * this, one corruption episode would trigger a reload storm.
+	 */
+	private readonly recoveryThrottleMs = 5_000;
+	/**
+	 * FLY-639: invoked when in-process recovery has failed `maxRecoveryFailures`
+	 * times in a row — the sql.js WASM module is likely unrecoverable. Default:
+	 * log FATAL + controlled `process.exit(1)` so launchd respawns the Bridge
+	 * with a FRESH WASM module. This resolves the "never crash" vs. "launchd is
+	 * the fallback" contradiction: a single transient error is contained, but a
+	 * truly-dead store does not leave an alive-but-useless daemon. Injectable so
+	 * tests do not kill the test runner.
+	 */
+	onUnrecoverableCorruption: (err: unknown) => void = (err) => {
+		console.error(
+			"[StateStore] FATAL: sql.js corruption unrecoverable after repeated in-process reloads — exiting for a clean restart (launchd respawns with a fresh WASM module):",
+			err instanceof Error ? err.message : err,
+		);
+		process.exit(1);
+	};
+
+	private constructor(db: Database, dbPath: string, sqlModule: SqlJsStatic) {
 		this.db = db;
 		this.dbPath = dbPath;
+		this.sqlModule = sqlModule;
 	}
 
 	static async create(dbPath: string): Promise<StateStore> {
@@ -302,7 +364,7 @@ export class StateStore {
 				db = new SQL.Database();
 			}
 		}
-		const store = new StateStore(db, dbPath);
+		const store = new StateStore(db, dbPath, SQL);
 		store.migrate();
 		return store;
 	}
@@ -310,6 +372,116 @@ export class StateStore {
 	close(): void {
 		this.save();
 		this.db.close();
+	}
+
+	/**
+	 * FLY-639: best-effort in-process recovery from sql.js / WASM corruption.
+	 * Returns `true` ONLY when the DB was rebuilt and is healthy again.
+	 *
+	 * - Non-corruption errors → `false` (DB untouched; no counting / throttling).
+	 * - Corruption errors → rebuild the DB from the LAST PERSISTED on-disk image
+	 *   (the corrupt in-memory instance is NEVER `export()`ed/saved — that would
+	 *   produce a poisoned image). Recoverable cases (a bad DB handle / SQLite
+	 *   heap state) heal in-process so the next poll cycle is healthy without a
+	 *   process restart.
+	 *
+	 * IMPORTANT — this is NOT a guaranteed cure for module-level WASM corruption:
+	 * rebuilding `new Database(bytes)` reuses the SAME already-instantiated sql.js
+	 * module, so if the function-table itself is dead the rebuild may immediately
+	 * re-fail. That path is handled by the failure escalation
+	 * (`onUnrecoverableCorruption`), NOT by pretending recovery succeeded.
+	 *
+	 * Data tradeoff: the reload discards unpersisted in-memory mutations since the
+	 * last `save()`/`flush()`. `appendLeadEvent` / `markLeadEventDelivered` are
+	 * not durable until a later `flush()`, so some non-flushed lead events may be
+	 * lost or duplicated. Accepted for P1 — continuing on a corrupt DB is worse.
+	 *
+	 * Never throws: a failed rebuild is logged + counted, and the caller (a
+	 * periodic poller) simply skips the cycle.
+	 */
+	recoverFromCorruption(err: unknown): boolean {
+		if (!isSqlJsCorruptionError(err)) return false;
+
+		const now = Date.now();
+		// Storm guard: at most one ACTUAL rebuild per throttle window. A throttled
+		// call is the SAME corruption episode, so it is NOT counted toward the
+		// unrecoverable-escalation failure tally.
+		if (now - this.lastRecoveryAttemptAt < this.recoveryThrottleMs) {
+			return false;
+		}
+		this.lastRecoveryAttemptAt = now;
+
+		const original = err instanceof Error ? err.message : String(err);
+		const old = this.db;
+		// Track the freshly-built handle so it can be closed if migration throws
+		// (no leaked sql.js handle on the failure path — Codex code R1 LOW).
+		let next: Database | undefined;
+		try {
+			// Build the new handle from the last persisted image, swap it in, then
+			// migrate it (idempotent; synchronous + no save()). On ANY throw the
+			// catch restores `old` and closes the half-built `next`.
+			next = this.buildDatabaseFromDisk();
+			this.db = next;
+			this.migrate();
+			// Best-effort close of the old (corrupt) handle to release WASM memory —
+			// important under memory pressure. NEVER save() it; a close failure does
+			// not fail recovery.
+			try {
+				old.close();
+			} catch {
+				// old handle may itself be poisoned — ignore.
+			}
+			this.recoveryFailures = 0;
+			console.error(
+				`[StateStore] FLY-639: recovered from sql.js corruption — DB restored from last persisted image (${this.dbPath}). Original error: ${original}`,
+			);
+			return true;
+		} catch (rebuildErr) {
+			this.db = old; // restore defined state (old is corrupt, retried next window)
+			// Close the half-built replacement so a failed rebuild never leaks a handle.
+			if (next) {
+				try {
+					next.close();
+				} catch {
+					// best-effort
+				}
+			}
+			this.recoveryFailures++;
+			console.error(
+				`[StateStore] FLY-639: in-process DB rebuild FAILED (attempt ${this.recoveryFailures}/${this.maxRecoveryFailures}). Original error: ${original}; rebuild error: ${
+					rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr)
+				}`,
+			);
+			if (this.recoveryFailures >= this.maxRecoveryFailures) {
+				this.onUnrecoverableCorruption(err);
+			}
+			return false;
+		}
+	}
+
+	/**
+	 * FLY-639: build a fresh Database from the last persisted on-disk image.
+	 *
+	 * A MISSING/unreadable file → fresh empty DB (legitimate first-run / no image
+	 * yet). But a file that EXISTS yet is malformed must NOT be silently swallowed
+	 * into an empty-DB "success": the `new Database(bytes)` throw is allowed to
+	 * propagate to `recoverFromCorruption()`'s catch so it counts as a rebuild
+	 * failure and can reach the unrecoverable escalation, rather than masking a
+	 * corrupt persisted image as a clean recovery (Codex code R1 MEDIUM).
+	 */
+	private buildDatabaseFromDisk(): Database {
+		if (this.dbPath === ":memory:") {
+			return new this.sqlModule.Database();
+		}
+		let data: Buffer;
+		try {
+			data = readFileSync(this.dbPath);
+		} catch {
+			// No on-disk image yet (or unreadable path) → fresh empty DB.
+			return new this.sqlModule.Database();
+		}
+		// Bytes exist — let a malformed image throw (caught by recoverFromCorruption).
+		return new this.sqlModule.Database(data);
 	}
 
 	private save(): void {

@@ -445,7 +445,11 @@ describe("GatePoller (FLY-161)", () => {
 		const getSessionSpy = vi
 			.spyOn(store, "getSession")
 			.mockImplementation(() => {
-				throw new Error("memory access out of bounds");
+				// Neutral non-corruption fault: these FLY-307 circuit tests only
+				// need getSession to FAIL repeatedly; the cause is irrelevant to
+				// circuit counting. (Avoid a sql.js-corruption signature so the
+				// FLY-639 self-heal does not rebuild the :memory: store mid-test.)
+				throw new Error("simulated getSession failure (FLY-307 circuit)");
 			});
 
 		const poller = makePoller({ circuitThreshold: 3, circuitCooldownTicks: 5 });
@@ -476,7 +480,11 @@ describe("GatePoller (FLY-161)", () => {
 		const getSessionSpy = vi
 			.spyOn(store, "getSession")
 			.mockImplementation(() => {
-				throw new Error("memory access out of bounds");
+				// Neutral non-corruption fault: these FLY-307 circuit tests only
+				// need getSession to FAIL repeatedly; the cause is irrelevant to
+				// circuit counting. (Avoid a sql.js-corruption signature so the
+				// FLY-639 self-heal does not rebuild the :memory: store mid-test.)
+				throw new Error("simulated getSession failure (FLY-307 circuit)");
 			});
 
 		const poller = makePoller({ circuitThreshold: 3, circuitCooldownTicks: 2 });
@@ -506,7 +514,11 @@ describe("GatePoller (FLY-161)", () => {
 			const getSessionSpy = vi
 				.spyOn(store, "getSession")
 				.mockImplementation(() => {
-					throw new Error("memory access out of bounds");
+					// Neutral non-corruption fault: these FLY-307 circuit tests only
+					// need getSession to FAIL repeatedly; the cause is irrelevant to
+					// circuit counting. (Avoid a sql.js-corruption signature so the
+					// FLY-639 self-heal does not rebuild the :memory: store mid-test.)
+					throw new Error("simulated getSession failure (FLY-307 circuit)");
 				});
 
 			const poller = makePoller({ circuitThreshold: 2 });
@@ -536,7 +548,11 @@ describe("GatePoller (FLY-161)", () => {
 		const getSessionSpy = vi
 			.spyOn(store, "getSession")
 			.mockImplementation(() => {
-				throw new Error("memory access out of bounds");
+				// Neutral non-corruption fault: these FLY-307 circuit tests only
+				// need getSession to FAIL repeatedly; the cause is irrelevant to
+				// circuit counting. (Avoid a sql.js-corruption signature so the
+				// FLY-639 self-heal does not rebuild the :memory: store mid-test.)
+				throw new Error("simulated getSession failure (FLY-307 circuit)");
 			});
 		const readUnread = vi.fn(async () => []);
 		const transport = {
@@ -594,5 +610,67 @@ describe("GatePoller (FLY-161)", () => {
 		// Sanity: ops-lead also doesn't see it because the question's
 		// to_agent is product-lead, so ops-lead's CommDB pending list is empty.
 		expect(opsRuntime.captured).toHaveLength(0);
+	});
+
+	// --- FLY-639: StateStore corruption containment + self-heal ---
+
+	it("FLY-639: a StateStore throw during poll is contained — poll resolves, circuit records a failure, and self-heal is attempted", async () => {
+		insertSession("exec-639", { status: "running", labels: ["product"] });
+		insertQuestion({
+			execId: "exec-639",
+			leadId: "product-lead",
+			content: "ping",
+		});
+
+		// Simulate sql.js corruption surfacing through the per-lead StateStore touch.
+		const getSessionSpy = vi
+			.spyOn(store, "getSession")
+			.mockImplementation(() => {
+				throw new Error("no such table: sessions");
+			});
+		const recoverSpy = vi.spyOn(store, "recoverFromCorruption");
+
+		const poller = makePoller({ circuitThreshold: 5 });
+
+		// MUST NOT throw — a thrown poll() is the production Bridge crash.
+		await expect(runPoll(poller)).resolves.toBeUndefined();
+
+		// Best-effort self-heal invoked with the corruption error.
+		expect(recoverSpy).toHaveBeenCalled();
+		expect(recoverSpy.mock.calls[0]![0]).toBeInstanceOf(Error);
+		// No event delivered on the failed poll.
+		expect(runtime.captured).toHaveLength(0);
+
+		getSessionSpy.mockRestore();
+		recoverSpy.mockRestore();
+	});
+
+	it("FLY-639: a StateStore throw inside relayToLead (inner catch) is contained + self-heals (Codex code R1 HIGH)", async () => {
+		insertSession("exec-639b", { status: "running", labels: ["product"] });
+		insertQuestion({
+			execId: "exec-639b",
+			leadId: "product-lead",
+			content: "ping",
+		});
+		// Corruption surfacing in lead_events, swallowed by relayToLead's INNER catch
+		// (not the outer per-lead catch). Must still self-heal.
+		const appendSpy = vi
+			.spyOn(store, "appendLeadEvent")
+			.mockImplementation(() => {
+				throw new Error("no such table: lead_events");
+			});
+		const recoverSpy = vi
+			.spyOn(store, "recoverFromCorruption")
+			.mockReturnValue(true);
+
+		await expect(
+			runPoll(makePoller({ circuitThreshold: 5 })),
+		).resolves.toBeUndefined();
+
+		expect(recoverSpy).toHaveBeenCalled();
+		expect(recoverSpy.mock.calls[0]![0]).toBeInstanceOf(Error);
+
+		appendSpy.mockRestore();
+		recoverSpy.mockRestore();
 	});
 });
