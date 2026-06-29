@@ -2995,6 +2995,11 @@ export async function startBridge(
 				projects,
 				config,
 				leadAlertNotifier,
+				// FLY-630 ②: drive the PARENT issue thread's stage badge across the QA
+				// phase (🧪QA while running → ⏳待批 on pass → 🔨实现中 on fail). Only
+				// set when the chat-thread feature is on; otherwise stampIssueStage
+				// no-ops.
+				chatThreadCreator,
 			});
 			autoQaCoordinatorHolder.current = new AutoQaCoordinator({
 				store,

@@ -115,6 +115,21 @@ export interface AutoQaSideEffects {
 		projectName: string;
 		reason: string;
 	}): Promise<void> | void;
+	/**
+	 * FLY-630 ②: stamp the PARENT issue's `[FLY-XX]` chat-thread title badge to
+	 * reflect the issue's CURRENT pipeline stage during the independent-QA phase.
+	 * Because QA runs on a SEPARATE `QA·FLY-XX` issue/thread (FLY-643), the parent
+	 * thread would otherwise stay frozen on the implementer's last stage (approve →
+	 * ⏳待批) while QA runs. The coordinator drives it: QA spawned → "test" (🧪QA);
+	 * QA passed → "approve" (⏳待批, now genuinely awaiting the founder); QA failed →
+	 * "implement" (🔨实现中, the implementer is being woken to fix). Fire-and-forget
+	 * + best-effort (gated by the same status-emoji feature flag); never throws into
+	 * the QA lifecycle.
+	 */
+	stampIssueStage(args: {
+		session: Session;
+		stage: string;
+	}): Promise<void> | void;
 }
 
 export interface AutoQaCoordinatorDeps {
@@ -147,6 +162,27 @@ export class AutoQaCoordinator {
 
 	private warn(m: string): void {
 		(this.deps.logger?.warn ?? this.deps.logger?.log)?.(`[auto-qa] ${m}`);
+	}
+
+	/**
+	 * FLY-630 ②: stamp the parent thread badge, best-effort. A cosmetic
+	 * thread-title failure must NEVER throw into the QA lifecycle (e.g. mark a
+	 * record stuck or block a founder release) — so any error from the side-effect
+	 * is swallowed here, independent of how a concrete impl behaves.
+	 */
+	private async safeStampIssueStage(
+		session: Session,
+		stage: string,
+	): Promise<void> {
+		try {
+			await this.deps.effects.stampIssueStage({ session, stage });
+		} catch (err) {
+			this.warn(
+				`stampIssueStage(${stage}) failed for ${session.issue_id}: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
 	}
 
 	/**
@@ -298,6 +334,10 @@ export class AutoQaCoordinator {
 				session,
 				text: `🧪 自动 QA 开始 — 独立 Runner 在单独的 QA issue ${qaRef} 上验证此 PR（reviewed commit \`${sha.slice(0, 8)}\`）。QA 全绿前不会打扰 founder。`,
 			});
+			// FLY-630 ②: reflect the issue's real pipeline stage on the PARENT thread —
+			// QA is now running, so the badge becomes 🧪QA (not the frozen ⏳待批 from
+			// the implementer's approve stage). Best-effort — never fails the spawn.
+			await this.safeStampIssueStage(session, "test");
 		} catch (err) {
 			// NEVER leave a held parent with no QA runner. Mark stuck + Lead-only
 			// alert; the founder is not surfaced (held), the Lead investigates. The
@@ -433,6 +473,9 @@ export class AutoQaCoordinator {
 				`QA PASS for ${parent.issue_id} (${targetExec}) — releasing founder ship-ready notification`,
 			);
 			await this.deps.effects.notifyShipReady({ session: parent, record });
+			// FLY-630 ②: QA is green — the issue is now genuinely awaiting the founder.
+			// Re-stamp the parent thread back to the approve badge (⏳待批).
+			await this.safeStampIssueStage(parent, "approve");
 			// Mark notified only AFTER the notification fired, so a crash in between
 			// leaves it passed-but-unnotified for reconcile to re-notify.
 			this.deps.store.setAutoQaStatus(targetExec, parentSha, "passed", {
@@ -446,6 +489,9 @@ export class AutoQaCoordinator {
 				`QA FAIL for ${parent.issue_id} (${targetExec}) — waking implementer, founder NOT notified`,
 			);
 			await this.deps.effects.feedbackWakeMain({ session: parent, summary });
+			// FLY-630 ②: QA failed → the implementer is being woken to fix. Reflect
+			// that on the parent thread (🔨实现中), not a stale 🧪QA.
+			await this.safeStampIssueStage(parent, "implement");
 			// FLY-643: a QA FAIL is Lead-facing — post to the QA issue's OWN thread,
 			// NOT the parent thread (the founder watches the parent thread; surfacing
 			// a non-green QA there would violate "don't bother the founder before QA
