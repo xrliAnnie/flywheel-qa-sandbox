@@ -315,6 +315,18 @@ describe("CommDB", () => {
 			expect(db.getActiveSessions()).toHaveLength(0);
 		});
 
+		// FLY-638: deleteSession
+		it("should delete a session row and return the change count", () => {
+			db.registerSession("exec-1", "@42", "geoforge3d");
+			db.updateSessionStatus("exec-1", "completed");
+
+			expect(db.deleteSession("exec-1")).toBe(1);
+			expect(db.getSession("exec-1")).toBeUndefined();
+			// Idempotent — deleting a missing row is a no-op (0 changes).
+			expect(db.deleteSession("exec-1")).toBe(0);
+			expect(db.deleteSession("never-existed")).toBe(0);
+		});
+
 		it("should list sessions with filters", () => {
 			db.registerSession("exec-1", "@42", "geoforge3d");
 			db.registerSession("exec-2", "@43", "geoforge3d");

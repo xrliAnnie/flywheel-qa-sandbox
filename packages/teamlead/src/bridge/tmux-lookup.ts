@@ -398,3 +398,56 @@ export async function killTmuxWindow(
 		return { killed: false, error: msg };
 	}
 }
+
+/**
+ * FLY-638: kill the per-runner cmux LINKED session (`cmux-<window_name>`).
+ *
+ * cmux-sync creates a linked session named `cmux-<window_name>` for each runner
+ * window so the founder can watch it as its own cmux tab. `killTmuxWindow` (a
+ * `kill-window` on the shared base session) removes the window, but the linked
+ * cmux session keeps a client attached and lingers — accumulating stale
+ * `cmux-FLY-X-…` tabs in the founder's cmux UI (the gap FLY-638 fixes).
+ *
+ * Resolve the window's `window_name` and kill the matching cmux session by EXACT
+ * (`=`) name (cmux-sync's own convention — avoids fnmatch/prefix-matching the
+ * wrong session). MUST run while the window is still alive (i.e. BEFORE
+ * `killTmuxWindow`) so `display-message` can read the name.
+ *
+ * `kill-session` on the linked cmux session does NOT take down the window in the
+ * shared base session — the window is still linked there and is closed
+ * separately by `killTmuxWindow`. Best-effort: a missing window / cmux session /
+ * tmux server is benign success. Never throws.
+ */
+export async function killCmuxLinkedSession(
+	tmuxWindow: string,
+	runTmux: TmuxRunner = defaultTmuxRunner,
+): Promise<{ killed: boolean; cmuxSession?: string; error?: string }> {
+	let windowName: string;
+	try {
+		const { stdout } = await runTmux([
+			"display-message",
+			"-p",
+			"-t",
+			tmuxWindow,
+			"#{window_name}",
+		]);
+		windowName = stdout.trim();
+	} catch (err) {
+		const msg = (err as Error).message ?? String(err);
+		// Window already gone → its linked cmux session is gone too. Benign.
+		if (isTmuxAbsenceMessage(msg)) return { killed: true };
+		console.error(`[tmux-lookup] cmux display-message error: ${msg}`);
+		return { killed: false, error: msg };
+	}
+	if (!windowName) return { killed: true }; // nothing resolved → nothing to kill
+	const cmuxSession = `cmux-${windowName}`;
+	try {
+		await runTmux(["kill-session", "-t", `=${cmuxSession}`]);
+		return { killed: true, cmuxSession };
+	} catch (err) {
+		const msg = (err as Error).message ?? String(err);
+		if (isTmuxAbsenceMessage(msg)) return { killed: true, cmuxSession }; // already gone
+		console.error(`[tmux-lookup] cmux kill-session error: ${msg}`);
+		return { killed: false, cmuxSession, error: msg };
+	}
+}

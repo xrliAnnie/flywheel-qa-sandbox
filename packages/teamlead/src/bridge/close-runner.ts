@@ -22,13 +22,23 @@
  */
 
 import { closeRunnerTerminalView } from "flywheel-core";
+import {
+	type ApplyTransitionOpts,
+	applyTransition,
+} from "../applyTransition.js";
 import type { StateStore } from "../StateStore.js";
+import { deleteCommDbSession } from "./commdb-session-prune.js";
 import {
 	type CloseArchiveDeps,
 	maybeArchiveThreadOnClose,
 } from "./done-thread-archiver.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
-import { getTmuxTargetFromCommDb, killTmuxWindow } from "./tmux-lookup.js";
+import {
+	getTmuxTargetFromCommDb,
+	killCmuxLinkedSession,
+	killTmuxWindow,
+} from "./tmux-lookup.js";
+import { sqliteDatetime } from "./types.js";
 
 /** FLY-116: success-style outcome states. closeRunner kills tmux + Terminal tab. */
 export const AUTO_CLOSE_STATES: ReadonlySet<string> = new Set([
@@ -43,6 +53,21 @@ export const AUTO_CLOSE_STATES: ReadonlySet<string> = new Set([
 export const CRASH_PRESERVE_STATES: ReadonlySet<string> = new Set([
 	"failed",
 	"blocked",
+]);
+
+/**
+ * FLY-638: source states a `finalizeDone` close transitions to `completed`
+ * before closing. A done-but-stuck runner — ship succeeded (560/628 parked at
+ * `awaiting_review` or `approved_to_ship`) or QA passed (636 still `running`)
+ * but it exited before emitting its final `stage set completed`, so the FSM
+ * never moved off these — sits in one of these. All three edges to `completed`
+ * are FSM-legal (WORKFLOW_TRANSITIONS), so the Lead can finalize + close in one
+ * step instead of hand-`pkill`-ing the body.
+ */
+export const FINALIZE_DONE_SOURCE_STATES: ReadonlySet<string> = new Set([
+	"running",
+	"awaiting_review",
+	"approved_to_ship",
 ]);
 
 /**
@@ -73,6 +98,25 @@ export interface CloseRunnerOpts {
 	 */
 	forcePreserved?: boolean;
 	/**
+	 * FLY-638: done-mode finalize. When true AND the session is stuck in a
+	 * non-terminal but DONE state (running/awaiting_review/approved_to_ship — see
+	 * FINALIZE_DONE_SOURCE_STATES), the close FIRST transitions it to `completed`
+	 * via the FSM (so the eligibility gate passes AND the FLY-369 archive cascade,
+	 * which is gated on `completed`, fires) before tearing down. The Lead's
+	 * invocation is the authority — close_runner is already a founder-consent
+	 * reserved action — so we do NOT auto-finalize without this flag; a genuinely
+	 * under-review runner is never silently completed + archived. Requires
+	 * `transitionOpts`.
+	 */
+	finalizeDone?: boolean;
+	/**
+	 * FLY-638: FSM transition opts, required when `finalizeDone` is set so the
+	 * done-finalize goes through the canonical `applyTransition` path. Absent →
+	 * `finalizeDone` is refused (`finalize_done_unavailable`) rather than bypassing
+	 * the FSM.
+	 */
+	transitionOpts?: ApplyTransitionOpts;
+	/**
 	 * FLY-369: when provided, a successful done-cleanup close (status=completed
 	 * with no other active runner for the issue) cascades to archiving the
 	 * issue's Discord chat thread via the central `maybeArchiveThreadOnClose`.
@@ -96,13 +140,65 @@ export async function closeRunner(
 	opts: CloseRunnerOpts,
 	store: StateStore,
 ): Promise<CloseRunnerResult> {
-	const session = store.getSession(opts.executionId);
+	let session = store.getSession(opts.executionId);
 	if (!session) {
 		return { closed: false, error: "session_not_found" };
 	}
 
 	// FLY-102 Round 3 QA finding: audit event_id is Lead-dimensional.
 	const auditKey = `${opts.executionId}-${opts.leadId ?? "unknown"}`;
+
+	// FLY-638: done-mode finalize. A done-but-stuck runner (ship succeeded / QA
+	// passed but it exited before its final `stage set completed`, so the FSM
+	// never moved off running/awaiting_review/approved_to_ship) is transitioned to
+	// `completed` HERE — before the eligibility gate — so the close proceeds AND
+	// the FLY-369 archive cascade fires. Lead-asserted (explicit `finalizeDone`
+	// flag); never auto-applied. CRASH_PRESERVE_STATES (failed/blocked) are NOT in
+	// FINALIZE_DONE_SOURCE_STATES — a crash is not "done", so done-mode leaves them
+	// to the preserve gate below.
+	if (opts.finalizeDone && FINALIZE_DONE_SOURCE_STATES.has(session.status)) {
+		if (!opts.transitionOpts) {
+			// Defensive: production wires transitionOpts. Without it we cannot
+			// transition through the FSM, and must not forceStatus past it.
+			return { closed: false, error: "finalize_done_unavailable" };
+		}
+		const priorStatus = session.status;
+		const fin = applyTransition(
+			opts.transitionOpts,
+			opts.executionId,
+			"completed",
+			{
+				executionId: opts.executionId,
+				issueId: opts.issueId,
+				projectName: opts.projectName,
+				trigger: "fly638_close_runner_done",
+			},
+			{ last_activity_at: sqliteDatetime() },
+		);
+		if (!fin.ok) {
+			return {
+				closed: false,
+				error: `finalize_done_rejected:${fin.error ?? "fsm"}`,
+			};
+		}
+		store.insertEvent({
+			event_id: `close-runner-finalized-${auditKey}`,
+			execution_id: opts.executionId,
+			issue_id: opts.issueId,
+			project_name: opts.projectName,
+			event_type: "lead_close_runner_finalized",
+			source: "bridge.close-runner",
+			payload: {
+				fromStatus: priorStatus,
+				toStatus: "completed",
+				reason: opts.reason,
+				leadId: opts.leadId,
+				executorType: opts.executorType ?? "engineer",
+			},
+		});
+		// Re-fetch so the rest of the close runs against status=completed.
+		session = store.getSession(opts.executionId) ?? session;
+	}
 
 	const isPreserveState = CRASH_PRESERVE_STATES.has(session.status);
 	const forceClose = !!opts.forcePreserved && isPreserveState;
@@ -174,8 +270,18 @@ export async function closeRunner(
 		if (opts.archive) {
 			await maybeArchiveThreadOnClose(store, session, opts.archive);
 		}
+		// FLY-638: tmux is already gone → drop the dead CommDB session row so it
+		// doesn't linger in runner_terminal_list / bootstrap.
+		deleteCommDbSession(opts.executionId, opts.projectName);
 		return { closed: true, alreadyGone: true };
 	}
+
+	// FLY-638: kill the per-runner cmux LINKED session BEFORE killTmuxWindow
+	// (display-message needs the window alive to read its name). Best-effort —
+	// a cmux-resolve/kill failure must never block the window kill or the close.
+	await killCmuxLinkedSession(target.tmuxWindow).catch((e: Error) =>
+		console.warn(`[close-runner] cmux session close warn: ${e.message}`),
+	);
 
 	// success path: kill tmux window
 	const res = await killTmuxWindow(target.tmuxWindow);
@@ -237,6 +343,13 @@ export async function closeRunner(
 	// runner; it runs after terminal-tab cleanup and never affects the result.
 	if (res.killed && opts.archive) {
 		await maybeArchiveThreadOnClose(store, session, opts.archive);
+	}
+
+	// FLY-638: on a successful close the runner's tmux window is gone → drop its
+	// CommDB session row. Only on the killed path — a kill failure leaves the row
+	// (and the still-alive runner) for retry.
+	if (res.killed) {
+		deleteCommDbSession(opts.executionId, opts.projectName);
 	}
 
 	return { closed: res.killed, error: res.error };

@@ -7,9 +7,19 @@ import { StateStore } from "../StateStore.js";
 const mockGetTmuxTarget = vi.fn();
 const mockKillTmuxWindow = vi.fn();
 
+const mockKillCmuxLinkedSession = vi.fn(async () => ({ killed: true }));
+
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
 	killTmuxWindow: (...args: unknown[]) => mockKillTmuxWindow(...args),
+	killCmuxLinkedSession: (...args: unknown[]) =>
+		mockKillCmuxLinkedSession(...args),
+}));
+
+// FLY-638: stub the CommDB prune so tests never touch the real comm.db on disk.
+const mockDeleteCommDbSession = vi.fn(() => true);
+vi.mock("../bridge/commdb-session-prune.js", () => ({
+	deleteCommDbSession: (...args: unknown[]) => mockDeleteCommDbSession(...args),
 }));
 
 // ── Helpers ─────────────────────────────────────────────

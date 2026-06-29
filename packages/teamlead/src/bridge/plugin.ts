@@ -71,6 +71,7 @@ import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
+import { pruneDeadTerminalCommDbSessions } from "./commdb-session-prune.js";
 import {
 	buildLoopbackBaseUrl,
 	reconcileCompleteFailedMarkers,
@@ -150,6 +151,7 @@ import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import {
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
+	killCmuxLinkedSession,
 	killTmuxWindow,
 	sendEnterToWindow,
 	sendKeysToWindow,
@@ -1166,6 +1168,15 @@ export function createBridgeApp(
 				return;
 			}
 
+			// FLY-638 (Codex R1 MED): this founder-gated teardown surface must also
+			// drop the per-runner cmux LINKED session, or it re-introduces the same
+			// cmux leak the close_runner / terminate paths fixed. Resolve + kill it
+			// BEFORE killTmuxWindow (display-message needs the window alive).
+			// Best-effort — never blocks the window kill.
+			await killCmuxLinkedSession(target.tmuxWindow).catch((e: Error) =>
+				console.warn(`[close-tmux] cmux session close warn: ${e.message}`),
+			);
+
 			const result = await killTmuxWindow(target.tmuxWindow);
 
 			store.insertEvent({
@@ -1195,10 +1206,13 @@ export function createBridgeApp(
 		fcMw("close_runner"),
 		async (req, res) => {
 			const executionId = req.params.executionId as string;
-			const { leadId, reason, executorType } = (req.body ?? {}) as {
+			const { leadId, reason, executorType, done } = (req.body ?? {}) as {
 				leadId?: string;
 				reason?: string;
 				executorType?: string;
+				// FLY-638: done-mode — finalize a done-but-stuck runner
+				// (running/awaiting_review/approved_to_ship → completed) then close.
+				done?: boolean;
 			};
 
 			// FLY-102 Codex Round 1+2: leadId MUST be present — scope check is
@@ -1255,6 +1269,13 @@ export function createBridgeApp(
 					reason,
 					leadId: leadIdTrimmed,
 					executorType,
+					// FLY-638: done-mode finalize. When `done`, a done-but-stuck
+					// runner (running/awaiting_review/approved_to_ship) is moved to
+					// `completed` via the FSM before close so the archive cascade
+					// fires. transitionOpts is initialized later in this setup fn but
+					// is captured by this request-time closure (always defined here).
+					finalizeDone: !!done,
+					transitionOpts,
 					// FLY-369: central close→archive cascade (done-cleanup + no
 					// other active runner). Archives via the Bridge-local sink.
 					archive: {
@@ -1269,7 +1290,17 @@ export function createBridgeApp(
 			if (!result.closed && result.error?.startsWith("status_not_eligible:")) {
 				res.status(409).json({
 					success: false,
-					message: `Cannot close runner: ${result.error}. Eligible states: ${Array.from(CLOSE_ELIGIBLE_STATES).join(", ")}.`,
+					message: `Cannot close runner: ${result.error}. Eligible states: ${Array.from(CLOSE_ELIGIBLE_STATES).join(", ")}. If the runner is DONE (ship succeeded / QA passed) but stuck in a parked/running state, retry with done=true to finalize it to completed first.`,
+				});
+				return;
+			}
+
+			// FLY-638: done-mode finalize failures (no FSM opts / FSM rejected the
+			// running|awaiting_review|approved_to_ship → completed edge).
+			if (!result.closed && result.error?.startsWith("finalize_done_")) {
+				res.status(409).json({
+					success: false,
+					message: `Cannot finalize+close runner: ${result.error}.`,
 				});
 				return;
 			}
@@ -2711,6 +2742,41 @@ export async function startBridge(
 		console.error(
 			`[Bridge] FLY-324 boot sweep failed (non-fatal): ${(err as Error).message}`,
 		);
+	}
+
+	// FLY-638: boot prune sweep — clear the backlog of stale CommDB session rows
+	// (terminal status + tmux window provably gone). These accumulate (~65 observed
+	// in production) and pollute runner_terminal_list / Lead bootstrap with
+	// class=dead entries. One pass per distinct project; the live counterpart is
+	// deleteCommDbSession on the close_runner / terminate / post-merge teardown
+	// paths (mirrors the FLY-324 live + boot shape).
+	//
+	// FIRE-AND-FORGET (Codex R1 MED): unlike the FLY-324 sweep (status-only, fast),
+	// this sweep does a per-row tmux probe (up to ~5s each, serial). With a backlog
+	// of dead rows behind a wedged tmux server, awaiting it here would stall the
+	// rest of Bridge boot for minutes. It is pure best-effort cleanup with no
+	// ordering dependency on later boot steps, so detach it and let it drain in the
+	// background; per-project failures are swallowed.
+	{
+		const prunedProjects = new Set<string>();
+		void (async () => {
+			for (const p of projects ?? []) {
+				if (prunedProjects.has(p.projectName)) continue;
+				prunedProjects.add(p.projectName);
+				try {
+					const pruned = await pruneDeadTerminalCommDbSessions(p.projectName);
+					if (pruned.pruned > 0) {
+						console.log(
+							`[Bridge] FLY-638 CommDB prune (${p.projectName}): scanned=${pruned.scanned} pruned=${pruned.pruned} kept=${pruned.kept} stale terminal rows removed`,
+						);
+					}
+				} catch (err) {
+					console.error(
+						`[Bridge] FLY-638 CommDB prune (${p.projectName}) failed (non-fatal): ${(err as Error).message}`,
+					);
+				}
+			}
+		})();
 	}
 
 	// FLY-369: archive-on-close. Archiving is driven by the Lead's close action

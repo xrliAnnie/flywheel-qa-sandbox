@@ -653,6 +653,19 @@ export class CommDB {
 			.get(executionId) as Session | undefined;
 	}
 
+	/**
+	 * FLY-638: delete a session registry row. Used by (a) the live teardown path
+	 * (close_runner / terminate / post-merge) to drop a runner's row once its tmux
+	 * is gone, and (b) the boot prune sweep that clears the backlog of dead
+	 * terminal rows polluting `runner_terminal_list` / bootstrap. Idempotent —
+	 * deleting a missing row is a no-op. Returns the number of rows removed.
+	 */
+	deleteSession(executionId: string): number {
+		return this.db
+			.prepare("DELETE FROM sessions WHERE execution_id = ?")
+			.run(executionId).changes;
+	}
+
 	getActiveSessions(projectName?: string): Session[] {
 		if (projectName) {
 			return this.db
