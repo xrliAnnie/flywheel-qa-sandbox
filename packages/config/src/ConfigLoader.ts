@@ -1,10 +1,11 @@
 import * as path from "node:path";
 import { parse } from "yaml";
 import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
-import type { CheckpointConfig, FlywheelConfig } from "./types.js";
+import type { CheckpointConfig, FlywheelConfig, RoleEffort } from "./types.js";
 import {
 	EXECUTOR_BACKENDS,
 	FOUNDER_UX_GATE_MODES,
+	ROLE_EFFORT_LEVELS,
 	XIAOHONGSHU_CADENCES,
 	XIAOHONGSHU_MAX_FETCH_CEILING,
 	XIAOHONGSHU_REVIEW_CHANNELS,
@@ -295,6 +296,19 @@ export class ConfigLoader {
 				// (resolveRoleAdapter → runnerModel → `--model`) gets the bare id.
 				if (typeof role.model === "string") {
 					role.model = role.model.trim();
+				}
+				// FLY-671: optional per-role effort (closed CLI enum). Absent stays
+				// absent (byte-compat). A misspelled level must fail at load, not
+				// silently reach the runner CLI and crash it at spawn.
+				if (role.effort != null) {
+					if (
+						typeof role.effort !== "string" ||
+						!ROLE_EFFORT_LEVELS.includes(role.effort as RoleEffort)
+					) {
+						throw new Error(
+							`roles.${roleName}.effort must be one of ${ROLE_EFFORT_LEVELS.join(", ")} when set, got ${JSON.stringify(role.effort)}`,
+						);
+					}
 				}
 			}
 		}

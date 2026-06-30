@@ -115,6 +115,42 @@ if [ "$rc" -eq 2 ] && [ "$(fleet_batch_current_model "$PJ2" geo-oliver)" = "clau
   pass "B14 restore conflict → rc2, no clobber"
 else fail "B14 expected rc2/no-clobber, rc=$rc cur=$(fleet_batch_current_model "$PJ2" geo-oliver)"; fi
 
+# --- FLY-671 composite primitive (model + effort, three-state) ---
+# B15 — touch_effort=1 sets BOTH model and effort in one write.
+cp "$PJ" "$PJ2"
+fleet_batch_write_key_fields "$PJ2" "geo-oliver" "claude-sonnet-4-6" 1 "high"
+if [ "$(fleet_batch_current_model "$PJ2" geo-oliver)" = "claude-sonnet-4-6" ] &&
+   [ "$(fleet_batch_current_effort "$PJ2" geo-oliver)" = "high" ]; then
+  pass "B15 composite write sets model + effort"
+else fail "B15 composite set failed (model=$(fleet_batch_current_model "$PJ2" geo-oliver) effort=$(fleet_batch_current_effort "$PJ2" geo-oliver))"; fi
+
+# B16 — touch_effort=0 leaves effort UNTOUCHED (three-state absent), writes model only.
+cp "$PJ" "$PJ2"
+fleet_batch_write_key_fields "$PJ2" "geo-oliver" "x" 1 "medium"   # seed an effort
+fleet_batch_write_key_fields "$PJ2" "geo-oliver" "claude-fable-5" 0 "null"  # touch_effort=0
+if [ "$(fleet_batch_current_model "$PJ2" geo-oliver)" = "claude-fable-5" ] &&
+   [ "$(fleet_batch_current_effort "$PJ2" geo-oliver)" = "medium" ]; then
+  pass "B16 touch_effort=0 leaves effort untouched (absent)"
+else fail "B16 effort should be preserved, got $(fleet_batch_current_effort "$PJ2" geo-oliver)"; fi
+
+# B17 — touch_effort=1 with effort='null' DELETES the effort field (back to default).
+cp "$PJ" "$PJ2"
+fleet_batch_write_key_fields "$PJ2" "geo-oliver" "claude-fable-5" 1 "high"
+fleet_batch_write_key_fields "$PJ2" "geo-oliver" "claude-fable-5" 1 "null"
+if [ "$(fleet_batch_current_effort "$PJ2" geo-oliver)" = "null" ] &&
+   [ "$(jq -r '.[0].leads[] | select(.agentId=="oliver") | has("effort")' "$PJ2")" = "false" ]; then
+  pass "B17 effort='null' deletes the effort field"
+else fail "B17 effort null-delete failed"; fi
+
+# B18 — composite conditional restore refuses if EFFORT was externally changed.
+cp "$PJ" "$PJ2"
+fleet_batch_write_key_fields "$PJ2" "geo-oliver" "claude-fable-5" 1 "high"   # our write
+fleet_batch_write_key_fields "$PJ2" "geo-oliver" "claude-fable-5" 1 "max"    # external effort change
+fleet_batch_restore_key_fields "$PJ2" "geo-oliver" "claude-fable-5" "null" 1 "high" "null"; rc=$?
+if [ "$rc" -eq 2 ] && [ "$(fleet_batch_current_effort "$PJ2" geo-oliver)" = "max" ]; then
+  pass "B18 composite restore refuses on external effort change (rc2, no clobber)"
+else fail "B18 expected rc2/no-clobber, rc=$rc effort=$(fleet_batch_current_effort "$PJ2" geo-oliver)"; fi
+
 echo "=================================="
 echo "fleet-batch tests: ${PASSED} passed, ${FAILED} failed"
 [ "$FAILED" -eq 0 ]

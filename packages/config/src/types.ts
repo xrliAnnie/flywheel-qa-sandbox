@@ -418,12 +418,33 @@ export const EXECUTOR_BACKENDS: readonly ExecutorBackend[] = [
 	"kimi-tmux",
 ];
 
+/**
+ * FLY-671: per-role reasoning-effort levels — the Claude Code CLI `--effort`
+ * enum. Local copy of teamlead's `LeadEffort`/`EFFORT_LEVELS` (the FLY-123
+ * cross-package boundary forbids `config` depending on `teamlead`).
+ */
+export type RoleEffort = "low" | "medium" | "high" | "xhigh" | "max";
+
+export const ROLE_EFFORT_LEVELS: readonly RoleEffort[] = [
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
+
 /** FLY-123: per-role backend binding in project config. */
 export interface RoleBackendConfig {
 	/** Executor backend (AdapterRegistry key), e.g. "codex-tmux". */
 	backend: ExecutorBackend;
 	/** Optional model override for this role. */
 	model?: string;
+	/**
+	 * FLY-671: optional reasoning-effort override for this role (runner side).
+	 * Flows `resolveRoleAdapter → runnerEffort → --effort`. Absent = no
+	 * `--effort` flag (account default). Only the claude-tmux runner consumes it.
+	 */
+	effort?: RoleEffort;
 }
 
 /** FLY-123: role → backend map (`roles:` block in .flywheel/config.yaml). */

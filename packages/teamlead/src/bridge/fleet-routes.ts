@@ -31,6 +31,8 @@ export interface FleetRouteDeps {
 	tokens: ConfirmTokenStore;
 	/** Current model per exact lead key (null = account default). */
 	currentModels: () => Map<string, string | null>;
+	/** FLY-671: current effort per exact lead key (null = default). */
+	currentEfforts: () => Map<string, string | null>;
 	/**
 	 * Allowed `to.model` targets per exact lead key (server-computed
 	 * `tierOptions ∪ {null}`; a Codex Lead's only target is `null`). The stage
@@ -38,6 +40,12 @@ export interface FleetRouteDeps {
 	 * the dropdown (§2.6 model-authorization gate).
 	 */
 	allowedTargets: () => Map<string, Array<string | null>>;
+	/**
+	 * FLY-671: allowed `to.effort` targets per key (backend-aware:
+	 * Claude = levels ∪ {null}, Codex = `[null]`). Same forged-client gate as
+	 * model — an effort target outside this set is rejected before token issuance.
+	 */
+	allowedEffortTargets: () => Map<string, Array<string | null>>;
 	/** SHA of the live projects.json (the engine's file_sha). */
 	configSha: () => string;
 	/** Create the launching journal before spawn; returns false on failure. */
@@ -82,6 +90,7 @@ export function handleStage(
 			batchId,
 			deps.configSha(),
 			deps.currentModels(),
+			deps.currentEfforts(),
 			body.changes,
 		);
 	} catch (err) {
@@ -119,6 +128,37 @@ export function handleStage(
 				status: 403,
 				body: { error: `model change not allowed for ${c.key} (display-only)` },
 			};
+		}
+		// FLY-671: effort-authorization gate — only when the change touches effort.
+		// Same forged-client defense as model + the Codex display-only reject.
+		if ("effort" in c.to) {
+			const effortTargets = deps.allowedEffortTargets().get(c.key);
+			if (!effortTargets) {
+				return { status: 400, body: { error: `unknown key: ${c.key}` } };
+			}
+			const toEffort = c.to.effort ?? null;
+			if (toEffort !== null && typeof toEffort !== "string") {
+				return {
+					status: 400,
+					body: { error: `to.effort must be string|null: ${c.key}` },
+				};
+			}
+			if (!effortTargets.includes(toEffort)) {
+				return {
+					status: 403,
+					body: { error: `effort not allowed for ${c.key}` },
+				};
+			}
+			const effortDisplayOnly =
+				effortTargets.length === 1 && effortTargets[0] === null;
+			if (effortDisplayOnly && (c.from.effort ?? null) !== toEffort) {
+				return {
+					status: 403,
+					body: {
+						error: `effort change not allowed for ${c.key} (display-only)`,
+					},
+				};
+			}
 		}
 	}
 	const sha = canonicalRequestSha(req);

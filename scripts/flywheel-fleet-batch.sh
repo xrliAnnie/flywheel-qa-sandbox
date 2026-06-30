@@ -53,15 +53,25 @@ fleet_batch_validate_request() {
     echo "backend changes are not supported in inc2a (managed backend switch = FLY-264)" >&2
     return 1
   fi
-  # Each change: key matches grammar; to.model is string|null.
+  # Each change: key matches grammar; to.model is string|null. FLY-671: when a
+  # change touches effort (`to`/`from` has the key), it must be null or a valid
+  # CLI level — the engine writes projects.json BEFORE cutover, so a bogus effort
+  # must fail pre-accept, never reach the file (Codex design review R2 MEDIUM-4).
   local bad
   bad=$(jq -r --arg re "$FLEET_BATCH_SAFE_ID" '
+    def okeffort($e): ($e == null) or (["low","medium","high","xhigh","max"] | index($e) != null);
     [ .changes[]
       | if (.key | type) != "string" then "non-string key"
         elif (.key | test($re) | not) then ("bad key grammar: " + (.key | tostring))
         elif (has("to") | not) then ("missing to: " + (.key | tostring))
         elif ((.to.model | type) as $t | ($t != "string" and $t != "null"))
           then ("to.model must be string|null: " + (.key | tostring))
+        elif ((.to | has("effort")) and ((.to.effort | type) as $t | ($t != "string" and $t != "null")))
+          then ("to.effort must be string|null: " + (.key | tostring))
+        elif ((.to | has("effort")) and (okeffort(.to.effort) | not))
+          then ("to.effort not a valid level: " + (.key | tostring))
+        elif ((.from? // {} | has("effort")) and (okeffort(.from.effort) | not))
+          then ("from.effort not a valid level: " + (.key | tostring))
         else empty end ] | (.[0] // "")' "$cf" 2>/dev/null)
   if [ -n "$bad" ]; then echo "$bad" >&2; return 1; fi
 
@@ -111,6 +121,71 @@ fleet_batch_write_key_model() {
   fi
 }
 
+# fleet_batch_current_effort <projects_json> <exact_key>
+#   Echoes the lead's current effort, or the literal "null" if absent (FLY-671).
+fleet_batch_current_effort() {
+  local pj="$1" key="$2"
+  jq -r --arg key "$key" '
+    [ .[] | .projectName as $p | .leads[]
+      | select(($p + "-" + .agentId) == $key) | (.effort // null) ]
+    | (.[0] // null) | if . == null then "null" else . end' "$pj" 2>/dev/null
+}
+
+# fleet_batch_write_key_fields <pj> <key> <model> <touch_effort> <effort>
+#   FLY-671 COMPOSITE atomic write (Codex design review R2 BLOCKER-2): set/delete
+#   model AND (when <touch_effort> = "1") set/delete effort in ONE jq + temp +
+#   rename — never two independent writes (a crash between them would leave a
+#   half-mutated config with no symmetric restore). When <touch_effort> = "0",
+#   effort is left exactly as-is (the model-only path; byte-identical jq output to
+#   fleet_batch_write_key_model). "null" means delete that field. MUST hold the lock.
+fleet_batch_write_key_fields() {
+  local pj="$1" key="$2" model="$3" touch_effort="$4" effort="${5:-null}"
+  local tmp="${pj}.write.$$"
+  if jq --arg key "$key" --arg model "$model" \
+        --arg touch "$touch_effort" --arg effort "$effort" '
+        map( .projectName as $p
+             | .leads |= map(
+                 if ($p + "-" + .agentId) == $key
+                 then (if $model == "null" then del(.model) else .model = $model end)
+                      | (if $touch == "1"
+                         then (if $effort == "null" then del(.effort) else .effort = $effort end)
+                         else . end)
+                 else . end ) )' "$pj" >"$tmp" 2>/dev/null &&
+     jq empty "$tmp" 2>/dev/null; then
+    chmod "$(_fleet_batch_file_mode "$pj")" "$tmp" 2>/dev/null || true
+    mv "$tmp" "$pj"
+  else
+    rm -f "$tmp"
+    echo "failed to write fields for ${key}" >&2
+    return 1
+  fi
+}
+
+# fleet_batch_restore_key_fields <pj> <key> <written_model> <orig_model> \
+#                                <touch_effort> <written_effort> <orig_effort>
+#   FLY-671 COMPOSITE conditional restore: restore BOTH original values ONLY if
+#   the current state still equals what THIS batch wrote (model, AND effort when
+#   touched). If an external writer changed either, do NOT clobber → return 2
+#   (config-restore-conflict). One atomic write. MUST hold the lock.
+fleet_batch_restore_key_fields() {
+  local pj="$1" key="$2" written_model="$3" orig_model="$4"
+  local touch_effort="$5" written_effort="${6:-null}" orig_effort="${7:-null}"
+  local cur_model cur_effort
+  cur_model=$(fleet_batch_current_model "$pj" "$key")
+  if [ "$cur_model" != "$written_model" ]; then
+    echo "config-restore-conflict for ${key}: model current='${cur_model}' != written='${written_model}'" >&2
+    return 2
+  fi
+  if [ "$touch_effort" = "1" ]; then
+    cur_effort=$(fleet_batch_current_effort "$pj" "$key")
+    if [ "$cur_effort" != "$written_effort" ]; then
+      echo "config-restore-conflict for ${key}: effort current='${cur_effort}' != written='${written_effort}'" >&2
+      return 2
+    fi
+  fi
+  fleet_batch_write_key_fields "$pj" "$key" "$orig_model" "$touch_effort" "$orig_effort"
+}
+
 # fleet_batch_restore_key <projects_json> <exact_key> <written_to> <original_from>
 #   Conditional restore (R2 #4): restore the key's model to <original_from> ONLY
 #   if its current value still equals <written_to> (i.e. THIS batch's write is
@@ -158,8 +233,22 @@ fleet_batch_verify_baseline() {
             | if . == null then "null" else . end' "$cf")
     cur=$(fleet_batch_current_model "$pj" "$key")
     if [ "$from" != "$cur" ]; then
-      echo "baseline mismatch for ${key}: reviewed from='${from}' but current='${cur}'" >&2
+      echo "baseline mismatch for ${key}: reviewed model from='${from}' but current='${cur}'" >&2
       return 1
+    fi
+    # FLY-671: check the effort baseline ONLY when the reviewed `from` carries the
+    # effort key (a model-only change has no from.effort → skip; three-state).
+    local has_from_effort
+    has_from_effort=$(jq -r --argjson i "$i" '.changes[$i].from | has("effort")' "$cf")
+    if [ "$has_from_effort" = "true" ]; then
+      local from_e cur_e
+      from_e=$(jq -r --argjson i "$i" '.changes[$i].from.effort // null
+                | if . == null then "null" else . end' "$cf")
+      cur_e=$(fleet_batch_current_effort "$pj" "$key")
+      if [ "$from_e" != "$cur_e" ]; then
+        echo "baseline mismatch for ${key}: reviewed effort from='${from_e}' but current='${cur_e}'" >&2
+        return 1
+      fi
     fi
   done
   return 0
@@ -230,22 +319,26 @@ fleet_batch_apply() {
   local n i stop=0
   n=$(jq -r '.changes | length' "$cf")
   for ((i = 0; i < n; i++)); do
-    local key to from
+    local key to from touch_effort to_e from_e
     key=$(jq -r --argjson i "$i" '.changes[$i].key' "$cf")
     to=$(jq -r --argjson i "$i" '.changes[$i].to.model // null
           | if . == null then "null" else . end' "$cf")
     from=$(jq -r --argjson i "$i" '.changes[$i].from.model // null
           | if . == null then "null" else . end' "$cf")
+    # FLY-671 three-state: touch effort ONLY when `to` carries the key.
+    touch_effort=$(jq -r --argjson i "$i" 'if .changes[$i].to | has("effort") then "1" else "0" end' "$cf")
+    to_e=$(jq -r --argjson i "$i" '.changes[$i].to.effort // null | if . == null then "null" else . end' "$cf")
+    from_e=$(jq -r --argjson i "$i" '.changes[$i].from.effort // null | if . == null then "null" else . end' "$cf")
 
     if [ "$stop" = "1" ]; then
       batch_key_set_status "$batch_id" "$key" skipped
       continue
     fi
 
-    # ① write-ahead config-writing → write key model under the config lock.
+    # ① write-ahead config-writing → composite (model + effort) write under lock.
     batch_key_set_status "$batch_id" "$key" config-writing
     if ! config_write_locked "$lock" "$deadline" \
-          bash "$_FLEET_BATCH_LIB" write-key "$pj" "$key" "$to"; then
+          bash "$_FLEET_BATCH_LIB" write-key-fields "$pj" "$key" "$to" "$touch_effort" "$to_e"; then
       # Per-key forward-write contention (already accepted) → unapplied, stop.
       batch_key_set_status "$batch_id" "$key" unapplied
       stop=1
@@ -260,10 +353,10 @@ fleet_batch_apply() {
       continue
     fi
 
-    # ③ cutover failed → conditional restore under the config lock, then stop.
+    # ③ cutover failed → composite conditional restore under the lock, then stop.
     batch_key_set_status "$batch_id" "$key" config-restoring
     config_write_locked "$lock" "$deadline" \
-      bash "$_FLEET_BATCH_LIB" restore-key "$pj" "$key" "$to" "$from"
+      bash "$_FLEET_BATCH_LIB" restore-key-fields "$pj" "$key" "$to" "$from" "$touch_effort" "$to_e" "$from_e"
     case $? in
       0)  batch_key_set_status "$batch_id" "$key" failed-restored ;;
       2)  batch_key_set_status "$batch_id" "$key" config-restore-conflict ;;
@@ -285,9 +378,11 @@ fleet_batch_apply() {
 if [ "${BASH_SOURCE[0]}" = "${0}" ]; then
   _op="${1:-}"; shift || true
   case "$_op" in
-    verify-baseline) fleet_batch_verify_baseline "$@" ;;
-    write-key)       fleet_batch_write_key_model "$@" ;;
-    restore-key)     fleet_batch_restore_key "$@" ;;
+    verify-baseline)    fleet_batch_verify_baseline "$@" ;;
+    write-key)          fleet_batch_write_key_model "$@" ;;
+    restore-key)        fleet_batch_restore_key "$@" ;;
+    write-key-fields)   fleet_batch_write_key_fields "$@" ;;   # FLY-671 composite
+    restore-key-fields) fleet_batch_restore_key_fields "$@" ;; # FLY-671 composite
     *) echo "flywheel-fleet-batch.sh: unknown op '${_op}'" >&2; exit 64 ;;
   esac
   exit $?
@@ -301,12 +396,17 @@ fi
 #   Reconcile ONE non-terminal key using config presence + journaled status.
 fleet_batch_reconcile_key() {
   local pj="$1" bid="$2" key="$3"
-  local path st to from cur
+  local path st to from cur touch_effort to_e from_e cur_e
   path="$(batch_journal_path "$bid")"
   st=$(batch_key_status "$bid" "$key")
   to=$(jq -r --arg k "$key" '.keys[$k].to.model // null | if .==null then "null" else . end' "$path")
   from=$(jq -r --arg k "$key" '.keys[$k].from.model // null | if .==null then "null" else . end' "$path")
   cur=$(fleet_batch_current_model "$pj" "$key")
+  # FLY-671 composite: recover the effort dimension too, three-state.
+  touch_effort=$(jq -r --arg k "$key" 'if .keys[$k].to | has("effort") then "1" else "0" end' "$path")
+  to_e=$(jq -r --arg k "$key" '.keys[$k].to.effort // null | if .==null then "null" else . end' "$path")
+  from_e=$(jq -r --arg k "$key" '.keys[$k].from.effort // null | if .==null then "null" else . end' "$path")
+  cur_e=$(fleet_batch_current_effort "$pj" "$key")
   case "$st" in
     applied|failed-restored|config-restore-conflict|skipped|unapplied|manual-intervention)
       : ;; # already terminal — leave as-is
@@ -314,8 +414,13 @@ fleet_batch_reconcile_key() {
       # never started its write → safe to skip.
       batch_key_set_status "$bid" "$key" skipped ;;
     config-writing)
-      # crashed around the forward write: did the (atomic) write land?
-      if [ "$cur" = "$to" ]; then
+      # crashed around the forward write: did the (atomic) composite write land?
+      # The write set model AND (when touched) effort in ONE op, so "landed" means
+      # BOTH match what THIS batch intended.
+      local landed=1
+      [ "$cur" = "$to" ] || landed=0
+      if [ "$touch_effort" = "1" ] && [ "$cur_e" != "$to_e" ]; then landed=0; fi
+      if [ "$landed" = "1" ]; then
         # config ahead of the carrier (cutover never confirmed) → needs a human
         # / the inner inc1 recover; surface it, don't silently claim applied.
         batch_key_set_status "$bid" "$key" manual-intervention
@@ -326,8 +431,8 @@ fleet_batch_reconcile_key() {
       # config written, cutover state unknown → manual intervention.
       batch_key_set_status "$bid" "$key" manual-intervention ;;
     config-restoring)
-      # finish the conditional restore if THIS batch's value is still present.
-      if fleet_batch_restore_key "$pj" "$key" "$to" "$from" 2>/dev/null; then
+      # finish the composite conditional restore if THIS batch's values are still present.
+      if fleet_batch_restore_key_fields "$pj" "$key" "$to" "$from" "$touch_effort" "$to_e" "$from_e" 2>/dev/null; then
         batch_key_set_status "$bid" "$key" failed-restored
       else
         batch_key_set_status "$bid" "$key" config-restore-conflict

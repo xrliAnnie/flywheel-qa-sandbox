@@ -209,6 +209,12 @@ export interface BlueprintContext {
 	runnerBackend?: string;
 	/** Optional model override resolved alongside the backend (label/roles). */
 	runnerModel?: string;
+	/**
+	 * FLY-671: optional reasoning-effort override (roles.runner.effort), resolved
+	 * independently of backend/model. Flows to the claude-tmux adapter `--effort`.
+	 * Absent ⇒ no `--effort` flag (account default).
+	 */
+	runnerEffort?: string;
 
 	/**
 	 * FLY-493 — explicit no-transport contract. Set to `"none"` ONLY for a
@@ -1205,6 +1211,9 @@ export class Blueprint {
 				// (label / roles config). Claude path previously passed no
 				// model — absent stays absent (byte-compat).
 				...(ctx.runnerModel !== undefined && { model: ctx.runnerModel }),
+				// FLY-671: reasoning-effort override (roles.runner.effort) → adapter
+				// `--effort`. Absent stays absent (byte-compat; only claude-tmux uses it).
+				...(ctx.runnerEffort !== undefined && { effort: ctx.runnerEffort }),
 				timeoutMs,
 				sessionDisplayName: `${displayId} ${cleanIssueTitle(hydrated.issueTitle)}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
