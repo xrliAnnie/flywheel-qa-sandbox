@@ -116,4 +116,20 @@ describe("parseLeadActionsConfig — token mode (FLY-304)", () => {
 			);
 		}
 	});
+
+	it("FLY-676: roundtableAutoContinue is false unless the effective flag env is '1'", () => {
+		const off = parseLeadActionsConfig({ ...baseEnv() });
+		expect(off.roundtableAutoContinue).toBe(false);
+		// only the runtime-computed EFFECTIVE flag turns it on (NOT raw THREAD_AUTOCONTINUE)
+		const rawOnly = parseLeadActionsConfig({
+			...baseEnv(),
+			FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE: "1",
+		});
+		expect(rawOnly.roundtableAutoContinue).toBe(false);
+		const on = parseLeadActionsConfig({
+			...baseEnv(),
+			FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE: "1",
+		});
+		expect(on.roundtableAutoContinue).toBe(true);
+	});
 });

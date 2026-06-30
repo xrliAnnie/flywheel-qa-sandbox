@@ -39,6 +39,12 @@ export interface LeadActionsConfig {
 	rateWindowMs: number;
 	/** Idempotency TTL (ms) — a repeat (channel, text) within this collapses. */
 	idempotencyTtlMs: number;
+	/** FLY-676 — EFFECTIVE roundtable autoContinue, computed by the RUNTIME (replyInThread
+	 * enabled && THREAD_AUTOCONTINUE !== "0") and forwarded as a non-secret coordinate. The
+	 * child must NOT independently interpret raw THREAD_AUTOCONTINUE (it would misjudge
+	 * default-on when REPLY_IN_THREAD is off — Codex R4#1). When true, a proactive
+	 * `target="roundtable"` send is fail-soft refused (FLY-680). Default false (byte-compat). */
+	roundtableAutoContinue: boolean;
 }
 
 function posIntEnv(value: string | undefined, fallback: number): number {
@@ -100,5 +106,9 @@ export function parseLeadActionsConfig(
 			env.FLYWHEEL_LEAD_ACTIONS_IDEMPOTENCY_TTL_MS,
 			60_000,
 		),
+		// FLY-676: runtime-computed effective flag (NOT raw THREAD_AUTOCONTINUE). Default
+		// false when absent → no proactive-roundtable refusal (byte-compat).
+		roundtableAutoContinue:
+			env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE === "1",
 	};
 }

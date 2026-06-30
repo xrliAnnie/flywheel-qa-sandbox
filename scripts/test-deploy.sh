@@ -491,7 +491,10 @@ if [[ "$MODE" == "roundtable" ]]; then
   # needs ON; without them the test Lead silently runs OFF = false-green.
   RT_REPLY_IN_THREAD=$(jq -r '.roundtableChannel.replyInThread // false | if . then 1 else 0 end' "$SLOTS_FILE")
   RT_AUTO_CONTINUE=$(jq -r '.roundtableChannel.autoContinue // false | if . then 1 else 0 end' "$SLOTS_FILE")
-  RT_THREAD_BUDGET=$(jq -r '.roundtableChannel.threadBudget // 2' "$SLOTS_FILE")
+  # FLY-676: emit budget ONLY when explicitly set in test-slots.json. Absent => empty =>
+  # qa-room.sh omits FLYWHEEL_ROUNDTABLE_THREAD_BUDGET => the backend default (12) is
+  # exercised, so the QA Room matches the shipped production default instead of forcing 2.
+  RT_THREAD_BUDGET=$(jq -r '.roundtableChannel.threadBudget // empty' "$SLOTS_FILE")
   while IFS= read -r line; do
     [[ -n "$line" ]] && LEAD_EXTRA_ENV+=("$line")
   done < <(qa_room_roundtable_lead_env \

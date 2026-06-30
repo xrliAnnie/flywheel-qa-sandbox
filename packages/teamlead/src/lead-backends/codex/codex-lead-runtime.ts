@@ -589,9 +589,11 @@ export function parseCodexLeadRuntimeConfig(
 			(env.FLYWHEEL_ROUNDTABLE_REPLY_CAP ?? "").trim(),
 			10,
 		);
-		// FLY-314 Part(b): no-@ in-thread continuation (default OFF = mention-required,
-		// byte-compat with FLY-220 hardening). Same env names as the Claude plugin.
-		const autoContinue = env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE === "1";
+		// FLY-676: no-@ in-thread continuation (member-follow) is now DEFAULT-ON when
+		// reply-in-thread is enabled — on unless explicitly disabled with "0" (the
+		// kill-switch). Was `=== "1"` (default-off) under FLY-314. Mirrors the Claude
+		// plugin's loadRoundtableConfig. Same env names across both backends.
+		const autoContinue = env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE !== "0";
 		const budgetParsed = Number.parseInt(
 			(env.FLYWHEEL_ROUNDTABLE_THREAD_BUDGET ?? "").trim(),
 			10,
@@ -870,6 +872,11 @@ function fullAccessLeadActionsMcpConfig(
 		| "leadActionsChannelAliases"
 	>,
 	entry: string,
+	// FLY-676: the EFFECTIVE roundtable autoContinue, computed by the caller from
+	// config.replyInThread (replyInThread enabled && autoContinue). Forwarded as a non-secret
+	// coordinate so the MCP child guards proactive roundtable sends WITHOUT re-deriving it from
+	// raw env (Codex R4#1). Both call sites (live + dry-run) pass the same value.
+	roundtableAutoContinue: boolean,
 ): LeadActionsMcpConfig {
 	const env: Record<string, string> = {
 		FLYWHEEL_LEAD_ID: config.leadId,
@@ -884,6 +891,12 @@ function fullAccessLeadActionsMcpConfig(
 					FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:
 						config.leadActionsChannelAliases,
 				}
+			: {}),
+		// FLY-676: effective roundtable autoContinue (non-secret). Present only when ON so the
+		// OFF config keeps its prior env shape (byte-compat). The child fail-soft refuses a
+		// proactive target="roundtable" send when this is "1" (FLY-680 engage hook pending).
+		...(roundtableAutoContinue
+			? { FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE: "1" }
 			: {}),
 	};
 	return {
@@ -1301,6 +1314,7 @@ export function buildCodexLeadRuntime(
 					leadActions: fullAccessLeadActionsMcpConfig(
 						config,
 						assertLeadActionsEntry(config.leadActionsEntry),
+						config.replyInThread?.autoContinue === true,
 					),
 				})
 			: buildCodexLeadMcpArgv({ chrome: config.chrome });
@@ -1365,6 +1379,12 @@ export function buildCodexLeadRuntime(
 				FLYWHEEL_LEAD_CHAT_CHANNEL_ID: config.chatChannelId,
 				FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:
 					config.crossDeptChannelIds.join(","),
+				// FLY-676: effective roundtable autoContinue (non-secret; runtime-computed).
+				// Present only when ON → the gateway's discord_send fail-soft refuses a proactive
+				// target="roundtable" while autoContinue is on (FLY-680 engage hook pending).
+				...(config.replyInThread?.autoContinue
+					? { FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE: "1" }
+					: {}),
 				// FLY-350 (Z) unit 4: non-secret PR scope (owner/repo). The GH_TOKEN
 				// travels over the broker, never the gateway child env.
 				...(config.projectRepo
@@ -1680,6 +1700,7 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 					leadActions: fullAccessLeadActionsMcpConfig(
 						config,
 						config.leadActionsEntry,
+						config.replyInThread?.autoContinue === true,
 					),
 				})
 			: buildCodexLeadMcpArgv({ chrome: config.chrome });

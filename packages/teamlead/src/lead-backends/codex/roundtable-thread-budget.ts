@@ -21,6 +21,12 @@ export interface ThreadBudgetStore {
 	budgets: Map<string, number>;
 }
 
+/** FLY-676 — default per-thread bot-only anti-loop budget. Raised from 2 → 12 so a natural
+ * multi-turn back-and-forth between thread members is not truncated, while a runaway bot-only
+ * loop still terminates in <= 12 steps per Lead (reset only by a human message / new topic).
+ * Kept in lockstep with the Claude plugin's DEFAULT_ROUNDTABLE_THREAD_BUDGET (vendor parity). */
+export const DEFAULT_ROUNDTABLE_THREAD_BUDGET = 12;
+
 export function createThreadBudgetStore(): ThreadBudgetStore {
 	return { budgets: new Map() };
 }

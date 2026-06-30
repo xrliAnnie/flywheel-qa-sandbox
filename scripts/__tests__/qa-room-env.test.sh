@@ -64,6 +64,17 @@ else
   fail "roundtable lead env ON+autoContinue" "$OUT"
 fi
 
+# ── FLY-676: autoContinue ON but NO explicit budget => emit autocontinue, OMIT budget ──
+# (test-deploy.sh now passes empty when threadBudget is unset, so the backend default 12 is
+# exercised instead of forcing 2). The lead env must NOT carry FLYWHEEL_ROUNDTABLE_THREAD_BUDGET.
+OUT=$(qa_room_roundtable_lead_env "555" "1" "1" "")
+if grep -q '^FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE=1$' <<<"$OUT" \
+  && ! grep -q 'FLYWHEEL_ROUNDTABLE_THREAD_BUDGET' <<<"$OUT"; then
+  pass "FLY-676: autoContinue ON + empty budget omits THREAD_BUDGET (backend default 12 used)"
+else
+  fail "FLY-676 autoContinue ON + empty budget omits THREAD_BUDGET" "$OUT"
+fi
+
 # ── FLY-314 Part b: replyInThread ON but autoContinue OFF => no autocontinue/budget ─
 OUT=$(qa_room_roundtable_lead_env "555" "1" "0" "2")
 if grep -q '^FLYWHEEL_ROUNDTABLE_CHANNEL_ID=555$' <<<"$OUT" \

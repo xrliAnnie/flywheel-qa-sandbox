@@ -58,6 +58,18 @@ describe("buildLeadActionsMcpServerConfig", () => {
 			"roundtable:999",
 		);
 	});
+
+	it("FLY-676: forwards FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE only when on (TUI guard)", () => {
+		const off = buildLeadActionsMcpServerConfig(baseOpts());
+		expect("FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE" in off.env).toBe(
+			false,
+		);
+		const on = buildLeadActionsMcpServerConfig({
+			...baseOpts(),
+			roundtableAutoContinue: true,
+		});
+		expect(on.env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE).toBe("1");
+	});
 });
 
 describe("toMcpServerToml", () => {
@@ -133,6 +145,23 @@ describe("assertLeadActionsConfigGate (§10 config gate — option C)", () => {
 		expect(() =>
 			assertLeadActionsConfigGate(goodToml(), expected()),
 		).not.toThrow();
+	});
+
+	it("FLY-676: accepts config WITH the effective-flag env when expected has it (on-case round-trip)", () => {
+		const expectedOn = buildLeadActionsMcpServerConfig({
+			...baseOpts(),
+			roundtableAutoContinue: true,
+		});
+		const tomlOn = [
+			'default_permissions = "flywheel-lead-secret-deny"',
+			'approval_policy = "never"',
+			toMcpServerToml("lead_actions", expectedOn),
+		].join("\n");
+		expect(() => assertLeadActionsConfigGate(tomlOn, expectedOn)).not.toThrow();
+		// drift: a config carrying the flag but an `expected` WITHOUT it fail-closes (loud).
+		expect(() => assertLeadActionsConfigGate(tomlOn, expected())).toThrow(
+			/env keys/,
+		);
 	});
 
 	it("rejects unparseable TOML (fail-closed)", () => {
@@ -287,6 +316,20 @@ describe("FLY-398 full-access lead_actions (discriminated gate — NOT a widened
 			for (const k of Object.keys(cfg.env)) {
 				expect(/TOKEN|SECRET|KEY/i.test(k)).toBe(false);
 			}
+		});
+
+		it("FLY-676: forwards FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE only when on (TUI full-access guard)", () => {
+			const off = buildFullAccessLeadActionsMcpServerConfig(faOpts());
+			expect(
+				"FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE" in off.env,
+			).toBe(false);
+			const on = buildFullAccessLeadActionsMcpServerConfig({
+				...faOpts(),
+				roundtableAutoContinue: true,
+			});
+			expect(on.env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE).toBe(
+				"1",
+			);
 		});
 	});
 

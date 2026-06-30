@@ -143,3 +143,47 @@ describe("runDiscordSend (FLY-350 shared core)", () => {
 		expect(sent?.textLen).toBe("super secret message body".length);
 	});
 });
+
+describe("FLY-676 — proactive roundtable guard (Option B; FLY-680 owns the real engage hook)", () => {
+	it("autoContinue ON → REFUSES roundtable BEFORE side effects (no post, deferred audit)", async () => {
+		const { deps, post, audits } = makeDeps({ roundtableAutoContinue: true });
+		const r = await runDiscordSend("roundtable", "hi team", deps);
+		expect(r.ok).toBe(false);
+		expect(r.isError).toBe(true);
+		expect(r.text).toMatch(/FLY-680/);
+		expect(post).not.toHaveBeenCalled();
+		// audited with a DISTINCT outcome (not confused with rate_limited)
+		expect(audits.at(-1)?.outcome).toBe("roundtable_proactive_deferred");
+		expect(audits.some((a) => a.outcome === "rate_limited")).toBe(false);
+	});
+
+	it("autoContinue ON → does NOT consume idempotency/rate budget (a later allowed send still posts)", async () => {
+		const { deps, post } = makeDeps({
+			roundtableAutoContinue: true,
+			rateLimiter: new SlidingWindowRateLimiter({
+				maxPerWindow: 1,
+				windowMs: 60_000,
+			}),
+		});
+		await runDiscordSend("roundtable", "blocked", deps); // refused before side effects
+		// the chat channel's single-slot budget must be intact (guard ran before rate-limit)
+		const r = await runDiscordSend("chat", "still works", deps);
+		expect(r.ok).toBe(true);
+		expect(post).toHaveBeenCalledTimes(1);
+		expect(post).toHaveBeenCalledWith(CHAT, "still works", TOKEN);
+	});
+
+	it("autoContinue ON → 'chat' is unaffected (only roundtable is guarded)", async () => {
+		const { deps, post } = makeDeps({ roundtableAutoContinue: true });
+		const r = await runDiscordSend("chat", "hello", deps);
+		expect(r.ok).toBe(true);
+		expect(post).toHaveBeenCalledWith(CHAT, "hello", TOKEN);
+	});
+
+	it("autoContinue OFF / unset (kill-switch / byte-compat) → roundtable proactive send still posts", async () => {
+		const { deps, post } = makeDeps(); // roundtableAutoContinue defaults undefined
+		const r = await runDiscordSend("roundtable", "hi team", deps);
+		expect(r.ok).toBe(true);
+		expect(post).toHaveBeenCalledWith(ROUNDTABLE, "hi team", TOKEN);
+	});
+});

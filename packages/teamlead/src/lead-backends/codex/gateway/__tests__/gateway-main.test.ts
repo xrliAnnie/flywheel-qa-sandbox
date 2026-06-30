@@ -43,6 +43,22 @@ describe("parseGatewayConfig (F-a boundary)", () => {
 		);
 	});
 
+	it("FLY-676: roundtableAutoContinue only on for the runtime EFFECTIVE flag (not raw THREAD_AUTOCONTINUE)", () => {
+		expect(parseGatewayConfig(FULL_ENV).roundtableAutoContinue).toBe(false);
+		expect(
+			parseGatewayConfig({
+				...FULL_ENV,
+				FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE: "1",
+			}).roundtableAutoContinue,
+		).toBe(false);
+		expect(
+			parseGatewayConfig({
+				...FULL_ENV,
+				FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE: "1",
+			}).roundtableAutoContinue,
+		).toBe(true);
+	});
+
 	it("rejects a path-traversal project name (boundary)", () => {
 		expect(() =>
 			parseGatewayConfig({

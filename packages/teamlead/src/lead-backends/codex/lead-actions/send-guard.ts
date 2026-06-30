@@ -32,6 +32,27 @@ export function deriveSendIdempotencyKey(
 		.digest("hex");
 }
 
+/**
+ * FLY-676 — refuse a Codex Lead's PROACTIVE `discord_send(target="roundtable")` while
+ * reply-in-thread `autoContinue` is on (PURE).
+ *
+ * A proactive roundtable post bypasses `LeadInputRouter`, so (unlike a reactive reply) it
+ * neither subscribes the spawned topic thread nor seeds this Lead's anti-loop budget. Under
+ * FLY-676's default-on member-budget path the initiator would then miss the sibling's first
+ * in-thread reply (even an explicit @). The proper cross-process subscribe+seed engage hook is
+ * FLY-680; until then this guard fail-soft refuses the proactive roundtable surface so it never
+ * silently regresses. Only "roundtable" is affected — "chat" (and any other target) is untouched
+ * — and only when autoContinue is on; the kill-switch (autoContinue off) restores the prior
+ * behavior. `autoContinue` here is the EFFECTIVE flag computed by the runtime
+ * (replyInThread enabled && THREAD_AUTOCONTINUE !== "0"), NOT a raw env read in the child.
+ */
+export function shouldRefuseProactiveRoundtable(input: {
+	target: string;
+	autoContinue: boolean;
+}): boolean {
+	return input.autoContinue === true && input.target.trim() === "roundtable";
+}
+
 export interface RateLimitOptions {
 	/** Max sends allowed per channel within the window. */
 	maxPerWindow: number;
