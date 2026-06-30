@@ -37,6 +37,7 @@ import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
+import { runTokenReport } from "./commands/token-report.js";
 import { verifyApproval } from "./commands/verify-approval.js";
 import {
 	type VisualCaptureArgs,
@@ -84,6 +85,11 @@ Commands:
             FLYWHEEL_REMOTE_REPORTS=0 disables. Always prints a one-line
             JSON envelope to stdout.
   set-artifact   Register build output (.glb/.stl/.3mf) path for 3D capture (GEO-151)
+  token-report   Fine-grained token usage report (FLY-614). Subcommands:
+            aggregate [--since --until]  scan CC logs → persist daily aggregates;
+            report [--date --before A..B --after C..D --out <html> --json]  render;
+            daily [--out <html>]  aggregate today+yesterday → report yesterday.
+            Pair with publish-report --html <out> to deliver to a channel.
 
 Global options:
   --db <path>       Explicit DB path
@@ -195,6 +201,9 @@ async function main(): Promise<void> {
 			break;
 		case "publish-report":
 			await runPublishReport(commandArgs);
+			break;
+		case "token-report":
+			await runTokenReport(commandArgs);
 			break;
 		case "notify":
 			await runNotify(commandArgs);
