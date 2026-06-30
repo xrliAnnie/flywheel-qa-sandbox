@@ -59,6 +59,8 @@ export interface FleetLeadState {
 	canSpawnRunners: boolean;
 	configured: {
 		model: string | null;
+		/** FLY-671: desired effort, or null = default (no override). */
+		effort: string | null;
 		backend: LeadBackendId;
 		source: "explicit" | "legacy" | "default";
 	};
@@ -68,6 +70,9 @@ export interface FleetLeadState {
 		manifestModel: string | null;
 		manifestBackend: string | null;
 		plistModel: string | null;
+		/** FLY-671: effort carriers (manifest field + plist FLYWHEEL_LEAD_EFFORT). */
+		manifestEffort: string | null;
+		plistEffort: string | null;
 	};
 	observed: {
 		management: FleetManagement;
@@ -81,9 +86,9 @@ export interface FleetLeadState {
 	paneWatch: boolean;
 	/**
 	 * Drift is only computed for alignable standard-managed leads; codex
-	 * external carriers are N/A, not drift (R3#5).
+	 * external carriers are N/A, not drift (R3#5). FLY-671 adds the effort axis.
 	 */
-	drift: { model: boolean; backend: boolean } | null;
+	drift: { model: boolean; backend: boolean; effort: boolean } | null;
 }
 
 export interface FleetSnapshot {
@@ -199,6 +204,9 @@ interface CarrierRead {
 	manifestBackend: string | null;
 	manifestPid: number;
 	plistModel: string | null;
+	/** FLY-671: effort carriers. */
+	manifestEffort: string | null;
+	plistEffort: string | null;
 	plistOk: boolean; // structural binding: wrapper + canonical manifest + label
 	identityOk: boolean; // manifest projectName/leadId bind to this exact key
 	probeFailed: boolean;
@@ -216,6 +224,8 @@ function readCarrier(
 		manifestBackend: null,
 		manifestPid: 0,
 		plistModel: null,
+		manifestEffort: null,
+		plistEffort: null,
 		plistOk: false,
 		identityOk: false,
 		probeFailed: false,
@@ -233,6 +243,7 @@ function readCarrier(
 		try {
 			const m = JSON.parse(deps.readFile(mPath)) as {
 				model?: string;
+				effort?: string;
 				leadBackend?: { backendId?: string };
 				pid?: number;
 				projectName?: string;
@@ -242,6 +253,7 @@ function readCarrier(
 			// must not lend standard-managed status to this exact key.
 			out.identityOk = `${m.projectName ?? ""}-${m.leadId ?? ""}` === key;
 			out.manifestModel = typeof m.model === "string" ? m.model : null;
+			out.manifestEffort = typeof m.effort === "string" ? m.effort : null;
 			out.manifestBackend =
 				typeof m.leadBackend?.backendId === "string"
 					? m.leadBackend.backendId
@@ -260,6 +272,11 @@ function readCarrier(
 				/<key>\s*FLYWHEEL_LEAD_MODEL\s*<\/key>\s*<string>([^<]*)<\/string>/,
 			);
 			out.plistModel = modelMatch?.[1] ?? null;
+			// FLY-671: mirror the model regex for the effort carrier.
+			const effortMatch = plist.match(
+				/<key>\s*FLYWHEEL_LEAD_EFFORT\s*<\/key>\s*<string>([^<]*)<\/string>/,
+			);
+			out.plistEffort = effortMatch?.[1] ?? null;
 			out.plistOk =
 				plist.includes(`<string>${wrapperPathFor(home)}</string>`) &&
 				plist.includes(`<string>${mPath}</string>`) &&
@@ -407,6 +424,8 @@ export async function collectFleetSnapshot(
 					manifestBackend: null,
 					manifestPid: 0,
 					plistModel: null,
+					manifestEffort: null,
+					plistEffort: null,
 					plistOk: false,
 					identityOk: false,
 					probeFailed: true,
@@ -419,15 +438,23 @@ export async function collectFleetSnapshot(
 			const decision = deriveDecision(eff.backend, management, runtime);
 			// Drift only for alignable standard carriers (R3#5): codex external
 			// is N/A/EXTERNAL, not drift.
-			let drift: { model: boolean; backend: boolean } | null = null;
+			let drift: {
+				model: boolean;
+				backend: boolean;
+				effort: boolean;
+			} | null = null;
 			if (eff.backend === "claude-code" && carrier.manifestExists) {
 				const configuredModel = lead.model ?? null;
+				const configuredEffort = lead.effort ?? null;
 				drift = {
 					model:
 						configuredModel !== carrier.manifestModel ||
 						configuredModel !== carrier.plistModel,
 					backend:
 						(carrier.manifestBackend ?? DEFAULT_LEAD_BACKEND) !== eff.backend,
+					effort:
+						configuredEffort !== carrier.manifestEffort ||
+						configuredEffort !== carrier.plistEffort,
 				};
 			}
 
@@ -439,6 +466,7 @@ export async function collectFleetSnapshot(
 				canSpawnRunners: lead.canSpawnRunners !== false,
 				configured: {
 					model: lead.model ?? null,
+					effort: lead.effort ?? null,
 					backend: eff.backend,
 					source: eff.source,
 				},
@@ -448,6 +476,8 @@ export async function collectFleetSnapshot(
 					manifestModel: carrier.manifestModel,
 					manifestBackend: carrier.manifestBackend,
 					plistModel: carrier.plistModel,
+					manifestEffort: carrier.manifestEffort,
+					plistEffort: carrier.plistEffort,
 				},
 				observed: {
 					management,
@@ -483,7 +513,10 @@ function structuralProjection(projects: ProjectEntry[]): string {
 			generalChannel: p.generalChannel ?? null,
 			memoryAllowedUsers: p.memoryAllowedUsers ?? null,
 			leads: p.leads.map((l) => {
-				const { model: _m, backend: _b, botToken: _t, ...rest } = l;
+				// FLY-671: effort is a HOT fleet field (like model/backend) — exclude
+				// it from the structural projection so a projects.json effort edit is
+				// a hot overlay, NOT a restart-required structural change.
+				const { model: _m, backend: _b, effort: _e, botToken: _t, ...rest } = l;
 				return rest;
 			}),
 		})),
@@ -518,7 +551,12 @@ export class ConfigSnapshotProvider {
 	/** True when ≥1 lead explicitly configures a fleet field (default-off gate, R1#6). */
 	hasExplicitFleetConfig(): boolean {
 		return this.current.some((p) =>
-			p.leads.some((l) => l.model !== undefined || l.backend !== undefined),
+			p.leads.some(
+				(l) =>
+					l.model !== undefined ||
+					l.backend !== undefined ||
+					l.effort !== undefined, // FLY-671
+			),
 		);
 	}
 
@@ -544,7 +582,7 @@ export class ConfigSnapshotProvider {
 			);
 			return;
 		}
-		// Fleet-field overlay onto boot objects (only model/backend move).
+		// Fleet-field overlay onto boot objects (model/backend/effort move — FLY-671).
 		const freshByKey = new Map<string, LeadConfig>();
 		for (const p of fresh) {
 			for (const l of p.leads)
@@ -560,6 +598,8 @@ export class ConfigSnapshotProvider {
 				else delete next.model;
 				if (f.backend !== undefined) next.backend = f.backend;
 				else delete next.backend;
+				if (f.effort !== undefined) next.effort = f.effort;
+				else delete next.effort;
 				return next;
 			}),
 		}));

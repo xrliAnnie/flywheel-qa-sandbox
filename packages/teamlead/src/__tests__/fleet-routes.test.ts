@@ -63,11 +63,23 @@ function deps(
 				["geo-oliver", null],
 				["geo-mufasa", null], // Codex Lead — only null is allowed
 			]),
+		currentEfforts: () =>
+			new Map<string, string | null>([
+				["geo-peter", null],
+				["geo-oliver", null],
+				["geo-mufasa", null],
+			]),
 		allowedTargets: () =>
 			new Map<string, Array<string | null>>([
 				["geo-peter", ["claude-fable-5", null]],
 				["geo-oliver", ["claude-fable-5", null]],
 				["geo-mufasa", [null]], // Codex: model display-only
+			]),
+		allowedEffortTargets: () =>
+			new Map<string, Array<string | null>>([
+				["geo-peter", [null, "low", "medium", "high", "xhigh", "max"]],
+				["geo-oliver", [null, "low", "medium", "high", "xhigh", "max"]],
+				["geo-mufasa", [null]], // Codex: effort display-only
 			]),
 		configSha: () => "cfgsha",
 		createLaunching: () => true,
@@ -214,6 +226,86 @@ describe("fleet-routes — handleStage", () => {
 			ORIGIN,
 		);
 		expect(r.status).toBe(400);
+	});
+});
+
+describe("fleet-routes — handleStage effort (FLY-671)", () => {
+	it("effort-only change: 200, canonical to.effort present, to.model = current", () => {
+		const d = deps();
+		const r = handleStage(
+			d,
+			{ changes: [{ key: "geo-peter", toEffort: "high" }] },
+			SAME,
+			ORIGIN,
+		);
+		expect(r.status).toBe(200);
+		const req = r.body.canonicalRequest as CanonicalRequest;
+		// to.model filled from current; effort key present with the new value.
+		expect(req.changes[0]).toEqual({
+			key: "geo-peter",
+			from: { model: "claude-fable-5", effort: null },
+			to: { model: "claude-fable-5", effort: "high" },
+		});
+	});
+
+	it("model+effort together: both dimensions in the canonical change", () => {
+		const d = deps();
+		const r = handleStage(
+			d,
+			{
+				changes: [
+					{ key: "geo-oliver", toModel: "claude-fable-5", toEffort: "medium" },
+				],
+			},
+			SAME,
+			ORIGIN,
+		);
+		expect(r.status).toBe(200);
+		const req = r.body.canonicalRequest as CanonicalRequest;
+		expect(req.changes[0]).toEqual({
+			key: "geo-oliver",
+			from: { model: null, effort: null },
+			to: { model: "claude-fable-5", effort: "medium" },
+		});
+	});
+
+	it("model-only change stays byte-identical (no effort key — reverse-compat)", () => {
+		const d = deps();
+		const r = handleStage(
+			d,
+			{ changes: [{ key: "geo-oliver", toModel: "claude-fable-5" }] },
+			SAME,
+			ORIGIN,
+		);
+		const req = r.body.canonicalRequest as CanonicalRequest;
+		expect(req.changes[0]).toEqual({
+			key: "geo-oliver",
+			from: { model: null },
+			to: { model: "claude-fable-5" },
+		});
+	});
+
+	it("Codex Lead non-null effort is rejected (display-only, 403)", () => {
+		const d = deps();
+		const r = handleStage(
+			d,
+			{ changes: [{ key: "geo-mufasa", toEffort: "high" }] },
+			SAME,
+			ORIGIN,
+		);
+		expect(r.status).toBe(403);
+		expect(String(r.body.error)).toMatch(/effort not allowed|display-only/);
+	});
+
+	it("effort outside the allowed set is rejected (forged client, 403)", () => {
+		const d = deps();
+		const r = handleStage(
+			d,
+			{ changes: [{ key: "geo-peter", toEffort: "ultra" }] },
+			SAME,
+			ORIGIN,
+		);
+		expect(r.status).toBe(403);
 	});
 });
 

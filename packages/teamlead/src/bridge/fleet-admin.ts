@@ -17,16 +17,32 @@
 
 import { createHash, randomBytes } from "node:crypto";
 
-/** A draft change from the console: a lead key + the desired model (null = default). */
+/**
+ * A draft change from the console — sparse: only the dimensions the founder
+ * actually changed are present (FLY-671). `toModel`/`toEffort` keys are present
+ * iff that dimension was edited; `null` means "back to the default". A change
+ * must carry at least one of the two.
+ */
 export interface ConsoleChange {
 	key: string;
-	toModel: string | null;
+	/** Present iff model was changed; null = account default. */
+	toModel?: string | null;
+	/** FLY-671: present iff effort was changed; null = back to default. */
+	toEffort?: string | null;
 }
 
+/**
+ * The full canonical change the engine re-verifies. `to.model` is ALWAYS present
+ * (filled from the current model when the founder didn't touch it) — idempotent
+ * for the engine's model-required contract. The `effort` key (on BOTH from/to) is
+ * present ONLY when the change touches effort (FLY-671 three-state: absent =
+ * don't touch effort). A model-only change therefore has NO effort key and is
+ * byte-identical to the pre-FLY-671 shape (same confirmToken SHA — reverse-compat).
+ */
 export interface CanonicalChange {
 	key: string;
-	from: { model: string | null };
-	to: { model: string | null };
+	from: { model: string | null; effort?: string | null };
+	to: { model: string | null; effort?: string | null };
 }
 
 export interface CanonicalRequest {
@@ -45,14 +61,24 @@ export function newBatchId(): string {
 
 /**
  * Build the canonical request the founder confirms and the engine re-verifies.
- * `fromModelByKey` supplies each key's CURRENT model (null = account default) so
- * the reviewed transition is the exact from→to. Rejects unsafe batchId/keys and
- * duplicate keys (defense in depth with the engine's own validation).
+ * `fromModelByKey` / `fromEffortByKey` supply each key's CURRENT model/effort
+ * (null = default) so the reviewed transition is the exact from→to.
+ *
+ * Sparse → full normalization (FLY-671, Codex design review R2 HIGH-1):
+ *   - `to.model` is ALWAYS present — filled from the current model when the
+ *     console didn't change it (idempotent for the engine).
+ *   - The `effort` key (from+to) is added ONLY when the console changed effort
+ *     (`"toEffort" in c`). A model-only change therefore has NO effort key and is
+ *     byte-identical to the pre-FLY-671 canonical shape (same SHA).
+ *
+ * Rejects unsafe batchId/keys, duplicate keys, and a change that touches neither
+ * dimension (defense in depth with the engine's own validation).
  */
 export function buildCanonicalRequest(
 	batchId: string,
 	expectedConfigSha: string,
 	fromModelByKey: Map<string, string | null>,
+	fromEffortByKey: Map<string, string | null>,
 	changes: ConsoleChange[],
 ): CanonicalRequest {
 	if (!SAFE_ID.test(batchId)) throw new Error(`unsafe batchId: ${batchId}`);
@@ -64,11 +90,26 @@ export function buildCanonicalRequest(
 		if (seen.has(c.key)) throw new Error(`duplicate key: ${c.key}`);
 		seen.add(c.key);
 		if (!fromModelByKey.has(c.key)) throw new Error(`unknown key: ${c.key}`);
-		return {
+		const touchesModel = "toModel" in c;
+		const touchesEffort = "toEffort" in c;
+		if (!touchesModel && !touchesEffort) {
+			throw new Error(`empty change (no model/effort): ${c.key}`);
+		}
+		const fromModel = fromModelByKey.get(c.key) ?? null;
+		const change: CanonicalChange = {
 			key: c.key,
-			from: { model: fromModelByKey.get(c.key) ?? null },
-			to: { model: c.toModel },
+			// `to.model` always present: the founder's value, or the current model
+			// when model was not touched (idempotent for the model-required engine).
+			from: { model: fromModel },
+			to: { model: touchesModel ? (c.toModel ?? null) : fromModel },
 		};
+		if (touchesEffort) {
+			// Three-state effort: include the key on BOTH from (fresh baseline) and
+			// to (the founder's value, null = delete). Absent ⇒ engine leaves effort.
+			change.from.effort = fromEffortByKey.get(c.key) ?? null;
+			change.to.effort = c.toEffort ?? null;
+		}
+		return change;
 	});
 	return { batchId, expectedConfigSha, changes: out };
 }

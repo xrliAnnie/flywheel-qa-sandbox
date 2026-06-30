@@ -444,11 +444,13 @@ if command -v jq >/dev/null 2>&1; then
   # the next `daemon install`). Absent fields stay absent — never injected.
   _existing_model=""
   _existing_lead_backend=""
+  _existing_effort=""   # FLY-671: preserve the effort carrier across boot rewrites
   if [ -f "$MANIFEST_FILE" ]; then
     _existing_mcp_exclude=$(jq -r '.mcpExclude // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
     _existing_chrome_enabled=$(jq -r '.chromeEnabled // false' "$MANIFEST_FILE" 2>/dev/null || echo "false")
     _existing_model=$(jq -r '.model // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
     _existing_lead_backend=$(jq -r '.leadBackend.backendId // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
+    _existing_effort=$(jq -r '.effort // ""' "$MANIFEST_FILE" 2>/dev/null || echo "")
   fi
   _final_mcp_exclude="${FLYWHEEL_LEAD_MCP_EXCLUDE-$_existing_mcp_exclude}"
   if [ "${FLYWHEEL_LEAD_CHROME_ENABLED:-}" = "true" ]; then
@@ -476,6 +478,7 @@ if command -v jq >/dev/null 2>&1; then
     --argjson chromeEnabled "$_final_chrome_enabled" \
     --arg model "$_existing_model" \
     --arg leadBackendId "$_existing_lead_backend" \
+    --arg effort "$_existing_effort" \
     '{
        leadId: $leadId, projectDir: $projectDir, projectName: $projectName,
        subdir: $subdir, workspace: $workspace, botTokenEnv: $botTokenEnv,
@@ -483,6 +486,7 @@ if command -v jq >/dev/null 2>&1; then
        pid: ($pid | tonumber)
      }
      | (if $model != "" then . + {model: $model} else . end)
+     | (if $effort != "" then . + {effort: $effort} else . end)
      | (if $leadBackendId != "" then . + {leadBackend: {backendId: $leadBackendId}} else . end)' \
     > "$_manifest_tmp" \
     && jq empty "$_manifest_tmp" 2>/dev/null \
@@ -1448,6 +1452,27 @@ if [ -n "$_fly241_lead_model" ]; then
   log "Lead model override: --model ${_fly241_lead_model} (FLY-241)"
 fi
 
+# FLY-671: per-Lead effort override. When `FLYWHEEL_LEAD_EFFORT` is set (per-Lead
+# via the launchd plist, carried from projects.json → manifest → generate_plist),
+# pass it through as `--effort` so a cost-sensitive Lead can run lower effort
+# (xhigh→high/medium) to save tokens. This GENERALIZES the FLY-231/FLY-583
+# companion pin below: an explicit valid effort wins for ANY Lead (incl. companion).
+#
+# enum guard (Codex design review R2 MEDIUM-4): a bad value is treated as UNSET,
+# never injected. Critically, a bad explicit env must NOT both crash the CLI AND
+# strip a companion's FLY-583 xhigh fallback — so an invalid value falls through
+# to the companion default below, identical to "unset".
+#
+# Trim surrounding whitespace (same as FLY-241 model) before the enum check.
+_fly671_lead_effort="${FLYWHEEL_LEAD_EFFORT:-}"
+_fly671_lead_effort="${_fly671_lead_effort#"${_fly671_lead_effort%%[![:space:]]*}"}"
+_fly671_lead_effort="${_fly671_lead_effort%"${_fly671_lead_effort##*[![:space:]]}"}"
+case "$_fly671_lead_effort" in
+  low|medium|high|xhigh|max) _fly671_effort_valid=true ;;
+  "") _fly671_effort_valid=false ;;
+  *) _fly671_effort_valid=false; log "WARN: ignoring invalid FLYWHEEL_LEAD_EFFORT='${_fly671_lead_effort}' (treated as unset)" ;;
+esac
+
 # FLY-231 / FLY-583: companion effort. FLY-231 originally pinned `--effort medium`
 # on the theory that default/high effort triggered the "drafts a reply but never
 # calls the discord reply tool → goes silent" leak (FLY-306). FLY-583 disproved
@@ -1456,9 +1481,15 @@ fi
 # capability against Annie's explicit "keep Belle on xhigh" requirement. The real,
 # effort-independent leak defense is the discord-reply-enforcer Stop hook (FLY-387),
 # which catches an unexecuted reply and nudges a resend (verified recovering Belle
-# live). So pin companions to xhigh (capability), never medium. Companion-only —
-# existing Leads still get NO `--effort` flag (argv byte-identical, sentinel-asserted).
-if [ "$IS_COMPANION_ROLE" = true ]; then
+# live). So pin companions to xhigh (capability), never medium.
+#
+# Precedence (FLY-671): a valid explicit FLYWHEEL_LEAD_EFFORT overrides everything;
+# otherwise a companion still gets xhigh; otherwise (non-companion, no/bad env) NO
+# `--effort` flag is appended — argv stays byte-identical to pre-FLY-671 (sentinel-asserted).
+if [ "$_fly671_effort_valid" = true ]; then
+  CLAUDE_ARGS+=(--effort "$_fly671_lead_effort")
+  log "Lead effort override: --effort ${_fly671_lead_effort} (FLY-671)"
+elif [ "$IS_COMPANION_ROLE" = true ]; then
   CLAUDE_ARGS+=(--effort xhigh)
   log "Companion: --effort xhigh (FLY-583; leak defense is the discord-reply-enforcer hook, not effort)"
 fi

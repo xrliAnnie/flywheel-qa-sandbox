@@ -142,6 +142,50 @@ describe("resolveRoleAdapter — project config layer", () => {
 		});
 		expect(resolved.backend).toBe("claude-tmux");
 	});
+
+	// FLY-671: effort resolves INDEPENDENTLY of the backend/model label gate
+	// (Codex design review R2 HIGH-2) — a label must NOT drop roles.runner.effort.
+	it("roles.runner.effort with no labels → resolved.effort", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			projectRoles: { runner: { backend: "claude-tmux", effort: "high" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved.effort).toBe("high");
+	});
+
+	it("a backend-selecting label does NOT drop roles.runner.effort", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["claude"], // selects backend via label layer
+			projectRoles: { runner: { backend: "claude-tmux", effort: "high" } },
+			env: EMPTY_ENV,
+		});
+		// effort still applies even though the label set the backend.
+		expect(resolved.effort).toBe("high");
+		expect(resolved.backend).toBe("claude-tmux");
+	});
+
+	it("a model-selecting label still keeps roles.runner.effort", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["opus"], // a model label (infers claude vendor)
+			projectRoles: { runner: { backend: "claude-tmux", effort: "medium" } },
+			env: EMPTY_ENV,
+		});
+		// Whatever the label does to backend/model, effort is resolved
+		// independently from the project roles block.
+		expect(resolved.effort).toBe("medium");
+	});
+
+	it("no effort anywhere → resolved.effort undefined (byte-compat)", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			projectRoles: { runner: { backend: "claude-tmux" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved.effort).toBeUndefined();
+	});
 });
 
 describe("resolveRoleAdapter — task (label) layer", () => {

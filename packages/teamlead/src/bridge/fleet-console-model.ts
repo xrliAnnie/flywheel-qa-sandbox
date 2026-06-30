@@ -42,6 +42,13 @@ export interface ConsoleLeadView {
 	backendOptions: BackendOption[];
 	tierOptions: readonly TierOption[];
 	allowedModelTargets: Array<string | null>;
+	/** FLY-671: active effort level, or `null` for the default (no override). */
+	currentEffort: string | null;
+	/** Resolved display label for the active effort (e.g. "high", "默认"). */
+	currentEffortLabel: string;
+	/** FLY-671: effort chip options + allowlist (backend-aware). */
+	effortOptions: readonly TierOption[];
+	allowedEffortTargets: Array<string | null>;
 	/**
 	 * Online dot state (§2.4 whitelist). Optional: the pure builder leaves it
 	 * undefined; `FleetConsole` enriches it from the live fleet evidence. The UI
@@ -79,6 +86,8 @@ export function buildConsoleLeadView(
 	const cap = computeLeadCapabilities(lead, legacyBackend);
 	// inc1 keeps `model` absent (not normalized); absent = account default = null.
 	const currentModelId = typeof lead.model === "string" ? lead.model : null;
+	// FLY-671: effort likewise absent = null = 默认 (companion → xhigh at launch).
+	const currentEffort = typeof lead.effort === "string" ? lead.effort : null;
 	return {
 		leadId: lead.agentId,
 		key: `${projectName}-${lead.agentId}`,
@@ -91,6 +100,10 @@ export function buildConsoleLeadView(
 		backendOptions: cap.backendOptions,
 		tierOptions: cap.tierOptions,
 		allowedModelTargets: cap.allowedModelTargets,
+		currentEffort,
+		currentEffortLabel: modelLabelFor(cap.effortOptions, currentEffort),
+		effortOptions: cap.effortOptions,
+		allowedEffortTargets: cap.allowedEffortTargets,
 	};
 }
 

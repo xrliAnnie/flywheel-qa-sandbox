@@ -21,6 +21,7 @@ import {
 	effectiveLeadBackend,
 	type LeadBackendId,
 } from "../lead-backends/lead-backend.js";
+import { EFFORT_LEVELS } from "../lead-effort.js";
 import type { LeadConfig } from "../ProjectConfig.js";
 
 /** A selectable level. `id: null` is the account-default tier (no override). */
@@ -43,18 +44,66 @@ export interface BackendOption {
 /**
  * Claude tier options: Fable 5 (explicit) + Opus 4.8 (1M) (explicit window
  * selector, FLY-360) + Opus 4.8 (account default = null, ~200K window in Claude
- * Code).
+ * Code) + Sonnet 4.6 + Haiku 4.5 (FLY-671 cheaper tiers for cost-sensitive
+ * Leads — Sonnet is materially cheaper than Opus).
+ *
+ * FLY-671 canonical model facts:
+ *   - Sonnet 4.6 → explicit model id "claude-sonnet-4-6"
+ *   - Haiku 4.5  → explicit model id "claude-haiku-4-5-20251001"
+ * The two cheaper tiers are APPENDED (not reordered) so the existing three
+ * entries keep their positions — anything depending on their ordinal stays
+ * byte-compatible; this only EXPANDS `computeAllowedModelTargets`.
  */
 export const CLAUDE_TIER_OPTIONS: readonly TierOption[] = [
 	{ id: "claude-fable-5", label: "Fable 5" },
 	{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)" },
 	{ id: null, label: "Opus 4.8" },
+	{ id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+	{ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 ];
 
 /** Codex tier options: single, read-only GPT-5 (display-only; not switchable). */
 export const CODEX_TIER_OPTIONS: readonly TierOption[] = [
 	{ id: null, label: "GPT-5", readonly: true },
 ];
+
+/**
+ * FLY-671: effort chip options. `id: null` = 默认 (no override) — companions
+ * still get their FLY-583 `xhigh`; other Leads get the account default. The five
+ * explicit levels mirror the Claude CLI `--effort` enum (low → max).
+ */
+export const EFFORT_OPTIONS: readonly TierOption[] = [
+	{ id: null, label: "默认" },
+	...EFFORT_LEVELS.map((e) => ({ id: e as string, label: e })),
+];
+
+/**
+ * Codex effort is display-only (`[null]`), mirroring CODEX_TIER_OPTIONS: a Codex
+ * Lead has no `--effort` runtime path (FLY-671 out-of-scope), so the chip is
+ * readonly and the only legal target is `null`.
+ */
+export const CODEX_EFFORT_OPTIONS: readonly TierOption[] = [
+	{ id: null, label: "默认", readonly: true },
+];
+
+/** Effort chip options for the Lead's effective backend. */
+export function computeEffortOptions(
+	backend: LeadBackendId,
+): readonly TierOption[] {
+	return backend === "codex-app-server" ? CODEX_EFFORT_OPTIONS : EFFORT_OPTIONS;
+}
+
+/**
+ * Legal `to.effort` targets for a managed effort switch, backend-aware (mirrors
+ * `computeAllowedModelTargets`): Claude = the five levels ∪ `{null}` (null =
+ * delete/back-to-default is a legal target); Codex = `[null]` only (display-only,
+ * no switch).
+ */
+export function computeAllowedEffortTargets(
+	backend: LeadBackendId,
+): Array<string | null> {
+	return backend === "codex-app-server" ? [null] : [null, ...EFFORT_LEVELS];
+}
 
 export const DISABLED_BACKEND_SWITCH = "受管后端切换 = FLY-264";
 export const DISABLED_WRITE_LEAD_CODEX =
@@ -136,6 +185,9 @@ export interface LeadCapabilities {
 	backendOptions: BackendOption[];
 	tierOptions: readonly TierOption[];
 	allowedModelTargets: Array<string | null>;
+	/** FLY-671: effort chip options + allowlist (backend-aware). */
+	effortOptions: readonly TierOption[];
+	allowedEffortTargets: Array<string | null>;
 }
 
 /**
@@ -155,5 +207,7 @@ export function computeLeadCapabilities(
 		backendOptions: computeBackendOptions(lead, backend),
 		tierOptions: computeTierOptions(backend),
 		allowedModelTargets: computeAllowedModelTargets(backend),
+		effortOptions: computeEffortOptions(backend),
+		allowedEffortTargets: computeAllowedEffortTargets(backend),
 	};
 }

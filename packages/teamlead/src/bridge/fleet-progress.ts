@@ -132,8 +132,9 @@ export interface BatchJournal {
 	keys: Record<
 		string,
 		{
-			from: { model: string | null };
-			to: { model: string | null };
+			// FLY-671: `effort` present only when the change touches effort (three-state).
+			from: { model: string | null; effort?: string | null };
+			to: { model: string | null; effort?: string | null };
 			status: KeyStatus;
 			intendedPostSha?: string;
 		}
@@ -142,8 +143,18 @@ export interface BatchJournal {
 
 export interface KeyProgress {
 	key: string;
+	/** Model dimension (kept; legacy model-only journals read identically). */
 	from: string | null;
 	to: string | null;
+	/**
+	 * FLY-671: effort dimension, field-level. `null` when the change did NOT touch
+	 * effort (UI shows only the model diff); a present effort key surfaces its own
+	 * from→to so "only effort changed" is never invisible (Codex R1 MEDIUM-9).
+	 */
+	fromEffort: string | null;
+	toEffort: string | null;
+	/** True iff this change actually touched the effort dimension. */
+	touchesEffort: boolean;
 	status: KeyStatus;
 	rank: number;
 	label: string;
@@ -181,10 +192,15 @@ export function buildBatchProgress(journal: BatchJournal): BatchProgress {
 				terminal: true,
 				manual: true,
 			};
+			// FLY-671: effort is part of the change iff the `to` carries the key.
+			const touchesEffort = k.to != null && Object.hasOwn(k.to, "effort");
 			return {
 				key,
 				from: k.from?.model ?? null,
 				to: k.to?.model ?? null,
+				fromEffort: touchesEffort ? (k.from?.effort ?? null) : null,
+				toEffort: touchesEffort ? (k.to?.effort ?? null) : null,
+				touchesEffort,
 				status: k.status,
 				rank: kv.rank,
 				label: kv.label,

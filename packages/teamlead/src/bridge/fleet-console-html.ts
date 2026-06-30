@@ -125,7 +125,7 @@ export function getFleetConsoleHtml(): string {
 <body>
 <h1>Flywheel Fleet</h1>
 <div class="sub">本机 · Lead 级别切换(Runner 将继承所属 Lead 的后端与级别 — 接线 = 下一期)</div>
-<div class="hint">改任意卡片的「级别」chip → 看草稿态 → 顶部「应用 N 项更改」→ 确认框 → 逐项真生效(每个 Lead 重启约 15 秒,失败自动回滚该项)。后端切换本期置灰(见 chip 提示)。</div>
+<div class="hint">改任意卡片的「级别」或「Effort」chip → 看草稿态 → 顶部「应用 N 项更改」→ 确认框 → 逐项真生效(每个 Lead 重启约 15 秒,失败自动回滚该项)。Effort 降到 high/medium 省 token;Codex Lead 的 Effort 置灰(无 --effort 路径)。后端切换本期置灰(见 chip 提示)。</div>
 <div class="err" id="err"></div>
 <div class="applybar" id="applybar">
   <span class="txt" id="applytxt">⏳ 0 项更改待应用</span>
@@ -138,6 +138,8 @@ export function getFleetConsoleHtml(): string {
 (function(){
   var BACKEND_LABEL = { "claude-code":"Claude Code", "codex-app-server":"Codex" };
   var snapshot = null, original = {}, draft = {}, es = null;
+  // FLY-671: effort is a second per-key dimension, tracked in parallel with model.
+  var originalEffort = {}, draftEffort = {};
 
   function esc(s){ return String(s==null?"":s).replace(/[&<>"]/g, function(c){
     return c==="&"?"&amp;":c==="<"?"&lt;":c===">"?"&gt;":"&quot;"; }); }
@@ -158,11 +160,26 @@ export function getFleetConsoleHtml(): string {
     for (var i=0;i<lead.tierOptions.length;i++){ if(!lead.tierOptions[i].readonly) return false; }
     return true;
   }
+  // FLY-671: effort-dimension mirrors of the tier helpers.
+  function effortLabel(lead, id){
+    var opts = lead.effortOptions || [];
+    for (var i=0;i<opts.length;i++){ if(opts[i].id===id) return opts[i].label; }
+    return id===null ? "默认" : id;
+  }
+  function isReadonlyEffort(lead){
+    var opts = lead.effortOptions || [];
+    if (opts.length <= 1) return true;
+    for (var i=0;i<opts.length;i++){ if(!opts[i].readonly) return false; }
+    return true;
+  }
   function changesList(){
     var out=[];
     for (var i=0;i<snapshot.leads.length;i++){
       var l=snapshot.leads[i];
-      if (draft[l.key] !== original[l.key]) out.push({ lead:l, fromId:original[l.key], toId:draft[l.key] });
+      var mc = draft[l.key] !== original[l.key];
+      var ec = draftEffort[l.key] !== originalEffort[l.key];
+      if (mc || ec) out.push({ lead:l, modelChanged:mc, fromId:original[l.key], toId:draft[l.key],
+        effortChanged:ec, fromEffort:originalEffort[l.key], toEffort:draftEffort[l.key] });
     }
     return out;
   }
@@ -192,11 +209,25 @@ export function getFleetConsoleHtml(): string {
       + '<div class="val">'+val+'</div>'
       + '<div class="menu" id="menu-'+esc(lead.key)+'-tier"></div></div>';
   }
+  // FLY-671: effort chip — mirrors tierChipHtml on the effort dimension.
+  function effortChipHtml(lead){
+    var changed = draftEffort[lead.key] !== originalEffort[lead.key];
+    var ro = isReadonlyEffort(lead);
+    var oldLbl = effortLabel(lead, originalEffort[lead.key]);
+    var newLbl = effortLabel(lead, draftEffort[lead.key]);
+    var val = changed
+      ? '<span class="old">'+esc(oldLbl)+'</span><span class="new">'+esc(newLbl)+'</span>'
+      : esc(newLbl);
+    return '<div class="chip '+(changed?"changed":"")+(ro?" ro":"")+'" data-key="'+esc(lead.key)+'" data-kind="effort">'
+      + '<div class="lbl">Effort'+(ro?"":'<span class="caret">⌄</span>')+'</div>'
+      + '<div class="val">'+val+'</div>'
+      + '<div class="menu" id="menu-'+esc(lead.key)+'-effort"></div></div>';
+  }
 
   function render(){
     var grid = el("grid");
     grid.innerHTML = snapshot.leads.map(function(l){
-      var changed = draft[l.key] !== original[l.key];
+      var changed = (draft[l.key] !== original[l.key]) || (draftEffort[l.key] !== originalEffort[l.key]);
       var foot = "";
       if (changed) foot += '<span class="tag pend">未应用</span>';
       if (l.backendSource==="explicit" || l.currentBackend==="codex-app-server") {
@@ -206,7 +237,7 @@ export function getFleetConsoleHtml(): string {
         + '<div class="top"><span class="'+dotClass(l.online)+'"></span>'
         + '<span class="name">'+esc(l.displayName)+'</span>'
         + '<span class="proj">'+esc(l.projectName)+'</span></div>'
-        + '<div class="specs">'+backendChipHtml(l)+tierChipHtml(l)+'</div>'
+        + '<div class="specs">'+backendChipHtml(l)+tierChipHtml(l)+effortChipHtml(l)+'</div>'
         + '<div class="cardfoot">'+foot+'</div></div>';
     }).join("");
     var n = changesList().length;
@@ -233,11 +264,14 @@ export function getFleetConsoleHtml(): string {
           + esc(BACKEND_LABEL[o.backend]||o.backend)+mini+'</div>';
       }).join("");
     } else {
-      menu.innerHTML = lead.tierOptions.map(function(o,i){
-        var selected = o.id===draft[key];
+      // tier or effort — same menu shape, different option list + dimension.
+      var opts = kind==="effort" ? (lead.effortOptions||[]) : lead.tierOptions;
+      var cur  = kind==="effort" ? draftEffort[key] : draft[key];
+      menu.innerHTML = opts.map(function(o,i){
+        var selected = o.id===cur;
         var ro = !!o.readonly;
         return '<div class="opt'+(ro?" disabled":"")+'"'
-          + (ro?"":' data-pick="'+esc(key)+'" data-idx="'+i+'"')+'>'
+          + (ro?"":' data-pick="'+esc(key)+'" data-idx="'+i+'" data-dim="'+esc(kind)+'"')+'>'
           + '<span class="check">'+(selected?"✓":"")+'</span>'+esc(o.label)+'</div>';
       }).join("");
     }
@@ -252,8 +286,10 @@ export function getFleetConsoleHtml(): string {
       ev.stopPropagation();
       var k = pickEl.getAttribute("data-pick");
       var idx = parseInt(pickEl.getAttribute("data-idx"),10);
+      var dim = pickEl.getAttribute("data-dim") || "tier";
       var lead = leadByKey(k);
-      draft[k] = lead.tierOptions[idx].id;
+      if (dim==="effort"){ draftEffort[k] = (lead.effortOptions||[])[idx].id; }
+      else { draft[k] = lead.tierOptions[idx].id; }
       closeMenus(); render();
       return;
     }
@@ -272,6 +308,7 @@ export function getFleetConsoleHtml(): string {
 
   el("discardBtn").addEventListener("click", function(){
     for (var k in original) draft[k] = original[k];
+    for (var k2 in originalEffort) draftEffort[k2] = originalEffort[k2];
     render();
   });
   el("applyBtn").addEventListener("click", openConfirm);
@@ -280,11 +317,14 @@ export function getFleetConsoleHtml(): string {
     var list = changesList();
     if (!list.length) return;
     var rows = list.map(function(c){
-      return '<div class="change"><span class="who">'+esc(c.lead.displayName)+'</span>'
-        + '<span class="what">级别</span>'
-        + '<span class="from">'+esc(tierLabel(c.lead,c.fromId))+'</span>'
-        + '<span class="arr">→</span>'
+      var parts = '';
+      if (c.modelChanged) parts += '<div><span class="what">级别</span>'
+        + '<span class="from">'+esc(tierLabel(c.lead,c.fromId))+'</span><span class="arr">→</span>'
         + '<span class="to">'+esc(tierLabel(c.lead,c.toId))+'</span></div>';
+      if (c.effortChanged) parts += '<div><span class="what">Effort</span>'
+        + '<span class="from">'+esc(effortLabel(c.lead,c.fromEffort))+'</span><span class="arr">→</span>'
+        + '<span class="to">'+esc(effortLabel(c.lead,c.toEffort))+'</span></div>';
+      return '<div class="change"><span class="who">'+esc(c.lead.displayName)+'</span>'+parts+'</div>';
     }).join("");
     el("modal").innerHTML = '<h3>应用 '+list.length+' 项更改?</h3>'
       + '<div class="change-list">'+rows+'</div>'
@@ -299,7 +339,13 @@ export function getFleetConsoleHtml(): string {
 
   async function runApply(list){
     clearError();
-    var changes = list.map(function(c){ return { key:c.lead.key, toModel:c.toId }; });
+    // FLY-671: sparse payload — only the dimensions the founder actually changed.
+    var changes = list.map(function(c){
+      var ch = { key:c.lead.key };
+      if (c.modelChanged) ch.toModel = c.toId;
+      if (c.effortChanged) ch.toEffort = c.toEffort;
+      return ch;
+    });
     var staged, applied;
     try {
       var r1 = await fetch("/api/fleet/stage", { method:"POST",
@@ -320,8 +366,11 @@ export function getFleetConsoleHtml(): string {
   function progRow(c, st){
     var cls = st.tone==="done"?"st-done":st.tone==="doing"?"st-doing"
       : st.tone==="warn"?"st-warn":st.tone==="error"?"st-error":"st-wait";
+    var what = '';
+    if (c.modelChanged) what += '级别 → '+esc(tierLabel(c.lead,c.toId));
+    if (c.effortChanged) what += (what?' · ':'')+'Effort → '+esc(effortLabel(c.lead,c.toEffort));
     return '<div class="prog"><span class="who">'+esc(c.lead.displayName)+'</span>'
-      + '<span>级别 → '+esc(tierLabel(c.lead,c.toId))+'</span>'
+      + '<span>'+what+'</span>'
       + '<span class="st '+cls+'">'+esc(st.label)+'</span></div>';
   }
 
@@ -377,8 +426,12 @@ export function getFleetConsoleHtml(): string {
       if (!r.ok){ showError("snapshot 失败 "+r.status); return; }
       snapshot = await r.json();
     } catch(e){ showError("snapshot 请求失败: "+e); return; }
-    original = {}; draft = {};
-    for (var i=0;i<snapshot.leads.length;i++){ var l=snapshot.leads[i]; original[l.key]=l.currentModelId; draft[l.key]=l.currentModelId; }
+    original = {}; draft = {}; originalEffort = {}; draftEffort = {};
+    for (var i=0;i<snapshot.leads.length;i++){
+      var l=snapshot.leads[i];
+      original[l.key]=l.currentModelId; draft[l.key]=l.currentModelId;
+      originalEffort[l.key]=l.currentEffort; draftEffort[l.key]=l.currentEffort;
+    }
     render();
   }
 
