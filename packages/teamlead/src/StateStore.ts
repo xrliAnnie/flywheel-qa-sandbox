@@ -250,6 +250,8 @@ export interface SessionUpsert {
 	session_params?: string;
 	heartbeat_at?: string;
 	adapter_type?: string;
+	/** FLY-615: resolved ponytail condition (A/B join key for FLY-614/616). */
+	ponytail_condition?: string;
 	run_attempt?: number;
 	retry_predecessor?: string;
 	retry_successor?: string;
@@ -327,6 +329,8 @@ export interface Session {
 	session_params?: string;
 	heartbeat_at?: string;
 	adapter_type?: string;
+	/** FLY-615: resolved ponytail condition (A/B join key for FLY-614/616). */
+	ponytail_condition?: string;
 	run_attempt?: number;
 	retry_predecessor?: string;
 	retry_successor?: string;
@@ -755,6 +759,12 @@ export class StateStore {
 		}
 		try {
 			this.db.run("ALTER TABLE sessions ADD COLUMN adapter_type TEXT");
+		} catch {
+			// Column already exists — ignore
+		}
+		try {
+			// FLY-615: ponytail A/B condition (join key for FLY-614/616).
+			this.db.run("ALTER TABLE sessions ADD COLUMN ponytail_condition TEXT");
 		} catch {
 			// Column already exists — ignore
 		}
@@ -1200,11 +1210,11 @@ export class StateStore {
 				last_error, decision_route, decision_reasoning,
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
-				session_params, heartbeat_at, adapter_type, run_attempt,
+				session_params, heartbeat_at, adapter_type, ponytail_condition, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
 				doc_tier, issue_url
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -1231,6 +1241,7 @@ export class StateStore {
 				session_params = COALESCE(excluded.session_params, session_params),
 				heartbeat_at = COALESCE(excluded.heartbeat_at, heartbeat_at),
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
+				ponytail_condition = COALESCE(excluded.ponytail_condition, ponytail_condition),
 				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
 				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
 				retry_successor = COALESCE(excluded.retry_successor, retry_successor),
@@ -1269,6 +1280,7 @@ export class StateStore {
 					session.session_params ?? null,
 					session.heartbeat_at ?? null,
 					session.adapter_type ?? null,
+					session.ponytail_condition ?? null,
 					session.run_attempt ?? null,
 					session.retry_predecessor ?? null,
 					session.retry_successor ?? null,
@@ -1343,11 +1355,11 @@ export class StateStore {
 				last_error, decision_route, decision_reasoning,
 				cost_usd, commit_count, files_changed, lines_added, lines_removed,
 				summary, diff_summary, commit_messages, changed_file_paths,
-				session_params, heartbeat_at, adapter_type, run_attempt,
+				session_params, heartbeat_at, adapter_type, ponytail_condition, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
 				doc_tier, issue_url
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -1374,6 +1386,7 @@ export class StateStore {
 				session_params = COALESCE(excluded.session_params, session_params),
 				heartbeat_at = COALESCE(excluded.heartbeat_at, heartbeat_at),
 				adapter_type = COALESCE(excluded.adapter_type, adapter_type),
+				ponytail_condition = COALESCE(excluded.ponytail_condition, ponytail_condition),
 				run_attempt = COALESCE(excluded.run_attempt, run_attempt),
 				retry_predecessor = COALESCE(excluded.retry_predecessor, retry_predecessor),
 				retry_successor = COALESCE(excluded.retry_successor, retry_successor),
@@ -1412,6 +1425,7 @@ export class StateStore {
 					fields.session_params ?? null,
 					fields.heartbeat_at ?? null,
 					fields.adapter_type ?? null,
+					fields.ponytail_condition ?? null,
 					fields.run_attempt ?? null,
 					fields.retry_predecessor ?? null,
 					fields.retry_successor ?? null,
@@ -1515,6 +1529,7 @@ export class StateStore {
 			session_params: "session_params",
 			heartbeat_at: "heartbeat_at",
 			adapter_type: "adapter_type",
+			ponytail_condition: "ponytail_condition",
 			run_attempt: "run_attempt",
 			retry_predecessor: "retry_predecessor",
 			retry_successor: "retry_successor",
@@ -2730,6 +2745,7 @@ export class StateStore {
 			session_params: (row.session_params as string) ?? undefined,
 			heartbeat_at: (row.heartbeat_at as string) ?? undefined,
 			adapter_type: (row.adapter_type as string) ?? undefined,
+			ponytail_condition: (row.ponytail_condition as string) ?? undefined,
 			run_attempt: (row.run_attempt as number) ?? undefined,
 			retry_predecessor: (row.retry_predecessor as string) ?? undefined,
 			retry_successor: (row.retry_successor as string) ?? undefined,

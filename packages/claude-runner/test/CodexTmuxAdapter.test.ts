@@ -313,6 +313,31 @@ describe("CodexTmuxAdapter (FLY-123 §5.6 state machine)", () => {
 		expect(promptText).toContain("do the task");
 	});
 
+	it("FLY-615: enablePonytail injects the ponytail ruleset into the prompt", async () => {
+		let promptText = "";
+		fake.onCycle = (_c, state) => {
+			promptText = readFileSync(state.promptPath as string, "utf-8");
+			return { exitCode: 0, lastMessage: "ok" };
+		};
+		await adapter.execute(
+			ctx({ enablePonytail: true, appendSystemPrompt: "SYSTEM RULES HERE" }),
+		);
+		expect(promptText).toContain("Ponytail — code-minimalism ruleset");
+		expect(promptText).toContain("decision ladder");
+		expect(promptText).toContain("SYSTEM RULES HERE");
+		expect(promptText).toContain("do the task");
+	});
+
+	it("FLY-615: no enablePonytail → no ponytail ruleset (byte-compatible)", async () => {
+		let promptText = "";
+		fake.onCycle = (_c, state) => {
+			promptText = readFileSync(state.promptPath as string, "utf-8");
+			return { exitCode: 0, lastMessage: "ok" };
+		};
+		await adapter.execute(ctx({ appendSystemPrompt: "SYSTEM RULES HERE" }));
+		expect(promptText).not.toContain("code-minimalism ruleset");
+	});
+
 	it("gate loop: exit+marker → awaiting_gate → CommDB answer → resume cycle with threadId → terminal", async () => {
 		const db = new CommDB(dbPath);
 		const questionId = db.insertQuestion(

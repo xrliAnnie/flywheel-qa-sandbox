@@ -1076,6 +1076,65 @@ doc_flow:
 		});
 	});
 
+	// FLY-615: ponytail validation
+	describe("ponytail validation", () => {
+		const withPonytail = (ponytailYaml: string) => `
+${MINIMAL_CONFIG_YAML}
+${ponytailYaml}
+`;
+
+		it("accepts enabled ponytail config", async () => {
+			readFile.mockResolvedValue(
+				withPonytail(`
+ponytail:
+  enabled: true
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.ponytail?.enabled).toBe(true);
+		});
+
+		it("accepts absent ponytail (feature off, byte-compatible)", async () => {
+			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.ponytail).toBeUndefined();
+		});
+
+		it("accepts enabled:false", async () => {
+			readFile.mockResolvedValue(
+				withPonytail(`
+ponytail:
+  enabled: false
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.ponytail?.enabled).toBe(false);
+		});
+
+		it("rejects non-boolean ponytail.enabled", async () => {
+			readFile.mockResolvedValue(
+				withPonytail(`
+ponytail:
+  enabled: "yes"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/ponytail\.enabled must be a boolean/,
+			);
+		});
+
+		it("rejects non-mapping ponytail", async () => {
+			readFile.mockResolvedValue(
+				withPonytail(`
+ponytail: "on"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/ponytail must be a YAML mapping/,
+			);
+		});
+	});
+
 	// FLY-598: founder_ux_gate validation
 	describe("founder_ux_gate validation", () => {
 		const withGate = (gateYaml: string) => `

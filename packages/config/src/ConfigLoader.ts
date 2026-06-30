@@ -397,6 +397,21 @@ export class ConfigLoader {
 			}
 		}
 
+		// ponytail (optional — FLY-615). Absent or enabled:false → project does
+		// not opt ponytail on by default (byte-compatible). Shape validated
+		// whenever PRESENT so a malformed config fails loudly.
+		const ponytail = c.ponytail as Record<string, unknown> | undefined;
+		if (ponytail != null) {
+			if (typeof ponytail !== "object" || Array.isArray(ponytail)) {
+				throw new Error(
+					"ponytail must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (typeof ponytail.enabled !== "boolean") {
+				throw new Error("ponytail.enabled must be a boolean");
+			}
+		}
+
 		// xiaohongshu_learning (optional — FLY-222)
 		// Static SHAPE validation only. The routing-tuple cross-check (Lead
 		// exists + canSpawnRunners, department_label routes uniquely to lead_id,

@@ -662,6 +662,8 @@ export function createEventRouter(
 				// FLY-493: persist the resolved executor backend as adapter_type so
 				// the no-transport wake-guard (and the dashboard) can see it.
 				const eventAdapterType = asString(payload.runnerBackend);
+				// FLY-615: persist the resolved ponytail condition (A/B join key).
+				const eventPonytailCondition = asString(payload.ponytailCondition);
 
 				if (transitionOpts) {
 					const result = applyTransition(
@@ -680,6 +682,9 @@ export function createEventRouter(
 							stage_updated_at: now,
 							session_role: eventSessionRole,
 							...(eventAdapterType && { adapter_type: eventAdapterType }),
+							...(eventPonytailCondition && {
+								ponytail_condition: eventPonytailCondition,
+							}),
 						},
 					);
 					if (!result.ok) {
@@ -704,6 +709,9 @@ export function createEventRouter(
 						stage_updated_at: now,
 						session_role: eventSessionRole,
 						...(eventAdapterType && { adapter_type: eventAdapterType }),
+						...(eventPonytailCondition && {
+							ponytail_condition: eventPonytailCondition,
+						}),
 					});
 				}
 

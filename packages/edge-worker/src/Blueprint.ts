@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -7,9 +7,18 @@ import type {
 	CheckpointsConfig,
 	DocFlowConfig,
 	FounderUxGateConfig,
+	PonytailConfig,
+	PonytailInput,
 	SkillsConfig,
 } from "flywheel-config";
-import { DEFAULT_GATE_TIMEOUT_MS } from "flywheel-config";
+import {
+	DEFAULT_GATE_TIMEOUT_MS,
+	PONYTAIL_CONFLICT,
+	PONYTAIL_PLUGIN,
+	PONYTAIL_SELECTOR_UNAVAILABLE,
+	resolvePonytailRequested,
+	toPonytailCondition,
+} from "flywheel-config";
 import type {
 	AdapterExecutionResult,
 	DecisionResult,
@@ -99,10 +108,70 @@ export interface BlueprintResult {
 	consecutiveFailures?: number;
 }
 
+/**
+ * FLY-615: which backends can actually CONSUME `enablePonytail`. Only the
+ * Claude adapter (real plugin via --settings) and the Codex adapter (ruleset
+ * injection) do. antigravity-tmux / kimi-tmux ignore it — so ponytail can never
+ * be effectively "on" for them (Codex code-review MED): they must read as NOT
+ * ready (→ unavailable, never on:*).
+ */
+const PONYTAIL_SUPPORTED_BACKENDS = new Set(["claude-tmux", "codex-tmux"]);
+
+/**
+ * FLY-615: per-backend readiness cache — caches ONLY positive (ready) results.
+ * Once a backend probes ready, plugin install state is stable for the Bridge
+ * lifetime, so we skip re-shelling-out (Codex LOW: avoid a synchronous
+ * `execFileSync` per ponytail-on run-start). A negative result is NOT cached
+ * (Codex R2 MED): if the plugin was missing, an operator running
+ * `scripts/setup-ponytail.sh` mid-lifetime must be picked up by the next
+ * ponytail-on run without a Bridge restart — so `false` is always re-probed.
+ */
+const ponytailReadyBackends = new Set<string>();
+
+/**
+ * FLY-615: default ponytail readiness probe. Codex path injects the ruleset as
+ * plain prompt text (no external dep) → ready. Claude path needs the real
+ * plugin installed in the inherited CLAUDE_CONFIG_DIR → probe `claude plugin
+ * details ponytail@ponytail` (exit 0 = installed/usable). Unsupported backends
+ * → not ready. Any error (claude missing, plugin absent) → not ready → caller
+ * records an `unavailable` condition and skips the --settings flag (no silent
+ * OFF data). Result cached per backend.
+ */
+export function defaultPonytailReadiness(backend: string): boolean {
+	if (!PONYTAIL_SUPPORTED_BACKENDS.has(backend)) return false;
+	if (ponytailReadyBackends.has(backend)) return true;
+	// codex-tmux: ruleset injection is plain text → always ready.
+	let ready = true;
+	if (backend === "claude-tmux") {
+		try {
+			execFileSync("claude", ["plugin", "details", PONYTAIL_PLUGIN], {
+				stdio: "ignore",
+				timeout: 20_000,
+			});
+			ready = true;
+		} catch {
+			ready = false;
+		}
+	}
+	// Cache only the positive result — a negative is re-probed next time so a
+	// post-start `setup-ponytail.sh` is picked up without a Bridge restart.
+	if (ready) ponytailReadyBackends.add(backend);
+	return ready;
+}
+
 /** Runtime context for a single Blueprint execution */
 export interface BlueprintContext {
 	teamName: string;
 	runnerName: string;
+	/**
+	 * FLY-615: ponytail input for this run — `start_signal` (fresh resolve from
+	 * run-param + labels + project config) or `frozen_requested` (retry preserves
+	 * the predecessor's A/B bucket). Built by runs-route (start) / actions (retry)
+	 * and threaded through the dispatcher. Absent → Blueprint falls back to a
+	 * start_signal derived from hydrated labels (byte-compatible: off:default
+	 * unless a label/project opts in).
+	 */
+	ponytailInput?: PonytailInput;
 	// v0.2 — optional for backward compat
 	projectName?: string;
 	sessionTimeoutMs?: number;
@@ -437,6 +506,18 @@ export class Blueprint {
 		// docFlowConfig). Absent or mode==="off" → no founder-UX prompt block
 		// (byte-compatible spawn prompt).
 		private founderUxGateConfig?: FounderUxGateConfig,
+		// FLY-615 — optional per-project ponytail config (lowest ladder layer).
+		// MUST stay among the LAST constructor parameters (same positional-
+		// alignment contract as docFlowConfig / founderUxGateConfig). Absent →
+		// no per-project ponytail (label/run layers still apply); byte-compatible.
+		private ponytailConfig?: PonytailConfig,
+		// FLY-615 — readiness probe: is ponytail actually usable for `backend`?
+		// Injectable for tests. Default (set below) checks `claude plugin details`
+		// for claude-tmux; the Codex ruleset-injection path is always ready
+		// (plain text). `requested on` + NOT ready → effective "unavailable".
+		private ponytailReadiness: (
+			backend: string,
+		) => boolean = defaultPonytailReadiness,
 	) {}
 
 	async run(
@@ -450,6 +531,15 @@ export class Blueprint {
 
 		// Hydrate BEFORE emitStarted so labels are available in session_started payload
 		const hydrated = await this.hydrator.hydrate(node);
+
+		// FLY-615: resolve the ponytail condition BEFORE the event envelope so
+		// the session_started upsert carries `ponytail_condition` (the FLY-614/616
+		// A/B join key). Falls back to a start_signal from hydrated labels when no
+		// explicit ponytailInput was threaded (byte-compatible: off:default unless
+		// a label/project opts in). selector-unavailable (labels unreadable under
+		// project-on) and readiness failure both yield an `unavailable` condition
+		// (no --settings, recorded for audit, excluded from 614/616).
+		const ponytailCondition = this.resolvePonytailCondition(ctx, hydrated);
 
 		const env: EventEnvelope = {
 			executionId,
@@ -467,6 +557,8 @@ export class Blueprint {
 			// FLY-493: persist the resolved executor backend (→ session.adapter_type)
 			// so the no-transport wake-guard can recognize an antigravity session.
 			...(ctx.runnerBackend && { runnerBackend: ctx.runnerBackend }),
+			// FLY-615: persisted ponytail condition (→ session.ponytail_condition).
+			...(ponytailCondition && { ponytailCondition }),
 		};
 
 		// Fire-and-forget started event (labels now populated)
@@ -484,6 +576,51 @@ export class Blueprint {
 		}
 	}
 
+	/**
+	 * FLY-615: resolve this run's ponytail condition (the persisted A/B tag).
+	 * Returns the encoded `ponytail_condition` string, or undefined when there
+	 * is no ponytail involvement to record (e.g. a label conflict we refuse to
+	 * guess — logged, treated as off).
+	 */
+	private resolvePonytailCondition(
+		ctx: BlueprintContext,
+		hydrated: HydratedContext,
+	): string | undefined {
+		const input: PonytailInput = ctx.ponytailInput ?? {
+			kind: "start_signal",
+			signal: {
+				labelStatus: "readable",
+				labels: (ctx.issueLabels ?? hydrated.labels).map((l) =>
+					l.toLowerCase(),
+				),
+			},
+		};
+		let resolved: ReturnType<typeof resolvePonytailRequested>;
+		try {
+			resolved = resolvePonytailRequested(input, this.ponytailConfig);
+		} catch (err) {
+			// Conflicting ponytail / ponytail-off labels — refuse to guess. Record
+			// a DISTINCT unavailable:conflict (loud, excluded from A/B) rather than
+			// a silent off:default; the run proceeds WITHOUT ponytail.
+			console.warn(
+				`[Blueprint] ponytail label conflict for ${hydrated.issueId} — NOT enabling ponytail, recording unavailable:conflict: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+			return PONYTAIL_CONFLICT;
+		}
+		if (resolved.kind === "selector_unavailable") {
+			return PONYTAIL_SELECTOR_UNAVAILABLE;
+		}
+		const { requested } = resolved;
+		if (requested.want === "off") {
+			return toPonytailCondition(requested, false).encoded;
+		}
+		// want === "on" — consult readiness for the resolved backend.
+		const ready = this.ponytailReadiness(ctx.runnerBackend ?? "claude-tmux");
+		return toPonytailCondition(requested, ready).encoded;
+	}
+
 	private async runInner(
 		node: DagNode,
 		projectRoot: string,
@@ -491,6 +628,9 @@ export class Blueprint {
 		env: EventEnvelope,
 		hydrated: HydratedContext,
 	): Promise<BlueprintResult> {
+		// FLY-615: enable ponytail for this run iff the resolved condition is
+		// effectively on (encoded "on:<source>"). unavailable/off → no enablement.
+		const enablePonytail = (env.ponytailCondition ?? "").startsWith("on:");
 		// FLY-123: adapter lookup is by EXECUTOR BACKEND (registry key), not by
 		// ctx.runnerName (a display-ish field the old makeAdapter closure
 		// ignored anyway). Absent → claude-tmux, byte-compat with production.
@@ -1207,6 +1347,8 @@ export class Blueprint {
 				label: buildWindowLabel(displayId, ctx.runnerName, hydrated.issueTitle),
 				permissionMode: "bypassPermissions",
 				appendSystemPrompt: systemPrompt,
+				// FLY-615: enable ponytail for this run (backend decides how).
+				...(enablePonytail && { enablePonytail: true }),
 				// FLY-123: model override resolved by RoleAdapterResolver
 				// (label / roles config). Claude path previously passed no
 				// model — absent stays absent (byte-compat).

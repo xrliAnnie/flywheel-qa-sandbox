@@ -3,6 +3,7 @@
 // FLY-579: QaContext is defined in edge-worker (Blueprint owns the prompt
 // rendering); teamlead depends on edge-worker, so we import the type here for
 // StartRequest. Defining it in teamlead would invert the dependency.
+import type { PonytailInput } from "flywheel-config";
 import type { QaContext } from "flywheel-edge-worker/dist/Blueprint.js";
 
 export type { QaContext };
@@ -142,6 +143,12 @@ export interface StartRequest {
 	 * label-driven backend resolution (byte-compatible).
 	 */
 	ignoreRunnerLabelSelection?: boolean;
+	/**
+	 * FLY-615: per-run + per-issue ponytail signal (run-param override + issue
+	 * labels + read status), built by runs-route. Resolved against project
+	 * config in Blueprint. Absent → Blueprint falls back to hydrated labels.
+	 */
+	ponytailInput?: PonytailInput;
 }
 
 export interface StartResult {

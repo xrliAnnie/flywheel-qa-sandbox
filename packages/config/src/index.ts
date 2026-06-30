@@ -8,6 +8,29 @@ export {
 	GATE_TIMEOUT_BUFFER_MS,
 	MIN_GATE_TIMEOUT_MS,
 } from "./constants.js";
+export type {
+	PonytailCondition,
+	PonytailEffective,
+	PonytailInput,
+	PonytailRequested,
+	PonytailRetryPlan,
+	PonytailRunSignal,
+	PonytailSource,
+	PonytailWant,
+	ResolvePonytailResult,
+} from "./ponytail.js";
+export {
+	decodePonytailConditionForRetry,
+	PONYTAIL_CONFLICT,
+	PONYTAIL_LABEL_OFF,
+	PONYTAIL_LABEL_ON,
+	PONYTAIL_PLUGIN,
+	PONYTAIL_SELECTOR_UNAVAILABLE,
+	PonytailLabelConflictError,
+	resolvePonytailRequested,
+	toPonytailCondition,
+} from "./ponytail.js";
+export { PONYTAIL_RULESET } from "./ponytail-ruleset.js";
 export {
 	DEFAULT_PROOFSHOT_CAPTURE_ANGLES,
 	DEFAULT_PROOFSHOT_CAPTURE_STAGES,
@@ -35,6 +58,7 @@ export type {
 	FounderUxGateMode,
 	OrchestratorConfig,
 	ParallelConfig,
+	PonytailConfig,
 	ProofShotConfig,
 	ReactionsConfig,
 	RoleBackendConfig,

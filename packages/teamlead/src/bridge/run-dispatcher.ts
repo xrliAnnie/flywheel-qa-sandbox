@@ -595,6 +595,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			agentName: req.agentName,
 			issueLabels: req.issueLabels,
 			owningDept: req.owningDept,
+			// FLY-615: per-run + per-issue ponytail signal (Blueprint resolves it)
+			ponytailInput: req.ponytailInput,
 			// FLY-205: doc-flow tier + issue URL (runs-route validates/persists)
 			docTier: req.docTier,
 			issueUrl: req.issueUrl,
