@@ -10,9 +10,27 @@
 #   For manual Bridge startup, use scripts/run-bridge.ts directly via tsx.
 set -euo pipefail
 
-FLYWHEEL_DIR="${HOME}/Dev/flywheel"
-ENV_FILE="${HOME}/.flywheel/.env"
-PID_FILE="${HOME}/.flywheel/pids/bridge.pid"
+# FLY-650: resolve FLYWHEEL_DIR / FLYWHEEL_STATE_DIR from host.json (core/host
+# config). Defaults == today's hardcoded values, so a host with NO host.json is
+# byte-identical (the Bridge runs on both macOS and Linux, so this wrapper is on
+# the portable path). A missing/broken lib falls back to the old hardcode.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SELF_DIR/lib/host-config.sh" ]]; then
+  # shellcheck source=lib/host-config.sh
+  source "$SELF_DIR/lib/host-config.sh"
+  # FLY-650 (Codex R1 HIGH-2): FAIL-CLOSED on a malformed host.json. host_config_load
+  # only fails on a PRESENT-but-broken host.json (absent → succeeds with defaults);
+  # a broken core config must stop startup (launchd/systemd throttle-restarts +
+  # the operator is alerted) rather than silently start the WRONG checkout.
+  if ! host_config_load >/dev/null; then
+    echo "[bridge-wrapper] FATAL: host.json invalid (fail-closed) — fix it and restart" >&2
+    exit 1
+  fi
+fi
+FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
+FLYWHEEL_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+ENV_FILE="${FLYWHEEL_STATE_DIR}/.env"
+PID_FILE="${FLYWHEEL_STATE_DIR}/pids/bridge.pid"
 
 log() { echo "[bridge-wrapper] $(date '+%H:%M:%S') $*"; }
 
@@ -49,7 +67,9 @@ if [[ -f "$BRIDGE_PORT_LIB" ]]; then
 
   BRIDGE_URL="${BRIDGE_URL:-http://localhost:${TEAMLEAD_PORT:-9876}}"
   BRIDGE_PORT="$(bp_port_from_url "$BRIDGE_URL")"
-  STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel/state}"
+  # FLY-650: FLYWHEEL_STATE_DIR is the state ROOT (~/.flywheel); the wrapper's
+  # markers live in its /state subdir. Resolves to the SAME path as before.
+  STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state"
   START_MARKER="${STATE_DIR}/bridge-wrapper-starts"
   mkdir -p "$STATE_DIR" 2>/dev/null || true
 

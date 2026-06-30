@@ -143,20 +143,24 @@ if [ -f "$FW/bin/skills-sync.sh" ]; then
   SKILLS_REPO="$(grep -oE '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]*skills[A-Za-z0-9_.-]*' "$FW/bin/skills-sync.sh" | head -1 || true)"
 fi
 
-# deps[]: static known toolchain with install-channel hints.
+# deps[]: known toolchain with PER-PLATFORM install hints (FLY-650).
+# Schema: platforms.{darwin:{channel,formula}, linux:{apt,dnf,presentCheck}}.
+# `required:true` deps with no linux mapping fail-loud on a Linux provision
+# (platform-deps.sh). node/pnpm are present-check on Linux (nvm/corepack path).
+# cmux is darwin-only (required:false → skipped on Linux). AI CLIs are manual.
 DEPS_JSON='[
-  {"name":"homebrew","channel":"installer"},
-  {"name":"node","channel":"brew","formula":"node"},
-  {"name":"pnpm","channel":"brew","formula":"pnpm"},
-  {"name":"tmux","channel":"brew","formula":"tmux"},
-  {"name":"gh","channel":"brew","formula":"gh"},
-  {"name":"jq","channel":"brew","formula":"jq"},
-  {"name":"git","channel":"brew","formula":"git"},
-  {"name":"cmux","channel":"manual","note":"cmux app + flywheel-cmux-install.sh"},
-  {"name":"codex","channel":"manual","note":"OpenAI Codex CLI"},
-  {"name":"claude","channel":"manual","note":"Claude Code CLI"},
-  {"name":"kimi","channel":"manual","note":"Kimi Code CLI (brew kimi-code)"},
-  {"name":"agy","channel":"manual","note":"Antigravity CLI"}
+  {"name":"homebrew","required":false,"platforms":{"darwin":{"channel":"installer"}}},
+  {"name":"node","required":true,"platforms":{"darwin":{"channel":"brew","formula":"node"},"linux":{"presentCheck":true}},"check":{"command":"node"}},
+  {"name":"pnpm","required":true,"platforms":{"darwin":{"channel":"brew","formula":"pnpm"},"linux":{"presentCheck":true}},"check":{"command":"pnpm"}},
+  {"name":"tmux","required":true,"platforms":{"darwin":{"channel":"brew","formula":"tmux"},"linux":{"apt":"tmux","dnf":"tmux"}},"check":{"command":"tmux"}},
+  {"name":"gh","required":true,"platforms":{"darwin":{"channel":"brew","formula":"gh"},"linux":{"apt":"gh","dnf":"gh"}},"check":{"command":"gh"}},
+  {"name":"jq","required":true,"platforms":{"darwin":{"channel":"brew","formula":"jq"},"linux":{"apt":"jq","dnf":"jq"}},"check":{"command":"jq"}},
+  {"name":"git","required":true,"platforms":{"darwin":{"channel":"brew","formula":"git"},"linux":{"apt":"git","dnf":"git"}},"check":{"command":"git"}},
+  {"name":"cmux","required":false,"platforms":{"darwin":{"channel":"manual"}},"note":"darwin-only viewer; cmux app + flywheel-cmux-install.sh"},
+  {"name":"codex","required":false,"channel":"manual","note":"OpenAI Codex CLI"},
+  {"name":"claude","required":false,"channel":"manual","note":"Claude Code CLI"},
+  {"name":"kimi","required":false,"channel":"manual","note":"Kimi Code CLI (brew kimi-code)"},
+  {"name":"agy","required":false,"channel":"manual","note":"Antigravity CLI"}
 ]'
 
 jq -n \
@@ -180,6 +184,18 @@ jq -n \
     }
   }' > "$STAGE/manifest.json"
 
+# ── 3b. host.json (FLY-650 D2=B core/host config) ─────────────────────────
+# The captured host.json carries only PORTABLE fields (skillsRepo). platform /
+# supervisorBackend / viewerBackend are deliberately OMITTED so the TARGET host
+# derives them from its own uname via host-config.sh — a darwin capture must NOT
+# pin the wrong platform onto a Linux provision target (D3=B). flywheelDir /
+# stateDir are also omitted (target defaults to today's values; an operator may
+# add overrides on the target). leadEnablement omitted (reserved; see §3.6).
+# Zero secrets — skillsRepo is a public repo slug; the secret-scan gate covers it.
+jq -n --arg repo "${SKILLS_REPO:-xrliAnnie/flywheel-skills}" \
+  '{ schemaVersion: 1, skillsRepo: (if $repo=="" then "xrliAnnie/flywheel-skills" else $repo end) }' \
+  > "$STAGE/host.json"
+
 # ── 4. FINAL SECRET GATE (red line) ───────────────────────────────────────
 if ! scan_for_secrets "$STAGE"; then
   echo "fleet-capture: ABORT — secret-like content detected in staged artifact." >&2
@@ -189,7 +205,7 @@ fi
 
 # ── 5. atomic-ish move into place ─────────────────────────────────────────
 mkdir -p "$OUT_DIR"
-cp "$STAGE/projects.json" "$STAGE/env.example" "$STAGE/manifest.json" "$OUT_DIR/"
+cp "$STAGE/projects.json" "$STAGE/env.example" "$STAGE/manifest.json" "$STAGE/host.json" "$OUT_DIR/"
 
 # ── 6. WHOLE-ARTIFACT GATE (Codex R1 HIGH-2) ──────────────────────────────
 # The STAGE scan only covers the files we generated. A pre-existing stale or
@@ -206,5 +222,6 @@ fi
 echo "fleet-capture: wrote sanitized artifact to $OUT_DIR"
 echo "  - projects.json   (env NAMES only)"
 echo "  - env.example     ($(grep -cE '^[[:space:]]*(export[[:space:]]+)?[A-Za-z_]' "$OUT_DIR/env.example" 2>/dev/null || echo 0) keys, zero values)"
-echo "  - manifest.json   ($(jq '.repos|length' "$OUT_DIR/manifest.json") repos, $(jq '.launchdJobs|length' "$OUT_DIR/manifest.json") launchd jobs)"
+echo "  - manifest.json   ($(jq '.repos|length' "$OUT_DIR/manifest.json") repos, $(jq '.launchdJobs|length' "$OUT_DIR/manifest.json") launchd jobs, platform-keyed deps)"
+echo "  - host.json       (FLY-650 core/host config — portable fields; target derives platform)"
 echo "fleet-capture: review for zero secrets before committing to git."

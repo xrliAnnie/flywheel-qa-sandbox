@@ -263,6 +263,7 @@ export type {
 	CloseTerminalViewOpts,
 	CloseTerminalViewResult,
 	TmuxViewerOpts,
+	ViewerBackend,
 } from "./tmux-viewer.js";
 export {
 	cancelOpener,
@@ -271,6 +272,8 @@ export {
 	openTmuxViewer,
 	openTmuxViewerLegacy,
 	posixEscape,
+	resolveViewerBackend,
+	viewerUsesTerminalApp,
 } from "./tmux-viewer.js";
 export type {
 	ActionDefinition,

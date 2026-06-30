@@ -14,11 +14,28 @@
 set -euo pipefail
 
 MANIFEST="${1:?Usage: flywheel-lead-wrapper.sh <manifest-path>}"
+# FLY-650: honor host.json flywheelDir (core/host config). host_config_load
+# exports FLYWHEEL_DIR only if not already set; with no host.json it derives the
+# default == today's value, so the `${FLYWHEEL_DIR:-...}` below is byte-identical.
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SELF_DIR/lib/host-config.sh" ]; then
+  # shellcheck source=lib/host-config.sh
+  source "$SELF_DIR/lib/host-config.sh"
+  # FLY-650 (Codex R1 HIGH-2): FAIL-CLOSED on a malformed host.json (same as the
+  # Bridge wrapper) — a broken core config must not silently fall back.
+  if ! host_config_load >/dev/null; then
+    echo "[wrapper] FATAL: host.json invalid (fail-closed) — fix it and restart" >&2
+    exit 1
+  fi
+fi
 # FLY-224: overridable defaults (testability seams). Unset in production launchd,
 # so the resolved values — and therefore behavior — are byte-identical to before.
+# FLY-650 (Codex R1 MED-1): .env/pids live under FLYWHEEL_STATE_DIR (the state
+# ROOT) so Bridge + Leads share ONE state root; default == today's ~/.flywheel.
 FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
-ENV_FILE="${FLYWHEEL_WRAPPER_ENV_FILE:-${HOME}/.flywheel/.env}"
-PID_DIR="${FLYWHEEL_WRAPPER_PID_DIR:-${HOME}/.flywheel/pids}"
+FLYWHEEL_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+ENV_FILE="${FLYWHEEL_WRAPPER_ENV_FILE:-${FLYWHEEL_STATE_DIR}/.env}"
+PID_DIR="${FLYWHEEL_WRAPPER_PID_DIR:-${FLYWHEEL_STATE_DIR}/pids}"
 
 log() {
   echo "[wrapper] $(date '+%H:%M:%S') $*"
