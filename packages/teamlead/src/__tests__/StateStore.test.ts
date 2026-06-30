@@ -824,9 +824,15 @@ describe("StateStore — FLY-369 chat thread archival", () => {
 	});
 
 	it("archived_at column survives a legacy DB without it (migration)", async () => {
-		const path = "/tmp/fly369-legacy-chat-threads.sqlite";
+		const fs = await import("node:fs");
+		const { mkdtempSync, rmSync } = fs;
+		const { tmpdir } = await import("node:os");
+		const { join: joinPath } = await import("node:path");
+		// FLY-663: use a unique temp dir so WAL sidecars (-wal/-shm) from a prior
+		// run can't replay into this one (a fixed path + unlink-main-only leaks them).
+		const dir = mkdtempSync(joinPath(tmpdir(), "fly369-"));
+		const path = joinPath(dir, "legacy-chat-threads.sqlite");
 		try {
-			const fs = await import("node:fs");
 			const initSqlJs = (await import("sql.js")).default;
 			const SQL = await initSqlJs();
 			const seed = new SQL.Database();
@@ -856,11 +862,9 @@ describe("StateStore — FLY-369 chat thread archival", () => {
 			expect(
 				migrated.getChatThreadByIssue("FLY-99", "ch-1")?.archived_at,
 			).toBeTruthy();
+			migrated.close();
 		} finally {
-			try {
-				const fs = await import("node:fs");
-				fs.unlinkSync(path);
-			} catch {}
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });
@@ -1300,9 +1304,14 @@ describe("StateStore — runner-attach pin (FLY-560)", () => {
 	});
 
 	it("attach-pin columns survive a legacy DB without them (migration)", async () => {
-		const path = "/tmp/fly560-legacy-chat-threads.sqlite";
+		const fs = await import("node:fs");
+		const { mkdtempSync, rmSync } = fs;
+		const { tmpdir } = await import("node:os");
+		const { join: joinPath } = await import("node:path");
+		// FLY-663: unique temp dir so WAL sidecars don't leak across runs.
+		const dir = mkdtempSync(joinPath(tmpdir(), "fly560-"));
+		const path = joinPath(dir, "legacy-chat-threads.sqlite");
 		try {
-			const fs = await import("node:fs");
 			const initSqlJs = (await import("sql.js")).default;
 			const SQL = await initSqlJs();
 			const seed = new SQL.Database();
@@ -1333,11 +1342,9 @@ describe("StateStore — runner-attach pin (FLY-560)", () => {
 			expect(migrated.getChatThreadAttachPin("FLY-99", "ch-1")?.messageId).toBe(
 				"m-9",
 			);
+			migrated.close();
 		} finally {
-			try {
-				const fs = await import("node:fs");
-				fs.unlinkSync(path);
-			} catch {}
+			rmSync(dir, { recursive: true, force: true });
 		}
 	});
 });
@@ -1403,7 +1410,7 @@ describe("StateStore FLY-639 corruption recovery", () => {
 		store.close();
 	});
 
-	it("on-disk recovery: saved session survives, unflushed lead event does NOT", async () => {
+	it("on-disk recovery: reopens healthy and durable data survives (FLY-663: WAL = no unflushed loss)", async () => {
 		const { mkdtempSync, rmSync } = await import("node:fs");
 		const { tmpdir } = await import("node:os");
 		const { join: joinPath } = await import("node:path");
@@ -1411,21 +1418,17 @@ describe("StateStore FLY-639 corruption recovery", () => {
 		const dbPath = joinPath(dir, "state.db");
 		const store = await StateStore.create(dbPath);
 		try {
-			// upsertSession auto-saves → persisted to disk.
 			store.upsertSession(makeSession({ execution_id: "disk-1" }));
-			// appendLeadEvent does NOT flush → in-memory only.
+			// FLY-663: under WAL every write is immediately durable — appendLeadEvent
+			// no longer has the old "lost until flush()" window.
 			store.appendLeadEvent("lead-1", "evt-1", "x", "{}");
-			// sanity: before recovery the lead event exists in memory.
-			expect(store.tryClaimLeadEvent("lead-1", "evt-1", "x", "{}")).toBe(false);
 
 			const recovered = store.recoverFromCorruption(new Error(CORRUPTION));
 			expect(recovered).toBe(true);
 
-			// Session survived (it was saved to disk before corruption).
+			// Both the session AND the lead event survive (both were durable).
 			expect(store.getSession("disk-1")).toBeTruthy();
-			// Unflushed lead event is gone (reload reads the last persisted image).
-			// tryClaim returns true ⇒ the row was absent.
-			expect(store.tryClaimLeadEvent("lead-1", "evt-1", "x", "{}")).toBe(true);
+			expect(store.tryClaimLeadEvent("lead-1", "evt-1", "x", "{}")).toBe(false);
 		} finally {
 			store.close();
 			rmSync(dir, { recursive: true, force: true });
@@ -1436,13 +1439,12 @@ describe("StateStore FLY-639 corruption recovery", () => {
 		const store = await StateStore.create(":memory:");
 		const onUnrecoverable = vi.fn();
 		store.onUnrecoverableCorruption = onUnrecoverable;
-		// Force every rebuild to throw (simulate a dead WASM module).
-		(store as unknown as { sqlModule: unknown }).sqlModule = {
-			Database: class {
-				constructor() {
-					throw new Error("dead module");
-				}
-			},
+		// FLY-663: simulate a reopen that keeps failing (e.g. a malformed file that
+		// stays malformed) by forcing buildDatabaseFromDisk to throw.
+		(
+			store as unknown as { buildDatabaseFromDisk: () => unknown }
+		).buildDatabaseFromDisk = () => {
+			throw new Error("reopen failed");
 		};
 
 		const max = (store as unknown as { maxRecoveryFailures: number })
@@ -1462,13 +1464,11 @@ describe("StateStore FLY-639 corruption recovery", () => {
 		const store = await StateStore.create(":memory:");
 		store.onUnrecoverableCorruption = vi.fn();
 		let builds = 0;
-		(store as unknown as { sqlModule: unknown }).sqlModule = {
-			Database: class {
-				constructor() {
-					builds++;
-					throw new Error("dead module");
-				}
-			},
+		(
+			store as unknown as { buildDatabaseFromDisk: () => unknown }
+		).buildDatabaseFromDisk = () => {
+			builds++;
+			throw new Error("reopen failed");
 		};
 		// First call attempts a rebuild (fails). Second call within the throttle
 		// window is skipped — same episode, not a new attempt.
@@ -1485,14 +1485,14 @@ describe("StateStore FLY-639 corruption recovery", () => {
 		const store = await StateStore.create(":memory:");
 		const onUnrecoverable = vi.fn();
 		store.onUnrecoverableCorruption = onUnrecoverable;
-		const goodModule = (store as unknown as { sqlModule: unknown }).sqlModule;
+		const realBuild = (
+			store as unknown as { buildDatabaseFromDisk: () => unknown }
+		).buildDatabaseFromDisk.bind(store);
 		// One failed attempt.
-		(store as unknown as { sqlModule: unknown }).sqlModule = {
-			Database: class {
-				constructor() {
-					throw new Error("dead module");
-				}
-			},
+		(
+			store as unknown as { buildDatabaseFromDisk: () => unknown }
+		).buildDatabaseFromDisk = () => {
+			throw new Error("reopen failed");
 		};
 		(
 			store as unknown as { lastRecoveryAttemptAt: number }
@@ -1501,8 +1501,10 @@ describe("StateStore FLY-639 corruption recovery", () => {
 		expect(
 			(store as unknown as { recoveryFailures: number }).recoveryFailures,
 		).toBe(1);
-		// Restore a working module → a real recovery resets the counter.
-		(store as unknown as { sqlModule: unknown }).sqlModule = goodModule;
+		// Restore the real reopen → a real recovery resets the counter.
+		(
+			store as unknown as { buildDatabaseFromDisk: () => unknown }
+		).buildDatabaseFromDisk = realBuild;
 		(
 			store as unknown as { lastRecoveryAttemptAt: number }
 		).lastRecoveryAttemptAt = 0;
@@ -1514,20 +1516,20 @@ describe("StateStore FLY-639 corruption recovery", () => {
 		store.close();
 	});
 
-	it("a MALFORMED on-disk image is NOT a silent empty-DB success — it counts as a rebuild failure (Codex code R1 MEDIUM)", async () => {
+	it("a MALFORMED on-disk file is NOT a silent empty-DB success — it counts as a rebuild failure (FLY-663 §2.5 contract)", async () => {
 		const { mkdtempSync, rmSync, writeFileSync } = await import("node:fs");
 		const { tmpdir } = await import("node:os");
 		const { join: joinPath } = await import("node:path");
 		const dir = mkdtempSync(joinPath(tmpdir(), "fly639-malformed-"));
-		const dbPath = joinPath(dir, "state.db");
-		const store = await StateStore.create(dbPath);
+		const malformedPath = joinPath(dir, "malformed.db");
+		// A file that EXISTS but is not a SQLite database.
+		writeFileSync(malformedPath, Buffer.from("not a valid sqlite image"));
+		const store = await StateStore.create(":memory:");
 		try {
-			store.upsertSession(makeSession({ execution_id: "disk-2" })); // valid, saved
-			// Corrupt the persisted image on disk: a file that EXISTS but is malformed.
-			writeFileSync(dbPath, Buffer.from("not a valid sqlite image"));
+			// Point recovery at the malformed file: buildDatabaseFromDisk must throw
+			// on the sanity read rather than masking it as a clean empty DB.
+			(store as unknown as { dbPath: string }).dbPath = malformedPath;
 			store.onUnrecoverableCorruption = vi.fn();
-			// Recovery must NOT silently return an empty DB and claim success: the
-			// malformed image makes `new Database(bytes)` throw -> counted failure.
 			expect(store.recoverFromCorruption(new Error(CORRUPTION))).toBe(false);
 			expect(
 				(store as unknown as { recoveryFailures: number }).recoveryFailures,

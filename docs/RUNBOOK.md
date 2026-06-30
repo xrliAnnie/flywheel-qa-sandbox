@@ -214,6 +214,12 @@ ps aux | grep teamlead
 rm -f ~/.flywheel/teamlead.db-journal
 ```
 
+> **FLY-663 (WAL):** `teamlead.db` now runs in WAL mode. Do **not** delete the
+> `teamlead.db-wal` / `teamlead.db-shm` sidecars to "clear a lock" — under WAL
+> they hold committed data until a checkpoint, so deleting them loses state.
+> SQLite manages them automatically; a clean Bridge `close()` checkpoints the
+> `-wal` into the main file. The legacy `-journal` file is not used in WAL mode.
+
 ### Events returning 401 Unauthorized
 
 Both the daemon and the orchestrator (event sender) must share the same `TEAMLEAD_INGEST_TOKEN` value. If the daemon has a token configured but the sender does not (or vice versa), requests will be rejected.
