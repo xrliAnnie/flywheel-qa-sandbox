@@ -105,6 +105,11 @@ These touch real secrets / live state and stay in human hands by design.
    `~/.flywheel/{teamlead.db,audit.db,cipher.db,memories,comm,manifests}` plus
    per-Lead memory and companion **thread-id** state (e.g. Mufasa thread
    `019eaf5d`) so conversations continue verbatim.
+   > **FLY-663 (WAL):** `teamlead.db` is now WAL-mode. Either copy it AFTER the
+   > Bridge has cleanly stopped (a clean `close()` checkpoints the WAL into the
+   > main file), OR copy `teamlead.db`, `teamlead.db-wal`, AND `teamlead.db-shm`
+   > **together** — the `-wal` sidecar can hold committed rows until a checkpoint.
+   > Copying only `teamlead.db` while the `-wal` is non-empty loses recent state.
 5. **macOS Automation permission** — first `osascript` → Terminal grant
    (see `SETUP.md`). Click **Allow** once.
 6. **Discord bots / Linear team** — reuse existing if migrating; for a brand-new

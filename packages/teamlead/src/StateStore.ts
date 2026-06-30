@@ -1,20 +1,144 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import initSqlJs, { type Database, type SqlJsStatic } from "sql.js";
+import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
+
+/**
+ * FLY-663: a thin compatibility shim that exposes the exact sql.js surface
+ * StateStore used (`run` / `prepare`+`bind`/`step`/`getAsObject`/`free` /
+ * `exec` / `getRowsModified` / `close`) on top of a native `better-sqlite3`
+ * connection. Centralizing the 1:1 mapping here keeps the ~67 query call sites
+ * byte-identical (minimal diff, single well-tested seam) while removing the
+ * sql.js WASM engine entirely.
+ *
+ * Why the migration (FLY-663 root-fix, not FLY-639's band-aid): the old
+ * `StateStore.save()` called `sql.js` `db.export()` on EVERY write — that closes
+ * + reopens the SQLite connection and re-serializes the WHOLE DB into a fresh
+ * contiguous buffer in the 2GB-capped, fragmentation-prone WASM linear heap
+ * (independent of system RAM). Under a dozen runners' high-frequency writes the
+ * WASM heap fragments/exhausts → the SQLite WASM instance corrupts → the
+ * production `null function or function signature mismatch` → `no such table`
+ * signatures. better-sqlite3 is native SQLite: no WASM heap to exhaust/corrupt,
+ * incremental WAL writes (no full-DB export per write), so corruption is
+ * structurally impossible. The on-disk file is unchanged (sql.js exported a
+ * standard SQLite3 file), so the migration needs zero data conversion.
+ */
+interface CompatExecResult {
+	columns: string[];
+	values: unknown[][];
+}
+
+/** sql.js-shaped Statement over a better-sqlite3 prepared statement. */
+class CompatStatement {
+	private bound: unknown[] = [];
+	private rows: Record<string, unknown>[] | null = null;
+	private cursor = 0;
+	constructor(private readonly stmt: BetterSqlite3.Statement) {}
+	/** sql.js `bind` — store params; defer execution until first `step()`. */
+	bind(params: unknown[] = []): boolean {
+		this.bound = params;
+		this.rows = null;
+		this.cursor = 0;
+		return true;
+	}
+	/** sql.js `step` — lazily run the query on first call, then advance one row. */
+	step(): boolean {
+		if (this.rows === null) {
+			this.rows = this.stmt.all(...this.bound) as Record<string, unknown>[];
+			this.cursor = 0;
+		}
+		if (this.cursor < this.rows.length) {
+			this.cursor++;
+			return true;
+		}
+		return false;
+	}
+	/** sql.js `getAsObject` — the current row as a column-name-keyed object. */
+	getAsObject(): Record<string, unknown> {
+		return this.rows?.[this.cursor - 1] ?? {};
+	}
+	/** sql.js `free` — release iteration state (no native handle to free). */
+	free(): void {
+		this.rows = null;
+		this.cursor = 0;
+	}
+}
+
+/**
+ * FLY-663: sql.js-surface wrapper over a native better-sqlite3 connection.
+ * Statements are prepared per-call (StateStore never cached them), matching the
+ * old usage exactly.
+ */
+class CompatDb {
+	private lastChanges = 0;
+	constructor(public readonly raw: BetterDb) {}
+
+	/** sql.js `run(sql, params?)`: param query → prepared run (track changes);
+	 * no-param SQL → `exec` (supports multi-statement DDL scripts). */
+	run(sql: string, params?: unknown[]): void {
+		if (params !== undefined) {
+			const info = this.raw.prepare(sql).run(...params);
+			this.lastChanges = info.changes;
+		} else {
+			this.raw.exec(sql);
+			this.lastChanges = 0;
+		}
+	}
+
+	/** sql.js `prepare(sql)` → an iterable CompatStatement (reads). */
+	prepare(sql: string): CompatStatement {
+		return new CompatStatement(this.raw.prepare(sql));
+	}
+
+	/** sql.js `exec(sql, params?)`: result-bearing → `[{columns, values}]`
+	 * (tuple shape the lead_events / stuck / delivery / PRAGMA readers expect);
+	 * non-result → run and return `[]`. */
+	exec(sql: string, params?: unknown[]): CompatExecResult[] {
+		const stmt = this.raw.prepare(sql);
+		if (stmt.reader) {
+			const rows = stmt.all(...(params ?? [])) as Record<string, unknown>[];
+			if (rows.length === 0) return [];
+			const columns = Object.keys(rows[0] as Record<string, unknown>);
+			const values = rows.map((r) => columns.map((c) => r[c]));
+			return [{ columns, values }];
+		}
+		stmt.run(...(params ?? []));
+		this.lastChanges = 0;
+		return [];
+	}
+
+	/** sql.js `getRowsModified()` → rows changed by the last `run`. */
+	getRowsModified(): number {
+		return this.lastChanges;
+	}
+
+	/** Run a logical mutation atomically (FLY-663 §2.8: the old export() was the
+	 * persistence boundary; better-sqlite3 autocommits each statement, so
+	 * multi-statement methods must be wrapped to avoid durable partial state). */
+	transaction(fn: () => void): void {
+		this.raw.transaction(fn)();
+	}
+
+	close(): void {
+		this.raw.close();
+	}
+}
 
 /**
  * FLY-639: sql.js / WASM error signatures that mean the current DB instance can
  * no longer be trusted and must be rebuilt — NOT a recoverable logical error.
  * `null function or function signature mismatch` = WASM indirect-call-table
- * corruption (the production incident); `no such table` = a corrupted instance
- * that lost its schema; the rest are the well-known sql.js fatal modes. Matched
- * case-insensitively as substrings. Ordinary errors (e.g. UNIQUE constraint)
- * deliberately do NOT match, so they never trigger a reload.
+ * corruption (the original FLY-639 incident); the rest are the well-known SQLite
+ * fatal modes. FLY-663: the engine is now native better-sqlite3 (no WASM), so
+ * these are retained as DORMANT defense — they also match better-sqlite3
+ * `SQLITE_CORRUPT` / `SQLITE_NOTADB` style messages. Matched case-insensitively
+ * as substrings. Ordinary errors (e.g. UNIQUE constraint) deliberately do NOT
+ * match, so they never trigger a reload.
  */
 const SQLJS_CORRUPTION_SIGNATURES = [
 	"null function or function signature mismatch",
 	"no such table",
 	"database disk image is malformed",
+	"file is not a database",
 	"out of memory",
 	"memory access out of bounds",
 ] as const;
@@ -309,10 +433,8 @@ export interface AutoQaRecord {
 export const REVIEW_BINDING_UNBOUND = "unbound";
 
 export class StateStore {
-	private db: Database;
+	private db: CompatDb;
 	private dbPath: string;
-	/** FLY-639: retained sql.js module, so a corrupt DB can be rebuilt synchronously. */
-	private sqlModule: SqlJsStatic;
 
 	// --- FLY-639: best-effort corruption self-heal + unrecoverable escalation ---
 	/** Consecutive failed rebuilds; reset to 0 on a successful recovery. */
@@ -328,73 +450,110 @@ export class StateStore {
 	 */
 	private readonly recoveryThrottleMs = 5_000;
 	/**
-	 * FLY-639: invoked when in-process recovery has failed `maxRecoveryFailures`
-	 * times in a row — the sql.js WASM module is likely unrecoverable. Default:
-	 * log FATAL + controlled `process.exit(1)` so launchd respawns the Bridge
-	 * with a FRESH WASM module. This resolves the "never crash" vs. "launchd is
-	 * the fallback" contradiction: a single transient error is contained, but a
-	 * truly-dead store does not leave an alive-but-useless daemon. Injectable so
-	 * tests do not kill the test runner.
+	 * FLY-639 (retained DORMANT under FLY-663): invoked when in-process recovery
+	 * has failed `maxRecoveryFailures` times in a row — the DB cannot be reopened.
+	 * Default: log FATAL + controlled `process.exit(1)` so launchd respawns the
+	 * Bridge with a fresh process + connection. This resolves the "never crash"
+	 * vs. "launchd is the fallback" contradiction: a single transient error is
+	 * contained, but a truly-dead store does not leave an alive-but-useless
+	 * daemon. Injectable so tests do not kill the test runner.
 	 */
 	onUnrecoverableCorruption: (err: unknown) => void = (err) => {
 		console.error(
-			"[StateStore] FATAL: sql.js corruption unrecoverable after repeated in-process reloads — exiting for a clean restart (launchd respawns with a fresh WASM module):",
+			"[StateStore] FATAL: StateStore DB unrecoverable after repeated in-process reopen attempts — exiting for a clean restart (launchd respawns the Bridge with a fresh connection):",
 			err instanceof Error ? err.message : err,
 		);
 		process.exit(1);
 	};
 
-	private constructor(db: Database, dbPath: string, sqlModule: SqlJsStatic) {
+	private constructor(db: CompatDb, dbPath: string) {
 		this.db = db;
 		this.dbPath = dbPath;
-		this.sqlModule = sqlModule;
 	}
 
+	/**
+	 * FLY-663: open the StateStore on native better-sqlite3. The factory stays
+	 * `async` so the many `await StateStore.create(...)` call sites (and tests)
+	 * are byte-compatible; better-sqlite3 itself is synchronous.
+	 *
+	 * Zero data migration: a sql.js-exported `teamlead.db` is a standard SQLite3
+	 * file, so this opens the existing production DB in place. WAL mode +
+	 * `synchronous=NORMAL` give incremental durable writes without the old
+	 * full-DB export-on-every-write.
+	 */
 	static async create(dbPath: string): Promise<StateStore> {
-		const SQL = await initSqlJs();
-		let db: Database;
-		if (dbPath === ":memory:") {
-			db = new SQL.Database();
-		} else {
-			try {
-				const data = readFileSync(dbPath);
-				db = new SQL.Database(data);
-			} catch {
-				mkdirSync(dirname(dbPath), { recursive: true });
-				db = new SQL.Database();
-			}
-		}
-		const store = new StateStore(db, dbPath, SQL);
+		const store = new StateStore(StateStore.openDatabase(dbPath), dbPath);
 		store.migrate();
 		return store;
 	}
 
+	/** FLY-663: open a better-sqlite3 connection with the StateStore pragmas. */
+	private static openDatabase(dbPath: string): CompatDb {
+		if (dbPath !== ":memory:") {
+			mkdirSync(dirname(dbPath), { recursive: true });
+		}
+		const raw = new BetterSqlite3(dbPath);
+		// WAL: incremental writes (no full-DB export per write). synchronous=NORMAL
+		// is safe under WAL (at most the last txn lost on power-loss) and fast.
+		// busy_timeout: retry transient locks (e.g. a cross-process WAL reader /
+		// checkpoint) instead of failing immediately.
+		raw.pragma("journal_mode = WAL");
+		raw.pragma("synchronous = NORMAL");
+		raw.pragma("busy_timeout = 5000");
+		raw.pragma("foreign_keys = ON");
+		return new CompatDb(raw);
+	}
+
+	/**
+	 * FLY-663: checkpoint the WAL into the main DB file before closing, so a clean
+	 * shutdown leaves `teamlead.db` complete and `-wal` empty (backup/migration
+	 * tooling can then treat the main file as authoritative). save() is a no-op
+	 * now (writes are already durable), so no pre-close flush is needed.
+	 */
 	close(): void {
-		this.save();
+		try {
+			// wal_checkpoint can return a NON-throwing busy result (busy=1) if another
+			// connection holds a read txn — then the WAL is NOT fully truncated. Log it
+			// so backup/migration tooling knows the -wal/-shm sidecars may still hold
+			// committed frames and must be copied with the main file (Codex code R1 LOW).
+			const res = this.db.raw.pragma("wal_checkpoint(TRUNCATE)") as
+				| Array<{ busy?: number }>
+				| undefined;
+			const busy = res?.[0]?.busy;
+			if (busy && busy !== 0) {
+				console.warn(
+					`[StateStore] close(): WAL checkpoint busy (a reader held a lock) — ${this.dbPath}-wal/-shm may retain committed frames; copy them with the main file.`,
+				);
+			}
+		} catch {
+			// best-effort; a checkpoint failure must not prevent close.
+		}
 		this.db.close();
 	}
 
 	/**
-	 * FLY-639: best-effort in-process recovery from sql.js / WASM corruption.
-	 * Returns `true` ONLY when the DB was rebuilt and is healthy again.
+	 * FLY-639 (band-aid, retained DORMANT under FLY-663): best-effort in-process
+	 * recovery from DB corruption. Returns `true` ONLY when the DB was reopened
+	 * and is healthy again.
+	 *
+	 * After the FLY-663 migration the engine is native better-sqlite3 (no WASM
+	 * heap), so the original sql.js corruption mode is structurally impossible.
+	 * This is kept as defense-in-depth for genuine SQLite-level corruption
+	 * (`SQLITE_CORRUPT` / `SQLITE_NOTADB` / a malformed on-disk file).
 	 *
 	 * - Non-corruption errors → `false` (DB untouched; no counting / throttling).
-	 * - Corruption errors → rebuild the DB from the LAST PERSISTED on-disk image
-	 *   (the corrupt in-memory instance is NEVER `export()`ed/saved — that would
-	 *   produce a poisoned image). Recoverable cases (a bad DB handle / SQLite
-	 *   heap state) heal in-process so the next poll cycle is healthy without a
-	 *   process restart.
+	 * - Corruption errors → close the suspect handle and REOPEN from the on-disk
+	 *   file (a transient handle/heap state heals in-process).
 	 *
-	 * IMPORTANT — this is NOT a guaranteed cure for module-level WASM corruption:
-	 * rebuilding `new Database(bytes)` reuses the SAME already-instantiated sql.js
-	 * module, so if the function-table itself is dead the rebuild may immediately
-	 * re-fail. That path is handled by the failure escalation
-	 * (`onUnrecoverableCorruption`), NOT by pretending recovery succeeded.
-	 *
-	 * Data tradeoff: the reload discards unpersisted in-memory mutations since the
-	 * last `save()`/`flush()`. `appendLeadEvent` / `markLeadEventDelivered` are
-	 * not durable until a later `flush()`, so some non-flushed lead events may be
-	 * lost or duplicated. Accepted for P1 — continuing on a corrupt DB is worse.
+	 * Recovery CONTRACT (FLY-663 §2.5 — never silently recreate an empty DB over
+	 * real data):
+	 *   - `:memory:` → rebuild empty (tests only have no on-disk image).
+	 *   - file ABSENT → fresh empty DB (legitimate first run).
+	 *   - file PRESENT but malformed / NOTADB / CORRUPT → the reopen's sanity
+	 *     read THROWS → counted as a rebuild FAILURE → after
+	 *     `maxRecoveryFailures` consecutive failures escalate via
+	 *     `onUnrecoverableCorruption` (clean restart). It is NEVER masked as an
+	 *     empty-DB "success".
 	 *
 	 * Never throws: a failed rebuild is logged + counted, and the caller (a
 	 * periodic poller) simply skips the cycle.
@@ -414,17 +573,15 @@ export class StateStore {
 		const original = err instanceof Error ? err.message : String(err);
 		const old = this.db;
 		// Track the freshly-built handle so it can be closed if migration throws
-		// (no leaked sql.js handle on the failure path — Codex code R1 LOW).
-		let next: Database | undefined;
+		// (no leaked handle on the failure path — Codex code R1 LOW).
+		let next: CompatDb | undefined;
 		try {
-			// Build the new handle from the last persisted image, swap it in, then
-			// migrate it (idempotent; synchronous + no save()). On ANY throw the
-			// catch restores `old` and closes the half-built `next`.
+			// Reopen from the on-disk file, swap it in, then migrate it (idempotent;
+			// synchronous). On ANY throw the catch restores `old` and closes `next`.
 			next = this.buildDatabaseFromDisk();
 			this.db = next;
 			this.migrate();
-			// Best-effort close of the old (corrupt) handle to release WASM memory —
-			// important under memory pressure. NEVER save() it; a close failure does
+			// Best-effort close of the old (corrupt) handle. A close failure does
 			// not fail recovery.
 			try {
 				old.close();
@@ -433,7 +590,7 @@ export class StateStore {
 			}
 			this.recoveryFailures = 0;
 			console.error(
-				`[StateStore] FLY-639: recovered from sql.js corruption — DB restored from last persisted image (${this.dbPath}). Original error: ${original}`,
+				`[StateStore] FLY-639: recovered from DB corruption — reopened from on-disk file (${this.dbPath}). Original error: ${original}`,
 			);
 			return true;
 		} catch (rebuildErr) {
@@ -460,44 +617,46 @@ export class StateStore {
 	}
 
 	/**
-	 * FLY-639: build a fresh Database from the last persisted on-disk image.
+	 * FLY-663: reopen a fresh better-sqlite3 connection from the on-disk file.
 	 *
-	 * A MISSING/unreadable file → fresh empty DB (legitimate first-run / no image
-	 * yet). But a file that EXISTS yet is malformed must NOT be silently swallowed
-	 * into an empty-DB "success": the `new Database(bytes)` throw is allowed to
-	 * propagate to `recoverFromCorruption()`'s catch so it counts as a rebuild
-	 * failure and can reach the unrecoverable escalation, rather than masking a
-	 * corrupt persisted image as a clean recovery (Codex code R1 MEDIUM).
+	 * A MISSING file → fresh empty DB (legitimate first-run / no image yet). A
+	 * file that EXISTS yet is malformed must NOT be silently swallowed into an
+	 * empty-DB "success": the sanity read below THROWS so it counts as a rebuild
+	 * failure in `recoverFromCorruption()` and can reach the unrecoverable
+	 * escalation (FLY-639 contract preserved; Codex code R1 MEDIUM).
 	 */
-	private buildDatabaseFromDisk(): Database {
+	private buildDatabaseFromDisk(): CompatDb {
 		if (this.dbPath === ":memory:") {
-			return new this.sqlModule.Database();
+			return StateStore.openDatabase(":memory:");
 		}
-		let data: Buffer;
-		try {
-			data = readFileSync(this.dbPath);
-		} catch {
-			// No on-disk image yet (or unreadable path) → fresh empty DB.
-			return new this.sqlModule.Database();
+		const fileExisted = existsSync(this.dbPath);
+		const db = StateStore.openDatabase(this.dbPath);
+		if (fileExisted) {
+			// Existing file → prove it is a real SQLite DB. A malformed/NOTADB image
+			// makes this read throw, which the caller counts as a rebuild failure
+			// (rather than masking corruption as a clean empty DB).
+			db.raw.prepare("SELECT name FROM sqlite_master LIMIT 1").get();
 		}
-		// Bytes exist — let a malformed image throw (caught by recoverFromCorruption).
-		return new this.sqlModule.Database(data);
-	}
-
-	private save(): void {
-		if (this.dbPath === ":memory:") return;
-		const data = this.db.export();
-		writeFileSync(this.dbPath, Buffer.from(data));
+		return db;
 	}
 
 	/**
-	 * FLY-605: force-persist pending mutations (e.g. lead_events written by
-	 * `appendLeadEvent` / `markLeadEventDelivered`, which do NOT auto-save) to
-	 * disk. Callers that must guarantee durability before a follow-on durable
-	 * write (e.g. advancing a thread cursor) call this explicitly.
+	 * FLY-663: persistence is now incremental + durable per write (better-sqlite3
+	 * WAL), so the old export-on-every-write `save()` is gone. Kept as a no-op so
+	 * the internal write-path call sites stay byte-identical (minimal diff).
+	 */
+	private save(): void {
+		// no-op: every run() is already durable to the WAL.
+	}
+
+	/**
+	 * FLY-605: durability barrier before a follow-on durable write. Under WAL
+	 * every write is already durable, so this is a no-op (retained for the
+	 * external callers in gate-poller). FLY-663: this also removes the old
+	 * "appendLeadEvent/markLeadEventDelivered not durable until flush" hazard.
 	 */
 	flush(): void {
-		this.save();
+		// no-op: writes are already durable under WAL.
 	}
 
 	migrate(): void {
@@ -1027,8 +1186,13 @@ export class StateStore {
 			session.status === "awaiting_review" &&
 			existing?.status !== "awaiting_review";
 
-		this.db.run(
-			`INSERT INTO sessions (
+		// FLY-663 §2.8: the session upsert + awaiting_review stamp + lifecycle bump
+		// are one logical mutation. The old export()-on-save was the atomic
+		// persistence boundary; under better-sqlite3 autocommit they must be wrapped
+		// so a mid-sequence throw cannot leave durable partial state.
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO sessions (
 				execution_id, issue_id, project_name, status,
 				issue_identifier, issue_title,
 				started_at, last_activity_at,
@@ -1078,55 +1242,56 @@ export class StateStore {
 				doc_tier = COALESCE(excluded.doc_tier, doc_tier),
 				issue_url = COALESCE(excluded.issue_url, issue_url)
 			`,
-			[
-				session.execution_id,
-				session.issue_id,
-				session.project_name,
-				session.status,
-				session.issue_identifier ?? null,
-				session.issue_title ?? null,
-				session.started_at ?? null,
-				session.last_activity_at ?? null,
-				session.tmux_session ?? null,
-				session.worktree_path ?? null,
-				session.branch ?? null,
-				session.last_error ?? null,
-				session.decision_route ?? null,
-				session.decision_reasoning ?? null,
-				session.cost_usd ?? null,
-				session.commit_count ?? null,
-				session.files_changed ?? null,
-				session.lines_added ?? null,
-				session.lines_removed ?? null,
-				session.summary ?? null,
-				session.diff_summary ?? null,
-				session.commit_messages ?? null,
-				session.changed_file_paths ?? null,
-				session.session_params ?? null,
-				session.heartbeat_at ?? null,
-				session.adapter_type ?? null,
-				session.run_attempt ?? null,
-				session.retry_predecessor ?? null,
-				session.retry_successor ?? null,
-				session.issue_labels ?? null,
-				session.pr_number ?? null,
-				session.session_stage ?? null,
-				session.stage_updated_at ?? null,
-				session.session_role ?? null,
-				session.doc_tier ?? null,
-				session.issue_url ?? null,
-			],
-		);
-		if (enteringAwaitingReview) {
-			this.stampAwaitingReviewEntry(session.execution_id);
-		}
-		// FLY-245 D-a: bump the monotonic lifecycle revision on a genuine status
-		// CHANGE (a new session keeps revision 0; a same-status re-upsert does not
-		// inflate it). The runner-lifecycle credential's freshness snapshot relies
-		// on this.
-		if (existing && existing.status !== session.status) {
-			this.bumpLifecycleRevision(session.execution_id);
-		}
+				[
+					session.execution_id,
+					session.issue_id,
+					session.project_name,
+					session.status,
+					session.issue_identifier ?? null,
+					session.issue_title ?? null,
+					session.started_at ?? null,
+					session.last_activity_at ?? null,
+					session.tmux_session ?? null,
+					session.worktree_path ?? null,
+					session.branch ?? null,
+					session.last_error ?? null,
+					session.decision_route ?? null,
+					session.decision_reasoning ?? null,
+					session.cost_usd ?? null,
+					session.commit_count ?? null,
+					session.files_changed ?? null,
+					session.lines_added ?? null,
+					session.lines_removed ?? null,
+					session.summary ?? null,
+					session.diff_summary ?? null,
+					session.commit_messages ?? null,
+					session.changed_file_paths ?? null,
+					session.session_params ?? null,
+					session.heartbeat_at ?? null,
+					session.adapter_type ?? null,
+					session.run_attempt ?? null,
+					session.retry_predecessor ?? null,
+					session.retry_successor ?? null,
+					session.issue_labels ?? null,
+					session.pr_number ?? null,
+					session.session_stage ?? null,
+					session.stage_updated_at ?? null,
+					session.session_role ?? null,
+					session.doc_tier ?? null,
+					session.issue_url ?? null,
+				],
+			);
+			if (enteringAwaitingReview) {
+				this.stampAwaitingReviewEntry(session.execution_id);
+			}
+			// FLY-245 D-a: bump the monotonic lifecycle revision on a genuine status
+			// CHANGE (a new session keeps revision 0; a same-status re-upsert does not
+			// inflate it). The runner-lifecycle credential's freshness snapshot relies
+			// on this.
+			if (existing && existing.status !== session.status) {
+				this.bumpLifecycleRevision(session.execution_id);
+			}
+		});
 		this.save();
 	}
 
@@ -1166,8 +1331,11 @@ export class StateStore {
 		// genuine transition (this is the FSM-validated path; a new session keeps
 		// revision 0).
 		const preStatus = this.getSession(executionId)?.status;
-		this.db.run(
-			`INSERT INTO sessions (
+		// FLY-663 §2.8: status upsert + awaiting_review stamp + lifecycle bump are
+		// one logical mutation — wrap so no durable partial state on a mid throw.
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO sessions (
 				execution_id, issue_id, project_name, status,
 				issue_identifier, issue_title,
 				started_at, last_activity_at,
@@ -1217,51 +1385,52 @@ export class StateStore {
 				doc_tier = COALESCE(excluded.doc_tier, doc_tier),
 				issue_url = COALESCE(excluded.issue_url, issue_url)
 			`,
-			[
-				executionId,
-				fields.issue_id ?? null,
-				fields.project_name ?? null,
-				status,
-				fields.issue_identifier ?? null,
-				fields.issue_title ?? null,
-				fields.started_at ?? null,
-				fields.last_activity_at ?? null,
-				fields.tmux_session ?? null,
-				fields.worktree_path ?? null,
-				fields.branch ?? null,
-				fields.last_error ?? null,
-				fields.decision_route ?? null,
-				fields.decision_reasoning ?? null,
-				fields.cost_usd ?? null,
-				fields.commit_count ?? null,
-				fields.files_changed ?? null,
-				fields.lines_added ?? null,
-				fields.lines_removed ?? null,
-				fields.summary ?? null,
-				fields.diff_summary ?? null,
-				fields.commit_messages ?? null,
-				fields.changed_file_paths ?? null,
-				fields.session_params ?? null,
-				fields.heartbeat_at ?? null,
-				fields.adapter_type ?? null,
-				fields.run_attempt ?? null,
-				fields.retry_predecessor ?? null,
-				fields.retry_successor ?? null,
-				fields.issue_labels ?? null,
-				fields.pr_number ?? null,
-				fields.session_stage ?? null,
-				fields.stage_updated_at ?? null,
-				fields.session_role ?? null,
-				fields.doc_tier ?? null,
-				fields.issue_url ?? null,
-			],
-		);
-		if (enteringAwaitingReview) {
-			this.stampAwaitingReviewEntry(executionId);
-		}
-		if (preStatus !== undefined && preStatus !== status) {
-			this.bumpLifecycleRevision(executionId);
-		}
+				[
+					executionId,
+					fields.issue_id ?? null,
+					fields.project_name ?? null,
+					status,
+					fields.issue_identifier ?? null,
+					fields.issue_title ?? null,
+					fields.started_at ?? null,
+					fields.last_activity_at ?? null,
+					fields.tmux_session ?? null,
+					fields.worktree_path ?? null,
+					fields.branch ?? null,
+					fields.last_error ?? null,
+					fields.decision_route ?? null,
+					fields.decision_reasoning ?? null,
+					fields.cost_usd ?? null,
+					fields.commit_count ?? null,
+					fields.files_changed ?? null,
+					fields.lines_added ?? null,
+					fields.lines_removed ?? null,
+					fields.summary ?? null,
+					fields.diff_summary ?? null,
+					fields.commit_messages ?? null,
+					fields.changed_file_paths ?? null,
+					fields.session_params ?? null,
+					fields.heartbeat_at ?? null,
+					fields.adapter_type ?? null,
+					fields.run_attempt ?? null,
+					fields.retry_predecessor ?? null,
+					fields.retry_successor ?? null,
+					fields.issue_labels ?? null,
+					fields.pr_number ?? null,
+					fields.session_stage ?? null,
+					fields.stage_updated_at ?? null,
+					fields.session_role ?? null,
+					fields.doc_tier ?? null,
+					fields.issue_url ?? null,
+				],
+			);
+			if (enteringAwaitingReview) {
+				this.stampAwaitingReviewEntry(executionId);
+			}
+			if (preStatus !== undefined && preStatus !== status) {
+				this.bumpLifecycleRevision(executionId);
+			}
+		});
 		this.save();
 	}
 
@@ -1403,16 +1572,20 @@ export class StateStore {
 		// FLY-245 D-a: bump lifecycle revision on a forced status change too (this
 		// legacy path must not be a hole in the freshness counter — plan §5.1).
 		const preStatus = this.getSession(executionId)?.status;
-		this.db.run(
-			`UPDATE sessions SET status = ?, last_activity_at = ?, last_error = ? WHERE execution_id = ?`,
-			[status, lastActivityAt, lastError ?? null, executionId],
-		);
-		if (enteringAwaitingReview) {
-			this.stampAwaitingReviewEntry(executionId);
-		}
-		if (preStatus !== undefined && preStatus !== status) {
-			this.bumpLifecycleRevision(executionId);
-		}
+		// FLY-663 §2.8: forced status + awaiting_review stamp + lifecycle bump are
+		// one logical mutation — wrap so no durable partial state on a mid throw.
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE sessions SET status = ?, last_activity_at = ?, last_error = ? WHERE execution_id = ?`,
+				[status, lastActivityAt, lastError ?? null, executionId],
+			);
+			if (enteringAwaitingReview) {
+				this.stampAwaitingReviewEntry(executionId);
+			}
+			if (preStatus !== undefined && preStatus !== status) {
+				this.bumpLifecycleRevision(executionId);
+			}
+		});
 		this.save();
 	}
 
@@ -1937,19 +2110,23 @@ export class StateStore {
 		issueId: string,
 		leadId?: string,
 	): void {
-		this.db.run(
-			"DELETE FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND thread_id != ?",
-			[issueId, channelId, threadId],
-		);
-		this.db.run(
-			`INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id)
-			 VALUES (?, ?, ?, ?)
-			 ON CONFLICT(thread_id) DO UPDATE SET
-				channel_id = excluded.channel_id,
-				issue_id = excluded.issue_id,
-				lead_id = excluded.lead_id`,
-			[threadId, channelId, issueId, leadId ?? null],
-		);
+		// FLY-663 §2.8: delete-stale-then-upsert is one logical mutation — wrap so a
+		// crash between the DELETE and the INSERT can't leave the issue thread-less.
+		this.db.transaction(() => {
+			this.db.run(
+				"DELETE FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND thread_id != ?",
+				[issueId, channelId, threadId],
+			);
+			this.db.run(
+				`INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id)
+				 VALUES (?, ?, ?, ?)
+				 ON CONFLICT(thread_id) DO UPDATE SET
+					channel_id = excluded.channel_id,
+					issue_id = excluded.issue_id,
+					lead_id = excluded.lead_id`,
+				[threadId, channelId, issueId, leadId ?? null],
+			);
+		});
 		this.save();
 	}
 
