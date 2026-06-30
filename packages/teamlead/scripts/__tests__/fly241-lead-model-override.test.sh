@@ -168,6 +168,78 @@ test_production_has_gate() {
 }
 test_production_has_gate
 
+# ═══════════════════════════════════════════════════════════════════════════
+# FLY-671: per-Lead effort override (`FLYWHEEL_LEAD_EFFORT`). The carrier flows
+# projects.json → manifest → plist env; here we drive the env directly (same as
+# the model tests) and assert the emitted `--effort` argv. Precedence:
+#   valid explicit env  → --effort <value> (any Lead, incl companion)
+#   no/empty/bad env + companion → --effort xhigh (FLY-583 fallback preserved)
+#   no/empty/bad env + non-companion → NO --effort (byte-compat)
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Prints the VALUE token immediately following `--effort`, or nothing.
+effort_arg_value() {
+  printf '%s\n' "$1" | awk -F'\t' '
+    prev=="--effort" && $1=="ARG" { print $2; exit }
+    $1=="ARG" { prev=$2 }
+  '
+}
+# Prints "yes" iff an `--effort` ARG token is present.
+effort_arg_present() {
+  printf '%s\n' "$1" | awk -F'\t' '
+    $1=="ARG" && $2=="--effort" { print "yes"; exit }
+  '
+}
+
+# E1: non-companion + valid effort → --effort high
+H=$(make_home); P=$(fixture_projects "$H")
+PLAN=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d FLYWHEEL_LEAD_EFFORT=high | plan_of)
+[ "$(effort_arg_value "$PLAN")" = "high" ] && ok "E1 non-companion valid → --effort high" || bad "E1 non-companion valid → expected high, got '$(effort_arg_value "$PLAN")'"
+rm -rf "$H"
+
+# E2: non-companion + UNSET → NO --effort (byte-compat — the sentinel)
+H=$(make_home); P=$(fixture_projects "$H")
+PLAN=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d | plan_of)
+[ -z "$(effort_arg_present "$PLAN")" ] && ok "E2 non-companion UNSET → no --effort (byte-compat)" || bad "E2 non-companion UNSET → --effort leaked '$(effort_arg_value "$PLAN")'"
+rm -rf "$H"
+
+# E3: non-companion + whitespace-only → trimmed → NO --effort
+H=$(make_home); P=$(fixture_projects "$H")
+PLAN=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d "FLYWHEEL_LEAD_EFFORT=   " | plan_of)
+[ -z "$(effort_arg_present "$PLAN")" ] && ok "E3 non-companion whitespace → trimmed → no --effort" || bad "E3 non-companion whitespace → --effort present"
+rm -rf "$H"
+
+# E4: non-companion + INVALID value → treated as unset → NO --effort
+H=$(make_home); P=$(fixture_projects "$H")
+PLAN=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d FLYWHEEL_LEAD_EFFORT=ultra | plan_of)
+[ -z "$(effort_arg_present "$PLAN")" ] && ok "E4 non-companion invalid → no --effort (unset)" || bad "E4 non-companion invalid → --effort leaked '$(effort_arg_value "$PLAN")'"
+rm -rf "$H"
+
+# E5: companion + UNSET → --effort xhigh (FLY-583 fallback intact)
+H=$(make_home); P=$(fixture_projects "$H")
+PLAN=$(run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth | plan_of)
+[ "$(effort_arg_value "$PLAN")" = "xhigh" ] && ok "E5 companion UNSET → --effort xhigh (FLY-583)" || bad "E5 companion UNSET → expected xhigh, got '$(effort_arg_value "$PLAN")'"
+rm -rf "$H"
+
+# E5b: companion + INVALID value → falls through to xhigh (bad env must NOT strip xhigh)
+H=$(make_home); P=$(fixture_projects "$H")
+PLAN=$(run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth FLYWHEEL_LEAD_EFFORT=bogus | plan_of)
+[ "$(effort_arg_value "$PLAN")" = "xhigh" ] && ok "E5b companion invalid env → still xhigh (fallback preserved)" || bad "E5b companion invalid env → expected xhigh, got '$(effort_arg_value "$PLAN")'"
+rm -rf "$H"
+
+# E6: companion + valid explicit effort → overrides xhigh (--effort medium)
+H=$(make_home); P=$(fixture_projects "$H")
+PLAN=$(run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth FLYWHEEL_LEAD_EFFORT=medium | plan_of)
+[ "$(effort_arg_value "$PLAN")" = "medium" ] && ok "E6 companion explicit → --effort medium (overrides xhigh)" || bad "E6 companion explicit → expected medium, got '$(effort_arg_value "$PLAN")'"
+rm -rf "$H"
+
+# E7: production claude-lead.sh has the FLY-671 effort gate
+if grep -qE 'FLYWHEEL_LEAD_EFFORT' "$LEAD_SH" && grep -qE '\-\-effort.*_fly671_lead_effort' "$LEAD_SH"; then
+  ok "production claude-lead.sh has FLY-671 --effort gate"
+else
+  bad "claude-lead.sh missing FLY-671 --effort gate (regression)"
+fi
+
 echo ""
-echo "FLY-241 lead-model-override test: ${PASS} passed, ${FAIL} failed"
+echo "FLY-241/671 lead model+effort override test: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

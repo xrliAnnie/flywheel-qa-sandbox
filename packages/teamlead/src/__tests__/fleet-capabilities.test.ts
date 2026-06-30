@@ -2,12 +2,15 @@ import { describe, expect, it } from "vitest";
 import {
 	CLAUDE_TIER_OPTIONS,
 	CODEX_TIER_OPTIONS,
+	computeAllowedEffortTargets,
 	computeAllowedModelTargets,
 	computeBackendOptions,
+	computeEffortOptions,
 	computeLeadCapabilities,
 	computeTierOptions,
 	DISABLED_BACKEND_SWITCH,
 	DISABLED_WRITE_LEAD_CODEX,
+	EFFORT_OPTIONS,
 	isCodexEligible,
 } from "../bridge/fleet-capabilities.js";
 import type { LeadConfig } from "../ProjectConfig.js";
@@ -23,12 +26,17 @@ function lead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 }
 
 describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () => {
-	it("Claude tiers = Fable 5 + Opus 4.8 (1M) explicit + Opus 4.8 (account default = null)", () => {
+	it("Claude tiers = Fable 5 + Opus 4.8 (1M) + Opus 4.8 (null) + Sonnet 4.6 + Haiku 4.5 (FLY-671 cheaper tiers appended)", () => {
 		expect(CLAUDE_TIER_OPTIONS).toEqual([
 			{ id: "claude-fable-5", label: "Fable 5" },
 			// FLY-360: explicit 1M-context selector (Claude Code CLI `[1m]` suffix).
 			{ id: "claude-opus-4-8[1m]", label: "Opus 4.8 (1M)" },
 			{ id: null, label: "Opus 4.8" },
+			// FLY-671: cheaper tiers appended (high→low) so cost-sensitive Leads can
+			// be downgraded from the console. Appended (not reordered) so the existing
+			// three entries keep their positions (reverse-compat for any ordinal use).
+			{ id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+			{ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
 		]);
 	});
 
@@ -49,6 +57,8 @@ describe("fleet-capabilities — allowedModelTargets (R6 #5)", () => {
 		const targets = computeAllowedModelTargets("claude-code");
 		expect(targets).toContain("claude-fable-5");
 		expect(targets).toContain("claude-opus-4-8[1m]"); // FLY-360: 1M selector authorized
+		expect(targets).toContain("claude-sonnet-4-6"); // FLY-671: cheaper tier authorized
+		expect(targets).toContain("claude-haiku-4-5-20251001"); // FLY-671: cheaper tier authorized
 		expect(targets).toContain(null); // explicit → account default is legal
 	});
 
@@ -59,6 +69,45 @@ describe("fleet-capabilities — allowedModelTargets (R6 #5)", () => {
 
 	it("Codex Lead targets = only null (no managed model switch)", () => {
 		expect(computeAllowedModelTargets("codex-app-server")).toEqual([null]);
+	});
+});
+
+describe("fleet-capabilities — effort options/targets (FLY-671, backend-aware)", () => {
+	it("EFFORT_OPTIONS = 默认(null) + the five CLI levels", () => {
+		expect(EFFORT_OPTIONS.map((o) => o.id)).toEqual([
+			null,
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+	});
+
+	it("Claude allowed effort targets = null + five levels", () => {
+		expect(computeAllowedEffortTargets("claude-code")).toEqual([
+			null,
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
+		expect(computeEffortOptions("claude-code")).toBe(EFFORT_OPTIONS);
+	});
+
+	it("Codex Lead effort is display-only: only null target, readonly chip", () => {
+		expect(computeAllowedEffortTargets("codex-app-server")).toEqual([null]);
+		const opts = computeEffortOptions("codex-app-server");
+		expect(opts).toHaveLength(1);
+		expect(opts[0]?.readonly).toBe(true);
+	});
+
+	it("computeLeadCapabilities carries effortOptions + allowedEffortTargets", () => {
+		const cap = computeLeadCapabilities(lead({ backend: "claude-code" }));
+		expect(cap.allowedEffortTargets).toContain("high");
+		expect(cap.allowedEffortTargets).toContain(null);
+		expect(cap.effortOptions).toBe(EFFORT_OPTIONS);
 	});
 });
 

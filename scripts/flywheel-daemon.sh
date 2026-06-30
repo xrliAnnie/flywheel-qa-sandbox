@@ -249,12 +249,39 @@ generate_plist_to() {
     return 1
   fi
 
+  # FLY-671: per-Lead effort carrier. Effort is a CLOSED CLI enum (unlike the
+  # free-string model), so a hand-edited manifest with a bogus value must NOT
+  # reach launchd → the CLI → crash the Lead. Validate against the enum + reject
+  # control chars; refuse to generate on a bad value (loud, not silent).
+  local effort
+  effort=$(jq -r '.effort // ""' "$manifest_source_path" 2>/dev/null || echo "")
+  if [ -n "$effort" ]; then
+    case "$effort" in
+      low|medium|high|xhigh|max) : ;;
+      *)
+        log "ERROR: manifest effort '$effort' is not a valid level (low|medium|high|xhigh|max); refusing to generate plist"
+        return 1
+        ;;
+    esac
+  fi
+
+  # Emit the EnvironmentVariables dict when model OR effort is set; each key is
+  # conditional. byte-compat: model-set/effort-unset yields the exact pre-FLY-671
+  # single-MODEL-line block. Key order is fixed model→effort.
   local env_block=""
-  if [ -n "$model" ]; then
+  if [ -n "$model" ] || [ -n "$effort" ]; then
     env_block="    <key>EnvironmentVariables</key>
     <dict>
-        <key>FLYWHEEL_LEAD_MODEL</key><string>$(xml_escape "$model")</string>
-    </dict>
+"
+    if [ -n "$model" ]; then
+      env_block="${env_block}        <key>FLYWHEEL_LEAD_MODEL</key><string>$(xml_escape "$model")</string>
+"
+    fi
+    if [ -n "$effort" ]; then
+      env_block="${env_block}        <key>FLYWHEEL_LEAD_EFFORT</key><string>$(xml_escape "$effort")</string>
+"
+    fi
+    env_block="${env_block}    </dict>
 "
   fi
 

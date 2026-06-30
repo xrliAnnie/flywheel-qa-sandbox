@@ -146,6 +146,11 @@ export interface AdapterExecutionContext {
 	cwd: string;
 	/** AI model to use (e.g., "opus", "sonnet") */
 	model?: string;
+	/**
+	 * FLY-671: reasoning-effort level (`low|medium|high|xhigh|max`) → CLI
+	 * `--effort`. Only the claude-tmux runner consumes it; absent ⇒ no flag.
+	 */
+	effort?: string;
 	/** Permission mode (e.g., "bypassPermissions", "plan") */
 	permissionMode?: string;
 	/** Additional text to append to the system prompt */

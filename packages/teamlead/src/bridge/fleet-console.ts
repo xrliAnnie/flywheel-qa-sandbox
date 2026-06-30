@@ -188,6 +188,33 @@ export class FleetConsole {
 		return out;
 	}
 
+	/**
+	 * FLY-671: current effort per exact key read FRESH from projects.json (mirrors
+	 * `currentModels`) — the `from.effort` baseline the engine re-verifies.
+	 */
+	currentEfforts(): Map<string, string | null> {
+		const out = new Map<string, string | null>();
+		let raw: unknown;
+		try {
+			raw = JSON.parse(readFileSync(this.o.projectsJsonPath, "utf8"));
+		} catch {
+			return out;
+		}
+		if (!Array.isArray(raw)) return out;
+		for (const project of raw as Array<Record<string, unknown>>) {
+			const projectName = project?.projectName;
+			const leads = project?.leads;
+			if (typeof projectName !== "string" || !Array.isArray(leads)) continue;
+			for (const lead of leads as Array<Record<string, unknown>>) {
+				const agentId = lead?.agentId;
+				if (typeof agentId !== "string") continue;
+				const effort = typeof lead.effort === "string" ? lead.effort : null;
+				out.set(`${projectName}-${agentId}`, effort);
+			}
+		}
+		return out;
+	}
+
 	// ── Route deps (§2.2) ──────────────────────────────────────────────────
 
 	routeDeps(): FleetRouteDeps {
@@ -195,7 +222,9 @@ export class FleetConsole {
 			audit: this.audit,
 			tokens: this.tokens,
 			currentModels: () => this.currentModels(),
+			currentEfforts: () => this.currentEfforts(),
 			allowedTargets: () => this.allowedTargets(),
+			allowedEffortTargets: () => this.allowedEffortTargets(),
 			configSha: () => this.configSha(),
 			createLaunching: (batchId, req) => this.createLaunching(batchId, req),
 			spawnEngine: (batchId, req) => this.spawnEngine(batchId, req),
@@ -211,6 +240,18 @@ export class FleetConsole {
 		const out = new Map<string, Array<string | null>>();
 		for (const lead of this.buildSnapshot().leads) {
 			out.set(lead.key, lead.allowedModelTargets);
+		}
+		return out;
+	}
+
+	/**
+	 * FLY-671: allowed `to.effort` targets per key (backend-aware: Claude =
+	 * levels ∪ {null}, Codex = [null]). Same forged-client gate as model.
+	 */
+	allowedEffortTargets(): Map<string, Array<string | null>> {
+		const out = new Map<string, Array<string | null>>();
+		for (const lead of this.buildSnapshot().leads) {
+			out.set(lead.key, lead.allowedEffortTargets);
 		}
 		return out;
 	}

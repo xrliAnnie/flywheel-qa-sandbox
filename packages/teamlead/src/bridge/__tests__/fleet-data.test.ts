@@ -202,7 +202,7 @@ describe("collectFleetSnapshot — two-axis evidence", () => {
 		expect(l.observed.management).toBe("standard-confirmed");
 		expect(l.observed.runtime).toBe("claude-confirmed");
 		expect(l.presentation).toBe("ONLINE");
-		expect(l.drift).toEqual({ model: false, backend: false });
+		expect(l.drift).toEqual({ model: false, backend: false, effort: false });
 	});
 
 	it("model drift visible (config differs from manifest/plist)", async () => {
@@ -429,6 +429,30 @@ describe("ConfigSnapshotProvider", () => {
 		prov.refresh();
 		expect(prov.snapshot().projects[0]!.leads[0]!.model).toBeUndefined();
 		expect(prov.hasExplicitFleetConfig()).toBe(false);
+	});
+
+	it("FLY-671: effort is a HOT field — add/remove overlays without restart-required", () => {
+		let fresh = [project({ effort: "high" })];
+		const prov = new ConfigSnapshotProvider(boot, {
+			loadProjects: () => fresh,
+			envPinned: false,
+		});
+		expect(prov.hasExplicitFleetConfig()).toBe(false);
+		prov.refresh();
+		// hot-add effort → live (NOT restart-required), value overlaid.
+		expect(prov.snapshot().state).toBe("live");
+		expect(prov.snapshot().projects[0]!.leads[0]!.effort).toBe("high");
+		expect(prov.hasExplicitFleetConfig()).toBe(true);
+		// model + effort together stays live.
+		fresh = [project({ model: "fab-2", effort: "medium" })];
+		prov.refresh();
+		expect(prov.snapshot().state).toBe("live");
+		expect(prov.snapshot().projects[0]!.leads[0]!.effort).toBe("medium");
+		// hot-remove effort → absent (deleted, not stale).
+		fresh = [project()];
+		prov.refresh();
+		expect(prov.snapshot().state).toBe("live");
+		expect(prov.snapshot().projects[0]!.leads[0]!.effort).toBeUndefined();
 	});
 
 	it("structural change (new lead) → restart-required + last-known-good (R3#4)", () => {

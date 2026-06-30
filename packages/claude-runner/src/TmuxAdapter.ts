@@ -681,6 +681,9 @@ export class TmuxAdapter implements IAdapter {
 			args.push("--append-system-prompt-file", promptPath);
 		}
 		if (ctx.model) args.push("--model", ctx.model);
+		// FLY-671: reasoning-effort override (roles.runner.effort). Absent ⇒ no
+		// flag (byte-compat). claude-tmux only; codex/agy/kimi adapters ignore it.
+		if (ctx.effort) args.push("--effort", ctx.effort);
 		if (ctx.allowedTools?.length)
 			args.push("--allowed-tools", ...ctx.allowedTools);
 		if (ctx.sessionDisplayName) args.push("--name", ctx.sessionDisplayName);

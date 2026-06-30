@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
+import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
 
 export interface LeadConfig {
 	agentId: string;
@@ -131,6 +132,21 @@ export interface LeadConfig {
 		| "content-coordination"
 		| "write-capable"
 		| "full-access";
+	/**
+	 * FLY-671: per-Lead reasoning-effort override (`low|medium|high|xhigh|max`).
+	 * Mirrors `model`: only effective for the `claude-code` backend, flowing
+	 * `fleet apply → manifest → generate_plist` as `FLYWHEEL_LEAD_EFFORT` →
+	 * `claude-lead.sh --effort`. Lowering it from the account default (effectively
+	 * xhigh) directly saves tokens.
+	 *
+	 * Cross-field (validated below): rejected on a `codex-app-server` Lead — Codex
+	 * has no `--effort` runtime path, so a value there would be inert dead config.
+	 *
+	 * Absent = account default (companions still get their FLY-583 `xhigh`).
+	 * Deliberately NOT normalized (FLY-231 pattern): absent stays absent so
+	 * existing in-memory Lead objects keep their exact shape (reverse-compat).
+	 */
+	effort?: LeadEffort;
 }
 
 /**
@@ -478,6 +494,25 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				) {
 					throw new Error(
 						`Project "${entry.projectName}" leads[${i}].backend: must be "claude-code" | "codex-app-server" (the Lead backend seam, not the Runner's executor id), got ${JSON.stringify(lead.backend)}`,
+					);
+				}
+			}
+			// FLY-671: validate optional per-lead effort (closed CLI enum). Absent
+			// stays absent (reverse-compat). Codex Leads have no `--effort` runtime
+			// path → reject the mixture as dead config (Codex design review R2 LOW-5,
+			// same fail-closed cross-field discipline as the codexProfile block).
+			if (lead.effort !== undefined) {
+				if (!isLeadEffort(lead.effort)) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].effort: must be "low"|"medium"|"high"|"xhigh"|"max", got ${JSON.stringify(lead.effort)}`,
+					);
+				}
+				if (lead.backend === "codex-app-server") {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`effort is not supported on backend "codex-app-server" (Codex has no ` +
+							`--effort runtime path — it would be inert config). Remove effort or ` +
+							`use the claude-code backend.`,
 					);
 				}
 			}

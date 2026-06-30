@@ -247,9 +247,13 @@ collect_lead_state() {
   local plist
   plist=$(plist_path "$key")
 
-  local desired_model
+  local desired_model desired_effort
   desired_model=$(jq -r --arg p "$project" --arg l "$lead" \
     '.[] | select(.projectName == $p) | .leads[] | select(.agentId == $l) | .model // ""' \
+    "$snapshot" 2>/dev/null)
+  # FLY-671: desired effort (launch-affecting carrier, same as model).
+  desired_effort=$(jq -r --arg p "$project" --arg l "$lead" \
+    '.[] | select(.projectName == $p) | .leads[] | select(.agentId == $l) | .effort // ""' \
     "$snapshot" 2>/dev/null)
   local db
   db=$(desired_backend "$snapshot" "$project" "$lead" "$project_root")
@@ -257,11 +261,12 @@ collect_lead_state() {
   d_backend="${db%% *}"
   d_source="${db##* }"
 
-  local m_model="" m_backend="" plist_model="" m_exists=false p_exists=false
+  local m_model="" m_backend="" m_effort="" plist_model="" plist_effort="" m_exists=false p_exists=false
   if [ -f "$manifest" ]; then
     m_exists=true
     m_model=$(jq -r '.model // ""' "$manifest" 2>/dev/null || echo "")
     m_backend=$(jq -r '.leadBackend.backendId // ""' "$manifest" 2>/dev/null || echo "")
+    m_effort=$(jq -r '.effort // ""' "$manifest" 2>/dev/null || echo "")
   fi
   if [ -f "$plist" ]; then
     p_exists=true
@@ -273,6 +278,12 @@ collect_lead_state() {
       armed && match($0, /<string>[^<]*<\/string>/) {
         print substr($0, RSTART+8, RLENGTH-17); exit
       }' "$plist")
+    # FLY-671: mirror the armed scan for the effort carrier.
+    plist_effort=$(awk '
+      /FLYWHEEL_LEAD_EFFORT/ { armed=1 }
+      armed && match($0, /<string>[^<]*<\/string>/) {
+        print substr($0, RSTART+8, RLENGTH-17); exit
+      }' "$plist")
   fi
 
   local mgmt runtime
@@ -281,26 +292,31 @@ collect_lead_state() {
 
   jq -n \
     --arg project "$project" --arg lead "$lead" --arg key "$key" \
-    --arg dModel "$desired_model" --arg dBackend "$d_backend" --arg dSource "$d_source" \
-    --arg mModel "$m_model" --arg mBackend "$m_backend" --arg pModel "$plist_model" \
+    --arg dModel "$desired_model" --arg dEffort "$desired_effort" --arg dBackend "$d_backend" --arg dSource "$d_source" \
+    --arg mModel "$m_model" --arg mBackend "$m_backend" --arg mEffort "$m_effort" \
+    --arg pModel "$plist_model" --arg pEffort "$plist_effort" \
     --argjson mExists "$m_exists" --argjson pExists "$p_exists" \
     --arg mgmt "$mgmt" --arg runtime "$runtime" \
     '{project: $project, lead: $lead, key: $key,
-      desired: {model: $dModel, backend: $dBackend, source: $dSource},
+      desired: {model: $dModel, effort: $dEffort, backend: $dBackend, source: $dSource},
       carrier: {manifestExists: $mExists, plistExists: $pExists,
-                manifestModel: $mModel, manifestBackend: $mBackend, plistModel: $pModel},
+                manifestModel: $mModel, manifestBackend: $mBackend, manifestEffort: $mEffort,
+                plistModel: $pModel, plistEffort: $pEffort},
       observed: {management: $mgmt, runtime: $runtime}}'
 }
 
 # Classification (§2.3): echoes "APPLICABLE" | "IN-SYNC" | "UNAPPLIED <reason>"
 classify_lead() {
   local state_json="$1"
-  local d_model d_backend m_model m_backend p_model m_exists p_exists mgmt runtime
+  local d_model d_effort d_backend m_model m_backend m_effort p_model p_effort m_exists p_exists mgmt runtime
   d_model=$(jq -r '.desired.model' <<< "$state_json")
+  d_effort=$(jq -r '.desired.effort // ""' <<< "$state_json")
   d_backend=$(jq -r '.desired.backend' <<< "$state_json")
   m_model=$(jq -r '.carrier.manifestModel' <<< "$state_json")
   m_backend=$(jq -r '.carrier.manifestBackend' <<< "$state_json")
+  m_effort=$(jq -r '.carrier.manifestEffort // ""' <<< "$state_json")
   p_model=$(jq -r '.carrier.plistModel' <<< "$state_json")
+  p_effort=$(jq -r '.carrier.plistEffort // ""' <<< "$state_json")
   m_exists=$(jq -r '.carrier.manifestExists' <<< "$state_json")
   p_exists=$(jq -r '.carrier.plistExists' <<< "$state_json")
   mgmt=$(jq -r '.observed.management' <<< "$state_json")
@@ -334,8 +350,11 @@ classify_lead() {
   if [ "$runtime" != "claude-confirmed" ]; then
     echo "UNAPPLIED runtime-${runtime}"; return
   fi
-  # Model-only diff against BOTH carriers (manifest + plist env, R1#2).
-  if [ "$d_model" = "$m_model" ] && [ "$d_model" = "$p_model" ]; then
+  # Diff against BOTH carriers (manifest + plist env, R1#2). FLY-671: a change in
+  # EITHER model OR effort makes the lead APPLICABLE — an effort-only change must
+  # not be skipped as in-sync.
+  if [ "$d_model" = "$m_model" ] && [ "$d_model" = "$p_model" ] \
+     && [ "$d_effort" = "$m_effort" ] && [ "$d_effort" = "$p_effort" ]; then
     echo "IN-SYNC"; return
   fi
   echo "APPLICABLE"
@@ -436,11 +455,16 @@ manifest_projection_sha() {
     echo "__absent-or-invalid__"
     return
   fi
+  # FLY-671: effort is launch-affecting (it flows to the plist → `--effort`), so
+  # it MUST participate in the rollback CAS projection — otherwise a manifest-only
+  # effort edit would be invisible to the CAS and a stale restore could clobber it
+  # (Codex design review R2 BLOCKER-5).
   jq -S -c '{leadId: (.leadId // null), projectName: (.projectName // null),
              projectDir: (.projectDir // null), subdir: (.subdir // null),
              workspace: (.workspace // null), botTokenEnv: (.botTokenEnv // null),
              mcpExclude: (.mcpExclude // null), chromeEnabled: (.chromeEnabled // null),
-             model: (.model // null), leadBackend: (.leadBackend // null)}' \
+             model: (.model // null), effort: (.effort // null),
+             leadBackend: (.leadBackend // null)}' \
     "$manifest" 2>/dev/null | shasum -a 256 | awk '{print $1}'
 }
 
@@ -750,10 +774,11 @@ cmd_apply() {
       '.leads[$key] = {attempt: 1, phase: "pending",
         original: {manifestExisted: true, plistExisted: true,
                    manifestSha: $mSha, plistSha: $pSha, manifestProjSha: $projSha},
-        desired: {model: $dModel}}' \
+        desired: {model: $dModel, effort: $dEffort}}' \
       --arg key "$key" --arg mSha "$m_sha" --arg pSha "$p_sha" \
       --arg projSha "$proj_sha" \
-      --arg dModel "$(jq -r --arg pp "$p" --arg ll "$l" '.[] | select(.projectName==$pp) | .leads[] | select(.agentId==$ll) | .model // ""' "$snapshot")"
+      --arg dModel "$(jq -r --arg pp "$p" --arg ll "$l" '.[] | select(.projectName==$pp) | .leads[] | select(.agentId==$ll) | .model // ""' "$snapshot")" \
+      --arg dEffort "$(jq -r --arg pp "$p" --arg ll "$l" '.[] | select(.projectName==$pp) | .leads[] | select(.agentId==$ll) | .effort // ""' "$snapshot")"
   done
 
   # ── Step 4: Phase W — wrapper, exactly once (R2#5/R6#4/R7#2) ─────────
@@ -824,12 +849,16 @@ cmd_apply() {
     # Staging (§2.6 step 1): desired manifest = current canonical with
     # model/backendId updated; desired plist via the daemon helper with the
     # CANONICAL runtime path (R5#4). Canonical untouched here.
-    local d_model
+    local d_model d_effort
     d_model=$(jq -r '.leads[$key].desired.model' --arg key "$key" "$txn")
+    # FLY-671: stage the effort carrier too, so generate_plist_to emits
+    # FLYWHEEL_LEAD_EFFORT into the regenerated plist (empty = delete the field).
+    d_effort=$(jq -r '.leads[$key].desired.effort // ""' --arg key "$key" "$txn")
     local staged_m="${txn_dir}/staged/${key}.manifest.json"
     local staged_p="${txn_dir}/staged/${key}.plist"
-    if ! jq --arg model "$d_model" \
+    if ! jq --arg model "$d_model" --arg effort "$d_effort" \
       '(if $model != "" then . + {model: $model} else del(.model) end)
+       | (if $effort != "" then . + {effort: $effort} else del(.effort) end)
        | . + {leadBackend: {backendId: "claude-code"}}' \
       "$cm" > "$staged_m" 2>/dev/null || ! jq empty "$staged_m" 2>/dev/null; then
       ferr "${key}: staging manifest failed — lead untouched, stopping."

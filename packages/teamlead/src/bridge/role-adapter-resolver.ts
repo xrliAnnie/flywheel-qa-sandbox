@@ -78,6 +78,8 @@ export interface ResolvedRoleAdapter {
 	 */
 	vendor?: TransportBackend;
 	model?: string;
+	/** FLY-671: optional reasoning-effort for the runner (claude-tmux `--effort`). */
+	effort?: string;
 }
 
 export interface ResolveRoleAdapterArgs {
@@ -185,6 +187,16 @@ export function resolveRoleAdapter(
 	// 4. Built-in default.
 	if (!backend) backend = BUILTIN_DEFAULT;
 
+	// FLY-671: effort resolves INDEPENDENTLY of the backend/model precedence above
+	// (Codex design review R2 HIGH-2). The model layer gates the whole project
+	// `roles` block behind "no label backend selected"; if effort rode along, a
+	// task with a `claude`/`sonnet`/... label would silently drop
+	// `roles.runner.effort` exactly when a label is present — defeating the
+	// cost-saving goal. v1 has NO label-level effort source, so the project role
+	// effort still applies under label-selected runners. (If label effort is ever
+	// added, give it precedence here.)
+	const effort = args.projectRoles?.[args.role]?.effort;
+
 	// FLY-493: `transport` is ALWAYS set (explicit no-transport contract);
 	// `vendor` is set only for a transported backend, so a no-transport backend
 	// (antigravity) yields `vendor: undefined` — never confused with legacy.
@@ -192,5 +204,6 @@ export function resolveRoleAdapter(
 	const resolved: ResolvedRoleAdapter = { backend, transport };
 	if (transport !== "none") resolved.vendor = transport;
 	if (model) resolved.model = model;
+	if (effort) resolved.effort = effort;
 	return resolved;
 }

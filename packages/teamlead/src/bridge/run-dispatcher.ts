@@ -110,6 +110,7 @@ export function buildRunnerSpawnFields(
 	| "vendor"
 	| "runnerBackend"
 	| "runnerModel"
+	| "runnerEffort"
 	| "runnerTransportMode"
 > {
 	// FLY-123: resolve the executor backend for the runner role —
@@ -130,10 +131,11 @@ export function buildRunnerSpawnFields(
 	// intentional contract, not the legacy/rollback "default claude" absence.
 	const backendFields: Pick<
 		BlueprintContext,
-		"runnerBackend" | "runnerModel" | "runnerTransportMode"
+		"runnerBackend" | "runnerModel" | "runnerEffort" | "runnerTransportMode"
 	> = {
 		runnerBackend: resolved.backend,
 		...(resolved.model && { runnerModel: resolved.model }),
+		...(resolved.effort && { runnerEffort: resolved.effort }), // FLY-671
 		...(resolved.transport === "none" && { runnerTransportMode: "none" }),
 	};
 	// A no-transport backend NEVER wires Agent Team identity — even on the
