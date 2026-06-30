@@ -366,6 +366,48 @@ describe("TmuxAdapter", () => {
 		expect(newWindow?.args).not.toContain("sh");
 	});
 
+	// ─── FLY-615: ponytail --settings flag ───────────
+	const PONYTAIL_SETTINGS_JSON =
+		'{"enabledPlugins":{"ponytail@ponytail":true}}';
+
+	it("FLY-615: enablePonytail adds --settings <json> (normal path)", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		await adapter.execute(makeCtx({ enablePonytail: true }));
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		const idx = newWindow!.args.indexOf("--settings");
+		expect(idx).toBeGreaterThan(-1);
+		expect(newWindow!.args[idx + 1]).toBe(PONYTAIL_SETTINGS_JSON);
+	});
+
+	it('FLY-615: --settings survives the gateway launch path (sh -c "$@")', async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "fly615-ponytail-"));
+		try {
+			const commitFile = join(tmp, "succ-1");
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+			await adapter.execute(
+				makeCtx({ enablePonytail: true, launchCommitPath: commitFile }),
+			);
+			const newWindow = calls.find(
+				(c) => c.cmd === "tmux" && c.args[0] === "new-window",
+			);
+			const idx = newWindow!.args.indexOf("--settings");
+			expect(idx).toBeGreaterThan(-1);
+			expect(newWindow!.args[idx + 1]).toBe(PONYTAIL_SETTINGS_JSON);
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	it("FLY-615: no enablePonytail → no --settings (byte-compatible)", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		await adapter.execute(makeCtx());
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		expect(newWindow!.args).not.toContain("--settings");
+	});
+
 	// ─── Window launch ──────────────────────────────
 
 	it("launches tmux window with -c ctx.cwd", async () => {

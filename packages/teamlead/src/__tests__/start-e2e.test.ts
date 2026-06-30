@@ -208,6 +208,12 @@ describe("Start API E2E", () => {
 			// issueUrl captured from the Linear preflight mock.
 			docTier: undefined,
 			issueUrl: "https://linear.app/test/issue/GEO-TEST",
+			// FLY-615: per-run/per-issue ponytail signal. No body.ponytail → no
+			// runOverride; labels from the mock issue; readable.
+			ponytailInput: {
+				kind: "start_signal",
+				signal: { labels: ["product"], labelStatus: "readable" },
+			},
 		});
 	}, 15_000);
 

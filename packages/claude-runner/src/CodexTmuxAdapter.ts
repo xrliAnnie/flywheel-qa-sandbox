@@ -52,6 +52,7 @@ import {
 	listGateMarkersForExecution,
 	removeGateMarker,
 } from "flywheel-comm/gate-marker";
+import { PONYTAIL_RULESET } from "flywheel-config";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -396,8 +397,17 @@ export class CodexTmuxAdapter implements IAdapter {
 		// Codex has no --append-system-prompt-file: fold the system prompt
 		// into the dynamic prompt text (plan §5.5 — AGENTS.md handles the
 		// persistent layer; the dynamic layer is per-execution).
-		let nextPrompt = ctx.appendSystemPrompt
-			? `${ctx.appendSystemPrompt}\n\n---\n\n${ctx.prompt}`
+		// FLY-615: Codex can't load the real ponytail plugin (headless, no
+		// interactive hook-trust), so when ponytail is enabled for this run we
+		// inject the portable ponytail-style ruleset into the instruction layer.
+		// Equivalent ruleset, not the plugin's per-turn hooks (caveat for 616).
+		const systemLayer = ctx.enablePonytail
+			? ctx.appendSystemPrompt
+				? `${PONYTAIL_RULESET}\n\n---\n\n${ctx.appendSystemPrompt}`
+				: PONYTAIL_RULESET
+			: ctx.appendSystemPrompt;
+		let nextPrompt = systemLayer
+			? `${systemLayer}\n\n---\n\n${ctx.prompt}`
 			: ctx.prompt;
 
 		try {

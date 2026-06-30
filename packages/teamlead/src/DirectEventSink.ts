@@ -121,6 +121,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// recognize an antigravity session. The HTTP /events session_started
 			// handler persists the same field for the loopback path.
 			adapter_type: env.runnerBackend,
+			// FLY-615: persist the resolved ponytail condition (A/B join key for
+			// FLY-614 token accounting + FLY-616 quality eval). HTTP /events path
+			// persists the same field.
+			ponytail_condition: env.ponytailCondition,
 		});
 
 		// GEO-151: Persist effective proofshot config into session_params so

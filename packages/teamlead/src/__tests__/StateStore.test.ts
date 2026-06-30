@@ -236,6 +236,21 @@ describe("StateStore", () => {
 		expect(s!.adapter_type).toBe("claude-cli");
 	});
 
+	it("FLY-615: upsertSession stores and retrieves ponytail_condition", () => {
+		store.upsertSession(makeSession({ ponytail_condition: "on:label" }));
+		expect(store.getSession("exec-1")!.ponytail_condition).toBe("on:label");
+	});
+
+	it("FLY-615: patchSessionMetadata updates ponytail_condition", () => {
+		store.upsertSession(makeSession({}));
+		store.patchSessionMetadata("exec-1", {
+			ponytail_condition: "unavailable:readiness:on:project",
+		});
+		expect(store.getSession("exec-1")!.ponytail_condition).toBe(
+			"unavailable:readiness:on:project",
+		);
+	});
+
 	it("upsertSession stores and retrieves session_params", () => {
 		store.upsertSession(makeSession({ session_params: '{"sessionId":"abc"}' }));
 		const s = store.getSession("exec-1");

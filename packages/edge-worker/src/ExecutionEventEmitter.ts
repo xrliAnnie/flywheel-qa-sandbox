@@ -21,6 +21,14 @@ export interface EventEnvelope {
 	 * session and never routes a wake to the env-default claude mailbox.
 	 */
 	runnerBackend?: string;
+	/**
+	 * FLY-615: the resolved ponytail condition for this run (e.g. "on:label",
+	 * "off:default", "unavailable:readiness:on:project"). Persisted as
+	 * `session.ponytail_condition` — the join key for FLY-614 token accounting +
+	 * FLY-616 quality eval A/B buckets. Absent → no ponytail condition recorded
+	 * (byte-compatible).
+	 */
+	ponytailCondition?: string;
 }
 
 export interface ExecutionEventEmitter {
@@ -72,6 +80,8 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				sessionRole: env.sessionRole,
 				// FLY-493: executor backend → persisted as session.adapter_type.
 				runnerBackend: env.runnerBackend,
+				// FLY-615: ponytail condition → persisted as session.ponytail_condition.
+				ponytailCondition: env.ponytailCondition,
 			},
 		});
 		this.track(p);

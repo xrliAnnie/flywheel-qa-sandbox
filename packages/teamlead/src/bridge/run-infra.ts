@@ -24,6 +24,7 @@ import {
 	ConfigLoader,
 	type DocFlowConfig,
 	type FounderUxGateConfig,
+	type PonytailConfig,
 	type RoleBackendMap,
 	type SkillsConfig,
 } from "flywheel-config";
@@ -162,6 +163,7 @@ async function createRunBlueprint(
 	skillsConfig?: SkillsConfig, // GEO-151: ProofShot + skill commands surfaced to Blueprint
 	docFlowConfig?: DocFlowConfig, // FLY-205: doc-flow baseline (DOC-FLOW prompt block when enabled)
 	founderUxGateConfig?: FounderUxGateConfig, // FLY-598: founder-UX gate prompt injection when mode != off
+	ponytailConfig?: PonytailConfig, // FLY-615: per-project ponytail rollout layer
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -404,7 +406,8 @@ async function createRunBlueprint(
 			checkpointConfig, // FLY-47
 			flywheelRepoRoot, // FLY-137 v1.27.2: Blueprint resolves shipped-generic agent_file from this root
 			docFlowConfig, // FLY-205
-			founderUxGateConfig, // FLY-598: LAST param by contract (Codex design R2 #5)
+			founderUxGateConfig, // FLY-598
+			ponytailConfig, // FLY-615: per-project ponytail rollout layer
 		);
 
 		const cleanup = async () => {
@@ -564,6 +567,7 @@ export async function setupRunInfrastructure(
 			let rolesConfig: RoleBackendMap | undefined;
 			let docFlowConfig: DocFlowConfig | undefined;
 			let founderUxGateConfig: FounderUxGateConfig | undefined;
+			let ponytailConfig: PonytailConfig | undefined;
 			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
 			try {
 				const configLoader = new ConfigLoader(async (p) =>
@@ -579,6 +583,14 @@ export async function setupRunInfrastructure(
 				rolesConfig = flywheelConfig?.roles;
 				docFlowConfig = flywheelConfig?.doc_flow; // FLY-205
 				founderUxGateConfig = flywheelConfig?.founder_ux_gate; // FLY-598
+				// FLY-615 v1 = per-issue only (Tadashi): the per-project config
+				// layer is DORMANT — we intentionally do NOT load
+				// `flywheelConfig?.ponytail`, so the project layer of the resolver
+				// never fires (a project's `ponytail.enabled` has no effect yet).
+				// The 3-layer resolver + Blueprint `ponytailConfig` param stay in
+				// place; v2 activates per-project rollout by loading it here.
+				// `ConfigLoader` still validates `ponytail` when present (harmless).
+				ponytailConfig = undefined;
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 					// No config file — no checkpoints, no agents block, no skills.
@@ -625,6 +637,7 @@ export async function setupRunInfrastructure(
 				skillsConfig, // GEO-151: wired into Blueprint slot 7
 				docFlowConfig, // FLY-205
 				founderUxGateConfig, // FLY-598
+				ponytailConfig, // FLY-615: per-project ponytail rollout layer
 			);
 
 			projectRuntimes.set(project.projectName, {
