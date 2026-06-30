@@ -20,6 +20,7 @@ import {
 } from "./roundtable-reply-route.js";
 import {
 	createThreadBudgetStore,
+	DEFAULT_ROUNDTABLE_THREAD_BUDGET,
 	seedThreadBudget,
 	type ThreadBudgetStore,
 } from "./roundtable-thread-budget.js";
@@ -77,7 +78,9 @@ export function buildReplyInThreadWiring(opts: {
 	const registry = new RoundtableThreadRegistry();
 	const budgetStore = createThreadBudgetStore();
 	const budgetN =
-		opts.cfg.budgetN && opts.cfg.budgetN > 0 ? opts.cfg.budgetN : 2;
+		opts.cfg.budgetN && opts.cfg.budgetN > 0
+			? opts.cfg.budgetN
+			: DEFAULT_ROUNDTABLE_THREAD_BUDGET;
 	const autoContinue = opts.cfg.autoContinue === true;
 	const parentChannelId = opts.cfg.parentChannelId;
 	// Other cross-dept channels keep their FLY-267 source-channel reply (R2#2).

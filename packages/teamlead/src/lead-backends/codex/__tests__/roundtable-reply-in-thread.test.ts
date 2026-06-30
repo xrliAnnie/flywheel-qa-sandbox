@@ -26,7 +26,7 @@ describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", ()
 		expect(parseCodexLeadRuntimeConfig(env()).replyInThread).toBeUndefined();
 	});
 
-	it("flag=1 + parent in cross-dept → enabled config (with guildId)", () => {
+	it("flag=1 + parent in cross-dept → enabled config (with guildId; FLY-676 autoContinue default-on)", () => {
 		const cfg = parseCodexLeadRuntimeConfig(
 			env({
 				FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1",
@@ -38,14 +38,31 @@ describe("parseCodexLeadRuntimeConfig — reply-in-thread (FLY-314 Phase 2)", ()
 			enabled: true,
 			parentChannelId: RT,
 			guildId: "guild-9",
+			autoContinue: true,
 		});
 	});
 
-	it("autoContinue off by default (omitted from config = byte-compat shape)", () => {
+	it("FLY-676: autoContinue ON by default when reply-in-thread enabled (env unset)", () => {
 		const cfg = parseCodexLeadRuntimeConfig(
 			env({
 				FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1",
 				FLYWHEEL_ROUNDTABLE_CHANNEL_ID: RT,
+			}),
+		).replyInThread;
+		// FLY-676 flipped autoContinue default-on (was default-off in FLY-314); the
+		// config shape now carries autoContinue:true when REPLY_IN_THREAD=1 + env unset.
+		expect(cfg).toEqual({
+			enabled: true,
+			parentChannelId: RT,
+			autoContinue: true,
+		});
+	});
+	it("FLY-676: THREAD_AUTOCONTINUE=0 (kill-switch) → autoContinue OMITTED (reverse-compat OFF-shape)", () => {
+		const cfg = parseCodexLeadRuntimeConfig(
+			env({
+				FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD: "1",
+				FLYWHEEL_ROUNDTABLE_CHANNEL_ID: RT,
+				FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE: "0",
 			}),
 		).replyInThread;
 		expect(cfg).toEqual({ enabled: true, parentChannelId: RT });

@@ -122,6 +122,10 @@ export interface GatewayConfig {
 	sendRateWindowMs: number;
 	/** Idempotency TTL (ms) — a repeat (channel, text) within this collapses. */
 	sendIdempotencyTtlMs: number;
+	/** FLY-676 — EFFECTIVE roundtable autoContinue (runtime-computed; NOT raw env). When
+	 * true, a proactive `target="roundtable"` send is fail-soft refused (FLY-680). Default
+	 * false (byte-compat with the FLY-245 gateway that had no roundtable awareness). */
+	roundtableAutoContinue: boolean;
 	// ── FLY-350 (Z) unit 4: gateway-proxied PR scope ──────────────────────────
 	/** The project's GitHub repo slug ("owner/repo") — scopes git_push/open_pr.
 	 * OPTIONAL (absent → git_push/open_pr fail closed at call time). The GH_TOKEN
@@ -193,6 +197,10 @@ export function parseGatewayConfig(env: NodeJS.ProcessEnv): GatewayConfig {
 			60_000,
 		),
 		projectRepo: env.FLYWHEEL_GATEWAY_PROJECT_REPO?.trim() ?? "",
+		// FLY-676: runtime-computed effective flag (NOT raw THREAD_AUTOCONTINUE). Default
+		// false when absent → no proactive-roundtable refusal (byte-compat).
+		roundtableAutoContinue:
+			env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE === "1",
 	};
 }
 
@@ -895,6 +903,7 @@ export async function gatewayMain(
 				auditPath: discordSendAuditPath,
 				leadId: cfg.leadId,
 				projectName: cfg.projectName,
+				roundtableAutoContinue: cfg.roundtableAutoContinue,
 			});
 			return asText(r.text, r.isError);
 		},

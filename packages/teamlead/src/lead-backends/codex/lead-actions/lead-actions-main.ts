@@ -168,6 +168,7 @@ export async function leadActionsMain(
 				auditPath,
 				leadId: cfg.leadId,
 				projectName: cfg.projectName,
+				roundtableAutoContinue: cfg.roundtableAutoContinue,
 			});
 			return asText(r.text, r.isError);
 		},

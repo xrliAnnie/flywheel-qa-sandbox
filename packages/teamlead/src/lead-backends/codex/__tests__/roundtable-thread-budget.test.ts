@@ -4,11 +4,18 @@ import { buildMentionGate } from "../mention-gate.js";
 import { RoundtableThreadRegistry } from "../RoundtableThreadRegistry.js";
 import {
 	createThreadBudgetStore,
+	DEFAULT_ROUNDTABLE_THREAD_BUDGET,
 	decideTopicThreadContinuation,
 	seedThreadBudget,
 } from "../roundtable-thread-budget.js";
 
 const THREAD = "topic-thread-1";
+
+describe("DEFAULT_ROUNDTABLE_THREAD_BUDGET (FLY-676)", () => {
+	it("is 12 (raised from 2 so natural multi-turn talk is not truncated)", () => {
+		expect(DEFAULT_ROUNDTABLE_THREAD_BUDGET).toBe(12);
+	});
+});
 
 describe("decideTopicThreadContinuation — bounded bot-only budget (FLY-314 R1#1 parity)", () => {
 	it("UNSEEDED thread: a bot trigger drops (missing budget = exhausted, not a reset)", () => {

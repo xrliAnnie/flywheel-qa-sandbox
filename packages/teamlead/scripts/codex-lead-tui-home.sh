@@ -30,6 +30,19 @@ set -euo pipefail
 log() { echo "[codex-lead-tui-home] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
+# FLY-676 — echo "1" when roundtable in-thread member-follow (autoContinue) is EFFECTIVELY
+# on, else "". MUST mirror parseCodexLeadRuntimeConfig exactly: reply-in-thread enabled
+# (FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1) AND autoContinue not explicitly disabled
+# (FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE != "0", i.e. DEFAULT-ON). The §10 config gate
+# compares the resulting config.toml env against the runtime's expectedMcp, so any drift
+# from the TS computation fail-closes the daemon (loud) rather than silently mis-gating.
+roundtable_autocontinue_effective() {
+  if [[ "${FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD:-}" == "1" \
+        && "${FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE:-}" != "0" ]]; then
+    printf '1'
+  fi
+}
+
 HOME_DIR="${FLYWHEEL_CODEX_TUI_HOME:-}"
 [ -n "$HOME_DIR" ] || die "FLYWHEEL_CODEX_TUI_HOME is required"
 
@@ -154,6 +167,12 @@ append_lead_actions_mcp() {
   local cross="${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-}"
   local state_dir="${FLYWHEEL_LEAD_ACTIONS_STATE_DIR:-}"
   local aliases="${FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:-}"
+  # FLY-676: effective roundtable autoContinue, mirroring parseCodexLeadRuntimeConfig
+  # (replyInThread enabled && THREAD_AUTOCONTINUE != "0"). Forwarded so the lead_actions
+  # child fail-soft refuses proactive roundtable sends. The §10 config gate compares this
+  # against the runtime's expectedMcp env — any drift fail-closes the daemon (loud).
+  local rt_eff
+  rt_eff="$(roundtable_autocontinue_effective)"
   for pair in "FLYWHEEL_LEAD_ACTIONS_MAIN_JS=$main_js" \
     "FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET=$sock" "FLYWHEEL_LEAD_ID=$lead_id" \
     "FLYWHEEL_PROJECT_NAME=$project" "FLYWHEEL_LEAD_CHAT_CHANNEL_ID=$chat" \
@@ -163,7 +182,7 @@ append_lead_actions_mcp() {
   # Render env as a TOML inline table via python (handles quoting; NO secret here
   # — the bot token travels over the broker socket, never config.toml).
   local env_toml
-  env_toml="$(python3 - "$lead_id" "$project" "$sock" "$chat" "$cross" "$state_dir" "$aliases" <<'PYENV'
+  env_toml="$(python3 - "$lead_id" "$project" "$sock" "$chat" "$cross" "$state_dir" "$aliases" "$rt_eff" <<'PYENV'
 import sys, json
 keys = ["FLYWHEEL_LEAD_ID","FLYWHEEL_PROJECT_NAME","FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET",
         "FLYWHEEL_LEAD_CHAT_CHANNEL_ID","FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
@@ -175,6 +194,10 @@ for k, v in zip(keys, vals):
         continue  # optional
     # defense-in-depth: never let a secret-shaped value into config
     pairs.append(f"{k} = {json.dumps(v)}")
+# FLY-676: append the effective roundtable autoContinue flag ONLY when on (keeps the
+# prior OFF env shape; matches the runtime builder's conditional include).
+if len(sys.argv) > 8 and sys.argv[8] == "1":
+    pairs.append(f'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = {json.dumps("1")}')
 print(", ".join(pairs))
 PYENV
 )" || die "append_lead_actions_mcp: failed to render env table"
@@ -293,8 +316,10 @@ append_full_access_lead_actions_mcp() {
     case "$pair" in *=) die "append_full_access_lead_actions_mcp: missing required env ${pair%=}" ;; esac
   done
   # env table: non-secret coords ONLY, NO broker socket (token is by NAME via env_vars).
+  local rt_eff
+  rt_eff="$(roundtable_autocontinue_effective)"  # FLY-676 — see helper; gate-matched
   local env_toml
-  env_toml="$(python3 - "$lead_id" "$project" "$chat" "$cross" "$state_dir" "$aliases" <<'PYENV'
+  env_toml="$(python3 - "$lead_id" "$project" "$chat" "$cross" "$state_dir" "$aliases" "$rt_eff" <<'PYENV'
 import sys, json
 keys = ["FLYWHEEL_LEAD_ID","FLYWHEEL_PROJECT_NAME","FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
         "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS","FLYWHEEL_LEAD_ACTIONS_STATE_DIR",
@@ -310,6 +335,10 @@ for k, v in zip(keys, vals):
         # gate value and fail-close after the home is already written.
         v = ",".join(s.strip() for s in v.split(",") if s.strip())
     pairs.append(f"{k} = {json.dumps(v)}")
+# FLY-676: effective roundtable autoContinue flag — ONLY when on (matches the runtime
+# full-access builder's conditional include; preserves the prior OFF env shape).
+if len(sys.argv) > 7 and sys.argv[7] == "1":
+    pairs.append(f'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = {json.dumps("1")}')
 print(", ".join(pairs))
 PYENV
 )" || die "append_full_access_lead_actions_mcp: failed to render env table"

@@ -836,6 +836,12 @@ export async function main(
 			crossDeptChannelIds: config.crossDeptChannelIds,
 			stateDir,
 			explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
+			// FLY-676: forward the effective roundtable autoContinue so the TUI lead_actions
+			// child guards proactive roundtable sends (parity with headless). The §10 config
+			// gate asserts config.toml env EXACTLY matches this, so codex-lead-tui-home.sh must
+			// write the same FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE — any drift
+			// fail-closes the daemon (loud, not silent).
+			roundtableAutoContinue: config.replyInThread?.autoContinue === true,
 		});
 		const configTomlPath = join(config.codexHome, "config.toml");
 		let configTomlContent: string;
@@ -883,6 +889,10 @@ export async function main(
 			crossDeptChannelIds: config.crossDeptChannelIds,
 			stateDir,
 			explicitAliases: env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES?.trim(),
+			// FLY-676: forward the effective roundtable autoContinue (parity with headless).
+			// codex-lead-tui-home.sh writes the matching env into config.toml; the full-access
+			// §10 gate asserts EXACT env match (drift fail-closes the daemon).
+			roundtableAutoContinue: config.replyInThread?.autoContinue === true,
 		});
 		const configTomlPath = join(config.codexHome, "config.toml");
 		let configTomlContent: string;

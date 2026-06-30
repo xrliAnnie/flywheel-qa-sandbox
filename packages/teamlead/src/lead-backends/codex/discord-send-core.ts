@@ -30,6 +30,7 @@ import {
 	deriveSendIdempotencyKey,
 	type SendIdempotencyCache,
 	type SlidingWindowRateLimiter,
+	shouldRefuseProactiveRoundtable,
 } from "./lead-actions/send-guard.js";
 
 /** The result of a `runDiscordSend` call — the caller wraps `text` into its own
@@ -55,6 +56,12 @@ export interface DiscordSendDeps extends ChannelAliasConfig {
 	auditPath: string;
 	leadId: string;
 	projectName: string;
+	/** FLY-676 — the EFFECTIVE roundtable autoContinue flag (replyInThread enabled &&
+	 * THREAD_AUTOCONTINUE !== "0"), computed by the runtime and forwarded as a non-secret
+	 * coordinate (NOT a raw env read in the child). When true, a proactive
+	 * `target="roundtable"` send is fail-soft refused (FLY-680 owns the proper engage hook).
+	 * Absent/false → no refusal (kill-switch / byte-compat with pre-FLY-676). */
+	roundtableAutoContinue?: boolean;
 	/** Injectable clock (default `Date.now`) for deterministic tests. */
 	now?: () => number;
 	/** Injectable Discord POST (default the real `postDiscordMessageToChannel`). */
@@ -106,6 +113,35 @@ export async function runDiscordSend(
 				? e.message
 				: String(e);
 		return { ok: false, isError: true, text: `REFUSED: ${msg}` };
+	}
+
+	// FLY-676 guard (Codex R4#2): after the alias classifies as "roundtable" but BEFORE any
+	// side effect (idempotency record / rate-limit consume / Discord post / non-defer audit),
+	// fail-soft refuse a PROACTIVE roundtable send while reply-in-thread autoContinue is on.
+	// A proactive roundtable post bypasses LeadInputRouter → no subscribe + no budget seed →
+	// the initiator would miss the first reply back (FLY-680 owns the proper engage hook).
+	if (
+		shouldRefuseProactiveRoundtable({
+			target,
+			autoContinue: deps.roundtableAutoContinue === true,
+		})
+	) {
+		audit({
+			ts: now,
+			leadId: deps.leadId,
+			project: deps.projectName,
+			target,
+			channelId,
+			outcome: "roundtable_proactive_deferred",
+		});
+		return {
+			ok: false,
+			isError: true,
+			channelId,
+			text:
+				"REFUSED: proactive roundtable posts are deferred while in-thread auto-continue is on " +
+				"(FLY-680 — cross-process subscribe+seed not yet wired). Reactive replies are unaffected.",
+		};
 	}
 
 	const key = deriveSendIdempotencyKey(channelId, text);

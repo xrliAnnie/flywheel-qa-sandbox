@@ -3,7 +3,41 @@ import {
 	deriveSendIdempotencyKey,
 	SendIdempotencyCache,
 	SlidingWindowRateLimiter,
+	shouldRefuseProactiveRoundtable,
 } from "../send-guard.js";
+
+describe("shouldRefuseProactiveRoundtable (FLY-676)", () => {
+	it("refuses target=roundtable when autoContinue on", () => {
+		expect(
+			shouldRefuseProactiveRoundtable({
+				target: "roundtable",
+				autoContinue: true,
+			}),
+		).toBe(true);
+		expect(
+			shouldRefuseProactiveRoundtable({
+				target: "  roundtable  ",
+				autoContinue: true,
+			}),
+		).toBe(true);
+	});
+	it("does NOT refuse roundtable when autoContinue off (kill-switch / byte-compat)", () => {
+		expect(
+			shouldRefuseProactiveRoundtable({
+				target: "roundtable",
+				autoContinue: false,
+			}),
+		).toBe(false);
+	});
+	it("never refuses non-roundtable targets (chat, other)", () => {
+		expect(
+			shouldRefuseProactiveRoundtable({ target: "chat", autoContinue: true }),
+		).toBe(false);
+		expect(
+			shouldRefuseProactiveRoundtable({ target: "random", autoContinue: true }),
+		).toBe(false);
+	});
+});
 
 describe("deriveSendIdempotencyKey", () => {
 	it("is deterministic for the same (channel, text)", () => {

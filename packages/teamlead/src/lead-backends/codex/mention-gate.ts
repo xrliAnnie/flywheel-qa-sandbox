@@ -21,6 +21,7 @@
 
 import type { DiscordInboundMessage } from "./CodexDiscordGateway.js";
 import {
+	DEFAULT_ROUNDTABLE_THREAD_BUDGET,
 	decideTopicThreadContinuation,
 	seedThreadBudget,
 	type ThreadBudgetStore,
@@ -98,7 +99,10 @@ export function buildMentionGate(
 	const dynamicShared = opts.dynamicSharedChannels;
 	const compiled = compileMentionPatterns(opts.mentionPatterns);
 	const autoContinue = opts.autoContinue === true && !!opts.budgetStore;
-	const budgetN = opts.budgetN && opts.budgetN > 0 ? opts.budgetN : 2;
+	const budgetN =
+		opts.budgetN && opts.budgetN > 0
+			? opts.budgetN
+			: DEFAULT_ROUNDTABLE_THREAD_BUDGET;
 	return (msg) => {
 		const isDynamicThread = dynamicShared?.has(msg.channelId) === true;
 		const isShared = shared.has(msg.channelId) || isDynamicThread;
