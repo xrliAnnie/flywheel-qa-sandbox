@@ -356,6 +356,9 @@ importers:
 
   packages/qa-framework:
     dependencies:
+      better-sqlite3:
+        specifier: ^12.8.0
+        version: 12.8.0
       yaml:
         specifier: ^2.7.1
         version: 2.8.1
@@ -363,6 +366,9 @@ importers:
         specifier: 4.3.6
         version: 4.3.6
     devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
       '@types/node':
         specifier: ^20.0.0
         version: 20.19.21
