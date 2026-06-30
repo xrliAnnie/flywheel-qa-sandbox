@@ -44,6 +44,14 @@ EOF
 done
 export PATH="$STUB_BIN:$PATH"
 
+# FLY-650: this is the DARWIN provisioning test (it predates platform-awareness and
+# asserts the launchd/narrate flow with a stub fixture repo). Force darwin so it is
+# deterministic on any CI host — on linux the supervisor phase would actually run
+# materialize-lead-manifests.sh + supervisor_install, which the stub fixture lacks.
+# The linux supervisor path (real repo-root + stubbed systemctl) is covered by
+# provision-linux.test.sh.
+export FLYWHEEL_PLATFORM=darwin
+
 # ── fixture fleet artifact ────────────────────────────────────────────────
 FLEET="$SANDBOX/fleet"
 mkdir -p "$FLEET"

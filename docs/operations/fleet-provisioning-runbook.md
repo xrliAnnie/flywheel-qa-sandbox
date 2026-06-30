@@ -139,3 +139,73 @@ These touch real secrets / live state and stay in human hands by design.
       per FLY-517 if the machine is capacity-constrained).
 
 Troubleshooting Bridge/launchd: see `docs/operations/bridge-daemon-management.md`.
+
+---
+
+## E. Linux / WSL2 (FLY-650 — portable provisioning)
+
+The SAME toolchain runs on Linux and WSL2. macOS keeps launchd (byte-identical to
+above); Linux uses **systemd --user**. The core/host config (`host.json`) and
+projects.json are physically separate (D2=B): a deployer edits the simple project
+config and need not touch the core.
+
+### E.1 Concepts (what changed vs macOS)
+
+- **Supervisor**: `launchd` (macOS) ↔ **`systemd --user`** (Linux). The
+  service-spec maps `service`→`.service`, `timer`→`.timer` (OnCalendar),
+  `path`→`.path` (DirectoryNotEmpty); `cmux-watcher` is darwin-only (skipped).
+- **Core/host config**: `~/.flywheel/host.json` carries platform/paths/skillsRepo.
+  Missing host.json = today's defaults (byte-compat). The captured artifact's
+  host.json carries only portable fields; the **target derives its platform from
+  uname** (a macOS capture never pins macOS onto a Linux target).
+- **Deps**: per-platform (`brew` on macOS, `apt`/`dnf` on Linux; node/pnpm are
+  present-checked — install via nvm/corepack). A required dep with no Linux
+  mapping fails loud (re-capture with FLY-650 or add `platforms.linux`).
+- **Viewer**: Linux has no cmux. `host.json.viewerBackend` defaults to
+  `tmux-only` on Linux — leads run in tmux and the operator attaches with
+  `tmux attach` (or Windows Terminal on WSL2). This is an **explicit, founder-
+  acknowledged revision** of the macOS "never headless" rule for Linux hosts
+  (tmux-only is visible-and-attachable, not truly headless).
+
+### E.2 Steps (run on the NEW Linux / WSL2 host)
+
+```bash
+# 0. WSL2 only — enable systemd, then restart WSL from Windows:
+#    sudo sh -c 'printf "[boot]\nsystemd=true\n" >> /etc/wsl.conf'   # then: wsl --shutdown
+#    Install under the LINUX filesystem (e.g. ~/Dev), NOT /mnt/c.
+
+# 1. Get the checkout.
+git clone https://github.com/<owner>/flywheel.git ~/Dev/flywheel
+cd ~/Dev/flywheel
+
+# 2. PREFLIGHT — prints an evidence bundle; installs/changes nothing.
+bash scripts/linux-preflight.sh
+#    Resolve every [BLOCK] (systemctl --user, lingering) before continuing.
+
+# 3. DRY-RUN, then apply through the home/token bootstrap (same phases as macOS).
+bash scripts/provision-fleet-host.sh                       # full plan, no changes
+bash scripts/provision-fleet-host.sh --apply --skip-token-check --only deps
+bash scripts/provision-fleet-host.sh --apply --skip-token-check --only repos --from repos
+bash scripts/provision-fleet-host.sh --apply --skip-token-check --only flywheel-home
+bash scripts/provision-fleet-host.sh --apply --skip-token-check --only tokens
+
+# 4. Section C (fill real tokens + restore state). gh/codex/claude auth too.
+
+# 5. Enable lingering + finish with the token gate enforced.
+loginctl enable-linger "$USER"
+bash scripts/provision-fleet-host.sh --apply --from tokens
+
+# 6. Bring up Bridge + aux units (systemd --user), then validate.
+#    (Lead bring-up: materialize the manifest, then supervisor install — see the
+#    provisioner's narrated supervisor phase. Verify with: systemctl --user status.)
+bash scripts/provision-fleet-host.sh --apply --only validate
+```
+
+### E.3 D3=B real-machine acceptance (founder-run)
+
+The runner cannot reach the founder's machines (same model as a migration). The
+founder runs the steps above on her real Linux + Windows(WSL2) boxes; on any
+failure she pastes back the evidence bundle (`linux-preflight.sh` output + the
+section-11 `journalctl --user` / `systemctl --user status` commands). The runner
+fixes and the founder re-runs until green. **The founder's real-machine green run
+is the acceptance gate** — hermetic tests are only the correctness guardrail.

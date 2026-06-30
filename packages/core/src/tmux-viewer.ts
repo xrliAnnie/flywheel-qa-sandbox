@@ -162,6 +162,46 @@ export function cancelOpener(executionId: string): void {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FLY-650: viewer backend gate (D1=A / Linux portability)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export type ViewerBackend = "cmux" | "terminal-app" | "tmux-only" | "none";
+
+/**
+ * FLY-650: which terminal viewer backend is active. Mirrors host-config.sh's
+ * `viewerBackend` (set as FLYWHEEL_VIEWER_BACKEND by the Bridge wrapper). The env
+ * value wins; otherwise the platform default — macOS=`cmux` (today's behavior),
+ * anything else (Linux/WSL2)=`tmux-only`.
+ *
+ * Founder-confirmed (FLY-650, Annie 2026-06-28): Linux runs headless `tmux-only`
+ * (attach with `tmux attach`) — an explicit, acknowledged revision of the macOS
+ * "never headless" rule for Linux hosts. macOS stays `cmux` (byte-compat).
+ */
+export function resolveViewerBackend(): ViewerBackend {
+	const env = process.env.FLYWHEEL_VIEWER_BACKEND;
+	if (
+		env === "cmux" ||
+		env === "terminal-app" ||
+		env === "tmux-only" ||
+		env === "none"
+	) {
+		return env;
+	}
+	return process.platform === "darwin" ? "cmux" : "tmux-only";
+}
+
+/**
+ * Whether the active viewer backend uses the macOS Terminal.app/osascript opener.
+ * `cmux` and `terminal-app` do; `tmux-only` and `none` do not (Linux/WSL2 +
+ * containers attach via `tmux attach`). Centralized so EVERY dispatch path that
+ * calls openTmuxViewer is gated here — new call sites cannot bypass it.
+ */
+export function viewerUsesTerminalApp(): boolean {
+	const b = resolveViewerBackend();
+	return b === "cmux" || b === "terminal-app";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Public API: open viewer
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -189,6 +229,17 @@ export interface TmuxViewerOpts {
  * one at a time, preventing Terminal.app Apple Event collisions.
  */
 export function openTmuxViewer(opts: TmuxViewerOpts): void {
+	// FLY-650: central viewer-backend gate. On Linux/WSL2 (tmux-only/none) the
+	// macOS Terminal.app/osascript opener is skipped — the operator attaches with
+	// `tmux attach`. macOS (cmux) is unchanged (byte-compat). Gating here covers
+	// every dispatch call site (run-dispatcher x2, DagDispatcher) at once.
+	if (!viewerUsesTerminalApp()) {
+		console.log(
+			`[tmux-viewer] viewer backend '${resolveViewerBackend()}' — skipping ` +
+				`Terminal.app opener (attach with: tmux attach -t ${opts.baseSessionName})`,
+		);
+		return;
+	}
 	const tmuxPath = resolveTmuxPath();
 	if (!tmuxPath) {
 		console.warn("[tmux-viewer] tmux not found in PATH, skipping viewer");
@@ -502,6 +553,14 @@ async function runVerifyLog(
  * use openTmuxViewer({...}).
  */
 export function openTmuxViewerLegacy(sessionName: string): void {
+	// FLY-650: same viewer-backend gate as openTmuxViewer (skip on Linux/WSL2).
+	if (!viewerUsesTerminalApp()) {
+		console.log(
+			`[tmux-viewer] viewer backend '${resolveViewerBackend()}' — skipping ` +
+				`legacy Terminal.app opener (attach with: tmux attach -t ${sessionName})`,
+		);
+		return;
+	}
 	const tmuxPath = resolveTmuxPath();
 	if (!tmuxPath) {
 		console.warn("[tmux-viewer] tmux not found in PATH, skipping viewer");

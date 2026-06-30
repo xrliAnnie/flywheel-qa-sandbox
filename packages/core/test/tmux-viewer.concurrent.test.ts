@@ -14,7 +14,30 @@
  *   - `openingTitles` is released in the top-level `finally` for every path.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	afterAll,
+	afterEach,
+	beforeAll,
+	beforeEach,
+	describe,
+	expect,
+	it,
+	vi,
+} from "vitest";
+
+// FLY-650: these tests exercise the Terminal.app opener, which only runs when the
+// viewer backend is cmux/terminal-app. CI runs on linux (resolveViewerBackend
+// defaults to tmux-only there → opener skipped), so force cmux to test the opener
+// path platform-independently. Restored after the file.
+const _origViewerBackend = process.env.FLYWHEEL_VIEWER_BACKEND;
+beforeAll(() => {
+	process.env.FLYWHEEL_VIEWER_BACKEND = "cmux";
+});
+afterAll(() => {
+	if (_origViewerBackend === undefined)
+		delete process.env.FLYWHEEL_VIEWER_BACKEND;
+	else process.env.FLYWHEEL_VIEWER_BACKEND = _origViewerBackend;
+});
 
 vi.mock("node:child_process", () => ({
 	execFileSync: vi.fn(),

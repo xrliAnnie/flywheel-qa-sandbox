@@ -71,6 +71,18 @@ done
 [ -n "$FLEET_DIR" ] || FLEET_DIR="$REPO_ROOT/fleet"
 FW="$HOME_DIR/.flywheel"
 MANIFEST="$FLEET_DIR/manifest.json"
+HOST_JSON="$FW/host.json"
+
+# FLY-650: platform-abstraction libs. host-config resolves platform + supervisor
+# backend (darwin defaults reproduce today's launchd behavior, byte-compat);
+# supervisor renders systemd units on linux; platform-deps resolves per-platform
+# install actions. Sourcing only defines functions (guarded, no side effects).
+# shellcheck source=lib/host-config.sh
+source "$SCRIPT_DIR/lib/host-config.sh"
+# shellcheck source=lib/supervisor.sh
+source "$SCRIPT_DIR/lib/supervisor.sh"
+# shellcheck source=lib/platform-deps.sh
+source "$SCRIPT_DIR/lib/platform-deps.sh"
 
 # ── helpers ───────────────────────────────────────────────────────────────
 log()  { echo "[provision] $*"; }
@@ -153,34 +165,85 @@ phase_preflight() {
   [ -f "$MANIFEST" ] || die "no captured artifact at $MANIFEST (run fleet-capture.sh first)"
   command -v jq >/dev/null 2>&1 || die "jq required"
   [ "$(id -u)" -eq 0 ] && die "do not run as root"
-  if [ "$(uname -s)" != "Darwin" ]; then warn "not macOS — provisioning targets macOS"; fi
-  # host-safety: refuse to clobber a live fleet on --apply.
-  if [ "$DRY_RUN" -eq 0 ] && [ -f "$FW/projects.json" ]; then
-    local leads
-    leads="$(jq '[.[].leads[]?] | length' "$FW/projects.json" 2>/dev/null || echo 0)"
-    if [ "${leads:-0}" -gt 0 ] && [ "$FORCE" -ne 1 ]; then
-      die "live fleet detected ($leads leads in $FW/projects.json) — refusing --apply without --force"
-    fi
-  fi
+  case "$FLYWHEEL_PLATFORM" in
+    darwin|linux) ;;
+    *) warn "unsupported platform '${FLYWHEEL_PLATFORM:-?}' — provisioning supports darwin|linux" ;;
+  esac
+  # host-safety: the live-fleet guard runs in main() BEFORE the phase loop so it
+  # protects EVERY entrypoint (incl --only/--from flywheel-home), not just a full
+  # run through preflight (Codex R4 HIGH). Nothing to do here.
   log "preflight ok (manifest: $(jq -r '.repos|length' "$MANIFEST") repos, $(jq -r '.launchdJobs|length' "$MANIFEST") jobs)"
 }
 
+# _host_safety_guard — refuse to clobber a live fleet on --apply (FLY-519 red line).
+# FLY-650: checks BOTH the resolved state dir AND the DEFAULT ~/.flywheel (a custom
+# host.json.stateDir must not let an existing default-location fleet slip past).
+# FLY-650 (Codex R4 HIGH): called from main() before ANY phase, so destructive
+# --only/--from entrypoints (e.g. flywheel-home) cannot bypass it.
+_host_safety_guard() {
+  [ "$DRY_RUN" -eq 0 ] || return 0
+  [ "$FORCE" -ne 1 ] || return 0
+  # Idempotency (Codex R4): once THIS provision has written its bootstrap host.json
+  # marker, staged re-entry (--only tokens after --only flywheel-home, re-runs) is
+  # our own managed state — skip. A pre-FLY-650 live fleet has NO host.json, so the
+  # accidental-clobber case (provisioning over a foreign/older live fleet) still
+  # fires. Re-clobbering an already-provisioned host is an explicit --force action.
+  [ -f "$HOST_JSON" ] && return 0
+  local -a cands=("$FW/projects.json")
+  [ "$FW" != "$HOME_DIR/.flywheel" ] && cands+=("$HOME_DIR/.flywheel/projects.json")
+  local pj n total=0
+  for pj in "${cands[@]}"; do
+    [ -f "$pj" ] || continue
+    n="$(jq '[.[].leads[]?] | length' "$pj" 2>/dev/null || echo 0)"
+    total=$((total + ${n:-0}))
+  done
+  if [ "$total" -gt 0 ]; then
+    die "live fleet detected ($total leads in ${cands[*]}) — refusing --apply without --force"
+  fi
+}
+
+# detect_pkgmgr <platform> — which package manager to drive on this host.
+detect_pkgmgr() {
+  case "$1" in
+    darwin) echo brew ;;
+    linux)
+      if command -v apt-get >/dev/null 2>&1; then echo apt
+      elif command -v dnf >/dev/null 2>&1; then echo dnf
+      else echo ""; fi ;;
+    *) echo "" ;;
+  esac
+}
+
 phase_deps() {
-  log "phase: deps"
-  if ! command -v brew >/dev/null 2>&1; then
+  local platform="${FLYWHEEL_PLATFORM:-}"
+  if [ -z "$platform" ]; then
+    case "$(uname -s)" in Darwin) platform=darwin ;; Linux) platform=linux ;; *) platform=unknown ;; esac
+  fi
+  local pkgmgr; pkgmgr="$(detect_pkgmgr "$platform")"
+  log "phase: deps (platform: $platform, pkgmgr: ${pkgmgr:-none})"
+  if [ "$platform" = "darwin" ] && [ "$pkgmgr" = "brew" ] && ! command -v brew >/dev/null 2>&1; then
     step "install Homebrew (https://brew.sh install.sh)"
   fi
-  local name channel formula
-  while IFS=$'\t' read -r name channel formula; do
+  # FLY-650: per-platform install actions via platform-deps.sh (brew/apt/dnf/
+  # present-check/manual/skip). REQUIRED deps with no linux mapping fail-loud.
+  local manifest_json; manifest_json="$(cat "$MANIFEST")"
+  local name action arg
+  while IFS=$'\t' read -r name action arg; do
+    [ -z "$name" ] && continue
     if command -v "$name" >/dev/null 2>&1; then
       log "dep present: $name"; continue
     fi
-    case "$channel" in
-      brew) run brew install "${formula:-$name}" ;;
-      installer) : ;;  # homebrew handled above
-      *) warn "dep '$name' needs manual install (channel: $channel) — see runbook" ;;
+    case "$action" in
+      install-brew) run brew install "$arg" ;;
+      install-apt)  run sudo apt-get install -y "$arg" ;;
+      install-dnf)  run sudo dnf install -y "$arg" ;;
+      present-check) warn "dep '$name' must already be present on $platform (e.g. nvm/corepack) — not auto-installed; see runbook" ;;
+      manual) warn "dep '$name' needs manual install ($platform) — see runbook" ;;
+      skip) log "dep '$name' not required on $platform — skipping" ;;
+      error-no-linux-mapping) die "dep '$name': $arg" ;;
+      *) warn "dep '$name': unknown action '$action'" ;;
     esac
-  done < <(jq -r '.deps[] | [.name, .channel, (.formula // "")] | @tsv' "$MANIFEST")
+  done < <(platform_deps_select "$manifest_json" "$platform" "$pkgmgr")
 }
 
 phase_repos() {
@@ -217,6 +280,19 @@ phase_flywheel_home() {
     log "projects.json exists — keeping (use --force to overwrite)"
   else
     run cp "$FLEET_DIR/projects.json" "$FW/projects.json"
+  fi
+  # FLY-650: materialize host.json (core/host config) from the artifact. Like
+  # projects.json: keep an existing one (operator may have added platform/path
+  # overrides) unless --force. Absent in old captures → fine (defaults apply).
+  # host.json lives at the BOOTSTRAP path (dirname $HOST_JSON = $HOME/.flywheel),
+  # which may DIFFER from $FW when a custom stateDir is set — ensure it exists.
+  if [ -f "$FLEET_DIR/host.json" ]; then
+    run mkdir -p "$(dirname "$HOST_JSON")"
+    if [ -f "$HOST_JSON" ] && [ "$FORCE" -ne 1 ]; then
+      log "host.json exists — keeping (use --force to overwrite)"
+    else
+      run cp "$FLEET_DIR/host.json" "$HOST_JSON"
+    fi
   fi
   # install runtime bin scripts from the checkout.
   local f
@@ -264,7 +340,29 @@ phase_skills() {
   step "run first skills-sync (global skills incl notion)"
   local canon
   canon="$(jq -r '.skills.canonicalRepo // ""' "$MANIFEST" 2>/dev/null)"
-  [ -n "$canon" ] && log "skills canonical repo: $canon"
+  # Codex R2 MED-B: this phase only narrates/delegates — an empty/null canonicalRepo
+  # must NOT make the phase (and thus the whole provision) fail. Keep return 0.
+  if [ -n "$canon" ]; then log "skills canonical repo: $canon"; else log "skills canonicalRepo: (none captured) — wire skills-sync per runbook"; fi
+  return 0
+}
+
+# FLY-650 (Codex R1 HIGH-1): the canonical Linux systemd unit specs the
+# provisioner installs — bridge (service) + deterministic aux (updater path+timer,
+# daily-standup timer) + per-lead services from the MATERIALIZED manifests. Both
+# phase_supervisor (install) and phase_validate (check) iterate THIS list, so unit
+# names are consistent by construction. cmux-watcher is darwinOnly (omitted on
+# linux); skills-update needs the synced skills-sync.sh script (narrated, R2#1).
+# Echoes one spec JSON per line.
+_fleet_linux_specs() {
+  local fw="$FLYWHEEL_DIR" st="$FLYWHEEL_STATE_DIR"
+  jq -nc --arg fw "$fw" '{name:"flywheel-bridge",kind:"service",exec:("/bin/bash "+$fw+"/scripts/flywheel-bridge-wrapper.sh"),keepAlive:true,stdout:"/tmp/flywheel-bridge.log"}'
+  jq -nc --arg fw "$fw" --arg st "$st" '{name:"flywheel-updater",kind:"path",exec:("/bin/bash "+$fw+"/scripts/update-flywheel.sh"),watch:[($st+"/self-ship-pending.d")],schedule:[{hour:0,minute:0},{hour:12,minute:0}]}'
+  jq -nc --arg fw "$fw" '{name:"flywheel-daily-standup",kind:"timer",exec:("/bin/bash "+$fw+"/scripts/daily-standup.sh"),schedule:[{hour:3,minute:0}]}'
+  local m
+  for m in "$FW/manifests"/*.json; do
+    [ -e "$m" ] || continue
+    jq -c --arg fw "$fw" --arg m "$m" '{name:("flywheel-lead-"+.projectName+"-"+.leadId),kind:"service",exec:("/bin/bash "+$fw+"/scripts/flywheel-lead-wrapper.sh "+$m),keepAlive:true}' "$m"
+  done
 }
 
 phase_launchd() {
@@ -275,29 +373,60 @@ phase_launchd() {
       die "token gate: refusing to start launchd jobs with empty/placeholder tokens"
     fi
   fi
-  # Bridge + auxiliary jobs: delegated to restart-services.sh on the real host
-  # (it already (re)loads bridge + cmux-watcher + standup + skills-update +
-  # updater idempotently). We enumerate them here for plan visibility.
-  step "deploy Bridge + auxiliary launchd jobs via restart-services.sh"
+  # FLY-650: platform-aware supervisor bring-up. The phase id stays "launchd"
+  # (CLI/test surface compat) but routes through the supervisor backend resolved
+  # by host-config. Lead bring-up is NARRATED (not fired) on BOTH platforms — the
+  # manifest-first-run chicken-egg + irreversible side effects make it operator-
+  # run per the runbook (Codex R1 MEDIUM/#2).
   local label kind
-  while IFS=$'\t' read -r label kind; do
-    [ "$kind" = "aux" ] || continue
-    step "  aux job: $label"
-  done < <(jq -r '.launchdJobs[] | [.label, .kind] | @tsv' "$MANIFEST")
-  # leads: delegated to the real host, NOT auto-run here (Codex R1 MEDIUM).
-  # `flywheel-fleet.sh apply` is a carrier-DIFF engine (model/backend cutover)
-  # and reports not-installed/no-carrier on a clean host — it does NOT do a
-  # from-scratch bring-up. `flywheel-daemon.sh install --all` installs from
-  # EXISTING manifests, which on a clean host don't exist yet: each Lead's
-  # manifest is generated by claude-lead.sh on its FIRST launch (daemon.sh:21).
-  # So the correct clean-host sequence is operator-run + verified on the real
-  # machine per the runbook; we narrate it rather than fire a command that
-  # would silently no-op (or that this PR is forbidden to run here anyway).
-  step "deploy lead launchd jobs from projects.json — per Lead:"
-  step "  1) run claude-lead.sh ONCE to generate the Lead's manifest, then stop it"
-  step "     (the launchd wrapper EXITS if no manifest exists — it does not self-generate)"
-  step "  2) flywheel-daemon.sh install <lead> — generate plist + bootstrap from the manifest"
-  step "  NOTE: run + verify on the REAL host per the runbook (flywheel-daemon.sh status)"
+  if [ "${FLYWHEEL_SUPERVISOR_BACKEND:-launchd}" = "systemd-user" ]; then
+    log "supervisor backend: systemd --user (linux)"
+    if [ "$DRY_RUN" -eq 1 ]; then
+      plan "loginctl enable-linger \"\$USER\" (boot-start + survive logout)"
+      plan "materialize lead manifests: materialize-lead-manifests.sh --home $HOME_DIR"
+      plan "supervisor install flywheel-bridge.service, flywheel-updater.{path,timer}, flywheel-daily-standup.timer"
+      plan "supervisor install per-lead flywheel-lead-<project>-<leadId>.service (from materialized manifests)"
+      step "cmux-watcher darwinOnly→skipped; skills-update needs ~/.flywheel/bin/skills-sync.sh (see runbook)"
+    else
+      # FLY-650 (Codex R1 HIGH-1): ACTUALLY install on linux. Unlike darwin (where
+      # restart-services.sh is the operator's bring-up tool), linux has no such
+      # delegate — the provisioner IS the bring-up tool, so D3=B can really run.
+      run loginctl enable-linger "$USER"
+      log "materializing lead manifests"
+      run bash "$REPO_ROOT/scripts/materialize-lead-manifests.sh" \
+        --home "$HOME_DIR" --projects "$FW/projects.json" --manifests-dir "$FW/manifests"
+      local spec uname_
+      while IFS= read -r spec; do
+        [ -z "$spec" ] && continue
+        uname_="$(jq -r '.name' <<<"$spec")"
+        log "supervisor install: $uname_"
+        supervisor_install "$spec" || die "supervisor install failed: $uname_"
+      done < <(_fleet_linux_specs)
+      step "cmux-watcher darwinOnly→skipped; skills-update needs ~/.flywheel/bin/skills-sync.sh (see runbook)"
+    fi
+  else
+    # darwin: delegated to restart-services.sh (it (re)loads bridge + cmux-watcher
+    # + standup + skills-update + updater idempotently). Unchanged from FLY-519.
+    step "deploy Bridge + auxiliary launchd jobs via restart-services.sh"
+    while IFS=$'\t' read -r label kind; do
+      [ "$kind" = "aux" ] || continue
+      step "  aux job: $label"
+    done < <(jq -r '.launchdJobs[] | [.label, .kind] | @tsv' "$MANIFEST")
+    # leads: delegated to the real host, NOT auto-run here (Codex R1 MEDIUM).
+    # `flywheel-fleet.sh apply` is a carrier-DIFF engine (model/backend cutover)
+    # and reports not-installed/no-carrier on a clean host — it does NOT do a
+    # from-scratch bring-up. `flywheel-daemon.sh install --all` installs from
+    # EXISTING manifests, which on a clean host don't exist yet: each Lead's
+    # manifest is generated by claude-lead.sh on its FIRST launch (daemon.sh:21).
+    # So the correct clean-host sequence is operator-run + verified on the real
+    # machine per the runbook; we narrate it rather than fire a command that
+    # would silently no-op (or that this PR is forbidden to run here anyway).
+    step "deploy lead launchd jobs from projects.json — per Lead:"
+    step "  1) run claude-lead.sh ONCE to generate the Lead's manifest, then stop it"
+    step "     (the launchd wrapper EXITS if no manifest exists — it does not self-generate)"
+    step "  2) flywheel-daemon.sh install <lead> — generate plist + bootstrap from the manifest"
+    step "  NOTE: run + verify on the REAL host per the runbook (flywheel-daemon.sh status)"
+  fi
 }
 
 phase_validate() {
@@ -313,20 +442,36 @@ phase_validate() {
       warn "validate: Bridge not responding at $BRIDGE_URL/api/runs/active"; ok=0
     fi
   fi
-  # lead plists loaded + processes (dry-run: plan).
+  # units/plists loaded (dry-run: plan). FLY-650: platform-aware — launchd
+  # (darwin, byte-identical to FLY-519) vs systemctl --user (linux).
   local uid label
   uid="$(id -u)"
-  while IFS=$'\t' read -r label _; do
-    if [ "$DRY_RUN" -eq 1 ]; then
-      plan "launchctl print gui/$uid/$label (expect loaded)"
-    else
-      if launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
+  if [ "${FLYWHEEL_SUPERVISOR_BACKEND:-launchd}" = "systemd-user" ]; then
+    # Codex R1 MED-2: check the SAME units the supervisor phase installed (from
+    # _fleet_linux_specs) — consistent flywheel-* names, not launchd-label-derived.
+    local spec unit
+    while IFS= read -r spec; do
+      [ -z "$spec" ] && continue
+      case "$(jq -r '.kind' <<<"$spec")" in timer) unit="$(jq -r '.name' <<<"$spec").timer" ;; path) unit="$(jq -r '.name' <<<"$spec").path" ;; *) unit="$(jq -r '.name' <<<"$spec").service" ;; esac
+      if [ "$DRY_RUN" -eq 1 ]; then
+        plan "systemctl --user is-active $unit (expect active)"
+      elif systemctl --user is-active "$unit" >/dev/null 2>&1; then
+        log "validate: active $unit"
+      else
+        warn "validate: NOT active $unit"; ok=0
+      fi
+    done < <(_fleet_linux_specs)
+  else
+    while IFS=$'\t' read -r label _; do
+      if [ "$DRY_RUN" -eq 1 ]; then
+        plan "launchctl print gui/$uid/$label (expect loaded)"
+      elif launchctl print "gui/$uid/$label" >/dev/null 2>&1; then
         log "validate: loaded $label"
       else
         warn "validate: NOT loaded $label"; ok=0
       fi
-    fi
-  done < <(jq -r '.launchdJobs[] | [.label, .kind] | @tsv' "$MANIFEST")
+    done < <(jq -r '.launchdJobs[] | [.label, .kind] | @tsv' "$MANIFEST")
+  fi
   # dispatcher smoke: Bridge read-only endpoint reachable (429 = limiting, warn).
   if [ "$DRY_RUN" -eq 1 ]; then
     plan "dispatcher smoke: GET $BRIDGE_URL/api/runs/active (429 → warn, not fail)"
@@ -344,6 +489,25 @@ phase_validate() {
 
 main() {
   log "mode: $([ "$DRY_RUN" -eq 1 ] && echo DRY-RUN || echo APPLY)  fleet-dir: $FLEET_DIR  home: $HOME_DIR"
+  # FLY-650: resolve platform + supervisor backend FIRST (before any phase, so
+  # --only/--from also see it). host.json from $FW or the artifact; platform
+  # derives from THIS target's uname — a darwin capture never pins platform onto
+  # a linux target. Malformed host.json fails closed.
+  local host_json_src="$HOST_JSON"
+  [ -f "$host_json_src" ] || host_json_src="$FLEET_DIR/host.json"
+  if ! host_config_load "$host_json_src"; then
+    die "host.json invalid — fix it then re-run (fail-closed)"
+  fi
+  # FLY-650 (Codex R2 MED-A): write ALL runtime state (.env/projects.json/manifests/
+  # dirs) under the RESOLVED state root so provision-write matches what the wrappers
+  # read at runtime. host.json itself stays at the BOOTSTRAP path ($HOME/.flywheel/
+  # host.json) — the wrappers must find it BEFORE they know a custom stateDir.
+  # Default stateDir == $HOME/.flywheel ⇒ FW unchanged (byte-compat).
+  FW="${FLYWHEEL_STATE_DIR:-$HOME_DIR/.flywheel}"
+  log "platform: ${FLYWHEEL_PLATFORM} | supervisor: ${FLYWHEEL_SUPERVISOR_BACKEND} | viewer: ${FLYWHEEL_VIEWER_BACKEND} | state: ${FW} | host.json: ${HOST_JSON}"
+  # FLY-650 (Codex R4 HIGH): host-safety guard runs HERE — before any phase — so
+  # destructive --only/--from entrypoints can't bypass it (it was preflight-only).
+  _host_safety_guard
   local ph fn
   for ph in "${ALL_PHASES[@]}"; do
     phase_enabled "$ph" || continue
