@@ -49,6 +49,10 @@ export interface BuildLeadActionsMcpOptions {
 	crossDeptChannelIds: string[];
 	stateDir: string;
 	explicitAliases?: string;
+	/** FLY-676 — EFFECTIVE roundtable autoContinue (runtime-computed: replyInThread enabled
+	 * && THREAD_AUTOCONTINUE !== "0"). When true, the child fail-soft refuses a proactive
+	 * discord_send(target="roundtable") (FLY-680 owns the real engage hook). Non-secret. */
+	roundtableAutoContinue?: boolean;
 }
 
 /** Keys that must NEVER appear in the MCP server env (defense-in-depth: this
@@ -74,6 +78,12 @@ export function buildLeadActionsMcpServerConfig(
 	};
 	if (opts.explicitAliases) {
 		env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES = opts.explicitAliases;
+	}
+	// FLY-676: forward the effective roundtable autoContinue flag (non-secret) so the TUI
+	// lead_actions child fail-soft refuses proactive roundtable sends — parity with the
+	// headless path. Present only when ON (keeps the prior OFF env shape; byte-compat).
+	if (opts.roundtableAutoContinue) {
+		env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = "1";
 	}
 	for (const k of Object.keys(env)) {
 		// FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET contains "SOCKET", not a secret token,
@@ -412,6 +422,9 @@ export interface BuildFullAccessLeadActionsMcpOptions {
 	crossDeptChannelIds: string[];
 	stateDir: string;
 	explicitAliases?: string;
+	/** FLY-676 — EFFECTIVE roundtable autoContinue (runtime-computed). When true, the child
+	 * fail-soft refuses proactive discord_send(target="roundtable") (FLY-680). Non-secret. */
+	roundtableAutoContinue?: boolean;
 }
 
 /** Build the FULL-ACCESS `[mcp_servers.lead_actions]` config — non-secret coords +
@@ -429,6 +442,11 @@ export function buildFullAccessLeadActionsMcpServerConfig(
 	};
 	if (opts.explicitAliases) {
 		env.FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES = opts.explicitAliases;
+	}
+	// FLY-676: forward the effective roundtable autoContinue flag (non-secret). Parity with
+	// the headless full-access path; present only when ON (byte-compat OFF shape).
+	if (opts.roundtableAutoContinue) {
+		env.FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = "1";
 	}
 	for (const k of Object.keys(env)) {
 		if (FORBIDDEN_ENV_KEY.test(k)) {

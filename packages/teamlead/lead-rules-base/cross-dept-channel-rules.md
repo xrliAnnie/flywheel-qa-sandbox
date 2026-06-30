@@ -136,6 +136,7 @@ Continue with discipline so the thread **converges** instead of looping:
   posting a bare "收到" — **stay silent**. Silence is the normal way a thread ends.
 - **Never reply to your own message**, and do not re-litigate a point already settled.
 - Keep it to **your department's slice**; don't restate what another Lead already said.
-- A thread naturally goes quiet when everyone is done — let it. (A bounded safety cap
-  also stops un-prompted bot-to-bot continuation automatically; do not rely on it —
-  exercise judgment first. A human stepping in, or a fresh `@`, always reopens the floor.)
+- A thread naturally goes quiet when everyone is done — let it. (A bounded safety cap is a
+  HIGH last-resort circuit-breaker — it stops a runaway un-prompted bot-to-bot loop, it is
+  NOT a per-few-turns cutoff; a normal back-and-forth never reaches it. Do not rely on it —
+  exercise judgment first. A human stepping in resets it, and always reopens the floor.)
