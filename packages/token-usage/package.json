@@ -1,0 +1,35 @@
+{
+	"name": "flywheel-token-usage",
+	"version": "0.1.0",
+	"description": "FLY-614 fine-grained token usage tracking (per project / lead / completed issue / model) — scan CC logs, persist daily aggregates to Supabase, render daily HTML report",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"flywheel-token-report": "dist/cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"test": "vitest run",
+		"test:watch": "vitest --watch",
+		"test:run": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@supabase/supabase-js": "^2.99.0",
+		"better-sqlite3": "^12.8.0"
+	},
+	"devDependencies": {
+		"@types/better-sqlite3": "^7.6.13",
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	},
+	"publishConfig": {
+		"access": "public"
+	}
+}
