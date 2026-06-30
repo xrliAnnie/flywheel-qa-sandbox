@@ -12,6 +12,7 @@
  */
 
 import { Router } from "express";
+import type { PonytailInput } from "flywheel-config";
 import {
 	DOC_TIERS,
 	type DocTier,
@@ -478,6 +479,24 @@ export function createRunsRouter(
 		try {
 			// FLY-24: Pass pre-fetched title/identifier so Blueprint's EventEnvelope
 			// uses real metadata (PreHydrator may fail Linear API and fall back to stub title).
+			// FLY-615: per-run ponytail override (highest ladder layer). Build a
+			// non-collapsed start_signal (run-param + labels + read status) so
+			// Blueprint resolves it against project config. Invalid values are
+			// ignored (treated as no override → label/project layers decide).
+			const rawPonytail = (req.body as { ponytail?: unknown }).ponytail;
+			const ponytailRunOverride =
+				rawPonytail === "on" || rawPonytail === "off"
+					? (rawPonytail as "on" | "off")
+					: undefined;
+			const ponytailInput: PonytailInput = {
+				kind: "start_signal",
+				signal: {
+					...(ponytailRunOverride && { runOverride: ponytailRunOverride }),
+					labels: normalizedIssueLabels,
+					labelStatus: issueLabelsFetchFailed ? "unreadable" : "readable",
+				},
+			};
+
 			const result = await startDispatcher.start({
 				issueId,
 				projectName,
@@ -489,6 +508,8 @@ export function createRunsRouter(
 				agentName,
 				issueLabels: normalizedIssueLabels,
 				owningDept,
+				// FLY-615: per-run + per-issue ponytail signal (resolved in Blueprint)
+				ponytailInput,
 				// FLY-137 Phase 5: Codex auto-trigger snapshot
 				codexSkip,
 				// FLY-205: doc-flow tier + issue URL (header continuity)

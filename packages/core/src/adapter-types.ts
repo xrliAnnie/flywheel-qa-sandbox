@@ -157,6 +157,15 @@ export interface AdapterExecutionContext {
 	appendSystemPrompt?: string;
 	/** Allowed tool patterns (e.g., ["Read(**)", "Edit(**)", "Bash"]) */
 	allowedTools?: string[];
+	/**
+	 * FLY-615: enable the ponytail (code-minimalism) behavior for this run.
+	 * Resolved by Blueprint from the three-layer ladder + readiness. The
+	 * backend decides HOW: Claude (TmuxAdapter) adds `--settings enabledPlugins`
+	 * to load the real plugin; Codex (CodexTmuxAdapter) injects the portable
+	 * ponytail ruleset into the instruction layer. Absent/false = no change
+	 * (byte-compatible spawn).
+	 */
+	enablePonytail?: boolean;
 	/** Maximum number of agentic turns */
 	maxTurns?: number;
 	/** Process-level timeout in milliseconds */

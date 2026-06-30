@@ -494,4 +494,22 @@ export interface FlywheelConfig {
 	xiaohongshu_learning?: XiaohongshuLearningConfig;
 	/** FLY-598: founder-facing UX gate. Absent or mode:off = fully off (byte-compatible). */
 	founder_ux_gate?: FounderUxGateConfig;
+	/**
+	 * FLY-615: per-project ponytail (code-minimalism plugin) rollout layer.
+	 * Absent or enabled:false → this project does not opt ponytail on by default
+	 * (per-issue label / per-run flag can still turn it on). Byte-compatible.
+	 */
+	ponytail?: PonytailConfig;
+}
+
+/**
+ * FLY-615: per-project ponytail rollout config. The lowest layer of the
+ * resolution ladder (per-run flag > per-issue label > per-project config >
+ * default off). `enabled: true` means every Runner of this project gets
+ * ponytail unless a per-issue `ponytail-off` label or per-run override turns
+ * it off. No `mode` field in v1 (ponytail's built-in default `full` is used);
+ * exposing mode without wiring a real mechanism would be a false contract.
+ */
+export interface PonytailConfig {
+	enabled: boolean;
 }

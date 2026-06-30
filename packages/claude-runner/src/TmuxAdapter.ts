@@ -12,7 +12,7 @@ import { createRequire } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import { resolveCommBackend } from "flywheel-config";
+import { PONYTAIL_PLUGIN, resolveCommBackend } from "flywheel-config";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -686,6 +686,15 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.effort) args.push("--effort", ctx.effort);
 		if (ctx.allowedTools?.length)
 			args.push("--allowed-tools", ...ctx.allowedTools);
+		// FLY-615: enable the ponytail plugin for THIS launch only via inline
+		// settings (highest non-managed precedence; per-plugin merge — does not
+		// disturb other enabled plugins). Absent → no flag → byte-compatible.
+		if (ctx.enablePonytail) {
+			args.push(
+				"--settings",
+				JSON.stringify({ enabledPlugins: { [PONYTAIL_PLUGIN]: true } }),
+			);
+		}
 		if (ctx.sessionDisplayName) args.push("--name", ctx.sessionDisplayName);
 		// NOTE: --max-turns does NOT exist in Claude CLI v2.1.63
 		// NOTE: previousSession intentionally ignored — no resume in interactive tmux mode
