@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  FLY-614 — daily token-usage report (launchd template).
+  Install:
+    cp scripts/com.flywheel.token-usage-daily.plist ~/Library/LaunchAgents/
+    # edit the path / Hour / Minute / channel below to match this machine, then:
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flywheel.token-usage-daily.plist
+  Channel is supplied via FLYWHEEL_TOKEN_USAGE_CHANNEL (set below or in ~/.flywheel/.env).
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.flywheel.token-usage-daily</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/bash</string>
+		<string>/Users/xiaorongli/Dev/flywheel/scripts/token-usage-daily.sh</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>FLYWHEEL_REPO</key>
+		<string>/Users/xiaorongli/Dev/flywheel</string>
+		<!-- <key>FLYWHEEL_TOKEN_USAGE_CHANNEL</key><string>REPLACE_WITH_CHANNEL_ID</string> -->
+	</dict>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>23</integer>
+		<key>Minute</key>
+		<integer>30</integer>
+	</dict>
+	<key>RunAtLoad</key>
+	<false/>
+	<key>StandardOutPath</key>
+	<string>/tmp/flywheel-token-usage-daily.log</string>
+	<key>StandardErrorPath</key>
+	<string>/tmp/flywheel-token-usage-daily.err</string>
+</dict>
+</plist>
