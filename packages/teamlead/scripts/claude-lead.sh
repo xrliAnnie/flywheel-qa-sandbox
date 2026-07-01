@@ -1720,6 +1720,19 @@ elif [ "$IS_COS_ROLE" = false ]; then
     log "Appending base auto-QA pipeline rules: ${BASE_AUTO_QA_RULES}"
   fi
 
+  # ── FLY-707 (FLY-698 epic): Default-Enable Policy (non-cos dept leads only) ──
+  # Built features ship ENABLED for the project (config opt-ins like qa.auto /
+  # doc_flow, default-off env flags), not left dormant behind an un-flipped
+  # opt-in — with security/governance gates (founder_consent, founder_ux_gate,
+  # branch protection) EXPLICITLY EXEMPT (flipping those blindly can wedge
+  # merge/ship). Pure guidance prose; harmless everywhere. Optional — missing
+  # base file is a no-op (backward compat with older flywheel checkouts).
+  BASE_DEFAULT_ENABLE_RULES="${BASE_RULES_DIR}/default-enable-policy.md"
+  if [ -f "$BASE_DEFAULT_ENABLE_RULES" ] && [ -r "$BASE_DEFAULT_ENABLE_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DEFAULT_ENABLE_RULES")
+    log "Appending base default-enable policy: ${BASE_DEFAULT_ENABLE_RULES}"
+  fi
+
   # ── FLY-222: Xiaohongshu memory-write delegation (non-cos dept leads only) ──
   # A xiaohongshu-learning Runner holds NO Bridge /api/* token by design
   # (FLY-175 least-privilege), so it delegates its "things learned" → memory

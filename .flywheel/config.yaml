@@ -53,6 +53,31 @@ checkpoints:
     timeout_ms: 86400000
     timeout_behavior: fail-close
 
+# FLY-707 (enablement, FLY-698 epic): flywheel default-enables built workflow
+# features instead of leaving them dormant behind a per-project opt-in.
+#
+# qa (FLY-579 auto-QA pipeline): after code review passes, the Bridge spawns an
+# INDEPENDENT QA Runner on a separate QA·FLY-XX issue pinned to the reviewed
+# commit and HOLDS the founder until QA is green. Read from this CANONICAL root
+# only (auto-qa-config-source.ts → ConfigLoader → cfg.qa); a runner can't edit
+# its own PR's config to skip its own QA. The global env FLYWHEEL_AUTO_QA=0 is a
+# hard kill-switch on top of this. The qa-executor agent is wired in agents.qa.
+qa:
+  auto: true
+  # Issue labels that skip auto-QA even when auto is true — docs/chore PRs have
+  # nothing to functionally verify. A per-issue Linear `no-qa` label also skips.
+  skip_labels: [docs, chore]
+
+# doc_flow (FLY-205 department-first process docs): Runners receive a DOC-FLOW
+# system-prompt block to write exploration/research/plan under
+# `<department>/doc/<ISSUE-KEY>-<slug>/`. department-first folder; flywheel's
+# engineering agents resolve to `engineering`. Controls DOCUMENT OUTPUT ONLY —
+# every checkpoint/agent-role gate still applies at all doc tiers; QA runners
+# produce no docs and are skipped.
+doc_flow:
+  enabled: true
+  default_department: engineering
+
 # Executors: role-based so Tadashi (one engineering Lead) covers multiple roles
 # by issue label — the GeoForge3D "Peter covers many roles" pattern, narrowed by
 # Annie to 3 roles. All agents live under .flywheel/agents/engineering/ —
