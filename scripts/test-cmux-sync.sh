@@ -38,6 +38,7 @@ export CLEANUP_PENDING="$TMPDIR_ROOT/cleanup-pending"
 export STALE_STATE="$TMPDIR_ROOT/stale.state"
 export HEAL_STATE="$TMPDIR_ROOT/heal.state"  # FLY-169
 export CMUX_SOCK_IDENT_FILE="$TMPDIR_ROOT/sock-ident"  # FLY-254
+export ORPHAN_PIN_STATE="$TMPDIR_ROOT/orphan-pin.state"  # FLY-293
 export FLYWHEEL_CMUX_CLEANUP_DELAY=30
 export FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP=300
 
@@ -63,6 +64,8 @@ MOCK_SHOW_HOOKS=""         # FLY-129 Phase 2: tmux show-hooks output — lines o
 tmux() {
   case "$1" in
     list-windows)
+      # FLY-293: simulate per-session list-windows failure (strict-inventory tests).
+      [[ "${MOCK_TMUX_LISTWINDOWS_FAIL:-0}" == "1" ]] && return 1
       shift
       # args are like: -t session -F format
       local session="" fmt=""
@@ -86,6 +89,8 @@ tmux() {
       esac
       ;;
     list-sessions)
+      # FLY-293: simulate tmux server down / probe failure (fail-closed tests).
+      [[ "${MOCK_TMUX_LIST_FAIL:-0}" == "1" ]] && return 1
       echo "$MOCK_TMUX_SESSIONS"
       ;;
     has-session)
@@ -373,6 +378,13 @@ reset_mocks() {
   MOCK_TMUX_KILLED=""
   MOCK_PGREP_HIT="0"
   MOCK_SHOW_HOOKS=""
+  # FLY-293: tmux inventory failure knobs + orphan-pin reaper env/state.
+  MOCK_TMUX_LIST_FAIL="0"        # 1 = tmux list-sessions fails (server down)
+  MOCK_TMUX_LISTWINDOWS_FAIL="0" # 1 = tmux list-windows fails (per-session probe)
+  ORPHAN_PIN_STATE="$TMPDIR_ROOT/orphan-pin.state"
+  FLYWHEEL_CMUX_ORPHAN_REAPER=1
+  FLYWHEEL_CMUX_ORPHAN_PIN_GRACE=300
+  rm -f "$ORPHAN_PIN_STATE" 2>/dev/null
   # FLY-169 mocks
   MOCK_TMUX_CLIENTS=""        # lines "view_session=N" or "view_session=N1,N2" (per-call seq)
   MOCK_TMUX_SELECTS=""        # captured select-window targets
@@ -3222,6 +3234,319 @@ else pass "cmux rc=99 handled as a plain select failure (GUARD_WAS_BLOCKED side 
 if grep -q "WARN: cmux select-workspace failed (rc=99)" "$TMPDIR_ROOT/t254.log"; then
   pass "plain cmux failure logged through the wrapper's WARN path"
 else fail "expected the wrapper WARN for rc=99; log: $(grep WARN "$TMPDIR_ROOT/t254.log" | head -2)"; fi
+
+# ════════════════════════════════════════════════════════════════
+# FLY-293: orphan cmux workspace-pin reaper
+# ════════════════════════════════════════════════════════════════
+
+# Standard fixture: one orphan managed pin + a live runner + a live Lead + a
+# remain-on-exit dead-pin runner (window exists) + a ghost + a user tab + a
+# non-managed-vendor tab. Mirrors the real prod shape (all runner titles are
+# "{issueId}-claude-{slug}").
+_fly293_fixture() {
+  reset_mocks
+  MOCK_TMUX_SESSIONS=$'flywheel\nrunner-flywheel\ncmux-LEARN-142-claude-LEARN-141\ncmux-flywheel-flywheel-cos-lead'
+  # flywheel session: Lead window + zsh. runner-flywheel: live runner + dead-pin runner.
+  MOCK_TMUX_WINDOWS=$'flywheel|@0|zsh\nflywheel|@1|flywheel-flywheel-cos-lead\nrunner-flywheel|@2|LEARN-142-claude-LEARN-141\nrunner-flywheel|@3|FLY-999-claude-deadpin'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[
+    {"ref":"workspace:36","title":"FLY-637-claude-FLY-626-follow-up"},
+    {"ref":"workspace:62","title":"LEARN-142-claude-LEARN-141"},
+    {"ref":"workspace:23","title":"flywheel-flywheel-cos-lead"},
+    {"ref":"workspace:99","title":"FLY-999-claude-deadpin"},
+    {"ref":"workspace:10","title":"~"},
+    {"ref":"workspace:5","title":"home"},
+    {"ref":"workspace:7","title":"FLY-1-codex-x"}
+  ]}'
+}
+
+test_fly293_managed_title_gate() {
+  echo "Test: is_managed_runner_title — source-accurate (-claude- only)"
+  reset_mocks
+  local ok=1
+  for t in "FLY-637-claude-x" "LEARN-143-claude-LEARN-141" "TIDE-22-claude-round-2" "FLY-1-claude"; do
+    is_managed_runner_title "$t" || { fail "expected MANAGED: $t"; ok=0; }
+  done
+  # reverse sentinels — producer cannot emit these; must be non-managed
+  for t in "FLY-293-codex-foo" "FLY-293-gemini-notes" "FLY-1-cursor-x" "FLY-1-kimi-x" "FLY-1-agy-x" \
+           "flywheel-flywheel-cos-lead" "home" "notes" "FLY-293-claudette-x" "notes-FLY-1-claude" "FLY-637"; do
+    if is_managed_runner_title "$t"; then fail "expected NON-managed: $t"; ok=0; fi
+  done
+  [[ "$ok" == "1" ]] && pass "managed gate matches -claude- only; rejects other vendors / Lead / user tab / bare-id"
+}
+
+test_fly293_orphan_pin_refs_identifies_only_orphan() {
+  echo "Test: orphan_pin_refs identifies ONLY the fully-orphaned managed pin"
+  _fly293_fixture
+  local out rc=0
+  out=$(orphan_pin_refs) || rc=$?
+  if [[ $rc -ne 0 ]]; then fail "expected rc=0, got $rc"; return; fi
+  # exactly one orphan: workspace:36
+  if echo "$out" | grep -q "^workspace:36	FLY-637-claude-FLY-626-follow-up$"; then
+    pass "orphan workspace:36 identified"
+  else
+    fail "orphan:36 missing. out=[$out]"
+  fi
+  local n; n=$(echo "$out" | grep -c "^workspace:" || true)
+  if [[ "$n" == "1" ]]; then pass "exactly 1 orphan (live runner/Lead, dead-pin, ghost, user tab, codex tab all excluded)"; else fail "expected 1 orphan, got $n. out=[$out]"; fi
+  # explicit negatives
+  echo "$out" | grep -q "workspace:62" && fail "live runner (62) wrongly orphaned" || pass "live runner kept"
+  echo "$out" | grep -q "workspace:23" && fail "live Lead (23) wrongly orphaned" || pass "live Lead kept"
+  echo "$out" | grep -q "workspace:99" && fail "dead-pin (99, FLY-720 boundary) wrongly orphaned" || pass "dead-pin window kept (FLY-720 boundary)"
+  echo "$out" | grep -q "workspace:5" && fail "user tab (home) wrongly orphaned" || pass "user tab kept"
+  echo "$out" | grep -q "workspace:7" && fail "non-managed vendor (codex) wrongly orphaned" || pass "non-managed vendor tab kept"
+  echo "$out" | grep -q "workspace:10" && fail "ghost (~) wrongly in orphan set" || pass "ghost left to ghost reaper"
+}
+
+test_fly293_orphan_pin_refs_json_fail_rc2() {
+  echo "Test: orphan_pin_refs rc=2 on cmux JSON unavailable"
+  _fly293_fixture
+  MOCK_CMUX_JSON_FAIL="1"
+  local out rc=0
+  out=$(orphan_pin_refs 2>/dev/null) || rc=$?
+  if [[ $rc -eq 2 && -z "$out" ]]; then pass "cmux JSON down → rc=2, empty (fail-closed)"; else fail "rc=$rc out=[$out]"; fi
+}
+
+test_fly293_orphan_pin_refs_listsessions_fail_rc2() {
+  echo "Test: orphan_pin_refs rc=2 on tmux list-sessions failure"
+  _fly293_fixture
+  MOCK_TMUX_LIST_FAIL="1"
+  local out rc=0
+  out=$(orphan_pin_refs 2>/dev/null) || rc=$?
+  if [[ $rc -eq 2 && -z "$out" ]]; then pass "tmux list-sessions down → rc=2 (fail-closed)"; else fail "rc=$rc out=[$out]"; fi
+}
+
+test_fly293_orphan_pin_refs_listwindows_fail_rc2() {
+  echo "Test: orphan_pin_refs rc=2 on tmux list-windows failure"
+  _fly293_fixture
+  MOCK_TMUX_LISTWINDOWS_FAIL="1"
+  local out rc=0
+  out=$(orphan_pin_refs 2>/dev/null) || rc=$?
+  if [[ $rc -eq 2 && -z "$out" ]]; then pass "tmux list-windows down → rc=2 (fail-closed)"; else fail "rc=$rc out=[$out]"; fi
+}
+
+test_fly293_close_if_still_orphan_closes() {
+  echo "Test: close_orphan_workspace_pin_if_still_orphan closes a still-orphan pin"
+  _fly293_fixture
+  close_orphan_workspace_pin_if_still_orphan "workspace:36" "FLY-637-claude-FLY-626-follow-up"
+  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:36"; then
+    pass "orphan closed via revalidating chokepoint"
+  else fail "no close. ops=[$MOCK_CMUX_OPS]"; fi
+}
+
+test_fly293_close_skips_malformed_ref() {
+  echo "Test: close chokepoint skips malformed ref"
+  _fly293_fixture
+  close_orphan_workspace_pin_if_still_orphan "bogus-ref" "FLY-637-claude-FLY-626-follow-up" 2>/dev/null
+  if [[ -z "$MOCK_CMUX_OPS" ]]; then pass "malformed ref → no close"; else fail "ops=[$MOCK_CMUX_OPS]"; fi
+}
+
+test_fly293_close_skips_title_drift() {
+  echo "Test: close chokepoint skips when title drifted from the vetted title"
+  _fly293_fixture
+  close_orphan_workspace_pin_if_still_orphan "workspace:36" "FLY-637-claude-STALE-DIFFERENT" 2>/dev/null
+  if [[ -z "$MOCK_CMUX_OPS" ]]; then pass "title drift → no close (TOCTOU guard)"; else fail "ops=[$MOCK_CMUX_OPS]"; fi
+}
+
+test_fly293_close_skips_when_window_reappeared() {
+  echo "Test: close chokepoint skips when a same-name window reappeared"
+  _fly293_fixture
+  # workspace:36's runner window came back alive between derive and close
+  MOCK_TMUX_WINDOWS="$MOCK_TMUX_WINDOWS"$'\nrunner-flywheel|@4|FLY-637-claude-FLY-626-follow-up'
+  close_orphan_workspace_pin_if_still_orphan "workspace:36" "FLY-637-claude-FLY-626-follow-up" 2>/dev/null
+  if [[ -z "$MOCK_CMUX_OPS" ]]; then pass "window reappeared → no close (final revalidation)"; else fail "ops=[$MOCK_CMUX_OPS]"; fi
+}
+
+test_fly293_reap_grace_first_seen_no_close() {
+  echo "Test: reap first-sighting records grace, does NOT close"
+  _fly293_fixture
+  reap_orphan_workspace_pins
+  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace"; then fail "closed on first sighting"; else pass "no close on first sighting"; fi
+  if grep -q "^workspace:36|" "$ORPHAN_PIN_STATE" 2>/dev/null; then pass "grace clock recorded for workspace:36"; else fail "no grace row. state=[$(cat "$ORPHAN_PIN_STATE" 2>/dev/null)]"; fi
+  if echo "$MOCK_CMUX_OPS" | grep -q "refresh-surfaces"; then fail "refresh-surfaces called with 0 closes"; else pass "no refresh-surfaces (nothing closed)"; fi
+}
+
+test_fly293_reap_grace_met_closes_and_refreshes() {
+  echo "Test: reap closes after grace met + calls refresh-surfaces"
+  _fly293_fixture
+  printf 'workspace:36|1|Rk9v\n' > "$ORPHAN_PIN_STATE"   # ancient first-seen (ts=1)
+  reap_orphan_workspace_pins
+  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:36"; then pass "orphan closed after grace"; else fail "no close. ops=[$MOCK_CMUX_OPS]"; fi
+  if echo "$MOCK_CMUX_OPS" | grep -q "refresh-surfaces"; then pass "refresh-surfaces called after close"; else fail "no refresh. ops=[$MOCK_CMUX_OPS]"; fi
+  if grep -q "^workspace:36|" "$ORPHAN_PIN_STATE" 2>/dev/null; then fail "closed ref still in state"; else pass "closed ref dropped from state"; fi
+}
+
+test_fly293_reap_grace_cancel_when_recovered() {
+  echo "Test: reap drops grace row when pin is no longer orphan"
+  _fly293_fixture
+  # pre-seed a grace row for a ref that is NOT orphan this pass (workspace:62 = live runner)
+  printf 'workspace:62|1|eA==\n' > "$ORPHAN_PIN_STATE"
+  reap_orphan_workspace_pins
+  if grep -q "^workspace:62|" "$ORPHAN_PIN_STATE" 2>/dev/null; then fail "recovered ref still in state"; else pass "recovered ref's grace row dropped"; fi
+  echo "$MOCK_CMUX_OPS" | grep -q "workspace:62" && fail "live runner closed!" || pass "live runner never closed"
+}
+
+test_fly293_reap_grace_ref_keyed_not_title() {
+  echo "Test: grace is ref-keyed — same-title stale ref does NOT age a new ref (HIGH-3)"
+  reset_mocks
+  MOCK_TMUX_SESSIONS=$'flywheel\nrunner-flywheel'
+  MOCK_TMUX_WINDOWS=$'flywheel|@0|zsh'
+  # two orphan pins, SAME title, different refs (no window, no cmux- session)
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[
+    {"ref":"workspace:40","title":"FLY-500-claude-x"},
+    {"ref":"workspace:41","title":"FLY-500-claude-x"}
+  ]}'
+  # workspace:40 already aged (ancient), workspace:41 unseen
+  printf 'workspace:40|1|eA==\n' > "$ORPHAN_PIN_STATE"
+  reap_orphan_workspace_pins
+  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:40"; then pass "aged ref (40) closed"; else fail "40 not closed. ops=[$MOCK_CMUX_OPS]"; fi
+  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:41"; then fail "new ref (41) wrongly aged by same-title 40 (title-keyed bug)"; else pass "new ref (41) NOT aged by same-title stale ref → grace is ref-keyed"; fi
+}
+
+test_fly293_reap_multiple_orphans() {
+  echo "Test: reap closes multiple orphans in one pass (grace met)"
+  reset_mocks
+  MOCK_TMUX_SESSIONS=$'flywheel'
+  MOCK_TMUX_WINDOWS=$'flywheel|@0|zsh'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[
+    {"ref":"workspace:40","title":"FLY-500-claude-a"},
+    {"ref":"workspace:41","title":"FLY-501-claude-b"}
+  ]}'
+  printf 'workspace:40|1|eA==\nworkspace:41|1|eA==\n' > "$ORPHAN_PIN_STATE"
+  reap_orphan_workspace_pins
+  local n; n=$(echo "$MOCK_CMUX_OPS" | grep -c "^close-workspace --workspace workspace:4" || true)
+  if [[ "$n" == "2" ]]; then pass "both orphans closed"; else fail "expected 2 closes, got $n. ops=[$MOCK_CMUX_OPS]"; fi
+}
+
+test_fly293_reap_env_off_inert() {
+  echo "Test: FLYWHEEL_CMUX_ORPHAN_REAPER=0 → periodic reaper fully inert (byte-compat)"
+  _fly293_fixture
+  printf 'workspace:36|1|eA==\n' > "$ORPHAN_PIN_STATE"   # would otherwise close
+  FLYWHEEL_CMUX_ORPHAN_REAPER=0 reap_orphan_workspace_pins
+  if [[ -z "$MOCK_CMUX_OPS" ]]; then pass "no cmux ops (no close, no refresh) when off"; else fail "ops=[$MOCK_CMUX_OPS]"; fi
+  # state file left untouched (row still present — inert)
+  if grep -q "^workspace:36|" "$ORPHAN_PIN_STATE" 2>/dev/null; then pass "state untouched when off"; else fail "state mutated when off"; fi
+}
+
+test_fly293_list_orphan_pins_readonly() {
+  echo "Test: --list-orphan-pins is read-only (never closes)"
+  _fly293_fixture
+  local out; out=$(list_orphan_pins 2>/dev/null)
+  if echo "$out" | grep -q "workspace:36"; then pass "list shows orphan workspace:36"; else fail "list missing orphan. out=[$out]"; fi
+  if [[ -z "$MOCK_CMUX_OPS" ]]; then pass "list closed nothing (read-only)"; else fail "list mutated cmux! ops=[$MOCK_CMUX_OPS]"; fi
+}
+
+test_fly293_reap_oneshot_no_grace() {
+  echo "Test: --reap-orphan-pins closes immediately (no grace) + refresh"
+  _fly293_fixture   # empty grace state → periodic would NOT close, but one-shot must
+  reap_orphan_pins_oneshot >/dev/null
+  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:36"; then pass "one-shot closed orphan without grace"; else fail "no close. ops=[$MOCK_CMUX_OPS]"; fi
+  if echo "$MOCK_CMUX_OPS" | grep -q "refresh-surfaces"; then pass "one-shot refreshed after close"; else fail "no refresh"; fi
+  # one-shot must NOT touch live/lead/deadpin/user/ghost
+  local n; n=$(echo "$MOCK_CMUX_OPS" | grep -c "^close-workspace" || true)
+  if [[ "$n" == "1" ]]; then pass "one-shot closed exactly the 1 orphan"; else fail "expected 1 close, got $n. ops=[$MOCK_CMUX_OPS]"; fi
+}
+
+test_fly293_reap_oneshot_works_when_env_off() {
+  echo "Test: --reap-orphan-pins is an explicit operator action (not env-gated)"
+  _fly293_fixture
+  FLYWHEEL_CMUX_ORPHAN_REAPER=0 reap_orphan_pins_oneshot >/dev/null
+  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:36"; then pass "one-shot still works with reaper env off (operator override)"; else fail "one-shot blocked by env off. ops=[$MOCK_CMUX_OPS]"; fi
+}
+
+test_fly293_gc_orphan_pin_state() {
+  echo "Test: gc_orphan_pin_state_file drops rows whose ref is gone; env off = inert"
+  _fly293_fixture
+  # workspace:36 exists in JSON; workspace:9999 does not
+  printf 'workspace:36|1|eA==\nworkspace:9999|1|eA==\n' > "$ORPHAN_PIN_STATE"
+  gc_orphan_pin_state_file
+  if grep -q "^workspace:36|" "$ORPHAN_PIN_STATE" && ! grep -q "^workspace:9999|" "$ORPHAN_PIN_STATE"; then
+    pass "gc kept live ref, dropped dead ref"
+  else fail "gc wrong. state=[$(cat "$ORPHAN_PIN_STATE")]"; fi
+  # env off → inert (no change)
+  printf 'workspace:9999|1|eA==\n' > "$ORPHAN_PIN_STATE"
+  FLYWHEEL_CMUX_ORPHAN_REAPER=0 gc_orphan_pin_state_file
+  if grep -q "^workspace:9999|" "$ORPHAN_PIN_STATE"; then pass "gc inert when reaper off (byte-compat)"; else fail "gc ran when off"; fi
+}
+
+# Codex code-review R1 MED-1/MED-2: reap must never abort the watcher under
+# `set -euo pipefail` on a corrupt state row, a non-numeric grace env, or an
+# unwritable state path. Run in a `( set -euo pipefail; ... )` subshell so a
+# crash surfaces as a non-zero rc.
+test_fly293_reap_corrupt_state_row_no_crash() {
+  echo "Test: reap survives a corrupt (non-numeric) first_seen under set -e"
+  _fly293_fixture
+  printf 'workspace:36|NOTNUM|eA==\n' > "$ORPHAN_PIN_STATE"
+  ( set -euo pipefail; reap_orphan_workspace_pins ) >/dev/null 2>&1
+  local rc=$?
+  [[ $rc -eq 0 ]] && pass "corrupt first_seen → rc=0 (watcher survives)" || fail "crashed rc=$rc"
+  # row self-heals to a numeric clock and is NOT closed this tick
+  _fly293_fixture
+  printf 'workspace:36|NOTNUM|eA==\n' > "$ORPHAN_PIN_STATE"
+  reap_orphan_workspace_pins
+  if grep -q '^workspace:36|[0-9][0-9]*|' "$ORPHAN_PIN_STATE"; then pass "corrupt row healed to numeric clock"; else fail "not healed: [$(cat "$ORPHAN_PIN_STATE")]"; fi
+  echo "$MOCK_CMUX_OPS" | grep -q "close-workspace" && fail "corrupt row wrongly closed this tick" || pass "corrupt row not closed (grace restarted)"
+}
+
+test_fly293_reap_nonnumeric_grace_no_crash() {
+  echo "Test: reap survives a non-numeric FLYWHEEL_CMUX_ORPHAN_PIN_GRACE under set -e"
+  _fly293_fixture
+  printf 'workspace:36|1|eA==\n' > "$ORPHAN_PIN_STATE"
+  ( set -euo pipefail; FLYWHEEL_CMUX_ORPHAN_PIN_GRACE=abc reap_orphan_workspace_pins ) >/dev/null 2>&1
+  local rc=$?
+  [[ $rc -eq 0 ]] && pass "non-numeric grace → rc=0 (falls back, watcher survives)" || fail "crashed rc=$rc"
+}
+
+test_fly293_reap_unwritable_state_no_crash() {
+  echo "Test: reap fail-closed on an unwritable state path under set -e"
+  _fly293_fixture
+  ( set -euo pipefail; ORPHAN_PIN_STATE=/ reap_orphan_workspace_pins ) >/dev/null 2>&1
+  local rc=$?
+  [[ $rc -eq 0 ]] && pass "unwritable ORPHAN_PIN_STATE → rc=0 (skips, watcher survives)" || fail "crashed rc=$rc"
+}
+
+# Codex code-review R2 MED: lexical length caps before arithmetic — an all-digit
+# but HUGE first_seen / grace overflows bash 3.2 64-bit arithmetic and can wrap
+# to bypass grace's fail-closed protection.
+test_fly293_reap_overflow_length_caps() {
+  echo "Test: reap length-caps huge first_seen / grace (no 64-bit overflow bypass)"
+  _fly293_fixture
+  printf 'workspace:36|99999999999999999999|eA==\n' > "$ORPHAN_PIN_STATE"   # 20-digit corrupt clock
+  reap_orphan_workspace_pins
+  echo "$MOCK_CMUX_OPS" | grep -q "close-workspace" && fail "huge first_seen wrongly closed (overflow into close branch)" || pass "huge first_seen NOT closed (length cap → treated as first-seen)"
+  if grep -qE '^workspace:36\|[0-9]{1,12}\|' "$ORPHAN_PIN_STATE"; then pass "huge first_seen re-clocked to a sane epoch"; else fail "not re-clocked: [$(cat "$ORPHAN_PIN_STATE")]"; fi
+  # huge grace must be capped (not wrap-negative → premature close of a within-grace pin)
+  _fly293_fixture
+  local ts10; ts10=$(( $(date +%s) - 10 ))
+  printf 'workspace:36|%s|eA==\n' "$ts10" > "$ORPHAN_PIN_STATE"           # 10s old → within any sane grace
+  FLYWHEEL_CMUX_ORPHAN_PIN_GRACE=999999999999999 reap_orphan_workspace_pins
+  echo "$MOCK_CMUX_OPS" | grep -q "close-workspace" && fail "huge grace overflow bypassed grace (10s-old pin closed)" || pass "huge grace capped→300; 10s-old pin NOT closed (grace intact)"
+}
+
+echo ""
+echo "═══ FLY-293: orphan cmux workspace-pin reaper ═══"
+test_fly293_managed_title_gate
+test_fly293_orphan_pin_refs_identifies_only_orphan
+test_fly293_orphan_pin_refs_json_fail_rc2
+test_fly293_orphan_pin_refs_listsessions_fail_rc2
+test_fly293_orphan_pin_refs_listwindows_fail_rc2
+test_fly293_close_if_still_orphan_closes
+test_fly293_close_skips_malformed_ref
+test_fly293_close_skips_title_drift
+test_fly293_close_skips_when_window_reappeared
+test_fly293_reap_grace_first_seen_no_close
+test_fly293_reap_grace_met_closes_and_refreshes
+test_fly293_reap_grace_cancel_when_recovered
+test_fly293_reap_grace_ref_keyed_not_title
+test_fly293_reap_multiple_orphans
+test_fly293_reap_env_off_inert
+test_fly293_list_orphan_pins_readonly
+test_fly293_reap_oneshot_no_grace
+test_fly293_reap_oneshot_works_when_env_off
+test_fly293_gc_orphan_pin_state
+test_fly293_reap_corrupt_state_row_no_crash
+test_fly293_reap_nonnumeric_grace_no_crash
+test_fly293_reap_unwritable_state_no_crash
+test_fly293_reap_overflow_length_caps
 
 set +e   # restore lenient mode for the summary
 

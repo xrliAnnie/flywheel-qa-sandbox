@@ -30,6 +30,10 @@ HEAL_STATE="${HEAL_STATE:-/tmp/flywheel-cmux-heal.state}"
 CLEANUP_DELAY_SECONDS="${FLYWHEEL_CMUX_CLEANUP_DELAY:-30}"
 CONSERVATIVE_CLEANUP_SECONDS="${FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP:-300}"
 
+# FLY-293: orphan cmux workspace-pin reaper — grace state file (ref-keyed).
+# Overridable for tests (${VAR:-default} preserves pre-set values).
+ORPHAN_PIN_STATE="${ORPHAN_PIN_STATE:-/tmp/flywheel-cmux-orphan-pin.state}"
+
 # FLY-254: cmux app-reopen one-shot re-attach sweep.
 # Generation state file — single line `<identity>|<state>|<attempts>`,
 # state ∈ pending|done. identity = the cmux socket's filesystem identity
@@ -588,6 +592,284 @@ for title, group in by_title.items():
     fi
     close_workspace_by_ref "$line" "dedup-newest-wins"
   done <<< "$plan"
+}
+
+# ── FLY-293: orphan cmux workspace-pin reaper ──
+#
+# Problem (root cause): `close_runner` (FLY-638) kills the per-runner
+# `cmux-<window_name>` linked session AND the source tmux window on close, but
+# never closes the cmux WORKSPACE object (the sidebar pin). The event-driven
+# cleanup (`window-unlinked` → mark_for_cleanup → cleanup_workspace_for) is the
+# ONLY thing that closes such a pin — and it is a fragile one-shot. Both periodic
+# fallbacks are anchor-dependent: cleanup_stale_conservative iterates existing
+# `cmux-*` linked sessions, reconcile_existing_workspaces iterates existing
+# SOURCE windows. A pin whose linked session AND source window are BOTH gone is
+# invisible to both → any missed event leaves it forever. Over time these
+# accumulate (prod: 47 workspaces / 18 live sessions → ~29 orphaned pins).
+#
+# This reaper is the anchor-independent backstop: it closes a workspace pin whose
+# tmux backing is FULLY gone — with a managed-title gate + strict-tmux fail-closed
+# so it can NEVER close a live Lead, a live runner, a remain-on-exit dead-pin
+# (FLY-720 owns those), or a founder's personal cmux tab.
+
+# is_managed_runner_title <title> — rc 0 iff the title is a Flywheel runner
+# window name the CURRENT producer can emit. Producer contract:
+# `buildWindowLabel(issueId, runnerName, title)` = "{issueId}-{runner}-{title}"
+# (packages/core/src/tmux-naming.ts), and both dispatch paths hardcode
+# runnerName="claude" (packages/teamlead/src/bridge/run-dispatcher.ts) — so ALL
+# runner window titles are "{LinearId}-claude-{title}" regardless of executor
+# backend (claude/codex/antigravity/kimi all emit "-claude-").
+# COUPLING: if runnerName ever becomes backend-specific (e.g. "-codex-"), extend
+# the alternation here in lockstep. Deliberately excludes codex/gemini/cursor/
+# kimi/agy (not producible today → not provably managed) and Lead windows
+# ("<project>-<lead>", never a close_runner target).
+is_managed_runner_title() {
+  local re='^[A-Z][A-Z0-9]*-[0-9]+-claude(-|$)'
+  [[ "$1" =~ $re ]]
+}
+
+# collect_agent_window_names_strict <sessions_snapshot> — print live agent window
+# names (flywheel Leads + runner-* Runners, minus default zsh/bash windows).
+# STRICT / fail-closed (FLY-293, Codex R1 HIGH-2): any `tmux list-windows`
+# failure for a snapshot session → rc=2 (uncertain → caller MUST skip). Takes the
+# already-captured session snapshot so we never re-issue `list-sessions`
+# (single-snapshot consistency, Codex R2 LOW-1). Empty stdout + rc=0 = genuinely
+# no agent windows (safe to act on).
+collect_agent_window_names_strict() {
+  local snapshot="$1"
+  local out="" sess w
+  while IFS= read -r sess; do
+    [[ -z "$sess" ]] && continue
+    case "$sess" in
+      flywheel|runner-*) ;;
+      *) continue ;;
+    esac
+    w=$(tmux list-windows -t "$sess" -F "#{session_name}|#{window_id}|#{window_name}" 2>/dev/null) || return 2
+    [[ -n "$w" ]] && out+="$w"$'\n'
+  done <<< "$snapshot"
+  printf '%s' "$out" | grep -v '|zsh$' | grep -v '|bash$' | grep -v '^$' | cut -d'|' -f3 || true
+  return 0
+}
+
+# orphan_pin_refs — print "<ref>\t<title>" for every cmux workspace that is a
+# fully-orphaned managed runner pin. Tri-state fail-closed:
+#   rc=2 (empty stdout) — cmux JSON OR tmux inventory unavailable. Callers MUST
+#     NOT treat as "no orphans" (that would race a mutation on stale state).
+#   rc=0 — stdout is the (possibly empty) orphan set.
+# Predicate (all required): (a) title non-empty & not "~"; (b0) managed-runner
+# title; (c) NO same-name live agent window (dead or alive — a remain-on-exit
+# dead-pin window still counts as present, keeping FLY-720's boundary intact);
+# (d) NO `cmux-<title>` linked session.
+orphan_pin_refs() {
+  local raw sessions agent_names pairs
+  raw=$(get_cmux_workspaces_json) || return 2
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2
+  agent_names=$(collect_agent_window_names_strict "$sessions") || return 2
+  pairs=$(printf '%s' "$raw" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+for w in d.get("workspaces", []):
+    ref = w.get("ref", "")
+    title = w.get("title")
+    if not ref or title is None:
+        continue
+    if "\t" in title or "\n" in title:
+        continue
+    sys.stdout.write(ref + "\t" + title + "\n")
+') || return 2
+  local ref title
+  while IFS=$'\t' read -r ref title; do
+    [[ -z "$ref" || -z "$title" ]] && continue
+    [[ "$title" == "~" ]] && continue
+    is_managed_runner_title "$title" || continue
+    if printf '%s\n' "$agent_names" | grep -qxF "$title"; then continue; fi
+    if printf '%s\n' "$sessions" | grep -qxF "cmux-${title}"; then continue; fi
+    printf '%s\t%s\n' "$ref" "$title"
+  done <<< "$pairs"
+  return 0
+}
+
+# close_orphan_workspace_pin_if_still_orphan <ref> <title> — THE single close
+# chokepoint for orphan pins (periodic AND one-shot). Re-reads cmux JSON + strict
+# tmux inventory RIGHT BEFORE the close and re-checks the FULL predicate against
+# the specific ref (Codex R1 MED-4 / R2: closes the derive→close TOCTOU without a
+# global lock). rc 0 = closed; rc 1 = skipped (ref malformed / gone / title drift
+# / no longer orphan / cmux-or-tmux uncertain).
+close_orphan_workspace_pin_if_still_orphan() {
+  local ref="$1" want_title="$2"
+  if [[ ! "$ref" =~ ^workspace:[0-9]+$ ]]; then
+    log "WARN: orphan-pin skip malformed ref: $ref"
+    return 1
+  fi
+  local raw sessions agent_names cur_title
+  raw=$(get_cmux_workspaces_json) || return 1
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 1
+  agent_names=$(collect_agent_window_names_strict "$sessions") || return 1
+  cur_title=$(printf '%s' "$raw" | python3 -c '
+import sys, json
+ref = sys.argv[1]
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+for w in d.get("workspaces", []):
+    if w.get("ref") == ref:
+        t = w.get("title")
+        if t is not None:
+            sys.stdout.write(t)
+        break
+' "$ref") || return 1
+  [[ -z "$cur_title" ]] && return 1                # ref gone from cmux
+  [[ "$cur_title" != "$want_title" ]] && return 1  # title drifted → not the pin we vetted
+  is_managed_runner_title "$cur_title" || return 1
+  if printf '%s\n' "$agent_names" | grep -qxF "$cur_title"; then return 1; fi
+  if printf '%s\n' "$sessions" | grep -qxF "cmux-${cur_title}"; then return 1; fi
+  close_workspace_by_ref "$ref" "orphan-pin-${cur_title}"
+  return 0
+}
+
+# reap_orphan_workspace_pins — periodic reaper (called from sync_additive /
+# sync_once). ref-keyed grace (Codex R1 HIGH-3): a pin must stay orphaned for
+# FLYWHEEL_CMUX_ORPHAN_PIN_GRACE seconds before it is closed (guards against a
+# just-created workspace whose linked session/rename momentarily lags). Every
+# close goes through the revalidating chokepoint. Kill-switch
+# FLYWHEEL_CMUX_ORPHAN_REAPER=0 → fully inert (Codex R1 MED-5, byte-compat).
+reap_orphan_workspace_pins() {
+  [[ "${FLYWHEEL_CMUX_ORPHAN_REAPER:-1}" == "0" ]] && return 0
+  # Codex R1 (code) MED-1: validate grace is all-digits BEFORE arithmetic. Under
+  # `set -euo pipefail`, a non-numeric operand in (( )) is treated as a variable
+  # ref and `set -u` turns it into a fatal "unbound variable" that kills the
+  # watcher. Non-numeric env / bad constant → fall back to a literal default.
+  local grace="${FLYWHEEL_CMUX_ORPHAN_PIN_GRACE:-$CONSERVATIVE_CLEANUP_SECONDS}"
+  case "$grace" in ''|*[!0-9]*) grace=300 ;; esac
+  # Codex R2 (code) MED: lexical length cap BEFORE arithmetic (mirrors
+  # validated_int_env). An all-digit but huge value overflows bash 3.2's 64-bit
+  # arithmetic and can wrap to bypass grace. 5 digits (≤99999s ≈ 27h) is far more
+  # than any sane grace and cannot overflow.
+  [[ ${#grace} -gt 5 ]] && grace=300
+  local refs
+  refs=$(orphan_pin_refs) || return 0   # rc=2 (cmux/tmux unavailable) → skip this pass
+  touch "$ORPHAN_PIN_STATE" 2>/dev/null || true
+  local now; now=$(date +%s)
+  local closed_any=0 keep="" ref title first tb64
+  while IFS=$'\t' read -r ref title; do
+    [[ -z "$ref" ]] && continue
+    first=$(awk -F'|' -v r="$ref" '$1==r{print $2; exit}' "$ORPHAN_PIN_STATE" 2>/dev/null || true)
+    # Codex R1 (code) MED-1: a corrupt state row (non-numeric first_seen) must not
+    # reach arithmetic. Treat a missing/malformed clock as first-seen (self-heals
+    # the row) — never feed it to (( )).
+    case "$first" in ''|*[!0-9]*) first="" ;; esac
+    # Codex R2 (code) MED: length cap — an all-digit but huge first_seen (e.g. a
+    # corrupt/ms row) overflows 64-bit arithmetic and can wrap into the close
+    # branch, defeating grace. A real epoch is ≤10 digits; >12 = implausible →
+    # treat as first-seen (re-clock), never let it reach (( )).
+    [[ -n "$first" && ${#first} -gt 12 ]] && first=""
+    tb64=$(printf '%s' "$title" | base64 | tr -d '\n')
+    if [[ -z "$first" ]]; then
+      keep+="${ref}|${now}|${tb64}"$'\n'            # first seen orphaned → start grace clock
+    elif (( now - 10#$first >= grace )); then       # 10# forces base-10 (no octal on leading-zero ts)
+      if close_orphan_workspace_pin_if_still_orphan "$ref" "$title"; then
+        closed_any=1                                # closed → drop from state
+      else
+        keep+="${ref}|${first}|${tb64}"$'\n'        # revalidation blocked → keep waiting
+      fi
+    else
+      keep+="${ref}|${first}|${tb64}"$'\n'          # still within grace → keep original ts
+    fi
+  done <<< "$refs"
+  # Codex R1 (code) MED-2: fail-closed on an unwritable state path. A bare
+  # `printf > "$ORPHAN_PIN_STATE"` on an unwritable path (e.g. broken /tmp) exits
+  # the watcher under `set -e`. This automatic path must degrade to "grace not
+  # persisted this tick" (safe — nothing is wrongly closed), never kill --watch.
+  printf '%s' "$keep" > "$ORPHAN_PIN_STATE" 2>/dev/null || true
+  if [[ "$closed_any" == "1" ]]; then
+    cmux_call refresh-surfaces || true             # best-effort repaint (not a safety condition)
+  fi
+  return 0
+}
+
+# gc_orphan_pin_state_file — watcher-startup GC: drop grace rows whose ref no
+# longer exists in cmux (leaked by a previous watcher). Env-gated so the OFF path
+# is byte-compatible (Codex R1 MED-5). JSON unavailable → skip (keep state).
+gc_orphan_pin_state_file() {
+  [[ "${FLYWHEEL_CMUX_ORPHAN_REAPER:-1}" == "0" ]] && return 0
+  [[ -f "$ORPHAN_PIN_STATE" ]] || return 0
+  local raw live_refs tmp ref ts tb64
+  raw=$(get_cmux_workspaces_json) || return 0
+  live_refs=$(printf '%s' "$raw" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for w in d.get("workspaces", []):
+    r = w.get("ref", "")
+    if r:
+        print(r)
+' 2>/dev/null || true)
+  tmp=$(mktemp "${ORPHAN_PIN_STATE}.XXXX" 2>/dev/null) || return 0
+  while IFS='|' read -r ref ts tb64; do
+    [[ -z "$ref" ]] && continue
+    if printf '%s\n' "$live_refs" | grep -qxF "$ref"; then
+      printf '%s|%s|%s\n' "$ref" "$ts" "$tb64" >> "$tmp"
+    fi
+  done < "$ORPHAN_PIN_STATE"
+  # Codex R1 (code) MED-2: best-effort atomic swap; an unwritable path must not
+  # abort the watcher at startup under `set -e`.
+  mv "$tmp" "$ORPHAN_PIN_STATE" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 0; }
+}
+
+# list_orphan_pins — read-only operator preview (--list-orphan-pins). Prints the
+# orphan set the reaper would target; NEVER closes anything. Q1 dry-run.
+list_orphan_pins() {
+  local refs
+  if ! refs=$(orphan_pin_refs); then
+    echo "orphan-pin list unavailable (cmux JSON or tmux inventory not ready)" >&2
+    return 1
+  fi
+  if [[ -z "$refs" ]]; then
+    echo "No orphan cmux runner pins."
+    return 0
+  fi
+  echo "Orphan cmux runner pins (managed title, no live window, no cmux-<title> session):"
+  local ref title
+  while IFS=$'\t' read -r ref title; do
+    [[ -z "$ref" ]] && continue
+    printf '  %s\t%s\n' "$ref" "$title"
+  done <<< "$refs"
+  return 0
+}
+
+# reap_orphan_pins_oneshot — operator one-shot immediate cleanup
+# (--reap-orphan-pins). Re-derives the orphan set NOW, closes each through the
+# revalidating chokepoint (NO grace — explicit operator action, same immediacy as
+# --once). Safe to run alongside a live --watch (narrow + idempotent + per-ref
+# final revalidation), so it does NOT take the --once watcher-running guard.
+reap_orphan_pins_oneshot() {
+  local refs
+  if ! refs=$(orphan_pin_refs); then
+    echo "orphan-pin reap skipped (cmux JSON or tmux inventory not ready)" >&2
+    return 1
+  fi
+  if [[ -z "$refs" ]]; then
+    echo "No orphan cmux runner pins to reap."
+    return 0
+  fi
+  local closed_any=0 ref title
+  while IFS=$'\t' read -r ref title; do
+    [[ -z "$ref" ]] && continue
+    if close_orphan_workspace_pin_if_still_orphan "$ref" "$title"; then
+      closed_any=1
+      echo "reaped orphan pin: $ref ($title)"
+    fi
+  done <<< "$refs"
+  if [[ "$closed_any" == "1" ]]; then
+    cmux_call refresh-surfaces || true
+  fi
+  return 0
 }
 
 linked_session_exists() {
@@ -2115,6 +2397,9 @@ sync_additive() {
     # Even with no agent windows, reap ghosts so cmux UI clutter doesn't
     # accumulate during quiet periods.
     reap_ghost_workspaces
+    # FLY-293: the "all runners closed" quiet state is EXACTLY when orphan pins
+    # linger — reap them here too, not only in the has-windows branch.
+    reap_orphan_workspace_pins
     return 0
   fi
 
@@ -2134,6 +2419,10 @@ sync_additive() {
   # JSON-unavailable — they no-op rather than mis-acting on stale state.
   reap_ghost_workspaces
   dedup_workspaces_by_title
+  # FLY-293: anchor-independent orphan-pin reaper (closes fully-orphaned managed
+  # runner pins whose linked session AND source window are both gone). Env-gated,
+  # fail-closed, ref-keyed grace — see reap_orphan_workspace_pins.
+  reap_orphan_workspace_pins
 
   cleanup_stale_conservative
 }
@@ -2266,6 +2555,10 @@ watch_main() {
   # previous watcher). Keeps transition-only heal logging accurate.
   gc_heal_state_file
 
+  # FLY-293: GC orphan-pin grace rows whose ref no longer exists in cmux (leaked
+  # by a previous watcher). Env-gated (byte-compat when reaper off).
+  gc_orphan_pin_state_file
+
   # FLY-254: log effective reopen-sweep knobs ONCE at startup — the deployment
   # verification anchor (don't trust kickstart exit codes; read this line).
   # validated_int_env also emits its one-time fallback WARNs here.
@@ -2312,6 +2605,8 @@ sync_once() {
   if [[ -z "$tmux_windows" ]]; then
     # No agent windows in any session — just cleanup stale
     cleanup_stale_workspaces
+    # FLY-293: quiet state (all runners closed) → reap orphan pins here too.
+    reap_orphan_workspace_pins
     return 0
   fi
 
@@ -2338,6 +2633,8 @@ sync_once() {
   #    benefits from the same hygiene the periodic watcher gives).
   reap_ghost_workspaces
   dedup_workspaces_by_title
+  # FLY-293: orphan-pin reaper in manual full-sync too.
+  reap_orphan_workspace_pins
 
   # 6. (FLY-169) Manual attach self-heal sweep. `--once` is an explicit
   #    operator action (not idle load), so it doubles as a zero-idle rescue
@@ -2525,12 +2822,26 @@ case "${1:-}" in
     # `cmux refresh-surfaces` to Leads (not Runners).
     list_lead_refs
     ;;
+  --list-orphan-pins)
+    # FLY-293: read-only preview of orphan cmux runner pins the reaper would
+    # close (managed title, no live window, no cmux-<title> session). Never
+    # closes anything — safe alongside a live --watch. Q1 dry-run.
+    list_orphan_pins
+    ;;
+  --reap-orphan-pins)
+    # FLY-293: operator one-shot immediate cleanup — re-derive the orphan set and
+    # close each through the revalidating chokepoint (NO grace). Safe alongside a
+    # live --watch (narrow + idempotent + per-ref final revalidation).
+    reap_orphan_pins_oneshot
+    ;;
   *)
-    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--list-lead-refs]"
-    echo "  --once             Full sync with aggressive cleanup (cmux + tmux). Manual use from inside cmux."
-    echo "  --watch            Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
-    echo "  --refresh          tmux-only linked session repair. Safe from anywhere."
-    echo "  --list-lead-refs   Print Lead cmux workspace refs (Phase 8 Path A)."
+    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins]"
+    echo "  --once              Full sync with aggressive cleanup (cmux + tmux). Manual use from inside cmux."
+    echo "  --watch             Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
+    echo "  --refresh           tmux-only linked session repair. Safe from anywhere."
+    echo "  --list-lead-refs    Print Lead cmux workspace refs (Phase 8 Path A)."
+    echo "  --list-orphan-pins  FLY-293: print orphan runner cmux pins (read-only preview)."
+    echo "  --reap-orphan-pins  FLY-293: close orphan runner cmux pins now (one-shot, revalidated)."
     exit 1
     ;;
 esac
