@@ -808,6 +808,13 @@ async function handleRetry(
 			// issue_url keeps the doc header identical between start and retry.
 			docTier: parseDocTier(session.doc_tier),
 			issueUrl: session.issue_url,
+			// FLY-728 Part C: REUSE the predecessor's persisted dispatch model — the
+			// param the Lead-sorter chose at the original dispatch, NOT the resolved
+			// runner_model (which conflates label/project/account sources). So a
+			// removed label or a changed project default is NOT reintroduced; only a
+			// genuine sorter/dispatch choice survives. NULL (no dispatch param) →
+			// undefined → the retry re-resolves from current labels/project/account.
+			dispatchModel: session.dispatch_model ?? undefined,
 			// FLY-245 D2: gateway pre-bound successor id (plan §5.2.1) — the
 			// dispatcher uses it instead of a fresh randomUUID so recovery can
 			// reconcile by the durably-bound key. Absent for legacy retries.
@@ -853,6 +860,12 @@ async function handleRetry(
 				// empty doc_tier and drift back to "full".
 				doc_tier: parseDocTier(session.doc_tier) ?? "full",
 				...(session.issue_url ? { issue_url: session.issue_url } : {}),
+				// FLY-728 (Codex design R2): carry the sorter's dispatch_model onto the
+				// SUCCESSOR row too, or a retry-of-retry reads an empty value and the
+				// sorter-chosen model is lost (mirrors doc_tier continuity).
+				...(session.dispatch_model
+					? { dispatch_model: session.dispatch_model }
+					: {}),
 			});
 		} else {
 			console.warn(

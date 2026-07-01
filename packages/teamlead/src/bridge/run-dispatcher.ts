@@ -103,6 +103,16 @@ export function buildRunnerSpawnFields(
 	 * false → existing label-driven resolution (byte-compatible).
 	 */
 	ignoreRunnerLabelSelection?: boolean,
+	/**
+	 * FLY-728 Part C: the per-run `/api/runs/start` `model` param (already
+	 * normalized to a canonical tier id at the Bridge boundary) — the
+	 * difficulty-sorter's output. Applied by resolveRoleAdapter below a manual
+	 * model/vendor label and above the project default. On retry it is re-derived
+	 * from the persisted `runner_model` so a sorter-chosen model survives (the
+	 * label layer re-resolves a manual label first, so this only re-applies a
+	 * genuinely dispatch/project-tier model). Absent → no dispatch override.
+	 */
+	dispatchModel?: string,
 ): Pick<
 	BlueprintContext,
 	| "runnerAgentName"
@@ -114,16 +124,17 @@ export function buildRunnerSpawnFields(
 	| "runnerTransportMode"
 > {
 	// FLY-123: resolve the executor backend for the runner role —
-	// task(label) > project roles config > FLYWHEEL_RUNNER_BACKEND env >
-	// built-in claude-tmux. With nothing configured this resolves to
-	// claude-tmux + vendor claude-code, making the returned fields
-	// byte-identical to the pre-FLY-123 buildAgentTeamIdentity output
+	// task(label) > FLY-728 dispatch model > project roles config >
+	// FLYWHEEL_RUNNER_BACKEND env > built-in claude-tmux. With nothing configured
+	// this resolves to claude-tmux + vendor claude-code, making the returned
+	// fields byte-identical to the pre-FLY-123 buildAgentTeamIdentity output
 	// (plus runnerBackend="claude-tmux", which is also Blueprint's default).
 	// FLY-643: a QA runner (ignoreRunnerLabelSelection) skips the label layer so
 	// the parent's vendor labels can't select its backend.
 	const resolved = resolveRoleAdapter({
 		role: "runner",
 		...(!ignoreRunnerLabelSelection && issueLabels && { issueLabels }),
+		...(dispatchModel && { dispatchModel }),
 		...(rolesConfig && { projectRoles: rolesConfig }),
 	});
 	// FLY-493: a no-transport backend (antigravity, transport === "none") carries
@@ -328,6 +339,10 @@ export class RetryDispatcher implements IRetryDispatcher {
 				req.leadId,
 				req.issueLabels,
 				runtime.rolesConfig,
+				// FLY-643 ignoreRunnerLabelSelection is not carried on the retry
+				// path; FLY-728 dispatch model IS (re-derived from runner_model).
+				undefined,
+				req.dispatchModel,
 			),
 			retryContext: {
 				predecessorExecutionId: req.oldExecutionId,
@@ -614,6 +629,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				req.issueLabels,
 				runtime.rolesConfig,
 				req.ignoreRunnerLabelSelection,
+				req.dispatchModel, // FLY-728 Part C
 			),
 			// FLY-116: spawn macOS Terminal viewer once tmux window exists
 			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {

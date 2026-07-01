@@ -586,6 +586,72 @@ describe("Blueprint", () => {
 		expect(execCall.commDbPath).toBeUndefined();
 	});
 
+	// FLY-728: Blueprint must copy ctx.runnerModel into the started EventEnvelope
+	// so the Bridge persists it as session.runner_model. Without this, a per-issue
+	// model routed runner would run with --model but never surface which model.
+	it("copies ctx.runnerModel into the session_started envelope", async () => {
+		const emitStarted = vi.fn(async () => {});
+		const emitter: ExecutionEventEmitter = {
+			emitStarted,
+			emitWorktreeReady: vi.fn(async () => {}),
+			emitCompleted: vi.fn(async () => {}),
+			emitFailed: vi.fn(async () => {}),
+			emitHeartbeat: vi.fn(async () => {}),
+			flush: vi.fn(async () => {}),
+		};
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker(),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			emitter,
+		);
+
+		await blueprint.run(
+			makeNode(),
+			"/project",
+			makeContext({ runnerModel: "claude-fable-5" }),
+		);
+
+		expect(emitStarted).toHaveBeenCalledWith(
+			expect.objectContaining({ runnerModel: "claude-fable-5" }),
+		);
+	});
+
+	it("does not set runnerModel in the envelope when ctx has none (byte-compat)", async () => {
+		const emitStarted = vi.fn(async () => {});
+		const emitter: ExecutionEventEmitter = {
+			emitStarted,
+			emitWorktreeReady: vi.fn(async () => {}),
+			emitCompleted: vi.fn(async () => {}),
+			emitFailed: vi.fn(async () => {}),
+			emitHeartbeat: vi.fn(async () => {}),
+			flush: vi.fn(async () => {}),
+		};
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker(),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			emitter,
+		);
+
+		await blueprint.run(makeNode(), "/project", makeContext());
+
+		const env = emitStarted.mock.calls[0]![0] as { runnerModel?: string };
+		expect(env.runnerModel).toBeUndefined();
+	});
+
 	// ─── GEO-261: emitTerminal await tests ──────────
 
 	describe("emitTerminal (GEO-261)", () => {

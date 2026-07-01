@@ -50,8 +50,9 @@ export interface BackendOption {
  * FLY-671 canonical model facts:
  *   - Sonnet 4.6 → explicit model id "claude-sonnet-4-6"
  *   - Haiku 4.5  → explicit model id "claude-haiku-4-5-20251001"
- * The two cheaper tiers are APPENDED (not reordered) so the existing three
- * entries keep their positions — anything depending on their ordinal stays
+ * FLY-728: Sonnet 5 (`claude-sonnet-5`) is the current fleet Sonnet (founder
+ * confirmed); it is the FLY-728 simple-tier model. Kept 4.6 (don't remove a
+ * FLY-671 tier) and APPENDED Sonnet 5 so all existing ordinals stay
  * byte-compatible; this only EXPANDS `computeAllowedModelTargets`.
  */
 export const CLAUDE_TIER_OPTIONS: readonly TierOption[] = [
@@ -60,6 +61,7 @@ export const CLAUDE_TIER_OPTIONS: readonly TierOption[] = [
 	{ id: null, label: "Opus 4.8" },
 	{ id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
 	{ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+	{ id: "claude-sonnet-5", label: "Sonnet 5" },
 ];
 
 /** Codex tier options: single, read-only GPT-5 (display-only; not switchable). */

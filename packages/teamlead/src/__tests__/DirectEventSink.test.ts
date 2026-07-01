@@ -585,6 +585,23 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 		expect(store.getSession("exec-1")?.adapter_type).toBe("antigravity-tmux");
 	});
 
+	// FLY-728: the PRODUCTION started path must persist the resolved runner model
+	// as runner_model so the dashboard / issue surfaces show which model a
+	// per-issue routed runner is using.
+	it("emitStarted persists runnerModel as session.runner_model", async () => {
+		await new DirectEventSink(store, makeConfig(), testProjects).emitStarted(
+			makeEnvelope({ runnerModel: "claude-fable-5" }),
+		);
+		expect(store.getSession("exec-1")?.runner_model).toBe("claude-fable-5");
+	});
+
+	it("emitStarted without runnerModel leaves runner_model unset (byte-compat)", async () => {
+		await new DirectEventSink(store, makeConfig(), testProjects).emitStarted(
+			makeEnvelope(),
+		);
+		expect(store.getSession("exec-1")?.runner_model ?? null).toBeNull();
+	});
+
 	it("awaiting_review + route=pr_handoff → status unchanged (skipped, no strand-clear)", async () => {
 		store.upsertSession({
 			execution_id: "exec-1",

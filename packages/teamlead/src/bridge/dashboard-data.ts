@@ -21,6 +21,8 @@ export interface DashboardSession {
 	last_error?: string;
 	decision_route?: string;
 	tmux_session?: string;
+	/** FLY-728: resolved runner model (per-issue model routing visibility). */
+	runner_model?: string;
 	commit_count?: number;
 	lines_added?: number;
 	lines_removed?: number;
@@ -72,6 +74,8 @@ function toDashboardSession(s: Session): DashboardSession {
 		last_error: s.last_error,
 		decision_route: s.decision_route,
 		tmux_session: s.tmux_session,
+		// FLY-728: resolved runner model (per-issue model routing visibility).
+		runner_model: s.runner_model,
 		commit_count: s.commit_count,
 		lines_added: s.lines_added,
 		lines_removed: s.lines_removed,

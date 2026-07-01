@@ -1656,6 +1656,18 @@ elif [ "$IS_COS_ROLE" = false ]; then
     log "Appending base executor-routing rules: ${BASE_EXECUTOR_ROUTING_RULES}"
   fi
 
+  # ── FLY-728: Model Routing by task difficulty (non-cos dept leads only) ──
+  # The Lead is the difficulty sorter: at dispatch it judges an issue's
+  # difficulty from signals (labels / title / description) and passes a model
+  # tier on /api/runs/start (heavy→Fable / … / trivial→Haiku). A manual model
+  # label wins; genuinely unsure → ask the founder. Only roles that spawn
+  # Runners load it. Optional — missing base file is a no-op (backward compat).
+  BASE_MODEL_ROUTING_RULES="${BASE_RULES_DIR}/model-routing.md"
+  if [ -f "$BASE_MODEL_ROUTING_RULES" ] && [ -r "$BASE_MODEL_ROUTING_RULES" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_MODEL_ROUTING_RULES")
+    log "Appending base model-routing rules: ${BASE_MODEL_ROUTING_RULES}"
+  fi
+
   # ── FLY-195: Stuck-Runner Re-Manage (non-cos dept leads only) ──
   # Defines how a Lead judges + re-manages a runner_stuck_escalation event
   # (ladder: mailbox wake → restricted recovery nudge; disposition receipts;

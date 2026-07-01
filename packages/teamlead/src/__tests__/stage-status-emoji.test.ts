@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
 import {
+	applyModelSuffix,
 	BLOCKED_EMOJI,
+	modelSuffixCode,
 	STAGE_EMOJI,
 	STAGE_WORD,
 	splitStatusEmoji,
 	stageBadge,
 	stageEmoji,
 	stageWord,
+	stripModelSuffix,
 	stripStatusEmojiPrefix,
 	VALID_STAGES,
 } from "../bridge/stage-utils.js";
@@ -240,5 +243,55 @@ describe("FLY-560 UX iteration: splitStatusEmoji peels the glued word", () => {
 		expect(stripStatusEmojiPrefix("✅完成 [FLY-560] Done")).toBe(
 			"[FLY-560] Done",
 		);
+	});
+});
+
+describe("FLY-728: model-code suffix (F/O/S/H)", () => {
+	it("applyModelSuffix appends the code after the base", () => {
+		expect(applyModelSuffix("[FLY-728] Title", "F")).toBe("[FLY-728] Title ·F");
+		expect(applyModelSuffix("[FLY-728] Title", "O")).toBe("[FLY-728] Title ·O");
+	});
+
+	it("applyModelSuffix is idempotent (re-stamp does not double the suffix)", () => {
+		expect(applyModelSuffix("[FLY-728] Title ·F", "F")).toBe(
+			"[FLY-728] Title ·F",
+		);
+		// and it can SWAP the code (model never changes in practice, but be safe)
+		expect(applyModelSuffix("[FLY-728] Title ·F", "S")).toBe(
+			"[FLY-728] Title ·S",
+		);
+	});
+
+	it("undefined code strips any existing suffix (account default = no code)", () => {
+		expect(applyModelSuffix("[FLY-728] Title ·F", undefined)).toBe(
+			"[FLY-728] Title",
+		);
+		expect(applyModelSuffix("[FLY-728] Title", undefined)).toBe(
+			"[FLY-728] Title",
+		);
+	});
+
+	it("stripModelSuffix removes only a trailing model code", () => {
+		expect(stripModelSuffix("[FLY-728] Title ·H")).toBe("[FLY-728] Title");
+		expect(stripModelSuffix("[FLY-728] Title")).toBe("[FLY-728] Title");
+		// a middle-dot elsewhere in the title is untouched
+		expect(stripModelSuffix("[FLY-728] A·B thing")).toBe("[FLY-728] A·B thing");
+	});
+
+	it("coexists with the stage-emoji prefix — splitStatusEmoji preserves the suffix", () => {
+		// The stage badge is a PREFIX; the model code is a SUFFIX. Stripping the
+		// stage prefix must keep the model suffix intact (survives re-stamps).
+		const stamped = "🔨实现中 [FLY-728] Title ·F";
+		expect(splitStatusEmoji(stamped).base).toBe("[FLY-728] Title ·F");
+		expect(stripModelSuffix(splitStatusEmoji(stamped).base)).toBe(
+			"[FLY-728] Title",
+		);
+	});
+
+	it("modelSuffixCode extracts the trailing code (for preserve-if-undefined)", () => {
+		expect(modelSuffixCode("[FLY-728] Title ·F")).toBe("F");
+		expect(modelSuffixCode("[FLY-728] Title ·H")).toBe("H");
+		expect(modelSuffixCode("[FLY-728] Title")).toBeUndefined();
+		expect(modelSuffixCode("[FLY-728] A·B thing")).toBeUndefined();
 	});
 });

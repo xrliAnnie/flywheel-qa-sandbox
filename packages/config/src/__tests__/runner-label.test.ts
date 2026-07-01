@@ -97,4 +97,63 @@ describe("parseRunnerLabels", () => {
 		expect(parseRunnerLabels(["cursor"]).runnerType).toBe("cursor");
 		expect(parseRunnerLabels(["antigravity"]).runnerType).toBe("antigravity");
 	});
+
+	// FLY-728: per-issue model routing — `fable` label resolves to the canonical
+	// explicit id `claude-fable-5` (the string fleet-console / token pricing /
+	// TmuxAdapter `--model` all use). Infers the `claude` runner because the id
+	// starts with "claude".
+	it("resolves fable label to claude-fable-5 (Claude runner), case-insensitive", () => {
+		expect(parseRunnerLabels(["fable"])).toEqual({
+			runnerType: "claude",
+			modelOverride: "claude-fable-5",
+		});
+		expect(parseRunnerLabels(["FABLE"])).toEqual({
+			runnerType: "claude",
+			modelOverride: "claude-fable-5",
+		});
+	});
+
+	it("fable co-existing with a claude agent label keeps both", () => {
+		// claude agent + fable model → runner claude, model kept (same runner).
+		expect(parseRunnerLabels(["claude", "fable"])).toEqual({
+			runnerType: "claude",
+			modelOverride: "claude-fable-5",
+		});
+	});
+
+	it("agent label overrides fable model label (model dropped)", () => {
+		// codex agent + fable (a Claude model) → keep codex, drop the model.
+		const sel = parseRunnerLabels(["codex", "fable"]);
+		expect(sel.runnerType).toBe("codex");
+		expect(sel.modelOverride).toBeUndefined();
+	});
+
+	// Codex design R1 #6: no-transport vendors must never get a Claude model id
+	// attached — otherwise a future model-label expansion could hand a Fable id
+	// to an antigravity/kimi runner that can't run it.
+	it("no-transport vendor label wins over fable, no Claude model attached", () => {
+		const agy = parseRunnerLabels(["antigravity", "fable"]);
+		expect(agy.runnerType).toBe("antigravity");
+		expect(agy.modelOverride).toBeUndefined();
+
+		const kimi = parseRunnerLabels(["kimi", "fable"]);
+		expect(kimi.runnerType).toBe("kimi");
+		expect(kimi.modelOverride).toBeUndefined();
+	});
+
+	it("fable does not perturb existing model labels", () => {
+		// Regression guard: opus/sonnet/haiku resolve exactly as before.
+		expect(parseRunnerLabels(["opus"])).toEqual({
+			runnerType: "claude",
+			modelOverride: "opus",
+		});
+		expect(parseRunnerLabels(["sonnet"])).toEqual({
+			runnerType: "claude",
+			modelOverride: "sonnet",
+		});
+		expect(parseRunnerLabels(["haiku"])).toEqual({
+			runnerType: "claude",
+			modelOverride: "haiku",
+		});
+	});
 });
