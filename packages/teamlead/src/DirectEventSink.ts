@@ -4,7 +4,11 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { DEFAULT_PROOFSHOT_CONFIG, type SkillsConfig } from "flywheel-config";
+import {
+	DEFAULT_PROOFSHOT_CONFIG,
+	modelShortCode,
+	type SkillsConfig,
+} from "flywheel-config";
 import { WORKFLOW_TRANSITIONS } from "flywheel-core";
 import type {
 	EventEnvelope,
@@ -121,6 +125,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// recognize an antigravity session. The HTTP /events session_started
 			// handler persists the same field for the loopback path.
 			adapter_type: env.runnerBackend,
+			// FLY-728: persist the resolved runner model as runner_model so the
+			// dashboard / issue surfaces show which model the per-issue routed runner
+			// is using. The HTTP /events session_started handler persists the same
+			// field for the loopback path.
+			runner_model: env.runnerModel,
 			// FLY-615: persist the resolved ponytail condition (A/B join key for
 			// FLY-614 token accounting + FLY-616 quality eval). HTTP /events path
 			// persists the same field.
@@ -174,6 +183,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							botToken,
 							leadId: ctLead.agentId,
 							ownerUserId: this.config.discordOwnerUserId,
+							// FLY-728 Part D: stamp the model code at thread creation so a
+							// new [FLY-XX] thread shows F/O/S/H immediately (not only after
+							// the first stage_changed). `?? null` = authoritative (no stale
+							// code carried onto a reused thread).
+							modelCode: modelShortCode(env.runnerModel) ?? null,
 						});
 						console.log(
 							`[DirectEventSink] ensureChatThread: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,

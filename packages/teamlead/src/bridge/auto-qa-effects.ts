@@ -15,6 +15,7 @@
  */
 
 import { CommDB } from "flywheel-comm/db";
+import { modelShortCode } from "flywheel-config";
 import type { LeadAlertNotifier } from "../LeadAlertNotifier.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { AutoQaRecord, Session, StateStore } from "../StateStore.js";
@@ -345,6 +346,9 @@ export class AutoQaEffects implements AutoQaSideEffects {
 					issueTitle: args.session.issue_title,
 					botToken,
 					leadId,
+					// FLY-728 Part D: carry the parent runner's model code (authoritative
+					// — `?? null` clears on account-default, never keeps a stale code).
+					modelCode: modelShortCode(args.session.runner_model) ?? null,
 				},
 				thread.thread_id,
 				args.stage,

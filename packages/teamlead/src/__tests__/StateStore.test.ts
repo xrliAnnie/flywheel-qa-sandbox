@@ -313,6 +313,45 @@ describe("StateStore", () => {
 		expect(s!.adapter_type).toBe("claude-cli");
 	});
 
+	// FLY-728: per-issue model routing visibility — runner_model column.
+	it("FLY-728: upsertSession stores and retrieves runner_model", () => {
+		store.upsertSession(makeSession({ runner_model: "claude-fable-5" }));
+		expect(store.getSession("exec-1")!.runner_model).toBe("claude-fable-5");
+	});
+
+	it("FLY-728: runner_model absent → undefined (byte-compat, no override)", () => {
+		store.upsertSession(makeSession({}));
+		expect(store.getSession("exec-1")!.runner_model).toBeUndefined();
+	});
+
+	it("FLY-728: patchSessionMetadata updates runner_model", () => {
+		store.upsertSession(makeSession({}));
+		store.patchSessionMetadata("exec-1", { runner_model: "opus" });
+		expect(store.getSession("exec-1")!.runner_model).toBe("opus");
+	});
+
+	it("FLY-728: upsert COALESCE preserves an existing runner_model", () => {
+		store.upsertSession(makeSession({ runner_model: "claude-fable-5" }));
+		// A later upsert that omits runner_model must not blank the stored value.
+		store.upsertSession(makeSession({ status: "awaiting_review" }));
+		expect(store.getSession("exec-1")!.runner_model).toBe("claude-fable-5");
+	});
+
+	// FLY-728 Part C: dispatch_model is the source-honest retry input (the sorter's
+	// dispatch param ONLY, distinct from the resolved runner_model).
+	it("FLY-728: upsert/patch/COALESCE dispatch_model round-trips", () => {
+		store.upsertSession(makeSession({ dispatch_model: "claude-fable-5" }));
+		expect(store.getSession("exec-1")!.dispatch_model).toBe("claude-fable-5");
+		// COALESCE preserves it on a later upsert that omits it
+		store.upsertSession(makeSession({ status: "awaiting_review" }));
+		expect(store.getSession("exec-1")!.dispatch_model).toBe("claude-fable-5");
+		// patchSessionMetadata can set it
+		store.upsertSession(makeSession({ execution_id: "exec-2" }));
+		expect(store.getSession("exec-2")!.dispatch_model).toBeUndefined();
+		store.patchSessionMetadata("exec-2", { dispatch_model: "claude-sonnet-5" });
+		expect(store.getSession("exec-2")!.dispatch_model).toBe("claude-sonnet-5");
+	});
+
 	it("FLY-615: upsertSession stores and retrieves ponytail_condition", () => {
 		store.upsertSession(makeSession({ ponytail_condition: "on:label" }));
 		expect(store.getSession("exec-1")!.ponytail_condition).toBe("on:label");

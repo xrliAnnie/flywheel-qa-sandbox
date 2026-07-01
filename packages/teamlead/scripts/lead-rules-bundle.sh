@@ -65,6 +65,10 @@ compute_lead_rule_bundle() {
         _lrb_emit "${base}/runner-messaging-rules.md" 0 || return 10
       fi
       _lrb_emit "${base}/executor-routing.md" 0 || return 10
+      # FLY-728: the Lead is the difficulty sorter — judge difficulty at dispatch
+      # and pass a model tier on /api/runs/start. Every dispatch-capable Lead
+      # (incl. full-access Codex) needs it, so it lives in the shared bundle too.
+      _lrb_emit "${base}/model-routing.md" 0 || return 10
       _lrb_emit "${base}/stuck-runner-remanage.md" 0 || return 10
       _lrb_emit "${base}/runner-reengage-rules.md" 0 || return 10
       # FLY-369: status-relay + proactive patrol — backend-independent (loads on

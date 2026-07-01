@@ -11,7 +11,12 @@ import {
 	pinThreadMessage,
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
-import { splitStatusEmoji, stageBadge } from "./stage-utils.js";
+import {
+	modelSuffixCode,
+	splitStatusEmoji,
+	stageBadge,
+	stripModelSuffix,
+} from "./stage-utils.js";
 import { validateThreadExists } from "./thread-validator.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -98,6 +103,18 @@ export interface ChatThreadContext {
 	leadId?: string;
 	/** Discord user ID to auto-add as thread member (for sidebar visibility). */
 	ownerUserId?: string;
+	/**
+	 * FLY-728 Part D: the resolved model's F/O/S/H short code, stamped as a title
+	 * SUFFIX (` ·F`) that rides the same rename as the stage-emoji prefix.
+	 * Tri-state (Codex code R1 MEDIUM — an authoritative stamp must be able to
+	 * CLEAR a stale suffix when a reused thread's run has no model):
+	 *   - a code ("F"…) → SET the suffix to it
+	 *   - `null`        → CLEAR it (the caller KNOWS this run is account-default)
+	 *   - absent        → PRESERVE the existing suffix (caller has no model context)
+	 * Every stamp caller that has the session passes `modelShortCode(runner_model)
+	 * ?? null` so account-default clears rather than preserving a prior model.
+	 */
+	modelCode?: "F" | "O" | "S" | "H" | null;
 }
 
 export interface ChatThreadResult {
@@ -123,8 +140,21 @@ function buildIssueThreadName(
 	return ctx.issueTitle ?? ctx.issueId;
 }
 
-function truncateDiscordThreadName(name: string): string {
-	return name.slice(0, DISCORD_THREAD_NAME_MAX);
+/**
+ * FLY-728: compose the final ≤100-char thread title, RESERVING room for the
+ * leading status `prefix` (e.g. "🔨实现中 ") and the trailing model-code suffix
+ * (` ·F`) so a long issue title truncates in the MIDDLE and never drops the
+ * F/O/S/H code off the end (Codex design R1 MEDIUM). `base` must be suffix-free.
+ */
+function composeThreadTitle(
+	prefix: string,
+	base: string,
+	modelCode: "F" | "O" | "S" | "H" | null | undefined,
+): string {
+	const suffix = modelCode ? ` ·${modelCode}` : "";
+	const budget = DISCORD_THREAD_NAME_MAX - prefix.length - suffix.length;
+	const cutBase = base.slice(0, Math.max(0, budget));
+	return `${prefix}${cutBase}${suffix}`;
 }
 
 function isPlaceholderThreadName(
@@ -230,7 +260,14 @@ export class ChatThreadCreator {
 		// 2. Compose thread name + initial message visible in main channel.
 		// FLY-91 UX fix: "Start Thread from Message" makes the root message
 		// appear in the channel, so users can see the thread was created.
-		const threadName = truncateDiscordThreadName(buildIssueThreadName(ctx));
+		// FLY-728 Part D (Codex R1 MEDIUM): stamp the model code at thread creation
+		// so a new [FLY-XX] thread shows F/O/S/H immediately, not only after the
+		// first stage_changed.
+		const threadName = composeThreadTitle(
+			"",
+			buildIssueThreadName(ctx),
+			ctx.modelCode,
+		);
 
 		const issueKey = effectiveIssueKey(ctx);
 		const messageContent = issueKey
@@ -521,19 +558,34 @@ export class ChatThreadCreator {
 			// (including any manual curation), swapping just the emoji. Rebuild the
 			// canonical `[FLY-XX] Title` from ctx only when the current title is a
 			// placeholder (or empty) and the real title is known.
-			const currentBase = splitStatusEmoji(currentName ?? "").base;
+			// FLY-560 strips the leading stage emoji; FLY-728 works on a SUFFIX-FREE
+			// base and re-appends the model code via composeThreadTitle (so it rides
+			// the same rename as the stage badge, and long titles reserve room for
+			// it). The placeholder check uses the bare base.
+			const rawBase = splitStatusEmoji(currentName ?? "").base;
+			const bareBase = stripModelSuffix(rawBase);
+			// FLY-728 Part D (tri-state, Codex code R1 MEDIUM): an explicit code SETS
+			// it, `null` CLEARS it (authoritative caller knows this run is account-
+			// default — so a stale ·F from a prior run on a REUSED thread is removed),
+			// and ABSENT preserves whatever is there (a caller with no model context).
+			const effectiveCode =
+				ctx.modelCode === undefined
+					? modelSuffixCode(rawBase) // preserve
+					: (ctx.modelCode ?? undefined); // set (code) or clear (null → undefined)
 			let base: string | undefined;
-			if (currentBase && !isPlaceholderThreadName(currentBase, ctx)) {
-				base = currentBase;
+			if (bareBase && !isPlaceholderThreadName(bareBase, ctx)) {
+				base = bareBase;
 			} else if (ctx.issueTitle && effectiveIssueKey(ctx)) {
 				base = buildIssueThreadName(ctx);
-			} else if (currentBase) {
-				base = currentBase;
+			} else if (bareBase) {
+				base = bareBase;
 			}
 			if (!base) return { status: "noop" };
 
-			const desired = truncateDiscordThreadName(
-				badge ? `${badge} ${base}` : base,
+			const desired = composeThreadTitle(
+				badge ? `${badge} ` : "",
+				base,
+				effectiveCode,
 			);
 			if (currentName === desired) return { status: "noop" }; // already stamped
 
@@ -867,7 +919,12 @@ export class ChatThreadCreator {
 	): Promise<void> {
 		if (!ctx.issueTitle) return;
 		if (!effectiveIssueKey(ctx)) return;
-		const desiredName = truncateDiscordThreadName(buildIssueThreadName(ctx));
+		// FLY-728: carry the model code (backfill fills a placeholder → no suffix yet).
+		const desiredName = composeThreadTitle(
+			"",
+			buildIssueThreadName(ctx),
+			ctx.modelCode,
+		);
 		if (!desiredName || desiredName === ctx.issueId) return;
 
 		const controller = new AbortController();

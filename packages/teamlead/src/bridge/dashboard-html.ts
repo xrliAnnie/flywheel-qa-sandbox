@@ -95,7 +95,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
 <section>
   <h2>Active Sessions</h2>
   <table><thead><tr>
-    <th>Issue</th><th>Status</th><th>Project</th><th>Runtime</th><th>Branch</th><th>Process</th><th>Actions</th>
+    <th>Issue</th><th>Status</th><th>Project</th><th>Model</th><th>Runtime</th><th>Branch</th><th>Process</th><th>Actions</th>
   </tr></thead><tbody id="t-active"></tbody></table>
   <div class="empty" id="e-active" style="display:none">No active sessions</div>
 </section>
@@ -306,6 +306,7 @@ tbody tr:hover{background:rgba(255,255,255,.03)}
         + issueCell(s)
         + '<td>' + statusBadge(s.status) + '</td>'
         + '<td>' + escapeHtml(s.project_name) + '</td>'
+        + '<td class="mono">' + escapeHtml(s.runner_model || '\\u2014') + '</td>'
         + '<td class="runtime" data-started="' + escapeHtml(s.started_at || '') + '">' + escapeHtml(formatRuntime(s.started_at)) + '</td>'
         + '<td class="mono truncate">' + escapeHtml(s.branch || '-') + '</td>'
         + '<td>' + tmuxTag(s) + '</td>'

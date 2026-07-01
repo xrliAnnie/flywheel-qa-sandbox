@@ -86,6 +86,15 @@ export interface ResolveRoleAdapterArgs {
 	role: RoleName;
 	/** Linear labels (lowercased upstream or not — parser normalizes). */
 	issueLabels?: readonly string[];
+	/**
+	 * FLY-728 Part C: the per-run `/api/runs/start` `model` param — the sorter's
+	 * output channel. The Lead judges the issue's difficulty at dispatch and
+	 * passes a canonical model id here (already normalized + whitelisted at the
+	 * Bridge boundary). Applied for the runner role BELOW a manual model/vendor
+	 * label (the founder's explicit choice wins) and ABOVE the project default.
+	 * All 728 tiers are Claude models → backend claude-tmux.
+	 */
+	dispatchModel?: string;
 	/** Project `.flywheel/config.yaml` `roles:` block (already validated). */
 	projectRoles?: RoleBackendMap;
 	/** Process env (injectable for tests). */
@@ -164,6 +173,16 @@ export function resolveRoleAdapter(
 			}
 			// Unsupported vendor label (gemini/cursor) → fall through.
 		}
+	}
+
+	// 1b. FLY-728 Part C: dispatch `model` param (the difficulty-sorter's output).
+	//     Runner-only, and only when the label layer selected NO backend (no
+	//     vendor + no model label) — so a manual model label OR a vendor label
+	//     (which would pin a non-Claude backend) both win over the sorter. All
+	//     728 tiers are Claude models → claude-tmux.
+	if (!backend && args.role === "runner" && args.dispatchModel) {
+		backend = "claude-tmux";
+		model = args.dispatchModel;
 	}
 
 	// 2. Project config roles block.

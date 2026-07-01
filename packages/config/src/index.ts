@@ -8,6 +8,14 @@ export {
 	GATE_TIMEOUT_BUFFER_MS,
 	MIN_GATE_TIMEOUT_MS,
 } from "./constants.js";
+// FLY-728: per-issue model routing — tier vocabulary (dispatch whitelist +
+// tier→model default + F/O/S/H short code).
+export type { ModelTier, ModelTierSpec } from "./model-tiers.js";
+export {
+	MODEL_TIERS,
+	modelShortCode,
+	normalizeDispatchModel,
+} from "./model-tiers.js";
 export type {
 	PonytailCondition,
 	PonytailEffective,

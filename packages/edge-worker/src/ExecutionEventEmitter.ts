@@ -22,6 +22,13 @@ export interface EventEnvelope {
 	 */
 	runnerBackend?: string;
 	/**
+	 * FLY-728: the resolved runner model (e.g. "claude-fable-5", "opus"). Persisted
+	 * as `session.runner_model` so the dashboard / issue surfaces show which model a
+	 * per-issue routed runner is using. Absent → no `--model` override was resolved
+	 * (account default), persisted as NULL (byte-compatible).
+	 */
+	runnerModel?: string;
+	/**
 	 * FLY-615: the resolved ponytail condition for this run (e.g. "on:label",
 	 * "off:default", "unavailable:readiness:on:project"). Persisted as
 	 * `session.ponytail_condition` — the join key for FLY-614 token accounting +
@@ -80,6 +87,8 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				sessionRole: env.sessionRole,
 				// FLY-493: executor backend → persisted as session.adapter_type.
 				runnerBackend: env.runnerBackend,
+				// FLY-728: resolved runner model → persisted as session.runner_model.
+				runnerModel: env.runnerModel,
 				// FLY-615: ponytail condition → persisted as session.ponytail_condition.
 				ponytailCondition: env.ponytailCondition,
 			},

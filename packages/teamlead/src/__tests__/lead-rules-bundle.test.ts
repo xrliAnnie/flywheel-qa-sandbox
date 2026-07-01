@@ -70,6 +70,7 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"department-lead-rules.md",
 			"runner-messaging-rules.md",
 			"executor-routing.md",
+			"model-routing.md",
 			"stuck-runner-remanage.md",
 			"runner-reengage-rules.md",
 			"runner-patrol-rules.md",

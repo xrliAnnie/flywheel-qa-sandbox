@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { modelShortCode } from "flywheel-config";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -1158,6 +1159,10 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			issueTitle: session.issue_title,
 			botToken,
 			leadId,
+			// FLY-728 Part D: the reconnect stamp has the session — keep the model
+			// code authoritative (`?? null` clears on account-default) so a reconnect
+			// rename never keeps a stale code (Codex code R1).
+			modelCode: modelShortCode(session.runner_model) ?? null,
 		};
 
 		let badge: string | null;

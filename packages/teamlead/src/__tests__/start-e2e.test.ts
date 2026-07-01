@@ -678,6 +678,74 @@ describe("Start API E2E", () => {
 		}, 15_000);
 	});
 
+	// FLY-728 Part C — dispatch `model` param boundary validation + normalization.
+	describe("FLY-728 — dispatch model param", () => {
+		it("valid tier id passes through to the dispatcher as dispatchModel", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-TEST",
+					projectName: "TestProject",
+					model: "claude-fable-5",
+				}),
+			});
+			expect(res.status).toBe(200);
+			const startReq = mockDispatcher.start.mock.calls[0]![0];
+			expect(startReq.dispatchModel).toBe("claude-fable-5");
+			// FLY-728: persisted as the source-honest retry input dispatch_model.
+			expect(store.getSession("exec-GEO-TEST")?.dispatch_model).toBe(
+				"claude-fable-5",
+			);
+		}, 15_000);
+
+		it("a bare alias is normalized to the canonical id before dispatch", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-TEST",
+					projectName: "TestProject",
+					model: "opus",
+				}),
+			});
+			expect(res.status).toBe(200);
+			const startReq = mockDispatcher.start.mock.calls[0]![0];
+			expect(startReq.dispatchModel).toBe("claude-opus-4-8[1m]");
+		}, 15_000);
+
+		it("unknown model → 400 INVALID_MODEL (never reaches dispatcher)", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-TEST",
+					projectName: "TestProject",
+					model: "gpt-5.5-codex",
+				}),
+			});
+			expect(res.status).toBe(400);
+			const body = (await res.json()) as { code: string; reason: string };
+			expect(body.code).toBe("INVALID_MODEL");
+			expect(body.reason).toBe("unknown_model");
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		}, 15_000);
+
+		it("omitted model → dispatcher gets undefined dispatchModel (byte-compat)", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-TEST",
+					projectName: "TestProject",
+				}),
+			});
+			expect(res.status).toBe(200);
+			const startReq = mockDispatcher.start.mock.calls[0]![0];
+			expect(startReq.dispatchModel).toBeUndefined();
+		}, 15_000);
+	});
+
 	// FLY-534 — projectName is case-insensitive. The configured project is
 	// "TestProject"; a caller sending it differently-cased ("testproject" /
 	// "TESTPROJECT") must resolve to the SAME runtime, and the dispatcher (plus

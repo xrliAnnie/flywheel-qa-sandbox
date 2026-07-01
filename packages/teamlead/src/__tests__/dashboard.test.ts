@@ -274,6 +274,27 @@ describe("buildDashboardPayload", () => {
 		expect(payload.active[0]!.execution_id).toBe("e1");
 	});
 
+	// FLY-728: the resolved runner model surfaces in the dashboard payload so the
+	// founder can see which model a per-issue routed runner is using.
+	it("FLY-728: runner_model surfaces on the active session payload", () => {
+		store.upsertSession(
+			makeSession({
+				execution_id: "e1",
+				status: "running",
+				runner_model: "claude-fable-5",
+			}),
+		);
+		const payload = buildDashboardPayload(store, 15);
+		expect(payload.active[0]!.runner_model).toBe("claude-fable-5");
+	});
+
+	it("FLY-728: runner_model absent → undefined, payload shape intact (byte-compat)", () => {
+		store.upsertSession(makeSession({ execution_id: "e1", status: "running" }));
+		const payload = buildDashboardPayload(store, 15);
+		expect(payload.active[0]!.runner_model).toBeUndefined();
+		expect(payload.active[0]!.execution_id).toBe("e1");
+	});
+
 	it("awaiting_review session appears in metrics and active", () => {
 		store.upsertSession(
 			makeSession({ execution_id: "e1", status: "awaiting_review" }),
