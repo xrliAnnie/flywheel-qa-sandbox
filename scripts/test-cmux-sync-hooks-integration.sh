@@ -471,6 +471,74 @@ kill -TERM "$PID_A" "$PID_B" 2>/dev/null || true
 sleep 1
 rm -rf "$INT_LOCK_DIR" "${INT_LOCK_DIR}.reap" "$LOG_A" "$LOG_B"
 
+# ── Scenario E (FLY-293): orphan-pin reaper against REAL tmux inventory ──
+#
+# Proves the safety-critical detection predicate on a real tmux server (the
+# part mocks can get subtly wrong): a live runner (real window + real linked
+# cmux- session) is KEPT; a fully-orphaned managed pin (NO window, NO linked
+# session) is the only thing reaped; non-managed titles (Lead / user tab) are
+# kept; and a real tmux-server-down makes orphan_pin_refs fail-closed (rc=2,
+# no false orphans). cmux is mocked (no real cmux in CI); tmux is the real
+# isolated server via the shim. Does NOT need tmux 3.5+ (basic list/kill only).
+echo
+echo "── Scenario E (FLY-293): orphan-pin reaper (real tmux inventory) ──"
+reset_scenario "E293"
+# LIVE runner: real window + real grouped linked cmux- session → must be KEPT.
+tmux new-session -d -s "runner-test-fly293" -n "FLY-100-claude-alive" "sleep 60" 2>/dev/null
+tmux new-session -d -t "runner-test-fly293" -s "cmux-FLY-100-claude-alive" 2>/dev/null
+# FLY-777-claude-orphan: intentionally NO window and NO cmux- session = orphan.
+
+# Mock cmux (no real cmux binary in CI): controlled workspace JSON referencing
+# the real tmux state, and capture close-workspace / refresh-surfaces.
+FLY293_OPS=""
+cmux() {
+  [[ "${1:-}" == "--socket" ]] && shift 2
+  [[ "${1:-}" == "--json" ]] && shift
+  case "${1:-}" in
+    list-workspaces)
+      cat <<'FLY293JSON'
+{"workspaces":[
+  {"ref":"workspace:1","title":"FLY-100-claude-alive"},
+  {"ref":"workspace:2","title":"FLY-777-claude-orphan"},
+  {"ref":"workspace:3","title":"home"},
+  {"ref":"workspace:4","title":"flywheel-flywheel-cos-lead"}
+]}
+FLY293JSON
+      ;;
+    close-workspace|refresh-surfaces) FLY293_OPS+="$*"$'\n' ;;
+  esac
+  return 0
+}
+export -f cmux
+
+d293_out=$(orphan_pin_refs)
+if echo "$d293_out" | grep -q "^workspace:2	FLY-777-claude-orphan$" \
+   && [[ "$(echo "$d293_out" | grep -c '^workspace:')" == "1" ]]; then
+  pass "Scenario E: real-tmux orphan detection — only FLY-777 orphan (live runner + Lead + user tab kept)"
+else
+  fail "Scenario E: orphan_pin_refs wrong. out=[$d293_out]"
+fi
+
+FLY293_OPS=""
+reap_orphan_pins_oneshot >/dev/null 2>&1
+if echo "$FLY293_OPS" | grep -q "close-workspace --workspace workspace:2" \
+   && ! echo "$FLY293_OPS" | grep -q "workspace:1"; then
+  pass "Scenario E: one-shot reaped orphan (workspace:2), never touched live runner (workspace:1)"
+else
+  fail "Scenario E: reap wrong. ops=[$FLY293_OPS]"
+fi
+
+# Fail-closed against a REAL tmux failure: kill the isolated server → the real
+# `tmux list-sessions` inside orphan_pin_refs fails → rc=2, no false orphans.
+command tmux -L "$TMUX_SOCKET" kill-server 2>/dev/null || true
+d293_fc_out=$(orphan_pin_refs 2>/dev/null); d293_fc_rc=$?
+if [[ $d293_fc_rc -eq 2 && -z "$d293_fc_out" ]]; then
+  pass "Scenario E: real tmux server down → orphan_pin_refs rc=2 (fail-closed, zero false orphans)"
+else
+  fail "Scenario E: expected rc=2 on tmux-down, got rc=$d293_fc_rc out=[$d293_fc_out]"
+fi
+unset -f cmux 2>/dev/null || true
+
 # ── Summary ───────────────────────────────────────────────────────────
 
 echo
