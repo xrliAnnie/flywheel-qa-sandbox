@@ -38,6 +38,91 @@ describe("dateRange", () => {
 	});
 });
 
+describe("aggregateAndPersist rates seam (FLY-713 Codex R4)", () => {
+	// A baseDir with one real CC jsonl assistant turn (1M opus input tokens),
+	// under a /Dev/flywheel cwd so the classifier attributes it to the flywheel project.
+	function baseDirWithOneOpusTurn(): string {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "tu-rates-"));
+		const line = JSON.stringify({
+			type: "assistant",
+			timestamp: "2026-06-26T12:00:00Z",
+			requestId: "req-rates-1",
+			cwd: "/Users/test/Dev/flywheel",
+			message: {
+				model: "claude-opus-4-8",
+				usage: {
+					input_tokens: 1_000_000,
+					output_tokens: 0,
+					cache_read_input_tokens: 0,
+					cache_creation_input_tokens: 0,
+				},
+			},
+		});
+		fs.writeFileSync(path.join(dir, "session.jsonl"), `${line}\n`);
+		return dir;
+	}
+
+	function capturingStore() {
+		const saved: DailyRow[] = [];
+		return {
+			saved,
+			store: {
+				replaceDaily: (_day: string, rows: DailyRow[]) => {
+					saved.push(...rows);
+					return Promise.resolve();
+				},
+				queryDaily: () => Promise.resolve([]),
+			},
+		};
+	}
+
+	it("persists cost from the configured rates table, not the defaults", async () => {
+		const baseDir = baseDirWithOneOpusTurn();
+		const cap = capturingStore();
+		try {
+			await aggregateAndPersist({
+				baseDir,
+				store: cap.store,
+				since: "2026-06-26",
+				until: "2026-06-26",
+				timeZone: "UTC",
+				rates: {
+					"claude-opus-4-8": {
+						input: 1,
+						output: 1,
+						cacheRead: 1,
+						cacheWrite: 1,
+					},
+				},
+			});
+			const total = cap.saved.find((r) => r.scope === "total");
+			// 1M input × $1/MTok = $1 = 1_000_000 micro (the configured rate, not the default $5).
+			expect(total?.costMicroUsd).toBe(1_000_000);
+		} finally {
+			fs.rmSync(baseDir, { recursive: true, force: true });
+		}
+	});
+
+	it("falls back to the default table when no rates are passed", async () => {
+		const baseDir = baseDirWithOneOpusTurn();
+		const cap = capturingStore();
+		try {
+			await aggregateAndPersist({
+				baseDir,
+				store: cap.store,
+				since: "2026-06-26",
+				until: "2026-06-26",
+				timeZone: "UTC",
+			});
+			const total = cap.saved.find((r) => r.scope === "total");
+			// Default opus-4-8 input rate is $5/MTok → 5_000_000 micro.
+			expect(total?.costMicroUsd).toBe(5_000_000);
+		} finally {
+			fs.rmSync(baseDir, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("aggregateAndPersist mid-run fallback (Codex R1)", () => {
 	it("writes to localFallback when the primary store throws", async () => {
 		const baseDir = emptyBaseDir(); // no jsonl → no records → empty-day replace

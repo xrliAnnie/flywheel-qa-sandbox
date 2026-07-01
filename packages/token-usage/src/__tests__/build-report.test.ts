@@ -106,6 +106,38 @@ describe("buildReportModel", () => {
 		expect(m.projects.map((p) => p.name)).toEqual(["flywheel", "sub"]);
 	});
 
+	it("pads known projects with no usage as 0-entries (FLY-713)", () => {
+		const padded = buildReportModel(rows, {
+			reportDay: "2026-06-26",
+			timezone: "America/Los_Angeles",
+			isCompleted: () => false,
+			knownProjects: [
+				"flywheel",
+				"sub",
+				"joycon-typeless",
+				"tidal-echo",
+				"polaris",
+			],
+			displayOnlyProjects: ["polaris"],
+		});
+		const names = padded.projects.map((p) => p.name);
+		expect(names).toContain("joycon-typeless");
+		expect(names).toContain("tidal-echo");
+		expect(names).toContain("polaris");
+		// Active projects keep their data; padded ones are 0 and appended after.
+		expect(padded.projects[0].name).toBe("flywheel");
+		const joycon = padded.projects.find((p) => p.name === "joycon-typeless");
+		expect(joycon).toMatchObject({ tokens: 0, cost: 0, leads: [], issues: [] });
+		// Registered-but-0 projects are not flagged; display-only ones are.
+		expect(joycon?.unregistered).toBeFalsy();
+		const polaris = padded.projects.find((p) => p.name === "polaris");
+		expect(polaris?.unregistered).toBe(true);
+		// A padded project is excluded from the per-project trend (no line for 0 data).
+		expect(padded.trendByProject.map((t) => t.project)).not.toContain(
+			"joycon-typeless",
+		);
+	});
+
 	it("exposes a flat fleet Leads ranking", () => {
 		expect(m.leadsAll.map((l) => l.name)).toEqual([
 			"flywheel-eng-lead",
@@ -123,10 +155,10 @@ describe("buildReportModel", () => {
 		});
 	});
 
-	it("builds total trend across the window", () => {
+	it("builds total trend across the window (tokens + cost)", () => {
 		expect(m.trendTotal).toEqual([
-			{ day: "2026-06-25", tokens: 800 },
-			{ day: "2026-06-26", tokens: 1000 },
+			{ day: "2026-06-25", tokens: 800, cost: 0 },
+			{ day: "2026-06-26", tokens: 1000, cost: 0 },
 		]);
 	});
 
@@ -134,8 +166,8 @@ describe("buildReportModel", () => {
 		const fly = m.trendByProject.find((t) => t.project === "flywheel");
 		// 06-25: 500 + 100 = 600 ; 06-26: 600 + 200 = 800
 		expect(fly?.points).toEqual([
-			{ day: "2026-06-25", tokens: 600 },
-			{ day: "2026-06-26", tokens: 800 },
+			{ day: "2026-06-25", tokens: 600, cost: 0 },
+			{ day: "2026-06-26", tokens: 800, cost: 0 },
 		]);
 	});
 

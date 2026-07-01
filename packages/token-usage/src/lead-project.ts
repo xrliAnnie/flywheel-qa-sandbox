@@ -36,6 +36,15 @@ export const DEFAULT_LEAD_PROJECT: Record<string, string> = {
 /** Fallback bucket for leads not in the map and not matching a known prefix. */
 export const LEAD_FALLBACK_PROJECT = "(其它)";
 
+/**
+ * Display-only projects: names the founder recognizes but that are NOT yet
+ * registered in `projects.json`. They are listed in the report (with 0 usage
+ * and a "(未立项)" tag) so they're visible, WITHOUT registering them as managed
+ * projects (registration = the Bridge/watchdog expects a Lead + config). When a
+ * project is truly stood up, add it to `projects.json` and remove it here.
+ */
+export const DISPLAY_ONLY_PROJECTS: readonly string[] = ["polaris"];
+
 /** Default authoritative fleet-config path. */
 export const DEFAULT_PROJECTS_JSON = path.join(
 	os.homedir(),
@@ -78,6 +87,28 @@ export function loadLeadProjectMap(
 		}
 	}
 	return map;
+}
+
+/**
+ * The canonical list of known project names from the fleet config `projects.json`
+ * (each entry's `projectName`). Used to list every project in the report — even
+ * ones with no usage that day (shown as 0). Returns `[]` if the config is
+ * unreadable (so the report still renders, just without 0-padding).
+ */
+export function loadKnownProjects(
+	projectsJsonPath: string = DEFAULT_PROJECTS_JSON,
+): string[] {
+	try {
+		const parsed = JSON.parse(
+			readFileSync(projectsJsonPath, "utf8"),
+		) as ProjectsJsonEntry[];
+		if (!Array.isArray(parsed)) return [];
+		return parsed
+			.map((p) => p?.projectName)
+			.filter((n): n is string => typeof n === "string" && n.length > 0);
+	} catch {
+		return [];
+	}
 }
 
 /**

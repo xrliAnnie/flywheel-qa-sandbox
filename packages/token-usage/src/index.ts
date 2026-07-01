@@ -2,14 +2,29 @@ export { aggregateDaily } from "./aggregator.js";
 export { classifyCwd, PROJECTS } from "./classifier.js";
 export { main as runTokenReportCli } from "./cli.js";
 export { loadCompletedIssues } from "./completion.js";
-export { DEFAULT_LEAD_PROJECT, resolveLeadProject } from "./lead-project.js";
+export {
+	DEFAULT_LEAD_PROJECT,
+	DISPLAY_ONLY_PROJECTS,
+	loadKnownProjects,
+	resolveLeadProject,
+} from "./lead-project.js";
 export {
 	aggregateAndPersist,
 	dateRange,
 	generateReport,
 	todayInTz,
 } from "./pipeline.js";
-export { costMicroUsd, MODEL_RATES, microUsdToUsd } from "./pricing.js";
+export {
+	costMicroUsd,
+	formatUsd,
+	type LoadedPricing,
+	loadPricingConfig,
+	loadPricingConfigWithMeta,
+	MODEL_RATES,
+	type ModelRate,
+	microUsdToUsd,
+	ratesForDay,
+} from "./pricing.js";
 export {
 	buildReportModel,
 	type ReportModel,
