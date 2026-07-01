@@ -940,6 +940,10 @@ function titleFor(kind: AlertEventType): string {
 		// builds its own title); case exists for switch exhaustiveness.
 		case "runner_lead_pending_unhandled":
 			return "Runner waiting — Lead unresponsive";
+		// FLY-725: never emitted by LeadWatchdog (the milestone patrol builds its
+		// own title); case exists for switch exhaustiveness.
+		case "founder_milestone_undelivered":
+			return "Milestone ping undelivered";
 	}
 }
 
@@ -979,5 +983,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-637-ext: never emitted by LeadWatchdog (the lead-pending escalation builds its own body).
 		case "runner_lead_pending_unhandled":
 			return "A runner has been blocked waiting on the Lead to answer its question, and the Lead did not respond after several reminders. Poke the Lead — the runner itself is fine.";
+		// FLY-725: never emitted by LeadWatchdog (the milestone / founder-thread patrol builds its own body).
+		case "founder_milestone_undelivered":
+			return "The Bridge could not deliver a founder milestone / ship-ready ping to its issue thread. The founder was NOT pinged; check the thread / bot token / owner config.";
 	}
 }

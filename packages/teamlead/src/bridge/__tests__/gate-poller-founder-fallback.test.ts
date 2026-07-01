@@ -199,6 +199,62 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 		await fallback(poller, makeSession(), makeQuestion());
 	});
 
+	it("FLY-725: permanent (4xx) delivery failure escalates on the alert channel (never silent) + writes terminal marker", async () => {
+		const { store, events } = makeStore();
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 403 }));
+		const alert = vi.fn(async () => ({ sent: true }));
+		const poller = makePoller(
+			{
+				fetchImpl: fetchImpl as unknown as typeof fetch,
+				leadAlertSink: {
+					alert,
+				} as unknown as GatePollerConfig["leadAlertSink"],
+			},
+			store,
+		);
+		await fallback(
+			poller,
+			makeSession(),
+			makeQuestion({ checkpoint: "approve_to_ship" }),
+		);
+		// The founder was not pinged → alert-channel escalation fired.
+		expect(alert).toHaveBeenCalledTimes(1);
+		expect((alert.mock.calls[0]?.[0] as { eventType: string }).eventType).toBe(
+			"founder_milestone_undelivered",
+		);
+		// Terminal marker still written (a 4xx won't fix itself).
+		expect(events.some((e) => e.event_id === "founder-thread-notify-q1")).toBe(
+			true,
+		);
+	});
+
+	it("FLY-725: no_chat_thread is transient — retries (no terminal marker / no escalation within budget)", async () => {
+		const { store, events } = makeStore();
+		store.getChatThreadByIssue = vi.fn(() => undefined) as never;
+		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
+		const alert = vi.fn(async () => ({ sent: true }));
+		const poller = makePoller(
+			{
+				fetchImpl: fetchImpl as unknown as typeof fetch,
+				leadAlertSink: {
+					alert,
+				} as unknown as GatePollerConfig["leadAlertSink"],
+			},
+			store,
+		);
+		await fallback(
+			poller,
+			makeSession(),
+			makeQuestion({ checkpoint: "approve_to_ship" }),
+		);
+		// No thread yet → skipped:no_chat_thread → transient retry, NOT terminal.
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(events.some((e) => e.event_id === "founder-thread-notify-q1")).toBe(
+			false,
+		);
+		expect(alert).not.toHaveBeenCalled();
+	});
+
 	it("durable marker already present (Bridge restart) → no POST", async () => {
 		const { store } = makeStore([
 			{

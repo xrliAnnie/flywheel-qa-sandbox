@@ -2080,6 +2080,39 @@ export class StateStore {
 		return rows;
 	}
 
+	/**
+	 * FLY-725: main-session ZERO-SIGNAL terminal milestones (failed/blocked) for ONE
+	 * project that recently reached that state — the milestone-report patrol
+	 * candidate set. `completed` is intentionally excluded (routine completions go
+	 * to the FLY-727 digest, not a real-time ping; Annie 2026-07-01 plan §B).
+	 * `project_name` is filtered at the SQL boundary (Codex R1 #2: `matchesLead`
+	 * alone is not a project boundary — two projects can reuse a lead id). QA runners
+	 * (`session_role != 'main'`) are excluded — they produce no founder-facing
+	 * milestone. `lookbackHours` bounds the scan window so the patrol does not walk
+	 * the entire session history each tick.
+	 */
+	getRecentTerminalSessionsForNotify(
+		projectName: string,
+		lookbackHours: number,
+	): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			  WHERE project_name = ?
+			    AND status IN ('failed', 'blocked')
+			    AND (session_role IS NULL OR session_role = 'main')
+			    AND last_activity_at > datetime('now', ?)`,
+		);
+		stmt.bind([projectName, `-${lookbackHours} hours`]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
 	/** Retrieve parsed session_params for a given execution. */
 	getSessionParams(executionId: string): Record<string, unknown> | undefined {
 		const stmt = this.db.prepare(

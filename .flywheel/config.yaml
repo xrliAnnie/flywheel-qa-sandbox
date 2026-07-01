@@ -78,6 +78,20 @@ doc_flow:
   enabled: true
   default_department: engineering
 
+# founder_milestone_report (FLY-725): when a Runner reaches a ZERO-SIGNAL terminal
+# milestone (failed / blocked) the Bridge pushes ONE @founder-pinged report to the
+# issue's [FLY-XX] chat thread — a mechanism-guaranteed, ground-truth "push" so the
+# founder is never forced to pull. Content is generated from the real session event
+# (route / PR / last_error), NOT the possibly-lagging thread title. v1 = failed +
+# blocked only: routine `completed` → FLY-727 daily digest; `ship_ready` is already
+# an @founder ping via the FLY-605 approve_to_ship gate (not duplicated here).
+# Absent/enabled:false = off (byte-compatible); FLYWHEEL_FOUNDER_MILESTONE_NOTIFY=0
+# is a fleet kill-switch. Loaded from this CANONICAL root only, so a runner can't
+# edit its own PR config to change founder notifications.
+founder_milestone_report:
+  enabled: true
+  milestones: [failed, blocked]
+
 # Executors: role-based so Tadashi (one engineering Lead) covers multiple roles
 # by issue label — the GeoForge3D "Peter covers many roles" pattern, narrowed by
 # Annie to 3 roles. All agents live under .flywheel/agents/engineering/ —
