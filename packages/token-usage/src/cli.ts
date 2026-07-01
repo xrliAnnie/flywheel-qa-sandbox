@@ -48,6 +48,178 @@ function shiftDay(day: string, delta: number): string {
 	return d.toISOString().slice(0, 10);
 }
 
+export interface CmpWindow {
+	since: string;
+	until: string;
+	label: string;
+}
+export interface Comparison {
+	before: CmpWindow;
+	after: CmpWindow;
+}
+
+/**
+ * Strict YYYY-MM-DD parse. Rejects values JS `Date` would silently normalize
+ * (e.g. `2026-02-31` → `2026-03-03`). Returns the canonical iso string or null.
+ */
+export function parseIsoDayStrict(s: string | undefined): string | null {
+	if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+	const d = new Date(`${s}T00:00:00Z`);
+	if (Number.isNaN(d.getTime())) return null;
+	return d.toISOString().slice(0, 10) === s ? s : null;
+}
+
+/** Parse a bounded positive-integer flag/env; warn + fall back to `def` when invalid. */
+function boundedInt(
+	raw: string | undefined,
+	def: number,
+	min: number,
+	max: number,
+	name: string,
+): number {
+	if (raw === undefined) return def;
+	const n = Number(raw);
+	if (!Number.isInteger(n) || n < min || n > max) {
+		console.warn(
+			`[token-usage] invalid ${name} "${raw}" — using ${def} (allowed ${min}..${max})`,
+		);
+		return def;
+	}
+	return n;
+}
+
+/**
+ * Derive the before/after comparison windows for the report hero.
+ * Precedence: explicit --before/--after > --rollout-date (flag > env) > week-over-week.
+ * The week-over-week default is applied only when `defaultWeekOverWeek` is set (daily mode);
+ * ad-hoc `report` gets a comparison only when flags/env request one.
+ */
+export function deriveComparison(
+	reportDay: string,
+	flags: Flags,
+	env: Record<string, string | undefined>,
+	opts: { defaultWeekOverWeek: boolean },
+): Comparison | undefined {
+	// 1. explicit windows win outright (both required to render a comparison).
+	const explicitBefore = parseWindow(str(flags, "before"), "改动前");
+	const explicitAfter = parseWindow(str(flags, "after"), "改动后");
+	if (explicitBefore && explicitAfter) {
+		return { before: explicitBefore, after: explicitAfter };
+	}
+
+	// 2. rollout anchor (ponytail-style fixed before/after). Flag overrides env.
+	const rolloutRaw = str(flags, "rollout-date") ?? env.TOKEN_USAGE_ROLLOUT_DATE;
+	if (rolloutRaw !== undefined) {
+		const d = parseIsoDayStrict(rolloutRaw);
+		if (!d) {
+			console.warn(
+				`[token-usage] invalid rollout date "${rolloutRaw}" — using week-over-week`,
+			);
+		} else if (d > reportDay) {
+			console.warn(
+				`[token-usage] rollout date ${d} is after report day ${reportDay} — using week-over-week`,
+			);
+		} else {
+			const n = boundedInt(
+				str(flags, "window") ?? env.TOKEN_USAGE_WINDOW_DAYS,
+				7,
+				1,
+				90,
+				"--window",
+			);
+			return {
+				before: {
+					since: shiftDay(d, -n),
+					until: shiftDay(d, -1),
+					label: "改动前",
+				},
+				after: { since: d, until: reportDay, label: "改动后" },
+			};
+		}
+	}
+
+	// 3. rolling week-over-week (daily default only).
+	if (opts.defaultWeekOverWeek) {
+		return {
+			before: {
+				since: shiftDay(reportDay, -13),
+				until: shiftDay(reportDay, -7),
+				label: "前一周",
+			},
+			after: {
+				since: shiftDay(reportDay, -6),
+				until: reportDay,
+				label: "本周",
+			},
+		};
+	}
+	return undefined;
+}
+
+/**
+ * Derive the daily aggregate window. The lower bound must reach every day the report
+ * will render (Codex R1 HIGH-2): the backfill floor anchored on the *report day* plus
+ * the comparison before/after starts — so a fallback store self-heals with no missing
+ * comparison day. `until` is today so today's partial data is pre-aggregated.
+ */
+export function deriveAggregateWindow(
+	today: string,
+	reportDay: string,
+	comparison: Comparison | undefined,
+	flags: Flags,
+	env: Record<string, string | undefined>,
+): { since: string; until: string } {
+	const backfillDays = boundedInt(
+		str(flags, "backfill-days") ?? env.TOKEN_USAGE_BACKFILL_DAYS,
+		14,
+		1,
+		90,
+		"--backfill-days",
+	);
+	const candidates = [shiftDay(reportDay, -(backfillDays - 1))];
+	if (comparison?.before.since) candidates.push(comparison.before.since);
+	if (comparison?.after.since) candidates.push(comparison.after.since);
+	const since = candidates.reduce((a, b) => (a < b ? a : b));
+	return { since, until: today };
+}
+
+export interface ReportParams {
+	reportDay: string;
+	trendSince: string;
+	comparison: Comparison | undefined;
+	aggregateSince: string;
+	aggregateUntil: string;
+}
+
+/** Resolve all report + aggregate parameters from the CLI flags (pure + testable). */
+export function resolveReportParams(
+	cmd: string,
+	flags: Flags,
+	env: Record<string, string | undefined>,
+	today: string,
+): ReportParams {
+	const reportDay =
+		str(flags, "date") ?? (cmd === "daily" ? shiftDay(today, -1) : today);
+	const trendSince = str(flags, "trend-since") ?? shiftDay(reportDay, -27);
+	const comparison = deriveComparison(reportDay, flags, env, {
+		defaultWeekOverWeek: cmd === "daily",
+	});
+	const aggWin = deriveAggregateWindow(
+		today,
+		reportDay,
+		comparison,
+		flags,
+		env,
+	);
+	return {
+		reportDay,
+		trendSince,
+		comparison,
+		aggregateSince: str(flags, "since") ?? aggWin.since,
+		aggregateUntil: str(flags, "until") ?? aggWin.until,
+	};
+}
+
 export async function main(
 	argv: string[] = process.argv.slice(2),
 ): Promise<number> {
@@ -62,6 +234,9 @@ export async function main(
 	const completedDbPath =
 		str(flags, "completed-db") ?? path.join(home, ".flywheel", "teamlead.db");
 	const today = todayInTz(tz);
+	// Resolve report day, trend/comparison windows, and the rolling aggregate window
+	// once, up front — the aggregate step must cover every day the report renders.
+	const params = resolveReportParams(cmd, flags, process.env, today);
 
 	const resolved = await resolveUsageStore({ localPath });
 	if (resolved.warning) console.error(`[token-usage] ${resolved.warning}`);
@@ -75,8 +250,13 @@ export async function main(
 
 	try {
 		if (cmd === "aggregate" || cmd === "daily") {
-			const since = str(flags, "since") ?? shiftDay(today, -1);
-			const until = str(flags, "until") ?? today;
+			// Rolling window (default 14 days, anchored on the report day + covering the
+			// comparison windows) so the local fallback self-heals a full trend instead of
+			// collapsing to today+yesterday. replaceDaily is idempotent per day; re-scanning
+			// historical days re-aggregates from the same append-only CC logs (pricing uses
+			// current rates — see FLY-713: rate changes only affect newly-aggregated days).
+			const since = params.aggregateSince;
+			const until = params.aggregateUntil;
 			// Derive the lead→project map from the authoritative fleet config.
 			const leadProjectMap = loadLeadProjectMap(str(flags, "projects-json"));
 			// Load the (optionally configured) pricing table once; warnings → stderr.
@@ -105,12 +285,9 @@ export async function main(
 
 		if (cmd === "aggregate") return 0;
 
-		// report / daily → generate
-		const reportDay =
-			str(flags, "date") ?? (cmd === "daily" ? shiftDay(today, -1) : today);
-		const trendSince = str(flags, "trend-since") ?? shiftDay(reportDay, -27);
-		const before = parseWindow(str(flags, "before"), "改动前");
-		const after = parseWindow(str(flags, "after"), "改动后");
+		// report / daily → generate (params resolved up front, incl. the before/after
+		// comparison hero: week-over-week by default in daily mode, or a configurable
+		// --rollout-date / TOKEN_USAGE_ROLLOUT_DATE anchor).
 		// Canonical project list (projects.json) + display-only names (Polaris etc)
 		// so every project shows, even at 0.
 		const registered = loadKnownProjects(str(flags, "projects-json"));
@@ -119,12 +296,12 @@ export async function main(
 
 		const gen = await generateReport({
 			store: resolved.store,
-			reportDay,
+			reportDay: params.reportDay,
 			timeZone: tz,
-			trendSince,
+			trendSince: params.trendSince,
 			completedDbPath,
-			before,
-			after,
+			before: params.comparison?.before,
+			after: params.comparison?.after,
 			storeMode: resolved.mode,
 			warning: resolved.warning,
 			localFallback,

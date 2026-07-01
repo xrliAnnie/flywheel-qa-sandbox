@@ -85,10 +85,13 @@ Commands:
             FLYWHEEL_REMOTE_REPORTS=0 disables. Always prints a one-line
             JSON envelope to stdout.
   set-artifact   Register build output (.glb/.stl/.3mf) path for 3D capture (GEO-151)
-  token-report   Fine-grained token usage report (FLY-614). Subcommands:
-            aggregate [--since --until]  scan CC logs → persist daily aggregates;
-            report [--date --before A..B --after C..D --out <html> --json]  render;
-            daily [--out <html>]  aggregate today+yesterday → report yesterday.
+  token-report   Fine-grained token usage report (FLY-614/FLY-744). Subcommands:
+            aggregate [--since --until | --backfill-days N]  scan CC logs → persist
+              daily aggregates (rolling window, default 14 days);
+            report [--date --trend-since --before A..B --after C..D |
+              --rollout-date D --window N] [--out <html> --json]  render;
+            daily [--out <html>]  roll up the window → report yesterday, with a
+              week-over-week before/after hero (or a --rollout-date anchor).
             Pair with publish-report --html <out> to deliver to a channel.
 
 Global options:

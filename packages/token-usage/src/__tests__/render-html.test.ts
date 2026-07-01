@@ -197,3 +197,68 @@ describe("renderReportHtml FLY-713 — links + precision", () => {
 		);
 	});
 });
+
+// FLY-744 anti-regression: the trend chart, weekday, and before/after comparison hero
+// were the features Annie reported "lost". They are NOT lost in the code; lock them in
+// so a future "rebuild" can't silently drop them again.
+describe("renderReportHtml — FLY-744 trend + comparison sentinels", () => {
+	const tr = (day: string, tokens: number, cost: number): DailyRow[] => [
+		r({ day, scope: "total", totalTokens: tokens, costMicroUsd: cost }),
+		r({
+			day,
+			scope: "project",
+			dimKey: "flywheel",
+			project: "flywheel",
+			totalTokens: tokens,
+			costMicroUsd: cost,
+		}),
+	];
+	const trendRows: DailyRow[] = [
+		...tr("2026-06-22", 2_000_000_000, 1_000_000_000),
+		...tr("2026-06-23", 1_500_000_000, 800_000_000),
+		...tr("2026-06-24", 2_600_000_000, 1_200_000_000),
+		...tr("2026-06-25", 1_700_000_000, 900_000_000),
+		...tr("2026-06-26", 2_740_000_000, 1_300_000_000),
+	];
+	const trendModel = buildReportModel(trendRows, {
+		reportDay: "2026-06-26",
+		timezone: "America/Los_Angeles",
+		isCompleted: () => false,
+		trendSince: "2026-06-22",
+		before: { since: "2026-06-22", until: "2026-06-23", label: "前一周" },
+		after: { since: "2026-06-24", until: "2026-06-26", label: "本周" },
+	});
+	const html = renderReportHtml(trendModel);
+
+	it("renders the fleet trend chart with a peak label and both trend dimensions", () => {
+		expect(html).toContain("峰值");
+		expect(html).toContain("维度①");
+		expect(html).toContain("维度②");
+	});
+
+	it("renders weekday glyphs (the 'week display' Annie asked to restore)", () => {
+		expect(html).toMatch(/周[日一二三四五六]/);
+	});
+
+	it("renders the before/after comparison hero with both window labels", () => {
+		expect(html).toContain("改动前后用量对比");
+		expect(html).toContain("前一周");
+		expect(html).toContain("本周");
+	});
+
+	it("renders a comparison hero without NaN when the before window has no data", () => {
+		const model2 = buildReportModel(
+			tr("2026-06-26", 1_000_000_000, 500_000_000),
+			{
+				reportDay: "2026-06-26",
+				timezone: "UTC",
+				isCompleted: () => false,
+				before: { since: "2026-06-12", until: "2026-06-18", label: "前一周" },
+				after: { since: "2026-06-20", until: "2026-06-26", label: "本周" },
+			},
+		);
+		const out = renderReportHtml(model2);
+		expect(out).not.toContain("NaN");
+		expect(out).toContain("前一周");
+	});
+});
