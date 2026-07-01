@@ -27,6 +27,41 @@
 
 set -euo pipefail
 
+# FLY-694: macOS /bin/bash is the GPLv2-frozen bash 3.2, whose incremental script
+# reader silently mis-parses a here-document that straddles its internal read-buffer
+# boundary — a byte-layout-dependent defect that `bash -n` cannot detect on ANY bash
+# version. FLY-676 (#388) added ~1.8 KB to this file, shifting a heredoc onto a bad
+# boundary, so bash 3.2 failed to DEFINE write_full_access_config /
+# append_full_access_lead_actions_mcp at runtime → the Mufasa launcher hit
+# `line 395: write_full_access_config: command not found`, exited 127, and launchd
+# retried every 30s. In-file restructuring cannot fix it (the desync is intrinsic to
+# 3.2's heredoc reader — even a single brace-group / main() wrapper still desyncs), so
+# re-exec under a modern bash (>=4), which has no such defect and is therefore immune
+# to ANY future byte-layout shift. Self-contained (no launcher / PATH dependency);
+# idempotent via the sentinel; a host with no modern bash warns loudly and proceeds.
+if [ "${BASH_VERSINFO:-0}" -lt 4 ]; then
+  # Candidates are TRUSTED ABSOLUTE system paths only — never a PATH-resolved `bash`:
+  # the production wrapper prepends user-writable dirs (~/.local/bin) to PATH, and even
+  # the version probe below EXECUTES the candidate, so a PATH lookup could run a
+  # user-writable bash impersonator in this full-access context (Codex review LOW-2).
+  # These four cover macOS Homebrew (arm + intel/manual) and Linux (/usr/bin, /bin).
+  if [ -z "${FLYWHEEL_TUI_HOME_REEXEC:-}" ]; then
+    for _modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash /bin/bash; do
+      [ -x "$_modern_bash" ] || continue
+      # only re-exec into a GENUINELY modern (>=4) bash — never loop back into a 3.x bash
+      # (e.g. macOS /bin/bash). The sentinel is a second backstop against re-exec loops.
+      if "$_modern_bash" -c 'exit $(( ${BASH_VERSINFO:-0} < 4 ))' 2>/dev/null; then
+        export FLYWHEEL_TUI_HOME_REEXEC=1
+        exec "$_modern_bash" "$0" "$@"
+      fi
+    done
+  fi
+  # Reached here only while STILL under bash <4 — either no modern bash was found, or a
+  # pre-set FLYWHEEL_TUI_HOME_REEXEC suppressed the re-exec (Codex review LOW-1). Warn
+  # loudly: the here-document desync may bite on this host.
+  echo "[codex-lead-tui-home] WARNING (FLY-694): running under bash ${BASH_VERSION:-?} (<4) and did not re-exec into a modern bash — here-document parsing may be unreliable on this host." >&2
+fi
+
 log() { echo "[codex-lead-tui-home] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
