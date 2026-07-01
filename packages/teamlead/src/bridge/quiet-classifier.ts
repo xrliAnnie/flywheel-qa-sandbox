@@ -23,6 +23,7 @@ import { isStuckEligibleStatus } from "./stuck-candidate.js";
 export type QuietVerdict =
 	| "self_parked" // runner declared `park` (done-but-alive)
 	| "self_long_task" // runner declared `busy` (bounded long task)
+	| "done_but_running" // FLY-637 #1: stage=completed but FSM still running (FLY-324)
 	| "pending_gate" // unanswered CommDB gate/ask — parked at a gate
 	| "recent_comm" // messaged its Lead recently (mechanically alive)
 	| "review_signal" // needs_review emitted, status not yet flipped (gray zone)
@@ -40,6 +41,17 @@ export interface QuietSignals {
 	hasPendingReviewSignal: boolean;
 	/** Effective runner self-declared marker kind, or null. */
 	declaredKind: "parked" | "long_task" | null;
+	/**
+	 * FLY-637 #1 (explicit FLY-324 skip): the session reported `stage=completed`
+	 * yet the FSM never moved off `running` (no PR / no decision_route — a no-code
+	 * / QA Runner that finished via `stage set completed`). Such a Runner is done,
+	 * not stuck. FLY-324's live handler / boot sweep normally transitions it out of
+	 * `running`; this explicit signal is belt-and-suspenders for the residual cases
+	 * where it slipped past (parked exclude / pending marker / race). Absent ⇒
+	 * false (byte-compat). Computed by the caller via the shared `isDoneButRunning`
+	 * predicate.
+	 */
+	isDoneButRunning?: boolean;
 }
 
 export interface QuietResult {
@@ -55,6 +67,11 @@ export interface QuietResult {
 export function classifyQuiet(signals: QuietSignals): QuietResult {
 	if (!isStuckEligibleStatus(signals.status)) {
 		return { verdict: "parked_review_status", mayWake: false };
+	}
+	// FLY-637 #1: a done-but-running Runner (stage=completed, FSM still running) is
+	// finished, not stuck — explicit FLY-324 skip, before the self-declared markers.
+	if (signals.isDoneButRunning) {
+		return { verdict: "done_but_running", mayWake: false };
 	}
 	if (signals.declaredKind === "parked") {
 		return { verdict: "self_parked", mayWake: false };

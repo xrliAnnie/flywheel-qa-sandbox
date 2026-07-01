@@ -66,7 +66,14 @@ export type AlertEventType =
 	// without a verdict, or a fail-closed pr_head_sha). A Lead-only alert — the
 	// founder is intentionally never surfaced for a non-green QA. NOT a
 	// founder-facing notification (those go to the issue thread).
-	| "auto_qa_stuck";
+	| "auto_qa_stuck"
+	// FLY-637-ext: the owning Lead did not answer a runner's BLOCKING question
+	// gate after the configured number of backoff nudges → page Annie ONCE
+	// (final fallback). DISTINCT from runner_stuck_unhandled: the runner is fine,
+	// the Lead is unresponsive — so this is deliberately NOT in
+	// AUTO_ATTEMPT_EVENT_TYPES and carries no runnerStuck metadata, so the
+	// AutoRepairBot never sends the runner a `continue` nudge (Codex design R1 #3).
+	| "runner_lead_pending_unhandled";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 

@@ -82,12 +82,18 @@ function makeStore(): MockStore {
 		updateHeartbeat: vi.fn(),
 		markGateTimeoutNotified: vi.fn(),
 		forceStatus: vi.fn(),
+		// FLY-637 persistent quiet-wake dedup surface (no-op for these tests).
+		hasQuietWakeNotified: vi.fn().mockReturnValue(false),
+		recordQuietWakeNotified: vi.fn(),
+		clearQuietWakeNotified: vi.fn(),
+		pruneQuietWakeNotifiedNotIn: vi.fn(),
 	};
 }
 
 function makeNotifier(): MockNotifier {
 	return {
-		onSessionStuck: vi.fn().mockResolvedValue(undefined),
+		// FLY-637: onSessionStuck returns a "persisted" boolean now.
+		onSessionStuck: vi.fn().mockResolvedValue(true),
 		onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 		onSessionStale: vi.fn().mockResolvedValue(undefined),
 		onSessionMonitoringLost: vi.fn().mockResolvedValue(undefined),

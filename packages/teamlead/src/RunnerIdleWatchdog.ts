@@ -13,7 +13,11 @@ import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { parseSessionLabels } from "./bridge/lead-scope.js";
-import { classifyQuiet, type QuietSignals } from "./bridge/quiet-classifier.js";
+import {
+	classifyQuiet,
+	type QuietSignals,
+	quietFingerprint,
+} from "./bridge/quiet-classifier.js";
 import { createStatusQuery } from "./bridge/runner-status.js";
 import type { RuntimeRegistry } from "./bridge/runtime-registry.js";
 import type {
@@ -125,6 +129,12 @@ export class RunnerIdleWatchdog {
 			}
 			// FLY-195: stuck episodes for gone executions are dropped the same way.
 			this.config.stuckDetector?.pruneInactive(activeIds);
+			// FLY-637 #4: prune persistent quiet-wake dedup rows for sessions no
+			// longer in THIS watchdog's running surface (idle source). Empty set ⇒
+			// all idle rows cleared (no `IN ()`); the store handles the guard.
+			if (this.quietPersistEnabled()) {
+				this.config.store.pruneQuietWakeNotifiedNotIn("idle", [...activeIds]);
+			}
 
 			for (const session of sessions) {
 				await this.checkSession(session);
@@ -218,14 +228,19 @@ export class RunnerIdleWatchdog {
 				result.status !== "executing" && this.isWakeSuppressed(session);
 
 			if (result.status === "executing") {
-				// Active — clear dedup state; transitionCounter uses Date.now() on next idle
+				// Active — reset the IN-MEMORY dedup state only. The persistent
+				// quiet_wake_notified rows are keyed by the frozen-frame fingerprint
+				// and must NOT be cleared here (FLY-637 R1 #1: a raw spinner / ctx%
+				// tick reads as `executing`; clearing the row would let the very same
+				// frozen frame re-wake the Lead — defeating the fingerprint dedup).
+				// transitionCounter uses Date.now() on next idle.
 				state.waitingCycleCount = 0;
 				state.notifiedForStatus = null;
 			} else if (result.status === "waiting") {
 				state.waitingCycleCount++;
 				if (
 					state.waitingCycleCount >= this.config.waitingThresholdCycles &&
-					state.notifiedForStatus !== "waiting" &&
+					!this.alreadyNotifiedIdle(session, state, "waiting", output) &&
 					!quietSuppressed
 				) {
 					state.transitionCounter = Date.now();
@@ -235,13 +250,17 @@ export class RunnerIdleWatchdog {
 						result.reason,
 						state.transitionCounter,
 					);
-					if (persisted) state.notifiedForStatus = "waiting";
+					if (persisted)
+						this.markNotifiedIdle(session, state, "waiting", output);
 				}
 			} else {
 				// "idle" or "unknown" — immediate trigger; break waiting streak
 				state.waitingCycleCount = 0;
 				const idleStatus = result.status as IdleStatus;
-				if (state.notifiedForStatus !== idleStatus && !quietSuppressed) {
+				if (
+					!this.alreadyNotifiedIdle(session, state, idleStatus, output) &&
+					!quietSuppressed
+				) {
 					state.transitionCounter = Date.now();
 					const persisted = await this.emitIdleEvent(
 						session,
@@ -249,7 +268,8 @@ export class RunnerIdleWatchdog {
 						result.reason,
 						state.transitionCounter,
 					);
-					if (persisted) state.notifiedForStatus = idleStatus;
+					if (persisted)
+						this.markNotifiedIdle(session, state, idleStatus, output);
 				}
 			}
 
@@ -259,6 +279,57 @@ export class RunnerIdleWatchdog {
 				`[IdleWatchdog] Error checking ${session.execution_id}:`,
 				err instanceof Error ? err.message : String(err),
 			);
+		}
+	}
+
+	/**
+	 * FLY-637 #3/#4: persistent quiet-wake dedup is on by default;
+	 * `FLYWHEEL_QUIET_PERSIST_DEDUP=0` reverts to the MVP in-memory
+	 * (`notifiedForStatus`) dedup — byte-compat. Read per-call so a flip needs
+	 * no restart.
+	 */
+	private quietPersistEnabled(): boolean {
+		return process.env.FLYWHEEL_QUIET_PERSIST_DEDUP !== "0";
+	}
+
+	/**
+	 * FLY-637 #2/#3: has the Lead already been woken about THIS idle episode?
+	 * Pane-backed statuses (waiting / idle with captured output) dedup on the
+	 * persistent normalized fingerprint — so cosmetic jitter and Bridge restarts
+	 * don't re-wake. No-pane statuses (`unknown` / capture-fail, `output`
+	 * undefined) and the kill-switch fall back to the in-memory status dedup.
+	 */
+	private alreadyNotifiedIdle(
+		session: Session,
+		state: SessionIdleState,
+		idleStatus: IdleStatus,
+		output: string | undefined,
+	): boolean {
+		if (this.quietPersistEnabled() && output !== undefined) {
+			return this.config.store.hasQuietWakeNotified(
+				session.execution_id,
+				"idle",
+				quietFingerprint(output),
+			);
+		}
+		return state.notifiedForStatus === idleStatus;
+	}
+
+	/** FLY-637: record the dedup after a PERSISTED emit (mirrors {@link alreadyNotifiedIdle}). */
+	private markNotifiedIdle(
+		session: Session,
+		state: SessionIdleState,
+		idleStatus: IdleStatus,
+		output: string | undefined,
+	): void {
+		if (this.quietPersistEnabled() && output !== undefined) {
+			this.config.store.recordQuietWakeNotified(
+				session.execution_id,
+				"idle",
+				quietFingerprint(output),
+			);
+		} else {
+			state.notifiedForStatus = idleStatus;
 		}
 	}
 

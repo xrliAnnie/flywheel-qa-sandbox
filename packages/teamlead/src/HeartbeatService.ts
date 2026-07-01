@@ -39,7 +39,17 @@ import type { ProjectEntry } from "./ProjectConfig.js";
 import type { Session, StateStore } from "./StateStore.js";
 
 export interface HeartbeatNotifier {
-	onSessionStuck(session: Session, minutesSinceActivity: number): Promise<void>;
+	/**
+	 * Emit the `session_stuck` advisory. Returns true ONLY when the event was
+	 * actually persisted (appended to `lead_events`) — FLY-637 R1 #2: the stuck
+	 * dedup (both persistent + in-memory) must be gated on this, so a no-lead /
+	 * no-runtime no-op (returns false) cannot durably silence a wake that never
+	 * reached the guardrail journal. A no-op notifier returns false.
+	 */
+	onSessionStuck(
+		session: Session,
+		minutesSinceActivity: number,
+	): Promise<boolean>;
 	onSessionOrphaned(
 		session: Session,
 		minutesSinceHeartbeat: number,
@@ -722,6 +732,13 @@ export class HeartbeatService implements ReconnectController {
 		for (const id of this.notifiedStuck) {
 			if (!stuckIds.has(id)) this.notifiedStuck.delete(id);
 		}
+		// FLY-637 #4: prune the persistent stuck dedup against the SAME set so a
+		// session that recovered (left getStuckSessions) starts clean — if it gets
+		// stuck again later it can be re-reported. Empty set ⇒ all stuck rows
+		// cleared (the store guards the `IN ()` case).
+		if (this.quietPersistEnabled()) {
+			this.store.pruneQuietWakeNotifiedNotIn("stuck", [...stuckIds]);
+		}
 
 		for (const session of stuck) {
 			// FLY-172 + FLY-623: a monitoring-lost / re-adopted (alive-but-detached)
@@ -731,7 +748,9 @@ export class HeartbeatService implements ReconnectController {
 			// re-adopted session would trade a false orphan for a false stuck (plan
 			// §3.4 regression guard). The reconcile pass owns both sets.
 			if (this.isMonitorSuppressed(session.execution_id)) continue;
-			if (this.notifiedStuck.has(session.execution_id)) continue;
+			// FLY-637 #3/#4: in-memory OR persistent dedup — already reported this
+			// stuck episode (persistent survives a Bridge restart).
+			if (this.alreadyNotifiedStuck(session)) continue;
 			// FLY-626: a legitimately-quiet runner (self-declared park/busy, parked
 			// at a gate, recently active) must not wake the Lead with session_stuck.
 			// Advisory-only — reapOrphans force-fail + monitoring-lost are untouched.
@@ -748,11 +767,56 @@ export class HeartbeatService implements ReconnectController {
 			}
 
 			try {
-				await this.notifier.onSessionStuck(session, minutesSince);
-				this.notifiedStuck.add(session.execution_id);
+				const persisted = await this.notifier.onSessionStuck(
+					session,
+					minutesSince,
+				);
+				// FLY-637 R1 #2 / R2 LOW #2: dedup (BOTH persistent + in-memory) ONLY
+				// once the wake was actually persisted to lead_events. A no-runtime /
+				// no-lead no-op (persisted=false) must NOT durably silence a wake that
+				// never reached the guardrail journal — leave it un-deduped to retry.
+				if (persisted) this.markStuckNotified(session);
 			} catch {
-				// Notification failed — don't dedup so it's retried next cycle
+				// Notification threw — don't dedup so it's retried next cycle
 			}
+		}
+	}
+
+	/**
+	 * FLY-637 #3/#4: persistent quiet-wake dedup is on by default;
+	 * `FLYWHEEL_QUIET_PERSIST_DEDUP=0` reverts to the MVP in-memory
+	 * (`notifiedStuck`) dedup only — byte-compat. Read per-call (no restart).
+	 */
+	private quietPersistEnabled(): boolean {
+		return process.env.FLYWHEEL_QUIET_PERSIST_DEDUP !== "0";
+	}
+
+	/**
+	 * Already reported this stuck episode? In-memory `notifiedStuck` OR (when
+	 * persistence is on) the durable `quiet_wake_notified` row. The heartbeat path
+	 * has no pane, so the episode fingerprint is the sentinel `'stuck'`.
+	 */
+	private alreadyNotifiedStuck(session: Session): boolean {
+		if (this.notifiedStuck.has(session.execution_id)) return true;
+		if (this.quietPersistEnabled()) {
+			return this.store.hasQuietWakeNotified(
+				session.execution_id,
+				"stuck",
+				"stuck",
+			);
+		}
+		return false;
+	}
+
+	/** FLY-637: record the stuck dedup (in-memory + persistent) after a PERSISTED emit. */
+	private markStuckNotified(session: Session): void {
+		this.notifiedStuck.add(session.execution_id);
+		if (this.quietPersistEnabled()) {
+			this.store.recordQuietWakeNotified(
+				session.execution_id,
+				"stuck",
+				"stuck",
+			);
 		}
 	}
 
@@ -949,7 +1013,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		private chatThreadCreator?: ChatThreadCreator,
 	) {}
 
-	async onSessionStuck(session: Session, minutes: number): Promise<void> {
+	async onSessionStuck(session: Session, minutes: number): Promise<boolean> {
 		const hookPayload: HookPayload = {
 			event_type: "session_stuck",
 			execution_id: session.execution_id,
@@ -961,7 +1025,9 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			minutes_since_activity: minutes,
 			session_role: session.session_role ?? "main",
 		};
-		await this.deliverHook(session, hookPayload);
+		// FLY-637 R1 #2: surface whether the event was actually persisted to
+		// lead_events so checkStuck only dedups a wake that truly happened.
+		return this.deliverHook(session, hookPayload);
 	}
 
 	async onSessionOrphaned(session: Session, minutes: number): Promise<void> {
@@ -1168,7 +1234,7 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 	private async deliverHook(
 		session: Session,
 		hookPayload: HookPayload,
-	): Promise<void> {
+	): Promise<boolean> {
 		let agentId: string;
 		let chatChannel: string;
 		let runtime: import("./bridge/lead-runtime.js").LeadRuntime;
@@ -1186,7 +1252,9 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			console.warn(
 				`[heartbeat-notify] Cannot resolve runtime for "${session.project_name}" — skipping notification`,
 			);
-			return;
+			// FLY-637 R1 #2: NOT persisted (no lead_events row appended) → false so
+			// checkStuck does not durably dedup a wake that never happened.
+			return false;
 		}
 
 		hookPayload.chat_channel = chatChannel;
@@ -1242,5 +1310,9 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 			// Advisory event — best-effort, mark delivered anyway
 			this.store.markLeadEventDelivered(seq);
 		}
+		// FLY-637 R1 #2: the event row IS in lead_events (guardrail retry owns
+		// redelivery), so this counts as persisted regardless of the immediate
+		// transport outcome.
+		return true;
 	}
 }
