@@ -50,6 +50,10 @@ describe("StuckWatcher (compat re-export)", () => {
 		getStuckSessions: ReturnType<typeof vi.fn>;
 		getOrphanSessions: ReturnType<typeof vi.fn>;
 		getStaleCompletedSessions: ReturnType<typeof vi.fn>;
+		hasQuietWakeNotified: ReturnType<typeof vi.fn>;
+		recordQuietWakeNotified: ReturnType<typeof vi.fn>;
+		clearQuietWakeNotified: ReturnType<typeof vi.fn>;
+		pruneQuietWakeNotifiedNotIn: ReturnType<typeof vi.fn>;
 	};
 	let notifier: {
 		onSessionStuck: ReturnType<typeof vi.fn>;
@@ -63,9 +67,15 @@ describe("StuckWatcher (compat re-export)", () => {
 			getStuckSessions: vi.fn().mockReturnValue([]),
 			getOrphanSessions: vi.fn().mockReturnValue([]),
 			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
+			// FLY-637 persistent quiet-wake dedup surface (no-op for these tests).
+			hasQuietWakeNotified: vi.fn().mockReturnValue(false),
+			recordQuietWakeNotified: vi.fn(),
+			clearQuietWakeNotified: vi.fn(),
+			pruneQuietWakeNotifiedNotIn: vi.fn(),
 		};
 		notifier = {
-			onSessionStuck: vi.fn().mockResolvedValue(undefined),
+			// FLY-637: onSessionStuck returns a "persisted" boolean now.
+			onSessionStuck: vi.fn().mockResolvedValue(true),
 			onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 			onSessionStale: vi.fn().mockResolvedValue(undefined),
 		};

@@ -48,6 +48,7 @@ function createMockStore(sessions: Session[] = []) {
 		failureError?: string;
 	}> = [];
 	let seqCounter = 0;
+	const quietNotified = new Set<string>(); // FLY-637 persistent dedup (test)
 
 	return {
 		getActiveSessions: vi.fn(() => sessions),
@@ -90,10 +91,30 @@ function createMockStore(sessions: Session[] = []) {
 		recordDeliveryFailure: vi.fn((_seq: number, _error: string) => {}),
 		// FLY-639: self-heal hook the watchdog calls when a poll throws.
 		recoverFromCorruption: vi.fn((_err: unknown) => false),
+		// FLY-637: persistent quiet-wake dedup surface (Set-backed for real dedup).
+		hasQuietWakeNotified: vi.fn((e: string, s: string, f: string) =>
+			quietNotified.has(`${e}|${s}|${f}`),
+		),
+		recordQuietWakeNotified: vi.fn((e: string, s: string, f: string) => {
+			quietNotified.add(`${e}|${s}|${f}`);
+		}),
+		clearQuietWakeNotified: vi.fn((e: string, s?: string) => {
+			for (const key of [...quietNotified]) {
+				const [ke, ks] = key.split("|");
+				if (ke === e && (!s || ks === s)) quietNotified.delete(key);
+			}
+		}),
+		pruneQuietWakeNotifiedNotIn: vi.fn((s: string, keep: string[]) => {
+			for (const key of [...quietNotified]) {
+				const [ke, ks] = key.split("|");
+				if (ks === s && !keep.includes(ke)) quietNotified.delete(key);
+			}
+		}),
 		_events: events,
 		_resetEvents: () => {
 			events = [];
 			seqCounter = 0;
+			quietNotified.clear();
 		},
 	};
 }

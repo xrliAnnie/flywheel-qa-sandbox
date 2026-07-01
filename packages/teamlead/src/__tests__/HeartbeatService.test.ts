@@ -54,6 +54,11 @@ describe("HeartbeatService", () => {
 		getOrphanSessions: ReturnType<typeof vi.fn>;
 		getStaleCompletedSessions: ReturnType<typeof vi.fn>;
 		forceStatus: ReturnType<typeof vi.fn>;
+		// FLY-637 persistent quiet-wake dedup surface
+		hasQuietWakeNotified: ReturnType<typeof vi.fn>;
+		recordQuietWakeNotified: ReturnType<typeof vi.fn>;
+		clearQuietWakeNotified: ReturnType<typeof vi.fn>;
+		pruneQuietWakeNotifiedNotIn: ReturnType<typeof vi.fn>;
 	};
 	let notifier: {
 		onSessionStuck: ReturnType<typeof vi.fn>;
@@ -63,14 +68,36 @@ describe("HeartbeatService", () => {
 	let service: HeartbeatService;
 
 	beforeEach(() => {
+		const quietNotified = new Set<string>();
+		const qk = (e: string, s: string, f: string) => `${e}|${s}|${f}`;
 		store = {
 			getStuckSessions: vi.fn().mockReturnValue([]),
 			getOrphanSessions: vi.fn().mockReturnValue([]),
 			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 			forceStatus: vi.fn(),
+			hasQuietWakeNotified: vi.fn((e: string, s: string, f: string) =>
+				quietNotified.has(qk(e, s, f)),
+			),
+			recordQuietWakeNotified: vi.fn((e: string, s: string, f: string) => {
+				quietNotified.add(qk(e, s, f));
+			}),
+			clearQuietWakeNotified: vi.fn((e: string, s?: string) => {
+				for (const k of [...quietNotified]) {
+					const [ke, ks] = k.split("|");
+					if (ke === e && (!s || ks === s)) quietNotified.delete(k);
+				}
+			}),
+			pruneQuietWakeNotifiedNotIn: vi.fn((s: string, keep: string[]) => {
+				for (const k of [...quietNotified]) {
+					const [ke, ks] = k.split("|");
+					if (ks === s && !keep.includes(ke)) quietNotified.delete(k);
+				}
+			}),
 		};
 		notifier = {
-			onSessionStuck: vi.fn().mockResolvedValue(undefined),
+			// FLY-637: onSessionStuck now returns a "persisted" boolean; true so the
+			// stuck dedup engages exactly as before.
+			onSessionStuck: vi.fn().mockResolvedValue(true),
 			onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 			onSessionStale: vi.fn().mockResolvedValue(undefined),
 		};

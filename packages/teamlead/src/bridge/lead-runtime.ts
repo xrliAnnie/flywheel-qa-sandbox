@@ -23,6 +23,7 @@ export const GUARDRAIL_EVENT_TYPES = new Set([
 	"gate_timed_out", // FLY-159: Lead must reliably notify Annie when Runner gate times out (fail-close path only)
 	"session_monitoring_lost", // FLY-172: Lead must reliably learn it lost monitoring of a live Runner (fall back to tmux)
 	"runner_stuck_escalation", // FLY-195: stuck-candidate handoff to owning Lead — Lead judges + re-manages (plan §3.2)
+	"runner_lead_pending_escalation", // FLY-637-ext: Lead has not answered a runner's blocking question gate — reliable nudge (R1 #6)
 ]);
 
 /**

@@ -26,6 +26,7 @@ import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
+import { isDoneButRunning as isDoneButRunningSession } from "./done-running-reconciler.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { parseSessionLabels } from "./lead-scope.js";
@@ -238,7 +239,17 @@ export function probeDeclaredStateFromCommDb(
  * status check inside `classifyQuiet`.
  */
 export function probeQuietSignals(
-	session: { execution_id: string; project_name: string; status: string },
+	session: {
+		execution_id: string;
+		project_name: string;
+		status: string;
+		// FLY-637 #1: fields the shared `isDoneButRunning` predicate reads. The
+		// stall watchdogs already pass the full Session row, so these are present
+		// in production; optional here so callers/tests can omit them (⇒ false).
+		session_stage?: string | null;
+		decision_route?: string | null;
+		pr_number?: number | null;
+	},
 	opts: { activityWindowMs: number; nowMs: number },
 ): QuietSignals {
 	const { execution_id, project_name, status } = session;
@@ -258,6 +269,14 @@ export function probeQuietSignals(
 		hasRecentComm: comm.hasRecentOutbound,
 		hasPendingReviewSignal: false,
 		declaredKind,
+		// FLY-637 #1: explicit FLY-324 done-but-running skip, via the shared
+		// predicate (status=running & stage=completed & no route & no PR).
+		isDoneButRunning: isDoneButRunningSession({
+			status: session.status,
+			session_stage: session.session_stage,
+			decision_route: session.decision_route,
+			pr_number: session.pr_number,
+		}),
 	};
 }
 

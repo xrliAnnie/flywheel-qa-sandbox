@@ -936,6 +936,10 @@ function titleFor(kind: AlertEventType): string {
 		// title); case exists for switch exhaustiveness.
 		case "auto_qa_stuck":
 			return "Auto-QA pipeline stuck";
+		// FLY-637-ext: never emitted by LeadWatchdog (the lead-pending escalation
+		// builds its own title); case exists for switch exhaustiveness.
+		case "runner_lead_pending_unhandled":
+			return "Runner waiting — Lead unresponsive";
 	}
 }
 
@@ -972,5 +976,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-579: never emitted by LeadWatchdog (AutoQaEffects builds its own body).
 		case "auto_qa_stuck":
 			return "The auto-QA pipeline could not proceed (spawn failed, no verdict, or a fail-closed pr_head_sha). The founder was NOT surfaced; investigate the QA Runner.";
+		// FLY-637-ext: never emitted by LeadWatchdog (the lead-pending escalation builds its own body).
+		case "runner_lead_pending_unhandled":
+			return "A runner has been blocked waiting on the Lead to answer its question, and the Lead did not respond after several reminders. Poke the Lead — the runner itself is fine.";
 	}
 }
