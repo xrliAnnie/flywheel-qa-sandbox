@@ -28,21 +28,30 @@ CC jsonl logs (~/.claude/projects)
 Via the package bin `flywheel-token-report`, or `flywheel-comm token-report`:
 
 ```bash
-# scan logs → persist daily aggregates (default window = today + yesterday)
-flywheel-comm token-report aggregate [--since YYYY-MM-DD --until YYYY-MM-DD]
+# scan logs → persist daily aggregates (rolling window, default 14 days ending today;
+# override with --backfill-days N or TOKEN_USAGE_BACKFILL_DAYS, or --since/--until)
+flywheel-comm token-report aggregate [--since YYYY-MM-DD --until YYYY-MM-DD] [--backfill-days N]
 
 # render a day's report from the store
 flywheel-comm token-report report --date YYYY-MM-DD \
   [--trend-since YYYY-MM-DD] \
-  [--before A..B --after C..D] \   # before/after comparison windows
+  [--before A..B --after C..D] \        # explicit before/after comparison windows, OR
+  [--rollout-date YYYY-MM-DD --window N] \  # ponytail-style fixed anchor (window default 7d)
   [--out report.html] [--json]
 
-# one-shot daily: aggregate today+yesterday → report yesterday → write HTML
+# one-shot daily: aggregate the rolling window → report yesterday → write HTML.
+# The daily report defaults to a week-over-week before/after comparison hero
+# (previous 7 days vs latest 7). Pin a fixed rollout anchor instead via
+# --rollout-date / TOKEN_USAGE_ROLLOUT_DATE (+ --window / TOKEN_USAGE_WINDOW_DAYS).
 flywheel-comm token-report daily --out /tmp/report.html
 ```
 
 Common flags: `--db <sqlite-fallback-path>` (default `~/.flywheel/token-usage.db`),
-`--completed-db <teamlead.db>`, `--base-dir <~/.claude/projects>`, `--tz <IANA tz>`.
+`--completed-db <teamlead.db>`, `--base-dir <~/.claude/projects>`, `--tz <IANA tz>`,
+`--backfill-days N` (rolling aggregate window, default 14), `--rollout-date` / `--window`
+(fixed before/after anchor). The rolling aggregate window always extends to cover the
+comparison's before-window, so a Supabase-unreachable local fallback still self-heals a
+full trend + a correct comparison hero.
 
 ## Persistence
 

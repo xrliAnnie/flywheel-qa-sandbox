@@ -29,6 +29,8 @@
 	  FLY-713: fire at 00:30 (just past midnight) so the report — which renders
 	  YESTERDAY's full day — is sent with the freshest complete data. 00:30 is a
 	  clean gap clear of the 00:00 updater and the 01:00 / 03:00 / 03:07 cron jobs.
+	  (FLY-744 note: the issue says "00:35"; that's an approximation — the actual,
+	  deliberately-chosen slot is 00:30. Kept as-is to preserve the clean cron gap.)
 	-->
 	<key>StartCalendarInterval</key>
 	<dict>
