@@ -96,3 +96,12 @@ jobs:
       # source release + mock codex on PATH; never touches the real global symlink).
       - name: Test — FLY-513 global-codex repoint apply-path
         run: bash packages/teamlead/scripts/__tests__/fly-513-repoint.test.sh
+
+      # FLY-697: Codex TRACE-log SSD-wear guard. Hermetic — runs against a
+      # throwaway sqlite DB and shims lsof/osascript via PATH, so it never
+      # touches a real ~/.codex/logs_2.sqlite. Needs the sqlite3 CLI.
+      - name: Install sqlite3 for codex-log-guard test
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Test — FLY-697 codex-log-guard
+        run: bash scripts/__tests__/codex-log-guard.test.sh
