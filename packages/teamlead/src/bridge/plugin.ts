@@ -109,6 +109,7 @@ import {
 	loopbackSelfOrigin,
 } from "./fleet-routes.js";
 import { buildFounderConsentWiring } from "./founder-consent/wiring.js";
+import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
 import {
@@ -2610,6 +2611,14 @@ export async function startBridge(
 		},
 	);
 
+	// FLY-725 (Codex R2 #1): capture the milestone-report baseline cutoff BEFORE
+	// the Bridge starts accepting events. On the first patrol after this project
+	// first enables the feature, terminal sessions with `last_activity_at <= cutoff`
+	// are treated as pre-boot history (marker-seeded, not pinged); a Runner that
+	// completes AFTER we start listening (but before the first patrol) is > cutoff
+	// and still pings, so the startup window cannot swallow a real milestone.
+	const founderMilestoneBaselineCutoffMs = Date.now();
+
 	const server = app.listen(config.port, config.host);
 
 	await new Promise<void>((resolve, reject) => {
@@ -2931,6 +2940,10 @@ export async function startBridge(
 	const leadPendingAlertHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
+	// FLY-725: per-project founder milestone-report config, read from each
+	// project's CANONICAL root (never a runner's PR worktree).
+	const founderMilestoneReportByProject =
+		await loadFounderMilestoneReportConfigByProject(projects);
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
 		projects,
@@ -2952,6 +2965,9 @@ export async function startBridge(
 		cursorStore: founderReplyCursorPath
 			? new FileInboundCursorStore(founderReplyCursorPath)
 			: undefined,
+		// FLY-725: founder milestone-report patrol (Bridge-primary @founder push).
+		founderMilestoneReportByProject,
+		founderMilestoneBaselineCutoffMs,
 		// FLY-513: periodic global-codex drift detection (path-only, zero new timer).
 		// Default-on; `FLYWHEEL_CODEX_HEALTH_GUARD=0` short-circuits inside the probe.
 		onHealthTick: codexHealthEnabled

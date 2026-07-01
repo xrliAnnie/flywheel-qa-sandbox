@@ -6,6 +6,7 @@ import {
 	EXECUTOR_BACKENDS,
 	FOUNDER_UX_GATE_MODES,
 	ROLE_EFFORT_LEVELS,
+	SUPPORTED_MILESTONE_KINDS_V1,
 	XIAOHONGSHU_CADENCES,
 	XIAOHONGSHU_MAX_FETCH_CEILING,
 	XIAOHONGSHU_REVIEW_CHANNELS,
@@ -394,6 +395,44 @@ export class ConfigLoader {
 				throw new Error(
 					`founder_ux_gate.mode must be one of ${FOUNDER_UX_GATE_MODES.join(" | ")}, got "${String(founderUxGate.mode)}"`,
 				);
+			}
+		}
+
+		// founder_milestone_report (optional — FLY-725). Absent or enabled:false →
+		// off (byte-compatible). Shape validated whenever PRESENT so a malformed
+		// config fails loudly. `milestones` values are restricted to
+		// SUPPORTED_MILESTONE_KINDS_V1 — `ship_ready` and unknown kinds are
+		// REJECTED so an operator cannot silently opt into an unimplemented no-op.
+		const fmr = c.founder_milestone_report as
+			| Record<string, unknown>
+			| undefined;
+		if (fmr != null) {
+			if (typeof fmr !== "object" || Array.isArray(fmr)) {
+				throw new Error(
+					"founder_milestone_report must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (typeof fmr.enabled !== "boolean") {
+				throw new Error("founder_milestone_report.enabled must be a boolean");
+			}
+			if (fmr.milestones != null) {
+				if (!Array.isArray(fmr.milestones)) {
+					throw new Error(
+						"founder_milestone_report.milestones must be an array of strings",
+					);
+				}
+				for (const m of fmr.milestones) {
+					if (
+						typeof m !== "string" ||
+						!SUPPORTED_MILESTONE_KINDS_V1.includes(
+							m as (typeof SUPPORTED_MILESTONE_KINDS_V1)[number],
+						)
+					) {
+						throw new Error(
+							`founder_milestone_report.milestones: "${String(m)}" is not supported in v1 (allowed: ${SUPPORTED_MILESTONE_KINDS_V1.join(" | ")})`,
+						);
+					}
+				}
 			}
 		}
 

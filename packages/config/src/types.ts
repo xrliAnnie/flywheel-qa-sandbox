@@ -262,6 +262,52 @@ export interface FounderUxGateConfig {
 }
 
 /**
+ * FLY-725: founder milestone-report kinds. When a Runner reaches one of these
+ * terminal milestones the Bridge pushes an @founder-pinged report to the issue's
+ * chat thread (see gate-poller milestone patrol).
+ *
+ * v1 scope (Annie 2026-07-01, plan §B) is the two **zero-signal** terminal
+ * states — `failed` / `blocked` — the ones the founder gets NO push for today:
+ * - `completed` is deliberately NOT real-time here: routine completions are noise
+ *   and move to the FLY-727 daily digest.
+ * - `ship_ready` is already an @founder ping via the FLY-605 `approve_to_ship`
+ *   gate fallback (posted from the real gate event), so 725 does NOT duplicate it.
+ * Both remain forward-compat union members but are NOT accepted by v1 config.
+ */
+export type MilestoneKind = "completed" | "failed" | "blocked" | "ship_ready";
+
+/**
+ * FLY-725: the milestones v1 actually implements + accepts in config. ConfigLoader
+ * rejects any `milestones` value outside this set (incl. `completed` → FLY-727 and
+ * `ship_ready` → FLY-605) so an operator can never silently opt into an
+ * unimplemented / out-of-scope milestone.
+ */
+export const SUPPORTED_MILESTONE_KINDS_V1: readonly MilestoneKind[] = [
+	"failed",
+	"blocked",
+];
+
+/**
+ * FLY-725: per-project founder milestone-report policy. Absent or `enabled:false`
+ * ⇒ feature OFF (opt-in; byte-compatible — the Bridge milestone patrol no-ops).
+ * The global env `FLYWHEEL_FOUNDER_MILESTONE_NOTIFY=0` is a hard kill-switch on
+ * top of this. Loaded from the project's CANONICAL root only (never a runner's
+ * PR worktree) so a runner cannot edit its own config to change founder
+ * notifications.
+ */
+export interface FounderMilestoneReportConfig {
+	/** Turn the milestone → founder push on for this project. */
+	enabled: boolean;
+	/**
+	 * Which milestones to push. Absent ⇒ all of SUPPORTED_MILESTONE_KINDS_V1.
+	 * Every value must be ∈ SUPPORTED_MILESTONE_KINDS_V1 (ConfigLoader rejects
+	 * `ship_ready`/unknown). A subset lets the founder later move `completed` to a
+	 * digest (FLY-727) without a code change.
+	 */
+	milestones?: MilestoneKind[];
+}
+
+/**
  * FLY-222: per-collection learning cadence.
  */
 export type XiaohongshuCadence = "daily" | "weekly" | "biweekly" | "monthly";
@@ -494,6 +540,8 @@ export interface FlywheelConfig {
 	xiaohongshu_learning?: XiaohongshuLearningConfig;
 	/** FLY-598: founder-facing UX gate. Absent or mode:off = fully off (byte-compatible). */
 	founder_ux_gate?: FounderUxGateConfig;
+	/** FLY-725: founder milestone-report push. Absent or enabled:false = off (byte-compatible). */
+	founder_milestone_report?: FounderMilestoneReportConfig;
 	/**
 	 * FLY-615: per-project ponytail (code-minimalism plugin) rollout layer.
 	 * Absent or enabled:false → this project does not opt ponytail on by default

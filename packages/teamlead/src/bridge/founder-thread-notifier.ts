@@ -13,9 +13,11 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { MilestoneKind } from "flywheel-config";
 import type { StateStore } from "../StateStore.js";
 import { parseRetryAfterMs } from "./chat-thread-utils.js";
 import { isDiscordSnowflake, truncate } from "./founder-notify-utils.js";
+import { milestoneLabel } from "./milestone-report-policy.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const POST_TIMEOUT_MS = 5_000;
@@ -59,10 +61,23 @@ export type FounderThreadNotifyKind =
 	| "permanent_failed"
 	| "transient_failed";
 
+/** FLY-725: why a post was skipped, so the caller can retry vs. escalate. */
+export type FounderThreadSkipReason =
+	| "no_chat_thread"
+	| "no_bot_token"
+	| "no_owner"
+	| "bad_owner_id";
+
 export interface FounderThreadNotifyResult {
 	kind: FounderThreadNotifyKind;
 	/** Only on a 429 transient_failed — Discord's honored Retry-After in ms. */
 	retryAfterMs?: number;
+	/**
+	 * Only on `skipped`. `no_chat_thread` is TRANSIENT (the thread may be created
+	 * later → the caller retries within budget); the others are config errors the
+	 * caller should escalate rather than silently drop (Annie 2026-07-01).
+	 */
+	skipReason?: FounderThreadSkipReason;
 }
 
 function buildBody(opts: FounderThreadNotifyOpts): string {
@@ -121,17 +136,17 @@ export async function emitFounderThreadNotification(
 		audit(store, opts, "founder_thread_notify_skipped", {
 			reason: "no_chat_thread",
 		});
-		return { kind: "skipped" };
+		return { kind: "skipped", skipReason: "no_chat_thread" };
 	}
 	if (!opts.botToken) {
 		audit(store, opts, "founder_thread_notify_skipped", {
 			reason: "no_bot_token",
 		});
-		return { kind: "skipped" };
+		return { kind: "skipped", skipReason: "no_bot_token" };
 	}
 	if (!opts.ownerUserId) {
 		audit(store, opts, "founder_thread_notify_skipped", { reason: "no_owner" });
-		return { kind: "skipped" };
+		return { kind: "skipped", skipReason: "no_owner" };
 	}
 	if (!isDiscordSnowflake(opts.ownerUserId)) {
 		// Codex R2 #4: a malformed owner id would make Discord reject the POST
@@ -139,73 +154,285 @@ export async function emitFounderThreadNotification(
 		audit(store, opts, "founder_thread_notify_skipped", {
 			reason: "bad_owner_id",
 		});
-		return { kind: "skipped" };
+		return { kind: "skipped", skipReason: "bad_owner_id" };
 	}
 
-	// ── (B) COMPOSE + POST ──
+	// ── (B) COMPOSE + POST + (C) CLASSIFY (shared core; FLY-725 extract) ──
 	const body = buildBody(opts);
+	const outcome = await postFounderThreadCore(
+		opts.thread.thread_id,
+		body,
+		opts.botToken,
+		opts.ownerUserId,
+		fetchImpl,
+	);
+	// Audit + return EXACTLY as before (byte-compatible gate-path behavior).
+	if (outcome.kind === "posted") {
+		audit(store, opts, "founder_thread_notified", {
+			threadId: opts.thread.thread_id,
+			status: outcome.status,
+		});
+		return { kind: "posted" };
+	}
+	if (outcome.kind === "transient_failed") {
+		if (outcome.status === 429) {
+			audit(store, opts, "founder_thread_notify_failed", {
+				severity: "transient",
+				status: 429,
+				retryAfterMs: outcome.retryAfterMs,
+			});
+			return { kind: "transient_failed", retryAfterMs: outcome.retryAfterMs };
+		}
+		if (outcome.status !== undefined) {
+			// 5xx
+			audit(store, opts, "founder_thread_notify_failed", {
+				severity: "transient",
+				status: outcome.status,
+			});
+			return { kind: "transient_failed" };
+		}
+		// Network error / abort / timeout — transient.
+		audit(store, opts, "founder_thread_notify_failed", {
+			severity: "transient",
+			error: outcome.error,
+		});
+		return { kind: "transient_failed" };
+	}
+	// Any other 4xx (incl. 400 malformed mention / 401/403/404) — client
+	// error, retrying won't help (Codex R2 #4).
+	audit(store, opts, "founder_thread_notify_failed", {
+		severity: "permanent",
+		status: outcome.status,
+		body: outcome.body,
+	});
+	return { kind: "permanent_failed" };
+}
+
+/**
+ * FLY-725: shared POST + classify core for founder-thread pushes (gate + milestone).
+ * Does the Discord POST (with the founder-only mention) and classifies the
+ * response into posted / transient / permanent — WITHOUT auditing (each caller
+ * owns its own audit event names). Extracted verbatim from the old inline block
+ * in `emitFounderThreadNotification` so the gate path behaves identically.
+ */
+type PostFounderThreadOutcome =
+	| { kind: "posted"; status: number }
+	| {
+			kind: "transient_failed";
+			/** 429 or 5xx status; undefined for a network error / abort / timeout. */
+			status?: number;
+			retryAfterMs?: number;
+			error?: string;
+	  }
+	| { kind: "permanent_failed"; status: number; body: string };
+
+async function postFounderThreadCore(
+	threadId: string,
+	body: string,
+	botToken: string,
+	ownerUserId: string,
+	fetchImpl: typeof fetch,
+): Promise<PostFounderThreadOutcome> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
 	try {
 		const res = await fetchImpl(
-			`${DISCORD_API}/channels/${opts.thread.thread_id}/messages`,
+			`${DISCORD_API}/channels/${threadId}/messages`,
 			{
 				method: "POST",
 				headers: {
-					Authorization: `Bot ${opts.botToken}`,
+					Authorization: `Bot ${botToken}`,
 					"Content-Type": "application/json",
 				},
 				// FLY-162: explicitly allow ONLY the founder user mention; block
 				// @everyone/@here/role (ChatThreadCreator default blocks all mentions).
 				body: JSON.stringify({
 					content: body,
-					allowed_mentions: { users: [opts.ownerUserId] },
+					allowed_mentions: { users: [ownerUserId] },
 				}),
 				signal: controller.signal,
 			},
 		);
-
-		// ── (C) CLASSIFY (mirrors chat-thread-utils.ts::archiveChatThread) ──
-		if (res.ok) {
-			audit(store, opts, "founder_thread_notified", {
-				threadId: opts.thread.thread_id,
-				status: res.status,
-			});
-			return { kind: "posted" };
-		}
+		if (res.ok) return { kind: "posted", status: res.status };
 		if (res.status === 429) {
 			const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
-			audit(store, opts, "founder_thread_notify_failed", {
-				severity: "transient",
-				status: 429,
-				retryAfterMs,
-			});
-			return { kind: "transient_failed", retryAfterMs };
+			return { kind: "transient_failed", status: 429, retryAfterMs };
 		}
 		if (res.status >= 500) {
-			audit(store, opts, "founder_thread_notify_failed", {
-				severity: "transient",
-				status: res.status,
-			});
-			return { kind: "transient_failed" };
+			return { kind: "transient_failed", status: res.status };
 		}
-		// Any other 4xx (incl. 400 malformed mention / 401/403/404) — client
-		// error, retrying won't help (Codex R2 #4).
 		const text = await res.text().catch(() => "");
-		audit(store, opts, "founder_thread_notify_failed", {
-			severity: "permanent",
+		return {
+			kind: "permanent_failed",
 			status: res.status,
 			body: text.slice(0, 300),
-		});
-		return { kind: "permanent_failed" };
+		};
 	} catch (err) {
-		// Network error / abort / timeout — transient.
-		audit(store, opts, "founder_thread_notify_failed", {
-			severity: "transient",
-			error: (err as Error).message,
-		});
-		return { kind: "transient_failed" };
+		return { kind: "transient_failed", error: (err as Error).message };
 	} finally {
 		clearTimeout(timer);
 	}
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// FLY-725: milestone report — Bridge-primary @founder-pinged push when a Runner
+// reaches a terminal milestone (completed / failed / blocked). Reuses the shared
+// POST/classify core; distinct audit event names so the two paths are separable.
+// ─────────────────────────────────────────────────────────────────────────
+
+export interface FounderMilestoneNotifyOpts {
+	executionId: string;
+	issueId: string;
+	issueIdentifier?: string;
+	issueTitle?: string;
+	projectName: string;
+	milestone: MilestoneKind;
+	/** DecisionLayer route (needs_review / blocked / pr_handoff / merged / …). */
+	route?: string;
+	/** PR number when known (for the result line). */
+	prNumber?: number;
+	/** Short session summary (completed). */
+	summary?: string;
+	/** Last error (failed). */
+	lastError?: string;
+	/**
+	 * DecisionLayer reasoning (blocked). `complete --route blocked --summary "…"`
+	 * puts the real reason in `summary` / `decision_reasoning`, NOT `last_error`
+	 * (Codex code R1), so the blocked report reads the best-available reason from
+	 * lastError → summary → decisionReasoning.
+	 */
+	decisionReasoning?: string;
+	/** Pre-resolved via getChatThreadByIssue. */
+	thread?: ChatThreadRef;
+	/** lead.botToken ?? config.discordBotToken. */
+	botToken?: string;
+	/** config.discordOwnerUserId (for @mention + ping). */
+	ownerUserId?: string;
+}
+
+function buildMilestoneBody(opts: FounderMilestoneNotifyOpts): string {
+	const identifier = opts.issueIdentifier ?? opts.issueId;
+	const owner = `<@${opts.ownerUserId}>`;
+	const { emoji, zh } = milestoneLabel(opts.milestone);
+	const title = opts.issueTitle ? ` ${truncate(opts.issueTitle, 80)}` : "";
+	const header = `${emoji} **${identifier}${title} — Runner ${zh}**`;
+
+	const detail: string[] = [];
+	if (opts.milestone === "failed" || opts.milestone === "blocked") {
+		// Best-available real reason: failures carry `last_error`; a blocked runner
+		// (`complete --route blocked --summary "…"`) carries the reason in
+		// `summary` / `decision_reasoning` (Codex code R1). Show whichever is set.
+		const reason = (
+			opts.lastError?.trim() ||
+			opts.summary?.trim() ||
+			opts.decisionReasoning?.trim() ||
+			""
+		).trim();
+		if (reason) detail.push(`原因：${truncate(reason, SUMMARY_MAX)}`);
+	} else {
+		// completed
+		if (opts.prNumber) detail.push(`PR #${opts.prNumber}`);
+		if (opts.route === "pr_handoff") detail.push("待你手动 ship");
+		else if (opts.route) detail.push(`route=${opts.route}`);
+		if (opts.summary) detail.push(truncate(opts.summary, SUMMARY_MAX));
+	}
+	const resultLine = detail.length > 0 ? `结果：${detail.join("｜")}` : "";
+	return resultLine
+		? [header, owner, "", resultLine].join("\n")
+		: [header, owner].join("\n");
+}
+
+function auditMilestone(
+	store: StateStore,
+	opts: FounderMilestoneNotifyOpts,
+	eventType: string,
+	payload: Record<string, unknown>,
+): void {
+	store.insertEvent({
+		event_id: `${eventType}-${randomUUID()}`,
+		execution_id: opts.executionId,
+		issue_id: opts.issueId,
+		project_name: opts.projectName,
+		event_type: eventType,
+		source: "bridge.founder-thread-notifier",
+		payload: { milestone: opts.milestone, ...payload },
+	});
+}
+
+export async function emitFounderMilestoneNotification(
+	opts: FounderMilestoneNotifyOpts,
+	deps: FounderThreadNotifyDeps,
+): Promise<FounderThreadNotifyResult> {
+	const { store, fetchImpl = fetch } = deps;
+
+	// ── (A) VALIDATE (mirrors the gate path) ──
+	if (!opts.thread?.thread_id) {
+		auditMilestone(store, opts, "founder_milestone_notify_skipped", {
+			reason: "no_chat_thread",
+		});
+		return { kind: "skipped", skipReason: "no_chat_thread" };
+	}
+	if (!opts.botToken) {
+		auditMilestone(store, opts, "founder_milestone_notify_skipped", {
+			reason: "no_bot_token",
+		});
+		return { kind: "skipped", skipReason: "no_bot_token" };
+	}
+	if (!opts.ownerUserId) {
+		auditMilestone(store, opts, "founder_milestone_notify_skipped", {
+			reason: "no_owner",
+		});
+		return { kind: "skipped", skipReason: "no_owner" };
+	}
+	if (!isDiscordSnowflake(opts.ownerUserId)) {
+		auditMilestone(store, opts, "founder_milestone_notify_skipped", {
+			reason: "bad_owner_id",
+		});
+		return { kind: "skipped", skipReason: "bad_owner_id" };
+	}
+
+	// ── (B) COMPOSE + POST + (C) CLASSIFY (shared core) ──
+	const body = buildMilestoneBody(opts);
+	const outcome = await postFounderThreadCore(
+		opts.thread.thread_id,
+		body,
+		opts.botToken,
+		opts.ownerUserId,
+		fetchImpl,
+	);
+	if (outcome.kind === "posted") {
+		auditMilestone(store, opts, "founder_milestone_notified", {
+			threadId: opts.thread.thread_id,
+			status: outcome.status,
+		});
+		return { kind: "posted" };
+	}
+	if (outcome.kind === "transient_failed") {
+		if (outcome.status === 429) {
+			auditMilestone(store, opts, "founder_milestone_notify_failed", {
+				severity: "transient",
+				status: 429,
+				retryAfterMs: outcome.retryAfterMs,
+			});
+			return { kind: "transient_failed", retryAfterMs: outcome.retryAfterMs };
+		}
+		if (outcome.status !== undefined) {
+			auditMilestone(store, opts, "founder_milestone_notify_failed", {
+				severity: "transient",
+				status: outcome.status,
+			});
+			return { kind: "transient_failed" };
+		}
+		auditMilestone(store, opts, "founder_milestone_notify_failed", {
+			severity: "transient",
+			error: outcome.error,
+		});
+		return { kind: "transient_failed" };
+	}
+	auditMilestone(store, opts, "founder_milestone_notify_failed", {
+		severity: "permanent",
+		status: outcome.status,
+		body: outcome.body,
+	});
+	return { kind: "permanent_failed" };
 }

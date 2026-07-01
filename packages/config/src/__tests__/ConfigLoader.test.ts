@@ -1197,4 +1197,119 @@ founder_ux_gate: "enforce"
 			);
 		});
 	});
+
+	describe("founder_milestone_report validation (FLY-725)", () => {
+		const withFmr = (fmrYaml: string) => `
+${MINIMAL_CONFIG_YAML}
+${fmrYaml}
+`;
+
+		it("accepts absent founder_milestone_report (feature off, backward compatible)", async () => {
+			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_milestone_report).toBeUndefined();
+		});
+
+		it("accepts enabled with default milestones (milestones omitted)", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_milestone_report?.enabled).toBe(true);
+			expect(config.founder_milestone_report?.milestones).toBeUndefined();
+		});
+
+		it("accepts a supported milestones subset", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+  milestones: [failed, blocked]
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_milestone_report?.milestones).toEqual([
+				"failed",
+				"blocked",
+			]);
+		});
+
+		it("rejects ship_ready in v1 (covered by FLY-605, not 725 — must fail loudly)", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+  milestones: [failed, ship_ready]
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/ship_ready.*not supported in v1/,
+			);
+		});
+
+		it("rejects completed in v1 (routine completions → FLY-727 digest, not real-time)", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+  milestones: [failed, completed]
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/completed.*not supported in v1/,
+			);
+		});
+
+		it("rejects an unknown milestone value", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+  milestones: [merged]
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/"merged" is not supported in v1/,
+			);
+		});
+
+		it("rejects a non-boolean enabled", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: "yes"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_milestone_report\.enabled must be a boolean/,
+			);
+		});
+
+		it("rejects a non-mapping founder_milestone_report", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report: "on"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_milestone_report must be a YAML mapping/,
+			);
+		});
+
+		it("rejects milestones that is not an array", async () => {
+			readFile.mockResolvedValue(
+				withFmr(`
+founder_milestone_report:
+  enabled: true
+  milestones: completed
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_milestone_report\.milestones must be an array/,
+			);
+		});
+	});
 });
