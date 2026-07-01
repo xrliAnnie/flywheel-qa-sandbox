@@ -10,13 +10,27 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../bridge/tmux-lookup.js", () => ({
-	getTmuxTargetFromCommDb: vi.fn(() => ({
-		tmuxWindow: "geoforge3d:@0",
-		sessionName: "geoforge3d",
-	})),
-	isTmuxWindowAlive: vi.fn(async () => true),
-}));
+vi.mock("../bridge/tmux-lookup.js", () => {
+	// FLY-720: isSessionTmuxAlive now reads pane liveness via lookupTmuxTarget +
+	// probeRunnerProcessLiveness. Keep these tests driving liveness through the
+	// existing `isTmuxWindowAlive` mock by DERIVING the pane probe from it
+	// (true → "alive", false → "absent"), so the existing test bodies are unchanged.
+	const isTmuxWindowAlive = vi.fn(async () => true);
+	return {
+		getTmuxTargetFromCommDb: vi.fn(() => ({
+			tmuxWindow: "geoforge3d:@0",
+			sessionName: "geoforge3d",
+		})),
+		isTmuxWindowAlive,
+		lookupTmuxTarget: vi.fn(() => ({
+			kind: "found",
+			target: { tmuxWindow: "geoforge3d:@0", sessionName: "geoforge3d" },
+		})),
+		probeRunnerProcessLiveness: vi.fn(async () =>
+			(await isTmuxWindowAlive("geoforge3d:@0")) ? "alive" : "absent",
+		),
+	};
+});
 
 vi.mock("../bridge/complete-marker-reconciler.js", () => ({
 	tryReconcileComplete: vi.fn(async () => ({ kind: "absent" })),
@@ -30,6 +44,7 @@ import {
 import {
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
+	lookupTmuxTarget,
 } from "../bridge/tmux-lookup.js";
 import { HeartbeatService } from "../HeartbeatService.js";
 import type { Session } from "../StateStore.js";
@@ -38,6 +53,7 @@ const mockedTry = vi.mocked(tryReconcileComplete);
 const mockedFallback = vi.mocked(applyQuarantineFallback);
 const mockedAlive = vi.mocked(isTmuxWindowAlive);
 const mockedTarget = vi.mocked(getTmuxTargetFromCommDb);
+const mockedLookup = vi.mocked(lookupTmuxTarget);
 
 function sess(overrides: Partial<Session> = {}): Session {
 	return {
@@ -104,6 +120,10 @@ beforeEach(() => {
 	mockedTarget.mockReset().mockReturnValue({
 		tmuxWindow: "geoforge3d:@0",
 		sessionName: "geoforge3d",
+	});
+	mockedLookup.mockReset().mockReturnValue({
+		kind: "found",
+		target: { tmuxWindow: "geoforge3d:@0", sessionName: "geoforge3d" },
 	});
 });
 
@@ -386,8 +406,9 @@ describe("HeartbeatService legacy (FLY-623 kill-switch FLYWHEEL_HEARTBEAT_READOP
 		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(1);
 	});
 
-	it("indeterminate tmux target (no CommDB) → not protected → reapOrphans force-fails", async () => {
+	it("no CommDB target (gone) → not protected → reapOrphans force-fails", async () => {
 		mockedTarget.mockReturnValue(undefined);
+		mockedLookup.mockReturnValue({ kind: "gone" }); // FLY-720: liveness reads via lookupTmuxTarget
 		const s = sess();
 		store.getOrphanSessions.mockReturnValue([s]);
 		await service.reconcileMonitorLoss();

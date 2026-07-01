@@ -305,6 +305,89 @@ export async function isTmuxWindowAlive(tmuxWindow: string): Promise<boolean> {
 }
 
 /**
+ * FLY-720: 4-state per-runner PROCESS liveness (as opposed to window existence).
+ *
+ * Under cmux `remain-on-exit on` (see scripts/flywheel-cmux-sync.sh) a crashed
+ * Runner's tmux window PERSISTS with a dead `[exited]` pane (the FLY-622
+ * dead-pin). `isTmuxWindowAlive` / `probeTmuxWindowLiveness` only test window
+ * existence via `list-panes` success, so they read that corpse as alive — which
+ * is exactly why the FLY-623 heartbeat readopt loop re-adopts a crashed Runner
+ * forever and it never gets reaped. This probe reads `#{pane_dead}` on each pane
+ * to distinguish a dead process (window still there) from window absence:
+ *   - `alive`         — `list-panes` succeeded and ≥1 pane is live (`pane_dead=0`);
+ *   - `dead_pin`      — `list-panes` succeeded, ≥1 pane, and EVERY pane is dead
+ *                       (`pane_dead=1`): window EXISTS, process is a corpse;
+ *   - `absent`        — tmux PROVED the window/session/server is gone (NOT a
+ *                       dead-pin) — left to the existing `reapOrphans → failed`
+ *                       orphan path, not the crash reaper;
+ *   - `indeterminate` — timeout / ENOENT / EACCES / unparseable: could NOT
+ *                       determine liveness → caller treats as alive-for-suppression
+ *                       (never reap), GEO-374 guard.
+ *
+ * The `TmuxRunner` seam keeps it unit-testable without a real tmux server.
+ */
+export type RunnerLiveness = "alive" | "dead_pin" | "absent" | "indeterminate";
+
+export async function probeRunnerProcessLiveness(
+	tmuxWindow: string,
+	runTmux: TmuxRunner = defaultTmuxRunner,
+): Promise<RunnerLiveness> {
+	let stdout: string;
+	try {
+		({ stdout } = await runTmux([
+			"list-panes",
+			"-t",
+			tmuxWindow,
+			"-F",
+			"#{pane_dead}",
+		]));
+	} catch (err) {
+		const msg = (err as Error).message ?? String(err);
+		if (isTmuxAbsenceMessage(msg)) return "absent";
+		console.error(
+			`[tmux-lookup] pane-dead probe INDETERMINATE (fail-closed): ${msg}`,
+		);
+		return "indeterminate";
+	}
+	const panes = stdout
+		.split("\n")
+		.map((l) => l.trim())
+		.filter(Boolean);
+	// No panes parsed (empty output) — we learned nothing definitive.
+	if (panes.length === 0) return "indeterminate";
+	// Every pane is a remain-on-exit corpse → the Runner process is dead while
+	// the window still exists. Any live pane → alive.
+	return panes.every((p) => p === "1") ? "dead_pin" : "alive";
+}
+
+/**
+ * FLY-720: capture a runner window's scrollback (crash forensics) BEFORE the
+ * crash reaper tears the window down. `-p` prints to stdout, `-S -` starts at
+ * the beginning of history. Runner windows are single-pane (one claude/codex
+ * process) — the window target captures that pane. Best-effort: returns the
+ * error text instead of throwing so the reaper can record it and still reap.
+ */
+export async function captureRunnerScrollback(
+	tmuxWindow: string,
+	runTmux: TmuxRunner = defaultTmuxRunner,
+): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+	try {
+		const { stdout } = await runTmux([
+			"capture-pane",
+			"-t",
+			tmuxWindow,
+			"-p",
+			"-S",
+			"-",
+		]);
+		return { ok: true, text: stdout };
+	} catch (err) {
+		const msg = (err as Error).message ?? String(err);
+		return { ok: false, error: msg };
+	}
+}
+
+/**
  * FLY-195: type a literal line of text into a tmux window and press Enter.
  *
  * Used ONLY by the restricted recovery-nudge endpoint (plan §3.5) — the text
