@@ -329,6 +329,33 @@ if [ -f "$GATE_JS" ]; then
   run_fa_xcheck "with-aliases" "1512578695468941333,1517226183341904032" "roundtable:1512578695468941333"
 fi
 
+# ════════════════ FLY-694 — bash 3.2 here-doc desync re-exec guard ════════════════
+# macOS /bin/bash is the GPLv2-frozen bash 3.2, whose incremental script reader
+# silently mis-parses a here-document that straddles its read-buffer boundary. After
+# FLY-676 shifted a heredoc onto a bad boundary, bash 3.2 failed to DEFINE
+# write_full_access_config / append_full_access_lead_actions_mcp at runtime → the
+# launcher hit "line 395: write_full_access_config: command not found" (exit 127, 30s
+# launchd loop). `bash -n` cannot catch this on ANY bash version, and Linux CI uses a
+# modern bash so it never reproduced there. The fix re-execs under a modern bash. These
+# assertions are RED on the pre-fix script when this suite runs under /bin/bash 3.2 and
+# GREEN once the guard is present (and trivially pass under a modern /bin/bash).
+command grep -q 'FLYWHEEL_TUI_HOME_REEXEC' "$SUT" && command grep -q 'BASH_VERSINFO' "$SUT" \
+  && pass "FLY-694: bash-3.2 re-exec guard present in the script" \
+  || fail "FLY-694: re-exec guard (FLYWHEEL_TUI_HOME_REEXEC + BASH_VERSINFO) missing — bash 3.2 heredoc desync will recur"
+H=$(fresh_home 694)
+FA694_OUT=$(FLYWHEEL_CODEX_LEAD_PROFILE=full-access FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" \
+  FLYWHEEL_LEAD_ACTIONS_MAIN_JS="/dist/lead-actions/lead-actions-main.js" \
+  FLYWHEEL_LEAD_ACTIONS_NODE_BIN="/usr/local/bin/node" \
+  FLYWHEEL_LEAD_ID="mufasa-lead" FLYWHEEL_PROJECT_NAME="growth" \
+  FLYWHEEL_LEAD_CHAT_CHANNEL_ID="123" FLYWHEEL_LEAD_ACTIONS_STATE_DIR="/state/mufasa" \
+  /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+echo "$FA694_OUT" | command grep -q "command not found" \
+  && fail "FLY-694: full-access ensure-home under /bin/bash emitted 'command not found' (bash 3.2 heredoc desync); out: $FA694_OUT" \
+  || pass "FLY-694: full-access ensure-home under /bin/bash defines all functions (no 'command not found')"
+echo "$FA694_OUT" | command grep -q "rc=0" \
+  && pass "FLY-694: full-access ensure-home under /bin/bash exits 0 (was 127 pre-fix)" \
+  || fail "FLY-694: full-access ensure-home under /bin/bash did not exit 0; out: $FA694_OUT"
+
 echo "────────────────────────────"
 echo "Results: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
