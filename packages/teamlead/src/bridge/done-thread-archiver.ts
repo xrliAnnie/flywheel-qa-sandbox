@@ -149,24 +149,26 @@ const CLOSE_ARCHIVE_ACTIVE_STATUSES = [
 ];
 
 /**
- * FLY-369: the central close→archive cascade. Called from `closeRunner` (the
- * single chokepoint every Lead's runner-close funnels through), so archiving is
- * bound to a real close action — NOT to Linear flipping to "Done" (premature).
- * Zero binding to a specific Lead: whoever closes the runner triggers it.
- *
- * Archives the issue's chat thread ONLY when BOTH hold:
- *   (a) this is a done-cleanup close — `session.status === "completed"` (NOT an
- *       abandon/terminate: rejected/deferred/shelved/terminated/failed/blocked
- *       never archive), and
+ * FLY-369 / FLY-720: the guarded close→archive cascade. Archives the issue's
+ * chat thread ONLY when BOTH hold:
+ *   (a) `session.status` is in `opts.allowStatuses` (the caller's status gate),
+ *       and
  *   (b) the issue has no OTHER active runner (running/awaiting_review/
  *       approved_to_ship).
  *
+ * This is the single archive-policy surface — label/lead resolution, chat-channel
+ * + thread lookup, bot-token selection, and the "no other active runner" guard
+ * live here so callers never fork the policy (Codex FLY-720 R1 MED-4). Two
+ * callers parameterize the status gate:
+ *   - `maybeArchiveThreadOnClose` → `["completed"]` (FLY-369 done-cleanup close).
+ *   - the FLY-720 crash reaper → `["terminated"]`, AFTER it has transitioned the
+ *     just-reaped row to `terminated` (so the row is excluded from the active-set
+ *     check above).
+ *
  * Always goes through `archiveThreadAndRecord` → Bridge-local `archiveChatThread`
- * (idempotent Discord PATCH): a still-archived thread is a Discord no-op, and a
- * thread re-opened by activity is re-archived on the next close ("re-open then
- * re-close re-archives"). Never throws.
+ * (idempotent Discord PATCH). Never throws.
  */
-export async function maybeArchiveThreadOnClose(
+export async function archiveIssueThreadIfNoOtherActive(
 	store: StateStore,
 	session: {
 		execution_id: string;
@@ -176,10 +178,11 @@ export async function maybeArchiveThreadOnClose(
 		status: string;
 	},
 	deps: CloseArchiveDeps,
+	opts: { allowStatuses: readonly string[] },
 ): Promise<void> {
 	try {
-		// (a) done-cleanup only.
-		if (session.status !== "completed") return;
+		// (a) status gate — only the caller-allowed terminal statuses archive.
+		if (!opts.allowStatuses.includes(session.status)) return;
 
 		// (b) no OTHER active runner for the same issue.
 		const others = store
@@ -233,11 +236,38 @@ export async function maybeArchiveThreadOnClose(
 			},
 		);
 	} catch (err) {
-		// Never let archive cascade break the close path.
+		// Never let archive cascade break the close/reap path.
 		console.warn(
-			`[done-thread-archiver] close cascade failed for ${session.execution_id} (${session.issue_id}): ${(err as Error).message}`,
+			`[done-thread-archiver] archive cascade failed for ${session.execution_id} (${session.issue_id}): ${(err as Error).message}`,
 		);
 	}
+}
+
+/**
+ * FLY-369: the central close→archive cascade. Called from `closeRunner` (the
+ * single chokepoint every Lead's runner-close funnels through), so archiving is
+ * bound to a real close action — NOT to Linear flipping to "Done" (premature).
+ * Zero binding to a specific Lead: whoever closes the runner triggers it.
+ *
+ * Done-cleanup only: archives when `session.status === "completed"` (NOT an
+ * abandon/terminate: rejected/deferred/shelved/terminated/failed/blocked never
+ * archive here). Thin delegate over `archiveIssueThreadIfNoOtherActive` with the
+ * `["completed"]` gate — byte-compatible with the pre-FLY-720 behavior.
+ */
+export async function maybeArchiveThreadOnClose(
+	store: StateStore,
+	session: {
+		execution_id: string;
+		issue_id: string;
+		issue_identifier?: string;
+		project_name: string;
+		status: string;
+	},
+	deps: CloseArchiveDeps,
+): Promise<void> {
+	return archiveIssueThreadIfNoOtherActive(store, session, deps, {
+		allowStatuses: ["completed"],
+	});
 }
 
 /** Resolve the bot token for a thread, preferring its creation-time lead_id. */

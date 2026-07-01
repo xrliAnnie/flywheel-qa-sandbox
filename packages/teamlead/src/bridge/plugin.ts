@@ -17,7 +17,11 @@ import {
 	type CommBackend,
 	resolveCommBackend as resolveCommBackendShared,
 } from "flywheel-config";
-import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
+import {
+	closeRunnerTerminalView,
+	WORKFLOW_TRANSITIONS,
+	WorkflowFSM,
+} from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
@@ -71,17 +75,22 @@ import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
-import { pruneDeadTerminalCommDbSessions } from "./commdb-session-prune.js";
+import {
+	deleteCommDbSession,
+	pruneDeadTerminalCommDbSessions,
+} from "./commdb-session-prune.js";
 import {
 	buildLoopbackBaseUrl,
 	reconcileCompleteFailedMarkers,
 } from "./complete-marker-reconciler.js";
+import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import {
 	parseSweepExcludeEnv,
 	reconcileDoneButRunning,
 } from "./done-running-reconciler.js";
+import { archiveIssueThreadIfNoOtherActive } from "./done-thread-archiver.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
 import { defaultFleetConsoleOptions, FleetConsole } from "./fleet-console.js";
@@ -148,11 +157,15 @@ import {
 } from "./stuck-escalation.js";
 import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
 import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
+import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import {
+	captureRunnerScrollback,
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
 	killCmuxLinkedSession,
 	killTmuxWindow,
+	lookupTmuxTarget,
+	probeRunnerProcessLiveness,
 	sendEnterToWindow,
 	sendKeysToWindow,
 } from "./tmux-lookup.js";
@@ -2668,6 +2681,58 @@ export async function startBridge(
 				})
 		: undefined;
 
+	// FLY-720: crash-reaper injected deps. Default ON; `FLYWHEEL_CRASH_REAPER=0`
+	// disables the whole reaper (falls back to reapOrphans→failed). Grace defaults
+	// to the orphan threshold (clean handoff with reapOrphans); a larger
+	// `FLYWHEEL_CRASH_REAP_GRACE_MIN` is clamped to ≥ orphan threshold. Teardown +
+	// archive reuse the same primitives as close_runner (killCmux/window, terminal
+	// close, deleteCommDbSession, the shared archive predicate w/ allowStatuses).
+	const crashReaperGraceMinutes = (() => {
+		const raw = Number.parseInt(
+			process.env.FLYWHEEL_CRASH_REAP_GRACE_MIN ?? "",
+			10,
+		);
+		const v =
+			Number.isFinite(raw) && raw > 0 ? raw : config.orphanThresholdMinutes;
+		return Math.max(v, config.orphanThresholdMinutes);
+	})();
+	const crashReaperConfig: CrashReaperInjectedDeps = {
+		enabled: process.env.FLYWHEEL_CRASH_REAPER !== "0",
+		crashGraceMinutes: crashReaperGraceMinutes,
+		lookupTmuxTarget,
+		probeLiveness: (w) => probeRunnerProcessLiveness(w),
+		captureScrollback: (w) => captureRunnerScrollback(w),
+		killCmuxLinkedSession: (w) => killCmuxLinkedSession(w),
+		killTmuxWindow: (w) => killTmuxWindow(w),
+		closeTerminalView: async (session, tmuxWindow) => {
+			const identity = resolveTerminalViewIdentity(session, {
+				tmuxWindow,
+				sessionName: tmuxWindow.split(":")[0] ?? tmuxWindow,
+			});
+			if (!identity) return;
+			await closeRunnerTerminalView({
+				baseSessionName: identity.sessionName,
+				projectName: identity.projectName,
+				executionId: identity.executionId,
+				windowId: identity.windowId,
+				sessionRole: identity.sessionRole,
+			});
+		},
+		deleteCommDbSession: (execId, projectName) =>
+			deleteCommDbSession(execId, projectName),
+		archiveThread: (session) =>
+			archiveIssueThreadIfNoOtherActive(
+				store,
+				session,
+				{
+					projects,
+					globalBotToken: config.discordBotToken,
+					discordOwnerUserId: config.discordOwnerUserId,
+				},
+				{ allowStatuses: ["terminated"] },
+			),
+	};
+
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -2683,6 +2748,7 @@ export async function startBridge(
 		},
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
 		quietSignalsProbe,
+		crashReaperConfig,
 	);
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event

@@ -12,7 +12,9 @@ import { randomUUID } from "node:crypto";
 import { afterAll, describe, expect, it } from "vitest";
 import {
 	buildAttachCommand,
+	captureRunnerScrollback,
 	isTmuxWindowAlive,
+	probeRunnerProcessLiveness,
 	resolveCmuxAttachTarget,
 } from "../bridge/tmux-lookup.js";
 
@@ -61,6 +63,89 @@ describeReal("isTmuxWindowAlive (real tmux)", () => {
 		);
 	});
 });
+
+// ── FLY-720: the ROOT-CAUSE proof on real tmux — a remain-on-exit dead-pin ──
+// window STILL EXISTS (isTmuxWindowAlive → true, the bug) but its process is dead
+// (probeRunnerProcessLiveness → "dead_pin", the fix). This is exactly the FLY-622
+// dead-pin cmux leaves for a crashed Runner. Mocks cannot prove #{pane_dead}.
+describeReal(
+	"probeRunnerProcessLiveness + captureRunnerScrollback (real tmux)",
+	() => {
+		const session = `fly720-test-${randomUUID().slice(0, 8)}`;
+		afterAll(() => {
+			spawnSync("tmux", ["kill-session", "-t", session], { stdio: "ignore" });
+		});
+
+		function paneDead(target: string): string {
+			return execFileSync(
+				"tmux",
+				["display-message", "-p", "-t", target, "#{pane_dead}"],
+				{ encoding: "utf8", timeout: 5000 },
+			).trim();
+		}
+
+		it("dead-pin: window exists (isTmuxWindowAlive true) but process is dead (dead_pin)", async () => {
+			// Live window under remain-on-exit (the Runner/Lead cmux convention).
+			execFileSync(
+				"tmux",
+				["new-session", "-d", "-s", session, "-n", "W", "sleep 600"],
+				{
+					timeout: 5000,
+				},
+			);
+			execFileSync(
+				"tmux",
+				["set-window-option", "-t", `${session}:W`, "remain-on-exit", "on"],
+				{ timeout: 5000 },
+			);
+			const windowId = execFileSync(
+				"tmux",
+				["list-windows", "-t", session, "-F", "#{window_id}"],
+				{ encoding: "utf8", timeout: 5000 },
+			)
+				.trim()
+				.split("\n")[0];
+			const target = `${session}:${windowId}`;
+
+			// Live → alive on both probes.
+			expect(await isTmuxWindowAlive(target)).toBe(true);
+			expect(await probeRunnerProcessLiveness(target)).toBe("alive");
+
+			// Kill the pane's process; remain-on-exit keeps the window as a dead-pin.
+			execFileSync(
+				"tmux",
+				[
+					"respawn-pane",
+					"-k",
+					"-t",
+					target,
+					"sh",
+					"-c",
+					"echo CRASH_MARKER_XYZ; exit 0",
+				],
+				{ timeout: 5000 },
+			);
+			// Poll for the pane to become dead (process exit is near-instant but async).
+			for (let i = 0; i < 30 && paneDead(target) !== "1"; i++) {
+				spawnSync("sleep", ["0.1"]);
+			}
+
+			// THE BUG: window still exists → the old probe reads it as alive.
+			expect(await isTmuxWindowAlive(target)).toBe(true);
+			// THE FIX: the process is dead → the new probe returns dead_pin.
+			expect(await probeRunnerProcessLiveness(target)).toBe("dead_pin");
+
+			// Forensics: the dead pane's scrollback is still capturable.
+			const cap = await captureRunnerScrollback(target);
+			expect(cap.ok).toBe(true);
+			if (cap.ok) expect(cap.text).toContain("CRASH_MARKER_XYZ");
+
+			// Kill the whole window → absent (NOT a dead-pin → reapOrphans owns it).
+			execFileSync("tmux", ["kill-window", "-t", target], { timeout: 5000 });
+			expect(await probeRunnerProcessLiveness(target)).toBe("absent");
+		});
+	},
+);
 
 // ── FLY-560 Feature C: real-tmux attach-target resolution ──
 describeReal("resolveCmuxAttachTarget + buildAttachCommand (real tmux)", () => {

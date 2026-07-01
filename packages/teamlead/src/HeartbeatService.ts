@@ -14,6 +14,11 @@ import {
 	type MarkerReconcilerDeps,
 	tryReconcileComplete,
 } from "./bridge/complete-marker-reconciler.js";
+import {
+	type CrashReaperInjectedDeps,
+	reapCrashedRunners,
+} from "./bridge/crash-reaper.js";
+import { hasPendingCompleteMarker } from "./bridge/done-running-reconciler.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import {
@@ -27,6 +32,8 @@ import { reconnectingBadge, stageBadge } from "./bridge/stage-utils.js";
 import {
 	getTmuxTargetFromCommDb,
 	isTmuxWindowAlive,
+	lookupTmuxTarget,
+	probeRunnerProcessLiveness,
 } from "./bridge/tmux-lookup.js";
 import type { ProjectEntry } from "./ProjectConfig.js";
 import type { Session, StateStore } from "./StateStore.js";
@@ -160,6 +167,14 @@ export class HeartbeatService implements ReconnectController {
 		 * owned by heartbeat + tmux liveness (Codex R1 #4).
 		 */
 		private quietSignalsProbe?: (session: Session) => QuietSignals,
+		/**
+		 * FLY-720: injected crash-reaper deps (tmux/discord/fs sinks + grace +
+		 * kill-switch). When wired (production) the crash reaper runs each cycle
+		 * BEFORE `reapOrphans`, claiming confirmed dead-pins so `reapOrphans` never
+		 * force-fails them to `failed`. Absent (tests / kill-switch OFF) → the crash
+		 * reaper is a no-op and behavior is exactly pre-FLY-720.
+		 */
+		private crashReaperConfig?: CrashReaperInjectedDeps,
 	) {}
 
 	start(): void {
@@ -200,8 +215,19 @@ export class HeartbeatService implements ReconnectController {
 			if (this.monitorReconcile) {
 				await this.reconcileMonitorLoss();
 			}
+			// FLY-720: crash reaper runs BEFORE reapOrphans and claims confirmed
+			// dead-pins into deadPinOwned so reapOrphans skips them (never force-fails
+			// a crash to `failed`). Best-effort — a reaper failure must not skip the
+			// rest of the cycle. Only awaited when the reaper is wired + enabled, so an
+			// unconfigured Bridge keeps checkStuck's synchronous getStuckSessions call
+			// on the same tick (mirrors the monitorReconcile guard; preserves existing
+			// fake-timer test timing).
+			let deadPinOwned: ReadonlySet<string> = new Set();
+			if (this.crashReaperConfig?.enabled) {
+				deadPinOwned = await this.reapCrashedRunners();
+			}
 			await this.checkStuck();
-			await this.reapOrphans();
+			await this.reapOrphans(deadPinOwned);
 			await this.checkStaleCompleted();
 			await this.checkAwaitingReviewTimeout();
 		} catch (err) {
@@ -600,18 +626,51 @@ export class HeartbeatService implements ReconnectController {
 		}
 	}
 
-	/** FLY-172: resolve + probe tmux for a session. Single owner of liveness. */
+	/**
+	 * FLY-172 + FLY-720: resolve + probe tmux for a session. Single owner of the
+	 * heartbeat-side liveness read.
+	 *
+	 * FLY-720 root-cause fix: a crashed Runner's cmux `remain-on-exit on` window
+	 * PERSISTS with a dead `[exited]` pane, so the old window-existence probe
+	 * (`isTmuxWindowAlive`) read the corpse as alive → the readopt loop re-adopted
+	 * it forever → it never aged into an orphan → never reaped. This now reads
+	 * `#{pane_dead}` (via `probeRunnerProcessLiveness`) so a dead-pin is NOT alive.
+	 *
+	 * Liveness for the readopt / monitor-loss path (alive = keep monitoring):
+	 *   - CommDB `gone` (no target) → false (today's behavior; reapOrphans owns it).
+	 *   - CommDB `error` (locked/corrupt/transient) → TRUE, alive-for-suppression
+	 *     (GEO-374: a transient read must never look dead → never reaped).
+	 *   - pane probe `alive` / `indeterminate` → true (keep monitoring).
+	 *   - pane probe `dead_pin` / `absent` → false (ages into orphan → crash reaper
+	 *     claims dead_pin; reapOrphans claims absent).
+	 *
+	 * `FLYWHEEL_LIVENESS_PANE_DEAD=0` reverts to the exact pre-FLY-720
+	 * window-existence probe (emergency byte-compat).
+	 */
 	private async isSessionTmuxAlive(session: Session): Promise<boolean> {
 		if (!session.project_name) return false;
-		const target = getTmuxTargetFromCommDb(
-			session.execution_id,
-			session.project_name,
-		);
-		if (!target) return false;
+		if (process.env.FLYWHEEL_LIVENESS_PANE_DEAD === "0") {
+			const target = getTmuxTargetFromCommDb(
+				session.execution_id,
+				session.project_name,
+			);
+			if (!target) return false;
+			try {
+				return await isTmuxWindowAlive(target.tmuxWindow);
+			} catch {
+				return false;
+			}
+		}
+		const lookup = lookupTmuxTarget(session.execution_id, session.project_name);
+		if (lookup.kind === "gone") return false;
+		if (lookup.kind === "error") return true; // alive-for-suppression (GEO-374)
 		try {
-			return await isTmuxWindowAlive(target.tmuxWindow);
+			const liveness = await probeRunnerProcessLiveness(
+				lookup.target.tmuxWindow,
+			);
+			return liveness === "alive" || liveness === "indeterminate";
 		} catch {
-			return false;
+			return true; // fail-closed to alive-for-suppression
 		}
 	}
 
@@ -749,8 +808,49 @@ export class HeartbeatService implements ReconnectController {
 		this.lastStaleCheckAt = Date.now();
 	}
 
+	/**
+	 * FLY-720: run the liveness-based crash reaper for this cycle and return the
+	 * set of confirmed dead-pin execIds so `reapOrphans` skips them. No-op (empty
+	 * set) when the reaper is unwired or its kill-switch is OFF. Never throws — a
+	 * reaper failure logs and returns an empty set so the rest of the cycle runs.
+	 */
+	private async reapCrashedRunners(): Promise<ReadonlySet<string>> {
+		if (!this.crashReaperConfig?.enabled || !this.transitionOpts) {
+			return new Set();
+		}
+		try {
+			const res = await reapCrashedRunners({
+				...this.crashReaperConfig,
+				store: this.store,
+				transitionOpts: this.transitionOpts,
+				orphanThresholdMinutes: this.orphanThresholdMinutes,
+				nowMs: Date.now(),
+				isSuppressed: (id) =>
+					this.isMonitorSuppressed(id) || this.markerRetryPending.has(id),
+				hasPendingCompleteMarker: (id) => hasPendingCompleteMarker(id),
+			});
+			if (
+				res.reaped > 0 ||
+				res.confirmedDeadPinOwned > 0 ||
+				res.cleanupPending > 0
+			) {
+				console.log(
+					`[crash-reaper] owned=${res.confirmedDeadPinOwned} reaped=${res.reaped} waitingGrace=${res.confirmedDeadButWaitingForGrace} cleanupPending=${res.cleanupPending} absentToOrphan=${res.absentPassedToOrphan} indeterminateSuppressed=${res.indeterminateSuppressed} transitionSkipped=${res.transitionSkipped}`,
+				);
+			}
+			return res.deadPinOwned;
+		} catch (err) {
+			console.error(
+				`[crash-reaper] cycle failed (skipping, Bridge stays up): ${(err as Error).message}`,
+			);
+			return new Set();
+		}
+	}
+
 	/** Reap orphan sessions: heartbeat has gone stale beyond orphanThresholdMinutes. */
-	async reapOrphans(): Promise<void> {
+	async reapOrphans(
+		deadPinOwned: ReadonlySet<string> = new Set(),
+	): Promise<void> {
 		const orphans = this.store.getOrphanSessions(this.orphanThresholdMinutes);
 
 		// Prune notified set: remove entries for sessions no longer orphaned
@@ -760,6 +860,10 @@ export class HeartbeatService implements ReconnectController {
 		}
 
 		for (const session of orphans) {
+			// FLY-720: a confirmed dead-pin the crash reaper owns this cycle is
+			// reaped there (→ terminated + teardown + archive); reapOrphans must NOT
+			// force-fail it to `failed` (a CRASH_PRESERVE state that never archives).
+			if (deadPinOwned.has(session.execution_id)) continue;
 			// FLY-172 + FLY-623: skip sessions the reconcile pass classified this
 			// cycle as alive-but-detached (monitor-lost / re-adopted) or as having a
 			// marker pending retry. reapOrphans does NOT probe tmux itself — the
