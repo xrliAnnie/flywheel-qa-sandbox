@@ -226,4 +226,88 @@ describe("FLY-205 — retry doc-tier continuity", () => {
 		const successor = store.getSession("retry-exec-1");
 		expect(successor?.doc_tier).toBe("full");
 	});
+
+	// FLY-728 Part C — retry REUSES the predecessor's persisted `dispatch_model`
+	// (the sorter's dispatch param ONLY), source-honestly — NOT the resolved
+	// runner_model (Codex design R1 HIGH-2: runner_model conflates label/project/
+	// account sources; re-deriving from it would reintroduce a removed label's or
+	// a stale project default's model).
+	function seedFailed(
+		executionId: string,
+		cols: { runner_model?: string; dispatch_model?: string },
+	): void {
+		store.upsertSession({
+			execution_id: executionId,
+			issue_id: "LEARN-23",
+			project_name: "sub",
+			status: "failed",
+			issue_identifier: "LEARN-23",
+			...cols,
+		});
+	}
+
+	it("retry reuses a persisted dispatch_model (sorter choice survives)", async () => {
+		seedFailed("exec-m1", {
+			dispatch_model: "claude-fable-5",
+			runner_model: "claude-fable-5",
+		});
+		const res = await fetch(`${baseUrl}/actions/retry`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "exec-m1" }),
+		});
+		expect(res.status).toBe(200);
+		expect(retryDispatcher._requests[0]!.dispatchModel).toBe("claude-fable-5");
+	});
+
+	it("retry with no dispatch_model → dispatchModel undefined (re-resolve from current state)", async () => {
+		seedFailed("exec-m2", {});
+		const res = await fetch(`${baseUrl}/actions/retry`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "exec-m2" }),
+		});
+		expect(res.status).toBe(200);
+		expect(retryDispatcher._requests[0]!.dispatchModel).toBeUndefined();
+	});
+
+	it("a label-derived runner_model (no dispatch_model) is NOT reintroduced on retry", async () => {
+		// Original ran Fable because of a manual `fable` label (no dispatch param).
+		// The label may be removed before retry — so its model must NOT come back
+		// via runner_model. Only dispatch_model (NULL here) drives dispatchModel.
+		seedFailed("exec-m3", { runner_model: "claude-fable-5" });
+		const res = await fetch(`${baseUrl}/actions/retry`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "exec-m3" }),
+		});
+		expect(res.status).toBe(200);
+		expect(retryDispatcher._requests[0]!.dispatchModel).toBeUndefined();
+	});
+
+	it("successor row persists dispatch_model — retry-of-retry keeps the sorter model", async () => {
+		seedFailed("exec-m4", { dispatch_model: "claude-fable-5" });
+		const res1 = await fetch(`${baseUrl}/actions/retry`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "exec-m4" }),
+		});
+		expect(res1.status).toBe(200);
+		// The successor row carries dispatch_model forward.
+		expect(store.getSession("retry-exec-1")?.dispatch_model).toBe(
+			"claude-fable-5",
+		);
+		// Fail the successor + retry IT → the model must still survive.
+		store.forceStatus("retry-exec-1", "failed", new Date().toISOString());
+		const res2 = await fetch(`${baseUrl}/actions/retry`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ execution_id: "retry-exec-1" }),
+		});
+		expect(res2.status).toBe(200);
+		expect(retryDispatcher._requests[1]!.dispatchModel).toBe("claude-fable-5");
+		expect(store.getSession("retry-exec-2")?.dispatch_model).toBe(
+			"claude-fable-5",
+		);
+	});
 });

@@ -557,6 +557,9 @@ export class Blueprint {
 			// FLY-493: persist the resolved executor backend (→ session.adapter_type)
 			// so the no-transport wake-guard can recognize an antigravity session.
 			...(ctx.runnerBackend && { runnerBackend: ctx.runnerBackend }),
+			// FLY-728: persist the resolved runner model (→ session.runner_model) for
+			// per-issue model routing visibility. Absent → account default (no --model).
+			...(ctx.runnerModel && { runnerModel: ctx.runnerModel }),
 			// FLY-615: persisted ponytail condition (→ session.ponytail_condition).
 			...(ponytailCondition && { ponytailCondition }),
 		};

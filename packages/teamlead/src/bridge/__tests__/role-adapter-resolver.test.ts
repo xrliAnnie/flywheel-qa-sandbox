@@ -255,6 +255,117 @@ describe("resolveRoleAdapter — task (label) layer", () => {
 		});
 		expect(resolved.backend).toBe("claude-tmux");
 	});
+
+	// FLY-728: per-issue model routing — a `fable` label pins the Claude tmux
+	// backend + the explicit `claude-fable-5` model, overriding the project
+	// default model (the label layer sets backend, so the project roles layer is
+	// skipped entirely). This is the "heavy task → Fable" enabler.
+	it("fable label → claude-tmux + claude-fable-5, overriding project model", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["fable"],
+			projectRoles: { runner: { backend: "claude-tmux", model: "sonnet" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved).toEqual({
+			backend: "claude-tmux",
+			transport: "claude-code",
+			vendor: "claude-code",
+			model: "claude-fable-5",
+		});
+	});
+
+	it("fable label overrides a codex project default (Claude model → claude-tmux)", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["fable"],
+			projectRoles: { runner: { backend: "codex-tmux", model: "gpt-5.5" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved.backend).toBe("claude-tmux");
+		expect(resolved.model).toBe("claude-fable-5");
+	});
+
+	it("fable does not re-bind the lead role", () => {
+		const resolved = resolveRoleAdapter({
+			role: "lead",
+			issueLabels: ["fable"],
+			env: EMPTY_ENV,
+		});
+		expect(resolved.backend).toBe("claude-tmux");
+		expect(resolved.model).toBeUndefined();
+	});
+});
+
+// FLY-728 Part C: the dispatch `model` param — the sorter's output channel. The
+// Lead judges difficulty and passes a model at dispatch. It sits BELOW a manual
+// model/vendor label (founder's explicit choice wins) and ABOVE the project
+// default (smart routing overrides a static project model).
+describe("resolveRoleAdapter — dispatch model param (Part C)", () => {
+	it("dispatchModel with no label → claude-tmux + that model", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			dispatchModel: "claude-fable-5",
+			env: EMPTY_ENV,
+		});
+		expect(resolved).toEqual({
+			backend: "claude-tmux",
+			transport: "claude-code",
+			vendor: "claude-code",
+			model: "claude-fable-5",
+		});
+	});
+
+	it("dispatchModel overrides the project default model (smart routing > project)", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			dispatchModel: "claude-fable-5",
+			projectRoles: { runner: { backend: "claude-tmux", model: "sonnet" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved.model).toBe("claude-fable-5");
+		expect(resolved.backend).toBe("claude-tmux");
+	});
+
+	it("a manual MODEL label beats dispatchModel (founder's explicit choice wins)", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["opus"],
+			dispatchModel: "claude-fable-5",
+			env: EMPTY_ENV,
+		});
+		expect(resolved.model).toBe("opus");
+	});
+
+	it("a vendor label (codex) beats dispatchModel — no Claude model forced onto codex", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["codex"],
+			dispatchModel: "claude-fable-5",
+			env: EMPTY_ENV,
+		});
+		expect(resolved.backend).toBe("codex-tmux");
+		expect(resolved.model).toBeUndefined();
+	});
+
+	it("dispatchModel does not affect the lead role", () => {
+		const resolved = resolveRoleAdapter({
+			role: "lead",
+			dispatchModel: "claude-fable-5",
+			env: EMPTY_ENV,
+		});
+		expect(resolved.backend).toBe("claude-tmux");
+		expect(resolved.model).toBeUndefined();
+	});
+
+	it("no dispatchModel → falls through to project/default (byte-compat)", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			projectRoles: { runner: { backend: "claude-tmux", model: "sonnet" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved.model).toBe("sonnet");
+	});
 });
 
 // FLY-493: Antigravity is a first-class executor backend with NO transport.

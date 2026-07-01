@@ -511,6 +511,125 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		);
 	});
 
+	// FLY-728 Part D: the model short code (F/O/S/H) rides the same rename as the
+	// stage badge — a suffix (` ·F`) that coexists with the stage emoji prefix.
+	it("FLY-728: stamps the model code as a suffix alongside the stage emoji", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-560] Discord issue status" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({ modelCode: "F" }),
+			"thread-1",
+			"implement",
+		);
+
+		const patchOpts = mockFetch.mock.calls[1]![1];
+		expect(JSON.parse(patchOpts.body).name).toBe(
+			"🔨 [FLY-560] Discord issue status ·F",
+		);
+	});
+
+	it("FLY-728: an authoritative modelCode=null CLEARS a stale suffix (Codex code R1)", async () => {
+		// A reused thread from a prior Fable run carries ` ·F`; the new run is
+		// account-default. The stage stamp passes null (authoritative) → the stale
+		// code is removed, so the thread never wrongly claims Fable.
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🔨 [FLY-560] Discord issue status ·F" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({ modelCode: null }),
+			"thread-1",
+			"design_review",
+		);
+
+		const patchCall = mockFetch.mock.calls.find(
+			(c) => c[1]?.method === "PATCH",
+		);
+		const name = JSON.parse(patchCall![1].body).name as string;
+		expect(name).not.toContain("·F");
+		expect(name).toBe("👀 [FLY-560] Discord issue status");
+	});
+
+	it("FLY-728: a re-stamp with NO modelCode preserves an existing suffix", async () => {
+		// A QA / reconnecting re-stamp has no model context — it must not strip the
+		// code the stage stamp set. GET returns a title already carrying ` ·F`.
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🔨 [FLY-560] Discord issue status ·F" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		// switch the stage (design_review) but pass no modelCode
+		await creator.stampStageEmoji(ctx(), "thread-1", "design_review");
+
+		const patchCall = mockFetch.mock.calls.find(
+			(c) => c[1]?.method === "PATCH",
+		);
+		// the suffix ·F survives the stage change
+		expect(JSON.parse(patchCall![1].body).name).toContain(" ·F");
+		expect(JSON.parse(patchCall![1].body).name).toContain(
+			"[FLY-560] Discord issue status ·F",
+		);
+	});
+
+	it("FLY-728: idempotent — no PATCH when the emoji AND model suffix already match", async () => {
+		mockFetch.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			json: () =>
+				Promise.resolve({ name: "🔨 [FLY-560] Discord issue status ·F" }),
+		});
+
+		await creator.stampStageEmoji(
+			ctx({ modelCode: "F" }),
+			"thread-1",
+			"implement",
+		);
+
+		expect(mockFetch.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(
+			false,
+		);
+	});
+
+	it("FLY-728: a long title truncates in the middle — the model suffix survives (Codex R1 MED)", async () => {
+		const longTitle = `[FLY-560] ${"x".repeat(200)}`;
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: longTitle }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({ issueTitle: undefined, modelCode: "F" }),
+			"thread-1",
+			"implement",
+		);
+
+		const patchCall = mockFetch.mock.calls.find(
+			(c) => c[1]?.method === "PATCH",
+		);
+		const name = JSON.parse(patchCall![1].body).name as string;
+		expect(name.length).toBeLessThanOrEqual(100);
+		expect(name.endsWith(" ·F")).toBe(true); // code survived truncation
+		expect(name.startsWith("🔨 ")).toBe(true); // stage prefix intact
+	});
+
 	it("is idempotent — no PATCH when the desired emoji is already present", async () => {
 		mockFetch.mockResolvedValueOnce({
 			ok: true,

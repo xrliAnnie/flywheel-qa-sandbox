@@ -4,6 +4,7 @@ import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import type { FounderUxGateMode } from "flywheel-config";
+import { modelShortCode } from "flywheel-config";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import {
@@ -428,6 +429,11 @@ function stampStageEmojiForSession(
 				issueTitle: session.issue_title,
 				botToken,
 				leadId,
+				// FLY-728 Part D: ride the stage rename with the model short code
+				// (F/O/S/H) so the founder sees which model this issue is running.
+				// `?? null` = authoritative CLEAR on account-default, so a reused
+				// thread never keeps a stale code from a prior run (Codex code R1).
+				modelCode: modelShortCode(session.runner_model) ?? null,
 			},
 			thread.thread_id,
 			stage,
@@ -662,6 +668,9 @@ export function createEventRouter(
 				// FLY-493: persist the resolved executor backend as adapter_type so
 				// the no-transport wake-guard (and the dashboard) can see it.
 				const eventAdapterType = asString(payload.runnerBackend);
+				// FLY-728: persist the resolved runner model (per-issue model routing
+				// visibility). Mirrors the DirectEventSink production path.
+				const eventRunnerModel = asString(payload.runnerModel);
 				// FLY-615: persist the resolved ponytail condition (A/B join key).
 				const eventPonytailCondition = asString(payload.ponytailCondition);
 
@@ -682,6 +691,7 @@ export function createEventRouter(
 							stage_updated_at: now,
 							session_role: eventSessionRole,
 							...(eventAdapterType && { adapter_type: eventAdapterType }),
+							...(eventRunnerModel && { runner_model: eventRunnerModel }),
 							...(eventPonytailCondition && {
 								ponytail_condition: eventPonytailCondition,
 							}),
@@ -709,6 +719,7 @@ export function createEventRouter(
 						stage_updated_at: now,
 						session_role: eventSessionRole,
 						...(eventAdapterType && { adapter_type: eventAdapterType }),
+						...(eventRunnerModel && { runner_model: eventRunnerModel }),
 						...(eventPonytailCondition && {
 							ponytail_condition: eventPonytailCondition,
 						}),

@@ -13,6 +13,7 @@
 
 import { Router } from "express";
 import type { PonytailInput } from "flywheel-config";
+import { MODEL_TIERS, normalizeDispatchModel } from "flywheel-config";
 import {
 	DOC_TIERS,
 	type DocTier,
@@ -182,6 +183,41 @@ export function createRunsRouter(
 				return;
 			}
 			docTier = parsedTier;
+		}
+
+		// FLY-728 Part C: optional per-run `model` param — the difficulty-sorter's
+		// output (the Lead judges difficulty at dispatch and passes a tier model).
+		// Semantics mirror docTier:
+		//   - undefined / null / missing → no dispatch override (label/project/account)
+		//   - a known tier id or bare alias → normalized to canonical id
+		//   - anything else → 400 INVALID_MODEL (machine-only payload, FLY-127 shape).
+		// A typo must fail loud at the boundary — never silently spawn the wrong (or
+		// account-default) model. FLY-709 makes the accepted set configurable.
+		const rawModel = req.body.model;
+		let dispatchModel: string | undefined;
+		if (rawModel === undefined || rawModel === null) {
+			dispatchModel = undefined;
+		} else if (typeof rawModel !== "string") {
+			res.status(400).json({
+				success: false,
+				code: "INVALID_MODEL",
+				reason: "wrong_type",
+				silent: false,
+			});
+			return;
+		} else {
+			const normalized = normalizeDispatchModel(rawModel);
+			if (!normalized) {
+				res.status(400).json({
+					success: false,
+					code: "INVALID_MODEL",
+					reason: "unknown_model",
+					allowed: Object.values(MODEL_TIERS).map((t) => t.id),
+					silent: false,
+				});
+				return;
+			}
+			dispatchModel = normalized;
 		}
 
 		// FLY-59: Per-role dedup — same issue can have main + qa concurrently
@@ -515,6 +551,8 @@ export function createRunsRouter(
 				// FLY-205: doc-flow tier + issue URL (header continuity)
 				docTier,
 				issueUrl,
+				// FLY-728 Part C: difficulty-sorter's dispatch model (normalized)
+				dispatchModel,
 			});
 
 			// FLY-91: Poll for chatThreadId. emitStarted() awaits chat thread
@@ -564,6 +602,10 @@ export function createRunsRouter(
 					// never a silent re-default. issue_url for header continuity.
 					doc_tier: docTier ?? "full",
 					issue_url: issueUrl,
+					// FLY-728 Part C: persist the dispatch model param ONLY (not the
+					// resolved model) so retry re-applies a genuine sorter/dispatch
+					// choice — never a removed label's or a stale project default's model.
+					dispatch_model: dispatchModel,
 				});
 			}
 

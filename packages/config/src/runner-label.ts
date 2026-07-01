@@ -84,6 +84,12 @@ function resolveModelFromLabels(labels: string[]): string | undefined {
 		return "gemini-3-pro-preview";
 	}
 
+	// FLY-728: per-issue model routing. `fable` resolves to the canonical
+	// explicit id `claude-fable-5` (the exact string fleet-console, token
+	// pricing/report, and the claude-tmux `--model` flag all use). It infers the
+	// `claude` runner via inferRunnerFromModel because the id starts with
+	// "claude". opus/sonnet/haiku stay bare aliases (already CLI-accepted).
+	if (labels.includes("fable")) return "claude-fable-5";
 	if (labels.includes("opus")) return "opus";
 	if (labels.includes("sonnet")) return "sonnet";
 	if (labels.includes("haiku")) return "haiku";

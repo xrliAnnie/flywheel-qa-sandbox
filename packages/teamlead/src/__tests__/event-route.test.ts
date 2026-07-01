@@ -100,6 +100,42 @@ describe("Event route", () => {
 		expect(session!.issue_identifier).toBe("GEO-95");
 	});
 
+	// FLY-728: the loopback /events session_started handler persists the resolved
+	// runner model as runner_model (mirrors the DirectEventSink production path).
+	it("POST /events session_started persists payload.runnerModel as runner_model", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: {
+						issueIdentifier: "GEO-95",
+						issueTitle: "Test issue",
+						runnerModel: "claude-fable-5",
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")!.runner_model).toBe("claude-fable-5");
+	});
+
+	it("POST /events session_started without runnerModel leaves runner_model unset", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent()),
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")!.runner_model ?? null).toBeNull();
+	});
+
 	it("POST /events with session_completed (needs_review) sets awaiting_review", async () => {
 		// First create session
 		await fetch(`${baseUrl}/events`, {

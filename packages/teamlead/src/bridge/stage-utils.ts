@@ -251,3 +251,42 @@ export function splitStatusEmoji(name: string): {
 export function stripStatusEmojiPrefix(name: string): string {
 	return splitStatusEmoji(name).base;
 }
+
+/**
+ * FLY-728 Part D: the model-tier short code (F/O/S/H) is stamped as a title
+ * SUFFIX — deliberately NOT a leading status emoji — so it coexists with the
+ * FLY-560 stage-emoji prefix (the stage re-stamp swaps only the leading emoji;
+ * `splitStatusEmoji` never touches the suffix, so the model code survives every
+ * stage transition). The suffix rides the SAME thread rename as the stage badge,
+ * so it never adds a Discord rate-limit rename of its own.
+ *
+ * Marker: a `" ·"` separator + the single letter, e.g. `[FLY-728] Title ·F`.
+ */
+const MODEL_SUFFIX_SEP = " ·";
+const MODEL_SUFFIX_RE = / ·[FOSH]$/;
+
+/** Strip a trailing model-code suffix (` ·F`), if present. Idempotent. */
+export function stripModelSuffix(base: string): string {
+	return base.replace(MODEL_SUFFIX_RE, "");
+}
+
+/** Extract the model code from a trailing ` ·F` suffix, or undefined if none. */
+export function modelSuffixCode(
+	base: string,
+): "F" | "O" | "S" | "H" | undefined {
+	const m = base.match(MODEL_SUFFIX_RE);
+	return m ? (m[0].trim().slice(1) as "F" | "O" | "S" | "H") : undefined;
+}
+
+/**
+ * Ensure `base` carries exactly the given model-code suffix. Strips any existing
+ * one first (idempotent + churn-safe under re-stamping), then appends `·<code>`.
+ * `undefined` code → the base with no model suffix (account default = no code).
+ */
+export function applyModelSuffix(
+	base: string,
+	code: "F" | "O" | "S" | "H" | undefined,
+): string {
+	const bare = stripModelSuffix(base);
+	return code ? `${bare}${MODEL_SUFFIX_SEP}${code}` : bare;
+}

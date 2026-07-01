@@ -49,6 +49,14 @@ export interface RetryRequest {
 	 */
 	issueUrl?: string;
 	/**
+	 * FLY-728 Part C: the difficulty-sorter's dispatch model, re-derived on
+	 * retry from the predecessor's persisted `runner_model` (via
+	 * `normalizeDispatchModel`) so a sorter-chosen model survives a retry. The
+	 * label layer re-resolves a manual label first, so this only re-applies a
+	 * genuinely dispatch/project-tier model. Absent → no dispatch override.
+	 */
+	dispatchModel?: string;
+	/**
 	 * FLY-245 D2 (plan §5.2.1): gateway pre-bound successor execution id.
 	 * When present the dispatcher MUST use it instead of generating a fresh
 	 * randomUUID, so crash recovery can reconcile / idempotently re-drive by a
@@ -114,6 +122,14 @@ export interface StartRequest {
 	docTier?: "full" | "plan_only" | "none";
 	/** FLY-205: Linear issue URL from runs-route preflight (DOC-FLOW header). */
 	issueUrl?: string;
+	/**
+	 * FLY-728 Part C: the per-run `/api/runs/start` `model` param — the
+	 * difficulty-sorter's output, normalized to a canonical tier id + whitelisted
+	 * at the runs-route boundary (`normalizeDispatchModel`). Applied below a
+	 * manual model/vendor label and above the project default. Absent → no
+	 * dispatch override (byte-compatible).
+	 */
+	dispatchModel?: string;
 	/**
 	 * FLY-579: explicit git start point for the worktree (a commit SHA / ref).
 	 * Threaded to `WorktreeManager.create({ startPoint })`. The Auto-QA

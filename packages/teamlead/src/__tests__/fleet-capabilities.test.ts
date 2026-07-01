@@ -26,7 +26,7 @@ function lead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 }
 
 describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () => {
-	it("Claude tiers = Fable 5 + Opus 4.8 (1M) + Opus 4.8 (null) + Sonnet 4.6 + Haiku 4.5 (FLY-671 cheaper tiers appended)", () => {
+	it("Claude tiers = Fable 5 + Opus 4.8 (1M) + Opus 4.8 (null) + Sonnet 4.6 + Haiku 4.5 + Sonnet 5 (FLY-728 appended)", () => {
 		expect(CLAUDE_TIER_OPTIONS).toEqual([
 			{ id: "claude-fable-5", label: "Fable 5" },
 			// FLY-360: explicit 1M-context selector (Claude Code CLI `[1m]` suffix).
@@ -37,6 +37,9 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 			// three entries keep their positions (reverse-compat for any ordinal use).
 			{ id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
 			{ id: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+			// FLY-728: Sonnet 5 = current fleet Sonnet (the simple-tier model);
+			// appended so all existing ordinals stay byte-compatible.
+			{ id: "claude-sonnet-5", label: "Sonnet 5" },
 		]);
 	});
 
@@ -59,6 +62,7 @@ describe("fleet-capabilities — allowedModelTargets (R6 #5)", () => {
 		expect(targets).toContain("claude-opus-4-8[1m]"); // FLY-360: 1M selector authorized
 		expect(targets).toContain("claude-sonnet-4-6"); // FLY-671: cheaper tier authorized
 		expect(targets).toContain("claude-haiku-4-5-20251001"); // FLY-671: cheaper tier authorized
+		expect(targets).toContain("claude-sonnet-5"); // FLY-728: current fleet Sonnet
 		expect(targets).toContain(null); // explicit → account default is legal
 	});
 
