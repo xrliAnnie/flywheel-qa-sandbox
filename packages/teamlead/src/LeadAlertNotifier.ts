@@ -73,7 +73,13 @@ export type AlertEventType =
 	// the Lead is unresponsive — so this is deliberately NOT in
 	// AUTO_ATTEMPT_EVENT_TYPES and carries no runnerStuck metadata, so the
 	// AutoRepairBot never sends the runner a `continue` nudge (Codex design R1 #3).
-	| "runner_lead_pending_unhandled";
+	| "runner_lead_pending_unhandled"
+	// FLY-725 (Annie 2026-07-01: "never silently drop"): the Bridge could not
+	// deliver a failed/blocked milestone @founder ping to its issue thread
+	// (permanent 4xx / missing thread|token|owner / transient retry budget
+	// elapsed). Surfaced so the founder is not left in the dark. Not a runner-
+	// stuck event — the runner is fine; the notification channel failed.
+	| "founder_milestone_undelivered";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 
