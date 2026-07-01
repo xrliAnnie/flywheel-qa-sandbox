@@ -1,5 +1,10 @@
 import { resolveLeadProject } from "./lead-project.js";
-import { costMicroUsd } from "./pricing.js";
+import {
+	costMicroUsd,
+	MODEL_RATES,
+	type ModelRate,
+	ratesForDay,
+} from "./pricing.js";
 import type { DailyRow, Scope, UsageRecord } from "./types.js";
 
 interface Acc {
@@ -44,6 +49,18 @@ function toRow(day: string, scope: Scope, dimKey: string, a: Acc): DailyRow {
 
 export interface AggregateOptions {
 	leadProjectMap?: Record<string, string>;
+	/**
+	 * Per-model pricing table for cost estimation. Defaults to the built-in
+	 * `MODEL_RATES`; pass a `loadPricingConfig()` result to apply a configured
+	 * override. Cost is computed here (per record, by model) and stored in each
+	 * `DailyRow.costMicroUsd`, so a rate change only affects newly aggregated days.
+	 */
+	rates?: Record<string, ModelRate>;
+	/**
+	 * Models explicitly overridden via config (from `loadPricingConfigWithMeta`).
+	 * These are pinned against date-effective pricing rules — see `ratesForDay`.
+	 */
+	pinnedModels?: ReadonlySet<string>;
 }
 
 /**
@@ -97,8 +114,15 @@ export function aggregateDaily(
 		return a;
 	};
 
+	const rates = opts.rates ?? MODEL_RATES;
 	for (const r of records) {
-		const cost = costMicroUsd(r.model, r);
+		// Price by the rate effective ON the record's day (date-aware, e.g. Sonnet 5);
+		// config-pinned models keep their configured rate for every day.
+		const cost = costMicroUsd(
+			r.model,
+			r,
+			ratesForDay(r.day, rates, opts.pinnedModels),
+		);
 		const g = dayOf(r.day);
 		add(g.total, r, cost);
 		if (r.model && r.model !== "<synthetic>" && r.model !== "?") {

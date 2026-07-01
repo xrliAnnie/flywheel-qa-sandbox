@@ -25,10 +25,15 @@
 		<string>/Users/xiaorongli/Dev/flywheel</string>
 		<!-- <key>FLYWHEEL_TOKEN_USAGE_CHANNEL</key><string>REPLACE_WITH_CHANNEL_ID</string> -->
 	</dict>
+	<!--
+	  FLY-713: fire at 00:30 (just past midnight) so the report — which renders
+	  YESTERDAY's full day — is sent with the freshest complete data. 00:30 is a
+	  clean gap clear of the 00:00 updater and the 01:00 / 03:00 / 03:07 cron jobs.
+	-->
 	<key>StartCalendarInterval</key>
 	<dict>
 		<key>Hour</key>
-		<integer>23</integer>
+		<integer>0</integer>
 		<key>Minute</key>
 		<integer>30</integer>
 	</dict>

@@ -1,5 +1,6 @@
 import { aggregateDaily } from "./aggregator.js";
 import { loadCompletedIssues } from "./completion.js";
+import type { ModelRate } from "./pricing.js";
 import { buildReportModel, type ReportModel } from "./report/build-report.js";
 import { renderReportHtml } from "./report/render-html.js";
 import { renderReportText } from "./report/render-text.js";
@@ -31,6 +32,10 @@ export interface AggregateOptions {
 	until: string;
 	homeDir?: string;
 	leadProjectMap?: Record<string, string>;
+	/** Per-model pricing override (from `loadPricingConfig()`); defaults to the built-in table. */
+	rates?: Record<string, ModelRate>;
+	/** Config-overridden model ids, pinned against date-effective pricing (see ratesForDay). */
+	pinnedModels?: ReadonlySet<string>;
 	/**
 	 * Optional secondary store written when a `store.replaceDaily` throws mid-run
 	 * (e.g. Supabase passes the initial probe but the RPC fails later). Ensures a
@@ -54,7 +59,11 @@ export async function aggregateAndPersist(
 		until: opts.until,
 		homeDir: opts.homeDir,
 	});
-	const rows = aggregateDaily(records, { leadProjectMap: opts.leadProjectMap });
+	const rows = aggregateDaily(records, {
+		leadProjectMap: opts.leadProjectMap,
+		rates: opts.rates,
+		pinnedModels: opts.pinnedModels,
+	});
 	const byDay = new Map<string, DailyRow[]>();
 	for (const r of rows) {
 		const list = byDay.get(r.day) ?? [];
@@ -95,6 +104,10 @@ export interface GenerateOptions {
 	after?: { since: string; until: string; label: string };
 	storeMode?: "supabase" | "local";
 	warning?: string;
+	/** Canonical known project names (from projects.json) — listed even with 0 usage. */
+	knownProjects?: string[];
+	/** Subset of knownProjects that are display-only (not registered) → tagged 未立项. */
+	displayOnlyProjects?: string[];
 	/**
 	 * Local fallback store (when primary=Supabase). Any of its still-unsynced days that
 	 * fall in the report window override the primary's rows for those days, so a day that
@@ -159,6 +172,8 @@ export async function generateReport(
 		after: opts.after,
 		storeMode: opts.storeMode,
 		warning,
+		knownProjects: opts.knownProjects,
+		displayOnlyProjects: opts.displayOnlyProjects,
 	});
 	return {
 		model,

@@ -21,10 +21,14 @@ export interface ProjectEntry {
 	issues: IssueEntry[];
 	inprogCount: number;
 	inprogTokens: number;
+	/** True for display-only projects not yet registered in projects.json (shown 0). */
+	unregistered?: boolean;
 }
 export interface TrendPoint {
 	day: string;
 	tokens: number;
+	/** Estimated cost (micro-USD) for that day. */
+	cost: number;
 }
 export interface WindowAgg {
 	label: string;
@@ -62,6 +66,18 @@ export interface BuildReportOptions {
 	/** Trend window lower bound (YYYY-MM-DD). Defaults to reportDay. */
 	trendSince?: string;
 	topProjects?: number;
+	/**
+	 * Canonical list of known project names (e.g. from the fleet `projects.json`).
+	 * Any that have no usage on the report day are still listed (with 0) so the
+	 * report shows every project, not only the ones that happened to run.
+	 */
+	knownProjects?: string[];
+	/**
+	 * Subset of `knownProjects` that are display-only (recognized but not yet
+	 * registered in projects.json). Padded 0-entries for these are flagged
+	 * `unregistered` so the report can tag them "(未立项)".
+	 */
+	displayOnlyProjects?: string[];
 	before?: { since: string; until: string; label: string };
 	after?: { since: string; until: string; label: string };
 	storeMode?: "supabase" | "local";
@@ -128,6 +144,27 @@ export function buildReportModel(
 	}
 	projects.sort((a, b) => b.tokens - a.tokens);
 
+	// Pad with known projects that had NO usage on the report day (show 0), so the
+	// report always lists every known project, not just the ones that happened to run.
+	if (opts.knownProjects?.length) {
+		const present = new Set(projects.map((p) => p.name));
+		const displayOnly = new Set(opts.displayOnlyProjects ?? []);
+		for (const name of opts.knownProjects) {
+			if (present.has(name)) continue;
+			projects.push({
+				name,
+				tokens: 0,
+				cost: 0,
+				runnerMainTokens: 0,
+				leads: [],
+				issues: [],
+				inprogCount: 0,
+				inprogTokens: 0,
+				unregistered: displayOnly.has(name),
+			});
+		}
+	}
+
 	const leadsAll: LeadEntry[] = leadScope
 		.map((r) => ({
 			name: r.dimKey,
@@ -148,39 +185,51 @@ export function buildReportModel(
 	const since = opts.trendSince ?? day;
 	const inWindow = (d: string) => d >= since && d <= day;
 	const totalByDay = new Map<string, number>();
+	const totalCostByDay = new Map<string, number>();
 	for (const r of rows) {
-		if (r.scope === "total" && inWindow(r.day))
+		if (r.scope === "total" && inWindow(r.day)) {
 			totalByDay.set(r.day, r.totalTokens);
+			totalCostByDay.set(r.day, r.costMicroUsd);
+		}
 	}
 	const trendDays = [...totalByDay.keys()].sort();
 	const trendTotal: TrendPoint[] = trendDays.map((d) => ({
 		day: d,
 		tokens: totalByDay.get(d) ?? 0,
+		cost: totalCostByDay.get(d) ?? 0,
 	}));
 
-	// per-project trend = project-scope + its lead rows, per day
+	// per-project trend = project-scope + its lead rows, per day (tokens + cost)
 	const topN = opts.topProjects ?? TREND_TOP_DEFAULT;
-	const topProjectNames = projects.slice(0, topN).map((p) => p.name);
-	const projDayTok = new Map<string, Map<string, number>>(); // project -> day -> tok
-	const bump = (proj: string, d: string, tok: number) => {
-		let m = projDayTok.get(proj);
+	const topProjectNames = projects
+		.filter((p) => p.tokens > 0)
+		.slice(0, topN)
+		.map((p) => p.name);
+	const projDay = new Map<string, Map<string, { tok: number; cost: number }>>(); // project -> day -> {tok,cost}
+	const bump = (proj: string, d: string, tok: number, cost: number) => {
+		let m = projDay.get(proj);
 		if (!m) {
 			m = new Map();
-			projDayTok.set(proj, m);
+			projDay.set(proj, m);
 		}
-		m.set(d, (m.get(d) ?? 0) + tok);
+		const cur = m.get(d) ?? { tok: 0, cost: 0 };
+		cur.tok += tok;
+		cur.cost += cost;
+		m.set(d, cur);
 	};
 	for (const r of rows) {
 		if (!inWindow(r.day)) continue;
-		if (r.scope === "project") bump(r.dimKey, r.day, r.totalTokens);
+		if (r.scope === "project")
+			bump(r.dimKey, r.day, r.totalTokens, r.costMicroUsd);
 		else if (r.scope === "lead" && r.project)
-			bump(r.project, r.day, r.totalTokens);
+			bump(r.project, r.day, r.totalTokens, r.costMicroUsd);
 	}
 	const trendByProject = topProjectNames.map((proj) => ({
 		project: proj,
 		points: trendDays.map((d) => ({
 			day: d,
-			tokens: projDayTok.get(proj)?.get(d) ?? 0,
+			tokens: projDay.get(proj)?.get(d)?.tok ?? 0,
+			cost: projDay.get(proj)?.get(d)?.cost ?? 0,
 		})),
 	}));
 

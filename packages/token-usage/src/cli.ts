@@ -3,8 +3,13 @@ import { writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadLeadProjectMap } from "./lead-project.js";
+import {
+	DISPLAY_ONLY_PROJECTS,
+	loadKnownProjects,
+	loadLeadProjectMap,
+} from "./lead-project.js";
 import { aggregateAndPersist, generateReport, todayInTz } from "./pipeline.js";
+import { loadPricingConfigWithMeta } from "./pricing.js";
 import { DEFAULT_TIMEZONE } from "./scanner.js";
 import { LocalSqliteUsageStore, resolveUsageStore } from "./store/index.js";
 
@@ -74,6 +79,11 @@ export async function main(
 			const until = str(flags, "until") ?? today;
 			// Derive the lead→project map from the authoritative fleet config.
 			const leadProjectMap = loadLeadProjectMap(str(flags, "projects-json"));
+			// Load the (optionally configured) pricing table once; warnings → stderr.
+			// `overrides` pins config-set models against date-effective rules.
+			const { rates, overrides } = loadPricingConfigWithMeta({
+				file: str(flags, "pricing-file"),
+			});
 			const { days, fallbackDays } = await aggregateAndPersist({
 				baseDir,
 				store: resolved.store,
@@ -82,6 +92,8 @@ export async function main(
 				until,
 				localFallback,
 				leadProjectMap,
+				rates,
+				pinnedModels: overrides,
 			});
 			console.error(
 				`[token-usage] aggregated + persisted ${days.length} day(s): ${days.join(", ")} (store=${resolved.mode})` +
@@ -99,6 +111,11 @@ export async function main(
 		const trendSince = str(flags, "trend-since") ?? shiftDay(reportDay, -27);
 		const before = parseWindow(str(flags, "before"), "改动前");
 		const after = parseWindow(str(flags, "after"), "改动后");
+		// Canonical project list (projects.json) + display-only names (Polaris etc)
+		// so every project shows, even at 0.
+		const registered = loadKnownProjects(str(flags, "projects-json"));
+		const displayOnlyProjects = [...DISPLAY_ONLY_PROJECTS];
+		const knownProjects = [...registered, ...displayOnlyProjects];
 
 		const gen = await generateReport({
 			store: resolved.store,
@@ -111,6 +128,8 @@ export async function main(
 			storeMode: resolved.mode,
 			warning: resolved.warning,
 			localFallback,
+			knownProjects,
+			displayOnlyProjects,
 		});
 
 		const out = str(flags, "out");
