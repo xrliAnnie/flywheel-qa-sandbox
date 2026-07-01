@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildReportModel } from "../report/build-report.js";
 import { renderReportHtml } from "../report/render-html.js";
 import type { DailyRow } from "../types.js";
@@ -114,5 +114,86 @@ describe("renderReportHtml", () => {
 			warning: "Supabase unreachable; local-only",
 		});
 		expect(withWarn).toContain("Supabase unreachable");
+	});
+
+	it("reframes USD as a cost estimate (not 'weight')", () => {
+		expect(html).toContain("成本估算");
+		expect(html).not.toContain("重量");
+	});
+
+	it("labels the Claude-Code-only scope (Codex deferred to FLY-714)", () => {
+		expect(html).toContain("仅 Claude Code");
+		expect(html).toContain("FLY-714");
+	});
+
+	it("shows the weekday on the report date (FLY-713 — workday/weekend pattern)", () => {
+		// 2026-06-26 is a Friday (周五).
+		expect(html).toContain("周五");
+	});
+});
+
+describe("renderReportHtml FLY-713 — links + precision", () => {
+	const linkRows: DailyRow[] = [
+		r({ scope: "total", totalTokens: 1_000, costMicroUsd: 420_000 }),
+		r({
+			scope: "project",
+			dimKey: "flywheel",
+			project: "flywheel",
+			totalTokens: 1_000,
+			costMicroUsd: 420_000,
+		}),
+		r({
+			scope: "issue",
+			dimKey: "FLY-42",
+			project: "flywheel",
+			totalTokens: 500,
+			costMicroUsd: 420_000, // $0.42 — a small completed issue
+		}),
+		r({
+			scope: "issue",
+			dimKey: "WEIRD ID",
+			project: "flywheel",
+			totalTokens: 10,
+			costMicroUsd: 1_000,
+		}),
+	];
+	const linkModel = buildReportModel(linkRows, {
+		reportDay: "2026-06-26",
+		timezone: "UTC",
+		isCompleted: () => true, // both issues count as completed
+	});
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+		delete process.env.TOKEN_USAGE_LINEAR_WORKSPACE;
+	});
+
+	it("renders a completed FLY-XXX as a clickable Linear link", () => {
+		const out = renderReportHtml(linkModel);
+		expect(out).toContain(
+			'<a href="https://linear.app/geoforge3d/issue/FLY-42" target="_blank" rel="noopener">FLY-42</a>',
+		);
+	});
+
+	it("does NOT link a malformed issue id (plain text only)", () => {
+		const out = renderReportHtml(linkModel);
+		expect(out).not.toContain("issue/WEIRD");
+	});
+
+	it("shows cents for a small issue cost instead of $0", () => {
+		const out = renderReportHtml(linkModel);
+		expect(out).toContain("$0.42");
+	});
+
+	it("honors a valid configured workspace and falls back on an invalid one", () => {
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		process.env.TOKEN_USAGE_LINEAR_WORKSPACE = "myteam";
+		expect(renderReportHtml(linkModel)).toContain(
+			"https://linear.app/myteam/issue/FLY-42",
+		);
+		process.env.TOKEN_USAGE_LINEAR_WORKSPACE = "bad ws!";
+		expect(renderReportHtml(linkModel)).toContain(
+			"https://linear.app/geoforge3d/issue/FLY-42",
+		);
 	});
 });

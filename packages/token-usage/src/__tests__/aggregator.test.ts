@@ -112,10 +112,36 @@ describe("aggregateDaily", () => {
 		expect(fly?.freshTokens).toBe(60);
 	});
 
-	it("computes cost weight per group from per-record model rates", () => {
-		// FLY-1 opus: 10*15 + 20*75 + 100*1.5 + 30*18.75 = 150+1500+150+562.5 = 2362.5 -> round 2363
+	it("computes cost per group from per-record model rates", () => {
+		// FLY-1 opus (5/25/0.5/6.25): 10*5 + 20*25 + 100*0.5 + 30*6.25 = 50+500+50+187.5 = 787.5 -> round 788
 		const fly = find(rows, "project", "flywheel");
-		expect(fly?.costMicroUsd).toBe(2363);
+		expect(fly?.costMicroUsd).toBe(788);
+	});
+
+	it("threads a custom rates table into the stored cost (FLY-713 config seam)", () => {
+		const custom = aggregateDaily(
+			[
+				rec({
+					kind: "runner",
+					project: "flywheel",
+					issue: "FLY-1",
+					inputTokens: 1_000_000,
+					model: "claude-opus-4-8",
+				}),
+			],
+			{
+				rates: {
+					"claude-opus-4-8": {
+						input: 1,
+						output: 1,
+						cacheRead: 1,
+						cacheWrite: 1,
+					},
+				},
+			},
+		);
+		// 1M input × $1/MTok = $1 = 1_000_000 micro (not the default $5).
+		expect(find(custom, "project", "flywheel")?.costMicroUsd).toBe(1_000_000);
 	});
 
 	it("emits per-model rows excluding synthetic", () => {
