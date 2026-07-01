@@ -45,6 +45,11 @@ function createMockStore(sessions: Session[]) {
 		markLeadEventDelivered: vi.fn(),
 		recordDeliveryFailure: vi.fn(),
 		isLeadEventDelivered: vi.fn(() => false),
+		// FLY-637: persistent quiet-wake dedup surface the watchdog now consults.
+		hasQuietWakeNotified: vi.fn(() => false),
+		recordQuietWakeNotified: vi.fn(),
+		clearQuietWakeNotified: vi.fn(),
+		pruneQuietWakeNotifiedNotIn: vi.fn(),
 	};
 }
 

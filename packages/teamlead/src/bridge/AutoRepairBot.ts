@@ -83,6 +83,11 @@ const HUMAN_ONLY_REASON: Partial<Record<AlertPayload["eventType"], string>> = {
 	permission_blocked:
 		"waiting on a permission prompt — NEVER auto-confirmed (a human must approve/deny).",
 	crash_loop: "crash-looping — needs investigation; not auto-fixable.",
+	// FLY-637-ext: the Lead has ignored a runner's blocking question for several
+	// backoff rounds. The runner is fine — do NOT nudge it; a human (the founder)
+	// should poke the Lead.
+	runner_lead_pending_unhandled:
+		"a runner is blocked waiting on the Lead to answer its question, and the Lead has not responded after several reminders — the Lead needs a human poke (the runner is fine; nothing to auto-repair).",
 };
 
 export class AutoRepairBot {

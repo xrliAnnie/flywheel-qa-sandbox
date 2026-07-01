@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import BetterSqlite3, { type Database as BetterDb } from "better-sqlite3";
+import type { LeadNudgeRow } from "./bridge/lead-pending-escalation.js";
 
 /**
  * FLY-663: a thin compatibility shim that exposes the exact sql.js surface
@@ -1117,6 +1118,42 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_auto_qa_record_status ON auto_qa_record(status)",
 		);
+
+		// FLY-637 #3/#4: persistent "already-notified" dedup for the quiet-path
+		// Lead wake (direction A — report-once, NO backoff). A row means "I already
+		// woke the Lead about THIS frozen frame", so a Bridge restart cannot
+		// re-wake (the in-memory dedup sets are wiped on restart). Keyed by
+		// (execution_id, source, episode_fingerprint):
+		//   - source = 'idle'  (RunnerIdleWatchdog) → fp = quietFingerprint(pane)
+		//   - source = 'stuck' (HeartbeatService)   → fp = sentinel 'stuck' (no pane)
+		// Rows are pruned when the session leaves the watchdog's running/stuck set.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS quiet_wake_notified (
+				execution_id        TEXT NOT NULL,
+				source              TEXT NOT NULL,
+				episode_fingerprint TEXT NOT NULL,
+				notified_at         TEXT NOT NULL DEFAULT (datetime('now')),
+				PRIMARY KEY (execution_id, source, episode_fingerprint)
+			)
+		`);
+
+		// FLY-637-ext: durable exponential-backoff state for the lead-pending
+		// escalation (a runner blocked on a `question` gate the Lead hasn't
+		// answered). Keyed by (execution_id, question_id) so a runner's multiple
+		// pending questions never share/overwrite backoff state (Codex R1 #1).
+		// Survives a Bridge restart so a restart doesn't re-storm nudges.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS lead_pending_escalation (
+				execution_id        TEXT NOT NULL,
+				question_id         TEXT NOT NULL,
+				stuck_key           TEXT NOT NULL,
+				nudge_count         INTEGER NOT NULL DEFAULT 0,
+				last_nudge_at_ms    INTEGER NOT NULL DEFAULT 0,
+				next_eligible_at_ms INTEGER NOT NULL DEFAULT 0,
+				paged_annie         INTEGER NOT NULL DEFAULT 0,
+				PRIMARY KEY (execution_id, question_id)
+			)
+		`);
 
 		// FLY-25: migration for existing tables missing new columns
 		this.migrateLeadEventsDeliveryColumns();
@@ -3088,6 +3125,179 @@ export class StateStore {
 			note: (row[5] as string | null) ?? null,
 			created_at: row[6] as string,
 		};
+	}
+
+	// --- FLY-637 #3/#4: persistent quiet-wake "already-notified" dedup ---
+
+	/**
+	 * True when the Lead was already woken about this exact frozen frame
+	 * (execution + source + episode fingerprint). Used by both stall watchdogs to
+	 * suppress a repeat wake across cosmetic pane jitter AND across a Bridge
+	 * restart (the in-memory dedup sets are wiped on restart; this row is not).
+	 */
+	hasQuietWakeNotified(
+		executionId: string,
+		source: string,
+		episodeFingerprint: string,
+	): boolean {
+		const result = this.db.exec(
+			`SELECT 1 FROM quiet_wake_notified
+			 WHERE execution_id = ? AND source = ? AND episode_fingerprint = ?`,
+			[executionId, source, episodeFingerprint],
+		);
+		return (result[0]?.values.length ?? 0) > 0;
+	}
+
+	/**
+	 * Record that the Lead was woken about this frozen frame. Idempotent
+	 * (INSERT OR IGNORE on the composite PK). Callers MUST only record AFTER the
+	 * wake event was actually persisted (FLY-637 R1 #2): recording a wake that
+	 * never reached the guardrail journal would durably suppress a real one.
+	 */
+	recordQuietWakeNotified(
+		executionId: string,
+		source: string,
+		episodeFingerprint: string,
+	): void {
+		this.db.run(
+			`INSERT OR IGNORE INTO quiet_wake_notified
+			   (execution_id, source, episode_fingerprint)
+			 VALUES (?, ?, ?)`,
+			[executionId, source, episodeFingerprint],
+		);
+		this.save();
+	}
+
+	/**
+	 * Clear the quiet-wake dedup rows for one execution — all sources, or just
+	 * the given source. Called when a session recovers / leaves the watchdog
+	 * surface so a genuinely-new later episode starts clean.
+	 */
+	clearQuietWakeNotified(executionId: string, source?: string): void {
+		if (source) {
+			this.db.run(
+				`DELETE FROM quiet_wake_notified WHERE execution_id = ? AND source = ?`,
+				[executionId, source],
+			);
+		} else {
+			this.db.run(`DELETE FROM quiet_wake_notified WHERE execution_id = ?`, [
+				executionId,
+			]);
+		}
+		this.save();
+	}
+
+	/**
+	 * Prune quiet-wake dedup rows for a source: delete every row whose
+	 * `execution_id` is NOT in `keepExecIds`. Each watchdog calls this with its
+	 * OWN surface set (idle → the running sessions it polls; stuck → the current
+	 * `getStuckSessions` set) so a session that left the surface drops its rows.
+	 *
+	 * Empty-set guard (FLY-637 R1 #4): `keepExecIds = []` means "keep none" →
+	 * delete ALL rows for the source, instead of emitting an invalid `IN ()`.
+	 */
+	pruneQuietWakeNotifiedNotIn(source: string, keepExecIds: string[]): void {
+		if (keepExecIds.length === 0) {
+			this.db.run(`DELETE FROM quiet_wake_notified WHERE source = ?`, [source]);
+		} else {
+			const placeholders = keepExecIds.map(() => "?").join(",");
+			this.db.run(
+				`DELETE FROM quiet_wake_notified
+				 WHERE source = ? AND execution_id NOT IN (${placeholders})`,
+				[source, ...keepExecIds],
+			);
+		}
+		// FLY-637 (Codex code R1 LOW-1): prune runs every heartbeat (5m) / idle poll,
+		// usually a no-op. Only flush the sql.js DB to disk when rows actually
+		// changed — avoids a recurring whole-DB export for the common empty case.
+		if (this.db.getRowsModified() > 0) this.save();
+	}
+
+	// --- FLY-637-ext: lead-pending escalation durable backoff state ---
+
+	/** Read the backoff row for one (execution, blocking question), or undefined. */
+	getLeadPendingEscalation(
+		executionId: string,
+		questionId: string,
+	): LeadNudgeRow | undefined {
+		const result = this.db.exec(
+			`SELECT stuck_key, nudge_count, last_nudge_at_ms, next_eligible_at_ms, paged_annie
+			 FROM lead_pending_escalation
+			 WHERE execution_id = ? AND question_id = ?`,
+			[executionId, questionId],
+		);
+		const row = result[0]?.values[0];
+		if (!row) return undefined;
+		return {
+			stuck_key: row[0] as string,
+			nudge_count: row[1] as number,
+			last_nudge_at_ms: row[2] as number,
+			next_eligible_at_ms: row[3] as number,
+			paged_annie: (row[4] as number) === 1,
+		};
+	}
+
+	/** Upsert the backoff row. Caller commits AFTER the nudge/alert is accepted (R1 #5). */
+	upsertLeadPendingEscalation(
+		executionId: string,
+		questionId: string,
+		row: LeadNudgeRow,
+	): void {
+		this.db.run(
+			`INSERT INTO lead_pending_escalation
+			   (execution_id, question_id, stuck_key, nudge_count, last_nudge_at_ms, next_eligible_at_ms, paged_annie)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)
+			 ON CONFLICT(execution_id, question_id) DO UPDATE SET
+			   stuck_key = excluded.stuck_key,
+			   nudge_count = excluded.nudge_count,
+			   last_nudge_at_ms = excluded.last_nudge_at_ms,
+			   next_eligible_at_ms = excluded.next_eligible_at_ms,
+			   paged_annie = excluded.paged_annie`,
+			[
+				executionId,
+				questionId,
+				row.stuck_key,
+				row.nudge_count,
+				row.last_nudge_at_ms,
+				row.next_eligible_at_ms,
+				row.paged_annie ? 1 : 0,
+			],
+		);
+		this.save();
+	}
+
+	/** Clear one question's row, or all of a runner's rows (question answered / gone). */
+	clearLeadPendingEscalation(executionId: string, questionId?: string): void {
+		if (questionId) {
+			this.db.run(
+				`DELETE FROM lead_pending_escalation WHERE execution_id = ? AND question_id = ?`,
+				[executionId, questionId],
+			);
+		} else {
+			this.db.run(
+				`DELETE FROM lead_pending_escalation WHERE execution_id = ?`,
+				[executionId],
+			);
+		}
+		this.save();
+	}
+
+	/**
+	 * Prune rows whose `question_id` is NOT in the current active pending set —
+	 * a question that was answered / evicted drops its escalation state so a later
+	 * genuine episode starts clean. Empty set ⇒ clear all (no `IN ()`).
+	 */
+	pruneLeadPendingEscalationNotIn(activeQuestionIds: string[]): void {
+		if (activeQuestionIds.length === 0) {
+			this.db.run(`DELETE FROM lead_pending_escalation`);
+		} else {
+			const placeholders = activeQuestionIds.map(() => "?").join(",");
+			this.db.run(
+				`DELETE FROM lead_pending_escalation WHERE question_id NOT IN (${placeholders})`,
+				activeQuestionIds,
+			);
+		}
+		if (this.db.getRowsModified() > 0) this.save();
 	}
 
 	// --- FLY-25: Delivery tracking ---

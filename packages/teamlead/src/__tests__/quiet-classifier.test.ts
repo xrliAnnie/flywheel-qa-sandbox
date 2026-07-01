@@ -66,6 +66,38 @@ describe("classifyQuiet (FLY-626) — cheap stateless exemption", () => {
 		// even with no other exemption, declared parked must suppress
 		expect(classifyQuiet(base({ declaredKind: "parked" })).mayWake).toBe(false);
 	});
+
+	// FLY-637 #1: explicit FLY-324 done-but-running skip
+	it("an explicit done-but-running session never wakes the Lead", () => {
+		const r = classifyQuiet(base({ isDoneButRunning: true }));
+		expect(r.verdict).toBe("done_but_running");
+		expect(r.mayWake).toBe(false);
+	});
+
+	it("done_but_running takes precedence over an otherwise unexplained quiet", () => {
+		// no declared marker / gate / comm — would be quiet_unexplained, but the
+		// explicit FLY-324 signal must short-circuit to a non-waking verdict.
+		const r = classifyQuiet(base({ isDoneButRunning: true }));
+		expect(r.mayWake).toBe(false);
+	});
+
+	it("absent/false isDoneButRunning preserves pre-FLY-637 behavior (byte-compat)", () => {
+		// default base() omits isDoneButRunning → unchanged quiet_unexplained
+		expect(classifyQuiet(base()).verdict).toBe("quiet_unexplained");
+		expect(classifyQuiet(base({ isDoneButRunning: false })).verdict).toBe(
+			"quiet_unexplained",
+		);
+	});
+
+	it("a non-running done-but-running session still reads as parked_review_status (status gate first)", () => {
+		// status gate runs BEFORE the done_but_running check; a non-running status
+		// short-circuits regardless of the FLY-324 flag.
+		const r = classifyQuiet(
+			base({ status: "awaiting_review", isDoneButRunning: true }),
+		);
+		expect(r.verdict).toBe("parked_review_status");
+		expect(r.mayWake).toBe(false);
+	});
 });
 
 describe("quietFingerprint / normalize (FLY-626) — pane-jitter immunity", () => {

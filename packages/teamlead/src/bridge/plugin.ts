@@ -2638,7 +2638,9 @@ export async function startBridge(
 						: undefined,
 				)
 			: {
-					onSessionStuck: async () => {},
+					// FLY-637 R1 #2: no-op notifier never persists an event → false, so
+					// checkStuck does not durably dedup a wake that never happened.
+					onSessionStuck: async () => false,
 					onSessionOrphaned: async () => {},
 					onSessionStale: async () => {},
 					onSessionMonitoringLost: async () => {},
@@ -2674,6 +2676,11 @@ export async function startBridge(
 				execution_id: string;
 				project_name: string;
 				status: string;
+				// FLY-637 #1: the watchdogs pass the full Session row, so these reach
+				// probeQuietSignals for the explicit FLY-324 done-but-running skip.
+				session_stage?: string | null;
+				decision_route?: string | null;
+				pr_number?: number | null;
 			}) =>
 				probeQuietSignals(session, {
 					activityWindowMs: stuckCommActivityMs(),
@@ -2916,11 +2923,25 @@ export async function startBridge(
 	// BridgeEventLoopWatchdog below) so general Bridge integration suites never fire
 	// a meta-alert off the test machine's real (possibly contaminated) global codex.
 	const codexHealthEnabled = !process.env.VITEST;
+	// FLY-637-ext: late-bound page-Annie sink for the lead-pending escalation. The
+	// GatePoller starts before the shared `alertSink` exists below; boot is
+	// synchronous so the holder is populated before the first ~3s poll tick. The
+	// page step is rare (only after the Lead ignores a runner's question for several
+	// backoff rounds), so an unset holder during boot can never reach it.
+	const leadPendingAlertHolder: {
+		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
+	} = {};
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
 		projects,
 		store,
 		runtimeRegistry: registry,
+		leadAlertSink: {
+			alert: (p) =>
+				leadPendingAlertHolder.current
+					? leadPendingAlertHolder.current.alert(p)
+					: Promise.resolve({ skipped: "unknown-lead" } as AlertResult),
+		},
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		transport: misroutePatrolTransport,
 		misrouteArchiveDir,
@@ -3208,6 +3229,9 @@ export async function startBridge(
 	// adds threading + auto-repair; otherwise it's the raw notifier (byte-compat).
 	const alertSink: { alert: (p: AlertPayload) => Promise<AlertResult> } =
 		alertHub ? { alert: (p) => alertHub.handle(p) } : leadAlertNotifier;
+	// FLY-637-ext: now that the shared alert sink exists, point the GatePoller's
+	// late-bound lead-pending page-Annie holder at it (same routing as FLY-195 Q7).
+	leadPendingAlertHolder.current = alertSink;
 
 	// FLY-182 §4.1: surface any Lead whose alert channel/token cannot resolve
 	// from config — the silent gap that broke alerting for 25 days. LOUD log +

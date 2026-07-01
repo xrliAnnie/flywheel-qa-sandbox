@@ -22,18 +22,41 @@ function makeStuckSession(over: Partial<Session> = {}): Session {
 }
 
 function makeStore(stuck: Session[]) {
+	const notified = new Set<string>(); // FLY-637 persistent dedup (test)
+	const key = (e: string, s: string, f: string) => `${e}|${s}|${f}`;
 	return {
 		getStuckSessions: vi.fn(() => stuck),
 		getOrphanSessions: vi.fn(() => []),
 		getStaleCompletedSessions: vi.fn(() => []),
 		getAwaitingReviewTimedOut: vi.fn(() => []),
 		forceStatus: vi.fn(),
+		// FLY-637 persistent quiet-wake dedup, Set-backed for real behavior.
+		_notified: notified,
+		hasQuietWakeNotified: vi.fn((e: string, s: string, f: string) =>
+			notified.has(key(e, s, f)),
+		),
+		recordQuietWakeNotified: vi.fn((e: string, s: string, f: string) => {
+			notified.add(key(e, s, f));
+		}),
+		clearQuietWakeNotified: vi.fn((e: string, s?: string) => {
+			for (const k of [...notified]) {
+				const [ke, ks] = k.split("|");
+				if (ke === e && (!s || ks === s)) notified.delete(k);
+			}
+		}),
+		pruneQuietWakeNotifiedNotIn: vi.fn((s: string, keep: string[]) => {
+			for (const k of [...notified]) {
+				const [ke, ks] = k.split("|");
+				if (ks === s && !keep.includes(ke)) notified.delete(k);
+			}
+		}),
 	};
 }
 
-function makeNotifier() {
+/** `persisted` controls the onSessionStuck return (FLY-637 success signal). */
+function makeNotifier(persisted = true) {
 	return {
-		onSessionStuck: vi.fn(async () => {}),
+		onSessionStuck: vi.fn(async () => persisted),
 		onSessionOrphaned: vi.fn(async () => {}),
 		onSessionStale: vi.fn(async () => {}),
 		onSessionMonitoringLost: vi.fn(async () => {}),
@@ -51,9 +74,16 @@ function signals(over: Partial<QuietSignals> = {}): QuietSignals {
 	};
 }
 
-function build(stuck: Session[], probe?: (session: Session) => QuietSignals) {
-	const store = makeStore(stuck);
-	const notifier = makeNotifier();
+function build(
+	stuck: Session[],
+	probe?: (session: Session) => QuietSignals,
+	deps?: {
+		store?: ReturnType<typeof makeStore>;
+		notifier?: ReturnType<typeof makeNotifier>;
+	},
+) {
+	const store = deps?.store ?? makeStore(stuck);
+	const notifier = deps?.notifier ?? makeNotifier();
 	const service = new HeartbeatService(
 		// biome-ignore lint/suspicious/noExplicitAny: test mocks
 		store as any,
@@ -103,5 +133,73 @@ describe("HeartbeatService FLY-626 session_stuck suppression", () => {
 		const { service, notifier } = build([makeStuckSession()], undefined);
 		await service.check();
 		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("HeartbeatService FLY-637 persistent stuck dedup", () => {
+	afterEach(() => {
+		delete process.env.FLYWHEEL_QUIET_PERSIST_DEDUP;
+	});
+
+	it("reports a stuck runner once and not again across checks", async () => {
+		const { service, notifier } = build([makeStuckSession()], () => signals());
+		await service.check();
+		await service.check();
+		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(1);
+	});
+
+	it("a Bridge restart (new service, same store) does NOT re-wake the same stuck episode (#3/#4)", async () => {
+		const stuck = [makeStuckSession()];
+		const store = makeStore(stuck);
+		const { service: s1, notifier: n1 } = build([], () => signals(), { store });
+		await s1.check();
+		expect(n1.onSessionStuck).toHaveBeenCalledTimes(1);
+		expect(store._notified.size).toBe(1); // persisted
+		// fresh service = wiped in-memory notifiedStuck, but the persistent row remains
+		const { service: s2, notifier: n2 } = build([], () => signals(), { store });
+		await s2.check();
+		expect(n2.onSessionStuck).not.toHaveBeenCalled();
+	});
+
+	it("a recovered-then-re-stuck runner can be re-reported (prune)", async () => {
+		const stuck = [makeStuckSession()];
+		const store = makeStore(stuck);
+		const { service, notifier } = build([], () => signals(), { store });
+		await service.check();
+		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(1);
+		// runner recovers → leaves the stuck set → prune clears its dedup row
+		stuck.length = 0;
+		await service.check();
+		expect(store._notified.size).toBe(0);
+		// gets stuck again later → re-reported
+		stuck.push(makeStuckSession());
+		await service.check();
+		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(2);
+	});
+
+	it("a non-persisted wake (no lead/runtime) is NOT deduped → retried next cycle (#2 HIGH)", async () => {
+		const store = makeStore([makeStuckSession()]);
+		const notifier = makeNotifier(false); // onSessionStuck resolves false = not persisted
+		const { service } = build([], () => signals(), { store, notifier });
+		await service.check();
+		await service.check();
+		// retried each cycle — no durable suppression of a wake that never happened
+		expect(notifier.onSessionStuck).toHaveBeenCalledTimes(2);
+		expect(store._notified.size).toBe(0); // nothing recorded
+	});
+
+	it("kill-switch FLYWHEEL_QUIET_PERSIST_DEDUP=0 reverts to in-memory dedup (byte-compat)", async () => {
+		process.env.FLYWHEEL_QUIET_PERSIST_DEDUP = "0";
+		const stuck = [makeStuckSession()];
+		const store = makeStore(stuck);
+		const { service: s1, notifier: n1 } = build([], () => signals(), { store });
+		await s1.check();
+		await s1.check();
+		expect(n1.onSessionStuck).toHaveBeenCalledTimes(1); // in-memory dedup
+		expect(store._notified.size).toBe(0); // no persistence
+		// fresh service re-wakes (MVP: in-memory only, restart re-alerts)
+		const { service: s2, notifier: n2 } = build([], () => signals(), { store });
+		await s2.check();
+		expect(n2.onSessionStuck).toHaveBeenCalledTimes(1);
 	});
 });

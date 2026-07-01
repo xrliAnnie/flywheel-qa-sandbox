@@ -21,6 +21,7 @@ import {
 	idleWatchdogPollMs,
 	parseNonNegativeIntEnv,
 	probeCommSignalsFromCommDb,
+	probeQuietSignals,
 	stuckCommActivityMs,
 	stuckDetectionEnabled,
 	stuckEscalationEventId,
@@ -553,5 +554,81 @@ describe("probeCommSignalsFromCommDb (FLY-253, real sqlite)", () => {
 		expect(
 			probeCommSignalsFromCommDb("exec-1", "geo", 60_000).hasRecentOutbound,
 		).toBe(false);
+	});
+});
+
+describe("probeQuietSignals isDoneButRunning (FLY-637 #1)", () => {
+	let dir: string;
+	let oldHome: string | undefined;
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "fly637-probe-"));
+		oldHome = process.env.HOME;
+		process.env.HOME = dir; // no comm.db ⇒ comm signals default false / null
+	});
+
+	afterEach(() => {
+		process.env.HOME = oldHome;
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	const opts = { activityWindowMs: 60_000, nowMs: 1_000_000 };
+
+	it("stage=completed + no route + no pr ⇒ isDoneButRunning true", () => {
+		const signals = probeQuietSignals(
+			{
+				execution_id: "exec-1",
+				project_name: "geo",
+				status: "running",
+				session_stage: "completed",
+				decision_route: null,
+				pr_number: null,
+			},
+			opts,
+		);
+		expect(signals.isDoneButRunning).toBe(true);
+		// the comm side defaults false (no comm.db) — byte-compat passthrough
+		expect(signals.status).toBe("running");
+		expect(signals.hasPendingGate).toBe(false);
+		expect(signals.hasRecentComm).toBe(false);
+		expect(signals.declaredKind).toBe(null);
+	});
+
+	it("stage=completed but a PR exists ⇒ NOT done-but-running (dev session mid-ship)", () => {
+		const signals = probeQuietSignals(
+			{
+				execution_id: "exec-1",
+				project_name: "geo",
+				status: "running",
+				session_stage: "completed",
+				decision_route: null,
+				pr_number: 42,
+			},
+			opts,
+		);
+		expect(signals.isDoneButRunning).toBe(false);
+	});
+
+	it("stage=completed but a decision_route is set ⇒ NOT done-but-running", () => {
+		const signals = probeQuietSignals(
+			{
+				execution_id: "exec-1",
+				project_name: "geo",
+				status: "running",
+				session_stage: "completed",
+				decision_route: "needs_review",
+				pr_number: null,
+			},
+			opts,
+		);
+		expect(signals.isDoneButRunning).toBe(false);
+	});
+
+	it("an ordinary running session (no completed stage) ⇒ isDoneButRunning false (byte-compat)", () => {
+		const signals = probeQuietSignals(
+			{ execution_id: "exec-1", project_name: "geo", status: "running" },
+			opts,
+		);
+		expect(signals.isDoneButRunning).toBe(false);
 	});
 });
