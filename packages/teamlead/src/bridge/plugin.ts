@@ -3308,8 +3308,13 @@ export async function startBridge(
 			pollIntervalMs: roundtableConfig.pollIntervalMs,
 		});
 		await roundtableThreadManager.start();
+		// FLY-314 fix (Codex R1 MEDIUM#6): loud startup line so a Bridge restart PROVES
+		// the intended trigger mode + tuning loaded (over-spawn was a mis-set mode).
 		console.log(
-			`[Bridge] RoundtableThreadManager started — channel=${roundtableConfig.channelId}, trigger=${roundtableConfig.triggerMode}`,
+			`[Bridge] RoundtableThreadManager started — channel=${roundtableConfig.channelId}, ` +
+				`trigger=${roundtableConfig.triggerMode}, minMentions=${roundtableConfig.trigger.minMentions ?? "-"}, ` +
+				`leadIds=${roundtableConfig.trigger.leadUserIds?.length ?? 0}, members=${roundtableConfig.memberUserIds.length}, ` +
+				`founder=${roundtableConfig.founderUserId ? "set" : "unset"}, threadOwnBot=${roundtableConfig.threadOwnBotMessages}`,
 		);
 	}
 
