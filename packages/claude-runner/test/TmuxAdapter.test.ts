@@ -9,7 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AdapterExecutionContext } from "flywheel-core";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // We'll test TmuxAdapter by injecting a mock execFileFn
 import type { ExecFileFn } from "../src/TmuxAdapter.js";
@@ -1308,12 +1308,27 @@ describe("TmuxAdapter", () => {
 	// =========================================================================
 	describe("FLY-142 PR 1.4 — mailbox sentinel + rollback gate", () => {
 		const ORIGINAL_BACKEND = process.env.FLYWHEEL_COMM_BACKEND;
+		// These assert the mailbox sentinel dir the adapter mkdir's under
+		// `homedir()/.flywheel/runner-state`; isolate HOME to a temp dir so they
+		// pass on a read-only real HOME (sandbox/CI) and never touch real state.
+		const ORIGINAL_HOME = process.env.HOME;
+		let tmpHome: string;
+		beforeEach(() => {
+			tmpHome = mkdtempSync(join(tmpdir(), "fly142-home-"));
+			process.env.HOME = tmpHome;
+		});
 		afterEach(() => {
 			if (ORIGINAL_BACKEND === undefined) {
 				delete process.env.FLYWHEEL_COMM_BACKEND;
 			} else {
 				process.env.FLYWHEEL_COMM_BACKEND = ORIGINAL_BACKEND;
 			}
+			if (ORIGINAL_HOME === undefined) {
+				delete process.env.HOME;
+			} else {
+				process.env.HOME = ORIGINAL_HOME;
+			}
+			rmSync(tmpHome, { recursive: true, force: true });
 		});
 
 		it("default (env unset → mailbox): writes sentinel + injects FLYWHEEL_RUNNER_STATE_DIR", async () => {
@@ -1389,6 +1404,131 @@ describe("TmuxAdapter", () => {
 			// the same. This keeps the most-recoverable path as default.
 			expect(joined).toContain("FLYWHEEL_RUNNER_STATE_DIR=");
 			expect(joined).not.toContain("FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+		});
+	});
+
+	// FLY-766: per-runner browser temp dir + owner marker (claude-tmux only).
+	describe("FLY-766 — browser-tmp TMPDIR + owner marker", () => {
+		const ORIGINAL_BACKEND = process.env.FLYWHEEL_COMM_BACKEND;
+		const ORIGINAL_HOME = process.env.HOME;
+		const OWNER_DB = "/Users/x/.flywheel/teamlead.db";
+		// Isolate HOME to a temp dir so the adapter's real `homedir()`-based
+		// browser-tmp/marker writes are hermetic + reproducible in sandboxed/CI
+		// environments (never touch a developer's real ~/.flywheel/runner-state).
+		let tmpHome: string;
+		beforeEach(() => {
+			tmpHome = mkdtempSync(join(tmpdir(), "fly766-home-"));
+			process.env.HOME = tmpHome;
+		});
+		afterEach(() => {
+			if (ORIGINAL_BACKEND === undefined) {
+				delete process.env.FLYWHEEL_COMM_BACKEND;
+			} else {
+				process.env.FLYWHEEL_COMM_BACKEND = ORIGINAL_BACKEND;
+			}
+			if (ORIGINAL_HOME === undefined) {
+				delete process.env.HOME;
+			} else {
+				process.env.HOME = ORIGINAL_HOME;
+			}
+			rmSync(tmpHome, { recursive: true, force: true });
+		});
+
+		function markerFor(execId: string): string {
+			return join(
+				tmpHome,
+				".flywheel",
+				"runner-state",
+				execId,
+				"browser-tmp",
+				".flywheel-owner.json",
+			);
+		}
+
+		it("claude-tmux (mailbox): injects TMPDIR=…/browser-tmp + writes owner marker with the threaded db path", async () => {
+			delete process.env.FLYWHEEL_COMM_BACKEND;
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				undefined,
+				undefined,
+				undefined,
+				OWNER_DB,
+			);
+
+			await adapter.execute(makeCtx({ executionId: "fly766-mbx" }));
+
+			const joined = calls
+				.find((c) => c.args[0] === "new-window")!
+				.args.join(" ");
+			expect(joined).toContain("TMPDIR=");
+			expect(joined).toContain("/browser-tmp");
+			const marker = JSON.parse(readFileSync(markerFor("fly766-mbx"), "utf-8"));
+			expect(marker.execId).toBe("fly766-mbx");
+			expect(marker.stateDbPath).toBe(OWNER_DB);
+		});
+
+		it("claude-tmux (commdb rollback): STILL injects TMPDIR (gated on type, not backend)", async () => {
+			process.env.FLYWHEEL_COMM_BACKEND = "commdb";
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter(
+				"flywheel",
+				fn,
+				10,
+				undefined,
+				undefined,
+				undefined,
+				OWNER_DB,
+			);
+
+			await adapter.execute(makeCtx({ executionId: "fly766-rb" }));
+
+			const joined = calls
+				.find((c) => c.args[0] === "new-window")!
+				.args.join(" ");
+			expect(joined).toContain("TMPDIR=");
+			expect(joined).toContain("/browser-tmp");
+			// Rollback still skips the mailbox sentinel dir.
+			expect(joined).not.toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+		});
+
+		it("owner marker stateDbPath is null when no ownerStateDbPath is threaded", async () => {
+			delete process.env.FLYWHEEL_COMM_BACKEND;
+			const { fn } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+			await adapter.execute(makeCtx({ executionId: "fly766-noown" }));
+			const marker = JSON.parse(
+				readFileSync(markerFor("fly766-noown"), "utf-8"),
+			);
+			expect(marker.stateDbPath).toBeNull();
+		});
+
+		it("non-claude adapter (kimi/agy type) does NOT inject TMPDIR (v1 scope gate)", async () => {
+			delete process.env.FLYWHEEL_COMM_BACKEND;
+			// Real Kimi/Antigravity adapters inherit this base `execute()` and set a
+			// non-"claude-tmux" `type`; a minimal subclass isolates the gate without
+			// their fail-closed auth preflight.
+			class NonClaudeAdapter extends TmuxAdapter {
+				readonly type = "kimi-tmux";
+			}
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new NonClaudeAdapter(
+				"flywheel",
+				fn,
+				10,
+				undefined,
+				undefined,
+				undefined,
+				OWNER_DB,
+			);
+			await adapter.execute(makeCtx({ executionId: "fly766-kimi" }));
+			const joined = calls
+				.find((c) => c.args[0] === "new-window")!
+				.args.join(" ");
+			expect(joined).not.toContain("TMPDIR=");
+			expect(existsSync(markerFor("fly766-kimi"))).toBe(false);
 		});
 	});
 
