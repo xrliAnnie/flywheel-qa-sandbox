@@ -115,14 +115,20 @@ export function buildAttachCommand(
 	opts: AttachCommandOpts = {},
 ): string {
 	let cmd: string;
+	// FLY-756: prefix `env -u TMUX` so this rescue command attaches cleanly even
+	// when pasted into a shell that has `$TMUX` set — exactly the cmux dead
+	// surface the founder copies it into. Without it, `tmux attach` refuses with
+	// "sessions should be nested with care, unset $TMUX" (tmux keys nesting off
+	// `$TMUX`). Same nested-attach failure mode as the cmux-sync heal/create
+	// injection sites hardened in scripts/flywheel-cmux-sync.sh.
 	if (target.kind === "cmux") {
-		cmd = `tmux attach -t '=${target.session}'`;
+		cmd = `env -u TMUX tmux attach -t '=${target.session}'`;
 	} else {
 		// Degraded fallback: attach the shared base session, then jump to the
 		// exact window. NOTE: changes the base session's active window for any
 		// client attached directly to it (cmux uses linked sessions, so normally
 		// unaffected). The `\;` separates tmux commands at the shell.
-		cmd = `tmux attach -t '=${target.session}' \\; select-window -t '=${target.tmuxWindow}'`;
+		cmd = `env -u TMUX tmux attach -t '=${target.session}' \\; select-window -t '=${target.tmuxWindow}'`;
 	}
 	if (opts.sshHost) {
 		const escaped = cmd.replace(/'/g, "'\\''");

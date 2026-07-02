@@ -668,6 +668,14 @@ if [[ "$create_count" == "2" ]]; then
 else
   fail "expected 2 new-workspace calls, got $create_count. Ops: $MOCK_CMUX_OPS"
 fi
+# FLY-756: the create-time attach command must run under `env -u TMUX` — a cmux
+# surface that inherited $TMUX (cmux launched from within tmux) would otherwise
+# nest-fail `tmux attach` ("sessions should be nested with care, unset $TMUX").
+if echo "$MOCK_CMUX_OPS" | grep -q "^new-workspace --command env -u TMUX tmux attach"; then
+  pass "FLY-756: new-workspace --command runs attach under env -u TMUX"
+else
+  fail "FLY-756: create attach missing env -u TMUX; got: $(echo "$MOCK_CMUX_OPS" | grep '^new-workspace' | head -1)"
+fi
 # zsh filtered
 if echo "$MOCK_CMUX_OPS" | grep -q "zsh"; then
   fail "zsh window should be filtered"
@@ -1911,8 +1919,8 @@ fly169_setup_one() {
 # selected terminal surface, NO separate send-key, + select-window + refresh
 fly169_setup_one 0
 self_heal_one_workspace "lead-a"
-if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1 --surface surface:1 tmux attach -t '=cmux-lead-a'"; then
-  pass "0-client: atomic send scoped to --workspace + selected --surface with attach cmd"
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1 --surface surface:1 env -u TMUX tmux attach -t '=cmux-lead-a'"; then
+  pass "0-client: atomic send scoped to --workspace + selected --surface with attach cmd (FLY-756: env -u TMUX)"
 else
   fail "expected surface-scoped attach send; got: $MOCK_CMUX_OPS"
 fi
@@ -1963,7 +1971,7 @@ fi
 fly169_setup_one 0
 MOCK_CMUX_SURFACES=$'workspace:1;;surface:9;;terminal;;\nworkspace:1;;surface:7;;terminal;;true'
 self_heal_one_workspace "lead-a"
-if echo "$MOCK_CMUX_OPS" | grep -q -- "--surface surface:7 tmux attach"; then
+if echo "$MOCK_CMUX_OPS" | grep -q -- "--surface surface:7 env -u TMUX tmux attach"; then
   pass "multi-surface: send targets the SELECTED terminal surface:7 (not surface:9)"
 else
   fail "wrong surface targeted; got: $MOCK_CMUX_OPS"
@@ -2027,10 +2035,31 @@ MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a'
 MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
 MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"title":"lead-a","ref":"workspace:1"},{"title":"lead-a","ref":"workspace:2"}]}'
 MOCK_CMUX_SURFACES=$'workspace:1;;surface:1;;terminal;;true\nworkspace:2;;surface:2;;terminal;;true'
-MOCK_TMUX_CLIENTS="cmux-lead-a=0,0,2"  # outer=0, ref1 GATE1=0 (atomic send), ref2 GATE1=2 (break)
+# FLY-756: plain heal now runs a per-ref final 0-client guard between GATE1 and
+# the send, so ref1 consumes an extra list-clients read. Sequence right-shifts:
+# outer=0, ref1 GATE1=0, ref1 FINAL-GUARD=0 (atomic send), ref2 GATE1=2 (break).
+MOCK_TMUX_CLIENTS="cmux-lead-a=0,0,0,2"
 self_heal_one_workspace "lead-a"
 if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:1"; then pass "mid-loop: first ref sent"; else fail "first ref should send"; fi
 if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:2"; then fail "second ref must NOT send after client appears"; else pass "mid-loop: loop breaks before second ref"; fi
+
+# Test 8d (FLY-756): PLAIN heal path gate→send race. The final 0-client guard
+# now runs for plain heal too (previously escalated-only). A focus-triggered
+# attach that lands BETWEEN GATE1 and the send is caught: GATE1=0 passes, the
+# final guard re-reads clients as 1 → MUST NOT send, and rc=2 (client appeared)
+# surfaces to the caller. This is the exact nested-attach injection race.
+reset_mocks
+MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+MOCK_CMUX_SURFACES="workspace:1;;surface:1;;terminal;;true"
+MOCK_TMUX_CLIENTS="cmux-lead-a=0,1"   # GATE1=0 (pass) → FINAL-GUARD=1 (client raced in)
+fr756=0
+self_heal_workspace_ref "lead-a" "workspace:1" || fr756=$?
+if echo "$MOCK_CMUX_OPS" | grep -q "send"; then
+  fail "FLY-756: plain-path final guard must block send when a client appears after GATE1; got: $MOCK_CMUX_OPS"
+else
+  pass "FLY-756: plain-path gate→send race blocked by final 0-client guard (no send)"
+fi
+[[ "$fr756" == "2" ]] && pass "FLY-756: rc=2 (client appeared) surfaces to caller" || fail "FLY-756: expected rc=2, got $fr756"
 
 # Test 8c (Codex CR R1+R4 HIGH — designed out): the re-attach is a SINGLE
 # atomic send (cmd + embedded newline), so there is NO text→Enter gap at all.
@@ -2069,7 +2098,7 @@ MOCK_CMUX_SURFACES="workspace:5;;surface:5;;terminal;;true"
 MOCK_TMUX_CLIENTS="cmux-lead-a=0"
 hr=0
 self_heal_workspace_ref "lead-a" "workspace:5" || hr=$?
-if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:5 --surface surface:5 tmux attach"; then
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:5 --surface surface:5 env -u TMUX tmux attach"; then
   pass "verify-at-create: ref-scoped heal works pre-rename (via new_ref)"
 else
   fail "ref-scoped send failed; got: $MOCK_CMUX_OPS"
@@ -2510,7 +2539,7 @@ HEAL_RENDER_ESCALATE=1 self_heal_sweep_all 2>"$TMPDIR_ROOT/t254.log"
 if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:7"; then
   pass "escalation focuses the broken workspace (select-workspace ws7)"
 else fail "expected select-workspace ws7; ops: $MOCK_CMUX_OPS"; fi
-if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7 --surface surface:7 tmux attach"; then
+if echo "$MOCK_CMUX_OPS" | grep -q "send --workspace workspace:7 --surface surface:7 env -u TMUX tmux attach"; then
   pass "atomic send fired after render + full gate re-run"
 else fail "expected attach send to ws7; ops: $MOCK_CMUX_OPS"; fi
 if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace --workspace workspace:1"; then

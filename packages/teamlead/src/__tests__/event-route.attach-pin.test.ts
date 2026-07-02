@@ -164,7 +164,7 @@ describe("FLY-560 Feature C: event-route attach-pin wiring", () => {
 		expect(attachSpy).toHaveBeenCalledTimes(1);
 		const [ctx, threadId, command] = attachSpy.mock.calls[0]!;
 		expect(threadId).toBe(THREAD_ID);
-		expect(command).toBe("tmux attach -t '=cmux-FLY-560-claude-x'");
+		expect(command).toBe("env -u TMUX tmux attach -t '=cmux-FLY-560-claude-x'");
 		expect(ctx).toMatchObject({
 			chatChannelId: CHAT_CHANNEL,
 			issueId: ISSUE_ID,
