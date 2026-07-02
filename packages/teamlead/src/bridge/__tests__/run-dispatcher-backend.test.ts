@@ -95,7 +95,10 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 		const ctx = await startAndWait(dispatcher);
 		expect(ctx.runnerBackend).toBe("claude-tmux");
 		expect(ctx.vendor).toBe("claude-code");
-		expect(ctx.runnerModel).toBeUndefined();
+		// FLY-751: a claude-tmux runner with no model from any layer now gets
+		// the explicit small-context fleet default instead of inheriting the
+		// account default (which is a RAM-heavy 1M-context model in prod).
+		expect(ctx.runnerModel).toBe("claude-fable-5");
 		// FLY-142 identity fields still present (mailbox default)
 		expect(ctx.runnerAgentName).toMatch(/^runner-/);
 		expect(ctx.agentTeamName).toBe("product-lead");

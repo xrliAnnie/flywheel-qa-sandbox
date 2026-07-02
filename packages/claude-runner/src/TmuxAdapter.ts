@@ -743,14 +743,26 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.effort) args.push("--effort", ctx.effort);
 		if (ctx.allowedTools?.length)
 			args.push("--allowed-tools", ...ctx.allowedTools);
-		// FLY-615: enable the ponytail plugin for THIS launch only via inline
-		// settings (highest non-managed precedence; per-plugin merge — does not
-		// disturb other enabled plugins). Absent → no flag → byte-compatible.
-		if (ctx.enablePonytail) {
-			args.push(
-				"--settings",
-				JSON.stringify({ enabledPlugins: { [PONYTAIL_PLUGIN]: true } }),
-			);
+		// FLY-615 + FLY-751: per-launch inline settings (highest non-managed
+		// precedence; per-plugin merge — does not disturb other enabled plugins).
+		// BOTH sources write the same `enabledPlugins` map, so they MUST merge
+		// into a single --settings flag: ponytail enables its plugin (true) and
+		// the FLY-751 slim profile disables heavy per-session MCP plugins
+		// (false). Real-machine spike (2026-07-01) confirmed a `false` entry
+		// prevents that plugin's MCP server subprocess from spawning. Neither
+		// source present → no flag → byte-compatible.
+		const enabledPlugins: Record<string, boolean> = {
+			...(ctx.enablePonytail && { [PONYTAIL_PLUGIN]: true }),
+		};
+		for (const plugin of ctx.disabledPlugins ?? []) {
+			enabledPlugins[plugin] = false;
+		}
+		if (Object.keys(enabledPlugins).length > 0) {
+			args.push("--settings", JSON.stringify({ enabledPlugins }));
+		}
+		// FLY-751: Claude-in-Chrome off for slimmed (non-QA) runners.
+		if (ctx.disableChrome) {
+			args.push("--no-chrome");
 		}
 		if (ctx.sessionDisplayName) args.push("--name", ctx.sessionDisplayName);
 		// NOTE: --max-turns does NOT exist in Claude CLI v2.1.63
