@@ -103,6 +103,15 @@ export interface ResolveRoleAdapterArgs {
 
 const BUILTIN_DEFAULT: ExecutorBackend = "claude-tmux";
 
+/**
+ * FLY-751: the small-context fleet default for claude-tmux runners that
+ * resolved no model from any precedence layer. Same model family as the
+ * account default (Fable is the founder-confirmed fleet standard) WITHOUT the
+ * `[1m]` suffix — the whole point is not paying the 1M-context RAM cost on
+ * every unlabeled dispatch.
+ */
+const RUNNER_DEFAULT_MODEL = "claude-fable-5";
+
 function parseEnvBackend(
 	raw: string | undefined,
 	envName: string,
@@ -205,6 +214,21 @@ export function resolveRoleAdapter(
 
 	// 4. Built-in default.
 	if (!backend) backend = BUILTIN_DEFAULT;
+
+	// 4b. FLY-751: runner default model. A claude-tmux runner that resolved NO
+	// model from any layer used to spawn without `--model` and inherit the
+	// ACCOUNT default — which is a 1M-context model on the production machine
+	// (~0.35GB extra RAM per runner, FLY-753 measured). Inject the explicit
+	// small-context fleet default instead. Layers above (label / dispatch /
+	// project roles) still win; leads and non-claude backends are untouched.
+	// `FLYWHEEL_RUNNER_DEFAULT_MODEL` overrides the default; the value `off`
+	// restores the legacy inherit-account behavior.
+	if (!model && args.role === "runner" && backend === "claude-tmux") {
+		const configured = env.FLYWHEEL_RUNNER_DEFAULT_MODEL?.trim();
+		if (configured?.toLowerCase() !== "off") {
+			model = configured || RUNNER_DEFAULT_MODEL;
+		}
+	}
 
 	// FLY-671: effort resolves INDEPENDENTLY of the backend/model precedence above
 	// (Codex design review R2 HIGH-2). The model layer gates the whole project

@@ -286,6 +286,18 @@ export interface BlueprintContext {
 	runnerEffort?: string;
 
 	/**
+	 * FLY-751: per-runner MCP slim profile, computed by run-dispatcher.ts (via
+	 * `resolveRunnerMcpProfile`, gated on runnerBackend === "claude-tmux") on
+	 * BOTH the start and retry paths. Blueprint only forwards the two fields to
+	 * `adapter.execute()` — it never reads env itself (keeps this testable).
+	 * Absent/null ⇒ no slimming (byte-compatible spawn).
+	 */
+	runnerMcpProfile?: {
+		disabledPlugins: string[];
+		disableChrome: boolean;
+	} | null;
+
+	/**
 	 * FLY-493 — explicit no-transport contract. Set to `"none"` ONLY for a
 	 * deliberately transport-less backend (antigravity-tmux: the `agy` CLI has
 	 * no claude-code Agent Team, so v1 has no Lead→Runner push-wake). This is
@@ -1365,6 +1377,12 @@ export class Blueprint {
 				// FLY-671: reasoning-effort override (roles.runner.effort) → adapter
 				// `--effort`. Absent stays absent (byte-compat; only claude-tmux uses it).
 				...(ctx.runnerEffort !== undefined && { effort: ctx.runnerEffort }),
+				// FLY-751: per-runner MCP slim profile → adapter --settings/--no-chrome.
+				// Absent/null stays absent (byte-compat spawn).
+				...(ctx.runnerMcpProfile && {
+					disabledPlugins: ctx.runnerMcpProfile.disabledPlugins,
+					disableChrome: ctx.runnerMcpProfile.disableChrome,
+				}),
 				timeoutMs,
 				sessionDisplayName: `${displayId} ${cleanIssueTitle(hydrated.issueTitle)}`,
 				sentinelPath: canLand ? landSignalPath : undefined,

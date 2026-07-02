@@ -166,6 +166,20 @@ export interface AdapterExecutionContext {
 	 * (byte-compatible spawn).
 	 */
 	enablePonytail?: boolean;
+	/**
+	 * FLY-751: per-runner MCP slimming. Marketplace-qualified plugin keys to
+	 * disable for THIS launch (merged into the same `--settings enabledPlugins`
+	 * map ponytail uses, as `false` entries). Resolved by the dispatcher via
+	 * `resolveRunnerMcpProfile` (flywheel-config) — claude-tmux only. Absent or
+	 * empty = no change (byte-compatible spawn).
+	 */
+	disabledPlugins?: string[];
+	/**
+	 * FLY-751: when true the launch gets `--no-chrome` (Claude-in-Chrome
+	 * integration off). QA runners keep the browser (the profile resolver
+	 * exempts them). Absent/false = no change (byte-compatible spawn).
+	 */
+	disableChrome?: boolean;
 	/** Maximum number of agentic turns */
 	maxTurns?: number;
 	/** Process-level timeout in milliseconds */

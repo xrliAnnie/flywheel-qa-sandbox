@@ -12,6 +12,7 @@ export {
 // tier→model default + F/O/S/H short code).
 export type { ModelTier, ModelTierSpec } from "./model-tiers.js";
 export {
+	ACCEPTED_DISPATCH_MODELS,
 	MODEL_TIERS,
 	modelShortCode,
 	normalizeDispatchModel,
@@ -51,6 +52,16 @@ export type {
 	RunnerVendorType,
 } from "./runner-label.js";
 export { parseRunnerLabels } from "./runner-label.js";
+// FLY-751: per-runner MCP slimming — pure profile resolver consumed by the
+// dispatcher (claude-tmux runner spawns only).
+export type {
+	ResolveRunnerMcpProfileArgs,
+	RunnerMcpProfile,
+} from "./runner-mcp-profile.js";
+export {
+	DEFAULT_RUNNER_DISABLED_PLUGINS,
+	resolveRunnerMcpProfile,
+} from "./runner-mcp-profile.js";
 export type {
 	AgentConfig,
 	AgentNodeConfig,
