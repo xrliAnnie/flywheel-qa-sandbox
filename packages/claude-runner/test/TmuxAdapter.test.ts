@@ -12,7 +12,12 @@ import type { AdapterExecutionContext } from "flywheel-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 // We'll test TmuxAdapter by injecting a mock execFileFn
-import { TmuxAdapter } from "../src/TmuxAdapter.js";
+import type { ExecFileFn } from "../src/TmuxAdapter.js";
+import {
+	ensureRunnerSession,
+	pruneScaffoldWindow,
+	TmuxAdapter,
+} from "../src/TmuxAdapter.js";
 
 // ─── Helpers ─────────────────────────────────────
 
@@ -40,6 +45,7 @@ function makeMockExec(
 		tmuxVersion?: string;
 		hasSessionError?: boolean;
 		killWindowThrows?: boolean;
+		listWindows?: string;
 	} = {},
 ) {
 	const calls: ExecCall[] = [];
@@ -49,6 +55,9 @@ function makeMockExec(
 		tmuxVersion = "tmux 3.4",
 		hasSessionError = true, // session doesn't exist by default
 		killWindowThrows = false,
+		// FLY-758: `list-windows` output for pruneScaffoldWindow. Default "" is
+		// byte-compatible — an empty inventory means <2 windows → no prune.
+		listWindows = "",
 	} = options;
 
 	const fn = (cmd: string, args: string[]): { stdout: string } => {
@@ -99,12 +108,23 @@ function makeMockExec(
 				if (killWindowThrows) throw new Error("tmux kill-window failed");
 				return { stdout: "" };
 			}
+
+			if (subcommand === "list-windows") {
+				return { stdout: listWindows };
+			}
 		}
 
 		return { stdout: "" };
 	};
 
 	return { fn, calls };
+}
+
+/** FLY-758: kill-window `-t` targets recorded by a mock, in call order. */
+function killWindowTargets(calls: ExecCall[]): string[] {
+	return calls
+		.filter((c) => c.cmd === "tmux" && c.args[0] === "kill-window")
+		.map((c) => c.args[c.args.indexOf("-t") + 1] ?? "");
 }
 
 /**
@@ -1489,5 +1509,159 @@ describe("TmuxAdapter", () => {
 			const fourGateSessionMs = 4 * 48 * 3600 * 1000 + 5_400_000 * 4; // 192h waits + ~6h active
 			expect(outer).toBeGreaterThan(fourGateSessionMs);
 		});
+	});
+});
+
+// ─── FLY-758: win0 scaffold prune ────────────────────────────────────────────
+
+describe("pruneScaffoldWindow (FLY-758)", () => {
+	function mockExec(
+		listWindows: string,
+		opts: { throwOnList?: boolean } = {},
+	): { fn: ExecFileFn; calls: ExecCall[] } {
+		const calls: ExecCall[] = [];
+		const fn: ExecFileFn = (cmd, args) => {
+			calls.push({ cmd, args });
+			if (cmd === "tmux" && args[0] === "list-windows") {
+				if (opts.throwOnList) throw new Error("tmux list-windows failed");
+				return { stdout: listWindows };
+			}
+			return { stdout: "" };
+		};
+		return { fn, calls };
+	}
+
+	it("prunes the win0 zsh scaffold in a runner-* session", () => {
+		const { fn, calls } = mockExec("@0|zsh\n@42|GEO-TEST-claude-fix");
+		pruneScaffoldWindow(fn, "runner-test", "@42");
+		expect(killWindowTargets(calls)).toEqual(["@0"]);
+	});
+
+	it("prunes a bash scaffold too", () => {
+		const { fn, calls } = mockExec("@0|bash\n@42|GEO-TEST-claude-fix");
+		pruneScaffoldWindow(fn, "runner-test", "@42");
+		expect(killWindowTargets(calls)).toEqual(["@0"]);
+	});
+
+	it("never prunes when only the runner window exists (would kill the session)", () => {
+		const { fn, calls } = mockExec("@42|GEO-TEST-claude-fix");
+		pruneScaffoldWindow(fn, "runner-test", "@42");
+		expect(killWindowTargets(calls)).toEqual([]);
+	});
+
+	it("never prunes a runner-named window", () => {
+		const { fn, calls } = mockExec("@1|GEO-A-claude-a\n@2|GEO-B-claude-b");
+		pruneScaffoldWindow(fn, "runner-test", "@1");
+		expect(killWindowTargets(calls)).toEqual([]);
+	});
+
+	it("runner-* scope guard: makes no tmux call for a non-runner session", () => {
+		const { fn, calls } = mockExec("@0|zsh\n@42|GEO-TEST-claude-fix");
+		pruneScaffoldWindow(fn, "flywheel", "@42");
+		// Guard returns before any tmux invocation — protects the Lead/base session.
+		expect(calls).toHaveLength(0);
+	});
+
+	it("never kills the just-created windowId even if it is shell-named (defense in depth)", () => {
+		const { fn, calls } = mockExec("@42|zsh\n@7|GEO-TEST-claude-fix");
+		// @42 is the runner we just created; it must be skipped even though named "zsh".
+		pruneScaffoldWindow(fn, "runner-test", "@42");
+		expect(killWindowTargets(calls)).toEqual([]);
+	});
+
+	it("only prunes zsh/bash, not sh or dash-shells (cmux-sync predicate alignment)", () => {
+		const { fn, calls } = mockExec(
+			"@0|sh\n@1|-zsh\n@2|-bash\n@42|GEO-TEST-claude-fix",
+		);
+		pruneScaffoldWindow(fn, "runner-test", "@42");
+		expect(killWindowTargets(calls)).toEqual([]);
+	});
+
+	it("is best-effort: a list-windows failure never throws", () => {
+		const { fn } = mockExec("", { throwOnList: true });
+		expect(() => pruneScaffoldWindow(fn, "runner-test", "@42")).not.toThrow();
+	});
+
+	it("wiring: execute() prunes the win0 scaffold for a runner-* session", async () => {
+		const { fn, calls } = makeMockExec({
+			paneDead: true,
+			windowId: "@42",
+			listWindows: "@0|zsh\n@42|GEO-TEST-claude-fix",
+		});
+		const adapter = new TmuxAdapter("runner-test", fn, 10);
+		await adapter.execute(makeCtx());
+		const targets = killWindowTargets(calls);
+		expect(targets).toContain("@0"); // scaffold pruned
+		expect(targets).not.toContain("@42"); // runner window never killed
+	});
+});
+
+// ─── FLY-758: scaffold naming (defeats the async automatic-rename race) ───────
+
+describe("ensureRunnerSession (FLY-758)", () => {
+	function renameCalls(calls: ExecCall[]): ExecCall[] {
+		return calls.filter(
+			(c) => c.cmd === "tmux" && c.args[0] === "rename-window",
+		);
+	}
+
+	function mockExec(opts: { sessionExists?: boolean; scaffoldId?: string }): {
+		fn: ExecFileFn;
+		calls: ExecCall[];
+	} {
+		const calls: ExecCall[] = [];
+		const fn: ExecFileFn = (cmd, args) => {
+			calls.push({ cmd, args });
+			if (cmd === "tmux" && args[0] === "has-session") {
+				if (!opts.sessionExists) throw new Error("session not found");
+				return { stdout: "" };
+			}
+			if (cmd === "tmux" && args[0] === "new-session") {
+				// the -P -F form returns the created scaffold window id
+				return { stdout: args.includes("-P") ? (opts.scaffoldId ?? "@0") : "" };
+			}
+			return { stdout: "" };
+		};
+		return { fn, calls };
+	}
+
+	it("creates the session and renames the scaffold window to zsh (runner-* session)", () => {
+		const { fn, calls } = mockExec({ sessionExists: false, scaffoldId: "@0" });
+		ensureRunnerSession(fn, "runner-test");
+		const rn = renameCalls(calls);
+		expect(rn).toHaveLength(1);
+		expect(rn[0].args).toEqual(["rename-window", "-t", "@0", "zsh"]);
+	});
+
+	it("does not create or rename when the session already exists", () => {
+		const { fn, calls } = mockExec({ sessionExists: true });
+		ensureRunnerSession(fn, "runner-test");
+		expect(calls.filter((c) => c.args[0] === "new-session")).toHaveLength(0);
+		expect(renameCalls(calls)).toHaveLength(0);
+	});
+
+	it("never renames a non-runner session's scaffold (but still creates it)", () => {
+		const { fn, calls } = mockExec({ sessionExists: false, scaffoldId: "@0" });
+		ensureRunnerSession(fn, "flywheel");
+		expect(renameCalls(calls)).toHaveLength(0);
+		expect(calls.some((c) => c.args[0] === "new-session")).toBe(true);
+	});
+
+	it("falls back to a plain create when -P/-F throws, and never throws", () => {
+		const calls: ExecCall[] = [];
+		const fn: ExecFileFn = (cmd, args) => {
+			calls.push({ cmd, args });
+			if (cmd === "tmux" && args[0] === "has-session")
+				throw new Error("not found");
+			if (cmd === "tmux" && args[0] === "new-session" && args.includes("-P")) {
+				throw new Error("-P unsupported");
+			}
+			return { stdout: "" };
+		};
+		expect(() => ensureRunnerSession(fn, "runner-test")).not.toThrow();
+		const ns = calls.filter((c) => c.args[0] === "new-session");
+		expect(ns).toHaveLength(2); // -P -F attempt (threw) + plain fallback
+		expect(ns[1].args).toEqual(["new-session", "-d", "-s", "runner-test"]);
+		expect(renameCalls(calls)).toHaveLength(0); // no id → no rename
 	});
 });
