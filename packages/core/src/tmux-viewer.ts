@@ -83,8 +83,10 @@ const VERIFY_OSASCRIPT_TIMEOUT_MS = 5_000;
 
 /**
  * Promise-style execFile wrapper. Always resolves with `{stdout, stderr}` on
- * success, rejects with the original Error (which carries `.code === "ETIMEDOUT"`
- * when Node's child-process timeout fires).
+ * success, rejects with the original Error. NOTE (FLY-754): Node's
+ * child-process timeout does NOT set `.code === "ETIMEDOUT"` here — the real
+ * shape is `{code: null, killed: true, signal: "SIGTERM"}` (process killed by
+ * the timeout signal). Use isExecFileTimeout() to classify.
  */
 function execFilePromise(
 	cmd: string,
@@ -97,6 +99,23 @@ function execFilePromise(
 			else resolve({ stdout: stdout ?? "", stderr: stderr ?? "" });
 		});
 	});
+}
+
+/**
+ * FLY-754: classify an execFile rejection as a timeout / signal kill.
+ * Node's execFile timeout kills the child with `killSignal` (default SIGTERM)
+ * and the callback error carries `{code: null, killed: true, signal: "SIGTERM"}`
+ * — NOT `code === "ETIMEDOUT"` (kept in the check for defense in depth).
+ * Any signal-killed osascript is treated as AMBIGUOUS: Terminal.app may have
+ * partially accepted `do script` before the kill, so callers must NOT assume
+ * the tab was never created.
+ */
+function isExecFileTimeout(err: unknown): boolean {
+	const e = err as NodeJS.ErrnoException & {
+		killed?: boolean;
+		signal?: string | null;
+	};
+	return e.code === "ETIMEDOUT" || e.killed === true || e.signal != null;
 }
 
 /** Sleep without shelling out (Codex R1 non-blocking — FLY-128). */
@@ -192,13 +211,18 @@ export function resolveViewerBackend(): ViewerBackend {
 
 /**
  * Whether the active viewer backend uses the macOS Terminal.app/osascript opener.
- * `cmux` and `terminal-app` do; `tmux-only` and `none` do not (Linux/WSL2 +
- * containers attach via `tmux attach`). Centralized so EVERY dispatch path that
- * calls openTmuxViewer is gated here — new call sites cannot bypass it.
+ * ONLY `terminal-app` does. Centralized so EVERY dispatch path that calls
+ * openTmuxViewer is gated here — new call sites cannot bypass it.
+ *
+ * FLY-754 (intentional behavior change over FLY-650's byte-compat): `cmux` no
+ * longer runs the Terminal.app opener. On cmux hosts the viewing surface is
+ * cmux-sync's per-window workspaces; the opener's `viewer-<execId>` linked
+ * sessions had no consumer there (the Terminal tab consistently failed to
+ * materialize) and leaked on every dispatch — 36 zombie sessions observed in
+ * production. `tmux-only` / `none` (Linux/WSL2) stay skipped as before.
  */
 export function viewerUsesTerminalApp(): boolean {
-	const b = resolveViewerBackend();
-	return b === "cmux" || b === "terminal-app";
+	return resolveViewerBackend() === "terminal-app";
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,14 +253,19 @@ export interface TmuxViewerOpts {
  * one at a time, preventing Terminal.app Apple Event collisions.
  */
 export function openTmuxViewer(opts: TmuxViewerOpts): void {
-	// FLY-650: central viewer-backend gate. On Linux/WSL2 (tmux-only/none) the
-	// macOS Terminal.app/osascript opener is skipped — the operator attaches with
-	// `tmux attach`. macOS (cmux) is unchanged (byte-compat). Gating here covers
-	// every dispatch call site (run-dispatcher x2, DagDispatcher) at once.
+	// FLY-650/FLY-754: central viewer-backend gate. Only `terminal-app` runs the
+	// macOS Terminal.app/osascript opener. On cmux hosts cmux-sync owns viewing
+	// (skipping here is what stops `viewer-<execId>` sessions from ever being
+	// created — the FLY-754 leak source); on Linux/WSL2 the operator attaches
+	// with `tmux attach`. Gating here covers every dispatch call site
+	// (run-dispatcher x2, DagDispatcher) at once.
 	if (!viewerUsesTerminalApp()) {
+		const backend = resolveViewerBackend();
 		console.log(
-			`[tmux-viewer] viewer backend '${resolveViewerBackend()}' — skipping ` +
-				`Terminal.app opener (attach with: tmux attach -t ${opts.baseSessionName})`,
+			`[tmux-viewer] viewer backend '${backend}' — skipping Terminal.app opener ` +
+				(backend === "cmux"
+					? "(viewing handled by cmux-sync workspaces)"
+					: `(attach with: tmux attach -t ${opts.baseSessionName})`),
 		);
 		return;
 	}
@@ -332,7 +361,16 @@ async function doOpen(
 		killViewerSessionBestEffort(tmuxPath, viewerSession);
 		return;
 	}
-	await runOpen(tmuxPath, viewerSession, safeTitle);
+	const openOutcome = await runOpen(tmuxPath, viewerSession, safeTitle);
+
+	// FLY-754: a DEFINITE spawn failure (osascript exited non-zero, not
+	// signal-killed) means the tab was never created — clean up the linked
+	// viewer session created in step 3 or it leaks forever. Ambiguous timeout
+	// keeps the verify/log-only path below (the tab may exist).
+	if (openOutcome === "failed") {
+		killViewerSessionBestEffort(tmuxPath, viewerSession);
+		return;
+	}
 
 	// 6. In-queue verification (FLY-128 §4.4 — log only, never throws).
 	// Awaited so the next opener does not start its dedup until verify settles.
@@ -472,11 +510,21 @@ function killViewerSessionBestEffort(
 	}
 }
 
+/**
+ * Spawn the Terminal tab. Returns the outcome classification (FLY-754):
+ *   - "ok"        — osascript succeeded
+ *   - "failed"    — osascript DEFINITELY failed (non-zero exit, not
+ *                   signal-killed) → the tab was never created; caller must
+ *                   clean up the linked viewer session
+ *   - "ambiguous" — timeout / signal kill → Terminal.app may have partially
+ *                   accepted `do script`; caller must NOT kill the viewer
+ *                   session (log-only, same conservative semantics as verify)
+ */
 async function runOpen(
 	tmuxPath: string,
 	viewerSession: string,
 	safeTitle: string,
-): Promise<void> {
+): Promise<"ok" | "failed" | "ambiguous"> {
 	const safeViewer = posixEscape(viewerSession);
 	const shellCmd = `exec ${tmuxPath} attach -t '=${safeViewer}' 2>/dev/null`;
 	const safeShellCmd = escapeAppleScript(shellCmd);
@@ -495,9 +543,15 @@ async function runOpen(
 			["-e", script],
 			OPEN_OSASCRIPT_TIMEOUT_MS,
 		);
+		return "ok";
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : String(err);
+		if (isExecFileTimeout(err)) {
+			console.warn(`[tmux-viewer] open timed out (ambiguous): ${msg}`);
+			return "ambiguous";
+		}
 		console.warn(`[tmux-viewer] open failed: ${msg}`);
+		return "failed";
 	}
 }
 
@@ -553,7 +607,8 @@ async function runVerifyLog(
  * use openTmuxViewer({...}).
  */
 export function openTmuxViewerLegacy(sessionName: string): void {
-	// FLY-650: same viewer-backend gate as openTmuxViewer (skip on Linux/WSL2).
+	// FLY-650/FLY-754: same viewer-backend gate as openTmuxViewer (only
+	// terminal-app opens tabs; cmux is handled by cmux-sync, Linux skips).
 	if (!viewerUsesTerminalApp()) {
 		console.log(
 			`[tmux-viewer] viewer backend '${resolveViewerBackend()}' — skipping ` +

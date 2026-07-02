@@ -9,13 +9,13 @@ import {
 	vi,
 } from "vitest";
 
-// FLY-650: these tests exercise the Terminal.app opener, which only runs when the
-// viewer backend is cmux/terminal-app. CI runs on linux (resolveViewerBackend
-// defaults to tmux-only there → opener skipped), so force cmux to test the opener
+// FLY-650/FLY-754: these tests exercise the Terminal.app opener, which only runs
+// when the viewer backend is terminal-app (FLY-754 removed cmux from the opener
+// gate — cmux-sync owns viewing there). Force terminal-app to test the opener
 // path platform-independently. Restored after the file.
 const _origViewerBackend = process.env.FLYWHEEL_VIEWER_BACKEND;
 beforeAll(() => {
-	process.env.FLYWHEEL_VIEWER_BACKEND = "cmux";
+	process.env.FLYWHEEL_VIEWER_BACKEND = "terminal-app";
 });
 afterAll(() => {
 	if (_origViewerBackend === undefined)
@@ -262,6 +262,82 @@ describe("openTmuxViewer (FLY-116 — new object signature)", () => {
 			expect.stringContaining("tmux not found"),
 		);
 		expect(mockExecFile).not.toHaveBeenCalled();
+	});
+
+	// ── FLY-754: runOpen failure classification ────────────────────────────
+	// The viewer session is created BEFORE the Terminal tab spawns. When the
+	// spawn osascript DEFINITELY failed (non-zero exit, no signal), the
+	// just-created viewer session must be cleaned up or it leaks forever.
+	// A timeout kill (real Node shape: code:null, killed:true, signal:SIGTERM)
+	// is ambiguous — Terminal.app may have partially accepted `do script` — so
+	// it must keep the log-only behavior (never kill a possibly-live attach).
+
+	function killSessionCalls(executionId: string) {
+		return mockExecFileSync.mock.calls.filter(
+			(c) =>
+				c[0] === "/usr/local/bin/tmux" &&
+				(c[1] as string[])[0] === "kill-session" &&
+				(c[1] as string[])[2] === `=viewer-${executionId}`,
+		);
+	}
+
+	function mockOpenOsascriptFailure(err: Error) {
+		mockExecFile.mockImplementation(
+			(
+				_cmd: string,
+				args: string[],
+				optsOrCb: unknown,
+				maybeCb?: (e: Error | null, stdout?: string, stderr?: string) => void,
+			) => {
+				const callback = (
+					typeof optsOrCb === "function" ? optsOrCb : maybeCb
+				) as (e: Error | null, stdout?: string, stderr?: string) => void;
+				const script = (args[1] ?? "") as string;
+				if (/do script/.test(script)) {
+					callback(err, "", "");
+				} else if (/return "missing"/.test(script)) {
+					callback(null, "exists\n", "");
+				} else {
+					callback(null, "open\n", "");
+				}
+			},
+		);
+	}
+
+	it("definite osascript spawn failure → kills the just-created viewer session exactly once", async () => {
+		const opts = makeOpts();
+		mockOpenOsascriptFailure(new Error("Command failed: osascript"));
+
+		openTmuxViewer(opts);
+		await settleQueue();
+
+		// pre-open stale cleanup + exactly one post-failure cleanup
+		expect(killSessionCalls(opts.executionId)).toHaveLength(2);
+	});
+
+	it("osascript spawn timeout (killed/SIGTERM, code:null) → log-only, no post-failure kill", async () => {
+		const opts = makeOpts();
+		const timeoutErr = Object.assign(new Error("Command failed: osascript"), {
+			code: null,
+			killed: true,
+			signal: "SIGTERM",
+		});
+		mockOpenOsascriptFailure(timeoutErr);
+
+		openTmuxViewer(opts);
+		await settleQueue();
+
+		// Only the pre-open stale cleanup — ambiguous timeout must NOT kill.
+		expect(killSessionCalls(opts.executionId)).toHaveLength(1);
+	});
+
+	it("osascript spawn success → no post-open kill-session", async () => {
+		const opts = makeOpts();
+		openTmuxViewer(opts);
+		await settleQueue();
+
+		// Only the pre-open stale cleanup.
+		expect(killSessionCalls(opts.executionId)).toHaveLength(1);
 	});
 });
 

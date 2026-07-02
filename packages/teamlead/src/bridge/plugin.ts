@@ -3035,6 +3035,31 @@ export async function startBridge(
 		);
 	}
 
+	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
+	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
+	// The generation source is fixed in openTmuxViewer (cmux no longer opens
+	// viewers); this migrates the existing backlog + backstops the terminal-app
+	// path. MUST run after the FLY-172 marker drain and FLY-324 sweep above so
+	// it sees post-reconciliation statuses (Codex design review R1). One-shot,
+	// fire-and-forget, best-effort. `FLYWHEEL_VIEWER_SESSION_REAPER=0` disables
+	// (same escape-hatch shape as FLYWHEEL_CRASH_REAPER).
+	if (process.env.FLYWHEEL_VIEWER_SESSION_REAPER !== "0") {
+		import("./viewer-session-reaper.js")
+			.then(({ deriveOwnedBaseSessions, reapViewerSessions }) =>
+				reapViewerSessions(
+					store,
+					deriveOwnedBaseSessions((projects ?? []).map((p) => p.projectName)),
+				).then((r) =>
+					console.log(
+						`[viewer-session-reaper] scanned=${r.scanned} killed=${r.killed} skippedAttached=${r.skippedAttached} skippedActive=${r.skippedActive} skippedForeign=${r.skippedForeign} errors=${r.errors.length}`,
+					),
+				),
+			)
+			.catch((e: Error) =>
+				console.warn(`[viewer-session-reaper] failed: ${e.message}`),
+			);
+	}
+
 	// FLY-638: boot prune sweep — clear the backlog of stale CommDB session rows
 	// (terminal status + tmux window provably gone). These accumulate (~65 observed
 	// in production) and pollute runner_terminal_list / Lead bootstrap with

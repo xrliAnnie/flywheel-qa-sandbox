@@ -51,9 +51,11 @@ describe("resolveViewerBackend", () => {
 });
 
 describe("viewerUsesTerminalApp", () => {
-	it("true for cmux/terminal-app, false for tmux-only/none", () => {
+	// FLY-754: cmux no longer runs the Terminal.app opener — cmux-sync owns the
+	// viewing surface there. Only the explicit terminal-app backend opens tabs.
+	it("true ONLY for terminal-app; false for cmux/tmux-only/none", () => {
 		process.env.FLYWHEEL_VIEWER_BACKEND = "cmux";
-		expect(viewerUsesTerminalApp()).toBe(true);
+		expect(viewerUsesTerminalApp()).toBe(false);
 		process.env.FLYWHEEL_VIEWER_BACKEND = "terminal-app";
 		expect(viewerUsesTerminalApp()).toBe(true);
 		process.env.FLYWHEEL_VIEWER_BACKEND = "tmux-only";
@@ -89,8 +91,24 @@ describe("openTmuxViewer gate", () => {
 		expect(execFile).not.toHaveBeenCalled();
 	});
 
-	it("cmux → passes the gate (tmux lookup happens)", () => {
+	// FLY-754: cmux is skipped BEFORE any tmux/osascript call — no
+	// viewer-<execId> session may ever be created on a cmux host.
+	it("cmux → skips the opener entirely (no tmux session, no osascript)", () => {
 		process.env.FLYWHEEL_VIEWER_BACKEND = "cmux";
+		openTmuxViewer(opts);
+		expect(execFileSync).not.toHaveBeenCalled();
+		expect(execFile).not.toHaveBeenCalled();
+	});
+
+	it("cmux → legacy opener is skipped too", () => {
+		process.env.FLYWHEEL_VIEWER_BACKEND = "cmux";
+		openTmuxViewerLegacy("runner-flywheel");
+		expect(execFile).not.toHaveBeenCalled();
+	});
+
+	// FLY-754 byte-compat lock: terminal-app keeps the full opener path.
+	it("terminal-app → passes the gate (tmux lookup happens)", () => {
+		process.env.FLYWHEEL_VIEWER_BACKEND = "terminal-app";
 		openTmuxViewer(opts);
 		// Past the gate it resolves tmux via execFileSync (mocked present).
 		expect(execFileSync).toHaveBeenCalled();
