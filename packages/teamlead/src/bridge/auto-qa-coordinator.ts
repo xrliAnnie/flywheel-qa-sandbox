@@ -130,6 +130,38 @@ export interface AutoQaSideEffects {
 		session: Session;
 		stage: string;
 	}): Promise<void> | void;
+	/**
+	 * FLY-752: RE-TEST wake — wake the ALIVE, parked QA runner to verify the
+	 * implementer's NEW head (fix-loop reuse; never a fresh QA2). Unlike the
+	 * void/best-effort `sendRunnerWake`, this is a FAIL-LOUD primitive: it resolves
+	 * the transport from the QA session's `adapter_type`, clears the QA's
+	 * `declare-state park` marker so the idle-watchdog resumes, and RETURNS whether
+	 * the wake landed. A no-transport QA (should be impossible — spawn forces a
+	 * mailbox-capable lane) returns `{ ok: false }` so the coordinator holds the
+	 * founder + keeps the durable retest marker for reconcile, never silently
+	 * releasing the gate on a wake that went nowhere.
+	 */
+	retestWakeQa(args: {
+		qaSession: Session;
+		parentSession: Session;
+		newSha: string;
+	}):
+		| Promise<{ ok: boolean; error?: string }>
+		| { ok: boolean; error?: string };
+	/**
+	 * FLY-752: TERMINAL QA cleanup — the founder-visible half of the issue's ask.
+	 * On QA PASS (and on supersede while a QA runner is still alive) close the QA
+	 * runner: kill its cmux workspace + tmux window + Terminal tab, ARCHIVE its
+	 * Discord thread (FLY-369), drop its CommDB row. Concrete impl uses
+	 * `closeRunner({ finalizeDone: true, transitionOpts, archive })` so a
+	 * still-`running` (idle/parked) QA is FSM-transitioned to `completed` first
+	 * (archive is completed-gated). Best-effort — a close failure never throws into
+	 * the QA lifecycle (reconcile re-drives it).
+	 */
+	closeQaRunner(args: {
+		qaSession: Session;
+		reason?: string;
+	}): Promise<void> | void;
 }
 
 export interface AutoQaCoordinatorDeps {
@@ -186,11 +218,24 @@ export class AutoQaCoordinator {
 	}
 
 	/**
-	 * (a) A main session just entered awaiting_review. Decide + (if applicable)
-	 * spawn independent QA and HOLD the founder. Idempotent + race-safe.
+	 * (a) A main session just entered awaiting_review. FLY-752 fix-loop reuse:
+	 *   - No owner record + a GENUINE fresh review-pass → first spawn.
+	 *   - No owner record + NOT a fresh transition (parked-waiting-for-founder /
+	 *     re-emission) → SKIP (never QA a parked session).
+	 *   - Owner record, SAME head → dedup / no-op (running dedup; passed founder
+	 *     already surfaced; stuck/failed held; awaiting_retest held).
+	 *   - Owner record, NEW head → RETARGET the same record + REUSE the QA runner:
+	 *     alive → `retest_wake`; dead/closed → re-spawn into the SAME QA issue.
+	 * Idempotent + race-safe. `opts.freshTransition` = the parent transitioned INTO
+	 * awaiting_review (its prior status was not awaiting_review); defaults true for
+	 * back-compat when a caller omits it (real callers always compute + pass it).
 	 */
-	async onMainAwaitingReview(session: Session): Promise<void> {
+	async onMainAwaitingReview(
+		session: Session,
+		opts?: { freshTransition?: boolean },
+	): Promise<void> {
 		if ((session.session_role ?? "main") !== "main") return;
+		const freshTransition = opts?.freshTransition ?? true;
 
 		const policy = this.deps.resolveQaPolicy(session);
 		if (!policy.enabled) {
@@ -218,9 +263,34 @@ export class AutoQaCoordinator {
 			return;
 		}
 
-		// A new reviewed head supersedes any older still-running record for this
-		// parent (a prior QA against a stale head is moot once a new head arrives).
-		this.deps.store.supersedeOtherAutoQaRecords(session.execution_id, sha);
+		const owner = this.deps.store.getLatestAutoQaRecordByParent(
+			session.execution_id,
+		);
+
+		if (owner) {
+			if (owner.target_pr_head_sha === sha) {
+				// Same head — parked / duplicate re-emission. No new QA, no re-test.
+				// passed → founder already surfaced; running/awaiting_retest/stuck/
+				// failed → held, Lead-driven. All no-op.
+				this.log(
+					`dedup ${session.execution_id} @ ${sha.slice(0, 8)} — owner record is ${owner.status} for this head`,
+				);
+				return;
+			}
+			// NEW head = a genuine fix round (freshTransition not required — the head
+			// change is the authoritative signal). REUSE the same QA runner/issue.
+			await this.driveRetest(session, owner, sha);
+			return;
+		}
+
+		// No owner record. Only a GENUINE fresh review-pass gets a first QA — a
+		// parked-waiting-for-founder / re-emitted awaiting_review must NOT spawn.
+		if (!freshTransition) {
+			this.log(
+				`skip ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — no owner record and not a fresh review-pass (parked-for-founder)`,
+			);
+			return;
+		}
 
 		// Held-first, atomic: claim BEFORE spawning so no relayer can observe the
 		// parent as an ordinary review gate, and concurrent awaiting_review events
@@ -232,13 +302,95 @@ export class AutoQaCoordinator {
 			projectName: session.project_name,
 		});
 		if (!claimed) {
+			// A superseded/terminal row for this exact head already exists (rare:
+			// reconcile superseded it, parent re-entered on the same head). Reopen it
+			// for a fresh QA rather than silently skipping (which would leak the gate).
+			const reopened = this.deps.store.reopenAutoQaRecordForRespawn(
+				session.execution_id,
+				sha,
+			);
 			this.log(
-				`dedup ${session.execution_id} @ ${sha.slice(0, 8)} — QA already claimed for this head`,
+				`reopen ${session.execution_id} @ ${sha.slice(0, 8)} for re-spawn (reopened=${reopened})`,
+			);
+		}
+
+		await this.spawnQa(session, sha);
+	}
+
+	/**
+	 * FLY-752: drive a RE-TEST on a new head, reusing the same QA runner/issue.
+	 * RETARGET the owner record (running + durable retest marker), then either wake
+	 * the alive QA runner (`retest_wake`) or — if it already ended (a prior PASS
+	 * closed it, or it died) — re-spawn a fresh QA into the SAME QA issue. On a wake
+	 * that does NOT land, the founder stays HELD and the durable marker is kept so
+	 * reconcile re-drives it — the gate is never silently released.
+	 */
+	private async driveRetest(
+		session: Session,
+		owner: AutoQaRecord,
+		newSha: string,
+	): Promise<void> {
+		const retargeted = this.deps.store.retargetAutoQaRecord({
+			parentExecutionId: session.execution_id,
+			oldSha: owner.target_pr_head_sha,
+			newSha,
+			expectStatuses: [
+				"running",
+				"awaiting_retest",
+				"passed",
+				"stuck",
+				"failed",
+			],
+		});
+		if (!retargeted) {
+			this.log(
+				`retest skipped for ${session.issue_id} @ ${newSha.slice(0, 8)} — retarget CAS miss (status drift / concurrent)`,
 			);
 			return;
 		}
 
-		await this.spawnQa(session, sha);
+		const qa = owner.qa_execution_id
+			? this.deps.store.getSession(owner.qa_execution_id)
+			: undefined;
+		if (qa && !TERMINAL_STATUSES.has(qa.status ?? "")) {
+			const wake = await this.deps.effects.retestWakeQa({
+				qaSession: qa,
+				parentSession: session,
+				newSha,
+			});
+			if (wake.ok) {
+				this.deps.store.clearRetestWakePending(session.execution_id, newSha);
+				this.log(
+					`retest wake OK for ${session.issue_id} @ ${newSha.slice(0, 8)} (QA ${qa.execution_id})`,
+				);
+				await this.deps.effects.postThread({
+					session,
+					text: `🧪 自动 QA 复测新 head \`${newSha.slice(0, 8)}\` — 同一个 QA Runner(不重开)。QA 全绿前不打扰 founder。`,
+				});
+				await this.safeStampIssueStage(session, "test");
+			} else {
+				// Wake did NOT land — hold the founder, keep the durable marker for
+				// reconcile to retry, and tell the Lead. NEVER release the gate.
+				this.warn(
+					`retest wake FAILED for ${session.issue_id} @ ${newSha.slice(0, 8)}: ${wake.error ?? "unknown"} — held for reconcile retry`,
+				);
+				await this.deps.effects.alertLeadPipelineError({
+					session,
+					issueId: session.issue_id,
+					projectName: session.project_name,
+					reason: `auto-QA retest wake failed for ${session.issue_id} (QA ${qa.execution_id}): ${wake.error ?? "unknown"}. Founder held; reconcile will retry.`,
+				});
+			}
+			return;
+		}
+
+		// QA runner already ended (prior PASS closed it, or it died) → re-spawn a
+		// fresh QA into the SAME QA issue (record carries qa_issue_id). Not a QA2 —
+		// the old one is gone; this is bounded, single-QA reuse of the issue/thread.
+		this.log(
+			`retest re-spawn for ${session.issue_id} @ ${newSha.slice(0, 8)} — prior QA runner ended`,
+		);
+		await this.spawnQa(session, newSha);
 	}
 
 	/**
@@ -318,6 +470,12 @@ export class AutoQaCoordinator {
 				// vendor label (agy/kimi/codex) can't pick the QA backend (FLY-643).
 				issueLabels: parseIssueLabels(session.issue_labels),
 				ignoreRunnerLabelSelection: true,
+				// FLY-752: the QA runner MUST be mailbox-capable so `retest_wake` can
+				// reach it across the fix loop. A project whose runner role / env
+				// default is no-transport (antigravity/kimi) would otherwise spawn a QA
+				// that can never be re-woken → wedge the founder gate after the first
+				// FAIL. buildRunnerSpawnFields forces a Claude lane when this is set.
+				requireMailboxTransport: true,
 				startPoint: sha,
 				qaContext,
 			});
@@ -326,6 +484,9 @@ export class AutoQaCoordinator {
 				sha,
 				result.executionId,
 			);
+			// FLY-752: this spawn covers the record's current head → the retest wake
+			// (if this was a re-spawn after retarget) is satisfied. Clear the marker.
+			this.deps.store.clearRetestWakePending(session.execution_id, sha);
 			this.log(
 				`spawned QA ${result.executionId} on ${qaIssue.issueIdentifier ?? qaIssue.issueId} for ${session.issue_id} @ ${sha.slice(0, 8)} (parent ${session.execution_id})`,
 			);
@@ -470,23 +631,42 @@ export class AutoQaCoordinator {
 				verdictEventId: event.event_id,
 			});
 			this.log(
-				`QA PASS for ${parent.issue_id} (${targetExec}) — releasing founder ship-ready notification`,
+				`QA PASS for ${parent.issue_id} (${targetExec}) — releasing founder ship-ready notification + closing QA`,
 			);
 			await this.deps.effects.notifyShipReady({ session: parent, record });
 			// FLY-630 ②: QA is green — the issue is now genuinely awaiting the founder.
 			// Re-stamp the parent thread back to the approve badge (⏳待批).
 			await this.safeStampIssueStage(parent, "approve");
+			// FLY-752: QA passed → the fix loop is done. Auto-cleanup the QA runner
+			// (cmux workspace + tmux + Terminal tab + FLY-369 archive + CommDB row)
+			// so it never lingers/accumulates. Best-effort; a close failure is picked
+			// up by reconcile (listPassedAutoQaRecords + live QA → close).
+			await this.deps.effects.closeQaRunner({
+				qaSession,
+				reason: `auto-QA passed for ${parent.issue_id}`,
+			});
 			// Mark notified only AFTER the notification fired, so a crash in between
 			// leaves it passed-but-unnotified for reconcile to re-notify.
 			this.deps.store.setAutoQaStatus(targetExec, parentSha, "passed", {
 				notifiedAt: true,
 			});
 		} else {
-			this.deps.store.setAutoQaStatus(targetExec, parentSha, "failed", {
-				verdictEventId: event.event_id,
-			});
+			// FLY-752: FAIL no longer TERMINATES the QA. The record goes to the
+			// non-terminal `awaiting_retest` hold state and the QA runner is kept
+			// ALIVE (it self-`declare-state park`s + releases heavy resources). When
+			// the implementer pushes a new head, onMainAwaitingReview retargets this
+			// record + `retest_wake`s the SAME QA runner (fix-loop reuse; never a
+			// fresh QA2). The founder stays held (status != passed).
+			this.deps.store.setAutoQaStatus(
+				targetExec,
+				parentSha,
+				"awaiting_retest",
+				{
+					verdictEventId: event.event_id,
+				},
+			);
 			this.log(
-				`QA FAIL for ${parent.issue_id} (${targetExec}) — waking implementer, founder NOT notified`,
+				`QA FAIL for ${parent.issue_id} (${targetExec}) — waking implementer, QA parked for retest, founder NOT notified`,
 			);
 			await this.deps.effects.feedbackWakeMain({ session: parent, summary });
 			// FLY-630 ②: QA failed → the implementer is being woken to fix. Reflect
@@ -499,7 +679,7 @@ export class AutoQaCoordinator {
 			// dev-fix → QA-retest loop and only escalates on a real deadlock.
 			await this.deps.effects.postThread({
 				session: qaSession,
-				text: `🔴 自动 QA 未通过 → 已把报告交回实现 Runner 修复（founder 不打扰）。\n${truncate(summary, 600)}`,
+				text: `🔴 自动 QA 未通过 → 已把报告交回实现 Runner 修复,QA Runner 保活等复测(同一个,不重开;founder 不打扰)。\n${truncate(summary, 600)}`,
 			});
 		}
 	}
@@ -509,26 +689,92 @@ export class AutoQaCoordinator {
 	 * GatePoller / Heartbeat timers (so a restart never relays a held gate).
 	 */
 	async reconcileOnStartup(): Promise<void> {
-		// passed-but-unnotified → re-notify (crash between status=passed + notify).
-		for (const rec of this.deps.store.listPassedUnnotifiedAutoQaRecords()) {
+		// (1) PASSED records — re-notify if unnotified AND close a QA runner left
+		// alive by a crash between notifyShipReady and closeQaRunner (FLY-752). The
+		// passed-unnotified sweep alone misses the notified-but-not-closed case, so
+		// scan ALL passed records for a still-live QA.
+		for (const rec of this.deps.store.listPassedAutoQaRecords()) {
 			const parent = this.deps.store.getSession(rec.parent_execution_id);
-			if (!parent || parent.status !== "awaiting_review") continue;
-			if (parent.pr_head_sha?.toLowerCase() !== rec.target_pr_head_sha)
-				continue;
-			this.log(
-				`reconcile re-notify ship-ready for ${parent.issue_id} (${rec.parent_execution_id})`,
-			);
-			await this.deps.effects.notifyShipReady({ session: parent, record: rec });
-			this.deps.store.setAutoQaStatus(
-				rec.parent_execution_id,
-				rec.target_pr_head_sha,
-				"passed",
-				{ notifiedAt: true },
-			);
+			const parentOk =
+				parent &&
+				parent.status === "awaiting_review" &&
+				parent.pr_head_sha?.toLowerCase() === rec.target_pr_head_sha;
+
+			if (parentOk && !rec.notified_at) {
+				this.log(
+					`reconcile re-notify ship-ready for ${parent.issue_id} (${rec.parent_execution_id})`,
+				);
+				await this.deps.effects.notifyShipReady({
+					session: parent,
+					record: rec,
+				});
+				this.deps.store.setAutoQaStatus(
+					rec.parent_execution_id,
+					rec.target_pr_head_sha,
+					"passed",
+					{ notifiedAt: true },
+				);
+			}
+
+			// Close a QA runner the PASS never cleaned up (crash between notify+close).
+			if (rec.qa_execution_id) {
+				const qa = this.deps.store.getSession(rec.qa_execution_id);
+				if (qa && !TERMINAL_STATUSES.has(qa.status ?? "")) {
+					this.log(
+						`reconcile close passed-but-live QA ${rec.qa_execution_id} for ${rec.issue_id}`,
+					);
+					await this.deps.effects.closeQaRunner({
+						qaSession: qa,
+						reason: `auto-QA passed (reconcile cleanup) for ${rec.issue_id}`,
+					});
+				}
+			}
 		}
 
-		// running records → spawn if never spawned; stuck if QA died without verdict.
+		// (2) Records with a durable retest-wake marker (crash after retarget, before
+		// the wake was confirmed) → re-drive: wake the alive QA, or re-spawn a dead
+		// one. This is what makes the retest wake durable across a restart (FLY-752).
+		for (const rec of this.deps.store.listAutoQaRecordsAwaitingRetestWake()) {
+			const parent = this.deps.store.getSession(rec.parent_execution_id);
+			if (
+				!parent ||
+				parent.status !== "awaiting_review" ||
+				parent.pr_head_sha?.toLowerCase() !== rec.target_pr_head_sha
+			) {
+				continue; // handled by the running sweep below (superseded / moot).
+			}
+			const qa = rec.qa_execution_id
+				? this.deps.store.getSession(rec.qa_execution_id)
+				: undefined;
+			if (qa && !TERMINAL_STATUSES.has(qa.status ?? "")) {
+				const wake = await this.deps.effects.retestWakeQa({
+					qaSession: qa,
+					parentSession: parent,
+					newSha: rec.target_pr_head_sha,
+				});
+				if (wake.ok) {
+					this.deps.store.clearRetestWakePending(
+						rec.parent_execution_id,
+						rec.target_pr_head_sha,
+					);
+					this.log(
+						`reconcile retest-wake redelivered for ${parent.issue_id} (QA ${rec.qa_execution_id})`,
+					);
+				} else {
+					this.warn(
+						`reconcile retest-wake still failing for ${parent.issue_id}: ${wake.error ?? "unknown"} — kept pending`,
+					);
+				}
+			} else {
+				this.log(`reconcile re-spawn (retest, QA dead) for ${parent.issue_id}`);
+				await this.spawnQa(parent, rec.target_pr_head_sha);
+			}
+		}
+
+		// (3) RUNNING records (no pending marker) → spawn if never spawned; stuck if
+		// the QA died without a verdict.
 		for (const rec of this.deps.store.listRunningAutoQaRecords()) {
+			if (rec.retest_wake_pending_at) continue; // handled by sweep (2).
 			const parent = this.deps.store.getSession(rec.parent_execution_id);
 			// Parent moved on (merged / new head / gone) → record is moot.
 			if (
@@ -575,6 +821,56 @@ export class AutoQaCoordinator {
 				});
 			}
 			// else QA still running → leave it; verdict pending.
+		}
+
+		// (4) AWAITING_RETEST records (QA reported FAIL, parked for the next head).
+		// Parent moved on / gone → superseded (+ close a still-live QA); QA session
+		// died while parked → stuck + alert (founder held; a dead parked runner is
+		// also reaped by the orphan/crash reaper). QA alive → leave (awaiting head).
+		for (const rec of this.deps.store.listAutoQaRecordsByStatus(
+			"awaiting_retest",
+		)) {
+			const parent = this.deps.store.getSession(rec.parent_execution_id);
+			const qa = rec.qa_execution_id
+				? this.deps.store.getSession(rec.qa_execution_id)
+				: undefined;
+			const parentGone =
+				!parent ||
+				parent.status !== "awaiting_review" ||
+				parent.pr_head_sha?.toLowerCase() !== rec.target_pr_head_sha;
+			if (parentGone) {
+				this.deps.store.setAutoQaStatus(
+					rec.parent_execution_id,
+					rec.target_pr_head_sha,
+					"superseded",
+					{},
+				);
+				if (qa && !TERMINAL_STATUSES.has(qa.status ?? "")) {
+					await this.deps.effects.closeQaRunner({
+						qaSession: qa,
+						reason: `auto-QA superseded (reconcile) for ${rec.issue_id}`,
+					});
+				}
+				continue;
+			}
+			if (!qa || TERMINAL_STATUSES.has(qa.status ?? "")) {
+				this.warn(
+					`reconcile stuck: parked QA ${rec.qa_execution_id} for ${parent.issue_id} is ${qa?.status ?? "gone"} — cannot retest`,
+				);
+				this.deps.store.setAutoQaStatus(
+					rec.parent_execution_id,
+					rec.target_pr_head_sha,
+					"stuck",
+					{},
+				);
+				await this.deps.effects.alertLeadPipelineError({
+					session: parent,
+					issueId: parent.issue_id,
+					projectName: parent.project_name,
+					reason: `auto-QA stuck for ${parent.issue_id}: parked QA ${rec.qa_execution_id} died before retest. Founder NOT surfaced.`,
+				});
+			}
+			// else QA alive + parked → leave it; awaiting the next head.
 		}
 	}
 }

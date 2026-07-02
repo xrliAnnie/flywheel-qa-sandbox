@@ -354,7 +354,10 @@ export class ConfigLoader {
 					"qa must be a YAML mapping (object), not an array or scalar",
 				);
 			}
-			if (typeof qa.auto !== "boolean") {
+			// FLY-752: `auto` is OPTIONAL (opt-out default). Absent → ON downstream.
+			// A PRESENT non-boolean is still malformed → throw (fails CLOSED at the
+			// policy resolver, never silently on).
+			if (qa.auto != null && typeof qa.auto !== "boolean") {
 				throw new Error("qa.auto must be a boolean");
 			}
 			if (qa.skip_labels != null) {

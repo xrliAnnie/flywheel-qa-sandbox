@@ -2,6 +2,9 @@
  * FLY-643: AutoQaEffects.createQaIssue — creates the separate QA·FLY-XX Linear
  * issue mirroring the parent's team / project / labels, fail-closed on any error.
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { Session } from "../../StateStore.js";
@@ -92,6 +95,10 @@ describe("buildQaIssueContent (FLY-643)", () => {
 		expect(description).toContain("#42");
 		expect(description).toContain(SHA);
 		expect(description).toContain("qa-result");
+		// FLY-752 (Codex code R1 #1): the QA issue description must carry the
+		// fix-loop contract, NOT the old terminal `complete --route no_code`.
+		expect(description).not.toContain("complete --route no_code");
+		expect(description).toContain("declare-state park");
 	});
 
 	it("omits the PR line when no PR number", () => {
@@ -354,5 +361,185 @@ describe("AutoQaEffects.stampIssueStage (FLY-630 ②)", () => {
 		expect(() =>
 			effects.stampIssueStage({ session: session(), stage: "test" }),
 		).not.toThrow();
+	});
+});
+
+describe("AutoQaEffects.retestWakeQa (FLY-752 fail-loud wake)", () => {
+	let tmpDir: string;
+	beforeEach(() => {
+		tmpDir = mkdtempSync(join(tmpdir(), "fly752-comm-"));
+		process.env.FLYWHEEL_COMM_DIR = tmpDir;
+	});
+	afterEach(() => {
+		process.env.FLYWHEEL_COMM_DIR = undefined;
+		rmSync(tmpDir, { recursive: true, force: true });
+	});
+
+	function qa(adapter?: string): Session {
+		return {
+			execution_id: "qa-1",
+			issue_id: "qa-uuid",
+			project_name: "proj",
+			adapter_type: adapter,
+		} as Session;
+	}
+	const parent = () =>
+		({
+			execution_id: "main-1",
+			issue_id: "parent-uuid",
+			issue_identifier: "FLY-643",
+			project_name: "proj",
+		}) as Session;
+
+	it("clears the QA park marker + wakes with the CLAUDE backend for a claude-tmux QA", async () => {
+		const calls: { backend?: string; content: string }[] = [];
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [],
+			config: {} as never,
+			wakeImpl: async (args) => {
+				calls.push({ backend: args.backend, content: args.content });
+				return { ok: true };
+			},
+		});
+		const res = await effects.retestWakeQa({
+			qaSession: qa("claude-tmux"),
+			parentSession: parent(),
+			newSha: SHA,
+		});
+		expect(res.ok).toBe(true);
+		expect(calls[0]?.backend).toBe("claude-code");
+		expect(calls[0]?.content).toContain(SHA);
+		expect(calls[0]?.content).toContain("--target-exec main-1");
+	});
+
+	it("routes to the CODEX backend for a codex-tmux QA", async () => {
+		const calls: { backend?: string }[] = [];
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [],
+			config: {} as never,
+			wakeImpl: async (args) => {
+				calls.push({ backend: args.backend });
+				return { ok: true };
+			},
+		});
+		await effects.retestWakeQa({
+			qaSession: qa("codex-tmux"),
+			parentSession: parent(),
+			newSha: SHA,
+		});
+		expect(calls[0]?.backend).toBe("codex");
+	});
+
+	it("FAIL-CLOSED for a no-transport QA backend (never a silent success)", async () => {
+		let waked = false;
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [],
+			config: {} as never,
+			wakeImpl: async () => {
+				waked = true;
+				return { ok: true };
+			},
+		});
+		const res = await effects.retestWakeQa({
+			qaSession: qa("antigravity-tmux"),
+			parentSession: parent(),
+			newSha: SHA,
+		});
+		expect(res.ok).toBe(false);
+		expect(res.error).toContain("no-transport");
+		expect(waked).toBe(false);
+	});
+
+	it("returns ok:false when the mailbox wake fails", async () => {
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [],
+			config: {} as never,
+			wakeImpl: async () => ({ ok: false, error: "mailbox down" }),
+		});
+		const res = await effects.retestWakeQa({
+			qaSession: qa("claude-tmux"),
+			parentSession: parent(),
+			newSha: SHA,
+		});
+		expect(res.ok).toBe(false);
+		expect(res.error).toContain("mailbox down");
+	});
+
+	it("FAIL-LOUD on a backend_commdb SKIP — this primitive delivers the wake itself, so a skip is NOT a success (Codex code R1 #2)", async () => {
+		// In FLYWHEEL_COMM_BACKEND=commdb rollback mode wakeRunnerMailbox skips
+		// without delivering. retestWakeQa has no PostToolUse hook to inject the row
+		// (unlike sendRunnerWake), so a skip must fail-loud → coordinator keeps the
+		// durable retest marker + alerts, never clears it on a wake that went nowhere.
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [],
+			config: {} as never,
+			wakeImpl: async () => ({ ok: false, skippedReason: "backend_commdb" }),
+		});
+		const res = await effects.retestWakeQa({
+			qaSession: qa("claude-tmux"),
+			parentSession: parent(),
+			newSha: SHA,
+		});
+		expect(res.ok).toBe(false);
+	});
+});
+
+describe("AutoQaEffects.closeQaRunner (FLY-752 cleanup)", () => {
+	it("closeRunner is invoked with finalizeDone + executorType=qa + archive", async () => {
+		const calls: Parameters<
+			typeof import("../close-runner.js").closeRunner
+		>[0][] = [];
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [{ projectName: "proj" } as ProjectEntry],
+			config: { discordOwnerUserId: "owner-1" } as never,
+			transitionOpts: { some: "opts" } as never,
+			globalBotToken: "bot-tok",
+			closeRunnerImpl: async (opts) => {
+				calls.push(opts);
+				return { closed: true };
+			},
+		});
+		await effects.closeQaRunner({
+			qaSession: {
+				execution_id: "qa-1",
+				issue_id: "qa-uuid",
+				project_name: "proj",
+			} as Session,
+			reason: "auto-QA passed",
+		});
+		expect(calls).toHaveLength(1);
+		expect(calls[0].executionId).toBe("qa-1");
+		expect(calls[0].executorType).toBe("qa");
+		expect(calls[0].finalizeDone).toBe(true);
+		expect(calls[0].transitionOpts).toEqual({ some: "opts" });
+		expect(calls[0].archive?.globalBotToken).toBe("bot-tok");
+		expect(calls[0].archive?.discordOwnerUserId).toBe("owner-1");
+	});
+
+	it("never throws when closeRunner reports not-closed (reconcile retries)", async () => {
+		const effects = new AutoQaEffects({
+			store: {} as never,
+			projects: [],
+			config: {} as never,
+			closeRunnerImpl: async () => ({
+				closed: false,
+				error: "status_not_eligible:running",
+			}),
+		});
+		await expect(
+			effects.closeQaRunner({
+				qaSession: {
+					execution_id: "qa-1",
+					issue_id: "qa-uuid",
+					project_name: "proj",
+				} as Session,
+			}),
+		).resolves.toBeUndefined();
 	});
 });

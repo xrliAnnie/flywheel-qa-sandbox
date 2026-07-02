@@ -593,6 +593,11 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				try {
 					await this.autoQaCoordinator.current.onMainAwaitingReview(
 						mainSession,
+						{
+							// FLY-752: fresh review-pass (prior status wasn't
+							// awaiting_review) vs re-emitted / parked-for-founder.
+							freshTransition: preExistingSession?.status !== "awaiting_review",
+						},
 					);
 				} catch (err) {
 					console.error(
