@@ -1,15 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
-	applyModelSuffix,
+	applyModelMarker,
 	BLOCKED_EMOJI,
-	modelSuffixCode,
+	hasIssueKeyHead,
+	modelMarkerCode,
 	STAGE_EMOJI,
 	STAGE_WORD,
 	splitStatusEmoji,
 	stageBadge,
 	stageEmoji,
 	stageWord,
-	stripModelSuffix,
+	stripModelMarker,
 	stripStatusEmojiPrefix,
 	VALID_STAGES,
 } from "../bridge/stage-utils.js";
@@ -246,52 +247,116 @@ describe("FLY-560 UX iteration: splitStatusEmoji peels the glued word", () => {
 	});
 });
 
-describe("FLY-728: model-code suffix (F/O/S/H)", () => {
-	it("applyModelSuffix appends the code after the base", () => {
-		expect(applyModelSuffix("[FLY-728] Title", "F")).toBe("[FLY-728] Title ·F");
-		expect(applyModelSuffix("[FLY-728] Title", "O")).toBe("[FLY-728] Title ·O");
+describe("FLY-755: model-code front marker ([F]/[O]/[S]/[H])", () => {
+	it("applyModelMarker prepends the code before the issue key — all four codes", () => {
+		expect(applyModelMarker("[FLY-728] Title", "F")).toBe(
+			"[F] [FLY-728] Title",
+		);
+		expect(applyModelMarker("[FLY-728] Title", "O")).toBe(
+			"[O] [FLY-728] Title",
+		);
+		expect(applyModelMarker("[FLY-728] Title", "S")).toBe(
+			"[S] [FLY-728] Title",
+		);
+		expect(applyModelMarker("[FLY-728] Title", "H")).toBe(
+			"[H] [FLY-728] Title",
+		);
 	});
 
-	it("applyModelSuffix is idempotent (re-stamp does not double the suffix)", () => {
-		expect(applyModelSuffix("[FLY-728] Title ·F", "F")).toBe(
-			"[FLY-728] Title ·F",
+	it("applyModelMarker is idempotent (re-stamp does not double the marker)", () => {
+		expect(applyModelMarker("[F] [FLY-728] Title", "F")).toBe(
+			"[F] [FLY-728] Title",
 		);
 		// and it can SWAP the code (model never changes in practice, but be safe)
-		expect(applyModelSuffix("[FLY-728] Title ·F", "S")).toBe(
-			"[FLY-728] Title ·S",
+		expect(applyModelMarker("[F] [FLY-728] Title", "S")).toBe(
+			"[S] [FLY-728] Title",
 		);
 	});
 
-	it("undefined code strips any existing suffix (account default = no code)", () => {
-		expect(applyModelSuffix("[FLY-728] Title ·F", undefined)).toBe(
+	it("undefined code strips any existing marker (account default = no code)", () => {
+		expect(applyModelMarker("[F] [FLY-728] Title", undefined)).toBe(
 			"[FLY-728] Title",
 		);
-		expect(applyModelSuffix("[FLY-728] Title", undefined)).toBe(
+		expect(applyModelMarker("[FLY-728] Title", undefined)).toBe(
+			"[FLY-728] Title",
+		);
+		// legacy tail is cleared too
+		expect(applyModelMarker("[FLY-728] Title ·F", undefined)).toBe(
 			"[FLY-728] Title",
 		);
 	});
 
-	it("stripModelSuffix removes only a trailing model code", () => {
-		expect(stripModelSuffix("[FLY-728] Title ·H")).toBe("[FLY-728] Title");
-		expect(stripModelSuffix("[FLY-728] Title")).toBe("[FLY-728] Title");
+	it("applyModelMarker migrates a legacy tail suffix to the front", () => {
+		expect(applyModelMarker("[FLY-728] Title ·F", "F")).toBe(
+			"[F] [FLY-728] Title",
+		);
+	});
+
+	it("applyModelMarker never stamps a keyless base (no issue key head)", () => {
+		// FLY-755 paired contract (Codex design R2): insertion is anchored on a
+		// bracketed issue key — keyless titles (even bracket-start ones) are never
+		// stamped, so recognition can never mis-strip a real title later.
+		expect(applyModelMarker("Bare title", "F")).toBe("Bare title");
+		expect(applyModelMarker("[infra] Title", "F")).toBe("[infra] Title");
+		expect(applyModelMarker("[Fable] Title", "F")).toBe("[Fable] Title");
+	});
+
+	it("stripModelMarker removes the leading marker and/or a legacy tail", () => {
+		expect(stripModelMarker("[F] [FLY-728] Title")).toBe("[FLY-728] Title");
+		expect(stripModelMarker("[FLY-728] Title ·H")).toBe("[FLY-728] Title");
+		// both forms present (defensive) → both removed
+		expect(stripModelMarker("[F] [FLY-728] Title ·H")).toBe("[FLY-728] Title");
+		expect(stripModelMarker("[FLY-728] Title")).toBe("[FLY-728] Title");
+		// marker directly in front of a bare-key placeholder ([KEY] at end)
+		expect(stripModelMarker("[F] [FLY-728]")).toBe("[FLY-728]");
 		// a middle-dot elsewhere in the title is untouched
-		expect(stripModelSuffix("[FLY-728] A·B thing")).toBe("[FLY-728] A·B thing");
+		expect(stripModelMarker("[FLY-728] A·B thing")).toBe("[FLY-728] A·B thing");
 	});
 
-	it("coexists with the stage-emoji prefix — splitStatusEmoji preserves the suffix", () => {
-		// The stage badge is a PREFIX; the model code is a SUFFIX. Stripping the
-		// stage prefix must keep the model suffix intact (survives re-stamps).
-		const stamped = "🔨实现中 [FLY-728] Title ·F";
-		expect(splitStatusEmoji(stamped).base).toBe("[FLY-728] Title ·F");
-		expect(stripModelSuffix(splitStatusEmoji(stamped).base)).toBe(
+	it("stripModelMarker never mis-strips bracket-start titles (Lead gate cases)", () => {
+		// The marker regex is single-letter [FOSH] followed by a bracketed issue
+		// key — multi-letter bracket segments and keyless brackets pass through.
+		expect(stripModelMarker("[founder-UX] Title")).toBe("[founder-UX] Title");
+		expect(stripModelMarker("[infra] Title")).toBe("[infra] Title");
+		expect(stripModelMarker("[Fable] Title")).toBe("[Fable] Title");
+		expect(stripModelMarker("[FIX] Title")).toBe("[FIX] Title");
+		// literal single-letter bracket titles WITHOUT an issue key behind them
+		// are real title text, not our marker (Codex design R1/R2)
+		expect(stripModelMarker("[F] Founder copy")).toBe("[F] Founder copy");
+		expect(stripModelMarker("[F] [infra] copy")).toBe("[F] [infra] copy");
+	});
+
+	it("coexists with the stage-emoji prefix — splitStatusEmoji peels only the badge", () => {
+		// The stage badge is the outermost PREFIX; the model marker sits between
+		// the badge and the issue key. Stripping the badge keeps the marker.
+		const stamped = "🔨实现中 [F] [FLY-728] Title";
+		expect(splitStatusEmoji(stamped).base).toBe("[F] [FLY-728] Title");
+		expect(stripModelMarker(splitStatusEmoji(stamped).base)).toBe(
 			"[FLY-728] Title",
 		);
 	});
 
-	it("modelSuffixCode extracts the trailing code (for preserve-if-undefined)", () => {
-		expect(modelSuffixCode("[FLY-728] Title ·F")).toBe("F");
-		expect(modelSuffixCode("[FLY-728] Title ·H")).toBe("H");
-		expect(modelSuffixCode("[FLY-728] Title")).toBeUndefined();
-		expect(modelSuffixCode("[FLY-728] A·B thing")).toBeUndefined();
+	it("modelMarkerCode extracts the front marker, falling back to the legacy tail", () => {
+		expect(modelMarkerCode("[F] [FLY-728] Title")).toBe("F");
+		expect(modelMarkerCode("[H] [FLY-728] Title")).toBe("H");
+		// legacy tail fallback (preserve path on un-migrated threads)
+		expect(modelMarkerCode("[FLY-728] Title ·H")).toBe("H");
+		// front wins over a (defensive) simultaneous legacy tail
+		expect(modelMarkerCode("[F] [FLY-728] Title ·H")).toBe("F");
+		expect(modelMarkerCode("[FLY-728] Title")).toBeUndefined();
+		expect(modelMarkerCode("[FLY-728] A·B thing")).toBeUndefined();
+		// keyless literal bracket titles carry no code
+		expect(modelMarkerCode("[F] Founder copy")).toBeUndefined();
+		expect(modelMarkerCode("[F] [infra] copy")).toBeUndefined();
+	});
+
+	it("hasIssueKeyHead recognizes only a bracketed Linear issue key head", () => {
+		expect(hasIssueKeyHead("[FLY-728] Title")).toBe(true);
+		expect(hasIssueKeyHead("[FLY-728]")).toBe(true);
+		expect(hasIssueKeyHead("[GEO3D-12] Title")).toBe(true);
+		expect(hasIssueKeyHead("[infra] Title")).toBe(false);
+		expect(hasIssueKeyHead("[Fable] Title")).toBe(false);
+		expect(hasIssueKeyHead("[F] Title")).toBe(false);
+		expect(hasIssueKeyHead("Bare title")).toBe(false);
 	});
 });
