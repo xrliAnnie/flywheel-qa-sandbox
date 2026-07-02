@@ -558,6 +558,16 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-766: the actual db path this store opened (`:memory:` or a file path).
+	 * The Chrome-session reaper uses it as the ownership truth threaded into the
+	 * per-runner owner marker — no env re-resolution, no reach into the private
+	 * field.
+	 */
+	getDbPath(): string {
+		return this.dbPath;
+	}
+
+	/**
 	 * FLY-663: open the StateStore on native better-sqlite3. The factory stays
 	 * `async` so the many `await StateStore.create(...)` call sites (and tests)
 	 * are byte-compatible; better-sqlite3 itself is synchronous.
