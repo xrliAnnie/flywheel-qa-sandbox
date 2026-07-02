@@ -15,15 +15,19 @@
  */
 
 import { CommDB } from "flywheel-comm/db";
+import { wakeRunnerMailbox } from "flywheel-comm/wake";
 import { modelShortCode } from "flywheel-config";
+import type { ApplyTransitionOpts } from "../applyTransition.js";
 import type { LeadAlertNotifier } from "../LeadAlertNotifier.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { AutoQaRecord, Session, StateStore } from "../StateStore.js";
 import type { AutoQaSideEffects, QaIssueRef } from "./auto-qa-coordinator.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
+import { closeRunner } from "./close-runner.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { postDiscordMessageToChannel } from "./discord-utils.js";
 import { buildSessionKey } from "./hook-payload.js";
+import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import { sendRunnerWake } from "./runner-wake.js";
 import type { BridgeConfig } from "./types.js";
 
@@ -80,6 +84,18 @@ export interface AutoQaEffectsDeps {
 	 * fails closed.
 	 */
 	linearClientFactory?: (apiKey: string) => LinearClientLike;
+	/**
+	 * FLY-752: FSM transition opts, required by `closeQaRunner` so a still-`running`
+	 * (idle/parked) QA runner is finalized to `completed` before close (archive is
+	 * completed-gated). Wired in plugin.ts (same value close-runner endpoint uses).
+	 */
+	transitionOpts?: ApplyTransitionOpts;
+	/** FLY-752: per-Lead-less global bot token, for the closeQaRunner archive cascade. */
+	globalBotToken?: string;
+	/** FLY-752: test seam for the mailbox wake used by `retestWakeQa`. */
+	wakeImpl?: typeof wakeRunnerMailbox;
+	/** FLY-752: test seam for closeRunner (defaults to the real primitive). */
+	closeRunnerImpl?: typeof closeRunner;
 }
 
 export class AutoQaEffects implements AutoQaSideEffects {
@@ -362,6 +378,130 @@ export class AutoQaEffects implements AutoQaSideEffects {
 				);
 			});
 	}
+
+	/**
+	 * FLY-752: FAIL-LOUD re-test wake. Resolve the QA session's transport from its
+	 * `adapter_type`; a no-transport QA (should be impossible — spawn forces a
+	 * mailbox-capable lane) returns `{ ok:false }` so the coordinator holds the
+	 * founder + keeps the durable retest marker. Clear the QA's `declare-state park`
+	 * marker so the idle-watchdog resumes, then mailbox-wake it with the new head.
+	 */
+	async retestWakeQa(args: {
+		qaSession: Session;
+		parentSession: Session;
+		newSha: string;
+	}): Promise<{ ok: boolean; error?: string }> {
+		const adapter = args.qaSession.adapter_type;
+		const transport =
+			adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
+				? EXECUTOR_TO_TRANSPORT[adapter as keyof typeof EXECUTOR_TO_TRANSPORT]
+				: "claude-code"; // legacy/absent adapter → default Claude lane.
+		if (transport === "none") {
+			return {
+				ok: false,
+				error: `no-transport QA backend (${adapter}) cannot receive retest_wake`,
+			};
+		}
+		const wake = this.deps.wakeImpl ?? wakeRunnerMailbox;
+		// create-if-missing: clearDeclaredState is a no-op when the QA never parked,
+		// and the wake must still proceed — never throw just because comm.db is absent.
+		const db = new CommDB(commDbPathForProject(args.qaSession.project_name));
+		try {
+			// Clear the QA's self-declared `park` marker so the idle-watchdog resumes
+			// and treats the QA as active again once it re-tests.
+			try {
+				db.clearDeclaredState(args.qaSession.execution_id);
+			} catch (err) {
+				console.warn(
+					`[auto-qa-effects] clearDeclaredState warn for ${args.qaSession.execution_id}: ${
+						err instanceof Error ? err.message : String(err)
+					}`,
+				);
+			}
+			const parentRef =
+				args.parentSession.issue_identifier ?? args.parentSession.issue_id;
+			const content =
+				`Auto-QA RE-TEST: the PR you are verifying (${parentRef}) has a NEW reviewed head ` +
+				`${args.newSha}. Re-fetch + re-pin your worktree to it, re-run your QA scenarios, then emit ` +
+				`flywheel-comm qa-result --status pass|fail --target-exec ${args.parentSession.execution_id} again. ` +
+				`Same QA session — do NOT complete; on FAIL park again and wait for the next retest.`;
+			const res = await wake({
+				db,
+				execId: args.qaSession.execution_id,
+				fromAgent: "bridge",
+				content,
+				metadata: {
+					kind: "retest_wake",
+					newSha: args.newSha,
+					parentExec: args.parentSession.execution_id,
+				},
+				backend: transport,
+			});
+			if (res.ok) return { ok: true };
+			// FLY-752 (Codex code R1 #2): unlike sendRunnerWake — whose caller has a
+			// PostToolUse hook that injects the CommDB row in rollback mode — this
+			// primitive delivers the wake itself. A `backend_commdb` skip therefore
+			// means NOTHING was delivered, so it MUST fail-loud (keep the durable
+			// retest marker + alert), never report success (which would clear the
+			// marker and strand the founder gate with no retry).
+			return {
+				ok: false,
+				error: res.error ?? res.skippedReason ?? "wake failed",
+			};
+		} catch (err) {
+			return {
+				ok: false,
+				error: err instanceof Error ? err.message : String(err),
+			};
+		} finally {
+			db.close();
+		}
+	}
+
+	/**
+	 * FLY-752: close a QA runner at a terminal QA outcome (PASS / supersede). Uses
+	 * `closeRunner({ finalizeDone: true })` so a still-`running` (idle/parked) QA is
+	 * FSM-transitioned to `completed` first (archive is completed-gated), then its
+	 * cmux workspace + tmux window + Terminal tab are killed, its Discord thread is
+	 * archived (FLY-369), and its CommDB row dropped. Best-effort — a failure is
+	 * logged, never thrown into the QA lifecycle (reconcile re-drives it).
+	 */
+	async closeQaRunner(args: {
+		qaSession: Session;
+		reason?: string;
+	}): Promise<void> {
+		const close = this.deps.closeRunnerImpl ?? closeRunner;
+		try {
+			const result = await close(
+				{
+					executionId: args.qaSession.execution_id,
+					issueId: args.qaSession.issue_id,
+					projectName: args.qaSession.project_name,
+					reason: args.reason ?? "auto-QA terminal cleanup",
+					executorType: "qa",
+					finalizeDone: true,
+					transitionOpts: this.deps.transitionOpts,
+					archive: {
+						projects: this.deps.projects,
+						globalBotToken: this.deps.globalBotToken,
+						discordOwnerUserId: this.deps.config.discordOwnerUserId,
+					},
+				},
+				this.deps.store,
+			);
+			if (!result.closed) {
+				console.warn(
+					`[auto-qa-effects] closeQaRunner did not close ${args.qaSession.execution_id}: ${result.error ?? "unknown"} (reconcile will retry)`,
+				);
+			}
+		} catch (err) {
+			console.warn(
+				`[auto-qa-effects] closeQaRunner threw for ${args.qaSession.execution_id}: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
+	}
 }
 
 function parseLabels(raw: string | undefined): string[] {
@@ -398,7 +538,7 @@ export function buildQaIssueContent(args: {
 		...(args.prNumber ? [`- PR: #${args.prNumber}`] : []),
 		`- Reviewed commit (pinned): \`${args.prHeadSha}\``,
 		"",
-		"Verify the pinned commit per the shipped qa-executor contract (real-machine E2E, read-only — do NOT modify source). Report the verdict via `flywheel-comm qa-result --target-exec <parent>` then `complete --route no_code`. This issue is the QA runner's own tracking issue; the change under test lives on the parent.",
+		"Verify the pinned commit per the shipped qa-executor contract (real-machine E2E, read-only — do NOT modify source). Report the verdict via `flywheel-comm qa-result --status pass|fail --target-exec <parent>`. FLY-752 fix-loop reuse: on PASS release heavy resources (close Claude-in-Chrome tabs) and STOP — do NOT `complete`, the pipeline finalizes + cleans you up; on FAIL release resources, `flywheel-comm declare-state park`, and WAIT to be re-woken with the next head, then re-test with THIS SAME session. This issue is the QA runner's own tracking issue; the change under test lives on the parent.",
 	];
 	return { title, description: lines.join("\n") };
 }

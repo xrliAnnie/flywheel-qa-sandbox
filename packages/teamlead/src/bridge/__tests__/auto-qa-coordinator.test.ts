@@ -25,6 +25,7 @@ function fakeEffects(opts?: {
 		parent: { issue_id: string };
 		prHeadSha: string;
 	}) => Promise<QaIssueRef | undefined> | QaIssueRef | undefined;
+	retestWakeOk?: boolean;
 }) {
 	const posts: { text: string; issueId: string }[] = [];
 	const wakes: { summary: string }[] = [];
@@ -32,6 +33,9 @@ function fakeEffects(opts?: {
 	const createCalls: { issueId: string; prHeadSha: string }[] = [];
 	// FLY-630 ②: parent-thread badge stamps (issueId + stage), in call order.
 	const stamps: { issueId: string; stage: string }[] = [];
+	// FLY-752: retest wakes + QA closes, in call order.
+	const retests: { qaExec: string; newSha: string }[] = [];
+	const closes: { qaExec: string }[] = [];
 	const counters = { shipReady: 0 };
 	const effects: AutoQaSideEffects = {
 		postThread: ({ session, text }) => {
@@ -57,8 +61,25 @@ function fakeEffects(opts?: {
 		stampIssueStage: ({ session, stage }) => {
 			stamps.push({ issueId: session.issue_id, stage });
 		},
+		retestWakeQa: ({ qaSession, newSha }) => {
+			retests.push({ qaExec: qaSession.execution_id, newSha });
+			return { ok: opts?.retestWakeOk ?? true };
+		},
+		closeQaRunner: ({ qaSession }) => {
+			closes.push({ qaExec: qaSession.execution_id });
+		},
 	};
-	return { effects, posts, wakes, alerts, createCalls, stamps, counters };
+	return {
+		effects,
+		posts,
+		wakes,
+		alerts,
+		createCalls,
+		stamps,
+		retests,
+		closes,
+		counters,
+	};
 }
 
 async function setup(opts?: {
@@ -70,9 +91,13 @@ async function setup(opts?: {
 		parent: { issue_id: string };
 		prHeadSha: string;
 	}) => Promise<QaIssueRef | undefined> | QaIssueRef | undefined;
+	retestWakeOk?: boolean;
 }) {
 	const store = await StateStore.create(":memory:");
-	const f = fakeEffects({ createQaIssueImpl: opts?.createQaIssueImpl });
+	const f = fakeEffects({
+		createQaIssueImpl: opts?.createQaIssueImpl,
+		retestWakeOk: opts?.retestWakeOk,
+	});
 	const startCalls: StartRequest[] = [];
 	const start = vi.fn(async (req: StartRequest) => {
 		startCalls.push(req);
@@ -96,6 +121,8 @@ async function setup(opts?: {
 		alerts: f.alerts,
 		createCalls: f.createCalls,
 		stamps: f.stamps,
+		retests: f.retests,
+		closes: f.closes,
 		counters: f.counters,
 	};
 }
@@ -236,14 +263,116 @@ describe("AutoQaCoordinator.onMainAwaitingReview", () => {
 		expect(s2.alerts.some((a) => a.includes("spawn failed"))).toBe(true);
 	});
 
-	it("a new reviewed head supersedes the old record + spawns fresh QA", async () => {
+	// ── FLY-752: fix-loop reuse ──
+
+	it("a NEW head after a FAIL RE-TESTS the SAME QA runner (retest_wake) — never a fresh QA2", async () => {
 		const main = awaitingMain(s.store);
 		await s.coord.onMainAwaitingReview(main);
+		// Give the record a live QA runner + simulate its FAIL → awaiting_retest.
+		s.store.upsertSession({
+			execution_id: "qa-1",
+			issue_id: "qa-issue-uuid",
+			project_name: "proj",
+			status: "running",
+			session_role: "qa",
+		});
+		s.store.setAutoQaStatus("main-1", SHA, "awaiting_retest", {});
+
+		// Implementer pushes a new head + re-requests review.
 		const main2 = awaitingMain(s.store, { prHeadSha: SHA2 });
-		await s.coord.onMainAwaitingReview(main2);
-		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("superseded");
-		expect(s.store.getAutoQaRecord("main-1", SHA2)?.status).toBe("running");
+		await s.coord.onMainAwaitingReview(main2, { freshTransition: false });
+
+		// NO fresh spawn — the SAME QA is re-woken to re-test the new head.
+		expect(s.start).toHaveBeenCalledTimes(1);
+		expect(s.retests).toEqual([{ qaExec: "qa-1", newSha: SHA2 }]);
+		// One row, retargeted to the new head, running, marker cleared (wake ok).
+		expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+		const rec = s.store.getAutoQaRecord("main-1", SHA2);
+		expect(rec?.status).toBe("running");
+		expect(rec?.qa_execution_id).toBe("qa-1");
+		expect(rec?.retest_wake_pending_at).toBeFalsy();
+	});
+
+	it("a NEW head after the QA already ENDED (prior PASS closed it) → re-spawn into the SAME QA issue", async () => {
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+		// QA passed + was closed → its session is terminal (completed).
+		s.store.upsertSession({
+			execution_id: "qa-1",
+			issue_id: "qa-issue-uuid",
+			project_name: "proj",
+			status: "completed",
+			session_role: "qa",
+		});
+		s.store.setAutoQaStatus("main-1", SHA, "passed", { notifiedAt: true });
+
+		const main2 = awaitingMain(s.store, { prHeadSha: SHA2 });
+		await s.coord.onMainAwaitingReview(main2, { freshTransition: false });
+
+		// No retest wake (QA dead) → re-spawn, reusing the SAME QA issue (no new create).
+		expect(s.retests.length).toBe(0);
 		expect(s.start).toHaveBeenCalledTimes(2);
+		expect(s.createCalls.length).toBe(1); // QA issue reused, not re-created
+		const rec = s.store.getAutoQaRecord("main-1", SHA2);
+		expect(rec?.status).toBe("running");
+	});
+
+	it("retest wake that does NOT land → founder HELD, durable marker kept, Lead alerted (never released)", async () => {
+		const s2 = await setup({ retestWakeOk: false });
+		const main = awaitingMain(s2.store);
+		await s2.coord.onMainAwaitingReview(main);
+		s2.store.upsertSession({
+			execution_id: "qa-1",
+			issue_id: "qa-issue-uuid",
+			project_name: "proj",
+			status: "running",
+			session_role: "qa",
+		});
+		s2.store.setAutoQaStatus("main-1", SHA, "awaiting_retest", {});
+		const main2 = awaitingMain(s2.store, { prHeadSha: SHA2 });
+		await s2.coord.onMainAwaitingReview(main2, { freshTransition: false });
+
+		const rec = s2.store.getAutoQaRecord("main-1", SHA2);
+		// held (running, != passed) + durable marker retained for reconcile.
+		expect(rec?.status).toBe("running");
+		expect(rec?.retest_wake_pending_at).toBeTruthy();
+		expect(s2.alerts.some((a) => a.includes("retest wake failed"))).toBe(true);
+	});
+
+	it("Q3(b): no owner record + NOT a fresh review-pass (parked-for-founder) → SKIP, no spawn", async () => {
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main, { freshTransition: false });
+		expect(s.start).not.toHaveBeenCalled();
+		expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+	});
+
+	it("legacy `failed` owner, SAME head → held no-op (no spawn, no leak)", async () => {
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+		s.store.setAutoQaStatus("main-1", SHA, "failed", {}); // legacy terminal FAIL
+		await s.coord.onMainAwaitingReview(main, { freshTransition: false });
+		// No second spawn; the failed record still holds the founder.
+		expect(s.start).toHaveBeenCalledTimes(1);
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("failed");
+	});
+
+	it("legacy `failed` owner, NEW head → retarget + re-drive (reuse QA issue), holds founder", async () => {
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+		// Legacy: QA runner already ended, record is terminal `failed`.
+		s.store.upsertSession({
+			execution_id: "qa-1",
+			issue_id: "qa-issue-uuid",
+			project_name: "proj",
+			status: "completed",
+			session_role: "qa",
+		});
+		s.store.setAutoQaStatus("main-1", SHA, "failed", {});
+		const main2 = awaitingMain(s.store, { prHeadSha: SHA2 });
+		await s.coord.onMainAwaitingReview(main2, { freshTransition: false });
+		const rec = s.store.getAutoQaRecord("main-1", SHA2);
+		expect(rec?.status).toBe("running"); // held on the new head → no founder leak
+		expect(s.start).toHaveBeenCalledTimes(2); // re-spawn into same QA issue
 	});
 });
 
@@ -290,7 +419,7 @@ describe("AutoQaCoordinator.onQaResult", () => {
 		qaSession(s.store);
 	}
 
-	it("PASS → record passed + founder ship-ready notification released + notified_at stamped", async () => {
+	it("PASS → record passed + founder ship-ready + QA runner CLOSED (cleanup) + notified_at stamped", async () => {
 		await primeRunningQa();
 		await s.coord.onQaResult(verdict({ status: "pass" }));
 		const rec = s.store.getAutoQaRecord("main-1", SHA);
@@ -298,17 +427,23 @@ describe("AutoQaCoordinator.onQaResult", () => {
 		expect(rec?.notified_at).toBeTruthy();
 		expect(s.counters.shipReady).toBe(1);
 		expect(s.wakes.length).toBe(0);
+		// FLY-752: QA passed → the QA runner is auto-closed (cmux/thread/pin cleanup).
+		expect(s.closes).toEqual([{ qaExec: "qa-1" }]);
 		// FLY-630 ②: QA green → parent thread re-stamped to "approve" (⏳待批) — now
 		// genuinely awaiting the founder.
 		expect(s.stamps).toContainEqual({ issueId: "FLY-1", stage: "approve" });
 	});
 
-	it("FAIL → record failed + implementer woken; founder NOT notified; 🔴 to QA thread NOT parent (FLY-643)", async () => {
+	it("FAIL → record awaiting_retest (QA parked, NOT closed) + implementer woken; founder NOT notified; 🔴 to QA thread not parent", async () => {
 		await primeRunningQa();
 		await s.coord.onQaResult(
 			verdict({ status: "fail", summary: "button broken" }),
 		);
-		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("failed");
+		// FLY-752: FAIL → non-terminal awaiting_retest; QA is reused, NOT closed.
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe(
+			"awaiting_retest",
+		);
+		expect(s.closes.length).toBe(0);
 		expect(s.counters.shipReady).toBe(0);
 		expect(s.wakes[0]?.summary).toContain("button broken");
 		// 🔴 goes to the QA issue's OWN thread, NOT the parent thread (the founder

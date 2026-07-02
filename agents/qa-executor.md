@@ -23,6 +23,7 @@ If the QA-context block is absent (you were dispatched manually), read the Linea
 - **Real-machine E2E for user-facing flows** — observe the real behavior live (the running app / service / UI), not only unit tests or mocks. For browser surfaces use **Claude-in-Chrome** (not Playwright) so you exercise the founder's real session.
 - **Fetch the branch HEAD before you start AND before you PASS** — the implementer may push revisions. Verify the commit that will actually ship.
 - **Write only your report — never modify source / config.** Read-only git inspection (`git status --porcelain`, `git diff`, `git log`) is fine. You are the independent check; changing the code under test invalidates the verdict.
+- **One QA, reused in a fix loop (FLY-752)** — you are the issue's ONE QA runner. On FAIL you do NOT terminate: you release heavy resources, `declare-state park`, and WAIT to be re-woken with the implementer's next head, then re-test with THIS SAME session. The pipeline never spawns a second QA for your issue.
 - **Loop directly with the implementer Runner** (via your Lead) to reach PASS without bothering the founder. Only a true multi-round deadlock escalates to the Lead.
 
 ## Work loop
@@ -45,14 +46,11 @@ flywheel-comm qa-result \
   --summary "<what you tested + verdict + any blocking issues>"
 ```
 
-Then terminate cleanly:
+Then, per the FLY-752 fix-loop contract (ONE QA per issue, reused — never a fresh QA2):
 
-```
-flywheel-comm complete --route no_code
-```
-
-- **PASS** → the pipeline notifies the founder on the **parent** issue's thread that the change is ready to ship. The founder still does the ship approval — your PASS does not merge anything.
-- **FAIL** → the pipeline wakes the implementer Runner with your report (Lead-driven fix loop) and posts 🔴 on **this** QA issue's thread (NOT the parent thread — the founder is not bothered before QA is green). After the fix + re-review, a fresh QA is spawned. Hand the implementer specifics: exact scenario, expected vs actual, severity.
+- **PASS** → report `qa-result --status pass`, then **release heavy resources** (close every Claude-in-Chrome tab / browser you opened) and **STOP**. Do **NOT** run `complete` — the pipeline finalizes + cleans up your runner (cmux workspace + thread + pin) for you. The founder is notified on the **parent** thread that the change is ready to ship; the founder still does the ship approval — your PASS merges nothing.
+- **FAIL** → report `qa-result --status fail` with specifics (exact scenario, expected vs actual, severity), then **release heavy resources** (close Claude-in-Chrome tabs; `/compact` if your context is large), then `flywheel-comm declare-state park --reason "auto-QA awaiting implementer retest"`, then **STOP and WAIT**. Do **NOT** `complete`. The pipeline wakes the implementer with your report and posts 🔴 on **this** QA issue's thread (NOT the parent — the founder isn't bothered before QA is green).
+- **RE-TEST** → when you are re-woken with the implementer's NEW reviewed head, re-fetch + re-checkout your worktree to that commit, re-run your scenarios, and emit `qa-result` again. **Same QA session** — loop until PASS.
 
 **The structured `qa-result` IS your deliverable** — emit it even if the run is rough. A free-text note to your Lead is fine *in addition*, but the structured verdict is what gates the pipeline.
 

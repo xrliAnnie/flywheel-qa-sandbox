@@ -478,11 +478,34 @@ export interface AutoQaRecord {
 	qa_issue_identifier?: string;
 	qa_issue_title?: string;
 	qa_issue_url?: string;
-	status: "running" | "passed" | "failed" | "superseded" | "stuck";
+	/**
+	 * FLY-752: `awaiting_retest` is the NEW non-terminal hold state — a QA runner
+	 * reported FAIL but is kept ALIVE (idle, `declare-state park`ed) to re-test the
+	 * implementer's next head (fix-loop reuse; NEVER a fresh QA2/QA3). `failed` is
+	 * retained ONLY for legacy rows written by the pre-FLY-752 pipeline; the new
+	 * FAIL path writes `awaiting_retest`, but old `failed` rows must still be
+	 * handled (same-head hold / new-head retarget) so an upgrade can't leak the
+	 * founder gate.
+	 */
+	status:
+		| "running"
+		| "awaiting_retest"
+		| "passed"
+		| "failed"
+		| "superseded"
+		| "stuck";
 	verdict_event_id?: string;
 	started_at: string;
 	completed_at?: string;
 	notified_at?: string;
+	/**
+	 * FLY-752: durable crash-recovery marker. Set when a record is RETARGETED to a
+	 * new head (fix round) and stays set until the QA runner's `retest_wake` is
+	 * confirmed delivered. If the Bridge restarts in that window, reconcile sees
+	 * this non-null and re-drives the wake (or re-spawns a dead QA) — so a missed
+	 * retest wake never silently strands the founder gate.
+	 */
+	retest_wake_pending_at?: string;
 }
 
 /**
@@ -1221,6 +1244,7 @@ export class StateStore {
 				started_at TEXT NOT NULL DEFAULT (datetime('now')),
 				completed_at TEXT,
 				notified_at TEXT,
+				retest_wake_pending_at TEXT,
 				PRIMARY KEY (parent_execution_id, target_pr_head_sha)
 			)
 		`);
@@ -2532,6 +2556,8 @@ export class StateStore {
 			started_at: row.started_at as string,
 			completed_at: (row.completed_at as string) ?? undefined,
 			notified_at: (row.notified_at as string) ?? undefined,
+			retest_wake_pending_at:
+				(row.retest_wake_pending_at as string) ?? undefined,
 		};
 	}
 
@@ -2733,6 +2759,199 @@ export class StateStore {
 		}
 		stmt.free();
 		return out;
+	}
+
+	/**
+	 * FLY-752: ALL passed records (regardless of notified_at) — reconcile scans
+	 * these to close a QA runner that PASSED but was left live by a crash between
+	 * `notifyShipReady` and the close (the passed-unnotified sweep alone misses the
+	 * notified-but-not-closed case).
+	 */
+	listPassedAutoQaRecords(): AutoQaRecord[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE status = 'passed' ORDER BY started_at",
+		);
+		const out: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			out.push(
+				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** FLY-752: all records in a given status (reconcile sweeps, e.g. awaiting_retest). */
+	listAutoQaRecordsByStatus(status: AutoQaRecord["status"]): AutoQaRecord[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE status = ? ORDER BY started_at",
+		);
+		stmt.bind([status]);
+		const out: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			out.push(
+				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/**
+	 * FLY-752: non-superseded records whose retarget left a durable retest-wake
+	 * marker (crash after retarget, before the wake was confirmed). Reconcile
+	 * re-drives the wake (or re-spawns a dead QA) for these.
+	 */
+	listAutoQaRecordsAwaitingRetestWake(): AutoQaRecord[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE retest_wake_pending_at IS NOT NULL AND status != 'superseded' ORDER BY started_at",
+		);
+		const out: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			out.push(
+				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/**
+	 * FLY-752: the QA "owner" record for a parent — the single non-superseded
+	 * record its one QA issue/runner is tracked on. A parent has at most one active
+	 * QA (the fix-loop invariant), but on upgrade a legacy `failed`/`passed`/`stuck`
+	 * row can be the owner. Latest-by-started_at breaks any tie deterministically;
+	 * `superseded` rows are excluded (moot).
+	 */
+	getLatestAutoQaRecordByParent(
+		parentExecutionId: string,
+	): AutoQaRecord | undefined {
+		// rowid DESC tiebreaks records claimed within the same second (started_at is
+		// second-granularity) → newest-inserted wins deterministically.
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE parent_execution_id = ? AND status != 'superseded' ORDER BY started_at DESC, rowid DESC LIMIT 1",
+		);
+		stmt.bind([parentExecutionId]);
+		let rec: AutoQaRecord | undefined;
+		if (stmt.step()) {
+			rec = this.rowToAutoQaRecord(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return rec;
+	}
+
+	/**
+	 * FLY-752: RETARGET a parent's QA owner record to a NEW reviewed head (a fix
+	 * round), REUSING the same QA issue/runner. CAS + crash-safe:
+	 *   - Guard: the (parent, oldSha) row must currently be in `expectStatuses`
+	 *     (running / awaiting_retest / passed / stuck / legacy failed). A status
+	 *     drift (already moved on / concurrent retarget) → false, no write.
+	 *   - Conflict: a stale TERMINAL/superseded (parent, newSha) row can exist
+	 *     (force-push back to an old sha, prior round on that exact head) — the
+	 *     in-place UPDATE would violate the PK. Delete only such stale rows first;
+	 *     never an active (running/awaiting_retest) one.
+	 *   - Reset: status→running; clear verdict_event_id / completed_at AND
+	 *     notified_at (notification state is scoped to (parent, head), not the
+	 *     reusable row — else a retargeted old PASS keeps its old notified_at and a
+	 *     new-head PASS could be dropped by reconcile); set the durable
+	 *     retest_wake_pending_at marker.
+	 * Returns true iff the retarget row was updated.
+	 */
+	retargetAutoQaRecord(input: {
+		parentExecutionId: string;
+		oldSha: string;
+		newSha: string;
+		expectStatuses: AutoQaRecord["status"][];
+	}): boolean {
+		if (input.newSha === input.oldSha) return false;
+		const current = this.getAutoQaRecord(input.parentExecutionId, input.oldSha);
+		if (!current || !input.expectStatuses.includes(current.status)) {
+			return false; // CAS miss — status drift / concurrent retarget.
+		}
+		try {
+			// Remove a stale conflicting (parent, newSha) row so the PK-column UPDATE
+			// cannot hit SQLITE_CONSTRAINT. Only NON-active rows — an active row for
+			// newSha would mean the invariant is already broken; bail then.
+			const conflicting = this.getAutoQaRecord(
+				input.parentExecutionId,
+				input.newSha,
+			);
+			if (conflicting) {
+				if (
+					conflicting.status === "running" ||
+					conflicting.status === "awaiting_retest"
+				) {
+					return false; // active row already owns newSha — do not clobber.
+				}
+				this.db.run(
+					"DELETE FROM auto_qa_record WHERE parent_execution_id = ? AND target_pr_head_sha = ?",
+					[input.parentExecutionId, input.newSha],
+				);
+			}
+			this.db.run(
+				`UPDATE auto_qa_record
+				    SET target_pr_head_sha = ?,
+				        status = 'running',
+				        verdict_event_id = NULL,
+				        completed_at = NULL,
+				        notified_at = NULL,
+				        retest_wake_pending_at = datetime('now')
+				  WHERE parent_execution_id = ? AND target_pr_head_sha = ?`,
+				[input.newSha, input.parentExecutionId, input.oldSha],
+			);
+			const updated = this.db.getRowsModified() > 0;
+			this.save();
+			return updated;
+		} catch (err) {
+			console.warn(
+				`[auto-qa] retargetAutoQaRecord failed for ${input.parentExecutionId} ${input.oldSha.slice(0, 8)}→${input.newSha.slice(0, 8)}: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+			return false;
+		}
+	}
+
+	/** FLY-752: clear the durable retest-wake marker once the wake is confirmed. */
+	clearRetestWakePending(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+	): void {
+		this.db.run(
+			"UPDATE auto_qa_record SET retest_wake_pending_at = NULL WHERE parent_execution_id = ? AND target_pr_head_sha = ?",
+			[parentExecutionId, targetPrHeadSha],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-752: reopen an EXISTING (parent, sha) row for a fresh QA re-spawn on the
+	 * SAME head. Used only in the rare case where the QA owner lookup found no
+	 * active record but a superseded/terminal row for the current head still exists
+	 * (e.g. reconcile superseded it, then the parent re-entered review on the same
+	 * head). Resets to running + clears terminal fields (keeps qa_issue_id so the
+	 * same QA issue is reused). Returns true iff a row was updated.
+	 */
+	reopenAutoQaRecordForRespawn(
+		parentExecutionId: string,
+		targetPrHeadSha: string,
+	): boolean {
+		this.db.run(
+			`UPDATE auto_qa_record
+			    SET status = 'running',
+			        qa_execution_id = NULL,
+			        verdict_event_id = NULL,
+			        completed_at = NULL,
+			        notified_at = NULL,
+			        retest_wake_pending_at = NULL
+			  WHERE parent_execution_id = ? AND target_pr_head_sha = ?`,
+			[parentExecutionId, targetPrHeadSha],
+		);
+		const updated = this.db.getRowsModified() > 0;
+		this.save();
+		return updated;
 	}
 
 	getChatThreadByIssue(
@@ -3804,6 +4023,8 @@ export class StateStore {
 				"qa_issue_identifier",
 				"qa_issue_title",
 				"qa_issue_url",
+				// FLY-752: durable retest-wake crash-recovery marker.
+				"retest_wake_pending_at",
 			]) {
 				if (!columns.includes(col)) {
 					this.db.run(`ALTER TABLE auto_qa_record ADD COLUMN ${col} TEXT`);

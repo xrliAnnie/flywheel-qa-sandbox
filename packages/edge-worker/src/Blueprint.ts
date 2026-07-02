@@ -344,9 +344,11 @@ export interface QaContext {
 /**
  * FLY-579: build the QA-mode runner prompt lines. An Auto-QA runner does
  * INDEPENDENT verification of an already-implemented + code-reviewed change at a
- * pinned commit. It must NOT implement / branch / push / PR / approve / ship —
- * its terminal action is a structured `qa-result` verdict then
- * `complete --route no_code`, which is how the pipeline gates the founder.
+ * pinned commit. It must NOT implement / branch / push / PR / approve / ship — its
+ * action is a structured `qa-result` verdict; FLY-752 fix-loop reuse then has it
+ * STOP on PASS (the pipeline finalizes + cleans it up) or `declare-state park` +
+ * wait for a RE-TEST on FAIL (never a terminal `complete`), which is how the
+ * pipeline gates the founder while reusing the SAME QA runner.
  *
  * Exported so the QA prompt contract can be unit-tested directly (in addition to
  * the Blueprint.run() integration test that asserts a QA ctx produces these
@@ -385,8 +387,11 @@ export function buildQaModeSystemPromptLines(
 		"",
 		"QA VERDICT (MANDATORY — this is how the pipeline gates the founder):",
 		`a. Report your verdict STRUCTURALLY: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${qaContext.parentExecutionId} --status pass|fail --summary "<what you tested + verdict + any blocking issue>"\``,
-		`b. Then terminate: \`node ${commCliPath} complete --route no_code\`.`,
-		"PASS → the pipeline notifies the founder (in the issue thread) that the change is ready to ship; the founder still does the ship approval (your PASS merges nothing). FAIL → the pipeline routes your report back to the implementer for a fix and re-spawns QA; the founder is NOT notified — hand the implementer exact scenario / expected-vs-actual / severity.",
+		// FLY-752: ONE QA per issue, REUSED in a fix loop — never a fresh QA2/QA3.
+		"b. PASS → report qa-result pass, then RELEASE heavy resources (close all Claude-in-Chrome tabs / any browser you opened) and STOP. Do NOT run `complete` — the pipeline finalizes + cleans up this QA runner for you.",
+		`c. FAIL → report qa-result fail with a specific report (exact scenario / expected-vs-actual / severity), then RELEASE heavy resources (close Claude-in-Chrome tabs; if your context is large, \`/compact\`), then \`node ${commCliPath} declare-state park --reason "auto-QA awaiting implementer retest"\`, then STOP and WAIT. Do NOT \`complete\`. You will be re-woken with a RE-TEST message when the implementer pushes a new head.`,
+		"d. RE-TEST (when you are woken with a new reviewed head): re-fetch + re-checkout your worktree to the NEW commit, re-run your scenarios, then emit `qa-result` again (pass or fail). Same QA session — keep looping until PASS. This is why you release the browser + park between rounds: don't hold heavy resources while the implementer fixes.",
+		"PASS → the pipeline notifies the founder (in the issue thread) that the change is ready to ship; the founder still does the ship approval (your PASS merges nothing). FAIL → the pipeline routes your report back to the implementer for a fix and re-tests with THIS SAME QA session (not a new one); the founder is NOT notified.",
 		'The structured qa-result IS your deliverable — emit it even if the run is rough. Never use the stock SendMessage to:"team-lead" channel.',
 	];
 }
@@ -1065,8 +1070,9 @@ export class Blueprint {
 					if (!cpConfig.enabled) continue;
 					// FLY-579: a QA runner does not brainstorm and does not ship —
 					// skip those gates. It keeps the `question` gate (it can ask its
-					// Lead). Its terminal action is the qa-result verdict + complete
-					// --route no_code (injected above), not an approve_to_ship gate.
+					// Lead). FLY-752: its action is the qa-result verdict then STOP
+					// (PASS) / park + wait for retest (FAIL) — never an approve_to_ship
+					// gate, never a terminal `complete`.
 					if (
 						isQaRunner &&
 						(cpName === "brainstorm" || cpName === "approve_to_ship")

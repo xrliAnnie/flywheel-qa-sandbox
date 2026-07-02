@@ -21,6 +21,7 @@ import { fileURLToPath } from "node:url";
 import { ConfigLoader, type FlywheelConfig } from "flywheel-config";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
+import type { QaConfigResult } from "../auto-qa-config-source.js";
 import {
 	AutoQaCoordinator,
 	type AutoQaSideEffects,
@@ -29,6 +30,11 @@ import {
 import { resolveAutoQaPolicy } from "../auto-qa-policy.js";
 import type { StartRequest } from "../retry-dispatcher.js";
 import { resolveRoleAdapter } from "../role-adapter-resolver.js";
+
+/** FLY-752: wrap a loaded `cfg.qa` into the policy's tri-state input. */
+function qaTri(qa: FlywheelConfig["qa"]): QaConfigResult {
+	return qa ? { kind: "config", ...qa } : { kind: "absent" };
+}
 
 // packages/teamlead/src/bridge/__tests__ → repo root is five levels up.
 const REPO_ROOT = resolve(
@@ -59,7 +65,7 @@ describe("FLY-707: flywheel auto-QA + doc_flow enablement (canonical config)", (
 	it("auto-QA policy is ENABLED for a normal (engineer) issue", () => {
 		expect(
 			resolveAutoQaPolicy({
-				qaConfig: cfg.qa,
+				qaConfig: qaTri(cfg.qa),
 				issueLabels: ["engineer"],
 				env: {},
 			}).enabled,
@@ -68,7 +74,7 @@ describe("FLY-707: flywheel auto-QA + doc_flow enablement (canonical config)", (
 
 	it("auto-QA policy SKIPS a docs-labelled issue (skip_labels)", () => {
 		const d = resolveAutoQaPolicy({
-			qaConfig: cfg.qa,
+			qaConfig: qaTri(cfg.qa),
 			issueLabels: ["docs"],
 			env: {},
 		});
@@ -96,6 +102,8 @@ describe("FLY-707: flywheel auto-QA + doc_flow enablement (canonical config)", (
 			feedbackWakeMain: () => {},
 			alertLeadPipelineError: () => {},
 			stampIssueStage: () => {},
+			retestWakeQa: () => ({ ok: true }),
+			closeQaRunner: () => {},
 		};
 		const coord = new AutoQaCoordinator({
 			store,
@@ -103,7 +111,7 @@ describe("FLY-707: flywheel auto-QA + doc_flow enablement (canonical config)", (
 			// Policy resolved from the REAL canonical config — NOT a hand-built stub.
 			resolveQaPolicy: (session) =>
 				resolveAutoQaPolicy({
-					qaConfig: cfg.qa,
+					qaConfig: qaTri(cfg.qa),
 					issueLabels: JSON.parse(session.issue_labels ?? "[]"),
 					env: {},
 				}),

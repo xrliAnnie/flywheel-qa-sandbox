@@ -3324,9 +3324,16 @@ export async function startBridge(
 	if (startDispatcher) {
 		try {
 			const qaConfigByProject = await loadQaConfigByProject(projects);
-			const optInCount = projects.filter(
-				(p) => qaConfigByProject.get(p.projectName)?.auto,
-			).length;
+			// FLY-752: auto-QA is opt-OUT now — count projects NOT opted out
+			// (absent config / no explicit `auto: false` / not malformed).
+			const optedOutCount = projects.filter((p) => {
+				const cfg = qaConfigByProject.get(p.projectName);
+				return (
+					cfg?.kind === "malformed" ||
+					(cfg?.kind === "config" && cfg.auto === false)
+				);
+			}).length;
+			const enabledCount = projects.length - optedOutCount;
 			const autoQaEffects = new AutoQaEffects({
 				store,
 				projects,
@@ -3337,6 +3344,11 @@ export async function startBridge(
 				// set when the chat-thread feature is on; otherwise stampIssueStage
 				// no-ops.
 				chatThreadCreator,
+				// FLY-752: closeQaRunner needs the FSM transition opts (to finalize a
+				// still-running QA before close) + the global bot token (archive
+				// cascade). Same values the archive cascade uses in this boot scope.
+				transitionOpts,
+				globalBotToken: config.discordBotToken,
 			});
 			autoQaCoordinatorHolder.current = new AutoQaCoordinator({
 				store,
@@ -3360,7 +3372,7 @@ export async function startBridge(
 					),
 				);
 			console.log(
-				`[auto-qa] coordinator wired (${optInCount}/${projects.length} projects with qa.auto)`,
+				`[auto-qa] coordinator wired (opt-out default: ${enabledCount}/${projects.length} projects auto-QA ON)`,
 			);
 		} catch (err) {
 			console.warn(
