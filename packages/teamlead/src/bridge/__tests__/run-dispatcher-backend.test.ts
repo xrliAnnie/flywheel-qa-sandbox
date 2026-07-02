@@ -248,4 +248,58 @@ describe("RunDispatcher backend resolution (FLY-123)", () => {
 		// Label `agy` ignored; project roles config wins.
 		expect(ctx.runnerBackend).toBe("codex-tmux");
 	});
+
+	// ── FLY-752: requireMailboxTransport forces a mailbox-capable QA lane ──
+
+	it("[FLY-752] requireMailboxTransport FORCES claude-tmux when project roles select a no-transport backend", async () => {
+		// A project whose runner role is antigravity (no-transport) would otherwise
+		// spawn a QA that can never receive a retest_wake → wedge the founder gate.
+		dispatcher = makeDispatcher({ runner: { backend: "antigravity-tmux" } });
+		await dispatcher.start({
+			issueId: "qa-issue",
+			projectName: "proj",
+			leadId: "product-lead",
+			issueLabels: [],
+			ignoreRunnerLabelSelection: true,
+			requireMailboxTransport: true,
+		} as Parameters<RunDispatcher["start"]>[0]);
+		await dispatcher.drain();
+		const ctx = captured as BlueprintContext;
+		expect(ctx.runnerBackend).toBe("claude-tmux");
+		expect(ctx.runnerTransportMode).not.toBe("none");
+	});
+
+	it("[FLY-752] requireMailboxTransport FORCES claude-tmux for a kimi role too, dropping the source model", async () => {
+		dispatcher = makeDispatcher({
+			runner: { backend: "kimi-tmux", model: "kimi-latest" },
+		});
+		await dispatcher.start({
+			issueId: "qa-issue",
+			projectName: "proj",
+			leadId: "product-lead",
+			issueLabels: [],
+			ignoreRunnerLabelSelection: true,
+			requireMailboxTransport: true,
+		} as Parameters<RunDispatcher["start"]>[0]);
+		await dispatcher.drain();
+		const ctx = captured as BlueprintContext;
+		expect(ctx.runnerBackend).toBe("claude-tmux");
+		// The no-transport role's model is dropped → Claude account default.
+		expect(ctx.runnerModel).toBeUndefined();
+	});
+
+	it("[FLY-752] WITHOUT requireMailboxTransport, a no-transport role is unchanged (byte-compat)", async () => {
+		dispatcher = makeDispatcher({ runner: { backend: "antigravity-tmux" } });
+		await dispatcher.start({
+			issueId: "qa-issue",
+			projectName: "proj",
+			leadId: "product-lead",
+			issueLabels: [],
+			ignoreRunnerLabelSelection: true,
+		} as Parameters<RunDispatcher["start"]>[0]);
+		await dispatcher.drain();
+		const ctx = captured as BlueprintContext;
+		expect(ctx.runnerBackend).toBe("antigravity-tmux");
+		expect(ctx.runnerTransportMode).toBe("none");
+	});
 });

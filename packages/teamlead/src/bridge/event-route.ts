@@ -647,6 +647,11 @@ export function createEventRouter(
 		const now = sqliteDatetime();
 		const payload = event.payload ?? {};
 		let transitionRejected = false;
+		// FLY-752: capture the PRE-transition status so the auto-QA coordinator can
+		// tell a genuine FRESH review-pass (running/other → awaiting_review) from a
+		// re-emitted / parked-waiting-for-founder awaiting_review (never auto-QA the
+		// latter). Read BEFORE any status write below.
+		const autoQaPriorStatus = store.getSession(event.execution_id)?.status;
 
 		try {
 			const ctx = {
@@ -1789,7 +1794,11 @@ export function createEventRouter(
 			session.status === "awaiting_review"
 		) {
 			try {
-				await autoQaCoordinator.current.onMainAwaitingReview(session);
+				await autoQaCoordinator.current.onMainAwaitingReview(session, {
+					// FLY-752: a genuine fresh review-pass transitioned INTO
+					// awaiting_review; a re-emitted / parked-for-founder one did not.
+					freshTransition: autoQaPriorStatus !== "awaiting_review",
+				});
 			} catch (err) {
 				console.error(
 					`[event-route] onMainAwaitingReview threw for ${event.execution_id}: ${(err as Error).message}`,

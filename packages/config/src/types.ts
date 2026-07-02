@@ -205,18 +205,24 @@ export interface DocFlowConfig {
 }
 
 /**
- * FLY-579: auto-QA pipeline policy (per project). Absent → feature OFF for the
- * project (opt-in; byte-compatible). The Bridge loads this from the project's
- * CANONICAL / mainline root only (never an implementation PR's worktree) so a
- * runner cannot edit its own config to skip its QA.
+ * FLY-579 / FLY-752: auto-QA pipeline policy (per project). The Bridge loads this
+ * from the project's CANONICAL / mainline root only (never an implementation PR's
+ * worktree) so a runner cannot edit its own config to skip its QA.
+ *
+ * FLY-752 flipped auto-QA to **opt-out** (fleet-wide default-on): an absent config
+ * / an absent `qa` block / a `qa` block with no `auto` key all mean auto-QA is ON.
+ * A project opts OUT by explicitly setting `auto: false` (or the `no-qa` label /
+ * the `FLYWHEEL_AUTO_QA=0` kill-switch). A MALFORMED config fails CLOSED (off),
+ * never on — see the policy resolver.
  */
 export interface QaConfig {
 	/**
 	 * Auto-spawn an independent QA Runner after code review passes, hold the
-	 * founder until QA is green. Default false (opt-in). The global env
-	 * `FLYWHEEL_AUTO_QA=0` is a hard kill-switch on top of this.
+	 * founder until QA is green. **Optional (FLY-752):** absent → ON (opt-out
+	 * default). Set `false` to opt out. The global env `FLYWHEEL_AUTO_QA=0` is a
+	 * hard kill-switch on top of this.
 	 */
-	auto: boolean;
+	auto?: boolean;
 	/**
 	 * Issue labels that skip auto-QA even when `auto` is true (e.g. docs, chore).
 	 * Lowercased at load. A per-issue Linear `no-qa` label also skips.

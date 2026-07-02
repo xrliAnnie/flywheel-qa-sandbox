@@ -29,7 +29,10 @@ import type {
 	StartRequest,
 	StartResult,
 } from "./retry-dispatcher.js";
-import { resolveRoleAdapter } from "./role-adapter-resolver.js";
+import {
+	type ResolvedRoleAdapter,
+	resolveRoleAdapter,
+} from "./role-adapter-resolver.js";
 import {
 	AdmissionDeferredError,
 	RunnerAdmissionController,
@@ -113,6 +116,16 @@ export function buildRunnerSpawnFields(
 	 * genuinely dispatch/project-tier model). Absent → no dispatch override.
 	 */
 	dispatchModel?: string,
+	/**
+	 * FLY-752: require a MAILBOX-CAPABLE backend. When the resolved backend would be
+	 * no-transport (antigravity/kimi → transport:"none", which project roles / env
+	 * default can still select even under `ignoreRunnerLabelSelection`), FORCE the
+	 * transported `claude-tmux` lane and DROP the (possibly Claude-incompatible)
+	 * model/effort from the no-transport source (→ Claude account defaults). Auto-QA
+	 * sets this so its QA runner can always receive a `retest_wake`. Default false →
+	 * byte-compatible (no forcing).
+	 */
+	requireMailboxTransport?: boolean,
 ): Pick<
 	BlueprintContext,
 	| "runnerAgentName"
@@ -131,12 +144,25 @@ export function buildRunnerSpawnFields(
 	// (plus runnerBackend="claude-tmux", which is also Blueprint's default).
 	// FLY-643: a QA runner (ignoreRunnerLabelSelection) skips the label layer so
 	// the parent's vendor labels can't select its backend.
-	const resolved = resolveRoleAdapter({
+	const resolvedRaw = resolveRoleAdapter({
 		role: "runner",
 		...(!ignoreRunnerLabelSelection && issueLabels && { issueLabels }),
 		...(dispatchModel && { dispatchModel }),
 		...(rolesConfig && { projectRoles: rolesConfig }),
 	});
+	// FLY-752: force a mailbox-capable lane when required. A no-transport backend
+	// (antigravity/kimi) has no mailbox → a QA runner on it could never receive its
+	// retest_wake. Rewrite to claude-tmux + drop the source model/effort so the
+	// forced Claude lane uses account defaults (the no-transport role's model may be
+	// Claude-incompatible; Blueprint forwards runnerModel to the adapter).
+	const resolved: ResolvedRoleAdapter =
+		requireMailboxTransport && resolvedRaw.transport === "none"
+			? {
+					backend: "claude-tmux",
+					transport: "claude-code",
+					vendor: "claude-code",
+				}
+			: resolvedRaw;
 	// FLY-493: a no-transport backend (antigravity, transport === "none") carries
 	// an EXPLICIT marker so the absence of vendor/Agent-Team identity below is an
 	// intentional contract, not the legacy/rollback "default claude" absence.
@@ -630,6 +656,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				runtime.rolesConfig,
 				req.ignoreRunnerLabelSelection,
 				req.dispatchModel, // FLY-728 Part C
+				req.requireMailboxTransport, // FLY-752
 			),
 			// FLY-116: spawn macOS Terminal viewer once tmux window exists
 			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {

@@ -210,4 +210,168 @@ describe("StateStore auto_qa_record", () => {
 		const rec = store.getAutoQaRecord("parent-1", SHA_A);
 		expect(rec?.qa_execution_id).toBe("qa-exec-9");
 	});
+
+	// ── FLY-752: fix-loop reuse (getLatest / retarget CAS / pending) ──
+
+	function claim(store: StateStore, p: string, sha: string): void {
+		store.claimAutoQaRecord({
+			parentExecutionId: p,
+			targetPrHeadSha: sha,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+	}
+
+	it("awaiting_retest is a NON-terminal status (no completed_at stamp)", async () => {
+		const store = await freshStore();
+		claim(store, "p", SHA_A);
+		store.setAutoQaStatus("p", SHA_A, "awaiting_retest", {});
+		const rec = store.getAutoQaRecord("p", SHA_A);
+		expect(rec?.status).toBe("awaiting_retest");
+		expect(rec?.completed_at).toBeFalsy();
+	});
+
+	it("getLatestAutoQaRecordByParent returns the newest non-superseded record", async () => {
+		const store = await freshStore();
+		claim(store, "p", SHA_A);
+		store.setAutoQaStatus("p", SHA_A, "passed", {});
+		claim(store, "p", SHA_B);
+		// SHA_B is later (higher started_at ordering by insertion) → owner.
+		const rec = store.getLatestAutoQaRecordByParent("p");
+		expect(rec?.target_pr_head_sha).toBe(SHA_B);
+	});
+
+	it("getLatestAutoQaRecordByParent includes legacy failed/stuck, excludes superseded", async () => {
+		const store = await freshStore();
+		claim(store, "p", SHA_A);
+		store.setAutoQaStatus("p", SHA_A, "failed", {}); // legacy terminal FAIL
+		const rec = store.getLatestAutoQaRecordByParent("p");
+		expect(rec?.status).toBe("failed");
+		expect(rec?.target_pr_head_sha).toBe(SHA_A);
+
+		// A superseded-only parent → no owner.
+		claim(store, "q", SHA_A);
+		store.supersedeOtherAutoQaRecords("q", SHA_B); // supersede SHA_A (kept=SHA_B, absent)
+		expect(store.getLatestAutoQaRecordByParent("q")).toBeUndefined();
+	});
+
+	it("retargetAutoQaRecord moves the row in place to a new head, resetting terminal fields", async () => {
+		const store = await freshStore();
+		claim(store, "p", SHA_A);
+		store.setAutoQaQaExecutionId("p", SHA_A, "qa-exec-1");
+		store.setAutoQaStatus("p", SHA_A, "passed", { verdictEventId: "evt-1" });
+		store.setAutoQaStatus("p", SHA_A, "passed", { notifiedAt: true });
+
+		const ok = store.retargetAutoQaRecord({
+			parentExecutionId: "p",
+			oldSha: SHA_A,
+			newSha: SHA_B,
+			expectStatuses: [
+				"running",
+				"awaiting_retest",
+				"passed",
+				"stuck",
+				"failed",
+			],
+		});
+		expect(ok).toBe(true);
+
+		// Single row, now at SHA_B, running, terminal fields + notified_at cleared,
+		// qa_execution_id + issue carried over (same QA reused).
+		expect(store.getAutoQaRecord("p", SHA_A)).toBeUndefined();
+		const rec = store.getAutoQaRecord("p", SHA_B);
+		expect(rec?.status).toBe("running");
+		expect(rec?.qa_execution_id).toBe("qa-exec-1");
+		expect(rec?.verdict_event_id).toBeFalsy();
+		expect(rec?.completed_at).toBeFalsy();
+		expect(rec?.notified_at).toBeFalsy(); // R3-1: MUST be cleared
+		expect(rec?.retest_wake_pending_at).toBeTruthy();
+	});
+
+	it("retargetAutoQaRecord is a CAS no-op on status drift", async () => {
+		const store = await freshStore();
+		claim(store, "p", SHA_A);
+		store.setAutoQaStatus("p", SHA_A, "superseded", {});
+		const ok = store.retargetAutoQaRecord({
+			parentExecutionId: "p",
+			oldSha: SHA_A,
+			newSha: SHA_B,
+			expectStatuses: [
+				"running",
+				"awaiting_retest",
+				"passed",
+				"stuck",
+				"failed",
+			],
+		});
+		expect(ok).toBe(false);
+		expect(store.getAutoQaRecord("p", SHA_A)?.status).toBe("superseded");
+		expect(store.getAutoQaRecord("p", SHA_B)).toBeUndefined();
+	});
+
+	it("retargetAutoQaRecord deletes a stale terminal (parent,newSha) conflict then moves", async () => {
+		const store = await freshStore();
+		// Stale historical row for SHA_B (force-push back to an old sha scenario).
+		claim(store, "p", SHA_B);
+		store.setAutoQaStatus("p", SHA_B, "superseded", {});
+		// Active row on SHA_A.
+		claim(store, "p", SHA_A);
+		const ok = store.retargetAutoQaRecord({
+			parentExecutionId: "p",
+			oldSha: SHA_A,
+			newSha: SHA_B,
+			expectStatuses: [
+				"running",
+				"awaiting_retest",
+				"passed",
+				"stuck",
+				"failed",
+			],
+		});
+		expect(ok).toBe(true);
+		expect(store.getAutoQaRecord("p", SHA_A)).toBeUndefined();
+		expect(store.getAutoQaRecord("p", SHA_B)?.status).toBe("running");
+		// Exactly one row for the parent.
+		expect(store.listAutoQaRecordsByParent("p")).toHaveLength(1);
+	});
+
+	it("clearRetestWakePending clears the durable marker", async () => {
+		const store = await freshStore();
+		claim(store, "p", SHA_A);
+		store.retargetAutoQaRecord({
+			parentExecutionId: "p",
+			oldSha: SHA_A,
+			newSha: SHA_B,
+			expectStatuses: ["running"],
+		});
+		expect(
+			store.getAutoQaRecord("p", SHA_B)?.retest_wake_pending_at,
+		).toBeTruthy();
+		store.clearRetestWakePending("p", SHA_B);
+		expect(
+			store.getAutoQaRecord("p", SHA_B)?.retest_wake_pending_at,
+		).toBeFalsy();
+	});
+
+	it("listPassedAutoQaRecords + listAutoQaRecordsAwaitingRetestWake for reconcile", async () => {
+		const store = await freshStore();
+		claim(store, "p1", SHA_A);
+		store.setAutoQaStatus("p1", SHA_A, "passed", { notifiedAt: true }); // passed + notified
+		claim(store, "p2", SHA_A);
+		store.retargetAutoQaRecord({
+			parentExecutionId: "p2",
+			oldSha: SHA_A,
+			newSha: SHA_B,
+			expectStatuses: ["running"],
+		}); // running + pending marker
+
+		expect(
+			store.listPassedAutoQaRecords().map((r) => r.parent_execution_id),
+		).toEqual(["p1"]);
+		expect(
+			store
+				.listAutoQaRecordsAwaitingRetestWake()
+				.map((r) => r.parent_execution_id),
+		).toEqual(["p2"]);
+	});
 });

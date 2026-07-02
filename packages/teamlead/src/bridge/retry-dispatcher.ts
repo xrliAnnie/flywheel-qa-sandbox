@@ -160,6 +160,16 @@ export interface StartRequest {
 	 */
 	ignoreRunnerLabelSelection?: boolean;
 	/**
+	 * FLY-752: require a MAILBOX-CAPABLE executor backend. Auto-QA sets this so the
+	 * QA runner can always receive a `retest_wake` across the fix loop. If backend
+	 * resolution would pick a no-transport lane (antigravity/kimi → transport:none,
+	 * even after `ignoreRunnerLabelSelection` because project roles / env default
+	 * still apply), it is FORCED to `claude-tmux` (and the no-transport role/env
+	 * runner model is dropped to the Claude account default, since it may be
+	 * Claude-incompatible). Absent → no forcing (byte-compatible).
+	 */
+	requireMailboxTransport?: boolean;
+	/**
 	 * FLY-615: per-run + per-issue ponytail signal (run-param override + issue
 	 * labels + read status), built by runs-route. Resolved against project
 	 * config in Blueprint. Absent → Blueprint falls back to hydrated labels.
