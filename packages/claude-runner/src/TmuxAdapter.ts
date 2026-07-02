@@ -508,6 +508,11 @@ export class TmuxAdapter implements IAdapter {
 			}
 		}
 
+		// FLY-758: drop the never-used default-shell scaffold window (win0) so cmux
+		// can't pin an empty workspace at it. Safe now that this runner's window
+		// exists (see pruneScaffoldWindow). Best-effort — never blocks the spawn.
+		pruneScaffoldWindow(this.execFileFn, this.sessionName, windowId);
+
 		// GEO-206 Phase 2: Register session in comm.db
 		// Store full tmux target (session:window) so capture works with any session name
 		let registeredSession = false;
@@ -1037,15 +1042,164 @@ export class TmuxAdapter implements IAdapter {
 	}
 
 	private ensureSession(): void {
-		try {
-			this.execFileFn("tmux", ["has-session", "-t", `=${this.sessionName}`]);
-		} catch {
-			this.execFileFn("tmux", ["new-session", "-d", "-s", this.sessionName]);
-		}
+		ensureRunnerSession(this.execFileFn, this.sessionName);
 	}
 
 	sanitizeWindowName(name: string): string {
 		return sanitizeTmuxName(name);
+	}
+}
+
+/**
+ * FLY-758: ensure the runner base tmux session exists AND its scaffold window is
+ * deterministically named `zsh`.
+ *
+ * `tmux new-session -d` forces a default window (the never-used scaffold, win0).
+ * On a FRESH session its automatic-rename is ASYNC: the window is named `tmux`
+ * until the shell finishes loading its rc and prints a prompt — measured at
+ * ~8 s on production (tmux 3.5a). But `ensureSession → new-window → prune` runs
+ * in milliseconds, so a name-only prune ({zsh,bash}) would miss the scaffold on
+ * the FIRST spawn into a fresh base session — exactly the GEO-436 scenario (base
+ * session freshly created, hit after every reboot / tmux-server restart for each
+ * project's first runner). QA (FLY-758) caught this: the unit-test mock fed
+ * `@0|zsh` and hid the race.
+ *
+ * Fix: when we CREATE the session, capture the scaffold window id and immediately
+ * `rename-window <id> zsh`. A manual rename sets the name now AND disables
+ * automatic-rename for that window (verified on tmux 3.5a — it stays `zsh`), so
+ * `pruneScaffoldWindow`'s existing name predicate reliably matches it at
+ * millisecond time. Renaming to `zsh` (not a custom sentinel) also keeps the
+ * later `kill-window` → `window-unlinked` event a name cmux-sync already treats
+ * as a default shell (scripts/flywheel-cmux-sync.sh:2293-2301) → no unmanaged
+ * cmux cleanup, no cmux-sync change needed.
+ *
+ * Scoped/best-effort: the rename only runs for `runner-` sessions (mirrors
+ * pruneScaffoldWindow's scope) and is best-effort — a failure degrades to the
+ * pre-fix behavior (scaffold cleaned once auto-rename settles on a later spawn),
+ * never blocks the spawn.
+ */
+export function ensureRunnerSession(
+	execFileFn: ExecFileFn,
+	sessionName: string,
+): void {
+	try {
+		execFileFn("tmux", ["has-session", "-t", `=${sessionName}`]);
+		return; // session already exists — scaffold (if any) is aged; prune's name path handles it
+	} catch {
+		// session does not exist — create it below
+	}
+
+	let scaffoldWindowId = "";
+	try {
+		const created = execFileFn("tmux", [
+			"new-session",
+			"-d",
+			"-P",
+			"-F",
+			"#{window_id}",
+			"-s",
+			sessionName,
+		]);
+		scaffoldWindowId = created.stdout.trim();
+	} catch {
+		// -P/-F unexpectedly failed — fall back to a plain create so the spawn can
+		// proceed. The scaffold keeps its async name; prune's aged-name path cleans
+		// it on a later spawn.
+		try {
+			execFileFn("tmux", ["new-session", "-d", "-s", sessionName]);
+		} catch {
+			// best-effort — a create failure surfaces later via the runner launch.
+		}
+		return;
+	}
+
+	// Normalize the fresh scaffold's name to `zsh` (defeats the async rename race)
+	// — runner-scoped so a non-runner base session's window naming is never touched.
+	if (scaffoldWindowId && sessionName.startsWith("runner-")) {
+		try {
+			execFileFn("tmux", ["rename-window", "-t", scaffoldWindowId, "zsh"]);
+		} catch {
+			// best-effort — prune's aged-name path still catches it later.
+		}
+	}
+}
+
+/**
+ * FLY-758: shell names that identify the never-used default scaffold window
+ * tmux forces onto a `new-session`-created base session. Runner windows are
+ * created with `-n <issueId>-claude-…` (→ tmux disables automatic-rename for
+ * them), so they never match. Fresh scaffolds are normalized to `zsh` at create
+ * time by `ensureRunnerSession` (tmux otherwise leaves them named `tmux` for
+ * several seconds — the FLY-758 QA race), so this name predicate is reliable at
+ * millisecond spawn time.
+ *
+ * EXACTLY `zsh` + `bash` — the same set cmux-sync's inventory + window-unlinked
+ * cleanup paths already treat as default scaffolds
+ * (scripts/flywheel-cmux-sync.sh:316-317, :2293-2301). Kept in lockstep so this
+ * `kill-window` source can never fire a window-unlinked event for a name
+ * cmux-sync doesn't recognize as a shell (which would let it enqueue cleanup for
+ * an unmanaged title — Codex design review R2). A non-zsh/bash login shell simply
+ * no-ops (no regression).
+ */
+const SCAFFOLD_SHELL_NAMES = new Set(["zsh", "bash"]);
+
+/**
+ * FLY-758: remove the never-used default-shell scaffold window (win0) from a
+ * runner base session so cmux can never pin an empty workspace at it.
+ *
+ * `ensureSession()` creates the base session with `tmux new-session -d`, which
+ * tmux forces to contain one default window running a bare login shell. No
+ * runner ever uses it — every runner launches in its OWN window via
+ * `new-window`. cmux-sync builds a grouped linked session per runner window and
+ * can end up pinning a cmux workspace at that shared, never-used win0 (FLY-758:
+ * empty pane that reopens empty). Removing the scaffold once a real runner
+ * window exists makes that failure structurally impossible.
+ *
+ * Shared by TmuxAdapter (claude/agy/kimi) and the independent CodexTmuxAdapter —
+ * both create the same scaffold via `new-session -d` and both launch runners in
+ * separate windows. Call AFTER the caller's runner `new-window` has succeeded.
+ *
+ * Safety invariants:
+ *  - runner-session scoped: no-op unless `sessionName` starts with "runner-"
+ *    (the Lead `flywheel` session + legacy `TmuxRunner`/E2E sessions untouched);
+ *  - never kills `keepWindowId` (the runner window we just created);
+ *  - only kills a window named a bare default shell (`zsh`/`bash`); runner
+ *    windows are `<issueId>-claude-…` and can NEVER match — even a dead
+ *    (remain-on-exit) one keeps its runner name;
+ *  - ≥2 windows required → never kills the session's last window;
+ *  - idempotent: once the scaffold is gone, no bare-shell window is found;
+ *  - best-effort: any failure is swallowed. Pruning is a display nicety and must
+ *    NEVER block or fail a spawn.
+ */
+export function pruneScaffoldWindow(
+	execFileFn: ExecFileFn,
+	sessionName: string,
+	keepWindowId: string,
+): void {
+	if (!sessionName.startsWith("runner-")) return;
+	try {
+		const result = execFileFn("tmux", [
+			"list-windows",
+			"-t",
+			`=${sessionName}`,
+			"-F",
+			"#{window_id}|#{window_name}",
+		]);
+		const lines = result.stdout.trim().split("\n").filter(Boolean);
+		// Never kill the session's last window (would kill the session).
+		if (lines.length < 2) return;
+		for (const line of lines) {
+			const sep = line.indexOf("|");
+			if (sep < 0) continue;
+			const windowId = line.slice(0, sep);
+			const windowName = line.slice(sep + 1);
+			if (windowId === keepWindowId) continue; // never the just-created runner window
+			if (!SCAFFOLD_SHELL_NAMES.has(windowName)) continue;
+			execFileFn("tmux", ["kill-window", "-t", windowId]);
+			return; // at most one scaffold
+		}
+	} catch {
+		// best-effort — never block or fail a spawn on scaffold pruning.
 	}
 }
 

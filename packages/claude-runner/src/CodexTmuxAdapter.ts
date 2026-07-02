@@ -69,7 +69,11 @@ import {
 	scrubCodexHomeCredential,
 } from "./codex-home.js";
 import type { ExecFileFn } from "./TmuxAdapter.js";
-import { defaultExecFile } from "./TmuxAdapter.js";
+import {
+	defaultExecFile,
+	ensureRunnerSession,
+	pruneScaffoldWindow,
+} from "./TmuxAdapter.js";
 
 /**
  * Structural surface of the codex transport this executor needs. Kept
@@ -313,6 +317,12 @@ export class CodexTmuxAdapter implements IAdapter {
 		// so the dispatcher re-drives (never adopts the idle bare shell as a started
 		// Runner). `ctx.launchCommitPath` (gateway path only) is threaded to the
 		// injection.
+
+		// FLY-758: same win0 scaffold prune as TmuxAdapter (codex has its own
+		// execute()). The codex runner window is created with `-n windowName`, so
+		// it never matches the bare-shell scaffold predicate; keepWindowId adds a
+		// second guard. Best-effort — never blocks the spawn.
+		pruneScaffoldWindow(this.execFileFn, this.sessionName, windowId);
 
 		// CommDB session registration (parity with TmuxAdapter)
 		let registeredSession = false;
@@ -1056,11 +1066,9 @@ export class CodexTmuxAdapter implements IAdapter {
 	}
 
 	private ensureSession(): void {
-		try {
-			this.execFileFn("tmux", ["has-session", "-t", `=${this.sessionName}`]);
-		} catch {
-			this.execFileFn("tmux", ["new-session", "-d", "-s", this.sessionName]);
-		}
+		// FLY-758: shared helper names the fresh scaffold `zsh` so pruneScaffoldWindow
+		// reliably matches it at millisecond spawn time (defeats the async rename race).
+		ensureRunnerSession(this.execFileFn, this.sessionName);
 	}
 }
 

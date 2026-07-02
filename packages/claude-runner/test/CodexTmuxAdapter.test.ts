@@ -40,6 +40,8 @@ class FakeTmux {
 	attachedClients = "";
 	/** display-message window name (set from new-window -n; overridable). */
 	windowName = "";
+	/** FLY-758: `list-windows` output for pruneScaffoldWindow ("" = byte-compat). */
+	listWindows = "";
 	sendKeys: string[] = [];
 	newWindowArgs: string[] = [];
 	killWindowArgs: string[][] = [];
@@ -75,6 +77,8 @@ class FakeTmux {
 					}
 					return { stdout: `${WINDOW_ID}\n` };
 				}
+				case "list-windows":
+					return { stdout: this.listWindows };
 				case "display-message":
 					return { stdout: `${this.windowName}\n` };
 				case "list-clients":
@@ -227,6 +231,30 @@ describe("CodexTmuxAdapter (FLY-123 §5.6 state machine)", () => {
 	it("type + no streaming", () => {
 		expect(adapter.type).toBe("codex-tmux");
 		expect(adapter.supportsStreaming).toBe(false);
+	});
+
+	it("FLY-758: prunes the win0 zsh scaffold (codex backend, runner-* session)", async () => {
+		// Codex has its OWN execute()/ensureSession() (not a TmuxAdapter subclass),
+		// so it must call the shared pruneScaffoldWindow itself.
+		fake.listWindows = `@0|zsh\n${WINDOW_ID}|FLY-123-claude-do-the-task`;
+		const runnerAdapter = new CodexTmuxAdapter(
+			"runner-codex-test",
+			fake.exec,
+			25,
+			60_000,
+		);
+		await runnerAdapter.execute(ctx());
+		const targets = fake.killWindowArgs.map((a) => a[a.indexOf("-t") + 1]);
+		expect(targets).toContain("@0"); // scaffold pruned
+		expect(targets).not.toContain(WINDOW_ID); // runner window never killed
+	});
+
+	it("FLY-758: does NOT prune under the default non-runner session (guard)", async () => {
+		// The default fixture session "testsess" is not runner-* → guard no-ops.
+		fake.listWindows = `@0|zsh\n${WINDOW_ID}|FLY-123-claude-do-the-task`;
+		await adapter.execute(ctx());
+		const targets = fake.killWindowArgs.map((a) => a[a.indexOf("-t") + 1]);
+		expect(targets).not.toContain("@0");
 	});
 
 	// Codex R5 HIGH-3: the durable COMMIT is written the instant BEFORE the codex
