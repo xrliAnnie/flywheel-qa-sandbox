@@ -66,7 +66,11 @@ ssq_init_dirs() {
 # — a feature HEAD or empty value must never become a marker that can never ack).
 # Echoes the final marker path on success.
 ssq_enqueue() {
-  local sha="${1:-}" pr="${2:-}" nonce="${3:-}"
+  # FLY-727: optional 4th arg `issue` (e.g. FLY-727) is recorded in the marker so
+  # the self-ship ack point can report a high-fidelity deployment event. Backward
+  # compatible: old 2-3 arg callers still work; markers without `issueIdentifier`
+  # are still deployable and ack a PR-only deployment event.
+  local sha="${1:-}" pr="${2:-}" nonce="${3:-}" issue="${4:-}"
   if ! ssq_is_sha40 "$sha"; then
     ssq_log "refusing enqueue: target sha '$sha' is not 40-hex (fail-close)"
     return 64
@@ -79,9 +83,9 @@ ssq_enqueue() {
   tmp="$(mktemp "${SELF_SHIP_TMP_DIR}/marker.XXXXXX")" || { ssq_log "mktemp failed"; return 1; }
   # jq builds the JSON so quoting/encoding is safe.
   if ! jq -n \
-        --arg sha "$sha" --arg pr "$pr" \
+        --arg sha "$sha" --arg pr "$pr" --arg issue "$issue" \
         --argjson now "$now" \
-        '{targetSha:$sha, prNumber:$pr, attempts:0, nextAttemptAt:$now, lastErrorClass:null, createdAt:$now}' \
+        '{targetSha:$sha, prNumber:$pr, issueIdentifier:$issue, schemaVersion:2, attempts:0, nextAttemptAt:$now, lastErrorClass:null, createdAt:$now}' \
         > "$tmp"; then
     rm -f "$tmp"; ssq_log "jq marker build failed"; return 1
   fi
@@ -168,16 +172,31 @@ ssq_quarantine() { ssq_block "$1" "quarantine-invalid"; }
 # A marker is satisfied once its target merge SHA is an ancestor-or-equal of the
 # deployed SHA (the deployed code includes the merge). Returns 0 + deletes the
 # marker; non-zero means "not yet" (target object missing or not yet deployed).
-ssq_try_ack() {
+# FLY-727 (Codex design review R2#1): split the destructive ack into a
+# non-destructive check + an explicit delete, so callers can persist a
+# deployment event BEFORE deleting the only marker that can retry it.
+#   ssq_is_satisfied <marker> <deployed> [repo] → 0 iff target ancestor-of deployed (NO delete)
+#   ssq_delete_ack   <marker>                    → delete the acked marker
+ssq_is_satisfied() {
   local f="$1" deployed="$2" repo="${3:-${HOME}/Dev/flywheel}"
   local target; target="$(ssq_marker_field "$f" targetSha)"
   ssq_is_sha40 "$target" || return 2
   ssq_is_sha40 "$deployed" || return 1
   git -C "$repo" cat-file -e "${target}^{commit}" 2>/dev/null || return 1   # object not present yet
-  if git -C "$repo" merge-base --is-ancestor "$target" "$deployed" 2>/dev/null; then
-    rm -f "$f"; return 0
-  fi
-  return 1
+  git -C "$repo" merge-base --is-ancestor "$target" "$deployed" 2>/dev/null
+}
+
+ssq_delete_ack() { rm -f "$1"; }
+
+# Backward-compatible wrapper (check + delete in one) for existing callers.
+# Capture ssq_is_satisfied's exit code explicitly — a bare `return $?` after an
+# `if` whose condition is FALSE returns the if-statement's exit (0), not the
+# condition's, which would wrongly ack a never-deployed target (T7c).
+ssq_try_ack() {
+  ssq_is_satisfied "$1" "$2" "${3:-${HOME}/Dev/flywheel}"
+  local rc=$?
+  (( rc == 0 )) && ssq_delete_ack "$1"
+  return $rc
 }
 
 # Is the marker's target an ancestor-or-equal of origin/main? Used after a

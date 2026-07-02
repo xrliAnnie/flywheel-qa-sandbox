@@ -26,6 +26,38 @@ export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/home
 FLYWHEEL_DIR="${HOME}/Dev/flywheel"
 DEPLOYED_SHA_FILE="${HOME}/.flywheel/deployed-sha"
 LOCK_DIR="${HOME}/.flywheel/restart.lock.d"
+
+# FLY-727 (Codex design review R2#4): mandatory markerless deployment fallback.
+# Whenever deployed-sha advances OLD→NEW, report a deployment event per merged
+# commit in the range as source=fallback-git-log (inferred). merge_sha = the
+# commit hash, which is the SAME identity the self-ship marker/ack path uses, so
+# the deploy-events dedup naturally collapses any overlap. Fully best-effort: it
+# NEVER affects the deploy outcome (all failures swallowed).
+record_deployed_range() {
+    local old="$1" new="$2"
+    local comm="${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js"
+    [[ -f "$comm" ]] || return 0
+    [[ "$old" =~ ^[0-9a-f]{40}$ ]] || return 0   # need a base commit for the range
+    [[ "$new" =~ ^[0-9a-f]{40}$ ]] || return 0
+    git -C "$FLYWHEEL_DIR" log --no-merges --format='%H %s' "${old}..${new}" 2>/dev/null | \
+    while read -r hash subj; do
+        [[ "$hash" =~ ^[0-9a-f]{40}$ ]] || continue
+        local issue pr args
+        issue=$(printf '%s' "$subj" | grep -oE '[A-Z]+-[0-9]+' | head -1)
+        pr=$(printf '%s' "$subj" | grep -oE '#[0-9]+' | head -1 | tr -d '#')
+        [[ -z "$issue" && -z "$pr" ]] && continue
+        args=(--project flywheel --source fallback-git-log --merge-sha "$hash" --deployed-sha "$new" --deploy-batch-id "$new")
+        [[ -n "$issue" ]] && args+=(--issue "$issue")
+        [[ -n "$pr" ]] && args+=(--pr "$pr")
+        # FLY-727 (QA FLY-739): BRIDGE_URL is a plain local var here (never exported),
+        # so the child node saw no bridge URL and report-deployed exited 2 (no row, no
+        # spool). Pass it explicitly (default localhost:9876) so the fallback records
+        # the event. Best-effort: still swallow failures — this must never fail a deploy.
+        FLYWHEEL_BRIDGE_URL="${FLYWHEEL_BRIDGE_URL:-${BRIDGE_URL:-http://localhost:9876}}" \
+            node "$comm" report-deployed "${args[@]}" >/dev/null 2>&1 || true
+    done
+    return 0
+}
 PLUGIN_RESTART_PENDING="${HOME}/.flywheel/plugin-restart-pending"
 
 MAX_WAIT_SECONDS="${RESTART_MAX_WAIT:-300}"   # 5 minutes default (env override: RESTART_MAX_WAIT)
@@ -453,6 +485,7 @@ else
     CHANGED=$(git -C "$FLYWHEEL_DIR" diff --name-only "$DEPLOYED_SHA" "$CURRENT_HEAD")
     if [[ -z "$CHANGED" ]]; then
         log "No file changes between ${DEPLOYED_SHA:0:7} and ${CURRENT_HEAD:0:7}, exiting."
+        record_deployed_range "$DEPLOYED_SHA" "$CURRENT_HEAD"
         echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"
         exit 0
     fi
@@ -467,6 +500,7 @@ fi
 
 if [[ "$restart_bridge" == "false" && "$restart_all_leads" == "false" ]]; then
     log "No services affected by changes. Updating deployed-sha only."
+    record_deployed_range "$DEPLOYED_SHA" "$CURRENT_HEAD"
     echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"
     exit 0
 fi
@@ -1146,6 +1180,7 @@ deploy_and_verify() {
         return 0
     fi
 
+    record_deployed_range "$DEPLOYED_SHA" "$CURRENT_HEAD"
     echo "$CURRENT_HEAD" > "$DEPLOYED_SHA_FILE"
     log "deployed-sha updated to ${CURRENT_HEAD:0:7}"
 
