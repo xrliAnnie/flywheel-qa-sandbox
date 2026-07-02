@@ -189,7 +189,7 @@ describeReal("resolveCmuxAttachTarget + buildAttachCommand (real tmux)", () => {
 
 	it("renders shell-valid attach commands for both cmux and base fallback", () => {
 		const cmuxCmd = buildAttachCommand({ kind: "cmux", session: cmuxName });
-		expect(cmuxCmd).toBe(`tmux attach -t '=${cmuxName}'`);
+		expect(cmuxCmd).toBe(`env -u TMUX tmux attach -t '=${cmuxName}'`);
 		const baseCmd = buildAttachCommand({
 			kind: "base",
 			session: base,

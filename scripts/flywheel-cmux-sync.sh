@@ -1132,32 +1132,38 @@ gc_heal_state_file() {
 # text→Enter gap for a client to attach into between two injections (Codex CR
 # R1 + R4 HIGH). printf -v preserves the trailing newline (command substitution
 # would strip it). Callers MUST have run every safety gate immediately before.
+#
+# FLY-756: `env -u TMUX` — the injected `tmux attach` runs in the surface's bare
+# shell, which inherits the cmux process env. When cmux was launched from within
+# a tmux session, `$TMUX` is set and `tmux attach` refuses with "sessions should
+# be nested with care, unset $TMUX" (tmux keys nesting off `$TMUX`; `TMUX_PANE`
+# is informational and not part of the check). Stripping `$TMUX` for this one
+# invocation is the source-level cure for the nested-attach dead pane.
 heal_send_attach() {
   local wname="$1" ref="$2" surface_ref="$3"
   local view_session="${VIEW_PREFIX}${wname}"
   local attach_cmd
-  printf -v attach_cmd "tmux attach -t '=%s'\n" "$view_session"
+  printf -v attach_cmd "env -u TMUX tmux attach -t '=%s'\n" "$view_session"
   heal_state_log_once "$wname" "Self-heal: re-attaching '$wname' (0 clients on $view_session, ws $ref surface $surface_ref)"
-  # FLY-254 (Codex CR R1 HIGH-1 + R5 HIGH-1): under escalation the FINAL
-  # guards (generation pin + 0-client) run INSIDE cmux_call_guarded — after
-  # ALL bookkeeping (heal-state touch/awk/append + log + the wrapper's own
-  # mktemp), as the genuine last operation before the injection. A
-  # focus-triggered attach can complete during ANY of that bookkeeping; a
-  # client then means healed — sending would type into a live session.
-  # Single enforcement point for EVERY escalated send path (render loop AND
-  # the already-readable fast path). Plain (non-escalated) mode is
-  # byte-compatible: no guard, no extra calls. rc: 0 = sent (best-effort);
-  # 1 = fail-closed / generation changed; 2 = client appeared (do not send).
-  if [[ "${HEAL_RENDER_ESCALATE:-0}" == "1" ]]; then
-    _GUARD_VIEW_SESSION="$view_session"
-    cmux_call_guarded _heal_send_final_guard send --workspace "$ref" --surface "$surface_ref" "$attach_cmd" || true
-    if [[ "$GUARD_WAS_BLOCKED" == "1" ]]; then
-      return "${GUARD_BLOCK_RC:-1}"
-    fi
-    return 0   # send attempted — cmux failure is best-effort (legacy || true)
+  # FLY-254 (Codex CR R1 HIGH-1 + R5 HIGH-1) + FLY-756: the FINAL guards
+  # (generation pin + 0-client) run INSIDE cmux_call_guarded — after ALL
+  # bookkeeping (heal-state touch/awk/append + log + the wrapper's own mktemp),
+  # as the genuine last operation before the injection. A focus-triggered attach
+  # can complete during ANY of that bookkeeping (the gate→send window); a client
+  # then means healed — sending would inject `tmux attach` into a live pane
+  # (nested-attach). FLY-756: this final guard now runs for BOTH plain and
+  # escalated heal (previously plain mode had no guard — that unguarded window
+  # was the nested-attach injection race). Single enforcement point, single
+  # injection path (FLY-254 R1 HIGH-1 invariant preserved & strengthened).
+  # Generation pin inside the guard is a no-op in plain mode (HEAL_SWEEP_GEN_IDENT
+  # unset). rc: 0 = sent (best-effort); 1 = fail-closed / generation changed;
+  # 2 = client appeared (do not send).
+  _GUARD_VIEW_SESSION="$view_session"
+  cmux_call_guarded _heal_send_final_guard send --workspace "$ref" --surface "$surface_ref" "$attach_cmd" || true
+  if [[ "$GUARD_WAS_BLOCKED" == "1" ]]; then
+    return "${GUARD_BLOCK_RC:-1}"
   fi
-  cmux_call send --workspace "$ref" --surface "$surface_ref" "$attach_cmd" || true
-  return 0
+  return 0   # send attempted — cmux failure is best-effort (legacy || true)
 }
 
 # Ref-scoped self-heal primitive. Heals ONE known cmux workspace ref. Used by
@@ -1194,9 +1200,12 @@ self_heal_workspace_ref() {
     return $esc_rc
   fi
   [[ $shell_rc -ne 0 ]] && return 1
-  # Single injection helper. Under escalation its rc matters (Codex CR R1
-  # HIGH-1: the already-readable escalated fast path must hit the same final
-  # 0-client guard as the render loop); in plain mode it always returns 0.
+  # Single injection helper. Its rc matters for BOTH plain and escalated heal
+  # now (FLY-756): both hit the same final 0-client guard immediately before the
+  # send, so rc 2 (a client raced in between GATE1 above and the send) → return 2
+  # so the caller stops sending; rc 1 → fail-closed skip. (Was: plain mode always
+  # returned 0 with no final guard — that unguarded gate→send window was the
+  # nested-attach injection race.)
   local send_rc=0
   heal_send_attach "$wname" "$ref" "$surface_ref" || send_rc=$?
   [[ $send_rc -eq 2 ]] && return 2
@@ -1861,7 +1870,11 @@ for w in json.load(sys.stdin).get("workspaces", []):
   #   SIGPIPE — that's a kernel signal). FLY-129: cmux_call routes stderr to
   #   the log so we can see whether cmux is missing, rejecting auth, or just
   #   transiently broken.
-  if ! cmux_call new-workspace --command "tmux attach -t '=${view_session}'"; then
+  # FLY-756: `env -u TMUX` — the create-time surface shell inherits the cmux
+  # process env; when cmux was launched from within tmux, `$TMUX` is set and
+  # `tmux attach` nest-fails ("sessions should be nested with care"). Strip it
+  # for this attach so the fresh surface attaches cleanly.
+  if ! cmux_call new-workspace --command "env -u TMUX tmux attach -t '=${view_session}'"; then
     log "WARN: cmux new-workspace failed for $window_name (see prior log lines)"
     return 0
   fi

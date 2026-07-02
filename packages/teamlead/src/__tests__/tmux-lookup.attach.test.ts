@@ -96,7 +96,10 @@ describe("buildAttachCommand", () => {
 			kind: "cmux",
 			session: "cmux-FLY-560-claude-x",
 		});
-		expect(cmd).toBe("tmux attach -t '=cmux-FLY-560-claude-x'");
+		// FLY-756: env -u TMUX so a paste into a $TMUX shell (e.g. the cmux dead
+		// surface Annie copies into) doesn't nest-fail ("sessions should be
+		// nested with care, unset $TMUX").
+		expect(cmd).toBe("env -u TMUX tmux attach -t '=cmux-FLY-560-claude-x'");
 	});
 
 	it("renders the base fallback with attach + exact select-window", () => {
@@ -106,7 +109,7 @@ describe("buildAttachCommand", () => {
 			tmuxWindow: "runner-flywheel:@46",
 		});
 		expect(cmd).toBe(
-			"tmux attach -t '=runner-flywheel' \\; select-window -t '=runner-flywheel:@46'",
+			"env -u TMUX tmux attach -t '=runner-flywheel' \\; select-window -t '=runner-flywheel:@46'",
 		);
 	});
 
@@ -116,7 +119,7 @@ describe("buildAttachCommand", () => {
 			{ sshHost: "mac-studio" },
 		);
 		expect(cmd).toBe(
-			"ssh mac-studio -t 'tmux attach -t '\\''=cmux-FLY-560-x'\\'''",
+			"ssh mac-studio -t 'env -u TMUX tmux attach -t '\\''=cmux-FLY-560-x'\\'''",
 		);
 	});
 });

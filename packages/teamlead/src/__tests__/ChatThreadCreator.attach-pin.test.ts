@@ -22,7 +22,7 @@ const ctx = {
 	botToken: "bot-token",
 };
 const NOW = () => "2026-06-27T12:00:00Z";
-const CMD = "tmux attach -t '=cmux-FLY-560-x'";
+const CMD = "env -u TMUX tmux attach -t '=cmux-FLY-560-x'";
 
 /** Mock fetch router for POST message / PATCH message. */
 function routeFetch(opts: {
