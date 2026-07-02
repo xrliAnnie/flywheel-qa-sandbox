@@ -26,15 +26,24 @@ runners:
 # FLY-728 / Annie: project-DEFAULT Runner model — the REAL knob the
 # RoleAdapterResolver reads (run-infra.ts `rolesConfig = flywheelConfig?.roles`
 # → resolveRoleAdapter `projectRoles`). Resolve order: issue label > dispatch
-# `model` param (difficulty sorter) > THIS project default > account default
-# (Opus). The resolver gates `model` behind `backend`, so `backend` is REQUIRED
-# here. Default all un-labelled / un-sorted Flywheel tasks to Fable 5 (strongest
-# model, fewer weak-model iterations). NOTE: `runners.available.claude.model`
-# above is legacy and is NOT read by the resolver — this `roles:` block is.
+# `model` param (difficulty sorter) > THIS project default > account default.
+# The resolver gates `model` behind `backend`, so `backend` is REQUIRED here.
+# NOTE: `runners.available.claude.model` above is legacy and is NOT read by
+# the resolver — this `roles:` block is.
+#
+# FLY-788 / Annie: this is a PROJECT-WIDE FALLBACK for every runner spawn that
+# has no vendor/model label AND no dispatch `model` param — includes but is
+# NOT limited to the FLY-579 auto-QA pipeline (which creates a fresh
+# `QA·FLY-XX` issue and dispatches it without a label or dispatchModel, so it
+# lands exactly here). This used to default to Fable 5 (FLY-728); Annie found
+# that meant any such automatic spawn silently burned tokens on Fable
+# ("5 个 QA 全 Fable、30 分钟就烧完"). Defaulted to Opus 4.8 (1M) instead —
+# still the strongest fleet-standard tier, but the model an unlabelled/
+# un-sorted spawn should get by default, not a project opt-in choice.
 roles:
   runner:
     backend: claude-tmux
-    model: claude-fable-5
+    model: claude-opus-4-8[1m]
 
 teams:
   - name: default
