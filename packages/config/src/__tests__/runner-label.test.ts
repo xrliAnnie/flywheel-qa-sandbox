@@ -156,4 +156,34 @@ describe("parseRunnerLabels", () => {
 			modelOverride: "haiku",
 		});
 	});
+
+	// FLY-751: 1M context is explicit opt-in — the -1m labels resolve to the
+	// canonical [1m] ids (small context is the fleet default everywhere else).
+	it("resolves opus-1m / fable-1m labels to the [1m] ids (Claude runner)", () => {
+		expect(parseRunnerLabels(["opus-1m"])).toEqual({
+			runnerType: "claude",
+			modelOverride: "claude-opus-4-8[1m]",
+		});
+		expect(parseRunnerLabels(["FABLE-1M"])).toEqual({
+			runnerType: "claude",
+			modelOverride: "claude-fable-5[1m]",
+		});
+	});
+
+	it("1m label wins over the bare alias when both are present", () => {
+		expect(parseRunnerLabels(["opus", "opus-1m"])).toEqual({
+			runnerType: "claude",
+			modelOverride: "claude-opus-4-8[1m]",
+		});
+		expect(parseRunnerLabels(["fable-1m", "fable"])).toEqual({
+			runnerType: "claude",
+			modelOverride: "claude-fable-5[1m]",
+		});
+	});
+
+	it("agent label overrides a conflicting 1m model label (model dropped)", () => {
+		const sel = parseRunnerLabels(["codex", "opus-1m"]);
+		expect(sel.runnerType).toBe("codex");
+		expect(sel.modelOverride).toBeUndefined();
+	});
 });

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
 import type { RoleBackendMap } from "flywheel-config";
+import { resolveRunnerMcpProfile } from "flywheel-config";
 import { openTmuxViewer } from "flywheel-core";
 import type { AgentDispatcher } from "flywheel-edge-worker";
 import type {
@@ -110,10 +111,12 @@ export function buildRunnerSpawnFields(
 	 * FLY-728 Part C: the per-run `/api/runs/start` `model` param (already
 	 * normalized to a canonical tier id at the Bridge boundary) — the
 	 * difficulty-sorter's output. Applied by resolveRoleAdapter below a manual
-	 * model/vendor label and above the project default. On retry it is re-derived
-	 * from the persisted `runner_model` so a sorter-chosen model survives (the
-	 * label layer re-resolves a manual label first, so this only re-applies a
-	 * genuinely dispatch/project-tier model). Absent → no dispatch override.
+	 * model/vendor label and above the project default. On retry it is the
+	 * predecessor's persisted `dispatch_model` (actions.ts) — never
+	 * `runner_model`, which is display/audit output only (FLY-751 Codex R1
+	 * #2). The label layer re-resolves a manual label first, so this only
+	 * re-applies a genuinely dispatch-chosen model. Absent → no dispatch
+	 * override.
 	 */
 	dispatchModel?: string,
 	/**
@@ -339,6 +342,22 @@ export class RetryDispatcher implements IRetryDispatcher {
 			req.leadId,
 		);
 
+		// FLY-142 PR 1.4 + FLY-123: Agent Team identity + executor backend
+		// resolution. No-op on rollback path (backend fields still set).
+		// Uses runnerAgentName/agentTeamName/vendor — distinct from
+		// FLY-137's agentName (dispatcher key) above.
+		const runnerSpawn = buildRunnerSpawnFields(
+			newExecutionId,
+			req.leadId,
+			req.issueLabels,
+			runtime.rolesConfig,
+			// FLY-643 ignoreRunnerLabelSelection is not carried on the retry
+			// path; the FLY-728 dispatch model IS (retry reuses the persisted
+			// `dispatch_model` — actions.ts; `runner_model` is display/audit
+			// output only, FLY-751 Codex R1 #2).
+			undefined,
+			req.dispatchModel,
+		);
 		const ctx: BlueprintContext = {
 			teamName: "eng",
 			runnerName: "claude",
@@ -356,20 +375,16 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// FLY-205: predecessor's tier + URL — retry NEVER re-defaults the tier
 			docTier: req.docTier,
 			issueUrl: req.issueUrl,
-			// FLY-142 PR 1.4 + FLY-123: Agent Team identity + executor backend
-			// resolution. No-op on rollback path (backend fields still set).
-			// Uses runnerAgentName/agentTeamName/vendor — distinct from
-			// FLY-137's agentName (dispatcher key) above.
-			...buildRunnerSpawnFields(
-				newExecutionId,
-				req.leadId,
-				req.issueLabels,
-				runtime.rolesConfig,
-				// FLY-643 ignoreRunnerLabelSelection is not carried on the retry
-				// path; FLY-728 dispatch model IS (re-derived from runner_model).
-				undefined,
-				req.dispatchModel,
-			),
+			...runnerSpawn,
+			// FLY-751: recompute the MCP slim profile on retry from the persisted
+			// session fields (sessionRole + issue labels flow through the retry
+			// request) — a QA retry keeps its browser exemption.
+			...(runnerSpawn.runnerBackend === "claude-tmux" && {
+				runnerMcpProfile: resolveRunnerMcpProfile({
+					sessionRole: req.sessionRole,
+					issueLabels: req.issueLabels,
+				}),
+			}),
 			retryContext: {
 				predecessorExecutionId: req.oldExecutionId,
 				previousError: req.previousError,
@@ -622,6 +637,20 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.leadId,
 		);
 
+		// FLY-142 PR 1.4 + FLY-123: same as retry path — Agent Team identity
+		// + executor backend resolution (labels > roles config > env > claude).
+		// FLY-643: a QA start passes ignoreRunnerLabelSelection so the parent's
+		// vendor labels can't pick the QA backend (issueLabels still flow below
+		// for Lead/thread routing).
+		const runnerSpawn = buildRunnerSpawnFields(
+			executionId,
+			req.leadId,
+			req.issueLabels,
+			runtime.rolesConfig,
+			req.ignoreRunnerLabelSelection,
+			req.dispatchModel, // FLY-728 Part C
+			req.requireMailboxTransport, // FLY-752
+		);
 		const ctx: BlueprintContext = {
 			teamName: "eng",
 			runnerName: "claude",
@@ -644,20 +673,18 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// FLY-579: worktree start point (QA pins to parent pr_head_sha) + QA context
 			startPoint: req.startPoint,
 			qaContext: req.qaContext,
-			// FLY-142 PR 1.4 + FLY-123: same as retry path — Agent Team identity
-			// + executor backend resolution (labels > roles config > env > claude).
-			// FLY-643: a QA start passes ignoreRunnerLabelSelection so the parent's
-			// vendor labels can't pick the QA backend (issueLabels still flow below
-			// for Lead/thread routing).
-			...buildRunnerSpawnFields(
-				executionId,
-				req.leadId,
-				req.issueLabels,
-				runtime.rolesConfig,
-				req.ignoreRunnerLabelSelection,
-				req.dispatchModel, // FLY-728 Part C
-				req.requireMailboxTransport, // FLY-752
-			),
+			...runnerSpawn,
+			// FLY-751: per-runner MCP slim profile — claude-tmux only, gated on
+			// the FINAL resolved backend (runnerSpawn.runnerBackend reflects the
+			// FLY-752 mailbox-forcing rewrite, not the raw label/role pick); QA
+			// keeps the browser (sessionRole="qa"); full-mcp label / env
+			// kill-switch resolve to null inside (→ byte-compatible spawn).
+			...(runnerSpawn.runnerBackend === "claude-tmux" && {
+				runnerMcpProfile: resolveRunnerMcpProfile({
+					sessionRole: req.sessionRole,
+					issueLabels: req.issueLabels,
+				}),
+			}),
 			// FLY-116: spawn macOS Terminal viewer once tmux window exists
 			onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
 				openTmuxViewer({

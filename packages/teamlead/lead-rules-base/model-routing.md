@@ -23,13 +23,29 @@ same `/api/runs/start` call.
 | Difficulty | Model | `model` value |
 |------------|-------|---------------|
 | **Heavy** — architecture, migration, redesign, gnarly multi-file/cross-system change, deep debugging | Fable 5 | `fable` |
-| **Medium** — a normal feature or bug fix of moderate scope | Opus 4.8 (1M) | `opus` |
+| **Medium** — a normal feature or bug fix of moderate scope | Opus 4.8 | `opus` |
 | **Simple** — a small, well-scoped change | Sonnet 5 | `sonnet` |
 | **Trivial** — a typo, a rename, a copy tweak, a version bump, a one-liner | Haiku 4.5 | `haiku` |
 
 The bare aliases (`fable`/`opus`/`sonnet`/`haiku`) are accepted; so are the full
-ids (`claude-fable-5`, `claude-opus-4-8[1m]`, `claude-sonnet-5`,
-`claude-haiku-4-5-20251001`). Anything else is rejected `400 INVALID_MODEL`.
+ids (`claude-fable-5`, `claude-opus-4-8`, `claude-sonnet-5`,
+`claude-haiku-4-5-20251001`). Anything else is rejected `400 INVALID_MODEL`
+(the error payload lists every accepted spelling).
+
+## 1M context is explicit opt-in (FLY-751)
+
+**Every tier runs a small (standard) context window by default.** A 1M-context
+Claude process costs ~0.35GB more RAM per Runner, and the fleet hit swap
+exhaustion when every runner inherited a 1M default — so 1M is now something
+you ask for, not something you get.
+
+- Pass `"model": "opus-1m"` (Opus 4.8 · 1M) or `"model": "fable-1m"`
+  (Fable 5 · 1M) **only when the task genuinely needs the huge window** — e.g.
+  it must hold a massive corpus/log/diff in one context and cannot be chunked.
+- The same spellings work as issue labels (`opus-1m` / `fable-1m`) when the
+  founder wants to pin 1M on an issue.
+- A normal heavy task does NOT need 1M — `fable` (small context) is the right
+  heavy tier.
 
 ## Signals for the judgment (holistic, not a checklist)
 
@@ -54,12 +70,15 @@ gives the concrete `curl`). Example: a heavy refactor → `"model": "fable"`.
 ## When to leave it off
 
 - **The founder already chose a model** — if the issue carries a manual model
-  label (`fable`/`opus`/`sonnet`/`haiku`, applied because the founder told you a
-  model), that is the founder's explicit choice. **Respect it — do not pass a
-  `model` param that fights it.** (Even if you did, the label wins.)
+  label (`fable`/`opus`/`sonnet`/`haiku`/`opus-1m`/`fable-1m`, applied because
+  the founder told you a model), that is the founder's explicit choice.
+  **Respect it — do not pass a `model` param that fights it.** (Even if you
+  did, the label wins.)
 - **You genuinely can't tell** how heavy the task is — omit `model`. The run
-  falls through to the project default, then the account default (Opus 4.8).
-  Don't guess wildly; a wrong-but-confident tier is worse than the default.
+  falls through to the project default, then the built-in runner default
+  (Fable 5, small context — FLY-751; runs no longer inherit the account
+  default). Don't guess wildly; a wrong-but-confident tier is worse than the
+  default.
 
 ## When to ask instead of guess
 

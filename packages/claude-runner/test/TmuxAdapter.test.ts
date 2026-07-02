@@ -428,6 +428,102 @@ describe("TmuxAdapter", () => {
 		expect(newWindow!.args).not.toContain("--settings");
 	});
 
+	// ─── FLY-751: per-runner MCP slimming (disabledPlugins + disableChrome) ───
+
+	it("FLY-751: disabledPlugins → single --settings disabling each plugin", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		await adapter.execute(
+			makeCtx({
+				disabledPlugins: [
+					"discord@claude-plugins-official",
+					"serena@claude-plugins-official",
+				],
+			}),
+		);
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		const idx = newWindow!.args.indexOf("--settings");
+		expect(idx).toBeGreaterThan(-1);
+		expect(newWindow!.args[idx + 1]).toBe(
+			'{"enabledPlugins":{"discord@claude-plugins-official":false,"serena@claude-plugins-official":false}}',
+		);
+		// exactly one --settings flag
+		expect(
+			newWindow!.args.filter((a: string) => a === "--settings"),
+		).toHaveLength(1);
+	});
+
+	it("FLY-751: ponytail + disabledPlugins merge into ONE --settings map", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		await adapter.execute(
+			makeCtx({
+				enablePonytail: true,
+				disabledPlugins: ["discord@claude-plugins-official"],
+			}),
+		);
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		const settingsArgs = newWindow!.args.filter(
+			(a: string) => a === "--settings",
+		);
+		expect(settingsArgs).toHaveLength(1);
+		const idx = newWindow!.args.indexOf("--settings");
+		expect(newWindow!.args[idx + 1]).toBe(
+			'{"enabledPlugins":{"ponytail@ponytail":true,"discord@claude-plugins-official":false}}',
+		);
+	});
+
+	it("FLY-751: disableChrome → --no-chrome BEFORE the prompt (last positional)", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		await adapter.execute(makeCtx({ disableChrome: true }));
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		const noChromeIdx = newWindow!.args.indexOf("--no-chrome");
+		expect(noChromeIdx).toBeGreaterThan(-1);
+		// prompt is the final arg of the window command
+		expect(noChromeIdx).toBeLessThan(newWindow!.args.length - 1);
+	});
+
+	it("FLY-751: slim flags survive the gateway launch path", async () => {
+		const tmp = mkdtempSync(join(tmpdir(), "fly751-slim-"));
+		try {
+			const commitFile = join(tmp, "succ-1");
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			const adapter = new TmuxAdapter("flywheel", fn, 10);
+			await adapter.execute(
+				makeCtx({
+					disabledPlugins: ["discord@claude-plugins-official"],
+					disableChrome: true,
+					launchCommitPath: commitFile,
+				}),
+			);
+			const newWindow = calls.find(
+				(c) => c.cmd === "tmux" && c.args[0] === "new-window",
+			);
+			expect(newWindow!.args).toContain("--settings");
+			expect(newWindow!.args).toContain("--no-chrome");
+		} finally {
+			rmSync(tmp, { recursive: true, force: true });
+		}
+	});
+
+	it("FLY-751: empty disabledPlugins + no chrome flag → byte-compatible argv", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		await adapter.execute(makeCtx({ disabledPlugins: [] }));
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		expect(newWindow!.args).not.toContain("--settings");
+		expect(newWindow!.args).not.toContain("--no-chrome");
+	});
+
+	it("FLY-751: absent fields → no --no-chrome (byte-compatible)", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		const adapter = new TmuxAdapter("flywheel", fn, 10);
+		await adapter.execute(makeCtx());
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		expect(newWindow!.args).not.toContain("--no-chrome");
+	});
+
 	// ─── Window launch ──────────────────────────────
 
 	it("launches tmux window with -c ctx.cwd", async () => {
