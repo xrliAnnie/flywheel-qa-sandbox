@@ -12,10 +12,11 @@ import {
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
 import {
-	modelSuffixCode,
+	hasIssueKeyHead,
+	modelMarkerCode,
 	splitStatusEmoji,
 	stageBadge,
-	stripModelSuffix,
+	stripModelMarker,
 } from "./stage-utils.js";
 import { validateThreadExists } from "./thread-validator.js";
 
@@ -104,13 +105,15 @@ export interface ChatThreadContext {
 	/** Discord user ID to auto-add as thread member (for sidebar visibility). */
 	ownerUserId?: string;
 	/**
-	 * FLY-728 Part D: the resolved model's F/O/S/H short code, stamped as a title
-	 * SUFFIX (` ·F`) that rides the same rename as the stage-emoji prefix.
+	 * FLY-755 (was FLY-728 Part D): the resolved model's F/O/S/H short code,
+	 * stamped as a FRONT bracket marker (`[F] ` between the stage badge and the
+	 * issue key) that rides the same rename as the stage-emoji prefix — the old
+	 * tail suffix was invisible on mobile truncation.
 	 * Tri-state (Codex code R1 MEDIUM — an authoritative stamp must be able to
-	 * CLEAR a stale suffix when a reused thread's run has no model):
-	 *   - a code ("F"…) → SET the suffix to it
+	 * CLEAR a stale marker when a reused thread's run has no model):
+	 *   - a code ("F"…) → SET the marker to it
 	 *   - `null`        → CLEAR it (the caller KNOWS this run is account-default)
-	 *   - absent        → PRESERVE the existing suffix (caller has no model context)
+	 *   - absent        → PRESERVE the existing marker (caller has no model context)
 	 * Every stamp caller that has the session passes `modelShortCode(runner_model)
 	 * ?? null` so account-default clears rather than preserving a prior model.
 	 */
@@ -141,20 +144,24 @@ function buildIssueThreadName(
 }
 
 /**
- * FLY-728: compose the final ≤100-char thread title, RESERVING room for the
- * leading status `prefix` (e.g. "🔨实现中 ") and the trailing model-code suffix
- * (` ·F`) so a long issue title truncates in the MIDDLE and never drops the
- * F/O/S/H code off the end (Codex design R1 MEDIUM). `base` must be suffix-free.
+ * FLY-755: compose the final ≤100-char thread title. The model code is a FRONT
+ * bracket marker (`[F] `) between the status `prefix` (e.g. "🔨实现中 ") and the
+ * base, so truncation eats only the base's tail and the code stays visible on
+ * mobile (the FLY-728 tail suffix + mid-truncation reservation are gone).
+ * Insertion is gated on hasIssueKeyHead — the SAME issue-key anchor the marker
+ * recognition uses (stage-utils paired contract), so keyless titles are never
+ * stamped. `base` must be marker-free; the anchor is evaluated on the full
+ * pre-truncation base (truncation never touches the key head).
  */
 function composeThreadTitle(
 	prefix: string,
 	base: string,
 	modelCode: "F" | "O" | "S" | "H" | null | undefined,
 ): string {
-	const suffix = modelCode ? ` ·${modelCode}` : "";
-	const budget = DISCORD_THREAD_NAME_MAX - prefix.length - suffix.length;
+	const marker = modelCode && hasIssueKeyHead(base) ? `[${modelCode}] ` : "";
+	const budget = DISCORD_THREAD_NAME_MAX - prefix.length - marker.length;
 	const cutBase = base.slice(0, Math.max(0, budget));
-	return `${prefix}${cutBase}${suffix}`;
+	return `${prefix}${marker}${cutBase}`;
 }
 
 function isPlaceholderThreadName(
@@ -260,8 +267,8 @@ export class ChatThreadCreator {
 		// 2. Compose thread name + initial message visible in main channel.
 		// FLY-91 UX fix: "Start Thread from Message" makes the root message
 		// appear in the channel, so users can see the thread was created.
-		// FLY-728 Part D (Codex R1 MEDIUM): stamp the model code at thread creation
-		// so a new [FLY-XX] thread shows F/O/S/H immediately, not only after the
+		// FLY-755 (was FLY-728 Part D): stamp the model code at thread creation
+		// so a new thread shows `[F] [FLY-XX] …` immediately, not only after the
 		// first stage_changed.
 		const threadName = composeThreadTitle(
 			"",
@@ -558,19 +565,21 @@ export class ChatThreadCreator {
 			// (including any manual curation), swapping just the emoji. Rebuild the
 			// canonical `[FLY-XX] Title` from ctx only when the current title is a
 			// placeholder (or empty) and the real title is known.
-			// FLY-560 strips the leading stage emoji; FLY-728 works on a SUFFIX-FREE
-			// base and re-appends the model code via composeThreadTitle (so it rides
-			// the same rename as the stage badge, and long titles reserve room for
-			// it). The placeholder check uses the bare base.
+			// FLY-560 strips the leading stage emoji; FLY-755 works on a MARKER-FREE
+			// base and re-inserts the model code via composeThreadTitle (so it rides
+			// the same rename as the stage badge). The placeholder check uses the
+			// bare base. stripModelMarker also peels a legacy FLY-728 tail (` ·F`),
+			// so pre-755 threads migrate to the front marker on this re-stamp.
 			const rawBase = splitStatusEmoji(currentName ?? "").base;
-			const bareBase = stripModelSuffix(rawBase);
-			// FLY-728 Part D (tri-state, Codex code R1 MEDIUM): an explicit code SETS
-			// it, `null` CLEARS it (authoritative caller knows this run is account-
-			// default — so a stale ·F from a prior run on a REUSED thread is removed),
-			// and ABSENT preserves whatever is there (a caller with no model context).
+			const bareBase = stripModelMarker(rawBase);
+			// Tri-state (FLY-728 Codex code R1 MEDIUM): an explicit code SETS it,
+			// `null` CLEARS it (authoritative caller knows this run is account-
+			// default — so a stale [F] from a prior run on a REUSED thread is
+			// removed), and ABSENT preserves whatever is there (a caller with no
+			// model context) — front marker first, legacy tail as fallback.
 			const effectiveCode =
 				ctx.modelCode === undefined
-					? modelSuffixCode(rawBase) // preserve
+					? modelMarkerCode(rawBase) // preserve
 					: (ctx.modelCode ?? undefined); // set (code) or clear (null → undefined)
 			let base: string | undefined;
 			if (bareBase && !isPlaceholderThreadName(bareBase, ctx)) {
@@ -919,13 +928,6 @@ export class ChatThreadCreator {
 	): Promise<void> {
 		if (!ctx.issueTitle) return;
 		if (!effectiveIssueKey(ctx)) return;
-		// FLY-728: carry the model code (backfill fills a placeholder → no suffix yet).
-		const desiredName = composeThreadTitle(
-			"",
-			buildIssueThreadName(ctx),
-			ctx.modelCode,
-		);
-		if (!desiredName || desiredName === ctx.issueId) return;
 
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
@@ -949,7 +951,27 @@ export class ChatThreadCreator {
 			};
 			const currentName =
 				typeof data.name === "string" ? data.name.trim() : undefined;
-			if (!isPlaceholderThreadName(currentName, ctx)) return;
+			// FLY-755 (Codex design R1 #1): the placeholder gate must see THROUGH
+			// the model marker (and a legacy ` ·F` tail) — a marker-carrying
+			// placeholder (`[F] [FLY-509] FLY-509`) must still backfill once the
+			// real title arrives.
+			const bareCurrentName = currentName
+				? stripModelMarker(currentName)
+				: undefined;
+			if (!isPlaceholderThreadName(bareCurrentName, ctx)) return;
+			// Same tri-state as the stage stamp: absent modelCode (e.g. the /send
+			// route in tools.ts) PRESERVES the code already on the placeholder —
+			// front marker first, legacy tail as fallback (which thereby migrates).
+			const effectiveCode =
+				ctx.modelCode === undefined
+					? modelMarkerCode(currentName ?? "")
+					: (ctx.modelCode ?? undefined);
+			const desiredName = composeThreadTitle(
+				"",
+				buildIssueThreadName(ctx),
+				effectiveCode,
+			);
+			if (!desiredName || desiredName === ctx.issueId) return;
 			if (currentName === desiredName) return;
 
 			const patchRes = await fetch(`${DISCORD_API}/channels/${threadId}`, {
