@@ -395,7 +395,7 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
            exit 1   # fail-close
        fi
        # (d) Durable handoff to the detached updater (NO inline restart-services.sh).
-       if ! bash "$MAIN_REPO/scripts/self-ship-restart.sh" --target-sha "$MERGE_SHA" --pr {PR_NUMBER}; then
+       if ! bash "$MAIN_REPO/scripts/self-ship-restart.sh" --target-sha "$MERGE_SHA" --pr {PR_NUMBER} --issue {ISSUE_ID}; then
            echo "[spin] FATAL: self-ship handoff failed — NOT emitting success session_completed." >&2
            exit 1   # fail-close: a merged-but-not-reliably-queued ship must not report completed
        fi

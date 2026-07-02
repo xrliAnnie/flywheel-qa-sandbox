@@ -91,6 +91,9 @@ import {
 import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
+import { createDeploymentsRouter } from "./deployments-route.js";
+import { createDigestRouter } from "./digest-route.js";
+import { DigestService } from "./digest-service.js";
 import {
 	parseSweepExcludeEnv,
 	reconcileDoneButRunning,
@@ -2285,6 +2288,57 @@ export function createBridgeApp(
 		app.use("/api/reports", (_req, res) => {
 			res.status(503).json({
 				error: "reports API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
+
+	// FLY-727: /api/digest — daily completion digest render endpoint.
+	// EXPLICIT default-off (R3 #1): mounted ONLY when FLYWHEEL_DIGEST_CHANNEL is
+	// set. There is NO silent fallback to FLYWHEEL_TOKEN_USAGE_CHANNEL — a prod
+	// deployment that already has the cost channel must NOT auto-enable the digest
+	// (byte-compat). The operator points FLYWHEEL_DIGEST_CHANNEL at the reused cost
+	// channel (renamed "Flywheel Notification") id explicitly. Delivery is done by
+	// scripts/daily-digest.sh via `flywheel-comm publish-report` — this route only
+	// renders HTML (Bridge has no browser).
+	if (process.env.FLYWHEEL_DIGEST_CHANNEL) {
+		const digestSlug = process.env.LINEAR_WORKSPACE_SLUG;
+		const digestService = new DigestService(store, {
+			tz: process.env.FLYWHEEL_DIGEST_TZ ?? "America/Los_Angeles",
+			linearBaseUrl: digestSlug
+				? `https://linear.app/${digestSlug}/issue`
+				: undefined,
+		});
+		const digestRouter = createDigestRouter(digestService);
+		if (config.apiToken) {
+			app.use(
+				"/api/digest",
+				tokenAuthMiddleware(config.apiToken),
+				digestRouter,
+			);
+		} else {
+			app.use("/api/digest", digestRouter);
+		}
+		console.log(
+			`[Bridge] Daily digest configured — channel=${process.env.FLYWHEEL_DIGEST_CHANNEL}`,
+		);
+	}
+
+	// FLY-727: /api/deployments/report — the deployment_events ingestion surface
+	// (each project's deploy hook reports a live deployment here → the digest's
+	// primary source of truth). AUTH-REQUIRED (Codex R2#2): it forges the digest's
+	// "shipped today" data and accepts remote (Vercel) webhooks, so it must NEVER
+	// run unauthenticated — no apiToken → 503, mirroring /api/reports (NOT the
+	// tokenless /api/runs fallback).
+	if (config.apiToken) {
+		app.use(
+			"/api/deployments",
+			tokenAuthMiddleware(config.apiToken),
+			createDeploymentsRouter(store),
+		);
+	} else {
+		app.use("/api/deployments", (_req, res) => {
+			res.status(503).json({
+				error: "deployments API requires TEAMLEAD_API_TOKEN",
 			});
 		});
 	}

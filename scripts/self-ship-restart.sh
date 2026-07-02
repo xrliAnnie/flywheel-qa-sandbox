@@ -47,11 +47,15 @@ ssr_kickstart() {
 }
 
 ssr_main() {
-  local target_sha="" pr="" dry_run=0
+  # FLY-727: --issue (e.g. FLY-727) is recorded in the marker so the self-ship ack
+  # point can report a high-fidelity, ISSUE-attributed deployment event. Optional +
+  # backward compatible (missing → PR-only deployment event; old markers still work).
+  local target_sha="" pr="" issue="" dry_run=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --target-sha) target_sha="${2:-}"; shift 2 ;;
       --pr)         pr="${2:-}"; shift 2 ;;
+      --issue)      issue="${2:-}"; shift 2 ;;
       --dry-run)    dry_run=1; shift ;;
       *) ssr_log "unknown arg '$1'"; return 64 ;;
     esac
@@ -79,7 +83,8 @@ ssr_main() {
   fi
 
   local marker
-  if ! marker="$(ssq_enqueue "$target_sha" "$pr")"; then
+  # 3rd arg is the nonce (empty → auto-generated); 4th is the issue identifier.
+  if ! marker="$(ssq_enqueue "$target_sha" "$pr" "" "$issue")"; then
     ssr_log "FATAL: failed to enqueue marker for ${target_sha}."
     return 1
   fi

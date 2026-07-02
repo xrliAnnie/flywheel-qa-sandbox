@@ -44,6 +44,12 @@ if [[ "$(ssq_pending_count)" == "1" ]]; then pass "T2 enqueue produced one valid
 leftover="$(find "$SELF_SHIP_TMP_DIR" -type f | wc -l | tr -d ' ')"
 if [[ "$leftover" == "0" ]]; then pass "T2b no temp leftover in tmp dir"; else fail "T2b temp leftover=$leftover"; fi
 
+# ── T2c: FLY-727 — issueIdentifier (4th arg) + schemaVersion recorded ────────
+m2c="$(SELF_SHIP_NOW=1000 ssq_enqueue "$SHA_A" "271" "n2c" "FLY-727")"
+if [[ "$(ssq_marker_field "$m2c" issueIdentifier)" == "FLY-727" ]]; then pass "T2c marker records issueIdentifier"; else fail "T2c missing issueIdentifier (got '$(ssq_marker_field "$m2c" issueIdentifier)')"; fi
+if [[ "$(ssq_marker_field "$m2c" schemaVersion)" == "2" ]]; then pass "T2c marker schemaVersion=2"; else fail "T2c schemaVersion missing"; fi
+rm -f "$m2c"
+
 # ── T3: corrupt / junk entries are quarantined OUT of the watched dir ───────
 echo "{ not json" > "${SELF_SHIP_PENDING_DIR}/corrupt.json"
 touch "${SELF_SHIP_PENDING_DIR}/.DS_Store"
