@@ -31,6 +31,10 @@ assert_in() {
   if printf '%s' "$1" | grep -qF "$2"; then PASS=$((PASS+1)); echo "  PASS: $3"
   else FAIL=$((FAIL+1)); echo "  FAIL: $3 (output missing '$2')"; fi
 }
+assert_executable() {
+  if [ -x "$1" ]; then PASS=$((PASS+1)); echo "  PASS: $2"
+  else FAIL=$((FAIL+1)); echo "  FAIL: $2 (not executable: $1)"; fi
+}
 
 TMP_BASE="$(mktemp -d /tmp/fly284-setup-test.XXXXXX)"
 trap 'rm -rf "$TMP_BASE"' EXIT
@@ -57,6 +61,10 @@ assert_contains_file "${T1}/.flywheel/config.yaml" "doc_flow:" "config has doc_f
 assert_contains_file "${T1}/.gitignore" "worktrees/" ".gitignore ignores worktrees/ (Runner isolation)"
 assert_contains_file "${T1}/.lead/tidal-demo-cos-lead/identity.md" "Triton" "CoS identity carries persona"
 assert_contains_file "${T1}/.lead/tidal-demo-content-lead/identity.md" "Ariel" "dept identity carries persona"
+# FLY-727: deploy-report hook (auto-onboard this project to the daily digest)
+assert_file_exists "${T1}/.flywheel/hooks/report-deployment.sh" "FLY-727 deploy-report hook scaffolded"
+assert_executable "${T1}/.flywheel/hooks/report-deployment.sh" "deploy-report hook is executable"
+assert_contains_file "${T1}/.flywheel/hooks/report-deployment.sh" 'report-deployed --project "tidal-demo"' "hook calls report-deployed with the project name filled"
 
 # ── Test 2: idempotency — re-run produces zero changes ──
 echo "Test 2: re-run idempotency (two runs diff empty)"
@@ -99,6 +107,7 @@ assert_eq "$CANARY_AFTER" "$CANARY_BEFORE" "writes nothing outside --target (can
 assert_in "$T5_OUT" "gh repo create" "checklist prints gh repo create (gated, not executed)"
 assert_in "$T5_OUT" "FLYWHEEL_LEAD_ROLE=cos" "checklist prints CoS launchd env requirement"
 assert_in "$T5_OUT" "projects.json" "checklist prints live projects.json edit (gated)"
+assert_in "$T5_OUT" "Digest onboarding" "checklist prints FLY-727 digest-onboarding step (wire report-deployment hook)"
 assert_in "$T5_OUT" "claude-lead.sh" "checklist prints claude-lead.sh manifest step"
 # the script itself must not execute live writes — static guard
 if grep -Eq '^[[:space:]]*(launchctl|gh repo create)' "$SETUP"; then

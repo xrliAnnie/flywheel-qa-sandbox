@@ -190,6 +190,56 @@ export interface SessionEvent {
 }
 
 /**
+ * FLY-727: a stored session_event row carrying `id` + `ts` (which the base
+ * `SessionEvent` interface omits). Used by the daily completion digest for
+ * per-event Pacific-day filtering + last-write-wins ordering by event timestamp.
+ */
+export interface CompletionEventRow {
+	id: number;
+	ts: string; // SQLite UTC string `YYYY-MM-DD HH:MM:SS`
+	execution_id: string;
+	issue_id: string;
+	project_name: string;
+	payload?: unknown;
+}
+
+/**
+ * FLY-727: input to `insertDeploymentEvent`. Ingestion requires `projectName` +
+ * `source`, at least one of issue/pr, and at least one identity field
+ * (mergeSha / deployedSha / deployBatchId / sourceEventId) — validated at the
+ * Bridge route boundary before this is called. `deployedAt` defaults to now.
+ */
+export interface DeploymentEventInput {
+	projectName: string;
+	issueIdentifier?: string;
+	prNumber?: number;
+	mergeSha?: string;
+	deployedSha?: string;
+	deployBatchId?: string;
+	environment?: string;
+	source: string;
+	sourceEventId?: string;
+	deployedAt?: string; // SQLite UTC string; Bridge defaults to now when omitted
+	metadataJson?: string;
+}
+
+export interface DeploymentEventRow {
+	id: number;
+	project_name: string;
+	issue_identifier: string | null;
+	pr_number: number | null;
+	merge_sha: string | null;
+	deployed_sha: string | null;
+	deploy_batch_id: string | null;
+	environment: string;
+	source: string;
+	source_event_id: string | null;
+	deployed_at: string;
+	recorded_at: string;
+	metadata_json: string | null;
+}
+
+/**
  * FLY-195 (plan §3.4): Lead disposition receipt for one stuck episode.
  *
  * `handled_remanaged` is written IMPLICITLY by the Bridge recovery-nudge
@@ -962,8 +1012,47 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_events_issue ON session_events(issue_id)",
 		);
+		// FLY-727: daily digest range-scans session_completed by ts.
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_events_type_ts ON session_events(event_type, ts)",
+		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_sessions_status ON sessions(status)",
+		);
+
+		// FLY-727: deployment_events — the fleet "deployed to live" ledger. The daily
+		// digest queries this by time (cheap indexed range); each project reports a
+		// row at its real product-deploy point via `POST /api/deployments/report`.
+		// dedup_key is a deterministic non-null identity so INSERT OR IGNORE is idempotent.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS deployment_events (
+				id                INTEGER PRIMARY KEY AUTOINCREMENT,
+				project_name      TEXT NOT NULL,
+				issue_identifier  TEXT,
+				pr_number         INTEGER,
+				merge_sha         TEXT,
+				deployed_sha      TEXT,
+				deploy_batch_id   TEXT,
+				environment       TEXT NOT NULL DEFAULT 'production',
+				source            TEXT NOT NULL,
+				source_event_id   TEXT,
+				deployed_at       TEXT NOT NULL,
+				recorded_at       TEXT NOT NULL DEFAULT (datetime('now')),
+				metadata_json     TEXT,
+				dedup_key         TEXT NOT NULL
+			)
+		`);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_deployment_events_dedup ON deployment_events(dedup_key)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_deployment_events_time ON deployment_events(deployed_at)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_deployment_events_proj_time ON deployment_events(project_name, deployed_at)",
+		);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_deployment_events_issue ON deployment_events(project_name, issue_identifier)",
 		);
 
 		// GEO-195: Event journal for lead runtime delivery tracking
@@ -1233,6 +1322,182 @@ export class StateStore {
 				severity: row.severity as string,
 				payload: row.payload ? JSON.parse(row.payload as string) : undefined,
 				source: row.source as string,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-727: session_completed events in a UTC time window, carrying `id` + `ts`.
+	 * The daily digest queries a WIDE UTC window and does the exact Pacific-day
+	 * (+ DST) filtering per-event downstream. Read-only; ordered ASC by ts so a
+	 * downstream last-write-wins dedup yields each issue's latest completion.
+	 */
+	getCompletionEventsInRange(
+		sinceUtc: string,
+		untilUtc: string,
+	): CompletionEventRow[] {
+		const stmt = this.db.prepare(
+			`SELECT id, ts, execution_id, issue_id, project_name, payload
+			 FROM session_events
+			 WHERE event_type = 'session_completed' AND ts >= ? AND ts < ?
+			 ORDER BY ts ASC`,
+		);
+		stmt.bind([sinceUtc, untilUtc]);
+		const rows: CompletionEventRow[] = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				id: row.id as number,
+				ts: row.ts as string,
+				execution_id: row.execution_id as string,
+				issue_id: row.issue_id as string,
+				project_name: row.project_name as string,
+				payload: row.payload ? JSON.parse(row.payload as string) : undefined,
+			});
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-727: idempotently insert a deployment event. Returns whether a NEW row was
+	 * inserted (false = dedup hit). `deployedAt` defaults to now. The dedup key is a
+	 * deterministic non-null identity so `INSERT OR IGNORE` collapses replays
+	 * (self-ship updater re-runs, spool drains) but keeps genuinely distinct deploys.
+	 */
+	insertDeploymentEvent(input: DeploymentEventInput): { inserted: boolean } {
+		const norm = (s: string | undefined) => (s ? s.trim() : undefined);
+		const issue = norm(input.issueIdentifier)?.toUpperCase();
+		const mergeSha = norm(input.mergeSha)?.toLowerCase();
+		const deployedSha = norm(input.deployedSha)?.toLowerCase();
+		const batchId = norm(input.deployBatchId);
+		const sourceEventId = norm(input.sourceEventId);
+		const environment = norm(input.environment) ?? "production";
+		const deployedAt =
+			norm(input.deployedAt) ??
+			new Date()
+				.toISOString()
+				.replace("T", " ")
+				.replace(/\.\d+Z$/, "");
+		// Event identity — must be non-null (Bridge route rejects if all absent).
+		const eventIdentity =
+			mergeSha ?? sourceEventId ?? batchId ?? deployedSha ?? "";
+		// Codex code-review R6 (HIGH): a squash-merge commit is 1:1 with a single
+		// PR/issue, so when `merge_sha` is the identity it ALONE identifies the deploy
+		// — issue/pr are enrichment and must NOT be part of the dedup key. Otherwise a
+		// fallback-git-log row whose commit subject yielded a PR but no issue (key
+		// `proj||pr|sha|env`) fails to collide with the authoritative marker report
+		// (key `proj|issue|pr|sha|env`), leaving two rows the digest double-counts.
+		// A merge-less identity (batch / deployed-sha) CAN span multiple issues, so
+		// there issue+pr stay in the key to keep genuinely-distinct deploys distinct.
+		const dedupKey = mergeSha
+			? [input.projectName, "", "", eventIdentity, environment].join("|")
+			: [
+					input.projectName,
+					issue ?? "",
+					input.prNumber ?? "",
+					eventIdentity,
+					environment,
+				].join("|");
+
+		// Correctness of dedup is guaranteed by the UNIQUE(dedup_key) index +
+		// INSERT OR IGNORE regardless; the `inserted` bool is informational for the
+		// CLI response, so a per-key existence probe (not a racy full-table count) is
+		// enough to say "recorded" vs "already recorded".
+		const existed =
+			(this.db.exec(
+				"SELECT 1 FROM deployment_events WHERE dedup_key = ? LIMIT 1",
+				[dedupKey],
+			)[0]?.values.length ?? 0) > 0;
+		this.db.run(
+			`INSERT OR IGNORE INTO deployment_events
+			 (project_name, issue_identifier, pr_number, merge_sha, deployed_sha,
+			  deploy_batch_id, environment, source, source_event_id, deployed_at,
+			  metadata_json, dedup_key)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				input.projectName,
+				issue ?? null,
+				input.prNumber ?? null,
+				mergeSha ?? null,
+				deployedSha ?? null,
+				batchId ?? null,
+				environment,
+				input.source,
+				sourceEventId ?? null,
+				deployedAt,
+				norm(input.metadataJson) ?? null,
+				dedupKey,
+			],
+		);
+		// Codex code-review R5 #2: a marker-driven markerless FALLBACK row
+		// (source='fallback-git-log') is written at deployed-sha advance BEFORE the
+		// authoritative marker-backed self-ship report for the same commit identity;
+		// plain INSERT OR IGNORE would leave the deploy stuck as `inferred`. When an
+		// AUTHORITATIVE (non-fallback) source reports the same dedup_key, UPGRADE the
+		// existing fallback row to it (source + enrich fields). Only fallback rows are
+		// touched (WHERE source='fallback-git-log'), so authoritative rows never regress.
+		if (input.source !== "fallback-git-log") {
+			this.db.run(
+				`UPDATE deployment_events
+				   SET source = ?,
+				       issue_identifier = COALESCE(?, issue_identifier),
+				       pr_number = COALESCE(?, pr_number),
+				       merge_sha = COALESCE(?, merge_sha),
+				       deployed_sha = COALESCE(?, deployed_sha),
+				       source_event_id = COALESCE(?, source_event_id)
+				 WHERE dedup_key = ? AND source = 'fallback-git-log'`,
+				[
+					input.source,
+					issue ?? null,
+					input.prNumber ?? null,
+					mergeSha ?? null,
+					deployedSha ?? null,
+					sourceEventId ?? null,
+					dedupKey,
+				],
+			);
+		}
+		this.save();
+		return { inserted: !existed };
+	}
+
+	/**
+	 * FLY-727: deployment events in a UTC time window (the digest's primary source).
+	 * Ordered ASC by deployed_at.
+	 */
+	getDeploymentEventsInRange(
+		sinceUtc: string,
+		untilUtc: string,
+	): DeploymentEventRow[] {
+		const stmt = this.db.prepare(
+			`SELECT id, project_name, issue_identifier, pr_number, merge_sha,
+			        deployed_sha, deploy_batch_id, environment, source,
+			        source_event_id, deployed_at, recorded_at, metadata_json
+			 FROM deployment_events
+			 WHERE deployed_at >= ? AND deployed_at < ?
+			 ORDER BY deployed_at ASC`,
+		);
+		stmt.bind([sinceUtc, untilUtc]);
+		const rows: DeploymentEventRow[] = [];
+		while (stmt.step()) {
+			const r = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				id: r.id as number,
+				project_name: r.project_name as string,
+				issue_identifier: (r.issue_identifier as string) ?? null,
+				pr_number: (r.pr_number as number) ?? null,
+				merge_sha: (r.merge_sha as string) ?? null,
+				deployed_sha: (r.deployed_sha as string) ?? null,
+				deploy_batch_id: (r.deploy_batch_id as string) ?? null,
+				environment: r.environment as string,
+				source: r.source as string,
+				source_event_id: (r.source_event_id as string) ?? null,
+				deployed_at: r.deployed_at as string,
+				recorded_at: r.recorded_at as string,
+				metadata_json: (r.metadata_json as string) ?? null,
 			});
 		}
 		stmt.free();

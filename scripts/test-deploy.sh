@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # FLY-96: Deploy a test slot (Bridge + Lead) for Discord E2E testing.
 #
-# Usage: scripts/test-deploy.sh [slot-number]
+# Usage: scripts/test-deploy.sh [slot-number] [--digest <channel-id>]
 #   If slot-number is provided, claims that specific slot.
 #   If omitted, claims the first available slot from the pool.
+#   --digest <id>  FLY-727: mount the daily-digest route on the slot Bridge
+#                  (FLYWHEEL_DIGEST_CHANNEL=<id>) for a real staging digest E2E.
 #
 # Output: JSON with slot metadata (slot, port, channel, pids)
 # Prerequisites: ~/.flywheel/.env with TEST_BOT_TOKEN_N, ~/.flywheel/test-slots.json
@@ -121,6 +123,9 @@ REQUESTED_SLOT=""
 MODE="slot"   # FLY-153: slot (default, per-slot channel) | mirror (3-Lead shared channel)
               # FLY-529: roundtable (test #leads-roundtable mirror + auto-thread host)
 ALERTS=0      # FLY-529: --alerts wires the isolated test alert channel (any mode)
+DIGEST_CHANNEL=""  # FLY-727: --digest <id> mounts the daily-digest route on the slot
+                   # Bridge (FLYWHEEL_DIGEST_CHANNEL) so a real staging E2E can render
+                   # /api/digest/render + deliver to an isolated test channel.
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from-branch)
@@ -133,6 +138,10 @@ while [[ $# -gt 0 ]]; do
       MODE="${1#*=}"; shift ;;
     --alerts)
       ALERTS=1; shift ;;
+    --digest)
+      DIGEST_CHANNEL="${2:?--digest requires a channel id}"; shift 2 ;;
+    --digest=*)
+      DIGEST_CHANNEL="${1#*=}"; shift ;;
     -h|--help)
       sed -n '2,12p' "$0"; exit 0 ;;
     [0-9]*)
@@ -552,6 +561,16 @@ if [[ "$ALERTS" == "1" ]]; then
   LEAD_EXTRA_ENV+=("FLYWHEEL_PROJECTS_FILE=${SLOT_DIR}/flywheel-projects.json")
   LEAD_EXTRA_ENV+=("${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}")
   log "alerts mode: channel=${ALERT_CHANNEL_ID} repairBotEnv=${ALERT_REPAIR_BOT_TOKEN_ENV} (queue/claims/deadletter isolated to ${SLOT_DIR})"
+fi
+
+# FLY-727: --digest mounts the daily-digest route on the slot Bridge by setting
+# FLYWHEEL_DIGEST_CHANNEL. The route renders /api/digest/render from the slot's
+# ISOLATED StateStore; scripts/daily-digest.sh then delivers via publish-report to
+# this channel using the slot's own bot token — never production. Bridge-only env
+# (the digest is a Bridge cron/route; the Lead never touches it).
+if [[ -n "$DIGEST_CHANNEL" ]]; then
+  BRIDGE_EXTRA_ENV+=("FLYWHEEL_DIGEST_CHANNEL=${DIGEST_CHANNEL}")
+  log "digest mode: FLYWHEEL_DIGEST_CHANNEL=${DIGEST_CHANNEL} (route mounts on slot Bridge; renders from isolated StateStore)"
 fi
 
 # FLY-115: per-slot normal clone eliminates cross-slot git contention

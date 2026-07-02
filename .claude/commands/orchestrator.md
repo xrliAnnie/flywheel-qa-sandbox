@@ -413,7 +413,7 @@ For each PR the user approves to ship:
      # (3) clean-checkout preflight (single-writer; updater pull + rollback need it)
      [[ -z "$(git -C "$MAIN_REPO" status --porcelain)" ]] || { echo "[orchestrator] FATAL: main checkout dirty — refusing handoff" >&2; exit 1; }
      # (4) durable handoff (fail-close: no success session_completed if this fails)
-     bash "$MAIN_REPO/scripts/self-ship-restart.sh" --target-sha "$MERGE_SHA" --pr {PR_NUMBER} \
+     bash "$MAIN_REPO/scripts/self-ship-restart.sh" --target-sha "$MERGE_SHA" --pr {PR_NUMBER} --issue {ISSUE_ID} \
        || { echo "[orchestrator] FATAL: self-ship handoff failed — do not report success" >&2; exit 1; }
      ```
    - The detached updater pulls main + runs `restart-services.sh`, restarting only

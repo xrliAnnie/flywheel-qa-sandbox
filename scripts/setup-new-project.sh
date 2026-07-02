@@ -195,6 +195,36 @@ doc_flow:
   default_department: ${DEPT}
 CONFIG_EOF
 
+# ── 4b. FLY-727: deploy-report hook (auto-onboard this project to the digest) ─
+# Every new project is born with a ready, best-effort wrapper it calls at its
+# deploy point so the daily Flywheel digest covers it. It records one
+# deployment_events row via the Bridge (report-deployed → /api/deployments/report;
+# POSTs to the local Bridge or spools). Wiring it into the deploy point is a
+# printed cutover step (§8) — the hook itself is filesystem-only, safe to scaffold.
+write_if_absent "${TARGET}/.flywheel/hooks/report-deployment.sh" << HOOK_EOF
+#!/usr/bin/env bash
+# FLY-727: report a production deployment of \`${PROJECT}\` to the Flywheel daily
+# digest ("who shipped what today", fleet-wide). Call at your deploy point / CI
+# post-deploy step, e.g.:
+#   .flywheel/hooks/report-deployment.sh --issue FLY-123 --pr 45 --merge-sha <40hex>
+# Supply at least one identity: --merge-sha / --deployed-sha / --deploy-batch-id /
+# --source-event-id. Best-effort: it NEVER fails your deploy — report-deployed POSTs
+# to the local Flywheel Bridge (default http://localhost:9876; override with
+# FLYWHEEL_BRIDGE_URL) or spools the event for a later drain. Needs the flywheel
+# checkout (FLYWHEEL_DIR, default \$HOME/Dev/flywheel).
+set -uo pipefail
+FLYWHEEL_DIR="\${FLYWHEEL_DIR:-\$HOME/Dev/flywheel}"
+COMM="\${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js"
+if [ ! -f "\$COMM" ]; then
+  echo "[report-deployment] flywheel-comm not found at \$COMM — set FLYWHEEL_DIR; skipping (digest event not recorded)" >&2
+  exit 0
+fi
+node "\$COMM" report-deployed --project "${PROJECT}" --source project-deploy "\$@" \\
+  || echo "[report-deployment] deploy-report not confirmed (best-effort — spooled/deferred; digest event may be delayed)" >&2
+exit 0
+HOOK_EOF
+chmod +x "${TARGET}/.flywheel/hooks/report-deployment.sh" 2>/dev/null || true
+
 # ── 5. Executor agent (content → content-engineer framing; else generic) ─────
 if [ "$DEPT" = "content" ]; then
   write_if_absent "${TARGET}/${EXECUTOR_REL}" << 'EXEC_EOF'
@@ -391,5 +421,9 @@ Order matters (FLY-270: projects.json-first → manifest → install plist):
     FLYWHEEL_LEAD_ROLE=cos (verify: launchctl print … | grep FLYWHEEL_LEAD_ROLE).
  8. Restart the Bridge (batch with any in-flight Bridge PRs).
  9. Verify: bots online + reply in their channels + a real founder chat.
+10. Digest onboarding (FLY-727): wire .flywheel/hooks/report-deployment.sh into
+    ${PROJECT}'s deploy point (or CI post-deploy) — call it with
+    --issue FLY-N | --pr N --merge-sha <sha> at each production deploy. That records
+    a deployment_events row so the daily fleet-wide digest covers ${PROJECT}.
 ────────────────────────────────────────────────────────────────────────────
 CUTOVER_EOF

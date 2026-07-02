@@ -72,6 +72,37 @@ deployed_sha() { cat "$DEPLOYED_SHA_FILE" 2>/dev/null || echo ""; }
 # ── Process one marker-driven deploy cycle ──────────────────────────────────
 # Runs a deploy, then acks every due marker the deploy satisfied; markers that
 # don't ack record a failure (classified) and back off / block.
+# FLY-727: report ONE deployment event via `flywheel-comm report-deployed`
+# (thin HTTP client → Bridge /api/deployments/report; spools if Bridge down).
+# Returns 0 when the event is durable (posted OR spooled), non-zero otherwise.
+# The return value is ADVISORY only: the caller (process_due_markers) acks a
+# satisfied marker regardless — the report is a best-effort side-effect and must
+# never wedge the self-ship deploy (QA FLY-739). A non-zero return just gets logged.
+# $1=issueIdentifier(optional) $2=prNumber $3=merge_sha $4=deployed_sha
+report_deployment() {
+  local issue="$1" pr="$2" merge="$3" deployed="$4"
+  local comm="${FLYWHEEL_DIR}/packages/flywheel-comm/dist/index.js"
+  # A missing/unbuilt CLI is an environment problem, NOT a reason to wedge the
+  # deploy forever (marker never clears). Log loudly and let the ack proceed —
+  # deploy availability wins over one lost digest event.
+  [[ -f "$comm" ]] || { log "report_deployment: flywheel-comm not built at $comm — skipping deployment report (ack proceeds)"; return 0; }
+  local args=(--project flywheel --source self-ship --deploy-batch-id "$deployed")
+  ssq_is_sha40 "$merge" 2>/dev/null && args+=(--merge-sha "$merge")
+  ssq_is_sha40 "$deployed" 2>/dev/null && args+=(--deployed-sha "$deployed")
+  [[ -n "$issue" ]] && args+=(--issue "$issue")
+  [[ -n "$pr" ]] && args+=(--pr "$pr")
+  # FLY-727 (QA FLY-739): the launchd updater env carries no bridge URL (only PATH;
+  # ~/.flywheel/.env has TEAMLEAD_API_TOKEN but no FLYWHEEL_BRIDGE_URL/BRIDGE_URL).
+  # Pass an explicit local default so report-deployed can POST (or spool) instead of
+  # exiting 2. An operator-set FLYWHEEL_BRIDGE_URL / BRIDGE_URL still wins.
+  local bridge_url="${FLYWHEEL_BRIDGE_URL:-${BRIDGE_URL:-http://localhost:9876}}"
+  FLYWHEEL_BRIDGE_URL="$bridge_url" node "$comm" report-deployed "${args[@]}"
+  local rc=$?
+  # 0=posted, 1=spooled (both durable). Any other code is a best-effort miss — the
+  # caller acks the marker regardless (deploy availability wins; see process_due_markers).
+  (( rc == 0 || rc == 1 ))
+}
+
 process_due_markers() {
   local rc class
   "$SELF_SHIP_DEPLOY_CMD"; rc=$?
@@ -79,7 +110,23 @@ process_due_markers() {
   local f rec
   while IFS= read -r f; do
     [[ -z "$f" ]] && continue
-    if (( rc == 0 )) && ssq_try_ack "$f" "$deployed" "$FLYWHEEL_DIR"; then
+    if (( rc == 0 )) && ssq_is_satisfied "$f" "$deployed" "$FLYWHEEL_DIR"; then
+      # FLY-727 (QA FLY-739): the deployment-event report is a SECONDARY, best-effort
+      # side-effect of a self-ship deploy and must NEVER gate or alert on the PRIMARY
+      # concern (the deploy happened → clear the marker). report-deployed is itself
+      # durable — it POSTs to the local Bridge or SPOOLs for a later drain — so a
+      # satisfied marker is ALWAYS acked. The earlier "report before ack, keep the
+      # marker on a non-durable report" design turned an env gap (no bridge URL) into
+      # a marker block + severe_alert to Annie on every deploy, a regression that
+      # violated AC5 ("zero prod change when default-off"). Report, log, then ack.
+      local mtarget mpr missue
+      mtarget="$(ssq_marker_field "$f" targetSha)"
+      mpr="$(ssq_marker_field "$f" prNumber)"
+      missue="$(ssq_marker_field "$f" issueIdentifier)"
+      if ! report_deployment "$missue" "$mpr" "$mtarget" "$deployed"; then
+        log "marker $(basename "$f") satisfied; deployment-event report not durable (best-effort — digest event may be delayed/lost). Acking anyway; self-ship deploy must not wedge."
+      fi
+      ssq_delete_ack "$f"
       log "acked + cleared marker $(basename "$f") (deployed ${deployed:0:7})"
       continue
     fi

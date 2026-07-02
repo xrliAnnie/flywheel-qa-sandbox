@@ -31,6 +31,7 @@ import {
 	publishReport,
 } from "./commands/publish-report.js";
 import { qaResult } from "./commands/qa-result.js";
+import { reportDeployed } from "./commands/report-deployed.js";
 import { respond } from "./commands/respond.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
@@ -207,6 +208,9 @@ async function main(): Promise<void> {
 			break;
 		case "token-report":
 			await runTokenReport(commandArgs);
+			break;
+		case "report-deployed":
+			process.exitCode = await reportDeployed(commandArgs);
 			break;
 		case "notify":
 			await runNotify(commandArgs);
