@@ -28,6 +28,7 @@ import {
 } from "../auto-qa-coordinator.js";
 import { resolveAutoQaPolicy } from "../auto-qa-policy.js";
 import type { StartRequest } from "../retry-dispatcher.js";
+import { resolveRoleAdapter } from "../role-adapter-resolver.js";
 
 // packages/teamlead/src/bridge/__tests__ → repo root is five levels up.
 const REPO_ROOT = resolve(
@@ -131,5 +132,20 @@ describe("FLY-707: flywheel auto-QA + doc_flow enablement (canonical config)", (
 		expect(start).toHaveBeenCalledTimes(1);
 		expect(startCalls[0].sessionRole).toBe("qa");
 		expect(startCalls[0].startPoint).toBe(SHA);
+	});
+
+	// FLY-788: roles.runner.model used to default to Fable 5 (FLY-728), so ANY
+	// spawn with no vendor/model label and no dispatch `model` param — most
+	// notably the auto-QA spawn above, which has neither — silently inherited
+	// Fable and burned tokens. Pin the real canonical config + the real
+	// resolver (not a hand-built projectRoles fixture) so a future edit that
+	// silently reverts this to Fable fails loudly here.
+	it("roles.runner defaults to Opus 4.8 (1M), not Fable (FLY-788)", () => {
+		expect(cfg.roles?.runner?.backend).toBe("claude-tmux");
+		expect(cfg.roles?.runner?.model).toBe("claude-opus-4-8[1m]");
+		expect(
+			resolveRoleAdapter({ role: "runner", projectRoles: cfg.roles, env: {} })
+				.model,
+		).toBe("claude-opus-4-8[1m]");
 	});
 });
