@@ -25,13 +25,13 @@ import {
 	vi,
 } from "vitest";
 
-// FLY-650: these tests exercise the Terminal.app opener, which only runs when the
-// viewer backend is cmux/terminal-app. CI runs on linux (resolveViewerBackend
-// defaults to tmux-only there → opener skipped), so force cmux to test the opener
+// FLY-650/FLY-754: these tests exercise the Terminal.app opener, which only runs
+// when the viewer backend is terminal-app (FLY-754 removed cmux from the opener
+// gate — cmux-sync owns viewing there). Force terminal-app to test the opener
 // path platform-independently. Restored after the file.
 const _origViewerBackend = process.env.FLYWHEEL_VIEWER_BACKEND;
 beforeAll(() => {
-	process.env.FLYWHEEL_VIEWER_BACKEND = "cmux";
+	process.env.FLYWHEEL_VIEWER_BACKEND = "terminal-app";
 });
 afterAll(() => {
 	if (_origViewerBackend === undefined)
