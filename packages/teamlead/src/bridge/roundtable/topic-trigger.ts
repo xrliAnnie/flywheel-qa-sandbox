@@ -21,6 +21,13 @@ export interface RoundtableMessage {
 	mentions: string[];
 	/** Discord `mention_everyone` (true for @everyone / @here). */
 	mentionEveryone: boolean;
+	/**
+	 * FLY-314 fix: the referenced message id when this message is a Discord REPLY
+	 * (`message_reference.message_id`). Present → the message is a follow-up in an
+	 * ongoing discussion, NOT a fresh topic; the manager's follow-up gate skips it
+	 * so a reply never opens a second thread. Undefined for a plain top-level post.
+	 */
+	referencedMessageId?: string;
 }
 
 export type RoundtableTriggerMode =

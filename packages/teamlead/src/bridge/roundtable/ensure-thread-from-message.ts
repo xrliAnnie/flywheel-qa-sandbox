@@ -12,6 +12,8 @@
  * review R1#5). Never throws.
  */
 
+import { deriveRoundtableThreadName } from "./roundtable-text.js";
+
 const DISCORD_API = "https://discord.com/api/v10";
 const ENSURE_TIMEOUT_MS = 5_000;
 /** Discord error code: "A thread has already been created for this message". */
@@ -38,9 +40,12 @@ export type EnsureThreadResult =
 	/** 429 / 5xx / network / timeout — caller may retry or fall back. */
 	| { ok: false; reason: "transient" };
 
+/** FLY-314 fix (Codex code review R1 LOW): use the SHARED name helper so a
+ * Codex-created topic thread is byte-for-byte aligned with the Bridge poller +
+ * plugin (90/100-char behavior), not the older local 80-char cleanup. Idempotent on
+ * an already-derived `deps.threadName`. */
 function deriveName(raw: string | undefined): string {
-	const cleaned = (raw ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
-	return (cleaned || "Roundtable topic").slice(0, 100);
+	return deriveRoundtableThreadName(raw ?? "");
 }
 
 /**

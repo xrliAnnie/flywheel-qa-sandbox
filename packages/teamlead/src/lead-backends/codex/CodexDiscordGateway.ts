@@ -41,6 +41,10 @@ export interface DiscordInboundMessage {
 	 * Optional/empty when unknown — mention detection then falls back to scanning
 	 * `content` for the `<@id>` / `<@!id>` token. */
 	mentions?: string[];
+	/** FLY-314 fix: set on a Discord REPLY (`message_reference.message_id`). Present
+	 * → this message is a follow-up, so the reply routes into the referenced topic
+	 * thread (if known) instead of opening a new one. */
+	referencedMessageId?: string;
 }
 
 /** The injected Discord connection (real impl wraps discord.js / the adapter).
