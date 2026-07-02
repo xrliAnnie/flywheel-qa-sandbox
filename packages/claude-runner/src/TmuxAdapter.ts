@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import {
+	chmodSync,
 	existsSync,
 	mkdirSync,
 	readdirSync,
@@ -111,6 +112,17 @@ export class TmuxAdapter implements IAdapter {
 		 * backward-compatible with all existing call sites.
 		 */
 		private transport?: RunnerSpawnTransport,
+		/**
+		 * FLY-766: this Bridge's actual opened StateStore db path (= store.getDbPath()),
+		 * threaded from `setupRunInfrastructure`. Written into each claude-tmux
+		 * runner's `.flywheel-owner.json` owner marker so the Chrome-session reaper
+		 * can prove which Bridge owns a leaked `agent-browser` Chrome (defends
+		 * against mis-killing a same-machine QA-slot's live Chrome). TMPDIR + marker
+		 * injection is gated on `type === "claude-tmux"` (not on this field); when
+		 * this is undefined (legacy call sites) the marker's `stateDbPath` is written
+		 * as `null`, which the reaper treats as unowned → foreign → never reaped.
+		 */
+		private ownerStateDbPath?: string,
 	) {}
 
 	/**
@@ -349,6 +361,46 @@ export class TmuxAdapter implements IAdapter {
 			console.warn(
 				`[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for ${ctx.executionId} + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.`,
 			);
+		}
+
+		// FLY-766: per-runner browser temp dir + owner marker (claude-tmux only).
+		// Point this runner's TMPDIR at a per-execId dir so `agent-browser`'s
+		// ephemeral Chrome profiles land under
+		// `~/.flywheel/runner-state/<execId>/browser-tmp/agent-browser-chrome-<uuid>`
+		// (deterministic attribution). The `.flywheel-owner.json` marker records
+		// THIS Bridge's actual StateStore db path so the Chrome-session reaper can
+		// prove ownership before killing (never touches a same-machine QA slot's
+		// live Chrome). Gated on `type === "claude-tmux"` so the shared base
+		// `execute()` does not inject for agy/kimi subclasses (v1 scope). Best-effort:
+		// a failure logs + falls back to the system TMPDIR (that runner's Chrome
+		// becomes unattributed → handled log-only by the reaper), never blocks spawn.
+		if (this.type === "claude-tmux") {
+			try {
+				const browserTmp = join(
+					homedir(),
+					".flywheel",
+					"runner-state",
+					ctx.executionId,
+					"browser-tmp",
+				);
+				mkdirSync(browserTmp, { recursive: true });
+				chmodSync(browserTmp, 0o700);
+				const markerPath = join(browserTmp, ".flywheel-owner.json");
+				writeFileSync(
+					markerPath,
+					JSON.stringify({
+						execId: ctx.executionId,
+						stateDbPath: this.ownerStateDbPath ?? null,
+					}),
+					{ mode: 0o600 },
+				);
+				chmodSync(markerPath, 0o600);
+				envArgs.push("-e", `TMPDIR=${browserTmp}`);
+			} catch (err) {
+				console.warn(
+					`[TmuxAdapter] FLY-766 browser-tmp/owner-marker setup FAILED for ${ctx.executionId}: ${(err as Error).message}. Runner falls back to system TMPDIR; its agent-browser Chrome will be unattributed (reaper log-only).`,
+				);
+			}
 		}
 
 		// GEO-292: Bridge connection for stage reporting

@@ -164,6 +164,7 @@ async function createRunBlueprint(
 	docFlowConfig?: DocFlowConfig, // FLY-205: doc-flow baseline (DOC-FLOW prompt block when enabled)
 	founderUxGateConfig?: FounderUxGateConfig, // FLY-598: founder-UX gate prompt injection when mode != off
 	ponytailConfig?: PonytailConfig, // FLY-615: per-project ponytail rollout layer
+	ownerStateDbPath?: string, // FLY-766: this Bridge's actual StateStore db path → claude-tmux owner marker
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -323,6 +324,7 @@ async function createRunBlueprint(
 					sessionTimeoutMs,
 					hookServer,
 					transport,
+					ownerStateDbPath, // FLY-766: threaded to the per-runner owner marker
 				),
 		);
 		adapterRegistry.registerFactory(
@@ -638,6 +640,7 @@ export async function setupRunInfrastructure(
 				docFlowConfig, // FLY-205
 				founderUxGateConfig, // FLY-598
 				ponytailConfig, // FLY-615: per-project ponytail rollout layer
+				store.getDbPath(), // FLY-766: owner marker db-path truth
 			);
 
 			projectRuntimes.set(project.projectName, {

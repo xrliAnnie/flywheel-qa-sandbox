@@ -3060,6 +3060,72 @@ export async function startBridge(
 			);
 	}
 
+	// FLY-766: Chrome-session reaper — kill leaked `agent-browser` Chrome-for-Testing
+	// instances (the real root of the fleet memory spikes: any session using
+	// claude-in-chrome / ProofShot leaves an ephemeral headless Chrome resident).
+	// Attributed cleanup (use-done-must-close + owner-marker-proven no-row orphan)
+	// is always on; unattributed cleanup is default log-only (opt-in one-time
+	// FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED=1). Skips entirely for a
+	// `:memory:` store (unit-test Bridges) so tests never enumerate real processes
+	// or start a timer. Boot + periodic share one single-flight guard.
+	// `FLYWHEEL_CHROME_REAPER=0` disables both.
+	let chromeReaperTimer: ReturnType<typeof setInterval> | undefined;
+	if (
+		process.env.FLYWHEEL_CHROME_REAPER !== "0" &&
+		store.getDbPath() !== ":memory:"
+	) {
+		const chromeGraceMin = (() => {
+			const n = Number(process.env.FLYWHEEL_CHROME_REAPER_ORPHAN_GRACE_MIN);
+			return Number.isFinite(n) && n > 0 ? n : 30;
+		})();
+		const chromeIntervalMs = (() => {
+			const n = Number(process.env.FLYWHEEL_CHROME_REAPER_INTERVAL_MS);
+			return Number.isFinite(n) && n >= 1000 ? n : 60_000;
+		})();
+		const chromeMigrateUnattributed =
+			process.env.FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED === "1";
+		let chromeReaperRunning = false;
+		const runChromeReap = async (mode: "boot" | "periodic"): Promise<void> => {
+			if (chromeReaperRunning) return; // single-flight (shared boot + periodic)
+			chromeReaperRunning = true;
+			try {
+				const { reapChromeSessions } = await import(
+					"./chrome-session-reaper.js"
+				);
+				const r = await reapChromeSessions({
+					store,
+					ownStateDbPath: store.getDbPath(),
+					mode,
+					migrateUnattributed: chromeMigrateUnattributed,
+					unattributedIdleGraceMinutes: chromeGraceMin,
+					nowMs: Date.now(),
+				});
+				if (
+					r.scanned > 0 ||
+					r.killedAttributedTerminal > 0 ||
+					r.killedAttributedOrphan > 0 ||
+					r.killedUnattributedIdle > 0 ||
+					r.wouldKillUnattributed > 0 ||
+					r.errors.length > 0
+				) {
+					console.log(
+						`[chrome-reaper:${mode}] scanned=${r.scanned} killTerminal=${r.killedAttributedTerminal} killOrphan=${r.killedAttributedOrphan} killUnattr=${r.killedUnattributedIdle} wouldKillUnattr=${r.wouldKillUnattributed} skippedActive=${r.skippedActive} skippedForeign=${r.skippedForeign} raced=${r.racedSkipped} errors=${r.errors.length}`,
+					);
+				}
+			} catch (e) {
+				console.warn(`[chrome-reaper:${mode}] failed: ${(e as Error).message}`);
+			} finally {
+				chromeReaperRunning = false;
+			}
+		};
+		void runChromeReap("boot"); // migrate backlog + backstop
+		chromeReaperTimer = setInterval(
+			() => void runChromeReap("periodic"),
+			chromeIntervalMs,
+		);
+		chromeReaperTimer.unref?.();
+	}
+
 	// FLY-638: boot prune sweep — clear the backlog of stale CommDB session rows
 	// (terminal status + tmux window provably gone). These accumulate (~65 observed
 	// in production) and pollute runner_terminal_list / Lead bootstrap with
@@ -3766,6 +3832,7 @@ export async function startBridge(
 		idleWatchdog.stop();
 		leadWatchdog.stop();
 		clearInterval(leadAlertDrainTimer);
+		if (chromeReaperTimer) clearInterval(chromeReaperTimer); // FLY-766
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
 		// are the same instance, only tear down once. If they differ (caller
 		// injected retryDispatcher but not startDispatcher), tear down both.
