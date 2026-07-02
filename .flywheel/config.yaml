@@ -23,6 +23,19 @@ runners:
       type: claude
       model: sonnet        # Runner model; Lead model is set per-fleet (FLY-241/247)
 
+# FLY-728 / Annie: project-DEFAULT Runner model — the REAL knob the
+# RoleAdapterResolver reads (run-infra.ts `rolesConfig = flywheelConfig?.roles`
+# → resolveRoleAdapter `projectRoles`). Resolve order: issue label > dispatch
+# `model` param (difficulty sorter) > THIS project default > account default
+# (Opus). The resolver gates `model` behind `backend`, so `backend` is REQUIRED
+# here. Default all un-labelled / un-sorted Flywheel tasks to Fable 5 (strongest
+# model, fewer weak-model iterations). NOTE: `runners.available.claude.model`
+# above is legacy and is NOT read by the resolver — this `roles:` block is.
+roles:
+  runner:
+    backend: claude-tmux
+    model: claude-fable-5
+
 teams:
   - name: default
     orchestrators:
