@@ -239,7 +239,7 @@ describe("RoundtableThreadManager.processMessage", () => {
 			channelId: CH,
 			authorId: "u1",
 			authorBot: false,
-			content: "x",
+			content: "real topic here",
 			mentions: [],
 			mentionEveryone: true,
 		});
@@ -255,7 +255,7 @@ describe("RoundtableThreadManager.processMessage", () => {
 			channelId: CH,
 			authorId: "u1",
 			authorBot: false,
-			content: "x",
+			content: "real topic here",
 			mentions: [],
 			mentionEveryone: true,
 		});
@@ -272,7 +272,7 @@ describe("RoundtableThreadManager.processMessage", () => {
 			channelId: CH,
 			authorId: "u1",
 			authorBot: false,
-			content: "x",
+			content: "real topic here",
 			mentions: [],
 			mentionEveryone: true,
 		});
@@ -289,7 +289,7 @@ describe("RoundtableThreadManager.processMessage", () => {
 			channelId: CH,
 			authorId: "u1",
 			authorBot: false,
-			content: "x",
+			content: "real topic here",
 			mentions: [],
 			mentionEveryone: true,
 		});
@@ -308,7 +308,7 @@ describe("RoundtableThreadManager.processMessage", () => {
 			channelId: CH,
 			authorId: "u1",
 			authorBot: false,
-			content: "x",
+			content: "real topic here",
 			mentions: [],
 			mentionEveryone: true,
 		});
@@ -334,7 +334,7 @@ describe("RoundtableThreadManager.processMessage", () => {
 			channelId: CH,
 			authorId: "u1",
 			authorBot: false,
-			content: "x",
+			content: "real topic here",
 			mentions: [],
 			mentionEveryone: true,
 		});
@@ -423,7 +423,7 @@ describe("RoundtableThreadManager poll loop + cursor", () => {
 					id: "11",
 					channel_id: CH,
 					author: { id: "u1", bot: false },
-					content: "x",
+					content: "real topic here",
 					mention_everyone: true,
 				},
 			],
@@ -469,7 +469,7 @@ describe("RoundtableThreadManager poll loop + cursor", () => {
 						id: "11",
 						channel_id: CH,
 						author: { id: "u1", bot: false },
-						content: "x",
+						content: "real topic here",
 						mention_everyone: true,
 					},
 				]);
@@ -521,7 +521,7 @@ describe("RoundtableThreadManager poll loop + cursor", () => {
 					id: "11",
 					channel_id: CH,
 					author: { id: "u1", bot: false },
-					content: "x",
+					content: "real topic here",
 					mention_everyone: true,
 				},
 			],
@@ -604,13 +604,14 @@ describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", (
 		expect(createBody(calls)?.name).toBe("ship the membership fix");
 	});
 
-	it("created: mentions-only / empty content falls back to the placeholder name", async () => {
+	it("FLY-314 fix: mentions-only / empty content is NOISE — opens NO thread (this WAS the row-of-'Roundtable topic' bug)", async () => {
 		const { impl, calls } = makeFetch({});
 		const m = mgr(store, impl);
-		await m.processMessage(
+		const advance = await m.processMessage(
 			msg({ content: "<@123> <@456>", mentions: ["123"] }),
 		);
-		expect(createBody(calls)?.name).toBe("Roundtable topic");
+		expect(advance).toBe(true); // handled / no-op
+		expect(countCreates(calls)).toBe(0); // no placeholder-named thread
 	});
 
 	it("recovery: a placeholder-named thread (plugin won the race) gets PATCH-renamed to the topic", async () => {
@@ -763,5 +764,70 @@ describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", (
 		expect(putMemberIds(calls)).toContain("founder-x");
 		// the descriptive name already matched → no rename needed in the recovery pass
 		expect(patchCalls(calls)).toHaveLength(0);
+	});
+});
+
+describe("RoundtableThreadManager — FLY-314 fix: follow-up + noise pre-gates (mode-independent)", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	it("follow-up gate: a Discord reply (referencedMessageId set) never opens a thread — even under any_top_level", async () => {
+		const { impl, calls } = makeFetch({});
+		const m = mgr(store, impl); // any_top_level = trigger always true
+		const advance = await m.processMessage(
+			msg({ id: "77", content: "yeah agreed", referencedMessageId: "42" }),
+		);
+		expect(advance).toBe(true); // handled / no-op → cursor advances
+		expect(countCreates(calls)).toBe(0);
+		expect(store.getRoundtableTopicThread(CH, "77")).toBeUndefined();
+	});
+
+	it("noise gate: pure-emoji / short acks never open a thread — even under any_top_level", async () => {
+		for (const content of ["👍👍", "🎉", "ok", "<:tada:1>", "   "]) {
+			const { impl, calls } = makeFetch({});
+			const m = mgr(store, impl);
+			const advance = await m.processMessage(msg({ id: "80", content }));
+			expect(advance).toBe(true);
+			expect(countCreates(calls)).toBe(0);
+		}
+	});
+
+	it("a genuine non-reply topic still opens exactly one thread with a descriptive name (regression)", async () => {
+		const { impl, calls } = makeFetch({});
+		const m = mgr(store, impl);
+		const advance = await m.processMessage(
+			msg({ id: "90", content: "<@1> Flywheel restarted — check runners" }),
+		);
+		expect(advance).toBe(true);
+		expect(countCreates(calls)).toBe(1);
+		const createBody = JSON.parse(
+			calls.find((c) => /\/messages\/90\/threads$/.test(c.url))?.body ?? "{}",
+		);
+		expect(createBody.name).toBe("Flywheel restarted — check runners");
+	});
+
+	it("pollOnce maps Discord message_reference → follow-up (no thread for a raw reply message)", async () => {
+		const cursor = new InMemoryInboundCursorStore();
+		cursor.save(CH, "150"); // resume from an older id so 200 is delivered (not baselined away)
+		const { impl, calls } = makeFetch({
+			messages: [
+				{
+					id: "200",
+					channel_id: CH,
+					content: "sounds good",
+					author: { id: "u2", bot: false },
+					message_reference: { message_id: "150" },
+				},
+			],
+		});
+		const m = mgr(store, impl, { cursorStore: cursor });
+		await m.start(); // resumes at 150 (ready, no baseline fetch)
+		const advanced = await m.pollOnce(); // sees 200, a reply → follow-up gate
+		await m.stop();
+		expect(advanced).toBe(1); // handled + advanced, but…
+		expect(countCreates(calls)).toBe(0); // …no thread created for a follow-up
+		expect(store.getRoundtableTopicThread(CH, "200")).toBeUndefined();
 	});
 });
