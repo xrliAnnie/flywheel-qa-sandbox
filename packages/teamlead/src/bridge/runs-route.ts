@@ -25,7 +25,7 @@ import {
 	resolveCanonicalProjectName,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
-import type { StateStore } from "../StateStore.js";
+import type { Session, StateStore } from "../StateStore.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
 import { resolveFounderFacingUx } from "./founder-ux/trigger.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
@@ -76,6 +76,13 @@ export function createRunsRouter(
 	runnerAdmission: RunnerAdmissionController,
 	_discordGuildId?: string, // FLY-163: unused after forumLink removal; kept for callsite stability
 	chatThreadsEnabled?: boolean,
+	// FLY-742: when a run-start is declined by an existing active session, this
+	// guard decides whether to auto-finalize a stale done-but-parked blocker
+	// (freeing the slot so THIS run proceeds) or durably alert the Lead. Absent →
+	// unchanged 409 behavior (byte-compat).
+	staleBlockerGuard?: {
+		handleActiveBlocker(blocker: Session): Promise<{ proceed: boolean }>;
+	},
 ): Router {
 	const router = Router();
 	// FLY-127: registry is constructed once per router and re-read on each
@@ -228,17 +235,32 @@ export function createRunsRouter(
 			(s) =>
 				s.issue_id === issueId &&
 				(s.session_role ?? "main") === role &&
-				["running", "awaiting_review"].includes(s.status),
+				// FLY-742: include approved_to_ship — getActiveSessions() already
+				// treats it as active, so a lingering approved_to_ship session must
+				// also route through the stale-blocker guard (align the one-active-
+				// session rule with getActiveSessions()).
+				["running", "awaiting_review", "approved_to_ship"].includes(s.status),
 		);
 		if (alreadyActive) {
-			res.status(409).json({
-				success: false,
-				// FLY-229: hint re-engagement. Conditional language — Bridge FSM
-				// status alone doesn't prove tmux liveness, so point at
-				// runner_terminal_list to confirm parked-alive before re-engaging.
-				message: `Issue ${issueId} already has an active session for role "${role}" (${alreadyActive.execution_id}, status: ${alreadyActive.status}). If that session is parked and still alive (idle), re-engage it via 'flywheel-comm send' / SendMessage instead of starting a new run — check runner_terminal_list (class=parked-alive).`,
-			});
-			return;
+			// FLY-742: a done-but-parked blocker (finished, PR merged/closed, never
+			// emitted `completed`) would silently block this scheduled/cron run
+			// forever. The guard either auto-finalizes such a blocker (freeing the
+			// slot so this run proceeds — same-tick self-heal) or durably alerts the
+			// Lead. Absent guard → unchanged 409 (byte-compat).
+			const guarded = staleBlockerGuard
+				? await staleBlockerGuard.handleActiveBlocker(alreadyActive)
+				: { proceed: false };
+			if (!guarded.proceed) {
+				res.status(409).json({
+					success: false,
+					// FLY-229: hint re-engagement. Conditional language — Bridge FSM
+					// status alone doesn't prove tmux liveness, so point at
+					// runner_terminal_list to confirm parked-alive before re-engaging.
+					message: `Issue ${issueId} already has an active session for role "${role}" (${alreadyActive.execution_id}, status: ${alreadyActive.status}). If that session is parked and still alive (idle), re-engage it via 'flywheel-comm send' / SendMessage instead of starting a new run — check runner_terminal_list (class=parked-alive).`,
+				});
+				return;
+			}
+			// guard finalized the stale blocker → slot freed → fall through to start.
 		}
 
 		// FLY-123 WS-D (P4): resource-based admission — no count cap. Defer only
