@@ -1,7 +1,9 @@
+import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import express from "express";
 // FLY-286 PR-2: web-local review route (gated on FLYWHEEL_XHS_REVIEW).
 import {
@@ -23,7 +25,10 @@ import {
 	WorkflowFSM,
 } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
-import type { ApplyTransitionOpts } from "../applyTransition.js";
+import {
+	type ApplyTransitionOpts,
+	applyTransition,
+} from "../applyTransition.js";
 import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import {
 	type HeartbeatNotifier,
@@ -146,6 +151,12 @@ import {
 	captureSession as defaultCaptureSession,
 	isCaptureError,
 } from "./session-capture.js";
+import {
+	alertStaleBlockerToLead,
+	createStaleBlockerGuard,
+	finalizeStaleBlocker,
+	type PrState,
+} from "./stale-blocker-guard.js";
 import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
 import {
@@ -173,7 +184,7 @@ import {
 import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
-import type { BridgeConfig } from "./types.js";
+import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import { makeBridgeWorktreeCleanup } from "./worktree-cleanup.js";
 import {
 	createInMemoryTokenStore,
@@ -214,6 +225,55 @@ export function resolveMailboxWriteTimeoutMs(): number | undefined {
 	const n = Number(raw);
 	if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return undefined;
 	return n;
+}
+
+const execFileP = promisify(execFile);
+
+/**
+ * FLY-742: stale-blocker TTL. Only a parked blocker idle past this reaches the
+ * `gh` PR-state check. `FLYWHEEL_CRON_STALE_TTL_MIN` (positive int minutes),
+ * default 120.
+ */
+export function resolveCronStaleTtlMs(): number {
+	const raw = Number.parseInt(
+		process.env.FLYWHEEL_CRON_STALE_TTL_MIN ?? "",
+		10,
+	);
+	const minutes = Number.isFinite(raw) && raw > 0 ? raw : 120;
+	return minutes * 60_000;
+}
+
+/**
+ * FLY-742: authoritative PR-state check for the auto-finalize gate. Runs
+ * `gh pr view` in the project's git checkout (auto-detects the repo from the
+ * remote). Bounded (10s); any error/timeout/no-repo → `unknown` (fail-safe:
+ * the caller then alerts instead of auto-finalizing — never auto-clears a
+ * session without proof the PR is done).
+ */
+export async function checkPrStateViaGh(
+	projectRoot: string,
+	prNumber: number,
+): Promise<PrState> {
+	// Codex code review R1 #1: self-contained defensive guard — a NaN / 0 /
+	// negative / non-integer PR number can never trigger a meaningless `gh` call.
+	if (!Number.isInteger(prNumber) || prNumber <= 0) return "unknown";
+	try {
+		const { stdout } = await execFileP(
+			"gh",
+			["pr", "view", String(prNumber), "--json", "state,mergedAt"],
+			{ cwd: projectRoot, timeout: 10_000 },
+		);
+		const parsed = JSON.parse(stdout) as {
+			state?: string;
+			mergedAt?: string | null;
+		};
+		if (parsed.mergedAt || parsed.state === "MERGED") return "merged";
+		if (parsed.state === "CLOSED") return "closed";
+		if (parsed.state === "OPEN") return "open";
+		return "unknown";
+	} catch {
+		return "unknown";
+	}
 }
 
 /**
@@ -2055,6 +2115,100 @@ export function createBridgeApp(
 
 	// GEO-267: /api/runs — start new Runner executions
 	if (startDispatcher) {
+		// FLY-742: stale-blocker guard for the run-start 409 path. Own fsm/executor
+		// (stateless config) since the shared transitionOpts is built later in
+		// setup; teardown primitives are the same module-level fns crash-reaper
+		// uses (equivalent to close_runner done=true). Default-on;
+		// FLYWHEEL_CRON_STALE_GUARD=0 → unchanged 409 (byte-compat).
+		const staleGuardTransitionOpts: ApplyTransitionOpts = {
+			store,
+			fsm: new WorkflowFSM(WORKFLOW_TRANSITIONS),
+			executor: new DirectiveExecutor(store),
+		};
+		const staleBlockerGuard = createStaleBlockerGuard({
+			enabled: process.env.FLYWHEEL_CRON_STALE_GUARD !== "0",
+			staleTtlMs: resolveCronStaleTtlMs(),
+			now: () => Date.now(),
+			projectRootFor: (name) =>
+				projects.find((p) => p.projectName === name)?.projectRoot,
+			checkPrState: (projectRoot, prNumber) =>
+				checkPrStateViaGh(projectRoot, prNumber),
+			finalizeBlocker: (blocker, prState) =>
+				finalizeStaleBlocker(blocker, prState, {
+					store,
+					lookupTmuxTarget,
+					killCmuxLinkedSession: (w) => killCmuxLinkedSession(w),
+					killTmuxWindow: (w) => killTmuxWindow(w),
+					closeTerminalView: async (session, tmuxWindow) => {
+						const identity = resolveTerminalViewIdentity(session, {
+							tmuxWindow,
+							sessionName: tmuxWindow.split(":")[0] ?? tmuxWindow,
+						});
+						if (!identity) return;
+						await closeRunnerTerminalView({
+							baseSessionName: identity.sessionName,
+							projectName: identity.projectName,
+							executionId: identity.executionId,
+							windowId: identity.windowId,
+							sessionRole: identity.sessionRole,
+						});
+					},
+					deleteCommDbSession: (execId, projectName) =>
+						deleteCommDbSession(execId, projectName),
+					applyTransition: (execId, target, ctx, fields) => {
+						const tr = applyTransition(
+							staleGuardTransitionOpts,
+							execId,
+							target,
+							ctx,
+							fields,
+						);
+						return {
+							ok: tr.ok,
+							error: (tr as { error?: string }).error,
+						};
+					},
+					archiveThread: (session) =>
+						archiveIssueThreadIfNoOtherActive(
+							store,
+							session,
+							{
+								projects,
+								globalBotToken: config.discordBotToken,
+								discordOwnerUserId: config.discordOwnerUserId,
+							},
+							{ allowStatuses: ["completed"] },
+						),
+					sqliteNow: () => sqliteDatetime(),
+					log: (m) => console.log(m),
+				}),
+			alertLead: (blocker, prState, idleHours) =>
+				alertStaleBlockerToLead(blocker, prState, idleHours, {
+					store,
+					resolveLeadId: (b) => {
+						if (!b.project_name) return undefined;
+						try {
+							const labels = parseSessionLabels(b);
+							const { lead } = resolveLeadForIssue(
+								projects,
+								b.project_name,
+								labels,
+							);
+							return lead.agentId;
+						} catch {
+							return undefined;
+						}
+					},
+					deliver: async (leadId, envelope) => {
+						const runtime = registry?.getForLead(leadId);
+						if (!runtime) return { delivered: false, error: "no lead runtime" };
+						return runtime.deliver(envelope);
+					},
+					isoNow: () => new Date().toISOString(),
+					log: (m) => console.log(m),
+				}),
+			log: (m) => console.log(m),
+		});
 		const runsRouter = createRunsRouter(
 			startDispatcher,
 			store,
@@ -2062,6 +2216,7 @@ export function createBridgeApp(
 			config.runnerAdmission,
 			config.discordGuildId,
 			config.chatThreadsEnabled,
+			staleBlockerGuard,
 		);
 		if (config.apiToken) {
 			app.use("/api/runs", tokenAuthMiddleware(config.apiToken), runsRouter);
