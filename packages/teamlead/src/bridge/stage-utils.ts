@@ -253,40 +253,64 @@ export function stripStatusEmojiPrefix(name: string): string {
 }
 
 /**
- * FLY-728 Part D: the model-tier short code (F/O/S/H) is stamped as a title
- * SUFFIX — deliberately NOT a leading status emoji — so it coexists with the
- * FLY-560 stage-emoji prefix (the stage re-stamp swaps only the leading emoji;
- * `splitStatusEmoji` never touches the suffix, so the model code survives every
- * stage transition). The suffix rides the SAME thread rename as the stage badge,
- * so it never adds a Discord rate-limit rename of its own.
+ * FLY-755: the model-tier short code (F/O/S/H) is stamped as a LEADING bracket
+ * marker placed after the FLY-560 stage badge and before the issue key, e.g.
+ * `🧠规划 [F] [FLY-755] Title`. The FLY-728 tail suffix (` ·F`) was invisible
+ * on mobile, where long titles truncate and the tail never renders. The marker
+ * still rides the SAME thread rename as the stage badge (splitStatusEmoji peels
+ * only the badge, leaving the marker at the front of the base), so it never
+ * adds a Discord rate-limit rename of its own.
  *
- * Marker: a `" ·"` separator + the single letter, e.g. `[FLY-728] Title ·F`.
+ * Recognition and insertion are a PAIRED contract anchored on a bracketed
+ * Linear issue key: the marker is only recognized when followed by `[KEY-N]`,
+ * and only ever inserted in front of a base that starts with `[KEY-N]`. A
+ * keyless title — even one literally starting with `[F] ` or `[infra] ` — is
+ * therefore never mis-stripped or mis-stamped, and anything we insert is
+ * always strippable on the next re-stamp (no double-stamp). The legacy FLY-728
+ * tail form is still recognized so existing threads migrate to the front
+ * marker on their next re-stamp; no proactive mass rename.
  */
-const MODEL_SUFFIX_SEP = " ·";
-const MODEL_SUFFIX_RE = / ·[FOSH]$/;
+const ISSUE_KEY_HEAD_RE = /^\[[A-Z][A-Z0-9]*-\d+\](?:\s|$)/;
+const MODEL_MARKER_RE = /^\[([FOSH])\] (?=\[[A-Z][A-Z0-9]*-\d+\](?:\s|$))/;
+const LEGACY_MODEL_SUFFIX_RE = / ·([FOSH])$/;
 
-/** Strip a trailing model-code suffix (` ·F`), if present. Idempotent. */
-export function stripModelSuffix(base: string): string {
-	return base.replace(MODEL_SUFFIX_RE, "");
-}
-
-/** Extract the model code from a trailing ` ·F` suffix, or undefined if none. */
-export function modelSuffixCode(
-	base: string,
-): "F" | "O" | "S" | "H" | undefined {
-	const m = base.match(MODEL_SUFFIX_RE);
-	return m ? (m[0].trim().slice(1) as "F" | "O" | "S" | "H") : undefined;
+/** True when `base` starts with a bracketed Linear issue key (`[FLY-755] …`). */
+export function hasIssueKeyHead(base: string): boolean {
+	return ISSUE_KEY_HEAD_RE.test(base);
 }
 
 /**
- * Ensure `base` carries exactly the given model-code suffix. Strips any existing
- * one first (idempotent + churn-safe under re-stamping), then appends `·<code>`.
- * `undefined` code → the base with no model suffix (account default = no code).
+ * Strip the leading model marker (`[F] ` before an issue key) and/or a legacy
+ * FLY-728 tail suffix (` ·F`), if present. Idempotent.
  */
-export function applyModelSuffix(
+export function stripModelMarker(base: string): string {
+	return base.replace(MODEL_MARKER_RE, "").replace(LEGACY_MODEL_SUFFIX_RE, "");
+}
+
+/**
+ * Extract the model code — the leading marker wins; the legacy tail suffix is
+ * the fallback (preserve path on threads not yet migrated). Undefined if none.
+ */
+export function modelMarkerCode(
+	base: string,
+): "F" | "O" | "S" | "H" | undefined {
+	const front = base.match(MODEL_MARKER_RE);
+	if (front) return front[1] as "F" | "O" | "S" | "H";
+	const tail = base.match(LEGACY_MODEL_SUFFIX_RE);
+	return tail ? (tail[1] as "F" | "O" | "S" | "H") : undefined;
+}
+
+/**
+ * Ensure `base` carries exactly the given model marker at the front. Strips any
+ * existing marker/legacy suffix first (idempotent + churn-safe under
+ * re-stamping), then prepends `[<code>] ` — but ONLY in front of an issue-key
+ * base (see the paired contract above). `undefined` code → no marker (account
+ * default = no code). Keyless bases are returned marker-free either way.
+ */
+export function applyModelMarker(
 	base: string,
 	code: "F" | "O" | "S" | "H" | undefined,
 ): string {
-	const bare = stripModelSuffix(base);
-	return code ? `${bare}${MODEL_SUFFIX_SEP}${code}` : bare;
+	const bare = stripModelMarker(base);
+	return code && hasIssueKeyHead(bare) ? `[${code}] ${bare}` : bare;
 }

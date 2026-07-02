@@ -511,9 +511,10 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		);
 	});
 
-	// FLY-728 Part D: the model short code (F/O/S/H) rides the same rename as the
-	// stage badge — a suffix (` ·F`) that coexists with the stage emoji prefix.
-	it("FLY-728: stamps the model code as a suffix alongside the stage emoji", async () => {
+	// FLY-755: the model short code (F/O/S/H) rides the same rename as the stage
+	// badge — a FRONT bracket marker (`[F] `) between the badge and the issue key
+	// (the FLY-728 tail suffix was invisible on mobile truncation).
+	it("FLY-755: stamps the model code as a front marker after the stage emoji", async () => {
 		mockFetch
 			.mockResolvedValueOnce({
 				ok: true,
@@ -530,14 +531,38 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 
 		const patchOpts = mockFetch.mock.calls[1]![1];
 		expect(JSON.parse(patchOpts.body).name).toBe(
-			"🔨 [FLY-560] Discord issue status ·F",
+			"🔨 [F] [FLY-560] Discord issue status",
 		);
 	});
 
-	it("FLY-728: an authoritative modelCode=null CLEARS a stale suffix (Codex code R1)", async () => {
-		// A reused thread from a prior Fable run carries ` ·F`; the new run is
+	it("FLY-755: an authoritative modelCode=null CLEARS a stale front marker", async () => {
+		// A reused thread from a prior Fable run carries `[F] `; the new run is
 		// account-default. The stage stamp passes null (authoritative) → the stale
 		// code is removed, so the thread never wrongly claims Fable.
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🔨 [F] [FLY-560] Discord issue status" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({ modelCode: null }),
+			"thread-1",
+			"design_review",
+		);
+
+		const patchCall = mockFetch.mock.calls.find(
+			(c) => c[1]?.method === "PATCH",
+		);
+		const name = JSON.parse(patchCall![1].body).name as string;
+		expect(name).not.toContain("[F]");
+		expect(name).toBe("👀 [FLY-560] Discord issue status");
+	});
+
+	it("FLY-755: modelCode=null also CLEARS a legacy tail suffix (·F)", async () => {
 		mockFetch
 			.mockResolvedValueOnce({
 				ok: true,
@@ -558,18 +583,19 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		);
 		const name = JSON.parse(patchCall![1].body).name as string;
 		expect(name).not.toContain("·F");
+		expect(name).not.toContain("[F]");
 		expect(name).toBe("👀 [FLY-560] Discord issue status");
 	});
 
-	it("FLY-728: a re-stamp with NO modelCode preserves an existing suffix", async () => {
+	it("FLY-755: a re-stamp with NO modelCode preserves an existing front marker", async () => {
 		// A QA / reconnecting re-stamp has no model context — it must not strip the
-		// code the stage stamp set. GET returns a title already carrying ` ·F`.
+		// code the stage stamp set. GET returns a title already carrying `[F] `.
 		mockFetch
 			.mockResolvedValueOnce({
 				ok: true,
 				status: 200,
 				json: () =>
-					Promise.resolve({ name: "🔨 [FLY-560] Discord issue status ·F" }),
+					Promise.resolve({ name: "🔨 [F] [FLY-560] Discord issue status" }),
 			})
 			.mockResolvedValueOnce({ ok: true, status: 200 });
 
@@ -579,19 +605,41 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		const patchCall = mockFetch.mock.calls.find(
 			(c) => c[1]?.method === "PATCH",
 		);
-		// the suffix ·F survives the stage change
-		expect(JSON.parse(patchCall![1].body).name).toContain(" ·F");
-		expect(JSON.parse(patchCall![1].body).name).toContain(
-			"[FLY-560] Discord issue status ·F",
+		// the front marker survives the stage change, still in front
+		expect(JSON.parse(patchCall![1].body).name).toBe(
+			"👀 [F] [FLY-560] Discord issue status",
 		);
 	});
 
-	it("FLY-728: idempotent — no PATCH when the emoji AND model suffix already match", async () => {
+	it("FLY-755: a re-stamp migrates a legacy tail suffix to the front marker", async () => {
+		// Pre-755 thread: `… ·F` at the tail. The next stage re-stamp (even with
+		// no model context) must migrate the code to the front, not drop it and
+		// not leave it at the tail.
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🔨 [FLY-560] Discord issue status ·F" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(ctx(), "thread-1", "design_review");
+
+		const patchCall = mockFetch.mock.calls.find(
+			(c) => c[1]?.method === "PATCH",
+		);
+		const name = JSON.parse(patchCall![1].body).name as string;
+		expect(name).toBe("👀 [F] [FLY-560] Discord issue status");
+		expect(name).not.toContain(" ·F");
+	});
+
+	it("FLY-755: idempotent — no PATCH when the emoji AND front marker already match", async () => {
 		mockFetch.mockResolvedValueOnce({
 			ok: true,
 			status: 200,
 			json: () =>
-				Promise.resolve({ name: "🔨 [FLY-560] Discord issue status ·F" }),
+				Promise.resolve({ name: "🔨 [F] [FLY-560] Discord issue status" }),
 		});
 
 		await creator.stampStageEmoji(
@@ -605,7 +653,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		);
 	});
 
-	it("FLY-728: a long title truncates in the middle — the model suffix survives (Codex R1 MED)", async () => {
+	it("FLY-755: a long title truncates at the tail — the front marker survives", async () => {
 		const longTitle = `[FLY-560] ${"x".repeat(200)}`;
 		mockFetch
 			.mockResolvedValueOnce({
@@ -626,8 +674,67 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 		);
 		const name = JSON.parse(patchCall![1].body).name as string;
 		expect(name.length).toBeLessThanOrEqual(100);
-		expect(name.endsWith(" ·F")).toBe(true); // code survived truncation
-		expect(name.startsWith("🔨 ")).toBe(true); // stage prefix intact
+		expect(name.startsWith("🔨 [F] [FLY-560]")).toBe(true); // code in front
+		expect(name.endsWith(" ·F")).toBe(false); // no tail form anymore
+	});
+
+	it("FLY-755: never stamps a marker onto a keyless bracket-start title", async () => {
+		// Paired contract (Codex design R2): insertion is anchored on a bracketed
+		// issue key. A keyless curated title like `[infra] …` must not be stamped
+		// even when the caller carries a model code.
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "🧠 [infra] investigation" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({
+				issueTitle: undefined,
+				issueIdentifier: undefined,
+				issueId: "uuid-1",
+				modelCode: "F",
+			}),
+			"thread-1",
+			"implement",
+		);
+
+		const patchCall = mockFetch.mock.calls.find(
+			(c) => c[1]?.method === "PATCH",
+		);
+		expect(JSON.parse(patchCall![1].body).name).toBe(
+			"🔨 [infra] investigation",
+		);
+	});
+
+	it("FLY-755: modelCode=null never deletes a literal keyless `[F] ` title prefix", async () => {
+		// `[F] [infra] copy` here is REAL title text (no issue key behind the
+		// single letter) — the authoritative clear must not eat it.
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "🧠 [F] [infra] copy" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({
+				issueTitle: undefined,
+				issueIdentifier: undefined,
+				issueId: "uuid-1",
+				modelCode: null,
+			}),
+			"thread-1",
+			"implement",
+		);
+
+		const patchCall = mockFetch.mock.calls.find(
+			(c) => c[1]?.method === "PATCH",
+		);
+		expect(JSON.parse(patchCall![1].body).name).toBe("🔨 [F] [infra] copy");
 	});
 
 	it("is idempotent — no PATCH when the desired emoji is already present", async () => {
@@ -1136,5 +1243,181 @@ describe("FLY-91: resolveChatThreadId helper", () => {
 	it("returns undefined when chatChannelId is undefined", () => {
 		store.upsertChatThread("t-1", "ch-1", "issue-1");
 		expect(resolveChatThreadId(store, "issue-1", undefined)).toBeUndefined();
+	});
+});
+
+describe("FLY-755: creation + backfill carry the front model marker", () => {
+	let store: StateStore;
+	let creator: ChatThreadCreator;
+
+	beforeEach(async () => {
+		vi.clearAllMocks();
+		store = await StateStore.create(":memory:");
+		creator = new ChatThreadCreator(store);
+	});
+
+	afterEach(() => {
+		store.close();
+		vi.restoreAllMocks();
+	});
+
+	it("creates a new thread with the front marker (dispatch path)", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "msg-755" }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "thread-755" }),
+			});
+
+		await creator.ensureChatThread({
+			chatChannelId: "ch-1",
+			issueId: "FLY-755",
+			issueIdentifier: "FLY-755",
+			issueTitle: "Model code up front",
+			botToken: "bot-token",
+			modelCode: "F",
+		});
+
+		const threadBody = JSON.parse(mockFetch.mock.calls[1]![1].body);
+		expect(threadBody.name).toBe("[F] [FLY-755] Model code up front");
+	});
+
+	it("does not stamp a keyless title at creation (no issue key head)", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "msg-kl" }),
+			})
+			.mockResolvedValueOnce({
+				ok: true,
+				json: () => Promise.resolve({ id: "thread-kl" }),
+			});
+
+		await creator.ensureChatThread({
+			chatChannelId: "ch-1",
+			issueId: "uuid-no-key",
+			issueTitle: "[Fable] curated copy",
+			botToken: "bot-token",
+			modelCode: "F",
+		});
+
+		const threadBody = JSON.parse(mockFetch.mock.calls[1]![1].body);
+		expect(threadBody.name).toBe("[Fable] curated copy");
+	});
+
+	// Codex design R1 #1: the backfill placeholder gate must see THROUGH the
+	// model marker / legacy suffix, or marker-carrying placeholder threads can
+	// never be renamed once the real issue title arrives.
+	it("backfills a marker-carrying placeholder and keeps the marker", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[F] [FLY-509] FLY-509" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.backfillThreadName(
+			{
+				chatChannelId: "ch-1",
+				issueId: "FLY-509",
+				issueIdentifier: "FLY-509",
+				issueTitle: "Real title",
+				botToken: "bot-token",
+				modelCode: "F",
+			},
+			"thread-bf",
+		);
+
+		const patchCall = mockFetch.mock.calls.find(
+			(c) => c[1]?.method === "PATCH",
+		);
+		expect(JSON.parse(patchCall![1].body).name).toBe(
+			"[F] [FLY-509] Real title",
+		);
+	});
+
+	it("backfills a legacy-suffix placeholder and migrates the code to the front", async () => {
+		// absent modelCode — the /send route (tools.ts) passes none; the code
+		// stored on the placeholder must be preserved, front-migrated.
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-509] FLY-509 ·F" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.backfillThreadName(
+			{
+				chatChannelId: "ch-1",
+				issueId: "FLY-509",
+				issueIdentifier: "FLY-509",
+				issueTitle: "Real title",
+				botToken: "bot-token",
+			},
+			"thread-bf",
+		);
+
+		const patchCall = mockFetch.mock.calls.find(
+			(c) => c[1]?.method === "PATCH",
+		);
+		const name = JSON.parse(patchCall![1].body).name as string;
+		expect(name).toBe("[F] [FLY-509] Real title");
+		expect(name).not.toContain(" ·F");
+	});
+
+	it("backfill with modelCode=null clears the placeholder's marker", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[F] [FLY-509] FLY-509" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.backfillThreadName(
+			{
+				chatChannelId: "ch-1",
+				issueId: "FLY-509",
+				issueIdentifier: "FLY-509",
+				issueTitle: "Real title",
+				botToken: "bot-token",
+				modelCode: null,
+			},
+			"thread-bf",
+		);
+
+		const patchCall = mockFetch.mock.calls.find(
+			(c) => c[1]?.method === "PATCH",
+		);
+		expect(JSON.parse(patchCall![1].body).name).toBe("[FLY-509] Real title");
+	});
+
+	it("backfill does not overwrite a marker-carrying curated (non-placeholder) title", async () => {
+		mockFetch.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			json: () => Promise.resolve({ name: "[F] [FLY-509] curated title" }),
+		});
+
+		await creator.backfillThreadName(
+			{
+				chatChannelId: "ch-1",
+				issueId: "FLY-509",
+				issueIdentifier: "FLY-509",
+				issueTitle: "Real title",
+				botToken: "bot-token",
+				modelCode: "F",
+			},
+			"thread-bf",
+		);
+
+		expect(mockFetch.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(
+			false,
+		);
 	});
 });
