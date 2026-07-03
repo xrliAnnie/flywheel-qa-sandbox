@@ -34,6 +34,7 @@ import {
 	GUARDRAIL_EVENT_TYPES,
 	type LeadEventEnvelope,
 } from "./lead-runtime.js";
+import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
 import {
 	isPostApproveShipComplete,
 	markEvidenceGapCompletion,
@@ -1257,7 +1258,14 @@ export function createEventRouter(
 								: undefined,
 							fallbackBotToken: config.discordBotToken,
 						},
-						{ store, projects, removeCleanWorktree },
+						{
+							store,
+							projects,
+							removeCleanWorktree,
+							// FLY-799: auto-flip the shipped issue to Done (ship-success gated
+							// by runPostShipFinalization's merge-evidence predicate).
+							markIssueDone: makeLinearDoneFinalizer(config),
+						},
 					).catch((err) => {
 						console.error(
 							`[event-route] runPostShipFinalization failed for ${event.execution_id}:`,
@@ -1617,7 +1625,14 @@ export function createEventRouter(
 											: undefined,
 										fallbackBotToken: config.discordBotToken,
 									},
-									{ store, projects, removeCleanWorktree },
+									{
+										store,
+										projects,
+										removeCleanWorktree,
+										// FLY-799: auto-flip the shipped issue to Done (ship-success gated
+										// by runPostShipFinalization's merge-evidence predicate).
+										markIssueDone: makeLinearDoneFinalizer(config),
+									},
 								).catch((err) => {
 									console.error(
 										`[event-route W2] runPostShipFinalization failed for ${event.execution_id}:`,
