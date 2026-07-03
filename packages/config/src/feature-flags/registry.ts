@@ -125,6 +125,34 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"resolve.direct-toggle.test:auto_qa_killswitch live-observe",
 	},
 	{
+		// FLY-685: close_runner (Bridge) writes a cmux pin close-request marker on a
+		// successful window kill; the cmux-sync watcher drains it and closes the
+		// stale sidebar pin immediately. readonly (not web-toggleable): the switch
+		// is honored on BOTH the Bridge TS side (marker write) and the separate
+		// long-running bash watcher (marker drain, its own env) — flipping the
+		// Bridge's process.env would not live-affect the watcher, so it needs an
+		// env change + restart of both, never a single-process live toggle.
+		name: "cmux_close_request_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_CLOSE_REQUEST",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"close_runner 写 cmux pin close-request marker + watcher 立即移除 stale pin（FLY-685）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/cmux-close-request.ts",
+				"requestCmuxPinClose",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "watcher 侧同名读取在 scripts/flywheel-cmux-sync.sh（cli_invocation）；=0 关闭两侧，需重启 Bridge + watcher。",
+	},
+	{
 		name: "gatepoller_circuit",
 		category: "feature",
 		source: "env",

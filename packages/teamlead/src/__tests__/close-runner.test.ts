@@ -1,5 +1,8 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "../bridge/close-runner.js";
 import { StateStore } from "../StateStore.js";
@@ -438,5 +441,121 @@ describe("closeRunner", () => {
 				"terminated",
 			].sort(),
 		);
+	});
+});
+
+// ── FLY-685: close_runner writes a cmux close-request marker ─────────────────
+// On a successful window kill, closeRunner appends the runner's window_name to
+// the marker file the cmux-sync watcher drains to remove the stale sidebar pin.
+// The window_name is derived from killCmuxLinkedSession's resolved cmuxSession
+// ("cmux-<window_name>"). Best-effort — never blocks/affects the close.
+
+describe("closeRunner — FLY-685 cmux pin marker", () => {
+	let store: StateStore;
+	let dir: string;
+	let markerFile: string;
+	const prevFile = process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE;
+	const prevSwitch = process.env.FLYWHEEL_CMUX_CLOSE_REQUEST;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		mockGetTmuxTarget.mockReset();
+		mockKillTmuxWindow.mockReset();
+		mockKillCmuxLinkedSession.mockReset();
+		dir = mkdtempSync(join(tmpdir(), "fly685-close-"));
+		markerFile = join(dir, "close-requested");
+		process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE = markerFile;
+		delete process.env.FLYWHEEL_CMUX_CLOSE_REQUEST;
+		mockGetTmuxTarget.mockReturnValue({
+			tmuxWindow: "runner-flywheel:@46",
+			sessionName: "runner-flywheel",
+		});
+	});
+
+	afterEach(() => {
+		rmSync(dir, { recursive: true, force: true });
+		if (prevFile === undefined)
+			delete process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE;
+		else process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE = prevFile;
+		if (prevSwitch === undefined)
+			delete process.env.FLYWHEEL_CMUX_CLOSE_REQUEST;
+		else process.env.FLYWHEEL_CMUX_CLOSE_REQUEST = prevSwitch;
+		// restore the shared mock's default resolution for the rest of the suite
+		mockKillCmuxLinkedSession.mockResolvedValue({ killed: true });
+	});
+
+	it("writes the derived window_name on a successful close", async () => {
+		seedSession(store, "completed");
+		mockKillCmuxLinkedSession.mockResolvedValue({
+			killed: true,
+			cmuxSession: "cmux-FLY-102-claude-close-runner-stale-pin",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toEqual({ closed: true });
+		expect(readFileSync(markerFile, "utf8")).toBe(
+			"FLY-102-claude-close-runner-stale-pin\n",
+		);
+	});
+
+	it("does NOT write when the tmux kill failed (runner may still be alive)", async () => {
+		seedSession(store, "completed");
+		mockKillCmuxLinkedSession.mockResolvedValue({
+			killed: true,
+			cmuxSession: "cmux-FLY-102-claude-x",
+		});
+		mockKillTmuxWindow.mockResolvedValue({
+			killed: false,
+			error: "permission denied",
+		});
+
+		await closeRunner(makeOpts(), store);
+
+		expect(existsSync(markerFile)).toBe(false);
+	});
+
+	it("does NOT write when cmuxSession is absent (window already gone)", async () => {
+		seedSession(store, "completed");
+		mockKillCmuxLinkedSession.mockResolvedValue({ killed: true }); // no cmuxSession
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+
+		await closeRunner(makeOpts(), store);
+
+		expect(existsSync(markerFile)).toBe(false);
+	});
+
+	it("does NOT write when the kill-switch is off (byte-compat)", async () => {
+		process.env.FLYWHEEL_CMUX_CLOSE_REQUEST = "0";
+		seedSession(store, "completed");
+		mockKillCmuxLinkedSession.mockResolvedValue({
+			killed: true,
+			cmuxSession: "cmux-FLY-102-claude-x",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toEqual({ closed: true });
+		expect(existsSync(markerFile)).toBe(false);
+	});
+
+	it("marker write never affects the close result (unwritable path)", async () => {
+		process.env.FLYWHEEL_CMUX_CLOSE_REQUEST_FILE = join(
+			dir,
+			"no-such-dir",
+			"marker",
+		);
+		seedSession(store, "completed");
+		mockKillCmuxLinkedSession.mockResolvedValue({
+			killed: true,
+			cmuxSession: "cmux-FLY-102-claude-x",
+		});
+		mockKillTmuxWindow.mockResolvedValue({ killed: true });
+
+		const result = await closeRunner(makeOpts(), store);
+
+		expect(result).toEqual({ closed: true });
 	});
 });
