@@ -82,6 +82,7 @@ import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
+import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import {
 	deleteCommDbSession,
 	pruneDeadTerminalCommDbSessions,
@@ -3329,12 +3330,38 @@ export async function startBridge(
 	// rest of Bridge boot for minutes. It is pure best-effort cleanup with no
 	// ordering dependency on later boot steps, so detach it and let it drain in the
 	// background; per-project failures are swallowed.
+	//
+	// FLY-817: the CommDB↔FSM reconcile (sibling of the FLY-638 sweep, folded into
+	// the same per-project loop) runs FIRST each project — it clears CommDB
+	// `running` rows whose Bridge FSM is a non-preserve terminal outcome AND whose
+	// tmux target is provably dead (the FLY-638 blind spot). Both sweeps probe tmux
+	// per row and share the fire-and-forget + dedup shape; their candidate sets are
+	// disjoint (running vs completed/timeout). `FLYWHEEL_COMMDB_FSM_RECONCILE=0`
+	// disables the reconcile (kill-switch, mirrors FLYWHEEL_CRASH_REAPER).
 	{
 		const prunedProjects = new Set<string>();
+		const reconcileOn = process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
 		void (async () => {
 			for (const p of projects ?? []) {
 				if (prunedProjects.has(p.projectName)) continue;
 				prunedProjects.add(p.projectName);
+				if (reconcileOn) {
+					try {
+						const r = await reconcileCommDbRunningAgainstFsm(
+							p.projectName,
+							(id) => store.getSession(id)?.status,
+						);
+						if (r.reconciled > 0) {
+							console.log(
+								`[Bridge] FLY-817 CommDB↔FSM reconcile (${p.projectName}): scanned=${r.scanned} reconciled=${r.reconciled} keptNonTerminal=${r.keptNonTerminal} keptPreserve=${r.keptPreserve} keptAliveTarget=${r.keptAliveTarget}`,
+							);
+						}
+					} catch (err) {
+						console.error(
+							`[Bridge] FLY-817 CommDB↔FSM reconcile (${p.projectName}) failed (non-fatal): ${(err as Error).message}`,
+						);
+					}
+				}
 				try {
 					const pruned = await pruneDeadTerminalCommDbSessions(p.projectName);
 					if (pruned.pruned > 0) {
