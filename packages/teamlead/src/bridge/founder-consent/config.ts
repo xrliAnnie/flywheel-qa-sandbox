@@ -14,8 +14,14 @@
 import { createHash } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
+// FLY-709 F3: DecisionMode + resolveDecisionMode are extracted to flywheel-config
+// so the feature-flag registry can compute the DECISION_MODE gate's value without
+// flywheel-config depending on flywheel-teamlead. Re-exported here for byte-compat
+// (existing importers keep importing DecisionMode/resolveDecisionMode from here).
+import { type DecisionMode, resolveDecisionMode } from "flywheel-config";
 
-export type DecisionMode = "off" | "audit_only" | "enforce";
+export type { DecisionMode } from "flywheel-config";
+export { resolveDecisionMode } from "flywheel-config";
 export type FailMode = "closed" | "open";
 export type BypassLabelFreshness = "stored" | "linear_live";
 
@@ -95,38 +101,6 @@ function parseJsonMap<T>(
 		out[k] = v;
 	}
 	return out;
-}
-
-/**
- * Resolve the operating mode from the canonical env + legacy alias.
- * Precedence (plan §8.1.1):
- *   1. DECISION_MODE present → wins (warn if ENABLED also set).
- *   2. DECISION_MODE absent + ENABLED=true → "enforce".
- *   3. otherwise → "off".
- */
-export function resolveDecisionMode(
-	env: NodeJS.ProcessEnv,
-	warn: (msg: string) => void = () => {},
-): DecisionMode {
-	const raw = env.FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE?.trim();
-	const enabledRaw = env.FLYWHEEL_FOUNDER_CONSENT_ENABLED?.trim();
-	const enabled = enabledRaw === "true" || enabledRaw === "1";
-
-	if (raw) {
-		if (raw !== "off" && raw !== "audit_only" && raw !== "enforce") {
-			throw new Error(
-				`FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE must be off|audit_only|enforce, got "${raw}"`,
-			);
-		}
-		if (enabledRaw !== undefined) {
-			warn(
-				"FLYWHEEL_FOUNDER_CONSENT_ENABLED is set but DECISION_MODE takes precedence; legacy alias ignored",
-			);
-		}
-		return raw as DecisionMode;
-	}
-
-	return enabled ? "enforce" : "off";
 }
 
 /**

@@ -17,6 +17,7 @@ import {
 	declareState,
 	parseDuration,
 } from "./commands/declare-state.js";
+import { runFeatureFlags } from "./commands/feature-flags.js";
 import {
 	awaitFounderUxGate,
 	declareFounderUx,
@@ -33,6 +34,7 @@ import {
 import { qaResult } from "./commands/qa-result.js";
 import { reportDeployed } from "./commands/report-deployed.js";
 import { respond } from "./commands/respond.js";
+import { runRunnerConfig } from "./commands/runner-config.js";
 import { search } from "./commands/search.js";
 import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
@@ -85,6 +87,19 @@ Commands:
             [--no-screenshot]. Env: FLYWHEEL_BRIDGE_URL, TEAMLEAD_API_TOKEN,
             FLYWHEEL_REMOTE_REPORTS=0 disables. Always prints a one-line
             JSON envelope to stdout.
+  feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
+            report [--project <name>] [--channel <id>] [--out <file>]
+            [--bridge-url <url>]  — fetch the read-only flag report from the
+            Bridge loopback endpoint and deliver via publish-report (hosted URL
+            + Discord). Honors FLYWHEEL_REMOTE_REPORTS=0.
+            apply --name <flag> --to on|off [--bridge-url <url>]  — the command
+            the founder pastes to the Lead (copy-paste-apply); stage→apply a
+            direct-toggle flag on the loopback Bridge routes.
+  runner-config   Per-project runner defaults + cron model (FLY-709). Subcommand:
+            apply --project <name> [--cron <collection_id>] [--model <id|default>]
+            [--effort <level|default>] [--backend <executor|default>] --yes
+            — writes <projectRoot>/.flywheel/config.yaml (roles.runner.* or
+            collections[].model); hot-effective for NEW runs, no restart.
   set-artifact   Register build output (.glb/.stl/.3mf) path for 3D capture (GEO-151)
   token-report   Fine-grained token usage report (FLY-614/FLY-744). Subcommands:
             aggregate [--since --until | --backfill-days N]  scan CC logs → persist
@@ -205,6 +220,12 @@ async function main(): Promise<void> {
 			break;
 		case "publish-report":
 			await runPublishReport(commandArgs);
+			break;
+		case "feature-flags":
+			await runFeatureFlags(commandArgs);
+			break;
+		case "runner-config":
+			await runRunnerConfig(commandArgs);
 			break;
 		case "token-report":
 			await runTokenReport(commandArgs);

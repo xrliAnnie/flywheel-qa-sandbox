@@ -49,11 +49,13 @@ export interface RetryRequest {
 	 */
 	issueUrl?: string;
 	/**
-	 * FLY-728 Part C: the difficulty-sorter's dispatch model, re-derived on
-	 * retry from the predecessor's persisted `runner_model` (via
-	 * `normalizeDispatchModel`) so a sorter-chosen model survives a retry. The
-	 * label layer re-resolves a manual label first, so this only re-applies a
-	 * genuinely dispatch/project-tier model. Absent → no dispatch override.
+	 * FLY-728 Part C: the difficulty-sorter's dispatch model. On retry it is
+	 * the predecessor's persisted `dispatch_model` (actions.ts reads the
+	 * session row) — NEVER `runner_model`, which is display/audit output and
+	 * would smuggle stale label/project/account choices back in (FLY-751
+	 * Codex R1 #2). The label layer re-resolves a manual label first, so this
+	 * only re-applies a genuinely dispatch-chosen model. Absent → no dispatch
+	 * override.
 	 */
 	dispatchModel?: string;
 	/**

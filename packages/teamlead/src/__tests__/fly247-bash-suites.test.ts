@@ -96,6 +96,14 @@ describe("FLY-247 bash suites (hermetic)", () => {
 		).not.toThrow();
 	}, 120_000);
 
+	// FLY-709 P4.2: the single-Lead value-flags entry the console's copy-paste
+	// command targets (canonical changes-file shape + backend fail-close).
+	it("flywheel-fleet single-lead value flags (FLY-709 Path C)", () => {
+		expect(() =>
+			runSuite("scripts/__tests__/flywheel-fleet-lead-flags.test.sh"),
+		).not.toThrow();
+	}, 120_000);
+
 	it("flywheel-fleet apply-batch orchestration (mid-fail/baseline/env-pinned)", () => {
 		expect(() =>
 			runSuite("scripts/__tests__/flywheel-fleet-apply-batch.test.sh"),

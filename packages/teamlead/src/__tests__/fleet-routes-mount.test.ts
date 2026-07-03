@@ -147,6 +147,34 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 		expect(res.status).toBe(403);
 	});
 
+	it("FLY-709: flag stage/apply routes are mounted (cross-origin 403; unknown flag 400)", async () => {
+		// cross-origin rejected (anti-CSRF), same guard as the fleet routes
+		const cross = await fetch(`${baseUrl}/api/fleet/flag/stage`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Origin: "http://evil.test",
+			},
+			body: JSON.stringify({ name: "auto_qa_killswitch", to: false }),
+		});
+		expect(cross.status).toBe(403);
+		// same-origin + unknown flag → 400 (reaches the handler; rejected before any
+		// .env read, so this proves the mount without touching ~/.flywheel/.env)
+		const unknown = await fetch(`${baseUrl}/api/fleet/flag/stage`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: baseUrl },
+			body: JSON.stringify({ name: "totally-not-a-flag", to: false }),
+		});
+		expect(unknown.status).toBe(400);
+		// apply requires canonical + confirmToken
+		const badApply = await fetch(`${baseUrl}/api/fleet/flag/apply`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", Origin: baseUrl },
+			body: JSON.stringify({}),
+		});
+		expect(badApply.status).toBe(400);
+	});
+
 	it("stage→apply happy path: same-origin, confirmToken, launching+spawn (202)", async () => {
 		const sameOrigin = baseUrl; // browser Origin === the host it was served from
 		const stageRes = await fetch(`${baseUrl}/api/fleet/stage`, {

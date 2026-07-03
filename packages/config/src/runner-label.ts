@@ -84,6 +84,13 @@ function resolveModelFromLabels(labels: string[]): string | undefined {
 		return "gemini-3-pro-preview";
 	}
 
+	// FLY-751: explicit 1M-context opt-in labels — checked BEFORE the bare
+	// aliases so an issue carrying both `opus` and `opus-1m` resolves to 1M
+	// (the more specific ask wins). `includes` is exact-match, so there is no
+	// substring swallowing either way; the ordering is for precedence only.
+	if (labels.includes("opus-1m")) return "claude-opus-4-8[1m]";
+	if (labels.includes("fable-1m")) return "claude-fable-5[1m]";
+
 	// FLY-728: per-issue model routing. `fable` resolves to the canonical
 	// explicit id `claude-fable-5` (the exact string fleet-console, token
 	// pricing/report, and the claude-tmux `--model` flag all use). It infers the

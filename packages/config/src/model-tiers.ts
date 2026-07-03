@@ -13,9 +13,16 @@
  *
  * Canonical model ids for the 728 default mapping (the founder confirmed the
  * tiers; tier→model is FLY-709-configurable): Fable 5 `claude-fable-5`, Opus 4.8
- * (1M window) `claude-opus-4-8[1m]`, Sonnet 5 `claude-sonnet-5`, Haiku 4.5
+ * `claude-opus-4-8`, Sonnet 5 `claude-sonnet-5`, Haiku 4.5
  * `claude-haiku-4-5-20251001`. The `[1m]` suffix is the Claude Code CLI
  * 1M-context-window selector at standard pricing.
+ *
+ * FLY-751: the medium tier dropped its `[1m]` suffix — a 1M-context Claude
+ * process costs ~0.35GB more RAM per runner (FLY-753 measured) and most tasks
+ * don't need the window. 1M is now an EXPLICIT opt-in: the `opus-1m` /
+ * `fable-1m` dispatch aliases (and the same issue labels, see runner-label.ts)
+ * resolve to the `[1m]` ids. The ship gate for this change called the flip out
+ * to the founder (it reverses the FLY-728-era medium mapping she confirmed).
  *
  * The simple-tier id `claude-sonnet-5` is verified against the token pricing
  * catalog (`token-usage/pricing.ts`), the token report label map
@@ -37,20 +44,41 @@ export interface ModelTierSpec {
 /** Difficulty tier → default model. 728 built-in; FLY-709 makes it configurable. */
 export const MODEL_TIERS: Readonly<Record<ModelTier, ModelTierSpec>> = {
 	heavy: { id: "claude-fable-5", aliases: ["fable"], code: "F" },
-	medium: { id: "claude-opus-4-8[1m]", aliases: ["opus"], code: "O" },
+	medium: { id: "claude-opus-4-8", aliases: ["opus"], code: "O" },
 	light: { id: "claude-sonnet-5", aliases: ["sonnet"], code: "S" },
 	trivial: { id: "claude-haiku-4-5-20251001", aliases: ["haiku"], code: "H" },
 };
 
-/** Lowercased id/alias → canonical id (built once from MODEL_TIERS). */
+/**
+ * FLY-751: explicit 1M-context opt-in spellings. NOT a tier — a Lead (or a
+ * label) reaches for these only when a task genuinely needs the 1M window.
+ */
+const ONE_M_DISPATCH_MODELS: ReadonlyMap<string, string> = new Map([
+	["opus-1m", "claude-opus-4-8[1m]"],
+	["claude-opus-4-8[1m]", "claude-opus-4-8[1m]"],
+	["fable-1m", "claude-fable-5[1m]"],
+	["claude-fable-5[1m]", "claude-fable-5[1m]"],
+]);
+
+/** Lowercased id/alias → canonical id (built once from MODEL_TIERS + 1M opt-ins). */
 const DISPATCH_MODEL_LOOKUP: ReadonlyMap<string, string> = (() => {
 	const m = new Map<string, string>();
 	for (const spec of Object.values(MODEL_TIERS)) {
 		m.set(spec.id.toLowerCase(), spec.id);
 		for (const alias of spec.aliases) m.set(alias.toLowerCase(), spec.id);
 	}
+	for (const [alias, id] of ONE_M_DISPATCH_MODELS) m.set(alias, id);
 	return m;
 })();
+
+/**
+ * FLY-751: every spelling `normalizeDispatchModel` accepts — for boundary
+ * error payloads (`runs-route.ts` INVALID_MODEL `allowed`), so the 1M opt-ins
+ * are discoverable and not just tribal knowledge.
+ */
+export const ACCEPTED_DISPATCH_MODELS: readonly string[] = [
+	...DISPATCH_MODEL_LOOKUP.keys(),
+];
 
 /**
  * Normalize a dispatch `model` param to a canonical tier id, or `null` when it

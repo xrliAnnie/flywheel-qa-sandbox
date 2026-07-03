@@ -39,6 +39,7 @@ export STALE_STATE="$TMPDIR_ROOT/stale.state"
 export HEAL_STATE="$TMPDIR_ROOT/heal.state"  # FLY-169
 export CMUX_SOCK_IDENT_FILE="$TMPDIR_ROOT/sock-ident"  # FLY-254
 export ORPHAN_PIN_STATE="$TMPDIR_ROOT/orphan-pin.state"  # FLY-293
+export FLYWHEEL_CMUX_CLOSE_REQUEST_FILE="$TMPDIR_ROOT/close-requested"  # FLY-685
 export FLYWHEEL_CMUX_CLEANUP_DELAY=30
 export FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP=300
 
@@ -267,7 +268,15 @@ cmux() {
         echo "$MOCK_CMUX_WORKSPACES"
       fi
       ;;
-    close-workspace|new-workspace|rename-workspace|send|send-key|refresh-surfaces)
+    close-workspace)
+      MOCK_CMUX_OPS+="$*"$'\n'
+      # FLY-685: simulate a cmux close-workspace mutation failure (revalidation
+      # JSON succeeds but the close itself fails) to test marker requeue on an
+      # unconfirmed close. NB: use an explicit `if` — a trailing `[[…]] && return`
+      # would make the case arm exit 1 whenever the condition is FALSE.
+      if [[ "${MOCK_CMUX_CLOSE_FAIL:-0}" == "1" ]]; then return 1; fi
+      ;;
+    new-workspace|rename-workspace|send|send-key|refresh-surfaces)
       # FLY-169: capture send / send-key / refresh-surfaces too (with their
       # --surface args) so tests can assert surface-scoped self-heal sends.
       MOCK_CMUX_OPS+="$*"$'\n'
@@ -385,6 +394,12 @@ reset_mocks() {
   FLYWHEEL_CMUX_ORPHAN_REAPER=1
   FLYWHEEL_CMUX_ORPHAN_PIN_GRACE=300
   rm -f "$ORPHAN_PIN_STATE" 2>/dev/null
+  # FLY-685: close-request marker file + kill-switch (default on).
+  CLOSE_REQUEST_FILE="$TMPDIR_ROOT/close-requested"
+  FLYWHEEL_CMUX_CLOSE_REQUEST=1
+  MOCK_CMUX_CLOSE_FAIL="0"   # 1 = cmux close-workspace mutation fails (revalidation still passes)
+  LAST_WORKSPACE_CLOSE_RC=0
+  rm -f "$CLOSE_REQUEST_FILE" "${CLOSE_REQUEST_FILE}.processing" 2>/dev/null
   # FLY-169 mocks
   MOCK_TMUX_CLIENTS=""        # lines "view_session=N" or "view_session=N1,N2" (per-call seq)
   MOCK_TMUX_SELECTS=""        # captured select-window targets
@@ -3551,6 +3566,145 @@ test_fly293_reap_overflow_length_caps() {
   echo "$MOCK_CMUX_OPS" | grep -q "close-workspace" && fail "huge grace overflow bypassed grace (10s-old pin closed)" || pass "huge grace capped→300; 10s-old pin NOT closed (grace intact)"
 }
 
+# ════════════════════════════════════════════════════════════════
+# FLY-685: close_runner close-request marker → immediate pin removal
+# ════════════════════════════════════════════════════════════════
+
+test_fly685_close_request_closes_orphan_pin() {
+  echo "Test: process_close_requests closes a fully-gone runner's pin (marker → chokepoint, no grace)"
+  _fly293_fixture
+  printf 'FLY-637-claude-FLY-626-follow-up\n' > "$CLOSE_REQUEST_FILE"
+  process_close_requests
+  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:36"; then pass "orphan pin closed immediately (no grace)"; else fail "no close. ops=[$MOCK_CMUX_OPS]"; fi
+  if echo "$MOCK_CMUX_OPS" | grep -q "refresh-surfaces"; then pass "refresh-surfaces after close"; else fail "no refresh. ops=[$MOCK_CMUX_OPS]"; fi
+  if [[ ! -f "$CLOSE_REQUEST_FILE" ]]; then pass "marker consumed (not requeued)"; else fail "marker lingered: [$(cat "$CLOSE_REQUEST_FILE")]"; fi
+  # never touches a live runner / Lead / dead-pin / user tab
+  local n; n=$(echo "$MOCK_CMUX_OPS" | grep -c "^close-workspace" || true)
+  if [[ "$n" == "1" ]]; then pass "closed exactly the 1 targeted pin"; else fail "expected 1 close, got $n. ops=[$MOCK_CMUX_OPS]"; fi
+}
+
+test_fly685_close_request_skips_live_runner_no_requeue() {
+  echo "Test: process_close_requests does NOT close a same-title LIVE runner + drops the marker (no requeue)"
+  _fly293_fixture
+  printf 'LEARN-142-claude-LEARN-141\n' > "$CLOSE_REQUEST_FILE"   # live runner (window @2 present)
+  process_close_requests
+  echo "$MOCK_CMUX_OPS" | grep -q "close-workspace" && fail "live runner pin wrongly closed!" || pass "live runner pin NOT closed (chokepoint rc=1)"
+  if [[ ! -f "$CLOSE_REQUEST_FILE" ]]; then pass "predicate-skip marker DROPPED (never requeued through a live runner)"; else fail "marker wrongly requeued: [$(cat "$CLOSE_REQUEST_FILE")]"; fi
+}
+
+test_fly685_close_request_requeues_on_json_unavailable() {
+  echo "Test: process_close_requests requeues on cmux JSON unavailable (workspace_refs_for rc=2)"
+  _fly293_fixture
+  printf 'FLY-637-claude-FLY-626-follow-up\n' > "$CLOSE_REQUEST_FILE"
+  MOCK_CMUX_JSON_FAIL="1"
+  process_close_requests
+  echo "$MOCK_CMUX_OPS" | grep -q "close-workspace" && fail "closed despite JSON down" || pass "no close when JSON down"
+  if grep -qxF "FLY-637-claude-FLY-626-follow-up" "$CLOSE_REQUEST_FILE" 2>/dev/null; then pass "marker requeued for next tick"; else fail "marker not requeued: [$(cat "$CLOSE_REQUEST_FILE" 2>/dev/null)]"; fi
+}
+
+test_fly685_close_request_survives_set_e() {
+  echo "Test: process_close_requests survives set -euo pipefail when JSON unavailable (FLY-694)"
+  _fly293_fixture
+  printf 'FLY-637-claude-FLY-626-follow-up\n' > "$CLOSE_REQUEST_FILE"
+  MOCK_CMUX_JSON_FAIL="1"
+  local rc=0
+  ( set -euo pipefail; process_close_requests ) || rc=$?
+  if [[ $rc -eq 0 ]]; then pass "watcher survived set -e (rc=0)"; else fail "watcher died under set -e (rc=$rc)"; fi
+  if grep -qxF "FLY-637-claude-FLY-626-follow-up" "$CLOSE_REQUEST_FILE" 2>/dev/null; then pass "marker requeued under set -e"; else fail "marker lost under set -e: [$(cat "$CLOSE_REQUEST_FILE" 2>/dev/null)]"; fi
+}
+
+test_fly685_close_request_final_gate_rc2_requeue_rc1_drop() {
+  echo "Test: process_close_requests requeues on final-gate UNCERTAINTY (rc=2), drops on predicate skip (rc=1)"
+  # Overrides are scoped to subshells so the real functions survive for later tests.
+  _fly293_fixture
+  printf 'FLY-637-claude-FLY-626-follow-up\n' > "$CLOSE_REQUEST_FILE"
+  (
+    workspace_refs_for() { printf 'workspace:36\n'; return 0; }
+    close_orphan_workspace_pin_if_still_orphan() { return 2; }   # uncertain
+    process_close_requests
+  )
+  if grep -qxF "FLY-637-claude-FLY-626-follow-up" "$CLOSE_REQUEST_FILE" 2>/dev/null; then pass "final-gate rc=2 → marker requeued"; else fail "rc=2 not requeued: [$(cat "$CLOSE_REQUEST_FILE" 2>/dev/null)]"; fi
+  _fly293_fixture
+  printf 'FLY-637-claude-FLY-626-follow-up\n' > "$CLOSE_REQUEST_FILE"
+  (
+    workspace_refs_for() { printf 'workspace:36\n'; return 0; }
+    close_orphan_workspace_pin_if_still_orphan() { return 1; }   # predicate skip
+    process_close_requests
+  )
+  if [[ ! -f "$CLOSE_REQUEST_FILE" ]]; then pass "final-gate rc=1 (predicate skip) → marker dropped"; else fail "rc=1 wrongly requeued: [$(cat "$CLOSE_REQUEST_FILE")]"; fi
+}
+
+test_fly685_chokepoint_rc2_on_uncertainty() {
+  echo "Test: close_orphan_workspace_pin_if_still_orphan → rc=2 on uncertainty, rc=1 on predicate skip"
+  _fly293_fixture
+  local rc=0
+  close_orphan_workspace_pin_if_still_orphan "workspace:36" "FLY-637-claude-STALE-DIFFERENT" 2>/dev/null || rc=$?
+  if [[ $rc -eq 1 ]]; then pass "title drift → rc=1 (predicate skip)"; else fail "expected rc=1, got $rc"; fi
+  MOCK_CMUX_JSON_FAIL="1"
+  rc=0
+  close_orphan_workspace_pin_if_still_orphan "workspace:36" "FLY-637-claude-FLY-626-follow-up" 2>/dev/null || rc=$?
+  if [[ $rc -eq 2 ]]; then pass "cmux JSON down → rc=2 (uncertain)"; else fail "expected rc=2, got $rc"; fi
+}
+
+test_fly685_close_request_input_hardening() {
+  echo "Test: process_close_requests rejects malformed marker lines (empty / tab / overlong) — no close, no crash"
+  _fly293_fixture
+  {
+    printf '\n'                                                    # empty line
+    printf 'FLY-637-claude-FLY\t626\n'                             # embedded tab
+    printf 'FLY-637-claude-%s\n' "$(head -c 250 < /dev/zero | tr '\0' 'x')"  # overlong (>200)
+  } > "$CLOSE_REQUEST_FILE"
+  local rc=0
+  ( set -euo pipefail; process_close_requests ) || rc=$?
+  if [[ $rc -eq 0 ]]; then pass "malformed input did not crash the watcher"; else fail "crashed on malformed input (rc=$rc)"; fi
+  if [[ -z "$MOCK_CMUX_OPS" ]]; then pass "malformed lines → no cmux ops"; else fail "malformed line acted on: ops=[$MOCK_CMUX_OPS]"; fi
+}
+
+test_fly685_close_request_env_off_inert() {
+  echo "Test: FLYWHEEL_CMUX_CLOSE_REQUEST=0 → process_close_requests fully inert (byte-compat)"
+  _fly293_fixture
+  printf 'FLY-637-claude-FLY-626-follow-up\n' > "$CLOSE_REQUEST_FILE"
+  FLYWHEEL_CMUX_CLOSE_REQUEST=0 process_close_requests
+  if [[ -z "$MOCK_CMUX_OPS" ]]; then pass "no cmux ops when off"; else fail "ops=[$MOCK_CMUX_OPS]"; fi
+  if grep -qxF "FLY-637-claude-FLY-626-follow-up" "$CLOSE_REQUEST_FILE" 2>/dev/null; then pass "marker untouched when off"; else fail "marker mutated when off"; fi
+}
+
+test_fly685_gc_close_request_drops_stale() {
+  echo "Test: gc_close_request_file drops marker lines with no live workspace, keeps live ones"
+  _fly293_fixture
+  {
+    printf 'FLY-637-claude-FLY-626-follow-up\n'   # has workspace:36 → keep
+    printf 'FLY-999-claude-NO-SUCH-PIN\n'         # no matching workspace → drop
+  } > "$CLOSE_REQUEST_FILE"
+  gc_close_request_file
+  if grep -qxF "FLY-637-claude-FLY-626-follow-up" "$CLOSE_REQUEST_FILE"; then pass "live-workspace line kept"; else fail "live line dropped: [$(cat "$CLOSE_REQUEST_FILE")]"; fi
+  if grep -qxF "FLY-999-claude-NO-SUCH-PIN" "$CLOSE_REQUEST_FILE"; then fail "stale line not dropped"; else pass "stale line dropped"; fi
+}
+
+test_fly685_chokepoint_rc2_on_close_mutation_failure() {
+  echo "Test: close_orphan_workspace_pin_if_still_orphan → rc=2 when the cmux close mutation itself fails (Codex code R1 MED)"
+  _fly293_fixture
+  MOCK_CMUX_CLOSE_FAIL="1"   # revalidation passes, but close-workspace fails
+  local rc=0
+  close_orphan_workspace_pin_if_still_orphan "workspace:36" "FLY-637-claude-FLY-626-follow-up" 2>/dev/null || rc=$?
+  if [[ $rc -eq 2 ]]; then pass "unconfirmed close (cmux mutation failed) → rc=2 (uncertain, retry)"; else fail "expected rc=2, got $rc"; fi
+  # sanity: a confirmed close is still rc=0
+  MOCK_CMUX_CLOSE_FAIL="0"
+  rc=0
+  close_orphan_workspace_pin_if_still_orphan "workspace:36" "FLY-637-claude-FLY-626-follow-up" || rc=$?
+  if [[ $rc -eq 0 ]]; then pass "confirmed close → rc=0"; else fail "expected rc=0, got $rc"; fi
+}
+
+test_fly685_close_request_requeues_on_close_mutation_failure() {
+  echo "Test: process_close_requests requeues the marker when the cmux close mutation fails (not silently dropped)"
+  _fly293_fixture
+  printf 'FLY-637-claude-FLY-626-follow-up\n' > "$CLOSE_REQUEST_FILE"
+  MOCK_CMUX_CLOSE_FAIL="1"
+  process_close_requests
+  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:36"; then pass "close attempted"; else fail "close not attempted. ops=[$MOCK_CMUX_OPS]"; fi
+  if grep -qxF "FLY-637-claude-FLY-626-follow-up" "$CLOSE_REQUEST_FILE" 2>/dev/null; then pass "marker REQUEUED on unconfirmed close (retries next tick, not 5-min fallback)"; else fail "marker dropped despite close failure: [$(cat "$CLOSE_REQUEST_FILE" 2>/dev/null)]"; fi
+}
+
 echo ""
 echo "═══ FLY-293: orphan cmux workspace-pin reaper ═══"
 test_fly293_managed_title_gate
@@ -3576,6 +3730,20 @@ test_fly293_reap_corrupt_state_row_no_crash
 test_fly293_reap_nonnumeric_grace_no_crash
 test_fly293_reap_unwritable_state_no_crash
 test_fly293_reap_overflow_length_caps
+
+echo ""
+echo "═══ FLY-685: close_runner close-request marker → immediate pin removal ═══"
+test_fly685_close_request_closes_orphan_pin
+test_fly685_close_request_skips_live_runner_no_requeue
+test_fly685_close_request_requeues_on_json_unavailable
+test_fly685_close_request_survives_set_e
+test_fly685_close_request_final_gate_rc2_requeue_rc1_drop
+test_fly685_chokepoint_rc2_on_uncertainty
+test_fly685_close_request_input_hardening
+test_fly685_close_request_env_off_inert
+test_fly685_gc_close_request_drops_stale
+test_fly685_chokepoint_rc2_on_close_mutation_failure
+test_fly685_close_request_requeues_on_close_mutation_failure
 
 set +e   # restore lenient mode for the summary
 

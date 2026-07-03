@@ -143,7 +143,12 @@ export function buildReplyInThreadWiring(opts: {
 			route.parentChannelId,
 			route.sourceMessageId,
 			opts.botToken,
-			opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {},
+			{
+				...(opts.fetchImpl ? { fetchImpl: opts.fetchImpl } : {}),
+				// FLY-314 fix: correct-from-start name so a Codex-created topic thread is
+				// never left as the generic "Roundtable topic" placeholder.
+				...(route.threadName ? { threadName: route.threadName } : {}),
+			},
 		);
 		if (!res.ok) {
 			opts.logger?.warn(

@@ -32,6 +32,8 @@ interface RawDiscordMessage {
 	author?: { id?: string; bot?: boolean };
 	/** FLY-267: Discord populates `mentions` with the @-mentioned user objects. */
 	mentions?: Array<{ id?: string }>;
+	/** FLY-314 fix: set on a Discord REPLY → the message this one replies to. */
+	message_reference?: { message_id?: string };
 }
 
 export interface RestPollSourceOptions {
@@ -332,6 +334,8 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 				mentions: (m.mentions ?? [])
 					.map((u) => u.id)
 					.filter((id): id is string => Boolean(id)),
+				// FLY-314 fix: reply target → follow-up routing (into referenced thread).
+				referencedMessageId: m.message_reference?.message_id,
 			});
 		} catch (err) {
 			this.logger.warn("inbound handler threw (will retry)", {

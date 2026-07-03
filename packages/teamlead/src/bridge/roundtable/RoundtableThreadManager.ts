@@ -27,6 +27,11 @@
 import type { InboundCursorStore } from "../../lead-backends/codex/InboundCursorStore.js";
 import type { StateStore } from "../../StateStore.js";
 import { addThreadMember } from "../chat-thread-utils.js";
+import {
+	deriveRoundtableThreadName,
+	isTopicNoise,
+	ROUNDTABLE_PLACEHOLDER_NAME,
+} from "./roundtable-text.js";
 import type { RoundtableMessage } from "./topic-trigger.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
@@ -38,12 +43,11 @@ const THREAD_TYPES = new Set([10, 11, 12]);
 const AUTO_ARCHIVE_DURATION = 4320; // 3 days
 /** Cap on an honored 429 Retry-After so a hostile/huge value can't wedge the poll. */
 const MAX_RETRY_AFTER_MS = 60_000;
-/**
- * FLY-576: the generic name the Belle plugin hard-codes when it wins the create
- * race. Doubles as (a) the fallback when a topic message has no usable text and
- * (b) the marker the recovery path looks for before renaming to a descriptive name.
- */
-const ROUNDTABLE_PLACEHOLDER_NAME = "Roundtable topic";
+// FLY-576: ROUNDTABLE_PLACEHOLDER_NAME (the generic name the Belle plugin hard-codes
+// when it wins the create race) is now imported from ./roundtable-text.js so the
+// poller, the Codex-lead path, and the plugin all share ONE canonical value + naming
+// (FLY-314 fix §6 risk 3). It doubles as (a) the fallback when a topic message has no
+// usable text and (b) the marker the recovery path looks for before renaming.
 
 /** Discord sends Retry-After in (possibly fractional) seconds → ms. */
 function parseRetryAfterMs(
@@ -62,6 +66,8 @@ interface RawDiscordMessage {
 	author?: { id?: string; bot?: boolean };
 	mentions?: Array<{ id?: string }>;
 	mention_everyone?: boolean;
+	/** FLY-314 fix: set on a Discord REPLY → the message this one replies to. */
+	message_reference?: { message_id?: string };
 }
 
 type Timer = { cancel: () => void };
@@ -315,7 +321,16 @@ export class RoundtableThreadManager {
 		// that the parent-only poll never sees.
 		if (!this.threadOwnBotMessages && msg.authorId === this.botUserId)
 			return true;
-		// 2. Trigger — `disabled` mode makes this always false (canary / byte-compat).
+		// 2. FLY-314 fix — mode-independent pre-gates (BEFORE the trigger). Both are
+		// "handled / no-op" (return true → cursor advances), never a transient hold.
+		//   2a. follow-up gate: a Discord reply is a continuation, NOT a fresh topic —
+		//       never open a second thread for it (the discussion stays in the original
+		//       thread via reply-in-thread). This is the core "follow-up over-spawn" fix
+		//       and holds regardless of the trigger mode.
+		if (msg.referencedMessageId) return true;
+		//   2b. noise gate: pure-emoji / one-word acks are not topics worth a thread.
+		if (isTopicNoise(msg.content)) return true;
+		// 3. Trigger — `disabled` mode makes this always false (canary / byte-compat).
 		if (!this.trigger(msg)) return true;
 		// 3. Dedup — already opened a thread for this message.
 		if (this.store.getRoundtableTopicThread(this.channelId, msg.id))
@@ -634,6 +649,7 @@ export class RoundtableThreadManager {
 				.map((u) => u.id)
 				.filter((id): id is string => Boolean(id)),
 			mentionEveryone: m.mention_everyone === true,
+			referencedMessageId: m.message_reference?.message_id,
 		};
 	}
 
@@ -644,13 +660,6 @@ export class RoundtableThreadManager {
 	 * has no usable text (e.g. mentions-only).
 	 */
 	private threadName(content: string): string {
-		const cleaned = content
-			.replace(/<a?:\w+:\d+>/g, "") // custom emoji <:x:1> / <a:x:1>
-			.replace(/<@[!&]?\d+>/g, "") // user <@1>/<@!1> + role <@&1> mentions
-			.replace(/<#\d+>/g, "") // channel mentions <#1>
-			.replace(/\s+/g, " ")
-			.trim()
-			.slice(0, 90);
-		return (cleaned || ROUNDTABLE_PLACEHOLDER_NAME).slice(0, 100);
+		return deriveRoundtableThreadName(content);
 	}
 }

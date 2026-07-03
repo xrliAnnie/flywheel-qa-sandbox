@@ -4,6 +4,7 @@
 #
 #   flywheel-fleet.sh plan   [--lead <key>] [--project <p>]
 #   flywheel-fleet.sh apply  [--lead <key>] [--project <p>] [--yes] [--dry-run]
+#   flywheel-fleet.sh apply  --lead <key> [--model <id|default>] [--effort <level|default>] [--backend <id>] --yes   (FLY-709 Path C)
 #   flywheel-fleet.sh apply --rollback [--txn <id>] [--lead <key>] [--yes]
 #   flywheel-fleet.sh recover --txn <id> [--lead <key>] --yes
 #
@@ -627,13 +628,93 @@ cmd_apply_batch() {
   fleet_batch_apply "$cf" "$PROJECTS_JSON"
 }
 
+# FLY-709 P4.2: single-Lead value-flags sugar — the command the console's
+# copy-paste text emits. Builds a canonical changes-file byte-aligned with
+# buildCanonicalRequest (to.model ALWAYS present — filled with the current
+# model on effort-only calls; effort keys ONLY when --effort was given, the
+# FLY-671 three-state contract) and drives the same cmd_apply_batch machinery
+# (journal + baseline SHA + per-key transactional cutover all inherited).
+# A --backend that differs from the current backend fail-closes: a Lead
+# backend switch is a manual cutover (FLY-264 not built; FLY-350/398 runbook).
+cmd_apply_lead_flags() {
+  local key="$1" model_set="$2" model_val="$3" effort_set="$4" effort_val="$5" \
+        backend_set="$6" backend_val="$7" yes="$8"
+  [ -n "$key" ] || die "--model/--effort/--backend require --lead <exact {project}-{lead} key>"
+  guard_env_source
+
+  local matches
+  matches=$(jq -r --arg key "$key" '
+    [ .[] | .projectName as $p | .leads[]
+      | select(($p + "-" + .agentId) == $key) ] | length' "$PROJECTS_JSON")
+  [ "$matches" = "1" ] || die "--lead '${key}' matches ${matches} leads — use the exact {project}-{lead} key"
+
+  local cur_backend
+  cur_backend=$(jq -r --arg key "$key" '
+    [ .[] | .projectName as $p | .leads[]
+      | select(($p + "-" + .agentId) == $key) | (.backend // "claude-code") ]
+    | .[0]' "$PROJECTS_JSON")
+  if [ "$backend_set" = "true" ] && [ "$backend_val" != "$cur_backend" ]; then
+    die "backend switch ${cur_backend} → ${backend_val} needs a MANUAL cutover (managed Lead-backend switch = FLY-264, not built; see the FLY-350/398 runbooks). Nothing was changed."
+  fi
+
+  local cur_model cur_effort
+  cur_model=$(fleet_batch_current_model "$PROJECTS_JSON" "$key")
+  cur_effort=$(fleet_batch_current_effort "$PROJECTS_JSON" "$key")
+
+  local to_model="$cur_model"
+  if [ "$model_set" = "true" ]; then
+    if [ "$model_val" = "default" ]; then to_model="null"; else to_model="$model_val"; fi
+  fi
+  local to_effort="$cur_effort"
+  if [ "$effort_set" = "true" ]; then
+    if [ "$effort_val" = "default" ]; then to_effort="null"; else to_effort="$effort_val"; fi
+  fi
+
+  if [ "$model_set" != "true" ] && [ "$effort_set" != "true" ]; then
+    flog "nothing to apply for ${key} (backend already ${cur_backend}; no --model/--effort given)"
+    return 0
+  fi
+
+  if [ "$yes" != "true" ]; then
+    flog "WOULD-APPLY ${key}: model ${cur_model} -> ${to_model}$( [ "$effort_set" = "true" ] && echo ", effort ${cur_effort} -> ${to_effort}" )"
+    flog "re-run with --yes to apply"
+    return 1
+  fi
+
+  local batch_id sha cf
+  batch_id="cli-${key}-$(date +%s)"
+  sha=$(file_sha "$PROJECTS_JSON")
+  cf=$(mktemp "${TMPDIR:-/tmp}/fleet-lead-flags.XXXXXX")
+  jq -n --arg key "$key" --arg batch "$batch_id" --arg sha "$sha" \
+     --arg fromModel "$cur_model" --arg toModel "$to_model" \
+     --arg touchEffort "$( [ "$effort_set" = "true" ] && echo true || echo false )" \
+     --arg fromEffort "$cur_effort" --arg toEffort "$to_effort" '
+    def val($s): if $s == "null" then null else $s end;
+    { batchId: $batch, expectedConfigSha: $sha,
+      changes: [ { key: $key,
+        from: ({ model: val($fromModel) }
+               + (if $touchEffort == "true" then { effort: val($fromEffort) } else {} end)),
+        to:   ({ model: val($toModel) }
+               + (if $touchEffort == "true" then { effort: val($toEffort) } else {} end)) } ] }
+  ' >"$cf" || { rm -f "$cf"; die "could not build the changes-file for ${key}"; }
+
+  cmd_apply_batch "$cf"
+  local rc=$?
+  rm -f "$cf"
+  return $rc
+}
+
 cmd_apply() {
   local want_lead="" want_project="" yes=false dry_run=false rollback=false txn_id_arg="" changes_file=""
+  local flag_model_set=false flag_model="" flag_effort_set=false flag_effort="" flag_backend_set=false flag_backend=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --lead) [ -n "${2:-}" ] || die "--lead requires a value"; want_lead="$2"; shift 2 ;;
       --project) [ -n "${2:-}" ] || die "--project requires a value"; want_project="$2"; shift 2 ;;
       --changes-file) [ -n "${2:-}" ] || die "--changes-file requires a value"; changes_file="$2"; shift 2 ;;
+      --model) [ -n "${2:-}" ] || die "--model requires a value (model id or 'default')"; flag_model_set=true; flag_model="$2"; shift 2 ;;
+      --effort) [ -n "${2:-}" ] || die "--effort requires a value (level or 'default')"; flag_effort_set=true; flag_effort="$2"; shift 2 ;;
+      --backend) [ -n "${2:-}" ] || die "--backend requires a value"; flag_backend_set=true; flag_backend="$2"; shift 2 ;;
       --yes) yes=true; shift ;;
       --dry-run) dry_run=true; shift ;;
       --rollback) rollback=true; shift ;;
@@ -641,6 +722,18 @@ cmd_apply() {
       *) die "apply: unknown argument $1" ;;
     esac
   done
+
+  # FLY-709 P4.2: single-Lead value-flags sugar (see cmd_apply_lead_flags).
+  if [ "$flag_model_set" = "true" ] || [ "$flag_effort_set" = "true" ] || [ "$flag_backend_set" = "true" ]; then
+    [ -z "$changes_file" ] || die "value flags cannot be combined with --changes-file"
+    [ "$rollback" = "false" ] || die "value flags cannot be combined with --rollback"
+    cmd_apply_lead_flags "$want_lead" \
+      "$flag_model_set" "$flag_model" \
+      "$flag_effort_set" "$flag_effort" \
+      "$flag_backend_set" "$flag_backend" \
+      "$yes"
+    return $?
+  fi
 
   # FLY-247 inc2a: batch model-only apply. The console API created the launching
   # journal before spawn; here we validate the canonical request and drive the
@@ -1551,6 +1644,8 @@ Commands:
          Read-only three-way drift report (config / manifest / plist +
          observed management×runtime). Never mutates.
   apply  [--lead <key>] [--project <p>] [--yes] [--dry-run]
+  apply  --lead <key> [--model <id|default>] [--effort <level|default>] [--backend <id>] --yes
+         FLY-709 Path C single-Lead sugar over the batch engine (backend diff = manual cutover, fail-close)
          Apply model-only changes to confirmed-standard Claude leads via a
          staged transaction (confirm → backup → daemon staged install →
          verify → auto-rollback on failure). Anything codex / unknown /
