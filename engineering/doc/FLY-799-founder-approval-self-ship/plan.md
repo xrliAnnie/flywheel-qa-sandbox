@@ -75,8 +75,12 @@ graph TD
   if/when/unless/wait/hold、别/不/先/等/看/再/待会/如果/除非/但是/改完/晚点)。**出现 issue/PR 号
   或 `FLY-xxx` 必须与当前 `issueId`/PR 号精确匹配**,否则 unclear(裸 `ship 756` 若 756≠当前绑定
   则不批)。**Tier-3 只有真·模糊自由文字才兜底** → A-3 classifier,**走订阅不烧付费 API**(见 A-3)。
-- **`ImageSource`(v1,Annie:图片确认)**:founder 发**图片附件**(截图/图片确认)→ **多模态
-  classifier**(Claude 原生多模态)判是否明确批准。**证据到附件级(Codex R5)**:先只收
+- **`ImageSource`(代码 v1 建好、但 default-off,Annie 拍 B / Tadashi 2026-07-02)**:Annie 选
+  **B = v1 ship 只『打字 + ✅』,图片作紧跟的 fast-follow(仍在 799 内)**。所以 ImageSource **代码
+  照建 + 测好(已 landed)**,但 v1 **放它自己的 flag `FLYWHEEL_FOUNDER_IMAGE_APPROVAL` 默认 OFF**;
+  v1 运行行为 = 打字+✅,图片这个 flag 作**下一个增量紧跟着 flip-on**(同 799)。ApprovalSignal 抽象
+  撑住三种、图片随时能开。founder 发**图片附件**(截图/图片确认)→ **多模态 classifier**(Claude
+  原生多模态,实测订阅可跑)判是否明确批准。**证据到附件级(Codex R5)**:先只收
   founder-authored Discord 图片附件(非文字里任意 URL)、过 MIME/扩展 allowlist + 数量/字节上限 +
   成功 fetch + **classify 前算 sha256**;verdict 要求 `evidenceMessageId===expectedMessageId`
   **且** `evidenceAttachmentIds ⊆ 期望附件`;fetch 失败 → unclear(不回退文字推断)。审计记
@@ -399,7 +403,8 @@ interface LinearIssueFinalizer { markDone(issueId: string): Promise<{ done: bool
 - **D1 身份防伪造强度 = 批准边界反转 ✅(Annie 拍)**:验明是她本人 Discord 身份(reaction
   user / message author === canonicalFounderId 且非 bot)→ 把 approval 写进 gate(反转
   FLY-175 WAKE-only)。fail-closed:身份不符 → WAKE-only 不写。
-- **D2 明确批准 = 文字 / ✅ reaction / 图片确认 ✅(Annie 拍)**:v1 三 source。**文字走 3 层省钱
+- **D2 明确批准 = 文字 / ✅ reaction【v1 开】+ 图片【建好但 default-off,fast-follow flip】(Annie 拍 B,Tadashi 2026-07-02 澄清)**:v1 三 source 代码全建好,但**运行只开文字+✅**;图片走自己的
+  `FLYWHEEL_FOUNDER_IMAGE_APPROVAL` 默认 OFF,作 799 内下一个增量 flip-on。**文字走 3 层省钱
   (Annie:能免费就别付费)**:① ✅ reaction 零 AI(主路径)② Tier-2 常见关键词零 AI(带否定守卫)
   ③ 只有真·模糊文字/图片才调 classifier,**走订阅不烧付费 API**(A-3)。`ApprovalSignalSource`
   抽象让语音以后插入。**明确批准的确切定义见 A-0**。**D2b 收尾失败 = best-effort 不回滚 ✅**:
