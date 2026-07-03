@@ -205,6 +205,10 @@ post `:cool:` 的 re-driver —— 那会变成新的 Bridge-side ship executor,
   → alert + 明说『live runner 才修,真 death 待 795』**,并据此**收窄默认-ON 的可靠性声明**(诚实:
   覆盖『Bridge 重启但 runner tmux 存活』这个常见情形;机器重启杀了 runner 的真 death 留 795)。
 - 窄接口 `ShipResumeSubstrate`(v1 = re-wake + 幂等 verify + reconciler;v2 = 795 断点续做)。
+- **与 795 的边界(Tadashi 2026-07-02)**:v1 re-wake reconciler **不读 795 的 `progress.md`**
+  —— 它只用 StateStore `approved_to_ship` + PR head + `verifyApproval`,自足。真 runner-death 恢复
+  (v2)= **消费 795 的 durable substrate**(经 `ShipResumeSubstrate` 接口),**不各造**:我的消费
+  需求交给 Tadashi 转 795,不自建 progress 机制。
 
 ### Part C — fan-out 收尾(扩 post-ship-finalization)
 
