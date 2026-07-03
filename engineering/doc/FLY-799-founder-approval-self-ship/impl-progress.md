@@ -24,9 +24,24 @@ Issue: FLY-799 (https://linear.app/geoforge3d/issue/FLY-799/infrafounder-facingp
 
 **多模态实测 OK(claude -p @image 订阅可读)。但 Annie 拍 B(Tadashi 澄清):v1 只开『打字+✅』,ImageSource 代码建好但 v1 放自己的 flag `FLYWHEEL_FOUNDER_IMAGE_APPROVAL` **default-off**,图片作 799 内 fast-follow flip-on。别 v1 就 ON。**
 
-**累计 9 模块 80 测全绿 + notifier byte-compat 集成。Part A 批准判定层(判定核心 + 3 sources + binding 核)全 landed。**
+10. `gate-message-binding-store.ts`(A-0b StateStore 持久化,write-once,真库测,4 测,`2f964665`)
+11. `fanout-finalization.ts`(Part C:`collectRelatedNodes` feature↔QA + `isQaSafeToFinalize` 只 PASS,3 测,`cd6b9089`)
+12. `write-gate-response.ts`(A-4 共享受信任写原语,结构 deps,8 测,`57d94c70`+`9df95163`)
+13. `founder-ship-approval-handler.ts`(**keystone**:身份→A-2 收窄一 gate→TextSource→共享写,7 测,`265cdad9`)
+14. **deliverer byte-compat 接线**:`founder-reply-deliverer.ts` ship 分支加 optional `tryFounderShipApproval`(absent→WAKE-only 逐字,11 现存测绿,`b0f20155`)
 
-## 🔜 未做（整合层,按序,touch 现有 Bridge/StateStore 码)
+**累计 13 功能模块 126 测全绿(含现存 deliverer 11 + notifier 13,byte-compat 验过)。文字批准端到端全通:founder 文字→身份→A-2 收窄→TextSource→写 {approved:true} 归属 founder→(hook)翻状态+唤醒。**
+
+## 🔜 剩余 = 生产 plumbing（注入真 deps + fanout cleanup + reconciler,touch gate-poller/plugin 大文件）
+0. **build worktree deps 才能跑 deliverer 测**:`pnpm --filter flywheel-comm build`(deliverer import 真 flywheel-comm/db)。已建。
+1. **gate-poller.founderReplyDeliverPass 装配**:build `tryFounderShipApproval` callback = 注入 canonicalFounderId(deriveCanonicalFounderId)+ 真 CommDB + wiring 的 onResponseWritten;flag `FLYWHEEL_FOUNDER_AUTO_APPROVE`(默认 ON)+ per-project denylist 门控;把 callback 传进 `emitFounderReplyDeliveryForThread` deps。**+ 写 binding**:`maybeEmitFounderThreadFallback` notifier 返回 gateMessageId 后 `writeGateMessageBinding`(写前核 session awaiting_review + review_question_id/pr_head)。**+ reaction per-gate poll**(A-0c:独立文字 cursor,读 binding 的 targetMessageId,调 evaluateReactionSource + 写 helper + bounded backoff + signal marker)。
+2. ImageSource 接线(default-off flag,download+hash+@path;handler 加 image 分支)。
+3. gate-response-router 改用共享 `writeGateResponseAndRunPostWrite`(Codex dedup,可选/小心)。
+4. **Part C fanout cleanupNode**:对每 RelatedNode 调 `closeRunner{finalizeDone,archive}`(QA 用 `closeQaRunner`)+ `removeCleanWorktree` + 抽 `LinearIssueFinalizer.markDone`(plugin.ts L1882-1938)+ per-node marker/reconcile;接 `post-ship-finalization.runPostShipFinalization` 尾。
+5. **Part B re-wake reconciler**(见旧笔记)。
+6. **plugin 装配 + flag**(见旧笔记)。
+
+--- 旧笔记（细节保留）---
 1. **A-0b 绑定持久化(纯核 + notifier 已做)**:剩 = ① StateStore 写/读绑定方法(用 `insertEvent(bindingEventId(qid), payload=GateMessageBinding)` write-once + 读回 helper);② `gate-poller.ts` `maybeEmitFounderThreadFallback`(approve_to_ship 分支)在 notifier 返回 `gateMessageId` 后写绑定(写前核 session awaiting_review + review_question_id/pr_head 未变)。ReactionSource evaluate 时读 `selectCurrentBinding` 取 targetMessageId。
 2. **ImageSource**(`image-approval-source.ts`):founder 图片附件 → 多模态 classifier。**前置:先实测 `claude -p` 是否支持图片附件输入(base64/文件路径);不支持 → v1 feature-gate(env 关),绝不退化成文字**。证据到附件级(sha256 + evidenceAttachmentIds)。`RawDiscordMessage` + fetch 扩到含附件。
 3. **共享 `writeGateResponseAndRunPostWrite`**:从 `founder-consent/gate-response-router.ts`(L235-268 幂等)+ `wiring.ts`(`onResponseWritten` L153-223)抽出;Surface B 与 founder-reply 共用。含 checkpoint/当前-question/status 守卫 + 相同批准 retry + 冲突拒 + retrySafe 才让 cursor 前移。export `onResponseWritten` + helper 供 deliverer。
