@@ -31,6 +31,7 @@ import {
 	deriveRoundtableThreadName,
 	isTopicNoise,
 	ROUNDTABLE_PLACEHOLDER_NAME,
+	ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
 } from "./roundtable-text.js";
 import type { RoundtableMessage } from "./topic-trigger.js";
 
@@ -40,7 +41,6 @@ const CREATE_TIMEOUT_MS = 5_000;
 const THREAD_ALREADY_EXISTS_CODE = 160004;
 /** Discord thread channel types (10 announcement, 11 public, 12 private). */
 const THREAD_TYPES = new Set([10, 11, 12]);
-const AUTO_ARCHIVE_DURATION = 4320; // 3 days
 /** Cap on an honored 429 Retry-After so a hostile/huge value can't wedge the poll. */
 const MAX_RETRY_AFTER_MS = 60_000;
 // FLY-576: ROUNDTABLE_PLACEHOLDER_NAME (the generic name the Belle plugin hard-codes
@@ -340,12 +340,14 @@ export class RoundtableThreadManager {
 		const result = await this.createThreadFromMessage(msg);
 		switch (result.kind) {
 			case "created":
-				// Host bot won the create — the name is already descriptive, so pass it
-				// as currentName (no rename needed). commitThread returns false on a
+				// Host bot won the create — the name is already descriptive AND
+				// createThreadFromMessage already set the 1h archive, so pass both as the
+				// current values (no PATCH needed). commitThread returns false on a
 				// transient decorate failure to hold the cursor.
 				return await this.commitThread(msg, result.threadId, {
 					seed: true,
 					currentName: this.threadName(msg.content),
+					currentArchiveMinutes: ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
 				});
 			case "exists": {
 				// Recovery: someone (usually the Belle plugin's real-time gateway) created
@@ -363,6 +365,7 @@ export class RoundtableThreadManager {
 				return await this.commitThread(msg, msg.id, {
 					seed: false,
 					currentName: conf.name,
+					currentArchiveMinutes: conf.autoArchiveMinutes,
 				});
 			}
 			case "deleted":
@@ -394,8 +397,11 @@ export class RoundtableThreadManager {
 	 *     awaited + classified — a transient failure returns false to HOLD the cursor
 	 *     (the next poll re-runs; PUT thread-member is idempotent). A permanent
 	 *     failure (bad token / no perms / gone) is warned and skipped (never wedge).
-	 *  2. Rename a placeholder-named thread (the Belle plugin hard-codes the
-	 *     placeholder) to a descriptive name — same hold-on-transient policy.
+	 *  2. Converge thread metadata in ONE PATCH — rename a placeholder-named thread
+	 *     (the plugin hard-codes the placeholder) to a descriptive name AND, for a
+	 *     thread the plugin created with Discord's default 3-day archive, set the 1h
+	 *     archive (FLY-802). Only the fields that actually changed are sent; same
+	 *     hold-on-transient policy.
 	 *  3. Persist the row LAST. A crash before here re-runs idempotently via the
 	 *     160004 recovery path; a crash after here but before the cursor saves dedups
 	 *     out safely (the row now means the critical repair already completed). This
@@ -408,7 +414,13 @@ export class RoundtableThreadManager {
 	private async commitThread(
 		msg: RoundtableMessage,
 		threadId: string,
-		opts: { seed: boolean; currentName?: string },
+		opts: {
+			seed: boolean;
+			currentName?: string;
+			/** The thread's current auto_archive_duration (minutes). Undefined when
+			 * unreadable → treated as needing convergence (FLY-802). */
+			currentArchiveMinutes?: number;
+		},
 	): Promise<boolean> {
 		// FLY-576 (Annie's T2 model + founder): the founder is ALWAYS a member; union
 		// with any configured base members and the leads the author @-mentioned. Skip
@@ -425,15 +437,31 @@ export class RoundtableThreadManager {
 			// "permanent" already warned inside addThreadMember — proceed (no wedge).
 		}
 
-		// Rename only when the creator left the generic placeholder (the Belle plugin
-		// path); the host bot's own create already set a descriptive name.
+		// FLY-576 + FLY-802: converge the thread's metadata in ONE PATCH, sending only
+		// the fields that actually need changing.
+		//  - name: only when the creator left the generic placeholder (the plugin's
+		//    real-time gateway hard-codes it); a thread the host bot created already
+		//    reads descriptive → skipped.
+		//  - auto_archive_duration: FLY-802 — the plugin's real-time gateway can win the
+		//    create race and open the thread with Discord's DEFAULT 3-day archive, so
+		//    the poller must converge it to 1h (else it never collapses out of the
+		//    sidebar — the whole point of the issue). A thread the host bot created
+		//    already carries 60 (currentArchiveMinutes === 60) → skipped, so there is no
+		//    redundant Discord write on the create path.
+		const patch: { name?: string; auto_archive_duration?: number } = {};
 		const desired = this.threadName(msg.content);
 		if (
 			opts.currentName === ROUNDTABLE_PLACEHOLDER_NAME &&
 			desired !== opts.currentName
 		) {
-			const outcome = await this.renameThread(threadId, desired);
-			if (outcome === "transient") return false; // hold — converge the name too
+			patch.name = desired;
+		}
+		if (opts.currentArchiveMinutes !== ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES) {
+			patch.auto_archive_duration = ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES;
+		}
+		if (patch.name !== undefined || patch.auto_archive_duration !== undefined) {
+			const outcome = await this.patchThread(threadId, patch);
+			if (outcome === "transient") return false; // hold — converge on the next poll
 			// "permanent" (e.g. no MANAGE_THREADS) already warned — membership stands.
 		}
 
@@ -473,13 +501,14 @@ export class RoundtableThreadManager {
 		}
 	}
 
-	/** PATCH /channels/{threadId} {name}. Classified like the member add: transient
+	/** PATCH /channels/{threadId} with the given thread-metadata fields (name and/or
+	 * auto_archive_duration). Classified like the member add: transient
 	 * (429/5xx/network/timeout) → caller holds the cursor; permanent (401/403/404,
-	 * e.g. Cass lacks MANAGE_THREADS) → warn + proceed (membership still converges). */
-	private async renameThread(
+	 * e.g. the bot lacks MANAGE_THREADS) → warn + proceed (membership still converges). */
+	private async patchThread(
 		threadId: string,
-		name: string,
-	): Promise<"renamed" | "transient" | "permanent"> {
+		fields: { name?: string; auto_archive_duration?: number },
+	): Promise<"patched" | "transient" | "permanent"> {
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
 		try {
@@ -489,18 +518,18 @@ export class RoundtableThreadManager {
 					Authorization: `Bot ${this.botToken}`,
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ name }),
+				body: JSON.stringify(fields),
 				signal: controller.signal,
 			});
-			if (res.ok) return "renamed";
+			if (res.ok) return "patched";
 			this.logger.warn(
-				`[RoundtableThreadManager] rename thread ${threadId} failed: HTTP ${res.status} (name stays generic)`,
+				`[RoundtableThreadManager] patch thread ${threadId} failed: HTTP ${res.status} (name/archive stays as-is)`,
 			);
 			if (res.status === 408 || res.status === 429 || res.status >= 500)
 				return "transient";
 			return "permanent";
 		} catch (err) {
-			this.logger.warn("[RoundtableThreadManager] rename thread error", {
+			this.logger.warn("[RoundtableThreadManager] patch thread error", {
 				threadId,
 				err: (err as Error).message,
 			});
@@ -527,7 +556,8 @@ export class RoundtableThreadManager {
 					},
 					body: JSON.stringify({
 						name: this.threadName(msg.content),
-						auto_archive_duration: AUTO_ARCHIVE_DURATION,
+						// FLY-802: 1h auto-archive so finished topics collapse out of the sidebar.
+						auto_archive_duration: ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
 					}),
 					signal: controller.signal,
 				},
@@ -571,14 +601,16 @@ export class RoundtableThreadManager {
 
 	/**
 	 * GET /channels/{messageId} — confirm a thread owned by the roundtable channel
-	 * exists (recovery anchor: threadId === messageId) AND read its current name (so
-	 * the caller can rename a placeholder).
+	 * exists (recovery anchor: threadId === messageId) AND read its current name +
+	 * archive duration (so the caller can rename a placeholder and converge a
+	 * plugin-created thread's stale 3-day archive to 1h — FLY-802).
 	 *
 	 * FLY-576: classified, not boolean. A transient failure (429/5xx/network/timeout)
 	 * must NOT be collapsed to "not confirmed" — that would advance the cursor and
 	 * skip the founder/member/rename repair forever. The caller holds the cursor on
 	 * "transient" and retries next poll.
-	 *  - "confirmed": is a thread under this channel; carries `name` if readable.
+	 *  - "confirmed": is a thread under this channel; carries `name` +
+	 *    `autoArchiveMinutes` if readable.
 	 *  - "absent": 200-but-not-a-matching-thread, 404, or a non-retryable 4xx — there
 	 *    is nothing to repair / retrying won't help.
 	 *  - "transient": retry next poll.
@@ -586,7 +618,7 @@ export class RoundtableThreadManager {
 	private async confirmThreadExists(
 		messageId: string,
 	): Promise<
-		| { kind: "confirmed"; name?: string }
+		| { kind: "confirmed"; name?: string; autoArchiveMinutes?: number }
 		| { kind: "absent" }
 		| { kind: "transient" }
 	> {
@@ -602,15 +634,22 @@ export class RoundtableThreadManager {
 					type?: number;
 					parent_id?: string;
 					name?: unknown;
+					thread_metadata?: { auto_archive_duration?: unknown };
 				};
 				const isThread =
 					typeof data.type === "number" &&
 					THREAD_TYPES.has(data.type) &&
 					data.parent_id === this.channelId;
 				if (!isThread) return { kind: "absent" };
+				// FLY-802: also read the thread's current archive duration so commitThread
+				// can converge a plugin-created thread (Discord's default 3-day) to 1h
+				// without a redundant PATCH when it is already correct.
+				const rawArchive = data.thread_metadata?.auto_archive_duration;
 				return {
 					kind: "confirmed",
 					name: typeof data.name === "string" ? data.name : undefined,
+					autoArchiveMinutes:
+						typeof rawArchive === "number" ? rawArchive : undefined,
 				};
 			}
 			// 408 / 429 / 5xx → retry; everything else (404 gone, 401/403) → nothing to do.
