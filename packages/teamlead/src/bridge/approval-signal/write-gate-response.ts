@@ -29,7 +29,9 @@ export interface GateResponseDb {
 
 /** Structural StateStore surface. */
 export interface GateResponseStore {
-	getSession(executionId: string): { status?: string } | undefined;
+	getSession(
+		executionId: string,
+	): { status?: string; review_question_id?: string | null } | undefined;
 }
 
 export interface WriteGateResponseArgs {
@@ -120,9 +122,22 @@ export async function writeGateResponseAndRunPostWrite(
 		return guardOk("stale_review_question");
 	}
 
-	const status = args.store.getSession(args.executionId)?.status;
+	const liveSession = args.store.getSession(args.executionId);
+	const status = liveSession?.status;
 	if (status !== "awaiting_review" && status !== "approved_to_ship") {
 		return guardOk(`status_${status ?? "unknown"}`);
+	}
+
+	// FLY-799 (Codex R1 HIGH-2): re-read the session's CURRENT review binding at
+	// WRITE time — not the caller's snapshot. The founder-reply handler snapshots
+	// the session, then the Tier-3 evaluation can take seconds; if a re-review
+	// re-bound the session to a NEW review question meanwhile, the snapshot is
+	// stale and this stale gate must NOT be answered (Surface B already re-reads
+	// live via getCurrentReviewQuestionId — this gives the founder-reply path the
+	// same TOCTOU-closed guard).
+	const liveReviewQid = liveSession?.review_question_id;
+	if (liveReviewQid && liveReviewQid !== args.questionId) {
+		return guardOk("stale_review_question_live");
 	}
 
 	// Idempotent retry vs conflict.

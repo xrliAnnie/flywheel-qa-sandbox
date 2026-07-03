@@ -155,3 +155,40 @@ describe("writeGateResponseAndRunPostWrite — idempotency (Codex R2 HIGH-2)", (
 		expect(db.insertResponse).not.toHaveBeenCalled();
 	});
 });
+
+describe("writeGateResponseAndRunPostWrite — live review binding (Codex R1 HIGH-2)", () => {
+	it("refuses when the LIVE review_question_id no longer matches (re-review during eval)", async () => {
+		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+		const liveStore = {
+			getSession: vi.fn().mockReturnValue({
+				status: "awaiting_review",
+				review_question_id: "Q-NEW", // session re-bound to a newer gate
+			}),
+		};
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs, // questionId: "Q-1"
+			db,
+			store: liveStore,
+		});
+		expect(r.written).toBe(false);
+		expect(r.reason).toBe("stale_review_question_live");
+		expect(db.insertResponse).not.toHaveBeenCalled();
+	});
+
+	it("writes when the LIVE review_question_id still matches the gate", async () => {
+		const db = fakeDb({ checkpoint: "approve_to_ship", from_agent: "E-1" });
+		const liveStore = {
+			getSession: vi.fn().mockReturnValue({
+				status: "awaiting_review",
+				review_question_id: "Q-1",
+			}),
+		};
+		const r = await writeGateResponseAndRunPostWrite({
+			...baseArgs,
+			db,
+			store: liveStore,
+			onResponseWritten: vi.fn().mockResolvedValue({ ok: true }),
+		});
+		expect(r.written).toBe(true);
+	});
+});

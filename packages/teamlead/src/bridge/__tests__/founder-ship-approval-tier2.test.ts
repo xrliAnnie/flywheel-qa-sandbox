@@ -13,7 +13,10 @@
  */
 
 import { describe, expect, it } from "vitest";
-import { matchTier2Approval } from "../approval-signal/tier2-allowlist.js";
+import {
+	hasExplicitMismatchedReference,
+	matchTier2Approval,
+} from "../approval-signal/tier2-allowlist.js";
 
 const GATE = { issueIdentifier: "FLY-799", prNumber: 799 } as const;
 
@@ -72,5 +75,30 @@ describe("matchTier2Approval — bypass surface downgrades to Tier-3 (Codex R7/R
 	it("downgrades empty / whitespace-only input", () => {
 		expect(matchTier2Approval("", GATE)).toBe("downgrade");
 		expect(matchTier2Approval("   ", GATE)).toBe("downgrade");
+	});
+});
+
+describe("hasExplicitMismatchedReference (FLY-799 Codex R1 HIGH-3)", () => {
+	it("explicit wrong FLY-<n> → true (fail-closed target)", () => {
+		expect(hasExplicitMismatchedReference("ship FLY-756", GATE)).toBe(true);
+	});
+	it("correct FLY-<n> → false", () => {
+		expect(hasExplicitMismatchedReference("ship FLY-799", GATE)).toBe(false);
+	});
+	it("wrong #<n> PR → true", () => {
+		expect(hasExplicitMismatchedReference("approve #123", GATE)).toBe(true);
+	});
+	it("correct #<n> PR (matches prNumber) → false", () => {
+		expect(hasExplicitMismatchedReference("approve #799", GATE)).toBe(false);
+	});
+	it("bare incidental number is NOT a reference → false (still downgrades to Tier-3)", () => {
+		expect(
+			hasExplicitMismatchedReference("ship it, fixes 500 errors", GATE),
+		).toBe(false);
+	});
+	it("no reference at all → false", () => {
+		expect(hasExplicitMismatchedReference("looks good, ship", GATE)).toBe(
+			false,
+		);
 	});
 });

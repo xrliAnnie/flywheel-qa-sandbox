@@ -145,6 +145,41 @@ function stripAndVerifyReferences(
 }
 
 /**
+ * FLY-799 (Codex code-review R1 HIGH-3): fail-closed on a DELIBERATE wrong-target
+ * reference. True iff the message carries an EXPLICIT issue (`FLY-<n>`) or PR
+ * (`#<n>`) reference that does NOT target the current gate — a strong "not this
+ * one" signal that must never reach the Tier-3 LLM (which could still approve
+ * `ship FLY-756` in the FLY-799 thread). Bare numbers are intentionally NOT
+ * treated as references here — they are frequently incidental (`fixes 500
+ * errors`), so they still downgrade to Tier-3 for contextual judgement rather
+ * than hard-rejecting a genuine approval.
+ */
+export function hasExplicitMismatchedReference(
+	rawMessage: string,
+	gate: Tier2Gate,
+): boolean {
+	if (typeof rawMessage !== "string") return false;
+	const norm = rawMessage.toLowerCase();
+	const idNum = identifierNumber(gate.issueIdentifier);
+	const identLower = gate.issueIdentifier?.toLowerCase();
+	const prNum = gate.prNumber;
+
+	// Explicit FLY-<n> issue references.
+	for (const m of norm.matchAll(/fly-\d+/g)) {
+		if (!identLower || m[0] !== identLower) return true;
+	}
+	// Explicit #<n> PR references.
+	for (const m of norm.matchAll(/#(\d+)/g)) {
+		const n = Number.parseInt(m[1] as string, 10);
+		const matches =
+			(prNum !== undefined && n === prNum) ||
+			(idNum !== undefined && n === idNum);
+		if (!matches) return true;
+	}
+	return false;
+}
+
+/**
  * Classify a founder text message as a Tier-2 exact approval or a downgrade to
  * Tier-3. Returns "approve" ONLY for a bare, unambiguous, correctly-targeted
  * approval; everything else → "downgrade".

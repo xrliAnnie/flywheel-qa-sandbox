@@ -14,7 +14,10 @@ import {
 	classifyFounderShipApproval,
 	type FounderShipApprovalInput,
 } from "./founder-ship-approval-classifier.js";
-import { matchTier2Approval } from "./tier2-allowlist.js";
+import {
+	hasExplicitMismatchedReference,
+	matchTier2Approval,
+} from "./tier2-allowlist.js";
 import type { ApprovalSignal, GateBinding } from "./types.js";
 
 export interface TextSourceMessage {
@@ -55,14 +58,24 @@ export async function evaluateTextSource(
 		authorUserId: message.authorId,
 	};
 
+	const tier2Gate = {
+		issueIdentifier: gate.issueIdentifier,
+		prNumber: gate.prNumber,
+	};
+
 	// Tier-2 exact allowlist — zero AI, never calls the classifier.
-	if (
-		matchTier2Approval(message.content, {
-			issueIdentifier: gate.issueIdentifier,
-			prNumber: gate.prNumber,
-		}) === "approve"
-	) {
+	if (matchTier2Approval(message.content, tier2Gate) === "approve") {
 		return { ...base, kind: "approve" };
+	}
+
+	// FLY-799 (Codex R1 HIGH-3): an EXPLICIT wrong-target reference (`ship
+	// FLY-756` / `#123` in this gate's thread) is a deterministic "not this one"
+	// — fail-closed to WAKE-only, NEVER hand it to the Tier-3 LLM (which could
+	// still approve it). Bare numbers are not references here (they still
+	// downgrade to Tier-3), so an ordinary approval that happens to cite a number
+	// is unaffected.
+	if (hasExplicitMismatchedReference(message.content, tier2Gate)) {
+		return { ...base, kind: "unclear" };
 	}
 
 	// Tier-3 — ambiguous free text only.
