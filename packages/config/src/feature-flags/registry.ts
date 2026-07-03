@@ -215,6 +215,96 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"resolve.direct-toggle.test:founder_thread_notify live-observe",
 	},
+	// ─── FLY-799: founder-in-thread ship approval + auto-finalize ───
+	{
+		name: "founder_auto_approve",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FOUNDER_AUTO_APPROVE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-799: founder 在 [FLY-XX] thread 的文字/✅ 批准 → 归属 founder → 写 approve_to_ship gate → runner 自 ship",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/approval-signal/founder-ship-approval-factory.ts",
+				"autoApproveEnabled",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/approval-signal/founder-reaction-approval-factory.ts",
+				"autoApproveEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "call_time reads (live-toggleable in principle); marked readonly pending a resolve.direct-toggle proof test (fast-follow). `=0` → deliverer falls back to WAKE-only.",
+	},
+	{
+		name: "founder_image_approval",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FOUNDER_IMAGE_APPROVAL",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-799: founder 镜像图片确认作为批准（default-off fast-follow；v1 未接生产 evaluator，即使 =1 也 inert）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/approval-signal/founder-ship-approval-factory.ts",
+				"imageApprovalEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "v1 default-off scaffold；flip-on 需接 deliverer 附件 download+sha256 + 生产多模态 classifier。",
+	},
+	{
+		name: "stale_ship_rewake",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_STALE_SHIP_REWAKE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-799 Part B: 重新唤醒卡在 approved_to_ship 的 runner（漏掉的自-ship wake）；死 runner → alert 一次 defer FLY-795",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/gate-poller.ts",
+				"staleShipRewakeEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "GatePoller sub-cadence pass；`=0` 关掉再唤醒。call_time read (readonly pending direct-toggle proof).",
+	},
+	{
+		name: "auto_linear_done",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_AUTO_LINEAR_DONE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-799: runner 自-ship（confirmed merged）后自动把 Linear issue 翻到 Done",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/linear-issue-finalizer.ts",
+				"makeLinearDoneFinalizer",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "在 runPostShipFinalization（merge-evidence gated）里读；`=0` 关掉自动 Done。call_time read (readonly pending direct-toggle proof).",
+	},
 	{
 		name: "founder_reply_deliver",
 		category: "feature",
