@@ -739,6 +739,13 @@ describe("Dashboard HTML", () => {
 		expect(html).toContain("/actions/");
 		expect(html).toContain("Actions</th>");
 	});
+
+	it("FLY-709: is Apple-light, not the old GitHub-dark theme", async () => {
+		const { getDashboardHtml } = await import("../bridge/dashboard-html.js");
+		const html = getDashboardHtml();
+		expect(html).toContain("#f5f5f7"); // light page background
+		expect(html).not.toContain("#0d1117"); // retired the dark bg
+	});
 });
 
 // --- OUTCOME_STATUSES export ---
