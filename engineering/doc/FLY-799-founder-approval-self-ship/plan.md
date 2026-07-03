@@ -16,10 +16,11 @@ Issue: FLY-799 (https://linear.app/geoforge3d/issue/FLY-799/infrafounder-facingp
 ship → 触发**顺关系图的 fan-out 收尾**(shipped runner + QA + [v2] sub-issue 全清)。Lead 只
 relay,不代 merge。
 
-**非目标**:① 不实现 FLY-795 durable-state 地基(只标依赖、留接口);② 不建 FLY-793 的 sub-
-issue 三段式结构(fan-out v2 接口留好、遍历随 793);③ 不改 verify-approval 的 4-源校验(复用);
-④ **不引入 PR mode / pr_handoff**(Annie 明确『绝对没说要用 PR mode』)—— runner 自 ship =
-**复用现有 deploy workflow / 🆒 self-ship**,不做「runner 交 PR 给 founder 手动 ship」那套。
+**非目标 / 假设**:① 不实现 FLY-795 durable-state 地基(只标依赖、留接口);② **甲(Annie 拍):
+一个 issue、三个内部阶段、不拆独立 sub-issue、Bridge RPC 不改** ⇒ fan-out 关系图 = feature ↔ QA
+(AutoQaRecord),**不建/不遍历 Linear sub-issue 子树**(原 v2 复杂接口删掉);③ 不改 verify-approval
+的 4-源校验(复用);④ **不引入 PR mode / pr_handoff**(Annie:『绝对没说要用 PR mode』)—— runner
+自 ship = **复用现有 deploy workflow / 🆒 self-ship**,不做「runner 交 PR 给 founder 手动 ship」。
 
 ## 2. 架构:现状 vs 目标
 
@@ -145,6 +146,13 @@ JSON verdict」封装 → 新 seam `SubscriptionClaudeClassifierRunner`,硬合�
 摘要。**ImageSource 前置:先证明本机订阅 CLI 支持多模态附件输入;不支持/不可稳定测 → v1
 fail-closed/feature-gate,绝不默默退化成文字推断**。绝大多数批准是 ✅ 或 Tier-2(零 AI)→ Tier-3
 极少触发。
+- **模型 + 机制(Annie/Tadashi 拍)**:Tier-3 = **on-demand headless `claude -p`(不是常驻进程,
+  只在罕见模糊文字时起一个 headless claude 判一句立刻退)**,model = **Haiku
+  `claude-haiku-4-5-20251001`**(model-tiers trivial 档、订阅可用),**订阅 auth、非付费 API**。
+- **实测确认(2026-07-02,给 Annie 准信)**:`claude -p '<判定 prompt>' --model
+  claude-haiku-4-5-20251001` 在本机**订阅跑通**(无 API key)—— 对『先别 ship 我看看』正确返
+  `{"approved": false}`,~7.5s 一次性。→ **用 Haiku,不用退 Sonnet**。实现注:`-p` 输出会带
+  ```json fence → runner 用 `--output-format json` 或剥 fence 后再过 schema 校验。
 
 **A-4 写路径复用受信任语义(抽共享 helper,Codex R1 #3)**:**不裸写
 `db.insertResponse + onResponseWritten`**。抽一个共享内部 helper
@@ -200,26 +208,26 @@ post `:cool:` 的 re-driver —— 那会变成新的 Bridge-side ship executor,
 
 ### Part C — fan-out 收尾(扩 post-ship-finalization)
 
-shipped runner 自 ship 触发 `runPostShipFinalization`(对它自己,已存在)后,**再顺关系图遍历**
-清理每个相关节点。新增 `runFanoutFinalization(rootExecutionId)`:
+> **甲(Annie 拍 2026-07-02):一个 issue、三个内部阶段、不拆独立 sub-issue、Bridge RPC 不改。**
+> ⇒ **finalization 关系图 = feature ↔ QA(AutoQaRecord),不是三段 Linear 子树。** 原本留的
+> 『Linear sub-issue 子树遍历(v2/793)』**不再需要** —— 删掉那套复杂接口,fan-out 就是「关 feature
+> runner + 它的 QA」。
+
+shipped runner 自 ship 触发 `runPostShipFinalization`(对它自己,已存在)后,**再清它的 QA**:
 
 ```mermaid
 graph TD
-    S[shipped runner 自 ship → runPostShipFinalization] --> G[collectRelatedNodes<br/>关系图遍历]
+    S[shipped runner 自 ship → runPostShipFinalization] --> G[collectRelatedNodes]
     G --> Q[auto_qa_record: parent→qa_execution_id + qa_issue_id]
-    G -.v2/793.-> T[Linear sub-issue 子树<br/>parent/children via Linear SDK]
-    Q --> C[对每节点: cleanupNode]
-    T -.deferred.-> C
-    C --> C1[mark Linear Done]
+    Q --> C[cleanupNode QA]
+    C --> C1[mark QA issue Done]
     C --> C2[closeRunner finalizeDone+archive<br/>tmux+cmux+tab+thread+row]
     C --> C3[removeCleanWorktree]
 ```
 
-- **节点收集** `collectRelatedNodes(rootExecId)`:
-  - v1:root 的 `auto_qa_record`(parent=root)→ `qa_execution_id`(QA runner)+ `qa_issue_id`
-    (QA issue/thread)。
-  - v2(接口留好、遍历 deferred):Linear `issue.parent` 上溯到 main → `.children()` 下遍
-    design/implement/QA sub-issue。需处理「无 linear client」fallback(research C.4)。
+- **节点收集** `collectRelatedNodes(rootExecId)`:root 的 `auto_qa_record`(parent=root)→
+  `qa_execution_id`(QA runner)+ `qa_issue_id`(QA issue/thread)。**就这一层**(甲 = 无 sub-issue
+  树,不走 Linear parent/children)。
 - **v1 fan-out 的真实增量(Codex R1 #6,别高估复用)**:QA PASS 现在**已经**关掉了 QA runner
   (auto-qa-coordinator L629-652,reconcile L691-715 还会重试),所以 v1 QA fan-out 的真实工作
   ≈「**若 QA runner 仍 live 则 verify/close;若有 QA issue 则标 Done**」。**不动**
@@ -343,14 +351,14 @@ function writeGateResponseAndRunPostWrite(args: {
 // Part B — ship resume 地基(v1 = re-wake + 幂等 verify + stale-approved reconciler[in-scope];v2 = FLY-795)
 interface ShipResumeSubstrate { ensureShipResumable(execId: string): Promise<void>; }
 
-// Part C — 关系图收集(v1 auto_qa;v2 Linear 子树)
+// Part C — 关系图收集(甲:只 feature ↔ QA,不走 Linear 子树)
 interface RelatedNode {
   executionId?: string;   // 有 runner 的节点
   issueId: string;
-  role: "shipped" | "qa" | "design" | "implement";
-  qaStatus?: string;      // v1:只处理已 PASS;跳过 running/awaiting_retest/stuck
+  role: "shipped" | "qa";
+  qaStatus?: string;      // 只处理已 PASS;跳过 running/awaiting_retest/stuck
 }
-function collectRelatedNodes(rootExecId: string): Promise<RelatedNode[]>;
+function collectRelatedNodes(rootExecId: string): Promise<RelatedNode[]>; // = root + 其 auto_qa_record
 
 // Part C — per-node 可重试状态(Codex R1 #6)
 interface FanoutFinalizationStore {
@@ -390,8 +398,9 @@ interface LinearIssueFinalizer { markDone(issueId: string): Promise<{ done: bool
   失败节点只告警(FLY-368)+ 不阻塞其他 + 幂等不重清 + per-node reconcile;**绝不回滚已 ship**。
 - **D3 自 ship 机制 = 保留 `:cool:` ✅(Annie 拍)**:runner 提示词零改,保 CI+branch-protection;
   `gh pr merge` 已否决;**不引入 PR mode/pr_handoff ✅(Annie 拍)**。
-- **D4 fan-out scope = 一次做全、分两波 ✅(Annie 拍)**:v1 按当前 main = feature + 它的 QA;
-  FLY-793 merge 后 799 rebase 再把 Design/Implement/QA 三段清理做全(§10)。接口 v1 留好。
+- **D4 fan-out scope = feature ↔ QA(甲,Annie 2026-07-02 改拍)**:一个 issue 三内部阶段、不拆
+  独立 sub-issue ⇒ 收尾 = 关 feature runner + 它的 QA(AutoQaRecord)。**不再需要 sub-issue 树
+  遍历**,原『分两波 / 793 rebase 补三段』作废,一波做全。
 - **上线 = 默认 ON ✅(Annie 拍:直接上线、发现问题再关,别默认关)**。因为默认 ON,**runner 自
   ship 中途重启的可靠性不能再等 795** → **本 issue 内落地 v1 stale-`approved_to_ship`+open-PR
   reconciler**(bounded/audited re-drive)作默认-ON 的安全前提;795 落地后可替换为更强的断点续做。
@@ -459,15 +468,13 @@ crash/幂等测试全过;④ kill-switch `=0` sentinel 证明旧 WAKE-only 逐�
 Claude-in-Chrome)真机验过(Annie 真账号批准 → 自 ship + 全清;非本人/含糊/旧 head 不 ship)。
 协调批量 Bridge 重启(攒 PR)。
 
-## 10. 依赖 / 时序(Annie 拍的分波)
+## 10. 依赖 / 时序
 - **可并行设计**(Tadashi):跟 FLY-795 并行走 plan-first。
-- **fan-out 一次做全、但分两波落地(Annie ④)**:**v1 = 先按当前 main 写**(现 main 上只有
-  feature↔QA 关系 = auto_qa_record,所以 v1 清 feature runner + 它的 QA);**FLY-793 merge 到
-  main 后,799 rebase 上去,把 Design/Implement/QA 三段的清理分开做全**(= 799 PartC 的
-  completion,committed follow-on,不是模糊 future)。接口(`collectRelatedNodes` /
-  `FanoutFinalizationStore`)v1 就留好。
-- **Part B 作为新 ship 流程正式启用,前置 = FLY-795 durable-state 地基 _或_ 本 issue 自带的
-  stale-`approved_to_ship`+open-PR reconciler**(二选一;顺序可跟 795 协调;接口留好)。
+- **fan-out = feature ↔ QA,一波做全(甲,Annie 2026-07-02)**:不拆独立 sub-issue ⇒ 收尾就是关
+  feature runner + 它的 auto_qa_record QA。**原『793 rebase 补三段树』作废**;不再为 sub-issue 树
+  留复杂接口(`collectRelatedNodes` 只收 root + 其 QA)。
+- **Part B(默认 ON)**:runner 自 ship 中途重启的可靠性 = 本 issue 的 re-wake-only reconciler
+  兜常见情形(Bridge 重启但 runner 活)+ 真 runner-death 恢复靠 FLY-795(顺序可协调)。
 - **收尾 = best-effort(Annie ②)**:某步失败只告警(FLY-368),**绝不回滚已 ship 的东西**
   (ship 不可逆);幂等不重清 + per-node reconcile 补未完成。
 - **present Annie** 拍板 → Codex design review 已过(4 轮 APPROVED)→ 才 implement。
