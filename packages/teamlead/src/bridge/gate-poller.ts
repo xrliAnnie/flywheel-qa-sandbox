@@ -36,6 +36,7 @@ import {
 } from "../lead-backends/codex/InboundCursorStore.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import { isQaHeld } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import {
@@ -1408,6 +1409,45 @@ export class GatePoller {
 					: result.kind,
 			);
 		}
+
+		// FLY-799 A-0b: on a posted approve_to_ship ping, durably bind
+		// (questionId, prHeadSha) → the Discord gate message id so the reaction
+		// path knows which message to watch for the founder's ✅. Write-once
+		// (immutable — a duplicate ping cannot overwrite it). Only for the CURRENT
+		// review question of an awaiting_review session with a known pr_head — the
+		// exact-one key `selectCurrentBinding` fail-closes on. Best-effort; a write
+		// failure must never block the notify marker below.
+		if (
+			cp === "approve_to_ship" &&
+			result.kind === "posted" &&
+			result.gateMessageId &&
+			thread &&
+			session.pr_head_sha &&
+			session.status === "awaiting_review" &&
+			session.review_question_id === question.id
+		) {
+			try {
+				writeGateMessageBinding(
+					this.config.store,
+					{
+						questionId: question.id,
+						executionId: session.execution_id,
+						issueId: session.issue_id,
+						prHeadSha: session.pr_head_sha,
+						threadId: thread.thread_id,
+						gateMessageId: result.gateMessageId,
+						checkpoint: cp,
+						postedAt: new Date(now).toISOString(),
+					},
+					session.project_name,
+				);
+			} catch (err) {
+				console.warn(
+					`[gate-poller] FLY-799 gate-message binding write failed for ${question.id} (non-fatal): ${(err as Error).message}`,
+				);
+			}
+		}
+
 		this.writeFounderThreadMarker(question, session, result.kind);
 	}
 
