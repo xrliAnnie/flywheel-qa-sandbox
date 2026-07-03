@@ -22,6 +22,20 @@ describe("ensureThreadFromMessage", () => {
 		expect(r).toEqual({ ok: true, threadId: MSG });
 	});
 
+	it("FLY-802: creates the thread with auto_archive_duration=60 (1h → collapses out of the sidebar)", async () => {
+		let createBody: string | undefined;
+		const fetchImpl = vi.fn(async (_url: string, init?: RequestInit) => {
+			if ((init?.method ?? "GET").toUpperCase() === "POST")
+				createBody = typeof init?.body === "string" ? init.body : undefined;
+			return res(201, { id: MSG });
+		});
+		const r = await ensureThreadFromMessage(PARENT, MSG, "tok", {
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		expect(r).toEqual({ ok: true, threadId: MSG });
+		expect(JSON.parse(createBody ?? "{}").auto_archive_duration).toBe(60);
+	});
+
 	it("already-exists (400/160004) → confirm via GET → ok, no second create", async () => {
 		const calls: string[] = [];
 		const fetchImpl = vi.fn(async (url: string, init?: RequestInit) => {

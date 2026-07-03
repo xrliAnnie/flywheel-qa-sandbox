@@ -3,7 +3,15 @@ import {
 	deriveRoundtableThreadName,
 	isTopicNoise,
 	ROUNDTABLE_PLACEHOLDER_NAME,
+	ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
 } from "../roundtable-text.js";
+
+describe("ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES (FLY-802)", () => {
+	it("is 60 minutes — Discord's shortest auto_archive_duration", () => {
+		// 1h so topic threads collapse out of the sidebar instead of piling up.
+		expect(ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES).toBe(60);
+	});
+});
 
 describe("deriveRoundtableThreadName (FLY-314 shared naming)", () => {
 	it("uses the first line / topic text, stripping mention + emoji markup", () => {
