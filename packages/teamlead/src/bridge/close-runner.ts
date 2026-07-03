@@ -27,6 +27,7 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { StateStore } from "../StateStore.js";
+import { requestCmuxPinClose } from "./cmux-close-request.js";
 import { deleteCommDbSession } from "./commdb-session-prune.js";
 import {
 	type CloseArchiveDeps,
@@ -279,8 +280,11 @@ export async function closeRunner(
 	// FLY-638: kill the per-runner cmux LINKED session BEFORE killTmuxWindow
 	// (display-message needs the window alive to read its name). Best-effort —
 	// a cmux-resolve/kill failure must never block the window kill or the close.
-	await killCmuxLinkedSession(target.tmuxWindow).catch((e: Error) =>
-		console.warn(`[close-runner] cmux session close warn: ${e.message}`),
+	const cmuxRes = await killCmuxLinkedSession(target.tmuxWindow).catch(
+		(e: Error) => {
+			console.warn(`[close-runner] cmux session close warn: ${e.message}`);
+			return undefined;
+		},
 	);
 
 	// success path: kill tmux window
@@ -291,6 +295,21 @@ export async function closeRunner(
 	// (e.g. permission), closing the tab anyway would hide a still-running
 	// runner from the user (Codex Round 1 PR review #3).
 	if (res.killed) {
+		// FLY-685: request cmux workspace-pin (sidebar tab) removal — BEFORE the
+		// terminal-view close (Codex design R1 #1). `closeRunnerTerminalView`
+		// awaits an `osascript` call with no exec timeout; if it stalls, the tmux
+		// window is already gone but the pin would fall back to the 5-min FLY-293
+		// reaper. Writing the marker first preserves the "next watcher tick" path.
+		// window_name = the cmux workspace TITLE, reused from killCmuxLinkedSession's
+		// already-resolved `cmuxSession` ("cmux-<window_name>"). Absent → the window
+		// was already gone → nothing to target (FLY-293 reaper still backstops).
+		// Best-effort: never throws, never blocks the close; the watcher still
+		// re-validates the window + linked session are gone before closing the pin.
+		const cmuxWindowName = cmuxRes?.cmuxSession?.startsWith("cmux-")
+			? cmuxRes.cmuxSession.slice("cmux-".length)
+			: undefined;
+		if (cmuxWindowName) requestCmuxPinClose(cmuxWindowName);
+
 		const identity = resolveTerminalViewIdentity(session, target);
 		if (identity) {
 			await closeRunnerTerminalView({

@@ -51,6 +51,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_COMM_ROOT: "plumbing: comm root path",
 	FLYWHEEL_CLAIMS_DB: "plumbing: claims db path",
 	FLYWHEEL_GATE_MARKER_DIR: "plumbing: gate marker dir",
+	FLYWHEEL_CMUX_CLOSE_REQUEST_FILE:
+		"plumbing: cmux close-request marker file path (FLY-685)",
 	FLYWHEEL_REPO_ROOT: "plumbing: repo root path",
 	FLYWHEEL_DIR: "plumbing: state dir root",
 	FLYWHEEL_STATE_DIR: "plumbing: state dir",
