@@ -14,8 +14,9 @@
  * exactly one current gate / unclear) so the deliverer falls back to WAKE-only.
  */
 
+import type { ImageAttachment } from "./image-approval-source.js";
 import { evaluateTextSource } from "./text-approval-source.js";
-import type { GateBinding } from "./types.js";
+import type { ApprovalSignal, GateBinding } from "./types.js";
 import {
 	type GateResponseDb,
 	writeGateResponseAndRunPostWrite,
@@ -38,10 +39,34 @@ export interface ShipApprovalHandlerDeps {
 	onResponseWritten?: Parameters<
 		typeof writeGateResponseAndRunPostWrite
 	>[0]["onResponseWritten"];
+	/**
+	 * FLY-799 (image approval, default-OFF fast-follow): when true AND an image
+	 * evaluator is injected AND the founder message carries image attachments, a
+	 * mirrored-image confirmation is evaluated BEFORE the text path (an image
+	 * approve/reject is authoritative; unclear/null falls through to text). The
+	 * production image evaluator (download + sha256 + multimodal classify) is the
+	 * flip-on step; absent here → text-only (v1 default).
+	 */
+	imageApproval?: boolean;
+	evaluateImageImpl?: (args: {
+		gate: Omit<GateBinding, "targetMessageId">;
+		message: {
+			id: string;
+			authorId: string;
+			imageAttachments: ImageAttachment[];
+		};
+	}) => Promise<ApprovalSignal | null>;
 }
 
 export interface ShipApprovalHandlerArgs {
-	msg: { id: string; content?: string; authorId?: string };
+	msg: {
+		id: string;
+		content?: string;
+		authorId?: string;
+		/** FLY-799 image approval (fast-follow): populated only once the deliverer
+		 * downloads + hashes attachments; absent in the v1 default (text-only). */
+		imageAttachments?: ImageAttachment[];
+	};
 	shipGates: {
 		questionId: string;
 		checkpoint: string | null;
@@ -84,16 +109,39 @@ export async function tryFounderShipApproval(
 		canonicalFounderId: deps.canonicalFounderId,
 	};
 
-	// v1: TextSource only (Image behind its own default-off flag, wired later).
-	const evaluateText = deps.evaluateTextImpl ?? evaluateTextSource;
-	const signal = await evaluateText({
-		gate: binding,
-		message: {
-			id: args.msg.id,
-			content: args.msg.content ?? "",
-			authorId: args.msg.authorId ?? "",
-		},
-	});
+	// FLY-799 image approval (default-OFF fast-follow): an image approve/reject is
+	// authoritative; unclear/null falls through to the text path below. Only
+	// active when the flag is on, an evaluator is injected, AND attachments are
+	// present — so v1 (no evaluator wired) is byte-compatibly text-only.
+	let signal: ApprovalSignal | null = null;
+	if (
+		deps.imageApproval &&
+		deps.evaluateImageImpl &&
+		args.msg.imageAttachments &&
+		args.msg.imageAttachments.length > 0
+	) {
+		const imageSignal = await deps.evaluateImageImpl({
+			gate: binding,
+			message: {
+				id: args.msg.id,
+				authorId: args.msg.authorId ?? "",
+				imageAttachments: args.msg.imageAttachments,
+			},
+		});
+		if (imageSignal && imageSignal.kind !== "unclear") signal = imageSignal;
+	}
+
+	if (!signal) {
+		const evaluateText = deps.evaluateTextImpl ?? evaluateTextSource;
+		signal = await evaluateText({
+			gate: binding,
+			message: {
+				id: args.msg.id,
+				content: args.msg.content ?? "",
+				authorId: args.msg.authorId ?? "",
+			},
+		});
+	}
 	if (!signal || signal.kind === "unclear") return null; // WAKE-only fallback
 
 	const write = deps.writeGateResponseImpl ?? writeGateResponseAndRunPostWrite;
