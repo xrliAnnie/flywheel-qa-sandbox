@@ -566,7 +566,12 @@ export class Blueprint {
 			// (PreHydrator may fail Linear API and fall back to stub title)
 			issueIdentifier: ctx.issueIdentifier ?? hydrated.issueIdentifier,
 			issueTitle: ctx.issueTitle ?? hydrated.issueTitle,
-			labels: hydrated.labels,
+			// FLY-807: caller-provided labels (e.g. auto-QA's parent-issue labels, which
+			// drive Discord chat-thread routing via resolveLeadForIssue) take precedence
+			// over a fresh Linear re-fetch of THIS run's own issue — matching the same
+			// ctx.issueLabels ?? hydrated.labels precedence already used below for
+			// ponytail resolution and AgentDispatcher backend selection.
+			labels: ctx.issueLabels ?? hydrated.labels,
 			retryPredecessor: ctx.retryContext?.predecessorExecutionId,
 			runAttempt: ctx.retryContext?.attempt,
 			// FLY-59: Propagate session role from context to event envelope
