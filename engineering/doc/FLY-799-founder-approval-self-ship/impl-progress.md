@@ -22,7 +22,7 @@ Issue: FLY-799 (https://linear.app/geoforge3d/issue/FLY-799/infrafounder-facingp
 
 9. `image-approval-source.ts`(ImageSource:身份→MIME/size 过滤→注入多模态 classify→evidence 绑定 evidenceMessageId + evidenceAttachmentIds⊆valid)。8 测。`2054f00f`
 
-**多模态实测(Tadashi 要求先测):`claude -p 'What text... @/tmp/x.png' --model claude-haiku-4-5-20251001` 订阅正确读图(~7s,无 API key)→ ImageSource 纳入 v1、不 feature-gate-off。plan/breadcrumb 已钉。**
+**多模态实测 OK(claude -p @image 订阅可读)。但 Annie 拍 B(Tadashi 澄清):v1 只开『打字+✅』,ImageSource 代码建好但 v1 放自己的 flag `FLYWHEEL_FOUNDER_IMAGE_APPROVAL` **default-off**,图片作 799 内 fast-follow flip-on。别 v1 就 ON。**
 
 **累计 9 模块 80 测全绿 + notifier byte-compat 集成。Part A 批准判定层(判定核心 + 3 sources + binding 核)全 landed。**
 
