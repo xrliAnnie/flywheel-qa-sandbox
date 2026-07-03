@@ -37,6 +37,7 @@ export EVENT_FILE="$TMPDIR_ROOT/events"
 export CLEANUP_PENDING="$TMPDIR_ROOT/cleanup-pending"
 export STALE_STATE="$TMPDIR_ROOT/stale.state"
 export HEAL_STATE="$TMPDIR_ROOT/heal.state"  # FLY-169
+export CREATE_STATE="$TMPDIR_ROOT/create.state"  # FLY-825
 export CMUX_SOCK_IDENT_FILE="$TMPDIR_ROOT/sock-ident"  # FLY-254
 export ORPHAN_PIN_STATE="$TMPDIR_ROOT/orphan-pin.state"  # FLY-293
 export FLYWHEEL_CMUX_CLOSE_REQUEST_FILE="$TMPDIR_ROOT/close-requested"  # FLY-685
@@ -367,12 +368,55 @@ print(json.dumps(d))' "$sw_ref" 2>/dev/null)
 
 pgrep() {
   # FLY-129 Phase 1: drive sync_once's watcher-detection branch from tests.
-  # Real pgrep returns 0 if any match, 1 if none. Honor MOCK_PGREP_HIT.
+  # FLY-825: if MOCK_PGREP_PIDS is set, print those PIDs (one per line, like
+  # real pgrep -f) — wait_for_watcher_exit reads pgrep's stdout, not just its
+  # rc. MOCK_KILL_CALLS/kill() below mutates MOCK_PGREP_PIDS to simulate a
+  # process actually dying. Falls back to the legacy rc-only MOCK_PGREP_HIT
+  # (no stdout) for existing sync_once tests that only check the exit code.
+  if [[ -n "${MOCK_PGREP_PIDS:-}" ]]; then
+    printf '%s\n' $MOCK_PGREP_PIDS
+    return 0
+  fi
   [[ "${MOCK_PGREP_HIT:-0}" == "1" ]] && return 0
   return 1
 }
 
-export -f tmux cmux pgrep
+kill() {
+  # FLY-825: capture TERM/KILL calls for wait_for_watcher_exit tests — but ONLY
+  # when a test explicitly opts in via MOCK_KILL_INTERCEPT=1. Defining `kill`
+  # as a function unconditionally shadows the real builtin for the ENTIRE
+  # script (bash resolves functions before builtins), which broke the
+  # pre-existing FLY-177 "supervised takeover" test: its `kill "$fake_watcher"`
+  # (a REAL `sleep 60 &` background process) silently no-op'd through this
+  # mock instead of actually terminating the process, so
+  # acquire_watcher_lock's real death-detection never fired and the test hung
+  # (found live while running the suite). Default behavior must stay
+  # byte-identical to the real builtin; only wait_for_watcher_exit's own tests
+  # set MOCK_KILL_INTERCEPT=1, where every "pid" is a MOCK_PGREP_PIDS fake, not
+  # a real OS process.
+  if [[ "${MOCK_KILL_INTERCEPT:-0}" != "1" ]]; then
+    command kill "$@"
+    return $?
+  fi
+  # Default signal (bare `kill PID`, no flag) is treated as TERM. A PID listed
+  # in MOCK_KILL_SURVIVES ignores TERM (stays in MOCK_PGREP_PIDS) but always
+  # dies on KILL — models a process that needs the harder signal.
+  local sig="TERM" pid="$1"
+  case "$1" in
+    -TERM) sig="TERM"; pid="$2" ;;
+    -KILL) sig="KILL"; pid="$2" ;;
+    -*) sig="${1#-}"; pid="$2" ;;
+  esac
+  MOCK_KILL_CALLS+="${sig} ${pid}"$'\n'
+  if [[ "$sig" == "TERM" ]] && printf ' %s ' "$MOCK_KILL_SURVIVES" | grep -q " $pid "; then
+    return 0   # survives TERM — pid stays in MOCK_PGREP_PIDS
+  fi
+  MOCK_PGREP_PIDS=$(printf '%s\n' $MOCK_PGREP_PIDS | grep -vx "$pid" | tr '\n' ' ')
+  MOCK_PGREP_PIDS="${MOCK_PGREP_PIDS% }"
+  return 0
+}
+
+export -f tmux cmux pgrep kill
 
 reset_mocks() {
   MOCK_TMUX_WINDOWS=""
@@ -431,7 +475,15 @@ reset_mocks() {
   rm -f "$TMPDIR_ROOT"/jsoncalls.n "$TMPDIR_ROOT"/mock-ident.override "$TMPDIR_ROOT"/gmk.n 2>/dev/null
   # FLY-129 Phase 3: reset JSON transition state so per-test logging is clean.
   CMUX_JSON_LAST_STATE="unknown"
-  rm -f "$EVENT_FILE" "$CLEANUP_PENDING" "$STALE_STATE" "$HEAL_STATE"
+  rm -f "$EVENT_FILE" "$CLEANUP_PENDING" "$STALE_STATE" "$HEAL_STATE" "$CREATE_STATE"
+  # FLY-825
+  FLYWHEEL_CMUX_CREATE_DEDUP_SECONDS=""
+  MOCK_PGREP_PIDS=""            # pgrep mock: space-separated PID list to echo
+  MOCK_KILL_CALLS=""            # captured "SIGNAL PID" lines from the kill mock
+  MOCK_KILL_SURVIVES=""         # space-separated PIDs that ignore TERM (still match pgrep after)
+  MOCK_KILL_INTERCEPT="0"       # 0 (default) = kill() delegates to the REAL builtin
+                                 # (byte-compat with every pre-existing real-process test);
+                                 # 1 = wait_for_watcher_exit tests opt in to recording-only mode
   rm -f "$TMPDIR_ROOT"/clients.*.n
   rm -f "$CMUX_SOCK_IDENT_FILE" "$TMPDIR_ROOT"/readscreen.n "$TMPDIR_ROOT"/wsjson.n "$TMPDIR_ROOT"/wsjson.[0-9]* 2>/dev/null
   rm -rf "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR" "${FLYWHEEL_CMUX_WATCHER_LOCK_DIR}.reap"
@@ -441,7 +493,7 @@ reset_mocks() {
 source "$SCRIPT_DIR/flywheel-cmux-sync.sh"
 
 # Re-export mocks after sourcing (sourcing unsets them in some shells? defensive)
-export -f tmux cmux
+export -f tmux cmux pgrep kill
 
 # ════════════════════════════════════════════════════════════════
 # Test 1: register_session_hooks only registers for flywheel/runner-*
@@ -3744,6 +3796,207 @@ test_fly685_close_request_env_off_inert
 test_fly685_gc_close_request_drops_stale
 test_fly685_chokepoint_rc2_on_close_mutation_failure
 test_fly685_close_request_requeues_on_close_mutation_failure
+
+# ════════════════════════════════════════════════════════════════
+# FLY-825: create-vs-create dedup (drain_events + sync_additive same-tick
+# race) + the orphan-watcher wait_for_watcher_exit helper.
+# ════════════════════════════════════════════════════════════════
+
+test_fly825_create_dedup_same_window_id() {
+  echo "Test: create_workspace_for_window dedups a repeat call for the SAME (name, window_id) within TTL"
+  reset_mocks
+  MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  create_workspace_for_window "flywheel" "@1210" "lead-a" >/dev/null 2>&1 || true
+  create_workspace_for_window "flywheel" "@1210" "lead-a" >/dev/null 2>&1 || true
+  local n; n=$(echo "$MOCK_CMUX_OPS" | grep -c "new-workspace")
+  if [[ "$n" -eq 1 ]]; then
+    pass "same (name,id) called twice (drain_events + sync_additive sim) → only 1 new-workspace"
+  else
+    fail "expected 1 new-workspace call, got $n. ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly825_no_dedup_different_window_id() {
+  echo "Test: a genuine restart (same name, FRESH window_id) is NOT suppressed"
+  reset_mocks
+  MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  create_workspace_for_window "flywheel" "@1" "lead-a" >/dev/null 2>&1 || true
+  create_workspace_for_window "flywheel" "@2" "lead-a" >/dev/null 2>&1 || true
+  local n; n=$(echo "$MOCK_CMUX_OPS" | grep -c "new-workspace")
+  if [[ "$n" -eq 2 ]]; then
+    pass "different window_id (real restart) → both creates proceed, not suppressed"
+  else
+    fail "expected 2 new-workspace calls (different ids must not be deduped), got $n. ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly825_ready_gate_failure_no_mark() {
+  echo "Test: a deferred create (select-window fails) does NOT burn the dedup TTL"
+  reset_mocks
+  MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-b'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  MOCK_TMUX_SELECT_FAIL=1
+  create_workspace_for_window "flywheel" "@1" "lead-b" >/dev/null 2>&1 || true
+  if [[ -f "$CREATE_STATE" ]] && grep -q "^lead-b|@1|" "$CREATE_STATE"; then
+    fail "deferred (not-ready) create wrongly wrote CREATE_STATE — would suppress the legitimate retry"
+  else
+    pass "deferred create does not write CREATE_STATE (next tick's retry is not suppressed)"
+  fi
+  # Retry with select-window now succeeding must proceed (not falsely deduped).
+  MOCK_TMUX_SELECT_FAIL=0
+  create_workspace_for_window "flywheel" "@1" "lead-b" >/dev/null 2>&1 || true
+  if echo "$MOCK_CMUX_OPS" | grep -q "new-workspace"; then
+    pass "retry after ready-gate recovers actually creates (not suppressed by the earlier deferred attempt)"
+  else
+    fail "retry after recovery should have created; ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly825_create_recently_attempted_unit() {
+  echo "Test: create_recently_attempted / create_mark_attempted unit behavior"
+  reset_mocks
+  create_mark_attempted "lead-a" "@1"
+  if create_recently_attempted "lead-a" "@1"; then
+    pass "mark then query (same name+id) → hit"
+  else
+    fail "expected hit right after marking"
+  fi
+  if create_recently_attempted "lead-a" "@2"; then
+    fail "different window_id must NOT hit (dedup key includes window_id)"
+  else
+    pass "different window_id → miss (not falsely deduped)"
+  fi
+  if create_recently_attempted "lead-b" "@1"; then
+    fail "different window_name must NOT hit"
+  else
+    pass "different window_name → miss"
+  fi
+
+  # TTL expiry: write a timestamp older than the TTL directly (no real sleep).
+  reset_mocks
+  local old_ts; old_ts=$(( $(date +%s) - 999 ))
+  printf 'lead-a|@1|%s\n' "$old_ts" > "$CREATE_STATE"
+  if create_recently_attempted "lead-a" "@1"; then
+    fail "expired TTL row must miss"
+  else
+    pass "expired TTL row → miss (does not block a legitimate later recreate)"
+  fi
+
+  # Corrupt timestamp must fail open (miss), not crash.
+  reset_mocks
+  printf 'lead-a|@1|NOTNUM\n' > "$CREATE_STATE"
+  local rc=0
+  ( set -euo pipefail; create_recently_attempted "lead-a" "@1" ) >/dev/null 2>&1 || rc=$?
+  if [[ "$rc" -eq 1 ]]; then
+    pass "corrupt (non-numeric) timestamp → miss, no crash under set -e"
+  else
+    fail "corrupt timestamp: expected rc=1 (miss), got rc=$rc"
+  fi
+
+  # Future timestamp must fail open too (Codex R2 optional hardening).
+  reset_mocks
+  local future_ts; future_ts=$(( $(date +%s) + 999999 ))
+  printf 'lead-a|@1|%s\n' "$future_ts" > "$CREATE_STATE"
+  if create_recently_attempted "lead-a" "@1"; then
+    fail "future timestamp must miss (fail-open), not suppress creates until wall clock catches up"
+  else
+    pass "future timestamp → miss (fail-open)"
+  fi
+}
+
+test_fly825_dedup_seconds_env_validation() {
+  echo "Test: _create_dedup_seconds falls back to 30 on bad env, no crash under set -e"
+  reset_mocks
+  local v
+  v=$(FLYWHEEL_CMUX_CREATE_DEDUP_SECONDS="" _create_dedup_seconds)
+  [[ "$v" == "30" ]] && pass "empty env → default 30" || fail "empty env: expected 30, got $v"
+  v=$(FLYWHEEL_CMUX_CREATE_DEDUP_SECONDS="abc" _create_dedup_seconds)
+  [[ "$v" == "30" ]] && pass "non-numeric env → default 30" || fail "non-numeric env: expected 30, got $v"
+  v=$(FLYWHEEL_CMUX_CREATE_DEDUP_SECONDS="999999999999999999" _create_dedup_seconds)
+  [[ "$v" == "30" ]] && pass "overlong digit-only env → default 30 (length-cap, no 64-bit overflow)" || fail "overlong env: expected 30, got $v"
+  v=$(FLYWHEEL_CMUX_CREATE_DEDUP_SECONDS="45" _create_dedup_seconds)
+  [[ "$v" == "45" ]] && pass "valid numeric env is honored" || fail "valid env: expected 45, got $v"
+  local rc=0
+  ( set -euo pipefail; FLYWHEEL_CMUX_CREATE_DEDUP_SECONDS="abc" create_recently_attempted "lead-a" "@1" ) >/dev/null 2>&1 || rc=$?
+  [[ "$rc" -eq 1 ]] && pass "bad TTL env inside create_recently_attempted → miss, no watcher crash" || fail "expected rc=1, got rc=$rc"
+}
+
+test_fly825_gc_create_state_file() {
+  echo "Test: gc_create_state_file drops expired/corrupt/future rows, keeps valid ones"
+  reset_mocks
+  local now; now=$(date +%s)
+  local fresh=$((now - 1))
+  local expired=$((now - 999))
+  local future=$((now + 999999))
+  printf 'lead-a|@1|%s\nlead-b|@2|%s\nlead-c|@3|%s\nlead-d|@4|NOTNUM\n' "$fresh" "$expired" "$future" > "$CREATE_STATE"
+  gc_create_state_file
+  if grep -q "^lead-a|@1|" "$CREATE_STATE"; then pass "gc keeps fresh row"; else fail "fresh row dropped: [$(cat "$CREATE_STATE")]"; fi
+  if grep -q "^lead-b|@2|" "$CREATE_STATE"; then fail "gc must drop expired row"; else pass "gc drops expired row"; fi
+  if grep -q "^lead-c|@3|" "$CREATE_STATE"; then fail "gc must drop future (corrupt) row"; else pass "gc drops future/corrupt-clock row"; fi
+  if grep -q "^lead-d|@4|" "$CREATE_STATE"; then fail "gc must drop non-numeric row"; else pass "gc drops non-numeric row"; fi
+}
+
+test_fly825_wait_for_watcher_exit_no_process() {
+  echo "Test: wait_for_watcher_exit returns immediately when no process matches"
+  reset_mocks
+  MOCK_PGREP_PIDS=""
+  wait_for_watcher_exit
+  if [[ "$MOCK_SLEEPS" -eq 0 && -z "$MOCK_KILL_CALLS" ]]; then
+    pass "no matching process → immediate return, no sleep, no kill"
+  else
+    fail "expected 0 sleeps and no kill calls; sleeps=$MOCK_SLEEPS kills=[$MOCK_KILL_CALLS]"
+  fi
+}
+
+test_fly825_wait_for_watcher_exit_term_then_kill() {
+  echo "Test: wait_for_watcher_exit waits ~5s (10x0.5s) then TERM, then KILL if still alive"
+  reset_mocks
+  MOCK_PGREP_PIDS="4242"
+  MOCK_KILL_SURVIVES="4242"   # ignores TERM — proves the KILL escalation path
+  MOCK_KILL_INTERCEPT="1"     # "4242" is a fake pgrep PID, not a real process — opt in to recording
+  wait_for_watcher_exit
+  local half_second_sleeps; half_second_sleeps=$(echo "$MOCK_SLEEP_ARGS" | tr ' ' '\n' | grep -cx "0.5")
+  if [[ "$half_second_sleeps" -eq 10 ]]; then
+    pass "waits exactly 10 x 0.5s (true 5s) before escalating — not the 2.5s arithmetic bug Codex R1 caught"
+  else
+    fail "expected 10 half-second sleeps, got $half_second_sleeps (args=[$MOCK_SLEEP_ARGS])"
+  fi
+  if echo "$MOCK_KILL_CALLS" | grep -qx "TERM 4242"; then pass "TERM sent to the surviving pid"; else fail "no TERM sent; calls=[$MOCK_KILL_CALLS]"; fi
+  if echo "$MOCK_KILL_CALLS" | grep -qx "KILL 4242"; then pass "KILL sent after pid survived TERM"; else fail "no KILL escalation; calls=[$MOCK_KILL_CALLS]"; fi
+}
+
+test_fly825_wait_for_watcher_exit_multiple_pids_logged_individually() {
+  echo "Test: wait_for_watcher_exit kills multiple PIDs individually (not a blanket pkill)"
+  reset_mocks
+  MOCK_PGREP_PIDS="111 222"
+  MOCK_KILL_SURVIVES=""   # both die cleanly on TERM
+  MOCK_KILL_INTERCEPT="1" # fake pgrep PIDs, not real processes — opt in to recording
+  wait_for_watcher_exit
+  if echo "$MOCK_KILL_CALLS" | grep -qx "TERM 111" && echo "$MOCK_KILL_CALLS" | grep -qx "TERM 222"; then
+    pass "both PIDs get their own TERM call, logged individually"
+  else
+    fail "expected per-PID TERM; calls=[$MOCK_KILL_CALLS]"
+  fi
+  if echo "$MOCK_KILL_CALLS" | grep -qx "KILL 111" || echo "$MOCK_KILL_CALLS" | grep -qx "KILL 222"; then
+    fail "must not escalate to KILL for PIDs that already died on TERM"
+  else
+    pass "no unnecessary KILL for PIDs that died cleanly on TERM"
+  fi
+}
+
+echo ""
+echo "═══ FLY-825: create-vs-create dedup + orphan-watcher wait helper ═══"
+test_fly825_create_dedup_same_window_id
+test_fly825_no_dedup_different_window_id
+test_fly825_ready_gate_failure_no_mark
+test_fly825_create_recently_attempted_unit
+test_fly825_dedup_seconds_env_validation
+test_fly825_gc_create_state_file
+test_fly825_wait_for_watcher_exit_no_process
+test_fly825_wait_for_watcher_exit_term_then_kill
+test_fly825_wait_for_watcher_exit_multiple_pids_logged_individually
 
 set +e   # restore lenient mode for the summary
 
