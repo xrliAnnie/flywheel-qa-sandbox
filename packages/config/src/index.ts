@@ -8,6 +8,27 @@ export {
 	GATE_TIMEOUT_BUFFER_MS,
 	MIN_GATE_TIMEOUT_MS,
 } from "./constants.js";
+export type { DecisionMode, DecisionModeEnv } from "./decision-mode.js";
+export { resolveDecisionMode } from "./decision-mode.js";
+export type {
+	FeatureFlagSpec,
+	FlagCategory,
+	FlagEffectiveByProject,
+	FlagPolarity,
+	FlagReadSite,
+	FlagResolveCtx,
+	FlagScope,
+	FlagSource,
+	FlagToggleability,
+	FlagValueKind,
+	FlagView,
+	ReadTiming,
+} from "./feature-flags/index.js";
+export {
+	FEATURE_FLAGS,
+	resolveAllFlags,
+	resolveFlag,
+} from "./feature-flags/index.js";
 // FLY-728: per-issue model routing — tier vocabulary (dispatch whitelist +
 // tier→model default + F/O/S/H short code).
 export type { ModelTier, ModelTierSpec } from "./model-tiers.js";
@@ -47,6 +68,19 @@ export {
 	DEFAULT_PROOFSHOT_PATH_ALLOWLIST,
 	DEFAULT_PROOFSHOT_VISION_TOKEN_BUDGET,
 } from "./proofshot-defaults.js";
+// FLY-709 P4.3/P4.4: per-project runner-default / cron-model config writer.
+export type {
+	ApplyResult,
+	CronModelChange,
+	RunnerDefaultsChange,
+} from "./runner-config-writer.js";
+export {
+	applyCronModel,
+	applyRunnerDefaults,
+	configContentSha,
+	RunnerConfigStaleError,
+	withConfigFileLock,
+} from "./runner-config-writer.js";
 export type {
 	RunnerLabelSelection,
 	RunnerVendorType,
@@ -98,6 +132,7 @@ export {
 	EXECUTOR_BACKENDS,
 	FOUNDER_UX_GATE_DEFAULT_MODE,
 	FOUNDER_UX_GATE_MODES,
+	ROLE_EFFORT_LEVELS,
 	ROLE_NAMES,
 	SUPPORTED_MILESTONE_KINDS_V1,
 	XIAOHONGSHU_CADENCES,

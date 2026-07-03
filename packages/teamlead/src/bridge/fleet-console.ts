@@ -37,6 +37,8 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { EXECUTOR_BACKENDS, type FlagView, MODEL_TIERS } from "flywheel-config";
+import { EFFORT_LEVELS } from "../lead-effort.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { CanonicalRequest } from "./fleet-admin.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
@@ -45,6 +47,10 @@ import {
 	buildConsoleSnapshot,
 	type ConsoleLeadOnline,
 	type ConsoleSnapshot,
+	type CronModelView,
+	type PerIssueModelProvider,
+	type ProjectRunnerDefaultView,
+	type RunnerCapabilities,
 } from "./fleet-console-model.js";
 import type { FleetPresentation, FleetSnapshot } from "./fleet-data.js";
 import {
@@ -81,7 +87,43 @@ export interface FleetConsoleOptions {
 	pidAlive?: (pid: number) => boolean;
 	/** Injectable batch recovery (defaults to spawning `recover --batch`). */
 	recoverBatch?: (batchId: string) => void;
+	/**
+	 * FLY-709: resolved feature-flag views (from flywheel-config resolveAllFlags,
+	 * ctx = process.env + per-project config). Optional — omitted → no flags section.
+	 */
+	featureFlags?: () => FlagView[];
+	/** FLY-728 seam (read-only): per-issue model rows; omitted → no section. */
+	perIssueModels?: PerIssueModelProvider;
+	/**
+	 * FLY-709 ② (b): per-project runner default model (read-only), from
+	 * `roles.runner` in each project's config.yaml. Optional — omitted → no section.
+	 */
+	projectRunnerDefaults?: () => ProjectRunnerDefaultView[];
+	/** FLY-709 P4.4: cron recurring-issue model rows; omitted → no section. */
+	cronModels?: () => CronModelView[];
+	/**
+	 * FLY-709 P4 (Codex R1 #6): stat-and-reload-on-change of the per-project
+	 * config cache, awaited by the snapshot routes so a runner-config CLI write
+	 * is visible without a Bridge restart.
+	 */
+	refreshProjectConfigs?: () => Promise<void>;
+	/** FLY-709 P4.2: flywheel-comm dist path for the runner/cron copy commands. */
+	commCliPath?: string;
 	logger?: (msg: string) => void;
+}
+
+/**
+ * FLY-709 P4.3 — dropdown options for the per-project runner-default rows.
+ * Backends = the full executor set (this is the RUNNER layer, where
+ * Antigravity/Kimi genuinely exist); models = the FLY-728 canonical tier ids;
+ * efforts = the Claude CLI levels (writer enforces claude-tmux-only).
+ */
+export function runnerCapabilities(): RunnerCapabilities {
+	return {
+		backends: EXECUTOR_BACKENDS,
+		models: Object.values(MODEL_TIERS).map((t) => t.id),
+		efforts: EFFORT_LEVELS,
+	};
 }
 
 /** Map the fleet presentation verdict to the console's online dot state. */
@@ -129,14 +171,34 @@ export class FleetConsole {
 
 	// ── Read model (§2.4) ──────────────────────────────────────────────────
 
+	/**
+	 * FLY-709 P4: mtime-refresh the per-project config cache (delegates to the
+	 * wired provider). Awaited by the snapshot routes before buildSnapshot().
+	 */
+	async refreshProjectConfigs(): Promise<void> {
+		await this.o.refreshProjectConfigs?.();
+	}
+
 	/** Secret-free console snapshot: every configured Lead + capabilities. */
 	buildSnapshot(): ConsoleSnapshot {
 		const projects = this.o.liveProjects();
 		const byName = new Map(projects.map((p) => [p.projectName, p]));
-		const snap = buildConsoleSnapshot(projects, (projectName) => {
-			const proj = byName.get(projectName);
-			return proj ? this.o.legacyBackendOf(proj) : undefined;
-		});
+		const snap = buildConsoleSnapshot(
+			projects,
+			(projectName) => {
+				const proj = byName.get(projectName);
+				return proj ? this.o.legacyBackendOf(proj) : undefined;
+			},
+			{
+				featureFlags: this.o.featureFlags?.(),
+				perIssueModels: this.o.perIssueModels?.list(),
+				projectRunnerDefaults: this.o.projectRunnerDefaults?.(),
+				cronModels: this.o.cronModels?.(),
+				runnerCapabilities: runnerCapabilities(),
+				fleetScriptPath: this.o.fleetScriptPath,
+				commCliPath: this.o.commCliPath,
+			},
+		);
 		// Enrich the online dot from the live fleet evidence (presentation by key);
 		// null/stale evidence → "unknown" (never a stale confirmed dot).
 		const evidence = this.o.fleetEvidence?.() ?? null;

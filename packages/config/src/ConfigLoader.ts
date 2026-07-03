@@ -1,6 +1,7 @@
 import * as path from "node:path";
 import { parse } from "yaml";
 import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
+import { normalizeDispatchModel } from "./model-tiers.js";
 import type { CheckpointConfig, FlywheelConfig, RoleEffort } from "./types.js";
 import {
 	EXECUTOR_BACKENDS,
@@ -526,6 +527,18 @@ export class ConfigLoader {
 					) {
 						throw new Error(
 							`${where}.cadence must be one of ${XIAOHONGSHU_CADENCES.join(", ")}, got "${col.cadence}"`,
+						);
+					}
+					// FLY-709: optional per-collection runner model — must be a
+					// recognized FLY-728 dispatch tier (id or alias). A typo here would
+					// otherwise silently spawn the wrong model every day.
+					if (
+						col.model != null &&
+						(typeof col.model !== "string" ||
+							normalizeDispatchModel(col.model) === null)
+					) {
+						throw new Error(
+							`${where}.model must be a recognized model tier id or alias (normalizeDispatchModel), got "${col.model}"`,
 						);
 					}
 					if (col.max_fetch != null) {

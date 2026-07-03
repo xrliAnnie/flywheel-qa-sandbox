@@ -352,3 +352,61 @@ describe("ConfigLoader — xiaohongshu_learning (FLY-222)", () => {
 		});
 	});
 });
+
+// FLY-709 P4.4: optional per-collection runner model (validated against the
+// FLY-728 dispatch whitelist — a typo must fail at the config boundary, never
+// silently spawn the account-default model every day).
+describe("ConfigLoader — collections[].model (FLY-709)", () => {
+	it("accepts a bare alias and keeps it verbatim", async () => {
+		const cfg = await load(
+			withXhs(`  enabled: true
+  collections:
+${VALID_COLLECTION}
+      model: sonnet`),
+		);
+		expect(cfg.xiaohongshu_learning?.collections?.[0]?.model).toBe("sonnet");
+	});
+
+	it("accepts a canonical tier id", async () => {
+		const cfg = await load(
+			withXhs(`  enabled: true
+  collections:
+${VALID_COLLECTION}
+      model: "claude-haiku-4-5-20251001"`),
+		);
+		expect(cfg.xiaohongshu_learning?.collections?.[0]?.model).toBe(
+			"claude-haiku-4-5-20251001",
+		);
+	});
+
+	it("rejects a model outside the dispatch whitelist", async () => {
+		await expect(
+			load(
+				withXhs(`  enabled: true
+  collections:
+${VALID_COLLECTION}
+      model: gpt-5`),
+			),
+		).rejects.toThrow(/model must be a recognized model tier/);
+	});
+
+	it("rejects a non-string model", async () => {
+		await expect(
+			load(
+				withXhs(`  enabled: true
+  collections:
+${VALID_COLLECTION}
+      model: 5`),
+			),
+		).rejects.toThrow(/model must be a recognized model tier/);
+	});
+
+	it("absent model stays undefined (byte-compat)", async () => {
+		const cfg = await load(
+			withXhs(`  enabled: true
+  collections:
+${VALID_COLLECTION}`),
+		);
+		expect(cfg.xiaohongshu_learning?.collections?.[0]?.model).toBeUndefined();
+	});
+});

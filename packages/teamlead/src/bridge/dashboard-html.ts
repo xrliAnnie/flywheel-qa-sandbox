@@ -8,14 +8,16 @@ export function getDashboardHtml(): string {
 <title>Flywheel Operations Dashboard</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
+/* FLY-709: Apple-light palette (retired the old GitHub-dark theme — Annie wants
+   the light Apple-card style everywhere; this fallback must never render dark). */
 :root{
-  --bg:#0d1117;--surface:#161b22;--border:#30363d;
-  --text:#e6edf3;--text-muted:#8b949e;
-  --green:#3fb950;--yellow:#d29922;--red:#f85149;--blue:#58a6ff;
-  --card-bg:#1c2128;
+  --bg:#f5f5f7;--surface:#fff;--border:#e5e5ea;
+  --text:#1d1d1f;--text-muted:#86868b;
+  --green:#34c759;--yellow:#ff9500;--red:#ff3b30;--blue:#007aff;
+  --card-bg:#fff;
 }
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
-  background:var(--bg);color:var(--text);line-height:1.5;padding:1.5rem}
+  background:var(--bg);color:var(--text);line-height:1.5;padding:1.5rem;max-width:1100px;margin:0 auto}
 h1{font-size:1.25rem;font-weight:600;display:flex;align-items:center;gap:.75rem}
 .live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;animation:pulse 2s infinite}
 .live-dot.offline{background:var(--red);animation:none}
@@ -24,7 +26,7 @@ h1{font-size:1.25rem;font-weight:600;display:flex;align-items:center;gap:.75rem}
 header{display:flex;justify-content:space-between;align-items:center;padding-bottom:1rem;border-bottom:1px solid var(--border);margin-bottom:1.5rem}
 
 .metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:.75rem;margin-bottom:1.5rem}
-.metric-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:1rem;text-align:center}
+.metric-card{background:var(--card-bg);border:1px solid var(--border);border-radius:12px;padding:1rem;text-align:center;box-shadow:0 1px 3px rgba(0,0,0,.06)}
 .metric-card .label{font-size:.75rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.05em}
 .metric-card .value{font-size:2rem;font-weight:700;font-variant-numeric:tabular-nums;margin-top:.25rem}
 .metric-card .value.green{color:var(--green)}
@@ -38,7 +40,7 @@ table{width:100%;border-collapse:collapse;font-size:.8125rem}
 th{text-align:left;padding:.5rem .75rem;color:var(--text-muted);font-weight:500;border-bottom:1px solid var(--border);white-space:nowrap}
 td{padding:.5rem .75rem;border-bottom:1px solid var(--border);font-variant-numeric:tabular-nums}
 tr:last-child td{border-bottom:none}
-tbody tr:hover{background:rgba(255,255,255,.03)}
+tbody tr:hover{background:rgba(0,0,0,.03)}
 
 .badge{display:inline-flex;align-items:center;gap:4px;font-size:.75rem;padding:2px 8px;border-radius:12px;white-space:nowrap}
 .badge-running{background:rgba(63,185,80,.15);color:var(--green)}
