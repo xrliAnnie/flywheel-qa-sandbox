@@ -131,6 +131,13 @@ export interface PostShipDeps {
 	 * Absent → no worktree cleanup (byte-compat for callers that don't wire it).
 	 */
 	removeCleanWorktree?: WorktreeCleanupFn;
+	/**
+	 * FLY-799: optional auto-Linear-Done closure. Because this whole orchestrator
+	 * runs ONLY on confirmed merge evidence (isPostApproveShipComplete), calling
+	 * it here is the structural ship-success gate — a shipped issue flips to Done.
+	 * Best-effort (never throws). Absent → no Linear transition (byte-compat).
+	 */
+	markIssueDone?: (issueId: string, issueIdentifier?: string) => Promise<void>;
 }
 
 /**
@@ -166,6 +173,21 @@ export async function runPostShipFinalization(
 		payload: { claimedAt: new Date().toISOString() },
 	});
 	if (!claimed) return;
+
+	// ── (0.5) FLY-799 auto-Linear-Done — the ship is confirmed merged (the
+	// predicate that gates this whole orchestrator required landingStatus=merged),
+	// so flip the issue to Done. Best-effort: the closure never throws, and a
+	// Linear failure must not block the tmux/thread teardown below. ──
+	if (deps.markIssueDone) {
+		await deps
+			.markIssueDone(opts.issueId, opts.issueIdentifier)
+			.catch((err) => {
+				console.error(
+					`[post-ship] markIssueDone failed:`,
+					(err as Error).message,
+				);
+			});
+	}
 
 	// ── (1) tmux cleanup — idempotent; preserved contract { tmuxClosed, errors } ──
 	const cleanup = await postMergeTmuxCleanup(
