@@ -5,38 +5,38 @@ import {
 } from "../runner-mcp-profile.js";
 
 describe("resolveRunnerMcpProfile (FLY-751)", () => {
-	// context7 is deliberately NOT in the default list — founder ruling
-	// (runners keep library-doc lookup), FLY-751 review 2026-07-01.
-	it("default: disables the built-in three plugins and chrome (no context7)", () => {
+	// FLY-812 (founder review 2026-07-03): default slim narrowed to serena ONLY.
+	// discord + playwright are kept fleet-wide (runner / geoforge3d testing need
+	// them); chrome defaults ON; context7 stays excluded (library-doc lookup).
+	it("default: disables serena only, keeps discord/playwright/chrome (no context7)", () => {
 		const profile = resolveRunnerMcpProfile({ env: {} });
 		expect(profile).toEqual({
-			disabledPlugins: [
-				"discord@claude-plugins-official",
-				"playwright@claude-plugins-official",
-				"serena@claude-plugins-official",
-			],
-			disableChrome: true,
+			disabledPlugins: ["serena@claude-plugins-official"],
+			disableChrome: false,
 		});
+		expect(profile?.disabledPlugins).not.toContain(
+			"discord@claude-plugins-official",
+		);
+		expect(profile?.disabledPlugins).not.toContain(
+			"playwright@claude-plugins-official",
+		);
 		expect(profile?.disabledPlugins).not.toContain(
 			"context7@claude-plugins-official",
 		);
 	});
 
-	it("QA session keeps the browser: playwright removed from list, chrome kept", () => {
+	it("QA session: same serena-only slim, chrome kept", () => {
 		const profile = resolveRunnerMcpProfile({ sessionRole: "qa", env: {} });
 		expect(profile).toEqual({
-			disabledPlugins: [
-				"discord@claude-plugins-official",
-				"serena@claude-plugins-official",
-			],
+			disabledPlugins: ["serena@claude-plugins-official"],
 			disableChrome: false,
 		});
 	});
 
-	it("non-qa sessionRole values (e.g. main) get the full default slim", () => {
+	it("non-qa sessionRole values (e.g. main) get the plugin slim, chrome ON", () => {
 		const profile = resolveRunnerMcpProfile({ sessionRole: "main", env: {} });
 		expect(profile?.disabledPlugins).toEqual(DEFAULT_RUNNER_DISABLED_PLUGINS);
-		expect(profile?.disableChrome).toBe(true);
+		expect(profile?.disableChrome).toBe(false);
 	});
 
 	it("full-mcp label opts the runner out entirely (case-insensitive)", () => {
@@ -72,15 +72,17 @@ describe("resolveRunnerMcpProfile (FLY-751)", () => {
 				"discord@claude-plugins-official",
 				"serena@claude-plugins-official",
 			],
-			disableChrome: true,
+			disableChrome: false,
 		});
 	});
 
-	it("empty env list + non-QA still yields chrome-only slimming", () => {
+	// FLY-812: with chrome default-ON, an empty plugin list + non-QA + no
+	// `no-chrome` label leaves nothing to slim → degenerate null (byte-compat).
+	it("empty env list + non-QA + no opt-out → null (nothing to slim)", () => {
 		const profile = resolveRunnerMcpProfile({
 			env: { FLYWHEEL_RUNNER_DISABLED_PLUGINS: "" },
 		});
-		expect(profile).toEqual({ disabledPlugins: [], disableChrome: true });
+		expect(profile).toBeNull();
 	});
 
 	it("empty env list + QA degenerates to null (nothing to slim)", () => {
@@ -103,5 +105,58 @@ describe("resolveRunnerMcpProfile (FLY-751)", () => {
 			disabledPlugins: ["serena@claude-plugins-official"],
 			disableChrome: false,
 		});
+	});
+
+	// ─── FLY-812: `no-chrome` label = explicit chrome opt-out (default is ON) ───
+
+	it("FLY-812: no-chrome label forces chrome off for a non-QA runner (plugins still slimmed)", () => {
+		const profile = resolveRunnerMcpProfile({
+			issueLabels: ["no-chrome"],
+			env: {},
+		});
+		expect(profile).toEqual({
+			disabledPlugins: DEFAULT_RUNNER_DISABLED_PLUGINS,
+			disableChrome: true,
+		});
+	});
+
+	it("FLY-812: no-chrome label is case-insensitive", () => {
+		const profile = resolveRunnerMcpProfile({
+			issueLabels: ["bug", "No-Chrome"],
+			env: {},
+		});
+		expect(profile?.disableChrome).toBe(true);
+	});
+
+	it("FLY-812: no-chrome label forces chrome off even for a QA session", () => {
+		const profile = resolveRunnerMcpProfile({
+			sessionRole: "qa",
+			issueLabels: ["no-chrome"],
+			env: {},
+		});
+		expect(profile).toEqual({
+			disabledPlugins: ["serena@claude-plugins-official"],
+			disableChrome: true,
+		});
+	});
+
+	it("FLY-812: full-mcp takes precedence over no-chrome (both present → null)", () => {
+		expect(
+			resolveRunnerMcpProfile({
+				issueLabels: ["no-chrome", "full-mcp"],
+				env: {},
+			}),
+		).toBeNull();
+	});
+
+	// Codex R1 #2: the explicit opt-out must survive the degenerate guard — an
+	// empty plugin override leaves disabledPlugins empty, but disableChrome:true
+	// means there IS something to do, so it must NOT collapse to null.
+	it("FLY-812: no-chrome + empty plugin override → {[], disableChrome:true} (not null)", () => {
+		const profile = resolveRunnerMcpProfile({
+			issueLabels: ["no-chrome"],
+			env: { FLYWHEEL_RUNNER_DISABLED_PLUGINS: "" },
+		});
+		expect(profile).toEqual({ disabledPlugins: [], disableChrome: true });
 	});
 });

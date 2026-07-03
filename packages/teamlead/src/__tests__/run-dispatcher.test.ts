@@ -228,13 +228,12 @@ describe("FLY-751: runnerMcpProfile wiring", () => {
 		vi.unstubAllEnvs();
 	});
 
+	// FLY-812 (founder review 2026-07-03): chrome defaults ON and the default
+	// slim is serena ONLY (discord + playwright kept fleet-wide for
+	// runner/geoforge3d testing). disableChrome:false unless the runner opts out.
 	const DEFAULT_PROFILE = {
-		disabledPlugins: [
-			"discord@claude-plugins-official",
-			"playwright@claude-plugins-official",
-			"serena@claude-plugins-official",
-		],
-		disableChrome: true,
+		disabledPlugins: ["serena@claude-plugins-official"],
+		disableChrome: false,
 	};
 
 	function startWith(req: Record<string, unknown>) {
@@ -265,22 +264,25 @@ describe("FLY-751: runnerMcpProfile wiring", () => {
 		return run.mock.calls[0][2];
 	}
 
-	it("start(): default claude-tmux run gets the full slim profile", async () => {
+	it("start(): default claude-tmux run gets the plugin slim, chrome on", async () => {
 		const { runtime, start } = startWith({});
 		await start();
 		expect(ctxOf(runtime).runnerMcpProfile).toEqual(DEFAULT_PROFILE);
 	});
 
-	it("start(): QA run keeps the browser (playwright out, chrome on)", async () => {
-		const { runtime, start } = startWith({ sessionRole: "qa" });
+	it("start(): no-chrome label flows through → serena slimmed + chrome off", async () => {
+		const { runtime, start } = startWith({ issueLabels: ["no-chrome"] });
 		await start();
 		expect(ctxOf(runtime).runnerMcpProfile).toEqual({
-			disabledPlugins: [
-				"discord@claude-plugins-official",
-				"serena@claude-plugins-official",
-			],
-			disableChrome: false,
+			disabledPlugins: ["serena@claude-plugins-official"],
+			disableChrome: true,
 		});
+	});
+
+	it("start(): QA run gets the serena-only slim, chrome on", async () => {
+		const { runtime, start } = startWith({ sessionRole: "qa" });
+		await start();
+		expect(ctxOf(runtime).runnerMcpProfile).toEqual(DEFAULT_PROFILE);
 	});
 
 	it("start(): full-mcp label opts out (profile null)", async () => {
@@ -304,7 +306,7 @@ describe("FLY-751: runnerMcpProfile wiring", () => {
 		expect("runnerMcpProfile" in ctx).toBe(false);
 	});
 
-	it("retry: profile recomputed (QA retry keeps its browser exemption)", async () => {
+	it("retry: profile recomputed (QA retry gets the serena-only slim)", async () => {
 		const [name, runtime] = makeRuntime("TestProject");
 		const runtimes = new Map([[name, runtime]]);
 		const dispatcher = new RetryDispatcher(runtimes, []);
@@ -315,13 +317,7 @@ describe("FLY-751: runnerMcpProfile wiring", () => {
 			runAttempt: 1,
 			sessionRole: "qa",
 		});
-		expect(ctxOf(runtime).runnerMcpProfile).toEqual({
-			disabledPlugins: [
-				"discord@claude-plugins-official",
-				"serena@claude-plugins-official",
-			],
-			disableChrome: false,
-		});
+		expect(ctxOf(runtime).runnerMcpProfile).toEqual(DEFAULT_PROFILE);
 	});
 
 	it("retry: default run gets the full slim profile", async () => {
