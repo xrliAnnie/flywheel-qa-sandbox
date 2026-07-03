@@ -143,9 +143,13 @@ JSON verdict」封装 → 新 seam `SubscriptionClaudeClassifierRunner`,硬合�
 上限 + 失败熔断;timeout/nonzero/login/rate-limit/malformed JSON 全部 → `unclear` + WAKE-only**
 (绝不 fail-open);输出过 JSON schema 校验 + 叠加 `evidenceMessageId===expectedMessageId`
 (+image attachment ids/hash);审计记 `claude --version`/promptHash/policyVersion/latency/exit/stderr
-摘要。**ImageSource 前置:先证明本机订阅 CLI 支持多模态附件输入;不支持/不可稳定测 → v1
-fail-closed/feature-gate,绝不默默退化成文字推断**。绝大多数批准是 ✅ 或 Tier-2(零 AI)→ Tier-3
-极少触发。
+摘要。**ImageSource 多模态 = 实测已支持(2026-07-02,Tadashi 要求先测不假设)**:`claude -p
+'What text... @/tmp/fly799-ship.png' --model claude-haiku-4-5-20251001` 在本机**订阅正确读出图内
+文字**(~7s,无 API key)→ **ImageSource 纳入 v1、不 feature-gate-off**。机制:founder 的 Discord
+图片附件**下载到受控 temp 路径**(image MIME allowlist + size cap)→ sha256 → prompt 里
+`@<temp-path>` 引用喂**同一 runner**(`--output-format json`)→ 判 → 清 temp。**安全**:`@path`
+只引用我们下载的受控路径,founder 文字作数据不作路径(防 `@/etc/passwd` 注入);下载失败/非图片/
+超限 → unclear。绝大多数批准是 ✅ 或 Tier-2(零 AI)→ Tier-3(文字/图片)极少触发。
 - **模型 + 机制(Annie/Tadashi 拍)**:Tier-3 = **on-demand headless `claude -p`(不是常驻进程,
   只在罕见模糊文字时起一个 headless claude 判一句立刻退)**,model = **Haiku
   `claude-haiku-4-5-20251001`**(model-tiers trivial 档、订阅可用),**订阅 auth、非付费 API**。
