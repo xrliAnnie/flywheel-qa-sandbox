@@ -45,14 +45,15 @@ export interface WriteGateResponseArgs {
 	expectedCurrentReviewQuestionId?: string;
 	/**
 	 * Best-effort post-write side effects (flip awaiting_review→approved_to_ship +
-	 * wake). Returns an observable outcome so the caller can decide retrySafe.
+	 * wake). May return an `{ ok: boolean }` outcome (sync or via a Promise) so the
+	 * caller can decide retrySafe; a void / fire-and-forget hook is treated as ok.
 	 */
 	onResponseWritten?: (info: {
 		executionId: string;
 		questionId: string;
 		actor: string;
 		answer: string;
-	}) => Promise<{ ok: boolean }> | { ok: boolean } | void;
+	}) => unknown;
 }
 
 export interface WriteGateResponseResult {
@@ -72,14 +73,20 @@ function isApproval(answer: string): boolean {
 async function runHook(args: WriteGateResponseArgs): Promise<boolean> {
 	if (!args.onResponseWritten) return true;
 	try {
-		const out = await args.onResponseWritten({
-			executionId: args.executionId,
-			questionId: args.questionId,
-			actor: args.actor,
-			answer: args.answer,
-		});
-		// void / undefined → treat as ok (fire-and-forget hooks).
-		return out == null ? true : out.ok !== false;
+		const out = await Promise.resolve(
+			args.onResponseWritten({
+				executionId: args.executionId,
+				questionId: args.questionId,
+				actor: args.actor,
+				answer: args.answer,
+			}),
+		);
+		// An { ok:false } outcome means the hook did not reach a safe state; a void
+		// / fire-and-forget hook (or { ok:true }) is treated as ok.
+		if (out && typeof out === "object" && (out as { ok?: unknown }).ok === false) {
+			return false;
+		}
+		return true;
 	} catch {
 		return false;
 	}
