@@ -94,6 +94,7 @@ export interface FounderReplyDeliverDeps {
 		msg: { id: string; content?: string; authorId?: string };
 		shipGates: PendingQuestionForThread[];
 		ctx: FounderReplyThreadCtx;
+		db: CommDB;
 	}) => Promise<{ handled: string[]; retrySafe: boolean } | null>;
 }
 
@@ -265,6 +266,7 @@ async function processFounderMessage(
 			msg: { id: msg.id, content: msg.content, authorId: msg.author?.id },
 			shipGates: ship,
 			ctx,
+			db,
 		});
 		if (res) {
 			for (const id of res.handled) handled.add(id);
