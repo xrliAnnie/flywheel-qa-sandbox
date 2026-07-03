@@ -40,11 +40,23 @@ Issue: FLY-799 (https://linear.app/geoforge3d/issue/FLY-799/infrafounder-facingp
 - **binding 写**(`358978ae`):`maybeEmitFounderThreadFallback` 在 posted approve_to_ship ping 后 `writeGateMessageBinding`(写前核 awaiting_review + review_question_id===qid + pr_head)。write-once。
 - **✅ reaction 端到端 wire**(`358978ae`+`48b653a3`):`founder-reaction-approval-handler.ts`(per-gate,读 binding→evaluateReactionSource→共享写)+ `founder-reaction-approval-factory.ts`(同文字 gating,reactionFetcherImpl 是 per-call arg=per-lead botToken)+ gate-poller `founderReactionApprovalPass`(枚举 pending approve_to_ship gate,建 per-lead Discord reactions fetcher,per-qid 15s 节流,piggyback founder-reply sub-cadence,自限=flip 后掉出 awaiting_review filter)+ plugin `makeFounderReactionApprovalCallback`(readBindingImpl=readCurrentGateMessageBinding)。**14 新测 + 18 gate-poller founder 测 + full teamlead build 全绿。**
 
-### 🔜 未做
-2. ImageSource 接线(default-off flag `FLYWHEEL_FOUNDER_IMAGE_APPROVAL`,download+hash+@path;handler 加 image 分支)。
-3. gate-response-router 改用共享 `writeGateResponseAndRunPostWrite`(Codex dedup,可选/小心)。
-4. **Part C fanout cleanupNode**:对每 RelatedNode 调 `closeRunner{finalizeDone,archive}`(QA 用 `closeQaRunner`)+ `removeCleanWorktree` + 抽 `LinearIssueFinalizer.markDone`(plugin.ts L1882-1938)+ per-node marker/reconcile;接 `post-ship-finalization.runPostShipFinalization` 尾。**core=issue 标题「自动收尾」**。
-5. **Part B re-wake reconciler**(`stale-approved-ship-reconciler.ts`):默认-ON,扫 stale approved_to_ship→re-verify(复用 verifyApproval)→只 re-wake 活 runner,真死→alert+待 795,不读 795 progress.md。
+### ✅ 已 landed（续接第二轮 — 全部 plumbing 完成）
+- **Part B re-wake reconciler**(`67a2eea3`):`stale-approved-ship-reconciler.ts`(isRewakeCandidate 纯核 + reconcileStaleApprovedShip 注入式)+ gate-poller `staleApprovedShipReconcilePass`(默认-ON `FLYWHEEL_STALE_SHIP_REWAKE`,tmux 探活→活=re-wake approval / 死=alert 一次 defer 795,per-session backoff + 跨-pass dead dedup)。11 测。
+- **Part C 审计结论(Tadashi 拍)**:issue 说的 fan-out(close runner/QA/worktree/thread/cmux)现有机制**已全覆盖** —— auto-qa-coordinator 在 QA-pass 当刻 `closeQaRunner`(auto-qa-coordinator.ts:644),`runPostShipFinalization` 在 ship 做 feature tmux+worktree+thread archive。→ **(a) 跳过冗余 ship-时 QA fan-out**;`collectRelatedNodes`/`isQaSafeToFinalize` 保留作防御模块不接主 finalization。
+- **auto-Linear-Done-on-ship**(`de1dc387`,Part C 真缺口):`linear-issue-finalizer.ts`(`markLinearIssueDone` 解 completed-type『Done』state + name fallback,best-effort never throw;`makeLinearDoneFinalizer` 默认-ON `FLYWHEEL_AUTO_LINEAR_DONE`)→ `runPostShipFinalization` optional `markIssueDone` dep(结构性 ship-success gate=只在 merged 证据跑)→ 3 call site(DirectEventSink + event-route ×2)。9 测 + 68 post-ship/event-route 回归绿。
+- **ImageSource default-off scaffold**(`baa4cfff`):handler image 分支(注入式,image approve/reject 权威、unclear→落文字)+ factory `FLYWHEEL_FOUNDER_IMAGE_APPROVAL=1` opt-in(默认 OFF,per-call)+ evaluateImageImpl passthrough(v1 未接=即使 flag on 也 inert)+ msg.imageAttachments optional。16 测。**flip-on fast-follow(default-off 故 inert)= deliverer download+sha256 + 生产多模态 evaluator**。
+
+### 🔜 未做(明确 out-of-v1)
+- gate-response-router 改用共享 `writeGateResponseAndRunPostWrite`(可选 dedup,风险,skip)。
+- ImageSource flip-on(default-off fast-follow):deliverer 附件 download+hash + 生产多模态 classifier。
+
+## 全部 flag(default 值)
+- `FLYWHEEL_FOUNDER_AUTO_APPROVE`(默认 ON,`=0` kill)+ `FLYWHEEL_FOUNDER_AUTO_APPROVE_DENYLIST`(逗号分隔 project)
+- `FLYWHEEL_FOUNDER_IMAGE_APPROVAL`(默认 OFF,`=1` opt-in;v1 inert)
+- `FLYWHEEL_STALE_SHIP_REWAKE`(默认 ON,`=0` kill)
+- `FLYWHEEL_AUTO_LINEAR_DONE`(默认 ON,`=0` kill)
+
+**总计 179 FLY-799 测 across 21 files 全绿 + full teamlead build + full-repo biome lint(0 error)。**
 
 --- 旧笔记（细节保留）---
 1. **A-0b 绑定持久化(纯核 + notifier 已做)**:剩 = ① StateStore 写/读绑定方法(用 `insertEvent(bindingEventId(qid), payload=GateMessageBinding)` write-once + 读回 helper);② `gate-poller.ts` `maybeEmitFounderThreadFallback`(approve_to_ship 分支)在 notifier 返回 `gateMessageId` 后写绑定(写前核 session awaiting_review + review_question_id/pr_head 未变)。ReactionSource evaluate 时读 `selectCurrentBinding` 取 targetMessageId。
