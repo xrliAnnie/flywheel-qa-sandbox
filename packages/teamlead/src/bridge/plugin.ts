@@ -72,6 +72,7 @@ import {
 	buildRepairChain,
 	resolveFirstAvailableBotToken,
 } from "./alert-bot-chain.js";
+import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { loadQaConfigByProject } from "./auto-qa-config-source.js";
 import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { AutoQaEffects } from "./auto-qa-effects.js";
@@ -116,7 +117,10 @@ import {
 	handleStage,
 	loopbackSelfOrigin,
 } from "./fleet-routes.js";
-import { buildFounderConsentWiring } from "./founder-consent/wiring.js";
+import {
+	buildFounderConsentWiring,
+	buildGateResponsePostWriteHook,
+} from "./founder-consent/wiring.js";
 import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
@@ -3240,6 +3244,43 @@ export async function startBridge(
 	const leadPendingAlertHolder: {
 		current?: { alert: (p: AlertPayload) => Promise<AlertResult> };
 	} = {};
+	// FLY-799: founder-in-thread ship approval. When the founder replies "ship
+	// it" / ✅ in a `[FLY-XX]` thread, this callback attributes the approval to
+	// HER (canonical founder id), writes {"approved":true} to the approve_to_ship
+	// gate, and runs the SAME flip+wake as Surface B (buildGateResponsePostWriteHook
+	// — the one source of truth) so the runner self-ships. The gate-poller's
+	// founder-reply pass invokes it. Its internal gates (default-ON kill-switch,
+	// per-project denylist, resolvable canonical founder id — all read per-call)
+	// return null when off → the deliverer falls back to WAKE-only.
+	const founderShipPostWriteHook = buildGateResponsePostWriteHook({
+		store,
+		transitionOpts,
+	});
+	const founderAutoApproveDenylist = new Set(
+		(process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE_DENYLIST ?? "")
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean),
+	);
+	const founderShipApprovalCallback = makeFounderShipApprovalCallback({
+		discordOwnerUserId: config.discordOwnerUserId,
+		founderConsentUserId: config.founderConsent?.founderUserId,
+		store,
+		denylistProjects: founderAutoApproveDenylist,
+		// The db flowing through the deliverer IS a real CommDB (GateResponseDb is
+		// its structural subset), so widening it for the wake is sound at runtime.
+		onResponseWritten: (info) =>
+			founderShipPostWriteHook({
+				executionId: info.executionId,
+				questionId: info.questionId,
+				leadId: info.actor,
+				answer: info.answer,
+				db: info.db as unknown as Parameters<
+					typeof founderShipPostWriteHook
+				>[0]["db"],
+			}),
+	});
+
 	// FLY-725: per-project founder milestone-report config, read from each
 	// project's CANONICAL root (never a runner's PR worktree).
 	const founderMilestoneReportByProject =
@@ -3262,6 +3303,9 @@ export async function startBridge(
 		// from config; the founder-reply cursor persists across restarts.
 		discordBotToken: config.discordBotToken,
 		discordOwnerUserId: config.discordOwnerUserId,
+		// FLY-799: founder-in-thread ship approval (default-ON kill-switch inside
+		// the factory). Absent (fcWiring null) → deliverer stays WAKE-only.
+		tryFounderShipApproval: founderShipApprovalCallback,
 		cursorStore: founderReplyCursorPath
 			? new FileInboundCursorStore(founderReplyCursorPath)
 			: undefined,
