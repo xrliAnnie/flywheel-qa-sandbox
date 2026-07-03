@@ -23,7 +23,6 @@ export interface FounderReactionApprovalFactoryConfig {
 	discordOwnerUserId?: string;
 	founderConsentUserId?: string;
 	store: ReactionApprovalHandlerDeps["store"];
-	reactionFetcherImpl: ReactionApprovalHandlerDeps["reactionFetcherImpl"];
 	readBindingImpl: ReactionApprovalHandlerDeps["readBindingImpl"];
 	onResponseWritten?: ReactionApprovalHandlerDeps["onResponseWritten"];
 	/** Projects for which auto-approve is disabled (per-project kill). */
@@ -43,6 +42,8 @@ export interface FounderReactionApprovalCallbackArgs {
 	};
 	ctx: { issueId: string; threadId: string; projectName: string };
 	db: GateResponseDb;
+	/** Per-lead Discord reactions fetcher (bot token differs per lead). */
+	reactionFetcherImpl: ReactionApprovalHandlerDeps["reactionFetcherImpl"];
 }
 
 /** Default ON — only an explicit `=0` disables (kill-switch). */
@@ -74,7 +75,7 @@ export function makeFounderReactionApprovalCallback(
 				canonicalFounderId,
 				store: config.store,
 				db: args.db,
-				reactionFetcherImpl: config.reactionFetcherImpl,
+				reactionFetcherImpl: args.reactionFetcherImpl,
 				readBindingImpl: config.readBindingImpl,
 				onResponseWritten: config.onResponseWritten,
 				evaluateReactionImpl: config.evaluateReactionImpl,

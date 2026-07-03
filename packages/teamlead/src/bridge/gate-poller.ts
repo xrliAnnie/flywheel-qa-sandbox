@@ -31,6 +31,10 @@ import {
 	SUPPORTED_MILESTONE_KINDS_V1,
 } from "flywheel-config";
 import {
+	encodeReactionEmoji,
+	type ReactionFetcher,
+} from "../lead-backends/codex/gateway/founder-confirmation.js";
+import {
 	type InboundCursorStore,
 	InMemoryInboundCursorStore,
 } from "../lead-backends/codex/InboundCursorStore.js";
@@ -39,6 +43,7 @@ import type { Session, StateStore } from "../StateStore.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import { isQaHeld } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
+import { DISCORD_API } from "./discord-utils.js";
 import {
 	isDiscordSnowflake,
 	parseSqliteUtcMs,
@@ -162,6 +167,24 @@ export interface GatePollerConfig {
 	 * approve_to_ship gate response. Absent → deliverer stays WAKE-only.
 	 */
 	tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
+
+	/**
+	 * FLY-799: the flag-gated founder ✅-reaction ship-approval callback (built in
+	 * plugin.ts via makeFounderReactionApprovalCallback). Called per pending
+	 * approve_to_ship gate; on a founder ✅ on the bound gate message it writes the
+	 * approve_to_ship response. Absent → no reaction pass (text path unchanged).
+	 */
+	tryFounderReactionApproval?: (args: {
+		gate: {
+			questionId: string;
+			executionId: string;
+			checkpoint: string | null;
+			createdAtMs: number;
+		};
+		ctx: { issueId: string; threadId: string; projectName: string };
+		db: CommDB;
+		reactionFetcherImpl: ReactionFetcher;
+	}) => Promise<{ handled: string[]; retrySafe: boolean } | null>;
 
 	// ── FLY-637-ext: lead-pending escalation ──
 	/**
@@ -558,6 +581,24 @@ export class GatePoller {
 					);
 					// FLY-639: this pass also touches StateStore (getSession /
 					// getChatThreadByIssue / appendLeadEvent) — self-heal on corruption.
+					this.maybeRecoverStore(err);
+				}
+			}
+			// FLY-799: founder ✅-reaction ship approval on the same sub-cadence
+			// (piggyback; zero new timer). Only runs when the reaction callback is
+			// wired; fully isolated so its errors never abort the poll loop.
+			if (
+				this.config.tryFounderReactionApproval &&
+				this.founderReplyDeliverEnabled() &&
+				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
+			) {
+				try {
+					await this.founderReactionApprovalPass();
+				} catch (err) {
+					console.warn(
+						"[GatePoller] founder-reaction approval pass error:",
+						err instanceof Error ? err.message : String(err),
+					);
 					this.maybeRecoverStore(err);
 				}
 			}
@@ -1037,6 +1078,13 @@ export class GatePoller {
 		string,
 		{ firstFailedAtMs: number; nextAttemptAtMs: number; attempts: number }
 	>();
+	/**
+	 * FLY-799: qid → next allowed reaction-check time. A ✅ needs a Discord
+	 * reactions GET per pending ship gate; throttle so we do not hammer the API
+	 * every poll tick (ship gates are few + short-lived, so a coarse interval is
+	 * plenty). Cleared implicitly as the gate leaves awaiting_review.
+	 */
+	private readonly founderReactionNextCheck = new Map<string, number>();
 
 	// ── FLY-637-ext: lead-pending escalation (sibling of the founder fallback) ──
 
@@ -1927,6 +1975,129 @@ export class GatePoller {
 						// FLY-639 (Codex code R1 HIGH): per-thread founder-reply delivery touches StateStore (isLeadEventDelivered / appendLeadEvent / markLeadEventDelivered / flush / recordDeliveryFailure) — self-heal on corruption.
 						this.maybeRecoverStore(err);
 					}
+				}
+			}
+		}
+	}
+
+	/** FLY-799: minimum spacing between reaction-checks for one ship gate. */
+	private founderReactionCheckIntervalMs(): number {
+		return 15_000;
+	}
+
+	/**
+	 * FLY-799: per-pending-ship-gate founder ✅-reaction approval. For each
+	 * past-grace `approve_to_ship` gate, build a per-lead Discord reactions
+	 * fetcher (bot token) and call the flag-gated reaction callback; on a founder
+	 * ✅ on the durably-bound gate message it writes `{approved:true}` (attributed
+	 * to the founder) + flips + wakes. Self-limiting (the flip drops the gate out
+	 * of awaiting_review) + throttled per-qid so we do not hammer the reactions
+	 * API. Fully isolated: a per-gate error is logged and never aborts the pass.
+	 */
+	private async founderReactionApprovalPass(): Promise<void> {
+		const tryReaction = this.config.tryFounderReactionApproval;
+		if (!tryReaction) return;
+		if (!this.config.chatThreadsEnabled) return;
+		const ownerUserId = this.config.discordOwnerUserId;
+		if (!isDiscordSnowflake(ownerUserId)) return;
+		const graceMs = this.founderReplyDeliverGraceMs();
+		const now = Date.now();
+		const fetchImpl = this.config.fetchImpl ?? fetch;
+
+		for (const project of this.config.projects) {
+			for (const lead of project.leads) {
+				const botToken = lead.botToken ?? this.config.discordBotToken;
+				if (!botToken) continue;
+				const dbPath = defaultGetCommDbPath(project.projectName);
+
+				// Collect pending approve_to_ship questions for this lead (read-only).
+				let shipGates: PendingQuestion[];
+				try {
+					const rdb = CommDB.openReadonly(dbPath);
+					try {
+						shipGates = (
+							rdb.getPendingQuestions(lead.agentId) as PendingQuestion[]
+						).filter((q) => q.checkpoint === "approve_to_ship");
+					} finally {
+						rdb.close();
+					}
+				} catch {
+					continue; // CommDB not present yet
+				}
+				if (shipGates.length === 0) continue;
+
+				// Per-lead Discord reactions fetcher (paginating GET; the shared
+				// checkReactionConfirmation is fail-closed on any non-200/429/malformed).
+				const reactionFetcherImpl: ReactionFetcher = async ({
+					channelId,
+					messageId,
+					emoji,
+					after,
+				}) => {
+					const afterQs = after ? `&after=${encodeURIComponent(after)}` : "";
+					const res = await fetchImpl(
+						`${DISCORD_API}/channels/${channelId}/messages/${messageId}/reactions/${encodeReactionEmoji(emoji)}?limit=100${afterQs}`,
+						{ headers: { Authorization: `Bot ${botToken}` } },
+					);
+					return {
+						status: res.status,
+						body: res.ok ? await res.json() : undefined,
+					};
+				};
+
+				// One writable CommDB per lead for any gate response write.
+				let db: CommDB;
+				try {
+					db = new CommDB(dbPath, false);
+				} catch {
+					continue;
+				}
+				try {
+					for (const q of shipGates) {
+						const createdMs = parseSqliteUtcMs(q.created_at);
+						if (createdMs === null || now - createdMs < graceMs) continue;
+						// Throttle: at most one reactions GET per qid per interval.
+						const nextAt = this.founderReactionNextCheck.get(q.id) ?? 0;
+						if (now < nextAt) continue;
+						this.founderReactionNextCheck.set(
+							q.id,
+							now + this.founderReactionCheckIntervalMs(),
+						);
+
+						const session = this.config.store.getSession(q.from_agent);
+						if (!session) continue;
+						const thread = this.config.store.getChatThreadByIssue(
+							session.issue_id,
+							lead.chatChannel,
+						);
+						if (!thread?.thread_id) continue;
+
+						try {
+							await tryReaction({
+								gate: {
+									questionId: q.id,
+									executionId: q.from_agent,
+									checkpoint: q.checkpoint,
+									createdAtMs: createdMs,
+								},
+								ctx: {
+									issueId: session.issue_id,
+									threadId: thread.thread_id,
+									projectName: project.projectName,
+								},
+								db,
+								reactionFetcherImpl,
+							});
+						} catch (err) {
+							console.warn(
+								`[GatePoller] founder-reaction approval error (qid=${q.id}):`,
+								err instanceof Error ? err.message : String(err),
+							);
+							this.maybeRecoverStore(err);
+						}
+					}
+				} finally {
+					db.close();
 				}
 			}
 		}
