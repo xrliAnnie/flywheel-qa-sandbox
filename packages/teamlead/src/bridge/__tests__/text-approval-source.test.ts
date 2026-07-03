@@ -109,3 +109,36 @@ describe("evaluateTextSource — Tier-3 fallback", () => {
 		expect(input.expectedMessageId).toBe("MSG-1");
 	});
 });
+
+describe("evaluateTextSource — explicit wrong-target fail-closed (Codex R1 HIGH-3)", () => {
+	it("'ship FLY-756' in the FLY-799 gate → unclear, NEVER calls the classifier", async () => {
+		const classifyImpl = vi.fn();
+		const sig = await evaluateTextSource(
+			{ gate: GATE, message: msg("ship FLY-756") },
+			{ classifyImpl },
+		);
+		expect(sig?.kind).toBe("unclear");
+		expect(classifyImpl).not.toHaveBeenCalled();
+	});
+
+	it("wrong PR '#123' → unclear, no classify", async () => {
+		const classifyImpl = vi.fn();
+		const sig = await evaluateTextSource(
+			{ gate: GATE, message: msg("approve #123") },
+			{ classifyImpl },
+		);
+		expect(sig?.kind).toBe("unclear");
+		expect(classifyImpl).not.toHaveBeenCalled();
+	});
+
+	it("ambiguous text with an incidental bare number still reaches Tier-3", async () => {
+		const classifyImpl = vi
+			.fn()
+			.mockResolvedValue({ kind: "approve", evidence_message_id: "MSG-1" });
+		await evaluateTextSource(
+			{ gate: GATE, message: msg("yeah lets do it, fixes 500 errors") },
+			{ classifyImpl },
+		);
+		expect(classifyImpl).toHaveBeenCalledOnce();
+	});
+});
