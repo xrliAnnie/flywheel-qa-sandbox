@@ -19,20 +19,105 @@ describe("EXECUTOR_TO_TRANSPORT mapping (Codex R5 note #2)", () => {
 });
 
 describe("resolveRoleAdapter — built-in default", () => {
-	it("runner with nothing set → claude-tmux (byte-compat)", () => {
+	// FLY-751: a claude-tmux runner with NO model from any layer no longer
+	// inherits the account default (`~/.claude/settings.json` carries a 1M-
+	// context model, ~0.35GB extra RAM per runner) — it gets the explicit
+	// small-context fleet default instead.
+	it("runner with nothing set → claude-tmux + small-context default model (FLY-751)", () => {
 		expect(resolveRoleAdapter({ role: "runner", env: EMPTY_ENV })).toEqual({
 			backend: "claude-tmux",
 			transport: "claude-code",
 			vendor: "claude-code",
+			model: "claude-fable-5",
 		});
 	});
 
-	it("lead with nothing set → claude-tmux", () => {
+	it("lead with nothing set → claude-tmux (no model injection — lead untouched)", () => {
 		expect(resolveRoleAdapter({ role: "lead", env: EMPTY_ENV })).toEqual({
 			backend: "claude-tmux",
 			transport: "claude-code",
 			vendor: "claude-code",
 		});
+	});
+});
+
+describe("resolveRoleAdapter — FLY-751 runner default model", () => {
+	it("FLYWHEEL_RUNNER_DEFAULT_MODEL overrides the built-in default", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			env: { FLYWHEEL_RUNNER_DEFAULT_MODEL: "claude-sonnet-5" },
+		});
+		expect(resolved.model).toBe("claude-sonnet-5");
+	});
+
+	it("FLYWHEEL_RUNNER_DEFAULT_MODEL=off restores legacy inherit-account behavior", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			env: { FLYWHEEL_RUNNER_DEFAULT_MODEL: "OFF" },
+		});
+		expect(resolved.model).toBeUndefined();
+	});
+
+	it("a model label wins — no default injection", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["opus"],
+			env: EMPTY_ENV,
+		});
+		expect(resolved.model).toBe("opus");
+	});
+
+	it("a 1m opt-in label wins — no default injection", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["opus-1m"],
+			env: EMPTY_ENV,
+		});
+		expect(resolved.model).toBe("claude-opus-4-8[1m]");
+	});
+
+	it("the dispatch model wins — no default injection", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			dispatchModel: "claude-opus-4-8",
+			env: EMPTY_ENV,
+		});
+		expect(resolved.model).toBe("claude-opus-4-8");
+	});
+
+	it("project roles model wins — no default injection", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			projectRoles: { runner: { backend: "claude-tmux", model: "sonnet" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved.model).toBe("sonnet");
+	});
+
+	it("project roles claude-tmux WITHOUT model still gets the default", () => {
+		const resolved = resolveRoleAdapter({
+			role: "runner",
+			projectRoles: { runner: { backend: "claude-tmux" } },
+			env: EMPTY_ENV,
+		});
+		expect(resolved.model).toBe("claude-fable-5");
+	});
+
+	it("non-claude backends never get the claude default model", () => {
+		const codex = resolveRoleAdapter({
+			role: "runner",
+			env: { FLYWHEEL_RUNNER_BACKEND: "codex-tmux" },
+		});
+		expect(codex.backend).toBe("codex-tmux");
+		expect(codex.model).toBeUndefined();
+
+		const agy = resolveRoleAdapter({
+			role: "runner",
+			issueLabels: ["agy"],
+			env: EMPTY_ENV,
+		});
+		expect(agy.backend).toBe("antigravity-tmux");
+		expect(agy.model).toBeUndefined();
 	});
 });
 

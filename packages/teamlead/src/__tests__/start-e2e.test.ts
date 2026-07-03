@@ -711,6 +711,22 @@ describe("Start API E2E", () => {
 			});
 			expect(res.status).toBe(200);
 			const startReq = mockDispatcher.start.mock.calls[0]![0];
+			// FLY-751: medium tier dropped [1m] — `opus` is small-context now.
+			expect(startReq.dispatchModel).toBe("claude-opus-4-8");
+		}, 15_000);
+
+		it("FLY-751: opus-1m opt-in normalizes to the [1m] id before dispatch", async () => {
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-TEST",
+					projectName: "TestProject",
+					model: "opus-1m",
+				}),
+			});
+			expect(res.status).toBe(200);
+			const startReq = mockDispatcher.start.mock.calls[0]![0];
 			expect(startReq.dispatchModel).toBe("claude-opus-4-8[1m]");
 		}, 15_000);
 

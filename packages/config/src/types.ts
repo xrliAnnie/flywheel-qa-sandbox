@@ -399,6 +399,13 @@ export interface XiaohongshuCollectionConfig {
 	 * founder promotes — no issue is created without an explicit action.
 	 */
 	auto_create?: boolean;
+	/**
+	 * FLY-709: runner model for this collection's daily runs. Passed verbatim as
+	 * the `/api/runs/start` `model` dispatch param (FLY-728 Part C), so it must
+	 * be a recognized tier id or alias (`normalizeDispatchModel`). Absent =
+	 * today's behavior (project default / account default).
+	 */
+	model?: string;
 }
 
 /**

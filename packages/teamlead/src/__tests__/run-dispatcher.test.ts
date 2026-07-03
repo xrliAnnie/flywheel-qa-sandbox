@@ -221,6 +221,123 @@ describe("RetryDispatcher", () => {
 	});
 });
 
+// ── FLY-751: runner MCP slim profile wiring (start + retry) ──────────────
+
+describe("FLY-751: runnerMcpProfile wiring", () => {
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
+	const DEFAULT_PROFILE = {
+		disabledPlugins: [
+			"discord@claude-plugins-official",
+			"playwright@claude-plugins-official",
+			"serena@claude-plugins-official",
+		],
+		disableChrome: true,
+	};
+
+	function startWith(req: Record<string, unknown>) {
+		const [name, runtime] = makeRuntime("TestProject");
+		const runtimes = new Map([[name, runtime]]);
+		const dispatcher = new RunDispatcher(
+			runtimes,
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+		return {
+			dispatcher,
+			runtime,
+			start: () =>
+				dispatcher.start({
+					issueId: "FLY-751",
+					projectName: "TestProject",
+					...req,
+				}),
+		};
+	}
+
+	function ctxOf(runtime: ProjectRuntime) {
+		const run = (
+			runtime.blueprint as unknown as { run: ReturnType<typeof vi.fn> }
+		).run;
+		expect(run).toHaveBeenCalledOnce();
+		return run.mock.calls[0][2];
+	}
+
+	it("start(): default claude-tmux run gets the full slim profile", async () => {
+		const { runtime, start } = startWith({});
+		await start();
+		expect(ctxOf(runtime).runnerMcpProfile).toEqual(DEFAULT_PROFILE);
+	});
+
+	it("start(): QA run keeps the browser (playwright out, chrome on)", async () => {
+		const { runtime, start } = startWith({ sessionRole: "qa" });
+		await start();
+		expect(ctxOf(runtime).runnerMcpProfile).toEqual({
+			disabledPlugins: [
+				"discord@claude-plugins-official",
+				"serena@claude-plugins-official",
+			],
+			disableChrome: false,
+		});
+	});
+
+	it("start(): full-mcp label opts out (profile null)", async () => {
+		const { runtime, start } = startWith({ issueLabels: ["full-mcp"] });
+		await start();
+		expect(ctxOf(runtime).runnerMcpProfile).toBeNull();
+	});
+
+	it("start(): FLYWHEEL_RUNNER_SLIM_MCP=0 kill-switch (profile null)", async () => {
+		vi.stubEnv("FLYWHEEL_RUNNER_SLIM_MCP", "0");
+		const { runtime, start } = startWith({});
+		await start();
+		expect(ctxOf(runtime).runnerMcpProfile).toBeNull();
+	});
+
+	it("start(): non-claude backend gets NO profile field at all", async () => {
+		const { runtime, start } = startWith({ issueLabels: ["codex"] });
+		await start();
+		const ctx = ctxOf(runtime);
+		expect(ctx.runnerBackend).toBe("codex-tmux");
+		expect("runnerMcpProfile" in ctx).toBe(false);
+	});
+
+	it("retry: profile recomputed (QA retry keeps its browser exemption)", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const runtimes = new Map([[name, runtime]]);
+		const dispatcher = new RetryDispatcher(runtimes, []);
+		await dispatcher.dispatch({
+			oldExecutionId: "old-exec",
+			issueId: "FLY-751",
+			projectName: "TestProject",
+			runAttempt: 1,
+			sessionRole: "qa",
+		});
+		expect(ctxOf(runtime).runnerMcpProfile).toEqual({
+			disabledPlugins: [
+				"discord@claude-plugins-official",
+				"serena@claude-plugins-official",
+			],
+			disableChrome: false,
+		});
+	});
+
+	it("retry: default run gets the full slim profile", async () => {
+		const [name, runtime] = makeRuntime("TestProject");
+		const runtimes = new Map([[name, runtime]]);
+		const dispatcher = new RetryDispatcher(runtimes, []);
+		await dispatcher.dispatch({
+			oldExecutionId: "old-exec",
+			issueId: "FLY-751",
+			projectName: "TestProject",
+			runAttempt: 1,
+		});
+		expect(ctxOf(runtime).runnerMcpProfile).toEqual(DEFAULT_PROFILE);
+	});
+});
+
 // ── FLY-95: Resolved failure handling ──────────────
 
 describe("FLY-95: Dispatcher resolved failure handling", () => {

@@ -13,7 +13,10 @@
 
 import { Router } from "express";
 import type { PonytailInput } from "flywheel-config";
-import { MODEL_TIERS, normalizeDispatchModel } from "flywheel-config";
+import {
+	ACCEPTED_DISPATCH_MODELS,
+	normalizeDispatchModel,
+} from "flywheel-config";
 import {
 	DOC_TIERS,
 	type DocTier,
@@ -219,7 +222,10 @@ export function createRunsRouter(
 					success: false,
 					code: "INVALID_MODEL",
 					reason: "unknown_model",
-					allowed: Object.values(MODEL_TIERS).map((t) => t.id),
+					// FLY-751: the FULL accepted set (tier ids + aliases + explicit
+					// 1M opt-ins like opus-1m) so a Lead can discover the spellings
+					// from the error instead of tribal knowledge.
+					allowed: [...ACCEPTED_DISPATCH_MODELS],
 					silent: false,
 				});
 				return;
