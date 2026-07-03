@@ -34,6 +34,15 @@ CONSERVATIVE_CLEANUP_SECONDS="${FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP:-300}"
 # Overridable for tests (${VAR:-default} preserves pre-set values).
 ORPHAN_PIN_STATE="${ORPHAN_PIN_STATE:-/tmp/flywheel-cmux-orphan-pin.state}"
 
+# FLY-685: close-request marker file. close_runner (Bridge, no cmux socket)
+# appends a runner's window_name here on a successful window kill; the watcher
+# drains it every tick and closes the matching workspace pin IMMEDIATELY (no
+# grace) via the FLY-293 revalidating chokepoint. This is the fast path for the
+# close_runner case (the FLY-293 reaper's 5-min grace still backstops abnormal
+# death). MUST match `DEFAULT_CLOSE_REQUEST_FILE` in
+# packages/teamlead/src/bridge/cmux-close-request.ts. Overridable for tests.
+CLOSE_REQUEST_FILE="${FLYWHEEL_CMUX_CLOSE_REQUEST_FILE:-/tmp/flywheel-cmux-close-requested}"
+
 # FLY-254: cmux app-reopen one-shot re-attach sweep.
 # Generation state file — single line `<identity>|<state>|<attempts>`,
 # state ∈ pending|done. identity = the cmux socket's filesystem identity
@@ -507,11 +516,21 @@ close_workspace_by_ref() {
   # Single chokepoint for all cmux workspace closes. Audit log per call;
   # FLYWHEEL_CMUX_DRY_RUN=1 short-circuits the actual cmux call but still
   # logs (so a dry-run inspection still shows what would have happened).
+  #
+  # FLY-685 (Codex code R1 MED): records the actual cmux close rc in the global
+  # LAST_WORKSPACE_CLOSE_RC (0 = closed / dry-run). The function itself still
+  # ALWAYS returns 0 — the `|| true` semantics existing callers (ghost reaper,
+  # dedup, cleanup_workspace_for) rely on under `set -euo pipefail` are
+  # unchanged. Only close_orphan_workspace_pin_if_still_orphan reads the global,
+  # so it can distinguish a swallowed cmux close FAILURE from a real close and
+  # requeue the close-request marker instead of silently dropping it.
   local ws_ref="$1" reason="$2"
   local dry="${FLYWHEEL_CMUX_DRY_RUN:-0}"
   log "[audit] close workspace=$ws_ref reason=$reason dry_run=$dry"
+  LAST_WORKSPACE_CLOSE_RC=0
   [[ "$dry" == "1" ]] && return 0
-  cmux_call close-workspace --workspace "$ws_ref" || true
+  cmux_call close-workspace --workspace "$ws_ref" || LAST_WORKSPACE_CLOSE_RC=$?
+  return 0
 }
 
 # FLY-129 Phase 4 (scope #3): periodic ghost reaper.
@@ -696,8 +715,18 @@ for w in d.get("workspaces", []):
 # chokepoint for orphan pins (periodic AND one-shot). Re-reads cmux JSON + strict
 # tmux inventory RIGHT BEFORE the close and re-checks the FULL predicate against
 # the specific ref (Codex R1 MED-4 / R2: closes the derive→close TOCTOU without a
-# global lock). rc 0 = closed; rc 1 = skipped (ref malformed / gone / title drift
-# / no longer orphan / cmux-or-tmux uncertain).
+# global lock).
+#   rc 0 = closed.
+#   rc 1 = PREDICATE skip (ref malformed / gone / title drift / non-managed /
+#          same-name live window / linked session still present) — a trustworthy
+#          "do NOT close this ref" decision.
+#   rc 2 = UNCERTAIN (FLY-685): cmux JSON / tmux inventory / parse read failed, so
+#          the predicate could NOT be evaluated. Callers that requeue on transient
+#          failure (process_close_requests) MUST distinguish this from rc 1 —
+#          requeueing a predicate skip would let an old close marker outlive a
+#          same-title restarted runner. Existing FLY-293 callers
+#          (reap_orphan_workspace_pins / reap_orphan_pins_oneshot) branch only on
+#          shell success vs non-zero, so rc 2 is behavior-compatible for them.
 close_orphan_workspace_pin_if_still_orphan() {
   local ref="$1" want_title="$2"
   if [[ ! "$ref" =~ ^workspace:[0-9]+$ ]]; then
@@ -705,9 +734,9 @@ close_orphan_workspace_pin_if_still_orphan() {
     return 1
   fi
   local raw sessions agent_names cur_title
-  raw=$(get_cmux_workspaces_json) || return 1
-  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 1
-  agent_names=$(collect_agent_window_names_strict "$sessions") || return 1
+  raw=$(get_cmux_workspaces_json) || return 2                        # FLY-685: uncertain
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2  # FLY-685: uncertain
+  agent_names=$(collect_agent_window_names_strict "$sessions") || return 2     # FLY-685: uncertain
   cur_title=$(printf '%s' "$raw" | python3 -c '
 import sys, json
 ref = sys.argv[1]
@@ -721,13 +750,20 @@ for w in d.get("workspaces", []):
         if t is not None:
             sys.stdout.write(t)
         break
-' "$ref") || return 1
+' "$ref") || return 2                                                # FLY-685: parse uncertain
   [[ -z "$cur_title" ]] && return 1                # ref gone from cmux
   [[ "$cur_title" != "$want_title" ]] && return 1  # title drifted → not the pin we vetted
   is_managed_runner_title "$cur_title" || return 1
   if printf '%s\n' "$agent_names" | grep -qxF "$cur_title"; then return 1; fi
   if printf '%s\n' "$sessions" | grep -qxF "cmux-${cur_title}"; then return 1; fi
   close_workspace_by_ref "$ref" "orphan-pin-${cur_title}"
+  # FLY-685 (Codex code R1 MED): close_workspace_by_ref swallows cmux close
+  # failures (|| true) and records the real rc in LAST_WORKSPACE_CLOSE_RC. A
+  # swallowed failure means the pin is NOT actually closed — return rc=2
+  # (uncertain) so the close-request path REQUEUES (and the FLY-293 reaper keeps
+  # its grace row) instead of dropping the marker and silently falling back to
+  # the 5-min reaper. rc=0 only on a confirmed close.
+  [[ "${LAST_WORKSPACE_CLOSE_RC:-0}" -ne 0 ]] && return 2
   return 0
 }
 
@@ -870,6 +906,120 @@ reap_orphan_pins_oneshot() {
     cmux_call refresh-surfaces || true
   fi
   return 0
+}
+
+# ── FLY-685: close_runner fast-path pin removal ──
+#
+# close_runner (Bridge, no cmux socket) appends a runner's window_name to
+# $CLOSE_REQUEST_FILE on a successful window kill (see
+# packages/teamlead/src/bridge/cmux-close-request.ts). This drains that file
+# every watcher tick and closes the matching workspace pin IMMEDIATELY through
+# the FLY-293 revalidating chokepoint — NO grace, because the marker names a
+# window close_runner already killed (not a guessed orphan). The chokepoint still
+# re-verifies the window + linked session are gone before closing, so a
+# same-title restarted runner is never mis-closed.
+#
+# Requeue is narrow: ONLY transient uncertainty (cmux JSON / tmux inventory
+# unavailable — rc=2 from workspace_refs_for OR the chokepoint) is kept for the
+# next tick. Predicate skips (rc=1: restarted / not-orphan / gone) are DROPPED
+# and left to the FLY-293 reaper — requeueing them would let an old marker outlive
+# a same-title restarted runner. Kill-switch FLYWHEEL_CMUX_CLOSE_REQUEST=0 → fully
+# inert (byte-compat). Marker lines are untrusted local IPC (validated below).
+process_close_requests() {
+  [[ "${FLYWHEEL_CMUX_CLOSE_REQUEST:-1}" == "0" ]] && return 0
+  local tmp="${CLOSE_REQUEST_FILE}.processing"
+  # Crash recovery: fold a leftover .processing batch (a previous drain that was
+  # interrupted) back into the live file so the drain below processes it exactly
+  # once — no same-tick double-process (Codex design R2 watchpoint #4).
+  if [[ -f "$tmp" ]]; then
+    cat "$tmp" >> "$CLOSE_REQUEST_FILE" 2>/dev/null || true
+    rm -f "$tmp" 2>/dev/null || true
+  fi
+  [[ -f "$CLOSE_REQUEST_FILE" ]] || return 0
+  # Atomically take the current batch so concurrent close_runner appends land in
+  # the NEXT batch (mirrors drain_events' mv-to-.processing TOCTOU handling).
+  mv "$CLOSE_REQUEST_FILE" "$tmp" 2>/dev/null || return 0
+  _drain_close_requests "$tmp"
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+
+# _drain_close_requests <batch> — process one frozen batch of window_name lines.
+# Uncertain (rc=2) lines are appended back to $CLOSE_REQUEST_FILE (append is
+# concurrency-safe vs a live close_runner append); at most one requeue per line
+# per batch even with multiple uncertain refs. rc-capture is explicit so a helper
+# returning non-zero under `set -euo pipefail` never exits the watcher (Codex
+# design R1 #2 / FLY-694).
+_drain_close_requests() {
+  local batch="$1"
+  [[ -f "$batch" ]] || return 0
+  local closed_any=0 wname refs rc ref crc requeue
+  while IFS= read -r wname; do
+    # Untrusted local IPC: reject empty / tab-containing / overlong lines BEFORE
+    # the managed-title gate (mirrors orphan_pin_refs' tab/newline defense).
+    [[ -z "$wname" ]] && continue
+    case "$wname" in *$'\t'*) continue ;; esac
+    [[ ${#wname} -gt 200 ]] && continue
+    is_managed_runner_title "$wname" || continue
+    rc=0
+    refs=$(workspace_refs_for "$wname") || rc=$?
+    if [[ $rc -eq 2 ]]; then
+      # cmux JSON unavailable at initial lookup → transient; requeue for next tick.
+      printf '%s\n' "$wname" >> "$CLOSE_REQUEST_FILE" 2>/dev/null || true
+      continue
+    fi
+    # rc=0: refs = the (possibly empty) set of workspace refs for this title.
+    [[ -z "$refs" ]] && continue   # pin already gone → nothing to close
+    requeue=0
+    while IFS= read -r ref; do
+      [[ -z "$ref" ]] && continue
+      crc=0
+      close_orphan_workspace_pin_if_still_orphan "$ref" "$wname" || crc=$?
+      if [[ $crc -eq 0 ]]; then
+        closed_any=1
+      elif [[ $crc -eq 2 ]]; then
+        requeue=1   # final-gate uncertainty (JSON/tmux flap during revalidation)
+      fi
+      # crc=1 (predicate skip: restarted / not-orphan / gone) → drop; FLY-293 backstops.
+    done <<< "$refs"
+    [[ $requeue -eq 1 ]] && { printf '%s\n' "$wname" >> "$CLOSE_REQUEST_FILE" 2>/dev/null || true; }
+  done < "$batch"
+  if [[ "$closed_any" == "1" ]]; then
+    cmux_call refresh-surfaces || true
+  fi
+  return 0
+}
+
+# gc_close_request_file — watcher-startup GC: drop marker lines whose title has no
+# matching cmux workspace (leaked by a previous watcher, or the pin was already
+# closed). Env-gated (OFF path byte-compatible). cmux JSON unavailable → skip
+# (keep the file, retry next startup). Mirrors gc_orphan_pin_state_file.
+gc_close_request_file() {
+  [[ "${FLYWHEEL_CMUX_CLOSE_REQUEST:-1}" == "0" ]] && return 0
+  [[ -f "$CLOSE_REQUEST_FILE" ]] || return 0
+  local raw live_titles tmp wname
+  raw=$(get_cmux_workspaces_json) || return 0   # JSON unavailable → keep file
+  live_titles=$(printf '%s' "$raw" | python3 -c '
+import sys, json
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for w in d.get("workspaces", []):
+    t = w.get("title")
+    if t:
+        print(t)
+' 2>/dev/null || true)
+  tmp=$(mktemp "${CLOSE_REQUEST_FILE}.XXXX" 2>/dev/null) || return 0
+  while IFS= read -r wname; do
+    [[ -z "$wname" ]] && continue
+    if printf '%s\n' "$live_titles" | grep -qxF "$wname"; then
+      printf '%s\n' "$wname" >> "$tmp"
+    fi
+  done < "$CLOSE_REQUEST_FILE"
+  # Best-effort atomic swap; an unwritable path must not abort the watcher at
+  # startup under `set -e` (mirrors gc_orphan_pin_state_file).
+  mv "$tmp" "$CLOSE_REQUEST_FILE" 2>/dev/null || { rm -f "$tmp" 2>/dev/null || true; return 0; }
 }
 
 linked_session_exists() {
@@ -2527,6 +2677,8 @@ watch_loop() {
       fi
       drain_events
       process_pending_cleanups
+      # FLY-685: drain close_runner's close-request markers → immediate pin removal.
+      process_close_requests
       if (( tick % 4 == 0 )); then
         sync_additive
       fi
@@ -2571,6 +2723,10 @@ watch_main() {
   # FLY-293: GC orphan-pin grace rows whose ref no longer exists in cmux (leaked
   # by a previous watcher). Env-gated (byte-compat when reaper off).
   gc_orphan_pin_state_file
+
+  # FLY-685: GC close-request marker lines whose title no longer has a cmux
+  # workspace (leaked by a previous watcher / already-closed pin). Env-gated.
+  gc_close_request_file
 
   # FLY-254: log effective reopen-sweep knobs ONCE at startup — the deployment
   # verification anchor (don't trust kickstart exit codes; read this line).
