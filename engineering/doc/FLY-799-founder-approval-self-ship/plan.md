@@ -17,7 +17,9 @@ ship → 触发**顺关系图的 fan-out 收尾**(shipped runner + QA + [v2] sub
 relay,不代 merge。
 
 **非目标**:① 不实现 FLY-795 durable-state 地基(只标依赖、留接口);② 不建 FLY-793 的 sub-
-issue 三段式结构(fan-out v2 接口留好、遍历随 793);③ 不改 verify-approval 的 4-源校验(复用)。
+issue 三段式结构(fan-out v2 接口留好、遍历随 793);③ 不改 verify-approval 的 4-源校验(复用);
+④ **不引入 PR mode / pr_handoff**(Annie 明确『绝对没说要用 PR mode』)—— runner 自 ship =
+**复用现有 deploy workflow / 🆒 self-ship**,不做「runner 交 PR 给 founder 手动 ship」那套。
 
 ## 2. 架构:现状 vs 目标
 
@@ -52,19 +54,36 @@ graph TD
 **主改点**:`bridge/founder-reply-deliverer.ts` `processFounderMessage` 的 `ship`(approve_to_ship)
 分支,从「只 WAKE」改为(仅当身份 + 硬约束全满足才写批准,否则 WAKE-only + 交回 Lead)。
 
-**A-0 批准信号抽象层(Annie D2-② 要求:可扩展到语音)**:批准检测不绑死「文字/reaction 两种」,
-而是抽一个 `ApprovalSignalSource` —— 每个 source 把一个 founder 输入归一成**完全绑定的**
-`ApprovalSignal`(discriminated union,§5),gate-write 路径 **source-无关**(信号绑定后):
+**A-0 批准信号抽象层(Annie D2-② 要求:可扩展到语音/图片)**:批准检测不绑死单一形态,而是抽
+一个 `ApprovalSignalSource` —— 每个 source 把一个 founder 输入归一成**完全绑定的**
+`ApprovalSignal`(discriminated union,§5),gate-write 路径 **source-无关**(信号绑定后)。
+
+> **『明确批准』的确切定义(Annie 要求明确定义)** = 一个 **kind:"approve"、身份=canonical
+> founder、绑定到当前 gate(questionId + prHeadSha + targetMessageId/message)** 的
+> `ApprovalSignal`,来自以下任一 source。**任何达不到的(含糊 / reject / 非本人 / 无绑定 / REST
+> 失败)= 不算批准 → 不 ship**(fail-closed)。
+
 - **`ReactionSource`(v1,✅ 对勾)**:founder 在 ship-gate 那条消息上贴 ✅ = **确定性批准,零
   LLM**。**不用 🆒**(Annie:少见;v1 只 ✅)。最简单最稳,是主路径。**必须绑到 A-0b 的
   durable `targetMessageId`**(下条);缺绑定 → 拒批准(不靠文字/时间戳/最新 post/扫 thread 猜)。
 - **`TextSource`(v1,自由文字)**:走 A-3 的 Haiku classifier(只为「别把『我看看再 ship』误当
   批准」兜底)。
-- **`VoiceSource`(未来)**:语音转写 → 同一 classifier(或语音专用),**作为新 source 插入,
-  不碰 gate-write 路径**。这就是 Annie 要的抽象层。
+- **`ImageSource`(v1,Annie:图片确认)**:founder 发**图片附件**(截图/图片确认)→ **多模态
+  classifier**(Claude 原生多模态)判是否明确批准。**证据到附件级(Codex R5)**:先只收
+  founder-authored Discord 图片附件(非文字里任意 URL)、过 MIME/扩展 allowlist + 数量/字节上限 +
+  成功 fetch + **classify 前算 sha256**;verdict 要求 `evidenceMessageId===expectedMessageId`
+  **且** `evidenceAttachmentIds ⊆ 期望附件`;fetch 失败 → unclear(不回退文字推断)。审计记
+  attachmentId/filename/contentType/byteSize/sha256/classifier model+version/prompt+policy version。
+  **图片语义 fail-closed 严规(Codex R5,图比文字更易误判)**:只有 founder 消息/图**无歧义表达
+  『现在批准 ship 这个当前 gate』**才 approve;以下一律 `unclear` → 不 ship:纯状态截图、
+  历史/转发的旧批准、通用 ✅/👍 图、别的 issue/PR、看不清/裁切/残缺、或无法把图绑到当前
+  `questionId/prHeadSha`。倾向要求「图里能看到当前 issue/PR/gate 上下文」或「配一句把图绑到
+  『ship this』的 founder 文字」。
+- **`VoiceSource`(未来)**:语音转写 → 同一 classifier,**作为新 source 插入,不碰 gate-write
+  路径**。这就是 Annie 要的抽象层(image/voice 都是它验证的用例)。
 - 无论哪个 source,A-1(身份)+ A-2(唯一当前 gate)+ A-4(受信任写)+ A-5(审计)都照常套用。
   reaction 的「身份」= reactor `user.id === canonicalFounderId && bot !== true`(Codex R3 #3:要
-  完整 user 对象、查 bot 位);text/voice = 消息作者 id。
+  完整 user 对象、查 bot 位);text/image/voice = 消息作者 id === canonicalFounderId && !bot。
 
 **A-0b ship-gate 消息 id 的 durable 绑定(Codex R3 #1,ReactionSource 的前置)**:现在
 `founder-thread-notifier` POST「🚀 Ship gate 等你批准」后**只 audit threadId/status、不存 Discord
@@ -200,8 +219,8 @@ graph TD
 
 | # | 文件 | 改动 | Part |
 |---|------|------|------|
-| 1 | `bridge/founder-reply-deliverer.ts` | ship 分支:身份 + A-1..A-5 → 调 `ApprovalSignalSource` → 共享写 helper | A |
-| 1b | `bridge/approval-signal/`(新) | `ApprovalSignalSource` 抽象 + `ReactionSource`(per-gate poll `targetMessageId` 的 ✅,复用 `founder-confirmation.ts`,确定性零 LLM,查 bot 位)+ `TextSource`(调 classifier);VoiceSource 留口 | A |
+| 1 | `bridge/founder-reply-deliverer.ts` | ship 分支:身份 + A-1..A-5 → 调 `ApprovalSignalSource` → 共享写 helper;`RawDiscordMessage` + fetch 扩到含**图片附件**(Codex R5:只 founder-authored、allowlist、fetch+hash) | A |
+| 1b | `bridge/approval-signal/`(新) | `ApprovalSignalSource` 抽象 + `ReactionSource`(per-gate poll `targetMessageId` 的 ✅,复用 `founder-confirmation.ts`,确定性零 LLM,查 bot 位)+ `TextSource`(Haiku)+ `ImageSource`(图片附件→多模态 classifier,Annie D2);VoiceSource 留口 | A |
 | 1c | `bridge/founder-thread-notifier.ts` | 成功 POST 后解析并返回 Discord `gateMessageId`(现只 audit threadId/status) | A |
 | 1d | `StateStore.ts` + `bridge/gate-message-binding.ts`(新) | durable `(questionId,execId,issueId,prHeadSha,threadId,gateMessageId,checkpoint,postedAt)` 绑定 + reaction signal marker | A |
 | 2 | `bridge/gate-poller.ts` `founderReplyDeliverPass` | 注入 signal sources + `writeGateResponseAndRunPostWrite` + canonical founder id;founder-reply 读取扩到 reactions | A |
@@ -234,15 +253,30 @@ type ApprovalSignal =   // 每个 variant 都带 questionId+prHeadSha,审计对�
       targetMessageId: string; emoji: "✅"; reactorUserId: string }
   | { source: "text"; kind: "approve" | "reject" | "unclear"; questionId: string; prHeadSha: string;
       messageId: string; authorUserId: string }
+  | { source: "image"; kind: "approve" | "reject" | "unclear"; questionId: string; prHeadSha: string;
+      messageId: string; authorUserId: string;
+      evidenceAttachmentIds: string[]; imageHashes: string[] }  // Annie D2:图片确认(证据到附件级)
   | { source: "voice"; kind: "approve" | "reject" | "unclear"; questionId: string; prHeadSha: string;
       transcriptId: string }; // future
-// Codex R4 #1:接口按 source 各自数据流分,别硬统一(reaction 只吃 gate+targetMessageId;text 吃 message)
+// Codex R4 #1:接口按 source 各自数据流分,别硬统一(reaction 只吃 gate+targetMessageId;text/image 吃 message)
 interface ReactionSource { evaluate(gate: GateBinding): Promise<ApprovalSignal | null>; }
 interface TextSource {
   evaluate(args: { gate: Omit<GateBinding, "targetMessageId">;
                    message: { id: string; content: string; authorId: string } }): Promise<ApprovalSignal | null>;
 }
-// v1: ReactionSource(✅ 确定性零 LLM,只 poll targetMessageId 的 ✅ reactors) + TextSource(A-3 Haiku)
+interface ImageSource {  // founder 图片附件 → 多模态 classifier(Codex R5:证据必须到附件级)
+  evaluate(args: {
+    gate: Omit<GateBinding, "targetMessageId">;
+    // 只收 founder-authored Discord 图片附件(非文字里的任意 URL);先 fetch+hash 再 classify
+    message: { id: string; authorId: string;
+               imageAttachments: { id: string; filename: string; contentType: string;
+                                   byteSize: number; sha256: string }[] };
+  }): Promise<ApprovalSignal | null>;
+}
+// 多模态 classifier verdict(TextSource 用 ClassifierVerdict;ImageSource 用这个):
+// require evidenceMessageId===expectedMessageId AND evidenceAttachmentIds ⊆ expectedAttachmentIds(非空);
+// cache(若有)key = (questionId, prHeadSha, expectedMessageId, attachmentIds, imageHashes)。
+// v1: ReactionSource(✅ 确定性零 LLM) + TextSource(Haiku) + ImageSource(多模态 classifier);future: VoiceSource
 
 // Part A — 绑消息的 ship 批准判定器(Codex R1 #1;仅 TextSource / VoiceSource 用)。禁 bypass/cache;require evidence 匹配。
 interface FounderShipApprovalInput {
@@ -323,17 +357,17 @@ interface LinearIssueFinalizer { markDone(issueId: string): Promise<{ done: bool
 - **D1 身份防伪造强度 = 批准边界反转 ✅(Annie 拍)**:验明是她本人 Discord 身份(reaction
   user / message author === canonicalFounderId 且非 bot)→ 把 approval 写进 gate(反转
   FLY-175 WAKE-only)。fail-closed:身份不符 → WAKE-only 不写。
-- **D2 批准信号 = ✅ reaction + 文字,留抽象层扩语音 ✅(Annie 拍)**:v1 = `ReactionSource`
-  (**✅ 对勾**,确定性零 LLM;**不用 🆒**)+ `TextSource`(Haiku classifier 兜底文字歧义);
-  抽 `ApprovalSignalSource`(A-0)让语音以后作新 source 插入。**D2b 部分成功回滚** = ship 不可逆 →
-  尽力清 + 失败节点告警(FLY-368)+ 不阻塞其他 + 幂等不重清 + per-node reconcile(建议,待
-  Annie 本轮确认)。
+- **D2 明确批准 = 文字 / ✅ reaction / 图片确认 ✅(Annie 拍)**:v1 三 source(`TextSource` Haiku
+  + `ReactionSource` ✅ 确定性零 LLM,不用 🆒 + `ImageSource` 图片附件→多模态 classifier);
+  `ApprovalSignalSource` 抽象让语音以后作新 source 插入。**明确批准的确切定义见 A-0**。**D2b 收尾
+  失败 = best-effort 不回滚 ✅(Annie 拍)**:失败节点只告警(FLY-368)+ 不阻塞其他 + 幂等不重清 +
+  per-node reconcile 补未完成;**绝不回滚已 ship 的东西**。
 - **D3 自 ship 机制 = 保留 `:cool:` ✅(Annie 拍)**:runner 提示词零改,保 CI+branch-protection;
-  `gh pr merge` 已否决。
-- **D4 fan-out v1 scope**(待 Annie 本轮确认):v1 = feature runner + 它的 QA(auto_qa_record 链,
-  已能落);Linear sub-issue 子树接口留好、随 FLY-793。
-- **Part B 启用前置**:runner 自 ship 后中途重启的完全可靠 = 依赖 FLY-795 或本 issue 自带 stale-
-  approved reconciler;默认 default-off、小范围先验。
+  `gh pr merge` 已否决;**不引入 PR mode/pr_handoff ✅(Annie 拍)**。
+- **D4 fan-out scope = 一次做全、分两波 ✅(Annie 拍)**:v1 按当前 main = feature + 它的 QA;
+  FLY-793 merge 后 799 rebase 再把 Design/Implement/QA 三段清理做全(§10)。接口 v1 留好。
+- **Part B 启用前置 ✅(Annie 拍,顺序可协调)**:runner 自 ship 后中途重启的完全可靠 = 依赖
+  FLY-795 或本 issue 自带 stale-approved reconciler;默认 default-off、小范围先验。
 
 ### 本轮回 Annie 的两个问题(D2 a/b)
 - **(a) Haiku 分类器装在 Bridge 哪一层?** 装在 **Bridge 进程内、GatePoller 的 founder-reply 读取
@@ -365,6 +399,11 @@ interface LinearIssueFinalizer { markDone(issueId: string): Promise<{ done: bool
   `review_question_id`+`prHeadSha` 拒;⑮ reaction API 分页第 2 页才找到 founder → 命中;
   ⑯ 403/404/429/malformed → fail-closed;⑰ 重复 poll 同一 ✅ → 幂等(signal marker);⑱ 批准后
   founder 取消 ✅ → 已 durable 写不回滚;⑲ audit 记 targetMessageId + emoji + reactorUserId。
+- **image 专项(Codex R5)**:⑳ 无附件 → null/unclear;㉑ 非图片/超大附件 → fail-closed;㉒ 多附件
+  需显式 evidenceAttachmentIds;㉓ 通用 ✅/👍 图 → unclear;㉔ 旧批准/别 issue/QA-pass 截图 →
+  unclear;㉕ 看不清图 → unclear;㉖ 合法当前-gate 图批准仅当作者=canonical founder 且
+  questionId/prHeadSha 匹配才写;㉗ audit 含 image sha256 + evidenceAttachmentId;㉘ fetch 失败 →
+  unclear(不回退文字)。
 - **集成**:真 CommDB + StateStore:founder 消息 → gate 翻 → verify-approval=true;fan-out 关
   QA + archive。
 - **byte-compat**:env 开关(如 `FLYWHEEL_FOUNDER_AUTO_APPROVE=0` 默认?见 rollout)默认关 →
@@ -377,9 +416,15 @@ Bridge 侧改动 → 需一次 Bridge 重启部署(runner 提示词若 D3=保 :c
 起)。env 开关默认**关**(opt-in),先在 529 Room / 单项目验,再 fleet。协调批量 Bridge 重启
 (攒 PR)。
 
-## 10. 依赖 / 时序
-- **可并行设计**(Tadashi):跟 FLY-795 并行走 plan-first。Part A/C 可先落(default-off)。
-  **Part B 作为新 ship 流程正式启用,前置 = FLY-795 durable-state 地基 _或_ 本 issue 自带的
-  stale-`approved_to_ship`+open-PR reconciler**(二选一,非硬依赖 795 才能动;接口留好)。
-- **v2 fan-out** 依赖 FLY-793 sub-issue 结构。
-- **present Annie** 拍 §7 → Codex design review 已过 → 才 implement。
+## 10. 依赖 / 时序(Annie 拍的分波)
+- **可并行设计**(Tadashi):跟 FLY-795 并行走 plan-first。
+- **fan-out 一次做全、但分两波落地(Annie ④)**:**v1 = 先按当前 main 写**(现 main 上只有
+  feature↔QA 关系 = auto_qa_record,所以 v1 清 feature runner + 它的 QA);**FLY-793 merge 到
+  main 后,799 rebase 上去,把 Design/Implement/QA 三段的清理分开做全**(= 799 PartC 的
+  completion,committed follow-on,不是模糊 future)。接口(`collectRelatedNodes` /
+  `FanoutFinalizationStore`)v1 就留好。
+- **Part B 作为新 ship 流程正式启用,前置 = FLY-795 durable-state 地基 _或_ 本 issue 自带的
+  stale-`approved_to_ship`+open-PR reconciler**(二选一;顺序可跟 795 协调;接口留好)。
+- **收尾 = best-effort(Annie ②)**:某步失败只告警(FLY-368),**绝不回滚已 ship 的东西**
+  (ship 不可逆);幂等不重清 + per-node reconcile 补未完成。
+- **present Annie** 拍板 → Codex design review 已过(4 轮 APPROVED)→ 才 implement。
