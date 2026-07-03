@@ -20,7 +20,11 @@ Issue: FLY-799 (https://linear.app/geoforge3d/issue/FLY-799/infrafounder-facingp
 
 实测过:headless Haiku 走订阅可跑(~7.5s,无 API key);`--output-format json` envelope = `{type,subtype,is_error,result,...}`;Discord create-message 返回 `{id,...}`。
 
-**累计 8 模块 72 测 + notifier byte-compat 集成。**
+9. `image-approval-source.ts`(ImageSource:身份→MIME/size 过滤→注入多模态 classify→evidence 绑定 evidenceMessageId + evidenceAttachmentIds⊆valid)。8 测。`2054f00f`
+
+**多模态实测(Tadashi 要求先测):`claude -p 'What text... @/tmp/x.png' --model claude-haiku-4-5-20251001` 订阅正确读图(~7s,无 API key)→ ImageSource 纳入 v1、不 feature-gate-off。plan/breadcrumb 已钉。**
+
+**累计 9 模块 80 测全绿 + notifier byte-compat 集成。Part A 批准判定层(判定核心 + 3 sources + binding 核)全 landed。**
 
 ## 🔜 未做（整合层,按序,touch 现有 Bridge/StateStore 码)
 1. **A-0b 绑定持久化(纯核 + notifier 已做)**:剩 = ① StateStore 写/读绑定方法(用 `insertEvent(bindingEventId(qid), payload=GateMessageBinding)` write-once + 读回 helper);② `gate-poller.ts` `maybeEmitFounderThreadFallback`(approve_to_ship 分支)在 notifier 返回 `gateMessageId` 后写绑定(写前核 session awaiting_review + review_question_id/pr_head 未变)。ReactionSource evaluate 时读 `selectCurrentBinding` 取 targetMessageId。
