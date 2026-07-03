@@ -61,6 +61,18 @@ export interface FounderConsentWiring {
 	gateRouter: Router;
 	/** Read-only debug router — undefined when off. */
 	debugRouter?: Router;
+	/**
+	 * FLY-799: the post-write hook (flip awaiting_review→approved_to_ship + wake).
+	 * Exposed so the founder-reply approval path (via the ship-approval factory)
+	 * runs the SAME status-flip + wake as Surface B. ALWAYS present.
+	 */
+	onResponseWritten: (info: {
+		executionId: string;
+		questionId: string;
+		leadId: string;
+		answer: string;
+		db: Parameters<typeof sendRunnerWake>[1];
+	}) => Promise<void>;
 }
 
 export function buildFounderConsentWiring(
@@ -245,6 +257,7 @@ export function buildFounderConsentWiring(
 			resolveContext,
 			middlewareFor: () => (_q, _s, next) => next(),
 			gateRouter: createGateResponseRouter(gateDeps),
+			onResponseWritten,
 		};
 	}
 
@@ -302,5 +315,6 @@ export function buildFounderConsentWiring(
 			founderConsentMiddleware(mount, { evaluator, resolveContext, logger }),
 		gateRouter: createGateResponseRouter(gateDeps),
 		debugRouter,
+		onResponseWritten,
 	};
 }

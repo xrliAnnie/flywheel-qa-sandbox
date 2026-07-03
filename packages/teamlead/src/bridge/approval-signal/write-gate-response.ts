@@ -53,6 +53,8 @@ export interface WriteGateResponseArgs {
 		questionId: string;
 		actor: string;
 		answer: string;
+		/** The CommDB the response was written to (the wake needs it). */
+		db: GateResponseDb;
 	}) => unknown;
 }
 
@@ -79,11 +81,16 @@ async function runHook(args: WriteGateResponseArgs): Promise<boolean> {
 				questionId: args.questionId,
 				actor: args.actor,
 				answer: args.answer,
+				db: args.db,
 			}),
 		);
 		// An { ok:false } outcome means the hook did not reach a safe state; a void
 		// / fire-and-forget hook (or { ok:true }) is treated as ok.
-		if (out && typeof out === "object" && (out as { ok?: unknown }).ok === false) {
+		if (
+			out &&
+			typeof out === "object" &&
+			(out as { ok?: unknown }).ok === false
+		) {
 			return false;
 		}
 		return true;
