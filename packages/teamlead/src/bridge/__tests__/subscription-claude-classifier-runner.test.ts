@@ -31,20 +31,24 @@ function okEnvelope(resultText: string): { stdout: string; stderr: string } {
 
 describe("runSubscriptionClassifier — success", () => {
 	it("extracts the verdict JSON from a success envelope", async () => {
-		const execFileImpl = vi.fn().mockResolvedValue(okEnvelope('{"approved": true}'));
+		const execFileImpl = vi
+			.fn()
+			.mockResolvedValue(okEnvelope('{"approved": true}'));
 		const res = await runSubscriptionClassifier("prompt", { execFileImpl });
 		expect(res).toEqual({ ok: true, verdict: { approved: true } });
 	});
 
 	it("strips a ```json code fence around the verdict", async () => {
-		const fenced = "```json\n{\"approved\": false}\n```";
+		const fenced = '```json\n{"approved": false}\n```';
 		const execFileImpl = vi.fn().mockResolvedValue(okEnvelope(fenced));
 		const res = await runSubscriptionClassifier("prompt", { execFileImpl });
 		expect(res).toEqual({ ok: true, verdict: { approved: false } });
 	});
 
 	it("invokes claude headless with -p, --model, --output-format json, NO shell", async () => {
-		const execFileImpl = vi.fn().mockResolvedValue(okEnvelope('{"approved": true}'));
+		const execFileImpl = vi
+			.fn()
+			.mockResolvedValue(okEnvelope('{"approved": true}'));
 		await runSubscriptionClassifier("the-prompt", {
 			execFileImpl,
 			model: "claude-haiku-4-5-20251001",
@@ -61,16 +65,23 @@ describe("runSubscriptionClassifier — success", () => {
 
 describe("runSubscriptionClassifier — fail-closed", () => {
 	it("exec error (timeout / CLI missing / nonzero) → ok:false", async () => {
-		const execFileImpl = vi.fn().mockRejectedValue(
-			Object.assign(new Error("spawn claude ETIMEDOUT"), { killed: true }),
-		);
+		const execFileImpl = vi
+			.fn()
+			.mockRejectedValue(
+				Object.assign(new Error("spawn claude ETIMEDOUT"), { killed: true }),
+			);
 		const res = await runSubscriptionClassifier("p", { execFileImpl });
 		expect(res.ok).toBe(false);
 	});
 
 	it("is_error envelope → ok:false", async () => {
 		const execFileImpl = vi.fn().mockResolvedValue({
-			stdout: JSON.stringify({ type: "result", subtype: "error", is_error: true, result: "" }),
+			stdout: JSON.stringify({
+				type: "result",
+				subtype: "error",
+				is_error: true,
+				result: "",
+			}),
 			stderr: "",
 		});
 		const res = await runSubscriptionClassifier("p", { execFileImpl });
@@ -78,13 +89,17 @@ describe("runSubscriptionClassifier — fail-closed", () => {
 	});
 
 	it("unparseable envelope stdout → ok:false", async () => {
-		const execFileImpl = vi.fn().mockResolvedValue({ stdout: "not json at all", stderr: "" });
+		const execFileImpl = vi
+			.fn()
+			.mockResolvedValue({ stdout: "not json at all", stderr: "" });
 		const res = await runSubscriptionClassifier("p", { execFileImpl });
 		expect(res.ok).toBe(false);
 	});
 
 	it("unparseable verdict inside result → ok:false", async () => {
-		const execFileImpl = vi.fn().mockResolvedValue(okEnvelope("I think you should ship it, yes"));
+		const execFileImpl = vi
+			.fn()
+			.mockResolvedValue(okEnvelope("I think you should ship it, yes"));
 		const res = await runSubscriptionClassifier("p", { execFileImpl });
 		expect(res.ok).toBe(false);
 	});
