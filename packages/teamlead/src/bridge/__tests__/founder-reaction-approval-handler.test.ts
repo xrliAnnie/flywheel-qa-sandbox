@@ -106,13 +106,11 @@ describe("tryFounderReactionApproval", () => {
 	it("session not awaiting_review → null (A-2 narrow)", async () => {
 		const { deps, writeGateResponseImpl } = make({
 			store: {
-				getSession: vi
-					.fn()
-					.mockReturnValue({
-						status: "approved_to_ship",
-						review_question_id: "Q-1",
-						pr_head_sha: "sha-1",
-					}),
+				getSession: vi.fn().mockReturnValue({
+					status: "approved_to_ship",
+					review_question_id: "Q-1",
+					pr_head_sha: "sha-1",
+				}),
 			},
 		});
 		const r = await tryFounderReactionApproval({ gate, ctx }, deps as never);
@@ -123,13 +121,11 @@ describe("tryFounderReactionApproval", () => {
 	it("review_question_id !== gate question → null (stale gate)", async () => {
 		const { deps, writeGateResponseImpl } = make({
 			store: {
-				getSession: vi
-					.fn()
-					.mockReturnValue({
-						status: "awaiting_review",
-						review_question_id: "Q-OTHER",
-						pr_head_sha: "sha-1",
-					}),
+				getSession: vi.fn().mockReturnValue({
+					status: "awaiting_review",
+					review_question_id: "Q-OTHER",
+					pr_head_sha: "sha-1",
+				}),
 			},
 		});
 		const r = await tryFounderReactionApproval({ gate, ctx }, deps as never);
@@ -140,12 +136,10 @@ describe("tryFounderReactionApproval", () => {
 	it("no pr_head_sha → null", async () => {
 		const { deps, writeGateResponseImpl } = make({
 			store: {
-				getSession: vi
-					.fn()
-					.mockReturnValue({
-						status: "awaiting_review",
-						review_question_id: "Q-1",
-					}),
+				getSession: vi.fn().mockReturnValue({
+					status: "awaiting_review",
+					review_question_id: "Q-1",
+				}),
 			},
 		});
 		const r = await tryFounderReactionApproval({ gate, ctx }, deps as never);
