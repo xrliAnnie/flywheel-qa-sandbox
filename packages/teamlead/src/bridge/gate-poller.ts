@@ -44,6 +44,7 @@ import {
 } from "./founder-notify-utils.js";
 import {
 	emitFounderReplyDeliveryForThread,
+	type FounderReplyDeliverDeps,
 	type FounderReplyThreadCtx,
 	type PendingQuestionForThread,
 } from "./founder-reply-deliverer.js";
@@ -153,6 +154,13 @@ export interface GatePollerConfig {
 	founderReplyDeliverEveryNTicks?: number;
 	/** Part B thread-read cursor store (default in-memory). */
 	cursorStore?: InboundCursorStore;
+	/**
+	 * FLY-799: the flag-gated founder ship-approval callback (built in plugin.ts
+	 * via makeFounderShipApprovalCallback). Threaded into the founder-reply
+	 * deliverer so a founder's identity-verified text approval writes the
+	 * approve_to_ship gate response. Absent → deliverer stays WAKE-only.
+	 */
+	tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
 
 	// ── FLY-637-ext: lead-pending escalation ──
 	/**
@@ -1868,6 +1876,8 @@ export class GatePoller {
 							fetchImpl: this.config.fetchImpl,
 							cursorStore: this.config.cursorStore ?? this.defaultReplyCursor,
 							deliverAmbiguousToLead,
+							// FLY-799: founder text approval → gate write (flag-gated; absent → WAKE-only).
+							tryFounderShipApproval: this.config.tryFounderShipApproval,
 						});
 					} catch (err) {
 						console.warn(
