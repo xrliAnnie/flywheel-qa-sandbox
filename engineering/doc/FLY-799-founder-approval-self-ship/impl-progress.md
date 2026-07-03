@@ -15,11 +15,15 @@ Issue: FLY-799 (https://linear.app/geoforge3d/issue/FLY-799/infrafounder-facingp
 4. `founder-ship-approval-classifier.ts` — Tier-3 classifier(建 prompt + evidence_message_id===expectedMessageId 绑定)。9 测。`60b1a9f0`
 5. `types.ts` — `ApprovalSignal` discriminated union + `GateBinding`。
 6. `text-approval-source.ts`(TextSource:身份→Tier2→Tier3)+ `reaction-approval-source.ts`(ReactionSource:包 `checkReactionConfirmation`,✅ only,绑 targetMessageId)。12 测。`0cea1789`
+7. `gate-message-binding.ts`(A-0b 纯核):`extractGateMessageId`(解 Discord create-message .id)+ `bindingEventId`(write-once)+ `selectCurrentBinding`(fail-closed 恰一个 questionId+prHeadSha)。8 测。`3a39b577`
+8. **notifier 集成**:`founder-thread-notifier.ts` `postFounderThreadCore` ok 时解析 body 拿 message id、经 `FounderThreadNotifyResult.gateMessageId`(optional)返回。byte-compat(13 现存 notifier 测仍绿,milestone 路径不受影响)。`424af478`
 
-实测过:headless Haiku 走订阅可跑(~7.5s,无 API key);`--output-format json` envelope = `{type,subtype,is_error,result,...}`。
+实测过:headless Haiku 走订阅可跑(~7.5s,无 API key);`--output-format json` envelope = `{type,subtype,is_error,result,...}`;Discord create-message 返回 `{id,...}`。
+
+**累计 8 模块 72 测 + notifier byte-compat 集成。**
 
 ## 🔜 未做（整合层,按序,touch 现有 Bridge/StateStore 码)
-1. **A-0b gate-message durable 绑定**:`founder-thread-notifier.ts` `postFounderThreadCore` 成功后解析 Discord POST 返回的 message id 并返回(现只 audit threadId/status,L170-175/L229-257);StateStore 新表/事件存 `(questionId,executionId,issueId,prHeadSha,threadId,gateMessageId,checkpoint,postedAt)`,unique key `(questionId,prHeadSha,checkpoint)`、gateMessageId immutable、写前再核 session 仍 awaiting_review。ReactionSource 从此绑定取 `targetMessageId`。
+1. **A-0b 绑定持久化(纯核 + notifier 已做)**:剩 = ① StateStore 写/读绑定方法(用 `insertEvent(bindingEventId(qid), payload=GateMessageBinding)` write-once + 读回 helper);② `gate-poller.ts` `maybeEmitFounderThreadFallback`(approve_to_ship 分支)在 notifier 返回 `gateMessageId` 后写绑定(写前核 session awaiting_review + review_question_id/pr_head 未变)。ReactionSource evaluate 时读 `selectCurrentBinding` 取 targetMessageId。
 2. **ImageSource**(`image-approval-source.ts`):founder 图片附件 → 多模态 classifier。**前置:先实测 `claude -p` 是否支持图片附件输入(base64/文件路径);不支持 → v1 feature-gate(env 关),绝不退化成文字**。证据到附件级(sha256 + evidenceAttachmentIds)。`RawDiscordMessage` + fetch 扩到含附件。
 3. **共享 `writeGateResponseAndRunPostWrite`**:从 `founder-consent/gate-response-router.ts`(L235-268 幂等)+ `wiring.ts`(`onResponseWritten` L153-223)抽出;Surface B 与 founder-reply 共用。含 checkpoint/当前-question/status 守卫 + 相同批准 retry + 冲突拒 + retrySafe 才让 cursor 前移。export `onResponseWritten` + helper 供 deliverer。
 4. **deliverer ship 分支接线**:`founder-reply-deliverer.ts` `processFounderMessage` 的 ship 分支(现只 WAKE,L238-297)改为:身份验证(canonicalFounderId)→ A-2 收窄恰一个当前 ship gate(status=awaiting_review && review_question_id===qid)→ 调 sources(Reaction/Text/Image)→ 明确 approve → 共享 helper 写 `{approved:true}` actor=真实 founder id + audit(user id + msg id + questionId + prHeadSha + node set)→ onResponseWritten 翻状态+唤醒。含糊/reject/非本人→WAKE-only。装配在 `gate-poller.ts` `founderReplyDeliverPass`(L1795-1883)注入 sources + helper + canonicalFounderId。reaction 独立 per-gate poll(不共享文字 cursor)+ bounded backoff + durable signal marker。
