@@ -72,7 +72,9 @@ import {
 	buildRepairChain,
 	resolveFirstAvailableBotToken,
 } from "./alert-bot-chain.js";
+import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
+import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import { loadQaConfigByProject } from "./auto-qa-config-source.js";
 import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { AutoQaEffects } from "./auto-qa-effects.js";
@@ -3281,6 +3283,29 @@ export async function startBridge(
 			}),
 	});
 
+	// FLY-799: the founder ✅-reaction ship-approval callback (same gating; the
+	// gate-poller reaction pass injects the per-lead reactions fetcher per-call).
+	// readBindingImpl resolves the durable (questionId,prHeadSha)->gateMessageId
+	// binding written when the ship ping was posted.
+	const founderReactionApprovalCallback = makeFounderReactionApprovalCallback({
+		discordOwnerUserId: config.discordOwnerUserId,
+		founderConsentUserId: config.founderConsent?.founderUserId,
+		store,
+		denylistProjects: founderAutoApproveDenylist,
+		readBindingImpl: (executionId, questionId, prHeadSha) =>
+			readCurrentGateMessageBinding(store, executionId, questionId, prHeadSha),
+		onResponseWritten: (info) =>
+			founderShipPostWriteHook({
+				executionId: info.executionId,
+				questionId: info.questionId,
+				leadId: info.actor,
+				answer: info.answer,
+				db: info.db as unknown as Parameters<
+					typeof founderShipPostWriteHook
+				>[0]["db"],
+			}),
+	});
+
 	// FLY-725: per-project founder milestone-report config, read from each
 	// project's CANONICAL root (never a runner's PR worktree).
 	const founderMilestoneReportByProject =
@@ -3306,6 +3331,8 @@ export async function startBridge(
 		// FLY-799: founder-in-thread ship approval (default-ON kill-switch inside
 		// the factory). Absent (fcWiring null) → deliverer stays WAKE-only.
 		tryFounderShipApproval: founderShipApprovalCallback,
+		// FLY-799: founder ✅-reaction ship approval (per-gate reaction poll).
+		tryFounderReactionApproval: founderReactionApprovalCallback,
 		cursorStore: founderReplyCursorPath
 			? new FileInboundCursorStore(founderReplyCursorPath)
 			: undefined,

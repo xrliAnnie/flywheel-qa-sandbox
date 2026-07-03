@@ -20,6 +20,7 @@ const callArgs = {
 	gate,
 	ctx: { issueId: "I", threadId: "T", projectName: "proj" },
 	db: {} as never,
+	reactionFetcherImpl: vi.fn(),
 };
 
 afterEach(() => {
@@ -33,7 +34,6 @@ function make(over = {}) {
 	const cb = makeFounderReactionApprovalCallback({
 		discordOwnerUserId: "FOUNDER-1",
 		store: { getSession: vi.fn() },
-		reactionFetcherImpl: vi.fn(),
 		readBindingImpl: vi.fn(),
 		handlerImpl,
 		...over,
@@ -88,5 +88,6 @@ describe("makeFounderReactionApprovalCallback — gating", () => {
 		expect(hArgs.gate).toMatchObject({ questionId: "Q-1", executionId: "E-1" });
 		expect(hArgs.ctx).toMatchObject({ issueId: "I", threadId: "T" });
 		expect(hDeps.db).toBe(callArgs.db);
+		expect(hDeps.reactionFetcherImpl).toBe(callArgs.reactionFetcherImpl);
 	});
 });
