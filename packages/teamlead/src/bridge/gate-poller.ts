@@ -68,9 +68,17 @@ import {
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
 import { decideMilestoneReport } from "./milestone-report-policy.js";
+import { sendRunnerWake } from "./runner-wake.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { defaultGetCommDbPath } from "./session-capture.js";
+import {
+	DEFAULT_REWAKE_BACKOFF_MS,
+	DEFAULT_REWAKE_GRACE_MS,
+	type RewakeSessionProbe,
+	reconcileStaleApprovedShip,
+} from "./stale-approved-ship-reconciler.js";
 import type { UnhandledAlertSink } from "./stuck-escalation.js";
+import { isTmuxSessionAlive } from "./tmux-lookup.js";
 
 /**
  * FLY-208 A2: minimal structural view of the agent-team transport used by the
@@ -602,6 +610,23 @@ export class GatePoller {
 					this.maybeRecoverStore(err);
 				}
 			}
+
+			// FLY-799 Part B: re-wake sessions stranded in approved_to_ship (a
+			// missed self-ship wake). Default-ON kill-switch; same sub-cadence.
+			if (
+				this.staleShipRewakeEnabled() &&
+				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
+			) {
+				try {
+					await this.staleApprovedShipReconcilePass();
+				} catch (err) {
+					console.warn(
+						"[GatePoller] stale approved_to_ship reconcile error:",
+						err instanceof Error ? err.message : String(err),
+					);
+					this.maybeRecoverStore(err);
+				}
+			}
 		} finally {
 			this.polling = false;
 		}
@@ -1085,6 +1110,10 @@ export class GatePoller {
 	 * plenty). Cleared implicitly as the gate leaves awaiting_review.
 	 */
 	private readonly founderReactionNextCheck = new Map<string, number>();
+	/** FLY-799 Part B: execId → next allowed stale-ship re-wake time. */
+	private readonly staleShipRewakeBackoff = new Map<string, number>();
+	/** FLY-799 Part B: execIds already dead-alerted (one alert per stranded ship). */
+	private readonly staleShipDeadAlerted = new Set<string>();
 
 	// ── FLY-637-ext: lead-pending escalation (sibling of the founder fallback) ──
 
@@ -2101,6 +2130,84 @@ export class GatePoller {
 				}
 			}
 		}
+	}
+
+	/** FLY-799 Part B: default-ON re-wake reconciler kill-switch (`=0` disables). */
+	private staleShipRewakeEnabled(): boolean {
+		return process.env.FLYWHEEL_STALE_SHIP_REWAKE !== "0";
+	}
+
+	/**
+	 * FLY-799 Part B: re-wake sessions stranded in approved_to_ship. A LIVE runner
+	 * gets the approval wake re-sent (idempotent; verify-approval still gates the
+	 * actual ship); a DEAD one is alerted once (durable event + warn) and deferred
+	 * to FLY-795. Re-wake-only — never self-ships, never reads 795's progress.md.
+	 */
+	private async staleApprovedShipReconcilePass(): Promise<void> {
+		const sessions = this.config.store
+			.getActiveSessions()
+			.filter((s) => s.status === "approved_to_ship");
+		if (sessions.length === 0) return;
+
+		await reconcileStaleApprovedShip({
+			sessions: sessions as RewakeSessionProbe[],
+			nowMs: Date.now(),
+			graceMs: DEFAULT_REWAKE_GRACE_MS,
+			backoffMs: DEFAULT_REWAKE_BACKOFF_MS,
+			backoff: this.staleShipRewakeBackoff,
+			deadAlerted: this.staleShipDeadAlerted,
+			isAlive: async (s) => {
+				if (!s.tmux_session) return true; // can't probe → treat as live (re-wake harmless)
+				try {
+					return await isTmuxSessionAlive(s.tmux_session);
+				} catch {
+					return true;
+				}
+			},
+			reWake: async (s) => {
+				const dbPath = defaultGetCommDbPath(s.project_name);
+				let db: CommDB;
+				try {
+					db = new CommDB(dbPath, false);
+				} catch {
+					return;
+				}
+				try {
+					await sendRunnerWake(
+						this.config.store,
+						db,
+						s.execution_id,
+						{ issue_id: s.issue_id, project_name: s.project_name },
+						"approval_wake",
+						{ questionId: s.review_question_id },
+					);
+				} finally {
+					db.close();
+				}
+			},
+			alertDead: async (s) => {
+				console.warn(
+					`[GatePoller] FLY-799: approved_to_ship runner ${s.execution_id} (issue ${s.issue_id}) appears DEAD while stranded post-approval — founder approved but the runner cannot self-ship. Deferring to FLY-795 (durable resume).`,
+				);
+				try {
+					this.config.store.insertEvent({
+						event_id: `stale-approved-ship-dead-${s.execution_id}`,
+						execution_id: s.execution_id,
+						issue_id: s.issue_id,
+						project_name: s.project_name,
+						event_type: "stale_approved_ship_dead",
+						source: "bridge.fly799-stale-ship-reconciler",
+						payload: {
+							reviewQuestionId: s.review_question_id ?? null,
+							prHeadSha: s.pr_head_sha ?? null,
+							at: new Date().toISOString(),
+						},
+					});
+				} catch {
+					// durable dead-alert event is best-effort
+				}
+			},
+		});
 	}
 
 	/**
