@@ -405,3 +405,70 @@ describe("buildTriggerBody (the YAML the skill reads — cross-artifact contract
 		expect(body).not.toContain("base_url");
 	});
 });
+
+// FLY-709 P4.4: per-collection runner model — planner carries it verbatim,
+// executor passes it into the /api/runs/start args ONLY when configured
+// (absent = today's request shape byte-for-byte).
+describe("collections[].model pass-through (FLY-709)", () => {
+	it("planner carries col.model into plan.model; absent stays undefined", () => {
+		const withModel = only(
+			planLearningRuns(
+				makeDeps(cfgWith([{ ...ONE_COLLECTION[0], model: "haiku" }])),
+			),
+		);
+		expect(withModel.action).toBe("spawn");
+		if (withModel.action === "spawn") {
+			expect(withModel.plan.model).toBe("haiku");
+		}
+		const without = only(planLearningRuns(makeDeps(cfgWith(ONE_COLLECTION))));
+		if (without.action === "spawn") {
+			expect(without.plan.model).toBeUndefined();
+		}
+	});
+
+	it("executor forwards plan.model to startRun; absent = no model key", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "xhs-model-"));
+		try {
+			const createTriggerIssue = vi.fn(async () => "ISSUE-M");
+			const startRun = vi.fn(async () => ({
+				ok: true as const,
+				executionId: "exec-m",
+			}));
+			const basePlan: CollectionRunPlan = {
+				project: "sub",
+				collectionId: "c1",
+				collectionLabel: "AI-视频",
+				leadId: "sub-lead",
+				departmentLabel: "Sub",
+				targetLinearProject: "Flywheel Sandbox",
+				cadence: "weekly",
+				maxFetch: 20,
+				videoOptIn: false,
+				reviewChannel: "web-local",
+				firstRunCap: 15,
+				firstRunAnalyzeLimit: 200,
+				autoCreate: true,
+			};
+			await executeLearningPlan(
+				[{ action: "spawn", plan: { ...basePlan, model: "claude-sonnet-5" } }],
+				{ stateDir: dir, createTriggerIssue, startRun },
+			);
+			expect(startRun).toHaveBeenCalledWith({
+				issueId: "ISSUE-M",
+				projectName: "sub",
+				leadId: "sub-lead",
+				model: "claude-sonnet-5",
+			});
+
+			startRun.mockClear();
+			await executeLearningPlan(
+				[{ action: "spawn", plan: { ...basePlan, collectionId: "c2" } }],
+				{ stateDir: dir, createTriggerIssue, startRun },
+			);
+			const args = startRun.mock.calls[0][0] as Record<string, unknown>;
+			expect("model" in args).toBe(false);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});

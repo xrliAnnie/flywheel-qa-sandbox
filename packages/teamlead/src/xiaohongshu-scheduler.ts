@@ -56,6 +56,12 @@ export interface CollectionRunPlan {
 	firstRunCap: number;
 	firstRunAnalyzeLimit: number;
 	autoCreate: boolean;
+	/**
+	 * FLY-709: per-collection runner model (config `collections[].model`,
+	 * FLY-728-whitelist-validated at load). Forwarded as the /api/runs/start
+	 * `model` dispatch param. Absent = today's behavior.
+	 */
+	model?: string;
 }
 
 export type CollectionDecision =
@@ -160,6 +166,9 @@ export function planLearningRuns(deps: PlannerDeps): CollectionDecision[] {
 					firstRunAnalyzeLimit:
 						col.first_run_analyze_limit ?? XIAOHONGSHU_MAX_FETCH_CEILING,
 					autoCreate: col.auto_create ?? true,
+					// FLY-709: spread-only so an unconfigured collection keeps today's
+					// plan shape (no `model` key at all).
+					...(col.model !== undefined ? { model: col.model } : {}),
 				},
 			});
 		}
@@ -225,6 +234,8 @@ export interface ExecutorDeps {
 		issueId: string;
 		projectName: string;
 		leadId: string;
+		/** FLY-709: dispatch model (FLY-728 Part C param). Key absent when unconfigured. */
+		model?: string;
 	}) => Promise<StartRunResult>;
 	log?: (msg: string) => void;
 	alert?: (msg: string) => void;
@@ -305,6 +316,7 @@ export async function executeLearningPlan(
 				issueId: triggerIssueId,
 				projectName: plan.project,
 				leadId: plan.leadId,
+				...(plan.model !== undefined ? { model: plan.model } : {}),
 			});
 			if (r.ok) {
 				report.spawned.push(plan.collectionId);

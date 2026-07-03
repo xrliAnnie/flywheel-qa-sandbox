@@ -221,6 +221,7 @@ async function main(): Promise<void> {
 		issueId: string;
 		projectName: string;
 		leadId: string;
+		model?: string;
 	}): Promise<StartRunResult> {
 		const res = await fetch(`${BRIDGE_URL}/api/runs/start`, {
 			method: "POST",
@@ -232,6 +233,9 @@ async function main(): Promise<void> {
 				issueId: args.issueId,
 				projectName: args.projectName,
 				leadId: args.leadId,
+				// FLY-709: per-collection model (key absent when unconfigured —
+				// byte-compat with today's request body).
+				...(args.model !== undefined ? { model: args.model } : {}),
 			}),
 		});
 		if (res.ok) {

@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
+import { readFileSync as ffReadFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,6 +18,7 @@ import {
 } from "flywheel-comm/xiaohongshu-state";
 import {
 	type CommBackend,
+	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
 } from "flywheel-config";
 import {
@@ -101,6 +103,14 @@ import {
 import { archiveIssueThreadIfNoOtherActive } from "./done-thread-archiver.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
+import { ProjectConfigCache } from "./feature-flag-config-source.js";
+import { renderFlagReport } from "./feature-flag-report-html.js";
+import {
+	type FlagCanonical,
+	type FlagRouteDeps,
+	handleFlagApply,
+	handleFlagStage,
+} from "./flag-routes.js";
 import { defaultFleetConsoleOptions, FleetConsole } from "./fleet-console.js";
 import { getFleetConsoleHtml } from "./fleet-console-html.js";
 import {
@@ -132,9 +142,14 @@ import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
 import { queryLinearIssues } from "./linear-query.js";
 import { resolveLinearScope, resolveProjectNameParam } from "./linear-scope.js";
+import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
+import {
+	buildCronModelViews,
+	buildProjectRunnerDefaults,
+} from "./project-runner-model-source.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
@@ -147,6 +162,12 @@ import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
 import { setupRunInfrastructure } from "./run-infra.js";
 import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
+import {
+	handleRunnerApply,
+	handleRunnerStage,
+	type RunnerCanonical,
+	type RunnerRouteDeps,
+} from "./runner-routes.js";
 import { createStatusQuery } from "./runner-status.js";
 import { createRunsRouter } from "./runs-route.js";
 import { RuntimeRegistry } from "./runtime-registry.js";
@@ -917,13 +938,41 @@ export function createBridgeApp(
 		});
 
 		// Secret-free read model (loopback only; allowlisted DTO, never LeadConfig).
-		app.get("/api/fleet/snapshot", (req, res) => {
+		app.get("/api/fleet/snapshot", async (req, res) => {
 			if (!loopbackSelfOrigin(req.headers.host)) {
 				res.status(403).json({ error: "non-loopback host" });
 				return;
 			}
 			try {
+				// FLY-709 P4: mtime-refresh the per-project config cache so a
+				// runner-config CLI write is visible on the NEXT snapshot without a
+				// Bridge restart (unchanged files are stat-only, not re-parsed).
+				await fleetConsole.refreshProjectConfigs?.();
 				res.json(fleetConsole.buildSnapshot());
+			} catch (err) {
+				res.status(500).json({ error: (err as Error).message });
+			}
+		});
+
+		// FLY-709: the phone feature-flag report (loopback). The localhost console
+		// renders the flag cards natively from its snapshot (no iframe), so this
+		// endpoint is the phone artifact only:
+		//   ?interactive=1 → the copy-paste page (delivered via `flywheel-comm
+		//                    feature-flags report` → publish-report; report-registry
+		//                    mints the CSP nonce at serve time).
+		//   (absent/0)     → read-only cards (byte-compat).
+		app.get("/api/fleet/flag-report.html", async (req, res) => {
+			if (!loopbackSelfOrigin(req.headers.host)) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			try {
+				await fleetConsole.refreshProjectConfigs?.();
+				const snap = fleetConsole.buildSnapshot();
+				const html = renderFlagReport(snap, {
+					interactive: req.query.interactive === "1",
+				});
+				res.type("html").send(html);
 			} catch (err) {
 				res.status(500).json({ error: (err as Error).message });
 			}
@@ -1020,6 +1069,106 @@ export function createBridgeApp(
 				selfOrigin,
 			);
 			res.status(r.status).json(r.body);
+		});
+
+		// FLY-709 P2: feature-flag toggle (copy-paste-apply). Same loopback +
+		// same-origin + confirmToken auth as the fleet routes; reuses the console's
+		// token store + audit. Only direct-toggle flags are accepted (server
+		// allow-set is authority; governance/restart-type refused in handleFlagStage).
+		const flagRouteDeps: FlagRouteDeps = {
+			envPath: join(homedir(), ".flywheel", ".env"),
+			readFile: (p) => ffReadFileSync(p, "utf-8"),
+			tokens: fleetConsole.tokens,
+			audit: fleetConsole.audit,
+		};
+		app.post("/api/fleet/flag/stage", (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const r = handleFlagStage(flagRouteDeps, req.body, selfOrigin);
+			res.status(r.code).json(r.body);
+		});
+		app.post("/api/fleet/flag/apply", (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const { canonical, confirmToken } = (req.body ?? {}) as {
+				canonical?: FlagCanonical;
+				confirmToken?: string;
+			};
+			if (!canonical || !confirmToken) {
+				res.status(400).json({ error: "missing canonical/confirmToken" });
+				return;
+			}
+			const r = handleFlagApply(
+				flagRouteDeps,
+				canonical,
+				confirmToken,
+				selfOrigin,
+			);
+			res.status(r.code).json(r.body);
+		});
+
+		// FLY-709 P5: runner-default stage/apply — same loopback + same-origin +
+		// confirmToken auth as flag/fleet; reuses the console's tokens + audit +
+		// the live project topology (projectRoot resolved server-side, never from
+		// the client). Writes config.yaml (new-run scope; NO Lead restart).
+		const runnerRouteDeps: RunnerRouteDeps = {
+			liveProjects: () => projects,
+			readFile: (p) => ffReadFileSync(p, "utf-8"),
+			tokens: fleetConsole.tokens,
+			audit: fleetConsole.audit,
+		};
+		app.post("/api/fleet/runner/stage", (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const r = handleRunnerStage(runnerRouteDeps, req.body, selfOrigin);
+			res.status(r.code).json(r.body);
+		});
+		app.post("/api/fleet/runner/apply", async (req, res) => {
+			const selfOrigin = loopbackSelfOrigin(req.headers.host);
+			if (!selfOrigin) {
+				res.status(403).json({ error: "non-loopback host" });
+				return;
+			}
+			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
+				res.status(403).json({ error: "cross-origin" });
+				return;
+			}
+			const { canonical, confirmToken } = (req.body ?? {}) as {
+				canonical?: RunnerCanonical;
+				confirmToken?: string;
+			};
+			if (!canonical || !confirmToken) {
+				res.status(400).json({ error: "missing canonical/confirmToken" });
+				return;
+			}
+			const r = await handleRunnerApply(
+				runnerRouteDeps,
+				canonical,
+				confirmToken,
+				selfOrigin,
+			);
+			res.status(r.code).json(r.body);
 		});
 	}
 
@@ -2497,13 +2646,54 @@ export async function startBridge(
 				process.env.FLYWHEEL_REPO_ROOT?.trim() ||
 				resolve(here, "..", "..", "..", "..");
 			const fleetScriptPath = join(repoRoot, "scripts", "flywheel-fleet.sh");
+			const commCliPath = join(
+				repoRoot,
+				"packages",
+				"flywheel-comm",
+				"dist",
+				"index.js",
+			);
+			// FLY-709 P4: mtime-cached per-project configs (Codex R1 #6) — env
+			// flags are always fresh from process.env; project-config flags/rows
+			// refresh whenever the file stamp changes (runner-config CLI writes are
+			// visible on the next snapshot, no Bridge restart).
+			const ffConfigCache = new ProjectConfigCache();
+			void ffConfigCache
+				.get(fleetConfigProvider.snapshot().projects)
+				.catch(() => {});
 			fleetConsole = new FleetConsole(
 				defaultFleetConsoleOptions({
 					fleetScriptPath,
+					commCliPath,
 					liveProjects: () => fleetConfigProvider.snapshot().projects,
 					legacyBackendOf: (p) => fleetLegacyBackendOf(p),
 					// Online dot from the live evidence poller (null/stale → unknown).
 					fleetEvidence: () => fleetPoller.snapshot(),
+					// FLY-709 P4: stat-and-reload-on-change before a snapshot build.
+					refreshProjectConfigs: () =>
+						ffConfigCache
+							.get(fleetConfigProvider.snapshot().projects)
+							.then(() => undefined)
+							.catch(() => undefined),
+					// FLY-709: resolved feature-flag views (env fresh + cached configs).
+					featureFlags: () =>
+						resolveAllFlags({
+							env: process.env,
+							projectConfigs: ffConfigCache.current(),
+						}),
+					// FLY-709 ② (b): per-project runner default model, derived from the
+					// SAME cached configs (no extra config.yaml IO).
+					projectRunnerDefaults: () =>
+						buildProjectRunnerDefaults(
+							fleetConfigProvider.snapshot().projects,
+							ffConfigCache.current(),
+						),
+					// FLY-709 P4.4: cron (recurring-issue) model rows from the same map.
+					cronModels: () =>
+						buildCronModelViews(
+							fleetConfigProvider.snapshot().projects,
+							ffConfigCache.current(),
+						),
 					logger: (msg) => console.log(msg),
 				}),
 			);

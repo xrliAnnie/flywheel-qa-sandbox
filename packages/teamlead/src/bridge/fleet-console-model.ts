@@ -13,6 +13,7 @@
  * listed in `ConsoleLeadView` are exposed.
  */
 
+import type { FlagView } from "flywheel-config";
 import type { LeadBackendId } from "../lead-backends/lead-backend.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import {
@@ -57,8 +58,88 @@ export interface ConsoleLeadView {
 	online?: ConsoleLeadOnline;
 }
 
+/**
+ * FLY-728 seam (read-only): a per-issue model override, sourced from FLY-728's
+ * mechanism when it lands. FLY-709 only DISPLAYS this; it does not build the
+ * mechanism. Absent provider → the console omits the section entirely (no empty
+ * placeholder implying the feature exists).
+ */
+export interface PerIssueModelView {
+	issueId: string;
+	identifier: string;
+	model: string;
+	source: string;
+}
+
+/** A provider FLY-728 wires in later; FLY-709 renders read-only if present. */
+export interface PerIssueModelProvider {
+	list(): PerIssueModelView[];
+}
+
+/**
+ * FLY-709 ② (b): a project's DEFAULT runner model/effort/backend, read-only, from
+ * `roles.runner` in `<projectRoot>/.flywheel/config.yaml` (FLY-671). This is the
+ * per-project Runner default — distinct from the per-Lead model chips (FLY-247,
+ * which stay editable and unchanged). 709 only DISPLAYS it; changing the default
+ * runner model is a follow-up (config.yaml writer, P3) / the FLY-728 label path.
+ */
+export interface ProjectRunnerDefaultView {
+	projectName: string;
+	/** roles.runner.model, or null = account default (no override). */
+	model: string | null;
+	/** roles.runner.effort, or null = default (no --effort). */
+	effort: string | null;
+	/** roles.runner.backend, or null = default (claude-tmux). */
+	backend: string | null;
+	/** Config load error surfaced as data (never silently defaulted). */
+	error?: string;
+}
+
+/**
+ * FLY-709 P4.4 — cron (recurring xiaohongshu trigger issue) model rows: one
+ * per enabled collection, with the configured `collections[].model` (null =
+ * default). The console renders a copy-command targeting
+ * `flywheel-comm runner-config apply --cron`.
+ */
+export interface CronModelView {
+	projectName: string;
+	collectionId: string;
+	label: string;
+	leadId: string;
+	model: string | null;
+}
+
+/**
+ * FLY-709 P4.3 — static option lists for the per-project runner-default
+ * dropdowns (the RUNNER executor layer, where the full 4-backend set lives —
+ * distinct from the 2-option Lead backend).
+ */
+export interface RunnerCapabilities {
+	backends: readonly string[];
+	models: readonly string[];
+	efforts: readonly string[];
+}
+
 export interface ConsoleSnapshot {
 	leads: ConsoleLeadView[];
+	/** FLY-709: every registered feature flag's current state (read-only view). */
+	featureFlags?: FlagView[];
+	/** FLY-728 seam: present only when a provider is wired. */
+	perIssueModels?: PerIssueModelView[];
+	/** FLY-709 ② (b): per-project runner default model (read-only). */
+	projectRunnerDefaults?: ProjectRunnerDefaultView[];
+	/** FLY-709 P4.4: cron recurring-issue model rows. */
+	cronModels?: CronModelView[];
+	/** FLY-709 P4.3: dropdown options for the runner-default rows. */
+	runnerCapabilities?: RunnerCapabilities;
+	/**
+	 * FLY-709 P4.2 (Codex R1 #4): the Bridge-runtime engine/CLI paths the
+	 * copy-command builders quote — never a hardcoded checkout. Local machine
+	 * paths only (not secrets); the pages that receive them are the loopback
+	 * console and the unguessable-token hosted ops page.
+	 */
+	fleetScriptPath?: string;
+	commCliPath?: string;
 }
 
 /** Resolve the display label for a Lead's active model under its backend. */
@@ -113,12 +194,29 @@ export function buildConsoleLeadView(
  * gate, R5 #1). `legacyBackendOf` optionally supplies the FLY-224 legacy backend
  * per (projectName, agentId).
  */
+export interface ConsoleSnapshotExtras {
+	/** FLY-709: resolved feature-flag views (from flywheel-config resolveAllFlags). */
+	featureFlags?: FlagView[];
+	/** FLY-728 seam: per-issue model rows (omitted when no provider). */
+	perIssueModels?: PerIssueModelView[];
+	/** FLY-709 ② (b): per-project runner default model rows (read-only). */
+	projectRunnerDefaults?: ProjectRunnerDefaultView[];
+	/** FLY-709 P4.4: cron recurring-issue model rows. */
+	cronModels?: CronModelView[];
+	/** FLY-709 P4.3: dropdown options for the runner-default rows. */
+	runnerCapabilities?: RunnerCapabilities;
+	/** FLY-709 P4.2: Bridge-runtime engine/CLI paths for the copy commands. */
+	fleetScriptPath?: string;
+	commCliPath?: string;
+}
+
 export function buildConsoleSnapshot(
 	projects: ProjectEntry[],
 	legacyBackendOf?: (
 		projectName: string,
 		lead: LeadConfig,
 	) => string | null | undefined,
+	extras?: ConsoleSnapshotExtras,
 ): ConsoleSnapshot {
 	const leads: ConsoleLeadView[] = [];
 	for (const project of projects) {
@@ -127,7 +225,30 @@ export function buildConsoleSnapshot(
 			leads.push(buildConsoleLeadView(project.projectName, lead, legacy));
 		}
 	}
-	return { leads };
+	const snapshot: ConsoleSnapshot = { leads };
+	if (extras?.featureFlags) snapshot.featureFlags = extras.featureFlags;
+	// FLY-728 seam: only attach when a provider actually supplied rows.
+	if (extras?.perIssueModels && extras.perIssueModels.length > 0) {
+		snapshot.perIssueModels = extras.perIssueModels;
+	}
+	// FLY-709 ② (b): attach when a provider is wired (omitted → no section).
+	if (
+		extras?.projectRunnerDefaults &&
+		extras.projectRunnerDefaults.length > 0
+	) {
+		snapshot.projectRunnerDefaults = extras.projectRunnerDefaults;
+	}
+	// FLY-709 P4.4: cron rows — same omitted-when-empty contract.
+	if (extras?.cronModels && extras.cronModels.length > 0) {
+		snapshot.cronModels = extras.cronModels;
+	}
+	if (extras?.runnerCapabilities) {
+		snapshot.runnerCapabilities = extras.runnerCapabilities;
+	}
+	if (extras?.fleetScriptPath)
+		snapshot.fleetScriptPath = extras.fleetScriptPath;
+	if (extras?.commCliPath) snapshot.commCliPath = extras.commCliPath;
+	return snapshot;
 }
 
 /** Keys that must NEVER appear in the secret-free console DTO. */
