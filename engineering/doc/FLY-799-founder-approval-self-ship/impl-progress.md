@@ -32,14 +32,19 @@ Issue: FLY-799 (https://linear.app/geoforge3d/issue/FLY-799/infrafounder-facingp
 
 **累计 13 功能模块 126 测全绿(含现存 deliverer 11 + notifier 13,byte-compat 验过)。文字批准端到端全通:founder 文字→身份→A-2 收窄→TextSource→写 {approved:true} 归属 founder→(hook)翻状态+唤醒。**
 
-## 🔜 剩余 = 生产 plumbing（注入真 deps + fanout cleanup + reconciler,touch gate-poller/plugin 大文件）
-0. **build worktree deps 才能跑 deliverer 测**:`pnpm --filter flywheel-comm build`(deliverer import 真 flywheel-comm/db)。已建。
-1. **gate-poller.founderReplyDeliverPass 装配**:build `tryFounderShipApproval` callback = 注入 canonicalFounderId(deriveCanonicalFounderId)+ 真 CommDB + wiring 的 onResponseWritten;flag `FLYWHEEL_FOUNDER_AUTO_APPROVE`(默认 ON)+ per-project denylist 门控;把 callback 传进 `emitFounderReplyDeliveryForThread` deps。**+ 写 binding**:`maybeEmitFounderThreadFallback` notifier 返回 gateMessageId 后 `writeGateMessageBinding`(写前核 session awaiting_review + review_question_id/pr_head)。**+ reaction per-gate poll**(A-0c:独立文字 cursor,读 binding 的 targetMessageId,调 evaluateReactionSource + 写 helper + bounded backoff + signal marker)。
-2. ImageSource 接线(default-off flag,download+hash+@path;handler 加 image 分支)。
+## 🔜 剩余 = 生产 plumbing
+0. **build worktree deps 才能跑测**:`pnpm --filter "flywheel-teamlead^..." build`(gate-poller/deliverer import 真 flywheel-comm/db + flywheel-core)。已建。
+
+### ✅ 已 landed（本轮续接）
+- **文字批准端到端 wire**(`c03d0cf8`+`62570620`):`startBridge` 建 `makeFounderShipApprovalCallback`(canonicalFounderId + store + denylist + onResponseWritten)→ 传进 GatePoller.config.tryFounderShipApproval;deliverer ship 分支已接。共享 flip+wake 从 wiring 抽成 `buildGateResponsePostWriteHook`(Surface B + founder-reply 同一真相)。
+- **binding 写**(`358978ae`):`maybeEmitFounderThreadFallback` 在 posted approve_to_ship ping 后 `writeGateMessageBinding`(写前核 awaiting_review + review_question_id===qid + pr_head)。write-once。
+- **✅ reaction 端到端 wire**(`358978ae`+`48b653a3`):`founder-reaction-approval-handler.ts`(per-gate,读 binding→evaluateReactionSource→共享写)+ `founder-reaction-approval-factory.ts`(同文字 gating,reactionFetcherImpl 是 per-call arg=per-lead botToken)+ gate-poller `founderReactionApprovalPass`(枚举 pending approve_to_ship gate,建 per-lead Discord reactions fetcher,per-qid 15s 节流,piggyback founder-reply sub-cadence,自限=flip 后掉出 awaiting_review filter)+ plugin `makeFounderReactionApprovalCallback`(readBindingImpl=readCurrentGateMessageBinding)。**14 新测 + 18 gate-poller founder 测 + full teamlead build 全绿。**
+
+### 🔜 未做
+2. ImageSource 接线(default-off flag `FLYWHEEL_FOUNDER_IMAGE_APPROVAL`,download+hash+@path;handler 加 image 分支)。
 3. gate-response-router 改用共享 `writeGateResponseAndRunPostWrite`(Codex dedup,可选/小心)。
-4. **Part C fanout cleanupNode**:对每 RelatedNode 调 `closeRunner{finalizeDone,archive}`(QA 用 `closeQaRunner`)+ `removeCleanWorktree` + 抽 `LinearIssueFinalizer.markDone`(plugin.ts L1882-1938)+ per-node marker/reconcile;接 `post-ship-finalization.runPostShipFinalization` 尾。
-5. **Part B re-wake reconciler**(见旧笔记)。
-6. **plugin 装配 + flag**(见旧笔记)。
+4. **Part C fanout cleanupNode**:对每 RelatedNode 调 `closeRunner{finalizeDone,archive}`(QA 用 `closeQaRunner`)+ `removeCleanWorktree` + 抽 `LinearIssueFinalizer.markDone`(plugin.ts L1882-1938)+ per-node marker/reconcile;接 `post-ship-finalization.runPostShipFinalization` 尾。**core=issue 标题「自动收尾」**。
+5. **Part B re-wake reconciler**(`stale-approved-ship-reconciler.ts`):默认-ON,扫 stale approved_to_ship→re-verify(复用 verifyApproval)→只 re-wake 活 runner,真死→alert+待 795,不读 795 progress.md。
 
 --- 旧笔记（细节保留）---
 1. **A-0b 绑定持久化(纯核 + notifier 已做)**:剩 = ① StateStore 写/读绑定方法(用 `insertEvent(bindingEventId(qid), payload=GateMessageBinding)` write-once + 读回 helper);② `gate-poller.ts` `maybeEmitFounderThreadFallback`(approve_to_ship 分支)在 notifier 返回 `gateMessageId` 后写绑定(写前核 session awaiting_review + review_question_id/pr_head 未变)。ReactionSource evaluate 时读 `selectCurrentBinding` 取 targetMessageId。
