@@ -66,8 +66,14 @@ graph TD
 - **`ReactionSource`(v1,✅ 对勾)**:founder 在 ship-gate 那条消息上贴 ✅ = **确定性批准,零
   LLM**。**不用 🆒**(Annie:少见;v1 只 ✅)。最简单最稳,是主路径。**必须绑到 A-0b 的
   durable `targetMessageId`**(下条);缺绑定 → 拒批准(不靠文字/时间戳/最新 post/扫 thread 猜)。
-- **`TextSource`(v1,自由文字)**:走 A-3 的 Haiku classifier(只为「别把『我看看再 ship』误当
-  批准」兜底)。
+- **`TextSource`(v1,自由文字)—— 3 层省钱(Annie:能免费就别付费)**:**Tier-2 = 精确短句
+  allowlist(非 substring,Codex R7 #1)**:归一化后**整条消息**恰等于白名单短句才算(如 `ship` /
+  `ship it` / `approve` / `approved` / `lgtm` / `go` / `批准` / `可以 ship` / `上线吧` /
+  `同意上线` / `ship FLY-799`)。**任一命中即降级 Tier-3 / unclear**:含 newline/引用/代码块/URL/
+  `?`/`:`/逗号分号/多句、>4-5 tokens 或 >~32 chars、任何 hedge/条件/否定(no/not/don't/but/after/
+  if/when/unless/wait/hold、别/不/先/等/看/再/待会/如果/除非/但是/改完/晚点)。**出现 issue/PR 号
+  或 `FLY-xxx` 必须与当前 `issueId`/PR 号精确匹配**,否则 unclear(裸 `ship 756` 若 756≠当前绑定
+  则不批)。**Tier-3 只有真·模糊自由文字才兜底** → A-3 classifier,**走订阅不烧付费 API**(见 A-3)。
 - **`ImageSource`(v1,Annie:图片确认)**:founder 发**图片附件**(截图/图片确认)→ **多模态
   classifier**(Claude 原生多模态)判是否明确批准。**证据到附件级(Codex R5)**:先只收
   founder-authored Discord 图片附件(非文字里任意 URL)、过 MIME/扩展 allowlist + 数量/字节上限 +
@@ -120,14 +126,25 @@ rerun / 未来 sub-issue)。写前**收窄候选**:只留 `session.status==="awa
 session.review_question_id === q.questionId` 的 gate,**要求恰好一个**;>1 → 不写、WAKE-only +
 交回 Lead(除非 Annie 明确批 batch 语法,§7-D2)。
 
-**A-3 批准意图判定(专用 classifier,绑消息,Codex R1 #1)**:**不直接复用
+**A-3 批准意图判定(专用 classifier,绑消息,Codex R1 #1;仅 Tier-3 兜底调)**:**不直接复用
 `FounderConsentEvaluator`** —— 它会 env/label short-circuit(evaluator L149-178)、cache 按
 issue/exec/action/head 而非消息 id(L180-200)、只要求 evidence 是"window 内某条 founder 消息"
 (L297-314)。新增专用合同 `FounderShipApprovalClassifier`:输入必须含 `expectedMessageId /
 messageContent / questionId / executionId / issueId / prHeadSha`;**禁用 env/label bypass**;
-**禁 cache 或按 `(questionId, prHeadSha, expectedMessageId)` 为 key**;若用 LLM,**要求
+**禁 cache 或按 `(questionId, prHeadSha, expectedMessageId)` 为 key**;**要求
 `decision.evidenceMessageId === expectedMessageId`**,否则 fail-closed。明确 reject/
 changes-requested → 写 feedback(非 approved)+ feedback_wake。含糊/非本人 → WAKE-only。
+**成本(Annie:能免费就别付费)+ 订阅 runner 合同(Codex R7 #2)**:classifier 只在 **Tier-3
+(真·模糊自由文字 / 图片)** 才调,且**走订阅**(headless `claude -p` / Claude Code,与 Belle/Runner
+同套 subscription),**不用付费 `AnthropicLLMClient`**。当前 codebase 无现成「一次性 prompt→严格
+JSON verdict」封装 → 新 seam `SubscriptionClaudeClassifierRunner`,硬合同:**`execFile` 无 shell +
+固定 cwd + 最小 env + 显式 `CLAUDE_CONFIG_DIR`/PATH;严格 timeout + max stdout/stderr buffer + 并发
+上限 + 失败熔断;timeout/nonzero/login/rate-limit/malformed JSON 全部 → `unclear` + WAKE-only**
+(绝不 fail-open);输出过 JSON schema 校验 + 叠加 `evidenceMessageId===expectedMessageId`
+(+image attachment ids/hash);审计记 `claude --version`/promptHash/policyVersion/latency/exit/stderr
+摘要。**ImageSource 前置:先证明本机订阅 CLI 支持多模态附件输入;不支持/不可稳定测 → v1
+fail-closed/feature-gate,绝不默默退化成文字推断**。绝大多数批准是 ✅ 或 Tier-2(零 AI)→ Tier-3
+极少触发。
 
 **A-4 写路径复用受信任语义(抽共享 helper,Codex R1 #3)**:**不裸写
 `db.insertResponse + onResponseWritten`**。抽一个共享内部 helper
@@ -152,7 +169,10 @@ response 但 transition/wake 失败 → 不前移 cursor,下轮重试收敛)。
 response 谁权威」,而写路径本被 respond.ts 限死(research A.3)。FLY-799 在 **Bridge 进程内、
 基于 Discord 身份验证过的、绑定到唯一当前 question + PR head + 具体消息 id 的 founder 批准**
 写 —— 比 Lead 转述更强的 founder 授权证据,等价于「被信任路径」,符合 FLY-175 本意。**这条写面
-走独立的 default-off flag(区别于 default-on 的 founder-reply-deliver flag)**,opt-in 才启用。
+有独立 flag 作 kill-switch;Annie 拍『默认 ON』(直接上线、发现问题再关),不是 opt-in-off。**
+仍保留 `=0` 关闭时逐字等于旧 WAKE-only 行为 + reverse-compat sentinel(证明关掉=旧行为)。
+**默认 ON 的前提 = Part B 的 v1 stale-approved reconciler 必须在 799 内落地**(否则 Bridge 重启
+中断自 ship 会 strand;见 Part B / §9)。
 
 ### Part B — runner 自 ship(基本不改 + 795 依赖)
 
@@ -160,18 +180,23 @@ Blueprint APPROVE GATE 已对(research B)。Part B:
 - **D3 = 保留 `:cool:`(Annie 已拍✅)**:**零改动** runner 提示词,保 CI/deploy/branch-protection。
   `gh pr merge` 方案已否决(不改 Blueprint L1167)。
 
-**795 依赖 —— 诚实定位(Codex R1 #5,不再声称 restart-resilient)**:runner 醒来后的自 ship
-是**一次性过程**(verify-approval→`:cool:`→轮询 merge→改 land-status→completed,Blueprint
-L1159-1177)。若 runner 进程在**批准后、`:cool:`/land-rewrite/completion 之前**死掉,「wake +
-幂等 verify-approval」**兜不住**(它只在同一个活 runner 真消费了 wake 时才续做);现有
-stale-blocker 逻辑只会 alert / finalize 已 merged/closed 的 PR,**不会 resume 一个 open 的
-approved ship**(stale-blocker-guard L14-19、L126-139)。因此:
-- **v1 落地 default-off**(landing code 允许);但**把它当新 ship 流程正式启用,前置条件 =
-  FLY-795 durable-state 地基,或本 issue 自带一个具体的 v1 reconciler**:检测 stale
-  `approved_to_ship` + open PR 的 session → bounded、audited 地 re-wake / re-drive。
-- 设计里定义窄接口 `ShipResumeSubstrate`(v1 = wake + 幂等 verify + [可选] stale-approved
-  reconciler;v2 = 795 durable 快照续做),实现挂接口后。**production 启用的 gating 写进 §9
-  rollout + §7 present Annie。**
+**默认 ON 的 restart 安全前提 —— v1 stale-approved reconciler(Codex R7 #3,in-scope)**:runner
+醒来后的自 ship 是**一次性过程**(verify-approval→`:cool:`→轮询 merge→改 land-status→completed,
+Blueprint L1159-1177)。现有 stale-blocker 对 open PR 只 alert(stale-blocker-guard L14-19、
+L126-139),不 resume。因默认 ON,本 issue 落地一个**明确 re-wake-only 状态机**(不做 Bridge 自
+post `:cool:` 的 re-driver —— 那会变成新的 Bridge-side ship executor,与「runner 自 ship 零改」
+矛盾;full runner-death 恢复 defer 795):
+- **触发**:Bridge startup + bounded periodic scan;只扫 **flag ON 且 stale** 的
+  `status=approved_to_ship` 且有 `review_question_id`/`pr_head_sha`/PR number 的 session。
+- **claim**:durable lock keyed `(executionId, questionId, prHeadSha, prNumber)` + marker
+  (`scanned/rewake_sent/adopted/alerted/done`),crash 可 adopt;单 Bridge worker 收口。
+- **re-verify**:复用 `verifyApproval`;查 **PR live head sha === session pr_head_sha**;PR
+  merged → 只 finalize/landing、**不重复 ship**;PR closed/head mismatch/missing/429/unknown →
+  **fail-closed + alert**。
+- **动作 = 只 re-wake 仍活着的 runner mailbox**(不自 post `:cool:`)。**runner 已死(真 strand)
+  → alert + 明说『live runner 才修,真 death 待 795』**,并据此**收窄默认-ON 的可靠性声明**(诚实:
+  覆盖『Bridge 重启但 runner tmux 存活』这个常见情形;机器重启杀了 runner 的真 death 留 795)。
+- 窄接口 `ShipResumeSubstrate`(v1 = re-wake + 幂等 verify + reconciler;v2 = 795 断点续做)。
 
 ### Part C — fan-out 收尾(扩 post-ship-finalization)
 
@@ -226,15 +251,16 @@ graph TD
 | 2 | `bridge/gate-poller.ts` `founderReplyDeliverPass` | 注入 signal sources + `writeGateResponseAndRunPostWrite` + canonical founder id;founder-reply 读取扩到 reactions | A |
 | 3 | `bridge/founder-consent/wiring.ts` | export `onResponseWritten` + 抽出的共享 `writeGateResponseAndRunPostWrite`(Surface B 也改用) | A |
 | 4 | `bridge/founder-consent/gate-response-router.ts` | 改用共享 `writeGateResponseAndRunPostWrite`(去重,Codex R1 #3) | A |
-| 5 | `bridge/founder-ship-approval-classifier.ts`(新) | `FounderShipApprovalClassifier`(TextSource 用):绑 expectedMessageId,禁 bypass/cache,require evidenceMessageId 匹配 | A |
-| 6 | `bridge/plugin.ts` | 装配 classifier + helper + canonical founder id + 新 default-off flag → GatePoller config | A |
+| 5 | `bridge/founder-ship-approval-classifier.ts`(新) | Tier-2 **精确短句 allowlist**(整条恰等、零 AI、数据+表驱动测试)+ Tier-3 `FounderShipApprovalClassifier`(**走订阅 headless claude,非付费 API**;绑 expectedMessageId,禁 bypass/cache,require evidenceMessageId 匹配;图片多模态同订阅) | A |
+| 6 | `bridge/plugin.ts` | 装配 signal sources + helper + canonical founder id + **default-ON kill-switch flag**(`FLYWHEEL_FOUNDER_AUTO_APPROVE`,`=0` 关)+ per-project denylist → GatePoller config | A |
 | 7 | `bridge/fanout-finalization.ts`(新) | `collectRelatedNodes` + `cleanupNode` + fan-out claim | C |
 | 8 | `bridge/linear-issue-finalizer.ts`(新,从 plugin.ts L1882-1938 抽) | `LinearIssueFinalizer.markDone`(state-name resolution 复用) | C |
 | 9 | `StateStore.ts` + `bridge/fanout-finalization-store.ts`(新) | `FanoutFinalizationStore`:per-node started/succeeded/failed marker + reconcile | C |
 | 10 | `bridge/post-ship-finalization.ts` | ship 收尾后 call fan-out(v1 = auto_qa 链,仅已 PASS QA) | C |
-| 11 | [Part B production 启用前] stale-`approved_to_ship` reconciler(或依赖 795) | Codex R1 #5 | B |
+| 11 | `bridge/stale-approved-ship-reconciler.ts`(新,**v1 in-scope**,默认-ON 安全前提) | 检测 stale `approved_to_ship`+open-PR → **re-wake-only**(只叫醒活 runner,**Bridge 绝不自 post :cool:**;真死→alert,待 795) | B |
 | 12 | `edge-worker/src/Blueprint.ts` | [仅 D3=merge 时] 改 :cool: 那句 | B |
-| 13 | 2 个 env 开关(default-off 授权写面 + fan-out)+ 测试夹具 + 单测/集成测 | byte-compat + TDD | ALL |
+| 12b | `bridge/subscription-claude-classifier-runner.ts`(新) | Tier-3 走订阅的 fail-closed wrapper(execFile、无 shell、timeout/buffer/并发上限、JSON schema、失败→unclear;image 先证多模态支持否则 feature-gate) | A |
+| 13 | env 开关(**default-ON kill-switch** 授权写面 + per-project denylist + fan-out flag)+ 测试夹具 + 单测/集成测 | kill-switch compat + TDD | ALL |
 
 ## 5. 接口(795 边界 + fan-out 收集器)
 
@@ -314,7 +340,7 @@ function writeGateResponseAndRunPostWrite(args: {
 // **HTTP Surface B 路径**:仍可选现有 best-effort(hook 失败不 fail 请求)—— 但这是**调用方
 // 显式策略**,不藏在共享原语里。
 
-// Part B — ship resume 地基(v1 = wake+幂等 verify [+可选 stale-approved reconciler];v2 = FLY-795)
+// Part B — ship resume 地基(v1 = re-wake + 幂等 verify + stale-approved reconciler[in-scope];v2 = FLY-795)
 interface ShipResumeSubstrate { ensureShipResumable(execId: string): Promise<void>; }
 
 // Part C — 关系图收集(v1 auto_qa;v2 Linear 子树)
@@ -357,23 +383,25 @@ interface LinearIssueFinalizer { markDone(issueId: string): Promise<{ done: bool
 - **D1 身份防伪造强度 = 批准边界反转 ✅(Annie 拍)**:验明是她本人 Discord 身份(reaction
   user / message author === canonicalFounderId 且非 bot)→ 把 approval 写进 gate(反转
   FLY-175 WAKE-only)。fail-closed:身份不符 → WAKE-only 不写。
-- **D2 明确批准 = 文字 / ✅ reaction / 图片确认 ✅(Annie 拍)**:v1 三 source(`TextSource` Haiku
-  + `ReactionSource` ✅ 确定性零 LLM,不用 🆒 + `ImageSource` 图片附件→多模态 classifier);
-  `ApprovalSignalSource` 抽象让语音以后作新 source 插入。**明确批准的确切定义见 A-0**。**D2b 收尾
-  失败 = best-effort 不回滚 ✅(Annie 拍)**:失败节点只告警(FLY-368)+ 不阻塞其他 + 幂等不重清 +
-  per-node reconcile 补未完成;**绝不回滚已 ship 的东西**。
+- **D2 明确批准 = 文字 / ✅ reaction / 图片确认 ✅(Annie 拍)**:v1 三 source。**文字走 3 层省钱
+  (Annie:能免费就别付费)**:① ✅ reaction 零 AI(主路径)② Tier-2 常见关键词零 AI(带否定守卫)
+  ③ 只有真·模糊文字/图片才调 classifier,**走订阅不烧付费 API**(A-3)。`ApprovalSignalSource`
+  抽象让语音以后插入。**明确批准的确切定义见 A-0**。**D2b 收尾失败 = best-effort 不回滚 ✅**:
+  失败节点只告警(FLY-368)+ 不阻塞其他 + 幂等不重清 + per-node reconcile;**绝不回滚已 ship**。
 - **D3 自 ship 机制 = 保留 `:cool:` ✅(Annie 拍)**:runner 提示词零改,保 CI+branch-protection;
   `gh pr merge` 已否决;**不引入 PR mode/pr_handoff ✅(Annie 拍)**。
 - **D4 fan-out scope = 一次做全、分两波 ✅(Annie 拍)**:v1 按当前 main = feature + 它的 QA;
   FLY-793 merge 后 799 rebase 再把 Design/Implement/QA 三段清理做全(§10)。接口 v1 留好。
-- **Part B 启用前置 ✅(Annie 拍,顺序可协调)**:runner 自 ship 后中途重启的完全可靠 = 依赖
-  FLY-795 或本 issue 自带 stale-approved reconciler;默认 default-off、小范围先验。
+- **上线 = 默认 ON ✅(Annie 拍:直接上线、发现问题再关,别默认关)**。因为默认 ON,**runner 自
+  ship 中途重启的可靠性不能再等 795** → **本 issue 内落地 v1 stale-`approved_to_ship`+open-PR
+  reconciler**(bounded/audited re-drive)作默认-ON 的安全前提;795 落地后可替换为更强的断点续做。
+  flag 仍在(kill-switch),`=0` 关掉 = 逐字旧 WAKE-only 行为。
 
 ### 本轮回 Annie 的两个问题(D2 a/b)
 - **(a) Haiku 分类器装在 Bridge 哪一层?** 装在 **Bridge 进程内、GatePoller 的 founder-reply 读取
   那一层**(新模块 `founder-ship-approval-classifier.ts`),跟现在已经在读你 thread 消息的代码
-  **同一层**。它**只在 `TextSource`(你打自由文字)时才跑**;你点 **✅ 是确定性的、根本不调 AI**。
-  用的是系统**已有的同一个 LLM 判断模式**(founder-consent evaluator 已在用),**不是新基建**。
+  **同一层**。它**只在真·模糊自由文字才跑**(✅ 和常见短语『ship/批准』都零 AI)。判断**沿用系统
+  已有的同款语义判断思路,但新加一个薄的订阅 runner 封装**(走订阅、不烧付费 API)。
 - **(b) 会不会太复杂?值不值?** 核心其实很小 —— 大部分是把**已有零件接起来**(自 ship / 收尾 /
   状态翻转都现成、verify-approval 零改)。真正新增就三块:① 文字批准的 Haiku 判断(**一次很轻的
   调用、只在你批准 ship 这种少见时刻**跑,非热路径);② `ApprovalSignal` 抽象层(小,为你要的语音
@@ -391,14 +419,24 @@ interface LinearIssueFinalizer { markDone(issueId: string): Promise<{ done: bool
   ① evidence message id 不匹配 → fail-closed;② env/label bypass 不能批准;③ cache 不能跨
   message id 复用批准;④ 同 thread 两个当前 ship gate → 不写 + 交回 Lead;⑤ canonical founder
   id 缺/冲突 → fail-closed;⑥ 已存在相同批准 → 重跑 post-write hook(幂等);⑦ 已存在冲突
-  feedback → 拒;⑧ post-write hook 失败 → founder-reply cursor 不前移;⑨ default-off 授权写面
-  → byte-compat 逐字 WAKE-only;⑩ 非 PASS QA 记录被跳过;⑪ per-node fan-out 失败 → 重启后只续
+  feedback → 拒;⑧ post-write hook 失败 → founder-reply cursor 不前移;⑨ **kill-switch `=0`**
+  → byte-compat 逐字 WAKE-only(flag 未设=默认 ON);⑩ 非 PASS QA 记录被跳过;⑪ per-node fan-out 失败 → 重启后只续
   未完成节点、不重做已成功节点。
 - **reaction 专项(Codex R3 #5)**:⑫ 无 durable target gate message id → 不批准;⑬ ✅ 贴在
   非-gate / 旧 gate / QA ship-ready 消息 → 忽略;⑭ 重新 review 后 ✅ 贴旧 gate → 被当前
   `review_question_id`+`prHeadSha` 拒;⑮ reaction API 分页第 2 页才找到 founder → 命中;
   ⑯ 403/404/429/malformed → fail-closed;⑰ 重复 poll 同一 ✅ → 幂等(signal marker);⑱ 批准后
   founder 取消 ✅ → 已 durable 写不回滚;⑲ audit 记 targetMessageId + emoji + reactorUserId。
+- **classifier 分层 + 成本专项(Codex R7 #5,含绕过面)**:㉙ Tier-2 精确短句 `ship`/`批准` →
+  approve 零 AI;㉚ 绕过面全 unclear/Tier-3:`I approve the direction but don't ship yet`、
+  `LGTM after QA`、`他刚才说 ship it, 我不同意`、`go with option A`、引用/代码块/URL/问号/多句/
+  超长、`ship 756` 但 756≠当前绑定 issue/PR;㉛ Tier-3 调的是**订阅 runner**(不实例化付费
+  `AnthropicLLMClient`,断言);㉜ 订阅 runner 失败模式全 fail-closed→unclear:CLI 缺失/需登录/
+  timeout/nonzero/stderr 噪声/malformed JSON/schema 不符/图片不支持;㉝ 默认 ON:flag 未设=开启;
+  `=0`=逐字旧 WAKE-only;per-project denylist 命中=不写;㉞ reconciler crash interleavings:PR 已
+  merged→只 finalize、closed/head mismatch/429/unknown→fail-closed+alert、claim 后 crash 可 adopt、
+  PR 已有 ship 信号 / runner 可能已发 `:cool`→**reconciler 自己绝不发 `:cool:`、只 adopt+alert**;
+  双 Bridge worker 不双 ship;**只 re-wake 活 runner,真死 runner→alert(不谎报修复,待 795)**。
 - **image 专项(Codex R5)**:⑳ 无附件 → null/unclear;㉑ 非图片/超大附件 → fail-closed;㉒ 多附件
   需显式 evidenceAttachmentIds;㉓ 通用 ✅/👍 图 → unclear;㉔ 旧批准/别 issue/QA-pass 截图 →
   unclear;㉕ 看不清图 → unclear;㉖ 合法当前-gate 图批准仅当作者=canonical founder 且
@@ -406,15 +444,20 @@ interface LinearIssueFinalizer { markDone(issueId: string): Promise<{ done: bool
   unclear(不回退文字)。
 - **集成**:真 CommDB + StateStore:founder 消息 → gate 翻 → verify-approval=true;fan-out 关
   QA + archive。
-- **byte-compat**:env 开关(如 `FLYWHEEL_FOUNDER_AUTO_APPROVE=0` 默认?见 rollout)默认关 →
-  行为逐字等于现状(WAKE-only);reverse-compat sentinel。
+- **kill-switch compat**:flag `FLYWHEEL_FOUNDER_AUTO_APPROVE` **默认 ON**(Annie 拍);`=0`
+  关掉 → 行为逐字等于现状(WAKE-only);reverse-compat sentinel 证明 `=0` = 旧行为。
 - **真机 E2E**(独立 QA,529 Room / Claude-in-Chrome):Annie 真账号在 thread 批准 → runner 真
   自 ship → QA+worktree+thread+cmux 全清;非本人/含糊不 ship。
 
 ## 9. Rollout
-Bridge 侧改动 → 需一次 Bridge 重启部署(runner 提示词若 D3=保 :cool: 则不改,fleet 不用重
-起)。env 开关默认**关**(opt-in),先在 529 Room / 单项目验,再 fleet。协调批量 Bridge 重启
-(攒 PR)。
+Bridge 侧改动 → 需一次 Bridge 重启部署(runner 提示词 D3=保 :cool 不改,fleet 不用重起)。
+**flag 默认 ON(Annie:直接上线、发现问题再关)**,`FLYWHEEL_FOUNDER_AUTO_APPROVE=0` 是 kill-switch;
+**加 per-project disable/denylist**(某项目出问题不用全 fleet 关停,Codex R7 #4)。
+**默认 ON 的 release-readiness gates(全过才 merge)**:① Tier-2 精确短句收窄 + 绕过测试全过;
+② `SubscriptionClaudeClassifierRunner` fail-closed 测试全过;③ stale-approved reconciler
+crash/幂等测试全过;④ kill-switch `=0` sentinel 证明旧 WAKE-only 逐字行为;⑤ 独立 QA(529 Room /
+Claude-in-Chrome)真机验过(Annie 真账号批准 → 自 ship + 全清;非本人/含糊/旧 head 不 ship)。
+协调批量 Bridge 重启(攒 PR)。
 
 ## 10. 依赖 / 时序(Annie 拍的分波)
 - **可并行设计**(Tadashi):跟 FLY-795 并行走 plan-first。
