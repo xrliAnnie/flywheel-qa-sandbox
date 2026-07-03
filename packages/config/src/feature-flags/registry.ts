@@ -581,6 +581,26 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "commdb_fsm_reconcile",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_COMMDB_FSM_RECONCILE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"CommDB↔FSM reconcile boot sweep — 清 CommDB running 但 FSM 终态+tmux 死的僵尸（FLY-817，补 FLY-638 盲区）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"createBridgeApp",
+				"mixed",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "lead_pane_readiness",
 		category: "feature",
 		source: "env",
