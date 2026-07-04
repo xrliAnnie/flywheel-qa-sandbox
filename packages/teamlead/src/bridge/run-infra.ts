@@ -55,6 +55,7 @@ import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
+import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import { type ProjectRuntime, RunDispatcher } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import type { BridgeConfig } from "./types.js";
@@ -464,6 +465,12 @@ export interface RunInfraOptions {
 	 * gate (Codex R1 HIGH-1). Absent → byte-compatible.
 	 */
 	autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
+	/**
+	 * FLY-793: late-bound three-stage PhaseOrchestrator holder, set on the
+	 * DirectEventSink so the in-process completion path drives Design→Implement→QA
+	 * phase handoffs. Absent / `.current` undefined → byte-compatible (no-op).
+	 */
+	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
 }
 
 export async function setupRunInfrastructure(
@@ -618,6 +625,9 @@ export async function setupRunInfrastructure(
 			// FLY-579 (Codex R1 HIGH-1): give the in-process completed path the
 			// auto-QA coordinator holder so it spawns QA + holds the founder.
 			directSink.autoQaCoordinator = runInfraOpts?.autoQaCoordinator;
+			// FLY-793: give the in-process completion path the three-stage
+			// PhaseOrchestrator holder so it drives Design→Implement→QA handoffs.
+			directSink.phaseOrchestrator = runInfraOpts?.phaseOrchestrator;
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).

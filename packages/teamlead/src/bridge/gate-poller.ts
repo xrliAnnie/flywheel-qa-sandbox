@@ -1399,9 +1399,12 @@ export class GatePoller {
 		const retry = this.founderNotifyRetry.get(question.id);
 		if (retry && now < retry.nextAttemptAtMs) return;
 
+		// FLY-793 (Codex full-PR R1 #5): a phase session's founder notification goes
+		// to its own side-table thread; `main` (default) → byte-unchanged.
 		const thread = this.config.store.getChatThreadByIssue(
 			session.issue_id,
 			lead.chatChannel,
+			session.chat_thread_role,
 		);
 		const botToken = lead.botToken ?? this.config.discordBotToken;
 		const ownerUserId = this.config.discordOwnerUserId;
@@ -1783,9 +1786,12 @@ export class GatePoller {
 			const retry = this.milestoneNotifyRetry.get(dedupKey);
 			if (retry && now < retry.nextAttemptAtMs) continue;
 
+			// FLY-793 (Codex full-PR R1 #5): route the milestone ping to the phase's
+			// own side-table thread; `main` → byte-unchanged.
 			const thread = this.config.store.getChatThreadByIssue(
 				s.issue_id,
 				lead.chatChannel,
+				s.chat_thread_role,
 			);
 			const result = await emitFounderMilestoneNotification(
 				{
@@ -1952,9 +1958,13 @@ export class GatePoller {
 					if (createdMs === null || now - createdMs < graceMs) continue;
 					const session = this.config.store.getSession(q.from_agent);
 					if (!session) continue;
+					// FLY-793 (Codex full-PR R1 #5): group founder replies by the phase's
+					// own side-table thread (the from_agent session's persisted role);
+					// `main` → byte-unchanged.
 					const thread = this.config.store.getChatThreadByIssue(
 						session.issue_id,
 						lead.chatChannel,
+						session.chat_thread_role,
 					);
 					if (!thread?.thread_id) continue;
 					let group = byThread.get(thread.thread_id);

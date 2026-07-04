@@ -118,12 +118,37 @@ export interface ChatThreadContext {
 	 * ?? null` so account-default clears rather than preserving a prior model.
 	 */
 	modelCode?: "F" | "O" | "S" | "H" | null;
+	/**
+	 * FLY-793 (Step 11): the session's chat-thread role. 'main' (default — every
+	 * existing caller) keeps the byte-unchanged single-thread-per-issue path. A
+	 * phase role (design/implement/qa) routes the create/find/upsert to the
+	 * `phase_chat_threads` side-table and stamps the phase badge into the title.
+	 */
+	chatThreadRole?: string;
 }
 
 export interface ChatThreadResult {
 	created: boolean;
 	threadId?: string;
 	error?: string;
+}
+
+/**
+ * FLY-793 (Step 11, ⑦): the phase badge stamped into a phase thread's base title
+ * (`[FLY-XX] <badge> <title>`). Empty for the main role, so the main path title is
+ * byte-unchanged. Decoupled from the status-emoji / model-code front markers.
+ */
+export function phaseThreadBadge(role?: string): string {
+	switch (role) {
+		case "design":
+			return "🎨设计";
+		case "implement":
+			return "🔨实现";
+		case "qa":
+			return "🧪QA";
+		default:
+			return "";
+	}
 }
 
 function effectiveIssueKey(
@@ -136,11 +161,19 @@ function effectiveIssueKey(
 }
 
 function buildIssueThreadName(
-	ctx: Pick<ChatThreadContext, "issueId" | "issueIdentifier" | "issueTitle">,
+	ctx: Pick<
+		ChatThreadContext,
+		"issueId" | "issueIdentifier" | "issueTitle" | "chatThreadRole"
+	>,
 ): string {
 	const issueKey = effectiveIssueKey(ctx);
-	if (issueKey) return `[${issueKey}] ${ctx.issueTitle ?? ctx.issueId}`;
-	return ctx.issueTitle ?? ctx.issueId;
+	// FLY-793 (Step 11 ⑦): phase threads carry a role badge in the base title
+	// (`[FLY-XX] 🎨设计 <title>`). Empty for main → byte-unchanged main title.
+	const badge = phaseThreadBadge(ctx.chatThreadRole);
+	const badgePrefix = badge ? `${badge} ` : "";
+	const title = ctx.issueTitle ?? ctx.issueId;
+	if (issueKey) return `[${issueKey}] ${badgePrefix}${title}`;
+	return `${badgePrefix}${title}`;
 }
 
 /**
@@ -218,7 +251,9 @@ export class ChatThreadCreator {
 	) {}
 
 	async ensureChatThread(ctx: ChatThreadContext): Promise<ChatThreadResult> {
-		const key = `${ctx.issueId}:${ctx.chatChannelId}`;
+		// FLY-793 (Step 11): the inflight-dedup key includes the role so concurrent
+		// design + implement creates for the SAME issue don't collapse into one.
+		const key = `${ctx.issueId}:${ctx.chatChannelId}:${ctx.chatThreadRole ?? "main"}`;
 		const pending = this.inflight.get(key);
 		if (pending) return pending;
 
@@ -232,10 +267,12 @@ export class ChatThreadCreator {
 	}
 
 	private async _doEnsure(ctx: ChatThreadContext): Promise<ChatThreadResult> {
-		// 1. Check existing mapping
+		// 1. Check existing mapping (FLY-793: role-scoped — a phase looks up its own
+		// side-table thread, main is byte-unchanged).
 		const existing = this.store.getChatThreadByIssue(
 			ctx.issueId,
 			ctx.chatChannelId,
+			ctx.chatThreadRole,
 		);
 		if (existing) {
 			const valid = await validateThreadExists(
@@ -355,12 +392,13 @@ export class ChatThreadCreator {
 			if (!data.id)
 				return { created: false, error: "no thread ID in response" };
 
-			// 3. Store mapping
+			// 3. Store mapping (FLY-793: role routes to the phase side-table).
 			this.store.upsertChatThread(
 				data.id,
 				ctx.chatChannelId,
 				ctx.issueId,
 				ctx.leadId,
+				ctx.chatThreadRole,
 			);
 
 			// 4. Auto-add owner as thread member (sidebar visibility + notifications)

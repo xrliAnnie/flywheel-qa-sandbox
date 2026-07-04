@@ -81,7 +81,20 @@ export class WorkflowFSM {
 // ── Flywheel workflow transition map ─────────────────────────────────
 export const WORKFLOW_TRANSITIONS = {
     pending: ["running"],
-    running: ["awaiting_review", "completed", "blocked", "failed", "terminated"],
+    running: [
+        "awaiting_review",
+        "completed",
+        "blocked",
+        "failed",
+        "terminated",
+        // FLY-793: a three-stage Design phase-session completes into design_done
+        // (non-terminal); the PhaseOrchestrator hands off to the Implement phase.
+        "design_done",
+    ],
+    // FLY-793: Design phase done (docs on the shared branch). Non-terminal — the
+    // PhaseOrchestrator captures the head + starts Implement, then this session is
+    // finalized (completed) or fails out (blocked/failed/terminated).
+    design_done: ["completed", "blocked", "failed", "terminated"],
     // FLY-44: terminate allowed from all started non-terminal states.
     // FLY-60 W2 (b): `completed` added to support post-merge re-finalization
     // from the `stage_changed=completed + landing_status.status="merged"`

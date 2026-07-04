@@ -5,11 +5,16 @@
 
 // FLY-493: `pr_handoff` — DecisionLayer routes a no-transport (antigravity)
 // ready_to_merge build to this terminal route instead of needs_review.
+// FLY-793: `phase_design_complete` — a three-stage Design phase-session finished
+// (docs committed to the shared branch, no PR/code). The PhaseOrchestrator acts
+// on it to hand off to the Implement phase. Maps to the non-terminal `design_done`
+// status (NOT a founder-facing terminal); no PR/merge evidence.
 export type DecisionRoute =
 	| "auto_approve"
 	| "needs_review"
 	| "blocked"
-	| "pr_handoff";
+	| "pr_handoff"
+	| "phase_design_complete";
 
 export type DecisionSource =
 	| "hard_rule"

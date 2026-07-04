@@ -377,6 +377,25 @@ export class ConfigLoader {
 			}
 		}
 
+		// pipeline (optional — FLY-793). Absent / three_stage:false → off
+		// (byte-compatible; single-session task as before). Shape validated
+		// whenever PRESENT so a malformed block fails loudly at load (mirrors
+		// doc_flow), instead of silently no-op-ing the toggle later.
+		const pipeline = c.pipeline as Record<string, unknown> | undefined;
+		if (pipeline != null) {
+			if (typeof pipeline !== "object" || Array.isArray(pipeline)) {
+				throw new Error(
+					"pipeline must be a YAML mapping (object), not an array or scalar",
+				);
+			}
+			if (
+				pipeline.three_stage != null &&
+				typeof pipeline.three_stage !== "boolean"
+			) {
+				throw new Error("pipeline.three_stage must be a boolean");
+			}
+		}
+
 		// founder_ux_gate (optional — FLY-598). Absent → off (byte-compatible).
 		// Kept separate from FLY-175 founderConsent so this gate can never toggle
 		// reserved-action consent. Shape validated whenever PRESENT so a malformed

@@ -652,6 +652,121 @@ describe("Blueprint", () => {
 		expect(env.runnerModel).toBeUndefined();
 	});
 
+	// FLY-807: the session_started envelope's `labels` field drives Discord chat-
+	// thread routing (DirectEventSink.emitStarted -> resolveLeadForIssue). It must
+	// prefer ctx.issueLabels (caller-provided, e.g. auto-QA's parent-issue labels)
+	// over hydrated.labels (a live Linear re-fetch of THIS run's own issue, which
+	// races empty right after auto-QA creates a brand-new "QA · FLY-XX" issue) --
+	// exactly like the two other ctx.issueLabels ?? hydrated.labels call sites in
+	// this same file (ponytail resolution + AgentDispatcher backend selection).
+	it("prefers ctx.issueLabels over hydrated.labels in the session_started envelope", async () => {
+		const emitStarted = vi.fn(async () => {});
+		const emitter: ExecutionEventEmitter = {
+			emitStarted,
+			emitWorktreeReady: vi.fn(async () => {}),
+			emitCompleted: vi.fn(async () => {}),
+			emitFailed: vi.fn(async () => {}),
+			emitHeartbeat: vi.fn(async () => {}),
+			flush: vi.fn(async () => {}),
+		};
+		// makeHydrator()'s stub fetchIssue omits `labels` entirely, so PreHydrator
+		// falls back to `[]` -- simulating the QA-issue race where the live Linear
+		// read comes back empty.
+		const blueprint = new Blueprint(
+			makeHydrator(),
+			makeMockGitChecker(),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			emitter,
+		);
+
+		await blueprint.run(
+			makeNode(),
+			"/project",
+			makeContext({ issueLabels: ["flywheel"] }),
+		);
+
+		const env = emitStarted.mock.calls[0]![0] as { labels?: string[] };
+		expect(env.labels).toEqual(["flywheel"]);
+	});
+
+	it("falls back to hydrated.labels when ctx.issueLabels is omitted (byte-compat)", async () => {
+		const emitStarted = vi.fn(async () => {});
+		const emitter: ExecutionEventEmitter = {
+			emitStarted,
+			emitWorktreeReady: vi.fn(async () => {}),
+			emitCompleted: vi.fn(async () => {}),
+			emitFailed: vi.fn(async () => {}),
+			emitHeartbeat: vi.fn(async () => {}),
+			flush: vi.fn(async () => {}),
+		};
+		const hydrator = new PreHydrator(async (id) => ({
+			title: `Issue ${id} title`,
+			description: `Description for ${id}`,
+			labels: ["hydrated"],
+		}));
+		const blueprint = new Blueprint(
+			hydrator,
+			makeMockGitChecker(),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			emitter,
+		);
+
+		await blueprint.run(makeNode(), "/project", makeContext());
+
+		const env = emitStarted.mock.calls[0]![0] as { labels?: string[] };
+		expect(env.labels).toEqual(["hydrated"]);
+	});
+
+	it("does not fall back to hydrated.labels when ctx.issueLabels is explicitly empty", async () => {
+		const emitStarted = vi.fn(async () => {});
+		const emitter: ExecutionEventEmitter = {
+			emitStarted,
+			emitWorktreeReady: vi.fn(async () => {}),
+			emitCompleted: vi.fn(async () => {}),
+			emitFailed: vi.fn(async () => {}),
+			emitHeartbeat: vi.fn(async () => {}),
+			flush: vi.fn(async () => {}),
+		};
+		const hydrator = new PreHydrator(async (id) => ({
+			title: `Issue ${id} title`,
+			description: `Description for ${id}`,
+			labels: ["hydrated"],
+		}));
+		const blueprint = new Blueprint(
+			hydrator,
+			makeMockGitChecker(),
+			() => makeMockAdapter(),
+			makeMockShell(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			emitter,
+		);
+
+		await blueprint.run(
+			makeNode(),
+			"/project",
+			makeContext({ issueLabels: [] }),
+		);
+
+		const env = emitStarted.mock.calls[0]![0] as { labels?: string[] };
+		expect(env.labels).toEqual([]);
+	});
+
 	// ─── GEO-261: emitTerminal await tests ──────────
 
 	describe("emitTerminal (GEO-261)", () => {

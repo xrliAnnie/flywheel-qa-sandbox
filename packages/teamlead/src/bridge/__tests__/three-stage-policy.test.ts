@@ -1,0 +1,146 @@
+import { describe, expect, it } from "vitest";
+import {
+	resolveThreeStageEntry,
+	resolveThreeStagePolicy,
+} from "../three-stage-policy.js";
+
+describe("resolveThreeStageEntry (FLY-793 Step 4 ENTRY)", () => {
+	const noEnv: Record<string, string | undefined> = {};
+
+	it("a fresh `main` dispatch on a three-stage project STARTS at Design", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: { three_stage: true },
+			issueLabels: [],
+			env: noEnv,
+		});
+		expect(e.enteredThreeStage).toBe(true);
+		expect(e.role).toBe("design");
+	});
+
+	it("byte-compat: a `main` dispatch with no three-stage config stays `main`", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: undefined,
+			issueLabels: [],
+			env: noEnv,
+		});
+		expect(e.enteredThreeStage).toBe(false);
+		expect(e.role).toBe("main");
+	});
+
+	it("an explicit phase role (handoff) passes through untouched — NOT re-entered", () => {
+		for (const role of ["design", "implement", "qa"]) {
+			const e = resolveThreeStageEntry({
+				requestRole: role,
+				pipelineConfig: { three_stage: true },
+				issueLabels: [],
+				env: noEnv,
+			});
+			expect(e.enteredThreeStage).toBe(false);
+			expect(e.role).toBe(role);
+		}
+	});
+
+	it("auto-QA (`qa`) on a three-stage project is NOT rerouted to design", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "qa",
+			pipelineConfig: { three_stage: true },
+			issueLabels: [],
+			env: noEnv,
+		});
+		expect(e.enteredThreeStage).toBe(false);
+		expect(e.role).toBe("qa");
+	});
+
+	it("`no-three-stage` label keeps a fresh dispatch as `main`", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: { three_stage: true },
+			issueLabels: ["no-three-stage"],
+			env: noEnv,
+		});
+		expect(e.enteredThreeStage).toBe(false);
+		expect(e.role).toBe("main");
+	});
+
+	it("`FLYWHEEL_THREE_STAGE=0` kill-switch keeps a fresh dispatch as `main`", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: { three_stage: true },
+			issueLabels: [],
+			env: { FLYWHEEL_THREE_STAGE: "0" },
+		});
+		expect(e.enteredThreeStage).toBe(false);
+		expect(e.role).toBe("main");
+	});
+});
+
+describe("resolveThreeStagePolicy (FLY-793)", () => {
+	const noEnv: Record<string, string | undefined> = {};
+
+	it("is OFF by default when no pipeline config is present (byte-compat)", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: undefined,
+			issueLabels: [],
+			env: noEnv,
+		});
+		expect(d.enabled).toBe(false);
+	});
+
+	it("is ON when pipeline.three_stage === true", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: { three_stage: true },
+			issueLabels: [],
+			env: noEnv,
+		});
+		expect(d.enabled).toBe(true);
+	});
+
+	it("is OFF when three_stage === false (explicit opt-out)", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: { three_stage: false },
+			issueLabels: [],
+			env: noEnv,
+		});
+		expect(d.enabled).toBe(false);
+	});
+
+	it("is OFF when the pipeline block has no three_stage key", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: {},
+			issueLabels: [],
+			env: noEnv,
+		});
+		expect(d.enabled).toBe(false);
+	});
+
+	it("FLYWHEEL_THREE_STAGE=0 hard kill-switch overrides an enabled config", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: { three_stage: true },
+			issueLabels: [],
+			env: { FLYWHEEL_THREE_STAGE: "0" },
+		});
+		expect(d.enabled).toBe(false);
+		expect(d.reason).toMatch(/kill-switch/i);
+	});
+
+	it("no-three-stage label opts a single issue out even when config enables it", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: { three_stage: true },
+			issueLabels: ["Backend", "no-three-stage"],
+			env: noEnv,
+		});
+		expect(d.enabled).toBe(false);
+		expect(d.reason).toMatch(/no-three-stage/i);
+	});
+
+	it("label match is case-insensitive", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: { three_stage: true },
+			issueLabels: ["NO-THREE-STAGE"],
+			env: noEnv,
+		});
+		expect(d.enabled).toBe(false);
+	});
+});

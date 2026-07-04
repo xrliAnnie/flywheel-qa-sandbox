@@ -365,6 +365,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 			executionId: newExecutionId,
 			leadId: req.leadId,
 			sessionRole: req.sessionRole,
+			// FLY-793: three-stage phases share one branch B (Bridge-internal).
+			shareParentBranch: req.shareParentBranch,
 			// Forward pre-fetched metadata so EventEnvelope retains title/identifier
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,
@@ -658,6 +660,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			executionId,
 			leadId: req.leadId,
 			sessionRole: req.sessionRole,
+			// FLY-793: three-stage phases share one branch B (Bridge-internal).
+			shareParentBranch: req.shareParentBranch,
 			// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,

@@ -33,6 +33,8 @@ const VALID_ROUTES = new Set([
 	"blocked",
 	"no_code",
 	"pr_handoff",
+	// FLY-793: three-stage Design phase completion (docs committed, no PR/merge).
+	"phase_design_complete",
 ]);
 
 const ATTEMPT_COUNT = 4;
@@ -108,9 +110,13 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 	}
 	// FLY-222 #1: no_code is a no-merge completion — reject contradictory flags
 	// so a misuse can't silently look like a merged completion.
-	if (opts.route === "no_code" && (opts.merged || opts.pr !== undefined)) {
+	// FLY-793: phase_design_complete is likewise a no-code/no-merge phase handoff.
+	if (
+		(opts.route === "no_code" || opts.route === "phase_design_complete") &&
+		(opts.merged || opts.pr !== undefined)
+	) {
 		console.error(
-			"--route no_code is for no-code/no-merge completions; do not pass --merged or --pr",
+			`--route ${opts.route} is for no-code/no-merge completions; do not pass --merged or --pr`,
 		);
 		process.exit(1);
 	}

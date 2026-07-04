@@ -96,6 +96,16 @@ export {
 	DEFAULT_RUNNER_DISABLED_PLUGINS,
 	resolveRunnerMcpProfile,
 } from "./runner-mcp-profile.js";
+// FLY-793: three-stage pipeline phase model tiers.
+export type { ThreeStagePhase } from "./three-stage-phases.js";
+export {
+	DEFAULT_PHASE_TIER,
+	isThreeStagePhaseRole,
+	nextPhase,
+	resolveCompletionSessionRole,
+	resolvePhaseModel,
+	THREE_STAGE_PHASE_SEQUENCE,
+} from "./three-stage-phases.js";
 export type {
 	AgentConfig,
 	AgentNodeConfig,
@@ -113,6 +123,7 @@ export type {
 	MilestoneKind,
 	OrchestratorConfig,
 	ParallelConfig,
+	PipelineConfig,
 	PonytailConfig,
 	ProofShotConfig,
 	ReactionsConfig,

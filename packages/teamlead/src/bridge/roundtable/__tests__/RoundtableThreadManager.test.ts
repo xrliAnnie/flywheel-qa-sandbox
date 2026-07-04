@@ -145,6 +145,29 @@ describe("RoundtableThreadManager.processMessage", () => {
 		expect(countCreates(calls)).toBe(0);
 	});
 
+	it("FLY-802: opens the topic thread with auto_archive_duration=60 (1h → collapses out of the sidebar)", async () => {
+		const { impl, calls } = makeFetch({});
+		const m = mgr(store, impl);
+		const advance = await m.processMessage({
+			id: "77",
+			channelId: CH,
+			authorId: "u1",
+			authorBot: false,
+			content: "deploy plan review — leads weigh in",
+			mentions: [],
+			mentionEveryone: false,
+		});
+		expect(advance).toBe(true);
+		const createCall = calls.find(
+			(c) => c.method === "POST" && /\/messages\/[^/]+\/threads$/.test(c.url),
+		);
+		expect(createCall).toBeDefined();
+		const body = JSON.parse(createCall?.body ?? "{}");
+		expect(body.auto_archive_duration).toBe(60);
+		// Host bot created it with 60 up-front → no redundant archive PATCH follows.
+		expect(patchCalls(calls)).toHaveLength(0);
+	});
+
 	it("threads the poller bot's OWN top-level message when threadOwnBotMessages is set (echo relax)", async () => {
 		const { impl, calls } = makeFetch({});
 		const m = mgr(store, impl, { threadOwnBotMessages: true });
@@ -614,33 +637,67 @@ describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", (
 		expect(countCreates(calls)).toBe(0); // no placeholder-named thread
 	});
 
-	it("recovery: a placeholder-named thread (plugin won the race) gets PATCH-renamed to the topic", async () => {
+	it("recovery: a placeholder-named plugin thread (default 3-day archive) gets ONE PATCH renaming it AND setting the 1h archive (FLY-802)", async () => {
 		const { impl, calls } = makeFetch({
 			createResponse: () => res(400, { code: 160004 }),
 			getChannelResponse: () =>
-				res(200, { type: 11, parent_id: CH, name: "Roundtable topic" }),
+				res(200, {
+					type: 11,
+					parent_id: CH,
+					name: "Roundtable topic",
+					thread_metadata: { auto_archive_duration: 4320 },
+				}),
 		});
 		const m = mgr(store, impl, { founderUserId: "founder-x" });
 		const advance = await m.processMessage(
 			msg({ content: "fix the sidebar surfacing", mentions: [] }),
 		);
 		expect(advance).toBe(true);
-		// renamed to the descriptive topic
+		// ONE PATCH converging BOTH the descriptive name and the 1h archive.
 		const patches = patchCalls(calls);
 		expect(patches).toHaveLength(1);
-		expect(JSON.parse(patches[0].body ?? "{}").name).toBe(
-			"fix the sidebar surfacing",
-		);
+		const patchBody = JSON.parse(patches[0].body ?? "{}");
+		expect(patchBody.name).toBe("fix the sidebar surfacing");
+		expect(patchBody.auto_archive_duration).toBe(60);
 		// founder + config members still added
 		expect(putMemberIds(calls)).toContain("founder-x");
 		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
 	});
 
-	it("recovery: a thread already bearing a descriptive name is NOT renamed", async () => {
+	it("FLY-802 recovery: a plugin thread with a fine name but the default 3-day archive gets a PATCH setting ONLY the 1h archive", async () => {
 		const { impl, calls } = makeFetch({
 			createResponse: () => res(400, { code: 160004 }),
 			getChannelResponse: () =>
-				res(200, { type: 11, parent_id: CH, name: "an existing good name" }),
+				res(200, {
+					type: 11,
+					parent_id: CH,
+					name: "already a good topic name",
+					thread_metadata: { auto_archive_duration: 4320 },
+				}),
+		});
+		const m = mgr(store, impl);
+		const advance = await m.processMessage(
+			msg({ content: "already a good topic name" }),
+		);
+		expect(advance).toBe(true);
+		const patches = patchCalls(calls);
+		expect(patches).toHaveLength(1);
+		const patchBody = JSON.parse(patches[0].body ?? "{}");
+		expect(patchBody.auto_archive_duration).toBe(60);
+		expect(patchBody.name).toBeUndefined(); // name already fine → not touched
+		expect(store.getRoundtableTopicThread(CH, "42")?.thread_id).toBe("42");
+	});
+
+	it("recovery: a fully-converged thread (good name AND already 1h archive) is NOT PATCHed", async () => {
+		const { impl, calls } = makeFetch({
+			createResponse: () => res(400, { code: 160004 }),
+			getChannelResponse: () =>
+				res(200, {
+					type: 11,
+					parent_id: CH,
+					name: "an existing good name",
+					thread_metadata: { auto_archive_duration: 60 },
+				}),
 		});
 		const m = mgr(store, impl);
 		await m.processMessage(msg());
@@ -743,9 +800,15 @@ describe("RoundtableThreadManager — FLY-576 founder + naming + convergence", (
 		const { impl, calls } = makeFetch({
 			createResponse: () =>
 				pass === 0 ? res(201, { id: "42" }) : res(400, { code: 160004 }),
-			// pass-1 create named it from the content; the GET reflects that (no rename).
+			// pass-1 create named it from the content AND set the 1h archive; the GET
+			// reflects both (no rename, no archive PATCH needed in the recovery pass).
 			getChannelResponse: () =>
-				res(200, { type: 11, parent_id: CH, name: "hello topic" }),
+				res(200, {
+					type: 11,
+					parent_id: CH,
+					name: "hello topic",
+					thread_metadata: { auto_archive_duration: 60 },
+				}),
 			putMemberResponse: () => (pass === 0 ? res(503, {}) : res(204, {})),
 		});
 		const m = mgr(store, impl, {

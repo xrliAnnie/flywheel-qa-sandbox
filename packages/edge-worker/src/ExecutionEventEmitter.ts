@@ -14,6 +14,15 @@ export interface EventEnvelope {
 	/** FLY-59: Session role for multi-session-per-issue support */
 	sessionRole?: string;
 	/**
+	 * FLY-793 (Step 11): the chat-thread role, computed ONCE at dispatch as
+	 * `shareParentBranch ? sessionRole : 'main'`. Carried on session_started so both
+	 * started sinks persist `sessions.chat_thread_role` — the durable signal that
+	 * routes Session-based thread resolution to the phase side-table (a plain
+	 * `sessionRole==='qa'` auto-QA runner on a SEPARATE issue is NOT a phase, so it
+	 * stays 'main'). Absent → 'main' (byte-compatible).
+	 */
+	chatThreadRole?: string;
+	/**
 	 * FLY-493: the resolved executor backend ("claude-tmux" | "codex-tmux" |
 	 * "antigravity-tmux" | "kimi-tmux"). Persisted as `session.adapter_type` so
 	 * the dashboard/wake surfaces can see it — in particular so the no-transport
@@ -85,6 +94,11 @@ export class TeamLeadClient implements ExecutionEventEmitter {
 				issueTitle: env.issueTitle,
 				labels: env.labels,
 				sessionRole: env.sessionRole,
+				// FLY-793 (Codex full-PR R1 #4): carry the chat-thread role on the HTTP
+				// started payload too — real runners emit via this client, so without it
+				// the /events sink defaults to "main" and (INSERT-once, never updated)
+				// permanently misroutes a phase session's thread to the main table.
+				chatThreadRole: env.chatThreadRole,
 				// FLY-493: executor backend → persisted as session.adapter_type.
 				runnerBackend: env.runnerBackend,
 				// FLY-728: resolved runner model → persisted as session.runner_model.
