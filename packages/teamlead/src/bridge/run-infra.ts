@@ -721,26 +721,42 @@ export async function setupRunInfrastructure(
 	//     gone on reboot); non-zero git exit ⇒ null ⇒ start fresh (fail-safe).
 	const resumeComputer: ResumeComputer = (issueId, role, projectName) => {
 		if (process.env.FLYWHEEL_PROGRESS_RESUME === "0") return null;
+		// A QA runner (auto-QA, FLY-579) pins its own worktree to the reviewed commit
+		// and writes NO progress ledger — it must never be resumed from a prior
+		// ledger (code-review MED-3). Only writer roles resume.
+		if (role === "qa") return null;
 		const runtime = projectRuntimes.get(projectName);
 		if (!runtime) return null;
 		const projectRoot = runtime.projectRoot;
 
-		// Latest prior session for this issue (UUID first, identifier fallback).
-		// Resolved once so branchName + priorSession stay mutually consistent.
-		const prior =
-			store.getSessionByIssue(issueId) ?? store.getSessionByIdentifier(issueId);
+		// The latest RESUMABLE prior session for THIS issue AND role — role/status
+		// scoped (code-review MED-3): excludes completed/shelved (never resume merged
+		// or parked work) and the wrong role's latest session. `issueId` may be the
+		// UUID or the identifier; the query matches either.
+		const prior = store.getResumableSessionForIssueRole(issueId, role);
 		if (!prior) return null;
 
 		const identifier = prior.issue_identifier ?? issueId;
 		const dept = docDeptByProject.get(projectName);
 		const docBaseDir = dept ? `${dept}/doc` : "doc";
+		const repoSlug = basename(projectRoot).toLowerCase();
 		// Branch B ground truth: the persisted branch, else the worktree dir name
 		// (WorktreeManager names the worktree dir identically to branch B), else a
 		// deterministic recompute matching WorktreeManager.worktreeName.
 		const branchB =
 			prior.branch ||
 			(prior.worktree_path ? basename(prior.worktree_path) : undefined) ||
-			`${basename(projectRoot).toLowerCase()}-${deriveWorktreeKey(identifier, role)}`;
+			`${repoSlug}-${deriveWorktreeKey(identifier, role)}`;
+
+		// shareParentBranch key-drift guard (code-review MED-3): a computed resume
+		// always sets shareParentBranch:true, so the rebuilt worktree lands on the
+		// MAIN-key branch (`<repoSlug>-<identifier>`). That is correct for role="main"
+		// and for FLY-793 phases (they already share the main-key branch), but a
+		// role-aware branch (`<repoSlug>-<identifier>-<role>`) would drift onto the
+		// main-key branch. If branch B is not the main-key branch, do NOT resume
+		// (fresh is safe) rather than continue the runner's work on the wrong branch.
+		const mainKeyBranch = `${repoSlug}-${deriveWorktreeKey(identifier, "main")}`;
+		if (branchB !== mainKeyBranch) return null;
 
 		const git = (args: string[]): string | null => {
 			try {
@@ -765,6 +781,20 @@ export async function setupRunInfrastructure(
 			}),
 			readBranchFile: (branch, path) => git(["show", `${branch}:${path}`]),
 			branchTip: (branch) => git(["rev-parse", branch])?.trim() ?? null,
+			// MED-4: when no plan_path is persisted, find the doc dir on the branch
+			// that actually holds a committed progress.md, so a co-located slug-named
+			// ledger (runner died before design_review) is still found. `git ls-tree`
+			// lists committed blobs; we take the dir of the first `${issue}-*/
+			// progress.md` under the doc base.
+			discoverDocDir: (branch) => {
+				const out = git(["ls-tree", "-r", "--name-only", branch]);
+				if (!out) return null;
+				const prefix = `${docBaseDir}/${identifier}-`;
+				const hit = out
+					.split("\n")
+					.find((p) => p.startsWith(prefix) && p.endsWith("/progress.md"));
+				return hit ? hit.slice(0, hit.length - "/progress.md".length) : null;
+			},
 		};
 
 		// resumeKind = "restart": the generic re-dispatch umbrella. The specific

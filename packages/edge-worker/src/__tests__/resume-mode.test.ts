@@ -49,6 +49,27 @@ describe("resumeModeInstructions (FLY-795)", () => {
 		);
 	});
 
+	it("HIGH-2: on mismatch (undefined effectiveStage) it withholds the skip-language and keeps gates", () => {
+		const text = resumeModeInstructions({ ...base }).lines.join("\n");
+		// still points at progress.md (weak reference layer is safe)
+		expect(text).toContain(base.progressPath);
+		// but must NOT tell the runner to skip explore/research/plan or re-brainstorm
+		expect(text).not.toMatch(/do NOT re-run explore\/research\/plan/i);
+		expect(text).not.toMatch(/do NOT re-brainstorm/i);
+		// and must instruct re-verifying the stage + running mandatory gates
+		expect(text).toMatch(/re-verify the current stage/i);
+		expect(text).toMatch(/mandatory gate/i);
+	});
+
+	it("HIGH-2: on a confirmed phase (implement) it DOES emit the skip-language", () => {
+		const text = resumeModeInstructions({
+			...base,
+			effectiveStage: "implement",
+		}).lines.join("\n");
+		expect(text).toMatch(/do NOT re-run explore\/research\/plan/i);
+		expect(text).toMatch(/do NOT re-brainstorm/i);
+	});
+
 	it("always preserves the founder ship-gate (never auto-ship)", () => {
 		const text = resumeModeInstructions({
 			...base,

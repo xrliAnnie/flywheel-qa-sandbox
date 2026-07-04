@@ -40,6 +40,44 @@ const PHASES: ReadonlySet<string> = new Set<ThreeStagePhase>([
 	"qa",
 ]);
 
+/**
+ * FLY-795: map a fine-grained pipeline stage (the `flywheel-comm stage set`
+ * vocabulary: started / onboard / brainstorm / … / ship / completed) to its
+ * three-stage phase grouping, or undefined for an unknown stage. Shared so the
+ * resume-detect side (teamlead cross-checks the StateStore stage vs the ledger
+ * phase) and the write side (the `progress` command rejects a `--phase` that
+ * contradicts the session's authoritative stage) use ONE mapping — no drift.
+ */
+const DESIGN_STAGES: ReadonlySet<string> = new Set([
+	"started",
+	"onboard",
+	"brainstorm",
+	"research",
+	"plan",
+	"design_review",
+	"design_done",
+	"design",
+]);
+const IMPLEMENT_STAGES: ReadonlySet<string> = new Set([
+	"implement",
+	"test",
+	"code_review",
+	"pr_created",
+]);
+const QA_STAGES: ReadonlySet<string> = new Set([
+	"qa",
+	"approve",
+	"ship",
+	"code_review_qa",
+]);
+
+export function stageToPhase(stage: string): ThreeStagePhase | undefined {
+	if (DESIGN_STAGES.has(stage)) return "design";
+	if (IMPLEMENT_STAGES.has(stage)) return "implement";
+	if (QA_STAGES.has(stage)) return "qa";
+	return undefined;
+}
+
 /** One planned unit of work within a phase. */
 export interface ProgressChunk {
 	id: string;
