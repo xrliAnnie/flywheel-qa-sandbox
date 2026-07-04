@@ -730,6 +730,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// FLY-793: three-stage phases share one branch B (Bridge-internal).
 			// FLY-795: a resume also shares branch B (reuse the same mechanism).
 			shareParentBranch: req.shareParentBranch || (resume ? true : undefined),
+			// FLY-859: Implement-fix round context after a QA FAIL (Bridge-internal).
+			phaseFixContext: req.phaseFixContext,
 			// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,
