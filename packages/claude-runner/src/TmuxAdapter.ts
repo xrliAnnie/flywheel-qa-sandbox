@@ -416,6 +416,10 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.stateDbPath) {
 			envArgs.push("-e", `FLYWHEEL_STATE_DB_PATH=${ctx.stateDbPath}`);
 		}
+		// FLY-795: where a resumed runner writes its progress cursor back.
+		if (ctx.progressPath) {
+			envArgs.push("-e", `FLYWHEEL_PROGRESS_PATH=${ctx.progressPath}`);
+		}
 		if (ctx.projectName) {
 			envArgs.push("-e", `FLYWHEEL_PROJECT_NAME=${ctx.projectName}`);
 		}

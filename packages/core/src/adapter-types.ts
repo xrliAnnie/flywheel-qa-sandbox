@@ -278,6 +278,15 @@ export interface AdapterExecutionContext {
 	 */
 	stateDbPath?: string;
 
+	/**
+	 * FLY-795: the resolved `progress.md` path, propagated to the Runner env as
+	 * FLYWHEEL_PROGRESS_PATH so a RESUMED runner writes its cursor back to the
+	 * exact same branch-committed file the prior runner used (via
+	 * `flywheel-comm progress --file $FLYWHEEL_PROGRESS_PATH`). Set only for a
+	 * restart-resume; a fresh runner derives progress.md inside its own doc folder.
+	 */
+	progressPath?: string;
+
 	// -- Callbacks --
 
 	/** Log output callback (stdout/stderr from CLI process) */

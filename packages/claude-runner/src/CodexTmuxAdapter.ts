@@ -999,6 +999,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		if (ctx.bridgeIngestToken)
 			push("FLYWHEEL_INGEST_TOKEN", ctx.bridgeIngestToken);
 		if (ctx.stateDbPath) push("FLYWHEEL_STATE_DB_PATH", ctx.stateDbPath);
+		if (ctx.progressPath) push("FLYWHEEL_PROGRESS_PATH", ctx.progressPath); // FLY-795
 		if (ctx.projectName) push("FLYWHEEL_PROJECT_NAME", ctx.projectName);
 		if (ctx.leadId) push("FLYWHEEL_LEAD_ID", ctx.leadId);
 		if (ctx.sentinelPath) push("FLYWHEEL_LAND_STATUS_PATH", ctx.sentinelPath);
