@@ -2407,6 +2407,44 @@ export class StateStore {
 		return rows;
 	}
 
+	/**
+	 * FLY-795 (code-review MED-3): the latest RESUMABLE prior session for an issue
+	 * AND role — the restart-resilient resume computer's candidate lookup. Precise
+	 * on purpose (the plain `getSessionByIssue` LIMIT-1-by-activity would pick the
+	 * wrong role's session, or a stale completed one, on a dispatcher path that runs
+	 * on every start()):
+	 *   - matches either the issue UUID or the Linear identifier (caller may hold
+	 *     whichever), so it works regardless of which the dispatch carries;
+	 *   - matches the dispatched role (a NULL/absent `session_role` counts as
+	 *     "main", the default role);
+	 *   - EXCLUDES terminal-success states (`completed`/`shelved`) — a merged or
+	 *     intentionally-parked session must NOT be silently resumed by a new
+	 *     dispatch; running / awaiting_review / terminated / failed / blocked all
+	 *     remain resumable (their work is still on branch B).
+	 * Returns the most recently active match, or undefined.
+	 */
+	getResumableSessionForIssueRole(
+		issueOrIdentifier: string,
+		role: string,
+	): Session | undefined {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE (issue_id = ? OR issue_identifier = ?)
+			   AND (session_role = ? OR (session_role IS NULL AND ? = 'main'))
+			   AND status NOT IN ('completed', 'shelved')
+			 ORDER BY last_activity_at DESC
+			 LIMIT 1`,
+		);
+		stmt.bind([issueOrIdentifier, issueOrIdentifier, role, role]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			return this.rowToSession(row);
+		}
+		stmt.free();
+		return undefined;
+	}
+
 	getRecentSessions(limit: number): Session[] {
 		const stmt = this.db.prepare(
 			"SELECT * FROM sessions ORDER BY last_activity_at DESC LIMIT ?",

@@ -8,7 +8,7 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	AnthropicLLMClient,
@@ -36,6 +36,7 @@ import {
 	CipherReader,
 	DecisionLayer,
 	defaultRules,
+	deriveWorktreeKey,
 	ExecutionEvidenceCollector,
 	FallbackHeuristic,
 	GitResultChecker,
@@ -56,7 +57,15 @@ import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { EventFilter } from "./EventFilter.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
-import { type ProjectRuntime, RunDispatcher } from "./run-dispatcher.js";
+import {
+	computeProgressResume,
+	type ProgressResumeDeps,
+} from "./progress-resume.js";
+import {
+	type ProjectRuntime,
+	type ResumeComputer,
+	RunDispatcher,
+} from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import type { BridgeConfig } from "./types.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
@@ -483,6 +492,12 @@ export async function setupRunInfrastructure(
 	const projectRuntimes = new Map<string, ProjectRuntime>();
 	const cleanupHandles: Array<() => Promise<void>> = [];
 
+	// FLY-795: per-project doc-flow default department, captured in the setup loop
+	// so the restart-resilient resume computer can resolve the deterministic
+	// `progress.md` doc base dir (`<dept>/doc`) — the precedence-③ fallback used
+	// only when a resumed session has no persisted plan_path. Absent → "doc".
+	const docDeptByProject = new Map<string, string | undefined>();
+
 	const fetchIssue = createFetchIssue(store);
 
 	// FLY-95: Shared WorktreeManager for per-Runner worktree isolation
@@ -660,6 +675,11 @@ export async function setupRunInfrastructure(
 				agentDispatcher, // FLY-137 v1.27.2: exposed for sync agentName validation in runs-route
 				rolesConfig, // FLY-123: project roles layer for RoleAdapterResolver
 			});
+			// FLY-795: remember the doc-flow default department for the resume computer.
+			docDeptByProject.set(
+				project.projectName,
+				docFlowConfig?.default_department,
+			);
 			cleanupHandles.push(cleanup);
 
 			console.log(`[RunInfra] ${project.projectName} ready`);
@@ -687,11 +707,109 @@ export async function setupRunInfrastructure(
 		join(homedir(), ".flywheel", "state", "launch-claims.db"),
 	);
 
+	// FLY-795: restart-resilient resume computer. On every (re-)dispatch, look for
+	// a prior session + a committed progress.md on that issue's branch B and, if
+	// found, tell the dispatcher to resume from the real cursor (reuse FLY-793's
+	// shareParentBranch/startPoint worktree mechanism) instead of starting over.
+	// This is the live wiring of the c3 core (`computeProgressResume`) — the pure
+	// git/StateStore lookups are provided here so the dispatcher stays generic.
+	//   - kill-switch: FLYWHEEL_PROGRESS_RESUME=0 → always fresh (byte-compatible).
+	//   - branch B is read from the ground-truth session row (branch, else the
+	//     worktree_path basename, which equals the branch name by construction);
+	//     never recomputed from a trusted-key string.
+	//   - reads the BRANCH BLOB via `git show` (never the worktree fs — it may be
+	//     gone on reboot); non-zero git exit ⇒ null ⇒ start fresh (fail-safe).
+	const resumeComputer: ResumeComputer = (issueId, role, projectName) => {
+		if (process.env.FLYWHEEL_PROGRESS_RESUME === "0") return null;
+		// A QA runner (auto-QA, FLY-579) pins its own worktree to the reviewed commit
+		// and writes NO progress ledger — it must never be resumed from a prior
+		// ledger (code-review MED-3). Only writer roles resume.
+		if (role === "qa") return null;
+		const runtime = projectRuntimes.get(projectName);
+		if (!runtime) return null;
+		const projectRoot = runtime.projectRoot;
+
+		// The latest RESUMABLE prior session for THIS issue AND role — role/status
+		// scoped (code-review MED-3): excludes completed/shelved (never resume merged
+		// or parked work) and the wrong role's latest session. `issueId` may be the
+		// UUID or the identifier; the query matches either.
+		const prior = store.getResumableSessionForIssueRole(issueId, role);
+		if (!prior) return null;
+
+		const identifier = prior.issue_identifier ?? issueId;
+		const dept = docDeptByProject.get(projectName);
+		const docBaseDir = dept ? `${dept}/doc` : "doc";
+		const repoSlug = basename(projectRoot).toLowerCase();
+		// Branch B ground truth: the persisted branch, else the worktree dir name
+		// (WorktreeManager names the worktree dir identically to branch B), else a
+		// deterministic recompute matching WorktreeManager.worktreeName.
+		const branchB =
+			prior.branch ||
+			(prior.worktree_path ? basename(prior.worktree_path) : undefined) ||
+			`${repoSlug}-${deriveWorktreeKey(identifier, role)}`;
+
+		// shareParentBranch key-drift guard (code-review MED-3): a computed resume
+		// always sets shareParentBranch:true, so the rebuilt worktree lands on the
+		// MAIN-key branch (`<repoSlug>-<identifier>`). That is correct for role="main"
+		// and for FLY-793 phases (they already share the main-key branch), but a
+		// role-aware branch (`<repoSlug>-<identifier>-<role>`) would drift onto the
+		// main-key branch. If branch B is not the main-key branch, do NOT resume
+		// (fresh is safe) rather than continue the runner's work on the wrong branch.
+		const mainKeyBranch = `${repoSlug}-${deriveWorktreeKey(identifier, "main")}`;
+		if (branchB !== mainKeyBranch) return null;
+
+		const git = (args: string[]): string | null => {
+			try {
+				return execFileSync("git", args, {
+					cwd: projectRoot,
+					encoding: "utf8",
+					stdio: ["ignore", "pipe", "ignore"],
+				});
+			} catch {
+				return null; // branch/file absent or git error → fail-safe (fresh)
+			}
+		};
+
+		const deps: ProgressResumeDeps = {
+			docBaseDir,
+			issueIdentifier: identifier,
+			branchName: () => branchB,
+			priorSession: () => ({
+				execution_id: prior.execution_id,
+				...(prior.plan_path && { plan_path: prior.plan_path }),
+				...(prior.session_stage && { session_stage: prior.session_stage }),
+			}),
+			readBranchFile: (branch, path) => git(["show", `${branch}:${path}`]),
+			branchTip: (branch) => git(["rev-parse", branch])?.trim() ?? null,
+			// MED-4: when no plan_path is persisted, find the doc dir on the branch
+			// that actually holds a committed progress.md, so a co-located slug-named
+			// ledger (runner died before design_review) is still found. `git ls-tree`
+			// lists committed blobs; we take the dir of the first `${issue}-*/
+			// progress.md` under the doc base.
+			discoverDocDir: (branch) => {
+				const out = git(["ls-tree", "-r", "--name-only", branch]);
+				if (!out) return null;
+				const prefix = `${docBaseDir}/${identifier}-`;
+				const hit = out
+					.split("\n")
+					.find((p) => p.startsWith(prefix) && p.endsWith("/progress.md"));
+				return hit ? hit.slice(0, hit.length - "/progress.md".length) : null;
+			},
+		};
+
+		// resumeKind = "restart": the generic re-dispatch umbrella. The specific
+		// terminate/reboot/handoff distinction is informational only (surfaced to
+		// the runner) and not knowable from the dispatch signature here.
+		return computeProgressResume(issueId, role, "restart", deps);
+	};
+
 	return new RunDispatcher(
 		projectRuntimes,
 		cleanupHandles,
 		config.runnerAdmission,
 		launchClaims,
+		undefined, // isCommitted — production uses the default file-existence check
+		resumeComputer, // FLY-795: live restart-resilient resume
 	);
 }
 

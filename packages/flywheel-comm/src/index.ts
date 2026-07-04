@@ -27,6 +27,7 @@ import { gate } from "./commands/gate.js";
 import { inbox } from "./commands/inbox.js";
 import { type NotifyArgs, notify } from "./commands/notify.js";
 import { pending } from "./commands/pending.js";
+import { progress } from "./commands/progress.js";
 import {
 	type PublishReportArgs,
 	publishReport,
@@ -178,6 +179,10 @@ async function main(): Promise<void> {
 			break;
 		case "stage":
 			await runStage(commandArgs);
+			break;
+		case "progress":
+			// FLY-795: single-writer, path-limited, atomic progress.md writer.
+			process.exit(progress(commandArgs));
 			break;
 		case "park":
 			runDeclareState("park", commandArgs);

@@ -154,6 +154,41 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "三段式主开关是 per-project pipeline.three_stage config；本 env=0 是全局紧急关，改后需重启 Bridge。",
 	},
 	{
+		// FLY-795: global kill-switch for restart-resilient resume. Default ON: a
+		// re-dispatched dead runner resumes from its committed progress.md cursor
+		// (reusing 793's shareParentBranch/startPoint worktree mechanism) instead of
+		// starting over. `=0` = fully revert to the pre-795 fresh-every-time behavior
+		// — the teamlead resume computer produces no progressResume AND the Blueprint
+		// PROGRESS LEDGER write-discipline prompt line is suppressed (byte-identical
+		// prompt). readonly ops safety lever, not a founder dashboard toggle.
+		name: "progress_resume_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_PROGRESS_RESUME",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"全局关掉 restart-resilient resume（重启/terminate/reboot 后从 progress.md 游标续做）；=0 = 纯 fresh 现状 + 抑制写台账纪律 prompt（FLY-795）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"resumeComputer",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/edge-worker/src/Blueprint.ts",
+				"buildSystemPromptLines",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "重启/terminate resume 主机制；=0 全局关，改后需重启 Bridge。",
+	},
+	{
 		// FLY-685: close_runner (Bridge) writes a cmux pin close-request marker on a
 		// successful window kill; the cmux-sync watcher drains it and closes the
 		// stale sidebar pin immediately. readonly (not web-toggleable): the switch

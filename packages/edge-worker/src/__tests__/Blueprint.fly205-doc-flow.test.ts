@@ -245,8 +245,13 @@ describe("DOC-FLOW injection (FLY-205)", () => {
 	});
 
 	it("OFF sentinel: absent and disabled configs produce byte-identical prompts with zero DOC-FLOW content", async () => {
-		const absent = await buildPrompt({});
+		// FLY-795: pin executionId so the comparison isolates the doc_flow config
+		// difference from the (config-independent) PROGRESS LEDGER block, which bakes
+		// the runner's exec-id like the other comm-command prompt lines.
+		const pin = { ctxExtra: { executionId: "fly205-fixed-exec" } };
+		const absent = await buildPrompt({ ...pin });
 		const disabled = await buildPrompt({
+			...pin,
 			docFlowConfig: { enabled: false, default_department: "content" },
 		});
 		expect(disabled).toBe(absent); // byte-identical

@@ -62,6 +62,22 @@ export {
 } from "./ponytail.js";
 export { PONYTAIL_RULESET } from "./ponytail-ruleset.js";
 export {
+	type ProgressPathInput,
+	resolveProgressPath,
+} from "./progress-path-resolver.js";
+// FLY-795: shared progress.md ledger schema (795 owns; 793 consumes on handoff).
+export type {
+	ChunkStatus,
+	ProgressChunk,
+	ProgressLedger,
+	ProgressPointers,
+} from "./progress-schema.js";
+export {
+	parseProgress,
+	renderProgress,
+	stageToPhase,
+} from "./progress-schema.js";
+export {
 	DEFAULT_PROOFSHOT_CAPTURE_ANGLES,
 	DEFAULT_PROOFSHOT_CAPTURE_STAGES,
 	DEFAULT_PROOFSHOT_CONFIG,

@@ -547,7 +547,11 @@ describe("Blueprint", () => {
 		const execCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		expect(execCall.appendSystemPrompt).toContain("Do not ask questions");
-		expect(execCall.appendSystemPrompt).not.toContain("flywheel-comm");
+		// No Lead → no Lead-comm (ask / gate / inbox) instructions. FLY-795: the
+		// unconditional PROGRESS LEDGER discipline line references `flywheel-comm
+		// progress` regardless of Lead, so assert the ask-specific marker is absent
+		// rather than the broad "flywheel-comm" string.
+		expect(execCall.appendSystemPrompt).not.toContain("ask --lead");
 	});
 
 	it("passes commDbPath to adapter when leadId + projectName set", async () => {

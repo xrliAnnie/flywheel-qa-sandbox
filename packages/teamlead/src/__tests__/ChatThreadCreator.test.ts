@@ -880,7 +880,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 	});
 
 	// FLY-630 ①: rapid transitions that pile up while a write is in flight coalesce
-	// to the LATEST stage — the intermediate (pr_created/⏳) is never PATCHed, so the
+	// to the LATEST stage — the intermediate (pr_created/📬) is never PATCHed, so the
 	// 2-rename/10-min budget is spent on the latest, not on transitional states.
 	it("coalesces queued stamps to the latest target (intermediate skipped)", async () => {
 		let currentTitle = "[FLY-560] Discord issue status";
@@ -907,7 +907,7 @@ describe("FLY-560: ChatThreadCreator.stampStageEmoji", () => {
 			},
 		);
 
-		// implement (🔨) starts the writer; while its GET is held, pr_created (⏳)
+		// implement (🔨) starts the writer; while its GET is held, pr_created (📬)
 		// and code_review (👀) queue. Only the latest (👀) should follow 🔨.
 		const p1 = creator.stampStageEmoji(ctx(), "thread-1", "implement");
 		const p2 = creator.stampStageEmoji(ctx(), "thread-1", "pr_created");

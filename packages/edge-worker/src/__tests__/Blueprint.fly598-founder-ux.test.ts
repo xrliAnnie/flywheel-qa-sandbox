@@ -85,6 +85,11 @@ async function buildPrompt(founderUxGateConfig?: {
 		teamName: "eng",
 		runnerName: "claude",
 		projectName: "testproj",
+		// FLY-795: pin executionId so the OFF-sentinel byte-identical comparison
+		// isolates the founder-UX config difference from the (config-independent)
+		// PROGRESS LEDGER block, which bakes the runner's exec-id like the other
+		// comm-command prompt lines do.
+		executionId: "fly598-fixed-exec",
 	};
 	await blueprint.run(
 		{ id: "FLY-598", blockedBy: [] } as DagNode,

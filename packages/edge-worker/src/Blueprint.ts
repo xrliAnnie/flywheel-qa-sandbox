@@ -39,6 +39,7 @@ import type {
 } from "./ExecutionEvidenceCollector.js";
 import type { GitResultChecker } from "./GitResultChecker.js";
 import type { HydratedContext, PreHydrator } from "./PreHydrator.js";
+import { resumeModeInstructions } from "./resume-mode.js";
 import type { SkillInjector } from "./SkillInjector.js";
 import type { WorktreeInfo, WorktreeManager } from "./WorktreeManager.js";
 import { resolveWorktreeKey } from "./WorktreeManager.js";
@@ -324,6 +325,25 @@ export interface BlueprintContext {
 	 * behavior (`FLYWHEEL_RUNNER_START_POINT` / `origin/main`).
 	 */
 	startPoint?: string;
+
+	/**
+	 * FLY-795: restart-resilient resume. Set by teamlead when re-dispatching a
+	 * DEAD runner (explicit terminate / reboot) whose branch B carries a committed
+	 * `progress.md`. Blueprint renders a RESUME-MODE prompt from this trusted input
+	 * (read the cursor + committed plan, continue from where the prior runner left
+	 * off; do NOT re-run explore/research/plan), and suppresses the completed
+	 * from-scratch gates up to `effectiveStage`. Absent ⇒ fresh (byte-compatible).
+	 * The worktree reuses FLY-793's `shareParentBranch` + `startPoint = <branch B
+	 * tip>` so `progress.md` survives the worktree rebuild.
+	 */
+	progressResume?: {
+		/** deterministic progress.md path (also injected as FLYWHEEL_PROGRESS_PATH). */
+		progressPath: string;
+		priorExecutionId: string;
+		resumeKind: "restart" | "terminate" | "reboot" | "handoff";
+		/** phase to suppress up-to; undefined = suppress no gates (fail-closed on mismatch). */
+		effectiveStage?: string;
+	};
 
 	/**
 	 * FLY-579: QA-runner context. Present ONLY for `sessionRole === "qa"`
@@ -1038,6 +1058,35 @@ export class Blueprint {
 			}
 		}
 
+		// FLY-795 (code-review HIGH-1): PROGRESS LEDGER write-discipline. Every
+		// non-QA WRITER runner (fresh OR resume) is told to keep a `progress.md`
+		// cursor committed to its branch as it works — otherwise a re-dispatch has
+		// nothing to resume from and the FLY-709 "never finishes" churn persists.
+		// Co-located in the runner's doc folder (matches FLY-793's convention +
+		// doc-flow naming — no forced slug); resume detection finds it on the branch
+		// regardless of slug. `flywheel-comm progress` path-limited commits ONLY
+		// progress.md (never sweeps code). QA runners write no ledger (isQaRunner
+		// skip). Byte-compat: the command is new; a runner that never calls it just
+		// doesn't write a ledger (= current behavior). The FLYWHEEL_PROGRESS_RESUME=0
+		// kill-switch fully reverts the feature — with no resume there is nothing to
+		// write for, so the discipline line is suppressed too (prompt byte-identical
+		// to pre-795).
+		if (!isQaRunner && process.env.FLYWHEEL_PROGRESS_RESUME !== "0") {
+			const progressLedgerLines = [
+				"PROGRESS LEDGER (restart-resilient — keep this current as you work):",
+				"Maintain a `progress.md` cursor in YOUR doc folder (the SAME folder as your",
+				"exploration/research/plan). After EACH meaningful step, update it with:",
+				`  node ${commCliPath} progress --exec-id ${executionId} --file <your-doc-folder>/progress.md \\`,
+				'    --phase design|implement|qa --cursor <n/m> [--set-chunk <id>=<status>] [--next "<next step>"]',
+				"It path-limited commits ONLY progress.md to your branch (never your code). This is",
+				"exactly what lets a restart / terminate / handoff CONTINUE from your real cursor",
+				"instead of starting over — so keep it honest and current, especially before long steps.",
+				"On a resume dispatch, $FLYWHEEL_PROGRESS_PATH points at the exact ledger to continue.",
+				"",
+			];
+			systemPromptLines.unshift(...progressLedgerLines);
+		}
+
 		// FLY-598: FOUNDER-UX GATE block — injected ONLY when the project enables
 		// founder_ux_gate (mode !== off). Absent/off → zero lines added
 		// (byte-compatible prompt). The judgment ("is this founder-facing UX") is
@@ -1078,7 +1127,17 @@ export class Blueprint {
 		// `complete --route blocked` (no new error stage).
 		// Inserted at the TOP of systemPromptLines so the Runner sees this before
 		// the standard pipeline instructions.
-		if (ctx.projectName) {
+		// FLY-795: resume-mode. When re-dispatched with a computed progressResume
+		// (a dead runner being continued), suppress the from-scratch onboard/
+		// brainstorm preamble IF the StateStore-authoritative effectiveStage proves
+		// design is done (implement/qa), and prepend a RESUME directive. Fail-closed
+		// (Codex R2 #4): absent/mismatched effectiveStage suppresses nothing. The
+		// ship-gate is always preserved (never auto-ship). Absent progressResume ⇒
+		// byte-compatible.
+		const resumeMode = ctx.progressResume
+			? resumeModeInstructions(ctx.progressResume)
+			: null;
+		if (ctx.projectName && !resumeMode?.suppressOnboardBrainstorm) {
 			const onboardPreamble = [
 				"PIPELINE PREAMBLE — run BEFORE any other work:",
 				`(1) \`node ${commCliPath} stage set onboard\` — reports intent (you are starting onboarding).`,
@@ -1089,6 +1148,11 @@ export class Blueprint {
 				"",
 			];
 			systemPromptLines.unshift(...onboardPreamble);
+		}
+		// FLY-795: the RESUME directive sits at the very TOP so the runner reads it
+		// before any pipeline instruction.
+		if (resumeMode) {
+			systemPromptLines.unshift(...resumeMode.lines);
 		}
 
 		// GEO-206 / FLY-161: Inject flywheel-comm ask instructions when Lead is available
@@ -1484,6 +1548,12 @@ export class Blueprint {
 				// Unset/:memory: → no injection; both sides fall back to the
 				// ~/.flywheel/teamlead.db default (byte-compat with prod today).
 				stateDbPath: resolveStateDbPathForRunner(),
+				// FLY-795: on a resume, tell the runner (via FLYWHEEL_PROGRESS_PATH)
+				// the exact branch-committed progress.md to keep updating. Fresh
+				// runners derive it inside their own doc folder (undefined here).
+				...(ctx.progressResume && {
+					progressPath: ctx.progressResume.progressPath,
+				}),
 				onHeartbeat: () => {
 					this.eventEmitter?.emitHeartbeat(env).catch(() => {});
 				},
