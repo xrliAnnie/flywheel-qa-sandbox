@@ -648,16 +648,18 @@ for title, group in by_title.items():
 # is_managed_runner_title <title> — rc 0 iff the title is a Flywheel runner
 # window name the CURRENT producer can emit. Producer contract:
 # `buildWindowLabel(issueId, runnerName, title)` = "{issueId}-{runner}-{title}"
-# (packages/core/src/tmux-naming.ts), and both dispatch paths hardcode
-# runnerName="claude" (packages/teamlead/src/bridge/run-dispatcher.ts) — so ALL
-# runner window titles are "{LinearId}-claude-{title}" regardless of executor
-# backend (claude/codex/antigravity/kimi all emit "-claude-").
-# COUPLING: if runnerName ever becomes backend-specific (e.g. "-codex-"), extend
-# the alternation here in lockstep. Deliberately excludes codex/gemini/cursor/
-# kimi/agy (not producible today → not provably managed) and Lead windows
-# ("<project>-<lead>", never a close_runner target).
+# (packages/core/src/tmux-naming.ts). `runnerName` is `runnerDisplayName(sessionRole)`
+# (packages/teamlead/src/bridge/run-dispatcher.ts): non-phase runs emit "claude"
+# (every executor backend — claude/codex/antigravity/kimi — still emits "-claude-"),
+# and FLY-793 three-stage PHASE runners emit their phase ("-design-"/"-implement-"/
+# "-qa-") so the founder can see the live phase in cmux. So the producible runner
+# label is EXACTLY one of `claude|design|implement|qa`.
+# COUPLING: if runnerName ever gains another producible value, extend the
+# alternation here (and test-cmux-sync.sh) in lockstep. Deliberately excludes
+# vendor names (codex/gemini/cursor/kimi/agy — not producible today → not provably
+# managed) and Lead windows ("<project>-<lead>", never a close_runner target).
 is_managed_runner_title() {
-  local re='^[A-Z][A-Z0-9]*-[0-9]+-claude(-|$)'
+  local re='^[A-Z][A-Z0-9]*-[0-9]+-(claude|design|implement|qa)(-|$)'
   [[ "$1" =~ $re ]]
 }
 
