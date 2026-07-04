@@ -1,14 +1,13 @@
 ---
 issue: FLY-858
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-04T09:34:16.015Z
-nextStep: "handoff: Implement phase executes plan.md on this branch (mkdir
-  doc/qa/harness + marker + PR)"
+phase: implement
+phaseCursor: 1/1
+updated: 2026-07-04T09:35:56.475Z
+nextStep: push branch + open PR against qa/fly849-793-batch-combined, then approve gate
 chunks: []
 pointers: {}
 ---
 
 # FLY-858 progress
-**phase**: design (4/4)
-**next**: handoff: Implement phase executes plan.md on this branch (mkdir doc/qa/harness + marker + PR)
+**phase**: implement (1/1)
+**next**: push branch + open PR against qa/fly849-793-batch-combined, then approve gate
