@@ -728,8 +728,7 @@ export async function setupRunInfrastructure(
 		// Latest prior session for this issue (UUID first, identifier fallback).
 		// Resolved once so branchName + priorSession stay mutually consistent.
 		const prior =
-			store.getSessionByIssue(issueId) ??
-			store.getSessionByIdentifier(issueId);
+			store.getSessionByIssue(issueId) ?? store.getSessionByIdentifier(issueId);
 		if (!prior) return null;
 
 		const identifier = prior.issue_identifier ?? issueId;

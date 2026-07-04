@@ -20,8 +20,8 @@
  * brainstorm/design gate.
  */
 
-import { parseProgress, resolveProgressPath } from "flywheel-config";
 import type { ThreeStagePhase } from "flywheel-config";
+import { parseProgress, resolveProgressPath } from "flywheel-config";
 
 export type ResumeKind = "restart" | "terminate" | "reboot" | "handoff";
 

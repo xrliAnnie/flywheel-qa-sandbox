@@ -18,7 +18,13 @@ describe("progress-schema (FLY-795)", () => {
 		phaseCursor: "3/5",
 		nextStep: "wire the badge legacy strip entries",
 		chunks: [
-			{ id: "c1", order: 1, deps: [], done: "schema round-trips", status: "done" },
+			{
+				id: "c1",
+				order: 1,
+				deps: [],
+				done: "schema round-trips",
+				status: "done",
+			},
 			{
 				id: "c2",
 				order: 2,
@@ -26,11 +32,18 @@ describe("progress-schema (FLY-795)", () => {
 				done: "progress command commits path-limited",
 				status: "doing",
 			},
-			{ id: "c3", order: 3, deps: ["c2"], done: "resume mode suppresses", status: "todo" },
+			{
+				id: "c3",
+				order: 3,
+				deps: ["c2"],
+				done: "resume mode suppresses",
+				status: "todo",
+			},
 		],
 		pointers: {
 			plan: "engineering/doc/FLY-795-restart-resilient-resume/plan.md",
-			exploration: "engineering/doc/FLY-795-restart-resilient-resume/exploration.md",
+			exploration:
+				"engineering/doc/FLY-795-restart-resilient-resume/exploration.md",
 			pr: "#431",
 			reviewedSha: "abc1234",
 		},
@@ -94,6 +107,8 @@ describe("progress-schema (FLY-795)", () => {
 	});
 
 	it("parseProgress throws on a non-progress markdown blob (fail-loud)", () => {
-		expect(() => parseProgress("# just a random doc\n\nno frontmatter here")).toThrow();
+		expect(() =>
+			parseProgress("# just a random doc\n\nno frontmatter here"),
+		).toThrow();
 	});
 });

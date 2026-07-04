@@ -20,24 +20,40 @@ describe("resumeModeInstructions (FLY-795)", () => {
 		const text = r.lines.join("\n");
 		expect(text).toMatch(/RESUME/);
 		expect(text).toContain(base.progressPath);
-		expect(text).toMatch(/do NOT re-run explore\/research\/plan|不要重跑|continue from/i);
+		expect(text).toMatch(
+			/do NOT re-run explore\/research\/plan|不要重跑|continue from/i,
+		);
 	});
 
 	it("suppresses onboard/brainstorm from-scratch when a phase is complete (implement/qa)", () => {
-		expect(resumeModeInstructions({ ...base, effectiveStage: "implement" }).suppressOnboardBrainstorm).toBe(true);
-		expect(resumeModeInstructions({ ...base, effectiveStage: "qa" }).suppressOnboardBrainstorm).toBe(true);
+		expect(
+			resumeModeInstructions({ ...base, effectiveStage: "implement" })
+				.suppressOnboardBrainstorm,
+		).toBe(true);
+		expect(
+			resumeModeInstructions({ ...base, effectiveStage: "qa" })
+				.suppressOnboardBrainstorm,
+		).toBe(true);
 	});
 
 	it("does NOT suppress when still in the design phase (brainstorm not done)", () => {
-		expect(resumeModeInstructions({ ...base, effectiveStage: "design" }).suppressOnboardBrainstorm).toBe(false);
+		expect(
+			resumeModeInstructions({ ...base, effectiveStage: "design" })
+				.suppressOnboardBrainstorm,
+		).toBe(false);
 	});
 
 	it("fail-closed: does NOT suppress when effectiveStage is undefined (StateStore/ledger mismatch)", () => {
-		expect(resumeModeInstructions({ ...base }).suppressOnboardBrainstorm).toBe(false);
+		expect(resumeModeInstructions({ ...base }).suppressOnboardBrainstorm).toBe(
+			false,
+		);
 	});
 
 	it("always preserves the founder ship-gate (never auto-ship)", () => {
-		const text = resumeModeInstructions({ ...base, effectiveStage: "qa" }).lines.join("\n");
+		const text = resumeModeInstructions({
+			...base,
+			effectiveStage: "qa",
+		}).lines.join("\n");
 		expect(text).toMatch(/ship-gate|approval|never auto-ship/i);
 	});
 });

@@ -20,14 +20,14 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
+import Database from "better-sqlite3";
 import {
 	type ProgressChunk,
 	type ProgressLedger,
-	type ThreeStagePhase,
 	parseProgress,
 	renderProgress,
+	type ThreeStagePhase,
 } from "flywheel-config";
-import Database from "better-sqlite3";
 import { resolveStateDbPath } from "./verify-approval.js";
 
 export interface ProgressArgs {
@@ -81,7 +81,9 @@ export function runProgress(
 	// 1. Single-writer authority (fail-closed) — StateStore session must be running.
 	const session = deps.readSession(args.execId);
 	if (!session) {
-		return fail(`no StateStore session for exec-id ${args.execId} (fail-closed)`);
+		return fail(
+			`no StateStore session for exec-id ${args.execId} (fail-closed)`,
+		);
 	}
 	if (session.status !== "running") {
 		return fail(
@@ -108,7 +110,9 @@ export function runProgress(
 			? parseProgress(deps.readFileSync(absPath))
 			: newLedger(issue ?? "unknown", args.phase);
 	} catch (err) {
-		return fail(`could not read existing progress.md: ${(err as Error).message}`);
+		return fail(
+			`could not read existing progress.md: ${(err as Error).message}`,
+		);
 	}
 	applyArgs(ledger, args);
 
@@ -155,7 +159,9 @@ function applyArgs(ledger: ProgressLedger, args: ProgressArgs): void {
 		if (c) c.status = upd.status as ProgressChunk["status"];
 	}
 	for (const p of args.pointer ?? []) {
-		if (["plan", "exploration", "research", "pr", "reviewedSha"].includes(p.key)) {
+		if (
+			["plan", "exploration", "research", "pr", "reviewedSha"].includes(p.key)
+		) {
 			(ledger.pointers as Record<string, string>)[p.key] = p.value;
 		}
 	}
@@ -177,7 +183,8 @@ function validateFile(
 	if (abs !== resolve(cwd, norm) || !abs.startsWith(resolve(cwd) + sep)) {
 		return `--file resolves outside cwd: ${file}`;
 	}
-	if (!/progress\.md$/.test(norm)) return `--file must end in progress.md: ${file}`;
+	if (!/progress\.md$/.test(norm))
+		return `--file must end in progress.md: ${file}`;
 	if (issue && !norm.includes(issue)) {
 		return `--file ${file} does not match issue ${issue}`;
 	}
@@ -194,7 +201,9 @@ function fail(reason: string): ProgressResult {
 export function progress(argv: string[]): number {
 	const args = parseArgv(argv);
 	if (!args.execId || !args.file) {
-		console.error("usage: flywheel-comm progress --exec-id <id> --file <path> [--phase p] [--cursor n/m] [--next ...] [--handoff ...] [--set-chunk id=status]... [--pointer key=value]...");
+		console.error(
+			"usage: flywheel-comm progress --exec-id <id> --file <path> [--phase p] [--cursor n/m] [--next ...] [--handoff ...] [--set-chunk id=status]... [--pointer key=value]...",
+		);
 		return 2;
 	}
 	const deps = liveDeps();
@@ -214,7 +223,10 @@ function liveDeps(): ProgressDeps {
 		readSession: (execId) => {
 			const statePath = resolveStateDbPath(undefined, process.env);
 			if (!existsSync(statePath)) return undefined;
-			const db = new Database(statePath, { readonly: true, fileMustExist: true });
+			const db = new Database(statePath, {
+				readonly: true,
+				fileMustExist: true,
+			});
 			try {
 				return db
 					.prepare(
@@ -269,17 +281,22 @@ function parseArgv(argv: string[]): ProgressArgs {
 				break;
 			case "--set-chunk": {
 				const [id, status] = next().split("=");
-				if (id && status) (args.chunkStatus ??= []).push({ id, status });
+				if (id && status) {
+					args.chunkStatus ??= [];
+					args.chunkStatus.push({ id, status });
+				}
 				break;
 			}
 			case "--pointer": {
 				const raw = next();
 				const eq = raw.indexOf("=");
-				if (eq > 0)
-					(args.pointer ??= []).push({
+				if (eq > 0) {
+					args.pointer ??= [];
+					args.pointer.push({
 						key: raw.slice(0, eq),
 						value: raw.slice(eq + 1),
 					});
+				}
 				break;
 			}
 		}

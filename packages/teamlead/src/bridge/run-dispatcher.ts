@@ -22,6 +22,7 @@ import type {
 } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
+import type { ProgressResumeInfo } from "./progress-resume.js";
 import type {
 	IRetryDispatcher,
 	IStartDispatcher,
@@ -30,7 +31,6 @@ import type {
 	StartRequest,
 	StartResult,
 } from "./retry-dispatcher.js";
-import type { ProgressResumeInfo } from "./progress-resume.js";
 import {
 	type ResolvedRoleAdapter,
 	resolveRoleAdapter,
@@ -47,6 +47,7 @@ export type ResumeComputer = (
 	role: string,
 	projectName: string,
 ) => ProgressResumeInfo | null;
+
 import {
 	AdmissionDeferredError,
 	RunnerAdmissionController,
@@ -665,7 +666,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		// rebuilds WITH progress.md). Undefined computer / no prior progress ⇒ fresh
 		// (byte-compatible). Never overrides a caller-supplied startPoint (793 phase
 		// handoff already pins its own).
-		const resume = this.resumeComputer?.(req.issueId, role, req.projectName) ?? null;
+		const resume =
+			this.resumeComputer?.(req.issueId, role, req.projectName) ?? null;
 
 		// FLY-142 PR 1.4 + FLY-123: same as retry path — Agent Team identity
 		// + executor backend resolution (labels > roles config > env > claude).
@@ -714,7 +716,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					progressPath: resume.progressPath,
 					priorExecutionId: resume.priorExecutionId,
 					resumeKind: resume.resumeKind,
-					...(resume.effectiveStage && { effectiveStage: resume.effectiveStage }),
+					...(resume.effectiveStage && {
+						effectiveStage: resume.effectiveStage,
+					}),
 				},
 			}),
 			...runnerSpawn,

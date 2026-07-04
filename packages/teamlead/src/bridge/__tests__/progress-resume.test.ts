@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-	type ProgressResumeDeps,
 	computeProgressResume,
+	type ProgressResumeDeps,
 	stageToPhase,
 } from "../progress-resume.js";
 
@@ -42,7 +42,12 @@ function makeDeps(over: Partial<ProgressResumeDeps> = {}): ProgressResumeDeps {
 
 describe("computeProgressResume (FLY-795)", () => {
 	it("returns the resume params when a prior execution + branch progress.md exist", () => {
-		const r = computeProgressResume("issue-uuid", "implement", "terminate", makeDeps());
+		const r = computeProgressResume(
+			"issue-uuid",
+			"implement",
+			"terminate",
+			makeDeps(),
+		);
 		expect(r).not.toBeNull();
 		expect(r!.priorExecutionId).toBe("old-exec");
 		expect(r!.resumeKind).toBe("terminate");
@@ -54,7 +59,12 @@ describe("computeProgressResume (FLY-795)", () => {
 
 	it("reads the BRANCH blob, not the worktree fs (worktree may be gone on reboot)", () => {
 		const readBranchFile = vi.fn(() => ledger);
-		computeProgressResume("issue-uuid", "implement", "reboot", makeDeps({ readBranchFile }));
+		computeProgressResume(
+			"issue-uuid",
+			"implement",
+			"reboot",
+			makeDeps({ readBranchFile }),
+		);
 		// must have consulted the branch, keyed by branch name + progress path
 		expect(readBranchFile).toHaveBeenCalledWith(
 			"flywheel-FLY-795",
@@ -64,13 +74,23 @@ describe("computeProgressResume (FLY-795)", () => {
 
 	it("no resume when there is no prior execution", () => {
 		expect(
-			computeProgressResume("i", "implement", "terminate", makeDeps({ priorSession: () => undefined })),
+			computeProgressResume(
+				"i",
+				"implement",
+				"terminate",
+				makeDeps({ priorSession: () => undefined }),
+			),
 		).toBeNull();
 	});
 
 	it("no resume when progress.md is not committed on the branch (→ fresh)", () => {
 		expect(
-			computeProgressResume("i", "implement", "terminate", makeDeps({ readBranchFile: () => null })),
+			computeProgressResume(
+				"i",
+				"implement",
+				"terminate",
+				makeDeps({ readBranchFile: () => null }),
+			),
 		).toBeNull();
 	});
 
@@ -86,7 +106,10 @@ describe("computeProgressResume (FLY-795)", () => {
 			"implement",
 			"terminate",
 			makeDeps({
-				priorSession: () => ({ execution_id: "old", session_stage: "brainstorm" }),
+				priorSession: () => ({
+					execution_id: "old",
+					session_stage: "brainstorm",
+				}),
 			}),
 		);
 		expect(r).not.toBeNull();
