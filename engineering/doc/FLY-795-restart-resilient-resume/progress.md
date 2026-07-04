@@ -1,9 +1,9 @@
 ---
 issue: FLY-795
 title: restart-resilient runner
-phase: implement
-phaseCursor: "6/6 chunks + plugin.ts activation DONE; opening PR"
-nextStep: "IMPLEMENTATION COMPLETE. All 6 chunks + live plugin.ts activation done; full build clean; repo-wide lint clean (my 21 files); 40 FLY-795 tests green. NEXT: open PR (flywheel-FLY-795 -> main) -> stage set pr_created (Bridge triggers Codex code review) -> approve gate (--no-block) + complete --route needs_review -> HOLD at ship-gate for batch (793+795+799, Annie executes). NEVER self-ship. Independent QA does the real restart-resume E2E (real git re-dispatch on a branch with committed progress.md)."
+phase: code_review
+phaseCursor: "impl + plugin.ts activation DONE; Codex code review APPROVED (3 rounds)"
+nextStep: "PR #436 open; Codex code review APPROVED after 3 rounds (R1 CHANGES 2H+3M → R2 CHANGES 1H+1M+1L, real-git-caught fresh-commit bug → R3 APPROVED). All fixes committed (bb63b808 R1, 845b36fb R2). Full build + repo lint clean; suites green (config 306, edge-worker Blueprint 109, teamlead 132, comm 14 incl 3 real-git). NEXT: approve gate (--no-block) + complete --route needs_review → HOLD at ship-gate for batch (793+795+799, Annie executes). Independent QA (529 Room) does the real restart-resume E2E. NEVER self-ship."
 chunks:
   - { id: c1, order: 1, deps: [], status: done, done: "shared progress-schema + path-resolver in flywheel-config (packages/config), 12 tests green — 4e554753" }
   - { id: c2, order: 2, deps: [c1], status: done, done: "flywheel-comm progress command (single-writer via StateStore + --file validation + atomic temp/rename + path-limited git commit), 6 tests — 983f4206" }
