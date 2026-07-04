@@ -125,6 +125,35 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"resolve.direct-toggle.test:auto_qa_killswitch live-observe",
 	},
 	{
+		// FLY-793: global hard kill-switch for the three-stage pipeline
+		// (Design→Implement→QA). The PRIMARY toggle is the per-project
+		// `pipeline.three_stage` config key; this env is a fleet-wide emergency OFF
+		// override (unset → the feature may run per project; `=0` → force-off
+		// everywhere). Read at call_time when a phase-session completes, so it can
+		// gate a live handoff. readonly (not a founder dashboard toggle): the config
+		// key is the intended per-project control, this env is an ops safety lever.
+		name: "three_stage_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_THREE_STAGE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"全局关掉三段式 pipeline（Design→Implement→QA）；主开关是 per-project pipeline.three_stage config，本 env 是 fleet-wide 紧急 OFF（FLY-793）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/three-stage-policy.ts",
+				"resolveThreeStagePolicy",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "三段式主开关是 per-project pipeline.three_stage config；本 env=0 是全局紧急关，改后需重启 Bridge。",
+	},
+	{
 		// FLY-685: close_runner (Bridge) writes a cmux pin close-request marker on a
 		// successful window kill; the cmux-sync watcher drains it and closes the
 		// stale sidebar pin immediately. readonly (not web-toggleable): the switch

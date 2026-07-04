@@ -255,6 +255,30 @@ export const STUCK_DISPOSITIONS = [
 ] as const;
 export type StuckDisposition = (typeof STUCK_DISPOSITIONS)[number];
 
+/**
+ * FLY-793 (Step 11): chat-thread role. 'main' is the byte-compatible default (one
+ * thread per issue+channel via `chat_threads`); the three phase roles route to the
+ * `phase_chat_threads` side-table so a three-stage issue gets one thread per phase.
+ */
+export type ChatThreadRole = "main" | "design" | "implement" | "qa";
+
+const PHASE_CHAT_THREAD_ROLES: ReadonlySet<string> = new Set([
+	"design",
+	"implement",
+	"qa",
+]);
+
+/**
+ * FLY-793 (Step 11): fold any non-phase / absent role to 'main'. Every existing
+ * caller passes no role → 'main' → the existing `chat_threads` 1:1 path unchanged.
+ * Only an explicit three-stage phase role reaches the side-table.
+ */
+export function normalizeChatThreadRole(role?: string | null): ChatThreadRole {
+	return role && PHASE_CHAT_THREAD_ROLES.has(role)
+		? (role as ChatThreadRole)
+		: "main";
+}
+
 /** Disposition values a Lead may write explicitly (handled_remanaged is implicit-only). */
 export const EXPLICIT_STUCK_DISPOSITIONS: readonly StuckDisposition[] = [
 	"false_positive",
@@ -349,6 +373,10 @@ export interface SessionUpsert {
 	doc_tier?: string;
 	/** FLY-205: Linear issue URL persisted at start (doc header continuity on retry). */
 	issue_url?: string;
+	/** FLY-793 (Step 11): chat-thread role — 'main' (default, non-three-stage) or a
+	 * phase role (design/implement/qa). Routes Session-based thread resolution to
+	 * the main `chat_threads` table vs the `phase_chat_threads` side-table. */
+	chat_thread_role?: string;
 	/** FLY-598: founder-facing-ux flag (Lead label snapshot OR Runner self-declare), 0|1. */
 	founder_facing_ux?: number;
 	/** FLY-598: Bridge-written, founder-verified UX sign-off record (JSON; bound to uxHash). */
@@ -419,6 +447,9 @@ export interface Session {
 	doc_tier?: string;
 	/** FLY-205: Linear issue URL persisted at start (doc header continuity on retry). */
 	issue_url?: string;
+	/** FLY-793 (Step 11): chat-thread role — 'main' (default) or a phase role
+	 * (design/implement/qa). Set at start; routes thread resolution by table. */
+	chat_thread_role?: string;
 	/** FLY-598: founder-facing-ux flag (Lead label snapshot OR Runner self-declare). */
 	founder_facing_ux?: boolean;
 	/** FLY-598: Bridge-written, founder-verified UX sign-off record (JSON; bound to uxHash). */
@@ -796,7 +827,8 @@ export class StateStore {
 				diff_summary TEXT,
 				commit_messages TEXT,
 				changed_file_paths TEXT,
-				thread_id TEXT
+				thread_id TEXT,
+				chat_thread_role TEXT NOT NULL DEFAULT 'main'
 			)
 		`);
 
@@ -1022,6 +1054,20 @@ export class StateStore {
 			/* exists */
 		}
 
+		// FLY-793 (Step 11): the session's chat-thread role — 'main' for every
+		// non-three-stage session (byte-compat), or the phase role (design /
+		// implement / qa) for a three-stage phase-session. Persisted at start so
+		// Session-based thread resolution (which lacks the dispatch-time
+		// shareParentBranch signal) routes to the right table. Legacy rows default
+		// 'main' = existing 1:1 behavior.
+		try {
+			this.db.run(
+				"ALTER TABLE sessions ADD COLUMN chat_thread_role TEXT NOT NULL DEFAULT 'main'",
+			);
+		} catch {
+			/* exists */
+		}
+
 		// FLY-245 D-a: monotonic lifecycle revision — incremented on EVERY status
 		// transition (upsert / persistTransition / forceStatus). The runner-lifecycle
 		// founder credential snapshots this at request time; a stale confirmation is
@@ -1126,6 +1172,34 @@ export class StateStore {
 		`);
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_threads_issue_channel ON chat_threads(issue_id, channel_id)",
+		);
+
+		// FLY-793 (Step 11, Hybrid): per-phase chat threads for a three-stage run.
+		// DELIBERATELY a SIDE-TABLE separate from `chat_threads`: a three-stage issue
+		// has ONE Design/Implement/QA thread per role, but `chat_threads`'
+		// `UNIQUE(issue_id, channel_id)` allows only one row per issue. Keeping the
+		// main table + its index BYTE-UNCHANGED (zero migration risk to the 1:1
+		// mapping every existing project relies on) and routing only non-`main`
+		// phase roles here is the de-risked Hybrid (Annie 2026-07-03). `session_role
+		// NOT NULL` avoids SQLite's multi-NULL unique-index escape hatch. Columns
+		// mirror `chat_threads` so the role-aware accessors dispatch by table.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS phase_chat_threads (
+				thread_id TEXT PRIMARY KEY,
+				channel_id TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				session_role TEXT NOT NULL,
+				lead_id TEXT,
+				created_at TEXT DEFAULT (datetime('now')),
+				discord_missing_at TEXT,
+				archived_at TEXT,
+				attach_pin_message_id TEXT,
+				attach_pin_command TEXT,
+				attach_pin_pinned_at TEXT
+			)
+		`);
+		this.db.run(
+			"CREATE UNIQUE INDEX IF NOT EXISTS idx_phase_chat_threads_issue_channel_role ON phase_chat_threads(issue_id, channel_id, session_role)",
 		);
 
 		// FLY-314: Roundtable per-topic threads. DELIBERATELY a separate table from
@@ -1572,8 +1646,8 @@ export class StateStore {
 				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, ponytail_condition, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
-				doc_tier, issue_url
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				doc_tier, issue_url, chat_thread_role
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -1654,6 +1728,10 @@ export class StateStore {
 					session.session_role ?? null,
 					session.doc_tier ?? null,
 					session.issue_url ?? null,
+					// FLY-793 (Step 11): set-once at INSERT; NOT in the ON CONFLICT
+					// update, so it is immutable after the row is created (the phase is
+					// fixed at dispatch). `?? "main"` keeps the NOT NULL column satisfied.
+					session.chat_thread_role ?? "main",
 				],
 			);
 			if (enteringAwaitingReview) {
@@ -1721,8 +1799,8 @@ export class StateStore {
 				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, ponytail_condition, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
-				doc_tier, issue_url
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				doc_tier, issue_url, chat_thread_role
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -1803,6 +1881,9 @@ export class StateStore {
 					fields.session_role ?? null,
 					fields.doc_tier ?? null,
 					fields.issue_url ?? null,
+					// FLY-793 (Step 11): set-once at INSERT; immutable via omission from
+					// the ON CONFLICT update (see the sibling upsert above).
+					fields.chat_thread_role ?? "main",
 				],
 			);
 			if (enteringAwaitingReview) {
@@ -1917,6 +1998,8 @@ export class StateStore {
 			// FLY-205: doc-flow tier + Linear URL (retry continuity)
 			doc_tier: "doc_tier",
 			issue_url: "issue_url",
+			// FLY-793 (Step 11): persisted chat-thread role (set at start).
+			chat_thread_role: "chat_thread_role",
 			// FLY-598: founder-facing UX gate flag + sign-off record + mode snapshot
 			founder_facing_ux: "founder_facing_ux",
 			founder_ux_signoff_json: "founder_ux_signoff_json",
@@ -2072,6 +2155,70 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-793 (Codex R1+R2): a same-issue session that OCCUPIES the shared branch-B
+	 * worktree — so a fresh three-stage re-dispatch here must be rejected, or it
+	 * would start a second phase and (via Blueprint.removeIfExists on the same
+	 * shared-branch key) tear away the running phase's worktree instead of failing
+	 * closed. Two disjuncts:
+	 *
+	 *   (a) a started PHASE session — `design`/`implement`/`qa` role in a
+	 *       branch-B-holding status (`running`/`awaiting_review`/`approved_to_ship`/
+	 *       `design_done`; `design_done` = the possibly-restart-spanning handoff
+	 *       window where the design worktree still exists for capturePhaseHeadSha).
+	 *   (b) a `pending` row that ALREADY holds a worktree (Codex R2): `worktree_ready`
+	 *       is reliable while `session_started` is fire-and-forget, so a durable
+	 *       `pending` + `worktree_path` row can exist BEFORE the phase role is
+	 *       persisted (role is written at `session_started`). This window survives a
+	 *       Bridge restart and is exactly when the inflight-map dedup is also gone —
+	 *       so match it by the created worktree, NOT by role. `listWorktreeProtection
+	 *       Sessions` already treats `pending` as protected; this closes the same
+	 *       hole for re-dispatch deletion. The entry guard only runs when the project
+	 *       has three_stage ON (a fresh `main` that just entered), so a same-issue
+	 *       pending worktree is a phase (or a stale pre-flip row) — rejecting is safe.
+	 *
+	 * Returns the first match (single-writer invariant).
+	 */
+	/**
+	 * FLY-793 (Codex full-PR R2 #1): all Design phase-sessions stuck at design_done.
+	 * The boot complete-marker drain replays a `phase_design_complete` marker BEFORE
+	 * the PhaseOrchestrator is wired, so the session lands at design_done without the
+	 * Design→Implement handoff firing. The orchestrator's startup reconcile re-drives
+	 * these (idempotent: onPhaseComplete re-gates on status===design_done).
+	 */
+	getStrandedDesignPhaseSessions(): Session[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM sessions WHERE session_role = 'design' AND status = 'design_done'",
+		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	getActivePhaseSessionForIssue(issueId: string): Session | undefined {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE issue_id = ?
+			   AND (
+			     (session_role IN ('design', 'implement', 'qa')
+			        AND status IN ('running', 'awaiting_review', 'approved_to_ship', 'design_done'))
+			     OR (status = 'pending' AND worktree_path IS NOT NULL AND worktree_path != '')
+			   )
+			 ORDER BY last_activity_at DESC LIMIT 1`,
+		);
+		stmt.bind([issueId]);
+		const found = stmt.step()
+			? this.rowToSession(stmt.getAsObject() as Record<string, unknown>)
+			: undefined;
+		stmt.free();
+		return found;
+	}
+
+	/**
 	 * FLY-603 Layer B: sessions whose worktree must NOT be reconciled — the
 	 * protected status set for a project. `pending` IS included: it is a real
 	 * persisted status (schema default; `worktree_ready` upserts a pending
@@ -2080,7 +2227,10 @@ export class StateStore {
 	 */
 	listWorktreeProtectionSessions(projectName: string): Session[] {
 		const stmt = this.db.prepare(
-			"SELECT * FROM sessions WHERE project_name = ? AND status IN ('running', 'awaiting_review', 'approved_to_ship', 'pending')",
+			// FLY-793: `design_done` protects a completed Design phase's shared
+			// branch-B worktree from the reconciler during the (possibly
+			// restart-spanning) handoff window — capturePhaseHeadSha still needs it.
+			"SELECT * FROM sessions WHERE project_name = ? AND status IN ('running', 'awaiting_review', 'approved_to_ship', 'pending', 'design_done')",
 		);
 		stmt.bind([projectName]);
 		const rows: Session[] = [];
@@ -2521,29 +2671,56 @@ export class StateStore {
 
 	// --- FLY-91: Chat thread CRUD (per-issue threads in chatChannel) ---
 
-	/** Delete-first upsert (same pattern as upsertThread for Forum). */
+	/**
+	 * Delete-first upsert (same pattern as upsertThread for Forum).
+	 *
+	 * FLY-793 (Step 11): `role` routes by table. 'main' (default — every existing
+	 * caller) hits `chat_threads` with the ORIGINAL statements (byte-unchanged). A
+	 * phase role hits the `phase_chat_threads` side-table and scopes the delete-stale
+	 * to (issue, channel, ROLE) so creating the Implement thread never deletes the
+	 * sibling Design thread.
+	 */
 	upsertChatThread(
 		threadId: string,
 		channelId: string,
 		issueId: string,
 		leadId?: string,
+		role: string = "main",
 	): void {
+		const r = normalizeChatThreadRole(role);
 		// FLY-663 §2.8: delete-stale-then-upsert is one logical mutation — wrap so a
 		// crash between the DELETE and the INSERT can't leave the issue thread-less.
 		this.db.transaction(() => {
-			this.db.run(
-				"DELETE FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND thread_id != ?",
-				[issueId, channelId, threadId],
-			);
-			this.db.run(
-				`INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id)
-				 VALUES (?, ?, ?, ?)
-				 ON CONFLICT(thread_id) DO UPDATE SET
-					channel_id = excluded.channel_id,
-					issue_id = excluded.issue_id,
-					lead_id = excluded.lead_id`,
-				[threadId, channelId, issueId, leadId ?? null],
-			);
+			if (r === "main") {
+				this.db.run(
+					"DELETE FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND thread_id != ?",
+					[issueId, channelId, threadId],
+				);
+				this.db.run(
+					`INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id)
+					 VALUES (?, ?, ?, ?)
+					 ON CONFLICT(thread_id) DO UPDATE SET
+						channel_id = excluded.channel_id,
+						issue_id = excluded.issue_id,
+						lead_id = excluded.lead_id`,
+					[threadId, channelId, issueId, leadId ?? null],
+				);
+			} else {
+				this.db.run(
+					"DELETE FROM phase_chat_threads WHERE issue_id = ? AND channel_id = ? AND session_role = ? AND thread_id != ?",
+					[issueId, channelId, r, threadId],
+				);
+				this.db.run(
+					`INSERT INTO phase_chat_threads (thread_id, channel_id, issue_id, session_role, lead_id)
+					 VALUES (?, ?, ?, ?, ?)
+					 ON CONFLICT(thread_id) DO UPDATE SET
+						channel_id = excluded.channel_id,
+						issue_id = excluded.issue_id,
+						session_role = excluded.session_role,
+						lead_id = excluded.lead_id`,
+					[threadId, channelId, issueId, r, leadId ?? null],
+				);
+			}
 		});
 		this.save();
 	}
@@ -2964,21 +3141,35 @@ export class StateStore {
 		return updated;
 	}
 
+	/**
+	 * FLY-793 (Step 11): `role` routes by table. 'main' (default — every existing
+	 * caller) reads `chat_threads` with the ORIGINAL statement (byte-unchanged); a
+	 * phase role reads the `phase_chat_threads` side-table scoped to that role, and
+	 * echoes `session_role` back so callers can tell which phase thread they got.
+	 */
 	getChatThreadByIssue(
 		issueId: string,
 		channelId: string,
+		role: string = "main",
 	):
 		| {
 				thread_id: string;
 				channel_id: string;
 				lead_id: string | null;
 				archived_at: string | null;
+				session_role: ChatThreadRole;
 		  }
 		| undefined {
-		const stmt = this.db.prepare(
-			"SELECT thread_id, channel_id, lead_id, archived_at FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND discord_missing_at IS NULL",
-		);
-		stmt.bind([issueId, channelId]);
+		const r = normalizeChatThreadRole(role);
+		const stmt =
+			r === "main"
+				? this.db.prepare(
+						"SELECT thread_id, channel_id, lead_id, archived_at FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND discord_missing_at IS NULL",
+					)
+				: this.db.prepare(
+						"SELECT thread_id, channel_id, lead_id, archived_at FROM phase_chat_threads WHERE issue_id = ? AND channel_id = ? AND session_role = ? AND discord_missing_at IS NULL",
+					);
+		stmt.bind(r === "main" ? [issueId, channelId] : [issueId, channelId, r]);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
 			stmt.free();
@@ -2987,36 +3178,71 @@ export class StateStore {
 				channel_id: row.channel_id as string,
 				lead_id: (row.lead_id as string) ?? null,
 				archived_at: (row.archived_at as string) ?? null,
+				session_role: r,
 			};
 		}
 		stmt.free();
 		return undefined;
 	}
 
-	/** FLY-91 Round 2: Reverse lookup by thread_id for conflict detection. */
-	getChatThreadByThreadId(
-		threadId: string,
-	): { thread_id: string; channel_id: string; issue_id: string } | undefined {
-		const stmt = this.db.prepare(
+	/**
+	 * FLY-91 Round 2: Reverse lookup by thread_id for conflict detection.
+	 *
+	 * FLY-793 (Step 11): a thread_id lives in exactly ONE of the two tables. Check
+	 * `chat_threads` FIRST (byte-unchanged for every existing main thread), then the
+	 * `phase_chat_threads` side-table. `session_role` is echoed ('main' for a main
+	 * thread) so callers that need role-sensitive metadata don't have to re-query.
+	 */
+	getChatThreadByThreadId(threadId: string):
+		| {
+				thread_id: string;
+				channel_id: string;
+				issue_id: string;
+				session_role: ChatThreadRole;
+		  }
+		| undefined {
+		const mainStmt = this.db.prepare(
 			"SELECT thread_id, channel_id, issue_id FROM chat_threads WHERE thread_id = ? AND discord_missing_at IS NULL",
 		);
-		stmt.bind([threadId]);
-		if (stmt.step()) {
-			const row = stmt.getAsObject() as Record<string, unknown>;
-			stmt.free();
+		mainStmt.bind([threadId]);
+		if (mainStmt.step()) {
+			const row = mainStmt.getAsObject() as Record<string, unknown>;
+			mainStmt.free();
 			return {
 				thread_id: row.thread_id as string,
 				channel_id: row.channel_id as string,
 				issue_id: row.issue_id as string,
+				session_role: "main",
 			};
 		}
-		stmt.free();
+		mainStmt.free();
+		const phaseStmt = this.db.prepare(
+			"SELECT thread_id, channel_id, issue_id, session_role FROM phase_chat_threads WHERE thread_id = ? AND discord_missing_at IS NULL",
+		);
+		phaseStmt.bind([threadId]);
+		if (phaseStmt.step()) {
+			const row = phaseStmt.getAsObject() as Record<string, unknown>;
+			phaseStmt.free();
+			return {
+				thread_id: row.thread_id as string,
+				channel_id: row.channel_id as string,
+				issue_id: row.issue_id as string,
+				session_role: normalizeChatThreadRole(row.session_role as string),
+			};
+		}
+		phaseStmt.free();
 		return undefined;
 	}
 
 	markChatThreadMissing(threadId: string): void {
 		this.db.run(
 			"UPDATE chat_threads SET discord_missing_at = datetime('now') WHERE thread_id = ?",
+			[threadId],
+		);
+		// FLY-793 (Step 11): a thread_id lives in exactly one table, so this second
+		// UPDATE is a no-op for a main thread (byte-safe) and covers a phase thread.
+		this.db.run(
+			"UPDATE phase_chat_threads SET discord_missing_at = datetime('now') WHERE thread_id = ?",
 			[threadId],
 		);
 		this.save();
@@ -3033,6 +3259,11 @@ export class StateStore {
 			"UPDATE chat_threads SET archived_at = datetime('now') WHERE thread_id = ?",
 			[threadId],
 		);
+		// FLY-793 (Step 11): no-op for a main thread; archives a phase thread.
+		this.db.run(
+			"UPDATE phase_chat_threads SET archived_at = datetime('now') WHERE thread_id = ?",
+			[threadId],
+		);
 		this.save();
 	}
 
@@ -3046,18 +3277,29 @@ export class StateStore {
 		issueId: string,
 		channelId: string,
 		state: { messageId: string; command: string; pinnedAt: string | null },
+		role: string = "main",
 	): void {
+		const table =
+			normalizeChatThreadRole(role) === "main"
+				? "chat_threads"
+				: "phase_chat_threads";
+		const roleClause =
+			table === "phase_chat_threads" ? " AND session_role = ?" : "";
+		const params = [
+			state.messageId,
+			state.command,
+			state.pinnedAt ?? null,
+			issueId,
+			channelId,
+			...(table === "phase_chat_threads"
+				? [normalizeChatThreadRole(role)]
+				: []),
+		];
 		this.db.run(
-			`UPDATE chat_threads
+			`UPDATE ${table}
 			 SET attach_pin_message_id = ?, attach_pin_command = ?, attach_pin_pinned_at = ?
-			 WHERE issue_id = ? AND channel_id = ?`,
-			[
-				state.messageId,
-				state.command,
-				state.pinnedAt ?? null,
-				issueId,
-				channelId,
-			],
+			 WHERE issue_id = ? AND channel_id = ?${roleClause}`,
+			params,
 		);
 		this.save();
 	}
@@ -3065,13 +3307,20 @@ export class StateStore {
 	getChatThreadAttachPin(
 		issueId: string,
 		channelId: string,
+		role: string = "main",
 	):
 		| { messageId: string; command: string; pinnedAt: string | null }
 		| undefined {
-		const stmt = this.db.prepare(
-			"SELECT attach_pin_message_id, attach_pin_command, attach_pin_pinned_at FROM chat_threads WHERE issue_id = ? AND channel_id = ?",
-		);
-		stmt.bind([issueId, channelId]);
+		const r = normalizeChatThreadRole(role);
+		const stmt =
+			r === "main"
+				? this.db.prepare(
+						"SELECT attach_pin_message_id, attach_pin_command, attach_pin_pinned_at FROM chat_threads WHERE issue_id = ? AND channel_id = ?",
+					)
+				: this.db.prepare(
+						"SELECT attach_pin_message_id, attach_pin_command, attach_pin_pinned_at FROM phase_chat_threads WHERE issue_id = ? AND channel_id = ? AND session_role = ?",
+					);
+		stmt.bind(r === "main" ? [issueId, channelId] : [issueId, channelId, r]);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
 			stmt.free();
@@ -3088,12 +3337,26 @@ export class StateStore {
 	}
 
 	/** FLY-560 Feature C: clear the attach-pin record (e.g. message deleted). */
-	clearChatThreadAttachPin(issueId: string, channelId: string): void {
+	clearChatThreadAttachPin(
+		issueId: string,
+		channelId: string,
+		role: string = "main",
+	): void {
+		const table =
+			normalizeChatThreadRole(role) === "main"
+				? "chat_threads"
+				: "phase_chat_threads";
+		const roleClause =
+			table === "phase_chat_threads" ? " AND session_role = ?" : "";
+		const params =
+			table === "phase_chat_threads"
+				? [issueId, channelId, normalizeChatThreadRole(role)]
+				: [issueId, channelId];
 		this.db.run(
-			`UPDATE chat_threads
+			`UPDATE ${table}
 			 SET attach_pin_message_id = NULL, attach_pin_command = NULL, attach_pin_pinned_at = NULL
-			 WHERE issue_id = ? AND channel_id = ?`,
-			[issueId, channelId],
+			 WHERE issue_id = ? AND channel_id = ?${roleClause}`,
+			params,
 		);
 		this.save();
 	}
@@ -3370,6 +3633,10 @@ export class StateStore {
 			// FLY-205: doc-flow tier + Linear URL (retry continuity)
 			doc_tier: (row.doc_tier as string) ?? undefined,
 			issue_url: (row.issue_url as string) ?? undefined,
+			// FLY-793 (Step 11): persisted chat-thread role. NOT NULL DEFAULT 'main',
+			// so a real row is always a string; coerce a missing column (pre-migration
+			// snapshot) to 'main' too, so every reader can trust it.
+			chat_thread_role: (row.chat_thread_role as string) ?? "main",
 			// FLY-598: founder-facing UX gate flag + sign-off record
 			founder_facing_ux: row.founder_facing_ux
 				? !!(row.founder_facing_ux as number)

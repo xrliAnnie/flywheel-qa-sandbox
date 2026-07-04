@@ -16,6 +16,7 @@ import type { PonytailInput } from "flywheel-config";
 import {
 	ACCEPTED_DISPATCH_MODELS,
 	normalizeDispatchModel,
+	resolvePhaseModel,
 } from "flywheel-config";
 import {
 	DOC_TIERS,
@@ -34,6 +35,8 @@ import { resolveFounderFacingUx } from "./founder-ux/trigger.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
+import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
+import { resolveThreeStageEntry } from "./three-stage-policy.js";
 
 /** Poll interval / max wait for chat thread_id to appear on session (FLY-91). */
 const THREAD_POLL_INTERVAL_MS = 500;
@@ -233,8 +236,13 @@ export function createRunsRouter(
 			dispatchModel = normalized;
 		}
 
-		// FLY-59: Per-role dedup — same issue can have main + qa concurrently
-		const role =
+		// FLY-59: Per-role dedup — same issue can have main + qa concurrently.
+		// FLY-793: `let` because a three-stage entry may reroute a fresh `main`
+		// dispatch to the Design phase below (after labels are resolved). The dedup
+		// here keys on the request role; a fresh three-stage issue has no active
+		// session, and a concurrent re-dispatch of an in-flight phase is backstopped
+		// by the worktree single-writer (git cannot check out shared branch B twice).
+		let role =
 			(typeof sessionRole === "string" ? sessionRole : undefined) ?? "main";
 		const activeSessions = store.getActiveSessions();
 		const alreadyActive = activeSessions.find(
@@ -484,6 +492,53 @@ export function createRunsRouter(
 			normalizedIssueLabels,
 		);
 
+		// FLY-793 (Step 4 ENTRY): a FRESH `main` dispatch on a three-stage-enabled
+		// project STARTS at the Design phase — this is the entry the PhaseOrchestrator
+		// (handoff-only) does not cover. The policy is resolved SERVER-SIDE from the
+		// project's CANONICAL config (+ the issue's Linear labels + the env
+		// kill-switch), NEVER the request body, so `shareParentBranch` stays
+		// Bridge-internal and a runner cannot self-elevate its own run. Only the fresh
+		// `main` entry is rerouted; an explicit phase role (a PhaseOrchestrator handoff
+		// calls startDispatcher.start directly, not this HTTP route) and auto-QA
+		// (`qa`) pass through. Absent config / OFF / `no-three-stage` label /
+		// `FLYWHEEL_THREE_STAGE=0` → stays `main` (byte-compatible).
+		let shareParentBranch: boolean | undefined;
+		if (role === "main") {
+			const proj = projects.find((p) => p.projectName === projectName);
+			const pipelineConfig = proj
+				? (await loadPipelineConfigByProject([proj])).get(projectName)
+				: undefined;
+			const entry = resolveThreeStageEntry({
+				requestRole: role,
+				pipelineConfig,
+				issueLabels: normalizedIssueLabels,
+				env: process.env,
+			});
+			if (entry.enteredThreeStage) {
+				// FLY-793 (Codex R1 BLOCKING): the per-role dedup above keyed on the
+				// request role `main` and CANNOT see an already-active Design/Implement/
+				// QA phase for this issue (those rows have a phase `session_role`). A
+				// second fresh dispatch here would start another phase AND — via
+				// Blueprint.removeIfExists on the SHARED branch-B worktree key — tear
+				// away the running phase's worktree instead of failing closed. Reject if
+				// any phase is in flight (incl. the design_done handoff window). The
+				// single active phase IS the pipeline's own progress.
+				const activePhase = store.getActivePhaseSessionForIssue(issueId);
+				if (activePhase) {
+					res.status(409).json({
+						success: false,
+						message: `Issue ${issueId} already has an active three-stage ${activePhase.session_role} phase (${activePhase.execution_id}, status: ${activePhase.status}). The pipeline advances Design→Implement→QA on one shared branch — do not start a second run; let the active phase hand off, or terminate it first.`,
+					});
+					return;
+				}
+				role = entry.role; // "design"
+				shareParentBranch = true;
+				// The Design phase runs on the design tier UNLESS the request already
+				// pinned a model (the difficulty-sorter override wins).
+				dispatchModel = dispatchModel ?? resolvePhaseModel("design");
+			}
+		}
+
 		// FLY-137 Phase 5: snapshot codex-skip label at run start (no mid-run
 		// Linear refresh). Semantics: "label the issue before triggering;
 		// if you forgot, cancel + retry." Bridge persists this on the session
@@ -568,6 +623,10 @@ export function createRunsRouter(
 				issueTitle,
 				issueIdentifier,
 				sessionRole: role,
+				// FLY-793 (Step 4 ENTRY): Bridge-INTERNAL, set ONLY by the server-side
+				// three-stage entry above (never from the request body). Undefined for
+				// every non-three-stage dispatch → byte-compatible.
+				shareParentBranch,
 				// FLY-137 v1.27.2: dept-aware dispatch context
 				agentName,
 				issueLabels: normalizedIssueLabels,

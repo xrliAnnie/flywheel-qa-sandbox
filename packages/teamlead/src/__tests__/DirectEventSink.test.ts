@@ -705,3 +705,96 @@ describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH
 		expect(delivered).toContain("session_completed");
 	});
 });
+
+describe("DirectEventSink — FLY-793: completion must not clobber a phase role (824 R2 E2E)", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	afterEach(() => {
+		store.close();
+	});
+
+	function needsReviewResult() {
+		return {
+			success: true,
+			decision: { route: "needs_review", reasoning: "test" },
+			evidence: {
+				commitCount: 1,
+				filesChangedCount: 1,
+				commitMessages: ["feat: x"],
+				changedFilePaths: ["a.ts"],
+				linesAdded: 1,
+				linesRemoved: 0,
+				diffSummary: "1 file changed",
+				headSha: null,
+				partial: false,
+				durationMs: 10,
+			},
+		} as unknown as BlueprintResult;
+	}
+
+	it("emitCompleted preserves a dispatched phase role even when the envelope role defaults to main", async () => {
+		// The 824 Track-1 shape reproduced in the in-process sink: the session was
+		// dispatched as an Implement phase (role=implement), but the completion
+		// envelope carries no sessionRole (→ would default to "main"). The stored
+		// role MUST stay "implement" so the Implement→QA handoff can fire.
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "implement",
+		});
+
+		await new DirectEventSink(store, makeConfig(), testProjects).emitCompleted(
+			// makeEnvelope() has no sessionRole → env.sessionRole is undefined,
+			// exactly the clobber-to-"main" scenario.
+			makeEnvelope(),
+			needsReviewResult(),
+		);
+
+		const s = store.getSession("exec-1");
+		expect(s?.status).toBe("awaiting_review");
+		expect(s?.session_role).toBe("implement"); // NOT clobbered to "main"
+	});
+
+	it("emitFailed preserves a dispatched phase role", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "design",
+		});
+
+		await new DirectEventSink(store, makeConfig(), testProjects).emitFailed(
+			makeEnvelope(),
+			"boom",
+		);
+
+		const s = store.getSession("exec-1");
+		expect(s?.status).toBe("failed");
+		expect(s?.session_role).toBe("design"); // NOT clobbered to "main"
+	});
+
+	it("byte-compat: a non-phase (main) session keeps role main on completion", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "running",
+			session_role: "main",
+		});
+
+		await new DirectEventSink(store, makeConfig(), testProjects).emitCompleted(
+			makeEnvelope(),
+			needsReviewResult(),
+		);
+
+		const s = store.getSession("exec-1");
+		expect(s?.session_role).toBe("main");
+	});
+});

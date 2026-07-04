@@ -237,6 +237,23 @@ export interface QaConfig {
 }
 
 /**
+ * FLY-793: three-stage pipeline (Design / Implement / QA internal phases) toggle.
+ *
+ * A NEW opt-in feature. Absent, an absent `three_stage` key, or `three_stage:
+ * false` all mean OFF — a task runs as a single session exactly as before
+ * (byte-compatible). A MALFORMED `pipeline` block fails loudly at config load
+ * (mirrors `doc_flow`); the enablement policy (`resolveThreeStagePolicy`) is
+ * default-OFF, so a failed/absent load is trivially fail-closed.
+ */
+export interface PipelineConfig {
+	/**
+	 * Enable the three-stage internal-phase pipeline (Design=Fable /
+	 * Implement=Opus / QA=Sonnet by default). Optional; absent → OFF.
+	 */
+	three_stage?: boolean;
+}
+
+/**
  * FLY-598: founder-facing-UX gate rollout mode.
  * - `off`     — feature fully inert; ZERO prompt/rule/stage text change (byte-compatible).
  * - `audit_only` — judgment prose + self-declare injection active, signoff evaluated +
@@ -549,6 +566,8 @@ export interface FlywheelConfig {
 	doc_flow?: DocFlowConfig;
 	/** FLY-579: auto-QA pipeline policy. Absent or auto:false = off (byte-compatible). */
 	qa?: QaConfig;
+	/** FLY-793: three-stage pipeline toggle. Absent or three_stage:false = off (byte-compatible). */
+	pipeline?: PipelineConfig;
 	/** FLY-222: periodic Xiaohongshu-collection learning. Absent = off. */
 	xiaohongshu_learning?: XiaohongshuLearningConfig;
 	/** FLY-598: founder-facing UX gate. Absent or mode:off = fully off (byte-compatible). */
