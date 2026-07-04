@@ -451,15 +451,67 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 				expect(h.start).not.toHaveBeenCalled();
 			});
 
-			it("fresh FAIL on an already-terminal session (verdict inserted, crash, session drained): close is skipped, fix still dispatched", async () => {
+			it("fresh FAIL on an already-terminal session STILL runs the dirty-safe close before dispatching (Codex code R1 HIGH-2)", async () => {
 				const h = makeDeps();
 				(h.qaVerdicts.getSession as ReturnType<typeof vi.fn>).mockReturnValue(
 					qaSession({ status: "completed" }),
 				);
 				await new PhaseOrchestrator(h.deps).onQaResult(qaSession(), verdict());
-				expect(h.closePhaseRunner).not.toHaveBeenCalled();
+				// A terminal session can still hold the shared branch-B worktree —
+				// the close effect owns the dirty check / proven removal; skipping it
+				// would hand the worktree to the next dispatch's non-dirty-safe
+				// removeIfExists.
+				expect(h.closePhaseRunner).toHaveBeenCalledOnce();
 				expect(h.start).toHaveBeenCalledOnce();
 				expect(h.intents.get("qa-exec")).toMatchObject({ closed: true });
+			});
+
+			it("incomplete FAIL intent is the AUTHORITY: a later verdict with a DIFFERENT eventId resumes the recorded flow (Codex code R1 HIGH-1)", async () => {
+				const h = makeDeps();
+				h.intents.set("qa-exec", {
+					status: "fail",
+					event_id: "ev-1",
+					summary: "scenario X broke",
+					at: "2026-07-04T00:00:00Z",
+					headSha: "persistedheadsha",
+					closed: true,
+				});
+				(h.qaVerdicts.getSession as ReturnType<typeof vi.fn>).mockReturnValue(
+					qaSession({ status: "completed" }),
+				);
+				await new PhaseOrchestrator(h.deps).onQaResult(
+					qaSession(),
+					verdict({ eventId: "ev-2", status: "fail" }),
+				);
+				expect(h.start).toHaveBeenCalledOnce();
+				expect(h.start.mock.calls[0]![0]).toMatchObject({
+					startPoint: "persistedheadsha",
+				});
+				// the ORIGINAL intent is resumed, not overwritten by the new event
+				expect(h.intents.get("qa-exec")).toMatchObject({
+					event_id: "ev-1",
+					fixExecId: "next-exec",
+				});
+			});
+
+			it("incomplete FAIL intent resumes even when the replayed verdict carries a garbage status", async () => {
+				const h = makeDeps();
+				h.intents.set("qa-exec", {
+					status: "fail",
+					event_id: "ev-1",
+					at: "2026-07-04T00:00:00Z",
+					headSha: "persistedheadsha",
+					closed: true,
+				});
+				(h.qaVerdicts.getSession as ReturnType<typeof vi.fn>).mockReturnValue(
+					qaSession({ status: "completed" }),
+				);
+				await new PhaseOrchestrator(h.deps).onQaResult(
+					qaSession(),
+					verdict({ eventId: "ev-x", status: "garbage" }),
+				);
+				expect(h.start).toHaveBeenCalledOnce();
+				expect(h.intents.get("qa-exec")?.fixExecId).toBe("next-exec");
 			});
 		});
 
@@ -558,6 +610,41 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 				expect(h.intents.get("qa-exec")).toMatchObject({
 					status: "fail",
 					event_id: "ev-stored",
+					fixExecId: "next-exec",
+				});
+			});
+
+			it("startup sweep resumes an incomplete FAIL intent even when the LATEST stored event has a different id (Codex code R1 HIGH-1)", async () => {
+				const h = makeDeps();
+				const s = session({
+					execution_id: "qa-exec",
+					session_role: "qa",
+					chat_thread_role: "qa",
+					status: "completed",
+				});
+				h.intents.set("qa-exec", {
+					status: "fail",
+					event_id: "ev-1",
+					at: "2026-07-04T00:00:00Z",
+					headSha: "persistedheadsha",
+					closed: true,
+				});
+				(
+					h.qaVerdicts.listVerdictEventCandidates as ReturnType<typeof vi.fn>
+				).mockReturnValue([s]);
+				(
+					h.qaVerdicts.getLatestQaResultEvent as ReturnType<typeof vi.fn>
+				).mockReturnValue({
+					eventId: "ev-2-later",
+					payload: { status: "fail", summary: "later duplicate" },
+				});
+				(h.qaVerdicts.getSession as ReturnType<typeof vi.fn>).mockReturnValue(
+					s,
+				);
+				await new PhaseOrchestrator(h.deps).reconcileOnStartup();
+				expect(h.start).toHaveBeenCalledOnce();
+				expect(h.intents.get("qa-exec")).toMatchObject({
+					event_id: "ev-1",
 					fixExecId: "next-exec",
 				});
 			});

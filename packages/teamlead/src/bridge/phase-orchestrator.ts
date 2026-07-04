@@ -344,6 +344,31 @@ export class PhaseOrchestrator {
 		if ((session.chat_thread_role ?? "main") !== "qa") return; // not three-stage
 		const execId = session.execution_id;
 
+		// The recorded intent is the AUTHORITY for this QA session — one verdict
+		// per lifecycle. Checked BEFORE validating the incoming verdict (Codex
+		// code R1 HIGH-1): an incomplete FAIL flow must resume no matter what a
+		// later/replayed qa_result carries (different event id, garbage status —
+		// the sweep replays only the LATEST stored event, so gating resume on the
+		// new event's identity/content would strand the recorded FAIL forever).
+		const existing = this.deps.qaVerdicts.readIntent(execId);
+		if (existing) {
+			if (
+				existing.status === "fail" &&
+				!existing.fixExecId &&
+				!existing.alertedAt
+			) {
+				await this.runFailFlow(session);
+				return;
+			}
+			// Fully processed (pass recorded / fail complete / terminally refused).
+			if (existing.event_id !== verdict.eventId) {
+				this.log(
+					`qa_result ${verdict.eventId} for ${execId} ignored — verdict ${existing.event_id} already recorded`,
+				);
+			}
+			return;
+		}
+
 		const status = (verdict.status ?? "").trim().toLowerCase();
 		if (status !== "pass" && status !== "fail") {
 			this.warn(
@@ -352,45 +377,25 @@ export class PhaseOrchestrator {
 			return;
 		}
 
-		const existing = this.deps.qaVerdicts.readIntent(execId);
-		if (existing && existing.event_id !== verdict.eventId) {
-			this.log(
-				`qa_result ${verdict.eventId} for ${execId} ignored — verdict ${existing.event_id} already recorded`,
+		// Fresh verdict — persist the intent BEFORE any side effect.
+		if (
+			status === "fail" &&
+			(session.status === "awaiting_review" ||
+				session.status === "approved_to_ship")
+		) {
+			// A ship gate is already in flight for this QA session — a FAIL now
+			// would yank the gate holder. Runner misbehavior; never auto-loop.
+			this.warn(
+				`qa_result FAIL for ${execId} ignored — session is ${session.status} (ship gate in flight)`,
 			);
 			return;
 		}
-		if (existing && existing.event_id === verdict.eventId) {
-			// Replay of a known verdict. PASS is fully processed at intent-write
-			// time; a FAIL with fixExecId (flow complete) or alertedAt (terminal
-			// fail-closed refusal) is done. Anything else resumes below.
-			if (
-				existing.status === "pass" ||
-				existing.fixExecId ||
-				existing.alertedAt
-			) {
-				return;
-			}
-		} else {
-			// Fresh verdict — persist the intent BEFORE any side effect.
-			if (
-				status === "fail" &&
-				(session.status === "awaiting_review" ||
-					session.status === "approved_to_ship")
-			) {
-				// A ship gate is already in flight for this QA session — a FAIL now
-				// would yank the gate holder. Runner misbehavior; never auto-loop.
-				this.warn(
-					`qa_result FAIL for ${execId} ignored — session is ${session.status} (ship gate in flight)`,
-				);
-				return;
-			}
-			this.deps.qaVerdicts.patchIntent(execId, {
-				status: status as "pass" | "fail",
-				event_id: verdict.eventId,
-				...(verdict.summary ? { summary: truncate(verdict.summary, 600) } : {}),
-				at: new Date().toISOString(),
-			});
-		}
+		this.deps.qaVerdicts.patchIntent(execId, {
+			status: status as "pass" | "fail",
+			event_id: verdict.eventId,
+			...(verdict.summary ? { summary: truncate(verdict.summary, 600) } : {}),
+			at: new Date().toISOString(),
+		});
 
 		if (status === "pass") {
 			this.log(
@@ -473,17 +478,21 @@ export class PhaseOrchestrator {
 		}
 
 		if (!intent()?.closed) {
-			// A session a restart already finds terminal was closed some other way
-			// (e.g. its own complete marker) — only close a live one.
-			if (session.status === "running") {
-				try {
-					await this.deps.effects.closePhaseRunner(session);
-				} catch (err) {
-					await refuse(
-						`closing QA phase runner failed: ${(err as Error).message}`,
-					);
-					return;
-				}
+			// ALWAYS run the dirty-safe close — even for a session a restart finds
+			// already terminal (Codex code R1 HIGH-2). A terminal session can still
+			// hold the shared branch-B worktree; skipping the close would hand it
+			// to the next dispatch's non-dirty-safe removeIfExists, which can
+			// discard uncommitted QA findings. closePhaseRunner owns the dirty
+			// check + proven removal (terminal statuses are close-eligible;
+			// crash-preserved ones make it throw → fail-closed alert, never a
+			// silent teardown).
+			try {
+				await this.deps.effects.closePhaseRunner(session);
+			} catch (err) {
+				await refuse(
+					`closing QA phase runner failed: ${(err as Error).message}`,
+				);
+				return;
 			}
 			this.deps.qaVerdicts.patchIntent(execId, { closed: true });
 		}

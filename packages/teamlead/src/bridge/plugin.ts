@@ -3850,7 +3850,11 @@ export async function startBridge(
 						// Blueprint.removeIfExists silently discard those files. The head
 						// SHA was already captured from the COMMITTED tree upstream, so the
 						// next phase always starts from committed state.
-						if (worktree) {
+						// FLY-859 (Codex code R1 HIGH-2): the QA FAIL fix-loop closes
+						// TERMINAL sessions through this path too. An absent worktree path
+						// means branch B is already free (removal already proven) — skip
+						// the probes instead of failing "unverifiable" forever.
+						if (worktree && ffExistsSync(worktree)) {
 							const clean = await gitWorktreeClean(worktree);
 							if (clean !== true) {
 								throw new Error(
