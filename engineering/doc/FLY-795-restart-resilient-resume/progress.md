@@ -2,8 +2,8 @@
 issue: FLY-795
 title: restart-resilient runner
 phase: implement
-phaseCursor: "6/6 chunks done; 1 activation step remaining"
-nextStep: "plugin.ts ACTIVATION: build a live ResumeComputer closure where RunDispatcher is constructed and pass it as the 6th ctor arg, gated on env FLYWHEEL_PROGRESS_RESUME (default ON, =0 => fresh/skip). Closure builds ProgressResumeDeps: branchName = WorktreeManager.worktreeName(issue,role); priorSession = StateStore latest running/terminated session for issue+role (needs plan_path + session_stage + issue_identifier); readBranchFile = `git show <branch>:<path>` in projectRoot; branchTip = `git rev-parse <branch>` in projectRoot. Then: full build (pnpm build) + lint (pnpm lint) -> open PR (branch flywheel-FLY-795 already on origin) -> codex-code-review skill (design already APPROVED) -> independent QA -> HOLD at ship-gate for batch (793+795+799, Annie executes). NEVER self-ship."
+phaseCursor: "6/6 chunks + plugin.ts activation DONE; opening PR"
+nextStep: "IMPLEMENTATION COMPLETE. All 6 chunks + live plugin.ts activation done; full build clean; repo-wide lint clean (my 21 files); 40 FLY-795 tests green. NEXT: open PR (flywheel-FLY-795 -> main) -> stage set pr_created (Bridge triggers Codex code review) -> approve gate (--no-block) + complete --route needs_review -> HOLD at ship-gate for batch (793+795+799, Annie executes). NEVER self-ship. Independent QA does the real restart-resume E2E (real git re-dispatch on a branch with committed progress.md)."
 chunks:
   - { id: c1, order: 1, deps: [], status: done, done: "shared progress-schema + path-resolver in flywheel-config (packages/config), 12 tests green — 4e554753" }
   - { id: c2, order: 2, deps: [c1], status: done, done: "flywheel-comm progress command (single-writer via StateStore + --file validation + atomic temp/rename + path-limited git commit), 6 tests — 983f4206" }
@@ -15,7 +15,7 @@ pointers:
   plan: engineering/doc/FLY-795-restart-resilient-resume/plan.md
   exploration: engineering/doc/FLY-795-restart-resilient-resume/exploration.md
   research: engineering/doc/FLY-795-restart-resilient-resume/research.md
-handoff: "FRESH-RUNNER RESUME ANCHOR. All 6 chunks (c1-c6) DONE + committed + green (35 tests total) + full build passes. Branch flywheel-FLY-795 on origin. 793 merged (3ebc6663) and rebased-on. READ plan.md (codex-APPROVED spec) + research.md first. ONE step remains: plugin.ts ACTIVATION — where RunDispatcher is constructed (grep `new RunDispatcher` in packages/teamlead/src), build a ResumeComputer closure {branchName=WorktreeManager.worktreeName(issue,role); priorSession=StateStore latest running/terminated session for issue+role incl plan_path+session_stage+issue_identifier; readBranchFile=`git show <branch>:<path>` in projectRoot; branchTip=`git rev-parse <branch>` in projectRoot} and pass as the RunDispatcher 6th ctor arg; gate on env FLYWHEEL_PROGRESS_RESUME (default ON, =0 => fresh, byte-compat). Then full build+lint (pnpm build; pnpm lint) -> open PR -> codex-code-review skill -> independent QA -> HOLD at ship-gate for batch (793+795+799). NEVER self-ship."
+handoff: "FRESH-RUNNER RESUME ANCHOR. IMPLEMENTATION COMPLETE — all 6 chunks (c1-c6) + live plugin.ts activation (run-infra.ts ResumeComputer closure at the RunDispatcher ctor, 6th arg, FLYWHEEL_PROGRESS_RESUME kill-switch default ON) DONE + committed + pushed. Full build clean; repo-wide lint clean on my 21 files; 40 FLY-795 tests green (config 12 + comm 6 + edge-worker 5 + teamlead 17). Branch flywheel-FLY-795 on origin; 793 merged (3ebc6663) is the base. READ plan.md (codex-APPROVED spec) first. REMAINING (process only, no more code): open PR (flywheel-FLY-795 -> main) -> stage set pr_created (Bridge auto-triggers Codex code review) -> approve gate (--no-block) + complete --route needs_review -> HOLD at ship-gate for batch (793+795+799, Annie executes). NEVER self-ship. Independent QA verifies the real restart-resume E2E (real git re-dispatch on a branch carrying committed progress.md — the live git/StateStore wiring is not unit-mocked by design; computeProgressResume pure core has 7 unit tests)."
 ---
 
 # FLY-795 progress — restart-resilient runner
@@ -31,6 +31,8 @@ handoff: "FRESH-RUNNER RESUME ANCHOR. All 6 chunks (c1-c6) DONE + committed + gr
 - ✅ c5 — adapters FLYWHEEL_PROGRESS_PATH env (Claude + Codex) (2b7c20cc)
 - ✅ c6 — stage-utils badge: pr_created → 📬PR已开 split from approve ⏳待批, test stays 🧪QA, 6 tests (830107f3)
 
-## remaining
-- ⬜ plugin.ts ACTIVATION — live ResumeComputer closure at RunDispatcher ctor + FLYWHEEL_PROGRESS_RESUME kill-switch (default ON)
-- ⬜ full build + lint → PR → codex-code-review → independent QA → HOLD ship-gate (batch 793+795+799). NEVER self-ship.
+- ✅ activation — live ResumeComputer closure at RunDispatcher ctor + FLYWHEEL_PROGRESS_RESUME kill-switch (default ON) (b6410aaf); full build + repo-wide lint clean (e2d61166)
+
+## remaining (process only — no more code)
+- ⬜ open PR (flywheel-FLY-795 → main) → stage set pr_created (Bridge triggers Codex code review) → approve gate + hold
+- ⬜ independent QA (real restart-resume E2E) → HOLD ship-gate (batch 793+795+799, Annie executes). NEVER self-ship.
