@@ -5,7 +5,7 @@
 **Issue**: FLY-861（QA·FLY-849 harness round 5 — verify FLY-859 Step 8）
 **Date**: 2026-07-04
 **Source**: `doc/qa/design/FLY-861-fly849-round5-step8/exploration.md`, `.../research.md`
-**Status**: draft
+**Status**: codex-approved（design review 1 轮 APPROVED，2026-07-04，verdict JSON 见 `.flywheel/runs/0d4aea83-.../codex/design-review.json`）
 **Branch**: `project-slot-2-FLY-861`（3-stage 共享分支，勿另建分支）
 **PR base**: `qa/fly849-793-batch-combined`（acceptance criteria 明确；**不是** `main`）
 **Goal**: 新建 `doc/qa/harness/FLY-849-round5-marker.md`（恰两行内容），commit 后向 `qa/fly849-793-batch-combined` 开 PR；随后的 founder gate + ship 由 QA phase 的 FLY-859 Step 8 机制承担。
