@@ -131,6 +131,13 @@ export interface PostShipDeps {
 	 * Absent → no worktree cleanup (byte-compat for callers that don't wire it).
 	 */
 	removeCleanWorktree?: WorktreeCleanupFn;
+	/**
+	 * FLY-799: optional auto-Linear-Done closure. Because this whole orchestrator
+	 * runs ONLY on confirmed merge evidence (isPostApproveShipComplete), calling
+	 * it here is the structural ship-success gate — a shipped issue flips to Done.
+	 * Best-effort (never throws). Absent → no Linear transition (byte-compat).
+	 */
+	markIssueDone?: (issueId: string, issueIdentifier?: string) => Promise<void>;
 }
 
 /**
@@ -166,6 +173,37 @@ export async function runPostShipFinalization(
 		payload: { claimedAt: new Date().toISOString() },
 	});
 	if (!claimed) return;
+
+	// ── (0.5) FLY-799 auto-Linear-Done — the ship is confirmed merged (the
+	// predicate that gates this whole orchestrator required landingStatus=merged),
+	// so flip the issue to Done. Best-effort AND time-bounded (Codex R1 HIGH-1):
+	// the Linear SDK call has no built-in timeout, so a network hang would stall
+	// the tmux/thread teardown below indefinitely. Race it against a bounded
+	// timeout so a hung Linear call yields to teardown (the issue stays not-Done,
+	// which the FLY-369 Done-sweep / a manual close can still resolve). ──
+	if (deps.markIssueDone) {
+		const MARK_DONE_TIMEOUT_MS = 15_000;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<void>((resolve) => {
+			timer = setTimeout(() => {
+				console.warn(
+					`[post-ship] markIssueDone timed out after ${MARK_DONE_TIMEOUT_MS}ms for ${opts.issueIdentifier ?? opts.issueId} — proceeding with teardown (issue left not-Done)`,
+				);
+				resolve();
+			}, MARK_DONE_TIMEOUT_MS);
+		});
+		await Promise.race([
+			deps.markIssueDone(opts.issueId, opts.issueIdentifier).catch((err) => {
+				console.error(
+					`[post-ship] markIssueDone failed:`,
+					(err as Error).message,
+				);
+			}),
+			timeout,
+		]).finally(() => {
+			if (timer) clearTimeout(timer);
+		});
+	}
 
 	// ── (1) tmux cleanup — idempotent; preserved contract { tmuxClosed, errors } ──
 	const cleanup = await postMergeTmuxCleanup(

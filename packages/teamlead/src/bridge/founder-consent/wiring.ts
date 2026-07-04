@@ -61,6 +61,112 @@ export interface FounderConsentWiring {
 	gateRouter: Router;
 	/** Read-only debug router — undefined when off. */
 	debugRouter?: Router;
+	/**
+	 * FLY-799: the post-write hook (flip awaiting_review→approved_to_ship + wake).
+	 * Exposed so the founder-reply approval path (via the ship-approval factory)
+	 * runs the SAME status-flip + wake as Surface B. ALWAYS present.
+	 */
+	onResponseWritten: (info: {
+		executionId: string;
+		questionId: string;
+		leadId: string;
+		answer: string;
+		db: Parameters<typeof sendRunnerWake>[1];
+	}) => Promise<void>;
+}
+
+/**
+ * FLY-799: the shared `approve_to_ship` post-write hook — flip
+ * awaiting_review → approved_to_ship (Codex R2 MEDIUM-1, parity with
+ * approveExecution) then wake the runner. Extracted so BOTH Surface B
+ * (buildFounderConsentWiring's gate router) and the founder-reply approval path
+ * (startBridge's ship-approval factory) run the IDENTICAL flip+wake and can
+ * never drift into subtly-different ship semantics.
+ *
+ * An approval answer (structured `{"approved": true}` — the only shape
+ * verify-approval honors) flips the FSM + sends an approval wake; any other
+ * answer is changes_requested feedback → wake only, NOT terminal. Best-effort
+ * throughout: never throws (sendRunnerWake never throws; an FSM/store failure
+ * logs and converges on the caller's idempotent retry).
+ */
+export function buildGateResponsePostWriteHook(deps: {
+	store: StateStore;
+	transitionOpts?: ApplyTransitionOpts;
+	logger?: { warn: (msg: string) => void };
+}): (info: {
+	executionId: string;
+	questionId: string;
+	leadId: string;
+	answer: string;
+	db: Parameters<typeof sendRunnerWake>[1];
+}) => Promise<void> {
+	const { store, transitionOpts } = deps;
+	const log = deps.logger ?? logger;
+	return async (info): Promise<void> => {
+		let approved = false;
+		try {
+			approved = JSON.parse(info.answer)?.approved === true;
+		} catch {
+			// non-JSON answer → feedback
+		}
+
+		const session = store.getSession(info.executionId);
+		if (!session) {
+			log.warn(
+				`gate-response post-write: no StateStore session for ${info.executionId}; skipping transition + wake`,
+			);
+			return;
+		}
+
+		if (approved && transitionOpts) {
+			// Parity with approveExecution: only flip from awaiting_review (a
+			// post-approve re-write or odd state must not regress/disturb FSM).
+			if (session.status === "awaiting_review") {
+				const result = applyTransition(
+					transitionOpts,
+					info.executionId,
+					"approved_to_ship",
+					{
+						executionId: info.executionId,
+						issueId: session.issue_id,
+						projectName: session.project_name,
+						trigger: "runner_gate_response",
+					},
+					{ last_activity_at: sqliteDatetime() },
+				);
+				if (!result.ok) {
+					// Recoverable (Codex R2 HIGH-2): the caller's idempotent-retry
+					// path re-runs this hook on a repeat respond, so a transient
+					// FSM/store failure here converges on retry.
+					log.warn(
+						`gate-response approval written but FSM rejected approved_to_ship for ${info.executionId}: ${result.error} — retry the respond to re-run the transition`,
+					);
+				}
+			} else if (session.status === "approved_to_ship") {
+				// Idempotent retry after a previously-completed transition —
+				// nothing to do but re-deliver the wake below.
+			} else {
+				log.warn(
+					`gate-response approval written for ${info.executionId} but status is "${session.status}" (expected awaiting_review) — transition skipped`,
+				);
+			}
+		}
+
+		await sendRunnerWake(
+			store,
+			info.db,
+			info.executionId,
+			session,
+			approved ? "approval_wake" : "feedback_wake",
+			// Codex PR R1 MEDIUM-5: carry the questionId + (for feedback) the
+			// actual feedback text so the idle runner can act on the wake
+			// without hunting for context. Non-authoritative either way.
+			{
+				questionId: info.questionId,
+				feedbackText: approved ? undefined : info.answer,
+			},
+		);
+	};
 }
 
 export function buildFounderConsentWiring(
@@ -148,84 +254,15 @@ export function buildFounderConsentWiring(
 		return sess ? { project_name: sess.project_name } : undefined;
 	};
 
-	// FLY-191 Phase 2: post-write hook for the gate-response endpoint (the
-	// production `flywheel-comm respond --bridge-url` ship path). An approval
-	// answer (structured {"approved": true} — the only shape verify-approval
-	// honors) flips awaiting_review → approved_to_ship (R2 MEDIUM-1) and sends
-	// an approval wake; any other answer is changes_requested feedback → wake
-	// only, NOT terminal (§3.2(ii)). Best-effort throughout (the router
-	// catches hook errors; sendRunnerWake never throws).
-	const onResponseWritten = async (info: {
-		executionId: string;
-		questionId: string;
-		leadId: string;
-		answer: string;
-		db: Parameters<typeof sendRunnerWake>[1];
-	}): Promise<void> => {
-		let approved = false;
-		try {
-			approved = JSON.parse(info.answer)?.approved === true;
-		} catch {
-			// non-JSON answer → feedback
-		}
-
-		const session = store.getSession(info.executionId);
-		if (!session) {
-			logger.warn(
-				`gate-response post-write: no StateStore session for ${info.executionId}; skipping transition + wake`,
-			);
-			return;
-		}
-
-		if (approved && transitionOpts) {
-			// Parity with approveExecution: only flip from awaiting_review (a
-			// post-approve re-write or odd state must not regress/disturb FSM).
-			if (session.status === "awaiting_review") {
-				const result = applyTransition(
-					transitionOpts,
-					info.executionId,
-					"approved_to_ship",
-					{
-						executionId: info.executionId,
-						issueId: session.issue_id,
-						projectName: session.project_name,
-						trigger: "runner_gate_response",
-					},
-					{ last_activity_at: sqliteDatetime() },
-				);
-				if (!result.ok) {
-					// Recoverable (Codex R2 HIGH-2): the router's idempotent-retry
-					// path re-runs this hook on a repeat respond, so a transient
-					// FSM/store failure here converges on retry.
-					logger.warn(
-						`gate-response approval written but FSM rejected approved_to_ship for ${info.executionId}: ${result.error} — retry the respond to re-run the transition`,
-					);
-				}
-			} else if (session.status === "approved_to_ship") {
-				// Idempotent retry after a previously-completed transition —
-				// nothing to do but re-deliver the wake below.
-			} else {
-				logger.warn(
-					`gate-response approval written for ${info.executionId} but status is "${session.status}" (expected awaiting_review) — transition skipped`,
-				);
-			}
-		}
-
-		await sendRunnerWake(
-			store,
-			info.db,
-			info.executionId,
-			session,
-			approved ? "approval_wake" : "feedback_wake",
-			// Codex PR R1 MEDIUM-5: carry the questionId + (for feedback) the
-			// actual feedback text so the idle runner can act on the wake
-			// without hunting for context. Non-authoritative either way.
-			{
-				questionId: info.questionId,
-				feedbackText: approved ? undefined : info.answer,
-			},
-		);
-	};
+	// FLY-191 Phase 2 / FLY-799: post-write hook for the gate-response endpoint
+	// (the production `flywheel-comm respond --bridge-url` ship path). Shared with
+	// the founder-reply approval path (startBridge's ship-approval factory) via
+	// buildGateResponsePostWriteHook so the two can never drift.
+	const onResponseWritten = buildGateResponsePostWriteHook({
+		store,
+		transitionOpts,
+		logger,
+	});
 
 	// FLY-191 Phase 2 (Codex PR R1 CRITICAL): the gate router rejects answers
 	// to anything but the session's CURRENT review question (when bound).
@@ -250,6 +287,7 @@ export function buildFounderConsentWiring(
 			resolveContext,
 			middlewareFor: () => (_q, _s, next) => next(),
 			gateRouter: createGateResponseRouter(gateDeps),
+			onResponseWritten,
 		};
 	}
 
@@ -307,5 +345,6 @@ export function buildFounderConsentWiring(
 			founderConsentMiddleware(mount, { evaluator, resolveContext, logger }),
 		gateRouter: createGateResponseRouter(gateDeps),
 		debugRouter,
+		onResponseWritten,
 	};
 }

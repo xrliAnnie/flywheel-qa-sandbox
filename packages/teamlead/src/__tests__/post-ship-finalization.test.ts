@@ -471,4 +471,43 @@ describe("runPostShipFinalization", () => {
 			),
 		).resolves.toBeUndefined();
 	});
+
+	// FLY-799 (Codex R1 HIGH-1): auto-Linear-Done must never block teardown.
+	it("markIssueDone is called with the issue id on a confirmed ship", async () => {
+		const markIssueDone = vi.fn().mockResolvedValue(undefined);
+		await runPostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{ store, projects: PROJECTS, markIssueDone },
+		);
+		expect(markIssueDone).toHaveBeenCalledWith("FLY-102", "FLY-102");
+		// teardown still ran: the atomic claim event exists.
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((e) => e.event_id === "post-ship-finalization-exec-1"),
+		).toBe(true);
+	});
+
+	it("a rejecting markIssueDone never breaks finalization (best-effort)", async () => {
+		const markIssueDone = vi.fn().mockRejectedValue(new Error("linear down"));
+		await expect(
+			runPostShipFinalization(
+				{
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					issueIdentifier: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+				},
+				{ store, projects: PROJECTS, markIssueDone },
+			),
+		).resolves.toBeUndefined();
+		expect(markIssueDone).toHaveBeenCalledOnce();
+	});
 });

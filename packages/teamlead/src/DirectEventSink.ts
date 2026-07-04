@@ -23,6 +23,7 @@ import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
+import { makeLinearDoneFinalizer } from "./bridge/linear-issue-finalizer.js";
 import type { PhaseOrchestrator } from "./bridge/phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
@@ -705,6 +706,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						store: this.store,
 						projects: this.projects,
 						removeCleanWorktree: this.removeCleanWorktree,
+						// FLY-799: auto-flip the shipped issue to Done (ship-success gated
+						// by runPostShipFinalization's merge-evidence predicate).
+						markIssueDone: makeLinearDoneFinalizer(this.config),
 					},
 				),
 			);
