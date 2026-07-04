@@ -68,7 +68,10 @@ export const STAGE_EMOJI: Record<string, string> = {
 	implement: "🔨",
 	test: "🧪",
 	code_review: "👀",
-	pr_created: "⏳",
+	// FLY-795 (Annie): pr_created is "PR opened, awaiting review" — split from
+	// `approve` ("awaiting founder ship approval") which keeps ⏳待批. `test` stays
+	// 🧪QA (auto-QA stamps stage=test for the real independent QA).
+	pr_created: "📬",
 	approve: "⏳",
 	ship: "🚀",
 	completed: "✅",
@@ -81,13 +84,17 @@ export const STAGE_EMOJI: Record<string, string> = {
  * tiny label after the emoji. Words are intentionally short (≤3 chars) to stay
  * well within Discord's 100-char thread-title limit.
  *
- * FINAL (Annie locked): collapse the two early clusters each to ONE state so a
+ * FINAL (Annie locked): collapse the early planning cluster to ONE state so a
  * Runner's title does NOT churn while it moves through that cluster (Discord
  * caps renames at 2/10-min — distinct words per sub-stage would change the title
- * on every transition). 11 stages → 8 unique titles:
+ * on every transition). 12 stages → 9 unique titles:
  *   - 🧠规划: started/onboard/brainstorm/research/plan (one shared title)
- *   - ⏳待批: pr_created/approve (one shared title)
- *   - the rest stay distinct: 👀设计审 · 👀代码审 · 🔨实现中 · 🧪QA · 🚀ship · ✅完成
+ *   - the rest stay distinct: 👀设计审 · 👀代码审 · 🔨实现中 · 🧪QA · 📬PR已开 ·
+ *     ⏳待批 · 🚀ship · ✅完成
+ * FLY-795 (Annie): pr_created split OUT of the ⏳待批 cluster to its own 📬PR已开
+ * ("PR opened, awaiting review") so the founder can tell "PR is up for review"
+ * from "awaiting my ship approval". That is one rename across two genuinely
+ * distinct stages, not churn within a cluster.
  * The two codex reviews keep separate WORDS under the shared 👀 (Annie's call)
  * because she wants design-review vs code-review legible — that is one rename
  * across two genuinely distinct stages, not churn within a cluster.
@@ -102,9 +109,12 @@ export const STAGE_WORD: Record<string, string> = {
 	plan: "规划",
 	design_review: "设计审",
 	implement: "实现中",
+	// FLY-795: test stays "QA" (auto-QA stamps stage=test for real independent QA).
 	test: "QA",
 	code_review: "代码审",
-	pr_created: "待批",
+	// FLY-795 (Annie): pr_created = "PR已开" (PR opened, awaiting review), split
+	// from `approve` = "待批" (awaiting founder ship approval).
+	pr_created: "PR已开",
 	approve: "待批",
 	ship: "ship",
 	completed: "完成",
