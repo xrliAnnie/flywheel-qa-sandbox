@@ -11,11 +11,13 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const closePhaseRunner = vi.fn(async () => {});
 	const alertLeadPipelineError = vi.fn(async () => {});
 	const listStrandedDesignPhases = vi.fn((): PhaseSession[] => []);
+	const resolveLeadId = vi.fn((): string | undefined => "eng-lead");
 	const deps: PhaseOrchestratorDeps = {
 		startDispatcher: { start },
 		effects: { capturePhaseHeadSha, closePhaseRunner, alertLeadPipelineError },
 		resolveThreeStage: () => ({ enabled: true }),
 		listStrandedDesignPhases,
+		resolveLeadId,
 		...over,
 	};
 	return {
@@ -25,6 +27,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		closePhaseRunner,
 		alertLeadPipelineError,
 		listStrandedDesignPhases,
+		resolveLeadId,
 	};
 }
 
@@ -118,6 +121,7 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 			},
 			resolveThreeStage: () => ({ enabled: true }),
 			listStrandedDesignPhases: () => [],
+			resolveLeadId: () => "eng-lead",
 		};
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "design", status: "design_done" }),
@@ -140,6 +144,8 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 				alertLeadPipelineError,
 			},
 			resolveThreeStage: () => ({ enabled: true }),
+			listStrandedDesignPhases: () => [],
+			resolveLeadId: () => "eng-lead",
 		};
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "design", status: "design_done" }),
@@ -225,5 +231,51 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 			expect(start).toHaveBeenCalledTimes(2);
 			expect(alertLeadPipelineError).toHaveBeenCalledOnce();
 		});
+	});
+});
+
+describe("handoff leadId resolution (combined-QA FLY-855)", () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	it("dispatches the next phase with the LIVE-resolved leadId (sessions has no lead_id column)", async () => {
+		const { deps, start, resolveLeadId } = makeDeps();
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "design", status: "design_done" }),
+		);
+		// The resolver was consulted for THIS session…
+		expect(resolveLeadId).toHaveBeenCalledWith(
+			expect.objectContaining({ execution_id: "exec-1" }),
+		);
+		// …and its answer (NOT a phantom prev.lead_id) went into the dispatch.
+		// Without a real leadId the TmuxAdapter CommDB registration is silently
+		// skipped and the phase window never auto-closes after ship (FLY-855).
+		expect(start.mock.calls[0]![0]).toMatchObject({
+			leadId: "eng-lead",
+			sessionRole: "implement",
+		});
+	});
+
+	it("resolver returning undefined still dispatches (leadId undefined) — degraded, not blocked", async () => {
+		const { deps, start, resolveLeadId } = makeDeps();
+		resolveLeadId.mockReturnValue(undefined);
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "implement", status: "awaiting_review" }),
+		);
+		expect(start).toHaveBeenCalledOnce();
+		expect(start.mock.calls[0]![0]).toMatchObject({ sessionRole: "qa" });
+		expect(start.mock.calls[0]![0].leadId).toBeUndefined();
+	});
+
+	it("reconcileOnStartup handoffs also carry the resolved leadId", async () => {
+		const { deps, start, listStrandedDesignPhases } = makeDeps();
+		listStrandedDesignPhases.mockReturnValue([
+			session({
+				execution_id: "e1",
+				session_role: "design",
+				status: "design_done",
+			}),
+		]);
+		await new PhaseOrchestrator(deps).reconcileOnStartup();
+		expect(start.mock.calls[0]![0]).toMatchObject({ leadId: "eng-lead" });
 	});
 });

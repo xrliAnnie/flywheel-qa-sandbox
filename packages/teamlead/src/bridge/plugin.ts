@@ -3733,6 +3733,31 @@ export async function startBridge(
 						),
 						env: process.env,
 					}),
+				// FLY-793 (combined-QA FLY-855): resolve the REAL leadId at handoff.
+				// The sessions table has NO lead_id column, so the orchestrator's old
+				// `prev.lead_id` read was always undefined → Blueprint's commDbPath
+				// had no leadId → TmuxAdapter's CommDB registration silently skipped
+				// → postMergeTmuxCleanup found no tmux target → the Implement/QA
+				// phase windows never auto-closed after ship (and the leaked QA
+				// runner un-archived the issue thread). Mirror the finalization
+				// paths: project config + the issue's labels.
+				resolveLeadId: (session) => {
+					if (!session.project_name) return undefined;
+					try {
+						const labels = store.getSessionLabels(session.execution_id);
+						const { lead } = resolveLeadForIssue(
+							projects,
+							session.project_name,
+							labels,
+						);
+						return lead.agentId;
+					} catch (err) {
+						console.warn(
+							`[three-stage] resolveLeadId failed for ${session.execution_id}: ${(err as Error).message}`,
+						);
+						return undefined;
+					}
+				},
 				effects: {
 					// Capture the phase's exact head SHA (git rev-parse HEAD in its
 					// worktree) BEFORE any cleanup — the durable handoff point on the
