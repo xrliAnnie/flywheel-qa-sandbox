@@ -33,12 +33,20 @@ import {
 	type ThreeStagePhase,
 } from "flywheel-config";
 
-/** Minimal session shape this coordinator needs (subset of StateStore Session). */
+/**
+ * Minimal session shape this coordinator needs (subset of StateStore Session).
+ *
+ * NOTE (FLY-793 combined-QA finding, FLY-855): there is deliberately NO
+ * `lead_id` field here — the sessions table has no such column, so a
+ * `prev.lead_id` read is always `undefined`. The handoff must resolve the real
+ * leadId via the `resolveLeadId` dep (project config + issue labels) instead;
+ * an undefined leadId silently skips the TmuxAdapter CommDB registration and
+ * the phase windows then never auto-close after ship.
+ */
 export interface PhaseSession {
 	execution_id: string;
 	issue_id: string;
 	project_name?: string;
-	lead_id?: string;
 	session_role?: string;
 	status: string;
 	issue_identifier?: string;
@@ -73,6 +81,17 @@ export interface PhaseOrchestratorDeps {
 	};
 	/** Per-project three-stage enablement (Step 1 policy). */
 	resolveThreeStage(session: PhaseSession): { enabled: boolean };
+	/**
+	 * FLY-793 (combined-QA FLY-855): resolve the REAL leadId for the next
+	 * phase's dispatch — project config + the issue's labels
+	 * (`resolveLeadForIssue`), exactly like post-ship finalization does. The
+	 * sessions table has NO lead_id column, so this must be resolved live at
+	 * handoff time. `undefined` (resolution failed) still dispatches — but the
+	 * TmuxAdapter CommDB registration is then skipped and the phase window will
+	 * not auto-close after ship, so the wiring should warn loudly when it
+	 * returns undefined.
+	 */
+	resolveLeadId(session: PhaseSession): string | undefined;
 	/**
 	 * FLY-793 (Codex full-PR R2 #1): Design phase-sessions stuck at design_done —
 	 * candidates for the startup reconcile (a boot-drain replay landed them at
@@ -186,11 +205,21 @@ export class PhaseOrchestrator {
 			);
 			return;
 		}
+		// FLY-793 (combined-QA FLY-855): resolve the real leadId LIVE — the old
+		// `prev.lead_id` read was a phantom (no such sessions column → always
+		// undefined → CommDB registration silently skipped → phase windows never
+		// auto-closed after ship, and the leaked QA runner un-archived threads).
+		const leadId = this.deps.resolveLeadId(prev);
+		if (!leadId) {
+			this.warn(
+				`resolveLeadId returned undefined for ${prev.issue_id} — dispatching ${next} anyway, but its CommDB registration will be skipped (window will not auto-close)`,
+			);
+		}
 		try {
 			const res = await this.deps.startDispatcher.start({
 				issueId: prev.issue_id,
 				projectName: prev.project_name,
-				leadId: prev.lead_id,
+				leadId,
 				sessionRole: next,
 				dispatchModel: resolvePhaseModel(next),
 				startPoint: headSha,
