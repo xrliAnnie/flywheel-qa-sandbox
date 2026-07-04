@@ -140,6 +140,27 @@ describe("expectedStatusFromMarker (event-route parity, Codex R2 #6)", () => {
 			expectedStatusFromMarker(mk("pr_handoff", false), undefined),
 		).toBeNull();
 	});
+	// FLY-793 (Codex full-PR R1 #2): phase_design_complete marker must be
+	// replayable (crash-safety for the Design→Implement handoff). Maps to the
+	// non-terminal design_done from running; fail-closed (null) from any
+	// non-running state, mirroring both sink guards.
+	it("phase_design_complete from running → design_done; from non-running → null", () => {
+		expect(
+			expectedStatusFromMarker(mk("phase_design_complete", false), "running"),
+		).toBe("design_done");
+		expect(
+			expectedStatusFromMarker(
+				mk("phase_design_complete", false),
+				"design_done",
+			),
+		).toBeNull();
+		expect(
+			expectedStatusFromMarker(mk("phase_design_complete", false), "completed"),
+		).toBeNull();
+		expect(
+			expectedStatusFromMarker(mk("phase_design_complete", false), undefined),
+		).toBeNull();
+	});
 	it("no_code from running → completed; from non-running → null", () => {
 		expect(expectedStatusFromMarker(mk("no_code", false), "running")).toBe(
 			"completed",

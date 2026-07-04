@@ -211,6 +211,11 @@ export function buildFounderConsentWiring(
 
 		if (project) {
 			for (const lead of project.leads) {
+				// FLY-793 (Codex full-PR R1 #5) — DOCUMENTED EXCEPTION: this
+				// founder-consent audit path operates on a NARROW session projection
+				// with no chat_thread_role, and it fires only for reserved actions
+				// (merge/ship/runner-lifecycle) that a three-stage PHASE runner never
+				// self-invokes. So it intentionally stays on the main thread mapping.
 				const t = store.getChatThreadByIssue(s.issue_id, lead.chatChannel);
 				if (t) {
 					threadId = t.thread_id;

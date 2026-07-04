@@ -12,7 +12,10 @@
  * review R1#5). Never throws.
  */
 
-import { deriveRoundtableThreadName } from "./roundtable-text.js";
+import {
+	deriveRoundtableThreadName,
+	ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
+} from "./roundtable-text.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 const ENSURE_TIMEOUT_MS = 5_000;
@@ -20,7 +23,6 @@ const ENSURE_TIMEOUT_MS = 5_000;
 const THREAD_ALREADY_EXISTS_CODE = 160004;
 /** Discord thread channel types (10 announcement, 11 public, 12 private). */
 const THREAD_TYPES = new Set([10, 11, 12]);
-const AUTO_ARCHIVE_DURATION = 4320; // 3 days
 
 export interface EnsureThreadDeps {
 	fetchImpl?: typeof fetch;
@@ -72,7 +74,8 @@ export async function ensureThreadFromMessage(
 				},
 				body: JSON.stringify({
 					name: deriveName(deps.threadName),
-					auto_archive_duration: AUTO_ARCHIVE_DURATION,
+					// FLY-802: 1h auto-archive so finished topics collapse out of the sidebar.
+					auto_archive_duration: ROUNDTABLE_TOPIC_AUTO_ARCHIVE_MINUTES,
 				}),
 				signal: controller.signal,
 			},

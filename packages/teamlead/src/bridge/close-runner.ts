@@ -69,6 +69,12 @@ export const FINALIZE_DONE_SOURCE_STATES: ReadonlySet<string> = new Set([
 	"running",
 	"awaiting_review",
 	"approved_to_ship",
+	// FLY-793: a three-stage Design phase-session lands here (route
+	// `phase_design_complete`). At handoff the PhaseOrchestrator closes it with
+	// `finalizeDone` → completed (FSM edge `design_done → completed` is legal) so
+	// the runner/worktree free for the Implement phase. NOT surfaced to the
+	// founder + no thread archive (the phases share the parent issue's thread).
+	"design_done",
 ]);
 
 /**

@@ -4,7 +4,7 @@ import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import type { FounderUxGateMode } from "flywheel-config";
-import { modelShortCode } from "flywheel-config";
+import { modelShortCode, resolveCompletionSessionRole } from "flywheel-config";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import {
@@ -35,6 +35,7 @@ import {
 	type LeadEventEnvelope,
 } from "./lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
+import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
 	markEvidenceGapCompletion,
@@ -556,6 +557,9 @@ export function createEventRouter(
 	// qa_result events drive the verdict. Holder absent / .current undefined →
 	// existing behaviour byte-for-byte (no held records exist, isQaHeld is false).
 	autoQaCoordinator?: { current: AutoQaCoordinator | undefined },
+	// FLY-793: three-stage PhaseOrchestrator. Absent / .current undefined → no-op
+	// (byte-compat); onPhaseComplete gates on three-stage phase role + status.
+	phaseOrchestrator?: { current: PhaseOrchestrator | undefined },
 ): Router {
 	const router = Router();
 	const issueStatusEmojiEnabled =
@@ -679,6 +683,11 @@ export function createEventRouter(
 				const eventRunnerModel = asString(payload.runnerModel);
 				// FLY-615: persist the resolved ponytail condition (A/B join key).
 				const eventPonytailCondition = asString(payload.ponytailCondition);
+				// FLY-793 (Step 11): persist the chat-thread role (computed at dispatch
+				// as shareParentBranch ? role : 'main'). This HTTP started path must
+				// persist it too, or a runner started via /events loses the signal that
+				// routes its thread to the phase side-table.
+				const eventChatThreadRole = asString(payload.chatThreadRole) ?? "main";
 
 				if (transitionOpts) {
 					const result = applyTransition(
@@ -696,6 +705,7 @@ export function createEventRouter(
 							session_stage: "started",
 							stage_updated_at: now,
 							session_role: eventSessionRole,
+							chat_thread_role: eventChatThreadRole,
 							...(eventAdapterType && { adapter_type: eventAdapterType }),
 							...(eventRunnerModel && { runner_model: eventRunnerModel }),
 							...(eventPonytailCondition && {
@@ -724,6 +734,7 @@ export function createEventRouter(
 						session_stage: "started",
 						stage_updated_at: now,
 						session_role: eventSessionRole,
+						chat_thread_role: eventChatThreadRole,
 						...(eventAdapterType && { adapter_type: eventAdapterType }),
 						...(eventRunnerModel && { runner_model: eventRunnerModel }),
 						...(eventPonytailCondition && {
@@ -859,6 +870,8 @@ export function createEventRouter(
 					// FLY-493: pr_handoff — no-transport antigravity build+PR terminal
 					// (running→completed; never awaiting_review/approved_to_ship).
 					"pr_handoff",
+					// FLY-793: three-stage Design phase completion → design_done.
+					"phase_design_complete",
 				]);
 				if (!isPostApproveShip && (!route || !VALID_ROUTES.has(route))) {
 					console.warn(
@@ -878,7 +891,9 @@ export function createEventRouter(
 				// evidence / evidence-gap / finalization. Skip like an invalid route.
 				// FLY-493: pr_handoff has the SAME running-only constraint.
 				if (
-					(route === "no_code" || route === "pr_handoff") &&
+					(route === "no_code" ||
+						route === "pr_handoff" ||
+						route === "phase_design_complete") &&
 					existingSession?.status !== "running"
 				) {
 					console.warn(
@@ -959,6 +974,12 @@ export function createEventRouter(
 					// means the ship did not complete — must NOT finalize.
 					// Sister branch: DirectEventSink.ts:273.
 					status = "blocked";
+				} else if (route === "phase_design_complete") {
+					// FLY-793: three-stage Design phase done (docs on the shared
+					// branch, no PR) → non-terminal design_done (running → design_done).
+					// The PhaseOrchestrator hands off to Implement. Sister branch:
+					// DirectEventSink.ts.
+					status = "design_done";
 				} else if (route === "no_code" || route === "pr_handoff") {
 					// FLY-222 #1: no-code/no-merge clean success → terminal completed.
 					// `running → completed` is a legal FSM edge. evidenceGap stays
@@ -992,8 +1013,19 @@ export function createEventRouter(
 					}
 				}
 
-				// FLY-59: Read session role from completed event payload
-				const completedSessionRole = asString(payload.sessionRole) ?? "main";
+				// FLY-59: Read session role from completed event payload.
+				// FLY-793 (824 R2 E2E fix): a completion signal must NOT clobber a
+				// dispatched phase role. The `flywheel-comm complete` CLI defaults its
+				// payload role to "main" (phase runners don't pass --session-role), so
+				// writing it back would overwrite the design/implement/qa role and the
+				// three-stage handoff would silently never fire. Preserve the existing
+				// phase role server-side (existingSession = pre-transition snapshot,
+				// line 850). Byte-compat: a non-phase existing role ("main"/none) falls
+				// through to the payload role, identical to the prior behavior.
+				const completedSessionRole = resolveCompletionSessionRole(
+					existingSession?.session_role,
+					asString(payload.sessionRole),
+				);
 
 				// FLY-191 Phase 2 (§5.5.2 + Codex PR R1 CRITICAL/HIGH-2): the review
 				// BINDING — the exact gate questionId + PR head this review request
@@ -1360,8 +1392,17 @@ export function createEventRouter(
 					}
 				}
 			} else if (event.event_type === "session_failed") {
-				// FLY-59: Read session role from failed event payload
-				const failedSessionRole = asString(payload.sessionRole) ?? "main";
+				// FLY-59: Read session role from failed event payload.
+				// FLY-793 (824 R2 E2E fix): same invariant as the completed path — a
+				// signal must not downgrade a dispatched phase role to the payload
+				// default "main" (keeps session_role accurate for triage / the
+				// three_stage_stuck path). existingSession (completed branch) is not
+				// in scope here, so read a pre-failure snapshot.
+				const preFailureSession = store.getSession(event.execution_id);
+				const failedSessionRole = resolveCompletionSessionRole(
+					preFailureSession?.session_role,
+					asString(payload.sessionRole),
+				);
 
 				if (transitionOpts) {
 					const result = applyTransition(
@@ -1817,6 +1858,23 @@ export function createEventRouter(
 			} catch (err) {
 				console.error(
 					`[event-route] onMainAwaitingReview threw for ${event.execution_id}: ${(err as Error).message}`,
+				);
+			}
+		}
+
+		// FLY-793: three-stage phase handoff (design_done → Implement; implement
+		// awaiting_review → QA). onPhaseComplete no-ops unless a three-stage phase
+		// session at its handoff status. Sister call: DirectEventSink.ts.
+		if (
+			event.event_type === "session_completed" &&
+			phaseOrchestrator?.current &&
+			session
+		) {
+			try {
+				await phaseOrchestrator.current.onPhaseComplete(session);
+			} catch (err) {
+				console.error(
+					`[event-route] onPhaseComplete threw for ${event.execution_id}: ${(err as Error).message}`,
 				);
 			}
 		}

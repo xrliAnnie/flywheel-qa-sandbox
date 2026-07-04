@@ -30,6 +30,20 @@ HEAL_STATE="${HEAL_STATE:-/tmp/flywheel-cmux-heal.state}"
 CLEANUP_DELAY_SECONDS="${FLYWHEEL_CMUX_CLEANUP_DELAY:-30}"
 CONSERVATIVE_CLEANUP_SECONDS="${FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP:-300}"
 
+# FLY-825: create-vs-create dedup. drain_events()'s event-driven "create" branch
+# and sync_additive()'s 60s missing-workspace scan can, within the SAME watch_loop
+# tick (ticks where tick % 4 == 0 run both), each independently decide a
+# workspace is "missing" for the same (window_name, window_id) and both call
+# create_workspace_for_window — producing two cmux tabs attached to the same
+# linked view_session (production repro 2026-07-03: `growth-mufasa-lead (@1210)`
+# created twice, 1s apart, IDENTICAL window_id). Keyed by window_name|window_id
+# (not window_name alone) so a genuine restart — same name, FRESH window_id — is
+# never suppressed by this guard; only a true repeat call for the exact same
+# window instance is skipped. This state file is process-local ground truth,
+# independent of cmux's own workspace-list read consistency (a second JSON read
+# cannot fix this — it can observe the same stale snapshot).
+CREATE_STATE="${CREATE_STATE:-/tmp/flywheel-cmux-create.state}"
+
 # FLY-293: orphan cmux workspace-pin reaper — grace state file (ref-keyed).
 # Overridable for tests (${VAR:-default} preserves pre-set values).
 ORPHAN_PIN_STATE="${ORPHAN_PIN_STATE:-/tmp/flywheel-cmux-orphan-pin.state}"
@@ -1275,6 +1289,75 @@ gc_heal_state_file() {
   mv "$tmp" "$HEAL_STATE"
 }
 
+# FLY-825: validated TTL — called at each guard entry (not once at top-level,
+# since env can't change mid-run anyway; this just keeps the validation next to
+# its only two call sites and avoids a load-order dependency on
+# validated_int_env, which is defined later in this file). Same three-step
+# pattern as reap_orphan_workspace_pins's `grace`: digit-only check, length cap
+# (4 digits ≤ 9999s is far more than this guard will ever need), then use.
+_create_dedup_seconds() {
+  local v="${FLYWHEEL_CMUX_CREATE_DEDUP_SECONDS:-30}"
+  case "$v" in ''|*[!0-9]*) v=30 ;; esac
+  [[ ${#v} -gt 4 ]] && v=30
+  echo "$((10#$v))"
+}
+
+# FLY-825: true (rc=0) if THIS EXACT (window_name, window_id) pair was created
+# within the last CREATE_DEDUP_SECONDS. Best-effort — an unreadable/missing
+# state file, or a corrupt/non-numeric/future stored timestamp, reads as "not
+# recently attempted" (fail-open on the guard itself: the guard is a hardening
+# layer, not a safety-critical gate — worst case on guard failure is reverting
+# to pre-fix duplicate-tab behavior, never a hang or a false suppression of a
+# real create).
+create_recently_attempted() {
+  local wname="$1" wid="$2" now ts dedup_seconds
+  [[ -f "$CREATE_STATE" ]] || return 1
+  now=$(date +%s)
+  dedup_seconds=$(_create_dedup_seconds)
+  ts=$(awk -F'|' -v n="$wname" -v w="$wid" '$1 == n && $2 == w { print $3; exit }' "$CREATE_STATE" 2>/dev/null || true)
+  case "$ts" in ''|*[!0-9]*) return 1 ;; esac
+  [[ ${#ts} -gt 12 ]] && return 1   # implausible/corrupt epoch → treat as not-recent
+  ts=$((10#$ts))
+  (( ts > now )) && return 1        # future timestamp → corrupt, fail open (not recent)
+  (( now - ts < dedup_seconds ))
+}
+
+# FLY-825: record (window_name, window_id) as just-attempted. Idempotent
+# overwrite (mktemp + rewrite, matching heal_state_clear's pattern) so a retry
+# for the same pair refreshes the timestamp instead of growing the file.
+create_mark_attempted() {
+  local wname="$1" wid="$2" now tmp
+  now=$(date +%s)
+  touch "$CREATE_STATE" 2>/dev/null || return 0
+  tmp=$(mktemp "${CREATE_STATE}.XXXX" 2>/dev/null) || return 0
+  if ! awk -F'|' -v n="$wname" -v w="$wid" '!($1 == n && $2 == w) { print }' "$CREATE_STATE" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 0
+  fi
+  printf '%s|%s|%s\n' "$wname" "$wid" "$now" >> "$tmp"
+  mv "$tmp" "$CREATE_STATE" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
+}
+
+# FLY-825: GC rows older than the TTL (watcher startup — mirrors gc_heal_state_file).
+# Same digit/length guard on each stored timestamp before arithmetic; a corrupt
+# or future row is dropped (self-heals) rather than risking `(( ))` on a bad value.
+gc_create_state_file() {
+  [[ -f "$CREATE_STATE" ]] || return 0
+  local now tmp dedup_seconds
+  now=$(date +%s)
+  dedup_seconds=$(_create_dedup_seconds)
+  tmp=$(mktemp "${CREATE_STATE}.XXXX") || return 0
+  while IFS='|' read -r name wid ts; do
+    [[ -z "$name" || -z "$wid" ]] && continue
+    case "$ts" in ''|*[!0-9]*) continue ;; esac
+    [[ ${#ts} -gt 12 ]] && continue
+    ts=$((10#$ts))
+    (( ts > now )) && continue
+    (( now - ts < dedup_seconds )) && printf '%s|%s|%s\n' "$name" "$wid" "$ts" >> "$tmp"
+  done < "$CREATE_STATE"
+  mv "$tmp" "$CREATE_STATE"
+}
+
 # FLY-254: THE single atomic re-attach injection path — used by BOTH the plain
 # heal and the render-escalated heal. There must never be a second injection
 # path (Codex R1 HIGH-1). ATOMIC: the attach command is sent WITH a trailing
@@ -1970,6 +2053,16 @@ create_workspace_for_window() {
   local window_name="$3"
   local view_session="${VIEW_PREFIX}${window_name}"
 
+  # FLY-825: skip if we already attempted a create for this EXACT
+  # (window_name, window_id) within the dedup TTL — prevents drain_events +
+  # sync_additive (same tick, tick % 4 == 0) from both creating a tab for the
+  # same window. Keyed by window_id too, so a genuine restart (same name,
+  # fresh window_id) is never suppressed.
+  if create_recently_attempted "$window_name" "$window_id"; then
+    log "Skipping duplicate create for: $window_name ($window_id) (attempted within last $(_create_dedup_seconds)s)"
+    return 0
+  fi
+
   local raw_before
   raw_before=$(get_cmux_workspaces_json) || return 0  # JSON unavailable → skip
 
@@ -2004,6 +2097,13 @@ sys.exit(0 if exists else 1)
     log "WARN: $view_session not ready (session/select-window) — deferring create for $window_name"
     return 0
   fi
+
+  # FLY-825: mark AFTER the ready gate passes (this call site is truly
+  # committing to a create attempt) and BEFORE the cmux mutation, so a
+  # concurrent-tick duplicate call sees the mark even if the cmux IPC below is
+  # slow. A deferred (not-ready) call above never reaches here — it does NOT
+  # burn the TTL, so the next tick's retry is never suppressed.
+  create_mark_attempted "$window_name" "$window_id"
 
   # 3. refs_before from the snapshot we already have (no extra cmux call).
   local refs_before
@@ -2720,6 +2820,10 @@ watch_main() {
   # previous watcher). Keeps transition-only heal logging accurate.
   gc_heal_state_file
 
+  # FLY-825: GC create-dedup rows past their TTL (leaked by a previous
+  # watcher / normal expiry). Keeps CREATE_STATE bounded.
+  gc_create_state_file
+
   # FLY-293: GC orphan-pin grace rows whose ref no longer exists in cmux (leaked
   # by a previous watcher). Env-gated (byte-compat when reaper off).
   gc_orphan_pin_state_file
@@ -2862,6 +2966,42 @@ _pid_is_watcher() {
   [[ "$cmd" == *flywheel-cmux-sync* && "$cmd" == *--watch* ]]
 }
 
+# FLY-825: bootout is not guaranteed synchronous — the old watcher process can
+# outlive its launchd job record (production repro: pid 64108, no longer
+# tracked by `launchctl list`, still alive + still the lock owner hours after
+# a same-label bootout/bootstrap cycle). Poll for `flywheel-cmux-sync --watch`
+# process(es) to actually disappear before the caller (flywheel-cmux-install.sh)
+# bootstraps a fresh instance, so a new launchd-tracked instance never has to
+# coexist with a not-fully-dead predecessor. Bounded ~5s real time (10 x 0.5s);
+# falls through to an explicit, PID-targeted TERM-then-KILL (never a broad
+# `pkill`) if bootout's own signal didn't land in time. Every PID killed is
+# logged for audit. Exposed as its own function (not inlined in the install
+# script, which has no BASH_SOURCE guard and top-level side effects) so it is
+# covered by this file's existing bash-3.2 `source`-based test harness.
+wait_for_watcher_exit() {
+  local half_seconds=0 pids pid
+  while true; do
+    pids=$(pgrep -f "flywheel-cmux-sync(\.sh)? +--watch" 2>/dev/null || true)
+    [[ -z "$pids" ]] && return 0
+    if (( half_seconds >= 10 )); then
+      log "wait_for_watcher_exit: still alive after 5s, escalating to TERM: $pids"
+      for pid in $pids; do
+        log "wait_for_watcher_exit: TERM pid=$pid"
+        kill -TERM "$pid" 2>/dev/null || true
+      done
+      sleep 1
+      pids=$(pgrep -f "flywheel-cmux-sync(\.sh)? +--watch" 2>/dev/null || true)
+      for pid in $pids; do
+        log "wait_for_watcher_exit: KILL pid=$pid (survived TERM)"
+        kill -KILL "$pid" 2>/dev/null || true
+      done
+      return 0
+    fi
+    sleep 0.5
+    half_seconds=$((half_seconds + 1))
+  done
+}
+
 acquire_watcher_lock() {
   # FLY-177: supervised (launchd) mode blocks-waits for a live watcher to exit
   # rather than exiting itself (no KeepAlive respawn churn). Unsupervised
@@ -2982,6 +3122,12 @@ case "${1:-}" in
     # FLY-98: tmux-only repair — safe to call from outside cmux
     refresh_linked_sessions
     ;;
+  --wait-for-watcher-exit)
+    # FLY-825: called by flywheel-cmux-install.sh between bootout and
+    # bootstrap. Safe from outside cmux (no cmux socket needed — pure
+    # tmux/process-table operation, same tier as --refresh).
+    wait_for_watcher_exit
+    ;;
   --once|"")
     sync_once
     ;;
@@ -3004,10 +3150,11 @@ case "${1:-}" in
     reap_orphan_pins_oneshot
     ;;
   *)
-    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins]"
+    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--wait-for-watcher-exit|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins]"
     echo "  --once              Full sync with aggressive cleanup (cmux + tmux). Manual use from inside cmux."
     echo "  --watch             Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
     echo "  --refresh           tmux-only linked session repair. Safe from anywhere."
+    echo "  --wait-for-watcher-exit  FLY-825: poll+kill any lingering --watch process (install-script helper)."
     echo "  --list-lead-refs    Print Lead cmux workspace refs (Phase 8 Path A)."
     echo "  --list-orphan-pins  FLY-293: print orphan runner cmux pins (read-only preview)."
     echo "  --reap-orphan-pins  FLY-293: close orphan runner cmux pins now (one-shot, revalidated)."

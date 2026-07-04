@@ -67,6 +67,12 @@ export type AlertEventType =
 	// founder is intentionally never surfaced for a non-green QA. NOT a
 	// founder-facing notification (those go to the issue thread).
 	| "auto_qa_stuck"
+	// FLY-793: a three-stage pipeline phase handoff (Design→Implement→QA) could
+	// not proceed — head-SHA capture failed, the previous phase runner would not
+	// close, or the next phase dispatch threw. Fail-closed: the next phase is NOT
+	// started and this Lead-only alert fires so a completed phase is never
+	// silently stranded. Not a founder-facing notification.
+	| "three_stage_stuck"
 	// FLY-637-ext: the owning Lead did not answer a runner's BLOCKING question
 	// gate after the configured number of backoff nudges → page Annie ONCE
 	// (final fallback). DISTINCT from runner_stuck_unhandled: the runner is fine,

@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	canonicalizeWorktreePath,
 	deriveWorktreeKey,
 	type WorktreeExecFn,
 	WorktreeManager,
@@ -919,26 +920,25 @@ describe("WorktreeManager", () => {
 			expect(fs.existsSync(path.join(info.worktreePath, "f.txt"))).toBe(true);
 		});
 
-		it("FLY-99: symlinked mainRepoPath → isRegistered false → Step 1b prune enables rerun", async () => {
+		it("FLY-99 + FLY-793: symlinked mainRepoPath → isRegistered now canonicalizes (true) → clean rerun", async () => {
 			// Production repro via an EXPLICIT directory symlink so the test
 			// behaves identically on macOS and Linux CI (does not depend on
 			// /var → /private/var auto-normalization).
 			//
-			// Sequence:
+			// FLY-793 (824 R2 E2E): isRegistered / getRegisteredWorktree now
+			// canonicalize BOTH sides before comparing (realpath), so the
+			// symlinked caller path correctly matches git's resolved path — no
+			// more raw-string mismatch. Sequence:
 			//   1. create() via symlinked mainRepoPath. git canonicalizes
-			//      internally and records the resolved worktree path in its
-			//      admin entry under .git/worktrees/<name>/.
-			//   2. isRegistered() via the same symlinked path does a raw
-			//      string compare and returns false — the caller's
-			//      constructed path still contains the unresolved symlink
-			//      segment, git's listing does not.
-			//   3. removeIfExists() therefore takes the orphan-dir branch and
-			//      fs.rm's the worktree dir (via symlink, so the real dir on
-			//      disk is removed), but the admin entry survives.
-			//   4. Step 1b's unconditional `git worktree prune` drops the now-
-			//      stale admin entry. Without it, the subsequent `branch -D`
-			//      fails with "Cannot delete branch X checked out at Y" and
-			//      the follow-up create() fails with "already checked out at".
+			//      internally and records the resolved worktree path.
+			//   2. isRegistered() via the same symlinked path now returns TRUE
+			//      (both sides realpath-resolved to the same dir).
+			//   3. removeIfExists() therefore takes the proper remove() path
+			//      (rename + prune), not the orphan-dir fs.rm fallback.
+			//   4. Step 1b's prune + branch -D still run; the follow-up create()
+			//      (-B reset-or-create) rebuilds cleanly with no "already checked
+			//      out at" crash. FLY-99's Step 1b is now belt-and-suspenders
+			//      rather than the sole thing keeping the rerun alive.
 			const { mainRepoCanonical, mainRepoViaSymlink } =
 				await setupSymlinkedRepo();
 			const mgr = new WorktreeManager();
@@ -964,13 +964,14 @@ describe("WorktreeManager", () => {
 			);
 			expect(canonicalWtPath).not.toBe(first.worktreePath);
 
-			// The mismatch precondition: isRegistered string-compares, so it
-			// returns false for the caller's (symlinked) worktree path and
-			// true for the canonical one — same underlying worktree, two
-			// answers.
+			// FLY-793: isRegistered now canonicalizes both sides, so it returns
+			// TRUE for BOTH the symlinked caller path and the canonical one —
+			// same underlying worktree, one consistent answer (previously the
+			// raw string compare returned false for the symlinked path, the bug
+			// that broke the three-stage worktree-removal-proof gate).
 			expect(
 				await mgr.isRegistered(mainRepoViaSymlink, first.worktreePath),
-			).toBe(false);
+			).toBe(true);
 			expect(await mgr.isRegistered(mainRepoCanonical, canonicalWtPath)).toBe(
 				true,
 			);
@@ -1215,5 +1216,120 @@ describe("WorktreeManager", () => {
 			// exact path used, not a recomputed sibling path
 			expect(calls[0].args).toContain("/some/weird/manually-made-path");
 		});
+	});
+});
+
+describe("canonicalizeWorktreePath (FLY-793 824 R2 E2E)", () => {
+	let realBase: string;
+	let linkBase: string;
+
+	beforeEach(() => {
+		// A real dir + a symlink pointing at it — mirrors macOS /tmp → /private/tmp
+		// (the exact shape that made getRegisteredWorktree's exact `===` miss).
+		realBase = fs.realpathSync(
+			fs.mkdtempSync(path.join(os.tmpdir(), "wt-canon-")),
+		);
+		linkBase = `${realBase}.link`;
+		fs.symlinkSync(realBase, linkBase);
+	});
+
+	afterEach(() => {
+		try {
+			fs.unlinkSync(linkBase);
+		} catch {}
+		try {
+			fs.rmSync(realBase, { recursive: true, force: true });
+		} catch {}
+	});
+
+	it("resolves a symlinked path to its canonical form (existing leaf)", () => {
+		fs.mkdirSync(path.join(realBase, "wt"));
+		expect(canonicalizeWorktreePath(path.join(linkBase, "wt"))).toBe(
+			path.join(realBase, "wt"),
+		);
+	});
+
+	it("resolves the symlinked prefix even when the leaf does not exist", () => {
+		// Deepest-existing-ancestor fallback: leaf 'gone' missing, parent resolves.
+		expect(canonicalizeWorktreePath(path.join(linkBase, "gone"))).toBe(
+			path.join(realBase, "gone"),
+		);
+	});
+
+	it("is idempotent on an already-canonical path", () => {
+		fs.mkdirSync(path.join(realBase, "wt2"));
+		const canon = path.join(realBase, "wt2");
+		expect(canonicalizeWorktreePath(canon)).toBe(canon);
+	});
+});
+
+describe("getRegisteredWorktree / isRegistered path canonicalization (FLY-793)", () => {
+	let realBase: string;
+	let linkBase: string;
+
+	beforeEach(() => {
+		realBase = fs.realpathSync(
+			fs.mkdtempSync(path.join(os.tmpdir(), "wt-reg-")),
+		);
+		linkBase = `${realBase}.link`;
+		fs.symlinkSync(realBase, linkBase);
+		fs.mkdirSync(path.join(realBase, "repo-GEO-42"));
+	});
+
+	afterEach(() => {
+		try {
+			fs.unlinkSync(linkBase);
+		} catch {}
+		try {
+			fs.rmSync(realBase, { recursive: true, force: true });
+		} catch {}
+	});
+
+	function porcelainFor(canonicalWtPath: string): string {
+		return [
+			`worktree ${realBase}`,
+			"HEAD abc1234",
+			"branch refs/heads/main",
+			"",
+			`worktree ${canonicalWtPath}`,
+			"HEAD def5678",
+			"branch refs/heads/repo-GEO-42",
+			"",
+		].join("\n");
+	}
+
+	it("getRegisteredWorktree matches a symlinked query against git's canonical path", async () => {
+		const canonicalWt = path.join(realBase, "repo-GEO-42");
+		const { fn } = makeMockExec([{ stdout: porcelainFor(canonicalWt) }]);
+		const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
+		// Query with the SYMLINK path — the shape a session stores (/tmp/...).
+		const reg = await mgr.getRegisteredWorktree(
+			realBase,
+			path.join(linkBase, "repo-GEO-42"),
+		);
+		expect(reg).not.toBeNull();
+		expect(reg?.branch).toBe("repo-GEO-42");
+		// Returns git's canonical path — the cleanup removes by THIS, not the query.
+		expect(reg?.path).toBe(canonicalWt);
+	});
+
+	it("isRegistered is true for a symlinked query", async () => {
+		const canonicalWt = path.join(realBase, "repo-GEO-42");
+		const { fn } = makeMockExec([{ stdout: porcelainFor(canonicalWt) }]);
+		const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
+		expect(
+			await mgr.isRegistered(realBase, path.join(linkBase, "repo-GEO-42")),
+		).toBe(true);
+	});
+
+	it("getRegisteredWorktree still returns null for a genuinely different path", async () => {
+		const canonicalWt = path.join(realBase, "repo-GEO-42");
+		const { fn } = makeMockExec([{ stdout: porcelainFor(canonicalWt) }]);
+		const mgr = new WorktreeManager({ baseDir: "/tmp/wt" }, fn);
+		const reg = await mgr.getRegisteredWorktree(
+			realBase,
+			path.join(realBase, "repo-GEO-99"),
+		);
+		expect(reg).toBeNull();
 	});
 });

@@ -66,6 +66,12 @@ export interface RetryRequest {
 	 * (fresh UUID), byte-compatible.
 	 */
 	successorExecutionId?: string;
+	/**
+	 * FLY-793: three-stage phase shares the parent issue's single branch B.
+	 * Bridge-INTERNAL; carried on the retry path so a retried phase keeps the
+	 * shared-branch behavior. Absent → role-aware worktree key (byte-compatible).
+	 */
+	shareParentBranch?: boolean;
 }
 
 export interface RetryResult {
@@ -177,6 +183,15 @@ export interface StartRequest {
 	 * config in Blueprint. Absent → Blueprint falls back to hydrated labels.
 	 */
 	ponytailInput?: PonytailInput;
+	/**
+	 * FLY-793: three-stage phase shares the parent issue's single branch B.
+	 * Bridge-INTERNAL — set ONLY by the PhaseOrchestrator when dispatching a
+	 * Design/Implement/QA phase-session; MUST NEVER be populated from the public
+	 * `/api/runs/start` body or a runner payload (runs-route does not read it).
+	 * Threaded to `BlueprintContext.shareParentBranch`. Absent → role-aware
+	 * worktree key (byte-compatible).
+	 */
+	shareParentBranch?: boolean;
 }
 
 export interface StartResult {

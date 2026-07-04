@@ -1,6 +1,9 @@
 import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { readFileSync as ffReadFileSync } from "node:fs";
+import {
+	existsSync as ffExistsSync,
+	readFileSync as ffReadFileSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -85,6 +88,7 @@ import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
+import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import {
 	deleteCommDbSession,
 	pruneDeadTerminalCommDbSessions,
@@ -151,6 +155,7 @@ import { resolveLinearScope, resolveProjectNameParam } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
+import { PhaseOrchestrator } from "./phase-orchestrator.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import {
 	buildCronModelViews,
@@ -200,6 +205,8 @@ import {
 import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
 import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
+import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
+import { resolveThreeStagePolicy } from "./three-stage-policy.js";
 import {
 	captureRunnerScrollback,
 	getTmuxTargetFromCommDb,
@@ -215,7 +222,10 @@ import { type CaptureSessionFn, createQueryRouter } from "./tools.js";
 import { createTriageDataRouter } from "./triage-data-route.js";
 import { createTriageTemplateRouter } from "./triage-template-route.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
-import { makeBridgeWorktreeCleanup } from "./worktree-cleanup.js";
+import {
+	gitWorktreeClean,
+	makeBridgeWorktreeCleanup,
+} from "./worktree-cleanup.js";
 import {
 	createInMemoryTokenStore,
 	handleGetReview,
@@ -677,6 +687,14 @@ export interface BridgeAppOptions {
 	 */
 	autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
 	/**
+	 * FLY-793: late-bound holder for the three-stage PhaseOrchestrator. The
+	 * /events route mounts inside createBridgeApp (pre-listen), but the
+	 * orchestrator is built later in startBridge (it needs startDispatcher +
+	 * LeadAlertNotifier), so the event router reads `.current` at request time.
+	 * Absent / `.current` undefined ⇒ three-stage dormant (byte-compatible).
+	 */
+	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
+	/**
 	 * FLY-516: late-bound shutdown flag. The /health route mounts inside
 	 * createBridgeApp (pre-listen) but close() lives in startBridge — so /health
 	 * reads this holder at request time and close() flips it at teardown start.
@@ -901,6 +919,7 @@ export function createBridgeApp(
 			{ issueStatusEmojiEnabled, issueAttachPinEnabled },
 			opts?.reconnectHolder,
 			opts?.autoQaCoordinator,
+			opts?.phaseOrchestrator,
 		),
 	);
 
@@ -2927,6 +2946,15 @@ export async function startBridge(
 		current: undefined,
 	};
 
+	// FLY-793: late-bound three-stage PhaseOrchestrator holder — read by BOTH the
+	// /events router (createBridgeApp) and the in-process DirectEventSink (via
+	// setupRunInfrastructure). Built post-listen (it needs startDispatcher +
+	// LeadAlertNotifier), so `.current` stays undefined until then = three-stage
+	// dormant (byte-compatible).
+	const phaseOrchestratorHolder: {
+		current: PhaseOrchestrator | undefined;
+	} = { current: undefined };
+
 	let startDispatcher = opts?.startDispatcher;
 	let internalDispatcher: IRetryDispatcher | undefined;
 	if (!startDispatcher) {
@@ -2945,6 +2973,9 @@ export async function startBridge(
 					// FLY-579: the in-process completed path drives auto-QA + holds
 					// the founder via this same holder.
 					autoQaCoordinator: autoQaCoordinatorHolder,
+					// FLY-793: the in-process completion path drives three-stage
+					// Design→Implement→QA phase handoffs via this same holder.
+					phaseOrchestrator: phaseOrchestratorHolder,
 				},
 			);
 			startDispatcher = dispatcher;
@@ -3013,6 +3044,8 @@ export async function startBridge(
 			reconnectHolder,
 			// FLY-579: event router reads this to drive the auto-QA pipeline.
 			autoQaCoordinator: autoQaCoordinatorHolder,
+			// FLY-793: event router reads this to drive three-stage phase handoffs.
+			phaseOrchestrator: phaseOrchestratorHolder,
 		},
 	);
 
@@ -3335,12 +3368,38 @@ export async function startBridge(
 	// rest of Bridge boot for minutes. It is pure best-effort cleanup with no
 	// ordering dependency on later boot steps, so detach it and let it drain in the
 	// background; per-project failures are swallowed.
+	//
+	// FLY-817: the CommDB↔FSM reconcile (sibling of the FLY-638 sweep, folded into
+	// the same per-project loop) runs FIRST each project — it clears CommDB
+	// `running` rows whose Bridge FSM is a non-preserve terminal outcome AND whose
+	// tmux target is provably dead (the FLY-638 blind spot). Both sweeps probe tmux
+	// per row and share the fire-and-forget + dedup shape; their candidate sets are
+	// disjoint (running vs completed/timeout). `FLYWHEEL_COMMDB_FSM_RECONCILE=0`
+	// disables the reconcile (kill-switch, mirrors FLYWHEEL_CRASH_REAPER).
 	{
 		const prunedProjects = new Set<string>();
+		const reconcileOn = process.env.FLYWHEEL_COMMDB_FSM_RECONCILE !== "0";
 		void (async () => {
 			for (const p of projects ?? []) {
 				if (prunedProjects.has(p.projectName)) continue;
 				prunedProjects.add(p.projectName);
+				if (reconcileOn) {
+					try {
+						const r = await reconcileCommDbRunningAgainstFsm(
+							p.projectName,
+							(id) => store.getSession(id)?.status,
+						);
+						if (r.reconciled > 0) {
+							console.log(
+								`[Bridge] FLY-817 CommDB↔FSM reconcile (${p.projectName}): scanned=${r.scanned} reconciled=${r.reconciled} keptNonTerminal=${r.keptNonTerminal} keptPreserve=${r.keptPreserve} keptAliveTarget=${r.keptAliveTarget}`,
+							);
+						}
+					} catch (err) {
+						console.error(
+							`[Bridge] FLY-817 CommDB↔FSM reconcile (${p.projectName}) failed (non-fatal): ${(err as Error).message}`,
+						);
+					}
+				}
 				try {
 					const pruned = await pruneDeadTerminalCommDbSessions(p.projectName);
 					if (pruned.pruned > 0) {
@@ -3709,6 +3768,197 @@ export async function startBridge(
 		} catch (err) {
 			console.warn(
 				`[auto-qa] coordinator wiring failed: ${(err as Error).message} — auto-QA disabled this boot`,
+			);
+		}
+	}
+
+	// FLY-793: build the three-stage PhaseOrchestrator now that startDispatcher +
+	// LeadAlertNotifier exist. Per-project `pipeline` config is loaded from the
+	// CANONICAL roots (never a PR worktree), so a runner cannot flip its own
+	// three-stage enablement. The holder is read lazily by both sinks, so filling
+	// it here (post-listen) is correct. Its OWN try/catch — a three-stage config
+	// problem must never disable auto-QA and vice versa. No startDispatcher ⇒
+	// never built (three-stage dormant; can't dispatch phase-sessions anyway).
+	if (startDispatcher) {
+		const phaseStartDispatcher = startDispatcher;
+		try {
+			const pipelineConfigByProject =
+				await loadPipelineConfigByProject(projects);
+			const enabledProjects = projects.filter(
+				(p) => pipelineConfigByProject.get(p.projectName)?.three_stage === true,
+			).length;
+			// FLY-793 (Codex full-PR R1 #1): dirty-safe worktree cleanup the handoff
+			// OWNS — so the branch-B worktree is torn down in the AWAITED
+			// closePhaseRunner (fail-closed on dirty), not left to the next phase's
+			// async, non-dirty-checked Blueprint.removeIfExists.
+			const phaseWorktreeCleanup = makeBridgeWorktreeCleanup(store, projects);
+			phaseOrchestratorHolder.current = new PhaseOrchestrator({
+				startDispatcher: phaseStartDispatcher,
+				resolveThreeStage: (session) =>
+					resolveThreeStagePolicy({
+						pipelineConfig: pipelineConfigByProject.get(
+							session.project_name ?? "",
+						),
+						issueLabels: parseJsonStringArray(
+							store.getSession(session.execution_id)?.issue_labels,
+						),
+						env: process.env,
+					}),
+				effects: {
+					// Capture the phase's exact head SHA (git rev-parse HEAD in its
+					// worktree) BEFORE any cleanup — the durable handoff point on the
+					// shared branch B. Null on any failure → orchestrator fail-closes.
+					capturePhaseHeadSha: async (session) => {
+						const worktree = store.getSession(
+							session.execution_id,
+						)?.worktree_path;
+						if (!worktree) return null;
+						try {
+							const { stdout } = await execFileP("git", [
+								"-C",
+								worktree,
+								"rev-parse",
+								"HEAD",
+							]);
+							const sha = stdout.trim();
+							return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+						} catch {
+							return null;
+						}
+					},
+					// Dirty-safe close of the completed phase runner. `finalizeDone`
+					// FSM-transitions the design_done / awaiting_review phase-session to
+					// completed first (edges are legal), then frees its tmux + worktree
+					// for the next phase. NO `archive` — the phases share the parent
+					// issue's thread, which must NOT be archived mid-pipeline.
+					closePhaseRunner: async (session) => {
+						// FLY-793 (Codex full-PR R1 #1): capture the worktree path BEFORE
+						// close (closeRunner may clear tmux/CommDB but leaves the worktree).
+						const worktree = store.getSession(
+							session.execution_id,
+						)?.worktree_path;
+						const result = await closeRunner(
+							{
+								executionId: session.execution_id,
+								issueId: session.issue_id,
+								projectName: session.project_name ?? "",
+								reason: `three-stage ${session.session_role ?? "phase"} handoff`,
+								executorType: "phase",
+								finalizeDone: true,
+								transitionOpts,
+							},
+							store,
+						);
+						if (!result.closed) {
+							throw new Error(result.error ?? "closeRunner did not close");
+						}
+						// FLY-793 (Codex full-PR R1 #1): the handoff OWNS the branch-B
+						// worktree teardown here (awaited, before the next phase). If the
+						// phase left uncommitted work (dirty) — or the clean-probe can't
+						// confirm — FAIL-CLOSED: throw so the PhaseOrchestrator aborts the
+						// handoff + alerts the Lead, and never lets the next phase's async
+						// Blueprint.removeIfExists silently discard those files. The head
+						// SHA was already captured from the COMMITTED tree upstream, so the
+						// next phase always starts from committed state.
+						if (worktree) {
+							const clean = await gitWorktreeClean(worktree);
+							if (clean !== true) {
+								throw new Error(
+									`${session.session_role ?? "phase"} worktree ${worktree} is ${
+										clean === false
+											? "DIRTY (uncommitted changes)"
+											: "unverifiable"
+									} — refusing handoff to avoid discarding work`,
+								);
+							}
+							// Clean → dirty-safe removal (git worktree remove, no --force) so
+							// branch B is free for the next phase's create.
+							await phaseWorktreeCleanup({
+								executionId: session.execution_id,
+								issueId: session.issue_id,
+								issueIdentifier: session.issue_identifier,
+								projectName: session.project_name ?? "",
+								tmuxClosed: result.closed,
+							});
+							// FLY-793 (Codex full-PR R2 #2): PROVE removal in the awaited
+							// path. makeBridgeWorktreeCleanup is never-throw (silently skips
+							// on FLYWHEEL_WORKTREE_AUTOCLEAN=0 / not-registered / path- or
+							// branch-mismatch, and only audits a removal failure), so a
+							// return does NOT guarantee the worktree is gone. If the path
+							// still exists, FAIL-CLOSED — for a phase handoff the autoclean
+							// escape hatch is FATAL, not skip-and-continue: the next phase
+							// must never run its async, non-dirty-safe removeIfExists on a
+							// worktree the orchestrator could not free. (remove() renames the
+							// path away synchronously, so a successful removal leaves it gone.)
+							if (ffExistsSync(worktree)) {
+								throw new Error(
+									`${session.session_role ?? "phase"} worktree ${worktree} still present after cleanup (autoclean off or removal failed) — refusing handoff`,
+								);
+							}
+						}
+					},
+					// Fail-closed Lead-only alert (never the founder). Resolve the
+					// owning Lead + page it via the SAME notifier auto-QA uses.
+					alertLeadPipelineError: async ({ session, reason }) => {
+						const projectName = session.project_name ?? "";
+						let leadId: string | undefined;
+						try {
+							const { lead } = resolveLeadForIssue(
+								projects,
+								projectName,
+								parseJsonStringArray(
+									store.getSession(session.execution_id)?.issue_labels,
+								),
+							);
+							leadId = lead.agentId;
+						} catch {
+							/* leadId stays undefined */
+						}
+						if (!leadId) {
+							console.error(
+								`[three-stage] pipeline error (no lead): ${reason}`,
+							);
+							return;
+						}
+						await leadAlertNotifier.alert({
+							leadId,
+							projectName,
+							eventId: `three-stage-stuck:${session.execution_id}:${Date.now()}`,
+							eventType: "three_stage_stuck",
+							title: `Three-stage pipeline stuck — ${
+								session.issue_identifier ?? session.issue_id
+							}`,
+							body: reason,
+							severity: "warning",
+						});
+					},
+				},
+				// FLY-793 (Codex full-PR R2 #1): source stranded design_done sessions
+				// for the startup reconcile (boot marker drain lands them before this
+				// orchestrator is wired).
+				listStrandedDesignPhases: () => store.getStrandedDesignPhaseSessions(),
+				logger: {
+					log: (m) => console.log(m),
+					warn: (m) => console.warn(m),
+				},
+			});
+			// FLY-793 (Codex full-PR R2 #1): re-drive any Design phase stranded at
+			// design_done by the boot marker drain (which ran before this orchestrator
+			// existed). Mirrors autoQaCoordinator.reconcileOnStartup — best-effort,
+			// never blocks boot.
+			void phaseOrchestratorHolder.current
+				.reconcileOnStartup()
+				.catch((err) =>
+					console.warn(
+						`[three-stage] reconcileOnStartup failed: ${(err as Error).message}`,
+					),
+				);
+			console.log(
+				`[three-stage] PhaseOrchestrator wired (opt-in default OFF: ${enabledProjects}/${projects.length} projects three_stage ON)`,
+			);
+		} catch (err) {
+			console.warn(
+				`[three-stage] PhaseOrchestrator wiring failed: ${(err as Error).message} — three-stage disabled this boot`,
 			);
 		}
 	}
