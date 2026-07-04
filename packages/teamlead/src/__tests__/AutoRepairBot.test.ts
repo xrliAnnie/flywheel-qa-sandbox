@@ -22,6 +22,11 @@ function makeBot(
 	over: {
 		runnerNudge?: ReturnType<typeof vi.fn>;
 		leadResumeEnter?: ReturnType<typeof vi.fn>;
+		accountSwitch?: {
+			canAttempt: ReturnType<typeof vi.fn>;
+			enqueue: ReturnType<typeof vi.fn>;
+			executeSwitch: ReturnType<typeof vi.fn>;
+		};
 	} = {},
 ) {
 	const runnerNudge =
@@ -36,6 +41,7 @@ function makeBot(
 	const bot = new AutoRepairBot({
 		runnerNudge: runnerNudge as never,
 		leadResumeEnter: leadResumeEnter as never,
+		accountSwitch: over.accountSwitch as never,
 		logger: () => {},
 	});
 	return { bot, runnerNudge, leadResumeEnter };
@@ -139,10 +145,14 @@ describe("AutoRepairBot (FLY-368)", () => {
 
 	// FLY-368 v1.58.0: canAttempt — pure predicate the Hub uses to word the ack
 	// honestly (only the two kinds the bot truly tries get "正在尝试自动修复…").
-	it("canAttempt is true only for the two repairable kinds", () => {
+	it("canAttempt is true only for the two repairable kinds (no accountSwitch)", () => {
 		const { bot } = makeBot();
-		expect(bot.canAttempt("runner_stuck_unhandled")).toBe(true);
-		expect(bot.canAttempt("pane_hash_stuck")).toBe(true);
+		expect(
+			bot.canAttempt(payload({ eventType: "runner_stuck_unhandled" })),
+		).toBe(true);
+		expect(bot.canAttempt(payload({ eventType: "pane_hash_stuck" }))).toBe(
+			true,
+		);
 		for (const k of [
 			"rate_limit",
 			"usage_limit",
@@ -150,7 +160,7 @@ describe("AutoRepairBot (FLY-368)", () => {
 			"permission_blocked",
 			"crash_loop",
 		] as const) {
-			expect(bot.canAttempt(k)).toBe(false);
+			expect(bot.canAttempt(payload({ eventType: k }))).toBe(false);
 		}
 	});
 
@@ -166,11 +176,51 @@ describe("AutoRepairBot (FLY-368)", () => {
 			"permission_blocked",
 			"crash_loop",
 		] as const) {
-			expect(bot.canAttempt(k)).toBe(false);
+			expect(bot.canAttempt(payload({ eventType: k }))).toBe(false);
 			const r = await bot.attempt(payload({ eventType: k }), CK);
 			expect(r.outcome).toBe("needs_human");
 			expect(r.action).toBe("none");
 		}
+	});
+
+	// FLY-696: usage_limit becomes attemptable when the account-switch repair is
+	// wired AND says so — canAttempt/attempt delegate to it, kept in sync.
+	it("usage_limit with a wired attemptable accountSwitch → enqueues the switch", async () => {
+		const accountSwitch = {
+			canAttempt: vi.fn(() => true),
+			enqueue: vi.fn(async () => ({
+				outcome: "attempted" as const,
+				action: "account_switch",
+				detail: "🔧 已排队 Claude 账号切换（from personal）",
+			})),
+			executeSwitch: vi.fn(),
+		};
+		const { bot } = makeBot({ accountSwitch });
+		expect(bot.canAttempt(payload({ eventType: "usage_limit" }))).toBe(true);
+		const r = await bot.attempt(payload({ eventType: "usage_limit" }), CK);
+		expect(r.outcome).toBe("attempted");
+		expect(r.action).toBe("account_switch");
+		expect(accountSwitch.enqueue).toHaveBeenCalledTimes(1);
+	});
+
+	it("usage_limit but accountSwitch not attemptable → needs_human, no enqueue", async () => {
+		const accountSwitch = {
+			canAttempt: vi.fn(() => false),
+			enqueue: vi.fn(),
+			executeSwitch: vi.fn(),
+		};
+		const { bot } = makeBot({ accountSwitch });
+		expect(bot.canAttempt(payload({ eventType: "usage_limit" }))).toBe(false);
+		const r = await bot.attempt(payload({ eventType: "usage_limit" }), CK);
+		expect(r.outcome).toBe("needs_human");
+		expect(accountSwitch.enqueue).not.toHaveBeenCalled();
+	});
+
+	it("usage_limit with NO accountSwitch dep → needs_human (byte-compat)", async () => {
+		const { bot } = makeBot();
+		const r = await bot.attempt(payload({ eventType: "usage_limit" }), CK);
+		expect(r.outcome).toBe("needs_human");
+		expect(r.action).toBe("none");
 	});
 
 	// FLY-368 v1.58.0 (Plan C): the bot's needs_human detail is now reason-ONLY —

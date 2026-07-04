@@ -64,6 +64,19 @@ export interface IdleWatchdogConfig {
 	 * plugin.ts; absent (tests/legacy) → no suppression (current behavior).
 	 */
 	isReconnecting?: (executionId: string) => boolean;
+	/**
+	 * FLY-696 M1/③: optional runner-side quota scan, driven from THIS poll's
+	 * capture (FLY-169: no new timer). Given a valid runner pane it applies the
+	 * §3.3 transient 529 short-circuit + the Claude usage-gauge parser; a real
+	 * 5h/weekly cap emits a usage_limit alert (with accountLimit metadata + runner
+	 * identity) through the shared alert sink → AutoRepairBot enqueue → account
+	 * switch. Wired in plugin.ts only when FLYWHEEL_ACCOUNT_SELF_HEAL=1; absent ⇒
+	 * no scan (byte-compat). Best-effort — a throwing scan never wedges the poll.
+	 * (Edge case per plan §11: under the shared single account the LeadWatchdog
+	 * already covers the core cap; this catches a runner capping while every Lead
+	 * pane is idle.)
+	 */
+	runnerQuotaScan?: (session: Session, pane: string) => void | Promise<void>;
 }
 
 type IdleStatus = "waiting" | "idle" | "unknown";
@@ -188,6 +201,25 @@ export class RunnerIdleWatchdog {
 				} catch (err) {
 					console.warn(
 						`[IdleWatchdog] stuck check error for ${session.execution_id}:`,
+						err instanceof Error ? err.message : String(err),
+					);
+				}
+			}
+
+			// FLY-696 M1/③: piggyback this SAME capture for runner-side quota
+			// detection (no new timer). Only on a valid capture (no infra error,
+			// output present). Best-effort — a throwing scan must never break the
+			// idle poll. Absent scan (self-heal off) ⇒ byte-compat no-op.
+			if (
+				this.config.runnerQuotaScan &&
+				captureErrorStatus === undefined &&
+				output !== undefined
+			) {
+				try {
+					await this.config.runnerQuotaScan(session, output);
+				} catch (err) {
+					console.warn(
+						`[IdleWatchdog] runner quota scan error for ${session.execution_id}:`,
 						err instanceof Error ? err.message : String(err),
 					);
 				}

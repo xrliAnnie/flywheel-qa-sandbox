@@ -32,6 +32,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { deriveAccountLimitForAlert } from "./account-heal/derive-account-limit.js";
 import type {
 	AlertEventType,
 	AlertPayload,
@@ -473,6 +474,25 @@ export class LeadWatchdog {
 			body: bodyFor(kind, pane),
 			severity: severityFor(kind),
 		};
+
+		// FLY-696: for a REAL usage cap, attach account-switch metadata so the
+		// AutoRepairBot / Infra Bot can rotate to the next account. Flag-gated
+		// (default off = byte-compat). isTransientThrottlePane already
+		// short-circuited above (§3.3 hard boundary), so a usage_limit reaching
+		// here is a genuine 5h/weekly cap, never a transient 529. A null result
+		// (ambiguous gauge / unprovisioned pool) leaves the alert needs_human.
+		if (
+			kind === "usage_limit" &&
+			process.env.FLYWHEEL_ACCOUNT_SELF_HEAL === "1"
+		) {
+			const accountLimit = deriveAccountLimitForAlert({
+				pane,
+				now: new Date(this.now()),
+			});
+			if (accountLimit) {
+				payload.metadata = { ...payload.metadata, accountLimit };
+			}
+		}
 
 		try {
 			const result = await this.config.notifier(payload);

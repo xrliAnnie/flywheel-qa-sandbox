@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# FLY-696 M1/⑤ (C1): machine-level Claude account rotation over the macOS
+# Keychain — the switch executor's `applyProfile`/`readActiveProfile` backend.
+#
+# Model (plan §3.1 Approach A pool-rotation, write path = "security -i"):
+#   - The pool ($FLYWHEEL_CLAUDE_PROFILES_DIR, default ~/.flywheel/claude-profiles)
+#     holds one 0600 .credentials.json per account (0700 dir, symlinks refused).
+#   - `use <name>` swaps the machine Keychain item "Claude Code-credentials"
+#     to that account. New claude spawns read the new account; live sessions
+#     keep their in-memory token and wait for reset (D1 — never hot-swapped).
+#
+# RED LINES (verified on-machine, spike 2026-07-03):
+#   - NO CREDENTIAL EVER ENTERS ANY argv. `security add-generic-password -w <v>`
+#     puts the token in argv (ps-visible) and the interactive/stdin `-w` prompt
+#     truncates at 128 bytes (readpassphrase). The safe path is `security -i`:
+#     the whole command (value included) travels on STDIN of /usr/bin/security
+#     — ps shows only "security -i". 1950-byte JSON with embedded quotes and a
+#     spacey quoted service name round-trip EXACTLY. The value is passed to the
+#     bash-builtin printf (no external argv) and MUST be a single token: we
+#     fail closed unless it is whitespace-free compact JSON starting with "{".
+#   - NEVER BREAK THE CLAUDE LOGIN. verify-before-commit: after writing we read
+#     the item back and require an exact match before touching `.active`; on a
+#     mismatch we roll back to the captured previous value and exit non-zero.
+#     `/usr/bin/security` needs no per-item provisioning (its Apple-signed
+#     identity passes the item ACL/partition — all existing Claude items are
+#     security-tool-owned), so a claude re-login recreating the item never
+#     strands us (unlike a partition-list/trusted-app provision, which is lost
+#     on recreation — verified).
+#   - Same interprocess lock as the Node switch executor (withMkdirLock —
+#     mkdir + holder marker {pid,at}, 120s stale-break, rm -rf release) on
+#     $FLYWHEEL_CLAUDE_ACCOUNTS_LOCK so bash and Node never interleave.
+#
+# Env overrides (tests inject a fake security bin; real-machine QA points at a
+# scratch keychain + dummy service so the real login item is NEVER touched):
+#   FLYWHEEL_CLAUDE_PROFILES_DIR      pool dir       (~/.flywheel/claude-profiles)
+#   FLYWHEEL_CLAUDE_ACCOUNTS_LOCK     lock dir       (~/.flywheel/claude-accounts.lock)
+#   FLYWHEEL_CLAUDE_SECURITY_BIN      security tool  (/usr/bin/security)
+#   FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE  item service   (Claude Code-credentials)
+#   FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT  item account   ($USER)
+#   FLYWHEEL_CLAUDE_KEYCHAIN          keychain path  (empty = default search list)
+#   FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS   lock timeout   (30000)
+set -euo pipefail
+
+POOL_DIR="${FLYWHEEL_CLAUDE_PROFILES_DIR:-$HOME/.flywheel/claude-profiles}"
+LOCK_DIR="${FLYWHEEL_CLAUDE_ACCOUNTS_LOCK:-$HOME/.flywheel/claude-accounts.lock}"
+SEC_BIN="${FLYWHEEL_CLAUDE_SECURITY_BIN:-/usr/bin/security}"
+SERVICE="${FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
+ACCT="${FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT:-$USER}"
+KEYCHAIN="${FLYWHEEL_CLAUDE_KEYCHAIN:-}"
+LOCK_TIMEOUT_MS="${FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS:-30000}"
+ACTIVE_FILE="$POOL_DIR/.active"
+
+usage() {
+  cat <<EOF
+Usage: flywheel-claude-profile <command> [args]
+
+Machine-level Claude account rotation (FLY-696). Swaps the shared Keychain
+credential item; new claude processes pick up the new account, live sessions
+wait for their reset (never hot-swapped).
+
+Commands:
+  list            Show pool profiles, mark the active one with *
+  status          Show the active profile
+  use <name>      Swap the machine Keychain to pool profile <name>
+  next            Rotate to the next pool profile (sorted round-robin)
+  capture <name>  Save the CURRENT Keychain credential into pool/<name>/
+EOF
+  exit 1
+}
+
+fail() { echo "Error: $*" >&2; exit 1; }
+
+# Cross-platform stat (BSD/macOS `-f`, GNU/Linux `-c`) — CI runs Linux.
+# GNU treats `-f` as FILESYSTEM stat and exits 0 with junk for unknown
+# directives, so exit-code fallback is not enough: accept the BSD output only
+# when it is purely numeric, else retry with GNU `-c`.
+stat_num() { # $1 = bsd format, $2 = gnu format, $3 = path
+  local v
+  v=$(stat -f "$1" "$3" 2>/dev/null)
+  case "$v" in
+    ""|*[!0-9]*) v=$(stat -c "$2" "$3" 2>/dev/null) || return 1 ;;
+  esac
+  [[ -n "$v" ]] || return 1
+  printf '%s' "$v"
+}
+stat_perms() { stat_num %Lp %a "$1"; }
+stat_mtime() { stat_num %m %Y "$1"; }
+
+# ---------------------------------------------------------------- lock (C5)
+# Byte-compatible with packages/teamlead/src/account-heal/mkdir-lock.ts:
+# atomic mkdir + holder JSON {pid,at(ms)}; stale = at older than 120s OR dead
+# pid (no-marker fallback: dir mtime older than 120s); release = rm -rf.
+now_ms() { echo $(( $(date +%s) * 1000 )); }
+
+lock_is_stale() {
+  local holder="$LOCK_DIR/holder" pid="" at=""
+  if [[ ! -f "$holder" ]]; then
+    local mtime
+    mtime=$(stat_mtime "$LOCK_DIR") || return 0 # dir vanished → free
+    [[ $(( $(date +%s) - mtime )) -gt 120 ]]
+    return
+  fi
+  pid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$holder" 2>/dev/null || true)
+  at=$(sed -n 's/.*"at":\([0-9][0-9]*\).*/\1/p' "$holder" 2>/dev/null || true)
+  if [[ -n "$at" && $(( $(now_ms) - at )) -gt 120000 ]]; then return 0; fi
+  if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    # Byte-compat with mkdir-lock.ts isProcessAlive: EPERM = the process
+    # EXISTS (just not ours) → alive, NOT stale. Only ESRCH (no such
+    # process) breaks the lock.
+    local err
+    err=$(kill -0 "$pid" 2>&1 || true)
+    case "$err" in
+      *[Nn]ot\ permitted*) : ;; # alive (EPERM)
+      *) return 0 ;;             # dead (ESRCH) → stale
+    esac
+  fi
+  return 1
+}
+
+LOCK_HELD=0
+release_lock() { [[ "$LOCK_HELD" -eq 1 ]] && rm -rf "$LOCK_DIR" 2>/dev/null || true; }
+
+acquire_lock() {
+  # FLY-852 (QA-caught self-deadlock): the Node switch executor calls `use`
+  # INSIDE its own withMkdirLock critical section on this SAME lock — taking it
+  # again here would wait on our own parent until timeout. The parent delegates
+  # by passing its pid; accept it ONLY when THREE things line up (Codex R3
+  # HIGH-1: env+holder alone is forgeable — any same-user process can read the
+  # holder pid and set the env):
+  #   1. the env pid matches the LIVE holder-marker pid, AND
+  #   2. that pid is OUR OWN PARENT ($PPID) — execFile spawns this script
+  #      directly, so only a child genuinely spawned by the lock holder passes;
+  #      a forger's parent is the forger, never the holder, AND
+  #   3. the holder is alive.
+  # Anything else falls through to a normal acquire (fail-safe). Delegated mode
+  # neither takes nor releases the lock (the parent owns it): LOCK_HELD stays 0
+  # so release_lock never touches it.
+  if [[ -n "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" && -f "$LOCK_DIR/holder" ]]; then
+    local hpid
+    hpid=$(sed -n 's/.*"pid":\([0-9][0-9]*\).*/\1/p' "$LOCK_DIR/holder" 2>/dev/null || true)
+    if [[ -n "$hpid" && "$hpid" == "$FLYWHEEL_CLAUDE_LOCK_DELEGATED" && "$hpid" == "$PPID" ]] \
+        && kill -0 "$hpid" 2>/dev/null; then
+      return 0
+    fi
+  fi
+  local deadline=$(( $(now_ms) + LOCK_TIMEOUT_MS ))
+  mkdir -p "$(dirname "$LOCK_DIR")"
+  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
+    if lock_is_stale; then rm -rf "$LOCK_DIR" 2>/dev/null || true; continue; fi
+    [[ $(now_ms) -ge $deadline ]] && fail "timeout acquiring lock $LOCK_DIR"
+    sleep 0.05
+  done
+  LOCK_HELD=1
+  trap release_lock EXIT
+  printf '{"pid":%d,"at":%d}' "$$" "$(now_ms)" > "$LOCK_DIR/holder"
+}
+
+# ------------------------------------------------------------- pool hygiene
+# Codex code R1 MED-4: profile names are path components of a credentials pool
+# — confine them to a strict allowlist (no '/', no '..', no leading '.', so a
+# name can never escape the pool or collide with '.active').
+require_valid_name() {
+  local name="$1"
+  case "$name" in
+    "" ) fail "empty profile name" ;;
+    .* ) fail "profile name '$name' must not start with '.'" ;;
+    *[!A-Za-z0-9._-]* ) fail "profile name '$name' has characters outside [A-Za-z0-9._-] — refusing" ;;
+    *..* ) fail "profile name '$name' contains '..' — refusing" ;;
+  esac
+}
+
+require_pool_entry() { # $1 = name; refuses symlinks, requires an owner-only file
+  local name="$1"
+  require_valid_name "$name"
+  local dir="$POOL_DIR/$name" file="$POOL_DIR/$name/.credentials.json"
+  [[ -L "$POOL_DIR" ]] && fail "pool dir $POOL_DIR is a symlink — refusing"
+  [[ -L "$dir" ]] && fail "profile dir $dir is a symlink — refusing"
+  [[ -d "$dir" ]] || fail "pool profile '$name' not found ($dir)"
+  [[ -L "$file" ]] && fail "credential file $file is a symlink — refusing"
+  [[ -f "$file" ]] || fail "pool profile '$name' has no .credentials.json"
+  # Codex code R1 MED-4: the credential file must be owner-only (0600/0400) —
+  # a group/world-readable credential is refused fail-closed.
+  local perms
+  perms=$(stat_perms "$file") || fail "cannot stat $file"
+  case "$perms" in
+    600|400) : ;;
+    *) fail "credential file $file has mode $perms (must be 600/400) — refusing" ;;
+  esac
+}
+
+# ------------------------------------------------------- keychain primitives
+kc_read() { # → stdout: current item value (non-zero when item missing)
+  if [[ -n "$KEYCHAIN" ]]; then
+    "$SEC_BIN" find-generic-password -a "$ACCT" -s "$SERVICE" -w "$KEYCHAIN"
+  else
+    "$SEC_BIN" find-generic-password -a "$ACCT" -s "$SERVICE" -w
+  fi
+}
+
+kc_write() { # $1 = secret. NO-ARGV path: command incl. value goes via stdin (-i).
+  local secret="$1"
+  [[ -z "$secret" ]] && fail "empty credential — refusing to write"
+  case "$secret" in
+    "{"*) : ;;
+    *) fail "credential is not a JSON object — refusing to write" ;;
+  esac
+  case "$secret" in
+    *[[:space:]]*) fail "credential contains whitespace — refusing (security -i single-token rule)" ;;
+  esac
+  # printf is a bash BUILTIN: the secret never appears in any process argv.
+  if [[ -n "$KEYCHAIN" ]]; then
+    printf 'add-generic-password -U -a "%s" -s "%s" -w %s "%s"\n' \
+      "$ACCT" "$SERVICE" "$secret" "$KEYCHAIN" | "$SEC_BIN" -i >/dev/null
+  else
+    printf 'add-generic-password -U -a "%s" -s "%s" -w %s\n' \
+      "$ACCT" "$SERVICE" "$secret" | "$SEC_BIN" -i >/dev/null
+  fi
+}
+
+# ------------------------------------------------------------------ commands
+get_active() { [[ -f "$ACTIVE_FILE" ]] && cat "$ACTIVE_FILE" || echo ""; }
+
+list_profiles() {
+  local active found=0 name
+  active=$(get_active)
+  for dir in "$POOL_DIR"/*/; do
+    [[ -d "$dir" ]] || continue
+    name=$(basename "$dir")
+    found=1
+    [[ "$name" == "$active" ]] && echo "* $name" || echo "  $name"
+  done
+  [[ $found -eq 0 ]] && echo "No profiles in pool $POOL_DIR."
+  return 0
+}
+
+show_status() {
+  local active
+  active=$(get_active)
+  [[ -z "$active" ]] && echo "No active profile set." || echo "Active profile: $active"
+}
+
+use_profile() {
+  local name="$1"
+  require_pool_entry "$name"
+  acquire_lock
+
+  local new backup="" got
+  new=$(cat "$POOL_DIR/$name/.credentials.json")
+  # Snapshot the current value so a failed verify can roll back — the red line
+  # is "switching must never leave the claude login broken".
+  backup=$(kc_read 2>/dev/null || true)
+
+  kc_write "$new" # fail-closed: any non-zero aborts (set -e), .active untouched
+
+  got=$(kc_read 2>/dev/null || true)
+  if [[ "$got" != "$new" ]]; then
+    if [[ -n "$backup" ]]; then
+      if kc_write "$backup" 2>/dev/null; then
+        fail "verify-before-commit failed (read-back mismatch) — rolled back to the previous credential; .active unchanged"
+      else
+        fail "verify-before-commit failed AND rollback failed — Keychain may be inconsistent for service '$SERVICE'; manual check required"
+      fi
+    fi
+    fail "verify-before-commit failed (read-back mismatch, no previous value to roll back) — .active unchanged"
+  fi
+
+  printf '%s' "$name" > "$ACTIVE_FILE.tmp"
+  mv "$ACTIVE_FILE.tmp" "$ACTIVE_FILE"
+  echo "Switched machine Claude account to profile '$name' (new spawns use it; live sessions wait for reset)"
+}
+
+next_profile() {
+  local active profiles=() name
+  active=$(get_active)
+  for dir in "$POOL_DIR"/*/; do
+    [[ -d "$dir" ]] || continue
+    profiles+=("$(basename "$dir")")
+  done
+  [[ ${#profiles[@]} -eq 0 ]] && fail "no profiles in pool $POOL_DIR"
+  [[ ${#profiles[@]} -eq 1 ]] && fail "only one profile in pool: ${profiles[0]}"
+  IFS=$'\n' profiles=($(sort <<<"${profiles[*]}")); unset IFS
+  local idx=0 i
+  for i in "${!profiles[@]}"; do
+    [[ "${profiles[$i]}" == "$active" ]] && { idx=$i; break; }
+  done
+  local next_idx=$(( (idx + 1) % ${#profiles[@]} ))
+  use_profile "${profiles[$next_idx]}"
+}
+
+capture_profile() {
+  local name="$1"
+  require_valid_name "$name"
+  local dir="$POOL_DIR/$name" cur
+  [[ -L "$POOL_DIR" ]] && fail "pool dir $POOL_DIR is a symlink — refusing"
+  [[ -L "$dir" ]] && fail "profile dir $dir is a symlink — refusing"
+  acquire_lock
+  cur=$(kc_read) || fail "no Keychain item for service '$SERVICE' — nothing to capture"
+  [[ -z "$cur" ]] && fail "Keychain item for service '$SERVICE' is empty — refusing to capture"
+  mkdir -p "$dir"
+  chmod 700 "$POOL_DIR" "$dir"
+  [[ -L "$dir/.credentials.json" ]] && fail "credential file is a symlink — refusing"
+  ( umask 077; printf '%s' "$cur" > "$dir/.credentials.json.tmp" )
+  mv "$dir/.credentials.json.tmp" "$dir/.credentials.json"
+  chmod 600 "$dir/.credentials.json"
+  echo "Captured current Keychain credential into pool profile '$name'"
+}
+
+mkdir -p "$POOL_DIR"
+chmod 700 "$POOL_DIR" 2>/dev/null || true
+
+case "${1:-}" in
+  list)    list_profiles ;;
+  status)  show_status ;;
+  use)     [[ -n "${2:-}" ]] || usage; use_profile "$2" ;;
+  next)    next_profile ;;
+  capture) [[ -n "${2:-}" ]] || usage; capture_profile "$2" ;;
+  *)       usage ;;
+esac

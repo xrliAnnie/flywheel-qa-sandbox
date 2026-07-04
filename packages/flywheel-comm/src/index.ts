@@ -5,6 +5,10 @@ import {
 	DEFAULT_GATE_TIMEOUT_MS,
 	DEFAULT_TIMEOUT_BEHAVIOR,
 } from "flywheel-config";
+import {
+	type AccountRotationNotifyArgs,
+	accountRotationNotify,
+} from "./commands/account-rotation-notify.js";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
@@ -104,6 +108,13 @@ Commands:
             — writes <projectRoot>/.flywheel/config.yaml (roles.runner.* or
             collections[].model); hot-effective for NEW runs, no restart.
   set-artifact   Register build output (.glb/.stl/.3mf) path for 3D capture (GEO-151)
+  account-rotation-notify  FLY-696: surface a Codex per-runner account rotation
+            in the unified Alerts channel. Emits a dedicated account_rotation
+            event to the Bridge /events (NOT artifact_emitted). Flags:
+            --provider <codex> --to <account> --reason <r> [--from <account>]
+            [--reset-at <iso>] [--bridge-url <url>] [--exec-id <id>].
+            Env: FLYWHEEL_BRIDGE_URL, FLYWHEEL_INGEST_TOKEN. Best-effort —
+            called with || true from flywheel-codex-with-fallback.
   token-report   Fine-grained token usage report (FLY-614/FLY-744). Subcommands:
             aggregate [--since --until | --backfill-days N]  scan CC logs → persist
               daily aggregates (rolling window, default 14 days);
@@ -248,6 +259,9 @@ async function main(): Promise<void> {
 			break;
 		case "set-artifact":
 			await runSetArtifact(commandArgs);
+			break;
+		case "account-rotation-notify":
+			await runAccountRotationNotify(commandArgs);
 			break;
 		case "xhs-state":
 			process.exit(await xhsState(commandArgs));
@@ -1068,6 +1082,57 @@ async function runNotify(args: string[]): Promise<void> {
 			`notify: ${err instanceof Error ? err.message : String(err)}`,
 		);
 		process.exit(1);
+	}
+}
+
+/**
+ * FLY-696 M1/④ — make a Codex per-runner account rotation visible in Alerts.
+ * Called (best-effort, `|| true`) by `flywheel-codex-with-fallback` after each
+ * `flywheel-codex-profile next`. Emits a dedicated `account_rotation` event to
+ * the Bridge /events; the Bridge routes it to the unified Alerts channel.
+ */
+async function runAccountRotationNotify(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			provider: { type: "string" },
+			from: { type: "string" },
+			to: { type: "string" },
+			reason: { type: "string" },
+			"reset-at": { type: "string" },
+			"bridge-url": { type: "string" },
+			"exec-id": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+
+	if (!values.provider || !values.to || !values.reason) {
+		console.error(
+			"account-rotation-notify: --provider, --to and --reason are required",
+		);
+		process.exit(2);
+	}
+
+	const notifyArgs: AccountRotationNotifyArgs = {
+		provider: values.provider,
+		to: values.to,
+		reason: values.reason,
+		...(values.from !== undefined && { from: values.from }),
+		...(values["reset-at"] !== undefined && { resetAt: values["reset-at"] }),
+		...(values["bridge-url"] !== undefined && {
+			bridgeUrl: values["bridge-url"],
+		}),
+		...(values["exec-id"] !== undefined && { execId: values["exec-id"] }),
+	};
+
+	try {
+		const result = await accountRotationNotify(notifyArgs);
+		process.exit(result.exitCode);
+	} catch (err) {
+		console.error(
+			`account-rotation-notify: ${err instanceof Error ? err.message : String(err)}`,
+		);
+		process.exit(2);
 	}
 }
 

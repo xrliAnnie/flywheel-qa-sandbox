@@ -17,6 +17,33 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROFILE_BIN="$SCRIPT_DIR/flywheel-codex-profile"
 POOL_DIR="${FLYWHEEL_CODEX_PROFILES_DIR:-$HOME/.codex/profiles}"
 
+# FLY-696 M1/④: surface a Codex per-runner rotation in the unified Alerts channel
+# (today it is silent). Best-effort — the runner injects FLYWHEEL_COMM_CLI +
+# FLYWHEEL_BRIDGE_URL; when either is absent the notify is a no-op and NEVER blocks
+# the rotation. Credentials are not involved (only from/to profile NAMES).
+active_profile() {
+  "$PROFILE_BIN" status 2>/dev/null | head -1 | sed 's/Active profile: //'
+}
+notify_rotation() {
+  local from="$1" to="$2" reason="$3"
+  [[ -n "${FLYWHEEL_COMM_CLI:-}" && -n "$to" ]] || return 0
+  local args=(account-rotation-notify --provider codex --to "$to" --reason "$reason")
+  [[ -n "$from" ]] && args+=(--from "$from")
+  # Codex R1 HIGH-1: fire-and-forget in a background subshell — a hung Bridge
+  # must NEVER wedge the rotation retry loop (the CLI also hard-bounds the POST
+  # at 5s as a second layer). `|| true` alone only swallows the exit code, not
+  # a hang.
+  ( node "$FLYWHEEL_COMM_CLI" "${args[@]}" >/dev/null 2>&1 || true ) &
+}
+# Rotate to the next pool profile, then emit the Alerts notice (from→to).
+rotate_and_notify() {
+  local reason="$1" before after
+  before="$(active_profile)"
+  "$PROFILE_BIN" next >&2
+  after="$(active_profile)"
+  notify_rotation "$before" "$after" "$reason"
+}
+
 num_profiles=$(ls -d "$POOL_DIR"/*/ 2>/dev/null | wc -l | tr -d ' ')
 [[ "$num_profiles" -eq 0 ]] && num_profiles=1
 
@@ -41,7 +68,7 @@ while [[ $attempts -lt $max_attempts ]]; do
     attempts=$((attempts + 1))
     if [[ $attempts -lt $max_attempts ]]; then
       echo "[flywheel-codex-with-fallback] Model not supported (attempt $attempts/$max_attempts). Switching profile..." >&2
-      "$PROFILE_BIN" next >&2
+      rotate_and_notify model_unsupported
     else
       echo "[flywheel-codex-with-fallback] Model not supported on any profile. Falling back to gpt-5.5..." >&2
       "$PROFILE_BIN" use "$start_profile" >&2
@@ -59,7 +86,7 @@ while [[ $attempts -lt $max_attempts ]]; do
     attempts=$((attempts + 1))
     if [[ $attempts -lt $max_attempts ]]; then
       echo "[flywheel-codex-with-fallback] Auth token expired (attempt $attempts/$max_attempts). Switching profile..." >&2
-      "$PROFILE_BIN" next >&2
+      rotate_and_notify auth_expired
     else
       echo "[flywheel-codex-with-fallback] AUTH_EXPIRED: all $max_attempts profiles have expired tokens. Run /codex-relogin." >&2
       "$PROFILE_BIN" use "$start_profile" >&2
@@ -69,7 +96,7 @@ while [[ $attempts -lt $max_attempts ]]; do
     attempts=$((attempts + 1))
     if [[ $attempts -lt $max_attempts ]]; then
       echo "[flywheel-codex-with-fallback] Rate limit (attempt $attempts/$max_attempts). Switching profile..." >&2
-      "$PROFILE_BIN" next >&2
+      rotate_and_notify rate_limit
     else
       echo "[flywheel-codex-with-fallback] All $max_attempts profiles exhausted. Giving up." >&2
       exit "$exit_code"

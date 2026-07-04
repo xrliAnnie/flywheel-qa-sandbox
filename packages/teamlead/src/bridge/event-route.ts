@@ -7,6 +7,7 @@ import type { FounderUxGateMode } from "flywheel-config";
 import { modelShortCode, resolveCompletionSessionRole } from "flywheel-config";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
+import { formatAccountRotationNotice } from "../account-heal/account-rotation-notice.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -539,6 +540,11 @@ export function createEventRouter(
 	// FLY-793: three-stage PhaseOrchestrator. Absent / .current undefined → no-op
 	// (byte-compat); onPhaseComplete gates on three-stage phase role + status.
 	phaseOrchestrator?: { current: PhaseOrchestrator | undefined },
+	// FLY-696 M1/④: late-bound Alerts-post for `account_rotation` events. Built in
+	// startBridge (needs the unified-channel DiscordOps, constructed after this
+	// router). `.current` undefined ⇒ the event is acked but not posted (byte-compat:
+	// no unified channel = no self-heal Alerts surface).
+	accountRotationPost?: { current?: (detail: string) => Promise<void> },
 ): Router {
 	const router = Router();
 	const issueStatusEmojiEnabled =
@@ -564,6 +570,45 @@ export function createEventRouter(
 		const event = req.body as IngestEvent | undefined;
 		if (!event || typeof event !== "object") {
 			res.status(400).json({ error: "expected JSON object" });
+			return;
+		}
+
+		// FLY-696 M1/④: a Codex per-runner account rotation notice. Handled BEFORE
+		// the issue/execution required-field validation below — it is a fleet-global
+		// visibility event (no issue/execution semantics; the emitter may not know
+		// either) carrying only provider/to/reason/... in its payload. Post one line
+		// to the unified Alerts channel via the late-bound callback, then ack.
+		// Best-effort by contract (the emitter calls it with `|| true`); a missing
+		// callback (no unified channel) or a failed POST never fails the request.
+		if (event.event_type === "account_rotation") {
+			const rot = (event.payload ?? {}) as Record<string, unknown>;
+			const provider = asString(rot.provider);
+			const to = asString(rot.to);
+			if (!provider || !to) {
+				res.status(400).json({
+					error:
+						"account_rotation: payload.provider and payload.to are required",
+				});
+				return;
+			}
+			const detail = formatAccountRotationNotice({
+				provider,
+				to,
+				from: asString(rot.from),
+				reason: asString(rot.reason),
+				resetAt: asString(rot.resetAt),
+			});
+			const post = accountRotationPost?.current;
+			if (post) {
+				try {
+					await post(detail);
+				} catch (err) {
+					console.error(
+						`[event-route] account_rotation post failed: ${(err as Error).message}`,
+					);
+				}
+			}
+			res.json({ ok: true });
 			return;
 		}
 

@@ -65,6 +65,14 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_MISROUTE_ARCHIVE_DIR: "plumbing: misroute archive dir",
 	FLYWHEEL_ALERT_QUEUE_DIR: "plumbing: alert queue dir",
 	FLYWHEEL_ALERT_DEADLETTER_DIR: "plumbing: alert deadletter dir",
+	FLYWHEEL_CLAUDE_ACCOUNTS_PATH:
+		"plumbing: claude account-state json path (FLY-696)",
+	FLYWHEEL_ACCOUNT_PENDING_PATH:
+		"plumbing: account_switch_pending store path (FLY-696)",
+	FLYWHEEL_CLAUDE_PROFILE_BIN:
+		"plumbing: flywheel-claude-profile script path (FLY-696)",
+	FLYWHEEL_CLAUDE_LOCK_DELEGATED:
+		"internal contract: parent lock-holder pid passed to the profile script (FLY-852 anti-deadlock; validated against the live holder marker)",
 	FLYWHEEL_BRIDGE_WATCHDOG_LOG: "plumbing: watchdog log path",
 	// secrets / token env names
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",

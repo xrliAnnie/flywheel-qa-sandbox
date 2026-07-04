@@ -107,6 +107,36 @@ export interface AlertMetadata {
 		episodeFingerprint: string;
 		escalatedAt?: number;
 	};
+	/**
+	 * FLY-696: a real quota cap (5h / weekly), NOT a transient 529. Produced at
+	 * detection (LeadWatchdog / RunnerQuotaDetector) after parsing the CLI usage
+	 * gauge. `provider` drives server-side cross-provider gating on the dedicated
+	 * account-switch route; `observedAccount`/`observedGeneration` are the CAS
+	 * snapshot so a duplicate trigger from another Lead cannot double-switch.
+	 * Absent when the gauge was ambiguous (→ the alert stays needs_human).
+	 */
+	accountLimit?: {
+		provider: "claude" | "codex";
+		scope: "5h" | "weekly" | "both";
+		/** ISO reset instant of the hit window (weekly dominates when "both"). */
+		resetAt: string;
+		observedAccount: string;
+		observedGeneration: number;
+	};
+	/**
+	 * FLY-696 M3: auth/login expiry — DELIBERATELY distinct from `accountLimit`.
+	 * Auth expiry is only fixed by re-login (never by waiting for a quota reset),
+	 * so it carries its own metadata and evidence source. `observedGeneration`
+	 * guards against marking the wrong pool profile after a switch already changed
+	 * the active account.
+	 */
+	authLimit?: {
+		provider: "claude" | "codex";
+		observedAccount: string;
+		observedGeneration: number;
+		/** What surfaced the expiry (e.g. "lead-pane:login_expired"). */
+		evidence: string;
+	};
 }
 
 export interface AlertPayload {

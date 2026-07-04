@@ -19,6 +19,7 @@
  * not run any repair.
  */
 
+import type { AccountSwitchRepair } from "../account-heal/account-switch-repair.js";
 import type { AlertPayload } from "../LeadAlertNotifier.js";
 import type {
 	LeadResumeEnterInput,
@@ -59,6 +60,13 @@ export interface AutoRepairBotDeps {
 	leadResumeEnter: (
 		input: LeadResumeEnterInput,
 	) => Promise<LeadResumeEnterOutcome>;
+	/**
+	 * FLY-696: the Claude account-switch repair (canAttempt/attempt). When wired
+	 * (plugin.ts, gated on FLYWHEEL_ACCOUNT_SELF_HEAL + a provisioned pool), a
+	 * usage_limit alert becomes an attemptable account rotation instead of
+	 * needs_human. Absent → usage_limit stays human-only (byte-compat).
+	 */
+	accountSwitch?: AccountSwitchRepair;
 	logger?: (msg: string) => void;
 }
 
@@ -98,13 +106,21 @@ export class AutoRepairBot {
 	}
 
 	/**
-	 * FLY-368 v1.58.0: does Cass actually attempt a repair for this kind? A pure,
-	 * side-effect-free predicate the Hub uses to word the ack honestly (only these
-	 * kinds get "正在尝试自动修复…"; everything else is escalated to Annie). Shares
-	 * `AUTO_ATTEMPT_EVENT_TYPES` with `attempt()` so the two can never drift.
+	 * FLY-368 v1.58.0: does Cass actually attempt a repair for this alert? The Hub
+	 * uses it to word the ack honestly (only kinds that get tried say
+	 * "正在尝试自动修复…"; everything else is escalated to Annie). Shares its logic
+	 * with `attempt()` so the two can never drift.
+	 *
+	 * FLY-696: now payload-aware (Codex R2/R5) — `usage_limit` is attemptable only
+	 * when the account-switch repair is wired AND says so (flag on + usable
+	 * accountLimit metadata + an available account), which is exactly what the
+	 * `attempt()` branch below does, keeping ack and outcome in sync.
 	 */
-	canAttempt(eventType: AlertPayload["eventType"]): boolean {
-		return AUTO_ATTEMPT_EVENT_TYPES.has(eventType);
+	canAttempt(payload: AlertPayload): boolean {
+		if (payload.eventType === "usage_limit") {
+			return this.deps.accountSwitch?.canAttempt(payload) ?? false;
+		}
+		return AUTO_ATTEMPT_EVENT_TYPES.has(payload.eventType);
 	}
 
 	/**
@@ -120,6 +136,25 @@ export class AutoRepairBot {
 				return this.repairRunner(payload);
 			case "pane_hash_stuck":
 				return this.repairLeadPane(payload, correlationKey);
+			case "usage_limit": {
+				// FLY-696: a real Claude quota cap → ENQUEUE a durable pending switch
+				// (a cross-provider Infra Bot claims it, else the Bridge watchdog fires
+				// it after the deadline — C8c). Gated by the same canAttempt predicate
+				// (flag on + usable metadata + available account) so the ack never
+				// claims a repair that won't happen. Absent/not-attemptable → the
+				// human-only reason (byte-compat when self-heal is off/unwired).
+				if (this.deps.accountSwitch?.canAttempt(payload)) {
+					const d = await this.deps.accountSwitch.enqueue(payload);
+					return { outcome: d.outcome, action: d.action, detail: d.detail };
+				}
+				return {
+					outcome: "needs_human",
+					action: "none",
+					detail:
+						HUMAN_ONLY_REASON.usage_limit ??
+						"no safe auto-repair for this alert kind.",
+				};
+			}
 			default: {
 				const reason =
 					HUMAN_ONLY_REASON[payload.eventType] ??

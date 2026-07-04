@@ -291,7 +291,7 @@ export class AlertChannelHub {
 		const bot = this.deps.autoRepairBot;
 		const ackTail = !bot
 			? "自动修复未启用，需要 Annie。"
-			: bot.canAttempt(payload.eventType)
+			: bot.canAttempt(payload)
 				? "正在尝试自动修复…"
 				: "";
 		await this.safePostToThread(

@@ -30,6 +30,12 @@ import {
 	WorkflowFSM,
 } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
+import { makeAccountSwitchRepair } from "../account-heal/account-switch-repair.js";
+import { accountSwitchWatchdogTick } from "../account-heal/account-switch-watchdog.js";
+import {
+	claudeProfileBinPath,
+	makeClaudeProfileSwitchDeps,
+} from "../account-heal/claude-profile-cli.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -47,7 +53,7 @@ import {
 	findUnreachableAlertLeads,
 	LeadAlertNotifier,
 } from "../LeadAlertNotifier.js";
-import { LeadWatchdog } from "../LeadWatchdog.js";
+import { isTransientThrottlePane, LeadWatchdog } from "../LeadWatchdog.js";
 import { locateLeadWindow } from "../LeadWindowLocator.js";
 import { CodexLeadOutboundHandler } from "../lead-backends/codex/CodexLeadOutboundHandler.js";
 import { FileInboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
@@ -177,6 +183,7 @@ import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
 import { setupRunInfrastructure } from "./run-infra.js";
+import { makeRunnerQuotaScan } from "./runner-quota-scan.js";
 import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
 import {
 	handleRunnerApply,
@@ -721,6 +728,15 @@ export interface BridgeAppOptions {
 	 * (old dashboard, no fleet routes).
 	 */
 	fleetConsole?: FleetConsole;
+	/**
+	 * FLY-696 M1/④: late-bound Alerts-post callback for `account_rotation` events.
+	 * The /events router mounts inside createBridgeApp, but the unified-channel
+	 * DiscordOps is built later in startBridge — so the router reads this holder at
+	 * request time and startBridge sets `.current` once the channel + DiscordOps
+	 * exist. Absent / `.current` undefined ⇒ the event is acknowledged but not
+	 * posted (byte-compat: no unified channel = no self-heal Alerts surface).
+	 */
+	accountRotationPost?: { current?: (detail: string) => Promise<void> };
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -926,6 +942,7 @@ export function createBridgeApp(
 			opts?.reconnectHolder,
 			opts?.autoQaCoordinator,
 			opts?.phaseOrchestrator,
+			opts?.accountRotationPost,
 		),
 	);
 
@@ -3019,6 +3036,14 @@ export async function startBridge(
 		current: null,
 	};
 
+	// FLY-696 M1/④: late-bound Alerts-post for account_rotation events. The event
+	// router (inside createBridgeApp) reads `.current` at request time; it is set
+	// below once the unified-channel DiscordOps exists. Null until then / when no
+	// unified channel = the event is acked but not posted (byte-compat).
+	const accountRotationPostHolder: {
+		current?: (detail: string) => Promise<void>;
+	} = {};
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -3052,6 +3077,8 @@ export async function startBridge(
 			autoQaCoordinator: autoQaCoordinatorHolder,
 			// FLY-793: event router reads this to drive three-stage phase handoffs.
 			phaseOrchestrator: phaseOrchestratorHolder,
+			// FLY-696 M1/④: event router reads this to post account_rotation notices.
+			accountRotationPost: accountRotationPostHolder,
 		},
 	);
 
@@ -4109,6 +4136,36 @@ export async function startBridge(
 		});
 	}
 
+	// FLY-696: hoisted so both the Hub's repair path AND the account-switch
+	// watchdog (piggybacked on onPollComplete below, no new timer) share one
+	// DiscordOps + one accountSwitch instance. accountSwitch is gated on
+	// FLYWHEEL_ACCOUNT_SELF_HEAL (default OFF = byte-compat → undefined).
+	const alertDiscordOps = createDiscordOps(() =>
+		buildRepairChain(projects, repairBotTokenEnvName)
+			.map((env) => process.env[env])
+			.filter((t): t is string => !!t),
+	);
+	const accountSwitchRepair =
+		process.env.FLYWHEEL_ACCOUNT_SELF_HEAL === "1"
+			? makeAccountSwitchRepair({
+					switchDeps: makeClaudeProfileSwitchDeps({
+						binPath: claudeProfileBinPath(),
+					}),
+				})
+			: undefined;
+
+	// FLY-696 M1/④: now that the unified-channel DiscordOps exists, late-bind the
+	// account_rotation Alerts-post the event router reads. Reuses the SAME
+	// post-to-thread path the account-switch watchdog uses. Gated on the SAME
+	// self-heal switch as the rest of FLY-696 (Codex R1 MED-2: flag off = the
+	// default MUST be byte-compatible, no new Alerts behavior); no unified
+	// channel likewise leaves the holder undefined → the event is acked, not
+	// posted.
+	if (accountSwitchRepair && unifiedAlertChannelId) {
+		accountRotationPostHolder.current = (detail) =>
+			alertDiscordOps.postToThread(unifiedAlertChannelId, detail);
+	}
+
 	// FLY-368 rework: Hub on when unified channel + threading + a resolvable repair
 	// chain; else watchdogs route straight to the notifier (legacy / root-only).
 	const alertHub =
@@ -4117,11 +4174,7 @@ export async function startBridge(
 					store,
 					notifier: leadAlertNotifier,
 					// Repair-chain DiscordOps: Cass → alphabetical, resolved per call.
-					discord: createDiscordOps(() =>
-						buildRepairChain(projects, repairBotTokenEnvName)
-							.map((env) => process.env[env])
-							.filter((t): t is string => !!t),
-					),
+					discord: alertDiscordOps,
 					// FLY-368: conservative auto-repair, default OFF. Only the two safe
 					// actions; reuses the audited runner-nudge + lead-resume-enter ops.
 					autoRepairBot: autoRepairEnabled
@@ -4147,6 +4200,11 @@ export async function startBridge(
 										captureFn: leadPaneCaptureFn,
 										sendEnter: sendEnterToWindow,
 									}),
+								// FLY-696: usage_limit → Claude account switch (enqueues a
+								// pending record; the watchdog below fires it). Hoisted +
+								// gated on FLYWHEEL_ACCOUNT_SELF_HEAL (default OFF → undefined
+								// = byte-compat, usage_limit stays needs_human).
+								accountSwitch: accountSwitchRepair,
 							})
 						: undefined,
 					// Reconcile capture: locate the Lead window + grab its pane (null when
@@ -4263,6 +4321,19 @@ export async function startBridge(
 		// live HeartbeatService set via the holder; null/kill-switch → no suppression.
 		isReconnecting: (execId) =>
 			reconnectHolder.current?.isReconnecting(execId) ?? false,
+		// FLY-696 M1/③: runner-side quota scan, piggybacked on this poll's capture
+		// (no new timer). Gated on the SAME switch (accountSwitchRepair exists iff
+		// FLYWHEEL_ACCOUNT_SELF_HEAL=1) — default OFF ⇒ undefined ⇒ byte-compat.
+		// Routes a real runner cap through the shared alert sink (Hub threading +
+		// AutoRepairBot enqueue), with the §3.3 transient-529 short-circuit inside.
+		runnerQuotaScan: accountSwitchRepair
+			? makeRunnerQuotaScan({
+					projects,
+					alert: (p) => alertSink.alert(p),
+					isTransient: isTransientThrottlePane,
+					now: () => Date.now(),
+				})
+			: undefined,
 	});
 	idleWatchdog.start();
 	console.log(
@@ -4349,7 +4420,32 @@ export async function startBridge(
 				}
 			: undefined,
 		// FLY-368: piggyback the 30s poll to run the reconcile pass (no new timer).
-		onPollComplete: alertHub ? () => alertHub.reconcile() : undefined,
+		onPollComplete: alertHub
+			? async () => {
+					await alertHub.reconcile();
+					// FLY-696: piggyback the account-switch watchdog on this 30s cadence
+					// (no new timer). Fires due pending switches (M1-only) / bot fallback
+					// (M2), posts results to the unified Alerts channel. Best-effort —
+					// never wedge the reconcile loop.
+					if (accountSwitchRepair && unifiedAlertChannelId) {
+						try {
+							await accountSwitchWatchdogTick({
+								now: () => Date.now(),
+								executeSwitch: (pending) =>
+									accountSwitchRepair.executeSwitch(pending),
+								post: (detail) =>
+									alertDiscordOps.postToThread(unifiedAlertChannelId, detail),
+							});
+						} catch (err) {
+							console.error(
+								`[Bridge] FLY-696 account-switch watchdog tick failed: ${
+									err instanceof Error ? err.message : String(err)
+								}`,
+							);
+						}
+					}
+				}
+			: undefined,
 		// FLY-193: default ON now that the idle-pane recognizer is validated
 		// against committed real Lead pane fixtures (see
 		// LeadWatchdog `__tests__/fixtures/lead-panes/`). The recognizer is

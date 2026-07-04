@@ -623,6 +623,39 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "account_self_heal",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ACCOUNT_SELF_HEAL",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"Claude 账号自愈：真 5h/weekly 配额用尽 → 自动切下一个可用账号 + Alerts 通知（FLY-696；529/临时限流绝不切）",
+		readSites: [
+			// startBridge constructs accountSwitchRepair (and gates the runner
+			// quota scan + the account_rotation Alerts post) at boot → a value
+			// change needs a Bridge restart, so NOT direct-toggleable.
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge (accountSwitchRepair)",
+				"object_construction",
+			),
+			envSite(
+				"packages/teamlead/src/LeadWatchdog.ts",
+				"LeadWatchdog.emitAlert (accountLimit attach)",
+				"call_time",
+			),
+			envSite(
+				"packages/teamlead/src/account-heal/account-switch-repair.ts",
+				"makeAccountSwitchRepair (isEnabled default)",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "xhs_review",
 		category: "feature",
 		source: "env",
