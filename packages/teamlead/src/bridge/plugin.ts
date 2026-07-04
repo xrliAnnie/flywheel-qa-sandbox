@@ -81,6 +81,7 @@ import { loadQaConfigByProject } from "./auto-qa-config-source.js";
 import { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { AutoQaEffects } from "./auto-qa-effects.js";
 import { resolveAutoQaPolicy } from "./auto-qa-policy.js";
+import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
@@ -190,6 +191,7 @@ import { createStandupRouter } from "./standup-route.js";
 import { StandupService } from "./standup-service.js";
 import {
 	buildStuckRunnerDetector,
+	hasPendingBlockingGateFromCommDb,
 	hasPendingGateFromCommDb,
 	idleWatchdogPollMs,
 	probeQuietSignals,
@@ -4072,6 +4074,13 @@ export async function startBridge(
 		// conservative auto-repair attempt (when enabled). Falls back to the raw
 		// notifier when the Hub is off (byte-compat).
 		notifier: alertSink,
+		// FLY-818 M3 (default-ON, kill-switch FLYWHEEL_STUCK_FOUNDER_PAGE=0): the
+		// founder page for a genuinely-stuck runner posts an @founder message into
+		// that runner's OWN [FLY-XX] issue thread (Annie's design), using the owning
+		// Lead's bot
+		// (lead.botToken) with this as the fallback. No owner id ⇒ page disabled.
+		discordBotToken: config.discordBotToken,
+		discordOwnerUserId: config.discordOwnerUserId,
 	});
 	// FLY-253 (Codex R2 #4): late-bind the detector into the holder the
 	// remanage router already captured — re_arm can now reach the in-memory
@@ -4108,6 +4117,38 @@ export async function startBridge(
 	console.log(
 		`[Bridge] RunnerIdleWatchdog started (${Math.round(idlePollMs / 1000)}s poll${stuckDetector ? ", FLY-195 stuck detection ON" : ", FLY-195 stuck detection OFF (FLYWHEEL_STUCK_DETECT=0)"})`,
 	);
+
+	// FLY-818: opt-in auto-continue arming worker (default OFF —
+	// FLYWHEEL_RUNNER_AUTOCONTINUE=1). A SEPARATE poller from RunnerIdleWatchdog: it
+	// only observes a spawned claude-tmux runner until its idle input box appears,
+	// then sends `/loop <goal>` ONCE so the runner self-continues toward its phase
+	// goal instead of idling after a turn (the FLY-818 root cause). It never touches
+	// the stuck-detector / idle-notification path. Reuses the audited nudge helpers
+	// (capture / tmux target / pending-gate probe / literal send-keys).
+	if (process.env.FLYWHEEL_RUNNER_AUTOCONTINUE === "1") {
+		const armWindowEnv = Number(
+			process.env.FLYWHEEL_AUTOCONTINUE_ARM_WINDOW_MS,
+		);
+		const autoContinueArmer = new AutoContinueArmer({
+			pollIntervalMs: 20_000,
+			projects,
+			store,
+			captureSessionFn: defaultCaptureSession,
+			getTmuxTarget: getTmuxTargetFromCommDb,
+			sendKeys: sendKeysToWindow,
+			// FLY-818 (Codex code review R1 #2): BLOCKING-only gate probe — a
+			// non-blocking `flywheel-comm ask` must NOT stop the runner from being
+			// armed to self-continue (only a checkpointed gate parks it).
+			hasPendingGate: hasPendingBlockingGateFromCommDb,
+			...(Number.isFinite(armWindowEnv) && armWindowEnv > 0
+				? { armWindowMs: armWindowEnv }
+				: {}),
+		});
+		autoContinueArmer.start();
+		console.log(
+			"[Bridge] AutoContinueArmer started (FLY-818 /loop self-continue arming, opt-in)",
+		);
+	}
 
 	const leadWatchdog = new LeadWatchdog({
 		pollIntervalMs: 30_000,

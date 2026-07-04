@@ -208,7 +208,6 @@ export class AlertChannelHub {
 	/** The watchdog notifier points here in unified+threading mode. */
 	async handle(payload: AlertPayload): Promise<AlertResult> {
 		const result = await this.deps.notifier.alert(payload);
-
 		// Degrade to root-only on duplicate/queued (Codex R1 MEDIUM-5).
 		if (result.skipped === "duplicate" || result.queued) return result;
 		if (!result.sent || !result.channelId || !result.messageId) return result;
@@ -227,6 +226,12 @@ export class AlertChannelHub {
 				`thread handling failed for ${ck}: ${(err as Error).message}`,
 			);
 		}
+		// FLY-818 M3 note: the genuinely-stuck-runner founder page is NOT here —
+		// it posts an @founder message into the STUCK RUNNER'S OWN [FLY-XX] issue
+		// thread from `createStuckUnhandledAlerter` (stuck-escalation.ts), which has
+		// the owning Lead (bot token + chat channel). This Hub only owns the alert
+		// thread + auto-repair (Annie's design; the alert-channel page was the
+		// rejected FLY-523 path).
 		return result;
 	}
 
@@ -239,7 +244,9 @@ export class AlertChannelHub {
 		const active = this.deps.store.getActiveAlertThread(ck);
 		if (active) {
 			if (active.event_id === payload.eventId) {
-				// Same episode already has a thread + ack — nothing to do.
+				// Same episode already has a thread + ack — nothing to do. (The M3
+				// founder-page lives in the stuck alerter — an issue-thread post — not
+				// the Hub, so the caller no longer needs this thread id.)
 				return;
 			}
 			// Stale row (a distinct, later episode never got resolved): resolve the

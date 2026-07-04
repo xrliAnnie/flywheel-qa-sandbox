@@ -1288,6 +1288,23 @@ export class StateStore {
 			"CREATE INDEX IF NOT EXISTS idx_alert_threads_active ON alert_threads(resolved_at)",
 		);
 
+		// FLY-818 M3: durable per-eventId founder-page ledger. Records whether a
+		// GENUINE founder page (an @founder message in the stuck runner's [FLY-XX]
+		// issue thread — Annie's issue-thread design) actually succeeded for a
+		// runner_stuck_unhandled escalation, keyed by its escalation eventId. The
+		// stuck detector retries the SAME eventId when alertUnhandled returns false;
+		// claims.db dedups that retry (skipped=duplicate) so the retry can never
+		// re-POST — this ledger lets the duplicate/queued early-return paths learn
+		// the REAL delivery outcome instead of resolving on a dedup alone (Codex
+		// R2#2). Monotonic: once a page truly lands, `paged` stays 1 (converge — Q3).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS founder_page_ledger (
+				event_id TEXT PRIMARY KEY,
+				paged INTEGER NOT NULL,
+				ts TEXT NOT NULL DEFAULT (datetime('now'))
+			)
+		`);
+
 		// FLY-368: durable, fail-closed audit for auto-repair-bot terminal writes
 		// to a LEAD pane (the resume-menu Enter). Lead-level alerts have no real
 		// execution/issue, so they MUST NOT be forced into session_events; this is
@@ -3517,6 +3534,44 @@ export class StateStore {
 			[correlationKey],
 		);
 		this.save();
+	}
+
+	/**
+	 * FLY-818 M3: record whether a genuine founder page landed for a stuck
+	 * escalation eventId. MONOTONIC (Codex R2#2 / Lead Q3): once a real page
+	 * succeeds (`paged=true`), it stays true so a later confirmed-duplicate
+	 * resolves the detector (converge — at-least-once + eventually stop). A `false`
+	 * (page failed / not yet delivered) never downgrades a prior `true`.
+	 */
+	recordFounderPaged(eventId: string, paged: boolean): void {
+		this.db.run(
+			`INSERT INTO founder_page_ledger (event_id, paged, ts)
+			 VALUES (?, ?, datetime('now'))
+			 ON CONFLICT(event_id) DO UPDATE SET
+			   paged = MAX(founder_page_ledger.paged, excluded.paged),
+			   ts = excluded.ts`,
+			[eventId, paged ? 1 : 0],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-818 M3: the recorded founder-page outcome for a stuck escalation eventId,
+	 * or undefined if none recorded yet. Consulted on the duplicate/queued
+	 * early-return paths so `alertUnhandled` gates on the REAL delivery, not a
+	 * claims.db dedup.
+	 */
+	getFounderPaged(eventId: string): boolean | undefined {
+		const stmt = this.db.prepare(
+			"SELECT paged FROM founder_page_ledger WHERE event_id = ?",
+		);
+		stmt.bind([eventId]);
+		let out: boolean | undefined;
+		if (stmt.step()) {
+			out = Number((stmt.getAsObject() as { paged: number }).paged) === 1;
+		}
+		stmt.free();
+		return out;
 	}
 
 	/**

@@ -27,6 +27,7 @@ import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { isDoneButRunning as isDoneButRunningSession } from "./done-running-reconciler.js";
+import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
 import type { HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { parseSessionLabels } from "./lead-scope.js";
@@ -160,6 +161,30 @@ export function hasPendingGateFromCommDb(
 	try {
 		db = CommDB.openReadonly(dbPath);
 		return db.hasPendingQuestionsFrom(executionId);
+	} finally {
+		db?.close();
+	}
+}
+
+/**
+ * FLY-818 (Codex code review R1 #2): true if this execution has an unanswered
+ * BLOCKING gate/question (`checkpoint IS NOT NULL`) — NOT a non-blocking
+ * `flywheel-comm ask`. The auto-continue armer uses this so a runner that fired a
+ * non-blocking ask still gets armed to self-continue (an ask must not stop the
+ * loop). Mirrors {@link hasPendingGateFromCommDb} but with the checkpoint filter.
+ */
+export function hasPendingBlockingGateFromCommDb(
+	executionId: string,
+	projectName: string,
+): boolean {
+	if (/[/\\]|\.\./.test(projectName)) return false;
+	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
+	if (!existsSync(dbPath)) return false;
+
+	let db: CommDB | undefined;
+	try {
+		db = CommDB.openReadonly(dbPath);
+		return db.hasPendingBlockingGateFrom(executionId);
 	} finally {
 		db?.close();
 	}
@@ -425,19 +450,60 @@ export function stuckUnhandledEventId(
 }
 
 /**
+ * FLY-818 M3 founder page gate. Default ON with a kill-switch
+ * (`FLYWHEEL_STUCK_FOUNDER_PAGE=0` disables) — flywheel-eng-lead's call (my ask
+ * dd4bee23): a genuinely-stuck runner reaching the founder is FLY-818's CORE ask,
+ * so a safety net that ships default-off "isn't done"; it only fires in the true-
+ * stuck edge case (rare) and matches Annie's default-enable principle. The founder
+ * page still additionally requires an owner id + store (see the alerter) — a
+ * deployment without those degrades to the legacy byte-compat path, so default-on
+ * never retry-storms an unconfigured Bridge. (Distinct from the ① autocontinue
+ * half, which stays default-OFF via `FLYWHEEL_RUNNER_AUTOCONTINUE`.)
+ */
+export function stuckFounderPageEnabled(
+	env: NodeJS.ProcessEnv = process.env,
+): boolean {
+	return env.FLYWHEEL_STUCK_FOUNDER_PAGE !== "0";
+}
+
+/** Optional deps enabling the FLY-818 M3 issue-thread founder page. */
+export interface StuckUnhandledAlerterOpts {
+	/** Required for the founder page (ledger + chat-thread resolution). */
+	store?: StateStore;
+	/** Fallback bot token when the owning Lead has none (config.discordBotToken). */
+	discordBotToken?: string;
+	/** config.discordOwnerUserId — the founder to @-mention. No owner ⇒ no page. */
+	discordOwnerUserId?: string;
+	/** Discord POST seam (tests). */
+	fetchImpl?: typeof fetch;
+	env?: NodeJS.ProcessEnv;
+	log?: (msg: string) => void;
+}
+
+/**
  * Page Annie about an episode no Lead disposed of within the grace window.
  * Body carries NO raw pane content (same privacy posture as LeadWatchdog).
  *
- * Returns true once the notifier accepted the payload (sent, queued for
- * drain, or deduped as duplicate) — the FLY-182-hardened notifier owns
- * reliability from there. Throws/false ⇒ detector retries next poll.
+ * FLY-818 M3 (Annie's design — lead-instruction 7bb06c0f/0807c747): default-ON
+ * (kill-switch `FLYWHEEL_STUCK_FOUNDER_PAGE=0`) and, with an owner id + store
+ * configured, the founder is paged by an @founder message posted into the STUCK
+ * RUNNER'S OWN [FLY-XX] issue chat_thread — NOT a DM, NOT the FLY-368 alert channel
+ * (the rejected FLY-523 path). Reuses the FLY-605 issue-thread push
+ * (`emitFounderStuckNotification`) with the owning Lead's bot. `annieAlerted` is
+ * gated on a GENUINE posted page (Codex R2#2): only a confirmed post resolves the
+ * episode; anything else (no thread yet, config gap, post failure) returns false so
+ * the StuckDetector retries (at-least-once), and the durable `founder_page_ledger`
+ * converges so a later duplicate never re-pages. Founder page disabled (kill-switch
+ * / no owner / no store) ⇒ the pre-M3 semantics (`sent||queued||duplicate`) so those
+ * deployments stay byte-identical.
  */
 export function createStuckUnhandledAlerter(
 	projects: ProjectEntry[],
 	notifier: UnhandledAlertSink,
-	log?: (msg: string) => void,
+	opts: StuckUnhandledAlerterOpts = {},
 ): (payload: StuckUnhandledPayload) => Promise<boolean> {
-	const logFn = log ?? ((msg: string) => console.log(msg));
+	const logFn = opts.log ?? ((msg: string) => console.log(msg));
+	const env = opts.env ?? process.env;
 	return async (payload: StuckUnhandledPayload): Promise<boolean> => {
 		const { session, episodeFingerprint, stuckMinutes, escalatedAt } = payload;
 		const labels = parseSessionLabels(session);
@@ -454,14 +520,15 @@ export function createStuckUnhandledAlerter(
 		}
 
 		const issue = session.issue_identifier ?? session.issue_id;
+		const eventId = stuckUnhandledEventId(
+			session.execution_id,
+			episodeFingerprint,
+			escalatedAt,
+		);
 		const result = await notifier.alert({
 			leadId: lead.agentId,
 			projectName: session.project_name,
-			eventId: stuckUnhandledEventId(
-				session.execution_id,
-				episodeFingerprint,
-				escalatedAt,
-			),
+			eventId,
 			eventType: "runner_stuck_unhandled",
 			title: `Runner stuck UNHANDLED: ${issue}`,
 			// FLY-253 §3.3 honesty fix: "may be down or stuck too" was a lie when
@@ -484,11 +551,64 @@ export function createStuckUnhandledAlerter(
 				},
 			},
 		});
-		return (
+
+		// Legacy (pre-M3) resolution: the FLY-182-hardened notifier owns reliability
+		// once it accepts the payload (sent, queued for drain, or deduped).
+		const legacyResolved =
 			result.sent === true ||
 			result.queued === true ||
-			result.skipped === "duplicate"
+			result.skipped === "duplicate";
+
+		// FLY-818 M3 issue-thread founder page. Disabled (kill-switch / no owner / no
+		// store) ⇒ byte-identical legacy semantics. Gated on an owner id so a
+		// default-on-but-unconfigured deployment degrades to legacy instead of
+		// retry-storming on a structural config gap.
+		if (
+			!stuckFounderPageEnabled(env) ||
+			!opts.store ||
+			!opts.discordOwnerUserId
+		) {
+			return legacyResolved;
+		}
+		const store = opts.store;
+
+		// Durable converge (Q3): this episode was already REALLY paged → resolve,
+		// never re-page that thread (no spam).
+		if (store.getFounderPaged(eventId) === true) return true;
+
+		const thread = store.getChatThreadByIssue(
+			session.issue_id,
+			lead.chatChannel,
 		);
+		const outcome = await emitFounderStuckNotification(
+			{
+				executionId: session.execution_id,
+				issueId: session.issue_id,
+				issueIdentifier: session.issue_identifier ?? undefined,
+				projectName: session.project_name,
+				leadAgentId: lead.agentId,
+				stuckMinutes,
+				thread,
+				botToken: lead.botToken ?? opts.discordBotToken,
+				ownerUserId: opts.discordOwnerUserId,
+			},
+			{ store, fetchImpl: opts.fetchImpl },
+		);
+		const paged = outcome.kind === "posted";
+		store.recordFounderPaged(eventId, paged);
+		if (!paged) {
+			// Ops-visible: a genuinely-stuck runner could NOT reach the founder in its
+			// issue thread. `no_chat_thread` is transient (the thread may appear
+			// later); config gaps (no_bot_token/bad_owner_id) + post failures stay
+			// loud rather than silently marking the episode handled. The detector
+			// retries next poll (at-least-once) — the ledger stays false.
+			logFn(
+				`[StuckEscalation] M3 founder page NOT delivered for ${eventId} (kind=${outcome.kind}${
+					outcome.skipReason ? `/${outcome.skipReason}` : ""
+				}) — detector will retry`,
+			);
+		}
+		return paged;
 	};
 }
 
@@ -498,6 +618,12 @@ export interface BuildStuckDetectorOptions extends StuckEscalationWiring {
 	notifier: UnhandledAlertSink;
 	env?: NodeJS.ProcessEnv;
 	now?: () => number;
+	/** FLY-818 M3 founder page: fallback bot token (config.discordBotToken). */
+	discordBotToken?: string;
+	/** FLY-818 M3 founder page: the founder to @-mention (config.discordOwnerUserId). */
+	discordOwnerUserId?: string;
+	/** FLY-818 M3 founder page: Discord POST seam (tests). */
+	fetchImpl?: typeof fetch;
 }
 
 /**
@@ -537,11 +663,14 @@ export function buildStuckRunnerDetector(
 				fingerprint,
 				nowMs,
 			),
-		alertUnhandled: createStuckUnhandledAlerter(
-			opts.projects,
-			opts.notifier,
+		alertUnhandled: createStuckUnhandledAlerter(opts.projects, opts.notifier, {
+			store: opts.store,
+			discordBotToken: opts.discordBotToken,
+			discordOwnerUserId: opts.discordOwnerUserId,
+			fetchImpl: opts.fetchImpl,
+			env,
 			log,
-		),
+		}),
 		thresholdMs: stuckThresholdMs(env),
 		graceMs: stuckLeadGraceMs(env),
 		now: opts.now,

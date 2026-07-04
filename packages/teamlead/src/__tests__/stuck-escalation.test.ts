@@ -204,21 +204,21 @@ describe("createStuckUnhandledAlerter (Q7)", () => {
 			escalatedAt: 5_000,
 		};
 	}
+	const EVENT_ID = stuckUnhandledEventId("exec-1", "abcdef0123456789", 5_000);
+	const FID = "123456789012345678"; // valid Discord snowflake
 
 	it("pages via the notifier with the generation eventId format and no raw pane content", async () => {
 		const alert = vi.fn(async () => ({ sent: true }));
 		const alerter = createStuckUnhandledAlerter(
 			testProjects,
 			{ alert },
-			() => {},
+			{ log: () => {} },
 		);
 		expect(await alerter(unhandledPayload())).toBe(true);
 		expect(alert).toHaveBeenCalledTimes(1);
 		const payload = alert.mock.calls[0]![0] as Record<string, unknown>;
 		expect(payload.eventType).toBe("runner_stuck_unhandled");
-		expect(payload.eventId).toBe(
-			stuckUnhandledEventId("exec-1", "abcdef0123456789", 5_000),
-		);
+		expect(payload.eventId).toBe(EVENT_ID);
 		// FLY-253 (Codex R2 #3): escalatedAt generation salt — a persistent
 		// fingerprint-only dedup would swallow the second-generation Q7 after a
 		// re-arm / TTL reminder when the Lead stays silent again.
@@ -242,7 +242,7 @@ describe("createStuckUnhandledAlerter (Q7)", () => {
 		const alerter = createStuckUnhandledAlerter(
 			testProjects,
 			{ alert },
-			() => {},
+			{ log: () => {} },
 		);
 		await alerter(unhandledPayload());
 		const payload = alert.mock.calls[0]![0] as Record<string, unknown>;
@@ -258,7 +258,7 @@ describe("createStuckUnhandledAlerter (Q7)", () => {
 			const alerter = createStuckUnhandledAlerter(
 				testProjects,
 				{ alert: vi.fn(async () => result) },
-				() => {},
+				{ log: () => {} },
 			);
 			expect(await alerter(unhandledPayload())).toBe(true);
 		}
@@ -268,7 +268,7 @@ describe("createStuckUnhandledAlerter (Q7)", () => {
 		const ghost = createStuckUnhandledAlerter(
 			testProjects,
 			{ alert: vi.fn(async () => ({ sent: true })) },
-			() => {},
+			{ log: () => {} },
 		);
 		expect(
 			await ghost({
@@ -280,9 +280,161 @@ describe("createStuckUnhandledAlerter (Q7)", () => {
 		const skipped = createStuckUnhandledAlerter(
 			testProjects,
 			{ alert: vi.fn(async () => ({ skipped: "no-channel" as const })) },
-			() => {},
+			{ log: () => {} },
 		);
 		expect(await skipped(unhandledPayload())).toBe(false);
+	});
+
+	// ── FLY-818 M3 (Annie's design — issue-thread founder page) ──────────────
+	// A genuinely-stuck runner pages the founder with an @founder message posted
+	// into its OWN [FLY-XX] issue chat_thread (NOT a DM, NOT the alert channel =
+	// the rejected FLY-523 path). Default-ON (kill-switch FLYWHEEL_STUCK_FOUNDER_PAGE=0)
+	// but additionally requires an owner id + store; else byte-compat legacy
+	// semantics. `annieAlerted` is gated on a GENUINE posted page; the ledger
+	// converges so a duplicate never re-pages.
+	function founderStore(threadId: string | undefined) {
+		const paged = new Map<string, boolean>();
+		const events: Array<{ event_type: string }> = [];
+		return {
+			paged,
+			events,
+			getFounderPaged: (id: string) =>
+				paged.has(id) ? paged.get(id) : undefined,
+			recordFounderPaged: (id: string, v: boolean) =>
+				paged.set(id, (paged.get(id) ?? false) || v),
+			getChatThreadByIssue: vi.fn((_issueId: string, channelId: string) =>
+				threadId ? { thread_id: threadId, channel_id: channelId } : undefined,
+			),
+			insertEvent: vi.fn((e: { event_type: string }) => {
+				events.push(e);
+				return true;
+			}),
+		};
+	}
+	function okFetch() {
+		return vi.fn(async () => ({
+			ok: true,
+			status: 204,
+			text: async () => "",
+			headers: { get: () => null },
+		})) as unknown as typeof fetch;
+	}
+	// Default-ON: an unset flag enables the page (kill-switch =0 disables).
+	const DEFAULT_ON = {} as NodeJS.ProcessEnv;
+	const KILL_SWITCH = { FLYWHEEL_STUCK_FOUNDER_PAGE: "0" } as NodeJS.ProcessEnv;
+
+	it("issue-thread page: posts an @founder message into the runner's [FLY-XX] thread with a founder-only mention, and resolves", async () => {
+		const store = founderStore("th-1");
+		const fetchImpl = okFetch();
+		const alerter = createStuckUnhandledAlerter(
+			testProjects,
+			{ alert: vi.fn(async () => ({ sent: true })) },
+			{
+				store: store as never,
+				discordOwnerUserId: FID,
+				discordBotToken: "global-bot",
+				fetchImpl,
+				env: DEFAULT_ON,
+				log: () => {},
+			},
+		);
+		expect(await alerter(unhandledPayload())).toBe(true);
+		// Resolved the issue thread by (issue_id, lead.chatChannel).
+		expect(store.getChatThreadByIssue).toHaveBeenCalledWith("FLY-1", "c");
+		// Posted to THAT thread with a founder-only @-mention.
+		const [url, init] = (
+			fetchImpl as unknown as { mock: { calls: [string, RequestInit][] } }
+		).mock.calls[0]!;
+		expect(url).toContain("/channels/th-1/messages");
+		const body = JSON.parse(init.body as string);
+		expect(body.content).toContain(`<@${FID}>`);
+		expect(body.allowed_mentions).toEqual({ users: [FID] });
+		// Ledger recorded a real page.
+		expect(store.paged.get(EVENT_ID)).toBe(true);
+	});
+
+	it("no chat thread yet ⇒ NOT resolved (transient; detector retries) and the ledger stays false", async () => {
+		const store = founderStore(undefined); // getChatThreadByIssue → undefined
+		const fetchImpl = okFetch();
+		const alerter = createStuckUnhandledAlerter(
+			testProjects,
+			{ alert: vi.fn(async () => ({ sent: true })) },
+			{
+				store: store as never,
+				discordOwnerUserId: FID,
+				discordBotToken: "global-bot",
+				fetchImpl,
+				env: DEFAULT_ON,
+				log: () => {},
+			},
+		);
+		expect(await alerter(unhandledPayload())).toBe(false);
+		expect(fetchImpl).not.toHaveBeenCalled(); // skipped before POST
+		expect(store.paged.get(EVENT_ID)).toBe(false);
+	});
+
+	it("ledger converge: a prior REAL page ⇒ resolved without re-posting (no spam)", async () => {
+		const store = founderStore("th-1");
+		store.paged.set(EVENT_ID, true); // already paged this episode
+		const fetchImpl = okFetch();
+		const alerter = createStuckUnhandledAlerter(
+			testProjects,
+			{ alert: vi.fn(async () => ({ sent: true })) },
+			{
+				store: store as never,
+				discordOwnerUserId: FID,
+				discordBotToken: "global-bot",
+				fetchImpl,
+				env: DEFAULT_ON,
+				log: () => {},
+			},
+		);
+		expect(await alerter(unhandledPayload())).toBe(true);
+		expect(fetchImpl).not.toHaveBeenCalled(); // converged → never re-posts
+	});
+
+	it("kill-switch FLYWHEEL_STUCK_FOUNDER_PAGE=0 ⇒ legacy semantics (sent/duplicate resolve), no founder page", async () => {
+		const store = founderStore("th-1");
+		const fetchImpl = okFetch();
+		const opts = {
+			store: store as never,
+			discordOwnerUserId: FID,
+			fetchImpl,
+			env: KILL_SWITCH, // default-on disabled by the kill-switch
+			log: () => {},
+		};
+		const sent = createStuckUnhandledAlerter(
+			testProjects,
+			{ alert: vi.fn(async () => ({ sent: true })) },
+			opts,
+		);
+		expect(await sent(unhandledPayload())).toBe(true);
+		const dup = createStuckUnhandledAlerter(
+			testProjects,
+			{ alert: vi.fn(async () => ({ skipped: "duplicate" as const })) },
+			opts,
+		);
+		expect(await dup(unhandledPayload())).toBe(true);
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(store.getChatThreadByIssue).not.toHaveBeenCalled();
+	});
+
+	it("no owner id ⇒ founder page disabled (degrade to legacy, no retry-storm)", async () => {
+		const store = founderStore("th-1");
+		const fetchImpl = okFetch();
+		const alerter = createStuckUnhandledAlerter(
+			testProjects,
+			{ alert: vi.fn(async () => ({ sent: true })) },
+			{
+				store: store as never,
+				// discordOwnerUserId omitted
+				fetchImpl,
+				env: DEFAULT_ON,
+				log: () => {},
+			},
+		);
+		expect(await alerter(unhandledPayload())).toBe(true); // legacy (sent)
+		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 });
 

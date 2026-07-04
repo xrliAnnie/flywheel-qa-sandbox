@@ -1122,4 +1122,53 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		],
 		toggleable: "readonly",
 	},
+	// ─── FLY-818: auto-continue (①) + stuck→founder-page (②) ───
+	{
+		name: "runner_autocontinue",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_RUNNER_AUTOCONTINUE",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-818 ①: opt-in /loop-native goal-driven 自动续跑 arming（AutoContinueArmer）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"createBridgeApp (AutoContinueArmer boot gate)",
+				"bridge_boot",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/autocontinue-armer.ts",
+				"AutoContinueArmer.enabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "boot-gated：plugin.ts 仅在 =1 时启动 armer poll；翻转需重启 Bridge。默认 off，先单-runner canary。",
+	},
+	{
+		name: "stuck_founder_page_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_STUCK_FOUNDER_PAGE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-818 ②: 关掉「runner 真卡住 → 在其 [FLY-XX] issue thread @founder」的直达页（default-on 安全网）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/stuck-escalation.ts",
+				"stuckFounderPageEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "额外要 owner id + store 才发页；=0 关闭直达页、退回 legacy alert 语义（需重启 Bridge 生效）。",
+	},
 ];

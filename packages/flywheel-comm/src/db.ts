@@ -510,6 +510,29 @@ export class CommDB {
 	}
 
 	/**
+	 * FLY-818: true if this execution has an unanswered BLOCKING gate/question
+	 * (`checkpoint IS NOT NULL`). A blocking `gate` command carries a checkpoint;
+	 * a non-blocking `flywheel-comm ask` has `checkpoint = NULL`. The auto-continue
+	 * armer uses THIS (not `hasPendingQuestionsFrom`) so a runner that fired a
+	 * non-blocking ask still gets armed to self-continue (Codex code review R1 #2 —
+	 * asks must not stop the loop). Stuck detection keeps the broad predicate.
+	 */
+	hasPendingBlockingGateFrom(execId: string): boolean {
+		const row = this.db
+			.prepare(
+				`SELECT COUNT(*) as cnt FROM messages q
+         WHERE q.from_agent = ? AND q.type = 'question'
+         AND q.checkpoint IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM messages r WHERE r.parent_id = q.id AND r.type = 'response'
+         )
+         AND q.expires_at > datetime('now')`,
+			)
+			.get(execId) as { cnt: number };
+		return row.cnt > 0;
+	}
+
+	/**
 	 * FLY-253 (L1): True if this execution sent ANY CommDB message within the
 	 * last `windowSeconds`. Liveness signal for the Bridge stuck-runner
 	 * detector — a runner that recently messaged its Lead (DONE report,

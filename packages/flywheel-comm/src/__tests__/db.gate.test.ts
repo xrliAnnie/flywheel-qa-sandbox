@@ -110,4 +110,30 @@ describe("CommDB gate methods", () => {
 			expect(db.hasPendingQuestionsFrom("runner-1")).toBe(true);
 		});
 	});
+
+	// FLY-818 (Codex code review R1 #2): the armer must NOT treat a non-blocking
+	// `flywheel-comm ask` (checkpoint NULL) as a blocking gate — only a checkpointed
+	// `gate` blocks. hasPendingBlockingGateFrom filters on `checkpoint IS NOT NULL`.
+	describe("hasPendingBlockingGateFrom (blocking gate only, not ask)", () => {
+		it("false for a non-blocking ask (checkpoint NULL) — runner stays armable", () => {
+			db.insertQuestion("runner-1", "lead-1", "just an ask"); // no checkpoint
+			expect(db.hasPendingQuestionsFrom("runner-1")).toBe(true); // broad predicate sees it
+			expect(db.hasPendingBlockingGateFrom("runner-1")).toBe(false); // but it is NOT a blocking gate
+		});
+
+		it("true for a checkpointed blocking gate", () => {
+			db.insertQuestion("runner-1", "lead-1", "brainstorm gate", {
+				checkpoint: "brainstorm",
+			});
+			expect(db.hasPendingBlockingGateFrom("runner-1")).toBe(true);
+		});
+
+		it("false when the blocking gate has been answered", () => {
+			const id = db.insertQuestion("runner-1", "lead-1", "q", {
+				checkpoint: "question",
+			});
+			db.insertResponse(id, "lead-1", "answered");
+			expect(db.hasPendingBlockingGateFrom("runner-1")).toBe(false);
+		});
+	});
 });

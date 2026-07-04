@@ -29,7 +29,7 @@ function payload(over: Partial<AlertPayload> = {}): AlertPayload {
 // attempted / resolved → none).
 type PostTuple = [string, string, { mentionUserId?: string } | undefined];
 
-function makeDiscord(): DiscordOps & {
+function makeDiscord(_opts: { postOk?: boolean } = {}): DiscordOps & {
 	created: string[];
 	posts: PostTuple[];
 	archived: string[];
@@ -56,11 +56,11 @@ function makeDiscord(): DiscordOps & {
 	};
 }
 
-const SENT: AlertResult = {
+const SENT: AlertResult = Object.freeze({
 	sent: true,
 	channelId: "UNI",
 	messageId: "root-1",
-};
+});
 
 describe("AlertChannelHub (FLY-368)", () => {
 	let store: StateStore;
@@ -70,7 +70,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("first alert opens a thread + posts ack (no bot)", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({ store, notifier, discord });
 
 		await hub.handle(payload());
@@ -83,7 +83,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("same event_id duplicate does NOT open a second thread", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({ store, notifier, discord });
 		await hub.handle(payload());
 		await hub.handle(payload()); // same eventId, same SENT result
@@ -92,7 +92,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("a DIFFERENT event_id under the same correlation key resolves the stale thread and opens a new one", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({ store, notifier, discord });
 		await hub.handle(payload({ eventId: "evt-1" }));
 		await hub.handle(payload({ eventId: "evt-2" }));
@@ -132,7 +132,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("runs the auto-repair bot and records its outcome when present", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const bot = {
 			canAttempt: vi.fn(() => true),
 			attempt: vi.fn(async () => ({
@@ -176,7 +176,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("ack says '正在尝试自动修复' only for a repairable kind", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({
 			store,
 			notifier,
@@ -191,7 +191,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("ack does NOT claim '正在尝试' for a non-repairable kind", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({
 			store,
 			notifier,
@@ -209,7 +209,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 		process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "1138241636057481306";
 		try {
 			const discord = makeDiscord();
-			const notifier = { alert: vi.fn(async () => SENT) };
+			const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 			const hub = new AlertChannelHub({
 				store,
 				notifier,
@@ -233,7 +233,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 		process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "not-a-snowflake";
 		try {
 			const discord = makeDiscord();
-			const notifier = { alert: vi.fn(async () => SENT) };
+			const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 			const hub = new AlertChannelHub({
 				store,
 				notifier,
@@ -258,7 +258,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 		process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "1138241636057481306";
 		try {
 			const discord = makeDiscord();
-			const notifier = { alert: vi.fn(async () => SENT) };
+			const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 			const hub = new AlertChannelHub({
 				store,
 				notifier,
@@ -278,7 +278,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("OFF path (no bot) ack is honest — no '等待人工'", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({ store, notifier, discord });
 		await hub.handle(payload());
 		const ack = discord.posts[0]![1];
@@ -289,7 +289,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("resolve attributes 'Cass 自动修复' + broke→fixed timeline when Cass acted", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({
 			store,
 			notifier,
@@ -307,7 +307,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("resolve does NOT credit Cass on self-heal (no bot / no attempt)", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({ store, notifier, discord });
 		await hub.handle(payload());
 		await hub.onLeadRecovery("flywheel", "tadashi", "pane_hash_stuck");
@@ -318,7 +318,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("onLeadRecovery posts recovered + archives + marks resolved", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const hub = new AlertChannelHub({ store, notifier, discord });
 		await hub.handle(payload());
 		await hub.onLeadRecovery("flywheel", "tadashi", "pane_hash_stuck");
@@ -331,7 +331,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("reconcile resolves a Lead alert when the pane no longer shows the kind (restart-safe)", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		// Round 1: open a rate_limit thread.
 		const hub1 = new AlertChannelHub({ store, notifier, discord });
 		await hub1.handle(payload({ eventType: "rate_limit", eventId: "evt-rl" }));
@@ -352,7 +352,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("reconcile does NOT resolve a still-frozen pane_hash_stuck on the first pass (two-capture rule)", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const frozen = "frozen pane no markers and no idle hint\n";
 		const hub = new AlertChannelHub({
 			store,
@@ -370,7 +370,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("reconcile resolves a RUNNER alert when the terminal advanced while session stays running (Codex HIGH-1)", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		store.upsertSession({
 			execution_id: "exec-7",
 			issue_id: "FLY-9",
@@ -406,7 +406,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 
 	it("reconcile does NOT resolve a runner alert when capture is unavailable (fail-closed)", async () => {
 		const discord = makeDiscord();
-		const notifier = { alert: vi.fn(async () => SENT) };
+		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		store.upsertSession({
 			execution_id: "exec-8",
 			issue_id: "FLY-9",
@@ -504,3 +504,9 @@ describe("createDiscordOps (FLY-368 rework: repair chain + allowed_mentions)", (
 		);
 	});
 });
+
+// NOTE: FLY-818 M3 (the genuinely-stuck-runner founder page) is NOT in the Hub.
+// It posts an @founder message into the stuck runner's OWN [FLY-XX] issue thread
+// from `createStuckUnhandledAlerter` (see stuck-escalation.test.ts) using the
+// owning Lead's bot — Annie's design; the alert-channel page was the rejected
+// FLY-523 path. This Hub only owns the alert thread + auto-repair.
