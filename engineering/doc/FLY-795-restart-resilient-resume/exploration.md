@@ -28,7 +28,7 @@ Issue: FLY-795 (https://linear.app/geoforge3d/issue/FLY-795/stabilityresume-runn
 - **在盘上 durable 的**:
   - **worktree(代码)** —— `~/Dev/flywheel-FLY-<n>`,重启 / reboot 都不丢。
   - **StateStore `sessions` 行**(`~/.flywheel/teamlead.db`):`issue / worktree_path / branch / status /
-    decision_route / decision_reasoning / summary / diff_summary / commit_messages / changed_file_paths / 
+    decision_route / decision_reasoning / summary / diff_summary / commit_messages / changed_file_paths /
     session_params / heartbeat_at / adapter_type / runner_model`。
   - **流水线 stage**(via `flywheel-comm stage set` → `session_events`):粗粒度(onboard/brainstorm/plan/implement/…)。
 - **不 durable 的(关键缺口)**:runner 的**执行上下文** —— 「做到哪、脑子里在想什么、下一步是什么、
