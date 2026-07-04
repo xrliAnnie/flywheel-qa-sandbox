@@ -521,7 +521,7 @@ export class PhaseOrchestrator {
 			const res = await this.deps.startDispatcher.start({
 				issueId: session.issue_id,
 				projectName: session.project_name,
-				leadId: session.lead_id,
+				leadId: this.deps.resolveLeadId(session),
 				sessionRole: "implement",
 				dispatchModel: resolvePhaseModel("implement"),
 				startPoint: headSha,
