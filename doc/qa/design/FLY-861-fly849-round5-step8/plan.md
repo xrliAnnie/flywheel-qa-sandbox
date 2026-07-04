@@ -19,7 +19,7 @@
 
 ## Task 1: 创建 round 5 marker 文件
 
-- [ ] **Step 1: 环境断言**
+- [x] **Step 1: 环境断言**
 
 ```bash
 git remote -v               # 必须是 xrliAnnie/flywheel-qa-sandbox（fetch+push）
@@ -31,7 +31,7 @@ git log --oneline -5        # 应含 Design 阶段设计文档 commit + baca27c/
 
 防御性回退：若 `git status --short` 显示 `?? doc/qa/design/`（Bucket A 意外未入库），先单独 commit（`docs(FLY-861): add design docs`）再继续。
 
-- [ ] **Step 2: 创建文件（内容字节级钉死，含末尾换行，共 3 行：标题 + 空行 + 一句话）**
+- [x] **Step 2: 创建文件（内容字节级钉死，含末尾换行，共 3 行：标题 + 空行 + 一句话）**
 
 路径：`doc/qa/harness/FLY-849-round5-marker.md`（目录不存在，随文件创建）
 
@@ -41,14 +41,14 @@ git log --oneline -5        # 应含 Design 阶段设计文档 commit + baca27c/
 This is the FLY-859 Step 8 verification round of the FLY-849 combined-batch harness (Design=Fable, Implement=Opus, QA=Sonnet, no manual simulation).
 ```
 
-- [ ] **Step 3: 自检**
+- [x] **Step 3: 自检**
 
 ```bash
 head -3 doc/qa/harness/FLY-849-round5-marker.md   # 与上方逐字一致
 git status --short                                 # 仅 Bucket B 文件
 ```
 
-- [ ] **Step 4: commit**
+- [x] **Step 4: commit**
 
 ```
 docs(FLY-861): add FLY-849 round 5 marker — FLY-859 Step 8 verification round
