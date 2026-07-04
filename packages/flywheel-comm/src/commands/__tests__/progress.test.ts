@@ -11,7 +11,11 @@ function makeDeps(over: Partial<ProgressDeps> = {}): ProgressDeps {
 	return {
 		env: { FLYWHEEL_STATE_DB_PATH: "/fake/teamlead.db" },
 		cwd: () => "/repo",
-		readSession: vi.fn(() => ({ status: "running", session_role: "implement", issue_identifier: "FLY-795" })),
+		readSession: vi.fn(() => ({
+			status: "running",
+			session_role: "implement",
+			issue_identifier: "FLY-795",
+		})),
 		existsSync: (p: string) => files.has(p),
 		readFileSync: (p: string) => {
 			const v = files.get(p);
@@ -42,7 +46,9 @@ describe("runProgress (FLY-795)", () => {
 		expect(r.ok).toBe(true);
 		// wrote the ledger (temp+rename)
 		expect(deps.writeTempAndRename).toHaveBeenCalledOnce();
-		const written = (deps as any)._files.get("/repo/engineering/doc/FLY-795-x/progress.md");
+		const written = (deps as any)._files.get(
+			"/repo/engineering/doc/FLY-795-x/progress.md",
+		);
 		expect(written).toContain("phase: implement");
 		// path-limited commit — MUST use `commit --only -- <file>` (never sweep code)
 		const gitCalls = (deps.git as any).mock.calls.map((c: any[]) => c[0]);
@@ -55,7 +61,11 @@ describe("runProgress (FLY-795)", () => {
 
 	it("fail-closed: rejects when the session is not running (dead/terminated writer)", () => {
 		const deps = makeDeps({
-			readSession: vi.fn(() => ({ status: "terminated", session_role: "implement", issue_identifier: "FLY-795" })),
+			readSession: vi.fn(() => ({
+				status: "terminated",
+				session_role: "implement",
+				issue_identifier: "FLY-795",
+			})),
 		});
 		const r = runProgress(okArgs, deps);
 		expect(r.ok).toBe(false);
@@ -101,7 +111,9 @@ describe("runProgress (FLY-795)", () => {
 		);
 		const r = runProgress({ ...okArgs, next: "next thing" }, deps);
 		expect(r.ok).toBe(true);
-		const written = (deps as any)._files.get("/repo/engineering/doc/FLY-795-x/progress.md");
+		const written = (deps as any)._files.get(
+			"/repo/engineering/doc/FLY-795-x/progress.md",
+		);
 		expect(written).toContain("phase: implement"); // updated
 		expect(written).toContain("c1"); // prior chunk preserved
 	});

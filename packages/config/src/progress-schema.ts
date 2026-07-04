@@ -204,7 +204,9 @@ function renderBody(data: Record<string, unknown>): string {
 	if (chunks.length > 0) {
 		lines.push("", "## chunks");
 		for (const c of chunks) {
-			lines.push(`- ${chunkMark(c.status as string)} ${c.id as string} — ${c.done as string}`);
+			lines.push(
+				`- ${chunkMark(c.status as string)} ${c.id as string} — ${c.done as string}`,
+			);
 		}
 	}
 	if (data.handoff) lines.push("", `**handoff**: ${data.handoff as string}`);

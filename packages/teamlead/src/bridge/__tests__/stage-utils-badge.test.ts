@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-	stageBadge,
 	splitStatusEmoji,
+	stageBadge,
 	stripStatusEmojiPrefix,
 } from "../stage-utils.js";
 
