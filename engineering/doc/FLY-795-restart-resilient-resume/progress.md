@@ -7,7 +7,7 @@ nextStep: build the flywheel-comm progress write command (StateStore single-writ
 chunks:
   - { id: c1, order: 1, deps: [], done: "shared progress-schema + path-resolver in flywheel-config, 12 tests green", status: done }
   - { id: c2, order: 2, deps: [c1], done: "flywheel-comm progress command (single-writer + atomic commit)", status: done }
-  - { id: c3, order: 3, deps: [c1], done: "teamlead progressResume (branch-blob detect + effectiveStage authority + shareParentBranch reuse)", status: doing }
+  - { id: c3, order: 3, deps: [c1], done: "teamlead progressResume core logic (branch-blob detect + effectiveStage authority + shareParentBranch reuse), 7 tests; WIRING into RunDispatcher remaining", status: doing }
   - { id: c4, order: 4, deps: [c3], done: "Blueprint resume-mode + effectiveStage suppression + FLYWHEEL_PROGRESS_PATH inject", status: todo }
   - { id: c5, order: 5, deps: [c4], done: "adapters FLYWHEEL_PROGRESS_PATH env (Claude + Codex)", status: todo }
   - { id: c6, order: 6, deps: [c1], done: "stage-utils badge fix (test/pr_created) + legacy strip", status: todo }
