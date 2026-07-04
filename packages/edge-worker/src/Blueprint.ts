@@ -39,6 +39,7 @@ import type {
 } from "./ExecutionEvidenceCollector.js";
 import type { GitResultChecker } from "./GitResultChecker.js";
 import type { HydratedContext, PreHydrator } from "./PreHydrator.js";
+import { resumeModeInstructions } from "./resume-mode.js";
 import type { SkillInjector } from "./SkillInjector.js";
 import type { WorktreeInfo, WorktreeManager } from "./WorktreeManager.js";
 import { resolveWorktreeKey } from "./WorktreeManager.js";
@@ -1097,7 +1098,17 @@ export class Blueprint {
 		// `complete --route blocked` (no new error stage).
 		// Inserted at the TOP of systemPromptLines so the Runner sees this before
 		// the standard pipeline instructions.
-		if (ctx.projectName) {
+		// FLY-795: resume-mode. When re-dispatched with a computed progressResume
+		// (a dead runner being continued), suppress the from-scratch onboard/
+		// brainstorm preamble IF the StateStore-authoritative effectiveStage proves
+		// design is done (implement/qa), and prepend a RESUME directive. Fail-closed
+		// (Codex R2 #4): absent/mismatched effectiveStage suppresses nothing. The
+		// ship-gate is always preserved (never auto-ship). Absent progressResume ⇒
+		// byte-compatible.
+		const resumeMode = ctx.progressResume
+			? resumeModeInstructions(ctx.progressResume)
+			: null;
+		if (ctx.projectName && !resumeMode?.suppressOnboardBrainstorm) {
 			const onboardPreamble = [
 				"PIPELINE PREAMBLE — run BEFORE any other work:",
 				`(1) \`node ${commCliPath} stage set onboard\` — reports intent (you are starting onboarding).`,
@@ -1108,6 +1119,11 @@ export class Blueprint {
 				"",
 			];
 			systemPromptLines.unshift(...onboardPreamble);
+		}
+		// FLY-795: the RESUME directive sits at the very TOP so the runner reads it
+		// before any pipeline instruction.
+		if (resumeMode) {
+			systemPromptLines.unshift(...resumeMode.lines);
 		}
 
 		// GEO-206 / FLY-161: Inject flywheel-comm ask instructions when Lead is available
