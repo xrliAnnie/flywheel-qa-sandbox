@@ -622,8 +622,51 @@ export function createEventRouter(
 		// session's own completion is separate). Drive the coordinator's PASS/FAIL
 		// branch and return. Idempotency is enforced by insertEvent dedup (above)
 		// AND the coordinator's record-status check (defence in depth).
+		//
+		// FLY-859: a THREE-STAGE QA phase's verdict is routed to the
+		// PhaseOrchestrator instead — the auto-QA guards (awaiting_review parent
+		// + AutoQaRecord) are structurally unsatisfiable for it (the implement
+		// phase was finalized at handoff; no record was ever spawned), which is
+		// exactly the FLY-849 §3.8 silent break. Discriminator: the REPORTING
+		// session's durable `chat_thread_role === 'qa'` (Blueprint writes a
+		// phase role only for shareParentBranch phase sessions; an auto-QA
+		// runner is always 'main'). Everything else falls through to the
+		// auto-QA path byte-for-byte. Each holder is isolated in its own
+		// try/catch — a failure on one path never disables the other.
 		if (event.event_type === "qa_result") {
-			if (autoQaCoordinator?.current) {
+			const reporting = store.getSession(event.execution_id);
+			const isThreeStageQaPhase =
+				!!reporting &&
+				(reporting.session_role ?? "main") === "qa" &&
+				(reporting.chat_thread_role ?? "main") === "qa";
+			if (isThreeStageQaPhase) {
+				if (phaseOrchestrator?.current) {
+					try {
+						const p = (event.payload ?? {}) as Record<string, unknown>;
+						await phaseOrchestrator.current.onQaResult(reporting, {
+							eventId: event.event_id,
+							status: typeof p.status === "string" ? p.status : "",
+							summary: typeof p.summary === "string" ? p.summary : undefined,
+							prHeadSha:
+								typeof p.prHeadSha === "string" ? p.prHeadSha : undefined,
+							targetExecutionId:
+								typeof p.targetExecutionId === "string"
+									? p.targetExecutionId
+									: undefined,
+						});
+					} catch (err) {
+						console.error(
+							`[event-route] three-stage onQaResult threw for ${event.execution_id}: ${(err as Error).message}`,
+						);
+					}
+				} else {
+					// Event is stored — the orchestrator's startup verdict sweep
+					// replays it once the holder is wired (never silently lost).
+					console.warn(
+						`[event-route] three-stage qa_result for ${event.execution_id} arrived with no PhaseOrchestrator — deferred to the startup verdict sweep`,
+					);
+				}
+			} else if (autoQaCoordinator?.current) {
 				try {
 					await autoQaCoordinator.current.onQaResult(event);
 				} catch (err) {

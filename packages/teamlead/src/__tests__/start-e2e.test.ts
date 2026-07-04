@@ -176,6 +176,26 @@ describe("Start API E2E", () => {
 		expect(mockDispatcher.start).toHaveBeenCalledOnce();
 	}, 15_000);
 
+	it("FLY-859: body-injected phaseFixContext / shareParentBranch NEVER reach the dispatcher (Bridge-INTERNAL fields)", async () => {
+		const res = await fetch(`${baseUrl}/api/runs/start`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				issueId: "GEO-INJECT",
+				projectName: "TestProject",
+				phaseFixContext: { round: 9, qaSummary: "injected" },
+				shareParentBranch: true,
+			}),
+		});
+		expect(res.status).toBe(200);
+		const req = mockDispatcher.start.mock.calls.at(-1)?.[0] as Record<
+			string,
+			unknown
+		>;
+		expect(req.phaseFixContext).toBeUndefined();
+		expect(req.shareParentBranch).toBeUndefined();
+	}, 15_000);
+
 	it("POST with leadId → passes through to dispatcher", async () => {
 		const res = await fetch(`${baseUrl}/api/runs/start`, {
 			method: "POST",

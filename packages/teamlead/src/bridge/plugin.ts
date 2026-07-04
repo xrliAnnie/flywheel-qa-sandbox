@@ -68,7 +68,7 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
-import { StateStore } from "../StateStore.js";
+import { type Session, StateStore } from "../StateStore.js";
 import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
 import { createActionRouter } from "./actions.js";
@@ -149,12 +149,16 @@ import { resolveLinearScope, resolveProjectNameParam } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
-import { PhaseOrchestrator } from "./phase-orchestrator.js";
+import {
+	PhaseOrchestrator,
+	type ThreeStageVerdictIntent,
+} from "./phase-orchestrator.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import {
 	buildCronModelViews,
 	buildProjectRunnerDefaults,
 } from "./project-runner-model-source.js";
+import { patchSessionParams } from "./proofshot-session.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
@@ -3721,8 +3725,65 @@ export async function startBridge(
 			// closePhaseRunner (fail-closed on dirty), not left to the next phase's
 			// async, non-dirty-checked Blueprint.removeIfExists.
 			const phaseWorktreeCleanup = makeBridgeWorktreeCleanup(store, projects);
+			// FLY-859: issue-thread notes for the QA fix-loop reuse the auto-QA
+			// effects' postThread machinery (stateless; a second instance is safe).
+			const phaseQaEffects = new AutoQaEffects({
+				store,
+				projects,
+				config,
+				leadAlertNotifier,
+				chatThreadCreator,
+				transitionOpts,
+				globalBotToken: config.discordBotToken,
+			});
+			// FLY-859: fix-round cap knob. Invalid/absent → orchestrator default (3).
+			const maxFixRoundsEnv = process.env.FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS;
+			const maxFixRounds =
+				maxFixRoundsEnv !== undefined
+					? Number.parseInt(maxFixRoundsEnv, 10)
+					: undefined;
 			phaseOrchestratorHolder.current = new PhaseOrchestrator({
 				startDispatcher: phaseStartDispatcher,
+				// FLY-859: the three-stage QA verdict machinery — thin store closures;
+				// the durable intent lives in session_params.three_stage_verdict via
+				// merge-style patchSessionParams (unrelated params survive).
+				qaVerdicts: {
+					getSession: (executionId) => store.getSession(executionId),
+					readIntent: (executionId) =>
+						store.getSessionParams(executionId)?.three_stage_verdict as
+							| ThreeStageVerdictIntent
+							| undefined,
+					patchIntent: (executionId, patch) => {
+						patchSessionParams(store, executionId, (cur) => ({
+							...cur,
+							three_stage_verdict: {
+								...((cur.three_stage_verdict as
+									| Record<string, unknown>
+									| undefined) ?? {}),
+								...patch,
+							},
+						}));
+					},
+					countImplementPhases: (issueId) =>
+						store.countSessionsByIssueAndChatThreadRole(issueId, "implement"),
+					getActiveImplementSession: (issueId) => {
+						const s = store.getActivePhaseSessionForIssue(issueId);
+						return s && s.session_role === "implement" ? s : undefined;
+					},
+					listVerdictEventCandidates: () =>
+						store.getThreeStageQaSessionsWithVerdictEvents(),
+					getLatestQaResultEvent: (executionId) =>
+						store.getLatestQaResultEventForExecution(executionId),
+					listStrandedPassCandidates: () =>
+						store.getStrandedThreeStageQaPassSessions(),
+					postIssueThread: async (session, text) => {
+						await phaseQaEffects.postThread({
+							session: session as Session,
+							text,
+						});
+					},
+					maxFixRounds,
+				},
 				resolveThreeStage: (session) =>
 					resolveThreeStagePolicy({
 						pipelineConfig: pipelineConfigByProject.get(
