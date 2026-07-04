@@ -2,11 +2,13 @@
  * FLY-22: RunDispatcher unit tests.
  */
 
+import { buildWindowLabel } from "flywheel-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	type ProjectRuntime,
 	RetryDispatcher,
 	RunDispatcher,
+	runnerDisplayName,
 } from "../bridge/run-dispatcher.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 
@@ -656,5 +658,53 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 			expect(ctx.agentTeamName).toBeUndefined();
 			expect(ctx.vendor).toBeUndefined();
 		});
+	});
+});
+
+describe("runnerDisplayName + cmux window label (FLY-793 phase visibility)", () => {
+	// A three-stage phase runner is (shareParentBranch === true) AND a phase role.
+	it("maps a three-stage phase role (shareParentBranch=true) to its phase name", () => {
+		expect(runnerDisplayName("design", true)).toBe("design");
+		expect(runnerDisplayName("implement", true)).toBe("implement");
+		expect(runnerDisplayName("qa", true)).toBe("qa");
+	});
+
+	it("byte-compat: non-phase (main / undefined / unknown) stays 'claude'", () => {
+		expect(runnerDisplayName("main", true)).toBe("claude");
+		expect(runnerDisplayName(undefined, true)).toBe("claude");
+		expect(runnerDisplayName("something-else", true)).toBe("claude");
+	});
+
+	it("byte-compat: FLY-579 Auto-QA (role='qa' but NO shareParentBranch) stays 'claude'", () => {
+		// The Codex R2 regression: Auto-QA shares sessionRole "qa" but is not a
+		// three-stage phase (no shareParentBranch), so it must NOT flip to "-qa-".
+		expect(runnerDisplayName("qa", false)).toBe("claude");
+		expect(runnerDisplayName("qa", undefined)).toBe("claude");
+		// A phase role without the three-stage marker is likewise unchanged.
+		expect(runnerDisplayName("design", false)).toBe("claude");
+		expect(runnerDisplayName("implement", undefined)).toBe("claude");
+	});
+
+	it("cmux visibility: the window label carries the phase per-phase, not 'claude'", () => {
+		// buildWindowLabel = `{issueId}-{runner}-{cleanTitle}`. Feeding it the
+		// phase-aware runner name is what makes cmux show the live phase.
+		const title = "three-stage pipeline";
+		expect(
+			buildWindowLabel("FLY-793", runnerDisplayName("design", true), title),
+		).toBe("FLY-793-design-three-stage pipeline");
+		expect(
+			buildWindowLabel("FLY-793", runnerDisplayName("implement", true), title),
+		).toBe("FLY-793-implement-three-stage pipeline");
+		expect(
+			buildWindowLabel("FLY-793", runnerDisplayName("qa", true), title),
+		).toBe("FLY-793-qa-three-stage pipeline");
+		// A non-phase (main) run is unchanged — still shows 'claude'.
+		expect(
+			buildWindowLabel("FLY-800", runnerDisplayName("main", true), title),
+		).toBe("FLY-800-claude-three-stage pipeline");
+		// Auto-QA (qa role, no shareParentBranch) is unchanged — still 'claude'.
+		expect(
+			buildWindowLabel("FLY-801", runnerDisplayName("qa", false), title),
+		).toBe("FLY-801-claude-three-stage pipeline");
 	});
 });
