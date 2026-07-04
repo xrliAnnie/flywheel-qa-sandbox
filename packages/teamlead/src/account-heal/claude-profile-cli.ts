@@ -33,6 +33,16 @@ export interface ClaudeProfileCliDeps {
 	/** Injectable for tests; defaults to node's execFile (promisified). */
 	execFile?: ExecFileFn;
 	withLock?: <T>(lockPath: string, fn: () => Promise<T>) => Promise<T>;
+	/**
+	 * FLY-865: surface the switch script's stderr on the AUTOMATIC path. `use`'s
+	 * display-identity sync is best-effort — on a missing/failed/locked identity
+	 * it warns to stderr but still exits 0 (the token switch is authoritative).
+	 * A manual CLI user sees that warning; the Bridge's execFile would otherwise
+	 * DISCARD it, silently leaving a stale `/status` display after an auto-switch.
+	 * Forward it so the operator can see the display identity wasn't updated.
+	 * Defaults to console.warn.
+	 */
+	onWarn?: (message: string) => void;
 }
 
 /** Default script path (override via FLYWHEEL_CLAUDE_PROFILE_BIN). */
@@ -47,6 +57,7 @@ export function makeClaudeProfileSwitchDeps(
 ): SwitchDeps {
 	const exec: ExecFileFn = deps.execFile ?? (execFileAsync as ExecFileFn);
 	const withLock = deps.withLock ?? withMkdirLock;
+	const onWarn = deps.onWarn ?? ((m: string) => console.warn(m));
 
 	return {
 		withLock,
@@ -58,12 +69,25 @@ export function makeClaudeProfileSwitchDeps(
 			// the live holder marker (a forged env without the real lock falls
 			// through to a normal acquire), and neither takes nor releases the lock.
 			// Throws on non-zero exit (execFile rejects) → executor fails closed.
-			await exec(deps.binPath, ["use", name], {
+			const { stderr } = await exec(deps.binPath, ["use", name], {
 				env: {
 					...process.env,
 					FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
 				},
 			});
+			// FLY-865: the switch succeeded (exit 0), but `use` may have warned on
+			// stderr that the DISPLAY identity wasn't updated (no captured identity,
+			// lock timeout, patch failure). execFile discards child stderr, so
+			// forward it — otherwise an auto-switch silently leaves a stale /status.
+			// Only forward actual warnings: `use` also emits a non-warning success
+			// line ("Updated ~/.claude.json display identity …") to stderr, which
+			// must not be logged at warn level.
+			const warning = (stderr ?? "")
+				.split("\n")
+				.filter((l) => /\bWarning:/i.test(l))
+				.join("\n")
+				.trim();
+			if (warning) onWarn(`[flywheel-claude-profile use ${name}] ${warning}`);
 		},
 		async readActiveProfile(): Promise<string | null> {
 			try {

@@ -17,13 +17,20 @@
  * spike-verified on-machine (2026-07-03) and is re-verified by the
  * independent QA against a scratch keychain + dummy service.
  */
-import { execFileSync, type SpawnSyncReturns } from "node:child_process";
+import {
+	execFileSync,
+	type SpawnSyncReturns,
+	spawn,
+	spawnSync,
+} from "node:child_process";
 import {
 	accessSync,
+	chmodSync,
 	constants,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -32,6 +39,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+// (dirname is used by both the PROFILE_BIN locator and FLY-865 identity tests)
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -55,6 +63,40 @@ let lockDir: string;
 let stateFile: string;
 let argvLog: string;
 let stubBin: string;
+// FLY-865: a scratch ~/.claude.json + its lock. env() ALWAYS points the script
+// at these so no test can ever touch the real ~/.claude.json.
+let claudeJson: string;
+let claudeJsonLock: string;
+
+// A representative oauthAccount identity block (non-secret: email/org/uuid).
+const IDENTITY_SHOP = {
+	accountUuid: "uuid-shop",
+	emailAddress: "shop@example.com",
+	organizationUuid: "org-shop",
+	organizationName: "Shop Org",
+	displayName: "Shopper",
+	organizationRole: "admin",
+};
+const IDENTITY_BIZ = {
+	accountUuid: "uuid-biz",
+	emailAddress: "biz@example.com",
+	organizationUuid: "org-biz",
+	organizationName: "Biz Org",
+	displayName: "Biz",
+	organizationRole: "admin",
+};
+
+/** A full-ish ~/.claude.json shape (many top-level keys + nested) to prove the
+ * patch preserves everything except oauthAccount. */
+function claudeJsonWith(oauth: unknown): string {
+	return JSON.stringify({
+		numStartups: 42,
+		mcpServers: { some: { command: "x" } },
+		projects: { "/a/b": { hasTrustDialogAccepted: true } },
+		oauthAccount: oauth,
+		tail: "keepme",
+	});
+}
 
 /**
  * The fake `security`. State = one file (the "keychain item"). Every argv is
@@ -96,12 +138,21 @@ function env(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
 		FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT: "testacct",
 		FAKE_SEC_STATE: stateFile,
 		FAKE_SEC_ARGV_LOG: argvLog,
+		// FLY-865 SAFETY: never let a test touch the real ~/.claude.json.
+		FLYWHEEL_CLAUDE_JSON: claudeJson,
+		FLYWHEEL_CLAUDE_JSON_LOCK: claudeJsonLock,
 		...extra,
 	};
 }
 
-function run(args: string[], extra: Record<string, string> = {}): string {
-	return execFileSync("bash", [PROFILE_BIN, ...args], {
+/** Which bash to run the script with. Defaults to PATH bash (Homebrew 5.x on
+ * this host); pass "/bin/bash" to exercise macOS system bash 3.2 (FLY-865/#6). */
+function run(
+	args: string[],
+	extra: Record<string, string> = {},
+	bash = "bash",
+): string {
+	return execFileSync(bash, [PROFILE_BIN, ...args], {
 		env: env(extra),
 		encoding: "utf-8",
 	});
@@ -110,9 +161,10 @@ function run(args: string[], extra: Record<string, string> = {}): string {
 function runExpectFail(
 	args: string[],
 	extra: Record<string, string> = {},
+	bash = "bash",
 ): { status: number; stderr: string } {
 	try {
-		execFileSync("bash", [PROFILE_BIN, ...args], {
+		execFileSync(bash, [PROFILE_BIN, ...args], {
 			env: env(extra),
 			encoding: "utf-8",
 			stdio: ["ignore", "pipe", "pipe"],
@@ -122,6 +174,24 @@ function runExpectFail(
 		return { status: e.status ?? -1, stderr: String(e.stderr) };
 	}
 	throw new Error(`expected non-zero exit for: ${args.join(" ")}`);
+}
+
+/** Run and capture stdout+stderr separately (identity notes go to stderr). */
+function runBoth(
+	args: string[],
+	extra: Record<string, string> = {},
+	bash = "bash",
+): { stdout: string; stderr: string } {
+	const r = spawnSync(bash, [PROFILE_BIN, ...args], {
+		env: env(extra),
+		encoding: "utf-8",
+	});
+	if (r.status !== 0) {
+		throw new Error(
+			`expected exit 0 for ${args.join(" ")}, got ${r.status}: ${r.stderr}`,
+		);
+	}
+	return { stdout: String(r.stdout), stderr: String(r.stderr) };
 }
 
 function seedProfile(name: string, secret: string): void {
@@ -136,6 +206,8 @@ beforeEach(() => {
 	stateFile = join(tmp, "keychain-state");
 	argvLog = join(tmp, "argv.log");
 	stubBin = join(tmp, "fake-security");
+	claudeJson = join(tmp, "claude.json");
+	claudeJsonLock = join(tmp, "claude.json.lock");
 	writeFileSync(stubBin, STUB, { mode: 0o755 });
 	writeFileSync(argvLog, "");
 	mkdirSync(pool, { recursive: true });
@@ -143,6 +215,8 @@ beforeEach(() => {
 	seedProfile("school", SECRET_B);
 	// current machine credential (what a rollback must restore)
 	writeFileSync(stateFile, SECRET_CUR);
+	// A scratch ~/.claude.json whose oauthAccount = the "shop" identity.
+	writeFileSync(claudeJson, claudeJsonWith(IDENTITY_SHOP));
 });
 
 afterEach(() => {
@@ -396,4 +470,250 @@ esac
 		run(["use", "school"], { FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS: "300" });
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
 	});
+});
+
+/**
+ * FLY-865 — the switch must ALSO swap the display identity: `use` writes the
+ * captured `oauthAccount` back into ~/.claude.json (the source /status reads),
+ * and `capture` snapshots that identity beside the pooled token. All identity
+ * IO is best-effort (token switch is authoritative) and never touches the real
+ * ~/.claude.json — env() always points FLYWHEEL_CLAUDE_JSON at a scratch file.
+ */
+describe("flywheel-claude-profile — display identity sync (FLY-865)", () => {
+	const identityFile = (name: string) => join(pool, name, "oauthAccount.json");
+	function seedIdentity(name: string, identity: unknown): void {
+		mkdirSync(join(pool, name), { recursive: true });
+		writeFileSync(identityFile(name), JSON.stringify(identity), {
+			mode: 0o600,
+		});
+	}
+	const readOauth = () =>
+		JSON.parse(readFileSync(claudeJson, "utf-8")).oauthAccount;
+
+	it("`capture` snapshots the current ~/.claude.json oauthAccount beside the token (0600) + echoes email", () => {
+		// scratch ~/.claude.json currently holds the BIZ identity.
+		writeFileSync(claudeJson, claudeJsonWith(IDENTITY_BIZ));
+		const { stdout, stderr } = runBoth(["capture", "business"]);
+		// token still captured (existing behavior):
+		expect(
+			readFileSync(join(pool, "business", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_CUR);
+		// identity captured beside it, 0600:
+		expect(JSON.parse(readFileSync(identityFile("business"), "utf-8"))).toEqual(
+			IDENTITY_BIZ,
+		);
+		expect(statSync(identityFile("business")).mode & 0o777).toBe(0o600);
+		// the email is echoed for operator eyeballing (stdout or stderr):
+		expect(stdout + stderr).toContain("biz@example.com");
+	});
+
+	it("`capture` with no/invalid target oauthAccount DELETES any stale identity file (no stale pairing) + still captures token + exit 0", () => {
+		// business already has a (stale) identity from a prior capture…
+		seedIdentity("business", IDENTITY_BIZ);
+		// …but the current ~/.claude.json has NO oauthAccount now.
+		writeFileSync(claudeJson, JSON.stringify({ numStartups: 1 }));
+		const { stderr } = runBoth(["capture", "business"]);
+		// token captured…
+		expect(
+			readFileSync(join(pool, "business", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_CUR);
+		// …but the stale identity file is REMOVED (never pair a new token with old identity).
+		expect(existsSync(identityFile("business"))).toBe(false);
+		expect(stderr).toMatch(/no display identity|capture/i);
+	});
+
+	it("`use` with a captured identity swaps ~/.claude.json oauthAccount, preserves every other key, keeps mode, stdout unchanged", () => {
+		seedIdentity("personal", IDENTITY_BIZ);
+		chmodSync(claudeJson, 0o600);
+		const before = JSON.parse(readFileSync(claudeJson, "utf-8"));
+		const out = run(["use", "personal"]);
+		// stdout contract unchanged (single Switched line):
+		expect(out).toContain(
+			"Switched machine Claude account to profile 'personal'",
+		);
+		// oauthAccount became BIZ:
+		expect(readOauth()).toEqual(IDENTITY_BIZ);
+		// every OTHER top-level key semantically preserved:
+		const after = JSON.parse(readFileSync(claudeJson, "utf-8"));
+		expect(after.numStartups).toBe(before.numStartups);
+		expect(after.mcpServers).toEqual(before.mcpServers);
+		expect(after.projects).toEqual(before.projects);
+		expect(after.tail).toBe(before.tail);
+		// mode preserved:
+		expect(statSync(claudeJson).mode & 0o777).toBe(0o600);
+		// token switched too:
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
+	});
+
+	it("`use` with NO captured identity: loud warn, ~/.claude.json untouched, token switched, exit 0 (RED LINE: no regression)", () => {
+		const before = readFileSync(claudeJson, "utf-8");
+		const { stdout, stderr } = runBoth(["use", "personal"]);
+		expect(stdout).toContain(
+			"Switched machine Claude account to profile 'personal'",
+		);
+		expect(stderr).toMatch(/capture/i); // tells operator how to fix
+		expect(readFileSync(claudeJson, "utf-8")).toBe(before); // untouched
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A); // token switched
+	});
+
+	it("`use` refuses a source identity that is not a valid object (null/string/missing email) — target untouched, exit 0", () => {
+		const before = readFileSync(claudeJson, "utf-8");
+		for (const bad of ["null", '"a-string"', '{"emailAddress":"x"}']) {
+			mkdirSync(join(pool, "personal"), { recursive: true });
+			writeFileSync(identityFile("personal"), bad, { mode: 0o600 });
+			const { stderr } = runBoth(["use", "personal"]);
+			expect(readFileSync(claudeJson, "utf-8"), `bad src ${bad}`).toBe(before);
+			expect(stderr, `bad src ${bad}`).toMatch(/identit|invalid|display/i);
+			rmSync(identityFile("personal"), { force: true });
+		}
+	});
+
+	it("`use` refuses to overwrite a ~/.claude.json that is not valid JSON — bytes unchanged, exit 0", () => {
+		seedIdentity("personal", IDENTITY_BIZ);
+		writeFileSync(claudeJson, "not-json-at-all{{{");
+		const { stderr } = runBoth(["use", "personal"]);
+		expect(readFileSync(claudeJson, "utf-8")).toBe("not-json-at-all{{{");
+		expect(stderr).toMatch(/identit|display|json/i);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A); // token still switched
+	});
+
+	it("`use` refuses a symlinked oauthAccount.json / symlinked ~/.claude.json — not written, exit 0", () => {
+		// symlinked identity file:
+		seedIdentity("real", IDENTITY_BIZ);
+		mkdirSync(join(pool, "personal"), { recursive: true });
+		symlinkSync(identityFile("real"), identityFile("personal"));
+		const before = readFileSync(claudeJson, "utf-8");
+		const r1 = runBoth(["use", "personal"]);
+		expect(readFileSync(claudeJson, "utf-8")).toBe(before);
+		expect(r1.stderr).toMatch(/symlink|identit|display/i);
+		rmSync(identityFile("personal"), { force: true });
+
+		// symlinked ~/.claude.json:
+		seedIdentity("school", IDENTITY_BIZ);
+		const realJson = join(tmp, "real-claude.json");
+		writeFileSync(realJson, claudeJsonWith(IDENTITY_SHOP));
+		rmSync(claudeJson, { force: true });
+		symlinkSync(realJson, claudeJson);
+		const r2 = runBoth(["use", "school"]);
+		// target (through the symlink) unchanged — the real file still SHOP:
+		expect(readOauth()).toEqual(IDENTITY_SHOP);
+		expect(r2.stderr).toMatch(/symlink|identit|display/i);
+	});
+
+	it("`use` refuses a group/world-readable oauthAccount.json (must be 0600/0400) — not written, exit 0", () => {
+		seedIdentity("personal", IDENTITY_BIZ);
+		chmodSync(identityFile("personal"), 0o644);
+		const before = readFileSync(claudeJson, "utf-8");
+		const { stderr } = runBoth(["use", "personal"]);
+		expect(readFileSync(claudeJson, "utf-8")).toBe(before);
+		expect(stderr).toMatch(/600|400|identit|display/i);
+	});
+
+	it("atomic + cleanup: a successful identity write leaves NO temp files behind", () => {
+		seedIdentity("personal", IDENTITY_BIZ);
+		run(["use", "personal"]);
+		expect(readOauth()).toEqual(IDENTITY_BIZ);
+		const leftovers = readdirSync(dirname(claudeJson)).filter(
+			(f) =>
+				f.startsWith("claude.json") &&
+				f !== "claude.json" &&
+				f !== "claude.json.lock",
+		);
+		expect(leftovers).toEqual([]);
+	});
+
+	it("claude-json lock held by a live holder: identity step times out → warn, ~/.claude.json untouched, but token/.active STILL switched, exit 0", () => {
+		seedIdentity("personal", IDENTITY_BIZ);
+		// Pre-hold the claude-json lock with a fresh live holder (this process).
+		mkdirSync(claudeJsonLock, { recursive: true });
+		writeFileSync(
+			join(claudeJsonLock, "holder"),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
+		);
+		const before = readFileSync(claudeJson, "utf-8");
+		const { stdout, stderr } = runBoth(["use", "personal"], {
+			CLAUDE_LOCK_WAIT_S: "1", // fail fast in the identity step
+		});
+		expect(stdout).toContain(
+			"Switched machine Claude account to profile 'personal'",
+		);
+		expect(readFileSync(claudeJson, "utf-8")).toBe(before); // identity not written
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A); // token switched
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("personal");
+		expect(stderr).toMatch(/lock|identit|display/i);
+		rmSync(claudeJsonLock, { recursive: true, force: true });
+	});
+
+	it("runs the identity path under macOS system /bin/bash (3.2) too (FLY-865 #6)", () => {
+		if (!existsSync("/bin/bash")) return; // non-macOS CI: skip
+		seedIdentity("personal", IDENTITY_BIZ);
+		const out = run(["use", "personal"], {}, "/bin/bash");
+		expect(out).toContain(
+			"Switched machine Claude account to profile 'personal'",
+		);
+		expect(readOauth()).toEqual(IDENTITY_BIZ);
+	});
+
+	// Codex code R1#1: prove the GLOBAL EXIT trap releases the claude-json lock on
+	// an abnormal exit even in FLY-852 delegated mode (acquire_lock returns early
+	// without arming a per-acquire trap). We hold the lock at kill time by making
+	// the identity `node` patch BLOCK: a `node` stub that just sleeps is put first
+	// on PATH, so sync_identity acquires the claude-json lock and then stalls in
+	// the patch. SIGTERM the shell → the global EXIT trap must free the lock.
+	// (A FIFO can't be used as $CLAUDE_JSON — it fails the `-f` regular-file gate.)
+	it("delegated mode: SIGTERM while holding the claude-json lock still releases it (global EXIT trap)", async () => {
+		seedIdentity("personal", IDENTITY_BIZ);
+		const lock = claudeJsonLock; // scratch claude.json is a regular file → passes `-f`
+		// A `node` that ignores its args and blocks — makes the patch step stall
+		// AFTER the lock is acquired. It records its own pid (which `exec sleep`
+		// inherits) so cleanup can reap the orphaned sleep deterministically.
+		const binDir = join(tmp, "stubbin");
+		mkdirSync(binDir, { recursive: true });
+		const stubPidFile = join(tmp, "stub.pid");
+		writeFileSync(
+			join(binDir, "node"),
+			'#!/bin/sh\necho $$ > "$FLY865_STUB_PID"\nexec sleep 20\n',
+			{ mode: 0o755 },
+		);
+		// Delegated: pre-hold the ACCOUNTS lock as THIS process so the child's
+		// acquire_lock returns early WITHOUT arming a per-acquire trap.
+		mkdirSync(lockDir, { recursive: true });
+		writeFileSync(
+			join(lockDir, "holder"),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
+		);
+		const child = spawn("bash", [PROFILE_BIN, "use", "personal"], {
+			env: env({
+				FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+				FLY865_STUB_PID: stubPidFile,
+				PATH: `${binDir}:${process.env.PATH ?? ""}`,
+			}),
+			stdio: "ignore",
+		});
+		const waitFor = async (cond: () => boolean): Promise<boolean> => {
+			for (let i = 0; i < 250; i++) {
+				if (cond()) return true;
+				await new Promise((r) => setTimeout(r, 20));
+			}
+			return cond();
+		};
+		// Script acquired `lock`, then stalled in the sleeping node patch.
+		expect(await waitFor(() => existsSync(lock))).toBe(true);
+		child.kill("SIGTERM"); // just the shell
+		// The global EXIT trap must have released the lock despite delegated mode.
+		expect(await waitFor(() => !existsSync(lock))).toBe(true);
+		// Cleanup: reap the orphaned sleep + kill the shell if still alive.
+		try {
+			const sleepPid = Number(readFileSync(stubPidFile, "utf-8").trim());
+			if (sleepPid > 0) process.kill(sleepPid, "SIGKILL");
+		} catch {
+			/* stub already gone */
+		}
+		try {
+			child.kill("SIGKILL");
+		} catch {
+			/* already dead */
+		}
+		rmSync(lockDir, { recursive: true, force: true });
+	}, 15000);
 });

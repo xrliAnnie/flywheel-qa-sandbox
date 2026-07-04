@@ -65,13 +65,26 @@ const ENV_KEYS = [
 	"FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE",
 	"FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT",
 	"FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS",
+	// FLY-865 — isolate the identity write from the real ~/.claude.json.
+	"FLYWHEEL_CLAUDE_JSON",
+	"FLYWHEEL_CLAUDE_JSON_LOCK",
 	"FAKE_SEC_STATE",
 	"FAKE_SEC_ARGV_LOG",
 ] as const;
 
+// FLY-865: the target account's display identity, snapshotted in the pool.
+const SCHOOL_IDENTITY = {
+	accountUuid: "uuid-school",
+	emailAddress: "school@example.com",
+	organizationUuid: "org-school",
+	organizationName: "School Org",
+	displayName: "Scholar",
+};
+
 let tmp: string;
 let lockPath: string;
 let storePath: string;
+let claudeJson: string;
 let saved: Record<string, string | undefined>;
 
 beforeEach(() => {
@@ -91,6 +104,21 @@ beforeEach(() => {
 	writeFileSync(join(pool, "school", ".credentials.json"), SECRET_B, {
 		mode: 0o600,
 	});
+	// FLY-865: school has a captured display identity; personal does not.
+	writeFileSync(
+		join(pool, "school", "oauthAccount.json"),
+		JSON.stringify(SCHOOL_IDENTITY),
+		{ mode: 0o600 },
+	);
+	// A scratch ~/.claude.json (identity currently = personal) — never the real one.
+	claudeJson = join(tmp, "claude.json");
+	writeFileSync(
+		claudeJson,
+		JSON.stringify({
+			numStartups: 7,
+			oauthAccount: { accountUuid: "u-personal", emailAddress: "p@x.com" },
+		}),
+	);
 	writeFileSync(stubBin, STUB, { mode: 0o755 });
 	writeFileSync(stateFile, SECRET_A); // current machine credential
 	writeFileSync(argvLog, "");
@@ -117,6 +145,9 @@ beforeEach(() => {
 	process.env.FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT = "seamacct";
 	// Regression speed: an un-delegated child would time out in 2s, not 30s.
 	process.env.FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS = "2000";
+	// FLY-865: point the identity write at the scratch file + isolated lock.
+	process.env.FLYWHEEL_CLAUDE_JSON = claudeJson;
+	process.env.FLYWHEEL_CLAUDE_JSON_LOCK = `${claudeJson}.lock`;
 	process.env.FAKE_SEC_STATE = stateFile;
 	process.env.FAKE_SEC_ARGV_LOG = argvLog;
 });
@@ -168,5 +199,12 @@ describe("switchAccount ↔ flywheel-claude-profile seam (REAL lock + REAL scrip
 		// The parent released the lock at the end (the delegated child must not
 		// have released it mid-critical-section NOR left it behind).
 		expect(existsSync(lockPath)).toBe(false);
+		// FLY-865: the REAL bash `use` also wrote school's display identity into
+		// the scratch ~/.claude.json (oauthAccount swapped, other keys preserved).
+		const cj = JSON.parse(readFileSync(claudeJson, "utf-8"));
+		expect(cj.oauthAccount).toEqual(SCHOOL_IDENTITY);
+		expect(cj.numStartups).toBe(7); // untouched
+		// No stray identity-write temp files left behind.
+		expect(existsSync(`${claudeJson}.lock`)).toBe(false);
 	});
 });

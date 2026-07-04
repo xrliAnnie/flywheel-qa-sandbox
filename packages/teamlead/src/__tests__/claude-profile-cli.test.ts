@@ -9,11 +9,15 @@ import { makeClaudeProfileSwitchDeps } from "../account-heal/claude-profile-cli.
 
 const BIN = "/x/flywheel-claude-profile";
 
-function deps(execFile: ReturnType<typeof vi.fn>) {
+function deps(
+	execFile: ReturnType<typeof vi.fn>,
+	onWarn?: (m: string) => void,
+) {
 	return makeClaudeProfileSwitchDeps({
 		binPath: BIN,
 		execFile: execFile as never,
 		withLock: async (_l, fn) => fn(),
+		onWarn,
 	});
 }
 
@@ -34,6 +38,41 @@ describe("makeClaudeProfileSwitchDeps", () => {
 				}),
 			}),
 		);
+	});
+
+	it("FLY-865: applyProfile forwards the switch script's stderr (identity warning) via onWarn on a SUCCESSFUL (exit 0) switch", async () => {
+		// `use` exits 0 (token switched) but warned on stderr that the display
+		// identity was not updated — execFile discards it, so onWarn must surface it.
+		const execFile = vi.fn(async () => ({
+			stdout: "Switched machine Claude account to profile 'school'",
+			stderr:
+				"Warning: profile 'school' has no captured display identity — new claude /status may show a stale account. To fix: capture school",
+		}));
+		const warns: string[] = [];
+		await deps(execFile, (m) => warns.push(m)).applyProfile("school");
+		expect(warns).toHaveLength(1);
+		expect(warns[0]).toContain("use school");
+		expect(warns[0]).toContain("no captured display identity");
+	});
+
+	it("FLY-865: applyProfile does NOT warn when the switch had no stderr", async () => {
+		const execFile = vi.fn(async () => ({ stdout: "Switched", stderr: "" }));
+		const warns: string[] = [];
+		await deps(execFile, (m) => warns.push(m)).applyProfile("school");
+		expect(warns).toHaveLength(0);
+	});
+
+	it("FLY-865: applyProfile does NOT warn on the non-warning success stderr line", async () => {
+		// `use` prints the identity-success line to stderr too; it must not be
+		// logged at warn level (only real "Warning:" lines are forwarded).
+		const execFile = vi.fn(async () => ({
+			stdout: "Switched machine Claude account to profile 'school'",
+			stderr:
+				"Updated ~/.claude.json display identity to 'school' (email: s@x.com)",
+		}));
+		const warns: string[] = [];
+		await deps(execFile, (m) => warns.push(m)).applyProfile("school");
+		expect(warns).toHaveLength(0);
 	});
 
 	it("applyProfile throws when the script exits non-zero (fail-closed)", async () => {

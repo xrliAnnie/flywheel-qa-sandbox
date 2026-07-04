@@ -50,6 +50,19 @@ KEYCHAIN="${FLYWHEEL_CLAUDE_KEYCHAIN:-}"
 LOCK_TIMEOUT_MS="${FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS:-30000}"
 ACTIVE_FILE="$POOL_DIR/.active"
 
+# FLY-865: display-identity sync. `use` writes the target account's oauthAccount
+# block into ~/.claude.json (the source `/status` reads email/org from) so a new
+# claude shows the switched account; `capture` snapshots that identity beside the
+# pooled token. CLAUDE_JSON_LOCK defaults to "${CLAUDE_JSON}.lock" so the real
+# file maps to ~/.claude.json.lock — the SAME mkdir mutex scripts/inject-linear-
+# issue.sh and scripts/test-teardown.sh serialize their trust-entry writes with,
+# so the three read-merge-write writers never drop each other's changes. Scratch
+# fixtures (FLYWHEEL_CLAUDE_JSON) get their own isolated lock.
+CLAUDE_JSON="${FLYWHEEL_CLAUDE_JSON:-$HOME/.claude.json}"
+CLAUDE_JSON_LOCK="${FLYWHEEL_CLAUDE_JSON_LOCK:-${CLAUDE_JSON}.lock}"
+: "${CLAUDE_LOCK_STALE_S:=60}"   # steal a claude-json lock older than this (crash)
+: "${CLAUDE_LOCK_WAIT_S:=30}"    # give up acquiring the claude-json lock after this
+
 usage() {
   cat <<EOF
 Usage: flywheel-claude-profile <command> [args]
@@ -120,6 +133,48 @@ lock_is_stale() {
 LOCK_HELD=0
 release_lock() { [[ "$LOCK_HELD" -eq 1 ]] && rm -rf "$LOCK_DIR" 2>/dev/null || true; }
 
+# FLY-865: the ~/.claude.json lock (mkdir mutex + mtime stale-steal + timeout),
+# byte-compatible with scripts/inject-linear-issue.sh:acquire_claude_lock so all
+# three writers of ~/.claude.json serialize on the same lock. Only `use`'s
+# identity write takes it (capture only reads — rename(2) is atomic, no torn
+# read). Nesting order is always accounts-lock → claude-json-lock; inject/
+# teardown take ONLY the claude-json lock, so there is no deadlock cycle.
+CLAUDE_JSON_LOCK_HELD=0
+release_claude_json_lock() {
+  if [[ "$CLAUDE_JSON_LOCK_HELD" -eq 1 ]]; then
+    rmdir "$CLAUDE_JSON_LOCK" 2>/dev/null || true
+    CLAUDE_JSON_LOCK_HELD=0
+  fi
+}
+# Release BOTH locks. Armed as a GLOBAL `trap cleanup_locks EXIT` below (before
+# any dispatch), so it fires on normal exit, set -e abort, and SIGINT/SIGTERM —
+# in delegated mode too (where acquire_lock returns before it could set a trap).
+# Each release no-ops when its *_HELD flag is 0.
+cleanup_locks() { release_lock; release_claude_json_lock; }
+
+acquire_claude_json_lock() { # returns non-zero on timeout (caller warns, best-effort)
+  local waited_ms=0 step_ms=100 max_ms=$(( CLAUDE_LOCK_WAIT_S * 1000 ))
+  while ! mkdir "$CLAUDE_JSON_LOCK" 2>/dev/null; do
+    if [[ -d "$CLAUDE_JSON_LOCK" ]]; then
+      local mtime now age
+      mtime=$(stat_mtime "$CLAUDE_JSON_LOCK" 2>/dev/null || echo "")
+      now=$(date +%s)
+      if [[ -n "$mtime" ]]; then
+        age=$(( now - mtime ))
+        if (( age > CLAUDE_LOCK_STALE_S )); then
+          rmdir "$CLAUDE_JSON_LOCK" 2>/dev/null || true
+          continue
+        fi
+      fi
+    fi
+    if (( waited_ms >= max_ms )); then return 1; fi
+    sleep 0.1
+    waited_ms=$(( waited_ms + step_ms ))
+  done
+  CLAUDE_JSON_LOCK_HELD=1
+  return 0
+}
+
 acquire_lock() {
   # FLY-852 (QA-caught self-deadlock): the Node switch executor calls `use`
   # INSIDE its own withMkdirLock critical section on this SAME lock — taking it
@@ -151,7 +206,6 @@ acquire_lock() {
     sleep 0.05
   done
   LOCK_HELD=1
-  trap release_lock EXIT
   printf '{"pid":%d,"at":%d}' "$$" "$(now_ms)" > "$LOCK_DIR/holder"
 }
 
@@ -217,6 +271,177 @@ kc_write() { # $1 = secret. NO-ARGV path: command incl. value goes via stdin (-i
   fi
 }
 
+# ------------------------------------------------------- display identity (FLY-865)
+# An account's DISPLAY identity (the `oauthAccount` block `/status` reads: email/
+# org/uuid) lives in ~/.claude.json, NOT in the Keychain token. Switching the
+# token alone left the display on the old account (FLY-865). We snapshot the
+# identity beside the pooled token on `capture` and write it back on `use`.
+#
+# All identity IO is BEST-EFFORT: the token switch (verify-before-commit above)
+# is authoritative, so a failed identity read/write only warns and returns 0 —
+# it must NEVER turn a committed token switch into a non-zero exit (the Node
+# switch executor treats non-zero `use` as "switch failed, state untouched").
+# The opaque token cannot be decoded to an identity, so capture/restore is the
+# only mechanism; we NEVER clear oauthAccount (undocumented refetch + risks the
+# "never break the claude login" red line).
+
+# require_identity_entry: 0 ok, 1 present-but-unusable (symlink / non-file /
+# not 0600-0400; warns), 2 missing (caller emits the re-capture hint).
+require_identity_entry() {
+  local f="$1" perms
+  if [[ -L "$f" ]]; then echo "Warning: identity file $f is a symlink — refusing" >&2; return 1; fi
+  if [[ ! -e "$f" ]]; then return 2; fi
+  if [[ ! -f "$f" ]]; then echo "Warning: identity file $f is not a regular file — refusing" >&2; return 1; fi
+  perms=$(stat_perms "$f") || { echo "Warning: cannot stat identity file $f — refusing" >&2; return 1; }
+  case "$perms" in
+    600|400) : ;;
+    *) echo "Warning: identity file $f has mode $perms (must be 600/400) — refusing" >&2; return 1 ;;
+  esac
+  return 0
+}
+
+# extract_claude_identity <claude.json> <out>: validate $1 has a real oauthAccount
+# object and atomically write it to $2 (0600); print its email on stdout. Non-zero
+# (no side effect on $2) when there is no valid oauthAccount to capture.
+extract_claude_identity() {
+  node --input-type=module - "$1" "$2" <<'NODE'
+import { readFileSync, writeFileSync, renameSync, chmodSync, unlinkSync } from "node:fs";
+const [target, out] = process.argv.slice(2);
+const REQ = ["accountUuid", "emailAddress", "organizationUuid", "organizationName"];
+const isValidIdentity = (o) =>
+  o !== null && typeof o === "object" && !Array.isArray(o) &&
+  REQ.every((k) => typeof o[k] === "string" && o[k].length > 0);
+let obj;
+try { obj = JSON.parse(readFileSync(target, "utf-8")); }
+catch { process.stderr.write(`cannot parse ${target}\n`); process.exit(1); }
+const oa = obj !== null && typeof obj === "object" && !Array.isArray(obj) ? obj.oauthAccount : undefined;
+if (!isValidIdentity(oa)) { process.stderr.write(`no valid oauthAccount in ${target}\n`); process.exit(1); }
+let tmp;
+for (let i = 0; i < 8; i++) {
+  const cand = `${out}.fly865.${process.pid}.${i}`;
+  try { writeFileSync(cand, JSON.stringify(oa), { flag: "wx", mode: 0o600 }); tmp = cand; break; }
+  catch (e) { if (e && e.code !== "EEXIST") { process.stderr.write(`write failed: ${e.message}\n`); process.exit(1); } }
+}
+if (tmp === undefined) { process.stderr.write(`could not create temp for ${out}\n`); process.exit(1); }
+try { chmodSync(tmp, 0o600); renameSync(tmp, out); }
+catch (e) { try { unlinkSync(tmp); } catch {} process.stderr.write(`rename failed: ${e.message}\n`); process.exit(1); }
+process.stdout.write(`${oa.emailAddress}\n`);
+NODE
+}
+
+# patch_claude_json_identity <identity-src> <claude.json>: validate both, then
+# atomically replace ONLY the oauthAccount field of $2 with $1 (all other keys
+# preserved, mode preserved), with a post-write read-back verify. Print the
+# applied email on stdout. Non-zero (target byte-untouched) on any failure.
+# MUST be called with CLAUDE_JSON_LOCK held.
+patch_claude_json_identity() {
+  node --input-type=module - "$1" "$2" <<'NODE'
+import { readFileSync, writeFileSync, renameSync, chmodSync, statSync, lstatSync, unlinkSync } from "node:fs";
+const [src, target] = process.argv.slice(2);
+const REQ = ["accountUuid", "emailAddress", "organizationUuid", "organizationName"];
+const isValidIdentity = (o) =>
+  o !== null && typeof o === "object" && !Array.isArray(o) &&
+  REQ.every((k) => typeof o[k] === "string" && o[k].length > 0);
+// Refuse a symlinked target INSIDE the locked write path (Codex R2#1).
+let st;
+try { st = lstatSync(target); } catch { process.stderr.write(`cannot lstat ${target}\n`); process.exit(1); }
+if (st.isSymbolicLink()) { process.stderr.write(`${target} is a symlink — refusing to write display identity\n`); process.exit(1); }
+let identity;
+try { identity = JSON.parse(readFileSync(src, "utf-8")); }
+catch { process.stderr.write(`cannot parse identity ${src}\n`); process.exit(1); }
+if (!isValidIdentity(identity)) { process.stderr.write(`invalid identity object in ${src}\n`); process.exit(1); }
+let obj;
+try { obj = JSON.parse(readFileSync(target, "utf-8")); }
+catch { process.stderr.write(`${target} is not valid JSON — refusing to overwrite\n`); process.exit(1); }
+if (obj === null || typeof obj !== "object" || Array.isArray(obj)) { process.stderr.write(`${target} is not a JSON object — refusing\n`); process.exit(1); }
+obj.oauthAccount = identity;
+const mode = statSync(target).mode & 0o777;
+let tmp;
+for (let i = 0; i < 8; i++) {
+  const cand = `${target}.fly865.${process.pid}.${i}`;
+  try { writeFileSync(cand, JSON.stringify(obj), { flag: "wx", mode }); tmp = cand; break; }
+  catch (e) { if (e && e.code !== "EEXIST") { process.stderr.write(`write failed: ${e.message}\n`); process.exit(1); } }
+}
+if (tmp === undefined) { process.stderr.write(`could not create temp near ${target}\n`); process.exit(1); }
+try { chmodSync(tmp, mode); renameSync(tmp, target); }
+catch (e) { try { unlinkSync(tmp); } catch {} process.stderr.write(`rename failed: ${e.message}\n`); process.exit(1); }
+// Post-write read-back verify — detect a concurrent (non-lock-respecting) clobber
+// (Codex R2#5). Compare the FULL required identity subset, not just email (a
+// same-email/different-org clobber must not pass — /status shows org too).
+try {
+  const after = JSON.parse(readFileSync(target, "utf-8"));
+  const oa = after && after.oauthAccount;
+  if (!oa || REQ.some((k) => oa[k] !== identity[k])) {
+    process.stderr.write(`post-write verify mismatch (concurrent write?)\n`); process.exit(1);
+  }
+} catch { process.stderr.write(`post-write verify read failed\n`); process.exit(1); }
+process.stdout.write(`${identity.emailAddress}\n`);
+NODE
+}
+
+# capture_identity <name>: snapshot the CURRENT ~/.claude.json oauthAccount beside
+# the just-captured token. If there is no valid identity to capture, DELETE any
+# stale oauthAccount.json for this profile so a fresh token is never paired with
+# an old identity (Codex R1#2). Best-effort — always returns 0.
+capture_identity() {
+  # Separate declarations: a combined `local name="$1" out="…$name…"` would
+  # expand the CALLER's dynamically-scoped `name`, not this one (ShellCheck SC2318).
+  local name="$1" email=""
+  local out="$POOL_DIR/$name/oauthAccount.json"
+  if [[ -L "$out" ]]; then
+    echo "Warning: $out is a symlink — refusing to capture display identity for '$name'" >&2
+    return 0
+  fi
+  if [[ ! -f "$CLAUDE_JSON" ]]; then
+    echo "Warning: $CLAUDE_JSON not found — no display identity captured for '$name'. Log into '$name' then re-run: flywheel-claude-profile capture $name" >&2
+    rm -f "$out" 2>/dev/null || true
+    return 0
+  fi
+  if email=$(extract_claude_identity "$CLAUDE_JSON" "$out"); then
+    echo "Captured display identity for '$name' (email: ${email:-unknown})"
+  else
+    echo "Warning: $CLAUDE_JSON has no valid oauthAccount — no display identity captured for '$name'. Log into '$name' then re-run: flywheel-claude-profile capture $name" >&2
+    rm -f "$out" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# sync_identity <name>: write the pooled identity for <name> into ~/.claude.json
+# (serialized on CLAUDE_JSON_LOCK). Best-effort — ALWAYS returns 0. Identity
+# messages go to STDERR so `use` STDOUT keeps its single "Switched…" line.
+sync_identity() {
+  # Separate declarations (ShellCheck SC2318): a combined local with `$name` in
+  # the RHS would read the caller's dynamically-scoped `name`, not this one.
+  local name="$1" rc=0 email=""
+  local src="$POOL_DIR/$name/oauthAccount.json"
+  # `; rc=$?` would let set -e abort on a non-zero return before capturing it.
+  require_identity_entry "$src" || rc=$?
+  if [[ $rc -eq 2 ]]; then
+    echo "Warning: profile '$name' has no captured display identity (oauthAccount.json). The machine Keychain token was switched, but ~/.claude.json display identity was NOT updated — a new claude '/status' may show a stale account. To fix: log into '$name' once, then run: flywheel-claude-profile capture $name" >&2
+    return 0
+  fi
+  if [[ $rc -ne 0 ]]; then
+    echo "Warning: display identity for '$name' NOT applied (token switched OK)." >&2
+    return 0
+  fi
+  if [[ ! -f "$CLAUDE_JSON" ]]; then
+    echo "Warning: $CLAUDE_JSON not found — display identity NOT updated for '$name' (token switched OK)." >&2
+    return 0
+  fi
+  if ! acquire_claude_json_lock; then
+    echo "Warning: could not acquire $CLAUDE_JSON_LOCK within ${CLAUDE_LOCK_WAIT_S}s — display identity NOT updated for '$name' (token switched OK)." >&2
+    return 0
+  fi
+  if email=$(patch_claude_json_identity "$src" "$CLAUDE_JSON"); then
+    release_claude_json_lock
+    echo "Updated ~/.claude.json display identity to '$name' (email: ${email:-unknown})" >&2
+  else
+    release_claude_json_lock
+    echo "Warning: failed to update ~/.claude.json display identity for '$name' (token switched OK; a new claude '/status' may show a stale account)." >&2
+  fi
+  return 0
+}
+
 # ------------------------------------------------------------------ commands
 get_active() { [[ -f "$ACTIVE_FILE" ]] && cat "$ACTIVE_FILE" || echo ""; }
 
@@ -266,6 +491,8 @@ use_profile() {
 
   printf '%s' "$name" > "$ACTIVE_FILE.tmp"
   mv "$ACTIVE_FILE.tmp" "$ACTIVE_FILE"
+  # FLY-865: swap the DISPLAY identity too (best-effort; never fails the switch).
+  sync_identity "$name"
   echo "Switched machine Claude account to profile '$name' (new spawns use it; live sessions wait for reset)"
 }
 
@@ -303,10 +530,22 @@ capture_profile() {
   mv "$dir/.credentials.json.tmp" "$dir/.credentials.json"
   chmod 600 "$dir/.credentials.json"
   echo "Captured current Keychain credential into pool profile '$name'"
+  # FLY-865: snapshot the account's DISPLAY identity beside the token (or clear a
+  # stale one so a fresh token is never paired with an old identity).
+  capture_identity "$name"
 }
 
 mkdir -p "$POOL_DIR"
 chmod 700 "$POOL_DIR" 2>/dev/null || true
+
+# Arm the lock cleanup GLOBALLY, before any command can acquire a lock. This
+# covers the FLY-852 delegated path (acquire_lock returns early without setting
+# a trap) AND abnormal exits: on bash 3.2/5 the EXIT trap fires on a set -e
+# abort AND on SIGINT/SIGTERM (verified), so an aborted switch never orphans the
+# accounts lock or the shared ~/.claude.json.lock. Both releases no-op when
+# their *_HELD flag is 0, so this is safe in delegated mode (parent owns the
+# accounts lock; child never touches it).
+trap cleanup_locks EXIT
 
 case "${1:-}" in
   list)    list_profiles ;;
