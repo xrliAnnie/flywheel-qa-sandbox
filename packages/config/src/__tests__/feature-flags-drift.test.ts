@@ -111,6 +111,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: milestone notify grace window (FLY-725)",
 	FLYWHEEL_CRON_STALE_TTL_MIN:
 		"tuning knob: cron stale-blocker TTL minutes (FLY-742)",
+	FLYWHEEL_THREE_STAGE_MAX_FIX_ROUNDS:
+		"tuning knob: three-stage QA fix-loop round cap, default 3 (FLY-859)",
 };
 
 function walk(dir: string, out: string[]): void {
