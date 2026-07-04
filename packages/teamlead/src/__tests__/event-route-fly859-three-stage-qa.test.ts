@@ -100,6 +100,7 @@ describe("event-route qa_result split (FLY-859)", () => {
 			},
 			resolveThreeStage: () => ({ enabled: true }),
 			listStrandedDesignPhases: () => [],
+			resolveLeadId: () => "test-lead",
 			qaVerdicts: {
 				getSession: (id) =>
 					store.getSession(id) as unknown as PhaseSession | undefined,

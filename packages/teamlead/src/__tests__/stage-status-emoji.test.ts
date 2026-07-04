@@ -40,7 +40,7 @@ describe("FLY-560: stage → status emoji", () => {
 		expect(stageEmoji("code_review")).toBe("👀");
 		expect(stageEmoji("implement")).toBe("🔨");
 		expect(stageEmoji("test")).toBe("🧪");
-		expect(stageEmoji("pr_created")).toBe("⏳");
+		expect(stageEmoji("pr_created")).toBe("📬");
 		expect(stageEmoji("approve")).toBe("⏳");
 		expect(stageEmoji("ship")).toBe("🚀");
 		expect(stageEmoji("completed")).toBe("✅");
@@ -131,8 +131,8 @@ describe("FLY-560 UX iteration: stage → status word", () => {
 		expect(stageEmoji("design_review")).toBe(stageEmoji("code_review"));
 	});
 
-	it("collapses the ⏳ awaiting cluster (pr_created/approve) to one 待批", () => {
-		expect(stageWord("pr_created")).toBe("待批");
+	it("FLY-795: pr_created (PR已开) is split from approve (待批)", () => {
+		expect(stageWord("pr_created")).toBe("PR已开");
 		expect(stageWord("approve")).toBe("待批");
 	});
 
@@ -168,7 +168,7 @@ describe("FLY-560 UX iteration: stageBadge (emoji-only vs emoji+word)", () => {
 		expect(stageBadge("design_review", true)).toBe("👀设计审");
 		expect(stageBadge("test", true)).toBe("🧪QA");
 		expect(stageBadge("code_review", true)).toBe("👀代码审");
-		expect(stageBadge("pr_created", true)).toBe("⏳待批");
+		expect(stageBadge("pr_created", true)).toBe("📬PR已开");
 		expect(stageBadge("approve", true)).toBe("⏳待批");
 		expect(stageBadge("ship", true)).toBe("🚀ship");
 		expect(stageBadge("completed", true)).toBe("✅完成");
