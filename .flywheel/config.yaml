@@ -160,3 +160,10 @@ agents:
     agent_file: .flywheel/agents/general-executor.md
     match:
       labels: []
+
+# FLY-793 / Annie 2026-07-04: enable the three-stage pipeline (Design→Implement→QA)
+# for the flywheel project ONLY — "我们现在开始用三段式真正干活，这个只需要开在 flywheel".
+# Per-project opt-in knob (ConfigLoader validates boolean; default absent=off).
+# E2E-verified: FLY-824 FINAL PASS + FLY-849 combined-batch PASS (5 rounds, PR #440).
+pipeline:
+  three_stage: true
