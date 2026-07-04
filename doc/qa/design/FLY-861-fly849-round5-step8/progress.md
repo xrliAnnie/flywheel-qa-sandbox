@@ -1,13 +1,14 @@
 ---
 issue: FLY-861
-phase: implement
-phaseCursor: 1/2
-updated: 2026-07-04T12:44:13.898Z
-nextStep: push + open PR against qa/fly849-793-batch-combined; NO self-ship
+phase: qa
+phaseCursor: 2/2
+updated: 2026-07-04T12:59:00.929Z
+nextStep: qa-result PASS reported; proceeding to APPROVE GATE (QA phase
+  self-ships per FLY-859 Step 8)
 chunks: []
 pointers: {}
 ---
 
 # FLY-861 progress
-**phase**: implement (1/2)
-**next**: push + open PR against qa/fly849-793-batch-combined; NO self-ship
+**phase**: qa (2/2)
+**next**: qa-result PASS reported; proceeding to APPROVE GATE (QA phase self-ships per FLY-859 Step 8)
