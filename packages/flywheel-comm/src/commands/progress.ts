@@ -184,12 +184,27 @@ export function runProgress(
 		deps.writeTempAndRename(absPath, content);
 
 		// 6. Path-limited commit — commit ONLY progress.md, never sweep staged code.
+		// A FIRST-EVER progress.md is UNTRACKED, and `git commit --only -- <path>`
+		// rejects an untracked pathspec (code-review R2 HIGH) — so stage the file
+		// first with a path-limited `git add`, then `commit --only` that one path
+		// (still never sweeps other staged code). On failure, unstage AND restore the
+		// prior on-disk snapshot so a failed commit leaves NO half-applied ledger and
+		// NO dangling index entry.
+		const rollback = (): void => {
+			deps.git(["reset", "-q", "HEAD", "--", args.file]); // unstage (no-op if none)
+			deps.restoreFile(absPath, priorContent);
+		};
+		const add = deps.git(["add", "--", args.file]);
+		if (add.status !== 0) {
+			rollback();
+			return fail(
+				`git add failed (status ${add.status}): ${add.stderr.trim()}`,
+			);
+		}
 		const msg = `chore(progress): ${ledger.issue} ${ledger.phase}${ledger.phaseCursor ? ` ${ledger.phaseCursor}` : ""}`;
 		const commit = deps.git(["commit", "--only", "-m", msg, "--", args.file]);
 		if (commit.status !== 0) {
-			// Restore the pre-write snapshot — a failed commit must not leave a
-			// half-applied progress.md on disk (MED-5).
-			deps.restoreFile(absPath, priorContent);
+			rollback();
 			return fail(
 				`git commit --only failed (status ${commit.status}): ${commit.stderr.trim()}`,
 			);
@@ -197,7 +212,14 @@ export function runProgress(
 		return { ok: true, path: args.file };
 	};
 
-	return deps.withLock ? deps.withLock(absPath, run) : run();
+	if (!deps.withLock) return run();
+	// A fail-closed lock acquisition (or any throw under the lock) becomes a clean
+	// failure result rather than crashing the CLI.
+	try {
+		return deps.withLock(absPath, run);
+	} catch (err) {
+		return fail((err as Error).message);
+	}
 }
 
 // ── merge / helpers ────────────────────────────────────────────────
@@ -356,15 +378,17 @@ function liveDeps(): ProgressDeps {
 			}
 		},
 		withLock: (absPath, fn) => {
-			// Best-effort exclusive lock via O_EXCL lockfile with brief bounded retry.
-			// A stale lock (crashed writer) older than 30s is reclaimed so a runner is
-			// never wedged. Single-writer means real contention is rare.
+			// Exclusive lock via O_EXCL lockfile with bounded retry. A stale lock
+			// (crashed writer) older than 30s is reclaimed so a runner is never wedged.
+			// FAIL-CLOSED (code-review R2 MED): if the lock is genuinely held by an
+			// active writer for the whole retry window, THROW rather than run `fn`
+			// unlocked — running the critical section without the lock is exactly the
+			// interleaving the lock exists to prevent. Single-writer means this is rare.
 			const lockPath = `${absPath}.lock`;
 			let fd: number | undefined;
-			for (let attempt = 0; attempt < 50; attempt++) {
+			for (let attempt = 0; attempt < 50 && fd === undefined; attempt++) {
 				try {
 					fd = openSync(lockPath, "wx");
-					break;
 				} catch {
 					// Held — reclaim if clearly stale, else spin briefly.
 					try {
@@ -376,10 +400,15 @@ function liveDeps(): ProgressDeps {
 					sleepMs(100);
 				}
 			}
+			if (fd === undefined) {
+				throw new Error(
+					`could not acquire progress lock ${lockPath} after bounded retry (another writer holds it)`,
+				);
+			}
 			try {
 				return fn();
 			} finally {
-				if (fd !== undefined) closeSync(fd);
+				closeSync(fd);
 				rmSync(lockPath, { force: true });
 			}
 		},

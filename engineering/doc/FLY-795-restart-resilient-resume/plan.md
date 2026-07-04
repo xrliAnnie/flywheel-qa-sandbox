@@ -147,11 +147,11 @@ pr: #<n>   reviewed_sha: <sha>    # 有则填
   - **terminate / reboot resume**(**新** execution,读 progress.md 续)→ FLY-623 的 reconnecting 集**不会**进(它只认 persisted `running`+stale heartbeat+tmux alive,`HeartbeatService.ts:141-147/529-532`)→ **静默续、新 execution 显示正常 stage badge**。这与 **Q2=甲 静默自动续**一致 —— **v1 刻意不给 terminate/reboot resume 额外 marker**(若日后要专属可见信号 = follow-up)。
 
 ### 3.6 badge 修(Annie 校正,搭车)——(Codex R1 #8:显式 legacy 条目)
-- `stage-utils.ts`:`STAGE_EMOJI` `test:🧪→🔨`、`pr_created:⏳→📬`;`STAGE_WORD` `test:QA→自测`、`pr_created:待批→PR已开`(与 `approve:待批` 拆开保留)。
-- **关键(#8)**:`EMOJI_TO_WORDS` 是从**当前** `STAGE_EMOJI`/`STAGE_WORD` **生成**的(`stage-utils.ts:156-168`)—— 改完后
-  **旧前缀(`🧪QA`、旧 `⏳待批`-pr_created)不再被 strip**。故必须在生成 map **之外显式加 legacy 词条**:`🧪→{QA}`(旧 test)、
-  `⏳→{待批}`(保 approve 当前 + 兼容旧 pr_created);`📬→{PR已开}`、`🔨→{实现中,自测}` 新词。
-- **reverse-compat 单测**:旧 emoji+词 / 旧 emoji-only / 新 emoji+词 / 无关前导 emoji —— 四类都正确 strip/还原。
+> **实现期 Lead 修订(取代本节初稿的 `test` 部分)**:初稿基于我一张状态图把 `test` fine-stage 误标在 Implement 下,提议 `test:🧪→🔨自测`。**Lead 核实后确认:`test` 保持 🧪QA** —— auto-QA coordinator(`auto-qa-coordinator.ts:370/501`)给真正的独立 QA runner 盖的正是 `stage=test`,所以 🧪QA 是对的、不能改。**本 PR 只改 `pr_created`**(拆出 `📬PR已开`,与 `approve:⏳待批` 分开),`test` 不动。下面「原始设计」保留作历史,以实现为准。
+- ~~`stage-utils.ts`:`STAGE_EMOJI` `test:🧪→🔨`、`pr_created:⏳→📬`;`STAGE_WORD` `test:QA→自测`、`pr_created:待批→PR已开`~~ → **实取**:`STAGE_EMOJI` 仅 `pr_created:⏳→📬`(`test` 留 🧪);`STAGE_WORD` 仅 `pr_created:待批→PR已开`(`test` 留 QA、`approve` 留 待批)。
+- **关键(#8)**:`EMOJI_TO_WORDS` 是从**当前** `STAGE_EMOJI`/`STAGE_WORD` **生成**的 —— `pr_created` 拆到 `📬PR已开` 后,
+  旧 `⏳待批`-pr_created 前缀仍由 `approve:⏳待批` 覆盖可 strip、新 `📬PR已开` 由新 `pr_created` 词条覆盖可 strip;`test:🧪QA` 未改故天然仍可 strip。**无需额外 legacy 词条**(因为 `test`/`approve` 词都没变)。
+- **reverse-compat 单测**:新 `📬PR已开` / 旧 `⏳待批`(经 approve) / `🧪QA` 保持 / emoji-only / 无关前导 emoji —— 都正确 strip/还原(`stage-utils-badge.test.ts`)。
 
 ### 3.7 793 接口对齐(**Codex R1 #7:落成具体共享面 + 双向验收测**)
 - **一个共享 schema/parser 模块**(放**中立包 `flywheel-config`**——edge-worker/teamlead/flywheel-comm 三方都已依赖、零新依赖边,R3#1;
