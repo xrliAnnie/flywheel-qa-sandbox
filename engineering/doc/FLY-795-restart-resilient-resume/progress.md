@@ -10,7 +10,7 @@ chunks:
   - { id: c3, order: 3, deps: [c1], done: "teamlead progressResume core logic (branch-blob detect + effectiveStage authority + shareParentBranch reuse), 7 tests; WIRING into RunDispatcher remaining", status: doing }
   - { id: c4, order: 4, deps: [c3], done: "Blueprint resume-mode + effectiveStage suppression + FLYWHEEL_PROGRESS_PATH inject", status: todo }
   - { id: c5, order: 5, deps: [c4], done: "adapters FLYWHEEL_PROGRESS_PATH env (Claude + Codex)", status: todo }
-  - { id: c6, order: 6, deps: [c1], done: "stage-utils badge fix — CORRECTION: test stays 🧪QA (auto-qa-coordinator stamps stage=test for REAL QA, auto-qa-coordinator.ts:370/501; Annie校正基于我图误标test在Implement下); ONLY pr_created→📬PR已开 + legacy strip. surface to Lead/Annie.", status: todo }
+  - { id: c6, order: 6, deps: [c1], done: "stage-utils badge fix — CORRECTION: test stays 🧪QA (auto-qa-coordinator stamps stage=test for REAL QA, auto-qa-coordinator.ts:370/501; Annie校正基于我图误标test在Implement下); ONLY pr_created→📬PR已开 + legacy strip. Lead CONFIRMED 2026-07-03: c6 = pr_created→📬PR已开 + legacy strip ONLY; test stays 🧪QA. Lead relays the diagram-mislabel note to Annie.", status: todo }
 pointers:
   plan: engineering/doc/FLY-795-restart-resilient-resume/plan.md
   exploration: engineering/doc/FLY-795-restart-resilient-resume/exploration.md
