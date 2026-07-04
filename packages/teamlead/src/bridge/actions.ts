@@ -791,6 +791,12 @@ async function handleRetry(
 			runAttempt,
 			leadId: retryLeadId,
 			sessionRole,
+			// FLY-840: `shareParentBranch` is intentionally NOT propagated here yet.
+			// A retried three-stage phase therefore shows the generic `claude` cmux
+			// window label (byte-compat with pre-cmux-PR behavior, not a regression).
+			// Propagating it also changes the retry's branch behavior (shared branch
+			// B) — 793 retry-core — so the retry-path phase label + branch-B
+			// preservation are handled together in FLY-840.
 			// FLY-137 v1.27.2: dept-aware dispatch context for retry
 			issueLabels: retryIssueLabels,
 			owningDept: retryOwningDept,
