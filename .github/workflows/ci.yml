@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# FLY-350 (Z) R3-2: pin the GITHUB_TOKEN to the LEAST privilege CI needs
+# (read the repo to build/test — nothing else). Without an explicit block a
+# pull_request run gets the repo-DEFAULT token scope, which can include write
+# / issues / pull-requests — an INDIRECT action channel a model-authored PR
+# (opened via the gateway) could ride to comment / dispatch / merge, bypassing
+# the structural "Mufasa cannot :cool:" guarantee. default-deny + contents:read
+# closes it. (The `:cool:` ship workflow's own scope is FLY-367.)
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@flywheel.dev"
+          git config --global user.name "Flywheel CI"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+
+      - name: Build
+        run: pnpm build
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test
+        run: pnpm test:packages:run
+
+      # FLY-110: cmux-sync hook integration test runs against an isolated
+      # tmux server (custom -L socket name) so it cannot interfere with
+      # other CI processes. Verifies the production-critical cleanup path:
+      # pane-died (global hook) fires when a remain-on-exit pane process
+      # exits — the bug that left cmux sidebar entries hanging for 5+
+      # minutes in production until FLY-110.
+      - name: Install tmux for cmux-sync hook integration test
+        run: sudo apt-get update && sudo apt-get install -y tmux
+
+      - name: Integration test — cmux-sync hooks
+        run: bash scripts/test-cmux-sync-hooks-integration.sh
+
+      # FLY-183: Discord adapter orphan reaper tests. Hermetic — the reaper's
+      # process-table source is injected (FLY183_PS_OVERRIDE) and all spawned
+      # processes are test-owned, so this never touches a real adapter. lsof is
+      # needed for the cwd-probe / identity-label cases (T3/T4).
+      - name: Install lsof for adapter-reap test
+        run: sudo apt-get update && sudo apt-get install -y lsof
+
+      - name: Test — Discord adapter orphan reaper (FLY-183)
+        run: bash packages/teamlead/scripts/__tests__/adapter-reap.test.sh
+
+      # FLY-519: fleet provisioning toolchain — hermetic tests for the secret
+      # sanitizer, capture, and provision scripts, PLUS the zero-secret gate at
+      # the git boundary. `scan_for_secrets fleet/` fails CI if the committed
+      # fleet/ artifact ever contains secret-like content (e.g. a hand-edited
+      # artifact bypassing fleet-capture.sh's own gate — Codex design-review).
+      - name: Test — FLY-519 fleet provisioning + zero-secret gate
+        run: |
+          bash scripts/__tests__/fleet-sanitize.test.sh
+          bash scripts/__tests__/fleet-capture.test.sh
+          bash scripts/__tests__/provision-fleet-host.test.sh
+          bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
+
+      # FLY-513: global-codex repoint apply-path (hermetic — fake HOME + fake
+      # source release + mock codex on PATH; never touches the real global symlink).
+      - name: Test — FLY-513 global-codex repoint apply-path
+        run: bash packages/teamlead/scripts/__tests__/fly-513-repoint.test.sh
+
+      # FLY-697: Codex TRACE-log SSD-wear guard. Hermetic — runs against a
+      # throwaway sqlite DB and shims lsof/osascript via PATH, so it never
+      # touches a real ~/.codex/logs_2.sqlite. Needs the sqlite3 CLI.
+      - name: Install sqlite3 for codex-log-guard test
+        run: sudo apt-get update && sudo apt-get install -y sqlite3
+
+      - name: Test — FLY-697 codex-log-guard
+        run: bash scripts/__tests__/codex-log-guard.test.sh

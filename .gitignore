@@ -1,0 +1,33 @@
+# macOS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.*
+
+# Build output
+dist/
+
+# Logs
+logs/
+*.log
+
+# pnpm
+.pnpm-debug.log
+
+# TypeScript
+*.tsbuildinfo
+.claude/worktrees/
+.claude/scheduled_tasks.lock
+avatar-candidates/
+
+# Python bytecode (FLY-387 hook tests)
+__pycache__/
+*.pyc

@@ -1,0 +1,318 @@
+import { randomUUID } from "node:crypto";
+import type { BlueprintResult } from "./Blueprint.js";
+
+export interface EventEnvelope {
+	executionId: string;
+	issueId: string;
+	projectName: string;
+	issueIdentifier?: string;
+	issueTitle?: string;
+	retryPredecessor?: string;
+	runAttempt?: number;
+	/** GEO-152: Linear issue labels for multi-lead routing */
+	labels?: string[];
+	/** FLY-59: Session role for multi-session-per-issue support */
+	sessionRole?: string;
+	/**
+	 * FLY-493: the resolved executor backend ("claude-tmux" | "codex-tmux" |
+	 * "antigravity-tmux" | "kimi-tmux"). Persisted as `session.adapter_type` so
+	 * the dashboard/wake surfaces can see it — in particular so the no-transport
+	 * wake-guard recognizes a no-transport (e.g. antigravity / kimi, transport=none)
+	 * session and never routes a wake to the env-default claude mailbox.
+	 */
+	runnerBackend?: string;
+	/**
+	 * FLY-728: the resolved runner model (e.g. "claude-fable-5", "opus"). Persisted
+	 * as `session.runner_model` so the dashboard / issue surfaces show which model a
+	 * per-issue routed runner is using. Absent → no `--model` override was resolved
+	 * (account default), persisted as NULL (byte-compatible).
+	 */
+	runnerModel?: string;
+	/**
+	 * FLY-615: the resolved ponytail condition for this run (e.g. "on:label",
+	 * "off:default", "unavailable:readiness:on:project"). Persisted as
+	 * `session.ponytail_condition` — the join key for FLY-614 token accounting +
+	 * FLY-616 quality eval A/B buckets. Absent → no ponytail condition recorded
+	 * (byte-compatible).
+	 */
+	ponytailCondition?: string;
+}
+
+export interface ExecutionEventEmitter {
+	emitStarted(env: EventEnvelope): Promise<void>;
+	/**
+	 * FLY-137: Notify Bridge that the worktree has been created so it can
+	 * persist `session.worktree_path` BEFORE the Runner can fire any stage
+	 * event (design_review / pr_created). Must be awaited by the caller —
+	 * stage handlers downstream rely on the session row carrying the right
+	 * worktree path, otherwise `skip.json` and review markers land in a
+	 * fallback directory the Runner can't see.
+	 */
+	emitWorktreeReady(env: EventEnvelope, worktreePath: string): Promise<void>;
+	emitCompleted(
+		env: EventEnvelope,
+		result: BlueprintResult,
+		summary?: string,
+	): Promise<void>;
+	emitFailed(
+		env: EventEnvelope,
+		error: string,
+		lastActivity?: string,
+	): Promise<void>;
+	/** GEO-157: Heartbeat — dedicated route, no session_events, no lead notification */
+	emitHeartbeat(env: EventEnvelope): Promise<void>;
+	flush(): Promise<void>;
+}
+
+export class TeamLeadClient implements ExecutionEventEmitter {
+	private pending: Promise<void>[] = [];
+	private settled = new Set<Promise<void>>();
+
+	constructor(
+		private baseUrl: string,
+		private authToken?: string,
+	) {}
+
+	async emitStarted(env: EventEnvelope): Promise<void> {
+		const p = this.postEvent({
+			event_id: randomUUID(),
+			execution_id: env.executionId,
+			issue_id: env.issueId,
+			project_name: env.projectName,
+			event_type: "session_started",
+			payload: {
+				issueIdentifier: env.issueIdentifier,
+				issueTitle: env.issueTitle,
+				labels: env.labels,
+				sessionRole: env.sessionRole,
+				// FLY-493: executor backend → persisted as session.adapter_type.
+				runnerBackend: env.runnerBackend,
+				// FLY-728: resolved runner model → persisted as session.runner_model.
+				runnerModel: env.runnerModel,
+				// FLY-615: ponytail condition → persisted as session.ponytail_condition.
+				ponytailCondition: env.ponytailCondition,
+			},
+		});
+		this.track(p);
+	}
+
+	/** GEO-261: Terminal event — awaits reliable delivery with retry. */
+	async emitCompleted(
+		env: EventEnvelope,
+		result: BlueprintResult,
+		summary?: string,
+	): Promise<void> {
+		await this.postEventReliable({
+			event_id: randomUUID(),
+			execution_id: env.executionId,
+			issue_id: env.issueId,
+			project_name: env.projectName,
+			event_type: "session_completed",
+			payload: {
+				issueIdentifier: env.issueIdentifier,
+				issueTitle: env.issueTitle,
+				evidence: result.evidence,
+				decision: result.decision,
+				summary,
+				labels: result.labels,
+				projectId: result.projectId,
+				exitReason: result.exitReason,
+				consecutiveFailures: result.consecutiveFailures,
+				sessionRole: env.sessionRole,
+				// FLY-123 R1 #4: adapter resume params (e.g. Codex threadId)
+				sessionParams: result.sessionParams,
+			},
+		});
+	}
+
+	/** GEO-261: Terminal event — awaits reliable delivery with retry. */
+	async emitFailed(
+		env: EventEnvelope,
+		error: string,
+		lastActivity?: string,
+	): Promise<void> {
+		await this.postEventReliable({
+			event_id: randomUUID(),
+			execution_id: env.executionId,
+			issue_id: env.issueId,
+			project_name: env.projectName,
+			event_type: "session_failed",
+			payload: {
+				issueIdentifier: env.issueIdentifier,
+				issueTitle: env.issueTitle,
+				error,
+				lastActivity,
+				labels: env.labels,
+				sessionRole: env.sessionRole,
+			},
+		});
+	}
+
+	async emitHeartbeat(env: EventEnvelope): Promise<void> {
+		// Dedicated heartbeat route — lightweight, no session_events, no lead notification
+		const p = this.postHeartbeat(env.executionId);
+		this.track(p);
+	}
+
+	/**
+	 * FLY-137: Worktree_ready — awaited by Blueprint after worktree
+	 * creation, before adapter execution. Uses the reliable post path so
+	 * the caller can rely on Bridge having persisted `worktree_path`
+	 * before any downstream stage handler runs.
+	 */
+	async emitWorktreeReady(
+		env: EventEnvelope,
+		worktreePath: string,
+	): Promise<void> {
+		await this.postEventReliable({
+			event_id: randomUUID(),
+			execution_id: env.executionId,
+			issue_id: env.issueId,
+			project_name: env.projectName,
+			event_type: "worktree_ready",
+			payload: {
+				worktreePath,
+			},
+		});
+	}
+
+	async flush(): Promise<void> {
+		await Promise.allSettled(this.pending);
+		this.pending = [];
+		this.settled.clear();
+	}
+
+	/** Track a fire-and-forget promise, draining settled ones to prevent unbounded growth. */
+	private track(p: Promise<void>): void {
+		const tracked = p.finally(() => this.settled.add(tracked));
+		this.pending.push(tracked);
+		// Periodically drain settled entries
+		if (this.settled.size > 0) {
+			this.pending = this.pending.filter((item) => !this.settled.has(item));
+			this.settled.clear();
+		}
+	}
+
+	private buildHeaders(): Record<string, string> {
+		const headers: Record<string, string> = {
+			"Content-Type": "application/json",
+		};
+		if (this.authToken) {
+			headers.Authorization = `Bearer ${this.authToken}`;
+		}
+		return headers;
+	}
+
+	/**
+	 * GEO-261: Post a terminal event with retry on transient failures.
+	 * Fully self-contained: handles retry, timeout, and logging internally.
+	 * Never throws — logs console.error on final failure.
+	 */
+	private async postEventReliable(
+		body: Record<string, unknown>,
+		maxRetries = 3, // FLY-86: 4 total attempts for terminal events
+	): Promise<void> {
+		const eventType = body.event_type as string;
+		for (let attempt = 0; attempt <= maxRetries; attempt++) {
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 5_000);
+			try {
+				const res = await fetch(`${this.baseUrl}/events`, {
+					method: "POST",
+					headers: this.buildHeaders(),
+					body: JSON.stringify(body),
+					signal: controller.signal,
+				});
+				if (res.ok) return;
+
+				// 4xx (except 429) = permanent failure, don't retry
+				if (res.status >= 400 && res.status < 500 && res.status !== 429) {
+					console.error(
+						`[TeamLeadClient] ${eventType} permanently rejected: ${res.status} ${res.statusText}`,
+					);
+					return;
+				}
+
+				// 5xx or 429 = transient, retry if possible
+				const msg = `[TeamLeadClient] ${eventType} rejected: ${res.status} ${res.statusText}`;
+				if (attempt < maxRetries) {
+					console.warn(`${msg} (retrying in 1s...)`);
+					await new Promise((r) => setTimeout(r, 1000));
+				} else {
+					console.error(`${msg} (no retries left)`);
+				}
+			} catch (err) {
+				// Network error or abort timeout = transient, retry if possible
+				const msg = `[TeamLeadClient] ${eventType} failed: ${err instanceof Error ? err.message : String(err)}`;
+				if (attempt < maxRetries) {
+					console.warn(`${msg} (retrying in 1s...)`);
+					await new Promise((r) => setTimeout(r, 1000));
+				} else {
+					console.error(`${msg} (no retries left)`);
+				}
+			} finally {
+				clearTimeout(timeout);
+			}
+		}
+	}
+
+	private async postHeartbeat(executionId: string): Promise<void> {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 3_000);
+		try {
+			const res = await fetch(`${this.baseUrl}/events/heartbeat`, {
+				method: "POST",
+				headers: this.buildHeaders(),
+				body: JSON.stringify({ execution_id: executionId }),
+				signal: controller.signal,
+			});
+			if (!res.ok) {
+				console.warn(`[TeamLeadClient] Heartbeat rejected: ${res.status}`);
+			}
+		} catch {
+			// Silently ignore heartbeat failures — they're best-effort
+		} finally {
+			clearTimeout(timeout);
+		}
+	}
+
+	/** Best-effort event post for non-terminal events (session_started). */
+	private async postEvent(body: Record<string, unknown>): Promise<void> {
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 5_000);
+		try {
+			const res = await fetch(`${this.baseUrl}/events`, {
+				method: "POST",
+				headers: this.buildHeaders(),
+				body: JSON.stringify(body),
+				signal: controller.signal,
+			});
+			if (!res.ok) {
+				console.warn(
+					`[TeamLeadClient] Event rejected: ${res.status} ${res.statusText}`,
+				);
+			}
+		} catch (err) {
+			console.warn(
+				`[TeamLeadClient] Failed to post event: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		} finally {
+			clearTimeout(timeout);
+		}
+	}
+}
+
+export class NoOpEventEmitter implements ExecutionEventEmitter {
+	async emitStarted(_env: EventEnvelope): Promise<void> {}
+	async emitWorktreeReady(
+		_env: EventEnvelope,
+		_worktreePath: string,
+	): Promise<void> {}
+	async emitCompleted(
+		_env: EventEnvelope,
+		_result: BlueprintResult,
+	): Promise<void> {}
+	async emitFailed(_env: EventEnvelope, _error: string): Promise<void> {}
+	async emitHeartbeat(_env: EventEnvelope): Promise<void> {}
+	async flush(): Promise<void> {}
+}

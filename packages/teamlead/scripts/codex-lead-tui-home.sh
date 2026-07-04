@@ -1,0 +1,565 @@
+#!/bin/bash
+# FLY-259 PR-B — codex-lead-tui-home.sh: idempotent assembly + validation of a
+# Codex TUI Lead's isolated CODEX_HOME, and the remote-control daemon ensure.
+#
+# Usage:
+#   codex-lead-tui-home.sh ensure-home   # assemble/validate $FLYWHEEL_CODEX_TUI_HOME
+#   codex-lead-tui-home.sh ensure-daemon # idempotent `codex remote-control start`
+#
+# Contracts (plan v1.44.0 §3 D3 / §4 PR-B — review-pinned):
+#   - SAFETY PIN double-insurance: config.toml carries sandbox_mode=read-only +
+#     approval_policy=never (the runtime ALSO re-pins via thread params every
+#     resume; the TUI command line ALSO passes explicit flags — R4 HIGH-4).
+#     A pre-existing config with a DIFFERENT sandbox/approval value is a
+#     fail-close exit 1 (FLY-224 HIGH-1 semantics transplanted) — we never
+#     silently overwrite an operator's explicit (mis)configuration.
+#   - persona does NOT live here (thread-params baseInstructions is the only
+#     persona path; the demo-era AGENTS.md approach is retired — D3).
+#   - standalone install REQUIRED for the daemon (npm codex has no daemon
+#     backend): fail-loud with instructions, NEVER auto `curl | sh`.
+#   - auth.json must exist (provisioning is the operator's/FLY-246's job).
+#   - everything idempotent: re-running with a compliant home is a no-op.
+#
+# Env:
+#   FLYWHEEL_CODEX_TUI_HOME   (required) isolated CODEX_HOME path
+#   FLYWHEEL_CODEX_TUI_CWD    (required for ensure-home) Lead working dir to trust
+#   FLYWHEEL_CODEX_BIN        (optional) codex binary for ensure-daemon (default: codex)
+
+set -euo pipefail
+
+# FLY-694: macOS /bin/bash is the GPLv2-frozen bash 3.2, whose incremental script
+# reader silently mis-parses a here-document that straddles its internal read-buffer
+# boundary — a byte-layout-dependent defect that `bash -n` cannot detect on ANY bash
+# version. FLY-676 (#388) added ~1.8 KB to this file, shifting a heredoc onto a bad
+# boundary, so bash 3.2 failed to DEFINE write_full_access_config /
+# append_full_access_lead_actions_mcp at runtime → the Mufasa launcher hit
+# `line 395: write_full_access_config: command not found`, exited 127, and launchd
+# retried every 30s. In-file restructuring cannot fix it (the desync is intrinsic to
+# 3.2's heredoc reader — even a single brace-group / main() wrapper still desyncs), so
+# re-exec under a modern bash (>=4), which has no such defect and is therefore immune
+# to ANY future byte-layout shift. Self-contained (no launcher / PATH dependency);
+# idempotent via the sentinel; a host with no modern bash warns loudly and proceeds.
+if [ "${BASH_VERSINFO:-0}" -lt 4 ]; then
+  # Candidates are TRUSTED ABSOLUTE system paths only — never a PATH-resolved `bash`:
+  # the production wrapper prepends user-writable dirs (~/.local/bin) to PATH, and even
+  # the version probe below EXECUTES the candidate, so a PATH lookup could run a
+  # user-writable bash impersonator in this full-access context (Codex review LOW-2).
+  # These four cover macOS Homebrew (arm + intel/manual) and Linux (/usr/bin, /bin).
+  if [ -z "${FLYWHEEL_TUI_HOME_REEXEC:-}" ]; then
+    for _modern_bash in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash /bin/bash; do
+      [ -x "$_modern_bash" ] || continue
+      # only re-exec into a GENUINELY modern (>=4) bash — never loop back into a 3.x bash
+      # (e.g. macOS /bin/bash). The sentinel is a second backstop against re-exec loops.
+      if "$_modern_bash" -c 'exit $(( ${BASH_VERSINFO:-0} < 4 ))' 2>/dev/null; then
+        export FLYWHEEL_TUI_HOME_REEXEC=1
+        exec "$_modern_bash" "$0" "$@"
+      fi
+    done
+  fi
+  # Reached here only while STILL under bash <4 — either no modern bash was found, or a
+  # pre-set FLYWHEEL_TUI_HOME_REEXEC suppressed the re-exec (Codex review LOW-1). Warn
+  # loudly: the here-document desync may bite on this host.
+  echo "[codex-lead-tui-home] WARNING (FLY-694): running under bash ${BASH_VERSION:-?} (<4) and did not re-exec into a modern bash — here-document parsing may be unreliable on this host." >&2
+fi
+
+log() { echo "[codex-lead-tui-home] $*" >&2; }
+die() { log "ERROR: $*"; exit 1; }
+
+# FLY-676 — echo "1" when roundtable in-thread member-follow (autoContinue) is EFFECTIVELY
+# on, else "". MUST mirror parseCodexLeadRuntimeConfig exactly: reply-in-thread enabled
+# (FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD=1) AND autoContinue not explicitly disabled
+# (FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE != "0", i.e. DEFAULT-ON). The §10 config gate
+# compares the resulting config.toml env against the runtime's expectedMcp, so any drift
+# from the TS computation fail-closes the daemon (loud) rather than silently mis-gating.
+roundtable_autocontinue_effective() {
+  if [[ "${FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD:-}" == "1" \
+        && "${FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE:-}" != "0" ]]; then
+    printf '1'
+  fi
+}
+
+HOME_DIR="${FLYWHEEL_CODEX_TUI_HOME:-}"
+[ -n "$HOME_DIR" ] || die "FLYWHEEL_CODEX_TUI_HOME is required"
+
+CONFIG="$HOME_DIR/config.toml"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+READ_DENY_FRAGMENT="$SCRIPT_DIR/templates/codex-read-deny-profile.toml"
+
+# FLY-260 read-deny mode (FLYWHEEL_CODEX_LEAD_READ_DENY=1): ATOMICALLY rewrite the
+# config to a known-safe [permissions]-profile shape — preserving only the existing
+# trusted [projects] (TOML-safe quoted) and GUARANTEEING no top-level sandbox_mode
+# (Codex R2 #1: a lingering legacy sandbox_mode disables the profile). The legacy
+# (flag-off) path is unchanged below. Validates the assembled config via tomllib
+# before swapping it in (key+value: sandbox_mode absent, default_permissions, every
+# filesystem rule == "deny", shell_environment_policy.exclude present, approval_policy).
+write_read_deny_config() {
+  local cwd="$1"
+  [ -f "$READ_DENY_FRAGMENT" ] || die "read-deny fragment missing: $READ_DENY_FRAGMENT (build the teamlead package / check templates/)"
+  local tmp
+  tmp="$(mktemp "${HOME_DIR}/.config.toml.readdeny.XXXXXX")" || die "mktemp failed"
+  # 1) the canonical read-deny shape (single source of truth).
+  cat "$READ_DENY_FRAGMENT" > "$tmp"
+  # 2) preserve existing trusted [projects] (TOML-safe) + ensure cwd is trusted.
+  python3 - "$CONFIG" "$cwd" >> "$tmp" <<'PYPROJ' || die "read-deny: failed to assemble trusted [projects] (parser missing or unparseable existing config)"
+import json, sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(2)
+cfg = {}
+try:
+    with open(sys.argv[1], "rb") as f:
+        cfg = tomllib.load(f)
+except FileNotFoundError:
+    cfg = {}
+except Exception:
+    sys.exit(3)
+cwd = sys.argv[2]
+projects = cfg.get("projects", {})
+if not isinstance(projects, dict):
+    sys.exit(4)
+trusted = {}
+for path, entry in projects.items():
+    if isinstance(entry, dict) and entry.get("trust_level") == "trusted":
+        trusted[path] = True
+trusted[cwd] = True  # always trust the Lead working dir (kills the boot trust menu)
+out = ["", "# Trusted project dirs (preserved + cwd) — TOML-safe quoted keys."]
+for path in trusted:
+    out.append(f'[projects.{json.dumps(path)}]')
+    out.append('trust_level = "trusted"')
+print("\n".join(out))
+PYPROJ
+  # 3) validate the assembled config BEFORE swapping it in (fail-closed).
+  python3 - "$tmp" <<'PYVAL' || { rm -f "$tmp"; die "read-deny config validation failed (effective values must be: NO top-level sandbox_mode; default_permissions=flywheel-lead-secret-deny; every [permissions.*.filesystem] rule == \"deny\"; [shell_environment_policy].exclude present; approval_policy=never)"; }
+import sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(2)
+try:
+    with open(sys.argv[1], "rb") as f:
+        cfg = tomllib.load(f)
+except Exception:
+    sys.exit(3)
+NAME = "flywheel-lead-secret-deny"
+# The canonical contract (must match read-deny-profile.ts + the committed fragment).
+# Codex code-review R1#2: validate the EXACT shape, not just "non-empty + all deny".
+EXPECT_EXTENDS = ":read-only"
+# FLY-350 code-review LOW-3: keep in sync with READ_DENY_ENV_EXCLUDE (read-deny-
+# profile.ts) — the FLYWHEEL_LEAD_ACTIONS_* exclusion hides the broker coordinate
+# from the model shell; a template drift dropping it must fail this validator.
+EXPECT_ENV = {"*TOKEN*", "*SECRET*", "*KEY*", "FLYWHEEL_LEAD_ACTIONS_*"}
+EXPECT_FS = {
+    "~/.codex**", "~/.ssh", "~/.aws", "~/.config/gh", "~/.config/gcloud",
+    "~/.npmrc", "~/.docker", "~/**/.env**",
+}
+if cfg.get("sandbox_mode") is not None:
+    sys.exit(10)  # legacy pin present → would disable the profile (Gotcha A)
+if cfg.get("default_permissions") != NAME:
+    sys.exit(11)
+if cfg.get("approval_policy") != "never":
+    sys.exit(12)
+# token-shaped env exclude must contain ALL THREE forms (not just one).
+sep = cfg.get("shell_environment_policy", {})
+if not isinstance(sep, dict):
+    sys.exit(13)
+excl = sep.get("exclude")
+if not isinstance(excl, list) or not EXPECT_ENV.issubset(set(excl)):
+    sys.exit(13)
+prof = cfg.get("permissions", {}).get(NAME, {})
+if not isinstance(prof, dict) or prof.get("extends") != EXPECT_EXTENDS:
+    sys.exit(18)
+fs = prof.get("filesystem", {})
+if not isinstance(fs, dict):
+    sys.exit(14)
+# key+value: every filesystem rule must be exactly "deny" (no read/write slipped in).
+for k, v in fs.items():
+    if v != "deny":
+        sys.exit(15)
+# EXACT canonical key set — rejects a weakened (missing key) OR widened (extra deny
+# outside the verified set, e.g. a blanket ~/.flywheel) filesystem map.
+if set(fs.keys()) != EXPECT_FS:
+    sys.exit(16)
+sys.exit(0)
+PYVAL
+  mv "$tmp" "$CONFIG"
+  log "config.toml written (read-deny profile + env exclude; no sandbox_mode)"
+}
+
+# FLY-350 — content-coordination profile: append the narrow lead-actions MCP
+# server to config.toml (the daemon spawns it; it fetches the bot token over the
+# parent runtime's broker socket — NO secret in this block). Idempotent because
+# the caller appends AFTER every (re)write of the base config. Fail-loud on a
+# missing coordinate so a half-configured MCP never silently no-ops.
+append_lead_actions_mcp() {
+  [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "content-coordination" ] || return 0
+  local main_js="${FLYWHEEL_LEAD_ACTIONS_MAIN_JS:-}"
+  local sock="${FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET:-}"
+  local node_bin="${FLYWHEEL_LEAD_ACTIONS_NODE_BIN:-node}"
+  local lead_id="${FLYWHEEL_LEAD_ID:-}"
+  local project="${FLYWHEEL_PROJECT_NAME:-}"
+  local chat="${FLYWHEEL_LEAD_CHAT_CHANNEL_ID:-}"
+  local cross="${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-}"
+  local state_dir="${FLYWHEEL_LEAD_ACTIONS_STATE_DIR:-}"
+  local aliases="${FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:-}"
+  # FLY-676: effective roundtable autoContinue, mirroring parseCodexLeadRuntimeConfig
+  # (replyInThread enabled && THREAD_AUTOCONTINUE != "0"). Forwarded so the lead_actions
+  # child fail-soft refuses proactive roundtable sends. The §10 config gate compares this
+  # against the runtime's expectedMcp env — any drift fail-closes the daemon (loud).
+  local rt_eff
+  rt_eff="$(roundtable_autocontinue_effective)"
+  for pair in "FLYWHEEL_LEAD_ACTIONS_MAIN_JS=$main_js" \
+    "FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET=$sock" "FLYWHEEL_LEAD_ID=$lead_id" \
+    "FLYWHEEL_PROJECT_NAME=$project" "FLYWHEEL_LEAD_CHAT_CHANNEL_ID=$chat" \
+    "FLYWHEEL_LEAD_ACTIONS_STATE_DIR=$state_dir"; do
+    case "$pair" in *=) die "append_lead_actions_mcp: missing required env ${pair%=}" ;; esac
+  done
+  # Render env as a TOML inline table via python (handles quoting; NO secret here
+  # — the bot token travels over the broker socket, never config.toml).
+  local env_toml
+  env_toml="$(python3 - "$lead_id" "$project" "$sock" "$chat" "$cross" "$state_dir" "$aliases" "$rt_eff" <<'PYENV'
+import sys, json
+keys = ["FLYWHEEL_LEAD_ID","FLYWHEEL_PROJECT_NAME","FLYWHEEL_LEAD_ACTIONS_BROKER_SOCKET",
+        "FLYWHEEL_LEAD_CHAT_CHANNEL_ID","FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS",
+        "FLYWHEEL_LEAD_ACTIONS_STATE_DIR","FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES"]
+vals = sys.argv[1:8]
+pairs = []
+for k, v in zip(keys, vals):
+    if k == "FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES" and not v:
+        continue  # optional
+    # defense-in-depth: never let a secret-shaped value into config
+    pairs.append(f"{k} = {json.dumps(v)}")
+# FLY-676: append the effective roundtable autoContinue flag ONLY when on (keeps the
+# prior OFF env shape; matches the runtime builder's conditional include).
+if len(sys.argv) > 8 and sys.argv[8] == "1":
+    pairs.append(f'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = {json.dumps("1")}')
+print(", ".join(pairs))
+PYENV
+)" || die "append_lead_actions_mcp: failed to render env table"
+  {
+    printf '\n# FLY-350 content-coordination: narrow lead-actions MCP (secretless — token via broker)\n'
+    printf '[mcp_servers.lead_actions]\n'
+    printf 'command = %s\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$node_bin")"
+    printf 'args = [%s]\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$main_js")"
+    printf 'env = { %s }\n' "$env_toml"
+  } >> "$CONFIG"
+  log "config.toml: appended [mcp_servers.lead_actions] (content-coordination)"
+}
+
+# FLY-398 — FULL-ACCESS (= Claude-equal) config: workspace-write + network ON + the
+# project root as the single writable root. NO read-deny profile (a full-access Lead
+# reads the disk like a Claude pane — the accepted Claude-equal tradeoff). The daemon
+# reads this at start; pin ⑤ (ensure_daemon stop/start) forces a re-read on flip.
+# Atomically rewritten via tmp + validated (mirrors write_read_deny_config's shape).
+write_full_access_config() {
+  local cwd="$1"
+  local tmp
+  tmp="$(mktemp "${HOME_DIR}/.config.toml.fullaccess.XXXXXX")" || die "mktemp failed"
+  {
+    printf '# Generated by codex-lead-tui-home.sh (FLY-398) — FULL-ACCESS (= Claude-equal)\n'
+    printf '# windowed TUI Lead: workspace-write + network ON + project writable root.\n'
+    printf '# The runtime re-pins via thread params on every resume and the TUI command\n'
+    printf '# line carries -s workspace-write (double insurance).\n'
+    printf 'sandbox_mode = "workspace-write"\n'
+    printf 'approval_policy = "never"\n'
+    printf '\n[sandbox_workspace_write]\n'
+    printf 'network_access = true\n'
+    printf 'writable_roots = [%s]\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$cwd")"
+  } > "$tmp"
+  # preserve existing trusted [projects] (TOML-safe) + ensure cwd is trusted.
+  python3 - "$CONFIG" "$cwd" >> "$tmp" <<'PYPROJ' || die "full-access: failed to assemble trusted [projects] (parser missing or unparseable existing config)"
+import json, sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(2)
+cfg = {}
+try:
+    with open(sys.argv[1], "rb") as f:
+        cfg = tomllib.load(f)
+except FileNotFoundError:
+    cfg = {}
+except Exception:
+    sys.exit(3)
+cwd = sys.argv[2]
+projects = cfg.get("projects", {})
+if not isinstance(projects, dict):
+    sys.exit(4)
+trusted = {}
+for path, entry in projects.items():
+    if isinstance(entry, dict) and entry.get("trust_level") == "trusted":
+        trusted[path] = True
+trusted[cwd] = True
+out = ["", "# Trusted project dirs (preserved + cwd) — TOML-safe quoted keys."]
+for path in trusted:
+    out.append(f'[projects.{json.dumps(path)}]')
+    out.append('trust_level = "trusted"')
+print("\n".join(out))
+PYPROJ
+  # validate the assembled config BEFORE swapping it in (fail-closed): workspace-write
+  # + network ON + exactly [cwd] writable + approval_policy=never + NO read-deny profile.
+  python3 - "$tmp" "$cwd" <<'PYVAL' || { rm -f "$tmp"; die "full-access config validation failed (must be sandbox_mode=workspace-write; approval_policy=never; [sandbox_workspace_write] network_access=true + writable_roots=[cwd]; NO default_permissions read-deny profile)"; }
+import sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(2)
+try:
+    with open(sys.argv[1], "rb") as f:
+        cfg = tomllib.load(f)
+except Exception:
+    sys.exit(3)
+cwd = sys.argv[2]
+if cfg.get("sandbox_mode") != "workspace-write":
+    sys.exit(10)
+if cfg.get("approval_policy") != "never":
+    sys.exit(11)
+# a full-access Lead must NOT carry the read-deny permission profile.
+if cfg.get("default_permissions") is not None:
+    sys.exit(12)
+sww = cfg.get("sandbox_workspace_write", {})
+if not isinstance(sww, dict):
+    sys.exit(13)
+if sww.get("network_access") is not True:
+    sys.exit(14)
+if sww.get("writable_roots") != [cwd]:
+    sys.exit(15)
+sys.exit(0)
+PYVAL
+  mv "$tmp" "$CONFIG"
+  log "config.toml written (full-access: workspace-write + network ON, writable_roots=[$cwd])"
+}
+
+# FLY-398 — full-access lead-actions MCP block: approve mode + token forwarded BY
+# NAME (env_vars) — NO broker socket (a full-access Lead has the token in its daemon
+# env, Claude-equal). The runtime's full-access §10 config gate validates the exact
+# shape (assertFullAccessLeadActionsConfigGate). Idempotent: appended AFTER every
+# (re)write of the base full-access config (write_full_access_config).
+append_full_access_lead_actions_mcp() {
+  [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ] || return 0
+  local main_js="${FLYWHEEL_LEAD_ACTIONS_MAIN_JS:-}"
+  local node_bin="${FLYWHEEL_LEAD_ACTIONS_NODE_BIN:-node}"
+  local lead_id="${FLYWHEEL_LEAD_ID:-}"
+  local project="${FLYWHEEL_PROJECT_NAME:-}"
+  local chat="${FLYWHEEL_LEAD_CHAT_CHANNEL_ID:-}"
+  local cross="${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-}"
+  local state_dir="${FLYWHEEL_LEAD_ACTIONS_STATE_DIR:-}"
+  local aliases="${FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES:-}"
+  for pair in "FLYWHEEL_LEAD_ACTIONS_MAIN_JS=$main_js" "FLYWHEEL_LEAD_ID=$lead_id" \
+    "FLYWHEEL_PROJECT_NAME=$project" "FLYWHEEL_LEAD_CHAT_CHANNEL_ID=$chat" \
+    "FLYWHEEL_LEAD_ACTIONS_STATE_DIR=$state_dir"; do
+    case "$pair" in *=) die "append_full_access_lead_actions_mcp: missing required env ${pair%=}" ;; esac
+  done
+  # env table: non-secret coords ONLY, NO broker socket (token is by NAME via env_vars).
+  local rt_eff
+  rt_eff="$(roundtable_autocontinue_effective)"  # FLY-676 — see helper; gate-matched
+  local env_toml
+  env_toml="$(python3 - "$lead_id" "$project" "$chat" "$cross" "$state_dir" "$aliases" "$rt_eff" <<'PYENV'
+import sys, json
+keys = ["FLYWHEEL_LEAD_ID","FLYWHEEL_PROJECT_NAME","FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
+        "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS","FLYWHEEL_LEAD_ACTIONS_STATE_DIR",
+        "FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES"]
+vals = sys.argv[1:7]
+pairs = []
+for k, v in zip(keys, vals):
+    if k == "FLYWHEEL_LEAD_ACTIONS_CHANNEL_ALIASES" and not v:
+        continue  # optional
+    if k == "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS":
+        # Codex R1 LOW-4: normalize with the same split/trim/filter the runtime uses
+        # (crossDeptChannelIds join), so a value with spaces does not diverge from the
+        # gate value and fail-close after the home is already written.
+        v = ",".join(s.strip() for s in v.split(",") if s.strip())
+    pairs.append(f"{k} = {json.dumps(v)}")
+# FLY-676: effective roundtable autoContinue flag — ONLY when on (matches the runtime
+# full-access builder's conditional include; preserves the prior OFF env shape).
+if len(sys.argv) > 7 and sys.argv[7] == "1":
+    pairs.append(f'FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE = {json.dumps("1")}')
+print(", ".join(pairs))
+PYENV
+)" || die "append_full_access_lead_actions_mcp: failed to render env table"
+  {
+    printf '\n# FLY-398 full-access (= Claude-equal): lead-actions MCP — approve mode + token by NAME (no broker)\n'
+    printf '[mcp_servers.lead_actions]\n'
+    printf 'command = %s\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$node_bin")"
+    printf 'args = [%s]\n' "$(python3 -c 'import json,sys;print(json.dumps(sys.argv[1]))' "$main_js")"
+    printf 'default_tools_approval_mode = "approve"\n'
+    printf 'env_vars = ["DISCORD_BOT_TOKEN"]\n'
+    printf 'env = { %s }\n' "$env_toml"
+  } >> "$CONFIG"
+  log "config.toml: appended [mcp_servers.lead_actions] (full-access: approve + token by name)"
+}
+
+ensure_home() {
+  local cwd="${FLYWHEEL_CODEX_TUI_CWD:-}"
+  [ -n "$cwd" ] || die "FLYWHEEL_CODEX_TUI_CWD is required for ensure-home"
+  mkdir -p "$HOME_DIR"
+
+  # 1. auth must be provisioned already (operator / FLY-246) — fail-loud.
+  [ -f "$HOME_DIR/auth.json" ] || die "auth.json missing in $HOME_DIR — provision the Lead's Codex auth first (see FLY-246); this script never copies credentials"
+
+  # 2. standalone install required for the daemon backend — fail-loud, no auto-install.
+  local standalone="$HOME_DIR/packages/standalone/current/codex"
+  if [ ! -x "$standalone" ]; then
+    die "standalone codex install missing at $standalone — the remote-control daemon requires it. Install with: CODEX_HOME=$HOME_DIR sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | sh' (then REVERT any shell-profile PATH edit the installer makes AND restore the neutral global ~/.local/bin/codex symlink — see FLY-259 spike notes + FLY-513)"
+  fi
+
+  # FLY-513: warn (non-fatal) if the GLOBAL `codex` on PATH was hijacked INTO this
+  # Lead home by the curl installer's `~/.local/bin/codex` side effect. The global
+  # codex (every runner's codex review gate + every codex companion resolves it via
+  # PATH) must be a NEUTRAL, PINNED install — a Lead-home binary gets churned by the
+  # standalone updater + Lead flips and transiently fails config-load, stalling every
+  # runner's review gate. Warn only: an operator may have a deliberate setup, and
+  # ensure-home must stay idempotent for a compliant home.
+  local global_codex="$HOME/.local/bin/codex"
+  if [ -L "$global_codex" ] || [ -e "$global_codex" ]; then
+    local global_real
+    global_real="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$global_codex" 2>/dev/null || true)"
+    case "$global_real" in
+      "$HOME_DIR"/*)
+        log "WARNING (FLY-513): global codex $global_codex resolves INTO this Lead home: $global_real"
+        log "  → the standalone updater / Lead flips will churn it and transiently break EVERY runner's codex review gate."
+        log "  → restore a neutral pinned global, e.g.: ln -sfn ~/.local/share/flywheel-codex/<ver>/bin/codex $global_codex"
+        ;;
+    esac
+  fi
+
+  # FLY-398: full-access (= Claude-equal) rewrites the config to a workspace-write +
+  # network-ON shape (replaces legacy steps 3+4). Mutually exclusive with read-deny
+  # (the runtime parse rejects full-access + read-deny). Auth + standalone still apply.
+  if [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ]; then
+    write_full_access_config "$cwd"
+    append_full_access_lead_actions_mcp
+    log "home OK (full-access): $HOME_DIR"
+    return 0
+  fi
+
+  # FLY-260: read-deny mode rewrites the config to a [permissions]-profile shape
+  # (replaces legacy steps 3+4). Auth + standalone (steps 1-2 above) still applied.
+  if [ "${FLYWHEEL_CODEX_LEAD_READ_DENY:-}" = "1" ]; then
+    write_read_deny_config "$cwd"
+    append_lead_actions_mcp
+    log "home OK (read-deny): $HOME_DIR"
+    return 0
+  fi
+
+  # 3. config.toml: write pins if absent; FAIL-CLOSE if present with drift.
+  #    Code review R1 HIGH-3: grep can be bypassed by TOML comments
+  #    (`sandbox_mode = "danger-full-access" # sandbox_mode = "read-only"`) —
+  #    validate EFFECTIVE values with a real TOML parser (python3.11+ tomllib;
+  #    its absence is itself a fail-close).
+  if [ -f "$CONFIG" ]; then
+    python3 - "$CONFIG" <<'PYCHECK' || die "config.toml pin validation failed (effective values must be sandbox_mode=read-only + approval_policy=never; parse errors and tomllib absence also fail closed). Fix $CONFIG manually."
+import sys
+try:
+    import tomllib
+except ImportError:
+    sys.exit(2)  # no parser → fail closed, never guess
+try:
+    with open(sys.argv[1], "rb") as f:
+        cfg = tomllib.load(f)
+except Exception:
+    sys.exit(3)  # unparseable config → fail closed
+ok = cfg.get("sandbox_mode") == "read-only" and cfg.get("approval_policy") == "never"
+sys.exit(0 if ok else 4)
+PYCHECK
+  else
+    cat > "$CONFIG" <<EOF
+# Generated by codex-lead-tui-home.sh (FLY-259) — safety pins for a read-only
+# chat-only companion TUI Lead. The runtime re-pins via thread params on every
+# resume and the TUI command line carries explicit flags (double insurance).
+sandbox_mode = "read-only"
+approval_policy = "never"
+EOF
+    log "config.toml written with read-only/never pins"
+  fi
+
+  # 4. trust the Lead's working dir (kills the boot trust-menu; cwd menu is
+  #    killed by -C on the TUI command — spike-verified, zero menus).
+  #    Code review R2 MED-4: judge the EFFECTIVE trust state via TOML parse —
+  #    grep presence would accept an explicit untrusted entry (menu stays) and
+  #    can false-match on comments/metacharacters.
+  local trust_state
+  trust_state=$(python3 - "$CONFIG" "$cwd" <<'PYTRUST'
+import sys
+try:
+    import tomllib
+except ImportError:
+    print("error"); sys.exit(0)
+try:
+    with open(sys.argv[1], "rb") as f:
+        cfg = tomllib.load(f)
+except Exception:
+    print("error"); sys.exit(0)
+projects = cfg.get("projects", {})
+# R4 MED-1: a non-table `projects` (scalar/list) must fail closed — appending
+# a [projects."<cwd>"] table next to it would produce invalid TOML.
+if not isinstance(projects, dict):
+    print("error"); sys.exit(0)
+if sys.argv[2] not in projects:
+    print("absent")  # no entry at all -> safe to append
+else:
+    entry = projects[sys.argv[2]]
+    if not isinstance(entry, dict):
+        print("error"); sys.exit(0)  # entry itself malformed -> fail closed
+    level = entry.get("trust_level")
+    # R3 MED-2: an EXISTING table without trust_level must NOT be appended to
+    # (duplicate [projects."<cwd>"] tables are invalid TOML) -> fail loud.
+    print("trusted" if level == "trusted" else ("empty" if level is None else "drift"))
+PYTRUST
+)
+  case "$trust_state" in
+    trusted) : ;;
+    empty) die "config.toml has a [projects.\"$cwd\"] table without trust_level — appending would create an invalid duplicate table (R3 MED-2). Add trust_level = \"trusted\" to the existing table manually." ;;
+    absent)
+      cat >> "$CONFIG" <<EOF
+
+[projects."$cwd"]
+trust_level = "trusted"
+EOF
+      log "trusted project dir added: $cwd"
+      ;;
+    drift) die "config.toml has an explicit non-trusted entry for $cwd — the boot trust menu would block an unattended TUI. Fix $CONFIG manually." ;;
+    *) die "trust-state TOML inspection failed for $CONFIG (parser missing or unparseable config) — fail closed" ;;
+  esac
+
+  # NOTE: no append_lead_actions_mcp here — content-coordination REQUIRES read-deny
+  # (enforced at runtime parse), so the lead-actions MCP block is only ever written
+  # on the read-deny path above (which atomically rewrites the base config first →
+  # idempotent). The non-read-deny path must never append (it would duplicate the
+  # [mcp_servers.lead_actions] table on re-run — code-review MED-4).
+  log "home OK: $HOME_DIR"
+}
+
+ensure_daemon() {
+  # Code review R1 MED-6: default to the STANDALONE binary inside this home —
+  # the daemon requires it, and a PATH `codex` (npm install) would fail forever
+  # even on a correctly provisioned home. Explicit override stays possible.
+  local codex_bin="${FLYWHEEL_CODEX_BIN:-$HOME_DIR/packages/standalone/current/codex}"
+  [ -x "$codex_bin" ] || die "codex binary not executable: $codex_bin (standalone install missing? see ensure-home)"
+  # FLY-260 (Codex R2 #2): under read-deny, a LONG-LIVED daemon would keep the OLD
+  # config it read at start (the rewritten read-deny config wouldn't take effect),
+  # so STOP it first to force a clean re-read on the next start. Best-effort (a
+  # not-running daemon makes stop a no-op). Flag-OFF keeps the idempotent start-only
+  # behavior (no daemon interruption on a normal restart — byte-compat).
+  # FLY-398 (pin ⑤): full-access ALSO needs stop-before-start — a stale read-only
+  # daemon would keep its old read-only sandbox/config/MCP and never re-read the
+  # rewritten workspace-write config (a flip would silently keep Mufasa read-only).
+  if [ "${FLYWHEEL_CODEX_LEAD_READ_DENY:-}" = "1" ] ||
+    [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ]; then
+    CODEX_HOME="$HOME_DIR" "$codex_bin" remote-control stop --json >/dev/null 2>&1 || true
+    log "stopped any running daemon so it re-reads the rewritten config (read-deny/full-access)"
+  fi
+  # `remote-control start` is idempotent (spike-verified: already-running →
+  # status connected). Fail-loud otherwise — the supervisor retries with backoff.
+  CODEX_HOME="$HOME_DIR" "$codex_bin" remote-control start --json \
+    || die "remote-control start failed (home: $HOME_DIR)"
+  local sock="$HOME_DIR/app-server-control/app-server-control.sock"
+  [ -S "$sock" ] || die "daemon reported started but control socket missing: $sock"
+  log "daemon OK: $sock"
+}
+
+case "${1:-}" in
+  ensure-home)   ensure_home ;;
+  ensure-daemon) ensure_daemon ;;
+  *) die "usage: $0 ensure-home|ensure-daemon" ;;
+esac

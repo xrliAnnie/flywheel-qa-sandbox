@@ -1,0 +1,443 @@
+[
+	{
+		"id": "FLY-374",
+		"uuid": "FLY-374",
+		"title": "[XHS-deep] 原生html交互有多爽",
+		"author": "Kai",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/6a12d56a000000003501c9a9",
+		"summary": "视频展示了一个 UI 动效图标（Lyra）的精细化、迭代式设计过程。内容涵盖了从静态（Idle）、动态（Wo…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-374/xhs-deep-原生html交互有多爽"
+	},
+	{
+		"id": "FLY-375",
+		"uuid": "FLY-375",
+		"title": "[XHS-deep]",
+		"author": "程序员Emily",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69f72c84000000001f003e59",
+		"summary": "介绍了一款新开源的金融AI工具 Dexter。它被定位为金融版的 Claude Code，主要功能…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-375/xhs-deep"
+	},
+	{
+		"id": "FLY-377",
+		"uuid": "FLY-377",
+		"title": "[XHS-deep] 69刀开源AI穿戴设备，凭什么拿下10K Star",
+		"author": "JaxAI",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69e57435000000001d01c58f",
+		"summary": "这条笔记介绍了一个名为Omi的开源AI可穿戴设备项目。它通过低成本硬件（69-89美元）实时捕捉用户对话…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-377/xhs-deep-69刀开源ai穿戴设备凭什么拿下10k-star"
+	},
+	{
+		"id": "FLY-379",
+		"uuid": "FLY-379",
+		"title": "[XHS-deep] Vercel 刚刚开源了一个 Coding Agent 平台",
+		"author": "AI智见录",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69ddb705000000001d01c5d8",
+		"summary": "Vercel 开源了面向云端 Coding Agent 的参考平台 Open Agents (open-…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-379/xhs-deep-vercel-刚刚开源了一个-coding-agent-平台"
+	},
+	{
+		"id": "FLY-380",
+		"uuid": "FLY-380",
+		"title": "[XHS-deep]",
+		"author": "老瑞的AI百宝箱",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69da626c0000000022029e56",
+		"summary": "这是一个名为 phuryn/pm-skills 的 GitHub 开源项目，它是一个产品管理技能市…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-380/xhs-deep"
+	},
+	{
+		"id": "FLY-401",
+		"uuid": "FLY-401",
+		"title": "[XHS-deep] “给AI一个会遗忘、会感受、会做梦的大脑。”",
+		"author": "P0lar1s",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69e477fb0000000023012bc9",
+		"summary": "这篇笔记介绍了OmbreBrain V1.2的更新，这是一个为AI设计的、模拟人脑海马体的记忆系统。…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-401/xhs-deep-给ai一个会遗忘会感受会做梦的大脑"
+	},
+	{
+		"id": "FLY-402",
+		"uuid": "FLY-402",
+		"title": "[XHS-deep] 我用CodeX做了一个AI群聊办公软件",
+		"author": "老董的 AI 分身",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/6a377068000000001503c7bc",
+		"summary": "视频演示了一款自研的AI办公群聊软件 nas_chat。它将项目文件、团队成员和AI整合到按“话…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-402/xhs-deep-我用codex做了一个ai群聊办公软件"
+	},
+	{
+		"id": "FLY-403",
+		"uuid": "FLY-403",
+		"title": "[XHS-deep] 如何制作完全个性化的墨水屏 Dashboard",
+		"author": "YK",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69c65d470000000023021d15",
+		"summary": "作者展示了一个完全个性化的智能家居墨水屏 Dashboard，其核心亮点是利用 AI 代理（Claude Co…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-403/xhs-deep-如何制作完全个性化的墨水屏-dashboard"
+	},
+	{
+		"id": "FLY-407",
+		"uuid": "FLY-407",
+		"title": "[XHS-deep] 他把自己的创业大脑做成了开源AI技能",
+		"author": "Kai不是AI",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69ce4ec1000000001d01b2e1",
+		"summary": "Gumroad 创始人 Sahil Lavingia 将其《极简创业法》的核心思想，打包成了一套开源…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-407/xhs-deep-他把自己的创业大脑做成了开源ai技能"
+	},
+	{
+		"id": "FLY-408",
+		"uuid": "FLY-408",
+		"title": "[XHS-deep] 谷歌开源TimesFM，可预測任何数据流...",
+		"author": "Yoyo的商界笔记",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69ce0c910000000022028e6b",
+		"summary": "谷歌开源了时间序列基础模型TimesFM，它能像语言模型预测单词一样，零样本（Zero-shot…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-408/xhs-deep-谷歌开源timesfm可预測任何数据流"
+	},
+	{
+		"id": "FLY-410",
+		"uuid": "FLY-410",
+		"title": "[XHS-deep] claude code窗口间以及微信之间能交流了",
+		"author": "fido是个版本控",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69c410c6000000001a02235b",
+		"summary": "该内容展示了一个名为 `cc-bridge` 的开源工具，它实现了在不同 claude-code…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-410/xhs-deep-claude-code窗口间以及微信之间能交流了"
+	},
+	{
+		"id": "FLY-415",
+		"uuid": "FLY-415",
+		"title": "[XHS-deep] 终于 把cloude接入了Meta眼镜",
+		"author": "黄药师",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69c7e9b9000000001d018d05",
+		"summary": "一名非程序员用户，在两天内完全依靠 Claude 编写代码，将 Meta Ray-Ban 智能眼镜的摄像头和…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-415/xhs-deep-终于-把cloude接入了meta眼镜"
+	},
+	{
+		"id": "FLY-416",
+		"uuid": "FLY-416",
+		"title": "[XHS-deep] 半个月试了 200 多个 skills，最后留下来的",
+		"author": "柚柚的赛博佬爸",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69bc8304000000002202b8af",
+		"summary": "作者测试了200多个AI agent \"skill\"后，筛选出8个最能解决实际痛点的工具。文章着重介…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-416/xhs-deep-半个月试了-200-多个-skills最后留下来的"
+	},
+	{
+		"id": "FLY-417",
+		"uuid": "FLY-417",
+		"title": "[XHS-deep] 🦞一个好玩的Agent专用通信工具：walkie",
+		"author": "硅基解码 Decoder Only",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/6999dd33000000001a0306ad",
+		"summary": "这篇笔记介绍了一款名为walkie的AI Agent专用P2P通信工具。它让部署…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-417/xhs-deep-一个好玩的agent专用通信工具walkie"
+	},
+	{
+		"id": "FLY-418",
+		"uuid": "FLY-418",
+		"title": "[XHS-deep] MSA开源，突破上下文极限，来到1亿token",
+		"author": "坤梼(KunTao)",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69c20e880000000023013d6d",
+		"summary": "这是一个名为 MSA (Memory Sparse Attention) 的开源AI框架，通过…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-418/xhs-deep-msa开源突破上下文极限来到1亿token"
+	},
+	{
+		"id": "FLY-419",
+		"uuid": "FLY-419",
+		"title": "[XHS-deep] 一个很好用的skill来增加项目效率",
+		"author": "兜爸在虾图",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69c71946000000001a0356dc",
+		"summary": "作者设计并实现了一个名为“项目协作者”（Project Collaborator）的 AI skill。…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-419/xhs-deep-一个很好用的skill来增加项目效率"
+	},
+	{
+		"id": "FLY-420",
+		"uuid": "FLY-420",
+		"title": "[XHS-deep] Claude Code 悄然发布的 AutoDream 2.0：让",
+		"author": "Kraps",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69c55b1a000000001e00f7bf",
+		"summary": "文章介绍了 Claude Code 的 AutoDream 功能，这是一个作为子智能体运行的 AI 记忆…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-420/xhs-deep-claude-code-悄然发布的-autodream-20让"
+	},
+	{
+		"id": "FLY-422",
+		"uuid": "FLY-422",
+		"title": "[XHS-deep] 我把三个顶级产品人的思维装进了 Claude",
+		"author": "心知",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69c0054300000000210049c6",
+		"summary": "作者为 Claude 构建了三个独立的 AI skill，分别模拟三位顶级产品人的思维模式（Lenny Rac…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-422/xhs-deep-我把三个顶级产品人的思维装进了-claude"
+	},
+	{
+		"id": "FLY-423",
+		"uuid": "FLY-423",
+		"title": "[XHS-deep] Google AutoHarness: 自动生成约束代码",
+		"author": "An epsilon of llm",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69b4432e000000002800b1ec",
+		"summary": "Google 提出了 AutoHarness 方法，利用小型 LLM（如 Gem…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-423/xhs-deep-google-autoharness-自动生成约束代码"
+	},
+	{
+		"id": "FLY-425",
+		"uuid": "FLY-425",
+		"title": "[XHS-deep] 全自动科研，真的建议早点接触",
+		"author": "阿东玩AI",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69c2b849000000001e00d26e",
+		"summary": "用户分享了为期一周的 \"autoresearch\" 体验，这是一个让 AI 围绕目标和评判标准，进行自主…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-425/xhs-deep-全自动科研真的建议早点接触"
+	},
+	{
+		"id": "FLY-426",
+		"uuid": "FLY-426",
+		"title": "[XHS-deep] 推荐一个独立开发者真的该收藏的 GitHub …",
+		"author": "七夜",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69b7970d0000000023004117",
+		"summary": "推荐了一个名为 \"Marketing for Founders\" 的 GitHub 仓库，它是一个为技术型创始…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-426/xhs-deep-推荐一个独立开发者真的该收藏的-github"
+	},
+	{
+		"id": "FLY-427",
+		"uuid": "FLY-427",
+		"title": "[XHS-deep] 一人抵48人, 零基础做独立游戏开发时代来了",
+		"author": "树人Shuren",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69c0d4cb0000000021038605",
+		"summary": "一个开源项目(Claude Code Game Studios)将语言模型构建成一个拥有48个AI…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-427/xhs-deep-一人抵48人-零基础做独立游戏开发时代来了"
+	},
+	{
+		"id": "FLY-431",
+		"uuid": "FLY-431",
+		"title": "[XHS-deep] YC CEO私藏的开发神器！Gstack 来了",
+		"author": "AIGC之眼",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69bcd03c00000000230132be",
+		"summary": "Gstack是一个将软件开发流程产品化的AI工具，它通过将大型语言模型（如Claude）封装成15个不…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-431/xhs-deep-yc-ceo私藏的开发神器gstack-来了"
+	},
+	{
+		"id": "FLY-434",
+		"uuid": "FLY-434",
+		"title": "[XHS-deep] 腾讯发了个自己的Skill hub",
+		"author": "小蚁AIGC",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69b0b625000000001b014c32",
+		"summary": "这是一张名为 \"SkillHub\" 的 AI Skills 商店或市场截图，它展示了一个“精选 TOP…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-434/xhs-deep-腾讯发了个自己的skill-hub"
+	},
+	{
+		"id": "FLY-435",
+		"uuid": "FLY-435",
+		"title": "[XHS-deep] 实测龙虾阿里本地tts模型Cosy voice 300m",
+		"author": "PeTerZ",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69ac3c0a000000002202398f",
+		"summary": "视频展示了一套在局域网内自建的 AI 语音交互系统。该系统整合了 AI Agent 框架 Opencl…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-435/xhs-deep-实测龙虾阿里本地tts模型cosy-voice-300m"
+	},
+	{
+		"id": "FLY-437",
+		"uuid": "FLY-437",
+		"title": "[XHS-deep] 广告Skill：Marketing-idea",
+		"author": "几口酱聊AI",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69abfa18000000001600b3e1",
+		"summary": "该视频介绍了一个名为 “Marketing Skills for Claude Code” 的开源项目…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-437/xhs-deep-广告skillmarketing-idea"
+	},
+	{
+		"id": "FLY-438",
+		"uuid": "FLY-438",
+		"title": "[XHS-deep] 终于！Rhino3D也接入了openclaw了",
+		"author": "哆啦z青-idesign",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69ac1bd000000000260327d6",
+		"summary": "该内容展示了如何将AI代理平台OpenClaw与专业3D建模软件Rhino3D进行集成。通…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-438/xhs-deep-终于rhino3d也接入了openclaw了"
+	},
+	{
+		"id": "FLY-439",
+		"uuid": "FLY-439",
+		"title": "[XHS-deep] Claude Code能做视频啦！",
+		"author": "AI创业马老师",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69986552000000000a02d3bc",
+		"summary": "视频演示了如何用 Claude Code 通过自然语言指令，实现从零生成产品演示视频、以及对已有视频…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-439/xhs-deep-claude-code能做视频啦"
+	},
+	{
+		"id": "FLY-441",
+		"uuid": "FLY-441",
+		"title": "[XHS-deep] 写了一个你可能苦找了几年的 Skill",
+		"author": "上班摸鱼",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69a23c19000000001d013d28",
+		"summary": "这是一个开源的视频分析工具，它将视频分解为场景，并使用大语言模型根据一个五维评分体系（美感、可信度、冲击力…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-441/xhs-deep-写了一个你可能苦找了几年的-skill"
+	},
+	{
+		"id": "FLY-442",
+		"uuid": "FLY-442",
+		"title": "[XHS-deep] 扒开 1.4 万 Star 的 WiFi-DensePose 源码",
+		"author": "云栈开源日记",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69a46856000000002602e3c2",
+		"summary": "该内容拆解了WiFi-DensePose项目，揭示其不仅是一个高性能的Python+Rust双栈流处理…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-442/xhs-deep-扒开-14-万-star-的-wifi-densepose-源码"
+	},
+	{
+		"id": "FLY-444",
+		"uuid": "FLY-444",
+		"title": "[XHS-deep] Claude Code 其实有 9 种 Hook，大多数人只",
+		"author": "AI 干货拆解",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69a194c1000000002602d510",
+		"summary": "这篇内容详细介绍了 Claude Code 中除了常见的 Pre/PostToolUse 之外的四种…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-444/xhs-deep-claude-code-其实有-9-种-hook大多数人只"
+	},
+	{
+		"id": "FLY-451",
+		"uuid": "FLY-451",
+		"title": "[XHS-deep] Gemini 3 Deep Thinking 直接做3D打印模型！",
+		"author": "安之Zeno",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/698ecde1000000000c034a62",
+		"summary": "该内容展示了一个AI（声称是 Gemini 3）工作流，它能根据输入的图片和复杂的文本指令，生成一个单…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-451/xhs-deep-gemini-3-deep-thinking-直接做3d打印模型"
+	},
+	{
+		"id": "FLY-453",
+		"uuid": "FLY-453",
+		"title": "[XHS-deep] Anthropic重磅：AI Agent长任务指南",
+		"author": "晓浩Xiaohao",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/698f048c000000001d01330b",
+		"summary": "这条笔记介绍了Anthropic为解决AI Agent在长任务中因上下文窗口限制而“失忆”的问题…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-453/xhs-deep-anthropic重磅ai-agent长任务指南"
+	},
+	{
+		"id": "FLY-454",
+		"uuid": "FLY-454",
+		"title": "[XHS-deep] arxiv-to-prompt 破万下载，一周年🎉",
+		"author": "Takashi Ishida",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/698efe5e000000001b014b17",
+		"summary": "作者介绍了一个个人开源项目 `arxiv-to-prompt`，它能将 arXiv 论…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-454/xhs-deep-arxiv-to-prompt-破万下载一周年"
+	},
+	{
+		"id": "FLY-455",
+		"uuid": "FLY-455",
+		"title": "[XHS-deep] DeerFlow 2.0 震撼发布",
+		"author": "Henry Li",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/699089ba000000000b011042",
+		"summary": "DeerFlow 2.0 是一个开源的长程超级智能体（Super Agent）框架，它通过自动将复…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-455/xhs-deep-deerflow-20-震撼发布"
+	},
+	{
+		"id": "FLY-456",
+		"uuid": "FLY-456",
+		"title": "[XHS-deep] 换 superset 了，好看又好用",
+		"author": "looplj",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69915552000000001503a4b0",
+		"summary": "这款名为 \"superset\" 的开发工具专为处理并发项目设计，它以终端为核心，将并行开发任务（如不同…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-456/xhs-deep-换-superset-了好看又好用"
+	},
+	{
+		"id": "FLY-457",
+		"uuid": "FLY-457",
+		"title": "[XHS-deep] 🕶️ Viture Luma + Mac：移动coding神器",
+		"author": "omom",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/6991a8d3000000000b008383",
+		"summary": "该用户展示了一套基于硬件触发（插入XR眼镜）的个人工作流自动化方案。通过组合使用Hammerspoon、B…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-457/xhs-deep-viture-luma-mac移动coding神器"
+	},
+	{
+		"id": "FLY-458",
+		"uuid": "FLY-458",
+		"title": "[XHS-deep] agent开发的下一个机会是sandbox",
+		"author": "阿东玩AI",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/698e0e9e000000001a036d89",
+		"summary": "文章论证了随着 AI Agent 获得更多本地系统访问权限（如 OpenClaw 项目所示），为防止其失…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-458/xhs-deep-agent开发的下一个机会是sandbox"
+	},
+	{
+		"id": "FLY-459",
+		"uuid": "FLY-459",
+		"title": "[XHS-deep] 如何让agent继承你的浏览器登录态？",
+		"author": "林帅说AI",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/698bd9b0000000000c037ed7",
+		"summary": "该内容讲解了如何让 AI Agent 继承用户在 Chrome 中的现有登录状态，以解决自动化过程中的重…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-459/xhs-deep-如何让agent继承你的浏览器登录态"
+	},
+	{
+		"id": "FLY-460",
+		"uuid": "FLY-460",
+		"title": "[XHS-deep] Claude让我彻底抛弃米家选择 Apple Home",
+		"author": "奇怪的摆摆鱼",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/6988169d0000000016008c8f",
+		"summary": "用户展示了如何利用 AI 助手 Claude，通过提供 IP 和 API Token 后下达自然语言指…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-460/xhs-deep-claude让我彻底抛弃米家选择-apple-home"
+	},
+	{
+		"id": "FLY-465",
+		"uuid": "FLY-465",
+		"title": "[XHS-deep] Claude Code能做视频了，Remotion不要太猛",
+		"author": "Feiskyer",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/6970ba9b000000000e00d111",
+		"summary": "Remotion，一个用Web技术生成视频的框架，发布了Agent Skills。这使得AI Ag…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-465/xhs-deep-claude-code能做视频了remotion不要太猛"
+	},
+	{
+		"id": "FLY-470",
+		"uuid": "FLY-470",
+		"title": "[XHS-deep] 2026年Claude Code Skills排行榜：Top 20完",
+		"author": "全金属外壳- 「AI工具实战派」",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/6975cf0b000000000a031235",
+		"summary": "这份（虚构的）2026年Claude Code Skills排行榜揭示了一种名为“…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-470/xhs-deep-2026年claude-code-skills排行榜top-20完"
+	},
+	{
+		"id": "FLY-471",
+		"uuid": "FLY-471",
+		"title": "[XHS-deep] Claude Code 自动代码评审工作流分享",
+		"author": "李志伟",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/6971a7dd000000000a02eacd",
+		"summary": "该内容展示了一个双 AI 协同的自动化代码评审工作流。通过让 Claude Code 扮演开发者、Codex…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-471/xhs-deep-claude-code-自动代码评审工作流分享"
+	},
+	{
+		"id": "FLY-473",
+		"uuid": "FLY-473",
+		"title": "[XHS-deep] GLM4.6配合Claude code真的好吗",
+		"author": "更有无名胜有名",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/69120926000000000503a637",
+		"summary": "用户尝试使用 Claude Code 配合 GLM4.6 从零开始开发一个复杂的 Next.js 应…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-473/xhs-deep-glm46配合claude-code真的好吗"
+	},
+	{
+		"id": "FLY-476",
+		"uuid": "FLY-476",
+		"title": "[XHS-deep] Codex & Claude Code 的集大成者来了",
+		"author": "saien",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/68eb6c69000000000300e644",
+		"summary": "Droid是一款对标Codex和Claude Code的新型AI编程工具。其核心设计是基于多Agent理…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-476/xhs-deep-codex-and-claude-code-的集大成者来了"
+	},
+	{
+		"id": "FLY-477",
+		"uuid": "FLY-477",
+		"title": "[XHS-deep] 3D打印在国外已经鲨疯啦❗❗❗",
+		"author": "嘻嘻不西西",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/68c9296500000000130132dc",
+		"summary": "这条内容指出了一个电商新机会：快时尚平台希音（SHEIN）正在大力招募3D打印类目的商家。内容分析了该机…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-477/xhs-deep-3d打印在国外已经鲨疯啦"
+	},
+	{
+		"id": "FLY-478",
+		"uuid": "FLY-478",
+		"title": "[XHS-deep] 我可以睡觉，但我的 AI 不行",
+		"author": "Bitaaa",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/68cfb574000000000b0134cd",
+		"summary": "该内容展示了一个“睡前指令”，让 AI Agent 在开发者睡觉时自主通宵工作。用户通过一个详细的 P…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-478/xhs-deep-我可以睡觉但我的-ai-不行"
+	},
+	{
+		"id": "FLY-479",
+		"uuid": "FLY-479",
+		"title": "[XHS-deep] Figma AI可以的",
+		"author": "Silviazzz",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/68cce12d0000000013014238",
+		"summary": "用户分享了使用 Figma AI 在一个下午内就完成了之前耗时一个月才能完成的 App 原型 r…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-479/xhs-deep-figma-ai可以的"
+	},
+	{
+		"id": "FLY-482",
+		"uuid": "FLY-482",
+		"title": "[XHS-deep] Claude Code+Perplexity MCP的SEO妙用",
+		"author": "山羊不在家",
+		"sourceUrl": "https://www.xiaohongshu.com/explore/68a51940000000001c0329f7",
+		"summary": "这篇笔记介绍了一种利用AI工具（Claude Code + Perplexity MCP）快速生成大量S…",
+		"linearUrl": "https://linear.app/geoforge3d/issue/FLY-482/xhs-deep-claude-codeperplexity-mcp的seo妙用"
+	}
+]

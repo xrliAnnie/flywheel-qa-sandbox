@@ -1,0 +1,38 @@
+{
+	"name": "flywheel-agent-team-transport",
+	"version": "0.1.0",
+	"description": "Vendor-neutral transport adapter for Lead↔Runner mailbox IPC. Default backend: claude-code Agent Team. Stub: Codex.",
+	"type": "module",
+	"main": "dist/src/index.js",
+	"types": "dist/src/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/src/index.d.ts",
+			"import": "./dist/src/index.js",
+			"default": "./dist/src/index.js"
+		}
+	},
+	"bin": {
+		"agent-team-transport": "dist/bin/agent-team-transport-cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"test": "vitest run",
+		"test:watch": "vitest --watch",
+		"typecheck": "tsc --noEmit",
+		"grep-gate": "node dist/bin/grep-gate.js"
+	},
+	"dependencies": {
+		"proper-lockfile": "^4.1.2"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"@types/proper-lockfile": "^4.1.4",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	}
+}
