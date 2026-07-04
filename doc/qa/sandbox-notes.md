@@ -1,7 +1,7 @@
 # QA Sandbox Notes — flywheel-qa-sandbox
 
 **Issue**: FLY-202 (QA sandbox fixture — slot harness real-Runner E2E task)
-**Date**: 2026-06-04
+**Date**: 2026-07-03
 
 ## Overview
 
@@ -51,7 +51,7 @@ qa
 reference
 retro
 
-doc//architecture:
+doc/architecture:
 archive
 capability-matrix.md
 flywheel-agent-architecture-diagram.html
@@ -61,17 +61,17 @@ product-experience-spec.md
 v0.2-architecture.md
 v2.0-product-vision.md
 
-doc//architecture/archive:
+doc/architecture/archive:
 v0.1.0-flywheel-orchestrator.md
 
-doc//engineer:
+doc/engineer:
 deep-research
 exploration
 implementation
 plan
 research
 
-doc//engineer/deep-research:
+doc/engineer/deep-research:
 001-decision-layer-gemini.md
 002-decision-layer-chatgpt.md
 003-stripe-minions-part1.md
@@ -86,13 +86,13 @@ doc//engineer/deep-research:
 claude-code-terminal-pane-management.md
 multi-agent-architecture-best-practices.md
 
-doc//engineer/exploration:
+doc/engineer/exploration:
 archive
 backlog
 new
 
-doc//engineer/exploration/archive:
+doc/engineer/exploration/archive:
 FLY-11-terminal-mcp-tool.md
 ```
 
-> Reviewed note: QA-S1 revision marker 20260604-1044
+> Reviewed note: QA-S3 slot-3 E2E re-run marker 20260703
