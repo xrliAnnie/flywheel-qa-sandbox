@@ -1519,6 +1519,12 @@ export class Blueprint {
 				// Unset/:memory: → no injection; both sides fall back to the
 				// ~/.flywheel/teamlead.db default (byte-compat with prod today).
 				stateDbPath: resolveStateDbPathForRunner(),
+				// FLY-795: on a resume, tell the runner (via FLYWHEEL_PROGRESS_PATH)
+				// the exact branch-committed progress.md to keep updating. Fresh
+				// runners derive it inside their own doc folder (undefined here).
+				...(ctx.progressResume && {
+					progressPath: ctx.progressResume.progressPath,
+				}),
 				onHeartbeat: () => {
 					this.eventEmitter?.emitHeartbeat(env).catch(() => {});
 				},
