@@ -126,6 +126,8 @@ describe("WorkflowFSM", () => {
 			"blocked",
 			"failed",
 			"terminated",
+			// FLY-793: three-stage Design phase handoff.
+			"design_done",
 		]);
 		expect(fsm.allowedTransitions("pending")).toEqual(["running"]);
 	});

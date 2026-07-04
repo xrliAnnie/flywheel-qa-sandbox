@@ -1313,3 +1313,51 @@ founder_milestone_report:
 		});
 	});
 });
+
+describe("ConfigLoader — pipeline (FLY-793 three-stage)", () => {
+	let readFile: ReturnType<typeof vi.fn>;
+	let loader: ConfigLoader;
+
+	beforeEach(() => {
+		readFile = vi.fn();
+		loader = new ConfigLoader(readFile);
+	});
+
+	it("parses pipeline.three_stage: true", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: true\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.three_stage).toBe(true);
+	});
+
+	it("parses pipeline.three_stage: false", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: false\n`,
+		);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline?.three_stage).toBe(false);
+	});
+
+	it("leaves pipeline undefined when absent (byte-compat)", async () => {
+		readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.pipeline).toBeUndefined();
+	});
+
+	it("throws when pipeline is a scalar, not a mapping", async () => {
+		readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}\npipeline: nope\n`);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/pipeline must be a YAML mapping/,
+		);
+	});
+
+	it("throws when pipeline.three_stage is not a boolean", async () => {
+		readFile.mockResolvedValue(
+			`${MINIMAL_CONFIG_YAML}\npipeline:\n  three_stage: "yes"\n`,
+		);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/pipeline\.three_stage must be a boolean/,
+		);
+	});
+});

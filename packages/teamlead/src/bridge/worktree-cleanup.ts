@@ -189,9 +189,15 @@ export function makeWorktreeCleanup(
 				return;
 			}
 			branch = reg.branch; // delete the ACTUAL registered branch
+			// FLY-793 (824 R2 E2E): probe + remove by the ACTUAL registered path.
+			// git reports symlink-resolved paths (e.g. /private/tmp/... for a
+			// session stored as /tmp/...), so use its own canonical path for both
+			// the clean-probe and `git worktree remove` rather than relying on git
+			// to re-resolve ours. Parallel to `branch = reg.branch` above.
+			const registeredPath = reg.path;
 
 			// (4) clean-guard — fail-closed on probe error.
-			const clean = await deps.isWorktreeClean(worktreePath);
+			const clean = await deps.isWorktreeClean(registeredPath);
 			if (clean !== true) {
 				audit(input, "worktree_cleanup_skipped", {
 					reason: clean === "unknown" ? "clean_unknown" : "dirty",
@@ -203,7 +209,7 @@ export function makeWorktreeCleanup(
 			// (5) dirty-safe removal.
 			const res = await deps.worktreeManager.removeCleanWorktreeByPath(
 				projectRoot,
-				worktreePath,
+				registeredPath,
 				branch,
 			);
 			audit(

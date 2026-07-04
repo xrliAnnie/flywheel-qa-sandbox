@@ -60,6 +60,30 @@ export function deriveWorktreeKey(
 	return role === "main" ? identifier : `${identifier}-${role}`;
 }
 
+/**
+ * FLY-793: worktree/branch key for a runner, three-stage-aware.
+ *
+ * A three-stage run is ONE issue with internal Design → Implement → QA
+ * phase-sessions that must share ONE branch B. When `shareParentBranch` is set
+ * (a Bridge-INTERNAL flag the PhaseOrchestrator sets on the phase dispatch —
+ * NEVER accepted from `/api/runs/start` or runner payloads), the key is the
+ * parent's `main`-role key (= `identifier`) regardless of `sessionRole`, so all
+ * three phases derive the SAME branch B. Absent → current role-aware behavior
+ * (`${identifier}-${role}` for non-main roles), byte-compatible.
+ *
+ * SECURITY: the shared key is computed HERE from the node's own `identifier`
+ * (never from an externally-supplied key string), so a mis-scoped/smuggled flag
+ * can at worst make a run use its own issue's main key — it can never target a
+ * different managed branch.
+ */
+export function resolveWorktreeKey(
+	identifier: string,
+	opts?: { sessionRole?: string; shareParentBranch?: boolean },
+): string {
+	if (opts?.shareParentBranch) return deriveWorktreeKey(identifier, "main");
+	return deriveWorktreeKey(identifier, opts?.sessionRole);
+}
+
 // ─── Default exec ────────────────────────────────
 
 // Uses execFile (array args, no shell) — safe from injection by design.
@@ -235,7 +259,9 @@ export class WorktreeManager {
 		worktreePath: string,
 	): Promise<boolean> {
 		const worktrees = await this.list(mainRepoPath);
-		return worktrees.some((wt) => wt.path === worktreePath);
+		// FLY-793: canonicalize both sides — git reports symlink-resolved paths.
+		const target = canonicalizeWorktreePath(worktreePath);
+		return worktrees.some((wt) => canonicalizeWorktreePath(wt.path) === target);
 	}
 
 	async list(mainRepoPath: string): Promise<ExternalWorktree[]> {
@@ -417,7 +443,14 @@ export class WorktreeManager {
 		worktreePath: string,
 	): Promise<ExternalWorktree | null> {
 		const worktrees = await this.list(mainRepoPath);
-		return worktrees.find((wt) => wt.path === worktreePath) ?? null;
+		// FLY-793 (824 R2 E2E): canonicalize both sides so a session-stored
+		// unresolved path (e.g. /tmp/...) matches git's symlink-resolved path
+		// (/private/tmp/...) instead of silently returning "not registered".
+		const target = canonicalizeWorktreePath(worktreePath);
+		return (
+			worktrees.find((wt) => canonicalizeWorktreePath(wt.path) === target) ??
+			null
+		);
 	}
 
 	/**
@@ -477,6 +510,46 @@ export class WorktreeManager {
 			wt.path,
 			opts?.deleteBranch ? wt.branch : null,
 		);
+	}
+}
+
+/**
+ * FLY-793 (824 R2 E2E): canonicalize a filesystem path so it can be compared
+ * against git's worktree paths, which `git worktree list --porcelain` always
+ * reports fully symlink-resolved (e.g. macOS `/tmp` → `/private/tmp`, or any
+ * user-configured symlink component on Linux). A plain string `===` against an
+ * unresolved caller path silently fails to match — that is the FLY-99 class of
+ * bug, and it broke the three-stage worktree-removal-proof gate (cleanup skipped
+ * as "not_registered" → the removed-proof check threw → handoff fail-closed).
+ *
+ * `fs.realpathSync` resolves symlinks but throws when the path (or a component)
+ * doesn't exist, so fall back to resolving the deepest existing ancestor and
+ * re-appending the missing tail. This keeps `/tmp/x` matching `/private/tmp/x`
+ * whether or not `x` is still on disk.
+ */
+export function canonicalizeWorktreePath(p: string): string {
+	const abs = path.resolve(p);
+	try {
+		return fs.realpathSync(abs);
+	} catch {
+		// Deepest-existing-ancestor fallback for a not-yet / no-longer existing
+		// path: walk up until an ancestor resolves, then re-attach the tail.
+		const tail: string[] = [];
+		let dir = abs;
+		for (
+			let parent = path.dirname(dir);
+			parent !== dir;
+			parent = path.dirname(dir)
+		) {
+			tail.unshift(path.basename(dir));
+			dir = parent;
+			try {
+				return path.join(fs.realpathSync(dir), ...tail);
+			} catch {
+				// ancestor still missing — keep walking up
+			}
+		}
+		return abs; // no existing ancestor (root always exists, so unreachable)
 	}
 }
 

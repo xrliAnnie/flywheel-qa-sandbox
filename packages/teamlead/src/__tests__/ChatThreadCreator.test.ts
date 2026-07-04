@@ -1,7 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatThreadCreator } from "../bridge/ChatThreadCreator.js";
+import {
+	ChatThreadCreator,
+	phaseThreadBadge,
+} from "../bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "../bridge/chat-thread-utils.js";
 import { StateStore } from "../StateStore.js";
+
+describe("FLY-793 phaseThreadBadge (Step 11 ⑦)", () => {
+	it("maps each phase role to its badge, main/absent → empty", () => {
+		expect(phaseThreadBadge("design")).toBe("🎨设计");
+		expect(phaseThreadBadge("implement")).toBe("🔨实现");
+		expect(phaseThreadBadge("qa")).toBe("🧪QA");
+		expect(phaseThreadBadge("main")).toBe("");
+		expect(phaseThreadBadge(undefined)).toBe("");
+	});
+});
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -68,6 +81,8 @@ describe("FLY-91: ChatThreadCreator", () => {
 			channel_id: "ch-123",
 			lead_id: null,
 			archived_at: null,
+			// FLY-793 (Step 11): additive — the main path always reports 'main'.
+			session_role: "main",
 		});
 	});
 
@@ -1169,11 +1184,13 @@ describe("FLY-91: StateStore chat_threads CRUD", () => {
 		store.upsertChatThread("t-1", "ch-1", "issue-1");
 		const result = store.getChatThreadByIssue("issue-1", "ch-1");
 		// FLY-369: getChatThreadByIssue now also returns lead_id + archived_at (null when unset).
+		// FLY-793 (Step 11): + session_role (additive; 'main' on the main path).
 		expect(result).toEqual({
 			thread_id: "t-1",
 			channel_id: "ch-1",
 			lead_id: null,
 			archived_at: null,
+			session_role: "main",
 		});
 	});
 
