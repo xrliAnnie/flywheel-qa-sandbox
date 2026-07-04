@@ -326,6 +326,25 @@ export interface BlueprintContext {
 	startPoint?: string;
 
 	/**
+	 * FLY-795: restart-resilient resume. Set by teamlead when re-dispatching a
+	 * DEAD runner (explicit terminate / reboot) whose branch B carries a committed
+	 * `progress.md`. Blueprint renders a RESUME-MODE prompt from this trusted input
+	 * (read the cursor + committed plan, continue from where the prior runner left
+	 * off; do NOT re-run explore/research/plan), and suppresses the completed
+	 * from-scratch gates up to `effectiveStage`. Absent ⇒ fresh (byte-compatible).
+	 * The worktree reuses FLY-793's `shareParentBranch` + `startPoint = <branch B
+	 * tip>` so `progress.md` survives the worktree rebuild.
+	 */
+	progressResume?: {
+		/** deterministic progress.md path (also injected as FLYWHEEL_PROGRESS_PATH). */
+		progressPath: string;
+		priorExecutionId: string;
+		resumeKind: "restart" | "terminate" | "reboot" | "handoff";
+		/** phase to suppress up-to; undefined = suppress no gates (fail-closed on mismatch). */
+		effectiveStage?: string;
+	};
+
+	/**
 	 * FLY-579: QA-runner context. Present ONLY for `sessionRole === "qa"`
 	 * Auto-QA spawns. Blueprint renders a QA-mode prompt (independent
 	 * verification — no implement/branch/push/PR, no approve-gate/ship) and the

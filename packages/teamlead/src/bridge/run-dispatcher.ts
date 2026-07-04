@@ -30,10 +30,23 @@ import type {
 	StartRequest,
 	StartResult,
 } from "./retry-dispatcher.js";
+import type { ProgressResumeInfo } from "./progress-resume.js";
 import {
 	type ResolvedRoleAdapter,
 	resolveRoleAdapter,
 } from "./role-adapter-resolver.js";
+
+/**
+ * FLY-795: compute the restart-resilient resume decision for a (re-)dispatch.
+ * Returns a ProgressResumeInfo when a prior execution + committed progress.md on
+ * branch B are found; null ⇒ start fresh. Injected into RunDispatcher so the
+ * live git/StateStore lookups stay out of the generic dispatcher.
+ */
+export type ResumeComputer = (
+	issueId: string,
+	role: string,
+	projectName: string,
+) => ProgressResumeInfo | null;
 import {
 	AdmissionDeferredError,
 	RunnerAdmissionController,
@@ -546,6 +559,12 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		launchClaims?: LaunchClaimStore,
 		/** FLY-245 R5: test seam for the commit-record existence check. */
 		isCommitted?: (execId: string) => boolean,
+		/**
+		 * FLY-795: compute restart-resilient resume for a (re-)dispatch. Returns a
+		 * ProgressResumeInfo when a prior execution + committed progress.md on
+		 * branch B are found, else null. Undefined ⇒ always fresh (byte-compatible).
+		 */
+		private resumeComputer?: ResumeComputer,
 	) {
 		super(blueprintsByProject, cleanupHandles, launchClaims, isCommitted);
 	}
@@ -639,6 +658,15 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.leadId,
 		);
 
+		// FLY-795: restart-resilient resume. If a prior execution + a committed
+		// progress.md on branch B exist, continue from the real cursor instead of
+		// fresh — reusing FLY-793's shareParentBranch/startPoint worktree mechanism
+		// (startPoint = branch B tip, so `git worktree add -B <branch> <tip>`
+		// rebuilds WITH progress.md). Undefined computer / no prior progress ⇒ fresh
+		// (byte-compatible). Never overrides a caller-supplied startPoint (793 phase
+		// handoff already pins its own).
+		const resume = this.resumeComputer?.(req.issueId, role, req.projectName) ?? null;
+
 		// FLY-142 PR 1.4 + FLY-123: same as retry path — Agent Team identity
 		// + executor backend resolution (labels > roles config > env > claude).
 		// FLY-643: a QA start passes ignoreRunnerLabelSelection so the parent's
@@ -661,7 +689,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			leadId: req.leadId,
 			sessionRole: req.sessionRole,
 			// FLY-793: three-stage phases share one branch B (Bridge-internal).
-			shareParentBranch: req.shareParentBranch,
+			// FLY-795: a resume also shares branch B (reuse the same mechanism).
+			shareParentBranch: req.shareParentBranch || (resume ? true : undefined),
 			// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
 			issueTitle: req.issueTitle,
 			issueIdentifier: req.issueIdentifier,
@@ -674,9 +703,20 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			// FLY-205: doc-flow tier + issue URL (runs-route validates/persists)
 			docTier: req.docTier,
 			issueUrl: req.issueUrl,
-			// FLY-579: worktree start point (QA pins to parent pr_head_sha) + QA context
-			startPoint: req.startPoint,
+			// FLY-579: worktree start point (QA pins to parent pr_head_sha) + QA context.
+			// FLY-795: a resume pins startPoint = branch B tip so `worktree add -B`
+			// rebuilds WITH the committed progress.md (never override a caller's own).
+			startPoint: req.startPoint ?? resume?.startPoint,
 			qaContext: req.qaContext,
+			// FLY-795: restart-resilient resume context (Blueprint renders resume mode).
+			...(resume && {
+				progressResume: {
+					progressPath: resume.progressPath,
+					priorExecutionId: resume.priorExecutionId,
+					resumeKind: resume.resumeKind,
+					...(resume.effectiveStage && { effectiveStage: resume.effectiveStage }),
+				},
+			}),
 			...runnerSpawn,
 			// FLY-751: per-runner MCP slim profile — claude-tmux only, gated on
 			// the FINAL resolved backend (runnerSpawn.runnerBackend reflects the
