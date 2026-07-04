@@ -83,6 +83,11 @@ const VALID_ROUTES = new Set([
 	// recognized here too, else a fail-close marker from
 	// `complete --route pr_handoff` is quarantined as unreplayable.
 	"pr_handoff",
+	// FLY-793 (Codex full-PR R1 #2): phase_design_complete is a `complete --route`,
+	// so its crash-safety marker MUST be replayable — else a Design phase that
+	// completes while Bridge is down is quarantined as unreplayable and the
+	// Design→Implement handoff never fires (stranded).
+	"phase_design_complete",
 ]);
 const TERMINAL_STATUSES = new Set([
 	"completed",
@@ -194,6 +199,16 @@ export function expectedStatusFromMarker(
 		// marker must never clear a review-gated session.
 		// FLY-493: pr_handoff behaves identically (running→completed, else null).
 		return currentStatus === "running" ? "completed" : null;
+	}
+	if (route === "phase_design_complete") {
+		// FLY-793 (Codex full-PR R1 #2): a Design phase only completes from RUNNING,
+		// mapping to the non-terminal design_done (both sinks). From any non-running
+		// state, fail closed (null → quarantine), mirroring the sink guards. NOTE:
+		// after replay, event-route awaits the handoff which finalizes design_done →
+		// completed — the post-replay status check accepts BOTH (see tryReconcile-
+		// Complete), so this expectation returning design_done does not quarantine a
+		// successfully-handed-off Design.
+		return currentStatus === "running" ? "design_done" : null;
 	}
 	// route undefined here only reachable when isPostApproveShip — natural completion.
 	return "completed";
@@ -381,9 +396,19 @@ export async function tryReconcileComplete(
 	// Re-read session and verify it reached the proven terminal status. Do NOT
 	// trust HTTP 2xx (event-route returns 200+warning on FSM/route rejection).
 	const afterStatus = deps.store.getSession(execId)?.status;
-	if (afterStatus === expectedStatus) {
+	// FLY-793 (Codex full-PR R1 #2): phase_design_complete's replay lands at
+	// design_done, then event-route AWAITS the handoff which finalizes it to
+	// completed (success) or leaves it design_done (fail-closed + Lead alert). BOTH
+	// mean the Design completion was reconciled — accept either, or a
+	// successfully-handed-off Design gets falsely quarantined + force-failed on boot.
+	const isPhaseDesign =
+		body.payload?.decision?.route === "phase_design_complete";
+	if (
+		afterStatus === expectedStatus ||
+		(isPhaseDesign && afterStatus === "completed")
+	) {
 		safeUnlink(markerPath, log);
-		return { kind: "reconciled", status: expectedStatus };
+		return { kind: "reconciled", status: afterStatus ?? expectedStatus };
 	}
 
 	// Duplicate event_id but session never reached terminal — same-id retry is a

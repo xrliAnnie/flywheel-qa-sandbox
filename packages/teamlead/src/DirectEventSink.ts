@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import {
 	DEFAULT_PROOFSHOT_CONFIG,
 	modelShortCode,
+	resolveCompletionSessionRole,
 	type SkillsConfig,
 } from "flywheel-config";
 import { WORKFLOW_TRANSITIONS } from "flywheel-core";
@@ -22,6 +23,7 @@ import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
+import type { PhaseOrchestrator } from "./bridge/phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
 	markEvidenceGapCompletion,
@@ -62,6 +64,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	 * is always false with no held record).
 	 */
 	public autoQaCoordinator?: { current: AutoQaCoordinator | undefined };
+	// FLY-793: three-stage PhaseOrchestrator (design_done → Implement; implement
+	// awaiting_review → QA). Undefined until the plugin constructs it → no-op
+	// (byte-compat); onPhaseComplete itself gates on three-stage phase + status.
+	public phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
 
 	constructor(
 		private store: StateStore,
@@ -119,6 +125,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			session_stage: "started",
 			stage_updated_at: now,
 			session_role: env.sessionRole ?? "main",
+			// FLY-793 (Step 11): persist the chat-thread role at start (this in-process
+			// sink is the PRODUCTION started path). Set-once, immutable thereafter.
+			chat_thread_role: env.chatThreadRole ?? "main",
 			// FLY-493 (Codex code review R1): the PRODUCTION started path is this
 			// in-process sink — persist the resolved executor backend as
 			// adapter_type so the no-transport wake-guard (runner-wake.ts) can
@@ -188,6 +197,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							// the first stage_changed). `?? null` = authoritative (no stale
 							// code carried onto a reused thread).
 							modelCode: modelShortCode(env.runnerModel) ?? null,
+							// FLY-793 (Step 11): a three-stage phase creates its OWN badged
+							// thread in the side-table; 'main' → byte-unchanged.
+							chatThreadRole: env.chatThreadRole,
 						});
 						console.log(
 							`[DirectEventSink] ensureChatThread: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
@@ -303,8 +315,15 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// FLY-493: pr_handoff (no-transport antigravity build+PR terminal) has the
 		// SAME running-only constraint as no_code — skip from any non-running
 		// state so it can't clear a review-gated session.
+		// FLY-793 (Codex full-PR R1 #3): phase_design_complete has the SAME
+		// running-only constraint — a duplicate/late Design completion for a session
+		// already moved to design_done/completed must NOT re-write design_done and
+		// re-invoke the PhaseOrchestrator (→ duplicate Implement dispatch / status
+		// regression). Parity with event-route.ts's phase_design_complete guard.
 		if (
-			(route === "no_code" || route === "pr_handoff") &&
+			(route === "no_code" ||
+				route === "pr_handoff" ||
+				route === "phase_design_complete") &&
 			preExistingSession?.status !== "running"
 		) {
 			console.warn(
@@ -334,7 +353,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// (isPostApproveShipComplete requires merged landing). Sister mapping:
 		// event-route.ts session_completed — both sinks MUST agree.
 		let evidenceGap = false;
-		if (route === "needs_review") {
+		if (route === "phase_design_complete") {
+			// FLY-793: a three-stage Design phase-session completed (docs on the
+			// shared branch, no PR). Non-terminal design_done; the PhaseOrchestrator
+			// hands off to Implement. Sister mapping: event-route.ts session_completed.
+			status = "design_done";
+		} else if (route === "needs_review") {
 			// FLY-115 v1.24.5 (FLY-120): if the Runner already finished shipping
 			// (Lead unblocked the approve_to_ship gate via flywheel-comm respond,
 			// then the Runner self-merged), short-circuit to "completed". The
@@ -454,7 +478,13 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				issue_identifier: env.issueIdentifier || undefined,
 				issue_title: env.issueTitle,
 				pr_number: prNumber,
-				session_role: env.sessionRole ?? "main",
+				// FLY-793: never downgrade a dispatched phase role (sister of the
+				// event-route completion guard) — env.sessionRole is durable here,
+				// but keep the invariant explicit + symmetric across sinks.
+				session_role: resolveCompletionSessionRole(
+					preExistingSession?.session_role,
+					env.sessionRole,
+				),
 			});
 			console.warn(
 				`[DirectEventSink] qid-less needs_review for Phase-2-bound ${env.executionId} while status="${preExistingSession?.status}" — evidence-only (status/binding/window owned by the HTTP binding path)`,
@@ -480,7 +510,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				issue_identifier: env.issueIdentifier || undefined,
 				issue_title: env.issueTitle,
 				pr_number: prNumber,
-				session_role: env.sessionRole ?? "main",
+				// FLY-793: preserve a dispatched phase role on completion (sister of
+				// the event-route completion guard; byte-compat for non-phase roles).
+				session_role: resolveCompletionSessionRole(
+					preExistingSession?.session_role,
+					env.sessionRole,
+				),
 			});
 		}
 
@@ -607,6 +642,22 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
+		// FLY-793: three-stage phase handoff. onPhaseComplete no-ops unless this is
+		// a three-stage phase session (per-project ON) at its handoff status, so it
+		// is safe to call on every completion. Sister call: event-route.ts.
+		if (this.phaseOrchestrator?.current) {
+			const phaseSession = this.store.getSession(env.executionId);
+			if (phaseSession) {
+				try {
+					await this.phaseOrchestrator.current.onPhaseComplete(phaseSession);
+				} catch (err) {
+					console.error(
+						`[DirectEventSink] onPhaseComplete threw for ${env.executionId}: ${(err as Error).message}`,
+					);
+				}
+			}
+		}
+
 		// FLY-579: hold the founder while QA-held — suppress the review-required
 		// delivery (the 🧪 / ship-ready posts reach the thread via the
 		// coordinator's ThreadPoster, not this sink). isQaHeld is false with no
@@ -666,6 +717,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		_lastActivity?: string,
 	): Promise<void> {
 		const now = sqliteDatetime();
+		// FLY-793: pre-failure snapshot so a failure signal doesn't downgrade a
+		// dispatched phase role (sister of the event-route failed guard).
+		const preFailureSession = this.store.getSession(env.executionId);
 
 		this.store.insertEvent({
 			event_id: randomUUID(),
@@ -686,7 +740,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// GEO-202: coerce "" → undefined so COALESCE preserves existing non-null value
 			issue_identifier: env.issueIdentifier || undefined,
 			issue_title: env.issueTitle,
-			session_role: env.sessionRole ?? "main",
+			session_role: resolveCompletionSessionRole(
+				preFailureSession?.session_role,
+				env.sessionRole,
+			),
 		});
 
 		// GEO-202: Post-upsert backfill — if session still has no identifier, fall back to issueId

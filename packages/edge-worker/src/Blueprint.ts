@@ -41,7 +41,7 @@ import type { GitResultChecker } from "./GitResultChecker.js";
 import type { HydratedContext, PreHydrator } from "./PreHydrator.js";
 import type { SkillInjector } from "./SkillInjector.js";
 import type { WorktreeInfo, WorktreeManager } from "./WorktreeManager.js";
-import { deriveWorktreeKey } from "./WorktreeManager.js";
+import { resolveWorktreeKey } from "./WorktreeManager.js";
 
 /**
  * FLY-205: Lead-judged doc tier — controls DOCUMENT OUTPUT ONLY (checkpoint
@@ -202,6 +202,12 @@ export interface BlueprintContext {
 	docTier?: DocTier;
 	// FLY-59 — Session role for multi-session-per-issue support
 	sessionRole?: string;
+	// FLY-793 — Bridge-INTERNAL three-stage flag (PhaseOrchestrator only; never
+	// from /api/runs/start or runner payload). When set, the Design/Implement/QA
+	// phase-sessions share ONE branch B (worktree key = parent main key,
+	// regardless of sessionRole) so they hand off on one branch. Absent →
+	// role-aware worktree key (byte-compatible).
+	shareParentBranch?: boolean;
 	// FLY-116 — Per-runner Terminal viewer hook. Fired by TmuxAdapter
 	// after `tmux new-window` returns a windowId, before waitForCompletion.
 	// Dispatchers set this to spawn a per-execution macOS Terminal tab.
@@ -576,6 +582,12 @@ export class Blueprint {
 			runAttempt: ctx.retryContext?.attempt,
 			// FLY-59: Propagate session role from context to event envelope
 			sessionRole: ctx.sessionRole,
+			// FLY-793 (Step 11): compute the chat-thread role ONCE here (the only
+			// place shareParentBranch is known) — a three-stage phase carries its
+			// phase role; everything else (incl. auto-QA's own sessionRole==='qa' on
+			// a separate issue) is 'main'. Persisted by both started sinks.
+			chatThreadRole:
+				ctx.shareParentBranch && ctx.sessionRole ? ctx.sessionRole : "main",
 			// FLY-493: persist the resolved executor backend (→ session.adapter_type)
 			// so the no-transport wake-guard can recognize an antigravity session.
 			...(ctx.runnerBackend && { runnerBackend: ctx.runnerBackend }),
@@ -671,7 +683,13 @@ export class Blueprint {
 			// FLY-95: Role-aware worktree naming to prevent main/QA collision.
 			// FLY-603: extracted into the shared deriveWorktreeKey() helper so the
 			// post-ship / reconciler cleanup derives the exact same key (no drift).
-			const worktreeIssueId = deriveWorktreeKey(node.id, ctx.sessionRole);
+			// FLY-793: three-stage phases share one branch B (shareParentBranch);
+			// otherwise role-aware key (byte-compat). resolveWorktreeKey computes the
+			// shared key from node.id itself — no external key value is trusted.
+			const worktreeIssueId = resolveWorktreeKey(node.id, {
+				sessionRole: ctx.sessionRole,
+				shareParentBranch: ctx.shareParentBranch,
+			});
 			try {
 				await this.worktreeManager.removeIfExists(
 					projectRoot,
@@ -802,28 +820,92 @@ export class Blueprint {
 		// land / doc-flow / brainstorm / approve-gate blocks below.
 		const isQaRunner = !!ctx.qaContext;
 
+		// FLY-793: three-stage internal phases (Design / Implement). A three-stage
+		// run is ONE issue with Design → Implement → QA phase-sessions sharing one
+		// branch B (shareParentBranch is the signal). The QA phase runs through the
+		// isQaRunner (qaContext) path. Absent shareParentBranch → not three-stage →
+		// the default single-session prompt below is byte-identical to before.
+		const isDesignPhase =
+			!isQaRunner &&
+			ctx.shareParentBranch === true &&
+			ctx.sessionRole === "design";
+		const isImplementPhase =
+			!isQaRunner &&
+			ctx.shareParentBranch === true &&
+			ctx.sessionRole === "implement";
+		// FLY-793 Step 8: the three-stage QA phase is a WRITER on the shared branch
+		// B (Annie 2026-07-02: "give it more permissions") — it runs the tests,
+		// commits its test/report to B, and reports a verdict. It is DISTINCT from
+		// the auto-QA `isQaRunner` path (read-only verification of a SEPARATE
+		// QA·FLY-XX issue): three-stage QA is a writer on the parent issue's branch,
+		// its independence coming from being its own session on the QA-tier model.
+		const isQaPhase =
+			!isQaRunner && ctx.shareParentBranch === true && ctx.sessionRole === "qa";
+
 		// FLY-643: an Auto-QA runner verifies the PARENT issue under test. When it
 		// runs on a SEPARATE QA·FLY-XX issue, `hydrated.issueId` is the QA issue —
 		// point the prompt at the parent (qaContext.parentIssueIdentifier) so it
 		// doesn't read "QA the QA issue". Falls back to its own issueId on the
 		// legacy same-issue / manual path.
 		const qaTarget = ctx.qaContext?.parentIssueIdentifier ?? hydrated.issueId;
-		const prompt = isQaRunner
-			? `Independently QA ${qaTarget} at the reviewed commit (its own tracking issue is ${hydrated.issueId}: ${hydrated.issueTitle}).\n\n${hydrated.issueDescription}`
-			: `Implement ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`;
+		let prompt: string;
+		if (isQaRunner) {
+			prompt = `Independently QA ${qaTarget} at the reviewed commit (its own tracking issue is ${hydrated.issueId}: ${hydrated.issueTitle}).\n\n${hydrated.issueDescription}`;
+		} else if (isDesignPhase) {
+			prompt = `Design phase for ${hydrated.issueId}: ${hydrated.issueTitle}. Produce the design (brainstorm → research → plan → design review) and commit the docs to this branch; do NOT write implementation code — the Implement phase does that on the same branch.\n\n${hydrated.issueDescription}`;
+		} else if (isImplementPhase) {
+			prompt = `Implement phase for ${hydrated.issueId}: ${hydrated.issueTitle}. The design is already done and committed on THIS branch — read it and implement; do NOT re-brainstorm.\n\n${hydrated.issueDescription}`;
+		} else if (isQaPhase) {
+			prompt = `QA phase for ${hydrated.issueId}: ${hydrated.issueTitle}. The implementation is already committed on THIS branch (a PR is open) — verify it, and commit your tests/QA report to this same branch.\n\n${hydrated.issueDescription}`;
+		} else {
+			prompt = `Implement ${hydrated.issueId}: ${hydrated.issueTitle}.\n\n${hydrated.issueDescription}`;
+		}
 
-		const systemPromptLines: string[] = isQaRunner
-			? []
-			: [
-					"You are working on a Linear issue. Follow these steps:",
-					"1. Read the codebase and understand the context (CLAUDE.md, relevant files).",
-					"2. Implement the requested changes following TDD.",
-					"3. Create a feature branch, commit your changes.",
-					"4. Push the branch and create a GitHub PR.",
-				];
+		let systemPromptLines: string[];
+		if (isQaRunner) {
+			systemPromptLines = [];
+		} else if (isDesignPhase) {
+			systemPromptLines = [
+				"You are the DESIGN phase of a three-stage pipeline (Design → Implement → QA), all on ONE shared branch.",
+				"1. Read the codebase and understand the context (CLAUDE.md, relevant files).",
+				"2. Do the design: brainstorm → research → plan → design review.",
+				"3. Commit the design docs (exploration/research/plan + progress.md) to this branch and push.",
+				"4. Then complete the design phase with `flywheel-comm complete --route phase_design_complete`. Do NOT implement code, create a PR, or ship — the Implement phase does that on this same branch.",
+			];
+		} else if (isImplementPhase) {
+			systemPromptLines = [
+				"You are the IMPLEMENT phase of a three-stage pipeline. The DESIGN phase already ran on this SAME branch.",
+				"1. Read the committed design first (exploration/research/plan + progress.md on this branch) and the codebase. Do NOT re-brainstorm the design.",
+				"2. Implement the plan following TDD.",
+				"3. Commit your changes to this branch.",
+				"4. Push the branch and create a GitHub PR.",
+			];
+		} else if (isQaPhase) {
+			systemPromptLines = [
+				"You are the QA phase of a three-stage pipeline (Design → Implement → QA), all on ONE shared branch. The IMPLEMENT phase already committed the code and opened a PR on THIS branch.",
+				"1. Read the committed design + implementation on this branch (exploration/research/plan + progress.md + the code). Do NOT re-implement the feature.",
+				"2. Verify the change against the plan: run the tests, exercise the real behavior, and add any missing test coverage. You HAVE write access — commit your tests + a QA report to THIS branch.",
+				"3. Push your commits to this branch (it updates the open PR — do NOT open a second PR).",
+				"4. Report the verdict with `flywheel-comm qa-result --status pass|fail`. On PASS the pipeline surfaces the founder ship gate; on FAIL commit your findings/failing tests first so the Implement-fix phase can read them on this branch.",
+			];
+		} else {
+			systemPromptLines = [
+				"You are working on a Linear issue. Follow these steps:",
+				"1. Read the codebase and understand the context (CLAUDE.md, relevant files).",
+				"2. Implement the requested changes following TDD.",
+				"3. Create a feature branch, commit your changes.",
+				"4. Push the branch and create a GitHub PR.",
+			];
+		}
 
-		if (!isQaRunner && canLand) {
+		if (!isQaRunner && !isDesignPhase && !isQaPhase && canLand) {
 			// v0.6: land after PR creation (v1.0 Phase 2: no merge — report readiness only)
+			// FLY-793: the Design phase has no PR/CI/land — it completes via
+			// phase_design_complete. The QA phase inherits the Implement phase's
+			// open PR (pushes to the same branch B) — it must NOT open a second PR,
+			// so it is excluded from the land/PR-create block; its own prompt drives
+			// the push + `flywheel-comm qa-result` verdict. Only Implement /
+			// single-session runners create + land a PR.
 			if (hasLandCommand) {
 				systemPromptLines.push(
 					`5. After creating the PR, use ${this.skillsConfig!.land_command} to monitor CI readiness.`,
@@ -838,7 +920,7 @@ export class Blueprint {
 				"6. After writing the landing signal (ready_to_merge or failed), exit the session.",
 				`Landing signal path: ${landSignalPath}`,
 			);
-		} else if (!isQaRunner) {
+		} else if (!isQaRunner && !isDesignPhase && !isQaPhase) {
 			// Legacy behavior: stop after PR
 			systemPromptLines.push(
 				"5. Verify CI passes. If CI fails, fix and push again.",
