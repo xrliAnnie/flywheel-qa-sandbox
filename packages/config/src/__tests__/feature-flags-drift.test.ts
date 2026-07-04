@@ -77,6 +77,8 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_LEAD_MODEL: "config value: per-lead model (fleet)",
 	FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "config value: alert channel id",
 	FLYWHEEL_FLY324_SWEEP_EXCLUDE: "config value: sweep exclude list",
+	FLYWHEEL_FOUNDER_AUTO_APPROVE_DENYLIST:
+		"config value: comma-separated projects excluded from founder auto-approve (FLY-799)",
 	FLYWHEEL_DIGEST_CHANNEL: "config value: daily digest channel id (FLY-727)",
 	FLYWHEEL_DIGEST_TZ: "config value: daily digest timezone (FLY-727)",
 	FLYWHEEL_FOUNDER_CONSENT_ENABLED:

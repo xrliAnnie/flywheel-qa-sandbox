@@ -15,6 +15,7 @@
 import { randomUUID } from "node:crypto";
 import type { MilestoneKind } from "flywheel-config";
 import type { StateStore } from "../StateStore.js";
+import { extractGateMessageId } from "./approval-signal/gate-message-binding.js";
 import { parseRetryAfterMs } from "./chat-thread-utils.js";
 import { isDiscordSnowflake, truncate } from "./founder-notify-utils.js";
 import { milestoneLabel } from "./milestone-report-policy.js";
@@ -78,6 +79,13 @@ export interface FounderThreadNotifyResult {
 	 * caller should escalate rather than silently drop (Annie 2026-07-01).
 	 */
 	skipReason?: FounderThreadSkipReason;
+	/**
+	 * FLY-799 A-0b: only on `posted` — the created Discord message id, so the
+	 * ship-gate caller can durably bind `(questionId,prHeadSha)->gateMessageId`
+	 * for ReactionSource. Optional/best-effort: undefined if the POST body could
+	 * not be parsed (the post still succeeded).
+	 */
+	gateMessageId?: string;
 }
 
 function buildBody(opts: FounderThreadNotifyOpts): string {
@@ -166,13 +174,14 @@ export async function emitFounderThreadNotification(
 		opts.ownerUserId,
 		fetchImpl,
 	);
-	// Audit + return EXACTLY as before (byte-compatible gate-path behavior).
+	// Audit + return (byte-compatible; FLY-799 adds the optional gateMessageId).
 	if (outcome.kind === "posted") {
 		audit(store, opts, "founder_thread_notified", {
 			threadId: opts.thread.thread_id,
 			status: outcome.status,
+			gateMessageId: outcome.messageId,
 		});
-		return { kind: "posted" };
+		return { kind: "posted", gateMessageId: outcome.messageId };
 	}
 	if (outcome.kind === "transient_failed") {
 		if (outcome.status === 429) {
@@ -216,7 +225,7 @@ export async function emitFounderThreadNotification(
  * in `emitFounderThreadNotification` so the gate path behaves identically.
  */
 type PostFounderThreadOutcome =
-	| { kind: "posted"; status: number }
+	| { kind: "posted"; status: number; messageId?: string }
 	| {
 			kind: "transient_failed";
 			/** 429 or 5xx status; undefined for a network error / abort / timeout. */
@@ -253,7 +262,18 @@ async function postFounderThreadCore(
 				signal: controller.signal,
 			},
 		);
-		if (res.ok) return { kind: "posted", status: res.status };
+		if (res.ok) {
+			// FLY-799 A-0b: capture the created message id so the ship-gate path can
+			// durably bind (questionId,prHeadSha)->gateMessageId for ReactionSource.
+			// Best-effort: a body-parse failure must NOT change the posted outcome.
+			let messageId: string | undefined;
+			try {
+				messageId = extractGateMessageId(await res.json()) ?? undefined;
+			} catch {
+				// keep messageId undefined
+			}
+			return { kind: "posted", status: res.status, messageId };
+		}
 		if (res.status === 429) {
 			const retryAfterMs = parseRetryAfterMs(res.headers.get("retry-after"));
 			return { kind: "transient_failed", status: 429, retryAfterMs };

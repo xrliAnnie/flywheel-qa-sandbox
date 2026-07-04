@@ -81,6 +81,21 @@ export interface FounderReplyDeliverDeps {
 		eventId: string,
 		payload: Record<string, unknown>,
 	) => Promise<boolean>;
+	/**
+	 * FLY-799: attempt to attribute a founder approval for the thread's ship
+	 * gate(s) from THIS founder message (text / image sources → shared gate-write
+	 * helper). Runs BEFORE the WAKE-only fallback. Returns the question ids it
+	 * resolved (approved or rejected → a response was written; the post-write hook
+	 * flips status + wakes) plus `retrySafe`. Question ids NOT in `handled` fall
+	 * through to WAKE-only (unclear / non-founder — non-authoritative context).
+	 * Absent (feature off / default) → the ship branch is byte-compatible WAKE-only.
+	 */
+	tryFounderShipApproval?: (args: {
+		msg: { id: string; content?: string; authorId?: string };
+		shipGates: PendingQuestionForThread[];
+		ctx: FounderReplyThreadCtx;
+		db: CommDB;
+	}) => Promise<{ handled: string[]; retrySafe: boolean } | null>;
 }
 
 function audit(
@@ -205,6 +220,7 @@ export async function emitFounderReplyDeliveryForThread(
 					wakeImpl,
 					respondImpl,
 					deliverAmbiguousToLead: deps.deliverAmbiguousToLead,
+					tryFounderShipApproval: deps.tryFounderShipApproval,
 				},
 				pendingNow,
 			);
@@ -230,6 +246,7 @@ async function processFounderMessage(
 		wakeImpl: typeof defaultWake;
 		respondImpl: typeof defaultRespond;
 		deliverAmbiguousToLead?: FounderReplyDeliverDeps["deliverAmbiguousToLead"];
+		tryFounderShipApproval?: FounderReplyDeliverDeps["tryFounderShipApproval"];
 	},
 	pendingNow: Set<string>,
 ): Promise<boolean> {
@@ -239,8 +256,27 @@ async function processFounderMessage(
 	const nonShip = matching.filter((q) => q.checkpoint !== "approve_to_ship");
 	let allOk = true;
 
-	// ── ship gates: WAKE-only, deduped by founder message id (Codex R1 #3) ──
+	// ── FLY-799: attribute a founder approval BEFORE WAKE-only. When enabled, a
+	// clear founder approval/rejection writes the gate response (the post-write
+	// hook flips status + wakes the runner); those question ids are "handled" and
+	// skip the WAKE-only below. Absent → handled is empty → byte-compatible.
+	const handled = new Set<string>();
+	if (deps.tryFounderShipApproval && ship.length > 0) {
+		const res = await deps.tryFounderShipApproval({
+			msg: { id: msg.id, content: msg.content, authorId: msg.author?.id },
+			shipGates: ship,
+			ctx,
+			db,
+		});
+		if (res) {
+			for (const id of res.handled) handled.add(id);
+			if (!res.retrySafe) allOk = false;
+		}
+	}
+
+	// ── ship gates: WAKE-only fallback, deduped by founder message id (Codex R1 #3) ──
 	for (const q of ship) {
+		if (handled.has(q.questionId)) continue; // FLY-799: resolved above (response written)
 		const marker = `founder-ship-wake-${q.questionId}-${msg.id}`;
 		if (
 			store
