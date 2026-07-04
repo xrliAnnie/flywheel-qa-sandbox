@@ -11,7 +11,8 @@
 
 import type { EventEnvelope } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AutoQaCoordinator } from "../bridge/auto-qa-coordinator.js";
 import type { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { DirectEventSink } from "../DirectEventSink.js";
@@ -345,6 +346,70 @@ describe("DirectEventSink — FLY-191 R5: late qid-less emission can't regress a
 		// commit_count prove the evidence-only patch ran)
 		expect(s?.decision_route).toBe("needs_review");
 		expect(s?.commit_count).toBe(1);
+	});
+
+	it("FLY-846 gate ⓪: the straggler must not spawn auto-QA either — the ROW is approved_to_ship even though the sink's local status says awaiting_review", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+			status: "awaiting_review",
+		});
+		store.setReviewBinding("exec-1", {
+			questionId: "11111111-1111-1111-1111-111111111111",
+			prHeadSha: HEAD_A,
+		});
+		store.persistTransition("exec-1", "approved_to_ship", {
+			issue_id: "issue-1",
+			project_name: "geoforge3d",
+		});
+
+		// Wire a REAL coordinator — the sink's LOCAL `status` for this emission is
+		// awaiting_review, so it DOES reach the coordinator; the row's old real
+		// qid defeats the evidence gate, so gate ⓪ (row status re-check) is the
+		// line that must stop the spawn.
+		const start = vi.fn(async () => ({
+			executionId: "qa-x",
+			issueId: "qa-issue",
+		}));
+		const coord = new AutoQaCoordinator({
+			store,
+			startDispatcher: { start },
+			resolveQaPolicy: () => ({ enabled: true }),
+			effects: {
+				postThread: () => {},
+				createQaIssue: () => ({ issueId: "qa-issue" }),
+				notifyShipReady: () => {},
+				feedbackWakeMain: () => {},
+				alertLeadPipelineError: () => {},
+				stampIssueStage: () => {},
+				retestWakeQa: () => ({ ok: true }),
+				closeQaRunner: () => {},
+			},
+		});
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		sink.autoQaCoordinator = { current: coord };
+
+		await sink.emitCompleted(makeEnvelope(), {
+			success: true,
+			decision: { route: "needs_review", reasoning: "straggler" },
+			evidence: {
+				commitCount: 1,
+				filesChangedCount: 1,
+				commitMessages: ["feat: x"],
+				changedFilePaths: ["a.ts"],
+				linesAdded: 1,
+				linesRemoved: 0,
+				diffSummary: "1 file changed",
+				headSha: HEAD_B,
+				partial: false,
+				durationMs: 10,
+			},
+		} as unknown as BlueprintResult);
+
+		expect(start).not.toHaveBeenCalled();
+		expect(store.getAutoQaRecord("exec-1", HEAD_A)).toBeUndefined();
+		expect(store.getAutoQaRecord("exec-1", HEAD_B)).toBeUndefined();
 	});
 });
 

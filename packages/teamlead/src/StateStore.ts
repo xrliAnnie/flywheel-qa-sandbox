@@ -3030,6 +3030,61 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-846 gate ①: is this issue itself an auto-created `QA·FLY-XX` issue?
+	 * True when any of the given issue keys (Linear UUID and/or identifier —
+	 * production data is MIXED-form, so callers pass both) matches a record's
+	 * `qa_issue_id` or `qa_issue_identifier`. The local, durable equivalent of
+	 * "this issue has a qa_of link" — no Linear API call.
+	 */
+	isAutoQaIssue(issueKeys: string[]): boolean {
+		const keys = normalizeIssueKeys(issueKeys);
+		if (keys.length === 0) return false;
+		const placeholders = keys.map(() => "?").join(",");
+		const stmt = this.db.prepare(
+			`SELECT 1 FROM auto_qa_record
+			  WHERE qa_issue_id IN (${placeholders})
+			     OR qa_issue_identifier IN (${placeholders})
+			  LIMIT 1`,
+		);
+		stmt.bind([...keys, ...keys]);
+		const hit = stmt.step();
+		stmt.free();
+		return hit;
+	}
+
+	/**
+	 * FLY-846 gate ③: the issue-level active-QA lookup. Returns records in a
+	 * non-terminal QA state (running / awaiting_retest / stuck) whose PARENT
+	 * issue matches any of the given keys (UUID/identifier mixed-form), excluding
+	 * the caller's own parent execution (same-parent records are handled by the
+	 * owner-record branch). `passed`/`failed`/`superseded` never block a new QA.
+	 */
+	listActiveAutoQaRecordsForIssue(input: {
+		issueKeys: string[];
+		excludeParentExecutionId: string;
+	}): AutoQaRecord[] {
+		const keys = normalizeIssueKeys(input.issueKeys);
+		if (keys.length === 0) return [];
+		const placeholders = keys.map(() => "?").join(",");
+		const stmt = this.db.prepare(
+			`SELECT * FROM auto_qa_record
+			  WHERE status IN ('running','awaiting_retest','stuck')
+			    AND issue_id IN (${placeholders})
+			    AND parent_execution_id != ?
+			  ORDER BY started_at, rowid`,
+		);
+		stmt.bind([...keys, input.excludeParentExecutionId]);
+		const out: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			out.push(
+				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/**
 	 * FLY-752: RETARGET a parent's QA owner record to a NEW reviewed head (a fix
 	 * round), REUSING the same QA issue/runner. CAS + crash-safe:
 	 *   - Guard: the (parent, oldSha) row must currently be in `expectStatuses`
@@ -4341,6 +4396,18 @@ export interface AlertThreadRow {
 	repair_status: string | null;
 	opened_at: string;
 	resolved_at: string | null;
+}
+
+/**
+ * FLY-846: normalize a caller-supplied issue key list (UUID/identifier mixed)
+ * for the gate queries — trim, drop blanks, dedupe. Guarantees the dynamic
+ * IN(...) placeholder list is never empty at the call sites (both queries
+ * short-circuit on an empty result).
+ */
+function normalizeIssueKeys(keys: string[]): string[] {
+	return [
+		...new Set(keys.map((k) => k?.trim()).filter((k): k is string => !!k)),
+	];
 }
 
 function rowToAlertThread(row: Record<string, unknown>): AlertThreadRow {

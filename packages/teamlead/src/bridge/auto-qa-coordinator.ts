@@ -28,7 +28,12 @@
  * touched — this coordinator only decides WHEN the founder is surfaced.
  */
 
-import type { AutoQaRecord, Session, StateStore } from "../StateStore.js";
+import {
+	type AutoQaRecord,
+	REVIEW_BINDING_UNBOUND,
+	type Session,
+	type StateStore,
+} from "../StateStore.js";
 import type { QaContext, StartRequest } from "./retry-dispatcher.js";
 
 /**
@@ -231,11 +236,45 @@ export class AutoQaCoordinator {
 	 * back-compat when a caller omits it (real callers always compute + pass it).
 	 */
 	async onMainAwaitingReview(
-		session: Session,
+		sessionInput: Session,
 		opts?: { freshTransition?: boolean },
 	): Promise<void> {
-		if ((session.session_role ?? "main") !== "main") return;
+		if ((sessionInput.session_role ?? "main") !== "main") return;
 		const freshTransition = opts?.freshTransition ?? true;
+
+		// FLY-846 gate ⓪: the coordinator RE-READS the row itself instead of
+		// trusting any caller's snapshot (Codex R1 LOW-2). DirectEventSink's
+		// FLY-191 R5 evidence-only branch keeps an approved_to_ship row untouched
+		// while its LOCAL status variable still says awaiting_review — without
+		// this guard that straggler reaches the claim path (and its old qid
+		// defeats gate ②). All later gates read this fresh row.
+		const session = this.deps.store.getSession(sessionInput.execution_id);
+		if (!session || (session.session_role ?? "main") !== "main") {
+			this.log(
+				`skip ${sessionInput.execution_id} — row ${session ? `role is ${session.session_role}` : "not found"}`,
+			);
+			return;
+		}
+		if (session.status !== "awaiting_review") {
+			this.log(
+				`skip ${session.execution_id} (${session.issue_id}) — row status is ${session.status}, not awaiting_review`,
+			);
+			return;
+		}
+
+		// FLY-846 gate ①: NEVER QA a QA. A `QA·FLY-XX` issue can carry a main-role
+		// session (Lead dispatched a runner on it — FLY-828/845 incidents); when it
+		// reaches awaiting_review it must not get a QA-of-a-QA. Detected by the
+		// generated title prefix (also covers hand-created QA issues) OR by the
+		// durable qa_issue_* columns (local equivalent of a qa_of link; survives a
+		// retitle). Log-only skip — the parent proceeds through the ordinary
+		// review path, which the Lead sees.
+		if (this.isQaIssueSession(session)) {
+			this.log(
+				`skip ${session.execution_id} (${session.issue_id}) — issue is itself a QA issue; never QA a QA`,
+			);
+			return;
+		}
 
 		const policy = this.deps.resolveQaPolicy(session);
 		if (!policy.enabled) {
@@ -260,6 +299,24 @@ export class AutoQaCoordinator {
 				projectName: session.project_name,
 				reason: `auto-QA could not spawn: ${session.issue_id} reached awaiting_review without a valid pr_head_sha. Founder NOT surfaced; please investigate.`,
 			});
+			return;
+		}
+
+		// FLY-846 gate ②: only a GENUINE review-pass may spawn (or retest). A
+		// genuine completion carries review evidence: a real approve-gate binding
+		// (review_question_id, not the UNBOUND sentinel) and/or a PR number. A
+		// body-kill / transient completion carries neither (only a cwd-HEAD sha) —
+		// FLY-842's parent died mid-implement exactly like that. Back-tested
+		// against all 30 production records: 0/28 false positives, 2/2 caught.
+		// Skip = no claim → the parent follows the ordinary (pre-FLY-579) review
+		// path; never wedged, never held.
+		const qid = session.review_question_id;
+		const hasReviewEvidence =
+			(!!qid && qid !== REVIEW_BINDING_UNBOUND) || session.pr_number != null;
+		if (!hasReviewEvidence) {
+			this.log(
+				`skip ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — no review evidence (qid=${qid ?? "none"}, pr=none); not a genuine review-pass`,
+			);
 			return;
 		}
 
@@ -292,6 +349,37 @@ export class AutoQaCoordinator {
 			return;
 		}
 
+		// FLY-846 gate ③: ONE issue, ONE active QA. Another parent execution on
+		// the SAME issue may hold an active record (running/awaiting_retest/stuck)
+		// — the FLY-696 incident: a terminated predecessor's record stayed
+		// "running" until the next Bridge restart, so a second QA (FLY-852) piled
+		// on top of the first (FLY-842). Contract (Lead-approved):
+		//   - the other parent STILL OWNS its record (awaiting_review + same head,
+		//     the reconcile predicate) → genuine anomaly: skip + Lead alert;
+		//   - otherwise (terminal / missing / moved on / head drift) → the record
+		//     is stale: supersede (synchronously, here) + proceed; its QA runner is
+		//     closed AFTER the claim below (best-effort, attempted once) — the
+		//     event-driven twin of reconcileOnStartup's supersede sweep.
+		// Codex R1 HIGH-1: supersede→claim must not be split by an await, or a
+		// concurrent same-issue parent could observe "no active record" and
+		// double-spawn. collectForeignActiveQa is synchronous; the only awaits
+		// (Lead alert on the skip path, stale-QA closes) happen after the outcome
+		// is already durable.
+		const foreign = this.collectForeignActiveQa(session);
+		if (foreign.owned) {
+			const rec = foreign.owned;
+			this.warn(
+				`gate③ skip ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — issue already has an active QA (record ${rec.parent_execution_id} @ ${rec.target_pr_head_sha.slice(0, 8)}, status ${rec.status})`,
+			);
+			await this.deps.effects.alertLeadPipelineError({
+				session,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				reason: `auto-QA NOT spawned for ${session.issue_id}: another live session (${rec.parent_execution_id}) already has an active QA (${rec.qa_issue_identifier ?? rec.qa_issue_id ?? "no QA issue yet"}, status ${rec.status}). Two concurrent review-gated sessions on one issue — please resolve.`,
+			});
+			return;
+		}
+
 		// Held-first, atomic: claim BEFORE spawning so no relayer can observe the
 		// parent as an ordinary review gate, and concurrent awaiting_review events
 		// spawn QA exactly once.
@@ -314,7 +402,98 @@ export class AutoQaCoordinator {
 			);
 		}
 
+		// Gate ③ stale-QA cleanup — only AFTER the claim above is durable (Codex
+		// R1 HIGH-1: a concurrent same-issue parent must always observe either the
+		// stale record or this fresh claim, never a gap), and DETACHED (Codex R2
+		// HIGH-1: closeRunner's Terminal path can hang with no exec timeout; a
+		// best-effort cleanup must never sit on the fresh parent's spawn critical
+		// path — with the claim already written, a hung close would otherwise
+		// wedge a legitimate flow with no QA runner). Attempted once; failures are
+		// logged, never propagated.
+		for (const qa of foreign.staleQaToClose) {
+			void Promise.resolve(
+				this.deps.effects.closeQaRunner({
+					qaSession: qa,
+					reason: `auto-QA superseded for ${session.issue_id} — a new session (${session.execution_id}) reached review`,
+				}),
+			).catch((err) => {
+				this.warn(
+					`gate③ stale QA close failed for ${qa.execution_id}: ${err instanceof Error ? err.message : String(err)}`,
+				);
+			});
+		}
+
 		await this.spawnQa(session, sha);
+	}
+
+	/**
+	 * FLY-846 gate ①: is this session's ISSUE itself a QA issue? Detected by the
+	 * generated title prefix (`QA · <ident>` — auto-qa-effects; the same prefix
+	 * convention is used for hand-created QA issues) or by the durable
+	 * qa_issue_id / qa_issue_identifier columns (survives a retitle; issue keys
+	 * are UUID/identifier mixed-form in production, so both session keys are
+	 * checked).
+	 */
+	private isQaIssueSession(session: Session): boolean {
+		if (/^\s*QA\s*·/.test(session.issue_title ?? "")) return true;
+		const keys = [session.issue_id, session.issue_identifier].filter(
+			(k): k is string => !!k,
+		);
+		return this.deps.store.isAutoQaIssue(keys);
+	}
+
+	/**
+	 * FLY-846 gate ③ resolution — SYNCHRONOUS on purpose (Codex R1 HIGH-1): the
+	 * caller must go from this check to its own claim with no await in between,
+	 * or a concurrent same-issue parent could observe "no active record" and
+	 * double-spawn.
+	 *
+	 * Returns `owned` when another parent execution still owns an active QA for
+	 * this issue (reconcile-verbatim predicate: awaiting_review AND still on the
+	 * record's reviewed head) — the caller skips + Lead-alerts. Stale foreign
+	 * records (owner moved on / terminal / missing / head drift) are superseded
+	 * HERE (synchronous DB write); their still-live QA sessions are returned in
+	 * `staleQaToClose` for the caller to close AFTER its claim is durable.
+	 */
+	private collectForeignActiveQa(session: Session): {
+		owned?: AutoQaRecord;
+		staleQaToClose: Session[];
+	} {
+		const issueKeys = [session.issue_id, session.issue_identifier].filter(
+			(k): k is string => !!k,
+		);
+		const foreign = this.deps.store.listActiveAutoQaRecordsForIssue({
+			issueKeys,
+			excludeParentExecutionId: session.execution_id,
+		});
+		const staleQaToClose: Session[] = [];
+		for (const rec of foreign) {
+			const otherParent = this.deps.store.getSession(rec.parent_execution_id);
+			const parentStillOwnsRecord =
+				otherParent?.status === "awaiting_review" &&
+				otherParent.pr_head_sha?.toLowerCase() === rec.target_pr_head_sha;
+			if (parentStillOwnsRecord) {
+				return { owned: rec, staleQaToClose };
+			}
+			// Stale — the other parent moved on / ended. Supersede now (sync);
+			// close later (caller, post-claim).
+			this.log(
+				`gate③ supersede stale record ${rec.parent_execution_id} @ ${rec.target_pr_head_sha.slice(0, 8)} for ${session.issue_id} (owner is ${otherParent?.status ?? "gone"})`,
+			);
+			this.deps.store.setAutoQaStatus(
+				rec.parent_execution_id,
+				rec.target_pr_head_sha,
+				"superseded",
+				{},
+			);
+			const oldQa = rec.qa_execution_id
+				? this.deps.store.getSession(rec.qa_execution_id)
+				: undefined;
+			if (oldQa && !TERMINAL_STATUSES.has(oldQa.status ?? "")) {
+				staleQaToClose.push(oldQa);
+			}
+		}
+		return { staleQaToClose };
 	}
 
 	/**

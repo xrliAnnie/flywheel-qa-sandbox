@@ -26,6 +26,8 @@ function fakeEffects(opts?: {
 		prHeadSha: string;
 	}) => Promise<QaIssueRef | undefined> | QaIssueRef | undefined;
 	retestWakeOk?: boolean;
+	/** FLY-846: override to defer/hang the close (gate ③ race test). */
+	closeQaRunnerImpl?: () => Promise<void> | void;
 }) {
 	const posts: { text: string; issueId: string }[] = [];
 	const wakes: { summary: string }[] = [];
@@ -67,6 +69,7 @@ function fakeEffects(opts?: {
 		},
 		closeQaRunner: ({ qaSession }) => {
 			closes.push({ qaExec: qaSession.execution_id });
+			if (opts?.closeQaRunnerImpl) return opts.closeQaRunnerImpl();
 		},
 	};
 	return {
@@ -92,11 +95,13 @@ async function setup(opts?: {
 		prHeadSha: string;
 	}) => Promise<QaIssueRef | undefined> | QaIssueRef | undefined;
 	retestWakeOk?: boolean;
+	closeQaRunnerImpl?: () => Promise<void> | void;
 }) {
 	const store = await StateStore.create(":memory:");
 	const f = fakeEffects({
 		createQaIssueImpl: opts?.createQaIssueImpl,
 		retestWakeOk: opts?.retestWakeOk,
+		closeQaRunnerImpl: opts?.closeQaRunnerImpl,
 	});
 	const startCalls: StartRequest[] = [];
 	const start = vi.fn(async (req: StartRequest) => {
@@ -128,29 +133,58 @@ async function setup(opts?: {
 }
 
 /**
- * Create an awaiting_review session. pr_head_sha is NOT persisted by
- * upsertSession (FLY-191: it is written by setReviewBinding) — set it the same
- * way production does.
+ * Create an awaiting_review session. pr_head_sha is written via
+ * setReviewBinding (FLY-191) — same as production — EXCEPT for the FLY-846
+ * `binding: "null"` shape (a session whose completion never went through the
+ * HTTP binding path, e.g. DirectEventSink-only: pr_head_sha set, qid NULL),
+ * which upsertSession persists directly.
+ *
+ * FLY-846 evidence knobs (defaults preserve the pre-FLY-846 genuine shape:
+ * real qid + pr_number 42):
+ *   - binding: "qid" (real questionId) | "unbound" (sentinel) | "null" (no qid)
+ *   - prNumber: null omits pr_number entirely
  */
 function awaitingMain(
 	store: StateStore,
-	o: { id?: string; role?: string; prHeadSha?: string | null } = {},
+	o: {
+		id?: string;
+		role?: string;
+		prHeadSha?: string | null;
+		status?: string;
+		issueId?: string;
+		issueIdentifier?: string;
+		issueTitle?: string;
+		binding?: "qid" | "unbound" | "null";
+		prNumber?: number | null;
+	} = {},
 ) {
 	const id = o.id ?? "main-1";
+	const prHeadSha = o.prHeadSha === undefined ? SHA : o.prHeadSha;
+	const binding = o.binding ?? "qid";
 	store.upsertSession({
 		execution_id: id,
-		issue_id: "FLY-1",
+		issue_id: o.issueId ?? "FLY-1",
 		project_name: "proj",
-		status: "awaiting_review",
+		status: o.status ?? "awaiting_review",
 		session_role: o.role ?? "main",
-		issue_title: "Test issue",
-		issue_identifier: "FLY-1",
+		issue_title: o.issueTitle ?? "Test issue",
+		issue_identifier: o.issueIdentifier ?? "FLY-1",
 		issue_labels: JSON.stringify(["engineer"]),
 		branch: "fly-1",
-		pr_number: 42,
+		...(o.prNumber === null ? {} : { pr_number: o.prNumber ?? 42 }),
 	});
-	const prHeadSha = o.prHeadSha === undefined ? SHA : o.prHeadSha;
-	store.setReviewBinding(id, { questionId: `q-${id}`, prHeadSha });
+	if (binding === "null") {
+		// pr_head_sha set, review_question_id left NULL — the DirectEventSink-only
+		// completion shape (patchSessionMetadata owns pr_head_sha on that path).
+		if (prHeadSha) {
+			store.patchSessionMetadata(id, { pr_head_sha: prHeadSha });
+		}
+	} else {
+		store.setReviewBinding(id, {
+			questionId: binding === "qid" ? `q-${id}` : null,
+			prHeadSha,
+		});
+	}
 	const s = store.getSession(id);
 	if (!s) throw new Error("session not found");
 	return s;
@@ -609,5 +643,367 @@ describe("AutoQaCoordinator.reconcileOnStartup", () => {
 		await s.coord.reconcileOnStartup();
 		expect(s.counters.shipReady).toBe(1);
 		expect(s.store.getAutoQaRecord("main-1", SHA)?.notified_at).toBeTruthy();
+	});
+});
+
+// ── FLY-846: spawn gates (QA-of-QA / premature / duplicate — runaway guards) ──
+
+describe("AutoQaCoordinator FLY-846 spawn gates", () => {
+	let s: Awaited<ReturnType<typeof setup>>;
+	beforeEach(async () => {
+		s = await setup();
+	});
+
+	const SHA3 = "c".repeat(40);
+
+	describe("gate ⓪ — coordinator-level status guard", () => {
+		it("a row no longer awaiting_review (approved_to_ship) never spawns, even with full evidence (DirectEventSink evidence-only straggler)", async () => {
+			const main = awaitingMain(s.store, { status: "approved_to_ship" });
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).not.toHaveBeenCalled();
+			expect(s.createCalls.length).toBe(0);
+			expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+			expect(s.alerts).toEqual([]);
+		});
+
+		it("re-reads the ROW: a STALE session snapshot saying awaiting_review cannot spawn once the row moved to approved_to_ship (Codex R1 LOW-2)", async () => {
+			// Snapshot taken while genuinely awaiting_review...
+			const staleSnapshot = awaitingMain(s.store);
+			expect(staleSnapshot.status).toBe("awaiting_review");
+			// ...then the row moves on (approval landed).
+			s.store.upsertSession({
+				execution_id: "main-1",
+				issue_id: "FLY-1",
+				project_name: "proj",
+				status: "approved_to_ship",
+			});
+			await s.coord.onMainAwaitingReview(staleSnapshot);
+			expect(s.start).not.toHaveBeenCalled();
+			expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+		});
+	});
+
+	describe("gate ① — never QA a QA issue", () => {
+		it("skips a main session whose issue title carries the QA · prefix (FLY-828/845 shape)", async () => {
+			const main = awaitingMain(s.store, {
+				issueTitle: "QA · FLY-793 — [pipeline] 三段式",
+			});
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).not.toHaveBeenCalled();
+			expect(s.createCalls.length).toBe(0);
+			expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+			expect(s.alerts).toEqual([]);
+		});
+
+		it("skips when the issue_id matches a record's qa_issue_id (title lost/retitled)", async () => {
+			s.store.claimAutoQaRecord({
+				parentExecutionId: "other-main",
+				targetPrHeadSha: SHA2,
+				issueId: "FLY-793",
+				projectName: "proj",
+			});
+			s.store.setAutoQaIssue("other-main", SHA2, {
+				issueId: "qa-824-uuid",
+				issueIdentifier: "FLY-824",
+				issueTitle: "QA · FLY-793 — x",
+			});
+			const main = awaitingMain(s.store, {
+				issueId: "qa-824-uuid",
+				issueIdentifier: "FLY-999",
+				issueTitle: "retitled — no prefix",
+			});
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).not.toHaveBeenCalled();
+			expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+		});
+
+		it("skips when the issue_identifier matches a record's qa_issue_identifier", async () => {
+			s.store.claimAutoQaRecord({
+				parentExecutionId: "other-main",
+				targetPrHeadSha: SHA2,
+				issueId: "FLY-818",
+				projectName: "proj",
+			});
+			s.store.setAutoQaIssue("other-main", SHA2, {
+				issueId: "qa-839-uuid",
+				issueIdentifier: "FLY-839",
+				issueTitle: "QA · FLY-818 — x",
+			});
+			const main = awaitingMain(s.store, {
+				issueId: "some-other-uuid",
+				issueIdentifier: "FLY-839",
+				issueTitle: "retitled — no prefix",
+			});
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).not.toHaveBeenCalled();
+			expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+		});
+	});
+
+	describe("gate ② — only a genuine review-pass spawns", () => {
+		it("no qid (NULL) + no pr_number → skip, no record, no alert (FLY-842 body-kill shape)", async () => {
+			const main = awaitingMain(s.store, { binding: "null", prNumber: null });
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).not.toHaveBeenCalled();
+			expect(s.createCalls.length).toBe(0);
+			expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+			expect(s.alerts).toEqual([]);
+		});
+
+		it("unbound sentinel qid + no pr_number → skip (sentinel is NOT evidence)", async () => {
+			const main = awaitingMain(s.store, {
+				binding: "unbound",
+				prNumber: null,
+			});
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).not.toHaveBeenCalled();
+			expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+		});
+
+		it("real qid alone (no pr_number) → spawn", async () => {
+			const main = awaitingMain(s.store, { prNumber: null });
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).toHaveBeenCalledTimes(1);
+			expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+		});
+
+		it("pr_number alone (unbound qid) → spawn (LEARN checkpoint-less shape)", async () => {
+			const main = awaitingMain(s.store, { binding: "unbound" });
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).toHaveBeenCalledTimes(1);
+			expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+		});
+
+		it("retest path is protected too: a new head WITHOUT evidence neither retargets nor wakes", async () => {
+			// Owner record exists from an earlier round; the parent row carries no
+			// review evidence (constructed directly — the defensive case).
+			s.store.claimAutoQaRecord({
+				parentExecutionId: "main-1",
+				targetPrHeadSha: SHA,
+				issueId: "FLY-1",
+				projectName: "proj",
+			});
+			const main2 = awaitingMain(s.store, {
+				prHeadSha: SHA2,
+				binding: "null",
+				prNumber: null,
+			});
+			await s.coord.onMainAwaitingReview(main2, { freshTransition: false });
+			expect(s.retests).toEqual([]);
+			expect(s.start).not.toHaveBeenCalled();
+			// Record NOT retargeted — still on the old head.
+			expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+			expect(s.store.getAutoQaRecord("main-1", SHA2)).toBeUndefined();
+		});
+	});
+
+	describe("gate ③ — one issue, one active QA", () => {
+		function foreignRecord(
+			o: {
+				status?: "running" | "awaiting_retest" | "stuck";
+				qaExec?: string;
+			} = {},
+		) {
+			s.store.claimAutoQaRecord({
+				parentExecutionId: "other-main",
+				targetPrHeadSha: SHA2,
+				issueId: "FLY-1",
+				projectName: "proj",
+			});
+			if (o.qaExec) {
+				s.store.setAutoQaQaExecutionId("other-main", SHA2, o.qaExec);
+			}
+			if (o.status && o.status !== "running") {
+				s.store.setAutoQaStatus("other-main", SHA2, o.status, {});
+			}
+		}
+
+		it("foreign ACTIVE record whose parent still owns it (awaiting_review + same head) → skip + Lead alert, no new record", async () => {
+			foreignRecord();
+			awaitingMain(s.store, { id: "other-main", prHeadSha: SHA2 });
+			const main = awaitingMain(s.store);
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).not.toHaveBeenCalled();
+			expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+			expect(s.alerts.length).toBe(1);
+			// The foreign record is untouched.
+			expect(s.store.getAutoQaRecord("other-main", SHA2)?.status).toBe(
+				"running",
+			);
+		});
+
+		it("foreign parent awaiting_review but on a DIFFERENT head (moved on) → supersede + proceed", async () => {
+			foreignRecord();
+			awaitingMain(s.store, { id: "other-main", prHeadSha: SHA3 });
+			const main = awaitingMain(s.store);
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.store.getAutoQaRecord("other-main", SHA2)?.status).toBe(
+				"superseded",
+			);
+			expect(s.start).toHaveBeenCalledTimes(1);
+			expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+			expect(s.alerts).toEqual([]);
+		});
+
+		it("foreign parent TERMINAL + its QA still alive → supersede + close old QA once + proceed (FLY-696→842/852 replay)", async () => {
+			foreignRecord({ qaExec: "other-qa" });
+			awaitingMain(s.store, {
+				id: "other-main",
+				prHeadSha: SHA2,
+				status: "terminated",
+			});
+			s.store.upsertSession({
+				execution_id: "other-qa",
+				issue_id: "qa-issue-uuid-old",
+				project_name: "proj",
+				status: "running",
+				session_role: "qa",
+			});
+			const main = awaitingMain(s.store);
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.store.getAutoQaRecord("other-main", SHA2)?.status).toBe(
+				"superseded",
+			);
+			expect(s.closes).toEqual([{ qaExec: "other-qa" }]);
+			expect(s.start).toHaveBeenCalledTimes(1);
+			expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+		});
+
+		it("foreign parent session MISSING → supersede + proceed (no close when no QA session)", async () => {
+			foreignRecord({ status: "awaiting_retest" });
+			const main = awaitingMain(s.store);
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.store.getAutoQaRecord("other-main", SHA2)?.status).toBe(
+				"superseded",
+			);
+			expect(s.closes).toEqual([]);
+			expect(s.start).toHaveBeenCalledTimes(1);
+		});
+
+		it("a stuck foreign record blocks while its parent still owns it", async () => {
+			foreignRecord({ status: "stuck" });
+			awaitingMain(s.store, { id: "other-main", prHeadSha: SHA2 });
+			const main = awaitingMain(s.store);
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).not.toHaveBeenCalled();
+			expect(s.alerts.length).toBe(1);
+		});
+
+		it("foreign passed/superseded records never block a new QA", async () => {
+			s.store.claimAutoQaRecord({
+				parentExecutionId: "p-passed",
+				targetPrHeadSha: SHA2,
+				issueId: "FLY-1",
+				projectName: "proj",
+			});
+			s.store.setAutoQaStatus("p-passed", SHA2, "passed", {});
+			s.store.claimAutoQaRecord({
+				parentExecutionId: "p-superseded",
+				targetPrHeadSha: SHA3,
+				issueId: "FLY-1",
+				projectName: "proj",
+			});
+			s.store.setAutoQaStatus("p-superseded", SHA3, "superseded", {});
+			const main = awaitingMain(s.store);
+			await s.coord.onMainAwaitingReview(main);
+			expect(s.start).toHaveBeenCalledTimes(1);
+			expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+			expect(s.store.getAutoQaRecord("p-passed", SHA2)?.status).toBe("passed");
+		});
+
+		it("gate③ hang-proof (Codex R2 HIGH-1): a NEVER-resolving stale-QA close does not block the new spawn", async () => {
+			// closeRunner's Terminal path can hang with no timeout — the detached
+			// cleanup must leave the spawn critical path untouched.
+			const s2 = await setup({
+				closeQaRunnerImpl: () => new Promise<void>(() => {}),
+			});
+			s2.store.claimAutoQaRecord({
+				parentExecutionId: "other-main",
+				targetPrHeadSha: SHA2,
+				issueId: "FLY-1",
+				projectName: "proj",
+			});
+			s2.store.setAutoQaQaExecutionId("other-main", SHA2, "other-qa");
+			awaitingMain(s2.store, {
+				id: "other-main",
+				prHeadSha: SHA2,
+				status: "terminated",
+			});
+			s2.store.upsertSession({
+				execution_id: "other-qa",
+				issue_id: "qa-issue-uuid-old",
+				project_name: "proj",
+				status: "running",
+				session_role: "qa",
+			});
+
+			const mainA = awaitingMain(s2.store);
+			// Must RESOLVE (and spawn) despite the hung close.
+			await s2.coord.onMainAwaitingReview(mainA);
+			expect(s2.start).toHaveBeenCalledTimes(1);
+			expect(s2.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+			// The close was still ATTEMPTED once (detached).
+			expect(s2.closes).toEqual([{ qaExec: "other-qa" }]);
+		});
+
+		it("race (Codex R1 HIGH-1): the new claim is visible BEFORE the stale-QA close awaits — a concurrent same-issue parent cannot double-spawn", async () => {
+			let releaseClose!: () => void;
+			const closeGate = new Promise<void>((resolve) => {
+				releaseClose = resolve;
+			});
+			const s2 = await setup({ closeQaRunnerImpl: () => closeGate });
+
+			// Stale foreign record (parent terminated) with a still-live QA runner.
+			s2.store.claimAutoQaRecord({
+				parentExecutionId: "other-main",
+				targetPrHeadSha: SHA2,
+				issueId: "FLY-1",
+				projectName: "proj",
+			});
+			s2.store.setAutoQaQaExecutionId("other-main", SHA2, "other-qa");
+			awaitingMain(s2.store, {
+				id: "other-main",
+				prHeadSha: SHA2,
+				status: "terminated",
+			});
+			s2.store.upsertSession({
+				execution_id: "other-qa",
+				issue_id: "qa-issue-uuid-old",
+				project_name: "proj",
+				status: "running",
+				session_role: "qa",
+			});
+
+			// Parent A reaches review; its gate ③ supersedes the stale record,
+			// claims, then BLOCKS on the deferred close.
+			const mainA = awaitingMain(s2.store);
+			const p1 = s2.coord.onMainAwaitingReview(mainA);
+			await vi.waitFor(() => {
+				expect(s2.closes.length).toBe(1);
+			});
+
+			// While A's close is still in flight, parent B on the SAME issue
+			// completes. It must observe A's already-durable claim (owned) — not a
+			// "no active record" gap — and skip + alert.
+			const mainB = awaitingMain(s2.store, {
+				id: "main-2",
+				prHeadSha: "d".repeat(40),
+			});
+			await s2.coord.onMainAwaitingReview(mainB);
+
+			releaseClose();
+			await p1;
+
+			// Exactly ONE spawn (A's); B was blocked by A's live claim.
+			expect(s2.start).toHaveBeenCalledTimes(1);
+			expect(s2.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+			expect(
+				s2.store.getAutoQaRecord("main-2", "d".repeat(40)),
+			).toBeUndefined();
+			expect(s2.alerts.length).toBe(1);
+			expect(s2.store.getAutoQaRecord("other-main", SHA2)?.status).toBe(
+				"superseded",
+			);
+		});
 	});
 });

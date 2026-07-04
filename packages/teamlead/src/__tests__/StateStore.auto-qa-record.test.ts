@@ -375,3 +375,116 @@ describe("StateStore auto_qa_record", () => {
 		).toEqual(["p2"]);
 	});
 });
+
+/**
+ * FLY-846: gate queries — QA-issue detection (gate ①) + issue-level active
+ * record lookup (gate ③). Parent issue keys are historically MIXED
+ * (Linear UUID vs identifier), so both queries must accept a key LIST.
+ */
+describe("StateStore auto_qa_record FLY-846 gate queries", () => {
+	function claim(
+		store: StateStore,
+		parent: string,
+		sha: string,
+		issueId = "FLY-1",
+	) {
+		expect(
+			store.claimAutoQaRecord({
+				parentExecutionId: parent,
+				targetPrHeadSha: sha,
+				issueId,
+				projectName: "proj",
+			}),
+		).toBe(true);
+	}
+
+	describe("isAutoQaIssue", () => {
+		it("matches qa_issue_id and qa_issue_identifier; misses others", async () => {
+			const store = await freshStore();
+			claim(store, "p1", SHA_A, "FLY-100");
+			store.setAutoQaIssue("p1", SHA_A, {
+				issueId: "qa-uuid-1",
+				issueIdentifier: "FLY-101",
+				issueTitle: "QA · FLY-100 — x",
+			});
+
+			expect(store.isAutoQaIssue(["qa-uuid-1"])).toBe(true);
+			expect(store.isAutoQaIssue(["FLY-101"])).toBe(true);
+			expect(store.isAutoQaIssue(["qa-uuid-1", "FLY-101"])).toBe(true);
+			// The PARENT issue is not a QA issue.
+			expect(store.isAutoQaIssue(["FLY-100"])).toBe(false);
+			expect(store.isAutoQaIssue(["nope"])).toBe(false);
+		});
+
+		it("empty / blank keys return false without generating invalid SQL", async () => {
+			const store = await freshStore();
+			expect(store.isAutoQaIssue([])).toBe(false);
+			expect(store.isAutoQaIssue(["", "   "])).toBe(false);
+		});
+	});
+
+	describe("listActiveAutoQaRecordsForIssue", () => {
+		it("returns only active statuses (running/awaiting_retest/stuck) for the issue, excluding the given parent", async () => {
+			const store = await freshStore();
+			// Active foreign records in each active status.
+			claim(store, "p-running", SHA_A, "FLY-696");
+			claim(store, "p-retest", SHA_B, "FLY-696");
+			store.setAutoQaStatus("p-retest", SHA_B, "awaiting_retest", {});
+			claim(store, "p-stuck", "c".repeat(40), "FLY-696");
+			store.setAutoQaStatus("p-stuck", "c".repeat(40), "stuck", {});
+			// Non-active statuses must NOT be returned.
+			claim(store, "p-passed", "d".repeat(40), "FLY-696");
+			store.setAutoQaStatus("p-passed", "d".repeat(40), "passed", {});
+			claim(store, "p-superseded", "e".repeat(40), "FLY-696");
+			store.setAutoQaStatus("p-superseded", "e".repeat(40), "superseded", {});
+			claim(store, "p-failed", "f".repeat(40), "FLY-696");
+			store.setAutoQaStatus("p-failed", "f".repeat(40), "failed", {});
+			// A record on a DIFFERENT issue must not leak in.
+			claim(store, "p-other-issue", SHA_A, "FLY-999");
+			// The caller's own record is excluded.
+			claim(store, "p-self", "1".repeat(40), "FLY-696");
+
+			const got = store.listActiveAutoQaRecordsForIssue({
+				issueKeys: ["FLY-696"],
+				excludeParentExecutionId: "p-self",
+			});
+			expect(got.map((r) => r.parent_execution_id).sort()).toEqual([
+				"p-retest",
+				"p-running",
+				"p-stuck",
+			]);
+		});
+
+		it("matches mixed parent issue key forms (UUID vs identifier)", async () => {
+			const store = await freshStore();
+			claim(store, "p-uuid", SHA_A, "uuid-parent");
+			claim(store, "p-ident", SHA_B, "FLY-696");
+
+			const got = store.listActiveAutoQaRecordsForIssue({
+				issueKeys: ["uuid-parent", "FLY-696"],
+				excludeParentExecutionId: "someone-else",
+			});
+			expect(got.map((r) => r.parent_execution_id).sort()).toEqual([
+				"p-ident",
+				"p-uuid",
+			]);
+		});
+
+		it("empty / blank keys return [] without generating invalid SQL", async () => {
+			const store = await freshStore();
+			claim(store, "p1", SHA_A, "FLY-696");
+			expect(
+				store.listActiveAutoQaRecordsForIssue({
+					issueKeys: [],
+					excludeParentExecutionId: "x",
+				}),
+			).toEqual([]);
+			expect(
+				store.listActiveAutoQaRecordsForIssue({
+					issueKeys: ["", "  "],
+					excludeParentExecutionId: "x",
+				}),
+			).toEqual([]);
+		});
+	});
+});
