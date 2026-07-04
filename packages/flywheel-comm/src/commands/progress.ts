@@ -18,7 +18,16 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import {
+	closeSync,
+	existsSync,
+	openSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import Database from "better-sqlite3";
 import {
@@ -26,6 +35,7 @@ import {
 	type ProgressLedger,
 	parseProgress,
 	renderProgress,
+	stageToPhase,
 	type ThreeStagePhase,
 } from "flywheel-config";
 import { resolveStateDbPath } from "./verify-approval.js";
@@ -49,6 +59,8 @@ export interface SessionRow {
 	status?: string;
 	session_role?: string;
 	issue_identifier?: string;
+	/** FLY-795 (MED-5): authoritative pipeline stage, for the phase cross-check. */
+	session_stage?: string;
 }
 
 /** Injectable seams so the writer is unit-testable without real git/db/fs. */
@@ -57,10 +69,33 @@ export interface ProgressDeps {
 	cwd: () => string;
 	/** Read the StateStore session row for the exec-id (fail-closed authority). */
 	readSession: (execId: string) => SessionRow | undefined;
+	/**
+	 * FLY-795 (MED-5): the execution_id of the LATEST running session for this
+	 * issue/role — the CURRENT active writer. The command refuses to write unless
+	 * `--exec-id` IS that writer, so a stale-but-still-`running` predecessor can
+	 * never clobber the ledger a newer active runner is maintaining. `undefined`
+	 * (no such lookup / none found) ⇒ skip the check (the own-status gate stands).
+	 */
+	latestActiveExecId?: (
+		issueIdentifier: string,
+		role: string,
+	) => string | undefined;
 	existsSync: (absPath: string) => boolean;
 	readFileSync: (absPath: string) => string;
 	/** Atomic write: temp-file + rename. */
 	writeTempAndRename: (absPath: string, content: string) => void;
+	/**
+	 * FLY-795 (MED-5): restore progress.md to a prior snapshot after a failed
+	 * commit (no half-write success). `content===null` ⇒ the file did not exist
+	 * before ⇒ remove it.
+	 */
+	restoreFile: (absPath: string, content: string | null) => void;
+	/**
+	 * FLY-795 (MED-5): serialize the read→merge→write→commit critical section per
+	 * progress.md via an exclusive lock, so concurrent `progress` calls in the same
+	 * worktree cannot interleave and lose an update. Optional (tests run inline).
+	 */
+	withLock?: <T>(absPath: string, fn: () => T) => T;
 	/** Run git with argv in cwd; returns {stdout,stderr,status}. */
 	git: (args: string[]) => { stdout: string; stderr: string; status: number };
 }
@@ -91,44 +126,78 @@ export function runProgress(
 		);
 	}
 	const issue = session.issue_identifier?.trim();
+	const role = session.session_role?.trim() || "main";
+
+	// 1b. Active-writer = the LATEST running session for this issue/role (MED-5).
+	// A stale predecessor that is still `running` must not clobber a newer runner's
+	// ledger. Skipped when the lookup is unavailable or the issue is unknown.
+	if (issue && deps.latestActiveExecId) {
+		const latest = deps.latestActiveExecId(issue, role);
+		if (latest && latest !== args.execId) {
+			return fail(
+				`exec-id ${args.execId} is not the current active writer for ${issue}/${role} (that is ${latest}); refusing`,
+			);
+		}
+	}
 
 	// 2. Path validation — relative, inside cwd, matches the issue prefix.
 	const pathErr = validateFile(args.file, deps.cwd(), issue);
 	if (pathErr) return fail(pathErr);
 	const absPath = join(deps.cwd(), args.file);
 
-	// 3. Phase cross-check (light): if a --phase is given it must be a valid phase
-	// AND, when the session carries a phase role, must not contradict it.
+	// 3. Phase cross-check: a --phase must be a valid phase AND must not contradict
+	// the StateStore-authoritative stage (MED-5 — the ledger phase can never claim a
+	// grouping the authority disagrees with; a stale/confused runner is rejected).
 	if (args.phase && !PHASES.has(args.phase)) {
 		return fail(`invalid --phase ${args.phase} (want design|implement|qa)`);
 	}
-
-	// 4. Merge into any existing ledger (preserve prior chunks/pointers).
-	let ledger: ProgressLedger;
-	try {
-		ledger = deps.existsSync(absPath)
-			? parseProgress(deps.readFileSync(absPath))
-			: newLedger(issue ?? "unknown", args.phase);
-	} catch (err) {
-		return fail(
-			`could not read existing progress.md: ${(err as Error).message}`,
-		);
+	if (args.phase && session.session_stage) {
+		const authorityPhase = stageToPhase(session.session_stage);
+		if (authorityPhase && authorityPhase !== args.phase) {
+			return fail(
+				`--phase ${args.phase} contradicts the authoritative stage ${session.session_stage} (phase ${authorityPhase}); refusing`,
+			);
+		}
 	}
-	applyArgs(ledger, args);
 
-	// 5. Atomic write (temp + rename).
-	const content = renderProgress(ledger);
-	deps.writeTempAndRename(absPath, content);
+	// 4–6 run under a per-worktree lock (MED-5) so concurrent progress calls in the
+	// same worktree serialize the read→merge→write→commit and cannot lose updates.
+	const run = (): ProgressResult => {
+		// 4. Merge into any existing ledger (preserve prior chunks/pointers).
+		let ledger: ProgressLedger;
+		const priorContent = deps.existsSync(absPath)
+			? deps.readFileSync(absPath)
+			: null;
+		try {
+			ledger = priorContent
+				? parseProgress(priorContent)
+				: newLedger(issue ?? "unknown", args.phase);
+		} catch (err) {
+			return fail(
+				`could not read existing progress.md: ${(err as Error).message}`,
+			);
+		}
+		applyArgs(ledger, args);
 
-	// 6. Path-limited commit — commit ONLY progress.md, never sweep staged code.
-	const msg = `chore(progress): ${ledger.issue} ${ledger.phase}${ledger.phaseCursor ? ` ${ledger.phaseCursor}` : ""}`;
-	const commit = deps.git(["commit", "--only", "-m", msg, "--", args.file]);
-	if (commit.status !== 0) {
-		return fail(
-			`git commit --only failed (status ${commit.status}): ${commit.stderr.trim()}`,
-		);
-	}
-	return { ok: true, path: args.file };
+		// 5. Atomic write (temp + rename).
+		const content = renderProgress(ledger);
+		deps.writeTempAndRename(absPath, content);
+
+		// 6. Path-limited commit — commit ONLY progress.md, never sweep staged code.
+		const msg = `chore(progress): ${ledger.issue} ${ledger.phase}${ledger.phaseCursor ? ` ${ledger.phaseCursor}` : ""}`;
+		const commit = deps.git(["commit", "--only", "-m", msg, "--", args.file]);
+		if (commit.status !== 0) {
+			// Restore the pre-write snapshot — a failed commit must not leave a
+			// half-applied progress.md on disk (MED-5).
+			deps.restoreFile(absPath, priorContent);
+			return fail(
+				`git commit --only failed (status ${commit.status}): ${commit.stderr.trim()}`,
+			);
+		}
+		return { ok: true, path: args.file };
+	};
+
+	return deps.withLock ? deps.withLock(absPath, run) : run();
 }
 
 // ── merge / helpers ────────────────────────────────────────────────
@@ -195,6 +264,16 @@ function fail(reason: string): ProgressResult {
 	return { ok: false, reason };
 }
 
+/** mtime (ms) of a path, for stale-lock reclamation. */
+function statSyncMtimeMs(path: string): number {
+	return statSync(path).mtimeMs;
+}
+
+/** Synchronous sleep (no deps) — used only for the brief lock-retry backoff. */
+function sleepMs(ms: number): void {
+	Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 // ── real CLI entry (builds live deps) ──────────────────────────────
 
 /** Parse argv → ProgressArgs (thin; the runner passes explicit flags). */
@@ -230,9 +309,32 @@ function liveDeps(): ProgressDeps {
 			try {
 				return db
 					.prepare(
-						"SELECT status, session_role, issue_identifier FROM sessions WHERE execution_id = ?",
+						"SELECT status, session_role, issue_identifier, session_stage FROM sessions WHERE execution_id = ?",
 					)
 					.get(execId) as SessionRow | undefined;
+			} finally {
+				db.close();
+			}
+		},
+		latestActiveExecId: (issueIdentifier, role) => {
+			const statePath = resolveStateDbPath(undefined, process.env);
+			if (!existsSync(statePath)) return undefined;
+			const db = new Database(statePath, {
+				readonly: true,
+				fileMustExist: true,
+			});
+			try {
+				const row = db
+					.prepare(
+						`SELECT execution_id FROM sessions
+						 WHERE issue_identifier = ? AND status = 'running'
+						   AND (session_role = ? OR (session_role IS NULL AND ? = 'main'))
+						 ORDER BY last_activity_at DESC LIMIT 1`,
+					)
+					.get(issueIdentifier, role, role) as
+					| { execution_id: string }
+					| undefined;
+				return row?.execution_id;
 			} finally {
 				db.close();
 			}
@@ -243,6 +345,43 @@ function liveDeps(): ProgressDeps {
 			const tmp = `${absPath}.tmp-${process.pid}`;
 			writeFileSync(tmp, content, "utf8");
 			renameSync(tmp, absPath);
+		},
+		restoreFile: (absPath, content) => {
+			if (content === null) {
+				rmSync(absPath, { force: true });
+			} else {
+				const tmp = `${absPath}.tmp-${process.pid}`;
+				writeFileSync(tmp, content, "utf8");
+				renameSync(tmp, absPath);
+			}
+		},
+		withLock: (absPath, fn) => {
+			// Best-effort exclusive lock via O_EXCL lockfile with brief bounded retry.
+			// A stale lock (crashed writer) older than 30s is reclaimed so a runner is
+			// never wedged. Single-writer means real contention is rare.
+			const lockPath = `${absPath}.lock`;
+			let fd: number | undefined;
+			for (let attempt = 0; attempt < 50; attempt++) {
+				try {
+					fd = openSync(lockPath, "wx");
+					break;
+				} catch {
+					// Held — reclaim if clearly stale, else spin briefly.
+					try {
+						const age = Date.now() - statSyncMtimeMs(lockPath);
+						if (age > 30_000) rmSync(lockPath, { force: true });
+					} catch {
+						/* ignore */
+					}
+					sleepMs(100);
+				}
+			}
+			try {
+				return fn();
+			} finally {
+				if (fd !== undefined) closeSync(fd);
+				rmSync(lockPath, { force: true });
+			}
 		},
 		git: (a) => {
 			const r = spawnSync("git", a, { cwd: process.cwd(), encoding: "utf8" });

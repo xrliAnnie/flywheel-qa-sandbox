@@ -25,6 +25,10 @@ function makeDeps(over: Partial<ProgressDeps> = {}): ProgressDeps {
 		writeTempAndRename: vi.fn((p: string, content: string) => {
 			files.set(p, content);
 		}),
+		restoreFile: vi.fn((p: string, content: string | null) => {
+			if (content === null) files.delete(p);
+			else files.set(p, content);
+		}),
 		git: vi.fn(() => ({ stdout: "", stderr: "", status: 0 })),
 		...over,
 		_files: files,
@@ -129,5 +133,69 @@ describe("runProgress (FLY-795)", () => {
 		const r = runProgress(okArgs, deps);
 		expect(r.ok).toBe(false);
 		expect(r.reason).toMatch(/commit/i);
+	});
+
+	it("MED-5: restores the prior progress.md when the commit fails (no half-write)", () => {
+		const path = "/repo/engineering/doc/FLY-795-x/progress.md";
+		const deps = makeDeps({
+			git: vi.fn((a: string[]) =>
+				a.includes("commit")
+					? { stdout: "", stderr: "hook failed", status: 1 }
+					: { stdout: "", stderr: "", status: 0 },
+			),
+		});
+		// no prior file existed → after a failed commit it must be removed (restore null)
+		const r = runProgress(okArgs, deps);
+		expect(r.ok).toBe(false);
+		expect(deps.restoreFile).toHaveBeenCalledWith(path, null);
+		expect((deps as any)._files.has(path)).toBe(false);
+	});
+
+	it("MED-5: rejects a stale predecessor that is not the current active writer", () => {
+		const deps = makeDeps({
+			latestActiveExecId: vi.fn(() => "e2-newer"),
+		});
+		const r = runProgress(okArgs, deps); // okArgs.execId = "e1"
+		expect(r.ok).toBe(false);
+		expect(r.reason).toMatch(/active writer/i);
+		expect(deps.writeTempAndRename).not.toHaveBeenCalled();
+	});
+
+	it("MED-5: allows the write when exec-id IS the current active writer", () => {
+		const deps = makeDeps({
+			latestActiveExecId: vi.fn(() => "e1"),
+		});
+		const r = runProgress(okArgs, deps);
+		expect(r.ok).toBe(true);
+	});
+
+	it("MED-5: rejects a --phase that contradicts the authoritative StateStore stage", () => {
+		const deps = makeDeps({
+			readSession: vi.fn(() => ({
+				status: "running",
+				session_role: "implement",
+				issue_identifier: "FLY-795",
+				session_stage: "brainstorm", // → design phase
+			})),
+		});
+		const r = runProgress({ ...okArgs, phase: "implement" }, deps);
+		expect(r.ok).toBe(false);
+		expect(r.reason).toMatch(/contradicts|stage/i);
+		expect(deps.writeTempAndRename).not.toHaveBeenCalled();
+	});
+
+	it("MED-5: runs the critical section under the per-worktree lock when provided", () => {
+		const calls: string[] = [];
+		const deps = makeDeps({
+			withLock: vi.fn((_p: string, fn: () => unknown) => {
+				calls.push("lock");
+				const out = fn();
+				calls.push("unlock");
+				return out;
+			}),
+		});
+		const r = runProgress(okArgs, deps);
+		expect(r.ok).toBe(true);
+		expect(calls).toEqual(["lock", "unlock"]);
 	});
 });

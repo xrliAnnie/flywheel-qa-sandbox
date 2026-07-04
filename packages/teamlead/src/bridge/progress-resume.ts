@@ -21,7 +21,11 @@
  */
 
 import type { ThreeStagePhase } from "flywheel-config";
-import { parseProgress, resolveProgressPath } from "flywheel-config";
+import {
+	parseProgress,
+	resolveProgressPath,
+	stageToPhase,
+} from "flywheel-config";
 
 export type ResumeKind = "restart" | "terminate" | "reboot" | "handoff";
 
@@ -55,33 +59,22 @@ export interface ProgressResumeDeps {
 	readBranchFile: (branch: string, path: string) => string | null;
 	/** `git rev-parse <branch>` — the branch tip SHA, or null. */
 	branchTip: (branch: string) => string | null;
+	/**
+	 * FLY-795 (code-review MED-4): discover the doc dir that actually carries a
+	 * committed `progress.md` for this issue on the branch (e.g. via
+	 * `git ls-tree -r <branch>` filtered to the issue-prefixed doc folders'
+	 * `progress.md`), or null. Used when no `plan_path` is persisted yet (runner
+	 * died before design_review) so a co-located, slug-named progress.md is still
+	 * found instead of falling through to the deterministic default and missing it.
+	 */
+	discoverDocDir?: (branch: string) => string | null;
 }
 
-const DESIGN_STAGES = new Set([
-	"started",
-	"onboard",
-	"brainstorm",
-	"research",
-	"plan",
-	"design_review",
-	"design_done",
-	"design",
-]);
-const IMPLEMENT_STAGES = new Set([
-	"implement",
-	"test",
-	"code_review",
-	"pr_created",
-]);
-const QA_STAGES = new Set(["qa", "approve", "ship", "code_review_qa"]);
-
-/** Map a fine-grained pipeline stage to its three-stage phase (or undefined). */
-export function stageToPhase(stage: string): ThreeStagePhase | undefined {
-	if (DESIGN_STAGES.has(stage)) return "design";
-	if (IMPLEMENT_STAGES.has(stage)) return "implement";
-	if (QA_STAGES.has(stage)) return "qa";
-	return undefined;
-}
+// FLY-795: `stageToPhase` moved to flywheel-config (progress-schema.ts) so the
+// resume-detect side (here) and the write side (`flywheel-comm progress`
+// phase-vs-stage cross-check) share ONE mapping. Re-exported for existing
+// importers of this module.
+export { stageToPhase };
 
 /**
  * Compute the resume decision, or null when the runner should start fresh (no
@@ -97,10 +90,18 @@ export function computeProgressResume(
 	if (!prior) return null;
 
 	const branch = deps.branchName(issueId, role);
+	// Path precedence: persisted plan_path dirname (①) → a doc dir discovered on the
+	// branch that actually holds progress.md (②, MED-4: covers a runner that died
+	// before plan_path was persisted, so its co-located slug-named ledger is still
+	// found) → deterministic default (③). Discovery only when no plan_path.
+	const discoveredDocDir = prior.plan_path
+		? undefined
+		: (deps.discoverDocDir?.(branch) ?? undefined);
 	const progressPath = resolveProgressPath({
 		docBaseDir: deps.docBaseDir,
 		issueIdentifier: deps.issueIdentifier,
 		...(prior.plan_path && { planPath: prior.plan_path }),
+		...(discoveredDocDir && { discoveredDocDir }),
 	});
 
 	// Read the BRANCH blob — never the worktree fs (it may be gone on reboot).

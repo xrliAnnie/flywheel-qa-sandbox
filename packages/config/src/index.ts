@@ -72,7 +72,11 @@ export type {
 	ProgressLedger,
 	ProgressPointers,
 } from "./progress-schema.js";
-export { parseProgress, renderProgress } from "./progress-schema.js";
+export {
+	parseProgress,
+	renderProgress,
+	stageToPhase,
+} from "./progress-schema.js";
 export {
 	DEFAULT_PROOFSHOT_CAPTURE_ANGLES,
 	DEFAULT_PROOFSHOT_CAPTURE_STAGES,

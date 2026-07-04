@@ -1058,6 +1058,35 @@ export class Blueprint {
 			}
 		}
 
+		// FLY-795 (code-review HIGH-1): PROGRESS LEDGER write-discipline. Every
+		// non-QA WRITER runner (fresh OR resume) is told to keep a `progress.md`
+		// cursor committed to its branch as it works — otherwise a re-dispatch has
+		// nothing to resume from and the FLY-709 "never finishes" churn persists.
+		// Co-located in the runner's doc folder (matches FLY-793's convention +
+		// doc-flow naming — no forced slug); resume detection finds it on the branch
+		// regardless of slug. `flywheel-comm progress` path-limited commits ONLY
+		// progress.md (never sweeps code). QA runners write no ledger (isQaRunner
+		// skip). Byte-compat: the command is new; a runner that never calls it just
+		// doesn't write a ledger (= current behavior). The FLYWHEEL_PROGRESS_RESUME=0
+		// kill-switch fully reverts the feature — with no resume there is nothing to
+		// write for, so the discipline line is suppressed too (prompt byte-identical
+		// to pre-795).
+		if (!isQaRunner && process.env.FLYWHEEL_PROGRESS_RESUME !== "0") {
+			const progressLedgerLines = [
+				"PROGRESS LEDGER (restart-resilient — keep this current as you work):",
+				"Maintain a `progress.md` cursor in YOUR doc folder (the SAME folder as your",
+				"exploration/research/plan). After EACH meaningful step, update it with:",
+				`  node ${commCliPath} progress --exec-id ${executionId} --file <your-doc-folder>/progress.md \\`,
+				'    --phase design|implement|qa --cursor <n/m> [--set-chunk <id>=<status>] [--next "<next step>"]',
+				"It path-limited commits ONLY progress.md to your branch (never your code). This is",
+				"exactly what lets a restart / terminate / handoff CONTINUE from your real cursor",
+				"instead of starting over — so keep it honest and current, especially before long steps.",
+				"On a resume dispatch, $FLYWHEEL_PROGRESS_PATH points at the exact ledger to continue.",
+				"",
+			];
+			systemPromptLines.unshift(...progressLedgerLines);
+		}
+
 		// FLY-598: FOUNDER-UX GATE block — injected ONLY when the project enables
 		// founder_ux_gate (mode !== off). Absent/off → zero lines added
 		// (byte-compatible prompt). The judgment ("is this founder-facing UX") is

@@ -116,6 +116,45 @@ describe("computeProgressResume (FLY-795)", () => {
 		expect(r!.effectiveStage).toBeUndefined();
 	});
 
+	it("MED-4: with no plan_path, uses a discovered slug-named doc dir on the branch", () => {
+		const readBranchFile = vi.fn(() => ledger);
+		const discoverDocDir = vi.fn(() => "engineering/doc/FLY-795-restart-slug");
+		const r = computeProgressResume(
+			"i",
+			"implement",
+			"terminate",
+			makeDeps({
+				priorSession: () => ({
+					execution_id: "old",
+					session_stage: "implement",
+				}), // no plan_path → discovery kicks in
+				readBranchFile,
+				discoverDocDir,
+			}),
+		);
+		expect(discoverDocDir).toHaveBeenCalledWith("flywheel-FLY-795");
+		expect(r!.progressPath).toBe(
+			"engineering/doc/FLY-795-restart-slug/progress.md",
+		);
+		expect(readBranchFile).toHaveBeenCalledWith(
+			"flywheel-FLY-795",
+			"engineering/doc/FLY-795-restart-slug/progress.md",
+		);
+	});
+
+	it("MED-4: plan_path (when present) still wins over branch discovery", () => {
+		const discoverDocDir = vi.fn(() => "engineering/doc/FLY-795-other");
+		const r = computeProgressResume(
+			"i",
+			"implement",
+			"terminate",
+			makeDeps({ discoverDocDir }), // default priorSession HAS plan_path
+		);
+		// plan_path dirname wins; discovery not consulted
+		expect(discoverDocDir).not.toHaveBeenCalled();
+		expect(r!.progressPath).toBe("engineering/doc/FLY-795-x/progress.md");
+	});
+
 	it("stageToPhase maps fine stages to design/implement/qa", () => {
 		expect(stageToPhase("brainstorm")).toBe("design");
 		expect(stageToPhase("design_review")).toBe("design");
