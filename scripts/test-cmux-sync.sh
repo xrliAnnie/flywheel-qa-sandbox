@@ -3356,18 +3356,24 @@ _fly293_fixture() {
 }
 
 test_fly293_managed_title_gate() {
-  echo "Test: is_managed_runner_title — source-accurate (-claude- only)"
+  echo "Test: is_managed_runner_title — source-accurate (claude + FLY-793 phase labels)"
   reset_mocks
   local ok=1
-  for t in "FLY-637-claude-x" "LEARN-143-claude-LEARN-141" "TIDE-22-claude-round-2" "FLY-1-claude"; do
+  # claude (non-phase runs) + FLY-793 three-stage phase labels (design/implement/qa),
+  # including bare-phase-at-end.
+  for t in "FLY-637-claude-x" "LEARN-143-claude-LEARN-141" "TIDE-22-claude-round-2" "FLY-1-claude" \
+           "FLY-793-design-three-stage" "FLY-800-implement-LEARN-1" "TIDE-5-qa-round-2" "FLY-2-qa"; do
     is_managed_runner_title "$t" || { fail "expected MANAGED: $t"; ok=0; }
   done
-  # reverse sentinels — producer cannot emit these; must be non-managed
+  # reverse sentinels — producer cannot emit these; must be non-managed.
+  # Includes phase-label near-misses (boundary must be `-` or end, so
+  # designer/implementation/qaX are NOT the phase labels).
   for t in "FLY-293-codex-foo" "FLY-293-gemini-notes" "FLY-1-cursor-x" "FLY-1-kimi-x" "FLY-1-agy-x" \
-           "flywheel-flywheel-cos-lead" "home" "notes" "FLY-293-claudette-x" "notes-FLY-1-claude" "FLY-637"; do
+           "flywheel-flywheel-cos-lead" "home" "notes" "FLY-293-claudette-x" "notes-FLY-1-claude" "FLY-637" \
+           "FLY-1-designer-x" "FLY-1-implementation-x" "FLY-1-qaX" "FLY-1-designx"; do
     if is_managed_runner_title "$t"; then fail "expected NON-managed: $t"; ok=0; fi
   done
-  [[ "$ok" == "1" ]] && pass "managed gate matches -claude- only; rejects other vendors / Lead / user tab / bare-id"
+  [[ "$ok" == "1" ]] && pass "managed gate matches claude|design|implement|qa; rejects other vendors / Lead / user tab / bare-id / phase near-misses"
 }
 
 test_fly293_orphan_pin_refs_identifies_only_orphan() {

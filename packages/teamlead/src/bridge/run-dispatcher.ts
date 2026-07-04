@@ -13,7 +13,10 @@ import { join } from "node:path";
 import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import { CommDB } from "flywheel-comm/db";
 import type { RoleBackendMap } from "flywheel-config";
-import { resolveRunnerMcpProfile } from "flywheel-config";
+import {
+	isThreeStagePhaseRole,
+	resolveRunnerMcpProfile,
+} from "flywheel-config";
 import { openTmuxViewer } from "flywheel-core";
 import type { AgentDispatcher } from "flywheel-edge-worker";
 import type {
@@ -50,6 +53,38 @@ import { defaultGetCommDbPath } from "./session-capture.js";
  */
 export function launchCommitPath(executionId: string): string {
 	return join(homedir(), ".flywheel", "state", "launch-commits", executionId);
+}
+
+/**
+ * FLY-793 follow-up (cmux phase visibility): the display name that goes into the
+ * cmux/tmux window label (`{issueId}-{runner}-{title}`). A three-stage PHASE
+ * runner shows its phase (`design` / `implement` / `qa`) so the founder can see
+ * which phase is live in cmux at a glance — instead of every phase showing the
+ * generic `claude`.
+ *
+ * Gated on `shareParentBranch` (the three-stage marker), NOT `sessionRole` alone:
+ * the FLY-579 Auto-QA session also carries `sessionRole: "qa"` but is a standalone
+ * QA runner (no `shareParentBranch`), so keying on the role alone would flip its
+ * window from `-claude-` to `-qa-` and break byte-compat. Mirrors Blueprint's
+ * three-stage discriminator (`ctx.shareParentBranch && ctx.sessionRole`). Every
+ * non-three-stage run (main + Auto-QA) stays `claude` → byte-compatible.
+ *
+ * SCOPE (FLY-840): the RETRY path (actions.ts `handleRetry`) does not propagate
+ * `shareParentBranch`, so a RETRIED three-stage phase falls through to `claude`
+ * here — the label is shown on first dispatch (start path) only. This is
+ * byte-compatible with pre-cmux-PR behavior (retry runnerName was hardcoded
+ * `claude`), so it is not a regression. Propagating the marker on retry also
+ * changes the retry's branch behavior (shared branch B) — 793 retry-core, not a
+ * window-label concern — so the retry-path label + branch-B preservation are
+ * tracked together in FLY-840, deliberately out of scope here.
+ */
+export function runnerDisplayName(
+	sessionRole: string | undefined,
+	shareParentBranch: boolean | undefined,
+): string {
+	return shareParentBranch && isThreeStagePhaseRole(sessionRole)
+		? sessionRole
+		: "claude";
 }
 
 export interface ProjectRuntime {
@@ -360,7 +395,8 @@ export class RetryDispatcher implements IRetryDispatcher {
 		);
 		const ctx: BlueprintContext = {
 			teamName: "eng",
-			runnerName: "claude",
+			// FLY-793 follow-up: phase runners show their phase in the cmux window.
+			runnerName: runnerDisplayName(req.sessionRole, req.shareParentBranch),
 			projectName: req.projectName,
 			executionId: newExecutionId,
 			leadId: req.leadId,
@@ -655,7 +691,8 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		);
 		const ctx: BlueprintContext = {
 			teamName: "eng",
-			runnerName: "claude",
+			// FLY-793 follow-up: phase runners show their phase in the cmux window.
+			runnerName: runnerDisplayName(req.sessionRole, req.shareParentBranch),
 			projectName: req.projectName,
 			executionId,
 			leadId: req.leadId,
