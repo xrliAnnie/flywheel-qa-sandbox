@@ -130,13 +130,15 @@ pr: #<n>   reviewed_sha: <sha>    # 有则填
 `progress.md`(连同积累的代码)在下一次 terminate→fresh 被**抹掉**。这正是本 issue 要修的 #1 路径,现状与之直接冲突。
 > (FLY-709 代码仍积累是因 runner **push 了 PR 分支到 origin**;但本地续做依赖的是本地分支 tip,不能靠 origin 兜。)
 
-**修 —— 加 resume-preserving 模式**(`WorktreeManager` 新参数,由 §3.3 的 `ctx.progressResume` 触发):
-- resume(同 issue + progressResume 存在):**不 `branch -D`**;只按需 reclaim worktree **路径/admin entry**(路径冲突时);
-  `git worktree add` **从现有本地分支 tip**(而非 `origin/main`/startPoint)—— progress.md + 积累代码随分支回来。
-- **true fresh start**(无 progressResume):**保留 FLY-99 的 `branch -D` + `-B` reset 语义不变**(byte-compat)。
-- 语义:**Bridge 重启 = 原地续**(worktree 在盘、进程 re-adopt);**reboot / worktree 清理 = 从本地分支 B 重建 worktree 再续**。
-- **必加真 git 测试**:progress.md commit 到本地分支 → 走 remove/recreate(resume 模式)→ 断言 progress.md **存活**在重建的 worktree;
-  且 fresh 模式仍 reset(两模式都测)。
+**修 —— 复用 793 已落地的 `shareParentBranch` + `startPoint` 机制(align 793、别各造)**:
+793 的 `PhaseOrchestrator`(`phase-orchestrator.ts`)phase 交接已用 `startDispatcher.start({ shareParentBranch:true, startPoint: <capturePhaseHeadSha> })`
+→ `worktree add -B <branch B> <startPoint>`,startPoint=branch B tip(含 committed progress.md)→ reset 到自己 tip = **保住 progress.md**(「B lives as pushed commits、worktrees disposable」)。
+- **restart-resume 复用同一机制**:teamlead 对**死掉的 runner**(terminate/reboot,非 793 的干净 phase 完成)重派时,
+  `startPoint = 解析出的 branch B 当前 tip`(`git rev-parse <branch>` 本地,缺则 `origin/<branch>`)+ `shareParentBranch:true`。
+  progress.md 已 commit 到 branch B → tip 有它 → 重建 worktree 拿回。**不新造「不 branch -D」模式**,复用 793 的 WorktreeManager 参数。
+- **true fresh start**(无 progressResume):`startPoint` 缺省 = `origin/main`,FLY-99 `-B` reset 语义不变(byte-compat)。
+- 语义:**Bridge 重启 = 原地续**(worktree 在盘、进程 re-adopt);**reboot / worktree 清理 = 从 branch B tip 重建 worktree 再续**。
+- **测试**:progress.md commit 到 branch B → 走 shareParentBranch+startPoint=tip 重建 → 断言 progress.md **存活**;fresh(无 startPoint)仍 origin/main。复用 793 的 worktree-handoff 测试面。
 
 ### 3.5 守护交互 + 可见性(R4)——(Codex R1 #9 澄清 scope)
 - resumed = 一个正常新 execution,`HeartbeatService`/`RunnerIdleWatchdog`/crash-reaper 正常对待(无特殊豁免;crash-reaper 生产 0 触发)。

@@ -106,6 +106,18 @@ export {
 	resolvePhaseModel,
 	THREE_STAGE_PHASE_SEQUENCE,
 } from "./three-stage-phases.js";
+// FLY-795: shared progress.md ledger schema (795 owns; 793 consumes on handoff).
+export type {
+	ChunkStatus,
+	ProgressChunk,
+	ProgressLedger,
+	ProgressPointers,
+} from "./progress-schema.js";
+export { parseProgress, renderProgress } from "./progress-schema.js";
+export {
+	resolveProgressPath,
+	type ProgressPathInput,
+} from "./progress-path-resolver.js";
 export type {
 	AgentConfig,
 	AgentNodeConfig,
