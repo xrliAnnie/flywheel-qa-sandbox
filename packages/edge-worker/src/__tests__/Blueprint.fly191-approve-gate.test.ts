@@ -149,7 +149,12 @@ describe("Blueprint approve_to_ship instruction (FLY-191 Phase 2)", () => {
 		expect(prompt).toContain("complete --route pr_handoff");
 		expect(prompt).toContain("no-transport backend");
 		expect(prompt).toContain('status:"ready_to_merge"');
-		expect(prompt).toContain("founder drives the founder-gated ship");
+		// FLY-827: the pr_handoff finish surfaces the Codex code-review status so the
+		// founder isn't blind when shipping a no-transport PR by hand.
+		expect(prompt).toContain("Codex code review is REQUIRED");
+		expect(prompt).toContain(
+			"the founder reviews Codex status and ships the PR",
+		);
 
 		// MUST NOT inject the approve-gate CHECKPOINT block (the "gate
 		// approve_to_ship" / verify-approval phrases still appear in the

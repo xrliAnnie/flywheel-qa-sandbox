@@ -3756,6 +3756,9 @@ export async function startBridge(
 						issueLabels: parseJsonStringArray(session.issue_labels),
 					}),
 				effects: autoQaEffects,
+				// FLY-827: the codex hard-gate kill-switch is read live from
+				// process.env (the direct feature-flag toggle mutates it in place).
+				env: process.env,
 				logger: {
 					log: (m) => console.log(m),
 					warn: (m) => console.warn(m),
@@ -3766,6 +3769,18 @@ export async function startBridge(
 				.catch((err) =>
 					console.warn(
 						`[auto-qa] reconcileOnStartup failed: ${(err as Error).message}`,
+					),
+				);
+			// FLY-827 (R1 HIGH-4): re-fire codex-hold side effects (alert + re-queue
+			// instruction) for awaiting_review sessions still lacking a Codex approval
+			// after this restart / default-ON flip. The founder HOLD is already
+			// guaranteed by the durable table + isReviewHeld, so running this after the
+			// timers start is safe (side-effects only).
+			void autoQaCoordinatorHolder.current
+				.reconcileCodexHolds()
+				.catch((err) =>
+					console.warn(
+						`[auto-qa] reconcileCodexHolds failed: ${(err as Error).message}`,
 					),
 				);
 			console.log(

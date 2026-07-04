@@ -540,6 +540,46 @@ export interface AutoQaRecord {
 }
 
 /**
+ * FLY-827: the durable Codex code-review verdict record — the AUTHORITATIVE
+ * source (NOT a PR comment) for "did Codex code review APPROVE this exact PR
+ * head?". Keyed by (execution_id, target_pr_head_sha) exactly like auto_qa_record
+ * so a new head automatically voids an older head's approval (requirement #6).
+ *
+ * status:
+ *  - pending  — a code review is required for this head but not yet approved
+ *               (audit-friendly; NOT the gate truth — the gate truth is
+ *               "is there an approved/skipped row for the current head").
+ *  - approved — Codex code review APPROVED this head (runner reported it via the
+ *               `codex_review_result` event after `await-codex-gate code`).
+ *  - skipped  — a sanctioned codex-skip label/flag bypassed review for this head.
+ *
+ * The gate (auto-QA spawn / founder hold / verify-approval merge) is satisfied
+ * iff there is an approved OR skipped row for the session's current head (or the
+ * session carries `codex_skip`, or the hard gate is off) — see
+ * `isCodexGateSatisfied` (Bridge) / verify-approval (CLI mirror).
+ */
+export interface CodexReviewRecord {
+	execution_id: string;
+	target_pr_head_sha: string;
+	issue_id: string;
+	project_name: string;
+	status: "pending" | "approved" | "skipped";
+	reviewed_target?: string;
+	codex_thread_id?: string;
+	rounds?: number;
+	verdict_event_id?: string;
+	created_at: string;
+	approved_at?: string;
+	/**
+	 * FLY-827 (Codex code-review R1 MED-1): stamped the first time the codex-hold
+	 * side-effect bundle (thread post + re-queue instruction + alert) fires for
+	 * this (exec, head). `claimCodexHoldNotify` sets it atomically so a restart /
+	 * repeated reconcile replays the hold WITHOUT re-posting / re-queueing.
+	 */
+	hold_notified_at?: string;
+}
+
+/**
  * FLY-191 Phase 2 (Codex R2 HIGH-1): sentinel stored in
  * `sessions.review_question_id` when a Phase-2 needs_review completion
  * carried no usable questionId. Distinguishes "binding required but missing"
@@ -1354,6 +1394,29 @@ export class StateStore {
 		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_auto_qa_record_status ON auto_qa_record(status)",
+		);
+
+		// FLY-827: durable Codex code-review verdict — the authoritative gate record
+		// (keyed to the exact reviewed head, so a new head voids an older approval).
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS codex_review_record (
+				execution_id TEXT NOT NULL,
+				target_pr_head_sha TEXT NOT NULL,
+				issue_id TEXT NOT NULL,
+				project_name TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending',
+				reviewed_target TEXT,
+				codex_thread_id TEXT,
+				rounds INTEGER,
+				verdict_event_id TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				approved_at TEXT,
+				hold_notified_at TEXT,
+				PRIMARY KEY (execution_id, target_pr_head_sha)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_codex_review_status ON codex_review_record(status)",
 		);
 
 		// FLY-637 #3/#4: persistent "already-notified" dedup for the quiet-path
@@ -3034,6 +3097,188 @@ export class StateStore {
 		}
 		stmt.free();
 		return rec;
+	}
+
+	// ─────────────────────────── FLY-827 Codex code-review gate ───────────────
+
+	private rowToCodexReviewRecord(
+		row: Record<string, unknown>,
+	): CodexReviewRecord {
+		return {
+			execution_id: row.execution_id as string,
+			target_pr_head_sha: row.target_pr_head_sha as string,
+			issue_id: row.issue_id as string,
+			project_name: row.project_name as string,
+			status: row.status as CodexReviewRecord["status"],
+			reviewed_target: (row.reviewed_target as string) ?? undefined,
+			codex_thread_id: (row.codex_thread_id as string) ?? undefined,
+			rounds:
+				typeof row.rounds === "number"
+					? (row.rounds as number)
+					: row.rounds == null
+						? undefined
+						: Number(row.rounds),
+			verdict_event_id: (row.verdict_event_id as string) ?? undefined,
+			created_at: row.created_at as string,
+			approved_at: (row.approved_at as string) ?? undefined,
+			hold_notified_at: (row.hold_notified_at as string) ?? undefined,
+		};
+	}
+
+	/**
+	 * FLY-827 (Codex code-review R1 MED-1): atomically CLAIM the right to fire the
+	 * codex-hold side-effect bundle for (exec, head). Ensures a row exists (as
+	 * pending) then stamps `hold_notified_at` IFF it was NULL. Returns true only for
+	 * the FIRST caller — so the LIVE onMainAwaitingReview path posts/queues/alerts
+	 * once, and a restart / repeated reconcileCodexHolds replays it as a no-op. A
+	 * NEW head is a different PK → a fresh claim succeeds (re-notify on a new head).
+	 */
+	claimCodexHoldNotify(input: {
+		executionId: string;
+		targetPrHeadSha: string;
+		issueId: string;
+		projectName: string;
+	}): boolean {
+		const sha = input.targetPrHeadSha.toLowerCase();
+		this.db.run(
+			`INSERT OR IGNORE INTO codex_review_record
+			   (execution_id, target_pr_head_sha, issue_id, project_name, status, created_at)
+			 VALUES (?, ?, ?, ?, 'pending', datetime('now'))`,
+			[input.executionId, sha, input.issueId, input.projectName],
+		);
+		this.db.run(
+			`UPDATE codex_review_record SET hold_notified_at = datetime('now')
+			  WHERE execution_id = ? AND target_pr_head_sha = ? AND hold_notified_at IS NULL`,
+			[input.executionId, sha],
+		);
+		const claimed = this.db.getRowsModified() > 0;
+		this.save();
+		return claimed;
+	}
+
+	/**
+	 * FLY-827: record a Codex code-review APPROVAL for (exec, head). INSERT-OR-APPROVE
+	 * (Codex R1 HIGH-1): a `codex_review_result` may arrive when NO `pending` row was
+	 * written (pr_created often lacks a stable pr_head_sha), so we must be able to
+	 * create the approved row from nothing — NOT only migrate pending→approved.
+	 *   - no row       → INSERT status='approved'
+	 *   - pending row  → UPDATE to approved
+	 *   - approved row → idempotent; preserve original audit fields via COALESCE
+	 *                    (Codex R2 LOW-4: a replayed verdict must not restamp
+	 *                    approved_at / overwrite verdict_event_id)
+	 *   - skipped row  → NOT overwritten (WHERE status != 'skipped'); gate already
+	 *                    satisfied. Returns whether the gate is now satisfied.
+	 */
+	recordCodexReviewApproved(input: {
+		executionId: string;
+		targetPrHeadSha: string;
+		issueId: string;
+		projectName: string;
+		verdictEventId?: string;
+		reviewedTarget?: string;
+		codexThreadId?: string;
+		rounds?: number;
+	}): boolean {
+		const sha = input.targetPrHeadSha.toLowerCase();
+		this.db.run(
+			`INSERT INTO codex_review_record
+			   (execution_id, target_pr_head_sha, issue_id, project_name, status,
+			    reviewed_target, codex_thread_id, rounds, verdict_event_id, created_at, approved_at)
+			 VALUES (?, ?, ?, ?, 'approved', ?, ?, ?, ?, datetime('now'), datetime('now'))
+			 ON CONFLICT(execution_id, target_pr_head_sha) DO UPDATE SET
+			   status = 'approved',
+			   approved_at = COALESCE(approved_at, datetime('now')),
+			   verdict_event_id = COALESCE(verdict_event_id, excluded.verdict_event_id),
+			   reviewed_target = COALESCE(reviewed_target, excluded.reviewed_target),
+			   codex_thread_id = COALESCE(codex_thread_id, excluded.codex_thread_id),
+			   rounds = COALESCE(rounds, excluded.rounds)
+			 WHERE codex_review_record.status != 'skipped'`,
+			[
+				input.executionId,
+				sha,
+				input.issueId,
+				input.projectName,
+				input.reviewedTarget ?? null,
+				input.codexThreadId ?? null,
+				input.rounds ?? null,
+				input.verdictEventId ?? null,
+			],
+		);
+		this.save();
+		return this.isCodexCodeReviewApproved(input.executionId, sha);
+	}
+
+	/**
+	 * FLY-827: mark a codex-skip bypass for (exec, head). Upsert to `skipped`
+	 * (sanctioned label/flag path). Only written when a head is available; a
+	 * session with `codex_skip` and no head is still gate-satisfied via the
+	 * session flag in `isCodexGateSatisfied` (does not depend on this row).
+	 */
+	markCodexReviewSkipped(input: {
+		executionId: string;
+		targetPrHeadSha: string;
+		issueId: string;
+		projectName: string;
+	}): void {
+		const sha = input.targetPrHeadSha.toLowerCase();
+		this.db.run(
+			`INSERT INTO codex_review_record
+			   (execution_id, target_pr_head_sha, issue_id, project_name, status, created_at)
+			 VALUES (?, ?, ?, ?, 'skipped', datetime('now'))
+			 ON CONFLICT(execution_id, target_pr_head_sha) DO UPDATE SET status = 'skipped'`,
+			[input.executionId, sha, input.issueId, input.projectName],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-827: register that a code review is REQUIRED for (exec, head) — audit
+	 * friendly only. INSERT OR IGNORE (never downgrades an approved/skipped row).
+	 * The gate does NOT depend on a pending row existing.
+	 */
+	upsertCodexReviewPending(input: {
+		executionId: string;
+		targetPrHeadSha: string;
+		issueId: string;
+		projectName: string;
+	}): void {
+		const sha = input.targetPrHeadSha.toLowerCase();
+		this.db.run(
+			`INSERT OR IGNORE INTO codex_review_record
+			   (execution_id, target_pr_head_sha, issue_id, project_name, status, created_at)
+			 VALUES (?, ?, ?, ?, 'pending', datetime('now'))`,
+			[input.executionId, sha, input.issueId, input.projectName],
+		);
+		this.save();
+	}
+
+	getCodexReviewRecord(
+		executionId: string,
+		targetPrHeadSha: string,
+	): CodexReviewRecord | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM codex_review_record WHERE execution_id = ? AND target_pr_head_sha = ?",
+		);
+		stmt.bind([executionId, targetPrHeadSha.toLowerCase()]);
+		let rec: CodexReviewRecord | undefined;
+		if (stmt.step()) {
+			rec = this.rowToCodexReviewRecord(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return rec;
+	}
+
+	/**
+	 * FLY-827: the core durable predicate — is Codex code review satisfied for this
+	 * exact head? True iff an approved OR skipped row exists (lower-cased sha).
+	 * `isCodexGateSatisfied` layers session.codex_skip + the hard-gate kill-switch
+	 * on top of this.
+	 */
+	isCodexCodeReviewApproved(executionId: string, sha: string): boolean {
+		const rec = this.getCodexReviewRecord(executionId, sha.toLowerCase());
+		return rec?.status === "approved" || rec?.status === "skipped";
 	}
 
 	getAutoQaRecordByQaExec(qaExecutionId: string): AutoQaRecord | undefined {

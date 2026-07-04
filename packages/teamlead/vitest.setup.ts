@@ -31,4 +31,11 @@ beforeEach(() => {
 	process.env.FLYWHEEL_COMM_DIR = mkdtempSync(
 		join(tmpdir(), "flywheel-tl-test-comm-"),
 	);
+	// FLY-827: the legacy teamlead suite was written for pre-hard-gate behavior —
+	// it drives sessions to awaiting_review and asserts founder surfacing / QA
+	// spawn / heartbeat escalation, which the DEFAULT-ON codex hard gate would now
+	// hold. Default the suite to gate-OFF (byte-compat = original behavior). The
+	// FLY-827 codex-gate tests inject an explicit env (coordinator `env`, isReviewHeld
+	// `env` arg, verify-approval `env`/`.env`) so they are unaffected by this default.
+	process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
 });

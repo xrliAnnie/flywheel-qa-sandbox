@@ -41,7 +41,7 @@ import {
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
-import { isQaHeld } from "./auto-qa-held.js";
+import { isReviewHeld } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
 import { DISCORD_API } from "./discord-utils.js";
 import {
@@ -431,7 +431,7 @@ export class GatePoller {
 							// HeartbeatService so the three surfaces cannot drift.
 							if (
 								question.checkpoint === "approve_to_ship" &&
-								isQaHeld(this.config.store, session)
+								isReviewHeld(this.config.store, session)
 							) {
 								continue;
 							}

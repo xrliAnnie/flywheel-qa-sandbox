@@ -38,6 +38,9 @@ function fakeEffects(opts?: {
 	// FLY-752: retest wakes + QA closes, in call order.
 	const retests: { qaExec: string; newSha: string }[] = [];
 	const closes: { qaExec: string }[] = [];
+	// FLY-827: codex-hold side effects, in call order.
+	const codexQueues: { execId: string }[] = [];
+	const codexAlerts: { execId: string; sha: string }[] = [];
 	const counters = { shipReady: 0 };
 	const effects: AutoQaSideEffects = {
 		postThread: ({ session, text }) => {
@@ -71,6 +74,12 @@ function fakeEffects(opts?: {
 			closes.push({ qaExec: qaSession.execution_id });
 			if (opts?.closeQaRunnerImpl) return opts.closeQaRunnerImpl();
 		},
+		queueCodexInstruction: ({ session }) => {
+			codexQueues.push({ execId: session.execution_id });
+		},
+		alertCodexGateBlocked: ({ session, sha }) => {
+			codexAlerts.push({ execId: session.execution_id, sha });
+		},
 	};
 	return {
 		effects,
@@ -81,6 +90,8 @@ function fakeEffects(opts?: {
 		stamps,
 		retests,
 		closes,
+		codexQueues,
+		codexAlerts,
 		counters,
 	};
 }
@@ -95,6 +106,7 @@ async function setup(opts?: {
 		prHeadSha: string;
 	}) => Promise<QaIssueRef | undefined> | QaIssueRef | undefined;
 	retestWakeOk?: boolean;
+	env?: Record<string, string | undefined>;
 	closeQaRunnerImpl?: () => Promise<void> | void;
 }) {
 	const store = await StateStore.create(":memory:");
@@ -114,6 +126,11 @@ async function setup(opts?: {
 		startDispatcher: { start },
 		resolveQaPolicy: () => opts?.policy ?? { enabled: true },
 		effects: f.effects,
+		// FLY-827: these tests validate the QA pipeline, which is orthogonal to the
+		// codex hard gate. Run with the gate OFF so onMainAwaitingReview's codex
+		// check short-circuits (satisfied) and the QA behavior is unchanged — this
+		// IS the byte-compat guarantee. Codex-gate behavior has its own test file.
+		env: opts?.env ?? { FLYWHEEL_CODEX_HARD_GATE: "0" },
 	});
 	return {
 		store,
@@ -128,6 +145,8 @@ async function setup(opts?: {
 		stamps: f.stamps,
 		retests: f.retests,
 		closes: f.closes,
+		codexQueues: f.codexQueues,
+		codexAlerts: f.codexAlerts,
 		counters: f.counters,
 	};
 }
@@ -643,6 +662,197 @@ describe("AutoQaCoordinator.reconcileOnStartup", () => {
 		await s.coord.reconcileOnStartup();
 		expect(s.counters.shipReady).toBe(1);
 		expect(s.store.getAutoQaRecord("main-1", SHA)?.notified_at).toBeTruthy();
+	});
+});
+
+// ─────────────────────────── FLY-827 Codex hard gate ─────────────────────────
+
+function codexEvent(
+	over: Partial<QaResultEvent["payload"]> & { execution_id?: string } = {},
+): QaResultEvent {
+	const { execution_id, ...payload } = over;
+	return {
+		event_id: "codex-evt-1",
+		execution_id: execution_id ?? "qa-runner-x",
+		issue_id: "FLY-1",
+		project_name: "proj",
+		event_type: "codex_review_result",
+		payload: {
+			reviewType: "code",
+			status: "APPROVED",
+			prHeadSha: SHA,
+			targetExecutionId: "main-1",
+			...payload,
+		},
+	};
+}
+
+describe("FLY-827 AutoQaCoordinator codex hard gate (gate ON)", () => {
+	async function gateOnSetup() {
+		// env = {} → FLYWHEEL_CODEX_HARD_GATE undefined → gate ON.
+		return setup({ env: {} });
+	}
+
+	it("codex NOT approved → does NOT spawn QA; holds + re-queues instruction + alerts", async () => {
+		const s = await gateOnSetup();
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+
+		// No QA runner, no auto_qa_record.
+		expect(s.start).not.toHaveBeenCalled();
+		expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
+		// Codex-hold side effects fired.
+		expect(s.codexQueues).toEqual([{ execId: "main-1" }]);
+		expect(s.codexAlerts).toEqual([{ execId: "main-1", sha: SHA }]);
+		expect(
+			s.postTexts().some((t) => t.includes("Codex code review 未通过")),
+		).toBe(true);
+	});
+
+	it("codex approved for this head → spawns QA normally", async () => {
+		const s = await gateOnSetup();
+		const main = awaitingMain(s.store);
+		s.store.recordCodexReviewApproved({
+			executionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		await s.coord.onMainAwaitingReview(main);
+
+		expect(s.start).toHaveBeenCalledTimes(1);
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+		expect(s.codexQueues).toEqual([]);
+	});
+
+	it("codex_skip session bypasses the gate → spawns QA without a record", async () => {
+		const s = await gateOnSetup();
+		awaitingMain(s.store); // creates main-1 (return unused; re-read after patch below)
+		s.store.patchSessionMetadata("main-1", { codex_skip: 1 });
+		const refreshed = s.store.getSession("main-1");
+		if (!refreshed) throw new Error("no session");
+		await s.coord.onMainAwaitingReview(refreshed);
+		expect(s.start).toHaveBeenCalledTimes(1);
+	});
+
+	it("onCodexReviewResult records approval + re-drives QA (complete-before-report race, codexReleased)", async () => {
+		const s = await gateOnSetup();
+		// Parent already reached awaiting_review while codex-held (no record yet).
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main); // codex-held, no spawn
+		expect(s.start).not.toHaveBeenCalled();
+
+		// Codex verdict arrives → record approved + re-drive → QA spawns.
+		await s.coord.onCodexReviewResult(codexEvent());
+		expect(s.store.isCodexCodeReviewApproved("main-1", SHA)).toBe(true);
+		expect(s.start).toHaveBeenCalledTimes(1);
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+	});
+
+	it("onCodexReviewResult ignores non-APPROVED / non-code / bad sha / unknown exec (no record)", async () => {
+		const s = await gateOnSetup();
+		awaitingMain(s.store);
+		await s.coord.onCodexReviewResult(codexEvent({ status: "CHANGES" }));
+		await s.coord.onCodexReviewResult(codexEvent({ reviewType: "design" }));
+		await s.coord.onCodexReviewResult(codexEvent({ prHeadSha: "nothex" }));
+		await s.coord.onCodexReviewResult(
+			codexEvent({ targetExecutionId: "no-such-exec" }),
+		);
+		expect(s.store.isCodexCodeReviewApproved("main-1", SHA)).toBe(false);
+		expect(s.start).not.toHaveBeenCalled();
+	});
+
+	it("fix-loop new head: existing QA owner + new head + codex NOT approved → codex-hold, NO retest wake (MED-8)", async () => {
+		const s = await gateOnSetup();
+		// Head A: codex approved → QA spawns + owner record created.
+		const mainA = awaitingMain(s.store);
+		s.store.recordCodexReviewApproved({
+			executionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		await s.coord.onMainAwaitingReview(mainA);
+		expect(s.start).toHaveBeenCalledTimes(1);
+
+		// New head B (implementer pushed a fix), codex NOT yet approved for B.
+		s.store.setReviewBinding("main-1", { questionId: "q2", prHeadSha: SHA2 });
+		const mainB = s.store.getSession("main-1");
+		if (!mainB) throw new Error("no session");
+		await s.coord.onMainAwaitingReview(mainB);
+
+		// No retest wake, owner record NOT retargeted to B; codex-hold instead.
+		expect(s.retests).toEqual([]);
+		expect(s.codexAlerts.some((a) => a.sha === SHA2)).toBe(true);
+		expect(s.store.getAutoQaRecord("main-1", SHA2)).toBeUndefined();
+
+		// Codex approves B → the gate is now satisfied for B and a re-drive proceeds
+		// PAST the codex hold into the QA path (a fresh spawn here since the mock QA
+		// runner has no live session — the point is the gate no longer blocks B).
+		await s.coord.onCodexReviewResult(codexEvent({ prHeadSha: SHA2 }));
+		expect(s.store.isCodexCodeReviewApproved("main-1", SHA2)).toBe(true);
+		expect(s.start).toHaveBeenCalledTimes(2);
+	});
+
+	it("codex-hold side effects fire ONCE per head — a repeated reconcile is a no-op (R1 MED-1)", async () => {
+		const s = await gateOnSetup();
+		const main = awaitingMain(s.store);
+		// Live path: first hold fires the full bundle.
+		await s.coord.onMainAwaitingReview(main);
+		expect(s.codexQueues).toHaveLength(1);
+		expect(s.codexAlerts).toHaveLength(1);
+		expect(
+			s.postTexts().filter((t) => t.includes("Codex code review 未通过")),
+		).toHaveLength(1);
+
+		// Reconcile (restart replay) for the same head → NO new thread/instruction/alert.
+		await s.coord.reconcileCodexHolds();
+		await s.coord.reconcileCodexHolds();
+		expect(s.codexQueues).toHaveLength(1);
+		expect(s.codexAlerts).toHaveLength(1);
+		expect(
+			s.postTexts().filter((t) => t.includes("Codex code review 未通过")),
+		).toHaveLength(1);
+	});
+
+	it("reconcileCodexHolds fires the hold for an awaiting_review session still lacking codex (fresh, no prior notify)", async () => {
+		const s = await gateOnSetup();
+		awaitingMain(s.store); // awaiting_review, no codex record, never went through onMainAwaitingReview
+		await s.coord.reconcileCodexHolds();
+		expect(s.codexQueues).toHaveLength(1);
+		expect(s.codexAlerts).toHaveLength(1);
+	});
+
+	it("Lead follow-up: skips auto-QA when a normal runner is re-dispatched onto a QA issue itself (no QA-of-QA, #828 guard)", async () => {
+		const s = await setup(); // guard runs BEFORE the codex gate — gate state is irrelevant
+		// Register a QA issue exactly as FLY-643 would (claim record + set qa_issue_id).
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "parent-x",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-parent",
+			projectName: "proj",
+		});
+		s.store.setAutoQaIssue("parent-x", SHA, {
+			issueId: "qa-issue-uuid",
+			issueIdentifier: "QA-1",
+		});
+		// A NORMAL (main-role) runner re-dispatched ON that QA issue.
+		s.store.upsertSession({
+			execution_id: "renorm-1",
+			issue_id: "qa-issue-uuid",
+			project_name: "proj",
+			status: "awaiting_review",
+			session_role: "main",
+			branch: "b",
+			pr_number: 9,
+		});
+		s.store.setReviewBinding("renorm-1", { questionId: "q", prHeadSha: SHA });
+		const sess = s.store.getSession("renorm-1");
+		if (!sess) throw new Error("no session");
+		await s.coord.onMainAwaitingReview(sess);
+		// No auto-QA spawned, no record claimed on the QA issue.
+		expect(s.start).not.toHaveBeenCalled();
+		expect(s.store.getAutoQaRecord("renorm-1", SHA)).toBeUndefined();
 	});
 });
 

@@ -20,8 +20,12 @@ import {
 } from "../StateStore.js";
 import { handleArtifactEvent } from "./artifact-event.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
-import { isQaHeld } from "./auto-qa-held.js";
+import { isReviewHeld } from "./auto-qa-held.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
+import {
+	buildCodexInstruction,
+	codexReviewTypeFor,
+} from "./codex-instruction.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import {
 	hasPendingCompleteMarker,
@@ -185,58 +189,6 @@ function isSafePlanPath(planPath: string): boolean {
 }
 
 /**
- * Resolve the review type from a stage transition target.
- * - `design_review` → "design"
- * - `pr_created`    → "code"
- * - anything else   → null (no auto-trigger)
- */
-function codexReviewTypeFor(stage: string): "design" | "code" | null {
-	if (stage === "design_review") return "design";
-	if (stage === "pr_created") return "code";
-	return null;
-}
-
-/**
- * Build the Runner-targeted instruction text for design/code review.
- */
-function buildCodexInstruction(
-	reviewType: "design" | "code",
-	planPath: string | undefined,
-	executionId: string,
-): string {
-	if (reviewType === "design") {
-		const target =
-			planPath ?? "<MISSING — re-run stage set design_review --plan <path>>";
-		return [
-			`[FLY-137] Codex design review required for exec=${executionId}.`,
-			`Run: /codex-design-review ${target}`,
-			`Iterate on findings until Codex returns APPROVED. Write the approved`,
-			`result to .flywheel/runs/${executionId}/codex/design-review.json with`,
-			`schema {executionId, reviewType:"design", status:"APPROVED",`,
-			`reviewedTarget:"${target}", timestamp:<ISO-8601>, rounds:<int>,`,
-			`codexThreadId:<string>}.`,
-			`Then call \`flywheel-comm await-codex-gate design --exec-id ${executionId}\``,
-			`before \`flywheel-comm stage set implement\`. The gate command is`,
-			`fail-closed; it will block until the result file or a skip marker`,
-			`appears.`,
-		].join(" ");
-	}
-	return [
-		`[FLY-137] Codex code review required for exec=${executionId}.`,
-		`Run: /codex-code-review`,
-		`Iterate on findings until Codex returns APPROVED. Write the approved`,
-		`result to .flywheel/runs/${executionId}/codex/code-review.json with`,
-		`schema {executionId, reviewType:"code", status:"APPROVED",`,
-		`reviewedTarget:"<pr-url>", timestamp:<ISO-8601>, rounds:<int>,`,
-		`codexThreadId:<string>}.`,
-		`Then call \`flywheel-comm await-codex-gate code --exec-id ${executionId}\``,
-		`before \`flywheel-comm stage set approve\`. The gate command is`,
-		`fail-closed; it will block until the result file or a skip marker`,
-		`appears.`,
-	].join(" ");
-}
-
-/**
  * Handle stage_changed → design_review / pr_created. Reads session
  * state (codex_skip + worktree_path + plan_path) and either writes
  * skip.json or writes a CommDB instruction to the Runner inbox.
@@ -276,6 +228,33 @@ function handleCodexAutoTrigger(
 	const refreshedSession = store.getSession(event.execution_id);
 	const codexSkip = !!refreshedSession?.codex_skip;
 	const persistedPlanPath = refreshedSession?.plan_path;
+
+	// FLY-827: for CODE review, register the durable gate record (audit-friendly;
+	// the gate truth is an approved/skipped record for the CURRENT head or
+	// session.codex_skip — NOT a pending row). pr_head_sha is usually absent at
+	// pr_created (setReviewBinding writes it on the completion event), so this only
+	// fires when a head is already bound; the codex_skip session flag carries the
+	// bypass otherwise.
+	if (reviewType === "code") {
+		const head = refreshedSession?.pr_head_sha?.toLowerCase();
+		if (head && /^[0-9a-f]{40}$/.test(head)) {
+			if (codexSkip) {
+				store.markCodexReviewSkipped({
+					executionId: event.execution_id,
+					targetPrHeadSha: head,
+					issueId: event.issue_id,
+					projectName: event.project_name,
+				});
+			} else {
+				store.upsertCodexReviewPending({
+					executionId: event.execution_id,
+					targetPrHeadSha: head,
+					issueId: event.issue_id,
+					projectName: event.project_name,
+				});
+			}
+		}
+	}
 
 	if (codexSkip) {
 		try {
@@ -673,6 +652,23 @@ export function createEventRouter(
 				} catch (err) {
 					console.error(
 						`[event-route] onQaResult threw for ${event.execution_id}: ${(err as Error).message}`,
+					);
+				}
+			}
+			res.json({ ok: true });
+			return;
+		}
+
+		// FLY-827: a Codex CODE review verdict (from `await-codex-gate code`). Record
+		// the durable approval + (race closure) re-drive QA if the parent already
+		// reached awaiting_review. Not a session-lifecycle transition — return early.
+		if (event.event_type === "codex_review_result") {
+			if (autoQaCoordinator?.current) {
+				try {
+					await autoQaCoordinator.current.onCodexReviewResult(event);
+				} catch (err) {
+					console.error(
+						`[event-route] onCodexReviewResult threw for ${event.execution_id}: ${(err as Error).message}`,
 					);
 				}
 			}
@@ -2018,7 +2014,7 @@ export function createEventRouter(
 				// coordinator's ThreadPoster, NOT this block.
 				if (
 					event.event_type === "session_completed" &&
-					isQaHeld(store, session)
+					isReviewHeld(store, session)
 				) {
 					console.log(
 						`[event-route] FLY-579 QA-held: suppressing review-required Lead delivery for ${event.execution_id}`,

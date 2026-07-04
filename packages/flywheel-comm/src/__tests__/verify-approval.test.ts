@@ -11,12 +11,15 @@
  *   --pr-head.
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { verifyApproval } from "../commands/verify-approval.js";
+import {
+	resolveCodexHardGateOn,
+	verifyApproval,
+} from "../commands/verify-approval.js";
 import { CommDB } from "../db.js";
 
 const EXEC = "exec-fly191";
@@ -47,6 +50,7 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		status: string;
 		pr_head_sha?: string | null;
 		review_question_id?: string | null;
+		codex_skip?: number;
 	}): void {
 		const db = new Database(stateDbPath);
 		db.exec(
@@ -54,17 +58,40 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				execution_id TEXT PRIMARY KEY,
 				status TEXT,
 				pr_head_sha TEXT,
-				review_question_id TEXT
+				review_question_id TEXT,
+				codex_skip INTEGER NOT NULL DEFAULT 0
 			)`,
 		);
 		db.prepare(
-			"INSERT OR REPLACE INTO sessions (execution_id, status, pr_head_sha, review_question_id) VALUES (?, ?, ?, ?)",
+			"INSERT OR REPLACE INTO sessions (execution_id, status, pr_head_sha, review_question_id, codex_skip) VALUES (?, ?, ?, ?, ?)",
 		).run(
 			row.execution_id,
 			row.status,
 			row.pr_head_sha ?? null,
 			row.review_question_id ?? null,
+			row.codex_skip ?? 0,
 		);
+		db.close();
+	}
+
+	/** FLY-827: write a codex_review_record row for (exec, head). */
+	function writeCodexRecord(
+		execution_id: string,
+		targetPrHeadSha: string,
+		status: "approved" | "skipped" | "pending",
+	): void {
+		const db = new Database(stateDbPath);
+		db.exec(
+			`CREATE TABLE IF NOT EXISTS codex_review_record (
+				execution_id TEXT NOT NULL,
+				target_pr_head_sha TEXT NOT NULL,
+				status TEXT NOT NULL DEFAULT 'pending',
+				PRIMARY KEY (execution_id, target_pr_head_sha)
+			)`,
+		);
+		db.prepare(
+			"INSERT OR REPLACE INTO codex_review_record (execution_id, target_pr_head_sha, status) VALUES (?, ?, ?)",
+		).run(execution_id, targetPrHeadSha.toLowerCase(), status);
 		db.close();
 	}
 
@@ -94,6 +121,27 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 			prHead,
 			dbPath: commDbPath,
 			stateDbPath,
+			// FLY-827: these FLY-191 tests predate the codex hard gate + verify the
+			// founder-approval semantics. Run gate-OFF (byte-compat) so they don't
+			// require a codex_review_record. Codex-gate behavior has its own block.
+			env: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
+			codexDotenvPath: join(tmpDir, "nonexistent.env"),
+		});
+	}
+
+	/** FLY-827: run with the codex hard gate ON (env has no key → resolver reads .env → absent path → process.env). */
+	function runGateOn(opts?: {
+		prHead?: string;
+		env?: NodeJS.ProcessEnv;
+		dotenvPath?: string;
+	}) {
+		return verifyApproval({
+			execId: EXEC,
+			prHead: opts?.prHead ?? HEAD,
+			dbPath: commDbPath,
+			stateDbPath,
+			env: opts?.env ?? ({} as NodeJS.ProcessEnv),
+			codexDotenvPath: opts?.dotenvPath ?? join(tmpDir, "nonexistent.env"),
 		});
 	}
 
@@ -323,5 +371,108 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 		expect(r.approved).toBe(false);
 		expect(r.reason).toBe("gate_not_answered");
 		expect(r.questionId).toBe(newQ); // verdict bound to the current request
+	});
+
+	// ── FLY-827: Codex code-review hard gate (merge chokepoint) ──
+
+	describe("FLY-827 codex hard gate", () => {
+		/** Founder side fully approved (bound + answered + status + head). */
+		function founderApproved(): void {
+			const qid = createGateQuestion();
+			answer(qid, JSON.stringify({ approved: true }));
+			writeStateSession({
+				execution_id: EXEC,
+				status: "approved_to_ship",
+				pr_head_sha: HEAD,
+				review_question_id: qid,
+			});
+		}
+
+		it("founder approved + codex approved (this head) → approved", () => {
+			founderApproved();
+			writeCodexRecord(EXEC, HEAD, "approved");
+			const r = runGateOn();
+			expect(r.approved).toBe(true);
+			expect(r.reason).toBe("approved");
+		});
+
+		it("founder approved + NO codex record → codex_review_not_approved", () => {
+			founderApproved();
+			const r = runGateOn();
+			expect(r.approved).toBe(false);
+			expect(r.reason).toBe("codex_review_not_approved");
+		});
+
+		it("codex approved for a DIFFERENT head → codex_review_not_approved", () => {
+			founderApproved();
+			writeCodexRecord(EXEC, "b".repeat(40), "approved");
+			const r = runGateOn();
+			expect(r.reason).toBe("codex_review_not_approved");
+		});
+
+		it("codex skipped record → approved", () => {
+			founderApproved();
+			writeCodexRecord(EXEC, HEAD, "skipped");
+			expect(runGateOn().approved).toBe(true);
+		});
+
+		it("session.codex_skip → approved without a codex record", () => {
+			const qid = createGateQuestion();
+			answer(qid, JSON.stringify({ approved: true }));
+			writeStateSession({
+				execution_id: EXEC,
+				status: "approved_to_ship",
+				pr_head_sha: HEAD,
+				review_question_id: qid,
+				codex_skip: 1,
+			});
+			expect(runGateOn().approved).toBe(true);
+		});
+
+		it("byte-compat: gate OFF (env FLYWHEEL_CODEX_HARD_GATE=0) → approved without a codex record", () => {
+			founderApproved();
+			const r = runGateOn({
+				env: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
+			});
+			expect(r.approved).toBe(true);
+			expect(r.reason).toBe("approved");
+		});
+
+		it("R3-HIGH-1 OFF live: inherited env has no key + .env has =0 → gate off → approved", () => {
+			founderApproved();
+			const envPath = join(tmpDir, "off.env");
+			writeFileSync(envPath, "FLYWHEEL_CODEX_HARD_GATE=0\n");
+			const r = runGateOn({
+				env: {} as NodeJS.ProcessEnv,
+				dotenvPath: envPath,
+			});
+			expect(r.approved).toBe(true);
+		});
+
+		it("R3-HIGH-1 re-arm live: stale inherited =0 + readable .env with key ABSENT → gate ON (NOT bypassed by stale env)", () => {
+			// The re-arm case: a runner spawned with FLYWHEEL_CODEX_HARD_GATE=0 in its
+			// inherited process.env, then the operator toggles the gate back ON (which
+			// DELETES the .env line). A readable .env with the key ABSENT must resolve
+			// to default-on — never fall back to the stale inherited 0.
+			const envPath = join(tmpDir, "rearm.env");
+			writeFileSync(envPath, "SOME_OTHER=1\n"); // key absent, file readable
+			expect(
+				resolveCodexHardGateOn({
+					argsEnv: undefined,
+					processEnv: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
+					dotenvPath: envPath,
+				}),
+			).toBe(true);
+		});
+
+		it("legacy: .env unreadable + inherited =0 → gate off (fallback)", () => {
+			expect(
+				resolveCodexHardGateOn({
+					argsEnv: undefined,
+					processEnv: { FLYWHEEL_CODEX_HARD_GATE: "0" } as NodeJS.ProcessEnv,
+					dotenvPath: join(tmpDir, "does-not-exist.env"),
+				}),
+			).toBe(false);
+		});
 	});
 });

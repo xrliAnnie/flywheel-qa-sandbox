@@ -72,9 +72,14 @@ describe("Event route", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -360,9 +365,14 @@ describe("Event route — structured hook payload", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -495,9 +505,14 @@ describe("Event route — EventFilter integration", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -626,9 +641,14 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -696,9 +716,14 @@ describe("Event route — GEO-292 stage tracking", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -1324,9 +1349,14 @@ describe("Event route — issue_identifier fallback (GEO-202)", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -1510,9 +1540,14 @@ describe("Event route — stage_context honesty (FLY-208 7a)", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});

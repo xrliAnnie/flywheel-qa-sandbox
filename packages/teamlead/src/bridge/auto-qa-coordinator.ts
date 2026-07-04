@@ -34,6 +34,11 @@ import {
 	type Session,
 	type StateStore,
 } from "../StateStore.js";
+import {
+	codexHardGateEnabled,
+	isCodexGateSatisfied,
+	isReviewableRole,
+} from "./codex-gate.js";
 import type { QaContext, StartRequest } from "./retry-dispatcher.js";
 
 /**
@@ -167,6 +172,24 @@ export interface AutoQaSideEffects {
 		qaSession: Session;
 		reason?: string;
 	}): Promise<void> | void;
+	/**
+	 * FLY-827: re-queue the `/codex-code-review` instruction to a runner whose
+	 * session is Codex-held (the runner never ran / never reported Codex). Closes
+	 * the loop (Lead D3): don't just block — tell the runner to go run Codex.
+	 * Best-effort (writes the runner's CommDB inbox); never throws into the gate.
+	 */
+	queueCodexInstruction(args: { session: Session }): Promise<void> | void;
+	/**
+	 * FLY-827: a Lead-facing Flywheel Alert that a session is blocked on the Codex
+	 * code-review hard gate (founder NOT surfaced). Rate-limited per (exec, head)
+	 * so a re-drive / restart doesn't spam. `sha` omitted → the missing-PR-head
+	 * variant (R3-LOW-3): deduped per exec, asks for a re-`complete` with a valid
+	 * head binding rather than a head-specific review. Never throws into the gate.
+	 */
+	alertCodexGateBlocked(args: {
+		session: Session;
+		sha?: string;
+	}): Promise<void> | void;
 }
 
 export interface AutoQaCoordinatorDeps {
@@ -183,6 +206,8 @@ export interface AutoQaCoordinatorDeps {
 	effects: AutoQaSideEffects;
 	/** Reserved QA agent name (AgentDispatcher resolves project-override → shipped). Default "qa". */
 	qaAgentName?: string;
+	/** FLY-827: env for the codex hard-gate kill-switch. Defaults to process.env. */
+	env?: Record<string, string | undefined>;
 	logger?: { log(m: string): void; warn(m: string): void };
 }
 
@@ -237,10 +262,17 @@ export class AutoQaCoordinator {
 	 */
 	async onMainAwaitingReview(
 		sessionInput: Session,
-		opts?: { freshTransition?: boolean },
+		opts?: { freshTransition?: boolean; codexReleased?: boolean },
 	): Promise<void> {
 		if ((sessionInput.session_role ?? "main") !== "main") return;
 		const freshTransition = opts?.freshTransition ?? true;
+		// FLY-827 (Codex R2 HIGH-3): a Codex-release re-drive (from
+		// onCodexReviewResult) forces the FIRST QA spawn even though it is not a
+		// fresh awaiting_review transition — the session was codex-held (returned
+		// before claiming any auto_qa_record), so without this override the "no
+		// owner + !freshTransition" guard below would skip QA forever.
+		const codexReleased = opts?.codexReleased ?? false;
+		const env = this.deps.env ?? process.env;
 
 		// FLY-846 gate ⓪: the coordinator RE-READS the row itself instead of
 		// trusting any caller's snapshot (Codex R1 LOW-2). DirectEventSink's
@@ -276,18 +308,11 @@ export class AutoQaCoordinator {
 			return;
 		}
 
-		const policy = this.deps.resolveQaPolicy(session);
-		if (!policy.enabled) {
-			this.log(
-				`skip ${session.execution_id} (${session.issue_id}) — auto-QA not enabled: ${policy.reason ?? "policy off"}`,
-			);
-			return;
-		}
-
-		// FAIL-CLOSED: QA MUST be pinned to the exact reviewed commit. A missing /
-		// malformed pr_head_sha must NEVER let QA fall back to origin/main — that
-		// would verify the wrong code. Pipeline error → Lead only (never founder),
-		// and the parent stays in its normal review path (no held record written).
+		// FAIL-CLOSED: QA + the codex gate MUST be pinned to the exact reviewed
+		// commit. A missing / malformed pr_head_sha must NEVER let QA fall back to
+		// origin/main — that would verify the wrong code. Checked BEFORE policy +
+		// codex (FLY-827) since both need the sha. Pipeline error → Lead only (never
+		// founder); the founder is held on missing-sha by isReviewHeld (R2-MED-3).
 		const sha = session.pr_head_sha?.toLowerCase();
 		if (!sha || !FULL_SHA.test(sha)) {
 			this.warn(
@@ -299,6 +324,25 @@ export class AutoQaCoordinator {
 				projectName: session.project_name,
 				reason: `auto-QA could not spawn: ${session.issue_id} reached awaiting_review without a valid pr_head_sha. Founder NOT surfaced; please investigate.`,
 			});
+			return;
+		}
+
+		// FLY-827: the Codex code-review HARD GATE — BEFORE QA policy (codex is
+		// fleet-universal, independent of per-project QA). Not satisfied → codex-hold
+		// (post thread + re-queue the review instruction + rate-limited alert) and
+		// return WITHOUT spawning QA. The founder stays held via isReviewHeld's codex
+		// branch. When the runner runs Codex + reports, onCodexReviewResult re-drives
+		// here with codexReleased:true.
+		if (!isCodexGateSatisfied(this.deps.store, session, sha, env)) {
+			await this.codexHold(session, sha);
+			return;
+		}
+
+		const policy = this.deps.resolveQaPolicy(session);
+		if (!policy.enabled) {
+			this.log(
+				`skip ${session.execution_id} (${session.issue_id}) — auto-QA not enabled: ${policy.reason ?? "policy off"}`,
+			);
 			return;
 		}
 
@@ -342,7 +386,10 @@ export class AutoQaCoordinator {
 
 		// No owner record. Only a GENUINE fresh review-pass gets a first QA — a
 		// parked-waiting-for-founder / re-emitted awaiting_review must NOT spawn.
-		if (!freshTransition) {
+		// FLY-827 (R2 HIGH-3): a codex-release re-drive ALSO gets the first spawn
+		// (the session was codex-held before it could claim a record; codex just
+		// released it, so this is a legitimate first review-pass).
+		if (!freshTransition && !codexReleased) {
 			this.log(
 				`skip ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — no owner record and not a fresh review-pass (parked-for-founder)`,
 			);
@@ -424,6 +471,132 @@ export class AutoQaCoordinator {
 		}
 
 		await this.spawnQa(session, sha);
+	}
+
+	/**
+	 * FLY-827: the Codex code-review hard-gate hold. A main session reached
+	 * awaiting_review but Codex has NOT approved the current head → post a thread
+	 * note, re-queue the `/codex-code-review` instruction to the runner (D3 loop
+	 * closure), and Lead-alert (rate-limited per exec+head). QA is NOT spawned and
+	 * the founder stays held via isReviewHeld. Best-effort side-effects: a failure
+	 * here must never surface the founder (the durable table + isReviewHeld hold).
+	 */
+	private async codexHold(session: Session, sha: string): Promise<void> {
+		// FLY-827 (Codex code-review R1 MED-1): fire the side-effect bundle (thread +
+		// re-queue + alert) ONCE per (exec, head). The LIVE onMainAwaitingReview path
+		// posts/queues/alerts the first time; a restart / repeated reconcileCodexHolds
+		// replays the hold as a no-op (the founder HOLD itself is enforced by the
+		// durable record + isReviewHeld, independent of this). A NEW head is a fresh
+		// claim → it re-notifies for that head.
+		const firstNotify = this.deps.store.claimCodexHoldNotify({
+			executionId: session.execution_id,
+			targetPrHeadSha: sha,
+			issueId: session.issue_id,
+			projectName: session.project_name,
+		});
+		if (!firstNotify) {
+			this.log(
+				`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — already notified for this head; skipping duplicate thread/instruction/alert`,
+			);
+			return;
+		}
+		this.log(
+			`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — code review not APPROVED; QA not spawned, founder held`,
+		);
+		try {
+			await this.deps.effects.postThread({
+				session,
+				text: `⛔ Codex code review 未通过(head \`${sha.slice(0, 8)}\`)— 自动 QA 不启动、founder 保持挂起。已重发 /codex-code-review 指令,过了 Codex APPROVED 才会继续。`,
+			});
+		} catch (err) {
+			this.warn(
+				`codexHold postThread failed for ${session.issue_id}: ${asErr(err)}`,
+			);
+		}
+		try {
+			await this.deps.effects.queueCodexInstruction({ session });
+		} catch (err) {
+			this.warn(
+				`codexHold queueCodexInstruction failed for ${session.issue_id}: ${asErr(err)}`,
+			);
+		}
+		try {
+			await this.deps.effects.alertCodexGateBlocked({ session, sha });
+		} catch (err) {
+			this.warn(
+				`codexHold alertCodexGateBlocked failed for ${session.issue_id}: ${asErr(err)}`,
+			);
+		}
+	}
+
+	/**
+	 * FLY-827: a Codex CODE review verdict arrived (from `await-codex-gate code` →
+	 * `codex_review_result` event). Validate + record the durable approval, then —
+	 * to close the complete-before-report race — if the parent is already
+	 * awaiting_review on this exact head, re-drive onMainAwaitingReview with
+	 * codexReleased:true so QA spawns now (it was codex-held). Only the `code`
+	 * review gates; a design verdict is ignored here.
+	 */
+	async onCodexReviewResult(event: QaResultEvent): Promise<void> {
+		const payload = (event.payload ?? {}) as Record<string, unknown>;
+		const reviewType = asString(payload.reviewType);
+		const status = asString(payload.status);
+		const sha = asString(payload.prHeadSha)?.toLowerCase();
+		const targetExec =
+			asString(payload.targetExecutionId) ?? event.execution_id;
+
+		if (reviewType !== "code") {
+			this.log(`codex_review_result ignored — reviewType=${reviewType ?? "?"}`);
+			return;
+		}
+		if (status !== "APPROVED") {
+			this.log(
+				`codex_review_result ignored — status=${status ?? "?"} (not APPROVED)`,
+			);
+			return;
+		}
+		if (!sha || !FULL_SHA.test(sha)) {
+			this.warn(
+				`codex_review_result ignored — missing/invalid prHeadSha (${sha ?? "none"})`,
+			);
+			return;
+		}
+		const session = this.deps.store.getSession(targetExec);
+		// FLY-827 + FLY-793: accept the PR-owning reviewable roles (main + the
+		// three-stage `implement` phase). A `qa` verdict is not gated here.
+		if (!session || !isReviewableRole(session.session_role)) {
+			this.warn(
+				`codex_review_result ignored — ${targetExec} is unknown or not a reviewable (main/implement) session`,
+			);
+			return;
+		}
+
+		this.deps.store.recordCodexReviewApproved({
+			executionId: targetExec,
+			targetPrHeadSha: sha,
+			issueId: session.issue_id,
+			projectName: session.project_name,
+			verdictEventId: event.event_id,
+			reviewedTarget: asString(payload.reviewedTarget),
+			codexThreadId: asString(payload.codexThreadId),
+			rounds:
+				typeof payload.rounds === "number"
+					? (payload.rounds as number)
+					: undefined,
+		});
+		this.log(
+			`codex code review APPROVED recorded for ${session.issue_id} (${targetExec}) @ ${sha.slice(0, 8)}`,
+		);
+
+		// Race closure (plan §3.2 #1): `complete --route needs_review` may have
+		// landed BEFORE this verdict (the session is already awaiting_review and was
+		// codex-held). Re-drive so QA spawns now — codexReleased forces the first spawn.
+		if (
+			session.status === "awaiting_review" &&
+			session.pr_head_sha?.toLowerCase() === sha
+		) {
+			await this.onMainAwaitingReview(session, { codexReleased: true });
+		}
 	}
 
 	/**
@@ -864,6 +1037,51 @@ export class AutoQaCoordinator {
 	}
 
 	/**
+	 * FLY-827 (Codex R1 HIGH-4): re-drive codex-hold SIDE-EFFECTS after a Bridge
+	 * restart / a default-ON flip. The founder HOLD itself does NOT depend on this
+	 * running (it's guaranteed by the durable codex_review_record + isReviewHeld,
+	 * timing-independent — same rationale as the auto-QA reconcile, plugin.ts). This
+	 * only re-fires the alert + re-queues the /codex-code-review instruction so a
+	 * held session isn't silently suppressed with no actionable signal. Idempotent:
+	 * the alert eventId is per-(exec, head) so a re-run won't spam.
+	 *
+	 * Safe to run after the GatePoller/Heartbeat timers start (the hold is already
+	 * in effect via the durable predicate).
+	 */
+	async reconcileCodexHolds(): Promise<void> {
+		const env = this.deps.env ?? process.env;
+		if (!codexHardGateEnabled(env)) return; // gate off → nothing held
+		for (const session of this.deps.store.getActiveSessions()) {
+			if ((session.session_role ?? "main") !== "main") continue;
+			if (session.status !== "awaiting_review") continue;
+			if (session.codex_skip) continue;
+			const sha = session.pr_head_sha?.toLowerCase();
+			if (!sha || !FULL_SHA.test(sha)) {
+				// Missing-head hold (R3-LOW-3): alert (deduped per exec), but do NOT
+				// queue a head-specific review — ask for a re-complete with a valid head.
+				this.warn(
+					`reconcile codex missing-head hold for ${session.issue_id} (${session.execution_id})`,
+				);
+				try {
+					await this.deps.effects.alertCodexGateBlocked({ session });
+				} catch (err) {
+					this.warn(`reconcile missing-head alert failed: ${asErr(err)}`);
+				}
+				continue;
+			}
+			if (isCodexGateSatisfied(this.deps.store, session, sha, env)) continue;
+			// A running QA record means codex already passed for this head (QA only
+			// spawns past the gate) — leave it to the QA reconcile.
+			const rec = this.deps.store.getAutoQaRecord(session.execution_id, sha);
+			if (rec?.status === "running") continue;
+			this.log(
+				`reconcile codex-hold re-fire for ${session.issue_id} (${session.execution_id}) @ ${sha.slice(0, 8)}`,
+			);
+			await this.codexHold(session, sha);
+		}
+	}
+
+	/**
 	 * (c) Restart reconcile — re-drive in-flight QA. MUST run before the
 	 * GatePoller / Heartbeat timers (so a restart never relays a held gate).
 	 */
@@ -1068,6 +1286,10 @@ function parseIssueLabels(raw: string | undefined): string[] {
 
 function asString(v: unknown): string | undefined {
 	return typeof v === "string" && v.length > 0 ? v : undefined;
+}
+
+function asErr(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
 }
 
 function truncate(s: string, max: number): string {

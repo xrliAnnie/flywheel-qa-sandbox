@@ -11,6 +11,7 @@ import { capture } from "./commands/capture.js";
 import { check } from "./commands/check.js";
 import { cleanupMessages } from "./commands/cleanup-messages.js";
 import { codexResume } from "./commands/codex-resume.js";
+import { emitCodexReviewResult } from "./commands/codex-review-result.js";
 import { complete } from "./commands/complete.js";
 import {
 	type DeclareStateOpts,
@@ -79,6 +80,7 @@ Commands:
   complete  Emit session_completed terminal event to Bridge (Runner use)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
+  codex-review-result  Emit a Codex code-review APPROVED verdict for the current head (FLY-827; await-codex-gate calls this automatically)
   cleanup   Delete read messages older than TTL (default 24h)
   visual-capture   Run ProofShot UI/3D capture, select artifacts, write manifest (GEO-151)
   notify    POST artifact_emitted event to Bridge after capture+Read (GEO-151)
@@ -201,6 +203,9 @@ async function main(): Promise<void> {
 			break;
 		case "qa-result":
 			await runQaResult(commandArgs);
+			break;
+		case "codex-review-result":
+			await runCodexReviewResult(commandArgs);
 			break;
 		case "declare-founder-ux":
 			await runDeclareFounderUx(commandArgs);
@@ -828,6 +833,29 @@ async function runQaResult(args: string[]): Promise<void> {
 		execId: values["exec-id"],
 		prHeadSha: values["pr-head"],
 	});
+}
+
+async function runCodexReviewResult(args: string[]): Promise<void> {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			"pr-head": { type: "string" },
+			"reviewed-target": { type: "string" },
+			rounds: { type: "string" },
+			"codex-thread-id": { type: "string" },
+		},
+		allowPositionals: false,
+	});
+	const rounds = values.rounds ? Number.parseInt(values.rounds, 10) : undefined;
+	const ok = await emitCodexReviewResult({
+		execId: values["exec-id"],
+		prHeadSha: values["pr-head"],
+		reviewedTarget: values["reviewed-target"],
+		rounds: Number.isFinite(rounds) ? rounds : undefined,
+		codexThreadId: values["codex-thread-id"],
+	});
+	process.exit(ok ? 0 : 1);
 }
 
 async function runAwaitCodexGate(args: string[]): Promise<void> {

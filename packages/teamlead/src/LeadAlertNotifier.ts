@@ -67,6 +67,11 @@ export type AlertEventType =
 	// founder is intentionally never surfaced for a non-green QA. NOT a
 	// founder-facing notification (those go to the issue thread).
 	| "auto_qa_stuck"
+	// FLY-827: a session reached awaiting_review but Codex code review is NOT
+	// APPROVED for the current PR head → the hard gate blocked auto-QA + merge and
+	// held the founder. A Lead-only alert (founder never surfaced pre-Codex).
+	// eventId `codex-gate:${execution_id}:${sha}` (no timestamp → fires ONCE per head).
+	| "codex_gate_blocked"
 	// FLY-793: a three-stage pipeline phase handoff (Design→Implement→QA) could
 	// not proceed — head-SHA capture failed, the previous phase runner would not
 	// close, or the next phase dispatch threw. Fail-closed: the next phase is NOT

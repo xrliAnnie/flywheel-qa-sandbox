@@ -1330,10 +1330,16 @@ export class Blueprint {
 							"",
 							"FINISH (no-transport backend — build+PR handoff, NOT a ship gate):",
 							"This backend has NO push-wake. Do NOT post an approve_to_ship gate, do NOT wait to be woken, do NOT ship. After your PR is open:",
-							`a. Tell your Lead the PR is ready (non-blocking): \`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} "DONE: PR <url> ready for human ship (no-transport runner; founder drives the founder-gated ship)"\``,
-							`b. Record the open PR as the landing signal: \`jq -n --argjson n <NUMBER> '{status:"ready_to_merge",prNumber:$n}' > ${landSignalPath}\``,
-							`c. Complete the session: \`node ${commCliPath} complete --route pr_handoff --pr <NUMBER>\` — this terminalizes you as 'completed' with the PR recorded (it never enters the approve/ship loop).`,
-							"d. Then STOP. Your build+PR work is done; the founder reviews and ships the PR.",
+							// FLY-827: Codex code review is a HARD requirement for EVERY PR. A
+							// pr_handoff PR is shipped by the founder by hand (outside the
+							// verify-approval merge gate), so surface the Codex status in the
+							// handoff so the founder isn't blind — they must NOT ship a PR whose
+							// current head hasn't passed Codex code review.
+							`a. Codex code review is REQUIRED (FLY-827). Run \`/codex-code-review\`, then \`node ${commCliPath} await-codex-gate code --exec-id ${executionId}\` (it verifies reviewedHeadSha === HEAD and reports the verdict). Only after it exits 0 is this PR eligible for the founder to ship.`,
+							`b. Tell your Lead the PR is ready + its Codex status (non-blocking): \`node ${commCliPath} ask --lead ${ctx.leadId} --exec-id ${executionId} "DONE: PR <url> ready for human ship (no-transport runner). Codex code review: PASSED for head <sha> (or: NOT run — founder must NOT ship until it passes)."\``,
+							`c. Record the open PR as the landing signal: \`jq -n --argjson n <NUMBER> '{status:"ready_to_merge",prNumber:$n}' > ${landSignalPath}\``,
+							`d. Complete the session: \`node ${commCliPath} complete --route pr_handoff --pr <NUMBER>\` — this terminalizes you as 'completed' with the PR recorded (it never enters the approve/ship loop).`,
+							"e. Then STOP. Your build+PR work is done; the founder reviews Codex status and ships the PR.",
 						);
 					} else if (cpName === "approve_to_ship") {
 						// FLY-191 Phase 2: non-blocking review flow. The runner posts

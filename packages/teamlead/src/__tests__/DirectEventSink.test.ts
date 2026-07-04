@@ -757,17 +757,25 @@ describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH
 	});
 
 	it("byte-compat: with NO held record the review-required delivery fires", async () => {
-		const { registry, delivered } = captureRegistry();
-		const sink = new DirectEventSink(
-			store,
-			makeConfig(),
-			testProjects,
-			undefined,
-			registry,
-		);
-		await sink.emitStarted(makeEnvelope());
-		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
-		expect(delivered).toContain("session_completed");
+		// FLY-827: this pre-codex byte-compat test asserts delivery with no held
+		// record. Run gate-OFF so isReviewHeld falls back to isQaHeld (false here);
+		// under the hard gate an un-reviewed awaiting_review is intentionally held.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		try {
+			const { registry, delivered } = captureRegistry();
+			const sink = new DirectEventSink(
+				store,
+				makeConfig(),
+				testProjects,
+				undefined,
+				registry,
+			);
+			await sink.emitStarted(makeEnvelope());
+			await sink.emitCompleted(makeEnvelope(), needsReviewResult());
+			expect(delivered).toContain("session_completed");
+		} finally {
+			delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		}
 	});
 });
 

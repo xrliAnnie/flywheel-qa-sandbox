@@ -17,7 +17,7 @@ import type {
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { AutoQaCoordinator } from "./bridge/auto-qa-coordinator.js";
-import { isQaHeld } from "./bridge/auto-qa-held.js";
+import { isReviewHeld } from "./bridge/auto-qa-held.js";
 import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "./bridge/chat-thread-utils.js";
 import type { EventFilter } from "./bridge/EventFilter.js";
@@ -659,13 +659,16 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			}
 		}
 
-		// FLY-579: hold the founder while QA-held — suppress the review-required
-		// delivery (the 🧪 / ship-ready posts reach the thread via the
-		// coordinator's ThreadPoster, not this sink). isQaHeld is false with no
-		// held record, so this is byte-compatible when auto-QA is off.
-		if (isQaHeld(this.store, this.store.getSession(env.executionId))) {
+		// FLY-579 + FLY-827: hold the founder while review-held — suppress the
+		// review-required delivery (the 🧪 / ship-ready posts reach the thread via the
+		// coordinator's ThreadPoster, not this sink). isReviewHeld is false with no
+		// held record AND codex satisfied, so this is byte-compatible when auto-QA is
+		// off and the hard gate is off. FLY-827 (R4-HIGH-1): DirectEventSink is the
+		// FOURTH founder-surface path — without isReviewHeld a Codex-held session
+		// (no auto_qa_record → isQaHeld false) would leak the review-required push.
+		if (isReviewHeld(this.store, this.store.getSession(env.executionId))) {
 			console.log(
-				`[DirectEventSink] FLY-579 QA-held: suppressing review-required delivery for ${env.executionId}`,
+				`[DirectEventSink] FLY-827 review-held: suppressing review-required delivery for ${env.executionId}`,
 			);
 		} else {
 			this.pushNotification(env, "session_completed");

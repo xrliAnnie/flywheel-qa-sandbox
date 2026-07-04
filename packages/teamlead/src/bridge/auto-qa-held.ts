@@ -24,6 +24,12 @@
  */
 
 import type { AutoQaRecord } from "../StateStore.js";
+import {
+	type CodexGateStore,
+	codexHardGateEnabled,
+	isCodexGateSatisfied,
+	isReviewableRole,
+} from "./codex-gate.js";
 
 /** Minimal read surface — keeps the predicate trivially unit-testable. */
 export interface AutoQaHeldStore {
@@ -38,6 +44,48 @@ export interface QaHeldSession {
 	session_role?: string;
 	status?: string;
 	pr_head_sha?: string;
+	/** FLY-827: sanctioned codex-skip bypass (needed by isReviewHeld). DB=int, type=bool. */
+	codex_skip?: number | boolean;
+}
+
+const FULL_SHA = /^[0-9a-f]{40}$/;
+
+/**
+ * FLY-827: the UNIFIED founder-hold predicate = codex gate hold OR QA hold.
+ *
+ * A main session in `awaiting_review` is held from founder surfacing while EITHER
+ * Codex code review is not satisfied for the current head, OR (once codex passed)
+ * QA is not green. All four founder-surface points (event-route always-deliver,
+ * GatePoller approve relay, HeartbeatService gate_timed_out, DirectEventSink
+ * emitCompleted push) consume THIS predicate so they cannot drift.
+ *
+ * Missing/invalid pr_head_sha (Codex R2-MED-3): a head-specific Codex review can't
+ * run without a head, so under the hard gate (and not codex_skip) an awaiting_review
+ * main session with no valid head is HELD (fail-closed — never surface an unmergeable
+ * review). Gate-off / codex_skip → fall through to isQaHeld's no-sha behavior (false).
+ *
+ * Byte-compat: with the hard gate OFF, isReviewHeld === isQaHeld exactly.
+ */
+export function isReviewHeld(
+	store: AutoQaHeldStore & CodexGateStore,
+	session: QaHeldSession | undefined,
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	if (!session) return false;
+	// FLY-827 + FLY-793: hold the PR-owning reviewable roles (main + implement);
+	// the qa/design roles are verifiers / pre-PR and are never founder-held here.
+	if (!isReviewableRole(session.session_role)) return false;
+	if (session.status !== "awaiting_review") return false;
+	const sha = session.pr_head_sha?.toLowerCase();
+	if (!sha || !FULL_SHA.test(sha)) {
+		// No valid head: hold under the hard gate (unless codex_skip), else no-op.
+		return codexHardGateEnabled(env) && !session.codex_skip;
+	}
+	// Codex gate first: not satisfied → held (independent of QA policy).
+	if (!isCodexGateSatisfied(store, session, sha, env)) return true;
+	// Codex satisfied → defer to the QA hold (QA-held is main-only; false for
+	// implement, which uses the FLY-793 phase QA rather than auto-QA).
+	return isQaHeld(store, session);
 }
 
 export function isQaHeld(

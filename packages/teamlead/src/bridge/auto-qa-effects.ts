@@ -24,6 +24,7 @@ import type { AutoQaRecord, Session, StateStore } from "../StateStore.js";
 import type { AutoQaSideEffects, QaIssueRef } from "./auto-qa-coordinator.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { closeRunner } from "./close-runner.js";
+import { queueCodexCodeReviewInstruction } from "./codex-instruction.js";
 import { commDbPathForProject } from "./commdb-path.js";
 import { postDiscordMessageToChannel } from "./discord-utils.js";
 import { buildSessionKey } from "./hook-payload.js";
@@ -302,6 +303,72 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			body: args.reason,
 			severity: "warning",
 			sessionKey: args.session ? buildSessionKey(args.session) : undefined,
+		});
+	}
+
+	/**
+	 * FLY-827: re-queue the `/codex-code-review` instruction to a Codex-held runner
+	 * (D3 loop closure — don't just block, tell the runner to go run Codex).
+	 * Best-effort; the shared helper swallows CommDB failures.
+	 */
+	queueCodexInstruction(args: { session: Session }): void {
+		queueCodexCodeReviewInstruction(
+			args.session.project_name,
+			args.session.execution_id,
+		);
+	}
+
+	/**
+	 * FLY-827: a Lead-only Flywheel Alert that a session is blocked on the Codex
+	 * code-review hard gate (founder NOT surfaced). eventId is keyed to (exec, head)
+	 * with NO timestamp so the alert claims-db dedup fires it ONCE per head — a
+	 * re-drive / Bridge restart re-running the codex-hold effect won't spam.
+	 */
+	async alertCodexGateBlocked(args: {
+		session: Session;
+		sha?: string;
+	}): Promise<void> {
+		const sha = args.sha?.toLowerCase();
+		if (!this.deps.leadAlertNotifier) {
+			console.error(
+				`[auto-qa-effects] codex gate blocked (no alert sink): ${args.session.issue_id} @ ${sha?.slice(0, 8) ?? "no-head"}`,
+			);
+			return;
+		}
+		let leadId: string | undefined;
+		try {
+			const { lead } = resolveLeadForIssue(
+				this.deps.projects,
+				args.session.project_name,
+				parseLabels(args.session.issue_labels),
+			);
+			leadId = lead.agentId;
+		} catch {
+			/* leadId stays undefined */
+		}
+		if (!leadId) {
+			console.error(
+				`[auto-qa-effects] codex gate blocked (no lead): ${args.session.issue_id}`,
+			);
+			return;
+		}
+		const title = `Codex code review NOT passed — ${args.session.issue_identifier ?? args.session.issue_id}`;
+		// R3-LOW-3: missing-head variant — no head to review; ask for a re-complete.
+		const eventId = sha
+			? `codex-gate:${args.session.execution_id}:${sha}`
+			: `codex-gate-missing-head:${args.session.execution_id}`;
+		const body = sha
+			? `PR head \`${sha.slice(0, 8)}\` has no Codex APPROVED — auto-QA blocked, merge blocked, founder held. Re-sent the /codex-code-review instruction to the runner. It must run Codex (or the head needs re-review if it changed).`
+			: `Session reached awaiting_review with NO valid PR head binding — the Codex hard gate is holding the founder but a head-specific review cannot run. Ask the runner to re-run \`complete --route needs_review --pr-head <sha> --question-id <id>\` with a valid head.`;
+		await this.deps.leadAlertNotifier.alert({
+			leadId,
+			projectName: args.session.project_name,
+			eventId,
+			eventType: "codex_gate_blocked",
+			title,
+			body,
+			severity: "warning",
+			sessionKey: buildSessionKey(args.session),
 		});
 	}
 

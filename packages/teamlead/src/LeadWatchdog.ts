@@ -948,6 +948,10 @@ function titleFor(kind: AlertEventType): string {
 		// own title); case exists for switch exhaustiveness.
 		case "founder_milestone_undelivered":
 			return "Milestone ping undelivered";
+		// FLY-827: never emitted by LeadWatchdog (AutoQaEffects builds its own
+		// title); case exists for switch exhaustiveness.
+		case "codex_gate_blocked":
+			return "Codex code review not passed";
 	}
 }
 
@@ -993,5 +997,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-725: never emitted by LeadWatchdog (the milestone / founder-thread patrol builds its own body).
 		case "founder_milestone_undelivered":
 			return "The Bridge could not deliver a founder milestone / ship-ready ping to its issue thread. The founder was NOT pinged; check the thread / bot token / owner config.";
+		// FLY-827: never emitted by LeadWatchdog (AutoQaEffects builds its own body).
+		case "codex_gate_blocked":
+			return "A PR reached awaiting_review but Codex code review is not APPROVED for the current head. The hard gate blocked auto-QA + merge and held the founder; the runner was re-sent the /codex-code-review instruction.";
 	}
 }

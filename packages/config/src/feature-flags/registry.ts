@@ -125,6 +125,47 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"resolve.direct-toggle.test:auto_qa_killswitch live-observe",
 	},
 	{
+		// FLY-827: the Codex code-review HARD GATE kill-switch. Default-ON: any PR
+		// must pass Codex code review (for its current head) before auto-QA spawns
+		// and before verify-approval permits merge; not passed → founder held +
+		// alert. `=0` is the emergency release. `direct` toggle: the Bridge reads
+		// process.env live (mutated in place by the flag apply). The runner-CLI
+		// verify-approval ALSO honors it live but via a call-time read of
+		// ~/.flywheel/.env (NOT a Bridge process.env readSite) — that CLI live-read
+		// is proven separately and deliberately NOT listed as a call_time readSite
+		// here so isDirectToggleable (which requires every listed readSite be
+		// Bridge call_time) still accepts this flag.
+		name: "codex_hard_gate_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CODEX_HARD_GATE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"全局关掉 Codex code-review 硬门（=0 应急放行；默认 ON=任何 PR 没过 Codex APPROVED 就卡住 auto-QA + merge）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/codex-gate.ts",
+				"isCodexGateSatisfied / codexHardGateEnabled",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/teamlead/src/bridge/auto-qa-held.ts",
+				"isReviewHeld",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "direct",
+		// Two live-observe proofs: the Bridge-side registry direct-toggle test AND
+		// the runner-CLI verify-approval .env bidirectional live-toggle test.
+		directToggleProof:
+			"resolve.direct-toggle.test:codex_hard_gate_killswitch live-observe + verify-approval.test:.env live-toggle",
+	},
+	{
 		// FLY-793: global hard kill-switch for the three-stage pipeline
 		// (Design→Implement→QA). The PRIMARY toggle is the per-project
 		// `pipeline.three_stage` config key; this env is a fleet-wide emergency OFF

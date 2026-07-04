@@ -6,11 +6,27 @@
  * JSON handling, and timeout.
  */
 
+import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitCodexGate } from "../commands/await-codex-gate.js";
+
+/** git-init `dir` with one empty commit; return its 40-hex HEAD. */
+function gitInitHead(dir: string): string {
+	const opts = { cwd: dir, stdio: "ignore" as const };
+	execFileSync("git", ["init", "-q"], opts);
+	execFileSync("git", ["config", "user.email", "t@t.dev"], opts);
+	execFileSync("git", ["config", "user.name", "t"], opts);
+	execFileSync("git", ["commit", "-q", "--allow-empty", "-m", "init"], opts);
+	return execFileSync("git", ["rev-parse", "HEAD"], {
+		cwd: dir,
+		encoding: "utf8",
+	})
+		.trim()
+		.toLowerCase();
+}
 
 describe("awaitCodexGate", () => {
 	let tmpRoot: string;
@@ -218,7 +234,9 @@ describe("awaitCodexGate", () => {
 		);
 	});
 
-	it("polls until result appears, then exits 0", async () => {
+	it("polls until result appears, then exits 0 (code review, reviewedHeadSha === HEAD)", async () => {
+		// FLY-827: a code review must bind to the reviewed commit == current HEAD.
+		const head = gitInitHead(tmpRoot);
 		// Spawn a "writer" that drops the result file after ~150ms.
 		const writer = setTimeout(() => {
 			writeFileSync(
@@ -228,6 +246,7 @@ describe("awaitCodexGate", () => {
 					reviewType: "code",
 					status: "APPROVED",
 					reviewedTarget: "https://github.com/org/repo/pull/123",
+					reviewedHeadSha: head,
 					timestamp: new Date().toISOString(),
 				}),
 			);
@@ -250,6 +269,59 @@ describe("awaitCodexGate", () => {
 		} finally {
 			clearTimeout(writer);
 		}
+	});
+
+	it("FLY-827 HIGH-2: code review with a STALE reviewedHeadSha (!= HEAD) → fatal exit 1 (no false approval on new head)", async () => {
+		gitInitHead(tmpRoot);
+		writeFileSync(
+			join(codexDir, "code-review.json"),
+			JSON.stringify({
+				executionId: execId,
+				reviewType: "code",
+				status: "APPROVED",
+				reviewedTarget: "https://github.com/org/repo/pull/123",
+				reviewedHeadSha: "a".repeat(40), // reviewed an OLD head, HEAD has moved
+				timestamp: new Date().toISOString(),
+			}),
+		);
+		await expect(
+			awaitCodexGate({
+				reviewType: "code",
+				execId,
+				worktreePath: tmpRoot,
+				timeoutMs: 1_000,
+				pollIntervalMs: 50,
+			}),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("reviewedHeadSha"),
+		);
+	});
+
+	it("FLY-827 HIGH-2: code review MISSING reviewedHeadSha → fatal exit 1 (fail-closed)", async () => {
+		gitInitHead(tmpRoot);
+		writeFileSync(
+			join(codexDir, "code-review.json"),
+			JSON.stringify({
+				executionId: execId,
+				reviewType: "code",
+				status: "APPROVED",
+				reviewedTarget: "https://github.com/org/repo/pull/123",
+				timestamp: new Date().toISOString(),
+			}),
+		);
+		await expect(
+			awaitCodexGate({
+				reviewType: "code",
+				execId,
+				worktreePath: tmpRoot,
+				timeoutMs: 1_000,
+				pollIntervalMs: 50,
+			}),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("reviewedHeadSha"),
+		);
 	});
 
 	it("exits 1 (fail-closed) on timeout when no result and no skip ever appears", async () => {

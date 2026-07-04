@@ -37,10 +37,13 @@
  *   }
  */
 
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve as resolvePath } from "node:path";
+import { emitCodexReviewResult } from "./codex-review-result.js";
 
 const VALID_REVIEW_TYPES = new Set(["design", "code"]);
+const FULL_SHA_RE = /^[0-9a-f]{40}$/;
 
 // Poll interval + timeout defaults. 2s × 30 min = 900 polls.
 const POLL_INTERVAL_MS = 2000;
@@ -62,9 +65,27 @@ interface ResultPayload {
 	reviewType?: unknown;
 	status?: unknown;
 	reviewedTarget?: unknown;
+	/** FLY-827: the commit Codex actually reviewed (code review only). */
+	reviewedHeadSha?: unknown;
 	timestamp?: unknown;
 	rounds?: unknown;
 	codexThreadId?: unknown;
+}
+
+/** Current git HEAD (40-hex, lower-case), or undefined if not resolvable. */
+function gitHead(worktreePath?: string): string | undefined {
+	try {
+		const sha = execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd: worktreePath ?? process.cwd(),
+			encoding: "utf8",
+			stdio: ["ignore", "pipe", "pipe"],
+		})
+			.trim()
+			.toLowerCase();
+		return FULL_SHA_RE.test(sha) ? sha : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 interface SkipPayload {
@@ -151,6 +172,28 @@ function validateResult(
 	if (ageMs > MAX_RESULT_AGE_MS) {
 		return `timestamp older than 24h: ${payload.timestamp}`;
 	}
+	// FLY-827 (Codex R1 HIGH-2): for CODE review, the result must be bound to the
+	// commit Codex reviewed, and that commit must equal the CURRENT git HEAD.
+	// Otherwise a stale `code-review.json` (still within the 24h window) would let
+	// the gate pass — and report the NEW head as approved — after the implementer
+	// pushed a fix. Fail-closed on a missing/mismatched head; design review is
+	// unaffected (no head binding).
+	if (opts.reviewType === "code") {
+		const reviewedHead =
+			typeof payload.reviewedHeadSha === "string"
+				? payload.reviewedHeadSha.toLowerCase()
+				: undefined;
+		if (!reviewedHead || !FULL_SHA_RE.test(reviewedHead)) {
+			return `code review result missing/invalid reviewedHeadSha (got ${String(payload.reviewedHeadSha)}) — re-run /codex-code-review and record the reviewed head`;
+		}
+		const head = gitHead(opts.worktreePath);
+		if (!head) {
+			return `could not resolve git HEAD to verify reviewedHeadSha`;
+		}
+		if (reviewedHead !== head) {
+			return `reviewedHeadSha ${reviewedHead.slice(0, 8)} != current HEAD ${head.slice(0, 8)} — the PR moved since Codex reviewed; re-run /codex-code-review for the new head`;
+		}
+	}
 	return null;
 }
 
@@ -206,6 +249,40 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
+ * FLY-827: on a VALID code-review APPROVAL, report the verdict to the Bridge so
+ * it can record the durable, head-bound approval (the authoritative gate record,
+ * not a PR comment). Best-effort: a delivery failure never fails the local gate
+ * (the Bridge's fail-closed hard gate + the marker cover the miss). Only fires
+ * for reviewType === "code"; design review is a pre-implement gate, not gated.
+ */
+async function reportCodeApproval(opts: AwaitCodexGateOpts): Promise<void> {
+	if (opts.reviewType !== "code") return;
+	let payload: ResultPayload;
+	try {
+		payload = JSON.parse(readFileSync(resultPathFor(opts), "utf-8"));
+	} catch {
+		return; // validated already; a re-read race is non-fatal for the report
+	}
+	const reviewedHead =
+		typeof payload.reviewedHeadSha === "string"
+			? payload.reviewedHeadSha
+			: undefined;
+	await emitCodexReviewResult({
+		execId: opts.execId,
+		prHeadSha: reviewedHead,
+		reviewedTarget:
+			typeof payload.reviewedTarget === "string"
+				? payload.reviewedTarget
+				: undefined,
+		rounds: typeof payload.rounds === "number" ? payload.rounds : undefined,
+		codexThreadId:
+			typeof payload.codexThreadId === "string"
+				? payload.codexThreadId
+				: undefined,
+	});
+}
+
+/**
  * Main entry point — exits the process with 0 (success) or 1 (failure).
  * Never throws into the caller; all errors are written to stderr and
  * the process exits non-zero.
@@ -252,6 +329,9 @@ export async function awaitCodexGate(opts: AwaitCodexGateOpts): Promise<void> {
 			console.log(
 				`[await-codex-gate] ${opts.reviewType} review APPROVED for exec=${opts.execId}`,
 			);
+			// FLY-827: report the code-review verdict to the Bridge (best-effort; a
+			// delivery failure never fails the local gate).
+			await reportCodeApproval(opts);
 			process.exit(0);
 		}
 		if (result.fatal) {

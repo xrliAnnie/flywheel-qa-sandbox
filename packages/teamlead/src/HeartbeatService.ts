@@ -4,7 +4,7 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "./applyTransition.js";
-import { isQaHeld } from "./bridge/auto-qa-held.js";
+import { isReviewHeld } from "./bridge/auto-qa-held.js";
 import type {
 	ChatThreadContext,
 	ChatThreadCreator,
@@ -295,7 +295,7 @@ export class HeartbeatService implements ReconnectController {
 			// not surfaced until QA is green; a QA stall is a Lead-only pipeline
 			// error (owned by AutoQaCoordinator), never a founder review timeout.
 			// Same isQaHeld predicate as event-route + GatePoller (no drift).
-			if (isQaHeld(this.store, session)) continue;
+			if (isReviewHeld(this.store, session)) continue;
 			const waitedMs =
 				Date.now() - new Date(`${enteredAt.replace(" ", "T")}Z`).getTime();
 			const body = {
