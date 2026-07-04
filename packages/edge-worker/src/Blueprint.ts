@@ -209,6 +209,12 @@ export interface BlueprintContext {
 	// regardless of sessionRole) so they hand off on one branch. Absent →
 	// role-aware worktree key (byte-compatible).
 	shareParentBranch?: boolean;
+	// FLY-859 — Bridge-INTERNAL fix-round context (PhaseOrchestrator only; never
+	// from /api/runs/start or runner payload). Set on an Implement-fix dispatch
+	// after a three-stage QA FAIL: the implement prompt gains a "QA Fix Round"
+	// section (findings are already committed on branch B; the PR exists).
+	// Absent → the plain implement-phase prompt (byte-compatible).
+	phaseFixContext?: { round: number; qaSummary: string };
 	// FLY-116 — Per-runner Terminal viewer hook. Fired by TmuxAdapter
 	// after `tmux new-window` returns a windowId, before waitForCompletion.
 	// Dispatchers set this to spawn a per-execution macOS Terminal tab.
@@ -862,6 +868,15 @@ export class Blueprint {
 		const isQaPhase =
 			!isQaRunner && ctx.shareParentBranch === true && ctx.sessionRole === "qa";
 
+		// GEO-292: Lift commCliPath to outer scope so lead-comm, stage injection
+		// AND the phase role prompts (FLY-859: the QA phase's exact qa-result
+		// command) can use it. Hoisted above the role-prompt blocks.
+		const __filename = fileURLToPath(import.meta.url);
+		const commCliPath = path.resolve(
+			path.dirname(__filename),
+			"../../flywheel-comm/dist/index.js",
+		);
+
 		// FLY-643: an Auto-QA runner verifies the PARENT issue under test. When it
 		// runs on a SEPARATE QA·FLY-XX issue, `hydrated.issueId` is the QA issue —
 		// point the prompt at the parent (qaContext.parentIssueIdentifier) so it
@@ -900,13 +915,33 @@ export class Blueprint {
 				"3. Commit your changes to this branch.",
 				"4. Push the branch and create a GitHub PR.",
 			];
+			// FLY-859: an Implement-fix dispatch after a QA FAIL — the QA phase's
+			// findings/failing tests are already committed on branch B and the PR
+			// already exists. The fix round overrides the "create a PR" step.
+			if (ctx.phaseFixContext) {
+				systemPromptLines.push(
+					"",
+					`## QA Fix Round ${ctx.phaseFixContext.round}`,
+					"The QA phase FAILED this branch. Its findings / failing tests / QA report are ALREADY COMMITTED on this branch — read them first and fix exactly what they name.",
+					`QA summary: ${ctx.phaseFixContext.qaSummary}`,
+					"The PR for this branch already exists — push your fix commits to this branch and do NOT run `gh pr create`. When your fix is pushed, complete via the standard APPROVE GATE flow below; the pipeline re-runs the QA phase automatically.",
+				);
+			}
 		} else if (isQaPhase) {
+			// FLY-859: explicit PASS/FAIL sequencing. The QA phase is this
+			// pipeline's ship-gate holder AND ship executor on PASS (Model A: the
+			// Design/Implement runners were closed at their handoffs — only the QA
+			// runner is alive at approval time). On FAIL it stops and lets the
+			// PhaseOrchestrator close it + start an Implement-fix phase (never the
+			// auto-QA park/retest protocol — that belongs to the separate
+			// QA·FLY-XX flow).
 			systemPromptLines = [
 				"You are the QA phase of a three-stage pipeline (Design → Implement → QA), all on ONE shared branch. The IMPLEMENT phase already committed the code and opened a PR on THIS branch.",
 				"1. Read the committed design + implementation on this branch (exploration/research/plan + progress.md + the code). Do NOT re-implement the feature.",
 				"2. Verify the change against the plan: run the tests, exercise the real behavior, and add any missing test coverage. You HAVE write access — commit your tests + a QA report to THIS branch.",
 				"3. Push your commits to this branch (it updates the open PR — do NOT open a second PR).",
-				"4. Report the verdict with `flywheel-comm qa-result --status pass|fail`. On PASS the pipeline surfaces the founder ship gate; on FAIL commit your findings/failing tests first so the Implement-fix phase can read them on this branch.",
+				`4. On PASS: report it STRUCTURALLY first — \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass --summary "<what you tested + verdict>"\` (three-stage verdicts are keyed to YOUR phase session, so --target-exec is your own exec id) — then IMMEDIATELY run the APPROVE GATE flow below (steps a-g): YOU are this pipeline's ship executor. Use the PR the Implement phase opened on this branch (\`gh pr view --json number\`).`,
+				`5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest (that is the separate auto-QA protocol), do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
 			];
 		} else {
 			systemPromptLines = [
@@ -965,12 +1000,7 @@ export class Blueprint {
 			);
 		}
 
-		// GEO-292: Lift commCliPath to outer scope so both lead-comm and stage injection can use it
-		const __filename = fileURLToPath(import.meta.url);
-		const commCliPath = path.resolve(
-			path.dirname(__filename),
-			"../../flywheel-comm/dist/index.js",
-		);
+		// (commCliPath is hoisted above the role prompts — see FLY-859 note.)
 
 		// FLY-579: QA-mode skeleton + structured verdict (needs commCliPath +
 		// executionId). The shipped qa-executor agent file carries the detailed

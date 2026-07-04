@@ -192,6 +192,15 @@ export interface StartRequest {
 	 * worktree key (byte-compatible).
 	 */
 	shareParentBranch?: boolean;
+	/**
+	 * FLY-859: fix-round context for an Implement-fix dispatch after a
+	 * three-stage QA FAIL. Bridge-INTERNAL — set ONLY by the PhaseOrchestrator;
+	 * MUST NEVER be populated from the public `/api/runs/start` body or a
+	 * runner payload (runs-route does not read it). Threaded to
+	 * `BlueprintContext.phaseFixContext`. Absent → plain implement prompt
+	 * (byte-compatible).
+	 */
+	phaseFixContext?: { round: number; qaSummary: string };
 }
 
 export interface StartResult {

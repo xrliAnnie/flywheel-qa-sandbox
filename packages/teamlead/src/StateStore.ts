@@ -2199,6 +2199,100 @@ export class StateStore {
 		return rows;
 	}
 
+	/**
+	 * FLY-859: implement-phase count for an issue (three-stage fix-loop round
+	 * cap). `chat_thread_role` is the durable three-stage marker (Blueprint
+	 * writes the phase role ONLY for shareParentBranch phase sessions), so this
+	 * counts the initial Implement phase plus every Implement-fix round —
+	 * auto-QA and single-session runs never carry a non-main value.
+	 */
+	countSessionsByIssueAndChatThreadRole(issueId: string, role: string): number {
+		const stmt = this.db.prepare(
+			"SELECT COUNT(*) AS n FROM sessions WHERE issue_id = ? AND chat_thread_role = ?",
+		);
+		stmt.bind([issueId, role]);
+		const n = stmt.step()
+			? Number((stmt.getAsObject() as Record<string, unknown>).n ?? 0)
+			: 0;
+		stmt.free();
+		return n;
+	}
+
+	/**
+	 * FLY-859 reconcile sweep (a): three-stage QA phase sessions that have at
+	 * least one stored `qa_result` event. The PhaseOrchestrator compares each
+	 * session's latest stored verdict event against its durable
+	 * `three_stage_verdict` intent and replays the ones a crash left
+	 * inserted-but-unprocessed (the `/events` insert→coordinator window).
+	 */
+	getThreeStageQaSessionsWithVerdictEvents(): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT s.* FROM sessions s
+			 WHERE s.chat_thread_role = 'qa'
+			   AND EXISTS (SELECT 1 FROM session_events e
+			               WHERE e.execution_id = s.execution_id
+			                 AND e.event_type = 'qa_result')`,
+		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-859 reconcile sweep (c): terminal three-stage QA phase sessions
+	 * carrying a verdict intent — candidates for the stranded-pass alert
+	 * (reported PASS but never opened the ship gate; the FLY-849 §3.8 silent
+	 * break). Coarse SQL filter; the orchestrator does the precise
+	 * intent/binding checks after parsing session_params.
+	 */
+	getStrandedThreeStageQaPassSessions(): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE chat_thread_role = 'qa'
+			   AND status IN ('completed', 'failed')
+			   AND session_params LIKE '%three_stage_verdict%'`,
+		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-859: latest stored `qa_result` event for an execution (reconcile
+	 * sweep (a) — replay source for inserted-but-unprocessed verdicts).
+	 */
+	getLatestQaResultEventForExecution(
+		executionId: string,
+	): { eventId: string; payload?: Record<string, unknown> } | undefined {
+		const stmt = this.db.prepare(
+			`SELECT event_id, payload FROM session_events
+			 WHERE execution_id = ? AND event_type = 'qa_result'
+			 ORDER BY id DESC LIMIT 1`,
+		);
+		stmt.bind([executionId]);
+		const row = stmt.step()
+			? (stmt.getAsObject() as Record<string, unknown>)
+			: undefined;
+		stmt.free();
+		if (!row) return undefined;
+		return {
+			eventId: row.event_id as string,
+			payload: row.payload
+				? (JSON.parse(row.payload as string) as Record<string, unknown>)
+				: undefined,
+		};
+	}
+
 	getActivePhaseSessionForIssue(issueId: string): Session | undefined {
 		const stmt = this.db.prepare(
 			`SELECT * FROM sessions
