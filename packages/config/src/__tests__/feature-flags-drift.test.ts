@@ -73,6 +73,10 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: flywheel-claude-profile script path (FLY-696)",
 	FLYWHEEL_CLAUDE_LOCK_DELEGATED:
 		"internal contract: parent lock-holder pid passed to the profile script (FLY-852 anti-deadlock; validated against the live holder marker)",
+	FLYWHEEL_CLAUDE_OAUTH_ENDPOINT:
+		"config value: OAuth token-refresh endpoint override for the freshness helper (FLY-871; enable-gate spike pins the exact contract without a code change)",
+	FLYWHEEL_CLAUDE_OAUTH_CLIENT_ID:
+		"config value: OAuth public client id override for the freshness helper (FLY-871)",
 	FLYWHEEL_BRIDGE_WATCHDOG_LOG: "plumbing: watchdog log path",
 	// secrets / token env names
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",
