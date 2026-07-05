@@ -1,14 +1,14 @@
 ---
 issue: FLY-887
 phase: implement
-phaseCursor: 7/11
-updated: 2026-07-05T18:42:16.899Z
-nextStep: "Step 8: ship finalization (finalizeThreeStagePhases) + Step 4b
-  dispatcher-seam test + Step 6 retest idempotency + Step 9 reconcile"
+phaseCursor: 8/11
+updated: 2026-07-05T19:07:56.702Z
+nextStep: Step 4b dispatcher-seam test + Step 9 reconcile test + Step 11
+  lint/full-suite/E2E
 chunks: []
 pointers: {}
 ---
 
 # FLY-887 progress
-**phase**: implement (7/11)
-**next**: Step 8: ship finalization (finalizeThreeStagePhases) + Step 4b dispatcher-seam test + Step 6 retest idempotency + Step 9 reconcile
+**phase**: implement (8/11)
+**next**: Step 4b dispatcher-seam test + Step 9 reconcile test + Step 11 lint/full-suite/E2E
