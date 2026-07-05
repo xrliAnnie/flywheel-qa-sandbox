@@ -303,4 +303,83 @@ describe("verifyPoolCredential — red lines", () => {
 		expect(verdict.fresh).toBe("stale");
 		expect(fetchImpl).toHaveBeenCalledTimes(0);
 	});
+
+	// Codex R1 MED — a valid refresh MUST carry a finite positive expires_in.
+	it("MISSING expires_in in the refresh response → stale, pool byte-unchanged", async () => {
+		const f = seed("school");
+		const before = readFileSync(f, "utf-8");
+		const fetchImpl = vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({ access_token: "n", refresh_token: "r" }), // no expires_in
+					{ status: 200 },
+				),
+		);
+		const verdict = await verifyPoolCredential({
+			name: "school",
+			activeName: "personal",
+			poolDir,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+		});
+		expect(verdict.fresh).toBe("stale");
+		expect(readFileSync(f, "utf-8")).toBe(before);
+	});
+
+	it("NON-POSITIVE expires_in → stale (never write an already-expired credential)", async () => {
+		const f = seed("school");
+		const before = readFileSync(f, "utf-8");
+		for (const bad of [0, -1, -3600]) {
+			const fetchImpl = vi.fn(
+				async () =>
+					new Response(
+						JSON.stringify({
+							access_token: "n",
+							refresh_token: "r",
+							expires_in: bad,
+						}),
+						{ status: 200 },
+					),
+			);
+			const verdict = await verifyPoolCredential({
+				name: "school",
+				activeName: "personal",
+				poolDir,
+				fetchImpl: fetchImpl as unknown as typeof fetch,
+			});
+			expect(verdict.fresh, `expires_in=${bad}`).toBe("stale");
+			expect(readFileSync(f, "utf-8"), `expires_in=${bad}`).toBe(before);
+		}
+	});
+
+	// Codex R1 HIGH — the timeout must bound the BODY read too. A response that
+	// resolves headers (200) but stalls the body must abort → stale, not hang
+	// (a hang inside bash `use` holds claude-accounts.lock past its 120s stale
+	// window, letting another switch interleave).
+	it("HIGH: a hung response BODY is bounded by the timeout (abort → stale, pool unchanged)", async () => {
+		const f = seed("school");
+		const before = readFileSync(f, "utf-8");
+		const fetchImpl = vi.fn((_url: string, init?: { signal?: AbortSignal }) => {
+			const signal = init?.signal;
+			// headers resolve immediately; json() never settles until the signal aborts
+			return Promise.resolve({
+				ok: true,
+				status: 200,
+				json: () =>
+					new Promise((_res, rej) => {
+						signal?.addEventListener("abort", () =>
+							rej(Object.assign(new Error("aborted"), { name: "AbortError" })),
+						);
+					}),
+			} as unknown as Response);
+		});
+		const verdict = await verifyPoolCredential({
+			name: "school",
+			activeName: "personal",
+			poolDir,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			timeoutMs: 20,
+		});
+		expect(verdict.fresh).toBe("stale");
+		expect(readFileSync(f, "utf-8")).toBe(before);
+	});
 });

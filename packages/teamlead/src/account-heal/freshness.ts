@@ -182,11 +182,21 @@ export async function verifyPoolCredential(
 
 	// Bounded probe-refresh — the refresh_token travels in the request BODY, never
 	// in argv or a URL. AbortSignal enforces the timeout.
+	//
+	// Codex R1 HIGH: the timeout MUST stay armed through the BODY read, not just
+	// the headers. Clearing the timer before `resp.json()` left the body unbounded
+	// — a server returning 200 headers then stalling the body would hang the helper
+	// INSIDE the bash `use` critical section while the Node parent holds
+	// claude-accounts.lock (which withMkdirLock breaks after 120s even with a LIVE
+	// holder → another switch could interleave and double-write the Keychain). The
+	// abort signal cancels the body stream too, so a stalled `resp.json()` rejects
+	// on timeout → stale. So fetch + json() run inside ONE try and the timer is
+	// cleared only in the finally that wraps both.
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
-	let resp: Response;
+	let payload: unknown;
 	try {
-		resp = await fetchImpl(refreshEndpoint, {
+		const resp = await fetchImpl(refreshEndpoint, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
 			body: JSON.stringify({
@@ -196,6 +206,13 @@ export async function verifyPoolCredential(
 			}),
 			signal: controller.signal,
 		});
+		if (!resp.ok) {
+			return {
+				fresh: "stale",
+				reason: `refresh refused (HTTP ${resp.status})`,
+			};
+		}
+		payload = await resp.json(); // bounded by the SAME signal (abort cancels body)
 	} catch (err) {
 		return {
 			fresh: "stale",
@@ -205,15 +222,6 @@ export async function verifyPoolCredential(
 		clearTimeout(timer);
 	}
 
-	if (!resp.ok) {
-		return { fresh: "stale", reason: `refresh refused (HTTP ${resp.status})` };
-	}
-	let payload: unknown;
-	try {
-		payload = await resp.json();
-	} catch {
-		return { fresh: "stale", reason: "refresh response not JSON" };
-	}
 	if (payload === null || typeof payload !== "object") {
 		return { fresh: "stale", reason: "refresh response not an object" };
 	}
@@ -234,10 +242,21 @@ export async function verifyPoolCredential(
 			reason: "refresh response missing rotated tokens",
 		};
 	}
-	const newExpiresAt =
-		typeof expiresIn === "number" && Number.isFinite(expiresIn)
-			? now() + Math.floor(expiresIn) * 1000
-			: null;
+	// Codex R1 MED: the OAuth refresh contract REQUIRES a finite POSITIVE
+	// expires_in. A missing / non-finite / non-positive value is a malformed
+	// response — treat it as stale (never write a credential with no expiresAt,
+	// which would defeat downstream freshness reasoning, nor an already-expired one).
+	if (
+		typeof expiresIn !== "number" ||
+		!Number.isFinite(expiresIn) ||
+		expiresIn <= 0
+	) {
+		return {
+			fresh: "stale",
+			reason: "refresh response missing/invalid expires_in",
+		};
+	}
+	const newExpiresAt = now() + Math.floor(expiresIn) * 1000;
 
 	// Write the ROTATED credential back to the pool FIRST — preserve every other
 	// field of claudeAiOauth, only swap the rotated three. Then return fresh.
@@ -245,8 +264,8 @@ export async function verifyPoolCredential(
 		...pooled.oauth,
 		accessToken: newAccess,
 		refreshToken: newRefresh,
+		expiresAt: newExpiresAt,
 	};
-	if (newExpiresAt !== null) nextOauth.expiresAt = newExpiresAt;
 	try {
 		writeBack(file, { claudeAiOauth: nextOauth });
 	} catch (err) {
