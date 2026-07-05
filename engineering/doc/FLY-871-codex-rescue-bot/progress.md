@@ -1,13 +1,45 @@
 ---
 issue: FLY-871
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-05T00:07:57.483Z
-nextStep: commit+push design docs, report Lead, complete phase_design_complete
-chunks: []
+phase: implement
+phaseCursor: 0/5
+updated: 2026-07-05T00:21:11.767Z
+nextStep: TDD C2 freshness helper (RED)
+chunks:
+  - id: C1-capture-back
+    order: 1
+    deps: []
+    done: ""
+    status: todo
+  - id: C2-freshness-helper
+    order: 2
+    deps: []
+    done: ""
+    status: doing
+  - id: C3-exit-codes-candidate-loop
+    order: 3
+    deps: []
+    done: ""
+    status: todo
+  - id: sentinel-extension
+    order: 4
+    deps: []
+    done: ""
+    status: todo
+  - id: S1-record
+    order: 5
+    deps: []
+    done: ""
+    status: todo
 pointers: {}
 ---
 
 # FLY-871 progress
-**phase**: design (4/4)
-**next**: commit+push design docs, report Lead, complete phase_design_complete
+**phase**: implement (0/5)
+**next**: TDD C2 freshness helper (RED)
+
+## chunks
+- ⬜ C1-capture-back — 
+- 🔨 C2-freshness-helper — 
+- ⬜ C3-exit-codes-candidate-loop — 
+- ⬜ sentinel-extension — 
+- ⬜ S1-record — 
