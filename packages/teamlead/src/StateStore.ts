@@ -3296,6 +3296,28 @@ export class StateStore {
 		return rec;
 	}
 
+	/**
+	 * FLY-867: ALL records for a QA exec. `qa_execution_id` is NOT unique
+	 * (historical rows across heads/parents) and the single-row accessor above
+	 * returns an arbitrary first match — unusable as a protection predicate.
+	 * The stale-terminal close guard must see EVERY row so ANY active fix-loop
+	 * record can protect the runner (fail-closed).
+	 */
+	listAutoQaRecordsByQaExec(qaExecutionId: string): AutoQaRecord[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE qa_execution_id = ? ORDER BY started_at",
+		);
+		stmt.bind([qaExecutionId]);
+		const out: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			out.push(
+				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return out;
+	}
+
 	listAutoQaRecordsByParent(parentExecutionId: string): AutoQaRecord[] {
 		const stmt = this.db.prepare(
 			"SELECT * FROM auto_qa_record WHERE parent_execution_id = ? ORDER BY started_at",

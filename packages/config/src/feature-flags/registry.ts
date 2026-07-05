@@ -809,6 +809,26 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "stale_terminal_close",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_STALE_TERMINAL_CLOSE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-867: 终态 session 的 tmux 还活着超过 stale 阈值 → 经 closeRunner 自动收(泄漏兜底);=0 回退 GEO-270 纯通知",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/HeartbeatService.ts",
+				"staleCloseEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "commdb_fsm_reconcile",
 		category: "feature",
 		source: "env",

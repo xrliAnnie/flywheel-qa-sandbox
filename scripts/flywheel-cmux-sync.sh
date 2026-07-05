@@ -1071,6 +1071,19 @@ is_pane_alive() {
   return 1
 }
 
+# FLY-867: ID-scoped source-pane liveness for ONE specific window. The
+# name-scoped is_pane_alive above is the WRONG predicate for per-window
+# decisions — with same-name siblings (retry/park leftovers) a live sibling
+# makes a dead husk read "alive". Mirrors refresh_linked_sessions' FLY-177
+# by-id probe. Probe failure (window just vanished, tmux error) reads as
+# dead — fail-closed for the create path, where the bug IS creating a tab
+# for a dead window; a missed create is retried by the next event/scan.
+window_source_pane_alive() {
+  local sess="$1" wid="$2" dead
+  dead=$(tmux display-message -p -t "=${sess}:${wid}" "#{pane_dead}" 2>/dev/null || echo "1")
+  [[ "$dead" == "0" ]]
+}
+
 cleanup_workspace_for() {
   # FLY-102: Clean up a single cmux workspace + linked session by window name.
   # FLY-129 Phase 3/5 (R3-1 + R4-1): hybrid fail-closed.
@@ -2055,6 +2068,16 @@ create_workspace_for_window() {
   local window_name="$3"
   local view_session="${VIEW_PREFIX}${window_name}"
 
+  # FLY-867 (Fix B): dead-husk windows (remain-on-exit corpses, pane_dead=1)
+  # must NEVER get a workspace. This breaks the CREATE↔CLEANUP oscillation:
+  # cleanup_stale_conservative closes the tab after 5min of dead pane, but the
+  # husk window stayed in get_tmux_agent_windows, so the 60s additive scan
+  # re-created the tab forever (production: FLY-808, ~7min cycle for hours).
+  # Silent skip — the additive scan re-hits every 60s and a log line per husk
+  # per tick would flood the watcher log. Sits ABOVE the FLY-825 dedup mark so
+  # a husk skip never burns the create TTL.
+  window_source_pane_alive "$source_session" "$window_id" || return 0
+
   # FLY-825: skip if we already attempted a create for this EXACT
   # (window_name, window_id) within the dedup TTL — prevents drain_events +
   # sync_additive (same tick, tick % 4 == 0) from both creating a tab for the
@@ -2093,9 +2116,14 @@ sys.exit(0 if exists else 1)
   #    select-window can still create a workspace pointing at the wrong window
   #    (window 0 zsh). On failure, defer — the next create event retries, and
   #    verify-at-create / bootstrap / health-recovery sweeps also cover it.
-  #    FLY-98: =name exact match survives window ID changes across restarts.
+  #    FLY-867 (Fix A): select by window_id, NOT `=name`. tmux fails a `=name`
+  #    target with "can't find window" when the name matches ≥2 windows
+  #    (same-name siblings from retry/park — production: FLY-811/852 creates
+  #    deferred every tick forever, so live runners never got a sidebar tab).
+  #    Grouped sessions share window objects, so the id is a valid view-session
+  #    target — same form FLY-177 already uses in refresh_linked_sessions.
   if ! linked_session_exists "$view_session" \
-     || ! tmux select-window -t "=${view_session}:=${window_name}" 2>/dev/null; then
+     || ! tmux select-window -t "=${view_session}:${window_id}" 2>/dev/null; then
     log "WARN: $view_session not ready (session/select-window) — deferring create for $window_name"
     return 0
   fi

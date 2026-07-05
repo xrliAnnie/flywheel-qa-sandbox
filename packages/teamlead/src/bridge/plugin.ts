@@ -3236,6 +3236,40 @@ export async function startBridge(
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
 		quietSignalsProbe,
 		crashReaperConfig,
+		// FLY-867: stale-terminal close — checkStaleCompleted upgrades from
+		// notify-only to notify+close for terminal-status sessions whose tmux is
+		// still alive past staleThresholdHours (nothing else closes them: the
+		// crash reaper only takes running, the auto-QA reconcile treats terminal
+		// as already-clean). All teardown goes through the closeRunner chokepoint.
+		// forcePreserved: this backstop has already passed the retest-protection
+		// predicate and the 24h stale gate — a failed/blocked session whose tmux
+		// lingers past that is a leak, not a crash-forensics scene, so the
+		// CRASH_PRESERVE gate is deliberately bypassed here (Codex design R1 #1).
+		// Kill-switch FLYWHEEL_STALE_TERMINAL_CLOSE=0 → notify-only (in
+		// HeartbeatService.staleCloseEnabled).
+		{
+			closeStale: async (session) => {
+				const result = await closeRunner(
+					{
+						executionId: session.execution_id,
+						issueId: session.issue_id,
+						projectName: session.project_name ?? "",
+						reason: "fly867_stale_terminal",
+						forcePreserved: true,
+						archive: {
+							projects,
+							globalBotToken: config.discordBotToken,
+							discordOwnerUserId: config.discordOwnerUserId,
+						},
+					},
+					store,
+				);
+				return {
+					closed: result.closed,
+					alreadyGone: result.alreadyGone,
+				};
+			},
+		},
 	);
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event

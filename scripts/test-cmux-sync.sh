@@ -41,6 +41,7 @@ export CREATE_STATE="$TMPDIR_ROOT/create.state"  # FLY-825
 export CMUX_SOCK_IDENT_FILE="$TMPDIR_ROOT/sock-ident"  # FLY-254
 export ORPHAN_PIN_STATE="$TMPDIR_ROOT/orphan-pin.state"  # FLY-293
 export FLYWHEEL_CMUX_CLOSE_REQUEST_FILE="$TMPDIR_ROOT/close-requested"  # FLY-685
+export HUSK_STATE="$TMPDIR_ROOT/husk.state"  # FLY-867
 export FLYWHEEL_CMUX_CLEANUP_DELAY=30
 export FLYWHEEL_CMUX_CONSERVATIVE_CLEANUP=300
 
@@ -60,6 +61,7 @@ MOCK_TMUX_SESSIONS=""      # list-sessions output
 MOCK_TMUX_HOOKS=""         # captured set-hook invocations
 MOCK_CMUX_OPS=""           # captured cmux operations
 MOCK_TMUX_KILLED=""        # captured tmux kill-session targets
+MOCK_TMUX_KILLED_WINDOWS="" # FLY-867: captured tmux kill-window targets
 MOCK_PGREP_HIT="0"         # FLY-129 Phase 1: pgrep mock — 1 = watcher running, 0 = not
 MOCK_SHOW_HOOKS=""         # FLY-129 Phase 2: tmux show-hooks output — lines of "<hook>[idx] ..." per session
 
@@ -111,6 +113,8 @@ tmux() {
       echo "$MOCK_TMUX_SESSIONS" | grep -qx "$target"
       ;;
     display-message)
+      # FLY-867: simulate display-message failure (husk-reaper probe fail-closed test).
+      [[ "${MOCK_TMUX_DISPLAY_FAIL:-0}" == "1" ]] && return 1
       # args: -p -t target format
       local target="" fmt=""
       shift
@@ -181,15 +185,40 @@ tmux() {
       # FLY-169: capture select-window targets so tests can assert active-window
       # repair (heal) and the create-time ready gate.
       shift
+      local sw_target=""
       while [[ $# -gt 0 ]]; do
         case "$1" in
-          -t) MOCK_TMUX_SELECTS+="$2"$'\n'; shift 2 ;;
+          -t) sw_target="$2"; MOCK_TMUX_SELECTS+="$2"$'\n'; shift 2 ;;
           *) shift ;;
         esac
       done
       # Honor MOCK_TMUX_SELECT_FAIL (for the §2.6 create-gate test).
       if [[ "${MOCK_TMUX_SELECT_FAIL:-0}" == "1" ]]; then return 1; fi
+      # FLY-867 (mock fidelity): real tmux FAILS `select-window -t "=sess:=name"`
+      # with "can't find window" when the name matches ≥2 windows (same-name
+      # ambiguity — verified on an isolated tmux server). Only the `:=name`
+      # target form is checked; `@id` (and other) targets keep default-success
+      # (grouped view sessions share window objects, so id targets resolve).
+      # 0/1 matches keep default-success so pre-FLY-867 fixtures (which often
+      # omit MOCK_TMUX_WINDOWS entirely) are unaffected.
+      local sw_win="${sw_target##*:}"
+      if [[ "$sw_win" == =* && "$sw_win" != "$sw_target" ]]; then
+        local sw_name="${sw_win#=}"
+        local sw_count
+        sw_count=$(echo "$MOCK_TMUX_WINDOWS" | awk -F'|' -v n="$sw_name" '$3 == n' | grep -c . || true)
+        if [[ "$sw_count" -ge 2 ]]; then return 1; fi
+      fi
       return 0
+      ;;
+    kill-window)
+      # FLY-867: capture kill-window targets (husk reaper assertions).
+      shift
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -t) MOCK_TMUX_KILLED_WINDOWS+="$2"$'\n'; shift 2 ;;
+          *) shift ;;
+        esac
+      done
       ;;
     new-session)
       # FLY-169: faithfully register the -s session so linked_session_exists
@@ -429,6 +458,7 @@ reset_mocks() {
   MOCK_TMUX_HOOKS=""
   MOCK_CMUX_OPS=""
   MOCK_TMUX_KILLED=""
+  MOCK_TMUX_KILLED_WINDOWS=""
   MOCK_PGREP_HIT="0"
   MOCK_SHOW_HOOKS=""
   # FLY-293: tmux inventory failure knobs + orphan-pin reaper env/state.
@@ -441,6 +471,12 @@ reset_mocks() {
   # FLY-685: close-request marker file + kill-switch (default on).
   CLOSE_REQUEST_FILE="$TMPDIR_ROOT/close-requested"
   FLYWHEEL_CMUX_CLOSE_REQUEST=1
+  # FLY-867: husk-reaper state + knobs (default on, production-default grace).
+  MOCK_TMUX_DISPLAY_FAIL="0"
+  HUSK_STATE="$TMPDIR_ROOT/husk.state"
+  FLYWHEEL_CMUX_HUSK_REAPER=1
+  FLYWHEEL_CMUX_HUSK_GRACE=86400
+  rm -f "$HUSK_STATE" 2>/dev/null
   MOCK_CMUX_CLOSE_FAIL="0"   # 1 = cmux close-workspace mutation fails (revalidation still passes)
   LAST_WORKSPACE_CLOSE_RC=0
   rm -f "$CLOSE_REQUEST_FILE" "${CLOSE_REQUEST_FILE}.processing" 2>/dev/null
@@ -725,6 +761,10 @@ EOF
 MOCK_CMUX_WORKSPACES=""
 # For register path: register_session_hooks will inspect name
 MOCK_TMUX_SESSIONS=""
+# FLY-867 (Fix B): creates now require a LIVE source pane — mark both create
+# targets alive (the implicit pre-FLY-867 assumption, now explicit).
+MOCK_TMUX_WINDOWS=$'flywheel|@42|worker-fly-102\nrunner-geoforge3d|@43|runner-task-1'
+MOCK_PANE_DEAD=$'flywheel:@42=0\nrunner-geoforge3d:@43=0'
 
 drain_events >/dev/null
 
@@ -3813,6 +3853,8 @@ test_fly825_create_dedup_same_window_id() {
   reset_mocks
   MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  MOCK_TMUX_WINDOWS=$'flywheel|@1210|lead-a'
+  MOCK_PANE_DEAD=$'flywheel:@1210=0'   # FLY-867: creates require a live source pane
   create_workspace_for_window "flywheel" "@1210" "lead-a" >/dev/null 2>&1 || true
   create_workspace_for_window "flywheel" "@1210" "lead-a" >/dev/null 2>&1 || true
   local n; n=$(echo "$MOCK_CMUX_OPS" | grep -c "new-workspace")
@@ -3828,6 +3870,9 @@ test_fly825_no_dedup_different_window_id() {
   reset_mocks
   MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-a'
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  # FLY-867: live source panes; ready gate is by-id so the same-name pair is fine.
+  MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-a\nflywheel|@2|lead-a'
+  MOCK_PANE_DEAD=$'flywheel:@1=0\nflywheel:@2=0'
   create_workspace_for_window "flywheel" "@1" "lead-a" >/dev/null 2>&1 || true
   create_workspace_for_window "flywheel" "@2" "lead-a" >/dev/null 2>&1 || true
   local n; n=$(echo "$MOCK_CMUX_OPS" | grep -c "new-workspace")
@@ -3843,6 +3888,8 @@ test_fly825_ready_gate_failure_no_mark() {
   reset_mocks
   MOCK_TMUX_SESSIONS=$'flywheel\ncmux-lead-b'
   MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  MOCK_TMUX_WINDOWS=$'flywheel|@1|lead-b'
+  MOCK_PANE_DEAD=$'flywheel:@1=0'   # FLY-867: creates require a live source pane
   MOCK_TMUX_SELECT_FAIL=1
   create_workspace_for_window "flywheel" "@1" "lead-b" >/dev/null 2>&1 || true
   if [[ -f "$CREATE_STATE" ]] && grep -q "^lead-b|@1|" "$CREATE_STATE"; then
@@ -4003,6 +4050,93 @@ test_fly825_gc_create_state_file
 test_fly825_wait_for_watcher_exit_no_process
 test_fly825_wait_for_watcher_exit_term_then_kill
 test_fly825_wait_for_watcher_exit_multiple_pids_logged_individually
+
+
+# ════════════════════════════════════════════════════════════════
+# FLY-867: dead-tab closure — Fix A (ready-gate by window_id),
+# Fix B (create husk-immunity), Fix C (dead-husk window reaper)
+# ════════════════════════════════════════════════════════════════
+
+test_fly867_mock_select_name_ambiguity() {
+  echo "Test: FLY-867 mock fidelity — select-window '=sess:=name' fails on same-name >=2"
+  reset_mocks
+  MOCK_TMUX_WINDOWS=$'runner-flywheel|@100|FLY-9852-claude-qa\nrunner-flywheel|@200|FLY-9852-claude-qa'
+  local rc=0
+  tmux select-window -t "=cmux-FLY-9852-claude-qa:=FLY-9852-claude-qa" || rc=$?
+  if [[ $rc -ne 0 ]]; then pass "dup-name '=name' target → rc=1 (real-tmux ambiguity modeled)"; else fail "expected rc!=0 on dup-name select"; fi
+  rc=0
+  tmux select-window -t "=cmux-FLY-9852-claude-qa:@200" || rc=$?
+  if [[ $rc -eq 0 ]]; then pass "'@id' target unaffected → rc=0"; else fail "id target must succeed"; fi
+  reset_mocks
+  MOCK_TMUX_WINDOWS=$'runner-flywheel|@100|FLY-9852-claude-qa'
+  rc=0
+  tmux select-window -t "=cmux-FLY-9852-claude-qa:=FLY-9852-claude-qa" || rc=$?
+  if [[ $rc -eq 0 ]]; then pass "single-match '=name' keeps default success (pre-FLY-867 fixtures unaffected)"; else fail "single-name select must succeed"; fi
+}
+
+test_fly867_fixA_create_by_id_survives_dup_name() {
+  echo "Test: FLY-867 Fix A — dup-name LIVE windows: create proceeds via by-id ready gate"
+  reset_mocks
+  MOCK_TMUX_WINDOWS=$'runner-flywheel|@100|FLY-9852-claude-qa\nrunner-flywheel|@200|FLY-9852-claude-qa'
+  MOCK_PANE_DEAD=$'runner-flywheel:@100=0\nrunner-flywheel:@200=0'
+  MOCK_TMUX_SESSIONS=$'runner-flywheel'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  create_workspace_for_window "runner-flywheel" "@200" "FLY-9852-claude-qa" >/dev/null 2>&1 || true
+  if echo "$MOCK_CMUX_OPS" | grep -q "new-workspace"; then
+    pass "create proceeds despite same-name sibling (by-id ready gate)"
+  else
+    fail "create deferred — name-ambiguous ready gate still in place. selects=[$(echo "$MOCK_TMUX_SELECTS" | tr '\n' ' ')]"
+  fi
+}
+
+test_fly867_fixB_create_skips_dead_husk() {
+  echo "Test: FLY-867 Fix B — dead-husk window never gets a workspace (oscillation broken)"
+  reset_mocks
+  MOCK_TMUX_WINDOWS=$'runner-flywheel|@749|FLY-9808-claude-husk'
+  MOCK_PANE_DEAD=$'runner-flywheel:@749=1'
+  MOCK_TMUX_SESSIONS=$'runner-flywheel'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  create_workspace_for_window "runner-flywheel" "@749" "FLY-9808-claude-husk" >/dev/null 2>&1 || true
+  if echo "$MOCK_CMUX_OPS" | grep -q "new-workspace"; then
+    fail "dead husk got a workspace — CREATE-CLEANUP oscillation NOT broken. ops=[$MOCK_CMUX_OPS]"
+  else
+    pass "dead husk: create silently skipped (no cmux new-workspace)"
+  fi
+  # Deferred husk skip must NOT burn the FLY-825 dedup TTL (guard sits above the mark).
+  if [[ -f "$CREATE_STATE" ]] && grep -q "FLY-9808-claude-husk" "$CREATE_STATE"; then
+    fail "husk skip wrongly burned the create-dedup TTL"
+  else
+    pass "husk skip does not burn the create-dedup TTL"
+  fi
+}
+
+test_fly867_fixB_mixed_creates_live_only() {
+  echo "Test: FLY-867 Fix B — mixed dead+live same name → exactly one create (the live wid)"
+  reset_mocks
+  MOCK_TMUX_WINDOWS=$'runner-flywheel|@7|FLY-9834-claude-qa\nrunner-flywheel|@9|FLY-9834-claude-qa'
+  MOCK_PANE_DEAD=$'runner-flywheel:@7=1\nrunner-flywheel:@9=0'
+  MOCK_TMUX_SESSIONS=$'runner-flywheel'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[]}'
+  create_workspace_for_window "runner-flywheel" "@7" "FLY-9834-claude-qa" >/dev/null 2>&1 || true
+  create_workspace_for_window "runner-flywheel" "@9" "FLY-9834-claude-qa" >/dev/null 2>&1 || true
+  local n; n=$(echo "$MOCK_CMUX_OPS" | grep -c "new-workspace")
+  if [[ "$n" -eq 1 ]]; then
+    pass "mixed dead+live same name → exactly 1 new-workspace (live only)"
+  else
+    fail "expected exactly 1 create, got $n. ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+# FLY-867 Fix C (husk-window auto-reaper) — dropped to follow-up per lead
+# (CRASH_PRESERVE forensics boundary; sidebar-visible fix is covered by A+B).
+
+
+echo ""
+echo "═══ FLY-867: dead-tab closure — husk-immune create + by-id gate + husk reaper ═══"
+test_fly867_mock_select_name_ambiguity
+test_fly867_fixA_create_by_id_survives_dup_name
+test_fly867_fixB_create_skips_dead_husk
+test_fly867_fixB_mixed_creates_live_only
 
 set +e   # restore lenient mode for the summary
 
