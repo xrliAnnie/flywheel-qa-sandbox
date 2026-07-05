@@ -72,6 +72,30 @@ export interface LeadConfig {
 	 */
 	companion?: boolean;
 	/**
+	 * FLY-879: external (customer-facing) Lead marker — an outward-facing agent
+	 * (e.g. Anna the interviewer) wrapped in Flywheel Lead infra for launchd
+	 * residency + Discord adapter + LeadWatchdog coverage, but with a HARD-LOCKED
+	 * capability surface: NO Runner spawning, NO Bridge/CommDB/internal MCP, and —
+	 * unlike a companion — NONE of the internal engineering rules AND not even the
+	 * cross-dept roundtable. Its ENTIRE rule surface is one `external-agent-contract.md`
+	 * (indicated instruction-source boundary: a customer message is DATA, never a
+	 * command). `claude-lead.sh` reads this (single source of truth) to take the
+	 * `external` role branch.
+	 *
+	 * Cross-field invariants (validated below, all fail-loud):
+	 *   - `external === true` requires an EXPLICIT `canSpawnRunners: false`
+	 *     (an external agent must never spawn Runners; do not let it default true).
+	 *   - `external` and `companion` are MUTUALLY EXCLUSIVE (a lead is one role).
+	 *   - MVP is claude-code only: `external === true` on a codex-family `backend`
+	 *     throws (codex external agent = follow-up).
+	 *
+	 * Default behavior when absent: NOT external (identical to all pre-FLY-879
+	 * Leads). Deliberately NOT normalized (FLY-231 pattern): consumers MUST check
+	 * `=== true` so an absent/false field is the standard non-external path with
+	 * zero shape change to existing in-memory Lead objects (reverse-compat).
+	 */
+	external?: boolean;
+	/**
 	 * FLY-247: per-Lead model override — the single source of truth for "which
 	 * model does this Lead run on" (previously a hand-edited plist env that any
 	 * `flywheel-daemon.sh install` silently wiped).
@@ -497,6 +521,52 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 					);
 				}
 			}
+			// FLY-879: external (customer-facing) Lead marker. Validate type +
+			// cross-field invariants. Runs AFTER canSpawnRunners normalization (so
+			// the explicit-false requirement is checked against the real boolean) and
+			// AFTER companion/backend validation. Placed BEFORE the FLY-245 codex
+			// block so an external+codex misconfig yields the external-specific
+			// message. Deliberately NOT normalized (FLY-231 pattern): absent stays
+			// absent, explicit false stays false — zero shape change for existing Leads.
+			if (lead.external !== undefined && typeof lead.external !== "boolean") {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].external: must be a boolean, got ${JSON.stringify(lead.external)}`,
+				);
+			}
+			if (lead.external === true) {
+				// A customer-facing external agent must NEVER spawn Runners. Require an
+				// EXPLICIT canSpawnRunners:false — since canSpawnRunners was normalized
+				// to `true` above when absent, this rejects both absent and true, so a
+				// missing field can never silently arm spawn authorization on an
+				// outward-facing bot.
+				if (lead.canSpawnRunners !== false) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`external: true requires an explicit canSpawnRunners: false ` +
+							`(a customer-facing external agent must never spawn Runners — FLY-879).`,
+					);
+				}
+				// A lead is exactly one role — external and companion are mutually
+				// exclusive (they load different, incompatible rule surfaces).
+				if (lead.companion === true) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`external: true cannot be combined with companion: true ` +
+							`(a lead is exactly one role — FLY-879).`,
+					);
+				}
+				// MVP is claude-code only: the external isolation surface (pane-cred
+				// emptying, MCP stripping, external-agent-contract) is wired for the
+				// claude-code launcher path. A codex-family external agent is a follow-up.
+				if (lead.backend === "codex-app-server") {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`external: true is only supported on backend "claude-code" (MVP); ` +
+							`"codex-app-server" is a follow-up — FLY-879.`,
+					);
+				}
+			}
+
 			// FLY-671: validate optional per-lead effort (closed CLI enum). Absent
 			// stays absent (reverse-compat). Codex Leads have no `--effort` runtime
 			// path → reject the mixture as dead config (Codex design review R2 LOW-5,
