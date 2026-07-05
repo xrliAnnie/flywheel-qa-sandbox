@@ -1,13 +1,14 @@
 ---
 issue: FLY-887
 phase: implement
-phaseCursor: 1/11
-updated: 2026-07-05T18:05:50.125Z
-nextStep: "Step 2: StateStore getPhaseSessionsForIssue + countEventsByIssueAndType (TDD)"
+phaseCursor: 2/11
+updated: 2026-07-05T18:08:58.813Z
+nextStep: "Step 10: registry env FLYWHEEL_THREE_STAGE_KEEPALIVE +
+  keepAliveEnabled helper"
 chunks: []
 pointers: {}
 ---
 
 # FLY-887 progress
-**phase**: implement (1/11)
-**next**: Step 2: StateStore getPhaseSessionsForIssue + countEventsByIssueAndType (TDD)
+**phase**: implement (2/11)
+**next**: Step 10: registry env FLYWHEEL_THREE_STAGE_KEEPALIVE + keepAliveEnabled helper
