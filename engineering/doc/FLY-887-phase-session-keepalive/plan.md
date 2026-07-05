@@ -292,7 +292,7 @@ turn 自查强制后，**新 spawn 的 phase session 必须在 runner 动手前�
 
 ## 风险 / 边界（照 research §5 + R2）
 
-- 内存 3 进程/issue：park 前 /compact + 释放 Chrome（prompt 硬要求）；three-stage 仅 flywheel opt-in；A5 待 Annie 准话。
+- 内存 3 进程/issue：park 前 /compact + 释放 Chrome（prompt 硬要求）；three-stage 仅 flywheel opt-in；A5 Annie 已拍板接受。
 - 双写者：TURN（Bridge 独写）+ parked-不碰-worktree 纪律 + runner 写前 turn 自查；同刻激活段唯一；git 冲突为可见兜底。
 - watchdog：park 标记全抑制（FLY-626）；`parked-alive` 分类已有；识别缺口归 FLY-878 不重做。
 - 与 FLY-869 的 merge_block / QA-done gate：守卫镜像，不动其语义。
