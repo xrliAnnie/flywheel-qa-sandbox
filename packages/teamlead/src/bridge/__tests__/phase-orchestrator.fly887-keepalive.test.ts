@@ -374,11 +374,12 @@ describe("FLY-887 QA FINDING: reconcileOnStartup re-fires design→implement on 
 	 * wake). This fires on EVERY restart, not once, since the design session's
 	 * status never changes.
 	 *
-	 * EXPECTED (fix target): reconcileOnStartup must not re-drive a design→
-	 * implement handoff when the issue has already progressed past Implement
-	 * (an alive QA/beyond phase already exists, or the TURN already points
-	 * elsewhere) — the RED assertions below currently FAIL against phase-
-	 * orchestrator.ts, demonstrating the bug.
+	 * FIX (phase-orchestrator.ts hasProgressedPastDesign): reconcileOnStartup
+	 * skips re-driving a design→implement handoff when the issue has already
+	 * progressed past Design — a live implement OR qa phase already exists, so the
+	 * handoff fired and the pipeline owns itself. Only a design_done whose
+	 * downstream never came up (the genuine "implement never started" remnant) is
+	 * re-driven. The two follow-on tests pin both edges of that guard.
 	 */
 	it("does NOT steal the TURN from a live QA fix-loop, and does NOT wake implement, when reconcile replays a permanently-parked design_done session", async () => {
 		const strandedDesign = session({
@@ -422,5 +423,57 @@ describe("FLY-887 QA FINDING: reconcileOnStartup re-fires design→implement on 
 		expect(grantTurn).not.toHaveBeenCalled();
 		expect(wakePhaseRunner).not.toHaveBeenCalled();
 		expect(start).not.toHaveBeenCalled();
+	});
+
+	// Guard against OVER-correction: reconcile MUST still re-drive the handoff for
+	// the genuine crash remnant it exists for — a design_done with NO downstream
+	// phase alive (the boot marker-drain landed it at design_done but Implement
+	// never started). Skipping this one would silently strand a real handoff.
+	it("STILL re-drives the handoff for a genuine remnant (no live implement AND no live qa)", async () => {
+		const strandedDesign = session({
+			execution_id: "design-exec",
+			session_role: "design",
+			chat_thread_role: "design",
+			status: "design_done",
+		});
+		const h = makeDeps({
+			listStrandedDesignPhases: () => [strandedDesign],
+			// Nothing downstream is alive → implement never started → genuine remnant.
+			getAlivePhaseSession: () => undefined,
+		});
+		await new PhaseOrchestrator(h.deps).reconcileOnStartup();
+		// The handoff fires: no live implement → spawn (dispatcher seam grants TURN).
+		expect(h.start).toHaveBeenCalledOnce();
+		expect(h.start.mock.calls[0]![0]).toMatchObject({
+			sessionRole: "implement",
+		});
+	});
+
+	// The QA branch of the progressed-past-design check is load-bearing: an
+	// Implement that has since DIED (its row gone) with a live QA fix-loop must
+	// STILL read as "progressed" — else reconcile resurrects a stale design→
+	// implement handoff underneath the QA that legitimately holds the TURN.
+	it("skips when only QA is alive (implement already dead) — QA branch of the guard", async () => {
+		const strandedDesign = session({
+			execution_id: "design-exec",
+			session_role: "design",
+			chat_thread_role: "design",
+			status: "design_done",
+		});
+		const aliveQa = session({
+			execution_id: "qa-exec",
+			session_role: "qa",
+			chat_thread_role: "qa",
+			status: "running",
+		});
+		const h = makeDeps({
+			listStrandedDesignPhases: () => [strandedDesign],
+			getAlivePhaseSession: (_issueId, phase) =>
+				phase === "qa" ? aliveQa : undefined,
+		});
+		await new PhaseOrchestrator(h.deps).reconcileOnStartup();
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.wakePhaseRunner).not.toHaveBeenCalled();
+		expect(h.start).not.toHaveBeenCalled();
 	});
 });

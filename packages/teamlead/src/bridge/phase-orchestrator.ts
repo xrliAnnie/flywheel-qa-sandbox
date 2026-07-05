@@ -319,6 +319,26 @@ export class PhaseOrchestrator {
 			this.log(`reconcileOnStartup: ${stranded.length} stranded design_done`);
 		}
 		for (const s of stranded) {
+			// FLY-887 QA finding: under keep-alive a Design phase parks FOREVER at
+			// status='design_done' (that is the whole point of "park, don't exit"),
+			// so `getStrandedDesignPhaseSessions` — a blind `role='design' AND
+			// status='design_done'` query written pre-FLY-887, when design_done was
+			// ALWAYS a genuine "implement never started" crash artifact — now ALSO
+			// matches every currently-healthy parked design, on EVERY Bridge restart,
+			// until the issue ships. Replaying those through the handoff re-derives
+			// design→implement and re-runs the wake path even when the pipeline has
+			// long moved past Implement into a live QA fix-loop: it tears the shared-
+			// worktree TURN away from whoever legitimately holds it and sends a phase a
+			// wake it was never taught to handle. reconcile's sole job is to COMPLETE a
+			// handoff that never fired, so only re-drive a genuine remnant — one whose
+			// downstream never came up. If any downstream phase (implement or qa) is
+			// already alive, the handoff fired: the pipeline owns itself now — skip.
+			if (this.hasProgressedPastDesign(s.issue_id)) {
+				this.log(
+					`reconcileOnStartup: ${s.execution_id} (${s.issue_id}) already progressed past design (live downstream phase) — skip stale handoff replay`,
+				);
+				continue;
+			}
 			try {
 				await this.onPhaseComplete(s);
 			} catch (err) {
@@ -328,6 +348,25 @@ export class PhaseOrchestrator {
 			}
 		}
 		await this.reconcileQaVerdicts();
+	}
+
+	/**
+	 * FLY-887 QA finding: has this issue's pipeline advanced past Design? True when
+	 * a live (parked, non-terminal) implement OR qa phase-session already exists —
+	 * i.e. the design→implement handoff already fired and the pipeline is running
+	 * itself. Both phases must be checked: a dead implement (whose row is gone /
+	 * terminal) with a live QA fix-loop must still read as "progressed" so reconcile
+	 * does not resurrect a stale design→implement handoff underneath the QA that
+	 * legitimately holds the TURN. Only when NEITHER is alive is a `design_done`
+	 * session the genuine "implement never started" crash remnant reconcile exists
+	 * for. The TURN table is a strict subset of this signal (a TURN only ever points
+	 * at a live phase), so this alive-phase check subsumes it.
+	 */
+	private hasProgressedPastDesign(issueId: string): boolean {
+		return (
+			this.deps.getAlivePhaseSession(issueId, "implement") !== undefined ||
+			this.deps.getAlivePhaseSession(issueId, "qa") !== undefined
+		);
 	}
 
 	/**
