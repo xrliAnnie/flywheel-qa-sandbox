@@ -349,3 +349,78 @@ describe("FLY-887 keep-alive QA-FAIL fix loop (wake implement, don't close QA)",
 		expect(h.intents.get("qa-1")?.status).toBe("pass");
 	});
 });
+
+describe("FLY-887 QA FINDING: reconcileOnStartup re-fires design→implement on EVERY restart under keep-alive", () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	/**
+	 * BUG: under keep-alive, a design phase parks FOREVER at status='design_done'
+	 * (that is the whole point of "park, don't exit"). But
+	 * `listStrandedDesignPhases` (StateStore.getStrandedDesignPhaseSessions) is a
+	 * blind `session_role='design' AND status='design_done'` query with no
+	 * liveness/progress check — it was written pre-FLY-887, when design_done was
+	 * ALWAYS a genuine "implement never started" crash artifact. Under keep-alive
+	 * it now ALSO matches every currently-healthy parked design session, on every
+	 * single Bridge restart, for as long as the issue is unshipped.
+	 *
+	 * reconcileOnStartup replays each of these through onPhaseComplete → handoff,
+	 * which re-derives `next = nextPhase('design') = 'implement'` and re-executes
+	 * the FULL wake-or-spawn path — even when the pipeline has ALREADY moved past
+	 * Implement into a live QA fix-loop. This test proves the concrete harm: the
+	 * shared-worktree TURN gets torn away from whoever legitimately holds it
+	 * (here: QA, mid fix-loop) and reassigned to `implement`, which then receives
+	 * a "retest"-worded wake it was never taught to handle (that wording is QA's
+	 * contract, not implement's — implement's prompt only knows a "QA FIX"
+	 * wake). This fires on EVERY restart, not once, since the design session's
+	 * status never changes.
+	 *
+	 * EXPECTED (fix target): reconcileOnStartup must not re-drive a design→
+	 * implement handoff when the issue has already progressed past Implement
+	 * (an alive QA/beyond phase already exists, or the TURN already points
+	 * elsewhere) — the RED assertions below currently FAIL against phase-
+	 * orchestrator.ts, demonstrating the bug.
+	 */
+	it("does NOT steal the TURN from a live QA fix-loop, and does NOT wake implement, when reconcile replays a permanently-parked design_done session", async () => {
+		const strandedDesign = session({
+			execution_id: "design-exec",
+			session_role: "design",
+			chat_thread_role: "design",
+			status: "design_done", // permanent under keep-alive — not a crash artifact
+		});
+		const aliveImplement = session({
+			execution_id: "impl-exec",
+			session_role: "implement",
+			chat_thread_role: "implement",
+			status: "awaiting_review",
+		});
+		const grantTurn = vi.fn();
+		const wakePhaseRunner = vi.fn(async () => ({ ok: true }));
+		const start = vi.fn(async () => ({ executionId: "should-not-spawn" }));
+		const h = makeDeps({
+			listStrandedDesignPhases: () => [strandedDesign],
+			getAlivePhaseSession: (_issueId, phase) =>
+				phase === "implement" ? aliveImplement : undefined,
+			grantTurn,
+			startDispatcher: { start },
+			effects: {
+				capturePhaseHeadSha: vi.fn(async () => "currentSharedWorktreeHead"),
+				closePhaseRunner: vi.fn(async () => {}),
+				alertLeadPipelineError: vi.fn(async () => {}),
+				probePhaseAlive: vi.fn(async () => "alive" as const),
+				parkPhaseRunner: vi.fn(async () => {}),
+				wakePhaseRunner,
+				// Same shared worktree → trivially "ready" regardless of how far
+				// downstream the pipeline has actually progressed.
+				assertPhaseWorktreeReady: vi.fn(async () => ({ ok: true })),
+			},
+		});
+
+		await new PhaseOrchestrator(h.deps).reconcileOnStartup();
+
+		// A design session that is merely PARKED (not genuinely stranded) must not
+		// re-trigger a handoff at all — the pipeline has already moved on.
+		expect(grantTurn).not.toHaveBeenCalled();
+		expect(wakePhaseRunner).not.toHaveBeenCalled();
+		expect(start).not.toHaveBeenCalled();
+	});
+});
