@@ -323,6 +323,11 @@ export class AutoQaEffects implements AutoQaSideEffects {
 	 * code-review hard gate (founder NOT surfaced). eventId is keyed to (exec, head)
 	 * with NO timestamp so the alert claims-db dedup fires it ONCE per head — a
 	 * re-drive / Bridge restart re-running the codex-hold effect won't spam.
+	 *
+	 * FLY-863: the coordinator now calls this ONLY from `reconcileStuckCodexHolds`
+	 * — i.e. only once a head has sat unresolved past the stuck threshold. The
+	 * routine first-hold (the normal, self-recovering pre-Codex-approval moment
+	 * nearly every PR passes through) never reaches this method anymore.
 	 */
 	async alertCodexGateBlocked(args: {
 		session: Session;
@@ -352,13 +357,16 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			);
 			return;
 		}
-		const title = `Codex code review NOT passed — ${args.session.issue_identifier ?? args.session.issue_id}`;
+		const title = `Codex code review stuck — ${args.session.issue_identifier ?? args.session.issue_id}`;
 		// R3-LOW-3: missing-head variant — no head to review; ask for a re-complete.
 		const eventId = sha
 			? `codex-gate:${args.session.execution_id}:${sha}`
 			: `codex-gate-missing-head:${args.session.execution_id}`;
+		// FLY-863: this fires ONLY from reconcileStuckCodexHolds now (past the
+		// stuck-duration threshold) — the copy says so, instead of the old
+		// "just not passed yet" framing that fired on every routine first hold.
 		const body = sha
-			? `PR head \`${sha.slice(0, 8)}\` has no Codex APPROVED — auto-QA blocked, merge blocked, founder held. Re-sent the /codex-code-review instruction to the runner. It must run Codex (or the head needs re-review if it changed).`
+			? `PR head \`${sha.slice(0, 8)}\` has been sitting WITHOUT a Codex APPROVED for an unusually long time — auto-QA blocked, merge blocked, founder held. The /codex-code-review instruction has already been re-sent; this isn't converging on its own, worth checking whether the runner is actually stuck.`
 			: `Session reached awaiting_review with NO valid PR head binding — the Codex hard gate is holding the founder but a head-specific review cannot run. Ask the runner to re-run \`complete --route needs_review --pr-head <sha> --question-id <id>\` with a valid head.`;
 		await this.deps.leadAlertNotifier.alert({
 			leadId,

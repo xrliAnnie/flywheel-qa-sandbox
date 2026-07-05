@@ -108,6 +108,8 @@ async function setup(opts?: {
 	retestWakeOk?: boolean;
 	env?: Record<string, string | undefined>;
 	closeQaRunnerImpl?: () => Promise<void> | void;
+	/** FLY-863: test seam for reconcileStuckCodexHolds's "now". */
+	now?: () => number;
 }) {
 	const store = await StateStore.create(":memory:");
 	const f = fakeEffects({
@@ -131,6 +133,7 @@ async function setup(opts?: {
 		// check short-circuits (satisfied) and the QA behavior is unchanged — this
 		// IS the byte-compat guarantee. Codex-gate behavior has its own test file.
 		env: opts?.env ?? { FLYWHEEL_CODEX_HARD_GATE: "0" },
+		now: opts?.now,
 	});
 	return {
 		store,
@@ -693,7 +696,14 @@ describe("FLY-827 AutoQaCoordinator codex hard gate (gate ON)", () => {
 		return setup({ env: {} });
 	}
 
-	it("codex NOT approved → does NOT spawn QA; holds + re-queues instruction + alerts", async () => {
+	// FLY-863 (Annie 2026-07-04): a routine codex-hold — the normal,
+	// self-recovering first step nearly every PR passes through before Codex
+	// has even run — must stay SILENT (no thread post, no Lead alert). Only
+	// `reconcileStuckCodexHolds` (own describe block below) surfaces anything,
+	// and only once a head has sat unresolved past the stuck threshold. This
+	// replaces the old "holds + alerts immediately" behavior this test used to
+	// lock in.
+	it("codex NOT approved → does NOT spawn QA; re-queues instruction, stays SILENT (no thread post, no alert)", async () => {
 		const s = await gateOnSetup();
 		const main = awaitingMain(s.store);
 		await s.coord.onMainAwaitingReview(main);
@@ -701,12 +711,12 @@ describe("FLY-827 AutoQaCoordinator codex hard gate (gate ON)", () => {
 		// No QA runner, no auto_qa_record.
 		expect(s.start).not.toHaveBeenCalled();
 		expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
-		// Codex-hold side effects fired.
+		// Self-heal action still fires; the loud bundle does not.
 		expect(s.codexQueues).toEqual([{ execId: "main-1" }]);
-		expect(s.codexAlerts).toEqual([{ execId: "main-1", sha: SHA }]);
-		expect(
-			s.postTexts().some((t) => t.includes("Codex code review 未通过")),
-		).toBe(true);
+		expect(s.codexAlerts).toEqual([]);
+		expect(s.postTexts().some((t) => t.includes("Codex code review"))).toBe(
+			false,
+		);
 	});
 
 	it("codex approved for this head → spawns QA normally", async () => {
@@ -782,8 +792,11 @@ describe("FLY-827 AutoQaCoordinator codex hard gate (gate ON)", () => {
 		await s.coord.onMainAwaitingReview(mainB);
 
 		// No retest wake, owner record NOT retargeted to B; codex-hold instead.
+		// FLY-863: the new head's hold is ALSO routine (self-recovering) → no
+		// alert fires immediately; only reconcileStuckCodexHolds could ever
+		// surface it, and only past the stuck threshold.
 		expect(s.retests).toEqual([]);
-		expect(s.codexAlerts.some((a) => a.sha === SHA2)).toBe(true);
+		expect(s.codexAlerts.some((a) => a.sha === SHA2)).toBe(false);
 		expect(s.store.getAutoQaRecord("main-1", SHA2)).toBeUndefined();
 
 		// Codex approves B → the gate is now satisfied for B and a re-drive proceeds
@@ -794,33 +807,33 @@ describe("FLY-827 AutoQaCoordinator codex hard gate (gate ON)", () => {
 		expect(s.start).toHaveBeenCalledTimes(2);
 	});
 
-	it("codex-hold side effects fire ONCE per head — a repeated reconcile is a no-op (R1 MED-1)", async () => {
+	it("codex-hold re-queue fires ONCE per head — a repeated reconcile is a no-op (R1 MED-1); routine hold stays silent throughout (FLY-863)", async () => {
 		const s = await gateOnSetup();
 		const main = awaitingMain(s.store);
-		// Live path: first hold fires the full bundle.
+		// Live path: first hold re-queues the instruction; no thread/alert.
 		await s.coord.onMainAwaitingReview(main);
 		expect(s.codexQueues).toHaveLength(1);
-		expect(s.codexAlerts).toHaveLength(1);
+		expect(s.codexAlerts).toHaveLength(0);
 		expect(
-			s.postTexts().filter((t) => t.includes("Codex code review 未通过")),
-		).toHaveLength(1);
+			s.postTexts().filter((t) => t.includes("Codex code review")),
+		).toHaveLength(0);
 
-		// Reconcile (restart replay) for the same head → NO new thread/instruction/alert.
+		// Reconcile (restart replay) for the same head → NO new re-queue, still silent.
 		await s.coord.reconcileCodexHolds();
 		await s.coord.reconcileCodexHolds();
 		expect(s.codexQueues).toHaveLength(1);
-		expect(s.codexAlerts).toHaveLength(1);
+		expect(s.codexAlerts).toHaveLength(0);
 		expect(
-			s.postTexts().filter((t) => t.includes("Codex code review 未通过")),
-		).toHaveLength(1);
+			s.postTexts().filter((t) => t.includes("Codex code review")),
+		).toHaveLength(0);
 	});
 
-	it("reconcileCodexHolds fires the hold for an awaiting_review session still lacking codex (fresh, no prior notify)", async () => {
+	it("reconcileCodexHolds re-queues for an awaiting_review session still lacking codex (fresh, no prior notify), stays silent (FLY-863)", async () => {
 		const s = await gateOnSetup();
 		awaitingMain(s.store); // awaiting_review, no codex record, never went through onMainAwaitingReview
 		await s.coord.reconcileCodexHolds();
 		expect(s.codexQueues).toHaveLength(1);
-		expect(s.codexAlerts).toHaveLength(1);
+		expect(s.codexAlerts).toHaveLength(0);
 	});
 
 	it("Lead follow-up: skips auto-QA when a normal runner is re-dispatched onto a QA issue itself (no QA-of-QA, #828 guard)", async () => {
@@ -853,6 +866,122 @@ describe("FLY-827 AutoQaCoordinator codex hard gate (gate ON)", () => {
 		// No auto-QA spawned, no record claimed on the QA issue.
 		expect(s.start).not.toHaveBeenCalled();
 		expect(s.store.getAutoQaRecord("renorm-1", SHA)).toBeUndefined();
+	});
+});
+
+// FLY-863: the ONLY place the codex-hold thread-post + Lead alert now fire —
+// once a head has sat unresolved past the stuck-duration threshold. A routine
+// hold (covered above) never reaches here.
+describe("FLY-863 AutoQaCoordinator.reconcileStuckCodexHolds", () => {
+	const STUCK_MS = 1000;
+
+	function setupStuck(nowFn: () => number) {
+		return setup({
+			env: { FLYWHEEL_CODEX_HOLD_STUCK_MS: String(STUCK_MS) },
+			now: nowFn,
+		});
+	}
+
+	it("does nothing before the threshold elapses", async () => {
+		const clock = Date.now();
+		const s = await setupStuck(() => clock);
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main); // routine hold, silent
+		expect(s.codexAlerts).toHaveLength(0);
+
+		await s.coord.reconcileStuckCodexHolds(); // 0ms elapsed — not stuck yet
+		expect(s.codexAlerts).toHaveLength(0);
+		expect(s.postTexts()).toHaveLength(0);
+	});
+
+	it("escalates once the SAME head has been held past the threshold — posts + alerts exactly once", async () => {
+		let clock = Date.now();
+		const s = await setupStuck(() => clock);
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+
+		clock += STUCK_MS + 1;
+		await s.coord.reconcileStuckCodexHolds();
+		expect(s.codexAlerts).toEqual([{ execId: "main-1", sha: SHA }]);
+		expect(
+			s.postTexts().filter((t) => t.includes("Codex code review")),
+		).toHaveLength(1);
+
+		// Idempotent — further passes (even long after) never re-fire for this head.
+		clock += STUCK_MS * 100;
+		await s.coord.reconcileStuckCodexHolds();
+		await s.coord.reconcileStuckCodexHolds();
+		expect(s.codexAlerts).toHaveLength(1);
+		expect(
+			s.postTexts().filter((t) => t.includes("Codex code review")),
+		).toHaveLength(1);
+	});
+
+	it("skips a head that got approved before the reconcile pass ran", async () => {
+		let clock = Date.now();
+		const s = await setupStuck(() => clock);
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+		s.store.recordCodexReviewApproved({
+			executionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+
+		clock += STUCK_MS + 1;
+		await s.coord.reconcileStuckCodexHolds();
+		expect(s.codexAlerts).toHaveLength(0);
+	});
+
+	it("skips a head the session has moved past (a NEW head superseded it)", async () => {
+		let clock = Date.now();
+		const s = await setupStuck(() => clock);
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main); // hold on SHA
+
+		s.store.setReviewBinding("main-1", { questionId: "q2", prHeadSha: SHA2 });
+
+		clock += STUCK_MS + 1;
+		await s.coord.reconcileStuckCodexHolds();
+		// The stale SHA record is skipped — the session is no longer on that head.
+		expect(s.codexAlerts.some((a) => a.sha === SHA)).toBe(false);
+	});
+
+	it("skips when the parent session is no longer awaiting_review", async () => {
+		let clock = Date.now();
+		const s = await setupStuck(() => clock);
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main);
+
+		s.store.upsertSession({
+			execution_id: "main-1",
+			issue_id: "FLY-1",
+			project_name: "proj",
+			status: "approved_to_ship",
+		});
+
+		clock += STUCK_MS + 1;
+		await s.coord.reconcileStuckCodexHolds();
+		expect(s.codexAlerts).toHaveLength(0);
+	});
+
+	it("gate OFF (kill switch) → does nothing, even past the threshold", async () => {
+		let clock = Date.now();
+		const s = await setup({
+			env: {
+				FLYWHEEL_CODEX_HARD_GATE: "0",
+				FLYWHEEL_CODEX_HOLD_STUCK_MS: String(STUCK_MS),
+			},
+			now: () => clock,
+		});
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main); // gate off → spawns QA normally, no hold record
+		expect(s.start).toHaveBeenCalledTimes(1);
+
+		clock += STUCK_MS + 1;
+		await s.coord.reconcileStuckCodexHolds();
+		expect(s.codexAlerts).toHaveLength(0);
 	});
 });
 

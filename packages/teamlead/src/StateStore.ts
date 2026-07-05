@@ -577,6 +577,14 @@ export interface CodexReviewRecord {
 	 * repeated reconcile replays the hold WITHOUT re-posting / re-queueing.
 	 */
 	hold_notified_at?: string;
+	/**
+	 * FLY-863: stamped the first time this (exec, head) crosses the stuck
+	 * threshold in `reconcileStuckCodexHolds` — the ONLY place the codex-hold
+	 * thread-post + Lead alert now fire. `claimCodexHoldStuckNotify` sets it
+	 * atomically so a head is escalated exactly once, no matter how many
+	 * reconcile passes observe it after that.
+	 */
+	stuck_notified_at?: string;
 }
 
 /**
@@ -1412,12 +1420,21 @@ export class StateStore {
 				created_at TEXT NOT NULL DEFAULT (datetime('now')),
 				approved_at TEXT,
 				hold_notified_at TEXT,
+				stuck_notified_at TEXT,
 				PRIMARY KEY (execution_id, target_pr_head_sha)
 			)
 		`);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_status ON codex_review_record(status)",
 		);
+		// FLY-863: existing databases created before this column existed.
+		try {
+			this.db.run(
+				"ALTER TABLE codex_review_record ADD COLUMN stuck_notified_at TEXT",
+			);
+		} catch {
+			/* exists */
+		}
 
 		// FLY-637 #3/#4: persistent "already-notified" dedup for the quiet-path
 		// Lead wake (direction A — report-once, NO backoff). A row means "I already
@@ -3122,6 +3139,7 @@ export class StateStore {
 			created_at: row.created_at as string,
 			approved_at: (row.approved_at as string) ?? undefined,
 			hold_notified_at: (row.hold_notified_at as string) ?? undefined,
+			stuck_notified_at: (row.stuck_notified_at as string) ?? undefined,
 		};
 	}
 
@@ -3279,6 +3297,62 @@ export class StateStore {
 	isCodexCodeReviewApproved(executionId: string, sha: string): boolean {
 		const rec = this.getCodexReviewRecord(executionId, sha.toLowerCase());
 		return rec?.status === "approved" || rec?.status === "skipped";
+	}
+
+	/**
+	 * FLY-863: still-pending holds whose FIRST notification (`hold_notified_at`)
+	 * is older than `thresholdMs` and have not yet been escalated
+	 * (`stuck_notified_at IS NULL`) — the candidates for
+	 * `AutoQaCoordinator.reconcileStuckCodexHolds`. The caller re-checks the
+	 * owning session (still awaiting_review on this exact head, gate still
+	 * unsatisfied) before firing anything — a row here is a candidate, not a
+	 * guarantee.
+	 */
+	listCodexHoldsPendingOlderThan(
+		nowMs: number,
+		thresholdMs: number,
+	): CodexReviewRecord[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_record
+			  WHERE status = 'pending' AND hold_notified_at IS NOT NULL AND stuck_notified_at IS NULL`,
+		);
+		const out: CodexReviewRecord[] = [];
+		while (stmt.step()) {
+			const rec = this.rowToCodexReviewRecord(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+			if (!rec.hold_notified_at) continue;
+			const heldSinceMs = Date.parse(
+				`${rec.hold_notified_at.replace(" ", "T")}Z`,
+			);
+			if (!Number.isNaN(heldSinceMs) && nowMs - heldSinceMs >= thresholdMs) {
+				out.push(rec);
+			}
+		}
+		stmt.free();
+		return out;
+	}
+
+	/**
+	 * FLY-863: atomically claim the right to fire the STUCK escalation (thread
+	 * post + Lead alert) for (exec, head). Returns true only for the first
+	 * caller — a repeated `reconcileStuckCodexHolds` pass observing the same
+	 * still-unresolved head is a no-op (LeadAlertNotifier's own per-eventId
+	 * dedup is a second, independent backstop).
+	 */
+	claimCodexHoldStuckNotify(
+		executionId: string,
+		targetPrHeadSha: string,
+	): boolean {
+		const sha = targetPrHeadSha.toLowerCase();
+		this.db.run(
+			`UPDATE codex_review_record SET stuck_notified_at = datetime('now')
+			  WHERE execution_id = ? AND target_pr_head_sha = ? AND stuck_notified_at IS NULL`,
+			[executionId, sha],
+		);
+		const claimed = this.db.getRowsModified() > 0;
+		this.save();
+		return claimed;
 	}
 
 	getAutoQaRecordByQaExec(qaExecutionId: string): AutoQaRecord | undefined {

@@ -36,6 +36,7 @@ import {
 } from "../StateStore.js";
 import {
 	codexHardGateEnabled,
+	codexHoldStuckThresholdMs,
 	isCodexGateSatisfied,
 	isReviewableRole,
 } from "./codex-gate.js";
@@ -208,6 +209,8 @@ export interface AutoQaCoordinatorDeps {
 	qaAgentName?: string;
 	/** FLY-827: env for the codex hard-gate kill-switch. Defaults to process.env. */
 	env?: Record<string, string | undefined>;
+	/** FLY-863: test seam for `reconcileStuckCodexHolds`'s "now". Defaults to Date.now. */
+	now?: () => number;
 	logger?: { log(m: string): void; warn(m: string): void };
 }
 
@@ -475,19 +478,31 @@ export class AutoQaCoordinator {
 
 	/**
 	 * FLY-827: the Codex code-review hard-gate hold. A main session reached
-	 * awaiting_review but Codex has NOT approved the current head → post a thread
-	 * note, re-queue the `/codex-code-review` instruction to the runner (D3 loop
-	 * closure), and Lead-alert (rate-limited per exec+head). QA is NOT spawned and
-	 * the founder stays held via isReviewHeld. Best-effort side-effects: a failure
-	 * here must never surface the founder (the durable table + isReviewHeld hold).
+	 * awaiting_review but Codex has NOT approved the current head → re-queue the
+	 * `/codex-code-review` instruction to the runner (D3 loop closure). QA is NOT
+	 * spawned and the founder stays held via isReviewHeld.
+	 *
+	 * FLY-863 (Annie 2026-07-04): this hold is the normal, self-recovering FIRST
+	 * step of nearly every PR (Codex simply hasn't run/reported yet) — it must
+	 * stay SILENT (no thread post, no Lead alert). Verified against the code: a
+	 * Bridge-visible re-hold on a NEW head is the only multi-round signal that
+	 * ever reaches here (a runner's own internal `/codex-code-review` retries are
+	 * invisible to Bridge — only the final APPROVED is reported), so a "round
+	 * count" cannot distinguish a normal in-progress loop from a real stall.
+	 * The thread-post + Lead alert now live EXCLUSIVELY in
+	 * `reconcileStuckCodexHolds`, which escalates only once the SAME head has
+	 * sat unresolved for a long real-world stretch — genuinely not converging,
+	 * not a routine mid-loop moment. Best-effort: a failure here must never
+	 * surface the founder (the durable table + isReviewHeld hold independently).
 	 */
 	private async codexHold(session: Session, sha: string): Promise<void> {
-		// FLY-827 (Codex code-review R1 MED-1): fire the side-effect bundle (thread +
-		// re-queue + alert) ONCE per (exec, head). The LIVE onMainAwaitingReview path
-		// posts/queues/alerts the first time; a restart / repeated reconcileCodexHolds
-		// replays the hold as a no-op (the founder HOLD itself is enforced by the
-		// durable record + isReviewHeld, independent of this). A NEW head is a fresh
-		// claim → it re-notifies for that head.
+		// FLY-827 (Codex code-review R1 MED-1): re-queue the instruction ONCE per
+		// (exec, head). The LIVE onMainAwaitingReview path claims + queues the
+		// first time; a restart / repeated reconcileCodexHolds replays the hold as
+		// a no-op (the founder HOLD itself is enforced by the durable record +
+		// isReviewHeld, independent of this). A NEW head is a fresh claim → it
+		// re-queues for that head. `hold_notified_at` also anchors the stuck-
+		// escalation clock in `reconcileStuckCodexHolds`.
 		const firstNotify = this.deps.store.claimCodexHoldNotify({
 			executionId: session.execution_id,
 			targetPrHeadSha: sha,
@@ -496,23 +511,13 @@ export class AutoQaCoordinator {
 		});
 		if (!firstNotify) {
 			this.log(
-				`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — already notified for this head; skipping duplicate thread/instruction/alert`,
+				`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — already notified for this head; skipping duplicate re-queue`,
 			);
 			return;
 		}
 		this.log(
-			`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — code review not APPROVED; QA not spawned, founder held`,
+			`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — code review not APPROVED; QA not spawned, founder held (routine — staying silent; escalates only if unresolved past the stuck threshold)`,
 		);
-		try {
-			await this.deps.effects.postThread({
-				session,
-				text: `⛔ Codex code review 未通过(head \`${sha.slice(0, 8)}\`)— 自动 QA 不启动、founder 保持挂起。已重发 /codex-code-review 指令,过了 Codex APPROVED 才会继续。`,
-			});
-		} catch (err) {
-			this.warn(
-				`codexHold postThread failed for ${session.issue_id}: ${asErr(err)}`,
-			);
-		}
 		try {
 			await this.deps.effects.queueCodexInstruction({ session });
 		} catch (err) {
@@ -520,12 +525,76 @@ export class AutoQaCoordinator {
 				`codexHold queueCodexInstruction failed for ${session.issue_id}: ${asErr(err)}`,
 			);
 		}
-		try {
-			await this.deps.effects.alertCodexGateBlocked({ session, sha });
-		} catch (err) {
+	}
+
+	/**
+	 * FLY-863: periodic escalation pass for codex-holds that have NOT converged
+	 * after a long real-world stretch (default 3h, `FLYWHEEL_CODEX_HOLD_STUCK_MS`
+	 * tunable). This is the ONLY place the codex-hold thread-post + Lead alert
+	 * fire — a routine review-fix round (the overwhelmingly common case) never
+	 * reaches here and stays completely silent. Idempotent per head:
+	 * `claimCodexHoldStuckNotify` fires the bundle exactly once per (exec, head),
+	 * with `LeadAlertNotifier`'s own per-eventId dedup as an independent second
+	 * backstop. Safe to call repeatedly (boot + every Lead-alert poll tick —
+	 * piggybacked, no new timer) since a fully-resolved fleet is a cheap no-op
+	 * scan.
+	 */
+	async reconcileStuckCodexHolds(): Promise<void> {
+		const env = this.deps.env ?? process.env;
+		if (!codexHardGateEnabled(env)) return; // gate off → nothing held
+		const thresholdMs = codexHoldStuckThresholdMs(env);
+		const now = this.deps.now?.() ?? Date.now();
+		for (const rec of this.deps.store.listCodexHoldsPendingOlderThan(
+			now,
+			thresholdMs,
+		)) {
+			const session = this.deps.store.getSession(rec.execution_id);
+			if (!session || session.status !== "awaiting_review") continue; // moved on
+			if (session.pr_head_sha?.toLowerCase() !== rec.target_pr_head_sha) {
+				continue; // superseded by a newer head — that head's own record governs
+			}
+			if (
+				isCodexGateSatisfied(
+					this.deps.store,
+					session,
+					rec.target_pr_head_sha,
+					env,
+				)
+			) {
+				continue; // approved / skipped in the meantime
+			}
+			if (
+				!this.deps.store.claimCodexHoldStuckNotify(
+					rec.execution_id,
+					rec.target_pr_head_sha,
+				)
+			) {
+				continue; // already escalated for this head
+			}
+			const hours = Math.round(thresholdMs / 3_600_000);
 			this.warn(
-				`codexHold alertCodexGateBlocked failed for ${session.issue_id}: ${asErr(err)}`,
+				`codex-hold STUCK for ${session.issue_id} (${session.execution_id}) @ ${rec.target_pr_head_sha.slice(0, 8)} — not approved after ${hours}h+, escalating`,
 			);
+			try {
+				await this.deps.effects.postThread({
+					session,
+					text: `⛔ Codex code review 已经卡了 ${hours}+ 小时还没过(head \`${rec.target_pr_head_sha.slice(0, 8)}\`)— 已重发过 /codex-code-review,但看起来没在收敛,可能需要人看一眼 runner 是不是卡住了。`,
+				});
+			} catch (err) {
+				this.warn(
+					`reconcileStuckCodexHolds postThread failed for ${session.issue_id}: ${asErr(err)}`,
+				);
+			}
+			try {
+				await this.deps.effects.alertCodexGateBlocked({
+					session,
+					sha: rec.target_pr_head_sha,
+				});
+			} catch (err) {
+				this.warn(
+					`reconcileStuckCodexHolds alertCodexGateBlocked failed for ${session.issue_id}: ${asErr(err)}`,
+				);
+			}
 		}
 	}
 

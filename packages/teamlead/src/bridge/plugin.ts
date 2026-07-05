@@ -3832,7 +3832,7 @@ export async function startBridge(
 						`[auto-qa] reconcileOnStartup failed: ${(err as Error).message}`,
 					),
 				);
-			// FLY-827 (R1 HIGH-4): re-fire codex-hold side effects (alert + re-queue
+			// FLY-827 (R1 HIGH-4): re-fire codex-hold side effects (re-queue
 			// instruction) for awaiting_review sessions still lacking a Codex approval
 			// after this restart / default-ON flip. The founder HOLD is already
 			// guaranteed by the durable table + isReviewHeld, so running this after the
@@ -3842,6 +3842,16 @@ export async function startBridge(
 				.catch((err) =>
 					console.warn(
 						`[auto-qa] reconcileCodexHolds failed: ${(err as Error).message}`,
+					),
+				);
+			// FLY-863: catch up on any head that crossed the stuck-duration
+			// threshold WHILE the Bridge was down — don't wait for the first 30s
+			// poll tick to notice a genuinely stuck hold on restart.
+			void autoQaCoordinatorHolder.current
+				.reconcileStuckCodexHolds()
+				.catch((err) =>
+					console.warn(
+						`[auto-qa] reconcileStuckCodexHolds failed: ${(err as Error).message}`,
 					),
 				);
 			console.log(
@@ -4453,33 +4463,48 @@ export async function startBridge(
 					void alertHub.onLeadRecovery(projectName, leadId, recoveredKind);
 				}
 			: undefined,
-		// FLY-368: piggyback the 30s poll to run the reconcile pass (no new timer).
-		onPollComplete: alertHub
-			? async () => {
+		// FLY-368: piggyback the 30s poll to run the alert-thread reconcile pass
+		// (no new timer). FLY-863: the SAME tick also re-scans for codex-holds that
+		// crossed the stuck-duration threshold since the last pass. FLY-696: the
+		// SAME tick also drives the account-switch watchdog (due pending switches
+		// M1-only / bot fallback M2), posting results to the unified Alerts
+		// channel. Every sub-task is independently try/caught so one failing piece
+		// never wedges the others or the poll loop — no new timer for any of them.
+		onPollComplete: async () => {
+			if (alertHub) {
+				try {
 					await alertHub.reconcile();
-					// FLY-696: piggyback the account-switch watchdog on this 30s cadence
-					// (no new timer). Fires due pending switches (M1-only) / bot fallback
-					// (M2), posts results to the unified Alerts channel. Best-effort —
-					// never wedge the reconcile loop.
-					if (accountSwitchRepair && unifiedAlertChannelId) {
-						try {
-							await accountSwitchWatchdogTick({
-								now: () => Date.now(),
-								executeSwitch: (pending) =>
-									accountSwitchRepair.executeSwitch(pending),
-								post: (detail) =>
-									alertDiscordOps.postToThread(unifiedAlertChannelId, detail),
-							});
-						} catch (err) {
-							console.error(
-								`[Bridge] FLY-696 account-switch watchdog tick failed: ${
-									err instanceof Error ? err.message : String(err)
-								}`,
-							);
-						}
-					}
+				} catch (err) {
+					console.warn(
+						`[Bridge] alertHub.reconcile failed: ${(err as Error).message}`,
+					);
 				}
-			: undefined,
+			}
+			try {
+				await autoQaCoordinatorHolder.current?.reconcileStuckCodexHolds();
+			} catch (err) {
+				console.warn(
+					`[auto-qa] reconcileStuckCodexHolds (poll) failed: ${(err as Error).message}`,
+				);
+			}
+			if (accountSwitchRepair && unifiedAlertChannelId) {
+				try {
+					await accountSwitchWatchdogTick({
+						now: () => Date.now(),
+						executeSwitch: (pending) =>
+							accountSwitchRepair.executeSwitch(pending),
+						post: (detail) =>
+							alertDiscordOps.postToThread(unifiedAlertChannelId, detail),
+					});
+				} catch (err) {
+					console.error(
+						`[Bridge] FLY-696 account-switch watchdog tick failed: ${
+							err instanceof Error ? err.message : String(err)
+						}`,
+					);
+				}
+			}
+		},
 		// FLY-193: default ON now that the idle-pane recognizer is validated
 		// against committed real Lead pane fixtures (see
 		// LeadWatchdog `__tests__/fixtures/lead-panes/`). The recognizer is

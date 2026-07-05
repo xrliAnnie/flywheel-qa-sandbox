@@ -20,6 +20,26 @@
 const HARD_GATE_ENV = "FLYWHEEL_CODEX_HARD_GATE";
 
 /**
+ * FLY-863: a routine codex-hold (review not yet APPROVED for the current head)
+ * is the normal, self-recovering first step of nearly every PR — it must NOT
+ * alert (Annie 2026-07-04: "normal loop mid-state ≠ a real problem, spamming
+ * Alerts pollutes judgment"). The hold only becomes worth a human's attention
+ * once the SAME head has sat unresolved for a long real-world stretch. Default
+ * 3h (a normal review-fix round settles within 1-2h; past 3h it's likely a
+ * genuine stall, not an in-progress loop) — tunable per fleet/project.
+ */
+const HOLD_STUCK_MS_ENV = "FLYWHEEL_CODEX_HOLD_STUCK_MS";
+const DEFAULT_HOLD_STUCK_MS = 3 * 60 * 60 * 1000;
+
+export function codexHoldStuckThresholdMs(
+	env: Record<string, string | undefined> = process.env,
+): number {
+	const raw = env[HOLD_STUCK_MS_ENV];
+	const n = raw ? Number.parseInt(raw, 10) : Number.NaN;
+	return Number.isFinite(n) && n > 0 ? n : DEFAULT_HOLD_STUCK_MS;
+}
+
+/**
  * FLY-827 + FLY-793: the session roles that OWN a PR and reach `awaiting_review`
  * for founder review — the ones the Codex founder-hold + verdict-recording apply
  * to. `main` is the normal runner; `implement` is the FLY-793 three-stage phase
