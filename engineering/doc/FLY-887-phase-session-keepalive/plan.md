@@ -5,6 +5,13 @@ Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-p
 基于: research.md
 版本: v1.58.0（暂定，ship 取空号）
 
+> ⚠️ **R1 草稿 — 部分被收回的约束污染，待 Annie sanity-check 🅱️ 提案后重写 R2。**
+> 本稿 M2/M3/M7 基于 Lead 初版「QA 只读 checkout」约束，该约束已被 Annie 亲自纠正收回
+> （三段都是 writer；worktree 并发定案 = 🅱️ 单物理 worktree + TURN 轮流写，见
+> exploration.md R2）。M1（park 化交接）/ M4 触发点 / M5（ship 收尾）/ M6（reconcile）/
+> M8（kill-switch）与轮次账本设计仍然成立，R2 将保留这些、把 worktree/QA 相关段落换成
+> 🅱️ + TURN。**本稿未经 Annie OK，不进 design review、不作为实现依据。**
+
 ## 定案（Lead brainstorm gate 已批 A1-A6 + worktree 图约束）
 
 三段式交接从「关人重开」改为「**park 保活 + wake-or-spawn**」：

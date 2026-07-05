@@ -125,3 +125,73 @@ Annie 原话（2026-07-05 06:48）：
 ## 7. 结论
 
 方案 A：把 FLY-752 auto-QA 已验证的 park/wake 循环移植进 FLY-793 三段式编排，交接由「关人重开」改为「park 保活 + wake-or-spawn」，worktree 由「每段重建」改为「活体原地复用（fail-closed 兜底回现行为）」，ship 后由既有 finalizeDone 链统一收尾。不改 FSM、不加新配置、不动单 session 路径。
+
+---
+
+## R2 修订（2026-07-05）：worktree 并发定案提案 — 🅱️ 单物理 worktree + TURN 轮流写
+
+> 背景：Lead 初版给 Annie 的「可写 worktree 传递 + QA 只读 checkout」被 Annie 亲自纠正**收回**——设计和 QA 都要写分支（设计 commit 文档、QA commit test-report/补测试）。Annie 在 🅰️（各自子分支→汇聚）/ 🅱️（共享 worktree + 写锁轮流）里 steer 🅱️：🅰️ 的交叉 rebase 链是错误温床；关键洞察 = **三段大部分时候不同时干活 → 一个物理 worktree 就够**。技术落地交给本设计从现状代码定。
+
+### R2.1 读代码后的结论：🅱️ 与现状高度合拍，比「QA 只读」更简单
+
+- 现状三段本就共享**一个** worktree key/branch/目录（`resolveWorktreeKey`，research §1.3）——🅱️ = 把「kill 前段来腾地方」换成「不删不重建、轮流用」，目录结构零变化。
+- git 硬约束（一条 branch 不能被两个 worktree 同时 checkout）在 🅱️ 下**天然不存在**：全程只有这一个 checkout。
+- 修复循环零编舞：implement 在同一目录修完 commit，QA 被唤醒时 **worktree 已经在新 head**——不需要 fetch/re-checkout/re-pin（「QA 只读独立 checkout」模型反而需要每轮 re-pin）。
+- QA 照旧 commit findings/failing tests/report 到 branch B（FLY-793 Step 8 的 writer 协议原样保留，Annie 2026-07-02 的决定不被推翻）。
+- 代码没有任何强烈反对信号：唯一要新建的机制就是 TURN 记录本身。
+
+### R2.2 写锁（TURN）机制设计
+
+**一句话：turn-based 独占激活——PhaseOrchestrator 在它既有的交接决策点授予 TURN，CommDB 持久记录，phase 的既有完成/verdict 信号即释放；runner 写前自查作 belt，Bridge 对账回收作兜底。**
+
+- **放在哪层（核心设计题的答案）**：**Bridge 侧 PhaseOrchestrator 交接点集中授予**。理由：交接点本来就是流水线唯一的状态权威（今天就是它决定谁 spawn/谁关），把 TURN 授予挂在同一决策点 = **零新增决策源**；runner 自协调当真相源会裂脑；纯强制层（hook 拦 git）过重。752 的 park/wake 里现成的「锁位」就是 wake 消息本身——wake = 授予，park = 交还，TURN 记录把这个隐式契约变成可查、可审计、可恢复的显式事实。
+- **真相源**：CommDB 新表 `three_stage_turn (issue_id PK, holder_exec_id, phase, epoch, granted_at)`，**只有 Bridge 写**。选 CommDB 不选 StateStore：跨进程可读（runner 经 flywheel-comm 自查）、过 Bridge 重启（FLY-626 同款持久性）。
+- **授予点**（全部是既有决策点，不新增事件）：dispatch design / handoff→implement / handoff→QA / FAIL→wake implement / fix 完→RE-TEST wake QA / founder 批准→ship wake QA。每次授予 epoch+1。
+- **释放点**（全部是既有 durable 信号）：`complete --route phase_design_complete`、`complete --route needs_review`、`qa-result fail`、`qa-result pass`。orchestrator 处理这些事件时翻转 TURN；runner 侧 park 是协议层的同义交还。
+- **锁的粒度**：TURN 管 worktree 的**全部触碰**（git 写 + 跑测试 + 改文件）。parked = 完全不碰 worktree（比「只锁 git 写」更粗但更简单可验——三段本就不同时干活，细粒度是 YAGNI）。
+- **runner 自查 belt**：新 flywheel-comm 子命令 `turn --exec-id <id>`（读 CommDB，答 yours / not-yours + holder）。prompt 契约：凡不是被带 TURN 的 wake 叫醒（例如 Lead 出于别的原因 send 了一条消息），动 worktree 前必须 turn 自查；not-yours → 不写，只回话/报告。
+- **退避（罕见并发）**：不设自旋等待。not-yours 的一方不写、答复来意后继续 park；若它确实需要写（极罕见），`flywheel-comm ask` 报 Lead 仲裁。写冲突的最终兜底是 git 本身（同分支冲突可见、可恢复）。
+- **崩溃恢复**：holder 死体 → HeartbeatService 照常收割 → orchestrator 对账（reconcile）发现 TURN 指向死 session → 按流水线当前态重新授予（wake-or-spawn 同款判定）。授予是事件驱动非阻塞等待，**无死锁形态**。
+
+### R2.3 权威图（单 worktree 三段轮流写 / QA 复验 / fix 循环 / ship 收尾）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Bridge<br/>(PhaseOrchestrator + TURN 表)
+    participant D as Design session
+    participant I as Implement session
+    participant Q as QA session
+    participant W as 单一物理 worktree<br/>(branch B, 全程一个 checkout)
+
+    Note over W: 创建一次；ship 前不删不重建
+    B->>D: dispatch + TURN(epoch 1)
+    D->>W: 写 exploration/research/plan，commit+push
+    D-->>B: complete phase_design_complete（=交还 TURN）
+    Note over D: declare-state park（保活，不退出）
+    B->>I: dispatch（同一 worktree 原地接手）+ TURN(epoch 2)
+    I->>W: TDD 实现，commit+push，开 PR
+    I-->>B: complete needs_review（=交还 TURN）
+    Note over I: park（保活）
+    B->>Q: dispatch（同一 worktree）+ TURN(epoch 3)
+    Q->>W: 跑测试；commit 测试/QA report 到 branch B
+    loop QA↔Implement 修复循环（同两个 session，cap 3 轮）
+        Q-->>B: qa-result fail（=交还 TURN）
+        Note over Q: park，等 RE-TEST
+        B->>I: wake（带 QA 报告）+ TURN(epoch+1)
+        I->>W: 修复（findings 已在分支上），push，重过 Codex review
+        I-->>B: 再次 complete needs_review（=交还 TURN）
+        Note over I: 重新 park
+        B->>Q: RE-TEST wake + TURN(epoch+1)
+        Note over Q,W: worktree 已在新 head——零 fetch/checkout 编舞
+        Q->>W: 复验
+    end
+    Q-->>B: qa-result pass → approve gate（founder）
+    Note over B: Annie 批准 + verified merge（权威=verify-approval，不变）
+    B->>D: closeRunner(finalizeDone) 下线
+    B->>I: closeRunner(finalizeDone) 下线
+    B->>Q: completed 下线
+    B->>W: 此刻才删 worktree；archive thread
+```
+
+图的不变量：任一时刻 **TURN 只指向一个 phase**（其余 parked、不碰 worktree）；worktree 生命周期 = issue 生命周期（创建一次、ship 后才删）；每一次 TURN 授予/交还都落在**已存在**的 pipeline 信号上，没有新事件类型。

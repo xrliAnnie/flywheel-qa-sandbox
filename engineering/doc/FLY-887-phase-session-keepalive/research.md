@@ -6,7 +6,9 @@ Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-p
 
 ## 0. 结论摘要
 
-方案 A（brainstorm gate 已批）完全可落地：所需基建（park 标记、mailbox wake、alive→wake/dead→spawn 双路、finalizeDone 收尾边、活跃态保护查询）**全部已存在**，改动集中在 PhaseOrchestrator 的两个动作点 + Blueprint 的 worktree 准备/prompt + 轮次账本。Lead 追加约束「可写 worktree 传递 + QA 只读 checkout」在保活下是结构必然（branch B 无法二次 checkout），落地 = 三段 QA 从「branch B writer」改为「独立 pinned checkout + 报告通道」。
+> **R2 修订（2026-07-05）**：初版 gate 后 Lead 给的「QA 只读 checkout」约束被 Annie 亲自纠正**收回**（三段都要写分支）；Annie steer 定 **🅱️ 单物理 worktree + TURN 轮流写**。本文 §3 已按 🅱️ 重写；§4/§5 受影响行随之修订。TURN 机制设计 + 权威图见 exploration.md R2。
+
+方案 A（brainstorm gate 已批）完全可落地：所需基建（park 标记、mailbox wake、alive→wake/dead→spawn 双路、finalizeDone 收尾边、活跃态保护查询）**全部已存在**，改动集中在 PhaseOrchestrator 的两个动作点 + Blueprint 的 worktree 准备/prompt + 轮次账本 + 新增 TURN 记录。🅱️ 下 worktree 结构零变化（三段本就共享一个 key/目录），git「一 branch 一 checkout」硬约束天然满足（全程只有一个 checkout）。
 
 ## 1. 现行机制精确解剖（file:line 为准）
 
@@ -64,24 +66,27 @@ graph LR
 | runs-route 三段防双开守卫 | runs-route.ts:560-571 | issue 有活跃 phase 时拒新 main dispatch——保活后依旧成立（活跃集合更大） |
 | `onMainAwaitingReview` 的 freshTransition + merge_block suppressor 模式 | event-route.ts:2053-2075 | 二次 needs_review 判「新一轮」的参考模式；FLY-869 merge_block 姊妹守卫要对齐 |
 
-## 3. Lead 约束「可写 worktree 传递 + QA 只读 checkout」落地分析
+## 3. worktree 并发模型（R2 重写）：🅱️ 单物理 worktree + TURN 轮流写
 
-1. **可写 worktree 传递（design→implement）**：共享 worktree **不删不重建**——handoff 时跳过 `phaseWorktreeCleanup`，dispatch 时跳过 `removeIfExists+create`，校验后原地复用（registered + clean + `HEAD==startPoint`；任一不满足 → fail-closed 告警，绝不静默拆）。parked design 的 cwd 保持有效（Annie 规格 2）。
-2. **QA 只读 checkout**：三段 QA 的 worktree key 改为 role-aware（`<identifier>-qa`，非共享 key）+ `startPoint = implement reviewed head`（FLY-579 pin 模式现成）。独立目录、qa 后缀 branch——**结构上碰不到 branch B**；协议上明文只读（不 push）。
-3. **findings 通道变化**（QA 不再 commit 到 B）：FAIL findings 走 (a) `qa-result --summary`（intent 内 600 cap 保留，作索引）+ (b) wake implement 消息带完整报告（sendRunnerWake feedbackText cap 1500 → 需为 fix-wake 放宽或走报告文件路径引用）+ (c) issue thread 备份贴。**QA 发现缺测试覆盖 = FAIL finding 让 implement 补**（与只读自洽；PASS 即真 PASS，不再有「QA 顺手 commit 测试」）。
-4. **runFailFlow 的 head 语义简化**：QA 无 commit → fix 起点/复验基线 = implement 的 reviewed head（不再需要 capture QA 自己的 head）。
-5. 对**首轮** Implement→QA 交接的含义：implement 保活不删 worktree → QA dispatch 用自己的 key 在 reviewed head 建只读 checkout —— 与共享 key 路径解耦，`-B` 冲突消失。
+> Annie 定案方向（Lead relay）：设计/实现/QA **三段都是 writer**（设计 commit 文档、QA commit test-report/补测试）；🅰️ 各自子分支→汇聚被她否掉（交叉 rebase 链 = 错误温床）；🅱️ 的关键洞察 = 三段基本不同时干活 → 一个物理 worktree 够用，剩下是「写锁/轮流」实现。TURN 机制完整设计 + 权威时序图见 **exploration.md R2.2/R2.3**。
+
+1. **单 worktree 全程存续**：共享 worktree **创建一次、ship 后才删**——handoff 时跳过 `phaseWorktreeCleanup`，后续 phase dispatch 跳过 `removeIfExists+create`，校验（registered + clean + `HEAD==startPoint`）后原地接手；校验不过 → fail-closed 告警（绝不静默拆活人目录）。三段 cwd 同一目录（与现状 `resolveWorktreeKey` 共享 key 完全一致，**worktree key 派生零改动**）。
+2. **git 硬约束天然满足**：「一条 branch 不能被两个 worktree checkout」在 🅱️ 下不构成问题——全程只有这一个 checkout；三个 session 只是三个进程共享同一 cwd。
+3. **TURN = 显式化的激活权**：任一时刻只有 TURN 持有者碰 worktree（git 写 + 跑测试 + 改文件），其余 parked 完全不碰。授予点=PhaseOrchestrator 既有交接/唤醒决策点；释放点=既有完成/verdict 信号（`phase_design_complete` / `needs_review` / `qa-result`）；真相源=CommDB 新表 `three_stage_turn`（Bridge 独写、跨进程可读、过重启）；runner 写前 `flywheel-comm turn` 自查作 belt；死 holder 由 Heartbeat 收割 + reconcile 重授予。无死锁（事件驱动授予，无阻塞等待）。
+4. **QA 协议不变（writer 保留）**：FAIL 时照旧 commit findings/failing tests/report 到 branch B（FLY-793 Step 8 原协议、Blueprint :941-944 文案主体保留）——只把「STOP 等 close」改成「park 等 RE-TEST」。`capturePhaseHeadSha` 语义照旧（QA 有 commit，头就是它的头）。
+5. **修复循环零编舞**：implement 在同一目录修完 commit+push → QA 被 RE-TEST wake 时 worktree **已经在新 head**——不需要 fetch/re-checkout/re-pin（这是 🅱️ 对比「独立 QA checkout」模型的直接简化收益）。
 
 ## 4. 改动面盘点（现状 → 目标）
 
 | # | 位置 | 现状 | 目标 |
 |---|---|---|---|
 | a | `phase-orchestrator.ts handoff()` | capture head → close+删 worktree → spawn | capture head → **park**（Bridge 侧 upsert 标记；不 close 不删）→ **wake-or-spawn**（活体 parked 下段在→wake；无→spawn）；前段已死→现行 close-clean+spawn 兜底 |
-| b | `runFailFlow()` | close QA → spawn implement-fix | QA 自 park（prompt）→ **wake 活体 parked implement**（带完整 QA 报告 + round）；implement 死→现行 spawn 兜底；head 语义改 reviewed head |
+| b | `runFailFlow()` | close QA → spawn implement-fix | QA 自 park（prompt）→ **wake 活体 parked implement**（带 QA 报告 + round + TURN）；implement 死→现行 spawn 兜底；`capturePhaseHeadSha` 语义照旧（QA 是 writer） |
 | c | verdict intent 模型 | 一 QA session 一 verdict | 按轮记录（round-indexed intent 数组或 latest+counter）；**fix_round 账本改 durable per-issue 计数**（替代 countImplementPhases 的 session 数语义），cap=3 语义不变 |
-| d | `Blueprint.runInner` worktree 准备 | 无条件 removeIfExists+create | `shareParentBranch` 且共享 worktree 有活体前段 → 校验后复用；三段 QA → role-aware key + pinned 只读 checkout |
-| e | Blueprint 三段 prompts | 完成即 STOP（被关）；QA「Do NOT park」 | design/implement：complete 后 `/compact`+释放重资源 → `declare-state park` → STOP 不退出、wake 前不动 worktree；QA：FAIL → qa-result → park 等 RE-TEST（翻转禁令）；QA 只读纪律 |
-| f | 二次 needs_review → QA 复验触发 | 不存在（每轮新 QA session） | 复用 onPhaseComplete 现触发点 + wake-or-spawn；对齐 freshTransition/merge_block 守卫模式；QA wake 消息 = RE-TEST 新 head（re-checkout 到新 reviewed head） |
+| d | `Blueprint.runInner` worktree 准备 | 无条件 removeIfExists+create | `shareParentBranch` 且共享 worktree 存在且有活体前段 → 校验后原地接手（implement 与 QA 同此路径；**worktree key 零改动**）；不存在/前段死体已清 → 现行 create |
+| e | Blueprint 三段 prompts | 完成即 STOP（被关）；QA「Do NOT park」 | design/implement：complete 后 `/compact`+释放重资源 → `declare-state park` → STOP 不退出、parked 期间不碰 worktree；QA：FAIL → commit findings（不变）→ qa-result → park 等 RE-TEST（翻转禁令）；三段共同的 TURN 契约（非 TURN wake 先 `flywheel-comm turn` 自查再动 worktree） |
+| f | 二次 needs_review → QA 复验触发 | 不存在（每轮新 QA session） | 复用 onPhaseComplete 现触发点 + wake-or-spawn；对齐 freshTransition/merge_block 守卫模式；QA wake = RE-TEST（worktree 已在新 head，零 checkout 编舞） |
+| f2 | TURN 记录（新） | 不存在（激活权隐含在「其余已被 kill」里） | CommDB 新表 `three_stage_turn(issue_id PK, holder_exec_id, phase, epoch, granted_at)` Bridge 独写；orchestrator 授予/翻转；新 `flywheel-comm turn --exec-id` 查询子命令（runner belt） |
 | g | ship 后收尾 | 交接时人已关光，finalization 只关 QA 窗 | verified merge → finalization 对 issue 全部三段活体依次 `closeRunner({finalizeDone:true})` + worktree 清理 + archive cascade（既有 FLY-369/855 链扩容） |
 | h | `reconcileOnStartup` / 各 sweep | stranded → 重驱 handoff（close+spawn） | 同一 wake-or-spawn 判定；重启后核对 park 标记 vs tmux 活体（死体→Heartbeat 收割→spawn 兜底） |
 
@@ -90,13 +95,13 @@ graph LR
 - **watchdog 误报**：park 标记全抑制 stall wake（FLY-626）；`parked-alive` 分类已存在；FLY-878（loop/watchdog park 态识别缺口）为姊妹 issue——本 issue 只保证标记正确写/清，识别缺口不重做（gate A6 已批）。
 - **stale 检测误伤**：StateStore 活跃查询保护 design_done；FLY-742 guard 以 PR 状态为权威（loop 期间 PR open → 不收）。
 - **内存**：3 claude 进程/issue；park 前 /compact + 释放 Chrome（FLY-752 文案现成）；FLY-751 已默认剥非-QA runner 的 chrome MCP；three-stage 仅 flywheel opt-in。**A5 已由 Lead 转 Annie 知情确认中。**
-- **双写者**：QA 只读 checkout 后，可写 worktree 只在 design→implement 传递；同刻激活段唯一由 park/wake 时序保证；git commit 冲突为可见兜底。
+- **双写者**：TURN 记录（Bridge 独写）+ parked-不碰-worktree 协议 + runner 写前 `flywheel-comm turn` 自查；同刻激活段唯一；git commit 冲突为可见兜底。
 - **byte-compat**：所有改动在 `shareParentBranch`/phase-role 门内；单 session、auto-QA（QA·FLY-XX 独立 issue 流）、`isQaRunner` 路径零变化。auto-QA 与三段互斥既有守卫（event-route.ts:2053 gate on session_role==='main'——三段 phase role 不进 auto-QA）。
 
 ## 6. 留给 plan 定稿的点
 
 1. 二次 `needs_review` 的 marker/事件重放语义验证（FSM no-op 下 session_completed 事件确认重发——FLY-191 生产已验，需测试钉死）。
-2. QA 完整报告的传递载体上限（wake 文本 cap 1500 vs 报告文件引用——倾向 wake 带摘要 + 报告全文落 QA checkout 内文件 + 路径引用，implement 可直接读）。
+2. TURN 表 schema/`flywheel-comm turn` 子命令输出契约 + 授予/翻转与既有事件处理的原子性（先记 TURN 还是先 wake——倾向先记后 wake，wake 失败 held-for-reconcile 镜像 FLY-752）。
 3. fix_round durable 账本的落点（issue 级 session_params vs QA session intent 数组）。
 4. park 后 runner 的等待姿态（STOP 不退出 = 等 mailbox wake；PostToolUse hook 注入 vs inbox-check 轮询——沿用 FLY-752 QA park 的既行姿态）。
 5. ship 收尾的 hook 位置（event-route merged 分支 vs fanout-finalization 扩展）。
