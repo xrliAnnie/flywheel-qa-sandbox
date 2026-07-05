@@ -25,6 +25,7 @@ function makeQaVerdicts() {
 			},
 		),
 		countImplementPhases: vi.fn(() => 1),
+		recordFixRound: vi.fn(() => 1),
 		getActiveImplementSession: vi.fn((): PhaseSession | undefined => undefined),
 		listVerdictEventCandidates: vi.fn((): PhaseSession[] => []),
 		getLatestQaResultEvent: vi.fn(() => undefined),
@@ -39,15 +40,38 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const capturePhaseHeadSha = vi.fn(async () => "deadbeefcafe1234");
 	const closePhaseRunner = vi.fn(async () => {});
 	const alertLeadPipelineError = vi.fn(async () => {});
+	// FLY-887 keep-alive effects (defaults — legacy tests never call them).
+	const probePhaseAlive = vi.fn(async () => "alive" as const);
+	const parkPhaseRunner = vi.fn(async () => {});
+	const wakePhaseRunner = vi.fn(async () => ({ ok: true }));
+	const assertPhaseWorktreeReady = vi.fn(async () => ({ ok: true }));
 	const listStrandedDesignPhases = vi.fn((): PhaseSession[] => []);
 	const { qaVerdicts, intents } = makeQaVerdicts();
 	const resolveLeadId = vi.fn((): string | undefined => "eng-lead");
+	// FLY-887: default keep-alive OFF so the existing tests validate the LEGACY
+	// close-and-respawn path (the byte-compat sentinel). Keep-alive tests override.
+	const keepAliveEnabled = vi.fn(() => false);
+	const getAlivePhaseSession = vi.fn(
+		(): PhaseSession | undefined => undefined,
+	);
+	const grantTurn = vi.fn(() => {});
 	const deps: PhaseOrchestratorDeps = {
 		startDispatcher: { start },
-		effects: { capturePhaseHeadSha, closePhaseRunner, alertLeadPipelineError },
+		effects: {
+			capturePhaseHeadSha,
+			closePhaseRunner,
+			alertLeadPipelineError,
+			probePhaseAlive,
+			parkPhaseRunner,
+			wakePhaseRunner,
+			assertPhaseWorktreeReady,
+		},
 		resolveThreeStage: () => ({ enabled: true }),
 		listStrandedDesignPhases,
 		resolveLeadId,
+		keepAliveEnabled,
+		getAlivePhaseSession,
+		grantTurn,
 		qaVerdicts,
 		...over,
 	};
@@ -57,8 +81,15 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		capturePhaseHeadSha,
 		closePhaseRunner,
 		alertLeadPipelineError,
+		probePhaseAlive,
+		parkPhaseRunner,
+		wakePhaseRunner,
+		assertPhaseWorktreeReady,
 		listStrandedDesignPhases,
 		resolveLeadId,
+		keepAliveEnabled,
+		getAlivePhaseSession,
+		grantTurn,
 		qaVerdicts,
 		intents,
 	};
@@ -169,19 +200,9 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 		const start = vi.fn(async () => {
 			throw new Error("dispatch boom");
 		});
-		const alertLeadPipelineError = vi.fn(async () => {});
-		const deps: PhaseOrchestratorDeps = {
+		const { deps, alertLeadPipelineError } = makeDeps({
 			startDispatcher: { start },
-			effects: {
-				capturePhaseHeadSha: vi.fn(async () => "abc123"),
-				closePhaseRunner: vi.fn(async () => {}),
-				alertLeadPipelineError,
-			},
-			resolveThreeStage: () => ({ enabled: true }),
-			listStrandedDesignPhases: () => [],
-			resolveLeadId: () => "eng-lead",
-			qaVerdicts: makeQaVerdicts().qaVerdicts,
-		};
+		});
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "design", status: "design_done" }),
 		);

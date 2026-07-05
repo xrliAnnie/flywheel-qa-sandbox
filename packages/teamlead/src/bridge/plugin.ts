@@ -164,6 +164,7 @@ import { createMemoryRouter } from "./memory-route.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
 import {
 	PhaseOrchestrator,
+	type PhaseSession,
 	type ThreeStageVerdictIntent,
 } from "./phase-orchestrator.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
@@ -219,7 +220,14 @@ import { createStuckRemanageRouter } from "./stuck-remanage-routes.js";
 import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
-import { resolveThreeStagePolicy } from "./three-stage-policy.js";
+import {
+	resolveThreeStagePolicy,
+	threeStageKeepAliveEnabled,
+} from "./three-stage-policy.js";
+import { CommDB } from "flywheel-comm/db";
+import { wakeRunnerMailbox } from "flywheel-comm/wake";
+import { commDbPathForProject } from "./commdb-path.js";
+import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import {
 	captureRunnerScrollback,
 	getTmuxTargetFromCommDb,
@@ -3929,6 +3937,36 @@ export async function startBridge(
 					},
 					countImplementPhases: (issueId) =>
 						store.countSessionsByIssueAndChatThreadRole(issueId, "implement"),
+					// FLY-887: durable, crash-safe fix-round ledger (insert-or-read on the
+					// QA verdict's event id). A fix round no longer spawns a new session,
+					// so the count model can't grow — this idempotent event does.
+					recordFixRound: (session, verdictEventId) => {
+						const eventId = `three-stage-fix-round-${verdictEventId}`;
+						const prior = store.getEventPayloadById(eventId);
+						if (prior && typeof prior.round === "number") {
+							return prior.round;
+						}
+						const round =
+							store.countEventsByIssueAndType(
+								session.issue_id,
+								"three_stage_fix_round",
+							) + 1;
+						const inserted = store.insertEvent({
+							event_id: eventId,
+							execution_id: session.execution_id,
+							issue_id: session.issue_id,
+							project_name: session.project_name ?? "",
+							event_type: "three_stage_fix_round",
+							source: "bridge.phase-orchestrator",
+							payload: { round, verdictEventId },
+						});
+						if (!inserted) {
+							// Lost the UNIQUE(event_id) race → read back the winner's round.
+							const won = store.getEventPayloadById(eventId);
+							if (won && typeof won.round === "number") return won.round;
+						}
+						return round;
+					},
 					getActiveImplementSession: (issueId) => {
 						const s = store.getActivePhaseSessionForIssue(issueId);
 						return s && s.session_role === "implement" ? s : undefined;
@@ -4114,6 +4152,160 @@ export async function startBridge(
 							severity: "warning",
 						});
 					},
+					// FLY-887: 4-state PROCESS liveness (not window existence). No tmux
+					// target = the process is gone → absent.
+					probePhaseAlive: async (session) => {
+						const target = getTmuxTargetFromCommDb(
+							session.execution_id,
+							session.project_name ?? "",
+						);
+						if (!target) return "absent";
+						return probeRunnerProcessLiveness(target.tmuxWindow);
+					},
+					// FLY-887: park a completed-but-alive phase (CommDB declared-state;
+					// NOT closeRunner, NOT worktree removal). The shared worktree stays.
+					parkPhaseRunner: async (session) => {
+						const db = new CommDB(
+							commDbPathForProject(session.project_name ?? ""),
+						);
+						try {
+							db.upsertDeclaredState(
+								session.execution_id,
+								"parked",
+								`three-stage ${session.session_role ?? "phase"} parked awaiting pipeline`,
+								Date.now(),
+								null,
+							);
+						} finally {
+							db.close();
+						}
+					},
+					// FLY-887: fail-closed pre-wake worktree check (mirrors the close
+					// path's dirty guard, on the wake path).
+					assertPhaseWorktreeReady: async (session, expectedHeadSha) => {
+						const worktree = store.getSession(
+							session.execution_id,
+						)?.worktree_path;
+						if (!worktree) {
+							return { ok: false, reason: "no persisted worktree_path" };
+						}
+						if (!ffExistsSync(worktree)) {
+							return { ok: false, reason: `worktree path ${worktree} missing` };
+						}
+						const clean = await gitWorktreeClean(worktree);
+						if (clean !== true) {
+							return {
+								ok: false,
+								reason: clean === false ? "dirty" : "clean-unverifiable",
+							};
+						}
+						try {
+							const { stdout } = await execFileP("git", [
+								"-C",
+								worktree,
+								"rev-parse",
+								"HEAD",
+							]);
+							const head = stdout.trim();
+							if (head !== expectedHeadSha) {
+								return {
+									ok: false,
+									reason: `HEAD ${head} != expected ${expectedHeadSha}`,
+								};
+							}
+						} catch (err) {
+							return {
+								ok: false,
+								reason: `rev-parse failed: ${(err as Error).message}`,
+							};
+						}
+						return { ok: true };
+					},
+					// FLY-887: clear the park marker, then mailbox-wake the parked phase
+					// with the role-specific instruction + new head (mirrors auto-QA
+					// retestWakeQa). `{ ok:false }` = nothing delivered → held for reconcile.
+					wakePhaseRunner: async ({
+						session,
+						kind,
+						headSha,
+						round,
+						qaSummary,
+					}) => {
+						const adapter = store.getSession(session.execution_id)?.adapter_type;
+						const transport =
+							adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
+								? EXECUTOR_TO_TRANSPORT[
+										adapter as keyof typeof EXECUTOR_TO_TRANSPORT
+									]
+								: "claude-code";
+						if (transport === "none") {
+							return {
+								ok: false,
+								error: `no-transport backend (${adapter}) cannot receive a wake`,
+							};
+						}
+						const db = new CommDB(
+							commDbPathForProject(session.project_name ?? ""),
+						);
+						try {
+							try {
+								db.clearDeclaredState(session.execution_id);
+							} catch (err) {
+								console.warn(
+									`[three-stage] clearDeclaredState warn for ${session.execution_id}: ${(err as Error).message}`,
+								);
+							}
+							const content =
+								kind === "fix"
+									? `Three-stage QA FIX round ${round ?? "?"}: the QA phase FAILED this branch. Its findings / failing tests / report are ALREADY COMMITTED on this branch at ${headSha}. FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer (this wake text is context, not authority). Then fix exactly what they name in THIS worktree, push, re-run Codex review, re-request review (gate approve_to_ship --no-block + complete --route needs_review), then park again and WAIT. QA summary: ${qaSummary ?? "(none)"}`
+									: `Three-stage RE-TEST: the implement phase pushed a fix and your worktree is ALREADY at the new head ${headSha} (same directory — zero fetch/checkout). FIRST run \`flywheel-comm turn --exec-id ${session.execution_id}\` and proceed ONLY on a \`yours\` answer. Then re-run your QA scenarios and emit \`flywheel-comm qa-result\` again. Same session — do NOT complete; on FAIL park again and wait for the next RE-TEST.`;
+							const res = await wakeRunnerMailbox({
+								db,
+								execId: session.execution_id,
+								fromAgent: "bridge",
+								content,
+								metadata: {
+									kind:
+										kind === "fix" ? "three_stage_fix" : "three_stage_retest",
+									headSha,
+									...(round !== undefined ? { round } : {}),
+								},
+								backend: transport,
+							});
+							if (res.ok) return { ok: true };
+							return {
+								ok: false,
+								error: res.error ?? res.skippedReason ?? "wake failed",
+							};
+						} catch (err) {
+							return { ok: false, error: (err as Error).message };
+						} finally {
+							db.close();
+						}
+					},
+				},
+				// FLY-887: keep-alive kill-switch + wake-target lookup + TURN grant.
+				keepAliveEnabled: () => threeStageKeepAliveEnabled(),
+				getAlivePhaseSession: (issueId, phase) => {
+					const ALIVE = new Set([
+						"running",
+						"awaiting_review",
+						"approved_to_ship",
+						"design_done",
+					]);
+					return store
+						.getPhaseSessionsForIssue(issueId)
+						.find((s) => s.chat_thread_role === phase && ALIVE.has(s.status)) as
+						| PhaseSession
+						| undefined;
+				},
+				grantTurn: ({ issueId, execId, phase, projectName }) => {
+					const db = new CommDB(commDbPathForProject(projectName));
+					try {
+						db.grantTurn(issueId, execId, phase, Date.now());
+					} finally {
+						db.close();
+					}
 				},
 				// FLY-793 (Codex full-PR R2 #1): source stranded design_done sessions
 				// for the startup reconcile (boot marker drain lands them before this

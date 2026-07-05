@@ -2519,6 +2519,29 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-887: the parsed JSON payload of a single event by its event_id, or
+	 * undefined. Backs `recordFixRound`'s insert-or-read: after an `insertEvent`
+	 * loses the UNIQUE(event_id) race (returns false), the winner's recorded
+	 * round is read back from here so a crash-replay resumes round N.
+	 */
+	getEventPayloadById(eventId: string): Record<string, unknown> | undefined {
+		const stmt = this.db.prepare(
+			"SELECT payload FROM session_events WHERE event_id = ? LIMIT 1",
+		);
+		stmt.bind([eventId]);
+		const row = stmt.step()
+			? (stmt.getAsObject() as Record<string, unknown>)
+			: undefined;
+		stmt.free();
+		if (!row || row.payload == null) return undefined;
+		try {
+			return JSON.parse(row.payload as string) as Record<string, unknown>;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
 	 * FLY-603 Layer B: sessions whose worktree must NOT be reconciled — the
 	 * protected status set for a project. `pending` IS included: it is a real
 	 * persisted status (schema default; `worktree_ready` upserts a pending

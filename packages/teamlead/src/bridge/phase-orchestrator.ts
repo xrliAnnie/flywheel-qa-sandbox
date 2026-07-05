@@ -95,6 +95,27 @@ export interface ThreeStageVerdictIntent {
 
 const DEFAULT_MAX_FIX_ROUNDS = 3;
 
+/**
+ * FLY-887: 4-state process liveness of a phase runner (mirrors
+ * `probeRunnerProcessLiveness`). `alive` → a live process to park; `dead_pin` /
+ * `absent` → the process is gone, close-clean (legacy); `indeterminate` (tmux
+ * timeout / EACCES) → FAIL-CLOSED: never treat a possibly-alive context holder as
+ * dead — leave it for reconcile.
+ */
+export type PhaseLiveness = "alive" | "dead_pin" | "absent" | "indeterminate";
+
+/** FLY-887: a keep-alive wake — a FAIL fix or a retest after a new head. */
+export interface WakePhaseRunnerArgs {
+	session: PhaseSession;
+	kind: "fix" | "retest";
+	/** The head the woken phase should be at (worktree already there). */
+	headSha: string;
+	/** FAIL fix round (kind === "fix"). */
+	round?: number;
+	/** Truncated QA findings summary (kind === "fix"). */
+	qaSummary?: string;
+}
+
 export interface PhaseOrchestratorDeps {
 	/** Dispatch a new phase-session (mirrors StartRequest subset). */
 	startDispatcher: {
@@ -121,6 +142,37 @@ export interface PhaseOrchestratorDeps {
 			session: PhaseSession;
 			reason: string;
 		}): Promise<void>;
+		/**
+		 * FLY-887: 4-state process liveness of a phase runner. `alive` → park it;
+		 * `dead_pin`/`absent` → close-clean; `indeterminate` → fail-closed (leave
+		 * for reconcile; never close a maybe-alive context holder).
+		 */
+		probePhaseAlive(session: PhaseSession): Promise<PhaseLiveness>;
+		/**
+		 * FLY-887: park a completed-but-alive phase (CommDB declared-state marker;
+		 * NOT closeRunner, NOT worktree removal). The shared worktree stays;
+		 * watchdog wakes are suppressed until re-engagement.
+		 */
+		parkPhaseRunner(session: PhaseSession): Promise<void>;
+		/**
+		 * FLY-887: wake a parked phase (clear its park marker first, then mailbox
+		 * wake with the role-specific instruction + new head). `{ ok:false }` →
+		 * nothing was delivered (no-transport / mailbox skip); the caller holds the
+		 * TURN and leaves it for reconcile (mirrors FLY-752 fail-loud retest).
+		 */
+		wakePhaseRunner(
+			args: WakePhaseRunnerArgs,
+		): Promise<{ ok: boolean; error?: string }>;
+		/**
+		 * FLY-887: fail-closed pre-wake worktree check (mirrors the close path's
+		 * dirty guard, on the wake path). `{ ok:false, reason }` → do NOT grant the
+		 * TURN, do NOT wake — alert the Lead. Verifies persisted worktree_path
+		 * exists + clean + `HEAD === expectedHeadSha`.
+		 */
+		assertPhaseWorktreeReady(
+			session: PhaseSession,
+			expectedHeadSha: string,
+		): Promise<{ ok: boolean; reason?: string }>;
 	};
 	/** Per-project three-stage enablement (Step 1 policy). */
 	resolveThreeStage(session: PhaseSession): { enabled: boolean };
@@ -142,6 +194,32 @@ export interface PhaseOrchestratorDeps {
 	 */
 	listStrandedDesignPhases(): PhaseSession[];
 	/**
+	 * FLY-887: the keep-alive kill-switch (FLYWHEEL_THREE_STAGE_KEEPALIVE). When
+	 * false, handoff/fail revert to the legacy close-and-respawn path (byte-compat).
+	 */
+	keepAliveEnabled(): boolean;
+	/**
+	 * FLY-887: a live (parked, non-terminal) phase-session for the issue with the
+	 * given phase role — the wake target. Undefined → spawn (dispatcher seam grants
+	 * its TURN). Backed by `getPhaseSessionsForIssue` filtered to the role + a
+	 * parked-eligible status.
+	 */
+	getAlivePhaseSession(
+		issueId: string,
+		phase: ThreeStagePhase,
+	): PhaseSession | undefined;
+	/**
+	 * FLY-887: grant the shared-worktree TURN to a WAKE target before waking it
+	 * (spawn paths get their TURN from the dispatcher pre-launch seam instead). The
+	 * project's CommDB is the single writer; epoch auto-increments.
+	 */
+	grantTurn(args: {
+		issueId: string;
+		execId: string;
+		phase: ThreeStagePhase;
+		projectName: string;
+	}): void;
+	/**
 	 * FLY-859: the three-stage QA verdict machinery (Step 8's deferred
 	 * ThreeStageQaCoordinator, folded into this orchestrator). All helpers are
 	 * thin store closures wired in plugin.ts; intent read/patch operate on the
@@ -158,6 +236,15 @@ export interface PhaseOrchestratorDeps {
 		): void;
 		/** Implement-phase count for the issue (initial + fix rounds). */
 		countImplementPhases(issueId: string): number;
+		/**
+		 * FLY-887: durable, crash-safe fix-round accounting (insert-or-read). Keyed
+		 * to the QA verdict's event id: if a `three_stage_fix_round` event already
+		 * exists for it → return its recorded round (a replay after a crash resumes
+		 * round N, never miscounts N+1); else round = countFixRounds + 1, insert,
+		 * return. Replaces the session-count model (a keep-alive fix WAKES the parked
+		 * implement, so the session count no longer grows).
+		 */
+		recordFixRound(session: PhaseSession, verdictEventId: string): number;
 		/**
 		 * Live (non-terminal) implement phase-session for the issue, if any —
 		 * closes the crash window between a successful fix dispatch and the
@@ -371,6 +458,18 @@ export class PhaseOrchestrator {
 		// new event's identity/content would strand the recorded FAIL forever).
 		const existing = this.deps.qaVerdicts.readIntent(execId);
 		if (existing) {
+			// Same verdict replayed → resume an incomplete FAIL, else no-op.
+			if (existing.event_id === verdict.eventId) {
+				if (
+					existing.status === "fail" &&
+					!existing.fixExecId &&
+					!existing.alertedAt
+				) {
+					await this.runFailFlow(session);
+				}
+				return;
+			}
+			// A DIFFERENT verdict eventId. An incomplete prior FAIL must finish first.
 			if (
 				existing.status === "fail" &&
 				!existing.fixExecId &&
@@ -379,13 +478,26 @@ export class PhaseOrchestrator {
 				await this.runFailFlow(session);
 				return;
 			}
-			// Fully processed (pass recorded / fail complete / terminally refused).
-			if (existing.event_id !== verdict.eventId) {
+			// FLY-887: keep-alive lets ONE QA session emit MULTIPLE verdicts (round 1
+			// FAIL → implementer fixes → round 2 verdict on the SAME session…). A new
+			// verdict eventId following a COMPLETED FAIL round (fixExecId set) is a
+			// NEW ROUND — fall through to process it fresh (overwriting the intent).
+			// A prior PASS / terminal refusal (alertedAt) / keep-alive OFF is never a
+			// new round → ignore the new verdict (byte-compat: keep-alive OFF closes
+			// the QA session after its single verdict, so this never fires there).
+			if (
+				!(
+					existing.status === "fail" &&
+					!!existing.fixExecId &&
+					this.deps.keepAliveEnabled()
+				)
+			) {
 				this.log(
 					`qa_result ${verdict.eventId} for ${execId} ignored — verdict ${existing.event_id} already recorded`,
 				);
+				return;
 			}
-			return;
+			// fall through → new round
 		}
 
 		const status = (verdict.status ?? "").trim().toLowerCase();
@@ -414,6 +526,15 @@ export class PhaseOrchestrator {
 			event_id: verdict.eventId,
 			...(verdict.summary ? { summary: truncate(verdict.summary, 600) } : {}),
 			at: new Date().toISOString(),
+			// FLY-887: reset per-round progress. For a truly fresh verdict these are
+			// already absent (no-op); for a keep-alive NEW ROUND they clear the prior
+			// round's fixExecId/headSha so a same-verdict replay of the new round
+			// re-drives (not short-circuits on the old round's fixExecId) and the head
+			// is re-captured at the new round's committed tip.
+			headSha: undefined,
+			closed: undefined,
+			fixExecId: undefined,
+			alertedAt: undefined,
 		});
 
 		if (status === "pass") {
@@ -449,6 +570,15 @@ export class PhaseOrchestrator {
 		}
 		if (!session.project_name) {
 			await refuse("session missing project_name — cannot start Implement-fix");
+			return;
+		}
+
+		// FLY-887: keep-alive fix loop — WAKE the alive parked implement (no close,
+		// no respawn; QA parks itself via its prompt). This branch is checked BEFORE
+		// the legacy active-adopt below, which would merely adopt the parked
+		// implement without waking it.
+		if (this.deps.keepAliveEnabled()) {
+			await this.runFailFlowKeepAlive(session, refuse);
 			return;
 		}
 
@@ -561,6 +691,152 @@ export class PhaseOrchestrator {
 	}
 
 	/**
+	 * FLY-887: the keep-alive QA-FAIL fix loop. WAKE the alive parked implement to
+	 * fix on the same branch (full context, zero token re-onboard) — no session is
+	 * closed, no context is lost. If the implement died, fall back to a spawn
+	 * (dispatcher seam grants its TURN). The QA session is NOT closed here: it
+	 * parks itself via its prompt and is re-woken to re-verify.
+	 */
+	private async runFailFlowKeepAlive(
+		session: PhaseSession,
+		refuse: (reason: string) => Promise<void>,
+	): Promise<void> {
+		const execId = session.execution_id;
+		const intent = () => this.deps.qaVerdicts.readIntent(execId);
+		const projectName = session.project_name as string;
+
+		// Durable, crash-safe fix-round accounting (insert-or-read on the verdict's
+		// event id): a replay after a crash resumes round N, never miscounts N+1.
+		const verdictEventId = intent()?.event_id;
+		if (!verdictEventId) {
+			await refuse(
+				`no QA verdict event_id recorded on ${session.issue_id} — cannot account the fix round`,
+			);
+			return;
+		}
+		const round = this.deps.qaVerdicts.recordFixRound(session, verdictEventId);
+		const maxFixRounds = normalizeMaxFixRounds(
+			this.deps.qaVerdicts.maxFixRounds,
+		);
+		if (round > maxFixRounds) {
+			await refuse(
+				`three-stage fix-loop cap reached on ${session.issue_id} (fix round ${round}; max ${maxFixRounds}) — Lead decides how to proceed`,
+			);
+			return;
+		}
+
+		// The QA phase is a WRITER — its findings/failing tests are already committed
+		// on branch B, so the head is its own committed head. Re-capture per round
+		// (the worktree stays under keep-alive, and each round's head differs); the
+		// fresh-verdict persist cleared the prior round's headSha. Reuse only a
+		// SAME-round persisted head (crash resume within a round).
+		let headSha = intent()?.headSha;
+		if (!headSha) {
+			headSha =
+				(await this.deps.effects.capturePhaseHeadSha(session)) ?? undefined;
+			if (!headSha) {
+				await refuse(
+					`could not capture QA phase head SHA on ${session.issue_id} — QA findings must be committed+pushed; fix-loop aborted`,
+				);
+				return;
+			}
+			this.deps.qaVerdicts.patchIntent(execId, { headSha });
+		}
+
+		const qaSummary = intent()?.summary ?? "(no QA summary provided)";
+		const impl = this.deps.getAlivePhaseSession(session.issue_id, "implement");
+		if (impl) {
+			// Alive parked implement → WAKE it (with full context). Fail-closed on a
+			// dirty / drifted worktree BEFORE granting the TURN or waking.
+			const ready = await this.deps.effects.assertPhaseWorktreeReady(
+				impl,
+				headSha,
+			);
+			if (!ready.ok) {
+				await this.failClosed(
+					impl,
+					`implement worktree not ready for fix wake (${ready.reason ?? "?"}) — not granting TURN / not waking`,
+				);
+				return;
+			}
+			this.deps.grantTurn({
+				issueId: session.issue_id,
+				execId: impl.execution_id,
+				phase: "implement",
+				projectName,
+			});
+			const woke = await this.deps.effects.wakePhaseRunner({
+				session: impl,
+				kind: "fix",
+				headSha,
+				round,
+				qaSummary,
+			});
+			// Persist the fix binding AFTER the TURN + wake attempt so a same-verdict
+			// replay short-circuits in onQaResult (no double-wake).
+			this.deps.qaVerdicts.patchIntent(execId, { fixExecId: impl.execution_id });
+			if (woke.ok) {
+				this.log(
+					`QA FAIL → WAKE implement fix round ${round} on ${session.issue_id} @ ${headSha.slice(0, 8)} (impl ${impl.execution_id})`,
+				);
+			} else {
+				this.warn(
+					`QA FAIL wake implement failed for ${impl.execution_id}: ${woke.error ?? "?"} — TURN set, held for reconcile`,
+				);
+			}
+			await this.postFixThread(session, round, true);
+			return;
+		}
+
+		// The implement phase died → spawn a fresh Implement-fix (dispatcher seam
+		// grants its TURN pre-launch). The QA session still parks (not closed).
+		const fixLeadId = this.deps.resolveLeadId(session);
+		if (fixLeadId === undefined) {
+			this.warn(
+				`resolveLeadId returned undefined for ${session.issue_id} — dispatching Implement-fix anyway, but its CommDB registration will be skipped (window will not auto-close)`,
+			);
+		}
+		try {
+			const res = await this.deps.startDispatcher.start({
+				issueId: session.issue_id,
+				projectName,
+				leadId: fixLeadId,
+				sessionRole: "implement",
+				dispatchModel: resolvePhaseModel("implement"),
+				startPoint: headSha,
+				shareParentBranch: true,
+				issueIdentifier: session.issue_identifier,
+				issueTitle: session.issue_title,
+				phaseFixContext: { round, qaSummary },
+			});
+			this.deps.qaVerdicts.patchIntent(execId, { fixExecId: res.executionId });
+			this.log(
+				`QA FAIL → spawn Implement-fix round ${round} (no live implement) on ${session.issue_id} @ ${headSha.slice(0, 8)} (exec ${res.executionId})`,
+			);
+		} catch (err) {
+			await refuse(`starting Implement-fix failed: ${(err as Error).message}`);
+			return;
+		}
+		await this.postFixThread(session, round, false);
+	}
+
+	private async postFixThread(
+		session: PhaseSession,
+		round: number,
+		woken: boolean,
+	): Promise<void> {
+		const verb = woken ? "唤醒 implement 段(活着,带全 context)" : "起 Implement-fix";
+		try {
+			await this.deps.qaVerdicts.postIssueThread(
+				session,
+				`🔴 三段 QA 未通过 → 已${verb}修复(第 ${round} 轮;findings/failing tests 已在分支上)。QA 段保活等复验。founder 不打扰。`,
+			);
+		} catch (err) {
+			this.warn(`postIssueThread failed: ${(err as Error).message}`);
+		}
+	}
+
+	/**
 	 * FLY-859 stranded-pass alert: verdict says PASS, session is terminal, and
 	 * there is no REAL ship-gate binding (`review_question_id` missing or the
 	 * 'unbound' sentinel, which verify-approval rejects). Alert once.
@@ -598,20 +874,55 @@ export class PhaseOrchestrator {
 			return;
 		}
 
-		// 2. Close the previous phase runner/worktree (dirty-safe) so branch B is
-		//    free for the next phase to check out (single-writer invariant).
-		try {
-			await this.deps.effects.closePhaseRunner(prev);
-		} catch (err) {
-			await this.failClosed(
-				prev,
-				`closing ${prev.session_role} phase runner failed: ${(err as Error).message}`,
-			);
+		// FLY-887: keep-alive OFF → the legacy close-and-respawn path, byte-for-byte.
+		if (!this.deps.keepAliveEnabled()) {
+			try {
+				await this.deps.effects.closePhaseRunner(prev);
+			} catch (err) {
+				await this.failClosed(
+					prev,
+					`closing ${prev.session_role} phase runner failed: ${(err as Error).message}`,
+				);
+				return;
+			}
+			if (!prev.project_name) {
+				await this.failClosed(
+					prev,
+					"session missing project_name — cannot start next phase",
+				);
+				return;
+			}
+			await this.dispatchNextPhase(prev, next, headSha);
 			return;
 		}
 
-		// 3. Start the next phase on the SAME issue + SAME branch B at the captured
-		//    head, with the next phase's model.
+		// FLY-887: keep-alive ON → PARK the completed phase (alive), or close a
+		// dead one. Never close a live context holder.
+		const liveness = await this.deps.effects.probePhaseAlive(prev);
+		if (liveness === "indeterminate") {
+			// FAIL-CLOSED: a tmux-probe timeout is NOT proof the phase is dead. Leave
+			// it for reconcile rather than close a possibly-alive context holder.
+			await this.failClosed(
+				prev,
+				`${prev.session_role} phase liveness indeterminate — not parking/closing; left for reconcile`,
+			);
+			return;
+		}
+		if (liveness === "alive") {
+			await this.deps.effects.parkPhaseRunner(prev);
+		} else {
+			// dead_pin / absent → the process is gone: close-clean (legacy behavior).
+			try {
+				await this.deps.effects.closePhaseRunner(prev);
+			} catch (err) {
+				await this.failClosed(
+					prev,
+					`closing dead ${prev.session_role} phase runner failed: ${(err as Error).message}`,
+				);
+				return;
+			}
+		}
+
 		if (!prev.project_name) {
 			await this.failClosed(
 				prev,
@@ -619,6 +930,63 @@ export class PhaseOrchestrator {
 			);
 			return;
 		}
+
+		// wake-or-spawn the next phase.
+		const target = this.deps.getAlivePhaseSession(prev.issue_id, next);
+		if (target) {
+			// The parked next phase is alive → WAKE it in place (zero checkout).
+			const ready = await this.deps.effects.assertPhaseWorktreeReady(
+				target,
+				headSha,
+			);
+			if (!ready.ok) {
+				await this.failClosed(
+					target,
+					`${next} phase worktree not ready to wake (${ready.reason ?? "?"}) — not granting TURN / not waking`,
+				);
+				return;
+			}
+			// Record the TURN BEFORE waking (wake failure → held for reconcile; the
+			// TURN already points at the target so the retry is idempotent).
+			this.deps.grantTurn({
+				issueId: prev.issue_id,
+				execId: target.execution_id,
+				phase: next,
+				projectName: prev.project_name,
+			});
+			const woke = await this.deps.effects.wakePhaseRunner({
+				session: target,
+				kind: "retest",
+				headSha,
+			});
+			if (woke.ok) {
+				this.log(
+					`${prev.session_role} → ${next} WAKE on ${prev.issue_id} @ ${headSha.slice(0, 8)} (target ${target.execution_id})`,
+				);
+			} else {
+				this.warn(
+					`${prev.session_role} → ${next} wake failed for ${target.execution_id}: ${woke.error ?? "?"} — TURN set, held for reconcile`,
+				);
+			}
+			return;
+		}
+
+		// No live next phase → SPAWN it (dispatcher pre-launch seam grants its TURN).
+		await this.dispatchNextPhase(prev, next, headSha);
+	}
+
+	/**
+	 * FLY-887: dispatch the next phase on the SAME issue + SAME branch B at the
+	 * captured head, with the next phase's model. Shared by the legacy handoff and
+	 * the keep-alive spawn-fallback. The caller MUST have verified `project_name`.
+	 * The TURN is granted by the RunDispatcher's pre-launch seam (never here — a
+	 * caller-side grant would race the runner's first `turn` self-check).
+	 */
+	private async dispatchNextPhase(
+		prev: PhaseSession,
+		next: ThreeStagePhase,
+		headSha: string,
+	): Promise<void> {
 		// FLY-793 (combined-QA FLY-855): resolve the real leadId LIVE — the old
 		// `prev.lead_id` read was a phantom (no such sessions column → always
 		// undefined → CommDB registration silently skipped → phase windows never
@@ -632,7 +1000,7 @@ export class PhaseOrchestrator {
 		try {
 			const res = await this.deps.startDispatcher.start({
 				issueId: prev.issue_id,
-				projectName: prev.project_name,
+				projectName: prev.project_name as string,
 				leadId,
 				sessionRole: next,
 				dispatchModel: resolvePhaseModel(next),

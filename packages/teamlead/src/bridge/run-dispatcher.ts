@@ -25,6 +25,7 @@ import type {
 } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
+import { threeStageKeepAliveEnabled } from "./three-stage-policy.js";
 import type { ProgressResumeInfo } from "./progress-resume.js";
 import type {
 	IRetryDispatcher,
@@ -694,6 +695,38 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			req.issueId,
 			req.leadId,
 		);
+
+		// FLY-887: pre-launch TURN grant seam. A three-stage phase SPAWN must have
+		// its shared-worktree TURN recorded in CommDB BEFORE the runner's first
+		// `turn` self-check — a caller-side grant (after start() returns) would race
+		// the launch and leave the runner seeing `no-turn`. This ONE seam covers
+		// every spawn path (all route through start()): the fresh Design entry
+		// (runs-route), the handoff spawn-fallback, the QA-FAIL spawn-fallback, and
+		// the reconcile spawn. Already-alive WAKE targets grant their TURN before the
+		// wake instead (orchestrator). Fail-closed: a grant failure fails the
+		// dispatch (never launch a phase that cannot establish single-writer
+		// ownership). Gated on keep-alive (=0 → the legacy path needs no TURN).
+		if (
+			req.shareParentBranch === true &&
+			isThreeStagePhaseRole(role) &&
+			threeStageKeepAliveEnabled()
+		) {
+			try {
+				const dbPath = defaultGetCommDbPath(req.projectName);
+				const db = new CommDB(dbPath);
+				try {
+					db.grantTurn(req.issueId, executionId, role, Date.now());
+				} finally {
+					db.close();
+				}
+			} catch (err) {
+				this.inflight.delete(key);
+				this.cleanupPreRegistration(executionId, req.projectName);
+				throw new Error(
+					`pre-launch TURN grant failed for ${role} phase on ${req.issueId}: ${(err as Error).message}`,
+				);
+			}
+		}
 
 		// FLY-795: restart-resilient resume. If a prior execution + a committed
 		// progress.md on branch B exist, continue from the real cursor instead of
