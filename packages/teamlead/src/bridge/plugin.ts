@@ -168,6 +168,7 @@ import {
 	type ThreeStageVerdictIntent,
 } from "./phase-orchestrator.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
+import { makeFinalizeThreeStagePhases } from "./post-ship-finalization.js";
 import {
 	buildCronModelViews,
 	buildProjectRunnerDefaults,
@@ -3007,6 +3008,11 @@ export async function startBridge(
 					// FLY-793: the in-process completion path drives three-stage
 					// Design→Implement→QA phase handoffs via this same holder.
 					phaseOrchestrator: phaseOrchestratorHolder,
+					// FLY-887: ship-time finalizer for keep-alive parked design/implement.
+					finalizeThreeStagePhases: makeFinalizeThreeStagePhases(
+						store,
+						transitionOpts,
+					),
 				},
 			);
 			startDispatcher = dispatcher;

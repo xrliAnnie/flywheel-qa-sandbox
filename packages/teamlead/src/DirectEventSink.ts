@@ -75,6 +75,17 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	// (byte-compat); onPhaseComplete itself gates on three-stage phase + status.
 	public phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
 
+	/**
+	 * FLY-887: ship-time three-stage phase finalizer (closes the parked design +
+	 * implement sessions before the shared worktree is removed). Set by the
+	 * composition root after construction. Absent → no phase finalization
+	 * (byte-compat; a single-session issue leaves nothing to finalize anyway).
+	 */
+	public finalizeThreeStagePhases?: (
+		issueId: string,
+		projectName: string,
+	) => Promise<void>;
+
 	constructor(
 		private store: StateStore,
 		private config: BridgeConfig,
@@ -791,6 +802,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						store: this.store,
 						projects: this.projects,
 						removeCleanWorktree: this.removeCleanWorktree,
+						// FLY-887: close the parked design + implement phases before the
+						// shared worktree is removed.
+						finalizeThreeStagePhases: this.finalizeThreeStagePhases,
 						// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 						// by runPostShipFinalization's merge-evidence predicate).
 						markIssueDone: makeLinearDoneFinalizer(this.config),

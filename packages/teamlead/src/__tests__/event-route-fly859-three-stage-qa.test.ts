@@ -97,10 +97,21 @@ describe("event-route qa_result split (FLY-859)", () => {
 				capturePhaseHeadSha: async () => "f".repeat(40),
 				closePhaseRunner: async () => {},
 				alertLeadPipelineError: async () => {},
+				// FLY-887: keep-alive effects (unused here — this suite pins the
+				// LEGACY close-and-respawn FLY-859 flow via keepAliveEnabled=false).
+				probePhaseAlive: async () => "alive",
+				parkPhaseRunner: async () => {},
+				wakePhaseRunner: async () => ({ ok: true }),
+				assertPhaseWorktreeReady: async () => ({ ok: true }),
 			},
 			resolveThreeStage: () => ({ enabled: true }),
 			resolveLeadId: () => "test-lead",
 			listStrandedDesignPhases: () => [],
+			// FLY-887: this suite asserts the LEGACY FAIL flow (close + spawn +
+			// intent.closed), which is exactly the keep-alive=OFF byte-compat path.
+			keepAliveEnabled: () => false,
+			getAlivePhaseSession: () => undefined,
+			grantTurn: () => {},
 			qaVerdicts: {
 				getSession: (id) =>
 					store.getSession(id) as unknown as PhaseSession | undefined,
@@ -116,6 +127,7 @@ describe("event-route qa_result split (FLY-859)", () => {
 				},
 				countImplementPhases: (issueId) =>
 					store.countSessionsByIssueAndChatThreadRole(issueId, "implement"),
+				recordFixRound: () => 1,
 				getActiveImplementSession: () => undefined,
 				listVerdictEventCandidates: () =>
 					store.getThreeStageQaSessionsWithVerdictEvents() as unknown as PhaseSession[],

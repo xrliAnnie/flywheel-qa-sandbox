@@ -48,6 +48,7 @@ import {
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
+	makeFinalizeThreeStagePhases,
 	markEvidenceGapCompletion,
 	runPostShipFinalization,
 } from "./post-ship-finalization.js";
@@ -555,6 +556,12 @@ export function createEventRouter(
 	const issueStatusEmojiEnabled =
 		featureFlags?.issueStatusEmojiEnabled !== false;
 	const issueAttachPinEnabled = featureFlags?.issueAttachPinEnabled === true;
+	// FLY-887: ship-time three-stage phase finalizer (built once; needs
+	// transitionOpts to close parked phases through the FSM). Undefined without
+	// transitionOpts → runPostShipFinalization skips it (byte-compat).
+	const finalizeThreeStagePhases = transitionOpts
+		? makeFinalizeThreeStagePhases(store, transitionOpts)
+		: undefined;
 
 	// Dedicated heartbeat route — lightweight, no session_events write, no lead notification
 	router.post("/heartbeat", (req, res) => {
@@ -1452,6 +1459,8 @@ export function createEventRouter(
 							store,
 							projects,
 							removeCleanWorktree,
+							// FLY-887: close parked design + implement phases before worktree removal.
+							finalizeThreeStagePhases,
 							// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 							// by runPostShipFinalization's merge-evidence predicate).
 							markIssueDone: makeLinearDoneFinalizer(config),
@@ -1878,6 +1887,8 @@ export function createEventRouter(
 										store,
 										projects,
 										removeCleanWorktree,
+										// FLY-887: close parked design + implement phases before worktree removal.
+										finalizeThreeStagePhases,
 										// FLY-799: auto-flip the shipped issue to Done (ship-success gated
 										// by runPostShipFinalization's merge-evidence predicate).
 										markIssueDone: makeLinearDoneFinalizer(config),
