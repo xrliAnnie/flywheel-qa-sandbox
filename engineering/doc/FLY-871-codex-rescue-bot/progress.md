@@ -1,15 +1,15 @@
 ---
 issue: FLY-871
 phase: implement
-phaseCursor: 1/5
-updated: 2026-07-05T00:30:20.235Z
-nextStep: "BASH: C1 capture-back + C2/C3 freshness guard in use_profile + bash tests"
+phaseCursor: 5/5
+updated: 2026-07-05T00:40:10.371Z
+nextStep: commit + push + PR (R1 incident root-cure)
 chunks:
   - id: C1-capture-back
     order: 1
     deps: []
     done: ""
-    status: todo
+    status: done
   - id: C2-freshness-helper
     order: 2
     deps: []
@@ -19,27 +19,27 @@ chunks:
     order: 3
     deps: []
     done: ""
-    status: doing
+    status: done
   - id: sentinel-extension
     order: 4
     deps: []
     done: ""
-    status: todo
+    status: done
   - id: S1-record
     order: 5
     deps: []
     done: ""
-    status: todo
+    status: done
 pointers: {}
 ---
 
 # FLY-871 progress
-**phase**: implement (1/5)
-**next**: BASH: C1 capture-back + C2/C3 freshness guard in use_profile + bash tests
+**phase**: implement (5/5)
+**next**: commit + push + PR (R1 incident root-cure)
 
 ## chunks
-- ⬜ C1-capture-back — 
+- ✅ C1-capture-back — 
 - ✅ C2-freshness-helper — 
-- 🔨 C3-exit-codes-candidate-loop — 
-- ⬜ sentinel-extension — 
-- ⬜ S1-record — 
+- ✅ C3-exit-codes-candidate-loop — 
+- ✅ sentinel-extension — 
+- ✅ S1-record — 
