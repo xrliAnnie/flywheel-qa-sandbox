@@ -80,10 +80,10 @@ sequenceDiagram
 
 | # | 文件 | 改动 |
 |---|---|---|
-| 1 | `packages/teamlead/src/bridge/phase-orchestrator.ts` | `handoff()` park 化 + wake-or-spawn + TURN 授予；`runFailFlow()` wake 化 + 轮次账本换源；reconcile 适配；deps 扩展（`probePhaseAlive`/`parkPhaseRunner`/`wakePhaseRunner`/`getAlivePhaseSession`/`grantTurn`/`recordFixRound`/`countFixRounds`） |
+| 1 | `packages/teamlead/src/bridge/phase-orchestrator.ts` | `handoff()` park 化 + wake-or-spawn + TURN 授予；`runFailFlow()` wake 化 + 轮次账本换源；reconcile 适配；deps 扩展（`probePhaseAlive` 四态/`parkPhaseRunner`/`wakePhaseRunner`（内清 park 标记）/`assertPhaseWorktreeReady`/`getAlivePhaseSession`/`grantTurn`/`recordFixRound`（insert-or-read）/`countFixRounds`） |
 | 2 | `packages/teamlead/src/bridge/plugin.ts` | 新 effects 接线：park（CommDB `upsertDeclaredState` + tmux 活体探测复用 tmux-lookup）、wake（`wakeRunnerMailbox` 直调，镜像 auto-qa-effects）、TURN 表读写、ship 收尾扩容调用 |
 | 3 | `packages/flywheel-comm/src/db.ts` + 新 `src/commands/turn.ts` | CommDB 新表 `three_stage_turn(issue_id PK, holder_exec_id, phase, epoch, granted_at)`（幂等 CREATE TABLE IF NOT EXISTS，migration 同 `runner_declared_states` 模式）+ 新子命令 `turn --exec-id <id>`（答 yours/not-yours + holder；runner 写前自查 belt） |
-| 4 | `packages/edge-worker/src/Blueprint.ts` | worktree 原地接手路径（implement/QA dispatch 遇活体前段 → 校验后复用，绝不 removeIfExists）；三段 prompts 改版（park 协议、翻转「Do NOT park」、TURN 契约；**QA writer 协议保留**） |
+| 4 | `packages/edge-worker/src/Blueprint.ts` | worktree 原地接手路径（implement/QA dispatch 遇活体前段 → 校验后复用，绝不 removeIfExists；接手也合成 WorktreeInfo + emitWorktreeReady）；三段 prompts 改版（park 协议可执行拼写、翻转「Do NOT park」、强制 turn 自查契约；**QA writer 协议保留**）；drive-by：:436 auto-QA prompt 的 `declare-state park` 改可执行拼写 |
 | 5 | `packages/teamlead/src/StateStore.ts` | `getPhaseSessionsForIssue(issueId)`（按 chat_thread_role）+ `countEventsByIssueAndType(issueId, type)` |
 | 6 | ship 收尾链（`runPostShipFinalization`，DirectEventSink.ts:36 引入处 + 其定义模块） | 收尾扩到 issue 全部三段活体：逐个 `closeRunner({finalizeDone:true})` → 共享 worktree 删除（此刻才删）→ archive cascade 放行 |
 | 7 | `packages/config/src/feature-flags/registry.ts` | 登记新 env `FLYWHEEL_THREE_STAGE_KEEPALIVE`（FLY-871 registry-drift 教训：新 env 必登记） |
@@ -98,15 +98,20 @@ sequenceDiagram
 async handoff(prev, next):
   headSha = capturePhaseHeadSha(prev)          # 不变，fail-closed
   if (!keepAliveEnabled()) → 现行 close+spawn   # kill-switch =0 逐字回退
-  alive = await deps.effects.probePhaseAlive(prev)   # tmux window 活体探测
-  if (alive):
+  liveness = await deps.effects.probePhaseAlive(prev)   # 四态，见下
+  if (liveness === 'alive'):
     await deps.effects.parkPhaseRunner(prev)   # CommDB upsertDeclaredState(execId,'parked',
                                                #   'three-stage phase parked awaiting pipeline', now, null)
                                                # 不 closeRunner、不删 worktree
-  else:
+  elif (liveness === 'indeterminate'):
+    failClosed(prev, 'liveness indeterminate') # 不 close、不 park、不动 TURN——留给 reconcile
+    return
+  else:  # dead_pin / absent
     await deps.effects.closePhaseRunner(prev)  # 死体 → 现行 close-clean（worktree 收干净）
   target = deps.getAlivePhaseSession(prev.issue_id, next)
   if (target):
+    await deps.effects.assertPhaseWorktreeReady(target, headSha)  # Codex R1 #1：wake 路的
+                                               # dirty/head fail-closed 校验（见下），不过→alert+return
     deps.grantTurn(prev.issue_id, target.execution_id, next)      # 先记 TURN 再 wake
     await deps.effects.wakePhaseRunner({session: target, kind: 'retest', headSha})
   else:
@@ -114,7 +119,9 @@ async handoff(prev, next):
     deps.grantTurn(prev.issue_id, res.executionId, next)
 ```
 
-- `probePhaseAlive`：plugin 侧 `getTmuxTargetFromCommDb(execId, project)` + tmux 探测（复用 tmux-lookup 现有 helpers）。探测失败按死体处理（fallback = 现行为，绝不悬空）。
+- `probePhaseAlive` **四态**（Codex R1 #2）：基于 `probeRunnerProcessLiveness`（tmux-lookup.ts:313-360，区分活进程 vs 死 pin），**不是**布尔 window 探测。`alive` → park/wake；`dead_pin`/`absent` → spawn 兜底（close-clean=现行为）；`indeterminate`（tmux 超时/EACCES 等瞬态）→ **fail-closed**：告警 Lead、不 close、不动 TURN，留 reconcile 重试——绝不把可能活着的 context holder 当死体关掉。四种结果各有 fake-tmux 测试。
+- `assertPhaseWorktreeReady(session, expectedHeadSha)`（Codex R1 #1）：**每次 grantTurn+wake 前必过**（handoff-retest 与 runFailFlow-fix 两处），不只在 dispatch：校验 persisted `worktree_path` 存在 + `git status --porcelain` 干净 + `rev-parse HEAD === expectedHeadSha`；任一不过 → 告警 Lead、不授 TURN、不 wake。今天 close 路径的 dirty fail-closed（plugin.ts:4033-4055）由它在 wake 路径上等价接续。
+- **wakePhaseRunner 先清 park 标记**（Codex R1 #7，镜像 auto-qa-effects.ts:481-489）：打开目标项目 CommDB → `clearDeclaredState(execId)` → 再写 mailbox wake；清除失败 warn-only 不阻塞 wake。否则 watchdog 会继续抑制一个本该活跃的 runner。
 - **TURN 顺序**：先写 TURN 记录再 wake（wake 失败 → `runner_wake_failed` 事件 + held-for-reconcile 镜像 FLY-752；TURN 已指向目标，reconcile 重试 wake 幂等）。
 - 释放语义：orchestrator 处理 `phase_design_complete` / `needs_review` / `qa-result` 事件时即认定上一持有者交还（TURN 在授予下一位时覆盖写，epoch+1；不需要显式"空档"状态）。
 
@@ -131,13 +138,17 @@ if (phaseTakeover && await worktreeManager.isRegistered(projectRoot, worktreePat
   if (clean !== true || head !== ctx.startPoint) {
     throw new Error('worktree_takeover_failed: ...');   # fail-closed，绝不 removeIfExists 活人目录
   }
+  worktreeInfo = { projectName, issueId: worktreeIssueId,
+                   worktreePath, branch: <shared main-key branch>, mainRepoPath: projectRoot };
   cwd = worktreePath;                                    # 原地接手：不 remove、不 create
+  await emitWorktreeReady(env, worktreePath);            # Codex R1 #3：worktree_path 必须照常持久
 } else {
   现行 removeIfExists + create                            # 首段 design / 死体已清 / 非三段
 }
 ```
 
 - **fail-closed 语义**：接手校验不过 → throw（`worktree_takeover_failed`），orchestrator `failClosed` 升级 Lead，**绝不静默 remove**（parked 前段的 cwd 在里面）。
+- **接手必须合成 `WorktreeInfo` + `emitWorktreeReady`**（Codex R1 #3）：`worktree_path` 不是装饰——`capturePhaseHeadSha`、Codex gate 产物、post-ship 清理都靠它；现行只在 `create()` 后持久（Blueprint.ts:743-755），缺失时 worktree-cleanup.ts:118-135 会按 `session_role` 派生兜底 key，QA 会错指到 `-qa` 路径。测试：接手路径照发 worktree_ready；QA 段收尾删的是共享 main-key worktree 而非 role 派生路径。
 - worktree key、目录、branch 全部零变化（🅱️ = 现状结构 + 不删）。
 
 ### M3 QA FAIL → wake implement（runFailFlow 改版）
@@ -145,24 +156,27 @@ if (phaseTakeover && await worktreeManager.isRegistered(projectRoot, worktreePat
 ```
 runFailFlow(qaSession, verdict):
   基础 refuse 分支不变（config off / 缺 project_name）
-  round = deps.qaVerdicts.countFixRounds(issue) + 1        # 账本换源，见下
+  round = deps.qaVerdicts.recordFixRound(issue, verdict.eventId)   # insert-or-read 单点记账，
+                                                            # 返回该 verdict 的权威轮次（见下）
   if (round > maxFixRounds): refuse(cap 升级 Lead)          # cap=3 语义不变
   headSha = capturePhaseHeadSha(qaSession)                  # 语义照旧：QA 是 writer，
                                                             # findings 已 commit 在共享 worktree
   impl = deps.getAlivePhaseSession(issue, 'implement')
   if (impl):
-    deps.qaVerdicts.recordFixRound(issue, verdict.eventId, round)   # 幂等，先记账后动作
+    await deps.effects.assertPhaseWorktreeReady(impl, headSha)      # Codex R1 #1：wake 前
+                                                        # dirty/head fail-closed，不过→alert+return
     deps.grantTurn(issue, impl.execution_id, 'implement')
     await deps.effects.wakePhaseRunner({session: impl, kind: 'fix', round,
-        qaSummary})                                         # findings 已在分支上，wake 带摘要即可
+        qaSummary})                                     # findings 已在分支上，wake 带摘要即可
+                                                        # （wakePhaseRunner 内先清 park 标记，M1）
     patchIntent(qa, {fixExecId: impl.execution_id, round})
   else:
     现行 spawn implement-fix（close QA 不需要——QA 活着只是 park；worktree 死体清理后
-    dispatch phaseFixContext @ headSha）+ 同样 recordFixRound   # 兜底=今天
+    dispatch phaseFixContext @ headSha）                    # 兜底=今天（轮次已在顶部记账）
   QA 自己由 prompt park（M6 文案）；Bridge 不 close QA
 ```
 
-- **轮次账本换源**：`countImplementPhases`（数 session 行）在 wake 模式下永不增长 → 换成**幂等轮次事件**：`recordFixRound` = `store.insertEvent({event_id: 'fix-round-' + verdict.eventId, event_type: 'three_stage_fix_round', issue_id, payload:{round}})`（event_id 幂等，重放不重计）；`countFixRounds(issue)` = 新查询 `countEventsByIssueAndType(issueId,'three_stage_fix_round')`。durable、跨 session、跨重启；wake 路与 spawn 兜底路统一记账。
+- **轮次账本换源 + crash-safe**（Codex R1 #5）：`countImplementPhases`（数 session 行）在 wake 模式下永不增长 → 换成**幂等轮次事件**，且 `recordFixRound(issueId, verdictEventId)` 是**insert-or-read 原子语义**：该 verdict eventId 的 `three_stage_fix_round` 事件已存在 → 直接**读回其 payload.round**（不重计）；不存在 → `round = countFixRounds(issue) + 1`，insert `{event_id: 'fix-round-' + verdictEventId, event_type: 'three_stage_fix_round', issue_id, payload:{round}}` 后返回 round。这样「记账后、wake 前」的 crash 重放会**恢复原轮次 N** 而不是误算 N+1；round 同时 patch 进 QA intent，重放以 intent/账本为准不双 wake。`countFixRounds(issue)` = 新查询 `countEventsByIssueAndType(issueId,'three_stage_fix_round')`。durable、跨 session、跨重启；wake 路与 spawn 兜底路统一记账。cap 判定在 recordFixRound 之后用返回的权威轮次做。
 - **QA findings 通道不变**：FAIL 前 QA 已把 findings/failing tests/报告 commit 进 branch B（现行 :944 协议）——implement 醒来在同一 worktree 直接看到，wake 消息只需带摘要 + round。R1 的「报告文件路径引用」通道作废（不需要了）。
 - verdict intent 从「一 session 一 verdict」放宽为**按轮**：`three_stage_verdict` 增加 `round` 字段；「已有 intent 即忽略新 verdict」守卫（:372-389）改为「同 round 幂等、新 round 换届」——FAIL 未走完的 round 继续走完（resume 语义保留）。
 
@@ -177,25 +191,27 @@ runFailFlow(qaSession, verdict):
 ### M5 TURN 表 + turn 子命令（flywheel-comm）
 
 - `db.ts`：`CREATE TABLE IF NOT EXISTS three_stage_turn (issue_id TEXT PRIMARY KEY, holder_exec_id TEXT NOT NULL, phase TEXT NOT NULL, epoch INTEGER NOT NULL, granted_at INTEGER NOT NULL)` + `grantTurn(issueId, execId, phase)`（epoch 自增覆盖写）+ `getTurn(issueId)`。Bridge 独写；runner 只读。
-- 新子命令 `turn --exec-id <id>`：查本 session 的 issue 的 TURN 行 → stdout 打印 `yours` / `not-yours holder=<execId> phase=<phase>`（exit 0 都是；查询失败 exit 1）。runner 契约（M6 prompt）：凡不是被带 TURN 的 wake 叫醒，动 worktree 前必须 turn 自查；not-yours → 不写、只回话。
+- 新子命令 `turn --exec-id <id>`：查本 session 的 issue 的 TURN 行 → stdout 打印 `yours phase=<phase> epoch=<n>` / `not-yours holder=<execId> phase=<phase> epoch=<n>`（exit 0 都是；查询失败 exit 1）。
+- **runner 契约（Codex R1 #4 收紧）：动 worktree 前 turn 自查一律强制——包括被「带 TURN grant」的 wake 叫醒之后。** wake 文本不是权威（可能迟到/重复/串轮次）：wake 消息携带 phase+epoch 仅作上下文，runner 必须以 `turn --exec-id` 的 CommDB 答案为准，`yours` 才动手；`not-yours`（含 stale epoch 的迟到 wake）→ 不写、只回话。测试覆盖「上一 epoch 的迟到 wake 不引发越权写」。
 - ship 收尾时删除该 issue 的 TURN 行（M7）。
 
 ### M6 prompts（Blueprint 三段块）
 
+> **CLI 拼写（Codex R1 #6）**：park 命令的可执行拼写是顶层 `node <comm> park --exec-id <id> --reason ...`（flywheel-comm index.ts:190-207 注册的是 `park`/`busy`/`unpark`；**不存在** `declare-state` 子命令——那只是源码模块名）。下述 prompt 全用可执行拼写，prompt 快照测试断言之。**顺带修**：现有 auto-QA prompt（Blueprint.ts:436）用的 `declare-state park` 是同款潜在生产 bug（QA runner 照它跑会报未知命令、park 失效）——本 issue 一并改为可执行拼写 + 快照测试（一行改动，同文件同 bug 类，向 Lead 报备的 drive-by fix）。
+
 - **design**（:903-909 追加）：
-  > 5. After `complete --route phase_design_complete` succeeds: release heavy resources (close Claude-in-Chrome tabs; run `/compact` if your context is large), then run `node <comm> declare-state park --exec-id <id> --reason "three-stage design parked until ship"`, then STOP and WAIT. Do NOT exit and do NOT touch the worktree while parked — you have handed the TURN back. You stay alive as the design-context holder; if a wake message asks you a question, answer it (read-only) unless the wake explicitly grants you the TURN. The Bridge closes you after ship.
+  > 5. After `complete --route phase_design_complete` succeeds: release heavy resources (close Claude-in-Chrome tabs; run `/compact` if your context is large), then run `node <comm> park --exec-id <id> --reason "three-stage design parked until ship"`, then STOP and WAIT. Do NOT exit — you stay alive as the design-context holder until ship. Before touching the worktree for ANY reason, you MUST run `node <comm> turn --exec-id <id>` and proceed only on `yours` — wake-message wording is never authority. The Bridge closes you after ship.
 - **implement**（:911-928 追加 park + wake 契约）：
-  > After `complete --route needs_review`: release heavy resources, `declare-state park --reason "three-stage implement parked awaiting QA"`, STOP and WAIT. Never touch the worktree while parked.
-  > When woken with a QA FIX message (the wake grants you the TURN): the QA phase's findings / failing tests / report are ALREADY COMMITTED on this branch — read them first, fix exactly what they name in THIS worktree, push, re-run Codex review, then re-request review (`gate approve_to_ship --no-block` + `complete --route needs_review`), then park again and WAIT.
-  > If you are woken by any message that does NOT explicitly grant the TURN, run `node <comm> turn --exec-id <id>` before touching the worktree; if it says not-yours, reply without writing.
+  > After `complete --route needs_review`: release heavy resources, `node <comm> park --exec-id <id> --reason "three-stage implement parked awaiting QA"`, STOP and WAIT. Never touch the worktree while parked.
+  > When woken with a QA FIX message: FIRST run `node <comm> turn --exec-id <id>` — proceed only if it answers `yours` (the wake text itself is context, not authority; a stale or duplicated wake must not make you write). Then: the QA phase's findings / failing tests / report are ALREADY COMMITTED on this branch — read them, fix exactly what they name in THIS worktree, push, re-run Codex review, then re-request review (`gate approve_to_ship --no-block` + `complete --route needs_review`), then park again and WAIT.
 - **QA**（:938-944 修订——**writer 协议主体保留**）：
   > （步骤 1-4 现行文案保留：同一 branch 验证、commit 测试+QA report 到 THIS branch、push、PASS → qa-result pass + APPROVE GATE 流。）
-  > 5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then `qa-result --status fail --summary ...`, then release heavy resources and `declare-state park --reason "three-stage QA awaiting implement fix"`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. Your worktree will already be at the new head when you wake — re-run your scenarios directly. Do NOT run `complete`, do NOT open the approve gate on FAIL.（删除旧「Do NOT park for retest」「the pipeline closes this session」句。）
-- 三段共同追加一行 TURN 契约（见 implement 段第三句，design/QA 同款）。
+  > 5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then `qa-result --status fail --summary ...`, then release heavy resources and `node <comm> park --exec-id <id> --reason "three-stage QA awaiting implement fix"`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. On wake, FIRST run `node <comm> turn --exec-id <id>` and proceed only on `yours`; your worktree will already be at the new head — re-run your scenarios directly. Do NOT run `complete`, do NOT open the approve gate on FAIL.（删除旧「Do NOT park for retest」「the pipeline closes this session」句。）
+- 三段共同契约：**任何时刻动 worktree 前 turn 自查强制**（含带 grant 的 wake 之后——Codex R1 #4）。
 
 ### M7 ship 后统一收尾
 
-- Hook 在既有 `runPostShipFinalization`（DirectEventSink.ts:36 引入；merge-evidence gated）：新增 `finalizeThreeStagePhases(issueId)` —— `store.getPhaseSessionsForIssue(issueId)` 取 chat_thread_role ∈ {design, implement} 且状态 ∈ FINALIZE_DONE_SOURCE_STATES 的 session，逐个 `closeRunner({finalizeDone:true, transitionOpts})`（FSM 边合法：design_done/awaiting_review → completed），随后共享 worktree 清理（**此刻才删**，复用 phaseWorktreeCleanup）+ 删 TURN 行。
+- Hook 在既有 `runPostShipFinalization`（post-ship-finalization.ts；merge-evidence gated）：新增 `finalizeThreeStagePhases(issueId)` **作为其显式依赖**，**插入点钉死**（Codex R1 #8）：在 root QA/shipped runner 的 tmux 清理之后、`removeCleanWorktree`（post-ship-finalization.ts:220-248）**之前**调用——否则共享 worktree 会在 parked design/implement（cwd 还在里面）被收掉之前先删。它对 `store.getPhaseSessionsForIssue(issueId)` 取 chat_thread_role ∈ {design, implement} 且状态 ∈ FINALIZE_DONE_SOURCE_STATES 的 session，逐个**直接调 `closeRunner({finalizeDone:true, transitionOpts})`**（不是 `closePhaseRunner`——那个 effect 拥有 handoff 期的 worktree 删除职责，ship 期不适用；FSM 边合法：design_done/awaiting_review → completed），随后共享 worktree 清理（**此刻才删**）+ 删 TURN 行。单测断言调用顺序（closeRunner×2 → removeCleanWorktree）。
 - archive cascade（FLY-369）本就 gate 在「completed + 无其他 active runner」——三段全关后自然放行，不改 cascade。
 - 漏收兜底：FLY-742 stale-blocker guard（PR merged 后 authoritative 检查会收）保持为第二道网。
 
@@ -220,28 +236,28 @@ runFailFlow(qaSession, verdict):
 - GREEN：两个 SQL 方法（现有 sessions/events 表，无 schema 迁移）。
 
 ### Step 3 — Blueprint worktree 原地接手
-- RED（注入 fake WorktreeManager/exec）：implement/qa 段 + registered+clean+HEAD==startPoint → 不调 removeIfExists/create、cwd=worktreePath；校验任一不过 → throw `worktree_takeover_failed`（不静默 remove）；未注册（前段死体已清）→ 现行 create；design 首段 / kill-switch=0 / 非三段 → 现行路径逐字（哨兵）。
+- RED（注入 fake WorktreeManager/exec）：implement/qa 段 + registered+clean+HEAD==startPoint → 不调 removeIfExists/create、cwd=worktreePath、**照常 emitWorktreeReady（worktree_path 持久，Codex R1 #3）**；校验任一不过 → throw `worktree_takeover_failed`（不静默 remove）；未注册（前段死体已清）→ 现行 create；design 首段 / kill-switch=0 / 非三段 → 现行路径逐字（哨兵）。
 - GREEN：M2 判定块。
 
 ### Step 4 — PhaseOrchestrator handoff park 化 + wake-or-spawn + TURN
-- RED（fake deps）：活体前段 → parkPhaseRunner 被调且 closePhaseRunner 不被调；死体 → closePhaseRunner（现行）；活体 parked 下段 → grantTurn 先于 wakePhaseRunner 且不 dispatch；无下段 → dispatch（现行参数逐字）+ grantTurn；capture head 失败 → fail-closed 不变；kill-switch=0 → 全现行路径（哨兵）。
-- GREEN：M1 逻辑 + deps 接口扩展 + plugin 接线（probePhaseAlive/park/wake/grantTurn effects）。
+- RED（fake deps）：probePhaseAlive **四态各一测**（Codex R1 #2）——alive → parkPhaseRunner 且 closePhaseRunner 不被调；dead_pin/absent → closePhaseRunner（现行）；indeterminate → failClosed 且**不 close、不 park、不动 TURN**；活体 parked 下段 → assertPhaseWorktreeReady → grantTurn 先于 wakePhaseRunner 且不 dispatch；assertPhaseWorktreeReady dirty/head-mismatch/无 worktree_path → 告警且**不授 TURN 不 wake**（Codex R1 #1）；无下段 → dispatch（现行参数逐字）+ grantTurn；wakePhaseRunner 先清 park 标记（清除失败 warn-only，Codex R1 #7）；capture head 失败 → fail-closed 不变；kill-switch=0 → 全现行路径（哨兵）。
+- GREEN：M1 逻辑 + deps 接口扩展 + plugin 接线（probePhaseAlive/park/wake/assertPhaseWorktreeReady/grantTurn effects）。
 
 ### Step 5 — runFailFlow wake 化 + 轮次账本
-- RED：活体 implement → recordFixRound（幂等：同 verdict eventId 重放只记一次）+ grantTurn + wakePhaseRunner(kind:'fix') + intent patch；死体 → spawn 兜底（现行 dispatch 参数 + 同样记账）；round>cap → refuse 升级（文案含轮数）；intent round 换届语义（新 round 的 verdict 不被旧 intent 吞）。
+- RED：活体 implement → recordFixRound insert-or-read（同 verdict eventId 重放**返回原轮次**不重计——crash 窗口测试：账本已插、intent/wake 未落，replay 以 round N 续走不算 N+1，Codex R1 #5）+ assertPhaseWorktreeReady + grantTurn + wakePhaseRunner(kind:'fix') + intent patch；死体 → spawn 兜底（现行 dispatch 参数 + 同样记账）；round>cap → refuse 升级（文案含轮数）；intent round 换届语义（新 round 的 verdict 不被旧 intent 吞）。
 - GREEN：M3 全量。
 
 ### Step 6 — QA 复验 wake（二次 needs_review）
-- RED：implement 二次 `session_completed`(awaiting_review) → handoff('qa') → 活体 QA → grantTurn + retest wake（内容含新 head + 「worktree 已在新 head」）+ `retestWokenAt` 幂等（同 head 重放不双 wake）；QA 死体 → spawn 新 QA（现行）；merge_block session → 全程 no-op。
+- RED：implement 二次 `session_completed`(awaiting_review) → handoff('qa') → 活体 QA → assertPhaseWorktreeReady（dirty/mismatch → 不授不 wake）→ grantTurn + retest wake（内容含新 head + phase/epoch + 「worktree 已在新 head」）+ `retestWokenAt` 幂等（同 head 重放不双 wake）；**stale-epoch 迟到 wake：turn 命令答 not-yours（epoch 不符）→ runner 侧契约测试证不越权写**（Codex R1 #4）；QA 死体 → spawn 新 QA（现行）；merge_block session → 全程 no-op。
 - GREEN：M4（大部分由 Step 4 覆盖，本步补 retest 专属幂等 + 守卫）。
 - **验证补钉**：event-route 级集成测试钉死「FSM no-op（awaiting_review→awaiting_review 拒绝）时 session_completed 事件仍到达 onPhaseComplete」（research §6.1；complete.ts 每次调用独立 POST /events 已核实）。
 
 ### Step 7 — 三段 prompts
-- RED：Blueprint prompt 快照断言——design/implement 含 park 指令与 TURN 契约；QA 保留 writer 步骤（commit tests/report to THIS branch）、FAIL 段含 park/RE-TEST、不含「Do NOT park」「the pipeline closes this session」旧句；单 session/auto-QA prompt 逐字不变（哨兵）。
+- RED：Blueprint prompt 快照断言——design/implement 含 park 指令（**可执行拼写 `node <comm> park`，绝无 `declare-state`，Codex R1 #6**）与强制 turn 自查契约（含带 grant 的 wake 之后）；QA 保留 writer 步骤（commit tests/report to THIS branch）、FAIL 段含 park/RE-TEST、不含「Do NOT park」「the pipeline closes this session」旧句；**auto-QA prompt :436 的 `declare-state park` 同步改为可执行拼写（drive-by fix，快照断言）**；单 session/其余 auto-QA prompt 逐字不变（哨兵）。
 - GREEN：M6 文案。
 
 ### Step 8 — ship 收尾扩容
-- RED：merged 收尾触发 `finalizeThreeStagePhases` → 两个 parked 段 closeRunner(finalizeDone) 按序调用 → 共享 worktree 清理 + TURN 行删除 → archive cascade 在全关后放行；单 session issue → no-op（哨兵）。
+- RED：merged 收尾触发 `finalizeThreeStagePhases`（作为 runPostShipFinalization 显式依赖）→ 两个 parked 段**直接 closeRunner**(finalizeDone) 调用（非 closePhaseRunner）→ **调用顺序钉死：closeRunner×2 → removeCleanWorktree**（Codex R1 #8）→ TURN 行删除 → archive cascade 在全关后放行；单 session issue → no-op（哨兵）。
 - GREEN：M7。
 
 ### Step 9 — reconcile 适配
