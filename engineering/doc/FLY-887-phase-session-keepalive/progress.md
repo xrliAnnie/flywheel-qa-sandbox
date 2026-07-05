@@ -1,14 +1,14 @@
 ---
 issue: FLY-887
 phase: implement
-phaseCursor: 11/11
-updated: 2026-07-05T19:27:28.752Z
-nextStep: STOP at approve gate — founder-gated; QA phase verifies E2E; Codex
-  code review runs
+phaseCursor: 12/12
+updated: 2026-07-05T23:24:06.819Z
+nextStep: push fix → stage code_review/pr_created (Bridge Codex) → APPROVE GATE;
+  pipeline re-runs QA + 529 Room E2E
 chunks: []
 pointers: {}
 ---
 
 # FLY-887 progress
-**phase**: implement (11/11)
-**next**: STOP at approve gate — founder-gated; QA phase verifies E2E; Codex code review runs
+**phase**: implement (12/12)
+**next**: push fix → stage code_review/pr_created (Bridge Codex) → APPROVE GATE; pipeline re-runs QA + 529 Room E2E
