@@ -2,12 +2,12 @@
 issue: FLY-887
 phase: design
 phaseCursor: 4/4
-updated: 2026-07-05T07:33:11.653Z
-nextStep: await Annie OK (q 12e9fc10) -> stage set design_review --plan
+updated: 2026-07-05T07:35:15.299Z
+nextStep: stage set design_review -> Codex review loop -> phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-887 progress
 **phase**: design (4/4)
-**next**: await Annie OK (q 12e9fc10) -> stage set design_review --plan
+**next**: stage set design_review -> Codex review loop -> phase_design_complete
