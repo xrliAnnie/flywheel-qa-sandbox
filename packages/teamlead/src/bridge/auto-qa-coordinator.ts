@@ -296,6 +296,16 @@ export class AutoQaCoordinator {
 			);
 			return;
 		}
+		// FLY-869 B (Codex R1 #3): a parked merged-without-approval session is HELD —
+		// never QA it back toward ship. The live entry must consume the merge_block
+		// suppressor too (not just the A-3 orphan sweep), else a Codex-release re-drive
+		// (onCodexReviewResult → codexReleased:true) would spawn QA on a parked merge.
+		if (session.merge_block_reason) {
+			this.log(
+				`skip ${session.execution_id} (${session.issue_id}) — merge_block parked (merged without approval); held, not QA'd`,
+			);
+			return;
+		}
 
 		// FLY-846 gate ①: NEVER QA a QA. A `QA·FLY-XX` issue can carry a main-role
 		// session (Lead dispatched a runner on it — FLY-828/845 incidents); when it
@@ -343,6 +353,14 @@ export class AutoQaCoordinator {
 
 		const policy = this.deps.resolveQaPolicy(session);
 		if (!policy.enabled) {
+			// FLY-869 A-1: auto-QA is not applicable for this session (no-qa label /
+			// qa.auto:false / kill-switch). Persist the IMMUTABLE qa_required=0 snapshot
+			// so the ship gate (evaluateQaShipGate) exempts it rather than fail-closing.
+			this.deps.store.setQaRequiredSnapshot({
+				executionId: session.execution_id,
+				required: 0,
+				reason: `policy_off:${policy.reason ?? "disabled"}`,
+			});
 			this.log(
 				`skip ${session.execution_id} (${session.issue_id}) — auto-QA not enabled: ${policy.reason ?? "policy off"}`,
 			);
@@ -366,6 +384,16 @@ export class AutoQaCoordinator {
 			);
 			return;
 		}
+
+		// FLY-869 A-1: from here auto-QA APPLIES (policy enabled + genuine review
+		// evidence). Persist the IMMUTABLE qa_required=1 snapshot so the ship gate
+		// requires a passing auto_qa_record for the head before Done. Immutable
+		// (IS NULL guard) → a later config/label change never rewrites the verdict.
+		this.deps.store.setQaRequiredSnapshot({
+			executionId: session.execution_id,
+			required: 1,
+			reason: "auto_qa_applies",
+		});
 
 		const owner = this.deps.store.getLatestAutoQaRecordByParent(
 			session.execution_id,
@@ -595,6 +623,32 @@ export class AutoQaCoordinator {
 					`reconcileStuckCodexHolds alertCodexGateBlocked failed for ${session.issue_id}: ${asErr(err)}`,
 				);
 			}
+		}
+	}
+
+	/**
+	 * FLY-869 B (决定③): fire the ONE loud "a runner self-merged WITHOUT approval"
+	 * Lead alert (→ Discord). The completion sinks call this on the FIRST merge_block
+	 * claim (parkMergeBlock returned true → once per head), so it is never re-sent on a
+	 * replay / restart. Reuses the pipeline-error alert channel. Best-effort — a failed
+	 * alert must never throw into the sink (the durable merge_block marker + isReviewHeld
+	 * suppression already hold the session; the alert is the human-visibility layer).
+	 */
+	async alertMergeWithoutApproval(
+		session: Session,
+		reason: string,
+	): Promise<void> {
+		try {
+			await this.deps.effects.alertLeadPipelineError({
+				session,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				reason,
+			});
+		} catch (err) {
+			this.warn(
+				`alertMergeWithoutApproval failed for ${session.issue_id}: ${asErr(err)}`,
+			);
 		}
 	}
 
@@ -1155,6 +1209,88 @@ export class AutoQaCoordinator {
 	 * GatePoller / Heartbeat timers (so a restart never relays a held gate).
 	 */
 	async reconcileOnStartup(): Promise<void> {
+		// (0) FLY-869 A-1b — qa_required BACKFILL (deployment safety). A session
+		// dispatched BEFORE this gate shipped ran the pre-gate onMainAwaitingReview,
+		// which never wrote the immutable qa_required snapshot. WITHOUT a backfill it
+		// reaches the QA ship gate (evaluateQaShipGate) with qa_required=NULL and,
+		// for a code PR, fail-closes → stranded. Reconstruct the verdict the forward
+		// path would have written, and grandfather already-approved in-flight work so
+		// the retroactive gate never strands a session the founder already cleared.
+		//
+		// Idempotent: setQaRequiredSnapshot's `WHERE qa_required IS NULL` guard means
+		// a second restart (or a race with the forward path) is a no-op. Independent
+		// of sweeps (1)-(4) below — it touches only qa_required, never auto_qa_records
+		// — but runs FIRST so the A-3 orphan sweep sees the backfilled requirement.
+		for (const session of this.deps.store.getActiveSessions()) {
+			if (
+				session.status !== "awaiting_review" &&
+				session.status !== "approved_to_ship"
+			) {
+				continue; // a `running` session snapshots when it reaches onMainAwaitingReview.
+			}
+			if (session.qa_required != null) continue; // already snapshotted (immutable).
+
+			const rec = this.deps.store.getLatestAutoQaRecordByParent(
+				session.execution_id,
+			);
+			if (rec) {
+				// QA genuinely applied (a record exists). Require it: the ship gate
+				// checks for a PASSED record for the head (passed→ships, otherwise→held).
+				this.deps.store.setQaRequiredSnapshot({
+					executionId: session.execution_id,
+					required: 1,
+					reason: `backfill:record_${rec.status}`,
+				});
+				continue;
+			}
+
+			const policy = this.deps.resolveQaPolicy(session);
+			const qid = session.review_question_id;
+			const hasReviewEvidence =
+				(!!qid && qid !== REVIEW_BINDING_UNBOUND) || session.pr_number != null;
+			if (!policy.enabled || !hasReviewEvidence) {
+				// Exempt: auto-QA off for this session (no-qa label / qa.auto:false /
+				// kill-switch) OR no code PR to QA. Mirrors the forward path's policy-off
+				// and no-review-evidence branches; also grandfathers no-PR in-flight work.
+				this.deps.store.setQaRequiredSnapshot({
+					executionId: session.execution_id,
+					required: 0,
+					reason: `backfill:exempt:${
+						!policy.enabled
+							? (policy.reason ?? "policy_off")
+							: "no_review_evidence"
+					}`,
+				});
+				continue;
+			}
+
+			// Code PR, auto-QA applies, but NO record was ever created (pre-FLY-579
+			// dispatch, or codex-held before QA). An `awaiting_review` session self-heals
+			// — the A-3 orphan sweep spawns the missing QA — so require it (fail-closed).
+			// An `approved_to_ship` session already cleared the founder gate under the
+			// pre-gate flow AND is not covered by the awaiting_review orphan sweep, so a
+			// retroactive requirement would strand it: grandfather it exempt.
+			if (session.status === "approved_to_ship") {
+				this.deps.store.setQaRequiredSnapshot({
+					executionId: session.execution_id,
+					required: 0,
+					reason: "backfill:grandfather_approved_pre_gate",
+				});
+				this.log(
+					`A-1b backfill grandfather ${session.execution_id} (${session.issue_id}) — approved_to_ship pre-gate, no QA record; exempt to avoid stranding`,
+				);
+			} else {
+				this.deps.store.setQaRequiredSnapshot({
+					executionId: session.execution_id,
+					required: 1,
+					reason: "backfill:code_pr_no_record",
+				});
+				this.log(
+					`A-1b backfill required ${session.execution_id} (${session.issue_id}) — code PR, no QA record; A-3 orphan sweep will spawn QA`,
+				);
+			}
+		}
+
 		// (1) PASSED records — re-notify if unnotified AND close a QA runner left
 		// alive by a crash between notifyShipReady and closeQaRunner (FLY-752). The
 		// passed-unnotified sweep alone misses the notified-but-not-closed case, so
@@ -1337,6 +1473,38 @@ export class AutoQaCoordinator {
 				});
 			}
 			// else QA alive + parked → leave it; awaiting the next head.
+		}
+
+		// (5) FLY-869 A-3 — "该起没起 QA" orphan sweep. An awaiting_review main session
+		// that reached review WITHOUT ever getting an auto_qa_record is invisible to the
+		// record-based sweeps (1)-(4) above — a should-have-QA'd session that nothing is
+		// driving. Re-drive the LIVE path so QA spawns (or the session is correctly
+		// codex-held / policy-skipped inside onMainAwaitingReview — all its gates still
+		// apply). Runs before founder surfacing (reconcileOnStartup precedes the
+		// GatePoller / Heartbeat timers), and EXCLUDES a parked merge_block session
+		// (决定③ — a merged-but-unapproved session must never be QA'd back into ship).
+		for (const session of this.deps.store.getActiveSessions()) {
+			if (session.status !== "awaiting_review") continue;
+			if ((session.session_role ?? "main") !== "main") continue;
+			// A parked merged-but-unapproved session is held, not shippable → never QA it.
+			if (session.merge_block_reason) continue;
+			// Has ANY auto_qa_record → owned by sweeps (1)-(4); not an orphan.
+			if (this.deps.store.getLatestAutoQaRecordByParent(session.execution_id)) {
+				continue;
+			}
+			this.log(
+				`A-3 orphan re-drive ${session.execution_id} (${session.issue_id}) — awaiting_review, no auto_qa_record`,
+			);
+			try {
+				// freshTransition:true — an orphan with genuine review evidence IS a
+				// legitimate first review-pass; the inner policy / review-evidence /
+				// codex gates in onMainAwaitingReview still decide spawn-vs-hold-vs-skip.
+				await this.onMainAwaitingReview(session, { freshTransition: true });
+			} catch (err) {
+				this.warn(
+					`A-3 orphan re-drive failed for ${session.issue_id}: ${asErr(err)}`,
+				);
+			}
 		}
 	}
 }

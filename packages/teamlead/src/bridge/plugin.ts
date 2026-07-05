@@ -3573,6 +3573,10 @@ export async function startBridge(
 	const founderShipPostWriteHook = buildGateResponsePostWriteHook({
 		store,
 		transitionOpts,
+		// FLY-869 B-3 (Codex R1 #1): drive an un-parked already-merged session to
+		// completed + Done on the founder-reply ship-approval path.
+		config,
+		projects,
 	});
 	const founderAutoApproveDenylist = new Set(
 		(process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE_DENYLIST ?? "")

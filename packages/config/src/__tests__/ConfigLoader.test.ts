@@ -1196,6 +1196,75 @@ founder_ux_gate: "enforce"
 				/founder_ux_gate must be a YAML mapping/,
 			);
 		});
+
+		// FLY-869: exempt_labels validation
+		it("accepts absent exempt_labels (resolver applies the default downstream)", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: enforce
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_ux_gate?.exempt_labels).toBeUndefined();
+		});
+
+		it("accepts a valid exempt_labels array and normalizes to lowercase", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: enforce
+  exempt_labels:
+    - "Brainstorm-Exempt"
+    - CHORE
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_ux_gate?.exempt_labels).toEqual([
+				"brainstorm-exempt",
+				"chore",
+			]);
+		});
+
+		it("accepts an empty exempt_labels array", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: enforce
+  exempt_labels: []
+`),
+			);
+			const config = await loader.load("/p/config.yaml");
+			expect(config.founder_ux_gate?.exempt_labels).toEqual([]);
+		});
+
+		it("rejects a non-array exempt_labels", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: enforce
+  exempt_labels: "brainstorm-exempt"
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_ux_gate\.exempt_labels must be an array of strings/,
+			);
+		});
+
+		it("rejects an exempt_labels array with a non-string element", async () => {
+			readFile.mockResolvedValue(
+				withGate(`
+founder_ux_gate:
+  mode: enforce
+  exempt_labels:
+    - "chore"
+    - 42
+`),
+			);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/founder_ux_gate\.exempt_labels must be an array of strings/,
+			);
+		});
 	});
 
 	describe("founder_milestone_report validation (FLY-725)", () => {

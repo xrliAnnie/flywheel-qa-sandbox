@@ -668,6 +668,73 @@ describe("AutoQaCoordinator.reconcileOnStartup", () => {
 	});
 });
 
+describe("AutoQaCoordinator.reconcileOnStartup — FLY-869 A-1b qa_required backfill", () => {
+	it("awaiting_review + matching auto_qa_record (no forward-path snapshot) → required=1", async () => {
+		const s = await setup();
+		awaitingMain(s.store); // qa_required starts NULL
+		// Low-level record claim (does NOT set the forward-path qa_required snapshot).
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		expect(s.store.getSession("main-1")?.qa_required).toBeUndefined();
+		await s.coord.reconcileOnStartup();
+		expect(s.store.getSession("main-1")?.qa_required).toBe(1);
+	});
+
+	it("awaiting_review + auto-QA policy OFF (no record) → required=0 (exempt)", async () => {
+		const s = await setup({
+			policy: { enabled: false, reason: "no_qa_label" },
+		});
+		awaitingMain(s.store);
+		await s.coord.reconcileOnStartup();
+		expect(s.store.getSession("main-1")?.qa_required).toBe(0);
+	});
+
+	it("awaiting_review + no review evidence (no PR + unbound qid) → required=0 (exempt)", async () => {
+		const s = await setup();
+		awaitingMain(s.store, { binding: "unbound", prNumber: null });
+		await s.coord.reconcileOnStartup();
+		expect(s.store.getSession("main-1")?.qa_required).toBe(0);
+	});
+
+	it("awaiting_review + code PR + policy ON + NO record → required=1 (fail-closed; A-3 will spawn)", async () => {
+		const s = await setup();
+		awaitingMain(s.store); // default: bound qid + pr 42 = review evidence
+		await s.coord.reconcileOnStartup();
+		expect(s.store.getSession("main-1")?.qa_required).toBe(1);
+	});
+
+	it("approved_to_ship + code PR + policy ON + NO record → required=0 (grandfather, no strand)", async () => {
+		const s = await setup();
+		awaitingMain(s.store, { status: "approved_to_ship" });
+		await s.coord.reconcileOnStartup();
+		expect(s.store.getSession("main-1")?.qa_required).toBe(0);
+	});
+
+	it("idempotent: an existing snapshot is NOT overwritten (immutable IS NULL guard)", async () => {
+		const s = await setup();
+		awaitingMain(s.store); // code PR that backfill would otherwise set to 1
+		// Pre-seed an explicit 0 — a later backfill must NOT flip it to 1.
+		s.store.setQaRequiredSnapshot({
+			executionId: "main-1",
+			required: 0,
+			reason: "pre_existing",
+		});
+		await s.coord.reconcileOnStartup();
+		expect(s.store.getSession("main-1")?.qa_required).toBe(0);
+	});
+
+	it("does NOT touch a `running` session (snapshot happens later at onMainAwaitingReview)", async () => {
+		const s = await setup();
+		awaitingMain(s.store, { status: "running" });
+		await s.coord.reconcileOnStartup();
+		expect(s.store.getSession("main-1")?.qa_required).toBeUndefined();
+	});
+});
+
 // ─────────────────────────── FLY-827 Codex hard gate ─────────────────────────
 
 function codexEvent(
@@ -1344,5 +1411,100 @@ describe("AutoQaCoordinator FLY-846 spawn gates", () => {
 				"superseded",
 			);
 		});
+	});
+});
+
+// ─────────────────────── FLY-869 A-3 orphan sweep ─────────────────────────────
+describe("FLY-869 A-3 orphan sweep (reconcileOnStartup)", () => {
+	it("awaiting_review main with NO auto_qa_record → re-drives → QA spawns", async () => {
+		const s = await setup(); // codex gate off, policy enabled
+		awaitingMain(s.store); // genuine review evidence, no record
+		await s.coord.reconcileOnStartup();
+		expect(s.start).toHaveBeenCalledTimes(1);
+		expect(s.store.getAutoQaRecord("main-1", SHA)?.status).toBe("running");
+	});
+
+	it("skips a session that ALREADY has a record (owned by sweeps 1-4, not an orphan)", async () => {
+		const s = await setup();
+		awaitingMain(s.store);
+		s.store.claimAutoQaRecord({
+			parentExecutionId: "main-1",
+			targetPrHeadSha: SHA,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		s.store.setAutoQaStatus("main-1", SHA, "passed", { notifiedAt: true });
+		await s.coord.reconcileOnStartup();
+		expect(s.start).not.toHaveBeenCalled();
+	});
+
+	it("EXCLUDES a merge_block (parked merged-but-unapproved) session — never QA it", async () => {
+		const s = await setup();
+		awaitingMain(s.store); // no record
+		s.store.setMergeBlock({
+			executionId: "main-1",
+			reason: "merge_without_approval:x/y",
+			head: SHA,
+		});
+		await s.coord.reconcileOnStartup();
+		expect(s.start).not.toHaveBeenCalled();
+	});
+
+	it("does NOT spawn for a policy-exempt orphan (snapshot 0, no QA)", async () => {
+		const s = await setup({
+			policy: { enabled: false, reason: "no_qa_label" },
+		});
+		awaitingMain(s.store);
+		await s.coord.reconcileOnStartup();
+		expect(s.start).not.toHaveBeenCalled();
+		expect(s.store.getSession("main-1")?.qa_required).toBe(0);
+	});
+});
+
+// ──────────────── FLY-869 B merge_without_approval loud alert ─────────────────
+describe("FLY-869 B alertMergeWithoutApproval", () => {
+	it("fires the loud pipeline-error Lead alert with the given reason", async () => {
+		const s = await setup();
+		const main = awaitingMain(s.store);
+		await s.coord.alertMergeWithoutApproval(
+			main,
+			"runner self-merged, no approval",
+		);
+		expect(s.alerts).toContain("runner self-merged, no approval");
+	});
+
+	// FLY-869 × FLY-863 boundary (Lead requirement): the 869 loud alert is
+	// reserved for a REAL violation (merged-without-approval). It must NOT re-noise
+	// the routine codex hold that FLY-863 deliberately silenced — a normal
+	// awaiting_review session whose Codex review simply hasn't APPROVED yet posts
+	// no thread + fires NO Lead alert (the escalation is FLY-863's separate
+	// reconcileStuckCodexHolds, only after a long stall).
+	it("does NOT fire on a routine codex hold (863's silenced normal state stays silent)", async () => {
+		const s = await setup({ env: {} }); // codex hard gate ON, no approval
+		const main = awaitingMain(s.store);
+		await s.coord.onMainAwaitingReview(main); // routine codex hold
+		// 863: routine hold posts no thread + fires no Lead pipeline alert.
+		expect(s.posts).toEqual([]);
+		expect(s.alerts).toEqual([]);
+		// 869 loud alert did not spawn QA or park anything either.
+		expect(s.start).not.toHaveBeenCalled();
+	});
+
+	// Codex R1 #3: a parked (merge_block) session that receives a Codex APPROVED verdict
+	// must NOT be QA'd back toward ship — the live entry consumes the merge_block
+	// suppressor, not only the A-3 orphan sweep.
+	it("a Codex approval on a PARKED merge_block session does NOT spawn QA (held)", async () => {
+		const s = await setup(); // codex gate off — isolate the merge_block guard
+		awaitingMain(s.store); // awaiting_review main
+		s.store.setMergeBlock({
+			executionId: "main-1",
+			reason: "merge_without_approval:x/y",
+			head: SHA,
+		});
+		// A same-head Codex approval re-drives onMainAwaitingReview(codexReleased) —
+		// which must early-return on merge_block_reason, never spawning QA.
+		await s.coord.onCodexReviewResult(codexEvent());
+		expect(s.start).not.toHaveBeenCalled();
+		expect(s.store.getAutoQaRecord("main-1", SHA)).toBeUndefined();
 	});
 });

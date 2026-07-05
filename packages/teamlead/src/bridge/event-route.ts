@@ -40,6 +40,11 @@ import {
 	type LeadEventEnvelope,
 } from "./lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
+import {
+	computeShipDecision,
+	isMergeBlocked,
+	parkMergeBlock,
+} from "./merge-ship-gate.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
@@ -1025,6 +1030,67 @@ export function createEventRouter(
 				// (isPostApproveShipComplete now requires merged landing) — see
 				// markEvidenceGapCompletion / FLY-210 for the later cleanup.
 				let evidenceGap = false;
+				// FLY-869 B: ship-eligibility gate computed BEFORE any status mutation
+				// (design R2 HIGH-1). SISTER computation to DirectEventSink.emitCompleted —
+				// both sinks MUST agree. A merged landing that is NOT ship-eligible is
+				// parked with a durable merge_block marker (决定③ — no auto-revert).
+				const erMergedLanding = landingStatus?.status === "merged";
+				// FLY-869 B (Codex R2 #1): the row's pr_head_sha is written later (≈line 1189) on
+				// the first complete — fall back to the event's evidence.headSha so a merge_block
+				// parked here binds the REAL merged head (else same-head recovery can't match).
+				const erPrHead =
+					existingSession?.pr_head_sha?.trim() ||
+					asString(evidence?.headSha)?.toLowerCase();
+				// Always route through the shared predicate (uniform kill-switch handling).
+				// A missing prior session row → verifyApproval reads no approval and
+				// fail-closes when the gate is ON (correct for a no-context merge), and
+				// the kill-switch still bypasses when OFF. Use the event identity so the
+				// gate is consulted even for a first-seen session_completed.
+				const erDecision = erMergedLanding
+					? computeShipDecision(
+							store,
+							existingSession ?? {
+								execution_id: event.execution_id,
+								project_name: event.project_name,
+							},
+							erPrHead ?? "",
+						)
+					: undefined;
+				const erShipEligible = erMergedLanding
+					? (erDecision?.eligible ?? false)
+					: undefined;
+				const erParkUnapprovedMerge = (): "awaiting_review" => {
+					if (existingSession) {
+						const claimed = parkMergeBlock(
+							store,
+							existingSession,
+							erPrHead ?? "",
+							erDecision ?? {
+								eligible: false,
+								mergeApprovalOk: false,
+								qaOk: false,
+								mergeReason: "no_pr_head",
+								qaReason: "session_not_found",
+							},
+						);
+						if (claimed) {
+							console.warn(
+								`[event-route] FLY-869 merge_without_approval — ${event.execution_id} ` +
+									`merged head=${erPrHead ?? "(none)"} NOT ship-eligible ` +
+									`(merge=${erDecision?.mergeReason ?? "no_head"} qa=${erDecision?.qaReason ?? "n/a"}); ` +
+									`parked awaiting_review + merge_block marker (no auto-revert)`,
+							);
+							// FLY-869 决定③: fire the ONE loud Discord alert (once per head —
+							// gated by the parkMergeBlock claim above). Not auto-reverted, not
+							// marked Done, issue stays open → a human must resolve it.
+							void autoQaCoordinator?.current?.alertMergeWithoutApproval(
+								existingSession,
+								`⛔ Runner ${event.execution_id}（${existingSession.issue_id}）自行 merge 但未获批准 —— merged head ${erPrHead ?? "(none)"} 未通过 ship 闸（merge=${erDecision?.mergeReason ?? "no_head"} qa=${erDecision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
+							);
+						}
+					}
+					return "awaiting_review";
+				};
 				if (route === "needs_review") {
 					// FLY-115 v1.24.5 (FLY-120): mirror the auto_approve+merged
 					// short-circuit so a Runner that self-merges after Lead
@@ -1035,7 +1101,8 @@ export function createEventRouter(
 					// because emitCompleted is in-process while this is the
 					// HTTP /events sink.
 					if (landingStatus?.status === "merged") {
-						status = "completed";
+						// FLY-869 B: merged → completed ONLY when ship-eligible.
+						status = erShipEligible ? "completed" : erParkUnapprovedMerge();
 					} else if (isPostApproveShip) {
 						status = "completed";
 						evidenceGap = true;
@@ -1044,8 +1111,9 @@ export function createEventRouter(
 					}
 				} else if (route === "auto_approve") {
 					if (landingStatus?.status === "merged") {
-						// FLY-58: auto_approve + merged → completed (not approved)
-						status = "completed";
+						// FLY-58 + FLY-869 B: auto_approve + merged → completed only if
+						// ship-eligible; otherwise park (merge_without_approval).
+						status = erShipEligible ? "completed" : erParkUnapprovedMerge();
 					} else if (isPostApproveShip) {
 						status = "completed";
 						evidenceGap = true;
@@ -1080,6 +1148,11 @@ export function createEventRouter(
 					// written (status !== "awaiting_review"), so the session never
 					// enters the wake-dependent approve loop.
 					status = "completed";
+				} else if (erMergedLanding) {
+					// FLY-869 B: natural (:cool:) completion WITH a merged landing must
+					// pass the ship-eligibility gate too (design R2 HIGH-3 — every
+					// merged→completed surface). Sister branch: DirectEventSink.ts.
+					status = erShipEligible ? "completed" : erParkUnapprovedMerge();
 				} else {
 					// route is undefined here — only reachable when
 					// isPostApproveShip is true (the strict route guard above
@@ -1092,9 +1165,8 @@ export function createEventRouter(
 					// WITHOUT merge proof when the landing signal was never
 					// rewritten — mark the gap so FLY-210 can finish the
 					// (now-suppressed) post-ship cleanup once proof arrives.
-					if (landingStatus?.status !== "merged") {
-						evidenceGap = true;
-					}
+					// (merged handled by the erMergedLanding branch above.)
+					evidenceGap = true;
 				}
 
 				// FLY-59: Read session role from completed event payload.
@@ -1360,6 +1432,8 @@ export function createEventRouter(
 						existingStatus: existingSession?.status,
 						route,
 						landingStatus,
+						// FLY-869 B: thread the pre-transition decision (parked = awaiting_review).
+						shipEligible: erShipEligible,
 					})
 				) {
 					runPostShipFinalization(
@@ -1683,12 +1757,62 @@ export function createEventRouter(
 							| undefined;
 						const sessionAtStage = store.getSession(event.execution_id);
 						const stageRoute = asString(sessionAtStage?.decision_route);
+						// FLY-869 B: compute ship-eligibility BEFORE applyTransition→completed
+						// (design R2 HIGH-4 — the W2 re-finalize surface must gate too). A
+						// merged-but-unapproved session is parked, NOT transitioned/finalized.
+						const w2PrHead = sessionAtStage?.pr_head_sha?.trim();
+						const w2Decision =
+							landingStatus?.status === "merged"
+								? computeShipDecision(
+										store,
+										sessionAtStage ?? {
+											execution_id: event.execution_id,
+											project_name: event.project_name,
+										},
+										w2PrHead ?? "",
+									)
+								: undefined;
+						const w2ShipEligible =
+							landingStatus?.status === "merged"
+								? (w2Decision?.eligible ?? false)
+								: undefined;
+						if (
+							landingStatus?.status === "merged" &&
+							w2ShipEligible === false &&
+							sessionAtStage
+						) {
+							const claimed = parkMergeBlock(
+								store,
+								sessionAtStage,
+								w2PrHead ?? "",
+								w2Decision ?? {
+									eligible: false,
+									mergeApprovalOk: false,
+									qaOk: false,
+									mergeReason: "no_pr_head",
+									qaReason: "session_not_found",
+								},
+							);
+							if (claimed) {
+								console.warn(
+									`[event-route W2] FLY-869 merge_without_approval — ${event.execution_id} ` +
+										`merged head=${w2PrHead ?? "(none)"} NOT ship-eligible; parked (no finalize).`,
+								);
+								// FLY-869 决定③: one loud Discord alert (once per head).
+								void autoQaCoordinator?.current?.alertMergeWithoutApproval(
+									sessionAtStage,
+									`⛔ Runner ${event.execution_id}（${sessionAtStage.issue_id}）自行 merge 但未获批准（stage=completed，merged head ${w2PrHead ?? "(none)"} 未通过 ship 闸：merge=${w2Decision?.mergeReason ?? "no_head"} qa=${w2Decision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
+								);
+							}
+						}
 						if (
 							landingStatus?.status === "merged" &&
 							isPostApproveShipComplete({
 								existingStatus: sessionAtStage?.status,
 								route: stageRoute,
 								landingStatus,
+								// FLY-869 B: gated — returns false when parked (not eligible).
+								shipEligible: w2ShipEligible,
 							})
 						) {
 							// (i) FSM transition FIRST via canonical applyTransition;
@@ -1931,7 +2055,11 @@ export function createEventRouter(
 			autoQaCoordinator?.current &&
 			session &&
 			(session.session_role ?? "main") === "main" &&
-			session.status === "awaiting_review"
+			session.status === "awaiting_review" &&
+			// FLY-869 B: a parked merged-but-unapproved session (merge_block marker)
+			// must NOT drive auto-QA (design R2 HIGH-4 suppressor). Sister guard:
+			// DirectEventSink.emitCompleted.
+			!isMergeBlocked(session)
 		) {
 			try {
 				await autoQaCoordinator.current.onMainAwaitingReview(session, {

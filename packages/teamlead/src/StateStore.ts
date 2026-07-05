@@ -383,6 +383,16 @@ export interface SessionUpsert {
 	founder_ux_signoff_json?: string;
 	/** FLY-598: per-run snapshot of founder_ux_gate.mode (off|audit_only|enforce). */
 	founder_ux_gate_mode?: string;
+	/** FLY-869 A-1: immutable QA-required snapshot (1=required, 0=exempt, absent=never-evaluated). */
+	qa_required?: number;
+	/** FLY-869 A-1: why the QA-required verdict was reached (policy reason token). */
+	qa_required_reason?: string;
+	/** FLY-869 B-3: merged-but-unapproved park marker (reason token; NULL = not blocked). */
+	merge_block_reason?: string;
+	/** FLY-869 B-3: the PR head sha the merge_block marker is bound to. */
+	merge_block_head?: string;
+	/** FLY-869 B-3: ISO timestamp the merge_block marker was written. */
+	merge_block_at?: string;
 }
 
 export interface Session {
@@ -456,6 +466,16 @@ export interface Session {
 	founder_ux_signoff_json?: string;
 	/** FLY-598: per-run snapshot of founder_ux_gate.mode (off|audit_only|enforce). */
 	founder_ux_gate_mode?: string;
+	/** FLY-869 A-1: immutable QA-required snapshot (1=required, 0=exempt, undefined=never-evaluated). */
+	qa_required?: number;
+	/** FLY-869 A-1: why the QA-required verdict was reached (policy reason token). */
+	qa_required_reason?: string;
+	/** FLY-869 B-3: merged-but-unapproved park marker (reason token; undefined = not blocked). */
+	merge_block_reason?: string;
+	/** FLY-869 B-3: the PR head sha the merge_block marker is bound to. */
+	merge_block_head?: string;
+	/** FLY-869 B-3: ISO timestamp the merge_block marker was written. */
+	merge_block_at?: string;
 	/** FLY-245 D-a: monotonic revision incremented on every status transition.
 	 * The runner-lifecycle founder credential snapshots this; a stale confirmation
 	 * is rejected once it changes (plan §5.1). Defaults 0. */
@@ -1060,6 +1080,43 @@ export class StateStore {
 		// reads it. Absent → treated as "off".
 		try {
 			this.db.run("ALTER TABLE sessions ADD COLUMN founder_ux_gate_mode TEXT");
+		} catch {
+			/* exists */
+		}
+
+		// FLY-869 A-1: immutable QA-required snapshot, captured when auto-qa-policy
+		// first evaluates this session (Bridge-side, where the trusted signals live).
+		// `qa_required` = 1 when QA applies (must pass before ship/Done), 0 when
+		// exempt (no-code / pure-docs / no-qa label / qa.auto:false), NULL = never
+		// evaluated (the "该起没起" case → the ship gate treats a code PR fail-closed,
+		// a no-code/no-PR route as exempt). config/label changes NEVER rewrite it.
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN qa_required INTEGER");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN qa_required_reason TEXT");
+		} catch {
+			/* exists */
+		}
+		// FLY-869 B-3: merged-but-unapproved park marker. When a session reaches a
+		// merged landing WITHOUT verified ship approval, we do NOT finalize (决定③
+		// no auto-revert); instead we persist this durable marker (head-bound) so the
+		// founder-hold suppressors keep it out of review/QA/finalization surfaces, and
+		// same-head approval recovery can clear it. NULL reason = not blocked.
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN merge_block_reason TEXT");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN merge_block_head TEXT");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN merge_block_at TEXT");
 		} catch {
 			/* exists */
 		}
@@ -2101,6 +2158,12 @@ export class StateStore {
 			founder_facing_ux: "founder_facing_ux",
 			founder_ux_signoff_json: "founder_ux_signoff_json",
 			founder_ux_gate_mode: "founder_ux_gate_mode",
+			// FLY-869: QA-required snapshot + merge_block park marker + codex-hold anchor
+			qa_required: "qa_required",
+			qa_required_reason: "qa_required_reason",
+			merge_block_reason: "merge_block_reason",
+			merge_block_head: "merge_block_head",
+			merge_block_at: "merge_block_at",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -3175,6 +3238,63 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-869 B-3: park a merged-but-unapproved session with a durable, head-bound
+	 * marker (决定③ no auto-revert). Also the ONCE-PER-HEAD alert claim (R1 MED-4):
+	 * writes IFF not already blocked for THIS head, and returns true ONLY for the
+	 * first caller — so the `merge_without_approval` alert fires once, and a restart
+	 * / replay is a no-op. A NEW head (rebase) is a fresh block → re-claims.
+	 */
+	setMergeBlock(input: {
+		executionId: string;
+		reason: string;
+		head: string;
+	}): boolean {
+		const head = input.head.toLowerCase();
+		this.db.run(
+			`UPDATE sessions
+			    SET merge_block_reason = ?, merge_block_head = ?, merge_block_at = datetime('now')
+			  WHERE execution_id = ?
+			    AND (merge_block_reason IS NULL OR lower(merge_block_head) != ?)`,
+			[input.reason, head, input.executionId, head],
+		);
+		const claimed = this.db.getRowsModified() > 0;
+		this.save();
+		return claimed;
+	}
+
+	/**
+	 * FLY-869 B-3 recovery: clear the merge_block marker once a same-head founder
+	 * approval lands (the session can then transition to completed + finalize).
+	 */
+	clearMergeBlock(executionId: string): void {
+		this.db.run(
+			`UPDATE sessions
+			    SET merge_block_reason = NULL, merge_block_head = NULL, merge_block_at = NULL
+			  WHERE execution_id = ?`,
+			[executionId],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-869 A-1: persist the IMMUTABLE qa_required snapshot (1=required, 0=exempt)
+	 * at auto-qa-policy eval time. Immutable = written ONLY when currently NULL, so a
+	 * later config/label change can never retroactively rewrite the ship verdict.
+	 */
+	setQaRequiredSnapshot(input: {
+		executionId: string;
+		required: 0 | 1;
+		reason: string;
+	}): void {
+		this.db.run(
+			`UPDATE sessions SET qa_required = ?, qa_required_reason = ?
+			  WHERE execution_id = ? AND qa_required IS NULL`,
+			[input.required, input.reason, input.executionId],
+		);
+		this.save();
+	}
+
+	/**
 	 * FLY-827: record a Codex code-review APPROVAL for (exec, head). INSERT-OR-APPROVE
 	 * (Codex R1 HIGH-1): a `codex_review_result` may arrive when NO `pending` row was
 	 * written (pr_created often lacks a stable pr_head_sha), so we must be able to
@@ -4227,6 +4347,18 @@ export class StateStore {
 			founder_ux_signoff_json:
 				(row.founder_ux_signoff_json as string) ?? undefined,
 			founder_ux_gate_mode: (row.founder_ux_gate_mode as string) ?? undefined,
+			// FLY-869 A-1: QA-required snapshot (numeric 0/1; undefined = never evaluated).
+			qa_required:
+				typeof row.qa_required === "number"
+					? row.qa_required
+					: row.qa_required == null
+						? undefined
+						: Number(row.qa_required),
+			qa_required_reason: (row.qa_required_reason as string) ?? undefined,
+			// FLY-869 B-3: merged-but-unapproved park marker.
+			merge_block_reason: (row.merge_block_reason as string) ?? undefined,
+			merge_block_head: (row.merge_block_head as string) ?? undefined,
+			merge_block_at: (row.merge_block_at as string) ?? undefined,
 			// FLY-245 D-a: monotonic lifecycle revision (defaults 0).
 			lifecycle_revision:
 				typeof row.lifecycle_revision === "number" ? row.lifecycle_revision : 0,

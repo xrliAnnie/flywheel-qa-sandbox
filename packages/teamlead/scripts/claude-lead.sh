@@ -1782,21 +1782,25 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r
   log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
 fi
 
-# ── FLY-598: Founder-facing UX judgment (universal — cos + dept, NOT companion) ──
-# Loads ONLY when this project enables the founder-UX gate
-# (founder_ux_gate.mode != off in .flywheel/config.yaml). Unlike doc-flow-rules
-# (always-appended + self-checking), this is CONDITIONALLY appended so an
-# un-enabled project (mode off / absent) sees ZERO Lead prompt change
-# (Codex R3-#3 / R2-#6 byte-compat). Guides whoever writes/triages issues
-# (cos + dept) to judge founder-facing UX and apply the `founder-facing-ux` label;
-# judgment is model-driven loose guidance, the enforcement is the Bridge gate.
+# ── FLY-598 / FLY-869: Founder brainstorm-alignment gate (universal — cos + dept, NOT companion) ──
+# Loads UNLESS this project EXPLICITLY disables the founder-UX gate
+# (founder_ux_gate.mode: off in .flywheel/config.yaml). FLY-869 flips the
+# default from opt-in to default-ON — an ABSENT founder_ux_gate block (or an
+# absent config file entirely) now resolves to "enforce" (mirrors
+# resolveEffectiveFounderUxConfig in flywheel-config), so this block is
+# appended for the common case. Only an EXPLICIT `mode: off` keeps the
+# pre-FLY-598 byte-compatible zero-prompt-change behavior (Codex R3-#3 / R2-#6
+# byte-compat, preserved for that one escape hatch). Guides whoever
+# writes/triages issues (cos + dept) that every substantial issue is gated by
+# default and only the `brainstorm-exempt` label opts an issue OUT; judgment
+# is model-driven loose guidance, the enforcement is the Bridge gate.
 BASE_FOUNDER_UX_RULES="${BASE_RULES_DIR}/founder-ux-rules.md"
 if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_FOUNDER_UX_RULES" ] && [ -r "$BASE_FOUNDER_UX_RULES" ]; then
   # Read founder_ux_gate.mode from the project config WITHOUT aborting under
   # `set -euo pipefail`: only awk when the config file exists, and `|| true` so a
-  # missing/malformed config (awk exit != 0) never kills the launch (a missing
-  # config simply means "gate off" → no append). This is why doc-flow-rules above
-  # self-checks inside the rule file instead — this block is the one shell-side read.
+  # missing/malformed config (awk exit != 0) never kills the launch. This is why
+  # doc-flow-rules above self-checks inside the rule file instead — this block is
+  # the one shell-side read.
   FOUNDER_UX_MODE=""
   _founder_ux_cfg="${PROJECT_DIR}/.flywheel/config.yaml"
   if [ -f "$_founder_ux_cfg" ]; then
@@ -1806,7 +1810,15 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_FOUNDER_UX_RULES" ] && [ -r "
       inblk && $1 == "mode:" { v=$2; gsub(/["'"'"',]/, "", v); print v; exit }
     ' "$_founder_ux_cfg" 2>/dev/null || true)"
   fi
-  if [ -n "$FOUNDER_UX_MODE" ] && [ "$FOUNDER_UX_MODE" != "off" ]; then
+  # FLY-869: absent config (no file / no founder_ux_gate block / no mode key —
+  # FOUNDER_UX_MODE still empty here) now DEFAULTS TO "enforce", mirroring
+  # resolveEffectiveFounderUxConfig's absent → enforce resolution. Only an
+  # EXPLICIT `mode: off` in the project config stays the byte-compatible
+  # no-append kill-switch.
+  if [ -z "$FOUNDER_UX_MODE" ]; then
+    FOUNDER_UX_MODE="enforce"
+  fi
+  if [ "$FOUNDER_UX_MODE" != "off" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_UX_RULES")
     log "Appending base founder-ux rules (founder_ux_gate.mode=${FOUNDER_UX_MODE}): ${BASE_FOUNDER_UX_RULES}"
   fi

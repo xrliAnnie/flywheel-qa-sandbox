@@ -46,6 +46,8 @@ export interface QaHeldSession {
 	pr_head_sha?: string;
 	/** FLY-827: sanctioned codex-skip bypass (needed by isReviewHeld). DB=int, type=bool. */
 	codex_skip?: number | boolean;
+	/** FLY-869 B: merged-but-unapproved park marker — held from ALL founder surfaces. */
+	merge_block_reason?: string;
 }
 
 const FULL_SHA = /^[0-9a-f]{40}$/;
@@ -72,6 +74,12 @@ export function isReviewHeld(
 	env: Record<string, string | undefined> = process.env,
 ): boolean {
 	if (!session) return false;
+	// FLY-869 B (design R2 HIGH-4 + Codex guardrail #1): a merged-but-unapproved
+	// parked session (merge_block marker) is held from EVERY founder surface —
+	// GatePoller approve-relay, event-route always-deliver, HeartbeatService
+	// gate_timed_out, DirectEventSink push — until same-head approval recovery
+	// clears the marker. Centralized here so the suppression can never drift.
+	if (session.merge_block_reason) return true;
 	// FLY-827 + FLY-793: hold the PR-owning reviewable roles (main + implement);
 	// the qa/design roles are verifiers / pre-PR and are never founder-held here.
 	if (!isReviewableRole(session.session_role)) return false;

@@ -11,11 +11,15 @@
  * Action Gate rule. Gated by `BRIDGE_DEPT_SCOPE_REJECT` env var (default on).
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Router } from "express";
 import type { PonytailInput } from "flywheel-config";
 import {
 	ACCEPTED_DISPATCH_MODELS,
+	ConfigLoader,
 	normalizeDispatchModel,
+	resolveEffectiveFounderUxConfig,
 	resolvePhaseModel,
 } from "flywheel-config";
 import {
@@ -31,7 +35,10 @@ import {
 } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
-import { resolveFounderFacingUx } from "./founder-ux/trigger.js";
+import {
+	isQaIssueTitle,
+	resolveFounderFacingUx,
+} from "./founder-ux/trigger.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 import { waitForSession } from "./session-wait.js";
@@ -73,6 +80,40 @@ function isDeptScopeRejectEnabled(): boolean {
 	if (v === undefined) return true;
 	const lower = v.toLowerCase();
 	return lower !== "off" && lower !== "false" && lower !== "0";
+}
+
+/**
+ * FLY-869: load a project's `founder_ux_gate.exempt_labels` from its
+ * CANONICAL `.flywheel/config.yaml` root — mirrors
+ * `loadPipelineConfigByProject` (SECURITY: reads the mainline checkout, NEVER
+ * an implementation PR's worktree, so a runner cannot self-exempt its own
+ * issue). Resolved through `resolveEffectiveFounderUxConfig` so an absent
+ * project / absent config file / absent `founder_ux_gate` block / malformed
+ * config all collapse to the resolver's default exempt list
+ * (`["brainstorm-exempt"]`) rather than an empty "nothing is exempt" set —
+ * the gate itself still defaults to enforce regardless of this list.
+ */
+export async function loadFounderUxExemptLabels(
+	project: ProjectEntry | undefined,
+	readFile: (p: string) => string = (p) => readFileSync(p, "utf-8"),
+): Promise<readonly string[]> {
+	if (!project) return resolveEffectiveFounderUxConfig().exempt_labels;
+	const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
+	try {
+		const loader = new ConfigLoader(async (p) => readFile(p));
+		const cfg = await loader.load(configPath);
+		return resolveEffectiveFounderUxConfig(cfg?.founder_ux_gate).exempt_labels;
+	} catch (err) {
+		const code = (err as NodeJS.ErrnoException).code;
+		if (code !== "ENOENT") {
+			console.warn(
+				`[founder-ux] config load failed for ${project.projectName}: ${
+					(err as Error).message
+				} — using default exempt labels`,
+			);
+		}
+		return resolveEffectiveFounderUxConfig().exempt_labels;
+	}
 }
 
 export function createRunsRouter(
@@ -546,21 +587,31 @@ export function createRunsRouter(
 		// touching Linear at transition time.
 		const codexSkip = normalizedIssueLabels.includes("codex-skip");
 
-		// FLY-598: snapshot the founder-facing-ux label at run start (same
-		// "label-before-trigger" semantics as codex-skip). This is the RECORD of
-		// the Lead's judgment (the Lead applies the label per loose guidance — no
-		// hardcoded classifier). A Runner can also self-declare later via
-		// `declare-founder-ux`. The flag is inert unless founder_ux_gate.mode != off,
-		// so snapshotting it is byte-compatible at the prompt/stage layer.
+		// FLY-598 / FLY-869: snapshot the founder-facing-ux flag at run start
+		// (same "label-before-trigger" semantics as codex-skip). FLY-869 flips
+		// this default-ON: every issue is in scope UNLESS it carries one of the
+		// project's configured exempt labels (default `["brainstorm-exempt"]`,
+		// resolved from `.flywheel/config.yaml`'s `founder_ux_gate.exempt_labels`
+		// via `resolveEffectiveFounderUxConfig`). A Runner can also self-declare
+		// later via `declare-founder-ux`. The flag is inert unless
+		// founder_ux_gate.mode resolves to something other than "off".
 		//
 		// FLY-598 (Codex R1 MEDIUM): fail-closed on a label-read failure. If we
-		// could not read the issue's labels we cannot prove it is NOT founder-facing,
-		// so treat it AS founder-facing (the primary trigger must never fail-open on a
-		// Linear outage). This only has teeth when the gate is enabled (mode != off);
-		// with the default off mode the flag is inert, so this is byte-compatible.
+		// could not read the issue's labels we cannot prove it is exempt, so
+		// treat it AS in scope (the trigger must never fail-open on a Linear
+		// outage). This only has teeth when the gate is enabled (mode != off).
+		const founderUxProject = projects.find(
+			(p) => p.projectName === projectName,
+		);
+		const founderUxExemptLabels =
+			await loadFounderUxExemptLabels(founderUxProject);
 		const founderFacingUx = resolveFounderFacingUx(
 			normalizedIssueLabels,
 			issueLabelsFetchFailed,
+			founderUxExemptLabels,
+			// FLY-869 (Lead 2ee06754): a `QA · <ident>` verification issue is auto-exempt
+			// from the brainstorm gate — no manual label. (QA·867 / FLY-873 was the case.)
+			isQaIssueTitle(issueTitle),
 		);
 
 		// FLY-137 v1.27.2 (Codex Track A #2): validate `agentName` SYNCHRONOUSLY
