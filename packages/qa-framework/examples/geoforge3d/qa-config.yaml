@@ -1,0 +1,52 @@
+# GeoForge3D QA Configuration
+# Example: full-stack project with backend API + frontend Shopify store
+
+project:
+  name: "GeoForge3D"
+  description: "3D geographic model generation from real-world map data"
+
+qa:
+  doc_root: "product/doc/qa"
+  test_report_dir: "product/doc/qa/test-reports"
+  context_file: "product/doc/qa/qa-context.md"
+
+plan:
+  source: "branch_fetch"
+  fetch_strategy: "checkout_file"
+
+domains:
+  - name: "backend"
+    dir: "product/GeoForge3D-Backend"
+    test_skill: "backend-integration-test"
+    config_file: ".claude/skills/backend-integration-test/geoforge3d-backend-suite.md"
+    cleanup_script: null
+
+  - name: "frontend"
+    dir: "product/GeoForge3D-Frontend"
+    test_skill: "frontend-integration-test"
+    config_file: ".claude/skills/frontend-integration-test/geoforge3d-frontend-config.md"
+    cleanup_script: null
+
+api:
+  openapi_spec: "product/GeoForge3D-Backend/api-gateway/openapi-spec.yaml"
+  base_url: "https://geoforge3d-api-5csvf2blaa-uw.a.run.app"
+
+orchestrator:
+  db_path: "~/.flywheel/orchestrator/geoforge3d-qa.db"
+  max_concurrent_agents: 2
+  artifact_retention_days: 30
+  agent_types:
+    - name: "qa-parallel"
+      step_templates:
+        - { key: "onboard", name: "Onboard", order: 1, prerequisite: null }
+        - { key: "analyze_plan", name: "Analyze + Plan", order: 2, prerequisite: "onboard" }
+        - { key: "research", name: "Research", order: 3, prerequisite: "analyze_plan" }
+        - { key: "write_execute", name: "Write + Execute", order: 4, prerequisite: "research" }
+        - { key: "finalize", name: "Finalize", order: 5, prerequisite: "write_execute" }
+
+version:
+  file: "product/doc/VERSION"
+
+env_refs:
+  gcloud_project: "GCP_PROJECT"
+  api_token: "GEOFORGE3D_API_TOKEN"

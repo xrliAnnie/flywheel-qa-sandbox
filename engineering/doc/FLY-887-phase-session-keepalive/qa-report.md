@@ -1,0 +1,272 @@
+# FLY-887 三段式 phase-session 并存保活 — QA 报告
+
+Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-phase-session-并存保活-designimplementqa-不跑完就关qaimplement)
+日期: 2026-07-05 / 2026-07-06(round 2 + round 3)
+基于: plan.md
+
+## Round 3（Annie 指定：全 Discord 叙事重跑）：PASS，给 founder 的可读证据
+
+Round 2 的 529 Room E2E 走的是直接 API 旁路驱动，没有一条完整的 Discord 叙事。
+Annie 要求重跑一次、全程走真实 Discord 对话，产出一条她能自己点开读完的 thread。
+
+**Discord thread（founder 可直接打开查看）：**
+https://discord.com/channels/1485787271192907816/1523516456409759814
+
+用专门新建的 issue FLY-895（避免复用 round 2 的 FLY-202 造成混淆）。这条 thread
+里有 15 条真实、按时间顺序发出的消息，完整读出：session 启动 → design 完成
+（parked，明确标注没关）→ implement 启动 → 🛑 ship 授权需要founder拍板（Lead
+正确拒绝自批）→ implement 完成→QA 启动 → QA 未通过、**唤醒同一个 implement**
+修复（第 1 轮，真实的一处小毛病：新加的一条记录漏了句尾句号）→ fix-loop 更新
+（implement 修好、push、PR 更新）→ ship → 完工。
+
+**关键：** 在 implement 正在修复、design 仍 park 着的那一刻真实重启了一次 Bridge。
+启动日志原文：「reconcileOnStartup: 666972eb...(FLY-895) already progressed
+past design (live downstream phase) — skip stale handoff replay」。重启前后
+session/TURN/tmux 窗口数量零漂移，implement 那个 pane 全程没断。Annie 六条
+目标运行时行为逐条再次确认，和 round 2 PASS 完全一致（详见下方 round 2 章节）。
+
+诚实的小观察（不是 bug，FLY-887 没碰这段既有逻辑）：QA 复验 PASS 那次，Lead 的
+消息模板只在 FAIL 时发专门一条，PASS 没有单独一条字面消息——能从后续的
+fix-loop 更新 + ship 徽标 + 完工消息推断出来。这是 FLY-793 既有的消息模板特征，
+留作观察，不阻塞本次 ship。
+
+测试 slot 已按标准拆除（Bridge/tmux/worktree/CommDB），Discord thread 本身不
+受影响，现在仍可正常打开查看。
+
+## Round 2 结论：PASS
+
+本轮验证 round 1 的修复（commit `0d51ea3c`）+ 补一处新发现的边界情况（commit
+`19ead1d6`）+ Tadashi 要求的隔离 529 QA Room 真机全链路 E2E（硬门槛）。三项全过。
+
+### 1. Round 1 回归修复验证：PASS
+
+`reconcileOnStartup` 的 `hasProgressedPastDesign` 守卫（`0d51ea3c`）确认解决了
+round 1 发现的问题——重放已经合法 park 的 design session 不再误触发 design→
+implement handoff、不再从活体 QA fix-loop 手里夺走 TURN。
+
+- 之前 FAIL 报告里提交的回归测试（`phase-orchestrator.fly887-keepalive.test.ts`
+  "FLY-887 QA FINDING" describe block）现在 **GREEN**（14/14），含两条哨兵测试
+  钉住守卫两侧行为（真崩溃 remnant 仍会重驱 handoff；QA 分支单独测试仍会跳过）。
+- 全仓测试重新跑一遍：teamlead 4900+ passed（另有 9 个失败只在**满并行跑全仓**
+  时出现，单独/小范围重跑 100% 绿——已确认是资源争用导致的环境性 flake，跟本次
+  改动无关，同 round 1 报告里记录的 codex-lead-runtime.test.ts 环境性失败同类）；
+  flywheel-comm 732/732、config 323/323、edge-worker 1054/1054（+5 skipped，
+  memory-supabase-live 环境性跳过）全绿。Lint 对本 PR 改动的文件干净（另有 14 条
+  警告在本 PR 完全未碰的既有文件里，与本次改动无关）。CI 绿（PR #458）。
+
+### 2. 新发现 + 修复：reconcile 分不清"真崩溃"和"已 ship"
+
+代码审查中发现 `hasProgressedPastDesign` 的 round-1 修复本身还留了一条更窄的缝：
+`getAlivePhaseSession` 只看**活体**行，如果 Bridge 恰好崩在
+`finalizeThreeStagePhases` 收尾中途——已经把 implement 关成 `completed`（不再
+"活"）、但还没轮到关 design（design 仍停在 `design_done`）——下次重启时
+`hasProgressedPastDesign` 会把这个"已经 ship 完、只是收尾中途崩溃"的 design
+误判成"implement 从未起来过的真崩溃 remnant"，重新在**已经合并的 issue** 上
+spawn 一个全新 implement。
+
+已跟 Tadashi 确认后在本 PR 内补上小而安全的修复：新 dep
+`hasShipFinalizationClaim(issueId)`，查 `runPostShipFinalization` 的原子
+per-issue claim 事件（`post_ship_finalization_claim`，已有的
+`countEventsByIssueAndType` 复用）是否存在，OR 进 `hasProgressedPastDesign`。
+一个真崩溃、从未 ship 过的 implement 不会有这个 claim 事件，所以守卫本身要保护
+的"真 remnant 仍要重驱"行为不受影响。两条新哨兵测试钉住两侧：已 ship 完
+（claim 存在）→跳过；从未 ship（claim 不存在）→仍重驱。16/16（fly887-keepalive
+套件）+ 58/58（含 legacy keep-alive-OFF 套件）全绿。commit `19ead1d6`。
+
+### 3. 529 Room 真机全链路 E2E：PASS（Tadashi 要求的硬门槛，已完成）
+
+单测/集成测试证明不了的东西——真实 tmux 进程活体探测、真实共享 git worktree、
+真实 CommDB TURN 表、以及**真实 Bridge 进程重启**——这轮用一个隔离测试环境
+（slot 2）真机跑通了完整链路：park→wake→TURN→FAIL→wake-fix→wake-retest→PASS→
+**穿插两次真实 Bridge 重启**→founder-approve→ship→三段统一收尾→worktree 删除→
+teardown。部署源用一次性 sandbox 分支 `qa-e2e-887-scratch`（把两个跟本 PR 无关
+的既有假测试密钥 fixture 中和掉，只为绕过 sandbox 仓库的 push-protection 误报，
+从未碰真正的 PR 分支——Tadashi 已确认这个处理方式并明确不去点 GitHub 的
+"allow this secret"）。
+
+Annie 六条目标运行时行为（plan.md「目标运行时行为」表）逐条真机验证：
+
+- **Design park + Implement 原地接管同一 worktree**：PASS——两者
+  `worktree_path` 完全一致（无 `-design`/`-implement` 后缀分裂），两个 OS
+  进程验证同时存活，Bridge log 记录 handoff。
+- **Implement park + QA 接管同一 worktree、QA 可写**：PASS——QA 真的把测试
+  文件/报告 commit 到共享分支上（`git log` 验证多个 commit）。
+- **QA FAIL → wake 同一 implement 修 → wake 同一 QA 复验 → PASS**：PASS——
+  Bridge log 逐字确认「wake」用的是**同一个 execution_id**、不是重新 spawn；
+  TURN epoch 正确递增；implement/QA 各自的 `turn --exec-id` 自查在动手前答
+  `yours`；QA 复验时 worktree 已在新 head，零 fetch/checkout。
+- **穿插 Bridge 重启不误触发（本 PR 修的核心场景）**：PASS——两次独立重启，
+  Design 仍停在 `design_done` 且下游活体/已推进时，Bridge 启动日志逐字打出
+  `... already progressed past design (live downstream phase) — skip stale
+  handoff replay`，session 数/TURN 行/tmux 窗口数量在重启前后**零漂移**。
+  并且验证了对照组：设计刚 park、下游真的还没起来时，重启**正确地**重新驱动了
+  handoff（证明守卫是真的在判断,不是无脑跳过）。
+- **Ship 后统一收尾**：PASS——founder-approve 模拟后，QA 走完整 ship 序列，
+  两个 parked 段（design + implement）都被 `closeRunner(finalizeDone)` 关成
+  `completed`，`three_stage_turn` 表被清空该行，共享 worktree **只在此刻**才被
+  删除（之前全程未删），Linear issue 自动标 Done。
+
+**发现的两个与本 PR 无关的既有问题**（不阻塞本次 ship，建议开 follow-up）：
+
+1. `pipelineConfigByProject` 在 Bridge **启动时**读入缓存一次，不是每次请求都
+   重新读——测试/部署时改 `.flywheel/config.yaml` 的 `pipeline.three_stage`
+   需要重启 Bridge 才生效。纯工具/文档层面的坑，不是运行时 bug。
+2. **FLY-827 Codex 硬闸 ↔ 三段式 QA-as-ship-executor 的一处真实交互缝隙**：
+   `codex_review_result` 的接收方只认 main/implement 角色的 session
+   （`auto-qa-coordinator.ts` `isReviewableRole` 门），而三段式下最终执行 ship
+   的是 QA 这个 session 自己的 exec-id——E2E 里验证 `verify-approval` 走这条
+   路径时卡住过，只能手动在隔离测试库里直接插一行 `approved` 记录绕过。这是
+   FLY-793（三段式本身）就已经存在的既有交互问题，本 PR 完全没碰
+   `auto-qa-coordinator.ts` 的这段逻辑，**不是** FLY-887 引入的新 bug，但既然
+   本仓库自己（flywheel 项目）三段式已经打开（`.flywheel/config.yaml`
+   `three_stage: true`），这条缝隙值得单独立一个 follow-up issue 排查——如果
+   本仓库的 Codex 硬闸也生效，未来某个三段式 issue 走到 ship 这一步可能会撞上
+   同样的卡点。
+
+E2E 过程中还有一处已核实无害的操作插曲：E2E agent 有一次误用了自己 shell 继承
+的生产环境变量（`FLYWHEEL_BRIDGE_URL`/`FLYWHEEL_ISSUE_ID` 等，来自它自己作为
+Runner 的身份）把一条 `codex-review-result` 事件发到了本仓库自己的生产 Bridge
+（issue FLY-887 本身）。已读代码确认：`onCodexReviewResult` 对未知/不可复核角色
+的 `targetExecutionId` 只是 log warning 后直接 return，不落任何状态改动——生产
+上只多了一条无害的 orphan `session_events` 审计行，没有任何副作用。
+
+### 结论
+
+Round 2 验证 + 新边界修复 + 真机全链路 E2E 全部 PASS。Annie 的核心诉求
+（QA↔implement 修复循环不丢 context、不重开、不费 token）在真实 Bridge 重启
+穿插下得到了真机层面的证实，而不仅仅是 mock 测试层面。建议进入 approve gate。
+
+---
+
+## Round 1 结论：FAIL（已修复，见上）
+
+代码级审查 + 测试执行发现一处 **高严重度、可复现的正确性 bug**：`reconcileOnStartup`
+（Bridge 每次启动/重启都会跑）在 keep-alive 模式下会在**每一次 Bridge 重启**时错误地对
+已经合法 park 的 design session 重新触发 design→implement handoff —— 无论流水线实际
+已经推进到哪一步，都会把共享 worktree 的 TURN 从当前合法持有者（例如正在 fix-loop 中的
+QA）夺走并错误地转授给 implement，还会给 implement 发一条它的 prompt 从未教过它处理的
+"retest"（QA 专用措辞）唤醒消息。这个问题会在生产上**每次 Bridge 重启**都复发（本项目
+重启 Bridge 是常态操作），直接违背了 FLY-887 本身要解决的核心诉求（"不丢 context、不被
+打断的 fix 循环"）。
+
+## 已验证通过的部分（代码级，非常扎实）
+
+逐条对照 plan.md 的机制设计（M1-M9,7 处改动面 + kill-switch），全部实现与设计一致:
+
+- **TURN 表 + `turn` 命令**（`db.ts` / `turn.ts`）: UPSERT + epoch 自增语义正确;
+  `turn` 命令 yours/not-yours/no-turn 三态 + 正确的 exit code 契约（真失败才 exit 1）。
+- **PhaseOrchestrator.handoff()**: 四态 liveness（alive/dead_pin/absent/indeterminate）
+  处理正确，`indeterminate` 严格 fail-closed（不 park、不 close、不动 TURN）;
+  wake-or-spawn 路径里 `grantTurn` 严格先于 `wakePhaseRunner`（真实测试从 fake
+  `blueprint.run` 内部读表验证 happens-before，非仅断言调用顺序）。
+- **`assertPhaseWorktreeReady`** 在 wake 前的 dirty/head-mismatch fail-closed 校验到位
+  （handoff 和 fix-loop 两处都过）。
+- **RunDispatcher pre-launch TURN grant seam**：`run-dispatcher-fly887-turn-seam.test.ts`
+  用真实 fake `blueprint.run` 读表证明了"launch 前 TURN 已落"，覆盖 fresh spawn/两条
+  spawn 兜底/kill-switch OFF 哨兵。
+- **Blueprint worktree 原地接管**：`Blueprint.fly887-worktree-takeover.test.ts` 用**真
+  git 临时仓**（非 mock）验证 dirty/HEAD-drift 时 fail-closed 拒绝接管，clean+HEAD 匹配
+  时正确复用。
+- **`runFailFlowKeepAlive`**：`recordFixRound` insert-or-read 幂等语义 + cap 检查 +
+  wake(fix)/spawn 兜底路径全部符合设计;多轮验证测试证明 round 正确递增。
+- **post-ship 收尾顺序**：`post-ship-finalization.fly887.test.ts` 用真实
+  `WorkflowFSM`+`DirectiveExecutor`+`StateStore` 证明 `finalizeThreeStagePhases` 严格
+  先于 `removeCleanWorktree` 调用，且正确把 parked design/implement 转 completed、
+  保留 shipped QA session 原状、删除 TURN 行。
+- **kill-switch**（`FLYWHEEL_THREE_STAGE_KEEPALIVE`）：默认 ON，registry 已登记
+  （`feature-flags-drift.test.ts` 不会漏检），`=0` 时逐字回退旧 close+respawn 行为
+  （legacy 测试套件专门用 `keepAliveEnabled: false` 跑，是有效的 byte-compat 哨兵）。
+- **Prompt 文案**：design/implement 段的 park 契约 + 强制 turn 自查 + QA FAIL 段的新
+  RE-TEST 措辞，snapshot 测试全绿；`declare-state` → `park` 的 drive-by 修正（含
+  auto-QA prompt 那处同类潜在 bug）已生效。
+
+全仓测试：teamlead 4862 passed / edge-worker 1054 passed / flywheel-comm 732 passed /
+config 323 passed（另有 24 个 `codex-lead-runtime.test.ts` 失败是已知环境性问题——QA
+runner 自己的 TMPDIR 落在 `~/.flywheel` 下触发该文件的安全校验，与本 PR 无关，该文件
+根本不在 diff 里；用干净 TMPDIR 重跑 117/117 全过）。CI 绿（PR #458）。Lint 干净。
+
+## FAIL 发现：`reconcileOnStartup` 在 keep-alive 下每次重启都会误触发过期 handoff
+
+### 根因
+
+`StateStore.getStrandedDesignPhaseSessions()`（pre-FLY-887 既有查询）：
+
+```sql
+SELECT * FROM sessions WHERE session_role = 'design' AND status = 'design_done'
+```
+
+这个查询在 FLY-793 时代的语义是"implement 从未真正起来过的崩溃残留"——因为当时
+design_done 只是一个**转瞬即逝**的中间状态（handoff 立刻把它关掉+起 implement）。
+
+FLY-887 keep-alive 把这个假设打破了：design session park 之后会**永久停留**在
+`design_done`（这正是"park 不退出"的字面含义），直到 ship 才被 `finalizeThreeStagePhases`
+转成 `completed`。于是 `getStrandedDesignPhaseSessions()` 现在**分不清"真崩溃残留"
+和"健康 park 中，流水线早就往前走了"**——两者在这个查询看来一模一样。
+
+`reconcileOnStartup()`（`phase-orchestrator.ts:310`）在**每次 Bridge 启动/重启时无条件
+执行**，把查到的每一行都重放进 `onPhaseComplete` → `handoff(design, 'implement')`。
+`handoff()` 本身没有"这个 issue 是不是已经推进过 implement"的检查——它只看
+`getAlivePhaseSession(issueId, 'implement')` 是否有活体，有就走 wake-or-spawn 的
+wake 分支：
+
+1. `capturePhaseHeadSha(prev)` 对**共享物理 worktree**跑 `git rev-parse HEAD`——不管
+   design/implement/QA 谁的 session row 传进去，读到的都是同一个目录当前的 HEAD。
+2. `assertPhaseWorktreeReady(target, headSha)` 拿这个刚读出来的 HEAD 去比对 target
+   （被唤醒对象）的 worktree HEAD——因为是同一个物理目录，这个校验**永远同义反复地
+   通过**，不管流水线实际推进到多远。
+3. 于是 `grantTurn({execId: <implement>, phase: 'implement'})` 被调用——**把 TURN 从
+   当前真正的持有者（可能是 QA，正在 fix-loop 里）夺走**，转授给 implement。
+4. `wakePhaseRunner({session: implement, kind: 'retest', ...})` 被调用——发给
+   implement 的措辞是（plugin.ts wakePhaseRunner 的 'retest' 分支）："the implement
+   phase pushed a fix... re-run your **QA scenarios** and emit `qa-result` again"——
+   这段话是写给 **QA** 的，implement 的 prompt 里从未教过它怎么处理一条 "RE-TEST" 唤醒
+   （implement 只被教了怎么处理 "QA FIX" 唤醒）。
+
+### 复现（已写成失败的回归测试，随本次 QA 一并提交）
+
+`packages/teamlead/src/bridge/__tests__/phase-orchestrator.fly887-keepalive.test.ts`
+新增 describe block "FLY-887 QA FINDING: reconcileOnStartup re-fires design→implement
+on EVERY restart under keep-alive"：构造一个永久 park 在 `design_done` 的 design
+session + 一个活体 implement（模拟"流水线早就往前走了"），跑
+`reconcileOnStartup()`，断言 `grantTurn` / `wakePhaseRunner` / `start` 都不应被调用。
+**当前实现下这个断言失败**——`grantTurn` 被以 `{execId: 'impl-exec', phase:
+'implement'}` 调用了一次，证实了上面的分析。
+
+跑法（在 packages/teamlead 下，注意用干净 TMPDIR 避开环境性噪音）：
+
+```
+TMPDIR=/tmp npx vitest run src/bridge/__tests__/phase-orchestrator.fly887-keepalive.test.ts
+```
+
+### 影响面
+
+- **每次 Bridge 重启**都会对**每一个**"design 已完成但 issue 还没 ship"的三段式
+  issue 触发一次——这不是罕见 corner case，是这个仓库的日常操作节奏（本仓库 changelog
+  里 Bridge 重启是按天甚至按批次发生的）。
+- TURN 被错误转授之后，真正应该持有 TURN 的一方（例如 mid-fix-loop 的 QA）下次做
+  `turn --exec-id` 自查会看到 `not-yours`——而 QA/implement 的 prompt 契约里**没有
+  教过"看到 not-yours 该怎么恢复"**，等于把一个健康的 fix-loop 卡死，需要人工
+  （Lead）介入才能恢复。这正好是 Annie 提出 FLY-887 想要根治的那类"半途被打断、
+  context 断裂"的问题的一个新变种。
+- implement 收到不属于自己的 "retest" 唤醒文本后的实际行为不可预测（不在被教过的
+  契约范围内）。
+
+### 建议的修复方向（不越权替 implement 做决定，仅供参考）
+
+`reconcileOnStartup` / `getStrandedDesignPhaseSessions` 需要加一个"这个 issue 是否已
+经推进过 design"的判断，例如：只有当**该 issue 不存在任何活体的
+implement/qa**（`getAlivePhaseSession` 对 implement 和 qa 都返回 undefined）时才认定
+design_done 是"真崩溃残留"，否则视为"健康 park，无需重放"直接跳过。TURN 表本身也可以
+作为第二重信号（TURN 当前指向别的 phase → 跳过）。
+
+## 下一步
+
+按协议：本次 QA 报告 FAIL，commit + push 这份报告和回归测试到本分支后立即
+`qa-result --status fail`，然后 STOP 等待——流水线会关闭本 QA session 并起一个新的
+Implement-fix session 来修复上述问题。
+
+修复后建议：Tadashi（flywheel-eng-lead）已确认——鉴于这是自举流水线基建本身（restart-
+gated feature），ship 前仍需在隔离 529 QA Room 补一次真机全链 E2E（真 park→真 wake→
+TURN 轮转→穿插 Bridge 重启→ship 统一收尾 + fix-loop cap 3），而不是 ship 了当生产
+canary 去发现问题。这次发现的 reconcile bug 恰好会在 E2E 的"穿插 Bridge 重启"步骤里
+复现，建议先修好这个再进 529 Room，否则会在那一步白白撞上同一个已知问题。

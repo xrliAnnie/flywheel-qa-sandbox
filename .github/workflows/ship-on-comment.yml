@@ -1,0 +1,178 @@
+name: "Ship on :cool: Comment"
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+  checks: read
+
+concurrency:
+  group: ship-pr-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  ship:
+    name: "🚀 CI + Merge"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: |
+      github.event.issue.pull_request &&
+      github.event.issue.state == 'open' &&
+      github.event.comment.body == ':cool:'
+
+    steps:
+    - name: "📝 Get PR information"
+      id: pr-info
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          let permission = 'none';
+          try {
+            const { data: perm } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              username: context.payload.comment.user.login
+            });
+            permission = perm.permission;
+          } catch (e) {
+            // 404 for non-collaborators — treat as no permission
+          }
+          if (!['admin', 'write'].includes(permission)) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `⚠️ @${context.payload.comment.user.login} does not have write access — ship rejected.`
+            });
+            core.setFailed('Commenter lacks write permission');
+            return;
+          }
+
+          const { data: pr } = await github.rest.pulls.get({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: context.issue.number
+          });
+
+          if (pr.merged || pr.state !== 'open') {
+            core.setFailed(`PR is already ${pr.merged ? 'merged' : pr.state} — skipping`);
+            return;
+          }
+
+          const headRepoFullName = pr.head.repo?.full_name;
+          const baseRepoFullName = `${context.repo.owner}/${context.repo.repo}`;
+          if (headRepoFullName && headRepoFullName !== baseRepoFullName) {
+            core.setFailed('Fork PRs are not supported by ship workflow');
+            return;
+          }
+
+          if (pr.draft) {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: '⚠️ Cannot ship a draft PR. Mark it as ready for review first.'
+            });
+            core.setFailed('PR is still in draft');
+            return;
+          }
+
+          core.setOutput('head_ref', pr.head.ref);
+          core.setOutput('head_sha', pr.head.sha);
+          core.setOutput('pr_title', pr.title);
+
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: `🚀 Ship triggered for \`${pr.head.ref}\` at \`${pr.head.sha.slice(0, 7)}\` — running CI checks...`
+          });
+
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ steps.pr-info.outputs.head_sha }}
+        persist-credentials: false
+
+    - uses: pnpm/action-setup@v4
+
+    - uses: actions/setup-node@v4
+      with:
+        node-version-file: .node-version
+        cache: pnpm
+
+    - name: Configure git for tests
+      run: |
+        git config --global user.email "ci@flywheel.dev"
+        git config --global user.name "Flywheel CI"
+
+    - name: Install dependencies
+      run: pnpm install --frozen-lockfile
+
+    - name: Install better-sqlite3 prebuilt binary
+      run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+
+    - name: Build
+      run: pnpm build
+
+    - name: Typecheck
+      run: pnpm typecheck
+
+    - name: Lint
+      run: pnpm lint
+
+    - name: Test
+      run: pnpm test:packages:run
+
+    - name: "✅ Merge PR"
+      if: success()
+      uses: actions/github-script@v6
+      env:
+        PR_TITLE: ${{ steps.pr-info.outputs.pr_title }}
+        PR_NUMBER: ${{ github.event.issue.number }}
+        HEAD_REF: ${{ steps.pr-info.outputs.head_ref }}
+        HEAD_SHA: ${{ steps.pr-info.outputs.head_sha }}
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const prNumber = parseInt(process.env.PR_NUMBER, 10);
+          await github.rest.pulls.merge({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            pull_number: prNumber,
+            merge_method: 'squash',
+            commit_title: `${process.env.PR_TITLE} (#${prNumber})`,
+            commit_message: 'Shipped via :cool: comment',
+            sha: process.env.HEAD_SHA
+          });
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: prNumber,
+            body: `✅ CI green — PR merged to main! (${process.env.HEAD_SHA.slice(0, 7)})`
+          });
+          try {
+            await github.rest.git.deleteRef({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: `heads/${process.env.HEAD_REF}`
+            });
+          } catch (e) { /* best-effort branch cleanup */ }
+
+    - name: "❌ Report failure"
+      if: failure() && steps.pr-info.outcome == 'success'
+      uses: actions/github-script@v6
+      with:
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+        script: |
+          const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+          await github.rest.issues.createComment({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+            body: `❌ Ship failed — PR was NOT merged. Check the [workflow run](${runUrl}) for details. Fix the issue and post :cool: again.`
+          });
