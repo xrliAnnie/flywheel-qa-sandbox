@@ -109,3 +109,10 @@ jobs:
       # touches a real ~/.codex/logs_2.sqlite. Needs the sqlite3 CLI.
       - name: Test — FLY-697 codex-log-guard
         run: bash scripts/__tests__/codex-log-guard.test.sh
+
+      # FLY-880: internal PM agent role .md contract guard. Pure text assertions
+      # (no external deps) — defends the 40k injection-truncation red line and the
+      # product-co-creation (mode A) + inherited docs/design (mode B) anchors
+      # against silent regression.
+      - name: Test — FLY-880 PM executor role contract
+        run: bash scripts/__tests__/test-pm-executor-contract.sh
