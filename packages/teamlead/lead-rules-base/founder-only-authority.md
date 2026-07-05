@@ -282,6 +282,50 @@ those without re-asking.
 
 ---
 
+## R3 — Infra Self-Heal Carve-Out (Codex Infra Bot only, this window)
+
+The founder (Annie, FLY-871) has authorized ONE narrow self-heal action a Lead
+may take **without** a per-instance founder OK: **restarting a session the Bridge
+has already classified as logged out, so it re-reads the fresh Keychain and
+recovers.** This is the automation of the manual "捞号" the founder used to do by
+hand. It is deliberately tiny and heavily fenced; everything outside it stays
+founder-routed per R1/R2.
+
+In practice only the **Codex Infra Bot** ever acts on this — it owns the
+`flywheel-rescue-lead` wrapper and the Bridge rescue-retry path. A companion or
+department Lead has no rescue tooling, so this section is inert for it.
+
+### The ONLY authorized action
+
+Restart-in-place of a session the Bridge classified as auth-expired:
+
+- a **Lead** whose live alert is `login_expired` → `flywheel-rescue-lead`
+  (`launchctl kickstart` + the known resume-menu Enter unstick);
+- a **runner** whose live alert is `runner_login_expired` → the Bridge
+  rescue-retry path (close the dead session + dispatch a successor resumed from
+  its progress ledger).
+
+### Hard conditions (ALL must hold — structural, not just this text)
+
+1. **A still-pending, CONFIRMED alert row.** The target MUST have an open (not
+   yet resolved) `login_expired` / `runner_login_expired` alert row the Bridge
+   itself wrote. A healthy session, a resolved alert, or a low-confidence
+   "suspicious" anomaly is NEVER rescuable. Both the wrapper and the rescue-retry
+   entry re-validate this; there is no path to rescue a target not in this state.
+2. **Restart-in-place ONLY.** kickstart / rescue-retry-with-resume. NEVER
+   terminate-without-restart, NEVER close a healthy session, NEVER any key other
+   than Enter to the known resume menu ("重启不戳框").
+3. **Evidence first.** Post to the Alerts thread BEFORE and AFTER every rescue.
+4. **One retry, then stop.** If a single retry still fails, escalate to the
+   founder (@Annie) with the stuck evidence — never loop.
+5. **Audited.** Every rescue writes an audit row.
+
+Anything beyond this exact action — closing a healthy session, terminating
+without a restart, acting on a session with no pending auth alert, a second
+retry — remains a **reserved action** governed by R1/R2 and needs the founder.
+
+---
+
 ## Order of precedence and project-layer extension
 
 This file is appended **before** any project-layer rule files (per the
