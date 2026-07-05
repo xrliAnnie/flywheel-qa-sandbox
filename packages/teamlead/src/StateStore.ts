@@ -2473,6 +2473,52 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-887: ALL three-stage phase sessions for an issue (design/implement/qa by
+	 * the durable `chat_thread_role` marker), any status, newest first. The
+	 * ship-time finalizer filters these to the parked design + implement sessions
+	 * it must close; the keep-alive orchestrator filters by role + alive status to
+	 * find a wake target. Single-session / auto-QA rows (`chat_thread_role='main'`)
+	 * are never returned, so a non-three-stage issue yields `[]` (no-op downstream).
+	 */
+	getPhaseSessionsForIssue(issueId: string): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE issue_id = ?
+			   AND chat_thread_role IN ('design', 'implement', 'qa')
+			 ORDER BY last_activity_at DESC`,
+		);
+		stmt.bind([issueId]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-887: durable, replay-idempotent event count for an issue + type — the
+	 * fix-round ledger source. A three-stage QA FAIL no longer spawns a NEW
+	 * implement session (the parked one is woken to fix), so the FLY-859
+	 * session-count round accounting no longer grows; the round is instead an
+	 * idempotent `three_stage_fix_round` event per QA verdict. `insertEvent`'s
+	 * UNIQUE(event_id) dedup means a replayed verdict never double-counts.
+	 */
+	countEventsByIssueAndType(issueId: string, eventType: string): number {
+		const stmt = this.db.prepare(
+			"SELECT COUNT(*) AS n FROM session_events WHERE issue_id = ? AND event_type = ?",
+		);
+		stmt.bind([issueId, eventType]);
+		const n = stmt.step()
+			? Number((stmt.getAsObject() as Record<string, unknown>).n ?? 0)
+			: 0;
+		stmt.free();
+		return n;
+	}
+
+	/**
 	 * FLY-603 Layer B: sessions whose worktree must NOT be reconciled — the
 	 * protected status set for a project. `pending` IS included: it is a real
 	 * persisted status (schema default; `worktree_ready` upserts a pending
