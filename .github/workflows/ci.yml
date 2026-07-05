@@ -99,6 +99,11 @@ jobs:
           bash scripts/__tests__/provision-fleet-host.test.sh
           bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
 
+      # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
+      # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
+      - name: Test — FLY-882 Discord bot token pool
+        run: bash scripts/__tests__/discord-bot-pool.test.sh
+
       # FLY-513: global-codex repoint apply-path (hermetic — fake HOME + fake
       # source release + mock codex on PATH; never touches the real global symlink).
       - name: Test — FLY-513 global-codex repoint apply-path
