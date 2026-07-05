@@ -1,0 +1,1008 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-503 — [XHS-deep] backlog 合并 review</title>
+<style>
+  :root { --ink:#1d1d1f; --dim:#86868b; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, "PingFang SC", sans-serif;
+    background:#f5f5f7; color:var(--ink); max-width:960px; margin:0 auto;
+    padding:1.5rem 1rem 6rem; line-height:1.5; }
+  h1 { font-size:1.5rem; margin:.2rem 0; }
+  .intro { color:#333; font-size:.95rem; background:#fff; border-radius:12px;
+    padding:1rem 1.25rem; box-shadow:0 1px 3px rgba(0,0,0,.06); margin:1rem 0; }
+  .intro b { color:#1a365d; }
+  .cluster { margin:1.75rem 0; }
+  .cluster-head { display:flex; align-items:center; gap:.6rem; flex-wrap:wrap; }
+  .cluster-head h2 { font-size:1.2rem; margin:.4rem 0; }
+  .count { color:var(--dim); font-size:.9rem; font-weight:400; }
+  .xproj-badge { background:#fbeae9; color:#ff3b30; font-size:.78rem;
+    padding:.15rem .55rem; border-radius:999px; }
+  .blurb { color:#555; font-size:.9rem; margin:.2rem 0 .8rem; }
+  .card { background:#fff; border-radius:12px; padding:.9rem 1.1rem; margin:.7rem 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #d2d2d7; }
+  .card.rep { border-left-color:#007aff; }
+  .card.merge { border-left-color:#ff9500; }
+  .card.indep { border-left-color:#34c759; }
+  .card.route { border-left-color:#af52de; }
+  .card-head { display:flex; align-items:center; gap:.55rem; flex-wrap:wrap;
+    font-size:.85rem; }
+  .issue-id a { font-family:"SF Mono", ui-monospace, monospace; color:#1a365d;
+    font-weight:600; text-decoration:none; }
+  .badge { font-size:.74rem; padding:.1rem .5rem; border-radius:999px;
+    color:#fff; }
+  .badge.rep { background:#007aff; }
+  .badge.merge { background:#ff9500; }
+  .badge.indep { background:#34c759; }
+  .badge.route { background:#af52de; }
+  .author { color:var(--dim); }
+  .src a { color:#007aff; text-decoration:none; }
+  .inert { color:#bbb; }
+  .card-title { font-weight:600; margin:.35rem 0 .25rem; }
+  .summary { color:#333; font-size:.9rem; }
+  .proposal { color:#1a365d; font-size:.85rem; margin:.45rem 0 .2rem; }
+  .rationale { color:#666; font-size:.82rem; margin-bottom:.5rem; }
+  .decision { display:flex; gap:.4rem; flex-wrap:wrap; margin:.3rem 0; }
+  .opt { font-size:.84rem; background:#f5f5f7; border:1px solid #e0e0e5;
+    border-radius:8px; padding:.25rem .55rem; cursor:pointer; }
+  .comment-label { display:block; font-size:.82rem; color:#555; margin-top:.4rem; }
+  textarea { width:100%; font-family:inherit; font-size:.85rem; border:1px solid #e0e0e5;
+    border-radius:8px; padding:.4rem; margin-top:.2rem; }
+  .exportbar { position:sticky; top:0; z-index:5; background:rgba(245,245,247,.95);
+    backdrop-filter:saturate(180%) blur(8px); padding:.6rem 0; margin-bottom:.5rem;
+    border-bottom:1px solid #e0e0e5; }
+  .exportbar .row { display:flex; align-items:center; gap:.8rem; flex-wrap:wrap; }
+  button { font:inherit; font-size:.9rem; background:#007aff; color:#fff; border:0;
+    border-radius:8px; padding:.45rem .9rem; cursor:pointer; }
+  button.secondary { background:#e8e8ed; color:#1d1d1f; }
+  .tally { font-size:.85rem; color:#444; }
+  .tally span { font-weight:600; }
+  #export-output { white-space:pre-wrap; word-break:break-all; background:#1d1d1f;
+    color:#e8e8ed; font-family:"SF Mono", ui-monospace, monospace; font-size:.78rem;
+    border-radius:10px; padding:.8rem; margin-top:.6rem; max-height:340px;
+    overflow:auto; display:none; }
+  #copy-status { font-size:.85rem; color:#34c759; }
+</style>
+</head>
+<body>
+<h1>FLY-503 — [XHS-deep] backlog 合并 review</h1>
+<div class="exportbar">
+  <div class="row">
+    <button id="copy-json" type="button">复制决策 JSON</button>
+    <button id="toggle-output" type="button" class="secondary">查看/隐藏 JSON</button>
+    <span class="tally">合并 <span id="t-merge">0</span> · 保留 <span id="t-keep">0</span>
+      · 路由 <span id="t-route">0</span> · 取消 <span id="t-cancel">0</span></span>
+    <span id="copy-status"></span>
+  </div>
+  <pre id="export-output"></pre>
+</div>
+<div class="intro">
+  <p>这是 FLY-349 v2 deep-scan 留下的 <b>49 条 [XHS-deep] Backlog issue</b>
+  的合并提案。每条都给了一个默认建议(代表 / 合并 / 独立 / 跨项目路由)，你逐条调整即可。</p>
+  <p>提案默认：<b>8 代表</b> · <b>15 合并</b> · <b>18 独立</b> ·
+  <b>8 跨项目路由</b>。全采纳合并则 49 → 34。</p>
+  <p>用法：逐条选 <b>合并 / 保持独立 / 路由 / 取消</b>，需要的话写评论(尤其想合并到别的目标时注明)。
+  改完点 <b>复制决策 JSON</b>，把它发回给 Tadashi，我据此执行 Phase 2(合并入代表 + 被合并标
+  duplicateOf + Canceled，全程保留各来源 provenance)。<b>在你导出之前不会动任何 Linear issue。</b></p>
+</div>
+<section class="cluster">
+  <div class="cluster-head">
+    <h2>多-agent 编排 / coding-agent 平台 <span class="count">8</span></h2>
+    
+  </div>
+  <p class="blurb">参考性的多-agent / coding-agent 平台与框架。平台调研类高度重叠，建议合一个代表 issue 横向借鉴；并发开发与「通宵自主」是 Flywheel 核心特性的独立切点，保留。</p>
+  <article class="card rep" data-issue="FLY-379" data-cluster="orchestration" data-role="representative">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-379/xhs-deep-vercel-刚刚开源了一个-coding-agent-平台" rel="noopener noreferrer" target="_blank">FLY-379</a></span>
+    <span class="badge rep">代表</span>
+    <span class="author">@AI智见录</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69ddb705000000001d01c5d8" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Vercel 刚刚开源了一个 Coding Agent 平台</div>
+  <div class="summary">Vercel 开源了面向云端 Coding Agent 的参考平台 Open Agents (open-…</div>
+  <div class="proposal">建议作本组<strong>代表</strong>(合并目标)</div>
+  <div class="rationale">理由：Vercel Open Agents — 最完整的云端 coding-agent 参考平台，作平台调研代表。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-379" value="keep" checked> 代表 · 保留</label> <label class="opt"><input type="radio" name="decision-FLY-379" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-379" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-375" data-cluster="orchestration" data-role="merge" data-into="FLY-379">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-375/xhs-deep" rel="noopener noreferrer" target="_blank">FLY-375</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@程序员Emily</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69f72c84000000001f003e59" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep]</div>
+  <div class="summary">介绍了一款新开源的金融AI工具 Dexter。它被定位为金融版的 Claude Code，主要功能…</div>
+  <div class="proposal">建议合并入 <strong>FLY-379</strong> · 置信 high</div>
+  <div class="rationale">理由：Dexter=金融垂直版 Claude Code，属同类 coding-agent 平台调研。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-375" value="merge" checked> 合并入 FLY-379</label> <label class="opt"><input type="radio" name="decision-FLY-375" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-375" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-375" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-427" data-cluster="orchestration" data-role="merge" data-into="FLY-379">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-427/xhs-deep-一人抵48人-零基础做独立游戏开发时代来了" rel="noopener noreferrer" target="_blank">FLY-427</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@树人Shuren</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69c0d4cb0000000021038605" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 一人抵48人, 零基础做独立游戏开发时代来了</div>
+  <div class="summary">一个开源项目(Claude Code Game Studios)将语言模型构建成一个拥有48个AI…</div>
+  <div class="proposal">建议合并入 <strong>FLY-379</strong> · 置信 high</div>
+  <div class="rationale">理由：Game Studios 48-agent = 多-agent coding 平台样本。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-427" value="merge" checked> 合并入 FLY-379</label> <label class="opt"><input type="radio" name="decision-FLY-427" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-427" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-427" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-431" data-cluster="orchestration" data-role="merge" data-into="FLY-379">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-431/xhs-deep-yc-ceo私藏的开发神器gstack-来了" rel="noopener noreferrer" target="_blank">FLY-431</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@AIGC之眼</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69bcd03c00000000230132be" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] YC CEO私藏的开发神器！Gstack 来了</div>
+  <div class="summary">Gstack是一个将软件开发流程产品化的AI工具，它通过将大型语言模型（如Claude）封装成15个不…</div>
+  <div class="proposal">建议合并入 <strong>FLY-379</strong> · 置信 high</div>
+  <div class="rationale">理由：Gstack 15-模块 dev workflow = 同类平台化 coding 工具。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-431" value="merge" checked> 合并入 FLY-379</label> <label class="opt"><input type="radio" name="decision-FLY-431" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-431" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-431" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-455" data-cluster="orchestration" data-role="merge" data-into="FLY-379">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-455/xhs-deep-deerflow-20-震撼发布" rel="noopener noreferrer" target="_blank">FLY-455</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@Henry Li</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/699089ba000000000b011042" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] DeerFlow 2.0 震撼发布</div>
+  <div class="summary">DeerFlow 2.0 是一个开源的长程超级智能体（Super Agent）框架，它通过自动将复…</div>
+  <div class="proposal">建议合并入 <strong>FLY-379</strong> · 置信 medium</div>
+  <div class="rationale">理由：DeerFlow 2.0 长程 super-agent 框架，属多-agent 编排框架；与 Flywheel 编排最近，可考虑独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-455" value="merge" checked> 合并入 FLY-379</label> <label class="opt"><input type="radio" name="decision-FLY-455" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-455" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-455" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-476" data-cluster="orchestration" data-role="merge" data-into="FLY-379">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-476/xhs-deep-codex-and-claude-code-的集大成者来了" rel="noopener noreferrer" target="_blank">FLY-476</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@saien</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/68eb6c69000000000300e644" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Codex &amp; Claude Code 的集大成者来了</div>
+  <div class="summary">Droid是一款对标Codex和Claude Code的新型AI编程工具。其核心设计是基于多Agent理…</div>
+  <div class="proposal">建议合并入 <strong>FLY-379</strong> · 置信 high</div>
+  <div class="rationale">理由：Droid 多-agent coding 工具，同类。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-476" value="merge" checked> 合并入 FLY-379</label> <label class="opt"><input type="radio" name="decision-FLY-476" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-476" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-476" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-456" data-cluster="orchestration" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-456/xhs-deep-换-superset-了好看又好用" rel="noopener noreferrer" target="_blank">FLY-456</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@looplj</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69915552000000001503a4b0" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 换 superset 了，好看又好用</div>
+  <div class="summary">这款名为 &quot;superset&quot; 的开发工具专为处理并发项目设计，它以终端为核心，将并行开发任务（如不同…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：superset 并发项目工具 — 对应 Flywheel 并行 Runner 的具体 tooling 模式，独立保留。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-456" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-456" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-456" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-456" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-478" data-cluster="orchestration" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-478/xhs-deep-我可以睡觉但我的-ai-不行" rel="noopener noreferrer" target="_blank">FLY-478</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@Bitaaa</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/68cfb574000000000b0134cd" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 我可以睡觉，但我的 AI 不行</div>
+  <div class="summary">该内容展示了一个“睡前指令”，让 AI Agent 在开发者睡觉时自主通宵工作。用户通过一个详细的 P…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：「我睡觉 AI 不行」通宵自主 — Flywheel 自主性论点的独立验证切点，保留。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-478" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-478" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-478" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-478" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+</section>
+<section class="cluster">
+  <div class="cluster-head">
+    <h2>Agent 间通信 <span class="count">3</span></h2>
+    
+  </div>
+  <p class="blurb">Agent 之间的通信/桥接工具。两个 P2P/桥接工具近重复，建议合一；群聊办公是协作 UI，独立。</p>
+  <article class="card rep" data-issue="FLY-410" data-cluster="agent-comm" data-role="representative">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-410/xhs-deep-claude-code窗口间以及微信之间能交流了" rel="noopener noreferrer" target="_blank">FLY-410</a></span>
+    <span class="badge rep">代表</span>
+    <span class="author">@fido是个版本控</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69c410c6000000001a02235b" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] claude code窗口间以及微信之间能交流了</div>
+  <div class="summary">该内容展示了一个名为 `cc-bridge` 的开源工具，它实现了在不同 claude-code…</div>
+  <div class="proposal">建议作本组<strong>代表</strong>(合并目标)</div>
+  <div class="rationale">理由：cc-bridge — Claude-Code 窗口间 + 微信桥接，覆盖面更广，作通信代表。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-410" value="keep" checked> 代表 · 保留</label> <label class="opt"><input type="radio" name="decision-FLY-410" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-410" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-417" data-cluster="agent-comm" data-role="merge" data-into="FLY-410">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-417/xhs-deep-一个好玩的agent专用通信工具walkie" rel="noopener noreferrer" target="_blank">FLY-417</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@硅基解码 Decoder Only</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/6999dd33000000001a0306ad" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 🦞一个好玩的Agent专用通信工具：walkie</div>
+  <div class="summary">这篇笔记介绍了一款名为walkie的AI Agent专用P2P通信工具。它让部署…</div>
+  <div class="proposal">建议合并入 <strong>FLY-410</strong> · 置信 high</div>
+  <div class="rationale">理由：walkie = agent 专用 P2P 通信工具，与 cc-bridge 同主题。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-417" value="merge" checked> 合并入 FLY-410</label> <label class="opt"><input type="radio" name="decision-FLY-417" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-417" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-417" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-402" data-cluster="agent-comm" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-402/xhs-deep-我用codex做了一个ai群聊办公软件" rel="noopener noreferrer" target="_blank">FLY-402</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@老董的 AI 分身</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/6a377068000000001503c7bc" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 我用CodeX做了一个AI群聊办公软件</div>
+  <div class="summary">视频演示了一款自研的AI办公群聊软件 nas_chat。它将项目文件、团队成员和AI整合到按“话…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：nas_chat AI 群聊办公软件 = 按话题组织的人+AI 协作 workspace/UI，区别于纯通信传输，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-402" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-402" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-402" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-402" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+</section>
+<section class="cluster">
+  <div class="cluster-head">
+    <h2>记忆与上下文 <span class="count">4</span></h2>
+    
+  </div>
+  <p class="blurb">Agent 记忆系统与上下文窗口。两个「记忆/做梦」型系统近重复建议合一；稀疏注意力扩窗与 Anthropic 长任务指南是不同机制，独立。</p>
+  <article class="card rep" data-issue="FLY-401" data-cluster="memory" data-role="representative">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-401/xhs-deep-给ai一个会遗忘会感受会做梦的大脑" rel="noopener noreferrer" target="_blank">FLY-401</a></span>
+    <span class="badge rep">代表</span>
+    <span class="author">@P0lar1s</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69e477fb0000000023012bc9" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] “给AI一个会遗忘、会感受、会做梦的大脑。”</div>
+  <div class="summary">这篇笔记介绍了OmbreBrain V1.2的更新，这是一个为AI设计的、模拟人脑海马体的记忆系统。…</div>
+  <div class="proposal">建议作本组<strong>代表</strong>(合并目标)</div>
+  <div class="rationale">理由：OmbreBrain 海马体记忆系统 — 完整 agent 记忆大脑，作记忆代表。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-401" value="keep" checked> 代表 · 保留</label> <label class="opt"><input type="radio" name="decision-FLY-401" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-401" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-420" data-cluster="memory" data-role="merge" data-into="FLY-401">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-420/xhs-deep-claude-code-悄然发布的-autodream-20让" rel="noopener noreferrer" target="_blank">FLY-420</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@Kraps</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69c55b1a000000001e00f7bf" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Claude Code 悄然发布的 AutoDream 2.0：让</div>
+  <div class="summary">文章介绍了 Claude Code 的 AutoDream 功能，这是一个作为子智能体运行的 AI 记忆…</div>
+  <div class="proposal">建议合并入 <strong>FLY-401</strong> · 置信 high</div>
+  <div class="rationale">理由：AutoDream 2.0 记忆 sub-agent（同样「做梦/巩固」隐喻），与 OmbreBrain 同主题。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-420" value="merge" checked> 合并入 FLY-401</label> <label class="opt"><input type="radio" name="decision-FLY-420" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-420" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-420" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-418" data-cluster="memory" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-418/xhs-deep-msa开源突破上下文极限来到1亿token" rel="noopener noreferrer" target="_blank">FLY-418</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@坤梼(KunTao)</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69c20e880000000023013d6d" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] MSA开源，突破上下文极限，来到1亿token</div>
+  <div class="summary">这是一个名为 MSA (Memory Sparse Attention) 的开源AI框架，通过…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：MSA(Memory Sparse Attention) 1亿token = 上下文扩窗的注意力机制，区别于记忆存储系统，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-418" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-418" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-418" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-418" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-453" data-cluster="memory" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-453/xhs-deep-anthropic重磅ai-agent长任务指南" rel="noopener noreferrer" target="_blank">FLY-453</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@晓浩Xiaohao</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/698f048c000000001d01330b" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Anthropic重磅：AI Agent长任务指南</div>
+  <div class="summary">这条笔记介绍了Anthropic为解决AI Agent在长任务中因上下文窗口限制而“失忆”的问题…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：Anthropic 官方 AI Agent 长任务指南 — 高价值方法论文档，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-453" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-453" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-453" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-453" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+</section>
+<section class="cluster">
+  <div class="cluster-head">
+    <h2>Skill 生态与 marketplace <span class="count">4</span></h2>
+    
+  </div>
+  <p class="blurb">Skill 市场 / 精选清单 / skill 发现。四条都是「skill marketplace 或 curated list」观察，重叠高，建议合一。</p>
+  <article class="card rep" data-issue="FLY-434" data-cluster="skill-ecosystem" data-role="representative">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-434/xhs-deep-腾讯发了个自己的skill-hub" rel="noopener noreferrer" target="_blank">FLY-434</a></span>
+    <span class="badge rep">代表</span>
+    <span class="author">@小蚁AIGC</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69b0b625000000001b014c32" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 腾讯发了个自己的Skill hub</div>
+  <div class="summary">这是一张名为 &quot;SkillHub&quot; 的 AI Skills 商店或市场截图，它展示了一个“精选 TOP…</div>
+  <div class="proposal">建议作本组<strong>代表</strong>(合并目标)</div>
+  <div class="rationale">理由：腾讯 SkillHub = skill marketplace，作 skill 生态观察代表。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-434" value="keep" checked> 代表 · 保留</label> <label class="opt"><input type="radio" name="decision-FLY-434" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-434" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-380" data-cluster="skill-ecosystem" data-role="merge" data-into="FLY-434">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-380/xhs-deep" rel="noopener noreferrer" target="_blank">FLY-380</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@老瑞的AI百宝箱</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69da626c0000000022029e56" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep]</div>
+  <div class="summary">这是一个名为 phuryn/pm-skills 的 GitHub 开源项目，它是一个产品管理技能市…</div>
+  <div class="proposal">建议合并入 <strong>FLY-434</strong> · 置信 medium</div>
+  <div class="rationale">理由：phuryn/pm-skills = PM skill 市场，属 skill marketplace 观察。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-380" value="merge" checked> 合并入 FLY-434</label> <label class="opt"><input type="radio" name="decision-FLY-380" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-380" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-380" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-416" data-cluster="skill-ecosystem" data-role="merge" data-into="FLY-434">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-416/xhs-deep-半个月试了-200-多个-skills最后留下来的" rel="noopener noreferrer" target="_blank">FLY-416</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@柚柚的赛博佬爸</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69bc8304000000002202b8af" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 半个月试了 200 多个 skills，最后留下来的</div>
+  <div class="summary">作者测试了200多个AI agent &quot;skill&quot;后，筛选出8个最能解决实际痛点的工具。文章着重介…</div>
+  <div class="proposal">建议合并入 <strong>FLY-434</strong> · 置信 high</div>
+  <div class="rationale">理由：试 200+ skills 留 8 = skill 精选清单，同主题。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-416" value="merge" checked> 合并入 FLY-434</label> <label class="opt"><input type="radio" name="decision-FLY-416" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-416" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-416" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-470" data-cluster="skill-ecosystem" data-role="merge" data-into="FLY-434">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-470/xhs-deep-2026年claude-code-skills排行榜top-20完" rel="noopener noreferrer" target="_blank">FLY-470</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@全金属外壳- 「AI工具实战派」</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/6975cf0b000000000a031235" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 2026年Claude Code Skills排行榜：Top 20完</div>
+  <div class="summary">这份（虚构的）2026年Claude Code Skills排行榜揭示了一种名为“…</div>
+  <div class="proposal">建议合并入 <strong>FLY-434</strong> · 置信 high</div>
+  <div class="rationale">理由：2026 CC Skills Top 20 排行 = skill 精选清单，同主题。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-470" value="merge" checked> 合并入 FLY-434</label> <label class="opt"><input type="radio" name="decision-FLY-470" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-470" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-470" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+</section>
+<section class="cluster">
+  <div class="cluster-head">
+    <h2>可建的具体 skill（marketing / 专家 persona / 协作） <span class="count">6</span></h2>
+    
+  </div>
+  <p class="blurb">可借鉴落地为具体 skill 的点子。marketing/growth 三条合一；专家-persona 打包两条合一；项目协作 skill 独立。</p>
+  <article class="card rep" data-issue="FLY-437" data-cluster="buildable-skills" data-role="representative">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-437/xhs-deep-广告skillmarketing-idea" rel="noopener noreferrer" target="_blank">FLY-437</a></span>
+    <span class="badge rep">代表</span>
+    <span class="author">@几口酱聊AI</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69abfa18000000001600b3e1" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 广告Skill：Marketing-idea</div>
+  <div class="summary">该视频介绍了一个名为 “Marketing Skills for Claude Code” 的开源项目…</div>
+  <div class="proposal">建议作本组<strong>代表</strong>(合并目标)</div>
+  <div class="rationale">理由：Marketing-idea / Marketing Skills for Claude Code = marketing skill 集，作 marketing 代表。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-437" value="keep" checked> 代表 · 保留</label> <label class="opt"><input type="radio" name="decision-FLY-437" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-437" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-426" data-cluster="buildable-skills" data-role="merge" data-into="FLY-437">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-426/xhs-deep-推荐一个独立开发者真的该收藏的-github" rel="noopener noreferrer" target="_blank">FLY-426</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@七夜</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69b7970d0000000023004117" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 推荐一个独立开发者真的该收藏的 GitHub …</div>
+  <div class="summary">推荐了一个名为 &quot;Marketing for Founders&quot; 的 GitHub 仓库，它是一个为技术型创始…</div>
+  <div class="proposal">建议合并入 <strong>FLY-437</strong> · 置信 high</div>
+  <div class="rationale">理由：Marketing for Founders repo = 同类 marketing 资源/技能。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-426" value="merge" checked> 合并入 FLY-437</label> <label class="opt"><input type="radio" name="decision-FLY-426" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-426" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-426" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-482" data-cluster="buildable-skills" data-role="merge" data-into="FLY-437">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-482/xhs-deep-claude-codeperplexity-mcp的seo妙用" rel="noopener noreferrer" target="_blank">FLY-482</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@山羊不在家</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/68a51940000000001c0329f7" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Claude Code+Perplexity MCP的SEO妙用</div>
+  <div class="summary">这篇笔记介绍了一种利用AI工具（Claude Code + Perplexity MCP）快速生成大量S…</div>
+  <div class="proposal">建议合并入 <strong>FLY-437</strong> · 置信 medium</div>
+  <div class="rationale">理由：Claude+Perplexity MCP 批量 SEO = marketing/growth 具体手法，归 marketing。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-482" value="merge" checked> 合并入 FLY-437</label> <label class="opt"><input type="radio" name="decision-FLY-482" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-482" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-482" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card rep" data-issue="FLY-422" data-cluster="buildable-skills" data-role="representative">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-422/xhs-deep-我把三个顶级产品人的思维装进了-claude" rel="noopener noreferrer" target="_blank">FLY-422</a></span>
+    <span class="badge rep">代表</span>
+    <span class="author">@心知</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69c0054300000000210049c6" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 我把三个顶级产品人的思维装进了 Claude</div>
+  <div class="summary">作者为 Claude 构建了三个独立的 AI skill，分别模拟三位顶级产品人的思维模式（Lenny Rac…</div>
+  <div class="proposal">建议作本组<strong>代表</strong>(合并目标)</div>
+  <div class="rationale">理由：三个产品人思维装进 Claude = 专家-persona skill 模式代表。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-422" value="keep" checked> 代表 · 保留</label> <label class="opt"><input type="radio" name="decision-FLY-422" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-422" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-407" data-cluster="buildable-skills" data-role="merge" data-into="FLY-422">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-407/xhs-deep-他把自己的创业大脑做成了开源ai技能" rel="noopener noreferrer" target="_blank">FLY-407</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@Kai不是AI</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69ce4ec1000000001d01b2e1" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 他把自己的创业大脑做成了开源AI技能</div>
+  <div class="summary">Gumroad 创始人 Sahil Lavingia 将其《极简创业法》的核心思想，打包成了一套开源…</div>
+  <div class="proposal">建议合并入 <strong>FLY-422</strong> · 置信 medium</div>
+  <div class="rationale">理由：Sahil 极简创业大脑打包成 skill = 同样「把专家思维打包成 skill」模式。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-407" value="merge" checked> 合并入 FLY-422</label> <label class="opt"><input type="radio" name="decision-FLY-407" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-407" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-407" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-419" data-cluster="buildable-skills" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-419/xhs-deep-一个很好用的skill来增加项目效率" rel="noopener noreferrer" target="_blank">FLY-419</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@兜爸在虾图</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69c71946000000001a0356dc" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 一个很好用的skill来增加项目效率</div>
+  <div class="summary">作者设计并实现了一个名为“项目协作者”（Project Collaborator）的 AI skill。…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：「项目协作者」skill 提效 = 偏 workflow/协调的 skill，区别于 persona skill，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-419" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-419" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-419" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-419" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+</section>
+<section class="cluster">
+  <div class="cluster-head">
+    <h2>研究自动化 / 前沿模型 <span class="count">5</span></h2>
+    
+  </div>
+  <p class="blurb">研究自动化工具链与前沿模型。autoresearch 与 arxiv-to-prompt 同属研究工作流可合；AutoHarness/源码拆解/TimesFM 各自独立。</p>
+  <article class="card rep" data-issue="FLY-425" data-cluster="research-automation" data-role="representative">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-425/xhs-deep-全自动科研真的建议早点接触" rel="noopener noreferrer" target="_blank">FLY-425</a></span>
+    <span class="badge rep">代表</span>
+    <span class="author">@阿东玩AI</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69c2b849000000001e00d26e" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 全自动科研，真的建议早点接触</div>
+  <div class="summary">用户分享了为期一周的 &quot;autoresearch&quot; 体验，这是一个让 AI 围绕目标和评判标准，进行自主…</div>
+  <div class="proposal">建议作本组<strong>代表</strong>(合并目标)</div>
+  <div class="rationale">理由：autoresearch 全自动科研闭环 — 研究自动化代表。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-425" value="keep" checked> 代表 · 保留</label> <label class="opt"><input type="radio" name="decision-FLY-425" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-425" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-454" data-cluster="research-automation" data-role="merge" data-into="FLY-425">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-454/xhs-deep-arxiv-to-prompt-破万下载一周年" rel="noopener noreferrer" target="_blank">FLY-454</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@Takashi Ishida</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/698efe5e000000001b014b17" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] arxiv-to-prompt 破万下载，一周年🎉</div>
+  <div class="summary">作者介绍了一个个人开源项目 `arxiv-to-prompt`，它能将 arXiv 论…</div>
+  <div class="proposal">建议合并入 <strong>FLY-425</strong> · 置信 medium</div>
+  <div class="rationale">理由：arxiv-to-prompt 论文→prompt = 研究工作流工具，归研究自动化；若想保细粒度可独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-454" value="merge" checked> 合并入 FLY-425</label> <label class="opt"><input type="radio" name="decision-FLY-454" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-454" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-454" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-423" data-cluster="research-automation" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-423/xhs-deep-google-autoharness-自动生成约束代码" rel="noopener noreferrer" target="_blank">FLY-423</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@An epsilon of llm</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69b4432e000000002800b1ec" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Google AutoHarness: 自动生成约束代码</div>
+  <div class="summary">Google 提出了 AutoHarness 方法，利用小型 LLM（如 Gem…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：Google AutoHarness 自动生成约束/harness 代码 = codegen/测试方法，区别于论文研究，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-423" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-423" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-423" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-423" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-442" data-cluster="research-automation" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-442/xhs-deep-扒开-14-万-star-的-wifi-densepose-源码" rel="noopener noreferrer" target="_blank">FLY-442</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@云栈开源日记</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69a46856000000002602e3c2" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 扒开 1.4 万 Star 的 WiFi-DensePose 源码</div>
+  <div class="summary">该内容拆解了WiFi-DensePose项目，揭示其不仅是一个高性能的Python+Rust双栈流处理…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：WiFi-DensePose 源码深读 = 源码学习样本（与 FLY-349 deep-read 同风格），独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-442" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-442" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-442" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-442" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-408" data-cluster="research-automation" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-408/xhs-deep-谷歌开源timesfm可预測任何数据流" rel="noopener noreferrer" target="_blank">FLY-408</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@Yoyo的商界笔记</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69ce0c910000000022028e6b" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 谷歌开源TimesFM，可预測任何数据流...</div>
+  <div class="summary">谷歌开源了时间序列基础模型TimesFM，它能像语言模型预测单词一样，零样本（Zero-shot…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：谷歌 TimesFM 时序基础模型 = 前沿 ML 模型观察，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-408" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-408" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-408" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-408" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+</section>
+<section class="cluster">
+  <div class="cluster-head">
+    <h2>视频 / 视觉 / 设计 / 语音 <span class="count">7</span></h2>
+    
+  </div>
+  <p class="blurb">媒体生成与设计能力。两条视频生成近重复合一；视频分析、Figma 设计、原生 HTML 动效、本地 TTS 各自独立；3D 打印模型生成跨项目另议。</p>
+  <article class="card rep" data-issue="FLY-439" data-cluster="media" data-role="representative">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-439/xhs-deep-claude-code能做视频啦" rel="noopener noreferrer" target="_blank">FLY-439</a></span>
+    <span class="badge rep">代表</span>
+    <span class="author">@AI创业马老师</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69986552000000000a02d3bc" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Claude Code能做视频啦！</div>
+  <div class="summary">视频演示了如何用 Claude Code 通过自然语言指令，实现从零生成产品演示视频、以及对已有视频…</div>
+  <div class="proposal">建议作本组<strong>代表</strong>(合并目标)</div>
+  <div class="rationale">理由：Claude Code 做产品演示视频（NL→生成+剪辑）— 视频生成代表。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-439" value="keep" checked> 代表 · 保留</label> <label class="opt"><input type="radio" name="decision-FLY-439" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-439" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card merge" data-issue="FLY-465" data-cluster="media" data-role="merge" data-into="FLY-439">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-465/xhs-deep-claude-code能做视频了remotion不要太猛" rel="noopener noreferrer" target="_blank">FLY-465</a></span>
+    <span class="badge merge">建议合并</span>
+    <span class="author">@Feiskyer</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/6970ba9b000000000e00d111" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Claude Code能做视频了，Remotion不要太猛</div>
+  <div class="summary">Remotion，一个用Web技术生成视频的框架，发布了Agent Skills。这使得AI Ag…</div>
+  <div class="proposal">建议合并入 <strong>FLY-439</strong> · 置信 high</div>
+  <div class="rationale">理由：Remotion Agent Skills 做视频 = 同主题视频生成。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-465" value="merge" checked> 合并入 FLY-439</label> <label class="opt"><input type="radio" name="decision-FLY-465" value="keep"> 保持独立</label> <label class="opt"><input type="radio" name="decision-FLY-465" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-465" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-441" data-cluster="media" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-441/xhs-deep-写了一个你可能苦找了几年的-skill" rel="noopener noreferrer" target="_blank">FLY-441</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@上班摸鱼</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69a23c19000000001d013d28" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 写了一个你可能苦找了几年的 Skill</div>
+  <div class="summary">这是一个开源的视频分析工具，它将视频分解为场景，并使用大语言模型根据一个五维评分体系（美感、可信度、冲击力…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：视频分析工具（5维评分）= 分析非生成，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-441" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-441" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-441" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-441" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-479" data-cluster="media" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-479/xhs-deep-figma-ai可以的" rel="noopener noreferrer" target="_blank">FLY-479</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@Silviazzz</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/68cce12d0000000013014238" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Figma AI可以的</div>
+  <div class="summary">用户分享了使用 Figma AI 在一个下午内就完成了之前耗时一个月才能完成的 App 原型 r…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：Figma AI 原型 = UI 设计工具，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-479" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-479" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-479" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-479" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-374" data-cluster="media" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-374/xhs-deep-原生html交互有多爽" rel="noopener noreferrer" target="_blank">FLY-374</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@Kai</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/6a12d56a000000003501c9a9" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 原生html交互有多爽</div>
+  <div class="summary">视频展示了一个 UI 动效图标（Lyra）的精细化、迭代式设计过程。内容涵盖了从静态（Idle）、动态（Wo…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：原生 HTML 交互 / UI 动效图标迭代设计 = 前端/视觉设计，独立（与 Flywheel HTML 报告体验相关）。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-374" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-374" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-374" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-374" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-435" data-cluster="media" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-435/xhs-deep-实测龙虾阿里本地tts模型cosy-voice-300m" rel="noopener noreferrer" target="_blank">FLY-435</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@PeTerZ</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69ac3c0a000000002202398f" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 实测龙虾阿里本地tts模型Cosy voice 300m</div>
+  <div class="summary">视频展示了一套在局域网内自建的 AI 语音交互系统。该系统整合了 AI Agent 框架 Opencl…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：CosyVoice 本地 TTS + 语音 agent = 语音/音频能力，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-435" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-435" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-435" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-435" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card route" data-issue="FLY-451" data-cluster="media" data-role="route_out" data-target="GeoForge3D?">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-451/xhs-deep-gemini-3-deep-thinking-直接做3d打印模型" rel="noopener noreferrer" target="_blank">FLY-451</a></span>
+    <span class="badge route">跨项目</span>
+    <span class="author">@安之Zeno</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/698ecde1000000000c034a62" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Gemini 3 Deep Thinking 直接做3D打印模型！</div>
+  <div class="summary">该内容展示了一个AI（声称是 Gemini 3）工作流，它能根据输入的图片和复杂的文本指令，生成一个单…</div>
+  <div class="proposal">建议路由到 <strong>GeoForge3D?</strong> · 不并入 Flywheel</div>
+  <div class="rationale">理由：Gemini 3 直接做 3D 打印模型 = 3D/GeoForge 倾向，跨项目，待 Annie 拍是否转 GeoForge3D。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-451" value="route_out" checked> 路由出 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-451" value="keep"> 保留在 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-451" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-451" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+</section>
+<section class="cluster">
+  <div class="cluster-head">
+    <h2>Claude Code 平台特性 / 工作流 / 模型 backend <span class="count">3</span></h2>
+    
+  </div>
+  <p class="blurb">CC 平台知识与工作流。三条主题各异、互不重复，全部独立；code-review 工作流 Flywheel 已实现可作验证，GLM backend 与 Runner 多-backend(FLY-492/493) 相关。</p>
+  <article class="card indep" data-issue="FLY-444" data-cluster="cc-platform" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-444/xhs-deep-claude-code-其实有-9-种-hook大多数人只" rel="noopener noreferrer" target="_blank">FLY-444</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@AI 干货拆解</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69a194c1000000002602d510" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Claude Code 其实有 9 种 Hook，大多数人只</div>
+  <div class="summary">这篇内容详细介绍了 Claude Code 中除了常见的 Pre/PostToolUse 之外的四种…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：Claude Code 9 种 Hook = 平台特性知识，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-444" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-444" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-444" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-444" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-471" data-cluster="cc-platform" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-471/xhs-deep-claude-code-自动代码评审工作流分享" rel="noopener noreferrer" target="_blank">FLY-471</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@李志伟</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/6971a7dd000000000a02eacd" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Claude Code 自动代码评审工作流分享</div>
+  <div class="summary">该内容展示了一个双 AI 协同的自动化代码评审工作流。通过让 Claude Code 扮演开发者、Codex…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：Claude+Codex 双 AI 自动代码评审工作流 = Flywheel 已实现（Codex review），作验证/对照，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-471" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-471" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-471" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-471" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-473" data-cluster="cc-platform" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-473/xhs-deep-glm46配合claude-code真的好吗" rel="noopener noreferrer" target="_blank">FLY-473</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@更有无名胜有名</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69120926000000000503a637" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] GLM4.6配合Claude code真的好吗</div>
+  <div class="summary">用户尝试使用 Claude Code 配合 GLM4.6 从零开始开发一个复杂的 Next.js 应…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：GLM4.6 配 Claude Code = 模型 backend，关联 Runner 多-backend(FLY-492/493)，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-473" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-473" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-473" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-473" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+</section>
+<section class="cluster">
+  <div class="cluster-head">
+    <h2>Agent 安全 / sandbox / 浏览器自动化 <span class="count">2</span></h2>
+    
+  </div>
+  <p class="blurb">Agent 安全与系统/网页访问。沙箱隔离与浏览器登录态继承机制不同，均独立保留。</p>
+  <article class="card indep" data-issue="FLY-458" data-cluster="safety-browser" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-458/xhs-deep-agent开发的下一个机会是sandbox" rel="noopener noreferrer" target="_blank">FLY-458</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@阿东玩AI</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/698e0e9e000000001a036d89" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] agent开发的下一个机会是sandbox</div>
+  <div class="summary">文章论证了随着 AI Agent 获得更多本地系统访问权限（如 OpenClaw 项目所示），为防止其失…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：agent 开发下一机会=sandbox = 隔离/安全，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-458" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-458" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-458" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-458" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card indep" data-issue="FLY-459" data-cluster="safety-browser" data-role="independent">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-459/xhs-deep-如何让agent继承你的浏览器登录态" rel="noopener noreferrer" target="_blank">FLY-459</a></span>
+    <span class="badge indep">独立</span>
+    <span class="author">@林帅说AI</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/698bd9b0000000000c037ed7" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 如何让agent继承你的浏览器登录态？</div>
+  <div class="summary">该内容讲解了如何让 AI Agent 继承用户在 Chrome 中的现有登录状态，以解决自动化过程中的重…</div>
+  <div class="proposal">建议<strong>独立保留</strong></div>
+  <div class="rationale">理由：agent 继承浏览器登录态 = 凭据/浏览器自动化，独立。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-459" value="keep" checked> 保留独立</label> <label class="opt"><input type="radio" name="decision-FLY-459" value="merge"> 合并(在评论注明目标)</label> <label class="opt"><input type="radio" name="decision-FLY-459" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-459" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+</section>
+<section class="cluster xproj">
+  <div class="cluster-head">
+    <h2>硬件 / 3D（跨项目 — 不并入 Flywheel） <span class="count">7</span></h2>
+    <span class="xproj-badge">跨项目 · 默认不并入</span>
+  </div>
+  <p class="blurb">跨项目候选，默认不并入 Flywheel。Joycon 硬件(Hiro 在接) + 3D/GeoForge 倾向(同 FLY-436→GEO-431)。建议路由到对应项目或保留，待 Annie 拍；不做 Flywheel 侧合并。</p>
+  <article class="card route" data-issue="FLY-403" data-cluster="hardware-crossproject" data-role="route_out" data-target="Joycon">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-403/xhs-deep-如何制作完全个性化的墨水屏-dashboard" rel="noopener noreferrer" target="_blank">FLY-403</a></span>
+    <span class="badge route">跨项目</span>
+    <span class="author">@YK</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69c65d470000000023021d15" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 如何制作完全个性化的墨水屏 Dashboard</div>
+  <div class="summary">作者展示了一个完全个性化的智能家居墨水屏 Dashboard，其核心亮点是利用 AI 代理（Claude Co…</div>
+  <div class="proposal">建议路由到 <strong>Joycon</strong> · 不并入 Flywheel</div>
+  <div class="rationale">理由：个性化墨水屏 Dashboard = Joycon 硬件，Hiro 在接。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-403" value="route_out" checked> 路由出 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-403" value="keep"> 保留在 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-403" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-403" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card route" data-issue="FLY-415" data-cluster="hardware-crossproject" data-role="route_out" data-target="Joycon">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-415/xhs-deep-终于-把cloude接入了meta眼镜" rel="noopener noreferrer" target="_blank">FLY-415</a></span>
+    <span class="badge route">跨项目</span>
+    <span class="author">@黄药师</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69c7e9b9000000001d018d05" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 终于 把cloude接入了Meta眼镜</div>
+  <div class="summary">一名非程序员用户，在两天内完全依靠 Claude 编写代码，将 Meta Ray-Ban 智能眼镜的摄像头和…</div>
+  <div class="proposal">建议路由到 <strong>Joycon</strong> · 不并入 Flywheel</div>
+  <div class="rationale">理由：Claude 接入 Meta 眼镜 = Joycon 硬件，Hiro 在接。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-415" value="route_out" checked> 路由出 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-415" value="keep"> 保留在 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-415" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-415" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card route" data-issue="FLY-457" data-cluster="hardware-crossproject" data-role="route_out" data-target="Joycon">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-457/xhs-deep-viture-luma-mac移动coding神器" rel="noopener noreferrer" target="_blank">FLY-457</a></span>
+    <span class="badge route">跨项目</span>
+    <span class="author">@omom</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/6991a8d3000000000b008383" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 🕶️ Viture Luma + Mac：移动coding神器</div>
+  <div class="summary">该用户展示了一套基于硬件触发（插入XR眼镜）的个人工作流自动化方案。通过组合使用Hammerspoon、B…</div>
+  <div class="proposal">建议路由到 <strong>Joycon</strong> · 不并入 Flywheel</div>
+  <div class="rationale">理由：Viture Luma XR 移动 coding = Joycon 硬件，Hiro 在接。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-457" value="route_out" checked> 路由出 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-457" value="keep"> 保留在 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-457" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-457" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card route" data-issue="FLY-460" data-cluster="hardware-crossproject" data-role="route_out" data-target="Joycon">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-460/xhs-deep-claude让我彻底抛弃米家选择-apple-home" rel="noopener noreferrer" target="_blank">FLY-460</a></span>
+    <span class="badge route">跨项目</span>
+    <span class="author">@奇怪的摆摆鱼</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/6988169d0000000016008c8f" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] Claude让我彻底抛弃米家选择 Apple Home</div>
+  <div class="summary">用户展示了如何利用 AI 助手 Claude，通过提供 IP 和 API Token 后下达自然语言指…</div>
+  <div class="proposal">建议路由到 <strong>Joycon</strong> · 不并入 Flywheel</div>
+  <div class="rationale">理由：Claude 控 Apple Home 智能家居 = Joycon 硬件，Hiro 在接。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-460" value="route_out" checked> 路由出 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-460" value="keep"> 保留在 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-460" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-460" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card route" data-issue="FLY-377" data-cluster="hardware-crossproject" data-role="route_out" data-target="Joycon?">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-377/xhs-deep-69刀开源ai穿戴设备凭什么拿下10k-star" rel="noopener noreferrer" target="_blank">FLY-377</a></span>
+    <span class="badge route">跨项目</span>
+    <span class="author">@JaxAI</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69e57435000000001d01c58f" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 69刀开源AI穿戴设备，凭什么拿下10K Star</div>
+  <div class="summary">这条笔记介绍了一个名为Omi的开源AI可穿戴设备项目。它通过低成本硬件（69-89美元）实时捕捉用户对话…</div>
+  <div class="proposal">建议路由到 <strong>Joycon?</strong> · 不并入 Flywheel</div>
+  <div class="rationale">理由：Omi 开源 AI 可穿戴设备 = 硬件/可穿戴，疑似 Joycon 域，待 Annie 路由。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-377" value="route_out" checked> 路由出 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-377" value="keep"> 保留在 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-377" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-377" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card route" data-issue="FLY-438" data-cluster="hardware-crossproject" data-role="route_out" data-target="GeoForge3D?">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-438/xhs-deep-终于rhino3d也接入了openclaw了" rel="noopener noreferrer" target="_blank">FLY-438</a></span>
+    <span class="badge route">跨项目</span>
+    <span class="author">@哆啦z青-idesign</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/69ac1bd000000000260327d6" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 终于！Rhino3D也接入了openclaw了</div>
+  <div class="summary">该内容展示了如何将AI代理平台OpenClaw与专业3D建模软件Rhino3D进行集成。通…</div>
+  <div class="proposal">建议路由到 <strong>GeoForge3D?</strong> · 不并入 Flywheel</div>
+  <div class="rationale">理由：Rhino3D 接入 OpenClaw = 3D 建模，GeoForge 倾向，待 Annie 拍。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-438" value="route_out" checked> 路由出 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-438" value="keep"> 保留在 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-438" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-438" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+<article class="card route" data-issue="FLY-477" data-cluster="hardware-crossproject" data-role="route_out" data-target="GeoForge3D?">
+  <div class="card-head">
+    <span class="issue-id"><a href="https://linear.app/geoforge3d/issue/FLY-477/xhs-deep-3d打印在国外已经鲨疯啦" rel="noopener noreferrer" target="_blank">FLY-477</a></span>
+    <span class="badge route">跨项目</span>
+    <span class="author">@嘻嘻不西西</span>
+    <span class="src"><a href="https://www.xiaohongshu.com/explore/68c9296500000000130132dc" rel="noopener noreferrer" target="_blank">原帖</a></span>
+  </div>
+  <div class="card-title">[XHS-deep] 3D打印在国外已经鲨疯啦❗❗❗</div>
+  <div class="summary">这条内容指出了一个电商新机会：快时尚平台希音（SHEIN）正在大力招募3D打印类目的商家。内容分析了该机…</div>
+  <div class="proposal">建议路由到 <strong>GeoForge3D?</strong> · 不并入 Flywheel</div>
+  <div class="rationale">理由：SHEIN 3D 打印电商机会 = 3D/商业，GeoForge 倾向，待 Annie 拍。</div>
+  <div class="decision"><label class="opt"><input type="radio" name="decision-FLY-477" value="route_out" checked> 路由出 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-477" value="keep"> 保留在 Flywheel</label> <label class="opt"><input type="radio" name="decision-FLY-477" value="cancel"> 取消</label></div>
+  <label class="comment-label">评论(可选)：
+    <textarea name="comment-FLY-477" rows="2" maxlength="2000"></textarea>
+  </label>
+</article>
+</section>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var GENERATED_AT = "2026-06-23";
+  function collect() {
+    var cards = document.querySelectorAll("article.card[data-issue]");
+    var out = [];
+    cards.forEach(function (el) {
+      var id = el.getAttribute("data-issue");
+      var checked = el.querySelector('input[type=radio]:checked');
+      var decision = checked ? checked.value : null;
+      var ta = el.querySelector("textarea");
+      out.push({
+        id: id,
+        cluster: el.getAttribute("data-cluster"),
+        role: el.getAttribute("data-role"),
+        decision: decision,
+        target: el.getAttribute("data-into") || el.getAttribute("data-target") || null,
+        comment: ta ? ta.value.trim() : ""
+      });
+    });
+    return out;
+  }
+  function tally() {
+    var rows = collect();
+    var c = { merge: 0, keep: 0, route_out: 0, cancel: 0 };
+    rows.forEach(function (r) { if (r.decision in c) c[r.decision]++; });
+    document.getElementById("t-merge").textContent = c.merge;
+    document.getElementById("t-keep").textContent = c.keep;
+    document.getElementById("t-route").textContent = c.route_out;
+    document.getElementById("t-cancel").textContent = c.cancel;
+  }
+  function payload() {
+    return JSON.stringify(
+      { issue: "FLY-503", generatedAt: GENERATED_AT, decisions: collect() },
+      null, 2
+    );
+  }
+  document.addEventListener("change", function (e) {
+    if (e.target && e.target.type === "radio") tally();
+  });
+  document.getElementById("copy-json").addEventListener("click", function () {
+    var json = payload();
+    var out = document.getElementById("export-output");
+    out.textContent = json;
+    out.style.display = "block";
+    var status = document.getElementById("copy-status");
+    function ok() { status.textContent = "已复制 ✓"; }
+    function fail() { status.textContent = "复制失败，请手动选择下面文本"; }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(json).then(ok, fail);
+    } else {
+      fail();
+    }
+  });
+  document.getElementById("toggle-output").addEventListener("click", function () {
+    var out = document.getElementById("export-output");
+    if (out.style.display === "block") { out.style.display = "none"; }
+    else { out.textContent = payload(); out.style.display = "block"; }
+  });
+  tally();
+})();
+</script>
+</body>
+</html>

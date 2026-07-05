@@ -1,0 +1,52 @@
+# Flywheel configuration for `tidal-echo` — Blueprint/Runner-side config.
+# Lead/Discord routing lives in ~/.flywheel/projects.json (machine-local, added
+# at cutover). Scaffolded by setup-new-project.sh (FLY-284).
+
+project: tidal-echo
+
+linear:
+  # Schema-required but NOT a runtime ingestion filter; real scoping is the
+  # per-issue routing label + the FLY-127 run-start gate (projects.json).
+  team_id: TIDE
+
+runners:
+  default: claude
+  available:
+    claude:
+      type: claude
+      model: sonnet
+
+teams:
+  - name: default
+    orchestrators:
+      - type: dag
+        runner: claude
+        budget_per_issue: 10
+
+decision_layer:
+  autonomy_level: advisor            # merge / ship stay founder-gated (FLY-175)
+  escalation_channel: discord
+
+checkpoints:
+  brainstorm:
+    enabled: true
+    timeout_ms: 86400000
+    timeout_behavior: fail-close
+  question:
+    enabled: true
+    timeout_ms: 86400000
+    timeout_behavior: fail-open
+
+# Single content executor; key = agent name, value = file + dispatch labels.
+agents:
+  content:
+    agent_file: .flywheel/agents/content/content-executor.md
+    department: content
+    match:
+      labels: ["content"]
+default_agent: content
+
+# FLY-205: department-first doc-flow baseline.
+doc_flow:
+  enabled: true
+  default_department: content

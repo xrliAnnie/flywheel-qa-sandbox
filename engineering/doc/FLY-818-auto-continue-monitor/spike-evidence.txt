@@ -1,0 +1,10 @@
+# FLY-818 Phase-0 spike — 原始证据 (2026-07-03)
+## tick.log (权威, isolated unattended claude session, /loop self-paced)
+TICK 2026-07-03 12:49:15
+TICK 2026-07-03 12:51:10
+TICK 2026-07-03 12:53:09
+STOPPED 2026-07-03 12:55:50
+
+## 判读
+12:49:15 TICK1 → 12:51:10 TICK2 → 12:53:09 TICK3  (每轮~115s: ScheduleWakeup 60s+处理, 全程零用户输入 = ①自续跑/④ScheduleWakeup 无人值守可靠 fire PASS)
+12:53:22 注入 STOP → 12:55:50 STOPPED (下一轮 in-flight 检测到 STOP→写 STOPPED→不再续跑; 确认 TICKs 停在 3, 无 runaway = ②/③ 停止条件 PASS)

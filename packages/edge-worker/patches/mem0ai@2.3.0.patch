@@ -1,0 +1,32 @@
+diff --git a/dist/oss/index.js b/dist/oss/index.js
+index d8d27d4e96f9f9165fa457820b2652f61f554dcd..fee15009b1a16f62e7b585ea3be08d7274695447 100644
+--- a/dist/oss/index.js
++++ b/dist/oss/index.js
+@@ -1821,9 +1821,9 @@ var SupabaseDB = class {
+     this.tableName = config.tableName;
+     this.embeddingColumnName = config.embeddingColumnName || "embedding";
+     this.metadataColumnName = config.metadataColumnName || "metadata";
+-    this.initialize().catch((err) => {
++    this.ready = this.initialize().catch((err) => {
+       console.error("Failed to initialize Supabase:", err);
+-      throw err;
++      this.initError = err;
+     });
+   }
+   async initialize() {
+diff --git a/dist/oss/index.mjs b/dist/oss/index.mjs
+index 9e2c8bed1bed777610bf8b75308c9137ffe06486..3558094b2f8941453b34c11595445b1c7c5ca6ae 100644
+--- a/dist/oss/index.mjs
++++ b/dist/oss/index.mjs
+@@ -1760,9 +1760,9 @@ var SupabaseDB = class {
+     this.tableName = config.tableName;
+     this.embeddingColumnName = config.embeddingColumnName || "embedding";
+     this.metadataColumnName = config.metadataColumnName || "metadata";
+-    this.initialize().catch((err) => {
++    this.ready = this.initialize().catch((err) => {
+       console.error("Failed to initialize Supabase:", err);
+-      throw err;
++      this.initError = err;
+     });
+   }
+   async initialize() {

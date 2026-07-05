@@ -1,0 +1,10 @@
+⏺ Holding for the runner's deliverable while the context window compacts.
+
+  ⎿  API Error: Server is temporarily limiting requests (not your usage limit). Retrying in 9s… (attempt 2/10)
+✳ Compacting conversation… (6m 5s · ↑ 16.4k tokens)
+───────────────────────────────────────────────────────────────────────────────────────────────────── @product-lead ──
+❯
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡product-lead | ~/.flywheel/lead-workspace/product-lead | ctx 100% ██████████  100% context used
+  5h ██████████ 17% reset tmrw 02:30  |  7d ██████████ 55% reset Mon 09:00
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

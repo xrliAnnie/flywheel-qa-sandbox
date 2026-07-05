@@ -1,0 +1,137 @@
+#!/bin/bash
+# FLY-650: provision-fleet-host.sh — LINUX platform path (D1=A / D3=B).
+#
+# Complements provision-fleet-host.test.sh (darwin byte-compat). Asserts the
+# Linux branch: platform-keyed deps via apt, fail-loud on a required dep with no
+# linux mapping, host.json materialization, and the systemd narration in the
+# supervisor (launchd) phase.
+#
+# Hermetic: fixture HOME + platform-keyed artifact; FLYWHEEL_PLATFORM=linux
+# forces the linux path on a darwin test host. apt-get/dnf/systemctl/curl/git/
+# pnpm stubbed on PATH.
+set -uo pipefail
+
+PASSED=0; FAILED=0
+pass() { PASSED=$((PASSED+1)); echo "[TEST] ✓ $1"; }
+fail() { FAILED=$((FAILED+1)); echo "[TEST] ✗ $1"; }
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq required"; exit 1; }
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+PROVISION="${REPO_ROOT}/scripts/provision-fleet-host.sh"
+
+SANDBOX="$(mktemp -d -t fly650-provlinux-XXXXXX)"
+trap 'rm -rf "$SANDBOX"' EXIT
+
+STUB_BIN="$SANDBOX/stubbin"; mkdir -p "$STUB_BIN"
+CALLS="$SANDBOX/stub-calls.log"
+for b in apt-get dnf systemctl curl git pnpm sudo brew loginctl; do
+  cat > "$STUB_BIN/$b" <<EOF
+#!/bin/bash
+echo "$b \$*" >> "$CALLS"
+exit 0
+EOF
+  chmod +x "$STUB_BIN/$b"
+done
+# sudo passthrough: record + run the rest (so `sudo apt-get ...` logs apt-get too)
+cat > "$STUB_BIN/sudo" <<EOF
+#!/bin/bash
+echo "sudo \$*" >> "$CALLS"
+"\$@"
+EOF
+chmod +x "$STUB_BIN/sudo"
+export PATH="$STUB_BIN:$PATH"
+
+FLEET="$SANDBOX/fleet"; mkdir -p "$FLEET"
+cat > "$FLEET/projects.json" <<'EOF'
+[ { "projectName": "flywheel", "projectRoot": "Dev/flywheel", "projectRepo": "xrliAnnie/flywheel",
+    "leads": [ { "agentId": "flywheel-cos-lead", "chatChannel": "1", "match": { "labels": ["cos"] }, "botTokenEnv": "CASS_BOT_TOKEN", "canSpawnRunners": false } ] } ]
+EOF
+cat > "$FLEET/env.example" <<'EOF'
+CASS_BOT_TOKEN=
+EOF
+# platform-keyed manifest: one apt-mappable dep (absent → installs), one
+# required darwin-only dep (no linux mapping → fail-loud). Fake names so
+# `command -v` never finds them and the install/​error action actually fires.
+cat > "$FLEET/manifest.json" <<'EOF'
+{ "schemaVersion": 1, "meta": { "capturedAt": "2026-06-28T00:00:00Z" },
+  "deps": [
+    { "name": "fakeaptdep", "required": true, "platforms": { "darwin": { "channel": "brew", "formula": "fakeaptdep" }, "linux": { "apt": "fakeaptpkg", "dnf": "fakednfpkg" } } }
+  ],
+  "repos": [ { "name": "flywheel", "slug": "xrliAnnie/flywheel", "targetDir": "Dev/flywheel" } ],
+  "launchdJobs": [ { "label": "com.flywheel.bridge", "kind": "aux" }, { "label": "com.flywheel.updater", "kind": "aux" } ],
+  "skills": { "skillsSyncPresent": false, "skillsUpdatePlistPresent": false, "canonicalRepo": "xrliAnnie/flywheel-skills" } }
+EOF
+echo '{ "schemaVersion": 1, "skillsRepo": "xrliAnnie/flywheel-skills" }' > "$FLEET/host.json"
+
+H="$SANDBOX/home"; mkdir -p "$H"
+UNIT_DIR="$SANDBOX/systemd-user"
+prov() {
+  env -i HOME="$H" PATH="$PATH" USER="tester" FLYWHEEL_PLATFORM=linux \
+    FLYWHEEL_SYSTEMD_USER_DIR="$UNIT_DIR" \
+    bash "$PROVISION" --home "$H" --repo-root "$REPO_ROOT" --fleet-dir "$FLEET" "$@"
+}
+
+# ── L1: deps phase on linux installs apt-mapped dep ──
+: > "$CALLS"
+prov --apply --skip-token-check --only deps >/dev/null 2>&1
+if grep -q "apt-get install -y fakeaptpkg" "$CALLS"; then
+  pass "L1 linux deps → apt-get install (platform-keyed)"
+else
+  fail "L1 expected apt-get install fakeaptpkg; calls: $(cat "$CALLS")"
+fi
+
+# ── L2: flywheel-home materializes host.json ──
+rm -rf "$H/.flywheel"
+prov --apply --skip-token-check --only flywheel-home >/dev/null 2>&1
+if [ -f "$H/.flywheel/host.json" ] && grep -q "skillsRepo" "$H/.flywheel/host.json"; then
+  pass "L2 host.json materialized into ~/.flywheel"
+else
+  fail "L2 host.json not materialized: $(ls "$H/.flywheel" 2>/dev/null)"
+fi
+
+# ── L3: supervisor (launchd) phase narrates systemd on linux ──
+OUT="$(prov --only launchd 2>&1)"
+if grep -q "systemd --user" <<<"$OUT" && grep -qi "enable-linger" <<<"$OUT"; then
+  pass "L3 supervisor phase narrates systemd --user + linger on linux"
+else
+  fail "L3 systemd narration missing: $OUT"
+fi
+
+# ── L6: --apply launchd ACTUALLY installs systemd units (Codex R1 HIGH-1) ──
+# flywheel-home (L2) already copied projects.json. Now really install.
+: > "$CALLS"; rm -rf "$UNIT_DIR"
+prov --apply --skip-token-check --only launchd >/dev/null 2>&1
+MAT_OK=0; [ -f "$H/.flywheel/manifests/flywheel-flywheel-cos-lead.json" ] && MAT_OK=1
+if [ "$MAT_OK" -eq 1 ] \
+   && grep -q "enable --now flywheel-bridge.service" "$CALLS" \
+   && grep -q "enable --now flywheel-lead-flywheel-flywheel-cos-lead.service" "$CALLS" \
+   && [ -f "$UNIT_DIR/flywheel-bridge.service" ] \
+   && grep -q "enable-linger" "$CALLS"; then
+  pass "L6 --apply launchd materializes + supervisor_install (bridge + lead + linger)"
+else
+  fail "L6 actual install: mat=$MAT_OK units=$(ls "$UNIT_DIR" 2>/dev/null) calls=$(grep -E 'enable|linger' "$CALLS")"
+fi
+
+# ── L5: validate phase plans systemctl is-active (not launchctl) on linux ──
+# (runs BEFORE L4, which destructively rewrites the manifest with no jobs.)
+OUT="$(prov --only validate 2>&1)"
+if grep -q "systemctl --user is-active" <<<"$OUT" && ! grep -q "launchctl print" <<<"$OUT"; then
+  pass "L5 validate uses systemctl --user is-active on linux"
+else
+  fail "L5 validate platform branch: $OUT"
+fi
+
+# ── L4: required dep with no linux mapping → fail-loud (DESTRUCTIVE: last) ──
+cat > "$FLEET/manifest.json" <<'EOF'
+{ "schemaVersion": 1, "meta": { "capturedAt": "2026-06-28T00:00:00Z" },
+  "deps": [ { "name": "fakeolddep", "required": true, "channel": "brew", "formula": "fakeolddep" } ],
+  "repos": [], "launchdJobs": [],
+  "skills": { "skillsSyncPresent": false, "skillsUpdatePlistPresent": false, "canonicalRepo": "x/y" } }
+EOF
+prov --apply --skip-token-check --only deps >/dev/null 2>&1
+[ $? -ne 0 ] && pass "L4 required dep w/ no linux mapping → fail-loud (exit non-zero)" \
+             || fail "L4 should have failed on no-linux-mapping required dep"
+
+echo ""
+echo "provision-linux.test: $PASSED passed, $FAILED failed"
+[ "$FAILED" -eq 0 ]
