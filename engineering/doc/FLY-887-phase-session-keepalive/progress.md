@@ -1,13 +1,13 @@
 ---
 issue: FLY-887
 phase: design
-phaseCursor: 2/4
-updated: 2026-07-05T07:14:12.689Z
-nextStep: await Annie A5 confirm -> plan.md -> design review
+phaseCursor: 3/4
+updated: 2026-07-05T07:19:38.722Z
+nextStep: check Lead reply (Annie A5) -> design_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-887 progress
-**phase**: design (2/4)
-**next**: await Annie A5 confirm -> plan.md -> design review
+**phase**: design (3/4)
+**next**: check Lead reply (Annie A5) -> design_review
