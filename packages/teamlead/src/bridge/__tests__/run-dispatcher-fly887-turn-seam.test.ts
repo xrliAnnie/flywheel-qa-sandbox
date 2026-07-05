@@ -8,8 +8,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { BlueprintContext } from "flywheel-edge-worker/dist/Blueprint.js";
 import { CommDB } from "flywheel-comm/db";
+import type { BlueprintContext } from "flywheel-edge-worker/dist/Blueprint.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commDbPathForProject } from "../commdb-path.js";
 import { type ProjectRuntime, RunDispatcher } from "../run-dispatcher.js";

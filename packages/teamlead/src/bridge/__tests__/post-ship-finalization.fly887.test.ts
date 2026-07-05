@@ -1,8 +1,8 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { CommDB } from "flywheel-comm/db";
+import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ApplyTransitionOpts } from "../../applyTransition.js";
 import { DirectiveExecutor } from "../../DirectiveExecutor.js";

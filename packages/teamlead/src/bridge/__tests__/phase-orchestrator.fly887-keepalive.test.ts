@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
-	PhaseOrchestrator,
 	type PhaseLiveness,
+	PhaseOrchestrator,
 	type PhaseOrchestratorDeps,
 	type PhaseSession,
 	type ThreeStageVerdictIntent,
@@ -19,12 +19,14 @@ function makeQaVerdicts() {
 	const qaVerdicts: PhaseOrchestratorDeps["qaVerdicts"] = {
 		getSession: vi.fn(() => sessionRow),
 		readIntent: vi.fn((id: string) => intents.get(id)),
-		patchIntent: vi.fn((id: string, patch: Partial<ThreeStageVerdictIntent>) => {
-			intents.set(id, {
-				...(intents.get(id) ?? {}),
-				...patch,
-			} as ThreeStageVerdictIntent);
-		}),
+		patchIntent: vi.fn(
+			(id: string, patch: Partial<ThreeStageVerdictIntent>) => {
+				intents.set(id, {
+					...(intents.get(id) ?? {}),
+					...patch,
+				} as ThreeStageVerdictIntent);
+			},
+		),
 		countImplementPhases: vi.fn(() => 1),
 		recordFixRound: vi.fn(() => 1),
 		getActiveImplementSession: vi.fn((): PhaseSession | undefined => undefined),
@@ -114,7 +116,9 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 		expect(h.closePhaseRunner).not.toHaveBeenCalled();
 		// no live implement → spawn (caller does NOT grant TURN; dispatcher seam does)
 		expect(h.start).toHaveBeenCalledOnce();
-		expect(h.start.mock.calls[0]![0]).toMatchObject({ sessionRole: "implement" });
+		expect(h.start.mock.calls[0]![0]).toMatchObject({
+			sessionRole: "implement",
+		});
 		expect(h.grantTurn).not.toHaveBeenCalled();
 	});
 
@@ -124,7 +128,9 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 				capturePhaseHeadSha: vi.fn(async () => "deadbeefcafe1234"),
 				closePhaseRunner: vi.fn(async () => {}),
 				alertLeadPipelineError: vi.fn(async () => {}),
-				probePhaseAlive: vi.fn(async (): Promise<PhaseLiveness> => "indeterminate"),
+				probePhaseAlive: vi.fn(
+					async (): Promise<PhaseLiveness> => "indeterminate",
+				),
 				parkPhaseRunner: vi.fn(async () => {}),
 				wakePhaseRunner: vi.fn(async () => ({ ok: true })),
 				assertPhaseWorktreeReady: vi.fn(async () => ({ ok: true })),
@@ -191,7 +197,9 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 	it("wake target worktree not ready → fail-closed, no grantTurn, no wake", async () => {
 		const qa = session({ execution_id: "qa-exec", session_role: "qa" });
 		const h = makeDeps({
-			getAlivePhaseSession: vi.fn((_i, phase) => (phase === "qa" ? qa : undefined)),
+			getAlivePhaseSession: vi.fn((_i, phase) =>
+				phase === "qa" ? qa : undefined,
+			),
 			effects: {
 				capturePhaseHeadSha: vi.fn(async () => "deadbeefcafe1234"),
 				closePhaseRunner: vi.fn(async () => {}),
@@ -216,14 +224,19 @@ describe("FLY-887 keep-alive handoff (park + wake-or-spawn + TURN)", () => {
 	it("wake failure → warns but leaves TURN set (held for reconcile), never throws", async () => {
 		const qa = session({ execution_id: "qa-exec", session_role: "qa" });
 		const h = makeDeps({
-			getAlivePhaseSession: vi.fn((_i, phase) => (phase === "qa" ? qa : undefined)),
+			getAlivePhaseSession: vi.fn((_i, phase) =>
+				phase === "qa" ? qa : undefined,
+			),
 			effects: {
 				capturePhaseHeadSha: vi.fn(async () => "deadbeefcafe1234"),
 				closePhaseRunner: vi.fn(async () => {}),
 				alertLeadPipelineError: vi.fn(async () => {}),
 				probePhaseAlive: vi.fn(async (): Promise<PhaseLiveness> => "alive"),
 				parkPhaseRunner: vi.fn(async () => {}),
-				wakePhaseRunner: vi.fn(async () => ({ ok: false, error: "no mailbox" })),
+				wakePhaseRunner: vi.fn(async () => ({
+					ok: false,
+					error: "no mailbox",
+				})),
 				assertPhaseWorktreeReady: vi.fn(async () => ({ ok: true })),
 			},
 		});
@@ -310,9 +323,9 @@ describe("FLY-887 keep-alive QA-FAIL fix loop (wake implement, don't close QA)",
 		const h = makeDeps({ getAlivePhaseSession: vi.fn(() => impl) });
 		h.setSessionRow(qaSession());
 		// increment the round per verdict (the durable ledger's insert-or-read).
-		(h.qaVerdicts.recordFixRound as ReturnType<typeof vi.fn>).mockImplementation(
-			() => ++round,
-		);
+		(
+			h.qaVerdicts.recordFixRound as ReturnType<typeof vi.fn>
+		).mockImplementation(() => ++round);
 		const orch = new PhaseOrchestrator(h.deps);
 		await orch.onQaResult(qaSession(), { eventId: "V1", status: "fail" });
 		await orch.onQaResult(qaSession(), { eventId: "V2", status: "fail" });

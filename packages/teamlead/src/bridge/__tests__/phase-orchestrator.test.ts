@@ -51,9 +51,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	// FLY-887: default keep-alive OFF so the existing tests validate the LEGACY
 	// close-and-respawn path (the byte-compat sentinel). Keep-alive tests override.
 	const keepAliveEnabled = vi.fn(() => false);
-	const getAlivePhaseSession = vi.fn(
-		(): PhaseSession | undefined => undefined,
-	);
+	const getAlivePhaseSession = vi.fn((): PhaseSession | undefined => undefined);
 	const grantTurn = vi.fn(() => {});
 	const deps: PhaseOrchestratorDeps = {
 		startDispatcher: { start },

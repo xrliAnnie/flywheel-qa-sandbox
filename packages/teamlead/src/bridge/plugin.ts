@@ -9,6 +9,8 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
+import { CommDB } from "flywheel-comm/db";
+import { wakeRunnerMailbox } from "flywheel-comm/wake";
 // FLY-286 PR-2: web-local review route (gated on FLYWHEEL_XHS_REVIEW).
 import {
 	createLocalAnalysisStore,
@@ -96,6 +98,7 @@ import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
+import { commDbPathForProject } from "./commdb-path.js";
 import {
 	deleteCommDbSession,
 	pruneDeadTerminalCommDbSessions,
@@ -181,6 +184,7 @@ import {
 } from "./report-registry.js";
 import { createReportsRouter } from "./reports-route.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
+import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
@@ -225,10 +229,6 @@ import {
 	resolveThreeStagePolicy,
 	threeStageKeepAliveEnabled,
 } from "./three-stage-policy.js";
-import { CommDB } from "flywheel-comm/db";
-import { wakeRunnerMailbox } from "flywheel-comm/wake";
-import { commDbPathForProject } from "./commdb-path.js";
-import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import {
 	captureRunnerScrollback,
 	getTmuxTargetFromCommDb,
@@ -4237,7 +4237,9 @@ export async function startBridge(
 						round,
 						qaSummary,
 					}) => {
-						const adapter = store.getSession(session.execution_id)?.adapter_type;
+						const adapter = store.getSession(
+							session.execution_id,
+						)?.adapter_type;
 						const transport =
 							adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
 								? EXECUTOR_TO_TRANSPORT[

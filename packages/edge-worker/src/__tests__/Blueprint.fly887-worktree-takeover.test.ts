@@ -13,11 +13,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-	AdapterExecutionContext,
-	AdapterExecutionResult,
-	IAdapter,
-} from "flywheel-core";
+import type { AdapterExecutionResult, IAdapter } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
@@ -201,7 +197,7 @@ describe("FLY-887 worktree in-place takeover", () => {
 		const wt = makeWtManager({ registered: true, path });
 		const { result } = await run(
 			wt,
-			makeGitChecker({ clean: true, head: "deadbeef" + "0".repeat(32) }),
+			makeGitChecker({ clean: true, head: `deadbeef${"0".repeat(32)}` }),
 			{ sessionRole: "implement", shareParentBranch: true, startPoint: HEAD },
 		);
 		expect(result.success).toBe(false);

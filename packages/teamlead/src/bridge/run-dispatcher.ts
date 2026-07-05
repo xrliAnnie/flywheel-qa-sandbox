@@ -25,7 +25,6 @@ import type {
 } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { LaunchClaimStore } from "./launch-claim-store.js";
 import { resolveCommBackend } from "./plugin.js";
-import { threeStageKeepAliveEnabled } from "./three-stage-policy.js";
 import type { ProgressResumeInfo } from "./progress-resume.js";
 import type {
 	IRetryDispatcher,
@@ -39,6 +38,7 @@ import {
 	type ResolvedRoleAdapter,
 	resolveRoleAdapter,
 } from "./role-adapter-resolver.js";
+import { threeStageKeepAliveEnabled } from "./three-stage-policy.js";
 
 /**
  * FLY-795: compute the restart-resilient resume decision for a (re-)dispatch.

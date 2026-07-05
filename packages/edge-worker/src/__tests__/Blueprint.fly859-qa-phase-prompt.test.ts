@@ -126,7 +126,7 @@ describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 		expect(p).toContain("On FAIL");
 		expect(p).toContain("--status fail");
 		expect(p).toContain("RE-TEST wake");
-		expect(p).toContain('park --exec-id');
+		expect(p).toContain("park --exec-id");
 		expect(p).toContain("turn --exec-id");
 		expect(p).toContain("Do NOT run `complete`");
 		// the legacy close-and-respawn wording is gone under keep-alive

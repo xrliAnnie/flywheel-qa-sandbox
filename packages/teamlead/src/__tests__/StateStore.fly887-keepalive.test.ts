@@ -99,9 +99,9 @@ describe("getPhaseSessionsForIssue (FLY-887)", () => {
 			chat_thread_role: "design",
 			status: "completed",
 		});
-		expect(store.getPhaseSessionsForIssue("FLY-1").map((r) => r.status)).toEqual(
-			["completed"],
-		);
+		expect(
+			store.getPhaseSessionsForIssue("FLY-1").map((r) => r.status),
+		).toEqual(["completed"]);
 	});
 });
 

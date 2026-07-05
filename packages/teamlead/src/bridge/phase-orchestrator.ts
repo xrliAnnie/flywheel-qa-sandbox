@@ -774,7 +774,9 @@ export class PhaseOrchestrator {
 			});
 			// Persist the fix binding AFTER the TURN + wake attempt so a same-verdict
 			// replay short-circuits in onQaResult (no double-wake).
-			this.deps.qaVerdicts.patchIntent(execId, { fixExecId: impl.execution_id });
+			this.deps.qaVerdicts.patchIntent(execId, {
+				fixExecId: impl.execution_id,
+			});
 			if (woke.ok) {
 				this.log(
 					`QA FAIL → WAKE implement fix round ${round} on ${session.issue_id} @ ${headSha.slice(0, 8)} (impl ${impl.execution_id})`,
@@ -825,7 +827,9 @@ export class PhaseOrchestrator {
 		round: number,
 		woken: boolean,
 	): Promise<void> {
-		const verb = woken ? "唤醒 implement 段(活着,带全 context)" : "起 Implement-fix";
+		const verb = woken
+			? "唤醒 implement 段(活着,带全 context)"
+			: "起 Implement-fix";
 		try {
 			await this.deps.qaVerdicts.postIssueThread(
 				session,
