@@ -209,6 +209,20 @@ export interface PhaseOrchestratorDeps {
 		phase: ThreeStagePhase,
 	): PhaseSession | undefined;
 	/**
+	 * FLY-887 QA round 2: true when `runPostShipFinalization`'s atomic
+	 * per-issue claim event (`post_ship_finalization_claim`) already exists for
+	 * this issue — the issue has already shipped and entered (or completed)
+	 * `finalizeThreeStagePhases`. `getAlivePhaseSession` alone cannot see this:
+	 * a Bridge crash between closing Implement (→ `completed`, no longer ALIVE)
+	 * and closing Design (still `design_done`) leaves a stranded design row
+	 * whose downstream reads as "gone", indistinguishable from a genuine
+	 * "Implement never started" remnant — without this check
+	 * `hasProgressedPastDesign` would spawn a brand-new Implement onto an
+	 * issue that is already merged. A dead/crashed (never-shipped) Implement
+	 * has no such claim event, so the genuine-remnant re-drive is unaffected.
+	 */
+	hasShipFinalizationClaim(issueId: string): boolean;
+	/**
 	 * FLY-887: grant the shared-worktree TURN to a WAKE target before waking it
 	 * (spawn paths get their TURN from the dispatcher pre-launch seam instead). The
 	 * project's CommDB is the single writer; epoch auto-increments.
@@ -361,11 +375,18 @@ export class PhaseOrchestrator {
 	 * session the genuine "implement never started" crash remnant reconcile exists
 	 * for. The TURN table is a strict subset of this signal (a TURN only ever points
 	 * at a live phase), so this alive-phase check subsumes it.
+	 *
+	 * FLY-887 QA round 2: the alive-phase check alone cannot see a downstream
+	 * that already finished via SHIPPING (closed to `completed`, so no longer
+	 * ALIVE) rather than crashing — so it is OR'd with
+	 * `hasShipFinalizationClaim`, the durable per-issue signal that
+	 * `runPostShipFinalization` already ran for this issue.
 	 */
 	private hasProgressedPastDesign(issueId: string): boolean {
 		return (
 			this.deps.getAlivePhaseSession(issueId, "implement") !== undefined ||
-			this.deps.getAlivePhaseSession(issueId, "qa") !== undefined
+			this.deps.getAlivePhaseSession(issueId, "qa") !== undefined ||
+			this.deps.hasShipFinalizationClaim(issueId)
 		);
 	}
 

@@ -54,6 +54,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const wakePhaseRunner = vi.fn(async () => ({ ok: true }));
 	const assertPhaseWorktreeReady = vi.fn(async () => ({ ok: true }));
 	const getAlivePhaseSession = vi.fn((): PhaseSession | undefined => undefined);
+	const hasShipFinalizationClaim = vi.fn((): boolean => false);
 	const grantTurn = vi.fn(() => {});
 	const { qaVerdicts, intents, setSessionRow } = makeQaVerdicts();
 	const deps: PhaseOrchestratorDeps = {
@@ -72,6 +73,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		resolveLeadId: () => "eng-lead",
 		keepAliveEnabled: () => true,
 		getAlivePhaseSession,
+		hasShipFinalizationClaim,
 		grantTurn,
 		qaVerdicts,
 		...over,
@@ -87,6 +89,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		wakePhaseRunner,
 		assertPhaseWorktreeReady,
 		getAlivePhaseSession,
+		hasShipFinalizationClaim,
 		grantTurn,
 		qaVerdicts,
 		intents,
@@ -475,5 +478,56 @@ describe("FLY-887 QA FINDING: reconcileOnStartup re-fires design→implement on 
 		expect(h.grantTurn).not.toHaveBeenCalled();
 		expect(h.wakePhaseRunner).not.toHaveBeenCalled();
 		expect(h.start).not.toHaveBeenCalled();
+	});
+
+	// FLY-887 QA round 2 finding: getAlivePhaseSession only sees LIVE rows, so it
+	// cannot tell "implement never started" apart from "implement/qa already
+	// finished via SHIPPING" — a Bridge crash between finalizeThreeStagePhases
+	// closing Implement (→ completed, no longer ALIVE) and closing Design (still
+	// design_done) would otherwise read as a genuine remnant and spawn a BRAND-NEW
+	// Implement onto an issue that is already merged. hasShipFinalizationClaim is
+	// the durable per-issue signal (runPostShipFinalization's atomic claim event)
+	// that closes this gap.
+	it("does NOT spawn a new implement when the issue already shipped (finalization claim exists) even though nothing reads as alive", async () => {
+		const strandedDesign = session({
+			execution_id: "design-exec",
+			session_role: "design",
+			chat_thread_role: "design",
+			status: "design_done",
+		});
+		const h = makeDeps({
+			listStrandedDesignPhases: () => [strandedDesign],
+			// Implement/QA already finalized to `completed` — no longer ALIVE.
+			getAlivePhaseSession: () => undefined,
+			// But the issue already shipped (crash landed between the two closeRunner
+			// calls inside finalizeThreeStagePhases).
+			hasShipFinalizationClaim: () => true,
+		});
+		await new PhaseOrchestrator(h.deps).reconcileOnStartup();
+		expect(h.grantTurn).not.toHaveBeenCalled();
+		expect(h.wakePhaseRunner).not.toHaveBeenCalled();
+		expect(h.start).not.toHaveBeenCalled();
+	});
+
+	// Sentinel: hasShipFinalizationClaim must NOT over-suppress the genuine
+	// remnant case — a design_done whose downstream truly never started (no
+	// finalization claim was ever recorded for this issue) still re-drives.
+	it("STILL re-drives the genuine remnant when the issue never shipped (no finalization claim)", async () => {
+		const strandedDesign = session({
+			execution_id: "design-exec",
+			session_role: "design",
+			chat_thread_role: "design",
+			status: "design_done",
+		});
+		const h = makeDeps({
+			listStrandedDesignPhases: () => [strandedDesign],
+			getAlivePhaseSession: () => undefined,
+			hasShipFinalizationClaim: () => false,
+		});
+		await new PhaseOrchestrator(h.deps).reconcileOnStartup();
+		expect(h.start).toHaveBeenCalledOnce();
+		expect(h.start.mock.calls[0]![0]).toMatchObject({
+			sessionRole: "implement",
+		});
 	});
 });

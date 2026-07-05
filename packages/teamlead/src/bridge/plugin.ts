@@ -4307,6 +4307,14 @@ export async function startBridge(
 						| PhaseSession
 						| undefined;
 				},
+				// FLY-887 QA round 2: durable "this issue already shipped" signal —
+				// runPostShipFinalization's atomic per-issue claim event, keyed to
+				// issue_id regardless of which execution triggered it.
+				hasShipFinalizationClaim: (issueId) =>
+					store.countEventsByIssueAndType(
+						issueId,
+						"post_ship_finalization_claim",
+					) > 0,
 				grantTurn: ({ issueId, execId, phase, projectName }) => {
 					const db = new CommDB(commDbPathForProject(projectName));
 					try {

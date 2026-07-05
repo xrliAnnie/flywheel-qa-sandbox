@@ -52,6 +52,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	// close-and-respawn path (the byte-compat sentinel). Keep-alive tests override.
 	const keepAliveEnabled = vi.fn(() => false);
 	const getAlivePhaseSession = vi.fn((): PhaseSession | undefined => undefined);
+	const hasShipFinalizationClaim = vi.fn((): boolean => false);
 	const grantTurn = vi.fn(() => {});
 	const deps: PhaseOrchestratorDeps = {
 		startDispatcher: { start },
@@ -69,6 +70,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		resolveLeadId,
 		keepAliveEnabled,
 		getAlivePhaseSession,
+		hasShipFinalizationClaim,
 		grantTurn,
 		qaVerdicts,
 		...over,
@@ -87,6 +89,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		resolveLeadId,
 		keepAliveEnabled,
 		getAlivePhaseSession,
+		hasShipFinalizationClaim,
 		grantTurn,
 		qaVerdicts,
 		intents,
