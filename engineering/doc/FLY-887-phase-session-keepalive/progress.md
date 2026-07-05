@@ -1,14 +1,13 @@
 ---
 issue: FLY-887
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-05T08:26:12.785Z
-nextStep: Lead go (after Annie morning sanity-check) -> complete --route
-  phase_design_complete
+phase: implement
+phaseCursor: 0/11
+updated: 2026-07-05T17:53:35.989Z
+nextStep: "Step 1: CommDB TURN table + turn subcommand (TDD)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-887 progress
-**phase**: design (4/4)
-**next**: Lead go (after Annie morning sanity-check) -> complete --route phase_design_complete
+**phase**: implement (0/11)
+**next**: Step 1: CommDB TURN table + turn subcommand (TDD)
