@@ -11,7 +11,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { writeStore } from "../account-heal/account-store.js";
 import { makeAccountSwitchRepair } from "../account-heal/account-switch-repair.js";
 import type { AlertPayload } from "../LeadAlertNotifier.js";
@@ -84,5 +84,30 @@ describe("FLY-696 reverse-compat sentinel (flag unset)", () => {
 		expect(repair.canAttempt(capPayload())).toBe(false);
 		const r = await repair.enqueue(capPayload());
 		expect(r.outcome).toBe("needs_human");
+	});
+
+	// FLY-871 R1: the freshness guard / candidate loop / capture-back are all
+	// DOWNSTREAM of `switchAccount`, which the automatic path only reaches via this
+	// (still-gated) repair adapter. Flag off ⇒ enqueue short-circuits to
+	// needs_human BEFORE any switch executor runs, so none of R1's new switch
+	// behavior can fire on the automatic path. (The ONE deliberate always-on change
+	// is the MANUAL `flywheel-claude-profile use` stale-interception — a bash
+	// behavior, covered by packages/claude-runner/test/claude-profile.test.ts, and
+	// exempted here per plan §5 because it only turns "switch into a dead token"
+	// into "refuse + warn" and must hold at all times.)
+	it("R1 switch executor is unreachable on the auto path when the flag is unset (switchImpl never called)", async () => {
+		const switchImpl = vi.fn();
+		const repair = makeAccountSwitchRepair({
+			switchDeps: {} as never,
+			storePath,
+			pendingPath,
+			withLock: async (_l, fn) => fn(),
+			switchImpl: switchImpl as never,
+		});
+		const r = await repair.enqueue(capPayload());
+		expect(r.outcome).toBe("needs_human");
+		// The candidate loop / freshness verification live inside switchAccount —
+		// prove it is NEVER invoked while the feature is dormant.
+		expect(switchImpl).not.toHaveBeenCalled();
 	});
 });

@@ -17,7 +17,11 @@
 import { execFile as nodeExecFile } from "node:child_process";
 import { promisify } from "node:util";
 import { withMkdirLock } from "./mkdir-lock.js";
-import type { SwitchDeps } from "./switch-executor.js";
+import {
+	FreshnessUnavailableError,
+	type SwitchDeps,
+	TargetStaleError,
+} from "./switch-executor.js";
 
 const execFileAsync = promisify(nodeExecFile);
 
@@ -69,12 +73,40 @@ export function makeClaudeProfileSwitchDeps(
 			// the live holder marker (a forged env without the real lock falls
 			// through to a normal acquire), and neither takes nor releases the lock.
 			// Throws on non-zero exit (execFile rejects) → executor fails closed.
-			const { stderr } = await exec(deps.binPath, ["use", name], {
-				env: {
-					...process.env,
-					FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
-				},
-			});
+			//
+			// FLY-871 R1/C2 (Codex R2#1 HIGH — bypass anti-inheritance): the freshness
+			// bypass is an EMERGENCY HUMAN override only. The automatic path spreads
+			// the whole parent env, so a polluted parent (.env / launchd wrapper /
+			// test parent) could silently carry the bypass into the Bridge auto-switch
+			// path. Scrub it here (layer 1); bash additionally refuses it in
+			// delegated-lock mode (layer 2). Both are test assertions.
+			const childEnv: NodeJS.ProcessEnv = {
+				...process.env,
+				FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+			};
+			delete childEnv.FLYWHEEL_CLAUDE_FRESHNESS_BYPASS;
+			let stderr: string;
+			try {
+				({ stderr } = await exec(deps.binPath, ["use", name], {
+					env: childEnv,
+				}));
+			} catch (err) {
+				// FLY-871 R1/C3 — map the freshness exit codes to typed errors the
+				// switch executor's candidate loop understands. 30 = target stale (try
+				// the next candidate); 31 = freshness helper unavailable (environmental,
+				// fail-closed, no loop). Match the numeric exit code OR the stderr
+				// marker (execFile may surface `code` as a signal string). Any OTHER
+				// failure rethrows unchanged (existing fail-closed behavior).
+				const e = err as { code?: number | string; stderr?: string };
+				const errText = String(e.stderr ?? "");
+				if (e.code === 30 || /FLYWHEEL_TARGET_STALE/.test(errText)) {
+					throw new TargetStaleError(name);
+				}
+				if (e.code === 31 || /FLYWHEEL_FRESHNESS_UNAVAILABLE/.test(errText)) {
+					throw new FreshnessUnavailableError(errText.trim() || undefined);
+				}
+				throw err;
+			}
 			// FLY-865: the switch succeeded (exit 0), but `use` may have warned on
 			// stderr that the DISPLAY identity wasn't updated (no captured identity,
 			// lock timeout, patch failure). execFile discards child stderr, so
