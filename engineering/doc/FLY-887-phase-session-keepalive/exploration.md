@@ -148,7 +148,17 @@ Annie 原话（2026-07-05 06:48）：
 - **真相源**：CommDB 新表 `three_stage_turn (issue_id PK, holder_exec_id, phase, epoch, granted_at)`，**只有 Bridge 写**。选 CommDB 不选 StateStore：跨进程可读（runner 经 flywheel-comm 自查）、过 Bridge 重启（FLY-626 同款持久性）。
 - **授予点**（全部是既有决策点，不新增事件）：dispatch design / handoff→implement / handoff→QA / FAIL→wake implement / fix 完→RE-TEST wake QA / founder 批准→ship wake QA。每次授予 epoch+1。
 - **释放点**（全部是既有 durable 信号）：`complete --route phase_design_complete`、`complete --route needs_review`、`qa-result fail`、`qa-result pass`。orchestrator 处理这些事件时翻转 TURN；runner 侧 park 是协议层的同义交还。
-- **锁的粒度**：TURN 管 worktree 的**全部触碰**（git 写 + 跑测试 + 改文件）。parked = 完全不碰 worktree（比「只锁 git 写」更粗但更简单可验——三段本就不同时干活，细粒度是 YAGNI）。
+- **锁的粒度（「放交接点还是 commit 点」的显式对比）**：
+
+  | | 🄿 phase 交接点粗粒度 TURN（本提案） | 🄲 per-commit 细粒度写锁 |
+  |---|---|---|
+  | 授予/释放次数 | 每个 phase 轮换 1 次（≈既有交接/唤醒点，零新事件） | 每次 commit 前后各 1 次（新增 acquire/release 协议 + 超时/忘还处理） |
+  | 要仲裁的真并发 | 不存在（Annie 的洞：三段基本不同时干活；流水线本身就是串行轮转） | 同样不存在——细粒度锁在没有并发的系统里只买到开销 |
+  | runner 协议复杂度 | 「parked 不碰 worktree；被带 TURN 的 wake 叫醒才干活」——与 park/wake 保活协议**同一条纪律**，零新概念 | 每次写前要 acquire、写后要 release、失败要退避——协议面翻倍 |
+  | 故障面 | 死 holder = 死 phase，Heartbeat+reconcile 既有恢复路径 | 多出「锁泄漏」（拿了没还）这一整类新故障 |
+
+  选 🄿：TURN 管 worktree 的**全部触碰**（git 写 + 跑测试 + 改文件），parked = 完全不碰。QA「跑测试怎么读」：QA 持 TURN 期间自由读写跑测试（它本来就是当值 phase）；不持 TURN 时不需要读 worktree（它在 park 等 RE-TEST）。
+- **三进程共享 cwd 怎么协调**：三个 phase session 的 tmux 进程 cwd 都指向同一个 worktree 目录——这**就是今天 phase dispatch 的现状**（`resolveWorktreeKey` 共享 key → 同一路径），只是今天前段进程被 kill 了。多进程同 cwd 对进程本身无冲突（cwd 只是路径引用）；唯一的坑是「目录被删导致 cwd 悬空」，而 R2 下 worktree 到 ship 才删，parked session 的 cwd 全程有效。不需要「cd 进/cd 出」编舞——parked 的纪律是「不碰」，不是「离开」。
 - **runner 自查 belt**：新 flywheel-comm 子命令 `turn --exec-id <id>`（读 CommDB，答 yours / not-yours + holder）。prompt 契约：凡不是被带 TURN 的 wake 叫醒（例如 Lead 出于别的原因 send 了一条消息），动 worktree 前必须 turn 自查；not-yours → 不写，只回话/报告。
 - **退避（罕见并发）**：不设自旋等待。not-yours 的一方不写、答复来意后继续 park；若它确实需要写（极罕见），`flywheel-comm ask` 报 Lead 仲裁。写冲突的最终兜底是 git 本身（同分支冲突可见、可恢复）。
 - **崩溃恢复**：holder 死体 → HeartbeatService 照常收割 → orchestrator 对账（reconcile）发现 TURN 指向死 session → 按流水线当前态重新授予（wake-or-spawn 同款判定）。授予是事件驱动非阻塞等待，**无死锁形态**。
