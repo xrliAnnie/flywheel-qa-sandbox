@@ -14,8 +14,10 @@ import {
 	writeStore,
 } from "../account-heal/account-store.js";
 import {
+	FreshnessUnavailableError,
 	type SwitchDeps,
 	switchAccount,
+	TargetStaleError,
 } from "../account-heal/switch-executor.js";
 
 const NOW = new Date("2026-07-03T20:00:00Z");
@@ -195,6 +197,135 @@ describe("switchAccount", () => {
 			activeAccount: "school",
 		});
 		expect(d.applyProfile).not.toHaveBeenCalled();
+	});
+
+	// ─────────────────────────────────────────────────────────────────────────
+	// FLY-871 R1/C3 — freshness candidate loop. `applyProfile` (the bash `use`)
+	// now verifies the target's pooled token is fresh BEFORE the Keychain write.
+	// A stale target throws TargetStaleError → mark it authExpired + try the next
+	// candidate. A missing freshness helper throws FreshnessUnavailableError →
+	// environmental failure: don't mark, don't loop (a candidate would fail the
+	// same way), fail-closed with ZERO Keychain writes.
+	// ─────────────────────────────────────────────────────────────────────────
+	function threeAccountStore(): AccountStore {
+		return {
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "business", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+		};
+	}
+
+	it("target stale → marks it authExpired (in-lock) and switches to the next candidate", async () => {
+		seed(threeAccountStore());
+		// selectNextAccount is deterministic alphabetical for 5h: business first.
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name === "business") throw new TargetStaleError("business");
+		});
+		const res = await switchAccount(input, deps({ applyProfile }));
+		expect(res).toMatchObject({ outcome: "switched", to: "school" });
+		// business was tried, marked stale, then school succeeded
+		expect(applyProfile).toHaveBeenNthCalledWith(1, "business");
+		expect(applyProfile).toHaveBeenNthCalledWith(2, "school");
+		const after = readStore(storePath);
+		expect(after.accounts.find((a) => a.name === "business")?.authExpired).toBe(
+			true,
+		);
+		expect(after.activeAccount).toBe("school");
+	});
+
+	it("two consecutive stale targets → third candidate succeeds", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name === "business") throw new TargetStaleError("business");
+			if (name === "school") throw new TargetStaleError("school");
+			// "personal" is currentName (excluded); with only 3 accounts and 2
+			// stale, no candidate remains → no_account. Add a 4th usable account.
+		});
+		// add a 4th account so a third distinct candidate exists
+		const s = threeAccountStore();
+		s.accounts.push({
+			name: "shopping",
+			quotaExhaustedUntil: null,
+			weeklyResetAt: null,
+		});
+		seed(s);
+		const res = await switchAccount(input, deps({ applyProfile }));
+		expect(res).toMatchObject({ outcome: "switched", to: "shopping" });
+		const after = readStore(storePath);
+		expect(after.accounts.find((a) => a.name === "business")?.authExpired).toBe(
+			true,
+		);
+		expect(after.accounts.find((a) => a.name === "school")?.authExpired).toBe(
+			true,
+		);
+	});
+
+	it("all candidates stale → no_account (with earliest reset), Keychain never committed", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async (name: string) => {
+			throw new TargetStaleError(name);
+		});
+		const res = await switchAccount(input, deps({ applyProfile }));
+		expect(res.outcome).toBe("no_account");
+		const after = readStore(storePath);
+		// active never switched; both non-current accounts flagged authExpired
+		expect(after.activeAccount).toBe("personal");
+		expect(after.accounts.find((a) => a.name === "school")?.authExpired).toBe(
+			true,
+		);
+		expect(after.accounts.find((a) => a.name === "business")?.authExpired).toBe(
+			true,
+		);
+	});
+
+	it("freshness helper unavailable → failed, NO account marked, NO loop, Keychain never written", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async () => {
+			throw new FreshnessUnavailableError();
+		});
+		const res = await switchAccount(input, deps({ applyProfile }));
+		expect(res.outcome).toBe("failed");
+		// exactly ONE apply attempt (no candidate loop — a candidate fails the same)
+		expect(applyProfile).toHaveBeenCalledTimes(1);
+		const after = readStore(storePath);
+		expect(after.activeAccount).toBe("personal"); // unchanged
+		expect(after.generation).toBe(1);
+		// no account was flagged authExpired
+		expect(after.accounts.every((a) => !a.authExpired)).toBe(true);
+	});
+
+	it("non-stale, non-freshness error keeps the current single fail-closed behavior", async () => {
+		seed(threeAccountStore());
+		const applyProfile = vi.fn(async () => {
+			throw new Error("keychain locked");
+		});
+		const res = await switchAccount(input, deps({ applyProfile }));
+		expect(res.outcome).toBe("failed");
+		expect(applyProfile).toHaveBeenCalledTimes(1); // no loop
+		expect(readStore(storePath).accounts.every((a) => !a.authExpired)).toBe(
+			true,
+		);
+	});
+
+	it("authExpired mark persists even when the whole switch ultimately fails (in-lock atomic)", async () => {
+		seed(threeAccountStore());
+		// business stale, then school throws a generic error (single fail-closed)
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name === "business") throw new TargetStaleError("business");
+			throw new Error("keychain locked");
+		});
+		const res = await switchAccount(input, deps({ applyProfile }));
+		expect(res.outcome).toBe("failed");
+		const after = readStore(storePath);
+		// the stale flag on business survived even though the switch failed later
+		expect(after.accounts.find((a) => a.name === "business")?.authExpired).toBe(
+			true,
+		);
+		expect(after.activeAccount).toBe("personal"); // never switched
 	});
 
 	it("weekly cap also records the exhausted account's weekly reset", async () => {

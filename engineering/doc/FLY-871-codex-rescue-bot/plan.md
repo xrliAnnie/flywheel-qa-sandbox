@@ -153,6 +153,7 @@ flowchart TD
 ## 7. 实现期 spike(先于对应组件,结论回写本 plan)
 
 - **S1 OAuth refresh 真机 spike**(C2 前置):测试账号(非 active)真调 refresh 端点;验收 = 新 token 生效 + 旧 refresh token 失效确认 + 响应字段与假设一致;不符 → 停,按实际调整 C2 再走 review。凭据全程不进 argv/日志。
+  - **实现期结论(2026-07-04,Lead 批准 lead-instruction fe514116)**:真 spike **推迟到 Annie 在场的 enable gate**,不在无人值守 implement session 里对真账号跑 —— refresh_token grant 是**破坏性**的(轮转真 family),对 Annie 的活账号跑 = 复刻 2026-07-04 事故本身,没有非破坏性的 spike 形态。因此 C2 按 research R-2 文档契约实现:端点/client_id **走 env 可覆盖**(`FLYWHEEL_CLAUDE_OAUTH_ENDPOINT` / `FLYWHEEL_CLAUDE_OAUTH_CLIENT_ID`,默认 `https://console.anthropic.com/v1/oauth/token` + 公开 client_id),全 **fail-closed**(端点契约不符 = stale = 不切 + 告警,Keychain 零写),单测**全 mock fetch 零真网络**覆盖所有红线。真 spike + 真机 QA(§8)在 Annie 在场的 enable gate 做;`FLYWHEEL_ACCOUNT_SELF_HEAL` 默认 OFF = 生产零风险(这段代码在她 flip 前不会自动跑)。若 spike 发现端点/字段契约不符 → 按 Annie 决策 ③ 退化形态(仅拒切 + 告警),env 覆盖使其为**配置改动而非代码改动**。
 - **S2 usage 端点探查**(可选,C7 增强):找 `/usage` 背后 HTTP 面;找不到/不稳 → 记论,维持事件学习,不阻塞。
 - **S3 被踢 pane 采样**(C8 前置):真机复现/采集 logged-out pane 文本 → fixture 定稿(参照 FLY-193 真 pane fixture 纪律)。
 
@@ -192,7 +193,8 @@ Lead 附加硬要求:「active 账号绝不从 pool 侧 refresh」= 测试断言
 
 ## 11. 交付物清单(交付顺序 = Annie ④:R1 单独 PR 先 ship,R2、R3 随后各自 PR)
 
-- [ ] R1:C1 回捕(bash+测试)/ C2 freshness helper(TS+bin+断言测试)/ C3 退出码+候选循环(bash+TS+测试)/ C4 keep-fresh 巡检 / sentinel 扩展 / S1 spike 记录
+- [x] **R1 核心(本 PR,incident 根治)**:C1 回捕(bash+测试)/ C2 freshness helper(TS `freshness.ts`+`freshness-cli.ts`+bin wrapper+18 断言测试,全 mock fetch)/ C3 退出码 30/31+候选循环(bash+TS+20 测试)/ sentinel 扩展 / S1 spike 记录(推迟 enable gate,见 §7-S1)。**红线断言齐全**:active 绝不 pool-refresh(0 fetch+pool 零写)/ stale 目标 Keychain 零写(exit 30)/ future-expiresAt+refused→stale / helper 不可用→exit 31 零 Keychain 写 / bypass 防继承(cli scrub + delegated bash 拒认)。
+- [ ] **R1 fast-follow(独立 PR)**:C4 keep-fresh 巡检 —— C4a 活跃账号回捕(随 SELF_HEAL)+ C4b 非活跃 probe-refresh(独立开关 `FLYWHEEL_ACCOUNT_KEEPFRESH` 默认 off,**启用前提 = R3 救援已上线**)。挂 LeadWatchdog `onPollComplete`(24h 节流,无新 timer)。Lead 已确认 R1 落地后立即开 tracked issue(fe514116)。
 - [ ] R2:C5 路由+audit+测试 / C6 launcher+launchd+persona+Discord 角色清单执行(Annie 勾)/ C7 摘要行为 / S2 记录
 - [ ] R3:C8 runner auth scan+fixture(S3)/ C9 playbook+carve-out 文字+server-side 校验+测试
 - [ ] 独立真机 QA §8 全 11 项 → 各段 PR hold 等 batch,不 self-ship

@@ -4,8 +4,12 @@
  * (throws on non-zero → fail-closed); readActiveProfile parses `status`. Exec is
  * injected so this is tested without the real script/Keychain.
  */
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeClaudeProfileSwitchDeps } from "../account-heal/claude-profile-cli.js";
+import {
+	FreshnessUnavailableError,
+	TargetStaleError,
+} from "../account-heal/switch-executor.js";
 
 const BIN = "/x/flywheel-claude-profile";
 
@@ -110,5 +114,79 @@ describe("makeClaudeProfileSwitchDeps", () => {
 	it("exposes withLock for the switch executor to serialize on", () => {
 		const d = deps(vi.fn());
 		expect(typeof d.withLock).toBe("function");
+	});
+
+	// ─── FLY-871 R1/C3 — freshness exit-code mapping + bypass env scrub ───
+	describe("FLY-871 freshness exit-code mapping", () => {
+		it("exit 30 → TargetStaleError (stale target, don't switch)", async () => {
+			const execFile = vi.fn(async () => {
+				throw Object.assign(new Error("use failed"), {
+					code: 30,
+					stderr: "FLYWHEEL_TARGET_STALE school\n",
+				});
+			});
+			await expect(
+				deps(execFile).applyProfile("school"),
+			).rejects.toBeInstanceOf(TargetStaleError);
+		});
+
+		it("exit 30 mapped from the stderr marker even if code is a string", async () => {
+			const execFile = vi.fn(async () => {
+				throw Object.assign(new Error("use failed"), {
+					code: "SOMETHING",
+					stderr: "FLYWHEEL_TARGET_STALE business\n",
+				});
+			});
+			await expect(
+				deps(execFile).applyProfile("business"),
+			).rejects.toBeInstanceOf(TargetStaleError);
+		});
+
+		it("exit 31 → FreshnessUnavailableError (helper missing, fail-closed)", async () => {
+			const execFile = vi.fn(async () => {
+				throw Object.assign(new Error("use failed"), {
+					code: 31,
+					stderr: "FLYWHEEL_FRESHNESS_UNAVAILABLE school\n",
+				});
+			});
+			await expect(
+				deps(execFile).applyProfile("school"),
+			).rejects.toBeInstanceOf(FreshnessUnavailableError);
+		});
+
+		it("any other non-zero exit rethrows the original error (unchanged behavior)", async () => {
+			const execFile = vi.fn(async () => {
+				throw Object.assign(new Error("verify-before-commit failed"), {
+					code: 1,
+					stderr: "verify-before-commit failed",
+				});
+			});
+			await expect(deps(execFile).applyProfile("school")).rejects.toThrow(
+				"verify-before-commit failed",
+			);
+			await expect(
+				deps(execFile).applyProfile("school"),
+			).rejects.not.toBeInstanceOf(TargetStaleError);
+		});
+	});
+
+	describe("FLY-871 bypass env scrub (Codex R2#1 — no inheritance into the auto path)", () => {
+		const KEY = "FLYWHEEL_CLAUDE_FRESHNESS_BYPASS";
+		let saved: string | undefined;
+		afterEach(() => {
+			if (saved === undefined) delete process.env[KEY];
+			else process.env[KEY] = saved;
+		});
+
+		it("a polluted parent env (bypass=1) is SCRUBBED from the child env", async () => {
+			saved = process.env[KEY];
+			process.env[KEY] = "1"; // parent pollution (.env / launchd / test parent)
+			const execFile = vi.fn(async () => ({ stdout: "Switched", stderr: "" }));
+			await deps(execFile).applyProfile("school");
+			const callEnv = execFile.mock.calls[0][2].env as Record<string, string>;
+			expect(callEnv[KEY]).toBeUndefined(); // the bypass NEVER reaches bash automatically
+			// the legitimate delegated-lock env is still passed
+			expect(callEnv.FLYWHEEL_CLAUDE_LOCK_DELEGATED).toBe(String(process.pid));
+		});
 	});
 });

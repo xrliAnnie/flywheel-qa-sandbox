@@ -6,8 +6,13 @@
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
 	"bin": {
-		"teamlead": "dist/index.js"
+		"teamlead": "dist/index.js",
+		"flywheel-claude-freshness": "bin/flywheel-claude-freshness"
 	},
+	"files": [
+		"dist",
+		"bin"
+	],
 	"scripts": {
 		"build": "tsc && rm -rf dist/static && cp -r static dist/static",
 		"dev": "tsc --watch",

@@ -56,6 +56,13 @@ const SECRET_B =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-BBB","refreshToken":"rB"}}';
 const SECRET_CUR =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-CURRENT","refreshToken":"rC"}}';
+// FLY-871: a value the live Keychain "drifted" to (claude auto-refreshed the
+// active account's token) — capture-back must snapshot THIS into the pool.
+const SECRET_DRIFT =
+	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-DRIFT","refreshToken":"rD"}}';
+// FLY-871: what a "refreshing" freshness helper writes back to the pool.
+const SECRET_ROTATED =
+	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-ROTATED","refreshToken":"rR"}}';
 
 let tmp: string;
 let pool: string;
@@ -63,6 +70,10 @@ let lockDir: string;
 let stateFile: string;
 let argvLog: string;
 let stubBin: string;
+// FLY-871: a default "always fresh" freshness helper stub (exit 0) so existing
+// `use` tests keep passing; freshLog records its argv for the invocation assertion.
+let freshBin: string;
+let freshLog: string;
 // FLY-865: a scratch ~/.claude.json + its lock. env() ALWAYS points the script
 // at these so no test can ever touch the real ~/.claude.json.
 let claudeJson: string;
@@ -138,6 +149,11 @@ function env(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
 		FLYWHEEL_CLAUDE_KEYCHAIN_ACCOUNT: "testacct",
 		FAKE_SEC_STATE: stateFile,
 		FAKE_SEC_ARGV_LOG: argvLog,
+		// FLY-871: default "always fresh" helper — existing `use`/`next` tests are
+		// unaffected (fresh verdict, no pool write-back). Individual tests override
+		// FLYWHEEL_CLAUDE_FRESHNESS_BIN to exercise stale / unavailable / refresh.
+		FLYWHEEL_CLAUDE_FRESHNESS_BIN: freshBin,
+		FRESH_ARGV_LOG: freshLog,
 		// FLY-865 SAFETY: never let a test touch the real ~/.claude.json.
 		FLYWHEEL_CLAUDE_JSON: claudeJson,
 		FLYWHEEL_CLAUDE_JSON_LOCK: claudeJsonLock,
@@ -208,8 +224,17 @@ beforeEach(() => {
 	stubBin = join(tmp, "fake-security");
 	claudeJson = join(tmp, "claude.json");
 	claudeJsonLock = join(tmp, "claude.json.lock");
+	freshBin = join(tmp, "fake-freshness");
+	freshLog = join(tmp, "fresh-argv.log");
 	writeFileSync(stubBin, STUB, { mode: 0o755 });
 	writeFileSync(argvLog, "");
+	// Default freshness helper: logs its argv, exits 0 (fresh). NO pool write-back.
+	writeFileSync(
+		freshBin,
+		'#!/usr/bin/env bash\nset -u\nprintf \'%s\\n\' "$*" >> "$FRESH_ARGV_LOG"\nexit 0\n',
+		{ mode: 0o755 },
+	);
+	writeFileSync(freshLog, "");
 	mkdirSync(pool, { recursive: true });
 	seedProfile("personal", SECRET_A);
 	seedProfile("school", SECRET_B);
@@ -716,4 +741,164 @@ describe("flywheel-claude-profile — display identity sync (FLY-865)", () => {
 		}
 		rmSync(lockDir, { recursive: true, force: true });
 	}, 15000);
+});
+
+/**
+ * FLY-871 R1 — token freshness guard + capture-back. Before writing a NON-ACTIVE
+ * target to the Keychain, `use` probe-refreshes its pooled token via a small Node
+ * helper (faked here, exit-code contract) and captures the OLD active account's
+ * live Keychain value back into its pool slot. A stale target / missing helper
+ * fails CLOSED with the Keychain untouched — the 2026-07-04 logout root-cure.
+ */
+describe("flywheel-claude-profile — freshness guard + capture-back (FLY-871)", () => {
+	/** A freshness stub with a fixed exit code (30 stale / 31 error / …). */
+	function staleStub(code: number): string {
+		const p = join(tmp, `fake-freshness-${code}`);
+		writeFileSync(
+			p,
+			`#!/usr/bin/env bash\nset -u\nprintf '%s\\n' "$*" >> "$FRESH_ARGV_LOG"\nexit ${code}\n`,
+			{ mode: 0o755 },
+		);
+		return p;
+	}
+
+	it("`use` invokes the freshness helper for a NON-ACTIVE target (verify --name --active --pool)", () => {
+		run(["use", "personal"]); // active was empty → still verifies the target
+		const log = readFileSync(freshLog, "utf-8");
+		expect(log).toContain("verify");
+		expect(log).toContain("--name personal");
+		expect(log).toContain(`--pool ${pool}`);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A); // switch happened
+	});
+
+	it("a STALE target (helper exit 30) → `use` exits 30, Keychain + .active UNTOUCHED", () => {
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_FRESHNESS_BIN: staleStub(30),
+		});
+		expect(status).toBe(30);
+		expect(stderr).toContain("FLYWHEEL_TARGET_STALE personal");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR); // never written
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+	});
+
+	it("a MISSING helper → `use` exits 31 fail-closed, Keychain + .active UNTOUCHED", () => {
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_FRESHNESS_BIN: join(tmp, "does-not-exist"),
+		});
+		expect(status).toBe(31);
+		expect(stderr).toContain("FLYWHEEL_FRESHNESS_UNAVAILABLE personal");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		expect(existsSync(join(pool, ".active"))).toBe(false);
+	});
+
+	it("a helper exit code OTHER than 30 → treated as unavailable (31), fail-closed", () => {
+		const { status, stderr } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_FRESHNESS_BIN: staleStub(7),
+		});
+		expect(status).toBe(31);
+		expect(stderr).toContain("FLYWHEEL_FRESHNESS_UNAVAILABLE personal");
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+	});
+
+	it("EMERGENCY bypass (non-delegated): missing helper + BYPASS=1 → switch proceeds with a loud warning", () => {
+		const { stdout, stderr } = runBoth(["use", "personal"], {
+			FLYWHEEL_CLAUDE_FRESHNESS_BIN: join(tmp, "does-not-exist"),
+			FLYWHEEL_CLAUDE_FRESHNESS_BYPASS: "1",
+		});
+		expect(stdout).toContain(
+			"Switched machine Claude account to profile 'personal'",
+		);
+		expect(stderr).toMatch(/BYPASS|SKIPPING token freshness/i);
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_A);
+	});
+
+	it("bypass is NOT honored in delegated-lock mode (Codex R2#1 layer 2) → still fails closed 31", () => {
+		// Simulate the Bridge auto-switch path: it holds the lock and delegates.
+		mkdirSync(lockDir, { recursive: true });
+		writeFileSync(
+			join(lockDir, "holder"),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
+		);
+		const { status } = runExpectFail(["use", "personal"], {
+			FLYWHEEL_CLAUDE_FRESHNESS_BIN: join(tmp, "does-not-exist"),
+			FLYWHEEL_CLAUDE_FRESHNESS_BYPASS: "1", // leaked into the auto path…
+			FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid), // …but delegated refuses it
+		});
+		expect(status).toBe(31); // bypass ignored → fail-closed
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_CUR);
+		rmSync(lockDir, { recursive: true, force: true });
+	});
+
+	it("freshness WRITE-BACK: a helper that rotates the pool credential → `use` writes the ROTATED token", () => {
+		// A refreshing helper writes a new compact credential to pool/<name>.
+		const refreshBin = join(tmp, "fake-freshness-refresh");
+		writeFileSync(
+			refreshBin,
+			`#!/usr/bin/env bash
+set -u
+name=""; pool=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --name) name="$2"; shift 2;;
+    --pool) pool="$2"; shift 2;;
+    --active) shift 2;;
+    *) shift;;
+  esac
+done
+printf '%s' '${SECRET_ROTATED}' > "$pool/$name/.credentials.json"
+exit 0
+`,
+			{ mode: 0o755 },
+		);
+		run(["use", "school"], { FLYWHEEL_CLAUDE_FRESHNESS_BIN: refreshBin });
+		// the Keychain got the ROTATED credential the helper wrote back, not SECRET_B
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_ROTATED);
+		expect(
+			readFileSync(join(pool, "school", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_ROTATED);
+	});
+
+	it("CAPTURE-BACK: the OLD active account's DRIFTED Keychain value is snapshotted into its pool slot", () => {
+		run(["use", "personal"]); // active=personal, kc=SECRET_A
+		// claude auto-refreshed the live token → the Keychain drifted:
+		writeFileSync(stateFile, SECRET_DRIFT);
+		run(["use", "school"]); // switching away captures personal's drifted value back
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_DRIFT);
+		// the new target still switched normally
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("school");
+	});
+
+	it("CAPTURE-BACK is skipped on the FIRST switch (no prior active) and never poisons the pool", () => {
+		run(["use", "personal"]); // active empty → capture-back skipped
+		// personal's pool credential is unchanged (still SECRET_A)
+		expect(
+			readFileSync(join(pool, "personal", ".credentials.json"), "utf-8"),
+		).toBe(SECRET_A);
+	});
+
+	it("re-selecting the CURRENT active (name == active) does NOT probe-refresh it (never refresh the active family)", () => {
+		run(["use", "personal"]); // active=personal
+		writeFileSync(freshLog, ""); // reset the helper argv log
+		run(["use", "personal"]); // name == active → no freshness probe
+		expect(readFileSync(freshLog, "utf-8").trim()).toBe(""); // helper NOT invoked
+	});
+
+	it("capture-back refuses a symlinked active pool credential file (never follow a symlink)", () => {
+		run(["use", "personal"]); // active=personal
+		// Replace personal's credential file with a symlink to an outside target.
+		const outside = join(tmp, "outside-cred");
+		writeFileSync(outside, SECRET_CUR);
+		rmSync(join(pool, "personal", ".credentials.json"), { force: true });
+		symlinkSync(outside, join(pool, "personal", ".credentials.json"));
+		writeFileSync(stateFile, SECRET_DRIFT);
+		const { stderr } = runBoth(["use", "school"]);
+		// the symlink target OUTSIDE the pool was NOT written through
+		expect(readFileSync(outside, "utf-8")).toBe(SECRET_CUR);
+		expect(stderr).toMatch(/symlink/i);
+		// the switch itself still succeeded
+		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_B);
+	});
 });

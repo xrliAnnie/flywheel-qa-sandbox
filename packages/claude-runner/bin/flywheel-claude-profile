@@ -82,6 +82,10 @@ EOF
 }
 
 fail() { echo "Error: $*" >&2; exit 1; }
+# FLY-871 R1/C3: exit with a SPECIFIC code (30 target-stale / 31 freshness-helper
+# unavailable) so the Node switch executor can distinguish freshness failures
+# from other failures and drive the candidate loop / fail-closed accordingly.
+fail_code() { local code="$1"; shift; echo "Error: $*" >&2; exit "$code"; }
 
 # Cross-platform stat (BSD/macOS `-f`, GNU/Linux `-c`) — CI runs Linux.
 # GNU treats `-f` as FILESYSTEM stat and exits 0 with junk for unknown
@@ -269,6 +273,91 @@ kc_write() { # $1 = secret. NO-ARGV path: command incl. value goes via stdin (-i
     printf 'add-generic-password -U -a "%s" -s "%s" -w %s\n' \
       "$ACCT" "$SERVICE" "$secret" | "$SEC_BIN" -i >/dev/null
   fi
+}
+
+# ------------------------------------------------- freshness guard (FLY-871 R1)
+# Root-cure for the 2026-07-04 logout incident: before writing a NON-ACTIVE
+# target to the Keychain, verify its pooled OAuth token is FRESH (probe-refresh).
+# A stale pooled token (its refresh-token family rotated out) written to the
+# machine Keychain logs out every live session. The verification is a small Node
+# helper (HTTP+JSON — bash can't) run INSIDE this lock; credentials NEVER cross
+# argv (the helper reads the pool file itself; only non-secret names are passed).
+#
+# default_freshness_bin: resolve the helper when FLYWHEEL_CLAUDE_FRESHNESS_BIN is
+# unset — derived relative to this script (claude-runner/bin →
+# teamlead/bin/flywheel-claude-freshness). Best-effort: prints an executable path
+# or nothing (→ fail-closed exit 31).
+default_freshness_bin() {
+  local d cand
+  d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 0
+  cand="$d/../../teamlead/bin/flywheel-claude-freshness"
+  [[ -x "$cand" ]] && printf '%s' "$cand"
+}
+
+# freshness_guard <name> <active>: exit 30 (target stale) / 31 (helper missing) /
+# return 0 (fresh — the helper may have written a rotated credential back to the
+# pool). Keychain/.active are UNTOUCHED on 30/31 (the incident root-cure). The
+# guard runs unconditionally on `use`/`next` (manual + automatic) — plan §5: the
+# manual stale-interception is part of the fix and is on at all times.
+freshness_guard() {
+  local name="$1" active="$2"
+  # Emergency HUMAN override. Honored ONLY on the manual path (NOT delegated-lock,
+  # i.e. not the Bridge auto-switch): Codex R2#1 layer 2 — even if the env leaks
+  # into the automatic path, delegated mode refuses it (the CLI also scrubs it,
+  # layer 1). The name is deliberately alarming; use only with a human at the keys.
+  if [[ -n "${FLYWHEEL_CLAUDE_FRESHNESS_BYPASS:-}" && -z "${FLYWHEEL_CLAUDE_LOCK_DELEGATED:-}" ]]; then
+    echo "Warning: FLYWHEEL_CLAUDE_FRESHNESS_BYPASS set — SKIPPING token freshness verification for '$name'. Emergency manual override; the switched-to token is NOT verified fresh and may strand live sessions if stale." >&2
+    return 0
+  fi
+  local bin="${FLYWHEEL_CLAUDE_FRESHNESS_BIN:-}"
+  [[ -z "$bin" ]] && bin="$(default_freshness_bin)"
+  if [[ -z "$bin" || ! -x "$bin" ]]; then
+    echo "FLYWHEEL_FRESHNESS_UNAVAILABLE $name" >&2
+    fail_code 31 "token freshness helper unavailable (looked for '${bin:-<none>}') — refusing to switch to a possibly-stale credential (fail-closed). Set FLYWHEEL_CLAUDE_FRESHNESS_BIN, or FLYWHEEL_CLAUDE_FRESHNESS_BYPASS=1 for an emergency manual override."
+  fi
+  local rc=0
+  "$bin" verify --name "$name" --active "$active" --pool "$POOL_DIR" || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    30)
+      echo "FLYWHEEL_TARGET_STALE $name" >&2
+      fail_code 30 "target account '$name' has a stale pooled credential (freshness refresh refused) — Keychain/.active unchanged"
+      ;;
+    *)
+      echo "FLYWHEEL_FRESHNESS_UNAVAILABLE $name" >&2
+      fail_code 31 "freshness helper exited $rc for '$name' — refusing to switch (fail-closed)"
+      ;;
+  esac
+}
+
+# capture_back <active> <value>: FLY-871 R1/C1 — before we overwrite the Keychain,
+# snapshot the CURRENT value (the OLD active account's live token, which claude
+# may have refreshed since capture) into its pool slot, so a later switch BACK to
+# it uses the freshest credential the machine held. BEST-EFFORT: any problem only
+# warns to stderr (never fails the switch — the switch is the priority). Refuses a
+# non-JSON-object / whitespace value and symlinked targets (never poison the pool).
+capture_back() {
+  local active="$1" value="$2"
+  case "$active" in
+    ""|.*|*[!A-Za-z0-9._-]*|*..*)
+      echo "Warning: skipping capture-back — invalid active name '$active'" >&2; return 0 ;;
+  esac
+  case "$value" in
+    "{"*) : ;;
+    *) echo "Warning: skipping capture-back for '$active' (current Keychain value is not a JSON object)" >&2; return 0 ;;
+  esac
+  case "$value" in
+    *[[:space:]]*) echo "Warning: skipping capture-back for '$active' (value has whitespace)" >&2; return 0 ;;
+  esac
+  local dir="$POOL_DIR/$active" file="$POOL_DIR/$active/.credentials.json"
+  [[ -L "$POOL_DIR" ]] && { echo "Warning: pool dir is a symlink — skipping capture-back" >&2; return 0; }
+  [[ -L "$dir" ]] && { echo "Warning: profile dir $dir is a symlink — skipping capture-back" >&2; return 0; }
+  [[ -d "$dir" ]] || { echo "Warning: active profile dir $dir missing — skipping capture-back for '$active'" >&2; return 0; }
+  [[ -L "$file" ]] && { echo "Warning: credential file $file is a symlink — skipping capture-back" >&2; return 0; }
+  ( umask 077; printf '%s' "$value" > "$file.tmp" ) || { echo "Warning: capture-back write failed for '$active'" >&2; return 0; }
+  mv "$file.tmp" "$file" 2>/dev/null || { echo "Warning: capture-back rename failed for '$active'" >&2; rm -f "$file.tmp" 2>/dev/null || true; return 0; }
+  chmod 600 "$file" 2>/dev/null || true
+  echo "Captured-back current credential for active profile '$active' before switch" >&2
 }
 
 # ------------------------------------------------------- display identity (FLY-865)
@@ -469,11 +558,32 @@ use_profile() {
   require_pool_entry "$name"
   acquire_lock
 
+  local active
+  active=$(get_active)
+
+  # FLY-871 R1/C2+C3 — freshness guard: before writing a NON-ACTIVE target to the
+  # Keychain, verify its pooled token is fresh (probe-refresh). The ACTIVE account
+  # is never pool-refreshed (its live session owns the token family). On a stale
+  # target (exit 30) or a missing helper (exit 31) we bail with the Keychain and
+  # .active UNTOUCHED — the 2026-07-04 incident root-cure. Re-selecting the current
+  # active (name == active) skips the probe (it re-writes the same account).
+  if [[ "$name" != "$active" ]]; then
+    freshness_guard "$name" "$active"
+  fi
+
   local new backup="" got
+  # RE-READ after the guard — freshness_guard's helper may have written a ROTATED
+  # credential back to the pool, and we must switch to the fresh one.
   new=$(cat "$POOL_DIR/$name/.credentials.json")
   # Snapshot the current value so a failed verify can roll back — the red line
   # is "switching must never leave the claude login broken".
   backup=$(kc_read 2>/dev/null || true)
+
+  # FLY-871 R1/C1 — capture-back the OLD active account's current Keychain value
+  # into its pool slot before we overwrite it (best-effort; see capture_back).
+  if [[ -n "$active" && "$active" != "$name" ]]; then
+    capture_back "$active" "$backup"
+  fi
 
   kc_write "$new" # fail-closed: any non-zero aborts (set -e), .active untouched
 
