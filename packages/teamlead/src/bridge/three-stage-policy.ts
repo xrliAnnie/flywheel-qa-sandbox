@@ -109,3 +109,22 @@ export function resolveThreeStageEntry(
 		? { role: "design", enteredThreeStage: true }
 		: { role: "main", enteredThreeStage: false };
 }
+
+/**
+ * FLY-887: the three-stage phase-session KEEP-ALIVE kill-switch. Default ON:
+ * when three-stage runs, phase-sessions park (stay alive) across handoffs and are
+ * woken (not respawned) — so QA↔implement fix loops keep full context. `=0`
+ * forces the legacy close-and-respawn behavior everywhere (byte-compatible with
+ * the pre-FLY-887 three-stage pipeline), for emergency rollback without disabling
+ * three-stage itself. Orthogonal to `FLYWHEEL_THREE_STAGE` (which disables
+ * three-stage entirely) and to the per-project `pipeline.three_stage` opt-in.
+ *
+ * Read at call time (both the PhaseOrchestrator handoff/fail decisions and the
+ * Blueprint worktree in-place-takeover gate) so a flip is live without a
+ * dispatch-shape change; the two read sites share this one env.
+ */
+export function threeStageKeepAliveEnabled(
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	return env.FLYWHEEL_THREE_STAGE_KEEPALIVE !== "0";
+}

@@ -2,7 +2,27 @@ import { describe, expect, it } from "vitest";
 import {
 	resolveThreeStageEntry,
 	resolveThreeStagePolicy,
+	threeStageKeepAliveEnabled,
 } from "../three-stage-policy.js";
+
+describe("threeStageKeepAliveEnabled (FLY-887 kill-switch)", () => {
+	it("defaults ON when the env is unset", () => {
+		expect(threeStageKeepAliveEnabled({})).toBe(true);
+	});
+	it("is OFF when FLYWHEEL_THREE_STAGE_KEEPALIVE=0", () => {
+		expect(
+			threeStageKeepAliveEnabled({ FLYWHEEL_THREE_STAGE_KEEPALIVE: "0" }),
+		).toBe(false);
+	});
+	it("any non-'0' value stays ON (only an explicit 0 disables)", () => {
+		expect(
+			threeStageKeepAliveEnabled({ FLYWHEEL_THREE_STAGE_KEEPALIVE: "1" }),
+		).toBe(true);
+		expect(
+			threeStageKeepAliveEnabled({ FLYWHEEL_THREE_STAGE_KEEPALIVE: "off" }),
+		).toBe(true);
+	});
+});
 
 describe("resolveThreeStageEntry (FLY-793 Step 4 ENTRY)", () => {
 	const noEnv: Record<string, string | undefined> = {};
