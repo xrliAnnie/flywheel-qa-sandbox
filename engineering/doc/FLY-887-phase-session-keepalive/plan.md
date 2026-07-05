@@ -19,7 +19,7 @@ review 过后 Lead 拿图+大白话给 Annie 终 sanity-check。**）
 - QA FAIL → **wake 活体 implement** 修（带全部 context）；fix 后 → **wake 同一 QA** 复验（worktree 已在新 head，零 checkout 编舞）；循环到 PASS。任一侧死体 → **spawn 兜底 = 现行为**。
 - 只在 founder ship 批准 + verified merge 后统一 `finalizeDone` 收尾三段 + 删 worktree + archive thread。
 - 不改 FSM、不动单 session / auto-QA / isQaRunner 路径（byte-compat，改动全在 `shareParentBranch`/phase-role 门内）。
-- A5（内存代价）Lead 正在跟 Annie 确认。
+- A5（内存代价 3 进程/issue）**Annie 已拍板接受**（/compact + 释放 Chrome 缓解保留）。
 
 ## 目标运行时行为（Annie 六条 → 状态表）
 
@@ -50,7 +50,7 @@ sequenceDiagram
     B->>D: dispatch + TURN(epoch 1)
     D->>W: 写 exploration/research/plan，commit+push
     D-->>B: complete phase_design_complete（=交还 TURN）
-    Note over D: declare-state park（保活，不退出）
+    Note over D: park（保活，不退出）
     B->>I: dispatch（同一 worktree 原地接手）+ TURN(epoch 2)
     I->>W: TDD 实现，commit+push，开 PR
     I-->>B: complete needs_review（=交还 TURN）
@@ -84,6 +84,7 @@ sequenceDiagram
 | 2 | `packages/teamlead/src/bridge/plugin.ts` | 新 effects 接线：park（CommDB `upsertDeclaredState` + tmux 活体探测复用 tmux-lookup）、wake（`wakeRunnerMailbox` 直调，镜像 auto-qa-effects）、TURN 表读写、ship 收尾扩容调用 |
 | 3 | `packages/flywheel-comm/src/db.ts` + 新 `src/commands/turn.ts` | CommDB 新表 `three_stage_turn(issue_id PK, holder_exec_id, phase, epoch, granted_at)`（幂等 CREATE TABLE IF NOT EXISTS，migration 同 `runner_declared_states` 模式）+ 新子命令 `turn --exec-id <id>`（答 yours/not-yours + holder；runner 写前自查 belt） |
 | 4 | `packages/edge-worker/src/Blueprint.ts` | worktree 原地接手路径（implement/QA dispatch 遇活体前段 → 校验后复用，绝不 removeIfExists；接手也合成 WorktreeInfo + emitWorktreeReady）；三段 prompts 改版（park 协议可执行拼写、翻转「Do NOT park」、强制 turn 自查契约；**QA writer 协议保留**）；drive-by：:436 auto-QA prompt 的 `declare-state park` 改可执行拼写 |
+| 4b | `packages/teamlead/src/bridge/run-dispatcher.ts` | pre-launch TURN grant seam（Codex R2 #1）：execId 分配 + CommDB 预注册后、`runtime.blueprint.run` 前，对 `shareParentBranch` phase dispatch 授 TURN；失败 → dispatch fail 不 launch。一个 seam 覆盖 fresh 入口/两条 spawn 兜底/reconcile spawn（全走同一 dispatcher） |
 | 5 | `packages/teamlead/src/StateStore.ts` | `getPhaseSessionsForIssue(issueId)`（按 chat_thread_role）+ `countEventsByIssueAndType(issueId, type)` |
 | 6 | ship 收尾链（`runPostShipFinalization`，DirectEventSink.ts:36 引入处 + 其定义模块） | 收尾扩到 issue 全部三段活体：逐个 `closeRunner({finalizeDone:true})` → 共享 worktree 删除（此刻才删）→ archive cascade 放行 |
 | 7 | `packages/config/src/feature-flags/registry.ts` | 登记新 env `FLYWHEEL_THREE_STAGE_KEEPALIVE`（FLY-871 registry-drift 教训：新 env 必登记） |
@@ -115,8 +116,9 @@ async handoff(prev, next):
     deps.grantTurn(prev.issue_id, target.execution_id, next)      # 先记 TURN 再 wake
     await deps.effects.wakePhaseRunner({session: target, kind: 'retest', headSha})
   else:
-    res = await startDispatcher.start({... 现行 dispatch ...})
-    deps.grantTurn(prev.issue_id, res.executionId, next)
+    await startDispatcher.start({... 现行 dispatch ...})
+    # TURN 授予不在 caller 侧——由 dispatcher 内的 pre-launch seam 在 Blueprint.run
+    # 启动前完成（Codex R2 #1，见 M5b）；caller 后置 grant 会与 runner 首个动作竞态
 ```
 
 - `probePhaseAlive` **四态**（Codex R1 #2）：基于 `probeRunnerProcessLiveness`（tmux-lookup.ts:313-360，区分活进程 vs 死 pin），**不是**布尔 window 探测。`alive` → park/wake；`dead_pin`/`absent` → spawn 兜底（close-clean=现行为）；`indeterminate`（tmux 超时/EACCES 等瞬态）→ **fail-closed**：告警 Lead、不 close、不动 TURN，留 reconcile 重试——绝不把可能活着的 context holder 当死体关掉。四种结果各有 fake-tmux 测试。
@@ -195,6 +197,14 @@ runFailFlow(qaSession, verdict):
 - **runner 契约（Codex R1 #4 收紧）：动 worktree 前 turn 自查一律强制——包括被「带 TURN grant」的 wake 叫醒之后。** wake 文本不是权威（可能迟到/重复/串轮次）：wake 消息携带 phase+epoch 仅作上下文，runner 必须以 `turn --exec-id` 的 CommDB 答案为准，`yours` 才动手；`not-yours`（含 stale epoch 的迟到 wake）→ 不写、只回话。测试覆盖「上一 epoch 的迟到 wake 不引发越权写」。
 - ship 收尾时删除该 issue 的 TURN 行（M7）。
 
+### M5b 新 dispatch 的 pre-launch TURN 授予（Codex R2 #1，blocking 修复）
+
+turn 自查强制后，**新 spawn 的 phase session 必须在 runner 动手前就有 TURN 行**——而 `RunDispatcher.start()` 在返回 executionId 之前就已启动 `Blueprint.run(...)`（run-dispatcher.ts:682 分配 execId → :787-788 launch → :821 才返回），caller 侧后置 grant 不构成可靠的 happens-before；fresh Design 入口（runs-route.ts:575-579 改写 role=design + shareParentBranch 后调同一 dispatcher）此前更是完全没人授牌。
+
+- **seam 位置**：`RunDispatcher.start()` 内部——executionId 分配 + CommDB 预注册之后、`runtime.blueprint.run(...)` 之前——加窄 scope 的 `preLaunchTurnGrant(executionId, issueId, phase)` 组合根 effect，门条件 = `shareParentBranch === true` && phase role && keepalive 开。**授予失败 → dispatch 直接 fail（不 launch）**，fail-closed。
+- **一个 seam 覆盖全部四条 spawn 路径**（都走同一 dispatcher）：① fresh 三段入口（runs-route）② handoff spawn 兜底 ③ QA FAIL spawn 兜底 ④ reconcile 驱动的 spawn。已活 session 的 wake 路径保持「grantTurn 先于 wake」不变。
+- **测试钉 happens-before**：fresh Design start 在 fake Blueprint/adapter 观察到 prompt 前 TURN epoch 1 已落；两条 spawn 兜底同样 pre-grant；kill-switch=0 不授牌；「fake runner 启动即查 turn」看到 `yours` 而非 no-row。
+
 ### M6 prompts（Blueprint 三段块）
 
 > **CLI 拼写（Codex R1 #6）**：park 命令的可执行拼写是顶层 `node <comm> park --exec-id <id> --reason ...`（flywheel-comm index.ts:190-207 注册的是 `park`/`busy`/`unpark`；**不存在** `declare-state` 子命令——那只是源码模块名）。下述 prompt 全用可执行拼写，prompt 快照测试断言之。**顺带修**：现有 auto-QA prompt（Blueprint.ts:436）用的 `declare-state park` 是同款潜在生产 bug（QA runner 照它跑会报未知命令、park 失效）——本 issue 一并改为可执行拼写 + 快照测试（一行改动，同文件同 bug 类，向 Lead 报备的 drive-by fix）。
@@ -240,8 +250,9 @@ runFailFlow(qaSession, verdict):
 - GREEN：M2 判定块。
 
 ### Step 4 — PhaseOrchestrator handoff park 化 + wake-or-spawn + TURN
-- RED（fake deps）：probePhaseAlive **四态各一测**（Codex R1 #2）——alive → parkPhaseRunner 且 closePhaseRunner 不被调；dead_pin/absent → closePhaseRunner（现行）；indeterminate → failClosed 且**不 close、不 park、不动 TURN**；活体 parked 下段 → assertPhaseWorktreeReady → grantTurn 先于 wakePhaseRunner 且不 dispatch；assertPhaseWorktreeReady dirty/head-mismatch/无 worktree_path → 告警且**不授 TURN 不 wake**（Codex R1 #1）；无下段 → dispatch（现行参数逐字）+ grantTurn；wakePhaseRunner 先清 park 标记（清除失败 warn-only，Codex R1 #7）；capture head 失败 → fail-closed 不变；kill-switch=0 → 全现行路径（哨兵）。
-- GREEN：M1 逻辑 + deps 接口扩展 + plugin 接线（probePhaseAlive/park/wake/assertPhaseWorktreeReady/grantTurn effects）。
+- RED（fake deps）：probePhaseAlive **四态各一测**（Codex R1 #2）——alive → parkPhaseRunner 且 closePhaseRunner 不被调；dead_pin/absent → closePhaseRunner（现行）；indeterminate → failClosed 且**不 close、不 park、不动 TURN**；活体 parked 下段 → assertPhaseWorktreeReady → grantTurn 先于 wakePhaseRunner 且不 dispatch；assertPhaseWorktreeReady dirty/head-mismatch/无 worktree_path → 告警且**不授 TURN 不 wake**（Codex R1 #1）；无下段 → dispatch（现行参数逐字，**caller 不 grant**——授牌在 dispatcher seam）；wakePhaseRunner 先清 park 标记（清除失败 warn-only，Codex R1 #7）；capture head 失败 → fail-closed 不变；kill-switch=0 → 全现行路径（哨兵）。
+- RED（dispatcher seam，Codex R2 #1）：fresh Design start（runs-route 入口形态）在 fake Blueprint/adapter 观察到 prompt 前 TURN epoch 1 已落；handoff/QA-FAIL 两条 spawn 兜底同样 pre-grant before launch；pre-grant 失败 → dispatch fail 且 Blueprint.run 未被调；kill-switch=0 / 非 shareParentBranch → 不授牌（哨兵）；fake runner 启动即查 turn → `yours` 非 no-row。
+- GREEN：M1 逻辑 + M5b dispatcher seam + deps 接口扩展 + plugin 接线（probePhaseAlive/park/wake/assertPhaseWorktreeReady/grantTurn effects）。
 
 ### Step 5 — runFailFlow wake 化 + 轮次账本
 - RED：活体 implement → recordFixRound insert-or-read（同 verdict eventId 重放**返回原轮次**不重计——crash 窗口测试：账本已插、intent/wake 未落，replay 以 round N 续走不算 N+1，Codex R1 #5）+ assertPhaseWorktreeReady + grantTurn + wakePhaseRunner(kind:'fix') + intent patch；死体 → spawn 兜底（现行 dispatch 参数 + 同样记账）；round>cap → refuse 升级（文案含轮数）；intent round 换届语义（新 round 的 verdict 不被旧 intent 吞）。
