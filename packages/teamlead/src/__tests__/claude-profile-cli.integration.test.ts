@@ -70,6 +70,9 @@ const ENV_KEYS = [
 	"FLYWHEEL_CLAUDE_JSON_LOCK",
 	"FAKE_SEC_STATE",
 	"FAKE_SEC_ARGV_LOG",
+	// FLY-871 — the real `use` now runs the freshness guard; inject a stub so the
+	// real seam doesn't make a live OAuth call with dummy pool credentials.
+	"FLYWHEEL_CLAUDE_FRESHNESS_BIN",
 ] as const;
 
 // FLY-865: the target account's display identity, snapshotted in the pool.
@@ -122,6 +125,11 @@ beforeEach(() => {
 	writeFileSync(stubBin, STUB, { mode: 0o755 });
 	writeFileSync(stateFile, SECRET_A); // current machine credential
 	writeFileSync(argvLog, "");
+	// FLY-871: default "always fresh" freshness stub (exit 0) so the REAL `use`
+	// path doesn't make a live OAuth call with the dummy pool credentials. Tests
+	// that exercise the stale path override FLYWHEEL_CLAUDE_FRESHNESS_BIN.
+	const freshBin = join(tmp, "fake-freshness");
+	writeFileSync(freshBin, "#!/usr/bin/env bash\nexit 0\n", { mode: 0o755 });
 	writeStore(
 		{
 			generation: 1,
@@ -150,6 +158,7 @@ beforeEach(() => {
 	process.env.FLYWHEEL_CLAUDE_JSON_LOCK = `${claudeJson}.lock`;
 	process.env.FAKE_SEC_STATE = stateFile;
 	process.env.FAKE_SEC_ARGV_LOG = argvLog;
+	process.env.FLYWHEEL_CLAUDE_FRESHNESS_BIN = freshBin;
 });
 
 afterEach(() => {
@@ -206,5 +215,49 @@ describe("switchAccount ↔ flywheel-claude-profile seam (REAL lock + REAL scrip
 		expect(cj.numStartups).toBe(7); // untouched
 		// No stray identity-write temp files left behind.
 		expect(existsSync(`${claudeJson}.lock`)).toBe(false);
+	});
+
+	// FLY-871 R1/C3 — the freshness guard end-to-end through the REAL seam: a stale
+	// target (real bash `use` exit 30) must reach real Node as TargetStaleError,
+	// flag the account authExpired, and — with no other candidate — resolve to
+	// no_account with the Keychain and .active UNTOUCHED (the incident red line,
+	// proven through the real lock + real script, not a mock).
+	it("a stale target (real freshness exit 30) → no_account, Keychain NOT written, account flagged authExpired", async () => {
+		const staleBin = join(tmp, "fake-freshness-stale");
+		writeFileSync(staleBin, "#!/usr/bin/env bash\nexit 30\n", { mode: 0o755 });
+		process.env.FLYWHEEL_CLAUDE_FRESHNESS_BIN = staleBin;
+
+		const deps = makeClaudeProfileSwitchDeps({ binPath: PROFILE_BIN });
+		const result = await switchAccount(
+			{
+				scope: "5h",
+				observedAccount: "personal",
+				observedGeneration: 1,
+				resetAt: "2026-07-05T02:30:00.000Z",
+				now: new Date("2026-07-04T20:00:00Z"),
+			},
+			{ storePath, lockPath, ...deps },
+		);
+
+		// only candidate (school) was stale → no usable account
+		expect(result.outcome).toBe("no_account");
+		// RED LINE: the fake Keychain was NEVER written (still the previous cred)
+		expect(readFileSync(process.env.FAKE_SEC_STATE as string, "utf-8")).toBe(
+			SECRET_A,
+		);
+		// .active was never committed
+		expect(
+			existsSync(
+				join(process.env.FLYWHEEL_CLAUDE_PROFILES_DIR as string, ".active"),
+			),
+		).toBe(false);
+		// the stale account was flagged authExpired (persisted in-lock)
+		const store = readStore(storePath);
+		expect(store.accounts.find((a) => a.name === "school")?.authExpired).toBe(
+			true,
+		);
+		expect(store.activeAccount).toBe("personal"); // unchanged
+		// lock released cleanly
+		expect(existsSync(lockPath)).toBe(false);
 	});
 });
