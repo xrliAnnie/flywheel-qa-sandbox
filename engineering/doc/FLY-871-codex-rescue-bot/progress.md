@@ -1,9 +1,9 @@
 ---
 issue: FLY-871
-phase: implement
-phaseCursor: 5/5
-updated: 2026-07-05T00:40:10.371Z
-nextStep: commit + push + PR (R1 incident root-cure)
+phase: qa
+phaseCursor: 1/1
+updated: 2026-07-05T02:20:00.000Z
+nextStep: qa-result pass → approve gate
 chunks:
   - id: C1-capture-back
     order: 1
@@ -30,12 +30,17 @@ chunks:
     deps: []
     done: ""
     status: done
+  - id: QA-verify
+    order: 6
+    deps: []
+    done: ""
+    status: done
 pointers: {}
 ---
 
 # FLY-871 progress
-**phase**: implement (5/5)
-**next**: commit + push + PR (R1 incident root-cure)
+**phase**: qa (1/1)
+**next**: qa-result pass → approve gate
 
 ## chunks
 - ✅ C1-capture-back — 
@@ -43,3 +48,4 @@ pointers: {}
 - ✅ C3-exit-codes-candidate-loop — 
 - ✅ sentinel-extension — 
 - ✅ S1-record — 
+- ✅ QA-verify — 代码审阅 + 98 目标测试 + 4814 全量回归(25 个失败均为环境性,与本 PR 无关)+ lint 干净。详见 qa-report.md。PASS。
