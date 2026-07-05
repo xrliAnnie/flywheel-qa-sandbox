@@ -5,8 +5,9 @@ Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-p
 基于: research.md
 版本: v1.58.0（暂定，ship 取空号）
 修订: R2（按 Annie steer 全面换到 🅱️ 单物理 worktree + TURN 轮流写、三段全 writer；
-R1 的「QA 只读 checkout」模型已随 Lead 收回作废。**design_review 提交 hold 中——
-等 Annie 对 exploration.md R2 提案 sanity-check OK 后才触发。**）
+R1 的「QA 只读 checkout」模型已随 Lead 收回作废。**Annie 已拍板 A5（接受 3 进程/issue
+内存代价，/compact+释放 Chrome 缓解保留）——前提齐全，本 plan 进 Codex design review；
+review 过后 Lead 拿图+大白话给 Annie 终 sanity-check。**）
 
 ## 定案（Lead brainstorm gate 已批 A1-A6；worktree 并发 = Annie steer 🅱️）
 
@@ -33,6 +34,47 @@ R1 的「QA 只读 checkout」模型已随 Lead 收回作废。**design_review �
 | merged 收尾 | finalizeDone→completed→关 | 同左 | completed→关 | —（worktree 此刻才删） |
 
 不变量：任一时刻 TURN 只指向一个 phase；worktree 生命周期 = issue 生命周期；每次 TURN 授予/交还都落在既有 pipeline 信号上（零新事件类型）。
+
+### 权威图（单 worktree、TURN 传递、三段轮流写、QA 跑测试、fix 循环、统一收尾）
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Bridge<br/>(PhaseOrchestrator + TURN 表)
+    participant D as Design session
+    participant I as Implement session
+    participant Q as QA session
+    participant W as 单一物理 worktree<br/>(branch B, 全程一个 checkout)
+
+    Note over W: 创建一次；ship 前不删不重建
+    B->>D: dispatch + TURN(epoch 1)
+    D->>W: 写 exploration/research/plan，commit+push
+    D-->>B: complete phase_design_complete（=交还 TURN）
+    Note over D: declare-state park（保活，不退出）
+    B->>I: dispatch（同一 worktree 原地接手）+ TURN(epoch 2)
+    I->>W: TDD 实现，commit+push，开 PR
+    I-->>B: complete needs_review（=交还 TURN）
+    Note over I: park（保活）
+    B->>Q: dispatch（同一 worktree）+ TURN(epoch 3)
+    Q->>W: 跑测试；commit 测试/QA report 到 branch B（QA 是 writer）
+    loop QA↔Implement 修复循环（同两个 session，cap 3 轮）
+        Q-->>B: qa-result fail（findings 已 commit；=交还 TURN）
+        Note over Q: park，等 RE-TEST
+        B->>I: wake（带 QA 摘要）+ TURN(epoch+1)
+        I->>W: 修复（findings 就在本 worktree 分支上），push，重过 Codex review
+        I-->>B: 再次 complete needs_review（=交还 TURN）
+        Note over I: 重新 park
+        B->>Q: RE-TEST wake + TURN(epoch+1)
+        Note over Q,W: worktree 已在新 head——零 fetch/checkout 编舞
+        Q->>W: 复验（跑测试自由读写——它是当值 phase）
+    end
+    Q-->>B: qa-result pass → approve gate（founder）
+    Note over B: Annie 批准 + verified merge（权威=verify-approval，不变）
+    B->>D: closeRunner(finalizeDone) 下线
+    B->>I: closeRunner(finalizeDone) 下线
+    B->>Q: completed 下线
+    B->>W: 此刻才删 worktree；删 TURN 行；archive thread
+```
 
 ## 改动面（7 处 + 测试）
 
