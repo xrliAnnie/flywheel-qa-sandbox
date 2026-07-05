@@ -194,7 +194,7 @@ Lead 附加硬要求:「active 账号绝不从 pool 侧 refresh」= 测试断言
 ## 11. 交付物清单(交付顺序 = Annie ④:R1 单独 PR 先 ship,R2、R3 随后各自 PR)
 
 - [x] **R1 核心(本 PR,incident 根治)**:C1 回捕(bash+测试)/ C2 freshness helper(TS `freshness.ts`+`freshness-cli.ts`+bin wrapper+18 断言测试,全 mock fetch)/ C3 退出码 30/31+候选循环(bash+TS+20 测试)/ sentinel 扩展 / S1 spike 记录(推迟 enable gate,见 §7-S1)。**红线断言齐全**:active 绝不 pool-refresh(0 fetch+pool 零写)/ stale 目标 Keychain 零写(exit 30)/ future-expiresAt+refused→stale / helper 不可用→exit 31 零 Keychain 写 / bypass 防继承(cli scrub + delegated bash 拒认)。
-- [ ] **R1 fast-follow(独立 PR)**:C4 keep-fresh 巡检 —— C4a 活跃账号回捕(随 SELF_HEAL)+ C4b 非活跃 probe-refresh(独立开关 `FLYWHEEL_ACCOUNT_KEEPFRESH` 默认 off,**启用前提 = R3 救援已上线**)。挂 LeadWatchdog `onPollComplete`(24h 节流,无新 timer)。Lead 已确认 R1 落地后立即开 tracked issue(fe514116)。
+- [ ] **R1 fast-follow(独立 PR)**:C4 keep-fresh 巡检 —— C4a 活跃账号回捕(随 SELF_HEAL)+ C4b 非活跃 probe-refresh(独立开关 `FLYWHEEL_ACCOUNT_KEEPFRESH` 默认 off,**启用前提 = R3 救援已上线**)。挂 LeadWatchdog `onPollComplete`(24h 节流,无新 timer)。**Tracked issue = FLY-875**(Lead 已开)。
 - [ ] R2:C5 路由+audit+测试 / C6 launcher+launchd+persona+Discord 角色清单执行(Annie 勾)/ C7 摘要行为 / S2 记录
 - [ ] R3:C8 runner auth scan+fixture(S3)/ C9 playbook+carve-out 文字+server-side 校验+测试
 - [ ] 独立真机 QA §8 全 11 项 → 各段 PR hold 等 batch,不 self-ship
