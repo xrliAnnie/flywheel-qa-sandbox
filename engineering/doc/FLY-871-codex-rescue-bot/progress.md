@@ -1,9 +1,9 @@
 ---
 issue: FLY-871
-phase: implement
+phase: qa
 phaseCursor: 6/6
-updated: 2026-07-06T07:14:25.550Z
-nextStep: commit + PR + flywheel-land
+updated: 2026-07-06T07:38:36.425Z
+nextStep: escalate pre-existing main-wide lint red blocking CI; approve gate
 chunks:
   - id: C1-capture-back
     order: 1
@@ -39,8 +39,8 @@ pointers: {}
 ---
 
 # FLY-871 progress
-**phase**: implement (6/6)
-**next**: commit + PR + flywheel-land
+**phase**: qa (6/6)
+**next**: escalate pre-existing main-wide lint red blocking CI; approve gate
 
 ## chunks
 - ✅ C1-capture-back — 
