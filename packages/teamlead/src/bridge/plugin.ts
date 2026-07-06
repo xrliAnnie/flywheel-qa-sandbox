@@ -166,8 +166,10 @@ import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
 import { createMemoryRouter } from "./memory-route.js";
 import { waitForPaneMarker } from "./pane-readiness.js";
 import {
+	computePhaseLineStates,
 	PhaseOrchestrator,
 	type PhaseSession,
+	renderPhaseStatusLine,
 	type ThreeStageVerdictIntent,
 } from "./phase-orchestrator.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
@@ -4315,6 +4317,27 @@ export async function startBridge(
 						issueId,
 						"post_ship_finalization_claim",
 					) > 0,
+				// FLY-887 (founder-visibility status line): re-render + post-or-edit
+				// the single "🎨design(...)·🔨implement(...)·🧪qa(...)" line. Best-effort
+				// — never lets a Discord hiccup break a real handoff/verdict.
+				refreshPhaseStatusLine: async (issueId) => {
+					try {
+						const sessions = store.getPhaseSessionsForIssue(issueId);
+						if (sessions.length === 0) return;
+						const anySession = store.getSession(sessions[0]!.execution_id);
+						if (!anySession) return;
+						const states = computePhaseLineStates(sessions);
+						const text = renderPhaseStatusLine(states);
+						await phaseQaEffects.refreshPhaseStatusLine({
+							session: anySession,
+							text,
+						});
+					} catch (err) {
+						console.warn(
+							`[phase-status-line] refresh failed for ${issueId}: ${(err as Error).message}`,
+						);
+					}
+				},
 				grantTurn: ({ issueId, execId, phase, projectName }) => {
 					const db = new CommDB(commDbPathForProject(projectName));
 					try {

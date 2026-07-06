@@ -53,6 +53,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const keepAliveEnabled = vi.fn(() => false);
 	const getAlivePhaseSession = vi.fn((): PhaseSession | undefined => undefined);
 	const hasShipFinalizationClaim = vi.fn((): boolean => false);
+	const refreshPhaseStatusLine = vi.fn(async (): Promise<void> => {});
 	const grantTurn = vi.fn(() => {});
 	const deps: PhaseOrchestratorDeps = {
 		startDispatcher: { start },
@@ -71,6 +72,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		keepAliveEnabled,
 		getAlivePhaseSession,
 		hasShipFinalizationClaim,
+		refreshPhaseStatusLine,
 		grantTurn,
 		qaVerdicts,
 		...over,
@@ -90,6 +92,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		keepAliveEnabled,
 		getAlivePhaseSession,
 		hasShipFinalizationClaim,
+		refreshPhaseStatusLine,
 		grantTurn,
 		qaVerdicts,
 		intents,
@@ -187,8 +190,9 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 			resolveThreeStage: () => ({ enabled: true }),
 			listStrandedDesignPhases: () => [],
 			resolveLeadId: () => "eng-lead",
+			refreshPhaseStatusLine: vi.fn(async () => {}),
 			qaVerdicts: makeQaVerdicts().qaVerdicts,
-		};
+		} as PhaseOrchestratorDeps;
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "design", status: "design_done" }),
 		);

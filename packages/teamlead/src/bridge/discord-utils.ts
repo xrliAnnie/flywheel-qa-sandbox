@@ -178,6 +178,53 @@ export async function postDiscordMessageToChannel(
 	return { ok: true, messageIds };
 }
 
+export type EditDiscordResult =
+	| { ok: true }
+	| { ok: false; status?: number; error: string };
+
+/**
+ * FLY-887 (founder-visibility status line): edit an existing Discord message
+ * in place (`PATCH /channels/{id}/messages/{id}`). Single-chunk only — callers
+ * with a short, bounded status line don't need `splitDiscordMessage`. Returns
+ * `status: 404` distinctly (never throws) so a caller can tell "message was
+ * deleted, repost fresh" apart from a transient failure worth leaving alone.
+ */
+export async function editDiscordMessageInChannel(
+	threadId: string,
+	messageId: string,
+	text: string,
+	botToken: string,
+	fetchImpl: typeof fetch = fetch,
+): Promise<EditDiscordResult> {
+	let res: Response;
+	try {
+		res = await fetchImpl(
+			`${DISCORD_API}/channels/${threadId}/messages/${messageId}`,
+			{
+				method: "PATCH",
+				headers: {
+					Authorization: `Bot ${botToken}`,
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({
+					content: text,
+					allowed_mentions: { parse: [] },
+				}),
+			},
+		);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		return { ok: false, error: `Discord PATCH failed: ${msg}` };
+	}
+	if (res.ok) return { ok: true };
+	const detail = await res.text().catch(() => "");
+	return {
+		ok: false,
+		status: res.status,
+		error: `Discord ${res.status}: ${detail.slice(0, 200)}`,
+	};
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // FLY-404: sendTypingToChannel — trigger the Discord "typing…" indicator.
 // ──────────────────────────────────────────────────────────────────────

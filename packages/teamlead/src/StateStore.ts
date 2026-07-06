@@ -1272,7 +1272,9 @@ export class StateStore {
 				archived_at TEXT,
 				attach_pin_message_id TEXT,
 				attach_pin_command TEXT,
-				attach_pin_pinned_at TEXT
+				attach_pin_pinned_at TEXT,
+				phase_status_message_id TEXT,
+				phase_status_text TEXT
 			)
 		`);
 		this.db.run(
@@ -1534,6 +1536,7 @@ export class StateStore {
 		// FLY-369: archived_at on chat_threads (archive-on-Done)
 		this.migrateChatThreadsArchivedColumn();
 		this.migrateChatThreadsAttachPinColumns();
+		this.migrateChatThreadsPhaseStatusLineColumns();
 		// FLY-643: qa_issue_* columns on auto_qa_record (separate QA issue)
 		this.migrateAutoQaRecordQaIssueColumns();
 	}
@@ -4095,6 +4098,56 @@ export class StateStore {
 		this.save();
 	}
 
+	/**
+	 * FLY-887 (founder-visibility status line): the single, in-place-edited
+	 * "🎨design(...)·🔨implement(...)·🧪qa(...)" message on the issue's MAIN
+	 * chat thread (never the per-role `phase_chat_threads` — the status line
+	 * is issue-wide, not phase-scoped). Undefined = no message posted yet.
+	 */
+	getPhaseStatusLine(
+		issueId: string,
+		channelId: string,
+	): { messageId: string; text: string } | undefined {
+		const stmt = this.db.prepare(
+			"SELECT phase_status_message_id, phase_status_text FROM chat_threads WHERE issue_id = ? AND channel_id = ?",
+		);
+		stmt.bind([issueId, channelId]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			const messageId = (row.phase_status_message_id as string) ?? null;
+			if (!messageId) return undefined;
+			return { messageId, text: (row.phase_status_text as string) ?? "" };
+		}
+		stmt.free();
+		return undefined;
+	}
+
+	setPhaseStatusLine(
+		issueId: string,
+		channelId: string,
+		messageId: string,
+		text: string,
+	): void {
+		this.db.run(
+			`UPDATE chat_threads
+			 SET phase_status_message_id = ?, phase_status_text = ?
+			 WHERE issue_id = ? AND channel_id = ?`,
+			[messageId, text, issueId, channelId],
+		);
+		this.save();
+	}
+
+	clearPhaseStatusLine(issueId: string, channelId: string): void {
+		this.db.run(
+			`UPDATE chat_threads
+			 SET phase_status_message_id = NULL, phase_status_text = NULL
+			 WHERE issue_id = ? AND channel_id = ?`,
+			[issueId, channelId],
+		);
+		this.save();
+	}
+
 	// ── FLY-368: alert_threads (unified-alert per-error thread, active-mapping) ──
 
 	/**
@@ -5061,6 +5114,31 @@ export class StateStore {
 			if (!columns.includes("attach_pin_pinned_at")) {
 				this.db.run(
 					"ALTER TABLE chat_threads ADD COLUMN attach_pin_pinned_at TEXT",
+				);
+			}
+		} catch {
+			// Table may not exist yet (first run) — CREATE TABLE will handle it
+		}
+	}
+
+	/**
+	 * FLY-887 (founder-visibility status line): add the single-updatable
+	 * phase-status-line message columns to chat_threads on legacy DBs
+	 * (idempotent). Mirrors migrateChatThreadsAttachPinColumns.
+	 */
+	private migrateChatThreadsPhaseStatusLineColumns(): void {
+		try {
+			const info = this.db.exec("PRAGMA table_info(chat_threads)");
+			if (info.length === 0) return;
+			const columns = info[0]!.values.map((row) => row[1] as string);
+			if (!columns.includes("phase_status_message_id")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN phase_status_message_id TEXT",
+				);
+			}
+			if (!columns.includes("phase_status_text")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN phase_status_text TEXT",
 				);
 			}
 		} catch {

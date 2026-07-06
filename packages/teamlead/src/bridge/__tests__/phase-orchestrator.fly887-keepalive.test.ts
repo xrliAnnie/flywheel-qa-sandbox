@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	computePhaseLineStates,
 	type PhaseLiveness,
 	PhaseOrchestrator,
 	type PhaseOrchestratorDeps,
 	type PhaseSession,
+	renderPhaseStatusLine,
 	type ThreeStageVerdictIntent,
 } from "../phase-orchestrator.js";
 
@@ -55,6 +57,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const assertPhaseWorktreeReady = vi.fn(async () => ({ ok: true }));
 	const getAlivePhaseSession = vi.fn((): PhaseSession | undefined => undefined);
 	const hasShipFinalizationClaim = vi.fn((): boolean => false);
+	const refreshPhaseStatusLine = vi.fn(async (): Promise<void> => {});
 	const grantTurn = vi.fn(() => {});
 	const { qaVerdicts, intents, setSessionRow } = makeQaVerdicts();
 	const deps: PhaseOrchestratorDeps = {
@@ -74,6 +77,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		keepAliveEnabled: () => true,
 		getAlivePhaseSession,
 		hasShipFinalizationClaim,
+		refreshPhaseStatusLine,
 		grantTurn,
 		qaVerdicts,
 		...over,
@@ -90,6 +94,7 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		assertPhaseWorktreeReady,
 		getAlivePhaseSession,
 		hasShipFinalizationClaim,
+		refreshPhaseStatusLine,
 		grantTurn,
 		qaVerdicts,
 		intents,
@@ -529,5 +534,55 @@ describe("FLY-887 QA FINDING: reconcileOnStartup re-fires design→implement on 
 		expect(h.start.mock.calls[0]![0]).toMatchObject({
 			sessionRole: "implement",
 		});
+	});
+});
+
+describe("FLY-887 founder-visibility: computePhaseLineStates + renderPhaseStatusLine", () => {
+	it("no sessions at all → all three phases pending", () => {
+		expect(computePhaseLineStates([])).toEqual({
+			design: "pending",
+			implement: "pending",
+			qa: "pending",
+		});
+	});
+
+	it("running → active; a post-boundary status → parked; completed/failed → done", () => {
+		const states = computePhaseLineStates([
+			{ chat_thread_role: "design", status: "design_done" },
+			{ chat_thread_role: "implement", status: "running" },
+			{ chat_thread_role: "qa", status: "failed" },
+		]);
+		expect(states).toEqual({
+			design: "parked",
+			implement: "active",
+			qa: "done",
+		});
+	});
+
+	it("approved_to_ship (post-QA-PASS ship gate) reads as parked, not active", () => {
+		const states = computePhaseLineStates([
+			{ chat_thread_role: "implement", status: "approved_to_ship" },
+		]);
+		expect(states.implement).toBe("parked");
+	});
+
+	it("keeps the FIRST (most-recent, per getPhaseSessionsForIssue's ORDER BY) row per role", () => {
+		// getPhaseSessionsForIssue orders last_activity_at DESC, so the caller's
+		// array already has the freshest row first per role — a second, older
+		// row for the same role (e.g. a stale duplicate) must not override it.
+		const states = computePhaseLineStates([
+			{ chat_thread_role: "qa", status: "running" },
+			{ chat_thread_role: "qa", status: "completed" }, // older, ignored
+		]);
+		expect(states.qa).toBe("active");
+	});
+
+	it("renders the exact founder-specified format: emoji+phase(state) joined by ' · '", () => {
+		const line = renderPhaseStatusLine({
+			design: "parked",
+			implement: "active",
+			qa: "pending",
+		});
+		expect(line).toBe("🎨design(parked)·🔨implement(active)·🧪qa(pending)");
 	});
 });
