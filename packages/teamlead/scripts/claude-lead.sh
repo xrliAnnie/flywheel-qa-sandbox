@@ -2222,6 +2222,33 @@ if [ -n "${FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:-}" ] && [ -n "${DISCORD_BOT_TOK
   fi
 fi
 
+# ── FLY-898: fleet-wide core-room reply discipline (non-CoS Claude lead) ─────
+# In a project's core room (generalChannel) a NON-CoS lead should hear a message
+# only when genuinely addressed; a no-@ message goes to the CoS alone. Here we
+# resolve whether THIS lead is such a non-CoS lead (resolveCoreRoomGate over the
+# SAME projects.json the Bridge/fleet script use) and, if so, idempotently patch
+# its access.json core group to requireMention:true (+ mentionPatterns:[] when
+# the fork plugin supports per-group patterns). CoS / core-less / core-no-CoS
+# (joycon) → gateNonCoS false → no-op (byte-compat). Best-effort (`|| true`): a
+# provisioning failure must never abort a Lead launch. Runs after the FLY-282
+# access.json seeding (access.json exists by now) and before the supervisor loop.
+if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
+  _cg_cli="${SCRIPT_DIR}/../dist/core-room-gate-cli.js"
+  _cg_apply="${SCRIPT_DIR}/apply-core-room-mention-gate.sh"
+  if [ -f "$_cg_cli" ] && [ -x "$_cg_apply" ] && command -v jq >/dev/null 2>&1; then
+    _cg_json="$(node "$_cg_cli" --lead-id "$LEAD_ID" --project "$PROJECT_NAME" 2>/dev/null || true)"
+    _cg_gate="$(printf '%s' "$_cg_json" | jq -r '.gateNonCoS // false' 2>/dev/null || echo false)"
+    _cg_core="$(printf '%s' "$_cg_json" | jq -r '.coreChannelId // empty' 2>/dev/null || true)"
+    if [ "$_cg_gate" = "true" ] && [ -n "$_cg_core" ]; then
+      log "FLY-898: applying core-room mention gate for ${LEAD_ID} (core ${_cg_core})"
+      "$_cg_apply" --access-file "${DISCORD_STATE_DIR}/access.json" \
+        --channel-id "$_cg_core" --id-only || true
+    fi
+  else
+    log "FLY-898: core-room-gate CLI/helper not built or jq missing — skip"
+  fi
+fi
+
 # GEO-285: Crash recovery with exponential backoff.
 # - Fresh start: generate UUID → bootstrap → save → claude --session-id
 # - Resume: read session ID → claude --resume (no bootstrap)
