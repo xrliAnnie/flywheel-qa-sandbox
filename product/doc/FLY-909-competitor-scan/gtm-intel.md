@@ -59,16 +59,19 @@ Annie 给的特征:desktop App、~18 人 / ~$9M 融资、slogan「数万家零�
 
 各家「手机能不能用/验收」实况:
 
-| 竞品 | 可达面 | 手机能验收吗 | 备注 |
+> **⚠️ 精确修正(Annie 直接问了这个,必须说准)**:我第一版说「Matrix 桌面 only、手机完全没法验收」**不够准**。查证:**flowith(母公司)确实有 iOS app**(App Store,可在手机上 monitor / review Agent Neo 的产出、管理 session)+ web(flowith.io)+ 桌面(Mac/Windows)。**但 Matrix 这个具体产品**(0 人公司 runner)是 **macOS 桌面 app 起家**(matrix.build,Apple Silicon;评论区「要开盖才能工作」);Matrix 的 0 人公司**能不能从那个 iOS app 全程验收 = 未确认**。
+
+| 产品 | 可达面 | 手机能验收吗 | 备注 |
 |---|---|---|---|
-| **Matrix** | **macOS 桌面 app ONLY** | **❌ 不能** | Apple Silicon 限定;评论区有人抱怨「要开盖才能工作」。**这就是 Annie 抓到的弱点** |
-| Lovable / Base44 / v0 / Bolt | web | ⚠️ 勉强 | 浏览器手机能开,但在手机上 prompt/改 app 体验差 |
+| **Matrix**(本体) | **macOS 桌面 app 起家** | **⚠️ 未确认** | Apple Silicon 限定;「要开盖才能工作」。母平台 flowith 有 iOS app,但那是 Agent Neo/canvas 的**监看**,不等于 Matrix 0 人公司能手机全程验收 |
+| flowith(母平台) | web + iOS app + 桌面(Mac/Win) | ⚠️ 部分(监看/review 产出) | iOS app 是**companion 监看**,不是完整指挥面 |
+| Lovable / Base44 / v0 / Bolt | web | ⚠️ 勉强 | 浏览器手机能开,但手机上 prompt/改 app 体验差 |
 | Replit | web(+历史 mobile) | ⚠️ 一般 | 云 IDE 手机端受限 |
 | Devin | web + **Slack** | ✅ 可(Slack 手机) | Slack 派任务/看进度手机可达 |
 | Hermes Agent | 自托管 daemon + 接 16+ 消息平台 | ✅ 可(但要先会自托管) | 面向技术人 |
-| **🎯 Flywheel** | **Discord(桌面 + 手机原生)** | ✅✅ **一流** | founder 只管两头,**手机上就能给方向 + 验收 PR** |
+| **🎯 Flywheel** | **Discord(桌面 + 手机原生)** | ✅✅ **一流** | 主界面本就是手机原生 chat,**给方向 + 验收 + 跟 Lead 对话全在手机同一个 IM 里** |
 
-**结论(喂定位)**:「**在手机上、在你已经在用的 IM 里,随时给方向 + 验收**」是我们相对 Matrix(桌面绑定)的**具体、可感的差异点**,建议写进 FLY-908 产品形态。⚠️ 注意:Devin/Hermes 靠 Slack/消息平台也部分解了这个痛,所以「手机可达」本身不独有;**真正独有的是「非技术 + 手机 IM + 一整个团队 + 工程级验收」的组合**。
+**结论(喂定位,精确版)**:差异**不是**「他们没手机、我们有」——他们有 iOS app。真差异是**形态层级**:他们的手机端是**桌面工具外挂的「监看产出」companion app**;我们的**主界面本就是手机原生 chat(Discord)**——你在**已经在用的 IM** 里**全程指挥 + 验收 + 对话**,不是去一个新 app 里「看看进度」。⚠️ 「手机可达」本身不独有(Devin 靠 Slack、flowith 有 iOS 监看);**真正独有 = 「非技术 + 手机 IM 主界面 + 一整个团队 + 工程级验收」的组合**。
 
 ---
 
