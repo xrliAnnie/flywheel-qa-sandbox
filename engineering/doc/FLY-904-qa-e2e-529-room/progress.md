@@ -1,13 +1,13 @@
 ---
 issue: FLY-904
 phase: design
-phaseCursor: 5/6
-updated: 2026-07-06T18:16:32.826Z
-nextStep: design_review 触发 + complete phase_design_complete + park
+phaseCursor: 6/6
+updated: 2026-07-06T18:28:32.388Z
+nextStep: complete phase_design_complete + park(设计阶段完结,等 implement 接手 TURN)
 chunks: []
 pointers: {}
 ---
 
 # FLY-904 progress
-**phase**: design (5/6)
-**next**: design_review 触发 + complete phase_design_complete + park
+**phase**: design (6/6)
+**next**: complete phase_design_complete + park(设计阶段完结,等 implement 接手 TURN)
