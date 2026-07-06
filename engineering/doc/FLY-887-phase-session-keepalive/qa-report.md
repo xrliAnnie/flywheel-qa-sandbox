@@ -1,8 +1,81 @@
 # FLY-887 三段式 phase-session 并存保活 — QA 报告
 
 Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-phase-session-并存保活-designimplementqa-不跑完就关qaimplement)
-日期: 2026-07-05 / 2026-07-06(round 2 + round 3 + round 4)
+日期: 2026-07-05 / 2026-07-06(round 2 + round 3 + round 4 + round 5)
 基于: plan.md
+
+## Round 5（FLY-902 独立 QA session，验收 R2：merge 收敛 + per-phase 模型零 Sonnet + channel 门控）：PASS
+
+**独立性声明**：本轮由 FLY-902（独立 Linear issue）的 QA session 执行，与 R1-R4 的 implement
+session（同一个 Claude Opus 4.8 self-QA）不是同一个 session。为避免碰三段式自己的共享 worktree
+（TURN 机制下不该被无关 session 触碰），本轮在一个独立的 detached-HEAD git worktree
+（`git worktree add --detach <path> 7daa635b`）里验收，全程**零代码改动**，只读+跑测试+审计。
+
+### 验收范围对照（issue 原文 5 条）
+
+**1. per-phase model 零 Sonnet + label-bypass 矩阵**：PASS。
+`packages/config/src/three-stage-phases.ts` 的 `DEFAULT_PHASE_TIER` 确认为
+`{design: heavy, implement: heavy, qa: medium}` → `{claude-fable-5, claude-fable-5,
+claude-opus-4-8}`，`zero-Sonnet invariant` 单测存在且绿。核对
+`packages/teamlead/src/bridge/role-adapter-resolver.ts` 确认 label 层（Task override）确实排在
+`dispatchModel` 之前——这正是「必须 bypass label 层」这条设计判断成立的前提。四路
+`ignoreRunnerLabelSelection: true`（入场 `runs-route.ts` / 交接+修复 spawn `phase-orchestrator.ts`
+三处 / retry `actions.ts`+`retry-dispatcher.ts`+`run-dispatcher.ts`）全部核对到位。读了
+`run-dispatcher.fly887-label-bypass.test.ts`：真的调用生产函数 `buildRunnerSpawnFields`，断言
+`sonnet`/`fable-1m`/`codex`/`agy`/`kimi` label 全部逃不出 phase 表，外加一条「同样的 label 不带
+phase seam 时行为不变」的字节兼容哨兵——不是形式主义占位测试。`actions-retry-route.test.ts` 的
+retry 矩阵（失败 phase 行 / 存量 sorter-pin 行 / 无持久模型行 / main 行字节兼容）同样是真实调用。
+
+**2. channel 门控**：PASS。`three-stage-policy.test.ts` 覆盖 缺失/命中/未命中/不可解析/空数组/
+kill-switch 优先级/入场路径 全部场景；`ConfigLoader.test.ts` 覆盖合法/空数组/缺失/非数组/裸数字/
+空字符串。生产 `.flywheel/config.yaml` 里 `three_stage_channels: ["1516209714097291335"]` 核对
+`~/.flywheel/projects.json` 确认就是 `flywheel-eng-lead`（Tadashi）自己的 `chatChannel`——即本
+issue 自己的 dispatch 路径逻辑自洽。
+
+**3. merge 收敛（887/892 语义共存）**：PASS。`git log` 确认 `9040ae4c` 是真正的 `git merge`
+（非 rebase/squash），R1 的两个 reconcile 修复 commit（`0d51ea3c`、`19ead1d6`）在 PR head 历史里
+可达——之前验过的 SHA 链没被 force-push 冲掉。`StateStore.getPhaseSessionsForIssue`（887 语义，
+全 status 全行，供 keep-alive wake 目标 + ship 收尾）与 `getLatestPhaseSessionsForIssue`（892
+改名后语义，每 role 最新一行，供 pipeline header）并存，调用点各自独立
+（`event-route.ts` 用后者、keep-alive/finalization 代码用前者），未见交叉误用。
+
+**4. R1 keep-alive 回归抽查**（非重跑完整 529 Room E2E——Lead 已确认这轮不需要）：PASS。
+`phase-orchestrator.fly887-keepalive` / `StateStore.fly887-keepalive` /
+`Blueprint.fly887-worktree-takeover` / `Blueprint.fly887-keepalive-prompt` /
+`post-ship-finalization.fly887` / `run-dispatcher-fly887-turn-seam` 全部在本轮全量测试里通过，
+不在下面任何一个失败列表里。
+
+**5. 全仓测试 + lint**：PASS，细节见下。
+
+### 全仓测试结果
+
+在独立 worktree 里 `pnpm build`（16 个包全绿，0 TS 报错）+ 逐包 `pnpm test`（约 8300+ 用例）。
+除以下几类**环境性失败**外全绿，且每一类都在**未改动的 `origin/main`、同一台机器 / 同一个
+Runner 环境**里独立复现，证明与本 PR 的 diff 无关（而不是照抄 PR 描述里的自述）：
+
+| 失败 | 数量 | 根因 | 是否复现于 main |
+|---|---|---|---|
+| `flywheel-cli/resolve-project.test.ts` | 1 | 本环境 `TMPDIR` 嵌在 `~/.flywheel` 之下，测试断言"walk up 找不到 `.flywheel/`"失效 | ✅ 复现 |
+| `teamlead/codex-lead-runtime.test.ts` | 22 | 同上：`FLYWHEEL_CODEX_LEAD_WORKSPACE` 重叠检查撞上本环境的 runner-state tmp 路径 | ✅ 复现 |
+| `teamlead/LeadAlertNotifier.test.ts` | 1 | 本 Runner `process.env` 里有真实 Discord bot token，泄进期望 mock token 的断言 | ✅ 复现 |
+| `teamlead/createLeadRuntime-preflight.test.ts` | 2 | 同类环境问题 | ✅ 复现 |
+| `teamlead/fly247-bash-suites.test.ts` | 1 | tmux 高负载超时（`vitest-worker onTaskUpdate timeout`） | ✅ 复现 |
+| `flywheel-comm/await-codex-gate.test.ts`（STALE reviewedHeadSha） | 1 | 硬编码 5s 超时，在我自己并发跑测试造成的机器高负载下超时 | 单独重跑在 main 和 PR head 上都秒过（非复现，确认纯 flaky） |
+
+以上 27 处环境性失败 + 1 处并发负载 flaky，**零处可归因于 FLY-887 R2 的代码改动**。
+
+### Lint
+
+PR head（`7daa635b`）`pnpm lint` **exit 0**：0 error，14 个 warning，且这 14 个 warning 全部落在
+本 PR **完全没有改动过**的文件里（`DirectEventSink.test.ts` / `heartbeat-quiet-suppression.test.ts`
+/ `runner-idle-watchdog-quiet.test.ts` / `scripts/qa-fly-863-codex-hold-signal-e2e.mjs`，用
+`git diff origin/main...origin/flywheel-FLY-887 -- <这些文件>` 核实为空 diff）。满足「本 PR 触及
+文件 lint clean」。
+
+### 结论：PASS
+
+FLY-902 issue 原文列出的 5 条验收范围全部独立验证通过，本 session 未修改任何实现代码。建议 Annie
+在 ship gate 批准，Lead 作为 executor 执行 merge。
 
 ## Round 4（Annie 加的功能：phase-session 可观测状态行）：PASS + 修了一个真发现
 
