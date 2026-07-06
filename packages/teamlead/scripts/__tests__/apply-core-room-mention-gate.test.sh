@@ -40,19 +40,20 @@ log_test() { echo "[TEST] $*"; }
 log_pass() { echo "  ✓ $*"; PASSED=$((PASSED + 1)); }
 log_fail() { echo "  ✗ $*" >&2; FAILED=$((FAILED + 1)); ERRORS="${ERRORS}\n  - $*"; }
 
-# server.ts fixtures: one WITH the per-group marker (the fork calls
-# resolveGroupMentionPatterns(policy, access) at the gate — Codex R1 MEDIUM: the
-# marker must match the CALL, not a mere type field), one WITHOUT. The
-# "half-baked" fixture proves a type field / comment alone is NOT enough.
+# server.ts fixtures. The preflight matches an EXPLICIT support SENTINEL (Codex R2
+# MEDIUM) — not a code shape — so the marker cannot false-positive on a helper
+# DEFINITION or a half-finished impl. SUPPORTED carries the sentinel; the others
+# (old / half-baked-with-a-definition-but-no-gate-routing) do NOT.
+SENTINEL='FLY-898-PER-GROUP-MENTION-PATTERNS-ACTIVE'
 SUPPORTED_SRV="$TMP_DIR/server-supported.ts"
-printf 'const m = await isMentioned(msg, resolveGroupMentionPatterns(policy, access))\n' > "$SUPPORTED_SRV"
+printf '// %s\nconst m = await isMentioned(msg, resolveGroupMentionPatterns(policy, access))\n' "$SENTINEL" > "$SUPPORTED_SRV"
 UNSUPPORTED_SRV="$TMP_DIR/server-old.ts"
 printf 'const m = await isMentioned(msg, access.mentionPatterns)\n' > "$UNSUPPORTED_SRV"
-# A plugin that DECLARES the type field but does NOT route the gate through it must
-# also be treated as unsupported (a bare `mentionPatterns?` field would silently be
-# ignored by the old gate) — refusing id-only here is the whole point of the marker.
+# The half-baked fixture DEFINES resolveGroupMentionPatterns AND declares the type
+# field, but the gate still calls the GLOBAL patterns — no sentinel → unsupported.
+# This is the exact false-positive a code-shape grep would have missed.
 HALFBAKED_SRV="$TMP_DIR/server-halfbaked.ts"
-printf 'type GroupPolicy = { requireMention: boolean; mentionPatterns?: string[] }\nconst m = await isMentioned(msg, access.mentionPatterns)\n' > "$HALFBAKED_SRV"
+printf 'type GroupPolicy = { requireMention: boolean; mentionPatterns?: string[] }\nfunction resolveGroupMentionPatterns(policy, access) { return access.mentionPatterns }\nconst m = await isMentioned(msg, access.mentionPatterns)\n' > "$HALFBAKED_SRV"
 
 # A representative non-CoS lead access.json: core group requireMention:false.
 make_access() {

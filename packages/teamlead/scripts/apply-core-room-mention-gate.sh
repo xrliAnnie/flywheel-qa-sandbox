@@ -47,14 +47,15 @@ USAGE
 # The RUNTIME path Claude Code executes the MCP server from is the marketplace
 # dir. Overridable for tests.
 PLUGIN_SERVER="${FLYWHEEL_DISCORD_PLUGIN_SERVER:-$HOME/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/discord/server.ts}"
-# The marker proving the RUNTIME actually ROUTES the gate through per-group patterns
-# (Codex R1 MEDIUM): the fork calls `resolveGroupMentionPatterns(policy, access)` at
-# BOTH isMentioned call sites in the gate. Matching the CALL (not just a type field
-# or a comment) proves per-group resolution is wired in — a mere `mentionPatterns?`
-# type field or a half-finished impl would NOT match. Absent → preflight fails →
-# we refuse to write the id-only field (requireMention-only + warn), never a silent
-# half-fix.
-PER_GROUP_MARKER='resolveGroupMentionPatterns(policy'
+# The support marker proving the RUNTIME plugin genuinely gates the core room on
+# per-group patterns. An EXPLICIT sentinel (Codex R2 MEDIUM) — not a code-shape grep:
+# a shape like `resolveGroupMentionPatterns(policy` could match a helper DEFINITION or
+# a half-finished impl while `isMentioned` still used the global patterns. The fork
+# carries this exact token at the gate ONLY while both isMentioned call sites route
+# through `resolveGroupMentionPatterns`, so it cannot false-positive. Absent → preflight
+# fails → we refuse to write the id-only field (requireMention-only + warn), never a
+# silent half-fix.
+PER_GROUP_MARKER='FLY-898-PER-GROUP-MENTION-PATTERNS-ACTIVE'
 
 # Channels dir where each lead's access.json lives (claude-lead.sh DISCORD_STATE_DIR).
 CHANNELS_DIR="${FLYWHEEL_CHANNELS_DIR:-$HOME/.claude/channels}"
