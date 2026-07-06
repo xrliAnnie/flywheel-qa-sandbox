@@ -308,9 +308,10 @@ turn 自查强制后，**新 spawn 的 phase session 必须在 runner 动手前�
 # R2 实施计划 — rebase 收敛 + per-phase model 策略 + channel 门控
 
 Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-phase-session-并存保活-designimplementqa-不跑完就关qaimplement)
-日期: 2026-07-05
+日期: 2026-07-05(R2 resume 修订 2026-07-06)
 基于: 同文件夹 exploration.md R2 节、research.md R2 节
-状态: R1(上文)已实现+QA 4/4 PASS,本节为 Lead 指令 34522575 的追加 scope;brainstorm gate 已获 Lead 批准(Path A:本 session 做完三件→推 PR #458)
+状态: R1(上文)已实现+QA 4/4 PASS,本节为 Lead 指令 34522575 的追加 scope;brainstorm gate 已获 Lead 批准(Path A:本 session 做完三件→推 PR #458)。
+resume 注记(2026-07-06,前 runner 在 R2 design review 中被 restart):Lead 在 resume brainstorm gate **再次确认 Path A**——本 session 直接做完三件、不走 phase_design_complete 交接。关键理由:887 修的就是三段式 per-phase model 路由;若走三段式 handoff,Implement/QA phase 会用**还没修**的路由 spawn(sorter pin light 时落 Sonnet 的 bug),等于 887 自己的实现可能跑在 Sonnet 上、违反 Annie 零-Sonnet 政策。Path A 全程 Fable。做完推 PR #458 → hold 在 founder ship gate,绝不自 ship。
 
 ## 目标(验收标准)
 

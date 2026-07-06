@@ -265,3 +265,5 @@ server-side 可信事实链:dispatch body 带 leadId → validateChatThreadParam
 - B(严格三段式):本 session 只出 docs → phase_design_complete → implement phase(新 session)接手实现。注意鸡生蛋:按现表 implement phase 会以 Opus spawn,而策略改动本身就是这单活。
 
 在 brainstorm gate 里让 Lead 拍板。
+
+**已定案(2026-07-05 初次 gate + 2026-07-06 resume gate 二次确认):Path A。** Lead 理由:走三段式 handoff 的话 Implement/QA phase 会用还没修的 model 路由 spawn(sorter pin light 时落 Sonnet 的 bug),887 自己的实现可能跑在 Sonnet 上、违反零-Sonnet;Path A 全程 Fable。本 session 做完三件 → 推 PR #458 → hold 在 founder ship gate。
