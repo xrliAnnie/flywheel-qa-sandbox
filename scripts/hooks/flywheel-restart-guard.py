@@ -85,7 +85,10 @@ PROC_IDENT_RE = re.compile(
 # managers (pnpm/npm/yarn/pnpx) are here too (Codex R5): `pnpm tsx …` /
 # `pnpm exec tsx …` / `npm exec tsx …` are reflexive one-line relaunch forms.
 # `pnpm build` / `npm run lint` etc. never carry run-bridge, so they don't hit.
-EXECUTORS = {"nohup", "npx", "tsx", "node", "bun", "deno", "pnpm", "pnpx", "npm", "yarn"}
+EXECUTORS = {
+    "nohup", "npx", "tsx", "node", "bun", "bunx", "deno",
+    "pnpm", "pnpx", "npm", "yarn",
+}
 SHELLS = {"bash", "sh", "zsh"}
 RUN_BRIDGE_RE = re.compile(r"run-bridge", re.I)
 
@@ -151,6 +154,9 @@ _WRAPPERS = {
     "sudo", "env", "nohup",
     "command", "exec", "time", "nice", "arch",
     "caffeinate", "timeout", "stdbuf", "setsid", "ionice", "chrt",
+    # corepack is the package-manager shim (`corepack pnpm tsx …`); the repo
+    # declares packageManager pnpm@… via corepack (Codex R6).
+    "corepack",
 }
 # -P is macOS env's alternate-PATH flag (`env -P /usr/bin node …`) — without
 # consuming its value, `/usr/bin` would be mistaken for the first token and the

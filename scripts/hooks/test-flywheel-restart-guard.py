@@ -184,6 +184,12 @@ MUST_BLOCK = [
     ("yarn tsx scripts/run-bridge.ts", "P3 yarn tsx"),
     ("pnpx tsx scripts/run-bridge.ts", "P3 pnpx tsx"),
     ("sudo pnpm exec tsx scripts/run-bridge.ts", "P3 sudo pnpm exec tsx"),
+    # Codex R6 MEDIUM (final closed list): bunx + corepack shim.
+    ("bunx tsx scripts/run-bridge.ts", "P3 bunx"),
+    ("corepack pnpm tsx scripts/run-bridge.ts", "P3 corepack pnpm tsx"),
+    ("corepack pnpm exec tsx scripts/run-bridge.ts", "P3 corepack pnpm exec tsx"),
+    ("corepack yarn tsx scripts/run-bridge.ts", "P3 corepack yarn tsx"),
+    ("corepack yarn dlx tsx scripts/run-bridge.ts", "P3 corepack yarn dlx tsx"),
     # P3 — shell -c payload recursion (one level), incl. merged flag clusters
     ('bash -c "nohup npx tsx scripts/run-bridge.ts"', "P3 bash -c payload"),
     ("sh -c 'npx tsx scripts/run-bridge.ts'", "P3 sh -c payload"),
@@ -234,6 +240,8 @@ MUST_PASS = [
     ("npm run lint", "npm run lint"),
     ("pnpm test:packages:run", "pnpm test script"),
     ("pnpm install --frozen-lockfile", "pnpm install"),
+    ("corepack pnpm build", "corepack pnpm build (no run-bridge)"),
+    ("corepack enable", "corepack enable"),
     ("sudo launchctl print gui/501/com.flywheel.bridge", "sudo read-only launchctl"),
 ]
 
