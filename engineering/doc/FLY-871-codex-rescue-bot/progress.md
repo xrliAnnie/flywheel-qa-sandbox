@@ -1,9 +1,9 @@
 ---
 issue: FLY-871
 phase: implement
-phaseCursor: 2/6
-updated: 2026-07-06T07:07:15.843Z
-nextStep: W1 verify-windowed-lead.sh + test
+phaseCursor: 4/6
+updated: 2026-07-06T07:11:24.603Z
+nextStep: W3 C6 runbook additions
 chunks:
   - id: C1-capture-back
     order: 1
@@ -39,8 +39,8 @@ pointers: {}
 ---
 
 # FLY-871 progress
-**phase**: implement (2/6)
-**next**: W1 verify-windowed-lead.sh + test
+**phase**: implement (4/6)
+**next**: W3 C6 runbook additions
 
 ## chunks
 - ✅ C1-capture-back — 
