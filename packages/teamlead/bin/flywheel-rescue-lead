@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# FLY-871 R3/C9 — thin launcher for the flywheel-rescue-lead CLI (the Codex Infra
+# Bot's lead-rescue consumer: POST /api/rescue → validate pending alert + kickstart
+# + resume-menu unstick, server-side). Args: --project <p> --lead <id> [--alert-id <a>].
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec node "${here}/../dist/account-heal/rescue-lead-cli.js" "$@"

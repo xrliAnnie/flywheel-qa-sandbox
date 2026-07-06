@@ -1,0 +1,10 @@
+⏺ Spawning the triage runner for GEO-402.
+
+  ⎿  API Error (429): rate limit exceeded — too many requests. Reset in 38m.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────── @cos-lead ──
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡cos-lead | ~/.flywheel/lead-workspace/cos-lead | ctx 22% ░░░░░░░░░░
+  5h ░░░░░░░░░░ 98% reset today 21:30  |  7d ░░░░░░░░░░ 71% reset Mon 09:00
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

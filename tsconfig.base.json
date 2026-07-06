@@ -1,0 +1,32 @@
+{
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"lib": ["ES2022"],
+		"moduleResolution": "node",
+		"esModuleInterop": true,
+		"allowSyntheticDefaultImports": true,
+		"strict": true,
+		"skipLibCheck": true,
+		"forceConsistentCasingInFileNames": true,
+		"resolveJsonModule": true,
+		"declaration": true,
+		"declarationMap": true,
+		"sourceMap": true,
+		"noUnusedLocals": true,
+		"noUnusedParameters": true,
+		"noImplicitReturns": true,
+		"noFallthroughCasesInSwitch": true,
+		"noUncheckedIndexedAccess": true,
+		"baseUrl": ".",
+		"paths": {
+			"flywheel-core": ["packages/core"],
+			"flywheel-edge-worker": ["packages/edge-worker"],
+			"flywheel-claude-runner": ["packages/claude-runner"],
+			"flywheel-linear-event-transport": ["packages/linear-event-transport"],
+			"flywheel-github-event-transport": ["packages/github-event-transport"],
+			"flywheel-slack-event-transport": ["packages/slack-event-transport"]
+		}
+	},
+	"exclude": ["node_modules", "dist", "build"]
+}

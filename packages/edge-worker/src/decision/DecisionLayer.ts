@@ -1,0 +1,185 @@
+import type { DecisionResult, ExecutionContext } from "flywheel-core";
+import type { AuditLogger } from "../AuditLogger.js";
+import type { CipherReader } from "../cipher/CipherReader.js";
+import type { FallbackHeuristic } from "./FallbackHeuristic.js";
+import type { HaikuTriageAgent } from "./HaikuTriageAgent.js";
+import type { HaikuVerifier } from "./HaikuVerifier.js";
+import type { HardRuleEngine } from "./HardRuleEngine.js";
+
+export interface IDecisionLayer {
+	decide(ctx: ExecutionContext, cwd: string): Promise<DecisionResult>;
+}
+
+export interface FullDiffProvider {
+	getFullDiff(cwd: string, baseSha: string): Promise<string>;
+}
+
+/**
+ * Orchestrates: Hard Rules → Haiku Triage → Haiku Verify → Fallback.
+ * cwd is passed per-call (Blueprint reused across worktrees).
+ */
+export class DecisionLayer implements IDecisionLayer {
+	constructor(
+		private hardRules: HardRuleEngine,
+		private triage: HaikuTriageAgent,
+		private verifier: HaikuVerifier,
+		private fallback: FallbackHeuristic,
+		private auditLogger: AuditLogger,
+		private diffProvider: FullDiffProvider,
+		private cipherReader?: CipherReader,
+	) {}
+
+	async decide(ctx: ExecutionContext, cwd: string): Promise<DecisionResult> {
+		// HR-LANDED: PR already merged (backward compat with old flywheel-land) — early return BEFORE final guard
+		if (ctx.landingStatus?.status === "merged") {
+			const result: DecisionResult = {
+				route: "auto_approve",
+				confidence: 1.0,
+				reasoning: `PR already merged by flywheel-land at ${ctx.landingStatus.mergedAt ?? "unknown"}`,
+				concerns: [],
+				decisionSource: "hard_rule",
+				hardRuleId: "HR-LANDED",
+			};
+			await this.audit(ctx, result);
+			return result;
+		}
+
+		// HR-PR-HANDOFF (FLY-493): a no-transport (e.g. antigravity / kimi) Runner
+		// CANNOT be woken to drive the founder-gated ship, so ready_to_merge must
+		// NOT enter the wake-dependent needs_review → approve_to_ship loop (it
+		// would strand in approved_to_ship). Route to the terminal `pr_handoff`
+		// instead — the Runner's build+PR work is done and the founder ships the
+		// PR by hand. MUST run BEFORE HR-READY (which maps ready_to_merge →
+		// needs_review). FLY-494: reasoning text is vendor-NEUTRAL (this is a
+		// generic transport==="none" branch — Kimi hits it too).
+		if (
+			ctx.runnerTransportMode === "none" &&
+			ctx.landingStatus?.status === "ready_to_merge"
+		) {
+			const result: DecisionResult = {
+				route: "pr_handoff",
+				confidence: 1.0,
+				reasoning:
+					"No-transport runner build complete; PR open and handed to the founder for the founder-gated ship",
+				concerns: [],
+				decisionSource: "hard_rule",
+				hardRuleId: "HR-PR-HANDOFF",
+			};
+			await this.audit(ctx, result);
+			return result;
+		}
+
+		// HR-READY: PR passed CI, awaiting CEO approval
+		if (ctx.landingStatus?.status === "ready_to_merge") {
+			const result: DecisionResult = {
+				route: "needs_review",
+				confidence: 1.0,
+				reasoning: "PR ready to merge, awaiting CEO approval",
+				concerns: [],
+				decisionSource: "hard_rule",
+				hardRuleId: "HR-READY",
+			};
+			await this.audit(ctx, result);
+			return result;
+		}
+
+		let result: DecisionResult;
+
+		// Step 1: Hard rules (deterministic, no LLM)
+		const hardRuleResult = this.hardRules.evaluate(ctx);
+		if (hardRuleResult) {
+			result = {
+				route: hardRuleResult.action === "block" ? "blocked" : "needs_review",
+				confidence: 1.0,
+				reasoning: hardRuleResult.reason,
+				concerns: [hardRuleResult.reason],
+				decisionSource: "hard_rule",
+				hardRuleId: hardRuleResult.ruleId,
+			};
+			await this.audit(ctx, result);
+			return result;
+		}
+
+		// CIPHER context injection (non-fatal)
+		let cipherContext: string | undefined;
+		if (this.cipherReader) {
+			try {
+				const cipher = await this.cipherReader.buildPromptContext({
+					labels: ctx.labels,
+					exitReason: ctx.exitReason,
+					changedFilePaths: ctx.changedFilePaths,
+					commitCount: ctx.commitCount,
+					filesChangedCount: ctx.filesChangedCount,
+					linesAdded: ctx.linesAdded,
+					linesRemoved: ctx.linesRemoved,
+					consecutiveFailures: ctx.consecutiveFailures,
+				});
+				if (cipher) cipherContext = cipher.promptText;
+			} catch {
+				// Non-fatal — proceed without CIPHER context
+			}
+		}
+
+		// Step 2: LLM triage
+		try {
+			result = await this.triage.triage(ctx, cipherContext);
+		} catch (err) {
+			// LLM failure → fallback
+			const errMsg = err instanceof Error ? err.message : String(err);
+			result = this.fallback.evaluate(ctx, errMsg);
+			await this.audit(ctx, result);
+			return result;
+		}
+
+		// Step 3: If auto_approve, verify with full diff
+		if (result.route === "auto_approve") {
+			try {
+				const fullDiff = await this.diffProvider.getFullDiff(cwd, ctx.baseSha);
+				const verification = await this.verifier.verify(ctx, fullDiff);
+				result.verification = verification;
+
+				if (!verification.approved) {
+					result = {
+						...result,
+						route: "needs_review",
+						confidence: verification.confidence,
+						concerns: [...result.concerns, ...verification.concerns],
+						decisionSource: "haiku_verify",
+					};
+				}
+			} catch {
+				// Verifier failure → downgrade to needs_review
+				result = {
+					...result,
+					route: "needs_review",
+					confidence: 0.5,
+					concerns: [...result.concerns, "Verification failed"],
+					decisionSource: "haiku_verify",
+				};
+			}
+		}
+
+		// Final guard: auto_approve disabled by policy — downgrade to needs_review
+		if (result.route === "auto_approve") {
+			result = {
+				...result,
+				route: "needs_review",
+				concerns: [...result.concerns, "auto_approve disabled by policy"],
+			};
+		}
+
+		await this.audit(ctx, result);
+		return result;
+	}
+
+	private async audit(
+		ctx: ExecutionContext,
+		result: DecisionResult,
+	): Promise<void> {
+		try {
+			await this.auditLogger.log(ctx, result);
+		} catch {
+			// Best-effort — audit failure doesn't block decision
+		}
+	}
+}
