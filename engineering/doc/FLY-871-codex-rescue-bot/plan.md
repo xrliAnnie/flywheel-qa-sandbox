@@ -248,7 +248,9 @@ fail-open + 零告警接线 → 「静默无 pane」不可见。前任「pane �
   跨进程 claim = sha1(project|lead|kind|signature),若 signature 用 YYYYMMDD,同日第二个
   真实 episode 会撞 claims.db 被吞,直接违反「恢复→再失败可再报」):K 次失败首次触发时把
   `{ startedAt }` 原子写进 `<stateDir>/tui-window-lost-episode.json`,signature =
-  `tui-window-lost:<startedAt ISO/epoch>`;probe 转绿(恢复)即删该文件并清进程内 latch,
+  `<kind>:<startedAt epoch ms>`(实现从 kind 常量派生,单一真相 → 即
+  `tui_window_lost:<startedAt>`;文件名保持连字符 `tui-window-lost-episode.json`);
+  probe 转绿(恢复)即删该文件并清进程内 latch,
   下一个 episode 生成新 startedAt = 新 signature,可再报。文件跨进程重启保 episode 连续
   (KeepAlive 重启不重复报同一 episode)。
 - **kind 契约写实**(Codex R1#3):`lead-alert.sh` 对未知 kind 硬拒(校验表在脚本内)——

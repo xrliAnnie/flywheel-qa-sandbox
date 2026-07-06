@@ -53,14 +53,22 @@ export FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID="<#codex-infra-bot 频道 id>"
   "agentId": "codex-infra-bot-lead",
   "chatChannel": "<#codex-infra-bot 频道 id>",
   "botTokenEnv": "CODEX_INFRA_BOT_TOKEN",
+  "alertChannel": "<Alerts 频道 id — 同 FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID>",  // ← 必填,见下
   "backend": "codex-app-server",     // windowed TUI 由 launcher/plist 决定(FLY-398)
   "codexProfile": "full-access",
   "canSpawnRunners": false,          // infra bot 不开 runner
   "department": "infra"
 }
 ```
-> cross-dept(Alerts)频道**不在** projects.json —— 它是 launcher 的 env
-> `FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS`(= `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID`),同 Mufasa。
+> **`alertChannel` 必填(W2 依赖)**:W2 的 `tui_window_lost` 经 `scripts/lead-alert.sh`
+> 发,而 `lead-alert.sh` **只从 projects.json 的 `alertChannel`**(缺省再退 `generalChannel`,
+> 需 `alertFallbackToCore:true`)解析目标频道 —— **不读** launcher 的
+> `FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS`。漏 `alertChannel` = 告警 dead-letter
+> `reason=no-channel`(静默丢)。token 缺 `alertBotTokenEnv` 时自动退回 `botTokenEnv`
+> (= `CODEX_INFRA_BOT_TOKEN`),无需单列。
+> cross-dept(Alerts)的**入站**唤醒(assignment @)仍走 launcher 的
+> `FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS`(= `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID`),同 Mufasa
+> —— 那条 env 管**收**,`alertChannel` 管 lead-alert.sh 的**发**,两者都要。
 
 ## 5. Wrapper + launchd 收编
 
@@ -85,7 +93,8 @@ export FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID="<#codex-infra-bot 频道 id>"
 ```bash
 packages/teamlead/scripts/verify-windowed-lead.sh flywheel codex-infra-bot-lead \
   --codex-home ~/.codex-infra-bot \
-  --log ~/Library/Logs/flywheel/codex-infra-bot-lead.log   # --log 可选,只进诊断层
+  --log /tmp/flywheel-lead-flywheel-codex-infra-bot-lead.log   # --log 可选,只进诊断层
+                                                               # 路径 = plist 的 Standard{Out,Error}Path
 ```
 
 逐层期望(退出码 0 = 1–5 层全绿;非零 = `10 + 第一个失败层`):
