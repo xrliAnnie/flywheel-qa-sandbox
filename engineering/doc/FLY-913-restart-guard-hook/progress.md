@@ -1,13 +1,13 @@
 ---
 issue: FLY-913
 phase: design
-phaseCursor: 1/5
-updated: 2026-07-06T19:50:53.083Z
-nextStep: BRAINSTORM GATE with Tadashi (design understanding)
+phaseCursor: 3/5
+updated: 2026-07-06T20:02:51.187Z
+nextStep: write plan.md then design_review (codex)
 chunks: []
 pointers: {}
 ---
 
 # FLY-913 progress
-**phase**: design (1/5)
-**next**: BRAINSTORM GATE with Tadashi (design understanding)
+**phase**: design (3/5)
+**next**: write plan.md then design_review (codex)
