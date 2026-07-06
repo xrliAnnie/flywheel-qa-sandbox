@@ -45,6 +45,13 @@ export interface DiscordInboundMessage {
 	 * → this message is a follow-up, so the reply routes into the referenced topic
 	 * thread (if known) instead of opening a new one. */
 	referencedMessageId?: string;
+	/** FLY-898: on a Discord REPLY, the AUTHOR id of the message being replied to
+	 * (`referenced_message.author.id`). Enables "reply-to-self" as an explicit
+	 * address signal in the id-only core gate — a reply to THIS bot's own message
+	 * counts as addressing it, without an @-token. Undefined when the payload
+	 * doesn't carry the referenced message's author (deleted / not a reply / no
+	 * permission) → reply-to-self simply does not trigger (safe, strict). */
+	referencedAuthorId?: string;
 }
 
 /** The injected Discord connection (real impl wraps discord.js / the adapter).

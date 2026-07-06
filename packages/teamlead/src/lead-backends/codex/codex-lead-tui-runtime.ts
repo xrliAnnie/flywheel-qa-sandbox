@@ -45,6 +45,7 @@ import {
 	parseCodexLeadRuntimeConfig,
 	readBaseInstructions,
 	readThreadId,
+	resolveCoreStrictChannelIds,
 	writeThreadId,
 } from "./codex-lead-runtime.js";
 import { DaemonConnectionSupervisor } from "./DaemonConnectionSupervisor.js";
@@ -577,11 +578,16 @@ function buildTuiGeneration(
 						// the TUI runtime does NOT spam shared channels and routes replies back
 						// to the source channel. No cross-dept → neither hook → byte-compat.
 						const crossDeptSet = new Set(config.crossDeptChannelIds);
+						// FLY-898: mirror the headless core-room id-only gate (empty otherwise).
+						const coreStrictChannelIds =
+							resolveCoreStrictChannelIds(config);
 						const shouldHandle =
-							config.crossDeptChannelIds.length > 0
+							config.crossDeptChannelIds.length > 0 ||
+							coreStrictChannelIds.length > 0
 								? buildMentionGate({
 										botUserId: config.botUserId,
 										sharedChannelIds: config.crossDeptChannelIds,
+										coreStrictChannelIds,
 										mentionPatterns: config.mentionPatterns,
 										...(replyInThread
 											? {

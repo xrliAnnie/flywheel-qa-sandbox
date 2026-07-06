@@ -79,6 +79,14 @@ export interface CodexLeadRuntimeConfig {
 	 * to non-bot authors (a sibling bot must use an exact mention id). Empty (env
 	 * unset) → bot-id mention only (most precise; no false "talking about" trigger). */
 	mentionPatterns: string[];
+	/** FLY-898: when true, this (non-CoS) lead's CORE room (`coreChannelId`) is
+	 * mention-gated with the id-only rule — a bare no-@ message is NOT handled
+	 * (only the CoS answers those); a real `<@id>` / reply-to-self still is. Set by
+	 * the launcher (`FLYWHEEL_LEAD_CORE_MENTION_GATED=1`, computed from
+	 * `resolveCoreRoomGate` over projects.json). EFFECTIVE only when `coreChannelId`
+	 * is set AND subscribed (see `resolveCoreStrictChannelIds`). Default false →
+	 * core always handled (byte-compat, CoS + current fleet). */
+	coreMentionGated: boolean;
 	/** FLY-314 Phase 2: reply-in-thread (default-OFF). When enabled, roundtable
 	 * replies route INTO the topic thread + the Lead subscribes to topic threads to
 	 * see other Leads' in-thread replies. Undefined/disabled → FLY-267 behavior. */
@@ -565,6 +573,10 @@ export function parseCodexLeadRuntimeConfig(
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
+	// FLY-898: core-room id-only mention gate for a non-CoS lead. The launcher sets
+	// this from resolveCoreRoomGate(projects.json); a CoS / core-less / core-no-CoS
+	// project never sets it → false → byte-compat (core always handled).
+	const coreMentionGated = env.FLYWHEEL_LEAD_CORE_MENTION_GATED === "1";
 	// FLY-314 Phase 2: reply-in-thread (default-OFF). The roundtable parent channel
 	// MUST be one of the cross-dept channels (so it is polled + mention-gated).
 	// `guildId` enables active-thread discovery; without it, only the immediate
@@ -796,6 +808,7 @@ export function parseCodexLeadRuntimeConfig(
 		channelIds,
 		crossDeptChannelIds,
 		mentionPatterns,
+		coreMentionGated,
 		...(replyInThread ? { replyInThread } : {}),
 		bridgeUrl,
 		apiToken,
@@ -824,6 +837,24 @@ export function parseCodexLeadRuntimeConfig(
 		leadActionsEntry,
 		leadActionsChannelAliases,
 	};
+}
+
+/** FLY-898: the EFFECTIVE core-strict channel set for the mention gate. The core
+ * room is id-only-gated iff (a) the launcher flagged it (`coreMentionGated`), AND
+ * (b) there is a core channel, AND (c) that core channel is actually in the
+ * runtime's subscribed `channelIds` (guardrail #1 — never claim a gate on a
+ * channel we don't even poll). Returns `[core]` or `[]`; shared by both runtimes'
+ * wiring AND the dry-run report so "on/off" always reflects the real decision. */
+export function resolveCoreStrictChannelIds(config: {
+	coreMentionGated: boolean;
+	coreChannelId?: string;
+	channelIds: string[];
+}): string[] {
+	return config.coreMentionGated &&
+		config.coreChannelId &&
+		config.channelIds.includes(config.coreChannelId)
+		? [config.coreChannelId]
+		: [];
 }
 
 /** The deployed gateway MCP entry next to this module (dist layout). Overridable
@@ -1596,11 +1627,19 @@ export function buildCodexLeadRuntime(
 			// mention AND route replies back to the source channel (chat/core stay
 			// always-handled + reply in chat). No cross-dept → neither hook → byte-compat.
 			const crossDeptSet = new Set(config.crossDeptChannelIds);
+			// FLY-898: id-only gate the core room for a non-CoS lead (empty otherwise).
+			const coreStrictChannelIds = resolveCoreStrictChannelIds(config);
 			const shouldHandle =
-				config.crossDeptChannelIds.length > 0
+				config.crossDeptChannelIds.length > 0 ||
+				coreStrictChannelIds.length > 0
 					? buildMentionGate({
 							botUserId: config.botUserId,
 							sharedChannelIds: config.crossDeptChannelIds,
+							// FLY-898: the core channel stays in baseChannels (still polled +
+							// reply-routed to itself, no bridge-403); it is gated id-only here,
+							// NOT added to crossDeptChannelIds (which would trigger the
+							// bridge-mode 403 throw + roundtable reply-routing).
+							coreStrictChannelIds,
 							mentionPatterns: config.mentionPatterns,
 							// FLY-314 Phase 2: topic threads are dynamic shared channels.
 							...(replyInThread
@@ -1744,6 +1783,13 @@ export function dryRunReport(config: CodexLeadRuntimeConfig): string[] {
 		// before a restart (which channels get mention-gated + reply-routed).
 		`cross-dept    : ${config.crossDeptChannelIds.length ? `${config.crossDeptChannelIds.join(", ")} (mention-gated + reply-routed)` : "(none — single-channel byte-compat)"}`,
 		`mention policy: ${config.crossDeptChannelIds.length ? (config.mentionPatterns.length ? `bot-id mention + name regex [${config.mentionPatterns.join(", ")}] (non-bot authors)` : "bot-id mention only") : "n/a (no shared channels)"}`,
+		// FLY-898: surface whether this (non-CoS) lead's core room is id-only gated,
+		// reflecting the EFFECTIVE decision (flag set AND core actually subscribed).
+		`core mention gate: ${
+			resolveCoreStrictChannelIds(config).length > 0
+				? `on (${config.coreChannelId} — id-only: real @ or reply-to-self; bare name text ignored)`
+				: "off (core always handled — CoS / core-less / core-no-CoS / gate flag unset)"
+		}`,
 		`inbound       : REST poll (own bot token) — no Bridge`,
 		`outbound mode : ${config.outboundMode}${noBridge ? " → DIRECT post to Discord (own bot token), NO Bridge" : ` → Bridge ${config.bridgeUrl}`}`,
 		// FLY-404: surface the typing indicator state so the operator can verify it
