@@ -50,9 +50,9 @@ describe("resolveCoreRoomGate (FLY-898 single decision)", () => {
 	});
 
 	it("multi-lead core, the OTHER non-CoS lead → GATE (Oliver)", () => {
-		expect(resolveCoreRoomGate(geoforge3d, geoforge3d.leads[2]).gateNonCoS).toBe(
-			true,
-		);
+		expect(
+			resolveCoreRoomGate(geoforge3d, geoforge3d.leads[2]).gateNonCoS,
+		).toBe(true);
 	});
 
 	it("CoS itself → NOT gated (Simba: chat==core)", () => {
@@ -87,7 +87,10 @@ describe("resolveCoreRoomGate (FLY-898 single decision)", () => {
 	});
 
 	it("no generalChannel (personal-assistant) → not gated, no core", () => {
-		const g = resolveCoreRoomGate(personalAssistant, personalAssistant.leads[0]);
+		const g = resolveCoreRoomGate(
+			personalAssistant,
+			personalAssistant.leads[0],
+		);
 		expect(g).toEqual({
 			coreChannelId: undefined,
 			projectHasCoS: false,

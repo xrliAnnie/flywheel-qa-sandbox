@@ -85,8 +85,7 @@ function hasExactMentionToken(
 	// ② exact mention token in content (covers <@id> and the legacy nickname <@!id>).
 	const content = msg.content;
 	return (
-		content.includes(`<@${botUserId}>`) ||
-		content.includes(`<@!${botUserId}>`)
+		content.includes(`<@${botUserId}>`) || content.includes(`<@!${botUserId}>`)
 	);
 }
 

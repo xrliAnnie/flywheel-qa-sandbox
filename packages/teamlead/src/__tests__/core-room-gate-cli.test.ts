@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-	computeAllGates,
-	resolveOneGate,
-} from "../core-room-gate-cli.js";
+import { computeAllGates, resolveOneGate } from "../core-room-gate-cli.js";
 
 // Fleet fixture with mixed backends (geoforge3d all-Claude; growth has a codex CoS
 // + Claude non-CoS; joycon core-no-CoS; personal-assistant no core).

@@ -25,10 +25,10 @@ import {
 	dryRunReport,
 	FULL_ACCESS_ENV_ALLOWLIST,
 	parseCodexLeadRuntimeConfig,
-	resolveCoreStrictChannelIds,
 	pathsOverlap,
 	readBaseInstructions,
 	readThreadId,
+	resolveCoreStrictChannelIds,
 	resolveFullAccessProjectRoot,
 	resolveLeadWorkspace,
 	writeThreadId,
@@ -1661,7 +1661,9 @@ describe("FLY-898 core-room mention gate (Codex)", () => {
 		const noCore = parseCodexLeadRuntimeConfig(
 			fullEnv({ FLYWHEEL_LEAD_CORE_MENTION_GATED: "1" }),
 		);
-		expect(dryRunReport(noCore).join("\n")).toMatch(/core mention gate\s*: off/);
+		expect(dryRunReport(noCore).join("\n")).toMatch(
+			/core mention gate\s*: off/,
+		);
 
 		// default (no env) → off
 		const off = parseCodexLeadRuntimeConfig(

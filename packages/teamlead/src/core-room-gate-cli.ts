@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+
 /**
  * FLY-898 — thin CLI wrapper around `resolveCoreRoomGate` over projects.json,
  * so the SAME decision drives the bash launchers/fleet script and the Codex
@@ -17,13 +18,13 @@
  *       env, not access.json). Exit 0.
  */
 
-import { loadProjects, type ProjectEntry } from "./ProjectConfig.js";
 import {
 	type CoreRoomGate,
 	type CoreRoomGateLead,
 	type CoreRoomGateProject,
 	resolveCoreRoomGate,
 } from "./core-room-gate.js";
+import { loadProjects, type ProjectEntry } from "./ProjectConfig.js";
 
 export interface GateEntry {
 	projectName: string;

@@ -1630,8 +1630,7 @@ export function buildCodexLeadRuntime(
 			// FLY-898: id-only gate the core room for a non-CoS lead (empty otherwise).
 			const coreStrictChannelIds = resolveCoreStrictChannelIds(config);
 			const shouldHandle =
-				config.crossDeptChannelIds.length > 0 ||
-				coreStrictChannelIds.length > 0
+				config.crossDeptChannelIds.length > 0 || coreStrictChannelIds.length > 0
 					? buildMentionGate({
 							botUserId: config.botUserId,
 							sharedChannelIds: config.crossDeptChannelIds,

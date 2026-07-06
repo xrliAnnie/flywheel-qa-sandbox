@@ -121,7 +121,9 @@ describe("buildMentionGate — coreStrictChannelIds (FLY-898 id-only core)", () 
 	});
 
 	it("core: real <@id> mention → handled", () => {
-		expect(gate(m({ channelId: "core-1", content: `hi <@${BOT}>` }))).toBe(true);
+		expect(gate(m({ channelId: "core-1", content: `hi <@${BOT}>` }))).toBe(
+			true,
+		);
 	});
 
 	it("core: Discord mentions array contains bot → handled", () => {

@@ -393,7 +393,7 @@ describe("RestPollDiscordInboundSource — lifecycle", () => {
 
 describe("RestPollDiscordInboundSource — FLY-898 referencedAuthorId mapping", () => {
 	/** Fake Discord serving RAW messages that carry the extra reply fields. */
-	function fakeRaw(channelId: string, initial: unknown[]) {
+	function fakeRaw(_channelId: string, initial: unknown[]) {
 		const log = [...initial];
 		const fetchImpl = (async (url: string) => {
 			const u = new URL(url);
@@ -414,7 +414,12 @@ describe("RestPollDiscordInboundSource — FLY-898 referencedAuthorId mapping", 
 
 	it("maps referenced_message.author.id → referencedAuthorId (reply-to-self signal)", async () => {
 		const { fetchImpl, log } = fakeRaw("c1", [
-			{ id: "1", channel_id: "c1", content: "base", author: { id: "a", bot: false } },
+			{
+				id: "1",
+				channel_id: "c1",
+				content: "base",
+				author: { id: "a", bot: false },
+			},
 		]);
 		const got: DiscordInboundMessage[] = [];
 		const src = new RestPollDiscordInboundSource({
@@ -447,7 +452,12 @@ describe("RestPollDiscordInboundSource — FLY-898 referencedAuthorId mapping", 
 
 	it("no referenced_message → referencedAuthorId undefined (byte-compat)", async () => {
 		const { fetchImpl, log } = fakeRaw("c1", [
-			{ id: "1", channel_id: "c1", content: "base", author: { id: "a", bot: false } },
+			{
+				id: "1",
+				channel_id: "c1",
+				content: "base",
+				author: { id: "a", bot: false },
+			},
 		]);
 		const got: DiscordInboundMessage[] = [];
 		const src = new RestPollDiscordInboundSource({
@@ -462,14 +472,24 @@ describe("RestPollDiscordInboundSource — FLY-898 referencedAuthorId mapping", 
 			return true;
 		});
 		await src.start();
-		log.push({ id: "2", channel_id: "c1", content: "hi", author: { id: "annie", bot: false } });
+		log.push({
+			id: "2",
+			channel_id: "c1",
+			content: "hi",
+			author: { id: "annie", bot: false },
+		});
 		await src.pollOnce();
 		expect(got[0].referencedAuthorId).toBeUndefined();
 	});
 
 	it("reply payload missing referenced_message.author → referencedAuthorId undefined (fail-safe)", async () => {
 		const { fetchImpl, log } = fakeRaw("c1", [
-			{ id: "1", channel_id: "c1", content: "base", author: { id: "a", bot: false } },
+			{
+				id: "1",
+				channel_id: "c1",
+				content: "base",
+				author: { id: "a", bot: false },
+			},
 		]);
 		const got: DiscordInboundMessage[] = [];
 		const src = new RestPollDiscordInboundSource({

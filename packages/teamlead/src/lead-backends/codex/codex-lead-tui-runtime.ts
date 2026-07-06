@@ -579,8 +579,7 @@ function buildTuiGeneration(
 						// to the source channel. No cross-dept → neither hook → byte-compat.
 						const crossDeptSet = new Set(config.crossDeptChannelIds);
 						// FLY-898: mirror the headless core-room id-only gate (empty otherwise).
-						const coreStrictChannelIds =
-							resolveCoreStrictChannelIds(config);
+						const coreStrictChannelIds = resolveCoreStrictChannelIds(config);
 						const shouldHandle =
 							config.crossDeptChannelIds.length > 0 ||
 							coreStrictChannelIds.length > 0
