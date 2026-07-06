@@ -1,10 +1,13 @@
 ---
 issue: FLY-887
 phase: design
-phaseCursor: 1/2
-updated: 2026-07-06T08:37:39.081Z
-nextStep: R2 codex design review re-run (resume; Path A re-confirmed at gate);
-  then implement merge-main + model policy + channel gating in THIS session
+phaseCursor: 2/2
+updated: 2026-07-06T09:30:31.955Z
+nextStep: "BLOCKED on founder-ux-gate: Annie UX sign-off for ux-brief.md (asked
+  Lead 00384e68; await-founder-ux-gate running in background). On pass: stage
+  set implement --ux-file, then R2 Step 1 merge origin/main (conflicts
+  pre-analyzed: StateStore keep-both, post-ship-finalization graft
+  phaseMessageTag import + phasePrefix into keep-alive structure)"
 chunks:
   - id: reconcile-replay-fix-verify
     order: 1
@@ -30,8 +33,8 @@ pointers: {}
 ---
 
 # FLY-887 progress
-**phase**: design (1/2)
-**next**: R2 codex design review re-run (resume; Path A re-confirmed at gate); then implement merge-main + model policy + channel gating in THIS session
+**phase**: design (2/2)
+**next**: BLOCKED on founder-ux-gate: Annie UX sign-off for ux-brief.md (asked Lead 00384e68; await-founder-ux-gate running in background). On pass: stage set implement --ux-file, then R2 Step 1 merge origin/main (conflicts pre-analyzed: StateStore keep-both, post-ship-finalization graft phaseMessageTag import + phasePrefix into keep-alive structure)
 
 ## chunks
 - ✅ reconcile-replay-fix-verify — 
