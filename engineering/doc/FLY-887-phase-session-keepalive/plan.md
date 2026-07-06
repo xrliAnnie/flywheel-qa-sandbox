@@ -313,6 +313,8 @@ Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-p
 状态: R1(上文)已实现+QA 4/4 PASS,本节为 Lead 指令 34522575 的追加 scope;brainstorm gate 已获 Lead 批准(Path A:本 session 做完三件→推 PR #458)。
 resume 注记(2026-07-06,前 runner 在 R2 design review 中被 restart):Lead 在 resume brainstorm gate **再次确认 Path A**——本 session 直接做完三件、不走 phase_design_complete 交接。关键理由:887 修的就是三段式 per-phase model 路由;若走三段式 handoff,Implement/QA phase 会用**还没修**的路由 spawn(sorter pin light 时落 Sonnet 的 bug),等于 887 自己的实现可能跑在 Sonnet 上、违反 Annie 零-Sonnet 政策。Path A 全程 Fable。做完推 PR #458 → hold 在 founder ship gate,绝不自 ship。
 
+**再更正(2026-07-06,Lead 指令 10c2f779,Annie 亲自拍板):Path A 收回,回正经三段式。**Annie 纠正:implement 和 QA 必须是**两个不同 session**(独立质检,runner 绝不测自己写的)。执行形态定稿:本 design session 只出 docs → `complete --route phase_design_complete` 交棒 → **独立 Implement phase** 在同分支执行本节 R2 Step 1-4 → **独立 QA session** 验收,三段共用同一条 thread。dogfooding 陷阱(本单修 model 路由本身,implement/QA 段可能被现有 buggy 路由 spawn 到 Sonnet)的兜底改为 **Lead 人工核模型**:phase 段起来后 Lead 核对、是 Sonnet 即换 Opus,pipeline 照常走。founder-UX 门(FLY-900)在撤,不再构成阻塞;ux-brief.md 保留为 founder 可见变化的记录。
+
 ## 目标(验收标准)
 
 1. PR #458 mergeable(不再 CONFLICTING/DIRTY),不 force-push、QA 已验证的 commit SHA 链保留。

@@ -267,3 +267,5 @@ server-side 可信事实链:dispatch body 带 leadId → validateChatThreadParam
 在 brainstorm gate 里让 Lead 拍板。
 
 **已定案(2026-07-05 初次 gate + 2026-07-06 resume gate 二次确认):Path A。** Lead 理由:走三段式 handoff 的话 Implement/QA phase 会用还没修的 model 路由 spawn(sorter pin light 时落 Sonnet 的 bug),887 自己的实现可能跑在 Sonnet 上、违反零-Sonnet;Path A 全程 Fable。本 session 做完三件 → 推 PR #458 → hold 在 founder ship gate。
+
+**终定案(2026-07-06,Lead 指令 10c2f779,Annie 亲自拍板):Path A 收回,改回 Path B(正经三段式)。**Annie 纠正:implement 和 QA 必须是两个不同 session——独立质检,runner 绝不测自己写的。design session 只出 docs、`phase_design_complete` 交棒;独立 Implement phase 执行 plan R2 步骤;独立 QA session 验收。dogfooding 的 Sonnet 风险改由 Lead 人工兜底(phase 段起来后核模型,Sonnet 即换 Opus)。
