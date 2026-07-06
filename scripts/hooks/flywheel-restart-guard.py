@@ -137,9 +137,10 @@ def _extract_c_payload(args: list[str]):
 # Transparent wrappers a relaunch can hide behind (Codex code review R1 HIGH:
 # `env node …` / `sudo -E node …` were silent allows). Each is stripped —
 # together with its short flags and leading env assignments — before the
-# first-token judgment. Flags that consume a value argument:
+# first-token judgment. Flags that consume a value argument; -S/--split-string
+# is handled separately (its value is a whole command line — Codex R2 MEDIUM).
 _WRAPPERS = {"sudo", "env", "nohup"}
-_WRAPPER_ARG_FLAGS = {"-u", "--user", "-g", "--group", "-C", "--chdir", "-S", "--split-string"}
+_WRAPPER_ARG_FLAGS = {"-u", "--user", "-g", "--group", "-C", "--chdir"}
 
 
 def _p3_hit(cmd: str, depth: int) -> bool:
@@ -168,10 +169,25 @@ def _p3_hit(cmd: str, depth: int) -> bool:
                 saw_nohup = saw_nohup or base == "nohup"
                 i += 1
                 while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "-":
-                    if tokens[i] in _WRAPPER_ARG_FLAGS and i + 1 < len(tokens):
+                    f = tokens[i]
+                    # env -S / --split-string carries a WHOLE command line in
+                    # one argument (Codex R2) — scan it like a -c payload.
+                    payload = None
+                    if f in ("-S", "--split-string") and i + 1 < len(tokens):
+                        payload = tokens[i + 1]
+                        i += 2
+                    elif f.startswith("--split-string="):
+                        payload = f.split("=", 1)[1]
+                        i += 1
+                    elif f.startswith("-S") and len(f) > 2:
+                        payload = f[2:]
+                        i += 1
+                    elif f in _WRAPPER_ARG_FLAGS and i + 1 < len(tokens):
                         i += 2
                     else:
                         i += 1
+                    if payload is not None and scan_block(payload, depth + 1):
+                        return True
                 continue
             break
         if i >= len(tokens):

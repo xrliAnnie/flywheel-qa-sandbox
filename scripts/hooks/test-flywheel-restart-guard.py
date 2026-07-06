@@ -146,6 +146,13 @@ MUST_BLOCK = [
     ("env -i FLYWHEEL_X=1 nohup npx tsx scripts/run-bridge.ts &",
      "P3 env -i + nohup stack"),
     ('sudo bash -c "node scripts/run-bridge.ts"', "P3 sudo bash -c payload"),
+    # Codex code review R2 MEDIUM: env -S/--split-string carries a whole
+    # command line in ONE argument — must be scanned like a -c payload.
+    ('env -S "node scripts/run-bridge.ts"', "P3 env -S payload"),
+    ('/usr/bin/env -S "node scripts/run-bridge.ts"', "P3 /usr/bin/env -S payload"),
+    ('env --split-string "node scripts/run-bridge.ts"', "P3 env --split-string payload"),
+    ('env --split-string="node scripts/run-bridge.ts"', "P3 env --split-string= payload"),
+    ('env -S"node scripts/run-bridge.ts"', "P3 env -S merged payload"),
     # P3 — shell -c payload recursion (one level), incl. merged flag clusters
     ('bash -c "nohup npx tsx scripts/run-bridge.ts"', "P3 bash -c payload"),
     ("sh -c 'npx tsx scripts/run-bridge.ts'", "P3 sh -c payload"),
@@ -184,6 +191,7 @@ MUST_PASS = [
     ("sudo cat scripts/run-bridge.ts", "sudo-wrapped read tool"),
     ("env | grep run-bridge", "bare env piped to grep"),
     ("env node scripts/qa-tool.mjs", "env-wrapped executor without run-bridge"),
+    ('env -S "node scripts/qa-tool.mjs"', "env -S payload without run-bridge"),
     ("sudo launchctl print gui/501/com.flywheel.bridge", "sudo read-only launchctl"),
 ]
 
