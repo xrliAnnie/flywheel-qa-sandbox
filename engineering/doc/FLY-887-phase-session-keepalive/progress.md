@@ -2,9 +2,10 @@
 issue: FLY-887
 phase: qa
 phaseCursor: 3/3
-updated: 2026-07-06T01:35:00.000Z
+updated: 2026-07-06T02:55:00.000Z
 nextStep: qa-result PASS + APPROVE GATE (this QA session is the ship
-  executor) — waiting for founder approval
+  executor) — round-3 full-Discord E2E re-run done (thread link given to
+  founder), waiting for founder approval
 chunks:
   - id: reconcile-replay-fix-verify
     status: done

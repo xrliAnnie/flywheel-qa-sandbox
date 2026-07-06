@@ -1,8 +1,37 @@
 # FLY-887 三段式 phase-session 并存保活 — QA 报告
 
 Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-phase-session-并存保活-designimplementqa-不跑完就关qaimplement)
-日期: 2026-07-05 / 2026-07-06(round 2)
+日期: 2026-07-05 / 2026-07-06(round 2 + round 3)
 基于: plan.md
+
+## Round 3（Annie 指定：全 Discord 叙事重跑）：PASS，给 founder 的可读证据
+
+Round 2 的 529 Room E2E 走的是直接 API 旁路驱动，没有一条完整的 Discord 叙事。
+Annie 要求重跑一次、全程走真实 Discord 对话，产出一条她能自己点开读完的 thread。
+
+**Discord thread（founder 可直接打开查看）：**
+https://discord.com/channels/1485787271192907816/1523516456409759814
+
+用专门新建的 issue FLY-895（避免复用 round 2 的 FLY-202 造成混淆）。这条 thread
+里有 15 条真实、按时间顺序发出的消息，完整读出：session 启动 → design 完成
+（parked，明确标注没关）→ implement 启动 → 🛑 ship 授权需要founder拍板（Lead
+正确拒绝自批）→ implement 完成→QA 启动 → QA 未通过、**唤醒同一个 implement**
+修复（第 1 轮，真实的一处小毛病：新加的一条记录漏了句尾句号）→ fix-loop 更新
+（implement 修好、push、PR 更新）→ ship → 完工。
+
+**关键：** 在 implement 正在修复、design 仍 park 着的那一刻真实重启了一次 Bridge。
+启动日志原文：「reconcileOnStartup: 666972eb...(FLY-895) already progressed
+past design (live downstream phase) — skip stale handoff replay」。重启前后
+session/TURN/tmux 窗口数量零漂移，implement 那个 pane 全程没断。Annie 六条
+目标运行时行为逐条再次确认，和 round 2 PASS 完全一致（详见下方 round 2 章节）。
+
+诚实的小观察（不是 bug，FLY-887 没碰这段既有逻辑）：QA 复验 PASS 那次，Lead 的
+消息模板只在 FAIL 时发专门一条，PASS 没有单独一条字面消息——能从后续的
+fix-loop 更新 + ship 徽标 + 完工消息推断出来。这是 FLY-793 既有的消息模板特征，
+留作观察，不阻塞本次 ship。
+
+测试 slot 已按标准拆除（Bridge/tmux/worktree/CommDB），Discord thread 本身不
+受影响，现在仍可正常打开查看。
 
 ## Round 2 结论：PASS
 
