@@ -2,12 +2,14 @@
 issue: FLY-887
 phase: design
 phaseCursor: 2/2
-updated: 2026-07-06T09:30:31.955Z
-nextStep: "BLOCKED on founder-ux-gate: Annie UX sign-off for ux-brief.md (asked
-  Lead 00384e68; await-founder-ux-gate running in background). On pass: stage
-  set implement --ux-file, then R2 Step 1 merge origin/main (conflicts
-  pre-analyzed: StateStore keep-both, post-ship-finalization graft
-  phaseMessageTag import + phasePrefix into keep-alive structure)"
+updated: 2026-07-06T13:59:32.339Z
+nextStep: "DESIGN PHASE DONE (docs committed, codex design review 2 rounds
+  APPROVED). Handing off via complete --route phase_design_complete per
+  lead-instruction 10c2f779 (Annie: implement+QA must be independent sessions).
+  Implement phase: execute plan.md R2 Steps 1-4 on this branch (merge conflict
+  pre-analysis: StateStore keep-both at ~2470/~4000-4100; post-ship-finalization
+  graft phaseMessageTag import + phasePrefix into keep-alive structure). Lead
+  will verify spawned phase models (Sonnet->Opus) manually."
 chunks:
   - id: reconcile-replay-fix-verify
     order: 1
@@ -34,7 +36,7 @@ pointers: {}
 
 # FLY-887 progress
 **phase**: design (2/2)
-**next**: BLOCKED on founder-ux-gate: Annie UX sign-off for ux-brief.md (asked Lead 00384e68; await-founder-ux-gate running in background). On pass: stage set implement --ux-file, then R2 Step 1 merge origin/main (conflicts pre-analyzed: StateStore keep-both, post-ship-finalization graft phaseMessageTag import + phasePrefix into keep-alive structure)
+**next**: DESIGN PHASE DONE (docs committed, codex design review 2 rounds APPROVED). Handing off via complete --route phase_design_complete per lead-instruction 10c2f779 (Annie: implement+QA must be independent sessions). Implement phase: execute plan.md R2 Steps 1-4 on this branch (merge conflict pre-analysis: StateStore keep-both at ~2470/~4000-4100; post-ship-finalization graft phaseMessageTag import + phasePrefix into keep-alive structure). Lead will verify spawned phase models (Sonnet->Opus) manually.
 
 ## chunks
 - ✅ reconcile-replay-fix-verify — 
