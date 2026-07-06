@@ -1,11 +1,10 @@
 ---
 issue: FLY-887
 phase: implement
-phaseCursor: 0/4
-updated: 2026-07-06T14:02:35.323Z
-nextStep: "R2 implement: Step 1 merge origin/main (resolve StateStore +
-  post-ship-finalization), Step 2 per-phase model, Step 3 channel gating, Step 4
-  PR"
+phaseCursor: 1/4
+updated: 2026-07-06T14:13:44.228Z
+nextStep: "Step 2 per-phase model policy (TDD): tier heavy/heavy/medium +
+  ignoreRunnerLabelSelection on all phase dispatch/retry paths"
 chunks:
   - id: reconcile-replay-fix-verify
     order: 1
@@ -31,8 +30,8 @@ pointers: {}
 ---
 
 # FLY-887 progress
-**phase**: implement (0/4)
-**next**: R2 implement: Step 1 merge origin/main (resolve StateStore + post-ship-finalization), Step 2 per-phase model, Step 3 channel gating, Step 4 PR
+**phase**: implement (1/4)
+**next**: Step 2 per-phase model policy (TDD): tier heavy/heavy/medium + ignoreRunnerLabelSelection on all phase dispatch/retry paths
 
 ## chunks
 - ✅ reconcile-replay-fix-verify — 
