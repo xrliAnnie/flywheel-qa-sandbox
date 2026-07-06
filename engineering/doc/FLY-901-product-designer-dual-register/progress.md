@@ -1,13 +1,13 @@
 ---
 issue: FLY-901
 phase: implement
-phaseCursor: 0/6
-updated: 2026-07-06T16:00:09.429Z
-nextStep: "C1: AgentConfig.departments 字段"
+phaseCursor: 6/6
+updated: 2026-07-06T16:11:55.907Z
+nextStep: "实现完成: C1-C4 + 测试全绿 + 真配置 E2E PASS; 待 commit + PR"
 chunks: []
 pointers: {}
 ---
 
 # FLY-901 progress
-**phase**: implement (0/6)
-**next**: C1: AgentConfig.departments 字段
+**phase**: implement (6/6)
+**next**: 实现完成: C1-C4 + 测试全绿 + 真配置 E2E PASS; 待 commit + PR
