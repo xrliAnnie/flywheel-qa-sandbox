@@ -40,11 +40,19 @@ log_test() { echo "[TEST] $*"; }
 log_pass() { echo "  ✓ $*"; PASSED=$((PASSED + 1)); }
 log_fail() { echo "  ✗ $*" >&2; FAILED=$((FAILED + 1)); ERRORS="${ERRORS}\n  - $*"; }
 
-# server.ts fixtures: one WITH the per-group marker, one WITHOUT.
+# server.ts fixtures: one WITH the per-group marker (the fork calls
+# resolveGroupMentionPatterns(policy, access) at the gate — Codex R1 MEDIUM: the
+# marker must match the CALL, not a mere type field), one WITHOUT. The
+# "half-baked" fixture proves a type field / comment alone is NOT enough.
 SUPPORTED_SRV="$TMP_DIR/server-supported.ts"
-printf 'const p = policy.mentionPatterns ?? access.mentionPatterns;\n' > "$SUPPORTED_SRV"
+printf 'const m = await isMentioned(msg, resolveGroupMentionPatterns(policy, access))\n' > "$SUPPORTED_SRV"
 UNSUPPORTED_SRV="$TMP_DIR/server-old.ts"
-printf 'const p = access.mentionPatterns;\n' > "$UNSUPPORTED_SRV"
+printf 'const m = await isMentioned(msg, access.mentionPatterns)\n' > "$UNSUPPORTED_SRV"
+# A plugin that DECLARES the type field but does NOT route the gate through it must
+# also be treated as unsupported (a bare `mentionPatterns?` field would silently be
+# ignored by the old gate) — refusing id-only here is the whole point of the marker.
+HALFBAKED_SRV="$TMP_DIR/server-halfbaked.ts"
+printf 'type GroupPolicy = { requireMention: boolean; mentionPatterns?: string[] }\nconst m = await isMentioned(msg, access.mentionPatterns)\n' > "$HALFBAKED_SRV"
 
 # A representative non-CoS lead access.json: core group requireMention:false.
 make_access() {
@@ -174,6 +182,20 @@ if [ "$rc" -eq 0 ] && [ "$req" = "true" ] && [ "$has_mp" = "false" ]; then
   log_pass "T9 requireMention:true, mentionPatterns NOT written (id-only deferred)"
 else
   log_fail "T9 wrong (rc=$rc req=$req has_mp=$has_mp)"
+fi
+
+# ── T9b: half-baked plugin (type field only, no gate routing) → unsupported ─
+log_test "T9b half-baked plugin (declares field but doesn't route gate) → id-only refused"
+Hb="$TMP_DIR/t9b.json"; make_access "$Hb"
+FLYWHEEL_DISCORD_PLUGIN_SERVER="$HALFBAKED_SRV" bash "$SCRIPT" \
+  --access-file "$Hb" --channel-id "$CORE" --id-only >/dev/null 2>&1
+rc=$?
+req=$(jq -r '.groups["'"$CORE"'"].requireMention' "$Hb")
+has_mp=$(jq -r '.groups["'"$CORE"'"] | has("mentionPatterns")' "$Hb")
+if [ "$rc" -eq 0 ] && [ "$req" = "true" ] && [ "$has_mp" = "false" ]; then
+  log_pass "T9b type-field-only is NOT enough → requireMention only (no silent half-fix)"
+else
+  log_fail "T9b wrong (rc=$rc req=$req has_mp=$has_mp)"
 fi
 
 # ── T10: no --id-only → requireMention only, patterns untouched ─────────────
