@@ -1,15 +1,11 @@
 ---
 issue: FLY-887
-phase: design
-phaseCursor: 2/2
-updated: 2026-07-06T13:59:32.339Z
-nextStep: "DESIGN PHASE DONE (docs committed, codex design review 2 rounds
-  APPROVED). Handing off via complete --route phase_design_complete per
-  lead-instruction 10c2f779 (Annie: implement+QA must be independent sessions).
-  Implement phase: execute plan.md R2 Steps 1-4 on this branch (merge conflict
-  pre-analysis: StateStore keep-both at ~2470/~4000-4100; post-ship-finalization
-  graft phaseMessageTag import + phasePrefix into keep-alive structure). Lead
-  will verify spawned phase models (Sonnet->Opus) manually."
+phase: implement
+phaseCursor: 0/4
+updated: 2026-07-06T14:02:35.323Z
+nextStep: "R2 implement: Step 1 merge origin/main (resolve StateStore +
+  post-ship-finalization), Step 2 per-phase model, Step 3 channel gating, Step 4
+  PR"
 chunks:
   - id: reconcile-replay-fix-verify
     order: 1
@@ -35,8 +31,8 @@ pointers: {}
 ---
 
 # FLY-887 progress
-**phase**: design (2/2)
-**next**: DESIGN PHASE DONE (docs committed, codex design review 2 rounds APPROVED). Handing off via complete --route phase_design_complete per lead-instruction 10c2f779 (Annie: implement+QA must be independent sessions). Implement phase: execute plan.md R2 Steps 1-4 on this branch (merge conflict pre-analysis: StateStore keep-both at ~2470/~4000-4100; post-ship-finalization graft phaseMessageTag import + phasePrefix into keep-alive structure). Lead will verify spawned phase models (Sonnet->Opus) manually.
+**phase**: implement (0/4)
+**next**: R2 implement: Step 1 merge origin/main (resolve StateStore + post-ship-finalization), Step 2 per-phase model, Step 3 channel gating, Step 4 PR
 
 ## chunks
 - ✅ reconcile-replay-fix-verify — 
