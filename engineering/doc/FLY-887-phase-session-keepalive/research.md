@@ -122,22 +122,23 @@ graph LR
 - main 侧对 packages/config/src/three-stage-phases.ts 只做**加法**(FLY-892 badge/tag 辅助:PHASE_THREAD_BADGE、phaseMessageTag 等),未动 DEFAULT_PHASE_TIER;runs-route.ts 模型行、phase-orchestrator.ts 在 main 侧零改动 —— ②③ 的落点与 merge 冲突不重叠。
 - 加分项:main 的 phaseMessageTag(founder 可见 [设计·Fable] 标签)在 runner_model 缺失时回退 DEFAULT_PHASE_TIER[role] —— 改表后标签自动变成 [实现·Fable]/[QA·Opus],无需另改。
 
-## R2.2 模型决策点全量清单(定案)
+## R2.2 模型决策点全量清单(定案;Codex design review R1 修订)
 
 | # | 位置 | 现状 | 改动 |
 |---|---|---|---|
-| 1 | runs-route.ts:579(三段式入场) | dispatchModel ?? resolvePhaseModel("design") —— sorter pin 赢 | **无条件 resolvePhaseModel("design")**(phase 表赢) |
-| 2 | phase-orchestrator.ts:1144(交接 spawn) | resolvePhaseModel(next) | 不改(表驱动) |
-| 3 | phase-orchestrator.ts:798/941(QA-fail 修复 spawn) | resolvePhaseModel("implement") | 不改(表驱动) |
+| 1 | runs-route.ts:579(三段式入场) | dispatchModel ?? resolvePhaseModel("design") —— sorter pin 赢 | **无条件 resolvePhaseModel("design")**(phase 表赢)+ **ignoreRunnerLabelSelection: true**(见 #7) |
+| 2 | phase-orchestrator.ts:1144(交接 spawn) | resolvePhaseModel(next) | 表驱动不变 + **ignoreRunnerLabelSelection: true**(见 #7) |
+| 3 | phase-orchestrator.ts:798/941(QA-fail 修复 spawn) | resolvePhaseModel("implement") | 同 #2 |
 | 4 | wake 路径 | 保持 spawn 模型 | 不改(策略在 spawn 时生效) |
-| 5 | retry-dispatcher | 重放 sessions.dispatch_model | 不改(入口修正后持久化值即表值) |
+| 5 | retry(actions.ts:807-849 → retry-dispatcher → run-dispatcher.retry) | 重放 sessions.dispatch_model,但**同时传当前 issueLabels 且 label 优先**;run-dispatcher.ts:404 对 retry 硬编码不带 ignore flag | **phase 段 retry 收归 phase 表**:session.chat_thread_role ∈ {design,implement,qa}(durable 三段标记,auto-QA 行 = 'main' 不受影响)→ (a) retry 链全程透传 ignoreRunnerLabelSelection=true;(b) dispatchModel = **resolvePhaseModel(chat_thread_role)** 无条件(不用持久值——修复前 dispatch 的存量 phase 行持久的可能是 sorter pin/NULL) |
 | 6 | DEFAULT_PHASE_TIER(three-stage-phases.ts:78) | design:heavy / implement:medium / qa:light | **design:heavy / implement:heavy / qa:medium** |
+| 7 | **Linear label 路径(Codex R1 blocker)**:resolveRoleAdapter(role-adapter-resolver.ts:173-194)label 层先于 dispatchModel —— `sonnet`/`opus`/`fable-1m` 等模型 label 与 `codex`/`agy`/`kimi` 等 vendor label **赢过** dispatchModel(role-adapter-resolver.test.ts:415-423 显式断言 label > dispatchModel) | 三段入场/交接/修复 spawn 均只改 dispatchModel → **label 照旧绕过 phase 表** | 所有 phase 段 dispatch(#1/#2/#3/#5)带 **ignoreRunnerLabelSelection: true**(FLY-643 既有 seam,auto-QA 已用同款;issueLabels 照旧流入 BlueprintContext 供路由/线程,只跳过 backend/model 选择层)→ label 层跳过后 1b 分支 dispatchModel 必中(backend=claude-tmux + phase 表模型),roles config/env 也不再参与 —— 副作用兑现:vendor label 无法把 phase 段放上 no-transport 后端(park/wake 需要 mailbox) |
 
-plugin.ts:3912 的 loadPipelineConfigByProject 仅作 boot 日志计数,非决策点。入场决策唯一入口 = runs-route(PhaseOrchestrator 交接直调 startDispatcher.start,天然只服务已入场的 pipeline)。
+plugin.ts:3912 的 loadPipelineConfigByProject 仅作 boot 日志计数,非决策点。入场决策唯一入口 = runs-route(PhaseOrchestrator 交接直调 startDispatcher.start,天然只服务已入场的 pipeline)。特殊模型/vendor 需求的 issue 用 no-three-stage label 走单 session(Lead 已批取舍,label 在单 session 路径完整生效)。
 
-## R2.3 channel 门控的可信输入链(定案)
+## R2.3 channel 门控的可信输入链(定案;Codex R1 #3 修正 seam 引用)
 
-- dispatch body 的 leadId 已被既有代码校验 ∈ project.leads(chat-thread-register.ts validateChatThreadParams);
+- dispatch body 的 leadId 由 **runs-route 内联的 project lead membership 校验**把关(runs-route.ts:337-349 显式 leadId 校验 ∈ project.leads;:400-419 leadId 缺失时 server-side 自动解析)——发生在三段式入场判定**之前**。(初稿引的 chat-thread-register.ts validateChatThreadParams 是 chat-thread 显式注册路径,不是 fresh dispatch 的校验 seam;信任模型不变,只修正 seam 引用);
 - project.leads[].chatChannel 来自 ~/.flywheel/projects.json(server 端配置)。生产实测:flywheel 项目 5 个 lead,flywheel-eng-lead.chatChannel = 1516209714097291335(#flywheel-engineer),其余 4 个(cos/product/codex-infra/anna)各有不同 channel;
 - 结论:门控输入 = leadId → leadConfig.chatChannel(server-side derive),对 request body 零新增信任。leadId 缺失/查无此 lead → chatChannel 解析为 undefined → allowlist 存在时 fail-closed。
 

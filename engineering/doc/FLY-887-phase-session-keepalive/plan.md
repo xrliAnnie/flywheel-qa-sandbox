@@ -316,7 +316,7 @@ resume 注记(2026-07-06,前 runner 在 R2 design review 中被 restart):Lead �
 ## 目标(验收标准)
 
 1. PR #458 mergeable(不再 CONFLICTING/DIRTY),不 force-push、QA 已验证的 commit SHA 链保留。
-2. 三段式 per-phase 模型 = design:Fable / implement:Fable / qa:Opus;任何路径(入场/交接/修复 spawn/retry)都不可能把 phase 段放上 Sonnet。
+2. 三段式 per-phase 模型 = design:Fable / implement:Fable / qa:Opus;任何路径(入场/交接/修复 spawn/retry,**含 request model pin 与 Linear 模型/vendor label 覆盖路径**)都不可能把 phase 段放上 Sonnet——phase 段模型主权归 phase 表。
 3. 三段式只对「dispatch Lead 的 chatChannel ∈ pipeline.three_stage_channels」的 fresh main dispatch 生效;flywheel 生产配置收窄到 #flywheel-engineer(1516209714097291335)。config key 缺失 = 现状(byte-compat)。
 4. 全量测试绿 + lint 绿;一个 PR;approve gate 报 Lead,不自 merge/ship。
 
@@ -328,7 +328,9 @@ resume 注记(2026-07-06,前 runner 在 R2 design review 中被 restart):Lead �
 - 解完先跑受两文件影响的测试(StateStore*、post-ship-finalization*、event-route*、phase-orchestrator*)再跑全量,证明「两边语义都活着」而不只是文本无冲突。
 - 产出 1 个 merge commit;绝不 rebase/force-push。
 
-## Step 2 — per-phase model 策略(任务②,TDD)
+## Step 2 — per-phase model 策略(任务②,TDD;Codex design review R1 #1/#2 修订)
+
+> **Codex R1 blocker(已采纳)**:只改 dispatchModel 不够——resolveRoleAdapter(role-adapter-resolver.ts:173-194)里 **Linear label 层先于 dispatchModel**(`sonnet`/`opus`/`fable-1m` 模型 label 与 `codex`/`agy`/`kimi` vendor label 都赢过 dispatchModel;role-adapter-resolver.test.ts:415-423 显式断言)。修法 = phase 段 dispatch 全部带 **ignoreRunnerLabelSelection: true**(FLY-643 既有 seam,auto-QA 已用同款):label 层跳过后 1b 分支 dispatchModel 必中(backend=claude-tmux + phase 表模型),roles config/env 不再参与;issueLabels 照旧流入 BlueprintContext 供路由/线程。副作用兑现:vendor label 无法把 phase 段放上 no-transport 后端(park/wake 需要 mailbox)。
 
 2a. packages/config/src/three-stage-phases.ts:
    - DEFAULT_PHASE_TIER → { design: "heavy", implement: "heavy", qa: "medium" }。
@@ -337,16 +339,24 @@ resume 注记(2026-07-06,前 runner 在 R2 design review 中被 restart):Lead �
    - resolveThreeStageEntry 返回值新增 dispatchModel?: string —— 入场(enteredThreeStage=true)时携带 resolvePhaseModel("design"),把模型主权收进可单测的 policy 模块。
 2c. packages/teamlead/src/bridge/runs-route.ts:579:
    - dispatchModel = dispatchModel ?? resolvePhaseModel("design") → 入场分支内无条件 dispatchModel = entry.dispatchModel(sorter pin 被 phase 表覆盖;注释写明 FLY-887 R2 政策与取舍:特殊模型走 no-three-stage label)。
+   - 同一入场分支的 startDispatcher.start 请求带 **ignoreRunnerLabelSelection: true**(模型/vendor label 对 phase 段失效)。
+2c2. packages/teamlead/src/bridge/phase-orchestrator.ts 三个 spawn 点(交接 :1144、修复 spawn :798/941):startDispatcher.start 请求同样带 **ignoreRunnerLabelSelection: true**(表驱动模型不变,flag 是对 label 层的同款封口)。
+2c3. **retry 路径收归 phase 表**(Codex R1 #2):判别器 = session.**chat_thread_role ∈ {design, implement, qa}**(StateStore durable 三段标记;auto-QA/单 session 行 = 'main',不受影响——「不动 auto-QA」边界由此保证)。对 phase 行的 retry:
+   - actions.ts retry 调用 + retry-dispatcher → run-dispatcher.retry 链路**透传 ignoreRunnerLabelSelection=true**(现状 run-dispatcher.ts:404 对 retry 硬编码 undefined——refreshed label 可绕过持久 dispatch_model,Codex R1 实锤);
+   - dispatchModel = **resolvePhaseModel(chat_thread_role)** 无条件(不用 session.dispatch_model 持久值:修复前 dispatch 的存量 phase 行持久的可能是 sorter pin 或 NULL,重放会再落 Sonnet)。
+   - 非 phase 行(chat_thread_role='main')retry 行为逐字不变(byte-compat 哨兵)。
 2d. 测试(先红后绿):
    - three-stage-phases.test.ts:新表断言(design/implement→claude-fable-5,qa→claude-opus-4-8)+ 「零 Sonnet 不变量」(遍历 THREE_STAGE_PHASE_SEQUENCE,resolvePhaseModel 不含 sonnet)。
    - three-stage-policy.test.ts:entry 携带 design 模型、pin 不影响 entry 决策。
+   - **label-bypass 矩阵(Codex R1)**:三段入场分别带 request model pin sonnet / issue label `sonnet` / label `fable-1m` / vendor label `codex` → dispatch 结果全部 = phase 表模型 + claude-tmux(label 不逃逸);同 label 集合在**非**三段路径(单 session)行为逐字不变(哨兵)。
+   - **retry 矩阵**:失败 phase 行(dispatch_model='claude-fable-5' + 当前 label `sonnet`)retry → 后继仍 phase 表模型;存量 phase 行(dispatch_model=NULL/sorter pin + label `sonnet`)retry → phase 表模型;chat_thread_role='main' 行 retry 行为逐字不变(auto-QA 哨兵)。
 
 ## Step 3 — channel 门控(任务③,TDD)
 
 3a. packages/config/src/types.ts:PipelineConfig 加 three_stage_channels?: string[](JSDoc:absent=不限;空数组=处处 OFF;必须是带引号的字符串,防 YAML 大整数丢精度)。
 3b. packages/config/src/ConfigLoader.ts:pipeline 校验块扩展 —— three_stage_channels 若存在必须是数组、每项必须非空字符串;数字项抛错并提示「Discord channel id 必须加引号」。
 3c. packages/teamlead/src/bridge/three-stage-policy.ts:
-   - ThreeStagePolicyInput / ThreeStageEntryInput 加 dispatchChannelId?: string(JSDoc:server-side 由 leadId → project.leads[].chatChannel 解析,绝不取自 request body)。
+   - ThreeStagePolicyInput / ThreeStageEntryInput 加 dispatchChannelId?: string(JSDoc:server-side 由 leadId → project.leads[].chatChannel 解析,绝不取自 request body。leadId 的可信性由 runs-route 内联 membership 校验保证——runs-route.ts:337-349 显式 leadId 校验 ∈ project.leads、:400-419 缺失时 server-side 自动解析,均在三段式入场判定之前;Codex R1 #3 修正:不是 chat-thread-register 的 validateChatThreadParams)。
    - resolveThreeStagePolicy:three_stage=true 后追加 —— allowlist 未定义→enabled(现状);allowlist 已定义→dispatchChannelId 存在且 ∈ allowlist 才 enabled,否则 disabled(reason 带上未命中详情)。kill-switch 与 no-three-stage label 仍最先短路。
 3d. packages/teamlead/src/bridge/runs-route.ts:入场分支前解析 dispatchChannelId = leadId ? proj?.leads.find(l => l.agentId === leadId)?.chatChannel : undefined,传入 resolveThreeStageEntry。
 3e. .flywheel/config.yaml(repo 内):pipeline 块加 three_stage_channels: ["1516209714097291335"] + 注释(#flywheel-engineer;529 Room 测三段式需加 slot channel 或删 key)。
