@@ -184,17 +184,27 @@ def _p3_hit(cmd: str, depth: int) -> bool:
                 while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "-":
                     f = tokens[i]
                     # env -S / --split-string carries a WHOLE command line in
-                    # one argument (Codex R2) — scan it like a -c payload.
+                    # one argument (Codex R2) — scan it like a -c payload. `S`
+                    # may sit anywhere in a short-option CLUSTER (`-iS`, Codex
+                    # R5): everything after the S is the attached payload, else
+                    # the next token is the payload.
                     payload = None
-                    if f in ("-S", "--split-string") and i + 1 < len(tokens):
+                    if f == "--split-string" and i + 1 < len(tokens):
                         payload = tokens[i + 1]
                         i += 2
                     elif f.startswith("--split-string="):
                         payload = f.split("=", 1)[1]
                         i += 1
-                    elif f.startswith("-S") and len(f) > 2:
-                        payload = f[2:]
-                        i += 1
+                    elif not f.startswith("--") and "S" in f:
+                        rest = f[f.index("S") + 1:]
+                        if rest:
+                            payload = rest
+                            i += 1
+                        elif i + 1 < len(tokens):
+                            payload = tokens[i + 1]
+                            i += 2
+                        else:
+                            i += 1
                     elif f in _WRAPPER_ARG_FLAGS and i + 1 < len(tokens):
                         i += 2
                     else:

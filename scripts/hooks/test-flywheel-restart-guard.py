@@ -173,6 +173,10 @@ MUST_BLOCK = [
     ("timeout 300 node scripts/run-bridge.ts", "P3 timeout duration (backstop)"),
     ("caffeinate -i npx tsx scripts/run-bridge.ts", "P3 caffeinate wrapper"),
     ('bash -lc "command node scripts/run-bridge.ts"', "P3 -c payload with command wrapper"),
+    # Codex R5 MEDIUM: -S inside a short-option CLUSTER (env -iS "…").
+    ('env -iS "node scripts/run-bridge.ts"', "P3 env -iS cluster payload"),
+    ('env -iS"npx tsx scripts/run-bridge.ts"', "P3 env -iS attached cluster payload"),
+    ('/usr/bin/env -iS "node scripts/run-bridge.ts"', "P3 /usr/bin/env -iS cluster"),
     # P3 — shell -c payload recursion (one level), incl. merged flag clusters
     ('bash -c "nohup npx tsx scripts/run-bridge.ts"', "P3 bash -c payload"),
     ("sh -c 'npx tsx scripts/run-bridge.ts'", "P3 sh -c payload"),
