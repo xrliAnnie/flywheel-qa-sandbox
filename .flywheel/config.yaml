@@ -116,10 +116,14 @@ founder_milestone_report:
 
 # Executors: role-based so Tadashi (one engineering Lead) covers multiple roles
 # by issue label — the GeoForge3D "Peter covers many roles" pattern, narrowed by
-# Annie to 3 roles. All agents live under .flywheel/agents/engineering/ —
-# department is inferred from that path and MUST equal the spawning Lead's
-# department ("engineering", Tadashi) for AgentDispatcher step-2a (dept label
-# match) to route. A folder named anything else (e.g. product/) would NOT route.
+# Annie to 3 roles. All agents live under .flywheel/agents/engineering/, so each
+# agent's HOME department is inferred from that path. AgentDispatcher step-2a
+# (dept label match) routes an agent when the spawning Lead's department is in the
+# agent's registered dept set: by default that set is just the path-derived home
+# dept; an agent MAY declare `departments: [...]` to register under additional
+# depts (FLY-901 dual-register — see `product-designer` below). Depts NOT listed
+# are never relaxed. A folder named anything else (e.g. product/) still infers a
+# different home dept.
 #
 # FLY-604: one executor per role, zero label overlap (REPLACE, not augment):
 #   - engineer         REPLACES the former code-executor (+ merges frontend); owns
@@ -149,7 +153,13 @@ agents:
       labels: ["qa", "testing"]
   product-designer:
     agent_file: .flywheel/agents/engineering/product-designer-executor.md
-    department: engineering
+    department: engineering        # home (physical file location — unchanged)
+    # FLY-901 dual-register: this one role serves BOTH the engineering Lead's
+    # doc/design work AND the product Lead's product co-creation. The file stays
+    # under engineering/, but it also registers under `product` so the product
+    # Lead's auto-dispatch (owningDept=product) reaches it in step-2a instead of
+    # falling to the shipped-generic executor. Only the listed depts are relaxed.
+    departments: [engineering, product]
     # doc/docs + design (UX design, migrated from the former docs-executor) +
     # product/UX/PM. research/plan are NOT here — they route to `engineer`.
     match:
