@@ -1,7 +1,7 @@
 # FLY-887 R2 UX Brief — founder 可见变化
 Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-phase-session-并存保活-designimplementqa-不跑完就关qaimplement)
 日期: 2026-07-06
-基于: plan.md R2 节(Codex design review 3 轮 APPROVED)
+基于: plan.md R2 节(resume 后 Codex design review 重跑 2 轮 APPROVED,2026-07-06)
 
 R2 三件事(rebase / per-phase model / channel 门控)对 Annie 直接可见的变化只有两点,且都是 Annie 本人已定的策略(经 Tadashi lead-instruction 34522575 传达):
 
