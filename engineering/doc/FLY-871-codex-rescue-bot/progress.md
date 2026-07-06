@@ -1,9 +1,9 @@
 ---
 issue: FLY-871
 phase: implement
-phaseCursor: 4/6
-updated: 2026-07-06T07:11:24.603Z
-nextStep: W3 C6 runbook additions
+phaseCursor: 6/6
+updated: 2026-07-06T07:14:25.550Z
+nextStep: commit + PR + flywheel-land
 chunks:
   - id: C1-capture-back
     order: 1
@@ -39,8 +39,8 @@ pointers: {}
 ---
 
 # FLY-871 progress
-**phase**: implement (4/6)
-**next**: W3 C6 runbook additions
+**phase**: implement (6/6)
+**next**: commit + PR + flywheel-land
 
 ## chunks
 - ✅ C1-capture-back — 
