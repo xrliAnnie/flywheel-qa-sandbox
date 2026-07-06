@@ -108,6 +108,74 @@ base main）：
   fail-open 符合预期）。`codex-infra-bot-lead` 的 `backend` 字段正确标注为 `codex-app-server`（fleet
   apply 脚本会据此跳过它，走 runtime env 而非 access.json）。
 
+### 8. 真机 Discord E2E（529 QA Room，Annie 补要求，2026-07-06）
+
+第一轮 QA（第 1-7 节）验证了实现正确性但未跑真 Discord 消息往返。Annie 指令要求补跑；本节用真实
+Discord 消息 + 真实运行中的 Claude Code Lead 会话验证，**只测不改实现**。
+
+**拓扑搭建**（无生产 mutation，全部在 `/tmp/flywheel-test-slot-{1,2}` + 独立 `~/.flywheel/pids`/
+`~/.flywheel/comm/test-slot-*`）：用 `scripts/test-deploy.sh 1` / `2`（`--mode slot`，本仓 checkout
+= PR #466 + 已编译 dist）起两个真实 Claude Code Lead：
+- **slot1 = CoS**（`flywheel-test-1`，channel `#cos-test`=`1493080991290626079`，`chatChannel==
+  generalChannel`，镜像生产 Simba）。
+- **slot2 = 非-CoS**（`flywheel-test-2`，自己的 channel `#product-lead-test`=
+  `1493080993173737583`，镜像生产 Peter）。
+
+`test-deploy.sh` 默认每个 slot 只生成单-lead roster（无法体现「同项目多 lead」），故为让 slot2 的
+FLY-898 launcher 逻辑算出真实 `gateNonCoS=true`，**手动 kill 掉 test-deploy 自动起的 slot2 Lead 进程**，
+用与 test-deploy 完全相同的 env（`DISCORD_BOT_TOKEN`/`DISCORD_STATE_DIR`/`BRIDGE_URL` 等，逐一核对
+test-deploy.sh 源码抄出）+ **一份手写的两-lead `FLYWHEEL_PROJECTS`**（`generalChannel=#cos-test`，
+`leads:[flywheel-test-1(chatChannel=core), flywheel-test-2(chatChannel=own)]`）重新 `bash
+claude-lead.sh` 拉起 slot2——这就是**真实的、未经改动的 FLY-898 launcher 代码**（`packages/teamlead/
+scripts/claude-lead.sh` 的 FLY-898 patch 段 + `core-room-gate-cli.js`），只是喂给它一份反映「同项目
+真有 CoS」的 roster（对应 test-deploy.sh harness 本身缺一个「多 lead 单项目」拓扑生成能力的已知局限，
+非 FLY-898 缺陷）。
+
+**实测证据 1 —— launcher 真实执行、access.json 真实被改**（`/tmp/flywheel-test-slot-2/
+lead-fly898.log`）：
+```
+[lead] 09:00:40 FLY-898: applying core-room mention gate for flywheel-test-2 (core 1493080991290626079)
+[core-room-gate] WARNING: --id-only requested but runtime plugin lacks per-group mentionPatterns support
+[core-room-gate]          (~/.claude/plugins/marketplaces/claude-plugins-official/external_plugins/discord/server.ts)
+[core-room-gate]          — applying requireMention:true ONLY (bare-name still passes).
+[core-room-gate] group '1493080991290626079' → requireMention:true (mention-required-only) in access.json (backup: ...)
+```
+`access.json` 改前 `{"1493080991290626079":{"requireMention":false}}` → 改后
+`{"1493080991290626079":{"requireMention":true}}` + 备份文件——**真实文件、真实 diff**，不是模拟。
+这一条本身就与 guardrail #2/#3 的设计意图吻合：当前**生产共享 marketplace 插件**尚未同步 fork
+（`server.ts` 900 行，无 `resolveGroupMentionPatterns`），preflight 正确拒绝写 `mentionPatterns:[]`，
+只给「mention-required-only」部分收益 + loud warn——这正是 plan §3.3 rollout 顺序里描述的、fork 同步
+之前的预期中间态。
+
+**实测证据 2 —— 3 个场景真消息往返**（core room = `#cos-test`，用 `TEST_BOT_TOKEN_1`/`TEST_BOT_TOKEN_2`
+真实 REST 发消息，slot1↔slot2 互相加进对方 `allowBots`）：
+
+| # | 场景 | 发的消息（真实 Discord message id） | slot2（非-CoS）结果 |
+|---|---|---|---|
+| ① | 无-@ 泛消息 | `1523723534919274547`「status check, anything blocking today?」 | **从未被注入 slot2 会话**——横跨后续 ~10 分钟 + 场景②③两条消息先后送达并被处理，scenario①的内容自始至终没有在 slot2 的 transcript 里出现过一次。**零注入零回，符合预期。** |
+| ③ | 真 `<@id>` | `1523723235856875761`「`<@1493072948683341976>` FLY-898 QA scenario 3」 | **注入 + 回复**（回复 msg id `1523724826928218192`）。slot2 自己读取 access.json 确认「`1493080991290626079: requireMention:true`」+ 真 @ 命中 → 判定 PASS。 |
+| ② | 裸名 `TestLeadTwo`（access.json `mentionPatterns:["\\bTestLeadTwo\\b"]`，我手动加的、模拟生产真实存在的名字正则） | `1523724916866814002`「hey TestLeadTwo can you take a look」 | **注入 + 回复**（回复 msg id `1523725048828006400`）。slot2 自己引用 `lead-fly898.log` 的原话「applying requireMention:true ONLY (bare-name still passes)」解释「裸名匹配了全局 mentionPatterns，所以在当前未同步 fork 的状态下这条消息合规地穿过了 delivery gate」——**这正是 guardrail #3 文档过的「mention-required-only」中间态该有的行为，不是 bug**：id-only（mentionPatterns:[]）要等 fork 同步后才会把这条也拦下。 |
+
+对照关系清楚：①（无-@）零注入 vs ②③（有真-@ 或裸名匹配）注入+回复，同一个 slot2 会话、同一个
+channel，行为差异只由消息内容决定——直接证明 `requireMention:true` 这道 gate 真的在拦截，而非
+碰巧沉默。
+
+**CoS 无条件监听（slot1）**：额外用一条无-@ 消息（诊断 ping，slot2 发到 core room）验证 slot1
+（CoS）**无条件收到并以 default-handler 身份回复**（`access.json` 里 `requireMention:false` 从未被
+FLY-898 触碰，byte-compat）；随后 slot1 又收到 slot2 对场景②③的回复，但**正确保持沉默**（peer-bot
+终态自述，非请求，避免 bot-to-bot 回声循环）——这是模型自己的应用层判断，不是 FLY-898 gate 的一部分，
+仅作为「消息确实双向可达」的旁证。
+
+**回归项**（roundtable 名字寻址不受影响 / joycon 型 core-无-CoS fail-open）：**未在本轮额外起第三套
+真机拓扑复测**——这两项已在 §3-5 用真实代码路径 + 真实 discord.js 形状的 fixture 覆盖（plugin fork
+139/139 全量 bun 套件零回归，含显式「roundtable 裸名仍触发」用例；`core-room-gate.test.ts`/
+`core-room-gate-cli.test.ts` 显式覆盖 joycon 型 core-无-CoS→`gateNonCoS:false`），且这两条都是**不受
+FLY-898 改动触碰的路径**（roundtable 走独立 `sharedChannelIds`，joycon 走同一 `resolveCoreRoomGate`
+纯函数,已直接测过其 fail-open 分支）,判断无需额外真机复测。
+
+**清理**：跑完后 `test-teardown.sh` 收回两个 slot（Lead 进程、Bridge、CommDB、tmux 窗口全部清理），
+未留任何常驻进程；`~/.claude/*` 全程未碰。
+
 ## 发现（非阻塞，供参考）
 
 **`codex-lead-tui-runtime.ts` 的 FLY-898 接线缺少专属单测**（plan §2.4 / progress.md chunk 5 原本
@@ -131,6 +199,15 @@ repo**（per-group mentionPatterns，PR #13）三处改动均验证正确、幂�
 仅 4 个失败，且逐一复测确认均为本机环境噪声（TMPDIR overlap / 真实 token 串扰 / 全量并发计时抖动），
 与 FLY-898 diff 完全无关。只读 smoke 对真实生产 `projects.json` 的门控判定与 research.md 的 fleet
 快照完全吻合。
+
+**补充（第二轮，Annie 要求）：真机 Discord E2E 已跑完**（§8）——529 Room 起两个真实 Claude Code Lead
+（CoS + 非-CoS），真实 launcher 代码把非-CoS lead 的 core group 从 `requireMention:false` 真实改成
+`true`（真实 access.json diff + 真实 warning log），随后 3 个场景用真实 Discord 消息验证：无-@ 消息
+零注入 slot2（① 真实静默,横跨多分钟+后续消息佐证不是延迟）、真 `<@id>` 注入+回复（③ PASS）、裸名
+在「未同步 fork」的当前中间态下仍注入+回复（② PASS，符合 guardrail #3 文档过的 mention-required-only
+预期行为,非 bug）。CoS 无条件监听 + 正确的 peer-bot 静默旁证也一并验证。回归项（roundtable/joycon）
+判断已被 §3-5 的真实代码路径测试充分覆盖,未见需要额外真机复测的理由。跑完已 `test-teardown.sh`
+清理两个 slot,生产环境（`~/.claude/*`、真实 leads）全程零接触。
 
 裸名→真@ 的行为收紧已在 `ux-brief.md` 向 Annie 明确说明，PR 正确 hold 在 founder ship-gate 未自动上线。
 
