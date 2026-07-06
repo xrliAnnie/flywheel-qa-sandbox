@@ -1,11 +1,10 @@
 ---
 issue: FLY-887
 phase: implement
-phaseCursor: 3/4
-updated: 2026-07-06T14:45:19.175Z
-nextStep: "Step 4: full-repo test + lint, push, PR #458 refresh, stage
-  pr_created (Codex review), then approve gate --no-block + complete --route
-  needs_review"
+phaseCursor: 4/4
+updated: 2026-07-06T14:49:28.835Z
+nextStep: pr_created reported; awaiting Codex code review gate, then CI green +
+  approve gate --no-block + complete --route needs_review
 chunks:
   - id: reconcile-replay-fix-verify
     order: 1
@@ -31,8 +30,8 @@ pointers: {}
 ---
 
 # FLY-887 progress
-**phase**: implement (3/4)
-**next**: Step 4: full-repo test + lint, push, PR #458 refresh, stage pr_created (Codex review), then approve gate --no-block + complete --route needs_review
+**phase**: implement (4/4)
+**next**: pr_created reported; awaiting Codex code review gate, then CI green + approve gate --no-block + complete --route needs_review
 
 ## chunks
 - ✅ reconcile-replay-fix-verify — 
