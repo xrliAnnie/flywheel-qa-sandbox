@@ -1,20 +1,19 @@
 ---
 issue: FLY-896
 phase: implement
-phaseCursor: 1/2
-updated: 2026-07-06T04:01:49.075Z
-nextStep: QA round 1 FAIL reported (missing terminal period, planted target);
-  parked awaiting RE-TEST wake for round 2 after implement fix
+phaseCursor: 2/2
+updated: 2026-07-06T04:20:30.099Z
+nextStep: QA round 2 PASS emitted; proceeding to approve-gate flow per QA Runner protocol
 chunks: []
 pointers: {}
-handoff: "QA round 1 verdict: FAIL (verify.sh check 3, head 954304e). qa-result
-  --status fail emitted. Parked. On RE-TEST wake: turn-check, re-run
-  qa-fly896/verify.sh, expect ALL PASS, append round 2 to qa-report.md,
-  qa-result --status pass, then approve-gate flow."
+handoff: "QA round 2 verdict: PASS (verify.sh 3/3, head b38ec42). Fix minimal
+  (1-char diff). Turn/wake observability gap logged in qa-report.md (no formal
+  Bridge RE-TEST wake; manual harness substitute used; turn self-check correctly
+  gated both withhold and proceed). qa-result --status pass emitted next."
 ---
 
 # FLY-896 progress
-**phase**: implement (1/2)
-**next**: QA round 1 FAIL reported (missing terminal period, planted target); parked awaiting RE-TEST wake for round 2 after implement fix
+**phase**: implement (2/2)
+**next**: QA round 2 PASS emitted; proceeding to approve-gate flow per QA Runner protocol
 
-**handoff**: QA round 1 verdict: FAIL (verify.sh check 3, head 954304e). qa-result --status fail emitted. Parked. On RE-TEST wake: turn-check, re-run qa-fly896/verify.sh, expect ALL PASS, append round 2 to qa-report.md, qa-result --status pass, then approve-gate flow.
+**handoff**: QA round 2 verdict: PASS (verify.sh 3/3, head b38ec42). Fix minimal (1-char diff). Turn/wake observability gap logged in qa-report.md (no formal Bridge RE-TEST wake; manual harness substitute used; turn self-check correctly gated both withhold and proceed). qa-result --status pass emitted next.
