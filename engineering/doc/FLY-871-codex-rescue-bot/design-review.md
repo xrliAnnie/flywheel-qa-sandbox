@@ -14,3 +14,16 @@ Issue: FLY-871 (https://linear.app/geoforge3d/issue/FLY-871/infraresilience-code
 | R4 | **APPROVED** | 两处非阻塞措辞清理(C9 触发词、§10 bypass 摘要 + research 两处旧简写)—— 已顺手修掉 |
 
 反馈原文:`/tmp/codex-rescue-design-feedback-flywheel-FLY-871-plan-round{1..4}.md`(临时文件,要点已全部折进 plan.md 正文,以 plan.md 为准)。
+
+---
+
+## Re-plan 附加评审:§12 windowed-TUI 显示(2026-07-05,task-115 回炉)
+
+**结论:2 轮 APPROVED**(codex-companion 持久 session,effort xhigh,只评 §12;R1 5 项全采纳、零 reject)。
+
+| 轮 | verdict | 要点 |
+|---|---|---|
+| R1 | CHANGES REQUESTED ×5 | ① W2 episode signature 用 YYYYMMDD 会在 claims.db(sha1(project\|lead\|kind\|signature))吞掉同日第二个真实 episode → 改 episode 级:state-dir 原子写 tui-window-lost-episode.json{startedAt},signature=tui-window-lost:<startedAt>,恢复删文件 ② W1 两个假红探针:layer-2 按 launcher 路径 pgrep 不成立(launcher 末尾 exec node 替换 argv)→ 改 launchctl PID + runtime JS argv 断言;layer-6 「近期 real-TUI-up 日志」不成立(健康 liveness 20s tick 不打日志)→ 降级为诊断层不计退出码 ③ kind 契约写实:lead-alert.sh 硬拒未知 kind → shell 校验表 + LeadAlertNotifier.ts TS 联合类型两侧同加;砍掉不存在的 --help/dry 测试口 → hermetic 真脚本模式 ④ dist runtime 拿不到 repo-root 脚本路径 → wrapper/launcher export FLYWHEEL_ROOT(claude-lead.sh 先例)+ FLYWHEEL_LEAD_ALERT_SH 覆盖口 + fail-soft ⑤ 共享 runtime 默认开会波及未来 Mufasa bootstrap → 默认 OFF、run-codex-infra-bot-tui.sh 显式 =1(InfraBot-only opt-in) |
+| R2 | **APPROVED** | 零 blocking;实现注记:TS kind 加类型后让 typecheck 逼出 exhaustive switch(LeadWatchdog title/body helper);episode 文件写原子 + 只在真转绿后删 |
+
+反馈原文:/tmp/codex-rescue-design-feedback-flywheel-FLY-871-plan-round{1,2}.md(临时文件,要点已折进 plan.md §12,以 plan.md 为准)。thread 归档:companion threadId 未从输出捕获,归档跳过(best-effort;下轮 companion 起新 thread 无影响)。

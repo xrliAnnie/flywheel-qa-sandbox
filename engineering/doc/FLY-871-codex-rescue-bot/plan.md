@@ -223,14 +223,19 @@ fail-open + 零告警接线 → 「静默无 pane」不可见。前任「pane �
 
 **W1 — `verify-windowed-lead.sh`(bring-up 逐层证据门,只读探针)**
 `packages/teamlead/scripts/verify-windowed-lead.sh <project> <leadId> [--label <launchd-label>] [--codex-home <dir>]`,逐层校验、每层独立 PASS/FAIL、非零退出码指明第一个失败层:
-1. launchd job loaded 且 running(`launchctl print gui/$UID/<label>`);
-2. TUI runtime node 进程活(按 launcher 路径 pgrep);
+1. launchd job loaded 且 running(`launchctl print gui/$UID/<label>`),并从输出取 PID;
+2. TUI runtime 进程活:**用第 1 层的 PID 断言其命令行是 `node …/codex-lead-tui-runtime.js`**;
+   无法取 PID 时 fallback = 按 **runtime JS 路径** pgrep。绝不按 launcher 路径 pgrep ——
+   launcher 末尾 `exec node "${TUI_RUNTIME}"`,argv 里不会残留 launcher 路径(Codex R1#2,
+   否则健康部署假红);
 3. daemon socket 存在:`<CODEX_HOME>/app-server-control/app-server-control.sock`;
 4. tmux 窗活:`tmux display-message -p -t '=flywheel:=<project>-<leadId>' '#{window_name} #{pane_dead}'` 回显 `<name> 0`(identity-echo,同 isTuiWindowAlive 语义,bash 复刻不 import);
 5. pane 真跑 codex:`#{pane_current_command}` 匹配 codex(排除 zsh/bash 死壳);
-6. runtime log 里近 N 分钟有 `tui-window: real TUI up` 或 liveness 健康(launchd log 路径可推导)。
-   退出码:0 全绿 / 10+layer 序号。**只读**,不 bootstrap、不开窗、不杀进程。
-   测试:bats/shell 测试 mock `launchctl`/`tmux`/文件系统(同 test-lead-alert-dedup.sh 模式);每层「缺该层 → 恰在该层 FAIL」+ 全绿 fixture。
+6. **诊断层,不计入退出码**(Codex R1#2):展示 launchd log 尾部、有无 fatal、有无
+   `tui-window: real TUI up` 历史行。健康的 20s liveness 循环**不打绿 tick 日志**,
+   「近期无 real-TUI-up 行」不是失败信号 —— 硬门只看 1-5 层活探针。
+   退出码:0 全绿 / 10+layer 序号(仅 1-5 层)。**只读**,不 bootstrap、不开窗、不杀进程。
+   测试:bats/shell 测试 mock `launchctl`/`tmux`/文件系统(同 test-lead-alert-dedup.sh 模式);每层「缺该层 → 恰在该层 FAIL」+ 全绿 fixture + 「日志无近期绿行但 1-5 层全活 → PASS」防假红回归。
 
 **W2 — 「静默无 pane」告警守卫(tui runtime,episode-latch,有界)**
 - 位置:`codex-lead-tui-runtime.ts` 的 liveness 循环(20s cadence,TUI_LIVENESS_INTERVAL_MS)。
@@ -239,17 +244,32 @@ fail-open + 零告警接线 → 「静默无 pane」不可见。前任「pane �
   --severity warning --title ... --body ...`(FLY-83 通道:Bridge-down 也能发,claims.db
   跨进程去重)。选 lead-alert.sh 而非 bot 自己的 Discord 出站:告警通道必须独立于「可能
   正在坏」的那条链。
-- **episode-latch**(FLY-220 教训):进程内每个失败 episode 只发一次;窗恢复(probe 转绿)
-  即清 latch,再次进入失败态 = 新 episode 可再发。signature = `<project>|<leadId>|
-  tui_window_lost|<episode 首次失败日 YYYYMMDD>`,claims.db 兜跨重启重复。
-- `lead-alert.sh` 的 kind 枚举加 `tui_window_lost`(纯 shell 校验表;Bridge 侧 claims 表
-  kind 只是 eventId 的哈希成分,无 schema 变更 —— implement 期核实 Bridge 不 enum 校验,
-  若校验则同步加)。
-- **byte-compat**:守卫只存在于 TUI runtime(生产今天没有任何 TUI runtime 在跑);
-  `FLYWHEEL_TUI_WINDOW_ALERT=0` 旁路(默认 on);fail-open 语义不变 —— Lead 服务从不因
-  开窗失败中断,守卫只把不可见变可见。
-- 测试:注入 fake exec 让 ensure 连续失败 → 恰好 1 次 alert 调用;恢复→再失败 → 第 2 次;
-  K-1 次失败 + 1 次成功 → 0 次;env=0 → 0 次;alert 脚本本身失败不影响 runtime(捕获+log)。
+- **episode-latch,episode 号必须 episode 级而非「日」级**(Codex R1#1:lead-alert.sh 的
+  跨进程 claim = sha1(project|lead|kind|signature),若 signature 用 YYYYMMDD,同日第二个
+  真实 episode 会撞 claims.db 被吞,直接违反「恢复→再失败可再报」):K 次失败首次触发时把
+  `{ startedAt }` 原子写进 `<stateDir>/tui-window-lost-episode.json`,signature =
+  `tui-window-lost:<startedAt ISO/epoch>`;probe 转绿(恢复)即删该文件并清进程内 latch,
+  下一个 episode 生成新 startedAt = 新 signature,可再报。文件跨进程重启保 episode 连续
+  (KeepAlive 重启不重复报同一 episode)。
+- **kind 契约写实**(Codex R1#3):`lead-alert.sh` 对未知 kind 硬拒(校验表在脚本内)——
+  交付 = ① shell 校验表加 `tui_window_lost`;② `LeadAlertNotifier.ts` 的 TS alert-kind
+  联合类型同步加(共享类型面不留 stale,防 queue/drain/测试漂移)。
+- **脚本路径解析写实**(Codex R1#4):runtime 从 `packages/teamlead/dist/lead-backends/codex`
+  跑,repo-root 的 `scripts/lead-alert.sh` 不能按 cwd 相对路径猜。交付 = InfraBot
+  wrapper/launcher export `FLYWHEEL_ROOT`(对齐 claude-lead.sh 已有先例),runtime 解析
+  `${FLYWHEEL_ROOT}/scripts/lead-alert.sh` 绝对路径经 `execFile` 调用;env 缺失或脚本不存在
+  = fail-soft(log warn,不 throw、不影响 Lead 服务);另设 `FLYWHEEL_LEAD_ALERT_SH` 显式
+  覆盖口(测试/非常规布局用)。加契约测试断言 runtime 解析出的路径 == 生产 wrapper 提供的路径。
+- **开关默认 OFF、InfraBot launcher opt-in**(Codex R1#5 拍定):守卫在共享 TUI runtime 里
+  默认 **off**(`FLYWHEEL_TUI_WINDOW_ALERT` 未设 = 现状,任何未来 Mufasa/task-114 bootstrap
+  字节兼容零波及);`run-codex-infra-bot-tui.sh` 显式 `FLYWHEEL_TUI_WINDOW_ALERT=1` ——
+  本 issue 只为 InfraBot 开。fleet 级默认开 = 将来单独决策(follow-up,归 Lead)。
+  fail-open 语义不变 —— Lead 服务从不因开窗失败中断,守卫只把不可见变可见。
+- 测试:注入 fake exec 让 ensure 连续失败 → 恰好 1 次 alert 调用;恢复→再失败 → 第 2 次
+  (不同 signature);K-1 次失败 + 1 次成功 → 0 次;env 未设 → 0 次;alert 调用失败/exit 2
+  (队列 spill)不影响 runtime(捕获+log)。lead-alert.sh 侧走既有 hermetic 真脚本模式
+  (fake curl + 临时 projects.json + 隔离 FLYWHEEL_CLAIMS_DB,真跑脚本):同 episode 二次
+  调用被 claims 吞、恢复后新 episode 放行、同日两 episode 均放行。
 
 **W3 — C6 runbook 增补(bring-up 协议 + bootout 恢复纪律)**
 - §5 装 plist 步后插「逐层验证」:每层 = W1 脚本对应层 + 期望输出;最后加 cmux 目视
@@ -280,7 +300,9 @@ fail-open + 零告警接线 → 「静默无 pane」不可见。前任「pane �
   按 W1 逐层门验,第一个失败层即精确定位;不盲装。
 - tui_window_lost 告警误报(tmux 短暂不可达)→ K=9 连续失败(≈3 分钟)+ episode-latch +
   claims.db 三层有界;最坏 = 每 episode 一条 warning。
-- lead-alert.sh 接口变化 → W2 测试用真脚本 --help/dry 路径断言参数契约(不 mock 掉接口本身)。
+- lead-alert.sh 接口变化 → W2 测试**真跑脚本**(hermetic:fake curl + 临时 projects.json +
+  隔离 FLYWHEEL_CLAIMS_DB,同 test-lead-alert-dedup.sh 模式)断言参数契约;脚本没有 dry-run
+  flag,不发明、不 mock 掉接口本身(Codex R1#3)。
 
 ### 12.5 交付顺序与 gate
 
