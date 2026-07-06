@@ -94,7 +94,13 @@ export type AlertEventType =
 	// FLY-871 R2/C8: a runner sitting at a login prompt (auth/session expired) —
 	// DISTINCT from the lead `login_expired` so AlertChannelHub.reconcile resolves
 	// it by the RUNNER pane, and the R3 rescue keys on this event's still-pending row.
-	| "runner_login_expired";
+	| "runner_login_expired"
+	// FLY-871 §12 W2: a windowed (cmux TUI) Codex Lead's founder-facing pane could
+	// not be (re)created after K consecutive liveness checks — "silent no-pane". NOT
+	// emitted by the TS LeadWatchdog / notifier: it is fired ONLY by the runtime's
+	// guard via scripts/lead-alert.sh (Discord-independent). Present in the union so
+	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
+	| "tui_window_lost";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 

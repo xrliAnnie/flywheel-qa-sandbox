@@ -19,7 +19,7 @@
 # Usage:
 #   lead-alert.sh \
 #     --lead <lead-id> --project <project-name> \
-#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error> \
+#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost> \
 #     --severity <info|warning|severe> \
 #     --title <string> --body <string> \
 #     [--signature <string>]
@@ -70,7 +70,10 @@ if [ -z "$LEAD_ID" ] || [ -z "$PROJECT_NAME" ] || [ -z "$KIND" ] || [ -z "$TITLE
 fi
 
 case "$KIND" in
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error) ;;
+  # FLY-871 §12 W2: tui_window_lost — the windowed Codex Lead's silent-no-pane
+  # guard fires this via lead-alert.sh (Discord-independent path). Kept in the TS
+  # AlertEventType union too (LeadAlertNotifier.ts) so the shared type face has no drift.
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
     exit 1

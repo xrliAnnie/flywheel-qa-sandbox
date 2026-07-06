@@ -112,3 +112,80 @@ Issue: FLY-871 (https://linear.app/geoforge3d/issue/FLY-871/infraresilience-code
 4. **v2 hook**:若出 `claude usage --json` 或用量端点,账本 `refreshAccountBalance(account)` seam 采纳之(A.4 安全前提);selection 函数已按账本 rank 留口。
 
 **Sources**: statusLine `rate_limits` fields — code.claude.com/docs/en/statusline · feature request #44328 (无端点) — github.com/anthropics/claude-code/issues/44328 · Claude Code usage limits 2026 — morphllm.com / truefoundry.com · Rate limits — platform.claude.com/docs/en/api/rate-limits
+
+---
+
+## R-10 windowed-TUI 显示:取证 + 机制审计(re-plan 回炉,2026-07-05,基于 task-115)
+
+> 背景:R2/R3 merge 后的部署尝试中,前任 runner 报告「launchd 链跑的是 headless codex
+> app-server(无 TTY),可见 pane 是另一个没自动化的东西」,而 Annie 记得 TUI 以前 work
+> 过。本节 = Fable runner 对整条 windowed 链路的独立真机取证(所有结论均可复现验证)。
+
+### R-10.1 pane 自动化在代码里已存在且机制健全(驳「pane 没自动化」)
+
+- `packages/teamlead/src/lead-backends/codex/tui-window.ts`(FLY-259 PR-C):
+  `ensureTuiWindow()` 在 tmux session **`flywheel`** 里开名为 `<project>-<leadId>` 的窗口,
+  跑真 `codex resume --remote unix://$CODEX_HOME/app-server-control/app-server-control.sock`
+  (`-C <cwd>` 杀 cwd 菜单;full-access 时带 `-s workspace-write`;`approval_policy="never"`
+  命令行 pin)。窗名 = FLY-169 MANAGED-title 硬契约。
+- `codex-lead-tui-runtime.ts`:thread id 确定后 ensure 窗口;每 20s(`TUI_LIVENESS_INTERVAL_MS`)
+  liveness probe(identity-echo 防 tmux 目标解析漂移),确认死窗才重建;generation stop /
+  shutdown 时 `killTuiWindow` 收尾,不留孤儿 pane。
+- **headless daemon 是架构的一半而非缺陷**:`codex remote-control` daemon 由 node runtime
+  spawn,无 TTY、也不需要;pane 的 pty 由 **tmux 提供**(`new-window` 内起 TUI 客户端 attach
+  同一 daemon)。launchd 环境无 TTY **不构成障碍**。
+- session `flywheel` = 所有 cmux Lead 视图共享的 **session group** 基座(真机核实:
+  `tmux ls` 显示 `flywheel: 15 windows (group flywheel)`,`cmux-flywheel-<lead>` 等视图
+  session 全挂同一 group;15 窗 = zsh + 14 个 Claude lead 窗,窗名同款 `<project>-<leadId>`
+  形态)。group 里新增窗口对所有 cmux 视图可见 → **开进 session `flywheel` = cmux 可见**。
+- socket 无分裂风险(本机核实):主 tmux server 在默认 socket
+  `/private/tmp/tmux-501/default`,`TMUX_TMPDIR` 未设;launchd 起的 `tmux`(同 uid、无
+  TMUX_TMPDIR 覆盖)命中**同一** server。InfraBot plist 模板无任何 env 覆盖(已读)。
+
+### R-10.2 「TUI worked before」属实(真机证据)
+
+- Mufasa 生产 plist(`com.flywheel.lead.growth-mufasa-lead.plist`,mtime Jun 22 00:50 =
+  FLY-398 TUI flip)ProgramArguments 指向 **windowed wrapper**
+  `flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh` → `run-codex-lead-mufasa-tui-fullaccess.sh`
+  → 同一 TUI runtime。内容正确,不存在「plist 指错 headless launcher」的问题。
+- `~/.flywheel/state/codex-lead/mufasa-lead/` 最后活动 **Jun 29 13:39**,晚于本次 boot
+  (Jun 28 17:17)→ Mufasa windowed TUI 在 launchd 下**这次 boot 里真跑过**。
+
+### R-10.3 真正的 regression:OPS 层,不是代码层
+
+- `launchctl list` 真机核实:**growth-mufasa-lead 是唯一缺席的 lead job**(其余十几个
+  `com.flywheel.lead.*` 全 loaded);`launchctl print-disabled gui/501` 为**空** → 不是被
+  disable,是 **Jun 29 前后被 bootout 后再没 bootstrap 回来**(时间与 task-114「June-28
+  63-CPU-hr stale growth-Mufasa orphan」清理动作吻合;bootout 不跨 login 持久,但本次
+  login 之后发生的 bootout 要等下次 login 才会被 RunAtLoad 兜回)。
+- 自那以后**没有任何进程再走过 TUI 开窗路径**;Jul 1 cmux/tmux session 重建(sessions
+  created Jul 1 22:48)把旧 pane 也清了。「看起来坏了」实为「唯一参照物下线了」。
+- InfraBot 侧:`~/.flywheel/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh` ✅、
+  `~/.codex-infra-bot/`(auth.json + standalone codex)✅、plist **模板** ✅(repo
+  `packages/teamlead/scripts/templates/`),但 plist **从未装进** `~/Library/LaunchAgents/`、
+  state dir `~/.flywheel/state/codex-lead/codex-infra-bot-lead` **不存在**、launchd log
+  不存在 → **InfraBot 的 TUI runtime 从未真正跑过**。R2/R3 QA 报告明文「C6 部署物料……
+  不在本次测试范围」→ windowed 显示对 InfraBot 是「设计了但从未被真机证明」。
+- 前任「launchd 链跑 headless codex app-server」观察的最可能来源:把 Claude Code
+  codex-companion 的十几个常驻 `app-server-broker.mjs` 进程(真机现在就有)或 FLY-350
+  时代的 headless launcher(`run-codex-lead-mufasa-fullaccess.sh`,仍保留作 rollback 资产)
+  误当成了 InfraBot/Mufasa 的生产链;实际生产 plist 均指向 TUI wrapper。
+
+### R-10.4 残余薄弱点(re-plan 要治的)
+
+1. **静默无 pane 洞**:`ensureTuiWindow` 特意 fail-open(可见性损失不伤 Lead 服务),失败
+   只写 launchd log —— 对普通 Lead 合理,但对「founder 必须看得见」的 Infra Bot,静默
+   无 pane 正是本次事故形态。runtime 目前**零**告警接线(已 grep 核实)。
+   → 接 `scripts/lead-alert.sh`(FLY-83;Bridge-down 也能发、claims.db 去重、有界)。
+2. **bootstrap 纪律缺口**:bootout 后无人负责 bootstrap 回来、无巡检发现「该 loaded 的
+   lead job 不在 launchd 里」;C6 runbook 只有 install 步、没有 verify/recovery 步。
+3. **bring-up 无证据门**:C6 enable 序里「装 launchd 起 bot」一步没有逐层验证协议
+   (loaded → runtime → daemon sock → 窗活 → pane cmd=codex → cmux 目视),失败模式全靠
+   事后人肉扒 —— 前任 runner 的误诊正是这个缺口的产物。
+4. **待真机复证项**(implement 期,Annie 解锁后):`codex resume --remote` 在当前 codex
+   版本下 attach 行为、daemon sock 就绪时序(窗比 sock 先起会不会 dead-pane 循环)——
+   机制 6 月在 Mufasa 上被证明过,但 codex 二进制/环境自那以后有升级,需按协议重证。
+
+**Sources**: 全部一手真机取证(tmux ls / launchctl list + print-disabled / plist plutil -p /
+state-dir mtime / wrapper+launcher+template 源码 / tui-window.ts + codex-lead-tui-runtime.ts
+/ qa-report-r2r3.md §范围)。

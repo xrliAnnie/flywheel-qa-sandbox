@@ -38,6 +38,17 @@ if [ ! -f "${TUI_HOME_SH}" ]; then
 	exit 1
 fi
 
+# FLY-871 §12 W2 — repo root, so the dist TUI runtime can resolve
+# scripts/lead-alert.sh for its silent-no-pane guard (the runtime runs from
+# dist/... and cannot guess the repo root from cwd; claude-lead.sh precedent).
+# Derived from the DEPLOYED main dist so the resolved script matches production.
+FLYWHEEL_ROOT="$(cd "${TEAMLEAD_ROOT}/../.." && pwd)"
+export FLYWHEEL_ROOT
+# Opt IN to the silent-no-pane guard — this bot is the one whose founder-facing
+# pane MUST be visible (FLY-398). Default OFF in the shared runtime, so any other
+# TUI Lead (future Mufasa/task-114 bootstrap) is byte-compat.
+export FLYWHEEL_TUI_WINDOW_ALERT=1
+
 # ── Infra Bot identity (matches ~/.flywheel/projects.json: flywheel / codex-infra-bot-lead) ──
 export FLYWHEEL_LEAD_ID="codex-infra-bot-lead"
 export FLYWHEEL_PROJECT_NAME="flywheel"
