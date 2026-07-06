@@ -1,13 +1,13 @@
 ---
 issue: FLY-913
-phase: design
-phaseCursor: 5/5
-updated: 2026-07-06T20:27:08.243Z
-nextStep: design complete (codex APPROVED 3 rounds); hand off to implement phase
+phase: implement
+phaseCursor: 0/5
+updated: 2026-07-06T20:34:33.783Z
+nextStep: "C1 TDD: write red pattern-matrix tests for flywheel-restart-guard.py"
 chunks: []
 pointers: {}
 ---
 
 # FLY-913 progress
-**phase**: design (5/5)
-**next**: design complete (codex APPROVED 3 rounds); hand off to implement phase
+**phase**: implement (0/5)
+**next**: C1 TDD: write red pattern-matrix tests for flywheel-restart-guard.py
