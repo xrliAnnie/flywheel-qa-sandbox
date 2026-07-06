@@ -1,9 +1,9 @@
 ---
 issue: FLY-871
 phase: implement
-phaseCursor: 0/6
-updated: 2026-07-06T07:01:21.619Z
-nextStep: W2 core module tui-window-alert.ts
+phaseCursor: 2/6
+updated: 2026-07-06T07:07:15.843Z
+nextStep: W1 verify-windowed-lead.sh + test
 chunks:
   - id: C1-capture-back
     order: 1
@@ -39,8 +39,8 @@ pointers: {}
 ---
 
 # FLY-871 progress
-**phase**: implement (0/6)
-**next**: W2 core module tui-window-alert.ts
+**phase**: implement (2/6)
+**next**: W1 verify-windowed-lead.sh + test
 
 ## chunks
 - ✅ C1-capture-back — 
