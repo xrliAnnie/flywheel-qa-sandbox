@@ -36,6 +36,13 @@ CREATE TABLE IF NOT EXISTS runner_declared_states (
   expires_at    INTEGER,
   updated_at    INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS three_stage_turn (
+  issue_id        TEXT PRIMARY KEY,
+  holder_exec_id  TEXT NOT NULL,
+  phase           TEXT NOT NULL,
+  epoch           INTEGER NOT NULL,
+  granted_at      INTEGER NOT NULL
+);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_unique_response ON messages(parent_id) WHERE type = 'response';
 CREATE INDEX IF NOT EXISTS idx_messages_to_agent ON messages(to_agent, type, created_at);
 CREATE INDEX IF NOT EXISTS idx_messages_parent ON messages(parent_id);
@@ -58,6 +65,22 @@ export interface RunnerDeclaredState {
 	created_at: number;
 	expires_at: number | null;
 	updated_at: number;
+}
+
+/**
+ * FLY-887: the three-stage TURN — which phase-session (identified by its
+ * `holder_exec_id`) currently holds the exclusive right to touch the shared
+ * worktree for `issue_id`. `epoch` monotonically increases on every re-grant so
+ * a late/duplicated wake carrying a stale epoch can be recognized as such. Only
+ * the Bridge writes this table (`grantTurn`); runners read it (`getTurn` via the
+ * `turn` subcommand) before writing. Timestamps are epoch milliseconds.
+ */
+export interface ThreeStageTurn {
+	issue_id: string;
+	holder_exec_id: string;
+	phase: string;
+	epoch: number;
+	granted_at: number;
 }
 
 export class CommDB {
@@ -624,6 +647,67 @@ export class CommDB {
 		if (!row) return null;
 		if (row.expires_at !== null && row.expires_at <= nowMs) return null;
 		return row;
+	}
+
+	// ── FLY-887: three-stage TURN (single-writer exclusive worktree activation) ──
+
+	/**
+	 * FLY-887: grant the shared-worktree TURN for `issueId` to `holderExecId`
+	 * (phase = design|implement|qa). Bridge is the ONLY caller. Overwrites any
+	 * prior holder and monotonically increments `epoch` so a late/duplicated wake
+	 * carrying a stale epoch is recognizable. A fresh grant starts at epoch 1.
+	 * `grantedAtMs` is epoch milliseconds (injected clock).
+	 */
+	grantTurn(
+		issueId: string,
+		holderExecId: string,
+		phase: string,
+		grantedAtMs: number,
+	): void {
+		this.db
+			.prepare(
+				`INSERT INTO three_stage_turn
+           (issue_id, holder_exec_id, phase, epoch, granted_at)
+         VALUES (?, ?, ?, 1, ?)
+         ON CONFLICT(issue_id) DO UPDATE SET
+           holder_exec_id = excluded.holder_exec_id,
+           phase = excluded.phase,
+           epoch = three_stage_turn.epoch + 1,
+           granted_at = excluded.granted_at`,
+			)
+			.run(issueId, holderExecId, phase, grantedAtMs);
+	}
+
+	/**
+	 * FLY-887: read the current TURN for `issueId`, or null if none.
+	 *
+	 * Readonly-tolerant (mirrors `getEffectiveDeclaredState`): a DB whose writer
+	 * never created this table (openReadonly skips schema) yields "no such table"
+	 * — that must read as "no TURN", never throw. Any other error propagates.
+	 */
+	getTurn(issueId: string): ThreeStageTurn | null {
+		let row: ThreeStageTurn | undefined;
+		try {
+			row = this.db
+				.prepare(
+					`SELECT issue_id, holder_exec_id, phase, epoch, granted_at
+           FROM three_stage_turn WHERE issue_id = ?`,
+				)
+				.get(issueId) as ThreeStageTurn | undefined;
+		} catch (err) {
+			if (/no such table: three_stage_turn/i.test((err as Error).message)) {
+				return null;
+			}
+			throw err;
+		}
+		return row ?? null;
+	}
+
+	/** FLY-887: remove the TURN row for `issueId` (ship-time cleanup). Idempotent. */
+	deleteTurn(issueId: string): void {
+		this.db
+			.prepare("DELETE FROM three_stage_turn WHERE issue_id = ?")
+			.run(issueId);
 	}
 
 	// ── Session Registry (Phase 2) ──

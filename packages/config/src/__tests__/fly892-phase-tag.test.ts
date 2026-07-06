@@ -44,9 +44,11 @@ describe("phaseMessageTag (FLY-892)", () => {
 		expect(phaseMessageTag("qa", "claude-sonnet-5")).toBe("[QA·Sonnet] ");
 	});
 	it("falls back to the phase's planned tier when runner_model is absent", () => {
+		// FLY-887 R2 (Annie's 2026-07-05 table): design/implement → Fable, qa →
+		// Opus — the founder-visible phase tags follow the new table (ux-brief).
 		expect(phaseMessageTag("design")).toBe("[设计·Fable] ");
-		expect(phaseMessageTag("implement", null)).toBe("[实现·Opus] ");
-		expect(phaseMessageTag("qa", undefined)).toBe("[QA·Sonnet] ");
+		expect(phaseMessageTag("implement", null)).toBe("[实现·Fable] ");
+		expect(phaseMessageTag("qa", undefined)).toBe("[QA·Opus] ");
 	});
 	it("is EMPTY for a main / non-phase role (byte-compat)", () => {
 		expect(phaseMessageTag("main")).toBe("");

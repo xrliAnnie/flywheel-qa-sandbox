@@ -221,3 +221,85 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 		expect(r.json.success).toBe(false);
 	});
 });
+
+/**
+ * FLY-887 R2 (Codex design R1 #2) — the retry matrix: PHASE-row retries stay
+ * under the phase table.
+ *
+ * Discriminator = the durable `chat_thread_role` three-stage marker. Phase
+ * rows: `dispatchModel` = resolvePhaseModel(role) UNCONDITIONALLY (never the
+ * persisted `dispatch_model` — a pre-fix phase row may have persisted a sorter
+ * pin or NULL, and replaying it would put the phase back on Sonnet) +
+ * `ignoreRunnerLabelSelection: true` (a refreshed `sonnet`/vendor label cannot
+ * bypass the table either — run-dispatcher previously hardcoded undefined).
+ * Non-phase rows (`chat_thread_role='main'`, incl. auto-QA): byte-compatible.
+ */
+describe("POST /api/actions/retry — FLY-887 R2 phase-row model matrix", () => {
+	it("a failed phase row (persisted phase model + sonnet label) retries on the phase table", async () => {
+		store.upsertSession({
+			execution_id: "phase-impl-1",
+			issue_id: "issue-887",
+			project_name: "fly245-d2-route-test",
+			status: "failed",
+			chat_thread_role: "implement",
+			dispatch_model: "claude-fable-5",
+			issue_labels: JSON.stringify(["sonnet"]),
+		});
+		const r = await postRetry({ execution_id: "phase-impl-1" });
+		expect(r.status).toBe(200);
+		expect(dispatched).toHaveLength(1);
+		expect(dispatched[0]?.dispatchModel).toBe("claude-fable-5");
+		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBe(true);
+	});
+
+	it("a LEGACY phase row (persisted sorter pin = sonnet) retries on the phase table, NOT the pin", async () => {
+		// The pre-fix bug shape: a phase dispatched before FLY-887 R2 persisted
+		// the sorter's pin. Replaying session.dispatch_model would re-land the
+		// phase on Sonnet — the table must win.
+		store.upsertSession({
+			execution_id: "phase-qa-1",
+			issue_id: "issue-887",
+			project_name: "fly245-d2-route-test",
+			status: "failed",
+			chat_thread_role: "qa",
+			dispatch_model: "claude-sonnet-5",
+			issue_labels: JSON.stringify(["sonnet"]),
+		});
+		const r = await postRetry({ execution_id: "phase-qa-1" });
+		expect(r.status).toBe(200);
+		expect(dispatched[0]?.dispatchModel).toBe("claude-opus-4-8"); // qa → Opus
+		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBe(true);
+	});
+
+	it("a legacy phase row with NO persisted dispatch model still retries on the phase table", async () => {
+		store.upsertSession({
+			execution_id: "phase-design-1",
+			issue_id: "issue-887",
+			project_name: "fly245-d2-route-test",
+			status: "failed",
+			chat_thread_role: "design",
+		});
+		const r = await postRetry({ execution_id: "phase-design-1" });
+		expect(r.status).toBe(200);
+		expect(dispatched[0]?.dispatchModel).toBe("claude-fable-5"); // design → Fable
+		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBe(true);
+	});
+
+	it("BYTE-COMPAT sentinel: a main-row retry (auto-QA / single-session shape) is untouched", async () => {
+		store.upsertSession({
+			execution_id: "main-1",
+			issue_id: "issue-main",
+			project_name: "fly245-d2-route-test",
+			status: "failed",
+			chat_thread_role: "main",
+			dispatch_model: "claude-sonnet-5",
+			issue_labels: JSON.stringify(["sonnet"]),
+		});
+		const r = await postRetry({ execution_id: "main-1" });
+		expect(r.status).toBe(200);
+		// Exactly the pre-FLY-887 behavior: persisted dispatch model reused,
+		// label layer NOT bypassed.
+		expect(dispatched[0]?.dispatchModel).toBe("claude-sonnet-5");
+		expect(dispatched[0]?.ignoreRunnerLabelSelection).toBeUndefined();
+	});
+});

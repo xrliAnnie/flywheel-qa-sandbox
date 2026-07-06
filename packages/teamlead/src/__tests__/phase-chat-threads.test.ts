@@ -208,7 +208,7 @@ describe("FLY-892 one issue = one thread (converge)", () => {
 		});
 	});
 
-	describe("(c2) getPhaseSessionsForIssue (pipeline-header data source)", () => {
+	describe("(c2) getLatestPhaseSessionsForIssue (pipeline-header data source)", () => {
 		it("returns the latest session per phase role, keyed on chat_thread_role", () => {
 			store.upsertSession({
 				execution_id: "e-design",
@@ -236,7 +236,7 @@ describe("FLY-892 one issue = one thread (converge)", () => {
 				status: "running",
 			});
 
-			const rows = store.getPhaseSessionsForIssue("FLY-892");
+			const rows = store.getLatestPhaseSessionsForIssue("FLY-892");
 			expect(rows.map((s) => s.chat_thread_role).sort()).toEqual([
 				"design",
 				"implement",
@@ -262,7 +262,7 @@ describe("FLY-892 one issue = one thread (converge)", () => {
 				chat_thread_role: "implement",
 				last_activity_at: "2026-07-05T03:00:00Z",
 			});
-			const rows = store.getPhaseSessionsForIssue("FLY-892");
+			const rows = store.getLatestPhaseSessionsForIssue("FLY-892");
 			expect(rows).toHaveLength(1);
 			expect(rows[0]?.execution_id).toBe("e-impl-2");
 		});
@@ -273,7 +273,7 @@ describe("FLY-892 one issue = one thread (converge)", () => {
 				project_name: "flywheel",
 				status: "running",
 			});
-			expect(store.getPhaseSessionsForIssue("FLY-500")).toHaveLength(0);
+			expect(store.getLatestPhaseSessionsForIssue("FLY-500")).toHaveLength(0);
 		});
 	});
 });

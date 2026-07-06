@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProjectEntry } from "../../ProjectConfig.js";
 import {
 	PhaseOrchestrator,
 	type PhaseOrchestratorDeps,
 	type PhaseSession,
 	type ThreeStageVerdictIntent,
 } from "../phase-orchestrator.js";
+import {
+	resolveHandoffDispatchChannelId,
+	resolveThreeStagePolicy,
+} from "../three-stage-policy.js";
 
 /**
  * Stateful qaVerdicts fake (FLY-859): patchIntent merges into an in-memory
@@ -25,6 +30,7 @@ function makeQaVerdicts() {
 			},
 		),
 		countImplementPhases: vi.fn(() => 1),
+		recordFixRound: vi.fn(() => 1),
 		getActiveImplementSession: vi.fn((): PhaseSession | undefined => undefined),
 		listVerdictEventCandidates: vi.fn((): PhaseSession[] => []),
 		getLatestQaResultEvent: vi.fn(() => undefined),
@@ -39,15 +45,40 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 	const capturePhaseHeadSha = vi.fn(async () => "deadbeefcafe1234");
 	const closePhaseRunner = vi.fn(async () => {});
 	const alertLeadPipelineError = vi.fn(async () => {});
+	// FLY-887 keep-alive effects (defaults — legacy tests never call them).
+	const probePhaseAlive = vi.fn(async () => "alive" as const);
+	const parkPhaseRunner = vi.fn(async () => {});
+	const wakePhaseRunner = vi.fn(async () => ({ ok: true }));
+	const assertPhaseWorktreeReady = vi.fn(async () => ({ ok: true }));
 	const listStrandedDesignPhases = vi.fn((): PhaseSession[] => []);
 	const { qaVerdicts, intents } = makeQaVerdicts();
 	const resolveLeadId = vi.fn((): string | undefined => "eng-lead");
+	// FLY-887: default keep-alive OFF so the existing tests validate the LEGACY
+	// close-and-respawn path (the byte-compat sentinel). Keep-alive tests override.
+	const keepAliveEnabled = vi.fn(() => false);
+	const getAlivePhaseSession = vi.fn((): PhaseSession | undefined => undefined);
+	const hasShipFinalizationClaim = vi.fn((): boolean => false);
+	const refreshPhaseStatusLine = vi.fn(async (): Promise<void> => {});
+	const grantTurn = vi.fn(() => {});
 	const deps: PhaseOrchestratorDeps = {
 		startDispatcher: { start },
-		effects: { capturePhaseHeadSha, closePhaseRunner, alertLeadPipelineError },
+		effects: {
+			capturePhaseHeadSha,
+			closePhaseRunner,
+			alertLeadPipelineError,
+			probePhaseAlive,
+			parkPhaseRunner,
+			wakePhaseRunner,
+			assertPhaseWorktreeReady,
+		},
 		resolveThreeStage: () => ({ enabled: true }),
 		listStrandedDesignPhases,
 		resolveLeadId,
+		keepAliveEnabled,
+		getAlivePhaseSession,
+		hasShipFinalizationClaim,
+		refreshPhaseStatusLine,
+		grantTurn,
 		qaVerdicts,
 		...over,
 	};
@@ -57,8 +88,17 @@ function makeDeps(over: Partial<PhaseOrchestratorDeps> = {}) {
 		capturePhaseHeadSha,
 		closePhaseRunner,
 		alertLeadPipelineError,
+		probePhaseAlive,
+		parkPhaseRunner,
+		wakePhaseRunner,
+		assertPhaseWorktreeReady,
 		listStrandedDesignPhases,
 		resolveLeadId,
+		keepAliveEnabled,
+		getAlivePhaseSession,
+		hasShipFinalizationClaim,
+		refreshPhaseStatusLine,
+		grantTurn,
 		qaVerdicts,
 		intents,
 	};
@@ -77,7 +117,7 @@ function session(over: Partial<PhaseSession>): PhaseSession {
 describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 	beforeEach(() => vi.clearAllMocks());
 
-	it("Design done → captures SHA, closes design, starts Implement (Opus) on branch B", async () => {
+	it("Design done → captures SHA, closes design, starts Implement (Fable) on branch B", async () => {
 		const { deps, start, capturePhaseHeadSha, closePhaseRunner } = makeDeps();
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "design", status: "design_done" }),
@@ -88,20 +128,25 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 		expect(start.mock.calls[0]![0]).toMatchObject({
 			issueId: "FLY-793",
 			sessionRole: "implement",
-			dispatchModel: "claude-opus-4-8",
+			// FLY-887 R2 (Annie's table): implement runs on Fable, and the label
+			// layer is bypassed so no issue label can override the phase model.
+			dispatchModel: "claude-fable-5",
+			ignoreRunnerLabelSelection: true,
 			startPoint: "deadbeefcafe1234",
 			shareParentBranch: true,
 		});
 	});
 
-	it("Implement awaiting_review → starts QA (Sonnet) on the same branch", async () => {
+	it("Implement awaiting_review → starts QA (Opus) on the same branch", async () => {
 		const { deps, start } = makeDeps();
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "implement", status: "awaiting_review" }),
 		);
 		expect(start.mock.calls[0]![0]).toMatchObject({
 			sessionRole: "qa",
-			dispatchModel: "claude-sonnet-5",
+			// FLY-887 R2 (Annie's table): QA runs on Opus — never Sonnet.
+			dispatchModel: "claude-opus-4-8",
+			ignoreRunnerLabelSelection: true,
 			shareParentBranch: true,
 		});
 	});
@@ -155,8 +200,9 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 			resolveThreeStage: () => ({ enabled: true }),
 			listStrandedDesignPhases: () => [],
 			resolveLeadId: () => "eng-lead",
+			refreshPhaseStatusLine: vi.fn(async () => {}),
 			qaVerdicts: makeQaVerdicts().qaVerdicts,
-		};
+		} as PhaseOrchestratorDeps;
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "design", status: "design_done" }),
 		);
@@ -169,19 +215,9 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 		const start = vi.fn(async () => {
 			throw new Error("dispatch boom");
 		});
-		const alertLeadPipelineError = vi.fn(async () => {});
-		const deps: PhaseOrchestratorDeps = {
+		const { deps, alertLeadPipelineError } = makeDeps({
 			startDispatcher: { start },
-			effects: {
-				capturePhaseHeadSha: vi.fn(async () => "abc123"),
-				closePhaseRunner: vi.fn(async () => {}),
-				alertLeadPipelineError,
-			},
-			resolveThreeStage: () => ({ enabled: true }),
-			listStrandedDesignPhases: () => [],
-			resolveLeadId: () => "eng-lead",
-			qaVerdicts: makeQaVerdicts().qaVerdicts,
-		};
+		});
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "design", status: "design_done" }),
 		);
@@ -323,7 +359,10 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 				expect(h.start.mock.calls[0]![0]).toMatchObject({
 					issueId: "FLY-793",
 					sessionRole: "implement",
-					dispatchModel: "claude-opus-4-8",
+					// FLY-887 R2 (Annie's table): implement-fix runs on Fable, label
+					// layer bypassed.
+					dispatchModel: "claude-fable-5",
+					ignoreRunnerLabelSelection: true,
 					startPoint: "deadbeefcafe1234",
 					shareParentBranch: true,
 					// FLY-856: resolved live via resolveLeadId, never a phantom
@@ -805,5 +844,133 @@ describe("handoff leadId resolution (combined-QA FLY-855)", () => {
 		]);
 		await new PhaseOrchestrator(deps).reconcileOnStartup();
 		expect(start.mock.calls[0]![0]).toMatchObject({ leadId: "eng-lead" });
+	});
+});
+
+/**
+ * FLY-902: with `three_stage_channels` configured, the handoff-side policy
+ * check MUST see the dispatching Lead's chatChannel. The shipped R2 wiring
+ * (plugin.ts's resolveThreeStage closure) omitted dispatchChannelId, so the
+ * policy read the channel as unresolved, fail-closed, and every handoff
+ * silently no-oped — design stuck at design_done forever, zero logs.
+ *
+ * These tests compose resolveThreeStage from the REAL production pieces
+ * (resolveThreeStagePolicy + resolveHandoffDispatchChannelId) exactly the way
+ * plugin.ts wires them post-fix, so a regression in either piece — or a
+ * plugin wiring that stops passing the channel — re-fails here.
+ */
+describe("PhaseOrchestrator × three_stage_channels (FLY-902 regression)", () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	const CHAN = "1516209714097291335";
+	const projects = [
+		{
+			projectName: "flywheel",
+			projectRoot: "/tmp/flywheel",
+			leads: [
+				{
+					agentId: "flywheel-eng-lead",
+					chatChannel: CHAN,
+					match: { labels: ["flywheel"] },
+				},
+			],
+		},
+	] as ProjectEntry[];
+	const pipelineConfig = {
+		three_stage: true,
+		three_stage_channels: [CHAN],
+	};
+	const issueLabels = ["flywheel"];
+
+	/** The post-fix plugin.ts wiring shape (real policy + real resolver). */
+	const fixedResolveThreeStage = (s: PhaseSession) =>
+		resolveThreeStagePolicy({
+			pipelineConfig,
+			issueLabels,
+			env: {},
+			dispatchChannelId: resolveHandoffDispatchChannelId(
+				projects,
+				s.project_name,
+				issueLabels,
+			),
+		});
+
+	it("BUG FIX: a configured allowlist with the Lead's channel in it still hands Design off to Implement", async () => {
+		const { deps, start } = makeDeps({
+			resolveThreeStage: fixedResolveThreeStage,
+		});
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "design", status: "design_done" }),
+		);
+		expect(start).toHaveBeenCalledOnce();
+		expect(start.mock.calls[0]![0]).toMatchObject({ sessionRole: "implement" });
+	});
+
+	it("documents the shipped bug: the old wiring (no dispatchChannelId) never hands off — and now warns instead of silent no-op", async () => {
+		const warn = vi.fn();
+		const { deps, start } = makeDeps({
+			// The pre-fix plugin.ts closure shape: same real policy, channel omitted.
+			resolveThreeStage: () =>
+				resolveThreeStagePolicy({ pipelineConfig, issueLabels, env: {} }),
+			logger: { warn },
+		});
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "design", status: "design_done" }),
+		);
+		expect(start).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn.mock.calls[0]![0]).toContain("three-stage disabled");
+		expect(warn.mock.calls[0]![0]).toContain("(unresolved)");
+	});
+
+	it("fail-closed semantics preserved: a channel NOT in the allowlist blocks the handoff, loudly", async () => {
+		const warn = vi.fn();
+		const outOfListProjects = [
+			{
+				...projects[0]!,
+				leads: [
+					{
+						agentId: "flywheel-eng-lead",
+						chatChannel: "999",
+						match: { labels: ["flywheel"] },
+					},
+				],
+			},
+		] as ProjectEntry[];
+		const { deps, start } = makeDeps({
+			resolveThreeStage: (s: PhaseSession) =>
+				resolveThreeStagePolicy({
+					pipelineConfig,
+					issueLabels,
+					env: {},
+					dispatchChannelId: resolveHandoffDispatchChannelId(
+						outOfListProjects,
+						s.project_name,
+						issueLabels,
+					),
+				}),
+			logger: { warn },
+		});
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "design", status: "design_done" }),
+		);
+		expect(start).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn.mock.calls[0]![0]).toContain("999");
+	});
+
+	it("no warn spam off the handoff boundary: a disabled policy on a non-boundary status stays quiet", async () => {
+		const warn = vi.fn();
+		const { deps, start } = makeDeps({
+			resolveThreeStage: () => ({ enabled: false, reason: "whatever" }),
+			logger: { warn },
+		});
+		// `qa`/`running` passes the phase-role guard but is NOT a handoff boundary
+		// (auto-QA sessions share the `qa` role — they must not trigger the warn).
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "qa", status: "running" }),
+		);
+		expect(start).not.toHaveBeenCalled();
+		expect(warn).not.toHaveBeenCalled();
 	});
 });

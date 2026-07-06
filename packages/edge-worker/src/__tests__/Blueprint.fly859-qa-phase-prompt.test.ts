@@ -115,15 +115,23 @@ describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 		expect(p).toContain("APPROVE GATE (MANDATORY");
 	});
 
-	it("FAIL commits findings first, then STOPs — never the auto-QA park protocol, never complete", async () => {
+	it("FAIL commits findings first, then PARKS for the keep-alive RE-TEST loop (default ON) — never complete, never approve gate", async () => {
+		// FLY-887: keep-alive is default ON, so the FAIL branch now parks for a
+		// RE-TEST wake (the implementer stays alive to fix), NOT the old
+		// close-and-respawn "Implement-fix phase" / "Do NOT park for retest" text.
 		const p = await buildPrompt({
 			sessionRole: "qa",
 			shareParentBranch: true,
 		});
 		expect(p).toContain("On FAIL");
 		expect(p).toContain("--status fail");
-		expect(p).toContain("Do NOT park for retest");
-		expect(p).toContain("Implement-fix phase");
+		expect(p).toContain("RE-TEST wake");
+		expect(p).toContain("park --exec-id");
+		expect(p).toContain("turn --exec-id");
+		expect(p).toContain("Do NOT run `complete`");
+		// the legacy close-and-respawn wording is gone under keep-alive
+		expect(p).not.toContain("Do NOT park for retest");
+		expect(p).not.toContain("the pipeline closes this session");
 	});
 
 	it("Implement-fix dispatch renders the QA fix-round context", async () => {

@@ -394,6 +394,32 @@ export class ConfigLoader {
 			) {
 				throw new Error("pipeline.three_stage must be a boolean");
 			}
+			// FLY-887 R2: three_stage_channels — channel allowlist for three-stage
+			// entry. Items must be QUOTED strings: a bare YAML number would
+			// silently lose precision on 19-digit Discord snowflakes and the gate
+			// would never match, so numeric items fail loudly with a quoting hint.
+			const channels = pipeline.three_stage_channels;
+			if (channels != null) {
+				if (!Array.isArray(channels)) {
+					throw new Error(
+						"pipeline.three_stage_channels must be an array of channel-id strings",
+					);
+				}
+				for (const item of channels) {
+					if (typeof item === "number") {
+						throw new Error(
+							`pipeline.three_stage_channels item ${item} is a bare YAML number — ` +
+								"quote Discord channel ids (they exceed safe integer precision), " +
+								'e.g. three_stage_channels: ["1516209714097291335"]',
+						);
+					}
+					if (typeof item !== "string" || item.length === 0) {
+						throw new Error(
+							"pipeline.three_stage_channels items must be non-empty strings",
+						);
+					}
+				}
+			}
 		}
 
 		// founder_ux_gate (optional — FLY-598 / FLY-869). Absent → resolved to

@@ -19,7 +19,9 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { CommDB } from "flywheel-comm/db";
 import { phaseMessageTag } from "flywheel-config";
+import type { ApplyTransitionOpts } from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
@@ -27,6 +29,8 @@ import {
 	archiveChatThread,
 	removeUserFromChatThread,
 } from "./chat-thread-utils.js";
+import { closeRunner, FINALIZE_DONE_SOURCE_STATES } from "./close-runner.js";
+import { commDbPathForProject } from "./commdb-path.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import { patchSessionParams } from "./proofshot-session.js";
 import { emitRunnerReadyToCloseNotification } from "./runner-ready-to-close-notifier.js";
@@ -151,6 +155,99 @@ export interface PostShipDeps {
 	 * Best-effort (never throws). Absent → no Linear transition (byte-compat).
 	 */
 	markIssueDone?: (issueId: string, issueIdentifier?: string) => Promise<void>;
+	/**
+	 * FLY-887: close the issue's still-alive parked design + implement phase
+	 * sessions (three-stage keep-alive) BEFORE the shared worktree is removed — the
+	 * parked phases' cwd is inside it, so they must be torn down first. No-op for a
+	 * single-session issue and for keep-alive OFF (both leave no parked phases).
+	 * Never throws. Absent → no phase finalization (byte-compat).
+	 */
+	finalizeThreeStagePhases?: (
+		issueId: string,
+		projectName: string,
+	) => Promise<void>;
+}
+
+/**
+ * FLY-887: build the ship-time finalizer for a three-stage issue's still-alive
+ * parked phases. Closes the parked design + implement sessions DIRECTLY via
+ * `closeRunner({ finalizeDone })` (NOT `closePhaseRunner`, which owns the
+ * handoff-era worktree removal — the shared worktree is removed once by
+ * `removeCleanWorktree` AFTER this runs) and drops the issue's TURN row. Their
+ * FINALIZE_DONE source statuses (design_done / awaiting_review) transition to
+ * completed → the FLY-369 archive cascade then fires once all runners are closed.
+ * No-op for a single-session issue (no phase sessions) and for keep-alive OFF
+ * (no parked phases). Never throws.
+ *
+ * `refreshPhaseStatusLine` (optional — a founder-visibility real-machine QA
+ * finding): called AFTER the phases above are closed, so the status line's
+ * final refresh reads all three phases already at their terminal `completed`
+ * status and renders the documented done/done/done state, instead of going
+ * stale at whatever it last showed pre-merge. Best-effort — swallowed on error,
+ * absent → no refresh (byte-compat for callers that don't wire it).
+ */
+export function makeFinalizeThreeStagePhases(
+	store: StateStore,
+	transitionOpts: ApplyTransitionOpts,
+	refreshPhaseStatusLine?: (issueId: string) => Promise<void>,
+): (issueId: string, projectName: string) => Promise<void> {
+	return async (issueId, projectName) => {
+		const phases = store
+			.getPhaseSessionsForIssue(issueId)
+			.filter(
+				(s) =>
+					(s.chat_thread_role === "design" ||
+						s.chat_thread_role === "implement") &&
+					FINALIZE_DONE_SOURCE_STATES.has(s.status),
+			);
+		for (const p of phases) {
+			try {
+				const res = await closeRunner(
+					{
+						executionId: p.execution_id,
+						issueId: p.issue_id,
+						projectName: p.project_name ?? projectName,
+						reason: "three-stage ship finalization",
+						executorType: "phase",
+						finalizeDone: true,
+						transitionOpts,
+					},
+					store,
+				);
+				if (!res.closed) {
+					console.warn(
+						`[post-ship] finalize phase ${p.execution_id} not closed: ${res.error ?? "?"}`,
+					);
+				}
+			} catch (err) {
+				console.warn(
+					`[post-ship] finalize phase ${p.execution_id} threw: ${(err as Error).message}`,
+				);
+			}
+		}
+		if (refreshPhaseStatusLine) {
+			try {
+				await refreshPhaseStatusLine(issueId);
+			} catch (err) {
+				console.warn(
+					`[post-ship] final phase-status-line refresh failed for ${issueId}: ${(err as Error).message}`,
+				);
+			}
+		}
+		// The single-writer lease is done — drop the TURN row.
+		try {
+			const db = new CommDB(commDbPathForProject(projectName));
+			try {
+				db.deleteTurn(issueId);
+			} finally {
+				db.close();
+			}
+		} catch (err) {
+			console.warn(
+				`[post-ship] deleteTurn(${issueId}) failed: ${(err as Error).message}`,
+			);
+		}
+	};
 }
 
 /**
@@ -233,6 +330,21 @@ export async function runPostShipFinalization(
 		);
 		return { tmuxClosed: false, errors: [(err as Error).message] };
 	});
+
+	// ── (1.25) FLY-887 three-stage keep-alive: close the still-alive parked
+	// design + implement phases for this issue BEFORE the shared worktree is
+	// removed below (their cwd is inside it). No-op for single-session / keep-alive
+	// OFF (no parked phases exist). Never throws. ──
+	if (deps.finalizeThreeStagePhases) {
+		await deps
+			.finalizeThreeStagePhases(opts.issueId, opts.projectName)
+			.catch((err) => {
+				console.error(
+					`[post-ship] finalizeThreeStagePhases failed:`,
+					(err as Error).message,
+				);
+			});
+	}
 
 	// ── (1.5) FLY-603 Layer A worktree cleanup — AFTER tmux close (runner cwd is
 	// the worktree), BEFORE notifier. The closure self-guards on positive tmux

@@ -251,6 +251,41 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		note: "三段式主开关是 per-project pipeline.three_stage config；本 env=0 是全局紧急关，改后需重启 Bridge。",
 	},
 	{
+		// FLY-887: keep-alive kill-switch for the three-stage pipeline. Default ON:
+		// phase-sessions park across handoffs (design/implement/qa stay alive to
+		// ship) and are WOKEN (not respawned) so the QA↔implement fix loop keeps
+		// full context. `=0` forces the legacy close-and-respawn behavior
+		// everywhere (byte-compatible with the pre-FLY-887 pipeline) for emergency
+		// rollback WITHOUT disabling three-stage itself. Read at call_time by both
+		// the PhaseOrchestrator (handoff/fail decisions) and the Blueprint worktree
+		// in-place-takeover gate. Orthogonal to FLYWHEEL_THREE_STAGE.
+		name: "three_stage_keepalive_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_THREE_STAGE_KEEPALIVE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"全局关掉三段式 phase-session 保活（=0 回退 close-and-respawn 旧行为，不关三段式本身；默认 ON=三段 park 保活 + wake，QA↔implement 修复循环留全 context）(FLY-887)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/three-stage-policy.ts",
+				"threeStageKeepAliveEnabled",
+				"call_time",
+				"env-param",
+			),
+			envSite(
+				"packages/edge-worker/src/Blueprint.ts",
+				"runInner (worktree in-place takeover gate)",
+				"call_time",
+			),
+		],
+		toggleable: "readonly",
+		note: "与 FLYWHEEL_THREE_STAGE 正交（那个关整条三段式）；本 env=0 只回退保活到 close+respawn，改后需重启 Bridge。",
+	},
+	{
 		// FLY-795: global kill-switch for restart-resilient resume. Default ON: a
 		// re-dispatched dead runner resumes from its committed progress.md cursor
 		// (reusing 793's shareParentBranch/startPoint worktree mechanism) instead of

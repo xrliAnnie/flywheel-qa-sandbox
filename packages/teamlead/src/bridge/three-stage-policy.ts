@@ -24,7 +24,8 @@
  * taken at run start (trusted, not worktree-derived).
  */
 
-import type { PipelineConfig } from "flywheel-config";
+import { type PipelineConfig, resolvePhaseModel } from "flywheel-config";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 
 export interface ThreeStagePolicyInput {
 	/** Pipeline config, loaded from the CANONICAL root (never a PR worktree). */
@@ -33,6 +34,16 @@ export interface ThreeStagePolicyInput {
 	issueLabels: string[];
 	/** Env source for the kill-switch (defaults to process.env). */
 	env?: Record<string, string | undefined>;
+	/**
+	 * FLY-887 R2: the dispatching Lead's Discord chatChannel, resolved
+	 * SERVER-SIDE by the caller (leadId → `project.leads[].chatChannel`) —
+	 * NEVER taken from the request body. leadId itself is trusted because
+	 * runs-route validates it against the project's leads (membership check)
+	 * and auto-resolves it server-side when absent, both BEFORE the
+	 * three-stage entry decision. Only consulted when
+	 * `pipeline.three_stage_channels` is defined.
+	 */
+	dispatchChannelId?: string;
 }
 
 export interface ThreeStagePolicyDecision {
@@ -59,10 +70,53 @@ export function resolveThreeStagePolicy(
 	}
 
 	if (input.pipelineConfig?.three_stage === true) {
+		// FLY-887 R2: channel gating. Allowlist undefined → no restriction
+		// (byte-compat). Defined → the dispatching Lead's chatChannel must be in
+		// it; an empty array is an explicit universal OFF; an unresolvable
+		// channel fails closed (can't prove membership → single-session).
+		const allowlist = input.pipelineConfig.three_stage_channels;
+		if (allowlist !== undefined) {
+			const channel = input.dispatchChannelId;
+			if (!channel || !allowlist.includes(channel)) {
+				return {
+					enabled: false,
+					reason: `dispatch channel ${channel ?? "(unresolved)"} not in pipeline.three_stage_channels [${allowlist.join(", ")}]`,
+				};
+			}
+		}
 		return { enabled: true };
 	}
 
 	return { enabled: false, reason: "three-stage not enabled (opt-in default)" };
+}
+
+/**
+ * FLY-902: resolve the dispatching Lead's chatChannel for the HANDOFF-side
+ * policy checks (the PhaseOrchestrator's `resolveThreeStage` closure in
+ * plugin.ts). Mirrors the entry-side resolution in runs-route (leadId →
+ * `project.leads[].chatChannel`) via the same label-based lead resolution the
+ * handoff paths already use for `resolveLeadId` (project config + the issue's
+ * trusted Linear labels).
+ *
+ * Without this, a configured `three_stage_channels` allowlist read the channel
+ * as unresolved at EVERY handoff and failed closed — silently disabling every
+ * phase handoff after entry (design stuck at design_done forever, zero logs).
+ *
+ * Unresolvable (unknown project / missing projectName) → undefined; the policy
+ * then fails closed and the orchestrator's handoff-boundary warn surfaces it.
+ */
+export function resolveHandoffDispatchChannelId(
+	projects: ProjectEntry[],
+	projectName: string | undefined,
+	issueLabels: string[],
+): string | undefined {
+	if (!projectName) return undefined;
+	try {
+		return resolveLeadForIssue(projects, projectName, issueLabels).lead
+			.chatChannel;
+	} catch {
+		return undefined;
+	}
 }
 
 export interface ThreeStageEntryInput {
@@ -74,6 +128,12 @@ export interface ThreeStageEntryInput {
 	issueLabels: string[];
 	/** Env source for the kill-switch (defaults to process.env). */
 	env?: Record<string, string | undefined>;
+	/**
+	 * FLY-887 R2: the dispatching Lead's chatChannel for the
+	 * `three_stage_channels` gate (see ThreeStagePolicyInput.dispatchChannelId
+	 * for the trust chain). Only consulted when the allowlist is defined.
+	 */
+	dispatchChannelId?: string;
 }
 
 export interface ThreeStageEntryDecision {
@@ -81,6 +141,15 @@ export interface ThreeStageEntryDecision {
 	role: string;
 	/** True ONLY when the fresh dispatch enters three-stage (→ start the Design phase). */
 	enteredThreeStage: boolean;
+	/**
+	 * FLY-887 R2: the phase-table model for the entered phase (design). Present
+	 * ONLY when `enteredThreeStage` — the caller applies it UNCONDITIONALLY,
+	 * overriding any difficulty-sorter pin, so phase-model sovereignty lives in
+	 * this policy module (Annie's table: no phase ever runs on Sonnet). An issue
+	 * that genuinely needs a special model opts out via the `no-three-stage`
+	 * label and runs single-session.
+	 */
+	dispatchModel?: string;
 }
 
 /**
@@ -104,8 +173,32 @@ export function resolveThreeStageEntry(
 		pipelineConfig: input.pipelineConfig,
 		issueLabels: input.issueLabels,
 		env: input.env,
+		dispatchChannelId: input.dispatchChannelId,
 	}).enabled;
 	return enabled
-		? { role: "design", enteredThreeStage: true }
+		? {
+				role: "design",
+				enteredThreeStage: true,
+				dispatchModel: resolvePhaseModel("design"),
+			}
 		: { role: "main", enteredThreeStage: false };
+}
+
+/**
+ * FLY-887: the three-stage phase-session KEEP-ALIVE kill-switch. Default ON:
+ * when three-stage runs, phase-sessions park (stay alive) across handoffs and are
+ * woken (not respawned) — so QA↔implement fix loops keep full context. `=0`
+ * forces the legacy close-and-respawn behavior everywhere (byte-compatible with
+ * the pre-FLY-887 three-stage pipeline), for emergency rollback without disabling
+ * three-stage itself. Orthogonal to `FLYWHEEL_THREE_STAGE` (which disables
+ * three-stage entirely) and to the per-project `pipeline.three_stage` opt-in.
+ *
+ * Read at call time (both the PhaseOrchestrator handoff/fail decisions and the
+ * Blueprint worktree in-place-takeover gate) so a flip is live without a
+ * dispatch-shape change; the two read sites share this one env.
+ */
+export function threeStageKeepAliveEnabled(
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	return env.FLYWHEEL_THREE_STAGE_KEEPALIVE !== "0";
 }

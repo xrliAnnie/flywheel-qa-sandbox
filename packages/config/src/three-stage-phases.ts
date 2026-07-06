@@ -6,11 +6,15 @@
  * its own model. This module is the single source of truth for the phase
  * sequence and each phase's model.
  *
- * Model per phase (Annie's table):
- *   design    → heavy  (Fable)  — brainstorm / research / design reasoning
- *   implement → medium (Opus)   — code
- *   qa        → light  (Sonnet) — verification (QA is a write-capable phase too;
- *                                  the model choice is independent of that)
+ * Model per phase (Annie's table, updated 2026-07-05 — FLY-887 R2):
+ *   design    → heavy  (Fable) — brainstorm / research / design reasoning
+ *   implement → heavy  (Fable) — code
+ *   qa        → medium (Opus)  — verification (QA is a write-capable phase too;
+ *                                 the model choice is independent of that)
+ *
+ * NO phase runs on Sonnet. The motivating incident: the QA↔implement rework
+ * loop stalled with QA stuck on Sonnet — Annie's zero-Sonnet policy for phase
+ * sessions is enforced by an explicit invariant test.
  *
  * REVERT (7/7, after the Fable window): flip the `pipeline.three_stage` toggle
  * OFF — a task then runs as a single session exactly as before. The table here
@@ -19,7 +23,7 @@
  * The FLY-767 "prefer-Fable / strong-over-weak" stance is an ISSUE-LEVEL model
  * routing concern (Lead difficulty-sort / dispatch `model` param), separate from
  * this fixed per-phase table — it is not applied here so Annie's explicit
- * implement=Opus phase model is not silently overridden.
+ * per-phase model is not silently overridden.
  */
 
 import {
@@ -78,12 +82,12 @@ export function resolveCompletionSessionRole(
 	return incomingRole ?? "main";
 }
 
-/** Default model tier per phase (see file header). */
+/** Default model tier per phase (see file header — Annie's 2026-07-05 table). */
 export const DEFAULT_PHASE_TIER: Readonly<Record<ThreeStagePhase, ModelTier>> =
 	{
 		design: "heavy",
-		implement: "medium",
-		qa: "light",
+		implement: "heavy",
+		qa: "medium",
 	};
 
 /**

@@ -13,22 +13,30 @@ describe("three-stage-phases (FLY-793)", () => {
 		expect(THREE_STAGE_PHASE_SEQUENCE).toEqual(["design", "implement", "qa"]);
 	});
 
-	it("maps each phase to its default tier (Fable / Opus / Sonnet)", () => {
+	it("maps each phase to its default tier (Fable / Fable / Opus — Annie 2026-07-05)", () => {
 		expect(DEFAULT_PHASE_TIER).toEqual({
 			design: "heavy",
-			implement: "medium",
-			qa: "light",
+			implement: "heavy",
+			qa: "medium",
 		});
 	});
 
 	it("resolves canonical model ids per phase", () => {
 		// Draws from the shared MODEL_TIERS registry so it inherits fleet-wide model
-		// decisions. FLY-751 dropped the `[1m]` suffix from the `medium` tier
-		// (founder-confirmed: 1M is now an explicit `opus-1m` opt-in, not the
-		// default), so the implement phase (medium) resolves to plain Opus.
+		// decisions. FLY-887 R2 (Annie's 2026-07-05 table): design AND implement run
+		// on Fable; QA runs on Opus. No phase runs on Sonnet — the QA-rework loop
+		// stalling on Sonnet was the motivating incident.
 		expect(resolvePhaseModel("design")).toBe("claude-fable-5");
-		expect(resolvePhaseModel("implement")).toBe("claude-opus-4-8");
-		expect(resolvePhaseModel("qa")).toBe("claude-sonnet-5");
+		expect(resolvePhaseModel("implement")).toBe("claude-fable-5");
+		expect(resolvePhaseModel("qa")).toBe("claude-opus-4-8");
+	});
+
+	it("zero-Sonnet invariant: no phase in the sequence resolves to a sonnet model", () => {
+		// FLY-887 R2 (Annie's policy): the three-stage pipeline must NEVER place a
+		// phase session on Sonnet, whatever the table says in the future.
+		for (const phase of THREE_STAGE_PHASE_SEQUENCE) {
+			expect(resolvePhaseModel(phase).toLowerCase()).not.toContain("sonnet");
+		}
 	});
 
 	it("nextPhase walks the sequence and ends at QA", () => {

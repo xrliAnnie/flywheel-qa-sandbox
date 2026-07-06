@@ -543,3 +543,214 @@ describe("AutoQaEffects.closeQaRunner (FLY-752 cleanup)", () => {
 		).resolves.toBeUndefined();
 	});
 });
+
+describe("AutoQaEffects.refreshPhaseStatusLine (FLY-887 founder-visibility)", () => {
+	const projects: ProjectEntry[] = [
+		{
+			projectName: "proj",
+			projectRoot: "/x",
+			leads: [
+				{
+					agentId: "lead-1",
+					chatChannel: "chan-1",
+					botToken: "bot-token",
+					match: { labels: ["engineer"] },
+				},
+			],
+		} as ProjectEntry,
+	];
+
+	const session = (over: Partial<Session> = {}): Session =>
+		({
+			execution_id: "design-1",
+			issue_id: "FLY-887",
+			project_name: "proj",
+			issue_labels: JSON.stringify(["engineer"]),
+			...over,
+		}) as Session;
+
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		store.upsertChatThread("thread-1", "chan-1", "FLY-887");
+	});
+	afterEach(() => {
+		store.close();
+	});
+
+	/** Records every fetch call by method; POST → {id: msg id}, PATCH → configurable. */
+	function fakeFetch(opts: { postId?: string; patchStatus?: number } = {}) {
+		const calls: { method: string; url: string; body: string }[] = [];
+		const fetchImpl = (async (url: string, init?: RequestInit) => {
+			const method = (init?.method ?? "GET") as string;
+			calls.push({ method, url, body: String(init?.body ?? "") });
+			if (method === "POST") {
+				return {
+					ok: true,
+					json: async () => ({ id: opts.postId ?? "msg-1" }),
+				} as Response;
+			}
+			// PATCH
+			const status = opts.patchStatus ?? 200;
+			return {
+				ok: status >= 200 && status < 300,
+				status,
+				text: async () => "",
+			} as Response;
+		}) as typeof fetch;
+		return { fetchImpl, calls };
+	}
+
+	it("no-ops when there is no chat thread for the issue", async () => {
+		const { fetchImpl, calls } = fakeFetch();
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			fetchImpl,
+		});
+		await effects.refreshPhaseStatusLine({
+			session: session({ issue_id: "FLY-no-thread" }),
+			text: "🎨design(active)",
+		});
+		expect(calls).toHaveLength(0);
+	});
+
+	it("first refresh: no prior record → POSTs fresh and records the message id", async () => {
+		const { fetchImpl, calls } = fakeFetch({ postId: "msg-42" });
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			fetchImpl,
+		});
+
+		await effects.refreshPhaseStatusLine({
+			session: session(),
+			text: "🎨design(active)·🔨implement(pending)·🧪qa(pending)",
+		});
+
+		expect(calls).toEqual([
+			expect.objectContaining({
+				method: "POST",
+				url: "https://discord.com/api/v10/channels/thread-1/messages",
+			}),
+		]);
+		expect(store.getPhaseStatusLine("FLY-887", "chan-1")).toEqual({
+			messageId: "msg-42",
+			text: "🎨design(active)·🔨implement(pending)·🧪qa(pending)",
+		});
+	});
+
+	it("same text as last refresh → zero churn (no fetch at all)", async () => {
+		store.setPhaseStatusLine(
+			"FLY-887",
+			"chan-1",
+			"msg-1",
+			"🎨design(parked)·🔨implement(active)·🧪qa(pending)",
+		);
+		const { fetchImpl, calls } = fakeFetch();
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			fetchImpl,
+		});
+
+		await effects.refreshPhaseStatusLine({
+			session: session(),
+			text: "🎨design(parked)·🔨implement(active)·🧪qa(pending)",
+		});
+
+		expect(calls).toHaveLength(0);
+	});
+
+	it("changed text + existing message → PATCH edit in place (never a fresh POST)", async () => {
+		store.setPhaseStatusLine(
+			"FLY-887",
+			"chan-1",
+			"msg-1",
+			"🎨design(active)·🔨implement(pending)·🧪qa(pending)",
+		);
+		const { fetchImpl, calls } = fakeFetch();
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			fetchImpl,
+		});
+
+		await effects.refreshPhaseStatusLine({
+			session: session(),
+			text: "🎨design(parked)·🔨implement(active)·🧪qa(pending)",
+		});
+
+		expect(calls).toEqual([
+			expect.objectContaining({
+				method: "PATCH",
+				url: "https://discord.com/api/v10/channels/thread-1/messages/msg-1",
+			}),
+		]);
+		expect(store.getPhaseStatusLine("FLY-887", "chan-1")).toEqual({
+			messageId: "msg-1",
+			text: "🎨design(parked)·🔨implement(active)·🧪qa(pending)",
+		});
+	});
+
+	it("edit 404 (message deleted) → clears the stale record and reposts fresh", async () => {
+		store.setPhaseStatusLine(
+			"FLY-887",
+			"chan-1",
+			"msg-gone",
+			"🎨design(active)·🔨implement(pending)·🧪qa(pending)",
+		);
+		const { fetchImpl, calls } = fakeFetch({
+			patchStatus: 404,
+			postId: "msg-new",
+		});
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			fetchImpl,
+		});
+
+		await effects.refreshPhaseStatusLine({
+			session: session(),
+			text: "🎨design(parked)·🔨implement(active)·🧪qa(pending)",
+		});
+
+		expect(calls.map((c) => c.method)).toEqual(["PATCH", "POST"]);
+		expect(store.getPhaseStatusLine("FLY-887", "chan-1")).toEqual({
+			messageId: "msg-new",
+			text: "🎨design(parked)·🔨implement(active)·🧪qa(pending)",
+		});
+	});
+
+	it("edit transient error (not 404) → leaves the stale record for the next refresh to retry", async () => {
+		store.setPhaseStatusLine(
+			"FLY-887",
+			"chan-1",
+			"msg-1",
+			"🎨design(active)·🔨implement(pending)·🧪qa(pending)",
+		);
+		const { fetchImpl, calls } = fakeFetch({ patchStatus: 500 });
+		const effects = new AutoQaEffects({
+			store,
+			projects,
+			config: {} as never,
+			fetchImpl,
+		});
+
+		await effects.refreshPhaseStatusLine({
+			session: session(),
+			text: "🎨design(parked)·🔨implement(active)·🧪qa(pending)",
+		});
+
+		expect(calls.map((c) => c.method)).toEqual(["PATCH"]); // no repost — not a 404
+		expect(store.getPhaseStatusLine("FLY-887", "chan-1")).toEqual({
+			messageId: "msg-1",
+			text: "🎨design(active)·🔨implement(pending)·🧪qa(pending)", // unchanged
+		});
+	});
+});

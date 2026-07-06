@@ -30,7 +30,10 @@ import type { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { closeRunner } from "./close-runner.js";
 import { queueCodexCodeReviewInstruction } from "./codex-instruction.js";
 import { commDbPathForProject } from "./commdb-path.js";
-import { postDiscordMessageToChannel } from "./discord-utils.js";
+import {
+	editDiscordMessageInChannel,
+	postDiscordMessageToChannel,
+} from "./discord-utils.js";
 import { buildSessionKey } from "./hook-payload.js";
 import { EXECUTOR_TO_TRANSPORT } from "./role-adapter-resolver.js";
 import { sendRunnerWake } from "./runner-wake.js";
@@ -108,7 +111,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 
 	private resolveThread(
 		session: Session,
-	): { threadId: string; botToken: string } | undefined {
+	): { threadId: string; botToken: string; channel: string } | undefined {
 		try {
 			const { lead } = resolveLeadForIssue(
 				this.deps.projects,
@@ -123,7 +126,7 @@ export class AutoQaEffects implements AutoQaSideEffects {
 				channel,
 			);
 			if (!thread) return undefined;
-			return { threadId: thread.thread_id, botToken };
+			return { threadId: thread.thread_id, botToken, channel };
 		} catch {
 			return undefined;
 		}
@@ -161,6 +164,72 @@ export class AutoQaEffects implements AutoQaSideEffects {
 		if (!res.ok) {
 			console.warn(
 				`[auto-qa-effects] thread post failed for ${args.session.issue_id}: ${res.error}`,
+			);
+		}
+	}
+
+	/**
+	 * FLY-887 (founder-visibility status line): post-or-edit the single
+	 * 3-stage status line on the issue's main chat thread. No pin (unlike
+	 * FLY-560's attach-pin) — the test-slot bots don't even have
+	 * MANAGE_MESSAGES, and Annie only asked for an updatable line, not a
+	 * pinned one. Zero churn: skips the PATCH entirely when the text hasn't
+	 * changed since the last refresh. A stale/deleted message (404) triggers
+	 * exactly one repost. Never throws — a Discord hiccup here must never
+	 * break a real handoff/verdict.
+	 */
+	async refreshPhaseStatusLine(args: {
+		session: Session;
+		text: string;
+	}): Promise<void> {
+		const t = this.resolveThread(args.session);
+		if (!t) return; // no chat thread configured — nothing to update
+		const issueId = args.session.issue_id;
+		const existing = this.deps.store.getPhaseStatusLine(issueId, t.channel);
+		if (existing?.text === args.text) return; // no-op, zero churn
+		if (existing?.messageId) {
+			const edit = await editDiscordMessageInChannel(
+				t.threadId,
+				existing.messageId,
+				args.text,
+				t.botToken,
+				this.deps.fetchImpl ?? fetch,
+			);
+			if (edit.ok) {
+				this.deps.store.setPhaseStatusLine(
+					issueId,
+					t.channel,
+					existing.messageId,
+					args.text,
+				);
+				return;
+			}
+			if (edit.status !== 404) {
+				console.warn(
+					`[auto-qa-effects] phase-status-line edit failed for ${issueId}: ${edit.error}`,
+				);
+				return; // transient — leave the stale record, next refresh retries
+			}
+			this.deps.store.clearPhaseStatusLine(issueId, t.channel);
+			// fall through to repost fresh
+		}
+		const post = await postDiscordMessageToChannel(
+			t.threadId,
+			args.text,
+			t.botToken,
+			{},
+			this.deps.fetchImpl ?? fetch,
+		);
+		if (post.ok && post.messageIds[0]) {
+			this.deps.store.setPhaseStatusLine(
+				issueId,
+				t.channel,
+				post.messageIds[0],
+				args.text,
+			);
+		} else if (!post.ok) {
+			console.warn(
+				`[auto-qa-effects] phase-status-line post failed for ${issueId}: ${post.error}`,
 			);
 		}
 	}

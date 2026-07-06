@@ -481,6 +481,15 @@ export interface RunInfraOptions {
 	 * phase handoffs. Absent / `.current` undefined → byte-compatible (no-op).
 	 */
 	phaseOrchestrator?: { current: PhaseOrchestrator | undefined };
+	/**
+	 * FLY-887: ship-time three-stage phase finalizer (closes parked design +
+	 * implement sessions before the shared worktree is removed). Built at the
+	 * composition root with store + transitionOpts; wired onto the DirectEventSink.
+	 */
+	finalizeThreeStagePhases?: (
+		issueId: string,
+		projectName: string,
+	) => Promise<void>;
 }
 
 export async function setupRunInfrastructure(
@@ -658,6 +667,9 @@ export async function setupRunInfrastructure(
 			// FLY-793: give the in-process completion path the three-stage
 			// PhaseOrchestrator holder so it drives Design→Implement→QA handoffs.
 			directSink.phaseOrchestrator = runInfraOpts?.phaseOrchestrator;
+			// FLY-887: ship-time finalizer for keep-alive parked design/implement phases.
+			directSink.finalizeThreeStagePhases =
+				runInfraOpts?.finalizeThreeStagePhases;
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).

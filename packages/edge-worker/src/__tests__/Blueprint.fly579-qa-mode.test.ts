@@ -7,7 +7,7 @@
  *  - drop the brainstorm gate and the approve_to_ship / ship contract,
  *  - tell it the pinned reviewed commit + that the worktree is read-only,
  *  - route its verdict through `qa-result` and, FLY-752 fix-loop reuse, STOP on
- *    PASS (pipeline finalizes+cleans up) / `declare-state park` + wait for RE-TEST
+ *    PASS (pipeline finalizes+cleans up) / `park` + wait for RE-TEST
  *    on FAIL — never a terminal `complete --route no_code`, never a fresh QA2.
  * A normal (non-QA) runner is byte-compatible — it still gets the implement
  * steps + brainstorm + approve gate.
@@ -128,7 +128,8 @@ describe("Blueprint QA-mode prompt (FLY-579 P0-G3)", () => {
 		// FLY-752 fix-loop contract: PASS stops (pipeline finalizes+cleans up), FAIL
 		// parks for retest — NOT `complete --route no_code`, NOT a fresh QA2.
 		expect(prompt).not.toContain("complete --route no_code");
-		expect(prompt).toContain("declare-state park");
+		expect(prompt).toContain("park --reason");
+		expect(prompt).not.toContain("declare-state park");
 		expect(prompt).toContain("RE-TEST");
 		expect(prompt).toMatch(/Do NOT (run )?`?complete/i);
 		// real-machine E2E discipline
@@ -189,7 +190,8 @@ describe("buildQaModeSystemPromptLines (unit)", () => {
 		);
 		// FLY-752 fix-loop reuse: no terminal `complete`; FAIL parks + waits for retest.
 		expect(text).not.toContain("complete --route no_code");
-		expect(text).toContain("declare-state park");
+		expect(text).toContain("park --reason");
+		expect(text).not.toContain("declare-state park");
 		expect(text).toContain("RE-TEST");
 		expect(text).toContain("deadbeefcafe1234");
 

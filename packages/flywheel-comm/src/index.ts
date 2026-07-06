@@ -47,6 +47,7 @@ import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
 import { runTokenReport } from "./commands/token-report.js";
+import { formatTurnStatus, turnStatus } from "./commands/turn.js";
 import { verifyApproval } from "./commands/verify-approval.js";
 import {
 	type VisualCaptureArgs,
@@ -81,6 +82,10 @@ Commands:
   capture   Capture tmux output of a runner session
   search    Search tmux output for a regex pattern
   stage     Report pipeline stage to Bridge (Runner use)
+  turn      FLY-887: three-stage phase runner's shared-worktree TURN self-check.
+            Prints yours|not-yours|no-turn (exit 0). Touch the worktree ONLY on
+            a 'yours' answer; the wake message text is never authority.
+            --exec-id <id> (defaults to FLYWHEEL_EXEC_ID).
   complete  Emit session_completed terminal event to Bridge (Runner use)
   await-codex-gate  Block until Bridge-written Codex review JSON or skip marker appears (Runner use)
   qa-result  Emit a QA verdict (pass|fail) that gates the founder ship notification (QA Runner use)
@@ -205,6 +210,9 @@ async function main(): Promise<void> {
 			break;
 		case "unpark":
 			runDeclareState("unpark", commandArgs);
+			break;
+		case "turn":
+			runTurn(commandArgs);
 			break;
 		case "complete":
 			await runComplete(commandArgs);
@@ -600,6 +608,59 @@ function runDeclareState(
 					? "indefinite"
 					: new Date(result.expiresAtMs).toISOString();
 			console.log(`Declared ${result.kind} for ${execId} (until: ${until})`);
+		}
+	} finally {
+		db.close();
+	}
+}
+
+/**
+ * FLY-887: `turn --exec-id <id>` — a three-stage phase runner's shared-worktree
+ * TURN self-check. Prints exactly one of `yours` / `not-yours` / `no-turn` and
+ * exits 0; a query/DB failure exits 1. The runner proceeds to touch the worktree
+ * ONLY on `yours`. exec-id defaults to FLYWHEEL_EXEC_ID (a runner checks only for
+ * itself); an explicit `--exec-id` is a loud debug override.
+ */
+function runTurn(args: string[]): void {
+	const { values } = parseArgs({
+		args,
+		options: {
+			"exec-id": { type: "string" },
+			db: { type: "string" },
+			project: { type: "string" },
+			json: { type: "boolean", default: false },
+		},
+		allowPositionals: false,
+	});
+
+	const envExecId = process.env.FLYWHEEL_EXEC_ID;
+	let execId = envExecId;
+	if (values["exec-id"]) {
+		execId = values["exec-id"];
+		if (values["exec-id"] !== envExecId) {
+			console.error(
+				`[flywheel-comm turn] WARNING: --exec-id override (${values["exec-id"]}) — a runner should self-check only for itself ($FLYWHEEL_EXEC_ID). Use only for debug/test.`,
+			);
+		}
+	}
+	if (!execId) {
+		console.error(
+			"[flywheel-comm turn] FLYWHEEL_EXEC_ID is required (or pass --exec-id for debug)",
+		);
+		process.exit(1);
+	}
+
+	const dbPath = resolveDbPath({
+		db: values.db,
+		project: values.project ?? process.env.FLYWHEEL_PROJECT_NAME,
+	});
+	const db = new CommDB(dbPath);
+	try {
+		const status = turnStatus(db, execId);
+		if (values.json) {
+			console.log(JSON.stringify(status));
+		} else {
+			console.log(formatTurnStatus(status));
 		}
 	} finally {
 		db.close();

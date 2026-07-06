@@ -1272,7 +1272,9 @@ export class StateStore {
 				archived_at TEXT,
 				attach_pin_message_id TEXT,
 				attach_pin_command TEXT,
-				attach_pin_pinned_at TEXT
+				attach_pin_pinned_at TEXT,
+				phase_status_message_id TEXT,
+				phase_status_text TEXT
 			)
 		`);
 		this.db.run(
@@ -1534,6 +1536,7 @@ export class StateStore {
 		// FLY-369: archived_at on chat_threads (archive-on-Done)
 		this.migrateChatThreadsArchivedColumn();
 		this.migrateChatThreadsAttachPinColumns();
+		this.migrateChatThreadsPhaseStatusLineColumns();
 		// FLY-643: qa_issue_* columns on auto_qa_record (separate QA issue)
 		this.migrateAutoQaRecordQaIssueColumns();
 	}
@@ -2473,6 +2476,75 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-887: ALL three-stage phase sessions for an issue (design/implement/qa by
+	 * the durable `chat_thread_role` marker), any status, newest first. The
+	 * ship-time finalizer filters these to the parked design + implement sessions
+	 * it must close; the keep-alive orchestrator filters by role + alive status to
+	 * find a wake target. Single-session / auto-QA rows (`chat_thread_role='main'`)
+	 * are never returned, so a non-three-stage issue yields `[]` (no-op downstream).
+	 */
+	getPhaseSessionsForIssue(issueId: string): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE issue_id = ?
+			   AND chat_thread_role IN ('design', 'implement', 'qa')
+			 ORDER BY last_activity_at DESC`,
+		);
+		stmt.bind([issueId]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-887: durable, replay-idempotent event count for an issue + type — the
+	 * fix-round ledger source. A three-stage QA FAIL no longer spawns a NEW
+	 * implement session (the parked one is woken to fix), so the FLY-859
+	 * session-count round accounting no longer grows; the round is instead an
+	 * idempotent `three_stage_fix_round` event per QA verdict. `insertEvent`'s
+	 * UNIQUE(event_id) dedup means a replayed verdict never double-counts.
+	 */
+	countEventsByIssueAndType(issueId: string, eventType: string): number {
+		const stmt = this.db.prepare(
+			"SELECT COUNT(*) AS n FROM session_events WHERE issue_id = ? AND event_type = ?",
+		);
+		stmt.bind([issueId, eventType]);
+		const n = stmt.step()
+			? Number((stmt.getAsObject() as Record<string, unknown>).n ?? 0)
+			: 0;
+		stmt.free();
+		return n;
+	}
+
+	/**
+	 * FLY-887: the parsed JSON payload of a single event by its event_id, or
+	 * undefined. Backs `recordFixRound`'s insert-or-read: after an `insertEvent`
+	 * loses the UNIQUE(event_id) race (returns false), the winner's recorded
+	 * round is read back from here so a crash-replay resumes round N.
+	 */
+	getEventPayloadById(eventId: string): Record<string, unknown> | undefined {
+		const stmt = this.db.prepare(
+			"SELECT payload FROM session_events WHERE event_id = ? LIMIT 1",
+		);
+		stmt.bind([eventId]);
+		const row = stmt.step()
+			? (stmt.getAsObject() as Record<string, unknown>)
+			: undefined;
+		stmt.free();
+		if (!row || row.payload == null) return undefined;
+		try {
+			return JSON.parse(row.payload as string) as Record<string, unknown>;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
 	 * FLY-892 (Step 4): for the converged pipeline header, the LATEST session of
 	 * each three-stage phase role (design/implement/qa) on `issueId`. Keyed on
 	 * `chat_thread_role` (the persistent three-stage phase marker), NOT
@@ -2483,8 +2555,13 @@ export class StateStore {
 	 * header must always point at the most recent one, never a stale exec's attach
 	 * command. Returns at most 3 rows (one per phase actually started); phases not
 	 * yet started are absent (the caller renders them as ⬜ planned).
+	 *
+	 * FLY-887 R2 merge: RENAMED from `getPhaseSessionsForIssue` — that name is now
+	 * FLY-887's all-status/all-rows query (keep-alive wake target + ship finalizer).
+	 * The pipeline header needs exactly the latest row per role, so it keeps its own
+	 * query under a distinct name; both semantics survive the merge.
 	 */
-	getPhaseSessionsForIssue(issueId: string): Session[] {
+	getLatestPhaseSessionsForIssue(issueId: string): Session[] {
 		const out: Session[] = [];
 		for (const role of ["design", "implement", "qa"] as const) {
 			const stmt = this.db.prepare(
@@ -4003,6 +4080,56 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-887 (founder-visibility status line): the single, in-place-edited
+	 * "🎨design(...)·🔨implement(...)·🧪qa(...)" message on the issue's MAIN
+	 * chat thread (never the per-role `phase_chat_threads` — the status line
+	 * is issue-wide, not phase-scoped). Undefined = no message posted yet.
+	 */
+	getPhaseStatusLine(
+		issueId: string,
+		channelId: string,
+	): { messageId: string; text: string } | undefined {
+		const stmt = this.db.prepare(
+			"SELECT phase_status_message_id, phase_status_text FROM chat_threads WHERE issue_id = ? AND channel_id = ?",
+		);
+		stmt.bind([issueId, channelId]);
+		if (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			stmt.free();
+			const messageId = (row.phase_status_message_id as string) ?? null;
+			if (!messageId) return undefined;
+			return { messageId, text: (row.phase_status_text as string) ?? "" };
+		}
+		stmt.free();
+		return undefined;
+	}
+
+	setPhaseStatusLine(
+		issueId: string,
+		channelId: string,
+		messageId: string,
+		text: string,
+	): void {
+		this.db.run(
+			`UPDATE chat_threads
+			 SET phase_status_message_id = ?, phase_status_text = ?
+			 WHERE issue_id = ? AND channel_id = ?`,
+			[messageId, text, issueId, channelId],
+		);
+		this.save();
+	}
+
+	clearPhaseStatusLine(issueId: string, channelId: string): void {
+		this.db.run(
+			`UPDATE chat_threads
+			 SET phase_status_message_id = NULL, phase_status_text = NULL
+			 WHERE issue_id = ? AND channel_id = ?`,
+			[issueId, channelId],
+		);
+		this.save();
+	}
+
+	/**
 	 * FLY-892 (Step 5): the still-visible legacy phase threads (FLY-793 side-table
 	 * rows) the boot sweep must reconcile — a Discord thread still exists for each.
 	 * Filters out rows already archived or already marked missing so the sweep is
@@ -5008,6 +5135,31 @@ export class StateStore {
 			if (!columns.includes("attach_pin_pinned_at")) {
 				this.db.run(
 					"ALTER TABLE chat_threads ADD COLUMN attach_pin_pinned_at TEXT",
+				);
+			}
+		} catch {
+			// Table may not exist yet (first run) — CREATE TABLE will handle it
+		}
+	}
+
+	/**
+	 * FLY-887 (founder-visibility status line): add the single-updatable
+	 * phase-status-line message columns to chat_threads on legacy DBs
+	 * (idempotent). Mirrors migrateChatThreadsAttachPinColumns.
+	 */
+	private migrateChatThreadsPhaseStatusLineColumns(): void {
+		try {
+			const info = this.db.exec("PRAGMA table_info(chat_threads)");
+			if (info.length === 0) return;
+			const columns = info[0]!.values.map((row) => row[1] as string);
+			if (!columns.includes("phase_status_message_id")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN phase_status_message_id TEXT",
+				);
+			}
+			if (!columns.includes("phase_status_text")) {
+				this.db.run(
+					"ALTER TABLE chat_threads ADD COLUMN phase_status_text TEXT",
 				);
 			}
 		} catch {

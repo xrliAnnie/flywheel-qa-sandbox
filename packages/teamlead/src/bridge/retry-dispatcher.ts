@@ -72,6 +72,16 @@ export interface RetryRequest {
 	 * shared-branch behavior. Absent → role-aware worktree key (byte-compatible).
 	 */
 	shareParentBranch?: boolean;
+	/**
+	 * FLY-887 R2 (Codex R1 #2): carried on the retry path for PHASE rows
+	 * (`chat_thread_role` ∈ design/implement/qa) so a refreshed Linear label
+	 * cannot bypass the phase table on retry — previously the retry path
+	 * hardcoded this to undefined, re-opening the label layer that the original
+	 * phase dispatch had bypassed. actions.ts sets it from the predecessor row's
+	 * phase marker; absent → existing label-driven resolution (byte-compatible
+	 * for `chat_thread_role='main'` rows, incl. auto-QA).
+	 */
+	ignoreRunnerLabelSelection?: boolean;
 }
 
 export interface RetryResult {

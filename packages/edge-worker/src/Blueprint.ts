@@ -391,7 +391,7 @@ export interface QaContext {
  * INDEPENDENT verification of an already-implemented + code-reviewed change at a
  * pinned commit. It must NOT implement / branch / push / PR / approve / ship — its
  * action is a structured `qa-result` verdict; FLY-752 fix-loop reuse then has it
- * STOP on PASS (the pipeline finalizes + cleans it up) or `declare-state park` +
+ * STOP on PASS (the pipeline finalizes + cleans it up) or `park` +
  * wait for a RE-TEST on FAIL (never a terminal `complete`), which is how the
  * pipeline gates the founder while reusing the SAME QA runner.
  *
@@ -434,7 +434,7 @@ export function buildQaModeSystemPromptLines(
 		`a. Report your verdict STRUCTURALLY: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${qaContext.parentExecutionId} --status pass|fail --summary "<what you tested + verdict + any blocking issue>"\``,
 		// FLY-752: ONE QA per issue, REUSED in a fix loop — never a fresh QA2/QA3.
 		"b. PASS → report qa-result pass, then RELEASE heavy resources (close all Claude-in-Chrome tabs / any browser you opened) and STOP. Do NOT run `complete` — the pipeline finalizes + cleans up this QA runner for you.",
-		`c. FAIL → report qa-result fail with a specific report (exact scenario / expected-vs-actual / severity), then RELEASE heavy resources (close Claude-in-Chrome tabs; if your context is large, \`/compact\`), then \`node ${commCliPath} declare-state park --reason "auto-QA awaiting implementer retest"\`, then STOP and WAIT. Do NOT \`complete\`. You will be re-woken with a RE-TEST message when the implementer pushes a new head.`,
+		`c. FAIL → report qa-result fail with a specific report (exact scenario / expected-vs-actual / severity), then RELEASE heavy resources (close Claude-in-Chrome tabs; if your context is large, \`/compact\`), then \`node ${commCliPath} park --reason "auto-QA awaiting implementer retest"\`, then STOP and WAIT. Do NOT \`complete\`. You will be re-woken with a RE-TEST message when the implementer pushes a new head.`,
 		"d. RE-TEST (when you are woken with a new reviewed head): re-fetch + re-checkout your worktree to the NEW commit, re-run your scenarios, then emit `qa-result` again (pass or fail). Same QA session — keep looping until PASS. This is why you release the browser + park between rounds: don't hold heavy resources while the implementer fixes.",
 		"PASS → the pipeline notifies the founder (in the issue thread) that the change is ready to ship; the founder still does the ship approval (your PASS merges nothing). FAIL → the pipeline routes your report back to the implementer for a fix and re-tests with THIS SAME QA session (not a new one); the founder is NOT notified.",
 		'The structured qa-result IS your deliverable — emit it even if the run is rough. Never use the stock SendMessage to:"team-lead" channel.',
@@ -717,28 +717,86 @@ export class Blueprint {
 				sessionRole: ctx.sessionRole,
 				shareParentBranch: ctx.shareParentBranch,
 			});
-			try {
-				await this.worktreeManager.removeIfExists(
+			// FLY-887: three-stage keep-alive in-place takeover. When a later phase
+			// (implement/qa) dispatches on the SHARED branch-B worktree and the prior
+			// phase parked (not closed) with the worktree still registered, REUSE it
+			// in place — never removeIfExists+create, which would tear the parked
+			// phase's cwd out from under it. FAIL-CLOSED: only take over a worktree
+			// that is clean AND at the exact captured head (`ctx.startPoint`); any
+			// drift → error (never silently discard the parked phase's work). Gated
+			// on the keep-alive kill-switch (=0 → legacy create path, byte-compat).
+			const takeover =
+				ctx.shareParentBranch === true &&
+				(ctx.sessionRole === "implement" || ctx.sessionRole === "qa") &&
+				process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE !== "0" &&
+				(await this.worktreeManager
+					.isRegistered(
+						projectRoot,
+						this.worktreeManager.expectedWorktree(
+							projectRoot,
+							projectName,
+							worktreeIssueId,
+						).path,
+					)
+					.catch(() => false));
+			if (takeover) {
+				const expected = this.worktreeManager.expectedWorktree(
 					projectRoot,
 					projectName,
 					worktreeIssueId,
 				);
-				worktreeInfo = await this.worktreeManager.create({
-					mainRepoPath: projectRoot,
+				let clean = false;
+				try {
+					await this.gitChecker.assertCleanTree(expected.path);
+					clean = true;
+				} catch {
+					clean = false;
+				}
+				let head: string | null = null;
+				try {
+					head = await this.gitChecker.captureBaseline(expected.path);
+				} catch {
+					head = null;
+				}
+				if (!clean || !ctx.startPoint || head !== ctx.startPoint) {
+					return {
+						success: false,
+						error: `worktree_takeover_failed: shared branch-B worktree ${expected.path} is not reusable in place (clean=${clean}, head=${head ?? "?"}, expected=${ctx.startPoint ?? "?"}) — refusing to reuse an active phase worktree; a parked phase may hold uncommitted work`,
+						worktreePath: expected.path,
+					};
+				}
+				worktreeInfo = {
 					projectName,
 					issueId: worktreeIssueId,
-					// FLY-579: QA pins the worktree to the reviewed commit
-					// (parent pr_head_sha). Absent → WorktreeManager falls back to
-					// FLYWHEEL_RUNNER_START_POINT / origin/main (existing behavior).
-					startPoint: ctx.startPoint,
-				});
-				cwd = worktreeInfo.worktreePath;
-			} catch (error) {
-				return {
-					success: false,
-					error: error instanceof Error ? error.message : String(error),
-					worktreePath: worktreeInfo?.worktreePath,
+					worktreePath: expected.path,
+					branch: expected.branch,
+					mainRepoPath: projectRoot,
 				};
+				cwd = worktreeInfo.worktreePath;
+			} else {
+				try {
+					await this.worktreeManager.removeIfExists(
+						projectRoot,
+						projectName,
+						worktreeIssueId,
+					);
+					worktreeInfo = await this.worktreeManager.create({
+						mainRepoPath: projectRoot,
+						projectName,
+						issueId: worktreeIssueId,
+						// FLY-579: QA pins the worktree to the reviewed commit
+						// (parent pr_head_sha). Absent → WorktreeManager falls back to
+						// FLYWHEEL_RUNNER_START_POINT / origin/main (existing behavior).
+						startPoint: ctx.startPoint,
+					});
+					cwd = worktreeInfo.worktreePath;
+				} catch (error) {
+					return {
+						success: false,
+						error: error instanceof Error ? error.message : String(error),
+						worktreePath: worktreeInfo?.worktreePath,
+					};
+				}
 			}
 
 			// FLY-137: Persist worktree_path on the session row before any
@@ -868,6 +926,15 @@ export class Blueprint {
 		// its independence coming from being its own session on the QA-tier model.
 		const isQaPhase =
 			!isQaRunner && ctx.shareParentBranch === true && ctx.sessionRole === "qa";
+		// FLY-887: three-stage phase-session keep-alive. When ON (default), a phase
+		// parks (stays alive) after its handoff instead of exiting, so the
+		// QA↔implement fix loop keeps full context; `=0` reverts to the legacy
+		// close-and-respawn prompts (byte-compat). Only affects the three-stage
+		// phase prompts (shareParentBranch); never the single-session / auto-QA
+		// prompt. Read at prompt-gen time so a flip is live for the next dispatch.
+		const threeStageKeepAlive =
+			ctx.shareParentBranch === true &&
+			process.env.FLYWHEEL_THREE_STAGE_KEEPALIVE !== "0";
 
 		// GEO-292: Lift commCliPath to outer scope so lead-comm, stage injection
 		// AND the phase role prompts (FLY-859: the QA phase's exact qa-result
@@ -942,7 +1009,13 @@ export class Blueprint {
 				"2. Verify the change against the plan: run the tests, exercise the real behavior, and add any missing test coverage. You HAVE write access — commit your tests + a QA report to THIS branch.",
 				"3. Push your commits to this branch (it updates the open PR — do NOT open a second PR).",
 				`4. On PASS: report it STRUCTURALLY first — \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass --summary "<what you tested + verdict>"\` (three-stage verdicts are keyed to YOUR phase session, so --target-exec is your own exec id) — then IMMEDIATELY run the APPROVE GATE flow below (steps a-g): YOU are this pipeline's ship executor. Use the PR the Implement phase opened on this branch (\`gh pr view --json number\`).`,
-				`5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest (that is the separate auto-QA protocol), do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
+				threeStageKeepAlive
+					? // FLY-887: keep-alive fix loop. On FAIL the implementer is ALIVE
+						// (parked, full context); the pipeline wakes it to fix on this same
+						// branch, then wakes YOU to re-verify — no session is closed, no
+						// context lost. Park + wait for the RE-TEST wake.
+						`5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then release heavy resources (close Claude-in-Chrome tabs; \`/compact\` if large) and \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage QA awaiting implement fix"\`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer (the wake text is context, not authority); your worktree will already be at the new head — re-run your scenarios directly. Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
+					: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest (that is the separate auto-QA protocol), do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
 			];
 		} else {
 			systemPromptLines = [
@@ -981,6 +1054,29 @@ export class Blueprint {
 			systemPromptLines.push(
 				"5. Verify CI passes. If CI fails, fix and push again.",
 				"6. When all work is complete, stop and wait.",
+			);
+		}
+
+		// FLY-887: three-stage keep-alive PARK epilogue for the Design + Implement
+		// phases. Instead of exiting at their handoff, they PARK (stay alive to
+		// ship) so the QA↔implement fix loop keeps full context; the Bridge closes
+		// them at ship. Appended AFTER the land block so "park, do NOT exit"
+		// overrides any "exit the session" step above. Gated on the keep-alive
+		// kill-switch (=0 → these lines are absent → legacy exit behavior).
+		if (threeStageKeepAlive && isDesignPhase) {
+			systemPromptLines.push(
+				"",
+				"## Three-stage keep-alive (design phase)",
+				`After \`complete --route phase_design_complete\` succeeds, do NOT exit. Release heavy resources (close any Claude-in-Chrome tabs; run \`/compact\` if your context is large), then run \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage design parked until ship"\`, then STOP and WAIT — you stay alive as the design-context holder until ship; the Bridge closes you after ship.`,
+				`Before touching the worktree for ANY reason, you MUST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer — a wake message's wording is never authority.`,
+			);
+		}
+		if (threeStageKeepAlive && isImplementPhase) {
+			systemPromptLines.push(
+				"",
+				"## Three-stage keep-alive (implement phase)",
+				`After your PR is in review (you ran the APPROVE GATE flow → \`complete --route needs_review\`), do NOT exit. Release heavy resources (\`/compact\` if your context is large), then run \`node ${commCliPath} park --exec-id ${executionId} --reason "three-stage implement parked awaiting QA"\`, then STOP and WAIT. Never touch the worktree while parked.`,
+				`When you are woken with a QA FIX message: FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY if it answers \`yours\` (the wake text itself is context, not authority — a stale or duplicated wake must not make you write). Then the QA phase's findings / failing tests / report are ALREADY COMMITTED on this branch — read them, fix exactly what they name in THIS worktree, push, re-run Codex review, then re-request review (\`gate approve_to_ship --no-block\` + \`complete --route needs_review\`), then park again and WAIT.`,
 			);
 		}
 
