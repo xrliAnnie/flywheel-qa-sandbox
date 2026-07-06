@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- FLY-177: launchd supervision for the cmux workspace watcher.
+     Tokenized template — flywheel-cmux-install.sh renders __HOME__ → $HOME and
+     installs to ~/Library/LaunchAgents/com.flywheel.cmux-watcher.plist. -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.flywheel.cmux-watcher</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>__HOME__/.flywheel/bin/flywheel-cmux-autostart</string>
+    </array>
+    <!-- FLY-177: supervised mode → block-wait for a live watcher to exit
+         instead of fast-exit + KeepAlive respawn churn. -->
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>FLYWHEEL_CMUX_SUPERVISED</key><string>1</string>
+    </dict>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>30</integer>
+    <key>RunAtLoad</key><true/>
+    <key>StandardOutPath</key><string>/tmp/flywheel-cmux-watcher.log</string>
+    <key>StandardErrorPath</key><string>/tmp/flywheel-cmux-watcher.log</string>
+</dict>
+</plist>

@@ -1,0 +1,11 @@
+⏺ Reading Annie's note while my own session is throttled.
+
+← discord · Annie: please take a look at the runner when you get a sec
+  ⎿  API Error (429): Anthropic API rate limit reached.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────── @cos-lead ──
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡cos-lead | ~/.flywheel/lead-workspace/cos-lead | ctx 31% ░░░░░░░░░░
+  5h ██████████ 99% reset today 21:30  |  7d ░░░░░░░░░░ 70% reset Mon 09:00
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

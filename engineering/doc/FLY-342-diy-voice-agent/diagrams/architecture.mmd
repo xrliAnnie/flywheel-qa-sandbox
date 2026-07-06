@@ -1,0 +1,48 @@
+flowchart TB
+    subgraph EXIST["现有 Flywheel 系统（不改）"]
+        DISCORD["Discord 语音频道<br/>Opus 48k + DAVE 加密"]
+        LEAD["Claude Lead session<br/>脑：推理 + memory in repo<br/>（唯一决策者，原地不动）"]
+        LINEAR["Linear / transcript 落档<br/>(FLY-548)"]
+    end
+
+    subgraph SHARED["共用接入层（FLY-544 / 543）"]
+        ADAPTER["Discord voice adapter<br/>收麦→PCM / 播音←PCM"]
+        IFACE["可插拔后端接口<br/>= 883 §8 清单<br/>(音频协商/流式/VAD/打断/tool/transcript/声线)"]
+    end
+
+    subgraph OPTA["选项 A：Realtime 后端（特殊场合）"]
+        RT["Realtime 语音模型<br/>Gemini Live / OpenAI Realtime<br/>嘴+耳：听/说/VAD/原生打断"]
+    end
+
+    subgraph OPTB["选项 B：TTS 管线后端（默认）"]
+        VAD["VAD / 唤醒 / PTT<br/>silero-vad + Porcupine"]
+        STT["STT<br/>本地 whisper.cpp / SenseVoice<br/>云兜底 Groq"]
+        TTS["TTS：按句流水线<br/>本地 CosyVoice/Qwen3/Higgs(非商)<br/>兜底 edge-tts / Azure F0"]
+    end
+
+    DISCORD <--> ADAPTER
+    ADAPTER <--> IFACE
+
+    %% Option A: realtime 当嘴耳，脑经 tool-call 回 Lead
+    IFACE -->|选项A| RT
+    RT -->|tool call<br/>SILENT/WHEN_IDLE/INTERRUPT| LEAD
+    LEAD -->|结果调度回| RT
+
+    %% Option B: STT -> Claude -> TTS 回合制管线
+    IFACE -->|选项B| VAD
+    VAD --> STT
+    STT -->|文本| LEAD
+    LEAD -->|回复文本，按句| TTS
+    TTS --> ADAPTER
+    RT --> ADAPTER
+
+    LEAD -.->|transcript 落 audit| LINEAR
+
+    classDef exist fill:#e8f0fe,stroke:#1a365d,stroke-width:2px;
+    classDef opta fill:#fde8e8,stroke:#ff3b30,stroke-width:1px;
+    classDef optb fill:#e8f8ee,stroke:#34c759,stroke-width:1px;
+    classDef shared fill:#fff6e5,stroke:#ff9500,stroke-width:1px;
+    class DISCORD,LEAD,LINEAR exist;
+    class RT opta;
+    class VAD,STT,TTS optb;
+    class ADAPTER,IFACE shared;

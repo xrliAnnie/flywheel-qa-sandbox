@@ -1,0 +1,22 @@
+[
+  {
+    "idx": 1,
+    "text": "把 FLY-342 派给 Tadashi",
+    "chars": 20,
+    "first_chunk_s": 8.255,
+    "synth_s": 19.18,
+    "audio_s": 3.76,
+    "rtf": 5.101,
+    "file": "cosy_01.wav"
+  },
+  {
+    "idx": 2,
+    "text": "approve 那个 PR，可以 ship 了",
+    "chars": 23,
+    "first_chunk_s": 8.659,
+    "synth_s": 8.66,
+    "audio_s": 2.72,
+    "rtf": 3.184,
+    "file": "cosy_02.wav"
+  }
+]

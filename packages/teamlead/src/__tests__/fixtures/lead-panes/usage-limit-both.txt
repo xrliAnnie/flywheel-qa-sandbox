@@ -1,0 +1,10 @@
+⏺ Working on the deploy.
+
+  ⎿  Claude usage limit reached. Your limit will reset at 9:00 PM (America/Chicago).
+
+──────────────────────────────────────────────────────────────────────────────── @cos-lead ──
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡cos-lead | ~/.flywheel/lead-workspace/cos-lead | ctx 51% ██████████
+  5h ██████████ 100% reset today 21:30  |  7d ██████████ 100% reset Mon 09:00
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

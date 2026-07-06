@@ -1,0 +1,27 @@
+# FLY-519 — second line of defence for the ZERO-SECRET contract of fleet/.
+# fleet-capture.sh already (1) redacts .env to key names and (2) runs
+# scan_for_secrets as a hard gate before writing. This .gitignore makes it
+# impossible to accidentally commit a real secret file even if those fail.
+#
+# The ONLY files meant to live here are: projects.json (env NAMES only),
+# env.example (key names, zero values), manifest.json, and example/.
+
+# Never commit a real env file or any of its backups.
+.env
+*.env
+!env.example
+!example/env.example
+
+# Never commit databases (teamlead/audit/cipher/dedup) or auth material.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+codex-homes/
+**/auth.json
+**/*token*.json
+**/*secret*
+
+# Never commit raw backups that might carry values.
+*.bak
+*.backup
