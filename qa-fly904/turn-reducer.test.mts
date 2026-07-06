@@ -292,4 +292,41 @@ describe("invariants (plan §2.6)", () => {
 			}),
 		);
 	});
+
+	// QA-added (FLY-904 scenario 2): the design-redo round trip exists in the suite
+	// only as disconnected T7/T8 unit rows against hand-built fixtures. This chains
+	// T1→T7→T8→T2→T5→T6 to prove epoch stays strictly increasing across the redo
+	// (grants) and flat on qa_pass/merged, and that a redo does not leave residue.
+	test("design-redo round-trip chain T1→T7→T8→T2→T5→T6 with epoch sequence 1,2,3,4,5,5,5", () => {
+		const chain: TurnEvent["type"][] = [
+			"phase_design_complete", // T1
+			"design_redo", // T7 — Lead wakes parked design, parks running implement
+			"phase_design_complete", // T8 — redo handback re-wakes implement
+			"needs_review", // T2
+			"qa_pass", // T5
+			"merged", // T6
+		];
+		let state = initialState;
+		const epochs: number[] = [state.epoch];
+		for (const type of chain) {
+			const prevEpoch = state.epoch;
+			state = grant(state, { type } as TurnEvent);
+			expect(state.epoch).toBeGreaterThanOrEqual(prevEpoch);
+			expect(state.worktreePresent).toBe(state.turn !== null);
+			epochs.push(state.epoch);
+		}
+		expect(epochs).toEqual([1, 2, 3, 4, 5, 5, 5]);
+		expect(state).toEqual(
+			mkState({
+				turn: null,
+				epoch: 5,
+				design: "closed",
+				implement: "closed",
+				qa: "closed",
+				verdict: "pass",
+				fixRounds: 0,
+				worktreePresent: false,
+			}),
+		);
+	});
 });
