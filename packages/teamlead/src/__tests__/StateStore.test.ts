@@ -939,8 +939,7 @@ describe("StateStore — FLY-369 chat thread archival", () => {
 			channel_id: "ch-1",
 			lead_id: "lead-a",
 			archived_at: null,
-			// FLY-793 (Step 11): additive — main path reports 'main'.
-			session_role: "main",
+			// FLY-892 (converge): thread resolution is role-agnostic — no session_role.
 		});
 	});
 

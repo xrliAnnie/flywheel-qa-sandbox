@@ -218,6 +218,18 @@ export interface ProjectEntry {
 	projectRepo?: string;
 	leads: LeadConfig[];
 	generalChannel?: string;
+	/**
+	 * FLY-892 (Step 7, ④): env var name holding the dedicated "system announcer"
+	 * bot token (a pool bot separate from the chat Leads). Auto status broadcasts
+	 * (pipeline header, auto-QA thread posts, the boot-sweep pointer) post as this
+	 * bot so the founder tells "system is broadcasting" apart from "a Lead is
+	 * talking to me". Resolved at load into the runtime-only `announcerBotToken`;
+	 * a raw `announcerBotToken` in JSON input is stripped (secrets come via env,
+	 * same as `botTokenEnv`). Unset → all broadcasts use the Lead bot (byte-compat).
+	 */
+	announcerBotTokenEnv?: string;
+	/** Resolved announcer bot token (populated at load from announcerBotTokenEnv). NOT from JSON input. */
+	announcerBotToken?: string;
 	/** Memory API user_id allowlist. Fail-closed: requests rejected if not configured. */
 	memoryAllowedUsers?: string[];
 	/**
@@ -282,9 +294,37 @@ export function loadProjects(): ProjectEntry[] {
 				}
 			}
 		}
+		// FLY-892 (Step 7): hydrate the project-level announcer bot token from env
+		// (same secret-handling model as the per-lead botTokenEnv). Missing env →
+		// leave unset → broadcasts fall back to the Lead bot (byte-compat).
+		const announcerEnv = entry.announcerBotTokenEnv;
+		if (typeof announcerEnv === "string" && announcerEnv.length > 0) {
+			const resolved = process.env[announcerEnv];
+			if (resolved) {
+				entry.announcerBotToken = resolved;
+			} else {
+				console.warn(
+					`[loadProjects] "${entry.projectName}": announcerBotTokenEnv="${announcerEnv}" ` +
+						`not found in env — auto broadcasts will fall back to the Lead bot`,
+				);
+			}
+		}
 	}
 
 	return projects;
+}
+
+/**
+ * FLY-892 (Step 7): the project's resolved "system announcer" bot token, or
+ * `undefined` when the project didn't configure one → callers fall back to the
+ * Lead bot (byte-compat). Used by the auto-broadcast seams (pipeline header,
+ * auto-QA thread posts, boot-sweep pointer).
+ */
+export function resolveAnnouncerBotToken(
+	projects: ProjectEntry[],
+	projectName: string,
+): string | undefined {
+	return projects.find((p) => p.projectName === projectName)?.announcerBotToken;
 }
 
 /**
@@ -677,6 +717,21 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				`Project "${entry.projectName}" generalChannel: if provided, must be a non-empty string, got ${JSON.stringify(entry.generalChannel)}`,
 			);
 		}
+
+		// FLY-892 (Step 7): validate optional announcerBotTokenEnv (an env var NAME,
+		// not a secret) + strip any raw announcerBotToken from JSON input — the
+		// secret is hydrated from env later (loadProjects), keeping this validator
+		// pure/env-free (same model as the per-lead botTokenEnv).
+		if (
+			entry?.announcerBotTokenEnv !== undefined &&
+			(typeof entry.announcerBotTokenEnv !== "string" ||
+				entry.announcerBotTokenEnv.length === 0)
+		) {
+			throw new Error(
+				`Project "${entry.projectName}" announcerBotTokenEnv: if provided, must be a non-empty string, got ${JSON.stringify(entry.announcerBotTokenEnv)}`,
+			);
+		}
+		delete entry.announcerBotToken;
 
 		// Validate optional memoryAllowedUsers (GEO-204)
 		const memoryAllowedUsers = entry?.memoryAllowedUsers;

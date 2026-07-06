@@ -4,7 +4,15 @@ import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import type { FounderUxGateMode } from "flywheel-config";
-import { modelShortCode, resolveCompletionSessionRole } from "flywheel-config";
+import {
+	DEFAULT_PHASE_TIER,
+	modelDisplayName,
+	modelShortCode,
+	phaseMessageTag,
+	phaseThreadBadge,
+	resolveCompletionSessionRole,
+	THREE_STAGE_PHASE_SEQUENCE,
+} from "flywheel-config";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import { formatAccountRotationNotice } from "../account-heal/account-rotation-notice.js";
@@ -13,7 +21,11 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { ReconnectController } from "../HeartbeatService.js";
-import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
+import {
+	type ProjectEntry,
+	resolveAnnouncerBotToken,
+	resolveLeadForIssue,
+} from "../ProjectConfig.js";
 import {
 	REVIEW_BINDING_UNBOUND,
 	type Session,
@@ -22,7 +34,11 @@ import {
 import { handleArtifactEvent } from "./artifact-event.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { isReviewHeld } from "./auto-qa-held.js";
-import type { ChatThreadCreator } from "./ChatThreadCreator.js";
+import {
+	buildPipelineHeaderContent,
+	type ChatThreadCreator,
+	type PhaseHeaderRow,
+} from "./ChatThreadCreator.js";
 import {
 	buildCodexInstruction,
 	codexReviewTypeFor,
@@ -407,6 +423,12 @@ function stampStageEmojiForSession(
 	const thread = deps.store.getChatThreadByIssue(session.issue_id, chatChannel);
 	if (!thread) return; // thread not created yet — a later stage_changed catches it
 
+	// FLY-892 (Step 6): on a three-stage issue the title prefix is the STAGE-level
+	// phase badge (🎨设计/🔨实现/🧪QA) of the reporting session's phase, which
+	// REPLACES the FLY-560 fine-grained stage word. `""` for a non-phase (main)
+	// session → falls back to the FLY-560 stage badge (byte-compat).
+	const phaseBadge = phaseThreadBadge(session.chat_thread_role) || undefined;
+
 	void deps.chatThreadCreator
 		.stampStageEmoji(
 			{
@@ -425,6 +447,7 @@ function stampStageEmojiForSession(
 			thread.thread_id,
 			stage,
 			issueStatusWordEnabled(),
+			phaseBadge,
 		)
 		.catch((err: unknown) => {
 			console.warn(
@@ -435,13 +458,28 @@ function stampStageEmojiForSession(
 }
 
 /**
- * FLY-560 Feature C: fire-and-forget ensure of the pinned `tmux attach` rescue
- * command on the issue's `[FLY-XX]` chat thread. Resolves the lead/channel/token
- * + thread (same as stampStageEmojiForSession), resolves the runner's tmux
- * window from CommDB → cmux linked-session attach target, and delegates to
- * ChatThreadCreator.ensureRunnerAttachPin. Silent on any miss (no lead/channel/
- * token, thread not created yet, tmux_window not registered yet) — the next
- * stage_changed reconciles. Never throws into the event handler.
+ * FLY-892 (Step 4): statuses that render a phase as ✅ done in the pipeline header.
+ * A DELIBERATELY header-local set — do NOT reuse a global TERMINAL_STATUSES here:
+ * `awaiting_review` / `approved_to_ship` are a runner that is still ALIVE and
+ * working (▶), not a finished phase. `design_done` is the design phase's handoff
+ * marker (✅). The rest with a session are ▶ active; no session is ⬜ planned.
+ */
+const HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([
+	"completed",
+	"failed",
+	"blocked",
+	"merged",
+	"design_done",
+]);
+
+/**
+ * FLY-560 Feature C + FLY-892 (Step 4): fire-and-forget ensure of the issue
+ * thread's pinned message. On a THREE-STAGE issue this is the "pipeline header"
+ * (all three phases: model + status + exec id + attach command); on any other
+ * issue it is the byte-unchanged single-runner "Runner terminal" attach pin.
+ * Resolves lead/channel/token + thread (same as stampStageEmojiForSession);
+ * silent on any miss (next stage_changed reconciles); never throws into the
+ * event handler.
  */
 function pinRunnerAttachForSession(
 	deps: {
@@ -475,32 +513,99 @@ function pinRunnerAttachForSession(
 	const resolvedChannel = chatChannel;
 	const resolvedToken = botToken;
 	const threadId = thread.thread_id;
-	// Codex code R1 MED-1 / R2: the CommDB read (getTmuxTargetFromCommDb opens a
+	// FLY-892 (Codex code R1 Med): the single-runner "Runner terminal" pin
+	// (non-three-stage fallback) MUST stay on the Lead bot — it is NOT a system
+	// broadcast, and switching it to the announcer would be a main-session
+	// behavior change + a 403 self-heal churn on the existing Lead-authored pin.
+	// Only the three-stage PIPELINE HEADER is a broadcast → announcer when the
+	// project configures one, else the Lead bot (byte-compat).
+	const ctx = {
+		chatChannelId: resolvedChannel,
+		issueId: session.issue_id,
+		issueIdentifier: session.issue_identifier,
+		issueTitle: session.issue_title,
+		botToken: resolvedToken,
+		leadId,
+	};
+	const headerBotToken =
+		resolveAnnouncerBotToken(deps.projects, session.project_name) ??
+		resolvedToken;
+	const headerCtx = { ...ctx, botToken: headerBotToken };
+	// Codex code R1 MED-1 / R2: the CommDB reads (getTmuxTargetFromCommDb opens a
 	// better-sqlite3 file with busy_timeout=5s) must NOT run on the request call
 	// stack — a locked comm.db could otherwise stall the stage_changed response.
 	// An async IIFE would run synchronously up to its first `await`, so push the
-	// ENTIRE chain (incl. the sync CommDB read) past a real async boundary via
+	// ENTIRE chain (incl. the sync CommDB reads) past a real async boundary via
 	// Promise.resolve().then — the handler returns before any of it runs.
 	void Promise.resolve()
 		.then(async () => {
-			const target = getTmuxTargetFromCommDb(
-				session.execution_id,
-				session.project_name,
+			// FLY-892 (Step 4): a phase session on this issue ⇒ render the pipeline
+			// header. Empty ⇒ non-three-stage ⇒ byte-unchanged single-runner pin.
+			const phaseSessions = deps.store.getPhaseSessionsForIssue(
+				session.issue_id,
 			);
-			if (!target) return; // tmux_window not registered yet — next stage reconciles
-			const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
-			const command = buildAttachCommand(attach);
-			await deps.chatThreadCreator.ensureRunnerAttachPin(
-				{
-					chatChannelId: resolvedChannel,
-					issueId: session.issue_id,
-					issueIdentifier: session.issue_identifier,
-					issueTitle: session.issue_title,
-					botToken: resolvedToken,
-					leadId,
-				},
+			if (phaseSessions.length === 0) {
+				const target = getTmuxTargetFromCommDb(
+					session.execution_id,
+					session.project_name,
+				);
+				if (!target) return; // tmux_window not registered yet — next stage reconciles
+				const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
+				await deps.chatThreadCreator.ensureRunnerAttachPin(
+					ctx,
+					threadId,
+					buildAttachCommand(attach),
+				);
+				return;
+			}
+
+			const byRole = new Map(phaseSessions.map((s) => [s.chat_thread_role, s]));
+			const rows: PhaseHeaderRow[] = [];
+			for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+				const plannedModel = modelDisplayName(
+					undefined,
+					DEFAULT_PHASE_TIER[role],
+				);
+				const ps = byRole.get(role);
+				if (!ps) {
+					rows.push({
+						label: phaseMessageTag(role).trim(),
+						status: "planned",
+						plannedModel,
+					});
+					continue;
+				}
+				const status: PhaseHeaderRow["status"] = HEADER_DONE_STATUSES.has(
+					ps.status,
+				)
+					? "done"
+					: "active";
+				let attachCommand: string | undefined;
+				let sessionEnded = false;
+				const target = getTmuxTargetFromCommDb(
+					ps.execution_id,
+					ps.project_name,
+				);
+				if (target) {
+					const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
+					attachCommand = buildAttachCommand(attach);
+				} else if (status === "done") {
+					// pre-FLY-887: a finished phase's session is closed → no target.
+					sessionEnded = true;
+				}
+				rows.push({
+					label: phaseMessageTag(role, ps.runner_model).trim(),
+					status,
+					execId: ps.execution_id.slice(0, 8),
+					attachCommand,
+					sessionEnded,
+				});
+			}
+			const content = buildPipelineHeaderContent(headerCtx, rows);
+			await deps.chatThreadCreator.ensureRunnerPipelineHeaderPin(
+				headerCtx,
 				threadId,
-				command,
+				content,
 			);
 		})
 		.catch((err: unknown) => {

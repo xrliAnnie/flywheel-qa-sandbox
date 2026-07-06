@@ -16,10 +16,14 @@
 
 import { CommDB } from "flywheel-comm/db";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
-import { modelShortCode } from "flywheel-config";
+import { modelShortCode, phaseMessageTag } from "flywheel-config";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import type { LeadAlertNotifier } from "../LeadAlertNotifier.js";
-import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
+import {
+	type ProjectEntry,
+	resolveAnnouncerBotToken,
+	resolveLeadForIssue,
+} from "../ProjectConfig.js";
 import type { AutoQaRecord, Session, StateStore } from "../StateStore.js";
 import type { AutoQaSideEffects, QaIssueRef } from "./auto-qa-coordinator.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
@@ -133,10 +137,24 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			);
 			return;
 		}
+		// FLY-892 (Step 3): this is the CENTRAL auto-QA issue-thread post seam (the
+		// three-stage orchestrator posts through it too). Tag which phase is
+		// speaking in the single converged thread. A standalone auto-QA session (on
+		// its own QA issue, not a three-stage phase) has chat_thread_role='main' →
+		// "" → byte-unchanged.
+		const prefix = phaseMessageTag(
+			args.session.chat_thread_role,
+			args.session.runner_model,
+		);
+		// FLY-892 (Step 7): a QA status broadcast → announcer bot when configured;
+		// else the Lead bot (byte-compat).
+		const broadcastToken =
+			resolveAnnouncerBotToken(this.deps.projects, args.session.project_name) ??
+			t.botToken;
 		const res = await postDiscordMessageToChannel(
 			t.threadId,
-			args.text,
-			t.botToken,
+			`${prefix}${args.text}`,
+			broadcastToken,
 			{},
 			this.deps.fetchImpl ?? fetch,
 		);

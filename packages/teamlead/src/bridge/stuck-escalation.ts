@@ -21,6 +21,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
+import { phaseMessageTag } from "flywheel-config";
 import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
@@ -591,6 +592,11 @@ export function createStuckUnhandledAlerter(
 				thread,
 				botToken: lead.botToken ?? opts.discordBotToken,
 				ownerUserId: opts.discordOwnerUserId,
+				// FLY-892 (Step 3): tag which phase session is stuck; "" for main.
+				phasePrefix: phaseMessageTag(
+					session.chat_thread_role,
+					session.runner_model,
+				),
 			},
 			{ store, fetchImpl: opts.fetchImpl },
 		);

@@ -1259,12 +1259,11 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		} catch {
 			return; // lead/project not resolvable → skip
 		}
-		// FLY-793 (Codex full-PR R1 #5): a three-stage phase session resolves its own
-		// side-table thread; `main` (default) → byte-unchanged.
+		// FLY-892 (converge): one issue = one thread — every phase session and the
+		// Lead resolve the SAME `(issue, channel)` thread.
 		const thread = this.store.getChatThreadByIssue(
 			session.issue_id,
 			chatChannel,
-			session.chat_thread_role,
 		);
 		if (!thread) return; // thread not created yet
 

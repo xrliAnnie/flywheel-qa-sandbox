@@ -48,6 +48,14 @@ export interface FounderThreadNotifyOpts {
 	botToken?: string;
 	/** config.discordOwnerUserId (for @mention + ping). */
 	ownerUserId?: string;
+	/**
+	 * FLY-892 (Step 3): the message-level phase tag (`[设计·Fable] ` …) prepended to
+	 * the header so, in the single converged issue thread, the founder can tell
+	 * which of the three-stage phase sessions is speaking. Empty for a main / non-
+	 * three-stage session → byte-unchanged. Callers pass
+	 * `phaseMessageTag(session.chat_thread_role, session.runner_model)`.
+	 */
+	phasePrefix?: string;
 }
 
 export interface FounderThreadNotifyDeps {
@@ -92,9 +100,10 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 	const identifier = opts.issueIdentifier ?? opts.issueId;
 	const owner = `<@${opts.ownerUserId}>`;
 	const summary = truncate(opts.summary, SUMMARY_MAX);
+	const prefix = opts.phasePrefix ?? ""; // FLY-892 Step 3 — "" for main (byte-compat)
 	if (opts.checkpoint === "approve_to_ship") {
 		return [
-			`🚀 **Ship gate 等你批准** — ${identifier}`,
+			`${prefix}🚀 **Ship gate 等你批准** — ${identifier}`,
 			owner,
 			"",
 			summary,
@@ -103,7 +112,7 @@ function buildBody(opts: FounderThreadNotifyOpts): string {
 		].join("\n");
 	}
 	return [
-		`🧠 **Brainstorm gate 等你确认** — ${identifier}`,
+		`${prefix}🧠 **Brainstorm gate 等你确认** — ${identifier}`,
 		owner,
 		"",
 		summary,
@@ -328,6 +337,8 @@ export interface FounderMilestoneNotifyOpts {
 	botToken?: string;
 	/** config.discordOwnerUserId (for @mention + ping). */
 	ownerUserId?: string;
+	/** FLY-892 (Step 3): message-level phase tag; "" for main (byte-compat). */
+	phasePrefix?: string;
 }
 
 function buildMilestoneBody(opts: FounderMilestoneNotifyOpts): string {
@@ -335,7 +346,8 @@ function buildMilestoneBody(opts: FounderMilestoneNotifyOpts): string {
 	const owner = `<@${opts.ownerUserId}>`;
 	const { emoji, zh } = milestoneLabel(opts.milestone);
 	const title = opts.issueTitle ? ` ${truncate(opts.issueTitle, 80)}` : "";
-	const header = `${emoji} **${identifier}${title} — Runner ${zh}**`;
+	const prefix = opts.phasePrefix ?? "";
+	const header = `${prefix}${emoji} **${identifier}${title} — Runner ${zh}**`;
 
 	const detail: string[] = [];
 	if (opts.milestone === "failed" || opts.milestone === "blocked") {
@@ -403,13 +415,16 @@ export interface FounderStuckNotifyOpts {
 	botToken?: string;
 	/** config.discordOwnerUserId (for @mention + ping). */
 	ownerUserId?: string;
+	/** FLY-892 (Step 3): message-level phase tag; "" for main (byte-compat). */
+	phasePrefix?: string;
 }
 
 function buildStuckBody(opts: FounderStuckNotifyOpts): string {
 	const identifier = opts.issueIdentifier ?? opts.issueId;
 	const owner = `<@${opts.ownerUserId}>`;
+	const prefix = opts.phasePrefix ?? "";
 	return [
-		`🚨 **Runner 卡住没人处理** — ${identifier}`,
+		`${prefix}🚨 **Runner 卡住没人处理** — ${identifier}`,
 		owner,
 		"",
 		`Runner (execution ${opts.executionId}) 的终端已 ~${opts.stuckMinutes} 分钟没变化、status 还是 running；` +

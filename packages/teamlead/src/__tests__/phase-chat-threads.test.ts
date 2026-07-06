@@ -1,12 +1,17 @@
 /**
- * FLY-793 (Step 11): the Hybrid per-phase chat-thread side-table.
+ * FLY-892 (converge): one issue = one thread.
  *
- * A three-stage issue has ONE Design/Implement/QA thread per role. The existing
- * `chat_threads` table (UNIQUE issue+channel) allows only one row per issue, so
- * phase threads live in a NEW `phase_chat_threads` side-table. The Hybrid
- * guarantee: the `main` path is BYTE-UNCHANGED (every existing caller passes no
- * role → 'main' → existing 1:1 behavior), and only explicit phase roles reach the
- * side-table.
+ * FLY-793 (Step 11) split a three-stage issue into three threads via a
+ * `phase_chat_threads` side-table keyed on `(issue, channel, session_role)`.
+ * FLY-892 converges thread resolution back to a single `(issue, channel)` row in
+ * `chat_threads`: every caller — a Lead `/send`, and a design/implement/qa phase
+ * session — resolves the SAME thread. The side-table is now READ-ONLY legacy:
+ *   - nothing WRITES it (upsertChatThread / attach-pin no longer route by role);
+ *   - existing rows are still reverse-lookup-able + archivable (boot sweep);
+ *   - `getUnarchivedPhaseChatThreads()` exposes them to the sweep.
+ *
+ * The `sessions.chat_thread_role` phase MARKER is untouched (three-stage identity
+ * now rides on the message / pipeline-header, not on a separate thread).
  */
 
 import { mkdtempSync, rmSync } from "node:fs";
@@ -15,12 +20,58 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { normalizeChatThreadRole, StateStore } from "../StateStore.js";
 
-describe("FLY-793 phase_chat_threads (Step 11, Hybrid)", () => {
+/** Access the private sql.js handle to seed LEGACY phase rows (nothing in the
+ *  post-converge API writes them; they only ever existed from pre-892 code). */
+function rawDb(store: StateStore): {
+	run(sql: string, params?: unknown[]): void;
+} {
+	return (
+		store as unknown as { db: { run(sql: string, params?: unknown[]): void } }
+	).db;
+}
+function seedLegacyPhaseThread(
+	store: StateStore,
+	row: {
+		threadId: string;
+		channelId: string;
+		issueId: string;
+		role: string;
+		leadId?: string;
+		archived?: boolean;
+		missing?: boolean;
+	},
+): void {
+	rawDb(store).run(
+		`INSERT INTO phase_chat_threads
+		   (thread_id, channel_id, issue_id, session_role, lead_id, archived_at, discord_missing_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		[
+			row.threadId,
+			row.channelId,
+			row.issueId,
+			row.role,
+			row.leadId ?? null,
+			row.archived ? "2026-07-01" : null,
+			row.missing ? "2026-07-01" : null,
+		],
+	);
+}
+function countPhaseRows(store: StateStore): number {
+	const db = (
+		store as unknown as {
+			db: { exec(sql: string): Array<{ values: unknown[][] }> };
+		}
+	).db;
+	const res = db.exec("SELECT COUNT(*) FROM phase_chat_threads");
+	return Number(res[0]?.values[0]?.[0] ?? 0);
+}
+
+describe("FLY-892 one issue = one thread (converge)", () => {
 	let dir: string;
 	let store: StateStore;
 
 	beforeEach(async () => {
-		dir = mkdtempSync(join(tmpdir(), "fly793-threads-"));
+		dir = mkdtempSync(join(tmpdir(), "fly892-threads-"));
 		store = await StateStore.create(join(dir, "teamlead.db"));
 	});
 	afterEach(() => {
@@ -28,7 +79,7 @@ describe("FLY-793 phase_chat_threads (Step 11, Hybrid)", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	describe("normalizeChatThreadRole", () => {
+	describe("normalizeChatThreadRole (marker semantics retained)", () => {
 		it("folds absent / non-phase roles to 'main'", () => {
 			expect(normalizeChatThreadRole()).toBe("main");
 			expect(normalizeChatThreadRole(undefined)).toBe("main");
@@ -43,174 +94,186 @@ describe("FLY-793 phase_chat_threads (Step 11, Hybrid)", () => {
 		});
 	});
 
-	describe("byte-compat: main role → chat_threads (unchanged)", () => {
-		it("default (no role) upserts + reads the main thread", () => {
-			store.upsertChatThread("t-main", "chan-1", "FLY-793", "lead-a");
-			const got = store.getChatThreadByIssue("FLY-793", "chan-1");
+	describe("(a) every caller resolves the single (issue,channel) main row", () => {
+		it("upsert + read the one thread; never touches the phase side-table", () => {
+			store.upsertChatThread("t-main", "chan-1", "FLY-892", "lead-a");
+			const got = store.getChatThreadByIssue("FLY-892", "chan-1");
 			expect(got?.thread_id).toBe("t-main");
-			expect(got?.session_role).toBe("main");
+			expect(countPhaseRows(store)).toBe(0);
 		});
-		it("a second main upsert on the same issue+channel replaces (1:1)", () => {
-			store.upsertChatThread("t-main-1", "chan-1", "FLY-793");
-			store.upsertChatThread("t-main-2", "chan-1", "FLY-793");
-			const got = store.getChatThreadByIssue("FLY-793", "chan-1");
-			expect(got?.thread_id).toBe("t-main-2");
-			// old row is gone (delete-stale)
+		it("a second upsert on the same issue+channel replaces (1:1)", () => {
+			store.upsertChatThread("t-main-1", "chan-1", "FLY-892");
+			store.upsertChatThread("t-main-2", "chan-1", "FLY-892");
+			expect(store.getChatThreadByIssue("FLY-892", "chan-1")?.thread_id).toBe(
+				"t-main-2",
+			);
 			expect(store.getChatThreadByThreadId("t-main-1")).toBeUndefined();
+			expect(countPhaseRows(store)).toBe(0);
 		});
-	});
-
-	describe("side-table: one thread per phase role", () => {
-		it("design / implement / qa each get their own thread, all coexisting", () => {
-			store.upsertChatThread("t-design", "chan-1", "FLY-793", "lead", "design");
-			store.upsertChatThread(
-				"t-impl",
-				"chan-1",
-				"FLY-793",
-				"lead",
-				"implement",
-			);
-			store.upsertChatThread("t-qa", "chan-1", "FLY-793", "lead", "qa");
-
-			expect(
-				store.getChatThreadByIssue("FLY-793", "chan-1", "design")?.thread_id,
-			).toBe("t-design");
-			expect(
-				store.getChatThreadByIssue("FLY-793", "chan-1", "implement")?.thread_id,
-			).toBe("t-impl");
-			expect(
-				store.getChatThreadByIssue("FLY-793", "chan-1", "qa")?.thread_id,
-			).toBe("t-qa");
-		});
-
-		it("creating the Implement thread does NOT delete the sibling Design thread", () => {
-			store.upsertChatThread("t-design", "chan-1", "FLY-793", "lead", "design");
-			store.upsertChatThread(
-				"t-impl",
-				"chan-1",
-				"FLY-793",
-				"lead",
-				"implement",
-			);
-			// design survives
-			expect(
-				store.getChatThreadByIssue("FLY-793", "chan-1", "design")?.thread_id,
-			).toBe("t-design");
-		});
-
-		it("a phase thread and the main thread coexist for the SAME issue", () => {
-			store.upsertChatThread("t-main", "chan-1", "FLY-793");
-			store.upsertChatThread("t-design", "chan-1", "FLY-793", "lead", "design");
-			expect(store.getChatThreadByIssue("FLY-793", "chan-1")?.thread_id).toBe(
-				"t-main",
-			);
-			expect(
-				store.getChatThreadByIssue("FLY-793", "chan-1", "design")?.thread_id,
-			).toBe("t-design");
-		});
-
-		it("re-upserting a phase role replaces only that role's thread", () => {
-			store.upsertChatThread(
-				"t-design-1",
-				"chan-1",
-				"FLY-793",
-				"lead",
-				"design",
-			);
-			store.upsertChatThread(
-				"t-design-2",
-				"chan-1",
-				"FLY-793",
-				"lead",
-				"design",
-			);
-			expect(
-				store.getChatThreadByIssue("FLY-793", "chan-1", "design")?.thread_id,
-			).toBe("t-design-2");
-			expect(store.getChatThreadByThreadId("t-design-1")).toBeUndefined();
-		});
-	});
-
-	describe("getChatThreadByThreadId spans both tables + echoes role", () => {
-		it("finds a main thread with session_role='main'", () => {
-			store.upsertChatThread("t-main", "chan-1", "FLY-793");
-			expect(store.getChatThreadByThreadId("t-main")).toMatchObject({
-				thread_id: "t-main",
-				issue_id: "FLY-793",
-				session_role: "main",
+		it("the attach-pin lives on the single main thread", () => {
+			store.upsertChatThread("t-main", "chan-1", "FLY-892");
+			store.setChatThreadAttachPin("FLY-892", "chan-1", {
+				messageId: "m1",
+				command: "tmux attach",
+				pinnedAt: "2026-07-05",
 			});
+			expect(store.getChatThreadAttachPin("FLY-892", "chan-1")?.messageId).toBe(
+				"m1",
+			);
+			expect(countPhaseRows(store)).toBe(0);
+			store.clearChatThreadAttachPin("FLY-892", "chan-1");
+			expect(store.getChatThreadAttachPin("FLY-892", "chan-1")).toBeUndefined();
 		});
-		it("finds a phase thread with its session_role", () => {
-			store.upsertChatThread("t-qa", "chan-1", "FLY-793", "lead", "qa");
-			expect(store.getChatThreadByThreadId("t-qa")).toMatchObject({
-				thread_id: "t-qa",
-				issue_id: "FLY-793",
+	});
+
+	describe("(b) legacy phase rows stay reverse-lookup-able + archivable", () => {
+		it("getChatThreadByThreadId finds a legacy phase thread + echoes its role", () => {
+			seedLegacyPhaseThread(store, {
+				threadId: "t-qa-legacy",
+				channelId: "chan-1",
+				issueId: "FLY-887",
+				role: "qa",
+			});
+			expect(store.getChatThreadByThreadId("t-qa-legacy")).toMatchObject({
+				thread_id: "t-qa-legacy",
+				issue_id: "FLY-887",
 				session_role: "qa",
 			});
 		});
-	});
-
-	describe("markMissing / markArchived reach the phase table", () => {
-		it("markChatThreadMissing hides a phase thread from getChatThreadByIssue", () => {
-			store.upsertChatThread("t-design", "chan-1", "FLY-793", "lead", "design");
-			store.markChatThreadMissing("t-design");
-			expect(
-				store.getChatThreadByIssue("FLY-793", "chan-1", "design"),
-			).toBeUndefined();
-		});
-		it("markChatThreadArchived stamps a phase thread's archived_at", () => {
-			store.upsertChatThread(
-				"t-impl",
-				"chan-1",
-				"FLY-793",
-				"lead",
-				"implement",
-			);
-			store.markChatThreadArchived("t-impl");
-			expect(
-				store.getChatThreadByIssue("FLY-793", "chan-1", "implement")
-					?.archived_at,
-			).not.toBeNull();
-		});
-	});
-
-	describe("attach-pin is role-scoped", () => {
-		it("a design attach-pin does not leak into the qa thread", () => {
-			store.upsertChatThread("t-design", "chan-1", "FLY-793", "lead", "design");
-			store.upsertChatThread("t-qa", "chan-1", "FLY-793", "lead", "qa");
-			store.setChatThreadAttachPin(
-				"FLY-793",
-				"chan-1",
-				{ messageId: "m1", command: "tmux attach", pinnedAt: "2026-07-03" },
-				"design",
-			);
-			expect(
-				store.getChatThreadAttachPin("FLY-793", "chan-1", "design")?.messageId,
-			).toBe("m1");
-			expect(
-				store.getChatThreadAttachPin("FLY-793", "chan-1", "qa"),
-			).toBeUndefined();
-		});
-	});
-
-	describe("persisted sessions.chat_thread_role round-trips", () => {
-		it("defaults to 'main' when unset, and stores an explicit phase role", () => {
-			store.upsertSession({
-				execution_id: "e-main",
-				issue_id: "FLY-793",
-				project_name: "flywheel",
-				status: "running",
+		it("markChatThreadArchived / markChatThreadMissing reach a legacy phase row", () => {
+			seedLegacyPhaseThread(store, {
+				threadId: "t-impl-legacy",
+				channelId: "chan-1",
+				issueId: "FLY-887",
+				role: "implement",
 			});
-			expect(store.getSession("e-main")?.chat_thread_role).toBe("main");
+			store.markChatThreadArchived("t-impl-legacy");
+			// archived → drops out of the sweep input set
+			expect(store.getUnarchivedPhaseChatThreads()).toHaveLength(0);
 
+			seedLegacyPhaseThread(store, {
+				threadId: "t-design-legacy",
+				channelId: "chan-1",
+				issueId: "FLY-886",
+				role: "design",
+			});
+			store.markChatThreadMissing("t-design-legacy");
+			expect(store.getUnarchivedPhaseChatThreads()).toHaveLength(0);
+		});
+	});
+
+	describe("(c1) getUnarchivedPhaseChatThreads (boot-sweep input)", () => {
+		it("returns only unarchived + non-missing legacy phase rows", () => {
+			seedLegacyPhaseThread(store, {
+				threadId: "t-d",
+				channelId: "chan-1",
+				issueId: "FLY-880",
+				role: "design",
+				leadId: "lead-x",
+			});
+			seedLegacyPhaseThread(store, {
+				threadId: "t-i",
+				channelId: "chan-1",
+				issueId: "FLY-880",
+				role: "implement",
+			});
+			seedLegacyPhaseThread(store, {
+				threadId: "t-archived",
+				channelId: "chan-1",
+				issueId: "FLY-881",
+				role: "qa",
+				archived: true,
+			});
+			seedLegacyPhaseThread(store, {
+				threadId: "t-missing",
+				channelId: "chan-1",
+				issueId: "FLY-882",
+				role: "qa",
+				missing: true,
+			});
+
+			const rows = store.getUnarchivedPhaseChatThreads();
+			expect(rows.map((r) => r.thread_id).sort()).toEqual(["t-d", "t-i"]);
+			const design = rows.find((r) => r.thread_id === "t-d");
+			expect(design).toMatchObject({
+				channel_id: "chan-1",
+				issue_id: "FLY-880",
+				session_role: "design",
+				lead_id: "lead-x",
+			});
+		});
+		it("is empty when there were never any phase rows (non-three-stage byte-compat)", () => {
+			store.upsertChatThread("t-main", "chan-1", "FLY-500");
+			expect(store.getUnarchivedPhaseChatThreads()).toHaveLength(0);
+		});
+	});
+
+	describe("(c2) getPhaseSessionsForIssue (pipeline-header data source)", () => {
+		it("returns the latest session per phase role, keyed on chat_thread_role", () => {
 			store.upsertSession({
 				execution_id: "e-design",
-				issue_id: "FLY-793",
+				issue_id: "FLY-892",
+				project_name: "flywheel",
+				status: "completed",
+				chat_thread_role: "design",
+				runner_model: "claude-fable-5",
+				last_activity_at: "2026-07-05T01:00:00Z",
+			});
+			store.upsertSession({
+				execution_id: "e-impl",
+				issue_id: "FLY-892",
 				project_name: "flywheel",
 				status: "running",
-				chat_thread_role: "design",
+				chat_thread_role: "implement",
+				runner_model: "claude-opus-4-8",
+				last_activity_at: "2026-07-05T02:00:00Z",
 			});
-			expect(store.getSession("e-design")?.chat_thread_role).toBe("design");
+			// a non-phase (main) session on the SAME issue is excluded
+			store.upsertSession({
+				execution_id: "e-main",
+				issue_id: "FLY-892",
+				project_name: "flywheel",
+				status: "running",
+			});
+
+			const rows = store.getPhaseSessionsForIssue("FLY-892");
+			expect(rows.map((s) => s.chat_thread_role).sort()).toEqual([
+				"design",
+				"implement",
+			]);
+			expect(
+				rows.find((s) => s.chat_thread_role === "design")?.runner_model,
+			).toBe("claude-fable-5");
+		});
+		it("returns the MOST RECENT session when a phase has multiple (fix-loop)", () => {
+			store.upsertSession({
+				execution_id: "e-impl-1",
+				issue_id: "FLY-892",
+				project_name: "flywheel",
+				status: "completed",
+				chat_thread_role: "implement",
+				last_activity_at: "2026-07-05T01:00:00Z",
+			});
+			store.upsertSession({
+				execution_id: "e-impl-2",
+				issue_id: "FLY-892",
+				project_name: "flywheel",
+				status: "running",
+				chat_thread_role: "implement",
+				last_activity_at: "2026-07-05T03:00:00Z",
+			});
+			const rows = store.getPhaseSessionsForIssue("FLY-892");
+			expect(rows).toHaveLength(1);
+			expect(rows[0]?.execution_id).toBe("e-impl-2");
+		});
+		it("is empty for an issue with no phase sessions", () => {
+			store.upsertSession({
+				execution_id: "e-main",
+				issue_id: "FLY-500",
+				project_name: "flywheel",
+				status: "running",
+			});
+			expect(store.getPhaseSessionsForIssue("FLY-500")).toHaveLength(0);
 		});
 	});
 });

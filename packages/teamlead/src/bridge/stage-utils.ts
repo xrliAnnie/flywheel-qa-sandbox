@@ -10,6 +10,8 @@
  * (existing fail channel — no new error stage needed).
  */
 
+import { PHASE_THREAD_BADGE_PARTS } from "flywheel-config";
+
 export const VALID_STAGES = new Set([
 	"started",
 	"onboard",
@@ -154,6 +156,10 @@ const ALL_STATUS_EMOJI: ReadonlySet<string> = new Set([
 	...Object.values(STAGE_EMOJI),
 	BLOCKED_EMOJI,
 	RECONNECTING_EMOJI,
+	// FLY-892 (Step 6): the three-stage phase badges (🎨设计/🔨实现/🧪QA) are
+	// stamped in place of the fine-grained stage badge on a three-stage issue, so
+	// strip/restamp must recognize their emoji (🎨 is new; 🔨/🧪 are shared).
+	...Object.values(PHASE_THREAD_BADGE_PARTS).map((p) => p.emoji),
 ]);
 
 /**
@@ -176,6 +182,13 @@ const EMOJI_TO_WORDS: Readonly<Record<string, readonly string[]>> = (() => {
 	}
 	add(BLOCKED_EMOJI, BLOCKED_WORD);
 	add(RECONNECTING_EMOJI, RECONNECTING_WORD); // FLY-623
+	// FLY-892 (Step 6): register the phase badge words so a phase badge peels
+	// cleanly (🎨设计/🔨实现/🧪QA). 🔨实现 coexists with the FLY-560 🔨实现中 stage
+	// word (longest-first sort peels 实现中 before 实现); 🧪QA equals the `test`
+	// word (idempotent add).
+	for (const { emoji, word } of Object.values(PHASE_THREAD_BADGE_PARTS)) {
+		add(emoji, word);
+	}
 	const out: Record<string, string[]> = {};
 	for (const [emoji, set] of Object.entries(sets)) {
 		out[emoji] = [...set].sort((a, b) => b.length - a.length);

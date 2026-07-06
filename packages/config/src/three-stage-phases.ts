@@ -22,7 +22,11 @@
  * implement=Opus phase model is not silently overridden.
  */
 
-import { MODEL_TIERS, type ModelTier } from "./model-tiers.js";
+import {
+	MODEL_TIERS,
+	type ModelTier,
+	modelDisplayName,
+} from "./model-tiers.js";
 
 export type ThreeStagePhase = "design" | "implement" | "qa";
 
@@ -100,4 +104,63 @@ export function nextPhase(phase: ThreeStagePhase): ThreeStagePhase | null {
 	const i = THREE_STAGE_PHASE_SEQUENCE.indexOf(phase);
 	if (i < 0 || i === THREE_STAGE_PHASE_SEQUENCE.length - 1) return null;
 	return THREE_STAGE_PHASE_SEQUENCE[i + 1]!;
+}
+
+/**
+ * FLY-892 (Codex R3 #4): the SINGLE source of truth for the three-stage phase
+ * thread-title badge — emoji + short word. FLY-793 lived in ChatThreadCreator;
+ * FLY-892 moves it to `packages/config` so both the ChatThreadCreator title
+ * stamp AND `stage-utils` strip/recognition read one vocabulary (stage-utils
+ * cannot import ChatThreadCreator without a cycle). Annie's locked glyphs
+ * (2026-07-05 mockup review, definition ③): 🎨设计 / 🔨实现 / 🧪QA.
+ */
+export const PHASE_THREAD_BADGE_PARTS: Readonly<
+	Record<ThreeStagePhase, { emoji: string; word: string }>
+> = {
+	design: { emoji: "🎨", word: "设计" },
+	implement: { emoji: "🔨", word: "实现" },
+	qa: { emoji: "🧪", word: "QA" },
+};
+
+/** Composed `emoji+word` badge per phase (`🎨设计`). Derived from the parts. */
+export const PHASE_THREAD_BADGE: Readonly<Record<ThreeStagePhase, string>> = {
+	design: `${PHASE_THREAD_BADGE_PARTS.design.emoji}${PHASE_THREAD_BADGE_PARTS.design.word}`,
+	implement: `${PHASE_THREAD_BADGE_PARTS.implement.emoji}${PHASE_THREAD_BADGE_PARTS.implement.word}`,
+	qa: `${PHASE_THREAD_BADGE_PARTS.qa.emoji}${PHASE_THREAD_BADGE_PARTS.qa.word}`,
+};
+
+/**
+ * FLY-892 (Step 6): the stage-level thread-title badge for a phase role (🎨设计 /
+ * 🔨实现 / 🧪QA), or `""` for a non-phase (main) role. On a three-stage issue
+ * this REPLACES the FLY-560 fine-grained stage prefix (Annie definition ③): the
+ * title carries only the current phase, so a whole pipeline renames ~twice.
+ */
+export function phaseThreadBadge(role: string | null | undefined): string {
+	return isThreeStagePhaseRole(role) ? PHASE_THREAD_BADGE[role] : "";
+}
+
+/** Human phase name shown inside a message tag (`[设计·Fable]`). */
+const PHASE_MESSAGE_NAME: Readonly<Record<ThreeStagePhase, string>> = {
+	design: "设计",
+	implement: "实现",
+	qa: "QA",
+};
+
+/**
+ * FLY-892 (Step 3, founder-approved ①): the message-level phase+model tag a
+ * three-stage phase session prepends to its founder-facing thread messages, e.g.
+ * `[设计·Fable] `. The model name is the session's own `runner_model`; when that
+ * is absent (account default) it falls back to the phase's planned tier model
+ * (`DEFAULT_PHASE_TIER`). A non-phase / main role → `""` so a Lead `/send` and
+ * every non-three-stage message are byte-unchanged. Trailing space included so
+ * callers just prepend.
+ */
+export function phaseMessageTag(
+	role: string | null | undefined,
+	runnerModel?: string | null,
+): string {
+	if (!isThreeStagePhaseRole(role)) return "";
+	const name = PHASE_MESSAGE_NAME[role];
+	const model = modelDisplayName(runnerModel, DEFAULT_PHASE_TIER[role]);
+	return model ? `[${name}·${model}] ` : `[${name}] `;
 }

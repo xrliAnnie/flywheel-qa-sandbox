@@ -118,37 +118,12 @@ export interface ChatThreadContext {
 	 * ?? null` so account-default clears rather than preserving a prior model.
 	 */
 	modelCode?: "F" | "O" | "S" | "H" | null;
-	/**
-	 * FLY-793 (Step 11): the session's chat-thread role. 'main' (default — every
-	 * existing caller) keeps the byte-unchanged single-thread-per-issue path. A
-	 * phase role (design/implement/qa) routes the create/find/upsert to the
-	 * `phase_chat_threads` side-table and stamps the phase badge into the title.
-	 */
-	chatThreadRole?: string;
 }
 
 export interface ChatThreadResult {
 	created: boolean;
 	threadId?: string;
 	error?: string;
-}
-
-/**
- * FLY-793 (Step 11, ⑦): the phase badge stamped into a phase thread's base title
- * (`[FLY-XX] <badge> <title>`). Empty for the main role, so the main path title is
- * byte-unchanged. Decoupled from the status-emoji / model-code front markers.
- */
-export function phaseThreadBadge(role?: string): string {
-	switch (role) {
-		case "design":
-			return "🎨设计";
-		case "implement":
-			return "🔨实现";
-		case "qa":
-			return "🧪QA";
-		default:
-			return "";
-	}
 }
 
 function effectiveIssueKey(
@@ -161,19 +136,16 @@ function effectiveIssueKey(
 }
 
 function buildIssueThreadName(
-	ctx: Pick<
-		ChatThreadContext,
-		"issueId" | "issueIdentifier" | "issueTitle" | "chatThreadRole"
-	>,
+	ctx: Pick<ChatThreadContext, "issueId" | "issueIdentifier" | "issueTitle">,
 ): string {
 	const issueKey = effectiveIssueKey(ctx);
-	// FLY-793 (Step 11 ⑦): phase threads carry a role badge in the base title
-	// (`[FLY-XX] 🎨设计 <title>`). Empty for main → byte-unchanged main title.
-	const badge = phaseThreadBadge(ctx.chatThreadRole);
-	const badgePrefix = badge ? `${badge} ` : "";
+	// FLY-892 (converge): the base title is `[FLY-XX] <title>` for every role. The
+	// three-stage phase is no longer a separate thread with a base-title badge —
+	// the current phase is shown as a STAGE-level title prefix (Step 6, stamped by
+	// stampStageEmoji) and as a message tag, not baked into the base title.
 	const title = ctx.issueTitle ?? ctx.issueId;
-	if (issueKey) return `[${issueKey}] ${badgePrefix}${title}`;
-	return `${badgePrefix}${title}`;
+	if (issueKey) return `[${issueKey}] ${title}`;
+	return title;
 }
 
 /**
@@ -209,6 +181,66 @@ function isPlaceholderThreadName(
 	placeholders.add(`[${issueKey}] ${issueKey}`);
 	placeholders.add(`[${issueKey}] ${ctx.issueId}`);
 	return placeholders.has(currentName);
+}
+
+/**
+ * FLY-892 (Step 4): one row of the pinned three-stage pipeline header. The caller
+ * (event-route) pre-builds `label` (`[设计·Fable]`) and `plannedModel` so this
+ * renderer stays config-free.
+ */
+export interface PhaseHeaderRow {
+	/** `[设计·Fable]` — phase name · that phase's ACTUAL (or planned) model. */
+	label: string;
+	status: "planned" | "active" | "done";
+	/** Planned model display name, for the "(计划模型 X)" suffix on a planned row. */
+	plannedModel?: string;
+	/** Short exec id — present when a session exists for this phase. */
+	execId?: string;
+	/** tmux/cmux attach command — present when CommDB resolves a live target. */
+	attachCommand?: string;
+	/** A DONE phase whose session is already gone (pre-FLY-887 keep-alive). */
+	sessionEnded?: boolean;
+}
+
+const PHASE_STATUS_BADGE: Readonly<Record<PhaseHeaderRow["status"], string>> = {
+	planned: "⬜ 未开始",
+	active: "▶ 进行中",
+	done: "✅ 完成",
+};
+
+/**
+ * FLY-892 (Step 4, founder-approved ①+②): render the single pinned "pipeline
+ * header" that lists all three phases — model tag + status (✅/▶/⬜) + exec id +
+ * attach command — so the founder reads the whole issue at a glance and can jump
+ * to any phase's scrollback. It ABSORBS the FLY-560 "Runner terminal" pin (one
+ * pinned message, edited in place, never a second pin). Pre-887, a done phase
+ * whose session is gone shows "✅ 完成" with "（session 已结束）"; once FLY-887 keeps
+ * phase sessions alive, the same code renders an attach command for all three —
+ * usability-driven, this reads CommDB only and never touches 887's lifecycle.
+ */
+export function buildPipelineHeaderContent(
+	ctx: Pick<ChatThreadContext, "issueId" | "issueIdentifier">,
+	phases: PhaseHeaderRow[],
+): string {
+	const key = effectiveIssueKey(ctx);
+	const label = key ? `[${key}]` : ctx.issueId;
+	const lines: string[] = [`📌 **${label} 三段流水线**`];
+	for (const p of phases) {
+		const head = `**${p.label}** ${PHASE_STATUS_BADGE[p.status]}`;
+		if (p.status === "planned") {
+			lines.push(
+				p.plannedModel ? `${head}（计划模型 ${p.plannedModel}）` : head,
+			);
+			continue;
+		}
+		lines.push(p.execId ? `${head} · exec \`${p.execId}\`` : head);
+		if (p.attachCommand) lines.push(`\`${p.attachCommand}\``);
+		else if (p.sessionEnded) lines.push("_（session 已结束）_");
+	}
+	lines.push(
+		"_自动更新：三段各用什么模型、跑到哪、去哪看终端，一条置顶看全。_",
+	);
+	return lines.join("\n");
 }
 
 export class ChatThreadCreator {
@@ -251,9 +283,10 @@ export class ChatThreadCreator {
 	) {}
 
 	async ensureChatThread(ctx: ChatThreadContext): Promise<ChatThreadResult> {
-		// FLY-793 (Step 11): the inflight-dedup key includes the role so concurrent
-		// design + implement creates for the SAME issue don't collapse into one.
-		const key = `${ctx.issueId}:${ctx.chatChannelId}:${ctx.chatThreadRole ?? "main"}`;
+		// FLY-892 (converge): one issue = one thread — the inflight-dedup key is
+		// `(issue, channel)` so concurrent design + implement ensures for the SAME
+		// issue collapse into a single create (never a duplicate thread).
+		const key = `${ctx.issueId}:${ctx.chatChannelId}`;
 		const pending = this.inflight.get(key);
 		if (pending) return pending;
 
@@ -267,12 +300,10 @@ export class ChatThreadCreator {
 	}
 
 	private async _doEnsure(ctx: ChatThreadContext): Promise<ChatThreadResult> {
-		// 1. Check existing mapping (FLY-793: role-scoped — a phase looks up its own
-		// side-table thread, main is byte-unchanged).
+		// 1. Check existing mapping (FLY-892: the single (issue, channel) thread).
 		const existing = this.store.getChatThreadByIssue(
 			ctx.issueId,
 			ctx.chatChannelId,
-			ctx.chatThreadRole,
 		);
 		if (existing) {
 			const valid = await validateThreadExists(
@@ -392,13 +423,12 @@ export class ChatThreadCreator {
 			if (!data.id)
 				return { created: false, error: "no thread ID in response" };
 
-			// 3. Store mapping (FLY-793: role routes to the phase side-table).
+			// 3. Store mapping (FLY-892: the single (issue, channel) thread).
 			this.store.upsertChatThread(
 				data.id,
 				ctx.chatChannelId,
 				ctx.issueId,
 				ctx.leadId,
-				ctx.chatThreadRole,
 			);
 
 			// 4. Auto-add owner as thread member (sidebar visibility + notifications)
@@ -460,9 +490,15 @@ export class ChatThreadCreator {
 		threadId: string,
 		stage: string,
 		withWord = false,
+		phaseBadge?: string | null,
 	): Promise<void> {
-		const badge = stageBadge(stage, withWord);
-		if (!badge) return; // unknown stage → no-op (no fetch, no writer)
+		// FLY-892 (Step 6): on a three-stage issue the title carries the STAGE-LEVEL
+		// phase badge (🎨设计/🔨实现/🧪QA) — Annie's locked glyphs — INSTEAD of the
+		// FLY-560 fine-grained per-stage word, so the whole pipeline renames ~twice.
+		// A non-empty `phaseBadge` overrides; else fall back to the FLY-560 stage
+		// badge (non-three-stage byte-compat). Same coalescing writer either way.
+		const badge = phaseBadge ? phaseBadge : stageBadge(stage, withWord);
+		if (!badge) return; // unknown stage + no phase badge → no-op (no fetch)
 		return this.enqueueTitleWrite(threadId, ctx, badge);
 	}
 
@@ -702,6 +738,50 @@ export class ChatThreadCreator {
 			now?: () => string;
 		} = {},
 	): Promise<void> {
+		// Single-runner (non-three-stage) path: fingerprint = the raw command
+		// (byte-compat), rendered message = the "📌 Runner terminal" template.
+		return this.enqueueAttachPin(
+			ctx,
+			threadId,
+			command,
+			this.buildAttachMessageContent(ctx, command),
+			deps,
+		);
+	}
+
+	/**
+	 * FLY-892 (Step 4): ensure the issue thread's pinned message is the three-stage
+	 * PIPELINE HEADER (`content` pre-rendered by `buildPipelineHeaderContent`). Uses
+	 * the SAME per-thread serialized pin state-machine as the single-runner attach
+	 * pin — it just absorbs the existing "Runner terminal" pin into a richer body.
+	 * The idempotency fingerprint IS the rendered content, so an unchanged header
+	 * is a zero-PATCH no-op and a phase advance is a single in-place edit.
+	 */
+	async ensureRunnerPipelineHeaderPin(
+		ctx: ChatThreadContext,
+		threadId: string,
+		content: string,
+		deps: {
+			pinImpl?: typeof pinThreadMessage;
+			now?: () => string;
+		} = {},
+	): Promise<void> {
+		return this.enqueueAttachPin(ctx, threadId, content, content, deps);
+	}
+
+	/** Per-thread serialized enqueue of a pin write (fingerprint = idempotency key,
+	 *  content = the rendered message body). Shared by the single-runner attach pin
+	 *  and the FLY-892 pipeline header. */
+	private enqueueAttachPin(
+		ctx: ChatThreadContext,
+		threadId: string,
+		fingerprint: string,
+		content: string,
+		deps: {
+			pinImpl?: typeof pinThreadMessage;
+			now?: () => string;
+		},
+	): Promise<void> {
 		const resolved = {
 			pinImpl: deps.pinImpl ?? pinThreadMessage,
 			now: deps.now ?? (() => new Date().toISOString()),
@@ -710,7 +790,13 @@ export class ChatThreadCreator {
 		const next = prev
 			.catch(() => undefined)
 			.then(() =>
-				this.ensureRunnerAttachPinNow(ctx, threadId, command, resolved),
+				this.ensureRunnerAttachPinNow(
+					ctx,
+					threadId,
+					fingerprint,
+					content,
+					resolved,
+				),
 			);
 		this.attachChains.set(threadId, next);
 		void next.finally(() => {
@@ -785,7 +871,12 @@ export class ChatThreadCreator {
 			},
 		);
 		if (res.ok) return "ok";
-		if (res.status === 404) return "missing";
+		// 404 — message gone. 403 (FLY-892 Step 7) — a DIFFERENT bot owns this pin
+		// (the announcer took over a pin the Lead bot originally created; Discord
+		// only lets the author edit). Both self-heal the same way: clear the stale
+		// record + repost under the current (announcer) bot. A genuine perm 403 just
+		// re-posts fresh next stage (bounded, no loop) once perms are fixed.
+		if (res.status === 404 || res.status === 403) return "missing";
 		const body = await res.text().catch(() => "");
 		console.warn(
 			`[ChatThreadCreator] attach-pin PATCH failed: ${res.status} ${body.slice(0, 200)}`,
@@ -841,13 +932,18 @@ export class ChatThreadCreator {
 	private async ensureRunnerAttachPinNow(
 		ctx: ChatThreadContext,
 		threadId: string,
-		command: string,
+		// FLY-892 (Step 4): `fingerprint` is the idempotency key stored in the
+		// `attach_pin_command` column; `content` is the rendered message body. For
+		// the single-runner pin they are (rawCommand, renderedTemplate); for the
+		// pipeline header they are (renderedHeader, renderedHeader).
+		fingerprint: string,
+		content: string,
 		deps: { pinImpl: typeof pinThreadMessage; now: () => string },
 	): Promise<void> {
 		const controller = new AbortController();
 		const timeout = setTimeout(() => controller.abort(), CREATE_TIMEOUT_MS);
 		try {
-			const content = this.buildAttachMessageContent(ctx, command);
+			const command = fingerprint;
 			const pinState = this.store.getChatThreadAttachPin(
 				ctx.issueId,
 				ctx.chatChannelId,

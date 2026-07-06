@@ -170,6 +170,7 @@ import {
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
+import { reconcileLegacyPhaseThreads } from "./legacy-phase-thread-sweep.js";
 import { queryLinearIssues } from "./linear-query.js";
 import { resolveLinearScope, resolveProjectNameParam } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
@@ -3387,6 +3388,23 @@ export async function startBridge(
 	} catch (err) {
 		console.error(
 			`[Bridge] FLY-172 boot marker drain failed (non-fatal): ${(err as Error).message}`,
+		);
+	}
+
+	// FLY-892 (Step 5): one-shot boot sweep — reconcile the legacy FLY-793 per-phase
+	// side-table threads (design/implement/qa) into the single converged issue
+	// thread. Points each at the main thread + archives it (FAIL-CLOSED: never
+	// archives an issue's only visible thread — see legacy-phase-thread-sweep.ts).
+	// Event-driven (boot), no new periodic timer; best-effort — must not block boot.
+	try {
+		await reconcileLegacyPhaseThreads({
+			store,
+			projects,
+			globalBotToken: config.discordBotToken,
+		});
+	} catch (err) {
+		console.error(
+			`[Bridge] FLY-892 legacy phase-thread sweep failed (non-fatal): ${(err as Error).message}`,
 		);
 	}
 
