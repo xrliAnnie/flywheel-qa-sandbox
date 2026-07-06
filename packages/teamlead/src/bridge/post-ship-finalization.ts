@@ -20,6 +20,7 @@
 
 import { randomUUID } from "node:crypto";
 import { CommDB } from "flywheel-comm/db";
+import { phaseMessageTag } from "flywheel-config";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
@@ -386,6 +387,8 @@ export async function runPostShipFinalization(
 		: undefined;
 
 	// ── (2) notifier — atomic dedupe; MUST run BEFORE archive ──
+	// FLY-892 (Step 3): tag which phase's runner finished; "" for main (byte-compat).
+	const finalizedSession = store.getSession(opts.executionId);
 	await emitRunnerReadyToCloseNotification(
 		{
 			executionId: opts.executionId,
@@ -397,6 +400,10 @@ export async function runPostShipFinalization(
 			errors: cleanup.errors?.length ? cleanup.errors : undefined,
 			thread,
 			botToken,
+			phasePrefix: phaseMessageTag(
+				finalizedSession?.chat_thread_role,
+				finalizedSession?.runner_model,
+			),
 		},
 		{ store },
 	);

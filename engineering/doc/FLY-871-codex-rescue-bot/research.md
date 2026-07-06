@@ -80,3 +80,35 @@ Issue: FLY-871 (https://linear.app/geoforge3d/issue/FLY-871/infraresilience-code
 2. R2 bot = Mufasa TUI full-access 模板复制(新 leadId/bot token/隔离 CODEX_HOME;**channel 结构以 plan C6 为准:私有 #codex-infra-bot 作 chat,Alerts 作 cross-dept mention-gated** —— design review 修正,chat channel 无 mention gate 不能直挂 Alerts)+ C8b 路由 + claimPending 接线 + 显式 mention 触发协议 + 每日摘要。
 3. R3 救 = lead kickstart(+确认框解卡)/ runner retry+progress-resume(修正后的机制)+ runner auth 检测 seam + founder-authority carve-out + server-side login_expired 校验。
 4. QA 真机 gate 按 exploration §5,追加:active-不-refresh 断言、健康 session 不被碰断言。
+
+---
+
+## 附录 A — Quota 准确源调研(R2,lead-instruction 47cff318② bounded research,2026-07-04)
+
+**问题**:C7 账号状态账本要准确的 5h/weekly 余额 + reset 时间,尤其解决「闲置(非 active)账号余额盲区」;并验证:若有只读用量接口,用池里闲置账号 access token 查询是否安全(不触发 refresh 轮转 = 不碰 R1 红线)。**Bounded ~30min,查不到就退回界面解析 + 滞后标注。**
+
+### A.1 现状源:CLI status-bar gauge(仅 active 账号)
+`parseUsageGauge`(`usage-gauge.ts`)正则解析渲染出的状态栏(`5h ██ 100% reset today 21:30 | 7d ██ 82% reset Mon 09:00`)。准确但 ① 仅 active 账号(要有可 capture 的 pane)② 渲染文本正则,CLI 改格式即碎(= 47cff318① 顾虑)。
+
+### A.2 更优源(新发现,推荐 primary):Claude Code statusLine `rate_limits` 结构化字段
+自定义 statusLine 脚本从 stdin 收到的 JSON payload **含结构化 rate_limits**(官方 contract,非渲染文本):
+- `rate_limits.five_hour.used_percentage` / `rate_limits.seven_day.used_percentage`(0–100)
+- `rate_limits.five_hour.resets_at` / `rate_limits.seven_day.resets_at`(**Unix epoch 秒**)
+- caveat:仅 Pro/Max 订阅、session 首个 API response 之后才出现;每 window 可能独立缺失(`jq -r '.rate_limits.five_hour.used_percentage // empty'` 优雅处理)。要求 Claude Code v2.1.x+。
+→ **准确 + 抗格式变化的 active-账号源**(直接回应 47cff318① 的 quota 解析顾虑)。harvest = 配自定义 statusLine 脚本把 rate_limits(+账号身份)写到 per-account ledger 文件,账本读之。账本 parser **同时接受** statusLine rate_limits(primary)与 gauge 文本(fallback,兼容旧 CLI / 首 response 前)。
+
+### A.3 闲置账号盲区:无安全只读用量接口
+- **无官方订阅用量只读端点**:`claude usage` / `GET /v1/organizations/.../usage/subscription` 是**未实现的 feature request**(anthropics/claude-code#44328,closed-as-duplicate,无端点)。`claude auth status --json` 只给订阅类型、无用量。`~/.claude/stats-cache.json` 是本地客户端统计(dailyActivity/modelUsage/…),**无 rate limit / reset**(本机实测 has rateLimit=false)。
+- **ccusage / claude-monitor** 读本地 `~/.claude` JSONL 日志算 token/成本(per-account-with-local-logs),非权威 remaining%,只覆盖本机有日志的账号 → 解不了闲置盲区。
+- 权威 %/reset 在 claude.ai Settings > Usage 网页(OAuth web session 后),无干净 API,只能浏览器自动化取(不适合无人值守常驻)。
+
+### A.4 OAuth 安全结论(R1 红线)
+一次**只读 resource GET** 带 `Authorization: Bearer <access_token>` **不**轮转 refresh-token family —— 轮转**只**发生在 `POST /oauth/token grant_type=refresh_token`。所以**若**将来有只读用量端点:用闲置账号**未过期** access token 查询 = **R1-安全**;但若 access token 已过期,查询需先 refresh = **R1 红线**,**绝不允许「为查余额 refresh 闲置账号」**。当下无端点 → v1 moot,存档给 v2。
+
+### A.5 v1 账本数据源决策(= 47cff318② fallback「界面解析 + 滞后标注」+ 抗格式升级)
+1. **active 账号**:primary = statusLine `rate_limits`(结构化,抗格式);fallback = `parseUsageGauge`(渲染文本)。
+2. **闲置账号**:**last-known snapshot + 滞后标注**(记每次该账号 active 时读数 + 时间戳;闲置时展示上次快照 + age/「stale since」)。**不做**闲置账号 live 查询(无安全源)。
+3. **撞限事件 / auth 健康**:发生即记(来自 R2 检测层 + R1 freshness probe)。
+4. **v2 hook**:若出 `claude usage --json` 或用量端点,账本 `refreshAccountBalance(account)` seam 采纳之(A.4 安全前提);selection 函数已按账本 rank 留口。
+
+**Sources**: statusLine `rate_limits` fields — code.claude.com/docs/en/statusline · feature request #44328 (无端点) — github.com/anthropics/claude-code/issues/44328 · Claude Code usage limits 2026 — morphllm.com / truefoundry.com · Rate limits — platform.claude.com/docs/en/api/rate-limits

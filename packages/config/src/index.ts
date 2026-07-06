@@ -41,6 +41,7 @@ export type { ModelTier, ModelTierSpec } from "./model-tiers.js";
 export {
 	ACCEPTED_DISPATCH_MODELS,
 	MODEL_TIERS,
+	modelDisplayName,
 	modelShortCode,
 	normalizeDispatchModel,
 } from "./model-tiers.js";
@@ -124,6 +125,10 @@ export {
 	DEFAULT_PHASE_TIER,
 	isThreeStagePhaseRole,
 	nextPhase,
+	PHASE_THREAD_BADGE,
+	PHASE_THREAD_BADGE_PARTS,
+	phaseMessageTag,
+	phaseThreadBadge,
 	resolveCompletionSessionRole,
 	resolvePhaseModel,
 	THREE_STAGE_PHASE_SEQUENCE,

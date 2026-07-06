@@ -1,20 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-	ChatThreadCreator,
-	phaseThreadBadge,
-} from "../bridge/ChatThreadCreator.js";
+import { ChatThreadCreator } from "../bridge/ChatThreadCreator.js";
 import { resolveChatThreadId } from "../bridge/chat-thread-utils.js";
 import { StateStore } from "../StateStore.js";
 
-describe("FLY-793 phaseThreadBadge (Step 11 ⑦)", () => {
-	it("maps each phase role to its badge, main/absent → empty", () => {
-		expect(phaseThreadBadge("design")).toBe("🎨设计");
-		expect(phaseThreadBadge("implement")).toBe("🔨实现");
-		expect(phaseThreadBadge("qa")).toBe("🧪QA");
-		expect(phaseThreadBadge("main")).toBe("");
-		expect(phaseThreadBadge(undefined)).toBe("");
-	});
-});
+// FLY-892: phaseThreadBadge moved to packages/config (three-stage-phases.ts) and
+// is unit-tested there (fly892-phase-tag.test.ts).
 
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
@@ -81,8 +71,6 @@ describe("FLY-91: ChatThreadCreator", () => {
 			channel_id: "ch-123",
 			lead_id: null,
 			archived_at: null,
-			// FLY-793 (Step 11): additive — the main path always reports 'main'.
-			session_role: "main",
 		});
 	});
 
@@ -1169,6 +1157,122 @@ describe("FLY-560 UX iteration: ChatThreadCreator.stampStageEmoji emoji+word mod
 	});
 });
 
+describe("FLY-892 Step 6: three-stage phase badge as stage-level title prefix", () => {
+	let store: StateStore;
+	let creator: ChatThreadCreator;
+
+	beforeEach(async () => {
+		vi.clearAllMocks();
+		store = await StateStore.create(":memory:");
+		creator = new ChatThreadCreator(store, () => Promise.resolve());
+	});
+	afterEach(() => {
+		store.close();
+		vi.restoreAllMocks();
+	});
+
+	const ctx = (over: Record<string, unknown> = {}) => ({
+		chatChannelId: "ch-1",
+		issueId: "FLY-892",
+		issueIdentifier: "FLY-892",
+		issueTitle: "One issue one thread",
+		botToken: "bot-token",
+		...over,
+	});
+
+	it("stamps the phase badge INSTEAD of the fine-grained stage word", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-892] One issue one thread" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		// stage=implement but phaseBadge=🔨实现 (design phase reporting? no — implement
+		// phase). The stage word 实现中 must NOT appear; the phase badge 🔨实现 does.
+		await creator.stampStageEmoji(
+			ctx(),
+			"thread-1",
+			"code_review",
+			true,
+			"🔨实现",
+		);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🔨实现 [FLY-892] One issue one thread",
+		);
+	});
+
+	it("swaps a stale phase badge (🎨设计 → 🔨实现) cleanly on phase change", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ name: "🎨设计 [FLY-892] One issue one thread" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx(),
+			"thread-1",
+			"implement",
+			true,
+			"🔨实现",
+		);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🔨实现 [FLY-892] One issue one thread",
+		);
+	});
+
+	it("is idempotent — re-stamping the same phase badge (implement→pr_created) does NOT PATCH", async () => {
+		mockFetch.mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			json: () =>
+				Promise.resolve({ name: "🔨实现 [FLY-892] One issue one thread" }),
+		});
+
+		// A later stage_changed within the SAME implement phase carries the SAME
+		// phase badge → no rename (this is what keeps a whole pipeline to ~2 renames).
+		await creator.stampStageEmoji(
+			ctx(),
+			"thread-1",
+			"pr_created",
+			true,
+			"🔨实现",
+		);
+
+		expect(mockFetch.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(
+			false,
+		);
+	});
+
+	it("carries the model code marker alongside the phase badge", async () => {
+		mockFetch
+			.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ name: "[FLY-892] One issue one thread" }),
+			})
+			.mockResolvedValueOnce({ ok: true, status: 200 });
+
+		await creator.stampStageEmoji(
+			ctx({ modelCode: "O" }),
+			"thread-1",
+			"implement",
+			true,
+			"🔨实现",
+		);
+
+		expect(JSON.parse(mockFetch.mock.calls[1]![1].body).name).toBe(
+			"🔨实现 [O] [FLY-892] One issue one thread",
+		);
+	});
+});
+
 describe("FLY-91: StateStore chat_threads CRUD", () => {
 	let store: StateStore;
 
@@ -1183,14 +1287,13 @@ describe("FLY-91: StateStore chat_threads CRUD", () => {
 	it("upsertChatThread + getChatThreadByIssue", () => {
 		store.upsertChatThread("t-1", "ch-1", "issue-1");
 		const result = store.getChatThreadByIssue("issue-1", "ch-1");
-		// FLY-369: getChatThreadByIssue now also returns lead_id + archived_at (null when unset).
-		// FLY-793 (Step 11): + session_role (additive; 'main' on the main path).
+		// FLY-369: getChatThreadByIssue also returns lead_id + archived_at (null when unset).
+		// FLY-892 (converge): no session_role (thread resolution is role-agnostic now).
 		expect(result).toEqual({
 			thread_id: "t-1",
 			channel_id: "ch-1",
 			lead_id: null,
 			archived_at: null,
-			session_role: "main",
 		});
 	});
 

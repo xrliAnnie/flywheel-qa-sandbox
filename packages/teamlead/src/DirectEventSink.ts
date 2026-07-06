@@ -214,9 +214,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							// the first stage_changed). `?? null` = authoritative (no stale
 							// code carried onto a reused thread).
 							modelCode: modelShortCode(env.runnerModel) ?? null,
-							// FLY-793 (Step 11): a three-stage phase creates its OWN badged
-							// thread in the side-table; 'main' → byte-unchanged.
-							chatThreadRole: env.chatThreadRole,
+							// FLY-892 (converge): one issue = one thread — no per-phase
+							// thread role is passed; the phase session and the Lead resolve
+							// the SAME (issue, channel) thread. `chat_thread_role` is still
+							// persisted on the session row (above) as the phase MARKER.
 						});
 						console.log(
 							`[DirectEventSink] ensureChatThread: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,

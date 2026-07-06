@@ -276,6 +276,62 @@ describe("AlertChannelHub (FLY-368)", () => {
 		}
 	});
 
+	// FLY-871 R2/W6: the account_switch enqueue IS the Codex Infra Bot's
+	// ASSIGNMENT — @-mention the infra bot so the FLY-267 mention-gate wakes it.
+	function accountSwitchBot() {
+		return {
+			canAttempt: vi.fn(() => true),
+			attempt: vi.fn(async () => ({
+				outcome: "attempted" as const,
+				action: "account_switch",
+				detail: "🔧 已排队账号切换，等待 Infra Bot 认领。",
+			})),
+		} as never;
+	}
+
+	it("W6: account_switch assignment @-pings the infra bot when the env id is set", async () => {
+		const prev = process.env.FLYWHEEL_INFRA_BOT_USER_ID;
+		process.env.FLYWHEEL_INFRA_BOT_USER_ID = "1200000000000000009";
+		try {
+			const discord = makeDiscord();
+			const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
+			const hub = new AlertChannelHub({
+				store,
+				notifier,
+				discord,
+				autoRepairBot: accountSwitchBot(),
+			});
+			await hub.handle(payload({ eventType: "usage_limit", eventId: "cap" }));
+			const assign = discord.posts.find(([, c]) => c.includes("认领"));
+			expect(assign).toBeDefined();
+			expect(assign![2]).toEqual({ mentionUserId: "1200000000000000009" });
+		} finally {
+			if (prev === undefined) delete process.env.FLYWHEEL_INFRA_BOT_USER_ID;
+			else process.env.FLYWHEEL_INFRA_BOT_USER_ID = prev;
+		}
+	});
+
+	it("W6 byte-compat: no infra-bot env ⇒ the account_switch post never pings", async () => {
+		const prev = process.env.FLYWHEEL_INFRA_BOT_USER_ID;
+		delete process.env.FLYWHEEL_INFRA_BOT_USER_ID;
+		try {
+			const discord = makeDiscord();
+			const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
+			const hub = new AlertChannelHub({
+				store,
+				notifier,
+				discord,
+				autoRepairBot: accountSwitchBot(),
+			});
+			await hub.handle(payload({ eventType: "usage_limit", eventId: "cap" }));
+			for (const [, , opts] of discord.posts) {
+				expect(opts?.mentionUserId).toBeUndefined();
+			}
+		} finally {
+			if (prev !== undefined) process.env.FLYWHEEL_INFRA_BOT_USER_ID = prev;
+		}
+	});
+
 	it("OFF path (no bot) ack is honest — no '等待人工'", async () => {
 		const discord = makeDiscord();
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };

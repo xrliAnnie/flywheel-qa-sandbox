@@ -36,6 +36,8 @@ export interface ReadyToCloseOpts {
 	thread?: ChatThreadRef;
 	/** Pre-resolved (lead.botToken ?? config.discordBotToken). */
 	botToken?: string;
+	/** FLY-892 (Step 3): message-level phase tag; "" for main (byte-compat). */
+	phasePrefix?: string;
 }
 
 export interface ReadyToCloseDeps {
@@ -102,7 +104,7 @@ export async function emitRunnerReadyToCloseNotification(
 		? "已由 postMergeTmuxCleanup 关闭"
 		: "仍在（Lead 可用 close_runner 收尾）";
 	const body = [
-		`🏁 **Runner 完工可关闭** — ${identifier}`,
+		`${opts.phasePrefix ?? ""}🏁 **Runner 完工可关闭** — ${identifier}`,
 		"",
 		`- Execution: \`${opts.executionId}\``,
 		`- Session status: \`${opts.sessionStatus}\``,

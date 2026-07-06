@@ -26,6 +26,17 @@ if [ "${FLYWHEEL_LEAD_COMPANION:-}" = "1" ]; then
   exit 0
 fi
 
+# FLY-879: external (customer-facing) Leads — Anna the interviewer — likewise get
+# NO engineering bootstrap: it carries internal engineering content that must never
+# reach a customer-facing agent, and Anna has no Bridge access anyway (the token is
+# emptied in its pane). claude-lead.sh skips the INITIAL bootstrap for external, but
+# this globally-installed hook fires post-compact for every session — so honor the
+# FLYWHEEL_LEAD_EXTERNAL=1 pane marker and exit BEFORE any bootstrap curl. Non-external
+# behavior is byte-identical (var absent → no skip).
+if [ "${FLYWHEEL_LEAD_EXTERNAL:-}" = "1" ]; then
+  exit 0
+fi
+
 bootstrap_curl() {
   # GEO-203: Increased timeout from 10→15s to account for dual-bucket memory recall
   local args=(-s -X POST "${BRIDGE_URL}/api/bootstrap/${LEAD_ID}" -H "Content-Type: application/json" --max-time 15 -w '\n%{http_code}')

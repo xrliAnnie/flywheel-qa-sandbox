@@ -299,13 +299,10 @@ export async function generateBootstrap(
 					// correctly by to_agent but the chat-thread hint points at
 					// the wrong Lead's chatChannel.
 					if (opts?.chatThreadsEnabled && targetLead?.chatChannel) {
-						// FLY-793 (Codex full-PR R1 #5): route to the session's OWN phase
-						// thread (side-table) — a three-stage phase must not resolve the
-						// main thread. `main` (default) → byte-unchanged.
+						// FLY-892 (converge): one issue = one thread.
 						const ct = store.getChatThreadByIssue(
 							matchedSession.issue_id,
 							targetLead.chatChannel,
-							matchedSession.chat_thread_role,
 						);
 						if (ct) rq.chatThreadId = ct.thread_id;
 					}
@@ -325,13 +322,8 @@ export async function generateBootstrap(
 				const labels = store.getSessionLabels(s.execution_id);
 				const { lead } = resolveLeadForIssue(projects, s.project_name, labels);
 				if (lead.chatChannel) {
-					// FLY-793 (Codex full-PR R1 #5): a phase session resolves its own
-					// side-table thread; `main` → byte-unchanged.
-					const ct = store.getChatThreadByIssue(
-						s.issue_id,
-						lead.chatChannel,
-						s.chat_thread_role,
-					);
+					// FLY-892 (converge): one issue = one thread.
+					const ct = store.getChatThreadByIssue(s.issue_id, lead.chatChannel);
 					if (ct) bs.chatThreadId = ct.thread_id;
 				}
 			} catch {

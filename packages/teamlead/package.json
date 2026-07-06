@@ -7,7 +7,9 @@
 	"types": "dist/index.d.ts",
 	"bin": {
 		"teamlead": "dist/index.js",
-		"flywheel-claude-freshness": "bin/flywheel-claude-freshness"
+		"flywheel-claude-freshness": "bin/flywheel-claude-freshness",
+		"flywheel-account-summary": "bin/flywheel-account-summary",
+		"flywheel-rescue-lead": "bin/flywheel-rescue-lead"
 	},
 	"files": [
 		"dist",

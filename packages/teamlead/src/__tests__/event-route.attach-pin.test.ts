@@ -74,6 +74,7 @@ describe("FLY-560 Feature C: event-route attach-pin wiring", () => {
 	let store: StateStore;
 	let stampSpy: ReturnType<typeof vi.fn>;
 	let attachSpy: ReturnType<typeof vi.fn>;
+	let headerSpy: ReturnType<typeof vi.fn>;
 	let fakeCreator: ChatThreadCreator;
 
 	beforeEach(async () => {
@@ -91,9 +92,11 @@ describe("FLY-560 Feature C: event-route attach-pin wiring", () => {
 		store.upsertChatThread(THREAD_ID, CHAT_CHANNEL, ISSUE_ID);
 		stampSpy = vi.fn().mockResolvedValue(undefined);
 		attachSpy = vi.fn().mockResolvedValue(undefined);
+		headerSpy = vi.fn().mockResolvedValue(undefined);
 		fakeCreator = {
 			stampStageEmoji: stampSpy,
 			ensureRunnerAttachPin: attachSpy,
+			ensureRunnerPipelineHeaderPin: headerSpy,
 		} as unknown as ChatThreadCreator;
 	});
 
@@ -171,6 +174,41 @@ describe("FLY-560 Feature C: event-route attach-pin wiring", () => {
 			issueIdentifier: "FLY-560",
 			botToken: "bot-token",
 		});
+	});
+
+	// FLY-892 (Codex code R1 Med): the single-runner "Runner terminal" pin is NOT
+	// a system broadcast — even when the project configures an announcer bot, the
+	// non-three-stage fallback must post/edit/pin as the LEAD bot (byte-compat),
+	// not the announcer. Only the three-stage pipeline header rides the announcer.
+	it("announcer configured + non-three-stage → single-runner pin stays on the LEAD bot", async () => {
+		const announcerProjects: ProjectEntry[] = [
+			{
+				...projects[0]!,
+				announcerBotToken: "announcer-bot-token",
+			} as ProjectEntry,
+		];
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/events",
+			createEventRouter(
+				store,
+				announcerProjects,
+				makeConfig(),
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				fakeCreator,
+				undefined,
+				{ issueStatusEmojiEnabled: false, issueAttachPinEnabled: true },
+			),
+		);
+		await postStage(app, "evt-announcer-single");
+		expect(attachSpy).toHaveBeenCalledTimes(1);
+		expect(headerSpy).not.toHaveBeenCalled();
+		const [ctx] = attachSpy.mock.calls[0]!;
+		expect(ctx.botToken).toBe("bot-token"); // LEAD bot, NOT announcer
 	});
 
 	it("emoji on + attach off → stamps only (attach not pinned)", async () => {

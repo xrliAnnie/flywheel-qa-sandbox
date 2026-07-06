@@ -112,3 +112,26 @@ export function modelShortCode(
 	if (m === "haiku" || m.startsWith("claude-haiku")) return "H";
 	return undefined;
 }
+
+/** Short code → the family display name shown in FLY-892 phase tags/headers. */
+const SHORT_CODE_DISPLAY_NAME: Readonly<Record<"F" | "O" | "S" | "H", string>> =
+	{ F: "Fable", O: "Opus", S: "Sonnet", H: "Haiku" };
+
+/**
+ * FLY-892 (Codex R1 #3): the canonical model DISPLAY name (Fable / Opus / Sonnet
+ * / Haiku) for a phase message tag / pipeline header. Reuses `modelShortCode`, so
+ * it covers canonical ids, bare aliases, and `[1m]` variants identically. When
+ * `model` maps to no known code (account default / non-Claude), fall back to the
+ * `fallbackTier`'s name if given, else `undefined`. This is the single display-
+ * name contract so no injection point re-derives it.
+ */
+export function modelDisplayName(
+	model: string | null | undefined,
+	fallbackTier?: ModelTier,
+): string | undefined {
+	const code = modelShortCode(model);
+	if (code) return SHORT_CODE_DISPLAY_NAME[code];
+	if (fallbackTier)
+		return SHORT_CODE_DISPLAY_NAME[MODEL_TIERS[fallbackTier].code];
+	return undefined;
+}
