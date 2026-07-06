@@ -140,7 +140,10 @@ def _extract_c_payload(args: list[str]):
 # first-token judgment. Flags that consume a value argument; -S/--split-string
 # is handled separately (its value is a whole command line — Codex R2 MEDIUM).
 _WRAPPERS = {"sudo", "env", "nohup"}
-_WRAPPER_ARG_FLAGS = {"-u", "--user", "-g", "--group", "-C", "--chdir"}
+# -P is macOS env's alternate-PATH flag (`env -P /usr/bin node …`) — without
+# consuming its value, `/usr/bin` would be mistaken for the first token and the
+# real executor never judged (Codex R3 MEDIUM).
+_WRAPPER_ARG_FLAGS = {"-u", "--user", "-g", "--group", "-C", "--chdir", "-P"}
 
 
 def _p3_hit(cmd: str, depth: int) -> bool:

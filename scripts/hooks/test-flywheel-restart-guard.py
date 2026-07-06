@@ -153,6 +153,10 @@ MUST_BLOCK = [
     ('env --split-string "node scripts/run-bridge.ts"', "P3 env --split-string payload"),
     ('env --split-string="node scripts/run-bridge.ts"', "P3 env --split-string= payload"),
     ('env -S"node scripts/run-bridge.ts"', "P3 env -S merged payload"),
+    # Codex R3 MEDIUM: macOS env -P <utilpath> consumes a value — without
+    # skipping it, /usr/bin masquerades as the first token.
+    ("env -P /usr/bin node scripts/run-bridge.ts", "P3 env -P utilpath"),
+    ("/usr/bin/env -P /usr/bin node scripts/run-bridge.ts", "P3 /usr/bin/env -P utilpath"),
     # P3 — shell -c payload recursion (one level), incl. merged flag clusters
     ('bash -c "nohup npx tsx scripts/run-bridge.ts"', "P3 bash -c payload"),
     ("sh -c 'npx tsx scripts/run-bridge.ts'", "P3 sh -c payload"),
