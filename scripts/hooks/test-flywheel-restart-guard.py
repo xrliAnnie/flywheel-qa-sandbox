@@ -157,6 +157,12 @@ MUST_BLOCK = [
     # skipping it, /usr/bin masquerades as the first token.
     ("env -P /usr/bin node scripts/run-bridge.ts", "P3 env -P utilpath"),
     ("/usr/bin/env -P /usr/bin node scripts/run-bridge.ts", "P3 /usr/bin/env -P utilpath"),
+    # Structural close of the unknown-consuming-flag class: even when a wrapper
+    # flag we don't know swallows the token walk, wrapper + executor token +
+    # run-bridge in one segment must still deny.
+    ('sudo -p "pw:" node scripts/run-bridge.ts', "P3 sudo -p prompt (unknown arg flag)"),
+    ("sudo --preserve-env=PATH node scripts/run-bridge.ts", "P3 sudo --preserve-env="),
+    ("env -i -P /usr/bin npx tsx scripts/run-bridge.ts", "P3 env -i -P stacked"),
     # P3 — shell -c payload recursion (one level), incl. merged flag clusters
     ('bash -c "nohup npx tsx scripts/run-bridge.ts"', "P3 bash -c payload"),
     ("sh -c 'npx tsx scripts/run-bridge.ts'", "P3 sh -c payload"),
@@ -196,6 +202,8 @@ MUST_PASS = [
     ("env | grep run-bridge", "bare env piped to grep"),
     ("env node scripts/qa-tool.mjs", "env-wrapped executor without run-bridge"),
     ('env -S "node scripts/qa-tool.mjs"', "env -S payload without run-bridge"),
+    ("sudo grep node scripts/restart-services.sh",
+     "sudo grep with executor-shaped needle, no run-bridge"),
     ("sudo launchctl print gui/501/com.flywheel.bridge", "sudo read-only launchctl"),
 ]
 

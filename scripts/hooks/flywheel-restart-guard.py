@@ -159,6 +159,7 @@ def _p3_hit(cmd: str, depth: int) -> bool:
         # wrappers (sudo/env/nohup + their flags) down to the REAL first token.
         i = 0
         saw_nohup = False
+        saw_wrapper = False
         while i < len(tokens):
             t = tokens[i]
             if ENV_ASSIGN_RE.match(t):
@@ -169,6 +170,7 @@ def _p3_hit(cmd: str, depth: int) -> bool:
                 continue
             base = os.path.basename(t)
             if base in _WRAPPERS:
+                saw_wrapper = True
                 saw_nohup = saw_nohup or base == "nohup"
                 i += 1
                 while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "-":
@@ -206,6 +208,16 @@ def _p3_hit(cmd: str, depth: int) -> bool:
         # bare-handed relaunch) — plus run-bridge in the segment.
         if (first in EXECUTORS or saw_nohup) and RUN_BRIDGE_RE.search(seg):
             return True
+        # Structural close of the unknown-wrapper-flag class (Codex R1/R2/R3
+        # were all "a flag we didn't enumerate swallowed the token walk"):
+        # once a wrapper was seen, an executor token ANYWHERE in the remainder
+        # + run-bridge in the segment is a relaunch, regardless of which flags
+        # sat between. Bounded false-positive: wrapper + executor word +
+        # run-bridge all in one read command is the already-accepted research
+        # shape (plan §5).
+        if saw_wrapper and RUN_BRIDGE_RE.search(seg):
+            if any(os.path.basename(t) in EXECUTORS for t in tokens[i:]):
+                return True
     return False
 
 
