@@ -254,6 +254,7 @@ import type { StuckRunnerDetector } from "./stuck-runner-detector.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import { loadPipelineConfigByProject } from "./three-stage-config-source.js";
 import {
+	resolveHandoffDispatchChannelId,
 	resolveThreeStagePolicy,
 	threeStageKeepAliveEnabled,
 } from "./three-stage-policy.js";
@@ -4144,16 +4145,28 @@ export async function startBridge(
 					},
 					maxFixRounds,
 				},
-				resolveThreeStage: (session) =>
-					resolveThreeStagePolicy({
+				resolveThreeStage: (session) => {
+					const issueLabels = parseJsonStringArray(
+						store.getSession(session.execution_id)?.issue_labels,
+					);
+					return resolveThreeStagePolicy({
 						pipelineConfig: pipelineConfigByProject.get(
 							session.project_name ?? "",
 						),
-						issueLabels: parseJsonStringArray(
-							store.getSession(session.execution_id)?.issue_labels,
+						issueLabels,
+						// FLY-902: the handoff-side check must see the dispatching
+						// Lead's chatChannel too — omitting it made a configured
+						// three_stage_channels allowlist fail closed on EVERY handoff
+						// (same trust chain as the entry gate in runs-route: server-side
+						// project config, never the request body).
+						dispatchChannelId: resolveHandoffDispatchChannelId(
+							projects,
+							session.project_name,
+							issueLabels,
 						),
 						env: process.env,
-					}),
+					});
+				},
 				// FLY-793 (combined-QA FLY-855): resolve the REAL leadId at handoff.
 				// The sessions table has NO lead_id column, so the orchestrator's old
 				// `prev.lead_id` read was always undefined → Blueprint's commDbPath

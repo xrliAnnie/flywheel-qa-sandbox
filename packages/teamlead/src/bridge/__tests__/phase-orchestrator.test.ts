@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProjectEntry } from "../../ProjectConfig.js";
 import {
 	PhaseOrchestrator,
 	type PhaseOrchestratorDeps,
 	type PhaseSession,
 	type ThreeStageVerdictIntent,
 } from "../phase-orchestrator.js";
+import {
+	resolveHandoffDispatchChannelId,
+	resolveThreeStagePolicy,
+} from "../three-stage-policy.js";
 
 /**
  * Stateful qaVerdicts fake (FLY-859): patchIntent merges into an in-memory
@@ -839,5 +844,133 @@ describe("handoff leadId resolution (combined-QA FLY-855)", () => {
 		]);
 		await new PhaseOrchestrator(deps).reconcileOnStartup();
 		expect(start.mock.calls[0]![0]).toMatchObject({ leadId: "eng-lead" });
+	});
+});
+
+/**
+ * FLY-902: with `three_stage_channels` configured, the handoff-side policy
+ * check MUST see the dispatching Lead's chatChannel. The shipped R2 wiring
+ * (plugin.ts's resolveThreeStage closure) omitted dispatchChannelId, so the
+ * policy read the channel as unresolved, fail-closed, and every handoff
+ * silently no-oped — design stuck at design_done forever, zero logs.
+ *
+ * These tests compose resolveThreeStage from the REAL production pieces
+ * (resolveThreeStagePolicy + resolveHandoffDispatchChannelId) exactly the way
+ * plugin.ts wires them post-fix, so a regression in either piece — or a
+ * plugin wiring that stops passing the channel — re-fails here.
+ */
+describe("PhaseOrchestrator × three_stage_channels (FLY-902 regression)", () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	const CHAN = "1516209714097291335";
+	const projects = [
+		{
+			projectName: "flywheel",
+			projectRoot: "/tmp/flywheel",
+			leads: [
+				{
+					agentId: "flywheel-eng-lead",
+					chatChannel: CHAN,
+					match: { labels: ["flywheel"] },
+				},
+			],
+		},
+	] as ProjectEntry[];
+	const pipelineConfig = {
+		three_stage: true,
+		three_stage_channels: [CHAN],
+	};
+	const issueLabels = ["flywheel"];
+
+	/** The post-fix plugin.ts wiring shape (real policy + real resolver). */
+	const fixedResolveThreeStage = (s: PhaseSession) =>
+		resolveThreeStagePolicy({
+			pipelineConfig,
+			issueLabels,
+			env: {},
+			dispatchChannelId: resolveHandoffDispatchChannelId(
+				projects,
+				s.project_name,
+				issueLabels,
+			),
+		});
+
+	it("BUG FIX: a configured allowlist with the Lead's channel in it still hands Design off to Implement", async () => {
+		const { deps, start } = makeDeps({
+			resolveThreeStage: fixedResolveThreeStage,
+		});
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "design", status: "design_done" }),
+		);
+		expect(start).toHaveBeenCalledOnce();
+		expect(start.mock.calls[0]![0]).toMatchObject({ sessionRole: "implement" });
+	});
+
+	it("documents the shipped bug: the old wiring (no dispatchChannelId) never hands off — and now warns instead of silent no-op", async () => {
+		const warn = vi.fn();
+		const { deps, start } = makeDeps({
+			// The pre-fix plugin.ts closure shape: same real policy, channel omitted.
+			resolveThreeStage: () =>
+				resolveThreeStagePolicy({ pipelineConfig, issueLabels, env: {} }),
+			logger: { warn },
+		});
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "design", status: "design_done" }),
+		);
+		expect(start).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn.mock.calls[0]![0]).toContain("three-stage disabled");
+		expect(warn.mock.calls[0]![0]).toContain("(unresolved)");
+	});
+
+	it("fail-closed semantics preserved: a channel NOT in the allowlist blocks the handoff, loudly", async () => {
+		const warn = vi.fn();
+		const outOfListProjects = [
+			{
+				...projects[0]!,
+				leads: [
+					{
+						agentId: "flywheel-eng-lead",
+						chatChannel: "999",
+						match: { labels: ["flywheel"] },
+					},
+				],
+			},
+		] as ProjectEntry[];
+		const { deps, start } = makeDeps({
+			resolveThreeStage: (s: PhaseSession) =>
+				resolveThreeStagePolicy({
+					pipelineConfig,
+					issueLabels,
+					env: {},
+					dispatchChannelId: resolveHandoffDispatchChannelId(
+						outOfListProjects,
+						s.project_name,
+						issueLabels,
+					),
+				}),
+			logger: { warn },
+		});
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "design", status: "design_done" }),
+		);
+		expect(start).not.toHaveBeenCalled();
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn.mock.calls[0]![0]).toContain("999");
+	});
+
+	it("no warn spam off the handoff boundary: a disabled policy on a non-boundary status stays quiet", async () => {
+		const warn = vi.fn();
+		const { deps, start } = makeDeps({
+			resolveThreeStage: () => ({ enabled: false, reason: "whatever" }),
+			logger: { warn },
+		});
+		// `qa`/`running` passes the phase-role guard but is NOT a handoff boundary
+		// (auto-QA sessions share the `qa` role — they must not trigger the warn).
+		await new PhaseOrchestrator(deps).onPhaseComplete(
+			session({ session_role: "qa", status: "running" }),
+		);
+		expect(start).not.toHaveBeenCalled();
+		expect(warn).not.toHaveBeenCalled();
 	});
 });

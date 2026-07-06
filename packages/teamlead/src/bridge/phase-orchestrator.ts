@@ -244,8 +244,13 @@ export interface PhaseOrchestratorDeps {
 			expectedHeadSha: string,
 		): Promise<{ ok: boolean; reason?: string }>;
 	};
-	/** Per-project three-stage enablement (Step 1 policy). */
-	resolveThreeStage(session: PhaseSession): { enabled: boolean };
+	/** Per-project three-stage enablement (Step 1 policy). `reason` (present
+	 * when disabled) is logged at handoff boundaries — a disabled policy must
+	 * never no-op silently there (FLY-902). */
+	resolveThreeStage(session: PhaseSession): {
+		enabled: boolean;
+		reason?: string;
+	};
 	/**
 	 * FLY-793 (combined-QA FLY-855): resolve the REAL leadId for the next
 	 * phase's dispatch — project config + the issue's labels
@@ -549,11 +554,24 @@ export class PhaseOrchestrator {
 			return; // qa is last — no status-driven handoff
 		}
 
-		if (!this.deps.resolveThreeStage(session).enabled) return; // per-project OFF
-
 		const phase = role;
 		const boundary = HANDOFF_STATUS[phase];
 		if (!boundary || session.status !== boundary) return; // not at a handoff
+
+		// Policy checked AFTER the boundary check (both are pure reads, so the
+		// swap is behavior-identical) so the disabled-warn fires exactly at real
+		// handoff boundaries — and never for auto-QA `qa`-role sessions, which
+		// share the phase-role guard above but have no handoff boundary.
+		const policy = this.deps.resolveThreeStage(session); // per-project OFF
+		if (!policy.enabled) {
+			// FLY-902: never no-op silently at a handoff boundary. This exact
+			// silence hid the missing-dispatchChannelId wiring bug — design sat at
+			// design_done forever with zero logs.
+			this.warn(
+				`three-stage disabled at ${phase} handoff for ${session.issue_id} (${session.execution_id}): ${policy.reason ?? "no reason given"} — handoff NOT dispatched`,
+			);
+			return;
+		}
 
 		const next = nextPhase(phase);
 		if (!next) return; // qa is last — its PASS/FAIL is the internal-QA path (Step 8)
@@ -703,9 +721,10 @@ export class PhaseOrchestrator {
 		// Never dispatch new phase-sessions for a project whose three-stage
 		// config was flipped off mid-flight (matches the handoff gate) — but
 		// never drop the verdict silently either.
-		if (!this.deps.resolveThreeStage(session).enabled) {
+		const failFlowPolicy = this.deps.resolveThreeStage(session);
+		if (!failFlowPolicy.enabled) {
 			await refuse(
-				`three-stage is disabled for ${session.project_name ?? "?"} — QA FAIL on ${session.issue_id} will NOT auto-loop`,
+				`three-stage is disabled for ${session.project_name ?? "?"} (${failFlowPolicy.reason ?? "no reason given"}) — QA FAIL on ${session.issue_id} will NOT auto-loop`,
 			);
 			return;
 		}

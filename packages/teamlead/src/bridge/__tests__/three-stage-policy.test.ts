@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
+import type { ProjectEntry } from "../../ProjectConfig.js";
 import {
+	resolveHandoffDispatchChannelId,
 	resolveThreeStageEntry,
 	resolveThreeStagePolicy,
 	threeStageKeepAliveEnabled,
@@ -297,5 +299,58 @@ describe("resolveThreeStagePolicy — three_stage_channels gating (FLY-887 R2)",
 		expect(e.enteredThreeStage).toBe(true);
 		expect(e.role).toBe("design");
 		expect(e.dispatchModel).toBe("claude-fable-5");
+	});
+});
+
+/**
+ * FLY-902 fix: the HANDOFF-side dispatchChannelId resolution. plugin.ts's
+ * resolveThreeStage closure passes this function's result into
+ * resolveThreeStagePolicy — without it, a configured three_stage_channels
+ * allowlist read the channel as unresolved at every handoff and fail-closed,
+ * silently disabling the whole pipeline after entry.
+ */
+describe("resolveHandoffDispatchChannelId (FLY-902)", () => {
+	const CHAN = "1516209714097291335";
+	const projects = [
+		{
+			projectName: "flywheel",
+			projectRoot: "/tmp/flywheel",
+			leads: [
+				{
+					agentId: "flywheel-eng-lead",
+					chatChannel: CHAN,
+					match: { labels: ["flywheel"] },
+				},
+				{
+					agentId: "other-lead",
+					chatChannel: "999888777",
+					match: { labels: ["other"] },
+				},
+			],
+		},
+	] as ProjectEntry[];
+
+	it("resolves the label-matched lead's chatChannel", () => {
+		expect(
+			resolveHandoffDispatchChannelId(projects, "flywheel", ["other"]),
+		).toBe("999888777");
+	});
+
+	it("falls back to the FIRST lead's chatChannel when no label matches (general match, mirrors resolveLeadForIssue)", () => {
+		expect(resolveHandoffDispatchChannelId(projects, "flywheel", [])).toBe(
+			CHAN,
+		);
+	});
+
+	it("unknown project → undefined (policy then fails closed)", () => {
+		expect(
+			resolveHandoffDispatchChannelId(projects, "nope", []),
+		).toBeUndefined();
+	});
+
+	it("undefined projectName → undefined", () => {
+		expect(
+			resolveHandoffDispatchChannelId(projects, undefined, []),
+		).toBeUndefined();
 	});
 });

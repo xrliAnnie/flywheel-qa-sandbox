@@ -25,6 +25,7 @@
  */
 
 import { type PipelineConfig, resolvePhaseModel } from "flywheel-config";
+import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 
 export interface ThreeStagePolicyInput {
 	/** Pipeline config, loaded from the CANONICAL root (never a PR worktree). */
@@ -87,6 +88,35 @@ export function resolveThreeStagePolicy(
 	}
 
 	return { enabled: false, reason: "three-stage not enabled (opt-in default)" };
+}
+
+/**
+ * FLY-902: resolve the dispatching Lead's chatChannel for the HANDOFF-side
+ * policy checks (the PhaseOrchestrator's `resolveThreeStage` closure in
+ * plugin.ts). Mirrors the entry-side resolution in runs-route (leadId →
+ * `project.leads[].chatChannel`) via the same label-based lead resolution the
+ * handoff paths already use for `resolveLeadId` (project config + the issue's
+ * trusted Linear labels).
+ *
+ * Without this, a configured `three_stage_channels` allowlist read the channel
+ * as unresolved at EVERY handoff and failed closed — silently disabling every
+ * phase handoff after entry (design stuck at design_done forever, zero logs).
+ *
+ * Unresolvable (unknown project / missing projectName) → undefined; the policy
+ * then fails closed and the orchestrator's handoff-boundary warn surfaces it.
+ */
+export function resolveHandoffDispatchChannelId(
+	projects: ProjectEntry[],
+	projectName: string | undefined,
+	issueLabels: string[],
+): string | undefined {
+	if (!projectName) return undefined;
+	try {
+		return resolveLeadForIssue(projects, projectName, issueLabels).lead
+			.chatChannel;
+	} catch {
+		return undefined;
+	}
 }
 
 export interface ThreeStageEntryInput {
