@@ -1,13 +1,13 @@
 ---
 issue: FLY-913
 phase: implement
-phaseCursor: 0/5
-updated: 2026-07-06T20:34:33.783Z
-nextStep: "C1 TDD: write red pattern-matrix tests for flywheel-restart-guard.py"
+phaseCursor: 1/5
+updated: 2026-07-06T20:37:43.368Z
+nextStep: "C2: install-restart-guard.sh + claude-lead.sh convergence + merge test matrix"
 chunks: []
 pointers: {}
 ---
 
 # FLY-913 progress
-**phase**: implement (0/5)
-**next**: C1 TDD: write red pattern-matrix tests for flywheel-restart-guard.py
+**phase**: implement (1/5)
+**next**: C2: install-restart-guard.sh + claude-lead.sh convergence + merge test matrix
