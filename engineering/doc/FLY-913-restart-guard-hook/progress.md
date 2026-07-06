@@ -1,13 +1,14 @@
 ---
 issue: FLY-913
 phase: implement
-phaseCursor: 1/5
-updated: 2026-07-06T20:37:43.368Z
-nextStep: "C2: install-restart-guard.sh + claude-lead.sh convergence + merge test matrix"
+phaseCursor: 2/5
+updated: 2026-07-06T20:40:36.630Z
+nextStep: "C3: lead-alert.sh --strict-delivery + restart_guard_bypass kind + TS
+  union + tests"
 chunks: []
 pointers: {}
 ---
 
 # FLY-913 progress
-**phase**: implement (1/5)
-**next**: C2: install-restart-guard.sh + claude-lead.sh convergence + merge test matrix
+**phase**: implement (2/5)
+**next**: C3: lead-alert.sh --strict-delivery + restart_guard_bypass kind + TS union + tests
