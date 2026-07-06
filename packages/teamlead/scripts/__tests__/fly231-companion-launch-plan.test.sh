@@ -190,13 +190,11 @@ normalize_plan() {
 # role diff never touches these dept-branch appends. This sentinel is not wired
 # into vitest/CI, so the drift went unnoticed.
 #
-# Post-rebase update (2026-07-05): rebasing flywheel-FLY-879 onto latest main
-# (#454/#455) pulled in FLY-869 (#449), which flips founder_ux_gate.mode from
-# opt-in to default-ON — an absent/malformed config now appends
-# founder-ux-rules.md for every non-companion/non-external lead. Added
-# rule=founder-ux-rules.md to both goldens (proven pre-existing: FLY-869 predates
-# this branch's rebase point, and FLY-879's diff only ADDS an IS_EXTERNAL_ROLE
-# exclusion to the existing gate — it does not touch the founder_ux_gate default).
+# FLY-900 (2026-07-06): the founder-UX signoff gate is RETIRED fleet-wide by
+# default. claude-lead.sh now appends founder-ux-rules.md only when
+# FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1. run_dry uses `env -i` (no such env), so the
+# DEFAULT plan no longer carries founder-ux-rules.md — it was removed from both
+# goldens. The reverse (env=1 → still appended) is covered by T11 below.
 read -r -d '' DEPT_GOLDEN <<'G'
 env=BRIDGE_URL=set
 env=CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=set
@@ -229,7 +227,6 @@ rule=doc-flow-rules.md
 rule=executor-routing.md
 rule=founder-html-delivery.md
 rule=founder-only-authority.md
-rule=founder-ux-rules.md
 rule=inbox-ack-rule.md
 rule=model-routing.md
 rule=runner-messaging-rules.md
@@ -267,7 +264,6 @@ rule=cross-dept-channel-rules.md
 rule=discord-reply-contract.md
 rule=founder-html-delivery.md
 rule=founder-only-authority.md
-rule=founder-ux-rules.md
 rule=inbox-ack-rule.md
 rule=screencapture-l3-skill.md
 G
@@ -338,6 +334,18 @@ EMPTY_RULES=$(mktemp -d "/tmp/fly231-emptyrules.XXXXXX")  # no companion-safety-
 run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth FLYWHEEL_BASE_RULES_DIR="$EMPTY_RULES" >/dev/null 2>&1
 [ $? -ne 0 ] && ok "T10 companion fail-STOP when safety-contract missing" || bad "T10 companion fail-STOP on missing contract"
 rm -rf "$H" "$EMPTY_RULES"
+
+# ───────── T11: FLY-900 reverse-compat — env=1 re-enables the founder-ux rules
+# The default (T8, env -i) drops founder-ux-rules.md. With the kill-switch
+# explicitly re-enabled a standard dept Lead gets it appended again (proves the
+# gate is reversible, not deleted). A companion still never gets it (env-agnostic
+# — the companion guard short-circuits before the founder-ux append).
+H=$(make_home); P=$(fixture_projects "$H" true)
+PLAN=$(run_dry "$H" "$P" product-lead "$H/proj-gf" geoforge3d FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1 | plan_of)
+printf '%s\n' "$PLAN" | grep -qF 'founder-ux-rules.md' && ok "T11 env=1 re-appends founder-ux-rules (reversible)" || bad "T11 env=1 must re-append founder-ux-rules"
+PLAN=$(run_dry "$H" "$P" mufasa-lead "$H/proj-growth" growth FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1 | plan_of)
+printf '%s\n' "$PLAN" | grep -qF 'founder-ux-rules.md' && bad "T11 companion must NOT get founder-ux-rules even with env=1" || ok "T11 companion still excluded (env=1)"
+rm -rf "$H"
 
 echo ""
 echo "FLY-231 launch-plan test: ${PASS} passed, ${FAIL} failed"

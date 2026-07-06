@@ -71,6 +71,10 @@ describe("FLY-598 founder-ux routes", () => {
 	}
 
 	beforeEach(async () => {
+		// FLY-900: the founder-UX gate is retired fleet-wide by default. These
+		// existing cases assert the ORIGINAL enforce behavior (status reflects the
+		// sign-off record), so run them with the kill-switch explicitly enabled.
+		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "1");
 		store = await StateStore.create(":memory:");
 		store.upsertSession({
 			execution_id: "exec-1",
@@ -84,6 +88,7 @@ describe("FLY-598 founder-ux routes", () => {
 	afterEach(async () => {
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 		vi.restoreAllMocks();
+		vi.unstubAllEnvs();
 	});
 
 	// ── status (read, ingest-token) ──
@@ -123,6 +128,26 @@ describe("FLY-598 founder-ux routes", () => {
 			{ headers: h },
 		);
 		expect(await r2.json()).toEqual({ approved: true });
+	});
+
+	// ── FLY-900 kill-switch OFF (default): status short-circuits to approved ──
+	it("FLY-900 gate disabled: status is approved:true even with NO sign-off (never blocks implement)", async () => {
+		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "0"); // override beforeEach "1"
+		await start();
+		const r = await fetch(
+			`${base}/api/founder-ux/status?execId=exec-1&uxHash=${UX_HASH}`,
+			{ headers: { Authorization: `Bearer ${INGEST}` } },
+		);
+		expect(await r.json()).toEqual({ approved: true });
+	});
+
+	it("FLY-900 gate disabled: auth is STILL enforced — no ingest token → 401 (short-circuit is after auth)", async () => {
+		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "0");
+		await start();
+		const r = await fetch(
+			`${base}/api/founder-ux/status?execId=exec-1&uxHash=${UX_HASH}`,
+		);
+		expect(r.status).toBe(401);
 	});
 
 	// ── signoff (privileged write, api-token, fail-closed) ──

@@ -13,6 +13,7 @@ import type {
 } from "flywheel-config";
 import {
 	DEFAULT_GATE_TIMEOUT_MS,
+	isFounderUxGateEnabled,
 	PONYTAIL_CONFLICT,
 	PONYTAIL_PLUGIN,
 	PONYTAIL_SELECTOR_UNAVAILABLE,
@@ -1124,8 +1125,12 @@ export class Blueprint {
 		// the HARD enforcement is the Bridge (await-founder-ux-gate fail-closed +
 		// stage_changed→implement guard). Self-declare guidance is shown for ALL
 		// runs (Codex R2-#5: the backup trigger must not depend on pre-flagging).
+		// FLY-900: the founder-UX gate is retired fleet-wide by default. Only when
+		// the kill-switch is explicitly re-enabled (FLYWHEEL_FOUNDER_UX_GATE_ENABLED
+		// === "1") do we inject the gate block — otherwise the runner is never told
+		// to run record-signoff / await-founder-ux-gate (cuts the Layer A source).
 		const founderUxMode = this.founderUxGateConfig?.mode;
-		if (founderUxMode && founderUxMode !== "off") {
+		if (founderUxMode && founderUxMode !== "off" && isFounderUxGateEnabled()) {
 			const fuxLines = [
 				"FOUNDER-UX GATE (this project enables founder_ux_gate):",
 				"FOUNDER-FACING UX = anything the founder (Annie) directly sees or operates",

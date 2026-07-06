@@ -6,6 +6,7 @@ import { CommDB } from "flywheel-comm/db";
 import type { FounderUxGateMode } from "flywheel-config";
 import {
 	DEFAULT_PHASE_TIER,
+	isFounderUxGateEnabled,
 	modelDisplayName,
 	modelShortCode,
 	phaseMessageTag,
@@ -1738,7 +1739,11 @@ export function createEventRouter(
 					// the current ux_hash. enforce → reject (FOUNDER_UX_SIGNOFF_REQUIRED,
 					// which `stage set implement` fail-closes on) BEFORE recording the
 					// stage; audit_only → log + proceed; off / non-founder-facing → pass.
-					if (stage === "implement") {
+					// FLY-900: the gate is retired fleet-wide by default — only run the
+					// guard when the kill-switch is explicitly re-enabled. Disabled →
+					// skip entirely (never read the snapshot, never block), so a
+					// founder-facing implement passes even without a sign-off.
+					if (stage === "implement" && isFounderUxGateEnabled()) {
 						const guardSession = store.getSession(event.execution_id);
 						const mode =
 							(guardSession?.founder_ux_gate_mode as

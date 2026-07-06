@@ -17,6 +17,7 @@
  */
 
 import type { Express, RequestHandler } from "express";
+import { isFounderUxGateEnabled } from "flywheel-config";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
 import { signoffSatisfies } from "./signoff.js";
@@ -111,6 +112,15 @@ export function mountFounderUxRoutes(
 				res
 					.status(400)
 					.json({ approved: false, error: "execId + uxHash required" });
+				return;
+			}
+			// FLY-900: gate retired fleet-wide by default. When the kill-switch is
+			// not explicitly re-enabled, the await-founder-ux-gate poll gets an
+			// immediate `approved: true` — it never blocks implement on a sign-off
+			// (this also unblocks any stale session still polling this route). auth +
+			// param validation above stay unchanged.
+			if (!isFounderUxGateEnabled()) {
+				res.json({ approved: true });
 				return;
 			}
 			res.json({ approved: signoffSatisfies(deps.store, execId, uxHash) });

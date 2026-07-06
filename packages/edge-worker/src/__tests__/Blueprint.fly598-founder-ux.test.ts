@@ -16,7 +16,7 @@ import type {
 	IAdapter,
 } from "flywheel-core";
 import type { DagNode } from "flywheel-dag-resolver";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import { Blueprint } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
@@ -102,6 +102,16 @@ async function buildPrompt(founderUxGateConfig?: {
 }
 
 describe("FOUNDER-UX GATE injection (FLY-598)", () => {
+	// FLY-900: the gate is retired fleet-wide by default; the injection now also
+	// requires the kill-switch to be explicitly re-enabled. These ON-path cases
+	// run with it enabled so they still assert the original enforce behavior.
+	beforeEach(() => {
+		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "1");
+	});
+	afterEach(() => {
+		vi.unstubAllEnvs();
+	});
+
 	it("enforce: injects the gate instruction + self-declare + ux-file stage", async () => {
 		const prompt = await buildPrompt({ mode: "enforce" });
 		expect(prompt).toContain("FOUNDER-UX GATE");
@@ -122,5 +132,18 @@ describe("FOUNDER-UX GATE injection (FLY-598)", () => {
 		expect(off).toBe(absent); // byte-identical
 		expect(absent).not.toContain("FOUNDER-UX GATE");
 		expect(absent).not.toContain("await-founder-ux-gate");
+	});
+
+	// FLY-900: with the kill-switch disabled (default), even an enforce/audit_only
+	// project injects ZERO founder-UX content — byte-identical to the off prompt.
+	it("FLY-900 kill-switch OFF: enforce injects NOTHING (byte-identical to off/absent)", async () => {
+		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "0"); // override beforeEach "1"
+		const enforceDisabled = await buildPrompt({ mode: "enforce" });
+		const auditDisabled = await buildPrompt({ mode: "audit_only" });
+		const off = await buildPrompt({ mode: "off" });
+		expect(enforceDisabled).toBe(off); // byte-identical — gate fully suppressed
+		expect(auditDisabled).toBe(off);
+		expect(enforceDisabled).not.toContain("FOUNDER-UX GATE");
+		expect(enforceDisabled).not.toContain("await-founder-ux-gate");
 	});
 });

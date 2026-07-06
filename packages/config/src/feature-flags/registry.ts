@@ -1401,6 +1401,42 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "readonly",
 		note: "absent → enforce（resolveEffectiveFounderUxConfig 收口，FLY-869）；显式 mode:off 才是旧行为的 kill-switch。",
 	},
+	{
+		// FLY-900: fleet-wide kill-switch that RETIRES the founder-UX
+		// implement-before-signoff gate (FLY-598 / FLY-869). Annie declared the gate
+		// unnecessary AND it is currently mis-configured (no FLYWHEEL_FOUNDER_USER_ID
+		// → the sign-off write fail-closes 503, permanently blocking every
+		// founder-facing issue's implement). Stacks OVER the per-project
+		// `founder_ux_gate.mode` (governance gate) as a fleet-wide override, like
+		// `three_stage_killswitch` — but OPPOSITE polarity: default OFF (gate
+		// disabled), only `=1` re-enables the original enforce. Governance gate →
+		// ALWAYS readonly (never a founder dashboard toggle). Requires a Bridge
+		// restart to take effect. The single flag semantic lives in the helper
+		// `isFounderUxGateEnabled`; Blueprint (prompt injection), the status route,
+		// the stage-guard call site, and claude-lead.sh all CONSUME that helper
+		// (they carry no env literal, so the drift scanner does not scan them and
+		// they are documented here as consumers, not readSites).
+		name: "founder_ux_gate_killswitch",
+		category: "governance_gate",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FOUNDER_UX_GATE_ENABLED",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"全局撤掉 founder-UX 签字门（implement 前必须 thread 签字，FLY-598/869）；默认 OFF=门禁用，=1 恢复原 enforce（叠在 per-project founder_ux_gate.mode 上，FLY-900）",
+		readSites: [
+			envSite(
+				"packages/config/src/founder-ux-config.ts",
+				"isFounderUxGateEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "单一语义在 helper isFounderUxGateEnabled；Blueprint(A)/status route(B)/stage-guard(C)/claude-lead.sh(D) 消费该 helper（无 env 字面量，非 readSite）；默认 OFF 撤门，=1 恢复；改后需重启 Bridge。",
+	},
 	// ─── FLY-818: auto-continue (①) + stuck→founder-page (②) ───
 	{
 		name: "runner_autocontinue",
