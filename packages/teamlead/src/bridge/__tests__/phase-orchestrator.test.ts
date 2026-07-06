@@ -112,7 +112,7 @@ function session(over: Partial<PhaseSession>): PhaseSession {
 describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 	beforeEach(() => vi.clearAllMocks());
 
-	it("Design done → captures SHA, closes design, starts Implement (Opus) on branch B", async () => {
+	it("Design done → captures SHA, closes design, starts Implement (Fable) on branch B", async () => {
 		const { deps, start, capturePhaseHeadSha, closePhaseRunner } = makeDeps();
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "design", status: "design_done" }),
@@ -123,20 +123,25 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 		expect(start.mock.calls[0]![0]).toMatchObject({
 			issueId: "FLY-793",
 			sessionRole: "implement",
-			dispatchModel: "claude-opus-4-8",
+			// FLY-887 R2 (Annie's table): implement runs on Fable, and the label
+			// layer is bypassed so no issue label can override the phase model.
+			dispatchModel: "claude-fable-5",
+			ignoreRunnerLabelSelection: true,
 			startPoint: "deadbeefcafe1234",
 			shareParentBranch: true,
 		});
 	});
 
-	it("Implement awaiting_review → starts QA (Sonnet) on the same branch", async () => {
+	it("Implement awaiting_review → starts QA (Opus) on the same branch", async () => {
 		const { deps, start } = makeDeps();
 		await new PhaseOrchestrator(deps).onPhaseComplete(
 			session({ session_role: "implement", status: "awaiting_review" }),
 		);
 		expect(start.mock.calls[0]![0]).toMatchObject({
 			sessionRole: "qa",
-			dispatchModel: "claude-sonnet-5",
+			// FLY-887 R2 (Annie's table): QA runs on Opus — never Sonnet.
+			dispatchModel: "claude-opus-4-8",
+			ignoreRunnerLabelSelection: true,
 			shareParentBranch: true,
 		});
 	});
@@ -349,7 +354,10 @@ describe("PhaseOrchestrator (FLY-793 Steps 4+7)", () => {
 				expect(h.start.mock.calls[0]![0]).toMatchObject({
 					issueId: "FLY-793",
 					sessionRole: "implement",
-					dispatchModel: "claude-opus-4-8",
+					// FLY-887 R2 (Annie's table): implement-fix runs on Fable, label
+					// layer bypassed.
+					dispatchModel: "claude-fable-5",
+					ignoreRunnerLabelSelection: true,
 					startPoint: "deadbeefcafe1234",
 					shareParentBranch: true,
 					// FLY-856: resolved live via resolveLeadId, never a phantom

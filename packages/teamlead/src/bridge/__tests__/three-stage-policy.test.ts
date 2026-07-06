@@ -38,6 +38,31 @@ describe("resolveThreeStageEntry (FLY-793 Step 4 ENTRY)", () => {
 		expect(e.role).toBe("design");
 	});
 
+	it("FLY-887 R2: entry carries the design-phase model — model sovereignty lives in the phase table", () => {
+		// The entry decision OWNS the dispatch model for a three-stage run: the
+		// caller (runs-route) applies `entry.dispatchModel` unconditionally, so a
+		// difficulty-sorter pin (e.g. sonnet on a light-sorted issue) can never
+		// put the Design phase on a non-table model.
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: { three_stage: true },
+			issueLabels: [],
+			env: noEnv,
+		});
+		expect(e.dispatchModel).toBe("claude-fable-5");
+	});
+
+	it("FLY-887 R2: a NON-entry decision carries no dispatchModel (single-session path untouched)", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: undefined,
+			issueLabels: [],
+			env: noEnv,
+		});
+		expect(e.enteredThreeStage).toBe(false);
+		expect(e.dispatchModel).toBeUndefined();
+	});
+
 	it("byte-compat: a `main` dispatch with no three-stage config stays `main`", () => {
 		const e = resolveThreeStageEntry({
 			requestRole: "main",

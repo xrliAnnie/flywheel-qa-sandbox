@@ -20,7 +20,6 @@ import {
 	ConfigLoader,
 	normalizeDispatchModel,
 	resolveEffectiveFounderUxConfig,
-	resolvePhaseModel,
 } from "flywheel-config";
 import {
 	DOC_TIERS,
@@ -544,6 +543,9 @@ export function createRunsRouter(
 		// (`qa`) pass through. Absent config / OFF / `no-three-stage` label /
 		// `FLYWHEEL_THREE_STAGE=0` → stays `main` (byte-compatible).
 		let shareParentBranch: boolean | undefined;
+		// FLY-887 R2: set with shareParentBranch at entry — phase sessions bypass
+		// the runner-label backend/model layer (see the entry branch below).
+		let ignoreRunnerLabelSelection: boolean | undefined;
 		if (role === "main") {
 			const proj = projects.find((p) => p.projectName === projectName);
 			const pipelineConfig = proj
@@ -574,9 +576,21 @@ export function createRunsRouter(
 				}
 				role = entry.role; // "design"
 				shareParentBranch = true;
-				// The Design phase runs on the design tier UNLESS the request already
-				// pinned a model (the difficulty-sorter override wins).
-				dispatchModel = dispatchModel ?? resolvePhaseModel("design");
+				// FLY-887 R2: the phase table OWNS the phase model — apply the entry's
+				// model UNCONDITIONALLY. A difficulty-sorter pin (e.g. a light-sorted
+				// issue pinned to Sonnet) must NOT leak onto a phase session; an issue
+				// that genuinely needs a special model opts out of three-stage via the
+				// `no-three-stage` label and runs single-session (recorded trade-off,
+				// Lead-approved).
+				dispatchModel = entry.dispatchModel;
+				// FLY-887 R2 (Codex R1 blocker): the Linear label layer outranks
+				// dispatchModel in resolveRoleAdapter — a `sonnet` model label or a
+				// `codex`/`agy`/`kimi` vendor label would beat the phase table (and a
+				// no-transport vendor backend can never receive park/wake mailboxes).
+				// Bypass the label layer for phase dispatch (FLY-643 seam, same as
+				// auto-QA); issueLabels still flow into BlueprintContext for
+				// Lead/thread routing.
+				ignoreRunnerLabelSelection = true;
 			}
 		}
 
@@ -678,6 +692,10 @@ export function createRunsRouter(
 				// three-stage entry above (never from the request body). Undefined for
 				// every non-three-stage dispatch → byte-compatible.
 				shareParentBranch,
+				// FLY-887 R2: phase dispatch bypasses the runner-label backend/model
+				// layer (set with shareParentBranch above; undefined otherwise →
+				// byte-compatible).
+				ignoreRunnerLabelSelection,
 				// FLY-137 v1.27.2: dept-aware dispatch context
 				agentName,
 				issueLabels: normalizedIssueLabels,

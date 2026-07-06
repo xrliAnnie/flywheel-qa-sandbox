@@ -401,11 +401,13 @@ export class RetryDispatcher implements IRetryDispatcher {
 			req.leadId,
 			req.issueLabels,
 			runtime.rolesConfig,
-			// FLY-643 ignoreRunnerLabelSelection is not carried on the retry
-			// path; the FLY-728 dispatch model IS (retry reuses the persisted
-			// `dispatch_model` — actions.ts; `runner_model` is display/audit
-			// output only, FLY-751 Codex R1 #2).
-			undefined,
+			// FLY-887 R2 (Codex R1 #2): now carried on the retry path — actions.ts
+			// sets it for PHASE rows so a refreshed label cannot bypass the phase
+			// table on retry. Undefined for non-phase retries (byte-compatible with
+			// the previous hardcoded undefined). The FLY-728 dispatch model is
+			// carried as before (`runner_model` is display/audit output only,
+			// FLY-751 Codex R1 #2).
+			req.ignoreRunnerLabelSelection,
 			req.dispatchModel,
 		);
 		const ctx: BlueprintContext = {

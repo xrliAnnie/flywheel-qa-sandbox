@@ -190,6 +190,13 @@ export interface PhaseOrchestratorDeps {
 			dispatchModel: string;
 			startPoint: string;
 			shareParentBranch: true;
+			/**
+			 * FLY-887 R2: always `true` on a phase spawn — the Linear label layer
+			 * outranks dispatchModel in resolveRoleAdapter, so without this a
+			 * `sonnet` model label (or a no-transport vendor label, which could
+			 * never receive park/wake mailboxes) would beat the phase table.
+			 */
+			ignoreRunnerLabelSelection: true;
 			issueIdentifier?: string;
 			issueTitle?: string;
 			phaseFixContext?: { round: number; qaSummary: string };
@@ -798,6 +805,8 @@ export class PhaseOrchestrator {
 				dispatchModel: resolvePhaseModel("implement"),
 				startPoint: headSha,
 				shareParentBranch: true,
+				// FLY-887 R2: labels never outrank the phase table (see deps JSDoc).
+				ignoreRunnerLabelSelection: true,
 				issueIdentifier: session.issue_identifier,
 				issueTitle: session.issue_title,
 				phaseFixContext: {
@@ -941,6 +950,8 @@ export class PhaseOrchestrator {
 				dispatchModel: resolvePhaseModel("implement"),
 				startPoint: headSha,
 				shareParentBranch: true,
+				// FLY-887 R2: labels never outrank the phase table (see deps JSDoc).
+				ignoreRunnerLabelSelection: true,
 				issueIdentifier: session.issue_identifier,
 				issueTitle: session.issue_title,
 				phaseFixContext: { round, qaSummary },
@@ -1144,6 +1155,8 @@ export class PhaseOrchestrator {
 				dispatchModel: resolvePhaseModel(next),
 				startPoint: headSha,
 				shareParentBranch: true,
+				// FLY-887 R2: labels never outrank the phase table (see deps JSDoc).
+				ignoreRunnerLabelSelection: true,
 				issueIdentifier: prev.issue_identifier,
 				issueTitle: prev.issue_title,
 			});

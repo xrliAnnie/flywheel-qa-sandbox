@@ -24,7 +24,7 @@
  * taken at run start (trusted, not worktree-derived).
  */
 
-import type { PipelineConfig } from "flywheel-config";
+import { type PipelineConfig, resolvePhaseModel } from "flywheel-config";
 
 export interface ThreeStagePolicyInput {
 	/** Pipeline config, loaded from the CANONICAL root (never a PR worktree). */
@@ -81,6 +81,15 @@ export interface ThreeStageEntryDecision {
 	role: string;
 	/** True ONLY when the fresh dispatch enters three-stage (→ start the Design phase). */
 	enteredThreeStage: boolean;
+	/**
+	 * FLY-887 R2: the phase-table model for the entered phase (design). Present
+	 * ONLY when `enteredThreeStage` — the caller applies it UNCONDITIONALLY,
+	 * overriding any difficulty-sorter pin, so phase-model sovereignty lives in
+	 * this policy module (Annie's table: no phase ever runs on Sonnet). An issue
+	 * that genuinely needs a special model opts out via the `no-three-stage`
+	 * label and runs single-session.
+	 */
+	dispatchModel?: string;
 }
 
 /**
@@ -106,7 +115,11 @@ export function resolveThreeStageEntry(
 		env: input.env,
 	}).enabled;
 	return enabled
-		? { role: "design", enteredThreeStage: true }
+		? {
+				role: "design",
+				enteredThreeStage: true,
+				dispatchModel: resolvePhaseModel("design"),
+			}
 		: { role: "main", enteredThreeStage: false };
 }
 
