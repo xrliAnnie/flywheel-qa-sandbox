@@ -1,8 +1,8 @@
 # FLY-871 Codex Infra Bot — C6 部署 runbook
 
 Issue: FLY-871 (https://linear.app/geoforge3d/issue/FLY-871/infraresilience-codex-救援-bot-账号体系外的看切救696-交叉自愈架构的-codex-半边token)
-日期: 2026-07-04
-基于: plan.md §C6 + lead-instruction dedef290(权限 + 头像)
+日期: 2026-07-04(§5.5/§5.6/§7 windowed bring-up 增补 2026-07-06)
+基于: plan.md §C6 + §12 W1/W2/W3 + lead-instruction dedef290(权限 + 头像)
 
 > **前置**:整套 R2/R3 在 `FLYWHEEL_ACCOUNT_SELF_HEAL` 翻开前**全程休眠**。本 runbook
 > 的步骤只在 Annie 拍板的 **enable window** 执行(真机 QA §8 全绿后)。仓库里已交付的
@@ -71,6 +71,52 @@ export FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID="<#codex-infra-bot 频道 id>"
 3. 隔离 `CODEX_HOME=~/.codex-infra-bot`(独立 Codex 账号 auth,与 Claude 账号体系无关)。
 4. ship 纪律遵循 `doc/engineer/implementation/companion-lead-ship-discipline.md`。
 
+> **W2 自动接线(无需手动步骤)**:launcher `run-codex-infra-bot-tui.sh` 已 export
+> `FLYWHEEL_ROOT`(让 dist runtime 定位 `scripts/lead-alert.sh`)+ `FLYWHEEL_TUI_WINDOW_ALERT=1`
+> —— 「静默无 pane」守卫因此**只对本 bot 开**(共享 TUI runtime 默认 OFF,其它 Lead 字节
+> 兼容)。窗连续 ~3 分钟建不起来/建了即死 → 经 lead-alert.sh 往 Alerts 发**一条**
+> `tui_window_lost`(episode-latch,恢复后新 episode 可再报)。
+
+## 5.5 逐层验证(W1 bring-up 证据门 —— 装完 plist **必跑**)
+
+`bootstrap` 之后,`~30s` 让 daemon+窗起来,然后跑只读探针脚本(它**不** bootstrap、不开窗、
+不杀进程,可反复跑):
+
+```bash
+packages/teamlead/scripts/verify-windowed-lead.sh flywheel codex-infra-bot-lead \
+  --codex-home ~/.codex-infra-bot \
+  --log ~/Library/Logs/flywheel/codex-infra-bot-lead.log   # --log 可选,只进诊断层
+```
+
+逐层期望(退出码 0 = 1–5 层全绿;非零 = `10 + 第一个失败层`):
+
+| 层 | 校验 | 期望 |
+|---|---|---|
+| 1 | launchd job loaded 且 running | `layer 1 PASS … running (pid N)` |
+| 2 | 该 pid 是 TUI runtime(`node …/codex-lead-tui-runtime.js`) | `layer 2 PASS …`(**绝不**按 launcher 路径判,argv 已被 `exec node` 替换) |
+| 3 | daemon socket `~/.codex-infra-bot/app-server-control/app-server-control.sock` | `layer 3 PASS` |
+| 4 | tmux 窗 `flywheel-codex-infra-bot-lead` 活(identity-echo) | `layer 4 PASS` |
+| 5 | pane 真跑 codex(非裸 zsh/bash 壳) | `layer 5 PASS` |
+| 6 | 诊断层,**不计退出码** | 打 launchd log 尾部;「无近期 real-TUI-up 行」**不是失败**(健康 20s liveness 不打绿 tick) |
+
+失败层直接指向问题链节:1 失败=job 没起(bootstrap 漏了?);2=进程不是 runtime;3=daemon
+sock 没就绪(可能窗先于 sock 起,见 §7 note);4=窗死/被 stale-kill;5=TUI 掉成壳。
+
+**最后一层人眼确认**:在 cmux 里看到名为 `flywheel-codex-infra-bot-lead` 的 tab 真出现
+(Annie 目视或截图)—— 消灭「装了但没人证明看得见」。
+
+## 5.6 post-bootout / reboot 恢复纪律
+
+- `bootout` **不跨 login 持久**,但也**不会自己回来**:本次 login 之后被 bootout 的 job,要等
+  **下次 login** 才被 `RunAtLoad` 兜回(Mufasa Jun-29 事故正是这个缺口 —— 被 bootout 后无人
+  bootstrap、无巡检发现)。
+- 恢复动作:`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.flywheel.lead.flywheel-codex-infra-bot-lead.plist`
+  → 再跑 §5.5 `verify-windowed-lead.sh` 全绿。
+- **巡检信号**:窗连续建不起来时,W2 守卫会在 Alerts 发 `tui_window_lost`;若整个 bot job 不在
+  launchd 里(bootout 后没回来),W2 守卫也随之缺席 —— 此时的可见信号是**每日摘要缺席**
+  (§C7b),需人工 `launchctl print` 复核 job 是否 loaded。
+  (Mufasa 自身的具体恢复归 task-114 执行,本 runbook 只落通用纪律。)
+
 ## 6. CODE 接线(R2/R3 已落地;enable 前必须在)
 
 - **W6 assignment 帖 mention**(✅ 已接):cap 触发的 pending switch 的 Alerts 帖显式带
@@ -95,7 +141,12 @@ export FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID="<#codex-infra-bot 频道 id>"
 ## 7. Enable 序(§8 QA 全绿 + Annie 拍板后)
 
 1. 确认 pool 4 账号 capture 新鲜。
-2. 装 launchd 起 bot → 验 bot 在 #codex-infra-bot / Alerts 出摘要、能被 @ 唤醒。
+2. 装 launchd 起 bot → **跑 §5.5 `verify-windowed-lead.sh` 逐层全绿 + cmux 目视 tab**(bring-up
+   证据门,W4)→ 验 bot 在 #codex-infra-bot / Alerts 出摘要、能被 @ 唤醒。
+   - **R-10.4-4 待复证(bring-up 时观察)**:若窗**先于** daemon sock 起 → 可能短暂 dead-pane
+     循环;runtime 的 20s liveness probe 应自愈(重建窗)。若观察到**持续**循环(非短暂),
+     不硬等 —— W2 守卫会在 ~3 分钟后发 `tui_window_lost`,按告警排查(sock 时序 / codex 二进制
+     版本漂移,见 §12 风险)。健康态下 verify 脚本 3 层(sock)与 4/5 层(窗/pane)应同时绿。
 3. 设 `FLYWHEEL_ACCOUNT_SELF_HEAL=1`(+ `FLYWHEEL_CLAUDE_PROFILE_BIN`)→ **重启 Bridge**
    (config/env 在 boot 时读 —— 攒批纪律;补装 config 后必再重启一次,LEARN-20 教训)。
 4. 注入一次演练确认(cap → assignment → claim → 切;login_expired → 救)→ Annie 验收。

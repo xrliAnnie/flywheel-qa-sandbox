@@ -976,6 +976,11 @@ function titleFor(kind: AlertEventType): string {
 		// it and builds its own title); case exists for switch exhaustiveness.
 		case "runner_login_expired":
 			return "Runner logged out";
+		// FLY-871 §12 W2: never emitted by LeadWatchdog (the windowed-TUI runtime
+		// guard fires it directly via scripts/lead-alert.sh with its own title);
+		// case exists for switch exhaustiveness.
+		case "tui_window_lost":
+			return "Infra Bot TUI window not visible";
 	}
 }
 
@@ -1032,5 +1037,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-871 R2/C8: never emitted by LeadWatchdog (the runner auth scan builds its own body).
 		case "runner_login_expired":
 			return "A Runner appears logged out (auth/login expired). Rescue restarts it in place so it re-reads the fresh Keychain; if that fails once, the founder is paged.";
+		// FLY-871 §12 W2: never emitted by LeadWatchdog (the windowed-TUI runtime guard builds its own body).
+		case "tui_window_lost":
+			return "A windowed Codex Lead's founder-facing cmux pane could not be (re)created for several minutes. Check the launchd job + tmux window (verify-windowed-lead.sh).";
 	}
 }

@@ -76,6 +76,7 @@ import {
 	killTuiWindow,
 	type TuiWindowSpec,
 } from "./tui-window.js";
+import { createTuiWindowAlertGuard } from "./tui-window-alert.js";
 import { WsTransport } from "./WsTransport.js";
 
 const execFileP = promisify(execFile);
@@ -387,6 +388,18 @@ function buildTuiGeneration(
 	// still bound to the OLD thread). Only same-thread transient rebuilds preserve
 	// a live founder session.
 	let ownedTuiThreadId: string | undefined;
+	// FLY-871 §12 W2: silent-no-pane guard. Process-scoped (declared here, outside
+	// the per-generation closure) so its consecutive-failure count + episode latch
+	// survive generation rebuilds. Default OFF — null unless the InfraBot launcher
+	// sets FLYWHEEL_TUI_WINDOW_ALERT=1 AND lead-alert.sh resolves; `?.record` is a
+	// no-op when null, so a plain Lead is byte-compat.
+	const tuiWindowAlertGuard = createTuiWindowAlertGuard({
+		stateDir: config.stateDir,
+		leadId: config.leadId,
+		projectName: config.projectName,
+		env: process.env,
+		log: (m) => logger.warn(m),
+	});
 	return () => {
 		let runtime: CodexLeadRuntime | null = null;
 		let proc: CodexLeadProcess | null = null;
@@ -410,14 +423,22 @@ function buildTuiGeneration(
 		//     window actually died (never flap a healthy session on rebuild).
 		const ensureTuiHealthy = () => {
 			if (stopped || !tuiSpec) return;
+			// Derive one health signal per tick and feed the silent-no-pane guard
+			// (W2). healthy=false unifies "create failed" and "died, re-create
+			// failed"; a genuinely alive owned window is healthy without a rebuild.
+			let healthy: boolean;
 			if (ownedTuiThreadId !== tuiSpec.threadId) {
 				const created = ensureTuiWindow(tuiSpec, {
 					log: (m) => logger.warn(m),
 				});
 				if (created) ownedTuiThreadId = tuiSpec.threadId;
-			} else if (!isTuiWindowAlive(tuiSpec)) {
-				ensureTuiWindow(tuiSpec, { log: (m) => logger.warn(m) });
+				healthy = created;
+			} else if (isTuiWindowAlive(tuiSpec)) {
+				healthy = true;
+			} else {
+				healthy = ensureTuiWindow(tuiSpec, { log: (m) => logger.warn(m) });
 			}
+			tuiWindowAlertGuard?.record(healthy);
 		};
 		return {
 			start: async () => {
