@@ -1,10 +1,115 @@
 # FLY-887 三段式 phase-session 并存保活 — QA 报告
 
 Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-phase-session-并存保活-designimplementqa-不跑完就关qaimplement)
-日期: 2026-07-05
+日期: 2026-07-05 / 2026-07-06(round 2)
 基于: plan.md
 
-## 结论：FAIL
+## Round 2 结论：PASS
+
+本轮验证 round 1 的修复（commit `0d51ea3c`）+ 补一处新发现的边界情况（commit
+`19ead1d6`）+ Tadashi 要求的隔离 529 QA Room 真机全链路 E2E（硬门槛）。三项全过。
+
+### 1. Round 1 回归修复验证：PASS
+
+`reconcileOnStartup` 的 `hasProgressedPastDesign` 守卫（`0d51ea3c`）确认解决了
+round 1 发现的问题——重放已经合法 park 的 design session 不再误触发 design→
+implement handoff、不再从活体 QA fix-loop 手里夺走 TURN。
+
+- 之前 FAIL 报告里提交的回归测试（`phase-orchestrator.fly887-keepalive.test.ts`
+  "FLY-887 QA FINDING" describe block）现在 **GREEN**（14/14），含两条哨兵测试
+  钉住守卫两侧行为（真崩溃 remnant 仍会重驱 handoff；QA 分支单独测试仍会跳过）。
+- 全仓测试重新跑一遍：teamlead 4900+ passed（另有 9 个失败只在**满并行跑全仓**
+  时出现，单独/小范围重跑 100% 绿——已确认是资源争用导致的环境性 flake，跟本次
+  改动无关，同 round 1 报告里记录的 codex-lead-runtime.test.ts 环境性失败同类）；
+  flywheel-comm 732/732、config 323/323、edge-worker 1054/1054（+5 skipped，
+  memory-supabase-live 环境性跳过）全绿。Lint 对本 PR 改动的文件干净（另有 14 条
+  警告在本 PR 完全未碰的既有文件里，与本次改动无关）。CI 绿（PR #458）。
+
+### 2. 新发现 + 修复：reconcile 分不清"真崩溃"和"已 ship"
+
+代码审查中发现 `hasProgressedPastDesign` 的 round-1 修复本身还留了一条更窄的缝：
+`getAlivePhaseSession` 只看**活体**行，如果 Bridge 恰好崩在
+`finalizeThreeStagePhases` 收尾中途——已经把 implement 关成 `completed`（不再
+"活"）、但还没轮到关 design（design 仍停在 `design_done`）——下次重启时
+`hasProgressedPastDesign` 会把这个"已经 ship 完、只是收尾中途崩溃"的 design
+误判成"implement 从未起来过的真崩溃 remnant"，重新在**已经合并的 issue** 上
+spawn 一个全新 implement。
+
+已跟 Tadashi 确认后在本 PR 内补上小而安全的修复：新 dep
+`hasShipFinalizationClaim(issueId)`，查 `runPostShipFinalization` 的原子
+per-issue claim 事件（`post_ship_finalization_claim`，已有的
+`countEventsByIssueAndType` 复用）是否存在，OR 进 `hasProgressedPastDesign`。
+一个真崩溃、从未 ship 过的 implement 不会有这个 claim 事件，所以守卫本身要保护
+的"真 remnant 仍要重驱"行为不受影响。两条新哨兵测试钉住两侧：已 ship 完
+（claim 存在）→跳过；从未 ship（claim 不存在）→仍重驱。16/16（fly887-keepalive
+套件）+ 58/58（含 legacy keep-alive-OFF 套件）全绿。commit `19ead1d6`。
+
+### 3. 529 Room 真机全链路 E2E：PASS（Tadashi 要求的硬门槛，已完成）
+
+单测/集成测试证明不了的东西——真实 tmux 进程活体探测、真实共享 git worktree、
+真实 CommDB TURN 表、以及**真实 Bridge 进程重启**——这轮用一个隔离测试环境
+（slot 2）真机跑通了完整链路：park→wake→TURN→FAIL→wake-fix→wake-retest→PASS→
+**穿插两次真实 Bridge 重启**→founder-approve→ship→三段统一收尾→worktree 删除→
+teardown。部署源用一次性 sandbox 分支 `qa-e2e-887-scratch`（把两个跟本 PR 无关
+的既有假测试密钥 fixture 中和掉，只为绕过 sandbox 仓库的 push-protection 误报，
+从未碰真正的 PR 分支——Tadashi 已确认这个处理方式并明确不去点 GitHub 的
+"allow this secret"）。
+
+Annie 六条目标运行时行为（plan.md「目标运行时行为」表）逐条真机验证：
+
+- **Design park + Implement 原地接管同一 worktree**：PASS——两者
+  `worktree_path` 完全一致（无 `-design`/`-implement` 后缀分裂），两个 OS
+  进程验证同时存活，Bridge log 记录 handoff。
+- **Implement park + QA 接管同一 worktree、QA 可写**：PASS——QA 真的把测试
+  文件/报告 commit 到共享分支上（`git log` 验证多个 commit）。
+- **QA FAIL → wake 同一 implement 修 → wake 同一 QA 复验 → PASS**：PASS——
+  Bridge log 逐字确认「wake」用的是**同一个 execution_id**、不是重新 spawn；
+  TURN epoch 正确递增；implement/QA 各自的 `turn --exec-id` 自查在动手前答
+  `yours`；QA 复验时 worktree 已在新 head，零 fetch/checkout。
+- **穿插 Bridge 重启不误触发（本 PR 修的核心场景）**：PASS——两次独立重启，
+  Design 仍停在 `design_done` 且下游活体/已推进时，Bridge 启动日志逐字打出
+  `... already progressed past design (live downstream phase) — skip stale
+  handoff replay`，session 数/TURN 行/tmux 窗口数量在重启前后**零漂移**。
+  并且验证了对照组：设计刚 park、下游真的还没起来时，重启**正确地**重新驱动了
+  handoff（证明守卫是真的在判断,不是无脑跳过）。
+- **Ship 后统一收尾**：PASS——founder-approve 模拟后，QA 走完整 ship 序列，
+  两个 parked 段（design + implement）都被 `closeRunner(finalizeDone)` 关成
+  `completed`，`three_stage_turn` 表被清空该行，共享 worktree **只在此刻**才被
+  删除（之前全程未删），Linear issue 自动标 Done。
+
+**发现的两个与本 PR 无关的既有问题**（不阻塞本次 ship，建议开 follow-up）：
+
+1. `pipelineConfigByProject` 在 Bridge **启动时**读入缓存一次，不是每次请求都
+   重新读——测试/部署时改 `.flywheel/config.yaml` 的 `pipeline.three_stage`
+   需要重启 Bridge 才生效。纯工具/文档层面的坑，不是运行时 bug。
+2. **FLY-827 Codex 硬闸 ↔ 三段式 QA-as-ship-executor 的一处真实交互缝隙**：
+   `codex_review_result` 的接收方只认 main/implement 角色的 session
+   （`auto-qa-coordinator.ts` `isReviewableRole` 门），而三段式下最终执行 ship
+   的是 QA 这个 session 自己的 exec-id——E2E 里验证 `verify-approval` 走这条
+   路径时卡住过，只能手动在隔离测试库里直接插一行 `approved` 记录绕过。这是
+   FLY-793（三段式本身）就已经存在的既有交互问题，本 PR 完全没碰
+   `auto-qa-coordinator.ts` 的这段逻辑，**不是** FLY-887 引入的新 bug，但既然
+   本仓库自己（flywheel 项目）三段式已经打开（`.flywheel/config.yaml`
+   `three_stage: true`），这条缝隙值得单独立一个 follow-up issue 排查——如果
+   本仓库的 Codex 硬闸也生效，未来某个三段式 issue 走到 ship 这一步可能会撞上
+   同样的卡点。
+
+E2E 过程中还有一处已核实无害的操作插曲：E2E agent 有一次误用了自己 shell 继承
+的生产环境变量（`FLYWHEEL_BRIDGE_URL`/`FLYWHEEL_ISSUE_ID` 等，来自它自己作为
+Runner 的身份）把一条 `codex-review-result` 事件发到了本仓库自己的生产 Bridge
+（issue FLY-887 本身）。已读代码确认：`onCodexReviewResult` 对未知/不可复核角色
+的 `targetExecutionId` 只是 log warning 后直接 return，不落任何状态改动——生产
+上只多了一条无害的 orphan `session_events` 审计行，没有任何副作用。
+
+### 结论
+
+Round 2 验证 + 新边界修复 + 真机全链路 E2E 全部 PASS。Annie 的核心诉求
+（QA↔implement 修复循环不丢 context、不重开、不费 token）在真实 Bridge 重启
+穿插下得到了真机层面的证实，而不仅仅是 mock 测试层面。建议进入 approve gate。
+
+---
+
+## Round 1 结论：FAIL（已修复，见上）
 
 代码级审查 + 测试执行发现一处 **高严重度、可复现的正确性 bug**：`reconcileOnStartup`
 （Bridge 每次启动/重启都会跑）在 keep-alive 模式下会在**每一次 Bridge 重启**时错误地对
