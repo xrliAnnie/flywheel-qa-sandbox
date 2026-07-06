@@ -1,13 +1,13 @@
 ---
 issue: FLY-901
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-06T15:57:42.756Z
-nextStep: "design phase 完成: 三件套 + Codex R1 APPROVED; 待 Implement phase 接手"
+phase: implement
+phaseCursor: 0/6
+updated: 2026-07-06T16:00:09.429Z
+nextStep: "C1: AgentConfig.departments 字段"
 chunks: []
 pointers: {}
 ---
 
 # FLY-901 progress
-**phase**: design (4/4)
-**next**: design phase 完成: 三件套 + Codex R1 APPROVED; 待 Implement phase 接手
+**phase**: implement (0/6)
+**next**: C1: AgentConfig.departments 字段
