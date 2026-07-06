@@ -1,14 +1,14 @@
 ---
 issue: FLY-900
 phase: design
-phaseCursor: 8/9
-updated: 2026-07-06T14:39:24.244Z
-nextStep: commit+push design docs -> report Lead -> complete
-  phase_design_complete (Codex APPROVED R2; Lead confirmed design-only)
+phaseCursor: 9/9
+updated: 2026-07-06T14:40:15.902Z
+nextStep: DESIGN COMPLETE — pushed ef96a551, Codex APPROVED R2. Handoff to
+  implement phase (Lead re-dispatch).
 chunks: []
 pointers: {}
 ---
 
 # FLY-900 progress
-**phase**: design (8/9)
-**next**: commit+push design docs -> report Lead -> complete phase_design_complete (Codex APPROVED R2; Lead confirmed design-only)
+**phase**: design (9/9)
+**next**: DESIGN COMPLETE — pushed ef96a551, Codex APPROVED R2. Handoff to implement phase (Lead re-dispatch).
