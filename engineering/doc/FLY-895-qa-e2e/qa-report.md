@@ -6,6 +6,11 @@ redo — do not pick up) — https://linear.app/studio/issue/FLY-895
 基于: `engineering/doc/FLY-895-qa-e2e/design.md`, PR #50
 (`xrliAnnie/flywheel-qa-sandbox`)
 
+**Round 1 Verdict**: **FAIL (deliberate/trivial)** — 缺尾句号，见下方 Verification
+results §3。用于演练 FLY-887 keep-alive fix-loop（FAIL→wake→fix→re-test→PASS）。
+**Round 2 Verdict**: **PASS** — 见文末 "Round 2" 一节。implement 推的一字符修复
+（补句号）已确认正确，`verify.sh` 在新 head 上 3/3 全绿。fix-loop 闭环。
+
 ## Round 1 结论：FAIL（trivial，用于演练 fix-loop）
 
 **PR head (Round 1)**: `9faef20abe04653d5719fd2311ea7cfd30315343` (branch
@@ -82,3 +87,30 @@ FAIL→wake→fix→re-test→PASS fix-loop 机制本身（这正是 FLY-895 这
 存在的目的）。按协议：本次 QA 报告 FAIL，commit + push 这份报告和 verify.sh 到本
 分支后立即 `qa-result --status fail`，然后 `park` 等待 RE-TEST 唤醒——流水线会通知
 Implement phase 修复上述一行标点后再唤醒本 QA session 复核。
+
+## Round 2 — RE-TEST after fix（fix-loop E2E，续）
+
+由 Bridge 的 RE-TEST 唤醒；worktree 已原地在新 head，无需 fetch/checkout。
+
+1. `flywheel-comm turn --exec-id ac2cc9b7-082b-4155-b4ab-2e0c921bef27` → `yours
+   phase=qa epoch=5` —— 先做 single-writer 自查，确认可以碰 worktree，再继续。
+2. 确认新 head：`git rev-parse HEAD` → `f260f1cdf8ec545423fad8d330ffca320c78389d`，
+   与唤醒通知里的 sha 完全一致。
+3. 审查修复提交（`f260f1cd "fix(FLY-895): add terminal period to E2E run-log entry
+   (QA round 1)"`）：单行 diff（`doc/qa/sandbox-notes.md | 2 +-`，净变化 1 行），
+   只在行末加了一个句号，没有其它改动、没有 scope creep。
+4. 重跑 `./engineering/doc/FLY-895-qa-e2e/verify.sh`：
+
+```
+PASS: '## E2E run log' section present exactly once (1)
+PASS: run-log entry present with correct date + issue number + text (1)
+PASS: run-log entry ends with a terminal period (style consistency with other bullets in file)
+ALL CHECKS PASSED
+```
+
+3/3 全绿，包括 Round 1 失败的那一项（尾句号）现在也通过了。
+
+**Round 2 verdict**: **PASS**。修复确认正确且最小。FLY-887 keep-alive fix-loop
+（PASS-eligible → 故意 FAIL → wake → fix → RE-TEST → PASS）端到端演练成功。
+按 `qa-result --status pass` 上报，随后走 APPROVE GATE 流程（本次三段式流水线中
+QA session 是 ship executor）。
