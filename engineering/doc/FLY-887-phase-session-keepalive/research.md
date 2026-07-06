@@ -106,3 +106,52 @@ graph LR
 4. park 后 runner 的等待姿态（STOP 不退出 = 等 mailbox wake；PostToolUse hook 注入 vs inbox-check 轮询——沿用 FLY-752 QA park 的既行姿态）。
 5. ship 收尾的 hook 位置（event-route merged 分支 vs fanout-finalization 扩展）。
 6. 每处 fail-closed 兜底的告警文案与 `three_stage_stuck` 事件复用。
+
+---
+
+# R2 调研 — rebase 收敛 + per-phase model + channel 门控(2026-07-05)
+
+基于: exploration.md R2 节。全部为 PR #458 分支(b0dd7786)+ origin/main(4b18a1f4)上的实测事实。
+
+## R2.1 分叉与冲突清单(git merge-tree 实测)
+
+- merge-base = 740c90ee(FLY-869)。branch +45 commits,main +13 commits。
+- 冲突仅 2 文件:
+  - packages/teamlead/src/StateStore.ts —— main 侧 FLY-892(#461)重构 chat_threads(canonical-key 收敛,222 行改动)vs branch 侧 R1 新增 phase/park 相关列与方法。同文件不同关注点,预计为相邻行/imports 级冲突。
+  - packages/teamlead/src/bridge/post-ship-finalization.ts —— main 侧 FLY-892 +7 行 vs branch 侧 R1 keep-alive 统一收尾重写。
+- main 侧对 packages/config/src/three-stage-phases.ts 只做**加法**(FLY-892 badge/tag 辅助:PHASE_THREAD_BADGE、phaseMessageTag 等),未动 DEFAULT_PHASE_TIER;runs-route.ts 模型行、phase-orchestrator.ts 在 main 侧零改动 —— ②③ 的落点与 merge 冲突不重叠。
+- 加分项:main 的 phaseMessageTag(founder 可见 [设计·Fable] 标签)在 runner_model 缺失时回退 DEFAULT_PHASE_TIER[role] —— 改表后标签自动变成 [实现·Fable]/[QA·Opus],无需另改。
+
+## R2.2 模型决策点全量清单(定案)
+
+| # | 位置 | 现状 | 改动 |
+|---|---|---|---|
+| 1 | runs-route.ts:579(三段式入场) | dispatchModel ?? resolvePhaseModel("design") —— sorter pin 赢 | **无条件 resolvePhaseModel("design")**(phase 表赢) |
+| 2 | phase-orchestrator.ts:1144(交接 spawn) | resolvePhaseModel(next) | 不改(表驱动) |
+| 3 | phase-orchestrator.ts:798/941(QA-fail 修复 spawn) | resolvePhaseModel("implement") | 不改(表驱动) |
+| 4 | wake 路径 | 保持 spawn 模型 | 不改(策略在 spawn 时生效) |
+| 5 | retry-dispatcher | 重放 sessions.dispatch_model | 不改(入口修正后持久化值即表值) |
+| 6 | DEFAULT_PHASE_TIER(three-stage-phases.ts:78) | design:heavy / implement:medium / qa:light | **design:heavy / implement:heavy / qa:medium** |
+
+plugin.ts:3912 的 loadPipelineConfigByProject 仅作 boot 日志计数,非决策点。入场决策唯一入口 = runs-route(PhaseOrchestrator 交接直调 startDispatcher.start,天然只服务已入场的 pipeline)。
+
+## R2.3 channel 门控的可信输入链(定案)
+
+- dispatch body 的 leadId 已被既有代码校验 ∈ project.leads(chat-thread-register.ts validateChatThreadParams);
+- project.leads[].chatChannel 来自 ~/.flywheel/projects.json(server 端配置)。生产实测:flywheel 项目 5 个 lead,flywheel-eng-lead.chatChannel = 1516209714097291335(#flywheel-engineer),其余 4 个(cos/product/codex-infra/anna)各有不同 channel;
+- 结论:门控输入 = leadId → leadConfig.chatChannel(server-side derive),对 request body 零新增信任。leadId 缺失/查无此 lead → chatChannel 解析为 undefined → allowlist 存在时 fail-closed。
+
+## R2.4 YAML 大整数精度坑(ConfigLoader 校验必须挡)
+
+Discord channel id(如 1516209714097291335)> 2^53,YAML 不加引号会被解析成丢精度的 JS Number。three_stage_channels 校验必须**只接受字符串**,数字项直接抛错并提示加引号 —— 否则配置者写裸数字会静默匹配不上(门控永 OFF 且无人知)。
+
+## R2.5 受影响测试清单
+
+- packages/config/src/__tests__/three-stage-phases.test.ts —— tier/模型断言(19-31 行)需按新表更新;新增「零 Sonnet 不变量」断言。
+- packages/teamlead/src/bridge/__tests__/three-stage-policy.test.ts —— 新增 channel 门控矩阵(absent=现状/命中/未命中/undefined channel/空数组/kill-switch 与 label 仍短路)。
+- ConfigLoader 校验测试(packages/config)—— three_stage_channels 类型矩阵(缺失/合法数组/非数组/数字项/空串项)。
+- 回归:phase-orchestrator.test.ts + phase-orchestrator.fly887-keepalive.test.ts + StateStore.fly887-keepalive.test.ts + event-route-fly859 全量跑(不预期改动,spawn 点模型值断言除外——若有硬编码 opus/sonnet 断言随表更新)。
+
+## R2.6 529 Room / QA slot 影响
+
+slot bridge 用各自 worktree 的项目 config。若 slot config 拷贝生产 config.yaml(带 allowlist)而 slot lead 的 chatChannel 是测试频道 → 三段式在 slot 内 OFF。以后测三段式:slot config 把 slot channel 加进 allowlist 或删掉该 key(absent=不限)。记入 qa-framework 使用注意,不阻塞本 PR。

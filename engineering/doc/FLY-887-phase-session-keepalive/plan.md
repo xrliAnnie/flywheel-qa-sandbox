@@ -302,3 +302,76 @@ turn 自查强制后，**新 spawn 的 phase session 必须在 runner 动手前�
 
 - 本文档由 **Design phase**（本 session）产出并 commit 到分支；**Implement phase** 在同分支按本计划 TDD 执行。
 - 验收 = Step 11 真机全链 PASS + Annie 六条逐条对照（本计划「目标运行时行为」表）+ Codex code review APPROVED + 独立 QA。
+
+---
+
+# R2 实施计划 — rebase 收敛 + per-phase model 策略 + channel 门控
+
+Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-phase-session-并存保活-designimplementqa-不跑完就关qaimplement)
+日期: 2026-07-05
+基于: 同文件夹 exploration.md R2 节、research.md R2 节
+状态: R1(上文)已实现+QA 4/4 PASS,本节为 Lead 指令 34522575 的追加 scope;brainstorm gate 已获 Lead 批准(Path A:本 session 做完三件→推 PR #458)
+
+## 目标(验收标准)
+
+1. PR #458 mergeable(不再 CONFLICTING/DIRTY),不 force-push、QA 已验证的 commit SHA 链保留。
+2. 三段式 per-phase 模型 = design:Fable / implement:Fable / qa:Opus;任何路径(入场/交接/修复 spawn/retry)都不可能把 phase 段放上 Sonnet。
+3. 三段式只对「dispatch Lead 的 chatChannel ∈ pipeline.three_stage_channels」的 fresh main dispatch 生效;flywheel 生产配置收窄到 #flywheel-engineer(1516209714097291335)。config key 缺失 = 现状(byte-compat)。
+4. 全量测试绿 + lint 绿;一个 PR;approve gate 报 Lead,不自 merge/ship。
+
+## Step 1 — merge origin/main 解冲突(任务①)
+
+- git merge origin/main,预期冲突 2 文件:
+  - StateStore.ts:main 侧 FLY-892 chat_threads canonical-key 收敛 vs branch 侧 R1 phase/park 列 —— 两者关注点不同,保双方语义:FLY-892 的 thread 收敛逻辑照 main,R1 的 park/phase 列与方法照 branch。
+  - post-ship-finalization.ts:main 侧 +7 行(FLY-892)vs branch 侧 keep-alive 统一收尾 —— 以 branch 结构为骨架,把 main 的 7 行语义(FLY-892 行为)融进来。
+- 解完先跑受两文件影响的测试(StateStore*、post-ship-finalization*、event-route*、phase-orchestrator*)再跑全量,证明「两边语义都活着」而不只是文本无冲突。
+- 产出 1 个 merge commit;绝不 rebase/force-push。
+
+## Step 2 — per-phase model 策略(任务②,TDD)
+
+2a. packages/config/src/three-stage-phases.ts:
+   - DEFAULT_PHASE_TIER → { design: "heavy", implement: "heavy", qa: "medium" }。
+   - 文件头注释更新为 Annie 2026-07-05 新表(Plan→Fable / Implement→Fable / QA→Opus,全程无 Sonnet;记录「QA 返工卡 Sonnet」动机)。
+2b. packages/teamlead/src/bridge/three-stage-policy.ts:
+   - resolveThreeStageEntry 返回值新增 dispatchModel?: string —— 入场(enteredThreeStage=true)时携带 resolvePhaseModel("design"),把模型主权收进可单测的 policy 模块。
+2c. packages/teamlead/src/bridge/runs-route.ts:579:
+   - dispatchModel = dispatchModel ?? resolvePhaseModel("design") → 入场分支内无条件 dispatchModel = entry.dispatchModel(sorter pin 被 phase 表覆盖;注释写明 FLY-887 R2 政策与取舍:特殊模型走 no-three-stage label)。
+2d. 测试(先红后绿):
+   - three-stage-phases.test.ts:新表断言(design/implement→claude-fable-5,qa→claude-opus-4-8)+ 「零 Sonnet 不变量」(遍历 THREE_STAGE_PHASE_SEQUENCE,resolvePhaseModel 不含 sonnet)。
+   - three-stage-policy.test.ts:entry 携带 design 模型、pin 不影响 entry 决策。
+
+## Step 3 — channel 门控(任务③,TDD)
+
+3a. packages/config/src/types.ts:PipelineConfig 加 three_stage_channels?: string[](JSDoc:absent=不限;空数组=处处 OFF;必须是带引号的字符串,防 YAML 大整数丢精度)。
+3b. packages/config/src/ConfigLoader.ts:pipeline 校验块扩展 —— three_stage_channels 若存在必须是数组、每项必须非空字符串;数字项抛错并提示「Discord channel id 必须加引号」。
+3c. packages/teamlead/src/bridge/three-stage-policy.ts:
+   - ThreeStagePolicyInput / ThreeStageEntryInput 加 dispatchChannelId?: string(JSDoc:server-side 由 leadId → project.leads[].chatChannel 解析,绝不取自 request body)。
+   - resolveThreeStagePolicy:three_stage=true 后追加 —— allowlist 未定义→enabled(现状);allowlist 已定义→dispatchChannelId 存在且 ∈ allowlist 才 enabled,否则 disabled(reason 带上未命中详情)。kill-switch 与 no-three-stage label 仍最先短路。
+3d. packages/teamlead/src/bridge/runs-route.ts:入场分支前解析 dispatchChannelId = leadId ? proj?.leads.find(l => l.agentId === leadId)?.chatChannel : undefined,传入 resolveThreeStageEntry。
+3e. .flywheel/config.yaml(repo 内):pipeline 块加 three_stage_channels: ["1516209714097291335"] + 注释(#flywheel-engineer;529 Room 测三段式需加 slot channel 或删 key)。
+3f. 测试(先红后绿):
+   - three-stage-policy.test.ts 门控矩阵:key 缺失=现状 / 命中 / 未命中 / channel undefined / 空数组 / label 与 kill-switch 优先。
+   - ConfigLoader 校验矩阵:合法 / 非数组 / 数字项 / 空串项。
+
+## Step 4 — 回归 + 收尾
+
+- pnpm 全仓 test + lint(biome);dist 不提交。
+- progress.md 逐步更新(flywheel-comm progress);docs(exploration/research/plan R2 节)与代码同 PR。
+- push → PR #458 自动更新;等 CI 绿;stage set pr_created(Bridge 触发 Codex code review)→ review 过后 approve gate --no-block + complete --route needs_review 报 Lead。**不自 merge、不 ship。**
+
+## 风险与取舍
+
+| 风险 | 处理 |
+|---|---|
+| merge 冲突解错丢 FLY-892 或 R1 语义 | 冲突文件双侧针对性测试先跑,再全量回归 |
+| 显式 fable-1m 等 pin 在三段式内被覆盖 | 记录在案的取舍(Lead 已批):特殊模型 issue 用 no-three-stage label 走单 session |
+| 已 parked 的存量 phase session 模型不变(Sonnet QA 还活着的 pipeline) | 策略对新 spawn 生效;存量 pipeline 由 Lead 决定要不要重跑,不在代码内强杀 |
+| YAML 裸数字 channel id 丢精度→门控静默失效 | ConfigLoader 拒数字项并给出加引号提示(3b) |
+| slot/529 Room 三段式 E2E 被 allowlist 关掉 | research R2.6 记录;slot config 自行加 slot channel(absent=不限) |
+| leadId 可被 dispatch 方伪造 | 三段式非特权(工作流形态而非权限);且 channel 解析仍走 server 配置,伪造只能选到「已配置 lead 的频道」,收益为零风险面不变 |
+
+## 明确不做(scope 纪律)
+
+- 不动 auto-QA(FLY-579 独立 QA·issue 流)的模型逻辑(runner_defaults.model 已由 Annie 定为 Opus 1M,与三段式 phase 表无关)。
+- 不做 per-phase 模型的 config 化(表 = 固定策略,Annie 拍板;要变更再开 issue)。
+- 不迁移存量 parked session 的模型。

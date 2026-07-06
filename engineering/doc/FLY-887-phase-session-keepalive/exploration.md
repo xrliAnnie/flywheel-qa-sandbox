@@ -178,7 +178,7 @@ sequenceDiagram
     B->>D: dispatch + TURN(epoch 1)
     D->>W: 写 exploration/research/plan，commit+push
     D-->>B: complete phase_design_complete（=交还 TURN）
-    Note over D: declare-state park（保活，不退出）
+    Note over D: park（保活，不退出;可执行拼写见 plan M6）
     B->>I: dispatch（同一 worktree 原地接手）+ TURN(epoch 2)
     I->>W: TDD 实现，commit+push，开 PR
     I-->>B: complete needs_review（=交还 TURN）
@@ -205,3 +205,63 @@ sequenceDiagram
 ```
 
 图的不变量：任一时刻 **TURN 只指向一个 phase**（其余 parked、不碰 worktree）；worktree 生命周期 = issue 生命周期（创建一次、ship 后才删）；每一次 TURN 授予/交还都落在**已存在**的 pipeline 信号上，没有新事件类型。
+
+---
+
+# R2（2026-07-05,Lead 指令 34522575)— rebase 收敛 + per-phase model 策略 + channel 门控
+
+> R1(以上全部)已实现、QA 4/4 PASS(见 qa-report.md)。本节是 Lead 在同一 issue 上追加的三件事的探索:
+> ① PR #458 rebase 到最新 main 解冲突;② Annie 定的 per-phase model 策略(Plan→Fable、Implement→Fable、QA→Opus,全程无 Sonnet);③ 三段式只在 #flywheel-engineer(channel 1516209714097291335)生效。
+
+## R2.1 任务①:PR #458 与 main 的分叉现状(代码级事实)
+
+- 分叉点 740c90ee(FLY-869)。branch 领先 45 commits(R1 全部工作+QA 证据),main 领先 13 commits(含 FLY-892 一 issue 一 thread、FLY-871 R2/R3、FLY-879 等)。
+- 真实冲突(git merge-tree 实测)只有 2 个文件:
+  - packages/teamlead/src/StateStore.ts(FLY-892 改 chat_threads 收敛 vs R1 的 phase/park 列)
+  - packages/teamlead/src/bridge/post-ship-finalization.ts(FLY-892 收敛 finalization vs R1 keep-alive 统一收尾)
+- 方案取舍:**merge origin/main 进 branch(1 个 merge commit)**,而非逐个 rebase 45 commits:
+  - rebase 需重放 45 个提交,同一冲突可能反复解 N 次,且 force-push 会使 PR 上 QA 已验证的 commit SHA 链(qa-report 引用 0d51ea3c/19ead1d6/dca5f5a4 等)全部失效;
+  - 仓库 ship 流是 squash-merge(:cool: deploy),merge-from-main 与 rebase 的最终 tree 等价;
+  - Lead 目标原话是「让它 mergeable(现在 CONFLICTING/DIRTY)」,merge 直达目标。
+
+## R2.2 任务②:per-phase model 策略——现状与 bug 链
+
+现状(packages/config/src/three-stage-phases.ts):
+
+| phase | 现状 tier | 现状模型 | 新策略(Annie) |
+|---|---|---|---|
+| design | heavy | Fable (claude-fable-5) | **Fable(不变)** |
+| implement | medium | Opus (claude-opus-4-8) | **Fable** |
+| qa | light | **Sonnet** (claude-sonnet-5) | **Opus** |
+
+模型决定点全量审计(dispatchModel 流向):
+
+1. **入口(runs-route.ts:579)**:dispatchModel = dispatchModel ?? resolvePhaseModel("design") —— **difficulty-sorter 的 pin 赢过 phase 表**。sorter 对「简单」issue pin light(Sonnet)时,design 段直接跑 Sonnet。这是「implement/plan must never run on Sonnet」bug 的入口路径。
+2. **交接 spawn(phase-orchestrator.ts:1144)**:dispatchNextPhase 用 resolvePhaseModel(next) —— 表直出,改表即生效。
+3. **QA-fail 修复 spawn(798 legacy / 941 keep-alive fallback)**:resolvePhaseModel("implement") —— 同上。
+4. **WAKE 路径(keep-alive 主路径)**:被唤醒的 parked session 保持 spawn 时的模型(进程活着,模型不可变)。QA 段今天以 Sonnet spawn → 修复循环里每轮复验都还是 Sonnet —— 这就是「QA 返工卡在 Sonnet」的机制真相:keep-alive 保住了 context,同时也把 spawn 时的弱模型锁到底。**策略必须在 spawn 时就对**。
+5. **retry(retry-dispatcher)**:重放 predecessor 持久化的 dispatch_model(sessions.dispatch_model)。入口修正后,phase 段持久化的即是表值,retry 自动正确。
+
+结论:改动 = (a) DEFAULT_PHASE_TIER 改为 design:heavy / implement:heavy / qa:medium(表内零 Sonnet);(b) 三段式入口丢弃 sorter pin,无条件用 phase 表(design=Fable)。取舍:显式 fable-1m 等 pin 也会被覆盖成 fable —— 三段式的模型主权归 phase 表;需要特殊模型的 issue 用 no-three-stage label 走单 session。
+
+## R2.3 任务③:channel 门控——现状与方案
+
+现状:pipeline.three_stage 是**项目级**开关(.flywheel/config.yaml,只 flywheel 开)。但 flywheel 项目下有 5 个 Lead(cos/eng/product/codex-infra/anna,各有自己的 chatChannel),任何 Lead dispatch 的 fresh main run 都会进三段式。Annie/Lead 要收窄:只有 #flywheel-engineer(=flywheel-eng-lead 的 chatChannel,1516209714097291335)发起的活走三段式。
+
+server-side 可信事实链:dispatch body 带 leadId → validateChatThreadParams 已验证 leadId ∈ project.leads → project.leads[].chatChannel 来自 ~/.flywheel/projects.json(server 配置,非 request body)。所以门控输入 = **由 leadId 解析出的 lead chatChannel**,不新信任任何 request 字段。
+
+方案:新 config key **pipeline.three_stage_channels?: string[]**(ConfigLoader 校验;absent → 不限制=现状,byte-compat):
+
+- allowlist 存在时:dispatch Lead 的 chatChannel ∈ allowlist → 三段式;否则(含 leadId 缺失/查无此 lead)→ OFF,fail-closed 回单 session。
+- flywheel 生产 config.yaml(repo 内文件,本 PR 直接改)加 three_stage_channels: ["1516209714097291335"]。
+- 「别的项目不启用」已由 opt-in 项目级开关保证(只 flywheel 有 three_stage: true)。
+- 副作用注记:529 Room QA slot 若要 E2E 三段式,slot 项目的 config 需把 slot channel 加进 allowlist(或不设该 key)——测试环境配置事项,不阻塞。
+
+## R2.4 执行路径(待 Lead gate 确认)
+
+本 session 是三段式 design phase(dispatch 模板要求 design-only、complete phase_design_complete),但 Lead 指令 34522575 明确「接着做这三件 → 一个 PR → 报我」。两条路径:
+
+- A(Lead 指令直读):本 session 做完 design docs + 全部实现 + 测试 → push 到 PR #458 → approve gate 报 Lead。
+- B(严格三段式):本 session 只出 docs → phase_design_complete → implement phase(新 session)接手实现。注意鸡生蛋:按现表 implement phase 会以 Opus spawn,而策略改动本身就是这单活。
+
+在 brainstorm gate 里让 Lead 拍板。
