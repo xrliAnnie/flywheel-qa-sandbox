@@ -1,9 +1,9 @@
 ---
 issue: FLY-871
-phase: qa
-phaseCursor: 1/1
-updated: 2026-07-05T02:20:00.000Z
-nextStep: qa-result pass → approve gate
+phase: design
+phaseCursor: 0/4
+updated: 2026-07-06T06:01:07.372Z
+nextStep: "brainstorm gate: windowed-TUI re-plan understanding to Lead"
 chunks:
   - id: C1-capture-back
     order: 1
@@ -39,8 +39,8 @@ pointers: {}
 ---
 
 # FLY-871 progress
-**phase**: qa (1/1)
-**next**: qa-result pass → approve gate
+**phase**: design (0/4)
+**next**: brainstorm gate: windowed-TUI re-plan understanding to Lead
 
 ## chunks
 - ✅ C1-capture-back — 
@@ -48,4 +48,4 @@ pointers: {}
 - ✅ C3-exit-codes-candidate-loop — 
 - ✅ sentinel-extension — 
 - ✅ S1-record — 
-- ✅ QA-verify — 代码审阅 + 98 目标测试 + 4814 全量回归(25 个失败均为环境性,与本 PR 无关)+ lint 干净。详见 qa-report.md。PASS。
+- ✅ QA-verify — 
