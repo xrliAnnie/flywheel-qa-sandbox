@@ -52,3 +52,30 @@ export function resolveEffectiveFounderUxConfig(
 			: [...DEFAULT_FOUNDER_UX_EXEMPT_LABELS],
 	};
 }
+
+/**
+ * FLY-900 — fleet-wide kill-switch for the founder-UX implement-before-signoff
+ * gate (FLY-598 / FLY-869). Annie declared the gate unnecessary AND it is
+ * currently mis-configured (no `FLYWHEEL_FOUNDER_USER_ID` → the sign-off write
+ * fail-closes 503, permanently blocking every founder-facing issue's implement).
+ *
+ * This is the SINGLE source of the flag's semantics. It stacks OVER the
+ * per-project `founder_ux_gate.mode` config (governance gate) as a fleet-wide
+ * override, exactly like `three_stage_killswitch` (`FLYWHEEL_THREE_STAGE`) — but
+ * with the OPPOSITE polarity: default OFF (gate disabled), only `"1"` re-enables
+ * the original enforce behavior (opt_in idiom, `resolve.ts:107`). We deliberately
+ * accept only `"1"` (not `"true"`) so the registry's displayed effective value is
+ * byte-identical to the real read — restart writes `=1` in `.env`.
+ *
+ * Consumed at three enforcement points (Blueprint prompt injection / status-route
+ * poll / stage-guard call site) plus `claude-lead.sh`'s rule-file append; every
+ * one short-circuits to "gate disabled" when this returns false. The pure
+ * resolver above is untouched (byte-compatible), so its unit tests never churn.
+ *
+ * Requires a Bridge restart to take effect (env is captured at boot).
+ */
+export function isFounderUxGateEnabled(
+	env: Record<string, string | undefined> = process.env,
+): boolean {
+	return env.FLYWHEEL_FOUNDER_UX_GATE_ENABLED === "1";
+}

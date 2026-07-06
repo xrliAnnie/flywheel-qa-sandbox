@@ -12,6 +12,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_FOUNDER_UX_EXEMPT_LABELS,
+	isFounderUxGateEnabled,
 	resolveEffectiveFounderUxConfig,
 } from "../founder-ux-config.js";
 import { FOUNDER_UX_GATE_DEFAULT_MODE } from "../types.js";
@@ -80,5 +81,46 @@ describe("FLY-869 resolveEffectiveFounderUxConfig", () => {
 		const result = resolveEffectiveFounderUxConfig(raw);
 		result.exempt_labels.push("mutated");
 		expect(raw.exempt_labels).toEqual(["chore"]);
+	});
+});
+
+describe("FLY-900 isFounderUxGateEnabled (fleet-wide kill-switch)", () => {
+	it("default OFF: unset env → false (gate disabled)", () => {
+		expect(isFounderUxGateEnabled({})).toBe(false);
+	});
+
+	it('"1" → true (only value that re-enables the gate)', () => {
+		expect(
+			isFounderUxGateEnabled({ FLYWHEEL_FOUNDER_UX_GATE_ENABLED: "1" }),
+		).toBe(true);
+	});
+
+	it('"0" → false (explicit disable)', () => {
+		expect(
+			isFounderUxGateEnabled({ FLYWHEEL_FOUNDER_UX_GATE_ENABLED: "0" }),
+		).toBe(false);
+	});
+
+	it.each(["true", "TRUE", "yes", "on", "", " 1", "1 ", "enabled"])(
+		'non-"1" value %j → false (opt_in idiom is strict, matches resolve.ts)',
+		(raw) => {
+			expect(
+				isFounderUxGateEnabled({ FLYWHEEL_FOUNDER_UX_GATE_ENABLED: raw }),
+			).toBe(false);
+		},
+	);
+
+	it("reads process.env by default when no env argument is given", () => {
+		const prev = process.env.FLYWHEEL_FOUNDER_UX_GATE_ENABLED;
+		try {
+			process.env.FLYWHEEL_FOUNDER_UX_GATE_ENABLED = "1";
+			expect(isFounderUxGateEnabled()).toBe(true);
+			delete process.env.FLYWHEEL_FOUNDER_UX_GATE_ENABLED;
+			expect(isFounderUxGateEnabled()).toBe(false);
+		} finally {
+			if (prev === undefined)
+				delete process.env.FLYWHEEL_FOUNDER_UX_GATE_ENABLED;
+			else process.env.FLYWHEEL_FOUNDER_UX_GATE_ENABLED = prev;
+		}
 	});
 });

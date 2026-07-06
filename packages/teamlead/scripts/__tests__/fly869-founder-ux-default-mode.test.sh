@@ -9,6 +9,11 @@
 # absent resolves to "enforce" (append), while an EXPLICIT `mode: off` stays
 # the byte-compatible kill-switch (no append).
 #
+# FLY-900 retires the gate fleet-wide: the founder-ux rules are now appended
+# ONLY when FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1. Tests 1-7 keep the switch enabled
+# to still exercise the FLY-869 MODE resolution; Tests 8-10 cover the FLY-900
+# append-gating (default OFF → never appended; =1 → the FLY-869 behavior).
+#
 # This test extracts the EXACT awk command + shell defaulting logic from
 # claude-lead.sh (copy-pasted verbatim into resolve_founder_ux_mode below,
 # mirroring the established convention in test-fly26-rules-split.sh) and
@@ -31,11 +36,18 @@ assert_eq() {
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# Verbatim mirror of the claude-lead.sh block (~line 1793-1819 post-FLY-869).
-# Takes a project dir (containing .flywheel/config.yaml, or nothing) and
-# echoes: "<FOUNDER_UX_MODE>|<APPENDED:0-or-1>"
+# Verbatim mirror of the claude-lead.sh block (post-FLY-869 + FLY-900).
+# Takes a project dir (containing .flywheel/config.yaml, or nothing) and the
+# FLY-900 kill-switch value ($2 = FLYWHEEL_FOUNDER_UX_GATE_ENABLED, "" = unset),
+# and echoes: "<FOUNDER_UX_MODE>|<APPENDED:0-or-1>".
+#
+# FLY-869 controls the MODE resolution (absent → enforce). FLY-900 adds a
+# fleet-wide kill-switch: the founder-ux rules are appended ONLY when the switch
+# is explicitly "1" (default OFF → never appended, regardless of the resolved
+# mode). The MODE resolution itself is unchanged by FLY-900.
 resolve_founder_ux_mode() {
   local PROJECT_DIR="$1"
+  local GATE_ENABLED="${2:-}"
   local FOUNDER_UX_MODE=""
   local _founder_ux_cfg="${PROJECT_DIR}/.flywheel/config.yaml"
   if [ -f "$_founder_ux_cfg" ]; then
@@ -45,12 +57,14 @@ resolve_founder_ux_mode() {
       inblk && $1 == "mode:" { v=$2; gsub(/["'"'"',]/, "", v); print v; exit }
     ' "$_founder_ux_cfg" 2>/dev/null || true)"
   fi
-  # FLY-869 default-resolution (the fix under test):
+  # FLY-869 default-resolution (mode still resolves the same way):
   if [ -z "$FOUNDER_UX_MODE" ]; then
     FOUNDER_UX_MODE="enforce"
   fi
+  # FLY-900 append-gating (the fix under test): append only when the kill-switch
+  # is "1" AND the mode isn't the explicit off kill-switch.
   local appended=0
-  if [ "$FOUNDER_UX_MODE" != "off" ]; then
+  if [ "$GATE_ENABLED" = "1" ] && [ "$FOUNDER_UX_MODE" != "off" ]; then
     appended=1
   fi
   echo "${FOUNDER_UX_MODE}|${appended}"
@@ -62,7 +76,7 @@ echo "=== FLY-869 founder_ux_gate default-mode resolution ==="
 echo "--- Test 1: no .flywheel dir at all -> enforce (appended) ---"
 PROJECT_1="$TMPDIR/proj-1"
 mkdir -p "$PROJECT_1"
-RESULT_1=$(resolve_founder_ux_mode "$PROJECT_1")
+RESULT_1=$(resolve_founder_ux_mode "$PROJECT_1" "1")
 assert_eq "$RESULT_1" "enforce|1" "Test 1: absent .flywheel dir resolves to enforce+appended"
 
 # Test 2: config.yaml exists but has no founder_ux_gate block at all → enforce, appended.
@@ -74,7 +88,7 @@ project: test-project
 linear:
   team_id: "TEAM-1"
 EOF
-RESULT_2=$(resolve_founder_ux_mode "$PROJECT_2")
+RESULT_2=$(resolve_founder_ux_mode "$PROJECT_2" "1")
 assert_eq "$RESULT_2" "enforce|1" "Test 2: config without founder_ux_gate block resolves to enforce+appended"
 
 # Test 3: founder_ux_gate block present but no mode key -> enforce, appended
@@ -90,7 +104,7 @@ founder_ux_gate:
   exempt_labels:
     - chore
 EOF
-RESULT_3=$(resolve_founder_ux_mode "$PROJECT_3")
+RESULT_3=$(resolve_founder_ux_mode "$PROJECT_3" "1")
 assert_eq "$RESULT_3" "enforce|1" "Test 3: founder_ux_gate block without mode key resolves to enforce+appended"
 
 # Test 4: EXPLICIT mode: off -> off, NOT appended (byte-compat kill-switch).
@@ -102,7 +116,7 @@ project: test-project
 founder_ux_gate:
   mode: off
 EOF
-RESULT_4=$(resolve_founder_ux_mode "$PROJECT_4")
+RESULT_4=$(resolve_founder_ux_mode "$PROJECT_4" "1")
 assert_eq "$RESULT_4" "off|0" "Test 4: explicit mode:off resolves to off, not appended"
 
 # Test 5: explicit mode: audit_only -> audit_only, appended (pre-existing behavior, unchanged).
@@ -114,7 +128,7 @@ project: test-project
 founder_ux_gate:
   mode: audit_only
 EOF
-RESULT_5=$(resolve_founder_ux_mode "$PROJECT_5")
+RESULT_5=$(resolve_founder_ux_mode "$PROJECT_5" "1")
 assert_eq "$RESULT_5" "audit_only|1" "Test 5: explicit mode:audit_only resolves to audit_only+appended (unchanged)"
 
 # Test 6: explicit mode: enforce -> enforce, appended (pre-existing behavior, unchanged).
@@ -126,7 +140,7 @@ project: test-project
 founder_ux_gate:
   mode: enforce
 EOF
-RESULT_6=$(resolve_founder_ux_mode "$PROJECT_6")
+RESULT_6=$(resolve_founder_ux_mode "$PROJECT_6" "1")
 assert_eq "$RESULT_6" "enforce|1" "Test 6: explicit mode:enforce resolves to enforce+appended (unchanged)"
 
 # Test 7: another top-level block appearing BEFORE founder_ux_gate in the file
@@ -141,8 +155,26 @@ qa:
 founder_ux_gate:
   mode: off
 EOF
-RESULT_7=$(resolve_founder_ux_mode "$PROJECT_7")
+RESULT_7=$(resolve_founder_ux_mode "$PROJECT_7" "1")
 assert_eq "$RESULT_7" "off|0" "Test 7: preceding unrelated block does not prevent reading the real mode"
+
+echo "=== FLY-900 kill-switch append-gating ==="
+
+# Test 8: DEFAULT (kill-switch unset) + absent config → mode still enforce, but
+# NOT appended (gate retired fleet-wide by default). Reuses proj-1 (no config).
+echo "--- Test 8: kill-switch unset (default) + enforce mode -> NOT appended ---"
+RESULT_8=$(resolve_founder_ux_mode "$PROJECT_1" "")
+assert_eq "$RESULT_8" "enforce|0" "Test 8: default OFF -> enforce mode but rules NOT appended"
+
+# Test 9: explicit kill-switch "0" + enforce mode → NOT appended.
+echo "--- Test 9: kill-switch '0' + enforce mode -> NOT appended ---"
+RESULT_9=$(resolve_founder_ux_mode "$PROJECT_1" "0")
+assert_eq "$RESULT_9" "enforce|0" "Test 9: explicit '0' -> enforce mode but rules NOT appended"
+
+# Test 10: kill-switch "1" + explicit mode:off → still NOT appended (off wins).
+echo "--- Test 10: kill-switch '1' + explicit mode:off -> still NOT appended ---"
+RESULT_10=$(resolve_founder_ux_mode "$PROJECT_4" "1")
+assert_eq "$RESULT_10" "off|0" "Test 10: even with the switch on, mode:off keeps rules off"
 
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="

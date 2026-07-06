@@ -118,6 +118,11 @@ describe("FLY-618 independent QA — founder-ux gate via REAL createBridgeApp", 
 	let realFetch: typeof globalThis.fetch;
 
 	beforeEach(async () => {
+		// FLY-900: the founder-UX gate is retired fleet-wide by default. This whole
+		// suite asserts the ORIGINAL enforce behavior (status/stage-guard react to
+		// the sign-off), so run it with the kill-switch explicitly enabled. The
+		// FLY-900 disabled-path cases below override this per-test.
+		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "1");
 		threadMessages = [];
 		discordUpstream500 = false;
 		discordNonArray = false;
@@ -156,6 +161,7 @@ describe("FLY-618 independent QA — founder-ux gate via REAL createBridgeApp", 
 		if (server) await new Promise<void>((r) => server.close(() => r()));
 		store.close();
 		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
 		vi.restoreAllMocks();
 	});
 
@@ -546,6 +552,47 @@ describe("FLY-618 independent QA — founder-ux gate via REAL createBridgeApp", 
 		store.patchSessionMetadata(EXEC, { founder_ux_gate_mode: "enforce" });
 		await startApp();
 		const r = await postImplement(UX_HASH);
+		expect(r.status).not.toBe(409);
+		expect(store.getSession(EXEC)?.session_stage).toBe("implement");
+	});
+
+	// ──────────── FLY-900 kill-switch OFF (default): whole gate retired ────────────
+	// Prove BOTH enforcement surfaces (the status route B and the stage-guard C)
+	// go fully permissive through the REAL createBridgeApp when the kill-switch is
+	// disabled — this is what unblocks a founder-facing issue's implement.
+
+	it("FLY-900 OFF: status route is approved:true with NO sign-off (Layer A retired)", async () => {
+		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "0"); // override beforeEach "1"
+		store.patchSessionMetadata(EXEC, {
+			founder_facing_ux: 1,
+			founder_ux_gate_mode: "enforce",
+		});
+		await startApp();
+		const s = await req("GET", statusPath(), { headers: bearer(INGEST) });
+		expect(s.status).toBe(200);
+		expect(s.json).toEqual({ approved: true });
+	});
+
+	it("FLY-900 OFF: founder-facing + enforce + implement WITHOUT a sign-off → NOT 409 (Layer B retired)", async () => {
+		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "0");
+		store.patchSessionMetadata(EXEC, {
+			founder_facing_ux: 1,
+			founder_ux_gate_mode: "enforce",
+		});
+		await startApp();
+		const r = await postImplement(UX_HASH);
+		expect(r.status).not.toBe(409);
+		expect(store.getSession(EXEC)?.session_stage).toBe("implement");
+	});
+
+	it("FLY-900 OFF: founder-facing + enforce + implement WITHOUT ux_hash → NOT 409 (missing-brief fail-close also retired)", async () => {
+		vi.stubEnv("FLYWHEEL_FOUNDER_UX_GATE_ENABLED", "0");
+		store.patchSessionMetadata(EXEC, {
+			founder_facing_ux: 1,
+			founder_ux_gate_mode: "enforce",
+		});
+		await startApp();
+		const r = await postImplement(undefined);
 		expect(r.status).not.toBe(409);
 		expect(store.getSession(EXEC)?.session_stage).toBe("implement");
 	});

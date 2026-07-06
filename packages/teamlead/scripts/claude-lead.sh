@@ -1955,7 +1955,12 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "
   if [ -z "$FOUNDER_UX_MODE" ]; then
     FOUNDER_UX_MODE="enforce"
   fi
-  if [ "$FOUNDER_UX_MODE" != "off" ]; then
+  # FLY-900: fleet-wide kill-switch — the founder-UX signoff gate is retired by
+  # default. Only append the founder-ux rules when the switch is explicitly
+  # re-enabled (FLYWHEEL_FOUNDER_UX_GATE_ENABLED=1), matching the TS helper
+  # isFounderUxGateEnabled (=== "1"). Disabled → the Lead is not handed the
+  # founder-ux rules at all.
+  if [ "${FLYWHEEL_FOUNDER_UX_GATE_ENABLED:-}" = "1" ] && [ "$FOUNDER_UX_MODE" != "off" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_UX_RULES")
     log "Appending base founder-ux rules (founder_ux_gate.mode=${FOUNDER_UX_MODE}): ${BASE_FOUNDER_UX_RULES}"
   fi
