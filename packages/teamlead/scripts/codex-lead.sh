@@ -91,6 +91,26 @@ export FLYWHEEL_CODEX_LEAD_STATE_DIR="$STATE_DIR"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# ── FLY-898: fleet-wide core-room mention gate signal (non-CoS Codex lead) ────
+# A Codex lead that subscribes to a core room (FLYWHEEL_LEAD_CORE_CHANNEL_ID set)
+# AND is a NON-CoS lead in a project that HAS a CoS must id-only-gate that core
+# room (resolveCoreRoomGate). We compute the decision from the SAME projects.json
+# the Claude side uses and export FLYWHEEL_LEAD_CORE_MENTION_GATED=1 so the
+# runtime turns the gate on (both headless + TUI). CoS / core-less / core-no-CoS
+# → not set → byte-compat (core always handled). Never overrides an explicit env
+# value; best-effort (a failure leaves the gate off, never aborts the launch).
+if [ -z "${FLYWHEEL_LEAD_CORE_MENTION_GATED:-}" ] && [ -n "${FLYWHEEL_LEAD_CORE_CHANNEL_ID:-}" ]; then
+  _cg_cli="${SCRIPT_DIR}/../dist/core-room-gate-cli.js"
+  if [ -f "$_cg_cli" ] && command -v jq >/dev/null 2>&1; then
+    _cg_gate="$(node "$_cg_cli" --lead-id "$LEAD_ID" --project "$PROJECT_NAME" 2>/dev/null \
+      | jq -r '.gateNonCoS // false' 2>/dev/null || echo false)"
+    if [ "$_cg_gate" = "true" ]; then
+      export FLYWHEEL_LEAD_CORE_MENTION_GATED=1
+      log "FLY-898: core-room mention gate ON for ${LEAD_ID} (non-CoS in a core-with-CoS project)"
+    fi
+  fi
+fi
+
 # ── FLY-350 H-2: full-access governance bundle (= Claude-equal red line) ──────
 # A full-access Codex Lead must load the SAME founder-only-authority contract +
 # role rules as the corresponding Claude Lead. The ordered base bundle comes from

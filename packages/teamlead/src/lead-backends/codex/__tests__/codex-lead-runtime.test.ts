@@ -28,6 +28,7 @@ import {
 	pathsOverlap,
 	readBaseInstructions,
 	readThreadId,
+	resolveCoreStrictChannelIds,
 	resolveFullAccessProjectRoot,
 	resolveLeadWorkspace,
 	writeThreadId,
@@ -1588,5 +1589,86 @@ describe("FLY-245 F-b: McpInventoryWatcher (release ④ runtime half)", () => {
 			status: "ready",
 		});
 		expect(w.observedTools()).toEqual([]);
+	});
+});
+
+// ─── FLY-898: core-room mention gate ────────────────────────────────────────
+describe("FLY-898 core-room mention gate (Codex)", () => {
+	it("parse: byte-compat — coreMentionGated false by default", () => {
+		expect(parseCodexLeadRuntimeConfig(fullEnv()).coreMentionGated).toBe(false);
+	});
+
+	it("parse: FLYWHEEL_LEAD_CORE_MENTION_GATED=1 → coreMentionGated true", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({
+				FLYWHEEL_LEAD_CORE_CHANNEL_ID: "chan-core",
+				FLYWHEEL_LEAD_CORE_MENTION_GATED: "1",
+			}),
+		);
+		expect(c.coreMentionGated).toBe(true);
+	});
+
+	it("resolveCoreStrictChannelIds: ON + core subscribed → [core]", () => {
+		expect(
+			resolveCoreStrictChannelIds({
+				coreMentionGated: true,
+				coreChannelId: "chan-core",
+				channelIds: ["chan-chat", "chan-core"],
+			}),
+		).toEqual(["chan-core"]);
+	});
+
+	it("resolveCoreStrictChannelIds: OFF → [] (byte-compat)", () => {
+		expect(
+			resolveCoreStrictChannelIds({
+				coreMentionGated: false,
+				coreChannelId: "chan-core",
+				channelIds: ["chan-chat", "chan-core"],
+			}),
+		).toEqual([]);
+	});
+
+	it("resolveCoreStrictChannelIds: ON but no coreChannelId → [] (nothing to gate)", () => {
+		expect(
+			resolveCoreStrictChannelIds({
+				coreMentionGated: true,
+				coreChannelId: undefined,
+				channelIds: ["chan-chat"],
+			}),
+		).toEqual([]);
+	});
+
+	it("resolveCoreStrictChannelIds: ON but core NOT in subscribed channels → [] (guardrail #1)", () => {
+		expect(
+			resolveCoreStrictChannelIds({
+				coreMentionGated: true,
+				coreChannelId: "chan-core",
+				channelIds: ["chan-chat"], // core not subscribed
+			}),
+		).toEqual([]);
+	});
+
+	it("dryRunReport: 'core mention gate: on' ONLY when gate is effective", () => {
+		const on = parseCodexLeadRuntimeConfig(
+			fullEnv({
+				FLYWHEEL_LEAD_CORE_CHANNEL_ID: "chan-core",
+				FLYWHEEL_LEAD_CORE_MENTION_GATED: "1",
+			}),
+		);
+		expect(dryRunReport(on).join("\n")).toMatch(/core mention gate\s*: on/);
+
+		// gated flag set but no core channel subscribed → off (guardrail #1)
+		const noCore = parseCodexLeadRuntimeConfig(
+			fullEnv({ FLYWHEEL_LEAD_CORE_MENTION_GATED: "1" }),
+		);
+		expect(dryRunReport(noCore).join("\n")).toMatch(
+			/core mention gate\s*: off/,
+		);
+
+		// default (no env) → off
+		const off = parseCodexLeadRuntimeConfig(
+			fullEnv({ FLYWHEEL_LEAD_CORE_CHANNEL_ID: "chan-core" }),
+		);
+		expect(dryRunReport(off).join("\n")).toMatch(/core mention gate\s*: off/);
 	});
 });

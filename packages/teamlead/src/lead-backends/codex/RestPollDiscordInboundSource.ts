@@ -34,6 +34,11 @@ interface RawDiscordMessage {
 	mentions?: Array<{ id?: string }>;
 	/** FLY-314 fix: set on a Discord REPLY → the message this one replies to. */
 	message_reference?: { message_id?: string };
+	/** FLY-898: Discord includes the FULL referenced message object on a reply (by
+	 * default). Its author id lets the gate recognize a reply to THIS bot's own
+	 * message as an explicit address (reply-to-self). Absent when the referenced
+	 * message was deleted / not fetched → reply-to-self simply won't trigger. */
+	referenced_message?: { author?: { id?: string } };
 }
 
 export interface RestPollSourceOptions {
@@ -336,6 +341,8 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 					.filter((id): id is string => Boolean(id)),
 				// FLY-314 fix: reply target → follow-up routing (into referenced thread).
 				referencedMessageId: m.message_reference?.message_id,
+				// FLY-898: author of the replied-to message → reply-to-self address signal.
+				referencedAuthorId: m.referenced_message?.author?.id,
 			});
 		} catch (err) {
 			this.logger.warn("inbound handler threw (will retry)", {

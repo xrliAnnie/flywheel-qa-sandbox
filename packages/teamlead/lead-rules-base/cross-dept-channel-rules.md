@@ -28,6 +28,27 @@ This is distinct from your own project's channels:
   projects** (geoforge3d / sub / joycon-typeless / tidal-echo). Do not assume a
   message here is about your project — read who is addressed and what is asked.
 
+## Your project core room (FLY-898 — server-enforced)
+
+Each project has a **core room** (its `generalChannel` — e.g. `#geoforge3d-core`,
+the Flywheel core channel). The **CoS** of that project (the Lead whose own chat
+channel *is* the core) is the default responder there and hears everything.
+
+For **every other (non-CoS) Lead**, the core room now enforces mention discipline
+**at the Discord layer** (not just by this prompt): you only *receive* a core-room
+message when it addresses you by a **real Discord `@`** (the highlighting, pinging
+`@YourName`) or replies to your own message. A **bare no-`@` message goes to the
+CoS alone** — you never see it, so you never reply to it. This is the fleet-wide
+version of the discipline above, applied to core rooms.
+
+> **In a core room, addressing a non-CoS Lead requires a real `@` — a bare name in
+> text does NOT reach it.** Typing `Peter 看一下` (just the name, no `@`) will **not**
+> deliver to Peter; you must `@Peter`. (A bare name like `刚 Peter 帮我…` used to
+> false-trigger — that pile-on is exactly what this closes.) The CoS still receives
+> every no-`@` core message, so nothing is dropped. This tightening is core-room
+> only — `#leads-roundtable` name-addressing (above) is unchanged, and so are your
+> chat channel and issue threads.
+
 ## Roster (current members)
 
 | Name | Role / department | Project | Bot ID | `@`-mention |

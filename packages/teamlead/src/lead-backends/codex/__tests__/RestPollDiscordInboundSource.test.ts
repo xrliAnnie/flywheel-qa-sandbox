@@ -390,3 +390,130 @@ describe("RestPollDiscordInboundSource — lifecycle", () => {
 		expect(cancelled).toBe(true);
 	});
 });
+
+describe("RestPollDiscordInboundSource — FLY-898 referencedAuthorId mapping", () => {
+	/** Fake Discord serving RAW messages that carry the extra reply fields. */
+	function fakeRaw(_channelId: string, initial: unknown[]) {
+		const log = [...initial];
+		const fetchImpl = (async (url: string) => {
+			const u = new URL(url);
+			const after = u.searchParams.get("after") ?? undefined;
+			let slice = log as Array<{ id: string }>;
+			if (after) {
+				const idx = slice.findIndex((m) => m.id === after);
+				slice = idx >= 0 ? slice.slice(idx + 1) : slice;
+			}
+			return {
+				ok: true,
+				status: 200,
+				json: async () => [...slice].reverse(),
+			} as unknown as Response;
+		}) as unknown as typeof fetch;
+		return { fetchImpl, log };
+	}
+
+	it("maps referenced_message.author.id → referencedAuthorId (reply-to-self signal)", async () => {
+		const { fetchImpl, log } = fakeRaw("c1", [
+			{
+				id: "1",
+				channel_id: "c1",
+				content: "base",
+				author: { id: "a", bot: false },
+			},
+		]);
+		const got: DiscordInboundMessage[] = [];
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: ["c1"],
+			fetchImpl,
+			setTimer: () => ({ cancel: () => {} }),
+			logger: silent,
+		});
+		src.onMessage((m) => {
+			got.push(m);
+			return true;
+		});
+		await src.start(); // baseline = 1
+		log.push({
+			id: "2",
+			channel_id: "c1",
+			content: "thanks",
+			author: { id: "annie", bot: false },
+			mentions: [{ id: "bot-9" }],
+			message_reference: { message_id: "1" },
+			referenced_message: { id: "1", author: { id: "bot-9" } },
+		});
+		await src.pollOnce();
+		expect(got).toHaveLength(1);
+		expect(got[0].referencedAuthorId).toBe("bot-9");
+		expect(got[0].referencedMessageId).toBe("1");
+		expect(got[0].mentions).toEqual(["bot-9"]);
+	});
+
+	it("no referenced_message → referencedAuthorId undefined (byte-compat)", async () => {
+		const { fetchImpl, log } = fakeRaw("c1", [
+			{
+				id: "1",
+				channel_id: "c1",
+				content: "base",
+				author: { id: "a", bot: false },
+			},
+		]);
+		const got: DiscordInboundMessage[] = [];
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: ["c1"],
+			fetchImpl,
+			setTimer: () => ({ cancel: () => {} }),
+			logger: silent,
+		});
+		src.onMessage((m) => {
+			got.push(m);
+			return true;
+		});
+		await src.start();
+		log.push({
+			id: "2",
+			channel_id: "c1",
+			content: "hi",
+			author: { id: "annie", bot: false },
+		});
+		await src.pollOnce();
+		expect(got[0].referencedAuthorId).toBeUndefined();
+	});
+
+	it("reply payload missing referenced_message.author → referencedAuthorId undefined (fail-safe)", async () => {
+		const { fetchImpl, log } = fakeRaw("c1", [
+			{
+				id: "1",
+				channel_id: "c1",
+				content: "base",
+				author: { id: "a", bot: false },
+			},
+		]);
+		const got: DiscordInboundMessage[] = [];
+		const src = new RestPollDiscordInboundSource({
+			botToken: "tok",
+			channelIds: ["c1"],
+			fetchImpl,
+			setTimer: () => ({ cancel: () => {} }),
+			logger: silent,
+		});
+		src.onMessage((m) => {
+			got.push(m);
+			return true;
+		});
+		await src.start();
+		log.push({
+			id: "2",
+			channel_id: "c1",
+			content: "re",
+			author: { id: "annie", bot: false },
+			message_reference: { message_id: "1" },
+			// referenced_message absent (deleted / no permission)
+		});
+		await src.pollOnce();
+		expect(got[0].referencedAuthorId).toBeUndefined();
+		expect(got[0].referencedMessageId).toBe("1");
+	});
+});

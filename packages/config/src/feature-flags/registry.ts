@@ -1107,6 +1107,27 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "lead_core_mention_gated",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_LEAD_CORE_MENTION_GATED",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"core-room 无-@ 消息只让 CoS 回、非-CoS lead 需被点名才回（FLY-898，launcher 从 projects.json 计算）",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
+				"codex-lead-runtime",
+				"mixed",
+				"env-param",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "codex_lead_read_deny",
 		category: "governance_gate",
 		source: "env",

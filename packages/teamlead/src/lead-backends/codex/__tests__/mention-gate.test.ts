@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { DiscordInboundMessage } from "../CodexDiscordGateway.js";
-import { buildMentionGate, isMentioned } from "../mention-gate.js";
+import {
+	buildMentionGate,
+	isIdMentioned,
+	isMentioned,
+} from "../mention-gate.js";
 
 const BOT = "1499895683287748679"; // this Lead's bot user id
 
@@ -104,5 +108,106 @@ describe("isMentioned — invalid regex is skipped, never throws", () => {
 	it("isMentioned is directly callable with compiled-from-empty patterns", () => {
 		expect(isMentioned(m({ content: `<@${BOT}>` }), BOT, [])).toBe(true);
 		expect(isMentioned(m({ content: "plain" }), BOT, [])).toBe(false);
+	});
+});
+
+// ─── FLY-898: core-strict (id-only) channels ────────────────────────────────
+describe("buildMentionGate — coreStrictChannelIds (FLY-898 id-only core)", () => {
+	const gate = buildMentionGate({
+		botUserId: BOT,
+		sharedChannelIds: ["shared-1"], // roundtable — name-aware
+		coreStrictChannelIds: ["core-1"], // core — id-only
+		mentionPatterns: ["\\bPeter\\b"],
+	});
+
+	it("core: real <@id> mention → handled", () => {
+		expect(gate(m({ channelId: "core-1", content: `hi <@${BOT}>` }))).toBe(
+			true,
+		);
+	});
+
+	it("core: Discord mentions array contains bot → handled", () => {
+		expect(
+			gate(m({ channelId: "core-1", content: "no token", mentions: [BOT] })),
+		).toBe(true);
+	});
+
+	it("core: BARE NAME in text (no @) → DROPPED (id-only, not name-matched)", () => {
+		// The exact FLY-152 pile-on bug: "刚 Peter 帮我" must NOT trigger Peter.
+		expect(
+			gate(m({ channelId: "core-1", content: "刚 Peter 帮我搞了 X" })),
+		).toBe(false);
+		expect(gate(m({ channelId: "core-1", content: "Peter 看一下" }))).toBe(
+			false,
+		);
+	});
+
+	it("core: no-@ generic message → DROPPED (only CoS handles those)", () => {
+		expect(gate(m({ channelId: "core-1", content: "status?" }))).toBe(false);
+	});
+
+	it("core: reply to THIS bot's own message → handled (reply-to-self)", () => {
+		expect(
+			gate(
+				m({
+					channelId: "core-1",
+					content: "thanks",
+					referencedAuthorId: BOT,
+				}),
+			),
+		).toBe(true);
+	});
+
+	it("core: reply to SOMEONE ELSE's message → DROPPED", () => {
+		expect(
+			gate(
+				m({
+					channelId: "core-1",
+					content: "thanks",
+					referencedAuthorId: "someone-else",
+				}),
+			),
+		).toBe(false); // reply to another author is not "addressing this bot"
+	});
+
+	it("roundtable (shared) still name-addressable → NOT regressed", () => {
+		// Same gate: a bare name in the ROUNDTABLE still triggers (byte-compat).
+		expect(gate(m({ channelId: "shared-1", content: "Peter around?" }))).toBe(
+			true,
+		);
+	});
+
+	it("chat/core-unrelated channel: always handled (byte-compat)", () => {
+		expect(gate(m({ channelId: "chat-1", content: "anything" }))).toBe(true);
+	});
+
+	it("empty coreStrictChannelIds (default) → byte-compat: no core gating", () => {
+		const g2 = buildMentionGate({
+			botUserId: BOT,
+			sharedChannelIds: ["shared-1"],
+		});
+		// a channel not in shared and not in coreStrict is always handled
+		expect(g2(m({ channelId: "core-1", content: "status?" }))).toBe(true);
+	});
+});
+
+describe("isIdMentioned (FLY-898) — @ + reply-to-self only, never name text", () => {
+	it("exact <@id> → true", () => {
+		expect(isIdMentioned(m({ content: `<@${BOT}>` }), BOT)).toBe(true);
+	});
+	it("mentions array → true", () => {
+		expect(isIdMentioned(m({ content: "x", mentions: [BOT] }), BOT)).toBe(true);
+	});
+	it("reply-to-self (referencedAuthorId === bot) → true", () => {
+		expect(isIdMentioned(m({ referencedAuthorId: BOT }), BOT)).toBe(true);
+	});
+	it("reply to another author → false", () => {
+		expect(isIdMentioned(m({ referencedAuthorId: "other" }), BOT)).toBe(false);
+	});
+	it("bare name text (even non-bot author) → false", () => {
+		expect(isIdMentioned(m({ content: "Peter hi" }), BOT)).toBe(false);
+	});
+	it("missing referencedAuthorId → reply-to-self does not trigger", () => {
+		expect(isIdMentioned(m({ content: "plain" }), BOT)).toBe(false);
 	});
 });
