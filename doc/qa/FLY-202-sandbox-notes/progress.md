@@ -1,13 +1,14 @@
 ---
 issue: FLY-202
-phase: implement
-phaseCursor: 5/5
-updated: 2026-07-06T00:51:00.626Z
-nextStep: "await review gate on PR #49"
+phase: qa
+phaseCursor: 1/2
+updated: 2026-07-06T00:58:53.406Z
+nextStep: "E2E fix-loop test: introduce deliberate defect, report FAIL, await
+  re-test wake"
 chunks: []
 pointers: {}
 ---
 
 # FLY-202 progress
-**phase**: implement (5/5)
-**next**: await review gate on PR #49
+**phase**: qa (1/2)
+**next**: E2E fix-loop test: introduce deliberate defect, report FAIL, await re-test wake
