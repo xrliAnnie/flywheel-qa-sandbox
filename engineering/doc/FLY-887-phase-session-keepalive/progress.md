@@ -2,9 +2,9 @@
 issue: FLY-887
 phase: design
 phaseCursor: 1/2
-updated: 2026-07-06T07:56:59.444Z
-nextStep: R2 codex design review round 1 in flight (bi3n42u5d); then merge main
-  + model policy + channel gating
+updated: 2026-07-06T08:37:39.081Z
+nextStep: R2 codex design review re-run (resume; Path A re-confirmed at gate);
+  then implement merge-main + model policy + channel gating in THIS session
 chunks:
   - id: reconcile-replay-fix-verify
     order: 1
@@ -31,7 +31,7 @@ pointers: {}
 
 # FLY-887 progress
 **phase**: design (1/2)
-**next**: R2 codex design review round 1 in flight (bi3n42u5d); then merge main + model policy + channel gating
+**next**: R2 codex design review re-run (resume; Path A re-confirmed at gate); then implement merge-main + model policy + channel gating in THIS session
 
 ## chunks
 - ✅ reconcile-replay-fix-verify — 
