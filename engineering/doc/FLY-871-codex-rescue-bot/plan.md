@@ -199,3 +199,92 @@ Lead 附加硬要求:「active 账号绝不从 pool 侧 refresh」= 测试断言
 - [ ] R3:C8 runner auth scan+fixture(S3)/ C9 playbook+carve-out 文字+server-side 校验+测试
 - [ ] 独立真机 QA §8 全 11 项 → 各段 PR hold 等 batch,不 self-ship
 - [ ] 归档:本 doc 三件套随最终 PR git mv 到 archive(若分段 ship,随 R3 段)
+
+---
+
+## 12. Re-plan:windowed-TUI 显示(2026-07-05 回炉,task-115;基于 research R-10)
+
+> **背景与边界**:FLY-871 R1(PR #448)+ R2/R3(PR #451)已 merge。部署尝试卡在「Codex TUI
+> Lead 怎么真正显示成 cmux 可见 pane」;Annie 拍板 CONTINUE not redo。本节 = 只针对这个
+> crux gap 的增量 plan。**保留全部已完成工作**(CODEX_HOME business auth、wrapper、config
+> dry-run、roundtable env 污染修复);**不改** tui-window.ts 的开窗机制本身(R-10.1 审计:
+> 机制健全);**不碰 Mufasa**(growth = Cass 域,归 task-114;Tadashi 拍定:机制真机证明
+> 用 InfraBot 自己的 bring-up,想拿 Mufasa 作参照须先报 Lead 协调);**不动**
+> FLYWHEEL_ACCOUNT_SELF_HEAL(维持 OFF 直到 Annie 拍板 enable,§9 原决策不变)。
+
+### 12.1 根因重述(→ 三个交付对应三个薄弱点)
+
+R-10 取证:pane 自动化代码已存在且健全;「坏了」= ① Mufasa(唯一 windowed 参照物)Jun 29
+被 bootout 后没人 bootstrap 回来、无巡检发现;② InfraBot 的 TUI runtime 从未真正跑过
+(plist 未装、QA 明文排除 C6 物料),windowed 显示从未被真机证明;③ ensureTuiWindow
+fail-open + 零告警接线 → 「静默无 pane」不可见。前任「pane 没自动化」结论已被代码取证驳回。
+
+### 12.2 交付物(implement 阶段;W1/W2 可先行,W4 founder-gated)
+
+**W1 — `verify-windowed-lead.sh`(bring-up 逐层证据门,只读探针)**
+`packages/teamlead/scripts/verify-windowed-lead.sh <project> <leadId> [--label <launchd-label>] [--codex-home <dir>]`,逐层校验、每层独立 PASS/FAIL、非零退出码指明第一个失败层:
+1. launchd job loaded 且 running(`launchctl print gui/$UID/<label>`);
+2. TUI runtime node 进程活(按 launcher 路径 pgrep);
+3. daemon socket 存在:`<CODEX_HOME>/app-server-control/app-server-control.sock`;
+4. tmux 窗活:`tmux display-message -p -t '=flywheel:=<project>-<leadId>' '#{window_name} #{pane_dead}'` 回显 `<name> 0`(identity-echo,同 isTuiWindowAlive 语义,bash 复刻不 import);
+5. pane 真跑 codex:`#{pane_current_command}` 匹配 codex(排除 zsh/bash 死壳);
+6. runtime log 里近 N 分钟有 `tui-window: real TUI up` 或 liveness 健康(launchd log 路径可推导)。
+   退出码:0 全绿 / 10+layer 序号。**只读**,不 bootstrap、不开窗、不杀进程。
+   测试:bats/shell 测试 mock `launchctl`/`tmux`/文件系统(同 test-lead-alert-dedup.sh 模式);每层「缺该层 → 恰在该层 FAIL」+ 全绿 fixture。
+
+**W2 — 「静默无 pane」告警守卫(tui runtime,episode-latch,有界)**
+- 位置:`codex-lead-tui-runtime.ts` 的 liveness 循环(20s cadence,TUI_LIVENESS_INTERVAL_MS)。
+  连续 K 次(默认 K=9,≈3 分钟)ensure/probe 都失败(窗建不起来或建了即死)→ shell out
+  `scripts/lead-alert.sh --lead <leadId> --project <project> --kind tui_window_lost
+  --severity warning --title ... --body ...`(FLY-83 通道:Bridge-down 也能发,claims.db
+  跨进程去重)。选 lead-alert.sh 而非 bot 自己的 Discord 出站:告警通道必须独立于「可能
+  正在坏」的那条链。
+- **episode-latch**(FLY-220 教训):进程内每个失败 episode 只发一次;窗恢复(probe 转绿)
+  即清 latch,再次进入失败态 = 新 episode 可再发。signature = `<project>|<leadId>|
+  tui_window_lost|<episode 首次失败日 YYYYMMDD>`,claims.db 兜跨重启重复。
+- `lead-alert.sh` 的 kind 枚举加 `tui_window_lost`(纯 shell 校验表;Bridge 侧 claims 表
+  kind 只是 eventId 的哈希成分,无 schema 变更 —— implement 期核实 Bridge 不 enum 校验,
+  若校验则同步加)。
+- **byte-compat**:守卫只存在于 TUI runtime(生产今天没有任何 TUI runtime 在跑);
+  `FLYWHEEL_TUI_WINDOW_ALERT=0` 旁路(默认 on);fail-open 语义不变 —— Lead 服务从不因
+  开窗失败中断,守卫只把不可见变可见。
+- 测试:注入 fake exec 让 ensure 连续失败 → 恰好 1 次 alert 调用;恢复→再失败 → 第 2 次;
+  K-1 次失败 + 1 次成功 → 0 次;env=0 → 0 次;alert 脚本本身失败不影响 runtime(捕获+log)。
+
+**W3 — C6 runbook 增补(bring-up 协议 + bootout 恢复纪律)**
+- §5 装 plist 步后插「逐层验证」:每层 = W1 脚本对应层 + 期望输出;最后加 cmux 目视
+  (Annie 或截图)确认 tab 出现 —— 消灭「装了但没人证明看得见」。
+- 新增「post-bootout/reboot 恢复」小节:bootout 不跨 login 持久但也不会自己回来;恢复 =
+  `launchctl bootstrap gui/$UID <plist>` + W1 全绿;明示 RunAtLoad 只在 login 时生效。
+  (Mufasa 的具体恢复动作归 task-114 执行,本 runbook 只落通用纪律。)
+- R-10.4-4 待复证项写进 enable 序:bring-up 时若窗先于 daemon sock 起导致 dead-pane
+  循环,liveness probe 20s 重建应自愈;若观察到持续循环 → 按 W2 告警路径上报,不硬等。
+
+**W4 — InfraBot 真机 bring-up(founder-gated,enable window 内)**
+装 plist(模板→ LaunchAgents → bootstrap)→ W1 逐层全绿 → cmux 目视/截图 → LeadWatchdog
+30s 扫描确认覆盖(§C7b 契约落地证明)。**硬门:Annie verified OK 才执行(FLY-869 纪律);
+在此之前不装生产 plist、不 bootstrap 任何生产 job。**W4 同时是 W1/W2/W3 的真机 QA。
+
+### 12.3 非目标(明确不做)
+
+- 不重写/不重构 tui-window.ts、codex-lead-tui-runtime.ts 的开窗与 liveness 机制;
+- 不做 headless 捷径(FLY-398 硬规则:生产 Codex lead 必须 windowed);
+- 不做「Bridge 侧巡检所有 lead 的 launchd loaded 状态」大盘(有价值但超本 issue 半径,
+  若 Lead 要 → follow-up issue);
+- 不碰 Mufasa 的 plist/进程/state(task-114,Cass 协调);
+- 不动 R1/R2/R3 已 ship 的任何行为(SELF_HEAL/KEEPFRESH 开关状态原样)。
+
+### 12.4 风险
+
+- `codex resume --remote` 在新版 codex 二进制下行为漂移(6 月证明过,环境有升级)→ W4
+  按 W1 逐层门验,第一个失败层即精确定位;不盲装。
+- tui_window_lost 告警误报(tmux 短暂不可达)→ K=9 连续失败(≈3 分钟)+ episode-latch +
+  claims.db 三层有界;最坏 = 每 episode 一条 warning。
+- lead-alert.sh 接口变化 → W2 测试用真脚本 --help/dry 路径断言参数契约(不 mock 掉接口本身)。
+
+### 12.5 交付顺序与 gate
+
+W1+W2+W3 = 一个 PR(代码+runbook,常规 codex code review + CI;不触生产);W4 = enable
+window 内的部署动作 + 真机 QA 证据(无新代码,gate = Annie verified OK,FLY-869)。
+本 §12 落 doc 后走 codex design review → APPROVED → phase_design_complete;plan review
+过后由 Lead relay Annie 拿 W4 的解锁签字。
