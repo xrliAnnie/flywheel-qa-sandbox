@@ -1,9 +1,10 @@
 ---
 issue: FLY-898
 phase: implement
-phaseCursor: 5/9
+phaseCursor: 9/9
 updated: 2026-07-06
-nextStep: core-room-gate-cli.ts + apply-core-room-mention-gate.sh + launcher wiring
+nextStep: full suite + lint → PR → founder ship-gate
+plugin_fork_pr: "xrliAnnie/claude-plugins-official#13 (per-group mentionPatterns)"
 chunks: []
 pointers:
   preflight_source: "check-discord-plugin.sh is ops-side (~/.flywheel/bin/, NOT repo-tracked). No installer source in repo. FLY-898 preflight is SELF-CONTAINED in the repo-tracked helper apply-core-room-mention-gate.sh (greps marketplace server.ts for the per-group marker) → no dependency on modifying the untracked ops script. Optionally the ops check-discord-plugin.sh can be extended too during rollout, but the helper's self-check is authoritative."
