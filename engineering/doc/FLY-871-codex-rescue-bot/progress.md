@@ -1,9 +1,9 @@
 ---
 issue: FLY-871
 phase: design
-phaseCursor: 0/4
-updated: 2026-07-06T06:01:07.372Z
-nextStep: "brainstorm gate: windowed-TUI re-plan understanding to Lead"
+phaseCursor: 2/4
+updated: 2026-07-06T06:40:23.536Z
+nextStep: codex design review on plan.md §12
 chunks:
   - id: C1-capture-back
     order: 1
@@ -39,8 +39,8 @@ pointers: {}
 ---
 
 # FLY-871 progress
-**phase**: design (0/4)
-**next**: brainstorm gate: windowed-TUI re-plan understanding to Lead
+**phase**: design (2/4)
+**next**: codex design review on plan.md §12
 
 ## chunks
 - ✅ C1-capture-back — 
