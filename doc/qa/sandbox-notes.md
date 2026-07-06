@@ -107,4 +107,4 @@ new
 
 ## E2E run log
 
-- 2026-07-05 — FLY-895 slot-2 redo of the FLY-887 keep-alive E2E (Discord narrative)
+- 2026-07-05 — FLY-895 slot-2 redo of the FLY-887 keep-alive E2E (Discord narrative).
