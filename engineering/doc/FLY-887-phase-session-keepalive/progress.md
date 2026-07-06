@@ -1,10 +1,11 @@
 ---
 issue: FLY-887
 phase: implement
-phaseCursor: 1/4
-updated: 2026-07-06T14:13:44.228Z
-nextStep: "Step 2 per-phase model policy (TDD): tier heavy/heavy/medium +
-  ignoreRunnerLabelSelection on all phase dispatch/retry paths"
+phaseCursor: 2/4
+updated: 2026-07-06T14:41:04.105Z
+nextStep: "Step 3 channel gating (TDD): three_stage_channels config key +
+  ConfigLoader validation + policy dispatchChannelId + runs-route wiring +
+  .flywheel/config.yaml"
 chunks:
   - id: reconcile-replay-fix-verify
     order: 1
@@ -30,8 +31,8 @@ pointers: {}
 ---
 
 # FLY-887 progress
-**phase**: implement (1/4)
-**next**: Step 2 per-phase model policy (TDD): tier heavy/heavy/medium + ignoreRunnerLabelSelection on all phase dispatch/retry paths
+**phase**: implement (2/4)
+**next**: Step 3 channel gating (TDD): three_stage_channels config key + ConfigLoader validation + policy dispatchChannelId + runs-route wiring + .flywheel/config.yaml
 
 ## chunks
 - ✅ reconcile-replay-fix-verify — 
