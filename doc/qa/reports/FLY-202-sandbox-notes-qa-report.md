@@ -1,11 +1,13 @@
-# QA · FLY-202 — sandbox-notes fixture (Round 1 PASS / Round 2 FAIL — fix-loop E2E)
+# QA · FLY-202 — sandbox-notes fixture (Round 1 PASS / Round 2 FAIL / Round 3 PASS — fix-loop E2E)
 
 **Issue**: FLY-202 (QA sandbox fixture — slot harness real-Runner E2E task, do not pick up)
 **Gates**: FLY-202 Implement phase — `doc/qa/sandbox-notes.md` deliverable + PR #49
 **PR head (Round 1)**: `2d5e267380a0f06521be86fb5be60f2cbc64b1b4` (branch `project-slot-2-FLY-202`, local HEAD == `origin/project-slot-2-FLY-202` == PR #49 head — verified via `git fetch` + `git rev-parse`)
+**PR head (Round 3, post-fix)**: `ec66fadb91d8ecbc64b6aaf50aeb00d88058a11b`
 **Date**: 2026-07-06
 **Round 1 Verdict**: **PASS** — deliverable matched the design-phase plan exactly; all structural invariants held against the live repo (not a stale snapshot). See "Verification results" below.
-**Round 2 Verdict**: **FAIL (deliberate)** — see "Round 2" section at the end. This round exercises the FLY-887 keep-alive QA fix-loop mechanism end-to-end: a real, tiny, deliberately-introduced defect was committed on top of the Round 1 PASS state, specifically so a re-test wake can be observed fixing it and re-verifying to a fresh PASS.
+**Round 2 Verdict**: **FAIL (deliberate)** — see "Round 2" section. This round exercises the FLY-887 keep-alive QA fix-loop mechanism end-to-end: a real, tiny, deliberately-introduced defect was committed on top of the Round 1 PASS state, specifically so a re-test wake can be observed fixing it and re-verifying to a fresh PASS.
+**Round 3 Verdict**: **PASS** — see "Round 3" section. RE-TEST wake received, Implement phase pushed a one-line fix (commit `ec66fad`), `verify.sh` re-run at the new head reports all 5 checks green again. Fix-loop cycle closed.
 
 ## Scope
 
@@ -148,3 +150,32 @@ the 11 live top-level directories.
 
 **Round 2 verdict**: **FAIL**. Not shipping this head. Reporting via `qa-result --status fail`
 and parking to await the RE-TEST wake once the Implement phase pushes the fix.
+
+## Round 3 — RE-TEST after fix (fix-loop E2E, continued)
+
+Woken by a RE-TEST signal reporting the Implement phase pushed a fix and the worktree was
+already at the new head — no fetch/checkout needed (same directory, shared branch).
+
+1. `flywheel-comm turn --exec-id c6280f4b-f3b6-4778-a251-667e50160eed` → `yours phase=qa epoch=5`
+   before touching anything, per the single-writer protocol.
+2. Confirmed the new head: `git rev-parse HEAD` → `ec66fadb91d8ecbc64b6aaf50aeb00d88058a11b`,
+   matching the wake notification exactly.
+3. Inspected the fix commit (`ec66fad "docs(FLY-202): re-add qa-fly310 dir row — QA fix-loop
+   round 1"`): a single-line diff (`doc/qa/sandbox-notes.md | 1 +`) that re-adds exactly the
+   `qa-fly310/` row removed in Round 2 — no unrelated changes, no scope creep.
+4. Re-ran `./doc/qa/FLY-202-sandbox-notes/verify.sh`:
+
+```
+PASS: 4 sections present (4)
+PASS: table rows == live top-level dir count (11)
+PASS: README summary bullet count in [9,11] (10)
+PASS: fenced ls -R block open+close (2)
+PASS: embedded ls -R snapshot matches live output verbatim
+ALL CHECKS PASSED
+```
+
+All 5 checks green, including the one that failed in Round 2 (table rows now back to 11/11).
+
+**Round 3 verdict**: **PASS**. Fix confirmed correct and minimal. Fix-loop E2E cycle
+(PASS → deliberate FAIL → wake → fix → RE-TEST → PASS) exercised successfully end-to-end.
+Reporting via `qa-result --status pass`.
