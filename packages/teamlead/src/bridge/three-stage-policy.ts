@@ -33,6 +33,16 @@ export interface ThreeStagePolicyInput {
 	issueLabels: string[];
 	/** Env source for the kill-switch (defaults to process.env). */
 	env?: Record<string, string | undefined>;
+	/**
+	 * FLY-887 R2: the dispatching Lead's Discord chatChannel, resolved
+	 * SERVER-SIDE by the caller (leadId → `project.leads[].chatChannel`) —
+	 * NEVER taken from the request body. leadId itself is trusted because
+	 * runs-route validates it against the project's leads (membership check)
+	 * and auto-resolves it server-side when absent, both BEFORE the
+	 * three-stage entry decision. Only consulted when
+	 * `pipeline.three_stage_channels` is defined.
+	 */
+	dispatchChannelId?: string;
 }
 
 export interface ThreeStagePolicyDecision {
@@ -59,6 +69,20 @@ export function resolveThreeStagePolicy(
 	}
 
 	if (input.pipelineConfig?.three_stage === true) {
+		// FLY-887 R2: channel gating. Allowlist undefined → no restriction
+		// (byte-compat). Defined → the dispatching Lead's chatChannel must be in
+		// it; an empty array is an explicit universal OFF; an unresolvable
+		// channel fails closed (can't prove membership → single-session).
+		const allowlist = input.pipelineConfig.three_stage_channels;
+		if (allowlist !== undefined) {
+			const channel = input.dispatchChannelId;
+			if (!channel || !allowlist.includes(channel)) {
+				return {
+					enabled: false,
+					reason: `dispatch channel ${channel ?? "(unresolved)"} not in pipeline.three_stage_channels [${allowlist.join(", ")}]`,
+				};
+			}
+		}
 		return { enabled: true };
 	}
 
@@ -74,6 +98,12 @@ export interface ThreeStageEntryInput {
 	issueLabels: string[];
 	/** Env source for the kill-switch (defaults to process.env). */
 	env?: Record<string, string | undefined>;
+	/**
+	 * FLY-887 R2: the dispatching Lead's chatChannel for the
+	 * `three_stage_channels` gate (see ThreeStagePolicyInput.dispatchChannelId
+	 * for the trust chain). Only consulted when the allowlist is defined.
+	 */
+	dispatchChannelId?: string;
 }
 
 export interface ThreeStageEntryDecision {
@@ -113,6 +143,7 @@ export function resolveThreeStageEntry(
 		pipelineConfig: input.pipelineConfig,
 		issueLabels: input.issueLabels,
 		env: input.env,
+		dispatchChannelId: input.dispatchChannelId,
 	}).enabled;
 	return enabled
 		? {

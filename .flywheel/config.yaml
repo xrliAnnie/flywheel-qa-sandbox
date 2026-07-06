@@ -165,5 +165,13 @@ agents:
 # for the flywheel project ONLY — "我们现在开始用三段式真正干活，这个只需要开在 flywheel".
 # Per-project opt-in knob (ConfigLoader validates boolean; default absent=off).
 # E2E-verified: FLY-824 FINAL PASS + FLY-849 combined-batch PASS (5 rounds, PR #440).
+#
+# FLY-887 R2: three_stage_channels narrows three-stage ENTRY to fresh main
+# dispatches from Leads whose chatChannel is listed (#flywheel-engineer only —
+# cos/product/codex-infra/anna dispatches run single-session). Channel ids MUST
+# be quoted strings (a bare YAML number silently loses snowflake precision;
+# ConfigLoader rejects it). Absent key = no restriction. To E2E three-stage in
+# the 529 Room, add the slot channel here or delete the key.
 pipeline:
   three_stage: true
+  three_stage_channels: ["1516209714097291335"] # #flywheel-engineer

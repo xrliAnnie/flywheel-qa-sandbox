@@ -248,9 +248,24 @@ export interface QaConfig {
 export interface PipelineConfig {
 	/**
 	 * Enable the three-stage internal-phase pipeline (Design=Fable /
-	 * Implement=Opus / QA=Sonnet by default). Optional; absent → OFF.
+	 * Implement=Fable / QA=Opus — FLY-887 R2, Annie's 2026-07-05 table).
+	 * Optional; absent → OFF.
 	 */
 	three_stage?: boolean;
+	/**
+	 * FLY-887 R2: Discord channel allowlist for three-stage ENTRY. A fresh
+	 * `main` dispatch enters three-stage only when the dispatching Lead's
+	 * `chatChannel` is in this list (resolved server-side from `leadId` →
+	 * `project.leads[].chatChannel`, NEVER from the request body).
+	 *
+	 * Absent → no restriction (byte-compatible with pre-gating behavior).
+	 * Empty array → three-stage OFF everywhere (explicit universal opt-out).
+	 * Items MUST be quoted strings — a bare YAML number would silently lose
+	 * precision on 19-digit Discord snowflakes (> Number.MAX_SAFE_INTEGER)
+	 * and the gate would never match; ConfigLoader rejects numeric items with
+	 * a quoting hint.
+	 */
+	three_stage_channels?: string[];
 }
 
 /**

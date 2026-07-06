@@ -551,11 +551,24 @@ export function createRunsRouter(
 			const pipelineConfig = proj
 				? (await loadPipelineConfigByProject([proj])).get(projectName)
 				: undefined;
+			// FLY-887 R2: resolve the dispatching Lead's chatChannel SERVER-SIDE
+			// (leadId → project.leads[].chatChannel — never the request body) for
+			// the `three_stage_channels` gate. leadId is trusted here: the
+			// membership check (:337-349) rejected a leadId not in project.leads,
+			// and the auto-resolve (:400-419) filled it server-side when absent —
+			// both ran before this entry decision. A dispatch-forged leadId can
+			// only select an ALREADY-CONFIGURED lead's channel, so the gate's
+			// risk surface is unchanged (three-stage is a workflow shape, not a
+			// privilege).
+			const dispatchChannelId = leadId
+				? proj?.leads.find((l) => l.agentId === leadId)?.chatChannel
+				: undefined;
 			const entry = resolveThreeStageEntry({
 				requestRole: role,
 				pipelineConfig,
 				issueLabels: normalizedIssueLabels,
 				env: process.env,
+				dispatchChannelId,
 			});
 			if (entry.enteredThreeStage) {
 				// FLY-793 (Codex R1 BLOCKING): the per-role dedup above keyed on the

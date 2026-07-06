@@ -189,3 +189,113 @@ describe("resolveThreeStagePolicy (FLY-793)", () => {
 		expect(d.enabled).toBe(false);
 	});
 });
+
+/**
+ * FLY-887 R2 Step 3 — channel gating: three-stage applies only to fresh main
+ * dispatches whose dispatching Lead's chatChannel ∈ pipeline.three_stage_channels.
+ * Key absent = no restriction (byte-compat); empty array = OFF everywhere.
+ * `dispatchChannelId` is resolved SERVER-SIDE (leadId → project.leads[].chatChannel),
+ * never from the request body.
+ */
+describe("resolveThreeStagePolicy — three_stage_channels gating (FLY-887 R2)", () => {
+	const noEnv: Record<string, string | undefined> = {};
+	const CHAN = "1516209714097291335";
+
+	it("key ABSENT → enabled regardless of channel (byte-compat with pre-gating behavior)", () => {
+		for (const dispatchChannelId of [CHAN, "999", undefined]) {
+			const d = resolveThreeStagePolicy({
+				pipelineConfig: { three_stage: true },
+				issueLabels: [],
+				env: noEnv,
+				dispatchChannelId,
+			});
+			expect(d.enabled).toBe(true);
+		}
+	});
+
+	it("channel IN the allowlist → enabled", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: { three_stage: true, three_stage_channels: [CHAN] },
+			issueLabels: [],
+			env: noEnv,
+			dispatchChannelId: CHAN,
+		});
+		expect(d.enabled).toBe(true);
+	});
+
+	it("channel NOT in the allowlist → disabled with a miss-detail reason", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: { three_stage: true, three_stage_channels: [CHAN] },
+			issueLabels: [],
+			env: noEnv,
+			dispatchChannelId: "111222333",
+		});
+		expect(d.enabled).toBe(false);
+		expect(d.reason).toContain("111222333");
+	});
+
+	it("allowlist defined but dispatchChannelId UNRESOLVABLE → disabled (fail-closed)", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: { three_stage: true, three_stage_channels: [CHAN] },
+			issueLabels: [],
+			env: noEnv,
+			dispatchChannelId: undefined,
+		});
+		expect(d.enabled).toBe(false);
+	});
+
+	it("EMPTY allowlist → disabled everywhere (explicit universal OFF)", () => {
+		const d = resolveThreeStagePolicy({
+			pipelineConfig: { three_stage: true, three_stage_channels: [] },
+			issueLabels: [],
+			env: noEnv,
+			dispatchChannelId: CHAN,
+		});
+		expect(d.enabled).toBe(false);
+	});
+
+	it("kill-switch and no-three-stage label still short-circuit FIRST", () => {
+		expect(
+			resolveThreeStagePolicy({
+				pipelineConfig: { three_stage: true, three_stage_channels: [CHAN] },
+				issueLabels: [],
+				env: { FLYWHEEL_THREE_STAGE: "0" },
+				dispatchChannelId: CHAN,
+			}).enabled,
+		).toBe(false);
+		expect(
+			resolveThreeStagePolicy({
+				pipelineConfig: { three_stage: true, three_stage_channels: [CHAN] },
+				issueLabels: ["no-three-stage"],
+				env: noEnv,
+				dispatchChannelId: CHAN,
+			}).enabled,
+		).toBe(false);
+	});
+
+	it("entry path: an out-of-allowlist channel keeps a fresh main dispatch single-session", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: { three_stage: true, three_stage_channels: [CHAN] },
+			issueLabels: [],
+			env: noEnv,
+			dispatchChannelId: "999",
+		});
+		expect(e.enteredThreeStage).toBe(false);
+		expect(e.role).toBe("main");
+		expect(e.dispatchModel).toBeUndefined();
+	});
+
+	it("entry path: an in-allowlist channel enters three-stage with the design model", () => {
+		const e = resolveThreeStageEntry({
+			requestRole: "main",
+			pipelineConfig: { three_stage: true, three_stage_channels: [CHAN] },
+			issueLabels: [],
+			env: noEnv,
+			dispatchChannelId: CHAN,
+		});
+		expect(e.enteredThreeStage).toBe(true);
+		expect(e.role).toBe("design");
+		expect(e.dispatchModel).toBe("claude-fable-5");
+	});
+});
