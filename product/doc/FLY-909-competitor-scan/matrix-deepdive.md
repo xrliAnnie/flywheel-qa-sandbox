@@ -24,7 +24,12 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 - **设目标 → 一个 CEO 级 Agent 协调多个部门**(research / production / analysis 等)自动干活;**agent 自建部门、自主分工**。
 - **游戏式「小人」可视化**:屏上小人代表 agent 在跑(可暂停);官方也承认这是在「探索聊天打字之外的交互方式」,部分用户嫌分心。
 - 底层能力官宣:**native computer use + durable memory + multi-agent coordination + outcome-driven autonomy**;「coordinates agent departments, ships artifacts, and **closes work with proof**(交付带证据)」。
-- 出身:flowith 的 canvas-first agentic workspace + Agent Neo(10M token context,单会话 1000+ 步)+ Knowledge Garden。
+- **⭐ 架构官宣 = `Brain → Runtime → Departments → Leads → Workers → Proof`** —— 这几乎就是 Flywheel 的 `CoS → Lead → Runner` 组织形状,连最后的「Proof」层都对应我们的验收/证据。**这是 Annie 说「非常像」的字面根据**:不只是理念像,连组织分层的骨架都撞上了。
+- 出身:flowith 的 canvas-first agentic workspace + Agent Neo(10M token context,单会话 1000+ 步)+ Knowledge Garden + FlowithOS(OS 级 agent,能操控浏览器/桌面软件端到端完成任务)。
+
+## 公司背景(体量参照)
+
+flowith,2023 创立,Derek Nee(CEO)+ Wu Yichen 联创。**seed/seed+ 共 ~$9M**(Vertex Ventures 领投 seed,红杉中国种子基金/HSG + LongRiver 共同领投 seed+)。**团队仅 ~18 人**(2026-03)。—— 一个精悍的早期团队 + 大叙事,增长快但还很早期。
 
 ## Onboarding
 
@@ -54,15 +59,19 @@ Issue: FLY-909 (https://linear.app/geoforge3d/issue/FLY-909/竞品分析市面�
 2. **coding 弱**:flowith 评测明确点出「**limited capability for technical work(scripting, coding)**」—— 它的根在 research/content/creative,**不是软件工程**。它的 3 家示例公司也都不是软件产品。
 3. **verification cost**:评论区有人直接质疑「**verification cost(验证成本)会成为 AGI 经济的瓶颈**」——「AI 说它建好了,谁来验、验得起吗?」它虽有「return proof」,但这块是公开的痛点。
 4. **可视化被嫌分心**:游戏小人对一部分严肃用户是负担而非价值。
+5. **⚠️「actually earns」目前无独立验证**:「数万家 0 人公司、真的赚钱」的说法**只见于 flowith 官方口径**,查无独立第三方/reddit 用户实证;仍在 beta。对外定位若对标它,别把它的收益宣称当既成事实。
 
 ---
 
 ## 跟 Flywheel:像谁 / 不一样(这份深挖的重点)
 
-### 像(为什么 Annie 说「非常像」)
+### 像(为什么 Annie 说「非常像」—— 而且是字面的像)
+- **⭐ 组织骨架几乎一样**:Matrix `Brain → Runtime → Departments → Leads → Workers → Proof` vs Flywheel `CoS → Lead → Runner + 验收/证据`。连「Proof」这一层都撞上。这不是理念相似,是**分层结构撞车**。
 - **同一个大形态**:你指挥的**一整个自主 AI 公司** + **分层部门** + agent 自主分工。
 - **同样订阅驱动**:跑 **Codex / Claude Code 订阅 + BYOK** —— ⚠️ 所以「无按 token 计费」**不是我们的独有差异**,它也这么干。
 - **同样打「不用招人就能开始」**的叙事。
+
+> 结论:靠「AI 公司 / 分层组织 / 订阅驱动」**已经区分不开**了。真正的差异必须落到下面三条**领域 + 界面 + 可信度**上,否则我们和 Matrix 在一句话定位上会撞脸。
 
 ### 不一样(差异化,诚实收窄后)
 | 维度 | Matrix | Flywheel |
