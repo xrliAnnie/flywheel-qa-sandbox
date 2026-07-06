@@ -134,6 +134,14 @@ def _extract_c_payload(args: list[str]):
     return None
 
 
+# Transparent wrappers a relaunch can hide behind (Codex code review R1 HIGH:
+# `env node …` / `sudo -E node …` were silent allows). Each is stripped —
+# together with its short flags and leading env assignments — before the
+# first-token judgment. Flags that consume a value argument:
+_WRAPPERS = {"sudo", "env", "nohup"}
+_WRAPPER_ARG_FLAGS = {"-u", "--user", "-g", "--group", "-C", "--chdir", "-S", "--split-string"}
+
+
 def _p3_hit(cmd: str, depth: int) -> bool:
     for seg in SEG_SPLIT_RE.split(cmd):
         seg = seg.strip()
@@ -143,36 +151,41 @@ def _p3_hit(cmd: str, depth: int) -> bool:
             tokens = shlex.split(seg)
         except ValueError:
             tokens = seg.split()
+        # Strip any interleaving of env assignments / `cd <dir>` / transparent
+        # wrappers (sudo/env/nohup + their flags) down to the REAL first token.
         i = 0
-        while i < len(tokens) and ENV_ASSIGN_RE.match(tokens[i]):
-            i += 1
-        if i < len(tokens) and tokens[i] == "cd":
-            i += 2
+        saw_nohup = False
+        while i < len(tokens):
+            t = tokens[i]
+            if ENV_ASSIGN_RE.match(t):
+                i += 1
+                continue
+            if t == "cd":
+                i += 2
+                continue
+            base = os.path.basename(t)
+            if base in _WRAPPERS:
+                saw_nohup = saw_nohup or base == "nohup"
+                i += 1
+                while i < len(tokens) and tokens[i].startswith("-") and tokens[i] != "-":
+                    if tokens[i] in _WRAPPER_ARG_FLAGS and i + 1 < len(tokens):
+                        i += 2
+                    else:
+                        i += 1
+                continue
+            break
         if i >= len(tokens):
             continue
         first = os.path.basename(tokens[i])
-        if first == "sudo":
-            i += 1
-            if i >= len(tokens):
-                continue
-            first = os.path.basename(tokens[i])
-        if first == "nohup":
-            # nohup itself is an executor form (`nohup scripts/run-bridge.ts`),
-            # but it may also front a shell (-c recursion below).
-            j = i + 1
-            nxt = os.path.basename(tokens[j]) if j < len(tokens) else ""
-            if nxt in SHELLS:
-                i, first = j, nxt
-            else:
-                if RUN_BRIDGE_RE.search(seg):
-                    return True
-                continue
         if first in SHELLS:
             payload = _extract_c_payload(tokens[i + 1 :])
             if payload is not None and scan_block(payload, depth + 1):
                 return True
             continue
-        if first in EXECUTORS and RUN_BRIDGE_RE.search(seg):
+        # Executor first token, OR a nohup-fronted direct script (`nohup
+        # scripts/run-bridge.ts &` has no executor token but is still a
+        # bare-handed relaunch) — plus run-bridge in the segment.
+        if (first in EXECUTORS or saw_nohup) and RUN_BRIDGE_RE.search(seg):
             return True
     return False
 

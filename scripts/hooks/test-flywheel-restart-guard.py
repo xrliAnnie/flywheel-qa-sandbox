@@ -135,6 +135,17 @@ MUST_BLOCK = [
     ("node scripts/run-bridge.ts", "P3 node direct"),
     ("npx tsx scripts/run-bridge.ts", "P3 npx tsx direct"),
     ("FLYWHEEL_BRIDGE_PORT=9999 node scripts/run-bridge.ts", "P3 env-prefixed node"),
+    # P3 — wrapper-prefixed executor forms (Codex code review R1 HIGH: env /
+    # sudo wrappers must not silently allow a bare-handed bridge relaunch)
+    ("env node scripts/run-bridge.ts", "P3 env wrapper"),
+    ("/usr/bin/env node scripts/run-bridge.ts", "P3 /usr/bin/env wrapper"),
+    ("sudo -E node scripts/run-bridge.ts", "P3 sudo -E wrapper"),
+    ("sudo FLYWHEEL_BRIDGE_PORT=9999 node scripts/run-bridge.ts",
+     "P3 sudo + env-assign wrapper"),
+    ("sudo -u xiaorongli npx tsx scripts/run-bridge.ts", "P3 sudo -u user wrapper"),
+    ("env -i FLYWHEEL_X=1 nohup npx tsx scripts/run-bridge.ts &",
+     "P3 env -i + nohup stack"),
+    ('sudo bash -c "node scripts/run-bridge.ts"', "P3 sudo bash -c payload"),
     # P3 — shell -c payload recursion (one level), incl. merged flag clusters
     ('bash -c "nohup npx tsx scripts/run-bridge.ts"', "P3 bash -c payload"),
     ("sh -c 'npx tsx scripts/run-bridge.ts'", "P3 sh -c payload"),
@@ -170,6 +181,10 @@ MUST_PASS = [
     ("tmux kill-session -t qa-slot-2", "QA slot tmux kill-session"),
     ("node scripts/qa-fly-529-alert-smoke.mjs", "executor without run-bridge"),
     ("git log --oneline -- scripts/run-bridge.ts", "git read of run-bridge path"),
+    ("sudo cat scripts/run-bridge.ts", "sudo-wrapped read tool"),
+    ("env | grep run-bridge", "bare env piped to grep"),
+    ("env node scripts/qa-tool.mjs", "env-wrapped executor without run-bridge"),
+    ("sudo launchctl print gui/501/com.flywheel.bridge", "sudo read-only launchctl"),
 ]
 
 
