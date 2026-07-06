@@ -1,10 +1,11 @@
-# QA · FLY-202 — sandbox-notes fixture (PASS)
+# QA · FLY-202 — sandbox-notes fixture (Round 1 PASS / Round 2 FAIL — fix-loop E2E)
 
 **Issue**: FLY-202 (QA sandbox fixture — slot harness real-Runner E2E task, do not pick up)
 **Gates**: FLY-202 Implement phase — `doc/qa/sandbox-notes.md` deliverable + PR #49
-**PR head**: `2d5e267380a0f06521be86fb5be60f2cbc64b1b4` (branch `project-slot-2-FLY-202`, local HEAD == `origin/project-slot-2-FLY-202` == PR #49 head — verified via `git fetch` + `git rev-parse`)
+**PR head (Round 1)**: `2d5e267380a0f06521be86fb5be60f2cbc64b1b4` (branch `project-slot-2-FLY-202`, local HEAD == `origin/project-slot-2-FLY-202` == PR #49 head — verified via `git fetch` + `git rev-parse`)
 **Date**: 2026-07-06
-**Verdict**: **PASS** — deliverable matches the design-phase plan exactly; all structural invariants hold against the live repo (not a stale snapshot).
+**Round 1 Verdict**: **PASS** — deliverable matched the design-phase plan exactly; all structural invariants held against the live repo (not a stale snapshot). See "Verification results" below.
+**Round 2 Verdict**: **FAIL (deliberate)** — see "Round 2" section at the end. This round exercises the FLY-887 keep-alive QA fix-loop mechanism end-to-end: a real, tiny, deliberately-introduced defect was committed on top of the Round 1 PASS state, specifically so a re-test wake can be observed fixing it and re-verifying to a fresh PASS.
 
 ## Scope
 
@@ -101,11 +102,49 @@ ALL CHECKS PASSED
 - No production Flywheel repo, Bridge, or Discord channel was touched; all verification ran
   inside the sandbox clone at `/private/tmp/flywheel-test-slot-2/project-slot-2-FLY-202`.
 
-## Conclusion
+## Conclusion (Round 1)
 
 The Implement phase's `doc/qa/sandbox-notes.md` deliverable is correct, complete, and current
 against live repo state — all 4 plan-mandated sections present, directory table and README
 summary both spot-checked for factual accuracy (not just count), and the `ls -R` snapshot is
 verbatim-fresh rather than a stale copy. Added a committed, repeatable verification script so
 future re-runs of this fixture (or accidental content drift) fail loudly instead of silently.
-**Ready to proceed to ship.**
+
+## Round 2 — deliberate regression (FLY-887 keep-alive fix-loop E2E)
+
+**Purpose**: per explicit instruction from the team lead, this round exercises the real
+FAIL → wake → fix → re-test → PASS loop on a real-machine test slot, using this already-PASSing
+fixture as the vehicle. One tiny, real defect was deliberately introduced (not fabricated as a
+false claim — the file content genuinely no longer matches the live repo) and reported as a
+genuine FAIL, exactly as `verify.sh` would report it if a future Implement-phase edit introduced
+this same regression by accident.
+
+**Defect introduced**: removed the `qa-fly310/` row from the "Top-level directories" table in
+`doc/qa/sandbox-notes.md` (previously line 36). No other content changed.
+
+**Expected vs. actual**:
+- Expected: table row count == live top-level directory count == **11**.
+- Actual: table now has **10** rows (missing `qa-fly310/`); live top-level directory count is
+  still 11 (`ls -F | grep -c '/$'` → 11, dir still exists on disk, untouched).
+
+**Reproduction** — `./doc/qa/FLY-202-sandbox-notes/verify.sh`:
+
+```
+PASS: 4 sections present (4)
+FAIL: table rows == live top-level dir count (expected 11, got 10)
+PASS: README summary bullet count in [9,11] (10)
+PASS: fenced ls -R block open+close (2)
+PASS: embedded ls -R snapshot matches live output verbatim
+SOME CHECKS FAILED
+```
+
+Exactly one check fails, isolating the defect precisely to the directory table (all other
+sections remain correct) — confirming the check has real discriminating power, not a blanket
+failure.
+
+**Fix required**: re-add the `qa-fly310/` row (`| \`qa-fly310/\` | Historical QA evidence/E2E
+scripts for FLY-310 |`) immediately after the `qa-fly294/` row, restoring 11 table rows to match
+the 11 live top-level directories.
+
+**Round 2 verdict**: **FAIL**. Not shipping this head. Reporting via `qa-result --status fail`
+and parking to await the RE-TEST wake once the Implement phase pushes the fix.

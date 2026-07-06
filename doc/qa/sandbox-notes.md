@@ -33,7 +33,6 @@ restart recovery) while the Runner is genuinely working.
 | `packages/` | pnpm monorepo packages: core, claude-runner, teamlead, flywheel-comm, qa-framework, etc. |
 | `patches/` | pnpm dependency patches (mem0ai@2.3.0.patch) |
 | `qa-fly294/` | Historical QA evidence/scripts for FLY-294 (layer A/B/C tests, fake-discord) |
-| `qa-fly310/` | Historical QA evidence/E2E scripts for FLY-310 |
 | `scripts/` | Ops & QA scripts (test-deploy / inject-linear-issue / test-teardown, alerts, cmux, ...) |
 | `supabase/` | Supabase migrations |
 
