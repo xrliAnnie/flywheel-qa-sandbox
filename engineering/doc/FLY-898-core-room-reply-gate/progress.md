@@ -1,10 +1,13 @@
 ---
 issue: FLY-898
 phase: implement
-phaseCursor: 9/9
+phaseCursor: 9/9 (complete — held at founder gate)
 updated: 2026-07-06
-nextStep: full suite + lint → PR → founder ship-gate
-plugin_fork_pr: "xrliAnnie/claude-plugins-official#13 (per-group mentionPatterns)"
+nextStep: HOLD at founder ship-gate (Annie reviews 裸名→真@ tightening per UX brief)
+main_pr: "xrliAnnie/flywheel#466"
+plugin_fork_pr: "xrliAnnie/claude-plugins-official#13 (per-group mentionPatterns + sentinel)"
+codex_code_review: "APPROVED (R1 2 MEDIUM → R2 1 MEDIUM → R3 clean, xhigh)"
+ci_status: "RED on Lint — PRE-EXISTING broken main (2 biome format errors in scripts/qa-fly892-real-discord-thread-e2e.mjs, byte-identical to main, untouched by FLY-898). main red since ~05:12 Jul6. Blocks the FLY-2 :cool: gate fleet-wide. FLY-898 files 100% biome-clean. Flagged to Lead (ask d9c00346): fold format-fix into #466 or separate cleanup PR?"
 chunks: []
 pointers:
   preflight_source: "check-discord-plugin.sh is ops-side (~/.flywheel/bin/, NOT repo-tracked). No installer source in repo. FLY-898 preflight is SELF-CONTAINED in the repo-tracked helper apply-core-room-mention-gate.sh (greps marketplace server.ts for the per-group marker) → no dependency on modifying the untracked ops script. Optionally the ops check-discord-plugin.sh can be extended too during rollout, but the helper's self-check is authoritative."
