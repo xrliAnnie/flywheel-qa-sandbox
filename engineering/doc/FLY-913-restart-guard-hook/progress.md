@@ -1,13 +1,13 @@
 ---
 issue: FLY-913
 phase: design
-phaseCursor: 3/5
-updated: 2026-07-06T20:02:51.187Z
-nextStep: write plan.md then design_review (codex)
+phaseCursor: 5/5
+updated: 2026-07-06T20:27:08.243Z
+nextStep: design complete (codex APPROVED 3 rounds); hand off to implement phase
 chunks: []
 pointers: {}
 ---
 
 # FLY-913 progress
-**phase**: design (3/5)
-**next**: write plan.md then design_review (codex)
+**phase**: design (5/5)
+**next**: design complete (codex APPROVED 3 rounds); hand off to implement phase
