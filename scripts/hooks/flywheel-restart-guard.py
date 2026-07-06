@@ -139,7 +139,15 @@ def _extract_c_payload(args: list[str]):
 # together with its short flags and leading env assignments — before the
 # first-token judgment. Flags that consume a value argument; -S/--split-string
 # is handled separately (its value is a whole command line — Codex R2 MEDIUM).
-_WRAPPERS = {"sudo", "env", "nohup"}
+# Codex R4: shell/utility wrappers (command/exec/time/nice/arch/…) are equally
+# transparent — a value-consuming flag we don't know is safe here because the
+# saw_wrapper backstop below catches the executor token anywhere in the
+# remainder. setsid/ionice/chrt cover the Linux fleet hosts (FLY-519).
+_WRAPPERS = {
+    "sudo", "env", "nohup",
+    "command", "exec", "time", "nice", "arch",
+    "caffeinate", "timeout", "stdbuf", "setsid", "ionice", "chrt",
+}
 # -P is macOS env's alternate-PATH flag (`env -P /usr/bin node …`) — without
 # consuming its value, `/usr/bin` would be mistaken for the first token and the
 # real executor never judged (Codex R3 MEDIUM).

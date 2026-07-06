@@ -163,6 +163,16 @@ MUST_BLOCK = [
     ('sudo -p "pw:" node scripts/run-bridge.ts', "P3 sudo -p prompt (unknown arg flag)"),
     ("sudo --preserve-env=PATH node scripts/run-bridge.ts", "P3 sudo --preserve-env="),
     ("env -i -P /usr/bin npx tsx scripts/run-bridge.ts", "P3 env -i -P stacked"),
+    # Codex R4 MEDIUM: shell/utility wrappers are equally transparent.
+    ("command node scripts/run-bridge.ts", "P3 command wrapper"),
+    ("exec node scripts/run-bridge.ts", "P3 exec wrapper"),
+    ("time node scripts/run-bridge.ts", "P3 time wrapper"),
+    ("nice node scripts/run-bridge.ts", "P3 nice wrapper"),
+    ("nice -n 10 node scripts/run-bridge.ts", "P3 nice -n value (backstop)"),
+    ("arch -x86_64 node scripts/run-bridge.ts", "P3 arch -x86_64 wrapper"),
+    ("timeout 300 node scripts/run-bridge.ts", "P3 timeout duration (backstop)"),
+    ("caffeinate -i npx tsx scripts/run-bridge.ts", "P3 caffeinate wrapper"),
+    ('bash -lc "command node scripts/run-bridge.ts"', "P3 -c payload with command wrapper"),
     # P3 — shell -c payload recursion (one level), incl. merged flag clusters
     ('bash -c "nohup npx tsx scripts/run-bridge.ts"', "P3 bash -c payload"),
     ("sh -c 'npx tsx scripts/run-bridge.ts'", "P3 sh -c payload"),
@@ -204,6 +214,10 @@ MUST_PASS = [
     ('env -S "node scripts/qa-tool.mjs"', "env -S payload without run-bridge"),
     ("sudo grep node scripts/restart-services.sh",
      "sudo grep with executor-shaped needle, no run-bridge"),
+    ("command -v node", "command -v probe without run-bridge"),
+    ("time grep run-bridge scripts/restart-services.sh",
+     "time-wrapped grep of run-bridge (no executor token)"),
+    ("time pnpm build", "time-wrapped build"),
     ("sudo launchctl print gui/501/com.flywheel.bridge", "sudo read-only launchctl"),
 ]
 
