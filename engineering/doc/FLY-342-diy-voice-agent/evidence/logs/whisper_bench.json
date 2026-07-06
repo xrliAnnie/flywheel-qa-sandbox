@@ -1,0 +1,443 @@
+[
+  {
+    "idx": 1,
+    "ref": "把 FLY-342 派给 Tadashi",
+    "hyp": "把弗艾3-4-2派给Tadashi",
+    "tokens_covered": [
+      "342"
+    ],
+    "tokens_total": [
+      "FLY-342",
+      "342"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.653,
+    "whisper_s": 1.991,
+    "audio_s": 3.048
+  },
+  {
+    "idx": 2,
+    "ref": "approve 那个 PR，可以 ship 了",
+    "hyp": "Approve那个PR,可以ship了。",
+    "tokens_covered": [
+      "approve",
+      "PR",
+      "ship"
+    ],
+    "tokens_total": [
+      "approve",
+      "PR",
+      "ship"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "positive=['approve', 'ship']:True",
+    "high_risk": true,
+    "rtf": 0.515,
+    "whisper_s": 1.496,
+    "audio_s": 2.904
+  },
+  {
+    "idx": 3,
+    "ref": "先别 ship，等 QA 过了再说",
+    "hyp": "先别SHIP 等QA过了再说",
+    "tokens_covered": [
+      "ship",
+      "QA"
+    ],
+    "tokens_total": [
+      "ship",
+      "QA"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "neg('别')=True flip=False",
+    "high_risk": true,
+    "rtf": 0.455,
+    "whisper_s": 1.54,
+    "audio_s": 3.384
+  },
+  {
+    "idx": 4,
+    "ref": "跑一下 pnpm lint 看看 CI 绿不绿",
+    "hyp": "跑一下 PMPM Lint 看看 CI 绿不绿",
+    "tokens_covered": [
+      "lint",
+      "CI"
+    ],
+    "tokens_total": [
+      "pnpm",
+      "lint",
+      "CI"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.397,
+    "whisper_s": 1.561,
+    "audio_s": 3.936
+  },
+  {
+    "idx": 5,
+    "ref": "这个 PR 有 conflict，先 rebase 到 main",
+    "hyp": "这个PR有conflict,先rebase到main。",
+    "tokens_covered": [
+      "PR",
+      "conflict",
+      "rebase",
+      "main"
+    ],
+    "tokens_total": [
+      "PR",
+      "conflict",
+      "rebase",
+      "main"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.4,
+    "whisper_s": 1.584,
+    "audio_s": 3.96
+  },
+  {
+    "idx": 6,
+    "ref": "把 FLY-435 和 FLY-354 合并成一个 epic",
+    "hyp": "把Fly-435和Fly-354合并成一个Epit",
+    "tokens_covered": [
+      "FLY-435",
+      "435",
+      "FLY-354",
+      "354"
+    ],
+    "tokens_total": [
+      "FLY-435",
+      "435",
+      "FLY-354",
+      "354",
+      "epic"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.336,
+    "whisper_s": 1.664,
+    "audio_s": 4.944
+  },
+  {
+    "idx": 7,
+    "ref": "不要 merge，我还没 review 完",
+    "hyp": "不要merge,我还没review完",
+    "tokens_covered": [
+      "merge",
+      "review"
+    ],
+    "tokens_total": [
+      "merge",
+      "review"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "neg('不要')=True flip=False",
+    "high_risk": true,
+    "rtf": 0.833,
+    "whisper_s": 2.298,
+    "audio_s": 2.76
+  },
+  {
+    "idx": 8,
+    "ref": "Bridge 重启一下，Lead 好像掉线了",
+    "hyp": "Bridge重启一下,Lit好像掉线了。",
+    "tokens_covered": [
+      "Bridge"
+    ],
+    "tokens_total": [
+      "Bridge",
+      "Lead"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.972,
+    "whisper_s": 3.219,
+    "audio_s": 3.312
+  },
+  {
+    "idx": 9,
+    "ref": "给 CosyVoice 装个 MPS 版本，跑本地 TTS",
+    "hyp": "给 Cozy Voice 装个 MPS 版本跑本地 TTS",
+    "tokens_covered": [
+      "MPS",
+      "TTS"
+    ],
+    "tokens_total": [
+      "CosyVoice",
+      "MPS",
+      "TTS"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.486,
+    "whisper_s": 2.391,
+    "audio_s": 4.92
+  },
+  {
+    "idx": 10,
+    "ref": "让 Codex 跑一轮 code review，xhigh 档",
+    "hyp": "让Codex跑一轮Code Review嗨到",
+    "tokens_covered": [
+      "Codex",
+      "code review"
+    ],
+    "tokens_total": [
+      "Codex",
+      "code review",
+      "xhigh"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.523,
+    "whisper_s": 1.934,
+    "audio_s": 3.696
+  },
+  {
+    "idx": 11,
+    "ref": "这个 commit 的 hash 是 cd753eb9",
+    "hyp": "这个commit的hash是cd7531b9",
+    "tokens_covered": [
+      "commit",
+      "hash",
+      "cd753"
+    ],
+    "tokens_total": [
+      "commit",
+      "hash",
+      "cd753eb9",
+      "cd753",
+      "753eb9"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.484,
+    "whisper_s": 1.951,
+    "audio_s": 4.032
+  },
+  {
+    "idx": 12,
+    "ref": "把 model 切成 Fable，别用 Opus",
+    "hyp": "把model切成fable 别用opus",
+    "tokens_covered": [
+      "model",
+      "Fable",
+      "Opus"
+    ],
+    "tokens_total": [
+      "model",
+      "Fable",
+      "Opus"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.595,
+    "whisper_s": 1.957,
+    "audio_s": 3.288
+  },
+  {
+    "idx": 13,
+    "ref": "Runner 卡在 awaiting review，帮我 verify 一下",
+    "hyp": "Runner卡在Awaiting Review,帮我Verify一下",
+    "tokens_covered": [
+      "Runner",
+      "awaiting",
+      "review",
+      "verify"
+    ],
+    "tokens_total": [
+      "Runner",
+      "awaiting",
+      "review",
+      "verify"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.46,
+    "whisper_s": 1.798,
+    "audio_s": 3.912
+  },
+  {
+    "idx": 14,
+    "ref": "部署到生产之前先跑 E2E test",
+    "hyp": "部署到生产之前先跑一二一test",
+    "tokens_covered": [
+      "test",
+      "部署",
+      "生产"
+    ],
+    "tokens_total": [
+      "E2E",
+      "test",
+      "部署",
+      "生产"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.507,
+    "whisper_s": 1.838,
+    "audio_s": 3.624
+  },
+  {
+    "idx": 15,
+    "ref": "这个 feature 先 hold 住，别急着上线",
+    "hyp": "这个feature先hold住别急着上线",
+    "tokens_covered": [
+      "feature",
+      "hold",
+      "上线"
+    ],
+    "tokens_total": [
+      "feature",
+      "hold",
+      "上线"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "neg('别')=True flip=False",
+    "high_risk": true,
+    "rtf": 0.459,
+    "whisper_s": 1.632,
+    "audio_s": 3.552
+  },
+  {
+    "idx": 16,
+    "ref": "Groq 的 API key 过期了，换一个",
+    "hyp": "Groc的APIP过期了,换一个。",
+    "tokens_covered": [
+      "API"
+    ],
+    "tokens_total": [
+      "Groq",
+      "API",
+      "key"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.575,
+    "whisper_s": 2.056,
+    "audio_s": 3.576
+  },
+  {
+    "idx": 17,
+    "ref": "whisper 大概三十秒能转完这段十分钟的音频",
+    "hyp": "Whisper大概30秒能转完这段10分钟的音频",
+    "tokens_covered": [
+      "whisper",
+      "30",
+      "10"
+    ],
+    "tokens_total": [
+      "whisper",
+      "三十",
+      "30",
+      "十分钟",
+      "10"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.358,
+    "whisper_s": 1.625,
+    "audio_s": 4.536
+  },
+  {
+    "idx": 18,
+    "ref": "把 research.md 的实测结果全部填进去",
+    "hyp": "把ResearchMD的实测结果全部填进去",
+    "tokens_covered": [
+      "research",
+      "结果",
+      "填"
+    ],
+    "tokens_total": [
+      "research.md",
+      "research",
+      "结果",
+      "填"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.398,
+    "whisper_s": 1.642,
+    "audio_s": 4.128
+  },
+  {
+    "idx": 19,
+    "ref": "Discord 那个 bot token 别 commit 进去",
+    "hyp": "Discord 那个 bot token 别 commit 进去",
+    "tokens_covered": [
+      "Discord",
+      "bot",
+      "token",
+      "commit"
+    ],
+    "tokens_total": [
+      "Discord",
+      "bot",
+      "token",
+      "commit"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "neg('别')=True flip=False",
+    "high_risk": true,
+    "rtf": 0.46,
+    "whisper_s": 1.623,
+    "audio_s": 3.528
+  },
+  {
+    "idx": 20,
+    "ref": "明天早上八点给我一份 standup 报告",
+    "hyp": "明天早上8点给我一份stand-up 报告",
+    "tokens_covered": [
+      "standup",
+      "8",
+      "报告"
+    ],
+    "tokens_total": [
+      "standup",
+      "八点",
+      "8",
+      "报告"
+    ],
+    "token_hit": true,
+    "reversal_ok": true,
+    "reversal_note": "",
+    "high_risk": false,
+    "rtf": 0.429,
+    "whisper_s": 1.627,
+    "audio_s": 3.792
+  }
+]
