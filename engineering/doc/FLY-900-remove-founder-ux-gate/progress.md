@@ -1,14 +1,13 @@
 ---
 issue: FLY-900
-phase: design
-phaseCursor: 9/9
-updated: 2026-07-06T14:40:15.902Z
-nextStep: DESIGN COMPLETE — pushed ef96a551, Codex APPROVED R2. Handoff to
-  implement phase (Lead re-dispatch).
+phase: implement
+phaseCursor: 1/7
+updated: 2026-07-06T14:46:22.086Z
+nextStep: helper isFounderUxGateEnabled + unit test (RED→GREEN)
 chunks: []
 pointers: {}
 ---
 
 # FLY-900 progress
-**phase**: design (9/9)
-**next**: DESIGN COMPLETE — pushed ef96a551, Codex APPROVED R2. Handoff to implement phase (Lead re-dispatch).
+**phase**: implement (1/7)
+**next**: helper isFounderUxGateEnabled + unit test (RED→GREEN)
