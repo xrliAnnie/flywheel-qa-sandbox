@@ -2,19 +2,19 @@
 issue: FLY-896
 phase: implement
 phaseCursor: 1/2
-updated: 2026-07-06T03:53:51.620Z
-nextStep: "Task 2: open PR to sandbox main; stage set pr_created; Codex code
-  review; gate approve_to_ship --no-block + complete --route needs_review; park
-  awaiting QA"
+updated: 2026-07-06T04:01:49.075Z
+nextStep: QA round 1 FAIL reported (missing terminal period, planted target);
+  parked awaiting RE-TEST wake for round 2 after implement fix
 chunks: []
 pointers: {}
-handoff: "Design docs at a268a55. Lead mandate: QA MUST run one deliberate
-  FAIL->wake->fix->RE-TEST->PASS round (verify.sh check 3 = missing terminal
-  period is the planted target). Never merge to real branches."
+handoff: "QA round 1 verdict: FAIL (verify.sh check 3, head 954304e). qa-result
+  --status fail emitted. Parked. On RE-TEST wake: turn-check, re-run
+  qa-fly896/verify.sh, expect ALL PASS, append round 2 to qa-report.md,
+  qa-result --status pass, then approve-gate flow."
 ---
 
 # FLY-896 progress
 **phase**: implement (1/2)
-**next**: Task 2: open PR to sandbox main; stage set pr_created; Codex code review; gate approve_to_ship --no-block + complete --route needs_review; park awaiting QA
+**next**: QA round 1 FAIL reported (missing terminal period, planted target); parked awaiting RE-TEST wake for round 2 after implement fix
 
-**handoff**: Design docs at a268a55. Lead mandate: QA MUST run one deliberate FAIL->wake->fix->RE-TEST->PASS round (verify.sh check 3 = missing terminal period is the planted target). Never merge to real branches.
+**handoff**: QA round 1 verdict: FAIL (verify.sh check 3, head 954304e). qa-result --status fail emitted. Parked. On RE-TEST wake: turn-check, re-run qa-fly896/verify.sh, expect ALL PASS, append round 2 to qa-report.md, qa-result --status pass, then approve-gate flow.
