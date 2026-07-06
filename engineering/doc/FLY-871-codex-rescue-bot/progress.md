@@ -1,10 +1,9 @@
 ---
 issue: FLY-871
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-06T06:52:43.669Z
-nextStep: phase_design_complete → Implement phase (W1+W2+W3 PR; W4 founder-gated
-  on Annie verified OK)
+phase: implement
+phaseCursor: 0/6
+updated: 2026-07-06T07:01:21.619Z
+nextStep: W2 core module tui-window-alert.ts
 chunks:
   - id: C1-capture-back
     order: 1
@@ -40,8 +39,8 @@ pointers: {}
 ---
 
 # FLY-871 progress
-**phase**: design (4/4)
-**next**: phase_design_complete → Implement phase (W1+W2+W3 PR; W4 founder-gated on Annie verified OK)
+**phase**: implement (0/6)
+**next**: W2 core module tui-window-alert.ts
 
 ## chunks
 - ✅ C1-capture-back — 
