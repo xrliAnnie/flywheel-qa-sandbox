@@ -45,6 +45,23 @@ If no arguments, ask the user for:
 
 ---
 
+## Step 0: Check the token pool first
+
+Before creating a brand-new Discord Application, check whether there's an
+unclaimed slot in the local bot token pool:
+
+```bash
+scripts/discord-bot-pool.sh list
+```
+
+If there's an `unclaimed` slot, skip Step 1/2 below and follow
+`doc/reference/discord-bot-pool-claim-guide.md` instead — it covers renaming,
+avatar, invite link, and registering the claim. Come back to **Step 3** of
+this document afterward (state dir / access.json / projects.json / launch).
+
+Only fall through to Step 1 below if the pool is empty or this Lead needs
+non-standard permissions/a separate Discord account.
+
 ## Step 1: Create Discord Application (Browser)
 
 Guide the user or use Chrome automation:

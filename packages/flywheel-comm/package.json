@@ -13,6 +13,7 @@
 		"./respond": "./dist/commands/respond.js",
 		"./gate-marker": "./dist/gate-marker.js",
 		"./verify-approval": "./dist/commands/verify-approval.js",
+		"./ship-eligibility": "./dist/ship-eligibility.js",
 		"./xiaohongshu-state": "./dist/xiaohongshu-state.js",
 		"./xiaohongshu-final": "./dist/xiaohongshu-final.js",
 		"./xiaohongshu-analysis-store": "./dist/xiaohongshu-analysis-store.js",

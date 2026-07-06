@@ -39,6 +39,21 @@ import {
 import type { ProjectEntry } from "./ProjectConfig.js";
 import type { Session, StateStore } from "./StateStore.js";
 
+/**
+ * FLY-867: injected stale-terminal close chokepoint. Production wires this to
+ * `closeRunner({ reason: "fly867_stale_terminal", forcePreserved: true, archive })`
+ * so a terminal-status session whose tmux window is still alive past
+ * `staleThresholdHours` is torn down through the ONE canonical teardown path
+ * (tmux kill + FLY-685 cmux close-request marker + FLY-369 archive + CommDB
+ * row deletion). Absent (tests / legacy wiring) → checkStaleCompleted keeps
+ * its pre-FLY-867 notify-only behavior byte-for-byte.
+ */
+export interface StaleTerminalCloseConfig {
+	closeStale(
+		session: Session,
+	): Promise<{ closed: boolean; alreadyGone?: boolean }>;
+}
+
 export interface HeartbeatNotifier {
 	/**
 	 * Emit the `session_stuck` advisory. Returns true ONLY when the event was
@@ -186,6 +201,14 @@ export class HeartbeatService implements ReconnectController {
 		 * reaper is a no-op and behavior is exactly pre-FLY-720.
 		 */
 		private crashReaperConfig?: CrashReaperInjectedDeps,
+		/**
+		 * FLY-867: injected stale-terminal close (see StaleTerminalCloseConfig).
+		 * Wired (production) → checkStaleCompleted upgrades from notify-only to
+		 * notify+close for leaked terminal-status sessions, behind the
+		 * FLYWHEEL_STALE_TERMINAL_CLOSE kill-switch (default ON) and the FLY-752
+		 * retest-protection predicate. Absent → pre-FLY-867 notify-only.
+		 */
+		private staleTerminalClose?: StaleTerminalCloseConfig,
 	) {}
 
 	start(): void {
@@ -821,7 +844,20 @@ export class HeartbeatService implements ReconnectController {
 		}
 	}
 
-	/** GEO-270: Check for completed/failed/blocked sessions with tmux still alive. */
+	/**
+	 * GEO-270: Check for completed/failed/blocked sessions with tmux still alive.
+	 *
+	 * FLY-867: upgraded from notify-only to notify+close. A terminal-status
+	 * session whose tmux window is still alive past `staleThresholdHours` is a
+	 * LEAK — nothing else closes it: the crash-reaper only takes
+	 * `status='running'` (getOrphanSessions), and the auto-QA reconcile's close
+	 * predicates treat "CommDB terminal" as "already cleaned up" (production:
+	 * 15 leaked QA runners with live claude processes, 2026-07-04). Contract:
+	 * this backstop owns exactly the `getStaleCompletedSessions` set
+	 * (completed/failed/blocked, ALL session_roles — a main-role leak was
+	 * observed too); terminated/rejected/shelved/deferred each have their own
+	 * close chains and are NOT scanned here.
+	 */
 	async checkStaleCompleted(): Promise<void> {
 		const now = Date.now();
 		if (now - this.lastStaleCheckAt < this.staleCheckIntervalMs) return;
@@ -836,9 +872,20 @@ export class HeartbeatService implements ReconnectController {
 			if (!staleIds.has(id)) this.notifiedStale.delete(id);
 		}
 
+		// FLY-867: compute the close-enabled gate ONCE per sweep. When close is
+		// disabled (kill-switch OFF or unwired), the loop must restore the exact
+		// pre-FLY-867 ordering — dedup short-circuit BEFORE the CommDB/tmux probe
+		// — so the OFF/unwired path is byte-compatible (no repeated I/O or logs
+		// for already-notified sessions). Codex code review R1 (MEDIUM).
+		const closeEnabled = this.staleCloseEnabled();
+
 		for (const session of stale) {
-			if (this.notifiedStale.has(session.execution_id)) continue;
 			if (!session.project_name) continue;
+			// Notify-only (close disabled) path: skip already-notified sessions
+			// before any probe, exactly as GEO-270 did pre-FLY-867.
+			if (!closeEnabled && this.notifiedStale.has(session.execution_id)) {
+				continue;
+			}
 
 			try {
 				const target = getTmuxTargetFromCommDb(
@@ -849,6 +896,24 @@ export class HeartbeatService implements ReconnectController {
 
 				const alive = await isTmuxWindowAlive(target.tmuxWindow);
 				if (!alive) continue;
+
+				// FLY-867: close the leak through the injected closeRunner
+				// chokepoint — BEFORE the notify dedup gate, so a failed close is
+				// retried every stale cycle (the dedup only suppresses repeat
+				// notifications, never a close retry). Guarded by the FLY-752
+				// retest-protection predicate: a parked QA in an active fix-loop
+				// must stay alive. Only a CONFIRMED teardown skips the stale
+				// notification; a failed/ineligible close falls through to the
+				// existing notify path (operator visibility preserved).
+				if (closeEnabled && !this.isRetestProtected(session)) {
+					const res = await this.staleTerminalClose?.closeStale(session);
+					if (res && (res.closed || res.alreadyGone)) {
+						this.notifiedStale.delete(session.execution_id);
+						continue;
+					}
+				}
+
+				if (this.notifiedStale.has(session.execution_id)) continue;
 
 				const hoursSince = session.last_activity_at
 					? Math.round(
@@ -871,6 +936,55 @@ export class HeartbeatService implements ReconnectController {
 		}
 
 		this.lastStaleCheckAt = Date.now();
+	}
+
+	/**
+	 * FLY-867: stale-terminal close is active iff production wired the close
+	 * chokepoint AND the kill-switch is not off. Default ON
+	 * (FLYWHEEL_STALE_TERMINAL_CLOSE=0 reverts to pre-FLY-867 notify-only).
+	 */
+	private staleCloseEnabled(): boolean {
+		if (!this.staleTerminalClose) return false;
+		return process.env.FLYWHEEL_STALE_TERMINAL_CLOSE !== "0";
+	}
+
+	/**
+	 * FLY-867 (FLY-752 boundary): NEVER close a QA runner an active fix-loop
+	 * still references. Owner-record semantics: the session is protected iff
+	 * ANY auto_qa_record has qa_execution_id === session, an active status
+	 * (running — an in-flight QA with a terminal CommDB anomaly is spared —
+	 * or awaiting_retest — parked for the next head), AND its parent is still
+	 * awaiting_review at that record's target head. `qa_execution_id` is not
+	 * unique (historical rows), so ALL rows are scanned — any match protects.
+	 * Any store read failure → protected (fail-closed: never kill on
+	 * uncertainty).
+	 */
+	private isRetestProtected(session: Session): boolean {
+		try {
+			const records = this.store.listAutoQaRecordsByQaExec(
+				session.execution_id,
+			);
+			for (const rec of records) {
+				if (rec.status !== "running" && rec.status !== "awaiting_retest") {
+					continue;
+				}
+				const parent = this.store.getSession(rec.parent_execution_id);
+				if (
+					parent &&
+					parent.status === "awaiting_review" &&
+					(parent.pr_head_sha ?? "").toLowerCase() ===
+						rec.target_pr_head_sha.toLowerCase()
+				) {
+					return true;
+				}
+			}
+			return false;
+		} catch (err) {
+			console.warn(
+				`[HeartbeatService] FLY-867 retest-protection read failed for ${session.execution_id} — treating as protected: ${(err as Error).message}`,
+			);
+			return true;
+		}
 	}
 
 	/**
@@ -1145,12 +1259,11 @@ export class RegistryHeartbeatNotifier implements HeartbeatNotifier {
 		} catch {
 			return; // lead/project not resolvable → skip
 		}
-		// FLY-793 (Codex full-PR R1 #5): a three-stage phase session resolves its own
-		// side-table thread; `main` (default) → byte-unchanged.
+		// FLY-892 (converge): one issue = one thread — every phase session and the
+		// Lead resolve the SAME `(issue, channel)` thread.
 		const thread = this.store.getChatThreadByIssue(
 			session.issue_id,
 			chatChannel,
-			session.chat_thread_role,
 		);
 		if (!thread) return; // thread not created yet
 

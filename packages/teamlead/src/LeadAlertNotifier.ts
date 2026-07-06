@@ -90,7 +90,11 @@ export type AlertEventType =
 	// (permanent 4xx / missing thread|token|owner / transient retry budget
 	// elapsed). Surfaced so the founder is not left in the dark. Not a runner-
 	// stuck event — the runner is fine; the notification channel failed.
-	| "founder_milestone_undelivered";
+	| "founder_milestone_undelivered"
+	// FLY-871 R2/C8: a runner sitting at a login prompt (auth/session expired) —
+	// DISTINCT from the lead `login_expired` so AlertChannelHub.reconcile resolves
+	// it by the RUNNER pane, and the R3 rescue keys on this event's still-pending row.
+	| "runner_login_expired";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 
@@ -136,6 +140,12 @@ export interface AlertMetadata {
 		observedGeneration: number;
 		/** What surfaced the expiry (e.g. "lead-pane:login_expired"). */
 		evidence: string;
+		/**
+		 * FLY-871 R2/C8: the runner's execution id when this is a
+		 * `runner_login_expired` — the R3 rescue path validates + targets this
+		 * exact session. Absent for a lead-pane auth alert.
+		 */
+		executionId?: string;
 	};
 }
 

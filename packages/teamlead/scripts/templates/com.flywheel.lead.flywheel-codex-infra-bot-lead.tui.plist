@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- FLY-871 R2/C6 — Codex Infra Bot TUI launchd job (TEMPLATE).
+     Install to ~/Library/LaunchAgents/com.flywheel.lead.flywheel-codex-infra-bot-lead.plist
+     as part of the enable window (see engineering/doc/FLY-871-codex-rescue-bot/
+     C6-infra-bot-deployment.md). FLY-398: the wrapper runs the WINDOWED TUI launcher,
+     never the headless app-server. Token stays OUT of the plist — the wrapper sources
+     ~/.flywheel/.env (CODEX_INFRA_BOT_TOKEN + FLYWHEEL_INFRA_BOT_USER_ID + the channel ids). -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.flywheel.lead.flywheel-codex-infra-bot-lead</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string>
+    <string>/Users/xiaorongli/.flywheel/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh</string>
+  </array>
+  <key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer><key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/tmp/flywheel-lead-flywheel-codex-infra-bot-lead.log</string>
+  <key>StandardErrorPath</key><string>/tmp/flywheel-lead-flywheel-codex-infra-bot-lead.log</string>
+</dict></plist>

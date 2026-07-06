@@ -42,6 +42,7 @@ const rec = (over: Partial<PendingSwitch> = {}): PendingSwitch => ({
 function tick(over: {
 	executeSwitch?: ReturnType<typeof vi.fn>;
 	post?: ReturnType<typeof vi.fn>;
+	onSwitchSuccess?: ReturnType<typeof vi.fn>;
 }) {
 	const executeSwitch =
 		over.executeSwitch ??
@@ -54,12 +55,14 @@ function tick(over: {
 	return {
 		executeSwitch,
 		post,
+		onSwitchSuccess: over.onSwitchSuccess,
 		run: () =>
 			accountSwitchWatchdogTick({
 				now: () => NOW,
 				pendingPath,
 				executeSwitch: executeSwitch as never,
 				post: post as never,
+				onSwitchSuccess: over.onSwitchSuccess as never,
 			}),
 	};
 }
@@ -115,5 +118,39 @@ describe("accountSwitchWatchdogTick", () => {
 		const t = tick({ executeSwitch });
 		expect(await t.run()).toBe(1); // second one still fired
 		expect(t.post).toHaveBeenCalledTimes(1);
+	});
+
+	// FLY-871 R3/W5: a successful switch triggers the post-switch rescue sweep.
+	it("fires onSwitchSuccess after a successful (attempted) switch", async () => {
+		writePending([rec()], pendingPath);
+		const onSwitchSuccess = vi.fn(async () => {});
+		const t = tick({ onSwitchSuccess });
+		expect(await t.run()).toBe(1);
+		expect(onSwitchSuccess).toHaveBeenCalledOnce();
+	});
+
+	it("does NOT fire onSwitchSuccess when the switch outcome is needs_human", async () => {
+		writePending([rec()], pendingPath);
+		const onSwitchSuccess = vi.fn(async () => {});
+		const t = tick({
+			executeSwitch: vi.fn(async () => ({
+				outcome: "needs_human",
+				action: "none",
+				detail: "no usable account",
+			})),
+			onSwitchSuccess,
+		});
+		await t.run();
+		expect(onSwitchSuccess).not.toHaveBeenCalled();
+	});
+
+	it("a throwing onSwitchSuccess is logged and never wedges the tick", async () => {
+		writePending([rec()], pendingPath);
+		const onSwitchSuccess = vi.fn(async () => {
+			throw new Error("sweep boom");
+		});
+		const t = tick({ onSwitchSuccess });
+		expect(await t.run()).toBe(1); // the switch still counts as fired
+		expect(onSwitchSuccess).toHaveBeenCalledOnce();
 	});
 });

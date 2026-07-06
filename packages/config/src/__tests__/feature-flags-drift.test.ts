@@ -77,6 +77,12 @@ const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: OAuth token-refresh endpoint override for the freshness helper (FLY-871; enable-gate spike pins the exact contract without a code change)",
 	FLYWHEEL_CLAUDE_OAUTH_CLIENT_ID:
 		"config value: OAuth public client id override for the freshness helper (FLY-871)",
+	FLYWHEEL_ACCOUNT_LEDGER_PATH:
+		"plumbing: account-ledger json path override (FLY-871)",
+	FLYWHEEL_INFRA_BOT_USER_ID:
+		"context: Codex Infra Bot discord user id, for @-mention on account-switch assignment posts (FLY-871)",
+	FLYWHEEL_DETECTION_AI_CLASSIFY:
+		"internal ops lever: kill-switch for the Layer-2 AI-assisted pane classify step, default-on (FLY-871)",
 	FLYWHEEL_BRIDGE_WATCHDOG_LOG: "plumbing: watchdog log path",
 	// secrets / token env names
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",

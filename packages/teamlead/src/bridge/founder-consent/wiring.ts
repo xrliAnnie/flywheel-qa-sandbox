@@ -22,6 +22,7 @@ import {
 } from "../../applyTransition.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import type { StateStore } from "../../StateStore.js";
+import { finalizeRecoveredMerge } from "../merge-ship-gate.js";
 import { sendRunnerWake } from "../runner-wake.js";
 import { type BridgeConfig, sqliteDatetime } from "../types.js";
 import {
@@ -93,6 +94,11 @@ export function buildGateResponsePostWriteHook(deps: {
 	store: StateStore;
 	transitionOpts?: ApplyTransitionOpts;
 	logger?: { warn: (msg: string) => void };
+	// FLY-869 B-3 (Codex R1 #1): threaded so the recovery can drive an un-parked,
+	// already-merged, now-eligible session to completed + Linear Done (else it strands
+	// at approved_to_ship). Absent → recovery only clears the marker (byte-compat).
+	config?: BridgeConfig;
+	projects?: ProjectEntry[];
 }): (info: {
 	executionId: string;
 	questionId: string;
@@ -149,6 +155,23 @@ export function buildGateResponsePostWriteHook(deps: {
 				log.warn(
 					`gate-response approval written for ${info.executionId} but status is "${session.status}" (expected awaiting_review) — transition skipped`,
 				);
+			}
+			// FLY-869 B-3 recovery (Codex R1 #1 / R2 #2): a founder gate-response approval on a
+			// parked merge_block session (same PR head) drives it to completed + Done — but ONLY
+			// when now fully ship-eligible; an unmet QA/Codex gate leaves the durable marker in
+			// place (still held). Sister call: actions.approveExecution.
+			if (deps.config && deps.projects) {
+				const completed = await finalizeRecoveredMerge(
+					store,
+					deps.config,
+					deps.projects,
+					info.executionId,
+				);
+				if (completed) {
+					log.warn(
+						`FLY-869 B-3 recovered merge finalized → completed for ${info.executionId}`,
+					);
+				}
 			}
 		}
 
@@ -262,6 +285,9 @@ export function buildFounderConsentWiring(
 		store,
 		transitionOpts,
 		logger,
+		// FLY-869 B-3: drive recovered-merge completion on this ship-approval path too.
+		config,
+		projects,
 	});
 
 	// FLY-191 Phase 2 (Codex PR R1 CRITICAL): the gate router rejects answers

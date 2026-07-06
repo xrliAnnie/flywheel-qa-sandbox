@@ -26,6 +26,7 @@ import {
 	type FounderUxGateConfig,
 	type PonytailConfig,
 	type RoleBackendMap,
+	resolveEffectiveFounderUxConfig,
 	type SkillsConfig,
 } from "flywheel-config";
 import type { LLMClient } from "flywheel-core";
@@ -625,6 +626,20 @@ export async function setupRunInfrastructure(
 				}
 			}
 
+			// FLY-869: resolve the RAW `founder_ux_gate` block (absent whenever the
+			// config file is missing, the key is omitted, or load failed with
+			// ENOENT above) into its EFFECTIVE form through the one resolution
+			// choke point. Absent → `enforce` + the default exempt-label list —
+			// NEVER a bare `undefined` that a downstream consumer would read as
+			// "gate off" (the FLY-598 opt-in behavior this issue reverses).
+			// Explicit project config (including an explicit `mode: "off"`
+			// kill-switch) passes through untouched. Both DirectEventSink's
+			// per-run mode snapshot (below) and Blueprint's prompt-injection
+			// config (createRunBlueprint call below) MUST receive this EFFECTIVE
+			// object, never the raw (possibly absent) `founderUxGateConfig`.
+			const effectiveFounderUxGateConfig =
+				resolveEffectiveFounderUxConfig(founderUxGateConfig);
+
 			const directSink = new DirectEventSink(
 				store,
 				config,
@@ -633,7 +648,7 @@ export async function setupRunInfrastructure(
 				registry,
 				chatThreadCreator,
 				skillsConfig, // GEO-151: ProofShotConfig persisted via emitStarted patch
-				founderUxGateConfig?.mode, // FLY-598: mode snapshot onto session at start
+				effectiveFounderUxGateConfig.mode, // FLY-598/869: EFFECTIVE mode snapshot (absent → enforce)
 			);
 			// FLY-603 Layer A: wire the shared cleanup closure onto this sink.
 			directSink.removeCleanWorktree = runInfraOpts?.removeCleanWorktree;
@@ -663,7 +678,7 @@ export async function setupRunInfrastructure(
 				flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1)
 				skillsConfig, // GEO-151: wired into Blueprint slot 7
 				docFlowConfig, // FLY-205
-				founderUxGateConfig, // FLY-598
+				effectiveFounderUxGateConfig, // FLY-598/869: EFFECTIVE config (absent → enforce)
 				ponytailConfig, // FLY-615: per-project ponytail rollout layer
 				store.getDbPath(), // FLY-766: owner marker db-path truth
 			);

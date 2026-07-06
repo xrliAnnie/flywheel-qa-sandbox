@@ -179,11 +179,24 @@ normalize_plan() {
     $1=="MCP_SERVER"{print "mcp="$2}
   ' | LC_ALL=C sort
 }
-# FLY-583: refreshed these goldens for PRE-EXISTING staleness, unrelated to the
-# companion effort change. The FLY-231 goldens predate later base rules that
+# FLY-583/FLY-879: refreshed these goldens for PRE-EXISTING staleness, unrelated to
+# the role changes. The FLY-231 goldens predate later base rules that
 # claude-lead.sh now emits for standard/cos leads — discord-reply-contract.md
 # (FLY-387), runner-reengage-rules.md (FLY-229), xiaohongshu-memory-rules.md
-# (FLY-222). This sentinel is not wired into vitest/CI, so the drift went unnoticed.
+# (FLY-222), and (added in this FLY-879 refresh) auto-qa-pipeline.md (FLY-579),
+# default-enable-policy.md (FLY-707), model-routing.md (FLY-728), and
+# runner-patrol-rules.md (FLY-369). Proven pre-existing: HEAD's claude-lead.sh
+# appends all four but the committed golden lacked them, and the FLY-879 external
+# role diff never touches these dept-branch appends. This sentinel is not wired
+# into vitest/CI, so the drift went unnoticed.
+#
+# Post-rebase update (2026-07-05): rebasing flywheel-FLY-879 onto latest main
+# (#454/#455) pulled in FLY-869 (#449), which flips founder_ux_gate.mode from
+# opt-in to default-ON — an absent/malformed config now appends
+# founder-ux-rules.md for every non-companion/non-external lead. Added
+# rule=founder-ux-rules.md to both goldens (proven pre-existing: FLY-869 predates
+# this branch's rebase point, and FLY-879's diff only ADDS an IS_EXTERNAL_ROLE
+# exclusion to the existing gate — it does not touch the founder_ux_gate default).
 read -r -d '' DEPT_GOLDEN <<'G'
 env=BRIDGE_URL=set
 env=CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=set
@@ -207,15 +220,20 @@ env=TEAMLEAD_ISSUE_PREFIXES=set
 mcp=flywheel-inbox
 mcp=flywheel-terminal
 role=standard
+rule=auto-qa-pipeline.md
 rule=cross-dept-channel-rules.md
+rule=default-enable-policy.md
 rule=department-lead-rules.md
 rule=discord-reply-contract.md
 rule=doc-flow-rules.md
 rule=executor-routing.md
 rule=founder-html-delivery.md
 rule=founder-only-authority.md
+rule=founder-ux-rules.md
 rule=inbox-ack-rule.md
+rule=model-routing.md
 rule=runner-messaging-rules.md
+rule=runner-patrol-rules.md
 rule=runner-reengage-rules.md
 rule=screencapture-l3-skill.md
 rule=stuck-runner-remanage.md
@@ -249,6 +267,7 @@ rule=cross-dept-channel-rules.md
 rule=discord-reply-contract.md
 rule=founder-html-delivery.md
 rule=founder-only-authority.md
+rule=founder-ux-rules.md
 rule=inbox-ack-rule.md
 rule=screencapture-l3-skill.md
 G

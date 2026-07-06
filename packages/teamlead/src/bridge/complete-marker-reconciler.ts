@@ -48,7 +48,8 @@ import {
 	type ApplyTransitionOpts,
 	applyTransition,
 } from "../applyTransition.js";
-import type { StateStore } from "../StateStore.js";
+import type { Session, StateStore } from "../StateStore.js";
+import { computeShipDecision, parkMergeBlock } from "./merge-ship-gate.js";
 
 /** Default marker directory — mirrors `flywheel-comm/complete.ts` writeMarker(). */
 export function defaultMarkerDir(): string {
@@ -97,6 +98,16 @@ const TERMINAL_STATUSES = new Set([
 ]);
 
 /**
+ * FLY-869 B (Codex R1 #2): the TRUE no-out terminal states for the pre-replay
+ * merge_block park — a merged-but-unapproved session is parked to `awaiting_review`
+ * (which `TERMINAL_STATUSES` above deliberately treats as terminal for the replay
+ * bookkeeping), so the park gate must use THIS narrower set. `awaiting_review` /
+ * `approved_to_ship` are eligible to be (re-)parked; a session that already reached
+ * one of these is genuinely done and must not be touched.
+ */
+const NO_OUT_TERMINAL_STATUSES = new Set(["completed", "blocked", "failed"]);
+
+/**
  * Discriminated reconcile outcome (Codex R1 #4 / R2 #2). The caller force-fails
  * ONLY on `absent`; `transient_failed` blocks force-fail and retries later;
  * `reconciled`/`duplicate_terminal` mean the session reached its true terminal
@@ -108,6 +119,10 @@ export type ReconcileOutcome =
 	| { kind: "absent" }
 	| { kind: "reconciled"; status: string }
 	| { kind: "duplicate_terminal"; status: string }
+	// FLY-869 B (design R2 HIGH-4): a merged marker whose session is NOT
+	// ship-eligible was parked with a merge_block marker + the complete-marker
+	// SETTLED (deleted, NOT quarantined, NOT forced completed/failed).
+	| { kind: "settled_merge_block"; head: string }
 	| { kind: "transient_failed"; error: string }
 	| {
 			kind: "quarantined";
@@ -128,6 +143,14 @@ export interface MarkerReconcilerDeps {
 	markerDir?: string;
 	quarantineDir?: string;
 	log?: (msg: string) => void;
+	/**
+	 * FLY-869 决定③: fire the ONE loud merge_without_approval Lead alert when THIS
+	 * restart-replay is the first to park a merged-but-unapproved marker (the live
+	 * sinks fire it in-band; this covers a Bridge that died in the exact window
+	 * before the live sink processed the completion). Best-effort; wired to the
+	 * AutoQaCoordinator's alert channel in plugin.ts. Absent → marker + log only.
+	 */
+	alertMergeWithoutApproval?: (session: Session, reason: string) => void;
 }
 
 /**
@@ -149,7 +172,7 @@ type MarkerBody = {
 	source?: string;
 	payload?: {
 		decision?: { route?: string };
-		evidence?: { landingStatus?: { status?: string } };
+		evidence?: { landingStatus?: { status?: string }; headSha?: string };
 		sessionRole?: string;
 		[k: string]: unknown;
 	};
@@ -305,7 +328,71 @@ export async function tryReconcileComplete(
 		return { kind: "quarantined", reason: "invalid", quarantinePath: qp };
 	}
 
-	const currentStatus = deps.store.getSession(execId)?.status;
+	const currentSession = deps.store.getSession(execId);
+	const currentStatus = currentSession?.status;
+
+	// FLY-869 B (design R2 HIGH-4): a merged marker whose session is NOT
+	// ship-eligible must NOT reconcile to `completed` (that would finalize/Done a
+	// merge_without_approval). Park it + SETTLE the marker (delete — the marker did
+	// its job; do NOT quarantine or force completed/failed). Same-head approval
+	// recovery later clears the park. Checked BEFORE the replay so the reconciler's
+	// expected-status bookkeeping never quarantines a legitimately-blocked merge.
+	//
+	// Codex R1 #2: `TERMINAL_STATUSES` here INCLUDES `awaiting_review` (used by the
+	// replay bookkeeping below), but a merged-without-approval session is parked to
+	// EXACTLY `awaiting_review` — so this pre-replay park must run for it. Gate only on
+	// the true no-out terminals ({completed, blocked, failed}); `awaiting_review` /
+	// `approved_to_ship` fall through to the eligibility check (an approved+merged row is
+	// eligible → not parked → normal completion; a parked/unapproved row → parked here).
+	const markerLanding = body.payload?.evidence?.landingStatus?.status;
+	if (
+		markerLanding === "merged" &&
+		currentSession &&
+		!currentSession.merge_block_reason &&
+		!NO_OUT_TERMINAL_STATUSES.has(currentStatus ?? "")
+	) {
+		// Prefer the persisted row head; fall back to the marker's own head evidence
+		// (Codex R1 #2 — a crash before the row's pr_head_sha was written must still
+		// resolve a head so verifyApproval fail-closes correctly rather than passing).
+		const prHead =
+			currentSession.pr_head_sha?.trim() ||
+			body.payload?.evidence?.headSha?.trim();
+		// Always route through the shared predicate so the kill-switches are honored
+		// uniformly (a missing head fail-closes only when the gate is ON).
+		const decision = computeShipDecision(
+			deps.store,
+			currentSession,
+			prHead ?? "",
+		);
+		const eligible = decision.eligible;
+		if (!eligible) {
+			const claimed = parkMergeBlock(
+				deps.store,
+				currentSession,
+				prHead ?? "",
+				decision ?? {
+					eligible: false,
+					mergeApprovalOk: false,
+					qaOk: false,
+					mergeReason: "no_pr_head",
+					qaReason: "session_not_found",
+				},
+			);
+			safeUnlink(markerPath, log);
+			log(
+				`[complete-reconciler] FLY-869 merge_without_approval ${execId} — parked + marker settled (no finalize)`,
+			);
+			// FLY-869 决定③: one loud Discord alert on the first claim (once per head).
+			if (claimed) {
+				deps.alertMergeWithoutApproval?.(
+					currentSession,
+					`⛔ Runner ${execId}（${currentSession.issue_id}）自行 merge 但未获批准（重启对账发现：merged head ${prHead ?? "(none)"} 未通过 ship 闸：merge=${decision.mergeReason} qa=${decision.qaReason}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
+				);
+			}
+			return { kind: "settled_merge_block", head: prHead ?? "" };
+		}
+	}
+
 	const expectedStatus = expectedStatusFromMarker(body, currentStatus);
 	if (expectedStatus === null) {
 		// FLY-222 #1 (Codex code-review R2 MED): if the session already reached a
@@ -572,7 +659,10 @@ export async function reconcileCompleteFailedMarkers(
 		const outcome = await tryReconcileComplete(execId, deps);
 		if (
 			outcome.kind === "reconciled" ||
-			outcome.kind === "duplicate_terminal"
+			outcome.kind === "duplicate_terminal" ||
+			// FLY-869 B: a settled merge_block is a successfully-PROCESSED marker
+			// (parked, not finalized) — count it as reconciled, never fall back.
+			outcome.kind === "settled_merge_block"
 		) {
 			result.reconciled += 1;
 		} else if (outcome.kind === "quarantined") {

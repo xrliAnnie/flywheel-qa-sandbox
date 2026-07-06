@@ -115,6 +115,10 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 	}
 
 	beforeEach(async () => {
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the
+		// marker-replay FSM parity, not the approval gate.
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
@@ -138,6 +142,8 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});

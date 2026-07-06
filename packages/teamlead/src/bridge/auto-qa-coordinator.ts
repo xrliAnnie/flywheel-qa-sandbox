@@ -36,6 +36,7 @@ import {
 } from "../StateStore.js";
 import {
 	codexHardGateEnabled,
+	codexHoldStuckThresholdMs,
 	isCodexGateSatisfied,
 	isReviewableRole,
 } from "./codex-gate.js";
@@ -208,6 +209,8 @@ export interface AutoQaCoordinatorDeps {
 	qaAgentName?: string;
 	/** FLY-827: env for the codex hard-gate kill-switch. Defaults to process.env. */
 	env?: Record<string, string | undefined>;
+	/** FLY-863: test seam for `reconcileStuckCodexHolds`'s "now". Defaults to Date.now. */
+	now?: () => number;
 	logger?: { log(m: string): void; warn(m: string): void };
 }
 
@@ -293,6 +296,16 @@ export class AutoQaCoordinator {
 			);
 			return;
 		}
+		// FLY-869 B (Codex R1 #3): a parked merged-without-approval session is HELD —
+		// never QA it back toward ship. The live entry must consume the merge_block
+		// suppressor too (not just the A-3 orphan sweep), else a Codex-release re-drive
+		// (onCodexReviewResult → codexReleased:true) would spawn QA on a parked merge.
+		if (session.merge_block_reason) {
+			this.log(
+				`skip ${session.execution_id} (${session.issue_id}) — merge_block parked (merged without approval); held, not QA'd`,
+			);
+			return;
+		}
 
 		// FLY-846 gate ①: NEVER QA a QA. A `QA·FLY-XX` issue can carry a main-role
 		// session (Lead dispatched a runner on it — FLY-828/845 incidents); when it
@@ -340,6 +353,14 @@ export class AutoQaCoordinator {
 
 		const policy = this.deps.resolveQaPolicy(session);
 		if (!policy.enabled) {
+			// FLY-869 A-1: auto-QA is not applicable for this session (no-qa label /
+			// qa.auto:false / kill-switch). Persist the IMMUTABLE qa_required=0 snapshot
+			// so the ship gate (evaluateQaShipGate) exempts it rather than fail-closing.
+			this.deps.store.setQaRequiredSnapshot({
+				executionId: session.execution_id,
+				required: 0,
+				reason: `policy_off:${policy.reason ?? "disabled"}`,
+			});
 			this.log(
 				`skip ${session.execution_id} (${session.issue_id}) — auto-QA not enabled: ${policy.reason ?? "policy off"}`,
 			);
@@ -363,6 +384,16 @@ export class AutoQaCoordinator {
 			);
 			return;
 		}
+
+		// FLY-869 A-1: from here auto-QA APPLIES (policy enabled + genuine review
+		// evidence). Persist the IMMUTABLE qa_required=1 snapshot so the ship gate
+		// requires a passing auto_qa_record for the head before Done. Immutable
+		// (IS NULL guard) → a later config/label change never rewrites the verdict.
+		this.deps.store.setQaRequiredSnapshot({
+			executionId: session.execution_id,
+			required: 1,
+			reason: "auto_qa_applies",
+		});
 
 		const owner = this.deps.store.getLatestAutoQaRecordByParent(
 			session.execution_id,
@@ -475,19 +506,31 @@ export class AutoQaCoordinator {
 
 	/**
 	 * FLY-827: the Codex code-review hard-gate hold. A main session reached
-	 * awaiting_review but Codex has NOT approved the current head → post a thread
-	 * note, re-queue the `/codex-code-review` instruction to the runner (D3 loop
-	 * closure), and Lead-alert (rate-limited per exec+head). QA is NOT spawned and
-	 * the founder stays held via isReviewHeld. Best-effort side-effects: a failure
-	 * here must never surface the founder (the durable table + isReviewHeld hold).
+	 * awaiting_review but Codex has NOT approved the current head → re-queue the
+	 * `/codex-code-review` instruction to the runner (D3 loop closure). QA is NOT
+	 * spawned and the founder stays held via isReviewHeld.
+	 *
+	 * FLY-863 (Annie 2026-07-04): this hold is the normal, self-recovering FIRST
+	 * step of nearly every PR (Codex simply hasn't run/reported yet) — it must
+	 * stay SILENT (no thread post, no Lead alert). Verified against the code: a
+	 * Bridge-visible re-hold on a NEW head is the only multi-round signal that
+	 * ever reaches here (a runner's own internal `/codex-code-review` retries are
+	 * invisible to Bridge — only the final APPROVED is reported), so a "round
+	 * count" cannot distinguish a normal in-progress loop from a real stall.
+	 * The thread-post + Lead alert now live EXCLUSIVELY in
+	 * `reconcileStuckCodexHolds`, which escalates only once the SAME head has
+	 * sat unresolved for a long real-world stretch — genuinely not converging,
+	 * not a routine mid-loop moment. Best-effort: a failure here must never
+	 * surface the founder (the durable table + isReviewHeld hold independently).
 	 */
 	private async codexHold(session: Session, sha: string): Promise<void> {
-		// FLY-827 (Codex code-review R1 MED-1): fire the side-effect bundle (thread +
-		// re-queue + alert) ONCE per (exec, head). The LIVE onMainAwaitingReview path
-		// posts/queues/alerts the first time; a restart / repeated reconcileCodexHolds
-		// replays the hold as a no-op (the founder HOLD itself is enforced by the
-		// durable record + isReviewHeld, independent of this). A NEW head is a fresh
-		// claim → it re-notifies for that head.
+		// FLY-827 (Codex code-review R1 MED-1): re-queue the instruction ONCE per
+		// (exec, head). The LIVE onMainAwaitingReview path claims + queues the
+		// first time; a restart / repeated reconcileCodexHolds replays the hold as
+		// a no-op (the founder HOLD itself is enforced by the durable record +
+		// isReviewHeld, independent of this). A NEW head is a fresh claim → it
+		// re-queues for that head. `hold_notified_at` also anchors the stuck-
+		// escalation clock in `reconcileStuckCodexHolds`.
 		const firstNotify = this.deps.store.claimCodexHoldNotify({
 			executionId: session.execution_id,
 			targetPrHeadSha: sha,
@@ -496,23 +539,13 @@ export class AutoQaCoordinator {
 		});
 		if (!firstNotify) {
 			this.log(
-				`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — already notified for this head; skipping duplicate thread/instruction/alert`,
+				`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — already notified for this head; skipping duplicate re-queue`,
 			);
 			return;
 		}
 		this.log(
-			`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — code review not APPROVED; QA not spawned, founder held`,
+			`codex-hold ${session.execution_id} (${session.issue_id}) @ ${sha.slice(0, 8)} — code review not APPROVED; QA not spawned, founder held (routine — staying silent; escalates only if unresolved past the stuck threshold)`,
 		);
-		try {
-			await this.deps.effects.postThread({
-				session,
-				text: `⛔ Codex code review 未通过(head \`${sha.slice(0, 8)}\`)— 自动 QA 不启动、founder 保持挂起。已重发 /codex-code-review 指令,过了 Codex APPROVED 才会继续。`,
-			});
-		} catch (err) {
-			this.warn(
-				`codexHold postThread failed for ${session.issue_id}: ${asErr(err)}`,
-			);
-		}
 		try {
 			await this.deps.effects.queueCodexInstruction({ session });
 		} catch (err) {
@@ -520,11 +553,101 @@ export class AutoQaCoordinator {
 				`codexHold queueCodexInstruction failed for ${session.issue_id}: ${asErr(err)}`,
 			);
 		}
+	}
+
+	/**
+	 * FLY-863: periodic escalation pass for codex-holds that have NOT converged
+	 * after a long real-world stretch (default 3h, `FLYWHEEL_CODEX_HOLD_STUCK_MS`
+	 * tunable). This is the ONLY place the codex-hold thread-post + Lead alert
+	 * fire — a routine review-fix round (the overwhelmingly common case) never
+	 * reaches here and stays completely silent. Idempotent per head:
+	 * `claimCodexHoldStuckNotify` fires the bundle exactly once per (exec, head),
+	 * with `LeadAlertNotifier`'s own per-eventId dedup as an independent second
+	 * backstop. Safe to call repeatedly (boot + every Lead-alert poll tick —
+	 * piggybacked, no new timer) since a fully-resolved fleet is a cheap no-op
+	 * scan.
+	 */
+	async reconcileStuckCodexHolds(): Promise<void> {
+		const env = this.deps.env ?? process.env;
+		if (!codexHardGateEnabled(env)) return; // gate off → nothing held
+		const thresholdMs = codexHoldStuckThresholdMs(env);
+		const now = this.deps.now?.() ?? Date.now();
+		for (const rec of this.deps.store.listCodexHoldsPendingOlderThan(
+			now,
+			thresholdMs,
+		)) {
+			const session = this.deps.store.getSession(rec.execution_id);
+			if (!session || session.status !== "awaiting_review") continue; // moved on
+			if (session.pr_head_sha?.toLowerCase() !== rec.target_pr_head_sha) {
+				continue; // superseded by a newer head — that head's own record governs
+			}
+			if (
+				isCodexGateSatisfied(
+					this.deps.store,
+					session,
+					rec.target_pr_head_sha,
+					env,
+				)
+			) {
+				continue; // approved / skipped in the meantime
+			}
+			if (
+				!this.deps.store.claimCodexHoldStuckNotify(
+					rec.execution_id,
+					rec.target_pr_head_sha,
+				)
+			) {
+				continue; // already escalated for this head
+			}
+			const hours = Math.round(thresholdMs / 3_600_000);
+			this.warn(
+				`codex-hold STUCK for ${session.issue_id} (${session.execution_id}) @ ${rec.target_pr_head_sha.slice(0, 8)} — not approved after ${hours}h+, escalating`,
+			);
+			try {
+				await this.deps.effects.postThread({
+					session,
+					text: `⛔ Codex code review 已经卡了 ${hours}+ 小时还没过(head \`${rec.target_pr_head_sha.slice(0, 8)}\`)— 已重发过 /codex-code-review,但看起来没在收敛,可能需要人看一眼 runner 是不是卡住了。`,
+				});
+			} catch (err) {
+				this.warn(
+					`reconcileStuckCodexHolds postThread failed for ${session.issue_id}: ${asErr(err)}`,
+				);
+			}
+			try {
+				await this.deps.effects.alertCodexGateBlocked({
+					session,
+					sha: rec.target_pr_head_sha,
+				});
+			} catch (err) {
+				this.warn(
+					`reconcileStuckCodexHolds alertCodexGateBlocked failed for ${session.issue_id}: ${asErr(err)}`,
+				);
+			}
+		}
+	}
+
+	/**
+	 * FLY-869 B (决定③): fire the ONE loud "a runner self-merged WITHOUT approval"
+	 * Lead alert (→ Discord). The completion sinks call this on the FIRST merge_block
+	 * claim (parkMergeBlock returned true → once per head), so it is never re-sent on a
+	 * replay / restart. Reuses the pipeline-error alert channel. Best-effort — a failed
+	 * alert must never throw into the sink (the durable merge_block marker + isReviewHeld
+	 * suppression already hold the session; the alert is the human-visibility layer).
+	 */
+	async alertMergeWithoutApproval(
+		session: Session,
+		reason: string,
+	): Promise<void> {
 		try {
-			await this.deps.effects.alertCodexGateBlocked({ session, sha });
+			await this.deps.effects.alertLeadPipelineError({
+				session,
+				issueId: session.issue_id,
+				projectName: session.project_name,
+				reason,
+			});
 		} catch (err) {
 			this.warn(
-				`codexHold alertCodexGateBlocked failed for ${session.issue_id}: ${asErr(err)}`,
+				`alertMergeWithoutApproval failed for ${session.issue_id}: ${asErr(err)}`,
 			);
 		}
 	}
@@ -1086,6 +1209,88 @@ export class AutoQaCoordinator {
 	 * GatePoller / Heartbeat timers (so a restart never relays a held gate).
 	 */
 	async reconcileOnStartup(): Promise<void> {
+		// (0) FLY-869 A-1b — qa_required BACKFILL (deployment safety). A session
+		// dispatched BEFORE this gate shipped ran the pre-gate onMainAwaitingReview,
+		// which never wrote the immutable qa_required snapshot. WITHOUT a backfill it
+		// reaches the QA ship gate (evaluateQaShipGate) with qa_required=NULL and,
+		// for a code PR, fail-closes → stranded. Reconstruct the verdict the forward
+		// path would have written, and grandfather already-approved in-flight work so
+		// the retroactive gate never strands a session the founder already cleared.
+		//
+		// Idempotent: setQaRequiredSnapshot's `WHERE qa_required IS NULL` guard means
+		// a second restart (or a race with the forward path) is a no-op. Independent
+		// of sweeps (1)-(4) below — it touches only qa_required, never auto_qa_records
+		// — but runs FIRST so the A-3 orphan sweep sees the backfilled requirement.
+		for (const session of this.deps.store.getActiveSessions()) {
+			if (
+				session.status !== "awaiting_review" &&
+				session.status !== "approved_to_ship"
+			) {
+				continue; // a `running` session snapshots when it reaches onMainAwaitingReview.
+			}
+			if (session.qa_required != null) continue; // already snapshotted (immutable).
+
+			const rec = this.deps.store.getLatestAutoQaRecordByParent(
+				session.execution_id,
+			);
+			if (rec) {
+				// QA genuinely applied (a record exists). Require it: the ship gate
+				// checks for a PASSED record for the head (passed→ships, otherwise→held).
+				this.deps.store.setQaRequiredSnapshot({
+					executionId: session.execution_id,
+					required: 1,
+					reason: `backfill:record_${rec.status}`,
+				});
+				continue;
+			}
+
+			const policy = this.deps.resolveQaPolicy(session);
+			const qid = session.review_question_id;
+			const hasReviewEvidence =
+				(!!qid && qid !== REVIEW_BINDING_UNBOUND) || session.pr_number != null;
+			if (!policy.enabled || !hasReviewEvidence) {
+				// Exempt: auto-QA off for this session (no-qa label / qa.auto:false /
+				// kill-switch) OR no code PR to QA. Mirrors the forward path's policy-off
+				// and no-review-evidence branches; also grandfathers no-PR in-flight work.
+				this.deps.store.setQaRequiredSnapshot({
+					executionId: session.execution_id,
+					required: 0,
+					reason: `backfill:exempt:${
+						!policy.enabled
+							? (policy.reason ?? "policy_off")
+							: "no_review_evidence"
+					}`,
+				});
+				continue;
+			}
+
+			// Code PR, auto-QA applies, but NO record was ever created (pre-FLY-579
+			// dispatch, or codex-held before QA). An `awaiting_review` session self-heals
+			// — the A-3 orphan sweep spawns the missing QA — so require it (fail-closed).
+			// An `approved_to_ship` session already cleared the founder gate under the
+			// pre-gate flow AND is not covered by the awaiting_review orphan sweep, so a
+			// retroactive requirement would strand it: grandfather it exempt.
+			if (session.status === "approved_to_ship") {
+				this.deps.store.setQaRequiredSnapshot({
+					executionId: session.execution_id,
+					required: 0,
+					reason: "backfill:grandfather_approved_pre_gate",
+				});
+				this.log(
+					`A-1b backfill grandfather ${session.execution_id} (${session.issue_id}) — approved_to_ship pre-gate, no QA record; exempt to avoid stranding`,
+				);
+			} else {
+				this.deps.store.setQaRequiredSnapshot({
+					executionId: session.execution_id,
+					required: 1,
+					reason: "backfill:code_pr_no_record",
+				});
+				this.log(
+					`A-1b backfill required ${session.execution_id} (${session.issue_id}) — code PR, no QA record; A-3 orphan sweep will spawn QA`,
+				);
+			}
+		}
+
 		// (1) PASSED records — re-notify if unnotified AND close a QA runner left
 		// alive by a crash between notifyShipReady and closeQaRunner (FLY-752). The
 		// passed-unnotified sweep alone misses the notified-but-not-closed case, so
@@ -1268,6 +1473,38 @@ export class AutoQaCoordinator {
 				});
 			}
 			// else QA alive + parked → leave it; awaiting the next head.
+		}
+
+		// (5) FLY-869 A-3 — "该起没起 QA" orphan sweep. An awaiting_review main session
+		// that reached review WITHOUT ever getting an auto_qa_record is invisible to the
+		// record-based sweeps (1)-(4) above — a should-have-QA'd session that nothing is
+		// driving. Re-drive the LIVE path so QA spawns (or the session is correctly
+		// codex-held / policy-skipped inside onMainAwaitingReview — all its gates still
+		// apply). Runs before founder surfacing (reconcileOnStartup precedes the
+		// GatePoller / Heartbeat timers), and EXCLUDES a parked merge_block session
+		// (决定③ — a merged-but-unapproved session must never be QA'd back into ship).
+		for (const session of this.deps.store.getActiveSessions()) {
+			if (session.status !== "awaiting_review") continue;
+			if ((session.session_role ?? "main") !== "main") continue;
+			// A parked merged-but-unapproved session is held, not shippable → never QA it.
+			if (session.merge_block_reason) continue;
+			// Has ANY auto_qa_record → owned by sweeps (1)-(4); not an orphan.
+			if (this.deps.store.getLatestAutoQaRecordByParent(session.execution_id)) {
+				continue;
+			}
+			this.log(
+				`A-3 orphan re-drive ${session.execution_id} (${session.issue_id}) — awaiting_review, no auto_qa_record`,
+			);
+			try {
+				// freshTransition:true — an orphan with genuine review evidence IS a
+				// legitimate first review-pass; the inner policy / review-evidence /
+				// codex gates in onMainAwaitingReview still decide spawn-vs-hold-vs-skip.
+				await this.onMainAwaitingReview(session, { freshTransition: true });
+			} catch (err) {
+				this.warn(
+					`A-3 orphan re-drive failed for ${session.issue_id}: ${asErr(err)}`,
+				);
+			}
 		}
 	}
 }

@@ -72,6 +72,30 @@ export interface LeadConfig {
 	 */
 	companion?: boolean;
 	/**
+	 * FLY-879: external (customer-facing) Lead marker — an outward-facing agent
+	 * (e.g. Anna the interviewer) wrapped in Flywheel Lead infra for launchd
+	 * residency + Discord adapter + LeadWatchdog coverage, but with a HARD-LOCKED
+	 * capability surface: NO Runner spawning, NO Bridge/CommDB/internal MCP, and —
+	 * unlike a companion — NONE of the internal engineering rules AND not even the
+	 * cross-dept roundtable. Its ENTIRE rule surface is one `external-agent-contract.md`
+	 * (indicated instruction-source boundary: a customer message is DATA, never a
+	 * command). `claude-lead.sh` reads this (single source of truth) to take the
+	 * `external` role branch.
+	 *
+	 * Cross-field invariants (validated below, all fail-loud):
+	 *   - `external === true` requires an EXPLICIT `canSpawnRunners: false`
+	 *     (an external agent must never spawn Runners; do not let it default true).
+	 *   - `external` and `companion` are MUTUALLY EXCLUSIVE (a lead is one role).
+	 *   - MVP is claude-code only: `external === true` on a codex-family `backend`
+	 *     throws (codex external agent = follow-up).
+	 *
+	 * Default behavior when absent: NOT external (identical to all pre-FLY-879
+	 * Leads). Deliberately NOT normalized (FLY-231 pattern): consumers MUST check
+	 * `=== true` so an absent/false field is the standard non-external path with
+	 * zero shape change to existing in-memory Lead objects (reverse-compat).
+	 */
+	external?: boolean;
+	/**
 	 * FLY-247: per-Lead model override — the single source of truth for "which
 	 * model does this Lead run on" (previously a hand-edited plist env that any
 	 * `flywheel-daemon.sh install` silently wiped).
@@ -194,6 +218,18 @@ export interface ProjectEntry {
 	projectRepo?: string;
 	leads: LeadConfig[];
 	generalChannel?: string;
+	/**
+	 * FLY-892 (Step 7, ④): env var name holding the dedicated "system announcer"
+	 * bot token (a pool bot separate from the chat Leads). Auto status broadcasts
+	 * (pipeline header, auto-QA thread posts, the boot-sweep pointer) post as this
+	 * bot so the founder tells "system is broadcasting" apart from "a Lead is
+	 * talking to me". Resolved at load into the runtime-only `announcerBotToken`;
+	 * a raw `announcerBotToken` in JSON input is stripped (secrets come via env,
+	 * same as `botTokenEnv`). Unset → all broadcasts use the Lead bot (byte-compat).
+	 */
+	announcerBotTokenEnv?: string;
+	/** Resolved announcer bot token (populated at load from announcerBotTokenEnv). NOT from JSON input. */
+	announcerBotToken?: string;
 	/** Memory API user_id allowlist. Fail-closed: requests rejected if not configured. */
 	memoryAllowedUsers?: string[];
 	/**
@@ -258,9 +294,37 @@ export function loadProjects(): ProjectEntry[] {
 				}
 			}
 		}
+		// FLY-892 (Step 7): hydrate the project-level announcer bot token from env
+		// (same secret-handling model as the per-lead botTokenEnv). Missing env →
+		// leave unset → broadcasts fall back to the Lead bot (byte-compat).
+		const announcerEnv = entry.announcerBotTokenEnv;
+		if (typeof announcerEnv === "string" && announcerEnv.length > 0) {
+			const resolved = process.env[announcerEnv];
+			if (resolved) {
+				entry.announcerBotToken = resolved;
+			} else {
+				console.warn(
+					`[loadProjects] "${entry.projectName}": announcerBotTokenEnv="${announcerEnv}" ` +
+						`not found in env — auto broadcasts will fall back to the Lead bot`,
+				);
+			}
+		}
 	}
 
 	return projects;
+}
+
+/**
+ * FLY-892 (Step 7): the project's resolved "system announcer" bot token, or
+ * `undefined` when the project didn't configure one → callers fall back to the
+ * Lead bot (byte-compat). Used by the auto-broadcast seams (pipeline header,
+ * auto-QA thread posts, boot-sweep pointer).
+ */
+export function resolveAnnouncerBotToken(
+	projects: ProjectEntry[],
+	projectName: string,
+): string | undefined {
+	return projects.find((p) => p.projectName === projectName)?.announcerBotToken;
 }
 
 /**
@@ -497,6 +561,52 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 					);
 				}
 			}
+			// FLY-879: external (customer-facing) Lead marker. Validate type +
+			// cross-field invariants. Runs AFTER canSpawnRunners normalization (so
+			// the explicit-false requirement is checked against the real boolean) and
+			// AFTER companion/backend validation. Placed BEFORE the FLY-245 codex
+			// block so an external+codex misconfig yields the external-specific
+			// message. Deliberately NOT normalized (FLY-231 pattern): absent stays
+			// absent, explicit false stays false — zero shape change for existing Leads.
+			if (lead.external !== undefined && typeof lead.external !== "boolean") {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].external: must be a boolean, got ${JSON.stringify(lead.external)}`,
+				);
+			}
+			if (lead.external === true) {
+				// A customer-facing external agent must NEVER spawn Runners. Require an
+				// EXPLICIT canSpawnRunners:false — since canSpawnRunners was normalized
+				// to `true` above when absent, this rejects both absent and true, so a
+				// missing field can never silently arm spawn authorization on an
+				// outward-facing bot.
+				if (lead.canSpawnRunners !== false) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`external: true requires an explicit canSpawnRunners: false ` +
+							`(a customer-facing external agent must never spawn Runners — FLY-879).`,
+					);
+				}
+				// A lead is exactly one role — external and companion are mutually
+				// exclusive (they load different, incompatible rule surfaces).
+				if (lead.companion === true) {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`external: true cannot be combined with companion: true ` +
+							`(a lead is exactly one role — FLY-879).`,
+					);
+				}
+				// MVP is claude-code only: the external isolation surface (pane-cred
+				// emptying, MCP stripping, external-agent-contract) is wired for the
+				// claude-code launcher path. A codex-family external agent is a follow-up.
+				if (lead.backend === "codex-app-server") {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
+							`external: true is only supported on backend "claude-code" (MVP); ` +
+							`"codex-app-server" is a follow-up — FLY-879.`,
+					);
+				}
+			}
+
 			// FLY-671: validate optional per-lead effort (closed CLI enum). Absent
 			// stays absent (reverse-compat). Codex Leads have no `--effort` runtime
 			// path → reject the mixture as dead config (Codex design review R2 LOW-5,
@@ -607,6 +717,21 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				`Project "${entry.projectName}" generalChannel: if provided, must be a non-empty string, got ${JSON.stringify(entry.generalChannel)}`,
 			);
 		}
+
+		// FLY-892 (Step 7): validate optional announcerBotTokenEnv (an env var NAME,
+		// not a secret) + strip any raw announcerBotToken from JSON input — the
+		// secret is hydrated from env later (loadProjects), keeping this validator
+		// pure/env-free (same model as the per-lead botTokenEnv).
+		if (
+			entry?.announcerBotTokenEnv !== undefined &&
+			(typeof entry.announcerBotTokenEnv !== "string" ||
+				entry.announcerBotTokenEnv.length === 0)
+		) {
+			throw new Error(
+				`Project "${entry.projectName}" announcerBotTokenEnv: if provided, must be a non-empty string, got ${JSON.stringify(entry.announcerBotTokenEnv)}`,
+			);
+		}
+		delete entry.announcerBotToken;
 
 		// Validate optional memoryAllowedUsers (GEO-204)
 		const memoryAllowedUsers = entry?.memoryAllowedUsers;

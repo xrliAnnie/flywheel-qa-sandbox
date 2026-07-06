@@ -16,10 +16,14 @@
 
 import { CommDB } from "flywheel-comm/db";
 import { wakeRunnerMailbox } from "flywheel-comm/wake";
-import { modelShortCode } from "flywheel-config";
+import { modelShortCode, phaseMessageTag } from "flywheel-config";
 import type { ApplyTransitionOpts } from "../applyTransition.js";
 import type { LeadAlertNotifier } from "../LeadAlertNotifier.js";
-import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
+import {
+	type ProjectEntry,
+	resolveAnnouncerBotToken,
+	resolveLeadForIssue,
+} from "../ProjectConfig.js";
 import type { AutoQaRecord, Session, StateStore } from "../StateStore.js";
 import type { AutoQaSideEffects, QaIssueRef } from "./auto-qa-coordinator.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
@@ -133,10 +137,24 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			);
 			return;
 		}
+		// FLY-892 (Step 3): this is the CENTRAL auto-QA issue-thread post seam (the
+		// three-stage orchestrator posts through it too). Tag which phase is
+		// speaking in the single converged thread. A standalone auto-QA session (on
+		// its own QA issue, not a three-stage phase) has chat_thread_role='main' →
+		// "" → byte-unchanged.
+		const prefix = phaseMessageTag(
+			args.session.chat_thread_role,
+			args.session.runner_model,
+		);
+		// FLY-892 (Step 7): a QA status broadcast → announcer bot when configured;
+		// else the Lead bot (byte-compat).
+		const broadcastToken =
+			resolveAnnouncerBotToken(this.deps.projects, args.session.project_name) ??
+			t.botToken;
 		const res = await postDiscordMessageToChannel(
 			t.threadId,
-			args.text,
-			t.botToken,
+			`${prefix}${args.text}`,
+			broadcastToken,
 			{},
 			this.deps.fetchImpl ?? fetch,
 		);
@@ -323,6 +341,11 @@ export class AutoQaEffects implements AutoQaSideEffects {
 	 * code-review hard gate (founder NOT surfaced). eventId is keyed to (exec, head)
 	 * with NO timestamp so the alert claims-db dedup fires it ONCE per head — a
 	 * re-drive / Bridge restart re-running the codex-hold effect won't spam.
+	 *
+	 * FLY-863: the coordinator now calls this ONLY from `reconcileStuckCodexHolds`
+	 * — i.e. only once a head has sat unresolved past the stuck threshold. The
+	 * routine first-hold (the normal, self-recovering pre-Codex-approval moment
+	 * nearly every PR passes through) never reaches this method anymore.
 	 */
 	async alertCodexGateBlocked(args: {
 		session: Session;
@@ -352,13 +375,16 @@ export class AutoQaEffects implements AutoQaSideEffects {
 			);
 			return;
 		}
-		const title = `Codex code review NOT passed — ${args.session.issue_identifier ?? args.session.issue_id}`;
+		const title = `Codex code review stuck — ${args.session.issue_identifier ?? args.session.issue_id}`;
 		// R3-LOW-3: missing-head variant — no head to review; ask for a re-complete.
 		const eventId = sha
 			? `codex-gate:${args.session.execution_id}:${sha}`
 			: `codex-gate-missing-head:${args.session.execution_id}`;
+		// FLY-863: this fires ONLY from reconcileStuckCodexHolds now (past the
+		// stuck-duration threshold) — the copy says so, instead of the old
+		// "just not passed yet" framing that fired on every routine first hold.
 		const body = sha
-			? `PR head \`${sha.slice(0, 8)}\` has no Codex APPROVED — auto-QA blocked, merge blocked, founder held. Re-sent the /codex-code-review instruction to the runner. It must run Codex (or the head needs re-review if it changed).`
+			? `PR head \`${sha.slice(0, 8)}\` has been sitting WITHOUT a Codex APPROVED for an unusually long time — auto-QA blocked, merge blocked, founder held. The /codex-code-review instruction has already been re-sent; this isn't converging on its own, worth checking whether the runner is actually stuck.`
 			: `Session reached awaiting_review with NO valid PR head binding — the Codex hard gate is holding the founder but a head-specific review cannot run. Ask the runner to re-run \`complete --route needs_review --pr-head <sha> --question-id <id>\` with a valid head.`;
 		await this.deps.leadAlertNotifier.alert({
 			leadId,

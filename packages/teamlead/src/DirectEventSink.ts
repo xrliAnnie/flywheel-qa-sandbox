@@ -24,6 +24,11 @@ import type { EventFilter } from "./bridge/EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "./bridge/lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./bridge/linear-issue-finalizer.js";
+import {
+	computeShipDecision,
+	isMergeBlocked,
+	parkMergeBlock,
+} from "./bridge/merge-ship-gate.js";
 import type { PhaseOrchestrator } from "./bridge/phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
@@ -198,9 +203,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 							// the first stage_changed). `?? null` = authoritative (no stale
 							// code carried onto a reused thread).
 							modelCode: modelShortCode(env.runnerModel) ?? null,
-							// FLY-793 (Step 11): a three-stage phase creates its OWN badged
-							// thread in the side-table; 'main' → byte-unchanged.
-							chatThreadRole: env.chatThreadRole,
+							// FLY-892 (converge): one issue = one thread — no per-phase
+							// thread role is passed; the phase session and the Lead resolve
+							// the SAME (issue, channel) thread. `chat_thread_role` is still
+							// persisted on the session row (above) as the phase MARKER.
 						});
 						console.log(
 							`[DirectEventSink] ensureChatThread: created=${result.created} threadId=${result.threadId ?? "none"} error=${result.error ?? "none"}`,
@@ -347,6 +353,68 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			preExistingSession?.status === "approved_to_ship" && !desPhase2Bound;
 
 		let status: string;
+		// FLY-869 B: ship-eligibility gate — computed BEFORE any status mutation
+		// (design R2 HIGH-1: verifyApproval requires the row still be
+		// approved_to_ship, but this sink writes `completed` first, so the decision
+		// MUST be taken pre-transition and threaded into finalization). A merged
+		// landing that is NOT ship-eligible is parked with a durable merge_block
+		// marker (决定③ — no auto-revert). Sister computation: event-route.ts
+		// session_completed + W2 + complete-marker-reconciler — all MUST agree.
+		const desMergedLanding = landingStatus?.status === "merged";
+		// FLY-869 B (Codex R2 #1): on the first `complete --route needs_review` the row may
+		// not have pr_head_sha yet (it is patched later) — so a merge_block parked HERE would
+		// bind an empty head and later refuse same-head recovery. Fall back to the completion
+		// event's own evidence.headSha so the marker is bound to the REAL merged head.
+		const desPrHead =
+			preExistingSession?.pr_head_sha?.trim() ||
+			(result.evidence?.headSha as string | undefined)?.trim();
+		// Always route through the shared predicate (it uniformly honors the
+		// independent kill-switches). A missing/empty head → verifyApproval
+		// fail-closes when the gate is ON, and the kill-switch still bypasses when OFF.
+		const desDecision = desMergedLanding
+			? computeShipDecision(
+					this.store,
+					preExistingSession ?? {
+						execution_id: env.executionId,
+						project_name: env.projectName,
+					},
+					desPrHead ?? "",
+				)
+			: undefined;
+		const desShipEligible = desMergedLanding
+			? (desDecision?.eligible ?? false)
+			: undefined;
+		const desParkUnapprovedMerge = (): "awaiting_review" => {
+			if (preExistingSession) {
+				const claimed = parkMergeBlock(
+					this.store,
+					preExistingSession,
+					desPrHead ?? "",
+					desDecision ?? {
+						eligible: false,
+						mergeApprovalOk: false,
+						qaOk: false,
+						mergeReason: "no_pr_head",
+						qaReason: "session_not_found",
+					},
+				);
+				if (claimed) {
+					console.warn(
+						`[DirectEventSink] FLY-869 merge_without_approval — ${env.executionId} ` +
+							`merged head=${desPrHead ?? "(none)"} NOT ship-eligible ` +
+							`(merge=${desDecision?.mergeReason ?? "no_head"} qa=${desDecision?.qaReason ?? "n/a"}); ` +
+							`parked awaiting_review + merge_block marker (no auto-revert)`,
+					);
+					// FLY-869 决定③: one loud Discord alert (once per head — the
+					// in-process twin of the event-route path).
+					void this.autoQaCoordinator?.current?.alertMergeWithoutApproval(
+						preExistingSession,
+						`⛔ Runner ${env.executionId}（${preExistingSession.issue_id}）自行 merge 但未获批准 —— merged head ${desPrHead ?? "(none)"} 未通过 ship 闸（merge=${desDecision?.mergeReason ?? "no_head"} qa=${desDecision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
+					);
+				}
+			}
+			return "awaiting_review";
+		};
 		// FLY-208 5a: approved_to_ship + auto_approve/needs_review WITHOUT
 		// merged landing used to map to awaiting_review — FSM-invalid from
 		// approved_to_ship → rejected → stuck forever (LEARN-12 incident).
@@ -369,7 +437,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// auto_approve+merged branch and the post-approve-ship completion
 			// guard at packages/teamlead/src/bridge/event-route.ts:344-354.
 			if (landingStatus?.status === "merged") {
-				status = "completed";
+				// FLY-869 B: merged → completed ONLY when ship-eligible (verified
+				// approval + Codex + QA); otherwise park (merge_without_approval).
+				status = desShipEligible ? "completed" : desParkUnapprovedMerge();
 			} else if (isPostApproveShip) {
 				status = "completed";
 				evidenceGap = true;
@@ -379,7 +449,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		} else if (route === "auto_approve") {
 			// FLY-58: merged → completed (not approved)
 			if (landingStatus?.status === "merged") {
-				status = "completed";
+				// FLY-869 B: gate on ship-eligibility (see needs_review branch).
+				status = desShipEligible ? "completed" : desParkUnapprovedMerge();
 			} else if (isPostApproveShip) {
 				status = "completed";
 				evidenceGap = true;
@@ -399,6 +470,12 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			// running-only guard above already returns early for non-running, but
 			// the explicit branch keeps the contract unambiguous.
 			status = "completed";
+		} else if (desMergedLanding) {
+			// FLY-869 B: natural (:cool:) completion WITH a merged landing must also
+			// pass the ship-eligibility gate (design R2 HIGH-3 — every merged→completed
+			// surface). A legit approved+shipped session is eligible; an unapproved /
+			// QA-unpassed merge is parked.
+			status = desShipEligible ? "completed" : desParkUnapprovedMerge();
 		} else {
 			status = "completed";
 			// FLY-208 5a: natural completion (no route) from approved_to_ship
@@ -625,7 +702,10 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			this.autoQaCoordinator?.current
 		) {
 			const mainSession = this.store.getSession(env.executionId);
-			if (mainSession) {
+			// FLY-869 B: a merged-but-unapproved parked session sits in awaiting_review
+			// with a merge_block marker — it MUST NOT drive auto-QA (design R2 HIGH-4
+			// suppressor). Recovery (same-head approval) clears the marker + finalizes.
+			if (mainSession && !isMergeBlocked(mainSession)) {
 				try {
 					await this.autoQaCoordinator.current.onMainAwaitingReview(
 						mainSession,
@@ -690,6 +770,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				existingStatus: preExistingSession?.status,
 				route,
 				landingStatus: landingStatusForHook,
+				// FLY-869 B: thread the pre-transition decision (a parked session is
+				// awaiting_review, not completed, so this is also guarded above).
+				shipEligible: desShipEligible,
 			})
 		) {
 			this.pending.push(

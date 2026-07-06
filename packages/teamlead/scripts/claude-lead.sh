@@ -355,6 +355,77 @@ case "$COMPANION_STATE" in
     ;;
 esac
 
+# ── FLY-879: external (customer-facing) role detection (single source of truth) ──
+# An external Lead (Anna the interviewer) is a customer-facing agent wrapped in
+# Flywheel infra with a HARD-LOCKED surface: NO Runner spawning, NO Bridge/CommDB/
+# internal MCP, and — unlike a companion — NONE of the internal engineering rules
+# AND not even the cross-dept roundtable. Its ENTIRE rule surface is one
+# external-agent-contract.md. The ONLY source of truth is `external: true` on the
+# lead in projects.json (config validation guarantees external ⇒ canSpawnRunners:
+# false AND external ⊕ companion, so the two role queries never both fire).
+#
+# This mirrors the companion query structurally (three-value: external /
+# nonexternal / error) + fail-STOP, and runs ONLY on the noncompanion path — an
+# error/notfound in that window (or a missing contract later) fail-STOPs with a
+# NEW `external_config_error` kind so an external agent is never silently mis-run
+# with an internal capability surface. Placed here (before any role-dependent
+# side-effect) so a fail-STOP leaves zero side effects.
+_external_query() {
+  node -e "
+    import('file://${SCRIPT_DIR}/../dist/ProjectConfig.js').then(({ loadProjects }) => {
+      let projects;
+      try { projects = loadProjects(); } catch { process.stdout.write('error'); return; }
+      const p = projects.find(e => e.projectName === process.argv[1]);
+      if (!p) { process.stdout.write('notfound'); return; }
+      const lead = (p.leads || []).find(l => l.agentId === process.argv[2]);
+      if (!lead) { process.stdout.write('notfound'); return; }
+      process.stdout.write(lead.external === true ? 'external' : 'nonexternal');
+    }).catch(() => { process.stdout.write('error'); });
+  " "$PROJECT_NAME" "$LEAD_ID" 2>/dev/null
+}
+
+# fail-STOP alert for the external role (mirrors _companion_failstop_alert). Uses
+# the NEW `external_config_error` kind (added to lead-alert.sh's allowlist). The
+# alert token is resolved by lead-alert.sh from projects.json's alertBotTokenEnv
+# (which must live in the launcher/wrapper env — see W3/W4).
+_external_failstop_alert() {
+  local body="$1"
+  local alert_sh="${FLYWHEEL_ROOT}/scripts/lead-alert.sh"
+  if [ -x "$alert_sh" ]; then
+    "$alert_sh" \
+      --lead "$LEAD_ID" --project "$PROJECT_NAME" \
+      --kind external_config_error --severity severe \
+      --title "External Lead failed to start" \
+      --body "$body" \
+      >/dev/null 2>&1 || true
+  fi
+}
+
+IS_EXTERNAL_ROLE=false
+EXTERNAL_STATE="nonexternal"
+if [ "$IS_COMPANION_ROLE" != true ]; then
+  EXTERNAL_STATE="$(_external_query)"
+  if [ "$EXTERNAL_STATE" = "error" ]; then
+    log "external role query returned error; retrying once..."
+    EXTERNAL_STATE="$(_external_query)"
+  fi
+  case "$EXTERNAL_STATE" in
+    external)
+      IS_EXTERNAL_ROLE=true
+      log "Role: external (projects.json external:true) — locked surface: contract-only rules, no internal MCP/creds/roundtable"
+      ;;
+    nonexternal)
+      : # standard Lead path — existing IS_COS_ROLE logic decides cos vs dept (unchanged)
+      ;;
+    *)
+      log "ERROR: external role detection inconclusive (state='${EXTERNAL_STATE:-empty}') for ${PROJECT_NAME}/${LEAD_ID}."
+      log "Refusing to start (fail-STOP) so an external agent is never silently mis-run with an internal capability surface."
+      _external_failstop_alert "External role detection inconclusive (state='${EXTERNAL_STATE:-empty}') for ${PROJECT_NAME}/${LEAD_ID}; refusing to start (fail-STOP). Check ~/.flywheel/projects.json for this external agent's entry."
+      exit 1
+      ;;
+  esac
+fi
+
 # GEO-246: Include PROJECT_NAME in session file to avoid cross-project collisions.
 # e.g., ~/.flywheel/claude-sessions/geoforge3d-product-lead.session-id
 SESSION_ID_FILE="${SESSION_DIR}/${PROJECT_NAME}-${LEAD_ID}.session-id"
@@ -538,7 +609,18 @@ fi
 SHARED_RULES_DIR="${PROJECT_DIR}/.lead/shared"
 LEAD_RULES_DIR="${HOME}/.flywheel/lead-rules/${LEAD_ID}"
 
-if [ -d "$SHARED_RULES_DIR" ]; then
+if [ "$IS_EXTERNAL_ROLE" = true ]; then
+  # FLY-879: an external (customer-facing) agent NEVER stages the project's
+  # `.lead/shared` rules — its ONLY rule surface is external-agent-contract.md.
+  # Staging internal Lead rules into an outward-facing agent is exactly the leak
+  # this role class exists to prevent. Also clean any stale cache so a leftover
+  # dir can't be appended downstream (the project-side append block is guarded too).
+  if [ -d "$LEAD_RULES_DIR" ]; then
+    rm -rf "$LEAD_RULES_DIR"
+    log "External: cleaned stale shared rules cache: ${LEAD_RULES_DIR}"
+  fi
+  log "External: skipping project shared-rule sync (contract-only rule surface)"
+elif [ -d "$SHARED_RULES_DIR" ]; then
   # Ensure parent directory exists
   mkdir -p "$(dirname "$LEAD_RULES_DIR")"
 
@@ -761,10 +843,15 @@ install_discord_reply_enforcer_hook() {
 # in ~/.claude/settings.json and may already be installed by other Leads — the
 # real companion guard is the FLYWHEEL_LEAD_COMPANION=1 pane marker that makes the
 # stable hook early-exit before any bootstrap curl (post-compact-bootstrap.sh).
-if [ "$IS_COMPANION_ROLE" != true ] && command -v jq >/dev/null 2>&1; then
+# FLY-879: external Leads ALSO skip installing the PostCompact bootstrap hook —
+# their pane carries FLYWHEEL_LEAD_EXTERNAL=1 and the global stable hook early-exits
+# on it (post-compact-bootstrap.sh), same pattern as the companion marker.
+if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && command -v jq >/dev/null 2>&1; then
   install_post_compact_hook
 elif [ "$IS_COMPANION_ROLE" = true ]; then
   log "Companion: skipping PostCompact hook install (global hook honors FLYWHEEL_LEAD_COMPANION marker)"
+elif [ "$IS_EXTERNAL_ROLE" = true ]; then
+  log "External: skipping PostCompact hook install (global hook honors FLYWHEEL_LEAD_EXTERNAL marker)"
 fi
 
 # FLY-387: install the discord-reply-enforcer Stop hook for EVERY role —
@@ -898,9 +985,16 @@ ensure_tmux_session() {
 # bash dynamic scope (it is `local` in _launch_claude, the only caller).
 _emit_launch_plan() {
   printf 'LAUNCH_PLAN_BEGIN\n'
-  printf 'ROLE\t%s\n' "$([ "$IS_COMPANION_ROLE" = true ] && echo companion || echo standard)"
+  # FLY-879: three-value role — external wins over companion (they are config-level
+  # mutually exclusive, so at most one of these is true).
+  local _plan_role=standard
+  if [ "$IS_EXTERNAL_ROLE" = true ]; then _plan_role=external
+  elif [ "$IS_COMPANION_ROLE" = true ]; then _plan_role=companion
+  fi
+  printf 'ROLE\t%s\n' "$_plan_role"
   printf 'ROLE_SOURCE\tprojects-query\n'
   printf 'COMPANION_STATE\t%s\n' "${COMPANION_STATE:-}"
+  printf 'EXTERNAL_STATE\t%s\n' "${EXTERNAL_STATE:-}"
   printf 'INBOX_MCP_ENABLED\t%s\n' "${INBOX_MCP_ENABLED:-false}"
   local a
   for a in "$@"; do printf 'ARG\t%s\n' "$a"; done
@@ -977,7 +1071,10 @@ _launch_claude() {
   local _cz_comm_cli="${FLYWHEEL_COMM_CLI:-}"
   local _cz_comm_db="${FLYWHEEL_COMM_DB:-}"
   local _cz_openai_key="${OPENAI_API_KEY:-}"
-  if [ "$IS_COMPANION_ROLE" = true ]; then
+  # FLY-879: an external (customer-facing) Lead gets the SAME high-privilege-cred
+  # emptying as a companion — no Bridge token, no CommDB, no OpenAI key in its pane.
+  # Anna reaches nothing internal (its whole world is the interviews repo + Discord).
+  if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
     _cz_teamlead_token=""
     _cz_bridge_url=""
     _cz_comm_cli=""
@@ -1032,6 +1129,13 @@ _launch_claude() {
   # post-compact-bootstrap.sh hook to early-exit before any bootstrap curl.
   if [ "$IS_COMPANION_ROLE" = true ]; then
     env_args+=(-e "FLYWHEEL_LEAD_COMPANION=1")
+  fi
+
+  # FLY-879: external marker — only added for external panes (non-external env is
+  # byte-identical, no such entry). Read by the GLOBAL stable post-compact-bootstrap.sh
+  # hook to early-exit before any bootstrap curl (Anna gets no engineering bootstrap).
+  if [ "$IS_EXTERNAL_ROLE" = true ]; then
+    env_args+=(-e "FLYWHEEL_LEAD_EXTERNAL=1")
   fi
 
   # FLY-142 PR 1.2: Agent Team transport env vars. Set by
@@ -1234,12 +1338,18 @@ export PATH="$HOME/.bun/bin:$PATH"
 export PATH="${FLYWHEEL_BIN_DIR:-$HOME/.flywheel/bin}:$PATH"
 GBRAIN_PATH="$(command -v gbrain 2>/dev/null || true)"
 
+# FLY-879: locked-role label for MCP-skip log lines (companion + external share
+# the "no internal MCP" surface). Empty for a standard Lead (this block is skipped).
+_LOCKED_ROLE_LABEL="Locked"
+[ "$IS_COMPANION_ROLE" = true ] && _LOCKED_ROLE_LABEL="Companion"
+[ "$IS_EXTERNAL_ROLE" = true ] && _LOCKED_ROLE_LABEL="External"
+
 terminal_server='{}'
-if [ "$IS_COMPANION_ROLE" = true ]; then
-  # FLY-231: companion has no Runner / Bridge-action surface — do NOT register
-  # flywheel-terminal (it would inject BRIDGE_URL + TEAMLEAD_API_TOKEN, the
-  # reserved-action handle a companion must not have).
-  log "Companion: flywheel-terminal MCP NOT registered"
+if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
+  # FLY-231/FLY-879: companion AND external have no Runner / Bridge-action surface
+  # — do NOT register flywheel-terminal (it would inject BRIDGE_URL +
+  # TEAMLEAD_API_TOKEN, the reserved-action handle a locked agent must not have).
+  log "${_LOCKED_ROLE_LABEL}: flywheel-terminal MCP NOT registered"
 elif [ -d "$TERMINAL_MCP_DIR" ]; then
   TERMINAL_MCP_BIN="$(cd "$TERMINAL_MCP_DIR" && pwd)/index.js"
   # FLY-102: inject BRIDGE_URL + TEAMLEAD_API_TOKEN so close_runner tool
@@ -1270,10 +1380,10 @@ fi
 # FLY-47: Inbox MCP for CommDB → Lead channel push delivery
 INBOX_MCP_ENABLED=false
 inbox_server='{}'
-if [ "$IS_COMPANION_ROLE" = true ]; then
-  # FLY-231: companion has no Runner mailbox / inbox need — leave disabled
-  # (also skips the inbox-ack rule + post-launch inbox poller downstream).
-  log "Companion: flywheel-inbox MCP NOT registered"
+if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
+  # FLY-231/FLY-879: companion AND external have no Runner mailbox / inbox need —
+  # leave disabled (also skips the inbox-ack rule + post-launch inbox poller).
+  log "${_LOCKED_ROLE_LABEL}: flywheel-inbox MCP NOT registered"
 elif [ -d "$INBOX_MCP_DIR" ]; then
   INBOX_MCP_BIN="$(cd "$INBOX_MCP_DIR" && pwd)/index.js"
   COMM_DB_PATH="${HOME}/.flywheel/comm/${PROJECT_NAME}/comm.db"
@@ -1301,9 +1411,10 @@ fi
 
 # FLY-90: gbrain MCP for project Wiki.
 gbrain_server='{}'
-if [ "$IS_COMPANION_ROLE" = true ]; then
-  # FLY-231: companion has no project Wiki — reserved infra MCP stays empty.
-  log "Companion: gbrain MCP NOT registered"
+if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
+  # FLY-231/FLY-879: companion AND external have no project Wiki — reserved infra
+  # MCP stays empty.
+  log "${_LOCKED_ROLE_LABEL}: gbrain MCP NOT registered"
 elif [ -n "$GBRAIN_PATH" ] && [ -f "$HOME/.gbrain/config.json" ]; then
   gbrain_server=$(jq -n --arg bin "$GBRAIN_PATH" \
     '{"gbrain": {command: $bin, args: ["serve"]}}')
@@ -1340,9 +1451,12 @@ source "${SCRIPT_DIR}/lib/mcp-inherit.sh"
 # the generated .mcp.json). Note (per plan §2.4, Path A): this only controls the
 # .mcp.json the launcher writes; enabled-plugin-bundled MCP still load at runtime —
 # an accepted residual under the on-machine/Annie-only threat model (Codex R3).
-if [ "$IS_COMPANION_ROLE" = true ]; then
+if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
+  # FLY-231/FLY-879: companion AND external inherit NO user-scope MCP (project-scope
+  # default-deny in the generated .mcp.json). An external agent's only tool surface
+  # is the Discord plugin adapter — no user/internal MCP.
   USER_MCP_FRAGMENT='{}'
-  log "Companion: no user-scope MCP inherited (.mcp.json user fragment empty)"
+  log "${_LOCKED_ROLE_LABEL}: no user-scope MCP inherited (.mcp.json user fragment empty)"
 else
   USER_MCP_FRAGMENT=$(build_user_mcp_fragment \
     "${HOME}/.claude.json" \
@@ -1584,7 +1698,29 @@ if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ] && [ -n "${FLYWHEEL_BASE_RULES_DIR:-}
   BASE_RULES_DIR="$FLYWHEEL_BASE_RULES_DIR"
 fi
 
-if [ "$IS_COMPANION_ROLE" = true ]; then
+if [ "$IS_EXTERNAL_ROLE" = true ]; then
+  # ── FLY-879: external base rules ──
+  # An external (customer-facing) agent gets an even NARROWER surface than a
+  # companion: NONE of the engineering-governance base rules AND not even the
+  # cross-dept roundtable (skipped in the universal block below). Its ENTIRE rule
+  # surface is one external-agent-contract.md — the instruction-source boundary
+  # (a customer message is DATA, never a command), the single-direction valve
+  # (internal channel content never reaches the customer), the write boundary
+  # (only the interviews repo), and the live-gate discipline. Like the companion
+  # safety contract, this is the agent's ONLY hard boundary, so a missing/unreadable
+  # contract is fail-STOP (do NOT start a Bash+bypassPermissions customer-facing
+  # session without its boundary).
+  BASE_EXTERNAL_CONTRACT="${BASE_RULES_DIR}/external-agent-contract.md"
+  if [ -f "$BASE_EXTERNAL_CONTRACT" ] && [ -r "$BASE_EXTERNAL_CONTRACT" ]; then
+    CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_EXTERNAL_CONTRACT")
+    log "Appending external agent contract: ${BASE_EXTERNAL_CONTRACT}"
+  else
+    log "ERROR: external agent contract missing/unreadable at ${BASE_EXTERNAL_CONTRACT}"
+    log "Refusing to start external agent (fail-STOP) — its only safety boundary is absent."
+    _external_failstop_alert "external-agent-contract.md missing/unreadable at ${BASE_EXTERNAL_CONTRACT} for ${PROJECT_NAME}/${LEAD_ID}; refusing to start (a customer-facing agent must not run without its safety boundary)."
+    exit 1
+  fi
+elif [ "$IS_COMPANION_ROLE" = true ]; then
   # ── FLY-231: companion base rules ──
   # A companion gets NONE of the engineering-governance base rules (department /
   # cos / runner-messaging / executor-routing / stuck-remanage / doc-flow) — they
@@ -1775,28 +1911,33 @@ fi
 # any Lead with Bridge action credentials could otherwise invoke them.
 # Optional — missing base file is a no-op (pre-FLY-175 backward compat).
 BASE_FOUNDER_AUTH_RULES="${BASE_RULES_DIR}/founder-only-authority.md"
-if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r "$BASE_FOUNDER_AUTH_RULES" ]; then
-  # FLY-231: companion skips this 20KB reserved-action contract — the short
-  # companion-safety-contract.md (above) covers its boundary in a non-engineering tone.
+if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_FOUNDER_AUTH_RULES" ] && [ -r "$BASE_FOUNDER_AUTH_RULES" ]; then
+  # FLY-231/FLY-879: companion AND external skip this 20KB reserved-action contract
+  # — the short companion-safety-contract.md / external-agent-contract.md (above)
+  # covers each one's boundary in a non-engineering tone.
   CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_AUTH_RULES")
   log "Appending base founder-only-authority rules: ${BASE_FOUNDER_AUTH_RULES}"
 fi
 
-# ── FLY-598: Founder-facing UX judgment (universal — cos + dept, NOT companion) ──
-# Loads ONLY when this project enables the founder-UX gate
-# (founder_ux_gate.mode != off in .flywheel/config.yaml). Unlike doc-flow-rules
-# (always-appended + self-checking), this is CONDITIONALLY appended so an
-# un-enabled project (mode off / absent) sees ZERO Lead prompt change
-# (Codex R3-#3 / R2-#6 byte-compat). Guides whoever writes/triages issues
-# (cos + dept) to judge founder-facing UX and apply the `founder-facing-ux` label;
-# judgment is model-driven loose guidance, the enforcement is the Bridge gate.
+# ── FLY-598 / FLY-869: Founder brainstorm-alignment gate (universal — cos + dept, NOT companion) ──
+# Loads UNLESS this project EXPLICITLY disables the founder-UX gate
+# (founder_ux_gate.mode: off in .flywheel/config.yaml). FLY-869 flips the
+# default from opt-in to default-ON — an ABSENT founder_ux_gate block (or an
+# absent config file entirely) now resolves to "enforce" (mirrors
+# resolveEffectiveFounderUxConfig in flywheel-config), so this block is
+# appended for the common case. Only an EXPLICIT `mode: off` keeps the
+# pre-FLY-598 byte-compatible zero-prompt-change behavior (Codex R3-#3 / R2-#6
+# byte-compat, preserved for that one escape hatch). Guides whoever
+# writes/triages issues (cos + dept) that every substantial issue is gated by
+# default and only the `brainstorm-exempt` label opts an issue OUT; judgment
+# is model-driven loose guidance, the enforcement is the Bridge gate.
 BASE_FOUNDER_UX_RULES="${BASE_RULES_DIR}/founder-ux-rules.md"
-if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_FOUNDER_UX_RULES" ] && [ -r "$BASE_FOUNDER_UX_RULES" ]; then
+if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_FOUNDER_UX_RULES" ] && [ -r "$BASE_FOUNDER_UX_RULES" ]; then
   # Read founder_ux_gate.mode from the project config WITHOUT aborting under
   # `set -euo pipefail`: only awk when the config file exists, and `|| true` so a
-  # missing/malformed config (awk exit != 0) never kills the launch (a missing
-  # config simply means "gate off" → no append). This is why doc-flow-rules above
-  # self-checks inside the rule file instead — this block is the one shell-side read.
+  # missing/malformed config (awk exit != 0) never kills the launch. This is why
+  # doc-flow-rules above self-checks inside the rule file instead — this block is
+  # the one shell-side read.
   FOUNDER_UX_MODE=""
   _founder_ux_cfg="${PROJECT_DIR}/.flywheel/config.yaml"
   if [ -f "$_founder_ux_cfg" ]; then
@@ -1806,7 +1947,15 @@ if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_FOUNDER_UX_RULES" ] && [ -r "
       inblk && $1 == "mode:" { v=$2; gsub(/["'"'"',]/, "", v); print v; exit }
     ' "$_founder_ux_cfg" 2>/dev/null || true)"
   fi
-  if [ -n "$FOUNDER_UX_MODE" ] && [ "$FOUNDER_UX_MODE" != "off" ]; then
+  # FLY-869: absent config (no file / no founder_ux_gate block / no mode key —
+  # FOUNDER_UX_MODE still empty here) now DEFAULTS TO "enforce", mirroring
+  # resolveEffectiveFounderUxConfig's absent → enforce resolution. Only an
+  # EXPLICIT `mode: off` in the project config stays the byte-compatible
+  # no-append kill-switch.
+  if [ -z "$FOUNDER_UX_MODE" ]; then
+    FOUNDER_UX_MODE="enforce"
+  fi
+  if [ "$FOUNDER_UX_MODE" != "off" ]; then
     CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_FOUNDER_UX_RULES")
     log "Appending base founder-ux rules (founder_ux_gate.mode=${FOUNDER_UX_MODE}): ${BASE_FOUNDER_UX_RULES}"
   fi
@@ -1818,8 +1967,8 @@ fi
 # link), never as a local file path. Loads for EVERY Lead role.
 # Optional — missing base file is a no-op (pre-FLY-203 backward compat).
 BASE_HTML_DELIVERY_RULES="${BASE_RULES_DIR}/founder-html-delivery.md"
-if [ "$IS_COMPANION_ROLE" != true ] && [ -f "$BASE_HTML_DELIVERY_RULES" ] && [ -r "$BASE_HTML_DELIVERY_RULES" ]; then
-  # FLY-231: companion produces no HTML reports — skip.
+if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_HTML_DELIVERY_RULES" ] && [ -r "$BASE_HTML_DELIVERY_RULES" ]; then
+  # FLY-231/FLY-879: companion + external produce no founder HTML reports — skip.
   CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_HTML_DELIVERY_RULES")
   log "Appending base founder-html-delivery rules: ${BASE_HTML_DELIVERY_RULES}"
 fi
@@ -1832,7 +1981,10 @@ fi
 # have not joined the channel see zero behavior change). Optional — missing base
 # file is a no-op (pre-FLY-223 backward compat).
 BASE_CROSS_DEPT_RULES="${BASE_RULES_DIR}/cross-dept-channel-rules.md"
-if [ -f "$BASE_CROSS_DEPT_RULES" ] && [ -r "$BASE_CROSS_DEPT_RULES" ]; then
+# FLY-879: external agents (Anna) are NOT roundtable members and must never see the
+# internal Lead roster / cross-dept coordination surface — skip (companion keeps it,
+# it IS a roundtable member). This is why external ≠ "companion with a different name".
+if [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_CROSS_DEPT_RULES" ] && [ -r "$BASE_CROSS_DEPT_RULES" ]; then
   CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_CROSS_DEPT_RULES")
   log "Appending base cross-dept-channel rules: ${BASE_CROSS_DEPT_RULES}"
 fi
@@ -1844,13 +1996,21 @@ fi
 # recurring victim) — every Lead replies on Discord, so no companion guard.
 # Optional — missing base file is a no-op (backward compat with older checkouts).
 BASE_DISCORD_REPLY_CONTRACT="${BASE_RULES_DIR}/discord-reply-contract.md"
-if [ -f "$BASE_DISCORD_REPLY_CONTRACT" ] && [ -r "$BASE_DISCORD_REPLY_CONTRACT" ]; then
+# FLY-879: external agents keep a deliberately minimal, auditable rule surface —
+# EXACTLY one file (external-agent-contract.md). Skip this soft output-contract too
+# (the discord-reply-enforcer Stop hook — installed for EVERY role incl. external —
+# is the real, effort-independent reply-leak defense; the prose is redundant here).
+if [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_DISCORD_REPLY_CONTRACT" ] && [ -r "$BASE_DISCORD_REPLY_CONTRACT" ]; then
   CLAUDE_ARGS+=(--append-system-prompt-file "$BASE_DISCORD_REPLY_CONTRACT")
   log "Appending base discord-reply-contract rules: ${BASE_DISCORD_REPLY_CONTRACT}"
 fi
 
 # ── FLY-26: project-side shared rules (concrete data) ──
-if [ -d "$LEAD_RULES_DIR" ]; then
+# FLY-879: external agents never append the project's common/department rules —
+# their surface is contract-only, and those rules are internal engineering data.
+# (The sync above already skipped staging them; this guard is belt-and-suspenders
+# against a stale LEAD_RULES_DIR.)
+if [ "$IS_EXTERNAL_ROLE" != true ] && [ -d "$LEAD_RULES_DIR" ]; then
   COMMON_RULES="${LEAD_RULES_DIR}/common-rules.md"
   if [ ! -f "$COMMON_RULES" ] || [ ! -r "$COMMON_RULES" ]; then
     echo "[lead] ERROR: Required shared rule file missing or unreadable: ${COMMON_RULES}"
@@ -1891,9 +2051,10 @@ fi
 # so the prompt can find `find-window.sh` by an explicit path.
 export FLYWHEEL_TEAMLEAD_SCRIPT_DIR="$SCRIPT_DIR"
 
-if [ "$IS_COMPANION_ROLE" = true ]; then
-  # FLY-231: companion has no screenshot duty — skip the L3 screencapture skill.
-  log "Companion: L3 screencapture skill skipped"
+if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
+  # FLY-231/FLY-879: companion + external have no screenshot duty — skip the L3
+  # screencapture skill (an external agent must never read the founder's screen).
+  log "${_LOCKED_ROLE_LABEL}: L3 screencapture skill skipped"
 elif [ "${LEAD_DISABLE_SCREENCAPTURE_SKILL:-0}" != "1" ]; then
   SCREENCAP_SKILL="${SCRIPT_DIR}/screencapture-l3-skill.md"
   if [ -f "$SCREENCAP_SKILL" ] && [ -r "$SCREENCAP_SKILL" ]; then
@@ -1921,11 +2082,12 @@ fi
 # Default `FLYWHEEL_AGENT_BACKEND=claude-code`. Set `FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT=1`
 # to bypass preflight (for emergency / dev iteration).
 
-if [ "$IS_COMPANION_ROLE" = true ]; then
-  # FLY-231: companion has no Runner mailbox / Agent Team need — skip the entire
-  # transport wiring (preflight, lead-env merge, lead-args). No mailbox identity is
-  # injected; the companion talks to Annie via the Discord plugin only.
-  log "Companion: skipping Agent Team transport wiring (no Runner mailbox)"
+if [ "$IS_COMPANION_ROLE" = true ] || [ "$IS_EXTERNAL_ROLE" = true ]; then
+  # FLY-231/FLY-879: companion AND external have no Runner mailbox / Agent Team need
+  # — skip the entire transport wiring (preflight, lead-env merge, lead-args). No
+  # mailbox identity is injected; they talk via the Discord plugin only (an external
+  # agent has no internal peers to message).
+  log "${_LOCKED_ROLE_LABEL}: skipping Agent Team transport wiring (no Runner mailbox)"
 elif command -v agent-team-transport >/dev/null 2>&1; then
   # Preflight gate: refuse to start Lead if backend is broken.
   if [ "${FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT:-0}" != "1" ]; then
@@ -2116,8 +2278,10 @@ while true; do
     # content that pollutes a companion persona; the persona itself is injected via
     # --agent identity.md and survives compaction). The global PostCompact hook is
     # separately gated by the FLYWHEEL_LEAD_COMPANION pane marker.
-    if [ "$IS_COMPANION_ROLE" != true ]; then
+    if [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ]; then
       send_bootstrap
+    elif [ "$IS_EXTERNAL_ROLE" = true ]; then
+      log "External: skipping engineering bootstrap (persona via --agent agent.md; no Bridge access)"
     else
       log "Companion: skipping engineering bootstrap (persona via --agent identity.md)"
     fi

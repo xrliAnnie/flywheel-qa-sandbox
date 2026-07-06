@@ -972,11 +972,20 @@ function titleFor(kind: AlertEventType): string {
 		// title); case exists for switch exhaustiveness.
 		case "codex_gate_blocked":
 			return "Codex code review not passed";
+		// FLY-871 R2/C8: never emitted by LeadWatchdog (the runner auth scan owns
+		// it and builds its own title); case exists for switch exhaustiveness.
+		case "runner_login_expired":
+			return "Runner logged out";
 	}
 }
 
 function severityFor(kind: AlertEventType): AlertPayload["severity"] {
-	if (kind === "crash_loop" || kind === "login_expired") return "severe";
+	if (
+		kind === "crash_loop" ||
+		kind === "login_expired" ||
+		kind === "runner_login_expired"
+	)
+		return "severe";
 	if (kind === "permission_blocked") return "warning";
 	return "warning";
 }
@@ -1020,5 +1029,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-827: never emitted by LeadWatchdog (AutoQaEffects builds its own body).
 		case "codex_gate_blocked":
 			return "A PR reached awaiting_review but Codex code review is not APPROVED for the current head. The hard gate blocked auto-QA + merge and held the founder; the runner was re-sent the /codex-code-review instruction.";
+		// FLY-871 R2/C8: never emitted by LeadWatchdog (the runner auth scan builds its own body).
+		case "runner_login_expired":
+			return "A Runner appears logged out (auth/login expired). Rescue restarts it in place so it re-reads the fresh Keychain; if that fails once, the founder is paged.";
 	}
 }

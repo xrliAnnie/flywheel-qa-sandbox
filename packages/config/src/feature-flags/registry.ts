@@ -166,6 +166,62 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"resolve.direct-toggle.test:codex_hard_gate_killswitch live-observe + verify-approval.test:.env live-toggle",
 	},
 	{
+		// FLY-869 B: the merge-race ship gate kill-switch. Default-ON (决定②): a merged
+		// landing maps to completed/Done ONLY when verifyApproval confirms a bound,
+		// answered approve_to_ship for the current head (+ FLY-827 Codex gate) — else the
+		// session is parked with a merge_block marker (决定③, no auto-revert) + a loud
+		// alert. `=0` is the emergency release (restores the pre-FLY-869 merged→completed
+		// short-circuit). INDEPENDENT of the QA gate below (R2 HIGH-3). Read via the
+		// shared evaluateShipEligibility predicate (const key in ship-eligibility.ts).
+		name: "merge_approval_gate_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_MERGE_APPROVAL_GATE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"全局关掉 merge-抢跑 ship 闸（=0 应急放行；默认 ON=merged 只有经 verifyApproval 批准才 completed/Done，否则挂 merge_block 不自动 revert + 响亮 alert）",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"evaluateShipEligibility (resolveDefaultOnGate MERGE_APPROVAL_GATE_KEY)",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "B 与 A（FLYWHEEL_QA_DONE_GATE）独立开关（R2 HIGH-3）；改后需重启 Bridge。",
+	},
+	{
+		// FLY-869 A: the QA-done ship gate kill-switch. Default-ON (决定②/④): a session
+		// whose persisted qa_required snapshot is 1 needs a PASSED auto_qa_record for the
+		// head before completed/Done; exempt (snapshot 0 / no-code / no-PR / no-qa label /
+		// qa.auto:false) passes. `=0` is the emergency release. INDEPENDENT of the merge
+		// gate above (R2 HIGH-3). Read via the shared evaluateQaShipGate predicate.
+		name: "qa_done_gate_killswitch",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_QA_DONE_GATE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"全局关掉 QA-done ship 闸（=0 应急放行；默认 ON=qa_required=1 的 session 必须有 head 的 passed auto_qa_record 才 completed/Done；豁免口=快照0/no-code/no-PR/no-qa/qa.auto:false）",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/ship-eligibility.ts",
+				"evaluateQaShipGate (resolveDefaultOnGate QA_DONE_GATE_KEY)",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+		note: "A 与 B（FLYWHEEL_MERGE_APPROVAL_GATE）独立开关（R2 HIGH-3）；改后需重启 Bridge。",
+	},
+	{
 		// FLY-793: global hard kill-switch for the three-stage pipeline
 		// (Design→Implement→QA). The PRIMARY toggle is the per-project
 		// `pipeline.three_stage` config key; this env is a fleet-wide emergency OFF
@@ -809,6 +865,26 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "stale_terminal_close",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_STALE_TERMINAL_CLOSE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-867: 终态 session 的 tmux 还活着超过 stale 阈值 → 经 closeRunner 自动收(泄漏兜底);=0 回退 GEO-270 纯通知",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/HeartbeatService.ts",
+				"staleCloseEnabled",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "commdb_fsm_reconcile",
 		category: "feature",
 		source: "env",
@@ -1306,11 +1382,14 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		source: "project_config",
 		scope: "project",
 		configKey: "founder_ux_gate.mode",
-		polarity: "opt_in",
+		// FLY-869: flipped default_on — an absent config resolves to `enforce`
+		// via resolveEffectiveFounderUxConfig (was opt_in `off` under FLY-598).
+		polarity: "default_on",
 		valueKind: "enum",
 		enumValues: ["off", "audit_only", "enforce"],
-		default: "off",
-		description: "founder-facing UX brainstorm 门（治理门，只读）",
+		default: "enforce",
+		description:
+			"全 issue brainstorm 对齐门（治理门，只读）— 默认 gate 所有实质性 issue，仅 brainstorm-exempt 标签豁免",
 		readSites: [
 			{
 				file: "packages/config/src/ConfigLoader.ts",
@@ -1320,6 +1399,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			},
 		],
 		toggleable: "readonly",
+		note: "absent → enforce（resolveEffectiveFounderUxConfig 收口，FLY-869）；显式 mode:off 才是旧行为的 kill-switch。",
 	},
 	// ─── FLY-818: auto-continue (①) + stuck→founder-page (②) ───
 	{

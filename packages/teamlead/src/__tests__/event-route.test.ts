@@ -76,10 +76,16 @@ describe("Event route", () => {
 		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
 		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
 		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -369,10 +375,16 @@ describe("Event route — structured hook payload", () => {
 		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
 		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
 		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -509,10 +521,16 @@ describe("Event route — EventFilter integration", () => {
 		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
 		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
 		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -645,10 +663,16 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
 		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
 		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -720,10 +744,16 @@ describe("Event route — GEO-292 stage tracking", () => {
 		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
 		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
 		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -1353,10 +1383,16 @@ describe("Event route — issue_identifier fallback (GEO-202)", () => {
 		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
 		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
 		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -1544,10 +1580,16 @@ describe("Event route — stage_context honesty (FLY-208 7a)", () => {
 		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
 		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
 		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
 		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});

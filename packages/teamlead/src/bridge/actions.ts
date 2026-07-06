@@ -25,6 +25,7 @@ import type { EventFilter } from "./EventFilter.js";
 import { buildSessionKey, type HookPayload } from "./hook-payload.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
+import { finalizeRecoveredMerge } from "./merge-ship-gate.js";
 import { reconcileGatewayRetry } from "./retry-dispatch-wal.js";
 import type { IRetryDispatcher } from "./retry-dispatcher.js";
 import { sendRunnerWake } from "./runner-wake.js";
@@ -353,6 +354,31 @@ export async function approveExecution(
 			message: `FSM rejected approve transition for ${identifier ?? executionId}`,
 			alreadyResponded: true,
 		};
+	}
+
+	// FLY-869 B-3 recovery (design R2 HIGH-5): if this session was parked with a
+	// merge_block marker (an unapproved merge) bound to the current PR head, THIS
+	// founder approval un-parks it — clear the marker so it is no longer held from
+	// founder surfaces and can complete via the (now ship-eligible) finalization path.
+	// FLY-869 B-3 recovery (Codex R1 #1 / R2 #2): a same-head founder approval on a parked
+	// merged-but-unapproved session drives it to completed + Linear Done — but ONLY when it is
+	// now fully ship-eligible; an unmet QA/Codex gate leaves the durable merge_block marker in
+	// place (still held). No-op for a normal (non-parked) approval. Worktree cleanup is
+	// intentionally omitted here (Codex R2 #3): a self-merged runner's worktree is already gone,
+	// and the periodic worktree reaper covers any straggler — the approval handlers do not carry
+	// the removeCleanWorktree closure.
+	if (config) {
+		const completed = await finalizeRecoveredMerge(
+			store,
+			config,
+			projects,
+			session.execution_id,
+		);
+		if (completed) {
+			console.log(
+				`[actions] FLY-869 B-3 recovered merge finalized → completed for ${executionId}`,
+			);
+		}
 	}
 
 	// FLY-58: Always set session_stage to "ship" on approve.

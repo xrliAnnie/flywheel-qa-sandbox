@@ -145,3 +145,96 @@ describe("StateStore — FLY-827 codex_review_record", () => {
 		expect(store.isCodexCodeReviewApproved("exec1", upper)).toBe(true);
 	});
 });
+
+describe("StateStore — FLY-863 codex-hold stuck escalation", () => {
+	let store: StateStore;
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+	});
+
+	const HOUR_MS = 60 * 60 * 1000;
+
+	it("listCodexHoldsPendingOlderThan excludes a fresh hold below the threshold", () => {
+		store.claimCodexHoldNotify({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		expect(store.listCodexHoldsPendingOlderThan(Date.now(), HOUR_MS)).toEqual(
+			[],
+		);
+	});
+
+	it("listCodexHoldsPendingOlderThan includes a hold once the threshold has elapsed", () => {
+		store.claimCodexHoldNotify({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		const farFuture = Date.now() + HOUR_MS + 5000;
+		const rows = store.listCodexHoldsPendingOlderThan(farFuture, HOUR_MS);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]?.execution_id).toBe("exec1");
+		expect(rows[0]?.target_pr_head_sha).toBe(SHA_A);
+	});
+
+	it("excludes a row that was never live-held (upsertCodexReviewPending only)", () => {
+		store.upsertCodexReviewPending({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		const farFuture = Date.now() + HOUR_MS + 5000;
+		expect(store.listCodexHoldsPendingOlderThan(farFuture, HOUR_MS)).toEqual(
+			[],
+		);
+	});
+
+	it("excludes a head that has since been approved", () => {
+		store.claimCodexHoldNotify({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		store.recordCodexReviewApproved({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		const farFuture = Date.now() + HOUR_MS + 5000;
+		expect(store.listCodexHoldsPendingOlderThan(farFuture, HOUR_MS)).toEqual(
+			[],
+		);
+	});
+
+	it("claimCodexHoldStuckNotify fires exactly once per (exec, head)", () => {
+		store.claimCodexHoldNotify({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		expect(store.claimCodexHoldStuckNotify("exec1", SHA_A)).toBe(true);
+		expect(store.claimCodexHoldStuckNotify("exec1", SHA_A)).toBe(false);
+	});
+
+	it("listCodexHoldsPendingOlderThan excludes a row already escalated", () => {
+		store.claimCodexHoldNotify({
+			executionId: "exec1",
+			targetPrHeadSha: SHA_A,
+			issueId: "FLY-1",
+			projectName: "proj",
+		});
+		store.claimCodexHoldStuckNotify("exec1", SHA_A);
+		const farFuture = Date.now() + HOUR_MS + 5000;
+		expect(store.listCodexHoldsPendingOlderThan(farFuture, HOUR_MS)).toEqual(
+			[],
+		);
+	});
+});

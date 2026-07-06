@@ -29,12 +29,19 @@ export {
 	resolveAllFlags,
 	resolveFlag,
 } from "./feature-flags/index.js";
+// FLY-869: founder-UX gate resolution choke point (absent config → enforce).
+export type { EffectiveFounderUxGateConfig } from "./founder-ux-config.js";
+export {
+	DEFAULT_FOUNDER_UX_EXEMPT_LABELS,
+	resolveEffectiveFounderUxConfig,
+} from "./founder-ux-config.js";
 // FLY-728: per-issue model routing — tier vocabulary (dispatch whitelist +
 // tier→model default + F/O/S/H short code).
 export type { ModelTier, ModelTierSpec } from "./model-tiers.js";
 export {
 	ACCEPTED_DISPATCH_MODELS,
 	MODEL_TIERS,
+	modelDisplayName,
 	modelShortCode,
 	normalizeDispatchModel,
 } from "./model-tiers.js";
@@ -118,6 +125,10 @@ export {
 	DEFAULT_PHASE_TIER,
 	isThreeStagePhaseRole,
 	nextPhase,
+	PHASE_THREAD_BADGE,
+	PHASE_THREAD_BADGE_PARTS,
+	phaseMessageTag,
+	phaseThreadBadge,
 	resolveCompletionSessionRole,
 	resolvePhaseModel,
 	THREE_STAGE_PHASE_SEQUENCE,

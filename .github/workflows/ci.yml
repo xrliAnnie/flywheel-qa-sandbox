@@ -24,7 +24,13 @@ jobs:
   build-and-test:
     name: Build & Test
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # FLY-889: 10 → 20. The suite runs ~750s (the single `Test` step alone is
+    # 446-467s, dominated by the teamlead package's 349 test files sitting last
+    # in the pnpm workspace topo order). 10min gave near-zero headroom, so ~half
+    # of non-superseded runs hit the wall and were force-cancelled — NOT a test
+    # failure, and it masks real failures (see FLY-882). 20min gives ~60%+
+    # headroom without shaving the suite itself (that's FLY-889-B, a follow-up).
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -58,15 +64,19 @@ jobs:
       - name: Test
         run: pnpm test:packages:run
 
+      # FLY-889: tmux/lsof/sqlite3 are each needed by a later hermetic test step
+      # (cmux-sync / FLY-183 orphan-reaper / FLY-697 codex-log-guard). Installing
+      # all three here in one apt-get avoids repeating `apt-get update` three
+      # times for the same effect.
+      - name: Install tmux/lsof/sqlite3 for hermetic test scripts
+        run: sudo apt-get update && sudo apt-get install -y tmux lsof sqlite3
+
       # FLY-110: cmux-sync hook integration test runs against an isolated
       # tmux server (custom -L socket name) so it cannot interfere with
       # other CI processes. Verifies the production-critical cleanup path:
       # pane-died (global hook) fires when a remain-on-exit pane process
       # exits — the bug that left cmux sidebar entries hanging for 5+
       # minutes in production until FLY-110.
-      - name: Install tmux for cmux-sync hook integration test
-        run: sudo apt-get update && sudo apt-get install -y tmux
-
       - name: Integration test — cmux-sync hooks
         run: bash scripts/test-cmux-sync-hooks-integration.sh
 
@@ -74,9 +84,6 @@ jobs:
       # process-table source is injected (FLY183_PS_OVERRIDE) and all spawned
       # processes are test-owned, so this never touches a real adapter. lsof is
       # needed for the cwd-probe / identity-label cases (T3/T4).
-      - name: Install lsof for adapter-reap test
-        run: sudo apt-get update && sudo apt-get install -y lsof
-
       - name: Test — Discord adapter orphan reaper (FLY-183)
         run: bash packages/teamlead/scripts/__tests__/adapter-reap.test.sh
 
@@ -92,6 +99,11 @@ jobs:
           bash scripts/__tests__/provision-fleet-host.test.sh
           bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
 
+      # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
+      # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
+      - name: Test — FLY-882 Discord bot token pool
+        run: bash scripts/__tests__/discord-bot-pool.test.sh
+
       # FLY-513: global-codex repoint apply-path (hermetic — fake HOME + fake
       # source release + mock codex on PATH; never touches the real global symlink).
       - name: Test — FLY-513 global-codex repoint apply-path
@@ -100,8 +112,12 @@ jobs:
       # FLY-697: Codex TRACE-log SSD-wear guard. Hermetic — runs against a
       # throwaway sqlite DB and shims lsof/osascript via PATH, so it never
       # touches a real ~/.codex/logs_2.sqlite. Needs the sqlite3 CLI.
-      - name: Install sqlite3 for codex-log-guard test
-        run: sudo apt-get update && sudo apt-get install -y sqlite3
-
       - name: Test — FLY-697 codex-log-guard
         run: bash scripts/__tests__/codex-log-guard.test.sh
+
+      # FLY-880: internal PM agent role .md contract guard. Pure text assertions
+      # (no external deps) — defends the 40k injection-truncation red line and the
+      # product-co-creation (mode A) + inherited docs/design (mode B) anchors
+      # against silent regression.
+      - name: Test — FLY-880 PM executor role contract
+        run: bash scripts/__tests__/test-pm-executor-contract.sh

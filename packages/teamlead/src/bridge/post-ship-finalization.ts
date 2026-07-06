@@ -19,6 +19,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { phaseMessageTag } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
@@ -65,6 +66,16 @@ export function isPostApproveShipComplete(args: {
 	existingStatus: string | undefined;
 	route: string | undefined;
 	landingStatus: { status?: string } | undefined;
+	/**
+	 * FLY-869 B (design R2 HIGH-1 / MED-1): the PRE-computed ship-eligibility
+	 * decision (approval + Codex + QA), taken BEFORE the status mutation. This is
+	 * the SINGLE finalization chokepoint — a merged landing that is NOT ship-eligible
+	 * was parked with a merge_block marker and MUST NOT finalize (mark Done / tear
+	 * down). `false` → refuse finalization. `undefined` (non-merged paths, or a
+	 * caller that legitimately did not evaluate) → the merged guard below already
+	 * fails for non-merged, so it does not weaken any existing path.
+	 */
+	shipEligible?: boolean;
 }): boolean {
 	// FLY-208 5a (Codex design R2 #1): merge evidence is REQUIRED in every
 	// branch. Previously `existingStatus === "approved_to_ship"` returned true
@@ -75,6 +86,8 @@ export function isPostApproveShipComplete(args: {
 	// merged. Finalization for evidence-gap completions is deferred to
 	// FLY-210 (PR-state freshness) or a manual close.
 	if (args.landingStatus?.status !== "merged") return false;
+	// FLY-869 B: never finalize a merged-but-unapproved (parked) session.
+	if (args.shipEligible === false) return false;
 	if (args.existingStatus === "approved_to_ship") return true;
 	if (args.route === "auto_approve") return true;
 	if (args.route === "needs_review") return true; // FLY-120
@@ -262,6 +275,8 @@ export async function runPostShipFinalization(
 		: undefined;
 
 	// ── (2) notifier — atomic dedupe; MUST run BEFORE archive ──
+	// FLY-892 (Step 3): tag which phase's runner finished; "" for main (byte-compat).
+	const finalizedSession = store.getSession(opts.executionId);
 	await emitRunnerReadyToCloseNotification(
 		{
 			executionId: opts.executionId,
@@ -273,6 +288,10 @@ export async function runPostShipFinalization(
 			errors: cleanup.errors?.length ? cleanup.errors : undefined,
 			thread,
 			botToken,
+			phasePrefix: phaseMessageTag(
+				finalizedSession?.chat_thread_role,
+				finalizedSession?.runner_model,
+			),
 		},
 		{ store },
 	);

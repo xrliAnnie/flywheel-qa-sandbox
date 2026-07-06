@@ -30,12 +30,17 @@ import {
 	WorkflowFSM,
 } from "flywheel-core";
 import type { CipherWriter, MemoryService } from "flywheel-edge-worker";
+import { recordAuthHealth as ledgerRecordAuthHealth } from "../account-heal/account-ledger.js";
 import { makeAccountSwitchRepair } from "../account-heal/account-switch-repair.js";
 import { accountSwitchWatchdogTick } from "../account-heal/account-switch-watchdog.js";
 import {
 	claudeProfileBinPath,
 	makeClaudeProfileSwitchDeps,
 } from "../account-heal/claude-profile-cli.js";
+import {
+	classifyDetection,
+	makeSubscriptionDetectionClassifier,
+} from "../account-heal/detection-classifier.js";
 import {
 	type ApplyTransitionOpts,
 	applyTransition,
@@ -53,7 +58,11 @@ import {
 	findUnreachableAlertLeads,
 	LeadAlertNotifier,
 } from "../LeadAlertNotifier.js";
-import { isTransientThrottlePane, LeadWatchdog } from "../LeadWatchdog.js";
+import {
+	isSafeResumeMenuForEnter,
+	isTransientThrottlePane,
+	LeadWatchdog,
+} from "../LeadWatchdog.js";
 import { locateLeadWindow } from "../LeadWindowLocator.js";
 import { CodexLeadOutboundHandler } from "../lead-backends/codex/CodexLeadOutboundHandler.js";
 import { FileInboundCursorStore } from "../lead-backends/codex/InboundCursorStore.js";
@@ -77,6 +86,10 @@ import { RunnerIdleWatchdog } from "../RunnerIdleWatchdog.js";
 import { type Session, StateStore } from "../StateStore.js";
 import { AlertChannelHub, createDiscordOps } from "./AlertChannelHub.js";
 import { AutoRepairBot } from "./AutoRepairBot.js";
+import {
+	type AccountSwitchRuntime,
+	createAccountSwitchRouter,
+} from "./account-switch-route.js";
 import { createActionRouter } from "./actions.js";
 // FLY-368: unified alert channel + per-error threading + conservative auto-repair.
 import {
@@ -157,6 +170,7 @@ import {
 import { attemptLeadResumeEnter } from "./lead-resume-enter.js";
 import type { LeadRuntime } from "./lead-runtime.js";
 import { matchesLead, parseSessionLabels } from "./lead-scope.js";
+import { reconcileLegacyPhaseThreads } from "./legacy-phase-thread-sweep.js";
 import { queryLinearIssues } from "./linear-query.js";
 import { resolveLinearScope, resolveProjectNameParam } from "./linear-scope.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
@@ -178,11 +192,23 @@ import {
 	ReportRegistry,
 } from "./report-registry.js";
 import { createReportsRouter } from "./reports-route.js";
+import { createRescueRouter, type RescueRouteRuntime } from "./rescue-route.js";
+import {
+	buildRescueRuntime,
+	makeCloseAndDispatchSuccessor,
+	makeKickstart,
+	makeRunnerRevalidate,
+	type RescueRuntime,
+} from "./rescue-runtime.js";
 import type { IRetryDispatcher, IStartDispatcher } from "./retry-dispatcher.js";
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
 import { setupRunInfrastructure } from "./run-infra.js";
+import {
+	defaultResolveLeadId,
+	makeRunnerAuthScan,
+} from "./runner-auth-scan.js";
 import { makeRunnerQuotaScan } from "./runner-quota-scan.js";
 import { attemptRunnerRecoveryNudge } from "./runner-recovery-nudge.js";
 import {
@@ -737,6 +763,21 @@ export interface BridgeAppOptions {
 	 * posted (byte-compat: no unified channel = no self-heal Alerts surface).
 	 */
 	accountRotationPost?: { current?: (detail: string) => Promise<void> };
+	/**
+	 * FLY-871 R2/C5: the /api/account-switch route (mounted in createBridgeApp)
+	 * reads this holder at request time; startBridge sets `.current` only when
+	 * accountSwitchRepair + the unified Alerts channel exist
+	 * (FLYWHEEL_ACCOUNT_SELF_HEAL=1). Undefined ⇒ the route returns 409 needs_human
+	 * (self-heal off = byte-compat).
+	 */
+	accountSwitchRoute?: { current?: AccountSwitchRuntime };
+	/**
+	 * FLY-871 R3/C9: the /api/rescue route (mounted in createBridgeApp) reads this
+	 * holder at request time; startBridge sets `.current` only when the rescue
+	 * runtime is built (FLYWHEEL_ACCOUNT_SELF_HEAL=1 + unified Alerts channel).
+	 * Undefined ⇒ the route returns 409 needs_human (self-heal off = byte-compat).
+	 */
+	rescueRoute?: { current?: RescueRouteRuntime };
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -2540,6 +2581,47 @@ export function createBridgeApp(
 		});
 	}
 
+	// FLY-871 R2/C5: POST /api/account-switch — the Codex Infra Bot's claim+execute
+	// entry for a Claude account switch. AUTH-REQUIRED (503 without TEAMLEAD_API_TOKEN),
+	// deliberately NOT under /actions. Reads the late-bound runtime holder (bound in
+	// startBridge only when self-heal is on) → off ⇒ 409 needs_human (byte-compat).
+	if (config.apiToken) {
+		app.use(
+			"/api/account-switch",
+			tokenAuthMiddleware(config.apiToken),
+			createAccountSwitchRouter({
+				getRuntime: () => opts?.accountSwitchRoute?.current,
+			}),
+		);
+	} else {
+		app.use("/api/account-switch", (_req, res) => {
+			res.status(503).json({
+				error: "account-switch API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
+
+	// FLY-871 R3/C9: POST /api/rescue — the Codex Infra Bot's entry to trigger an
+	// infra self-heal rescue (lead kickstart OR runner close+resumed-successor).
+	// AUTH-REQUIRED (503 without TEAMLEAD_API_TOKEN, this triggers destructive ops),
+	// deliberately NOT under /actions. Reads the late-bound runtime holder (bound in
+	// startBridge only when self-heal is on) → off ⇒ 409 needs_human (byte-compat).
+	if (config.apiToken) {
+		app.use(
+			"/api/rescue",
+			tokenAuthMiddleware(config.apiToken),
+			createRescueRouter({
+				getRuntime: () => opts?.rescueRoute?.current,
+			}),
+		);
+	} else {
+		app.use("/api/rescue", (_req, res) => {
+			res.status(503).json({
+				error: "rescue API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
+
 	// Catch-all 404 (must be after all routes)
 	app.use((_req, res) => {
 		res.status(404).json({ error: "not found" });
@@ -3044,6 +3126,16 @@ export async function startBridge(
 		current?: (detail: string) => Promise<void>;
 	} = {};
 
+	// FLY-871 R2/C5: the /api/account-switch route reads this holder at request
+	// time; set below (with accountRotationPostHolder) only when accountSwitchRepair
+	// + the unified Alerts channel exist. Undefined ⇒ route returns 409 needs_human.
+	const accountSwitchRouteHolder: { current?: AccountSwitchRuntime } = {};
+
+	// FLY-871 R3/C9: the /api/rescue route reads this holder at request time; set
+	// below only when the rescue runtime is built (self-heal on + unified Alerts
+	// channel). Undefined ⇒ route returns 409 needs_human (byte-compat).
+	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
+
 	const app = createBridgeApp(
 		store,
 		projects,
@@ -3079,6 +3171,9 @@ export async function startBridge(
 			phaseOrchestrator: phaseOrchestratorHolder,
 			// FLY-696 M1/④: event router reads this to post account_rotation notices.
 			accountRotationPost: accountRotationPostHolder,
+			// FLY-871 R2/C5: /api/account-switch route reads this holder.
+			accountSwitchRoute: accountSwitchRouteHolder,
+			rescueRoute: rescueRouteHolder,
 		},
 	);
 
@@ -3236,6 +3331,40 @@ export async function startBridge(
 		48, // reviewTimeoutHours (constructor default; FLY-159/191 48h)
 		quietSignalsProbe,
 		crashReaperConfig,
+		// FLY-867: stale-terminal close — checkStaleCompleted upgrades from
+		// notify-only to notify+close for terminal-status sessions whose tmux is
+		// still alive past staleThresholdHours (nothing else closes them: the
+		// crash reaper only takes running, the auto-QA reconcile treats terminal
+		// as already-clean). All teardown goes through the closeRunner chokepoint.
+		// forcePreserved: this backstop has already passed the retest-protection
+		// predicate and the 24h stale gate — a failed/blocked session whose tmux
+		// lingers past that is a leak, not a crash-forensics scene, so the
+		// CRASH_PRESERVE gate is deliberately bypassed here (Codex design R1 #1).
+		// Kill-switch FLYWHEEL_STALE_TERMINAL_CLOSE=0 → notify-only (in
+		// HeartbeatService.staleCloseEnabled).
+		{
+			closeStale: async (session) => {
+				const result = await closeRunner(
+					{
+						executionId: session.execution_id,
+						issueId: session.issue_id,
+						projectName: session.project_name ?? "",
+						reason: "fly867_stale_terminal",
+						forcePreserved: true,
+						archive: {
+							projects,
+							globalBotToken: config.discordBotToken,
+							discordOwnerUserId: config.discordOwnerUserId,
+						},
+					},
+					store,
+				);
+				return {
+					closed: result.closed,
+					alreadyGone: result.alreadyGone,
+				};
+			},
+		},
 	);
 
 	// FLY-623 (Codex R2 MED-5): publish the live reconnecting set to the event
@@ -3259,6 +3388,23 @@ export async function startBridge(
 	} catch (err) {
 		console.error(
 			`[Bridge] FLY-172 boot marker drain failed (non-fatal): ${(err as Error).message}`,
+		);
+	}
+
+	// FLY-892 (Step 5): one-shot boot sweep — reconcile the legacy FLY-793 per-phase
+	// side-table threads (design/implement/qa) into the single converged issue
+	// thread. Points each at the main thread + archives it (FAIL-CLOSED: never
+	// archives an issue's only visible thread — see legacy-phase-thread-sweep.ts).
+	// Event-driven (boot), no new periodic timer; best-effort — must not block boot.
+	try {
+		await reconcileLegacyPhaseThreads({
+			store,
+			projects,
+			globalBotToken: config.discordBotToken,
+		});
+	} catch (err) {
+		console.error(
+			`[Bridge] FLY-892 legacy phase-thread sweep failed (non-fatal): ${(err as Error).message}`,
 		);
 	}
 
@@ -3539,6 +3685,10 @@ export async function startBridge(
 	const founderShipPostWriteHook = buildGateResponsePostWriteHook({
 		store,
 		transitionOpts,
+		// FLY-869 B-3 (Codex R1 #1): drive an un-parked already-merged session to
+		// completed + Done on the founder-reply ship-approval path.
+		config,
+		projects,
 	});
 	const founderAutoApproveDenylist = new Set(
 		(process.env.FLYWHEEL_FOUNDER_AUTO_APPROVE_DENYLIST ?? "")
@@ -3798,7 +3948,7 @@ export async function startBridge(
 						`[auto-qa] reconcileOnStartup failed: ${(err as Error).message}`,
 					),
 				);
-			// FLY-827 (R1 HIGH-4): re-fire codex-hold side effects (alert + re-queue
+			// FLY-827 (R1 HIGH-4): re-fire codex-hold side effects (re-queue
 			// instruction) for awaiting_review sessions still lacking a Codex approval
 			// after this restart / default-ON flip. The founder HOLD is already
 			// guaranteed by the durable table + isReviewHeld, so running this after the
@@ -3808,6 +3958,16 @@ export async function startBridge(
 				.catch((err) =>
 					console.warn(
 						`[auto-qa] reconcileCodexHolds failed: ${(err as Error).message}`,
+					),
+				);
+			// FLY-863: catch up on any head that crossed the stuck-duration
+			// threshold WHILE the Bridge was down — don't wait for the first 30s
+			// poll tick to notice a genuinely stuck hold on restart.
+			void autoQaCoordinatorHolder.current
+				.reconcileStuckCodexHolds()
+				.catch((err) =>
+					console.warn(
+						`[auto-qa] reconcileStuckCodexHolds failed: ${(err as Error).message}`,
 					),
 				);
 			console.log(
@@ -4161,9 +4321,192 @@ export async function startBridge(
 	// default MUST be byte-compatible, no new Alerts behavior); no unified
 	// channel likewise leaves the holder undefined → the event is acked, not
 	// posted.
+	// FLY-871 R3/C9: the infra self-heal rescue runtime (built inside the same
+	// self-heal gate below). Declared here so the account-switch watchdog tick
+	// (onPollComplete, later in this closure) can trigger the post-switch sweep.
+	let rescueRuntime: RescueRuntime | undefined;
 	if (accountSwitchRepair && unifiedAlertChannelId) {
 		accountRotationPostHolder.current = (detail) =>
 			alertDiscordOps.postToThread(unifiedAlertChannelId, detail);
+		// FLY-871 R2/C5: bind the /api/account-switch runtime (same self-heal gate).
+		// The route claims a pending record + reuses accountSwitchRepair.executeSwitch,
+		// posts the result to the Alerts channel, and audits before/after to lead_events.
+		accountSwitchRouteHolder.current = {
+			repair: accountSwitchRepair,
+			postResult: (detail) =>
+				alertDiscordOps.postToThread(unifiedAlertChannelId, detail),
+			audit: (e) =>
+				store.appendLeadEvent(
+					e.actorBotId,
+					`account-switch:${e.phase}:${e.key}`,
+					`account_switch_${e.phase}`,
+					JSON.stringify(e),
+				),
+		};
+
+		// FLY-871 R3/C9: build the infra self-heal rescue runtime — binds the pure
+		// rescue orchestration (rescue.ts) to the real Bridge primitives. Consumed
+		// by the /api/rescue route (W3) and the post-switch sweep (W5). Same
+		// self-heal gate ⇒ dormant + byte-compat when the flag is off.
+		const resolveRescueLeadId = defaultResolveLeadId(projects);
+		// The founder's Discord id for a REAL @-ping on a rescue escalation (snowflake
+		// only; unset/malformed ⇒ undefined = degrade to no-mention, like the Hub).
+		const rescueFounderDiscordId = (): string | undefined => {
+			const id = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID?.trim();
+			return id && /^\d{17,20}$/.test(id) ? id : undefined;
+		};
+		const rescueDetectionAiClassify =
+			process.env.FLYWHEEL_DETECTION_AI_CLASSIFY === "0"
+				? undefined
+				: makeSubscriptionDetectionClassifier({});
+		rescueRuntime = buildRescueRuntime({
+			listPendingAlerts: () => store.listActiveAlertThreads(),
+			kickstart: makeKickstart({ log: (m) => console.warn(m) }),
+			captureLeadPane: async (projectName, leadId) => {
+				const w = await locateLeadWindow(projectName, leadId);
+				if (!w) return null;
+				return leadPaneCaptureFn(w.windowId, 200);
+			},
+			sendEnterToLead: async (projectName, leadId) => {
+				const w = await locateLeadWindow(projectName, leadId);
+				if (w) await sendEnterToWindow(w.windowId);
+			},
+			isResumeMenu: isSafeResumeMenuForEnter,
+			// FLY-871 Lead ②: revalidate the runner's LIVE pane before closing it.
+			revalidateRunner: makeRunnerRevalidate({
+				captureRunnerPane: async (executionId) => {
+					const s = store.getSession(executionId);
+					if (!s) return null;
+					const c = await defaultCaptureSession(
+						executionId,
+						s.project_name,
+						100,
+					);
+					return isCaptureError(c) ? null : c.output;
+				},
+				classify: async (region) => {
+					const r = await classifyDetection(region, {
+						aiClassify: rescueDetectionAiClassify,
+					});
+					return { category: r.category };
+				},
+			}),
+			// FLY-871 W4: close the dead running session (FSM terminate → close) +
+			// dispatch a resumed successor (start() runs the FLY-795 resume-computer).
+			closeAndDispatchSuccessor: makeCloseAndDispatchSuccessor({
+				getSession: (id) => store.getSession(id),
+				terminateForRescue: (s) => {
+					const tr = applyTransition(
+						transitionOpts,
+						s.execution_id,
+						"terminated",
+						{
+							executionId: s.execution_id,
+							issueId: s.issue_id,
+							projectName: s.project_name,
+							trigger: "login_expired_rescue",
+						},
+						{
+							last_activity_at: sqliteDatetime(),
+							last_error: "login expired — rescued (FLY-871)",
+						},
+					);
+					return { ok: tr.ok, error: tr.error };
+				},
+				closeRunner: async (s) => {
+					const r = await closeRunner(
+						{
+							executionId: s.execution_id,
+							issueId: s.issue_id,
+							projectName: s.project_name,
+							leadId: resolveRescueLeadId(s) ?? undefined,
+							reason: "login_expired_rescue",
+							forcePreserved: true,
+						},
+						store,
+					);
+					return { closed: r.closed, error: r.error };
+				},
+				startSuccessor: async (s) => {
+					if (!startDispatcher) {
+						throw new Error("no start dispatcher (rescue successor)");
+					}
+					const docTier =
+						s.doc_tier === "full" ||
+						s.doc_tier === "plan_only" ||
+						s.doc_tier === "none"
+							? s.doc_tier
+							: undefined;
+					const res = await startDispatcher.start({
+						issueId: s.issue_id,
+						projectName: s.project_name,
+						leadId: resolveRescueLeadId(s) ?? undefined,
+						sessionRole: s.session_role ?? undefined,
+						issueTitle: s.issue_title ?? undefined,
+						issueIdentifier: s.issue_identifier ?? undefined,
+						issueLabels: parseSessionLabels(s),
+						docTier,
+						issueUrl: s.issue_url ?? undefined,
+						dispatchModel: s.dispatch_model ?? undefined,
+					});
+					return res.executionId;
+				},
+				log: (m) => console.warn(m),
+			}),
+			// Evidence lands in THAT incident's Alerts thread (threadKey =
+			// correlationKey); falls back to the root channel only if the thread
+			// can't be resolved. An escalation @-pings the founder FOR REAL via
+			// allowed_mentions (a literal "@Annie" in text never pings).
+			postEvidence: async (detail, evOpts) => {
+				const threadId = evOpts?.threadKey
+					? store.getActiveAlertThread(evOpts.threadKey)?.thread_id
+					: undefined;
+				const mentionUserId = evOpts?.mention
+					? rescueFounderDiscordId()
+					: undefined;
+				await alertDiscordOps.postToThread(
+					threadId ?? unifiedAlertChannelId,
+					detail,
+					mentionUserId ? { mentionUserId } : undefined,
+				);
+			},
+			// A healed session ⇒ post ✅ into its thread + resolve it, so the sweep
+			// and the reconcile pass stop tracking it. Idempotent.
+			resolveAlert: async (correlationKey) => {
+				const row = store.getActiveAlertThread(correlationKey);
+				if (!row) return;
+				try {
+					await alertDiscordOps.postToThread(
+						row.thread_id,
+						"✅ 已恢复(rescue)。",
+					);
+				} catch (err) {
+					console.warn(
+						`[rescue] resolve post failed for ${correlationKey}: ${(err as Error).message}`,
+					);
+				}
+				store.resolveAlertThread(correlationKey);
+			},
+			audit: (e) =>
+				store.appendLeadEvent(
+					"codex-infra-bot-lead",
+					`rescue:${e.phase}:${e.target}`,
+					`rescue_${e.phase}`,
+					JSON.stringify(e),
+				),
+			waitMs: (ms) => new Promise((r) => setTimeout(r, ms)),
+			log: (m) => console.warn(m),
+		});
+		rescueRouteHolder.current = {
+			rescueLead: rescueRuntime.rescueLead,
+			rescueRunner: rescueRuntime.rescueRunner,
+		};
+		// FLY-871 R3/W5: on a successful bot-claimed switch (the /api/account-switch
+		// route), sweep the incident-window login-stuck sessions. The watchdog-fired
+		// switch wires the same sweep below (onPollComplete).
+		accountSwitchRouteHolder.current.onSwitchSuccess = async () => {
+			await rescueRuntime?.postSwitchRescueSweep();
+		};
 	}
 
 	// FLY-368 rework: Hub on when unified channel + threading + a resolvable repair
@@ -4327,12 +4670,39 @@ export async function startBridge(
 		// Routes a real runner cap through the shared alert sink (Hub threading +
 		// AutoRepairBot enqueue), with the §3.3 transient-529 short-circuit inside.
 		runnerQuotaScan: accountSwitchRepair
-			? makeRunnerQuotaScan({
-					projects,
-					alert: (p) => alertSink.alert(p),
-					isTransient: isTransientThrottlePane,
-					now: () => Date.now(),
-				})
+			? (() => {
+					const quotaScan = makeRunnerQuotaScan({
+						projects,
+						alert: (p) => alertSink.alert(p),
+						isTransient: isTransientThrottlePane,
+						now: () => Date.now(),
+					});
+					// FLY-871 R2/C8: compose the runner AUTH scan into the SAME seam
+					// (same per-session capture, no new timer). Layer-2 AI fallback is
+					// default-ON with kill-switch FLYWHEEL_DETECTION_AI_CLASSIFY=0; it
+					// only fires for unrecognized-anomalous panes (healthy/pattern panes
+					// never spend a model call).
+					const authScan = makeRunnerAuthScan({
+						alert: (p) => alertSink.alert(p),
+						resolveLeadId: defaultResolveLeadId(projects),
+						// FLY-871 R2/C7: populate the account-state ledger — a confirmed
+						// runner logout marks the active account's live auth as stale.
+						recordAuthHealth: (name) =>
+							ledgerRecordAuthHealth(name, {
+								lastFreshness: "stale",
+								lastVerifiedAt: new Date().toISOString(),
+								reason: "runner login_expired",
+							}),
+						aiClassify:
+							process.env.FLYWHEEL_DETECTION_AI_CLASSIFY === "0"
+								? undefined
+								: makeSubscriptionDetectionClassifier({}),
+					});
+					return async (session: Session, pane: string) => {
+						await quotaScan(session, pane);
+						await authScan(session, pane);
+					};
+				})()
 			: undefined,
 	});
 	idleWatchdog.start();
@@ -4419,33 +4789,56 @@ export async function startBridge(
 					void alertHub.onLeadRecovery(projectName, leadId, recoveredKind);
 				}
 			: undefined,
-		// FLY-368: piggyback the 30s poll to run the reconcile pass (no new timer).
-		onPollComplete: alertHub
-			? async () => {
+		// FLY-368: piggyback the 30s poll to run the alert-thread reconcile pass
+		// (no new timer). FLY-863: the SAME tick also re-scans for codex-holds that
+		// crossed the stuck-duration threshold since the last pass. FLY-696: the
+		// SAME tick also drives the account-switch watchdog (due pending switches
+		// M1-only / bot fallback M2), posting results to the unified Alerts
+		// channel. Every sub-task is independently try/caught so one failing piece
+		// never wedges the others or the poll loop — no new timer for any of them.
+		onPollComplete: async () => {
+			if (alertHub) {
+				try {
 					await alertHub.reconcile();
-					// FLY-696: piggyback the account-switch watchdog on this 30s cadence
-					// (no new timer). Fires due pending switches (M1-only) / bot fallback
-					// (M2), posts results to the unified Alerts channel. Best-effort —
-					// never wedge the reconcile loop.
-					if (accountSwitchRepair && unifiedAlertChannelId) {
-						try {
-							await accountSwitchWatchdogTick({
-								now: () => Date.now(),
-								executeSwitch: (pending) =>
-									accountSwitchRepair.executeSwitch(pending),
-								post: (detail) =>
-									alertDiscordOps.postToThread(unifiedAlertChannelId, detail),
-							});
-						} catch (err) {
-							console.error(
-								`[Bridge] FLY-696 account-switch watchdog tick failed: ${
-									err instanceof Error ? err.message : String(err)
-								}`,
-							);
-						}
-					}
+				} catch (err) {
+					console.warn(
+						`[Bridge] alertHub.reconcile failed: ${(err as Error).message}`,
+					);
 				}
-			: undefined,
+			}
+			try {
+				await autoQaCoordinatorHolder.current?.reconcileStuckCodexHolds();
+			} catch (err) {
+				console.warn(
+					`[auto-qa] reconcileStuckCodexHolds (poll) failed: ${(err as Error).message}`,
+				);
+			}
+			if (accountSwitchRepair && unifiedAlertChannelId) {
+				try {
+					await accountSwitchWatchdogTick({
+						now: () => Date.now(),
+						executeSwitch: (pending) =>
+							accountSwitchRepair.executeSwitch(pending),
+						post: (detail) =>
+							alertDiscordOps.postToThread(unifiedAlertChannelId, detail),
+						// FLY-871 R3/W5: a deadline-fired switch → sweep incident-window
+						// login-stuck sessions (same sweep the /api/account-switch route
+						// triggers). Undefined rescueRuntime ⇒ no sweep (byte-compat).
+						onSwitchSuccess: rescueRuntime
+							? async () => {
+									await rescueRuntime?.postSwitchRescueSweep();
+								}
+							: undefined,
+					});
+				} catch (err) {
+					console.error(
+						`[Bridge] FLY-696 account-switch watchdog tick failed: ${
+							err instanceof Error ? err.message : String(err)
+						}`,
+					);
+				}
+			}
+		},
 		// FLY-193: default ON now that the idle-pane recognizer is validated
 		// against committed real Lead pane fixtures (see
 		// LeadWatchdog `__tests__/fixtures/lead-panes/`). The recognizer is

@@ -383,6 +383,16 @@ export interface SessionUpsert {
 	founder_ux_signoff_json?: string;
 	/** FLY-598: per-run snapshot of founder_ux_gate.mode (off|audit_only|enforce). */
 	founder_ux_gate_mode?: string;
+	/** FLY-869 A-1: immutable QA-required snapshot (1=required, 0=exempt, absent=never-evaluated). */
+	qa_required?: number;
+	/** FLY-869 A-1: why the QA-required verdict was reached (policy reason token). */
+	qa_required_reason?: string;
+	/** FLY-869 B-3: merged-but-unapproved park marker (reason token; NULL = not blocked). */
+	merge_block_reason?: string;
+	/** FLY-869 B-3: the PR head sha the merge_block marker is bound to. */
+	merge_block_head?: string;
+	/** FLY-869 B-3: ISO timestamp the merge_block marker was written. */
+	merge_block_at?: string;
 }
 
 export interface Session {
@@ -456,6 +466,16 @@ export interface Session {
 	founder_ux_signoff_json?: string;
 	/** FLY-598: per-run snapshot of founder_ux_gate.mode (off|audit_only|enforce). */
 	founder_ux_gate_mode?: string;
+	/** FLY-869 A-1: immutable QA-required snapshot (1=required, 0=exempt, undefined=never-evaluated). */
+	qa_required?: number;
+	/** FLY-869 A-1: why the QA-required verdict was reached (policy reason token). */
+	qa_required_reason?: string;
+	/** FLY-869 B-3: merged-but-unapproved park marker (reason token; undefined = not blocked). */
+	merge_block_reason?: string;
+	/** FLY-869 B-3: the PR head sha the merge_block marker is bound to. */
+	merge_block_head?: string;
+	/** FLY-869 B-3: ISO timestamp the merge_block marker was written. */
+	merge_block_at?: string;
 	/** FLY-245 D-a: monotonic revision incremented on every status transition.
 	 * The runner-lifecycle founder credential snapshots this; a stale confirmation
 	 * is rejected once it changes (plan §5.1). Defaults 0. */
@@ -577,6 +597,14 @@ export interface CodexReviewRecord {
 	 * repeated reconcile replays the hold WITHOUT re-posting / re-queueing.
 	 */
 	hold_notified_at?: string;
+	/**
+	 * FLY-863: stamped the first time this (exec, head) crosses the stuck
+	 * threshold in `reconcileStuckCodexHolds` — the ONLY place the codex-hold
+	 * thread-post + Lead alert now fire. `claimCodexHoldStuckNotify` sets it
+	 * atomically so a head is escalated exactly once, no matter how many
+	 * reconcile passes observe it after that.
+	 */
+	stuck_notified_at?: string;
 }
 
 /**
@@ -1056,6 +1084,43 @@ export class StateStore {
 			/* exists */
 		}
 
+		// FLY-869 A-1: immutable QA-required snapshot, captured when auto-qa-policy
+		// first evaluates this session (Bridge-side, where the trusted signals live).
+		// `qa_required` = 1 when QA applies (must pass before ship/Done), 0 when
+		// exempt (no-code / pure-docs / no-qa label / qa.auto:false), NULL = never
+		// evaluated (the "该起没起" case → the ship gate treats a code PR fail-closed,
+		// a no-code/no-PR route as exempt). config/label changes NEVER rewrite it.
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN qa_required INTEGER");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN qa_required_reason TEXT");
+		} catch {
+			/* exists */
+		}
+		// FLY-869 B-3: merged-but-unapproved park marker. When a session reaches a
+		// merged landing WITHOUT verified ship approval, we do NOT finalize (决定③
+		// no auto-revert); instead we persist this durable marker (head-bound) so the
+		// founder-hold suppressors keep it out of review/QA/finalization surfaces, and
+		// same-head approval recovery can clear it. NULL reason = not blocked.
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN merge_block_reason TEXT");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN merge_block_head TEXT");
+		} catch {
+			/* exists */
+		}
+		try {
+			this.db.run("ALTER TABLE sessions ADD COLUMN merge_block_at TEXT");
+		} catch {
+			/* exists */
+		}
+
 		// FLY-191 Phase 2: persisted awaiting_review entry timestamp (Bridge-side
 		// 48h review-timeout anchor; must survive Bridge restarts — NOT the
 		// mutable last_activity_at) + gate_timed_out dedup stamp + the CURRENT
@@ -1412,12 +1477,21 @@ export class StateStore {
 				created_at TEXT NOT NULL DEFAULT (datetime('now')),
 				approved_at TEXT,
 				hold_notified_at TEXT,
+				stuck_notified_at TEXT,
 				PRIMARY KEY (execution_id, target_pr_head_sha)
 			)
 		`);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_status ON codex_review_record(status)",
 		);
+		// FLY-863: existing databases created before this column existed.
+		try {
+			this.db.run(
+				"ALTER TABLE codex_review_record ADD COLUMN stuck_notified_at TEXT",
+			);
+		} catch {
+			/* exists */
+		}
 
 		// FLY-637 #3/#4: persistent "already-notified" dedup for the quiet-path
 		// Lead wake (direction A — report-once, NO backoff). A row means "I already
@@ -2084,6 +2158,12 @@ export class StateStore {
 			founder_facing_ux: "founder_facing_ux",
 			founder_ux_signoff_json: "founder_ux_signoff_json",
 			founder_ux_gate_mode: "founder_ux_gate_mode",
+			// FLY-869: QA-required snapshot + merge_block park marker + codex-hold anchor
+			qa_required: "qa_required",
+			qa_required_reason: "qa_required_reason",
+			merge_block_reason: "merge_block_reason",
+			merge_block_head: "merge_block_head",
+			merge_block_at: "merge_block_at",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -2390,6 +2470,37 @@ export class StateStore {
 			: undefined;
 		stmt.free();
 		return found;
+	}
+
+	/**
+	 * FLY-892 (Step 4): for the converged pipeline header, the LATEST session of
+	 * each three-stage phase role (design/implement/qa) on `issueId`. Keyed on
+	 * `chat_thread_role` (the persistent three-stage phase marker), NOT
+	 * `session_role`, so it also captures phase sessions after terminal status.
+	 *
+	 * "Latest" = `last_activity_at DESC` with a stable `rowid DESC` tiebreak
+	 * (Codex R1 #4): an implement fix-loop spawns several implement sessions — the
+	 * header must always point at the most recent one, never a stale exec's attach
+	 * command. Returns at most 3 rows (one per phase actually started); phases not
+	 * yet started are absent (the caller renders them as ⬜ planned).
+	 */
+	getPhaseSessionsForIssue(issueId: string): Session[] {
+		const out: Session[] = [];
+		for (const role of ["design", "implement", "qa"] as const) {
+			const stmt = this.db.prepare(
+				`SELECT * FROM sessions
+				 WHERE issue_id = ? AND chat_thread_role = ?
+				 ORDER BY last_activity_at DESC, rowid DESC LIMIT 1`,
+			);
+			stmt.bind([issueId, role]);
+			if (stmt.step()) {
+				out.push(
+					this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+				);
+			}
+			stmt.free();
+		}
+		return out;
 	}
 
 	/**
@@ -2886,53 +2997,36 @@ export class StateStore {
 	/**
 	 * Delete-first upsert (same pattern as upsertThread for Forum).
 	 *
-	 * FLY-793 (Step 11): `role` routes by table. 'main' (default — every existing
-	 * caller) hits `chat_threads` with the ORIGINAL statements (byte-unchanged). A
-	 * phase role hits the `phase_chat_threads` side-table and scopes the delete-stale
-	 * to (issue, channel, ROLE) so creating the Implement thread never deletes the
-	 * sibling Design thread.
+	 * FLY-892 (converge): one issue = one thread. Every caller — a Lead `/send`, a
+	 * design/implement/qa phase session, gate-poller, heartbeat — resolves the SAME
+	 * `(issue, channel)` row in `chat_threads`. The FLY-793 per-phase side-table
+	 * (`phase_chat_threads`) is no longer written; the `session_role` phase marker
+	 * lives on `sessions.chat_thread_role` and is rendered as a message prefix /
+	 * pipeline-header row, not a separate thread. Legacy phase rows remain
+	 * READ-ONLY (reverse-lookup + boot-sweep archive).
 	 */
 	upsertChatThread(
 		threadId: string,
 		channelId: string,
 		issueId: string,
 		leadId?: string,
-		role: string = "main",
 	): void {
-		const r = normalizeChatThreadRole(role);
 		// FLY-663 §2.8: delete-stale-then-upsert is one logical mutation — wrap so a
 		// crash between the DELETE and the INSERT can't leave the issue thread-less.
 		this.db.transaction(() => {
-			if (r === "main") {
-				this.db.run(
-					"DELETE FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND thread_id != ?",
-					[issueId, channelId, threadId],
-				);
-				this.db.run(
-					`INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id)
-					 VALUES (?, ?, ?, ?)
-					 ON CONFLICT(thread_id) DO UPDATE SET
-						channel_id = excluded.channel_id,
-						issue_id = excluded.issue_id,
-						lead_id = excluded.lead_id`,
-					[threadId, channelId, issueId, leadId ?? null],
-				);
-			} else {
-				this.db.run(
-					"DELETE FROM phase_chat_threads WHERE issue_id = ? AND channel_id = ? AND session_role = ? AND thread_id != ?",
-					[issueId, channelId, r, threadId],
-				);
-				this.db.run(
-					`INSERT INTO phase_chat_threads (thread_id, channel_id, issue_id, session_role, lead_id)
-					 VALUES (?, ?, ?, ?, ?)
-					 ON CONFLICT(thread_id) DO UPDATE SET
-						channel_id = excluded.channel_id,
-						issue_id = excluded.issue_id,
-						session_role = excluded.session_role,
-						lead_id = excluded.lead_id`,
-					[threadId, channelId, issueId, r, leadId ?? null],
-				);
-			}
+			this.db.run(
+				"DELETE FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND thread_id != ?",
+				[issueId, channelId, threadId],
+			);
+			this.db.run(
+				`INSERT INTO chat_threads (thread_id, channel_id, issue_id, lead_id)
+				 VALUES (?, ?, ?, ?)
+				 ON CONFLICT(thread_id) DO UPDATE SET
+					channel_id = excluded.channel_id,
+					issue_id = excluded.issue_id,
+					lead_id = excluded.lead_id`,
+				[threadId, channelId, issueId, leadId ?? null],
+			);
 		});
 		this.save();
 	}
@@ -3122,6 +3216,7 @@ export class StateStore {
 			created_at: row.created_at as string,
 			approved_at: (row.approved_at as string) ?? undefined,
 			hold_notified_at: (row.hold_notified_at as string) ?? undefined,
+			stuck_notified_at: (row.stuck_notified_at as string) ?? undefined,
 		};
 	}
 
@@ -3154,6 +3249,63 @@ export class StateStore {
 		const claimed = this.db.getRowsModified() > 0;
 		this.save();
 		return claimed;
+	}
+
+	/**
+	 * FLY-869 B-3: park a merged-but-unapproved session with a durable, head-bound
+	 * marker (决定③ no auto-revert). Also the ONCE-PER-HEAD alert claim (R1 MED-4):
+	 * writes IFF not already blocked for THIS head, and returns true ONLY for the
+	 * first caller — so the `merge_without_approval` alert fires once, and a restart
+	 * / replay is a no-op. A NEW head (rebase) is a fresh block → re-claims.
+	 */
+	setMergeBlock(input: {
+		executionId: string;
+		reason: string;
+		head: string;
+	}): boolean {
+		const head = input.head.toLowerCase();
+		this.db.run(
+			`UPDATE sessions
+			    SET merge_block_reason = ?, merge_block_head = ?, merge_block_at = datetime('now')
+			  WHERE execution_id = ?
+			    AND (merge_block_reason IS NULL OR lower(merge_block_head) != ?)`,
+			[input.reason, head, input.executionId, head],
+		);
+		const claimed = this.db.getRowsModified() > 0;
+		this.save();
+		return claimed;
+	}
+
+	/**
+	 * FLY-869 B-3 recovery: clear the merge_block marker once a same-head founder
+	 * approval lands (the session can then transition to completed + finalize).
+	 */
+	clearMergeBlock(executionId: string): void {
+		this.db.run(
+			`UPDATE sessions
+			    SET merge_block_reason = NULL, merge_block_head = NULL, merge_block_at = NULL
+			  WHERE execution_id = ?`,
+			[executionId],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-869 A-1: persist the IMMUTABLE qa_required snapshot (1=required, 0=exempt)
+	 * at auto-qa-policy eval time. Immutable = written ONLY when currently NULL, so a
+	 * later config/label change can never retroactively rewrite the ship verdict.
+	 */
+	setQaRequiredSnapshot(input: {
+		executionId: string;
+		required: 0 | 1;
+		reason: string;
+	}): void {
+		this.db.run(
+			`UPDATE sessions SET qa_required = ?, qa_required_reason = ?
+			  WHERE execution_id = ? AND qa_required IS NULL`,
+			[input.required, input.reason, input.executionId],
+		);
+		this.save();
 	}
 
 	/**
@@ -3281,6 +3433,62 @@ export class StateStore {
 		return rec?.status === "approved" || rec?.status === "skipped";
 	}
 
+	/**
+	 * FLY-863: still-pending holds whose FIRST notification (`hold_notified_at`)
+	 * is older than `thresholdMs` and have not yet been escalated
+	 * (`stuck_notified_at IS NULL`) — the candidates for
+	 * `AutoQaCoordinator.reconcileStuckCodexHolds`. The caller re-checks the
+	 * owning session (still awaiting_review on this exact head, gate still
+	 * unsatisfied) before firing anything — a row here is a candidate, not a
+	 * guarantee.
+	 */
+	listCodexHoldsPendingOlderThan(
+		nowMs: number,
+		thresholdMs: number,
+	): CodexReviewRecord[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_record
+			  WHERE status = 'pending' AND hold_notified_at IS NOT NULL AND stuck_notified_at IS NULL`,
+		);
+		const out: CodexReviewRecord[] = [];
+		while (stmt.step()) {
+			const rec = this.rowToCodexReviewRecord(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+			if (!rec.hold_notified_at) continue;
+			const heldSinceMs = Date.parse(
+				`${rec.hold_notified_at.replace(" ", "T")}Z`,
+			);
+			if (!Number.isNaN(heldSinceMs) && nowMs - heldSinceMs >= thresholdMs) {
+				out.push(rec);
+			}
+		}
+		stmt.free();
+		return out;
+	}
+
+	/**
+	 * FLY-863: atomically claim the right to fire the STUCK escalation (thread
+	 * post + Lead alert) for (exec, head). Returns true only for the first
+	 * caller — a repeated `reconcileStuckCodexHolds` pass observing the same
+	 * still-unresolved head is a no-op (LeadAlertNotifier's own per-eventId
+	 * dedup is a second, independent backstop).
+	 */
+	claimCodexHoldStuckNotify(
+		executionId: string,
+		targetPrHeadSha: string,
+	): boolean {
+		const sha = targetPrHeadSha.toLowerCase();
+		this.db.run(
+			`UPDATE codex_review_record SET stuck_notified_at = datetime('now')
+			  WHERE execution_id = ? AND target_pr_head_sha = ? AND stuck_notified_at IS NULL`,
+			[executionId, sha],
+		);
+		const claimed = this.db.getRowsModified() > 0;
+		this.save();
+		return claimed;
+	}
+
 	getAutoQaRecordByQaExec(qaExecutionId: string): AutoQaRecord | undefined {
 		const stmt = this.db.prepare(
 			"SELECT * FROM auto_qa_record WHERE qa_execution_id = ?",
@@ -3294,6 +3502,28 @@ export class StateStore {
 		}
 		stmt.free();
 		return rec;
+	}
+
+	/**
+	 * FLY-867: ALL records for a QA exec. `qa_execution_id` is NOT unique
+	 * (historical rows across heads/parents) and the single-row accessor above
+	 * returns an arbitrary first match — unusable as a protection predicate.
+	 * The stale-terminal close guard must see EVERY row so ANY active fix-loop
+	 * record can protect the runner (fail-closed).
+	 */
+	listAutoQaRecordsByQaExec(qaExecutionId: string): AutoQaRecord[] {
+		const stmt = this.db.prepare(
+			"SELECT * FROM auto_qa_record WHERE qa_execution_id = ? ORDER BY started_at",
+		);
+		stmt.bind([qaExecutionId]);
+		const out: AutoQaRecord[] = [];
+		while (stmt.step()) {
+			out.push(
+				this.rowToAutoQaRecord(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return out;
 	}
 
 	listAutoQaRecordsByParent(parentExecutionId: string): AutoQaRecord[] {
@@ -3591,34 +3821,27 @@ export class StateStore {
 	}
 
 	/**
-	 * FLY-793 (Step 11): `role` routes by table. 'main' (default — every existing
-	 * caller) reads `chat_threads` with the ORIGINAL statement (byte-unchanged); a
-	 * phase role reads the `phase_chat_threads` side-table scoped to that role, and
-	 * echoes `session_role` back so callers can tell which phase thread they got.
+	 * FLY-892 (converge): the single `(issue, channel)` thread registry. Reads
+	 * `chat_threads` only — the FLY-793 per-phase side-table is no longer a thread
+	 * source, so a phase session and a Lead `/send` resolve the SAME thread. The
+	 * former `role` param and echoed `session_role` are gone (phase identity now
+	 * rides on the message, not on a separate thread).
 	 */
 	getChatThreadByIssue(
 		issueId: string,
 		channelId: string,
-		role: string = "main",
 	):
 		| {
 				thread_id: string;
 				channel_id: string;
 				lead_id: string | null;
 				archived_at: string | null;
-				session_role: ChatThreadRole;
 		  }
 		| undefined {
-		const r = normalizeChatThreadRole(role);
-		const stmt =
-			r === "main"
-				? this.db.prepare(
-						"SELECT thread_id, channel_id, lead_id, archived_at FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND discord_missing_at IS NULL",
-					)
-				: this.db.prepare(
-						"SELECT thread_id, channel_id, lead_id, archived_at FROM phase_chat_threads WHERE issue_id = ? AND channel_id = ? AND session_role = ? AND discord_missing_at IS NULL",
-					);
-		stmt.bind(r === "main" ? [issueId, channelId] : [issueId, channelId, r]);
+		const stmt = this.db.prepare(
+			"SELECT thread_id, channel_id, lead_id, archived_at FROM chat_threads WHERE issue_id = ? AND channel_id = ? AND discord_missing_at IS NULL",
+		);
+		stmt.bind([issueId, channelId]);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
 			stmt.free();
@@ -3627,7 +3850,6 @@ export class StateStore {
 				channel_id: row.channel_id as string,
 				lead_id: (row.lead_id as string) ?? null,
 				archived_at: (row.archived_at as string) ?? null,
-				session_role: r,
 			};
 		}
 		stmt.free();
@@ -3726,29 +3948,20 @@ export class StateStore {
 		issueId: string,
 		channelId: string,
 		state: { messageId: string; command: string; pinnedAt: string | null },
-		role: string = "main",
 	): void {
-		const table =
-			normalizeChatThreadRole(role) === "main"
-				? "chat_threads"
-				: "phase_chat_threads";
-		const roleClause =
-			table === "phase_chat_threads" ? " AND session_role = ?" : "";
-		const params = [
-			state.messageId,
-			state.command,
-			state.pinnedAt ?? null,
-			issueId,
-			channelId,
-			...(table === "phase_chat_threads"
-				? [normalizeChatThreadRole(role)]
-				: []),
-		];
+		// FLY-892 (converge): the pin (now the pipeline header) lives on the single
+		// `(issue, channel)` main thread — no more per-phase side-table routing.
 		this.db.run(
-			`UPDATE ${table}
+			`UPDATE chat_threads
 			 SET attach_pin_message_id = ?, attach_pin_command = ?, attach_pin_pinned_at = ?
-			 WHERE issue_id = ? AND channel_id = ?${roleClause}`,
-			params,
+			 WHERE issue_id = ? AND channel_id = ?`,
+			[
+				state.messageId,
+				state.command,
+				state.pinnedAt ?? null,
+				issueId,
+				channelId,
+			],
 		);
 		this.save();
 	}
@@ -3756,20 +3969,13 @@ export class StateStore {
 	getChatThreadAttachPin(
 		issueId: string,
 		channelId: string,
-		role: string = "main",
 	):
 		| { messageId: string; command: string; pinnedAt: string | null }
 		| undefined {
-		const r = normalizeChatThreadRole(role);
-		const stmt =
-			r === "main"
-				? this.db.prepare(
-						"SELECT attach_pin_message_id, attach_pin_command, attach_pin_pinned_at FROM chat_threads WHERE issue_id = ? AND channel_id = ?",
-					)
-				: this.db.prepare(
-						"SELECT attach_pin_message_id, attach_pin_command, attach_pin_pinned_at FROM phase_chat_threads WHERE issue_id = ? AND channel_id = ? AND session_role = ?",
-					);
-		stmt.bind(r === "main" ? [issueId, channelId] : [issueId, channelId, r]);
+		const stmt = this.db.prepare(
+			"SELECT attach_pin_message_id, attach_pin_command, attach_pin_pinned_at FROM chat_threads WHERE issue_id = ? AND channel_id = ?",
+		);
+		stmt.bind([issueId, channelId]);
 		if (stmt.step()) {
 			const row = stmt.getAsObject() as Record<string, unknown>;
 			stmt.free();
@@ -3786,28 +3992,54 @@ export class StateStore {
 	}
 
 	/** FLY-560 Feature C: clear the attach-pin record (e.g. message deleted). */
-	clearChatThreadAttachPin(
-		issueId: string,
-		channelId: string,
-		role: string = "main",
-	): void {
-		const table =
-			normalizeChatThreadRole(role) === "main"
-				? "chat_threads"
-				: "phase_chat_threads";
-		const roleClause =
-			table === "phase_chat_threads" ? " AND session_role = ?" : "";
-		const params =
-			table === "phase_chat_threads"
-				? [issueId, channelId, normalizeChatThreadRole(role)]
-				: [issueId, channelId];
+	clearChatThreadAttachPin(issueId: string, channelId: string): void {
 		this.db.run(
-			`UPDATE ${table}
+			`UPDATE chat_threads
 			 SET attach_pin_message_id = NULL, attach_pin_command = NULL, attach_pin_pinned_at = NULL
-			 WHERE issue_id = ? AND channel_id = ?${roleClause}`,
-			params,
+			 WHERE issue_id = ? AND channel_id = ?`,
+			[issueId, channelId],
 		);
 		this.save();
+	}
+
+	/**
+	 * FLY-892 (Step 5): the still-visible legacy phase threads (FLY-793 side-table
+	 * rows) the boot sweep must reconcile — a Discord thread still exists for each.
+	 * Filters out rows already archived or already marked missing so the sweep is
+	 * idempotent by construction (an archived row never re-enters the input set).
+	 * The side-table is otherwise read-only now (nothing writes it post-converge).
+	 */
+	getUnarchivedPhaseChatThreads(): Array<{
+		thread_id: string;
+		channel_id: string;
+		issue_id: string;
+		session_role: ChatThreadRole;
+		lead_id: string | null;
+	}> {
+		const stmt = this.db.prepare(
+			`SELECT thread_id, channel_id, issue_id, session_role, lead_id
+			 FROM phase_chat_threads
+			 WHERE archived_at IS NULL AND discord_missing_at IS NULL`,
+		);
+		const rows: Array<{
+			thread_id: string;
+			channel_id: string;
+			issue_id: string;
+			session_role: ChatThreadRole;
+			lead_id: string | null;
+		}> = [];
+		while (stmt.step()) {
+			const row = stmt.getAsObject() as Record<string, unknown>;
+			rows.push({
+				thread_id: row.thread_id as string,
+				channel_id: row.channel_id as string,
+				issue_id: row.issue_id as string,
+				session_role: normalizeChatThreadRole(row.session_role as string),
+				lead_id: (row.lead_id as string) ?? null,
+			});
+		}
+		stmt.free();
+		return rows;
 	}
 
 	// ── FLY-368: alert_threads (unified-alert per-error thread, active-mapping) ──
@@ -4131,6 +4363,18 @@ export class StateStore {
 			founder_ux_signoff_json:
 				(row.founder_ux_signoff_json as string) ?? undefined,
 			founder_ux_gate_mode: (row.founder_ux_gate_mode as string) ?? undefined,
+			// FLY-869 A-1: QA-required snapshot (numeric 0/1; undefined = never evaluated).
+			qa_required:
+				typeof row.qa_required === "number"
+					? row.qa_required
+					: row.qa_required == null
+						? undefined
+						: Number(row.qa_required),
+			qa_required_reason: (row.qa_required_reason as string) ?? undefined,
+			// FLY-869 B-3: merged-but-unapproved park marker.
+			merge_block_reason: (row.merge_block_reason as string) ?? undefined,
+			merge_block_head: (row.merge_block_head as string) ?? undefined,
+			merge_block_at: (row.merge_block_at as string) ?? undefined,
 			// FLY-245 D-a: monotonic lifecycle revision (defaults 0).
 			lifecycle_revision:
 				typeof row.lifecycle_revision === "number" ? row.lifecycle_revision : 0,

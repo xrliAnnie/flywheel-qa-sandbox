@@ -4,7 +4,15 @@ import { dirname, isAbsolute, join, resolve as resolvePath } from "node:path";
 import { Router } from "express";
 import { CommDB } from "flywheel-comm/db";
 import type { FounderUxGateMode } from "flywheel-config";
-import { modelShortCode, resolveCompletionSessionRole } from "flywheel-config";
+import {
+	DEFAULT_PHASE_TIER,
+	modelDisplayName,
+	modelShortCode,
+	phaseMessageTag,
+	phaseThreadBadge,
+	resolveCompletionSessionRole,
+	THREE_STAGE_PHASE_SEQUENCE,
+} from "flywheel-config";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import { formatAccountRotationNotice } from "../account-heal/account-rotation-notice.js";
@@ -13,7 +21,11 @@ import {
 	applyTransition,
 } from "../applyTransition.js";
 import type { ReconnectController } from "../HeartbeatService.js";
-import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
+import {
+	type ProjectEntry,
+	resolveAnnouncerBotToken,
+	resolveLeadForIssue,
+} from "../ProjectConfig.js";
 import {
 	REVIEW_BINDING_UNBOUND,
 	type Session,
@@ -22,7 +34,11 @@ import {
 import { handleArtifactEvent } from "./artifact-event.js";
 import type { AutoQaCoordinator } from "./auto-qa-coordinator.js";
 import { isReviewHeld } from "./auto-qa-held.js";
-import type { ChatThreadCreator } from "./ChatThreadCreator.js";
+import {
+	buildPipelineHeaderContent,
+	type ChatThreadCreator,
+	type PhaseHeaderRow,
+} from "./ChatThreadCreator.js";
 import {
 	buildCodexInstruction,
 	codexReviewTypeFor,
@@ -40,6 +56,11 @@ import {
 	type LeadEventEnvelope,
 } from "./lead-runtime.js";
 import { makeLinearDoneFinalizer } from "./linear-issue-finalizer.js";
+import {
+	computeShipDecision,
+	isMergeBlocked,
+	parkMergeBlock,
+} from "./merge-ship-gate.js";
 import type { PhaseOrchestrator } from "./phase-orchestrator.js";
 import {
 	isPostApproveShipComplete,
@@ -402,6 +423,12 @@ function stampStageEmojiForSession(
 	const thread = deps.store.getChatThreadByIssue(session.issue_id, chatChannel);
 	if (!thread) return; // thread not created yet — a later stage_changed catches it
 
+	// FLY-892 (Step 6): on a three-stage issue the title prefix is the STAGE-level
+	// phase badge (🎨设计/🔨实现/🧪QA) of the reporting session's phase, which
+	// REPLACES the FLY-560 fine-grained stage word. `""` for a non-phase (main)
+	// session → falls back to the FLY-560 stage badge (byte-compat).
+	const phaseBadge = phaseThreadBadge(session.chat_thread_role) || undefined;
+
 	void deps.chatThreadCreator
 		.stampStageEmoji(
 			{
@@ -420,6 +447,7 @@ function stampStageEmojiForSession(
 			thread.thread_id,
 			stage,
 			issueStatusWordEnabled(),
+			phaseBadge,
 		)
 		.catch((err: unknown) => {
 			console.warn(
@@ -430,13 +458,28 @@ function stampStageEmojiForSession(
 }
 
 /**
- * FLY-560 Feature C: fire-and-forget ensure of the pinned `tmux attach` rescue
- * command on the issue's `[FLY-XX]` chat thread. Resolves the lead/channel/token
- * + thread (same as stampStageEmojiForSession), resolves the runner's tmux
- * window from CommDB → cmux linked-session attach target, and delegates to
- * ChatThreadCreator.ensureRunnerAttachPin. Silent on any miss (no lead/channel/
- * token, thread not created yet, tmux_window not registered yet) — the next
- * stage_changed reconciles. Never throws into the event handler.
+ * FLY-892 (Step 4): statuses that render a phase as ✅ done in the pipeline header.
+ * A DELIBERATELY header-local set — do NOT reuse a global TERMINAL_STATUSES here:
+ * `awaiting_review` / `approved_to_ship` are a runner that is still ALIVE and
+ * working (▶), not a finished phase. `design_done` is the design phase's handoff
+ * marker (✅). The rest with a session are ▶ active; no session is ⬜ planned.
+ */
+const HEADER_DONE_STATUSES: ReadonlySet<string> = new Set([
+	"completed",
+	"failed",
+	"blocked",
+	"merged",
+	"design_done",
+]);
+
+/**
+ * FLY-560 Feature C + FLY-892 (Step 4): fire-and-forget ensure of the issue
+ * thread's pinned message. On a THREE-STAGE issue this is the "pipeline header"
+ * (all three phases: model + status + exec id + attach command); on any other
+ * issue it is the byte-unchanged single-runner "Runner terminal" attach pin.
+ * Resolves lead/channel/token + thread (same as stampStageEmojiForSession);
+ * silent on any miss (next stage_changed reconciles); never throws into the
+ * event handler.
  */
 function pinRunnerAttachForSession(
 	deps: {
@@ -470,32 +513,99 @@ function pinRunnerAttachForSession(
 	const resolvedChannel = chatChannel;
 	const resolvedToken = botToken;
 	const threadId = thread.thread_id;
-	// Codex code R1 MED-1 / R2: the CommDB read (getTmuxTargetFromCommDb opens a
+	// FLY-892 (Codex code R1 Med): the single-runner "Runner terminal" pin
+	// (non-three-stage fallback) MUST stay on the Lead bot — it is NOT a system
+	// broadcast, and switching it to the announcer would be a main-session
+	// behavior change + a 403 self-heal churn on the existing Lead-authored pin.
+	// Only the three-stage PIPELINE HEADER is a broadcast → announcer when the
+	// project configures one, else the Lead bot (byte-compat).
+	const ctx = {
+		chatChannelId: resolvedChannel,
+		issueId: session.issue_id,
+		issueIdentifier: session.issue_identifier,
+		issueTitle: session.issue_title,
+		botToken: resolvedToken,
+		leadId,
+	};
+	const headerBotToken =
+		resolveAnnouncerBotToken(deps.projects, session.project_name) ??
+		resolvedToken;
+	const headerCtx = { ...ctx, botToken: headerBotToken };
+	// Codex code R1 MED-1 / R2: the CommDB reads (getTmuxTargetFromCommDb opens a
 	// better-sqlite3 file with busy_timeout=5s) must NOT run on the request call
 	// stack — a locked comm.db could otherwise stall the stage_changed response.
 	// An async IIFE would run synchronously up to its first `await`, so push the
-	// ENTIRE chain (incl. the sync CommDB read) past a real async boundary via
+	// ENTIRE chain (incl. the sync CommDB reads) past a real async boundary via
 	// Promise.resolve().then — the handler returns before any of it runs.
 	void Promise.resolve()
 		.then(async () => {
-			const target = getTmuxTargetFromCommDb(
-				session.execution_id,
-				session.project_name,
+			// FLY-892 (Step 4): a phase session on this issue ⇒ render the pipeline
+			// header. Empty ⇒ non-three-stage ⇒ byte-unchanged single-runner pin.
+			const phaseSessions = deps.store.getPhaseSessionsForIssue(
+				session.issue_id,
 			);
-			if (!target) return; // tmux_window not registered yet — next stage reconciles
-			const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
-			const command = buildAttachCommand(attach);
-			await deps.chatThreadCreator.ensureRunnerAttachPin(
-				{
-					chatChannelId: resolvedChannel,
-					issueId: session.issue_id,
-					issueIdentifier: session.issue_identifier,
-					issueTitle: session.issue_title,
-					botToken: resolvedToken,
-					leadId,
-				},
+			if (phaseSessions.length === 0) {
+				const target = getTmuxTargetFromCommDb(
+					session.execution_id,
+					session.project_name,
+				);
+				if (!target) return; // tmux_window not registered yet — next stage reconciles
+				const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
+				await deps.chatThreadCreator.ensureRunnerAttachPin(
+					ctx,
+					threadId,
+					buildAttachCommand(attach),
+				);
+				return;
+			}
+
+			const byRole = new Map(phaseSessions.map((s) => [s.chat_thread_role, s]));
+			const rows: PhaseHeaderRow[] = [];
+			for (const role of THREE_STAGE_PHASE_SEQUENCE) {
+				const plannedModel = modelDisplayName(
+					undefined,
+					DEFAULT_PHASE_TIER[role],
+				);
+				const ps = byRole.get(role);
+				if (!ps) {
+					rows.push({
+						label: phaseMessageTag(role).trim(),
+						status: "planned",
+						plannedModel,
+					});
+					continue;
+				}
+				const status: PhaseHeaderRow["status"] = HEADER_DONE_STATUSES.has(
+					ps.status,
+				)
+					? "done"
+					: "active";
+				let attachCommand: string | undefined;
+				let sessionEnded = false;
+				const target = getTmuxTargetFromCommDb(
+					ps.execution_id,
+					ps.project_name,
+				);
+				if (target) {
+					const attach = await resolveCmuxAttachTarget(target.tmuxWindow);
+					attachCommand = buildAttachCommand(attach);
+				} else if (status === "done") {
+					// pre-FLY-887: a finished phase's session is closed → no target.
+					sessionEnded = true;
+				}
+				rows.push({
+					label: phaseMessageTag(role, ps.runner_model).trim(),
+					status,
+					execId: ps.execution_id.slice(0, 8),
+					attachCommand,
+					sessionEnded,
+				});
+			}
+			const content = buildPipelineHeaderContent(headerCtx, rows);
+			await deps.chatThreadCreator.ensureRunnerPipelineHeaderPin(
+				headerCtx,
 				threadId,
-				command,
+				content,
 			);
 		})
 		.catch((err: unknown) => {
@@ -1025,6 +1135,67 @@ export function createEventRouter(
 				// (isPostApproveShipComplete now requires merged landing) — see
 				// markEvidenceGapCompletion / FLY-210 for the later cleanup.
 				let evidenceGap = false;
+				// FLY-869 B: ship-eligibility gate computed BEFORE any status mutation
+				// (design R2 HIGH-1). SISTER computation to DirectEventSink.emitCompleted —
+				// both sinks MUST agree. A merged landing that is NOT ship-eligible is
+				// parked with a durable merge_block marker (决定③ — no auto-revert).
+				const erMergedLanding = landingStatus?.status === "merged";
+				// FLY-869 B (Codex R2 #1): the row's pr_head_sha is written later (≈line 1189) on
+				// the first complete — fall back to the event's evidence.headSha so a merge_block
+				// parked here binds the REAL merged head (else same-head recovery can't match).
+				const erPrHead =
+					existingSession?.pr_head_sha?.trim() ||
+					asString(evidence?.headSha)?.toLowerCase();
+				// Always route through the shared predicate (uniform kill-switch handling).
+				// A missing prior session row → verifyApproval reads no approval and
+				// fail-closes when the gate is ON (correct for a no-context merge), and
+				// the kill-switch still bypasses when OFF. Use the event identity so the
+				// gate is consulted even for a first-seen session_completed.
+				const erDecision = erMergedLanding
+					? computeShipDecision(
+							store,
+							existingSession ?? {
+								execution_id: event.execution_id,
+								project_name: event.project_name,
+							},
+							erPrHead ?? "",
+						)
+					: undefined;
+				const erShipEligible = erMergedLanding
+					? (erDecision?.eligible ?? false)
+					: undefined;
+				const erParkUnapprovedMerge = (): "awaiting_review" => {
+					if (existingSession) {
+						const claimed = parkMergeBlock(
+							store,
+							existingSession,
+							erPrHead ?? "",
+							erDecision ?? {
+								eligible: false,
+								mergeApprovalOk: false,
+								qaOk: false,
+								mergeReason: "no_pr_head",
+								qaReason: "session_not_found",
+							},
+						);
+						if (claimed) {
+							console.warn(
+								`[event-route] FLY-869 merge_without_approval — ${event.execution_id} ` +
+									`merged head=${erPrHead ?? "(none)"} NOT ship-eligible ` +
+									`(merge=${erDecision?.mergeReason ?? "no_head"} qa=${erDecision?.qaReason ?? "n/a"}); ` +
+									`parked awaiting_review + merge_block marker (no auto-revert)`,
+							);
+							// FLY-869 决定③: fire the ONE loud Discord alert (once per head —
+							// gated by the parkMergeBlock claim above). Not auto-reverted, not
+							// marked Done, issue stays open → a human must resolve it.
+							void autoQaCoordinator?.current?.alertMergeWithoutApproval(
+								existingSession,
+								`⛔ Runner ${event.execution_id}（${existingSession.issue_id}）自行 merge 但未获批准 —— merged head ${erPrHead ?? "(none)"} 未通过 ship 闸（merge=${erDecision?.mergeReason ?? "no_head"} qa=${erDecision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
+							);
+						}
+					}
+					return "awaiting_review";
+				};
 				if (route === "needs_review") {
 					// FLY-115 v1.24.5 (FLY-120): mirror the auto_approve+merged
 					// short-circuit so a Runner that self-merges after Lead
@@ -1035,7 +1206,8 @@ export function createEventRouter(
 					// because emitCompleted is in-process while this is the
 					// HTTP /events sink.
 					if (landingStatus?.status === "merged") {
-						status = "completed";
+						// FLY-869 B: merged → completed ONLY when ship-eligible.
+						status = erShipEligible ? "completed" : erParkUnapprovedMerge();
 					} else if (isPostApproveShip) {
 						status = "completed";
 						evidenceGap = true;
@@ -1044,8 +1216,9 @@ export function createEventRouter(
 					}
 				} else if (route === "auto_approve") {
 					if (landingStatus?.status === "merged") {
-						// FLY-58: auto_approve + merged → completed (not approved)
-						status = "completed";
+						// FLY-58 + FLY-869 B: auto_approve + merged → completed only if
+						// ship-eligible; otherwise park (merge_without_approval).
+						status = erShipEligible ? "completed" : erParkUnapprovedMerge();
 					} else if (isPostApproveShip) {
 						status = "completed";
 						evidenceGap = true;
@@ -1080,6 +1253,11 @@ export function createEventRouter(
 					// written (status !== "awaiting_review"), so the session never
 					// enters the wake-dependent approve loop.
 					status = "completed";
+				} else if (erMergedLanding) {
+					// FLY-869 B: natural (:cool:) completion WITH a merged landing must
+					// pass the ship-eligibility gate too (design R2 HIGH-3 — every
+					// merged→completed surface). Sister branch: DirectEventSink.ts.
+					status = erShipEligible ? "completed" : erParkUnapprovedMerge();
 				} else {
 					// route is undefined here — only reachable when
 					// isPostApproveShip is true (the strict route guard above
@@ -1092,9 +1270,8 @@ export function createEventRouter(
 					// WITHOUT merge proof when the landing signal was never
 					// rewritten — mark the gap so FLY-210 can finish the
 					// (now-suppressed) post-ship cleanup once proof arrives.
-					if (landingStatus?.status !== "merged") {
-						evidenceGap = true;
-					}
+					// (merged handled by the erMergedLanding branch above.)
+					evidenceGap = true;
 				}
 
 				// FLY-59: Read session role from completed event payload.
@@ -1360,6 +1537,8 @@ export function createEventRouter(
 						existingStatus: existingSession?.status,
 						route,
 						landingStatus,
+						// FLY-869 B: thread the pre-transition decision (parked = awaiting_review).
+						shipEligible: erShipEligible,
 					})
 				) {
 					runPostShipFinalization(
@@ -1683,12 +1862,62 @@ export function createEventRouter(
 							| undefined;
 						const sessionAtStage = store.getSession(event.execution_id);
 						const stageRoute = asString(sessionAtStage?.decision_route);
+						// FLY-869 B: compute ship-eligibility BEFORE applyTransition→completed
+						// (design R2 HIGH-4 — the W2 re-finalize surface must gate too). A
+						// merged-but-unapproved session is parked, NOT transitioned/finalized.
+						const w2PrHead = sessionAtStage?.pr_head_sha?.trim();
+						const w2Decision =
+							landingStatus?.status === "merged"
+								? computeShipDecision(
+										store,
+										sessionAtStage ?? {
+											execution_id: event.execution_id,
+											project_name: event.project_name,
+										},
+										w2PrHead ?? "",
+									)
+								: undefined;
+						const w2ShipEligible =
+							landingStatus?.status === "merged"
+								? (w2Decision?.eligible ?? false)
+								: undefined;
+						if (
+							landingStatus?.status === "merged" &&
+							w2ShipEligible === false &&
+							sessionAtStage
+						) {
+							const claimed = parkMergeBlock(
+								store,
+								sessionAtStage,
+								w2PrHead ?? "",
+								w2Decision ?? {
+									eligible: false,
+									mergeApprovalOk: false,
+									qaOk: false,
+									mergeReason: "no_pr_head",
+									qaReason: "session_not_found",
+								},
+							);
+							if (claimed) {
+								console.warn(
+									`[event-route W2] FLY-869 merge_without_approval — ${event.execution_id} ` +
+										`merged head=${w2PrHead ?? "(none)"} NOT ship-eligible; parked (no finalize).`,
+								);
+								// FLY-869 决定③: one loud Discord alert (once per head).
+								void autoQaCoordinator?.current?.alertMergeWithoutApproval(
+									sessionAtStage,
+									`⛔ Runner ${event.execution_id}（${sessionAtStage.issue_id}）自行 merge 但未获批准（stage=completed，merged head ${w2PrHead ?? "(none)"} 未通过 ship 闸：merge=${w2Decision?.mergeReason ?? "no_head"} qa=${w2Decision?.qaReason ?? "n/a"}）。已挂 merge_block、未标 Done、issue 留 open，不会自动 revert —— 需要人来处理。`,
+								);
+							}
+						}
 						if (
 							landingStatus?.status === "merged" &&
 							isPostApproveShipComplete({
 								existingStatus: sessionAtStage?.status,
 								route: stageRoute,
 								landingStatus,
+								// FLY-869 B: gated — returns false when parked (not eligible).
+								shipEligible: w2ShipEligible,
 							})
 						) {
 							// (i) FSM transition FIRST via canonical applyTransition;
@@ -1931,7 +2160,11 @@ export function createEventRouter(
 			autoQaCoordinator?.current &&
 			session &&
 			(session.session_role ?? "main") === "main" &&
-			session.status === "awaiting_review"
+			session.status === "awaiting_review" &&
+			// FLY-869 B: a parked merged-but-unapproved session (merge_block marker)
+			// must NOT drive auto-QA (design R2 HIGH-4 suppressor). Sister guard:
+			// DirectEventSink.emitCompleted.
+			!isMergeBlocked(session)
 		) {
 			try {
 				await autoQaCoordinator.current.onMainAwaitingReview(session, {

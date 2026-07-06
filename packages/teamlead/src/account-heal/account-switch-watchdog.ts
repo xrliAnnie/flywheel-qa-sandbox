@@ -23,6 +23,14 @@ export interface AccountSwitchWatchdogDeps {
 	executeSwitch: (pending: PendingSwitch) => Promise<RepairDisposition>;
 	/** Post the switch result into the Alerts thread. */
 	post: (detail: string) => Promise<void>;
+	/**
+	 * FLY-871 R3/W5: fired AFTER a successful switch (`outcome === "attempted"`) so
+	 * the rescue runtime can sweep every session still stuck at a login prompt in
+	 * the incident window (Annie 4945ebf9: "换号成功就把这一波卡登录的都救了"). Optional
+	 * ⇒ undefined = no sweep (byte-compat / self-heal off). Independently
+	 * try/caught so a sweep failure never wedges the switch or the poll loop.
+	 */
+	onSwitchSuccess?: () => Promise<void>;
 	logger?: (msg: string) => void;
 }
 
@@ -37,6 +45,18 @@ export async function accountSwitchWatchdogTick(
 			const result = await deps.executeSwitch(pending);
 			await deps.post(result.detail);
 			fired++;
+			// FLY-871 R3/W5: a successful switch → sweep the incident-window logins.
+			if (result.outcome === "attempted" && deps.onSwitchSuccess) {
+				try {
+					await deps.onSwitchSuccess();
+				} catch (sweepErr) {
+					deps.logger?.(
+						`account-switch watchdog: post-switch rescue sweep failed: ${
+							sweepErr instanceof Error ? sweepErr.message : String(sweepErr)
+						}`,
+					);
+				}
+			}
 		} catch (err) {
 			deps.logger?.(
 				`account-switch watchdog: executeSwitch failed for ${pending.key}: ${

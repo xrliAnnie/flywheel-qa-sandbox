@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-892 Mockup — 一 issue = 一 thread</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family: -apple-system, system-ui, "PingFang SC", sans-serif; background:#f5f5f7; color:#1d1d1f; padding:24px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size:20px; margin-bottom:4px; }
+  .sub { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .cols { display:flex; gap:16px; align-items:flex-start; flex-wrap:wrap; }
+  .discord { flex:1 1 560px; background:#313338; border-radius:12px; overflow:hidden; box-shadow:0 1px 3px rgba(0,0,0,.2); color:#dbdee1; font-size:14px; }
+  .titlebar { background:#2b2d31; padding:10px 14px; font-weight:600; color:#f2f3f5; border-bottom:1px solid #1e1f22; display:flex; align-items:center; gap:8px; }
+  .titlebar .hash { color:#80848e; }
+  .pinned { background:#2b2d31; margin:12px; border-left:4px solid #f0b232; border-radius:6px; padding:10px 12px; }
+  .pinned .pin-tag { color:#f0b232; font-size:11px; font-weight:700; letter-spacing:.4px; margin-bottom:6px; }
+  .pline { display:flex; gap:10px; padding:3px 0; font-family:"SF Mono", Menlo, monospace; font-size:13px; align-items:baseline; }
+  .pline .ph { width:110px; }
+  .pline .model { width:96px; color:#b5bac1; }
+  .pline .st-done { color:#23a55a; }
+  .pline .st-run { color:#f0b232; }
+  .pline .st-wait { color:#80848e; }
+  .attach { background:#1e1f22; border-radius:4px; padding:6px 8px; margin:4px 0 6px 0; font-family:"SF Mono",Menlo,monospace; font-size:12px; color:#b5bac1; }
+  .pnote { color:#80848e; font-size:11.5px; margin-top:6px; font-style:italic; }
+  .msg { display:flex; gap:12px; padding:8px 14px; }
+  .msg:hover { background:#2e3035; }
+  .avatar { width:36px; height:36px; border-radius:50%; flex:none; display:flex; align-items:center; justify-content:center; font-size:17px; }
+  .av-bridge { background:#4e5058; } .av-lead { background:#23a55a; } .av-annie { background:#eb459e; }
+  .m-head { display:flex; gap:8px; align-items:baseline; }
+  .m-name { font-weight:600; color:#f2f3f5; font-size:14px; }
+  .m-bot { background:#5865f2; color:#fff; font-size:9.5px; padding:1px 4px; border-radius:3px; vertical-align:middle; }
+  .m-time { color:#80848e; font-size:11px; }
+  .m-body { margin-top:2px; line-height:1.45; }
+  .divider { text-align:center; color:#80848e; font-size:11px; padding:6px 0; border-top:1px solid #3f4147; margin:4px 14px; }
+  .code { background:#1e1f22; border-radius:4px; padding:1px 5px; font-family:"SF Mono",Menlo,monospace; font-size:12.5px; }
+  .notes { flex:1 1 300px; min-width:280px; }
+  .note { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:12px 14px; margin-bottom:12px; border-left:4px solid #007aff; }
+  .note h3 { font-size:13px; color:#1a365d; margin-bottom:4px; }
+  .note p { font-size:12.5px; color:#4b4b4f; line-height:1.5; }
+  .note.amber { border-left-color:#ff9500; }
+  .note.green { border-left-color:#34c759; }
+  .note.purple { border-left-color:#af52de; }
+  .tag { display:inline-block; font-size:10.5px; font-weight:700; border-radius:3px; padding:1px 5px; margin-right:4px; vertical-align:middle; }
+  .tag.blue { background:#e8f1ff; color:#007aff; }
+  .before { margin-top:24px; background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:14px 16px; }
+  .before h2 { font-size:15px; color:#1a365d; margin-bottom:8px; }
+  .ba { display:flex; gap:14px; flex-wrap:wrap; font-size:12.5px; }
+  .ba > div { flex:1 1 260px; }
+  .ba ul { margin:6px 0 0 18px; line-height:1.7; }
+  .bad { color:#ff3b30; } .good { color:#34c759; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-892 Mockup — 一 issue = 一 thread</h1>
+  <div class="sub">同一 issue 的 Lead 更新 + 设计/实现/QA 三段产出,全部在这一条 thread 里。右侧注解说明每个元素怎么读。</div>
+
+  <div class="cols">
+    <div class="discord">
+      <div class="titlebar"><span class="hash">🧵</span>🔨实现 [O] [FLY-892] 一 issue = 一 thread — 收敛三段式</div>
+
+      <div class="pinned">
+        <div class="pin-tag">📌 置顶 · PIPELINE HEADER(原地更新,不刷屏)</div>
+        <div class="pline"><span class="ph">[设计·Fable]</span><span class="st-done">✅ 完成</span><span class="model">exec 1a2b3c4d</span></div>
+        <div class="attach">tmux -L flywheel attach -t runner-FLY-892-design &nbsp;<span style="color:#80848e">← 887 后 session 保活,点跳回看设计段 scrollback</span></div>
+        <div class="pline"><span class="ph">[实现·Opus]</span><span class="st-run">▶ 进行中</span><span class="model">exec 8e5b4127</span></div>
+        <div class="attach">tmux -L flywheel attach -t runner-FLY-892-implement</div>
+        <div class="pline"><span class="ph">[QA·Sonnet]</span><span class="st-wait">⬜ 未开始(计划模型 Sonnet)</span></div>
+        <div class="pnote">自动更新:三段各用什么模型、跑到哪、去哪看终端,一条置顶看全。887 落地前,已完成段显示「✅ 完成(session 已结束)」不带命令。</div>
+      </div>
+
+      <div class="msg"><div class="avatar av-bridge">📢</div><div>
+        <div class="m-head"><span class="m-name">Flywheel 播报 <span class="m-bot">BOT</span></span><span class="m-time">今天 10:02</span></div>
+        <div class="m-body">[设计·Fable] 设计阶段开跑 — brainstorm → research → plan → design review。</div>
+      </div></div>
+
+      <div class="msg"><div class="avatar av-bridge">📢</div><div>
+        <div class="m-head"><span class="m-name">Flywheel 播报 <span class="m-bot">BOT</span></span><span class="m-time">今天 11:40</span></div>
+        <div class="m-body">[设计·Fable] 设计评审通过(Codex APPROVED,2 轮)。plan: <span class="code">engineering/doc/FLY-892-one-issue-one-thread/plan.md</span></div>
+      </div></div>
+
+      <div class="msg"><div class="avatar av-lead">🤖</div><div>
+        <div class="m-head"><span class="m-name">Tadashi <span class="m-bot">BOT</span></span><span class="m-time">今天 11:52</span></div>
+        <div class="m-body">设计我看过了,方案收敛在 thread 解析层,session 三段保留。@Annie 有空扫一眼 mockup,没问题我放行实现。</div>
+      </div></div>
+
+      <div class="msg"><div class="avatar av-annie">🌸</div><div>
+        <div class="m-head"><span class="m-name">Annie</span><span class="m-time">今天 12:05</span></div>
+        <div class="m-body">好,就要这个效果 👍</div>
+      </div></div>
+
+      <div class="divider">—— 段切换:设计 ✅ → 实现 ▶(置顶 header 同步更新,thread 标题前缀 🎨设计 → 🔨实现)——</div>
+
+      <div class="msg"><div class="avatar av-bridge">📢</div><div>
+        <div class="m-head"><span class="m-name">Flywheel 播报 <span class="m-bot">BOT</span></span><span class="m-time">今天 13:10</span></div>
+        <div class="m-body">[实现·Opus] 实现阶段开跑,同一分支续跑。</div>
+      </div></div>
+
+      <div class="msg"><div class="avatar av-bridge">📢</div><div>
+        <div class="m-head"><span class="m-name">Flywheel 播报 <span class="m-bot">BOT</span></span><span class="m-time">今天 15:47</span></div>
+        <div class="m-body">[实现·Opus] PR 已建:<span class="code">#463</span>,Codex code review 进行中。</div>
+      </div></div>
+
+      <div class="msg"><div class="avatar av-bridge">📢</div><div>
+        <div class="m-head"><span class="m-name">Flywheel 播报 <span class="m-bot">BOT</span></span><span class="m-time">今天 16:30</span></div>
+        <div class="m-body">[QA·Sonnet] 真机 E2E:三段只落一条 thread ✅、Lead 消息同 thread ✅、pinned header 三态更新 ✅ — FINAL PASS。</div>
+      </div></div>
+
+      <div class="msg"><div class="avatar av-bridge">📢</div><div>
+        <div class="m-head"><span class="m-name">Flywheel 播报 <span class="m-bot">BOT</span></span><span class="m-time">今天 16:32</span></div>
+        <div class="m-body">📬 <b>待你批准</b>:FLY-892 QA 通过,PR #463 请求 ship。</div>
+      </div></div>
+    </div>
+
+    <div class="notes">
+      <div class="note">
+        <h3><span class="tag blue">1</span>Thread 标题</h3>
+        <p><b>🔨实现 [O] [FLY-892] 标题</b> —(你定案)前缀**只到阶段级**:🎨设计 / 🔨实现 / 🧪QA 随段切换,FLY-560 的细状态词不再上标题;[O] = 当前段模型码。不再有三条分身 thread。</p>
+      </div>
+      <div class="note amber">
+        <h3><span class="tag blue">2</span>置顶 Pipeline Header(= session-nav)</h3>
+        <p><b>(founder-approved ①+②)</b>一条置顶列三段:模型标签 + 状态(✅/▶/⬜)+ exec id + tmux/cmux attach 命令,点着跳去看各段 scrollback。原地编辑更新,不另加第二条置顶(吸收现有「Runner terminal」置顶)。887(三段 session 保活)落地前,已完成段没有可跳的 session,显示「已结束」;887 后三段全可跳。</p>
+      </div>
+      <div class="note green">
+        <h3><span class="tag blue">3</span>消息前缀 = 谁在说话</h3>
+        <p><b>(founder-approved ①)</b>三段 session 的产出消息带 <b>[设计·Fable]</b> / <b>[实现·Opus]</b> / <b>[QA·Sonnet]</b> 标签(段名·该段实际模型);Tadashi 和你的消息不带标签。一条 thread 里随时分得清「哪段在说话、用的什么模型」。</p>
+      </div>
+      <div class="note">
+        <h3><span class="tag blue">4</span>「Flywheel 播报」= 专职系统播报身份(你定案)</h3>
+        <p>所有自动状态播报(阶段开跑/完成、QA 结果、置顶 header 维护)由一个专职播报 bot 发(复用池子空 bot 03–06 之一,不新开);Tadashi/Honey Lemon 的聊天消息保持各自身份 —— 一眼分清「系统在播报」还是「Lead 在跟你说话」。</p>
+      </div>
+      <div class="note purple">
+        <h3><span class="tag blue">5</span>旧的重复 thread</h3>
+        <p>已存在的 🎨/🔨/🧪 分身 thread:Bridge 重启时各发一条「🔀 已归并到主 thread(链接)」然后归档,sidebar 清干净;in-flight 的 887 等后续消息自动进主 thread。</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="before">
+    <h2>Before / After</h2>
+    <div class="ba">
+      <div>
+        <b class="bad">现在(一个 issue 最多 4 条 thread)</b>
+        <ul>
+          <li>🎨设计 thread(标题永不更新 — 已知 bug)</li>
+          <li>🔨实现 thread</li>
+          <li>🧪QA thread(Done 后永不归档 — 已知 bug)</li>
+          <li>Lead 更新又另开一条 [FLY-XX] thread</li>
+        </ul>
+      </div>
+      <div>
+        <b class="good">改后(恰好 1 条)</b>
+        <ul>
+          <li>一条 [FLY-XX] thread:Lead + 三段全在这</li>
+          <li>标题前缀 = 当前阶段;置顶 = 三段总览 + attach</li>
+          <li>消息前缀 = 哪段在说话</li>
+          <li>三段 session/独立模型 后端原样保留</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

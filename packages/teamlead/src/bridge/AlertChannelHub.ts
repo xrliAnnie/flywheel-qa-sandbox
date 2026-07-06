@@ -311,8 +311,19 @@ export class AlertChannelHub {
 					fid ? { mentionUserId: fid } : undefined,
 				);
 			} else {
-				// "attempted": a safe action was sent — posted verbatim, NEVER pings.
-				await this.safePostToThread(threadId, repair.detail);
+				// "attempted": a safe action was sent — posted verbatim. FLY-871 R2/W6:
+				// an `account_switch` enqueue IS the Codex Infra Bot's ASSIGNMENT —
+				// @-mention the bot so the FLY-267 mention-gate wakes it to claim the
+				// pending switch (default `parse:[]` would suppress it). Env unset ⇒ no
+				// mention = byte-compat (the account-switch watchdog deadline still fires
+				// the switch even if the bot is never woken).
+				const infraBotId =
+					repair.action === "account_switch" ? this.infraBotId() : undefined;
+				await this.safePostToThread(
+					threadId,
+					repair.detail,
+					infraBotId ? { mentionUserId: infraBotId } : undefined,
+				);
 			}
 			// "attempted" (a safe action was sent, recovery not yet confirmed) vs
 			// "needs_human". The thread flips to resolved (✅ 已恢复) only when the
@@ -333,6 +344,18 @@ export class AlertChannelHub {
 	 */
 	private founderId(): string | undefined {
 		const id = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID?.trim();
+		return id && /^\d{17,20}$/.test(id) ? id : undefined;
+	}
+
+	/**
+	 * FLY-871 R2/W6: the Codex Infra Bot's Discord id, used to @-mention it on the
+	 * `account_switch` ASSIGNMENT post so the FLY-267 mention-gate wakes it to claim
+	 * the pending switch. Resolved at CALL time (env may change); accepts ONLY a
+	 * snowflake so a present-but-malformed env degrades to no-mention rather than a
+	 * rejected allowed_mentions body. Unset ⇒ undefined = byte-compat.
+	 */
+	private infraBotId(): string | undefined {
+		const id = process.env.FLYWHEEL_INFRA_BOT_USER_ID?.trim();
 		return id && /^\d{17,20}$/.test(id) ? id : undefined;
 	}
 
@@ -392,7 +415,14 @@ export class AlertChannelHub {
 		const active = this.deps.store.listActiveAlertThreads();
 		for (const row of active) {
 			try {
-				if (row.session_key && row.event_type === "runner_stuck_unhandled") {
+				if (
+					row.session_key &&
+					(row.event_type === "runner_stuck_unhandled" ||
+						row.event_type === "runner_login_expired")
+				) {
+					// FLY-871 R2/C8: a runner_login_expired resolves by the RUNNER's
+					// pane/status (rescue closes the old session, or its fingerprint
+					// changes), NOT a Lead pane — same path as runner_stuck_unhandled.
 					if (await this.shouldResolveRunner(row.session_key, row)) {
 						await this.resolve(row.correlation_key);
 					}

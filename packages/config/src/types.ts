@@ -270,18 +270,36 @@ export const FOUNDER_UX_GATE_MODES: readonly FounderUxGateMode[] = [
 	"enforce",
 ];
 
-/** FLY-598: default mode when `founder_ux_gate` is absent — fully off (byte-compatible). */
-export const FOUNDER_UX_GATE_DEFAULT_MODE: FounderUxGateMode = "off";
+/**
+ * FLY-869: default mode when `founder_ux_gate` is absent — ENFORCE. Flipped
+ * from FLY-598's opt-in `off`: gate EVERY substantial issue by default, not
+ * just ones a Lead remembered to label `founder-facing-ux`. Callers MUST NOT
+ * read this constant as "the absent behavior" directly — route the raw config
+ * through `resolveEffectiveFounderUxConfig` (./founder-ux-config.ts), the one
+ * choke point that distinguishes "absent" from an explicit `mode: "off"`.
+ */
+export const FOUNDER_UX_GATE_DEFAULT_MODE: FounderUxGateMode = "enforce";
 
 /**
- * FLY-598: founder-facing UX gate — enforce "brainstorm UX with the founder before
- * building founder-facing UX". Absent or `mode: off` → feature fully off (byte-compatible
- * spawn prompt + Lead rule set + stage path). Kept deliberately separate from the FLY-175
- * `founderConsent` decision mode so this gate can never toggle the reserved-action consent.
+ * FLY-598 / FLY-869: founder-facing UX gate — enforce "brainstorm UX with the founder
+ * before building". FLY-869 flips the default from opt-in `off` to default-on
+ * `enforce`: an ABSENT `founder_ux_gate` key now resolves to `enforce` (gating
+ * EVERY substantial issue) via `resolveEffectiveFounderUxConfig`. Only an
+ * EXPLICIT `mode: "off"` keeps the feature fully inert (byte-compatible spawn
+ * prompt + Lead rule set + stage path) — this is the project-level
+ * kill-switch. Kept deliberately separate from the FLY-175 `founderConsent`
+ * decision mode so this gate can never toggle the reserved-action consent.
  */
 export interface FounderUxGateConfig {
-	/** Rollout mode. Absent key → treated as `off`. */
+	/** Rollout mode. Absent key → resolved to `enforce` by resolveEffectiveFounderUxConfig. */
 	mode: FounderUxGateMode;
+	/**
+	 * FLY-869: labels that EXEMPT an issue from the gate (e.g. trivial / purely
+	 * mechanical work not worth a founder brainstorm). Absent →
+	 * `resolveEffectiveFounderUxConfig` defaults to `["brainstorm-exempt"]`.
+	 * Normalized to lowercase by ConfigLoader.
+	 */
+	exempt_labels?: string[];
 }
 
 /**
@@ -570,7 +588,11 @@ export interface FlywheelConfig {
 	pipeline?: PipelineConfig;
 	/** FLY-222: periodic Xiaohongshu-collection learning. Absent = off. */
 	xiaohongshu_learning?: XiaohongshuLearningConfig;
-	/** FLY-598: founder-facing UX gate. Absent or mode:off = fully off (byte-compatible). */
+	/**
+	 * FLY-598 / FLY-869: founder-facing UX gate. Absent = resolved to `enforce`
+	 * (default-on, FLY-869) via `resolveEffectiveFounderUxConfig`. Explicit
+	 * `mode: off` = fully off (byte-compatible kill-switch).
+	 */
 	founder_ux_gate?: FounderUxGateConfig;
 	/** FLY-725: founder milestone-report push. Absent or enabled:false = off (byte-compatible). */
 	founder_milestone_report?: FounderMilestoneReportConfig;

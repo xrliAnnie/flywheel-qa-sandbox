@@ -332,6 +332,110 @@ describe("loadProjects companion validation", () => {
 	});
 });
 
+// FLY-879: external (customer-facing) Lead marker.
+describe("loadProjects external validation", () => {
+	const originalEnv = process.env.FLYWHEEL_PROJECTS;
+	afterEach(() => {
+		if (originalEnv === undefined) delete process.env.FLYWHEEL_PROJECTS;
+		else process.env.FLYWHEEL_PROJECTS = originalEnv;
+	});
+
+	// Base external lead uses the lazy `external-interviews` label (deliberately
+	// NOT PM/Triage, to avoid the PM/Triage validator) + department "external".
+	const externalLead = (overrides: Record<string, unknown> = {}) => ({
+		agentId: "anna-interviewer-lead",
+		chatChannel: "ch-customer",
+		match: { labels: ["external-interviews"] },
+		department: "external",
+		canSpawnRunners: false,
+		external: true,
+		...overrides,
+	});
+
+	const loadWith = (lead: Record<string, unknown>) => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{ projectName: "flywheel", projectRoot: "/tmp", leads: [lead] },
+		]);
+		return loadProjects();
+	};
+
+	it("accepts a valid external lead (external:true + canSpawnRunners:false)", () => {
+		const lead = loadWith(externalLead())[0]!.leads[0]!;
+		expect(lead.external).toBe(true);
+		expect(lead.canSpawnRunners).toBe(false);
+	});
+
+	it("leaves external undefined when absent (NOT normalized to false)", () => {
+		// FLY-231 reverse-compat pattern: absent stays absent so existing Lead
+		// objects keep their exact shape. Consumers check `=== true`.
+		const lead = loadWith({
+			agentId: "product-lead",
+			chatChannel: "ch",
+			match: { labels: ["Product"] },
+		})[0]!.leads[0]!;
+		expect(lead.external).toBeUndefined();
+	});
+
+	it("preserves explicit external: false", () => {
+		const lead = loadWith({
+			agentId: "product-lead",
+			chatChannel: "ch",
+			match: { labels: ["Product"] },
+			external: false,
+		})[0]!.leads[0]!;
+		expect(lead.external).toBe(false);
+	});
+
+	it("throws when external is not a boolean", () => {
+		expect(() => loadWith(externalLead({ external: "yes" }))).toThrow(
+			/external/,
+		);
+	});
+
+	it("throws when external:true but canSpawnRunners is absent (default true)", () => {
+		// Build the lead WITHOUT canSpawnRunners (construct absent — do not delete):
+		// after normalization an absent field becomes `true`, which must be rejected.
+		const lead = {
+			agentId: "anna-interviewer-lead",
+			chatChannel: "ch-customer",
+			match: { labels: ["external-interviews"] },
+			department: "external",
+			external: true,
+		};
+		expect(() => loadWith(lead)).toThrow(/FLY-879/);
+	});
+
+	it("throws when external:true but canSpawnRunners is explicitly true", () => {
+		expect(() => loadWith(externalLead({ canSpawnRunners: true }))).toThrow(
+			/FLY-879/,
+		);
+	});
+
+	it("throws when external:true is combined with companion:true (mutually exclusive)", () => {
+		expect(() => loadWith(externalLead({ companion: true }))).toThrow(
+			/FLY-879/,
+		);
+	});
+
+	it("throws when external:true is combined with a codex-app-server backend (MVP claude-code only)", () => {
+		expect(() =>
+			loadWith(externalLead({ backend: "codex-app-server" })),
+		).toThrow(/FLY-879/);
+	});
+
+	it("is orthogonal to companion — a companion lead keeps external undefined", () => {
+		const lead = loadWith({
+			agentId: "mufasa-lead",
+			chatChannel: "ch",
+			match: { labels: ["growth"] },
+			canSpawnRunners: false,
+			companion: true,
+		})[0]!.leads[0]!;
+		expect(lead.companion).toBe(true);
+		expect(lead.external).toBeUndefined();
+	});
+});
+
 describe("FLY-163: deprecated field handling", () => {
 	const originalEnv = process.env.FLYWHEEL_PROJECTS;
 	let warnSpy: ReturnType<typeof vi.spyOn>;
