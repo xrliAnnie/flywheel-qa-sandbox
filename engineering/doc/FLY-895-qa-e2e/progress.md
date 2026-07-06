@@ -1,14 +1,13 @@
 ---
 issue: FLY-895
-phase: design
-phaseCursor: 2/2
-updated: 2026-07-06T02:30:07.958Z
-nextStep: "handoff: Implement phase appends E2E run log entry to
-  doc/qa/sandbox-notes.md on this branch"
+phase: implement
+phaseCursor: 1/1
+updated: 2026-07-06T02:32:05.342Z
+nextStep: push branch + open PR to sandbox main; then approve gate
 chunks: []
 pointers: {}
 ---
 
 # FLY-895 progress
-**phase**: design (2/2)
-**next**: handoff: Implement phase appends E2E run log entry to doc/qa/sandbox-notes.md on this branch
+**phase**: implement (1/1)
+**next**: push branch + open PR to sandbox main; then approve gate
