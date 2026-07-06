@@ -19,15 +19,21 @@
 # Usage:
 #   lead-alert.sh \
 #     --lead <lead-id> --project <project-name> \
-#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost> \
+#     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass> \
 #     --severity <info|warning|severe> \
 #     --title <string> --body <string> \
-#     [--signature <string>]
+#     [--signature <string>] [--strict-delivery]
 #
 # Exit codes:
 #   0 — posted or already claimed (both are success: no double-alert)
 #   1 — unrecoverable config error (missing projects.json, unknown lead, etc.)
 #   2 — Discord POST failed, payload queued for later drain
+#
+# --strict-delivery (FLY-913): print ONE machine-readable result line on stdout
+#   (`sent|duplicate|queued_transient|dead_lettered|config_error`) so callers
+#   can distinguish "transient failure, queued and WILL drain" from "permanently
+#   undeliverable" — exit 2 alone conflates the two (Codex R1 #1). Without the
+#   flag, behavior (stdout/stderr/exit codes) is byte-for-byte unchanged.
 set -euo pipefail
 
 log() {
@@ -35,7 +41,7 @@ log() {
 }
 
 usage() {
-  sed -n '3,33p' "$0" >&2
+  sed -n '3,40p' "$0" >&2
   exit 1
 }
 
@@ -46,6 +52,15 @@ SEVERITY="warning"
 TITLE=""
 BODY=""
 SIGNATURE=""
+STRICT_DELIVERY=0
+
+# FLY-913: machine-readable delivery result on stdout, ONLY under
+# --strict-delivery. log() writes to stderr, so this is the sole stdout line.
+emit_result() {
+  if [ "$STRICT_DELIVERY" = "1" ]; then
+    printf '%s\n' "$1"
+  fi
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -56,9 +71,11 @@ while [ $# -gt 0 ]; do
     --title)     TITLE="${2:?--title requires a value}"; shift 2 ;;
     --body)      BODY="${2:?--body requires a value}"; shift 2 ;;
     --signature) SIGNATURE="${2:?--signature requires a value}"; shift 2 ;;
+    --strict-delivery) STRICT_DELIVERY=1; shift ;;
     -h|--help)   usage ;;
     *)
       log "ERROR: unknown flag '$1'"
+      emit_result "config_error"
       usage
       ;;
   esac
@@ -66,6 +83,7 @@ done
 
 if [ -z "$LEAD_ID" ] || [ -z "$PROJECT_NAME" ] || [ -z "$KIND" ] || [ -z "$TITLE" ] || [ -z "$BODY" ]; then
   log "ERROR: --lead, --project, --kind, --title, --body are all required"
+  emit_result "config_error"
   usage
 fi
 
@@ -73,9 +91,13 @@ case "$KIND" in
   # FLY-871 §12 W2: tui_window_lost — the windowed Codex Lead's silent-no-pane
   # guard fires this via lead-alert.sh (Discord-independent path). Kept in the TS
   # AlertEventType union too (LeadAlertNotifier.ts) so the shared type face has no drift.
-  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost) ;;
+  # FLY-913: restart_guard_bypass — the flywheel-restart-guard PreToolUse hook's
+  # mandatory bypass alert (every bypass MUST ring; the hook fail-closes on
+  # anything but sent/queued_transient). Same TS-union parity convention.
+  rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|tui_window_lost|restart_guard_bypass) ;;
   *)
     log "ERROR: unknown --kind '$KIND'"
+    emit_result "config_error"
     exit 1
     ;;
 esac
@@ -84,6 +106,7 @@ case "$SEVERITY" in
   info|warning|severe) ;;
   *)
     log "ERROR: unknown --severity '$SEVERITY' (must be info|warning|severe)"
+    emit_result "config_error"
     exit 1
     ;;
 esac
@@ -92,6 +115,7 @@ esac
 for tool in jq sqlite3 curl shasum; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     log "ERROR: required tool '$tool' not found in PATH"
+    emit_result "config_error"
     exit 1
   fi
 done
@@ -126,6 +150,7 @@ if [ ! -f "$PROJECTS_JSON" ]; then
     "alert_dead_lettered" \
     "LeadAlert dropped (shell path)" \
     "projects.json not found at ${PROJECTS_JSON}; alert (lead=${LEAD_ID} project=${PROJECT_NAME} kind=${KIND}) dropped — config missing."
+  emit_result "config_error"
   exit 1
 fi
 
@@ -147,6 +172,7 @@ if ! LEAD_CFG=$(jq -c --arg p "$PROJECT_NAME" --arg l "$LEAD_ID" '
     "alert_dead_lettered" \
     "LeadAlert dropped (shell path)" \
     "projects.json unreadable/corrupt at ${PROJECTS_JSON}; alert (lead=${LEAD_ID} project=${PROJECT_NAME} kind=${KIND}) dropped — config parse error."
+  emit_result "config_error"
   exit 1
 fi
 
@@ -159,6 +185,7 @@ if [ -z "$LEAD_CFG" ] || [ "$LEAD_CFG" = "null" ]; then
     "alert_dead_lettered" \
     "LeadAlert dropped (shell path)" \
     "Lead '${LEAD_ID}' not found in project '${PROJECT_NAME}' (projects.json). Alert (kind=${KIND}) dropped — config drift or renamed lead."
+  emit_result "config_error"
   exit 1
 fi
 
@@ -208,6 +235,7 @@ EVENT_ID=$(LC_ALL=C printf '%s|%s|%s|%s' "$PROJECT_NAME" "$LEAD_ID" "$KIND" "$SI
   | awk '{print $1}')
 if [ -z "$EVENT_ID" ]; then
   log "ERROR: shasum failed to produce EVENT_ID (project=$PROJECT_NAME lead=$LEAD_ID kind=$KIND signature=$SIGNATURE)" >&2
+  emit_result "config_error"
   exit 3
 fi
 
@@ -243,6 +271,10 @@ CLAIM_RESULT=$(sqlite3 "$CLAIMS_DB" <<<"$CLAIM_SQL" 2>&1) || {
 CLAIMED=$(printf '%s\n' "$CLAIM_RESULT" | awk 'NF' | tail -n 1)
 if [ "$CLAIMED" != "1" ]; then
   log "already claimed event_id=$EVENT_ID lead=$LEAD_ID kind=$KIND signature=$SIGNATURE, skipping"
+  # NOTE (FLY-913 / Codex R2 #1): a claim row is written BEFORE the delivery
+  # attempt, so `duplicate` does NOT prove the earlier alert was ever sent or
+  # queued — strict callers must treat it as NOT-delivered.
+  emit_result "duplicate"
   exit 0
 fi
 
@@ -305,10 +337,12 @@ dead_letter() {
 
 if [ -z "$CHANNEL_ID" ]; then
   dead_letter "no-channel"
+  emit_result "config_error"
   exit 2
 fi
 if [ -z "$TOKEN" ]; then
   dead_letter "no-token"
+  emit_result "config_error"
   exit 2
 fi
 
@@ -324,6 +358,7 @@ HTTP_CODE=$(curl -s -o /tmp/lead-alert-$$.out -w '%{http_code}' \
 if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ] 2>/dev/null; then
   rm -f /tmp/lead-alert-$$.out
   log "sent lead=$LEAD_ID kind=$KIND channel=$CHANNEL_ID (HTTP $HTTP_CODE)"
+  emit_result "sent"
   exit 0
 fi
 
@@ -339,7 +374,9 @@ log "Discord POST failed HTTP=$HTTP_CODE body=$RESP_BODY"
 if [ "$HTTP_CODE" -ge 500 ] 2>/dev/null \
   || [ "$HTTP_CODE" = "429" ] || [ "$HTTP_CODE" = "000" ]; then
   enqueue "discord-${HTTP_CODE}"
+  emit_result "queued_transient"
   exit 2
 fi
 dead_letter "discord-${HTTP_CODE}"
+emit_result "dead_lettered"
 exit 2
