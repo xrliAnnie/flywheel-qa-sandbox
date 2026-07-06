@@ -81,7 +81,11 @@ PROC_IDENT_RE = re.compile(
     re.I,
 )
 
-EXECUTORS = {"nohup", "npx", "tsx", "node", "bun"}
+# Executor first tokens that can launch scripts/run-bridge.ts directly. Package
+# managers (pnpm/npm/yarn/pnpx) are here too (Codex R5): `pnpm tsx …` /
+# `pnpm exec tsx …` / `npm exec tsx …` are reflexive one-line relaunch forms.
+# `pnpm build` / `npm run lint` etc. never carry run-bridge, so they don't hit.
+EXECUTORS = {"nohup", "npx", "tsx", "node", "bun", "deno", "pnpm", "pnpx", "npm", "yarn"}
 SHELLS = {"bash", "sh", "zsh"}
 RUN_BRIDGE_RE = re.compile(r"run-bridge", re.I)
 

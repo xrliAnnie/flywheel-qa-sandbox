@@ -177,6 +177,13 @@ MUST_BLOCK = [
     ('env -iS "node scripts/run-bridge.ts"', "P3 env -iS cluster payload"),
     ('env -iS"npx tsx scripts/run-bridge.ts"', "P3 env -iS attached cluster payload"),
     ('/usr/bin/env -iS "node scripts/run-bridge.ts"', "P3 /usr/bin/env -iS cluster"),
+    # Codex R5 MEDIUM: package-manager exec forms of the same tsx entrypoint.
+    ("pnpm tsx scripts/run-bridge.ts", "P3 pnpm tsx"),
+    ("pnpm exec tsx scripts/run-bridge.ts", "P3 pnpm exec tsx"),
+    ("npm exec tsx scripts/run-bridge.ts", "P3 npm exec tsx"),
+    ("yarn tsx scripts/run-bridge.ts", "P3 yarn tsx"),
+    ("pnpx tsx scripts/run-bridge.ts", "P3 pnpx tsx"),
+    ("sudo pnpm exec tsx scripts/run-bridge.ts", "P3 sudo pnpm exec tsx"),
     # P3 — shell -c payload recursion (one level), incl. merged flag clusters
     ('bash -c "nohup npx tsx scripts/run-bridge.ts"', "P3 bash -c payload"),
     ("sh -c 'npx tsx scripts/run-bridge.ts'", "P3 sh -c payload"),
@@ -222,6 +229,11 @@ MUST_PASS = [
     ("time grep run-bridge scripts/restart-services.sh",
      "time-wrapped grep of run-bridge (no executor token)"),
     ("time pnpm build", "time-wrapped build"),
+    ("pnpm build", "pnpm build (no run-bridge)"),
+    ("pnpm -C packages/teamlead build", "pnpm -C build"),
+    ("npm run lint", "npm run lint"),
+    ("pnpm test:packages:run", "pnpm test script"),
+    ("pnpm install --frozen-lockfile", "pnpm install"),
     ("sudo launchctl print gui/501/com.flywheel.bridge", "sudo read-only launchctl"),
 ]
 
