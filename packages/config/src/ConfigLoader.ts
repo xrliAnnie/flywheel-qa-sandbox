@@ -699,6 +699,50 @@ export class ConfigLoader {
 						);
 					}
 				}
+				// FLY-901: optional `departments` set — explicit multi-dept registration
+				// for AgentDispatcher step-2a (dual-register). Omitted => path-derived
+				// single dept (byte-compat).
+				if (agent.departments != null) {
+					const departments = agent.departments;
+					// V1: non-empty string array
+					if (
+						!Array.isArray(departments) ||
+						departments.length === 0 ||
+						!departments.every((d) => typeof d === "string")
+					) {
+						throw new Error(
+							`agents.${name}.departments must be a non-empty array of strings`,
+						);
+					}
+					const depts = departments as string[];
+					// V2: path-safe tokens (each dept becomes a directory-segment semantic).
+					for (const d of depts) {
+						if (!/^[a-z0-9-]+$/.test(d)) {
+							throw new Error(
+								`agents.${name}.departments entries must be lowercase directory-safe tokens matching ^[a-z0-9-]+$, got "${d}"`,
+							);
+						}
+					}
+					// V3: no duplicate entries.
+					if (new Set(depts).size !== depts.length) {
+						throw new Error(
+							`agents.${name}.departments contains duplicate entries: [${depts.join(", ")}]`,
+						);
+					}
+					// V4: only dept-owned agents may declare departments (mirrors the
+					// singular `department` rule for top-level catch-all agents).
+					if (pathDept === null) {
+						throw new Error(
+							`agents.${name}: agent_file "${agentFile}" is at top-level (no dept dir) but departments is declared. Top-level agents must omit the departments field.`,
+						);
+					}
+					// V5: the file's physical home dept must be a member of the set.
+					if (!depts.includes(pathDept)) {
+						throw new Error(
+							`agents.${name}.departments must include the path-derived home department "${pathDept}" (agent_file "${agentFile}").`,
+						);
+					}
+				}
 				// match validation
 				if (!agent.match || typeof agent.match !== "object") {
 					throw new Error(`agents.${name}: missing required field "match"`);

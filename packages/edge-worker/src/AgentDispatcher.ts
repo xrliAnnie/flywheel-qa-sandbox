@@ -127,6 +127,21 @@ export function parsedDept(agentFile: string): string | null {
 	);
 }
 
+/**
+ * FLY-901: the set of owning-departments an agent is registered under for
+ * label-based dispatch (step-2a). Returns:
+ *   - `null` for top-level (catch-all) agents — they never participate in step-2a
+ *     (and ConfigLoader rejects a `departments` field on them).
+ *   - the explicit `departments` array when declared (dual-register).
+ *   - `[home]` (the single path-derived dept) when `departments` is omitted —
+ *     byte-compatible with the pre-FLY-901 single-dept behavior.
+ */
+export function registeredDepts(cfg: AgentConfig): string[] | null {
+	const home = parsedDept(cfg.agent_file);
+	if (home === null) return null;
+	return cfg.departments ?? [home];
+}
+
 /** Reserved dept-config key (clashes with shipped-generic synthesized result). */
 const RESERVED_GENERIC_AGENT_NAME = "generic";
 
@@ -203,7 +218,11 @@ export class AgentDispatcher {
 		// Step 2a — own-dept scope (only when owningDept is a known string, not "multiple"/undefined)
 		if (typeof owningDept === "string" && owningDept !== "multiple") {
 			for (const [name, cfg] of this.entries) {
-				if (parsedDept(cfg.agent_file) !== owningDept) continue;
+				// FLY-901: an agent participates in this dept's scope iff owningDept is a
+				// member of its registered dept SET (dual-register). Top-level agents
+				// (registeredDepts === null) never match here — they're handled in step-2b.
+				const depts = registeredDepts(cfg);
+				if (!depts || !depts.includes(owningDept)) continue;
 				if (this.labelsMatch(cfg, issueLabels)) {
 					return {
 						agentName: name,

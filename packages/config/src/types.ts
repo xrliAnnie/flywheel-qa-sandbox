@@ -136,6 +136,22 @@ export interface AgentConfig {
 	 * path-derived value.
 	 */
 	department?: string;
+	/**
+	 * FLY-901: optional explicit owning-department SET this agent registers under for
+	 * label-based dispatch (AgentDispatcher step-2a). Enables dual-register — one role
+	 * file reachable from multiple depts' auto-dispatch (e.g. the product/design executor
+	 * lives under `engineering/` but is also reached by the product Lead's `owningDept`).
+	 * Contract (enforced by ConfigLoader):
+	 *   - Omitted → step-2a uses the single path-derived dept (BYTE-COMPAT: existing
+	 *     agents behave exactly as before).
+	 *   - Only dept-owned agents (agent_file under `.flywheel/agents/<dept>/`) may declare
+	 *     it; top-level catch-all agents must omit it.
+	 *   - Non-empty string[] of `^[a-z0-9-]+$` tokens, no duplicates.
+	 *   - MUST include the path-derived home dept (the file's physical home is always a
+	 *     member; the singular `department` field, if also present, stays pinned to it).
+	 * Does NOT relax matching for any dept not explicitly listed.
+	 */
+	departments?: string[];
 	/** Dispatch matching rules */
 	match: {
 		/**

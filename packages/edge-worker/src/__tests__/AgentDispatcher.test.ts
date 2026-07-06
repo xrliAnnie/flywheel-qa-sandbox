@@ -6,6 +6,7 @@ import {
 	InvalidAgentFilePathError,
 	InvalidAgentNameError,
 	parsedDept,
+	registeredDepts,
 } from "../AgentDispatcher.js";
 
 /** Synthetic Flywheel repo root for tests — value isn't read on disk, just non-empty. */
@@ -463,5 +464,200 @@ describe("AgentDispatcher", () => {
 			// coordinator can spawn `agentName: "qa"` on any project.
 			"qa",
 		]);
+	});
+
+	// ─── FLY-901: dual-register (agents.<name>.departments) ────────────
+
+	/**
+	 * Mirrors the flywheel project's dual-register layout: the product/design
+	 * executor lives under `engineering/` but registers under BOTH engineering
+	 * and product so the product Lead's auto-dispatch reaches it.
+	 */
+	function makeDualRegisterAgents(): Record<string, AgentConfig> {
+		return {
+			engineer: {
+				agent_file: ".flywheel/agents/engineering/engineer-executor.md",
+				department: "engineering",
+				match: { labels: ["code", "feat", "fix"] },
+			},
+			"product-designer": {
+				agent_file: ".flywheel/agents/engineering/product-designer-executor.md",
+				department: "engineering",
+				departments: ["engineering", "product"],
+				match: { labels: ["doc", "design", "product", "pm", "ux", "designer"] },
+			},
+			general: {
+				agent_file: ".flywheel/agents/general-executor.md",
+				match: { labels: [] },
+			},
+		};
+	}
+
+	it("T1: product Lead reaches the dual-registered executor via step-2a", () => {
+		const dispatcher = new AgentDispatcher(
+			makeDualRegisterAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["product"],
+			owningDept: "product",
+		});
+		expect(result.agentName).toBe("product-designer");
+		expect(result.matchMethod).toBe("label");
+		expect(result.agentFileRoot).toBe("project");
+		// step-2a returns department = owningDept (the dept the match came in on)
+		expect(result.department).toBe("product");
+	});
+
+	it("T1b: product Lead reaches it via other listed labels (pm/ux/design)", () => {
+		const dispatcher = new AgentDispatcher(
+			makeDualRegisterAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		for (const label of ["pm", "ux", "design"]) {
+			const result = dispatcher.dispatch({
+				issueLabels: [label],
+				owningDept: "product",
+			});
+			expect(result.agentName).toBe("product-designer");
+			expect(result.department).toBe("product");
+		}
+	});
+
+	it("T2: engineering Lead still reaches the same executor (zero regression)", () => {
+		const dispatcher = new AgentDispatcher(
+			makeDualRegisterAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["doc"],
+			owningDept: "engineering",
+		});
+		expect(result.agentName).toBe("product-designer");
+		expect(result.matchMethod).toBe("label");
+		expect(result.department).toBe("engineering");
+	});
+
+	it("T3: an unlisted dept is NOT relaxed — no cross-dept leak", () => {
+		const dispatcher = new AgentDispatcher(
+			makeDualRegisterAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		// ops is not in product-designer.departments → step-2a must not match it
+		const result = dispatcher.dispatch({
+			issueLabels: ["product"],
+			owningDept: "ops",
+		});
+		expect(result.matchMethod).toBe("shipped-generic");
+	});
+
+	it("T4: product owningDept + only a code label → no cross-dept engineer leak", () => {
+		const dispatcher = new AgentDispatcher(
+			makeDualRegisterAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		// engineer has "code" but is registered engineering-only; product-designer
+		// is in-dept but has no "code" label → nothing in product scope matches.
+		const result = dispatcher.dispatch({
+			issueLabels: ["code"],
+			owningDept: "product",
+		});
+		expect(result.matchMethod).toBe("shipped-generic");
+	});
+
+	it("T5: departments does not activate step-2a for multiple/undefined owningDept", () => {
+		const dispatcher = new AgentDispatcher(
+			makeDualRegisterAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		for (const owningDept of ["multiple", undefined] as const) {
+			const result = dispatcher.dispatch({
+				issueLabels: ["product"],
+				owningDept,
+			});
+			// step-2a skipped entirely; step-2b (general, empty labels) misses → generic
+			expect(result.matchMethod).toBe("shipped-generic");
+		}
+	});
+
+	it("T6: an agent without departments still matches its home dept (byte-compat)", () => {
+		const dispatcher = new AgentDispatcher(
+			makeDualRegisterAgents(),
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["feat"],
+			owningDept: "engineering",
+		});
+		expect(result.agentName).toBe("engineer");
+		expect(result.department).toBe("engineering");
+	});
+
+	it("T8: first-configured wins when two agents dual-register the same dept+label", () => {
+		const agents: Record<string, AgentConfig> = {
+			alpha: {
+				agent_file: ".flywheel/agents/engineering/alpha-executor.md",
+				department: "engineering",
+				departments: ["engineering", "product"],
+				match: { labels: ["shared"] },
+			},
+			bravo: {
+				agent_file: ".flywheel/agents/engineering/bravo-executor.md",
+				department: "engineering",
+				departments: ["engineering", "product"],
+				match: { labels: ["shared"] },
+			},
+		};
+		const dispatcher = new AgentDispatcher(
+			agents,
+			undefined,
+			TEST_FLYWHEEL_ROOT,
+		);
+		const result = dispatcher.dispatch({
+			issueLabels: ["shared"],
+			owningDept: "product",
+		});
+		expect(result.agentName).toBe("alpha");
+	});
+});
+
+// ─── FLY-901: registeredDepts helper ─────────────
+
+describe("registeredDepts (FLY-901)", () => {
+	it("returns [home] when departments is omitted (byte-compat)", () => {
+		expect(
+			registeredDepts({
+				agent_file: ".flywheel/agents/product/backend-executor.md",
+				department: "product",
+				match: { labels: [] },
+			}),
+		).toEqual(["product"]);
+	});
+
+	it("returns the explicit departments array when declared", () => {
+		expect(
+			registeredDepts({
+				agent_file: ".flywheel/agents/engineering/product-designer-executor.md",
+				department: "engineering",
+				departments: ["engineering", "product"],
+				match: { labels: [] },
+			}),
+		).toEqual(["engineering", "product"]);
+	});
+
+	it("returns null for a top-level (catch-all) agent", () => {
+		expect(
+			registeredDepts({
+				agent_file: ".flywheel/agents/general-executor.md",
+				match: { labels: [] },
+			}),
+		).toBeNull();
 	});
 });

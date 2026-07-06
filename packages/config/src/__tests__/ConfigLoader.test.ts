@@ -652,6 +652,132 @@ agents:
 		expect(config.agents!.backend.department).toBeUndefined();
 	});
 
+	// ─── FLY-901: dual-register `departments` field validation ────────────
+
+	it("FLY-901: accepts a dept-owned agent with a valid departments set", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  product-designer:
+    agent_file: .flywheel/agents/engineering/product-designer-executor.md
+    department: engineering
+    departments: [engineering, product]
+    match:
+      labels: ["product", "design"]
+`;
+		readFile.mockResolvedValue(yaml);
+		const config = await loader.load("/p/config.yaml");
+		expect(config.agents!["product-designer"].departments).toEqual([
+			"engineering",
+			"product",
+		]);
+		expect(config.agents!["product-designer"].department).toBe("engineering");
+	});
+
+	it("FLY-901 V1a: rejects departments that is not an array", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    departments: product
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments must be a non-empty array of strings/i,
+		);
+	});
+
+	it("FLY-901 V1b: rejects an empty departments array", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    departments: []
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments must be a non-empty array of strings/i,
+		);
+	});
+
+	it("FLY-901 V1c: rejects departments with a non-string element", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    departments: [product, 7]
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments must be a non-empty array of strings/i,
+		);
+	});
+
+	it("FLY-901 V2: rejects a departments entry with an illegal token", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    departments: [product, "Not Safe"]
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments entries must be lowercase directory-safe tokens/i,
+		);
+	});
+
+	it("FLY-901 V3: rejects duplicate departments entries", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    agent_file: .flywheel/agents/product/backend-executor.md
+    departments: [product, product]
+    match:
+      labels: ["backend"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments contains duplicate entries/i,
+		);
+	});
+
+	it("FLY-901 V4: rejects departments declared on a top-level (no subdir) agent", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  general:
+    agent_file: .flywheel/agents/general-executor.md
+    departments: [engineering, product]
+    match:
+      labels: ["chore"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/top-level.*departments.*Top-level agents must omit/i,
+		);
+	});
+
+	it("FLY-901 V5: rejects departments that omit the path-derived home dept", async () => {
+		const yaml = `${MINIMAL_CONFIG_YAML}
+agents:
+  product-designer:
+    agent_file: .flywheel/agents/engineering/product-designer-executor.md
+    departments: [product]
+    match:
+      labels: ["product"]
+`;
+		readFile.mockResolvedValue(yaml);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/departments must include the path-derived home department/i,
+		);
+	});
+
 	it("FLY-137 v1.27.1: match.keywords is optional (no error if absent)", async () => {
 		const yaml = `${MINIMAL_CONFIG_YAML}
 agents:
