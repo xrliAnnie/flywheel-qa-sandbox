@@ -2989,6 +2989,17 @@ export async function startBridge(
 		current: PhaseOrchestrator | undefined;
 	} = { current: undefined };
 
+	// FLY-887 (founder-visibility status line, Finding B): the refresh function
+	// is only ready once phaseQaEffects is built (post-listen), but
+	// finalizeThreeStagePhases is wired here at construction time — mirrors the
+	// same forward-reference pattern as the two holders above. Populated where
+	// the PhaseOrchestratorDeps.refreshPhaseStatusLine dep is built, so ship-time
+	// finalization refreshes the line to its final done/done/done state instead
+	// of going stale at whatever it last showed pre-merge.
+	const phaseStatusLineRefreshHolder: {
+		current: ((issueId: string) => Promise<void>) | undefined;
+	} = { current: undefined };
+
 	let startDispatcher = opts?.startDispatcher;
 	let internalDispatcher: IRetryDispatcher | undefined;
 	if (!startDispatcher) {
@@ -3014,6 +3025,9 @@ export async function startBridge(
 					finalizeThreeStagePhases: makeFinalizeThreeStagePhases(
 						store,
 						transitionOpts,
+						(issueId) =>
+							phaseStatusLineRefreshHolder.current?.(issueId) ??
+							Promise.resolve(),
 					),
 				},
 			);
@@ -3921,6 +3935,31 @@ export async function startBridge(
 				maxFixRoundsEnv !== undefined
 					? Number.parseInt(maxFixRoundsEnv, 10)
 					: undefined;
+			// FLY-887 (founder-visibility status line): shared by the orchestrator's
+			// per-transition refresh AND ship-time finalization's final refresh (via
+			// phaseStatusLineRefreshHolder, declared near the other forward-reference
+			// holders — finalizeThreeStagePhases is wired before phaseQaEffects exists).
+			const refreshPhaseStatusLineEffect = async (
+				issueId: string,
+			): Promise<void> => {
+				try {
+					const sessions = store.getPhaseSessionsForIssue(issueId);
+					if (sessions.length === 0) return;
+					const anySession = store.getSession(sessions[0]!.execution_id);
+					if (!anySession) return;
+					const states = computePhaseLineStates(sessions);
+					const text = renderPhaseStatusLine(states);
+					await phaseQaEffects.refreshPhaseStatusLine({
+						session: anySession,
+						text,
+					});
+				} catch (err) {
+					console.warn(
+						`[phase-status-line] refresh failed for ${issueId}: ${(err as Error).message}`,
+					);
+				}
+			};
+			phaseStatusLineRefreshHolder.current = refreshPhaseStatusLineEffect;
 			phaseOrchestratorHolder.current = new PhaseOrchestrator({
 				startDispatcher: phaseStartDispatcher,
 				// FLY-859: the three-stage QA verdict machinery — thin store closures;
@@ -4319,25 +4358,13 @@ export async function startBridge(
 					) > 0,
 				// FLY-887 (founder-visibility status line): re-render + post-or-edit
 				// the single "🎨design(...)·🔨implement(...)·🧪qa(...)" line. Best-effort
-				// — never lets a Discord hiccup break a real handoff/verdict.
-				refreshPhaseStatusLine: async (issueId) => {
-					try {
-						const sessions = store.getPhaseSessionsForIssue(issueId);
-						if (sessions.length === 0) return;
-						const anySession = store.getSession(sessions[0]!.execution_id);
-						if (!anySession) return;
-						const states = computePhaseLineStates(sessions);
-						const text = renderPhaseStatusLine(states);
-						await phaseQaEffects.refreshPhaseStatusLine({
-							session: anySession,
-							text,
-						});
-					} catch (err) {
-						console.warn(
-							`[phase-status-line] refresh failed for ${issueId}: ${(err as Error).message}`,
-						);
-					}
-				},
+				// — never lets a Discord hiccup break a real handoff/verdict. Also
+				// populates phaseStatusLineRefreshHolder (declared near the other
+				// forward-reference holders) so ship-time finalization can reach the
+				// SAME function to refresh the line to its final done/done/done state
+				// (Finding B from the founder-visibility real-machine QA round — the
+				// line otherwise goes stale at whatever it showed pre-merge).
+				refreshPhaseStatusLine: refreshPhaseStatusLineEffect,
 				grantTurn: ({ issueId, execId, phase, projectName }) => {
 					const db = new CommDB(commDbPathForProject(projectName));
 					try {

@@ -177,10 +177,18 @@ export interface PostShipDeps {
  * completed → the FLY-369 archive cascade then fires once all runners are closed.
  * No-op for a single-session issue (no phase sessions) and for keep-alive OFF
  * (no parked phases). Never throws.
+ *
+ * `refreshPhaseStatusLine` (optional — a founder-visibility real-machine QA
+ * finding): called AFTER the phases above are closed, so the status line's
+ * final refresh reads all three phases already at their terminal `completed`
+ * status and renders the documented done/done/done state, instead of going
+ * stale at whatever it last showed pre-merge. Best-effort — swallowed on error,
+ * absent → no refresh (byte-compat for callers that don't wire it).
  */
 export function makeFinalizeThreeStagePhases(
 	store: StateStore,
 	transitionOpts: ApplyTransitionOpts,
+	refreshPhaseStatusLine?: (issueId: string) => Promise<void>,
 ): (issueId: string, projectName: string) => Promise<void> {
 	return async (issueId, projectName) => {
 		const phases = store
@@ -213,6 +221,15 @@ export function makeFinalizeThreeStagePhases(
 			} catch (err) {
 				console.warn(
 					`[post-ship] finalize phase ${p.execution_id} threw: ${(err as Error).message}`,
+				);
+			}
+		}
+		if (refreshPhaseStatusLine) {
+			try {
+				await refreshPhaseStatusLine(issueId);
+			} catch (err) {
+				console.warn(
+					`[post-ship] final phase-status-line refresh failed for ${issueId}: ${(err as Error).message}`,
 				);
 			}
 		}

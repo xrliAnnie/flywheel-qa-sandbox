@@ -109,6 +109,75 @@ describe("makeFinalizeThreeStagePhases (FLY-887)", () => {
 		// the main session is untouched
 		expect(store.getSession("main-1")?.status).toBe("awaiting_review");
 	});
+
+	// FLY-887 founder-visibility real-machine QA (Finding B): the status line
+	// otherwise goes stale at whatever it last showed pre-merge — the final
+	// refresh must fire AFTER design/implement are closed to completed (so it
+	// can render the documented done/done/done state), and must never throw
+	// even if the refresh itself fails (best-effort, byte-compat when absent).
+	it("calls refreshPhaseStatusLine AFTER closing design+implement to completed", async () => {
+		const { store, transitionOpts } = await makeStore();
+		seed(store, {
+			execution_id: "d",
+			status: "design_done",
+			chat_thread_role: "design",
+			session_role: "design",
+		});
+		seed(store, {
+			execution_id: "i",
+			status: "awaiting_review",
+			chat_thread_role: "implement",
+			session_role: "implement",
+		});
+		const statusesAtRefreshTime: (string | undefined)[] = [];
+		const refreshPhaseStatusLine = vi.fn(async (issueId: string) => {
+			statusesAtRefreshTime.push(store.getSession("d")?.status);
+			statusesAtRefreshTime.push(store.getSession("i")?.status);
+			expect(issueId).toBe("FLY-1");
+		});
+		const finalize = makeFinalizeThreeStagePhases(
+			store,
+			transitionOpts,
+			refreshPhaseStatusLine,
+		);
+		await finalize("FLY-1", "flywheel");
+
+		expect(refreshPhaseStatusLine).toHaveBeenCalledOnce();
+		expect(statusesAtRefreshTime).toEqual(["completed", "completed"]);
+	});
+
+	it("a throwing refreshPhaseStatusLine is swallowed — finalization still completes", async () => {
+		const { store, transitionOpts } = await makeStore();
+		seed(store, {
+			execution_id: "d",
+			status: "design_done",
+			chat_thread_role: "design",
+			session_role: "design",
+		});
+		const refreshPhaseStatusLine = vi.fn(async () => {
+			throw new Error("discord boom");
+		});
+		const finalize = makeFinalizeThreeStagePhases(
+			store,
+			transitionOpts,
+			refreshPhaseStatusLine,
+		);
+		await expect(finalize("FLY-1", "flywheel")).resolves.toBeUndefined();
+		expect(store.getSession("d")?.status).toBe("completed");
+	});
+
+	it("absent refreshPhaseStatusLine (byte-compat) — no refresh attempted, no error", async () => {
+		const { store, transitionOpts } = await makeStore();
+		seed(store, {
+			execution_id: "d",
+			status: "design_done",
+			chat_thread_role: "design",
+			session_role: "design",
+		});
+		const finalize = makeFinalizeThreeStagePhases(store, transitionOpts);
+		await expect(finalize("FLY-1", "flywheel")).resolves.toBeUndefined();
+		expect(store.getSession("d")?.status).toBe("completed");
+	});
 });
 
 describe("runPostShipFinalization ordering (FLY-887, Codex R1 #8)", () => {

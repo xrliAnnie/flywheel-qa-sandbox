@@ -1,8 +1,59 @@
 # FLY-887 三段式 phase-session 并存保活 — QA 报告
 
 Issue: FLY-887 (https://linear.app/geoforge3d/issue/FLY-887/pipeline-三段式-phase-session-并存保活-designimplementqa-不跑完就关qaimplement)
-日期: 2026-07-05 / 2026-07-06(round 2 + round 3)
+日期: 2026-07-05 / 2026-07-06(round 2 + round 3 + round 4)
 基于: plan.md
+
+## Round 4（Annie 加的功能：phase-session 可观测状态行）：PASS + 修了一个真发现
+
+Annie 要求把"phase-session 可观测"（一条随三段状态更新的 Discord 消息，如
+`🎨design(parked)·🔨implement(active)·🧪qa(pending)`）直接加进 887，不开 follow-up。
+
+**实现**（commit `ffa72f65`）：`computePhaseLineStates`/`renderPhaseStatusLine` 纯函数
+（`phase-orchestrator.ts`）+ `AutoQaEffects.refreshPhaseStatusLine`（post 一次、之后原地
+edit，零 churn，不 pin——镜像 FLY-560 attach-pin 的 edit/repost/404 语义但去掉了 pin，
+因为测试 slot bot 没有 MANAGE_MESSAGES 权限、且 Annie 只要"能更新"不要求"置顶"）+
+StateStore 两个新列迁移。挂在 `onPhaseComplete`（每次 handoff 后）+ `onQaResult`
+（PASS/FAIL 后）两处，覆盖三段式全部状态转移。35 个新/改测试全绿。
+
+**真机验证**（隔离 slot 3、全走真实 Discord 对话、fresh issue FLY-896）：
+
+- 用 Discord REST API 直接读消息，**同一个 message id** 在 design 完成、
+  implement→qa 交接、FAIL→fix→复验 PASS 全程被原地 PATCH（`edited_timestamp`
+  逐次变化,不是刷屏新消息）——这正是 Annie 要看的"一条可更新的行"。
+- **3 段并存硬证据**（Annie 明确要求亲眼看到）：在 QA FAIL、implement 正在修复、
+  design 仍 parked 的那一刻，截了 `tmux list-windows` + `ps` 快照，design/
+  implement/qa **三个进程/窗口同时存活**，逐字贴在真机验证报告里。
+- Ship 后消息内容**完整可读、不是 404**，但发现一个真问题（见下）。
+
+**Finding B（已修）**：ship 收尾时状态行从未刷新到最终态——`finalizeThreeStagePhases`
+把 design/implement 关成 completed 后，没有人叫它把状态行也刷成
+`.../done/done/done`，导致消息内容停留在 ship 前的最后一次更新。已修：给
+`makeFinalizeThreeStagePhases` 加了第三个可选参数 `refreshPhaseStatusLine`，在
+design/implement 都已经关成 completed **之后**调用（这样 QA 也早已是终态，三段全部
+读成 done）。`plugin.ts` 侧用了跟 `phaseOrchestratorHolder`/`autoQaCoordinatorHolder`
+同款的 forward-reference holder 模式接线（因为 `finalizeThreeStagePhases` 的构造点
+早于 `phaseQaEffects` 实例化）。新增 3 个测试（正常刷新读到 completed 状态、
+刷新抛错被吞掉不影响收尾、不传这个参数时字节兼容不报错）。
+
+**Finding A（既有问题，不是本 PR 引入的回归，建议单独开 follow-up）**：真机验证中，
+implement 修复轮次完成后，Bridge 自动唤醒 QA 复验没有触发。根因（已追踪到
+`phase-orchestrator.ts`）：`onPhaseComplete` 的守卫要求 session 状态**精确等于**
+`awaiting_review` 才判定为 handoff 边界；如果 runner 在调用 `complete` 之前，先**同步**
+跑完了 Codex review（跳过了通常的异步窗口），session 状态可能在事件真正被处理前就已经
+从 `awaiting_review` 跑到了 `completed`/`approved_to_ship`，守卫因此静默 no-op、不触发
+唤醒。`reconcileOnStartup` 也补不上这个洞（它只处理 design 角色的 stranded 情况，
+不处理 implement）。这次是 fail-closed（没有损坏任何东西，只是卡住等人工介入），而且
+QA 那次真机验证过程中 QA 自己也独立发现了同一类问题并主动标注——两处独立发现互相印证。
+这个守卫/reconcile 逻辑本 PR 完全没碰，是 FLY-793 时代就有的既有逻辑，建议单独开
+issue（FLY-887/FLY-827 关联）跟进，不阻塞本次 ship。
+
+**Finding C（既有的、次要的、可接受的 cosmetic 时序）**：每次 handoff 刚发生的瞬间，
+刚激活的那个 phase 会先显示 `(pending)` 而不是 `(active)`，要等到**下一次**转移才会
+纠正——因为 `refreshPhaseStatusLine` 在 `handoff()` 之后立即同步调用，此时被唤醒/新建
+的目标 session 状态还没来得及翻到 `running`。纯观感问题，自我纠正，符合当初"最小版、
+只读 session status、不查 CommDB parked 标记"的设计取舍（Tadashi 已认可），留作已知
+限制，不修。
 
 ## Round 3（Annie 指定：全 Discord 叙事重跑）：PASS，给 founder 的可读证据
 
