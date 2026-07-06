@@ -100,7 +100,14 @@ export type AlertEventType =
 	// emitted by the TS LeadWatchdog / notifier: it is fired ONLY by the runtime's
 	// guard via scripts/lead-alert.sh (Discord-independent). Present in the union so
 	// the shared kind face (lead-alert.sh allowlist ↔ TS) has no drift.
-	| "tui_window_lost";
+	| "tui_window_lost"
+	// FLY-913: the flywheel-restart-guard PreToolUse hook's mandatory bypass
+	// alert — fired ONLY via scripts/lead-alert.sh --strict-delivery (Discord-
+	// independent path; the hook fail-closes unless the strict result is
+	// sent/queued_transient). NOT emitted by the TS LeadWatchdog / notifier;
+	// present in the union so a queued bypass alert drains with a known
+	// eventType and the shared kind face (lead-alert.sh ↔ TS) has no drift.
+	| "restart_guard_bypass";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 

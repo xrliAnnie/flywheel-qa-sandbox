@@ -981,6 +981,11 @@ function titleFor(kind: AlertEventType): string {
 		// case exists for switch exhaustiveness.
 		case "tui_window_lost":
 			return "Infra Bot TUI window not visible";
+		// FLY-913: never emitted by LeadWatchdog (the restart-guard hook fires it
+		// directly via scripts/lead-alert.sh --strict-delivery with its own
+		// title); case exists for switch exhaustiveness.
+		case "restart_guard_bypass":
+			return "Restart-guard BYPASS used";
 	}
 }
 
@@ -1040,5 +1045,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-871 §12 W2: never emitted by LeadWatchdog (the windowed-TUI runtime guard builds its own body).
 		case "tui_window_lost":
 			return "A windowed Codex Lead's founder-facing cmux pane could not be (re)created for several minutes. Check the launchd job + tmux window (verify-windowed-lead.sh).";
+		// FLY-913: never emitted by LeadWatchdog (the restart-guard PreToolUse hook builds its own body via lead-alert.sh).
+		case "restart_guard_bypass":
+			return "An agent used the restart-guard bypass to run a manual Flywheel service restart. The command + reason are in ~/.flywheel/logs/restart-guard.log — review whether it was justified.";
 	}
 }

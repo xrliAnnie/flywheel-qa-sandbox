@@ -121,3 +121,14 @@ jobs:
       # against silent regression.
       - name: Test — FLY-880 PM executor role contract
         run: bash scripts/__tests__/test-pm-executor-contract.sh
+
+      # FLY-913: restart-guard deployment guardrail. Hermetic — the hook runs
+      # against stdin JSON fixtures with the alert seam stubbed (plus one
+      # integration case through the REAL lead-alert.sh with a fake curl); the
+      # install matrix runs against fake HOMEs; the strict-delivery matrix uses
+      # isolated FLYWHEEL_* dirs. Needs jq/sqlite3 (installed above) + python3.
+      - name: Test — FLY-913 restart-guard hook + install + strict-delivery
+        run: |
+          python3 scripts/hooks/test-flywheel-restart-guard.py
+          bash scripts/hooks/test-restart-guard-install.sh
+          bash scripts/__tests__/lead-alert-strict-delivery.test.sh

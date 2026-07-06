@@ -838,6 +838,33 @@ install_discord_reply_enforcer_hook() {
   mv "$tmpfile" "$settings_file"
   log "discord-reply-enforcer Stop hook installed: $hook_script"
 }
+
+# ── FLY-913: Install flywheel-restart-guard PreToolUse hook ────────────────
+# Deployment guardrail: hard-deny manual Bridge/Lead restarts (launchctl
+# kickstart/bootout, kill+relaunch, bare-handed run-bridge) at the Bash
+# boundary, pointing the agent at scripts/restart-services.sh. The merge
+# logic lives in ONE place — scripts/hooks/install-restart-guard.sh — which
+# this convergence step delegates to on every Lead start (anti-drift).
+# Installed for EVERY role incl. companion: the guard protects a GLOBAL
+# machine invariant (no manual flywheel service restarts from any session).
+install_restart_guard_hook() {
+  if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" = "1" ]; then
+    log "DRY-RUN: skipping flywheel-restart-guard PreToolUse hook install"
+    return
+  fi
+
+  local installer="${FLYWHEEL_ROOT}/scripts/hooks/install-restart-guard.sh"
+  if [ ! -f "$installer" ]; then
+    log "WARNING: install-restart-guard.sh not found: $installer"
+    return
+  fi
+
+  if bash "$installer" >/dev/null 2>&1; then
+    log "flywheel-restart-guard PreToolUse hook installed (converged)"
+  else
+    log "WARNING: flywheel-restart-guard hook install failed/skipped (non-fatal)"
+  fi
+}
 # FLY-231: companion skips installing the PostCompact bootstrap hook (it doesn't
 # want to (re)install the engineering bootstrap re-send). Note the hook is GLOBAL
 # in ~/.claude/settings.json and may already be installed by other Leads — the
@@ -861,6 +888,15 @@ if command -v jq >/dev/null 2>&1; then
   install_discord_reply_enforcer_hook
 else
   log "WARNING: jq not found. Skipping discord-reply-enforcer Stop hook install."
+fi
+
+# FLY-913: install the flywheel-restart-guard PreToolUse hook for EVERY role —
+# manual Bridge/Lead restarts are denied machine-wide regardless of which Lead
+# (or its Runners) types them; restart-services.sh stays the only path.
+if command -v jq >/dev/null 2>&1; then
+  install_restart_guard_hook
+else
+  log "WARNING: jq not found. Skipping flywheel-restart-guard PreToolUse hook install."
 fi
 
 # ── GEO-285: Early auto-compact + env exports ─────────────
