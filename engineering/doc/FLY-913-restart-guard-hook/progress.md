@@ -1,14 +1,14 @@
 ---
 issue: FLY-913
 phase: implement
-phaseCursor: 2/5
-updated: 2026-07-06T20:40:36.630Z
-nextStep: "C3: lead-alert.sh --strict-delivery + restart_guard_bypass kind + TS
-  union + tests"
+phaseCursor: 3/5
+updated: 2026-07-06T20:45:02.624Z
+nextStep: "C4: CI wiring + restart-guard.md ops doc + real-machine self-test
+  (worktree-local settings)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-913 progress
-**phase**: implement (2/5)
-**next**: C3: lead-alert.sh --strict-delivery + restart_guard_bypass kind + TS union + tests
+**phase**: implement (3/5)
+**next**: C4: CI wiring + restart-guard.md ops doc + real-machine self-test (worktree-local settings)
