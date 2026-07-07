@@ -1,13 +1,13 @@
 ---
 issue: FLY-927
 phase: implement
-phaseCursor: 2/18
-updated: 2026-07-07T16:11:01.585Z
-nextStep: Task 1.3 单一发送身份
+phaseCursor: 4/18
+updated: 2026-07-07T16:18:13.254Z
+nextStep: Task 1.5 issue-thread 投递腿
 chunks: []
 pointers: {}
 ---
 
 # FLY-927 progress
-**phase**: implement (2/18)
-**next**: Task 1.3 单一发送身份
+**phase**: implement (4/18)
+**next**: Task 1.5 issue-thread 投递腿
