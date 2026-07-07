@@ -1,14 +1,13 @@
 ---
 issue: FLY-967
 phase: implement
-phaseCursor: 3/10
-updated: 2026-07-07T20:48:40.024Z
-nextStep: P2-P7 assistant/* gated on 545 PR-1 merge; wake on 545 runner message
-  or heartbeat
+phaseCursor: 4/10
+updated: 2026-07-07T23:00:44.826Z
+nextStep: P4 BriefingEngine TDD (most independent module first)
 chunks: []
 pointers: {}
 ---
 
 # FLY-967 progress
-**phase**: implement (3/10)
-**next**: P2-P7 assistant/* gated on 545 PR-1 merge; wake on 545 runner message or heartbeat
+**phase**: implement (4/10)
+**next**: P4 BriefingEngine TDD (most independent module first)
