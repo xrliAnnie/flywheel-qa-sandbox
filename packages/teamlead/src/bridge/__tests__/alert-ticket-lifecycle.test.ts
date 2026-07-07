@@ -4,9 +4,9 @@
  * edit-in-place (best-effort degrade).
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { AlertChannelHub, type DiscordOps } from "../AlertChannelHub.js";
 import type { AlertPayload, AlertResult } from "../../LeadAlertNotifier.js";
 import { StateStore } from "../../StateStore.js";
+import { AlertChannelHub, type DiscordOps } from "../AlertChannelHub.js";
 import type { AutoRepairBot } from "../AutoRepairBot.js";
 
 const CK = "flywheel|tadashi|pane_hash_stuck|";
@@ -174,7 +174,8 @@ describe("FLY-927 Hub ticket lifecycle", () => {
 
 	it("edit degrade: legacy root without a 🎫 line is never rewritten", async () => {
 		const discord = makeDiscord();
-		discord.messageContent = "⚠️ **Lead pane frozen** (tadashi / pane_hash_stuck)\nb";
+		discord.messageContent =
+			"⚠️ **Lead pane frozen** (tadashi / pane_hash_stuck)\nb";
 		const hub = new AlertChannelHub({
 			store,
 			notifier: { alert: async () => ({ ...SENT }) },
@@ -253,9 +254,9 @@ describe("FLY-927 Hub T2 escalation (reconcile pass)", () => {
 		await hub.reconcile();
 		expect(store.getActiveAlertThread(CK)?.ticket_status).toBe("ESCALATED");
 		expect(posts.some((p) => p.includes("修不掉(T2"))).toBe(true);
-		expect(discord.edits.some(([, , c]) => c.includes("· 状态 ESCALATED"))).toBe(
-			true,
-		);
+		expect(
+			discord.edits.some(([, , c]) => c.includes("· 状态 ESCALATED")),
+		).toBe(true);
 	});
 
 	it("issue-BOUND expired ticket → escalates via the issue-thread leg (no @founder in the alert thread)", async () => {

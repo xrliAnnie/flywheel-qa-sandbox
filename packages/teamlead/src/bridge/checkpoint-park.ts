@@ -120,8 +120,7 @@ export function deriveParkTuple(input: ParkTupleInput): ParkTuple | null {
 			stage,
 			party: "ci",
 			ownerLeadId: input.ownerLeadId ?? null,
-			waitingSinceMs:
-				sqliteUtcMs(session.stage_updated_at) ?? input.nowMs,
+			waitingSinceMs: sqliteUtcMs(session.stage_updated_at) ?? input.nowMs,
 			notifiedEvidence: input.notifiedEvidence,
 			nextStep: `等 QA/CI 跑完(${label})`,
 		};
@@ -137,8 +136,7 @@ export function deriveParkTuple(input: ParkTupleInput): ParkTuple | null {
 			stage,
 			party: "runner",
 			ownerLeadId: input.ownerLeadId ?? null,
-			waitingSinceMs:
-				sqliteUtcMs(session.stage_updated_at) ?? input.nowMs,
+			waitingSinceMs: sqliteUtcMs(session.stage_updated_at) ?? input.nowMs,
 			notifiedEvidence: input.notifiedEvidence,
 			nextStep: `runner 推进 ${stage}(停滞需查)`,
 		};
@@ -155,13 +153,9 @@ export function deriveParkTuple(input: ParkTupleInput): ParkTuple | null {
 export function formatParkAlert(tuple: ParkTuple, nowMs: number): string {
 	const label = tuple.identifier ?? tuple.issueId;
 	const hours =
-		Math.round(
-			Math.max(0, nowMs - tuple.waitingSinceMs) / 3_600_000 * 10,
-		) / 10;
+		Math.round((Math.max(0, nowMs - tuple.waitingSinceMs) / 3_600_000) * 10) /
+		10;
 	const stage = tuple.stage ?? "(stage未上报)";
-	const party =
-		tuple.party === "founder"
-			? "founder(待你拍板)"
-			: tuple.party;
+	const party = tuple.party === "founder" ? "founder(待你拍板)" : tuple.party;
 	return `[${label}] [Runner] 停在${stage}已${hours}h,球在${party},owner=${tuple.ownerLeadId ?? "—"},下一步=${tuple.nextStep}`;
 }

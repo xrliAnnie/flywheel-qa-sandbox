@@ -1407,9 +1407,7 @@ describe("chat-thread routes (tools.ts)", () => {
 				text: "hello",
 			});
 			expect(res.status).toBe(403);
-			expect((res.body as { error: string }).error).toBe(
-				"alert_channel_gated",
-			);
+			expect((res.body as { error: string }).error).toBe("alert_channel_gated");
 		});
 
 		it("REFUSES /create targeting the unified alert channel when gating is on", async () => {
@@ -1423,9 +1421,7 @@ describe("chat-thread routes (tools.ts)", () => {
 				projectName: "TestProject",
 			});
 			expect(res.status).toBe(403);
-			expect((res.body as { error: string }).error).toBe(
-				"alert_channel_gated",
-			);
+			expect((res.body as { error: string }).error).toBe("alert_channel_gated");
 		});
 
 		it("ALLOWS a different channel while gating is on (proceeds past the gate)", async () => {

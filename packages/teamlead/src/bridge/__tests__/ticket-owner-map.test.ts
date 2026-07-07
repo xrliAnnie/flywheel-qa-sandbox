@@ -165,9 +165,9 @@ describe("ownerTicketFace", () => {
 		).toEqual({ ownerUserId: null, ownerLabel: "claude bot" });
 	});
 	it("lead owner renders its id as the label (no ping)", () => {
-		expect(ownerTicketFace({ kind: "lead", leadId: "flywheel-eng-lead" })).toEqual(
-			{ ownerUserId: null, ownerLabel: "flywheel-eng-lead" },
-		);
+		expect(
+			ownerTicketFace({ kind: "lead", leadId: "flywheel-eng-lead" }),
+		).toEqual({ ownerUserId: null, ownerLabel: "flywheel-eng-lead" });
 	});
 	it("none renders the — placeholder (empty label)", () => {
 		expect(ownerTicketFace({ kind: "none" })).toEqual({

@@ -165,7 +165,9 @@ describe("FLY-927 Task 2.3: rescue call ACKs the ticket", () => {
 
 	it("ackTicket throwing never fails the rescue", async () => {
 		const app = makeApp({
-			rescueLead: vi.fn(async () => ({ outcome: "attempted", detail: "ok" }) as never),
+			rescueLead: vi.fn(
+				async () => ({ outcome: "attempted", detail: "ok" }) as never,
+			),
 			rescueRunner: vi.fn(),
 			ackTicket: () => {
 				throw new Error("ack broke");
@@ -181,7 +183,9 @@ describe("FLY-927 Task 2.3: rescue call ACKs the ticket", () => {
 
 	it("runtime WITHOUT ackTicket keeps working (byte-compat)", async () => {
 		const app = makeApp({
-			rescueLead: vi.fn(async () => ({ outcome: "attempted", detail: "ok" }) as never),
+			rescueLead: vi.fn(
+				async () => ({ outcome: "attempted", detail: "ok" }) as never,
+			),
 			rescueRunner: vi.fn(),
 		});
 		const res = await request(app, "/api/rescue", {

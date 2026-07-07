@@ -205,9 +205,7 @@ describe("FLY-927 checkpoint-park patrol", () => {
 			"code review",
 		);
 		expect(leadEvents).toEqual(["test-lead:checkpoint-park-lead-q1"]);
-		expect(events.map((e) => e.event_type)).toEqual([
-			"checkpoint_park_nudged",
-		]);
+		expect(events.map((e) => e.event_type)).toEqual(["checkpoint_park_nudged"]);
 	});
 
 	it("re-run within the second window → dedup (no double nudge, no page yet)", async () => {

@@ -96,16 +96,20 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 			fetchImpl.mockClear();
 			const result = await sink.alert(payload(kind));
 			if (ISSUE_PROGRESS_KINDS.has(kind)) {
-				expect(fetchImpl, `${kind} should deliver to the issue thread`)
-					.toHaveBeenCalledTimes(1);
 				expect(
-					(fetchImpl.mock.calls[0] as unknown as [string])[0],
-				).toContain("/channels/thread-927/messages");
+					fetchImpl,
+					`${kind} should deliver to the issue thread`,
+				).toHaveBeenCalledTimes(1);
+				expect((fetchImpl.mock.calls[0] as unknown as [string])[0]).toContain(
+					"/channels/thread-927/messages",
+				);
 				expect(rawSink.alert).not.toHaveBeenCalled();
 				expect(result).toEqual({ sent: true });
 			} else {
-				expect(rawSink.alert, `${kind} should hit the raw sink`)
-					.toHaveBeenCalledTimes(1);
+				expect(
+					rawSink.alert,
+					`${kind} should hit the raw sink`,
+				).toHaveBeenCalledTimes(1);
 				expect(fetchImpl).not.toHaveBeenCalled();
 			}
 		}

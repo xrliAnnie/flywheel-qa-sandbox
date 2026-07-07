@@ -25,14 +25,14 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { readContentRef } from "flywheel-comm/utils";
+// FLY-927 (Task 3.2): checkpoint-park patrol wake primitive.
+import { wakeRunnerMailbox } from "flywheel-comm/wake";
 import {
 	type FounderMilestoneReportConfig,
 	type MilestoneKind,
 	phaseMessageTag,
 	SUPPORTED_MILESTONE_KINDS_V1,
 } from "flywheel-config";
-// FLY-927 (Task 3.3): truthful park wording for the lead-pending nudge.
-import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import {
 	encodeReactionEmoji,
 	type ReactionFetcher,
@@ -46,6 +46,8 @@ import type { Session, StateStore } from "../StateStore.js";
 import { writeGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
 import { isReviewHeld } from "./auto-qa-held.js";
 import { resolveChatThreadId } from "./chat-thread-utils.js";
+// FLY-927 (Task 3.3): truthful park wording for the lead-pending nudge.
+import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { DISCORD_API } from "./discord-utils.js";
 import {
 	isDiscordSnowflake,
@@ -62,8 +64,6 @@ import {
 	emitFounderThreadNotification,
 	emitIssueThreadInfraNotification,
 } from "./founder-thread-notifier.js";
-// FLY-927 (Task 3.2): checkpoint-park patrol wake primitive.
-import { wakeRunnerMailbox } from "flywheel-comm/wake";
 import type { HookPayload } from "./hook-payload.js";
 import {
 	computeStuckKey,
@@ -1444,9 +1444,7 @@ export class GatePoller {
 		const windowMs = this.checkpointStuckMs();
 		if (now - createdMs < windowMs) return;
 
-		const events = this.config.store.getEventsByExecution(
-			session.execution_id,
-		);
+		const events = this.config.store.getEventsByExecution(session.execution_id);
 		// Evidence = a SUCCESSFUL founder-facing delivery audit for THIS gate
 		// (the FLY-605 fallback's `founder_thread_notified`). Evidence present ⇒
 		// the founder already knows — waiting on her is not "stuck", stay silent.

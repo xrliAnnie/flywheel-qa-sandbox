@@ -100,15 +100,14 @@ describe("createInfraAlertSink (routing wrapper)", () => {
 	function makeDeps(overrides?: {
 		routingEnabled?: () => boolean;
 		resolve?: (p: AlertPayload) => BoundIssueThread | null;
-		deliver?: (
-			p: AlertPayload,
-			t: BoundIssueThread,
-		) => Promise<AlertResult>;
+		deliver?: (p: AlertPayload, t: BoundIssueThread) => Promise<AlertResult>;
 	}) {
 		const rawSink = {
-			alert: vi.fn(async (_p: AlertPayload): Promise<AlertResult> => ({
-				sent: true,
-			})),
+			alert: vi.fn(
+				async (_p: AlertPayload): Promise<AlertResult> => ({
+					sent: true,
+				}),
+			),
 		};
 		const resolve = vi.fn(overrides?.resolve ?? (() => null));
 		const deliver = vi.fn(

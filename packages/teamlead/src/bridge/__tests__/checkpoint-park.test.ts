@@ -92,9 +92,9 @@ describe("deriveParkTuple", () => {
 	});
 
 	it("evidence flag rides through", () => {
-		expect(deriveParkTuple(input({ notifiedEvidence: true }))?.notifiedEvidence).toBe(
-			true,
-		);
+		expect(
+			deriveParkTuple(input({ notifiedEvidence: true }))?.notifiedEvidence,
+		).toBe(true);
 	});
 });
 

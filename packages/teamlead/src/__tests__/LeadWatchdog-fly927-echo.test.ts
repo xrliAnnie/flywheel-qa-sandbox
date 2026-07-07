@@ -61,9 +61,9 @@ describe("FLY-927 echo-immunity parity (kind table ↔ ALERT_ECHO_START)", () =>
 				"🎫 flywheel · 首见 09:05 · owner <@123456789012345678> · 状态 NEW",
 			),
 		).toBe(true);
-		expect(ALERT_ECHO_START.test("  🎫 flywheel · 首见 09:05 · owner — · 状态 NEW")).toBe(
-			true,
-		);
+		expect(
+			ALERT_ECHO_START.test("  🎫 flywheel · 首见 09:05 · owner — · 状态 NEW"),
+		).toBe(true);
 	});
 
 	it("a normal Lead output line does NOT match (no over-stripping)", () => {

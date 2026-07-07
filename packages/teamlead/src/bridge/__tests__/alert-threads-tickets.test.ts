@@ -121,8 +121,7 @@ describe("FLY-927 alert_threads ticket lifecycle", () => {
 	it("getActiveAlertThreadByLeadAndType exact-matches the active row", () => {
 		openTicket();
 		expect(
-			store.getActiveAlertThreadByLeadAndType("lead-a", "rate_limit")
-				?.event_id,
+			store.getActiveAlertThreadByLeadAndType("lead-a", "rate_limit")?.event_id,
 		).toBe("evt-1");
 		expect(
 			store.getActiveAlertThreadByLeadAndType("lead-a", "usage_limit"),

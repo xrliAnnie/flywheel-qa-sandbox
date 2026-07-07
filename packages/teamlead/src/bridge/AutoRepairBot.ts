@@ -80,7 +80,11 @@ const ACTOR = "aunt-cass";
 const AUTO_ATTEMPT_EVENT_TYPES: ReadonlySet<AlertPayload["eventType"]> =
 	// FLY-927 (W-B): runner_throttle_stalled is a runner-stuck SUBTYPE — same
 	// runnerStuck metadata contract, same audited continue-nudge, all 5 gates.
-	new Set(["runner_stuck_unhandled", "runner_throttle_stalled", "pane_hash_stuck"]);
+	new Set([
+		"runner_stuck_unhandled",
+		"runner_throttle_stalled",
+		"pane_hash_stuck",
+	]);
 
 /** Account/billing/login/permission kinds the bot must NEVER touch — human-only. */
 const HUMAN_ONLY_REASON: Partial<Record<AlertPayload["eventType"], string>> = {

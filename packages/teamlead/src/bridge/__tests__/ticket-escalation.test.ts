@@ -3,8 +3,8 @@
  */
 import { describe, expect, it } from "vitest";
 import {
-	decideTicketEscalation,
 	DEFAULT_TICKET_ESCALATION_POLICY,
+	decideTicketEscalation,
 	ticketOwnerConfigured,
 } from "../ticket-escalation.js";
 
@@ -25,9 +25,9 @@ function row(over: Partial<Parameters<typeof decideTicketEscalation>[0]> = {}) {
 describe("decideTicketEscalation (T2 locked: 2 tries / 5 min)", () => {
 	it("legacy (NULL) and terminal states never escalate", () => {
 		for (const s of [null, "RESOLVED", "ESCALATED"]) {
-			expect(
-				decideTicketEscalation(row({ ticket_status: s }), NOW, true),
-			).toBe("none");
+			expect(decideTicketEscalation(row({ ticket_status: s }), NOW, true)).toBe(
+				"none",
+			);
 		}
 	});
 

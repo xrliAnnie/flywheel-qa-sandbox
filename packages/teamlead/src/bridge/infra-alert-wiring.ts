@@ -6,10 +6,7 @@
  * against a real (in-memory) StateStore.
  */
 
-import type {
-	AlertPayload,
-	AlertResult,
-} from "../LeadAlertNotifier.js";
+import type { AlertPayload, AlertResult } from "../LeadAlertNotifier.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import { correlationKeyFor } from "./AlertChannelHub.js";

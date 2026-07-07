@@ -446,10 +446,7 @@ export class AlertChannelHub {
 		try {
 			const content = await ops.getMessage(channelId, messageId);
 			if (!content) return;
-			const updated = content.replace(
-				/^(🎫 .*· 状态 )\S+$/mu,
-				`$1${status}`,
-			);
+			const updated = content.replace(/^(🎫 .*· 状态 )\S+$/mu, `$1${status}`);
 			if (updated === content) return; // no 🎫 line (legacy root) — skip
 			await ops.editMessage(channelId, messageId, updated);
 		} catch (err) {

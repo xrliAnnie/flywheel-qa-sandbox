@@ -796,7 +796,10 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 		}
 	});
 
-	const unified = { channelId: "OPS-CHAN", repairBotTokenEnv: "CASS_BOT_TOKEN" };
+	const unified = {
+		channelId: "OPS-CHAN",
+		repairBotTokenEnv: "CASS_BOT_TOKEN",
+	};
 
 	function okFetch() {
 		return vi.fn().mockResolvedValue({
@@ -856,7 +859,9 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 		);
 		const lines = (body.content as string).split("\n");
 		expect(lines[0]).toBe("⚠️ **T** (cos-lead / pane_hash_stuck)");
-		expect(lines[1]).toMatch(/^🎫 geoforge3d · 首见 \d{2}:\d{2} · owner — · 状态 NEW$/);
+		expect(lines[1]).toMatch(
+			/^🎫 geoforge3d · 首见 \d{2}:\d{2} · owner — · 状态 NEW$/,
+		);
 		expect(lines[2]).toBe("B");
 		expect(body.allowed_mentions).toEqual({ parse: [] });
 	});
@@ -933,7 +938,10 @@ describe("LeadAlertNotifier — FLY-927 Task 1.3: single sender identity (D2)", 
 		}
 	});
 
-	const unified = { channelId: "OPS-CHAN", repairBotTokenEnv: "CASS_BOT_TOKEN" };
+	const unified = {
+		channelId: "OPS-CHAN",
+		repairBotTokenEnv: "CASS_BOT_TOKEN",
+	};
 
 	function okFetch() {
 		return vi.fn().mockResolvedValue({
@@ -1072,7 +1080,10 @@ describe("LeadAlertNotifier — FLY-927 Task 1.4: unified-channel rate cap (T1)"
 		}
 	});
 
-	const unified = { channelId: "OPS-CHAN", repairBotTokenEnv: "CASS_BOT_TOKEN" };
+	const unified = {
+		channelId: "OPS-CHAN",
+		repairBotTokenEnv: "CASS_BOT_TOKEN",
+	};
 
 	/** Deterministic limiter stub: a scripted sequence of tryAcquire answers. */
 	function scriptedLimiter(answers: boolean[]) {

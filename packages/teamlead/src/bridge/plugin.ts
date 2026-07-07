@@ -110,12 +110,6 @@ import {
 	createAlertRateLimiter,
 	rateLimitPerMinuteFromEnv,
 } from "./alert-rate-limiter.js";
-// FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
-import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
-// FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
-import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
-// FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
-import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
@@ -127,6 +121,8 @@ import { AutoContinueArmer } from "./autocontinue-armer.js";
 import { BridgeEventLoopWatchdog } from "./BridgeEventLoopWatchdog.js";
 import { runBootShaCheck } from "./boot-sha-check.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
+// FLY-927 (Task 3.3): truthful stage wording for the three-stage stuck alert.
+import { deriveParkTuple, formatParkAlert } from "./checkpoint-park.js";
 import { CLOSE_ELIGIBLE_STATES, closeRunner } from "./close-runner.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
@@ -180,8 +176,12 @@ import {
 	buildGateResponsePostWriteHook,
 } from "./founder-consent/wiring.js";
 import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
+// FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
+import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
+// FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
+import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	derivePhaseDisplayState,
 	type PhaseDisplayState,
@@ -5157,10 +5157,7 @@ export async function startBridge(
 				const row =
 					route === "lead"
 						? leadId
-							? store.getActiveAlertThreadByLeadAndType(
-									leadId,
-									"login_expired",
-								)
+							? store.getActiveAlertThreadByLeadAndType(leadId, "login_expired")
 							: undefined
 						: store
 								.listActiveAlertThreads()

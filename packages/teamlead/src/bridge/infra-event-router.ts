@@ -33,8 +33,8 @@ export type AlertRouteClass = "ticket" | "issue_thread" | "notify";
  * Infra process-health kinds — a bot can act on these, so they queue as
  * tickets @ the owner bot, EVEN when bound to an issue (D1: responder-based).
  */
-export const TICKET_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>(
-	[
+export const TICKET_KINDS: ReadonlySet<AlertEventType> =
+	new Set<AlertEventType>([
 		"rate_limit",
 		"usage_limit",
 		"login_expired",
@@ -50,8 +50,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>
 		"auto_qa_stuck",
 		"codex_gate_blocked",
 		"bridge_wrapper_fail",
-	],
-);
+	]);
 
 /**
  * Issue-progress kinds — the responder is the issue's Lead/founder, so they

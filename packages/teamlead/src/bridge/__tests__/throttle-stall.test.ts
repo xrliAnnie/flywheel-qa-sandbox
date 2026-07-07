@@ -6,7 +6,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AlertPayload } from "../../LeadAlertNotifier.js";
 import { AutoRepairBot } from "../AutoRepairBot.js";
-import { detectThrottleStall, evaluateStuckCandidate } from "../stuck-candidate.js";
+import {
+	detectThrottleStall,
+	evaluateStuckCandidate,
+} from "../stuck-candidate.js";
 
 const STALLED_PANE = [
 	"⏺ pushing branch…",
