@@ -560,6 +560,16 @@ export function createStuckUnhandledAlerter(
 			result.queued === true ||
 			result.skipped === "duplicate";
 
+		// FLY-927 (Task 2.4, explicit behavior change — in Annie's morning brief):
+		// with the ticket queue ON, the IMMEDIATE founder page is replaced by the
+		// T2 "couldn't fix" page — the reconcile escalation pass pages the issue
+		// thread only after 2 ARC attempts / 5 minutes without recovery. Fewer,
+		// more accurate @Annie pings. FLYWHEEL_ALERT_TICKETS unset ⇒ the Q7
+		// immediate page below, exactly as today.
+		if (env.FLYWHEEL_ALERT_TICKETS === "1") {
+			return legacyResolved;
+		}
+
 		// FLY-818 M3 issue-thread founder page. Disabled (kill-switch / no owner / no
 		// store) ⇒ byte-identical legacy semantics. Gated on an owner id so a
 		// default-on-but-unconfigured deployment degrades to legacy instead of

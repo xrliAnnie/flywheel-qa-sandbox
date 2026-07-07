@@ -393,6 +393,28 @@ describe("createStuckUnhandledAlerter (Q7)", () => {
 		expect(fetchImpl).not.toHaveBeenCalled(); // converged → never re-posts
 	});
 
+	it("FLY-927 (Task 2.4): FLYWHEEL_ALERT_TICKETS=1 ⇒ the IMMEDIATE page is replaced by T2 (no page here; the reconcile escalation pages later)", async () => {
+		const store = founderStore("th-1");
+		const fetchImpl = okFetch();
+		const alerter = createStuckUnhandledAlerter(
+			testProjects,
+			{ alert: vi.fn(async () => ({ sent: true })) },
+			{
+				store: store as never,
+				discordOwnerUserId: FID,
+				discordBotToken: "global-bot",
+				fetchImpl,
+				env: { FLYWHEEL_ALERT_TICKETS: "1" } as NodeJS.ProcessEnv,
+				log: () => {},
+			},
+		);
+		// The ticket-queue root post is the notification; the alerter resolves on
+		// the legacy semantics and never fires the immediate founder page.
+		expect(await alerter(unhandledPayload())).toBe(true);
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(store.getChatThreadByIssue).not.toHaveBeenCalled();
+	});
+
 	it("kill-switch FLYWHEEL_STUCK_FOUNDER_PAGE=0 ⇒ legacy semantics (sent/duplicate resolve), no founder page", async () => {
 		const store = founderStore("th-1");
 		const fetchImpl = okFetch();

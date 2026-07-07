@@ -23,6 +23,7 @@ import {
 } from "flywheel-comm/xiaohongshu-state";
 import {
 	type CommBackend,
+	phaseMessageTag,
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
 	THREE_STAGE_PHASE_SEQUENCE,
@@ -111,6 +112,8 @@ import {
 } from "./alert-rate-limiter.js";
 // FLY-927 (W1): D1 responder-based routing — ticket queue vs issue thread.
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
+// FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
+import { emitFounderStuckNotification } from "./founder-thread-notifier.js";
 import { makeFounderReactionApprovalCallback } from "./approval-signal/founder-reaction-approval-factory.js";
 import { makeFounderShipApprovalCallback } from "./approval-signal/founder-ship-approval-factory.js";
 import { readCurrentGateMessageBinding } from "./approval-signal/gate-message-binding-store.js";
@@ -5219,6 +5222,53 @@ export async function startBridge(
 							100,
 						);
 						return isCaptureError(c) ? null : c.output;
+					},
+					// FLY-927 (Task 2.4): T2 escalation for an ISSUE-BOUND ticket pages
+					// the founder in the issue's own [FLY-XX] thread — the FLY-818 page
+					// + founder_page_ledger dedup (never re-pages the same event id).
+					escalateToIssueThread: async (row) => {
+						if (!row.session_key || !config.discordOwnerUserId) return false;
+						if (store.getFounderPaged(row.event_id) === true) return true;
+						const session = store.getSession(row.session_key);
+						if (!session) return false;
+						const { lead } = resolveLeadForIssue(
+							projects,
+							session.project_name,
+							parseJsonStringArray(session.issue_labels),
+						);
+						const thread = store.getChatThreadByIssue(
+							session.issue_id,
+							lead.chatChannel,
+						);
+						const firstSeenMs = row.first_seen_at
+							? Date.parse(`${row.first_seen_at.replace(" ", "T")}Z`)
+							: Number.NaN;
+						const outcome = await emitFounderStuckNotification(
+							{
+								executionId: row.session_key,
+								issueId: session.issue_id,
+								issueIdentifier: session.issue_identifier ?? undefined,
+								projectName: session.project_name,
+								leadAgentId: lead.agentId,
+								stuckMinutes: Number.isNaN(firstSeenMs)
+									? 0
+									: Math.max(
+											0,
+											Math.round((Date.now() - firstSeenMs) / 60_000),
+										),
+								thread,
+								botToken: lead.botToken ?? config.discordBotToken,
+								ownerUserId: config.discordOwnerUserId,
+								phasePrefix: phaseMessageTag(
+									session.chat_thread_role,
+									session.runner_model,
+								),
+							},
+							{ store },
+						);
+						const paged = outcome.kind === "posted";
+						store.recordFounderPaged(row.event_id, paged);
+						return paged;
 					},
 				})
 			: undefined;

@@ -30,6 +30,12 @@ import {
 import type { AlertThreadRow, StateStore } from "../StateStore.js";
 import type { AutoRepairBot } from "./AutoRepairBot.js";
 import { fingerprintOutput } from "./stuck-candidate.js";
+import {
+	decideTicketEscalation,
+	type TicketEscalationPolicy,
+	ticketOwnerConfigured,
+} from "./ticket-escalation.js";
+import { ownerRegistryFromEnv } from "./ticket-owner-map.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 
@@ -229,6 +235,16 @@ export interface AlertChannelHubDeps {
 		executionId: string,
 		projectName: string,
 	) => Promise<string | null>;
+	/**
+	 * FLY-927 (Task 2.4): T2 escalation delivery for an ISSUE-BOUND ticket —
+	 * the founder page lands in the issue's own [FLY-XX] thread (FLY-818 reuse +
+	 * founder_page_ledger dedup live in the plugin wiring). Returns true when
+	 * the page actually posted. Absent / false ⇒ the Hub falls back to the
+	 * needs_human @founder line in the alert thread.
+	 */
+	escalateToIssueThread?: (row: AlertThreadRow) => Promise<boolean>;
+	/** T2 policy override (tests); default = the locked 2-try/5-min constants. */
+	ticketPolicy?: TicketEscalationPolicy;
 	now?: () => number;
 	logger?: (msg: string) => void;
 }
@@ -543,28 +559,133 @@ export class AlertChannelHub {
 					// changes), NOT a Lead pane — same path as runner_stuck_unhandled.
 					if (await this.shouldResolveRunner(row.session_key, row)) {
 						await this.resolve(row.correlation_key);
+						continue;
 					}
+					await this.reconcileTicket(row);
 					continue;
 				}
-				if (!LEAD_KINDS.has(row.event_type as AlertEventType)) continue;
-				if (!this.deps.capturePane) continue;
-				const pane = await this.deps.capturePane(row.project_name, row.lead_id);
-				if (pane == null) continue; // no window / cannot tell → leave active
-				if (
-					await this.shouldResolveLead(
-						row.correlation_key,
-						row.event_type,
-						pane,
-					)
-				) {
-					await this.resolve(row.correlation_key);
+				if (LEAD_KINDS.has(row.event_type as AlertEventType)) {
+					if (this.deps.capturePane) {
+						const pane = await this.deps.capturePane(
+							row.project_name,
+							row.lead_id,
+						);
+						if (
+							pane != null &&
+							(await this.shouldResolveLead(
+								row.correlation_key,
+								row.event_type,
+								pane,
+							))
+						) {
+							await this.resolve(row.correlation_key);
+							continue;
+						}
+					}
 				}
+				// FLY-927 (Task 2.4): still-active ticket rows run the T2 decision on
+				// the SAME piggybacked tick (recovery was checked above — a recovered
+				// ticket resolved quietly and never reaches here). Legacy rows (NULL
+				// ticket_status) are a no-op inside.
+				await this.reconcileTicket(row);
 			} catch (err) {
 				this.logger(
 					`reconcile failed for ${row.correlation_key}: ${(err as Error).message}`,
 				);
 			}
 		}
+	}
+
+	/**
+	 * FLY-927 (Task 2.4): the per-row T2 pass — retry (second ARC attempt, all
+	 * safety gates intact) or escalate ("couldn't fix": 2 attempts / 5 min, or
+	 * unclaimed > 5 min with a configured owner).
+	 */
+	private async reconcileTicket(row: AlertThreadRow): Promise<void> {
+		if (!row.ticket_status) return; // legacy row — the state machine never drives it
+		const decision = decideTicketEscalation(
+			row,
+			this.now(),
+			ticketOwnerConfigured(row.owner_ref, ownerRegistryFromEnv(process.env)),
+			this.deps.ticketPolicy,
+		);
+		if (decision === "none") return;
+		if (decision === "retry") {
+			const bot = this.deps.autoRepairBot;
+			if (!bot) return;
+			// Reconstruct the minimal payload the bot's gates need — the structured
+			// runnerStuck fingerprint rides the row (episode_signature/session_key).
+			const payload: AlertPayload = {
+				leadId: row.lead_id,
+				projectName: row.project_name,
+				eventId: row.event_id,
+				eventType: row.event_type as AlertEventType,
+				title: "",
+				body: "",
+				severity: "warning",
+				sessionKey: row.session_key ?? undefined,
+				...(row.session_key && row.episode_signature
+					? {
+							metadata: {
+								runnerStuck: {
+									executionId: row.session_key,
+									episodeFingerprint: row.episode_signature,
+								},
+							},
+						}
+					: {}),
+			};
+			this.deps.store.bumpTicketAttempt(row.correlation_key);
+			const repair = await bot.attempt(payload, row.correlation_key);
+			await this.safePostToThread(
+				row.thread_id,
+				repair.outcome === "attempted"
+					? `🔁 第 ${row.attempt_count + 1} 次自动修复:${repair.detail}`
+					: `🔁 第 ${row.attempt_count + 1} 次尝试被安全闸拒绝:${repair.detail}`,
+			);
+			return;
+		}
+		await this.escalateTicket(row);
+	}
+
+	/**
+	 * T2 escalation: issue-bound tickets page the founder in the issue's OWN
+	 * thread (FLY-818 reuse + ledger dedup, via the injected wiring); unbound
+	 * tickets keep the existing needs_human @founder line in the alert thread.
+	 * Either way the ticket lands ESCALATED (terminal for the state machine —
+	 * the reconcile recovery pass can still resolve the row later).
+	 */
+	private async escalateTicket(row: AlertThreadRow): Promise<void> {
+		let pagedInIssueThread = false;
+		if (row.session_key && this.deps.escalateToIssueThread) {
+			try {
+				pagedInIssueThread = await this.deps.escalateToIssueThread(row);
+			} catch (err) {
+				this.logger(
+					`issue-thread escalation failed for ${row.correlation_key}: ${(err as Error).message}`,
+				);
+			}
+		}
+		if (pagedInIssueThread) {
+			await this.safePostToThread(
+				row.thread_id,
+				"⛔ 修不掉(T2)— 已升级 founder(落在该 issue 的 thread)。",
+			);
+		} else {
+			const fid = this.founderId();
+			const mention = fid ? `<@${fid}>` : "Annie";
+			await this.safePostToThread(
+				row.thread_id,
+				`🙋 ${mention} 修不掉(T2:重试 ${row.attempt_count} 次 / 超时)— 需要你处理。`,
+				fid ? { mentionUserId: fid } : undefined,
+			);
+		}
+		this.deps.store.setTicketStatus(row.correlation_key, "ESCALATED");
+		await this.updateRootTicketStatus(
+			row.channel_id,
+			row.root_message_id,
+			"ESCALATED",
+		);
 	}
 
 	/**
