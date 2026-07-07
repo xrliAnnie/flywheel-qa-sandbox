@@ -1,13 +1,13 @@
 ---
 issue: FLY-967
 phase: implement
-phaseCursor: 5/10
-updated: 2026-07-07T23:04:42.680Z
-nextStep: P5 assistant tools (lookup_issue/board_snapshot, mock HTTP)
+phaseCursor: 6/10
+updated: 2026-07-07T23:06:59.177Z
+nextStep: P3 AssistantSpeaker (24k stream → player, turn gate, flush, earcon/filler)
 chunks: []
 pointers: {}
 ---
 
 # FLY-967 progress
-**phase**: implement (5/10)
-**next**: P5 assistant tools (lookup_issue/board_snapshot, mock HTTP)
+**phase**: implement (6/10)
+**next**: P3 AssistantSpeaker (24k stream → player, turn gate, flush, earcon/filler)
