@@ -115,8 +115,10 @@ packages/teamlead/src/bridge/plugin.ts  # 仅当 545 PR-2 未先落:POST /api/li
   "assistant": {
     "commandName": "talk",              // 可选,默认 "talk"(定稿 Annie+HL,可配)
     "voice": "Kore",                    // 可选:Gemini prebuilt voiceName;缺省用模型默认;
-                                        //   实现期试听 3-5 个预置声线选型记 config 注释
-    "languageCode": "cmn-CN",           // 可选;缺省不传
+                                        //   实现期试听 3-5 个预置声线选型记 config 注释。
+                                        //   注意:native audio 模型自动选语言,不支持显式
+                                        //   languageCode(官方文档,Codex R1 #3)——语言约束
+                                        //   走 systemHint 提示词,不进 speechConfig
     "assistantBotTokenEnv": null,       // 可选:独立助理 bot;缺省 null = orchestrator bot 播音
     "briefing": {
       "refreshSec": 600,                // 可选,默认 600
@@ -148,16 +150,28 @@ export interface ConversationOptions {
    */
   systemPreamble?: string;
 }
-// genaiConnector:连接参数组装处,把 preamble 拼进 systemInstruction(单点改动 + 单测:
-//   有/无 preamble 两形状断言;现有测试全绿不改)。
-// 若 545 PR-1 落地时已引入等价能力(以其实际签名为准),本步 no-op —— implement 前 grep。
+// ConversationSession 新增一个方法(Codex R1 #1:systemInstruction 只设上下文,不会让模型
+// 主动开口;开场白/收尾 recap 都需要文字控制口):
+export interface ConversationSession {
+  …现有成员…
+  /** 发一段文字输入给模型(她听不到的控制提示,如「请开场」「请做 recap」)。
+   *  经 LiveConnection.sendText → session.sendRealtimeInput({ text })。
+   *  控制提示**不是 Annie 的话**(Codex R2):JSONL transcript 里记 role=control(或不落
+   *  user 轨),summary「引用原话」池只取她的 inputAudioTranscription 条目,绝不混入。 */
+  sendText(text: string): void;
+}
+// genaiConnector:①连接参数组装处把 preamble 拼进 systemInstruction;②transport 加 sendText。
+// 单测(mock transport):有/无 preamble 两形状断言;sendText 帧形状;speechConfig 只发
+// voiceConfig.prebuiltVoiceConfig.voiceName(不发 languageCode —— native audio 不支持,
+// Codex R1 #3);现有测试全绿不改(缺省字节兼容)。
+// 若 545 PR-1 落地时已引入等价能力(以其实际签名为准),对应步 no-op —— implement 前 grep。
 ```
 
 - **extraTools / LiveToolSpec / 分发与取消合同 = 545 plan §5.1 原文,本计划引用不复制**
   (防两边漂移;545 PR-1 交付)。A 传 `extraTools: [lookupIssueTool, boardSnapshotTool]`。
-- `speechConfig`(voiceName/languageCode)经 ConversationOptions 现有 `voice` 字段透传;
-  若现字段仅支持字符串 voice,genaiConnector 侧映射到 prebuiltVoiceConfig(研究 §1.1 已核
-  SDK 形状;单测断言连接参数)。
+- `speechConfig` 只含 voiceName:经 ConversationOptions 现有 `voice` 字段透传,genaiConnector
+  侧映射到 `voiceConfig.prebuiltVoiceConfig.voiceName`(研究 §1.1 已核 SDK 形状;单测断言
+  连接参数;无 languageCode —— 见 §4 config 注)。
 
 ### 5.2 assistant tools(D3 边界内,全只读)
 
@@ -169,8 +183,9 @@ export const lookupIssueTool: LiveToolSpec = {
     parameters: { type: "OBJECT", properties: {
       query: { type: "STRING", description: "issue identifier or keyword" } },
       required: ["query"] } },
-  handler: /* GET /api/linear/issue?query=…(合同=545 plan §5.3/P12)→ 摘要文本;
-              not-found → "没找到 <query>";HTTP 失败/超时(5s)→ 显式错误文本回注 */
+  handler: /* GET /api/linear/issue?projectName=<当前项目>&query=…(合同=545 plan §5.3/P12;
+              projectName binding 必带,Codex R1 #4)→ 摘要文本;identifier 精确命中优先于
+              关键词;not-found → "没找到 <query>";HTTP 失败/超时(5s)→ 显式错误文本回注 */
 };
 export const boardSnapshotTool: LiveToolSpec = {
   declaration: { name: "board_snapshot",
@@ -181,6 +196,9 @@ export const boardSnapshotTool: LiveToolSpec = {
   handler: /* GET /api/linear/issues?slim=1&projectName=…[&state=…] → 按 state 分组的
               标题行文本(≤2k chars 截断);失败语义同上 */
 };
+// BridgeLinearClient:projectName 为构造必填(Codex R1 #4)—— 每一次 Linear 调用
+// (create-issue body / issue lookup query / issues query)都带 projectName scope,
+// 单测逐路断言;unknown projectName → Bridge fail-loud(现有 FLY-371 行为)。
 // ask_lead:voice-core 内建路径不动,brain = 545 的 ReadOnlyLeadBrain(claude -p 只读白名单)。
 // 同步 function calling 约束(research §1.3):tool-call 事件一到 → AssistantSpeaker 即播
 // earcon;>2s 未回注 → 播预合成「我查一下」clip(一次性合成落文件,运行时零 TTS 依赖)。
@@ -204,6 +222,9 @@ export class BriefingEngine {
 //   / ②相关 issue(topic 命中,含 state)/ ③最近决策(近 14 天 Done 的 identifier+标题,
 //   最多 15 条)/ ④文档要点(docs[] 逐篇:文件名 + 开头 N chars)。
 // 数据源:GET /api/linear/issues(现有路由,research §5);docs[] 直接读文件(mtime 变才重读)。
+// 「近 14 天」机制(Codex R1 #6):现有路由无日期过滤参数,但按 updatedAt 排序返回 —— 请求
+//   state=Done + 足够 limit(50),客户端过滤 updatedAt >= now-14d,截 15 条;路由 truncated
+//   时简报标注「决策列表可能不全」。单测:日期过滤 + truncation 标注两路。
 ```
 
 ### 5.4 系统提示要点(systemPreamble + systemHint,implement 定稿逐字)
@@ -226,19 +247,26 @@ idle ──/talk [topic]──▶ invoked(SessionSlot.acquire 失败 → 回执�
        (systemPreamble + extraTools + voice);等 voiceStateUpdate 出现 Annie,超时 10min
        未进 → abort:issue comment「未开成」+ close + TIV 一句 + teardown)
       ▼
-live(助理开场白一句(含简报时间戳);对话环;earcon/filler;TIV 状态行+字幕;JSONL 双向落盘;
+live(开场:sendText 控制提示「请用一两句开场,报出简报时间」→ 模型原生语音开场(Codex R1
+      │ #1:systemInstruction 不会让模型主动开口,文字控制口是唯一开场通道);对话环;
+      │ earcon/filler;TIV 状态行+字幕;JSONL 双向落盘;
       │ 耳朵断连 → 自动 rejoin,>60s 不恢复 → 口播降级 + concluding(545 同款);
       │ rotator goAway 续接透明)
       │ 触发 concluding:她说「结束/就这样」(输入转写命中)或她离开 VC(voiceStateUpdate)
       ▼
-concluding(助理口头 recap「所以今天聊清了:1)…2)…对吗?」→ 等口头明确肯定;纠正 → 改 →
-      │      重念改动;她已离开 → 降级:summary 标「未经口头确认,请在 issue 里改」)
+concluding(sendText 控制提示触发 recap:「她说结束了,请口头 recap 今天聊清的要点,逐条,
+      │      问她对不对」→ 等口头明确肯定;纠正 → 改 → 重念改动;她已离开 → 降级:
+      │      summary 标「未经口头确认,请在 issue 里改」)
       ▼
 landing(AssistantLanding:summary+要点(逐条附原话引用 ts+原句,from JSONL)→ POST
       │  /api/linear/comment → update-issue 关闭 → TIV 结论卡片贴链接。
       │  失败语义(545 §6 landing 同款,顺序不可乱):comment 失败 → TIV 报错 + transcript
       │  路径兜底,不关 issue;close 翻转失败 → TIV 报错留人工;任何前步失败 = issue 不关,
-      │  可重跑(comment 幂等追加)。
+      │  可重跑。**重跑幂等(Codex R1 #5)**:comment 成功即写本地回执
+      │  landing-receipt.json(transcript 同目录,含 issue id + session id + comment 时刻);
+      │  重跑先查回执 —— 有回执 → 跳过 comment 直进 close;comment 正文自带
+      │  「assistant-summary <sessionId>」标记行供人工审计。单测:comment 成功→close 失败→
+      │  重跑不重发 comment。
       ▼
 teardown(bot 退出 VC;rotator close;transcript 收尾;SessionSlot.release)──▶ idle
 ```
@@ -247,9 +275,12 @@ teardown(bot 退出 VC;rotator close;transcript 收尾;SessionSlot.release)─�
   545 PR-2 对齐(implement 时同步一条对齐注释到 545 侧文档,防两边各造一个闸)。
 - **barge-in 口径(S-A1 定档)**:主路 = Gemini 服务端 VAD(response-cancelled → flush)。
   S-A1 实测「她开口→停播」体感;若 >400ms 不跟手 → 启用**本地预停门**:EarsReceiver
-  speaking-start 持续 ≥350ms(545 同款信号源与阈值)→ 先本地 flush(不发 interrupt,等
-  服务端 interrupted 收尾,两者幂等)。预停门做成 config 开关(`assistant.localBargeIn`,
-  默认按 S-A1 结论定),两路都有 fake-timer 单测。
+  speaking-start 持续 ≥350ms(545 同款信号源与阈值)→ `speaker.flush()` +
+  `conversation.interrupt()`(Codex R1 #2:voice-core 的 interrupt() 本就是**本地抑制**——
+  标记 turn 取消、abort 在飞 ask_lead、丢迟到音频/工具调用,不发服务端 cancel;只 flush 不
+  interrupt 会让死 turn 继续吐音/完成工具)。与稍后到的服务端 interrupted 幂等。预停门做成
+  config 开关(`assistant.localBargeIn`,默认按 S-A1 结论定);fake-timer 单测:预停后迟到
+  音频丢弃、assistant transcript 抑制、在飞 tool handler abort、下一轮她开口正常恢复。
 
 ## 7. 实施步骤(TDD;mock 全注入,545/voice-core 同款模式)
 
@@ -257,9 +288,9 @@ teardown(bot 退出 VC;rotator close;transcript 收尾;SessionSlot.release)─�
   10+ 轮:①全链首音分布(她停话→bot 出声;口径 §15:≤800ms 好/≤1.2s 可/>2s 停报 Tadashi);
   ②打断延迟(开口→停播),定 localBargeIn 默认值;③注入 8k 简报后模型答 board 问题抽查;
   ④试听 3-5 个 prebuilt 声线定默认。产出 evidence/s-a1-first-audio.md(数字+结论)。
-- **P1 voice-core systemPreamble**:先 mock-transport 测(有/无 preamble 的连接参数形状、
-  与 systemHint 拼接顺序、缺省字节兼容 = 现有测试全绿不改),后实现 §5.1;voice 字段 →
-  prebuiltVoiceConfig 映射断言。
+- **P1 voice-core systemPreamble + sendText**:先 mock-transport 测(有/无 preamble 的连接
+  参数形状、与 systemHint 拼接顺序、sendText 帧形状(sendRealtimeInput text)、speechConfig
+  只发 voiceName 不发 languageCode、缺省字节兼容 = 现有测试全绿不改),后实现 §5.1。
 - **P2 resample 方向**:upsample24kMonoTo48kStereo 纯函数单测(已知波形进出、奇数长度帧、
   空帧)。
 - **P3 AssistantSpeaker**:mock player/connection:流式衔接(chunk 陆续到 → 单 resource)、
@@ -268,10 +299,12 @@ teardown(bot 退出 VC;rotator close;transcript 收尾;SessionSlot.release)─�
 - **P4 BriefingEngine**:mock Bridge HTTP + tmp 目录:4 段模板与截断、topic 过滤提升、缓存
   原子写/读、refresh 失败保旧、stale 判定、docs[] mtime 重读、路径穿越拒绝(启动 fail-fast)。
 - **P5 tools**:lookup_issue/board_snapshot handler(mock HTTP):正常摘要、not-found 文案、
-  超时/HTTP 错误 → 显式错误文本回注、argv/日志无 token。
+  超时/HTTP 错误 → 显式错误文本回注、argv/日志无 token、**每次调用带 projectName scope
+  断言**(create-issue body / lookup query / issues query 三路,Codex R1 #4)。
 - **P6 SessionSlot + AssistantSession**:互斥(占用中 acquire 拒绝文案)、状态机全径
-  (fake timers):正常全流程、10min 未进 abort、说「结束」/离开 VC 两种 concluding 入口、
-  耳朵断连 >60s 降级、landing 失败语义三组(comment 失败/close 失败/重跑幂等)。
+  (fake timers):正常全流程(含开场/收尾 sendText 控制提示各一发)、10min 未进 abort、
+  说「结束」/离开 VC 两种 concluding 入口、耳朵断连 >60s 降级、landing 失败语义三组
+  (comment 失败不关 issue/close 失败留人工/重跑读回执不重发 comment)。
 - **P7 TalkCommand**:命令注册(可配名)、Join button、@ping、MOVE_MEMBERS(mock REST +
   权限缺失显式错误)、建立项 issue(BridgeLinearClient mock,title 形状断言)。
 - **P8 Bridge 路由(条件)**:implement 前 grep `/api/linear/comment`;545 PR-2 已落 → 本步
