@@ -82,10 +82,11 @@ if FLYWHEEL_DISCORD_PLUGIN_SERVER="$SUPPORTED_SRV" bash "$SCRIPT" \
     --access-file "$A" --channel-id "$CORE" --id-only >/dev/null 2>&1; then
   req=$(jq -r '.groups["'"$CORE"'"].requireMention' "$A")
   mp=$(jq -c '.groups["'"$CORE"'"].mentionPatterns // "MISS"' "$A")
-  if [ "$req" = "true" ] && [ "$mp" = "[]" ]; then
-    log_pass "T1 requireMention:true + mentionPatterns:[]"
+  af_len=$(jq -r '.groups["'"$CORE"'"].allowFrom | length' "$A")
+  if [ "$req" = "true" ] && [ "$mp" = "[]" ] && [ "$af_len" = "0" ]; then
+    log_pass "T1 requireMention:true + mentionPatterns:[] + allowFrom:[]"
   else
-    log_fail "T1 wrong state (req=$req mp=$mp)"
+    log_fail "T1 wrong state (req=$req mp=$mp allowFrom_len=$af_len)"
   fi
 else
   log_fail "T1 script exited non-zero on a valid id-only apply"
@@ -103,19 +104,18 @@ else
   log_fail "T2 not idempotent (rc=$rc changed=$([ "$(cat "$A")" = "$snap" ] && echo no || echo yes))"
 fi
 
-# ── T3: no other field/group touched ────────────────────────────────────────
-log_test "T3 touches no other field/group"
+# ── T3: only the core group changes; its allowFrom is retired (FLY-944) ─────
+log_test "T3 core allowFrom cleared; everything OUTSIDE the core group canonical-identical"
 B="$TMP_DIR/t3.json"; make_access "$B"
 before="$(rest_fingerprint "$B")"
-allowfrom_before=$(jq -c '.groups["'"$CORE"'"].allowFrom' "$B")
 FLYWHEEL_DISCORD_PLUGIN_SERVER="$SUPPORTED_SRV" bash "$SCRIPT" \
   --access-file "$B" --channel-id "$CORE" --id-only >/dev/null 2>&1
 after="$(rest_fingerprint "$B")"
-allowfrom_after=$(jq -c '.groups["'"$CORE"'"].allowFrom' "$B")
-if [ "$before" = "$after" ] && [ "$allowfrom_before" = "$allowfrom_after" ]; then
-  log_pass "T3 other groups + core.allowBots/allowFrom unchanged"
+core_af_len=$(jq -r '.groups["'"$CORE"'"].allowFrom | length' "$B")
+if [ "$before" = "$after" ] && [ "$core_af_len" = "0" ]; then
+  log_pass "T3 core allowFrom cleared; allowBots/dmPolicy/top-level allowFrom/other group untouched"
 else
-  log_fail "T3 a sibling field changed"
+  log_fail "T3 wrong (rest_changed=$([ "$before" = "$after" ] && echo no || echo yes) core_allowFrom_len=$core_af_len)"
 fi
 
 # ── T4: backup written ──────────────────────────────────────────────────────
@@ -260,6 +260,150 @@ JSON
   else
     log_fail "T11 wrong (rc=$rc peter_req=$p_req peter_mp=$p_mp refl_req=$r_req cos_req=$cos_req joy_req=$joy_req)"
   fi
+fi
+
+# ── T12: --allowfrom-only clears ONLY allowFrom on the target group ─────────
+log_test "T12 --allowfrom-only clears allowFrom, leaves requireMention/mentionPatterns/others"
+A="$TMP_DIR/t12.json"; make_access "$A"
+BEFORE_REST="$(rest_fingerprint "$A")"
+FLYWHEEL_DISCORD_PLUGIN_SERVER="$SUPPORTED_SRV" "$SCRIPT" \
+  --access-file "$A" --channel-id "$CORE" --allowfrom-only >/dev/null 2>&1
+rc=$?
+if [ $rc -eq 0 ] \
+  && [ "$(jq -r ".groups[\"$CORE\"].allowFrom | length" "$A")" = "0" ] \
+  && [ "$(jq -r ".groups[\"$CORE\"].requireMention" "$A")" = "false" ] \
+  && [ "$(jq -r ".groups[\"$CORE\"] | has(\"mentionPatterns\")" "$A")" = "false" ] \
+  && [ "$(rest_fingerprint "$A")" = "$BEFORE_REST" ]; then
+  log_pass "allowFrom cleared, requireMention/mentionPatterns untouched, rest identical"
+else
+  log_fail "T12 wrong result (rc=$rc): $(jq -c ".groups[\"$CORE\"]" "$A")"
+fi
+
+# ── T13: --allowfrom-only idempotent ────────────────────────────────────────
+log_test "T13 --allowfrom-only re-run at target state is a no-op"
+BEFORE_ALL="$(jq -S . "$A")"
+FLYWHEEL_DISCORD_PLUGIN_SERVER="$SUPPORTED_SRV" "$SCRIPT" \
+  --access-file "$A" --channel-id "$CORE" --allowfrom-only >/dev/null 2>&1
+rc=$?
+if [ $rc -eq 0 ] && [ "$(jq -S . "$A")" = "$BEFORE_ALL" ]; then
+  log_pass "idempotent no-op"
+else
+  log_fail "T13 re-run changed file or failed (rc=$rc)"
+fi
+
+# ── T14: --allowfrom-only absent group → no-op, never creates ───────────────
+log_test "T14 --allowfrom-only on absent group is a no-op"
+A="$TMP_DIR/t14.json"; make_access "$A"
+BEFORE_ALL="$(jq -S . "$A")"
+FLYWHEEL_DISCORD_PLUGIN_SERVER="$SUPPORTED_SRV" "$SCRIPT" \
+  --access-file "$A" --channel-id "9999999" --allowfrom-only >/dev/null 2>&1
+rc=$?
+if [ $rc -eq 0 ] && [ "$(jq -S . "$A")" = "$BEFORE_ALL" ]; then
+  log_pass "absent group untouched, exit 0"
+else
+  log_fail "T14 mutated file or failed (rc=$rc)"
+fi
+
+# ── T15: 已 flip 但 allowFrom 未清的存量(FLY-898 旧目标态)会被补清 ─────────
+log_test "T15 legacy FLY-898 target-state (requireMention:true, allowFrom non-empty) gets allowFrom cleared"
+A="$TMP_DIR/t15.json"; make_access "$A"
+jq ".groups[\"$CORE\"].requireMention = true | .groups[\"$CORE\"].mentionPatterns = []" "$A" > "$A.tmp" && mv "$A.tmp" "$A"
+FLYWHEEL_DISCORD_PLUGIN_SERVER="$SUPPORTED_SRV" "$SCRIPT" \
+  --access-file "$A" --channel-id "$CORE" --id-only >/dev/null 2>&1
+rc=$?
+if [ $rc -eq 0 ] && [ "$(jq -r ".groups[\"$CORE\"].allowFrom | length" "$A")" = "0" ]; then
+  log_pass "legacy flipped group still gets allowFrom cleared"
+else
+  log_fail "T15 allowFrom not cleared (rc=$rc): $(jq -c ".groups[\"$CORE\"]" "$A")"
+fi
+
+# ── T16: --all-shared per-lead 分流:非-CoS core 走主 transform,CoS core / roundtable 只清 allowFrom ─
+log_test "T16 --all-shared sweeps by role: non-CoS core flips+clears, CoS core & roundtable clear-only"
+FLEET_DIR="$TMP_DIR/channels16"; mkdir -p "$FLEET_DIR/discord-cos" "$FLEET_DIR/discord-eng"
+RT="1512578695468941333"
+cat > "$TMP_DIR/roundtable16.json" <<JSON
+{ "channelId": "$RT" }
+JSON
+# cos(CoS): core requireMention:false 带白名单(设计态,只清 allowFrom)+ roundtable 带白名单
+cat > "$FLEET_DIR/discord-cos/access.json" <<JSON
+{ "dmPolicy": "pairing", "allowFrom": ["annie"], "allowBots": ["b1"],
+  "groups": {
+    "$CORE": { "requireMention": false, "allowFrom": ["annie", "eng-bot"] },
+    "$RT":   { "requireMention": true,  "allowFrom": ["annie"] }
+  }, "pending": {} }
+JSON
+# eng(非-CoS,legacy 形态): core requireMention:false + 白名单 → 必须 flip+清一起;other 组不动
+cat > "$FLEET_DIR/discord-eng/access.json" <<JSON
+{ "dmPolicy": "pairing", "allowFrom": ["annie"], "groups": {
+    "$CORE":  { "requireMention": false, "allowFrom": ["annie", "cos-bot"] },
+    "$RT":    { "requireMention": true,  "allowFrom": ["annie", "b1"] },
+    "$OTHER": { "requireMention": true,  "allowFrom": ["annie"] }
+  }, "pending": {} }
+JSON
+# 假 GATE_CLI:--all-leads 输出两行(cos=isCoS, eng=gateNonCoS)
+FAKE_CLI="$TMP_DIR/fake-gate-cli-16.js"
+cat > "$FAKE_CLI" <<JS
+if (process.argv.includes("--all-leads")) {
+  console.log(JSON.stringify({ projectName: "p", leadId: "cos", coreChannelId: "$CORE", isCoS: true,  gateNonCoS: false, backend: "claude-code" }));
+  console.log(JSON.stringify({ projectName: "p", leadId: "eng", coreChannelId: "$CORE", isCoS: false, gateNonCoS: true,  backend: "claude-code" }));
+}
+JS
+FLYWHEEL_CHANNELS_DIR="$FLEET_DIR" \
+FLYWHEEL_CORE_ROOM_GATE_CLI="$FAKE_CLI" \
+FLYWHEEL_ROUNDTABLE_FILE="$TMP_DIR/roundtable16.json" \
+FLYWHEEL_DISCORD_PLUGIN_SERVER="$SUPPORTED_SRV" \
+  "$SCRIPT" --all-shared >/dev/null 2>&1
+rc=$?
+ok=1
+# eng 非-CoS core:flip + patterns + allowFrom 清空,同一次 patch(pile-on 安全不变量)
+[ "$(jq -r ".groups[\"$CORE\"].requireMention" "$FLEET_DIR/discord-eng/access.json")" = "true" ] || ok=0
+[ "$(jq -r ".groups[\"$CORE\"].mentionPatterns | length" "$FLEET_DIR/discord-eng/access.json")" = "0" ] || ok=0
+[ "$(jq -r ".groups[\"$CORE\"].allowFrom | length" "$FLEET_DIR/discord-eng/access.json")" = "0" ] || ok=0
+# cos CoS core:requireMention 保持 false,只清 allowFrom
+[ "$(jq -r ".groups[\"$CORE\"].requireMention" "$FLEET_DIR/discord-cos/access.json")" = "false" ] || ok=0
+[ "$(jq -r ".groups[\"$CORE\"].allowFrom | length" "$FLEET_DIR/discord-cos/access.json")" = "0" ] || ok=0
+[ "$(jq -r ".groups[\"$CORE\"] | has(\"mentionPatterns\")" "$FLEET_DIR/discord-cos/access.json")" = "false" ] || ok=0
+# roundtable 两边都清空、requireMention 不动
+[ "$(jq -r ".groups[\"$RT\"].allowFrom | length" "$FLEET_DIR/discord-cos/access.json")" = "0" ] || ok=0
+[ "$(jq -r ".groups[\"$RT\"].allowFrom | length" "$FLEET_DIR/discord-eng/access.json")" = "0" ] || ok=0
+[ "$(jq -r ".groups[\"$RT\"].requireMention" "$FLEET_DIR/discord-eng/access.json")" = "true" ] || ok=0
+# other group + 顶层 allowFrom 不动
+[ "$(jq -r ".groups[\"$OTHER\"].allowFrom | length" "$FLEET_DIR/discord-eng/access.json")" = "1" ] || ok=0
+[ "$(jq -r ".allowFrom | length" "$FLEET_DIR/discord-eng/access.json")" = "1" ] || ok=0
+# 同一进程对同一文件连续 patch(core + roundtable)必须留下两份互不覆盖的备份
+# (Codex code review R1 MEDIUM:.bak.<epoch>.<pid> 同秒碰撞会吃掉第一份备份)
+[ "$(ls "$FLEET_DIR/discord-cos/access.json".bak.* 2>/dev/null | wc -l | tr -d ' ')" = "2" ] || ok=0
+if [ $rc -eq 0 ] && [ $ok -eq 1 ]; then
+  log_pass "role-aware sweep correct on all groups"
+else
+  log_fail "T16 sweep wrong (rc=$rc)"
+fi
+
+# ── T17: --all-shared --dry-run 不改任何文件 ────────────────────────────────
+log_test "T17 --all-shared --dry-run mutates nothing"
+jq ".groups[\"$RT\"].allowFrom = [\"annie\"]" "$FLEET_DIR/discord-eng/access.json" \
+  > "$FLEET_DIR/discord-eng/access.json.tmp2" && mv "$FLEET_DIR/discord-eng/access.json.tmp2" "$FLEET_DIR/discord-eng/access.json"
+BEFORE_A="$(jq -S . "$FLEET_DIR/discord-eng/access.json")"
+FLYWHEEL_CHANNELS_DIR="$FLEET_DIR" \
+FLYWHEEL_CORE_ROOM_GATE_CLI="$FAKE_CLI" \
+FLYWHEEL_ROUNDTABLE_FILE="$TMP_DIR/roundtable16.json" \
+FLYWHEEL_DISCORD_PLUGIN_SERVER="$SUPPORTED_SRV" \
+  "$SCRIPT" --all-shared --dry-run >/dev/null 2>&1
+rc=$?
+if [ $rc -eq 0 ] && [ "$(jq -S . "$FLEET_DIR/discord-eng/access.json")" = "$BEFORE_A" ]; then
+  log_pass "dry-run left files untouched"
+else
+  log_fail "T17 dry-run mutated file (rc=$rc)"
+fi
+
+# ── T18: 回归守卫(Codex R1 #1):--all-shared 绝不产出 requireMention:false + allowFrom:[] 的非-CoS core ─
+log_test "T18 --all-shared never leaves a non-CoS core open (requireMention:false + empty allowFrom)"
+req="$(jq -r ".groups[\"$CORE\"].requireMention" "$FLEET_DIR/discord-eng/access.json")"
+af_len="$(jq -r ".groups[\"$CORE\"].allowFrom | length" "$FLEET_DIR/discord-eng/access.json")"
+if [ "$req" = "true" ] || [ "$af_len" != "0" ]; then
+  log_pass "non-CoS core not left open (requireMention=$req, allowFrom len=$af_len)"
+else
+  log_fail "T18 non-CoS core left OPEN: requireMention=false + allowFrom=[]"
 fi
 
 # ── Summary ─────────────────────────────────────────────────────────────────

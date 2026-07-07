@@ -2280,10 +2280,34 @@ if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
     _cg_json="$(node "$_cg_cli" --lead-id "$LEAD_ID" --project "$PROJECT_NAME" 2>/dev/null || true)"
     _cg_gate="$(printf '%s' "$_cg_json" | jq -r '.gateNonCoS // false' 2>/dev/null || echo false)"
     _cg_core="$(printf '%s' "$_cg_json" | jq -r '.coreChannelId // empty' 2>/dev/null || true)"
+    _cg_iscos="$(printf '%s' "$_cg_json" | jq -r '.isCoS // false' 2>/dev/null || echo false)"
     if [ "$_cg_gate" = "true" ] && [ -n "$_cg_core" ]; then
       log "FLY-898: applying core-room mention gate for ${LEAD_ID} (core ${_cg_core})"
+      # FLY-944: the --id-only transform now ALSO clears the group's allowFrom
+      # (sender whitelist retired in the same atomic patch — pile-on safe).
       "$_cg_apply" --access-file "${DISCORD_STATE_DIR}/access.json" \
         --channel-id "$_cg_core" --id-only || true
+    elif [ "$_cg_iscos" = "true" ] && [ -n "$_cg_core" ]; then
+      # FLY-944: a CoS keeps requireMention:false (it must hear its whole core)
+      # but its stale allowFrom whitelist made it deaf to NEW sibling leads
+      # (Cass missing HL). Clear allowFrom only.
+      log "FLY-944: clearing CoS core allowFrom for ${LEAD_ID} (core ${_cg_core})"
+      "$_cg_apply" --access-file "${DISCORD_STATE_DIR}/access.json" \
+        --channel-id "$_cg_core" --allowfrom-only || true
+    fi
+    # FLY-944: roundtable sender whitelist retired for every lead (discipline
+    # there is requireMention:true fleet-wide; plugin defaults a missing field
+    # to true). Same guarded scope → same fail-closed behavior as core.
+    _f944_rt=""
+    if [ -n "${FLYWHEEL_ROUNDTABLE_CHANNEL_ID:-}" ]; then
+      _f944_rt="$FLYWHEEL_ROUNDTABLE_CHANNEL_ID"
+    elif [ -f "${HOME}/.flywheel/roundtable.json" ]; then
+      _f944_rt="$(jq -r '.channelId // empty' "${HOME}/.flywheel/roundtable.json" 2>/dev/null || true)"
+    fi
+    if [ -n "$_f944_rt" ]; then
+      log "FLY-944: clearing roundtable allowFrom for ${LEAD_ID} (channel ${_f944_rt})"
+      "$_cg_apply" --access-file "${DISCORD_STATE_DIR}/access.json" \
+        --channel-id "$_f944_rt" --allowfrom-only || true
     fi
   else
     log "FLY-898: core-room-gate CLI/helper not built or jq missing — skip"
