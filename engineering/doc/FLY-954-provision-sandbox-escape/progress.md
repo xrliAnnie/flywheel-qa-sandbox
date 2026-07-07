@@ -1,13 +1,13 @@
 ---
 issue: FLY-954
 phase: implement
-phaseCursor: 0/9
-updated: 2026-07-07T16:15:20.925Z
-nextStep: "Task 1: script-sanity.sh lib (TDD RED)"
+phaseCursor: 1/9
+updated: 2026-07-07T16:17:21.685Z
+nextStep: "Task 2: provisioner env-unset + --state-dir + helper installs"
 chunks: []
 pointers: {}
 ---
 
 # FLY-954 progress
-**phase**: implement (0/9)
-**next**: Task 1: script-sanity.sh lib (TDD RED)
+**phase**: implement (1/9)
+**next**: Task 2: provisioner env-unset + --state-dir + helper installs
