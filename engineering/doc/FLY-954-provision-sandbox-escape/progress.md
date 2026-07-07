@@ -1,13 +1,13 @@
 ---
 issue: FLY-954
 phase: implement
-phaseCursor: 4/9
-updated: 2026-07-07T16:39:57.690Z
-nextStep: "Task 5: bin_integrity_drift alert kind (shell enum + TS union)"
+phaseCursor: 5/9
+updated: 2026-07-07T16:44:02.579Z
+nextStep: "Task 6: converge-flywheel-bin.sh (TDD)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-954 progress
-**phase**: implement (4/9)
-**next**: Task 5: bin_integrity_drift alert kind (shell enum + TS union)
+**phase**: implement (5/9)
+**next**: Task 6: converge-flywheel-bin.sh (TDD)
