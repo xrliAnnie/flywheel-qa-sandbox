@@ -391,7 +391,10 @@ phase_launchd() {
       # FLY-650 (Codex R1 HIGH-1): ACTUALLY install on linux. Unlike darwin (where
       # restart-services.sh is the operator's bring-up tool), linux has no such
       # delegate — the provisioner IS the bring-up tool, so D3=B can really run.
-      run loginctl enable-linger "$USER"
+      # FLY-957②: $USER is unset in non-login shells (containers, systemd/CI
+      # invocations) and this script runs under `set -u` — fall back to id -un.
+      # Found by the FLY-648 container real-machine QA.
+      run loginctl enable-linger "${USER:-$(id -un)}"
       log "materializing lead manifests"
       run bash "$REPO_ROOT/scripts/materialize-lead-manifests.sh" \
         --home "$HOME_DIR" --projects "$FW/projects.json" --manifests-dir "$FW/manifests"

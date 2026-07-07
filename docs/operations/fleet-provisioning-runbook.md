@@ -209,3 +209,85 @@ failure she pastes back the evidence bundle (`linux-preflight.sh` output + the
 section-11 `journalctl --user` / `systemctl --user status` commands). The runner
 fixes and the founder re-runs until green. **The founder's real-machine green run
 is the acceptance gate** — hermetic tests are only the correctness guardrail.
+
+---
+
+## F. Fresh instance — the one-command setup wizard (FLY-648)
+
+Sections A–E move an EXISTING fleet (capture → provision). Section F stands up
+a **brand-new instance on a new owner's machine** — their own Discord server,
+their own Linear workspace, their own Claude subscription, their own project —
+with **one command**:
+
+```bash
+git clone https://github.com/xrliAnnie/flywheel.git ~/Dev/flywheel
+cd ~/Dev/flywheel && pnpm install && pnpm build   # the config gate runs the REAL loader
+bash scripts/flywheel-setup.sh --project <name> \
+  --cos-persona <CosName> --eng-persona <EngName> [--linear-team <KEY>]
+```
+
+The wizard is a **step-engine with a resumable journal**
+(`~/.flywheel/setup-state.json`): interrupt it anywhere (most commonly while
+creating Discord bots) and re-running resumes from the first incomplete step.
+Every failure is fail-closed — it stops AT the failing step and says what to do.
+
+### F.1 What it automates vs what stays in your hands
+
+| Step | Kind | What happens |
+|---|---|---|
+| 1 preflight | AUTO | Linux/WSL2: `linux-preflight.sh --check` (hard blockers stop here) + platform-keyed deps |
+| 2 skeleton | AUTO | project repo scaffold (`setup-new-project.sh`, local `git init` — **no GitHub create/push**) |
+| 3 model key | GUIDED | Claude Code login with YOUR subscription (CLI login; API-key path is explicit opt-in) |
+| 4 bots | GUIDED (seam) | **C1 (default): you create 2 Discord bots** in the Developer Portal, step-by-step, invite URL printed (permissions incl. channel-create); tokens are read HIDDEN and validated immediately. **C2 (`--bot-path c2`): Flywheel-pool bots** — you only click 2 invite links (honestly annotated: semi-managed) |
+| 5 channels | AUTO | the validated bot creates `#cos-chat` `#eng-chat` `#general` (403 → you create them, it verifies), probes read+post per bot, captures guild/channel IDs, gets YOUR user id (paste, or type `read` to let the bot read it from a #general message) |
+| 6 linear | GUIDED+AUTO | API key hidden-read + validated → team/label/project find-or-create (existing team is only adopted with your explicit consent; no create permission → you create in the UI, it verifies) |
+| 7 config | AUTO | writes `projects.json`/`host.json`/`.env` (0600) — gated by the REAL config loader before landing; the token gate enforces every required secret |
+| 8 services | AUTO | the UNCHANGED provisioner: Linux = linger + lead manifests + systemd --user units via the supervisor seam; macOS = narrated operator bring-up (§B) |
+| 9 finish | AUTO | Bridge health check + "go say hi to your manager in Discord" |
+| 10 digest | AUTO | FLY-727 deploy-report hook pointer (skip with `--no-digest`) |
+
+**Secrets red line**: tokens/keys are read via hidden TTY, validated in memory,
+and written ONLY to `~/.flywheel/.env` (atomic, 0600). They never appear in
+chat, argv, shell history, logs, or the journal.
+
+**Honest notes printed up-front** (boundary table F): Discord bot creation
+cannot be API-automated; account sign-ups are yours; the machine should stay on
+24/7; model usage runs on your subscription/keys.
+
+### F.2 WSL2-specific notes
+
+- **systemd**: `sudo sh -c 'printf "[boot]\nsystemd=true\n" >> /etc/wsl.conf'`
+  then `wsl --shutdown` from Windows (§E.2 step 0). `linux-preflight.sh --check`
+  blocks until this works.
+- **Memory**: a fleet is a memory game — set `C:\Users\<you>\.wslconfig`
+  (`[wsl2]` / `memory=12GB` or most of the machine) before first bring-up.
+- **`gh` is NOT in Ubuntu's default apt sources** (or is ancient): add the
+  GitHub CLI apt repo first — https://github.com/cli/cli/blob/trunk/docs/install_linux.md
+- **node/pnpm are present-checked, not auto-installed**: nvm → LTS node →
+  `corepack enable` BEFORE running the wizard.
+- **Install under the Linux filesystem** (`~/Dev`), never `/mnt/c`
+  (`--check` blocks this).
+- **Claude login loopback**: run `claude` INSIDE the WSL shell; if the Windows
+  browser can't reach the localhost callback, use the copy-paste code flow.
+
+### F.3 Minimal-instance feature surface (what's ON/OFF after the wizard)
+
+| Feature | State | To enable |
+|---|---|---|
+| CoS + Eng Lead chat, Runner dispatch, PR flow | ON | — |
+| Founder gates (brainstorm/approve, FLY-175 — founder = the instance owner) | ON | — |
+| Cross-dept roundtable | OFF | create the channel + set `FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS` |
+| Operator alerts (LeadWatchdog) | **skipped** (no `alertChannel`/`alertFallbackToCore`) | set `"alertFallbackToCore": true` on a lead, or a dedicated `alertChannel` |
+| Skills sync (flywheel-skills) | OFF until repo access (provision skills phase degrades safely) | grant access + wire skills-sync |
+| Notion / Xiaohongshu / extra model keys | OFF | add the env keys later |
+| cmux viewer | N/A on Linux/WSL2 — tmux-only (§E.1) | — |
+
+### F.4 Real-machine acceptance (founder-run loop)
+
+Same D3=B model as §E.3: the runner cannot reach the target machine. The
+operator runs the wizard on the real WSL2 box and pastes back the evidence on
+any failure (`linux-preflight.sh` output, the failing step's message,
+`systemctl --user status flywheel-*`, `journalctl --user -u flywheel-bridge`).
+Green = every step done + `systemctl --user is-active` green + Bridge
+`/api/runs/active` 2xx + **@CoS answers in Discord**. Potholes found in the
+loop get folded back into the wizard + this section.

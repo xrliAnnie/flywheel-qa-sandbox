@@ -24,6 +24,14 @@
 #   --cos-persona <name>  persona name for the CoS identity skeleton (default: CoS)
 #   --dept-persona <name> persona name for the dept Lead identity skeleton (default: Lead)
 #   --repo-owner <owner>  GitHub owner for the printed `gh repo create` step (default: xrliAnnie)
+#   --cos-id <id>         OPT-IN (FLY-648): CoS lead id — names .lead/<id>/ and the
+#                         identity frontmatter (default: <project>-cos-lead, unchanged).
+#                         claude-lead.sh only loads the CoS rule surface for the
+#                         literal "cos-lead" (or FLYWHEEL_LEAD_ROLE=cos), so a
+#                         fresh-instance setup passes --cos-id cos-lead to align the
+#                         skeleton with the runtime agentId.
+#   --dept-id <id>        OPT-IN (FLY-648): dept lead id (default: <project>-<department>-lead,
+#                         unchanged) — same skeleton/agentId alignment for the dept Lead.
 #
 # Idempotent: re-running produces zero changes (skip-if-exists per file).
 # Filesystem-only: writes ONLY under <target>; touches no live config / network.
@@ -38,6 +46,7 @@ PROJECT="$1"; DEPT="$2"; shift 2
 
 TARGET=""; TEAM="TEAM"; TWO_LAYER=false
 COS_PERSONA="CoS"; DEPT_PERSONA="Lead"; REPO_OWNER="xrliAnnie"
+COS_ID_OVERRIDE=""; DEPT_ID_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --target)       TARGET="${2:?--target needs a value}"; shift 2 ;;
@@ -46,6 +55,8 @@ while [ $# -gt 0 ]; do
     --cos-persona)  COS_PERSONA="${2:?--cos-persona needs a value}"; shift 2 ;;
     --dept-persona) DEPT_PERSONA="${2:?--dept-persona needs a value}"; shift 2 ;;
     --repo-owner)   REPO_OWNER="${2:?--repo-owner needs a value}"; shift 2 ;;
+    --cos-id)       COS_ID_OVERRIDE="${2:?--cos-id needs a value}"; shift 2 ;;
+    --dept-id)      DEPT_ID_OVERRIDE="${2:?--dept-id needs a value}"; shift 2 ;;
     *)              err "unknown option: $1" ;;
   esac
 done
@@ -78,6 +89,19 @@ TARGET="$(cd "$TARGET" && pwd -P)"
 
 DEPT_LEAD_ID="${PROJECT}-${DEPT}-lead"
 COS_LEAD_ID="${PROJECT}-cos-lead"
+# FLY-648 opt-in overrides (absent = byte-identical default behavior). Lead ids
+# become .lead/<id>/ path components — enforce the claude-lead.sh grammar.
+if [ -n "$COS_ID_OVERRIDE" ]; then
+  printf '%s' "$COS_ID_OVERRIDE" | grep -Eq '^[a-z0-9][a-z0-9-]*$' \
+    || err "--cos-id \"$COS_ID_OVERRIDE\" must match ^[a-z0-9][a-z0-9-]*\$"
+  COS_LEAD_ID="$COS_ID_OVERRIDE"
+fi
+if [ -n "$DEPT_ID_OVERRIDE" ]; then
+  printf '%s' "$DEPT_ID_OVERRIDE" | grep -Eq '^[a-z0-9][a-z0-9-]*$' \
+    || err "--dept-id \"$DEPT_ID_OVERRIDE\" must match ^[a-z0-9][a-z0-9-]*\$"
+  DEPT_LEAD_ID="$DEPT_ID_OVERRIDE"
+fi
+[ "$COS_LEAD_ID" != "$DEPT_LEAD_ID" ] || err "--cos-id and --dept-id resolve to the same lead id ($COS_LEAD_ID)"
 EXECUTOR_REL=".flywheel/agents/${DEPT}/${DEPT}-executor.md"
 
 # Small idempotent file writer: write heredoc only if the file is absent.

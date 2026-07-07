@@ -43,6 +43,25 @@ EOF
   chmod +x "$STUB_BIN/$b"
 done
 export PATH="$STUB_BIN:$PATH"
+# FLY-954/957 (incident-hardening): the provisioner MUST run under a fully clean
+# environment (env -i). The runner process is born with a PRODUCTION
+# FLYWHEEL_STATE_DIR, and host-config gives an inherited FLYWHEEL_STATE_DIR top
+# priority (host-config.sh:108 / provision-fleet-host.sh:509) — so WITHOUT env -i
+# a stray --apply writes this fixture straight into the REAL ~/.flywheel/
+# projects.json. This bit the real fleet twice. Capture the stubbed PATH so
+# env -i can re-pass it; every provisioner invocation below goes through the
+# isolated helper with an explicit --home + pinned sandbox FLYWHEEL_STATE_DIR.
+STUB_PATH="$PATH"
+# _iso_prov <path> <home> <args...> — run provisioner in an env -i jail.
+_iso_prov() {
+  local _path="$1" _home="$2"; shift 2
+  env -i \
+    PATH="$_path" \
+    HOME="$_home" \
+    FLYWHEEL_PLATFORM=darwin \
+    FLYWHEEL_STATE_DIR="$_home/.flywheel" \
+    bash "$PROVISION" --repo-root "$RR" --fleet-dir "$FLEET" --home "$_home" "$@"
+}
 
 # FLY-650: this is the DARWIN provisioning test (it predates platform-awareness and
 # asserts the launchd/narrate flow with a stub fixture repo). Force darwin so it is
@@ -84,10 +103,9 @@ echo '# lib' > "$RR/scripts/lib/fleet-sanitize.sh"
 echo '# bridge plist' > "$RR/scripts/launchd/com.flywheel.bridge.plist"
 echo '# setup' > "$RR/scripts/lib/setup.ts"
 
-run_prov() {  # args... ; sets PROV_RC + writes PROV_LOG
-  HOME="$1"; shift
-  HOME="$HOME" bash "$PROVISION" --repo-root "$RR" --fleet-dir "$FLEET" "$@" \
-    >"$SANDBOX/prov.log" 2>&1
+run_prov() {  # <home> args... ; sets PROV_RC + writes PROV_LOG
+  local _home="$1"; shift
+  _iso_prov "$STUB_PATH" "$_home" "$@" >"$SANDBOX/prov.log" 2>&1
   PROV_RC=$?
   PROV_LOG="$SANDBOX/prov.log"
 }
@@ -182,8 +200,8 @@ exit 7
 EOF
 chmod +x "$STUBFAIL/git"
 H6="$SANDBOX/home6"; mkdir -p "$H6"
-PATH="$STUBFAIL:$PATH" HOME="$H6" bash "$PROVISION" --repo-root "$RR" --fleet-dir "$FLEET" \
-  --home "$H6" --apply --skip-token-check --only repos >"$SANDBOX/prov6.log" 2>&1
+_iso_prov "$STUBFAIL:$STUB_PATH" "$H6" --apply --skip-token-check --only repos \
+  >"$SANDBOX/prov6.log" 2>&1
 P6RC=$?
 if [ "$P6RC" -ne 0 ] && ! grep -q '\[provision\] done\.' "$SANDBOX/prov6.log"; then
   pass "P6: failing git clone aborts provision non-zero, no 'done.' printed"
@@ -203,8 +221,8 @@ EOF
   chmod +x "$STUBVFAIL/$b"
 done
 H7="$SANDBOX/home7"; mkdir -p "$H7"
-PATH="$STUBVFAIL:$PATH" HOME="$H7" bash "$PROVISION" --repo-root "$RR" --fleet-dir "$FLEET" \
-  --home "$H7" --apply --only validate >"$SANDBOX/prov7.log" 2>&1
+_iso_prov "$STUBVFAIL:$STUB_PATH" "$H7" --apply --only validate \
+  >"$SANDBOX/prov7.log" 2>&1
 P7RC=$?
 if [ "$P7RC" -ne 0 ]; then
   pass "P7: failed Bridge/launchd checks → validate phase aborts non-zero"

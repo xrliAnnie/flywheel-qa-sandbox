@@ -121,6 +121,23 @@ else
   fail "L5 validate platform branch: $OUT"
 fi
 
+# ── L7 (FLY-957②): --apply launchd with NO $USER in env → still succeeds ──
+# $USER is absent in non-login shells (containers, systemd/CI invocations);
+# under `set -u` the linger call used to die with "USER: unbound variable"
+# (found by the FLY-648 container real-machine QA). Must fall back to id -un.
+: > "$CALLS"
+OUT="$(env -i HOME="$H" PATH="$PATH" FLYWHEEL_PLATFORM=linux \
+  FLYWHEEL_SYSTEMD_USER_DIR="$UNIT_DIR" \
+  bash "$PROVISION" --home "$H" --repo-root "$REPO_ROOT" --fleet-dir "$FLEET" \
+  --apply --skip-token-check --only launchd 2>&1)"
+L7_RC=$?
+if [ "$L7_RC" -eq 0 ] && ! grep -q "unbound variable" <<<"$OUT" \
+   && grep -q "enable-linger $(id -un)" "$CALLS"; then
+  pass "L7 launchd phase survives USER-less env (linger falls back to id -un)"
+else
+  fail "L7 rc=$L7_RC linger=$(grep linger "$CALLS") out: $(grep -i 'unbound\|error' <<<"$OUT" | head -2)"
+fi
+
 # ── L4: required dep with no linux mapping → fail-loud (DESTRUCTIVE: last) ──
 cat > "$FLEET/manifest.json" <<'EOF'
 { "schemaVersion": 1, "meta": { "capturedAt": "2026-06-28T00:00:00Z" },

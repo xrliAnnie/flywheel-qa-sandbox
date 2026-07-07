@@ -99,6 +99,23 @@ jobs:
           bash scripts/__tests__/provision-fleet-host.test.sh
           bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
 
+      # FLY-648: one-command setup wizard (flywheel-setup.sh). Hermetic —
+      # fixture HOMEs + stubbed curl/systemctl/loginctl + guided inputs via
+      # the FLYWHEEL_SETUP_ANSWER_* automation seam. Needs the built teamlead
+      # dist (pnpm build above): the config gate runs the REAL loader
+      # (validate-projects CLI), and the POC drives the real provisioner's
+      # Linux APPLY path end-to-end + the linux-preflight --check contract.
+      - name: Test — FLY-648 one-command setup wizard
+        run: |
+          bash scripts/__tests__/flywheel-setup-engine.test.sh
+          bash scripts/__tests__/flywheel-setup-config.test.sh
+          bash scripts/__tests__/flywheel-setup-bot.test.sh
+          bash scripts/__tests__/flywheel-setup-channels.test.sh
+          bash scripts/__tests__/flywheel-setup-linear.test.sh
+          bash scripts/__tests__/flywheel-setup-services.test.sh
+          bash scripts/__tests__/flywheel-setup-poc.test.sh
+          bash scripts/__tests__/flywheel-setup-resume-e2e.test.sh
+
       # FLY-882: Discord bot token pool — hermetic (stub curl, fixture
       # DISCORD_BOT_POOL_HOME, no real ~/.flywheel touched, no real network).
       - name: Test — FLY-882 Discord bot token pool

@@ -9,16 +9,34 @@
 # Read-only + diagnostic: it INSTALLS nothing and CHANGES nothing. It never prints
 # secret VALUES (only whether token keys are present). Always exits 0 (it is a
 # report); a hard blocker is shown as [BLOCK] in the summary for the operator.
+#
+# FLY-648 (R1#4): OPT-IN `--check` mode for orchestrators (flywheel-setup.sh)
+# that need a trustable exit code: hard blockers (systemd user manager unusable,
+# checkout on /mnt/c, required commands missing, host-config parse failure)
+# make it exit non-zero. WITHOUT the flag, behavior is byte-identical to before
+# (always exit 0, diagnostic only).
 set -uo pipefail
+
+CHECK_MODE=0
+for _arg in "$@"; do
+  case "$_arg" in
+    --check) CHECK_MODE=1 ;;
+    -h|--help) echo "Usage: linux-preflight.sh [--check]"; exit 0 ;;
+    *) echo "linux-preflight: unknown arg: $_arg" >&2; exit 2 ;;
+  esac
+done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # host-config gives us the resolved FLYWHEEL_DIR / FLYWHEEL_STATE_DIR / backend.
+HOSTCFG_FAIL=0
 # shellcheck source=lib/host-config.sh
 source "$SCRIPT_DIR/lib/host-config.sh" 2>/dev/null || true
-host_config_load >/dev/null 2>&1 || true
+host_config_load >/dev/null 2>&1 || HOSTCFG_FAIL=1
 
 OK="  [ok]"; WARN="  [warn]"; MISS="  [MISSING]"; BLOCK="  [BLOCK]"
 blocks=0
+# --check-only counters (never change the printed report):
+check_mntc=0; check_missing_cmds=0
 
 h() { echo ""; echo "── $* ──"; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -95,6 +113,7 @@ for c in node pnpm git jq tmux gh; do
     if [ -n "$ver" ]; then echo "$OK $c: $ver"; else echo "$WARN $c: present but --version timed out/empty"; fi
   else
     echo "$MISS $c not found"
+    check_missing_cmds=$((check_missing_cmds+1))
   fi
 done
 have corepack && echo "$OK corepack present (pnpm path)" || echo "$WARN corepack not found (pnpm may need manual install)"
@@ -103,7 +122,9 @@ h "7. Checkout / state paths"
 echo "  FLYWHEEL_DIR=${FLYWHEEL_DIR:-?}"
 echo "  FLYWHEEL_STATE_DIR=${FLYWHEEL_STATE_DIR:-?}"
 case "${FLYWHEEL_DIR:-}" in
-  /mnt/c/*|/mnt/d/*) echo "$WARN checkout is on a Windows drive (/mnt/...). Install under the LINUX filesystem (e.g. \$HOME/Dev) for performance + correct permissions." ;;
+  /mnt/c/*|/mnt/d/*)
+    echo "$WARN checkout is on a Windows drive (/mnt/...). Install under the LINUX filesystem (e.g. \$HOME/Dev) for performance + correct permissions."
+    check_mntc=1 ;;
 esac
 [ -d "${FLYWHEEL_DIR:-/nonexistent}/.git" ] && echo "$OK flywheel checkout present" || echo "$MISS flywheel checkout not at FLYWHEEL_DIR"
 
@@ -140,4 +161,16 @@ else
   echo " SUMMARY: no hard blockers. Review [warn]/[MISSING] items, then provision."
 fi
 echo "================================================================"
+
+# FLY-648 --check: trustable exit code for orchestrators. Hard blockers =
+# [BLOCK] items + /mnt/c checkout + missing required commands + host-config
+# parse failure. Default (no flag) stays byte-identical: exit 0, no extra line.
+if [ "$CHECK_MODE" -eq 1 ]; then
+  check_total=$(( blocks + check_mntc + check_missing_cmds + HOSTCFG_FAIL ))
+  if [ "$check_total" -gt 0 ]; then
+    echo " CHECK: FAIL ($check_total hard blocker(s) in --check mode)"
+    exit 1
+  fi
+  echo " CHECK: PASS"
+fi
 exit 0
