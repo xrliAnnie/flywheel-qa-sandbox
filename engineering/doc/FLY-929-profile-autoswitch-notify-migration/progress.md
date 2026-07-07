@@ -1,13 +1,13 @@
 ---
 issue: FLY-929
 phase: design
-phaseCursor: 5/6
-updated: 2026-07-07T08:42:24.504Z
-nextStep: codex design review loop
+phaseCursor: 6/6
+updated: 2026-07-07T09:09:18.971Z
+nextStep: commit docs + phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-929 progress
-**phase**: design (5/6)
-**next**: codex design review loop
+**phase**: design (6/6)
+**next**: commit docs + phase_design_complete
