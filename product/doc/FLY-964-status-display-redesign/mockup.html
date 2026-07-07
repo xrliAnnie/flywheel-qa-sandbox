@@ -3,414 +3,406 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>三段式状态显示 · 理想态 mockup</title>
+<title>三段式状态显示 · 高保真 Discord mockup v2</title>
 <style>
-  :root{
-    --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#86868b;
-    --line:#e5e5ea; --line2:#eceef1;
-    --green:#248a3d; --green-bg:#e7f7ec; --green-dot:#34c759;
-    --blurple:#5865f2; --blurple-bg:#eceefe;
-    --grey:#8a8d93; --grey-bg:#f0f1f3;
-    --red:#d70015; --red-bg:#ffe9e7;
-    --amber:#b25e00; --amber-bg:#fff3e0;
-    --radius:14px;
-    --font:-apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue","PingFang SC",system-ui,sans-serif;
-    --mono:"SF Mono",ui-monospace,Menlo,Consolas,monospace;
+  /* ============ THEME TOGGLE (pure CSS, no JS — 过托管 CSP) ============ */
+  /* default = Discord 深色(最可能是 Annie 的);勾选 = Discord 浅色 */
+  .lt-input{position:absolute;width:0;height:0;opacity:0;pointer-events:none}
+
+  .page{
+    /* ---- Discord DARK (default) ---- */
+    --page-bg:#1e1f22;
+    --chat-bg:#313338;
+    --header-bg:#313338;
+    --header-line:#232428;
+    --pin-strip:#2b2d31;
+    --pin-msg-bg:#2e3035;
+    --pin-msg-line:#3f4147;
+    --d-text:#dbdee1;
+    --d-strong:#f2f3f5;
+    --d-muted:#949ba4;
+    --d-code-bg:#1e1f22;
+    --d-code-text:#c9cdd3;
+    --ticon:#80848e;
+    --link:#00a8fc;
+    /* explainer frame */
+    --ink:#e3e5e8;
+    --dim:#9a9ea6;
+    --frame-bg:#2b2d31;
+    --frame-line:#3a3c42;
+    --frame-soft:#232428;
+    /* accents (shared) */
+    --blurple:#5865f2;
+    --green:#3ba55d;
+    --red:#ed4245;
+    --amber:#f0b232;
+    --toggle-track:#1e1f22;
+    --toggle-active:#5865f2;
+    --font-d:"gg sans","Noto Sans","Helvetica Neue",Helvetica,Arial,-apple-system,"PingFang SC",sans-serif;
+    --font-a:-apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC",system-ui,sans-serif;
+    background:var(--page-bg);
+    color:var(--ink);
+    font-family:var(--font-a);
+    min-height:100vh;
+    transition:background .2s,color .2s;
   }
+  #lt:checked ~ .page{
+    /* ---- Discord LIGHT ---- */
+    --page-bg:#f2f3f5;
+    --chat-bg:#ffffff;
+    --header-bg:#ffffff;
+    --header-line:#e3e5e8;
+    --pin-strip:#f2f3f5;
+    --pin-msg-bg:#f7f8f8;
+    --pin-msg-line:#e3e5e8;
+    --d-text:#313338;
+    --d-strong:#060607;
+    --d-muted:#5c5e66;
+    --d-code-bg:#eceef1;
+    --d-code-text:#4a4d55;
+    --ticon:#80848e;
+    --link:#0068e0;
+    --ink:#1d1d1f;
+    --dim:#6a6d73;
+    --frame-bg:#ffffff;
+    --frame-line:#e5e5ea;
+    --frame-soft:#f5f5f7;
+    --toggle-track:#e3e5e8;
+  }
+
   *{box-sizing:border-box}
-  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);font-family:var(--font);-webkit-font-smoothing:antialiased}
-  body{line-height:1.55;font-size:16px}
-  .wrap{max-width:940px;margin:0 auto;padding:32px 20px 80px}
+  html,body{margin:0;padding:0}
+  body{line-height:1.5;font-size:16px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:820px;margin:0 auto;padding:26px 18px 80px}
 
-  /* hero */
-  .hero{margin:8px 0 26px}
-  .hero .eyebrow{font-size:13px;font-weight:600;color:var(--blurple);letter-spacing:.02em}
-  .hero h1{font-size:30px;line-height:1.2;margin:8px 0 8px;font-weight:700;letter-spacing:-.01em}
-  .hero p{font-size:16px;color:#3a3a3c;margin:0;max-width:660px}
-  .hero .meta{margin-top:14px;font-size:13px;color:var(--dim)}
-  .pill{display:inline-block;background:#fff;border:1px solid var(--line);border-radius:999px;padding:3px 11px;font-size:12.5px;color:#3a3a3c;margin:0 6px 6px 0}
+  /* ---- toggle button ---- */
+  .toggle-bar{position:sticky;top:0;z-index:20;display:flex;justify-content:flex-end;padding:10px 0 4px;background:linear-gradient(var(--page-bg),var(--page-bg) 70%,transparent)}
+  .lt-btn{display:inline-flex;align-items:center;gap:2px;background:var(--toggle-track);border:1px solid var(--frame-line);border-radius:999px;padding:3px;cursor:pointer;user-select:none;font-size:12.5px;font-weight:600}
+  .lt-btn span{padding:5px 12px;border-radius:999px;color:var(--dim);transition:all .15s}
+  .lt-btn .lt-dark{background:var(--toggle-active);color:#fff}
+  .lt-btn .lt-light{background:transparent}
+  #lt:checked ~ .page .lt-btn .lt-dark{background:transparent;color:var(--dim)}
+  #lt:checked ~ .page .lt-btn .lt-light{background:var(--toggle-active);color:#fff}
+  .toggle-hint{align-self:center;margin-right:auto;font-size:12px;color:var(--dim)}
 
-  /* generic card + section */
-  .section{margin:34px 0 0}
-  .section > h2{font-size:20px;font-weight:700;margin:0 0 4px;letter-spacing:-.01em}
-  .section > .sub{font-size:14px;color:var(--dim);margin:0 0 16px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:0 1px 3px rgba(0,0,0,.05);padding:20px 22px}
+  /* ---- hero ---- */
+  .hero{margin:6px 0 22px}
+  .hero .eyebrow{font-size:12.5px;font-weight:700;color:var(--blurple);letter-spacing:.02em}
+  .hero h1{font-size:26px;line-height:1.25;margin:8px 0 8px;font-weight:800;letter-spacing:-.01em;color:var(--ink)}
+  .hero p{font-size:15px;color:var(--dim);margin:0;max-width:620px}
 
-  /* the big idea */
-  .idea{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-  .idea .box{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
-  .idea .box h3{margin:0 0 6px;font-size:15px;font-weight:700;display:flex;align-items:center;gap:7px}
-  .idea .box p{margin:0;font-size:13.5px;color:#3a3a3c}
-  .idea .tag{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px}
-  .tag-coarse{background:var(--blurple-bg);color:var(--blurple)}
-  .tag-fine{background:var(--green-bg);color:var(--green)}
-  .cohere{margin-top:14px;background:#fbfbfd;border:1px dashed #d2d2d7;border-radius:12px;padding:13px 16px;font-size:13.5px;color:#3a3a3c;display:flex;gap:10px;align-items:flex-start}
+  .section{margin:30px 0 0}
+  .section > h2{font-size:18px;font-weight:800;margin:0 0 3px;color:var(--ink);letter-spacing:-.01em}
+  .section > .sub{font-size:13.5px;color:var(--dim);margin:0 0 14px}
+
+  /* ---- explainer frame cards ---- */
+  .fcard{background:var(--frame-bg);border:1px solid var(--frame-line);border-radius:12px;padding:15px 17px}
+  .idea{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .idea .box h3{margin:0 0 5px;font-size:14px;font-weight:800;color:var(--ink);display:flex;align-items:center;gap:7px}
+  .idea .box p{margin:0;font-size:13px;color:var(--dim)}
+  .tag{font-size:10.5px;font-weight:800;padding:2px 7px;border-radius:5px}
+  .tag-coarse{background:rgba(88,101,242,.18);color:#8891f5}
+  .tag-fine{background:rgba(59,165,93,.18);color:#5fce87}
+  .cohere{margin-top:12px;border:1px dashed var(--frame-line);border-radius:10px;padding:11px 14px;font-size:13px;color:var(--dim);display:flex;gap:9px}
   .cohere b{color:var(--ink)}
+  .legend{display:flex;flex-wrap:wrap;gap:7px;margin-top:12px}
+  .legend .lg{display:inline-flex;align-items:center;gap:6px;background:var(--frame-soft);border:1px solid var(--frame-line);border-radius:999px;padding:4px 10px;font-size:12px;color:var(--dim)}
 
-  /* legend */
-  .legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
-  .legend .lg{display:inline-flex;align-items:center;gap:6px;background:#fff;border:1px solid var(--line);border-radius:999px;padding:4px 11px;font-size:12.5px;color:#3a3a3c}
-  .legend .sw{font-size:13px}
+  /* ============ HIGH-FIDELITY DISCORD CARD ============ */
+  .dcard{border-radius:10px;overflow:hidden;border:1px solid var(--header-line);background:var(--chat-bg);font-family:var(--font-d);box-shadow:0 2px 10px rgba(0,0,0,.18)}
 
-  /* discord thread card */
-  .dcard{border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.05)}
-  .dhead{background:#f2f3f5;border-bottom:1px solid #e3e5e8;padding:9px 14px;display:flex;align-items:center;gap:8px;font-size:14px;color:#2e3338}
-  .dhead .tico{color:#80848e;font-weight:700}
-  .dhead .ttitle{font-weight:600;color:#060607;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .dhead .rl{margin-left:auto;font-size:11px;color:#80848e;white-space:nowrap}
+  /* thread header bar (Discord channel/thread header) */
+  .dhead{display:flex;align-items:center;gap:7px;background:var(--header-bg);border-bottom:1px solid var(--header-line);padding:11px 15px;box-shadow:0 1px 0 rgba(0,0,0,.12);font-size:15px}
+  .dhead .ticon{color:var(--ticon);font-size:17px;flex:0 0 auto}
+  .dhead .parent{color:var(--d-muted);font-weight:600;flex:0 0 auto}
+  .dhead .sep{color:var(--ticon);flex:0 0 auto}
+  .dhead .tname{color:var(--d-strong);font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+  .dhead .pin{margin-left:auto;color:var(--d-muted);font-size:15px;flex:0 0 auto}
 
-  /* pinned message inside */
-  .pinbar{display:flex;align-items:center;gap:6px;background:#faf7ec;border-bottom:1px solid #f0e8cf;color:#8a6d00;font-size:11.5px;font-weight:600;padding:5px 14px}
-  .msg{display:flex;gap:12px;padding:14px 14px 16px}
-  .ava{flex:0 0 40px;width:40px;height:40px;border-radius:50%;background:var(--blurple);color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px}
-  .mbody{flex:1;min-width:0}
-  .mname{font-weight:600;color:#060607;font-size:14.5px}
-  .mname .bot{background:var(--blurple);color:#fff;font-size:9.5px;font-weight:700;padding:1px 5px;border-radius:4px;margin-left:6px;vertical-align:middle;letter-spacing:.02em}
-  .mname .ts{color:#5c5e66;font-size:11.5px;font-weight:400;margin-left:8px}
-  .mtitle{font-weight:700;font-size:14.5px;margin:7px 0 12px;color:#111}
+  /* pinned strip */
+  .pinstrip{display:flex;align-items:center;gap:6px;background:var(--pin-strip);border-bottom:1px solid var(--header-line);padding:6px 15px;font-size:11.5px;font-weight:700;color:var(--d-muted);letter-spacing:.02em}
 
-  /* stepper */
-  .stepper{display:flex;align-items:stretch;margin:2px 0 14px}
-  .step{flex:1;text-align:center;position:relative;padding:2px 2px}
-  .step .chip{width:38px;height:38px;border-radius:50%;margin:0 auto 5px;display:flex;align-items:center;justify-content:center;font-size:19px;border:2px solid var(--line);background:#fff}
-  .step .lbl{font-size:12.5px;font-weight:700;color:#3a3a3c}
-  .step .st{font-size:11.5px;font-weight:600;margin-top:2px}
-  .conn{flex:0 0 26px;align-self:flex-start;margin-top:19px;height:3px;border-radius:2px;background:var(--line)}
-  .step.done .chip{border-color:var(--green-dot);background:var(--green-bg)}
-  .step.done .st{color:var(--green)}
-  .conn.done{background:var(--green-dot)}
-  .step.active .chip{border-color:var(--blurple);background:var(--blurple-bg);box-shadow:0 0 0 4px rgba(88,101,242,.14)}
-  .step.active .lbl{color:var(--blurple)}
-  .step.active .st{color:var(--blurple)}
-  .step.pending .chip{opacity:.55}
-  .step.pending .st{color:var(--grey)}
-  .step.blocked .chip{border-color:var(--red);background:var(--red-bg)}
-  .step.blocked .st{color:var(--red)}
+  /* the message */
+  .dmsg{display:flex;gap:14px;padding:14px 16px 15px;background:var(--pin-msg-bg)}
+  .davatar{flex:0 0 40px;width:40px;height:40px;border-radius:50%;background:linear-gradient(140deg,#5865f2,#7c4bd6);display:flex;align-items:center;justify-content:center;font-size:20px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+  .dcontent{flex:1;min-width:0}
+  .dmeta{display:flex;align-items:baseline;gap:8px;margin-bottom:3px;flex-wrap:wrap}
+  .dname{color:var(--d-strong);font-weight:700;font-size:15px}
+  .dapp{background:var(--blurple);color:#fff;font-size:10px;font-weight:700;padding:1px 5px 0;border-radius:4px;position:relative;top:-1px;letter-spacing:.03em}
+  .dapp::before{content:"✓ ";font-size:9px}
+  .dts{color:var(--d-muted);font-size:12px}
 
-  /* detail rows */
-  .rows{border-top:1px solid var(--line2);padding-top:11px;font-size:13.5px}
-  .row{display:flex;gap:10px;padding:3px 0}
-  .row .k{flex:0 0 84px;color:var(--dim);font-weight:600}
-  .row .v{flex:1;color:#2c2c2e}
-  .row .v code{font-family:var(--mono);font-size:12px;background:#f2f2f4;border:1px solid #e6e6eb;border-radius:5px;padding:1px 6px}
-  .ball{display:inline-flex;align-items:center;gap:6px;font-weight:600;padding:2px 9px;border-radius:999px;font-size:12.5px}
-  .ball-bot{background:var(--grey-bg);color:#5a5d63}
-  .ball-you{background:var(--amber-bg);color:var(--amber)}
-  .ball-blk{background:var(--red-bg);color:var(--red)}
-  .foot{margin-top:11px;font-size:11.5px;color:#a1a1a6;font-style:italic}
+  /* message body — rendered Discord markdown */
+  .dbody{font-size:14.5px;color:var(--d-text);line-height:1.55}
+  .dbody p{margin:0 0 3px}
+  .dbody strong{color:var(--d-strong);font-weight:700}
+  .dbody em{color:var(--d-muted);font-style:italic;font-size:13px}
+  .dbody code{font-family:"gg mono",ui-monospace,Menlo,Consolas,monospace;font-size:13px;background:var(--d-code-bg);color:var(--d-code-text);border-radius:4px;padding:2px 6px;border:1px solid rgba(0,0,0,.12)}
+  .mhead{font-size:15px;margin-bottom:8px!important}
+  .phaseline{font-size:15px;letter-spacing:.01em;margin:2px 0 10px!important;padding:8px 11px;background:var(--d-code-bg);border-radius:7px;display:inline-block}
+  .kv{display:flex;gap:9px;margin:0 0 3px}
+  .kv .kk{color:var(--d-strong);font-weight:700;flex:0 0 auto;min-width:52px}
+  .foot-it{margin-top:8px!important}
 
-  /* per-state read caption */
-  .read{margin:10px 2px 0;font-size:13px;color:#3a3a3c;display:flex;gap:8px;align-items:flex-start}
-  .read .b{color:var(--blurple);font-weight:700;flex:0 0 auto}
-
-  .statehdr{display:flex;align-items:baseline;gap:10px;margin:26px 0 10px}
-  .statehdr .n{font-size:13px;font-weight:700;color:#fff;background:var(--ink);width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
-  .statehdr h3{font-size:17px;font-weight:700;margin:0}
-  .statehdr .tagx{font-size:11.5px;font-weight:600;color:var(--dim)}
+  /* read caption below each card */
+  .read{margin:9px 3px 0;font-size:12.5px;color:var(--dim);display:flex;gap:7px}
+  .read .b{color:var(--blurple);font-weight:800;flex:0 0 auto}
+  .statehdr{display:flex;align-items:center;gap:9px;margin:22px 0 9px}
+  .statehdr .n{font-size:12px;font-weight:800;color:var(--page-bg);background:var(--ink);width:21px;height:21px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
+  .statehdr h3{font-size:15.5px;font-weight:800;margin:0;color:var(--ink)}
+  .statehdr .tagx{font-size:11.5px;font-weight:600;color:var(--dim);margin-left:auto}
 
   /* title A/B */
-  .ab{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-  .ab .opt{border:1px solid var(--line);border-radius:12px;padding:15px 16px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.05)}
-  .ab .opt .h{font-size:13px;font-weight:700;margin-bottom:9px;display:flex;gap:8px;align-items:center}
-  .ab .opt .h .badge{font-size:11px;font-weight:700;padding:2px 8px;border-radius:6px;background:var(--blurple-bg);color:var(--blurple)}
-  .titlebar{background:#f2f3f5;border:1px solid #e3e5e8;border-radius:8px;padding:8px 11px;font-size:13.5px;color:#060607;font-weight:600;display:flex;align-items:center;gap:7px;overflow:hidden}
-  .titlebar .tico{color:#80848e}
-  .prosc{font-size:12.5px;color:#3a3a3c;margin-top:10px}
-  .prosc .p{color:var(--green)}.prosc .c{color:var(--amber)}
-  .rec{margin-top:13px;background:var(--green-bg);border:1px solid #c7ecd1;border-radius:10px;padding:10px 13px;font-size:13px;color:#1a5e2a}
+  .ab{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .ab .opt .h{font-size:12.5px;font-weight:800;margin-bottom:8px;display:flex;gap:7px;align-items:center;color:var(--ink)}
+  .ab .opt .h .badge{font-size:10.5px;font-weight:800;padding:2px 7px;border-radius:5px;background:rgba(88,101,242,.18);color:#8891f5}
+  .abbar{background:var(--header-bg);border:1px solid var(--header-line);border-radius:8px;padding:9px 12px;font-family:var(--font-d);font-size:14px;color:var(--d-strong);font-weight:700;display:flex;align-items:center;gap:7px;overflow:hidden}
+  .abbar .ticon{color:var(--ticon);flex:0 0 auto}
+  .prosc{font-size:12px;color:var(--dim);margin-top:9px}
+  .prosc .p{color:var(--green)} .prosc .c{color:var(--amber)}
+  .rec{margin-top:12px;border:1px solid rgba(59,165,93,.4);background:rgba(59,165,93,.1);border-radius:10px;padding:9px 13px;font-size:12.5px;color:var(--ink)}
 
-  /* trust fixes */
-  .fixes{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-  .fix{border:1px solid var(--line);border-radius:12px;padding:15px 17px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.05)}
-  .fix .id{font-size:11px;font-weight:700;color:var(--red);letter-spacing:.03em}
-  .fix h3{margin:5px 0 8px;font-size:15px;font-weight:700}
-  .fix .was{font-size:13px;color:#3a3a3c;margin:0 0 8px}
-  .fix .now{font-size:13px;color:#1a5e2a;background:var(--green-bg);border-radius:8px;padding:8px 11px;margin:0}
+  /* fixes */
+  .fixes{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .fix .id{font-size:10.5px;font-weight:800;color:var(--red);letter-spacing:.03em}
+  .fix h3{margin:4px 0 7px;font-size:14px;font-weight:800;color:var(--ink)}
+  .fix .was{font-size:12.5px;color:var(--dim);margin:0 0 7px}
   .fix .was b{color:var(--red)}
+  .fix .now{font-size:12.5px;color:var(--ink);background:rgba(59,165,93,.12);border-radius:8px;padding:8px 11px;margin:0}
 
-  .closing{margin-top:30px;background:#fff;border:1px solid var(--line);border-radius:var(--radius);padding:18px 22px;box-shadow:0 1px 3px rgba(0,0,0,.05)}
-  .closing h3{margin:0 0 8px;font-size:16px}
-  .closing p{margin:0 0 6px;font-size:14px;color:#3a3a3c}
-  .qk{color:var(--blurple);font-weight:700}
+  .footer{margin-top:30px;text-align:center;font-size:12px;color:var(--dim)}
+  .footer .pend{display:inline-block;background:rgba(240,178,50,.14);color:var(--amber);border:1px solid rgba(240,178,50,.35);border-radius:999px;padding:4px 12px;font-weight:700;margin-bottom:10px}
 
-  @media (max-width:720px){
+  @media (max-width:680px){
     .idea,.ab,.fixes{grid-template-columns:1fr}
-    .hero h1{font-size:25px}
-    .row .k{flex-basis:70px}
-    .conn{flex-basis:16px}
-    .step .chip{width:34px;height:34px;font-size:17px}
+    .hero h1{font-size:22px}
+    .dhead .parent,.dhead .sep{display:none}
+    .statehdr .tagx{display:none}
   }
 </style>
 </head>
 <body>
-
+<input type="checkbox" id="lt" class="lt-input" aria-label="切换 Discord 深浅色">
+<div class="page">
 <div class="wrap">
 
+  <div class="toggle-bar">
+    <span class="toggle-hint">↔ 主题待定,先看你哪个像:</span>
+    <label class="lt-btn" for="lt"><span class="lt-dark">🌙 深色</span><span class="lt-light">☀️ 浅色</span></label>
+  </div>
+
   <div class="hero">
-    <div class="eyebrow">FLY-964 · 状态显示重设计 · v1 mockup(给 Annie 看,再一起改)</div>
-    <h1>三段式跑到哪了?一眼看懂「你在这里」</h1>
-    <p>一个任务在 <b>设计 → 实现 → QA</b> 三步里走。目标:你扫一眼 Discord,就知道 <b>现在在哪一步、卡没卡、球在不在你手里</b> —— 不用点进去翻。</p>
-    <div class="meta">
-      <span class="pill">🎨 设计</span><span class="pill">🔨 实现</span><span class="pill">🧪 QA</span>
-      <span class="pill">粗信号放标题 · 细信号放置顶</span><span class="pill">准 + 可信</span>
-    </div>
+    <div class="eyebrow">FLY-964 · v2 高保真 Discord mockup · 给 Annie 看,再一起改</div>
+    <h1>你 Discord 里真会看到的样子</h1>
+    <p>还是那个主张(粗标题 + 细置顶,一眼看懂「你在这里」)—— 这一版把它画成 <b>真实 Discord 卡片</b>:真 thread 标题栏、真置顶消息(📌 pin、头像、用户名、时间戳、markdown 排版)。上面切换钮可对比深/浅色。</p>
   </div>
 
-  <!-- ─────────────── 核心思路 ─────────────── -->
+  <!-- 核心思路(精简) -->
   <div class="section">
-    <h2>核心思路:两个信号,各管一层</h2>
-    <p class="sub">现在「乱」是因为标题和置顶各说各的、拼不成一句话。理想态让它们分工、且永远一致。</p>
-    <div class="idea">
-      <div class="box">
-        <h3><span class="tag tag-coarse">粗</span> 标题 = 现在哪一步</h3>
-        <p>只显示走到哪个 <b>phase</b>(设计/实现/QA)。<b>只在跨 phase 时才改名</b> —— 全程最多改 2 次,绕开 Discord「10 分钟只能改 2 次名」的限制,所以永远不卡。</p>
+    <h2>两个信号,各管一层</h2>
+    <p class="sub">标题=粗、置顶=细,同源不打架 —— 这是所有卡片的读法。</p>
+    <div class="fcard">
+      <div class="idea">
+        <div class="box"><h3><span class="tag tag-coarse">粗</span> 标题 = 哪一步</h3><p>只显示走到哪个 phase(设计/实现/QA)。只在跨 phase 时改名 → 全程 ≤2 次,绕开 Discord 改名限流,永不卡。</p></div>
+        <div class="box"><h3><span class="tag tag-fine">细</span> 置顶 = 你在这里</h3><p>不受限流,想更新就更新。承载:当前小步 · 球在谁手里 · 下一步 · 卡没卡。你真正读的是这条。</p></div>
       </div>
-      <div class="box">
-        <h3><span class="tag tag-fine">细</span> 置顶 = 你在这里(权威)</h3>
-        <p>置顶消息 <b>不受改名限制</b>,想更新就更新。承载全部细节:当前小步、<b>球在谁手里</b>、下一步、卡没卡、去哪看终端。你真正读的是这一条。</p>
+      <div class="cohere"><span>🔗</span><div><b>两者永远一致:</b>标题与置顶都从<b>同一份真实状态</b>算出,不会「标题说实现、置顶说 QA」打架。</div></div>
+      <div class="legend">
+        <span class="lg">✅ 完成</span><span class="lg">▶ 进行中</span><span class="lg">◾ 未开始</span><span class="lg">🔴 受阻</span>
+        <span class="lg">🤖 不用你 · ⏳ 球在你手里</span>
       </div>
-    </div>
-    <div class="cohere">
-      <span>🔗</span>
-      <div><b>为什么两者永远一致(cohere):</b>标题和置顶都从 <b>同一份真实状态</b> 自动算出来(不是两套各写各的),所以不会出现「标题说实现、置顶说 QA」的打架。这是这次重设计的地基。</div>
-    </div>
-    <div class="legend">
-      <span class="lg"><span class="sw">✅</span> 完成</span>
-      <span class="lg"><span class="sw" style="color:#5865f2">▶</span> 进行中</span>
-      <span class="lg"><span class="sw" style="color:#8a8d93">◾</span> 未开始</span>
-      <span class="lg"><span class="sw">🔴</span> 受阻</span>
-      <span class="lg">🤖 = 不用你 &nbsp;·&nbsp; ⏳ = 球在你手里</span>
     </div>
   </div>
 
-  <!-- ─────────────── 标题 A/B ─────────────── -->
+  <!-- 6 Discord cards -->
+  <div class="section">
+    <h2>六个代表状态 · 真 Discord 卡片</h2>
+    <p class="sub">每张 = thread 标题栏(顶) + 那条置顶消息(带 📌)在 Discord 里真样子。置顶内容是机器人真会发的 markdown 文字。</p>
+
+    <!-- S1 设计中 -->
+    <div class="statehdr"><span class="n">1</span><h3>设计中</h3><span class="tagx">🤖 不用你</span></div>
+    <div class="dcard">
+      <div class="dhead"><span class="parent"># flywheel-core</span><span class="sep">›</span><span class="ticon">🧵</span><span class="tname">🎨▶ 🔨◾ 🧪◾ · [FLY-964] 状态显示重设计</span><span class="pin">📌</span></div>
+      <div class="pinstrip">📌 置顶消息</div>
+      <div class="dmsg">
+        <div class="davatar">🤖</div>
+        <div class="dcontent">
+          <div class="dmeta"><span class="dname">Flywheel Runner</span><span class="dapp">APP</span><span class="dts">今天 14:02</span></div>
+          <div class="dbody">
+            <p class="mhead">📌 <strong>[FLY-964] 三段流水线</strong></p>
+            <p class="phaseline">🎨 设计 ▶ · 🔨 实现 ◾ · 🧪 QA ◾</p>
+            <div class="kv"><span class="kk">当前</span><span>在想方案(脑暴 / 调研 / 写计划)</span></div>
+            <div class="kv"><span class="kk">球在谁</span><span>🤖 Runner 在做,不用你</span></div>
+            <div class="kv"><span class="kk">下一步</span><span>设计定了 → 请你确认方向 → 交实现</span></div>
+            <p><code>cmux attach fly-964-design</code></p>
+            <p class="foot-it"><em>用 Fable · 自动更新,一条置顶看全</em></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="read"><span class="b">读法</span> 标题说「在设计」;置顶说「机器在想,你先不用管,等它来找你确认」。</div>
+
+    <!-- S2 等你确认 -->
+    <div class="statehdr"><span class="n">2</span><h3>设计中 · 等你确认方向</h3><span class="tagx">⏳ 球在你手里</span></div>
+    <div class="dcard">
+      <div class="dhead"><span class="parent"># flywheel-core</span><span class="sep">›</span><span class="ticon">🧵</span><span class="tname">🎨▶ 🔨◾ 🧪◾ · [FLY-964] 状态显示重设计</span><span class="pin">📌</span></div>
+      <div class="pinstrip">📌 置顶消息</div>
+      <div class="dmsg">
+        <div class="davatar">🤖</div>
+        <div class="dcontent">
+          <div class="dmeta"><span class="dname">Flywheel Runner</span><span class="dapp">APP</span><span class="dts">今天 14:08</span></div>
+          <div class="dbody">
+            <p class="mhead">📌 <strong>[FLY-964] 三段流水线</strong></p>
+            <p class="phaseline">🎨 设计 ▶ · 🔨 实现 ◾ · 🧪 QA ◾</p>
+            <div class="kv"><span class="kk">当前</span><span><strong>设计已成型,等你拍板方向</strong></span></div>
+            <div class="kv"><span class="kk">球在谁</span><span>⏳ 等你确认 —— 回一句就继续</span></div>
+            <div class="kv"><span class="kk">下一步</span><span>你确认 → 开始写代码(实现)</span></div>
+            <p><code>cmux attach fly-964-design</code></p>
+            <p class="foot-it"><em>用 Fable · 自动更新,一条置顶看全</em></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="read"><span class="b">读法</span> 标题<b>没变</b>(还在设计、不改名);置顶从「🤖 不用你」翻成「⏳ 等你」。粗信号稳、细信号动 —— 你只瞄置顶的「球在谁」。</div>
+
+    <!-- S3 实现中 -->
+    <div class="statehdr"><span class="n">3</span><h3>实现中</h3><span class="tagx">🤖 不用你</span></div>
+    <div class="dcard">
+      <div class="dhead"><span class="parent"># flywheel-core</span><span class="sep">›</span><span class="ticon">🧵</span><span class="tname">🎨✅ 🔨▶ 🧪◾ · [FLY-964] 状态显示重设计</span><span class="pin">📌</span></div>
+      <div class="pinstrip">📌 置顶消息</div>
+      <div class="dmsg">
+        <div class="davatar">🤖</div>
+        <div class="dcontent">
+          <div class="dmeta"><span class="dname">Flywheel Runner</span><span class="dapp">APP</span><span class="dts">今天 15:20</span></div>
+          <div class="dbody">
+            <p class="mhead">📌 <strong>[FLY-964] 三段流水线</strong></p>
+            <p class="phaseline">🎨 设计 ✅ · 🔨 实现 ▶ · 🧪 QA ◾</p>
+            <div class="kv"><span class="kk">当前</span><span>按计划写代码(先测试 → 再实现)</span></div>
+            <div class="kv"><span class="kk">球在谁</span><span>🤖 Runner 在做,不用你</span></div>
+            <div class="kv"><span class="kk">下一步</span><span>开好 PR → QA 自动接手</span></div>
+            <p><code>cmux attach fly-964-implement</code></p>
+            <p class="foot-it"><em>用 Fable · 自动更新,一条置顶看全</em></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="read"><span class="b">读法</span> 设计✅、实现在跑。你什么都不用做,QA 会自己接。</div>
+
+    <!-- S4 QA中 -->
+    <div class="statehdr"><span class="n">4</span><h3>QA 中</h3><span class="tagx">🤖 不用你</span></div>
+    <div class="dcard">
+      <div class="dhead"><span class="parent"># flywheel-core</span><span class="sep">›</span><span class="ticon">🧵</span><span class="tname">🎨✅ 🔨✅ 🧪▶ · [FLY-964] 状态显示重设计</span><span class="pin">📌</span></div>
+      <div class="pinstrip">📌 置顶消息</div>
+      <div class="dmsg">
+        <div class="davatar">🤖</div>
+        <div class="dcontent">
+          <div class="dmeta"><span class="dname">Flywheel Runner</span><span class="dapp">APP</span><span class="dts">今天 16:41</span></div>
+          <div class="dbody">
+            <p class="mhead">📌 <strong>[FLY-964] 三段流水线</strong></p>
+            <p class="phaseline">🎨 设计 ✅ · 🔨 实现 ✅ · 🧪 QA ▶</p>
+            <div class="kv"><span class="kk">当前</span><span>独立 QA 在真机验收这次改动</span></div>
+            <div class="kv"><span class="kk">球在谁</span><span>🤖 QA 在做,不用你</span></div>
+            <div class="kv"><span class="kk">下一步</span><span>全 PASS → 请你批 ship;没过 → 打回实现返工</span></div>
+            <p><code>cmux attach fly-964-qa</code></p>
+            <p class="foot-it"><em>用 Opus · 自动更新,一条置顶看全</em></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="read"><span class="b">读法</span> 前两步✅、QA 在跑。<b>关键:QA 没跑完不会催你</b> —— 见状态 6。</div>
+
+    <!-- S5 受阻 -->
+    <div class="statehdr"><span class="n">5</span><h3>受阻(卡住了)</h3><span class="tagx">🔴 需要人来解</span></div>
+    <div class="dcard">
+      <div class="dhead"><span class="parent"># flywheel-core</span><span class="sep">›</span><span class="ticon">🧵</span><span class="tname">🎨✅ 🔴 🧪◾ · [FLY-964] 状态显示重设计</span><span class="pin">📌</span></div>
+      <div class="pinstrip">📌 置顶消息</div>
+      <div class="dmsg">
+        <div class="davatar">🤖</div>
+        <div class="dcontent">
+          <div class="dmeta"><span class="dname">Flywheel Runner</span><span class="dapp">APP</span><span class="dts">今天 15:55</span></div>
+          <div class="dbody">
+            <p class="mhead">📌 <strong>[FLY-964] 三段流水线 · 🔴 受阻</strong></p>
+            <p class="phaseline">🎨 设计 ✅ · 🔨 实现 🔴 · 🧪 QA ◾</p>
+            <div class="kv"><span class="kk">卡在哪</span><span><strong>实现阶段 —— 依赖的接口没定,自己拿不准</strong></span></div>
+            <div class="kv"><span class="kk">球在谁</span><span>⏳ 等你 / eng 拍个决定</span></div>
+            <div class="kv"><span class="kk">下一步</span><span>你回一句方向 → 解阻,继续实现</span></div>
+            <p><code>cmux attach fly-964-implement</code></p>
+            <p class="foot-it"><em>受阻可能发生在任何一步;标题与置顶同时亮 🔴</em></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="read"><span class="b">读法</span> 🔴 在标题和置顶<b>同时</b>亮起,那一步变红。你一眼知道「卡了、在等我」,不会误以为它还在跑。</div>
+
+    <!-- S6 可 ship -->
+    <div class="statehdr"><span class="n">6</span><h3>可以 ship 了</h3><span class="tagx">⏳ QA 全过才弹</span></div>
+    <div class="dcard">
+      <div class="dhead"><span class="parent"># flywheel-core</span><span class="sep">›</span><span class="ticon">🧵</span><span class="tname">🎨✅ 🔨✅ 🧪✅ · [FLY-964] 状态显示重设计</span><span class="pin">📌</span></div>
+      <div class="pinstrip">📌 置顶消息</div>
+      <div class="dmsg">
+        <div class="davatar">🤖</div>
+        <div class="dcontent">
+          <div class="dmeta"><span class="dname">Flywheel Runner</span><span class="dapp">APP</span><span class="dts">今天 17:10</span></div>
+          <div class="dbody">
+            <p class="mhead">📌 <strong>[FLY-964] 三段流水线 · 全绿 ✅</strong></p>
+            <p class="phaseline">🎨 设计 ✅ · 🔨 实现 ✅ · 🧪 QA ✅</p>
+            <div class="kv"><span class="kk">当前</span><span><strong>QA 全部 PASS · CI 绿 · 就等你点头</strong></span></div>
+            <div class="kv"><span class="kk">球在谁</span><span>⏳ 等你批 ship(回 ✅ 就部署)</span></div>
+            <div class="kv"><span class="kk">下一步</span><span>你确认 → 自动部署合并 → 收工</span></div>
+            <p class="foot-it"><em>只有 QA 全过、CI 绿了才请你 —— 不会 QA 没跑完就催你</em></p>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="read"><span class="b">读法</span> 三格全✅,这一刻才把球交回你手里。「等你批」只在真的一切就绪时出现。</div>
+  </div>
+
+  <!-- 标题 A/B -->
   <div class="section">
     <h2>标题两种画法 — 你挑一个</h2>
-    <p class="sub">都只在跨 phase 时改名(不触发限流)。区别只是「显不显示整条路走到哪」。</p>
+    <p class="sub">都只在跨 phase 时改名(不触发限流)。上面所有卡片用的是方案 B。</p>
     <div class="ab">
       <div class="opt">
         <div class="h"><span class="badge">方案 A</span> 只显示当前这一步</div>
-        <div class="titlebar"><span class="tico">🧵</span> 🔨实现 ▶ · [FLY-964] 状态显示重设计</div>
-        <div class="prosc"><span class="p">＋ 最短、最干净,手机上不截断</span><br><span class="c">－ 看不出前面走完没、后面还剩几步</span></div>
+        <div class="abbar"><span class="ticon">🧵</span> 🔨实现 ▶ · [FLY-964] 状态显示重设计</div>
+        <div class="prosc"><span class="p">＋ 最短、最干净,手机不截断</span><br><span class="c">－ 看不出前面走完没、后面剩几步</span></div>
       </div>
       <div class="opt">
         <div class="h"><span class="badge">方案 B</span> 三步微进度条</div>
-        <div class="titlebar"><span class="tico">🧵</span> 🎨✅ 🔨▶ 🧪◾ · [FLY-964] 状态显示重设计</div>
-        <div class="prosc"><span class="p">＋ 一眼看全程:设计完了、正在实现、QA 还没开始</span><br><span class="c">－ 稍长(仍在限制内)</span></div>
+        <div class="abbar"><span class="ticon">🧵</span> 🎨✅ 🔨▶ 🧪◾ · [FLY-964] 状态显示重设计</div>
+        <div class="prosc"><span class="p">＋ 一眼看全程:设计完、正实现、QA 没开始</span><br><span class="c">－ 稍长(仍在限内)</span></div>
       </div>
     </div>
-    <div class="rec">💡 <b>我(HL)倾向 B</b>:标题本身就成了「你在这里」的迷你地图,和置顶的进度条呼应,粗细两层看着是同一件事。但这是你的口味 —— A 更极简也完全合理,你定。</div>
+    <div class="rec">💡 <b>我(HL)倾向 B</b> —— 标题本身成了「你在这里」的迷你地图,和置顶进度条呼应。但这是你的口味,A 更极简也完全合理,你定。</div>
   </div>
 
-  <!-- ─────────────── 5 个代表状态 ─────────────── -->
-  <div class="section">
-    <h2>五个代表状态 — 真实长这样</h2>
-    <p class="sub">下面每张卡片 = 你在 Discord 里真会看到的样子:上面是标题栏(用了方案 B),下面是置顶消息。</p>
-
-    <!-- STATE 1: 设计中 -->
-    <div class="statehdr"><span class="n">1</span><h3>设计中</h3><span class="tagx">🤖 Runner 在想 · 不用你</span></div>
-    <div class="dcard">
-      <div class="dhead"><span class="tico">🧵</span><span class="ttitle">🎨▶ 🔨◾ 🧪◾ · [FLY-964] 状态显示重设计</span><span class="rl">线程</span></div>
-      <div class="pinbar">📌 已置顶 · 自动更新</div>
-      <div class="msg">
-        <div class="ava">🐣</div>
-        <div class="mbody">
-          <div class="mname">Runner<span class="bot">机器</span><span class="ts">刚刚</span></div>
-          <div class="mtitle">[FLY-964] 三段流水线</div>
-          <div class="stepper">
-            <div class="step active"><div class="chip">🎨</div><div class="lbl">设计</div><div class="st">▶ 进行中</div></div>
-            <div class="conn"></div>
-            <div class="step pending"><div class="chip">🔨</div><div class="lbl">实现</div><div class="st">◾ 未开始</div></div>
-            <div class="conn"></div>
-            <div class="step pending"><div class="chip">🧪</div><div class="lbl">QA</div><div class="st">◾ 未开始</div></div>
-          </div>
-          <div class="rows">
-            <div class="row"><div class="k">当前小步</div><div class="v">在想方案(脑暴 / 调研 / 写计划)</div></div>
-            <div class="row"><div class="k">球在谁</div><div class="v"><span class="ball ball-bot">🤖 Runner 在做,不用你</span></div></div>
-            <div class="row"><div class="k">下一步</div><div class="v">设计定了 → <b>请你确认方向</b> → 交给实现</div></div>
-            <div class="row"><div class="k">看终端</div><div class="v"><code>cmux attach fly-964-design</code></div></div>
-          </div>
-          <div class="foot">用 Fable 模型 · 自动更新,一条置顶看全</div>
-        </div>
-      </div>
-    </div>
-    <div class="read"><span class="b">读法 →</span> 标题告诉你「在设计」;置顶告诉你「机器在想,你先不用管,等它来找你确认方向」。</div>
-
-    <!-- STATE 1b: 等你确认方向 (design gate) -->
-    <div class="statehdr"><span class="n">2</span><h3>设计中 · 等你确认方向</h3><span class="tagx">⏳ 球在你手里 —— 这就是「细」的价值</span></div>
-    <div class="dcard">
-      <div class="dhead"><span class="tico">🧵</span><span class="ttitle">🎨▶ 🔨◾ 🧪◾ · [FLY-964] 状态显示重设计</span><span class="rl">线程</span></div>
-      <div class="pinbar">📌 已置顶 · 自动更新</div>
-      <div class="msg">
-        <div class="ava">🐣</div>
-        <div class="mbody">
-          <div class="mname">Runner<span class="bot">机器</span><span class="ts">2 分钟前</span></div>
-          <div class="mtitle">[FLY-964] 三段流水线</div>
-          <div class="stepper">
-            <div class="step active"><div class="chip">🎨</div><div class="lbl">设计</div><div class="st">▶ 进行中</div></div>
-            <div class="conn"></div>
-            <div class="step pending"><div class="chip">🔨</div><div class="lbl">实现</div><div class="st">◾ 未开始</div></div>
-            <div class="conn"></div>
-            <div class="step pending"><div class="chip">🧪</div><div class="lbl">QA</div><div class="st">◾ 未开始</div></div>
-          </div>
-          <div class="rows">
-            <div class="row"><div class="k">当前小步</div><div class="v"><b>设计已成型,等你拍板方向</b></div></div>
-            <div class="row"><div class="k">球在谁</div><div class="v"><span class="ball ball-you">⏳ 等你确认 —— 回一句就继续</span></div></div>
-            <div class="row"><div class="k">下一步</div><div class="v">你确认 → 开始写代码(实现)</div></div>
-            <div class="row"><div class="k">看终端</div><div class="v"><code>cmux attach fly-964-design</code></div></div>
-          </div>
-          <div class="foot">用 Fable 模型 · 自动更新,一条置顶看全</div>
-        </div>
-      </div>
-    </div>
-    <div class="read"><span class="b">读法 →</span> 标题<b>没变</b>(还在设计,不用改名);但置顶从「🤖 不用你」翻成「⏳ 等你」。<b>粗信号稳、细信号动</b> —— 你只要瞄一眼置顶的「球在谁」,就知道该不该出手。</div>
-
-    <!-- STATE 3: 实现中 -->
-    <div class="statehdr"><span class="n">3</span><h3>实现中</h3><span class="tagx">🤖 Runner 在写代码 · 不用你</span></div>
-    <div class="dcard">
-      <div class="dhead"><span class="tico">🧵</span><span class="ttitle">🎨✅ 🔨▶ 🧪◾ · [FLY-964] 状态显示重设计</span><span class="rl">线程</span></div>
-      <div class="pinbar">📌 已置顶 · 自动更新</div>
-      <div class="msg">
-        <div class="ava">🐣</div>
-        <div class="mbody">
-          <div class="mname">Runner<span class="bot">机器</span><span class="ts">刚刚</span></div>
-          <div class="mtitle">[FLY-964] 三段流水线</div>
-          <div class="stepper">
-            <div class="step done"><div class="chip">🎨</div><div class="lbl">设计</div><div class="st">✅ 完成</div></div>
-            <div class="conn done"></div>
-            <div class="step active"><div class="chip">🔨</div><div class="lbl">实现</div><div class="st">▶ 进行中</div></div>
-            <div class="conn"></div>
-            <div class="step pending"><div class="chip">🧪</div><div class="lbl">QA</div><div class="st">◾ 未开始</div></div>
-          </div>
-          <div class="rows">
-            <div class="row"><div class="k">当前小步</div><div class="v">按计划写代码(先写测试 → 再实现)</div></div>
-            <div class="row"><div class="k">球在谁</div><div class="v"><span class="ball ball-bot">🤖 Runner 在做,不用你</span></div></div>
-            <div class="row"><div class="k">下一步</div><div class="v">开好 PR → <b>QA 自动接手</b> 验收</div></div>
-            <div class="row"><div class="k">看终端</div><div class="v"><code>cmux attach fly-964-implement</code></div></div>
-          </div>
-          <div class="foot">用 Fable 模型 · 自动更新,一条置顶看全</div>
-        </div>
-      </div>
-    </div>
-    <div class="read"><span class="b">读法 →</span> 设计那格变✅绿了、连线也绿了;实现在跑。你什么都不用做,QA 会自己接。</div>
-
-    <!-- STATE 4: QA中 -->
-    <div class="statehdr"><span class="n">4</span><h3>QA 中</h3><span class="tagx">🤖 独立 QA 在验 · 不用你</span></div>
-    <div class="dcard">
-      <div class="dhead"><span class="tico">🧵</span><span class="ttitle">🎨✅ 🔨✅ 🧪▶ · [FLY-964] 状态显示重设计</span><span class="rl">线程</span></div>
-      <div class="pinbar">📌 已置顶 · 自动更新</div>
-      <div class="msg">
-        <div class="ava">🔬</div>
-        <div class="mbody">
-          <div class="mname">Runner<span class="bot">机器</span><span class="ts">刚刚</span></div>
-          <div class="mtitle">[FLY-964] 三段流水线</div>
-          <div class="stepper">
-            <div class="step done"><div class="chip">🎨</div><div class="lbl">设计</div><div class="st">✅ 完成</div></div>
-            <div class="conn done"></div>
-            <div class="step done"><div class="chip">🔨</div><div class="lbl">实现</div><div class="st">✅ 完成</div></div>
-            <div class="conn done"></div>
-            <div class="step active"><div class="chip">🧪</div><div class="lbl">QA</div><div class="st">▶ 进行中</div></div>
-          </div>
-          <div class="rows">
-            <div class="row"><div class="k">当前小步</div><div class="v">独立 QA 在真机验收这次改动</div></div>
-            <div class="row"><div class="k">球在谁</div><div class="v"><span class="ball ball-bot">🤖 QA 在做,不用你</span></div></div>
-            <div class="row"><div class="k">下一步</div><div class="v">全 PASS → <b>请你批 ship</b>;没过 → 打回实现返工</div></div>
-            <div class="row"><div class="k">看终端</div><div class="v"><code>cmux attach fly-964-qa</code></div></div>
-          </div>
-          <div class="foot">用 Opus 模型 · 自动更新,一条置顶看全</div>
-        </div>
-      </div>
-    </div>
-    <div class="read"><span class="b">读法 →</span> 前两步都✅了,QA 在跑。<b>关键:QA 没跑完,不会来催你</b> —— 见状态 5。</div>
-
-    <!-- STATE 5: Blocked -->
-    <div class="statehdr"><span class="n">5</span><h3>受阻(卡住了)</h3><span class="tagx">🔴 需要人来解</span></div>
-    <div class="dcard">
-      <div class="dhead"><span class="tico">🧵</span><span class="ttitle">🎨✅ 🔴 🔨 · [FLY-964] 状态显示重设计</span><span class="rl">线程</span></div>
-      <div class="pinbar">📌 已置顶 · 自动更新</div>
-      <div class="msg">
-        <div class="ava" style="background:#d70015">⚠️</div>
-        <div class="mbody">
-          <div class="mname">Runner<span class="bot">机器</span><span class="ts">5 分钟前</span></div>
-          <div class="mtitle">[FLY-964] 三段流水线 · 🔴 受阻</div>
-          <div class="stepper">
-            <div class="step done"><div class="chip">🎨</div><div class="lbl">设计</div><div class="st">✅ 完成</div></div>
-            <div class="conn done"></div>
-            <div class="step blocked"><div class="chip">🔨</div><div class="lbl">实现</div><div class="st">🔴 受阻</div></div>
-            <div class="conn"></div>
-            <div class="step pending"><div class="chip">🧪</div><div class="lbl">QA</div><div class="st">◾ 未开始</div></div>
-          </div>
-          <div class="rows">
-            <div class="row"><div class="k">卡在哪</div><div class="v">实现阶段 —— <b>依赖的接口没定,自己拿不准</b></div></div>
-            <div class="row"><div class="k">球在谁</div><div class="v"><span class="ball ball-blk">⏳ 等你/eng 拍个决定</span></div></div>
-            <div class="row"><div class="k">下一步</div><div class="v">你回一句方向 → 解阻,继续实现</div></div>
-            <div class="row"><div class="k">看终端</div><div class="v"><code>cmux attach fly-964-implement</code></div></div>
-          </div>
-          <div class="foot">受阻是「横跨」标记,可能发生在任何一步;标题与置顶同时亮 🔴</div>
-        </div>
-      </div>
-    </div>
-    <div class="read"><span class="b">读法 →</span> 🔴 在标题和置顶<b>同时</b>亮起,那一步的格子也变红。你一眼知道「卡住了、在等我」,而不是以为它还在跑。</div>
-
-    <!-- STATE 6: Ship-ready -->
-    <div class="statehdr"><span class="n">6</span><h3>可以 ship 了</h3><span class="tagx">⏳ 球在你手里 —— QA 全过才弹</span></div>
-    <div class="dcard">
-      <div class="dhead"><span class="tico">🧵</span><span class="ttitle">🎨✅ 🔨✅ 🧪✅ · [FLY-964] 状态显示重设计</span><span class="rl">线程</span></div>
-      <div class="pinbar">📌 已置顶 · 自动更新</div>
-      <div class="msg">
-        <div class="ava" style="background:#248a3d">✓</div>
-        <div class="mbody">
-          <div class="mname">Runner<span class="bot">机器</span><span class="ts">刚刚</span></div>
-          <div class="mtitle">[FLY-964] 三段流水线 · 全绿 ✅</div>
-          <div class="stepper">
-            <div class="step done"><div class="chip">🎨</div><div class="lbl">设计</div><div class="st">✅ 完成</div></div>
-            <div class="conn done"></div>
-            <div class="step done"><div class="chip">🔨</div><div class="lbl">实现</div><div class="st">✅ 完成</div></div>
-            <div class="conn done"></div>
-            <div class="step done"><div class="chip">🧪</div><div class="lbl">QA</div><div class="st">✅ 完成</div></div>
-          </div>
-          <div class="rows">
-            <div class="row"><div class="k">当前状态</div><div class="v"><b>QA 全部 PASS</b> · CI 绿 · 就等你点头</div></div>
-            <div class="row"><div class="k">球在谁</div><div class="v"><span class="ball ball-you">⏳ 等你批 ship(回 ✅ 就部署)</span></div></div>
-            <div class="row"><div class="k">下一步</div><div class="v">你确认 → 自动部署合并 → 收工</div></div>
-          </div>
-          <div class="foot">✅ 只有 QA 全过、CI 绿了才会请你 —— 不会 QA 没跑完就催你</div>
-        </div>
-      </div>
-    </div>
-    <div class="read"><span class="b">读法 →</span> 三格全✅。这一刻才把球交回你手里。<b>「等你批」只在真的一切就绪时出现</b> —— 你看到它就可以放心点头。</div>
-  </div>
-
-  <!-- ─────────────── 为什么现在准+可信 ─────────────── -->
+  <!-- 两修复 -->
   <div class="section">
     <h2>为什么这回「准 + 可信」</h2>
-    <p class="sub">状态显示只要有一次骗了你,你就再也懒得看。理想态先堵住两个让它「乱 / 卡旧」的根源。</p>
+    <p class="sub">状态显示骗你一次你就懒得看。先堵住两个让它乱 / 卡旧的根源。</p>
     <div class="fixes">
-      <div class="fix">
+      <div class="fix fcard">
         <div class="id">修复 · FLY-962</div>
         <h3>活跃的线程不再被误归档</h3>
-        <p class="was">以前:重启时把 <b>还在跑</b> 的线程也归了档 → Discord 不让改归档线程的标题 → 今早状态改名 <b>失败 6060 次</b> → 标题卡在旧值。</p>
-        <p class="now">✅ 现在:只有真正 <b>做完 / 已上线</b> 才归档,活跃线程永不归档 → 标题永远改得动、永远是最新。</p>
+        <p class="was">以前:重启把<b>还在跑</b>的线程也归档 → Discord 拒绝改归档线程标题 → 今早失败 <b>6060 次</b> → 标题卡旧。</p>
+        <p class="now">✅ 现在:只有真 <b>做完 / 已上线</b> 才归档,活跃线程永不归档 → 标题永远改得动、是最新。</p>
       </div>
-      <div class="fix">
+      <div class="fix fcard">
         <div class="id">修复 · FLY-959</div>
         <h3>ship 不再弹太早</h3>
-        <p class="was">以前:QA <b>还没全过</b> 就弹「请你 ship」→ 你被叫来、其实没准备好 → 显示不可信。</p>
+        <p class="was">以前:QA <b>还没全过</b> 就弹「请你 ship」→ 你被叫来其实没准备好 → 显示不可信。</p>
         <p class="now">✅ 现在:QA <b>全部 PASS</b> 才把球交给你。你看到「等你批」= 真的能批了。</p>
       </div>
     </div>
-    <div class="closing">
-      <h3>一句话</h3>
-      <p><span class="qk">粗放标题、细放置顶,两者同源不打架;活跃不归档、QA 全过才弹。</span></p>
-      <p>凑成一句你一眼能读的:<b>「现在在哪一步 · 卡没卡 · 该不该我出手」</b>。准了、你才愿意看它。</p>
-    </div>
   </div>
 
-  <div style="margin-top:34px;text-align:center;font-size:12.5px;color:#a1a1a6">
-    v1 mockup · 供 Annie ⟷ HL 共创讨论 · 待定项:标题 A/B、字形/措辞、要不要加「预计还剩」<br>
+  <div class="footer">
+    <div class="pend">⏳ 待你定:Discord 主题(深色 / 浅色)—— 上方切换钮先对比,你说哪个我锁定</div><br>
+    v2 高保真 Discord mockup · 供 Annie ⟷ HL 共创 · 其它待定:标题 A/B、字形/措辞<br>
     非最终稿,拿来一起改
   </div>
 
+</div>
 </div>
 </body>
 </html>
