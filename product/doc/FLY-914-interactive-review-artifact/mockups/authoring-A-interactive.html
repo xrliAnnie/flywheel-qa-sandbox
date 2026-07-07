@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>FLY-914 · 批注创作 A — 真机可交互原型</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--blue:#007aff;
+    --hl:#fff6d6;--hlb:#ffcf2e;--line:#e5e5ea;--green:#34c759;}
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.75;font-size:17px;
+    padding-bottom:92px;overscroll-behavior:none}
+  .top{position:sticky;top:0;background:rgba(245,245,247,.86);backdrop-filter:blur(10px);
+    padding:14px 18px 10px;border-bottom:1px solid var(--line);z-index:5;max-width:560px;margin:0 auto}
+  .top .t{font-size:16px;font-weight:600}
+  .top .m{font-size:12px;color:var(--dim)}
+  .hint{background:#eef4ff;border:1px solid #d5e4ff;border-radius:12px;color:#1a5fb4;
+    font-size:12.5px;padding:9px 12px;margin:12px auto 4px;max-width:524px}
+  .doc{max-width:560px;margin:0 auto;padding:0 18px}
+  h2{font-size:20px;margin:22px 0 4px;letter-spacing:-.01em}
+  .byline{color:var(--dim);font-size:13px;margin-bottom:14px}
+  .para{position:relative;margin:0 0 14px;padding:9px 11px;border-radius:10px;cursor:pointer;
+    -webkit-user-select:none;user-select:none;transition:background .1s}
+  .para:active{background:#fafafa}
+  .para.sel{background:var(--hl);box-shadow:inset 0 0 0 1.5px var(--hlb)}
+  .para.has{background:#fffdf3}
+  .badge{position:absolute;right:-4px;top:-8px;background:var(--blue);color:#fff;
+    font-size:11px;font-weight:700;min-width:20px;height:20px;padding:0 5px;border-radius:11px;
+    display:flex;align-items:center;justify-content:center;box-shadow:0 1px 4px rgba(0,0,0,.2)}
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.28);z-index:40;display:none}
+  .scrim.on{display:block}
+  .sheet{position:fixed;left:0;right:0;bottom:0;z-index:50;background:#fff;
+    border-radius:20px 20px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.18);
+    padding:16px 18px calc(18px + env(safe-area-inset-bottom));transform:translateY(115%);
+    transition:transform .22s cubic-bezier(.2,.7,.2,1);max-width:560px;margin:0 auto;max-height:82vh;overflow:auto}
+  .sheet.on{transform:translateY(0)}
+  .qt{font-size:13px;color:var(--dim);border-left:3px solid var(--hlb);padding-left:9px;
+    margin-bottom:12px;max-height:72px;overflow:auto}
+  .exist{border-bottom:1px solid var(--line);padding:9px 0}
+  .exist .x{font-size:15px}
+  .exist .acts{margin-top:6px;display:flex;gap:16px}
+  .exist .acts a{font-size:13px;font-weight:600;color:var(--blue)}
+  .exist .acts a.del{color:#ff3b30}
+  textarea{width:100%;border:1px solid var(--line);border-radius:12px;padding:11px 12px;
+    font:inherit;font-size:15px;resize:none;min-height:74px;background:#fafafa;margin-top:10px}
+  .rowbtn{display:flex;gap:10px;margin-top:12px}
+  .btn{flex:1;text-align:center;padding:12px;border-radius:12px;font-size:15px;font-weight:600}
+  .btn.p{background:var(--blue);color:#fff}
+  .btn.s{background:#eef0f2;color:var(--ink)}
+  .tray{position:fixed;left:0;right:0;bottom:0;z-index:30;background:rgba(255,255,255,.94);
+    backdrop-filter:blur(10px);border-top:1px solid var(--line);
+    padding:10px 16px calc(10px + env(safe-area-inset-bottom));display:flex;align-items:center;gap:12px;
+    max-width:560px;margin:0 auto}
+  .tray .c{flex:1;font-size:14px;font-weight:600}
+  .tray .c span{color:var(--dim);font-weight:400;font-size:12px;display:block}
+  .send{background:var(--green);color:#fff;padding:11px 18px;border-radius:22px;font-size:15px;font-weight:700}
+  .send[disabled]{background:#c7c7cc}
+  h3{font-size:17px;margin:2px 0 12px}
+  pre{background:#0f1115;color:#c8e1ff;border-radius:12px;padding:12px;font-size:11.5px;
+    overflow:auto;max-height:170px;line-height:1.5;margin:10px 0 0}
+  .exp .row{display:flex;gap:8px;margin-bottom:10px}
+  .exp .num{color:var(--green);font-weight:700}
+  .exp .an{color:var(--dim);font-size:13px}
+  .exp .cm{font-size:15px}
+  .toast{position:fixed;left:50%;bottom:118px;transform:translateX(-50%);z-index:60;background:#1d1d1f;
+    color:#fff;padding:10px 16px;border-radius:20px;font-size:14px;opacity:0;transition:opacity .2s;pointer-events:none}
+  .toast.on{opacity:1}
+  .tag{display:inline-block;background:#eef4ff;color:#1a5fb4;font-size:11px;font-weight:600;border-radius:6px;padding:1px 7px;margin-left:6px}
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="t">竞品扫描 · v1 <span class="tag">A 原型 · 可批注</span></div>
+    <div class="m">Honey Lemon 发给你审阅 · 点段落留批注</div>
+  </div>
+  <div class="hint">怎么玩:① 点一段话 = 选中它,底部弹出评论框 ② 写完「保存」框自动收起,接着点下一段 ③ 有批注的段落右上角显示数字,点它可看/改/删 ④ 全部留完 → 底部「复制全部批注」= 一键复制(每条 = 段落原文 + 你的评论),粘给发起方就行</div>
+
+  <div class="doc">
+    <h2>3. 定价与差异化</h2>
+    <div class="byline">draft · 待你批注</div>
+    <div class="para" data-p>对手 A 走 seat-based 定价,每席每月 29 美元。团队越大越贵,这会惩罚客户的成长。对手 B 是 usage-based,免费额度很低,但用量一上来账单爬坡很快。</div>
+    <div class="para" data-p>我们建议走 flat team 价,主打一句话:不按人头罚你成长。这是我们和两个对手最大的差异点,应该放在落地页最前面。</div>
+    <div class="para" data-p>风险在于,flat 价在超大团队会被薅羊毛。需要一个软上限,或者对异常用量单独谈。这一条先记着,不进第一版落地页。</div>
+  </div>
+
+  <div class="tray">
+    <div class="c" id="trayCount" style="cursor:pointer">📝 批注 0<span>点这里看/改已留批注</span></div>
+    <div class="send" id="sendBtn" disabled>复制全部批注</div>
+  </div>
+
+  <div class="scrim" id="scrim"></div>
+
+  <!-- para sheet: existing comments for the tapped para + add -->
+  <div class="sheet" id="paraSheet">
+    <div class="qt" id="paraQuote">「…」</div>
+    <div id="paraExisting"></div>
+    <textarea id="paraText" placeholder="对这一段写点什么…"></textarea>
+    <div class="rowbtn">
+      <div class="btn s" id="paraCancel">关闭</div>
+      <div class="btn p" id="paraSave">保存批注</div>
+    </div>
+  </div>
+
+  <!-- all-comments list -->
+  <div class="sheet" id="listSheet">
+    <h3>已留批注</h3>
+    <div id="listBody"></div>
+    <div class="rowbtn"><div class="btn s" id="listClose">关闭</div></div>
+  </div>
+
+  <!-- copy preview / fallback -->
+  <div class="sheet" id="sendSheet">
+    <h3>复制全部批注</h3>
+    <div style="font-size:13px;color:var(--dim);margin-bottom:8px">每条 = <b>你评论的那段原文全文 + 你的评论</b>。下面就是会复制的内容,直接粘给发起方,他就有完整上下文。</div>
+    <pre id="expText"></pre>
+    <div class="rowbtn">
+      <div class="btn s" id="sheetClose">关闭</div>
+      <div class="btn p" id="expCopy">复制到剪贴板</div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  const paras=[...document.querySelectorAll('[data-p]')];
+  paras.forEach((p,i)=>{p.dataset.idx=i;});
+  let comments=[];   // {id, paraIdx, text}
+  let curPara=null, editingId=null, uid=1;
+  const scrim=document.getElementById('scrim');
+  const paraSheet=document.getElementById('paraSheet');
+
+  function paraText(i){return paras[i].dataset.raw||paras[i].textContent;}
+  paras.forEach((p,i)=>{p.dataset.raw=p.textContent;});
+
+  function showSheet(el){scrim.classList.add('on');el.classList.add('on');}
+  function hideSheets(){scrim.classList.remove('on');document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('on'));clearSel();}
+  function clearSel(){paras.forEach(p=>p.classList.remove('sel'));}
+
+  function openPara(i){
+    curPara=i; editingId=null; clearSel(); paras[i].classList.add('sel');
+    document.getElementById('paraQuote').textContent='「'+paraText(i)+'」';
+    renderExisting(i);
+    const ta=document.getElementById('paraText'); ta.value='';
+    showSheet(paraSheet); setTimeout(()=>ta.focus(),250);
+  }
+  function renderExisting(i){
+    const box=document.getElementById('paraExisting'); box.innerHTML='';
+    const mine=comments.filter(c=>c.paraIdx===i);
+    if(!mine.length)return;
+    mine.forEach(c=>{
+      const d=document.createElement('div'); d.className='exist';
+      d.innerHTML='<div class="x">'+esc(c.text)+'</div><div class="acts"><a data-e>编辑</a><a class="del" data-d>删除</a></div>';
+      d.querySelector('[data-e]').onclick=()=>{editingId=c.id;document.getElementById('paraText').value=c.text;document.getElementById('paraText').focus();};
+      d.querySelector('[data-d]').onclick=()=>{comments=comments.filter(x=>x.id!==c.id);paintHas();renderExisting(i);refreshTray();toast('已删');};
+      box.appendChild(d);
+    });
+  }
+  paras.forEach(p=>p.addEventListener('click',()=>openPara(parseInt(p.dataset.idx,10))));
+
+  document.getElementById('paraCancel').onclick=hideSheets;
+  document.getElementById('paraSave').onclick=()=>{
+    const t=document.getElementById('paraText').value.trim();
+    if(!t){toast('写点什么再保存');return;}
+    if(editingId){comments.find(x=>x.id===editingId).text=t;editingId=null;}
+    else{comments.push({id:uid++,paraIdx:curPara,text:t});}
+    paintHas(); refreshTray();
+    hideSheets();   // 保存后自动收起,直接点下一段(Annie 反馈)
+    toast('已保存 ✓ 点下一段继续');
+  };
+
+  function paintHas(){
+    paras.forEach((p,i)=>{
+      const n=comments.filter(c=>c.paraIdx===i).length;
+      p.classList.toggle('has',n>0);
+      let b=p.querySelector('.badge');
+      if(n>0){ if(!b){b=document.createElement('div');b.className='badge';p.appendChild(b);} b.textContent=n; }
+      else if(b){ b.remove(); }
+    });
+  }
+  const trayCount=document.getElementById('trayCount'), sendBtn=document.getElementById('sendBtn');
+  function refreshTray(){
+    trayCount.innerHTML='📝 批注 '+comments.length+'<span>点这里看/改已留批注</span>';
+    sendBtn.disabled=comments.length===0;
+  }
+  trayCount.onclick=()=>{ if(!comments.length){toast('还没留批注');return;} renderList(); showSheet(document.getElementById('listSheet')); };
+  document.getElementById('listClose').onclick=hideSheets;
+  function renderList(){
+    const body=document.getElementById('listBody'); body.innerHTML='';
+    comments.forEach(c=>{
+      const d=document.createElement('div'); d.className='exist';
+      d.innerHTML='<div class="an" style="font-size:12px;color:#86868b;margin-bottom:3px">「'+esc(paraText(c.paraIdx).slice(0,28))+'…」</div><div class="x">'+esc(c.text)+'</div>'+
+        '<div class="acts"><a data-e>编辑</a><a class="del" data-d>删除</a></div>';
+      d.querySelector('[data-e]').onclick=()=>{hideSheets();openPara(c.paraIdx);setTimeout(()=>{editingId=c.id;document.getElementById('paraText').value=c.text;document.getElementById('paraText').focus();},300);};
+      d.querySelector('[data-d]').onclick=()=>{comments=comments.filter(x=>x.id!==c.id);paintHas();refreshTray();if(comments.length)renderList();else hideSheets();};
+      body.appendChild(d);
+    });
+  }
+  function buildPairsText(){
+    const lines=['FLY-914 批注 · 竞品扫描 v1 · 共 '+comments.length+' 条',''];
+    comments.forEach((c,n)=>{
+      lines.push((n+1)+'. 原文:'+paraText(c.paraIdx));
+      lines.push('   批注:'+c.text);
+      lines.push('');
+    });
+    return lines.join('\n');
+  }
+  function doCopy(txt){ return (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject()); }
+  // 复制全部批注:每条=段落原文全文+评论 配对,直接进剪贴板(Annie 要的)
+  sendBtn.onclick=()=>{
+    if(!comments.length)return;
+    const txt=buildPairsText();
+    doCopy(txt)
+      .then(()=>toast('✅ 已复制 '+comments.length+' 条批注(段落原文+你的评论),粘给发起方就行'))
+      .catch(()=>{ document.getElementById('expText').textContent=txt; showSheet(document.getElementById('sendSheet')); });
+  };
+  document.getElementById('expCopy').onclick=()=>{
+    const txt=document.getElementById('expText').textContent;
+    doCopy(txt).then(()=>toast('✅ 已复制,直接粘给发起方')).catch(()=>toast('复制失败,长按上面文字手动全选复制'));
+  };
+  document.getElementById('sheetClose').onclick=hideSheets;
+  scrim.onclick=hideSheets;
+
+  function esc(s){return s.replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
+  let toT; function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('on');clearTimeout(toT);toT=setTimeout(()=>t.classList.remove('on'),1900);}
+  refreshTray();
+})();
+</script>
+</body>
+</html>

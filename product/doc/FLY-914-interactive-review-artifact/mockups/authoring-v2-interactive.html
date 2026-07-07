@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>FLY-914 · 批注创作 B — 真机可交互原型</title>
+<style>
+  :root{
+    --bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--blue:#007aff;
+    --hl:#fff3c4;--hlb:#ffcf2e;--line:#e5e5ea;--green:#34c759;--ink2:#3a3a3c;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;
+    -webkit-font-smoothing:antialiased;line-height:1.75;font-size:17px;
+    padding-bottom:96px;overscroll-behavior:none}
+  .doc{max-width:560px;margin:0 auto;padding:0 18px}
+  .top{position:sticky;top:0;background:rgba(245,245,247,.86);backdrop-filter:blur(10px);
+    padding:14px 18px 10px;border-bottom:1px solid var(--line);z-index:5;max-width:560px;margin:0 auto}
+  .top .t{font-size:16px;font-weight:600}
+  .top .m{font-size:12px;color:var(--dim)}
+  .hint{background:#eef4ff;border:1px solid #d5e4ff;border-radius:12px;color:#1a5fb4;
+    font-size:12.5px;padding:9px 12px;margin:12px auto 4px;max-width:524px}
+  h2{font-size:20px;margin:22px 0 4px;letter-spacing:-.01em}
+  .byline{color:var(--dim);font-size:13px;margin-bottom:14px}
+  p.blk{margin:0 0 15px}
+  /* selectable tokens — native selection disabled, custom only */
+  .tok{-webkit-user-select:none;user-select:none;border-radius:5px;padding:1px 0;
+    transition:background .08s}
+  .tok.sel{background:var(--hl);box-shadow:0 -1px 0 var(--hlb),0 2px 0 var(--hlb)}
+  .tok.has{border-bottom:2px dotted var(--blue)}
+  /* handles */
+  .handle{position:absolute;width:16px;height:16px;z-index:20;touch-action:none}
+  .handle::before{content:"";position:absolute;left:5px;top:0;width:2px;height:100%;background:var(--blue)}
+  .handle .knob{position:absolute;left:0;width:16px;height:16px;border-radius:50%;
+    background:var(--blue);box-shadow:0 1px 4px rgba(0,0,0,.3)}
+  .handle.start .knob{top:-14px}
+  .handle.end .knob{bottom:-14px}
+  .handle.start::before{top:-2px}
+  /* comment bubble */
+  .bubble{position:absolute;z-index:25;background:#1d1d1f;color:#fff;border-radius:10px;
+    padding:8px 14px;font-size:14px;font-weight:600;box-shadow:0 6px 18px rgba(0,0,0,.28);
+    transform:translate(-50%,-100%);white-space:nowrap}
+  .bubble::after{content:"";position:absolute;left:50%;bottom:-5px;transform:translateX(-50%);
+    border:6px solid transparent;border-top-color:#1d1d1f;border-bottom:0}
+  /* bottom sheets / overlays */
+  .scrim{position:fixed;inset:0;background:rgba(0,0,0,.28);z-index:40;display:none}
+  .scrim.on{display:block}
+  .sheet{position:fixed;left:0;right:0;bottom:0;z-index:50;background:#fff;
+    border-radius:20px 20px 0 0;box-shadow:0 -8px 30px rgba(0,0,0,.18);
+    padding:16px 18px calc(18px + env(safe-area-inset-bottom));transform:translateY(110%);
+    transition:transform .22s cubic-bezier(.2,.7,.2,1);max-width:560px;margin:0 auto}
+  .sheet.on{transform:translateY(0)}
+  .sheet .qt{font-size:13px;color:var(--dim);border-left:3px solid var(--hlb);
+    padding-left:9px;margin-bottom:12px;max-height:56px;overflow:auto}
+  textarea{width:100%;border:1px solid var(--line);border-radius:12px;padding:11px 12px;
+    font:inherit;font-size:15px;resize:none;min-height:76px;background:#fafafa}
+  .rowbtn{display:flex;gap:10px;margin-top:12px}
+  .btn{flex:1;text-align:center;padding:12px;border-radius:12px;font-size:15px;font-weight:600}
+  .btn.p{background:var(--blue);color:#fff}
+  .btn.s{background:#eef0f2;color:var(--ink)}
+  .btn.d{background:#fff0ef;color:#ff3b30}
+  .btn[disabled]{opacity:.4}
+  /* comment tray */
+  .tray{position:fixed;left:0;right:0;bottom:0;z-index:30;
+    background:rgba(255,255,255,.94);backdrop-filter:blur(10px);
+    border-top:1px solid var(--line);padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+    display:flex;align-items:center;gap:12px;max-width:560px;margin:0 auto}
+  .tray .c{flex:1;font-size:14px;font-weight:600}
+  .tray .c span{color:var(--dim);font-weight:400;font-size:12px;display:block}
+  .send{background:var(--green);color:#fff;padding:11px 18px;border-radius:22px;
+    font-size:15px;font-weight:700}
+  .send[disabled]{background:#c7c7cc}
+  .list .item{border-bottom:1px solid var(--line);padding:11px 0}
+  .list .item .q{font-size:12px;color:var(--dim);margin-bottom:3px}
+  .list .item .x{font-size:15px}
+  .list .item .acts{margin-top:7px;display:flex;gap:16px}
+  .list .item .acts a{font-size:13px;font-weight:600;color:var(--blue)}
+  .list .item .acts a.del{color:#ff3b30}
+  .sheet h3{font-size:17px;margin:2px 0 12px}
+  pre{background:#0f1115;color:#c8e1ff;border-radius:12px;padding:12px;font-size:11.5px;
+    overflow:auto;max-height:180px;line-height:1.5;margin:10px 0 0}
+  .exp .row{display:flex;gap:8px;margin-bottom:10px}
+  .exp .num{color:var(--green);font-weight:700}
+  .exp .an{color:var(--dim);font-size:13px}
+  .exp .cm{font-size:15px}
+  .toast{position:fixed;left:50%;bottom:120px;transform:translateX(-50%);z-index:60;
+    background:#1d1d1f;color:#fff;padding:10px 16px;border-radius:20px;font-size:14px;
+    opacity:0;transition:opacity .2s;pointer-events:none}
+  .toast.on{opacity:1}
+  .tag{display:inline-block;background:#eef4ff;color:#1a5fb4;font-size:11px;font-weight:600;
+    border-radius:6px;padding:1px 7px;margin-left:6px}
+</style>
+</head>
+<body>
+  <div class="top">
+    <div class="t">竞品扫描 · v1 <span class="tag">B 原型 · 可批注</span></div>
+    <div class="m">Honey Lemon 发给你审阅 · 手机上点句选中、留批注</div>
+  </div>
+  <div class="hint">怎么玩:① 点一句话 = 选中它 ② 拖两端蓝色手柄按句微调范围 ③ 点「💬 评论」写一条(先攒着,不发)④ 全部留完 → 底部「全部发送」一次性回传</div>
+
+  <div class="doc">
+    <h2>3. 定价与差异化</h2>
+    <div class="byline">draft · 待你批注</div>
+    <p class="blk" data-src>对手 A 走 seat-based 定价,每席每月 29 美元。团队越大越贵,这会惩罚客户的成长。对手 B 是 usage-based,免费额度很低,但用量一上来账单爬坡很快。</p>
+    <p class="blk" data-src>我们建议走 flat team 价,主打一句话:不按人头罚你成长。这是我们和两个对手最大的差异点,应该放在落地页最前面。</p>
+    <p class="blk" data-src>风险在于,flat 价在超大团队会被薅羊毛。需要一个软上限,或者对异常用量单独谈。这一条先记着,不进第一版落地页。</p>
+  </div>
+
+  <!-- handles + bubble injected here -->
+  <div id="layer"></div>
+
+  <!-- comment tray -->
+  <div class="tray">
+    <div class="c" id="trayCount" style="cursor:pointer">📝 批注 0<span>点这里看/改已留批注</span></div>
+    <div class="send" id="sendBtn" disabled>全部发送</div>
+  </div>
+
+  <div class="scrim" id="scrim"></div>
+
+  <!-- composer -->
+  <div class="sheet" id="composer">
+    <div class="qt" id="cmpQuote">「…」</div>
+    <textarea id="cmpText" placeholder="对这一句写点什么…"></textarea>
+    <div class="rowbtn">
+      <div class="btn s" id="cmpCancel">取消</div>
+      <div class="btn p" id="cmpSave">保存</div>
+    </div>
+  </div>
+
+  <!-- list -->
+  <div class="sheet" id="listSheet">
+    <h3>已留批注</h3>
+    <div class="list" id="listBody"></div>
+    <div class="rowbtn"><div class="btn s" id="listClose">关闭</div></div>
+  </div>
+
+  <!-- send preview -->
+  <div class="sheet" id="sendSheet">
+    <h3>全部发送 · 回流预览</h3>
+    <div style="font-size:13px;color:var(--dim);margin-bottom:8px">只回传下面这些结构化批注(不是整页)。这就是发起方收到的结果:</div>
+    <div class="exp" id="expBody"></div>
+    <pre id="expJson"></pre>
+    <div class="rowbtn">
+      <div class="btn s" id="expCopy">复制结构化结果</div>
+      <div class="btn p" id="expSend">发送</div>
+    </div>
+    <div style="font-size:12px;color:var(--dim);margin-top:10px">回流通道(自动 POST 还是复制回 Discord)= PRD 块2,正在跟基建对。</div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  const layer=document.getElementById('layer');
+  const scrim=document.getElementById('scrim');
+  // ---- tokenize into clause tokens ----
+  const toks=[]; // {el, idx, text}
+  function tokenize(){
+    const blocks=document.querySelectorAll('[data-src]');
+    let idx=0;
+    blocks.forEach(b=>{
+      const raw=b.textContent; b.textContent='';
+      // split keeping delimiters 。!?;,、 . ! ? ; :
+      const parts=raw.match(/[^。!?;,、,.!?;:]+[。!?;,、,.!?;:]?/g)||[raw];
+      parts.forEach(pt=>{
+        if(!pt.trim())return;
+        const s=document.createElement('span');
+        s.className='tok'; s.dataset.idx=idx; s.textContent=pt;
+        b.appendChild(s); toks.push({el:s,idx:idx,text:pt.trim()}); idx++;
+      });
+    });
+  }
+  tokenize();
+
+  let sel=null;              // {start,end}
+  let comments=[];           // {id,start,end,text}
+  let editingId=null;
+  let uid=1;
+
+  function anchorText(start,end){
+    let t=''; for(let i=start;i<=end;i++) t+=toks[i].text; return t;
+  }
+  function tokAt(x,y){
+    const el=document.elementFromPoint(x,y);
+    if(el&&el.classList&&el.classList.contains('tok')) return parseInt(el.dataset.idx,10);
+    // fallback: snap to nearest token by geometry (line-wrap / inter-token gaps)
+    let best=null,bestD=Infinity;
+    for(const t of toks){
+      const r=t.el.getBoundingClientRect();
+      const cx=Math.max(r.left,Math.min(x,r.right));
+      const cy=Math.max(r.top,Math.min(y,r.bottom));
+      const d=(cx-x)*(cx-x)+(cy-y)*(cy-y);
+      if(d<bestD){bestD=d;best=t.idx;}
+    }
+    return best;
+  }
+  function paintHas(){
+    toks.forEach(t=>t.el.classList.remove('has'));
+    comments.forEach(c=>{for(let i=c.start;i<=c.end;i++)toks[i]&&toks[i].el.classList.add('has');});
+  }
+  function clearSel(){ sel=null; render(); }
+  function render(){
+    toks.forEach(t=>t.el.classList.remove('sel'));
+    layer.innerHTML='';
+    if(!sel){ return; }
+    for(let i=sel.start;i<=sel.end;i++) toks[i].el.classList.add('sel');
+    const a=toks[sel.start].el.getBoundingClientRect();
+    const b=toks[sel.end].el.getBoundingClientRect();
+    const sc=window.scrollY, scx=window.scrollX;
+    // handles
+    const hs=document.createElement('div'); hs.className='handle start';
+    hs.style.left=(a.left+scx-8)+'px'; hs.style.top=(a.top+sc)+'px'; hs.style.height=a.height+'px';
+    hs.innerHTML='<div class="knob"></div>';
+    const he=document.createElement('div'); he.className='handle end';
+    he.style.left=(b.right+scx-8)+'px'; he.style.top=(b.top+sc)+'px'; he.style.height=b.height+'px';
+    he.innerHTML='<div class="knob"></div>';
+    layer.appendChild(hs); layer.appendChild(he);
+    dragify(hs,'start'); dragify(he,'end');
+    // bubble above selection midpoint
+    const bub=document.createElement('div'); bub.className='bubble'; bub.textContent='💬 评论';
+    const midx=(Math.min(a.left,b.left)+Math.max(a.right,b.right))/2+scx;
+    bub.style.left=midx+'px'; bub.style.top=(a.top+sc-8)+'px';
+    bub.addEventListener('click',openComposerNew);
+    layer.appendChild(bub);
+  }
+  function dragify(h,which){
+    h.addEventListener('pointerdown',e=>{
+      e.preventDefault();
+      try{h.setPointerCapture(e.pointerId);}catch(_){/* capture optional; never block drag */}
+      const move=ev=>{
+        const i=tokAt(ev.clientX,ev.clientY);
+        if(i==null||!sel)return;
+        if(which==='start') sel.start=Math.min(i,sel.end);
+        else sel.end=Math.max(i,sel.start);
+        render();
+      };
+      const up=()=>{document.removeEventListener('pointermove',move);document.removeEventListener('pointerup',up);};
+      document.addEventListener('pointermove',move);
+      document.addEventListener('pointerup',up);
+    });
+  }
+  // tap a token to select it
+  document.querySelector('.doc').addEventListener('click',e=>{
+    const el=e.target.closest('.tok'); if(!el)return;
+    const i=parseInt(el.dataset.idx,10); sel={start:i,end:i}; render();
+  });
+  // tap empty area clears
+  document.addEventListener('click',e=>{
+    if(e.target.closest('.tok')||e.target.closest('.handle')||e.target.closest('.bubble')||
+       e.target.closest('.sheet')||e.target.closest('.tray'))return;
+    if(sel)clearSel();
+  });
+  window.addEventListener('scroll',()=>{if(sel)render();},{passive:true});
+  window.addEventListener('resize',()=>{if(sel)render();});
+
+  // ---- composer ----
+  const composer=document.getElementById('composer');
+  const cmpQuote=document.getElementById('cmpQuote');
+  const cmpText=document.getElementById('cmpText');
+  function showSheet(el){scrim.classList.add('on');el.classList.add('on');}
+  function hideSheets(){scrim.classList.remove('on');document.querySelectorAll('.sheet').forEach(s=>s.classList.remove('on'));}
+  function openComposerNew(){
+    if(!sel)return; editingId=null;
+    cmpQuote.textContent='「'+anchorText(sel.start,sel.end)+'」';
+    cmpText.value=''; showSheet(composer); setTimeout(()=>cmpText.focus(),250);
+  }
+  function openComposerEdit(c){
+    editingId=c.id; sel={start:c.start,end:c.end};
+    cmpQuote.textContent='「'+anchorText(c.start,c.end)+'」';
+    cmpText.value=c.text; render(); hideSheets(); showSheet(composer);
+    setTimeout(()=>cmpText.focus(),250);
+  }
+  document.getElementById('cmpCancel').onclick=()=>{hideSheets();};
+  document.getElementById('cmpSave').onclick=()=>{
+    const t=cmpText.value.trim(); if(!t){toast('写点什么再保存');return;}
+    if(editingId){const c=comments.find(x=>x.id===editingId);c.text=t;}
+    else{comments.push({id:uid++,start:sel.start,end:sel.end,text:t});}
+    editingId=null; hideSheets(); clearSel(); paintHas(); refreshTray();
+    toast('已存,继续留下一条 · 都留完再全部发送');
+  };
+
+  // ---- tray + list ----
+  const trayCount=document.getElementById('trayCount');
+  const sendBtn=document.getElementById('sendBtn');
+  function refreshTray(){
+    trayCount.innerHTML='📝 批注 '+comments.length+'<span>点这里看/改已留批注</span>';
+    sendBtn.disabled=comments.length===0;
+  }
+  trayCount.onclick=()=>{ if(!comments.length){toast('还没留批注');return;} renderList(); showSheet(document.getElementById('listSheet')); };
+  document.getElementById('listClose').onclick=hideSheets;
+  function renderList(){
+    const body=document.getElementById('listBody'); body.innerHTML='';
+    comments.forEach(c=>{
+      const d=document.createElement('div'); d.className='item';
+      d.innerHTML='<div class="q">「'+esc(anchorText(c.start,c.end))+'」</div>'+
+                  '<div class="x">'+esc(c.text)+'</div>'+
+                  '<div class="acts"><a data-e>编辑</a><a class="del" data-d>删除</a></div>';
+      d.querySelector('[data-e]').onclick=()=>openComposerEdit(c);
+      d.querySelector('[data-d]').onclick=()=>{comments=comments.filter(x=>x.id!==c.id);paintHas();refreshTray();
+        if(comments.length)renderList();else hideSheets();};
+      body.appendChild(d);
+    });
+  }
+  // ---- send preview (structured export) ----
+  sendBtn.onclick=()=>{
+    if(!comments.length)return;
+    const exp=document.getElementById('expBody'); exp.innerHTML='';
+    comments.forEach((c,n)=>{
+      const r=document.createElement('div'); r.className='row';
+      r.innerHTML='<div class="num">'+(n+1)+'</div><div><div class="an">「'+esc(anchorText(c.start,c.end))+'」</div><div class="cm">'+esc(c.text)+'</div></div>';
+      exp.appendChild(r);
+    });
+    const payload={issue:'FLY-914',artifact:'竞品扫描 v1',
+      annotations:comments.map(c=>({anchor:anchorText(c.start,c.end),comment:c.text}))};
+    document.getElementById('expJson').textContent=JSON.stringify(payload,null,2);
+    showSheet(document.getElementById('sendSheet'));
+  };
+  document.getElementById('expCopy').onclick=()=>{
+    const txt=document.getElementById('expJson').textContent;
+    (navigator.clipboard?navigator.clipboard.writeText(txt):Promise.reject())
+      .then(()=>toast('已复制结构化结果(只含批注)')).catch(()=>toast('复制失败,长按 JSON 手动复制'));
+  };
+  document.getElementById('expSend').onclick=()=>{hideSheets();toast('已打包 '+comments.length+' 条,准备回流给发起方 ✓');};
+  scrim.onclick=hideSheets;
+
+  function esc(s){return s.replace(/[&<>]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[m]));}
+  let toT;
+  function toast(m){const t=document.getElementById('toast');t.textContent=m;t.classList.add('on');
+    clearTimeout(toT);toT=setTimeout(()=>t.classList.remove('on'),1900);}
+  refreshTray();
+})();
+</script>
+</body>
+</html>
