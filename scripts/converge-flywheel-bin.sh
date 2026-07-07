@@ -74,7 +74,10 @@ for f in $FILES; do
     fi
     continue
   fi
-  size="$(wc -c < "$dst" 2>/dev/null | tr -d ' ')"; size="${size:-0}"
+  # ([ -f ] first: a bare `wc -c < missing` prints the shell's redirect error
+  # before 2>/dev/null can apply — noisy on the fail-loud mount's stderr)
+  size=0
+  [ -f "$dst" ] && size="$(wc -c < "$dst" | tr -d ' ')"
   if ! assert_sane_script_source "$src"; then
     log "ERROR: $f drifted (bin ${size}B) but repo source failed sanity — NOT repairing (fail-safe)"
     alert "bin integrity: $f drifted, repo source insane" \
