@@ -1,13 +1,13 @@
 ---
 issue: FLY-927
 phase: implement
-phaseCursor: 7/18
-updated: 2026-07-07T18:48:42.099Z
-nextStep: Task 1.7 lead-alert.sh 对齐
+phaseCursor: 9/18
+updated: 2026-07-07T18:57:25.265Z
+nextStep: PR-2 Task 2.1 kind→owner 映射
 chunks: []
 pointers: {}
 ---
 
 # FLY-927 progress
-**phase**: implement (7/18)
-**next**: Task 1.7 lead-alert.sh 对齐
+**phase**: implement (9/18)
+**next**: PR-2 Task 2.1 kind→owner 映射
