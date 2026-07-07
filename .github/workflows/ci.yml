@@ -149,3 +149,14 @@ jobs:
           python3 scripts/hooks/test-flywheel-restart-guard.py
           bash scripts/hooks/test-restart-guard-install.sh
           bash scripts/__tests__/lead-alert-strict-delivery.test.sh
+
+      # FLY-927: infra-alert shell path (lead-alert.sh unified-channel/sender/
+      # rate/schema alignment, external-kind hygiene, bridge-wrapper fail-loud
+      # re-route). Hermetic — stub curl via PATH, isolated FLYWHEEL_* dirs, no
+      # real network or ~/.flywheel touched. Same tool set as strict-delivery
+      # above (jq/sqlite3/shasum), so CI already has the deps.
+      - name: Test — FLY-927 infra-alert shell path
+        run: |
+          bash scripts/__tests__/lead-alert-fly927.test.sh
+          bash scripts/__tests__/lead-alert-external-kind.test.sh
+          bash scripts/__tests__/bridge-wrapper-fail-loud.test.sh
