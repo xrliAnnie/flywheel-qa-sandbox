@@ -140,6 +140,7 @@ import {
 import { archiveIssueThreadIfNoOtherActive } from "./done-thread-archiver.js";
 import { EventFilter } from "./EventFilter.js";
 import { createEventRouter } from "./event-route.js";
+import { createExternalMergeReconciler } from "./external-merge-reconcile.js";
 import { ProjectConfigCache } from "./feature-flag-config-source.js";
 import { renderFlagReport } from "./feature-flag-report-html.js";
 import {
@@ -170,6 +171,7 @@ import {
 import { loadFounderMilestoneReportConfigByProject } from "./founder-milestone-config-source.js";
 import { mountFounderUxRoutes } from "./founder-ux/routes.js";
 import { GatePoller } from "./gate-poller.js";
+import { buildSessionKey } from "./hook-payload.js";
 import {
 	derivePhaseDisplayState,
 	type PhaseDisplayState,
@@ -247,6 +249,10 @@ import {
 	captureSession as defaultCaptureSession,
 	isCaptureError,
 } from "./session-capture.js";
+import {
+	defaultHasGateResponse,
+	defaultIsAncestor,
+} from "./ship-gate-rebind.js";
 import {
 	alertStaleBlockerToLead,
 	createStaleBlockerGuard,
@@ -3837,11 +3843,46 @@ export async function startBridge(
 	// project's CANONICAL root (never a runner's PR worktree).
 	const founderMilestoneReportByProject =
 		await loadFounderMilestoneReportConfigByProject(projects);
+	// FLY-945 Fix D: external-merge convergence sweeper (backstop — Fix F
+	// simultaneously retires executor-merge; this is NOT permission for it).
+	// Kill-switch FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0 lives inside pass().
+	const externalMergeReconciler = createExternalMergeReconciler({
+		store,
+		config,
+		projects,
+		removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
+		alertLead: async (session, title, body) => {
+			try {
+				const { lead } = resolveLeadForIssue(
+					projects,
+					session.project_name,
+					parseJsonStringArray(session.issue_labels) ?? [],
+				);
+				await leadAlertNotifier.alert({
+					leadId: lead.agentId,
+					projectName: session.project_name,
+					eventId: `external-merge:${session.execution_id}:${title}`,
+					eventType: "external_merge_suspect",
+					title,
+					body,
+					severity: "warning",
+					sessionKey: buildSessionKey(session),
+				});
+			} catch (err) {
+				console.warn(
+					`[external-merge] Lead alert failed for ${session.execution_id}: ${(err as Error).message}`,
+				);
+			}
+		},
+	});
+
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
 		projects,
 		store,
 		runtimeRegistry: registry,
+		// FLY-945 Fix D: run the sweeper on the patrol cadence (zero new timer).
+		externalMergeReconcile: () => externalMergeReconciler.pass(),
 		leadAlertSink: {
 			alert: (p) =>
 				leadPendingAlertHolder.current
@@ -4072,6 +4113,12 @@ export async function startBridge(
 				// FLY-827: the codex hard-gate kill-switch is read live from
 				// process.env (the direct feature-flag toggle mutates it in place).
 				env: process.env,
+				// FLY-945 Fix B: environment probes for the ship-gate head rebind
+				// (gate-unanswered check via CommDB + real-git ancestry proof).
+				shipGateRebind: {
+					hasGateResponse: defaultHasGateResponse,
+					isAncestor: defaultIsAncestor,
+				},
 				logger: {
 					log: (m) => console.log(m),
 					warn: (m) => console.warn(m),

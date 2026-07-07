@@ -152,9 +152,41 @@ If you ever execute approve without the required authorization
 unmerged; the only repair is full transparency so the founder can decide
 the response.
 
----
+### Executor-merge is RETIRED (FLY-945)
 
-## R2 — Runner Lifecycle Authorization (founder-routed, this window)
+"Executor-merge" — the Lead running `gh pr merge` (or any equivalent) as
+the founder's executor after she said "ship it" — was a **stopgap** for
+the days when a founder approval in the chat thread did not reliably
+reach the Runner's gate. That mechanical gap is now fixed (FLY-945):
+
+- The founder's "ship it" / approval text in the issue thread is picked
+  up within ~75s and recorded as a **founder-attributed** gate approval
+  bound to the current (QA-verified) PR head.
+- A QA-evidence commit that moves the head no longer strands the
+  approval — the Bridge auto-rebinds the gate to the new head and posts
+  a follow-up in the thread.
+- The Runner's `verify-approval` then passes and the Runner **ships
+  itself**: merge via `:cool:` → landing signal → `stage set completed`
+  → auto-cleanup + thread archive + Linear Done (the FLY-369 cascade).
+
+So after the founder approves, the Lead's job is **zero action**. If the
+Runner does not ship within a few minutes, the correct moves are, in
+order: diagnose (is the wake stuck? did verify-approval print a reason?),
+fix the mechanism or escalate to the founder — **never `gh pr merge` on
+its behalf**. `verify-approval` now also refuses Lead-attributed gate
+responses outright (`response_not_founder_attributed`), so a
+`flywheel-comm respond` self-approval cannot ship anything.
+
+Why this matters — the FLY-921 night, as the cautionary tale: the
+founder said "ship it"; the approval was in flight (it landed 4 minutes
+later); the Lead executor-merged in the meantime. The merge itself
+"worked", but it bypassed the Runner's self-ship — so the automatic
+cleanup, thread archive and Linear-Done cascade never fired, and the
+founder had to come back and ask for the archive by hand. An
+executor-merge doesn't save time; it converts one automated chain into
+three manual chores. (A bounded reconcile pass now exists to converge
+externally-merged PRs, but it is a backstop for accidents — not
+permission.)
 
 ### Reserved actions (current scope)
 

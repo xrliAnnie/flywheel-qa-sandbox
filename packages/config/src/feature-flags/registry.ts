@@ -1065,6 +1065,89 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "conversational",
 	},
 	{
+		name: "ship_gate_grace_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SHIP_GATE_GRACE_MS",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "15000",
+		description:
+			"founder 文字/✅ 对 approve_to_ship gate 的放行 grace(ms;默认 15s;设 600000 回到 FLY-605 旧 10min 行为——这就是 kill-switch,FLY-945 Fix A)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/gate-poller.ts",
+				"shipGateGraceMs",
+				"call_time",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "ship_gate_rebind",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SHIP_GATE_REBIND",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"QA PASS 证据 commit 使 PR head 前移时自动 rebind ship gate(=0 回到 FLY-945 前的 drop 行为)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/auto-qa-coordinator.ts",
+				"shipGateRebindEnabled",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "external_merge_reconcile",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_EXTERNAL_MERGE_RECONCILE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"外部 merge(executor-merge 残局)收敛兜底 pass(=0 关闭;FLY-945 Fix D——兜底不是许可)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/external-merge-reconcile.ts",
+				"createExternalMergeReconciler pass()",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "merge_reconcile_window_days",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_MERGE_RECONCILE_WINDOW_DAYS",
+		polarity: "opt_in",
+		valueKind: "value",
+		default: "7",
+		description:
+			"外部 merge 收敛 pass 的 completed-but-unfinalized 回看窗口(天;FLY-945 Fix D)",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/external-merge-reconcile.ts",
+				"createExternalMergeReconciler pass()",
+				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "viewer_session_reaper",
 		category: "kill_switch",
 		source: "env",
@@ -1369,6 +1452,27 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/founder-consent/config.ts",
 				"resolveDecisionMode",
 				"call_time",
+				"env-param",
+			),
+		],
+		toggleable: "readonly",
+	},
+	{
+		name: "founder_attribution_gate",
+		category: "governance_gate",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_FOUNDER_ATTRIBUTION_GATE",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"verify-approval 要求 approve gate 答复归属 founder 侧(founder id / bridge / bridge-founder-consent;=0 仅供 QA 房/应急;治理门,只读;FLY-945 Fix E)",
+		readSites: [
+			envSite(
+				"packages/flywheel-comm/src/founder-attribution.ts",
+				"resolveFounderAttributionGateOn",
+				"cli_invocation",
 				"env-param",
 			),
 		],

@@ -29,14 +29,14 @@ function rpc(method, params, { notify = false, timeout = 60000 } = {}) {
 		...(params !== undefined && { params }),
 	};
 	if (notify) {
-		srv.stdin.write(JSON.stringify(msg) + "\n");
+		srv.stdin.write(`${JSON.stringify(msg)}\n`);
 		return Promise.resolve();
 	}
 	const id = nextId++;
 	msg.id = id;
 	return new Promise((resolve, reject) => {
 		pending.set(id, { resolve, reject });
-		srv.stdin.write(JSON.stringify(msg) + "\n");
+		srv.stdin.write(`${JSON.stringify(msg)}\n`);
 		setTimeout(() => {
 			if (pending.has(id)) {
 				pending.delete(id);
@@ -123,11 +123,11 @@ function check(name, cond, detail) {
 		check(
 			"read_dom",
 			/Example Domain/i.test(snapTxt),
-			"snapshot_len=" + snapTxt.length + " head=" + snapTxt.slice(0, 160),
+			`snapshot_len=${snapTxt.length} head=${snapTxt.slice(0, 160)}`,
 		);
 
 		// 3) JS EVAL (also emits a console.log used by the next step)
-		const stamp = "FLY-581-VERIFY-" + Date.now();
+		const stamp = `FLY-581-VERIFY-${Date.now()}`;
 		const ev = await rpc("tools/call", {
 			name: "evaluate_script",
 			arguments: {
@@ -161,7 +161,7 @@ function check(name, cond, detail) {
 		check(
 			"read_network",
 			/example\.com/i.test(netTxt),
-			"net_len=" + netTxt.length + " sample=" + netTxt.slice(0, 200),
+			`net_len=${netTxt.length} sample=${netTxt.slice(0, 200)}`,
 		);
 
 		// 6) SCREENSHOT — saved server-side to a PNG file; verify magic bytes + size
@@ -189,8 +189,8 @@ function check(name, cond, detail) {
 		console.log(`SUMMARY ${passed}/${total} passed`);
 		process.exitCode = passed === total ? 0 : 2;
 	} catch (e) {
-		console.log("ERROR " + e.message);
-		console.log("STDERR " + stderrChunks.join("").slice(0, 1500));
+		console.log(`ERROR ${e.message}`);
+		console.log(`STDERR ${stderrChunks.join("").slice(0, 1500)}`);
 		process.exitCode = 3;
 	} finally {
 		srv.kill();

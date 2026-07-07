@@ -5,7 +5,9 @@
  * GEMINI_API_KEY); the real SDK is wired only in genaiConnector.ts (lazy).
  *
  * Event names mirror the Live server messages the adapter maps onto voice-core's
- * unified vocabulary (plan.md r2 §4 step 6). Note: there is NO client-side
+ * unified vocabulary (plan.md r2 §4 step 6). Tools are declared with full
+ * schemas (LiveToolDeclaration) and passed to the SDK verbatim (FLY-959 bug 3).
+ * Note: there is NO client-side
  * server-cancel — `interrupted` is a SERVER output signal (barge-in), and
  * `tool-call-cancellation` is the server revoking a tool call. Manual client
  * interrupt is a LOCAL suppression handled entirely in the session.
@@ -44,6 +46,16 @@ export interface LiveConnection {
 	close(): Promise<void>;
 }
 
+/** A full function declaration — real models need description+parameters to
+ * actually call a tool (FLY-543 QA: zero-schema declarations made the model
+ * fabricate answers or stall). Passed to the SDK verbatim. */
+export interface LiveToolDeclaration {
+	name: string;
+	description: string;
+	/** JSON-schema-style object ({ type: "OBJECT", properties, required }). */
+	parameters: Record<string, unknown>;
+}
+
 export interface LiveConnectParams {
 	model: string;
 	voice?: string;
@@ -51,7 +63,7 @@ export interface LiveConnectParams {
 	/** sessionResumption.handle for reconnect (resume). */
 	resumeHandle?: string;
 	/** declared tools (the brain is surfaced as ask_lead). */
-	toolNames: string[];
+	tools: LiveToolDeclaration[];
 	/** true iff the pinned model supports non-blocking function calls. */
 	asyncFunctionCalling: boolean;
 }

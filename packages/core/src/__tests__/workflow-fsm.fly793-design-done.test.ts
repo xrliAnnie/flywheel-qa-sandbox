@@ -29,7 +29,10 @@ describe("WORKFLOW_TRANSITIONS — FLY-793 design_done", () => {
 
 	it("byte-compat: existing terminal states unchanged", () => {
 		expect(WORKFLOW_TRANSITIONS.completed).toEqual([]);
+		// FLY-945 Fix C intentionally added awaiting_review (review re-request
+		// after an expired approval); the pre-existing targets are unchanged.
 		expect(WORKFLOW_TRANSITIONS.approved_to_ship).toEqual([
+			"awaiting_review",
 			"completed",
 			"blocked",
 			"failed",

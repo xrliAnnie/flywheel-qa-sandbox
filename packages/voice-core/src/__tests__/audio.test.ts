@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { FilePlayer } from "../audio/FilePlayer.js";
 import { MicCapture } from "../audio/MicCapture.js";
 import { StreamPlayer } from "../audio/StreamPlayer.js";
-import type { AudioFormat } from "../types.js";
+import type { AudioFormat, VoiceError } from "../types.js";
 import { FakeProcessRunner } from "./fakes.js";
 
 const MP3: AudioFormat = { encoding: "mp3", sampleRateHz: 24_000, channels: 1 };
@@ -96,5 +96,53 @@ describe("MicCapture (streaming, converse face)", () => {
 		expect(() => mic.start(() => {})).toThrowError(/already started/);
 		mic.stop();
 		expect(runner.handles[0].killedWith).toBe("SIGTERM");
+	});
+
+	it("captures from the system default input (:default) when no device given", () => {
+		const runner = new FakeProcessRunner();
+		const mic = new MicCapture({ ffmpegBin: "ffmpeg", runner });
+		mic.start(() => {});
+		const spawned = runner.spawnCalls[0];
+		const i = spawned.args.indexOf("-i");
+		expect(spawned.args[i + 1]).toBe(":default");
+	});
+
+	it("passes an explicit device through unchanged", () => {
+		const runner = new FakeProcessRunner();
+		const mic = new MicCapture({ ffmpegBin: "ffmpeg", device: ":2", runner });
+		mic.start(() => {});
+		expect(runner.spawnCalls[0].args).toContain(":2");
+	});
+
+	it("reports a non-zero exit with stderr + device guidance via onError", () => {
+		const runner = new FakeProcessRunner();
+		const mic = new MicCapture({ ffmpegBin: "ffmpeg", runner });
+		const errors: VoiceError[] = [];
+		mic.start(
+			() => {},
+			(e) => errors.push(e),
+		);
+		const h = runner.handles[0];
+		h.emitStderr(": Input/output error");
+		h.emitExit(1);
+		expect(errors).toHaveLength(1);
+		expect(errors[0].code).toBe("subprocess-failed");
+		expect(errors[0].message).toContain("Input/output error");
+		expect(errors[0].message).toContain("-list_devices");
+		expect(errors[0].message).toContain("FLYWHEEL_VOICE_MIC_DEVICE");
+	});
+
+	it("stays silent when exit follows an intentional stop()", () => {
+		const runner = new FakeProcessRunner();
+		const mic = new MicCapture({ ffmpegBin: "ffmpeg", runner });
+		const errors: VoiceError[] = [];
+		mic.start(
+			() => {},
+			(e) => errors.push(e),
+		);
+		const h = runner.handles[0];
+		mic.stop();
+		h.emitExit(null, "SIGTERM");
+		expect(errors).toHaveLength(0);
 	});
 });

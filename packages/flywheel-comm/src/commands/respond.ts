@@ -1,6 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "../db.js";
+import { isReservedApprovalAttribution } from "../founder-attribution.js";
 import { FounderConsentAuditStore } from "../founder-consent-audit.js";
 import { wakeRunnerMailbox } from "../wake.js";
 
@@ -43,6 +44,19 @@ export async function respond(args: RespondArgs): Promise<void> {
 		const checkpoint = question.checkpoint;
 
 		if (checkpoint && GATED_CHECKPOINTS.has(checkpoint)) {
+			// FLY-945 Fix E (Codex code R1 HIGH): the CLI's --lead is caller-
+			// controlled. Refuse the reserved founder-side attributions on the
+			// gated path — otherwise `--lead bridge` (or a founder-snowflake
+			// impersonation) through the bypass/bridge routes would forge a
+			// verify-approval-passable writer. Server-internal writers never go
+			// through this CLI.
+			if (isReservedApprovalAttribution(args.fromAgent)) {
+				throw new Error(
+					`flywheel-comm: "${args.fromAgent}" is a RESERVED approval attribution ` +
+						"(bridge / bridge-founder-consent / a Discord-snowflake founder id) — " +
+						"a Lead cannot respond to an approve_to_ship gate under that name.",
+				);
+			}
 			const bridgeUrl =
 				args.bridgeUrl?.trim() ||
 				env.BRIDGE_URL?.trim() ||

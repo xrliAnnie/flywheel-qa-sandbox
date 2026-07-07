@@ -149,3 +149,10 @@ jobs:
           python3 scripts/hooks/test-flywheel-restart-guard.py
           bash scripts/hooks/test-restart-guard-install.sh
           bash scripts/__tests__/lead-alert-strict-delivery.test.sh
+
+      # FLY-957: record_deployed_range must never kill deploy finalization.
+      # Hermetic — extracts the function from restart-services.sh, runs it under
+      # set -euo pipefail against a throwaway git repo + a PATH-shim node; no
+      # real ~/.flywheel, no network.
+      - name: Test — FLY-957 record_deployed_range best-effort
+        run: bash scripts/__tests__/restart-deployed-range.test.sh

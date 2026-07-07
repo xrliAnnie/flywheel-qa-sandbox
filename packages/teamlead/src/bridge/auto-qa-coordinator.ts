@@ -35,6 +35,10 @@ import {
 	type StateStore,
 } from "../StateStore.js";
 import {
+	readCurrentGateMessageBinding,
+	writeGateMessageBinding,
+} from "./approval-signal/gate-message-binding-store.js";
+import {
 	codexHardGateEnabled,
 	codexHoldStuckThresholdMs,
 	isCodexGateSatisfied,
@@ -191,6 +195,22 @@ export interface AutoQaSideEffects {
 		session: Session;
 		sha?: string;
 	}): Promise<void> | void;
+	/**
+	 * FLY-945 Fix B: post the ship-gate REBIND follow-up to the issue thread —
+	 * "gate 更新:PR head <old8> → <new8>,你的批准将绑定新 head" — and return the
+	 * created Discord message id + thread id so the coordinator can anchor the
+	 * new `(question, head)` binding revision on it (the founder's ✅-reaction
+	 * target). The ORIGINAL gate message is never edited (the founder may have
+	 * already read it; the follow-up preserves her informed consent). Absent /
+	 * `{ok:false}` → the binding row is NOT written (reaction path fail-closed
+	 * for the new head until a retry anchors it); the text-approval path is
+	 * already closed-loop via the session head update.
+	 */
+	notifyShipGateRebound?(args: {
+		session: Session;
+		oldSha: string;
+		newSha: string;
+	}): Promise<{ ok: boolean; messageId?: string; threadId?: string }>;
 }
 
 export interface AutoQaCoordinatorDeps {
@@ -212,6 +232,22 @@ export interface AutoQaCoordinatorDeps {
 	/** FLY-863: test seam for `reconcileStuckCodexHolds`'s "now". Defaults to Date.now. */
 	now?: () => number;
 	logger?: { log(m: string): void; warn(m: string): void };
+	/**
+	 * FLY-945 Fix B: environment probes for the ship-gate head rebind. Wired in
+	 * plugin.ts to `defaultHasGateResponse` / `defaultIsAncestor`
+	 * (ship-gate-rebind.ts). ABSENT → the rebind branch is inert and a
+	 * drifted-head qa_result is dropped exactly as before FLY-945.
+	 */
+	shipGateRebind?: {
+		/** True when the gate question already has a response (fail-closed on error). */
+		hasGateResponse(args: { projectName: string; questionId: string }): boolean;
+		/** True iff oldSha is an ancestor of newSha in the worktree (fail-closed). */
+		isAncestor(args: {
+			worktreePath: string;
+			oldSha: string;
+			newSha: string;
+		}): boolean;
+	};
 }
 
 export class AutoQaCoordinator {
@@ -1051,19 +1087,41 @@ export class AutoQaCoordinator {
 		// prHeadSha that equals the parent's CURRENT reviewed head. A MISSING sha
 		// no longer slips through — it is rejected, not silently accepted (the
 		// qa-result CLI makes prHeadSha optional, so a foreign/stale QA session
-		// could otherwise omit it and release the gate). A new head after QA
-		// started ⇒ stale ⇒ drop (a fresh record/QA covers the new head).
-		const parentSha = parent.pr_head_sha?.toLowerCase();
-		if (
-			!parentSha ||
-			!reportedSha ||
-			!FULL_SHA.test(reportedSha) ||
-			reportedSha !== parentSha
-		) {
+		// could otherwise omit it and release the gate).
+		let parentSha = parent.pr_head_sha?.toLowerCase();
+		if (!parentSha || !reportedSha || !FULL_SHA.test(reportedSha)) {
 			this.log(
 				`dropping stale/unbound qa_result for ${targetExec}: verdict head ${reportedSha ?? "(missing)"} != parent head ${parentSha ?? "?"}`,
 			);
 			return;
+		}
+		if (reportedSha !== parentSha) {
+			// FLY-945 Fix B: a PASS verdict whose head moved FORWARD on the same
+			// branch (QA-evidence commit) re-aims the ship gate instead of dying
+			// (FLY-921: the Bridge held the proof and dropped it). Every rebind
+			// condition is fail-closed; any miss → the exact pre-FLY-945 drop.
+			const rebound = await this.tryShipGateRebind({
+				parent,
+				oldSha: parentSha,
+				newSha: reportedSha,
+				reportedQaExec,
+				verdictStatus: status,
+			});
+			if (!rebound) {
+				this.log(
+					`dropping stale/unbound qa_result for ${targetExec}: verdict head ${reportedSha} != parent head ${parentSha}`,
+				);
+				return;
+			}
+			// Session + record now follow the reported head; this SAME verdict
+			// releases below (no second qa_result needed).
+			parentSha = reportedSha;
+		} else if (status === "pass") {
+			// FLY-945 Fix B retry hook: a prior rebind updated the session head but
+			// the thread follow-up failed → the ✅-reaction anchor is missing. Redo
+			// notify+binding only (idempotent; no-op unless the durable
+			// notify-failed marker exists and the current head is still unanchored).
+			await this.maybeRedoRebindAnchor(parent, parentSha);
 		}
 
 		const record = this.deps.store.getAutoQaRecord(targetExec, parentSha);
@@ -1157,6 +1215,260 @@ export class AutoQaCoordinator {
 				text: `🔴 自动 QA 未通过 → 已把报告交回实现 Runner 修复,QA Runner 保活等复测(同一个,不重开;founder 不打扰)。\n${truncate(summary, 600)}`,
 			});
 		}
+	}
+
+	// ── FLY-945 Fix B: ship-gate head rebind ────────────────────────────────
+
+	/** Write-once durable marker that a rebind's thread follow-up failed. */
+	private rebindNotifyFailedEventId(
+		questionId: string,
+		newSha: string,
+	): string {
+		return `ship-gate-rebind-notify-failed-${questionId}-${newSha}`;
+	}
+
+	private shipGateRebindEnabled(): boolean {
+		const env = this.deps.env ?? process.env;
+		return env.FLYWHEEL_SHIP_GATE_REBIND !== "0";
+	}
+
+	/**
+	 * Attempt the FLY-945 head rebind. ALL conditions must hold (each one
+	 * fail-closed; a miss returns false and the caller drops the verdict exactly
+	 * as before FLY-945):
+	 *  1. feature on + seams wired + verdict is a PASS (only a QA-proven head
+	 *     deserves the gate);
+	 *  2. the parent is awaiting_review (caller-checked) with a REAL bound
+	 *     review question (not null / 'unbound');
+	 *  3. the reporter passes the SAME record validation the normal path runs —
+	 *     the running record for the OLD head must name this exact QA runner
+	 *     (no door for a stranger sha);
+	 *  4. the gate question has NO response yet (an answered gate's approval is
+	 *     frozen on the sha the founder saw; recovery is Fix C's re-review);
+	 *  5. `git merge-base --is-ancestor old new` proves same-branch-forward in
+	 *     the session worktree (missing worktree → refuse).
+	 *
+	 * Actions, in order (plan §2.1): update the session head (the text-approval
+	 * path is closed-loop from HERE — tryFounderShipApproval computes its
+	 * binding from the live session); retarget the auto-QA record so THIS
+	 * verdict releases; post the thread follow-up and — only on a confirmed
+	 * post — anchor the new `(question, head)` binding revision for the
+	 * ✅-reaction path; audit `ship_gate_rebound`.
+	 */
+	private async tryShipGateRebind(args: {
+		parent: Session;
+		oldSha: string;
+		newSha: string;
+		reportedQaExec: string;
+		verdictStatus: "pass" | "fail";
+	}): Promise<boolean> {
+		const { parent, oldSha, newSha, reportedQaExec } = args;
+		if (!this.shipGateRebindEnabled()) return false;
+		if (args.verdictStatus !== "pass") return false;
+		const seams = this.deps.shipGateRebind;
+		if (!seams) return false; // not wired → byte-compatible drop
+
+		const qid = parent.review_question_id;
+		if (!qid || qid === REVIEW_BINDING_UNBOUND) return false;
+
+		const record = this.deps.store.getAutoQaRecord(parent.execution_id, oldSha);
+		if (
+			!record ||
+			record.status !== "running" ||
+			record.qa_execution_id !== reportedQaExec
+		) {
+			return false;
+		}
+
+		try {
+			if (
+				seams.hasGateResponse({
+					projectName: parent.project_name,
+					questionId: qid,
+				})
+			) {
+				return false; // approval already frozen on the old sha → Fix C path
+			}
+		} catch {
+			return false;
+		}
+
+		const worktree = parent.worktree_path;
+		if (!worktree) return false; // cannot prove ancestry → fail-closed
+		try {
+			if (!seams.isAncestor({ worktreePath: worktree, oldSha, newSha })) {
+				return false;
+			}
+		} catch {
+			return false;
+		}
+
+		// ── all conditions hold → act ──
+		if (
+			!this.deps.store.setSessionPrHeadShaForRebind(parent.execution_id, newSha)
+		) {
+			// Concurrent status flip (e.g. an approval landed this instant) — the
+			// WHERE-status guard made this a no-op. Treat as not rebound.
+			return false;
+		}
+		// Record follows the head so the CURRENT verdict releases normally. A CAS
+		// miss here leaves the approval path fixed but the verdict unconsumable
+		// this round — log it (the runner's re-sent qa_result covers it).
+		const retargeted = this.deps.store.retargetAutoQaRecord({
+			parentExecutionId: parent.execution_id,
+			oldSha,
+			newSha,
+			expectStatuses: ["running"],
+		});
+		if (retargeted) {
+			// We consume the verdict synchronously — no retest wake is wanted.
+			this.deps.store.clearRetestWakePending(parent.execution_id, newSha);
+		} else {
+			this.warn(
+				`ship-gate rebind for ${parent.issue_id}: record retarget ${oldSha.slice(0, 8)}→${newSha.slice(0, 8)} CAS-missed (approval path is re-aimed; verdict release waits for a re-sent qa_result)`,
+			);
+		}
+
+		const messageId = await this.ensureRebindAnchor(
+			parent,
+			qid,
+			oldSha,
+			newSha,
+		);
+
+		this.deps.store.insertEvent({
+			event_id: `ship-gate-rebound-${qid}-${newSha}`,
+			execution_id: parent.execution_id,
+			issue_id: parent.issue_id,
+			project_name: parent.project_name,
+			event_type: "ship_gate_rebound",
+			source: "bridge.auto-qa-coordinator",
+			payload: {
+				questionId: qid,
+				oldSha,
+				newSha,
+				gateMessageId: messageId ?? undefined,
+			},
+		});
+		this.log(
+			`ship-gate REBOUND for ${parent.issue_id} (${parent.execution_id}): ${oldSha.slice(0, 8)} → ${newSha.slice(0, 8)} (QA PASS evidence commit)${messageId ? "" : " — thread anchor pending retry"}`,
+		);
+		return true;
+	}
+
+	/**
+	 * Post the rebind follow-up + anchor the new `(question, head)` binding
+	 * revision. Product semantics: after a rebind, a founder ✅ on the OLD gate
+	 * message is a mismatch no-op (that message names the old sha — fail-closed
+	 * correct); THIS follow-up message is the new reactable object. Returns the
+	 * anchored message id, or null when the anchor is still missing (a durable
+	 * write-once `ship_gate_rebind_notify_failed` marker then arms
+	 * `maybeRedoRebindAnchor` for the next PASS qa_result).
+	 */
+	private async ensureRebindAnchor(
+		parent: Session,
+		questionId: string,
+		oldSha: string,
+		newSha: string,
+	): Promise<string | null> {
+		const markFailed = (reason: string) => {
+			this.deps.store.insertEvent({
+				event_id: this.rebindNotifyFailedEventId(questionId, newSha),
+				execution_id: parent.execution_id,
+				issue_id: parent.issue_id,
+				project_name: parent.project_name,
+				event_type: "ship_gate_rebind_notify_failed",
+				source: "bridge.auto-qa-coordinator",
+				payload: { questionId, oldSha, newSha, reason },
+			});
+			this.warn(
+				`ship-gate rebind follow-up NOT anchored for ${parent.issue_id} (${reason}) — reaction path fail-closed on ${newSha.slice(0, 8)} until retried; text approval unaffected`,
+			);
+		};
+
+		const notify = this.deps.effects.notifyShipGateRebound;
+		if (!notify) {
+			markFailed("no_notifier");
+			return null;
+		}
+		try {
+			const res = await notify({ session: parent, oldSha, newSha });
+			if (!res.ok || !res.messageId || !res.threadId) {
+				markFailed("post_failed");
+				return null;
+			}
+			// Anchor only AFTER the post is confirmed (Codex R2 #3: the binding row
+			// must carry a REAL gateMessageId — never write-then-send).
+			writeGateMessageBinding(
+				this.deps.store,
+				{
+					questionId,
+					executionId: parent.execution_id,
+					issueId: parent.issue_id,
+					prHeadSha: newSha,
+					threadId: res.threadId,
+					gateMessageId: res.messageId,
+					checkpoint: "approve_to_ship",
+					postedAt: new Date(this.deps.now?.() ?? Date.now()).toISOString(),
+				},
+				parent.project_name,
+			);
+			return res.messageId;
+		} catch (err) {
+			markFailed(err instanceof Error ? err.message : String(err));
+			return null;
+		}
+	}
+
+	/**
+	 * Retry hook (plan §2.1 #3): the session head already equals the reported
+	 * head, but a PRIOR rebind failed to anchor the follow-up message. Redo
+	 * notify+binding only. Guarded so it can never fire for a normal session:
+	 * requires the durable notify-failed marker for THIS (question, head), no
+	 * existing binding for the current head, and a still-unanswered gate.
+	 */
+	private async maybeRedoRebindAnchor(
+		parent: Session,
+		sha: string,
+	): Promise<void> {
+		if (!this.shipGateRebindEnabled()) return;
+		const seams = this.deps.shipGateRebind;
+		if (!seams) return;
+		const qid = parent.review_question_id;
+		if (!qid || qid === REVIEW_BINDING_UNBOUND) return;
+
+		const failedMarker = this.deps.store
+			.getEventsByExecution(parent.execution_id)
+			.find((e) => e.event_id === this.rebindNotifyFailedEventId(qid, sha));
+		if (!failedMarker) return;
+		if (
+			readCurrentGateMessageBinding(
+				this.deps.store,
+				parent.execution_id,
+				qid,
+				sha,
+			)
+		) {
+			return; // already anchored
+		}
+		try {
+			if (
+				seams.hasGateResponse({
+					projectName: parent.project_name,
+					questionId: qid,
+				})
+			) {
+				return; // approval already landed — no anchor needed
+			}
+		} catch {
+			return;
+		}
+		const oldSha =
+			typeof (failedMarker.payload as Record<string, unknown> | undefined)
+				?.oldSha === "string"
+				? ((failedMarker.payload as Record<string, unknown>).oldSha as string)
+				: "(unknown)";
+		await this.ensureRebindAnchor(parent, qid, oldSha, sha);
 	}
 
 	/**

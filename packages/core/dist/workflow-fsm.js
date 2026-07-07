@@ -116,7 +116,21 @@ export const WORKFLOW_TRANSITIONS = {
     // rejected it and the session stayed stuck in approved_to_ship (the same
     // latent stuck-state family as the LEARN-12 incident). `blocked` already
     // has human-unblock exits (deferred/shelved/terminated).
-    approved_to_ship: ["completed", "blocked", "failed", "terminated"],
+    //
+    // FLY-945 Fix C: `awaiting_review` added — an approved session whose head
+    // moved after the approval (verify-approval pr_head_sha mismatch) legally
+    // RE-OPENS review with a NEW gate question (`complete --route needs_review
+    // --question-id <new>`). All completion sinks map that combination (new
+    // questionId ≠ current binding, no merged landing) back to awaiting_review;
+    // without this edge the recovery lap was FSM-invalid and fell into the 5a
+    // evidence-gap completion instead of a fresh review window.
+    approved_to_ship: [
+        "awaiting_review",
+        "completed",
+        "blocked",
+        "failed",
+        "terminated",
+    ],
     blocked: ["deferred", "shelved", "terminated"],
     failed: ["shelved", "terminated"],
     rejected: ["shelved", "terminated"],

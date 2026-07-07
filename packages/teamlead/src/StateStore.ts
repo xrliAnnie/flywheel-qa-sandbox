@@ -2742,6 +2742,29 @@ export class StateStore {
 		this.save();
 	}
 
+	/**
+	 * FLY-945 Fix B: update ONLY the reviewed head of a session that is still
+	 * `awaiting_review` — the ship-gate rebind after a QA-evidence commit moved
+	 * the PR head forward (`git merge-base --is-ancestor` verified by the
+	 * caller). The `review_question_id` binding is intentionally untouched (the
+	 * gate question does not rotate on a rebind). The status guard is in the
+	 * WHERE clause so a concurrent approval flip (awaiting_review →
+	 * approved_to_ship) makes this a no-op instead of retargeting a decided
+	 * gate. Returns true iff the row was updated.
+	 */
+	setSessionPrHeadShaForRebind(
+		executionId: string,
+		prHeadSha: string,
+	): boolean {
+		this.db.run(
+			"UPDATE sessions SET pr_head_sha = ? WHERE execution_id = ? AND status = 'awaiting_review'",
+			[prHeadSha, executionId],
+		);
+		const updated = this.db.getRowsModified() > 0;
+		this.save();
+		return updated;
+	}
+
 	getSessionByIdentifier(identifier: string): Session | undefined {
 		const stmt = this.db.prepare(
 			"SELECT * FROM sessions WHERE issue_identifier = ? ORDER BY last_activity_at DESC LIMIT 1",
@@ -2912,6 +2935,57 @@ export class StateStore {
 		}
 		stmt.free();
 		return results;
+	}
+
+	/**
+	 * FLY-945 Fix D: parked (awaiting_review / approved_to_ship) sessions of a
+	 * project — path-1 candidates for the external-merge reconcile pass.
+	 */
+	listParkedSessionsForProject(projectName: string): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE project_name = ?
+			   AND status IN ('awaiting_review', 'approved_to_ship')
+			 ORDER BY last_activity_at ASC`,
+		);
+		stmt.bind([projectName]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
+	 * FLY-945 Fix D: recently-completed sessions of a project that carry a PR
+	 * clue — path-2 (completed-but-unfinalized) candidates. Bounded by
+	 * `sinceTs` (SQLite UTC "YYYY-MM-DD HH:MM:SS") so the sweep never digs
+	 * through old history.
+	 */
+	listCompletedSessionsWithPrSince(
+		projectName: string,
+		sinceTs: string,
+	): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE project_name = ?
+			   AND status = 'completed'
+			   AND last_activity_at >= ?
+			   AND (pr_number IS NOT NULL OR pr_head_sha IS NOT NULL)
+			 ORDER BY last_activity_at ASC`,
+		);
+		stmt.bind([projectName, sinceTs]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
 	}
 
 	getTerminalSessionsSince(sinceTs: string): Session[] {

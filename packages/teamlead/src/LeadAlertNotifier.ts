@@ -117,7 +117,13 @@ export type AlertEventType =
 	// FLY-954: <state>/bin runtime-script drift detected by
 	// scripts/converge-flywheel-bin.sh (shell path via lead-alert.sh; the
 	// Bridge never emits this kind itself — union parity only).
-	| "bin_integrity_drift";
+	| "bin_integrity_drift"
+	// FLY-945 Fix D: the external-merge reconcile pass found a merged PR it
+	// cannot verify (no founder-attributed approval, or the merged head differs
+	// from the head the approval was bound to) OR an externally-merged parked
+	// session that is not ship-eligible. Lead-only — the session is NOT
+	// finalized/archived; a human must look at the merge.
+	| "external_merge_suspect";
 
 export type AlertSeverity = "info" | "warning" | "severe";
 

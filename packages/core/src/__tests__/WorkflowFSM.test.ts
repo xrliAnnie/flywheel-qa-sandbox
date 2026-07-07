@@ -49,6 +49,10 @@ describe("WorkflowFSM", () => {
 		// route=blocked branch needs this edge or the session sticks in
 		// approved_to_ship forever (LEARN-12 stuck-state family).
 		["approved_to_ship", "blocked"],
+		// FLY-945 Fix C: an approval expired on a head move (verify-approval
+		// pr_head_sha mismatch) → the runner re-opens review with a NEW gate
+		// question; the sinks map that back to awaiting_review.
+		["approved_to_ship", "awaiting_review"],
 		// GEO-168: blocked/failed/rejected → running removed (retry is composite)
 		["blocked", "deferred"],
 		["blocked", "shelved"],
