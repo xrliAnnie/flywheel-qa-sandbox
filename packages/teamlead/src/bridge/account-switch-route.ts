@@ -225,8 +225,11 @@ export function createAccountSwitchRouter(
 			});
 			// Post the result back to the Alerts thread — best-effort (the switch has
 			// already committed; a Discord post failure must not 500 the request).
+			// FLY-929 (Codex code R1 HIGH): the disposition MUST ride along so the
+			// bot-claimed path gets the same W6 digest + A5 owner-mention routing
+			// as the watchdog path (plugin.ts postSwitchResult reads it).
 			try {
-				await rt.postResult(disposition.detail);
+				await rt.postResult(disposition.detail, disposition);
 			} catch (err) {
 				console.warn(
 					`[account-switch] postResult failed: ${(err as Error).message}`,
