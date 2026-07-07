@@ -1,13 +1,13 @@
 ---
 issue: FLY-954
-phase: design
-phaseCursor: 4/4
-updated: 2026-07-07T16:13:33.888Z
-nextStep: commit docs + complete phase_design_complete + park
+phase: implement
+phaseCursor: 0/9
+updated: 2026-07-07T16:15:20.925Z
+nextStep: "Task 1: script-sanity.sh lib (TDD RED)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-954 progress
-**phase**: design (4/4)
-**next**: commit docs + complete phase_design_complete + park
+**phase**: implement (0/9)
+**next**: Task 1: script-sanity.sh lib (TDD RED)
