@@ -1,13 +1,13 @@
 ---
 issue: FLY-967
 phase: implement
-phaseCursor: 0/10
-updated: 2026-07-07T20:20:59.199Z
-nextStep: P1 voice-core systemPreamble/sendText/voiceName TDD
+phaseCursor: 1/10
+updated: 2026-07-07T20:30:20.487Z
+nextStep: P8 Bridge routes (comment + issue query, 545 P12 contract)
 chunks: []
 pointers: {}
 ---
 
 # FLY-967 progress
-**phase**: implement (0/10)
-**next**: P1 voice-core systemPreamble/sendText/voiceName TDD
+**phase**: implement (1/10)
+**next**: P8 Bridge routes (comment + issue query, 545 P12 contract)
