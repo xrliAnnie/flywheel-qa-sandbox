@@ -1,13 +1,14 @@
 ---
 issue: FLY-967
 phase: implement
-phaseCursor: 9/10
-updated: 2026-07-07T23:14:12.154Z
-nextStep: P7 LiveCommand + config assistant block + index exports + full suite/lint + PR
+phaseCursor: 10/10
+updated: 2026-07-07T23:19:08.066Z
+nextStep: mock-complete; code review + PR decision (545 PR-1 not yet on main —
+  coordinate push/PR with Tadashi)
 chunks: []
 pointers: {}
 ---
 
 # FLY-967 progress
-**phase**: implement (9/10)
-**next**: P7 LiveCommand + config assistant block + index exports + full suite/lint + PR
+**phase**: implement (10/10)
+**next**: mock-complete; code review + PR decision (545 PR-1 not yet on main — coordinate push/PR with Tadashi)
