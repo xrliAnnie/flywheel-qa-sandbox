@@ -905,3 +905,142 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 		expect(body.allowed_mentions).toEqual({ parse: [] });
 	});
 });
+
+describe("LeadAlertNotifier — FLY-927 Task 1.3: single sender identity (D2)", () => {
+	let store: StateStore;
+	let queueDir: string;
+	const saved: Record<string, string | undefined> = {};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		queueDir = mkdtempSync(join(tmpdir(), "fly927-sender-"));
+		for (const k of [
+			"SIMBA_BOT_TOKEN",
+			"CASS_BOT_TOKEN",
+			"INFRA_SENDER_TOKEN",
+			"FLYWHEEL_ALERT_SENDER_TOKEN_ENV",
+		]) {
+			saved[k] = process.env[k];
+		}
+		process.env.SIMBA_BOT_TOKEN = "simba-tok";
+		process.env.CASS_BOT_TOKEN = "cass-tok";
+	});
+	afterEach(() => {
+		rmSync(queueDir, { recursive: true, force: true });
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+
+	const unified = { channelId: "OPS-CHAN", repairBotTokenEnv: "CASS_BOT_TOKEN" };
+
+	function okFetch() {
+		return vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "root-1" }),
+		});
+	}
+
+	it("sender env set → root posts with THAT token, own-bot chain never tried", async () => {
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "INFRA_SENDER_TOKEN";
+		process.env.INFRA_SENDER_TOKEN = "infra-tok";
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(result.sent).toBe(true);
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(
+			(
+				(fetchFn.mock.calls[0] as [string, RequestInit])[1].headers as Record<
+					string,
+					string
+				>
+			).Authorization,
+		).toBe("Bot infra-tok");
+	});
+
+	it("sender env set but UNRESOLVABLE → dead-letter, NO silent own-bot fallback", async () => {
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "INFRA_SENDER_TOKEN";
+		delete process.env.INFRA_SENDER_TOKEN;
+		const fetchFn = okFetch();
+		const dlDir = mkdtempSync(join(tmpdir(), "fly927-sender-dl-"));
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir: dlDir,
+			unifiedAlert: unified,
+		});
+		const result = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(result.deadLettered).toBe(true);
+		expect(fetchFn).not.toHaveBeenCalled(); // own bot (simba) never consulted
+		expect(readdirSync(dlDir).length).toBe(1);
+		rmSync(dlDir, { recursive: true, force: true });
+	});
+
+	it("SENTINEL: sender env unset → legacy own-bot attribution unchanged", async () => {
+		delete process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV;
+		const fetchFn = okFetch();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(
+			(
+				(fetchFn.mock.calls[0] as [string, RequestInit])[1].headers as Record<
+					string,
+					string
+				>
+			).Authorization,
+		).toBe("Bot simba-tok");
+	});
+
+	it("drainQueue retries with the sender identity too (same chain logic)", async () => {
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = "INFRA_SENDER_TOKEN";
+		process.env.INFRA_SENDER_TOKEN = "infra-tok";
+		// First send: transient 503 → queued.
+		const fetch503 = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 503,
+			statusText: "Service Unavailable",
+			text: async () => "",
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: fetch503,
+			queueDir,
+			unifiedAlert: unified,
+		});
+		const queued = await notifier.alert(buildPayload({ leadId: "cos-lead" }));
+		expect(queued).toEqual({ queued: true });
+		// Drain succeeds with the sender token.
+		const fetchOk = okFetch();
+		(notifier as unknown as { fetchFn: typeof fetchOk }).fetchFn = fetchOk;
+		const drained = await notifier.drainQueue();
+		expect(drained.sent).toBe(1);
+		expect(
+			(
+				(fetchOk.mock.calls[0] as [string, RequestInit])[1].headers as Record<
+					string,
+					string
+				>
+			).Authorization,
+		).toBe("Bot infra-tok");
+	});
+});

@@ -584,7 +584,18 @@ export class LeadAlertNotifier {
 		status?: number;
 	}> {
 		const repairEnv = this.unifiedAlert?.repairBotTokenEnv ?? "";
-		const chain = buildSendChain(this.projects, payload.leadId, repairEnv);
+		// FLY-927 (D2, single sender identity): when FLYWHEEL_ALERT_SENDER_TOKEN_ENV
+		// names a token env, the send chain COLLAPSES to that one identity — the
+		// gate keeper's own voice, replacing the own-bot→Cass→alpha attribution
+		// chain (the 7-06 PRD decision supersedes the 6-22 own-bot one). If the
+		// named env doesn't resolve, the loop below finds no token and the caller
+		// dead-letters + meta-alerts — deliberately NO silent fallback to the
+		// own-bot chain (gating semantics: better a dead-letter than an
+		// unauthorized sender). Unset ⇒ the legacy chain, byte-identical.
+		const senderEnv = process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+		const chain = senderEnv
+			? [senderEnv]
+			: buildSendChain(this.projects, payload.leadId, repairEnv);
 		let lastStatus: number | undefined;
 		for (const tokenEnv of chain) {
 			const token = process.env[tokenEnv];

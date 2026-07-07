@@ -4873,11 +4873,20 @@ export async function startBridge(
 	// watchdog (piggybacked on onPollComplete below, no new timer) share one
 	// DiscordOps + one accountSwitch instance. accountSwitch is gated on
 	// FLYWHEEL_ACCOUNT_SELF_HEAL (default OFF = byte-compat → undefined).
-	const alertDiscordOps = createDiscordOps(() =>
-		buildRepairChain(projects, repairBotTokenEnvName)
+	const alertDiscordOps = createDiscordOps(() => {
+		// FLY-927 (D2): single sender identity — when set, Hub thread operations
+		// use the SAME one identity as the root alert (no repair-chain fan-out).
+		// Unresolvable token ⇒ empty chain ⇒ the op fails loudly via the Hub's
+		// safe wrapper (never a silent other-bot fallback). Unset ⇒ legacy chain.
+		const senderEnv = process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+		if (senderEnv) {
+			const t = process.env[senderEnv];
+			return t ? [t] : [];
+		}
+		return buildRepairChain(projects, repairBotTokenEnvName)
 			.map((env) => process.env[env])
-			.filter((t): t is string => !!t),
-	);
+			.filter((t): t is string => !!t);
+	});
 	const accountSwitchRepair =
 		process.env.FLYWHEEL_ACCOUNT_SELF_HEAL === "1"
 			? makeAccountSwitchRepair({
