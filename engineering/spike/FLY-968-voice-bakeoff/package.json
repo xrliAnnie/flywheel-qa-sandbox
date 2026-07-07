@@ -1,0 +1,9 @@
+{
+	"name": "fly968-voice-bakeoff-spike",
+	"private": true,
+	"type": "module",
+	"dependencies": {
+		"@google/genai": "^1.16.0",
+		"ws": "^8.18.0"
+	}
+}
