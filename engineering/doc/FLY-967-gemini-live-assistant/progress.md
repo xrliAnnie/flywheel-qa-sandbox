@@ -1,13 +1,14 @@
 ---
 issue: FLY-967
 phase: implement
-phaseCursor: 1/10
-updated: 2026-07-07T20:30:20.487Z
-nextStep: P8 Bridge routes (comment + issue query, 545 P12 contract)
+phaseCursor: 2/10
+updated: 2026-07-07T20:41:02.650Z
+nextStep: await 545 PR-1 scaffold for assistant/* (P2-P7); meanwhile Gemini-side
+  spike prep
 chunks: []
 pointers: {}
 ---
 
 # FLY-967 progress
-**phase**: implement (1/10)
-**next**: P8 Bridge routes (comment + issue query, 545 P12 contract)
+**phase**: implement (2/10)
+**next**: await 545 PR-1 scaffold for assistant/* (P2-P7); meanwhile Gemini-side spike prep
