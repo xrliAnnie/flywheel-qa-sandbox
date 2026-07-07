@@ -126,6 +126,51 @@ export function createDiscordOps(
 				`Discord archiveThread exhausted repair chain (last=${lastStatus ?? "no-token"}) for ${threadId}`,
 			);
 		},
+		// FLY-927 (Task 2.3): root-message read + edit for the 🎫 status
+		// edit-in-place. Both best-effort (null/false on any failure) — the thread
+		// narrative is the truth stream; the root status is a courtesy render.
+		async getMessage(channelId, messageId) {
+			for (const token of getTokens()) {
+				try {
+					const res = await fetchFn(
+						`${DISCORD_API}/channels/${channelId}/messages/${messageId}`,
+						{ headers: authHeaders(token) },
+					);
+					if (res.ok) {
+						const body = (await res.json()) as { content?: string };
+						return body.content ?? null;
+					}
+					if (isPermFallthrough(res.status)) continue;
+					return null;
+				} catch {
+					return null;
+				}
+			}
+			return null;
+		},
+		async editMessage(channelId, messageId, content) {
+			for (const token of getTokens()) {
+				try {
+					const res = await fetchFn(
+						`${DISCORD_API}/channels/${channelId}/messages/${messageId}`,
+						{
+							method: "PATCH",
+							headers: authHeaders(token),
+							body: JSON.stringify({
+								content,
+								allowed_mentions: { parse: [] as string[] },
+							}),
+						},
+					);
+					if (res.ok) return true;
+					if (isPermFallthrough(res.status)) continue;
+					return false;
+				} catch {
+					return false;
+				}
+			}
+			return false;
+		},
 	};
 }
 
@@ -149,6 +194,18 @@ export interface DiscordOps {
 	): Promise<void>;
 	/** Archive a thread (best-effort). */
 	archiveThread(threadId: string): Promise<void>;
+	/**
+	 * FLY-927 (Task 2.3): read a message's content / edit it in place — the 🎫
+	 * status edit path. OPTIONAL (older DiscordOps impls / test doubles without
+	 * them simply skip the root status render; the thread narrative remains the
+	 * truth stream).
+	 */
+	getMessage?(channelId: string, messageId: string): Promise<string | null>;
+	editMessage?(
+		channelId: string,
+		messageId: string,
+		content: string,
+	): Promise<boolean>;
 }
 
 export interface AlertChannelHubDeps {
@@ -282,6 +339,16 @@ export class AlertChannelHub {
 			eventType: payload.eventType,
 			sessionKey: payload.sessionKey ?? null,
 			repairStatus: this.deps.autoRepairBot ? "pending" : null,
+			// FLY-927 (Task 2.3): ticket lifecycle seed from the enriched payload
+			// (absent = legacy row, NULL status — the state machine never drives it).
+			ticketStatus: payload.ticket?.status ?? null,
+			ownerRef: payload.ticket?.ownerRef ?? null,
+			firstSeenAt: payload.ticket
+				? new Date(payload.ticket.firstSeenMs)
+						.toISOString()
+						.replace("T", " ")
+						.slice(0, 19)
+				: null,
 		});
 		// FLY-368 v1.58.0: ack is HONEST per kind (no premature "waiting for human"):
 		//  - Cass will try this kind → "正在尝试自动修复…"
@@ -332,6 +399,47 @@ export class AlertChannelHub {
 				ck,
 				repair.outcome === "attempted" ? "attempted" : "needs_human",
 			);
+			// FLY-927 (Task 2.3): ticket lifecycle — Cass's immediate ARC counts an
+			// attempt toward the T2 budget; needs_human is a direct escalation. The
+			// root 🎫 line is re-rendered in place (best-effort).
+			if (payload.ticket) {
+				if (repair.outcome === "attempted") {
+					this.deps.store.setTicketStatus(ck, "REPAIRING");
+					this.deps.store.bumpTicketAttempt(ck);
+					await this.updateRootTicketStatus(channelId, messageId, "REPAIRING");
+				} else {
+					this.deps.store.setTicketStatus(ck, "ESCALATED");
+					await this.updateRootTicketStatus(channelId, messageId, "ESCALATED");
+				}
+			}
+		}
+	}
+
+	/**
+	 * FLY-927 (Task 2.3): re-render the root message's 🎫 status segment in
+	 * place. Best-effort at every step — missing ops methods / message gone /
+	 * no 🎫 line all degrade silently (the thread narrative is the truth stream).
+	 */
+	private async updateRootTicketStatus(
+		channelId: string,
+		messageId: string | null | undefined,
+		status: string,
+	): Promise<void> {
+		const ops = this.deps.discord;
+		if (!messageId || !ops.getMessage || !ops.editMessage) return;
+		try {
+			const content = await ops.getMessage(channelId, messageId);
+			if (!content) return;
+			const updated = content.replace(
+				/^(🎫 .*· 状态 )\S+$/mu,
+				`$1${status}`,
+			);
+			if (updated === content) return; // no 🎫 line (legacy root) — skip
+			await ops.editMessage(channelId, messageId, updated);
+		} catch (err) {
+			this.logger(
+				`root ticket-status edit failed (${messageId}): ${(err as Error).message}`,
+			);
 		}
 	}
 
@@ -374,6 +482,16 @@ export class AlertChannelHub {
 	async resolve(correlationKey: string): Promise<void> {
 		const active = this.deps.store.getActiveAlertThread(correlationKey);
 		if (!active) return;
+		// FLY-927 (Task 2.3): a ticket row flips to RESOLVED (quiet — never @Annie)
+		// with the root 🎫 line re-rendered; legacy rows (NULL status) untouched.
+		if (active.ticket_status) {
+			this.deps.store.setTicketStatus(correlationKey, "RESOLVED");
+			await this.updateRootTicketStatus(
+				active.channel_id,
+				active.root_message_id,
+				"RESOLVED",
+			);
+		}
 		await this.safePostToThread(active.thread_id, this.formatResolved(active));
 		await this.safeArchive(active.thread_id);
 		this.deps.store.resolveAlertThread(correlationKey);

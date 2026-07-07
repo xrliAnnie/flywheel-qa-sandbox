@@ -154,3 +154,95 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		);
 	});
 });
+
+describe("FLY-927 Task 2.3: owner enrichment (🎫 context before the sink)", () => {
+	let store: StateStore;
+	let rawSink: { alert: ReturnType<typeof vi.fn> };
+	const saved: Record<string, string | undefined> = {};
+
+	beforeEach(async () => {
+		store = await StateStore.create(":memory:");
+		rawSink = {
+			alert: vi.fn(async (): Promise<AlertResult> => ({ sent: true })),
+		};
+		for (const k of [
+			"FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID",
+			"FLYWHEEL_INFRA_BOT_USER_ID",
+		]) {
+			saved[k] = process.env[k];
+		}
+		process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID = "111111111111111111";
+		process.env.FLYWHEEL_INFRA_BOT_USER_ID = "222222222222222222";
+	});
+	afterEach(() => {
+		for (const [k, v] of Object.entries(saved)) {
+			if (v === undefined) delete process.env[k];
+			else process.env[k] = v;
+		}
+	});
+
+	function makeSink(tickets = true) {
+		return buildInfraAlertRouting({
+			store,
+			projects,
+			rawSink,
+			routingEnabled: () => true,
+			ticketsEnabled: () => tickets,
+			logger: () => {},
+			now: () => Date.UTC(2026, 6, 7, 9, 5),
+		});
+	}
+
+	it("ticket kind gets owner context (claude lead default → cross to codex bot for auth kinds)", async () => {
+		const sink = makeSink();
+		await sink.alert({ ...payload("login_expired"), sessionKey: undefined });
+		const enriched = rawSink.alert.mock.calls[0]![0] as AlertPayload;
+		// flywheel-eng-lead has no backend → claude default → CROSS to codex bot.
+		expect(enriched.ticket).toMatchObject({
+			ownerUserId: "222222222222222222",
+			ownerLabel: "codex bot",
+			status: "NEW",
+			ownerRef: "infra_bot:codex",
+			firstSeenMs: Date.UTC(2026, 6, 7, 9, 5),
+		});
+	});
+
+	it("provider-agnostic kind → claude bot owner", async () => {
+		const sink = makeSink();
+		await sink.alert({ ...payload("pane_hash_stuck"), sessionKey: undefined });
+		const enriched = rawSink.alert.mock.calls[0]![0] as AlertPayload;
+		expect(enriched.ticket?.ownerRef).toBe("infra_bot:claude");
+		expect(enriched.ticket?.ownerUserId).toBe("111111111111111111");
+	});
+
+	it("runner_lead_pending_unhandled lands directly ESCALATED with no owner", async () => {
+		const sink = makeSink();
+		await sink.alert({
+			...payload("runner_lead_pending_unhandled"),
+			sessionKey: undefined,
+		});
+		const enriched = rawSink.alert.mock.calls[0]![0] as AlertPayload;
+		// unbound progress kind fail-safes to the ticket queue AND carries the
+		// direct-ESCALATED status… wait: progress kinds are never enriched.
+		expect(enriched.ticket).toBeUndefined();
+	});
+
+	it("tickets disabled → payload passes through un-enriched (byte-compat)", async () => {
+		const sink = makeSink(false);
+		await sink.alert({ ...payload("rate_limit"), sessionKey: undefined });
+		expect(
+			(rawSink.alert.mock.calls[0]![0] as AlertPayload).ticket,
+		).toBeUndefined();
+	});
+
+	it("issue-progress kinds are never 🎫-enriched", async () => {
+		const sink = makeSink();
+		await sink.alert({
+			...payload("three_stage_stuck"),
+			sessionKey: "no-such-exec",
+		});
+		expect(
+			(rawSink.alert.mock.calls[0]![0] as AlertPayload).ticket,
+		).toBeUndefined();
+	});
+});

@@ -212,6 +212,8 @@ export interface AlertTicketContext {
 	status: string;
 	/** First-seen instant (ms epoch) — claims/episode first time. */
 	firstSeenMs: number;
+	/** Persisted owner ref (`infra_bot:claude|codex` / `lead:<id>`); not rendered. */
+	ownerRef?: string;
 }
 
 export interface AlertPayload {

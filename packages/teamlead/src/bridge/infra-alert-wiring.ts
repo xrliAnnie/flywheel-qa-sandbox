@@ -12,12 +12,20 @@ import type {
 } from "../LeadAlertNotifier.js";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
+import { correlationKeyFor } from "./AlertChannelHub.js";
 import { emitIssueThreadInfraNotification } from "./founder-thread-notifier.js";
 import {
 	type AlertSinkLike,
 	type BoundIssueThread,
 	createInfraAlertSink,
+	ISSUE_PROGRESS_KINDS,
 } from "./infra-event-router.js";
+import {
+	deriveTicketProvider,
+	ownerRegistryFromEnv,
+	ownerTicketFace,
+	resolveTicketOwner,
+} from "./ticket-owner-map.js";
 
 function parseLabels(raw: string | undefined | null): string[] {
 	if (!raw) return [];
@@ -40,9 +48,12 @@ export interface InfraAlertRoutingDeps {
 	rawSink: AlertSinkLike;
 	/** Test seams. */
 	routingEnabled?: () => boolean;
+	/** FLY-927 (Task 2.3): 🎫 owner enrichment gate; default FLYWHEEL_ALERT_TICKETS. */
+	ticketsEnabled?: () => boolean;
 	fetchImpl?: typeof fetch;
 	sleepFn?: (ms: number) => Promise<void>;
 	logger?: (msg: string) => void;
+	now?: () => number;
 }
 
 /**
@@ -129,11 +140,76 @@ export function buildInfraAlertRouting(
 		return fallback ?? { queued: true };
 	};
 
-	return createInfraAlertSink({
+	const routedSink = createInfraAlertSink({
 		rawSink: deps.rawSink,
 		routingEnabled: deps.routingEnabled,
 		resolveBoundIssueThread,
 		deliverToIssueThread,
 		logger: deps.logger,
 	});
+
+	// FLY-927 (Task 2.3): owner @-target enrichment. The root POST is the ONLY
+	// moment the mention can ride atomically (the Hub sees the messageId after
+	// the fact), so the ticket context — owner, status, first-seen — is computed
+	// HERE, before the sink. Ticket-queue kinds only; issue-progress kinds never
+	// render a 🎫 header. Enrichment failure degrades to the un-enriched payload
+	// (owner —), never blocks the alert.
+	const ticketsEnabled =
+		deps.ticketsEnabled ?? (() => process.env.FLYWHEEL_ALERT_TICKETS === "1");
+	const now = deps.now ?? (() => Date.now());
+	const enrich = (payload: AlertPayload): AlertPayload => {
+		if (!ticketsEnabled() || payload.ticket) return payload;
+		if (ISSUE_PROGRESS_KINDS.has(payload.eventType)) return payload;
+		try {
+			const reg = ownerRegistryFromEnv(process.env);
+			const session = payload.sessionKey
+				? deps.store.getSession(payload.sessionKey)
+				: undefined;
+			const provider = session?.adapter_type
+				? deriveTicketProvider({ adapterType: session.adapter_type })
+				: deriveTicketProvider({
+						leadBackend:
+							deps.projects
+								.find((p) => p.projectName === payload.projectName)
+								?.leads.find((l) => l.agentId === payload.leadId)?.backend ??
+							null,
+					});
+			const owner = resolveTicketOwner(payload.eventType, provider, reg);
+			const face = ownerTicketFace(owner);
+			// FLY-637-ext ladder output arrives with its owner-first response spent
+			// — the ticket lands directly ESCALATED (Task 2.1 contract).
+			const status =
+				payload.eventType === "runner_lead_pending_unhandled"
+					? "ESCALATED"
+					: "NEW";
+			// first-seen: a re-fire of the SAME episode keeps the original stamp.
+			const active = deps.store.getActiveAlertThread(
+				correlationKeyFor(payload),
+			);
+			const firstSeenMs =
+				active?.event_id === payload.eventId && active.first_seen_at
+					? Date.parse(`${active.first_seen_at.replace(" ", "T")}Z`) || now()
+					: now();
+			const ownerRef =
+				owner.kind === "infra_bot"
+					? `infra_bot:${owner.side}`
+					: owner.kind === "lead"
+						? `lead:${owner.leadId}`
+						: "";
+			return {
+				...payload,
+				ticket: {
+					ownerUserId: face.ownerUserId,
+					ownerLabel: face.ownerLabel,
+					status,
+					firstSeenMs,
+					ownerRef,
+				},
+			};
+		} catch {
+			return payload; // never block an alert on enrichment
+		}
+	};
+
+	return { alert: (payload) => routedSink.alert(enrich(payload)) };
 }

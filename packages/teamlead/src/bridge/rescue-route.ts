@@ -33,6 +33,18 @@ export interface RescueRouteRuntime {
 		leadId: string;
 	}) => Promise<RescueOutcome>;
 	rescueRunner: (input: { executionId: string }) => Promise<RescueOutcome>;
+	/**
+	 * FLY-927 (Task 2.3): ticket ACK — the owner bot calling /api/rescue IS the
+	 * claim. The wiring resolves the ACTIVE ticket row by (leadId, kind) /
+	 * (executionId session_key, kind); unresolved = no-op (never acks the wrong
+	 * episode). Optional + best-effort (byte-compat).
+	 */
+	ackTicket?: (input: {
+		route: "lead" | "runner";
+		projectName?: string;
+		leadId?: string;
+		executionId?: string;
+	}) => void;
 }
 
 export interface RescueRouteDeps {
@@ -85,6 +97,16 @@ export function createRescueRouter(deps: RescueRouteDeps): Router {
 					"account self-heal is disabled (FLYWHEEL_ACCOUNT_SELF_HEAL off) — no rescue performed",
 			});
 			return;
+		}
+
+		// FLY-927 (Task 2.3): the rescue call is the owner bot's claim — ACK the
+		// matching active ticket (best-effort; never blocks the rescue).
+		if (rt.ackTicket) {
+			try {
+				rt.ackTicket({ route, projectName, leadId, executionId });
+			} catch (err) {
+				console.warn(`[rescue] ticket ack failed: ${(err as Error).message}`);
+			}
 		}
 
 		try {

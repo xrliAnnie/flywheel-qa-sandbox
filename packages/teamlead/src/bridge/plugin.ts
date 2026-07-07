@@ -4959,6 +4959,15 @@ export async function startBridge(
 					`account_switch_${e.phase}`,
 					JSON.stringify(e),
 				),
+			// FLY-927 (Task 2.3): the atomic pending-switch claim ACKs the matching
+			// ACTIVE ticket — exact event-id correlation, so a stale episode can
+			// never be acked; legacy rows (NULL ticket_status) untouched.
+			ackTicket: (sourceAlertId) => {
+				const row = store.getActiveAlertThreadByEventId(sourceAlertId);
+				if (row?.ticket_status) {
+					store.setTicketStatus(row.correlation_key, "ACK");
+				}
+			},
 		};
 
 		// FLY-871 R3/C9: build the infra self-heal rescue runtime — binds the pure
@@ -5117,6 +5126,31 @@ export async function startBridge(
 		rescueRouteHolder.current = {
 			rescueLead: rescueRuntime.rescueLead,
 			rescueRunner: rescueRuntime.rescueRunner,
+			// FLY-927 (Task 2.3): a rescue call is the owner bot's claim — ACK the
+			// matching ACTIVE ticket. Lead rescues correlate by (leadId,
+			// login_expired); runner rescues by (session_key=executionId,
+			// runner_login_expired). Unresolved / legacy row = no-op (never ack the
+			// wrong episode).
+			ackTicket: ({ route, leadId, executionId }) => {
+				const row =
+					route === "lead"
+						? leadId
+							? store.getActiveAlertThreadByLeadAndType(
+									leadId,
+									"login_expired",
+								)
+							: undefined
+						: store
+								.listActiveAlertThreads()
+								.find(
+									(r) =>
+										r.session_key === executionId &&
+										r.event_type === "runner_login_expired",
+								);
+				if (row?.ticket_status) {
+					store.setTicketStatus(row.correlation_key, "ACK");
+				}
+			},
 		};
 		// FLY-871 R3/W5: on a successful bot-claimed switch (the /api/account-switch
 		// route), sweep the incident-window login-stuck sessions. The watchdog-fired
