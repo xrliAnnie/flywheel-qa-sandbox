@@ -1396,6 +1396,24 @@ export class StateStore {
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_alert_threads_active ON alert_threads(resolved_at)",
 		);
+		// FLY-927 (Task 2.2): ticket lifecycle columns — idempotent ADD COLUMN
+		// (the FLY-267 reply_channel_id migration pattern). NULL ticket_status on
+		// old rows = legacy semantics; the ticket state machine only drives rows
+		// opened with an explicit status.
+		for (const [col, ddl] of [
+			["ticket_status", "ticket_status TEXT"],
+			["owner_ref", "owner_ref TEXT"],
+			["attempt_count", "attempt_count INTEGER DEFAULT 0"],
+			["first_seen_at", "first_seen_at TEXT"],
+			["acked_at", "acked_at TEXT"],
+		] as const) {
+			const has = this.db.exec(
+				`SELECT 1 FROM pragma_table_info('alert_threads') WHERE name='${col}'`,
+			);
+			if (has.length === 0 || has[0]!.values.length === 0) {
+				this.db.run(`ALTER TABLE alert_threads ADD COLUMN ${ddl}`);
+			}
+		}
 
 		// FLY-818 M3: durable per-eventId founder-page ledger. Records whether a
 		// GENUINE founder page (an @founder message in the stuck runner's [FLY-XX]
@@ -4327,13 +4345,18 @@ export class StateStore {
 		eventType: string;
 		sessionKey?: string | null;
 		repairStatus?: string | null;
+		/** FLY-927: ticket lifecycle seed (absent = legacy row, NULL status). */
+		ticketStatus?: string | null;
+		ownerRef?: string | null;
+		firstSeenAt?: string | null;
 	}): void {
 		this.db.run(
 			`INSERT INTO alert_threads (
 				correlation_key, event_id, episode_signature, thread_id, root_message_id,
 				channel_id, lead_id, project_name, event_type, session_key, repair_status,
+				ticket_status, owner_ref, first_seen_at, attempt_count, acked_at,
 				opened_at, resolved_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), NULL)
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, datetime('now'), NULL)
 			ON CONFLICT(correlation_key) DO UPDATE SET
 				event_id = excluded.event_id,
 				episode_signature = excluded.episode_signature,
@@ -4345,6 +4368,11 @@ export class StateStore {
 				event_type = excluded.event_type,
 				session_key = excluded.session_key,
 				repair_status = excluded.repair_status,
+				ticket_status = excluded.ticket_status,
+				owner_ref = excluded.owner_ref,
+				first_seen_at = excluded.first_seen_at,
+				attempt_count = 0,
+				acked_at = NULL,
 				opened_at = datetime('now'),
 				resolved_at = NULL`,
 			[
@@ -4359,6 +4387,9 @@ export class StateStore {
 				input.eventType,
 				input.sessionKey ?? null,
 				input.repairStatus ?? null,
+				input.ticketStatus ?? null,
+				input.ownerRef ?? null,
+				input.firstSeenAt ?? null,
 			],
 		);
 		this.save();
@@ -4398,6 +4429,91 @@ export class StateStore {
 			[status, correlationKey],
 		);
 		this.save();
+	}
+
+	/**
+	 * FLY-927 (Task 2.2): set the ticket lifecycle status on the ACTIVE row.
+	 * ACK additionally stamps acked_at ONCE (first claim wins — the T2 unclaimed
+	 * fallback keys on its absence).
+	 */
+	setTicketStatus(correlationKey: string, status: string): void {
+		this.db.run(
+			`UPDATE alert_threads SET
+				ticket_status = ?,
+				acked_at = CASE WHEN ? = 'ACK' AND acked_at IS NULL THEN datetime('now') ELSE acked_at END
+			 WHERE correlation_key = ? AND resolved_at IS NULL`,
+			[status, status, correlationKey],
+		);
+		this.save();
+	}
+
+	/** FLY-927 (Task 2.2): consume one ARC attempt toward the T2 (2-try) budget. */
+	bumpTicketAttempt(correlationKey: string): void {
+		this.db.run(
+			"UPDATE alert_threads SET attempt_count = attempt_count + 1 WHERE correlation_key = ? AND resolved_at IS NULL",
+			[correlationKey],
+		);
+		this.save();
+	}
+
+	/**
+	 * FLY-927 (Task 2.2): active tickets still at NEW whose first-seen is older
+	 * than `ms` — the T2 unclaimed-fallback work list. Legacy rows (NULL
+	 * ticket_status) never match.
+	 */
+	getUnackedTicketsOlderThan(ms: number): AlertThreadRow[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM alert_threads
+			 WHERE resolved_at IS NULL AND ticket_status = 'NEW'
+			   AND first_seen_at IS NOT NULL
+			   AND first_seen_at <= datetime('now', ?)`,
+		);
+		stmt.bind([`-${Math.max(0, Math.floor(ms / 1000))} seconds`]);
+		const out: AlertThreadRow[] = [];
+		while (stmt.step()) {
+			out.push(rowToAlertThread(stmt.getAsObject() as Record<string, unknown>));
+		}
+		stmt.free();
+		return out;
+	}
+
+	/**
+	 * FLY-927 (Task 2.3 ACK correlation): the ACTIVE row for an exact event id.
+	 * A stale episode's event id never matches the active row (episode replace
+	 * overwrites event_id), so an action callback can never ACK the wrong episode.
+	 */
+	getActiveAlertThreadByEventId(eventId: string): AlertThreadRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM alert_threads WHERE event_id = ? AND resolved_at IS NULL",
+		);
+		stmt.bind([eventId]);
+		let out: AlertThreadRow | undefined;
+		if (stmt.step()) {
+			out = rowToAlertThread(stmt.getAsObject() as Record<string, unknown>);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/**
+	 * FLY-927 (Task 2.3 ACK correlation): the ACTIVE row for a (lead, kind) pair
+	 * — the rescue route's correlation input. Exact-match only; ambiguity is
+	 * impossible because correlation_key is the PK and includes both fields.
+	 */
+	getActiveAlertThreadByLeadAndType(
+		leadId: string,
+		eventType: string,
+	): AlertThreadRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM alert_threads WHERE lead_id = ? AND event_type = ? AND resolved_at IS NULL",
+		);
+		stmt.bind([leadId, eventType]);
+		let out: AlertThreadRow | undefined;
+		if (stmt.step()) {
+			out = rowToAlertThread(stmt.getAsObject() as Record<string, unknown>);
+		}
+		stmt.free();
+		return out;
 	}
 
 	/** FLY-368: mark the active alert thread resolved (recovery confirmed). */
@@ -5386,6 +5502,14 @@ export interface AlertThreadRow {
 	repair_status: string | null;
 	opened_at: string;
 	resolved_at: string | null;
+	/** FLY-927 ticket lifecycle (NEW/ACK/REPAIRING/RESOLVED/ESCALATED; NULL = legacy row). */
+	ticket_status: string | null;
+	/** FLY-927 owner ref (`infra_bot:claude` / `infra_bot:codex` / `lead:<id>`). */
+	owner_ref: string | null;
+	/** FLY-927 ARC attempts consumed toward the T2 (2-try) budget. */
+	attempt_count: number;
+	first_seen_at: string | null;
+	acked_at: string | null;
 }
 
 /**
@@ -5415,5 +5539,10 @@ function rowToAlertThread(row: Record<string, unknown>): AlertThreadRow {
 		repair_status: (row.repair_status as string) ?? null,
 		opened_at: row.opened_at as string,
 		resolved_at: (row.resolved_at as string) ?? null,
+		ticket_status: (row.ticket_status as string) ?? null,
+		owner_ref: (row.owner_ref as string) ?? null,
+		attempt_count: (row.attempt_count as number) ?? 0,
+		first_seen_at: (row.first_seen_at as string) ?? null,
+		acked_at: (row.acked_at as string) ?? null,
 	};
 }
